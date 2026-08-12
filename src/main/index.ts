@@ -177,7 +177,10 @@ if (!gotLock) {
       if (SMOKE_MODE && !smokeStarted && browserController !== null) {
         smokeStarted = true;
         const loadUrl = process.env['AIBROWSE_SMOKE_URL'];
-        runSmokeScenario(browserController, { loadUrl: loadUrl === '' ? undefined : loadUrl })
+        runSmokeScenario(browserController, {
+          loadUrl: loadUrl === '' ? undefined : loadUrl,
+          uiWindow: mainWindow, // T3：导航保护拦截与 bounds 上报生效验证
+        })
           .then(() => {
             logInfo('main', '冒烟自检通过，正常退出');
             app.quit();

@@ -12,9 +12,9 @@ const FILE_POLICY = { selfOrigin: null, selfFilePrefix: FILE_ENTRY };
 describe('resolveUiNavigationAllowed — 开发模式（origin 白名单）', () => {
   it('放行同 origin 的任意路径/查询/片段', () => {
     expect(resolveUiNavigationAllowed('http://localhost:5173/', DEV_POLICY)).toBe(true);
-    expect(
-      resolveUiNavigationAllowed('http://localhost:5173/some/route?q=1#top', DEV_POLICY),
-    ).toBe(true);
+    expect(resolveUiNavigationAllowed('http://localhost:5173/some/route?q=1#top', DEV_POLICY)).toBe(
+      true,
+    );
   });
 
   it('拒绝跨 origin 导航（远程页面是核心威胁）', () => {
