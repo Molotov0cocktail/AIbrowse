@@ -69,8 +69,8 @@ export const logDebug = (category: string, message: string): void =>
   write('DEBUG', category, message);
 export const logInfo = (category: string, message: string): void =>
   write('INFO', category, message);
-export const logWarn = (category: string, message: string): void =>
-  write('WARN', category, message);
+export const logWarn = (category: string, message: string, error?: unknown): void =>
+  write('WARN', category, message, error);
 export const logError = (category: string, message: string, error?: unknown): void =>
   write('ERROR', category, message, error);
 

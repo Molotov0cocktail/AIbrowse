@@ -12,7 +12,8 @@ export const SEARCH_ENGINE_URL = 'https://www.bing.com/search';
 // Allowed schemes are matched explicitly (not via a generic scheme pattern):
 // "example.com:8080" is a host:port, but the generic pattern would misread
 // "example.com:" as a scheme (dots are legal in scheme names per RFC 3986).
-const ALLOWED_SCHEME_PATTERN = /^(https?|about):/i;
+// Also shared by the tab will-navigate whitelist (doc/detailed-design.md §9).
+export const ALLOWED_SCHEME_PATTERN = /^(https?|about):/i;
 const DOMAIN_PATTERN =
   /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?([/?#].*)?$/i;
 const LOCALHOST_PATTERN = /^localhost(:\d{1,5})?([/?#].*)?$/i;
