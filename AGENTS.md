@@ -200,23 +200,28 @@ d:\AIbrowse\
 
 ## 5. 模块接口速查
 
-接口契约源为 First_stage.md §五/§七（草案，可改进但不得机械复制；实现后回填实际签名，
-并用 `grep -n "^export"` 与实际代码逐项核对）：
+接口契约已于 2026-08-13 **定稿**（T1），唯一契约源 `doc/detailed-design.md`（§2–§7 + §12 决议记录，
+含 proposal Q1–Q4 拍板）；以下为速查摘要。实现（T2/T4）后回填实际签名，
+并用 `grep -n "^export"` 与实际代码逐项核对：
 
 - **shared/url（已实现，2026-08-13 已用 grep 核对）**：`export const SEARCH_ENGINE_URL: string`
   （当前 `https://www.bing.com/search`，以后整体换 SearchProvider）；
   `export function resolveAddressBarInput(raw: string): string` —— `https://…`/`http://…`/`about:…`
   直开、裸域名/IP/localhost 补 `https://`、其余（含危险 scheme）走搜索；空输入与非法 URL
   安全返回 `''`（越界安全返回）。测试：`src/shared/url.test.ts`（15 用例）。
-- **BrowserController**（浏览器能力统一入口；未来 AI Agent 只能经它/Tool Layer 操作浏览器）：
-  `createTab(url?)` / `closeTab(tabId)` / `activateTab(tabId)` / `navigate(tabId, url)` /
-  `goBack(tabId)` / `goForward(tabId)` / `reload(tabId)` / `getTabs()` / `getActiveTab()` /
-  `getPageSnapshot(tabId)`，均返回 Promise；TabInfo/PageSnapshot 类型见 shared 层。
+- **BrowserController**（浏览器能力统一入口；未来 AI Agent 只能经它/Tool Layer 操作浏览器；
+  定稿契约）：`createTab(url?) → Promise<TabInfo>` / `closeTab · activateTab · navigate · goBack ·
+goForward · reload → Promise<boolean>`（参数/状态问题安全返回 `false`，不抛异常）/
+  `getTabs() → Promise<TabInfo[]>` / `getActiveTab() → Promise<TabInfo | null>` /
+  `getPageSnapshot(tabId) → Promise<PageSnapshot | null>`（null = 降级阶梯 L3）/
+  `dispose(): void`（退出路径全量清理，幂等）。TabInfo 含 `state`（idle/loading/ready/error）；
+  地址栏原始输入由 main 侧 IPC handler 统一规范化后再进 controller。
 - **PageSnapshot**（结构化快照，**不得默认返回整个 DOM**；过滤 script/style/隐藏内容等噪声；
   为交互元素生成 `elementId`，在一次快照生命周期内对应真实 DOM 元素）：
   `url` / `title` / `viewport?{scrollX,scrollY,width,height}` / `selection?` / `visibleText?` /
   `headings{level,text}[]` / `links{id,text,href}[]` / `buttons{id,text}[]` /
-  `inputs?{id,type,placeholder,value}[]` / `tables?{headers,rows}[]`。
+  `inputs?{id,type,placeholder,value}[]` / `tables?{headers,rows}[]` /
+  必填 `meta{capturedAt,readyState,degraded,warnings}`（降级阶梯 L0–L2，见 detailed-design §4）。
   要求：PageReader 不污染网站正常行为；对执行失败/跨域/页面销毁合理错误处理；
   远程网页不得通过此机制执行 Node.js 或 Electron privileged API。
 - **SessionManager**：本阶段仅持久 Session（重启后 Cookie/登录状态保留），
@@ -276,9 +281,9 @@ d:\AIbrowse\
   每次启动 Electron 须 `env -u` 排除，容易忘 → 后续可在 dev 脚本内兜底检测并给出中文提示。
 - **本机全局 git 配置的 `https.proxy` 是无效键**：git 只认 `http.proxy`，该全局配置被静默忽略，
   GitHub 推送必须显式 `-c http.proxy=…`（§6）；是否清理全局配置待用户确认（属用户机器配置，未动）。
-- **接口契约为草案** → First_stage.md 的示例接口可改进；详细设计定稿（任务 T1）需细化：
-  错误处理（跨域/页面销毁/执行失败）、preload bridge 最小权限清单、Tab 状态机纯逻辑边界、
-  proposal Q1–Q4 待定问题。
+- **接口契约已定稿**（2026-08-13，T1）：唯一契约源 doc/detailed-design.md（含 Q1–Q4 决议与
+  相对草案的 14 条变更）；T2/T4 实现后回填实际签名并与代码 grep 核对（§5）。
+  已知设计限制：PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过（快照点时刻尽力采样）。
 - **shared/url 已知限制**：不支持 IDN（中文域名）；无 SearchProvider 抽象（Bing 硬编码）；
   非 http/https/about 的 scheme 一律按搜索处理（安全优先，可接受）。
 - **日志位置随打包变化**：开发时 log/ 在项目根目录；打包后写用户数据目录（asar 只读），排查注意两处。

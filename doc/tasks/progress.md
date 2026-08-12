@@ -7,7 +7,7 @@
 
 ## 当前状态
 
-- 阶段：第一阶段（浏览器核心）。T0 基线完成，T1–T5 待执行。
+- 阶段：第一阶段（浏览器核心）。T0 基线、T1 详细设计定稿完成，T2–T5 待执行。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + Second_stage.md～Seventh_stage.md 入库；
   各文件职责、接管顺序与阶段切换纪律见 AGENTS.md §1/§2。
 - 最近 commit 与工作区状态：以 `git log --oneline` / `git status --short` 为准。
@@ -15,24 +15,28 @@
 
 ## 任务表
 
-| 任务 | 内容                                                                                             | 状态 | 备注                                  |
-| ---- | ------------------------------------------------------------------------------------------------ | ---- | ------------------------------------- |
-| T0   | 项目基线（git/文档链/脚手架/测试基建/最小应用）                                                  | ✅   | 2026-08-13 完成，见 tasks/baseline.md |
-| T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ⏳   | 下一次会话建议执行                    |
-| T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ⏳   | 依赖 T1                               |
-| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ⏳   | 依赖 T2                               |
-| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ⏳   | 依赖 T2                               |
-| T5   | 收尾：安全审计 + 第一阶段验收清单逐项核对 + 文档/README 同步                                     | ⏳   | 依赖 T2–T4                            |
+| 任务 | 内容                                                                                             | 状态 | 备注                                                           |
+| ---- | ------------------------------------------------------------------------------------------------ | ---- | -------------------------------------------------------------- |
+| T0   | 项目基线（git/文档链/脚手架/测试基建/最小应用）                                                  | ✅   | 2026-08-13 完成，见 tasks/baseline.md                          |
+| T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ✅   | 2026-08-13 完成，定稿见 doc/detailed-design.md（§12 决议记录） |
+| T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ⏳   | 依赖 T1                                                        |
+| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ⏳   | 依赖 T2                                                        |
+| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ⏳   | 依赖 T2                                                        |
+| T5   | 收尾：安全审计 + 第一阶段验收清单逐项核对 + 文档/README 同步                                     | ⏳   | 依赖 T2–T4                                                     |
 
 ## 最近验证结果（2026-08-13）
 
 - T0 基线：test 15/15 ✅ · typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅（退出码 0）
+- T1 定稿（2026-08-13，纯文档任务）：基线验证复跑全绿（test 15/15 · typecheck · lint · format:check · build）；
+  Electron 冒烟按验证矩阵「纯文档」豁免（代码零改动）。定稿契约依据本地 electron.d.ts（43.4.0）
+  逐项核实：WebContentsView/setVisible/addChildView/executeJavaScript/fromPartition/navigationHistory 均可用。
 - 规范校准：技术矩阵按官方来源（npm registry metadata + 官方文档）验证通过并冻结；
   依赖树健康（`npm ls` 无 invalid/missing peer）。
 
 ## 已知问题
 
-- proposal Q1–Q4 待 T1 拍板（elementId 映射、WebContentsView 生命周期、session 分区、快照降级粒度）。
+- proposal Q1–Q4 已拍板（2026-08-13，决议见 doc/detailed-design.md §12）。
+- PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过（设计决议，快照为点时刻尽力采样）。
 - 无 CI / 打包配置（第一阶段验收不要求）。
 - shared/url 不支持 IDN；SearchProvider 尚未抽象（以后替换）。
 - 本机环境注意（`ELECTRON_RUN_AS_NODE`、安装代理、git `http.proxy`）已写入 AGENTS.md §6，勿在别处重复维护。
@@ -43,7 +47,9 @@
 
 ## 下一个推荐任务
 
-- **T1 详细设计定稿**：输入 doc/proposal.md §8 + doc/detailed-design.md（草案）。
+- **T2 浏览器核心**：按 doc/detailed-design.md §2–§7 实现 BrowserController + TabManager +
+  WebContentsView + SessionManager（多 Tab 可开网页）+ tab-state.test.ts；
+  不包含 PageReader/采集（T4）与浏览器 UI（T3）。
 
 ## 第一阶段验收未完成项
 
