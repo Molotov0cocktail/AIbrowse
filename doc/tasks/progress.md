@@ -8,6 +8,8 @@
 ## 当前状态
 
 - 阶段：第一阶段（浏览器核心）。T0 基线完成，T1–T5 待执行。
+- 路线图文档已接入（2026-08-13）：ROADMAP.md + Second_stage.md～Seventh_stage.md 入库；
+  各文件职责、接管顺序与阶段切换纪律见 AGENTS.md §1/§2。
 - 最近 commit 与工作区状态：以 `git log --oneline` / `git status --short` 为准。
 - 技术基线：2026-08-13 验证冻结（AGENTS.md §1）；依赖精确版本固定（package.json 无 ^/~）。
 

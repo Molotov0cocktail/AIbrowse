@@ -5,5 +5,12 @@ release/
 log/
 coverage/
 package-lock.json
-# 用户的原始需求文档，不参与自动格式化
+# 用户的原始需求文档与阶段路线文档，不参与自动格式化
 First_stage.md
+ROADMAP.md
+Second_stage.md
+Third_stage.md
+Fourth_stage.md
+Fifth_stage.md
+Sixth_stage.md
+Seventh_stage.md

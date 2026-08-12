@@ -1,8 +1,9 @@
 # AGENTS.md — AIbrowse 项目专属开发手册
 
 > 依据 `.agents/skills/project-rules/PROJECT_RULES.md` §8 于 2026-08-13 初始化；
-> 与根目录 `First_stage.md`（阶段需求/验收标准）配套；技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
-> 新会话接管顺序：本文件 → `First_stage.md` → `doc/tasks/progress.md` → git 状态与代码核对（§2 步骤 0）。
+> 与根目录 `First_stage.md`（当前阶段需求/验收标准）、`ROADMAP.md` + `Second_stage.md`～`Seventh_stage.md`
+> （后续阶段路线与需求/验收标准）配套；技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
+> 新会话接管顺序：本文件 → 当前阶段文件（现为 `First_stage.md`）→ `doc/tasks/progress.md` → git 状态与代码核对（§2 步骤 0）。
 > 与本文件冲突时以本文件为准，通用规则基线见 `.agents/skills/project-rules/PROJECT_RULES.md`。
 > 任务进度不记在本文件：唯一进度源 `doc/tasks/progress.md`（本文件仅在有长期变化时更新，见 §2）。
 
@@ -14,6 +15,10 @@
 - **当前阶段（第一阶段）**：只构建安全、稳定、可扩展的浏览器核心
   **Browser → PageSnapshot → Browser Tool Interface**；**不接入任何 LLM API**。
   完成后得到能真正运行的 Windows 桌面浏览器原型，程序自身能把当前网页转成结构化 PageSnapshot。
+- **阶段机制**：`ROADMAP.md` 描述全阶段路线与切换原则；各阶段需求/验收标准分文件存放
+  （当前 `First_stage.md`，后续 `Second_stage.md`～`Seventh_stage.md`）。
+  当前处于第一阶段；**只有当前 Stage 的 Exit Gate 通过后才切换下一 Stage**（纪律见 §2 文档职责划分）。
+  各 Stage 文件的完整内容不复制进本文件，需要时直接读对应 Stage 文件。
 - **技术栈**：Electron + TypeScript + React + Vite + Node.js；页面承载用官方当前推荐的
   **WebContentsView**（禁用已废弃的 BrowserView）；测试 **Vitest**、lint **ESLint**、格式 **Prettier**。
   本阶段明确禁用：Playwright（作为浏览器主体）、SQLite、向量数据库、OpenAI/Anthropic API、
@@ -43,7 +48,9 @@
 ### 文档职责划分（唯一权威 + 单一事实源）
 
 ```
-First_stage.md（阶段需求/验收标准，低频修改）
+ROADMAP.md（全阶段路线与切换原则，低频修改）
+  ↓
+当前阶段文件 First_stage.md（后续 Second_stage.md～Seventh_stage.md，Exit Gate 通过后依次启用）
   ↓
 AGENTS.md（长期规则/稳定架构/技术基线，低频修改）
   ↓
@@ -54,6 +61,10 @@ doc/tasks/progress.md（当前工程状态/短期记忆，高频更新）
 Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ```
 
+- **阶段切换纪律**：当前处于第一阶段。只有当前 Stage 的 **Exit Gate** 全部通过（逐项核对该 Stage
+  文件的 Exit Gate/验收标准、progress.md 无阻塞级缺陷、全量验证通过）后，才可切换到下一 Stage；
+  切换按 ROADMAP.md「阶段切换原则」执行；阶段完成后**停下向用户报告**，不得擅自进入下一阶段
+  （First_stage.md §十五 / 本文件附 C）。
 - 不引入额外的状态文件 / Agent 日志 / checklist / handoff / summary 文件，除非实际开发证明必要。
 - **文档用于理解需求与意图；Git、当前代码、测试和构建结果用于确认项目实际状态。**
   若 progress.md 声称某功能已完成、但代码/Git/测试证明没有：以实际工程状态为事实，修正文档，再继续开发。
@@ -62,7 +73,7 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ### 步骤 0：新对话接管（每次新对话开始先做）
 
 1. 阅读 `AGENTS.md`（本文件）
-2. 阅读当前阶段文件 `First_stage.md`
+2. 阅读当前阶段文件（现为 `First_stage.md`；后续阶段文件为 `Second_stage.md`～`Seventh_stage.md`）
 3. 阅读 `doc/tasks/progress.md`（如存在）
 4. `git status` + 最近若干条 `git log --oneline`
 5. 检查本次任务相关的实际代码和配置
@@ -158,10 +169,11 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 
 ```
 d:\AIbrowse\
-├── AGENTS.md / First_stage.md / README.md     # 手册 / 阶段总任务 / 启动与架构简介
+├── AGENTS.md / First_stage.md / README.md     # 手册 / 当前阶段需求与验收 / 启动与架构简介
+├── ROADMAP.md / Second_stage.md～Seventh_stage.md  # 全阶段路线图 / 后续各阶段需求与验收标准
 ├── .agents/skills/…                           # 规则基线 + references/prompt-templates.md
 ├── .gitignore / .editorconfig                 # 忽略 log/、密钥、构建产物、IDE 个人配置
-├── .prettierrc.json / .prettierignore         # 格式约定（First_stage.md 不参与格式化）
+├── .prettierrc.json / .prettierignore         # 格式约定（需求/路线文档不参与格式化）
 ├── .node-version / .npmrc                     # Node 24.18.0 固定 / save-exact 精确版本
 ├── electron.vite.config.ts / vitest.config.ts # 构建（三目标）/ 测试配置
 ├── tsconfig.json + tsconfig.node/web.json     # 主进程与渲染进程各自的严格配置
