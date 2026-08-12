@@ -324,6 +324,10 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 - **理由**：显式 persist: 前缀语义明确（重启后 Cookie/登录状态持久，满足 First_stage §九）；
   defaultSession 虽默认持久但语义隐式、未来切多 Profile 需迁移，显式命名分区
   就是多 Profile（Personal/School/Work）接口落点（§2.4 `getSession(profile?)`）。
+- **权限安全默认值（2026-08-13 安全补丁，§11）**：分区首次创建时由 SessionManager 统一注册
+  `setPermissionRequestHandler` + `setPermissionCheckHandler`（官方要求两者同时实现才是完整权限
+  处理），策略委托 `permission-policy.ts` 纯函数——v1 一律拒绝（默认拒绝，未知权限/畸形来源
+  同样安全拒绝）；未来所有 profile 派生分区自动获得同一默认值。
 - 本阶段不做 Cookie 管理 UI / 清空会话功能（非第一阶段范围）。
 
 ## 8. PageSnapshot 采集算法（Q1 + 采集细节定稿；T4 实现）
@@ -399,10 +403,22 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 - **导航白名单**：每个 Tab webContents 的 `will-navigate` 仅放行 `http:`/`https:`/`about:`，
   其余（`file:`、自定义协议等）`preventDefault` + warn 日志（First_stage §八「对导航做好合理处理」）。
 - **window.open**：每个 Tab webContents 的 `setWindowOpenHandler` 一律 `deny` + warn（与基线主窗口一致）。
-- **UI 窗口自身导航白名单**（T3 补上，安全红线新发现）：React UI 所在窗口的 preload 会随
-  该窗口的**任何**导航加载——若 UI 窗口被导航到远程页面，远程页面将获得 `window.aibrowse` bridge。
-  因此 UI 窗口 `will-navigate` 只允许自身来源（开发模式 `ELECTRON_RENDERER_URL` origin /
-  生产 `file:` 入口），其余一律拦截 + warn。
+- **UI 窗口自身导航保护**（T3，安全红线；**是 tabs/nav/page/ui bridge 扩展的硬前提**——导航保护
+  必须先于或与 bridge 扩展同闭环落地，不得先暴露 bridge 再补保护）：React UI 所在窗口的 preload 会随
+  该窗口的**任何**导航加载——若 UI 窗口主框架被导航到远程页面，远程页面将获得 `window.aibrowse`
+  bridge（含 `page.snapshot`，可读取任意 Tab 内容）。保护覆盖两条路径，事件选择经
+  Electron 43.4.0 实测定稿（2026-08-13，见 §12 补丁决议）：
+  1. **页面发起的导航** → `will-navigate`：实测覆盖 `window.location.href`、`location.replace`、
+     链接点击（均触发，`preventDefault()` 可阻止）；程序化 `loadURL`/`back` 与子框架导航不触发
+     （无需额外按帧过滤）；不触发于页内导航（hash/pushState，不换文档、无风险）。
+  2. **服务器重定向** → `will-redirect`：实测在页面发起与程序化导航两条路径下都会对 302 目标触发，
+     `preventDefault()` 阻止整次导航（不单是重定向）。这是程序化导航遇到重定向时唯一的拦截点。
+     两处 handler 共用同一「自身来源」判定：开发模式仅放行 `ELECTRON_RENDERER_URL` 的 origin
+     （重定向目标同样过该判定）；生产仅放行 `file:` 入口（按入口文件路径前缀匹配）。
+     不采用 `will-frame-navigate`：对「主框架被导航走」这一威胁无增量覆盖（UI 窗口无远程子框架；
+     子框架导航不影响主框架 preload），且其 isMainFrame 需按位置参数读取、易错。
+     实现注意：TS 监听器首参 `details` 已并入 params（读 `details.url` / `details.isMainFrame`），
+     位置参数已标 `@deprecated`。
 
 ## 10. 测试规格（T2/T4 规划，红→绿纪律）
 
@@ -418,20 +434,21 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 
 ## 11. 安全基线核对清单（First_stage §八 → 落实位置，T5 逐项核对）
 
-| 红线                                   | 落实位置                                                             |
-| -------------------------------------- | -------------------------------------------------------------------- |
-| 远程网页 nodeIntegration=false         | Tab view webPreferences 显式声明（T2）                               |
-| contextIsolation=true                  | 同上（显式声明，不依赖默认值）                                       |
-| sandbox=true                           | 同上（显式声明）                                                     |
-| webSecurity 不关闭                     | 不设置 webSecurity（默认开启）                                       |
-| 远程网页无 Electron API / 文件系统访问 | Tab view 无 preload；无 Node 集成                                    |
-| ipcRenderer 不整体暴露                 | preload 仅白名单 bridge（§3.2）；远程页面无 preload                  |
-| window.open 限制                       | 每个 Tab + UI 窗口 setWindowOpenHandler deny                         |
-| 导航处理                               | Tab will-navigate 白名单 http/https/about；UI 窗口仅自身来源（§9）   |
-| UI 与远程网页安全边界                  | UI 渲染进程 ≠ Tab WebContentsView（独立 webContents + preload 隔离） |
-| IPC 最小权限                           | sender 校验 + 通道白名单（§3）                                       |
+| 红线                                   | 落实位置                                                                                                                                                    |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 远程网页 nodeIntegration=false         | Tab view webPreferences 显式声明（T2）                                                                                                                      |
+| contextIsolation=true                  | 同上（显式声明，不依赖默认值）                                                                                                                              |
+| sandbox=true                           | 同上（显式声明）                                                                                                                                            |
+| webSecurity 不关闭                     | 不设置 webSecurity（默认开启）                                                                                                                              |
+| 远程网页无 Electron API / 文件系统访问 | Tab view 无 preload；无 Node 集成                                                                                                                           |
+| ipcRenderer 不整体暴露                 | preload 仅白名单 bridge（§3.2）；远程页面无 preload                                                                                                         |
+| window.open 限制                       | 每个 Tab + UI 窗口 setWindowOpenHandler deny                                                                                                                |
+| 导航处理                               | Tab will-navigate 白名单 http/https/about；UI 窗口 will-navigate + will-redirect 仅自身来源（§9）                                                           |
+| 网页权限请求不得默认放行               | persist Session 注册 setPermissionRequestHandler + setPermissionCheckHandler，v1 默认拒绝（§7，permission-policy.ts 纯函数决策，未知权限/畸形来源安全拒绝） |
+| UI 与远程网页安全边界                  | UI 渲染进程 ≠ Tab WebContentsView（独立 webContents + preload 隔离）                                                                                        |
+| IPC 最小权限                           | sender 校验 + 通道白名单（§3）                                                                                                                              |
 
-## 12. 定稿决议记录（Q1–Q4 + 草案变更点）
+## 12. 定稿决议记录（Q1–Q4 + 草案变更点 + 安全补丁）
 
 ### proposal Q1–Q4 拍板
 
@@ -458,6 +475,30 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 12. 采集输出主进程 normalize 校验（页面视为敌手，不可信输入）。
 13. 快照 v1 仅主文档；跨域 iframe 无法读取 → L1 降级 + warnings（明确限制）。
 14. 单窗口假设写入设计（多窗口为未来扩展点）。
+
+### 安全补丁变更点（2026-08-13 技术审查后补入，已实现/已定稿）
+
+15. **网页权限默认拒绝**（已实现，本补丁）：Electron 官方安全文档明确「未注册 handler 时默认
+    自动批准全部权限请求」。persist Session 现于分区首次创建时注册
+    `setPermissionRequestHandler` + `setPermissionCheckHandler`（官方要求两者同时实现），
+    决策委托 `permission-policy.ts` 纯函数，v1 一律拒绝；未知权限类型与畸形来源同样安全拒绝；
+    配 `permission-policy.test.ts`（无 Electron mock 的纯策略测试）。T5 安全审计逐项核对。
+16. **UI 窗口导航保护事件集定稿**（T3 实现，Electron 43.4.0 实证，2026-08-13）：
+    实测矩阵（探针以本地 302 服务器 + 真实窗口驱动，结果如下）——
+
+    | 导航场景                    | will-navigate | will-frame-navigate    | will-redirect                   |
+    | --------------------------- | ------------- | ---------------------- | ------------------------------- |
+    | 程序化 loadURL              | ✗             | ✗                      | ✗                               |
+    | location.href（主框架）     | ✓             | ✓（isMainFrame=true）  | —                               |
+    | location.replace（主框架）  | ✓             | ✓（isMainFrame=true）  | —                               |
+    | 链接点击（主框架）          | ✓             | ✓                      | —                               |
+    | 子框架导航                  | ✗             | ✓（isMainFrame=false） | —                               |
+    | 页面发起导航 → 302 重定向   | ✓（初始 URL） | ✓                      | ✓（302 目标，isMainFrame=true） |
+    | 程序化 loadURL → 302 重定向 | ✗             | ✗                      | ✓（302 目标，isMainFrame=true） |
+
+    结论：`will-navigate`（页面发起导航，**含 location.replace**）+ `will-redirect`（服务器重定向，
+    程序化导航遇到 302 时唯一拦截点）即可完整覆盖 UI 主框架威胁；`will-frame-navigate` 无增量
+    覆盖且位置参数易错，不采用；三者 `preventDefault()` 均实测可阻止导航。§9 已按此定稿。
 
 ## 13. 实现顺序与范围边界（供 T2/T3/T4 参考）
 

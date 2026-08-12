@@ -26,6 +26,13 @@
 
 ## 最近验证结果（2026-08-13）
 
+- 安全补丁（2026-08-13，审查发现→修复）：persist Session 权限默认放行漏洞已修复——
+  `setPermissionRequestHandler` + `setPermissionCheckHandler` 双处理器默认拒绝（v1），
+  策略纯函数 `permission-policy.ts` + 4 组纯测试（无 Electron mock）。test 33/33 ✅ ·
+  typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅（退出码 0，离线场景）。
+  同步定稿：detailed-design §7/§9/§11/§12（权限默认拒绝 + UI 窗口导航保护事件集，
+  Electron 43.4.0 实证：will-navigate 覆盖页面发起导航含 location.replace；
+  will-redirect 覆盖页面发起与程序化两条路径的 302；不采用 will-frame-navigate）。
 - T0 基线：test 15/15 ✅ · typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅（退出码 0）
 - T1 定稿（2026-08-13，纯文档任务）：基线验证复跑全绿（test 15/15 · typecheck · lint · format:check · build）；
   Electron 冒烟按验证矩阵「纯文档」豁免（代码零改动）。定稿契约依据本地 electron.d.ts（43.4.0）
@@ -48,8 +55,10 @@
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过（设计决议，快照为点时刻尽力采样）。
 - 无 CI / 打包配置（第一阶段验收不要求）。
 - shared/url 不支持 IDN；SearchProvider 尚未抽象（以后替换）。
-- UI 窗口自身 will-navigate 白名单（detailed-design §9「T3 补上」）与渲染层 bounds 上报
-  （ResizeObserver）尚缺 —— T3 落地；当前内容区用窗口尺寸兜底 bounds。
+- UI 窗口导航保护（detailed-design §9，will-navigate + will-redirect 事件集已按 Electron 43.4.0
+  实测定稿）与渲染层 bounds 上报（ResizeObserver）尚缺 —— T3 落地；当前内容区用窗口尺寸兜底
+  bounds。⚠️ 导航保护是 tabs/nav/page/ui bridge 扩展的**硬前提**：必须与 bridge 扩展同闭环
+  先于或同时落地，不得先暴露 bridge。
 - 本机环境注意（`ELECTRON_RUN_AS_NODE`、安装代理、git `http.proxy`）已写入 AGENTS.md §6，勿在别处重复维护。
 
 ## 阻塞项
@@ -60,7 +69,9 @@
 
 - **T3 浏览器 UI**：preload bridge 扩展（AibrowseBridge 白名单：tabs/nav/page/ui，
   见 detailed-design §3.2）+ 顶部工具栏/标签栏/地址栏（main 侧已规范化）/主区域；
-  渲染层 ResizeObserver 上报 ui:content-bounds；UI 窗口自身 will-navigate 白名单（§9）；
+  渲染层 ResizeObserver 上报 ui:content-bounds。
+  ⚠️ 硬前提：UI 窗口导航保护（§9：will-navigate + will-redirect，事件集已实测定稿）
+  必须先于或与 bridge 扩展同闭环落地，不得先暴露 bridge 再补保护。
   真实网页可经地址栏打开（T2 主进程能力已就绪，冒烟可选 AIBROWSE_SMOKE_URL 验证）。
 
 ## 第一阶段验收未完成项

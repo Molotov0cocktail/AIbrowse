@@ -190,7 +190,8 @@ d:\AIbrowse\
     │       ├── browser-controller.ts          # 浏览器能力统一入口（接口 BrowserController + 实现类）
     │       ├── tab-manager.ts                 # WebContentsView 创建/销毁/事件→TabInfo 登记表
     │       ├── tab-state.ts / .test.ts        # 状态机纯函数 + 14 用例
-    │       ├── session-manager.ts             # persist:aibrowse 分区（多 Profile 预留）
+    │       ├── session-manager.ts             # persist:aibrowse 分区（多 Profile 预留；双权限处理器默认拒绝）
+    │       ├── permission-policy.ts / .test.ts  # 网页权限策略纯函数（v1 默认拒绝）+ 4 组用例（安全补丁）
     │       ├── page-reader.ts                 # （T4 待建）快照编排：注入 + 降级阶梯
     │       ├── snapshot-script.ts             # （T4 待建）注入脚本源（自安装 IIFE 字符串）
     │       └── snapshot-normalize.ts          # （T4 待建）脚本输出校验纯函数
@@ -256,6 +257,12 @@ d:\AIbrowse\
   `export class AppSessionManager`（`session.fromPartition` 懒加载单例；'main'→PERSIST_PARTITION，
   未来 Profile 映射 `persist:aibrowse-<profile>`）。本阶段仅持久 Session（重启后 Cookie/登录状态保留），
   不真正实现多 Profile。
+- **permission-policy（安全补丁，2026-08-13）**：`export function resolvePermissionRequest(
+permission, requestingUrl): boolean` / `export function resolvePermissionCheck(permission,
+requestingOrigin): boolean` —— 网页权限策略纯函数，v1 固定默认拒绝（未知权限/畸形来源同样拒绝）；
+  由 SessionManager 在分区首次创建时注册的 `setPermissionRequestHandler` +
+  `setPermissionCheckHandler` 调用（官方要求两者同时实现）。测试：`permission-policy.test.ts`（4 组）。
+  后续扩展权限白名单只改本模块与测试。
 - **PageSnapshot**（T4 实现）要求：结构化快照**不得默认返回整个 DOM**；过滤
   script/style/隐藏内容等噪声；为交互元素生成 `elementId`（双层映射，§8.4），在一次快照
   生命周期内对应真实 DOM 元素。PageReader 不污染网站正常行为；对执行失败/跨域/页面销毁
@@ -279,7 +286,7 @@ d:\AIbrowse\
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 15 用例）
+  - `npm test` — Vitest 全量测试（当前 33 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -307,6 +314,7 @@ d:\AIbrowse\
 - **重点测核心业务逻辑**（First_stage.md §十三），至少覆盖：
   - ✅ 地址栏输入 → URL / 搜索判断（`src/shared/url.test.ts`，15 用例，T0 红→绿落地）
   - ✅ Tab 状态机纯逻辑（`src/main/browser/tab-state.test.ts`，14 用例，T2 红→绿落地）
+  - ✅ 网页权限策略默认拒绝（`src/main/browser/permission-policy.test.ts`，4 组用例，安全补丁）
   - ⏳ PageSnapshot 数据规范化（规划 T4：`snapshot-normalize.test.ts`）
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖。
