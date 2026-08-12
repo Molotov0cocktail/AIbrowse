@@ -1,10 +1,12 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { BrowserControllerImpl } from './browser/browser-controller';
 import { AppSessionManager } from './browser/session-manager';
 import { initLogger, logDebug, logEnvironment, logError, logInfo, logWarn } from './logger';
 import { runSmokeScenario } from './smoke';
+import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
 import { resolveAddressBarInput } from '../shared/url';
 import { IPC } from '../shared/types/ipc';
 import type { AppInfo } from '../shared/types/app';
@@ -237,6 +239,31 @@ function createMainWindow(): BrowserWindow {
     logWarn('main', '已拦截 window.open 新窗口请求');
     return { action: 'deny' };
   });
+
+  // UI 窗口自身导航保护（§9，安全红线，preload bridge 扩展硬前提）：
+  // UI 窗口 preload 随该窗口任何导航加载——若主框架被导航到远程页面，远程页面将获得
+  // window.aibrowse bridge（含 page.snapshot）。will-navigate 覆盖页面发起导航
+  // （含 location.replace，Electron 43.4.0 实测触发），will-redirect 覆盖服务器重定向
+  // （程序化导航遇 302 时唯一拦截点）；两处 handler 共用同一「自身来源」判定。
+  const navPolicy = buildUiNavigationPolicy();
+  const onUiWillNavigate = (
+    details: Electron.Event<Electron.WebContentsWillNavigateEventParams>,
+  ): void => {
+    if (!resolveUiNavigationAllowed(details.url, navPolicy)) {
+      details.preventDefault();
+      logWarn('main', `已拦截 UI 窗口导航（自身来源判定失败）：${details.url}`);
+    }
+  };
+  const onUiWillRedirect = (
+    details: Electron.Event<Electron.WebContentsWillRedirectEventParams>,
+  ): void => {
+    if (!resolveUiNavigationAllowed(details.url, navPolicy)) {
+      details.preventDefault();
+      logWarn('main', `已拦截 UI 窗口重定向（自身来源判定失败）：${details.url}`);
+    }
+  };
+  win.webContents.on('will-navigate', onUiWillNavigate);
+  win.webContents.on('will-redirect', onUiWillRedirect);
   win.webContents.on('did-finish-load', () => {
     logInfo('main', '渲染进程页面加载完成');
   });
@@ -250,6 +277,19 @@ function createMainWindow(): BrowserWindow {
       .catch((err: unknown) => logError('main', '本地页面加载失败', err));
   }
   return win;
+}
+
+// UI 窗口导航保护的「自身来源」策略（§9）：开发模式仅放行 ELECTRON_RENDERER_URL 的
+// origin（重定向目标同样过该判定）；生产仅放行 file: 入口（按入口文件路径前缀匹配）。
+function buildUiNavigationPolicy(): UiNavigationPolicy {
+  const devUrl = process.env['ELECTRON_RENDERER_URL'];
+  if (devUrl) {
+    return { selfOrigin: new URL(devUrl).origin, selfFilePrefix: null };
+  }
+  return {
+    selfOrigin: null,
+    selfFilePrefix: pathToFileURL(join(__dirname, '../renderer/index.html')).href,
+  };
 }
 
 process.on('uncaughtException', (err) => {
