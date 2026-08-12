@@ -59,12 +59,17 @@ Tab 标题随网页变化、持久 Session、PageSnapshot 结构化读取 + elem
 
 | #   | 问题                                                                                              | 影响                                                                        | 拍板时机                  |
 | --- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | ------------------------- |
-| Q1  | elementId 与真实 DOM 元素在一次快照生命周期内的映射方案（注入脚本内 Map 缓存 vs 重新定位）        | 影响未来 AI 点击/填写工具的可行性                                           | 详细设计定稿（T1）        |
-| Q2  | WebContentsView 运行时细节：多 view 的叠加/遮挡与 bounds 管理、view 与 BrowserWindow 生命周期关系 | TabManager 实现细节                                                         | T1 定稿 + T2 实现中验证   |
-| Q3  | WebContentsView 默认使用的 session 分区（defaultSession vs 自定义 persist: 分区）                 | 持久 Session 是否生效                                                       | T1 定稿（以实测为准）     |
-| Q4  | 跨域 iframe / 页面销毁 / 执行失败时 PageSnapshot 的降级粒度                                       | PageReader 错误处理契约                                                     | T1 定稿                   |
+| Q1  | elementId 与真实 DOM 元素在一次快照生命周期内的映射方案（注入脚本内 Map 缓存 vs 重新定位）        | 影响未来 AI 点击/填写工具的可行性                                           | 已定稿（2026-08-13，T1）  |
+| Q2  | WebContentsView 运行时细节：多 view 的叠加/遮挡与 bounds 管理、view 与 BrowserWindow 生命周期关系 | TabManager 实现细节                                                         | 已定稿（2026-08-13，T1）  |
+| Q3  | WebContentsView 默认使用的 session 分区（defaultSession vs 自定义 persist: 分区）                 | 持久 Session 是否生效                                                       | 已定稿（2026-08-13，T1）  |
+| Q4  | 跨域 iframe / 页面销毁 / 执行失败时 PageSnapshot 的降级粒度                                       | PageReader 错误处理契约                                                     | 已定稿（2026-08-13，T1）  |
 | Q5  | GitHub 推送的代理方式                                                                             | 目前 git 全局已配置 `http://127.0.0.1:7890` 且实测可用，可回填 AGENTS.md §6 | 已确认（2026-08-13 实测） |
 | Q6  | 双远程用户名拼写不一致（Gitee `Molotov0coaktail` / GitHub `Molotov0cocktail`）                    | 推送失败或推错仓库                                                          | 首次推送时实测验证        |
+
+> Q1–Q4 决议：Q1 双层映射（`data-aibrowse-el` 属性烙印 + 注入上下文 Map，每次快照重建、有界无泄漏）；
+> Q2 全部 view 常驻 contentView、`setVisible` 切换、bounds 由渲染层 ResizeObserver 经 `ui:content-bounds` 上报；
+> Q3 显式 `persist:aibrowse` 分区（多 Profile 预留）；Q4 四级降级阶梯 L0–L3 + 必填 meta.degraded/warnings。
+> 完整契约与理由见 doc/detailed-design.md §12。
 
 ## 9. 里程碑划分
 
