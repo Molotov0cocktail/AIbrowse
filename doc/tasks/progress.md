@@ -23,9 +23,11 @@
 - **验证**：test 15/15 ✅ · typecheck ✅ · lint ✅ · format:check ✅ · build ✅（out/ 三目标）·
   冒烟 ✅（真实启动：窗口 → React 挂载 → bridge 链路 → 自动退出，退出码 0）·
   推送 ✅ gitee + ✅ github（提交 346231a / 0bde230 / 文档同步提交）。
-- **环境实测**：本机代理 127.0.0.1:7890 可用（github.com 经其可达）；git 全局 https.proxy 已配置，
-  但 GitHub 推送曾直连超时，显式 `-c https.proxy=…` 可解决；本机全局 `ELECTRON_RUN_AS_NODE=1`
-  必须 `env -u` 排除（未动全局变量）；Electron 二进制下载需 `NODE_USE_ENV_PROXY=1` + 代理。
+- **环境实测**：本机代理 127.0.0.1:7890 可用（github.com 经其可达）；⚠️ 本机 git 全局配置的
+  `https.proxy` 是**无效键**（git 只认 `http.proxy`，被静默忽略），GitHub 推送须显式
+  `-c http.proxy=http://127.0.0.1:7890`（GIT_CURL_VERBOSE 抓包确认直连后定位）；
+  本机全局 `ELECTRON_RUN_AS_NODE=1` 必须 `env -u` 排除（未动全局变量）；
+  Electron 二进制下载需 `NODE_USE_ENV_PROXY=1` + 代理。
 - **红→绿记录**：url.test.ts 先写后红（实现缺失）；实现后测试抓住两个真实缺陷
   （host:port 被误判为 scheme、搜索 URL 参数重复），修正后 15/15 绿。
 - **遗留**：proposal Q1–Q4 待 T1 拍板；无 CI/打包配置（阶段验收不要求）；shared/url 不支持 IDN；

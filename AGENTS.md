@@ -188,14 +188,15 @@ d:\AIbrowse\
   ```bash
   # 日常推送：Gitee 直连
   git push gitee main
-  # GitHub：经本机代理（全局 https.proxy 偶发不生效，显式指定最稳）
-  git -c https.proxy=http://127.0.0.1:7890 push github main
+  # GitHub：经本机代理（git 只认 http.proxy 键；本机全局的 https.proxy 是无效键）
+  git -c http.proxy=http://127.0.0.1:7890 push github main
 
   # 提交前必做：git status --short 复查工作区，无多余文件/敏感信息/构建产物
   ```
 - **代理配置（已确认可用，2026-08-13 实测）**：本机代理 `http://127.0.0.1:7890`（Clash 类），
-  git 全局已配置 `https.proxy`；github.com 经代理可达；Gitee 直连/代理均可达。
-  GitHub 推送若超时，用上面显式 `-c https.proxy=…` 重试。
+  github.com 经代理可达；Gitee 直连/代理均可达。⚠️ **git 的合法代理键是 `http.proxy`**
+  （本机全局配置的 `https.proxy` 是无效键、会被静默忽略，导致推送时直连 github 超时）；
+  推送 GitHub 一律用 `-c http.proxy=http://127.0.0.1:7890`。
 
 ## 7. 测试约定
 
@@ -212,7 +213,8 @@ d:\AIbrowse\
 
 - **本机环境变量陷阱**：`ELECTRON_RUN_AS_NODE=1` 全局存在（未改动，可能被本机 node 依赖），
   每次启动 Electron 须 `env -u` 排除，容易忘 → 后续可在 dev 脚本内兜底检测并给出中文提示。
-- **全局 https.proxy 偶发不生效**：GitHub 推送曾直连超时一次，显式 `-c https.proxy=…` 可解决（§6）。
+- **本机全局 git 配置的 `https.proxy` 是无效键**：git 只认 `http.proxy`，该全局配置被静默忽略，
+  GitHub 推送必须显式 `-c http.proxy=…`（§6）；是否清理全局配置待用户确认（属用户机器配置，未动）。
 - **接口契约为草案** → First_stage.md 的示例接口可改进；详细设计定稿（任务 T1）需细化：
   错误处理（跨域/页面销毁/执行失败）、preload bridge 最小权限清单、Tab 状态机纯逻辑边界、
   proposal Q1–Q4 待定问题。

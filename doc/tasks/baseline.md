@@ -30,7 +30,7 @@
 - [x] `npm run build` — 产物 out/ 生成成功（main 5.49 kB / preload 0.29 kB / renderer 557 kB，CJS）
 - [x] Electron 冒烟 — 实际启动通过：环境信息 → 窗口显示 → 页面加载 → React 挂载 + bridge 链路 →
       正常退出（**退出码 0**），完整日志链见 `log/aibrowse-2026-08-13.log`
-- [x] 双远程推送 — gitee ✅（直连）/ github ✅（显式 `-c https.proxy=…`，全局配置偶发不生效）；
+- [x] 双远程推送 — gitee ✅（直连）/ github ✅（显式 `-c http.proxy=…`；全局 `https.proxy` 为无效键）；
       ⚠️ 用户名拼写差异已按用户提供的地址实测无碍
 
 ## 完成定义
