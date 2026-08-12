@@ -4,6 +4,8 @@
 > 高频更新：每个开发闭环后更新；保持结构化、精炼，供新 Agent 快速接管，不写长篇开发日记
 > （历史细节进 git log / 任务文档）。任务粒度与文档职责见 AGENTS.md §2。
 > ⚠️ 文档与代码实际状态不一致时，以 Git/代码/测试为准并修正本文件。
+> ⚠️ 风险编号 R-XX 按登记顺序分配，**不得重排、不得复用**（已关闭项保留编号与结论直至自然归档）。
+> 「风险与限制」只登记当前仍需关注的事项；历史细节由 Git 提交与任务文档保存，不在此重复叙述。
 
 ## 当前状态
 
@@ -47,19 +49,64 @@
 - 规范校准：技术矩阵按官方来源（npm registry metadata + 官方文档）验证通过并冻结；
   依赖树健康（`npm ls` 无 invalid/missing peer）。
 
-## 已知问题
+## 风险与限制
 
-- proposal Q1–Q4 已拍板（2026-08-13，决议见 doc/detailed-design.md §12）。
-- PageSnapshot 当前 L2-only（T2 状态）：PageReader 采集脚本 T4 接入前，getPageSnapshot
-  返回真实 L2 降级快照（主进程侧 url/title + 空集合 + degraded:'main-process-only' + warnings）。
-- PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过（设计决议，快照为点时刻尽力采样）。
-- 无 CI / 打包配置（第一阶段验收不要求）。
-- shared/url 不支持 IDN；SearchProvider 尚未抽象（以后替换）。
-- UI 窗口导航保护（detailed-design §9，will-navigate + will-redirect 事件集已按 Electron 43.4.0
-  实测定稿）与渲染层 bounds 上报（ResizeObserver）尚缺 —— T3 落地；当前内容区用窗口尺寸兜底
-  bounds。⚠️ 导航保护是 tabs/nav/page/ui bridge 扩展的**硬前提**：必须与 bridge 扩展同闭环
-  先于或同时落地，不得先暴露 bridge。
-- 本机环境注意（`ELECTRON_RUN_AS_NODE`、安装代理、git `http.proxy`）已写入 AGENTS.md §6，勿在别处重复维护。
+> 编号规则见文件顶部；正常后续任务、已接受的设计决议、机器环境说明不登记为风险
+> （分别在任务表 / detailed-design / AGENTS.md §6）。
+
+### 开放风险登记
+
+#### R-01 UI 窗口导航保护缺失（T3 bridge 扩展硬前提）
+
+- 状态：Open
+- 发现于：2026-08-13 技术审查（T2 完成后）
+- 严重度：Medium（T3 若先扩展 bridge 再补保护，则升为 High）
+- 阻塞级别：指定任务硬前提（T3 tabs/nav/page/ui bridge 扩展）
+- 影响：UI 窗口 preload 随该窗口任何导航加载；若 UI 主框架被导航到远程页面，远程页面将获得
+  `window.aibrowse` bridge——T3 扩展后含 `page.snapshot`，可读取任意 Tab（含已登录页面）内容，
+  违反 First_stage §八 安全红线
+- 证据：`src/main/index.ts` 无 will-navigate / will-redirect 处理（2026-08-13 grep 核实）；
+  detailed-design §9/§12 决议 #16（Electron 43.4.0 实证：will-navigate 覆盖页面发起导航含
+  location.replace，will-redirect 覆盖页面发起与程序化两条路径的 302）
+- 当前处理：暂未实现（属 T3 范围）；事件集与自身来源判定已实测定稿（detailed-design §9）
+- 关闭条件：T3 内实现 UI 窗口 will-navigate + will-redirect 白名单（开发模式仅放行
+  `ELECTRON_RENDERER_URL` origin、生产仅放行 `file:` 入口），与 bridge 扩展同闭环落地，
+  经冒烟/实际导航验证拦截生效 → Resolved
+- 最迟复核点：T3 完成前（bridge 扩展必须先于或与保护同时落地，否则 T3 不得继续）
+
+#### R-02 Tab 导航白名单未覆盖服务器重定向（待 T5 评估）
+
+- 状态：Open
+- 发现于：2026-08-13 技术审查（T2 完成后）
+- 严重度：Low
+- 阻塞级别：当前任务非阻塞
+- 影响：Tab webContents 仅挂 will-navigate 白名单（http/https/about），302 重定向到非白名单
+  scheme（如自定义协议）时无拦截点；当前实际风险低——项目未注册任何自定义协议，且 Chromium
+  自身阻止远程页面导航到 file:// 等本地资源
+- 证据：`src/main/browser/tab-manager.ts` 仅注册 will-navigate（无 will-redirect）；
+  electron.d.ts（43.4.0）will-redirect 说明 + 2026-08-13 探针实测（302 目标触发 will-redirect）
+- 当前处理：暂不处理，留给 T5 安全审计评估
+- 关闭条件：T5 安全审计给出处置——补 will-redirect 加固（→ Resolved）或记录风险可接受理由
+  （→ Accepted）
+- 最迟复核点：First Stage Exit Gate（T5 安全审计内）
+
+### 计划内限制与延期项
+
+（正常后续任务 / 已接受设计决议 / 明确延期，不虚构严重度与证据）
+
+- PageSnapshot 当前 L2-only（T2 状态）：PageReader 采集脚本 T4 接入前，getPageSnapshot 返回真实
+  L2 降级快照（主进程侧 url/title + 空集合 + degraded:'main-process-only' + warnings）。
+  计划内，T4 落地，非缺陷。
+- PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过——已接受设计决议
+  （detailed-design §12 决议 #13，快照为点时刻尽力采样）。
+- 渲染层 bounds 上报（ResizeObserver → ui:content-bounds）尚未实现——T3 任务范围内；
+  当前内容区用窗口尺寸兜底 bounds（T2 冒烟已验证可用）。
+- 无 CI / 打包配置：第一阶段验收不要求；T5 收尾评估 CI（lint + test + typecheck），
+  打包属 Seventh Stage（Product Hardening）。
+- shared/url 不支持 IDN（中文域名走搜索兜底，安全无副作用）；SearchProvider 尚未抽象
+  （Bing 硬编码，计划在 Second/Third Stage 前替换）。
+- UI 窗口（defaultSession）未注册权限处理器：UI 只加载自身内容，R-01 落地后无远程页面可达，
+  当前无需处理；未来 UI 嵌入远程内容时重新评估。
 
 ## 阻塞项
 
