@@ -9,7 +9,8 @@
 
 ## 当前状态
 
-- 阶段：第一阶段（浏览器核心）。T0 基线、T1 详细设计定稿、T2 浏览器核心完成，T3–T5 待执行。
+- 阶段：第一阶段（浏览器核心）。T0 基线、T1 详细设计定稿、T2 浏览器核心、T3 浏览器 UI 闭环完成，
+  T4–T5 待执行。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + Second_stage.md～Seventh_stage.md 入库；
   各文件职责、接管顺序与阶段切换纪律见 AGENTS.md §1/§2。
 - 最近 commit 与工作区状态：以 `git log --oneline` / `git status --short` 为准。
@@ -22,12 +23,22 @@
 | T0   | 项目基线（git/文档链/脚手架/测试基建/最小应用）                                                  | ✅   | 2026-08-13 完成，见 tasks/baseline.md                          |
 | T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ✅   | 2026-08-13 完成，定稿见 doc/detailed-design.md（§12 决议记录） |
 | T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ✅   | 2026-08-13 完成，签名已回填 AGENTS.md §5 并与代码 grep 核对    |
-| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ⏳   | 依赖 T2 ✅                                                     |
+| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ✅   | 2026-08-13 完成，R-01 同闭环关闭（见下）                       |
 | T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ⏳   | 依赖 T2 ✅                                                     |
 | T5   | 收尾：安全审计 + 第一阶段验收清单逐项核对 + 文档/README 同步                                     | ⏳   | 依赖 T2–T4                                                     |
 
 ## 最近验证结果（2026-08-13）
 
+- T3 浏览器 UI 闭环（2026-08-13）：test 42/42 ✅（33 基线 + 9 ui-navigation-policy 新增）·
+  typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 三场景退出码 0：
+  ① dev 离线（T2 场景回归 + UI 导航保护拦截 + bounds 上报生效）；
+  ② 生产产物（`npm run start`，file: 入口导航保护路径）；
+  ③ 真实 URL（AIBROWSE_SMOKE_URL=https://www.bing.com/，ready + 标题非空）。
+  交付内容：UI 窗口导航保护（will-navigate + will-redirect 自身来源白名单，纯函数
+  ui-navigation-policy + 9 用例，**bridge 扩展硬前提，与 bridge 同闭环落地**）→
+  preload bridge 扩展（tabs/nav/page/ui 白名单，§3.2 定稿签名）→ 浏览器 chrome UI
+  （工具栏/标签栏/地址栏/主区域 + ResizeObserver bounds 上报 + 原始输入 main 侧规范化）→
+  冒烟扩展。分 4 个逻辑 commit 提交。
 - 安全补丁（2026-08-13，审查发现→修复）：persist Session 权限默认放行漏洞已修复——
   `setPermissionRequestHandler` + `setPermissionCheckHandler` 双处理器默认拒绝（v1），
   策略纯函数 `permission-policy.ts` + 4 组纯测试（无 Electron mock）。test 33/33 ✅ ·
@@ -56,23 +67,21 @@
 
 ### 开放风险登记
 
-#### R-01 UI 窗口导航保护缺失（T3 bridge 扩展硬前提）
+#### R-01 UI 窗口导航保护缺失（T3 bridge 扩展硬前提）→ Resolved
 
-- 状态：Open
+- 状态：**Resolved（2026-08-13，T3 内关闭）**
 - 发现于：2026-08-13 技术审查（T2 完成后）
-- 严重度：Medium（T3 若先扩展 bridge 再补保护，则升为 High）
+- 严重度：Medium（曾评估：T3 若先扩展 bridge 再补保护，则升为 High）
 - 阻塞级别：指定任务硬前提（T3 tabs/nav/page/ui bridge 扩展）
 - 影响：UI 窗口 preload 随该窗口任何导航加载；若 UI 主框架被导航到远程页面，远程页面将获得
   `window.aibrowse` bridge——T3 扩展后含 `page.snapshot`，可读取任意 Tab（含已登录页面）内容，
   违反 First_stage §八 安全红线
-- 证据：`src/main/index.ts` 无 will-navigate / will-redirect 处理（2026-08-13 grep 核实）；
-  detailed-design §9/§12 决议 #16（Electron 43.4.0 实证：will-navigate 覆盖页面发起导航含
-  location.replace，will-redirect 覆盖页面发起与程序化两条路径的 302）
-- 当前处理：暂未实现（属 T3 范围）；事件集与自身来源判定已实测定稿（detailed-design §9）
-- 关闭条件：T3 内实现 UI 窗口 will-navigate + will-redirect 白名单（开发模式仅放行
-  `ELECTRON_RENDERER_URL` origin、生产仅放行 `file:` 入口），与 bridge 扩展同闭环落地，
-  经冒烟/实际导航验证拦截生效 → Resolved
-- 最迟复核点：T3 完成前（bridge 扩展必须先于或与保护同时落地，否则 T3 不得继续）
+- 证据（曾）：`src/main/index.ts` 无 will-navigate / will-redirect 处理；
+  detailed-design §9/§12 决议 #16（Electron 43.4.0 实证事件集）
+- 关闭结论：T3 内先于 bridge 扩展落地 UI 窗口 will-navigate + will-redirect 自身来源白名单
+  （开发模式仅放行 `ELECTRON_RENDERER_URL` origin、生产仅放行 `file:` 入口），判定抽为纯函数
+  `ui-navigation-policy.ts` + 9 用例；冒烟新增拦截断言（dev origin 与生产 file: 两条路径
+  实跑均通过：UI 窗口发起远程导航 800ms 后 URL 不变）
 
 #### R-02 Tab 导航白名单未覆盖服务器重定向（待 T5 评估）
 
@@ -94,19 +103,20 @@
 
 （正常后续任务 / 已接受设计决议 / 明确延期，不虚构严重度与证据）
 
-- PageSnapshot 当前 L2-only（T2 状态）：PageReader 采集脚本 T4 接入前，getPageSnapshot 返回真实
+- PageSnapshot 当前 L2-only（T3 状态）：PageReader 采集脚本 T4 接入前，getPageSnapshot 返回真实
   L2 降级快照（主进程侧 url/title + 空集合 + degraded:'main-process-only' + warnings）。
   计划内，T4 落地，非缺陷。
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过——已接受设计决议
   （detailed-design §12 决议 #13，快照为点时刻尽力采样）。
-- 渲染层 bounds 上报（ResizeObserver → ui:content-bounds）尚未实现——T3 任务范围内；
-  当前内容区用窗口尺寸兜底 bounds（T2 冒烟已验证可用）。
+- 地址栏/标签栏 UI 交互（点击/键盘）暂未被冒烟直接驱动：冒烟覆盖主进程侧可观测行为
+  （导航保护拦截、bounds 上报生效、多 Tab 状态流转），React 交互路径经人工实际运行验证；
+  页面级 UI 自动化属 T5 评估范围。
 - 无 CI / 打包配置：第一阶段验收不要求；T5 收尾评估 CI（lint + test + typecheck），
   打包属 Seventh Stage（Product Hardening）。
 - shared/url 不支持 IDN（中文域名走搜索兜底，安全无副作用）；SearchProvider 尚未抽象
   （Bing 硬编码，计划在 Second/Third Stage 前替换）。
-- UI 窗口（defaultSession）未注册权限处理器：UI 只加载自身内容，R-01 落地后无远程页面可达，
-  当前无需处理；未来 UI 嵌入远程内容时重新评估。
+- UI 窗口（defaultSession）未注册权限处理器：UI 只加载自身内容，R-01 已关闭（导航保护落地）
+  后无远程页面可达，当前无需处理；未来 UI 嵌入远程内容时重新评估。
 
 ## 阻塞项
 
@@ -114,14 +124,14 @@
 
 ## 下一个推荐任务
 
-- **T3 浏览器 UI**：preload bridge 扩展（AibrowseBridge 白名单：tabs/nav/page/ui，
-  见 detailed-design §3.2）+ 顶部工具栏/标签栏/地址栏（main 侧已规范化）/主区域；
-  渲染层 ResizeObserver 上报 ui:content-bounds。
-  ⚠️ 硬前提：UI 窗口导航保护（§9：will-navigate + will-redirect，事件集已实测定稿）
-  必须先于或与 bridge 扩展同闭环落地，不得先暴露 bridge 再补保护。
-  真实网页可经地址栏打开（T2 主进程能力已就绪，冒烟可选 AIBROWSE_SMOKE_URL 验证）。
+- **T4 PageSnapshot**：PageReader（executeJavaScript 只读注入编排 + 降级阶梯 L0–L2）、
+  注入脚本 snapshot-script.ts（自安装 IIFE）、输出校验 normalize（页面视为敌手，
+  逐字段类型校验/限额二次截断）＋ `snapshot-normalize.test.ts`（红→绿）；
+  调试面板显示当前 Tab 的 PageSnapshot JSON（含 degraded/warnings，用户能看出采集受限）。
 
 ## 第一阶段验收未完成项
 
-- 除 Engineering 中「TS 编译/lint/测试通过、README 启动方式」已被 T0 覆盖外，其余全部待验收；
+- 浏览器 UI 相关验收项（启动/开网页/URL 输入/搜索/多 Tab/切换/关闭/前进/后退/刷新/
+  标题随网页变化）已由 T3 实现、待 T5 逐项核对；PageSnapshot 相关项待 T4；
+  Engineering 中「TS 编译/lint/测试通过、README 启动方式」已被 T0 覆盖。
   逐项清单以 First_stage.md §十四 为准，T5 收尾时核对。

@@ -183,9 +183,10 @@ d:\AIbrowse\
 ├── log/                                       # 运行时日志（gitignore，按日轮转）
 └── src/
     ├── main/
-    │   ├── index.ts                           # 入口：生命周期/单实例锁/安全默认值/IPC 装配（sender 校验）/冒烟
+    │   ├── index.ts                           # 入口：生命周期/单实例锁/安全默认值/IPC 装配（sender 校验）/UI 窗口导航保护/冒烟
     │   ├── logger.ts                          # log/ 文件日志（脱敏、按日轮转）
-    │   ├── smoke.ts                           # AIBROWSE_SMOKE 浏览器核心场景（T2 扩展）
+    │   ├── smoke.ts                           # AIBROWSE_SMOKE 场景（T2 核心 + T3 导航保护拦截/bounds 上报）
+    │   ├── ui-navigation-policy.ts / .test.ts # UI 窗口导航保护纯函数（自身来源白名单，T3 落地，9 用例）
     │   └── browser/
     │       ├── browser-controller.ts          # 浏览器能力统一入口（接口 BrowserController + 实现类）
     │       ├── tab-manager.ts                 # WebContentsView 创建/销毁/事件→TabInfo 登记表
@@ -196,9 +197,11 @@ d:\AIbrowse\
     │       ├── snapshot-script.ts             # （T4 待建）注入脚本源（自安装 IIFE 字符串）
     │       └── snapshot-normalize.ts          # （T4 待建）脚本输出校验纯函数
     ├── preload/
-    │   ├── index.ts                           # UI bridge（contextBridge 白名单，最小权限）
+    │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui，T3 扩展）
     │   └── index.d.ts                         # renderer 侧 window.aibrowse 类型
     ├── renderer/                              # React UI（index.html + src/）
+    │   └── src/browser/                       # （T3）chrome：Toolbar/TabBar/AddressBar +
+    │                                          #   useTabsState/useContentBounds（hooks）
     └── shared/
         ├── types/app.ts                       # 共享类型（AppInfo / AibrowseBridge）
         ├── types/browser.ts                   # TabInfo/TabsState/PageSnapshot/meta（T2）
@@ -212,7 +215,7 @@ d:\AIbrowse\
 ## 5. 模块接口速查
 
 接口契约已于 2026-08-13 **定稿**（T1），唯一契约源 `doc/detailed-design.md`（§2–§7 + §12 决议记录，
-含 proposal Q1–Q4 拍板）；以下为速查摘要，**T2 部分已用 `grep -n "^export"` 与实际代码逐项核对**
+含 proposal Q1–Q4 拍板）；以下为速查摘要，**T2/T3 部分已用 `grep -n "^export"` 与实际代码逐项核对**
 （2026-08-13）；PageReader 部分（T4）尚未实现。
 
 - **shared/url（已实现，2026-08-13 已用 grep 核对）**：`export const SEARCH_ENGINE_URL: string`
@@ -267,8 +270,26 @@ requestingOrigin): boolean` —— 网页权限策略纯函数，v1 固定默认
   script/style/隐藏内容等噪声；为交互元素生成 `elementId`（双层映射，§8.4），在一次快照
   生命周期内对应真实 DOM 元素。PageReader 不污染网站正常行为；对执行失败/跨域/页面销毁
   合理错误处理；远程网页不得通过此机制执行 Node.js 或 Electron privileged API。
-- **URL 判断逻辑（已实现）**：见上 shared/url；地址栏接入后 main 侧统一调用（T3）。
+- **URL 判断逻辑（已实现）**：见上 shared/url；地址栏原始输入经 `nav:navigate`/`tabs:create`
+  由 main 侧 IPC handler 统一规范化（T3 已接入，UI 不做 URL 判断）。
   已知限制：不支持中文/国际化域名（IDN）；以后替换 SearchProvider 时一并评估。
+- **preload bridge（AibrowseBridge，T3 已实现）**：`src/shared/types/app.ts` 定稿签名
+  （§3.2）+ `src/preload/index.ts` 白名单实现。`tabs.list/create/close/activate/onUpdated`
+  （onUpdated 返回退订函数，preload 内同一通道只注册一次 ipcRenderer 监听、JS 侧管理
+  listener 列表）；`nav.navigate/back/forward/reload`（navigate 传原始输入）；`page.snapshot`；
+  `ui.reportContentBounds`。原始 `ipcRenderer` 永不暴露给渲染层。
+- **ui-navigation-policy（T3 已实现，安全）**：`export interface UiNavigationPolicy`
+  （selfOrigin / selfFilePrefix）+ `export function resolveUiNavigationAllowed(targetUrl,
+policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）。开发模式仅放行
+  `ELECTRON_RENDERER_URL` origin、生产仅放行 `file:` 入口前缀；畸形输入安全返回 `false`。
+  由 `main/index.ts` 挂到 UI 窗口 `will-navigate` + `will-redirect`（§9，两处共用同一判定）。
+  测试：`ui-navigation-policy.test.ts`（9 用例）。
+- **渲染层 chrome（T3 已实现）**：`renderer/src/browser/`——Toolbar（后退/前进/刷新/地址栏/
+  新建 Tab）/ TabBar（标题兜底「新标签页」、切换/关闭、active 高亮、loading spinner、
+  error 红标）/ AddressBar（聚焦期不随 URL 刷新草稿、失焦同步、Enter 提交原始输入）；
+  hooks：`useTabsState`（tabs:updated 全量推送幂等更新，先订阅后拉取防旧快照回退）、
+  `useContentBounds`（ResizeObserver 测 chrome 高，防抖 50ms 上报 ui:content-bounds）。
+  主区域为占位容器，真实网页由 WebContentsView 按上报 bounds 覆盖渲染。
 
 ## 6. 常用命令
 
@@ -286,13 +307,15 @@ requestingOrigin): boolean` —— 网页权限策略纯函数，v1 固定默认
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 33 用例）
+  - `npm test` — Vitest 全量测试（当前 42 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
-    （启动 → 窗口 → React 挂载 → preload bridge 链路 → T2 起再跑浏览器核心场景：多 Tab
-    创建/切换/关闭、最后 Tab 自动新建、dispose 幂等无泄漏 → 自动退出，退出码 0 即通过；
-    日志链见 log/）。可选真实网页加载验证（需网络）：
+    （启动 → 窗口 → React 挂载 → preload bridge 链路 → 浏览器核心场景：多 Tab
+    创建/切换/关闭、最后 Tab 自动新建、dispose 幂等无泄漏 → T3 起再验证 UI 窗口导航保护
+    拦截（远程导航 800ms 后 UI URL 不变）与渲染层 bounds 上报生效（活动 view y>0）→
+    自动退出，退出码 0 即通过；日志链见 log/）。生产产物路径同样可跑：
+    `AIBROWSE_SMOKE=1 npm run start`（file: 入口导航保护）。可选真实网页加载验证（需网络）：
     `AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证 state=ready + 标题非空）。
 - **git 双远程**（已初始化，2026-08-13 双远程推送验证）：
   ```bash
@@ -315,6 +338,7 @@ requestingOrigin): boolean` —— 网页权限策略纯函数，v1 固定默认
   - ✅ 地址栏输入 → URL / 搜索判断（`src/shared/url.test.ts`，15 用例，T0 红→绿落地）
   - ✅ Tab 状态机纯逻辑（`src/main/browser/tab-state.test.ts`，14 用例，T2 红→绿落地）
   - ✅ 网页权限策略默认拒绝（`src/main/browser/permission-policy.test.ts`，4 组用例，安全补丁）
+  - ✅ UI 窗口导航保护自身来源白名单（`src/main/ui-navigation-policy.test.ts`，9 用例，T3 红→绿落地）
   - ⏳ PageSnapshot 数据规范化（规划 T4：`snapshot-normalize.test.ts`）
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖。
@@ -330,7 +354,7 @@ requestingOrigin): boolean` —— 网页权限策略纯函数，v1 固定默认
   相对草案的 14 条变更）。T2 部分（BrowserController/TabManager/SessionManager/tab-state/
   shared 类型/IPC）签名已于 2026-08-13 回填 §5 并与代码 grep 核对；PageReader 部分待 T4。
   已知设计限制：PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过（快照点时刻尽力采样）。
-- **PageSnapshot 当前为 L2-only（T2 状态）**：采集脚本（PageReader）T4 接入前，
+- **PageSnapshot 当前为 L2-only（T3 状态）**：采集脚本（PageReader）T4 接入前，
   `getPageSnapshot` 始终返回真实 L2 降级快照（主进程侧 url/title + 空集合 +
   `degraded:'main-process-only'` + warnings 明示原因）；调试面板（T4）据此可区分
   「页面没有链接」与「采集失败」。
@@ -339,9 +363,10 @@ requestingOrigin): boolean` —— 网页权限策略纯函数，v1 固定默认
 - **日志位置随打包变化**：开发时 log/ 在项目根目录；打包后写用户数据目录（asar 只读），排查注意两处。
 - **尚无 CI / 打包配置**：第一阶段验收不要求；electron-builder 打包与 GitHub Actions
   （lint + test + typecheck）待阶段收尾评估。
-- **冒烟已扩展（T2）**：覆盖多 Tab 创建/切换/关闭、最后 Tab 自动新建、dispose 幂等与
-  webContents 无残留；真实网页加载需 `AIBROWSE_SMOKE_URL` 附加验证（§6）。仍不覆盖：
-  地址栏 UI 交互（T3）、PageSnapshot 采集（T4）。
+- **冒烟已扩展（T2/T3）**：覆盖多 Tab 创建/切换/关闭、最后 Tab 自动新建、dispose 幂等与
+  webContents 无残留；T3 起再覆盖 UI 窗口导航保护拦截（dev origin 与生产 file: 两条路径）
+  与渲染层 bounds 上报生效；真实网页加载需 `AIBROWSE_SMOKE_URL` 附加验证（§6）。
+  仍不覆盖：地址栏/标签栏 React 交互的页面级驱动（人工实际运行验证）、PageSnapshot 采集（T4）。
 
 ## 附 A：验证矩阵（「作业完成」的定义）
 
