@@ -48,6 +48,7 @@ interface BrowserController {
 ```
 
 草案说明（可改进，不机械复制）：
+
 - 错误语义 T1 定稿：不存在的 tabId 如何安全返回（`null`/降级 vs 抛错）——倾向安全返回。
 - `navigate` 输入是否要求已规范化 URL：T1 定稿（倾向 main 侧统一用 shared/url 规范化）。
 
@@ -75,7 +76,7 @@ interface PageSnapshot {
 
 ```ts
 interface TabInfo {
-  id: string;          // 程序内唯一 id（与 webContents.id 解耦，避免 id 复用）
+  id: string; // 程序内唯一 id（与 webContents.id 解耦，避免 id 复用）
   title: string;
   url: string;
   active: boolean;
@@ -86,20 +87,21 @@ interface TabInfo {
 ### 2.4 preload bridge 最小权限清单（草案，T1 定稿）
 
 UI 渲染进程（React UI 专用 preload，与远程网页完全隔离）：
+
 - `tabs:list` / `tabs:create` / `tabs:close` / `tabs:activate` / `tabs:updated`（事件推送）
 - `nav:navigate` / `nav:back` / `nav:forward` / `nav:reload`
 - `page:snapshot`（读取当前网页结构化信息）
 - `app:get-info`（基线已有：版本信息）
-远程网页 **不挂载任何 preload 暴露的 Node/Electron 能力**；PageReader 采集走独立只读注入脚本。
+  远程网页 **不挂载任何 preload 暴露的 Node/Electron 能力**；PageReader 采集走独立只读注入脚本。
 
 ## 3. 错误处理（草案，T1 定稿）
 
-| 类别 | 处理方式 | 日志级别 |
-|---|---|---|
-| 参数无效（非法 tabId/URL） | 安全返回（undefined/空结果/降级），不抛异常 | warn |
-| 页面销毁/导航竞态（tab 已关闭后调用） | 安全返回并记录 | info/warn |
-| 采集执行失败（跨域 iframe、页面冻结） | 返回带 `error` 字段的部分快照或空结果 | warn + 分类计数 |
-| 未预期异常 | 顶层兜底记录堆栈，进程不崩 | error |
+| 类别                                  | 处理方式                                    | 日志级别        |
+| ------------------------------------- | ------------------------------------------- | --------------- |
+| 参数无效（非法 tabId/URL）            | 安全返回（undefined/空结果/降级），不抛异常 | warn            |
+| 页面销毁/导航竞态（tab 已关闭后调用） | 安全返回并记录                              | info/warn       |
+| 采集执行失败（跨域 iframe、页面冻结） | 返回带 `error` 字段的部分快照或空结果       | warn + 分类计数 |
+| 未预期异常                            | 顶层兜底记录堆栈，进程不崩                  | error           |
 
 ## 4. Tab 状态机（草案，T1 定稿）
 
@@ -124,11 +126,11 @@ ready/loading/error ──(close)──► destroyed（WebContentsView 销毁 + 
 
 ## 6. 测试规格（基线已建 + 规划）
 
-| 测试文件 | 用例要点 | 状态 |
-|---|---|---|
-| `src/shared/url.test.ts` | `https://…` 直开 / 裸域名规范化 / 搜索词 → 搜索引擎 URL / 空输入与异常输入安全返回 / 非法 scheme 处理 | ✅ 基线已建（N 用例） |
-| `src/main/browser/tab-state.test.ts` | Tab 状态机纯逻辑：activeTabId 选择、关闭后激活策略、事件归并 | 规划（T2） |
-| `src/main/browser/snapshot-normalize.test.ts` | PageSnapshot 数据规范化（文本修剪、空值、表格行列对齐） | 规划（T4） |
+| 测试文件                                      | 用例要点                                                                                              | 状态                   |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------- |
+| `src/shared/url.test.ts`                      | `https://…` 直开 / 裸域名规范化 / 搜索词 → 搜索引擎 URL / 空输入与异常输入安全返回 / 非法 scheme 处理 | ✅ 基线已建（15 用例） |
+| `src/main/browser/tab-state.test.ts`          | Tab 状态机纯逻辑：activeTabId 选择、关闭后激活策略、事件归并                                          | 规划（T2）             |
+| `src/main/browser/snapshot-normalize.test.ts` | PageSnapshot 数据规范化（文本修剪、空值、表格行列对齐）                                               | 规划（T4）             |
 
 ## 7. 待定问题（同 proposal §8 Q1–Q6，T1 集中定稿）
 

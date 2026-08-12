@@ -27,14 +27,14 @@
 
 ## 2. 关键技术决策
 
-| 决策点 | 选项 | 选择 | 理由 |
-|---|---|---|---|
-| 页面承载 | BrowserView / WebContentsView / `<webview>` / 每 Tab 一个 BrowserWindow | **WebContentsView** | 官方当前推荐；BrowserView 已废弃被禁；`<webview>` 非官方推荐且安全模型弱；每 Tab 一窗口开销大且多窗管理复杂 |
-| 构建工具 | 手动 vite+tsc / electron-forge / **electron-vite** | **electron-vite** | 专为 Electron+Vite 设计，main/preload/renderer 三目标一体，社区主流；v5.0.0 实测与 vite 7.3.x 兼容 |
-| 模块格式 | ESM main / CJS main | **CJS（不设 `"type": "module"`）** | `sandbox=true` 的 preload 只支持 CJS；保守默认，避免 ESM 互操作问题 |
-| TypeScript 版本 | 5.9.x / 6.0.x / 7.x | **6.0.3** | typescript-eslint 8.67 官方支持范围 `<6.1.0`；7.x（Go 重写）暂不支持 |
-| Session | 默认分区 / `persist:<name>` 自定义分区 | **待实测后定**（T1） | WebContentsView 的默认 session 行为需实测确认（见 proposal Q3） |
-| 日志 | 仅 console / 文件轮转 | **main 进程写 `log/<YYYY-MM-DD>.log`**（按日轮转），console 同步输出 | PROJECT_RULES §3.11 详尽日志红线；渲染进程关键日志后续经 IPC 汇总 |
+| 决策点          | 选项                                                                    | 选择                                                                 | 理由                                                                                                        |
+| --------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| 页面承载        | BrowserView / WebContentsView / `<webview>` / 每 Tab 一个 BrowserWindow | **WebContentsView**                                                  | 官方当前推荐；BrowserView 已废弃被禁；`<webview>` 非官方推荐且安全模型弱；每 Tab 一窗口开销大且多窗管理复杂 |
+| 构建工具        | 手动 vite+tsc / electron-forge / **electron-vite**                      | **electron-vite**                                                    | 专为 Electron+Vite 设计，main/preload/renderer 三目标一体，社区主流；v5.0.0 实测与 vite 7.3.x 兼容          |
+| 模块格式        | ESM main / CJS main                                                     | **CJS（不设 `"type": "module"`）**                                   | `sandbox=true` 的 preload 只支持 CJS；保守默认，避免 ESM 互操作问题                                         |
+| TypeScript 版本 | 5.9.x / 6.0.x / 7.x                                                     | **6.0.3**                                                            | typescript-eslint 8.67 官方支持范围 `<6.1.0`；7.x（Go 重写）暂不支持                                        |
+| Session         | 默认分区 / `persist:<name>` 自定义分区                                  | **待实测后定**（T1）                                                 | WebContentsView 的默认 session 行为需实测确认（见 proposal Q3）                                             |
+| 日志            | 仅 console / 文件轮转                                                   | **main 进程写 `log/<YYYY-MM-DD>.log`**（按日轮转），console 同步输出 | PROJECT_RULES §3.11 详尽日志红线；渲染进程关键日志后续经 IPC 汇总                                           |
 
 ## 3. 模块职责
 
@@ -91,9 +91,9 @@
 
 ## 8. 风险与不确定性
 
-| 风险 | 影响 | 缓解 |
-|---|---|---|
-| WebContentsView 多实例叠加/遮挡管理（bounds 同步、z-order） | 标签切换显示错乱 | T1 设计定稿 + T2 早期小步实测验证；不一次性写全 |
-| 采集脚本污染网站行为（选择器/样式副作用） | 违反「不污染网站」要求 | 只读遍历白名单实现 + 在真实网页上人工抽查 |
-| elementId 映射失效（DOM 变化后回查不到元素） | 未来 AI 操作受限 | 快照生命周期内短时缓存 + 重新定位策略（T1 定稿） |
-| Electron 二进制下载受网络影响 | 安装失败 | 已实测本机代理可用（127.0.0.1:7890）；必要时设 ELECTRON_MIRROR |
+| 风险                                                        | 影响                   | 缓解                                                           |
+| ----------------------------------------------------------- | ---------------------- | -------------------------------------------------------------- |
+| WebContentsView 多实例叠加/遮挡管理（bounds 同步、z-order） | 标签切换显示错乱       | T1 设计定稿 + T2 早期小步实测验证；不一次性写全                |
+| 采集脚本污染网站行为（选择器/样式副作用）                   | 违反「不污染网站」要求 | 只读遍历白名单实现 + 在真实网页上人工抽查                      |
+| elementId 映射失效（DOM 变化后回查不到元素）                | 未来 AI 操作受限       | 快照生命周期内短时缓存 + 重新定位策略（T1 定稿）               |
+| Electron 二进制下载受网络影响                               | 安装失败               | 已实测本机代理可用（127.0.0.1:7890）；必要时设 ELECTRON_MIRROR |

@@ -27,15 +27,15 @@ npm run dev      # 开发模式启动（真实启动 Electron 应用）
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev
 ```
 
-| 命令 | 作用 |
-| --- | --- |
-| `npm run dev` | Electron 开发模式（渲染进程 HMR） |
-| `npm run build` | 构建产物 `out/`（main / preload / renderer 三目标） |
-| `npm run start` | 以构建产物启动（preview） |
-| `npm test` | Vitest 全量测试（当前 15 用例） |
-| `npm run typecheck` | 严格类型检查（node + web 两套 tsconfig） |
-| `npm run lint` | ESLint 检查 |
-| `npm run format` / `format:check` | Prettier 格式化 / 检查 |
+| 命令                              | 作用                                                |
+| --------------------------------- | --------------------------------------------------- |
+| `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
+| `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
+| `npm run start`                   | 以构建产物启动（preview）                           |
+| `npm test`                        | Vitest 全量测试（当前 15 用例）                     |
+| `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
+| `npm run lint`                    | ESLint 检查                                         |
+| `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
 
 ## 本机环境注意（重要）
 

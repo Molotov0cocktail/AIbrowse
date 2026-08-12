@@ -4,7 +4,8 @@
 > 同月随根目录 `First_stage.md`（第一阶段总任务）同步更新。
 > 新会话只读本文件 + `First_stage.md` 即可接管开发；与本文件冲突时以本文件为准，
 > 通用规则基线见 `.agents/skills/project-rules/PROJECT_RULES.md`。
-> 项目尚未动工：首次实现作业前先完成 §2 的 git 前置与脚手架（见 §8 已知弱点）。
+> 项目状态：T0 基线已完成（2026-08-13，见 doc/tasks/baseline.md）；浏览器核心任务 T1–T5 待执行，
+> 唯一进度源 doc/tasks/progress.md。
 
 ## 1. 项目概览
 
@@ -19,14 +20,17 @@
   本阶段明确禁用：Playwright（作为浏览器主体）、SQLite、向量数据库、OpenAI/Anthropic API、
   RSS、Research Agent、图表系统、登录账号系统、云同步。
   若某技术选择与最新版 Electron 明显不兼容，可选更合理实现，但**必须在修改前说明原因**。
+  **已落地版本（2026-08-13）**：Electron 43.4.0 / electron-vite 5 / Vite 7.3.6 / React 19.2.8 /
+  TypeScript 6.0.3（typescript-eslint 8.67 支持上限 <6.1）/ Vitest 4 / ESLint 10（flat config）/ Prettier 3.9；
+  main/preload 输出 CJS（preload 必须 CJS 以兼容 `sandbox=true`）。
 - **交付形态**：Windows 桌面应用（Electron 产物）。
 - **git 双远程**（用户已提供，2026-08-13）：
   - Gitee（默认推送目标，国内直连，无需代理）：
     `https://gitee.com/Molotov0coaktail/aibrowse`
   - GitHub（任何网络操作前必须先启用并确认代理，见 §3 代理红线）：
     `https://github.com/Molotov0cocktail/AIbrowse`
-  - ⚠️ 两个平台用户名拼写不一致（Gitee `Molotov0coaktail` / GitHub `Molotov0cocktail`），
-    首次连接前与用户核实。
+  - ✅ 两个平台用户名拼写不一致（Gitee `Molotov0coaktail` / GitHub `Molotov0cocktail`）——
+    2026-08-13 已按用户提供的地址实际推送成功，URL 均正确；推送用本机已存凭据。
 - **团队语言（中英混合）**：界面文案 / 错误信息 / 日志 / 提交信息 / 文档 → **中文**；
   代码注释 → **英文**。提交信息格式 `<type>: <中文描述>`，
   type ∈ feat / fix / docs / refactor / test / chore / perf；一条提交一个逻辑变更，写「为什么」。
@@ -109,27 +113,28 @@ First_stage.md（阶段总任务：需求/架构/验收标准，根目录）
 
 ```
 d:\AIbrowse\
-├── AGENTS.md                                      # 本文件：项目专属开发手册
-├── First_stage.md                                 # 第一阶段总任务（需求/架构/验收标准源）
-├── .agents/
-│   └── skills/
-│       ├── project-rules/PROJECT_RULES.md         # 通用工程规则基线（红线出处与场景索引）
-│       └── vibe-coding-workflow/SKILL.md          # vibe-coding 工作流技能
-├── doc/                                           # （待建）proposal/设计/任务文档链
-├── log/                                           # （待建）运行日志，须加入 .gitignore
-└── src/                                           # （待建）源码，结构见 First_stage.md §四
+├── AGENTS.md / First_stage.md / README.md     # 手册 / 阶段总任务 / 启动与架构简介
+├── .agents/skills/…                           # 规则基线 + references/prompt-templates.md
+├── .gitignore / .editorconfig                 # 忽略 log/、密钥、构建产物、IDE 个人配置
+├── .prettierrc.json / .prettierignore         # 格式约定（First_stage.md 不参与格式化）
+├── electron.vite.config.ts / vitest.config.ts # 构建（三目标）/ 测试配置
+├── tsconfig.json + tsconfig.node/web.json     # 主进程与渲染进程各自的严格配置
+├── eslint.config.mjs                          # ESLint 10 flat config（react-hooks + refresh）
+├── package.json / package-lock.json           # 脚本见 §6；lockfile 入库
+├── doc/                                       # proposal / 设计 / tasks（progress.md 唯一进度源）
+├── log/                                       # 运行时日志（gitignore，按日轮转）
+└── src/
     ├── main/
-    │   └── browser/
-    │       ├── BrowserController.ts               # 浏览器能力统一入口（UI/AI 唯一操作面）
-    │       ├── TabManager.ts                      # 标签页状态管理
-    │       ├── SessionManager.ts                  # 持久 Session（为多 Profile 留接口）
-    │       ├── PageReader.ts                      # 网页 → 结构化 PageSnapshot
-    │       └── types.ts
-    ├── renderer/
-    │   ├── browser/                               # 浏览器 UI（顶部工具/标签栏/主区域/调试面板）
-    │   └── layout/
+    │   ├── index.ts                           # 入口：生命周期/单实例锁/安全默认值/冒烟模式
+    │   ├── logger.ts                          # log/ 文件日志（脱敏、按日轮转）
+    │   └── browser/                           # （待建）BrowserController/TabManager/SessionManager/PageReader/types
+    ├── preload/
+    │   ├── index.ts                           # UI bridge（contextBridge 白名单，最小权限）
+    │   └── index.d.ts                         # renderer 侧 window.aibrowse 类型
+    ├── renderer/                              # React UI（index.html + src/）
     └── shared/
-        └── types/                                 # 主/渲染进程共享类型
+        ├── types/app.ts                       # 共享类型（AppInfo / AibrowseBridge）
+        └── url.ts / url.test.ts               # 地址栏输入判断纯函数 + 15 用例
 ```
 
 分层方向（不可反向或跳跃）：`UI → BrowserController → TabManager / PageReader / SessionManager → Electron APIs`。
@@ -140,6 +145,11 @@ d:\AIbrowse\
 接口契约源为 First_stage.md §五/§七（草案，可改进但不得机械复制；实现后回填实际签名，
 并用 `grep -n "^export"` 与实际代码逐项核对）：
 
+- **shared/url（已实现，2026-08-13 已用 grep 核对）**：`export const SEARCH_ENGINE_URL: string`
+  （当前 `https://www.bing.com/search`，以后整体换 SearchProvider）；
+  `export function resolveAddressBarInput(raw: string): string` —— `https://…`/`http://…`/`about:…`
+  直开、裸域名/IP/localhost 补 `https://`、其余（含危险 scheme）走搜索；空输入与非法 URL
+  安全返回 `''`（越界安全返回）。测试：`src/shared/url.test.ts`（15 用例）。
 - **BrowserController**（浏览器能力统一入口；未来 AI Agent 只能经它/Tool Layer 操作浏览器）：
   `createTab(url?)` / `closeTab(tabId)` / `activateTab(tabId)` / `navigate(tabId, url)` /
   `goBack(tabId)` / `goForward(tabId)` / `reload(tabId)` / `getTabs()` / `getActiveTab()` /
@@ -153,67 +163,76 @@ d:\AIbrowse\
   远程网页不得通过此机制执行 Node.js 或 Electron privileged API。
 - **SessionManager**：本阶段仅持久 Session（重启后 Cookie/登录状态保留），
   为将来多 Profile（Personal/School/Work）留接口，不真正实现多 Profile。
-- **URL 判断逻辑**：地址栏输入统一封装（不在 UI 散落）——`https://…` 直开、`example.com`
-  规范化成 URL、`hello world` 走简单搜索引擎 URL；以后整体替换成 SearchProvider。
+- **URL 判断逻辑（已实现）**：见上 shared/url；地址栏接入后 main 侧统一调用（T3）。
+  已知限制：不支持中文/国际化域名（IDN）；以后替换 SearchProvider 时一并评估。
 
 ## 6. 常用命令
 
-- **脚手架尚未建立**：项目未初始化，无 package.json/tsconfig；以下为按标准
-  Electron + Vite + Vitest + ESLint + Prettier 项目预期的命令，**落地后以实际
-  package.json scripts 为准并回填核对**：
-  - `npm run dev` — 启动 Electron 开发模式
-  - `npm run build` — 构建产物
-  - `npm run test` — Vitest 全量测试
-  - `npm run lint` — ESLint 检查
-  - `npm run format` — Prettier 格式化
-- **git 双远程**（已确定）：
+- **本机环境两个坑（Windows，实测 2026-08-13）**：
+  1. 全局环境变量 `ELECTRON_RUN_AS_NODE=1`（可能被本机 node 配置依赖，**不要动全局变量**）——
+     任何启动 Electron 的命令前加 `env -u ELECTRON_RUN_AS_NODE`，如：
+     `env -u ELECTRON_RUN_AS_NODE npm run dev`
+     （PowerShell：`$env:ELECTRON_RUN_AS_NODE=$null; npm run dev`）。
+  2. Electron 二进制从 GitHub 下载，Node 24 原生 fetch 默认不走代理；安装依赖用：
+     `NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:7890 HTTPS_PROXY=http://127.0.0.1:7890 npm install`
+- **常用脚本**（以 package.json 为准，已核对落地）：
+  - `npm run dev` — Electron 开发模式（渲染进程 HMR）
+  - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
+  - `npm run start` — 以构建产物启动
+  - `npm test` — Vitest 全量测试（当前 15 用例）
+  - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
+  - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
+  - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
+    （启动 → 窗口 → React 挂载 → preload bridge 链路 → 自动退出，退出码 0 即通过；日志链见 log/）
+- **git 双远程**（已初始化，2026-08-13 双远程推送验证）：
   ```bash
-  # 首次初始化（当前目录尚未建 git 仓库）
-  git init
-  git remote add gitee https://gitee.com/Molotov0coaktail/aibrowse
-  git remote add github https://github.com/Molotov0cocktail/AIbrowse
-
-  # 日常推送：Gitee 直连；GitHub 仅在代理确认可用后推送
+  # 日常推送：Gitee 直连
   git push gitee main
-  git push github main
+  # GitHub：经本机代理（全局 https.proxy 偶发不生效，显式指定最稳）
+  git -c https.proxy=http://127.0.0.1:7890 push github main
 
   # 提交前必做：git status --short 复查工作区，无多余文件/敏感信息/构建产物
   ```
-- **代理配置（GitHub 操作前必查）**：待定（以本机可用方式为准：git 代理 / 系统代理 / 镜像；
-  首次使用前与用户确认并回填具体命令）。
+- **代理配置（已确认可用，2026-08-13 实测）**：本机代理 `http://127.0.0.1:7890`（Clash 类），
+  git 全局已配置 `https.proxy`；github.com 经代理可达；Gitee 直连/代理均可达。
+  GitHub 推送若超时，用上面显式 `-c https.proxy=…` 重试。
 
 ## 7. 测试约定
 
-- **框架**：Vitest（+ 随技术栈确定的运行环境）。
+- **框架**：Vitest 4，`environment: 'node'`（纯逻辑零环境依赖，分层纪律）；测试文件 `src/**/*.test.ts`。
 - **重点测核心业务逻辑**（First_stage.md §十三），至少覆盖：
-  - 地址栏输入 → URL / 搜索判断（§5 URL 判断逻辑）
-  - PageSnapshot 数据规范化
-  - Tab 状态管理中的纯逻辑部分
+  - ✅ 地址栏输入 → URL / 搜索判断（`src/shared/url.test.ts`，15 用例，T0 红→绿落地）
+  - ⏳ PageSnapshot 数据规范化（规划 T4）
+  - ⏳ Tab 状态管理中的纯逻辑部分（规划 T2）
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。
 
 ## 8. 已知弱点与改进建议
 
-- **git 仓库尚未初始化** → 首次动工前按 §2 第 1 步完成 git init、双远程、.gitignore。
-- **SKILL.md 引用的 `references/prompt-templates.md` 不存在** → 撰写 proposal/设计/任务文档前
-  需先补齐该模板文件或另立模板。
-- **双远程用户名拼写不一致** → 首次连接前与用户核实，避免推送失败或推错仓库。
-- **项目零代码、无脚手架** → 首次动工先立「最小可测闭环」基线
-  （PROJECT_RULES §4.1：文档链骨架 + 测试基建 + 提交基线），再做功能。
-- **接口契约为草案** → First_stage.md 的示例接口可改进；详细设计阶段需细化：
-  错误处理（跨域/页面销毁/执行失败）、preload bridge 最小权限清单、Tab 状态机的纯逻辑边界。
-- **尚无 CI** → 技术栈确定后尽早建立 lint、类型检查、CI，让机器早期接住低级错误。
+- **本机环境变量陷阱**：`ELECTRON_RUN_AS_NODE=1` 全局存在（未改动，可能被本机 node 依赖），
+  每次启动 Electron 须 `env -u` 排除，容易忘 → 后续可在 dev 脚本内兜底检测并给出中文提示。
+- **全局 https.proxy 偶发不生效**：GitHub 推送曾直连超时一次，显式 `-c https.proxy=…` 可解决（§6）。
+- **接口契约为草案** → First_stage.md 的示例接口可改进；详细设计定稿（任务 T1）需细化：
+  错误处理（跨域/页面销毁/执行失败）、preload bridge 最小权限清单、Tab 状态机纯逻辑边界、
+  proposal Q1–Q4 待定问题。
+- **shared/url 已知限制**：不支持 IDN（中文域名）；无 SearchProvider 抽象（Bing 硬编码）；
+  非 http/https/about 的 scheme 一律按搜索处理（安全优先，可接受）。
+- **日志位置随打包变化**：开发时 log/ 在项目根目录；打包后写用户数据目录（asar 只读），排查注意两处。
+- **尚无 CI / 打包配置**：第一阶段验收不要求；electron-builder 打包与 GitHub Actions
+  （lint + test + typecheck）待阶段收尾评估。
+- **冒烟范围有限**：AIBROWSE_SMOKE 只验证到 React 挂载 + bridge 链路；WebContentsView /
+  多标签相关冒烟需 T2 时扩展。
 
 ## 附 A：验证矩阵（「作业完成」的定义）
 
-| 改动类型 | 必做验证 | 说明 |
-|---|---|---|
-| 任何改动 | 全量测试 + diff 终检 + 文档同步 | 测试全绿；diff 无杂项/密钥/意外重写 |
-| 用户可见行为 | + 冒烟/实际运行验证 | 实际启动 Electron 验证可运行 |
-| 交付物相关 | + 重新构建产物 | 产物必须包含本次改动 |
-| 重大版本 | + Release 发布与独立验证 | tag + 上传 + 下载 URL 验证 |
-| 纯文档 | 免构建/重打包 | 但提交推送必须 |
+| 改动类型     | 必做验证                        | 说明                                |
+| ------------ | ------------------------------- | ----------------------------------- |
+| 任何改动     | 全量测试 + diff 终检 + 文档同步 | 测试全绿；diff 无杂项/密钥/意外重写 |
+| 用户可见行为 | + 冒烟/实际运行验证             | 实际启动 Electron 验证可运行        |
+| 交付物相关   | + 重新构建产物                  | 产物必须包含本次改动                |
+| 重大版本     | + Release 发布与独立验证        | tag + 上传 + 下载 URL 验证          |
+| 纯文档       | 免构建/重打包                   | 但提交推送必须                      |
 
 ## 附 B：第一阶段验收标准（摘要，完整清单见 First_stage.md §十四）
 

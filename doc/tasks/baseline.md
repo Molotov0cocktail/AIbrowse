@@ -23,16 +23,19 @@
 
 ## 测试与检查（实际结果，2026-08-13）
 
-- [x] `npm test` — Vitest 全量通过
-- [x] `npm run typecheck` — 通过
-- [x] `npm run lint` — 通过
-- [x] `npm run format:check` — 通过
-- [x] `npm run build` — 产物 out/ 生成成功
-- [x] Electron 冒烟 — 应用实际启动，窗口创建 + React 渲染 + preload bridge 全链路日志确认
+- [x] `npm test` — Vitest 全量通过（1 个测试文件 / **15 用例全绿**）
+- [x] `npm run typecheck` — 通过（tsc 6.0.3，node + web 两套严格配置）
+- [x] `npm run lint` — 通过（ESLint 10 flat config + react-hooks/react-refresh）
+- [x] `npm run format:check` — 通过（Prettier 3.9）
+- [x] `npm run build` — 产物 out/ 生成成功（main 5.49 kB / preload 0.29 kB / renderer 557 kB，CJS）
+- [x] Electron 冒烟 — 实际启动通过：环境信息 → 窗口显示 → 页面加载 → React 挂载 + bridge 链路 →
+      正常退出（**退出码 0**），完整日志链见 `log/aibrowse-2026-08-13.log`
+- [x] 双远程推送 — gitee ✅（直连）/ github ✅（显式 `-c https.proxy=…`，全局配置偶发不生效）；
+      ⚠️ 用户名拼写差异已按用户提供的地址实测无碍
 
 ## 完成定义
 
 - [x] 以上检查全部通过且冒烟退出码为 0
-- [x] git diff 终检无垃圾文件/敏感信息/构建产物
-- [x] 提交并推送双远程
+- [x] git diff 终检无垃圾文件/敏感信息/构建产物（log/、out/、node_modules/ 均被正确忽略）
+- [x] 提交并推送双远程（3 个提交：git 前置与文档链 / 脚手架与应用 / 文档同步）
 - [x] AGENTS.md / progress.md / README 与项目实际状态同步
