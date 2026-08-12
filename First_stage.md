@@ -78,6 +78,21 @@
 
 如果你发现某个技术选择与当前最新版 Electron 明显不兼容，可以选择更合理的实现，但必须在修改前说明原因。
 
+版本基线（2026-08-13 按官方来源验证并冻结）：
+
+* Node.js 24.x（Active LTS）
+* Electron 43.4.0
+* electron-vite 5.0.0
+* Vite 7.3.6
+* React 19.2.8
+* TypeScript 6.0.3
+* Vitest 4.1.10
+* ESLint 10.8.1（flat config）
+* Prettier 3.9.6
+
+升级任何核心工具链必须先说明理由并完成全量验证（typecheck / lint / test / build / Electron 冒烟），
+流程见 AGENTS.md §3；具体兼容性依据见 AGENTS.md §1。
+
 ---
 
 # 四、非常重要的架构要求

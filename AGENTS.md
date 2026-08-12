@@ -1,11 +1,10 @@
 # AGENTS.md — AIbrowse 项目专属开发手册
 
 > 依据 `.agents/skills/project-rules/PROJECT_RULES.md` §8 于 2026-08-13 初始化；
-> 同月随根目录 `First_stage.md`（第一阶段总任务）同步更新。
-> 新会话只读本文件 + `First_stage.md` 即可接管开发；与本文件冲突时以本文件为准，
-> 通用规则基线见 `.agents/skills/project-rules/PROJECT_RULES.md`。
-> 项目状态：T0 基线已完成（2026-08-13，见 doc/tasks/baseline.md）；浏览器核心任务 T1–T5 待执行，
-> 唯一进度源 doc/tasks/progress.md。
+> 与根目录 `First_stage.md`（阶段需求/验收标准）配套；技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
+> 新会话接管顺序：本文件 → `First_stage.md` → `doc/tasks/progress.md` → git 状态与代码核对（§2 步骤 0）。
+> 与本文件冲突时以本文件为准，通用规则基线见 `.agents/skills/project-rules/PROJECT_RULES.md`。
+> 任务进度不记在本文件：唯一进度源 `doc/tasks/progress.md`（本文件仅在有长期变化时更新，见 §2）。
 
 ## 1. 项目概览
 
@@ -20,9 +19,13 @@
   本阶段明确禁用：Playwright（作为浏览器主体）、SQLite、向量数据库、OpenAI/Anthropic API、
   RSS、Research Agent、图表系统、登录账号系统、云同步。
   若某技术选择与最新版 Electron 明显不兼容，可选更合理实现，但**必须在修改前说明原因**。
-  **已落地版本（2026-08-13）**：Electron 43.4.0 / electron-vite 5 / Vite 7.3.6 / React 19.2.8 /
-  TypeScript 6.0.3（typescript-eslint 8.67 支持上限 <6.1）/ Vitest 4 / ESLint 10（flat config）/ Prettier 3.9；
-  main/preload 输出 CJS（preload 必须 CJS 以兼容 `sandbox=true`）。
+  **技术基线（2026-08-13 按官方来源验证后冻结）**：Node.js 24.x（Active LTS，本机 24.18.0；
+  Electron 43.4.0 内置 Node 24.18.1，运行时实测）/ Electron 43.4.0 / electron-vite 5.0.0 / Vite 7.3.6 /
+  @vitejs/plugin-react 5.2.0 / React 19.2.8 / TypeScript 6.0.3（typescript-eslint 8.67.0 官方支持范围
+  `>=4.8.4 <6.1.0`）/ Vitest 4.1.10 / ESLint 10.8.1（flat config）/ Prettier 3.9.6；
+  依赖全部精确版本固定（无 ^/~，`.npmrc` save-exact=true），`engines.node` `>=24 <25` +
+  `.node-version` = 24.18.0；main/preload 输出 CJS（preload 必须 CJS 以兼容 `sandbox=true`）。
+  ⚠️ **基线冻结**：第一阶段内任何 Agent 不得擅自升级上述核心工具链；升级必须走 §3「技术基线升级流程」。
 - **交付形态**：Windows 桌面应用（Electron 产物）。
 - **git 双远程**（用户已提供，2026-08-13）：
   - Gitee（默认推送目标，国内直连，无需代理）：
@@ -35,31 +38,62 @@
   代码注释 → **英文**。提交信息格式 `<type>: <中文描述>`，
   type ∈ feat / fix / docs / refactor / test / chore / perf；一条提交一个逻辑变更，写「为什么」。
 
-## 2. 工作流程（每次作业的步骤链）
+## 2. 工作流程
 
-文档链（需求自上而下）：
+### 文档职责划分（唯一权威 + 单一事实源）
 
 ```
-First_stage.md（阶段总任务：需求/架构/验收标准，根目录）
-  → doc/proposal.md（目标/非目标/场景/输入输出/依赖/约束/验收标准/待定问题）
-  → doc/high-level-design.md + doc/detailed-design.md（架构/接口契约/文件布局/算法/错误处理/边界）
-  → doc/tasks/<模块>.md + doc/tasks/progress.md（唯一进度源，主 agent 维护）
+First_stage.md（阶段需求/验收标准，低频修改）
+  ↓
+AGENTS.md（长期规则/稳定架构/技术基线，低频修改）
+  ↓
+doc/（proposal / 设计 / 任务文档，按需产出）
+  ↓
+doc/tasks/progress.md（当前工程状态/短期记忆，高频更新）
+  ↓
+Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ```
 
-步骤链：
+- 不引入额外的状态文件 / Agent 日志 / checklist / handoff / summary 文件，除非实际开发证明必要。
+- **文档用于理解需求与意图；Git、当前代码、测试和构建结果用于确认项目实际状态。**
+  若 progress.md 声称某功能已完成、但代码/Git/测试证明没有：以实际工程状态为事实，修正文档，再继续开发。
+  同样，代码存在也不得违背 First_stage.md / AGENTS.md 中的明确需求与安全规则。
+
+### 步骤 0：新对话接管（每次新对话开始先做）
+
+1. 阅读 `AGENTS.md`（本文件）
+2. 阅读当前阶段文件 `First_stage.md`
+3. 阅读 `doc/tasks/progress.md`（如存在）
+4. `git status` + 最近若干条 `git log --oneline`
+5. 检查本次任务相关的实际代码和配置
+6. 确认文档描述与代码实际状态一致（不一致按上述原则处理）
+7. 然后才开始工作
+
+### 步骤链
 
 1. **稳定项目（含 git 前置）**：动工前摸清语言/框架/包管理器/测试/lint/构建/现有约定。
-   **git 前置**：远程地址已确认（§1）；当前目录尚未建 git 仓库，首次动工前
-   `git init` + 配置双远程 + 编写 .gitignore（`log/`、密钥/令牌本地文件、构建产物、IDE 个人配置）。
+   git 远程已配置（§1）；新建项目时再执行 git init + 双远程 + .gitignore（`log/`、密钥/令牌本地文件、
+   构建产物、IDE 个人配置）。
 2. **需求澄清**：First_stage.md 已是阶段需求源；新需求先写 proposal。
 3. **设计先行**：风险、歧义、备选方案必须写明，不得用自信措辞掩盖不确定性。
-4. **任务拆分**：每任务 ≤1 个模块，含目标/涉及文件/步骤/测试/完成定义/依赖。
+4. **任务拆分（闭环粒度）**：**一个新对话 ≈ 一个可验证的开发闭环**，不机械等于一个文件或一个模块。
+   每个任务明确：目标 / 范围 / 非目标 / 涉及模块 / 验收标准 / 测试方式 / 完成定义。
+   任务应尽量小，但必须形成完整、可机器验证的闭环（例：「建立可运行项目基线」= install 成功 +
+   typecheck + lint + test + build + Electron 冒烟 + diff 检查 + commit）。
 5. **小步实现**：一次一个未阻塞任务；实现 → 补测试 → 跑该任务检查 → 审阅 git diff → 更新 progress。
 6. **验证闭环（含提交）**：全量测试 → lint/类型检查 → 冒烟（实际启动 Electron 验证可运行）→
-   diff 终检（无关改动/生成杂项/密钥泄漏/意外重写）→ **提交前清除垃圾文件并复查工作区（§3）** →
-   **每次任务完成必 git commit + push 双远程** → 更新项目状态 → 汇报（改了啥/验证了啥/剩余风险）。
-7. **文档自动同步**：作业完成后自动更新本文件与 `progress.md` 的相应章节
-   （结构/接口/命令/测试约定/版本发布），无需用户提醒。
+   diff 终检（无关改动/生成杂项/密钥泄漏/意外重写）→ 提交前清除垃圾文件并复查工作区（§3）→
+   git commit + push 双远程 → 更新 progress.md → 汇报（改了啥/验证了啥/剩余风险）。
+   **提交粒度**：一个 commit = 一个逻辑完整、可验证的变化；任务内部可有多个逻辑 commit；
+   禁止每改几行就 commit、把大量无关修改塞进一个 commit、提交失败构建状态、
+   把临时脚本/日志/截图/缓存一起提交（§3 提交纪律）。
+7. **收尾状态可移交（每次对话结束前）**：检查 git diff 与 `git status --short` → 运行该任务要求的验证
+   （必要时全量回归）→ 更新 progress.md → 仅在存在长期变化时更新 AGENTS.md → 提交符合规则的 commit →
+   报告：做了什么 / 验证了什么 / 遗留问题 / 下一个最合适的独立任务。
+   不留：未说明的半成品、不知道是否保留的临时文件、未记录原因的失败测试、与 progress.md 不一致的工作区。
+
+**AGENTS.md 更新规则**：每个任务**不强制**更新本文件；仅当以下内容发生实质变化时才更新——
+工程规则 / 稳定架构 / 重要接口约定 / 技术基线 / 长期开发流程 / 必须让后续所有 Agent 都知道的重要事实。
 
 **询问边界（项目专属，细化 PROJECT_RULES「不确定就问」）**：仅以下情况停下来问用户——
 会导致数据丢失 / 需要删除大量已有代码 / 存在两个会显著影响长期架构且无法轻易迁移的方案 /
@@ -108,6 +142,17 @@ First_stage.md（阶段总任务：需求/架构/验收标准，根目录）
   Agent、收藏夹、SQLite、RSS、网页监控、Research、自动点击/填写、CDP Network 分析、下载管理器、
   浏览器插件、密码管理器、完整历史记录系统、浏览器同步、PDF viewer、广告拦截器——
   除非基础浏览器正常运行绝对必要，不得主动扩展。
+- **技术基线冻结（第一阶段）**：§1 已冻结版本不得由后续 Agent 擅自升级。升级流程：
+  先说明理由 → 验证 typecheck + lint + test + build + Electron 冒烟全绿 → 同步相关文档 → 提交。
+- **依赖可复现**：`package-lock.json` 必须提交；禁止删除 lockfile 后重新解析依赖来「解决」问题；
+  npm 出现 peer dependency / engine 警告时不得用 `--force` / `--legacy-peer-deps` 直接掩盖，
+  必须先查明原因；核心工具链依赖保持精确版本固定（package.json 无 ^/~，`.npmrc` save-exact=true）。
+- **质量门槛（不得为绿灯降门槛）**：typecheck / lint / test / build / 冒烟失败必须先修根因。
+  禁止：删除或跳过有意义的测试、修改测试让错误实现通过、大范围 `eslint-disable`、随意降低 ESLint 规则、
+  放宽 tsconfig 隐藏已有类型问题、用 `any` / `@ts-ignore` / `@ts-nocheck` 掩盖设计问题、注释掉失败功能、
+  catch 后静默吞掉本应处理的异常、忽略 Promise rejection、`--force` / `--legacy-peer-deps`、
+  删除 lockfile 重装碰运气、关闭 Electron 安全机制绕过实现问题。
+  若质量规则本身确有问题：先指出规则为何不合理与修改影响 → 修改设计/规范 → 再修改实现 → 完整重新验证。
 
 ## 4. 项目结构（2026-08-13 实际状态 + 规划）
 
@@ -117,6 +162,7 @@ d:\AIbrowse\
 ├── .agents/skills/…                           # 规则基线 + references/prompt-templates.md
 ├── .gitignore / .editorconfig                 # 忽略 log/、密钥、构建产物、IDE 个人配置
 ├── .prettierrc.json / .prettierignore         # 格式约定（First_stage.md 不参与格式化）
+├── .node-version / .npmrc                     # Node 24.18.0 固定 / save-exact 精确版本
 ├── electron.vite.config.ts / vitest.config.ts # 构建（三目标）/ 测试配置
 ├── tsconfig.json + tsconfig.node/web.json     # 主进程与渲染进程各自的严格配置
 ├── eslint.config.mjs                          # ESLint 10 flat config（react-hooks + refresh）
@@ -168,6 +214,9 @@ d:\AIbrowse\
 
 ## 6. 常用命令
 
+- **Node 环境固定（技术基线，§1）**：`node --version` 应为 24.x（`.node-version` = 24.18.0，
+  `engines.node` `>=24 <25`）。新环境按 `.node-version` 装好 Node 24 再 `npm install`；
+  版本不符时 npm 会给出 engine 警告，先解决版本问题，不要用 `--force` 掩盖。
 - **本机环境两个坑（Windows，实测 2026-08-13）**：
   1. 全局环境变量 `ELECTRON_RUN_AS_NODE=1`（可能被本机 node 配置依赖，**不要动全局变量**）——
      任何启动 Electron 的命令前加 `env -u ELECTRON_RUN_AS_NODE`，如：

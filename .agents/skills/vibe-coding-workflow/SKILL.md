@@ -14,7 +14,7 @@ single prompt would create too much ambiguity, context pressure, or unreviewable
 - Do not start implementation until the goal, scope, and success criteria are clear enough to test.
 - Keep project knowledge in files, not only in chat. Use `doc/` for planning artifacts and update existing project state files when present.
 - Make every phase produce an artifact that the next phase consumes.
-- Keep tasks small enough for one agent pass. A task should have explicit files, steps, and checks.
+- Keep tasks small, but make each task a complete, machine-verifiable loop with an explicit goal, scope, non-goals, modules involved, acceptance criteria, verification, and definition of done — not mechanically one file or one module.
 - Treat AI output as a draft until verified with diffs, tests, lint, type checks, and runtime checks.
 - Pause and ask the user when a requirement, product decision, data contract, destructive action, or external dependency is unclear.
 
@@ -79,10 +79,12 @@ doc/tasks/progress.md
 Each task file must include:
 
 - Objective
+- Scope and non-goals
+- Modules involved
 - Input docs
 - Files expected to change
 - Implementation steps
-- Tests and checks
+- Acceptance criteria and tests/checks
 - Definition of done
 - Dependencies on other tasks
 
@@ -126,8 +128,11 @@ Before calling the work done:
 - Run lint and type checks when available.
 - Run a smoke test or dev server for user-facing behavior when applicable.
 - Inspect the final diff for unrelated edits, generated clutter, secrets, and accidental rewrites.
-- Update project state or session logs when the session produced durable context.
-- Report what changed, what was verified, and remaining risks.
+- Update project state files when the session produced durable context (progress files every loop;
+  long-lived rule files only on real change).
+- Leave the workspace handoffable: clean `git status --short`, no unexplained temp files, no failing
+  tests without a recorded reason, state files consistent with the working tree.
+- Report what changed, what was verified, remaining issues, and the next best standalone task.
 
 ## Templates
 
