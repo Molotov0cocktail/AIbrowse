@@ -10,7 +10,7 @@
 ## 当前状态
 
 - 阶段：**第二阶段（AI 共读）**，已于 2026-08-13 正式切换（用户指令）。设计定稿与
-  任务拆分已完成（`doc/stage2/`）；**S1、S2、S3 已完成（2026-08-13）**，S4–S6 ⏳。
+  任务拆分已完成（`doc/stage2/`）；**S1、S2、S3、S4 已完成（2026-08-13）**，S5–S6 ⏳。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Entry Gate 独立定向审查通过（2026-08-13，无阻塞项）。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + First_stage.md～Seventh_stage.md 入库；
@@ -31,12 +31,56 @@
 | S1   | Provider 抽象 + SecureCredentialStore + 配置存取 + 错误归一化（FakeProvider 闭环，无 UI）        | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S1-provider-credential.md  |
 | S2   | ContextBuilder 纯核心：角色隔离/预算裁剪/selection 优先级/薄快照/表格噪声                        | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S2-context-builder.md      |
 | S3   | ConversationService + 会话 JSON 持久化 + ask 编排（实时快照防串页）+ 主进程冒烟                  | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S3-conversation-service.md |
-| S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ⏳   | 任务文档 doc/stage2/tasks/S4-ai-panel-ui.md；依赖：S3                         |
+| S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S4-ai-panel-ui.md          |
 | S5   | 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证                                    | ⏳   | 任务文档 doc/stage2/tasks/S5-security-prompt-injection.md；依赖：S4           |
 | S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ⏳   | 任务文档 doc/stage2/tasks/S6-finalize-acceptance.md；依赖：S1–S5              |
 
 ## 最近验证结果（2026-08-13）
 
+- **S4 AI 侧栏 UI 与布局协调（2026-08-13，第四个实现闭环）**：test **326/326** ✅
+  （304 基线 + 22 新增：stream-state 10 / history-events 6 / context-badge-format 6）·
+  typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 双场景退出码 0
+  （dev 离线 + 生产产物），**UI 端到端矩阵 1–12 全部断言通过**（React DOM 事件驱动，
+  FakeProvider 离线，真实 IPC/bridge/服务链路——UI → preload 白名单 → sender 校验 →
+  ConversationServiceImpl → 事件推送 → DOM）：
+  ① 端到端流式（delta 逐块渐进到达渲染 DOM——第三段不得与首块同时出现 + turn-done
+  complete + 追溯卡片 url === 提问时页 URL + 真实页面正文入 web 块 + 非薄长文页徽标
+  无「稀薄」提示）；② selection 独占（页面真实选中 → 徽标「选中文本（N 字）」+ 请求
+  含 `<selection>` 不含页面正文 + 摘录卡片）；③ 防串页（UI 切页后提问 → 请求含页 B
+  内容、页 A 内容不出现、追溯卡片 url 更新）；④ L3（dispose 后经 UI 提问 →
+  徽标「无网页上下文」+ 请求无 web 块 + 无错误标记）；⑤ 薄快照（空白页 → 徽标
+  「稀薄」提示 + 追溯卡片警告）；⑥ 中止（慢速 FakeProvider 中途点击「中止」→
+  「已中止」标记 + 部分保留 + 流停 + 中止按钮消失）；⑦ 错误归一化（注入 401 →
+  invalid-key 文案、注入超时 → timeout 文案；失败轮 user 消息仍展示）；⑧ 会话管理
+  UI（新建/切换/「不保存」开关双向/删除：ephemeral 提问不落盘、转保存落盘、删除即
+  消失、全新 Service 实例同目录重启恢复）；⑨ 布局协调（面板开 → 活动 view
+  bounds.width = 窗口宽 − 380；关 → 恢复；DebugPanel 收起/展开 → 高度变化；
+  切 Tab 后 bounds 保持；窗口缩放 → bounds 跟随）；⑩ **Key 安全（真实 safeStorage
+  运行）**：设置界面保存非真实测试标记 Key → credentials.json 仅 base64 密文、
+  渲染 DOM 与日志字节扫描零暴露、保存后输入立即清空、list() 仅 hasKey 布尔且结构
+  无 apiKey 字段、bridge 白名单仅 list/set/setKey（typeof getKey/get === 'undefined'）；
+  ⑪ Prompt Injection 结构断言（敌对页提问 → system 恒等于编译期常量、web 块恰好
+  单块闭合、geolocation 权限请求被默认拒绝）；⑫ 远程隔离回归（window.aibrowse/
+  process/require/electron 均 undefined）。**红→绿抓出并修复 3 个冒烟断言缺陷**：
+  `.ai-status-error` 选择器误中历史首条错误（改为末条）、矩阵 6 中止断言与矩阵 1
+  回答文本撞车（分块文案改用矩阵独有文本）、L3 错误标记断言误中历史旧错误
+  （改为仅检末条 assistant 消息）。
+  交付内容：① shared/types/ipc.ts 11 个 invoke 通道常量 + payload 类型（§4.1）；
+  ② main/index.ts handler 装配（全部复用既有 handle() sender+主帧校验，逐参数验证
+  安全返回；question > 16000 字符确定性截断 + warn、空串/非串 → internal 拒绝；
+  config:providers:set-key 只写不回读，apiKey='' = 删除）；③ preload bridge 白名单
+  （conversation 8 方法 + config.providers 3 方法；事件通道单次注册 + JS listener 集合
+  - 退订，沿用 tabs:updated 模式；原始 ipcRenderer 不暴露）；④ renderer/src/ai/ 面板
+    （AiPanel/ChatView/Composer/ContextBadge/CitationCard/ProviderSettings +
+    useConversation/useStream + 纯函数 stream-state/history-events/context-badge-format/
+    error-labels；回答纯文本 pre-wrap 渲染，零新依赖）；⑤ useContentBounds 升级为内容
+    容器两维矩形测量（通道/契约不变）+ App 布局（内容行 + 面板定宽 380px 停靠、
+    默认收起不持久化、无拖拽/动画；DebugPanel 移底部通栏）；⑥ 冒烟 UI 端到端矩阵
+    1–12（冒烟模式 AI 子系统走进程专属临时目录 + FakeProvider 注入，场景 10 凭据为
+    真实 safeStorage 密文，全程不触碰用户 userData，结束清理）；⑦ ProviderInfo 与
+    PROVIDER_KIND_OPENAI_COMPATIBLE 常量移至 shared 单一事实源（决议 #20：v1 设置
+    UI 只配置已注册 openai-compatible kind，不新增多 Provider 选择 UI，与 list() 顺序
+    无关）。仍不做真实 Provider 验证（S5）、不做专项安全审计（S5）。
 - **S3 ConversationService 与会话持久化（2026-08-13，第三个实现闭环）**：test **299/299** ✅
   （242 基线 + 57 新增：conversation-store 27 / conversation-service 30）· typecheck ✅ ·
   lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 双场景退出码 0（dev 离线 +
@@ -277,14 +321,13 @@
 
 ## 下一个推荐任务
 
-- **S4 AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调**（doc/stage2/tasks/S4-ai-panel-ui.md）：
-  invoke 通道（conversation:list/create/get-history/delete/set-ephemeral/ask/abort/preview、
-  config:providers:list/set/set-key——全部沿用 sender 校验、事件只发主窗口；两事件通道常量
-  与 payload 类型 S3 已落地）+ preload bridge 订阅（沿用 tabs:updated 单注册模式）+
-  AI 面板组件（AiPanel/ChatView/Composer/ContextBadge/CitationCard/ProviderSettings，
-  useConversation/useStream）+ useContentBounds 两维升级 + UI 端到端冒烟矩阵 1–12
-  （含场景 10 safeStorage 真实运行验证——此前单测仅注入 cipher 替身）。依赖：S3（已完成）。
-  完成后按依赖顺序 S5 → S6。
+- **S5 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证**
+  （doc/stage2/tasks/S5-security-prompt-injection.md）：detailed-design §12 注入边界
+  逐项机器可验证断言（§12.1 表 1–7，部分已由 S2/S4 单测与冒烟覆盖——S5 做独立
+  定向审计与矩阵复跑）、§14 安全基线核对清单逐项审计、全仓库 grep 断言（无浏览器
+  写 Tool/无 Key 读回/白名单清单核对）、远程页面隔离与权限默认拒绝回归；真实
+  Provider 可选验证需用户提供 Key（询问边界），无 Key 环境跳过并记录。依赖：
+  S1–S4（已完成）。完成后按依赖顺序 S6（第二阶段收尾/Exit Gate 判定）。
 
 ## 第一阶段验收未完成项
 

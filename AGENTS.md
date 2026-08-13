@@ -19,8 +19,9 @@
   ContextBuilder（纯函数）、LLMProvider（OpenAI-compatible 适配器 + FakeProvider，无厂商 SDK）、
   SecureCredentialStore（Electron safeStorage / Windows DPAPI）。契约源
   `doc/stage2/detailed-design.md`（2026-08-13 定稿）；任务 S1–S6 见 `doc/stage2/tasks/`。
-  **S1（Provider 抽象与凭据安全基座）、S2（ContextBuilder 纯核心）与 S3（ConversationService
-  与会话持久化）已完成（2026-08-13）**，进度见 progress.md。
+  **S1（Provider 抽象与凭据安全基座）、S2（ContextBuilder 纯核心）、S3（ConversationService
+  与会话持久化）与 S4（AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调）已完成
+  （2026-08-13）**，进度见 progress.md。
   **本阶段不实现自主浏览 Agent**：严禁新增 click/fill/scroll、自动搜索、多步 Browser
   Agent Tool（均属 Third Stage）。
 - **已完成（第一阶段，浏览器核心）**：`Browser → PageSnapshot → Browser Tool Interface`
@@ -237,18 +238,22 @@ d:\AIbrowse\
     │       └── provider/                      # （S1 ✅）LLMProvider 接口/工厂注册表/OpenAI-compatible
     │                                          #   适配器（fetch+SSE）/FakeProvider/error-normalize + 单测
     ├── preload/
-    │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui + conversation/config，S4 扩展）
+    │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui
+    │   │                                      #   + conversation/config（S4 ✅）；事件通道单次注册）
     │   └── index.d.ts                         # renderer 侧 window.aibrowse 类型
     ├── renderer/                              # React UI（index.html + src/）
     │   ├── src/browser/                       # （T3/T4）chrome：Toolbar/TabBar/AddressBar +
     │   │                                      #   DebugPanel + useTabsState/useContentBounds（hooks）
-    │   └── src/ai/                            # （S4 规划）AI 侧栏：AiPanel/ChatView/Composer/
-    │                                          #   ContextBadge/CitationCard/ProviderSettings + hooks
+    │   └── src/ai/                            # （S4 ✅）AI 侧栏：AiPanel/ChatView/Composer/
+    │                                          #   ContextBadge/CitationCard/ProviderSettings +
+    │                                          #   useConversation/useStream + 纯函数
+    │                                          #   （stream-state/history-events/context-badge-format）
     └── shared/
-        ├── types/app.ts                       # 共享类型（AppInfo / AibrowseBridge）
+        ├── types/app.ts                       # 共享类型（AppInfo / AibrowseBridge，S4 conversation/config 扩展 ✅）
         ├── types/browser.ts                   # TabInfo/TabsState/PageSnapshot/meta（T2）
-        ├── types/conversation.ts              # （S1 ✅）会话/消息/上下文/错误码/Provider 类型（§2+§3.3+§3.5）
-        ├── types/ipc.ts                       # IPC 通道常量 + payload 类型（T2，S4 扩展）
+        ├── types/conversation.ts              # （S1 ✅）会话/消息/上下文/错误码/Provider 类型
+        │                                      #   （§2+§3.3+§3.5；S4 增 ProviderInfo/kind 常量）
+        ├── types/ipc.ts                       # IPC 通道常量 + payload 类型（T2 基线 + S4 conversation/config 扩展 ✅）
         └── url.ts / url.test.ts               # 地址栏输入判断纯函数 + 15 用例
 ```
 
@@ -358,8 +363,8 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
 ### Second Stage AI 共读契约速查（定稿 2026-08-13；S1 部分已实现并 grep 核对，S2–S4 待实现后回填）
 
 > 唯一契约源 `doc/stage2/detailed-design.md`（§2–§12 + §15 决议记录，含 proposal Q1–Q10 拍板）；
-> 任务拆分见 `doc/stage2/tasks/S1–S6`。以下为速查摘要；S1–S3 部分签名已于 2026-08-13 与
-> 实际代码 `grep -n "^export"` 逐项核对，S4 部分实现前不含实际代码核对状态。
+> 任务拆分见 `doc/stage2/tasks/S1–S6`。以下为速查摘要；S1–S4 部分签名已于 2026-08-13 与
+> 实际代码 `grep -n "^export"` 逐项核对。
 
 - **shared/types/conversation.ts（S1 ✅ 已实现）**：`ContextMode`（selection/snapshot/none）、
   `ContextSource`（mode/tabId/url/title/capturedAt/degraded/thin/selectionExcerpt/warnings）、
@@ -457,17 +462,36 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
   并重导出）+ 纯校验 `normalizeBaseUrl`（仅 http/https 去尾 /）/`validateProviderConfig`
   （model/providerId 非空）；文件 `userData/provider-config.json` 形状校验 fail-closed
   （Key 不入此文件）。
-- **IPC/bridge 扩展（S4）**：invoke——conversation:list/create/get-history/delete/
-  set-ephemeral/ask/abort/preview、config:providers:list/set/set-key（apiKey='' = 删除）；
-  事件——conversation:stream-chunk / conversation:turn-done（**两事件通道常量与
-  StreamChunkEvent/TurnDoneEvent payload 类型已于 S3 落地**：shared/types/ipc.ts +
-  conversation.ts；index.ts 事件回调转发主窗口 send 亦 S3 最小装配，S4 只补 invoke
-  通道与 preload 订阅）。全部沿用 sender 校验（主窗口主帧）；事件只发主窗口；
-  question > 16000 字符确定性截断（buildContext 内 §7.5 预算截断 + 标记 + warn）。
-- **AI 侧栏与布局（S4）**：面板停靠挤压（定宽 380px、可收起）；useContentBounds 升级为
-  测量内容容器两维矩形（通道/契约 ui:content-bounds 不变）；回答渲染纯文本
-  （不引入 Markdown 库）；ContextBadge 由 conversation:preview 驱动（实时快照摘要，
-  不含正文）。
+- **IPC/bridge 扩展（S4 ✅ 已实现，2026-08-13 grep 核对）**：invoke——conversation:list/
+  create/get-history/delete/set-ephemeral/ask/abort/preview、config:providers:list/set/
+  set-key（apiKey='' = 删除）——11 个通道常量与 payload 类型在 shared/types/ipc.ts
+  （§4.1）；两事件通道常量与 StreamChunkEvent/TurnDoneEvent payload 类型 S3 已落地。
+  main 侧 handler 全部复用既有 `handle()` sender+主帧校验包装（index.ts），逐参数验证
+  安全返回不抛异常；question > 16000 字符确定性截断（truncateWithMark +
+  CONTEXT_BUDGET.questionMaxChars + warn，§4.1；buildContext 内 §7.5 预算截断为
+  纵深防御）、空串/非串 → AskResult{ok:false, internal}；事件只发主窗口。preload
+  bridge 白名单（§4.2）：`conversation.{list/create/getHistory/remove/setEphemeral/
+ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKey}`
+  ——事件订阅返回退订函数、preload 内同一通道只注册一次 ipcRenderer 监听 + JS 侧
+  listener 集合（与 tabs:updated 同模式，eventRelay 泛型封装）；**API Key 只写不回读**：
+  setKey 后 Key 无法经任何通道回渲染层，list() 仅含 hasKey（无读回方法，冒烟场景 10
+  白名单断言）。ProviderInfo 与 PROVIDER_KIND_OPENAI_COMPATIBLE 常量定义于
+  shared/types/conversation.ts（单一事实源；config-store/llm-provider 重导出）。
+- **AI 侧栏与布局（S4 ✅ 已实现，2026-08-13 grep 核对）**：`renderer/src/ai/`——
+  AiPanel（header：新建/会话列表/删除/不保存开关/设置/收起）· ChatView（消息流 +
+  追溯卡片 + 已中止/错误标记；回答纯文本 pre-wrap，不引入 Markdown 库）· Composer
+  （textarea Enter 发送 / Shift+Enter 换行；生成中显示「中止」）· ContextBadge
+  （conversation:preview 驱动：面板打开/tabs:updated 即时/窗口 focus 防抖 300ms；
+  文案纯函数 `describeContextPreview`）· CitationCard（ContextSource 摘要）·
+  ProviderSettings（v1 只配置已注册 openai-compatible kind——决议 #20，无多 Provider
+  选择 UI，与 list() 顺序无关；API Key type=password 只写不回显、保存后清空、apiKey=''
+  = 删除）；hooks `useConversation`（会话列表/当前会话/历史镜像 + turn-done 补
+  contextSource 收敛，纯函数 `reduceHistory`）与 `useStream`（requestId → delta 追加
+  - turn-done 收敛，纯函数 `reduceStream`；竞态残留事件按 requestId 忽略）；面板定宽
+    380px 停靠挤压、默认收起、不持久化、无拖拽/动画；useContentBounds 升级为测量内容
+    容器两维矩形（ResizeObserver + 防抖 50ms，通道/契约 ui:content-bounds 不变）；
+    布局：Toolbar+TabBar（chrome）→ 内容行（内容容器 + 面板）→ DebugPanel 底部通栏。
+    冒烟模式 AI 子系统走进程专属临时目录 + FakeProvider 注入（不触碰用户 userData）。
 - **Prompt Injection 验收边界（S5）**：机器可验证断言——网页内容只存在于 user 消息
   UNTRUSTED 块、system 恒等、块不可被内容闭合、角色程序字面量赋值、渲染层无 Key 读回、
   本阶段无浏览器写 Tool（click/fill/scroll 不存在，grep 断言）、权限默认拒绝回归、
@@ -490,7 +514,7 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 299 用例）
+  - `npm test` — Vitest 全量测试（当前 326 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -505,7 +529,9 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
     - warnings 展示）、远程页面隔离探针（window.aibrowse/process/require/electron 均
       undefined）→ S3 起再验证 AI 共读场景（FakeProvider 离线：流式端到端/selection 独占/
       防串页/L3 降级/薄快照/中止/错误归一化/会话持久化与删除/ephemeral 不落盘）→ S4 起
-      再验证 UI 端到端 + 布局 bounds 协调 + Key 不可达断言 + 注入结构断言（矩阵见
+      再验证 UI 端到端矩阵 1–12（流式分块渐进 DOM/selection/防串页/L3/薄快照/中止/错误
+      归一化/会话管理 UI/布局 bounds 380 收缩与恢复/Key 不可达——DOM 与日志字节扫描 +
+      credentials.json 密文 + 白名单无读回/注入结构断言/远程隔离回归；矩阵见
       doc/stage2/detailed-design.md §13.2）→ 自动退出，退出码 0 即通过；日志链见 log/）。
       生产产物路径同样可跑：
       `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
@@ -568,7 +594,12 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
     拒绝新建、§6.1 时序——实时采集防串页/L3/selection 独占/薄快照/先持久化 user 消息
     （磁盘探针）/错误归一化/not-configured 零网络、busy/abort 幂等与部分保留/dispose/
     deleteSession 中止不复活文件/ephemeral 不落盘与切换/重启恢复/200 条裁剪）。
-  - S4 起（待实现）：IPC/bridge 与 AI 面板 UI。
+  - ✅ S4（2026-08-13 红→绿落地，22 用例）：stream-state 纯 reducer（10：delta 追加/
+    turn-done 收敛以终态全文为准/aborted-error 保留部分/requestId 不匹配竞态残留忽略/
+    ask 拒绝文案）、history-events 历史收敛（6：乐观追加/turn-done 补 contextSource +
+    追加终态/磁盘历史不覆盖/替换）、context-badge-format 徽标文案映射（6：selection
+    N 字/snapshot thin-degraded 提示/none 原因）。UI 端到端矩阵 1–12 由 Electron 冒烟
+    覆盖（§6）；IPC/bridge 参数校验与 Key 只写不回读为 main/preload 胶水层（冒烟断言）。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。
@@ -592,16 +623,18 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
 - **日志位置随打包变化**：开发时 log/ 在项目根目录；打包后写用户数据目录（asar 只读），排查注意两处。
 - **尚无 CI / 打包配置**：第一阶段验收不要求；electron-builder 打包与 GitHub Actions
   （lint + test + typecheck）待阶段收尾评估。
-- **冒烟已扩展（T2–T5）**：覆盖多 Tab 创建/切换/关闭、最后 Tab 自动新建、dispose 幂等与
+- **冒烟已扩展（T2–T5 + S3–S4）**：覆盖多 Tab 创建/切换/关闭、最后 Tab 自动新建、dispose 幂等与
   webContents 无残留；T3 起覆盖 UI 窗口导航保护拦截（远程/同目录 file:/路径穿越三探针，
   dev origin 与生产 file: 精确匹配两条路径）与渲染层 bounds 上报生效；T4 起覆盖
   PageSnapshot 真实采集（本地受控双服务器页面：L0 内容对照/元素 id 唯一性与跨快照稳定/
   L1 跨域 iframe 跳过警告/L3 null）；T5 起覆盖敌对页面 elementId（重复/畸形/超大/冲突烙印）、
   Tab 302 重定向白名单（R-02 验证）、**UI 端到端**（React DOM 点击/键盘驱动地址栏/搜索/
   多 Tab/后退前进刷新/标题/调试面板，不引入 Playwright）、远程页面隔离探针、Session 跨进程
-  持久化（AIBROWSE_SESSION_SMOKE=set/check 双进程，§6）；真实网页加载需
-  `AIBROWSE_SMOKE_URL` 附加验证（§6）。仍不覆盖：L2 触发路径（渲染进程崩溃）的强制触发
-  （normalize 单测覆盖 L2 形状，PageReader 拒绝路径为薄胶水）。
+  持久化（AIBROWSE_SESSION_SMOKE=set/check 双进程，§6）；S3 起覆盖 AI 共读主进程矩阵
+  1–8；S4 起覆盖 **AI 面板 UI 端到端矩阵 1–12**（含真实 safeStorage 密文落盘与 Key 零
+  暴露断言，场景 10）。真实网页加载需 `AIBROWSE_SMOKE_URL` 附加验证（§6）。仍不覆盖：
+  L2 触发路径（渲染进程崩溃）的强制触发（normalize 单测覆盖 L2 形状，PageReader 拒绝
+  路径为薄胶水）。
 - **Tab will-redirect 白名单为防御纵深（T5）**：file:/data:/about:blank 等重定向目标已被
   Chromium 网络层拦截（ERR_UNSAFE_REDIRECT，探针实测不触发 will-redirect）；当前无自定义
   协议注册，未来注册 `aibrowse://` 等协议时该拦截点是唯一防线（冒烟以 custom:// 目标验证

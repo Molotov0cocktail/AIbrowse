@@ -22,18 +22,18 @@
 
 ## 实施步骤
 
-- [ ] IPC 常量与 payload 扩展 → main handler（复用既有 sender 校验 handle 包装）→
+- [x] IPC 常量与 payload 扩展 → main handler（复用既有 sender 校验 handle 包装）→
       preload bridge 白名单（事件通道单次注册 + JS 侧 listener 列表，沿用 tabs:updated 模式）
-- [ ] useContentBounds 升级：测量内容容器两维矩形（ResizeObserver + 防抖 50ms 不变）
-- [ ] App 布局：内容容器 + 面板停靠（定宽 380px，可收起）；DebugPanel 保留
-- [ ] 面板组件：会话列表/新建/删除/不保存开关/设置（API Key type=password 只写不回显）/
+- [x] useContentBounds 升级：测量内容容器两维矩形（ResizeObserver + 防抖 50ms 不变）
+- [x] App 布局：内容容器 + 面板停靠（定宽 380px，可收起）；DebugPanel 保留
+- [x] 面板组件：会话列表/新建/删除/不保存开关/设置（API Key type=password 只写不回显）/
       消息流（delta 追加 reducer）/中止按钮/ContextBadge（preview 驱动，防抖 300ms）/
       CitationCard（ContextSource 展示）
-- [ ] useStream：requestId → delta 追加 + turn-done 收敛（纯函数可测）
-- [ ] 冒烟 UI 端到端（矩阵全量，React DOM 事件驱动沿用 T5 方法）：1–12 全部场景，
+- [x] useStream：requestId → delta 追加 + turn-done 收敛（纯函数可测）
+- [x] 冒烟 UI 端到端（矩阵全量，React DOM 事件驱动沿用 T5 方法）：1–12 全部场景，
       含 9（bounds 宽度断言）/ 10（Key 不可达：DOM/日志字节扫描、credentials.json 密文、
       list 仅 hasKey）/ 11（注入结构断言）/ 12（远程隔离回归）
-- [ ] 全量回归 + 提交
+- [x] 全量回归 + 提交（2026-08-13，见 progress.md）
 
 ## 测试与检查
 
