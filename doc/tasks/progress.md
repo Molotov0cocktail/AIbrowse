@@ -10,7 +10,10 @@
 ## 当前状态
 
 - 阶段：**第二阶段（AI 共读）**，已于 2026-08-13 正式切换（用户指令）。设计定稿与
-  任务拆分已完成（`doc/stage2/`）；**S1、S2、S3、S4、S5 已完成（2026-08-13）**，S6 ⏳。
+  任务拆分已完成（`doc/stage2/`）；**S1–S6 全部完成（2026-08-13）**，S6 最终验收
+  §9 逐项通过 + §10 Exit Gate 判定通过（证据见 Second_stage.md §9/§10 与本文
+  「最近验证结果 · S6」）。**Second Stage 已完成内部验收，等待用户安排独立复验或
+  阶段切换**；阶段指针不切换、不实现 Third Stage（Browser Agent），等待用户指令。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Entry Gate 独立定向审查通过（2026-08-13，无阻塞项）。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + First_stage.md～Seventh_stage.md 入库；
@@ -33,9 +36,48 @@
 | S3   | ConversationService + 会话 JSON 持久化 + ask 编排（实时快照防串页）+ 主进程冒烟                  | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S3-conversation-service.md                                                                                       |
 | S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S4-ai-panel-ui.md                                                                                                |
 | S5   | 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证                                    | ✅   | 2026-08-13 完成（§12.1/§14 逐项审计通过、矩阵 11 注入夹具增强、真实 Provider 冒烟 2 次调用全通过，见下）；任务文档 doc/stage2/tasks/S5-security-prompt-injection.md |
-| S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ⏳   | 任务文档 doc/stage2/tasks/S6-finalize-acceptance.md；依赖：S1–S5                                                                                                    |
+| S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ✅   | 2026-08-13 完成（§9 逐项证据 + §10 Exit Gate 通过 + 真实 Provider 多网站验证，见下）；任务文档 doc/stage2/tasks/S6-finalize-acceptance.md                           |
 
 ## 最近验证结果（2026-08-13）
+
+- **S6 第二阶段收尾与最终验收（2026-08-13，第六个实现闭环）**：test **326/326** ✅ ·
+  typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 双场景退出码 0
+  （dev 离线全矩阵 + 生产产物）· **真实 Provider 多网站共读验证 ✅ 最终运行退出码 0**。
+  **① Second_stage.md §9 四组 16 项验收标准逐项核对通过**，每项证据（单测/冒烟场景/
+  审计条目/运行时日志）已回填 §9 勾选注释。**② §10 Exit Gate 判定：通过**（五条件逐项
+  证据已回填 §10 证据块）；项目状态登记：**Second Stage 已完成内部验收，等待用户安排
+  独立复验或阶段切换**（阶段指针不切换、不实现 Browser Agent）。**③ 新增真实 Provider
+  多网站共读冒烟场景**（`AIBROWSE_LIVE_SITES=1`，smoke.ts `runLiveProviderSitesScenario` +
+  index.ts 门控；仓库外 harness `run-live-smoke.ps1 -Sites`）：三类真实站点形态——
+  MDN 普通文章页（正文提问 + 总结 + selection 独占）、wangdoc 长文教程页（visibleText
+  超 12000 章节上限 → 确定性裁剪 warnings + 回答可用）、w3school.com.cn 表格页（数据表
+  提取）——外加切 Tab 与刷新防串页（url/tabId/capturedAt 更新 + 旧页标记词不串入），
+  每个提问对应一个明确验收项，全部经完整生产链路（UI → bridge → IPC → ConversationService
+  → ContextBuilder → OpenAI-compatible → 流式 → DOM）真实调用且 turn-done complete；
+  沿用 S5 真 Key 零暴露扫描（DOM/日志/临时文件/密文形态）。**④ 验收期间修复 3 个冒烟级
+  缺陷（均非共读业务缺陷）**：a) 长文站点夹具——MDN display 页在应用快照管线中正文仅
+  ~9.9k 字符（大量 p 文本隐藏在 BCD 折叠区，curl 文本量误判），更换为全明文渲染的
+  wangdoc stdlib/array 章节并将前置断言校准为「visibleText 超章节上限 12000」；
+  b) **冒烟 30s 兜底定时器缺陷（真实项目缺陷）**——「渲染进程未在 30 秒内就绪」定时器
+  在渲染进程就绪后从未清除，任何超 30s 的冒烟场景（真实 Provider 多网站验证必然超过）
+  被误杀（S5 会话日志亦有 1 次触发记录；离线矩阵 ~15s 恰好未暴露）——修复为
+  AppRendererReady 时 clearTimeout，场景自身超时接管（index.ts）；c) 表格页对照组断言
+  过度约束——nav 密集站点 links 章节超 200 条/4000 字符上限被确定性截断产生 warnings 是
+  §7.5 契约正确行为，删除「短页面无裁剪」对照组断言并加注释说明。**⑤ 真实调用台账**
+  （新规则：不设固定次数，每次对应明确验收项/问题定位/修复复验，报告次数与用途）：
+  共 18 次——run1 3 次（文章提问①/总结/selection，暴露长文夹具缺陷后按断言中止）/
+  run2 4 次（夹具修复复验，暴露 30s 定时器缺陷后被误杀）/ run3 4 次（定时器修复复验，
+  暴露表格页对照组断言问题）/ run4 7 次（最终完整验收：正文提问/总结/selection 独占/
+  长文裁剪/表格提取/切 Tab/刷新，全部 complete，退出码 0）。**⑥ 风险分类校准**：Prompt
+  Injection 语义层剩余风险正式登记为「已接受的剩余设计风险/计划内限制」（不分配 R 编号、
+  开放风险仍为「无」、不宣称完全免疫），保留「Third Stage 引入 Browser Tool 前重建
+  威胁模型」最迟复核点（见风险与限制）。**⑦ 文档同步**：Second_stage.md §9 勾选 + §10
+  证据块、AGENTS.md §1/§5 S6 状态 + §6 长期真实 Provider 测试流程（固定本地说明路径、
+  DPAPI 仓库外、仅环境变量注入、无固定调用上限规则）、README（当前状态/真实 Provider
+  开发者流程/测试计数 326）、detailed-design §13.2 增补多网站验证与调用规则（真实契约
+  变化的最小同步）、S5/S6 任务文档实施标记。交付：smoke.ts（LIVE_SITES +
+  runLiveProviderSitesScenario + 辅助函数）、index.ts（LIVE_SITES_MODE 门控 + 30s 定时器
+  清除修复）。
 
 - **S5 安全审计与 Prompt Injection 验证（2026-08-13，第五个实现闭环）**：test **326/326** ✅
   （无新增单测——审计未发现需新增纯函数的缺陷；注入夹具与真实 Provider 场景为冒烟胶水层）·
@@ -377,13 +419,16 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   最小化持久化，Second_stage.md §7）；③ 布局表启发式为容忍设计（误删只是少内容、
   误留只是多冗余，均有 warnings）；④ 回答渲染 v1 纯文本（无 Markdown 库）；
   ⑤ 面板定宽 380px（不做拖拽调宽）。
-- **Prompt Injection 剩余风险（S5 已复核，2026-08-13）**：机器可验证的结构性结论已由
-  S5 逐项验证——网页内容**不能**取得权限（permission-policy 默认拒绝探针）、读取密钥
-  （bridge 无读回 + 真 Key 零暴露扫描）、调用写操作（全仓库无写 Tool/写通道 + 请求
-  无 tools 字段）或改变消息角色（程序字面量 + 单块闭合转义断言），详见 §12.1 审计。
-  但**不承诺**模型在语义层完全不受网页文本诱导（如诱导生成误导性回答、诱导式表述），
-  该剩余风险如实保留。Third Stage 引入 Browser Tool 前必须重建威胁模型（届时
-  「网页文本诱导调用工具」成为真实攻击面）。
+- **Prompt Injection 语义层剩余风险（S5 已复核，S6 分类校准 2026-08-13——正式登记为
+  「已接受的剩余设计风险/计划内限制」，不分配 R 编号，开放风险仍为「无」）**：
+  机器可验证的结构性结论已由 S5 逐项验证——网页内容**不能**取得权限（permission-policy
+  默认拒绝探针）、读取密钥（bridge 无读回 + 真 Key 零暴露扫描）、调用写操作（全仓库无
+  写 Tool/写通道 + 请求无 tools 字段）或改变消息角色（程序字面量 + 单块闭合转义断言），
+  详见 §12.1 审计。**不承诺（也不得宣称）Prompt Injection 完全免疫**：模型在语义层仍
+  可能受网页文本诱导（如诱导生成误导性回答、诱导式表述）——当前阶段无浏览器写 Tool，
+  该诱导无法转化为真实操作，故不构成需要当前阶段继续修复的缺陷。**最迟复核点**：
+  Third Stage 引入 Browser Tool 前必须重建威胁模型（届时「网页文本诱导调用工具」
+  成为真实攻击面）。
 
 ## 阻塞项
 
@@ -391,14 +436,10 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **S6 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步**
-  （doc/stage2/tasks/S6-finalize-acceptance.md）：Second_stage.md §9 验收标准逐项核对
-  （AI 配置/共读/安全/Engineering 四组）、§10 Exit Gate 判定（真实网站共读稳定性、
-  Key 方案稳定、ContextBuilder 边界明确、注入基线测试存在、无「给 AI 更多权限」才能
-  掩盖的共读缺陷）、契约回填 AGENTS.md §5、S5 任务文档实施步骤勾选。真实 Provider
-  凭据流程**读取本地说明即可复核**（`%LOCALAPPDATA%\AIbrowse\S5\live-provider-test.md`），
-  不重新设计。依赖：S1–S5（已完成）。Exit Gate 通过后**停下报告**，不直接实现
-  Browser Agent。
+- **无——Second Stage 已完成内部验收，停下等待用户指令**：不切换到 Third Stage、
+  不设计/拆分 Third Stage 任务、不实现 Browser Agent（Second_stage.md §10 纪律 +
+  用户指令）。用户安排独立复验或阶段切换后，再按 ROADMAP.md 阶段切换原则进入
+  下一阶段（届时 Third Stage 引入 Browser Tool 前必须重建威胁模型，见风险与限制）。
 
 ## 第一阶段验收未完成项
 

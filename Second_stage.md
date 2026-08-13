@@ -214,29 +214,47 @@ ContextBuilder
 
 ## 9. 验收标准
 
+> 状态：S6 最终验收（2026-08-13）逐项核对通过，证据见各条目注释与
+> `doc/tasks/progress.md`「最近验证结果 · S6」。冒烟矩阵编号见
+> `doc/stage2/detailed-design.md` §13.2。
+
 ### AI 配置
-- [ ] 可配置至少一种 LLM Provider
-- [ ] API Key 不进入源码、日志、网页或 prompt
-- [ ] Provider 抽象不绑定业务逻辑
+- [x] 可配置至少一种 LLM Provider——ProviderSettings UI + `config:providers:*` 通道（S4，矩阵 10）；
+      真实 Provider（openai-compatible）经真实配置路径完成 S6 多网站验证 7 次真实调用
+- [x] API Key 不进入源码、日志、网页或 prompt——§12.1 边界 7 + S5 审计 + S6 多网站场景真 Key
+      零暴露扫描（DOM/日志/全部临时文件/密文形态断言）；全仓库 grep 无真实 Key 形态
+- [x] Provider 抽象不绑定业务逻辑——LLMProvider 接口 + 工厂注册表 + 错误归一化（S1）；零厂商
+      SDK（运行时依赖仅 react/react-dom；SSE 原生 fetch 自实现）
 
 ### 共读
-- [ ] AI 可回答当前网页问题
-- [ ] AI 可回答当前选中文本问题
-- [ ] AI 可总结当前页面
-- [ ] 切换 Tab 后上下文正确更新
-- [ ] 页面刷新/销毁不会导致旧快照错误复用
-- [ ] 超长页面有明确裁剪策略
+- [x] AI 可回答当前网页问题——S6 多网站验证文章页提问①（真实调用 complete）+ 离线矩阵 1/3
+- [x] AI 可回答当前选中文本问题——S6 selection 提问（mode=selection + selectionExcerpt 独占 +
+      追溯卡片）+ 离线矩阵 2
+- [x] AI 可总结当前页面——S6 文章页提问②与长文页总结（真实调用均 complete）
+- [x] 切换 Tab 后上下文正确更新——S6 切 Tab 提问（url/tabId/capturedAt 更新 + 旧页标记词不串入）+
+      离线矩阵 3
+- [x] 页面刷新/销毁不会导致旧快照错误复用——S6 刷新后提问 capturedAt 严格递增 + 离线矩阵 3
+      （刷新三断言 + 关闭活动 Tab 后快照为空白页）
+- [x] 超长页面有明确裁剪策略——context-budget 42 用例确定性裁剪 + S6 长文页真实验证
+      （visibleText 超 12000 章节上限 → 裁剪 warnings + 回答仍可用）
 
 ### 安全
-- [ ] 网页内容按不可信输入处理
-- [ ] 网页 Prompt Injection 不能覆盖系统/用户指令
-- [ ] 当前阶段 AI 不具备自主浏览写操作
-- [ ] Renderer/远程网页无法读取 API Key
+- [x] 网页内容按不可信输入处理——UNTRUSTED_WEB_CONTENT 块 + `</` 闭合转义 + 常量 system
+      （S2 30 用例 + 矩阵 11 注入夹具）
+- [x] 网页 Prompt Injection 不能覆盖系统/用户指令——§12.1 七项结构性边界（S5 审计 + 注入夹具
+      5 断言）；语义层剩余风险登记为已接受的剩余设计风险（progress.md，不宣称免疫）
+- [x] 当前阶段 AI 不具备自主浏览写操作——全仓库 grep 无 click/fill/scroll/写 Tool/写通道；
+      ProviderRequest 无 tools 字段（S5/S6 复验）
+- [x] Renderer/远程网页无法读取 API Key——bridge 只写不回读（白名单无 get 通道）+ 远程隔离
+      探针 + 矩阵 10（DOM/日志字节扫描 + credentials.json 密文）
 
 ### Engineering
-- [ ] test / typecheck / lint / build 全绿
-- [ ] Electron 实际共读冒烟通过
-- [ ] 日志可用于定位 Provider / Context 问题且无敏感信息
+- [x] test / typecheck / lint / build 全绿——S6 复跑：test 326/326 · typecheck · lint ·
+      format:check · build 全部通过
+- [x] Electron 实际共读冒烟通过——dev 离线全矩阵 + 生产产物冒烟 + 真实 Provider 多网站验证
+      （全部退出码 0；冒烟期间修复 30s 兜底定时器缺陷，见 progress.md S6）
+- [x] 日志可用于定位 Provider / Context 问题且无敏感信息——日志链含 requestId/provider/model/
+      mode/url/耗时/status；logger 脱敏 + 错误归一化脱敏用例 + 真 Key 零暴露扫描
 
 ---
 
@@ -249,5 +267,26 @@ ContextBuilder
 - ContextBuilder 与 PageSnapshot 的边界明确；
 - Prompt Injection 基线测试存在；
 - 没有需要通过“给 AI 更多权限”才能掩盖的共读缺陷。
+
+> **Exit Gate 判定：通过（2026-08-13，S6 最终验收）**。逐项证据：
+>
+> 1. **真实网站共读稳定**：S6 真实 Provider 多网站验证（`AIBROWSE_LIVE_SITES=1`，完整生产
+>    链路 UI → IPC → ConversationService → ContextBuilder → OpenAI-compatible → 流式 → DOM）——
+>    MDN 普通文章页（正文提问 + 总结）、wangdoc 长文教程页（visibleText 超章节上限 →
+>    确定性裁剪 warnings + 回答可用）、w3school.com.cn 表格页（数据表提取）、selection 独占
+>    （选中段落后提问）、切 Tab 与刷新（url/tabId/capturedAt 更新 + 旧页标记词不串入）。
+>    7 次真实调用全部 complete（最终运行退出码 0；前三次运行分别暴露并修复长文站点夹具、
+>    冒烟 30s 兜底定时器、表格页对照组断言三处冒烟级问题，均非共读业务缺陷）。
+> 2. **API Key 安全方案稳定**：S5/S6 两次真实运行真 Key 零暴露扫描通过（DOM/日志/临时文件/
+>    密文形态）；DPAPI 密文落盘、只写不回读、损坏容错与不可用降级均有单测与运行时证据。
+> 3. **ContextBuilder 与 PageSnapshot 边界明确**：唯一契约源 detailed-design §3.2/§7/§12
+>    （决议 #11–#13）；两模块纯函数零环境依赖、独立单测（72 + 46 用例），无跨层依赖。
+> 4. **Prompt Injection 基线测试存在**：detailed-design §12.1 七项结构性边界全部自动化
+>    （单测恒等断言 + 注入夹具 + 冒烟矩阵 11 五断言 + 全仓库 grep 断言），S5 审计 + S6 复验。
+> 5. **无「给 AI 更多权限」才能掩盖的共读缺陷**：验收期间发现的缺陷均为冒烟夹具/时序问题
+>    （修复不涉及任何权限变化）；无阻塞级缺陷。语义层注入剩余风险登记为已接受的剩余设计
+>    风险（progress.md），Third Stage 引入 Browser Tool 前必须重建威胁模型（最迟复核点）。
+>
+> > Second Stage 已完成内部验收，等待用户安排独立复验或阶段切换。
 
 阶段完成后停止，更新 `progress.md`，提出 Third Stage 的详细设计任务，不直接实现 Browser Agent。

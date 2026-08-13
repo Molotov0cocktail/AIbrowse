@@ -658,6 +658,13 @@ export const SYSTEM_PROMPT: string = `你是 AIbrowse 的网页共读助手，�
   （问题固定「用一句话回答：1+1 等于几」）断言收到 delta 且 turn-done complete；
   无 Key 环境跳过并记录，不作为失败。**不得**在无用户明确提供 Key 的情况下联网调用任何
   付费 API；Key 仅经环境变量传入（不入库、不入日志）。
+- **真实 Provider 多网站共读验证**（S6 落地，§10 Exit Gate 证据）：上述门控另加
+  `AIBROWSE_LIVE_SITES=1` → 场景改为多网站验证——普通文章页（正文提问 + 总结）/
+  长文页（visibleText 超章节上限 → 确定性裁剪 + warnings + 回答可用）/ 表格页
+  （数据表提取）/ selection 独占 / 切 Tab 与刷新（URL、capturedAt、tabId 更新 +
+  旧页标记词不串入），并沿用 Key 零暴露扫描。**真实调用规则（2026-08-13 用户更新）**：
+  不设固定调用次数，每次调用必须对应明确的验收项/问题定位/修复复验，禁止无界循环
+  重试；完成报告列出调用次数与用途。
 
 ## 14. 安全基线核对清单（Second Stage 增量，S5 逐项审计）
 

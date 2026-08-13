@@ -4,7 +4,8 @@
 > AI 侧栏、ConversationService、ContextBuilder、LLMProvider（OpenAI-compatible 适配器 +
 > FakeProvider，无厂商 SDK）、SecureCredentialStore（safeStorage/DPAPI）。契约源
 > `doc/stage2/detailed-design.md`。本阶段不实现自主浏览 Agent（无 click/fill/scroll、
-> 自动搜索、多步 Browser Agent Tool——属 Third Stage）。
+> 自动搜索、多步 Browser Agent Tool——属 Third Stage）。**已实现并完成内部验收
+> （2026-08-13）**。
 > 需求源：`Second_stage.md`；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
 ## 当前状态（2026-08-13）
@@ -14,10 +15,12 @@
   （工具栏/标签栏/地址栏/导航保护）→ T4 PageSnapshot（PageReader/采集脚本/normalize/调试面板）→
   T5 收尾（安全审计 + R-02 will-redirect 加固 + 验收清单逐项核对 + 文档同步）。
   验收证据见 `First_stage.md` §十四。
-- 🔨 **第二阶段（AI 共读）已正式切换（2026-08-13）**：需求校准与详细设计已定稿——
-  `doc/stage2/`（proposal / 高层设计 / 详细设计 + 任务拆分 S1–S6）；
-  **尚未开始实现**，首个实现任务 S1（Provider 抽象与凭据安全基座）见
-  `doc/stage2/tasks/S1-provider-credential.md`。
+- ✅ **第二阶段（AI 共读）已完成内部验收（2026-08-13）**：S1 Provider 抽象与凭据安全基座 →
+  S2 ContextBuilder 纯核心 → S3 ConversationService 与会话持久化 → S4 AI 侧栏 UI 与
+  IPC/bridge 扩展 → S5 安全审计与 Prompt Injection 验证 → S6 收尾验收（§9 逐项通过 +
+  §10 Exit Gate 判定通过，含真实 Provider 多网站共读验证）。
+  **等待用户安排独立复验或阶段切换**；不实现 Third Stage Browser Agent。
+  证据见 `Second_stage.md` §9/§10 与 `doc/tasks/progress.md`。
 
 ## 技术栈（实际落地版本）
 
@@ -33,20 +36,31 @@ npm run dev      # 开发模式启动（真实启动 Electron 应用）
 
 冒烟自检（启动 → 窗口 → React 挂载 → preload bridge 链路 → 浏览器核心场景 →
 T3 UI 导航保护/bounds → T4 PageSnapshot 真实采集 → T5 敌对页/302 拦截/UI 端到端/远程隔离 →
-自动退出，退出码 0 即通过；S3/S4 实现后加入 AI 共读场景：FakeProvider 离线矩阵
-流式端到端/selection 独占/防串页/L3 降级/薄快照/中止/错误归一化/会话持久化/UI 端到端/
-bounds 协调/Key 不可达/注入结构断言，矩阵见 `doc/stage2/detailed-design.md` §13.2）：
+S3/S4 AI 共读场景：FakeProvider 离线矩阵流式端到端/selection 独占/防串页/L3 降级/薄快照/
+中止/错误归一化/会话持久化/UI 端到端/bounds 协调/Key 不可达/注入结构断言 →
+自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2）：
 
 ```bash
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev
 ```
 
-真实 Provider 可选验证（S5 起，需用户提供 Key——未经提供不联网调用付费 API；
-Key 仅经环境变量传入，不入库/不入日志）：
+真实 Provider 可选验证（开发者流程，需用户已提供 Key——未经提供不联网调用付费 API；
+Key 永不写进命令行或项目文件）：
 
-```bash
-env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_LIVE_PROVIDER=1 AIBROWSE_TEST_API_KEY=<用户提供> npm run dev
+1. 先读取仓库外本地说明 `%LOCALAPPDATA%\AIbrowse\S5\live-provider-test.md`（记录测试用
+   base URL / model / DPAPI 密钥文件路径与注入规则——凭据与机器专属配置不进本仓库）。
+2. API Key 以 Windows DPAPI 密文保存在仓库外 `%LOCALAPPDATA%\AIbrowse\S5\provider-key.dpapi`，
+   测试时由仓库外启动脚本在受控子进程中解密并经环境变量短暂注入（测试结束清零内存、
+   清除环境变量与临时目录，不打印 Key）：
+
+```powershell
+# S5 固定问题一问一答 / S6 多网站共读验证（§10 Exit Gate）
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AIbrowse\S5\run-live-smoke.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AIbrowse\S5\run-live-smoke.ps1" -Sites
 ```
+
+3. 不设固定调用次数：每次真实调用必须对应明确的验收项或缺陷复验；完成报告列出调用
+   次数与用途，不包含凭据。
 
 Session 跨进程持久化验证（两个独立进程 + 同一临时目录，验证 Cookie 重启后保留；
 以生产产物验收，先执行 `npm run build`）：
@@ -62,7 +76,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 89 用例）                     |
+| `npm test`                        | Vitest 全量测试（当前 326 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -130,13 +144,13 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 89 用例）：地址栏输入判断（15）、Tab 状态机（14）、
-网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（46，页面视为敌手）。
+Vitest（node 环境）测核心纯逻辑（当前 326 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（46，页面视为敌手）；
+第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
+credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
+（system 恒等/块闭合转义/selection 独占）（72）、会话消息校验与编排（57）、
+UI 纯 reducer 与徽标文案（22）、logger 脱敏密钥专项用例。
 Electron 行为由冒烟自检真实启动验证（见上）。约定见 `AGENTS.md` §7。
-第二阶段（S1–S4）将新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
-credential/config 校验、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
-（system 恒等/块闭合转义/selection 独占）、会话消息校验、logger 脱敏密钥专项用例
-（规格见 `doc/stage2/detailed-design.md` §13）。
 
 ## 已知限制
 
