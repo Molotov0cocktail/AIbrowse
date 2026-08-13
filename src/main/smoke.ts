@@ -11,6 +11,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync 
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserController } from './browser/browser-controller';
+import type { PageSnapshot } from '../shared/types/browser';
 import { PERSIST_PARTITION } from './browser/session-manager';
 import { SEARCH_ENGINE_URL } from '../shared/url';
 import { getCurrentLogFilePath, logError, logInfo } from './logger';
@@ -19,7 +20,13 @@ import { ConversationStore, parseMessagesFile } from './ai/conversation-store';
 import { ConfigStore } from './ai/config-store';
 import { isCiphertextShape, SecureCredentialStoreImpl } from './ai/credential-store';
 import { SafeStorageCipher } from './ai/safe-storage-cipher';
-import { SYSTEM_PROMPT } from './ai/context-builder';
+import { isThinSnapshot, SYSTEM_PROMPT } from './ai/context-builder';
+import {
+  CONTEXT_BUDGET,
+  countSnapshotBodyChars,
+  fillWebContentSections,
+  filterLayoutTables,
+} from './ai/context-budget';
 import { FakeProvider, type FakeProviderScript } from './ai/provider/fake-provider';
 import {
   PROVIDER_KIND_OPENAI_COMPATIBLE,
@@ -27,6 +34,7 @@ import {
 } from './ai/provider/llm-provider';
 import type { SecureCredentialStore } from './ai/credential-store';
 import type {
+  ConversationMessage,
   ConversationSession,
   ProviderInfo,
   StreamChunkEvent,
@@ -67,6 +75,7 @@ export interface SmokeOptions {
   uiWindow?: BrowserWindow | null; // T3：UI 窗口导航保护拦截与 bounds 上报生效验证用
   aiSmokeDir?: string; // S4：冒烟模式 AI 子系统数据目录（UI 端到端矩阵断言/清理用）
   liveSmoke?: LiveProviderSmoke; // S5：真实 Provider 场景（AIBROWSE_LIVE_PROVIDER=1 时注入）
+  liveSites?: boolean; // S6：真实 Provider 多网站共读验证（AIBROWSE_LIVE_SITES=1 时启用）
 }
 
 // ---------- S5：真实 Provider 可选冒烟（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY） ----------
@@ -1694,6 +1703,391 @@ export async function runLiveProviderUiScenario(
   }
 }
 
+// ---------- S6：真实 Provider 多网站共读验证（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_LIVE_SITES=1）----------
+// §10 Exit Gate 证据：当前网页共读在多个不同内容形态的真实网站上经完整生产链路稳定工作。
+// 每个提问 = 一次真实 API 调用，与 §9 共读组验收项一一对应（正文提问/总结/长文裁剪/
+// 表格提取/selection 独占/切 Tab/刷新），不做自动重试；总调用次数由场景结构决定。
+// 站点为测试元数据（非机密，2026-08-13 本机连通性与内容形态探测选定）；Key 仍只经
+// 环境变量注入一次（零暴露扫描与 S5 同断言）。站点内容变化导致的超预算断言失败会给出
+// 明确更换站点的提示（失败前不产生真实调用）。
+const LIVE_SITES = {
+  // 普通文章/文档页（正文提问 + 总结 + selection）
+  article: 'https://developer.mozilla.org/zh-CN/docs/Web/API/Document/querySelector',
+  // 长文教程页（全明文渲染，正文超过 12000 字符章节上限 → 确定性裁剪 + warnings；
+  // 2026-08-13 实测在应用快照管线中 body.innerText 远超阈值）
+  long: 'https://wangdoc.com/javascript/stdlib/array',
+  // 含表格的结构化内容页（信息提取）
+  table: 'https://www.w3school.com.cn/html/html_tables.asp',
+} as const;
+
+async function liveSitesNavigateAndReady(
+  controller: BrowserController,
+  tabId: string,
+  url: string,
+  label: string,
+): Promise<PageSnapshot> {
+  assert(await controller.navigate(tabId, url), `${label}：导航应成功`);
+  await waitFor(
+    async () => {
+      const t = (await controller.getTabs()).find((x) => x.id === tabId);
+      return t !== undefined && t.state === 'ready' && t.url === url;
+    },
+    60_000,
+    `${label}：页面未在 60 秒内就绪（url=${url}）`,
+  );
+  // 采集健康：L0/L1 可接受（L1 警告照常展示），L2/L3 不可接受（共读将无依据）
+  const snap = await controller.getPageSnapshot(tabId);
+  assert(snap !== null, `${label}：快照不得为 null（L3）`);
+  assert(
+    snap.meta.degraded !== 'main-process-only',
+    `${label}：快照不得为 L2 采集失败（degraded=${snap.meta.degraded}）`,
+  );
+  return snap;
+}
+
+async function liveSitesAskViaUi(
+  uiWc: WebContents,
+  question: string,
+  label: string,
+): Promise<string> {
+  await typeIntoComposer(uiWc, question);
+  await waitFor(
+    async () => uiHas(uiWc, '.ai-message-streaming'),
+    60_000,
+    `${label}：流式气泡未在 60 秒内出现（请求未开始或未以流式返回）`,
+  );
+  await waitFor(
+    async () => !(await uiHas(uiWc, '.ai-message-streaming')),
+    120_000,
+    `${label}：生成未在 120 秒内完成（turn-done 未到达）`,
+  );
+  assert(!(await uiHas(uiWc, '.ai-status-error')), `${label}：本轮不得出现错误标记`);
+  const finalText = (await uiTextAll(uiWc, '.ai-message-assistant')).at(-1) ?? '';
+  assert(finalText.trim() !== '', `${label}：回答内容应非空`);
+  return finalText;
+}
+
+async function liveSitesNewSession(uiWc: WebContents, label: string): Promise<string> {
+  const before = await uiCount(uiWc, '.ai-session-item');
+  await clickUi(uiWc, '.ai-new-session');
+  await waitFor(
+    async () => (await uiCount(uiWc, '.ai-session-item')) === before + 1,
+    5000,
+    `${label}：新建会话后会话列表应增加 1 项`,
+  );
+  const id = await currentUiSessionId(uiWc);
+  assert(id !== '', `${label}：应能取得当前会话 id`);
+  return id;
+}
+
+// 读取该轮终态消息（服务层证据：引用链先于生成落地 + turn-done complete）
+async function liveSitesLastMessages(
+  aiSmokeDir: string,
+  sessionId: string,
+  label: string,
+): Promise<{ user: ConversationMessage; assistant: ConversationMessage }> {
+  const messageFile = join(aiSmokeDir, 'conversations', `${sessionId}.json`);
+  assert(existsSync(messageFile), `${label}：会话消息文件应落盘`);
+  const parsed = parseMessagesFile(readFileSync(messageFile, 'utf8'));
+  assert(parsed !== null, `${label}：会话消息文件应可解析`);
+  const assistant = [...parsed.messages].reverse().find((m) => m.role === 'assistant');
+  const user = [...parsed.messages].reverse().find((m) => m.role === 'user');
+  assert(assistant !== undefined && user !== undefined, `${label}：应有 user+assistant 消息`);
+  assert(assistant.status === 'complete', `${label}：assistant 消息应为 complete`);
+  return { user, assistant };
+}
+
+export async function runLiveProviderSitesScenario(
+  controller: BrowserController,
+  uiWindow: BrowserWindow,
+  aiSmokeDir: string,
+  live: LiveProviderSmoke,
+): Promise<void> {
+  const uiWc = uiWindow.webContents;
+  const logFile = getCurrentLogFilePath();
+  const logOffsetBefore = statSync(logFile).size; // 本场景日志字节扫描区间起点
+  let liveCalls = 0; // 真实调用计数（每次提问恰 1 次；仅用于最终日志汇总，不设上限）
+  try {
+    assert(await live.ready, '多网站共读：装配失败（配置写入或 Key 密文落盘未成功）');
+    const activeTab = await controller.getActiveTab();
+    assert(activeTab !== null, '多网站共读：应有活动标签页');
+
+    // 打开 AI 面板（后续各验收项均经完整 UI 链路提问）
+    await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
+    await waitForUiText(uiWc, '.ai-panel-title', 'AI 共读助手', 5000, '多网站共读：AI 面板未打开');
+
+    // —— ① 普通文章页：正文提问 + 总结（§9：回答当前网页问题 / 总结当前页面） ——
+    const articleSnap = await liveSitesNavigateAndReady(
+      controller,
+      activeTab.id,
+      LIVE_SITES.article,
+      '文章页',
+    );
+    assert(!isThinSnapshot(articleSnap), '文章页：快照应为非薄（正文充足，回答有依据）');
+    const articleTruncated = fillWebContentSections(articleSnap, 'snapshot').truncated;
+    {
+      const sessionId = await liveSitesNewSession(uiWc, '文章页会话');
+      await liveSitesAskViaUi(
+        uiWc,
+        '根据当前页面，Document.querySelector 返回什么？用一句话回答。',
+        '文章页提问①（正文提问）',
+      );
+      liveCalls += 1;
+      const { user } = await liveSitesLastMessages(aiSmokeDir, sessionId, '文章页提问①');
+      const cs = user.contextSource;
+      assert(cs?.mode === 'snapshot', `文章页提问①：mode 应为 snapshot（实际 ${cs?.mode}）`);
+      assert(
+        cs?.url === LIVE_SITES.article,
+        `文章页提问①：contextSource.url 应为提问时页 URL（实际 ${cs?.url}）`,
+      );
+      assert(cs?.capturedAt !== null, '文章页提问①：应有 capturedAt（主进程盖章）');
+      assert(cs?.tabId === activeTab.id, '文章页提问①：tabId 应为活动 Tab');
+      assert(
+        cs.warnings.some((w) => w.includes('已确定性裁剪')) === articleTruncated,
+        `文章页提问①：裁剪 warnings 应与预算判定一致（预期 ${articleTruncated}）`,
+      );
+      const capturedAfterQ1 = cs?.capturedAt ?? null;
+      await liveSitesAskViaUi(uiWc, '用一句话总结这个页面。', '文章页提问②（总结）');
+      liveCalls += 1;
+      const msgs2 = await liveSitesLastMessages(aiSmokeDir, sessionId, '文章页提问②');
+      assert(
+        msgs2.user.contextSource?.url === LIVE_SITES.article,
+        '文章页提问②：contextSource.url 应仍为文章页',
+      );
+      assert(
+        (msgs2.user.contextSource?.capturedAt ?? 0) > (capturedAfterQ1 ?? 0),
+        '文章页提问②：capturedAt 应更新（提问时刻实时采集）',
+      );
+    }
+
+    // —— ② selection 独占：选中正文段落后提问（§9：回答当前选中文本问题） ——
+    {
+      const pageWc = visibleTabView(uiWindow)?.webContents;
+      assert(pageWc !== undefined, 'selection：应有可见活动 Tab 视图');
+      // 真实页面选中：取正文中最长的段落（不依赖站点固定文案）
+      const selectedText = (await pageWc.executeJavaScript(
+        `(() => {
+          const paras = [...document.querySelectorAll('main p, article p, p')]
+            .map((p) => (p.textContent ?? '').trim())
+            .filter((t) => t.length > 40)
+            .sort((a, b) => b.length - a.length);
+          if (paras.length === 0) return '';
+          const p = [...document.querySelectorAll('main p, article p, p')]
+            .find((el) => (el.textContent ?? '').trim() === paras[0]);
+          const range = document.createRange();
+          range.selectNodeContents(p);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          return sel.toString();
+        })()`,
+      )) as string;
+      assert(selectedText.trim() !== '', 'selection：页面应有可选中的正文段落');
+      // 选中变化无 tabs:updated——焦点事件驱动徽标防抖刷新（§6.3，与矩阵 2 同手法）
+      await uiJs(uiWc, `window.dispatchEvent(new Event('focus'))`);
+      await waitFor(
+        async () => (await uiText(uiWc, '.ai-context-label')).startsWith('选中文本（'),
+        5000,
+        'selection：上下文徽标应显示「选中文本」模式',
+      );
+      const sessionId = await liveSitesNewSession(uiWc, 'selection 会话');
+      await liveSitesAskViaUi(uiWc, '解释我选中的这段。', 'selection 提问');
+      liveCalls += 1;
+      const { user } = await liveSitesLastMessages(aiSmokeDir, sessionId, 'selection 提问');
+      const cs = user.contextSource;
+      assert(cs?.mode === 'selection', `selection：mode 应为 selection（实际 ${cs?.mode}）`);
+      assert(
+        cs?.selectionExcerpt === selectedText.trim().slice(0, 200),
+        'selection：selectionExcerpt 应为选中文本前 200 字符（selection 独占证据）',
+      );
+      const citations = await uiTextAll(uiWc, '.ai-citation');
+      assert(
+        citations.at(-1)?.includes('选中文本') === true,
+        'selection：追溯卡片应显示选中文本徽标',
+      );
+      assert(
+        (await uiTextAll(uiWc, '.ai-citation-excerpt'))
+          .at(-1)
+          ?.includes(selectedText.trim().slice(0, 30)) === true,
+        'selection：追溯卡片应含选中摘录',
+      );
+      await pageWc.executeJavaScript(`window.getSelection().removeAllRanges()`); // 清理 selection
+    }
+
+    // —— ③ 长文页：确定性裁剪 + warnings + 回答可用（§9：超长页面有明确裁剪策略） ——
+    const longSnap = await liveSitesNavigateAndReady(
+      controller,
+      activeTab.id,
+      LIVE_SITES.long,
+      '长文页',
+    );
+    assert(
+      (longSnap.visibleText ?? '').trim().length > CONTEXT_BUDGET.sectionVisibleTextMax,
+      `长文页：visibleText 应超章节上限（${(longSnap.visibleText ?? '').trim().length} ≤ ${CONTEXT_BUDGET.sectionVisibleTextMax}，正文合计 ${countSnapshotBodyChars(longSnap)} 字符——站点内容已变化，需更换长文页站点）`,
+    );
+    {
+      const sessionId = await liveSitesNewSession(uiWc, '长文页会话');
+      await liveSitesAskViaUi(uiWc, '用两三句话总结这个页面的主要内容。', '长文页提问');
+      liveCalls += 1;
+      const { user } = await liveSitesLastMessages(aiSmokeDir, sessionId, '长文页提问');
+      const cs = user.contextSource;
+      assert(cs?.url === LIVE_SITES.long, '长文页：contextSource.url 应为长文页');
+      assert(
+        cs?.warnings.some((w) => w.includes('已确定性裁剪')) === true,
+        `长文页：warnings 应含确定性裁剪警告（实际 ${cs?.warnings.join(' / ')}）`,
+      );
+    }
+
+    // —— ④ 表格页：结构化内容提取（§9：表格类问题 / 列出关键数据） ——
+    const tableSnap = await liveSitesNavigateAndReady(
+      controller,
+      activeTab.id,
+      LIVE_SITES.table,
+      '表格页',
+    );
+    const keptTables = filterLayoutTables(tableSnap.tables ?? []).kept;
+    assert(keptTables.length >= 1, '表格页：应有至少一张通过布局过滤的数据表');
+    assert(
+      keptTables.some((t) => t.rows.length >= 2 && t.rows.some((r) => r.some((c) => c !== ''))),
+      '表格页：数据表应有非空行内容',
+    );
+    // 注意：nav 密集站点的 links 章节超过 200 条/4000 字符上限会被确定性截断并产生
+    // 裁剪 warnings——这是 §7.5 契约的正确行为，不构成缺陷，故不做「无裁剪」对照组断言。
+    const tableMarker = (tableSnap.visibleText ?? '').trim().slice(0, 80);
+    assert(tableMarker !== '', '表格页：visibleText 应非空（防串页标记词来源）');
+    {
+      const sessionId = await liveSitesNewSession(uiWc, '表格页会话');
+      await liveSitesAskViaUi(
+        uiWc,
+        '根据当前页面，HTML 表格由哪些基本标签构成？用一句话回答。',
+        '表格页提问',
+      );
+      liveCalls += 1;
+      const { user } = await liveSitesLastMessages(aiSmokeDir, sessionId, '表格页提问');
+      const cs = user.contextSource;
+      assert(cs?.url === LIVE_SITES.table, '表格页：contextSource.url 应为表格页');
+      assert(cs?.thin === false, '表格页：快照应为非薄');
+      const tableTurnCapturedAt = cs?.capturedAt ?? null;
+
+      // —— ⑤/⑥ 切 Tab 与刷新：URL/capturedAt/tabId 更新 + 旧页内容不串入（§6.2 防串页） ——
+      // （嵌套于表格页块：直接读取表格页轮 capturedAt 常量）
+      const tabsBefore = (await controller.getTabs()).length;
+      const tab2 = await controller.createTab(LIVE_SITES.article);
+      assert((await controller.getTabs()).length === tabsBefore + 1, '切 Tab：应新建标签页');
+      assert((await controller.getActiveTab())?.id === tab2.id, '切 Tab：新 Tab 应为活动 Tab');
+      await waitFor(
+        async () => {
+          const t = (await controller.getTabs()).find((x) => x.id === tab2.id);
+          return t !== undefined && t.state === 'ready' && t.url === LIVE_SITES.article;
+        },
+        60_000,
+        '切 Tab：文章页未在 60 秒内就绪',
+      );
+      const switchedSnap = await controller.getPageSnapshot(tab2.id);
+      assert(switchedSnap !== null, '切 Tab：新页快照不得为 null');
+      assert(
+        !(switchedSnap.visibleText ?? '').includes(tableMarker),
+        '切 Tab：新页快照不得包含表格页正文（旧页内容不串入）',
+      );
+      const switchSessionId = await liveSitesNewSession(uiWc, '切 Tab 会话');
+      await liveSitesAskViaUi(uiWc, '这个页面主要讲什么？用一句话回答。', '切 Tab 提问');
+      liveCalls += 1;
+      const { user: userSwitch } = await liveSitesLastMessages(
+        aiSmokeDir,
+        switchSessionId,
+        '切 Tab 提问',
+      );
+      const csSwitch = userSwitch.contextSource;
+      assert(
+        csSwitch?.url === LIVE_SITES.article,
+        `切 Tab：contextSource.url 应为新页（实际 ${csSwitch?.url}）`,
+      );
+      assert(csSwitch?.tabId === tab2.id, '切 Tab：tabId 应为新活动 Tab');
+      assert(
+        (csSwitch?.capturedAt ?? 0) > (tableTurnCapturedAt ?? 0),
+        '切 Tab：capturedAt 应更新（严格大于表格页轮）',
+      );
+      // 刷新后提问：capturedAt 严格递增（实时采集，不复用旧快照）
+      const capturedBeforeReload = csSwitch?.capturedAt ?? null;
+      assert(await controller.reload(tab2.id), '刷新：reload 应成功');
+      await waitFor(
+        async () => {
+          const t = (await controller.getTabs()).find((x) => x.id === tab2.id);
+          return t !== undefined && t.state === 'ready';
+        },
+        60_000,
+        '刷新：页面未在 60 秒内就绪',
+      );
+      await liveSitesAskViaUi(
+        uiWc,
+        '刷新后再问：querySelector 找不到匹配元素时返回什么？用一句话回答。',
+        '刷新后提问',
+      );
+      liveCalls += 1;
+      const msgs6 = await liveSitesLastMessages(aiSmokeDir, switchSessionId, '刷新后提问');
+      const cs6 = msgs6.user.contextSource;
+      assert(cs6?.url === LIVE_SITES.article, '刷新：contextSource.url 应不变');
+      assert(
+        (cs6?.capturedAt ?? 0) > (capturedBeforeReload ?? 0),
+        '刷新：capturedAt 应严格递增（提问时刻实时采集）',
+      );
+    }
+
+    // —— ⑦ 安全终检（与 S5 同断言）：Key 零暴露 + 密文形态 + 配置/日志使用记录 ——
+    const domDump = String(await uiJs(uiWc, 'document.body.innerHTML'));
+    assert(!domDump.includes(live.key), '多网站共读：渲染 DOM 不得包含明文 Key');
+    const logTail = readFileSync(logFile).subarray(logOffsetBefore).toString('utf8');
+    assert(!logTail.includes(live.key), '多网站共读：日志不得包含明文 Key');
+    const tempFiles = readdirSync(aiSmokeDir, { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.json') || name.endsWith('.tmp'))
+      .map((name) => join(aiSmokeDir, name));
+    for (const file of tempFiles) {
+      assert(
+        !readFileSync(file, 'utf8').includes(live.key),
+        `多网站共读：临时文件不得包含明文 Key（${file}）`,
+      );
+    }
+    const credFile = join(aiSmokeDir, 'credentials.json');
+    assert(existsSync(credFile), '多网站共读：凭据文件应落盘（真实 safeStorage 密文）');
+    const credRecord = JSON.parse(readFileSync(credFile, 'utf8')) as {
+      providers: Record<string, string>;
+    };
+    assert(
+      isCiphertextShape(credRecord.providers[PROVIDER_KIND_OPENAI_COMPATIBLE]),
+      '多网站共读：凭据文件应为密文形态（无明文 Key）',
+    );
+    const configText = readFileSync(join(aiSmokeDir, 'provider-config.json'), 'utf8');
+    assert(
+      configText.includes(`"baseUrl": "${live.baseUrl}"`),
+      '多网站共读：临时配置应含本次 baseUrl（唯一配置源）',
+    );
+    assert(
+      configText.includes(`"model": "${live.model}"`),
+      '多网站共读：临时配置应含本次 model（唯一配置源）',
+    );
+    assert(
+      logTail.includes(`provider=${PROVIDER_KIND_OPENAI_COMPATIBLE}`),
+      '多网站共读：日志应记录实际 provider（openai-compatible 链路）',
+    );
+    assert(logTail.includes(`model=${live.model}`), '多网站共读：日志应记录实际 model');
+
+    logInfo(
+      'smoke',
+      `真实 Provider 多网站共读验证通过（真实调用 ${liveCalls} 次，每次对应一个明确验收项：正文提问/总结/selection 独占/长文裁剪/表格提取/切 Tab/刷新；文章页/长文页/表格页三类站点 + Key 零暴露）`,
+    );
+  } catch (err) {
+    logError('smoke', '真实 Provider 多网站共读验证失败', err);
+    throw err;
+  } finally {
+    // 清理进程专属临时目录（含密文凭据与临时配置）；环境变量已由装配侧移除
+    try {
+      rmSync(aiSmokeDir, { recursive: true, force: true });
+    } catch (error) {
+      logError('smoke', '多网站共读临时目录清理失败', error);
+    }
+  }
+}
+
 export async function runSmokeScenario(
   controller: BrowserController,
   options: SmokeOptions = {},
@@ -2306,12 +2700,22 @@ export async function runSmokeScenario(
           options.aiSmokeDir !== undefined,
         '真实 Provider 冒烟需要 UI 窗口与数据目录选项',
       );
-      await runLiveProviderUiScenario(
-        controller,
-        options.uiWindow,
-        options.aiSmokeDir,
-        options.liveSmoke,
-      );
+      if (options.liveSites === true) {
+        // S6：§10 Exit Gate 多网站共读验证（AIBROWSE_LIVE_SITES=1）
+        await runLiveProviderSitesScenario(
+          controller,
+          options.uiWindow,
+          options.aiSmokeDir,
+          options.liveSmoke,
+        );
+      } else {
+        await runLiveProviderUiScenario(
+          controller,
+          options.uiWindow,
+          options.aiSmokeDir,
+          options.liveSmoke,
+        );
+      }
     }
 
     // 8. 可选真实 URL 加载（AIBROWSE_SMOKE_URL）：验证多 Tab 可开网页 + 标题随页面变化
@@ -2359,7 +2763,9 @@ export async function runSmokeScenario(
       'smoke',
       options.liveSmoke === undefined
         ? '冒烟场景全部通过（T2 浏览器核心 + T3 UI 闭环 + T4 PageSnapshot 采集 + T5 安全/端到端扩展 + S3 AI 共读矩阵 1–8 + S4 UI 端到端矩阵 1–12）'
-        : '冒烟场景全部通过（浏览器核心 + S5 真实 Provider 流式一问一答）',
+        : options.liveSites === true
+          ? '冒烟场景全部通过（浏览器核心 + S6 真实 Provider 多网站共读验证）'
+          : '冒烟场景全部通过（浏览器核心 + S5 真实 Provider 流式一问一答）',
     );
   } catch (err) {
     logError('smoke', '冒烟场景失败', err);
