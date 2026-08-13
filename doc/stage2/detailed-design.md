@@ -124,7 +124,9 @@ export type AskResult =
 ```ts
 // src/main/ai/conversation-service.ts
 export interface ConversationService {
-  createSession(opts?: { ephemeral?: boolean }): Promise<ConversationSession>;
+  createSession(opts?: { ephemeral?: boolean }): Promise<ConversationSession | null>;
+  // 决议 #19：达 50 会话上限拒绝新建 → null（§9 定稿「拒绝新建 + 提示」；
+  // §4.2 bridge 本就按可空返回建模，草图签名无失败通道——校准而非变更）
   listSessions(): Promise<ConversationSession[]>; // 新→旧
   getHistory(sessionId: string): Promise<ConversationMessage[] | null>; // null=会话不存在
   deleteSession(sessionId: string): Promise<boolean>; // 中止其进行中生成 → 删内存+落盘
@@ -628,20 +630,20 @@ export const SYSTEM_PROMPT: string = `你是 AIbrowse 的网页共读助手，�
 
 ### 13.2 冒烟矩阵（Electron 真实启动，FakeProvider，离线确定性；S3 主进程驱动 / S4 UI 端到端）
 
-| #   | 场景                      | 断言要点                                                                                 |
-| --- | ------------------------- | ---------------------------------------------------------------------------------------- |
-| 1   | 端到端流式回答            | chunk 到达渲染 DOM；turn-done complete；contextSource.url === 提问时页 URL               |
-| 2   | selection 模式            | 页面选中文本后提问 → mode='selection'；FakeProvider 收到的请求含 selection、不含页面正文 |
-| 3   | 防串页（切 Tab/刷新）     | §6.2 三断言（url 更新/capturedAt 递增/旧内容不出现）                                     |
-| 4   | L3 降级                   | 活动 Tab 关闭后提问 → mode='none' + 提示，无异常                                         |
-| 5   | 薄快照                    | 稀薄页面提问 → thin 徽标 + 提示展示                                                      |
-| 6   | 中止                      | 慢速 FakeProvider 中途「中止」→ 流停 + status='aborted' + 部分内容保留                   |
-| 7   | 超时/错误归一化           | FakeProvider 注入 401 → invalid-key 文案；注入超时 → timeout                             |
-| 8   | 会话持久化/删除/不保存    | ephemeral 会话提问 → 目录无该文件；删除 → 文件消失；重启后普通会话历史恢复               |
-| 9   | 布局协调                  | 面板开 → 活动 view bounds.width 缩小 380；关 → 恢复；切 Tab 后 bounds 保持               |
-| 10  | Key 安全                  | 设置 Key 后：渲染 DOM/日志字节扫描无 Key 值；credentials.json 为密文；list 仅 hasKey     |
-| 11  | Prompt Injection 结构断言 | 敌对页提问 → system 恒等/web 块单块/无写通道调用/权限处理器仍默认拒绝                    |
-| 12  | 远程隔离回归              | 远程页 window.aibrowse/process/require/electron 均 undefined（T5 探针保持）              |
+| #   | 场景                      | 断言要点                                                                                                                                                                         |
+| --- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 端到端流式回答            | chunk 到达渲染 DOM；turn-done complete；contextSource.url === 提问时页 URL                                                                                                       |
+| 2   | selection 模式            | 页面选中文本后提问 → mode='selection'；FakeProvider 收到的请求含 selection、不含页面正文                                                                                         |
+| 3   | 防串页（切 Tab/刷新）     | §6.2 三断言（url 更新/capturedAt 递增/旧内容不出现）                                                                                                                             |
+| 4   | L3 降级                   | 活动 Tab 关闭后提问 → mode='none' + 提示，无异常（S3 主进程驱动实现：dispose 后无任何标签页提问——最后 Tab 策略自动新建空白页使正常运行中始终存在活动 Tab，真实 L3 仅此路径可达） |
+| 5   | 薄快照                    | 稀薄页面提问 → thin 徽标 + 提示展示                                                                                                                                              |
+| 6   | 中止                      | 慢速 FakeProvider 中途「中止」→ 流停 + status='aborted' + 部分内容保留                                                                                                           |
+| 7   | 超时/错误归一化           | FakeProvider 注入 401 → invalid-key 文案；注入超时 → timeout                                                                                                                     |
+| 8   | 会话持久化/删除/不保存    | ephemeral 会话提问 → 目录无该文件；删除 → 文件消失；重启后普通会话历史恢复                                                                                                       |
+| 9   | 布局协调                  | 面板开 → 活动 view bounds.width 缩小 380；关 → 恢复；切 Tab 后 bounds 保持                                                                                                       |
+| 10  | Key 安全                  | 设置 Key 后：渲染 DOM/日志字节扫描无 Key 值；credentials.json 为密文；list 仅 hasKey                                                                                             |
+| 11  | Prompt Injection 结构断言 | 敌对页提问 → system 恒等/web 块单块/无写通道调用/权限处理器仍默认拒绝                                                                                                            |
+| 12  | 远程隔离回归              | 远程页 window.aibrowse/process/require/electron 均 undefined（T5 探针保持）                                                                                                      |
 
 - **真实 Provider 可选验证**（需用户提供 Key，询问边界）：`AIBROWSE_LIVE_PROVIDER=1` +
   `AIBROWSE_TEST_API_KEY`（+ 已保存的 baseUrl/model 配置）→ 附加场景：真实流式一问一答
@@ -706,6 +708,12 @@ export const SYSTEM_PROMPT: string = `你是 AIbrowse 的网页共读助手，�
     context-budget.ts 纯函数 `trimHistory` / `renderHistoryMessageContent`（S3 先裁剪
     再传入，buildContext 内部防御性复用，幂等）。均属**校准而非变更**（定稿时签名
     草图与 §2/§3.3 类型不自洽，本决议同步 §3.2/§6.1/§7.6，不留至 S6）。
+19. **S3 落地签名校准（2026-08-13，S3 实现前核对）**：`ConversationService.createSession`
+    返回 `Promise<ConversationSession | null>`——§9 定稿「达 50 会话上限**拒绝新建 + 提示**」
+    要求失败通道，而 §3.1 草图签名恒返回会话、与 §4.2 bridge 的
+    `Promise<ConversationSession | null>` 不自洽（bridge 层已按可空建模）。属**校准而非
+    变更**（§3.1 已同步）；同一校准并明确：会话消息文件缺失与整体损坏均按空历史处理
+    （fail-closed，不把原始文件内容暴露给渲染层），§9 行为不变。
 
 ## 16. 实现顺序与范围边界（S1–S6 映射）
 

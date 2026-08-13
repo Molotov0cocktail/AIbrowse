@@ -19,6 +19,9 @@ export const IPC = {
   AppRendererReady: 'app:renderer-ready', // 基线已有
   // main → renderer（事件推送）
   TabsUpdated: 'tabs:updated', // payload: TabsState（全量推送，渲染层幂等更新）
+  // —— Second Stage（main → renderer，事件推送；S3 最小装配，完整清单 §4.1，S4 补 invoke 通道）——
+  ConversationStreamChunk: 'conversation:stream-chunk', // payload: StreamChunkEvent
+  ConversationTurnDone: 'conversation:turn-done', // payload: TurnDoneEvent（终态恰好一次）
 } as const;
 
 export interface ContentBounds {

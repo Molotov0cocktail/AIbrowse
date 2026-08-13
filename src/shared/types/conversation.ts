@@ -77,6 +77,23 @@ export interface ContextPreview {
 export type AskResult =
   { ok: true; requestId: string } | { ok: false; error: NormalizedProviderError }; // busy / not-found / invalid params
 
+// —— 事件推送 payload（§3.1/§4.1；S3 主进程最小装配，S4 preload/renderer 直接复用） ——
+
+export interface StreamChunkEvent {
+  requestId: string;
+  sessionId: string;
+  delta: string;
+}
+
+export interface TurnDoneEvent {
+  requestId: string;
+  sessionId: string;
+  status: ConversationMessage['status'];
+  message: ConversationMessage; // 终态 assistant 消息（aborted/error 时含部分文本）
+  error: NormalizedProviderError | null; // complete → null；aborted 携带归一化 aborted（status 为判定主字段）
+  contextSource: ContextSource; // 该轮引用上下文（mode='none' 时为全空摘要）
+}
+
 // —— Provider abstraction (§3.3) ——
 
 export interface ProviderMetadata {
