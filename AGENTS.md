@@ -20,8 +20,9 @@
   SecureCredentialStore（Electron safeStorage / Windows DPAPI）。契约源
   `doc/stage2/detailed-design.md`（2026-08-13 定稿）；任务 S1–S6 见 `doc/stage2/tasks/`。
   **S1（Provider 抽象与凭据安全基座）、S2（ContextBuilder 纯核心）、S3（ConversationService
-  与会话持久化）与 S4（AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调）已完成
-  （2026-08-13）**，进度见 progress.md。
+  与会话持久化）、S4（AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调）与 S5（安全审计 +
+  Prompt Injection 验证矩阵 + 真实 Provider 可选验证）已完成（2026-08-13）**，
+  进度见 progress.md。
   **本阶段不实现自主浏览 Agent**：严禁新增 click/fill/scroll、自动搜索、多步 Browser
   Agent Tool（均属 Third Stage）。
 - **已完成（第一阶段，浏览器核心）**：`Browser → PageSnapshot → Browser Tool Interface`
@@ -497,11 +498,15 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
   内容容器两维矩形（ResizeObserver + 防抖 50ms，通道/契约 ui:content-bounds 不变）；
   布局：Toolbar+TabBar（chrome）→ 内容行（内容容器 + 面板）→ DebugPanel 底部通栏。
   冒烟模式 AI 子系统走进程专属临时目录 + FakeProvider 注入（不触碰用户 userData）。
-- **Prompt Injection 验收边界（S5）**：机器可验证断言——网页内容只存在于 user 消息
-  UNTRUSTED 块、system 恒等、块不可被内容闭合、角色程序字面量赋值、渲染层无 Key 读回、
-  本阶段无浏览器写 Tool（click/fill/scroll 不存在，grep 断言）、权限默认拒绝回归、
-  日志无 Key。**不承诺模型语义层免疫**：剩余风险登记 progress.md，Third Stage 引入
-  工具前重建威胁模型。
+- **Prompt Injection 验收边界（S5 ✅ 已实施验证，2026-08-13）**：机器可验证断言——
+  网页内容只存在于 user 消息 UNTRUSTED 块、system 恒等、块不可被内容闭合
+  （`</`→`<\/` 转义）、角色程序字面量赋值、渲染层无 Key 读回、本阶段无浏览器写 Tool
+  （click/fill/scroll 不存在，grep 断言 + 请求无 tools 字段）、权限默认拒绝回归、
+  日志无 Key——全部经 S5 逐项审计与运行时探针验证（§12.1/§14 结论见 progress.md；
+  矩阵 11 注入夹具已增强为含「忽略之前的指令」/伪造 role/原始闭合标签拼接等 4 条
+  文案 + 5 断言；真实 Provider 场景真 Key 零暴露扫描已落地，§6）。
+  **不承诺模型语义层免疫**：剩余风险登记 progress.md，Third Stage 引入工具前
+  重建威胁模型。
 
 ## 6. 常用命令
 
@@ -551,11 +556,31 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
     清理该目录）；命令（与 README 一致）：
     `env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> npm run start`
     （check 同理），退出码 0 即通过。
-  - **真实 Provider 可选验证（S5 起，需用户提供 Key——询问边界）**：
-    `AIBROWSE_LIVE_PROVIDER=1 AIBROWSE_TEST_API_KEY=<用户提供>`
-    附加设置（+ 已保存的 baseUrl/model 配置）→ 冒烟附加真实流式一问一答断言；
-    无 Key 环境跳过并记录，不作为失败。**未经用户明确提供 Key 不得联网调用任何付费 API**；
-    Key 仅经环境变量传入（不入库、不入日志）。
+  - **真实 Provider 可选验证（S5 落地，长期安全测试流程）**：
+    `AIBROWSE_LIVE_PROVIDER=1` + `AIBROWSE_TEST_API_KEY`（+ 非机密测试元数据
+    `AIBROWSE_TEST_BASE_URL` / `AIBROWSE_TEST_MODEL`）→ 冒烟附加真实流式一问一答
+    （固定问题「用一句话回答：1+1 等于几」，完整生产链路 UI → IPC → ConversationService
+    → ContextBuilder → OpenAI-compatible Provider → 流式事件 → DOM；断言流式 delta /
+    turn-done complete / 回答非空 / 配置与日志使用记录 / **真 Key 零暴露扫描**：DOM、
+    日志切片、全部临时文件均不含 Key、凭据文件为密文形态）。无 Key 环境跳过并记录，
+    不作为失败；真实调用上限 ≤2（第一次暴露可定位缺陷 → 离线修复 → 最多再验证一次，
+    不得自动重试或测试其他问题）；失败时区分 Provider 侧问题（余额/权限/服务/模型）
+    与代码缺陷，不得为排查打印 Key、扩大次数或削弱安全机制。
+    **凭据收集固定流程（一次性收集，S6 起复核本地说明即可，不重新设计）**：① API Key
+    只经 Windows DPAPI 加密存仓库外 `%LOCALAPPDATA%\AIbrowse\S5\provider-key.dpapi`
+    （Read-Host -AsSecureString | ConvertFrom-SecureString | Set-Content，Key 不得进入
+    聊天/源码/命令参数/普通文本）；② base URL 与 model 由用户逐个明确确认（不得猜测、
+    不得为枚举模型发起付费请求）；③ 三项收集完成后创建仓库外本地说明文件
+    `%LOCALAPPDATA%\AIbrowse\S5\live-provider-test.md`（只允许记录：Provider kind、
+    base URL、model、DPAPI 文件路径、创建/更新时间、「只允许通过 AIBROWSE_TEST_API_KEY
+    环境变量注入」规则、真实调用上限——**严禁**明文 Key/DPAPI 密文/请求头/任何可用于
+    认证的数据，不得入库/快照/报告）；④ 测试子进程用仓库外启动脚本
+    `%LOCALAPPDATA%\AIbrowse\S5\run-live-smoke.ps1`（DPAPI 解密 → 短暂赋环境变量 →
+    启动冒烟 → finally 清环境变量 + ZeroFreeBSTR 清零明文内存 + 清理临时 userData；
+    脚本纯 ASCII——PowerShell 5.1 按 ANSI 解析无 BOM 的 .ps1，中文会破坏解析）。
+    **未经用户明确提供 Key 不得联网调用任何付费 API**；Key 仅经环境变量传入
+    （应用读取后立即从 process.env 移除；不入库、不入日志）；DPAPI 文件与本地说明
+    默认保留供后续阶段复验，未经用户要求不得删除或轮换测试 Key。
 - **git 双远程**（已初始化，2026-08-13 双远程推送验证）：
   ```bash
   # 日常推送：Gitee 直连

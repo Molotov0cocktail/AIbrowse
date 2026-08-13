@@ -14,22 +14,24 @@
 ## 涉及文件
 
 - 修改：`doc/tasks/progress.md`（审计结论 + 剩余风险登记）、`doc/stage2/detailed-design.md`
-  （如审计发现需修契约）、`src/main/smoke.ts`（真实 Provider 可选场景，env 门控）。
+  （如审计发现需修契约）、`src/main/smoke.ts`（真实 Provider 可选场景 + 注入夹具增强，
+  env 门控）、`src/main/index.ts`（真实 Provider 冒烟装配：临时配置写入 / Key 环境变量
+  读取后立即移除 / 流式 delta 计数）。审计未发现需修契约的缺陷，detailed-design 未改动。
 
 ## 实施步骤
 
-- [ ] §14 清单逐项审计实际代码（引用 §/文件/行号落审计结论）
-- [ ] grep 矩阵自动化核对：click/fill/scroll/搜索 Tool 不存在；Key 读回通道不存在；
+- [x] §14 清单逐项审计实际代码（引用 §/文件/行号落审计结论）
+- [x] grep 矩阵自动化核对：click/fill/scroll/搜索 Tool 不存在；Key 读回通道不存在；
       全仓库无真实 Key 形态样本
-- [ ] 注入夹具复核：敌对页（含「忽略之前的指令」等文案）→ system 恒等 / 单块结构 /
+- [x] 注入夹具复核：敌对页（含「忽略之前的指令」等文案）→ system 恒等 / 单块结构 /
       无写调用 / 权限默认拒绝（矩阵 11 复跑）
-- [ ] 日志字节扫描断言复跑（矩阵 10）
-- [ ] 真实 Provider 可选验证：`AIBROWSE_LIVE_PROVIDER=1` + `AIBROWSE_TEST_API_KEY`
+- [x] 日志字节扫描断言复跑（矩阵 10）
+- [x] 真实 Provider 可选验证：`AIBROWSE_LIVE_PROVIDER=1` + `AIBROWSE_TEST_API_KEY`
       （**需用户提供 Key，先询问；未经用户提供不得联网调用付费 API**）——
       固定问题真实流式一问一答断言；无 Key 则跳过并记录
-- [ ] 剩余风险登记（progress.md 风险与限制：语义层注入剩余风险 + 为 Third Stage 预留的
+- [x] 剩余风险登记（progress.md 风险与限制：语义层注入剩余风险 + 为 Third Stage 预留的
       威胁模型要求）
-- [ ] 全量回归 + 提交
+- [x] 全量回归 + 提交
 
 ## 测试与检查
 

@@ -10,7 +10,7 @@
 ## 当前状态
 
 - 阶段：**第二阶段（AI 共读）**，已于 2026-08-13 正式切换（用户指令）。设计定稿与
-  任务拆分已完成（`doc/stage2/`）；**S1、S2、S3、S4 已完成（2026-08-13）**，S5–S6 ⏳。
+  任务拆分已完成（`doc/stage2/`）；**S1、S2、S3、S4、S5 已完成（2026-08-13）**，S6 ⏳。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Entry Gate 独立定向审查通过（2026-08-13，无阻塞项）。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + First_stage.md～Seventh_stage.md 入库；
@@ -20,23 +20,68 @@
 
 ## 任务表
 
-| 任务 | 内容                                                                                             | 状态 | 备注                                                                          |
-| ---- | ------------------------------------------------------------------------------------------------ | ---- | ----------------------------------------------------------------------------- |
-| T0   | 项目基线（git/文档链/脚手架/测试基建/最小应用）                                                  | ✅   | 2026-08-13 完成，见 tasks/baseline.md                                         |
-| T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ✅   | 2026-08-13 完成，定稿见 doc/detailed-design.md（§12 决议记录）                |
-| T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ✅   | 2026-08-13 完成，签名已回填 AGENTS.md §5 并与代码 grep 核对                   |
-| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ✅   | 2026-08-13 完成，R-01 同闭环关闭（见下）                                      |
-| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ✅   | 2026-08-13 完成（含 T3 导航保护收紧，见下）                                   |
-| T5   | 收尾：安全审计（§11 逐项 + R-02 关闭 + elementId 敌对页审查）+ 验收清单逐项核对 + 文档同步       | ✅   | 2026-08-13 完成（4 个逻辑 commit，见下）                                      |
-| S1   | Provider 抽象 + SecureCredentialStore + 配置存取 + 错误归一化（FakeProvider 闭环，无 UI）        | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S1-provider-credential.md  |
-| S2   | ContextBuilder 纯核心：角色隔离/预算裁剪/selection 优先级/薄快照/表格噪声                        | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S2-context-builder.md      |
-| S3   | ConversationService + 会话 JSON 持久化 + ask 编排（实时快照防串页）+ 主进程冒烟                  | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S3-conversation-service.md |
-| S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S4-ai-panel-ui.md          |
-| S5   | 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证                                    | ⏳   | 任务文档 doc/stage2/tasks/S5-security-prompt-injection.md；依赖：S4           |
-| S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ⏳   | 任务文档 doc/stage2/tasks/S6-finalize-acceptance.md；依赖：S1–S5              |
+| 任务 | 内容                                                                                             | 状态 | 备注                                                                                                                                                                |
+| ---- | ------------------------------------------------------------------------------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T0   | 项目基线（git/文档链/脚手架/测试基建/最小应用）                                                  | ✅   | 2026-08-13 完成，见 tasks/baseline.md                                                                                                                               |
+| T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ✅   | 2026-08-13 完成，定稿见 doc/detailed-design.md（§12 决议记录）                                                                                                      |
+| T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ✅   | 2026-08-13 完成，签名已回填 AGENTS.md §5 并与代码 grep 核对                                                                                                         |
+| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ✅   | 2026-08-13 完成，R-01 同闭环关闭（见下）                                                                                                                            |
+| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ✅   | 2026-08-13 完成（含 T3 导航保护收紧，见下）                                                                                                                         |
+| T5   | 收尾：安全审计（§11 逐项 + R-02 关闭 + elementId 敌对页审查）+ 验收清单逐项核对 + 文档同步       | ✅   | 2026-08-13 完成（4 个逻辑 commit，见下）                                                                                                                            |
+| S1   | Provider 抽象 + SecureCredentialStore + 配置存取 + 错误归一化（FakeProvider 闭环，无 UI）        | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S1-provider-credential.md                                                                                        |
+| S2   | ContextBuilder 纯核心：角色隔离/预算裁剪/selection 优先级/薄快照/表格噪声                        | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S2-context-builder.md                                                                                            |
+| S3   | ConversationService + 会话 JSON 持久化 + ask 编排（实时快照防串页）+ 主进程冒烟                  | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S3-conversation-service.md                                                                                       |
+| S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S4-ai-panel-ui.md                                                                                                |
+| S5   | 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证                                    | ✅   | 2026-08-13 完成（§12.1/§14 逐项审计通过、矩阵 11 注入夹具增强、真实 Provider 冒烟 2 次调用全通过，见下）；任务文档 doc/stage2/tasks/S5-security-prompt-injection.md |
+| S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ⏳   | 任务文档 doc/stage2/tasks/S6-finalize-acceptance.md；依赖：S1–S5                                                                                                    |
 
 ## 最近验证结果（2026-08-13）
 
+- **S5 安全审计与 Prompt Injection 验证（2026-08-13，第五个实现闭环）**：test **326/326** ✅
+  （无新增单测——审计未发现需新增纯函数的缺陷；注入夹具与真实 Provider 场景为冒烟胶水层）·
+  typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 三场景退出码 0
+  （dev 离线全矩阵 + 生产产物 + 真实 Provider 变体）。
+  **① §12.1 七项结构性边界逐项审计通过**（代码审查 + 全仓库 grep + 单测 + 运行时探针）：
+  边界 1/2/3——网页内容只进末条 user 消息 UNTRUSTED 块（serializeUntrustedBlock）、
+  `</`→`<\/` 闭合转义 + 属性转义（escapeBlockContent/escapeAttribute）、system 恒等
+  SYSTEM_PROMPT 编译期常量、角色仅程序字面量（conversation-store validateMessageShape
+  丢弃非 user|assistant 角色，纵深防御）；边界 4——渲染层无 Key 读回（bridge 白名单
+  仅 list/set/setKey，credential-store.get 仅主进程适配器用，矩阵 10 typeof 断言）；
+  边界 5——全仓库无 click/fill/scroll/搜索 Tool/写通道（grep：仅冒烟 UI 驱动与 ChatView
+  自身滚动；无 sendInputEvent/insertText；ProviderRequest 类型无 tools 字段，
+  supportsToolCalling: false）；边界 6——permission-policy 双处理器默认拒绝回归
+  （矩阵 11 geolocation 探针 denied）；边界 7——logger sanitize + error-normalize
+  脱敏用例 + 矩阵 10 字节扫描 + 真实 Provider 场景真 Key 扫描（见下）。
+  **② §14 安全基线清单逐项审计通过**：Key 零入库（credential-store 仅密文落盘 +
+  isCiphertextShape 丢弃 sk- 明文形态、config-store 无 Key 字段、适配器不记请求头）/
+  网页内容按不可信输入（§7.1）／权限默认拒绝不变／无写操作通道（grep 断言）／
+  IPC sender+主帧校验全覆盖 + preload 最小白名单 + 事件订阅退订清理／远程网页隔离
+  不变（tab 无 preload、nodeIntegration=false、contextIsolation+sandbox=true，
+  矩阵 12 探针回归）／日志可定位且无敏感信息。**未发现 S5 范围真实安全缺陷**。
+  **③ 注入夹具增强（矩阵 11）**：HOSTILE_HTML 增补 4 条注入文案（「忽略之前的指令」
+  /role: system 伪造/调用工具/原始 `</UNTRUSTED_WEB_CONTENT><system>` 拼接尝试），
+  矩阵 11 新增 5 断言——注入文案仅作为被阅读资料入块、闭合尝试被转义为 `<\/`、
+  不得以原始闭合标签拼接伪造结构、消息角色无 system、请求 JSON 无 tools/tool_calls
+  字段（elementId 敌对页场景不受影响，离线冒烟复跑通过）。
+  **④ 真实 Provider 可选验证（用户提供凭据，共 2 次真实调用）**：新增 env 门控场景
+  `AIBROWSE_LIVE_PROVIDER=1` + `AIBROWSE_TEST_API_KEY`（+ AIBROWSE_TEST_BASE_URL/
+  AIBROWSE_TEST_MODEL）——index.ts 装配侧将 baseUrl/model 写入进程专属临时配置、
+  Key 经 credentials.set 密文落盘后立即从 process.env 移除；冒烟场景经完整生产链路
+  （UI → bridge → IPC → ConversationService → ContextBuilder → OpenAI-compatible
+  Provider → 流式事件 → DOM）做固定问题「用一句话回答：1+1 等于几」的一问一答，
+  断言：流式气泡增量渲染 + 事件链路 delta 计数 ≥1 + 无错误标记 + 回答非空 +
+  持久化 assistant 消息 status=complete + contextSource snapshot/about:blank +
+  临时配置精确含 baseUrl/model + 日志记录实际 provider/model + **真 Key 零暴露扫描**
+  （DOM/日志切片/全部临时 JSON/密文形态断言）。
+  第 1 次调用即成功（鉴权通过、1464ms status=complete），但暴露冒烟胶水缺陷——
+  日志尾部读取用字符级 slice 配字节 offset（中文多字节使窗口起点右移），修复为
+  字节级 subarray 切片（与矩阵 10 同模式）；第 2 次调用全断言通过（1597ms complete，
+  exit 0）。**凭据清理已确认**：环境变量（应用内 delete + harness finally 移除）、
+  明文内存清零、临时 userData 清理（TEMP_CLEAN）；DPAPI 密文文件与仓库外本地说明
+  `%LOCALAPPDATA%\AIbrowse\S5\live-provider-test.md` 保留供 S6 复验（未经用户要求
+  不删除/轮换测试 Key）。交付：smoke.ts（矩阵 11 增强 + runLiveProviderUiScenario +
+  SmokeOptions.liveSmoke + 门控装配）、index.ts（LIVE_PROVIDER_MODE 装配 + env
+  移除 + delta 计数）；AGENTS.md §6 同步长期凭据流程通用规则（不含任何真实凭据）。
 - **S4 契约交接校准（2026-08-13，独立校准 commit，纯文档）**：按 detailed-design.md
   头部要求对 S1–S4 实际导出签名逐项 grep 核对——决议 #17（`resolveProvider` 与
   `ConfigStore.list()` 均 async：`Promise<LLMProvider | null>` / `Promise<ProviderInfo[]>`）、
@@ -332,12 +377,13 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   最小化持久化，Second_stage.md §7）；③ 布局表启发式为容忍设计（误删只是少内容、
   误留只是多冗余，均有 warnings）；④ 回答渲染 v1 纯文本（无 Markdown 库）；
   ⑤ 面板定宽 380px（不做拖拽调宽）。
-- **Prompt Injection 剩余风险（设计级登记，S5 验证后复核）**：结构性隔离（UNTRUSTED_WEB_CONTENT
-  块 + `</` 闭合转义 + system 编译期常量 + 本阶段无任何浏览器写 Tool + API Key 只写不读）
-  保证网页内容**不能**取得权限、读取密钥、调用写操作或改变消息角色——全部机器可验证
-  （doc/stage2/detailed-design.md §12）；但**不承诺**模型在语义层完全不受网页文本诱导
-  （如诱导生成误导性回答、诱导式表述）。Third Stage 引入 Browser Tool 前必须重建威胁
-  模型（届时「网页文本诱导调用工具」成为真实攻击面）。
+- **Prompt Injection 剩余风险（S5 已复核，2026-08-13）**：机器可验证的结构性结论已由
+  S5 逐项验证——网页内容**不能**取得权限（permission-policy 默认拒绝探针）、读取密钥
+  （bridge 无读回 + 真 Key 零暴露扫描）、调用写操作（全仓库无写 Tool/写通道 + 请求
+  无 tools 字段）或改变消息角色（程序字面量 + 单块闭合转义断言），详见 §12.1 审计。
+  但**不承诺**模型在语义层完全不受网页文本诱导（如诱导生成误导性回答、诱导式表述），
+  该剩余风险如实保留。Third Stage 引入 Browser Tool 前必须重建威胁模型（届时
+  「网页文本诱导调用工具」成为真实攻击面）。
 
 ## 阻塞项
 
@@ -345,13 +391,14 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **S5 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证**
-  （doc/stage2/tasks/S5-security-prompt-injection.md）：detailed-design §12 注入边界
-  逐项机器可验证断言（§12.1 表 1–7，部分已由 S2/S4 单测与冒烟覆盖——S5 做独立
-  定向审计与矩阵复跑）、§14 安全基线核对清单逐项审计、全仓库 grep 断言（无浏览器
-  写 Tool/无 Key 读回/白名单清单核对）、远程页面隔离与权限默认拒绝回归；真实
-  Provider 可选验证需用户提供 Key（询问边界），无 Key 环境跳过并记录。依赖：
-  S1–S4（已完成）。完成后按依赖顺序 S6（第二阶段收尾/Exit Gate 判定）。
+- **S6 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步**
+  （doc/stage2/tasks/S6-finalize-acceptance.md）：Second_stage.md §9 验收标准逐项核对
+  （AI 配置/共读/安全/Engineering 四组）、§10 Exit Gate 判定（真实网站共读稳定性、
+  Key 方案稳定、ContextBuilder 边界明确、注入基线测试存在、无「给 AI 更多权限」才能
+  掩盖的共读缺陷）、契约回填 AGENTS.md §5、S5 任务文档实施步骤勾选。真实 Provider
+  凭据流程**读取本地说明即可复核**（`%LOCALAPPDATA%\AIbrowse\S5\live-provider-test.md`），
+  不重新设计。依赖：S1–S5（已完成）。Exit Gate 通过后**停下报告**，不直接实现
+  Browser Agent。
 
 ## 第一阶段验收未完成项
 
