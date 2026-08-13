@@ -57,7 +57,11 @@ function collectSnapshot(): unknown {
       // 页面可能封死属性读取（敌手行为）：忽略，回退到烙印扫描结果
     }
     if (nextId > MAX_ELEMENT_ID) nextId = 0;
-    if (nextId < maxExistingId + 1) nextId = maxExistingId + 1;
+    // 防碰撞：预置烙印未达顶格时从 maxExistingId+1 继续；敌手预置顶格烙印
+    // （maxExistingId = MAX）无法继续递增 → 回绕到 0，由分配循环跳过已用 id
+    if (nextId < maxExistingId + 1 && maxExistingId + 1 <= MAX_ELEMENT_ID) {
+      nextId = maxExistingId + 1;
+    }
 
     function elementIdOf(el: Element): string {
       const attrMatch = /^(\d{1,10})$/.exec(el.getAttribute('data-aibrowse-el') ?? '');
@@ -67,12 +71,21 @@ function collectSnapshot(): unknown {
           elementMap.set(n, el);
           return `el-${n}`;
         }
-        // 重复烙印（页面篡改）→ 落入下方重新分配
+        if (elementMap.get(n) === el) {
+          // 同一元素跨集合复用（如 a[role=button]、input[type=button] 同时进入 buttons/inputs）：
+          // 复用已烙印的 id，保持「一次快照内 id ↔ 元素一一对应」与跨快照稳定
+          return `el-${n}`;
+        }
+        // 不同元素共用同一烙印（页面篡改重复属性）→ 落入下方重新分配
       }
       let n = nextId;
-      while (elementMap.has(n)) n++;
+      if (n > MAX_ELEMENT_ID) n = 0;
+      while (elementMap.has(n)) {
+        n++;
+        if (n > MAX_ELEMENT_ID) n = 0; // 回绕（元素数有界，不会无限循环）
+      }
       elementMap.set(n, el);
-      nextId = n + 1;
+      nextId = n >= MAX_ELEMENT_ID ? 0 : n + 1;
       try {
         el.setAttribute('data-aibrowse-el', String(n)); // 幂等写回（§8.3 唯一写操作）
       } catch {
