@@ -36,11 +36,15 @@ function ensureLogFile(): void {
 }
 
 // Basic redaction of credential-like tokens before anything reaches disk or console.
-function sanitize(text: string): string {
-  return text.replace(
-    /(token|secret|password|authorization|cookie)(["']?\s*[:=]\s*)\S+/gi,
-    '$1$2***',
-  );
+// S1 extension (design §5.1 redaction line): sk- shaped API keys (OpenAI/Anthropic forms)
+// are replaced wholesale, and apiKey/api-key/api_key key-value pairs are covered.
+export function sanitize(text: string): string {
+  return text
+    .replace(
+      /(token|secret|password|authorization|cookie|api[-_]?key)(["']?\s*[:=]\s*)\S+/gi,
+      '$1$2***',
+    )
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gi, 'sk-***');
 }
 
 function write(level: LogLevel, category: string, message: string, error?: unknown): void {
