@@ -157,3 +157,110 @@ body {
   flex: 1;
   background: var(--surface);
 }
+
+.debug-panel {
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.debug-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+}
+
+.debug-panel-title {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.debug-capture {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.debug-capture:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.debug-capture:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.debug-badge {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: var(--accent);
+  color: var(--text);
+}
+
+.debug-badge-partial {
+  background: light-dark(#fdf3d7, #4a4030);
+}
+
+.debug-badge-main-process-only,
+.debug-badge-l3 {
+  background: light-dark(#fbe4e1, #4a3433);
+  color: var(--danger);
+}
+
+.debug-toggle {
+  margin-left: auto;
+  height: 24px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.debug-toggle:hover {
+  background: var(--accent);
+  color: var(--text);
+}
+
+.debug-panel-body {
+  max-height: 220px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  padding: 8px;
+}
+
+.debug-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.debug-error {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.debug-warnings {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.debug-json {
+  margin: 0;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre;
+}

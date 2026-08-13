@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { DebugPanel } from './browser/DebugPanel';
 import { TabBar } from './browser/TabBar';
 import { Toolbar } from './browser/Toolbar';
 import { useContentBounds } from './browser/useContentBounds';
@@ -52,6 +53,8 @@ export default function App() {
           onActivate={(tabId) => void window.aibrowse.tabs.activate(tabId)}
           onClose={(tabId) => void window.aibrowse.tabs.close(tabId)}
         />
+        {/* 调试面板在 chrome 容器内：高度变化会被 ResizeObserver 测量并上报 bounds（§6） */}
+        <DebugPanel activeTabId={tabsState?.activeTabId ?? null} />
       </header>
       {/* 主内容区：WebContentsView 由主进程按 bounds 覆盖在此区域之上 */}
       <main className="content-area" />
