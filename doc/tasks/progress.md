@@ -37,6 +37,30 @@
 
 ## 最近验证结果（2026-08-13）
 
+- **S4 契约交接校准（2026-08-13，独立校准 commit，纯文档）**：按 detailed-design.md
+  头部要求对 S1–S4 实际导出签名逐项 grep 核对——决议 #17（`resolveProvider` 与
+  `ConfigStore.list()` 均 async：`Promise<LLMProvider | null>` / `Promise<ProviderInfo[]>`）、
+  决议 #18（`ContextBuildInput` 含 requestId/model；`buildContextSource(snapshot, mode,
+thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSession | null>`）、
+  决议 #20（`selectRegisteredProviderInfo(infos, kinds): ProviderInfo | null`）、
+  `ProviderInfo`/`PROVIDER_KIND_OPENAI_COMPATIBLE` 定义于 shared/types/conversation.ts
+  （config-store/llm-provider 重导出，renderer ProviderSettings 直接引用）、11 个 invoke
+  通道常量与 payload 类型（shared/types/ipc.ts）、两个事件 payload（StreamChunkEvent/
+  TurnDoneEvent）、AibrowseBridge 全部方法及三个事件订阅退订签名（onUpdated/
+  onStreamChunk/onTurnDone → `() => void`，与 preload eventRelay 实现一致）、
+  ConversationStore/ContextBuilder/context-budget/Provider/凭据/配置/渲染层纯函数全部
+  导出——**未发现真实签名偏差**。AGENTS.md §5 同步 4 处过期/表述偏差：① 速查标题
+  「S2–S4 待实现后回填」→「S1–S4 全部已实现并经 grep 逐项核对」；② SafeStorageCipher
+  运行时验证描述「S3+ 冒烟验证」→「已由 S4 冒烟场景 10 验证」（实际验证发生在 S4）；
+  ③ 渲染层只写不读表述「setKey/has」→「bridge 仅 setKey 写入，has 为 main 侧方法不进
+  bridge，renderer 只能经 list() 拿 hasKey 布尔」（与白名单实际一致）；④ 三处
+  prettier 列表规范化把行首「+ 实现类」「+ turn-done 收敛」「+ 退订」改写为「-」
+  导致语义失真的格式伪影，分别改为「与实现类」「逐块追加、turn-done 收敛」
+  「JS 侧 listener 集合退订」消除歧义。同时补记 shared/types/conversation.ts 的
+  S4 增补（事件 payload/ProviderInfo/kind 常量）。progress.md S4/S5 状态核对：
+  任务表 S4 ✅ / S5 ⏳、当前状态、下一个推荐任务（S5）均与实际一致；S4 条目内
+  同类「+ 退订」伪影一并在本闭环修正。验证：test 326/326 · typecheck · lint ·
+  format:check（纯文档改动，按 AGENTS.md 附 A 豁免 build/冒烟）。
 - **S4 AI 侧栏 UI 与布局协调（2026-08-13，第四个实现闭环）**：test **326/326** ✅
   （304 基线 + 22 新增：stream-state 10 / history-events 6 / context-badge-format 6）·
   typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 双场景退出码 0
@@ -69,18 +93,18 @@
   ② main/index.ts handler 装配（全部复用既有 handle() sender+主帧校验，逐参数验证
   安全返回；question > 16000 字符确定性截断 + warn、空串/非串 → internal 拒绝；
   config:providers:set-key 只写不回读，apiKey='' = 删除）；③ preload bridge 白名单
-  （conversation 8 方法 + config.providers 3 方法；事件通道单次注册 + JS listener 集合
-  - 退订，沿用 tabs:updated 模式；原始 ipcRenderer 不暴露）；④ renderer/src/ai/ 面板
-    （AiPanel/ChatView/Composer/ContextBadge/CitationCard/ProviderSettings +
-    useConversation/useStream + 纯函数 stream-state/history-events/context-badge-format/
-    error-labels；回答纯文本 pre-wrap 渲染，零新依赖）；⑤ useContentBounds 升级为内容
-    容器两维矩形测量（通道/契约不变）+ App 布局（内容行 + 面板定宽 380px 停靠、
-    默认收起不持久化、无拖拽/动画；DebugPanel 移底部通栏）；⑥ 冒烟 UI 端到端矩阵
-    1–12（冒烟模式 AI 子系统走进程专属临时目录 + FakeProvider 注入，场景 10 凭据为
-    真实 safeStorage 密文，全程不触碰用户 userData，结束清理）；⑦ ProviderInfo 与
-    PROVIDER_KIND_OPENAI_COMPATIBLE 常量移至 shared 单一事实源（决议 #20：v1 设置
-    UI 只配置已注册 openai-compatible kind，不新增多 Provider 选择 UI，与 list() 顺序
-    无关）。仍不做真实 Provider 验证（S5）、不做专项安全审计（S5）。
+  （conversation 8 方法 + config.providers 3 方法；事件通道单次注册、JS 侧 listener
+  集合退订，沿用 tabs:updated 模式；原始 ipcRenderer 不暴露）；④ renderer/src/ai/ 面板
+  （AiPanel/ChatView/Composer/ContextBadge/CitationCard/ProviderSettings +
+  useConversation/useStream + 纯函数 stream-state/history-events/context-badge-format/
+  error-labels；回答纯文本 pre-wrap 渲染，零新依赖）；⑤ useContentBounds 升级为内容
+  容器两维矩形测量（通道/契约不变）+ App 布局（内容行 + 面板定宽 380px 停靠、
+  默认收起不持久化、无拖拽/动画；DebugPanel 移底部通栏）；⑥ 冒烟 UI 端到端矩阵
+  1–12（冒烟模式 AI 子系统走进程专属临时目录 + FakeProvider 注入，场景 10 凭据为
+  真实 safeStorage 密文，全程不触碰用户 userData，结束清理）；⑦ ProviderInfo 与
+  PROVIDER_KIND_OPENAI_COMPATIBLE 常量移至 shared 单一事实源（决议 #20：v1 设置
+  UI 只配置已注册 openai-compatible kind，不新增多 Provider 选择 UI，与 list() 顺序
+  无关）。仍不做真实 Provider 验证（S5）、不做专项安全审计（S5）。
 - **S3 ConversationService 与会话持久化（2026-08-13，第三个实现闭环）**：test **299/299** ✅
   （242 基线 + 57 新增：conversation-store 27 / conversation-service 30）· typecheck ✅ ·
   lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 双场景退出码 0（dev 离线 +

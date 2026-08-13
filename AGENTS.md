@@ -360,51 +360,54 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
   `useContentBounds`（ResizeObserver 测 chrome 高，防抖 50ms 上报 ui:content-bounds）。
   主区域为占位容器，真实网页由 WebContentsView 按上报 bounds 覆盖渲染。
 
-### Second Stage AI 共读契约速查（定稿 2026-08-13；S1 部分已实现并 grep 核对，S2–S4 待实现后回填）
+### Second Stage AI 共读契约速查（定稿 2026-08-13；S1–S4 全部已实现，2026-08-13 经 `grep -n "^export"` 与实际代码逐项核对）
 
 > 唯一契约源 `doc/stage2/detailed-design.md`（§2–§12 + §15 决议记录，含 proposal Q1–Q10 拍板）；
 > 任务拆分见 `doc/stage2/tasks/S1–S6`。以下为速查摘要；S1–S4 部分签名已于 2026-08-13 与
 > 实际代码 `grep -n "^export"` 逐项核对。
 
-- **shared/types/conversation.ts（S1 ✅ 已实现）**：`ContextMode`（selection/snapshot/none）、
+- **shared/types/conversation.ts（S1 ✅ 已实现；S4 增补）**：`ContextMode`（selection/snapshot/none）、
   `ContextSource`（mode/tabId/url/title/capturedAt/degraded/thin/selectionExcerpt/warnings）、
   `ConversationMessage`（role ∈ user|assistant；status complete/aborted/error；
   contextSource 仅 user 消息携带；**不持久化快照正文**）、`ConversationSession`
   （含 ephemeral「不保存」）、`NormalizedErrorCode`（not-configured/invalid-key/rate-limit/
   timeout/network/context-too-long/provider-error/aborted/busy/not-found/internal）、
   `NormalizedProviderError`（code/message/retryable/providerId/model/requestId/httpStatus，
-  **不含响应体/请求头/密钥**）、`ContextPreview`、`AskResult`；Provider 类型——
-  `ProviderMetadata`/`ProviderMessage`/`ProviderRequest`/`ProviderUsage`/`ProviderEvent`/
-  `ProviderConfig`（Provider 数据类型放 shared，S4 preload/renderer 可直接复用）。
+  **不含响应体/请求头/密钥**）、`ContextPreview`、`AskResult`、事件 payload
+  `StreamChunkEvent`（requestId/sessionId/delta）与 `TurnDoneEvent`（requestId/sessionId/
+  status/message/error/contextSource）；Provider 类型——`ProviderMetadata`/`ProviderMessage`/
+  `ProviderRequest`/`ProviderUsage`/`ProviderEvent`/`ProviderConfig` + S4 增补
+  `ProviderInfo`（providerId/label/baseUrl/model/hasKey——**无 Key 值**）与常量
+  `PROVIDER_KIND_OPENAI_COMPATIBLE`（Provider 数据类型放 shared，preload/renderer 直接复用）。
 - **ConversationService（S3 ✅ 已实现，2026-08-13 grep 核对）**：接口 `ConversationService`
-  - 实现类 `ConversationServiceImpl`——`createSession(opts?): Promise<ConversationSession | null>`
-    （**决议 #19**：达 50 会话上限拒绝新建 → null；实际签名与唯一契约源 §3.1 均为可空返回）/
-    `listSessions`（新→旧）/`getHistory`（null=不存在）/
-    `deleteSession`（先中止在途生成 → 删内存+文件含残留 tmp → 更新索引）/
-    `setEphemeral`（false=现有消息落盘，true=移除磁盘文件）/`ask`（同步校验+注册在途后
-    立即返回 `{ok:true,requestId}`，生成后台执行经事件回调推送）/`abort(requestId)`
-    （幂等，无匹配 false）/`previewContext`（实时快照摘要不含正文）/`dispose`（中止全部
-    在途，幂等）；纯函数 `selectRegisteredProviderInfo(infos, kinds)`（**决议 #20**：
-    v1 单 Provider 选择契约，见下）。构造注入：`browser: SnapshotSource`（getActiveTab/
-    getPageSnapshot 最小接口，BrowserControllerImpl 结构兼容；实时采集防串页）/`store`/
-    `configStore`/`credentials`/`resolveProviderFn?`（冒烟注入 FakeProvider 缝；缺省生产
-    resolveProvider，决议 #17）`onStreamChunk`/`onTurnDone`（§3.1 事件输出，index.ts
-    转发主窗口 send）。
-    ask 编排时序即防串页契约：实时 `getPageSnapshot(activeTabId)`（禁止复用缓存快照）→
-    **Provider 选择（决议 #20）**：`selectRegisteredProviderInfo(await configStore.list(),
+  与实现类 `ConversationServiceImpl`——`createSession(opts?): Promise<ConversationSession | null>`
+  （**决议 #19**：达 50 会话上限拒绝新建 → null；实际签名与唯一契约源 §3.1 均为可空返回）/
+  `listSessions`（新→旧）/`getHistory`（null=不存在）/
+  `deleteSession`（先中止在途生成 → 删内存+文件含残留 tmp → 更新索引）/
+  `setEphemeral`（false=现有消息落盘，true=移除磁盘文件）/`ask`（同步校验+注册在途后
+  立即返回 `{ok:true,requestId}`，生成后台执行经事件回调推送）/`abort(requestId)`
+  （幂等，无匹配 false）/`previewContext`（实时快照摘要不含正文）/`dispose`（中止全部
+  在途，幂等）；纯函数 `selectRegisteredProviderInfo(infos, kinds)`（**决议 #20**：
+  v1 单 Provider 选择契约，见下）。构造注入：`browser: SnapshotSource`（getActiveTab/
+  getPageSnapshot 最小接口，BrowserControllerImpl 结构兼容；实时采集防串页）/`store`/
+  `configStore`/`credentials`/`resolveProviderFn?`（冒烟注入 FakeProvider 缝；缺省生产
+  resolveProvider，决议 #17）`onStreamChunk`/`onTurnDone`（§3.1 事件输出，index.ts
+  转发主窗口 send）。
+  ask 编排时序即防串页契约：实时 `getPageSnapshot(activeTabId)`（禁止复用缓存快照）→
+  **Provider 选择（决议 #20）**：`selectRegisteredProviderInfo(await configStore.list(),
 listProviderKinds())`——取 providerId 属于已注册工厂 kind 的配置；v1 仅注册
-    `openai-compatible` 一种 kind、ConfigStore 以 providerId 为键 upsert 同键恒唯一，
-    选择唯一且**与 `list()` 条目顺序无关**（不依赖任何隐含排序）；无已注册 kind 配置 →
-    not-configured 零网络请求；多 kind 并存是 Third Stage+ 扩展点 → `buildContext`
-    （requestId 先生成、model 来自所选配置——决议 #18）→
-    **先持久化 user 消息（含 ContextSource + meta.warnings）** → `resolveProvider` →
-    `provider.stream` → delta 逐块转发 → 终态组装 assistant 消息（complete 全文 /
-    aborted 保留部分 / error 保留部分+errorCode）→ 持久化 → turn-done 恰好一次。
-    每会话单在途（busy，ask 同步段注册原子）；参数/状态问题安全返回不抛异常
-    （not-found/busy/internal）；未预期异常 → error 日志 + 归一化 internal 且保证
-    turn-done；deleteSession 中止竞态下在途编排不得复活已删会话文件（appendMessage
-    存活守卫）。日志链：开始/结束各一条（requestId/providerId/model/mode/url/耗时/
-    status/errorCode，无内容与密钥）。
+  `openai-compatible` 一种 kind、ConfigStore 以 providerId 为键 upsert 同键恒唯一，
+  选择唯一且**与 `list()` 条目顺序无关**（不依赖任何隐含排序）；无已注册 kind 配置 →
+  not-configured 零网络请求；多 kind 并存是 Third Stage+ 扩展点 → `buildContext`
+  （requestId 先生成、model 来自所选配置——决议 #18）→
+  **先持久化 user 消息（含 ContextSource + meta.warnings）** → `resolveProvider` →
+  `provider.stream` → delta 逐块转发 → 终态组装 assistant 消息（complete 全文 /
+  aborted 保留部分 / error 保留部分+errorCode）→ 持久化 → turn-done 恰好一次。
+  每会话单在途（busy，ask 同步段注册原子）；参数/状态问题安全返回不抛异常
+  （not-found/busy/internal）；未预期异常 → error 日志 + 归一化 internal 且保证
+  turn-done；deleteSession 中止竞态下在途编排不得复活已删会话文件（appendMessage
+  存活守卫）。日志链：开始/结束各一条（requestId/providerId/model/mode/url/耗时/
+  status/errorCode，无内容与密钥）。
 - **ConversationStore（S3 ✅ 已实现，2026-08-13 grep 核对）**：`export class
 ConversationStore(userDataDir)`——`dirPath`/`loadSessions`/`saveSessions`（写入前过滤
   ephemeral 纵深防御）/`loadMessages`（缺失/损坏 → 空，fail-closed 不暴露原文）/
@@ -455,8 +458,10 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
   不可用 fail-closed：set 返回 false 不落盘 + 仅内存 Key（退出即弃）；损坏/解密失败 → 空/
   null + warn）+ 纯文件格式 `serializeCredentialsFile`/`parseCredentialsFile`/
   `isCiphertextShape`（sk- 明文形态条目丢弃）。`safe-storage-cipher.ts`——
-  `SafeStorageCipher`（Electron 薄胶水，运行时行为由 S3+ 冒烟验证 §13.2 场景 10）。
-  **渲染层只写不读**（S4：setKey/has，无 get 通道）。`config-store.ts`——
+  `SafeStorageCipher`（Electron 薄胶水，运行时行为已由 S4 冒烟场景 10 验证：真实
+  safeStorage 密文落盘 + DOM/日志零暴露断言，§13.2）。
+  **渲染层只写不读**（S4：bridge 仅 `setKey` 写入，`has` 为 main 侧方法不进 bridge——
+  renderer 只能经 `list()` 拿到 hasKey 布尔，无 get 通道）。`config-store.ts`——
   `ConfigStore`（`get`/`set`/`list(): Promise<ProviderInfo[]>`——设计 §3.5 签名已校准为
   Promise（决议 #17）：hasKey 依赖 §3.4 异步 `store.has()`；ProviderConfig 定义于 shared
   并重导出）+ 纯校验 `normalizeBaseUrl`（仅 http/https 去尾 /）/`validateProviderConfig`
@@ -486,12 +491,12 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
   ProviderSettings（v1 只配置已注册 openai-compatible kind——决议 #20，无多 Provider
   选择 UI，与 list() 顺序无关；API Key type=password 只写不回显、保存后清空、apiKey=''
   = 删除）；hooks `useConversation`（会话列表/当前会话/历史镜像 + turn-done 补
-  contextSource 收敛，纯函数 `reduceHistory`）与 `useStream`（requestId → delta 追加
-  - turn-done 收敛，纯函数 `reduceStream`；竞态残留事件按 requestId 忽略）；面板定宽
-    380px 停靠挤压、默认收起、不持久化、无拖拽/动画；useContentBounds 升级为测量内容
-    容器两维矩形（ResizeObserver + 防抖 50ms，通道/契约 ui:content-bounds 不变）；
-    布局：Toolbar+TabBar（chrome）→ 内容行（内容容器 + 面板）→ DebugPanel 底部通栏。
-    冒烟模式 AI 子系统走进程专属临时目录 + FakeProvider 注入（不触碰用户 userData）。
+  contextSource 收敛，纯函数 `reduceHistory`）与 `useStream`（requestId → delta 逐块
+  追加、turn-done 收敛，纯函数 `reduceStream`；竞态残留事件按 requestId 忽略）；面板
+  定宽 380px 停靠挤压、默认收起、不持久化、无拖拽/动画；useContentBounds 升级为测量
+  内容容器两维矩形（ResizeObserver + 防抖 50ms，通道/契约 ui:content-bounds 不变）；
+  布局：Toolbar+TabBar（chrome）→ 内容行（内容容器 + 面板）→ DebugPanel 底部通栏。
+  冒烟模式 AI 子系统走进程专属临时目录 + FakeProvider 注入（不触碰用户 userData）。
 - **Prompt Injection 验收边界（S5）**：机器可验证断言——网页内容只存在于 user 消息
   UNTRUSTED 块、system 恒等、块不可被内容闭合、角色程序字面量赋值、渲染层无 Key 读回、
   本阶段无浏览器写 Tool（click/fill/scroll 不存在，grep 断言）、权限默认拒绝回归、
