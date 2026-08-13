@@ -12,8 +12,11 @@
 - 阶段：**第二阶段（AI 共读）**，已于 2026-08-13 正式切换（用户指令）。设计定稿与
   任务拆分已完成（`doc/stage2/`）；**S1–S6 全部完成（2026-08-13）**，S6 最终验收
   §9 逐项通过 + §10 Exit Gate 判定通过（证据见 Second_stage.md §9/§10 与本文
-  「最近验证结果 · S6」）。**Second Stage 已完成内部验收，等待用户安排独立复验或
-  阶段切换**；阶段指针不切换、不实现 Third Stage（Browser Agent），等待用户指令。
+  「最近验证结果 · S6」）。**Second Stage 已完成内部验收**；用户独立复验
+  （2026-08-14）判定 Exit Gate 实质条件通过、发现 4 项非阻塞测试基础设施/文档缺陷
+  （冒烟 Tab 状态泄漏 / README 陈旧状态 / 表格页内容依赖证据不足 / Key 零暴露扫描
+  未覆盖装配期）——**已修复并全量回归，等待修复后独立确认**；阶段指针不切换、
+  不实现 Third Stage（Browser Agent）。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Entry Gate 独立定向审查通过（2026-08-13，无阻塞项）。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + First_stage.md～Seventh_stage.md 入库；
@@ -37,8 +40,59 @@
 | S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S4-ai-panel-ui.md                                                                                                |
 | S5   | 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证                                    | ✅   | 2026-08-13 完成（§12.1/§14 逐项审计通过、矩阵 11 注入夹具增强、真实 Provider 冒烟 2 次调用全通过，见下）；任务文档 doc/stage2/tasks/S5-security-prompt-injection.md |
 | S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ✅   | 2026-08-13 完成（§9 逐项证据 + §10 Exit Gate 通过 + 真实 Provider 多网站验证，见下）；任务文档 doc/stage2/tasks/S6-finalize-acceptance.md                           |
+| 修复 | 独立复验发现项修复闭环（Tab 状态自清理 / 表格内容依赖证据 / Key 扫描窗口 / README 状态）         | ✅   | 2026-08-14 完成（独立复验后定向修复，不切换阶段；4 项发现 + 修复证据见下）                                                                                          |
 
-## 最近验证结果（2026-08-13）
+## 最近验证结果（2026-08-14）
+
+- **独立复验发现项修复闭环（2026-08-14，S6 后定向修复，非新阶段任务）**：test **326/326** ✅
+  · typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 四场景退出码 0
+  （dev 离线全矩阵 + 生产产物 + **Bing 真实 URL 变体（原失败命令，红→绿）** + Session
+  set/check 跨进程）· **真实 Provider 多网站验证 ✅（最终代码状态复跑，7 次真实调用全
+  complete，退出码 0，新表格内容依赖断言与扩大后的 Key 零暴露扫描均通过）** · S5
+  一问一答变体 ✅（1 次调用，退出码 0）。**真实调用台账共 15 次**：多网站场景初次
+  验证 7 次（修复后新表格内容依赖断言与扩大后扫描窗口的首验）→ S5 一问一答变体
+  1 次（该场景扫描代码路径改动复验）→ 失败路径清理修复后多网站场景最终复验 7 次
+  （最终代码状态全量证据）。修复前红态证据：`AIBROWSE_SMOKE_URL=
+https://www.bing.com/` 完整命令退出码 1、失败断言「关闭网页标签页后应回到单个标签页」
+  （Bing ready/标题断言本身通过）。**① Tab 状态泄漏修复（根因）**：UI 矩阵 9 为验证
+  「切 Tab 后 bounds」经 UI 新建 Tab 后从未关闭，真实 URL 变体关闭自己的 Tab 后断言
+  `length === 1` 因泄漏 Tab 失败——矩阵 9 改为自建自清：相关断言完成后经真实产品链路
+  （UI 关闭按钮 → bridge → IPC → BrowserController）关闭该 Tab，try/finally 保证失败
+  路径同样清理，退出时新增「Tab 数量 = 1 + 活动 Tab 恢复进入前」回归断言；LIVE_SITES
+  切 Tab 验证创建的验证 Tab 同模式修复（BrowserController 产品链路关闭 + 数量/活动 Tab
+  恢复断言）；不修改 BrowserController/TabManager「关闭最后 Tab 后新建空白页」产品策略，
+  后续断言也不改成固定数字。**② 顺带修复（同根因实测触发）**：冒烟失败路径临时目录
+  清理缺口——`runSmokeScenario` 后置步骤失败时 catch 直接重抛，9.1 的正常清理不执行
+  （红态复现两次各留下 `aibrowse-smoke-conversations-*` 残留）——AI 句柄提升至 try 外 +
+  catch 最佳努力清理（不掩盖原始错误）。**③ 表格页内容依赖证据增强**：原问题「HTML
+  表格由哪些基本标签构成」可由模型先验知识回答，不能证明回答依赖页面表格数据——经
+  实际探测确认 w3school 示例表格（Company/Contact/Country，六行公司数据）为多年稳定
+  内容后，问题改为「根据当前页面中的示例表格，公司 Ernst Handel 的 Contact 是谁？」
+  （必须读取特定行/单元格才能回答）；新增真实调用前前置断言：目标行
+  Ernst Handel/Roland Mendel/Austria 完整存在于快照表格（`filterLayoutTables` 保留集）
+  且经 `fillWebContentSections` 确定性序列化进入 tables 章节（= ProviderRequest 依据，
+  不被布局过滤/预算裁剪丢失，ContextBuilder 契约不变）；回答断言改为「包含页面特定
+  数据 Roland Mendel」（不要求完全固定措辞）；站点内容变化时前置断言明确提示更换站点
+  （失败前不产生真实调用）。**④ Key 零暴露扫描窗口扩大**：此前扫描从场景开始时取日志
+  偏移，Key 进入进程 → 环境变量读取 → 装配 → safeStorage 密文落盘 → process.env 删除
+  的装配期不在窗口内——扫描起点提前至进程最早日志可观测点（index.ts 在 logEnvironment
+  与环境变量读取之前取定 `startupLogScan`{file, offsetBefore}，经
+  `LiveProviderSmoke.logScan` 传入两场景），覆盖测试子进程启动日志/环境变量读取/
+  Provider/config/credential 装配/Key 密文落盘/真实请求/流式响应/结束清理全过程；
+  沿用 S5 已修复的字节级 subarray 切片（无字符/字节偏移回退）；文件不存在时偏移为 0
+  （首个日志写入即创建文件，扫描覆盖全部字节）；**覆盖边界如实记录**（代码注释 +
+  本文）：仓库外 PowerShell harness 为独立进程（DPAPI 解密/注入/ZeroFreeBSTR 清零），
+  不在应用日志扫描范围内，其环境变量清理由 harness 自身 finally 强制——不伪称全生命
+  周期扫描。**⑤ README 状态同步**：架构节「AI 子系统（第二阶段，设计定稿、待实现）」
+  →「已实现并通过内部验收」；当前状态补独立复验发现与修复进展。AGENTS.md 未改
+  （长期测试规则无变化，§6 命令描述与修复后行为一致）；detailed-design 未改
+  （ContextBuilder/产品契约无变化）。交付：smoke.ts（矩阵 9 自清理 + LIVE_SITES 验证
+  Tab 自清理 + 失败路径临时目录清理 + 表格内容依赖断言 + logScan 消费）、index.ts
+  （startupLogScan 起点装配 + liveSmoke.logScan 接线）。
+  **本次明确不处理的观察（如实登记）**：全局场景看门狗未新增（各 waitFor 局部超时已
+  够用，新 watchdog 需单独设计且易再引入真实 Provider 慢响应误杀）；`48f1838` 提交
+  信息声称含 index.ts 接线而实际接线在 `c9a431f`（已推送双远程，禁止重写公共历史，
+  本次不 amend/不补偿空提交）。
 
 - **S6 第二阶段收尾与最终验收（2026-08-13，第六个实现闭环）**：test **326/326** ✅ ·
   typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 双场景退出码 0
@@ -436,9 +490,10 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **无——Second Stage 已完成内部验收，停下等待用户指令**：不切换到 Third Stage、
+- **等待修复后独立确认（无新开发任务）**：Second Stage 内部验收已完成、独立复验
+  发现的 4 项非阻塞测试基础设施/文档缺陷已修复并全量回归。不切换到 Third Stage、
   不设计/拆分 Third Stage 任务、不实现 Browser Agent（Second_stage.md §10 纪律 +
-  用户指令）。用户安排独立复验或阶段切换后，再按 ROADMAP.md 阶段切换原则进入
+  用户指令）。用户确认修复或安排阶段切换后，再按 ROADMAP.md 阶段切换原则进入
   下一阶段（届时 Third Stage 引入 Browser Tool 前必须重建威胁模型，见风险与限制）。
 
 ## 第一阶段验收未完成项

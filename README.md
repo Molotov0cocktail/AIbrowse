@@ -19,8 +19,11 @@
   S2 ContextBuilder 纯核心 → S3 ConversationService 与会话持久化 → S4 AI 侧栏 UI 与
   IPC/bridge 扩展 → S5 安全审计与 Prompt Injection 验证 → S6 收尾验收（§9 逐项通过 +
   §10 Exit Gate 判定通过，含真实 Provider 多网站共读验证）。
-  **等待用户安排独立复验或阶段切换**；不实现 Third Stage Browser Agent。
-  证据见 `Second_stage.md` §9/§10 与 `doc/tasks/progress.md`。
+  **独立复验（2026-08-14）**：Exit Gate 实质条件已通过，发现 4 项非阻塞测试基础设施/
+  文档缺陷（冒烟矩阵 9 新建 Tab 未自清理致 `AIBROWSE_SMOKE_URL` 变体退出码 1、README
+  状态表述陈旧、表格页问题可由模型先验知识回答、真实 Provider 日志扫描未覆盖装配期）——
+  **已修复并全量回归，等待修复后独立确认**。阶段指针不切换，**不实现 Third Stage
+  Browser Agent**。证据见 `Second_stage.md` §9/§10 与 `doc/tasks/progress.md`。
 
 ## 技术栈（实际落地版本）
 
@@ -111,7 +114,7 @@ React UI（渲染进程）→ BrowserController（主进程，浏览器能力统
   url/title）/ L3（tab 不可用，null）。type=password 不采集 value。
 - 纯逻辑（地址栏输入判断 `src/shared/url.ts`、Tab 状态机、权限策略、UI 导航保护、
   快照 normalize）零环境依赖、可单测；UI/IO 副作用在外层胶水。
-- AI 子系统（第二阶段，设计定稿、待实现）：依赖方向 `UI(AI 面板) → ConversationService →
+- AI 子系统（第二阶段，已实现并通过内部验收）：依赖方向 `UI(AI 面板) → ConversationService →
 ContextBuilder / LLMProvider → SecureCredentialStore`；网页上下文经 `ConversationService →
 BrowserController.getPageSnapshot`（**提问时刻实时采集**，禁止复用缓存快照——防串页）。
   LLM 请求仅在主进程发起（API Key 不出主进程，渲染层只写不读）；网页内容只进 user 消息的
