@@ -16,6 +16,13 @@ import type {
   TabIdPayload,
   TabsCreatePayload,
 } from '../shared/types/ipc';
+// Second Stage（S3 最小装配，完整 IPC/bridge 在 S4）：AI 共读子系统装配——
+// 事件回调转发主窗口 send（§3.1/§4，事件只发主窗口）；invoke 通道 S4 扩展。
+import { ConfigStore } from './ai/config-store';
+import { SecureCredentialStoreImpl } from './ai/credential-store';
+import { SafeStorageCipher } from './ai/safe-storage-cipher';
+import { ConversationServiceImpl, type ConversationService } from './ai/conversation-service';
+import { ConversationStore } from './ai/conversation-store';
 
 // 冒烟自检模式：窗口创建 + 渲染进程就绪后驱动浏览器核心场景（smoke.ts），全部断言通过后正常退出
 const SMOKE_MODE = process.env.AIBROWSE_SMOKE === '1';
@@ -35,6 +42,7 @@ logEnvironment();
 // 内部持有实现类：setContentBounds（§6 UI 接线）是类方法，不属于 §2.1 AI 契约接口
 let browserController: BrowserControllerImpl | null = null;
 let mainWindow: BrowserWindow | null = null;
+let conversationService: ConversationService | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -71,6 +79,7 @@ if (!gotLock) {
   });
   app.on('before-quit', () => {
     // 退出路径兜底清理（幂等）；主路径为窗口 closed → dispose（§5）
+    conversationService?.dispose(); // S3：中止全部在途生成
     browserController?.dispose();
     logInfo('main', '应用退出');
   });
@@ -224,6 +233,29 @@ function createBrowserWindow(): void {
     },
   });
   browserController = controller;
+  // S3 最小装配（§3.1/§4，完整 IPC invoke 通道与 preload 订阅在 S4）：AI 共读子系统
+  // 生产接线——事件回调转发主窗口 send（事件只发主窗口，§4）。safeStorage 运行时
+  // 加密行为验证留待 S4 冒烟场景 10；此处仅构造 cipher 胶水，不触发任何网络与加密动作。
+  const credentials = new SecureCredentialStoreImpl(
+    app.getPath('userData'),
+    new SafeStorageCipher(),
+  );
+  conversationService = new ConversationServiceImpl({
+    browser: controller, // SnapshotSource 结构兼容：getActiveTab/getPageSnapshot
+    store: new ConversationStore(app.getPath('userData')),
+    configStore: new ConfigStore(app.getPath('userData'), credentials),
+    credentials,
+    onStreamChunk: (e) => {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send(IPC.ConversationStreamChunk, e);
+      }
+    },
+    onTurnDone: (e) => {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send(IPC.ConversationTurnDone, e);
+      }
+    },
+  });
   void controller.createTab(); // 初始空白标签页（浏览器常驻形态）
   win.on('closed', () => {
     controller.dispose(); // 退出路径全量清理（幂等，§2.1）

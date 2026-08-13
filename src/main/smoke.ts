@@ -3,16 +3,22 @@
 // dispose 幂等与无泄漏；T3 新增 UI 窗口导航保护拦截验证（R-01）与渲染层 bounds 上报生效验证（§6）。
 // 任何断言失败 → logError + 抛出，入口 catch 后以退出码 1 结束（与基线冒烟语义一致）。
 
-import { session, webContents, WebContentsView } from 'electron';
+import { app, session, webContents, WebContentsView } from 'electron';
 import type { BrowserWindow, WebContents } from 'electron';
 import { createServer, type Server } from 'node:http';
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserController } from './browser/browser-controller';
 import { PERSIST_PARTITION } from './browser/session-manager';
 import { SEARCH_ENGINE_URL } from '../shared/url';
 import { getCurrentLogFilePath, logError, logInfo } from './logger';
+import { ConversationServiceImpl } from './ai/conversation-service';
+import { ConversationStore } from './ai/conversation-store';
+import { ConfigStore } from './ai/config-store';
+import { FakeProvider, type FakeProviderScript } from './ai/provider/fake-provider';
+import type { SecureCredentialStore } from './ai/credential-store';
+import type { StreamChunkEvent, TurnDoneEvent } from '../shared/types/conversation';
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -285,6 +291,443 @@ async function uiTabTitle(uiWc: WebContents, index: number): Promise<string> {
     uiWc,
     `document.querySelectorAll('[role="tab"]')[${index}].querySelector('.tab-title').textContent`,
   )) as string;
+}
+
+// ---------- S3：AI 共读场景（冒烟矩阵 1–8 主进程驱动，FakeProvider 离线确定性） ----------
+// 冒烟矩阵见 doc/stage2/detailed-design.md §13.2（矩阵 1–8）；矩阵 4（L3）需在
+// controller.dispose() 之后执行（无任何标签页 = 真实 L3），由返回句柄的 runL3 承接。
+// 会话持久化落在进程专属临时目录（app.getPath('temp')），全程不触碰用户真实 userData，
+// 验证的是真实文件读写（原子写/不落盘/删除/重启恢复），结束后整体清理。
+const FAKE_MODEL = 'fake-model';
+
+// 冒烟用凭据替身：注入 resolver 时 ConfigStore/credentials 仅用于配置加载路径
+// （hasKey 判定），不触发任何加密动作（safeStorage 运行时验证留待 S4 场景 10）。
+const smokeCredentials: SecureCredentialStore = {
+  isAvailable: () => true,
+  set: async () => false,
+  get: async () => null,
+  has: async () => true,
+  delete: async () => false,
+};
+
+export interface AiSmokeHandle {
+  runL3: () => Promise<void>; // 矩阵 4：dispose 后提问 → mode='none'
+  cleanup: () => Promise<void>;
+}
+
+function buildSmokeConversationService(
+  dir: string,
+  controller: BrowserController,
+  resolveProviderFn: (() => Promise<FakeProvider>) | undefined,
+  chunks: StreamChunkEvent[],
+  turns: TurnDoneEvent[],
+): ConversationServiceImpl {
+  const configStore = new ConfigStore(dir, smokeCredentials);
+  configStore.set({
+    providerId: 'fake',
+    baseUrl: 'https://fake.example/v1',
+    model: FAKE_MODEL,
+  });
+  return new ConversationServiceImpl({
+    browser: controller, // 真实 BrowserController：实时快照防串页以真实采集验证
+    store: new ConversationStore(dir),
+    configStore,
+    credentials: smokeCredentials,
+    resolveProviderFn:
+      resolveProviderFn === undefined ? undefined : async () => resolveProviderFn(),
+    onStreamChunk: (e) => chunks.push(e),
+    onTurnDone: (e) => turns.push(e),
+  });
+}
+
+async function waitTurn(turns: TurnDoneEvent[], requestId: string): Promise<TurnDoneEvent> {
+  let found: TurnDoneEvent | undefined;
+  await waitFor(
+    async () => {
+      found = turns.find((t) => t.requestId === requestId);
+      return found !== undefined;
+    },
+    10000,
+    `turn-done 未在 10 秒内到达（requestId=${requestId}）`,
+  );
+  return found as TurnDoneEvent;
+}
+
+export async function runAiConversationScenarios(
+  controller: BrowserController,
+  uiWindow: BrowserWindow | null | undefined,
+): Promise<AiSmokeHandle> {
+  const convDir = join(app.getPath('temp'), `aibrowse-smoke-conversations-${process.pid}`);
+  const cleanup = async (): Promise<void> => {
+    try {
+      rmSync(convDir, { recursive: true, force: true });
+    } catch (error) {
+      logError('smoke', 'AI 冒烟临时目录清理失败', error);
+    }
+  };
+
+  // holder 对象规避 TS 对闭包赋值后的 null 收窄（getLastRequest 只属最近一轮）
+  const fakeHolder: { current: FakeProvider | null } = { current: null };
+  let script: FakeProviderScript = {};
+  const setScript = (s: FakeProviderScript): void => {
+    script = s;
+  };
+  const resolveProviderFn = (): Promise<FakeProvider> => {
+    fakeHolder.current = new FakeProvider(script); // 每个 ask 新实例
+    return Promise.resolve(fakeHolder.current);
+  };
+
+  const chunks: StreamChunkEvent[] = [];
+  const turns: TurnDoneEvent[] = [];
+  const storeDir = join(convDir, 'conversations');
+
+  const runL3 = async (): Promise<void> => {
+    // 矩阵 4：L3 降级——dispose 后无任何标签页，getActiveTab → null → 快照 null →
+    // mode='none' + 提示，无异常（真实 L3：tab 不可用）
+    const service = buildSmokeConversationService(
+      convDir,
+      controller,
+      resolveProviderFn,
+      chunks,
+      turns,
+    );
+    try {
+      setScript({});
+      const session = await service.createSession();
+      assert(session !== null, 'L3 场景应能创建会话');
+      const result = await service.ask({
+        sessionId: session?.id ?? '',
+        question: '页面已销毁的问题',
+      });
+      assert(result.ok, 'L3 场景 ask 应返回 ok');
+      const turn = await waitTurn(turns, result.ok ? result.requestId : '');
+      assert(turn.status === 'complete', 'L3 场景应正常完成（无异常）');
+      assert(
+        turn.contextSource.mode === 'none',
+        `L3 场景 mode 应为 none（实际 ${turn.contextSource.mode}）`,
+      );
+      assert(turn.contextSource.url === null, 'L3 场景 contextSource.url 应为 null');
+      const lastUser = fakeHolder.current?.getLastRequest()?.messages.at(-1)?.content ?? '';
+      assert(lastUser.includes('页面已销毁的问题'), 'L3 场景请求应含问题原文');
+      assert(!lastUser.includes('UNTRUSTED_WEB_CONTENT'), 'L3 场景请求不得含 web 块');
+      logInfo('smoke', 'AI 共读矩阵 4 通过（L3 → mode=none，无异常）');
+    } finally {
+      service.dispose();
+    }
+  };
+
+  try {
+    const service = buildSmokeConversationService(
+      convDir,
+      controller,
+      resolveProviderFn,
+      chunks,
+      turns,
+    );
+    const pages = await startControlledPages();
+    try {
+      // —— 矩阵 1：端到端流式回答 + contextSource.url === 提问时页 URL ——
+      setScript({});
+      const pageTab = await controller.createTab(pages.simpleUrl);
+      await waitFor(
+        async () => {
+          const t = (await controller.getTabs()).find((x) => x.id === pageTab.id);
+          return t !== undefined && t.state === 'ready';
+        },
+        10000,
+        'AI 冒烟页面未在 10 秒内就绪',
+      );
+      const s1 = await service.createSession();
+      assert(s1 !== null, '矩阵 1 应能创建会话');
+      const r1 = await service.ask({ sessionId: s1?.id ?? '', question: '总结这个页面' });
+      assert(r1.ok, '矩阵 1 ask 应返回 ok');
+      const t1 = await waitTurn(turns, r1.ok ? r1.requestId : '');
+      assert(t1.status === 'complete', '矩阵 1 turn-done 应为 complete');
+      assert(t1.error === null, '矩阵 1 不应有错误');
+      const r1Chunks = chunks
+        .filter((c) => c.requestId === (r1.ok ? r1.requestId : ''))
+        .map((c) => c.delta)
+        .join('');
+      assert(
+        r1Chunks === '你好，这是来自 FakeProvider 的确定性回答。',
+        `矩阵 1 流式分块应按序完整到达（实际 ${r1Chunks}）`,
+      );
+      assert(t1.message.content === r1Chunks, '矩阵 1 终态消息应为累计全文');
+      assert(
+        t1.contextSource.url === pages.simpleUrl,
+        `矩阵 1 contextSource.url 应为提问时页 URL（实际 ${t1.contextSource.url}）`,
+      );
+      assert(t1.contextSource.mode === 'snapshot', '矩阵 1 mode 应为 snapshot');
+      // Provider 实际收到的请求：真实页面正文经真实快照管线进入末条 user 消息的 web 块
+      const req1 = fakeHolder.current?.getLastRequest();
+      assert(req1 != null && req1.model === FAKE_MODEL, '矩阵 1 请求 model 应来自配置');
+      const lastUser1 = req1?.messages.at(-1);
+      assert(lastUser1?.role === 'user', '矩阵 1 末条消息应为 user');
+      assert(
+        lastUser1?.content.includes('UNTRUSTED_WEB_CONTENT') === true,
+        '矩阵 1 请求应含 web 块',
+      );
+      assert(
+        lastUser1?.content.includes('主标题') === true,
+        '矩阵 1 请求应含真实页面正文（主标题）',
+      );
+      const h1 = await service.getHistory(s1?.id ?? '');
+      assert(
+        h1?.map((m) => m.role).join(',') === 'user,assistant',
+        '矩阵 1 历史应为 user+assistant',
+      );
+      logInfo('smoke', 'AI 共读矩阵 1 通过（端到端流式 + contextSource.url + 真实页面正文入块）');
+
+      // —— 矩阵 2：selection 独占——页面选中文本后提问，请求含 selection 不含页面正文 ——
+      const pageWc = visibleTabView(uiWindow)?.webContents;
+      assert(pageWc !== undefined, '矩阵 2 应有可见活动 Tab 视图');
+      await pageWc.executeJavaScript(
+        `(() => {
+          const p = document.querySelector('p');
+          const range = document.createRange();
+          range.selectNodeContents(p);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        })()`,
+      );
+      const s2 = await service.createSession();
+      assert(s2 !== null, '矩阵 2 应能创建会话');
+      const r2 = await service.ask({ sessionId: s2?.id ?? '', question: '解释我选中的这段' });
+      assert(r2.ok, '矩阵 2 ask 应返回 ok');
+      const t2 = await waitTurn(turns, r2.ok ? r2.requestId : '');
+      assert(
+        t2.contextSource.mode === 'selection',
+        `矩阵 2 mode 应为 selection（实际 ${t2.contextSource.mode}）`,
+      );
+      assert(
+        t2.contextSource.selectionExcerpt?.includes('这是一段用于验证可见文本采集的测试文本') ===
+          true,
+        '矩阵 2 selectionExcerpt 应为选中文本摘录',
+      );
+      const lastUser2 = fakeHolder.current?.getLastRequest()?.messages.at(-1)?.content ?? '';
+      assert(lastUser2.includes('<selection>'), '矩阵 2 请求应含 <selection> 块');
+      assert(
+        lastUser2.includes('这是一段用于验证可见文本采集的测试文本'),
+        '矩阵 2 请求应含选中文本',
+      );
+      assert(!lastUser2.includes('主标题'), '矩阵 2 请求不得含页面正文（selection 独占）');
+      await pageWc.executeJavaScript(`window.getSelection().removeAllRanges()`); // 清理 selection
+      logInfo('smoke', 'AI 共读矩阵 2 通过（selection 独占：含选中文本、不含页面正文）');
+
+      // —— 矩阵 3：防串页（§6.2 三断言：url 更新 / capturedAt 递增 / 旧内容不出现） ——
+      const capturedAtA = t1.contextSource.capturedAt;
+      assert(capturedAtA !== null, '矩阵 3 前置：第一轮应有 capturedAt');
+      assert(await controller.navigate(pageTab.id, pages.iframeUrl), '矩阵 3 导航到页面 B 应成功');
+      await waitFor(
+        async () => {
+          const t = (await controller.getTabs()).find((x) => x.id === pageTab.id);
+          return t !== undefined && t.state === 'ready' && t.url === pages.iframeUrl;
+        },
+        10000,
+        '矩阵 3 页面 B 未在 10 秒内就绪',
+      );
+      const r3 = await service.ask({ sessionId: s1?.id ?? '', question: '这个页面讲了什么' });
+      assert(r3.ok, '矩阵 3 ask 应返回 ok');
+      const t3 = await waitTurn(turns, r3.ok ? r3.requestId : '');
+      assert(
+        t3.contextSource.url === pages.iframeUrl,
+        `矩阵 3 断言①：第二轮 contextSource.url 应为页面 B（实际 ${t3.contextSource.url}）`,
+      );
+      assert(
+        (t3.contextSource.capturedAt ?? 0) > (capturedAtA ?? 0),
+        '矩阵 3 断言①：capturedAt 应更新（严格大于第一轮）',
+      );
+      const lastUser3 = fakeHolder.current?.getLastRequest()?.messages.at(-1)?.content ?? '';
+      assert(lastUser3.includes('带框架页'), '矩阵 3 断言②：请求应含页面 B 内容');
+      assert(
+        !lastUser3.includes('这是一段用于验证可见文本采集的测试文本'),
+        '矩阵 3 断言②：页面 A 内容不得出现在页面 B 轮',
+      );
+      // 刷新后提问：capturedAt 严格递增（实时采集而非缓存快照）
+      assert(await controller.reload(pageTab.id), '矩阵 3 刷新应成功');
+      await waitFor(
+        async () => {
+          const t = (await controller.getTabs()).find((x) => x.id === pageTab.id);
+          return t !== undefined && t.state === 'ready';
+        },
+        10000,
+        '矩阵 3 刷新后未在 10 秒内就绪',
+      );
+      const r3b = await service.ask({ sessionId: s1?.id ?? '', question: '刷新后再问' });
+      assert(r3b.ok, '矩阵 3 刷新后 ask 应返回 ok');
+      const t3b = await waitTurn(turns, r3b.ok ? r3b.requestId : '');
+      assert(
+        (t3b.contextSource.capturedAt ?? 0) > (t3.contextSource.capturedAt ?? 0),
+        '矩阵 3 断言①：刷新后 capturedAt 应严格递增',
+      );
+      // 提问时活动 Tab 已关闭（最后 Tab 策略自动新建空白页）→ 快照为空白页而非旧页内容
+      const tabsBeforeClose = await controller.getTabs();
+      for (const tab of tabsBeforeClose) {
+        if (tab.id !== pageTab.id) await controller.closeTab(tab.id); // 使 pageTab 成为唯一 Tab
+      }
+      assert(await controller.closeTab(pageTab.id), '矩阵 3 关闭最后页面 Tab 应成功');
+      await waitFor(
+        async () => {
+          const t = await controller.getActiveTab();
+          return t !== null && t.state === 'ready';
+        },
+        5000,
+        '矩阵 3 最后 Tab 策略未自动新建空白页',
+      );
+      const r3c = await service.ask({ sessionId: s1?.id ?? '', question: '空白页上的问题' });
+      assert(r3c.ok, '矩阵 3 空白页 ask 应返回 ok');
+      const t3c = await waitTurn(turns, r3c.ok ? r3c.requestId : '');
+      const lastUser3c = fakeHolder.current?.getLastRequest()?.messages.at(-1)?.content ?? '';
+      assert(
+        t3c.contextSource.url === 'about:blank',
+        `矩阵 3 断言③：关闭活动 Tab 后快照应为空白页（实际 ${t3c.contextSource.url}）`,
+      );
+      assert(!lastUser3c.includes('带框架页'), '矩阵 3 断言③：旧页内容不得出现在空白页轮');
+      // —— 矩阵 5：薄快照——空白页正文稀薄 → thin 标记 + 提示（不改变模式） ——
+      assert(t3c.contextSource.thin === true, '矩阵 5 空白页应判定为薄快照');
+      assert(t3c.contextSource.mode === 'snapshot', '矩阵 5 thin 不改变模式');
+      assert(
+        t3c.contextSource.warnings.some((w) => w.includes('稀薄')),
+        `矩阵 5 warnings 应含薄快照提示（实际 ${t3c.contextSource.warnings.join('；')}）`,
+      );
+      logInfo('smoke', 'AI 共读矩阵 3/5 通过（防串页三断言 + 薄快照 thin 标记）');
+
+      // —— 矩阵 6：中止——慢速 FakeProvider 中途 abort → 流停 + aborted + 部分内容保留 ——
+      setScript({
+        chunks: [
+          '第一段，',
+          { text: '第二段，', delayMs: 400 },
+          { text: '第三段。', delayMs: 400 },
+        ],
+      });
+      const s6 = await service.createSession();
+      assert(s6 !== null, '矩阵 6 应能创建会话');
+      const r6 = await service.ask({ sessionId: s6?.id ?? '', question: '中止我' });
+      assert(r6.ok, '矩阵 6 ask 应返回 ok');
+      // 在途时同会话再 ask → busy（每会话单在途，决议 Q8）
+      const busy = await service.ask({ sessionId: s6?.id ?? '', question: '再来一个' });
+      assert(!busy.ok && busy.error.code === 'busy', '矩阵 6 在途时再 ask 应返回 busy');
+      const r6Id = r6.ok ? r6.requestId : '';
+      await waitFor(
+        async () => chunks.some((c) => c.requestId === r6Id),
+        5000,
+        '矩阵 6 首个流式分块未在 5 秒内到达',
+      );
+      assert(service.abort(r6Id), '矩阵 6 abort 应命中在途生成');
+      const t6 = await waitTurn(turns, r6Id);
+      assert(t6.status === 'aborted', `矩阵 6 终态应为 aborted（实际 ${t6.status}）`);
+      assert(t6.message.content.includes('第一段，'), '矩阵 6 应保留已生成部分');
+      assert(!t6.message.content.includes('第三段。'), '矩阵 6 中止后不应继续生成');
+      assert(service.abort(r6Id) === false, '矩阵 6 终态后 abort 应幂等返回 false');
+      const h6 = await service.getHistory(s6?.id ?? '');
+      assert(h6?.at(-1)?.status === 'aborted', '矩阵 6 历史中应保留已中止消息');
+      logInfo('smoke', 'AI 共读矩阵 6 通过（中止保留部分 + busy + 幂等）');
+
+      // —— 矩阵 7：错误归一化——注入 401 → invalid-key；注入超时 → timeout ——
+      setScript({ error: { httpStatus: 401 } });
+      const s7 = await service.createSession();
+      assert(s7 !== null, '矩阵 7 应能创建会话');
+      const r7 = await service.ask({ sessionId: s7?.id ?? '', question: '触发 401 的问题' });
+      assert(r7.ok, '矩阵 7 ask 应返回 ok');
+      const t7 = await waitTurn(turns, r7.ok ? r7.requestId : '');
+      assert(t7.status === 'error', '矩阵 7 终态应为 error');
+      assert(
+        t7.error?.code === 'invalid-key',
+        `矩阵 7 401 应归一化 invalid-key（实际 ${t7.error?.code}）`,
+      );
+      assert(t7.error?.httpStatus === 401, '矩阵 7 应携带 httpStatus 401');
+      assert(t7.error?.message === 'API Key 无效或无权限，请检查设置', '矩阵 7 应为归一化中文文案');
+      const h7 = await service.getHistory(s7?.id ?? '');
+      assert(
+        h7?.map((m) => m.role).join(',') === 'user,assistant',
+        '矩阵 7 失败轮仍应先持久化 user 消息（引用链先于生成落地）',
+      );
+      assert(
+        h7?.at(-1)?.status === 'error' && h7?.at(-1)?.errorCode === 'invalid-key',
+        '矩阵 7 assistant 消息应带 errorCode',
+      );
+      setScript({ error: { code: 'timeout' } });
+      const r7b = await service.ask({ sessionId: s7?.id ?? '', question: '触发超时的问题' });
+      assert(r7b.ok, '矩阵 7 超时轮 ask 应返回 ok');
+      const t7b = await waitTurn(turns, r7b.ok ? r7b.requestId : '');
+      assert(
+        t7b.error?.code === 'timeout',
+        `矩阵 7 超时应归一化 timeout（实际 ${t7b.error?.code}）`,
+      );
+      assert(t7b.error?.retryable === true, '矩阵 7 timeout 应可重试');
+      logInfo('smoke', 'AI 共读矩阵 7 通过（401 → invalid-key / 超时 → timeout 归一化）');
+
+      // —— 矩阵 8：会话持久化 / 删除 / 不保存 / 重启恢复 ——
+      setScript({});
+      const s8 = await service.createSession();
+      assert(s8 !== null, '矩阵 8 应能创建会话');
+      const r8 = await service.ask({ sessionId: s8?.id ?? '', question: '会持久化的问题' });
+      assert(r8.ok, '矩阵 8 ask 应返回 ok');
+      await waitTurn(turns, r8.ok ? r8.requestId : '');
+      const s8File = join(storeDir, `${s8?.id}.json`);
+      assert(existsSync(s8File), '矩阵 8 普通会话提问后消息文件应落盘');
+      const seph = await service.createSession({ ephemeral: true });
+      assert(seph !== null, '矩阵 8 应能创建 ephemeral 会话');
+      const reph = await service.ask({ sessionId: seph?.id ?? '', question: '不保存的提问' });
+      assert(reph.ok, '矩阵 8 ephemeral ask 应返回 ok');
+      await waitTurn(turns, reph.ok ? reph.requestId : '');
+      assert(
+        !existsSync(join(storeDir, `${seph?.id}.json`)),
+        '矩阵 8 ephemeral 会话提问后不得落盘（不保存红线）',
+      );
+      const index8 = JSON.parse(readFileSync(join(storeDir, 'index.json'), 'utf8')) as {
+        sessions: Array<{ id: string }>;
+      };
+      assert(
+        index8.sessions.some((s) => s.id === s8?.id),
+        '矩阵 8 索引应含普通会话',
+      );
+      assert(!index8.sessions.some((s) => s.id === seph?.id), '矩阵 8 索引不得含 ephemeral 会话');
+      // setEphemeral(false) → 现有消息落盘
+      assert(
+        await service.setEphemeral(seph?.id ?? '', false),
+        '矩阵 8 setEphemeral(false) 应成功',
+      );
+      assert(existsSync(join(storeDir, `${seph?.id}.json`)), '矩阵 8 setEphemeral(false) 后应落盘');
+      // 重启模拟：全新 Service 实例从同一目录读盘（跨实例恢复 = 重启后历史恢复）
+      const restarted = buildSmokeConversationService(
+        convDir,
+        controller,
+        resolveProviderFn,
+        chunks,
+        turns,
+      );
+      try {
+        const ids = (await restarted.listSessions()).map((s) => s.id);
+        assert(ids.includes(s8?.id ?? ''), '矩阵 8 重启后应恢复普通会话');
+        assert(ids.includes(seph?.id ?? ''), '矩阵 8 重启后应恢复已转普通模式的会话');
+        assert(
+          (await restarted.getHistory(s8?.id ?? ''))?.map((m) => m.role).join(',') ===
+            'user,assistant',
+          '矩阵 8 重启后历史应完整恢复',
+        );
+        // 删除即消失（含残留 tmp）：预置写入中断残留 → deleteSession 一并移除
+        writeFileSync(`${s8File}.tmp`, 'half-written', 'utf8');
+        assert(await restarted.deleteSession(s8?.id ?? ''), '矩阵 8 deleteSession 应返回 true');
+        assert(!existsSync(s8File), '矩阵 8 删除后消息文件应消失');
+        assert(!existsSync(`${s8File}.tmp`), '矩阵 8 删除应连残留 tmp 一并移除');
+        assert((await restarted.getHistory(s8?.id ?? '')) === null, '矩阵 8 删除后历史应为 null');
+        assert(await restarted.deleteSession(seph?.id ?? ''), '矩阵 8 清理转普通会话应成功');
+        logInfo('smoke', 'AI 共读矩阵 8 通过（持久化/ephemeral 不落盘/重启恢复/删除含残留 tmp）');
+      } finally {
+        restarted.dispose();
+      }
+      service.dispose();
+    } finally {
+      await pages.close();
+    }
+    return { runL3, cleanup };
+  } catch (err) {
+    logError('smoke', 'AI 共读冒烟场景失败', err);
+    await cleanup();
+    throw err;
+  }
 }
 
 export async function runSmokeScenario(
@@ -879,6 +1322,11 @@ export async function runSmokeScenario(
       }
     }
 
+    // 7.8 AI 共读场景（S3，主进程驱动，FakeProvider 离线）：矩阵 1–3/5–8（矩阵 4 在
+    //     dispose 后执行——L3 需要无任何标签页）；会话持久化用进程专属临时目录，
+    //     验证真实文件读写，不触碰用户真实 userData
+    const aiSmoke = await runAiConversationScenarios(controller, options.uiWindow);
+
     // 8. 可选真实 URL 加载（AIBROWSE_SMOKE_URL）：验证多 Tab 可开网页 + 标题随页面变化
     if (options.loadUrl !== undefined) {
       const pageTab = await controller.createTab(options.loadUrl);
@@ -908,9 +1356,16 @@ export async function runSmokeScenario(
       'dispose 后仍残留标签页 webContents',
     );
 
+    // 9.1 矩阵 4（L3 → mode='none'）：dispose 后无任何标签页，提问走真实 L3 路径
+    try {
+      await aiSmoke.runL3();
+    } finally {
+      await aiSmoke.cleanup(); // 会话冒烟临时目录整体清理（含 provider-config 测试残留）
+    }
+
     logInfo(
       'smoke',
-      '冒烟场景全部通过（T2 浏览器核心 + T3 UI 闭环 + T4 PageSnapshot 采集 + T5 安全/端到端扩展）',
+      '冒烟场景全部通过（T2 浏览器核心 + T3 UI 闭环 + T4 PageSnapshot 采集 + T5 安全/端到端扩展 + S3 AI 共读矩阵 1–8）',
     );
   } catch (err) {
     logError('smoke', '冒烟场景失败', err);
