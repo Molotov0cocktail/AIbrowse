@@ -18,7 +18,7 @@ import type {
   StreamChunkEvent,
   TurnDoneEvent,
 } from '../../shared/types/conversation';
-import { ConfigStore } from './config-store';
+import { ConfigStore, type ProviderInfo } from './config-store';
 import type { SecureCredentialStore } from './credential-store';
 import { ConversationStore, SESSION_LIMIT } from './conversation-store';
 import { SYSTEM_PROMPT } from './context-builder';
@@ -28,12 +28,21 @@ import {
   FakeProvider,
   type FakeProviderScript,
 } from './provider/fake-provider';
-import type { LLMProvider } from './provider/llm-provider';
+import { registerProviderFactory, type LLMProvider } from './provider/llm-provider';
 import {
   ConversationServiceImpl,
+  selectRegisteredProviderInfo,
   type ConversationServiceOptions,
   type SnapshotSource,
 } from './conversation-service';
+
+// 'fake' kind 注册（测试进程内）：v1 Provider 选择契约（决议 #20）依赖已注册 kind 集合，
+// 与生产 openai-compatible 同路径；工厂仅满足类型（流式实现由注入的 resolveProviderFn
+// 提供，工厂不会被调用）。
+registerProviderFactory({
+  kind: 'fake',
+  create: () => new FakeProvider({}),
+});
 
 let baseDir: string;
 beforeAll(() => {
@@ -229,6 +238,37 @@ describe('ConversationService — 会话生命周期', () => {
   });
 });
 
+// ---------- v1 单 Provider 选择契约（决议 #20） ----------
+
+describe('selectRegisteredProviderInfo — v1 单 Provider 选择（§6.1，决议 #20）', () => {
+  const info = (providerId: string): ProviderInfo => ({
+    providerId,
+    label: providerId,
+    baseUrl: 'https://x.example/v1',
+    model: 'm',
+    hasKey: true,
+  });
+
+  it('返回 providerId 属于已注册 kind 的配置（未注册条目在前仍被跳过）', () => {
+    expect(selectRegisteredProviderInfo([info('unregistered'), info('fake')], ['fake'])).toEqual(
+      info('fake'),
+    );
+  });
+
+  it('选择与文件条目顺序无关：已注册 kind 配置在任意位置都被选中', () => {
+    expect(selectRegisteredProviderInfo([info('fake')], ['fake'])?.providerId).toBe('fake');
+    expect(
+      selectRegisteredProviderInfo([info('a-x'), info('fake'), info('b-x')], ['fake'])?.providerId,
+    ).toBe('fake');
+  });
+
+  it('无已注册 kind 配置 / 空列表 / 空 kinds → null（调用方 → not-configured）', () => {
+    expect(selectRegisteredProviderInfo([], ['fake'])).toBeNull();
+    expect(selectRegisteredProviderInfo([info('unregistered')], ['fake'])).toBeNull();
+    expect(selectRegisteredProviderInfo([info('fake')], [])).toBeNull();
+  });
+});
+
 // ---------- ask 编排（§6.1 时序即契约） ----------
 
 describe('ConversationService — ask 编排时序（§6.1）', () => {
@@ -368,6 +408,39 @@ describe('ConversationService — ask 编排时序（§6.1）', () => {
     expect(history?.[0]?.contextSource?.mode).toBe('snapshot');
     expect(history?.[1]?.status).toBe('error');
     expect(history?.[1]?.errorCode).toBe('not-configured');
+  });
+
+  it('多配置共存：选择已注册 kind 配置（决议 #20），未注册条目在文件顺序首位也不被选中', async () => {
+    const f = makeService();
+    f.browser.activeTab = makeTab();
+    f.browser.snapshot = makeSnapshot();
+    // 先写入未注册 kind 配置（文件顺序在前），再写入已注册 kind 的 fake 配置
+    f.configStore.set({
+      providerId: 'unregistered',
+      baseUrl: 'https://u.example/v1',
+      model: 'm-u',
+    });
+    f.configStore.set(FAKE_CONFIG);
+    const session = await f.service.createSession();
+    const { turn } = await askAndWait(f, session?.id ?? '', '选择契约校验');
+    expect(turn.status).toBe('complete');
+    expect(f.lastFake()?.getLastRequest()?.model).toBe('fake-model');
+  });
+
+  it('仅有未注册 kind 配置 → not-configured（不发起 Provider 调用）', async () => {
+    const f = makeService();
+    f.configStore.set({
+      providerId: 'unregistered',
+      baseUrl: 'https://u.example/v1',
+      model: 'm-u',
+    });
+    const session = await f.service.createSession();
+    const { turn } = await askAndWait(f, session?.id ?? '', '无可用 Provider 的问题');
+    expect(turn.status).toBe('error');
+    expect(turn.error?.code).toBe('not-configured');
+    expect(f.resolverCalls()).toBe(0);
+    const history = await f.service.getHistory(session?.id ?? '');
+    expect(history?.map((m) => m.role)).toEqual(['user', 'assistant']);
   });
 
   it('参数/状态安全返回：会话不存在 → not-found；空串/非串问题 → internal；不抛异常', async () => {

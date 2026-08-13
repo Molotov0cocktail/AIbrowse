@@ -69,6 +69,17 @@
   上限返回 null（§9 拒绝新建与 §4.2 可空 bridge 要求失败通道，§3.1 已同步）。
   仍不接 renderer UI/IPC invoke 通道（S4）、不做真实 Provider 联网；
   safeStorage 运行时验证仍留 S4 场景 10；零新依赖。
+- **S3 收尾交接校准（2026-08-13，独立校准 commit）**：① progress.md「下一个推荐任务」
+  指针修正为 S4（原误留 S3）；② AGENTS.md §5 createSession 签名显式化为
+  `Promise<ConversationSession | null>`（实际代码与唯一契约源 §3.1 一致，决议 #19）；
+  ③ **决议 #20 Provider 选择契约**——ask 原「取 `ConfigStore.list()` 首个已配置项」
+  依赖文件条目顺序的隐含规则，已定稿并落地为「providerId 属于已注册工厂 kind 的配置」
+  （纯函数 `selectRegisteredProviderInfo`，v1 仅注册 openai-compatible、ConfigStore 以
+  providerId 为键 upsert 同键恒唯一 → 选择唯一且与条目顺序无关；无已注册 kind 配置 →
+  not-configured 零网络请求）。同步唯一契约源 §6.1/§15 与 AGENTS.md §5；单测新增 5 用例
+  （纯函数 3 + 服务级 2：多配置共存顺序无关/仅未注册 kind → not-configured）；测试与
+  冒烟进程内注册 'fake' kind（与生产同路径）。test 304/304 · typecheck · lint ·
+  format:check · build · 冒烟双场景退出码 0。
 - **S2 ContextBuilder 纯核心（2026-08-13，第二个实现闭环）**：test **242/242** ✅
   （170 基线 + 72 新增：context-budget 42 / context-builder 30）· typecheck ✅ · lint ✅ ·
   format:check ✅ · build ✅ · Electron 冒烟 ✅ 双场景退出码 0（dev 离线 + 生产产物，
@@ -266,12 +277,14 @@
 
 ## 下一个推荐任务
 
-- **S3 ConversationService + 会话持久化 + ask 编排**（doc/stage2/tasks/S3-conversation-service.md）：
-  createSession/listSessions/getHistory/deleteSession/setEphemeral/ask/abort/previewContext/dispose；
-  实时快照防串页（提问时刻 getPageSnapshot，禁止缓存复用）→ buildContext（S2 已就绪，
-  输入含 requestId/model/tabId，决议 #18）→ 先持久化 user 消息 → provider.stream → 事件转发；
-  会话 JSON 持久化（原子写/50 会话/200 条/损坏容错/ephemeral 不落盘）；主进程冒烟矩阵 1–8
-  （FakeProvider 离线）。依赖：S1/S2（均已完成）。完成后按依赖顺序 S4 → S5 → S6。
+- **S4 AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调**（doc/stage2/tasks/S4-ai-panel-ui.md）：
+  invoke 通道（conversation:list/create/get-history/delete/set-ephemeral/ask/abort/preview、
+  config:providers:list/set/set-key——全部沿用 sender 校验、事件只发主窗口；两事件通道常量
+  与 payload 类型 S3 已落地）+ preload bridge 订阅（沿用 tabs:updated 单注册模式）+
+  AI 面板组件（AiPanel/ChatView/Composer/ContextBadge/CitationCard/ProviderSettings，
+  useConversation/useStream）+ useContentBounds 两维升级 + UI 端到端冒烟矩阵 1–12
+  （含场景 10 safeStorage 真实运行验证——此前单测仅注入 cipher 替身）。依赖：S3（已完成）。
+  完成后按依赖顺序 S5 → S6。
 
 ## 第一阶段验收未完成项
 

@@ -21,7 +21,7 @@ import type {
   TurnDoneEvent,
 } from '../../shared/types/conversation';
 import { logError, logInfo, logWarn } from '../logger';
-import type { ConfigStore } from './config-store';
+import type { ConfigStore, ProviderInfo } from './config-store';
 import type { SecureCredentialStore } from './credential-store';
 import {
   ConversationStore,
@@ -38,7 +38,23 @@ import {
 } from './context-builder';
 import { trimHistory } from './context-budget';
 import { normalizeProviderError } from './provider/error-normalize';
-import { resolveProvider, type LLMProvider } from './provider/llm-provider';
+import { listProviderKinds, resolveProvider, type LLMProvider } from './provider/llm-provider';
+
+// v1 单 Provider 选择契约（决议 #20，§6.1）：返回 providerId 属于已注册工厂 kind 的
+// 配置。v1 仅注册 PROVIDER_KIND_OPENAI_COMPATIBLE 一种 kind，且 ConfigStore 以
+// providerId 为键 upsert（同键恒唯一）——选择唯一且与 list() 文件条目顺序无关，
+// 不依赖任何隐含排序规则；无已注册 kind 配置 → null（调用方 → not-configured，
+// 不发起网络请求）。hasKey 不参与选择（无 Key 由 resolveProvider → not-configured
+// 兜底，§3.3）。多 kind 并存是 Third Stage+ 的扩展点，届时必须先定选择规则再扩展。
+export function selectRegisteredProviderInfo(
+  infos: ProviderInfo[],
+  kinds: string[],
+): ProviderInfo | null {
+  for (const info of infos) {
+    if (kinds.includes(info.providerId)) return info;
+  }
+  return null;
+}
 
 // 网页上下文快照来源（提问/预览时刻实时采集，禁止缓存复用——防串页核心，§6.1/§6.3）
 export interface SnapshotSource {
@@ -262,10 +278,13 @@ export class ConversationServiceImpl implements ConversationService {
       const mode = deriveContextMode(snapshot, thin);
       contextSource = buildContextSource(snapshot, mode, thin, activeTab?.id ?? null);
 
-      // 2. Provider 配置（决议 #18：model 来自已加载的 ProviderConfig；单 Provider 阶段
-      //    取首个已配置项——设置界面同为单 Provider 形态，§3.5）
-      const info = (await this.options.configStore.list())[0];
-      const config = info === undefined ? null : this.options.configStore.get(info.providerId);
+      // 2. Provider 配置（决议 #20：v1 单 Provider 选择契约——providerId 属于已注册
+      //    工厂 kind 的唯一配置，与文件条目顺序无关；决议 #18：model 来自该配置）
+      const info = selectRegisteredProviderInfo(
+        await this.options.configStore.list(),
+        listProviderKinds(),
+      );
+      const config = info === null ? null : this.options.configStore.get(info.providerId);
 
       // 3. buildContext（requestId 先生成、model 来自配置——决议 #18）
       let request: ProviderRequest | null = null;

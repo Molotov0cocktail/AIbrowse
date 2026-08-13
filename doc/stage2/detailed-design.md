@@ -388,6 +388,14 @@ export interface AibrowseBridge {
    error（status='error' + errorCode，content 保留部分）；持久化（ephemeral 跳过）；
    `onTurnDone` 转发；注销 in-flight。
 
+- **Provider 选择（v1 单 Provider 契约，决议 #20）**：ask 使用「providerId 属于已注册
+  工厂 kind」的配置（纯函数 `selectRegisteredProviderInfo(infos, kinds)`，
+  conversation-service.ts 导出）——v1 仅注册 `openai-compatible` 一种 kind，且
+  ConfigStore 以 providerId 为键 upsert（同键恒唯一），故选择唯一且**与配置文件条目
+  顺序无关**（不依赖 `list()` 的任何隐含排序规则）；已注册 kind 的配置不存在 → 不发起
+  网络请求，直接 not-configured。hasKey 不参与选择（无 Key 由 resolveProvider →
+  not-configured 兜底，§3.3）。多 kind 并存是 Third Stage+ 的扩展点，届时必须先定
+  选择规则再扩展。
 - 导航竞态：快照为点时刻尽力采样（第一阶段契约）；采集→发送窗口内的切 Tab/导航不破坏
   正确性（快照已物化且带 tabId/url/capturedAt 章）；生成**中**导航不影响本轮回答
   （回答依据已在快照中）。
@@ -714,6 +722,13 @@ export const SYSTEM_PROMPT: string = `你是 AIbrowse 的网页共读助手，�
     `Promise<ConversationSession | null>` 不自洽（bridge 层已按可空建模）。属**校准而非
     变更**（§3.1 已同步）；同一校准并明确：会话消息文件缺失与整体损坏均按空历史处理
     （fail-closed，不把原始文件内容暴露给渲染层），§9 行为不变。
+20. **S3 Provider 选择契约（2026-08-13，S3 收尾校准）**：ask 的 Provider 选择定稿为
+    「providerId 属于已注册工厂 kind 的配置」（纯函数 `selectRegisteredProviderInfo`）——
+    v1 仅注册 `openai-compatible` 一种 kind，ConfigStore 以 providerId 为键 upsert
+    同键恒唯一，选择唯一且**与 `list()` 条目顺序无关**（实现初期「取首个已配置项」是
+    依赖文件顺序的隐含规则，不得遗留 S4）；无已注册 kind 配置 → not-configured
+    （不发起网络请求）。属**校准而非变更**（§6.1 已同步该选择契约；单 Provider 设置
+    界面为 v1 形态，多 kind 并存是 Third Stage+ 扩展点，届时先定规则再扩展）。
 
 ## 16. 实现顺序与范围边界（S1–S6 映射）
 

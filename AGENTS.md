@@ -372,18 +372,26 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
   `ProviderMetadata`/`ProviderMessage`/`ProviderRequest`/`ProviderUsage`/`ProviderEvent`/
   `ProviderConfig`（Provider 数据类型放 shared，S4 preload/renderer 可直接复用）。
 - **ConversationService（S3 ✅ 已实现，2026-08-13 grep 核对）**：接口 `ConversationService`
-  - 实现类 `ConversationServiceImpl`——`createSession(opts?)`（**决议 #19**：达 50 会话
-    上限拒绝新建 → null）/`listSessions`（新→旧）/`getHistory`（null=不存在）/
+  - 实现类 `ConversationServiceImpl`——`createSession(opts?): Promise<ConversationSession | null>`
+    （**决议 #19**：达 50 会话上限拒绝新建 → null；实际签名与唯一契约源 §3.1 均为可空返回）/
+    `listSessions`（新→旧）/`getHistory`（null=不存在）/
     `deleteSession`（先中止在途生成 → 删内存+文件含残留 tmp → 更新索引）/
     `setEphemeral`（false=现有消息落盘，true=移除磁盘文件）/`ask`（同步校验+注册在途后
     立即返回 `{ok:true,requestId}`，生成后台执行经事件回调推送）/`abort(requestId)`
     （幂等，无匹配 false）/`previewContext`（实时快照摘要不含正文）/`dispose`（中止全部
-    在途，幂等）。构造注入：`browser: SnapshotSource`（getActiveTab/getPageSnapshot 最小
-    接口，BrowserControllerImpl 结构兼容；实时采集防串页）/`store`/`configStore`/
-    `credentials`/`resolveProviderFn?`（冒烟注入 FakeProvider 缝；缺省生产 resolveProvider，
-    决议 #17）`onStreamChunk`/`onTurnDone`（§3.1 事件输出，index.ts 转发主窗口 send）。
+    在途，幂等）；纯函数 `selectRegisteredProviderInfo(infos, kinds)`（**决议 #20**：
+    v1 单 Provider 选择契约，见下）。构造注入：`browser: SnapshotSource`（getActiveTab/
+    getPageSnapshot 最小接口，BrowserControllerImpl 结构兼容；实时采集防串页）/`store`/
+    `configStore`/`credentials`/`resolveProviderFn?`（冒烟注入 FakeProvider 缝；缺省生产
+    resolveProvider，决议 #17）`onStreamChunk`/`onTurnDone`（§3.1 事件输出，index.ts
+    转发主窗口 send）。
     ask 编排时序即防串页契约：实时 `getPageSnapshot(activeTabId)`（禁止复用缓存快照）→
-    `buildContext`（requestId 先生成、model 来自首个已配置 Provider——单 Provider 阶段）→
+    **Provider 选择（决议 #20）**：`selectRegisteredProviderInfo(await configStore.list(),
+listProviderKinds())`——取 providerId 属于已注册工厂 kind 的配置；v1 仅注册
+    `openai-compatible` 一种 kind、ConfigStore 以 providerId 为键 upsert 同键恒唯一，
+    选择唯一且**与 `list()` 条目顺序无关**（不依赖任何隐含排序）；无已注册 kind 配置 →
+    not-configured 零网络请求；多 kind 并存是 Third Stage+ 扩展点 → `buildContext`
+    （requestId 先生成、model 来自所选配置——决议 #18）→
     **先持久化 user 消息（含 ContextSource + meta.warnings）** → `resolveProvider` →
     `provider.stream` → delta 逐块转发 → 终态组装 assistant 消息（complete 全文 /
     aborted 保留部分 / error 保留部分+errorCode）→ 持久化 → turn-done 恰好一次。

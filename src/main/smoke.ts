@@ -17,6 +17,7 @@ import { ConversationServiceImpl } from './ai/conversation-service';
 import { ConversationStore } from './ai/conversation-store';
 import { ConfigStore } from './ai/config-store';
 import { FakeProvider, type FakeProviderScript } from './ai/provider/fake-provider';
+import { registerProviderFactory } from './ai/provider/llm-provider';
 import type { SecureCredentialStore } from './ai/credential-store';
 import type { StreamChunkEvent, TurnDoneEvent } from '../shared/types/conversation';
 
@@ -357,6 +358,13 @@ export async function runAiConversationScenarios(
   controller: BrowserController,
   uiWindow: BrowserWindow | null | undefined,
 ): Promise<AiSmokeHandle> {
+  // v1 单 Provider 选择契约（决议 #20）：选择依赖已注册 kind 集合——冒烟进程内注册
+  // 'fake' kind，与生产 openai-compatible 同路径；注入的 resolver 仅替换流式实现，
+  // 工厂不会被调用（仅满足类型）。
+  registerProviderFactory({
+    kind: 'fake',
+    create: () => new FakeProvider({}),
+  });
   const convDir = join(app.getPath('temp'), `aibrowse-smoke-conversations-${process.pid}`);
   const cleanup = async (): Promise<void> => {
     try {
