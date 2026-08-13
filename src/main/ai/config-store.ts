@@ -6,17 +6,10 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { logWarn } from '../logger';
 import type { SecureCredentialStore } from './credential-store';
-import type { ProviderConfig } from '../../shared/types/conversation';
+import type { ProviderConfig, ProviderInfo } from '../../shared/types/conversation';
 
-export type { ProviderConfig } from '../../shared/types/conversation';
-
-export interface ProviderInfo {
-  providerId: string;
-  label: string;
-  baseUrl: string;
-  model: string;
-  hasKey: boolean;
-}
+// ProviderInfo 定义于 shared（S4 起 renderer/preload 直接复用），此处重导出保持既有导入路径
+export type { ProviderConfig, ProviderInfo } from '../../shared/types/conversation';
 
 const PROVIDER_LABELS: Record<string, string> = {
   'openai-compatible': 'OpenAI 兼容',

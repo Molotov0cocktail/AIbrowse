@@ -18,7 +18,9 @@ export interface LLMProvider {
   stream(request: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent>;
 }
 
-export const PROVIDER_KIND_OPENAI_COMPATIBLE = 'openai-compatible';
+// 常量单一事实源在 shared（S4：renderer 设置 UI 复用，决议 #20）；此处重导出保持既有导入路径
+import { PROVIDER_KIND_OPENAI_COMPATIBLE } from '../../../shared/types/conversation';
+export { PROVIDER_KIND_OPENAI_COMPATIBLE };
 
 export interface ProviderFactory {
   readonly kind: string;

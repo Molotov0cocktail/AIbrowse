@@ -1,18 +1,22 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { AiPanel } from './ai/AiPanel';
 import { DebugPanel } from './browser/DebugPanel';
 import { TabBar } from './browser/TabBar';
 import { Toolbar } from './browser/Toolbar';
 import { useContentBounds } from './browser/useContentBounds';
 import { useTabsState } from './browser/useTabsState';
 
-// 浏览器 chrome（T3）：顶部工具栏 + 标签栏为渲染层 UI，主内容区由主进程
-// WebContentsView 按上报 bounds 覆盖渲染真实网页（design §6）。
+// 浏览器 chrome（T3）+ AI 侧栏停靠（S4，design §11.1）：顶部工具栏 + 标签栏为渲染层 UI，
+// 主内容区由主进程 WebContentsView 按上报 bounds 覆盖渲染真实网页（§11.2：useContentBounds
+// 测量内容容器两维矩形——面板开/关、窗口缩放、DebugPanel 收起都经同一路径更新 bounds）。
 // 所有浏览器操作经 window.aibrowse bridge → BrowserController（分层纪律）。
 export default function App() {
   const tabsState = useTabsState();
-  const chromeRef = useRef<HTMLElement>(null);
-  useContentBounds(chromeRef);
+  const contentRef = useRef<HTMLDivElement>(null);
+  useContentBounds(contentRef);
   const addressBarRef = useRef<HTMLInputElement>(null);
+  // 面板打开状态存渲染层内存：默认收起、不持久化（§11.2）；定宽 380px、无拖拽/动画
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
 
   useEffect(() => {
     // 渲染进程就绪即通知主进程（冒烟自检模式依赖此信号）；订阅先于此注册
@@ -31,7 +35,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="chrome" ref={chromeRef}>
+      <header className="chrome">
         <Toolbar
           activeTab={activeTab}
           onNavigate={(input) =>
@@ -45,6 +49,7 @@ export default function App() {
               addressBarRef.current?.focus(); // 新标签页聚焦地址栏，便于直接输入
             });
           }}
+          onToggleAiPanel={() => setAiPanelOpen((open) => !open)}
           addressBarRef={addressBarRef}
         />
         <TabBar
@@ -53,11 +58,14 @@ export default function App() {
           onActivate={(tabId) => void window.aibrowse.tabs.activate(tabId)}
           onClose={(tabId) => void window.aibrowse.tabs.close(tabId)}
         />
-        {/* 调试面板在 chrome 容器内：高度变化会被 ResizeObserver 测量并上报 bounds（§6） */}
-        <DebugPanel activeTabId={tabsState?.activeTabId ?? null} />
       </header>
-      {/* 主内容区：WebContentsView 由主进程按 bounds 覆盖在此区域之上 */}
-      <main className="content-area" />
+      {/* 内容行：内容容器（WebContentsView 覆盖区）+ AI 面板停靠（§11.1） */}
+      <div className="main-row">
+        <main className="content-area" ref={contentRef} />
+        {aiPanelOpen && <AiPanel onCollapse={() => setAiPanelOpen(false)} />}
+      </div>
+      {/* 调试面板在底部通栏：高度变化被内容容器的 ResizeObserver 测量并上报 bounds（§11.2） */}
+      <DebugPanel activeTabId={tabsState?.activeTabId ?? null} />
     </div>
   );
 }

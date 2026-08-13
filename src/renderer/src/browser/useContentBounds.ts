@@ -1,29 +1,30 @@
 import { useEffect, type RefObject } from 'react';
 import type { ContentBounds } from '../../../shared/types/ipc';
 
-// 内容区 bounds 上报（design §6）：ResizeObserver 测量 chrome（工具栏+标签栏）高度，
-// 防抖 50ms 后经 ui:content-bounds 上报；main 侧应用到当前活动 WebContentsView。
-// chrome 为块级容器：窗口 resize 改变其宽度时同样触发 ResizeObserver（无需单独监听 resize），
-// 宽度取 window.innerWidth、高度为窗口内容高减去 chrome 高。
+// 内容区 bounds 上报（design §11.2，决议 Q6 升级）：从「chrome 高度 → 内容区矩形」
+// 升级为测量内容容器元素的两维矩形——面板开/关、窗口缩放、DebugPanel 收起都改变
+// 容器尺寸并触发 ResizeObserver，经同一路径更新活动 view bounds（通道/契约不变：
+// ui:content-bounds 全量覆盖式）。防抖 50ms 不变。
 const DEBOUNCE_MS = 50;
 
-export function useContentBounds(chromeRef: RefObject<HTMLElement | null>): void {
+export function useContentBounds(contentRef: RefObject<HTMLElement | null>): void {
   useEffect(() => {
-    const chrome = chromeRef.current;
-    if (chrome === null) return;
+    const container = contentRef.current;
+    if (container === null) return;
 
     const report = (): void => {
-      const y = Math.round(chrome.getBoundingClientRect().height);
+      // 容器矩形即 WebContentsView 覆盖区（视图 x/y 相对窗口内容区，与 CSS 像素一致）
+      const rect = container.getBoundingClientRect();
       const bounds: ContentBounds = {
-        x: 0,
-        y,
-        width: Math.round(window.innerWidth),
-        height: Math.max(Math.round(window.innerHeight) - y, 0),
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
       };
       window.aibrowse.ui.reportContentBounds(bounds);
     };
 
-    report(); // 挂载即上报一次：窗口首次显示前的兜底 bounds（y=0）立即被校正（§6）
+    report(); // 挂载即上报一次：窗口首次显示前的兜底 bounds 立即被校正（§6）
 
     let timer: ReturnType<typeof setTimeout> | null = null;
     const schedule = (): void => {
@@ -31,11 +32,11 @@ export function useContentBounds(chromeRef: RefObject<HTMLElement | null>): void
       timer = setTimeout(report, DEBOUNCE_MS);
     };
     const observer = new ResizeObserver(schedule);
-    observer.observe(chrome);
+    observer.observe(container);
 
     return () => {
       observer.disconnect();
       if (timer !== null) clearTimeout(timer);
     };
-  }, [chromeRef]);
+  }, [contentRef]);
 }

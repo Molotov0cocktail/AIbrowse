@@ -131,3 +131,17 @@ export interface ProviderConfig {
   model: string; // Non-empty
   // apiKey is NOT part of this structure — SecureCredentialStore alone holds keys
 }
+
+// v1 唯一已注册 Provider kind（决议 #20）：S4 设置 UI 只配置该 kind，不新增多 Provider
+// 选择 UI。常量放 shared：main（工厂注册）与 renderer（ProviderSettings）共用单一事实源。
+export const PROVIDER_KIND_OPENAI_COMPATIBLE = 'openai-compatible';
+
+// list() 条目（§3.5）：渲染层/设置 UI 可见的 Provider 摘要——hasKey 为布尔，
+// 任何 Key 值都不在此结构内（Key 只写不读，§3.4/§4.2）。
+export interface ProviderInfo {
+  providerId: string;
+  label: string;
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+}

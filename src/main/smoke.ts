@@ -1,6 +1,7 @@
 // 冒烟自检（T2 起扩展）：AIBROWSE_SMOKE=1 时在主进程内驱动浏览器核心场景并断言。
 // 场景（§10 + T3 扩展）：多 view 创建/切换/关闭、最后 Tab 自动新建、可选真实 URL 加载、
 // dispose 幂等与无泄漏；T3 新增 UI 窗口导航保护拦截验证（R-01）与渲染层 bounds 上报生效验证（§6）。
+// S3 起覆盖 AI 共读主进程矩阵 1–8；S4 起覆盖 AI 面板 UI 端到端矩阵 1–12（§13.2）。
 // 任何断言失败 → logError + 抛出，入口 catch 后以退出码 1 结束（与基线冒烟语义一致）。
 
 import { app, session, webContents, WebContentsView } from 'electron';
@@ -16,10 +17,29 @@ import { getCurrentLogFilePath, logError, logInfo } from './logger';
 import { ConversationServiceImpl } from './ai/conversation-service';
 import { ConversationStore } from './ai/conversation-store';
 import { ConfigStore } from './ai/config-store';
+import { isCiphertextShape, SecureCredentialStoreImpl } from './ai/credential-store';
+import { SafeStorageCipher } from './ai/safe-storage-cipher';
+import { SYSTEM_PROMPT } from './ai/context-builder';
 import { FakeProvider, type FakeProviderScript } from './ai/provider/fake-provider';
 import { registerProviderFactory } from './ai/provider/llm-provider';
 import type { SecureCredentialStore } from './ai/credential-store';
-import type { StreamChunkEvent, TurnDoneEvent } from '../shared/types/conversation';
+import type {
+  ConversationSession,
+  ProviderInfo,
+  StreamChunkEvent,
+  TurnDoneEvent,
+} from '../shared/types/conversation';
+
+// S4：UI 端到端冒烟——index.ts 冒烟模式装配的 ConversationServiceImpl 经此 holder 注入
+// FakeProvider（每 ask 新实例，脚本由本文件场景设置；getLastRequest 供注入结构断言）。
+export const smokeUiFake: { holder: FakeProvider | null; script: FakeProviderScript } = {
+  holder: null,
+  script: {},
+};
+
+export function setSmokeUiFakeScript(script: FakeProviderScript): void {
+  smokeUiFake.script = script;
+}
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -42,6 +62,7 @@ function assert(condition: boolean, message: string): asserts condition {
 export interface SmokeOptions {
   loadUrl?: string;
   uiWindow?: BrowserWindow | null; // T3：UI 窗口导航保护拦截与 bounds 上报生效验证用
+  aiSmokeDir?: string; // S4：冒烟模式 AI 子系统数据目录（UI 端到端矩阵断言/清理用）
 }
 
 // ---------- T4：受控采集页面（真实 Electron 集成冒烟，不依赖外网） ----------
@@ -87,6 +108,18 @@ const INNER_HTML = `<!doctype html>
 <body><h1>内部文档标题</h1></body>
 </html>`;
 
+// S4：长文页（正文 > 300 字符，非薄快照）——验证徽标无「稀薄」提示的路径
+//（受控小页面正文普遍 < 300 字符、会被判为薄快照，故专设此页）。
+const LONG_TEXT = '长文内容用于验证非薄快照的共读链路与上下文预算。';
+const LONG_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>长文采集页</title></head>
+<body>
+  <h1>长文页标题</h1>
+  <p>${LONG_TEXT.repeat(30)}</p>
+</body>
+</html>`;
+
 // T5 敌对页面（elementId 审查）：预置重复/畸形/超大/负数/冲突的 data-aibrowse-el 烙印，
 // 验证一次快照内 id 唯一、格式合法、且每个 id 无歧义对应本次快照中的真实元素（§8.4/§8.6）。
 // 另含跨集合元素（a[role=button]、input[type=button] 同时进入两个集合）验证同元素同 id。
@@ -116,6 +149,7 @@ interface ControlledPages {
   simpleUrl: string;
   iframeUrl: string;
   hostileUrl: string;
+  longUrl: string;
   redirectOkUrl: string;
   redirectEvilUrl: string;
   setCookieUrl: string;
@@ -152,6 +186,11 @@ async function startControlledPages(): Promise<ControlledPages> {
     if (req.url === '/hostile') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(HOSTILE_HTML);
+      return;
+    }
+    if (req.url === '/long') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(LONG_HTML);
       return;
     }
     if (req.url === '/redirect-ok') {
@@ -201,6 +240,7 @@ async function startControlledPages(): Promise<ControlledPages> {
     simpleUrl: `${base}/simple`,
     iframeUrl: `${base}/iframe`,
     hostileUrl: `${base}/hostile`,
+    longUrl: `${base}/long`,
     redirectOkUrl: `${base}/redirect-ok`,
     redirectEvilUrl: `${base}/redirect-evil`,
     setCookieUrl: `${base}/set-cookie`,
@@ -292,6 +332,102 @@ async function uiTabTitle(uiWc: WebContents, index: number): Promise<string> {
     uiWc,
     `document.querySelectorAll('[role="tab"]')[${index}].querySelector('.tab-title').textContent`,
   )) as string;
+}
+
+// ---------- S4：AI 面板 UI 驱动辅助（沿用 T5 原生事件手法） ----------
+
+async function uiText(uiWc: WebContents, selector: string): Promise<string> {
+  return (await uiJs(
+    uiWc,
+    `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ''`,
+  )) as string;
+}
+
+async function uiTextAll(uiWc: WebContents, selector: string): Promise<string[]> {
+  return (await uiJs(
+    uiWc,
+    `[...document.querySelectorAll(${JSON.stringify(selector)})].map((el) => el.textContent)`,
+  )) as string[];
+}
+
+// 受控 textarea 写入（AI 提问输入）：原型 value setter + input 事件 → React onChange，
+// 随后 keydown Enter 触发发送（与 T5 地址栏同一标准 React 驱动手法）。
+async function typeIntoComposer(uiWc: WebContents, text: string): Promise<void> {
+  await uiJs(
+    uiWc,
+    `(() => {
+      const el = document.querySelector('.ai-composer-textarea');
+      if (!el) throw new Error('AI 输入框不存在');
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(el, ${JSON.stringify(text)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`,
+  );
+  await delay(100); // React setState 落定后再发 Enter（防御批处理时序）
+  await uiJs(
+    uiWc,
+    `(() => {
+      const el = document.querySelector('.ai-composer-textarea');
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    })()`,
+  );
+}
+
+// 受控 input 写入（Provider 设置表单）：与地址栏同一手法
+async function typeIntoUiInput(uiWc: WebContents, selector: string, text: string): Promise<void> {
+  await uiJs(
+    uiWc,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) throw new Error('输入元素不存在：' + ${JSON.stringify(selector)});
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(el, ${JSON.stringify(text)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`,
+  );
+  await delay(100);
+}
+
+async function waitForUiText(
+  uiWc: WebContents,
+  selector: string,
+  includes: string,
+  timeoutMs: number,
+  failure: string,
+): Promise<void> {
+  await waitFor(async () => (await uiText(uiWc, selector)).includes(includes), timeoutMs, failure);
+}
+
+async function uiHas(uiWc: WebContents, selector: string): Promise<boolean> {
+  return (await uiJs(
+    uiWc,
+    `document.querySelector(${JSON.stringify(selector)}) !== null`,
+  )) as boolean;
+}
+
+async function uiCount(uiWc: WebContents, selector: string): Promise<number> {
+  return (await uiJs(
+    uiWc,
+    `document.querySelectorAll(${JSON.stringify(selector)}).length`,
+  )) as number;
+}
+
+// 全部消息文本（含流式气泡）的聚合视图，供流式/终态断言
+function messagesSelector(): string {
+  return '.ai-message .ai-message-content';
+}
+
+async function uiMessages(uiWc: WebContents): Promise<string> {
+  return (await uiTextAll(uiWc, messagesSelector())).join('\n');
+}
+
+// 当前会话 id（经 bridge list()——真实 IPC 链路读回，供文件断言）
+async function currentUiSessionId(uiWc: WebContents): Promise<string> {
+  const sessions = (await uiJs(
+    uiWc,
+    'window.aibrowse.conversation.list()',
+  )) as ConversationSession[];
+  return sessions[0]?.id ?? '';
 }
 
 // ---------- S3：AI 共读场景（冒烟矩阵 1–8 主进程驱动，FakeProvider 离线确定性） ----------
@@ -733,6 +869,613 @@ export async function runAiConversationScenarios(
     return { runL3, cleanup };
   } catch (err) {
     logError('smoke', 'AI 共读冒烟场景失败', err);
+    await cleanup();
+    throw err;
+  }
+}
+
+// ---------- S4：AI 共读 UI 端到端冒烟（矩阵 1–3/5–12；矩阵 4 由返回句柄 dispose 后执行） ----------
+// 全链路真实：React DOM 事件 → preload bridge → IPC（sender 校验）→ ConversationServiceImpl
+// → FakeProvider（冒烟装配注入）→ 事件推送 → DOM 更新。会话数据落在冒烟临时目录
+// （aiSmokeDir，主进程装配即用），场景 10 凭据为真实 safeStorage 密文。
+const PANEL_WIDTH = 380; // §11.2 定宽（bounds 断言基准）
+const SMOKE_KEY_MARKER = 'smoke-key-marker-aibrowse-9f3k2x'; // 场景 10 非真实可识别测试标记
+
+export interface AiUiSmokeHandle {
+  runL3Ui: () => Promise<void>; // 矩阵 4：dispose 后经 UI 提问 → 无网页上下文
+  cleanup: () => Promise<void>;
+}
+
+export async function runAiUiScenarios(
+  controller: BrowserController,
+  uiWindow: BrowserWindow,
+  aiSmokeDir: string,
+): Promise<AiUiSmokeHandle> {
+  const uiWc = uiWindow.webContents;
+  const logFile = getCurrentLogFilePath();
+  const logOffsetBefore = statSync(logFile).size; // 场景 10 日志字节扫描区间起点
+  const sessionsDir = join(aiSmokeDir, 'conversations');
+  const [winW, winH] = uiWindow.getContentSize();
+
+  const activeViewBounds = async (): Promise<{ width: number; height: number } | null> => {
+    const view = visibleTabView(uiWindow);
+    return view === null ? null : view.getBounds();
+  };
+
+  const waitActiveUrl = async (url: string, failure: string): Promise<void> => {
+    await waitFor(
+      async () => {
+        const t = await controller.getActiveTab();
+        return t !== null && t.url === url && t.state === 'ready';
+      },
+      10000,
+      failure,
+    );
+  };
+
+  const lastRequestUser = (): string =>
+    smokeUiFake.holder?.getLastRequest()?.messages.at(-1)?.content ?? '';
+
+  const cleanup = async (): Promise<void> => {
+    try {
+      rmSync(aiSmokeDir, { recursive: true, force: true });
+    } catch (error) {
+      logError('smoke', 'AI UI 冒烟临时目录清理失败', error);
+    }
+  };
+
+  // 矩阵 4（L3）：dispose 后无任何标签页 → 预览 mode=none、提问无 web 块、无异常。
+  // 徽标刷新：dispose 不推送 tabs:updated，用焦点事件驱动防抖刷新（§6.3 触发时机之一）。
+  const runL3Ui = async (): Promise<void> => {
+    setSmokeUiFakeScript({ chunks: ['无上下文回答。'] });
+    await uiJs(uiWc, `window.dispatchEvent(new Event('focus'))`);
+    await waitForUiText(
+      uiWc,
+      '.ai-context-label',
+      '无网页上下文',
+      5000,
+      '矩阵 4：徽标未显示无网页上下文',
+    );
+    await typeIntoComposer(uiWc, '页面已销毁的问题');
+    await waitFor(
+      async () => (await uiMessages(uiWc)).includes('无上下文回答。'),
+      10000,
+      '矩阵 4：dispose 后提问未在 10 秒内完成',
+    );
+    const lastUser4 = lastRequestUser();
+    assert(lastUser4.includes('页面已销毁的问题'), '矩阵 4 请求应含问题原文');
+    assert(!lastUser4.includes('UNTRUSTED_WEB_CONTENT'), '矩阵 4 L3 请求不得含 web 块');
+    // 本轮（最后一条 assistant 消息）不得带错误标记——历史中的旧错误标记不参与断言
+    const lastAssistantHasError = (await uiJs(
+      uiWc,
+      `(() => {
+        const msgs = [...document.querySelectorAll('.ai-message-assistant')];
+        const last = msgs[msgs.length - 1];
+        return last !== undefined && last.querySelector('.ai-status-error') !== null;
+      })()`,
+    )) as boolean;
+    assert(!lastAssistantHasError, '矩阵 4 dispose 后提问不得出现错误标记');
+    logInfo('smoke', 'AI 共读 UI 矩阵 4 通过（dispose 后提问 → mode=none 无异常）');
+  };
+
+  try {
+    const pages = await startControlledPages();
+    try {
+      // —— 矩阵 9（开）：面板开 → 活动 view bounds.width 收缩 380（§11.2） ——
+      await waitFor(
+        async () => (await activeViewBounds())?.width === winW,
+        5000,
+        '矩阵 9 前置：面板未开时活动 view bounds 应为窗口全宽',
+      );
+      await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
+      await waitForUiText(uiWc, '.ai-panel-title', 'AI 共读助手', 5000, '矩阵 9：AI 面板未打开');
+      await waitFor(
+        async () => (await activeViewBounds())?.width === winW - PANEL_WIDTH,
+        5000,
+        `矩阵 9：面板打开后活动 view bounds.width 未收缩到窗口宽-${PANEL_WIDTH}`,
+      );
+      logInfo('smoke', 'AI 共读 UI 矩阵 9（开）：面板打开后 bounds 收缩 380');
+
+      // —— 矩阵 5：薄快照（空白页正文稀薄 → thin 徽标提示 + 提问正常） ——
+      await waitForUiText(
+        uiWc,
+        '.ai-context-label',
+        '当前网页',
+        5000,
+        '矩阵 5：徽标未显示当前网页',
+      );
+      await waitForUiText(uiWc, '.ai-context-hint', '稀薄', 5000, '矩阵 5：徽标未显示薄快照提示');
+      setSmokeUiFakeScript({ chunks: ['薄快照回答。'] });
+      await clickUi(uiWc, '.ai-new-session');
+      await waitFor(
+        async () => (await uiCount(uiWc, '.ai-session-item')) === 1,
+        5000,
+        '矩阵 5：新建会话后会话列表应有 1 项',
+      );
+      await typeIntoComposer(uiWc, '空白页的问题');
+      await waitFor(
+        async () => (await uiMessages(uiWc)).includes('薄快照回答。'),
+        10000,
+        '矩阵 5：空白页提问未在 10 秒内完成',
+      );
+      await waitForUiText(
+        uiWc,
+        '.ai-citation-warnings',
+        '稀薄',
+        5000,
+        '矩阵 5：追溯卡片应含薄快照提示',
+      );
+      const lastUser5 = lastRequestUser();
+      assert(lastUser5.includes('空白页的问题'), '矩阵 5 请求应含问题原文');
+      assert(lastUser5.includes('about:blank'), '矩阵 5 请求 web 块应带空白页 url');
+      assert(lastUser5.includes('UNTRUSTED_WEB_CONTENT'), '矩阵 5 thin 仍发送（块内仅身份信息）');
+      const session5Id = await currentUiSessionId(uiWc);
+      assert(
+        existsSync(join(sessionsDir, `${session5Id}.json`)),
+        '矩阵 8 前置：普通会话提问后消息文件应落盘',
+      );
+      logInfo('smoke', 'AI 共读 UI 矩阵 5 通过（薄快照徽标 + thin 提示 + 提问正常）');
+
+      // —— 矩阵 1：端到端流式——delta 逐块到达渲染 DOM、turn-done complete、追溯卡片 ——
+      setSmokeUiFakeScript({
+        chunks: [
+          { text: '第一段。', delayMs: 300 },
+          { text: '第二段。', delayMs: 500 },
+          { text: '第三段。', delayMs: 500 },
+        ],
+      });
+      await typeIntoAddressBar(uiWc, pages.longUrl);
+      await waitActiveUrl(pages.longUrl, '矩阵 1：长文页未在 10 秒内就绪');
+      // 长文页非薄快照：徽标「当前网页」且无「稀薄」提示（tabs:updated 驱动即时刷新）
+      await waitForUiText(
+        uiWc,
+        '.ai-context-label',
+        '当前网页',
+        5000,
+        '矩阵 1：徽标未显示当前网页',
+      );
+      await waitFor(
+        async () => (await uiText(uiWc, '.ai-context-hint')) === '',
+        5000,
+        '矩阵 1：非薄页面徽标不得含稀薄提示',
+      );
+      await typeIntoComposer(uiWc, '总结这个页面');
+      await waitFor(
+        async () => (await uiMessages(uiWc)).includes('第一段。'),
+        5000,
+        '矩阵 1：首个流式分块未在 5 秒内到达 DOM',
+      );
+      assert(
+        !(await uiMessages(uiWc)).includes('第三段。'),
+        '矩阵 1：delta 应逐块到达渲染 DOM（第三段不得与首块同时出现）',
+      );
+      await waitFor(
+        async () => (await uiMessages(uiWc)).includes('第一段。第二段。第三段。'),
+        10000,
+        '矩阵 1：完整流式回答未在 10 秒内到达 DOM',
+      );
+      await waitFor(
+        async () => (await uiTextAll(uiWc, '.ai-citation-url')).at(-1) === pages.longUrl,
+        5000,
+        '矩阵 1：追溯卡片 url 应为提问时页 URL',
+      );
+      assert(
+        !(await uiHas(uiWc, '.ai-status-error')),
+        '矩阵 1 turn-done 应为 complete（无错误标记）',
+      );
+      const req1 = smokeUiFake.holder?.getLastRequest();
+      assert(
+        req1 !== null && req1 !== undefined && req1.model === 'fake-model',
+        '矩阵 1 请求 model 应来自配置',
+      );
+      assert(
+        req1?.messages.at(-1)?.content.includes('长文页标题') === true,
+        '矩阵 1 请求应含真实页面正文（长文页标题）',
+      );
+      assert(
+        req1?.messages.at(-1)?.content.includes('UNTRUSTED_WEB_CONTENT') === true,
+        '矩阵 1 请求应含 web 块',
+      );
+      logInfo('smoke', 'AI 共读 UI 矩阵 1 通过（流式分块渐进 DOM + complete + 追溯卡片）');
+
+      // —— 矩阵 2：selection 独占——选中文本后提问，请求含 selection 不含页面正文 ——
+      const pageWc2 = visibleTabView(uiWindow)?.webContents;
+      assert(pageWc2 !== undefined, '矩阵 2 应有可见活动 Tab 视图');
+      await pageWc2.executeJavaScript(
+        `(() => {
+        const p = document.querySelector('p');
+        const range = document.createRange();
+        range.selectNodeContents(p);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      })()`,
+      );
+      // 选中变化无 tabs:updated——焦点事件驱动徽标防抖刷新（§6.3）
+      await uiJs(uiWc, `window.dispatchEvent(new Event('focus'))`);
+      await waitFor(
+        async () => (await uiText(uiWc, '.ai-context-label')).startsWith('选中文本（'),
+        5000,
+        '矩阵 2：徽标未显示选中文本模式',
+      );
+      setSmokeUiFakeScript({ chunks: ['选中文本回答。'] });
+      await typeIntoComposer(uiWc, '解释我选中的这段');
+      await waitFor(
+        async () => (await uiMessages(uiWc)).includes('选中文本回答。'),
+        10000,
+        '矩阵 2：selection 提问未在 10 秒内完成',
+      );
+      const lastUser2 = lastRequestUser();
+      assert(lastUser2.includes('<selection>'), '矩阵 2 请求应含 <selection> 块');
+      assert(
+        lastUser2.includes('长文内容用于验证非薄快照的共读链路与上下文预算'),
+        '矩阵 2 请求应含选中文本',
+      );
+      assert(!lastUser2.includes('长文页标题'), '矩阵 2 请求不得含页面正文（selection 独占）');
+      const citations2 = await uiTextAll(uiWc, '.ai-citation');
+      assert(citations2.at(-1)?.includes('选中文本') === true, '矩阵 2 追溯卡片应显示选中文本徽标');
+      assert(
+        (await uiTextAll(uiWc, '.ai-citation-excerpt')).at(-1)?.includes('长文内容') === true,
+        '矩阵 2 追溯卡片应含选中摘录',
+      );
+      await pageWc2.executeJavaScript(`window.getSelection().removeAllRanges()`); // 清理 selection
+      logInfo('smoke', 'AI 共读 UI 矩阵 2 通过（selection 独占：含选中文本、不含页面正文）');
+
+      // —— 矩阵 3：防串页（UI 驱动）——切页后提问，请求含页 B 内容、不含页 A 内容 ——
+      setSmokeUiFakeScript({ chunks: ['页面B回答。'] });
+      await typeIntoAddressBar(uiWc, pages.iframeUrl);
+      await waitActiveUrl(pages.iframeUrl, '矩阵 3：页面 B 未在 10 秒内就绪');
+      await typeIntoComposer(uiWc, '这个页面讲了什么');
+      await waitFor(
+        async () => (await uiMessages(uiWc)).includes('页面B回答。'),
+        10000,
+        '矩阵 3：页面 B 提问未在 10 秒内完成',
+      );
+      await waitFor(
+        async () => (await uiTextAll(uiWc, '.ai-citation-url')).at(-1) === pages.iframeUrl,
+        5000,
+        '矩阵 3：追溯卡片 url 应为页面 B',
+      );
+      const lastUser3 = lastRequestUser();
+      assert(lastUser3.includes('带框架页'), '矩阵 3：请求应含页面 B 内容');
+      assert(!lastUser3.includes('长文页标题'), '矩阵 3：页面 A 内容不得出现在页面 B 轮（防串页）');
+      logInfo('smoke', 'AI 共读 UI 矩阵 3 通过（切页后上下文正确更新，无串页）');
+
+      // —— 矩阵 7：错误归一化（UI 展示）——401 → invalid-key 文案；超时 → timeout 文案 ——
+      // 错误标记按消息逐条渲染：断言取「最后一条」错误标记（最新一轮的终态）
+      setSmokeUiFakeScript({ error: { httpStatus: 401 } });
+      await typeIntoComposer(uiWc, '触发 401 的问题');
+      await waitFor(
+        async () =>
+          (await uiTextAll(uiWc, '.ai-status-error'))
+            .at(-1)
+            ?.includes('API Key 无效或无权限，请检查设置') === true,
+        10000,
+        '矩阵 7：401 未归一化展示 invalid-key 文案',
+      );
+      assert(
+        (await uiMessages(uiWc)).includes('触发 401 的问题'),
+        '矩阵 7：失败轮 user 消息仍应展示（引用链先于生成落地）',
+      );
+      setSmokeUiFakeScript({ error: { code: 'timeout' } });
+      await typeIntoComposer(uiWc, '触发超时的问题');
+      await waitFor(
+        async () =>
+          (await uiTextAll(uiWc, '.ai-status-error')).at(-1)?.includes('请求超时，请稍后重试') ===
+          true,
+        10000,
+        '矩阵 7：超时未归一化展示 timeout 文案',
+      );
+      logInfo('smoke', 'AI 共读 UI 矩阵 7 通过（401/超时错误文案展示）');
+
+      // —— 矩阵 6：中止——慢速 FakeProvider 中途「中止」→ 流停 + 已中止 + 部分保留 ——
+      // 分块文案用本矩阵独有文本（会话历史累积，断言不得误中前几轮回答）
+      setSmokeUiFakeScript({
+        chunks: [
+          '中止测试第一部分，',
+          { text: '中止测试第二部分，', delayMs: 400 },
+          { text: '中止测试第三部分。', delayMs: 400 },
+        ],
+      });
+      await typeIntoComposer(uiWc, '中止我');
+      await waitFor(async () => uiHas(uiWc, '.ai-abort'), 5000, '矩阵 6：中止按钮未出现');
+      await waitFor(
+        async () => (await uiMessages(uiWc)).includes('中止测试第一部分，'),
+        5000,
+        '矩阵 6：首个分块未到达 DOM',
+      );
+      await clickUi(uiWc, '.ai-abort');
+      await waitForUiText(uiWc, '.ai-status-aborted', '已中止', 5000, '矩阵 6：已中止标记未出现');
+      assert((await uiMessages(uiWc)).includes('中止测试第一部分，'), '矩阵 6：应保留已生成部分');
+      await delay(800); // 等待潜在后续分块（若中止未生效将持续生成）
+      assert(
+        !(await uiMessages(uiWc)).includes('中止测试第三部分。'),
+        '矩阵 6：中止后不得继续生成',
+      );
+      assert(!(await uiHas(uiWc, '.ai-abort')), '矩阵 6：终态后中止按钮应消失（可重新提问）');
+      logInfo('smoke', 'AI 共读 UI 矩阵 6 通过（中止保留部分 + 流停 + 状态标记）');
+
+      // —— 矩阵 8：会话持久化 / 不保存 / 删除（UI 驱动）+ 重启恢复 ——
+      const persistedId = session5Id;
+      await clickUi(uiWc, '.ai-new-session');
+      await waitFor(
+        async () => (await uiCount(uiWc, '.ai-session-item')) === 2,
+        5000,
+        '矩阵 8：新建会话后应有 2 个会话',
+      );
+      const ephemeralId = await currentUiSessionId(uiWc);
+      assert(ephemeralId !== '' && ephemeralId !== persistedId, '矩阵 8：新会话应成为当前会话');
+      await clickUi(uiWc, '.ai-session-ephemeral'); // 切换「不保存」
+      await waitForUiText(uiWc, '.ai-session-flag', '不保存', 5000, '矩阵 8：不保存标记未出现');
+      setSmokeUiFakeScript({ chunks: ['不保存回答。'] });
+      await typeIntoComposer(uiWc, '不保存的提问');
+      await waitFor(
+        async () => (await uiMessages(uiWc)).includes('不保存回答。'),
+        10000,
+        '矩阵 8：ephemeral 提问未在 10 秒内完成',
+      );
+      assert(
+        !existsSync(join(sessionsDir, `${ephemeralId}.json`)),
+        '矩阵 8：ephemeral 会话提问后不得落盘（不保存红线）',
+      );
+      await clickUi(uiWc, '.ai-session-ephemeral'); // 切换回「保存」
+      await waitFor(
+        async () => !(await uiHas(uiWc, '.ai-session-flag')),
+        5000,
+        '矩阵 8：保存模式标记未消失',
+      );
+      assert(
+        existsSync(join(sessionsDir, `${ephemeralId}.json`)),
+        '矩阵 8：setEphemeral(false) 后既有消息应落盘',
+      );
+      await clickUi(uiWc, '.ai-session-item.active .ai-session-delete');
+      await waitFor(
+        async () => (await uiCount(uiWc, '.ai-session-item')) === 1,
+        5000,
+        '矩阵 8：删除后会话列表应剩 1 项',
+      );
+      assert(!existsSync(join(sessionsDir, `${ephemeralId}.json`)), '矩阵 8：删除后消息文件应消失');
+      // 重启恢复：全新 Service 实例读同一目录（真实文件），普通会话历史完整
+      const restartCredentials = new SecureCredentialStoreImpl(aiSmokeDir, new SafeStorageCipher());
+      const restarted = new ConversationServiceImpl({
+        browser: controller,
+        store: new ConversationStore(aiSmokeDir),
+        configStore: new ConfigStore(aiSmokeDir, restartCredentials),
+        credentials: restartCredentials,
+      });
+      try {
+        const ids = (await restarted.listSessions()).map((s) => s.id);
+        assert(ids.includes(persistedId), '矩阵 8：重启后应恢复普通会话');
+        assert(!ids.includes(ephemeralId), '矩阵 8：重启后不得恢复已删会话');
+        const h = await restarted.getHistory(persistedId);
+        assert(
+          h !== null && h.some((m) => m.content === '空白页的问题'),
+          '矩阵 8：重启后历史应完整恢复（含多轮消息）',
+        );
+        logInfo('smoke', 'AI 共读 UI 矩阵 8 通过（持久化/不保存/删除/重启恢复）');
+      } finally {
+        restarted.dispose();
+      }
+
+      // —— 矩阵 9（其余）：收起恢复 / DebugPanel 变化 / 切 Tab 保持 / 窗口缩放跟随 ——
+      await clickUi(uiWc, '.ai-collapse');
+      await waitFor(
+        async () => (await activeViewBounds())?.width === winW,
+        5000,
+        '矩阵 9：面板收起后 bounds 未恢复全宽',
+      );
+      await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
+      await waitFor(
+        async () => (await activeViewBounds())?.width === winW - PANEL_WIDTH,
+        5000,
+        '矩阵 9：面板重新打开后 bounds 未收缩 380',
+      );
+      // 面板重开 = 重挂载：等待会话恢复（后续矩阵 11 提问需要当前会话）
+      await waitFor(
+        async () => (await uiCount(uiWc, '.ai-session-item')) === 1,
+        5000,
+        '矩阵 9：面板重开后会话列表未恢复',
+      );
+      const boundsExpanded = await activeViewBounds();
+      assert(boundsExpanded !== null, '矩阵 9：应有活动 view bounds');
+      await clickUi(uiWc, '.debug-toggle'); // 收起调试面板 → 内容区变高
+      await waitFor(
+        async () => {
+          const b = await activeViewBounds();
+          return b !== null && b.height !== boundsExpanded?.height;
+        },
+        5000,
+        '矩阵 9：DebugPanel 收起后 bounds 高度未变化',
+      );
+      const boundsDebugCollapsed = await activeViewBounds();
+      assert(
+        (boundsDebugCollapsed?.height ?? 0) > (boundsExpanded?.height ?? 0),
+        '矩阵 9：DebugPanel 收起后内容区应更高',
+      );
+      await clickUi(uiWc, '.debug-toggle'); // 展开恢复
+      await waitFor(
+        async () => (await activeViewBounds())?.height === boundsExpanded?.height,
+        5000,
+        '矩阵 9：DebugPanel 展开后 bounds 高度未恢复',
+      );
+      await clickUi(uiWc, 'button[aria-label="新建标签页"]'); // 切 Tab → bounds 应用到新活动 view
+      await waitFor(
+        async () => (await controller.getTabs()).length === 2,
+        5000,
+        '矩阵 9：新建标签页后应有 2 个标签页',
+      );
+      await waitFor(
+        async () => {
+          const b = await activeViewBounds();
+          return (
+            b !== null && b.width === winW - PANEL_WIDTH && b.height === boundsExpanded?.height
+          );
+        },
+        5000,
+        '矩阵 9：切换 Tab 后 bounds 应保持',
+      );
+      uiWindow.setContentSize(1100, 700); // 窗口缩放 → bounds 跟随
+      await waitFor(
+        async () => (await activeViewBounds())?.width === 1100 - PANEL_WIDTH,
+        5000,
+        '矩阵 9：窗口缩放后 bounds.width 未跟随（应为窗口宽-380）',
+      );
+      uiWindow.setContentSize(winW, winH); // 恢复窗口尺寸
+      await waitFor(
+        async () => (await activeViewBounds())?.width === winW - PANEL_WIDTH,
+        5000,
+        '矩阵 9：窗口尺寸恢复后 bounds 未恢复',
+      );
+      logInfo(
+        'smoke',
+        'AI 共读 UI 矩阵 9 通过（开/关 380、DebugPanel、切 Tab、窗口缩放全路径 bounds 正确）',
+      );
+
+      // —— 矩阵 10：Key 安全（真实 safeStorage 运行：密文落盘、DOM/日志无值、无读回通道） ——
+      await clickUi(uiWc, '.ai-settings-open');
+      await waitForUiText(
+        uiWc,
+        '.ai-settings-title',
+        'Provider 设置',
+        5000,
+        '矩阵 10：设置界面未打开',
+      );
+      await typeIntoUiInput(uiWc, '.ai-settings-baseurl', 'https://smoke-provider.example/v1');
+      await typeIntoUiInput(uiWc, '.ai-settings-model', 'smoke-model');
+      await typeIntoUiInput(uiWc, '.ai-settings-key', SMOKE_KEY_MARKER);
+      await clickUi(uiWc, '.ai-settings-save');
+      await waitForUiText(uiWc, '.ai-settings-notice', '已保存', 5000, '矩阵 10：设置保存未完成');
+      await waitForUiText(
+        uiWc,
+        '.ai-settings-haskey',
+        '已保存',
+        5000,
+        '矩阵 10：hasKey 状态未显示已保存',
+      );
+      assert(
+        ((await uiJs(uiWc, `document.querySelector('.ai-settings-key').value`)) as string) === '',
+        '矩阵 10：保存后 Key 输入应立即清空（只写不回显）',
+      );
+      const domDump = (await uiJs(uiWc, 'document.body.innerHTML')) as string;
+      assert(!domDump.includes(SMOKE_KEY_MARKER), '矩阵 10：渲染 DOM 不得包含 API Key 值');
+      const logTail = readFileSync(logFile).subarray(logOffsetBefore).toString('utf8');
+      assert(!logTail.includes(SMOKE_KEY_MARKER), '矩阵 10：日志不得包含 API Key 值');
+      const credFile = join(aiSmokeDir, 'credentials.json');
+      assert(existsSync(credFile), '矩阵 10：credentials.json 应已落盘（真实 safeStorage 运行）');
+      const credText = readFileSync(credFile, 'utf8');
+      assert(!credText.includes(SMOKE_KEY_MARKER), '矩阵 10：凭据文件不得含明文 Key');
+      const credJson = JSON.parse(credText) as {
+        version: number;
+        providers: Record<string, string>;
+      };
+      const cipher = credJson.providers['openai-compatible'];
+      assert(
+        typeof cipher === 'string' && isCiphertextShape(cipher),
+        '矩阵 10：凭据文件应为 base64 密文形态',
+      );
+      const infos10 = (await uiJs(
+        uiWc,
+        'window.aibrowse.config.providers.list()',
+      )) as ProviderInfo[];
+      const mine10 = infos10.find((i) => i.providerId === 'openai-compatible');
+      assert(
+        mine10 !== undefined && mine10.hasKey === true,
+        '矩阵 10：list() 应含 openai-compatible 且 hasKey=true',
+      );
+      assert(
+        !Object.prototype.hasOwnProperty.call(mine10, 'apiKey'),
+        '矩阵 10：list() 条目不得含 apiKey 字段（仅 hasKey）',
+      );
+      assert(
+        !JSON.stringify(infos10).includes(SMOKE_KEY_MARKER),
+        '矩阵 10：list() 序列化不得含 Key 值',
+      );
+      assert(
+        ((await uiJs(
+          uiWc,
+          `Object.keys(window.aibrowse.config.providers).sort().join(',')`,
+        )) as string) === 'list,set,setKey',
+        '矩阵 10：bridge 白名单应为 list/set/setKey（无读回方法）',
+      );
+      assert(
+        ((await uiJs(uiWc, `typeof window.aibrowse.config.providers.getKey`)) as string) ===
+          'undefined',
+        '矩阵 10：不得存在 getKey 读回方法',
+      );
+      assert(
+        ((await uiJs(uiWc, `typeof window.aibrowse.config.providers.get`)) as string) ===
+          'undefined',
+        '矩阵 10：不得存在 get 读回方法',
+      );
+      await clickUi(uiWc, '.ai-settings-close');
+      logInfo('smoke', 'AI 共读 UI 矩阵 10 通过（Key 密文落盘 + DOM/日志零暴露 + 无读回通道）');
+
+      // —— 矩阵 11：Prompt Injection 结构断言（敌对页提问）——system 恒等 / 单块闭合 /
+      //    权限处理器默认拒绝（运行时探针）。无写通道与远程隔离由矩阵 12 探针覆盖。 ——
+      setSmokeUiFakeScript({ chunks: ['注入页回答。'] });
+      await typeIntoAddressBar(uiWc, pages.hostileUrl);
+      await waitActiveUrl(pages.hostileUrl, '矩阵 11：敌对页面未在 10 秒内就绪');
+      await typeIntoComposer(uiWc, '解读这个页面');
+      await waitFor(
+        async () => (await uiMessages(uiWc)).includes('注入页回答。'),
+        10000,
+        '矩阵 11：敌对页提问未在 10 秒内完成',
+      );
+      const req11 = smokeUiFake.holder?.getLastRequest();
+      assert(req11 !== null && req11 !== undefined, '矩阵 11：应有 Provider 请求记录');
+      assert(req11.system === SYSTEM_PROMPT, '矩阵 11：system 应恒等于编译期常量');
+      const lastUser11 = req11.messages.at(-1)?.content ?? '';
+      assert(
+        (lastUser11.match(/<UNTRUSTED_WEB_CONTENT /g) ?? []).length === 1 &&
+          (lastUser11.match(/<\/UNTRUSTED_WEB_CONTENT>/g) ?? []).length === 1,
+        '矩阵 11：web 块应恰好单块闭合（内容不可闭合块结构）',
+      );
+      assert(lastUser11.includes('敌对采集页'), '矩阵 11：请求应含敌对页正文（作为被阅读资料）');
+      const hostileWc = visibleTabView(uiWindow)?.webContents;
+      assert(hostileWc !== undefined, '矩阵 11：敌对页面应为活动 Tab');
+      const permResult = (await hostileWc.executeJavaScript(
+        `new Promise((resolve) => {
+        if (typeof navigator.geolocation === 'undefined') { resolve('no-api'); return; }
+        const timer = setTimeout(() => resolve('timeout'), 8000);
+        navigator.geolocation.getCurrentPosition(
+          () => { clearTimeout(timer); resolve('granted'); },
+          (err) => { clearTimeout(timer); resolve('denied:' + err.code); },
+        );
+      })`,
+      )) as string;
+      assert(
+        permResult.startsWith('denied'),
+        `矩阵 11：网页权限请求应被默认拒绝（实际 ${permResult}）`,
+      );
+      logInfo('smoke', 'AI 共读 UI 矩阵 11 通过（system 恒等 + 单块闭合 + 权限默认拒绝）');
+
+      // —— 矩阵 12：远程隔离回归（T5 探针保持）——远程页不可达 bridge/Node/Electron ——
+      const probeWc12 = visibleTabView(uiWindow)?.webContents;
+      assert(probeWc12 !== undefined, '矩阵 12：隔离探针前应有活动 Tab 视图');
+      const probe12 = (await probeWc12.executeJavaScript(
+        `({
+        aibrowse: typeof window.aibrowse,
+        process: typeof window.process,
+        require: typeof window.require,
+        electron: typeof window.electron,
+      })`,
+      )) as { aibrowse: string; process: string; require: string; electron: string };
+      assert(probe12.aibrowse === 'undefined', '矩阵 12：远程页面不得访问 window.aibrowse bridge');
+      assert(probe12.process === 'undefined', '矩阵 12：远程页面不得访问 Node.js process');
+      assert(probe12.require === 'undefined', '矩阵 12：远程页面不得访问 Node.js require');
+      assert(probe12.electron === 'undefined', '矩阵 12：远程页面不得访问 Electron API');
+      logInfo('smoke', 'AI 共读 UI 矩阵 12 通过（远程隔离探针回归）');
+
+      logInfo(
+        'smoke',
+        'AI 共读 UI 矩阵 1–3/5–12 全部通过（UI → bridge → IPC → 服务 → FakeProvider 全链路）',
+      );
+    } finally {
+      await pages.close();
+    }
+    return { runL3Ui, cleanup };
+  } catch (err) {
+    logError('smoke', 'AI 共读 UI 冒烟场景失败', err);
     await cleanup();
     throw err;
   }
@@ -1335,6 +2078,15 @@ export async function runSmokeScenario(
     //     验证真实文件读写，不触碰用户真实 userData
     const aiSmoke = await runAiConversationScenarios(controller, options.uiWindow);
 
+    // 7.9 AI 共读 UI 端到端（S4）：矩阵 1–3/5–12 经真实 UI → bridge → IPC → 服务链路
+    //     （矩阵 4 在 dispose 后经 runL3Ui 执行）；数据目录为主进程冒烟装配的临时目录
+    const aiUiSmoke =
+      options.uiWindow !== null &&
+      options.uiWindow !== undefined &&
+      options.aiSmokeDir !== undefined
+        ? await runAiUiScenarios(controller, options.uiWindow, options.aiSmokeDir)
+        : null;
+
     // 8. 可选真实 URL 加载（AIBROWSE_SMOKE_URL）：验证多 Tab 可开网页 + 标题随页面变化
     if (options.loadUrl !== undefined) {
       const pageTab = await controller.createTab(options.loadUrl);
@@ -1365,15 +2117,18 @@ export async function runSmokeScenario(
     );
 
     // 9.1 矩阵 4（L3 → mode='none'）：dispose 后无任何标签页，提问走真实 L3 路径
+    //     （主进程驱动 + UI 驱动双路径）
     try {
       await aiSmoke.runL3();
+      if (aiUiSmoke !== null) await aiUiSmoke.runL3Ui();
     } finally {
       await aiSmoke.cleanup(); // 会话冒烟临时目录整体清理（含 provider-config 测试残留）
+      if (aiUiSmoke !== null) await aiUiSmoke.cleanup(); // 冒烟 AI 数据目录整体清理
     }
 
     logInfo(
       'smoke',
-      '冒烟场景全部通过（T2 浏览器核心 + T3 UI 闭环 + T4 PageSnapshot 采集 + T5 安全/端到端扩展 + S3 AI 共读矩阵 1–8）',
+      '冒烟场景全部通过（T2 浏览器核心 + T3 UI 闭环 + T4 PageSnapshot 采集 + T5 安全/端到端扩展 + S3 AI 共读矩阵 1–8 + S4 UI 端到端矩阵 1–12）',
     );
   } catch (err) {
     logError('smoke', '冒烟场景失败', err);

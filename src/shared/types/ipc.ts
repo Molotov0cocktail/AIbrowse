@@ -19,9 +19,22 @@ export const IPC = {
   AppRendererReady: 'app:renderer-ready', // 基线已有
   // main → renderer（事件推送）
   TabsUpdated: 'tabs:updated', // payload: TabsState（全量推送，渲染层幂等更新）
-  // —— Second Stage（main → renderer，事件推送；S3 最小装配，完整清单 §4.1，S4 补 invoke 通道）——
+  // —— Second Stage（main → renderer，事件推送；S3 最小装配）——
   ConversationStreamChunk: 'conversation:stream-chunk', // payload: StreamChunkEvent
   ConversationTurnDone: 'conversation:turn-done', // payload: TurnDoneEvent（终态恰好一次）
+  // —— Second Stage（renderer → main，invoke；S4 落地，§4.1 完整清单）——
+  ConversationList: 'conversation:list',
+  ConversationCreate: 'conversation:create', // payload: { ephemeral?: boolean }
+  ConversationHistory: 'conversation:get-history', // payload: { sessionId }
+  ConversationDelete: 'conversation:delete', // payload: { sessionId }
+  ConversationSetEphemeral: 'conversation:set-ephemeral', // payload: { sessionId, ephemeral }
+  ConversationAsk: 'conversation:ask', // payload: { sessionId, question } → AskResult
+  ConversationAbort: 'conversation:abort', // payload: { requestId } → boolean
+  ConversationPreview: 'conversation:preview', // → ContextPreview | null
+  ConfigProvidersList: 'config:providers:list', // → ProviderInfo[]（含 hasKey，无 Key 值）
+  ConfigProvidersSet: 'config:providers:set', // payload: { providerId, baseUrl, model } → boolean
+  ConfigProvidersSetKey: 'config:providers:set-key', // payload: { providerId, apiKey } → boolean
+  //（apiKey='' = 删除；只写不回读）
 } as const;
 
 export interface ContentBounds {
@@ -43,4 +56,39 @@ export interface TabIdPayload {
 export interface NavNavigatePayload {
   tabId: string;
   input: string; // 原始输入，main 侧规范化（§9）
+}
+
+// —— Second Stage（S4，§4.1）：conversation/config invoke payload 类型 ——
+
+export interface ConversationCreatePayload {
+  ephemeral?: boolean;
+}
+
+export interface SessionIdPayload {
+  sessionId: string;
+}
+
+export interface ConversationSetEphemeralPayload {
+  sessionId: string;
+  ephemeral: boolean;
+}
+
+export interface ConversationAskPayload {
+  sessionId: string;
+  question: string;
+}
+
+export interface RequestIdPayload {
+  requestId: string;
+}
+
+export interface ConfigProvidersSetPayload {
+  providerId: string;
+  baseUrl: string;
+  model: string;
+}
+
+export interface ConfigProvidersSetKeyPayload {
+  providerId: string;
+  apiKey: string; // 只写不回读；'' = 删除
 }

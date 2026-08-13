@@ -9,10 +9,11 @@ interface ToolbarProps {
   onForward: () => void;
   onReload: () => void;
   onCreateTab: () => void;
+  onToggleAiPanel: () => void;
   addressBarRef: Ref<HTMLInputElement>;
 }
 
-// 顶部工具栏（First_stage §六）：后退/前进/刷新/地址栏/新建标签页。
+// 顶部工具栏（First_stage §六）：后退/前进/刷新/地址栏/新建标签页 + AI 侧栏开关（S4）。
 // 导航动作由 App 统一以活动 Tab 为对象调用 bridge（UI → BrowserController 分层）。
 export function Toolbar({
   activeTab,
@@ -21,6 +22,7 @@ export function Toolbar({
   onForward,
   onReload,
   onCreateTab,
+  onToggleAiPanel,
   addressBarRef,
 }: ToolbarProps) {
   return (
@@ -47,6 +49,15 @@ export function Toolbar({
         ↻
       </button>
       <AddressBar ref={addressBarRef} activeTab={activeTab} onNavigate={onNavigate} />
+      <button
+        type="button"
+        className="nav-button ai-toggle"
+        aria-label="AI 侧栏"
+        title="AI 侧栏"
+        onClick={onToggleAiPanel}
+      >
+        AI
+      </button>
       <button
         type="button"
         className="nav-button new-tab"
