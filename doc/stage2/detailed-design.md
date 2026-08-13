@@ -154,6 +154,8 @@ export interface ContextBuildInput {
   snapshot: PageSnapshot | null; // ask 时刻实时快照（L3 → null；由 Service 注入）
   history: ConversationMessage[]; // 已按 §7.6 裁剪
   system: string; // SYSTEM_PROMPT 常量（§7.3）
+  requestId: string; // 校准（决议 #18）：ProviderRequest 必填，由 Service 传入（§6.1 生成）
+  model: string; // 校准（决议 #18）：来自 ProviderConfig，由 Service 传入
   budget?: ContextBudget; // 测试/调参可注入，默认 context-budget.ts 常量
 }
 
@@ -174,6 +176,7 @@ export function buildContextSource(
   snapshot: PageSnapshot | null,
   mode: ContextMode,
   thin: boolean,
+  tabId: string | null, // 校准（决议 #18）：PageSnapshot 不含 tabId，由 Service 传入采集时刻活动 Tab id
 ): ContextSource;
 ```
 
@@ -371,11 +374,12 @@ export interface AibrowseBridge {
 2. **实时采集**：`const snapshot = await browserController.getPageSnapshot(activeTabId)`
    —— L3（tab 不可用）→ null；L1/L2 保留 degraded 标记。**禁止复用任何缓存快照**
    （调试面板快照与 AI 上下文零关联——防串页核心，Entry Gate 审查约束①）。
-3. `buildContext({question, snapshot, history, system})` → `{request, meta}`（§7）。
+3. `buildContext({question, snapshot, history, system, requestId, model})` → `{request, meta}`
+   （§7；requestId 先于本步生成、model 来自已加载的 ProviderConfig——决议 #18）。
 4. 组装并**先持久化 user 消息**（content=question，contextSource=buildContextSource(…)+
    meta.warnings）——引用链先于生成落地（追溯卡片在生成失败时依然可见）。
 5. `await resolveProvider(config, store)` → null → 立即 turn-done error（not-configured，
-   无网络请求）；requestId = crypto.randomUUID()，注册 in-flight。
+   无网络请求）；注册 in-flight。
 6. `for await (const e of provider.stream(request, signal))`：delta → `onStreamChunk` 转发；
    累计文本；error/done → 终态。
 7. 终态组装 assistant 消息：complete（全文）/ aborted（保留已生成部分 + status='aborted'）/
@@ -490,6 +494,9 @@ export const SYSTEM_PROMPT: string = `你是 AIbrowse 的网页共读助手，�
   可加一行 `（该轮引用页面：<title> <url>）`（来自 contextSource，≤ 120 字符/条，
   计入历史预算）——让模型知道早期轮次的依据来源而不重注入不可信全文。
   已知限制：跨轮「结合上一页」类追问只能依赖该来源行（快照不囤积，Second_stage.md §7）。
+  实现落点（决议 #18）：裁剪与重放为 context-budget.ts 纯函数 `trimHistory` /
+  `renderHistoryMessageContent`——S3 编排先 `trimHistory` 再传入 buildContext
+  （buildContext 内部亦防御性复用，幂等）；来源行计入单条上限与总预算。
 
 ### 7.7 表格序列化与布局表噪声
 
@@ -690,6 +697,15 @@ export const SYSTEM_PROMPT: string = `你是 AIbrowse 的网页共读助手，�
     Promise 建模 `list()`，§6.1 ask 编排在 async 上下文内 await 无额外成本。
     定稿时 §3.3/§3.5 的同步签名草图与 §3.4 异步接口不自洽，本决议为**校准而非变更**
     （§3.3/§3.5 签名与 §6.1 时序已同步，不留至 S6）。
+18. **S2 落地签名校准（2026-08-13，S2 实现前核对）**：① `ContextBuildInput` 增补
+    `requestId` / `model` 必填字段——§3.2 输出 `request: ProviderRequest` 要求二者，
+    buildContext 为纯函数不应自行生成 id 或读取配置，由 Service 在 ask 编排时传入
+    （§6.1 第 3 步调用前生成 requestId、取得 ProviderConfig）；② `buildContextSource`
+    增补 `tabId` 参数——PageSnapshot（第一阶段契约）不含 tabId，而 ContextSource.tabId
+    为「采集时刻活动 Tab id」，由 Service 传入；③ §7.6 历史裁剪/重放明确实现落点为
+    context-budget.ts 纯函数 `trimHistory` / `renderHistoryMessageContent`（S3 先裁剪
+    再传入，buildContext 内部防御性复用，幂等）。均属**校准而非变更**（定稿时签名
+    草图与 §2/§3.3 类型不自洽，本决议同步 §3.2/§6.1/§7.6，不留至 S6）。
 
 ## 16. 实现顺序与范围边界（S1–S6 映射）
 
