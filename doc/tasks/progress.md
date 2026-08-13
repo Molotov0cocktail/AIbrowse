@@ -53,9 +53,12 @@
   密文落盘/原子写/损坏容错 fail-closed/不可用仅内存降级/sk- 明文形态条目丢弃）；
   ⑦ config-store（baseUrl 仅 http/https 去尾 /、model 非空、加载形状校验 fail-closed、
   list() 含 hasKey）；⑧ logger sanitize 导出 + sk- 形态 Key/apiKey 键值对脱敏。
-  **与定稿签名的两处小调整**（代码注释已写明，S6 契约回填时确认）：`resolveProvider`
-  与 `ConfigStore.list()` 为 async（依赖异步 `store.has()`，§3.4）。不接 IPC/UI、
-  不联网、零新依赖；safeStorage 运行时行为按设计留待 S3+ 冒烟验证（§13.2 场景 10）。
+  **契约一致性校准（2026-08-13 同日闭环，独立 commit）**：`resolveProvider` 与
+  `ConfigStore.list()` 为 async 经独立核对判定必要——§3.4 将 `SecureCredentialStore.has()`
+  定为异步接口（「无 Key → null」与 hasKey 判定必须 await），§4.2 bridge 本就按 Promise
+  建模 `list()`，§6.1 ask 编排在 async 上下文内 await 无成本；设计文档 §3.3/§3.5 签名与
+  §6.1 await 时序已同步并新增决议 #17，不再遗留至 S6。不接 IPC/UI、不联网、零新依赖；
+  safeStorage 运行时行为按计划留待 S4 冒烟验证（§13.2 场景 10）。
 - Second Stage 切换与设计定稿（2026-08-13，纯文档任务，零代码改动）：① 步骤 0 核对——
   git 工作区干净、First Stage Exit Gate 与 Second Stage Entry Gate 均已有独立复验证据；
   ② 定稿 `doc/stage2/proposal.md`（目标/非目标/验收/Q1–Q10 拍板/S1–S6 里程碑）、

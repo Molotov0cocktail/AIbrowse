@@ -1,7 +1,7 @@
 // ConfigStore: provider config JSON persistence (non-secret; API keys are NOT stored here —
 // SecureCredentialStore alone holds them). Contract source:
-// doc/stage2/detailed-design.md §3.5. list() is async because hasKey goes through the
-// async SecureCredentialStore.has() (§3.4) — noted for S6 contract backfill.
+// doc/stage2/detailed-design.md §3.5 (list() signature calibrated to Promise, resolution #17).
+// list() is async because hasKey goes through the async SecureCredentialStore.has() (§3.4).
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { logWarn } from '../logger';

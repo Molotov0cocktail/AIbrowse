@@ -5,7 +5,7 @@
 > S3（§3/§6/§9 ConversationService/编排/持久化）、S4（§4/§11 IPC/bridge/面板/布局）。
 > 实现后所有签名必须用 `grep -n "^export"` 与实际代码核对回填到 AGENTS.md §5。
 > 需求源：Second_stage.md §3–§8；第一阶段契约（`doc/detailed-design.md`）保持有效；
-> 决议记录见本文 §15。
+> 决议记录见本文 §15（含 #17：S1 落地后异步签名校准）。
 
 ## 1. 文件布局（S1–S4 新增，规划）
 
@@ -215,7 +215,9 @@ export interface LLMProvider {
 export function resolveProvider(
   config: ProviderConfig | null,
   store: SecureCredentialStore,
-): LLMProvider | null; // 未配置/无 Key → null（→ not-configured）
+): Promise<LLMProvider | null>; // 未配置/无 Key → null（→ not-configured）
+// 签名校准（2026-08-13，决议 #17）：async——「无 Key → null」判定依赖 §3.4 异步 has()；
+// 调用方在 async 编排内 await（§6.1 步骤 5）
 ```
 
 - **FakeProvider**（S1）：实现同一接口，确定性脚本——按注入脚本逐段产出 delta（可配延迟，
@@ -263,7 +265,9 @@ export interface ProviderConfig {
 export class ConfigStore {
   get(providerId: string): ProviderConfig | null; // 加载时形状校验，非法 → null + warn
   set(config: ProviderConfig): boolean; // 校验失败 → false
-  list(): ProviderInfo[]; // { providerId, label, baseUrl, model, hasKey }
+  // 签名校准（2026-08-13，决议 #17）：hasKey 依赖 §3.4 异步 has()，故为 Promise；
+  // §4.2 bridge 的 list() 本就按 Promise 建模，调用方 await
+  list(): Promise<ProviderInfo[]>; // { providerId, label, baseUrl, model, hasKey }
 }
 ```
 
@@ -370,7 +374,7 @@ export interface AibrowseBridge {
 3. `buildContext({question, snapshot, history, system})` → `{request, meta}`（§7）。
 4. 组装并**先持久化 user 消息**（content=question，contextSource=buildContextSource(…)+
    meta.warnings）——引用链先于生成落地（追溯卡片在生成失败时依然可见）。
-5. `resolveProvider(config, store)` → null → 立即 turn-done error（not-configured，
+5. `await resolveProvider(config, store)` → null → 立即 turn-done error（not-configured，
    无网络请求）；requestId = crypto.randomUUID()，注册 in-flight。
 6. `for await (const e of provider.stream(request, signal))`：delta → `onStreamChunk` 转发；
    累计文本；error/done → 终态。
@@ -680,6 +684,12 @@ export const SYSTEM_PROMPT: string = `你是 AIbrowse 的网页共读助手，�
     容忍设计（Entry Gate 审查约束②③）。
 15. **回答渲染 v1 纯文本**：不引入 Markdown 渲染库（非目标；未来阶段评估）。
 16. **单窗口假设保持**：ConversationService 面向主窗口；多窗口为未来扩展点。
+17. **接口异步签名校准（2026-08-13，S1 落地后核对）**：`resolveProvider`（§3.3）与
+    `ConfigStore.list()`（§3.5）返回 Promise——§3.4 将 `SecureCredentialStore.has()`
+    定为异步接口，「无 Key → null」与 `hasKey` 判定必须 await；§4.2 bridge 已按
+    Promise 建模 `list()`，§6.1 ask 编排在 async 上下文内 await 无额外成本。
+    定稿时 §3.3/§3.5 的同步签名草图与 §3.4 异步接口不自洽，本决议为**校准而非变更**
+    （§3.3/§3.5 签名与 §6.1 时序已同步，不留至 S6）。
 
 ## 16. 实现顺序与范围边界（S1–S6 映射）
 

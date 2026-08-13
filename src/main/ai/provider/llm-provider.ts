@@ -1,7 +1,7 @@
 // LLMProvider interface + provider factory registry + resolveProvider.
-// Contract source: doc/stage2/detailed-design.md §3.3. resolveProvider is async because
-// the key-presence check goes through SecureCredentialStore.has() (async per §3.4) — the
-// only deviation from the design's sync signature sketch, noted for S6 contract backfill.
+// Contract source: doc/stage2/detailed-design.md §3.3 (signature calibrated to Promise,
+// resolution #17). resolveProvider is async because the key-presence check goes through
+// SecureCredentialStore.has() (async per §3.4).
 import type { ProviderConfig } from '../../../shared/types/conversation';
 import type {
   ProviderEvent,

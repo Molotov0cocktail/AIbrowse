@@ -388,9 +388,9 @@ history, system}) → {request, meta}`；`deriveContextMode`（selection 优先�
   `export interface LLMProvider`（`metadata` + `stream(request, signal): AsyncIterable<
 ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
   `ProviderFactory`/`registerProviderFactory`/`listProviderKinds`、`resolveProvider
-(config, store) → Promise<LLMProvider | null>`（**async**——无 Key 判定依赖异步
-  `store.has()`，相对设计同步签名的唯一调整；未配置/无 Key/未注册 kind → null →
-  not-configured，不发起网络请求）。`openai-compatible.ts`——`OpenAICompatibleProvider`
+(config, store) → Promise<LLMProvider | null>`（async——无 Key 判定依赖 §3.4 异步
+  `store.has()`；设计 §3.3 签名已校准为 Promise（决议 #17）；未配置/无 Key/未注册
+  kind → null → not-configured，不发起网络请求）。`openai-compatible.ts`——`OpenAICompatibleProvider`
   （原生 fetch + SSE 自解析：`\n\n` 分帧/`[DONE]`/usage 末帧/末帧 delta+usage 同帧不丢
   内容/CRLF 归一化，`POST {baseUrl}/chat/completions`，Key 请求时从 store 取不缓存、
   适配器不记录请求头，超时 `PROVIDER_TIMEOUTS` 连接 15s/空闲 chunk 60s/总 300s
@@ -412,10 +412,11 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
   `isCiphertextShape`（sk- 明文形态条目丢弃）。`safe-storage-cipher.ts`——
   `SafeStorageCipher`（Electron 薄胶水，运行时行为由 S3+ 冒烟验证 §13.2 场景 10）。
   **渲染层只写不读**（S4：setKey/has，无 get 通道）。`config-store.ts`——
-  `ConfigStore`（`get`/`set`/`list(): Promise<ProviderInfo[]>`——**list 异步**，hasKey
-  依赖异步 `store.has()`；ProviderConfig 定义于 shared 并重导出）+ 纯校验
-  `normalizeBaseUrl`（仅 http/https 去尾 /）/`validateProviderConfig`（model/providerId
-  非空）；文件 `userData/provider-config.json` 形状校验 fail-closed（Key 不入此文件）。
+  `ConfigStore`（`get`/`set`/`list(): Promise<ProviderInfo[]>`——设计 §3.5 签名已校准为
+  Promise（决议 #17）：hasKey 依赖 §3.4 异步 `store.has()`；ProviderConfig 定义于 shared
+  并重导出）+ 纯校验 `normalizeBaseUrl`（仅 http/https 去尾 /）/`validateProviderConfig`
+  （model/providerId 非空）；文件 `userData/provider-config.json` 形状校验 fail-closed
+  （Key 不入此文件）。
 - **IPC/bridge 扩展（S4）**：invoke——conversation:list/create/get-history/delete/
   set-ephemeral/ask/abort/preview、config:providers:list/set/set-key（apiKey='' = 删除）；
   事件——conversation:stream-chunk / conversation:turn-done。全部沿用 sender 校验
