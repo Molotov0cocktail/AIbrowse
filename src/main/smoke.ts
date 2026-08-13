@@ -3,13 +3,16 @@
 // dispose 幂等与无泄漏；T3 新增 UI 窗口导航保护拦截验证（R-01）与渲染层 bounds 上报生效验证（§6）。
 // 任何断言失败 → logError + 抛出，入口 catch 后以退出码 1 结束（与基线冒烟语义一致）。
 
-import { webContents, WebContentsView } from 'electron';
-import type { BrowserWindow } from 'electron';
+import { session, webContents, WebContentsView } from 'electron';
+import type { BrowserWindow, WebContents } from 'electron';
 import { createServer, type Server } from 'node:http';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserController } from './browser/browser-controller';
-import { logError, logInfo } from './logger';
+import { PERSIST_PARTITION } from './browser/session-manager';
+import { SEARCH_ENGINE_URL } from '../shared/url';
+import { getCurrentLogFilePath, logError, logInfo } from './logger';
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -77,9 +80,38 @@ const INNER_HTML = `<!doctype html>
 <body><h1>内部文档标题</h1></body>
 </html>`;
 
+// T5 敌对页面（elementId 审查）：预置重复/畸形/超大/负数/冲突的 data-aibrowse-el 烙印，
+// 验证一次快照内 id 唯一、格式合法、且每个 id 无歧义对应本次快照中的真实元素（§8.4/§8.6）。
+// 另含跨集合元素（a[role=button]、input[type=button] 同时进入两个集合）验证同元素同 id。
+const HOSTILE_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>敌对采集页</title></head>
+<body>
+  <h1>敌对采集页</h1>
+  <a href="https://example.com/a" data-aibrowse-el="7">链接甲（合法烙印）</a>
+  <a href="https://example.com/b" data-aibrowse-el="7">链接乙（与甲重复）</a>
+  <a href="https://example.com/c" data-aibrowse-el="el-x">链接丙（畸形）</a>
+  <a href="https://example.com/d" data-aibrowse-el="12345678901">链接丁（超大）</a>
+  <a href="https://example.com/e" data-aibrowse-el="-3">链接戊（负数）</a>
+  <a href="https://example.com/f" role="button" data-aibrowse-el="2">跨集合链接</a>
+  <button type="button" data-aibrowse-el="2">跨集合按钮（与跨集合链接冲突）</button>
+  <input type="button" value="输入按钮" data-aibrowse-el="9999999999">
+  <input type="text" placeholder="普通输入">
+</body>
+</html>`;
+
+// Session 冒烟（T5）：受控 Set-Cookie 页面（HttpOnly 证明不依赖 document.cookie 读取，
+// 跨进程持久化只能来自 persist: 分区落盘）。
+const COOKIE_NAME = 'aibrowse_session_probe';
+const COOKIE_VALUE = 'persist-ok';
+
 interface ControlledPages {
   simpleUrl: string;
   iframeUrl: string;
+  hostileUrl: string;
+  redirectOkUrl: string;
+  redirectEvilUrl: string;
+  setCookieUrl: string;
   base: string;
   close: () => Promise<void>;
 }
@@ -110,6 +142,36 @@ async function startControlledPages(): Promise<ControlledPages> {
       res.end(iframeHtml(innerUrl));
       return;
     }
+    if (req.url === '/hostile') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(HOSTILE_HTML);
+      return;
+    }
+    if (req.url === '/redirect-ok') {
+      // 允许目标：http → http（白名单内，302 应被放行跟随）
+      const addr = mainServer.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      res.writeHead(302, { Location: `http://127.0.0.1:${port}/simple` });
+      res.end();
+      return;
+    }
+    if (req.url === '/redirect-evil') {
+      // 禁止目标：未注册自定义协议（白名单外）。探针实测（Electron 43.4.0，2026-08-13）：
+      // file:/data:/about:blank 等目标被 Chromium 网络层先拦（ERR_UNSAFE_REDIRECT），
+      // 不会到达 will-redirect；自定义协议与 mailto: 会真实触发 will-redirect——
+      // 这正是 R-02 威胁模型（未来注册 aibrowse:// 等协议时）的验证目标。
+      res.writeHead(302, { Location: 'aibrowse-smoke://redirect-blocked/' });
+      res.end();
+      return;
+    }
+    if (req.url === '/set-cookie') {
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Set-Cookie': `${COOKIE_NAME}=${COOKIE_VALUE}; Path=/; HttpOnly; Max-Age=86400`,
+      });
+      res.end('<!doctype html><title>会话冒烟页</title><p>ok</p>');
+      return;
+    }
     res.writeHead(404);
     res.end();
   });
@@ -128,7 +190,16 @@ async function startControlledPages(): Promise<ControlledPages> {
       new Promise<void>((resolve) => innerServer.close(() => resolve())),
     ]);
   };
-  return { simpleUrl: `${base}/simple`, iframeUrl: `${base}/iframe`, base, close };
+  return {
+    simpleUrl: `${base}/simple`,
+    iframeUrl: `${base}/iframe`,
+    hostileUrl: `${base}/hostile`,
+    redirectOkUrl: `${base}/redirect-ok`,
+    redirectEvilUrl: `${base}/redirect-evil`,
+    setCookieUrl: `${base}/set-cookie`,
+    base,
+    close,
+  };
 }
 
 // 活动 Tab 对应的可见 WebContentsView（bounds 上报验证：§6 全量覆盖式应用）
@@ -138,6 +209,82 @@ function visibleTabView(win: BrowserWindow | null | undefined): WebContentsView 
     if (child instanceof WebContentsView && child.getVisible()) return child;
   }
   return null;
+}
+
+// ---------- T5：UI 端到端驱动（React DOM 点击/键盘事件，不引入 Playwright） ----------
+// React 事件系统监听根容器：原生 click / input / keydown 事件冒泡即触发对应 handler。
+// 受控输入（地址栏）用原型 value setter 写入——绕过 React 实例 tracker 后 dispatch
+// input 事件，ChangeEventPlugin 检测到值变化即触发 onChange（标准 React 驱动手法）。
+async function uiJs(uiWc: WebContents, script: string): Promise<unknown> {
+  return uiWc.executeJavaScript(script);
+}
+
+async function typeIntoAddressBar(uiWc: WebContents, text: string): Promise<void> {
+  await uiJs(
+    uiWc,
+    `(() => {
+      const el = document.querySelector('.address-bar');
+      if (!el) throw new Error('地址栏元素不存在');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(el, ${JSON.stringify(text)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`,
+  );
+  await delay(100); // React setState 落定后再发 Enter（防御批处理时序）
+  await uiJs(
+    uiWc,
+    `(() => {
+      const el = document.querySelector('.address-bar');
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    })()`,
+  );
+}
+
+async function clickUi(uiWc: WebContents, selector: string): Promise<void> {
+  await uiJs(
+    uiWc,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) throw new Error('UI 元素不存在：' + ${JSON.stringify(selector)});
+      el.click();
+    })()`,
+  );
+}
+
+async function clickUiTab(uiWc: WebContents, index: number): Promise<void> {
+  const i = String(index);
+  await uiJs(
+    uiWc,
+    `(() => {
+      const tabs = document.querySelectorAll('[role="tab"]');
+      if (tabs.length <= ${i}) throw new Error('标签页不存在：' + ${i});
+      tabs[${i}].click();
+    })()`,
+  );
+}
+
+async function clickUiTabClose(uiWc: WebContents, index: number): Promise<void> {
+  const i = String(index);
+  await uiJs(
+    uiWc,
+    `(() => {
+      const tabs = document.querySelectorAll('[role="tab"]');
+      const close = tabs[${i}]?.querySelector('.tab-close');
+      if (!close) throw new Error('标签页关闭按钮不存在：' + ${i});
+      close.click();
+    })()`,
+  );
+}
+
+async function uiTabCount(uiWc: WebContents): Promise<number> {
+  return (await uiJs(uiWc, `document.querySelectorAll('[role="tab"]').length`)) as number;
+}
+
+async function uiTabTitle(uiWc: WebContents, index: number): Promise<string> {
+  return (await uiJs(
+    uiWc,
+    `document.querySelectorAll('[role="tab"]')[${index}].querySelector('.tab-title').textContent`,
+  )) as string;
 }
 
 export async function runSmokeScenario(
@@ -304,9 +451,16 @@ export async function runSmokeScenario(
         allIds.every((id) => /^el-\d+$/.test(id)),
         '全部交互元素 elementId 应为 el-<n> 格式',
       );
+      // 一一对应语义（§8.4）：同一元素跨集合共用同一 id（input[type=button] 同时进入
+      // buttons 与 inputs），不同元素 id 唯一——受控页不同交互元素数 = 2 links + 2 buttons + 1 text = 5
       assert(
-        new Set(allIds).size === allIds.length,
-        '一次快照内 elementId 应唯一（含 input[type=button] 与 button 集合共用同一元素）',
+        snap.buttons.find((b) => b.text === '确定')?.id ===
+          (snap.inputs ?? []).find((i) => i.type === 'button')?.id,
+        '同一元素跨集合应共用同一 elementId（input[type=button] 同时进入 buttons/inputs）',
+      );
+      assert(
+        new Set(allIds).size === 5,
+        `不同元素的 elementId 应唯一（受控页应为 5 个不同元素，实际去重后 ${new Set(allIds).size} 个）`,
       );
 
       // 7.2 同一导航生命周期内重复采集 → 属性烙印复用，elementId 稳定（§8.4）
@@ -316,6 +470,11 @@ export async function runSmokeScenario(
         snapAgain.links.find((l) => l.href === 'https://example.com/')?.id ===
           snap.links.find((l) => l.href === 'https://example.com/')?.id,
         '重复采集应复用 data-aibrowse-el 烙印，elementId 稳定',
+      );
+      assert(
+        snapAgain.buttons.find((b) => b.text === '确定')?.id ===
+          snap.buttons.find((b) => b.text === '确定')?.id,
+        '重复采集应复用烙印（跨集合元素 input[type=button] 的 id 同样稳定）',
       );
 
       // 7.3 L1：含跨域 iframe 的页面 → degraded=partial + 中文跳过警告（v1 仅主文档，§8.2）
@@ -346,14 +505,378 @@ export async function runSmokeScenario(
       // 7.4 L3：未知 tabId → null（不抛异常）
       assert((await controller.getPageSnapshot('no-such-tab')) === null, '未知 tabId 应为 L3 null');
 
+      // 7.5 敌对页面 elementId（T5 审查）：预置重复/畸形/超大/负数/冲突烙印时，
+      //     一次快照内 id 必须唯一、格式合法、每个 id 无歧义对应本次快照中的真实元素
+      const hostileTab = await controller.createTab(pages.hostileUrl);
+      await waitFor(
+        async () => {
+          const t = (await controller.getTabs()).find((x) => x.id === hostileTab.id);
+          return t !== undefined && t.state === 'ready';
+        },
+        10000,
+        '敌对页面未在 10 秒内就绪',
+      );
+      const hostileSnap = await controller.getPageSnapshot(hostileTab.id);
+      assert(hostileSnap !== null, '敌对页面快照不应为 null');
+      const hostileIds = [
+        ...hostileSnap.links.map((x) => x.id),
+        ...hostileSnap.buttons.map((x) => x.id),
+        ...(hostileSnap.inputs ?? []).map((x) => x.id),
+      ];
+      assert(
+        hostileIds.every((id) => /^el-\d{1,10}$/.test(id)),
+        '敌对页面全部 elementId 应为合法 el-<1–10 位数字> 格式（畸形/超大烙印不得外泄）',
+      );
+      // 敌对页不同交互元素数：6 links + 2 buttons（跨集合链接重复计入 links）+ 1 text input = 9
+      assert(
+        new Set(hostileIds).size === 9,
+        `敌对页面不同元素应各有唯一 id（应为 9 个，实际去重后 ${new Set(hostileIds).size} 个）`,
+      );
+      assert(
+        hostileSnap.links.find((l) => l.text === '链接甲（合法烙印）')?.id === 'el-7',
+        '合法预置烙印应被复用（链接甲 → el-7）',
+      );
+      assert(
+        hostileSnap.buttons.find((b) => b.text === '输入按钮')?.id === 'el-9999999999',
+        '顶格合法烙印（10 位 9）应被复用且后续分配不发生溢出',
+      );
+      assert(
+        hostileSnap.links.find((l) => l.text === '跨集合链接')?.id ===
+          hostileSnap.buttons.find((b) => b.text === '跨集合链接')?.id,
+        '跨集合元素（a[role=button]）应在 links/buttons 共用同一 id',
+      );
+      assert(
+        hostileSnap.buttons.find((b) => b.text === '输入按钮')?.id ===
+          (hostileSnap.inputs ?? []).find((i) => i.type === 'button')?.id,
+        '跨集合元素（input[type=button]）应在 buttons/inputs 共用同一 id',
+      );
+      // 无歧义对应真实元素：快照中的每个 id 都必须能在页面活 DOM 的合法烙印中找到
+      const hostileTabWc = visibleTabView(options.uiWindow)?.webContents;
+      assert(hostileTabWc !== undefined, '敌对页面应为活动 Tab（可见 view 存在）');
+      const brandedIds = (await hostileTabWc.executeJavaScript(
+        `[...new Set([...document.querySelectorAll('[data-aibrowse-el]')]
+          .map((el) => el.getAttribute('data-aibrowse-el'))
+          .filter((v) => /^\\d{1,10}$/.test(v)))]`,
+      )) as string[];
+      for (const id of hostileIds) {
+        assert(
+          brandedIds.includes(id.slice(3)),
+          `快照 id ${id} 应无歧义对应活 DOM 中的真实元素（未找到对应烙印）`,
+        );
+      }
+      // 跨快照稳定：静态敌对页重复采集 id 完全一致
+      const hostileSnapAgain = await controller.getPageSnapshot(hostileTab.id);
+      assert(hostileSnapAgain !== null, '敌对页面重复采集不应返回 null');
+      assert(
+        JSON.stringify(hostileSnapAgain.links.map((x) => x.id)) ===
+          JSON.stringify(hostileSnap.links.map((x) => x.id)) &&
+          JSON.stringify(hostileSnapAgain.buttons.map((x) => x.id)) ===
+            JSON.stringify(hostileSnap.buttons.map((x) => x.id)) &&
+          JSON.stringify((hostileSnapAgain.inputs ?? []).map((x) => x.id)) ===
+            JSON.stringify((hostileSnap.inputs ?? []).map((x) => x.id)),
+        '敌对页面跨快照 elementId 应稳定（重复采集 id 一致）',
+      );
+      logInfo(
+        'smoke',
+        '敌对页面 elementId 验证通过（重复/畸形/超大/冲突烙印 → 唯一且对应真实元素）',
+      );
+
+      // 7.6 Tab 服务器重定向白名单（R-02 关闭验证）：will-redirect 拦截非白名单 302 目标。
+      //     程序化 loadURL 遇 302 时唯一拦截点——redirect-ok（http→http）放行跟随，
+      //     redirect-evil（http→file:）拦截且当前文档不被替换。
+      const redirectTab = await controller.createTab(pages.redirectOkUrl);
+      await waitFor(
+        async () => {
+          const t = (await controller.getTabs()).find((x) => x.id === redirectTab.id);
+          return t !== undefined && t.state === 'ready' && t.url === pages.simpleUrl;
+        },
+        10000,
+        `白名单内 302 应被跟随（期望到达 ${pages.simpleUrl}）`,
+      );
+      assert(
+        (await controller.getActiveTab())?.title === '冒烟采集页',
+        '跟随 302 后应加载目标页内容（标题=冒烟采集页）',
+      );
+      // 程序化导航遇禁止目标 302：will-redirect preventDefault 使本次导航被取消，
+      // loadURL reject → navigate 按失败语义返回 false，当前文档不被替换。
+      // 日志偏移切片：仅断言本次运行产生的拦截 warn（同日更早运行不参与）。
+      const logFile = getCurrentLogFilePath();
+      const logOffsetBefore = statSync(logFile).size;
+      const navResult = await controller.navigate(redirectTab.id, pages.redirectEvilUrl);
+      assert(
+        navResult === false,
+        `非白名单 302 目标应导致导航失败（navigate 返回 false，实际 ${String(navResult)}）`,
+      );
+      assert(
+        (await controller.getTabs()).find((x) => x.id === redirectTab.id)?.url === pages.simpleUrl,
+        '非白名单 302 目标（自定义协议）应在 will-redirect 被拦截，当前文档不被替换',
+      );
+      // 页面发起导航遇禁止目标 302（will-navigate 放行初始 http 地址，will-redirect 拦截目标）
+      const redirectTabWc = visibleTabView(options.uiWindow)?.webContents;
+      assert(redirectTabWc !== undefined, '重定向测试标签页应为活动 Tab');
+      await redirectTabWc.executeJavaScript(
+        `window.location.href = ${JSON.stringify(pages.redirectEvilUrl)}`,
+      );
+      await delay(800); // 给 302 与拦截留出时间；拦截生效则当前文档不被替换
+      assert(
+        (await controller.getTabs()).find((x) => x.id === redirectTab.id)?.url === pages.simpleUrl,
+        '页面发起的非白名单 302 目标同样应在 will-redirect 被拦截',
+      );
+      // 注意：statSync 的大小是字节，而字符串 slice 按字符——中文日志每字 3 字节，
+      // 必须按 Buffer 字节级切片再解码（否则偏移会落空）
+      const logTail = readFileSync(logFile).subarray(logOffsetBefore).toString('utf8');
+      assert(
+        logTail.includes('已拦截非白名单重定向'),
+        `Tab will-redirect 拦截应记录 warn 日志（本次运行区间内，offsetBefore=${logOffsetBefore}）`,
+      );
+      assert(await controller.closeTab(redirectTab.id), '关闭重定向测试标签页应返回 true');
+      assert(await controller.closeTab(hostileTab.id), '关闭敌对页面标签页应返回 true');
+
       assert(await controller.closeTab(simpleTab.id), '关闭采集页面标签页应返回 true');
       assert(await controller.closeTab(iframeTab.id), '关闭 iframe 页面标签页应返回 true');
       logInfo(
         'smoke',
-        'PageSnapshot 真实采集验证通过（L0 内容/L1 iframe 跳过/L3 null/elementId 稳定）',
+        'PageSnapshot 真实采集验证通过（L0 内容/L1 iframe 跳过/L3 null/elementId 稳定/敌对烙印唯一/302 重定向拦截）',
       );
     } finally {
       await pages.close();
+    }
+
+    // 7.7 UI 端到端（T5）：React DOM 点击/键盘事件驱动完整链路——地址栏输入 URL/搜索、
+    //     新建/切换/关闭 Tab、后退/前进/刷新、标题随网页变化、调试面板「读取当前网页」、
+    //     远程页面隔离探针（window.aibrowse / Node / Electron 均不可达）。
+    //     全链路：DOM 事件 → React handler → preload bridge → IPC（sender 校验）→
+    //     BrowserController → TabManager/webContents → tabs:updated 推送 → DOM 更新。
+    if (options.uiWindow !== null && options.uiWindow !== undefined) {
+      const uiWc = options.uiWindow.webContents;
+      const uiPages = await startControlledPages();
+      try {
+        const active = await controller.getActiveTab();
+        assert(active !== null, 'UI 端到端前应有活动标签页');
+        const firstTabId = active.id;
+
+        // 7.7.1 地址栏输入 URL → Enter → 活动 Tab 真实导航
+        await typeIntoAddressBar(uiWc, uiPages.simpleUrl);
+        await waitFor(
+          async () => {
+            const t = await controller.getActiveTab();
+            return t !== null && t.url === uiPages.simpleUrl && t.state === 'ready';
+          },
+          10000,
+          '地址栏输入 URL 后活动 Tab 未在 10 秒内到达目标页',
+        );
+
+        // 7.7.2 标题随网页变化：主进程 TabInfo.title 与标签栏 DOM 文案同步
+        assert(
+          (await controller.getActiveTab())?.title === '冒烟采集页',
+          'Tab 标题应随网页变化（主进程 TabInfo.title）',
+        );
+        await waitFor(
+          async () => (await uiTabTitle(uiWc, 0)) === '冒烟采集页',
+          5000,
+          '标签栏标题未随网页更新（UI DOM 文案）',
+        );
+
+        // 7.7.3 后退/前进：地址栏导航到第二页 → 后退回到第一页 → 前进回到第二页
+        await typeIntoAddressBar(uiWc, uiPages.iframeUrl);
+        await waitFor(
+          async () => (await controller.getActiveTab())?.url === uiPages.iframeUrl,
+          10000,
+          '地址栏导航到第二页失败',
+        );
+        await clickUi(uiWc, 'button[aria-label="后退"]');
+        await waitFor(
+          async () => (await controller.getActiveTab())?.url === uiPages.simpleUrl,
+          10000,
+          '后退未回到第一页',
+        );
+        await clickUi(uiWc, 'button[aria-label="前进"]');
+        await waitFor(
+          async () => (await controller.getActiveTab())?.url === uiPages.iframeUrl,
+          10000,
+          '前进未回到第二页',
+        );
+
+        // 7.7.4 刷新：点击刷新 → did-start-loading 计数增加 → 状态回到 ready、URL 不变
+        const reloadWc = visibleTabView(options.uiWindow)?.webContents;
+        assert(reloadWc !== undefined, '刷新验证前应有活动 Tab 视图');
+        let reloadLoadingCount = 0;
+        const onReloadLoading = (): void => {
+          reloadLoadingCount++;
+        };
+        reloadWc.on('did-start-loading', onReloadLoading);
+        try {
+          await clickUi(uiWc, 'button[aria-label="刷新"]');
+          await waitFor(
+            async () => {
+              const t = await controller.getActiveTab();
+              return (
+                reloadLoadingCount > 0 &&
+                t !== null &&
+                t.state === 'ready' &&
+                t.url === uiPages.iframeUrl
+              );
+            },
+            10000,
+            '刷新未生效（无加载事件或未回到 ready）',
+          );
+        } finally {
+          reloadWc.removeListener('did-start-loading', onReloadLoading);
+        }
+
+        // 7.7.5 搜索：地址栏输入搜索词 → Enter → main 规范化到 Bing 搜索 URL 并真实发起导航
+        //      （离线环境目标页加载会失败，断言导航目标 URL；URL 判断另有 15 用例单测）
+        const searchWc = visibleTabView(options.uiWindow)?.webContents;
+        assert(searchWc !== undefined, '搜索验证前应有活动 Tab 视图');
+        const startedUrls: string[] = [];
+        const onStartNavigation = (
+          details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
+        ): void => {
+          if (details.isMainFrame) startedUrls.push(details.url);
+        };
+        searchWc.on('did-start-navigation', onStartNavigation);
+        try {
+          await typeIntoAddressBar(uiWc, 'hello world');
+          await waitFor(
+            async () => startedUrls.some((u) => u.startsWith(`${SEARCH_ENGINE_URL}?q=hello+world`)),
+            5000,
+            `搜索未发起 Bing 搜索导航（实际 ${startedUrls.join(' / ') || '无'}）`,
+          );
+        } finally {
+          searchWc.removeListener('did-start-navigation', onStartNavigation);
+        }
+        // 恢复：导航回受控页面（离线搜索页加载失败后 Tab 可能处于 error 状态）
+        await typeIntoAddressBar(uiWc, uiPages.simpleUrl);
+        await waitFor(
+          async () => (await controller.getActiveTab())?.url === uiPages.simpleUrl,
+          10000,
+          '搜索验证后未恢复到受控页面',
+        );
+
+        // 7.7.6 新建 Tab（DOM 点击 ＋）→ 新 Tab 成为活动 Tab，标签栏 DOM 同步出现两个 tab
+        await clickUi(uiWc, 'button[aria-label="新建标签页"]');
+        await waitFor(
+          async () => (await controller.getTabs()).length === 2,
+          5000,
+          '新建标签页后应有 2 个标签页',
+        );
+        await waitFor(
+          async () => (await uiTabCount(uiWc)) === 2,
+          5000,
+          '标签栏 DOM 应显示 2 个 tab',
+        );
+        const newTabId = (await controller.getActiveTab())?.id;
+        assert(
+          newTabId !== null && newTabId !== undefined && newTabId !== firstTabId,
+          '新建标签页应成为活动标签页',
+        );
+        await waitFor(
+          async () => (await controller.getActiveTab())?.state === 'ready',
+          5000,
+          '新建标签页未在 5 秒内就绪',
+        );
+
+        // 7.7.7 切换 Tab（DOM 点击第一个 tab）→ 活动 Tab 切回第一个，aria-selected 同步
+        await clickUiTab(uiWc, 0);
+        await waitFor(
+          async () => (await controller.getActiveTab())?.id === firstTabId,
+          5000,
+          '点击标签页后未切换回第一个 Tab',
+        );
+        const ariaSelected = (await uiJs(
+          uiWc,
+          `document.querySelectorAll('[role="tab"]')[0].getAttribute('aria-selected')`,
+        )) as string;
+        assert(ariaSelected === 'true', '活动 Tab 的 aria-selected 应为 true');
+
+        // 7.7.8 关闭 Tab（DOM 点击第二个 tab 的关闭按钮）→ 剩余第一个 Tab 且保持活动
+        await clickUiTabClose(uiWc, 1);
+        await waitFor(
+          async () => {
+            const tabs = await controller.getTabs();
+            return tabs.length === 1 && tabs[0]?.id === firstTabId;
+          },
+          5000,
+          '关闭标签页后应只剩第一个 Tab',
+        );
+        await waitFor(
+          async () => (await uiTabCount(uiWc)) === 1,
+          5000,
+          '标签栏 DOM 应回到 1 个 tab',
+        );
+
+        // 7.7.9 调试面板「读取当前网页」：点击按钮 → bridge → IPC → BrowserController →
+        //       PageReader → 界面展示合法 JSON + degraded 徽标（L0）+ L1 warnings 列表
+        await clickUi(uiWc, '.debug-capture');
+        await waitFor(
+          async () =>
+            (
+              (await uiJs(
+                uiWc,
+                `document.querySelector('.debug-json')?.textContent ?? ''`,
+              )) as string
+            ).includes('"title": "冒烟采集页"'),
+          10000,
+          '调试面板未显示 PageSnapshot JSON（含页面标题）',
+        );
+        const l0Badge = (await uiJs(
+          uiWc,
+          `document.querySelector('.debug-badge')?.textContent ?? ''`,
+        )) as string;
+        assert(l0Badge.includes('L0'), `L0 快照徽标应显示 L0（实际 ${l0Badge}）`);
+        await typeIntoAddressBar(uiWc, uiPages.iframeUrl);
+        await waitFor(
+          async () => (await controller.getActiveTab())?.url === uiPages.iframeUrl,
+          10000,
+          '调试面板 L1 验证前未导航到 iframe 页面',
+        );
+        await clickUi(uiWc, '.debug-capture');
+        await waitFor(
+          async () =>
+            (
+              (await uiJs(
+                uiWc,
+                `document.querySelector('.debug-badge')?.textContent ?? ''`,
+              )) as string
+            ).includes('L1'),
+          10000,
+          'L1 快照徽标未显示',
+        );
+        await waitFor(
+          async () =>
+            (
+              (await uiJs(
+                uiWc,
+                `[...document.querySelectorAll('.debug-warnings li')].map((li) => li.textContent).join('|')`,
+              )) as string
+            ).includes('跳过 1 个 iframe'),
+          10000,
+          '调试面板 warnings 列表未显示 iframe 跳过警告',
+        );
+
+        // 7.7.10 远程页面隔离探针（First_stage §八）：活动 Tab 页面主世界无法访问
+        //        window.aibrowse bridge / Node.js / Electron API
+        const probeWc = visibleTabView(options.uiWindow)?.webContents;
+        assert(probeWc !== undefined, '隔离探针前应有活动 Tab 视图');
+        const probe = (await probeWc.executeJavaScript(
+          `({
+            aibrowse: typeof window.aibrowse,
+            process: typeof window.process,
+            require: typeof window.require,
+            electron: typeof window.electron,
+          })`,
+        )) as { aibrowse: string; process: string; require: string; electron: string };
+        assert(probe.aibrowse === 'undefined', '远程页面不得访问 window.aibrowse bridge');
+        assert(probe.process === 'undefined', '远程页面不得访问 Node.js process');
+        assert(probe.require === 'undefined', '远程页面不得访问 Node.js require');
+        assert(probe.electron === 'undefined', '远程页面不得访问 Electron API');
+        logInfo(
+          'smoke',
+          'UI 端到端验证通过（地址栏/搜索/多 Tab/后退前进刷新/标题/调试面板/远程隔离）',
+        );
+      } finally {
+        await uiPages.close();
+      }
     }
 
     // 8. 可选真实 URL 加载（AIBROWSE_SMOKE_URL）：验证多 Tab 可开网页 + 标题随页面变化
@@ -385,9 +908,54 @@ export async function runSmokeScenario(
       'dispose 后仍残留标签页 webContents',
     );
 
-    logInfo('smoke', '冒烟场景全部通过（T2 浏览器核心 + T3 UI 闭环 + T4 PageSnapshot 采集）');
+    logInfo(
+      'smoke',
+      '冒烟场景全部通过（T2 浏览器核心 + T3 UI 闭环 + T4 PageSnapshot 采集 + T5 安全/端到端扩展）',
+    );
   } catch (err) {
     logError('smoke', '冒烟场景失败', err);
+    throw err;
+  }
+}
+
+// ---------- T5：Session 跨进程持久化冒烟（First_stage §十四 Session 验收） ----------
+// 用法（两次独立应用进程，同一临时 userData，进程间持久化只能来自 persist: 分区落盘）：
+//   进程 A：AIBROWSE_SESSION_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> → 受控页 Set-Cookie
+//           （HttpOnly，排除 document.cookie 读取路径）→ 验证 Cookie 写入 → 完整退出
+//   进程 B：AIBROWSE_SESSION_SMOKE=check AIBROWSE_USER_DATA_DIR=<同一目录> → 新进程验证
+//           Cookie 仍在 → 完整退出
+// 单次进程内读取不能构成「重启后保持」证据（§十四）；测试后由调用方清理临时目录。
+export async function runSessionSmokeScenario(
+  controller: BrowserController,
+  mode: 'set' | 'check',
+): Promise<void> {
+  try {
+    const cookies = session.fromPartition(PERSIST_PARTITION).cookies;
+    const probe = async (): Promise<boolean> =>
+      (await cookies.get({ name: COOKIE_NAME })).some(
+        (c) => c.name === COOKIE_NAME && c.value === COOKIE_VALUE,
+      );
+
+    if (mode === 'set') {
+      const pages = await startControlledPages();
+      try {
+        const tab = await controller.createTab(pages.setCookieUrl);
+        await waitFor(probe, 10000, 'Set-Cookie 后未在 10 秒内写入 persist 分区 Cookie 存储');
+        assert(await controller.closeTab(tab.id), '关闭会话冒烟标签页应返回 true');
+        await delay(500); // 给持久层落盘留出安全余量（干净退出时 Chromium 会 flush）
+        logInfo('smoke', 'Session 冒烟（set）通过：Cookie 已写入持久分区');
+      } finally {
+        await pages.close();
+      }
+    } else {
+      await waitFor(probe, 10000, '重启后未在 10 秒内从持久分区读到先前写入的 Cookie');
+      logInfo(
+        'smoke',
+        'Session 冒烟（check）通过：新进程读取到先前写入的 Cookie（跨进程持久化生效）',
+      );
+    }
+  } catch (err) {
+    logError('smoke', 'Session 冒烟失败', err);
     throw err;
   }
 }

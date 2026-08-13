@@ -5,7 +5,7 @@ import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { BrowserControllerImpl } from './browser/browser-controller';
 import { AppSessionManager } from './browser/session-manager';
 import { initLogger, logDebug, logEnvironment, logError, logInfo, logWarn } from './logger';
-import { runSmokeScenario } from './smoke';
+import { runSessionSmokeScenario, runSmokeScenario } from './smoke';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
 import { resolveAddressBarInput } from '../shared/url';
 import { IPC } from '../shared/types/ipc';
@@ -19,6 +19,13 @@ import type {
 
 // 冒烟自检模式：窗口创建 + 渲染进程就绪后驱动浏览器核心场景（smoke.ts），全部断言通过后正常退出
 const SMOKE_MODE = process.env.AIBROWSE_SMOKE === '1';
+
+// Session 冒烟/测试隔离（§十四 Session 验收）：指定临时 userData 目录，避免触碰用户真实数据。
+// 必须在 app ready 前设置（Electron 官方 API）；仅测试/验证环境使用（AIBROWSE_SESSION_SMOKE）。
+const userDataOverride = process.env['AIBROWSE_USER_DATA_DIR'];
+if (userDataOverride !== undefined && userDataOverride !== '') {
+  app.setPath('userData', userDataOverride);
+}
 
 // 开发期日志写项目根目录 log/（AGENTS.md §3 红线）；打包后写入用户数据目录（asar 只读）
 initLogger(app.isPackaged ? app.getPath('userData') : app.getAppPath());
@@ -177,16 +184,22 @@ if (!gotLock) {
       if (SMOKE_MODE && !smokeStarted && browserController !== null) {
         smokeStarted = true;
         const loadUrl = process.env['AIBROWSE_SMOKE_URL'];
-        runSmokeScenario(browserController, {
-          loadUrl: loadUrl === '' ? undefined : loadUrl,
-          uiWindow: mainWindow, // T3：导航保护拦截与 bounds 上报生效验证
-        })
+        const sessionMode = process.env['AIBROWSE_SESSION_SMOKE'];
+        // Session 跨进程持久化冒烟（T5）：set/check 两进程共用临时 userData（§十四 Session 验收）
+        const run =
+          sessionMode === 'set' || sessionMode === 'check'
+            ? runSessionSmokeScenario(browserController, sessionMode)
+            : runSmokeScenario(browserController, {
+                loadUrl: loadUrl === '' ? undefined : loadUrl,
+                uiWindow: mainWindow, // T3：导航保护拦截与 bounds 上报生效验证
+              });
+        run
           .then(() => {
             logInfo('main', '冒烟自检通过，正常退出');
             app.quit();
           })
           .catch(() => {
-            app.exit(1); // 失败原因已由 runSmokeScenario 记录 error 日志
+            app.exit(1); // 失败原因已由 runSessionSmokeScenario / runSmokeScenario 记录 error 日志
           });
       }
     });
