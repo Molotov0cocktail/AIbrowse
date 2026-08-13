@@ -7,6 +7,7 @@ import type { BaseWindow, Rectangle } from 'electron';
 import type { PageSnapshot, TabInfo, TabsState } from '../../shared/types/browser';
 import type { ContentBounds } from '../../shared/types/ipc';
 import { logInfo, logWarn } from '../logger';
+import { PageReader } from './page-reader';
 import type { SessionManager } from './session-manager';
 import { TabManager, type TabEntry } from './tab-manager';
 import { selectNextActive } from './tab-state';
@@ -36,6 +37,7 @@ export interface BrowserControllerOptions {
 // 避免类/接口同名声明合并（@typescript-eslint/no-unsafe-declaration-merging）
 export class BrowserControllerImpl implements BrowserController {
   private readonly tabManager: TabManager;
+  private readonly pageReader: PageReader;
   private activeTabId: string | null = null;
   private lastContentBounds: Rectangle | null = null;
   private disposed = false;
@@ -46,6 +48,7 @@ export class BrowserControllerImpl implements BrowserController {
       session: options.sessionManager.getSession(),
       onChanged: () => this.pushState(),
     });
+    this.pageReader = new PageReader();
   }
 
   async createTab(url?: string): Promise<TabInfo> {
@@ -177,23 +180,8 @@ export class BrowserControllerImpl implements BrowserController {
     if (entry === undefined) return null; // L3：tab 不存在
     const wc = entry.view.webContents;
     if (wc.isDestroyed()) return null; // L3：webContents 已销毁
-    // T2：采集脚本（PageReader）T4 接入；当前返回真实的 L2 降级路径（§4）——
-    // 仅主进程侧 url/title + 空集合 + warnings，如实标注采集受限原因。
-    const warnings: string[] = ['页面采集脚本尚未接入（T4 PageReader），当前快照仅含 URL/标题'];
-    if (wc.isCrashed()) warnings.push('渲染进程已崩溃，仅返回主进程侧数据');
-    return {
-      url: wc.getURL(),
-      title: wc.getTitle(),
-      headings: [],
-      links: [],
-      buttons: [],
-      meta: {
-        capturedAt: Date.now(),
-        readyState: 'unknown',
-        degraded: 'main-process-only',
-        warnings,
-      },
-    };
+    // L0–L2 由 PageReader 编排（§8.1/§8.5）：注入只读采集脚本 + normalize 校验 + 降级阶梯
+    return this.pageReader.snapshot(wc);
   }
 
   dispose(): void {
