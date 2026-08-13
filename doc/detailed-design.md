@@ -348,9 +348,10 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   selection（`window.getSelection().toString()`，≤ 10 000 字符）。
 - `visibleText`：`document.body?.innerText`（布局感知，天然跳过 display:none 文本），
   空白折叠后 ≤ 100 000 字符截断。
-- headings：`h1`–`h6`；links：`a[href]`；buttons：`button`、`input[type=button|submit|reset]`、
-  `[role="button"]`；inputs：`input:not([type="hidden"])`、`textarea`、`select`
-  （value 取当前值，select 取选中项文本）；tables：`table` 与 `[role="table"]`。
+- headings：`h1`–`h6`；links：`a[href]`（href 取解析后的绝对 URL `el.href`）；buttons：`button`、
+  `input[type=button|submit|reset]`、`[role="button"]`（input 类按钮取 `value` 为可见文案）；
+  inputs：`input:not([type="hidden"])`、`textarea`、`select`（value 取当前值、
+  **`type=password` 除外——敏感信息不进快照**，select 取选中项文本）；tables：`table` 与 `[role="table"]`。
 - **可见性粗筛**（逐个元素，O(n) 且零副作用）：`offsetParent === null` 且
   `getClientRects().length === 0` → 跳过；`aria-hidden="true"`、`hidden` 属性 → 跳过；
   script/style/noscript/svg 内文、不可见 input 类型不采集；文本一律 `textContent.trim()`（空白折叠）。
@@ -358,8 +359,9 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   inputs ≤ 500；tables ≤ 100（每表 ≤ 500 行）；单元格文本 ≤ 1 000 字符；href ≤ 2 000 字符。
 - **iframe**：v1 仅采集主文档（同源 iframe 递归留未来扩展）；统计 iframe 总数，
   无法读取内容的记 warnings（如「跳过 3 个 iframe（其中 2 个跨域）」），对应 L1。
-- **表格**：表头取首行 `th`/`[role=columnheader]`（缺失则以空串占位、列数对齐）；
-  行取每 `tr` 的 `td/th/[role=gridcell]/[role=columnheader]` 文本；行列对齐由 normalize 补齐/截断。
+- **表格**：表头取首行 `th`/`[role=columnheader]`（缺失则以空串占位、列数对齐；该行不再重复计入
+  数据行）；行取每 `tr` 的 `td/th/[role=gridcell]/[role=columnheader]` 文本，`:scope` 限定
+  直接行/单元格（嵌套表格不混入）；行列对齐由 normalize 补齐/截断。
 
 ### 8.3 只读与不污染承诺（First_stage §七.5）
 

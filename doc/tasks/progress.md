@@ -9,8 +9,8 @@
 
 ## 当前状态
 
-- 阶段：第一阶段（浏览器核心）。T0 基线、T1 详细设计定稿、T2 浏览器核心、T3 浏览器 UI 闭环完成，
-  T4–T5 待执行。
+- 阶段：第一阶段（浏览器核心）。T0 基线、T1 详细设计定稿、T2 浏览器核心、T3 浏览器 UI、
+  T4 PageSnapshot 闭环完成，T5 待执行。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + Second_stage.md～Seventh_stage.md 入库；
   各文件职责、接管顺序与阶段切换纪律见 AGENTS.md §1/§2。
 - 最近 commit 与工作区状态：以 `git log --oneline` / `git status --short` 为准。
@@ -24,11 +24,23 @@
 | T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ✅   | 2026-08-13 完成，定稿见 doc/detailed-design.md（§12 决议记录） |
 | T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ✅   | 2026-08-13 完成，签名已回填 AGENTS.md §5 并与代码 grep 核对    |
 | T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ✅   | 2026-08-13 完成，R-01 同闭环关闭（见下）                       |
-| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ⏳   | 依赖 T2 ✅                                                     |
-| T5   | 收尾：安全审计 + 第一阶段验收清单逐项核对 + 文档/README 同步                                     | ⏳   | 依赖 T2–T4                                                     |
+| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ✅   | 2026-08-13 完成（含 T3 导航保护收紧，见下）                    |
+| T5   | 收尾：安全审计 + 第一阶段验收清单逐项核对 + 文档/README 同步                                     | ⏳   | 依赖 T2–T4 ✅                                                  |
 
 ## 最近验证结果（2026-08-13）
 
+- T4 PageSnapshot 闭环（2026-08-13）：test 89/89 ✅（42 基线 + 1 导航保护收紧新增 + 46
+  snapshot-normalize 新增）· typecheck ✅ · lint ✅ · format:check ✅ · build ✅ ·
+  Electron 冒烟 ✅ 三场景退出码 0：① dev 离线；② 生产产物（npm run start）；
+  ③ 真实 URL（AIBROWSE_SMOKE_URL=https://www.bing.com/）。冒烟新增真实采集断言：
+  本地受控双服务器页面实际注入只读脚本——L0 内容对照（heading/link/button/table/
+  visibleText/elementId 唯一性与跨快照稳定）、L1 跨域 iframe 跳过警告、L3 未知 tabId null。
+  交付内容（5 个逻辑 commit）：① T3 核查发现导航保护生产 file: 前缀语义过宽
+  （同目录扩展/路径穿越可放行）→ 收紧为入口精确匹配（scheme+pathname 相等，hash/query
+  变体视为同一文档）+ 冒烟三探针；② snapshot-normalize 校验纯函数（页面视为敌手）+
+  46 组红绿测试；③ 只读采集脚本（IIFE 字符串，DOM lib 引用保持 TS 检查）+ PageReader
+  L0–L2 阶梯接入 BrowserController；④ 调试面板（JSON + degraded 徽标 + warnings + 可收起）；
+  ⑤ 冒烟采集扩展。仍未接入 LLM、未开始 T5。
 - T3 浏览器 UI 闭环（2026-08-13）：test 42/42 ✅（33 基线 + 9 ui-navigation-policy 新增）·
   typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 三场景退出码 0：
   ① dev 离线（T2 场景回归 + UI 导航保护拦截 + bounds 上报生效）；
@@ -103,14 +115,14 @@
 
 （正常后续任务 / 已接受设计决议 / 明确延期，不虚构严重度与证据）
 
-- PageSnapshot 当前 L2-only（T3 状态）：PageReader 采集脚本 T4 接入前，getPageSnapshot 返回真实
-  L2 降级快照（主进程侧 url/title + 空集合 + degraded:'main-process-only' + warnings）。
-  计划内，T4 落地，非缺陷。
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过——已接受设计决议
   （detailed-design §12 决议 #13，快照为点时刻尽力采样）。
-- 地址栏/标签栏 UI 交互（点击/键盘）暂未被冒烟直接驱动：冒烟覆盖主进程侧可观测行为
-  （导航保护拦截、bounds 上报生效、多 Tab 状态流转），React 交互路径经人工实际运行验证；
-  页面级 UI 自动化属 T5 评估范围。
+- 采集边界（T4 落地，非缺陷）：iframe 跨域计数为尽力采样（未加载完成的同源 iframe 可能被
+  计为跨域，仅影响警告文案）；页面对主世界脚本的原型篡改可使采集返回 L2（按契约降级）；
+  L2 触发路径（渲染进程崩溃/上下文失效）未在冒烟强制触发（normalize 单测覆盖 L2 形状）。
+- 地址栏/标签栏/调试面板按钮的页面级点击驱动暂未被冒烟覆盖：冒烟覆盖主进程侧可观测行为
+  （导航保护拦截、bounds 上报生效、多 Tab 状态流转、真实采集），React 交互路径经人工实际
+  运行验证；页面级 UI 自动化属 T5 评估范围。
 - 无 CI / 打包配置：第一阶段验收不要求；T5 收尾评估 CI（lint + test + typecheck），
   打包属 Seventh Stage（Product Hardening）。
 - shared/url 不支持 IDN（中文域名走搜索兜底，安全无副作用）；SearchProvider 尚未抽象
@@ -124,14 +136,12 @@
 
 ## 下一个推荐任务
 
-- **T4 PageSnapshot**：PageReader（executeJavaScript 只读注入编排 + 降级阶梯 L0–L2）、
-  注入脚本 snapshot-script.ts（自安装 IIFE）、输出校验 normalize（页面视为敌手，
-  逐字段类型校验/限额二次截断）＋ `snapshot-normalize.test.ts`（红→绿）；
-  调试面板显示当前 Tab 的 PageSnapshot JSON（含 degraded/warnings，用户能看出采集受限）。
+- **T5 收尾**：安全审计（§11 核对清单逐项 + R-02 Tab will-redirect 评估处置）→
+  第一阶段验收清单逐项核对（First_stage.md §十四）→ README/文档同步（T4 内容、
+  测试数与冒烟说明更新）→ 逐项勾选 Exit Gate，通过后停下向用户报告。
 
 ## 第一阶段验收未完成项
 
-- 浏览器 UI 相关验收项（启动/开网页/URL 输入/搜索/多 Tab/切换/关闭/前进/后退/刷新/
-  标题随网页变化）已由 T3 实现、待 T5 逐项核对；PageSnapshot 相关项待 T4；
-  Engineering 中「TS 编译/lint/测试通过、README 启动方式」已被 T0 覆盖。
-  逐项清单以 First_stage.md §十四 为准，T5 收尾时核对。
+- 浏览器 UI 与 PageSnapshot 相关验收项已由 T3/T4 实现、待 T5 逐项核对；
+  Engineering 中「TS 编译/lint/测试通过、README 启动方式」已被 T0 覆盖（README 内容
+  待 T5 按 T4 现状同步）。逐项清单以 First_stage.md §十四 为准，T5 收尾时核对。
