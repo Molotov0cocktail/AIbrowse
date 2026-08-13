@@ -19,8 +19,8 @@
   ContextBuilder（纯函数）、LLMProvider（OpenAI-compatible 适配器 + FakeProvider，无厂商 SDK）、
   SecureCredentialStore（Electron safeStorage / Windows DPAPI）。契约源
   `doc/stage2/detailed-design.md`（2026-08-13 定稿）；任务 S1–S6 见 `doc/stage2/tasks/`。
-  **S1（Provider 抽象与凭据安全基座）与 S2（ContextBuilder 纯核心）已完成（2026-08-13）**，
-  进度见 progress.md。
+  **S1（Provider 抽象与凭据安全基座）、S2（ContextBuilder 纯核心）与 S3（ConversationService
+  与会话持久化）已完成（2026-08-13）**，进度见 progress.md。
   **本阶段不实现自主浏览 Agent**：严禁新增 click/fill/scroll、自动搜索、多步 Browser
   Agent Tool（均属 Third Stage）。
 - **已完成（第一阶段，浏览器核心）**：`Browser → PageSnapshot → Browser Tool Interface`
@@ -214,7 +214,7 @@ d:\AIbrowse\
     ├── main/
     │   ├── index.ts                           # 入口：生命周期/单实例锁/安全默认值/IPC 装配（sender 校验）/UI 窗口导航保护/冒烟
     │   ├── logger.ts                          # log/ 文件日志（脱敏、按日轮转；logger.test.ts 脱敏专项用例，S1）
-    │   ├── smoke.ts                           # AIBROWSE_SMOKE 场景（T2 核心 + T3 导航保护拦截/bounds 上报）
+    │   ├── smoke.ts                           # AIBROWSE_SMOKE 场景（T2 核心 + T3 导航保护拦截/bounds 上报 + S3 AI 共读矩阵 1–8）
     │   ├── ui-navigation-policy.ts / .test.ts # UI 窗口导航保护纯函数（自身来源白名单，T3 落地，9 用例）
     │   └── browser/
     │       ├── browser-controller.ts          # 浏览器能力统一入口（接口 BrowserController + 实现类）
@@ -226,8 +226,8 @@ d:\AIbrowse\
     │       ├── snapshot-script.ts             # （T4）注入脚本源（自安装 IIFE 字符串，DOM lib 引用保持 TS 检查）
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 46 用例
     │   └── ai/                                # （Second Stage，契约见 doc/stage2/detailed-design.md）
-    │       ├── conversation-service.ts        # （S3）会话编排：ask 实时快照/中止/事件/持久化接线
-    │       ├── conversation-store.ts          # （S3）会话 JSON 持久化（原子写/上限/损坏容错）
+    │       ├── conversation-service.ts        # （S3 ✅）会话编排：ask 实时快照/中止/事件/持久化接线
+    │       ├── conversation-store.ts          # （S3 ✅）会话 JSON 持久化（原子写/上限/损坏容错）
     │       ├── context-builder.ts             # （S2 ✅）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
     │       ├── context-budget.ts              # （S2 ✅）纯函数：预算常量与确定性裁剪
     │       ├── credential-store.ts            # （S1 ✅）SecureCredentialStore：API Key 密文落盘
@@ -358,8 +358,8 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
 ### Second Stage AI 共读契约速查（定稿 2026-08-13；S1 部分已实现并 grep 核对，S2–S4 待实现后回填）
 
 > 唯一契约源 `doc/stage2/detailed-design.md`（§2–§12 + §15 决议记录，含 proposal Q1–Q10 拍板）；
-> 任务拆分见 `doc/stage2/tasks/S1–S6`。以下为速查摘要；S1 部分签名已于 2026-08-13 与
-> 实际代码 `grep -n "^export"` 逐项核对，S2–S4 部分实现前不含实际代码核对状态。
+> 任务拆分见 `doc/stage2/tasks/S1–S6`。以下为速查摘要；S1–S3 部分签名已于 2026-08-13 与
+> 实际代码 `grep -n "^export"` 逐项核对，S4 部分实现前不含实际代码核对状态。
 
 - **shared/types/conversation.ts（S1 ✅ 已实现）**：`ContextMode`（selection/snapshot/none）、
   `ContextSource`（mode/tabId/url/title/capturedAt/degraded/thin/selectionExcerpt/warnings）、
@@ -371,12 +371,36 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
   **不含响应体/请求头/密钥**）、`ContextPreview`、`AskResult`；Provider 类型——
   `ProviderMetadata`/`ProviderMessage`/`ProviderRequest`/`ProviderUsage`/`ProviderEvent`/
   `ProviderConfig`（Provider 数据类型放 shared，S4 preload/renderer 可直接复用）。
-- **ConversationService（S3）**：`createSession/listSessions/getHistory/deleteSession/
-setEphemeral/ask/abort/previewContext/dispose`。ask 编排时序即防串页契约：
-  实时 `getPageSnapshot(activeTabId)`（禁止复用缓存快照）→ `buildContext` →
-  **先持久化 user 消息（含 ContextSource）** → `provider.stream` → 事件转发
-  （stream-chunk/turn-done）→ 终态持久化。每会话单在途（busy）；abort 幂等
-  （保留部分 + 已中止标记）。
+- **ConversationService（S3 ✅ 已实现，2026-08-13 grep 核对）**：接口 `ConversationService`
+  - 实现类 `ConversationServiceImpl`——`createSession(opts?)`（**决议 #19**：达 50 会话
+    上限拒绝新建 → null）/`listSessions`（新→旧）/`getHistory`（null=不存在）/
+    `deleteSession`（先中止在途生成 → 删内存+文件含残留 tmp → 更新索引）/
+    `setEphemeral`（false=现有消息落盘，true=移除磁盘文件）/`ask`（同步校验+注册在途后
+    立即返回 `{ok:true,requestId}`，生成后台执行经事件回调推送）/`abort(requestId)`
+    （幂等，无匹配 false）/`previewContext`（实时快照摘要不含正文）/`dispose`（中止全部
+    在途，幂等）。构造注入：`browser: SnapshotSource`（getActiveTab/getPageSnapshot 最小
+    接口，BrowserControllerImpl 结构兼容；实时采集防串页）/`store`/`configStore`/
+    `credentials`/`resolveProviderFn?`（冒烟注入 FakeProvider 缝；缺省生产 resolveProvider，
+    决议 #17）`onStreamChunk`/`onTurnDone`（§3.1 事件输出，index.ts 转发主窗口 send）。
+    ask 编排时序即防串页契约：实时 `getPageSnapshot(activeTabId)`（禁止复用缓存快照）→
+    `buildContext`（requestId 先生成、model 来自首个已配置 Provider——单 Provider 阶段）→
+    **先持久化 user 消息（含 ContextSource + meta.warnings）** → `resolveProvider` →
+    `provider.stream` → delta 逐块转发 → 终态组装 assistant 消息（complete 全文 /
+    aborted 保留部分 / error 保留部分+errorCode）→ 持久化 → turn-done 恰好一次。
+    每会话单在途（busy，ask 同步段注册原子）；参数/状态问题安全返回不抛异常
+    （not-found/busy/internal）；未预期异常 → error 日志 + 归一化 internal 且保证
+    turn-done；deleteSession 中止竞态下在途编排不得复活已删会话文件（appendMessage
+    存活守卫）。日志链：开始/结束各一条（requestId/providerId/model/mode/url/耗时/
+    status/errorCode，无内容与密钥）。
+- **ConversationStore（S3 ✅ 已实现，2026-08-13 grep 核对）**：`export class
+ConversationStore(userDataDir)`——`dirPath`/`loadSessions`/`saveSessions`（写入前过滤
+  ephemeral 纵深防御）/`loadMessages`（缺失/损坏 → 空，fail-closed 不暴露原文）/
+  `saveMessages`（原子写 tmp+rename）/`deleteFiles`（消息文件+残留 tmp）。纯函数：
+  `deriveTitle`（首问 ≤30 字符，换行折叠）、`validateMessageShape`/`validateSessionShape`
+  （§9 逐条校验）、`serialize/parseMessagesFile`/`serialize/parseIndexFile`（version 1；
+  整体不可解析 → null；索引解析丢弃 ephemeral 条目）、`cropMessagesToLimit`（200 条
+  裁最早）、常量 `SESSION_LIMIT=50`/`MESSAGE_LIMIT=200`/`TITLE_MAX_CHARS=30`。
+  布局 `<userData>/conversations/index.json + <sessionId>.json`（运行时目录，不入库）。
 - **ContextBuilder（S2 ✅ 已实现，2026-08-13 grep 核对）**：`buildContext({question,
 snapshot, history, system, requestId, model, budget?}) → {request, meta}`——
   `request: ProviderRequest`（requestId/model 由 Service 传入，决议 #18；web 块只进
@@ -427,8 +451,11 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
   （Key 不入此文件）。
 - **IPC/bridge 扩展（S4）**：invoke——conversation:list/create/get-history/delete/
   set-ephemeral/ask/abort/preview、config:providers:list/set/set-key（apiKey='' = 删除）；
-  事件——conversation:stream-chunk / conversation:turn-done。全部沿用 sender 校验
-  （主窗口主帧）；事件只发主窗口；question > 16000 字符确定性截断。
+  事件——conversation:stream-chunk / conversation:turn-done（**两事件通道常量与
+  StreamChunkEvent/TurnDoneEvent payload 类型已于 S3 落地**：shared/types/ipc.ts +
+  conversation.ts；index.ts 事件回调转发主窗口 send 亦 S3 最小装配，S4 只补 invoke
+  通道与 preload 订阅）。全部沿用 sender 校验（主窗口主帧）；事件只发主窗口；
+  question > 16000 字符确定性截断（buildContext 内 §7.5 预算截断 + 标记 + warn）。
 - **AI 侧栏与布局（S4）**：面板停靠挤压（定宽 380px、可收起）；useContentBounds 升级为
   测量内容容器两维矩形（通道/契约 ui:content-bounds 不变）；回答渲染纯文本
   （不引入 Markdown 库）；ContextBadge 由 conversation:preview 驱动（实时快照摘要，
@@ -455,7 +482,7 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 242 用例）
+  - `npm test` — Vitest 全量测试（当前 299 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -527,7 +554,13 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
     过滤边界）、context-builder 角色隔离（30：system 恒等/块闭合转义与属性转义/注入文案
     夹具/selection 独占/模式推导矩阵/薄快照/L2 降级/历史重放/问题截断/warnings 合并/
     buildContextSource）。
-  - S3 起（待实现）：会话消息形状校验与上限裁剪、title 推导。
+  - ✅ S3（2026-08-13 红→绿落地，57 用例）：conversation-store 纯格式与文件读写（27：
+    消息/会话形状校验、索引不含 ephemeral、整体损坏 fail-closed、上限裁剪、title 推导、
+    原子写无 tmp 残留、删除含残留 tmp）、conversation-service 编排（30：生命周期/上限
+    拒绝新建、§6.1 时序——实时采集防串页/L3/selection 独占/薄快照/先持久化 user 消息
+    （磁盘探针）/错误归一化/not-configured 零网络、busy/abort 幂等与部分保留/dispose/
+    deleteSession 中止不复活文件/ephemeral 不落盘与切换/重启恢复/200 条裁剪）。
+  - S4 起（待实现）：IPC/bridge 与 AI 面板 UI。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。
