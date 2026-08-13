@@ -56,6 +56,9 @@ const SMOKE_MODE = process.env.AIBROWSE_SMOKE === '1';
 // 写入进程专属临时配置，Key 只经 AIBROWSE_TEST_API_KEY 环境变量进入并立即从 process.env
 // 移除（零暴露扫描由冒烟场景在进程内完成，Key 绝不写入日志/文件/DOM）。
 const LIVE_PROVIDER_MODE = SMOKE_MODE && process.env['AIBROWSE_LIVE_PROVIDER'] === '1';
+// S6 真实 Provider 多网站共读验证（§10 Exit Gate）：AIBROWSE_LIVE_SITES=1 时冒烟改跑
+// 多网站场景（多个真实站点各对应一个明确验收项，见 smoke.ts LIVE_SITES）
+const LIVE_SITES_MODE = LIVE_PROVIDER_MODE && process.env['AIBROWSE_LIVE_SITES'] === '1';
 let liveSmoke: LiveProviderSmoke | undefined = undefined;
 let liveStreamChunkCount = 0; // 真实 Provider 场景 delta 计数（流式证据，index.ts 装配侧统计）
 
@@ -88,9 +91,12 @@ if (!gotLock) {
 
   let smokeStarted = false;
 
-  // 冒烟模式兜底：30 秒内渲染进程未就绪视为失败
+  // 冒烟模式兜底：30 秒内渲染进程未就绪视为失败。渲染进程就绪后必须清除
+  // （AppRendererReady 处理内）——否则超 30 秒的冒烟场景（如真实 Provider 多网站
+  // 验证）会被误杀（S6 验收时实测触发；场景自身有各自的超时与断言）。
+  let smokeReadyTimer: ReturnType<typeof setTimeout> | null = null;
   if (SMOKE_MODE) {
-    setTimeout(() => {
+    smokeReadyTimer = setTimeout(() => {
       logError('main', '冒烟超时：渲染进程未在 30 秒内就绪');
       app.exit(1);
     }, 30_000);
@@ -365,6 +371,10 @@ if (!gotLock) {
         return;
       }
       logInfo('main', '渲染进程就绪（React 已挂载，preload bridge 链路正常）');
+      if (smokeReadyTimer !== null) {
+        clearTimeout(smokeReadyTimer); // 已就绪：取消 30 秒兜底，场景自身超时接管
+        smokeReadyTimer = null;
+      }
       if (SMOKE_MODE && !smokeStarted && browserController !== null) {
         smokeStarted = true;
         const loadUrl = process.env['AIBROWSE_SMOKE_URL'];
@@ -378,6 +388,7 @@ if (!gotLock) {
                 uiWindow: mainWindow, // T3：导航保护拦截与 bounds 上报生效验证
                 aiSmokeDir: SMOKE_AI_DATA_DIR, // S4：UI 端到端矩阵断言/清理用
                 liveSmoke, // S5：AIBROWSE_LIVE_PROVIDER=1 时非 undefined（真实 Provider 场景）
+                liveSites: LIVE_SITES_MODE, // S6：AIBROWSE_LIVE_SITES=1 时启用多网站共读验证
               });
         run
           .then(() => {
@@ -428,6 +439,9 @@ function createBrowserWindow(): void {
   const liveActive = LIVE_PROVIDER_MODE && liveKey !== '';
   if (LIVE_PROVIDER_MODE && !liveActive) {
     logWarn('main', '真实 Provider 冒烟跳过：未提供 AIBROWSE_TEST_API_KEY（回退离线矩阵）');
+  }
+  if (LIVE_SITES_MODE && !liveActive) {
+    logWarn('main', '多网站共读验证跳过：未提供 AIBROWSE_TEST_API_KEY（回退离线矩阵）');
   }
   if (SMOKE_MODE && !liveActive) {
     // 冒烟：注册 'fake' kind 并写入 fake 配置（决议 #20：选择依赖已注册 kind 集合，
