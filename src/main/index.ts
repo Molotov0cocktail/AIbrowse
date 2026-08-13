@@ -1,10 +1,19 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { existsSync, statSync } from 'node:fs';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { BrowserControllerImpl } from './browser/browser-controller';
 import { AppSessionManager } from './browser/session-manager';
-import { initLogger, logDebug, logEnvironment, logError, logInfo, logWarn } from './logger';
+import {
+  getCurrentLogFilePath,
+  initLogger,
+  logDebug,
+  logEnvironment,
+  logError,
+  logInfo,
+  logWarn,
+} from './logger';
 import { runSessionSmokeScenario, runSmokeScenario, smokeUiFake } from './smoke';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
@@ -71,6 +80,18 @@ if (userDataOverride !== undefined && userDataOverride !== '') {
 
 // 开发期日志写项目根目录 log/（AGENTS.md §3 红线）；打包后写入用户数据目录（asar 只读）
 initLogger(app.isPackaged ? app.getPath('userData') : app.getAppPath());
+// 真实 Provider 场景 Key 零暴露日志扫描起点（独立复验增强，2026-08-14）：在
+// logEnvironment 与环境变量读取之前取定日志字节偏移，使扫描覆盖 Key 进入进程 →
+// 装配 → 密文落盘 → 请求 → 流式 → 结束清理全过程（此前偏移在冒烟场景开始时才取，
+// 装配期不在扫描窗口内）。文件不存在（临时 userData 首跑）时偏移为 0——首个日志
+// 写入即创建文件，扫描覆盖全部字节。扫描边界：应用进程内日志文件字节区间；仓库外
+// PowerShell harness（独立进程，DPAPI 解密/注入/ZeroFreeBSTR 清零）不在本扫描
+// 范围内，其环境变量清理由 harness 自身 finally 强制。
+const startupLogFile = getCurrentLogFilePath();
+const startupLogScan = {
+  file: startupLogFile,
+  offsetBefore: existsSync(startupLogFile) ? statSync(startupLogFile).size : 0,
+};
 logEnvironment();
 
 // 单窗口假设（detailed-design 决议 #14）：当前阶段仅一个 UI 窗口；IPC 调用时解引用。
@@ -474,6 +495,7 @@ function createBrowserWindow(): void {
         baseUrl: valid.baseUrl,
         model: valid.model,
         ready,
+        logScan: startupLogScan, // 零暴露扫描起点：早于环境变量读取（见上方 startupLogScan）
         getStreamChunkCount: () => liveStreamChunkCount,
       };
     }

@@ -90,6 +90,12 @@ export interface LiveProviderSmoke {
   model: string;
   ready: Promise<boolean>; // 装配完成（config 写入 + Key 密文落盘）后才允许提问
   getStreamChunkCount: () => number; // 真实事件链路 delta 计数（index.ts 装配侧统计）
+  // 日志零暴露扫描区间：由 index.ts 装配侧在进程最早日志可观测点（logEnvironment 与
+  // 环境变量读取之前）取定——覆盖 Key 进入进程 → 装配 → 密文落盘 → 请求 → 结束清理
+  // 全过程（独立复验增强，2026-08-14：此前偏移在场景开始时才取，装配期不在扫描窗口内）。
+  // 边界：应用进程内日志文件字节区间 [offsetBefore, 场景终检读取时刻]；仓库外
+  // PowerShell harness（独立进程，DPAPI 解密/注入/清零）不在本扫描范围内。
+  logScan: { file: string; offsetBefore: number };
 }
 
 const LIVE_QUESTION = '用一句话回答：1+1 等于几';
@@ -1331,37 +1337,77 @@ export async function runAiUiScenarios(
         5000,
         '矩阵 9：DebugPanel 展开后 bounds 高度未恢复',
       );
-      await clickUi(uiWc, 'button[aria-label="新建标签页"]'); // 切 Tab → bounds 应用到新活动 view
-      await waitFor(
-        async () => (await controller.getTabs()).length === 2,
-        5000,
-        '矩阵 9：新建标签页后应有 2 个标签页',
+      // 矩阵 9 新建 Tab 是为验证「切 Tab 后 bounds 应用到新活动 view」——场景自建自清：
+      // 相关断言完成后必须经真实产品链路（UI 关闭按钮 → bridge → IPC → BrowserController）
+      // 关闭该 Tab 并恢复进入前的活动 Tab 与 Tab 数量，不得让后续场景（如真实 URL 变体）
+      // 依赖本场景泄漏的状态（独立复验发现项，2026-08-14：真实 URL 变体「关闭网页标签页
+      // 后应回到单个标签页」断言因此退出码 1）。
+      const activeBeforeNewTab = await controller.getActiveTab();
+      assert(activeBeforeNewTab !== null, '矩阵 9：新建标签页前应有活动 Tab');
+      let matrix9TabCreated = false;
+      try {
+        await clickUi(uiWc, 'button[aria-label="新建标签页"]'); // 切 Tab → bounds 应用到新活动 view
+        matrix9TabCreated = true; // 点击已发出：无论后续断言成败都进入清理路径
+        await waitFor(
+          async () => (await controller.getTabs()).length === 2,
+          5000,
+          '矩阵 9：新建标签页后应有 2 个标签页',
+        );
+        await waitFor(
+          async () => {
+            const b = await activeViewBounds();
+            return (
+              b !== null && b.width === winW - PANEL_WIDTH && b.height === boundsExpanded?.height
+            );
+          },
+          5000,
+          '矩阵 9：切换 Tab 后 bounds 应保持',
+        );
+        uiWindow.setContentSize(1100, 700); // 窗口缩放 → bounds 跟随
+        await waitFor(
+          async () => (await activeViewBounds())?.width === 1100 - PANEL_WIDTH,
+          5000,
+          '矩阵 9：窗口缩放后 bounds.width 未跟随（应为窗口宽-380）',
+        );
+        uiWindow.setContentSize(winW, winH); // 恢复窗口尺寸
+        await waitFor(
+          async () => (await activeViewBounds())?.width === winW - PANEL_WIDTH,
+          5000,
+          '矩阵 9：窗口尺寸恢复后 bounds 未恢复',
+        );
+      } finally {
+        // 正常完成与断言失败都尽量清理本场景创建的 Tab；清理失败仅记日志（硬性恢复
+        // 断言在 try 块之后，正常路径不受影响，失败路径保留原始断言错误）。
+        if (matrix9TabCreated) {
+          try {
+            await waitFor(
+              async () => (await controller.getTabs()).length >= 2,
+              3000,
+              '矩阵 9：清理前新建标签页未出现',
+            );
+            await clickUiTabClose(uiWc, 1); // 真实产品链路：UI 关闭按钮（新建 Tab 为活动 Tab）
+            await waitFor(
+              async () => (await controller.getTabs()).length === 1,
+              5000,
+              '矩阵 9：关闭新建标签页后应回到 1 个标签页',
+            );
+          } catch (err) {
+            logError('smoke', '矩阵 9 新建标签页清理失败', err);
+          }
+        }
+      }
+      // 修复后回归断言：场景退出时 Tab 状态与进入前一致（不得泄漏本场景创建的 Tab）
+      assert(
+        (await controller.getTabs()).length === 1,
+        '矩阵 9：退出时应恢复 1 个标签页（不得泄漏本场景创建的 Tab）',
       );
-      await waitFor(
-        async () => {
-          const b = await activeViewBounds();
-          return (
-            b !== null && b.width === winW - PANEL_WIDTH && b.height === boundsExpanded?.height
-          );
-        },
-        5000,
-        '矩阵 9：切换 Tab 后 bounds 应保持',
-      );
-      uiWindow.setContentSize(1100, 700); // 窗口缩放 → bounds 跟随
-      await waitFor(
-        async () => (await activeViewBounds())?.width === 1100 - PANEL_WIDTH,
-        5000,
-        '矩阵 9：窗口缩放后 bounds.width 未跟随（应为窗口宽-380）',
-      );
-      uiWindow.setContentSize(winW, winH); // 恢复窗口尺寸
-      await waitFor(
-        async () => (await activeViewBounds())?.width === winW - PANEL_WIDTH,
-        5000,
-        '矩阵 9：窗口尺寸恢复后 bounds 未恢复',
+      assert(
+        (await controller.getActiveTab())?.id === activeBeforeNewTab.id,
+        '矩阵 9：退出时应恢复进入前活动 Tab',
       );
       logInfo(
         'smoke',
-        'AI 共读 UI 矩阵 9 通过（开/关 380、DebugPanel、切 Tab、窗口缩放全路径 bounds 正确）',
+        'AI 共读 UI 矩阵 9 通过（开/关 380、DebugPanel、切 Tab、窗口缩放全路径 bounds 正确 + Tab 状态自清理恢复）',
       );
 
       // —— 矩阵 10：Key 安全（真实 safeStorage 运行：密文落盘、DOM/日志无值、无读回通道） ——
@@ -1544,8 +1590,9 @@ export async function runLiveProviderUiScenario(
   live: LiveProviderSmoke,
 ): Promise<void> {
   const uiWc = uiWindow.webContents;
-  const logFile = getCurrentLogFilePath();
-  const logOffsetBefore = statSync(logFile).size; // 本场景日志字节扫描区间起点
+  // 日志零暴露扫描区间由装配侧在进程最早可观测点取定（覆盖 Key 进入进程/装配/密文
+  // 落盘全过程，独立复验增强）；本场景只负责按该区间做字节级切片扫描
+  const { file: logFile, offsetBefore: logOffsetBefore } = live.logScan;
   try {
     // 1. 前置：将活动页导航到空白页并等待就绪（固定问题与真实快照管线一起验证，
     //    上下文确定性；前序浏览器核心场景会把活动页留在受控页面）——装配就绪
@@ -1720,6 +1767,12 @@ const LIVE_SITES = {
   table: 'https://www.w3school.com.cn/html/html_tables.asp',
 } as const;
 
+// 表格页内容依赖证据（独立复验增强，2026-08-14）：w3school 示例表格（Company/Contact/
+// Country，六行公司数据）中多年稳定的数据行——问题与断言必须依赖页面中特定单元格数据，
+// 不能由通用知识（如「表格由哪些基本标签构成」）回答；发起任何真实调用前先验证该行
+// 确实存在于快照表格与上下文序列化中，站点内容变化时明确提示更换站点。
+const TABLE_PAGE_ROW = ['Ernst Handel', 'Roland Mendel', 'Austria'] as const;
+
 async function liveSitesNavigateAndReady(
   controller: BrowserController,
   tabId: string,
@@ -1804,8 +1857,9 @@ export async function runLiveProviderSitesScenario(
   live: LiveProviderSmoke,
 ): Promise<void> {
   const uiWc = uiWindow.webContents;
-  const logFile = getCurrentLogFilePath();
-  const logOffsetBefore = statSync(logFile).size; // 本场景日志字节扫描区间起点
+  // 日志零暴露扫描区间由装配侧在进程最早可观测点取定（覆盖 Key 进入进程/装配/密文
+  // 落盘全过程，独立复验增强）；本场景只负责按该区间做字节级切片扫描
+  const { file: logFile, offsetBefore: logOffsetBefore } = live.logScan;
   let liveCalls = 0; // 真实调用计数（每次提问恰 1 次；仅用于最终日志汇总，不设上限）
   try {
     assert(await live.ready, '多网站共读：装配失败（配置写入或 Key 密文落盘未成功）');
@@ -1951,18 +2005,38 @@ export async function runLiveProviderSitesScenario(
       keptTables.some((t) => t.rows.length >= 2 && t.rows.some((r) => r.some((c) => c !== ''))),
       '表格页：数据表应有非空行内容',
     );
+    // 内容依赖前置断言（真实调用前）：目标数据行必须存在于快照表格中
+    assert(
+      keptTables.some((t) => t.rows.some((r) => TABLE_PAGE_ROW.every((cell) => r.includes(cell)))),
+      `表格页：示例表格应含 ${TABLE_PAGE_ROW.join('/')} 完整行（站点内容已变化，需更换表格页站点）`,
+    );
+    // 确定性序列化（= ProviderRequest 依据，ContextBuilder 契约不变）：该行数据必须进入
+    // tables 章节——验证回答所依赖的页面数据确实可达模型（不被布局过滤或预算裁剪丢失）
+    const tableFill = fillWebContentSections(tableSnap, 'snapshot');
+    assert(
+      tableFill.sections.some(
+        (s) => s.name === 'tables' && TABLE_PAGE_ROW.every((cell) => s.content.includes(cell)),
+      ),
+      '表格页：目标行数据应进入上下文序列化（ProviderRequest 依据）',
+    );
     // 注意：nav 密集站点的 links 章节超过 200 条/4000 字符上限会被确定性截断并产生
     // 裁剪 warnings——这是 §7.5 契约的正确行为，不构成缺陷，故不做「无裁剪」对照组断言。
     const tableMarker = (tableSnap.visibleText ?? '').trim().slice(0, 80);
     assert(tableMarker !== '', '表格页：visibleText 应非空（防串页标记词来源）');
     {
       const sessionId = await liveSitesNewSession(uiWc, '表格页会话');
-      await liveSitesAskViaUi(
+      const tableAnswer = await liveSitesAskViaUi(
         uiWc,
-        '根据当前页面，HTML 表格由哪些基本标签构成？用一句话回答。',
+        '根据当前页面中的示例表格，公司 Ernst Handel 的 Contact 是谁？用一句话回答。',
         '表格页提问',
       );
       liveCalls += 1;
+      // 答案必须包含页面特定数据（Contact 单元格值，专有名词无法由通用知识替代；
+      // 不要求完全固定措辞，只验证关键页面事实进入回答）
+      assert(
+        tableAnswer.includes('Roland Mendel'),
+        '表格页：回答应包含页面特定数据（Ernst Handel 行的 Contact 单元格值）',
+      );
       const { user } = await liveSitesLastMessages(aiSmokeDir, sessionId, '表格页提问');
       const cs = user.contextSource;
       assert(cs?.url === LIVE_SITES.table, '表格页：contextSource.url 应为表格页');
@@ -2031,6 +2105,23 @@ export async function runLiveProviderSitesScenario(
         (cs6?.capturedAt ?? 0) > (capturedBeforeReload ?? 0),
         '刷新：capturedAt 应严格递增（提问时刻实时采集）',
       );
+      // —— Tab 状态自清理（独立复验发现项同模式，2026-08-14）：关闭本场景创建的验证
+      //    Tab，恢复进入前的 Tab 数量与活动 Tab——后续场景（如真实 URL 变体）不得依赖
+      //    泄漏的 Tab。tab2 为活动 Tab，关闭后左邻（表格页 Tab）自动接管。
+      //    失败路径无需专门清理：场景失败即整体失败退出，无后续场景运行。 ——
+      assert(
+        await controller.closeTab(tab2.id),
+        '切 Tab：关闭验证用标签页应成功（真实产品链路 BrowserController）',
+      );
+      await waitFor(
+        async () => (await controller.getTabs()).length === tabsBefore,
+        5000,
+        '切 Tab：关闭验证用标签页后 Tab 数量应恢复',
+      );
+      assert(
+        (await controller.getActiveTab())?.id === activeTab.id,
+        '切 Tab：关闭验证用标签页后应恢复表格页活动 Tab',
+      );
     }
 
     // —— ⑦ 安全终检（与 S5 同断言）：Key 零暴露 + 密文形态 + 配置/日志使用记录 ——
@@ -2092,6 +2183,10 @@ export async function runSmokeScenario(
   controller: BrowserController,
   options: SmokeOptions = {},
 ): Promise<void> {
+  // AI 共读句柄声明在 try 之外：后置步骤（真实 URL 变体等）失败时 catch 路径也要能
+  // 清理冒烟临时目录（清理纪律；独立复验红态复现实测触发——失败重跑留下残留目录）
+  let aiSmoke: AiSmokeHandle | null = null;
+  let aiUiSmoke: AiUiSmokeHandle | null = null;
   try {
     // 0. 初始标签页（main 启动时创建）应存在并就绪
     const initial = await controller.getActiveTab();
@@ -2683,8 +2778,6 @@ export async function runSmokeScenario(
     // 7.8/7.9 AI 共读场景：缺省为离线矩阵（S3 主进程驱动 + S4 UI 端到端，FakeProvider
     //     离线确定性）；AIBROWSE_LIVE_PROVIDER=1 时替换为 S5 真实 Provider 场景
     //     （完整生产链路，§13.2 真实流式一问一答）
-    let aiSmoke: AiSmokeHandle | null = null;
-    let aiUiSmoke: AiUiSmokeHandle | null = null;
     if (options.liveSmoke === undefined) {
       aiSmoke = await runAiConversationScenarios(controller, options.uiWindow);
       aiUiSmoke =
@@ -2768,6 +2861,14 @@ export async function runSmokeScenario(
           : '冒烟场景全部通过（浏览器核心 + S5 真实 Provider 流式一问一答）',
     );
   } catch (err) {
+    // 失败路径同样清理冒烟临时目录（最佳努力，不掩盖原始错误）——步骤 9.1 的正常清理
+    // 在失败时不执行；各场景自身的 catch 只覆盖场景内部失败，后置步骤失败会留下残留
+    try {
+      if (aiSmoke !== null) await aiSmoke.cleanup();
+      if (aiUiSmoke !== null) await aiUiSmoke.cleanup();
+    } catch (cleanupErr) {
+      logError('smoke', '冒烟失败路径临时目录清理失败', cleanupErr);
+    }
     logError('smoke', '冒烟场景失败', err);
     throw err;
   }
