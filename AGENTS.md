@@ -343,11 +343,15 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
       `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
       （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
       state=ready + 标题非空）。
-  - **Session 跨进程持久化冒烟**（§十四 Session 验收）：两个独立应用进程共用同一临时
-    userData——进程 A `AIBROWSE_SESSION_SMOKE=set` 经受控页 Set-Cookie（HttpOnly）写入
-    persist:aibrowse 分区后完整退出；进程 B `AIBROWSE_SESSION_SMOKE=check` 新进程读回
-    Cookie。两进程均需 `AIBROWSE_USER_DATA_DIR=<临时目录>`（app ready 前 setPath，
-    不触碰用户真实数据，测试后清理该目录），退出码 0 即通过。
+  - **Session 跨进程持久化冒烟**（§十四 Session 验收，以生产产物验收，需先 `npm run build`）：
+    两个独立应用进程共用同一临时 userData——进程 A
+    `AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=set` 经受控页 Set-Cookie（HttpOnly）写入
+    persist:aibrowse 分区后完整退出；进程 B `AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check`
+    新进程读回 Cookie。两进程均需 `AIBROWSE_SMOKE=1`（缺省不会运行冒烟、只启动普通应用）与
+    `AIBROWSE_USER_DATA_DIR=<临时目录>`（app ready 前 setPath，不触碰用户真实数据，测试后
+    清理该目录）；命令（与 README 一致）：
+    `env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> npm run start`
+    （check 同理），退出码 0 即通过。
 - **git 双远程**（已初始化，2026-08-13 双远程推送验证）：
   ```bash
   # 日常推送：Gitee 直连

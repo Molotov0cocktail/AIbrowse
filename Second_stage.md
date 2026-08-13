@@ -69,7 +69,7 @@
 - context limit metadata
 - request / response normalization
 
-第一阶段推荐只落地：
+本阶段推荐只落地：
 
 - 一个主要 Provider；
 - 一个 OpenAI-compatible Provider（若实现成本合理）。

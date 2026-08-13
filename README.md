@@ -33,7 +33,8 @@ T3 UI 导航保护/bounds → T4 PageSnapshot 真实采集 → T5 敌对页/302 
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev
 ```
 
-Session 跨进程持久化验证（两个独立进程 + 同一临时目录，验证 Cookie 重启后保留）：
+Session 跨进程持久化验证（两个独立进程 + 同一临时目录，验证 Cookie 重启后保留；
+以生产产物验收，先执行 `npm run build`）：
 
 ```bash
 # 进程 A：写入 Cookie 后完整退出；进程 B：新进程读回 Cookie

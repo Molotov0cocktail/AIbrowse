@@ -12,6 +12,9 @@
 - 阶段：第一阶段（浏览器核心）。T0 基线、T1 详细设计定稿、T2 浏览器核心、T3 浏览器 UI、
   T4 PageSnapshot 闭环、T5 收尾（安全审计 + 验收核对 + 文档同步）**全部完成**；
   第一阶段 Exit Gate 已通过（2026-08-13），**停止并等待用户指令**，不擅自进入第二阶段。
+- Second Stage Entry Gate 独立定向审查（用户指令下的进入前审查，纯审查零代码改动）
+  已于 2026-08-13 **通过**（无阻塞项，证据见「最近验证结果」）；**但尚未正式切换
+  Second Stage**——继续等待用户指令，不提前进入 Second Stage 设计或实现。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + Second_stage.md～Seventh_stage.md 入库；
   各文件职责、接管顺序与阶段切换纪律见 AGENTS.md §1/§2。
 - 最近 commit 与工作区状态：以 `git log --oneline` / `git status --short` 为准。
@@ -30,6 +33,17 @@
 
 ## 最近验证结果（2026-08-13）
 
+- Second Stage Entry Gate 独立定向审查（2026-08-13，纯审查零代码改动）：按 Second_stage.md
+  §2 逐项复核——① 四模块稳定边界与 AGENTS.md §5 契约逐项一致；② PageSnapshot 真实页面探针
+  （example.com/MDN 长文/w3school 表格页/cnblogs 长文/百度百科动态长文/sspai 动态首页/bing
+  首页七页：长文与表格内容质量良好、L0/L1 阶梯与 warnings 正常；bing 首页文本稀薄属页面特性）；
+  ③ elementId 生命周期与销毁错误处理（敌对页冒烟复跑）；④ 权限隔离冒烟复跑；⑤ 全量验证
+  复跑全绿（test 89/89 · typecheck · lint · format:check · build · dev/生产/真实 URL 冒烟 ·
+  Session set/check）；⑥ 本文档无阻塞级缺陷。另以同视图导航/刷新一致性探针证实无旧快照
+  复用，selection 焦点保持探针证实 chrome 获得焦点后页面 selection 保留且真实采集脚本可读
+  （支撑「对选中文字提问」链路）。判定：**Entry Gate 通过，无阻塞项**。审查发现的文档
+  不一致（AGENTS.md §6 Session 冒烟命令缺 `AIBROWSE_SMOKE=1`）已于本闭环修复；新增
+  Second Stage 设计约束三条登记于「计划内限制与延期项」。
 - T5 收尾（2026-08-13）：test 89/89 ✅ · typecheck ✅ · lint ✅ · format:check ✅ · build ✅ ·
   Electron 冒烟 ✅ 全场景退出码 0：① dev 离线（含 T5 新场景）；② 生产产物（npm run start）；
   ③ 真实 URL（AIBROWSE_SMOKE_URL=https://www.bing.com/）。新增验证：
@@ -137,6 +151,14 @@
   后无远程页面可达，当前无需处理；未来 UI 嵌入远程内容时重新评估。
 - 地址栏搜索的端到端验证在离线环境断言「导航目标为 Bing 搜索 URL」（did-start-navigation），
   真实搜索页加载需联网（冒烟含 AIBROWSE_SMOKE_URL 联网变体；URL 判断本身有 15 用例单测）。
+- Second Stage 设计约束（2026-08-13 Entry Gate 审查登记；判断：属第二阶段的输入约束而非
+  本阶段风险，不进入开放风险登记、不占用 R 编号）：① **提问时刻实时采集防串页**——AI 侧栏/
+  ContextBuilder 必须在提问时刻实时 `getPageSnapshot(activeTabId)`，不得复用调试面板保留的
+  最近一次快照，否则切 Tab 后上下文串页（Second_stage §8 已有对应测试重点，此为实现机制
+  约束）；② **薄快照降级策略**——动态/JS 重渲染或无语义标记页面快照文本可能稀薄（实测 bing
+  首页 visibleText 仅 7 字符，sspai 首页 0 heading），ContextBuilder 需有「快照过薄/无
+  selection」的提示与降级策略；③ **布局表噪声**——tables 采集无数据表启发式，布局表格
+  （实测 cnblogs 首表为日历，空表头）会与数据表混入，ContextBuilder 裁剪与共读提示需容忍。
 
 ## 阻塞项
 

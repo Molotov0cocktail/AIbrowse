@@ -919,11 +919,12 @@ export async function runSmokeScenario(
 }
 
 // ---------- T5：Session 跨进程持久化冒烟（First_stage §十四 Session 验收） ----------
-// 用法（两次独立应用进程，同一临时 userData，进程间持久化只能来自 persist: 分区落盘）：
-//   进程 A：AIBROWSE_SESSION_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> → 受控页 Set-Cookie
-//           （HttpOnly，排除 document.cookie 读取路径）→ 验证 Cookie 写入 → 完整退出
-//   进程 B：AIBROWSE_SESSION_SMOKE=check AIBROWSE_USER_DATA_DIR=<同一目录> → 新进程验证
-//           Cookie 仍在 → 完整退出
+// 用法（两次独立应用进程，同一临时 userData，进程间持久化只能来自 persist: 分区落盘；
+// 触发本场景还须 AIBROWSE_SMOKE=1——缺省不会运行冒烟、只启动普通应用）：
+//   进程 A：AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> →
+//           受控页 Set-Cookie（HttpOnly，排除 document.cookie 读取路径）→ 验证 Cookie 写入 → 完整退出
+//   进程 B：AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROWSE_USER_DATA_DIR=<同一目录> →
+//           新进程验证 Cookie 仍在 → 完整退出
 // 单次进程内读取不能构成「重启后保持」证据（§十四）；测试后由调用方清理临时目录。
 export async function runSessionSmokeScenario(
   controller: BrowserController,
