@@ -1,9 +1,11 @@
 # AGENTS.md — AIbrowse 项目专属开发手册
 
 > 依据 `.agents/skills/project-rules/PROJECT_RULES.md` §8 于 2026-08-13 初始化；
-> 与根目录 `First_stage.md`（当前阶段需求/验收标准）、`ROADMAP.md` + `Second_stage.md`～`Seventh_stage.md`
-> （后续阶段路线与需求/验收标准）配套；技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
-> 新会话接管顺序：本文件 → 当前阶段文件（现为 `First_stage.md`）→ `doc/tasks/progress.md` → git 状态与代码核对（§2 步骤 0）。
+> 与根目录 `Second_stage.md`（当前阶段需求/验收标准）、`ROADMAP.md` + `First_stage.md` /
+> `Third_stage.md`～`Seventh_stage.md`（已完成/后续阶段需求与验收标准）配套；
+> 技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
+> 新会话接管顺序：本文件 → 当前阶段文件（现为 `Second_stage.md`）→ `doc/tasks/progress.md`
+> → git 状态与代码核对（§2 步骤 0）。
 > 与本文件冲突时以本文件为准，通用规则基线见 `.agents/skills/project-rules/PROJECT_RULES.md`。
 > 任务进度不记在本文件：唯一进度源 `doc/tasks/progress.md`（本文件仅在有长期变化时更新，见 §2）。
 
@@ -12,17 +14,26 @@
 - **一句话定位**：Windows 桌面「AI 信息浏览器 / AI Information Browser」——内置 Chromium 的
   多标签页浏览器，用户与 AI 共享同一浏览器会话与登录状态；AI 仅通过受限
   BrowserController / Tool Layer 操作浏览器，不得拥有任意系统权限。
-- **当前阶段（第一阶段）**：只构建安全、稳定、可扩展的浏览器核心
-  **Browser → PageSnapshot → Browser Tool Interface**；**不接入任何 LLM API**。
-  完成后得到能真正运行的 Windows 桌面浏览器原型，程序自身能把当前网页转成结构化 PageSnapshot。
+- **当前阶段（第二阶段，AI 共读）**：在不破坏第一阶段浏览器安全边界的前提下，实现
+  **PageSnapshot / Selection → AI Context → Conversation**——AI 侧栏、ConversationService、
+  ContextBuilder（纯函数）、LLMProvider（OpenAI-compatible 适配器 + FakeProvider，无厂商 SDK）、
+  SecureCredentialStore（Electron safeStorage / Windows DPAPI）。契约源
+  `doc/stage2/detailed-design.md`（2026-08-13 定稿）；任务 S1–S6 见 `doc/stage2/tasks/`。
+  **本阶段不实现自主浏览 Agent**：严禁新增 click/fill/scroll、自动搜索、多步 Browser
+  Agent Tool（均属 Third Stage）。
+- **已完成（第一阶段，浏览器核心）**：`Browser → PageSnapshot → Browser Tool Interface`
+  ——BrowserController/TabManager/PageReader/SessionManager + WebContentsView 多标签浏览器 +
+  PageSnapshot 采集 + 调试面板；Exit Gate 已于 2026-08-13 通过（First_stage.md §十四）。
 - **阶段机制**：`ROADMAP.md` 描述全阶段路线与切换原则；各阶段需求/验收标准分文件存放
-  （当前 `First_stage.md`，后续 `Second_stage.md`～`Seventh_stage.md`）。
-  当前处于第一阶段；**只有当前 Stage 的 Exit Gate 通过后才切换下一 Stage**（纪律见 §2 文档职责划分）。
+  （当前 `Second_stage.md`；已完成 `First_stage.md`；后续 `Third_stage.md`～`Seventh_stage.md`）。
+  当前处于第二阶段；**只有当前 Stage 的 Exit Gate 通过后才切换下一 Stage**（纪律见 §2 文档职责划分）。
   各 Stage 文件的完整内容不复制进本文件，需要时直接读对应 Stage 文件。
 - **技术栈**：Electron + TypeScript + React + Vite + Node.js；页面承载用官方当前推荐的
   **WebContentsView**（禁用已废弃的 BrowserView）；测试 **Vitest**、lint **ESLint**、格式 **Prettier**。
-  本阶段明确禁用：Playwright（作为浏览器主体）、SQLite、向量数据库、OpenAI/Anthropic API、
-  RSS、Research Agent、图表系统、登录账号系统、云同步。
+  本阶段明确禁用：Playwright（作为浏览器主体）、SQLite、向量数据库、RSS、Research Agent、
+  图表系统、登录账号系统、云同步、厂商 LLM SDK（Provider 调用用原生 fetch + SSE 自实现，
+  零新依赖）、Markdown/富文本回答渲染库。⚠️ LLM API 调用**允许**（本阶段核心）但仅限
+  主进程内 Provider 适配器发起；API Key 不得进入源码/日志/prompt/网页/renderer 可读通道。
   若某技术选择与最新版 Electron 明显不兼容，可选更合理实现，但**必须在修改前说明原因**。
   **技术基线（2026-08-13 按官方来源验证后冻结）**：Node.js 24.x（Active LTS，本机 24.18.0；
   Electron 43.4.0 内置 Node 24.18.1，运行时实测）/ Electron 43.4.0 / electron-vite 5.0.0 / Vite 7.3.6 /
@@ -30,7 +41,7 @@
   `>=4.8.4 <6.1.0`）/ Vitest 4.1.10 / ESLint 10.8.1（flat config）/ Prettier 3.9.6；
   依赖全部精确版本固定（无 ^/~，`.npmrc` save-exact=true），`engines.node` `>=24 <25` +
   `.node-version` = 24.18.0；main/preload 输出 CJS（preload 必须 CJS 以兼容 `sandbox=true`）。
-  ⚠️ **基线冻结**：第一阶段内任何 Agent 不得擅自升级上述核心工具链；升级必须走 §3「技术基线升级流程」。
+  ⚠️ **基线冻结**：第二阶段内任何 Agent 不得擅自升级上述核心工具链；升级必须走 §3「技术基线升级流程」。
 - **交付形态**：Windows 桌面应用（Electron 产物）。
 - **git 双远程**（用户已提供，2026-08-13）：
   - Gitee（默认推送目标，国内直连，无需代理）：
@@ -50,21 +61,24 @@
 ```
 ROADMAP.md（全阶段路线与切换原则，低频修改）
   ↓
-当前阶段文件 First_stage.md（后续 Second_stage.md～Seventh_stage.md，Exit Gate 通过后依次启用）
+当前阶段文件 Second_stage.md（已完成 First_stage.md；后续 Third_stage.md～Seventh_stage.md，
+Exit Gate 通过后依次启用）
   ↓
 AGENTS.md（长期规则/稳定架构/技术基线，低频修改）
   ↓
-doc/（proposal / 设计 / 任务文档，按需产出）
+doc/（第一阶段历史：proposal / high-level-design / detailed-design，定稿不覆盖；
+    Second Stage 起：doc/stage2/、doc/stage3/… 各自独立的 proposal / 高层设计 /
+    详细设计 / 任务文档——目录约定 2026-08-13 起）
   ↓
 doc/tasks/progress.md（当前工程状态/短期记忆，高频更新）
   ↓
 Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ```
 
-- **阶段切换纪律**：当前处于第一阶段。只有当前 Stage 的 **Exit Gate** 全部通过（逐项核对该 Stage
+- **阶段切换纪律**：当前处于第二阶段。只有当前 Stage 的 **Exit Gate** 全部通过（逐项核对该 Stage
   文件的 Exit Gate/验收标准、progress.md 无阻塞级缺陷、全量验证通过）后，才可切换到下一 Stage；
   切换按 ROADMAP.md「阶段切换原则」执行；阶段完成后**停下向用户报告**，不得擅自进入下一阶段
-  （First_stage.md §十五 / 本文件附 C）。
+  （Second_stage.md §10 / 本文件附 C）。
 - 不引入额外的状态文件 / Agent 日志 / checklist / handoff / summary 文件，除非实际开发证明必要。
 - **文档用于理解需求与意图；Git、当前代码、测试和构建结果用于确认项目实际状态。**
   若 progress.md 声称某功能已完成、但代码/Git/测试证明没有：以实际工程状态为事实，修正文档，再继续开发。
@@ -73,7 +87,7 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ### 步骤 0：新对话接管（每次新对话开始先做）
 
 1. 阅读 `AGENTS.md`（本文件）
-2. 阅读当前阶段文件（现为 `First_stage.md`；后续阶段文件为 `Second_stage.md`～`Seventh_stage.md`）
+2. 阅读当前阶段文件（现为 `Second_stage.md`；已完成 `First_stage.md`，后续 `Third_stage.md`～`Seventh_stage.md`）
 3. 阅读 `doc/tasks/progress.md`（如存在）
 4. `git status` + 最近若干条 `git log --oneline`
 5. 检查本次任务相关的实际代码和配置
@@ -85,7 +99,7 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 1. **稳定项目（含 git 前置）**：动工前摸清语言/框架/包管理器/测试/lint/构建/现有约定。
    git 远程已配置（§1）；新建项目时再执行 git init + 双远程 + .gitignore（`log/`、密钥/令牌本地文件、
    构建产物、IDE 个人配置）。
-2. **需求澄清**：First_stage.md 已是阶段需求源；新需求先写 proposal。
+2. **需求澄清**：Second_stage.md 已是阶段需求源（契约源 `doc/stage2/detailed-design.md`）；新需求先写 proposal。
 3. **设计先行**：风险、歧义、备选方案必须写明，不得用自信措辞掩盖不确定性。
 4. **任务拆分（闭环粒度）**：**一个新对话 ≈ 一个可验证的开发闭环**，不机械等于一个文件或一个模块。
    每个任务明确：目标 / 范围 / 非目标 / 涉及模块 / 验收标准 / 测试方式 / 完成定义。
@@ -140,20 +154,32 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
   **BrowserController 是浏览器能力的统一入口**，依赖方向固定为
   `UI → BrowserController → TabManager / PageReader / SessionManager → Electron APIs`；
   不把所有代码写进几个巨大文件，从第一天起模块化。
+- **AI 子系统架构纪律**（Second_stage.md §5 + doc/stage2/detailed-design.md 定稿）：依赖方向
+  `UI(AI 面板) → ConversationService → ContextBuilder / LLMProvider → SecureCredentialStore`；
+  网页上下文经 `ConversationService → BrowserController.getPageSnapshot`（**提问时刻实时采集**，
+  禁止复用缓存快照——防串页核心）；禁止 LLMProvider 直接访问 webContents；禁止 React Chat UI
+  接触 API Key（只写不读）；禁止网页内容直接拼接进 system prompt（只进 user 消息的
+  `UNTRUSTED_WEB_CONTENT` 块，system 恒为应用常量）。
 - **安全红线**（First_stage.md §八，从第一版开始）：远程网页 `nodeIntegration=false`、
   `contextIsolation=true`、`sandbox=true`（架构允许时）、`webSecurity` 不得关闭；
   远程网页不得直接访问 Electron API / 文件系统 / 程序内部数据；preload bridge 最小权限，
   不把 ipcRenderer 整体暴露给网页；限制不必要的 window.open/新窗口行为；合理处理导航；
   React UI 与远程网页保持明确安全边界。**不得为省事关闭 Electron 安全机制。**
+- **API Key 零暴露红线**（Second_stage.md §3.3）：Key 不入源码/日志/prompt/网页/renderer
+  可读通道（设置界面只写不回显，`list` 仅回 hasKey）；落盘仅 safeStorage 密文；错误与日志
+  只记 provider/model/requestId 等非敏感元数据；真实 Provider 验证需用户提供 Key
+  （询问边界），未经提供不得联网调用付费 API。
 - **TypeScript 纪律**（First_stage.md §十二）：类型错误不得用 `any`、`@ts-ignore` 或关闭严格
   检查解决；不得删除有意义的测试来让测试通过；不留明显 placeholder 实现然后声称完成。
 - **生命周期纪律**（First_stage.md §十二）：对 Electron 生命周期、Tab 销毁、WebContents 销毁
   做好清理；注意 memory leak 与 event listener 重复注册。
-- **范围纪律（第一阶段不做清单，First_stage.md §十一）**：AI Chat、LLM API（OpenAI/Claude/Gemini）、
-  Agent、收藏夹、SQLite、RSS、网页监控、Research、自动点击/填写、CDP Network 分析、下载管理器、
-  浏览器插件、密码管理器、完整历史记录系统、浏览器同步、PDF viewer、广告拦截器——
-  除非基础浏览器正常运行绝对必要，不得主动扩展。
-- **技术基线冻结（第一阶段）**：§1 已冻结版本不得由后续 Agent 擅自升级。升级流程：
+- **范围纪律（第二阶段不做清单，Second_stage.md §4 + 三阶段红线）**：**严禁新增
+  click/fill/scroll、自动搜索、多步 Browser Agent Tool（均属 Third Stage）**；AI 自动
+  创建/关闭大量标签页、收藏/信源库、SQLite 业务数据层、向量数据库、RSS/Research/图表/
+  自动 Diff、多 Agent 编排、后台定时任务、完整浏览器历史记录系统、密码管理器
+  （SecureCredentialStore 仅管 API Key）、Markdown/富文本回答渲染、Playwright——
+  除非本阶段目标绝对必要，不得主动扩展。
+- **技术基线冻结（第二阶段同样生效）**：§1 已冻结版本不得由后续 Agent 擅自升级。升级流程：
   先说明理由 → 验证 typecheck + lint + test + build + Electron 冒烟全绿 → 同步相关文档 → 提交。
 - **依赖可复现**：`package-lock.json` 必须提交；禁止删除 lockfile 后重新解析依赖来「解决」问题；
   npm 出现 peer dependency / engine 警告时不得用 `--force` / `--legacy-peer-deps` 直接掩盖，
@@ -169,8 +195,8 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 
 ```
 d:\AIbrowse\
-├── AGENTS.md / First_stage.md / README.md     # 手册 / 当前阶段需求与验收 / 启动与架构简介
-├── ROADMAP.md / Second_stage.md～Seventh_stage.md  # 全阶段路线图 / 后续各阶段需求与验收标准
+├── AGENTS.md / Second_stage.md / README.md    # 手册 / 当前阶段需求与验收 / 启动与架构简介
+├── ROADMAP.md / First_stage.md / Third_stage.md～Seventh_stage.md  # 路线图 / 已完成与后续阶段需求
 ├── .agents/skills/…                           # 规则基线 + references/prompt-templates.md
 ├── .gitignore / .editorconfig                 # 忽略 log/、密钥、构建产物、IDE 个人配置
 ├── .prettierrc.json / .prettierignore         # 格式约定（需求/路线文档不参与格式化）
@@ -179,7 +205,8 @@ d:\AIbrowse\
 ├── tsconfig.json + tsconfig.node/web.json     # 主进程与渲染进程各自的严格配置
 ├── eslint.config.mjs                          # ESLint 10 flat config（react-hooks + refresh）
 ├── package.json / package-lock.json           # 脚本见 §6；lockfile 入库
-├── doc/                                       # proposal / 设计 / tasks（progress.md 唯一进度源）
+├── doc/                                       # 第一阶段历史（定稿不覆盖）；Second Stage：stage2/；
+│                                              #   tasks/progress.md 唯一进度源
 ├── log/                                       # 运行时日志（gitignore，按日轮转）
 └── src/
     ├── main/
@@ -196,20 +223,34 @@ d:\AIbrowse\
     │       ├── page-reader.ts                 # （T4）快照编排：executeJavaScript 注入 + L0–L2 降级阶梯
     │       ├── snapshot-script.ts             # （T4）注入脚本源（自安装 IIFE 字符串，DOM lib 引用保持 TS 检查）
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 46 用例
+    │   └── ai/                                # （Second Stage，S1–S4 规划，契约见 doc/stage2/detailed-design.md）
+    │       ├── conversation-service.ts        # （S3）会话编排：ask 实时快照/中止/事件/持久化接线
+    │       ├── conversation-store.ts          # （S3）会话 JSON 持久化（原子写/上限/损坏容错）
+    │       ├── context-builder.ts             # （S2）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
+    │       ├── context-budget.ts              # （S2）纯函数：预算常量与确定性裁剪
+    │       ├── credential-store.ts            # （S1）API Key 安全存储（safeStorage/DPAPI，密文落盘）
+    │       ├── config-store.ts                # （S1）Provider 配置 JSON（非机密）
+    │       └── provider/                      # （S1）LLMProvider 接口/OpenAI-compatible 适配器/
+    │                                          #   FakeProvider/错误归一化（无厂商 SDK）
     ├── preload/
-    │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui，T3 扩展）
+    │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui + conversation/config，S4 扩展）
     │   └── index.d.ts                         # renderer 侧 window.aibrowse 类型
     ├── renderer/                              # React UI（index.html + src/）
-    │   └── src/browser/                       # （T3/T4）chrome：Toolbar/TabBar/AddressBar +
-    │                                          #   DebugPanel + useTabsState/useContentBounds（hooks）
+    │   ├── src/browser/                       # （T3/T4）chrome：Toolbar/TabBar/AddressBar +
+    │   │                                      #   DebugPanel + useTabsState/useContentBounds（hooks）
+    │   └── src/ai/                            # （S4 规划）AI 侧栏：AiPanel/ChatView/Composer/
+    │                                          #   ContextBadge/CitationCard/ProviderSettings + hooks
     └── shared/
         ├── types/app.ts                       # 共享类型（AppInfo / AibrowseBridge）
         ├── types/browser.ts                   # TabInfo/TabsState/PageSnapshot/meta（T2）
-        ├── types/ipc.ts                       # IPC 通道常量 + payload 类型（T2）
+        ├── types/conversation.ts              # （S1 规划）会话/消息/上下文/错误码/Provider 类型
+        ├── types/ipc.ts                       # IPC 通道常量 + payload 类型（T2，S4 扩展）
         └── url.ts / url.test.ts               # 地址栏输入判断纯函数 + 15 用例
 ```
 
-分层方向（不可反向或跳跃）：`UI → BrowserController → TabManager / PageReader / SessionManager → Electron APIs`。
+分层方向（不可反向或跳跃）：`UI → BrowserController → TabManager / PageReader / SessionManager → Electron APIs`；
+AI 子系统：`UI(AI 面板) → ConversationService → ContextBuilder / LLMProvider → SecureCredentialStore`，
+网页上下文 `ConversationService → BrowserController.getPageSnapshot`。
 按实际 Electron 项目结构调整文件布局时，必须保持该分层不变。
 
 ## 5. 模块接口速查
@@ -310,6 +351,59 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
   `useContentBounds`（ResizeObserver 测 chrome 高，防抖 50ms 上报 ui:content-bounds）。
   主区域为占位容器，真实网页由 WebContentsView 按上报 bounds 覆盖渲染。
 
+### Second Stage AI 共读契约速查（定稿 2026-08-13，待 S1–S4 实现后 grep 核对回填）
+
+> 唯一契约源 `doc/stage2/detailed-design.md`（§2–§12 + §15 决议记录，含 proposal Q1–Q10 拍板）；
+> 任务拆分见 `doc/stage2/tasks/S1–S6`。以下为速查摘要，实现前**不含**实际代码核对状态。
+
+- **shared/types/conversation.ts（S1）**：`ContextMode`（selection/snapshot/none）、
+  `ContextSource`（mode/tabId/url/title/capturedAt/degraded/thin/selectionExcerpt/warnings）、
+  `ConversationMessage`（role ∈ user|assistant；status complete/aborted/error；
+  contextSource 仅 user 消息携带；**不持久化快照正文**）、`ConversationSession`
+  （含 ephemeral「不保存」）、`NormalizedErrorCode`（not-configured/invalid-key/rate-limit/
+  timeout/network/context-too-long/provider-error/aborted/busy/not-found/internal）、
+  `NormalizedProviderError`（code/message/retryable/providerId/model/requestId/httpStatus，
+  **不含响应体/请求头/密钥**）、`ContextPreview`、`AskResult`。
+- **ConversationService（S3）**：`createSession/listSessions/getHistory/deleteSession/
+setEphemeral/ask/abort/previewContext/dispose`。ask 编排时序即防串页契约：
+  实时 `getPageSnapshot(activeTabId)`（禁止复用缓存快照）→ `buildContext` →
+  **先持久化 user 消息（含 ContextSource）** → `provider.stream` → 事件转发
+  （stream-chunk/turn-done）→ 终态持久化。每会话单在途（busy）；abort 幂等
+  （保留部分 + 已中止标记）。
+- **ContextBuilder（S2，纯函数零 Electron 依赖）**：`buildContext({question, snapshot,
+history, system}) → {request, meta}`；`deriveContextMode`（selection 优先独占 →
+  snapshot → none；L2 保留身份降级；L3 → none）；`isThinSnapshot`（< 300 字符）；
+  `buildContextSource`。网页内容只进 user 消息 `UNTRUSTED_WEB_CONTENT` 块
+  （`</` 闭合转义、属性转义），`SYSTEM_PROMPT` 编译期常量（恒等断言）。
+  预算（context-budget 常量）：web 块总 30000 字符、按 text→headings→tables→links→
+  buttons→inputs 优先级确定性填充截断；历史最近 8 轮/12000 字符/单条 2000；
+  布局表启发式过滤（表头空且内容稀薄 → 跳过 + warnings）。
+- **LLMProvider（S1）**：`metadata（id/label/streaming/supportsToolCalling:false/
+defaultContextLimitTokens）+ stream(request, signal): AsyncIterable<ProviderEvent>`
+  （delta/done/error）。OpenAI-compatible 适配器：原生 fetch + SSE 自解析（无 SDK），
+  `POST {baseUrl}/chat/completions`，Key 请求时从 SecureCredentialStore 取、不缓存；
+  超时连接 15s/空闲 chunk 60s/总 300s。FakeProvider：确定性脚本（分块/延迟/错误注入/
+  中止 + getLastRequest 供冒烟断言）。error-normalize 纯函数：状态码矩阵 → 错误码
+  （401/403→invalid-key、429→rate-limit、400 上下文指征→context-too-long、5xx→
+  provider-error retryable、网络/超时/中止/解析失败各归一）。
+- **SecureCredentialStore（S1）**：`isAvailable/set/get/has/delete`；safeStorage
+  （Windows DPAPI）密文落盘 `userData/credentials.json`（原子写）；不可用 fail-closed
+  （不落盘 + 仅内存 Key 提示）；**渲染层只写不读**（setKey/has，无 get 通道）。
+  config-store：providerId/baseUrl（仅 http/https）/model JSON 读写校验（Key 不入此文件）。
+- **IPC/bridge 扩展（S4）**：invoke——conversation:list/create/get-history/delete/
+  set-ephemeral/ask/abort/preview、config:providers:list/set/set-key（apiKey='' = 删除）；
+  事件——conversation:stream-chunk / conversation:turn-done。全部沿用 sender 校验
+  （主窗口主帧）；事件只发主窗口；question > 16000 字符确定性截断。
+- **AI 侧栏与布局（S4）**：面板停靠挤压（定宽 380px、可收起）；useContentBounds 升级为
+  测量内容容器两维矩形（通道/契约 ui:content-bounds 不变）；回答渲染纯文本
+  （不引入 Markdown 库）；ContextBadge 由 conversation:preview 驱动（实时快照摘要，
+  不含正文）。
+- **Prompt Injection 验收边界（S5）**：机器可验证断言——网页内容只存在于 user 消息
+  UNTRUSTED 块、system 恒等、块不可被内容闭合、角色程序字面量赋值、渲染层无 Key 读回、
+  本阶段无浏览器写 Tool（click/fill/scroll 不存在，grep 断言）、权限默认拒绝回归、
+  日志无 Key。**不承诺模型语义层免疫**：剩余风险登记 progress.md，Third Stage 引入
+  工具前重建威胁模型。
+
 ## 6. 常用命令
 
 - **Node 环境固定（技术基线，§1）**：`node --version` 应为 24.x（`.node-version` = 24.18.0，
@@ -339,7 +433,11 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
     白名单（允许目标跟随/禁止目标 custom:// 拦截 + 日志断言）、UI 端到端（React DOM 点击/
     键盘驱动：地址栏 URL/搜索、多 Tab、后退前进刷新、标题随网页变化、调试面板 L0/L1 徽标
     - warnings 展示）、远程页面隔离探针（window.aibrowse/process/require/electron 均
-      undefined）→ 自动退出，退出码 0 即通过；日志链见 log/）。生产产物路径同样可跑：
+      undefined）→ S3 起再验证 AI 共读场景（FakeProvider 离线：流式端到端/selection 独占/
+      防串页/L3 降级/薄快照/中止/错误归一化/会话持久化与删除/ephemeral 不落盘）→ S4 起
+      再验证 UI 端到端 + 布局 bounds 协调 + Key 不可达断言 + 注入结构断言（矩阵见
+      doc/stage2/detailed-design.md §13.2）→ 自动退出，退出码 0 即通过；日志链见 log/）。
+      生产产物路径同样可跑：
       `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
       （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
       state=ready + 标题非空）。
@@ -352,6 +450,11 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
     清理该目录）；命令（与 README 一致）：
     `env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> npm run start`
     （check 同理），退出码 0 即通过。
+  - **真实 Provider 可选验证（S5 起，需用户提供 Key——询问边界）**：
+    `AIBROWSE_LIVE_PROVIDER=1 AIBROWSE_TEST_API_KEY=<用户提供>`
+    附加设置（+ 已保存的 baseUrl/model 配置）→ 冒烟附加真实流式一问一答断言；
+    无 Key 环境跳过并记录，不作为失败。**未经用户明确提供 Key 不得联网调用任何付费 API**；
+    Key 仅经环境变量传入（不入库、不入日志）。
 - **git 双远程**（已初始化，2026-08-13 双远程推送验证）：
   ```bash
   # 日常推送：Gitee 直连
@@ -377,6 +480,11 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
   - ✅ PageSnapshot 数据规范化（`src/main/browser/snapshot-normalize.test.ts`，46 用例，T4 红→绿落地：
     不可信输入→L2 合法快照、限额二次截断、elementId 格式过滤、非法条目丢弃、表格行列对齐、
     warnings 去重）
+- Second Stage（S1–S4 规划，规格见 doc/stage2/detailed-design.md §13.1）：error-normalize
+  状态码矩阵与脱敏断言、FakeProvider 确定性行为、credential/config 形状校验、
+  context-budget 确定性裁剪（预算优先级/截断标记/历史裁剪/表格过滤）、context-builder
+  角色隔离（system 恒等/块闭合转义/注入文案夹具/selection 独占/模式推导矩阵）、
+  会话消息形状校验与上限裁剪、logger 脱敏密钥（`sk-…` 形态）专项用例。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。
@@ -414,6 +522,10 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
   Chromium 网络层拦截（ERR_UNSAFE_REDIRECT，探针实测不触发 will-redirect）；当前无自定义
   协议注册，未来注册 `aibrowse://` 等协议时该拦截点是唯一防线（冒烟以 custom:// 目标验证
   handler 真实触发）。
+- **Prompt Injection 边界声明（Second Stage 起，长期事实）**：结构性隔离保证网页内容不能
+  取得权限、读取密钥、调用写操作或改变消息角色（机器可验证，doc/stage2/detailed-design.md
+  §12）；但**不承诺**模型在语义层完全不受网页文本诱导（误导性回答/诱导式表述的剩余风险
+  如实登记于 progress.md）。Third Stage 引入 Browser Tool 前必须重建威胁模型。
 
 ## 附 A：验证矩阵（「作业完成」的定义）
 
@@ -425,20 +537,20 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
 | 重大版本     | + Release 发布与独立验证        | tag + 上传 + 下载 URL 验证          |
 | 纯文档       | 免构建/重打包                   | 但提交推送必须                      |
 
-## 附 B：第一阶段验收标准（摘要，完整清单见 First_stage.md §十四）
+## 附 B：第二阶段验收标准（摘要，完整清单见 Second_stage.md §9）
 
-- **浏览器**：应用正常启动、打开网页、URL 输入、地址栏搜索、多 Tab（新建/切换/关闭）、
-  前进/后退/刷新有效、Tab 标题随网页变化。
-- **Session**：Cookie 使用持久 Session；重启应用后普通网站登录状态保持。
-- **PageSnapshot**：可读取当前网页，返回 URL/标题/主要文本/heading/link/button、识别常见 table、
-  为交互元素生成 elementId；调试面板能显示 PageSnapshot JSON。
-- **Architecture**：BrowserController / TabManager / PageReader / SessionManager 各自独立；
-  React UI 不滥用 Electron privileged API；类型定义清晰。
-- **Security**：nodeIntegration 未对远程网页开启、contextIsolation 开启、webSecurity 不关闭、
-  远程网站无法直接调用 Node.js、IPC 暴露遵循最小权限。
-- **Engineering**：TypeScript 编译通过、lint 通过、测试通过；README 包含启动方式并简述架构。
+- **AI 配置**：可配置至少一种 LLM Provider（OpenAI-compatible）；API Key 不进入源码/日志/
+  网页/prompt/renderer 可读通道；Provider 抽象不绑定业务逻辑（无厂商 SDK）。
+- **共读**：可回答当前网页/选中文本问题；可总结页面；切 Tab 后上下文正确更新；
+  页面刷新/销毁不导致旧快照错误复用（提问时刻实时采集）；超长页面有明确裁剪策略。
+- **安全**：网页内容按不可信输入处理（UNTRUSTED_WEB_CONTENT 块 + 常量 system）；
+  网页 Prompt Injection 不能覆盖系统/用户指令（结构性断言）；当前阶段 AI 不具备自主浏览
+  写操作（无 click/fill/scroll/搜索 Tool）；Renderer/远程网页无法读取 API Key。
+- **Engineering**：test / typecheck / lint / build 全绿；Electron 实际共读冒烟通过
+  （FakeProvider 离线矩阵）；日志可用于定位 Provider/Context 问题且无敏感信息。
 
-## 附 C：第一阶段完成报告格式（First_stage.md §十五）
+## 附 C：第二阶段完成报告格式（Second_stage.md §10）
 
-阶段完成后**停下**，不擅自开发第二阶段，向用户报告：已实现内容 / 项目结构 /
-测试和构建结果 / 已知限制 / 下一阶段最适合做什么，然后等待下一条指令。
+阶段完成后**停下**，不擅自开发第三阶段：更新 progress.md → 向用户报告（已实现内容 /
+验证结果 / 剩余风险 / Third Stage 详细设计的切入点建议）→ **不直接实现 Browser Agent**，
+等待下一条指令。

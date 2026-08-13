@@ -1,8 +1,11 @@
 # AIbrowse — AI 信息浏览器
 
-> 第一阶段目标：安全、稳定、可扩展的 **Windows 桌面浏览器核心原型**——`Browser → PageSnapshot → Browser Tool Interface`；
-> 程序自身能把当前网页读取为结构化 PageSnapshot。**不接入任何 LLM API。**
-> 需求源：`First_stage.md`；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
+> 第二阶段目标：**AI 共读与当前网页对话**——`PageSnapshot / Selection → AI Context → Conversation`：
+> AI 侧栏、ConversationService、ContextBuilder、LLMProvider（OpenAI-compatible 适配器 +
+> FakeProvider，无厂商 SDK）、SecureCredentialStore（safeStorage/DPAPI）。契约源
+> `doc/stage2/detailed-design.md`。本阶段不实现自主浏览 Agent（无 click/fill/scroll、
+> 自动搜索、多步 Browser Agent Tool——属 Third Stage）。
+> 需求源：`Second_stage.md`；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
 ## 当前状态（2026-08-13）
 
@@ -10,8 +13,11 @@
   （BrowserController/TabManager/SessionManager + WebContentsView）→ T3 浏览器 UI
   （工具栏/标签栏/地址栏/导航保护）→ T4 PageSnapshot（PageReader/采集脚本/normalize/调试面板）→
   T5 收尾（安全审计 + R-02 will-redirect 加固 + 验收清单逐项核对 + 文档同步）。
-  验收证据见 `First_stage.md` §十四；进度见 `doc/tasks/progress.md`。
-  下一步等待用户指令，按 `ROADMAP.md` 切换第二阶段。
+  验收证据见 `First_stage.md` §十四。
+- 🔨 **第二阶段（AI 共读）已正式切换（2026-08-13）**：需求校准与详细设计已定稿——
+  `doc/stage2/`（proposal / 高层设计 / 详细设计 + 任务拆分 S1–S6）；
+  **尚未开始实现**，首个实现任务 S1（Provider 抽象与凭据安全基座）见
+  `doc/stage2/tasks/S1-provider-credential.md`。
 
 ## 技术栈（实际落地版本）
 
@@ -27,10 +33,19 @@ npm run dev      # 开发模式启动（真实启动 Electron 应用）
 
 冒烟自检（启动 → 窗口 → React 挂载 → preload bridge 链路 → 浏览器核心场景 →
 T3 UI 导航保护/bounds → T4 PageSnapshot 真实采集 → T5 敌对页/302 拦截/UI 端到端/远程隔离 →
-自动退出，退出码 0 即通过）：
+自动退出，退出码 0 即通过；S3/S4 实现后加入 AI 共读场景：FakeProvider 离线矩阵
+流式端到端/selection 独占/防串页/L3 降级/薄快照/中止/错误归一化/会话持久化/UI 端到端/
+bounds 协调/Key 不可达/注入结构断言，矩阵见 `doc/stage2/detailed-design.md` §13.2）：
 
 ```bash
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev
+```
+
+真实 Provider 可选验证（S5 起，需用户提供 Key——未经提供不联网调用付费 API；
+Key 仅经环境变量传入，不入库/不入日志）：
+
+```bash
+env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_LIVE_PROVIDER=1 AIBROWSE_TEST_API_KEY=<用户提供> npm run dev
 ```
 
 Session 跨进程持久化验证（两个独立进程 + 同一临时目录，验证 Cookie 重启后保留；
@@ -82,21 +97,31 @@ React UI（渲染进程）→ BrowserController（主进程，浏览器能力统
   url/title）/ L3（tab 不可用，null）。type=password 不采集 value。
 - 纯逻辑（地址栏输入判断 `src/shared/url.ts`、Tab 状态机、权限策略、UI 导航保护、
   快照 normalize）零环境依赖、可单测；UI/IO 副作用在外层胶水。
+- AI 子系统（第二阶段，设计定稿、待实现）：依赖方向 `UI(AI 面板) → ConversationService →
+ContextBuilder / LLMProvider → SecureCredentialStore`；网页上下文经 `ConversationService →
+BrowserController.getPageSnapshot`（**提问时刻实时采集**，禁止复用缓存快照——防串页）。
+  LLM 请求仅在主进程发起（API Key 不出主进程，渲染层只写不读）；网页内容只进 user 消息的
+  `UNTRUSTED_WEB_CONTENT` 块（system 恒为应用常量）；Key 落盘仅 safeStorage（Windows DPAPI）
+  密文；会话持久化为 userData 下 JSON（不存快照正文，支持「不保存」会话）。
 
 ## 目录结构
 
 ```
 src/
 ├── main/          # 主进程：入口（生命周期/窗口/安全默认值/IPC 装配/导航保护）、logger、
-│   │              #   smoke（冒烟自检：多 Tab/导航保护/真实采集/敌对页/302/UI 端到端/Session）
-│   └── browser/   # BrowserController / TabManager / SessionManager / PageReader /
-│                  #   snapshot-script + snapshot-normalize / tab-state / permission-policy
-├── preload/       # UI bridge（contextBridge，白名单 IPC，最小权限）
-├── renderer/      # React UI：Toolbar / TabBar / AddressBar / DebugPanel + hooks
-└── shared/        # 共享类型（app/browser/ipc）+ 纯逻辑（url.ts）
+│   │              #   smoke（冒烟自检：多 Tab/导航保护/真实采集/敌对页/302/UI 端到端/Session/
+│   │              #             AI 共读矩阵（S3/S4 实现后））
+│   ├── browser/   # BrowserController / TabManager / SessionManager / PageReader /
+│   │              #   snapshot-script + snapshot-normalize / tab-state / permission-policy
+│   └── ai/        # （第二阶段，S1–S4 实现）ConversationService / ConversationStore /
+│                  #   ContextBuilder + budget / CredentialStore / ConfigStore /
+│                  #   provider（LLMProvider/OpenAI-compatible/FakeProvider/error-normalize）
+├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config）
+├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏，S4）
+└── shared/        # 共享类型（app/browser/ipc/conversation）+ 纯逻辑（url.ts）
 ```
 
-完整结构与职责见 `AGENTS.md` §4。
+完整结构与职责见 `AGENTS.md` §4；第二阶段契约与任务见 `doc/stage2/`。
 
 ## 日志
 
@@ -105,9 +130,13 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（89 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 89 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（46，页面视为敌手）。
 Electron 行为由冒烟自检真实启动验证（见上）。约定见 `AGENTS.md` §7。
+第二阶段（S1–S4）将新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
+credential/config 校验、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
+（system 恒等/块闭合转义/selection 独占）、会话消息校验、logger 脱敏密钥专项用例
+（规格见 `doc/stage2/detailed-design.md` §13）。
 
 ## 已知限制
 
@@ -115,4 +144,7 @@ Electron 行为由冒烟自检真实启动验证（见上）。约定见 `AGENTS
 - 地址栏不支持中文/国际化域名（IDN，走搜索兜底）；搜索引擎暂硬编码 Bing（后续换 SearchProvider）。
 - 无 CI / 打包配置（第一阶段验收不要求；打包属 Seventh Stage）。
 - 冒烟中的搜索验证在离线环境断言「发起 Bing 搜索导航」而非页面加载完成（联网冒烟变体可验证）。
+- Prompt Injection 边界（第二阶段定稿）：结构性隔离保证网页内容不能取得权限、读取密钥、
+  调用写操作或改变消息角色（机器可验证）；但**不承诺**模型在语义层完全不受网页文本诱导
+  ——剩余风险如实登记于 `doc/tasks/progress.md`，Third Stage 引入工具前重建威胁模型。
 - 详细清单见 `doc/tasks/progress.md`「计划内限制与延期项」。

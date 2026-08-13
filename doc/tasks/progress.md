@@ -9,30 +9,53 @@
 
 ## 当前状态
 
-- 阶段：第一阶段（浏览器核心）。T0 基线、T1 详细设计定稿、T2 浏览器核心、T3 浏览器 UI、
-  T4 PageSnapshot 闭环、T5 收尾（安全审计 + 验收核对 + 文档同步）**全部完成**；
-  第一阶段 Exit Gate 已通过（2026-08-13），**停止并等待用户指令**，不擅自进入第二阶段。
-- Second Stage Entry Gate 独立定向审查（用户指令下的进入前审查，纯审查零代码改动）
-  已于 2026-08-13 **通过**（无阻塞项，证据见「最近验证结果」）；**但尚未正式切换
-  Second Stage**——继续等待用户指令，不提前进入 Second Stage 设计或实现。
-- 路线图文档已接入（2026-08-13）：ROADMAP.md + Second_stage.md～Seventh_stage.md 入库；
+- 阶段：**第二阶段（AI 共读）**，已于 2026-08-13 正式切换（用户指令）。本会话完成：
+  需求校准、Second Stage 详细设计定稿与可验证任务拆分——`doc/stage2/`（proposal /
+  high-level-design / detailed-design 定稿 + tasks/S1–S6）；**未开始实现业务代码**，
+  S1–S6 全部 ⏳。
+- 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
+  Second Stage Entry Gate 独立定向审查通过（2026-08-13，无阻塞项）。
+- 路线图文档已接入（2026-08-13）：ROADMAP.md + First_stage.md～Seventh_stage.md 入库；
   各文件职责、接管顺序与阶段切换纪律见 AGENTS.md §1/§2。
 - 最近 commit 与工作区状态：以 `git log --oneline` / `git status --short` 为准。
 - 技术基线：2026-08-13 验证冻结（AGENTS.md §1）；依赖精确版本固定（package.json 无 ^/~）。
 
 ## 任务表
 
-| 任务 | 内容                                                                                             | 状态 | 备注                                                           |
-| ---- | ------------------------------------------------------------------------------------------------ | ---- | -------------------------------------------------------------- |
-| T0   | 项目基线（git/文档链/脚手架/测试基建/最小应用）                                                  | ✅   | 2026-08-13 完成，见 tasks/baseline.md                          |
-| T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ✅   | 2026-08-13 完成，定稿见 doc/detailed-design.md（§12 决议记录） |
-| T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ✅   | 2026-08-13 完成，签名已回填 AGENTS.md §5 并与代码 grep 核对    |
-| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ✅   | 2026-08-13 完成，R-01 同闭环关闭（见下）                       |
-| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ✅   | 2026-08-13 完成（含 T3 导航保护收紧，见下）                    |
-| T5   | 收尾：安全审计（§11 逐项 + R-02 关闭 + elementId 敌对页审查）+ 验收清单逐项核对 + 文档同步       | ✅   | 2026-08-13 完成（4 个逻辑 commit，见下）                       |
+| 任务 | 内容                                                                                             | 状态 | 备注                                                                |
+| ---- | ------------------------------------------------------------------------------------------------ | ---- | ------------------------------------------------------------------- |
+| T0   | 项目基线（git/文档链/脚手架/测试基建/最小应用）                                                  | ✅   | 2026-08-13 完成，见 tasks/baseline.md                               |
+| T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ✅   | 2026-08-13 完成，定稿见 doc/detailed-design.md（§12 决议记录）      |
+| T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ✅   | 2026-08-13 完成，签名已回填 AGENTS.md §5 并与代码 grep 核对         |
+| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ✅   | 2026-08-13 完成，R-01 同闭环关闭（见下）                            |
+| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ✅   | 2026-08-13 完成（含 T3 导航保护收紧，见下）                         |
+| T5   | 收尾：安全审计（§11 逐项 + R-02 关闭 + elementId 敌对页审查）+ 验收清单逐项核对 + 文档同步       | ✅   | 2026-08-13 完成（4 个逻辑 commit，见下）                            |
+| S1   | Provider 抽象 + SecureCredentialStore + 配置存取 + 错误归一化（FakeProvider 闭环，无 UI）        | ⏳   | 任务文档 doc/stage2/tasks/S1-provider-credential.md；依赖：无       |
+| S2   | ContextBuilder 纯核心：角色隔离/预算裁剪/selection 优先级/薄快照/表格噪声                        | ⏳   | 任务文档 doc/stage2/tasks/S2-context-builder.md；依赖：S1           |
+| S3   | ConversationService + 会话 JSON 持久化 + ask 编排（实时快照防串页）+ 主进程冒烟                  | ⏳   | 任务文档 doc/stage2/tasks/S3-conversation-service.md；依赖：S1/S2   |
+| S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ⏳   | 任务文档 doc/stage2/tasks/S4-ai-panel-ui.md；依赖：S3               |
+| S5   | 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证                                    | ⏳   | 任务文档 doc/stage2/tasks/S5-security-prompt-injection.md；依赖：S4 |
+| S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ⏳   | 任务文档 doc/stage2/tasks/S6-finalize-acceptance.md；依赖：S1–S5    |
 
 ## 最近验证结果（2026-08-13）
 
+- Second Stage 切换与设计定稿（2026-08-13，纯文档任务，零代码改动）：① 步骤 0 核对——
+  git 工作区干净、First Stage Exit Gate 与 Second Stage Entry Gate 均已有独立复验证据；
+  ② 定稿 `doc/stage2/proposal.md`（目标/非目标/验收/Q1–Q10 拍板/S1–S6 里程碑）、
+  `doc/stage2/high-level-design.md`（架构/决策/数据流/安全模型/存储/测试/风险）、
+  `doc/stage2/detailed-design.md`（§2–§16 唯一契约源：五模块职责与接口、IPC 白名单、
+  错误契约、实时快照防串页、selection 优先级/薄快照/表格噪声、预算与确定性裁剪、
+  角色隔离与 UNTRUSTED 块、流式/中止/超时、会话持久化与不保存、Key 安全、面板布局、
+  注入验收边界与剩余风险、冒烟矩阵）、`doc/stage2/tasks/S1–S6`（每任务 = 一个可验证
+  开发闭环：目标/范围/非目标/测试/完成定义/依赖；每个任务重申三阶段红线——严禁新增
+  click/fill/scroll、自动搜索、多步 Browser Agent Tool）；③ 更新 AGENTS.md（§1/§2
+  阶段指针与接管顺序、§3 AI 架构纪律/Key 零暴露红线/第二阶段不做清单、§4 结构、
+  §5 Second Stage 契约速查、§6 冒烟与真实 Provider 可选验证、§7 测试、§8 注入边界声明、
+  附 B/附 C）、README.md（当前状态/冒烟/架构/测试/已知限制）、本文件；
+  ④ 第一阶段 doc/proposal、doc/high-level-design、doc/detailed-design 与
+  doc/tasks/baseline.md **原位保留未覆盖**（历史定稿）；Second Stage 及后续文档按
+  `doc/stageN/` 目录约定独立存放；⑤ 验证：npm test 全量回归 + typecheck + lint +
+  format:check（纯文档按 AGENTS.md 附 A 免构建/冒烟）+ 文档交叉引用与格式检查。
 - Second Stage Entry Gate 独立定向审查（2026-08-13，纯审查零代码改动）：按 Second_stage.md
   §2 逐项复核——① 四模块稳定边界与 AGENTS.md §5 契约逐项一致；② PageSnapshot 真实页面探针
   （example.com/MDN 长文/w3school 表格页/cnblogs 长文/百度百科动态长文/sspai 动态首页/bing
@@ -151,14 +174,23 @@
   后无远程页面可达，当前无需处理；未来 UI 嵌入远程内容时重新评估。
 - 地址栏搜索的端到端验证在离线环境断言「导航目标为 Bing 搜索 URL」（did-start-navigation），
   真实搜索页加载需联网（冒烟含 AIBROWSE_SMOKE_URL 联网变体；URL 判断本身有 15 用例单测）。
-- Second Stage 设计约束（2026-08-13 Entry Gate 审查登记；判断：属第二阶段的输入约束而非
-  本阶段风险，不进入开放风险登记、不占用 R 编号）：① **提问时刻实时采集防串页**——AI 侧栏/
-  ContextBuilder 必须在提问时刻实时 `getPageSnapshot(activeTabId)`，不得复用调试面板保留的
-  最近一次快照，否则切 Tab 后上下文串页（Second_stage §8 已有对应测试重点，此为实现机制
-  约束）；② **薄快照降级策略**——动态/JS 重渲染或无语义标记页面快照文本可能稀薄（实测 bing
-  首页 visibleText 仅 7 字符，sspai 首页 0 heading），ContextBuilder 需有「快照过薄/无
-  selection」的提示与降级策略；③ **布局表噪声**——tables 采集无数据表启发式，布局表格
-  （实测 cnblogs 首表为日历，空表头）会与数据表混入，ContextBuilder 裁剪与共读提示需容忍。
+- Second Stage 设计约束（2026-08-13 Entry Gate 审查登记；属第二阶段的输入约束而非本阶段
+  风险，不进入开放风险登记、不占用 R 编号）：三条已由 Second Stage 详细设计定稿化解——
+  ① **提问时刻实时采集防串页** → ask 编排时序即契约（doc/stage2/detailed-design.md
+  §6.1/§6.2 + 防串页三断言）；② **薄快照降级策略** → thin 阈值 300 字符 + 提示
+  （§7.2/§7.4）；③ **布局表噪声** → 确定性启发式过滤 + 容忍设计（§7.5/§7.7）。
+- Second Stage 设计决议（2026-08-13 定稿时接受，属设计决议非风险）：① 字符预算 ≠
+  token 预算（无 tokenizer，保守字符上限 + Provider 400 映射 context-too-long 兜底）；
+  ② 会话不持久化快照正文（跨轮「结合上一页」类追问仅靠 contextSource 来源行，
+  最小化持久化，Second_stage.md §7）；③ 布局表启发式为容忍设计（误删只是少内容、
+  误留只是多冗余，均有 warnings）；④ 回答渲染 v1 纯文本（无 Markdown 库）；
+  ⑤ 面板定宽 380px（不做拖拽调宽）。
+- **Prompt Injection 剩余风险（设计级登记，S5 验证后复核）**：结构性隔离（UNTRUSTED_WEB_CONTENT
+  块 + `</` 闭合转义 + system 编译期常量 + 本阶段无任何浏览器写 Tool + API Key 只写不读）
+  保证网页内容**不能**取得权限、读取密钥、调用写操作或改变消息角色——全部机器可验证
+  （doc/stage2/detailed-design.md §12）；但**不承诺**模型在语义层完全不受网页文本诱导
+  （如诱导生成误导性回答、诱导式表述）。Third Stage 引入 Browser Tool 前必须重建威胁
+  模型（届时「网页文本诱导调用工具」成为真实攻击面）。
 
 ## 阻塞项
 
@@ -166,9 +198,11 @@
 
 ## 下一个推荐任务
 
-- **第一阶段已完成（Exit Gate 通过）**：停下向用户报告（First_stage.md §十五格式：
-  已实现内容 / 项目结构 / 测试和构建结果 / 已知限制 / 下一阶段最适合做什么），
-  等待用户指令后再按 ROADMAP.md「阶段切换原则」进入 Second Stage。
+- **S1 Provider 抽象与凭据安全基座**（doc/stage2/tasks/S1-provider-credential.md）：
+  LLMProvider 接口 + FakeProvider + OpenAI-compatible 适配器（原生 fetch + SSE，无 SDK）+
+  SecureCredentialStore（safeStorage/DPAPI）+ Provider 配置存取 + 错误归一化 + 对应单测。
+  Second Stage 首个实现闭环：无 UI、不联网、不新增依赖；依赖：无。完成后按依赖顺序
+  S2 → S3 → S4 → S5 → S6。
 
 ## 第一阶段验收未完成项
 
