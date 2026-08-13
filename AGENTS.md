@@ -19,7 +19,8 @@
   ContextBuilder（纯函数）、LLMProvider（OpenAI-compatible 适配器 + FakeProvider，无厂商 SDK）、
   SecureCredentialStore（Electron safeStorage / Windows DPAPI）。契约源
   `doc/stage2/detailed-design.md`（2026-08-13 定稿）；任务 S1–S6 见 `doc/stage2/tasks/`。
-  **S1（Provider 抽象与凭据安全基座）已完成（2026-08-13）**，进度见 progress.md。
+  **S1（Provider 抽象与凭据安全基座）与 S2（ContextBuilder 纯核心）已完成（2026-08-13）**，
+  进度见 progress.md。
   **本阶段不实现自主浏览 Agent**：严禁新增 click/fill/scroll、自动搜索、多步 Browser
   Agent Tool（均属 Third Stage）。
 - **已完成（第一阶段，浏览器核心）**：`Browser → PageSnapshot → Browser Tool Interface`
@@ -227,8 +228,8 @@ d:\AIbrowse\
     │   └── ai/                                # （Second Stage，契约见 doc/stage2/detailed-design.md）
     │       ├── conversation-service.ts        # （S3）会话编排：ask 实时快照/中止/事件/持久化接线
     │       ├── conversation-store.ts          # （S3）会话 JSON 持久化（原子写/上限/损坏容错）
-    │       ├── context-builder.ts             # （S2）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
-    │       ├── context-budget.ts              # （S2）纯函数：预算常量与确定性裁剪
+    │       ├── context-builder.ts             # （S2 ✅）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
+    │       ├── context-budget.ts              # （S2 ✅）纯函数：预算常量与确定性裁剪
     │       ├── credential-store.ts            # （S1 ✅）SecureCredentialStore：API Key 密文落盘
     │       │                                  #   （cipher 后端注入可替换，Q2）+ 纯文件格式 + 单测
     │       ├── safe-storage-cipher.ts         # （S1 ✅）Electron safeStorage（DPAPI）→ CipherBackend 薄胶水
@@ -376,14 +377,21 @@ setEphemeral/ask/abort/previewContext/dispose`。ask 编排时序即防串页契
   **先持久化 user 消息（含 ContextSource）** → `provider.stream` → 事件转发
   （stream-chunk/turn-done）→ 终态持久化。每会话单在途（busy）；abort 幂等
   （保留部分 + 已中止标记）。
-- **ContextBuilder（S2，纯函数零 Electron 依赖）**：`buildContext({question, snapshot,
-history, system}) → {request, meta}`；`deriveContextMode`（selection 优先独占 →
-  snapshot → none；L2 保留身份降级；L3 → none）；`isThinSnapshot`（< 300 字符）；
-  `buildContextSource`。网页内容只进 user 消息 `UNTRUSTED_WEB_CONTENT` 块
-  （`</` 闭合转义、属性转义），`SYSTEM_PROMPT` 编译期常量（恒等断言）。
-  预算（context-budget 常量）：web 块总 30000 字符、按 text→headings→tables→links→
-  buttons→inputs 优先级确定性填充截断；历史最近 8 轮/12000 字符/单条 2000；
-  布局表启发式过滤（表头空且内容稀薄 → 跳过 + warnings）。
+- **ContextBuilder（S2 ✅ 已实现，2026-08-13 grep 核对）**：`buildContext({question,
+snapshot, history, system, requestId, model, budget?}) → {request, meta}`——
+  `request: ProviderRequest`（requestId/model 由 Service 传入，决议 #18；web 块只进
+  末条 user 消息）；`deriveContextMode(snapshot, thin)`（null/L3 → none；selection
+  trim 非空优先独占 → selection；其余 → snapshot——thin 不改变模式，L2 保留身份降级）；
+  `isThinSnapshot`（正文合计 < 300 字符）；`buildContextSource(snapshot, mode, thin,
+tabId)`（tabId 由 Service 传入，决议 #18；selectionExcerpt ≤ 200）。网页内容只进
+  user 消息 `UNTRUSTED_WEB_CONTENT` 块（`</` → `<\/` 闭合转义 + 属性 `& < > "` 转义 +
+  `<selection>`/`<section name>` 结构），`SYSTEM_PROMPT` 编译期常量（恒等断言）。
+  context-budget.ts：`CONTEXT_BUDGET`（§7.5 全量表，可注入）/`THIN_SNAPSHOT_THRESHOLD`/
+  `TRUNCATION_MARK`/`truncateWithMark`/`countSnapshotBodyChars`/`filterLayoutTables`
+  （表头空且行少或内容稀薄 → 跳过）/`fillWebContentSections`（text→headings→tables→
+  links→buttons→inputs 优先级 + 各节/条目上限 + 总预算 30000 停止 + 任何截断标记）/
+  `trimHistory`（最近 8 对 + 12000 字符）/`renderHistoryMessageContent`（单条 2000 +
+  来源行 ≤ 120 计入预算）。
 - **LLMProvider（S1 ✅ 已实现，src/main/ai/provider/）**：`llm-provider.ts`——
   `export interface LLMProvider`（`metadata` + `stream(request, signal): AsyncIterable<
 ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
@@ -447,7 +455,7 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 170 用例）
+  - `npm test` — Vitest 全量测试（当前 242 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -514,9 +522,12 @@ ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
     与 not-configured 路径（6）、credential-store 密文落盘/损坏容错/不可用降级/纯格式
     （16，cipher 后端注入测试替身，safeStorage 行为由冒烟验证）、config-store 校验规则
     与持久化（11）、logger sanitize `sk-…` 形态与 apiKey 键值对脱敏（6）。
-  - S2 起（待实现）：context-budget 确定性裁剪（预算优先级/截断标记/历史裁剪/表格过滤）、
-    context-builder 角色隔离（system 恒等/块闭合转义/注入文案夹具/selection 独占/模式推导
-    矩阵）、会话消息形状校验与上限裁剪。
+  - ✅ S2（2026-08-13 红→绿落地，72 用例）：context-budget 确定性裁剪（42：预算优先级/
+    各节与条目上限/总预算停止/截断标记/历史裁剪轮数与字符/单条重放上限与来源行/布局表
+    过滤边界）、context-builder 角色隔离（30：system 恒等/块闭合转义与属性转义/注入文案
+    夹具/selection 独占/模式推导矩阵/薄快照/L2 降级/历史重放/问题截断/warnings 合并/
+    buildContextSource）。
+  - S3 起（待实现）：会话消息形状校验与上限裁剪、title 推导。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。

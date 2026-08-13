@@ -10,7 +10,7 @@
 ## 当前状态
 
 - 阶段：**第二阶段（AI 共读）**，已于 2026-08-13 正式切换（用户指令）。设计定稿与
-  任务拆分已完成（`doc/stage2/`）；**S1 已完成（2026-08-13）**，S2–S6 ⏳。
+  任务拆分已完成（`doc/stage2/`）；**S1、S2 已完成（2026-08-13）**，S3–S6 ⏳。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Entry Gate 独立定向审查通过（2026-08-13，无阻塞项）。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + First_stage.md～Seventh_stage.md 入库；
@@ -29,7 +29,7 @@
 | T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ✅   | 2026-08-13 完成（含 T3 导航保护收紧，见下）                                  |
 | T5   | 收尾：安全审计（§11 逐项 + R-02 关闭 + elementId 敌对页审查）+ 验收清单逐项核对 + 文档同步       | ✅   | 2026-08-13 完成（4 个逻辑 commit，见下）                                     |
 | S1   | Provider 抽象 + SecureCredentialStore + 配置存取 + 错误归一化（FakeProvider 闭环，无 UI）        | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S1-provider-credential.md |
-| S2   | ContextBuilder 纯核心：角色隔离/预算裁剪/selection 优先级/薄快照/表格噪声                        | ⏳   | 任务文档 doc/stage2/tasks/S2-context-builder.md；依赖：S1                    |
+| S2   | ContextBuilder 纯核心：角色隔离/预算裁剪/selection 优先级/薄快照/表格噪声                        | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S2-context-builder.md     |
 | S3   | ConversationService + 会话 JSON 持久化 + ask 编排（实时快照防串页）+ 主进程冒烟                  | ⏳   | 任务文档 doc/stage2/tasks/S3-conversation-service.md；依赖：S1/S2            |
 | S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ⏳   | 任务文档 doc/stage2/tasks/S4-ai-panel-ui.md；依赖：S3                        |
 | S5   | 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证                                    | ⏳   | 任务文档 doc/stage2/tasks/S5-security-prompt-injection.md；依赖：S4          |
@@ -37,6 +37,22 @@
 
 ## 最近验证结果（2026-08-13）
 
+- **S2 ContextBuilder 纯核心（2026-08-13，第二个实现闭环）**：test **242/242** ✅
+  （170 基线 + 72 新增：context-budget 42 / context-builder 30）· typecheck ✅ · lint ✅ ·
+  format:check ✅ · build ✅ · Electron 冒烟 ✅ 双场景退出码 0（dev 离线 + 生产产物，
+  既有场景回归，S2 纯逻辑不扩冒烟）。交付内容：① `context-builder.ts`——
+  `buildContext`（组装 ProviderRequest：system 恒等透传 + 历史重放 + 末条 user 消息含
+  UNTRUSTED_WEB_CONTENT 块）/ `deriveContextMode`（selection trim 非空优先独占 → snapshot →
+  none；L2 保留身份降级）/ `isThinSnapshot`（正文合计 < 300）/ `buildContextSource` /
+  `SYSTEM_PROMPT` 编译期常量；块闭合转义（`</` → `<\/`）+ 属性 `& < > "` 转义 +
+  `<selection>`/`<section name>` 结构；② `context-budget.ts`——`CONTEXT_BUDGET`（§7.5
+  全量表）+ 确定性裁剪（text→headings→tables→links→buttons→inputs 优先级填充、各节/
+  条目上限、总预算 30000 停止、任何截断 `…[已截断]` 标记 + 警告、布局表启发式过滤
+  「跳过 N 个疑似布局表格」）+ `trimHistory`/`renderHistoryMessageContent`（最近 8 对 /
+  12000 字符 / 单条 2000 含来源行 ≤120 计入预算）；③ 契约校准决议 #18（与实现同 commit）：
+  `ContextBuildInput` 增补 requestId/model、`buildContextSource` 增补 tabId、§7.6 实现
+  落点明确（§3.2/§6.1/§7.6/§15 已同步）。纯函数零 Electron 依赖、零新依赖、不接
+  IPC/UI、不联网；ProviderRequest 类型与 S1 交付一致（无冲突）。
 - **S1 Provider 抽象与凭据安全基座（2026-08-13，首个实现闭环）**：test **170/170** ✅
   （89 基线 + 81 新增：error-normalize 18 / fake 12 / openai-compatible 12 / llm-provider 6 /
   credential 16 / config 11 / logger 6）· typecheck ✅ · lint ✅ · format:check ✅ · build ✅ ·
@@ -218,11 +234,12 @@
 
 ## 下一个推荐任务
 
-- **S2 ContextBuilder 纯核心**（doc/stage2/tasks/S2-context-builder.md）：角色隔离
-  UNTRUSTED_WEB_CONTENT 块（`</` 闭合转义 + system 编译期常量恒等）+ 预算确定性裁剪
-  （context-budget 常量/优先级填充/历史裁剪）+ selection 独占优先级 + 薄快照判定 +
-  布局表过滤 + 对应单测。纯函数零 Electron 依赖；依赖：S1（已完成）。完成后按依赖
-  顺序 S3 → S4 → S5 → S6。
+- **S3 ConversationService + 会话持久化 + ask 编排**（doc/stage2/tasks/S3-conversation-service.md）：
+  createSession/listSessions/getHistory/deleteSession/setEphemeral/ask/abort/previewContext/dispose；
+  实时快照防串页（提问时刻 getPageSnapshot，禁止缓存复用）→ buildContext（S2 已就绪，
+  输入含 requestId/model/tabId，决议 #18）→ 先持久化 user 消息 → provider.stream → 事件转发；
+  会话 JSON 持久化（原子写/50 会话/200 条/损坏容错/ephemeral 不落盘）；主进程冒烟矩阵 1–8
+  （FakeProvider 离线）。依赖：S1/S2（均已完成）。完成后按依赖顺序 S4 → S5 → S6。
 
 ## 第一阶段验收未完成项
 
