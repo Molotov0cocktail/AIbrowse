@@ -278,12 +278,14 @@ requestingOrigin): boolean` —— 网页权限策略纯函数，v1 固定默认
   （onUpdated 返回退订函数，preload 内同一通道只注册一次 ipcRenderer 监听、JS 侧管理
   listener 列表）；`nav.navigate/back/forward/reload`（navigate 传原始输入）；`page.snapshot`；
   `ui.reportContentBounds`。原始 `ipcRenderer` 永不暴露给渲染层。
-- **ui-navigation-policy（T3 已实现，安全）**：`export interface UiNavigationPolicy`
-  （selfOrigin / selfFilePrefix）+ `export function resolveUiNavigationAllowed(targetUrl,
+- **ui-navigation-policy（T3 已实现，安全，T4 收紧）**：`export interface UiNavigationPolicy`
+  （selfOrigin / selfFileUrl）+ `export function resolveUiNavigationAllowed(targetUrl,
 policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）。开发模式仅放行
-  `ELECTRON_RENDERER_URL` origin、生产仅放行 `file:` 入口前缀；畸形输入安全返回 `false`。
+  `ELECTRON_RENDERER_URL` origin；生产仅放行 `file:` 入口文件 URL **精确匹配**（scheme+pathname
+  相等，hash/query 变体视为同一文档；同目录其他文件/`..` 路径穿越/大小写变体一律拒绝，失败关闭；
+  不用 origin 比较——file: 的 origin 恒为 'null'，会误放行所有本地文件）；畸形输入安全返回 `false`。
   由 `main/index.ts` 挂到 UI 窗口 `will-navigate` + `will-redirect`（§9，两处共用同一判定）。
-  测试：`ui-navigation-policy.test.ts`（9 用例）。
+  测试：`ui-navigation-policy.test.ts`（10 用例）。
 - **渲染层 chrome（T3 已实现）**：`renderer/src/browser/`——Toolbar（后退/前进/刷新/地址栏/
   新建 Tab）/ TabBar（标题兜底「新标签页」、切换/关闭、active 高亮、loading spinner、
   error 红标）/ AddressBar（聚焦期不随 URL 刷新草稿、失焦同步、Enter 提交原始输入）；

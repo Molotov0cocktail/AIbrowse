@@ -414,7 +414,10 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   2. **服务器重定向** → `will-redirect`：实测在页面发起与程序化导航两条路径下都会对 302 目标触发，
      `preventDefault()` 阻止整次导航（不单是重定向）。这是程序化导航遇到重定向时唯一的拦截点。
      两处 handler 共用同一「自身来源」判定：开发模式仅放行 `ELECTRON_RENDERER_URL` 的 origin
-     （重定向目标同样过该判定）；生产仅放行 `file:` 入口（按入口文件路径前缀匹配）。
+     （重定向目标同样过该判定）；生产仅放行 `file:` 入口文件 URL 精确匹配——scheme+pathname 相等，
+     hash/query 变体视为同一文档放行；同目录其他文件、`..` 路径穿越、大小写变体一律拒绝
+     （失败关闭。注意 file: 的 origin 在 Chromium 中恒为 'null'，绝不能用 origin 比较——
+     那会把所有本地文件视为同源）。
      不采用 `will-frame-navigate`：对「主框架被导航走」这一威胁无增量覆盖（UI 窗口无远程子框架；
      子框架导航不影响主框架 preload），且其 isMainFrame 需按位置参数读取、易错。
      实现注意：TS 监听器首参 `details` 已并入 params（读 `details.url` / `details.isMainFrame`），

@@ -5,6 +5,8 @@
 
 import { webContents, WebContentsView } from 'electron';
 import type { BrowserWindow } from 'electron';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { BrowserController } from './browser/browser-controller';
 import { logError, logInfo } from './logger';
 
@@ -54,15 +56,28 @@ export async function runSmokeScenario(
       '初始标签页未在 5 秒内就绪',
     );
 
-    // 1. UI 窗口导航保护（§9，R-01 关闭条件）：页面发起导航到远程 URL 应被 will-navigate
-    //    拦截，UI 停留在自身页面——否则远程页面将获得 window.aibrowse bridge（安全红线）。
+    // 1. UI 窗口导航保护（§9，R-01 关闭条件）：页面发起的非法导航应被 will-navigate 拦截，
+    //    UI 停留在自身页面——否则远程/本地其他文档将获得 window.aibrowse bridge（安全红线）。
+    //    探针覆盖：远程 URL（核心威胁）+ 同目录其他 file: 入口 + '..' 路径穿越（生产模式
+    //    精确匹配必须拒绝；前缀语义下穿越会被放行，故该探针能甄别策略回归）。
     if (options.uiWindow !== null && options.uiWindow !== undefined) {
       const uiWc = options.uiWindow.webContents;
       const uiUrl = uiWc.getURL();
-      await uiWc.executeJavaScript("window.location.href = 'https://example.com/'");
-      await delay(800); // 给导航提交留出时间；保护生效则 URL 不变（未生效则已跳走/加载中）
-      assert(uiWc.getURL() === uiUrl, `UI 窗口导航保护未拦截远程导航：UI 现为 ${uiWc.getURL()}`);
-      logInfo('smoke', 'UI 窗口导航保护拦截验证通过');
+      const uiEntry = pathToFileURL(join(__dirname, '../renderer/index.html')).href;
+      const blockedTargets = [
+        'https://example.com/',
+        pathToFileURL(join(__dirname, '../renderer/other.html')).href,
+        `${uiEntry}/../other.html`,
+      ];
+      for (const target of blockedTargets) {
+        await uiWc.executeJavaScript(`window.location.href = ${JSON.stringify(target)}`);
+        await delay(800); // 给导航提交留出时间；保护生效则 URL 不变（未生效则已跳走/加载中）
+        assert(
+          uiWc.getURL() === uiUrl,
+          `UI 窗口导航保护未拦截导航：UI 现为 ${uiWc.getURL()}（目标 ${target}）`,
+        );
+      }
+      logInfo('smoke', 'UI 窗口导航保护拦截验证通过（远程/同目录/路径穿越三探针）');
     }
 
     // 2. 新建第二个标签页 → 新 Tab 成为活动 Tab

@@ -283,15 +283,16 @@ function createMainWindow(): BrowserWindow {
 }
 
 // UI 窗口导航保护的「自身来源」策略（§9）：开发模式仅放行 ELECTRON_RENDERER_URL 的
-// origin（重定向目标同样过该判定）；生产仅放行 file: 入口（按入口文件路径前缀匹配）。
+// origin（重定向目标同样过该判定）；生产仅放行 file: 入口文件 URL 精确匹配（hash/query
+// 变体视为同一文档；同目录其他文件/路径穿越/大小写变体一律拒绝，失败关闭）。
 function buildUiNavigationPolicy(): UiNavigationPolicy {
   const devUrl = process.env['ELECTRON_RENDERER_URL'];
   if (devUrl) {
-    return { selfOrigin: new URL(devUrl).origin, selfFilePrefix: null };
+    return { selfOrigin: new URL(devUrl).origin, selfFileUrl: null };
   }
   return {
     selfOrigin: null,
-    selfFilePrefix: pathToFileURL(join(__dirname, '../renderer/index.html')).href,
+    selfFileUrl: pathToFileURL(join(__dirname, '../renderer/index.html')).href,
   };
 }
 
