@@ -10,7 +10,8 @@
 ## 当前状态
 
 - 阶段：第一阶段（浏览器核心）。T0 基线、T1 详细设计定稿、T2 浏览器核心、T3 浏览器 UI、
-  T4 PageSnapshot 闭环完成，T5 待执行。
+  T4 PageSnapshot 闭环、T5 收尾（安全审计 + 验收核对 + 文档同步）**全部完成**；
+  第一阶段 Exit Gate 已通过（2026-08-13），**停止并等待用户指令**，不擅自进入第二阶段。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + Second_stage.md～Seventh_stage.md 入库；
   各文件职责、接管顺序与阶段切换纪律见 AGENTS.md §1/§2。
 - 最近 commit 与工作区状态：以 `git log --oneline` / `git status --short` 为准。
@@ -25,9 +26,29 @@
 | T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ✅   | 2026-08-13 完成，签名已回填 AGENTS.md §5 并与代码 grep 核对    |
 | T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ✅   | 2026-08-13 完成，R-01 同闭环关闭（见下）                       |
 | T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ✅   | 2026-08-13 完成（含 T3 导航保护收紧，见下）                    |
-| T5   | 收尾：安全审计 + 第一阶段验收清单逐项核对 + 文档/README 同步                                     | ⏳   | 依赖 T2–T4 ✅                                                  |
+| T5   | 收尾：安全审计（§11 逐项 + R-02 关闭 + elementId 敌对页审查）+ 验收清单逐项核对 + 文档同步       | ✅   | 2026-08-13 完成（4 个逻辑 commit，见下）                       |
 
 ## 最近验证结果（2026-08-13）
+
+- T5 收尾（2026-08-13）：test 89/89 ✅ · typecheck ✅ · lint ✅ · format:check ✅ · build ✅ ·
+  Electron 冒烟 ✅ 全场景退出码 0：① dev 离线（含 T5 新场景）；② 生产产物（npm run start）；
+  ③ 真实 URL（AIBROWSE_SMOKE_URL=https://www.bing.com/）。新增验证：
+  ① **安全审计**：detailed-design §11 逐项核对实际代码全部落实（Tab/UI 安全默认值、
+  IPC sender+主帧校验、preload 白名单、双权限处理器默认拒绝、监听器逐一清理）；
+  ② **R-02 关闭**：Tab will-redirect 白名单 + 受控 302 冒烟（允许目标 http→http 跟随、
+  禁止目标 custom:// 拦截 + 日志字节切片断言；探针实测 file:/data:/about:blank 被
+  Chromium 网络层先拦、自定义协议/mailto: 真实触发 will-redirect）；
+  ③ **elementId 敌对页审查**：修复同元素跨集合双 id 漂移 + 顶格烙印分配溢出两处缺陷，
+  敌对页冒烟断言（重复/畸形/超大/负数/冲突烙印 → id 唯一、1–10 位数字、无歧义对应
+  活 DOM 真实元素、跨快照稳定）；
+  ④ **UI 端到端冒烟**：React DOM 点击/键盘事件驱动（地址栏 URL/搜索、多 Tab 新建/切换/关闭、
+  后退/前进/刷新、标题随网页变化、调试面板 L0 徽标+JSON / L1 徽标+warnings 展示），
+  远程页面隔离探针（window.aibrowse/process/require/electron 均 undefined）；
+  ⑤ **Session 跨进程持久化**：AIBROWSE_SESSION_SMOKE=set/check 双独立进程 + 临时
+  userData（HttpOnly Cookie 落盘 → 完整退出 → 新进程读回，测试后清理临时数据）。
+  交付 4 个逻辑 commit：① R-02 will-redirect 加固（+logger 日志路径导出）；
+  ② elementId 两处修复；③ 冒烟四场景扩展 + index 接线；④ 文档同步。
+  仍不接入 LLM、CI、打包；第一阶段 Exit Gate 通过，停止等待用户指令。
 
 - T4 PageSnapshot 闭环（2026-08-13）：test 89/89 ✅（42 基线 + 1 导航保护收紧新增 + 46
   snapshot-normalize 新增）· typecheck ✅ · lint ✅ · format:check ✅ · build ✅ ·
@@ -77,39 +98,24 @@
 > 编号规则见文件顶部；正常后续任务、已接受的设计决议、机器环境说明不登记为风险
 > （分别在任务表 / detailed-design / AGENTS.md §6）。
 
+### 已关闭风险摘要
+
+> 已关闭项保留编号与结论直至自然归档（不重排、不复用编号）。
+
+- **R-01 UI 窗口导航保护缺失**（Medium，T3 内关闭，2026-08-13）：UI 窗口 preload 随任何导航
+  加载，主框架被导航到远程页面即泄露 `window.aibrowse` bridge。处置：T3 先于 bridge 扩展
+  落地 will-navigate + will-redirect 自身来源白名单（纯函数 `ui-navigation-policy.ts` + 用例；
+  冒烟三探针实跑通过）。证据与影响详见 detailed-design §9/§12 决议 #16。
+- **R-02 Tab 导航白名单未覆盖服务器重定向**（Low，T5 关闭，2026-08-13）：Tab 仅挂
+  will-navigate，302 目标（如自定义协议）可绕过白名单。处置：补 will-redirect 与同一
+  scheme 白名单，受控 302 实测（允许目标 http→http 放行跟随；禁止目标 custom:// 拦截 +
+  日志断言；探针证实 file:/data:/about:blank 被 Chromium 网络层先拦、自定义协议/mailto:
+  真实触发 will-redirect——自定义协议正是该风险的验证路径）。当前项目未注册自定义协议，
+  该防护为防御纵深；结论 **Resolved**，详见 detailed-design §12 决议 #17。
+
 ### 开放风险登记
 
-#### R-01 UI 窗口导航保护缺失（T3 bridge 扩展硬前提）→ Resolved
-
-- 状态：**Resolved（2026-08-13，T3 内关闭）**
-- 发现于：2026-08-13 技术审查（T2 完成后）
-- 严重度：Medium（曾评估：T3 若先扩展 bridge 再补保护，则升为 High）
-- 阻塞级别：指定任务硬前提（T3 tabs/nav/page/ui bridge 扩展）
-- 影响：UI 窗口 preload 随该窗口任何导航加载；若 UI 主框架被导航到远程页面，远程页面将获得
-  `window.aibrowse` bridge——T3 扩展后含 `page.snapshot`，可读取任意 Tab（含已登录页面）内容，
-  违反 First_stage §八 安全红线
-- 证据（曾）：`src/main/index.ts` 无 will-navigate / will-redirect 处理；
-  detailed-design §9/§12 决议 #16（Electron 43.4.0 实证事件集）
-- 关闭结论：T3 内先于 bridge 扩展落地 UI 窗口 will-navigate + will-redirect 自身来源白名单
-  （开发模式仅放行 `ELECTRON_RENDERER_URL` origin、生产仅放行 `file:` 入口），判定抽为纯函数
-  `ui-navigation-policy.ts` + 9 用例；冒烟新增拦截断言（dev origin 与生产 file: 两条路径
-  实跑均通过：UI 窗口发起远程导航 800ms 后 URL 不变）
-
-#### R-02 Tab 导航白名单未覆盖服务器重定向（待 T5 评估）
-
-- 状态：Open
-- 发现于：2026-08-13 技术审查（T2 完成后）
-- 严重度：Low
-- 阻塞级别：当前任务非阻塞
-- 影响：Tab webContents 仅挂 will-navigate 白名单（http/https/about），302 重定向到非白名单
-  scheme（如自定义协议）时无拦截点；当前实际风险低——项目未注册任何自定义协议，且 Chromium
-  自身阻止远程页面导航到 file:// 等本地资源
-- 证据：`src/main/browser/tab-manager.ts` 仅注册 will-navigate（无 will-redirect）；
-  electron.d.ts（43.4.0）will-redirect 说明 + 2026-08-13 探针实测（302 目标触发 will-redirect）
-- 当前处理：暂不处理，留给 T5 安全审计评估
-- 关闭条件：T5 安全审计给出处置——补 will-redirect 加固（→ Resolved）或记录风险可接受理由
-  （→ Accepted）
-- 最迟复核点：First Stage Exit Gate（T5 安全审计内）
+- 当前无开放风险。
 
 ### 计划内限制与延期项
 
@@ -120,15 +126,17 @@
 - 采集边界（T4 落地，非缺陷）：iframe 跨域计数为尽力采样（未加载完成的同源 iframe 可能被
   计为跨域，仅影响警告文案）；页面对主世界脚本的原型篡改可使采集返回 L2（按契约降级）；
   L2 触发路径（渲染进程崩溃/上下文失效）未在冒烟强制触发（normalize 单测覆盖 L2 形状）。
-- 地址栏/标签栏/调试面板按钮的页面级点击驱动暂未被冒烟覆盖：冒烟覆盖主进程侧可观测行为
-  （导航保护拦截、bounds 上报生效、多 Tab 状态流转、真实采集），React 交互路径经人工实际
-  运行验证；页面级 UI 自动化属 T5 评估范围。
-- 无 CI / 打包配置：第一阶段验收不要求；T5 收尾评估 CI（lint + test + typecheck），
-  打包属 Seventh Stage（Product Hardening）。
+- Tab will-redirect 白名单为防御纵深（T5）：file:/data:/about:blank 等目标已被 Chromium
+  网络层拦截（ERR_UNSAFE_REDIRECT），当前无自定义协议注册；未来注册 `aibrowse://` 等协议
+  时该拦截点是唯一防线（冒烟已用 custom:// 目标验证 handler 真实触发）。
+- 无 CI / 打包配置：第一阶段验收不要求（Second Stage 起评估 CI：lint + test + typecheck；
+  打包属 Seventh Stage Product Hardening）。
 - shared/url 不支持 IDN（中文域名走搜索兜底，安全无副作用）；SearchProvider 尚未抽象
   （Bing 硬编码，计划在 Second/Third Stage 前替换）。
 - UI 窗口（defaultSession）未注册权限处理器：UI 只加载自身内容，R-01 已关闭（导航保护落地）
   后无远程页面可达，当前无需处理；未来 UI 嵌入远程内容时重新评估。
+- 地址栏搜索的端到端验证在离线环境断言「导航目标为 Bing 搜索 URL」（did-start-navigation），
+  真实搜索页加载需联网（冒烟含 AIBROWSE_SMOKE_URL 联网变体；URL 判断本身有 15 用例单测）。
 
 ## 阻塞项
 
@@ -136,12 +144,11 @@
 
 ## 下一个推荐任务
 
-- **T5 收尾**：安全审计（§11 核对清单逐项 + R-02 Tab will-redirect 评估处置）→
-  第一阶段验收清单逐项核对（First_stage.md §十四）→ README/文档同步（T4 内容、
-  测试数与冒烟说明更新）→ 逐项勾选 Exit Gate，通过后停下向用户报告。
+- **第一阶段已完成（Exit Gate 通过）**：停下向用户报告（First_stage.md §十五格式：
+  已实现内容 / 项目结构 / 测试和构建结果 / 已知限制 / 下一阶段最适合做什么），
+  等待用户指令后再按 ROADMAP.md「阶段切换原则」进入 Second Stage。
 
 ## 第一阶段验收未完成项
 
-- 浏览器 UI 与 PageSnapshot 相关验收项已由 T3/T4 实现、待 T5 逐项核对；
-  Engineering 中「TS 编译/lint/测试通过、README 启动方式」已被 T0 覆盖（README 内容
-  待 T5 按 T4 现状同步）。逐项清单以 First_stage.md §十四 为准，T5 收尾时核对。
+- 无：First_stage.md §十四 全部验收项已逐项核对并通过（T5，2026-08-13）；
+  证据摘要见 First_stage.md §十四「验收证据」与本文「最近验证结果」。

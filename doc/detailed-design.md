@@ -363,10 +363,11 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   数据行）；行取每 `tr` 的 `td/th/[role=gridcell]/[role=columnheader]` 文本，`:scope` 限定
   直接行/单元格（嵌套表格不混入）；行列对齐由 normalize 补齐/截断。
 
-### 8.3 只读与不污染承诺（First_stage §七.5）
+### 8.3 观察性采集与不污染承诺（First_stage §七.5）
 
-- 脚本不注册事件、不触发任何页面回调、不修改页面数据；唯一写操作是
-  **幂等**地写 `data-aibrowse-el` 属性（§8.4）。
+- 脚本以**观察性采集**为主：不注册事件、不触发任何页面回调、不修改页面数据、
+  不执行 Node API；唯一写操作是**唯一、命名空间受控（`data-aibrowse-el`）、幂等**
+  的 elementId 属性烙印（§8.4）。
 - 脚本被页面世界隔离：无 preload、无 Node 集成、无 IPC 通道，页面无法借快照执行
   Node.js / Electron 特权 API（First_stage §七.7）。
 
@@ -374,6 +375,10 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 
 - 扫描交互元素（links/buttons/inputs）时：已有 `data-aibrowse-el="n"` 属性则**复用**其 n；
   否则分配文档级递增计数器 n 并写回该属性。id 字符串格式 `el-<n>`（如 `el-42`）。
+  **同一元素出现在多个集合**（`a[role=button]`、`input[type=button]` 同时进入 buttons/inputs）
+  时跨集合复用同一 id（T5 修复，保证一次快照内 id ↔ 元素一一对应）；
+  **敌手预置顶格合法烙印**（`9999999999`）时后续分配**回绕到 0 并跳过已用 id**
+  （T5 修复，保证 id 恒为 1–10 位数字，不被 normalize 丢弃）。
 - 注入上下文维护 `Map<number, Element>`（`window.__aibrowsePage` 内）：
   **每次快照重建 Map，仅包含本次快照元素** → Map 有界（等于本次快照元素数）、无泄漏；
   快照生命周期 = 交付后至下一次快照/导航（页面世界重置时 Map 随世界销毁，自动释放）。
@@ -402,7 +407,8 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   main 侧 IPC handler 统一调用 `shared/url.resolveAddressBarInput`；
   返回 `''` → 动作返回 `false`（navigate）或创建空白 Tab（create），warn 日志。
   BrowserController 只接受规范化 URL（§2.1）。UI 不做 URL 判断（First_stage §十「不要散落在 UI」）。
-- **导航白名单**：每个 Tab webContents 的 `will-navigate` 仅放行 `http:`/`https:`/`about:`，
+- **导航白名单**：每个 Tab webContents 的 `will-navigate` **与 `will-redirect`**（T5 R-02 加固，
+  302 目标同样过白名单——程序化 loadURL 遇重定向时唯一拦截点）仅放行 `http:`/`https:`/`about:`，
   其余（`file:`、自定义协议等）`preventDefault` + warn 日志（First_stage §八「对导航做好合理处理」）。
 - **window.open**：每个 Tab webContents 的 `setWindowOpenHandler` 一律 `deny` + warn（与基线主窗口一致）。
 - **UI 窗口自身导航保护**（T3，安全红线；**是 tabs/nav/page/ui bridge 扩展的硬前提**——导航保护
@@ -448,7 +454,7 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 | 远程网页无 Electron API / 文件系统访问 | Tab view 无 preload；无 Node 集成                                                                                                                           |
 | ipcRenderer 不整体暴露                 | preload 仅白名单 bridge（§3.2）；远程页面无 preload                                                                                                         |
 | window.open 限制                       | 每个 Tab + UI 窗口 setWindowOpenHandler deny                                                                                                                |
-| 导航处理                               | Tab will-navigate 白名单 http/https/about；UI 窗口 will-navigate + will-redirect 仅自身来源（§9）                                                           |
+| 导航处理                               | Tab will-navigate + will-redirect 白名单 http/https/about（T5 R-02 加固，302 目标同过白名单）；UI 窗口 will-navigate + will-redirect 仅自身来源（§9）       |
 | 网页权限请求不得默认放行               | persist Session 注册 setPermissionRequestHandler + setPermissionCheckHandler，v1 默认拒绝（§7，permission-policy.ts 纯函数决策，未知权限/畸形来源安全拒绝） |
 | UI 与远程网页安全边界                  | UI 渲染进程 ≠ Tab WebContentsView（独立 webContents + preload 隔离）                                                                                        |
 | IPC 最小权限                           | sender 校验 + 通道白名单（§3）                                                                                                                              |
@@ -504,6 +510,16 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
     结论：`will-navigate`（页面发起导航，**含 location.replace**）+ `will-redirect`（服务器重定向，
     程序化导航遇到 302 时唯一拦截点）即可完整覆盖 UI 主框架威胁；`will-frame-navigate` 无增量
     覆盖且位置参数易错，不采用；三者 `preventDefault()` 均实测可阻止导航。§9 已按此定稿。
+
+17. **Tab will-redirect 白名单加固（T5 实现，R-02 关闭，2026-08-13）**：Tab 侧同样存在
+    决议 #16 的「程序化导航遇 302 无拦截点」问题（仅挂 will-navigate）。T5 补 `will-redirect`
+    与同一 scheme 白名单，并以受控 302 实测验证（探针矩阵：`file:`/`data:`/`about:blank`
+    目标被 Chromium 网络层先拦——ERR_UNSAFE_REDIRECT，**不触发** will-redirect；
+    **自定义协议与 `mailto:` 会真实触发 will-redirect**——取自定义协议为禁止目标验证
+    preventDefault 生效，允许目标 http→http 放行跟随）。当前项目未注册自定义协议，
+    该防护为防御纵深（未来注册 `aibrowse://` 等协议时成为唯一拦截点）。冒烟断言：
+    允许 302 到达目标页、禁止 302 当前文档不被替换（程序化与页面发起两条路径）+
+    本次运行日志区间内出现拦截 warn（字节偏移切片读取）。
 
 ## 13. 实现顺序与范围边界（供 T2/T3/T4 参考）
 

@@ -216,7 +216,8 @@ d:\AIbrowse\
 
 接口契约已于 2026-08-13 **定稿**（T1），唯一契约源 `doc/detailed-design.md`（§2–§7 + §12 决议记录，
 含 proposal Q1–Q4 拍板）；以下为速查摘要，**T2/T3/T4 部分已用 `grep -n "^export"` 与实际代码逐项核对**
-（2026-08-13，T4 完成时回填 PageReader/normalize 部分）。
+（2026-08-13，T4 完成时回填 PageReader/normalize 部分；T5 收尾补记 will-redirect 加固与
+elementId 跨集合复用）。
 
 - **shared/url（已实现，2026-08-13 已用 grep 核对）**：`export const SEARCH_ENGINE_URL: string`
   （当前 `https://www.bing.com/search`，以后整体换 SearchProvider）；
@@ -248,7 +249,8 @@ d:\AIbrowse\
   每个 Tab 一个 WebContentsView（显式安全默认值：无 preload、`nodeIntegration=false`、
   `contextIsolation=true`、`sandbox=true`、`session=persist:aibrowse`）；可见性用 `setVisible`
   切换（不用 removeChildView）；全部监听器注册于创建时、closeTab/dispose 时逐一移除；
-  `will-navigate` 白名单 http/https/about + `setWindowOpenHandler` 一律 deny。
+  `will-navigate` + `will-redirect` 白名单 http/https/about（302 目标同过白名单，T5 R-02
+  加固——程序化 loadURL 遇重定向时唯一拦截点）+ `setWindowOpenHandler` 一律 deny。
 - **tab-state（T2，纯函数零 Electron 依赖）**：`export type TabStateEvent`（start-loading/
   finish-load/fail-load，含 isMainFrame/errorCode）；
   `export function transition(state, e): TabState`（子框架忽略；-3=ERR_ABORTED 忽略；
@@ -278,7 +280,9 @@ requestingOrigin): boolean` —— 网页权限策略纯函数，v1 固定默认
   warnings 合并去重；任何输入（含 null）返回合法 PageSnapshot 不抛异常；L2 形状由同一模块产出。
   测试：`snapshot-normalize.test.ts`（46 用例）。结构化快照**不得默认返回整个 DOM**；过滤
   script/style/隐藏内容等噪声；`elementId` 双层映射（data-aibrowse-el 属性烙印 + 每次快照
-  重建的有界 Map，§8.4）在一次快照生命周期内对应真实 DOM 元素；type=password 不采集 value；
+  重建的有界 Map，§8.4）在一次快照生命周期内对应真实 DOM 元素；同一元素出现在多个集合
+  （a[role=button]、input[type=button]）时跨集合复用同一 id，敌手预置顶格合法烙印时分配
+  回绕（T5 修复）；type=password 不采集 value；
   PageReader 不污染网站正常行为（唯一写操作是幂等烙印属性）；远程网页不得通过此机制执行
   Node.js 或 Electron privileged API（脚本页面世界运行，无 preload/无 IPC）。
 - **URL 判断逻辑（已实现）**：见上 shared/url；地址栏原始输入经 `nav:navigate`/`tabs:create`
@@ -330,10 +334,20 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
     创建/切换/关闭、最后 Tab 自动新建、dispose 幂等无泄漏 → T3 起再验证 UI 窗口导航保护
     拦截（远程/同目录 file:/路径穿越三探针，800ms 后 UI URL 不变）与渲染层 bounds 上报生效
     （活动 view y>0）→ T4 起再验证 PageSnapshot 真实采集（本地受控页面 L0 内容对照/
-    L1 跨域 iframe 跳过/L3 null/elementId 唯一与跨快照稳定）→ 自动退出，退出码 0 即通过；
-    日志链见 log/）。生产产物路径同样可跑：`AIBROWSE_SMOKE=1 npm run start`
-    （file: 入口精确匹配导航保护）。可选真实网页加载验证（需网络）：
-    `AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证 state=ready + 标题非空）。
+    L1 跨域 iframe 跳过/L3 null/elementId 唯一与跨快照稳定）→ T5 起再验证：敌对页面
+    elementId（重复/畸形/超大/冲突烙印 → 唯一且对应活 DOM 真实元素）、Tab 302 重定向
+    白名单（允许目标跟随/禁止目标 custom:// 拦截 + 日志断言）、UI 端到端（React DOM 点击/
+    键盘驱动：地址栏 URL/搜索、多 Tab、后退前进刷新、标题随网页变化、调试面板 L0/L1 徽标
+    - warnings 展示）、远程页面隔离探针（window.aibrowse/process/require/electron 均
+      undefined）→ 自动退出，退出码 0 即通过；日志链见 log/）。生产产物路径同样可跑：
+      `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
+      （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
+      state=ready + 标题非空）。
+  - **Session 跨进程持久化冒烟**（§十四 Session 验收）：两个独立应用进程共用同一临时
+    userData——进程 A `AIBROWSE_SESSION_SMOKE=set` 经受控页 Set-Cookie（HttpOnly）写入
+    persist:aibrowse 分区后完整退出；进程 B `AIBROWSE_SESSION_SMOKE=check` 新进程读回
+    Cookie。两进程均需 `AIBROWSE_USER_DATA_DIR=<临时目录>`（app ready 前 setPath，
+    不触碰用户真实数据，测试后清理该目录），退出码 0 即通过。
 - **git 双远程**（已初始化，2026-08-13 双远程推送验证）：
   ```bash
   # 日常推送：Gitee 直连
@@ -382,12 +396,20 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
 - **日志位置随打包变化**：开发时 log/ 在项目根目录；打包后写用户数据目录（asar 只读），排查注意两处。
 - **尚无 CI / 打包配置**：第一阶段验收不要求；electron-builder 打包与 GitHub Actions
   （lint + test + typecheck）待阶段收尾评估。
-- **冒烟已扩展（T2/T3/T4）**：覆盖多 Tab 创建/切换/关闭、最后 Tab 自动新建、dispose 幂等与
+- **冒烟已扩展（T2–T5）**：覆盖多 Tab 创建/切换/关闭、最后 Tab 自动新建、dispose 幂等与
   webContents 无残留；T3 起覆盖 UI 窗口导航保护拦截（远程/同目录 file:/路径穿越三探针，
   dev origin 与生产 file: 精确匹配两条路径）与渲染层 bounds 上报生效；T4 起覆盖
   PageSnapshot 真实采集（本地受控双服务器页面：L0 内容对照/元素 id 唯一性与跨快照稳定/
-  L1 跨域 iframe 跳过警告/L3 null）；真实网页加载需 `AIBROWSE_SMOKE_URL` 附加验证（§6）。
-  仍不覆盖：地址栏/标签栏/调试面板按钮的页面级点击驱动（人工实际运行验证，T5 评估）。
+  L1 跨域 iframe 跳过警告/L3 null）；T5 起覆盖敌对页面 elementId（重复/畸形/超大/冲突烙印）、
+  Tab 302 重定向白名单（R-02 验证）、**UI 端到端**（React DOM 点击/键盘驱动地址栏/搜索/
+  多 Tab/后退前进刷新/标题/调试面板，不引入 Playwright）、远程页面隔离探针、Session 跨进程
+  持久化（AIBROWSE_SESSION_SMOKE=set/check 双进程，§6）；真实网页加载需
+  `AIBROWSE_SMOKE_URL` 附加验证（§6）。仍不覆盖：L2 触发路径（渲染进程崩溃）的强制触发
+  （normalize 单测覆盖 L2 形状，PageReader 拒绝路径为薄胶水）。
+- **Tab will-redirect 白名单为防御纵深（T5）**：file:/data:/about:blank 等重定向目标已被
+  Chromium 网络层拦截（ERR_UNSAFE_REDIRECT，探针实测不触发 will-redirect）；当前无自定义
+  协议注册，未来注册 `aibrowse://` 等协议时该拦截点是唯一防线（冒烟以 custom:// 目标验证
+  handler 真实触发）。
 
 ## 附 A：验证矩阵（「作业完成」的定义）
 

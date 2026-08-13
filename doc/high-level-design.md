@@ -1,6 +1,7 @@
 # AIbrowse 第一阶段 高层设计
 
-> 状态：初稿（随 M0 基线建立）。接口契约定稿由任务 T1「详细设计定稿」完成。
+> 状态：初稿（随 M0 基线建立）。接口契约定稿由任务 T1「详细设计定稿」完成；
+> 2026-08-13（T5 收尾）按实现现状同步 PageReader 采集边界与 elementId 烙印表述（§3/§5）。
 
 ## 1. 架构总览
 
@@ -43,8 +44,9 @@
   `getPageSnapshot`，全部返回 Promise。未来 AI Agent 只能经它（或在其上的 Tool Layer）操作浏览器。
 - **TabManager**：Tab 状态机与 WebContentsView 生命周期（创建/切换/关闭/销毁清理/事件监听注册与移除）。
   纯状态逻辑（如 activeTabId 选择、Tab 排序）与 Electron 副作用分离，便于单测。
-- **PageReader**：网页 → PageSnapshot。注入只读 DOM 遍历脚本（不修改 DOM、不劫持事件、不污染网站行为），
-  过滤 script/style/隐藏内容，为交互元素生成 elementId。
+- **PageReader**：网页 → PageSnapshot。以观察性采集为主：注入 DOM 遍历脚本，不注册事件、
+  不执行 Node API、不污染网站行为；唯一写操作是为交互元素做**唯一、命名空间受控
+  （`data-aibrowse-el`）、幂等**的 elementId 属性烙印。过滤 script/style/隐藏内容。
 - **SessionManager**：持久 Session（Cookie/登录状态重启保留），接口为将来多 Profile 预留，
   本阶段不实现多 Profile。
 - **shared/types**：主/渲染共享的类型（TabInfo / PageSnapshot / IPC channel 定义），
@@ -73,7 +75,10 @@
 - 主进程 IPC handler 校验调用方（区分 UI webContents 与远程网页 webContents），远程网页发来的
   请求一律拒绝。
 - 限制 `window.open` / 新窗口行为（setWindowOpenHandler 白名单/拒绝）。
-- PageReader 采集脚本为只读遍历：不改 DOM、不注册持久监听、不执行 Node API。
+- 导航处理：Tab 的 `will-navigate` + `will-redirect` 白名单 http/https/about（302 目标同过白名单）；
+  UI 窗口 `will-navigate` + `will-redirect` 仅自身来源。
+- PageReader 采集脚本以观察性采集为主：不注册持久监听、不执行 Node API；唯一写操作是幂等的
+  elementId 属性烙印（命名空间 `data-aibrowse-el`）。
 
 ## 6. 存储
 
@@ -86,6 +91,9 @@
   Tab 状态机纯逻辑部分。零环境依赖、零副作用。
 - **不测**：Electron 内部行为不强行 mock 成复杂系统；靠冒烟验证真实启动链路。
 - **冒烟**：应用真实启动（AIBROWSE_SMOKE=1 自检模式：窗口创建 → 渲染进程就绪 → 退出码 0）。
+  T2–T5 已扩展：多 Tab 生命周期 / UI 窗口导航保护拦截 / bounds 上报 / PageSnapshot 真实采集
+  （L0–L3 + 敌对页 elementId + 302 重定向拦截）/ UI 端到端 DOM 事件驱动 / 远程页面隔离探针；
+  Session 跨进程持久化另有 `AIBROWSE_SESSION_SMOKE=set|check` 双进程场景（§十四验收，见 AGENTS.md §6）。
 - **静态检查**：typecheck（tsc --noEmit，main/preload 与 renderer 两套 tsconfig）、ESLint、
   Prettier。
 

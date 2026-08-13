@@ -422,65 +422,96 @@ Electron 本身难以单元测试的部分不必强行 mock 成复杂系统。
 
 # 十四、第一阶段验收标准
 
-最终必须满足：
+最终必须满足（**T5 收尾已逐项核对并通过，2026-08-13**；证据摘要见本节末尾）：
 
 ### 浏览器
 
-* [ ] 应用能够正常启动
-* [ ] 能够打开网页
-* [ ] 可以输入 URL
-* [ ] 地址栏可以搜索
-* [ ] 支持多个 Tab
-* [ ] 可以切换 Tab
-* [ ] 可以关闭 Tab
-* [ ] 可以新建 Tab
-* [ ] 后退有效
-* [ ] 前进有效
-* [ ] 刷新有效
-* [ ] Tab 标题会随网页变化
+* [x] 应用能够正常启动
+* [x] 能够打开网页
+* [x] 可以输入 URL
+* [x] 地址栏可以搜索
+* [x] 支持多个 Tab
+* [x] 可以切换 Tab
+* [x] 可以关闭 Tab
+* [x] 可以新建 Tab
+* [x] 后退有效
+* [x] 前进有效
+* [x] 刷新有效
+* [x] Tab 标题会随网页变化
 
 ### Session
 
-* [ ] Cookie 使用持久 Session
-* [ ] 重启应用后普通网站登录状态具备保持能力
+* [x] Cookie 使用持久 Session
+* [x] 重启应用后普通网站登录状态具备保持能力
 
 ### PageSnapshot
 
-* [ ] 可以读取当前网页
-* [ ] 返回 URL
-* [ ] 返回标题
-* [ ] 返回主要文本
-* [ ] 返回 heading
-* [ ] 返回 link
-* [ ] 返回 button
-* [ ] 可以识别常见 table
-* [ ] 为交互元素生成 elementId
-* [ ] 调试面板能够显示 PageSnapshot JSON
+* [x] 可以读取当前网页
+* [x] 返回 URL
+* [x] 返回标题
+* [x] 返回主要文本
+* [x] 返回 heading
+* [x] 返回 link
+* [x] 返回 button
+* [x] 可以识别常见 table
+* [x] 为交互元素生成 elementId
+* [x] 调试面板能够显示 PageSnapshot JSON
 
 ### Architecture
 
-* [ ] BrowserController 独立
-* [ ] TabManager 独立
-* [ ] PageReader 独立
-* [ ] SessionManager 独立
-* [ ] React UI 不直接滥用 Electron privileged API
-* [ ] 类型定义清晰
+* [x] BrowserController 独立
+* [x] TabManager 独立
+* [x] PageReader 独立
+* [x] SessionManager 独立
+* [x] React UI 不直接滥用 Electron privileged API
+* [x] 类型定义清晰
 
 ### Security
 
-* [ ] nodeIntegration 未对远程网页开启
-* [ ] contextIsolation 开启
-* [ ] 不关闭 webSecurity
-* [ ] 远程网站无法直接调用 Node.js
-* [ ] IPC 暴露遵循最小权限原则
+* [x] nodeIntegration 未对远程网页开启
+* [x] contextIsolation 开启
+* [x] 不关闭 webSecurity
+* [x] 远程网站无法直接调用 Node.js
+* [x] IPC 暴露遵循最小权限原则
 
 ### Engineering
 
-* [ ] TypeScript 编译通过
-* [ ] lint 通过
-* [ ] 测试通过
-* [ ] README 包含启动方式
-* [ ] README 简短说明当前架构
+* [x] TypeScript 编译通过
+* [x] lint 通过
+* [x] 测试通过
+* [x] README 包含启动方式
+* [x] README 简短说明当前架构
+
+---
+
+**验收证据摘要（T5，2026-08-13，逐项对应）**：
+
+- **浏览器**：全部由 T5 新增 UI 端到端冒烟（`src/main/smoke.ts` §7.7）机器验证——React DOM
+  点击/键盘事件驱动真实链路（DOM 事件 → React → preload bridge → IPC → BrowserController →
+  webContents → tabs:updated → DOM），无 Playwright。地址栏输入 URL（受控本地页）断言活动
+  Tab 到达目标页；搜索词「hello world」断言真实发起 Bing 搜索导航；多 Tab 新建/切换/关闭
+  断言主进程 Tab 列表与标签栏 DOM 同步；后退/前进断言 URL 往返；刷新断言 did-start-loading
+  计数 + 回到 ready；标题断言 TabInfo.title 与标签栏文案随受控页标题变化。另：真实 URL
+  加载（AIBROWSE_SMOKE_URL=https://www.bing.com/）与生产产物冒烟均退出码 0。
+- **Session**：AIBROWSE_SESSION_SMOKE=set/check 两个独立应用进程 + 同一临时 userData
+  （AIBROWSE_USER_DATA_DIR，测试后清理）：进程 A 经受控页 Set-Cookie（HttpOnly）写入
+  persist:aibrowse 分区后完整退出；进程 B 重新启动后从持久分区读回同一 Cookie——跨进程
+  持久化证据（单进程读取不构成重启保持证据）。双进程均退出码 0。
+- **PageSnapshot**：保留 T4 真实采集断言（受控页 L0 heading/link/button/table/visibleText/
+  elementId 一一对照、L1 跨域 iframe 跳过警告、L3 未知 tabId null），T5 新增：调试面板
+  「读取当前网页」真实点击 → 界面显示合法 JSON + L0/L1 徽标 + warnings 列表（§7.7.9）；
+  敌对页面 elementId 审查（重复/畸形/超大/负数/冲突烙印 → id 唯一、1–10 位数字、
+  无歧义对应活 DOM 真实元素、跨快照稳定，§7.5）；远程页面隔离探针（window.aibrowse/
+  process/require/electron 均为 undefined，§7.7.10）。
+- **Architecture / Security**：按 detailed-design §11 安全基线清单逐项审计实际代码
+  （T5，结论见 doc/tasks/progress.md「最近验证结果」）：Tab/UI 安全默认值显式声明、
+  webSecurity 未关闭（全仓库 grep）、Tab 无 preload、IPC sender+主帧校验、preload 白名单、
+  window.open 一律 deny、Tab will-navigate + will-redirect 白名单（R-02 关闭）、UI 窗口
+  导航保护、persist Session 双权限处理器默认拒绝、监听器创建时注册/关闭时逐一移除、
+  dispose 幂等。模块边界与依赖方向同 First_stage §四（UI → BrowserController →
+  TabManager/PageReader/SessionManager → Electron APIs）。
+- **Engineering**：test 89/89 ✅ · typecheck ✅ · lint ✅ · format:check ✅ · build ✅；
+  README 已按 T5 现状同步（启动方式/架构/安全边界/PageSnapshot/已知限制）。
 
 ---
 
