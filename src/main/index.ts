@@ -6,6 +6,7 @@ import { BrowserControllerImpl } from './browser/browser-controller';
 import { AppSessionManager } from './browser/session-manager';
 import { initLogger, logDebug, logEnvironment, logError, logInfo, logWarn } from './logger';
 import { runSessionSmokeScenario, runSmokeScenario, smokeUiFake } from './smoke';
+import type { LiveProviderSmoke } from './smoke';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
 import { resolveAddressBarInput } from '../shared/url';
 import { IPC } from '../shared/types/ipc';
@@ -38,7 +39,10 @@ import { ConversationServiceImpl, type ConversationService } from './ai/conversa
 import { ConversationStore } from './ai/conversation-store';
 import { CONTEXT_BUDGET, truncateWithMark } from './ai/context-budget';
 import { FakeProvider } from './ai/provider/fake-provider';
-import { registerProviderFactory } from './ai/provider/llm-provider';
+import {
+  PROVIDER_KIND_OPENAI_COMPATIBLE,
+  registerProviderFactory,
+} from './ai/provider/llm-provider';
 
 // 冒烟模式 AI 子系统数据目录（进程专属临时目录，不触碰用户真实 userData）——S4 起
 // UI 端到端矩阵经真实 IPC/bridge 链路驱动同一实例；路径经 SmokeOptions 传给冒烟场景断言。
@@ -46,6 +50,14 @@ const SMOKE_AI_DATA_DIR = join(app.getPath('temp'), `aibrowse-smoke-ai-${process
 
 // 冒烟自检模式：窗口创建 + 渲染进程就绪后驱动浏览器核心场景（smoke.ts），全部断言通过后正常退出
 const SMOKE_MODE = process.env.AIBROWSE_SMOKE === '1';
+
+// S5 真实 Provider 冒烟（§6 可选验证，需用户提供 Key——询问边界）：AIBROWSE_LIVE_PROVIDER=1
+// 时冒烟装配走生产 Provider 链路（openai-compatible + 真实 resolveProvider）；baseUrl/model
+// 写入进程专属临时配置，Key 只经 AIBROWSE_TEST_API_KEY 环境变量进入并立即从 process.env
+// 移除（零暴露扫描由冒烟场景在进程内完成，Key 绝不写入日志/文件/DOM）。
+const LIVE_PROVIDER_MODE = SMOKE_MODE && process.env['AIBROWSE_LIVE_PROVIDER'] === '1';
+let liveSmoke: LiveProviderSmoke | undefined = undefined;
+let liveStreamChunkCount = 0; // 真实 Provider 场景 delta 计数（流式证据，index.ts 装配侧统计）
 
 // Session 冒烟/测试隔离（§十四 Session 验收）：指定临时 userData 目录，避免触碰用户真实数据。
 // 必须在 app ready 前设置（Electron 官方 API）；仅测试/验证环境使用（AIBROWSE_SESSION_SMOKE）。
@@ -365,6 +377,7 @@ if (!gotLock) {
                 loadUrl: loadUrl === '' ? undefined : loadUrl,
                 uiWindow: mainWindow, // T3：导航保护拦截与 bounds 上报生效验证
                 aiSmokeDir: SMOKE_AI_DATA_DIR, // S4：UI 端到端矩阵断言/清理用
+                liveSmoke, // S5：AIBROWSE_LIVE_PROVIDER=1 时非 undefined（真实 Provider 场景）
               });
         run
           .then(() => {
@@ -404,7 +417,19 @@ function createBrowserWindow(): void {
   const aiDir = SMOKE_MODE ? SMOKE_AI_DATA_DIR : app.getPath('userData');
   credentials = new SecureCredentialStoreImpl(aiDir, new SafeStorageCipher());
   configStore = new ConfigStore(aiDir, credentials);
-  if (SMOKE_MODE) {
+
+  // S5 真实 Provider 装配（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY，§6）：
+  // baseUrl/model 写入进程专属临时配置（非机密，供冒烟场景对照断言）；Key 经
+  // credentials.set 以密文落入临时目录，随后立即从 process.env 移除——Key 只经环境
+  // 变量进入一次，此后仅存在于内存引用（零暴露扫描用），绝不出进程。
+  const liveKey = LIVE_PROVIDER_MODE ? (process.env['AIBROWSE_TEST_API_KEY'] ?? '') : '';
+  const liveBaseUrl = LIVE_PROVIDER_MODE ? (process.env['AIBROWSE_TEST_BASE_URL'] ?? '') : '';
+  const liveModel = LIVE_PROVIDER_MODE ? (process.env['AIBROWSE_TEST_MODEL'] ?? '') : '';
+  const liveActive = LIVE_PROVIDER_MODE && liveKey !== '';
+  if (LIVE_PROVIDER_MODE && !liveActive) {
+    logWarn('main', '真实 Provider 冒烟跳过：未提供 AIBROWSE_TEST_API_KEY（回退离线矩阵）');
+  }
+  if (SMOKE_MODE && !liveActive) {
     // 冒烟：注册 'fake' kind 并写入 fake 配置（决议 #20：选择依赖已注册 kind 集合，
     // 与生产 openai-compatible 同路径；注入 resolver 仅替换流式实现）
     registerProviderFactory({ kind: 'fake', create: () => new FakeProvider({}) });
@@ -414,20 +439,53 @@ function createBrowserWindow(): void {
       model: 'fake-model',
     });
   }
+  if (liveActive) {
+    const valid = validateProviderConfig({
+      providerId: PROVIDER_KIND_OPENAI_COMPATIBLE,
+      baseUrl: liveBaseUrl,
+      model: liveModel,
+    });
+    if (valid === null) {
+      logError(
+        'main',
+        '真实 Provider 冒烟配置无效（baseUrl 仅 http/https、model 非空），不发起网络请求',
+      );
+    } else if (!configStore.set(valid)) {
+      logError('main', '真实 Provider 冒烟配置写入临时目录失败，不发起网络请求');
+    } else {
+      // Key 密文落盘（进程专属临时目录）；场景等待 ready 后才允许提问
+      const ready = credentials.set(valid.providerId, liveKey);
+      liveSmoke = {
+        key: liveKey,
+        baseUrl: valid.baseUrl,
+        model: valid.model,
+        ready,
+        getStreamChunkCount: () => liveStreamChunkCount,
+      };
+    }
+  }
+  if (LIVE_PROVIDER_MODE) {
+    delete process.env['AIBROWSE_TEST_API_KEY'];
+    delete process.env['AIBROWSE_TEST_BASE_URL'];
+    delete process.env['AIBROWSE_TEST_MODEL'];
+  }
   conversationService = new ConversationServiceImpl({
     browser: controller, // SnapshotSource 结构兼容：getActiveTab/getPageSnapshot
     store: new ConversationStore(aiDir),
     configStore,
     credentials,
-    // 冒烟注入（决议 #17 async 签名同形）：每 ask 新 FakeProvider 实例，脚本由冒烟场景设置
-    resolveProviderFn: SMOKE_MODE
-      ? async () => {
-          const provider = new FakeProvider(smokeUiFake.script);
-          smokeUiFake.holder = provider;
-          return provider;
-        }
-      : undefined,
+    // 冒烟注入（决议 #17 async 签名同形）：每 ask 新 FakeProvider 实例，脚本由冒烟场景设置；
+    // 真实 Provider 模式不注入——走生产 resolveProvider（已注册 openai-compatible 工厂）
+    resolveProviderFn:
+      SMOKE_MODE && !liveActive
+        ? async () => {
+            const provider = new FakeProvider(smokeUiFake.script);
+            smokeUiFake.holder = provider;
+            return provider;
+          }
+        : undefined,
     onStreamChunk: (e) => {
+      if (liveActive) liveStreamChunkCount += 1; // S5：真实事件链路 delta 计数（流式证据）
       if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
         win.webContents.send(IPC.ConversationStreamChunk, e);
       }
