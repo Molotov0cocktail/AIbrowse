@@ -9,10 +9,8 @@
 
 ## 当前状态
 
-- 阶段：**第二阶段（AI 共读）**，已于 2026-08-13 正式切换（用户指令）。本会话完成：
-  需求校准、Second Stage 详细设计定稿与可验证任务拆分——`doc/stage2/`（proposal /
-  high-level-design / detailed-design 定稿 + tasks/S1–S6）；**未开始实现业务代码**，
-  S1–S6 全部 ⏳。
+- 阶段：**第二阶段（AI 共读）**，已于 2026-08-13 正式切换（用户指令）。设计定稿与
+  任务拆分已完成（`doc/stage2/`）；**S1 已完成（2026-08-13）**，S2–S6 ⏳。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Entry Gate 独立定向审查通过（2026-08-13，无阻塞项）。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + First_stage.md～Seventh_stage.md 入库；
@@ -22,23 +20,42 @@
 
 ## 任务表
 
-| 任务 | 内容                                                                                             | 状态 | 备注                                                                |
-| ---- | ------------------------------------------------------------------------------------------------ | ---- | ------------------------------------------------------------------- |
-| T0   | 项目基线（git/文档链/脚手架/测试基建/最小应用）                                                  | ✅   | 2026-08-13 完成，见 tasks/baseline.md                               |
-| T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ✅   | 2026-08-13 完成，定稿见 doc/detailed-design.md（§12 决议记录）      |
-| T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ✅   | 2026-08-13 完成，签名已回填 AGENTS.md §5 并与代码 grep 核对         |
-| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ✅   | 2026-08-13 完成，R-01 同闭环关闭（见下）                            |
-| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ✅   | 2026-08-13 完成（含 T3 导航保护收紧，见下）                         |
-| T5   | 收尾：安全审计（§11 逐项 + R-02 关闭 + elementId 敌对页审查）+ 验收清单逐项核对 + 文档同步       | ✅   | 2026-08-13 完成（4 个逻辑 commit，见下）                            |
-| S1   | Provider 抽象 + SecureCredentialStore + 配置存取 + 错误归一化（FakeProvider 闭环，无 UI）        | ⏳   | 任务文档 doc/stage2/tasks/S1-provider-credential.md；依赖：无       |
-| S2   | ContextBuilder 纯核心：角色隔离/预算裁剪/selection 优先级/薄快照/表格噪声                        | ⏳   | 任务文档 doc/stage2/tasks/S2-context-builder.md；依赖：S1           |
-| S3   | ConversationService + 会话 JSON 持久化 + ask 编排（实时快照防串页）+ 主进程冒烟                  | ⏳   | 任务文档 doc/stage2/tasks/S3-conversation-service.md；依赖：S1/S2   |
-| S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ⏳   | 任务文档 doc/stage2/tasks/S4-ai-panel-ui.md；依赖：S3               |
-| S5   | 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证                                    | ⏳   | 任务文档 doc/stage2/tasks/S5-security-prompt-injection.md；依赖：S4 |
-| S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ⏳   | 任务文档 doc/stage2/tasks/S6-finalize-acceptance.md；依赖：S1–S5    |
+| 任务 | 内容                                                                                             | 状态 | 备注                                                                         |
+| ---- | ------------------------------------------------------------------------------------------------ | ---- | ---------------------------------------------------------------------------- |
+| T0   | 项目基线（git/文档链/脚手架/测试基建/最小应用）                                                  | ✅   | 2026-08-13 完成，见 tasks/baseline.md                                        |
+| T1   | 详细设计定稿：接口契约/错误处理/preload 清单/Tab 状态机/采集算法 + proposal Q1–Q4 拍板           | ✅   | 2026-08-13 完成，定稿见 doc/detailed-design.md（§12 决议记录）               |
+| T2   | 浏览器核心：BrowserController + TabManager + WebContentsView + SessionManager（多 Tab 可开网页） | ✅   | 2026-08-13 完成，签名已回填 AGENTS.md §5 并与代码 grep 核对                  |
+| T3   | 浏览器 UI：顶部工具栏/标签栏/地址栏（URL 判断逻辑接入）/主区域                                   | ✅   | 2026-08-13 完成，R-01 同闭环关闭（见下）                                     |
+| T4   | PageSnapshot：PageReader + elementId + 调试面板显示 JSON                                         | ✅   | 2026-08-13 完成（含 T3 导航保护收紧，见下）                                  |
+| T5   | 收尾：安全审计（§11 逐项 + R-02 关闭 + elementId 敌对页审查）+ 验收清单逐项核对 + 文档同步       | ✅   | 2026-08-13 完成（4 个逻辑 commit，见下）                                     |
+| S1   | Provider 抽象 + SecureCredentialStore + 配置存取 + 错误归一化（FakeProvider 闭环，无 UI）        | ✅   | 2026-08-13 完成（见下）；任务文档 doc/stage2/tasks/S1-provider-credential.md |
+| S2   | ContextBuilder 纯核心：角色隔离/预算裁剪/selection 优先级/薄快照/表格噪声                        | ⏳   | 任务文档 doc/stage2/tasks/S2-context-builder.md；依赖：S1                    |
+| S3   | ConversationService + 会话 JSON 持久化 + ask 编排（实时快照防串页）+ 主进程冒烟                  | ⏳   | 任务文档 doc/stage2/tasks/S3-conversation-service.md；依赖：S1/S2            |
+| S4   | AI 侧栏 UI + IPC/bridge 扩展 + 布局 bounds 协调 + UI 端到端冒烟矩阵                              | ⏳   | 任务文档 doc/stage2/tasks/S4-ai-panel-ui.md；依赖：S3                        |
+| S5   | 安全审计 + Prompt Injection 验证矩阵 + 真实 Provider 可选验证                                    | ⏳   | 任务文档 doc/stage2/tasks/S5-security-prompt-injection.md；依赖：S4          |
+| S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ⏳   | 任务文档 doc/stage2/tasks/S6-finalize-acceptance.md；依赖：S1–S5             |
 
 ## 最近验证结果（2026-08-13）
 
+- **S1 Provider 抽象与凭据安全基座（2026-08-13，首个实现闭环）**：test **170/170** ✅
+  （89 基线 + 81 新增：error-normalize 18 / fake 12 / openai-compatible 12 / llm-provider 6 /
+  credential 16 / config 11 / logger 6）· typecheck ✅ · lint ✅ · format:check ✅ · build ✅ ·
+  Electron 冒烟 ✅ 双场景退出码 0（dev 离线 + 生产产物，既有场景回归，S1 不扩冒烟）。
+  交付内容（1 个逻辑 commit c254465）：① `shared/types/conversation.ts` 定稿落地
+  （§2 全部类型 + Provider 类型——Provider 数据类型放 shared，S4 preload/renderer 可复用，
+  与任务文档一致）；② error-normalize 状态码矩阵纯函数（脱敏断言：错误不含响应体/密钥）；
+  ③ LLMProvider 接口 + 工厂注册表 + resolveProvider；④ FakeProvider 确定性脚本
+  （分块/延迟/错误注入/中止/getLastRequest）；⑤ OpenAI-compatible 适配器（原生 fetch +
+  SSE 自解析：`\n\n` 分帧/[DONE]/usage 末帧/末帧 delta+usage 同帧不丢内容/CRLF 归一化；
+  连接 15s/空闲 60s/总 300s AbortController 组合；Key 每请求从 store 取不缓存、适配器
+  不记请求头；零 Electron import）；⑥ SecureCredentialStore（cipher 后端注入可替换 +
+  `safe-storage-cipher.ts` Electron 薄胶水——设计 §1 布局外的唯一新增文件，分层纪律所需；
+  密文落盘/原子写/损坏容错 fail-closed/不可用仅内存降级/sk- 明文形态条目丢弃）；
+  ⑦ config-store（baseUrl 仅 http/https 去尾 /、model 非空、加载形状校验 fail-closed、
+  list() 含 hasKey）；⑧ logger sanitize 导出 + sk- 形态 Key/apiKey 键值对脱敏。
+  **与定稿签名的两处小调整**（代码注释已写明，S6 契约回填时确认）：`resolveProvider`
+  与 `ConfigStore.list()` 为 async（依赖异步 `store.has()`，§3.4）。不接 IPC/UI、
+  不联网、零新依赖；safeStorage 运行时行为按设计留待 S3+ 冒烟验证（§13.2 场景 10）。
 - Second Stage 切换与设计定稿（2026-08-13，纯文档任务，零代码改动）：① 步骤 0 核对——
   git 工作区干净、First Stage Exit Gate 与 Second Stage Entry Gate 均已有独立复验证据；
   ② 定稿 `doc/stage2/proposal.md`（目标/非目标/验收/Q1–Q10 拍板/S1–S6 里程碑）、
@@ -198,11 +215,11 @@
 
 ## 下一个推荐任务
 
-- **S1 Provider 抽象与凭据安全基座**（doc/stage2/tasks/S1-provider-credential.md）：
-  LLMProvider 接口 + FakeProvider + OpenAI-compatible 适配器（原生 fetch + SSE，无 SDK）+
-  SecureCredentialStore（safeStorage/DPAPI）+ Provider 配置存取 + 错误归一化 + 对应单测。
-  Second Stage 首个实现闭环：无 UI、不联网、不新增依赖；依赖：无。完成后按依赖顺序
-  S2 → S3 → S4 → S5 → S6。
+- **S2 ContextBuilder 纯核心**（doc/stage2/tasks/S2-context-builder.md）：角色隔离
+  UNTRUSTED_WEB_CONTENT 块（`</` 闭合转义 + system 编译期常量恒等）+ 预算确定性裁剪
+  （context-budget 常量/优先级填充/历史裁剪）+ selection 独占优先级 + 薄快照判定 +
+  布局表过滤 + 对应单测。纯函数零 Electron 依赖；依赖：S1（已完成）。完成后按依赖
+  顺序 S3 → S4 → S5 → S6。
 
 ## 第一阶段验收未完成项
 

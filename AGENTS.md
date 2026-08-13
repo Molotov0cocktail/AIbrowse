@@ -19,6 +19,7 @@
   ContextBuilder（纯函数）、LLMProvider（OpenAI-compatible 适配器 + FakeProvider，无厂商 SDK）、
   SecureCredentialStore（Electron safeStorage / Windows DPAPI）。契约源
   `doc/stage2/detailed-design.md`（2026-08-13 定稿）；任务 S1–S6 见 `doc/stage2/tasks/`。
+  **S1（Provider 抽象与凭据安全基座）已完成（2026-08-13）**，进度见 progress.md。
   **本阶段不实现自主浏览 Agent**：严禁新增 click/fill/scroll、自动搜索、多步 Browser
   Agent Tool（均属 Third Stage）。
 - **已完成（第一阶段，浏览器核心）**：`Browser → PageSnapshot → Browser Tool Interface`
@@ -211,7 +212,7 @@ d:\AIbrowse\
 └── src/
     ├── main/
     │   ├── index.ts                           # 入口：生命周期/单实例锁/安全默认值/IPC 装配（sender 校验）/UI 窗口导航保护/冒烟
-    │   ├── logger.ts                          # log/ 文件日志（脱敏、按日轮转）
+    │   ├── logger.ts                          # log/ 文件日志（脱敏、按日轮转；logger.test.ts 脱敏专项用例，S1）
     │   ├── smoke.ts                           # AIBROWSE_SMOKE 场景（T2 核心 + T3 导航保护拦截/bounds 上报）
     │   ├── ui-navigation-policy.ts / .test.ts # UI 窗口导航保护纯函数（自身来源白名单，T3 落地，9 用例）
     │   └── browser/
@@ -223,15 +224,17 @@ d:\AIbrowse\
     │       ├── page-reader.ts                 # （T4）快照编排：executeJavaScript 注入 + L0–L2 降级阶梯
     │       ├── snapshot-script.ts             # （T4）注入脚本源（自安装 IIFE 字符串，DOM lib 引用保持 TS 检查）
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 46 用例
-    │   └── ai/                                # （Second Stage，S1–S4 规划，契约见 doc/stage2/detailed-design.md）
+    │   └── ai/                                # （Second Stage，契约见 doc/stage2/detailed-design.md）
     │       ├── conversation-service.ts        # （S3）会话编排：ask 实时快照/中止/事件/持久化接线
     │       ├── conversation-store.ts          # （S3）会话 JSON 持久化（原子写/上限/损坏容错）
     │       ├── context-builder.ts             # （S2）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
     │       ├── context-budget.ts              # （S2）纯函数：预算常量与确定性裁剪
-    │       ├── credential-store.ts            # （S1）API Key 安全存储（safeStorage/DPAPI，密文落盘）
-    │       ├── config-store.ts                # （S1）Provider 配置 JSON（非机密）
-    │       └── provider/                      # （S1）LLMProvider 接口/OpenAI-compatible 适配器/
-    │                                          #   FakeProvider/错误归一化（无厂商 SDK）
+    │       ├── credential-store.ts            # （S1 ✅）SecureCredentialStore：API Key 密文落盘
+    │       │                                  #   （cipher 后端注入可替换，Q2）+ 纯文件格式 + 单测
+    │       ├── safe-storage-cipher.ts         # （S1 ✅）Electron safeStorage（DPAPI）→ CipherBackend 薄胶水
+    │       ├── config-store.ts                # （S1 ✅）Provider 配置 JSON（非机密，形状校验 fail-closed）+ 单测
+    │       └── provider/                      # （S1 ✅）LLMProvider 接口/工厂注册表/OpenAI-compatible
+    │                                          #   适配器（fetch+SSE）/FakeProvider/error-normalize + 单测
     ├── preload/
     │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui + conversation/config，S4 扩展）
     │   └── index.d.ts                         # renderer 侧 window.aibrowse 类型
@@ -243,7 +246,7 @@ d:\AIbrowse\
     └── shared/
         ├── types/app.ts                       # 共享类型（AppInfo / AibrowseBridge）
         ├── types/browser.ts                   # TabInfo/TabsState/PageSnapshot/meta（T2）
-        ├── types/conversation.ts              # （S1 规划）会话/消息/上下文/错误码/Provider 类型
+        ├── types/conversation.ts              # （S1 ✅）会话/消息/上下文/错误码/Provider 类型（§2+§3.3+§3.5）
         ├── types/ipc.ts                       # IPC 通道常量 + payload 类型（T2，S4 扩展）
         └── url.ts / url.test.ts               # 地址栏输入判断纯函数 + 15 用例
 ```
@@ -351,19 +354,22 @@ policy): boolean`——UI 窗口导航保护纯函数（零 Electron 依赖）�
   `useContentBounds`（ResizeObserver 测 chrome 高，防抖 50ms 上报 ui:content-bounds）。
   主区域为占位容器，真实网页由 WebContentsView 按上报 bounds 覆盖渲染。
 
-### Second Stage AI 共读契约速查（定稿 2026-08-13，待 S1–S4 实现后 grep 核对回填）
+### Second Stage AI 共读契约速查（定稿 2026-08-13；S1 部分已实现并 grep 核对，S2–S4 待实现后回填）
 
 > 唯一契约源 `doc/stage2/detailed-design.md`（§2–§12 + §15 决议记录，含 proposal Q1–Q10 拍板）；
-> 任务拆分见 `doc/stage2/tasks/S1–S6`。以下为速查摘要，实现前**不含**实际代码核对状态。
+> 任务拆分见 `doc/stage2/tasks/S1–S6`。以下为速查摘要；S1 部分签名已于 2026-08-13 与
+> 实际代码 `grep -n "^export"` 逐项核对，S2–S4 部分实现前不含实际代码核对状态。
 
-- **shared/types/conversation.ts（S1）**：`ContextMode`（selection/snapshot/none）、
+- **shared/types/conversation.ts（S1 ✅ 已实现）**：`ContextMode`（selection/snapshot/none）、
   `ContextSource`（mode/tabId/url/title/capturedAt/degraded/thin/selectionExcerpt/warnings）、
   `ConversationMessage`（role ∈ user|assistant；status complete/aborted/error；
   contextSource 仅 user 消息携带；**不持久化快照正文**）、`ConversationSession`
   （含 ephemeral「不保存」）、`NormalizedErrorCode`（not-configured/invalid-key/rate-limit/
   timeout/network/context-too-long/provider-error/aborted/busy/not-found/internal）、
   `NormalizedProviderError`（code/message/retryable/providerId/model/requestId/httpStatus，
-  **不含响应体/请求头/密钥**）、`ContextPreview`、`AskResult`。
+  **不含响应体/请求头/密钥**）、`ContextPreview`、`AskResult`；Provider 类型——
+  `ProviderMetadata`/`ProviderMessage`/`ProviderRequest`/`ProviderUsage`/`ProviderEvent`/
+  `ProviderConfig`（Provider 数据类型放 shared，S4 preload/renderer 可直接复用）。
 - **ConversationService（S3）**：`createSession/listSessions/getHistory/deleteSession/
 setEphemeral/ask/abort/previewContext/dispose`。ask 编排时序即防串页契约：
   实时 `getPageSnapshot(activeTabId)`（禁止复用缓存快照）→ `buildContext` →
@@ -378,18 +384,38 @@ history, system}) → {request, meta}`；`deriveContextMode`（selection 优先�
   预算（context-budget 常量）：web 块总 30000 字符、按 text→headings→tables→links→
   buttons→inputs 优先级确定性填充截断；历史最近 8 轮/12000 字符/单条 2000；
   布局表启发式过滤（表头空且内容稀薄 → 跳过 + warnings）。
-- **LLMProvider（S1）**：`metadata（id/label/streaming/supportsToolCalling:false/
-defaultContextLimitTokens）+ stream(request, signal): AsyncIterable<ProviderEvent>`
-  （delta/done/error）。OpenAI-compatible 适配器：原生 fetch + SSE 自解析（无 SDK），
-  `POST {baseUrl}/chat/completions`，Key 请求时从 SecureCredentialStore 取、不缓存；
-  超时连接 15s/空闲 chunk 60s/总 300s。FakeProvider：确定性脚本（分块/延迟/错误注入/
-  中止 + getLastRequest 供冒烟断言）。error-normalize 纯函数：状态码矩阵 → 错误码
-  （401/403→invalid-key、429→rate-limit、400 上下文指征→context-too-long、5xx→
-  provider-error retryable、网络/超时/中止/解析失败各归一）。
-- **SecureCredentialStore（S1）**：`isAvailable/set/get/has/delete`；safeStorage
-  （Windows DPAPI）密文落盘 `userData/credentials.json`（原子写）；不可用 fail-closed
-  （不落盘 + 仅内存 Key 提示）；**渲染层只写不读**（setKey/has，无 get 通道）。
-  config-store：providerId/baseUrl（仅 http/https）/model JSON 读写校验（Key 不入此文件）。
+- **LLMProvider（S1 ✅ 已实现，src/main/ai/provider/）**：`llm-provider.ts`——
+  `export interface LLMProvider`（`metadata` + `stream(request, signal): AsyncIterable<
+ProviderEvent>`，delta/done/error）、`PROVIDER_KIND_OPENAI_COMPATIBLE`、
+  `ProviderFactory`/`registerProviderFactory`/`listProviderKinds`、`resolveProvider
+(config, store) → Promise<LLMProvider | null>`（**async**——无 Key 判定依赖异步
+  `store.has()`，相对设计同步签名的唯一调整；未配置/无 Key/未注册 kind → null →
+  not-configured，不发起网络请求）。`openai-compatible.ts`——`OpenAICompatibleProvider`
+  （原生 fetch + SSE 自解析：`\n\n` 分帧/`[DONE]`/usage 末帧/末帧 delta+usage 同帧不丢
+  内容/CRLF 归一化，`POST {baseUrl}/chat/completions`，Key 请求时从 store 取不缓存、
+  适配器不记录请求头，超时 `PROVIDER_TIMEOUTS` 连接 15s/空闲 chunk 60s/总 300s
+  AbortController 组合，零 Electron import）+ 可单测纯函数 `parseSseFrame`/
+  `interpretSsePayload`/`mapMessages`。`fake-provider.ts`——`FakeProvider`
+  （确定性脚本 `FakeChunk`/`FakeProviderScript`：分块/延迟/错误注入 code|httpStatus/
+  中止 + `getLastRequest()` 供冒烟断言）+ `FAKE_PROVIDER_METADATA`。
+  `error-normalize.ts`——`normalizeProviderError`（判别联合 `NormalizeInput`：
+  http/network/timeout/aborted/parse/not-configured/internal）+ `isContextTooLongIndicator`
+  纯函数：状态码矩阵 → 错误码（401/403→invalid-key、429→rate-limit、400/422 上下文
+  指征→context-too-long、5xx→provider-error retryable、网络/超时/中止/解析失败各归一；
+  脱敏断言：错误绝不含响应体/密钥）。
+- **SecureCredentialStore（S1 ✅ 已实现，src/main/ai/）**：`credential-store.ts`——
+  `export interface SecureCredentialStore`（`isAvailable/set/get/has/delete`，`has` 供 IPC
+  查询不含密钥）+ `SecureCredentialStoreImpl`（cipher 后端注入 `CipherBackend`，Q2 可替换；
+  safeStorage/Windows DPAPI 密文落盘 `userData/credentials.json`（原子写 tmp+rename）；
+  不可用 fail-closed：set 返回 false 不落盘 + 仅内存 Key（退出即弃）；损坏/解密失败 → 空/
+  null + warn）+ 纯文件格式 `serializeCredentialsFile`/`parseCredentialsFile`/
+  `isCiphertextShape`（sk- 明文形态条目丢弃）。`safe-storage-cipher.ts`——
+  `SafeStorageCipher`（Electron 薄胶水，运行时行为由 S3+ 冒烟验证 §13.2 场景 10）。
+  **渲染层只写不读**（S4：setKey/has，无 get 通道）。`config-store.ts`——
+  `ConfigStore`（`get`/`set`/`list(): Promise<ProviderInfo[]>`——**list 异步**，hasKey
+  依赖异步 `store.has()`；ProviderConfig 定义于 shared 并重导出）+ 纯校验
+  `normalizeBaseUrl`（仅 http/https 去尾 /）/`validateProviderConfig`（model/providerId
+  非空）；文件 `userData/provider-config.json` 形状校验 fail-closed（Key 不入此文件）。
 - **IPC/bridge 扩展（S4）**：invoke——conversation:list/create/get-history/delete/
   set-ephemeral/ask/abort/preview、config:providers:list/set/set-key（apiKey='' = 删除）；
   事件——conversation:stream-chunk / conversation:turn-done。全部沿用 sender 校验
@@ -420,7 +446,7 @@ defaultContextLimitTokens）+ stream(request, signal): AsyncIterable<ProviderEve
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 89 用例）
+  - `npm test` — Vitest 全量测试（当前 170 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -480,11 +506,16 @@ defaultContextLimitTokens）+ stream(request, signal): AsyncIterable<ProviderEve
   - ✅ PageSnapshot 数据规范化（`src/main/browser/snapshot-normalize.test.ts`，46 用例，T4 红→绿落地：
     不可信输入→L2 合法快照、限额二次截断、elementId 格式过滤、非法条目丢弃、表格行列对齐、
     warnings 去重）
-- Second Stage（S1–S4 规划，规格见 doc/stage2/detailed-design.md §13.1）：error-normalize
-  状态码矩阵与脱敏断言、FakeProvider 确定性行为、credential/config 形状校验、
-  context-budget 确定性裁剪（预算优先级/截断标记/历史裁剪/表格过滤）、context-builder
-  角色隔离（system 恒等/块闭合转义/注入文案夹具/selection 独占/模式推导矩阵）、
-  会话消息形状校验与上限裁剪、logger 脱敏密钥（`sk-…` 形态）专项用例。
+- Second Stage（规格见 doc/stage2/detailed-design.md §13.1）：
+  - ✅ S1（2026-08-13 红→绿落地，81 用例）：error-normalize 状态码矩阵与脱敏断言（18）、
+    FakeProvider 确定性分块/错误注入/中止/getLastRequest（12）、OpenAI-compatible SSE
+    分帧/帧判定（含末帧 delta+usage 同帧）/消息映射纯函数（12）、resolveProvider 注册表
+    与 not-configured 路径（6）、credential-store 密文落盘/损坏容错/不可用降级/纯格式
+    （16，cipher 后端注入测试替身，safeStorage 行为由冒烟验证）、config-store 校验规则
+    与持久化（11）、logger sanitize `sk-…` 形态与 apiKey 键值对脱敏（6）。
+  - S2 起（待实现）：context-budget 确定性裁剪（预算优先级/截断标记/历史裁剪/表格过滤）、
+    context-builder 角色隔离（system 恒等/块闭合转义/注入文案夹具/selection 独占/模式推导
+    矩阵）、会话消息形状校验与上限裁剪。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。
