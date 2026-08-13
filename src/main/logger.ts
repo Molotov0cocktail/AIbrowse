@@ -65,6 +65,13 @@ function write(level: LogLevel, category: string, message: string, error?: unkno
   else console.log(safe);
 }
 
+// 冒烟断言用：当前日志文件路径（appendFileSync 同步写盘，读取即最新；仅测试/验证场景使用）。
+// 冒烟以「文件偏移切片」限定本次运行的日志区间，避免读到同日更早运行的内容。
+export function getCurrentLogFilePath(): string {
+  ensureLogFile();
+  return currentLogFile;
+}
+
 export const logDebug = (category: string, message: string): void =>
   write('DEBUG', category, message);
 export const logInfo = (category: string, message: string): void =>

@@ -156,15 +156,30 @@ export class TabManager {
     wc.on('did-navigate-in-page', onNavigateInPage);
     cleanup.push(() => wc.removeListener('did-navigate-in-page', onNavigateInPage));
 
-    // 导航白名单（§9）：仅 http/https/about，其余拦截 + warn
-    const onWillNavigate = (event: Electron.Event, targetUrl: string): void => {
-      if (!ALLOWED_SCHEME_PATTERN.test(targetUrl)) {
-        event.preventDefault();
-        logWarn('browser', `已拦截非白名单导航（tabId=${info.id}）：${targetUrl}`);
+    // 导航白名单（§9 + R-02）：仅 http/https/about，其余拦截 + warn。
+    // will-navigate 覆盖页面发起导航（含 location.replace）；will-redirect 覆盖服务器重定向
+    // （302 目标同样过白名单——程序化 loadURL 遇 302 时唯一拦截点，T5 R-02 加固）。
+    const onWillNavigate = (
+      details: Electron.Event<Electron.WebContentsWillNavigateEventParams>,
+    ): void => {
+      if (!ALLOWED_SCHEME_PATTERN.test(details.url)) {
+        details.preventDefault();
+        logWarn('browser', `已拦截非白名单导航（tabId=${info.id}）：${details.url}`);
       }
     };
     wc.on('will-navigate', onWillNavigate);
     cleanup.push(() => wc.removeListener('will-navigate', onWillNavigate));
+
+    const onWillRedirect = (
+      details: Electron.Event<Electron.WebContentsWillRedirectEventParams>,
+    ): void => {
+      if (!ALLOWED_SCHEME_PATTERN.test(details.url)) {
+        details.preventDefault();
+        logWarn('browser', `已拦截非白名单重定向（tabId=${info.id}）：${details.url}`);
+      }
+    };
+    wc.on('will-redirect', onWillRedirect);
+    cleanup.push(() => wc.removeListener('will-redirect', onWillRedirect));
 
     const onRenderGone = (): void => {
       // §4：渲染进程退出 → 该 Tab 立即降级为 error（快照走 L2/L3 路径）。
