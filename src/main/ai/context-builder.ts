@@ -12,6 +12,7 @@ import type {
   ConversationMessage,
   ProviderMessage,
   ProviderRequest,
+  ProviderTool,
 } from '../../shared/types/conversation';
 import {
   CONTEXT_BUDGET,
@@ -50,6 +51,9 @@ export interface ContextBuildInput {
   system: string; // SYSTEM_PROMPT constant (§7.3)
   requestId: string; // 决议 #18：ProviderRequest requires it; the Service passes its own id
   model: string; // 决议 #18：from ProviderConfig, passed by the Service
+  // A1：模型可见工具集——恒等透传进 ProviderRequest（无拼接无改写，程序生成）。
+  // 缺省 undefined = 无工具（共读路径不变，请求不含 tools 字段，§3.3）。
+  tools?: ProviderTool[];
   budget?: ContextBudget; // Test/tuning injection; defaults to context-budget constants
 }
 
@@ -120,6 +124,8 @@ export function buildContext(input: ContextBuildInput): ContextBuildOutput {
     model: input.model,
     system: input.system,
     messages: [...historyMessages, { role: 'user', content: userContent }],
+    // A1 tools 恒等透传（§3.3）：未传 tools 时字段缺失（共读路径行为不变）
+    ...(input.tools === undefined ? {} : { tools: input.tools }),
   };
 
   return { request, meta: { mode, thin, truncated, warnings } };

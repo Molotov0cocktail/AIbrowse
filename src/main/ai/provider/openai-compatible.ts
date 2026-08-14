@@ -1,16 +1,19 @@
 // OpenAI-compatible adapter: native fetch + hand-rolled SSE parsing, zero vendor SDK and
 // zero Electron imports (dependency-direction discipline: LLMProvider must never touch
 // webContents / Electron APIs). Keys are fetched from SecureCredentialStore per request and
-// never cached or logged. Contract source: doc/stage2/detailed-design.md §3.3/§5.1/§8.2.
+// never cached or logged. Contract source: doc/stage2/detailed-design.md §3.3/§5.1/§8.2;
+// A1 tool-calling extension: doc/stage3/detailed-design.md §3.1（SSE delta.tool_calls
+// 分片按 index 分槽累积，finish_reason=tool_calls 末帧后聚合校验产出 ProviderToolCall[]，
+// 恰好在 done 之前；原始分片仅为适配器内部状态，对外不暴露半截 arguments——决议 #30）。
 import { logDebug, logWarn } from '../../logger';
 import type { SecureCredentialStore } from '../credential-store';
 import type { ProviderConfig } from '../../../shared/types/conversation';
 import type {
   NormalizedProviderError,
   ProviderEvent,
-  ProviderMessage,
   ProviderMetadata,
   ProviderRequest,
+  ProviderToolCall,
   ProviderUsage,
 } from '../../../shared/types/conversation';
 import { normalizeProviderError, type ErrorNormalizeContext } from './error-normalize';
@@ -44,8 +47,40 @@ export function parseSseFrame(frameText: string): string | null {
   return dataLines.length === 0 ? null : dataLines.join('\n');
 }
 
+// —— A1：SSE tool_calls 原始分片（适配器内部类型，不进入共享契约，决议 #30） ——
+
+export interface ToolCallFragment {
+  index: number; // delta.tool_calls[].index：同 index 累积拼接
+  id?: string; // 首个分片携带（空串不算）
+  name?: string; // 首个分片携带（函数名分片中的空串不算）
+  arguments: string; // 增量片段（字符串拼接，完成时整体 JSON.parse）
+}
+
+// 每个 index 的累积槽：聚合完成后经 finalizeToolCalls 校验产出 ProviderToolCall。
+export interface ToolCallSlot {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
 export type SseChunkEvent =
-  | { type: 'delta'; text: string; usage?: ProviderUsage } // choices[0].delta.content; some
+  // choices[0].delta.content；同帧可再携带 tool_calls 分片与 finish_reason（先文本后工具）
+  | {
+      type: 'delta';
+      text: string;
+      usage?: ProviderUsage;
+      toolFragments?: ToolCallFragment[];
+      finishReason?: string;
+    }
+  // 纯 tool_calls 分片帧；末分片帧可同帧携带 finish_reason
+  | {
+      type: 'tool-delta';
+      fragments: ToolCallFragment[];
+      usage?: ProviderUsage;
+      finishReason?: string;
+    }
+  // delta 为空对象、仅携带 finish_reason 的收尾帧
+  | { type: 'finish'; reason: string; usage?: ProviderUsage }
   | { type: 'usage'; usage: ProviderUsage } // servers put the last delta + usage in one frame
   | { type: 'done-marker' } // [DONE]
   | { type: 'skip' } // Known empty frames (role-only first frame, empty choices)
@@ -74,17 +109,227 @@ export function interpretSsePayload(payload: string): SseChunkEvent {
   if (typeof first !== 'object' || first === null) {
     return usage === null ? { type: 'error' } : { type: 'usage', usage };
   }
-  const delta = (first as Record<string, unknown>).delta;
+  const firstRecord = first as Record<string, unknown>;
+  const finishReason =
+    typeof firstRecord.finish_reason === 'string' ? firstRecord.finish_reason : undefined;
+  let text: string | undefined;
+  let fragments: ToolCallFragment[] | undefined;
+  const delta = firstRecord.delta;
   if (typeof delta === 'object' && delta !== null) {
-    const content = (delta as Record<string, unknown>).content;
-    if (typeof content === 'string') {
-      const event: SseChunkEvent = { type: 'delta', text: content };
-      if (usage !== null) event.usage = usage;
-      return event;
+    const deltaRecord = delta as Record<string, unknown>;
+    if (typeof deltaRecord.content === 'string') text = deltaRecord.content;
+    if (deltaRecord.tool_calls !== undefined) {
+      const parsed = parseToolCallFragments(deltaRecord.tool_calls);
+      if (parsed === 'error') return { type: 'error' };
+      fragments = parsed;
     }
+  }
+  if (fragments !== undefined && text !== undefined) {
+    const event: Extract<SseChunkEvent, { type: 'delta' }> = {
+      type: 'delta',
+      text,
+      toolFragments: fragments,
+    };
+    if (usage !== null) event.usage = usage;
+    if (finishReason !== undefined) event.finishReason = finishReason;
+    return event;
+  }
+  if (fragments !== undefined) {
+    const event: Extract<SseChunkEvent, { type: 'tool-delta' }> = { type: 'tool-delta', fragments };
+    if (usage !== null) event.usage = usage;
+    if (finishReason !== undefined) event.finishReason = finishReason;
+    return event;
+  }
+  if (text !== undefined) {
+    const event: Extract<SseChunkEvent, { type: 'delta' }> = { type: 'delta', text };
+    if (usage !== null) event.usage = usage;
+    if (finishReason !== undefined) event.finishReason = finishReason;
+    return event;
+  }
+  if (finishReason !== undefined) {
+    const event: Extract<SseChunkEvent, { type: 'finish' }> = {
+      type: 'finish',
+      reason: finishReason,
+    };
+    if (usage !== null) event.usage = usage;
+    return event;
   }
   // Known variants without content (role frame / empty delta).
   return usage === null ? { type: 'skip' } : { type: 'usage', usage };
+}
+
+// delta.tool_calls 严格校验（§3.1 非法帧 → provider-error）：
+// 非数组 / 条目非对象 / 缺 index 或非整数 / id・name・arguments 类型不符 /
+// 条目既无 id 也无 function → 'error'。未知字段（如 type）忽略。
+function parseToolCallFragments(raw: unknown): ToolCallFragment[] | 'error' {
+  if (!Array.isArray(raw)) return 'error';
+  const fragments: ToolCallFragment[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) return 'error';
+    const record = entry as Record<string, unknown>;
+    if (typeof record.index !== 'number' || !Number.isInteger(record.index)) return 'error';
+    const fragment: ToolCallFragment = { index: record.index, arguments: '' };
+    if (record.id !== undefined) {
+      if (typeof record.id !== 'string') return 'error';
+      fragment.id = record.id;
+    }
+    let hasFunction = false;
+    if (record.function !== undefined) {
+      if (typeof record.function !== 'object' || record.function === null) return 'error';
+      hasFunction = true;
+      const fn = record.function as Record<string, unknown>;
+      if (fn.name !== undefined) {
+        if (typeof fn.name !== 'string') return 'error';
+        fragment.name = fn.name;
+      }
+      if (fn.arguments !== undefined) {
+        if (typeof fn.arguments !== 'string') return 'error';
+        fragment.arguments = fn.arguments;
+      }
+    }
+    if (fragment.id === undefined && !hasFunction) return 'error'; // 无任何可累积内容
+    fragments.push(fragment);
+  }
+  return fragments;
+}
+
+// 分片按 index 累积进槽（同 index 拼接；id/name 仅首个非空分片生效）。
+// 结构性防御校验（interpret 已校验，直接调用者同受保护）；失败返回 'illegal'。
+export function applyToolCallFragments(
+  slots: Map<number, ToolCallSlot>,
+  fragments: ToolCallFragment[],
+): 'ok' | 'illegal' {
+  for (const fragment of fragments) {
+    if (!Number.isInteger(fragment.index) || fragment.index < 0) return 'illegal';
+    if (fragment.id !== undefined && typeof fragment.id !== 'string') return 'illegal';
+    if (fragment.name !== undefined && typeof fragment.name !== 'string') return 'illegal';
+    if (typeof fragment.arguments !== 'string') return 'illegal';
+    const slot = slots.get(fragment.index) ?? { id: '', name: '', arguments: '' };
+    if (fragment.id !== undefined && fragment.id !== '') slot.id = fragment.id;
+    if (fragment.name !== undefined && fragment.name !== '') slot.name = fragment.name;
+    slot.arguments += fragment.arguments;
+    slots.set(fragment.index, slot);
+  }
+  return 'ok';
+}
+
+// 聚合校验（§3.1）：按 index 升序；id/name 非空；arguments 整体 JSON.parse 成功且
+// 结果为对象（非法 → 失败，流以 provider-error 终结，不产出半截工具调用）。
+export function finalizeToolCalls(
+  slots: Map<number, ToolCallSlot>,
+): { ok: true; calls: ProviderToolCall[] } | { ok: false } {
+  const calls: ProviderToolCall[] = [];
+  const sorted = [...slots.entries()].sort((a, b) => a[0] - b[0]);
+  for (const [, slot] of sorted) {
+    if (slot.id === '' || slot.name === '') return { ok: false };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(slot.arguments);
+    } catch {
+      return { ok: false };
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return { ok: false };
+    }
+    calls.push({ id: slot.id, name: slot.name, arguments: slot.arguments });
+  }
+  return { ok: true, calls };
+}
+
+// —— SSE 管道：解码 → 分帧 → 帧判定 → 聚合 → ProviderEvent（fetch 之外的纯管道，可单测） ——
+// body 为 fetch Response.body 原始字节流；abort/网络中断以异常向调用方传播
+// （stream() 的 catch 归一化）。onChunk 供空闲计时器按块重置（由 stream() 注入）。
+export async function* streamSseBody(
+  body: AsyncIterable<Uint8Array>,
+  context: ErrorNormalizeContext,
+  onChunk?: () => void,
+): AsyncIterable<ProviderEvent> {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const state = {
+    usage: undefined as ProviderUsage | undefined,
+    toolSlots: new Map<number, ToolCallSlot>(),
+    finishReason: null as string | null,
+    toolCallsEmitted: false,
+  };
+
+  function* failParse(): Generator<ProviderEvent, 'error'> {
+    logWarn(
+      'provider',
+      `流解析失败（${context.providerId}/${context.model ?? '-'}，req=${context.requestId}）`,
+    );
+    yield { type: 'error', error: normalizeProviderError({ kind: 'parse', context }) };
+    return 'error';
+  }
+
+  // One frame → events + pipeline state. Returns 'error'/'done' to stop the outer loop.
+  function* processFrame(
+    event: SseChunkEvent,
+  ): Generator<ProviderEvent, 'continue' | 'error' | 'done'> {
+    if (event.type === 'error') return yield* failParse();
+    if (event.type === 'usage') {
+      state.usage = event.usage;
+      return 'continue';
+    }
+    if (event.type === 'skip') return 'continue';
+    if (event.type === 'done-marker') {
+      yield { type: 'done', usage: state.usage };
+      return 'done';
+    }
+    const carryUsage = (usage: ProviderUsage | undefined): void => {
+      if (usage !== undefined) state.usage = usage;
+    };
+    if (event.type === 'delta') {
+      carryUsage(event.usage);
+      if (event.text !== '') yield { type: 'delta', text: event.text };
+      if (event.toolFragments !== undefined) {
+        if (applyToolCallFragments(state.toolSlots, event.toolFragments) !== 'ok') {
+          return yield* failParse();
+        }
+      }
+      if (event.finishReason !== undefined) state.finishReason = event.finishReason;
+    } else if (event.type === 'tool-delta') {
+      carryUsage(event.usage);
+      if (applyToolCallFragments(state.toolSlots, event.fragments) !== 'ok') {
+        return yield* failParse();
+      }
+      if (event.finishReason !== undefined) state.finishReason = event.finishReason;
+    } else if (event.type === 'finish') {
+      carryUsage(event.usage);
+      state.finishReason = event.reason;
+    }
+    // finish_reason=tool_calls 末帧后：聚合校验 → toolCalls 事件（恰好在 done 之前，
+    // 恰好产出一次）。finish 非 tool_calls 或零槽时静默丢弃累积（半成品不暴露）。
+    if (state.finishReason === 'tool_calls' && !state.toolCallsEmitted) {
+      state.toolCallsEmitted = true;
+      const finalized = finalizeToolCalls(state.toolSlots);
+      if (!finalized.ok) return yield* failParse();
+      if (finalized.calls.length > 0) yield { type: 'toolCalls', toolCalls: finalized.calls };
+    }
+    return 'continue';
+  }
+
+  for await (const chunk of body) {
+    onChunk?.();
+    // Normalize CRLF line endings so '\n\n' framing holds for servers that emit \r\n.
+    buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, '\n');
+    let separator: number;
+    while ((separator = buffer.indexOf('\n\n')) !== -1) {
+      const frameText = buffer.slice(0, separator);
+      buffer = buffer.slice(separator + 2);
+      const payload = parseSseFrame(frameText);
+      if (payload === null) continue; // Comment/keep-alive frame
+      const outcome = yield* processFrame(interpretSsePayload(payload));
+      if (outcome === 'done' || outcome === 'error') return;
+    }
+  }
+  // Stream ended cleanly without [DONE]: tolerate and finish (usage from last frame).
+  const tail = parseSseFrame(buffer);
+  if (tail !== null) {
+    const outcome = yield* processFrame(interpretSsePayload(tail));
+    if (outcome === 'done' || outcome === 'error') return;
+  }
+  yield { type: 'done', usage: state.usage };
 }
 
 function extractUsage(record: Record<string, unknown>): ProviderUsage | null {
@@ -97,10 +342,53 @@ function extractUsage(record: Record<string, unknown>): ProviderUsage | null {
   return result.inputTokens === undefined && result.outputTokens === undefined ? null : result;
 }
 
-// IR → wire messages: system maps to its own message; user/assistant pass through untouched
-// (the UNTRUSTED_WEB_CONTENT block is already inside user content — no joining here, §3.3).
-export function mapMessages(request: ProviderRequest): ProviderMessage[] {
-  return [{ role: 'system', content: request.system }, ...request.messages];
+// —— IR → wire 消息（适配器不做拼接） ——
+// system 独立映射为首条消息；user/assistant 原样透传（UNTRUSTED_WEB_CONTENT 块已在
+// user content 内，§3.3）。A1 扩展：role='tool' → 线格式 tool_call_id；assistant
+// toolCalls → 线格式 tool_calls 数组（历史重放，doc/stage3/detailed-design.md §3.1）。
+export interface WireMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_call_id?: string; // role='tool'：关联调用 id（IR toolCallId）
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>; // role='assistant' 且带 toolCalls 时重放
+}
+
+export function mapMessages(request: {
+  system: string;
+  messages: Array<{
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    content: string;
+    toolCallId?: string;
+    toolCalls?: ProviderToolCall[];
+  }>;
+}): WireMessage[] {
+  const wire: WireMessage[] = [{ role: 'system', content: request.system }];
+  for (const message of request.messages) {
+    if (message.role === 'tool') {
+      wire.push({
+        role: 'tool',
+        content: message.content,
+        tool_call_id: message.toolCallId ?? '',
+      });
+    } else if (message.role === 'assistant' && message.toolCalls !== undefined) {
+      wire.push({
+        role: 'assistant',
+        content: message.content,
+        tool_calls: message.toolCalls.map((call) => ({
+          id: call.id,
+          type: 'function' as const,
+          function: { name: call.name, arguments: call.arguments },
+        })),
+      });
+    } else {
+      wire.push({ role: message.role, content: message.content });
+    }
+  }
+  return wire;
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
@@ -117,7 +405,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       id: config.providerId,
       label: config.providerId,
       streaming: true,
-      supportsToolCalling: false,
+      supportsToolCalling: true, // A1 校准为真实端点能力（chat/completions 原生支持 tools）
       defaultContextLimitTokens: 128000, // Reference metadata only; real budget is char-based (§7.5)
     };
   }
@@ -176,10 +464,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
         response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          // A1：tools 直接透传 IR（程序生成）；未传 tools 时不发送该字段（共读路径不变）。
+          // v1 不发送 tool_choice（默认 auto，§3.1）。
           body: JSON.stringify({
             model: request.model,
             stream: true,
             messages: mapMessages(request),
+            ...(request.tools === undefined ? {} : { tools: request.tools }),
           }),
           signal: controller.signal,
         });
@@ -212,62 +503,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
         yield { type: 'error', error: normalizeProviderError({ kind: 'parse', context }) };
         return;
       }
-
-      resetIdle();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let usage: ProviderUsage | undefined;
-      try {
-        for await (const chunk of response.body) {
-          resetIdle();
-          // Normalize CRLF line endings so '\n\n' framing holds for servers that emit \r\n.
-          buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, '\n');
-          let separator: number;
-          while ((separator = buffer.indexOf('\n\n')) !== -1) {
-            const frameText = buffer.slice(0, separator);
-            buffer = buffer.slice(separator + 2);
-            const payload = parseSseFrame(frameText);
-            if (payload === null) continue; // Comment/keep-alive frame
-            const event = interpretSsePayload(payload);
-            if (event.type === 'error') {
-              logWarn(
-                'provider',
-                `流解析失败（${context.providerId}/${context.model ?? '-'}，req=${context.requestId}）`,
-              );
-              yield { type: 'error', error: normalizeProviderError({ kind: 'parse', context }) };
-              return;
-            }
-            if (event.type === 'usage') {
-              usage = event.usage;
-              continue;
-            }
-            if (event.type === 'skip') continue;
-            if (event.type === 'done-marker') {
-              yield { type: 'done', usage };
-              return;
-            }
-            if (event.usage !== undefined) usage = event.usage; // Last delta + usage in one frame
-            if (event.text !== '') yield { type: 'delta', text: event.text };
-          }
-        }
-        // Stream ended cleanly without [DONE]: tolerate and finish (usage from last frame).
-        const tail = parseSseFrame(buffer);
-        if (tail !== null) {
-          const event = interpretSsePayload(tail);
-          if (event.type === 'error') {
-            yield { type: 'error', error: normalizeProviderError({ kind: 'parse', context }) };
-            return;
-          }
-          if (event.type === 'usage') usage = event.usage;
-          else if (event.type === 'delta') {
-            if (event.usage !== undefined) usage = event.usage;
-            if (event.text !== '') yield { type: 'delta', text: event.text };
-          }
-        }
-        yield { type: 'done', usage };
-      } catch {
-        yield { type: 'error', error: this.mapFailure(phase, context) };
-      }
+      yield* streamSseBody(response.body, context, resetIdle);
+    } catch {
+      yield { type: 'error', error: this.mapFailure(phase, context) };
     } finally {
       clearTimeout(connectTimer);
       clearTimeout(totalTimer);

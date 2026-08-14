@@ -64,7 +64,8 @@ describe('resolveProvider — 未配置/无 Key → null（→ not-configured，
     const metadata = (provider as LLMProvider).metadata;
     expect(metadata.id).toBe('openai-compatible');
     expect(metadata.streaming).toBe(true);
-    expect(metadata.supportsToolCalling).toBe(false);
+    // A1 校准为真实端点能力（doc/stage3/detailed-design.md §3.1）
+    expect(metadata.supportsToolCalling).toBe(true);
     expect(typeof metadata.defaultContextLimitTokens).toBe('number');
   });
 });

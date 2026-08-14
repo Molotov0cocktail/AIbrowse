@@ -100,13 +100,16 @@ export interface ProviderMetadata {
   id: string;
   label: string;
   streaming: true;
-  supportsToolCalling: false; // Second Stage has no tools; metadata reserved for Third Stage
+  // A1 校准为真实端点能力（openai-compatible=true；fake=true），不再是 Second Stage 占位 false
+  supportsToolCalling: boolean;
   defaultContextLimitTokens: number; // Display/budget reference only (real budget is char-based, §7.5)
 }
 
 export interface ProviderMessage {
-  role: 'system' | 'user' | 'assistant'; // Assigned by program literals only; web content lives
+  role: 'system' | 'user' | 'assistant' | 'tool'; // Assigned by program literals only; web content lives
   content: string; // inside the user message's UNTRUSTED_WEB_CONTENT block (§7.3)
+  toolCallId?: string; // role='tool' 时必填：关联 ProviderToolCall.id（A1 扩展）
+  toolCalls?: ProviderToolCall[]; // role='assistant' 时可选：该轮工具调用（历史重放，A1 扩展）
 }
 
 export interface ProviderRequest {
@@ -114,12 +117,47 @@ export interface ProviderRequest {
   model: string;
   system: string;
   messages: ProviderMessage[];
+  // A1 新增：模型可见工具集——由 ToolRegistry.listTools() 序列化（程序生成，
+  // 模型/网页无写入通道）；undefined = 无工具（共读路径不变，请求不含 tools 字段）
+  tools?: ProviderTool[];
 }
 
 export type ProviderUsage = { inputTokens?: number; outputTokens?: number };
 
+// —— A1 扩展：tool calling 兼容层（doc/stage3/detailed-design.md §2.1） ——
+// SSE delta.tool_calls 原始分片仅为 OpenAI-compatible 适配器内部解析状态（不在此
+// 共享契约内）；对外 ProviderEvent.toolCalls 输出聚合校验完成的整组调用（决议 #30）。
+
+export interface ProviderToolParameter {
+  type: 'string' | 'number' | 'boolean'; // v1 仅基础类型（无 object/array 嵌套）
+  description?: string;
+  enum?: Array<string | number | boolean>; // 枚举约束（确定性校验用）
+}
+
+export interface ProviderTool {
+  type: 'function';
+  function: {
+    name: string;
+    description: string; // 来自 ToolDefinition（程序注册，模型不可写）
+    parameters: {
+      type: 'object';
+      properties: Record<string, ProviderToolParameter>;
+      required: string[];
+    };
+  };
+}
+
+export interface ProviderToolCall {
+  id: string; // 模型产出的调用 id；审计与结果关联键
+  name: string; // 工具名（执行前经注册表校验，未知 → tool-not-found）
+  arguments: string; // JSON 字符串（执行前经 schema 校验；解析失败 → invalid-args）
+}
+
 export type ProviderEvent =
   | { type: 'delta'; text: string }
+  // 聚合完成、校验通过的整组工具调用——适配器在 finish_reason=tool_calls 末帧后按
+  // index 升序产出，恰好在 done 之前；绝不携带半截 arguments。
+  | { type: 'toolCalls'; toolCalls: ProviderToolCall[] }
   | { type: 'done'; usage?: ProviderUsage }
   | { type: 'error'; error: NormalizedProviderError };
 

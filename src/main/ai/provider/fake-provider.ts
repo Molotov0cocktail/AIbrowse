@@ -1,7 +1,9 @@
 // FakeProvider: deterministic offline stand-in implementing the same LLMProvider interface.
 // Used by unit tests and (from S3) the smoke matrix — scripted chunks with optional delays
 // (abort/timeout scenarios), injected errors (code/httpStatus), and getLastRequest() capture.
-// Contract source: doc/stage2/detailed-design.md §3.3.
+// Contract source: doc/stage2/detailed-design.md §3.3; A1 工具脚本扩展：
+// doc/stage3/detailed-design.md §3.2（整组 toolCalls 一步产出，arguments 为已拼接
+// 完成的合法 JSON；supportsToolCalling 校准为 true）。
 import { setTimeout as sleep } from 'node:timers/promises';
 import type {
   NormalizedErrorCode,
@@ -9,6 +11,7 @@ import type {
   ProviderEvent,
   ProviderMetadata,
   ProviderRequest,
+  ProviderToolCall,
   ProviderUsage,
 } from '../../../shared/types/conversation';
 import { normalizeProviderError, type ErrorNormalizeContext } from './error-normalize';
@@ -18,14 +21,24 @@ export const FAKE_PROVIDER_METADATA: ProviderMetadata = {
   id: 'fake',
   label: 'Fake（离线测试）',
   streaming: true,
-  supportsToolCalling: false,
+  supportsToolCalling: true, // A1：FakeProvider 具备确定性工具脚本能力
   defaultContextLimitTokens: 128000,
 };
 
-export interface FakeChunk {
+export interface FakeTextChunk {
   text: string;
   delayMs?: number; // Wait before emitting this chunk (default 0), for abort/timeout scenarios
 }
+
+// A1：整组工具调用一步产出（与真实适配器聚合后的事件形态一致；arguments 为
+// 已拼接完成的合法 JSON 字符串，由脚本作者保证确定性）。
+export interface FakeToolCallsChunk {
+  kind: 'toolCalls';
+  toolCalls: ProviderToolCall[];
+  delayMs?: number;
+}
+
+export type FakeChunk = FakeTextChunk | FakeToolCallsChunk;
 
 export interface FakeProviderScript {
   chunks?: Array<string | FakeChunk>; // Default: fixed default script
@@ -69,7 +82,11 @@ export class FakeProvider implements LLMProvider {
         yield { type: 'error', error: normalizeProviderError({ kind: 'aborted', context }) };
         return;
       }
-      yield { type: 'delta', text: chunk.text };
+      if ('toolCalls' in chunk) {
+        yield { type: 'toolCalls', toolCalls: chunk.toolCalls };
+      } else {
+        yield { type: 'delta', text: chunk.text };
+      }
     }
     yield { type: 'done', usage: this.script.usage };
   }

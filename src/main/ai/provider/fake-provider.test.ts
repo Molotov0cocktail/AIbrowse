@@ -1,10 +1,11 @@
 // FakeProvider tests: deterministic script (chunks / delays / error injection / abort)
 // + getLastRequest capture for smoke assertions.
-// Contract source: doc/stage2/detailed-design.md §3.3.
+// Contract source: doc/stage2/detailed-design.md §3.3; A1 工具脚本：
+// doc/stage3/detailed-design.md §3.2.
 import { describe, expect, it } from 'vitest';
 import { FAKE_PROVIDER_METADATA, FakeProvider } from './fake-provider';
 import type { ProviderEvent } from '../../../shared/types/conversation';
-import type { ProviderRequest } from '../../../shared/types/conversation';
+import type { ProviderRequest, ProviderTool } from '../../../shared/types/conversation';
 
 const REQUEST: ProviderRequest = {
   requestId: 'req-1',
@@ -62,12 +63,90 @@ describe('FakeProvider — 确定性分块', () => {
     expect(performance.now() - started).toBeGreaterThanOrEqual(30);
   });
 
-  it('metadata：streaming=true / supportsToolCalling=false / id=fake', () => {
+  it('metadata：streaming=true / supportsToolCalling=true（A1 校准为真实值）/ id=fake', () => {
     expect(FAKE_PROVIDER_METADATA.id).toBe('fake');
     expect(FAKE_PROVIDER_METADATA.streaming).toBe(true);
-    expect(FAKE_PROVIDER_METADATA.supportsToolCalling).toBe(false);
+    expect(FAKE_PROVIDER_METADATA.supportsToolCalling).toBe(true);
     const provider = new FakeProvider();
     expect(provider.metadata).toEqual(FAKE_PROVIDER_METADATA);
+  });
+});
+
+describe('FakeProvider — 工具脚本（A1，doc/stage3/detailed-design.md §3.2）', () => {
+  const TOOL_CALLS = [
+    { id: 'call-1', name: 'browser.read', arguments: '{"tabId":null}' },
+    { id: 'call-2', name: 'browser.find', arguments: '{"text":"安全"}' },
+  ];
+  const TOOLS: ProviderTool[] = [
+    {
+      type: 'function',
+      function: {
+        name: 'browser.read',
+        description: '读取页面',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+  ];
+  const TOOL_REQUEST: ProviderRequest = {
+    ...REQUEST,
+    tools: TOOLS,
+  };
+
+  it('toolCalls 块整组一步产出（text → toolCalls → text → done，顺序确定）', async () => {
+    const provider = new FakeProvider({
+      chunks: [
+        { text: '开始。' },
+        { kind: 'toolCalls', toolCalls: TOOL_CALLS },
+        { text: '工具结果已收到。' },
+      ],
+    });
+    const events = await collect(provider, TOOL_REQUEST);
+    expect(events).toEqual([
+      { type: 'delta', text: '开始。' },
+      { type: 'toolCalls', toolCalls: TOOL_CALLS },
+      { type: 'delta', text: '工具结果已收到。' },
+      { type: 'done' },
+    ]);
+  });
+
+  it('toolCalls 块支持 delayMs（延迟后产出，可用于中止场景编排）', async () => {
+    const provider = new FakeProvider({
+      chunks: [{ kind: 'toolCalls', toolCalls: TOOL_CALLS, delayMs: 20 }],
+    });
+    const started = performance.now();
+    await collect(provider, TOOL_REQUEST);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(20);
+  });
+
+  it('同脚本两次运行事件序列完全一致（含 toolCalls，确定性）', async () => {
+    const script = {
+      chunks: [{ text: 'a' }, { kind: 'toolCalls' as const, toolCalls: TOOL_CALLS }, { text: 'b' }],
+    };
+    const run1 = await collect(new FakeProvider(script), TOOL_REQUEST);
+    const run2 = await collect(new FakeProvider(script), TOOL_REQUEST);
+    expect(run1).toEqual(run2);
+  });
+
+  it('getLastRequest 完整保留 tools 字段（恒等引用，供冒烟断言）', async () => {
+    const provider = new FakeProvider({ chunks: [] });
+    await collect(provider, TOOL_REQUEST);
+    expect(provider.getLastRequest()?.tools).toBe(TOOLS);
+  });
+
+  it('toolCalls 块前 abort → aborted 错误终结，不产出 toolCalls/done', async () => {
+    const provider = new FakeProvider({
+      chunks: [{ text: '第一块' }, { kind: 'toolCalls', toolCalls: TOOL_CALLS, delayMs: 10 }],
+    });
+    const controller = new AbortController();
+    const events: ProviderEvent[] = [];
+    for await (const event of provider.stream(TOOL_REQUEST, controller.signal)) {
+      events.push(event);
+      if (event.type === 'delta') controller.abort();
+    }
+    expect(events).toEqual([
+      { type: 'delta', text: '第一块' },
+      { type: 'error', error: expect.objectContaining({ code: 'aborted' }) },
+    ]);
   });
 });
 

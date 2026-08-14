@@ -429,10 +429,20 @@ export class ConversationServiceImpl implements ConversationService {
           this.options.onStreamChunk?.({ requestId, sessionId, delta: event.text });
         } else if (event.type === 'done') {
           return { text, status: 'complete', error: null };
-        } else {
+        } else if (event.type === 'error') {
           // 中止归一：aborted 终态保留部分回答（§8.3），不发错误标记
           const status = event.error.code === 'aborted' ? 'aborted' : 'error';
           return { text, status, error: event.error };
+        } else {
+          // A1：共读路径从不请求工具（未传 tools）；出现 toolCalls 事件属供应商异常
+          // 行为——共读不消费工具调用，fail-closed 归一化 internal（不把工具调用
+          // 误当作成功回答；Agent 路径的工具消费在 A5 落地）。
+          logWarn('conversation', `共读流出现未预期的工具调用事件（requestId=${requestId}）`);
+          return {
+            text,
+            status: 'error',
+            error: normalizeProviderError({ kind: 'internal', context }),
+          };
         }
       }
     } catch (err) {

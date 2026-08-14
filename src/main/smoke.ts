@@ -36,7 +36,9 @@ import type { SecureCredentialStore } from './ai/credential-store';
 import type {
   ConversationMessage,
   ConversationSession,
+  ProviderEvent,
   ProviderInfo,
+  ProviderTool,
   StreamChunkEvent,
   TurnDoneEvent,
 } from '../shared/types/conversation';
@@ -902,6 +904,71 @@ export async function runAiConversationScenarios(
         restarted.dispose();
       }
       service.dispose();
+
+      // —— A1 探针：FakeProvider 工具脚本 + tools 透传（脚本级验证，不接 Agent/UI） ——
+      // §3.4：toolCalls 按脚本顺序整组产出（「聚合后恰在 done 之前」为真实适配器
+      // 契约，单测覆盖）；getLastRequest 保留 tools 恒等透传（共读矩阵 11 已断言
+      // 「未传 tools → 无 tools 字段」的另一侧）。
+      const probeTools: ProviderTool[] = [
+        {
+          type: 'function',
+          function: {
+            name: 'browser.read',
+            description: '读取当前页面内容',
+            parameters: { type: 'object', properties: {}, required: [] },
+          },
+        },
+      ];
+      const probeCalls = [
+        { id: 'call-a1-1', name: 'browser.read', arguments: '{"tabId":null}' },
+        { id: 'call-a1-2', name: 'browser.read', arguments: '{}' },
+      ];
+      const probeProvider = new FakeProvider({
+        chunks: [
+          { text: '需要读取页面。' },
+          { kind: 'toolCalls', toolCalls: probeCalls },
+          { text: '读取完成。' },
+        ],
+      });
+      const probeEvents: ProviderEvent[] = [];
+      for await (const event of probeProvider.stream(
+        {
+          requestId: 'a1-probe',
+          model: FAKE_MODEL,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: 'user', content: '工具探针' }],
+          tools: [...probeTools],
+        },
+        new AbortController().signal,
+      )) {
+        probeEvents.push(event);
+      }
+      assert(
+        probeEvents.map((e) => e.type).join(',') === 'delta,toolCalls,delta,done',
+        'A1 探针：事件应严格按脚本顺序产出（delta → toolCalls → delta → done）',
+      );
+      const probeToolCalls = probeEvents.find((e) => e.type === 'toolCalls');
+      assert(
+        probeToolCalls?.type === 'toolCalls' &&
+          probeToolCalls.toolCalls.length === 2 &&
+          probeToolCalls.toolCalls[0].id === 'call-a1-1' &&
+          probeToolCalls.toolCalls[0].arguments === '{"tabId":null}',
+        'A1 探针：整组工具调用应按脚本顺序完整产出',
+      );
+      assert(
+        probeEvents.filter((e) => e.type === 'delta').length === 2 &&
+          probeEvents[0].type === 'delta' &&
+          probeEvents.at(-1)?.type === 'done',
+        'A1 探针：文本块与工具调用按脚本顺序产出，done 收尾',
+      );
+      const probeLastRequest = probeProvider.getLastRequest();
+      assert(
+        probeLastRequest?.tools !== undefined &&
+          probeLastRequest.tools.length === 1 &&
+          probeLastRequest.tools[0].function.name === 'browser.read',
+        'A1 探针：getLastRequest 应保留 tools（透传）',
+      );
+      logInfo('smoke', 'A1 工具调用探针通过（FakeProvider 工具脚本 + tools 透传 + 事件顺序）');
     } finally {
       await pages.close();
     }
@@ -1527,9 +1594,12 @@ export async function runAiUiScenarios(
         '矩阵 11：消息角色只能由程序字面量赋值（不得出现 system 角色消息）',
       );
       const req11Json = JSON.stringify(req11);
+      // A1 校准（§3.4）：请求无 tools 字段当且仅当未传 tools——共读路径未传 tools →
+      // 字段缺失（'tools' in request === false）；传 tools 的一侧由 A1 工具探针断言。
+      // 共读请求同样不得出现 tool_calls 字段（无浏览器写通道红线不变）。
       assert(
-        !req11Json.includes('"tools"') && !req11Json.includes('"tool_calls"'),
-        '矩阵 11：请求结构不得包含任何工具调用字段（无浏览器写通道）',
+        !('tools' in req11) && !req11Json.includes('"tool_calls"'),
+        '矩阵 11：共读请求不得含 tools 字段（未传 tools 时字段缺失，无浏览器写通道）',
       );
       const hostileWc = visibleTabView(uiWindow)?.webContents;
       assert(hostileWc !== undefined, '矩阵 11：敌对页面应为活动 Tab');

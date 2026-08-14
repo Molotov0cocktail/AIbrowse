@@ -391,3 +391,40 @@ describe('buildContextSource — ContextSource 映射（§2/§3.2）', () => {
     });
   });
 });
+
+describe('buildContext — tools 透传（A1，doc/stage3/detailed-design.md §3.3）', () => {
+  const TOOLS = [
+    {
+      type: 'function' as const,
+      function: {
+        name: 'browser.read',
+        description: '读取当前页面',
+        parameters: {
+          type: 'object' as const,
+          properties: { tabId: { type: 'string' as const, description: '标签页 id' } },
+          required: [],
+        },
+      },
+    },
+  ];
+
+  it('传入 tools → 恒等透传（无拷贝无改写，引用相同）', () => {
+    const output = buildContext(makeInput({ tools: TOOLS }));
+    expect(output.request.tools).toBe(TOOLS);
+  });
+
+  it('未传 tools → 请求无 tools 字段（共读路径行为不变）', () => {
+    const output = buildContext(makeInput());
+    expect('tools' in output.request).toBe(false);
+    expect(JSON.stringify(output.request).includes('"tools"')).toBe(false);
+  });
+
+  it('tools 透传不影响既有消息组装（messages/system 不变）', () => {
+    const base = buildContext(makeInput());
+    const withTools = buildContext(makeInput({ tools: TOOLS }));
+    expect(withTools.request.messages).toEqual(base.request.messages);
+    expect(withTools.request.system).toBe(base.request.system);
+    expect(withTools.request.requestId).toBe(base.request.requestId);
+    expect(withTools.request.model).toBe(base.request.model);
+  });
+});
