@@ -34,8 +34,13 @@
   Bing 搜索页实现（临时 Tab 精确 tabId 所有权与恢复语义 + try/finally 清理，
   决议 #32）+ 确定性解析（包装链接还原/过滤/去重/snippet 空串容忍设计）+
   search.web 工具注册（L0，注册表 13 工具）+ 受控搜索页冒烟全链路 + 公网 Bing
-  探针（10 条真实结果）；AgentLoop（A5）未实现；
-  下一个推荐任务 = **A5 Agent Runtime**。
+  探针（10 条真实结果）；**A5 Agent Runtime 已完成（2026-08-14）**：
+  AgentLoop 纯编排状态机（MAX_STEPS=12/总超时 420s/取消/防循环执行前阻断/
+  终态单一所有权，决议 #33 六点校准）+ AgentContextBuilder（AGENT_SYSTEM_PROMPT
+  独立常量 + UNTRUSTED_TOOL_RESULT 块）+ agent-history（ToolStep/脱敏
+  toolCalls/完整交互组）+ ConversationStore version 2 + ConversationService
+  agentAsk/confirmTool + 主进程冒烟 A-01～A-09（dev/生产双场景退出码 0）；
+  下一个推荐任务 = **A6 操作可见性 UI 与通道**。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Exit Gate 通过（2026-08-13 判定 + 2026-08-14 用户独立复验，4 项
   非阻塞缺陷已修复并全量回归，红态退出码 1 → 绿态 0；证据见 Second_stage.md
@@ -67,7 +72,7 @@
 | A2 | Tool Registry + 权限分级与确认状态机（click 确定性允许列表 + fail-closed）+ 审计日志（接线既有只读/导航工具 8 个） | ✅ | 2026-08-14 完成（见下）；契约 §4/§7/§10；任务文档 doc/stage3/tasks/A2-tool-registry-permission-audit.md |
 | A3 | 浏览器交互能力：scroll/click/fill/find + click 语义元数据 + elementId 生命周期验证 + click 执行器层白名单复核 | ✅ | 2026-08-14 完成（见下）；契约 §5 + 决议 #31（文档世代绑定）；任务文档 doc/stage3/tasks/A3-browser-interaction.md |
 | A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search.web 工具 | ✅ | 2026-08-14 完成（见下）；契约 §6 + 决议 #32（临时 Tab 所有权/错误映射/snippet 空串/包装链接/查询串全量审计）；任务文档 doc/stage3/tasks/A4-search-provider.md |
-| A5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ⏳ | 契约 §8–§9；任务文档 doc/stage3/tasks/A5-agent-runtime.md |
+| A5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ✅ | 2026-08-14 完成（见下）；契约 §8–§9 + 决议 #33；任务文档 doc/stage3/tasks/A5-agent-runtime.md |
 | A6 | 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI + UI 端到端冒烟矩阵 | ⏳ | 契约 §11；任务文档 doc/stage3/tasks/A6-agent-ui-visibility.md |
 | A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | ⏳ | 契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
 | A8 | 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步 | ⏳ | Third_stage.md §9/§10；任务文档 doc/stage3/tasks/A8-finalize-acceptance.md |
@@ -77,6 +82,79 @@
 > 编号一律不变。
 
 ## 最近验证结果（2026-08-14）
+
+- **A5 Agent Runtime（2026-08-14，第五个实现闭环）**：步骤 0 独立核对——HEAD
+  `035c988` = Gitee/GitHub 双远程 HEAD（ls-remote 实测）、工作区干净、基线
+  test 576/576 独立复跑全绿（与上一轮报告一致，已独立确认）；A3 世代状态与
+  A4 临时 Tab 所有权代码核对无回归。**① 契约校准（决议 #33，先于编码，六点
+  固定）**：a) 循环阻断时机——签名 = 工具名 + 规范化参数（键排序 + Unicode
+  NFC；解析失败 → NFC 原始串，改键序不能逃避）；判定在每次执行管线前，触发次
+  零副作用；阻断调用计 stepsUsed + 恰好一条审计（decision=invalid）+ 一个
+  ToolStep（stepsUsed === toolStepCount === 审计条数恒等）；步数上限同理
+  （绝不执行第 13 步，未执行零伪造）。b) 协议历史——每轮 assistant（完整按序
+  toolCalls + 轮次文本）+ 同序 tool 消息（id 精确匹配）；invalid-args/tool-not-
+  found/forbidden/denied/execution-failed 均为结构化 tool result；空/重复/
+  跨轮冲突 id fail-closed；同轮超剩余步数只执行预算内。c) 上下文与持久化——
+  首轮 goal+启动快照恰一次；当轮 ToolResult 全文进块、持久化只留摘要；持久化
+  结构 user(goal) → [assistant(脱敏 toolCalls)+tool(toolStep)]×N → 终态
+  assistant(finalText+agentRun)；每轮文本恰好落盘一次；200 条裁剪组感知；
+  孤立 tool 解析丢弃、不完整组重放过滤、共读重放过滤工具轮。d) 文本与工具并存
+  ——有 toolCalls 时该轮文本为过程性输出；仅「无工具且有文本」done；空轮进
+  transcript（重试痕迹）连续 2 轮终止；finalText = 最后一个模型轮的文本（与
+  终态消息 content 恒等）。e) 终态竞争——单一终态所有权（finish() 守卫 + 工具
+  执行/Provider 解析与终态 Promise.race，cancel 不挂起）；终态时 abort 流 +
+  cancelAll 作废 pending + 零后续执行 + 迟到事件忽略；timer/监听器 finally
+  清理；终态映射 done→complete/cancelled→aborted/timeout→error(timeout)/
+  安全终止→error（权威理由在 AgentRunSummary.status）。f) decision 单一事实源
+  ——ToolStepDecision 六值（增 invalid）在 shared/types/agent.ts，AuditDecision
+  为别名，execution-failed 保留实际权限决策。§2.2/§8.1/§8.3/§9.1/§9.3/§10.1/
+  §15 + high-level-design §4 + threat-model §3.4/§3.5 已同步。
+  **② 红→绿**：先写测试——红态 **8 files failed / 30 failed / 587 passed**
+  （4 个新测试文件模块不存在 + store/service/fake/confirm 扩展用例失败；既有
+  用例零删除零削弱）。实现后全量 **699/699**（新增 123：agent-safety 17 /
+  agent-context-builder 15 / agent-history 17 / agent-loop 32 / store 22 /
+  service 14 / fake 4 / confirm 3；store 既有 1 处版本断言随 v2 契约原位校准）。
+  期间修正的失败均为测试自身断言缺陷（计数时机/共享 metadata 污染/门闩模式/
+  快照正文误入夹具等）；实现侧真实缺陷 2 处——工具执行 await 未与终态竞争
+  （cancel 挂起死锁，Promise.race 修复）、冒烟 run 审计出口未接线——均有断言固化。
+  **③ 实现**：agent-safety（签名规范化/连续 3/累计 5/无进展 2，阈值可注入）；
+  agent-loop（纯核心零 Electron import：逐条串行 ToolExecutor 管线、审计捕获
+  包装零重复、每 run 独立 InteractionSemanticsStore、终态竞争、协议 fail-closed）；
+  agent-context-builder（AGENT_SYSTEM_PROMPT 独立常量、goal 消息复用共读块
+  序列化、UNTRUSTED_TOOL_RESULT 块闭合转义、buildAgentRequest 恒等透传）；
+  agent-history（ToolStep 内部能力参数零出现、fill toolCalls 脱敏、完整交互组
+  校验、跨 run 摘要重放 + 预算裁剪）；conversation-store v2（写入恒 v2/读兼容
+  v1/ToolStep 逐字段校验/孤立 tool 丢弃/组感知裁剪/零持久化红线字节断言）；
+  conversation-service（agentAsk 共享单在途互斥、goal 截断、Provider 未配置/
+  不支持工具零执行、逐步 ToolStep 持久化、终态映射、confirmTool、确认事件防串
+  run）；confirm-manager onPendingChange；fake-provider 多轮 rounds/
+  getRequests/中止感知睡眠；context-builder 共读重放过滤工具轮；index.ts 主进程
+  装配（事件回调日志可见性——不新增 IPC/preload/UI，A6 红线）。
+  **④ 冒烟 8.4 A-01～A-09（主进程驱动，FakeProvider 多轮脚本离线确定性）**：
+  A-01 多步任务（open→read→find→search.web→scroll→click→read→最终回答 done，
+  7 步/16 条历史/13 工具请求/system 恒等/goal 恰一次/搜索临时 Tab run 内零泄漏/
+  真实导航落地页）；A-02 提交类确认（deny 零动作 → 模型重试 → approve 执行，
+  页面日志恰好一次点击，审计 denied/confirmed 各一）；A-03 取消（慢模型中停
+  cancelled 部分保留 + pending 中 abort 作废零执行）；A-04 step-limit（注入
+  maxSteps=3，第 4 步零执行 scrollY 累计 6）；A-05 loop-detected（连续第三次
+  执行前阻断 scrollY=20，阻断步骤 decision=invalid，审计恰好 3 条）；A-06
+  invalid-args 回注后调整成功；A-07 elementId 世代（reload 后旧 id
+  stale-element、新快照正常导航，传递性证明零误操作）；A-08 fill 隐私（普通
+  输入成功 + input/change 事件真实触发、审计 len=N、password forbidden 零
+  写入、会话文件与日志字节扫描零原文）；A-09 审计恰好一条（3 条 tool-call +
+  2 条 agent-run，无 fill 原文/Key 形态）。**dev 离线全矩阵 + 生产产物双场景
+  退出码 0**；共读既有矩阵 1–12 与工具层/交互/搜索场景完整回归。红→绿期间
+  修正 3 处冒烟断言自身缺陷（A-04 累计滚动值、A-07 异步导航 waitFor +
+  传递性证明、A-09 auditRun 接线）。
+  **⑤ 验证与终检**：test 699/699 · typecheck · lint · format:check · build 全绿；
+  红线 grep（新代码零 Electron import/无万能工具形态/package 零改动/UI・preload・
+  IPC 零改动/共读 SYSTEM_PROMPT 零改动/13 工具 schema 零改动/fill 原文・快照
+  正文・documentId・Key 形态零持久化）；敏感信息扫描与 diff 终检零命中；根目录
+  杂散日志清理。**未调用任何付费 Provider、未输出/索取 API Key。**
+  计划内限制登记：确认事件回调「最后构造 Service 实例」所有权（单 pending 全局
+  串行化下的顺序场景安全）、取消竞态下被中断调用计步与审计但不产生 ToolStep
+  （决议 #33⑤ 固化）、运行时 transcript 当轮全文保留的确定性上界（12 步 ×
+  结果预算 ≈ 100k 字符）（见下「计划内限制」）。
 
 - **A4 SearchProvider 与 search.web 工具（2026-08-14，第四个实现闭环）**：步骤 0
   独立核对——HEAD `65c6b9c` = Gitee/GitHub 双远程 HEAD（ls-remote 实测）、工作区
@@ -764,6 +842,17 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   （2026-08-14）：Bing 当前主要返回直接目标 URL，ck/a 包装还原为确定性兜底
   规则（两形态均覆盖单测与冒烟夹具）；⑤ 轮询等待 ready（无事件订阅）——
   getTabs 每 50ms 一次、15s 上限，临时 Tab 生命周期极短，负载可忽略。
+- **A5 Agent Runtime 计划内限制（2026-08-14 决议 #33，如实登记）**：
+  ① 确认事件回调（ConfirmManager.onPendingChange）所有权为「最后构造的
+  ConversationService 实例」——A5 进程内仅一个生产 Service + 冒烟 Service 顺序
+  构造（单 pending 设计本身已全局串行化 L2），多 Service 并行共享 ConfirmManager
+  属 A6+ 扩展点；② 取消竞态下被中断的工具调用计 stepsUsed 与审计但不产生
+  ToolStep（迟到结果被忽略——工具执行与终态 Promise.race 所致），
+  toolStepCount ≤ stepsUsed 仅出现在该竞态路径（单测固化）；③ 运行时
+  transcript 保留当轮 ToolResult 全文（≤4000/8000 确定性截断）——12 步上限 ×
+  结果预算 + 启动快照 ≈ 100k 字符的请求规模确定性上界；跨 run 重放仅摘要
+  （决议 #26）；④ FakeProvider 多轮 rounds 脚本为测试设施扩展（生产适配器
+  行为不受影响）。
 - UI 窗口（defaultSession）未注册权限处理器：UI 只加载自身内容，R-01 已关闭（导航保护落地）
   后无远程页面可达，当前无需处理；未来 UI 嵌入远程内容时重新评估。
 - 地址栏搜索的端到端验证在离线环境断言「导航目标为 Bing 搜索 URL」（did-start-navigation），
@@ -801,17 +890,20 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **A5 Agent Runtime（新对话 = 一个可验证闭环）**：AgentLoop 纯编排状态机
-  （running/waiting-confirm/done/cancelled/step-limit/timeout/loop-detected/
-  no-progress/error）+ 上限常量（MAX_STEPS=12/总超时 420s 可注入）+ 防循环
-  （agent-safety 纯函数：连续 3 次/累计 5 次/无进展 2 步）+ AgentContextBuilder
-  （AGENT_SYSTEM_PROMPT 常量 + UNTRUSTED_TOOL_RESULT 块）+ conversation-store
-  version 2 ToolStep 持久化（fill 值不落盘）+ ConversationService agentAsk/
-  confirmTool 接线 + 主进程冒烟 A-01～A-09（FakeProvider 工具脚本离线确定性）。
-  任务文档 `doc/stage3/tasks/A5-agent-runtime.md`；
-  契约 `doc/stage3/detailed-design.md` §8–§9 + §13.1 A5 行。
-  **红线**：不实现 UI/IPC（A6）；不联网调用真实 Provider；A1–A4 已落地的
-  tool-calling/注册表/交互/搜索/审计链路不得削弱。
+- **A6 操作可见性 UI 与通道（新对话 = 一个可验证闭环）**：IPC/bridge 扩展
+  （conversation:agent-ask/agent-confirm 两 invoke + agent-step/
+  agent-confirm-request/agent-run-done 三事件通道——sender 校验 + 只发主窗口 +
+  preload eventRelay 退订，复用既有模式）+ Agent 模式 UI（模式切换/AgentStatusBar/
+  ToolCallList/ConfirmDialog（确定性 summary，deny 默认高亮）/停止按钮/ToolStep
+  紧凑条目 + agent-run-state 纯 reducer 单测）+ UI 端到端冒烟（矩阵 A 全量 UI 化
+  - 共读回归 A-11）。A5 已就绪的交接点：ConversationService.agentAsk/
+    confirmTool、onAgentStep/onAgentConfirmRequest/onAgentRunDone 主进程回调
+    （index.ts 现为日志可见性接线）、ConfirmManager.onPendingChange、ToolStep
+    v2 持久化历史（UI 直接渲染 toolStep 条目）、AgentRunSummary（终止理由文案源）。
+    任务文档 `doc/stage3/tasks/A6-agent-ui-visibility.md`；
+    契约 `doc/stage3/detailed-design.md` §11 + §13.2 A-10/A-11。
+    **红线**：不进行 A7 真实 Provider 验证（需 Key，询问边界）；不放宽 click
+    允许列表/documentId 世代校验/临时搜索 Tab 所有权；A1–A5 已落地的链路不得削弱。
 
 ## 第一阶段验收未完成项
 

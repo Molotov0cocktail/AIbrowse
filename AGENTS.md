@@ -34,12 +34,17 @@
   **A4 SearchProvider 与 search.web 已实现（2026-08-14）**——Bing 搜索页实现
   （临时 Tab 精确 tabId 所有权 + finally 清理 + 恢复语义，决议 #32）+ 确定性
   解析 + search.web 工具（L0，注册表 13 工具）；
-  AgentLoop（A5）未实现。A5–A8 待实现。
-  纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
-  （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
-  核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
-  是什么」。AI 不得直接获得 Electron API、webContents、Node.js、shell 或任意
-  JavaScript 执行权限。
+  **A5 Agent Runtime 已实现（2026-08-14）**——AgentLoop 纯编排状态机
+  （MAX_STEPS=12/总超时 420s/取消/防循环执行前阻断/终态单一所有权，决议 #33）
+  - AgentContextBuilder（AGENT_SYSTEM_PROMPT + UNTRUSTED_TOOL_RESULT 块）
+  - agent-history（ToolStep/脱敏 toolCalls/完整交互组）+ ConversationStore
+    version 2 + ConversationService agentAsk/confirmTool + 主进程冒烟
+    A-01～A-09（dev/生产双场景退出码 0）。A6–A8 待实现。
+    纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
+    （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
+    核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
+    是什么」。AI 不得直接获得 Electron API、webContents、Node.js、shell 或任意
+    JavaScript 执行权限。
 - **已完成（第二阶段，AI 共读）**：PageSnapshot / Selection → AI Context →
   Conversation——AI 侧栏、ConversationService、ContextBuilder、LLMProvider
   （OpenAI-compatible + FakeProvider）、SecureCredentialStore（safeStorage/DPAPI）。
@@ -270,12 +275,12 @@ d:\AIbrowse\
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 51 用例（A3 扩展语义元数据）
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
-    │       ├── conversation-service.ts        # （S3 ✅）会话编排：ask 实时快照/中止/事件/持久化接线
-    │       │                                  #   （A5 规划：agentAsk/confirmTool/ToolStep 持久化接线）
-    │       ├── conversation-store.ts          # （S3 ✅）会话 JSON 持久化（原子写/上限/损坏容错；
-    │       │                                  #   A5 规划：version 2 ToolStep 消息）
-    │       ├── context-builder.ts             # （S2 ✅）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
-    │       │                                  #   （A1 规划：tools 透传）
+    │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
+    │       │                                  #   agentAsk/confirmTool/ToolStep 持久化/Agent 终态恰好一次
+    │       ├── conversation-store.ts          # （S3 ✅ + A5 ✅）会话 JSON 持久化（原子写/上限/损坏容错；
+    │       │                                  #   version 2 ToolStep 消息，读兼容 v1，孤立 tool 丢弃）
+    │       ├── context-builder.ts             # （S2 ✅ + A5 ✅）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
+    │       │                                  #   （A1 tools 透传；A5 共读重放过滤工具轮）
     │       ├── context-budget.ts              # （S2 ✅）纯函数：预算常量与确定性裁剪
     │       ├── credential-store.ts            # （S1 ✅）SecureCredentialStore：API Key 密文落盘
     │       │                                  #   （cipher 后端注入可替换，Q2）+ 纯文件格式 + 单测
@@ -284,8 +289,9 @@ d:\AIbrowse\
     │       ├── provider/                      # （S1 ✅）LLMProvider 接口/工厂注册表/OpenAI-compatible
     │       │                                  #   适配器（fetch+SSE）/FakeProvider/error-normalize + 单测
     │       │                                  #   （A1 规划：tools/SSE tool_calls/FakeProvider 工具脚本）
-    │       ├── agent/                         # （A5 规划）agent-loop（纯编排状态机）/agent-context-builder/
-    │       │                                  #   agent-history/agent-safety（防循环纯函数）
+    │       ├── agent/                         # （A5 ✅）agent-loop（纯编排状态机，零 Electron import）/
+    │       │                                  #   agent-context-builder/agent-history/agent-safety
+    │       │                                  #   （防循环纯函数）+ 各自 .test.ts
     │       ├── tools/                         # （A2 ✅ + A3 ✅ + A4 ✅）tool-types/tool-registry（schema 校验）/
     │       │                                  #   tool-executor（校验→权限→确认→执行→审计）/
     │       │                                  #   browser-tools（A2 只读导航 8 工具）/
@@ -581,8 +587,8 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
 > 唯一契约源 `doc/stage3/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
 > Q1–Q15 拍板与决议 #21–#30）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
 > T-01～T-10、五层防线、红队矩阵 RT-01～RT-11、诚实边界声明）；任务 A1–A8 见
-> `doc/stage3/tasks/`。以下为速查摘要，**A1/A2 部分已于 2026-08-14 实现并经
-> `grep -n "^export"` 逐项核对**；A3–A8 待实现，实现后回填。
+> `doc/stage3/tasks/`。以下为速查摘要，**A1–A5 部分已于 2026-08-14 实现并经
+> `grep -n "^export"` 逐项核对**；A6–A8 待实现，实现后回填。
 
 - **tool-calling 兼容层（A1 ✅ 已实现，2026-08-14 grep 核对）**：shared/types/
   conversation.ts 新增 `ProviderToolParameter`/`ProviderTool`/`ProviderToolCall`
@@ -702,7 +708,7 @@ scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执
   纯函数 `buildSearchUrl(query, baseUrl=SEARCH_ENGINE_URL)`（encodeURIComponent，
   常量语义不变）/`unwrapBingWrapper`（ck/a u=a1 base64url 确定性还原，仅
   http/https）/`parseBingSearchResults(snapshot | null) → {results, warnings,
-  hasContent}`（bing 自身域 + 中英双语非结果标签过滤/非 http/https/畸形丢弃/
+hasContent}`（bing 自身域 + 中英双语非结果标签过滤/非 http/https/畸形丢弃/
   URL 去重保持首现/前 10/snippet 恒空串 + warning——扁平快照无可靠关联证据，
   宁缺勿错）+ 常量 `SEARCH_QUERY_MAX_LENGTH`=500/`SEARCH_READY_TIMEOUT_MS`=15000。
   **临时 Tab 所有权与恢复语义（决议 #32）**：本次调用以精确 tabId 独占
@@ -721,19 +727,57 @@ scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执
   正文/调试字段）。审计：search.web 查询串与 url 同等级**全量**记录（T-03 外发
   审查可追溯，上限 500 有界）；ToolExecutionContext 增 `searchProvider?`
   （A4 注入点，设计 §4.1 落点，A5 AgentLoop 装配复用）。
-- **AgentRuntime（A5）**：AgentLoop 纯编排状态机（running/waiting-confirm/done/
-  cancelled/step-limit/timeout/loop-detected/no-progress/error）；上限常量
-  MAX_STEPS=12 / 总超时 420s（含确认等待）；防循环（签名=工具名+规范化参数，
-  连续 3 次/累计 5 次 → loop-detected，连续 2 步无工具无文本 → no-progress，
-  无白名单例外——决议 #24）；ToolResult ≤ 4000 字符截断（read 8000）+ 错误
-  结构化错误码（工具错误永不以 ok=true 出现）；agent-ask 与共读 ask 在途互斥；
-  ToolStep 消息持久化（精简版，fill 值替换「（已输入 N 字符）」，version 2
-  读兼容 v1）；AGENT_SYSTEM_PROMPT 编译期常量；Tool Result 进
-  UNTRUSTED_TOOL_RESULT 块（闭合转义同 UNTRUSTED 块）。
-- **审计与可见性（A2/A6）**：每工具调用恰好一条审计（requestId/toolCallId/工具/
-  参数摘要/决策 auto|auto-visible|confirmed|denied|forbidden/结果/耗时/错误码）；
+- **AgentRuntime（A5 ✅ 已实现，2026-08-14 grep 核对）**：agent-loop.ts——
+  `AGENT_MAX_STEPS=12`/`AGENT_TOTAL_TIMEOUT_MS=420_000`（含确认等待）/
+  `AgentLoopLimits`（可注入）/`AGENT_LOOP_LIMITS`/`AgentRoundRecord`/
+  `AgentRunResult`/`AgentLoopCallbacks`/`AgentLoopOptions`/`class AgentLoop`
+  （纯编排状态机，零 Electron import：每轮 buildAgentRequest → provider.stream
+  累积 → 无工具有文本 done/空轮 no-progress 连续 2 轮/有工具逐条串行经
+  ToolExecutor 管线 → 步数/防循环执行前判定；终态单一所有权 finish() 守卫——
+  终态时 abort 模型流 + cancelAll 作废 pending + 零后续执行 + 迟到事件忽略；
+  工具执行与 Provider 解析与终态 Promise.race（cancel 不挂起）；协议非法
+  （空/重复/跨轮冲突 toolCallId）fail-closed error 终态；每 run 独立
+  InteractionSemanticsStore）。agent-safety.ts——`AGENT_LOOP_SAME_SIGNATURE_
+CONSECUTIVE=3`/`AGENT_LOOP_SAME_SIGNATURE_TOTAL=5`/`AGENT_LOOP_NO_PROGRESS_
+STEPS=2`/`AgentSafetyLimits`/`AGENT_SAFETY_LIMITS`/`normalizeSignatureArguments`/
+  `buildToolSignature`（键排序 + Unicode NFC；解析失败 → NFC 原始串）/`class
+AgentSafety`（wouldTriggerLoop 先于 record——触发次在执行前阻断，零副作用；
+  无白名单例外——决议 #24）。agent-context-builder.ts——`AGENT_SYSTEM_PROMPT`
+  编译期常量（与共读 SYSTEM_PROMPT 互不混用）/
+  `buildAgentGoalMessage`（goal + 启动快照 UNTRUSTED_WEB_CONTENT 块，复用共读
+  块序列化）/`formatToolResultBlock` + `buildToolResultMessage`
+  （UNTRUSTED_TOOL_RESULT 块，闭合转义同 UNTRUSTED 块）/`buildAgentRequest`
+  （replay + transcript 原序拼接、tools 恒等透传、未传无字段）。agent-history.ts
+  ——`TOOL_STEP_PREVIEW_MAX=200`/`FILL_MASK`/`buildToolStep`/`sanitizeToolCalls
+ForPersistence`（fill arguments.text →「（已输入 N 字符）」）/`buildToolStep
+Message`/`buildRoundAssistantMessage`/`buildFinalAgentMessage`（finalText +
+  AgentRunSummary）/`filterIncompleteToolGroups`/`replayToProviderMessages`
+  （完整交互组裁剪 + tool 消息只回摘要——决议 #26）。**决议 #33 校准（六点，
+  2026-08-14）**：循环/步数上限在执行前阻断（触发次计步 + 恰好一条审计
+  decision=invalid + 一个 ToolStep；stepsUsed === toolStepCount === 审计条数）；
+  协议历史 assistant（完整按序 toolCalls + 轮次文本）→ 同序 tool 消息；首轮
+  goal+快照恰一次（后续轮不重复插入）；finalText = 最后一个模型轮的文本（与
+  终态消息 content 恒等，每轮文本恰好落盘一次）；终态映射 done→complete/
+  cancelled→aborted/timeout→error(timeout)/安全终止→error（权威理由在
+  AgentRunSummary.status）；`ToolStepDecision` 六值（auto/auto-visible/confirmed/
+  denied/forbidden/invalid）单一事实源在 shared/types/agent.ts，audit-log.
+  AuditDecision 为别名，execution-failed 保留实际权限决策。ConversationService
+  扩展 `agentAsk({sessionId, goal})`/`confirmTool(toolCallId, approve)`
+  （共读与 Agent 共享每会话单在途互斥；goal >16000 确定性截断 + warn；Provider
+  未配置/不支持 tool calling → 零工具执行；逐步 ToolStep 持久化 + 终态恰好一次）；
+  ConfirmManager 增 `onPendingChange`（确认可见性事件源，Service 映射 runId →
+  sessionId 防串 run）；FakeProvider 增多轮 `rounds` 脚本/`getRequests()`/
+  中止感知睡眠；ConversationStore version 2（写入恒 v2/读兼容 v1/ToolStep 逐字段
+  fail-closed/孤立 tool 消息解析丢弃/200 条裁剪组感知）。主进程冒烟 8.4
+  A-01～A-09（多步任务/确认 deny・approve/取消含 pending 作废/step-limit/
+  loop-detected 触发次零 DOM 副作用/invalid-args 修正/世代 stale/fill 隐私 +
+  密码 forbidden/审计恰好一条 + 日志字节扫描）——dev + 生产双场景退出码 0。
+- **审计与可见性（A2 ✅/A5 ✅/A6）**：每工具调用恰好一条审计（requestId/toolCallId/工具/
+  参数摘要/决策 auto|auto-visible|confirmed|denied|forbidden|invalid/结果/耗时/错误码——
+  决议 #33 单一事实源；run 开始/终止各一条 `formatAgentRunAuditMessage`）；
   fill 值只记长度；IPC 通道 conversation:agent-ask/agent-confirm/agent-step/
-  agent-confirm-request/agent-run-done（sender 校验 + 只发主窗口）；
+  agent-confirm-request/agent-run-done（A6 落地；A5 仅主进程事件回调 + 冒烟驱动，
+  不新增 renderer 可调用的 IPC 通道/preload bridge/UI）；
   UI：Agent 模式切换/AgentStatusBar/ToolCallList/ConfirmDialog（确定性 summary，
   文案不经模型网页，deny 默认高亮）/停止按钮/ToolStep 紧凑条目。
 
@@ -753,7 +797,7 @@ scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 576 用例）
+  - `npm test` — Vitest 全量测试（当前 699 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -790,7 +834,19 @@ scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执
       临时 Tab 精确清理 + 数量恢复进入前 + 活动 Tab 恢复调用前；审计恰好一条
       decision=auto）→ 可选公网 Bing 探针（`AIBROWSE_SMOKE_LIVE_SEARCH=1`，
       需网络；成功断言结构、失败仅记录跳过原因不作失败，硬性断言只有临时 Tab
-      零泄漏）→ 自动退出，退出码 0 即通过；日志链见 log/）。
+      零泄漏）→ A5 起再验证 Agent Runtime 场景 8.4 A-01～A-09（FakeProvider
+      多轮脚本离线确定性，主进程驱动完整生产链路 agentAsk → AgentLoop → 13 工具
+      注册表 → 权限/确认/审计 → 真实 BrowserController/SearchProvider 受控夹具：
+      A-01 多步任务（open/read/find/search.web/scroll/click 真实执行 + 最终回答 +
+      协议历史合法序 + 13 工具请求 + system 恒等 + goal 恰一次 + 搜索临时 Tab
+      run 内零泄漏）/A-02 提交类确认 deny 零动作・approve 执行（审计 denied/
+      confirmed 各一）/A-03 慢模型中停 cancelled 部分保留 + pending 作废零执行/
+      A-04 step-limit（注入 maxSteps=3 第 4 步零执行）/A-05 loop-detected
+      连续第三次执行前阻断（触发次零 DOM 副作用，阻断步骤 decision=invalid）/
+      A-06 invalid-args 回注后调整成功/A-07 reload 后旧 elementId stale-element
+      新快照正常（传递性证明零误操作）/A-08 fill 隐私（审计 len=N + password
+      forbidden 零写入 + 会话文件/日志字节扫描零原文）/A-09 每步审计恰好一条 +
+      run 审计 2 条 + 日志无 Key/fill 值）→ 自动退出，退出码 0 即通过；日志链见 log/）。
       生产产物路径同样可跑：
       `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
       （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
@@ -959,6 +1015,45 @@ scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执
     冒烟 8.3 受控搜索页生命周期（三夹具形态 + 服务端命中计数 + 活动 Tab 恢复 +
     审计恰好一条）；8.1 校准为注册表 13 工具；可选公网 Bing 探针成功
     （10 条真实结果）。dev + 生产双场景退出码 0。
+  - ✅ A5（2026-08-14 红→绿落地，123 新增：agent-safety 17 / agent-context-builder
+    15 / agent-history 17 / agent-loop 32 / conversation-store 22 /
+    conversation-service 14 / fake-provider 4 / confirm-manager 3，基线 576 →
+    699；既有用例零删除零削弱——store 既有 1 处版本断言随 v2 契约原位校准
+    （version 2 为写入版本）；期间修正均为测试自身断言缺陷，实现侧真实缺陷
+    2 处——工具执行 await 未与终态竞争（cancel 挂起）、run 审计出口冒烟未接线）：
+    agent-safety 签名规范化（键排序/NFC/非法 JSON 原始串/嵌套递归排序/数值类型
+    区分）+ 循环判定（连续 3 在执行前阻断/非连续累计 5/read 无白名单例外/被拒与
+    失败同样计签/不同签名打断连续/触发次也计入/阈值注入/no-progress 连续 2）；
+    agent-loop 状态机全路径（多步 done/协议历史合法序与 toolCallId 精确关联/
+    文本+工具同轮为过程性输出/goal 不重复插入/invalid-args・tool-not-found・
+    forbidden・execution-failed 结构化回注后继续/execution-failed 保留实际权限
+    决策/L2 deny・approve・取消作废・总超时与确认竞争/step-limit 边界（13 调用
+    只执行 12、未执行零审计零伪造、步数用尽后最终回答仍 done）/防循环执行前
+    阻断（连续 3・累计 5・invalid-args 计签键序不能逃避）/no-progress 两轮与
+    打断/Provider 错误直传与流异常归一/用户取消部分保留/终态竞态（done 后迟到
+    abort 忽略、门闩流 abort 抢先、工具挂起时取消 run 不挂起且迟到结果无 step
+    事件、终态后零后续工具、审计仍恰好一条）/空・重复・跨轮冲突 toolCallId
+    fail-closed）；agent-context-builder（AGENT_SYSTEM_PROMPT 恒等且与共读
+    互不混用/goal+启动快照块闭合转义/快照 null 降级/goal 截断/tool 块 ok・
+    error_code 属性与敌手闭合转义/tools 恒等透传与未传无字段/replay+transcript
+    原序拼接/goal 恰一次）；agent-history（ToolStep 内部能力参数零出现/
+    contentPreview ≤200/decision 六值/FILL_MASK/assistant toolCalls fill 脱敏/
+    轮次与终态消息组装/完整交互组校验——孤立 tool 丢弃・不完整组整组丢弃・
+    toolCallId 错配丢弃/重放只回摘要 + 完整组预算裁剪）；conversation-store
+    v2（写入恒 v2/读兼容 v1/未知版本 null/tool 消息必填 toolStep+toolCallId/
+    ToolStep 逐字段 fail-closed/decision 六值/assistant 扩展字段形状非法丢字段
+    保留文本/孤立与重复 tool 消息解析丢弃/组感知 200 条裁剪/真实文件字节断言
+    fill 原文・快照正文・Key 形态・documentId 零落盘）；conversation-service
+    agentAsk（goal 空串与非串拒绝/超 16000 截断/共读与 Agent 双向互斥/not-found/
+    Provider 未配置 not-configured 零审计/不支持工具请求无 tools 字段与工具
+    事件 fail-closed/多步 ToolStep 持久化 16 条协议序/事件恰好一次/ephemeral
+    不落盘/重启恢复/abort 部分保留/deleteSession 不复活/confirmTool 转发与
+    防串 run 事件映射）；fake-provider 多轮 rounds 消费与回退/getRequests/
+    中止感知睡眠；confirm-manager onPendingChange（建立/决议/作废回调幂等）。
+    冒烟 8.4 A-01～A-09 主进程真实链路（多步任务 7 步/16 条历史/13 工具请求/
+    搜索临时 Tab 零泄漏/确认 deny・approve/取消含 pending 作废/step-limit/
+    loop-detected 触发次零 DOM 副作用/invalid-args 修正/世代 stale/fill 隐私 +
+    密码 forbidden/审计恰好一条 + 日志字节扫描）。dev + 生产双场景退出码 0。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。

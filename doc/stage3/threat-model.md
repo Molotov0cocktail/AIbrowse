@@ -99,18 +99,23 @@
 
 ### 3.4 审计层（全量、脱敏、可回溯，Third_stage.md §3.4/§4）
 
-- 每个 ToolCall（含被拒、被确认门拦截、执行失败）一条结构化审计日志：
+- 每个 ToolCall（含被拒、被确认门拦截、执行失败、防循环安全阻断）一条结构化审计日志：
   时间/requestId/toolCallId/工具名/参数摘要（fill 值只记长度与目标类型）/
-  决策（auto/confirmed/denied/forbidden）/结果/耗时/错误码。
+  决策（auto/auto-visible/confirmed/denied/forbidden/invalid——决议 #33 单一事实源：
+  校验前失败/未知工具/安全阻断=invalid；execution-failed 保留实际权限决策）/
+  结果/耗时/错误码；run 开始/终止各一条（status/步数/终止理由）。
 - 会话内持久化精简 ToolStep（不含 fill 输入值），用户可回溯 Agent 每一步。
 - 审计日志与既有日志同脱敏规则（无 Key/无用户输入值）。
 
 ### 3.5 运行时层（防循环与终止，Third_stage.md §3.4）
 
-- 最大步数 12 / 总超时 420s / 用户取消；防循环：同签名（工具名 + 规范化参数）连续
+- 最大步数 12 / 总超时 420s / 用户取消；防循环：同签名（工具名 + 规范化参数——
+  键排序 + Unicode NFC；解析失败参数用 NFC 原始串，改变 JSON 键顺序不能逃避）连续
   3 次 → 终止，累计 5 次 → 终止，连续 2 步无工具无文本增量 → 终止（T-10 的部分缓解：
-  循环型确认疲劳被步数上限截断）。
-- 终止时输出结构化终止理由（loop-detected/no-progress/step-limit/timeout/cancelled）。
+  循环型确认疲劳被步数上限截断）。**判定在触发次执行前（决议 #33）**：触发该次
+  阈值的调用零副作用（不校验不判权不确认不执行）。
+- 终止时输出结构化终止理由（loop-detected/no-progress/step-limit/timeout/cancelled）；
+  终态单一所有权——任何路径恰好一次终止事件与持久化，终态后零工具执行。
 
 ## 4. 红队测试矩阵（A7 实施，全部机器可验证）
 

@@ -119,7 +119,9 @@ args, elementSemantics?) → {level, reason}`；L0/L1/L2/L3 矩阵为编译期�
          read 工具结果为准）
    b. provider.stream → 累积文本增量 + tool_calls（增量索引关联）
    c. 无工具调用且有文本 → 该轮为最终回答 → 流式转发 → done
-   d. 有工具调用 → 逐条：
+   d. 有工具调用 → 逐条（**决议 #33 校准：防循环与步数上限在执行管线前判定**——
+      触发次零副作用；阻断调用计步 + 恰好一条审计（decision=invalid）+ 一个
+      ToolStep；同轮调用数超过剩余步数 → 只执行预算内，未执行零伪造）：
       ToolRegistry.validateToolArgs → 失败 → ToolResult(invalid-args) 回注
       PermissionPolicy.decide → L3 → ToolResult(forbidden)；L2 → ConfirmManager
       （pending + agent:confirm-request 事件 → 等待用户 approve/deny，计入总超时；
@@ -129,6 +131,12 @@ args, elementSemantics?) → {level, reason}`；L0/L1/L2/L3 矩阵为编译期�
    e. 步数/超时/防循环检查 → 继续或终止（结构化理由）
 5. 终态：done（最终回答全文）/ cancelled / aborted / 终止理由 → turn-done 事件
    → 持久化 assistant 消息（含 run 摘要）
+   —— **决议 #33 校准**：终态单一所有权（done/abort/超时/取消先到先得，恰好一次
+   事件与持久化；终态后零工具执行、迟到事件被忽略）；终态映射 done→complete、
+   cancelled→aborted、timeout→error(timeout)、step-limit/loop-detected/no-progress
+   →error（权威终止理由在 AgentRunSummary.status）；持久化历史按完整交互组校验
+   （assistant 轮次 toolCalls 脱敏持久化 + 孤立/不完整组过滤；共读重放过滤工具轮；
+   finalText = 最后一个模型轮的文本，每轮文本恰好落盘一次）
 ```
 
 - 页面变化后的状态刷新：Agent 不信任任何缓存快照——read 工具每次调用实时采集

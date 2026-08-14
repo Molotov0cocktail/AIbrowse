@@ -9,7 +9,8 @@
 > （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
 > **A1 tool-calling 兼容层 + A2 Tool Registry/权限分级与确认状态机/审计日志 +
 > A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）+
-> A4 SearchProvider 与 search.web 已实现（2026-08-14）；A5–A8 待实现**
+> A4 SearchProvider 与 search.web + A5 Agent Runtime 已实现（2026-08-14）；
+> A6–A8 待实现**
 > （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
 > T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
 > 见 `doc/stage3/proposal.md` §11）。
@@ -50,9 +51,15 @@
   **A4 SearchProvider 与 search.web 已完成**（接口 + Bing 搜索页实现——临时 Tab
   精确 tabId 所有权与恢复语义（决议 #32）+ 确定性解析（ck/a 包装链接还原/过滤/
   去重/snippet 空串容忍设计）+ 错误诚实映射（合法空结果 vs 结构无法识别/L2/L3）
-  + search.web 注册（L0，注册表 13 工具，查询串全量审计）——受控搜索页冒烟
-  全链路 + 公网 Bing 探针 10 条真实结果通过，dev/生产双场景）；
-  任务 A5–A8 待实现（**下一个推荐任务：A5 Agent Runtime**）；AgentLoop 未实现。
+  - search.web 注册（L0，注册表 13 工具，查询串全量审计）——受控搜索页冒烟
+    全链路 + 公网 Bing 探针 10 条真实结果通过，dev/生产双场景）；
+    **A5 Agent Runtime 已完成**（AgentLoop 纯编排状态机（MAX_STEPS=12/总超时
+    420s/取消/防循环执行前阻断/终态单一所有权，决议 #33 六点校准）+
+    AgentContextBuilder（AGENT_SYSTEM_PROMPT 独立常量 + UNTRUSTED_TOOL_RESULT
+    块）+ agent-history（ToolStep/脱敏 toolCalls/完整交互组）+ ConversationStore
+    version 2 + ConversationService agentAsk/confirmTool + 主进程冒烟 A-01～A-09
+    ——dev/生产双场景退出码 0）；
+    任务 A6–A8 待实现（**下一个推荐任务：A6 操作可见性 UI 与通道**）。
 
 ## 技术栈（实际落地版本）
 
@@ -111,7 +118,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 576 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 699 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -182,9 +189,11 @@ src/
 │                  #   find/scroll/click/fill、interaction-semantics 语义存储+世代绑定 +
 │                  #   A4 ✅ search-tool search.web 注册与序列化）+
 │                  #   permission/（A2 ✅ permission-policy + A3 ✅ classifyClickTarget）+
-│                  #   confirm-manager（A2 ✅ 确认状态机）+ audit-log（A2 ✅ 审计参数脱敏，
-│                  #   A4 ✅ search.web 查询串全量记录）；
-│                  #   agent/（A5 AgentLoop）+
+│                  #   confirm-manager（A2 ✅ 确认状态机 + A5 ✅ onPendingChange 可见性回调）+
+│                  #   audit-log（A2 ✅ 审计参数脱敏 + A4 ✅ search.web 查询串全量记录 +
+│                  #   A5 ✅ decision 单一事实源（ToolStepDecision 别名）+ agent-run 条目）；
+│                  #   agent/（A5 ✅ agent-loop 纯编排状态机 + agent-context-builder +
+│                  #   agent-history + agent-safety 防循环纯函数，零 Electron import）+
 │                  #   search/（A4 ✅ search-provider：接口 + Bing 页面实现 + 确定性解析，
 │                  #   临时 Tab 精确所有权零 Electron import）
 ├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
@@ -205,7 +214,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 576 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 699 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
@@ -231,14 +240,36 @@ executor（派生参数透传/无派生 fail-closed/fill 内容零原文）、cl
 与 decide 同源双表对照、paramRules（dy ±50000 整数/text 长度差异化）、
 ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元数据
 （isSubmit/ariaExpanded 严格布尔）、meta.documentId 主进程盖章。
-第三阶段 A4 新增（43）：搜索解析矩阵（正常组装/去重保持首现/非 http・https 与畸形
-URL 丢弃/bing 自身域与非结果标签过滤/ck/a 包装链接 base64url 还原/前 10/title 200
-截断/snippet 空串容忍设计/空与 null 安全降级）、临时搜索 Tab 所有权与恢复语义
-（精确 tabId 独占/只关本调用创建的确切 id/提前关闭安全无操作/活动 Tab 恢复与
-不抢焦点/并发隔离/超时・取消・异常全路径零泄漏——注入时钟确定性）、search.web
-工具（常量 schema/L0 管线决策/序列化纯文本零特权/4000 截断/空结果明确提示/
-结构无法识别 search-failed/取消归一/每次调用恰好一条审计/查询串全量审计）。
-Electron 行为由冒烟自检真实启动验证（见上）。 约定见 `AGENTS.md` §7。
+第三阶段 A5 新增（123）：agent-safety 签名规范化（键排序/Unicode NFC/非法 JSON
+原始串）与循环判定（连续 3 与累计 5 在执行前阻断/触发次计步/read 无白名单例外/
+被拒与失败同样计签/no-progress 连续 2，阈值可注入）、agent-loop 状态机全路径
+（多步任务/协议历史合法序（assistant toolCalls → tool 消息同序精确关联）/文本+
+工具同轮为过程性输出/goal 恰一次/四种工具错误结构化回注后继续/execution-failed
+保留实际权限决策/L2 deny・approve・取消・超时/step-limit 边界（13 调用只执行
+12，未执行零伪造）/防循环执行前阻断（触发次零副作用，阻断步骤 decision=invalid
+
+- 恰好一条审计）/no-progress 两轮/Provider 错误直传/用户取消部分保留/终态竞态
+  （先到先得、迟到 abort 与工具结果忽略、工具挂起不阻塞 run）/重复与空 toolCallId
+  fail-closed）、agent-context-builder（AGENT_SYSTEM_PROMPT 恒等且与共读互不
+  混用/goal + 启动快照块闭合转义/UNTRUSTED_TOOL_RESULT 块属性与敌手闭合转义/
+  tools 恒等透传）、agent-history（ToolStep 组装内部能力参数零出现/contentPreview
+  ≤200/decision 六值单一事实源/FILL_MASK 脱敏/完整交互组校验——孤立 tool 丢弃・
+  不完整组整组丢弃/跨 run 只回摘要 + 完整组预算裁剪）、conversation-store v2
+  （写入恒 v2/读兼容 v1/ToolStep 逐字段 fail-closed/孤立与重复 tool 消息解析丢弃/
+  组感知 200 条裁剪/真实文件字节断言 fill 原文・快照正文・Key 形态・documentId
+  零落盘）、conversation-service agentAsk（goal 校验与截断/共读与 Agent 双向在途
+  互斥/Provider 未配置与不支持工具零执行/多步 ToolStep 持久化协议序/事件恰好一次/
+  ephemeral 不落盘/重启恢复/abort 部分保留/deleteSession 不复活/confirmTool 转发
+  与防串 run 事件映射）、FakeProvider 多轮 rounds 脚本与中止感知睡眠、
+  ConfirmManager onPendingChange 回调。
+  第三阶段 A4 新增（43）：搜索解析矩阵（正常组装/去重保持首现/非 http・https 与畸形
+  URL 丢弃/bing 自身域与非结果标签过滤/ck/a 包装链接 base64url 还原/前 10/title 200
+  截断/snippet 空串容忍设计/空与 null 安全降级）、临时搜索 Tab 所有权与恢复语义
+  （精确 tabId 独占/只关本调用创建的确切 id/提前关闭安全无操作/活动 Tab 恢复与
+  不抢焦点/并发隔离/超时・取消・异常全路径零泄漏——注入时钟确定性）、search.web
+  工具（常量 schema/L0 管线决策/序列化纯文本零特权/4000 截断/空结果明确提示/
+  结构无法识别 search-failed/取消归一/每次调用恰好一条审计/查询串全量审计）。
+  Electron 行为由冒烟自检真实启动验证（见上）。 约定见 `AGENTS.md` §7。
 
 ## 已知限制
 

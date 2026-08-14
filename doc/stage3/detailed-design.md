@@ -172,15 +172,20 @@ export interface ToolResult {
   warnings?: string[]; // 中文警告（截断/降级/启发式过滤）
 }
 
+export type ToolStepDecision =
+  'auto' | 'auto-visible' | 'confirmed' | 'denied' | 'forbidden' | 'invalid'; // 决议 #33：校验前失败（tool-not-found/invalid-args/防循环安全阻断）；
+// 审计 AuditDecision 为本类型别名（单一事实源在 shared/types/agent.ts）
+
 export interface ToolStep {
-  // 会话内持久化精简版（§9.3；不含 fill 输入值、不含快照正文）
-  id: string; // ToolCall.id
+  // 会话内持久化精简版（§9.3；不含 fill 输入值、不含快照正文、不含 documentId/
+  // allowedKind 等内部能力参数——决议 #33）
+  id: string; // ToolCall.id（与 toolCallId 恒等——协议关联键）
   toolCallId: string;
   name: string;
   ok: boolean;
   contentPreview: string; // 结果摘要 ≤ 200 字符（fill 值替换为「（已输入 N 字符）」）
   errorCode?: ToolResultErrorCode;
-  decision: 'auto' | 'auto-visible' | 'confirmed' | 'denied' | 'forbidden';
+  decision: ToolStepDecision;
   createdAt: number; // 主进程盖章
 }
 
@@ -581,6 +586,16 @@ running →(外部 abort)→ cancelled
      审计（§10）→ ToolStep 事件（onAgentStep）→ 回注历史；
   5. 步数检查（stepsUsed ≥ MAX_STEPS 且仍需继续 → step-limit）；防循环检查
      （§8.3）→ 继续或终止。
+- **决议 #33 实施校准（2026-08-14，A5）**：
+  - 防循环与步数上限检查在**每次执行管线前**判定（触发次零副作用；阻断调用计
+    stepsUsed + 恰好一条审计（decision=invalid）+ 一个 ToolStep）；
+  - 每轮协议历史 = 一条 assistant（该轮完整 toolCalls + 该轮文本）+ 同序 tool
+    消息（UNTRUSTED_TOOL_RESULT 块）；空/重复/跨轮冲突 toolCallId → fail-closed
+    error 终态；同轮调用数超过剩余步数 → 只执行预算内（未执行零伪造）；
+  - **终态单一所有权**（finish() 一次性守卫）：终态时 abort 模型流 + cancelAll
+    作废 pending + 零后续工具执行；迟到 delta/工具结果/确认决定被忽略；工具执行
+    与 Provider 解析均与终态竞争（cancel/超时时 executor 未返回 run 不挂起）；
+    timer/监听器/AbortController finally 清理。
 - 页面变化后的状态刷新：不信任缓存——每次 read/find 实时采集；click/fill 执行
   前实时重新定位（§5.2）；导航后旧快照只作历史参考。
 - 构造注入：`{browser, searchProvider, providerResolver, store, confirmManager,
@@ -602,10 +617,14 @@ audit, budget?, limits?}`（limits 可注入便于测试）。
 
 ### 8.3 防循环（agent-safety.ts，纯函数）
 
-- 签名：`name + ':' + JSON.stringify(args, 排序键)`（确定性规范化：键排序、
-  Unicode 归一化 NFC）；仅对「执行了或试图执行」的工具调用计签。
+- 签名：`name + '|' + 规范化参数`（确定性规范化：JSON.parse 成功且为对象 →
+  递归键排序 + Unicode NFC 后确定性序列化；解析失败/非对象 → NFC 原始串——
+  无法取得合法参数的调用同样有稳定签名，改变 JSON 键顺序不能逃避检测）；
+  仅对「执行了或试图执行」的工具调用计签（校验失败/被拒/失败/执行/安全阻断均计）。
 - 判定：连续 3 次同签名 / run 内累计 5 次同签名 → loop-detected；连续 2 步
-  无文本增量且无工具调用 → no-progress。终止理由随 turn-done 结构化输出。
+  无文本增量且无工具调用 → no-progress。**判定在每次执行管线前**（触发该次
+  执行前终止——先 check 后 record，触发次零副作用；决议 #33①）。终止理由随
+  turn-done 结构化输出。
 - 白名单例外：**无**（read 重复 3 次也会触发——模型应 read 后有所作为；
   设计取舍记录于决议 #24：防死循环优先于「宽容重复读取」）。
 
@@ -653,9 +672,13 @@ export interface ConversationService {
   `<UNTRUSTED_TOOL_RESULT ok="true|false" tool="…">…</UNTRUSTED_TOOL_RESULT>`
   标记块 + 同一 `</`→`<\/` 闭合转义（threat-model §3.1）——搜索结果/页面内容
   回注与网页内容同等不可信标注。
-- 历史预算：复用 context-budget（历史 8 对改为「最近 8 轮模型交互」，含 tool
-  轮次；总 12000 字符；单条 2000）；tool 消息不重放内容全文（只重放
-  `ok/errorCode/前 200 字符摘要`，决议 #26：控制预算且摘要足够模型决策）。
+- 历史预算（决议 #33③ 实施校准）：**当前 run 内**运行时 transcript 保留完整
+  ToolResult（ToolExecutor 4000/8000 确定性截断即长度限制——12 步上限 × 预算 =
+  确定性有界）；**跨 run 持久化重放**只回 `ok/errorCode/前 200 字符摘要`
+  （决议 #26：控制预算且摘要足够模型决策），按完整交互组裁剪到 historyMaxChars
+  （12000）——不产生孤立 tool 消息或残缺组；持久化/重放不允许孤立 tool 消息
+  （解析丢弃、重放过滤不完整组）；**共读重放过滤 Agent 工具轮**（role='tool'
+  跳过、assistant toolCalls 不回放）。
 
 ### 9.2 AGENT_SYSTEM_PROMPT（编译期常量）
 
@@ -677,11 +700,24 @@ export const AGENT_SYSTEM_PROMPT: string = `你是 AIbrowse 的浏览器任务�
 ### 9.3 消息与持久化扩展（conversation-store.ts，version 2）
 
 - ConversationMessage 扩展：`role` 增 `'tool'`（消息类型判别联合）；
-  `toolStep?: ToolStep`（tool 消息携带精简步骤，§2.2）。
+  `toolStep?: ToolStep` + `toolCallId?`（tool 消息携带精简步骤与协议关联键，
+  §2.2）；assistant 可选 `toolCalls?: ProviderToolCall[]`（该轮工具调用，
+  **脱敏持久化**——browser.fill 的 arguments.text 替换为「（已输入 N 字符）」，
+  决议 #33③）与 `agentRun?: AgentRunSummary`（run 终态摘要，§8.5）。
+- **持久化结构（决议 #33③ 校准）**：每 run = user(goal) → [assistant(轮次文本 +
+  脱敏 toolCalls) + tool(toolStep)]×N → 终态 assistant（finalText + agentRun）。
+  每轮文本恰好落盘一次（工具轮=轮次消息；终止轮=终态消息），无重复拼接；
+  finalText = 最后一个模型轮的文本（done=最终回答；其余=终止轮部分文本，
+  AgentRunSummary.finalText 与终态消息 content 恒等）。
 - 文件 version 1 → 2：写入恒 v2；读取兼容 v1（role 校验白名单扩展 'tool'；
-  v1 文件按 v2 语义解析，无迁移写入）；损坏容错规则不变。
+  v1 文件按 v2 语义解析，无迁移写入）；损坏容错规则不变；ToolStep 逐字段
+  fail-closed（任一非法 → 整条丢弃）；assistant toolCalls/agentRun 形状非法 →
+  丢弃该字段保留文本；**孤立 tool 消息（无前导 assistant toolCalls 对应）与
+  toolCallId 重复使用在解析时丢弃 + 计数**（决议 #33③）。
 - **隐私红线**：ToolStep.contentPreview 的 fill 输入值替换为「（已输入 N 字符）」；
-  快照正文照旧不持久化。
+  快照正文照旧不持久化；documentId/allowedKind 等内部能力参数零落盘。
+- 200 条裁剪组感知：裁剪头部连续孤立 tool 消息一并丢弃（决议 #33③），其余
+  裁剪纪律不回归。
 
 ## 10. 审计日志（A2）
 
@@ -905,6 +941,56 @@ onAgentRunDone`（退订函数，既有 eventRelay 模式）。
     （threat-model §3.3 T-03 外发审查）：search.web 的 query 与 url 同等级全量
     进入审计（上限 500 有界），§10.1 与 audit-log 实现已同步。⑥ ctx.searchProvider
     为工具层注入点（设计 §4.1「browser 能力 + search」落点，A5 AgentLoop 装配）。
+33. **A5 Agent Runtime 实施校准（2026-08-14，A5 实施前，六点固定）**：
+    ① **循环阻断时机**——签名 = `工具名 + '|' + 规范化参数`（JSON.parse 成功且为
+    对象 → 递归键排序 + Unicode NFC 后确定性序列化；解析失败/非对象 → NFC 原始串
+    ——无法取得合法参数的调用同样有稳定签名，改变 JSON 键顺序不能逃避检测）。仅对
+    「执行了或试图执行」的调用计签（校验失败/被拒/失败/执行/安全阻断均计）。判定
+    在每次执行管线前：该调用会使连续 ≥3 或累计 ≥5 → **在执行前阻断**（触发次零
+    副作用：不校验不判权不确认不执行）；阻断调用计 stepsUsed + 恰好一条审计
+    （decision=invalid、ok=false）+ 一个 ToolStep（decision=invalid）——stepsUsed
+    === toolStepCount === 审计条数恒等。步数上限同理：绝不执行第 MAX_STEPS+1 步；
+    未执行调用零 ToolStep 零审计零伪造结果（终止轮不完整交互组由重放过滤器整体丢弃）。
+    ② **协议历史**——运行时 transcript 每轮 = 一条 assistant（该轮完整按 index 排序
+    toolCalls + 该轮文本）+ 按相同顺序的 tool 消息（toolCallId 精确匹配）；
+    invalid-args/tool-not-found/forbidden/denied/execution-failed 均为结构化 tool
+    result（UNTRUSTED_TOOL_RESULT 块）。空/重复 toolCallId、同 run 跨轮冲突 →
+    fail-closed：该轮零执行、run 以 error 终止。同轮调用数超过剩余 MAX_STEPS →
+    只执行预算内（串行 ≤12）。
+    ③ **上下文与持久化**——首轮 = 跨 run 重放（完整交互组裁剪）+ 一次 goal user
+    消息（启动时刻实时快照 UNTRUSTED_WEB_CONTENT 块）；后续轮在同一 transcript
+    追加（goal/快照不重复插入、assistant → tool 相邻关系不破坏）。ToolResult
+    当轮全文（ToolExecutor 4000/8000 截断）进块；持久化只留 ok/errorCode/前
+    200 字符摘要（决议 #26）；快照正文/fill 原文永不持久化。持久化结构：user(goal)
+    → [assistant(轮次文本 + 脱敏 toolCalls) + tool(toolStep)]×N → 终态 assistant
+    （finalText + agentRun）——每轮文本恰好落盘一次（工具轮=轮次消息，终止轮=终态
+    消息，无重复拼接）；assistant toolCalls 的 fill text 脱敏为「（已输入 N 字符）」。
+    200 条裁剪组感知（裁剪头部连续孤立 tool 消息一并丢弃）；解析丢弃孤立 tool 消息
+    （无前导 assistant toolCalls 对应）；重放过滤不完整组；**共读重放过滤 Agent
+    工具轮**（role='tool' 跳过、assistant toolCalls 不回放——共读请求无 tools
+    字段，重放无协议意义）。
+    ④ **文本与工具并存**——有 toolCalls 时该轮文本为过程性输出（进轮次消息与流
+    事件，非最终回答）；仅「无 toolCalls 且有文本」为 done；「无文本无工具」一轮
+    → 空 assistant('') 消息进入 transcript（模型可见自身空轮 = 重试痕迹）+
+    no-progress 计数，连续 2 轮 → no-progress 终止。**finalText = 最后一个模型
+    轮的文本**（done=最终回答；其余=终止轮部分文本），流事件逐 delta 转发全部轮次，
+    与持久化恒等映射（AgentRunSummary.finalText === 终态消息 content）。
+    ⑤ **终态竞争**——单一终态所有权（finish() 一次性守卫，done/abort/超时/取消/
+    异常先到先得）；任何路径 AgentRunDone/turn-done 恰好一次 + 终态 assistant
+    持久化恰好一次；终态时 loopController.abort + cancelAll(runId) 作废全部
+    pending；终态后零工具执行；迟到 delta/工具结果/确认决定被忽略（工具执行与
+    Provider 解析均与终态 Promise.race——cancel/超时时 executor 未返回 run 不挂起）；
+    session 删除竞争不复活文件（appendMessage 存活守卫）；timer/监听器/AbortController
+    finally 清理。**终态映射**：done→complete；cancelled→aborted（errorCode=
+    aborted）；timeout→error（errorCode=timeout 直传）；step-limit/loop-detected/
+    no-progress/error→error（错误直传；安全终止的权威理由在 AgentRunSummary.status，
+    A6 UI 以 run.status 为准）。
+    ⑥ **decision 单一事实源**——`ToolStepDecision`（auto/auto-visible/confirmed/
+    denied/forbidden/invalid）定义于 shared/types/agent.ts；audit-log.AuditDecision
+    为该类型别名（A2 既有导入路径不变）；ToolStep.decision 用同一类型；
+    execution-failed 保留实际权限决策（L0 工具执行失败 → decision=auto）；
+    校验失败/未知工具/防循环安全阻断 = invalid。§2.2/§8.1/§8.3/§9.1/§9.3/§10.1
+    已同步。
 
 ## 16. 实现顺序与范围边界（A1–A8 映射）
 
