@@ -77,11 +77,15 @@
 - **权限判定纯函数**（与第三阶段同模式）：`source_search/source_list/source_get`
   → L0 自动（但有界 + 分享模式过滤，见 §3.4 检索防线）；`source_apply_changes`
   → L2 必须用户确认。权限矩阵编译期常量，模型/网页/note 无任何通道修改。
-- **分享模式（ST-03/ST-08 核心防线）**：每个 Source 有 `share_mode` ∈
-  full | metadata | blocked——`blocked` 在工具视角完全不可见（search 不命中、
-  list 不列出、get 视同不存在）；`metadata` 返回元数据但**不含 note 正文**；
-  只有 `full` 才在命中时返回有界截断的 note（附 provenance）。用户明确写下供
-  AI 长期使用的备注 → 默认 full；无备注快速收藏 → 默认 metadata（UI 明示并可改）。
+- **分享模式（ST-03/ST-08 核心防线，决议 #58/#59）**：每个 Source 有
+  `share_mode` ∈ full | metadata | blocked——读取按**显式 audience**（必填，
+  无缺省，B4/B5 主进程适配器硬编码，模型/网页无通道自行选择）分流：
+  `agent` 视角下 `blocked` 完全不可见（search 不命中、list 不列出、get 视同
+  不存在——不分页空洞/错误差异/日志泄漏）；`metadata` 返回元数据但**不含
+  note 正文**（note 不参与命中与排序）；只有 `full` 才在命中时返回有界截断
+  的 note（附 provenance，≤200 码点 + 控制/bidi 剔除）；`user` 视角
+  blocked 可见可管理（B5 UI 需要）。用户明确写下供 AI 长期使用的备注 →
+  默认 full；无备注快速收藏 → 默认 metadata（UI 明示并可改）。
 - **change set 确认（ST-01/ST-06/ST-07 核心防线）**：模型提出**结构化 change set**
   （最多 20 项）→ 主进程读取当前状态 → 生成**确定性 before/after diff** →
   **L2 确认**（ConfirmDialog 只展示程序生成的 diff，网页/模型文本仅不可信纯文本
@@ -110,11 +114,16 @@
 - **返回字段 allowlist**：只返回白名单字段；note 仅对命中的少量 Source 返回（≤
   截断长度）、标明 provenance、剔除控制字符/双向文本控制符（复用
   `sanitizeConfirmText` 同族纯函数）。
-- **多语言检索确定性**：FTS5 trigram 查询串经纯函数转义（每个 token 短语包裹 +
-  内部双引号转义；1–2 字符短查询/特殊 URL/FTS 不可用 → 参数化精确匹配/LIKE 安全
-  降级，`LIKE ? ESCAPE`）；排序确定性（精确 > 前缀 > tag/group > name/domain >
-  note；priority 仅有限加分；recency 仅次级 tie-break；最终以 canonical_key 定序
-  保证全序）——查询中的引号/通配符/FTS 操作符/SQL 片段**只作为数据**（ST-04）。
+- **多语言检索确定性（决议 #60/#61/#62）**：FTS5 trigram 查询串经纯函数转义
+  （≥3 字符 token 短语包裹 + 内部双引号转义；1 字符仅精确 / 2 字符精确+前缀+
+  参数化字面子串 LIKE / 特殊 URL 走 canonicalKey·url 精确+前缀——中文 2 字符
+  子串经降级路径诚实交付，不声称 trigram 原生支持两字符）；「FTS 不可用」仅指
+  建库成功后 MATCH/构造失败 → 参数化降级（note 检索随之不可用并如实登记），
+  数据库整体不可用 → source-unavailable 不伪装成功；排序确定性（决议 #61：
+  档位严格不可跨档——精确 > 前缀 > tag/group > name/domain > note，priority
+  仅同档内降序；recency 仅同 priority 内 tie-break、lastUsedAt=null 恒末位；
+  最终以 scope + canonical_key + id 定序保证全序）——查询中的引号/通配符/FTS
+  操作符/SQL 片段**只作为数据**（ST-04）。
 - **change journal 有界**：默认最近 100 个 change set 且最长 30 天，任一上限到达
   即清理旧 payload（清理时机由 B2 以可注入时间测试定稿）——限制 Undo 数据暴露面
   与磁盘占用（ST-08/ST-11）。

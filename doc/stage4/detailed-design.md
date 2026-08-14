@@ -58,6 +58,7 @@ export type SourceTrustValue = 'official' | 'primary' | 'secondary' | 'community
 export type SourceTrustAssertedBy = 'user' | 'ai';
 export type SourceTrustVerification = 'asserted' | 'unverified';
 export type SourceCreator = 'user' | 'ai';
+export type SourceReadAudience = 'user' | 'agent'; // 决议 #58：显式读取视角（必填，无缺省）
 export type SourceUsageOutcome =
   'unknown' | 'reachable' | 'unreachable' | 'auth-required' | 'blocked';
 
@@ -182,15 +183,26 @@ export interface SourceListItem {
   trust: SourceTrust;
   shareMode: SourceShareMode;
   lastUsedAt: string | null;
-  // 不含 note 正文（B3 按分享模式对命中少量条目补充有界 note + provenance）
+  // 永不含 note 正文（决议 #59）——note 摘录只在 SourceSearchItem 上按 §8.2 规则出现
 }
 
 export interface SourceView extends Source {
   groupName: string | null; // 服务层视图（UI 手工路径需要 version/deletedAt；工具序列化按 §8.1 裁剪）
 }
 
+export interface SourceSearchNote {
+  userNote: string | null; // ≤200 字符截断 + 控制/bidi 剔除后的正文（null = 无）
+  aiNote: string | null;
+}
+
+export interface SourceSearchItem extends SourceListItem {
+  // note 仅 agent 视角 + shareMode='full' + 对应 note 非空时携带；
+  // user 视角与 metadata 条目恒 null（零 note 字节，决议 #59/#58）
+  note: SourceSearchNote | null;
+}
+
 export type SourceSearchResult =
-  | { ok: true; query: string; results: SourceListItem[] }
+  | { ok: true; query: string; results: SourceSearchItem[] }
   | { ok: false; errorCode: SourceErrorCode };
 
 export type SourceListResult =
@@ -262,7 +274,8 @@ B2 的 search 为参数化精确/前缀最小实现（FTS 检索接口由 B3 补
 
 ### 3.1 SQL 封闭规则（红线，grep 断言）
 
-- **业务 SQL** 只能是 `source-repository.ts` 与 `migrations.ts` 内的**编译期常量**
+- **业务 SQL** 只能是 **Repository 层**（`source-repository.ts` /
+  `source-search-index.ts`，B3 起）与 `migrations.ts` 内的**编译期常量**
   （模块级 const 字符串）或 migration 定义；
 - `sqlite-driver.ts` 仅允许**连接级运维 SQL** 编译期常量（PRAGMA busy_timeout/
   foreign_keys/journal_mode 与 BEGIN/COMMIT/ROLLBACK，值仅为程序校验后的整数选项
@@ -453,15 +466,19 @@ CREATE VIRTUAL TABLE sources_fts USING fts5(
 ```ts
 export interface SourceService {
   readonly id: string; // 'sources'
-  // 检索（§8）
-  search(query: string, opts: { limit?: number }): Promise<SourceSearchResult>; // 默认/硬上限 10
+  // 检索（§8；audience 必填——决议 #58：agent 视角 blocked 不可见，user 视角可见可管理）
+  search(
+    query: string,
+    opts: { limit?: number; audience: SourceReadAudience },
+  ): Promise<SourceSearchResult>; // 默认/硬上限 10
   list(opts: {
     page: number;
     pageSize?: number;
     groupId?: string | null;
     enabledOnly?: boolean;
+    audience: SourceReadAudience;
   }): Promise<SourceListResult>; // 每页 ≤20
-  get(id: string): Promise<SourceResult>;
+  get(id: string, audience: SourceReadAudience): Promise<SourceResult>;
   // 写入（Agent change set，§7）
   applyChangeSet(
     cs: SourceChangeSet,
@@ -492,10 +509,16 @@ export interface SourceService {
   Repository 物理删除（B2 无「非空即放行」假确认）；未签发/错绑定/过期/重用 →
   source-conflict 零删除；B5 接 UI 时复用同一签发器（二次确认 UI 先 issue 后
   消费）。
-- **B2 边界（决议 #52 冻结）**：search 为参数化精确/前缀最小实现（FTS 检索由
-  B3 补齐）；getState 恒 `{mode:'normal', reason:null}`（只读恢复态装配归 B7）；
-  recordUsage 为 usage_events 最近一次最小 upsert（UsageTracker/巡检归 B7）；
-  dispose 幂等关闭句柄。
+- **B2 边界（决议 #52 冻结）**：getState 恒 `{mode:'normal', reason:null}`
+  （只读恢复态装配归 B7）；recordUsage 为 usage_events 最近一次最小 upsert
+  （UsageTracker/巡检归 B7）；dispose 幂等关闭句柄。
+- **读取视角（决议 #58，B3 冻结）**：search/list/get 的 `audience` 必填无缺省
+  ——`agent` 视角：blocked 完全不可见（search 不命中/list 不列出/get 视同不存在
+  source-not-found）、metadata 的 get 无 note（两字段空串）、full 的 search 命中
+  才附有界 note 摘录；`user` 视角：blocked 可见可管理（B5 UI 需要）、get 恒完整
+  SourceView（note 读取时防御性清洗）。audience 由 B4 工具 executor 与 B5 IPC
+  handler 在主进程适配器硬编码——模型工具参数与 renderer 原始 payload 均无通道
+  自行选择。
 - 所有方法对非法输入安全返回（不抛异常）；不可预期异常归一化 source-unavailable
   并 logWarn（堆栈进日志，不进 ToolResult）。
 
@@ -604,7 +627,9 @@ fields=[…]; lens=[…]; versions=[…]`（note 正文零出现；URL 变更记
 ### 8.1 有界性与 allowlist
 
 - `source_search` 默认最多 10 项，**硬上限 10**（limit 参数超限拒绝
-  source-limit）；`source_list` 每页 ≤20（pageSize 超限拒绝）；
+  source-limit）；`source_list` 每页 ≤20（pageSize 超限拒绝）；候选行检索同样
+  有界（`SEARCH_CANDIDATE_MAX = 200`，SQL LIMIT 编译期常量——排序前的中间
+  结果也不得无界）；
 - 返回 allowlist：id/name/url/scope/canonicalKey 摘要/groupId 与 group 名/tags/
   priority/enabled/trust（三字段）/shareMode/provenance 标注/lastUsedAt 摘要——
   note 仅命中少量条目时按 §8.2 规则附带；**任何情况下不返回**：canonicalKey 内部
@@ -615,39 +640,66 @@ fields=[…]; lens=[…]; versions=[…]`（note 正文零出现；URL 变更记
   截断 + warning；
 - **本地完成检索/过滤/排序**——整库绝不发模型（无任何导出通道，SRT-03 grep）。
 
-### 8.2 分享模式
+### 8.2 分享模式（决议 #58/#59：按 audience 分列）
 
-| 模式     | 工具视角行为                                                                   | 设置通道                 | 默认           |
-| -------- | ------------------------------------------------------------------------------ | ------------------------ | -------------- |
-| full     | search 命中可返回（note 有界截断 + provenance）；get 返回 note                 | 用户 UI；模型 change set | 用户写备注时   |
-| metadata | search 命中可返回（**无 note 正文**，仅元数据）；get 无 note                   | 用户 UI；模型 change set | 无备注快速收藏 |
-| blocked  | **完全不可见**：search 不命中、list 不列出、get 视同不存在（source-not-found） | **仅用户 UI**            | 从不           |
+| 模式     | agent 视角行为（工具/B4 适配器硬编码 audience='agent'）                                                      | user 视角行为（UI/B5 适配器硬编码 audience='user'）           | 设置通道                 | 默认           |
+| -------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- | ------------------------ | -------------- |
+| full     | search 命中可返回（note 有界截断 + provenance）；get 返回 note                                               | 同左（get 恒完整视图；search 结果不含 note 正文——详情走 get） | 用户 UI；模型 change set | 用户写备注时   |
+| metadata | search 命中可返回（**无 note 正文**，仅元数据——note 不参与命中与排序）；get 无 note（两字段空串）            | 同左（UI 详情走 get 完整视图）                                | 用户 UI；模型 change set | 无备注快速收藏 |
+| blocked  | **完全不可见**：search 不命中、list 不列出、get 视同不存在（source-not-found）；不分页空洞/错误差异/日志泄漏 | **可见可管理**：list/get 返回（含 shareMode=blocked），可改回 | **仅用户 UI**            | 从不           |
 
-- note 返回规则（仅 full）：userNote/aiNote 各 ≤200 字符截断 + 控制字符/双向
-  控制符剔除 + 明确标注「用户备注（来源：user）/ AI 备注（来源：ai，未核验）」；
+- note 返回规则（仅 agent + full）：userNote/aiNote 各 ≤200 字符截断（Unicode
+  码点计数）+ 控制字符/双向控制符剔除（读取侧防御性清洗——旧数据/损坏数据同样
+  覆盖）+ provenance 由 userNote/aiNote 字段分离承载（B4 序列化层标注
+  「用户备注（来源：user）/ AI 备注（来源：ai，未核验）」）；
+- 写入侧清洗（B2 stripControlChars）已覆盖 C0/DEL/NEL/零宽/U+202A–U+202E/
+  U+2060/BOM；**B3 补齐 U+061C 与 U+2066–U+2069**（bidi 隔离控制符——原实现
+  未覆盖，读取侧同样剔除，敌手测试固化）；
 - UI 必须说明三态含义并允许修改（快速收藏时明确显示默认值）。
 
-### 8.3 多语言检索
+### 8.3 多语言检索（决议 #60/#61/#62 冻结分流与排序语义）
 
-- **主路径（B1 实测冻结 FTS5+trigram 后启用）**：sources_fts（name/url/
-  user_note/ai_note，trigram）处理中文/日文/英文与一般子串；B3 实测断言：
-  中文 2+ 字符子串、日文假名/汉字、英文词与子串、混合查询各自命中正确集；
+- **查询归一化与分流（决议 #60，纯函数 source-search-query.ts）**：查询
+  trim + NFC + 控制字符剔除后按 **Unicode 码点**计数——
+  - **1 字符**：仅精确匹配（name/url/canonicalKey）；
+  - **2 字符**：精确 + 前缀 + 参数化字面子串 `LIKE ? ESCAPE '\'`
+    （name/url/canonicalKey/tag/group）——**中文 2 字符子串经降级路径诚实交付，
+    测试不得声称 trigram 原生支持两字符**（B1 实测 trigram 仅 ≥3 字符命中）；
+  - **≥3 字符（含 3）**：FTS5 trigram 主路径；`buildFtsQuery` 仅对 **≥3 字符
+    token** 短语包裹（1–2 字符 token 不产生子串命中——trigram 语义，如实登记）；
+    同时候选集含 name/url/canonicalKey 精确与前缀 + tag/group 精确与子串
+    （精确/前缀命中不依赖 FTS 可用性）；
+  - **特殊 URL 查询（确定性判定集合）**：`normalizeSourceUrl(query, 'page')`
+    可解析，或 trim 后以 `http://`、`https://` 开头（含解析失败的 URL 形态——
+    只作数据，安全不命中）→ canonicalKey/url 精确 + 前缀路径；
+  - **大小写语义（如实登记）**：SQLite `=` 与 FTS trigram 区分大小写；LIKE
+    为 ASCII 不区分大小写（SQLite 默认）——排序档位判定与 SQL 语义一一对应
+    （精确判定区分大小写、前缀/子串判定 ASCII 不区分大小写）。
 - **查询串纯函数构造**（source-search-query.ts）：原始查询绝不拼接进 MATCH 表达
   式——`buildFtsQuery(raw)` 将 raw 逐 token 短语包裹并转义内部双引号；引号/
   通配符/FTS 操作符（AND/OR/NOT/NEAR/*/^/数字）**只作为数据**；查询串同样
-  参数绑定（`MATCH ?`）；
-- **安全降级（必须可用）**：1–2 字符查询、含特殊 URL 片段、FTS 表不可用/查询
-  构造失败 → 参数化精确匹配（name/group/tag/canonicalKey 精确或前缀，`LIKE ?
-ESCAPE '\'` 参数化）——降级路径是完整交付实现（FTS 为增强，SRT-04 覆盖）；
+  参数绑定（`MATCH ?`）；FTS 候选与精确/前缀/标签/分组候选在同一条编译期常量
+  SQL 内取并集（`SEARCH_CANDIDATE_MAX = 200` 有界），档位与排序全部在本地
+  纯函数计算（无动态 ORDER BY）。
+- **安全降级（必须可用，决议 #62）**：FTS 不可用**仅指**已成功建库（schema v1
+  迁移完成、sources_fts 存在）后的 MATCH 查询构造/执行失败或 FTS 表被破坏——
+  降级路径接管（参数化精确/前缀 LIKE，note 检索随之不可用并如实登记，不伪装
+  成功）；**不承诺无 FTS5 编译的构建可完成迁移**——schema v1 已按决议 #54 冻结
+  不改写（B1 实测 Electron 43.4.0 与系统 Node 24.18.0 均含 FTS5）；数据库整体
+  不可用（连接关闭/损坏）→ source-unavailable 安全失败；降级路径是完整交付
+  实现（FTS 为增强，SRT-04 覆盖）；
 - **普通索引**：canonical_key（UNIQUE 已建）、group（部分索引）、tag（经
   source_tag_links）、name（LIKE 前缀可用）；
-- **排序确定性**（纯函数，同输入同输出）：精确匹配 > 前缀匹配 > tag/group 命中 >
-  name/domain 命中 > note 命中；priority 仅有限加分（±1 档）；recency 仅次级
-  tie-break；最终以 canonical_key 升序定序（全序保证）；
+- **排序确定性（决议 #61，纯函数全序）**：档位严格不可跨档——精确匹配 > 前缀
+  匹配 > tag/group 命中 > name/domain 命中 > note 命中（priority **不得**反转
+  档位）；priority（1–5）仅同档内降序；同 priority 下 lastUsedAt 降序、
+  lastUsedAt=null 恒排最末；最终以 **scope ASC + canonicalKey ASC + id ASC**
+  收尾（origin/page 同 canonicalKey 也全序）。同输入同输出。
 - **索引一致性**：add/update/disable/restore/undo/rollback 与主表同事务同步
-  （触发器或 Repository 显式语句，B2 定稿并测试）；诊断性 rebuild
-  （`INSERT INTO sources_fts(sources_fts) VALUES('rebuild')`）由 B7 提供
-  受控入口（仅 UI 诊断按钮 + 测试），rebuild 后校验与主表行数一致。
+  （Repository 显式语句，B2 定稿并测试，B3 不重写）；诊断性 rebuild 与一致性
+  校验（`INSERT INTO sources_fts(sources_fts) VALUES('rebuild')` + 主表/FTS
+  行数比对）为 B3 内部能力（仅测试/诊断入口；UI 诊断按钮归 B7），rebuild 失败
+  不得破坏现有索引（单事务回滚）。
 
 ## 9. Source Tools v1 与权限矩阵（决策 6/5）
 
@@ -738,30 +790,31 @@ ESCAPE '\'` 参数化）——降级路径是完整交付实现（FTS 为增强�
 
 ### 13.1 单测（Vitest，node 环境，纯逻辑）
 
-| 测试文件                    | 用例要点                                                                                                                                                                                                                                                                             | 任务  |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----- |
-| source-canonical.test.ts    | 规范化矩阵：大小写/默认端口/fragment/userinfo 拒绝/IDN/query 保留/非默认端口/空路径（决议 #50：两形态同身份）；origin 与 page 键独立性（决议 #49）；确定性同输入同输出                                                                                                               | B2    |
-| source-change-set.test.ts   | 结构校验（1–20 边界/字段白名单/长度/枚举/URL 形状/trust 通道规则——模型不能 assertedBy=user、不能设 blocked；缺省冻结决议 #52；同 set 重复 sourceId 拒绝）                                                                                                                            | B2    |
-| source-search-query.test.ts | FTS 查询纯函数转义（引号/操作符/通配符只作数据）；降级判定（1–2 字符/特殊串）；排序器全序（精确>前缀>tag/group>name/domain>note + priority 有限加分 + canonical_key 定序）                                                                                                           | B3    |
-| migrations.test.ts          | 逐级事务性/异常 rollback/版本单调/未知高版本判定；**schema v1 契约断言**（表集/约束/索引/部分唯一索引/user_version=1 恒等，决议 #49/#51/#54/#55）                                                                                                                                    | B2/B7 |
-| change-journal.test.ts      | 有界清理（条数/年龄任一触发，注入时钟，恰好 30 天保留、超过清理）/Undo 消费幂等（决议 #52）/版本冲突拒绝/payload 形状校验/畸形 payload 安全失败/hard delete 精确拆分（决议 #55）                                                                                                     | B2    |
-| source-service.test.ts      | 注入真实 node:sqlite：CRUD/唯一约束并发（双连接同 canonical 仅一成功）/change set 事务回滚（第 N 项冲突整体零写入）/幂等键重放（同指纹幂等、异指纹 fail-closed，决议 #53）/expectedVersion/undo/hardDelete 清理（FTS/journal/usage 字节级）/非法输入安全返回/异常归一化/dispose 幂等 | B2    |
-| source-tools.test.ts        | 四工具 schema 校验/serialize 纯文本零特权/错误码映射/ctx.sourceService 优先于注入/audit 摘要形状                                                                                                                                                                                     | B4    |
-| usage-tracker.test.ts       | 命中登记/URL 比对/仅最近一次/未知来源不记录                                                                                                                                                                                                                                          | B7    |
+| 测试文件                    | 用例要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | 任务  |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| source-canonical.test.ts    | 规范化矩阵：大小写/默认端口/fragment/userinfo 拒绝/IDN/query 保留/非默认端口/空路径（决议 #50：两形态同身份）；origin 与 page 键独立性（决议 #49）；确定性同输入同输出                                                                                                                                                                                                                                                                                                                                                                                                             | B2    |
+| source-change-set.test.ts   | 结构校验（1–20 边界/字段白名单/长度/枚举/URL 形状/trust 通道规则——模型不能 assertedBy=user、不能设 blocked；缺省冻结决议 #52；同 set 重复 sourceId 拒绝）                                                                                                                                                                                                                                                                                                                                                                                                                          | B2    |
+| source-search-query.test.ts | FTS 查询纯函数转义（引号/操作符/通配符只作数据、短语包裹/双引号转义/短 token 过滤）；归一化与分流判定（trim/NFC/码点计数、1/2/3 字符边界、URL 判定集合，决议 #60）；排序器全序（档位不可跨档 + priority/recency 同档内 + lastUsedAt=null 末位 + scope/canonicalKey/id 收尾，决议 #61）；note 摘录（200/201 码点边界、C0/换行/零宽/U+061C/U+202A–U+202E/U+2066–U+2069 剔除）                                                                                                                                                                                                        | B3    |
+| source-search-index.test.ts | 候选集 SQL（FTS/LIKE/短查询/URL 四条编译期常量路径）注入串仅作数据；FTS 可用性判定与降级（决议 #62：MATCH/构造失败降级、数据库不可用 source-unavailable）；rebuild 前后行数与内容一致、失败不破坏现有索引；FTS 与主表同事务同步回归（B2 路径不重写）                                                                                                                                                                                                                                                                                                                               | B3    |
+| migrations.test.ts          | 逐级事务性/异常 rollback/版本单调/未知高版本判定；**schema v1 契约断言**（表集/约束/索引/部分唯一索引/user_version=1 恒等，决议 #49/#51/#54/#55）                                                                                                                                                                                                                                                                                                                                                                                                                                  | B2/B7 |
+| change-journal.test.ts      | 有界清理（条数/年龄任一触发，注入时钟，恰好 30 天保留、超过清理）/Undo 消费幂等（决议 #52）/版本冲突拒绝/payload 形状校验/畸形 payload 安全失败/hard delete 精确拆分（决议 #55）                                                                                                                                                                                                                                                                                                                                                                                                   | B2    |
+| source-service.test.ts      | 注入真实 node:sqlite：CRUD/唯一约束并发（双连接同 canonical 仅一成功）/change set 事务回滚（第 N 项冲突整体零写入）/幂等键重放（同指纹幂等、异指纹 fail-closed，决议 #53）/expectedVersion/undo/hardDelete 清理（FTS/journal/usage 字节级）/非法输入安全返回/异常归一化/dispose 幂等；**B3 扩展**：search/list/get 的 audience 完整矩阵（agent blocked 不可见·metadata 零 note 字节·full 摘录有界；user 可见可管理）、硬上限 10/每页 20/分页 total 与过滤一致、多语言命中（中/日/英/混合）、排序全序证据（priority 上下界/origin+page 同 canonicalKey）、disposed/句柄关闭安全返回 | B2/B3 |
+| source-tools.test.ts        | 四工具 schema 校验/serialize 纯文本零特权/错误码映射/ctx.sourceService 优先于注入/audit 摘要形状                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | B4    |
+| usage-tracker.test.ts       | 命中登记/URL 比对/仅最近一次/未知来源不记录                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | B7    |
 
 ### 13.2 冒烟矩阵（Electron 真实启动，临时 userData；dev+生产双场景）
 
-| #    | 场景                  | 断言要点                                                                                                                                                                                                                                                                            | 任务  |
-| ---- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| B-01 | B1 决策门 11 项探针   | §3.2 清单逐项断言（含中文 trigram 命中与生产构建 import）；失败即红并停止                                                                                                                                                                                                           | B1    |
-| B-02 | CRUD 持久化           | 专属门控 `AIBROWSE_SOURCES_SMOKE=set\|check`（决议 #57：与 SESSION_SMOKE 并列互斥）；set 进程临时 userData 建库迁移 v1 → SourceService CRUD+journal+disable → 干净退出；check 进程新进程读回全量断言（行数/内容/版本）→ 执行 Undo → 断言 Undo 生效 → 退出码 0；唯一约束冲突安全返回 | B2    |
-| B-03 | change set 确认全链路 | 模型（FakeProvider 脚本）提 change set → L2 确认必现 → deny 零写入/approve 单事务提交 → 审计恰好一条 → Undo 生效；迟到/未知 toolCallId 零写入                                                                                                                                       | B4    |
-| B-04 | 有界检索              | source_search 硬上限 10/分享模式过滤（blocked 不可见、metadata 无 note）/allowlist/结果预算截断/UNTRUSTED_TOOL_RESULT 块隔离（含注入 note 夹具）                                                                                                                                    | B3/B4 |
-| B-05 | 快速添加 UI 端到端    | 当前页快速收藏（默认 metadata）→ 列表出现 → 修改分享模式/备注 → 手工 Undo → 永久删除二次确认后消失且不可 Undo                                                                                                                                                                       | B5    |
-| B-06 | migration/恢复        | 旧版本库自动迁移（备份生成）；注入迁移失败 → rollback + 原库完好；损坏库/更高版本 → 只读恢复态 + 中文诊断 + 浏览器其余能力正常（既有冒烟场景回归）                                                                                                                                  | B7    |
-| B-07 | usage 记录            | 同 run source_search 命中 → browser_open 该 URL → usage 落库 reachable；无关 URL 不记录；无后台请求（日志断言零巡检）                                                                                                                                                               | B7    |
-| B-08 | 红队 SRT-01～SRT-12   | §4 矩阵全表（dev+生产双场景）+ RT-01～RT-11 全量回归                                                                                                                                                                                                                                | B8    |
-| B-09 | 共读与工具层回归      | 既有矩阵 1–12/8.1（注册表 17 工具）/8.2/8.3/8.4/8.5/8.6 全量回归；日志敏感扫描零命中                                                                                                                                                                                                | B4/B8 |
+| #    | 场景                  | 断言要点                                                                                                                                                                                                                                                                                                                                                                                                                                       | 任务  |
+| ---- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| B-01 | B1 决策门 11 项探针   | §3.2 清单逐项断言（含中文 trigram 命中与生产构建 import）；失败即红并停止                                                                                                                                                                                                                                                                                                                                                                      | B1    |
+| B-02 | CRUD 持久化           | 专属门控 `AIBROWSE_SOURCES_SMOKE=set\|check`（决议 #57：与 SESSION_SMOKE 并列互斥）；set 进程临时 userData 建库迁移 v1 → SourceService CRUD+journal+disable → 干净退出；check 进程新进程读回全量断言（行数/内容/版本）→ 执行 Undo → 断言 Undo 生效 → 退出码 0；唯一约束冲突安全返回                                                                                                                                                            | B2    |
+| B-03 | change set 确认全链路 | 模型（FakeProvider 脚本）提 change set → L2 确认必现 → deny 零写入/approve 单事务提交 → 审计恰好一条 → Undo 生效；迟到/未知 toolCallId 零写入                                                                                                                                                                                                                                                                                                  | B4    |
+| B-04 | 有界检索              | **B3/B4 分段完成（决议 #63）**——B3 子集（默认矩阵 dev+production 双场景，真实 Electron 内置 node:sqlite/FTS5/trigram）：source_search 硬上限 10/分享模式过滤（agent blocked 不可见、metadata 零 note 字节、full 摘录 ≤200 + provenance）/allowlist/中·日·英命中/短查询降级/rebuild 一致性；B4 待完成：SOURCE_TOOL_CONTENT_MAX=4000 结果预算截断/ToolResult 序列化/UNTRUSTED_TOOL_RESULT 块隔离（含注入 note 夹具）/审计——B3 不得宣称 B-04 全过 | B3/B4 |
+| B-05 | 快速添加 UI 端到端    | 当前页快速收藏（默认 metadata）→ 列表出现 → 修改分享模式/备注 → 手工 Undo → 永久删除二次确认后消失且不可 Undo                                                                                                                                                                                                                                                                                                                                  | B5    |
+| B-06 | migration/恢复        | 旧版本库自动迁移（备份生成）；注入迁移失败 → rollback + 原库完好；损坏库/更高版本 → 只读恢复态 + 中文诊断 + 浏览器其余能力正常（既有冒烟场景回归）                                                                                                                                                                                                                                                                                             | B7    |
+| B-07 | usage 记录            | 同 run source_search 命中 → browser_open 该 URL → usage 落库 reachable；无关 URL 不记录；无后台请求（日志断言零巡检）                                                                                                                                                                                                                                                                                                                          | B7    |
+| B-08 | 红队 SRT-01～SRT-12   | §4 矩阵全表（dev+生产双场景）+ RT-01～RT-11 全量回归                                                                                                                                                                                                                                                                                                                                                                                           | B8    |
+| B-09 | 共读与工具层回归      | 既有矩阵 1–12/8.1（注册表 17 工具）/8.2/8.3/8.4/8.5/8.6 全量回归；日志敏感扫描零命中                                                                                                                                                                                                                                                                                                                                                           | B4/B8 |
 
 - 真实 Provider 可选验证（B6/B8，需用户提供 Key，询问边界）：AI 自然语言管理
   端到端（「收藏这个网站/把它改到日本购物组并备注只用于中古价格/把这个来源标
@@ -943,6 +996,47 @@ TABLE` 注入串仅作数据）✅ ⑤ BEGIN/COMMIT/ROLLBACK（回调与语句�
     finally 关库干净退出；check：同目录新进程读回全量断言（行数/内容/版本）→
     执行 Undo → 断言 Undo 生效 → 退出码 0；两进程均需 AIBROWSE_SMOKE=1 +
     已核验系统 TEMP 子目录（AIBROWSE_USER_DATA_DIR）（§13.2/B2 任务文档）。
+
+### B3 实施前契约裁决（2026-08-15，六项冲突逐项核验 + 用户裁决，全部采纳推荐）
+
+58. **读取视角显式化**：search/list/get 增加**必填** `audience: 'user' | 'agent'`
+    （无缺省——调用方必须显式声明，防漏传方向性错误）。agent 视角：blocked 完全
+    不可见（search 不命中/list 不列出/get 视同不存在 source-not-found）；user
+    视角：blocked 可见可管理（B5 UI 需要）。audience 由 B4 工具 executor 与 B5
+    IPC handler 在**主进程适配器硬编码**——模型工具参数与 renderer 原始 payload
+    均无通道自行选择；禁止让全局 list/get 永久过滤 blocked 导致 UI 无法管理
+    （§2/§6/§8.2）。
+59. **搜索条目类型独立化**：新增 `SourceSearchItem`（独立于 `SourceListItem`）+
+    `SourceSearchNote` 摘录类型——full 模式命中条目的有界 note（userNote/aiNote
+    各 ≤200 字符 + provenance 由字段分离承载）只出现在该类型；`SourceListItem`
+    永不含 note；`SourceSearchResult.results` 改为 `SourceSearchItem[]`；
+    metadata 条目与 user 视角恒无 note 字段（零 note 字节）。不得依靠
+    TypeScript 结构外的临时字段（§2/§8.2）。
+60. **短查询与 FTS 分流语义**：查询 trim + NFC + 控制字符剔除后按 Unicode 码点
+    计数——1 字符：仅精确匹配（name/url/canonicalKey）；2 字符：精确 + 前缀 +
+    参数化字面子串 LIKE ESCAPE（中文 2 字符子串经降级路径诚实交付，**测试不得
+    声称 trigram 原生支持两字符**——B1 实测 trigram 仅 ≥3 字符命中）；≥3 字符
+    （含 3）：FTS5 trigram 主路径（buildFtsQuery 仅对 ≥3 字符 token 短语包裹，
+    短 token 不产生子串命中，如实登记）；特殊 URL 查询确定性判定集合 =
+    normalizeSourceUrl 可解析，或 trim 后以 http://、https:// 开头（§8.3）。
+61. **排序全序**：档位严格不可跨档——精确 > 前缀 > tag/group > name/domain >
+    note（priority **不得**反转档位）；priority（1–5）仅同档内降序；同
+    priority 下 lastUsedAt 降序、lastUsedAt=null 恒排最末；最终以 scope ASC +
+    canonicalKey ASC + id ASC 收尾（origin/page 同 canonicalKey 也全序）
+    （§8.3）。
+62. **「FTS 不可用」范围界定**：仅指已成功建库（schema v1 迁移完成、sources_fts
+    存在）后的 MATCH 查询构造/执行失败或 FTS 表被破坏——B3 查询降级路径接管
+    （参数化精确/前缀 LIKE，note 检索随之不可用并如实登记）；**不承诺无 FTS5
+    编译的构建可完成迁移**——schema v1 已按决议 #54 冻结，B3 不改写；B1 实测
+    Electron 43.4.0 与系统 Node 24.18.0 均含 FTS5；若未来需支持无 FTS5 构建，
+    须另立 migration v2 并在 B7 备份/恢复配套内评估兼容性影响（§8.3）。
+63. **B-04 分段记录**：B-04 冒烟断言记为 B3/B4 分段完成——B3 完成数据库/Service
+    子集（多语言检索/短查询降级/硬上限 10/每页 20/分享模式/note 清洗与
+    provenance/rebuild/一致性，默认矩阵 dev+production 双场景真实 node:sqlite
+    实测）；SOURCE_TOOL_CONTENT_MAX=4000、ToolResult 序列化、
+    UNTRUSTED_TOOL_RESULT 块接线与审计为 **B4 待完成**——B3 不提前实现 Source
+    Tools/工具预算/Agent 接线（工具注册表保持既有 13 个），不宣称 B-04 全过
+    （§13.2/B3 任务文档）。
 
 ## 16. 实现顺序与范围边界（B1–B9 映射）
 
