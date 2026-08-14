@@ -6815,11 +6815,19 @@ export async function runLiveAgentScenarios(
       // deny 恰好一次、confirmed 恰好一次（approve 时）；DOM 层：夹具提交类元素
       // （submit-btn/form-no-type）点击数 === approve 次数（deny 零 DOM 动作）
       const s5Slice = readFileSync(logFile).subarray(s5LogStart).toString('utf8').split('\n');
+      // 只数审计条目行（[audit] tool-call——每次调用恰好一条；[agent] 工具步骤行为同源
+      // 摘要，不含入计数——第 7 次执行断言自身缺陷：过滤条件命中两条日志形态致双计）
       const confirmedClicks = s5Slice.filter(
-        (l) => l.includes('tool=browser_click') && l.includes('decision=confirmed'),
+        (l) =>
+          l.includes('[audit] tool-call') &&
+          l.includes('tool=browser_click') &&
+          l.includes('decision=confirmed'),
       ).length;
       const deniedClicks = s5Slice.filter(
-        (l) => l.includes('tool=browser_click') && l.includes('decision=denied'),
+        (l) =>
+          l.includes('[audit] tool-call') &&
+          l.includes('tool=browser_click') &&
+          l.includes('decision=denied'),
       ).length;
       assert(
         confirmedClicks === (approved ? 1 : 0),
