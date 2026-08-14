@@ -287,6 +287,10 @@ ContextBuilder
 >    （修复不涉及任何权限变化）；无阻塞级缺陷。语义层注入剩余风险登记为已接受的剩余设计
 >    风险（progress.md），Third Stage 引入 Browser Tool 前必须重建威胁模型（最迟复核点）。
 >
-> > Second Stage 已完成内部验收，等待用户安排独立复验或阶段切换。
+> > Second Stage 已完成内部验收（2026-08-13）；用户独立复验（2026-08-14）发现的
+> > 4 项非阻塞测试基础设施/文档缺陷已修复并全量回归（红态退出码 1 → 绿态 0）。
+> > 2026-08-14 经用户指令正式切换至 Third Stage（Entry Gate 核验记录见
+> > doc/stage3/proposal.md §8）。
 
 阶段完成后停止，更新 `progress.md`，提出 Third Stage 的详细设计任务，不直接实现 Browser Agent。
+（Third Stage 已按本节建议执行：设计定稿与任务拆分见 `doc/stage3/`，实现任务 T1–T8。）

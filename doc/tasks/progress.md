@@ -9,16 +9,18 @@
 
 ## 当前状态
 
-- 阶段：**第二阶段（AI 共读）**，已于 2026-08-13 正式切换（用户指令）。设计定稿与
-  任务拆分已完成（`doc/stage2/`）；**S1–S6 全部完成（2026-08-13）**，S6 最终验收
-  §9 逐项通过 + §10 Exit Gate 判定通过（证据见 Second_stage.md §9/§10 与本文
-  「最近验证结果 · S6」）。**Second Stage 已完成内部验收**；用户独立复验
-  （2026-08-14）判定 Exit Gate 实质条件通过、发现 4 项非阻塞测试基础设施/文档缺陷
-  （冒烟 Tab 状态泄漏 / README 陈旧状态 / 表格页内容依赖证据不足 / Key 零暴露扫描
-  未覆盖装配期）——**已修复并全量回归，等待修复后独立确认**；阶段指针不切换、
-  不实现 Third Stage（Browser Agent）。
+- 阶段：**第三阶段（Browser Agent）**，已于 2026-08-14 正式切换（用户指令）。Entry
+  Gate 逐项核验通过（判定证据见 doc/stage3/proposal.md §8）；**设计定稿与任务拆分
+  已完成（2026-08-14，纯文档）**——`doc/stage3/`：threat-model（Prompt Injection
+  威胁模型重建定稿，先于任何 Browser Tool 实现）、proposal（Q1–Q15 拍板 + Entry
+  Gate 核验记录）、high-level-design、detailed-design（唯一契约源，§2–§16）+
+  任务 T1–T8（每任务 = 一个可验证闭环）。**尚未开始实现**：T1–T8 全部待开始，
+  **不引入任何 Browser Tool**；下一个推荐任务 = **T1 tool-calling 兼容层**
+  （硬前置：T1 验证通过前禁止任何 Browser Tool 实现）。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
-  Second Stage Entry Gate 独立定向审查通过（2026-08-13，无阻塞项）。
+  Second Stage Exit Gate 通过（2026-08-13 判定 + 2026-08-14 用户独立复验，4 项
+  非阻塞缺陷已修复并全量回归，红态退出码 1 → 绿态 0；证据见 Second_stage.md
+  §9/§10 与本文「最近验证结果」）。
 - 路线图文档已接入（2026-08-13）：ROADMAP.md + First_stage.md～Seventh_stage.md 入库；
   各文件职责、接管顺序与阶段切换纪律见 AGENTS.md §1/§2。
 - 最近 commit 与工作区状态：以 `git log --oneline` / `git status --short` 为准。
@@ -42,7 +44,47 @@
 | S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ✅   | 2026-08-13 完成（§9 逐项证据 + §10 Exit Gate 通过 + 真实 Provider 多网站验证，见下）；任务文档 doc/stage2/tasks/S6-finalize-acceptance.md                           |
 | 修复 | 独立复验发现项修复闭环（Tab 状态自清理 / 表格内容依赖证据 / Key 扫描窗口 / README 状态）         | ✅   | 2026-08-14 完成（独立复验后定向修复，不切换阶段；4 项发现 + 修复证据见下）                                                                                          |
 
+| T1 | tool-calling 兼容层（硬前置）：ProviderRequest/Event/Message 扩展 + 适配器 tools/SSE tool_calls + FakeProvider 工具脚本 | ⏳ | 契约 §2.1/§3；任务文档 doc/stage3/tasks/T1-tool-calling-layer.md；**验证通过前禁止任何 Browser Tool 实现** |
+| T2 | Tool Registry + 权限分级与确认状态机 + 审计日志（接线既有只读/导航工具 8 个） | ⏳ | 契约 §4/§7/§10；任务文档 doc/stage3/tasks/T2-tool-registry-permission-audit.md |
+| T3 | 浏览器交互能力：scroll/click/fill/find + isSubmit 语义元数据 + elementId 生命周期验证 | ⏳ | 契约 §5；任务文档 doc/stage3/tasks/T3-browser-interaction.md |
+| T4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search.web 工具 | ⏳ | 契约 §6；任务文档 doc/stage3/tasks/T4-search-provider.md |
+| T5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ⏳ | 契约 §8–§9；任务文档 doc/stage3/tasks/T5-agent-runtime.md |
+| T6 | 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI + UI 端到端冒烟矩阵 | ⏳ | 契约 §11；任务文档 doc/stage3/tasks/T6-agent-ui-visibility.md |
+| T7 | 威胁模型红队矩阵 R-01～R-10 + 安全审计 + 真实 Provider 可选验证 | ⏳ | 契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/T7-redteam-security-audit.md |
+| T8 | 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步 | ⏳ | Third_stage.md §9/§10；任务文档 doc/stage3/tasks/T8-finalize-acceptance.md |
+
 ## 最近验证结果（2026-08-14）
+
+- **Third Stage 切换与设计定稿（2026-08-14，纯文档任务，零代码改动）**：① 步骤 0 独立核对——
+  Git HEAD `9605269` = Gitee/GitHub 双远程 HEAD（GitHub 经代理确认）、工作区干净；
+  全量验证独立复跑全绿（test **326/326** · typecheck · lint · format:check ·
+  Electron 离线冒烟退出码 0——T2–T5 + S3 矩阵 1–8 + S4 UI 矩阵 1–12 全通过）；
+  据此校正「等待修复后独立确认」→ 修复已确认、阶段切换。② **Entry Gate 逐项核验**
+  （判定证据全文见 doc/stage3/proposal.md §8）：共读稳定 ✅ / ContextBuilder
+  不可信输入 ✅ / BrowserController 可扩展 ✅ / Key 与日志安全 ✅ /
+  **「LLM Provider 抽象支持 tool calling」→ 循环式门槛校正通过**——如实记录现状
+  （`supportsToolCalling: false`、ProviderRequest 无 tools 字段、SSE 仅解析
+  delta.content），判定该条字面要求与阶段目标构成循环（tool calling 兼容层是
+  第三阶段自身交付物），门禁保护性意图（抽象不被锁死）已由现有扩展点满足
+  （元数据字段预留/工厂注册表/自实现适配器/端点原生支持 tools）；**校正方式：
+  T1 = 阶段内硬前置，T1 验证通过前禁止引入任何 Browser Tool 实现**。③ 新建
+  `doc/stage3/`：**threat-model.md（Prompt Injection 威胁模型重建定稿，先于任何
+  Browser Tool 实现）**——威胁枚举 T-01～T-10、五层防线（结构/能力/决策/审计/
+  运行时）、红队矩阵 R-01～R-10、诚实边界声明（诱导式工具参数/确认疲劳/低风险
+  动作累积三类残余风险如实登记，不宣称语义免疫）；**proposal.md**（目标/非目标/
+  真实场景/验收映射/Q1–Q15 拍板/Entry Gate 核验记录/T1–T8 里程碑）、
+  **high-level-design.md**（架构/决策/数据流/安全模型/测试/风险）、
+  **detailed-design.md**（§2–§16 唯一契约源：tool-calling 兼容层、ToolRegistry
+  与首批 13 工具三批接线、L0–L3 权限矩阵与确认状态机、交互注入与 elementId
+  生命周期、SearchProvider、AgentLoop 上限/防循环/审计、操作可见性 UI 与通道、
+  测试规格与验收核对清单、决议 #21–#28）、**tasks/T1–T8**（每任务 = 一个可验证
+  开发闭环：目标/范围/非目标/涉及文件/实施步骤/完成定义；T1 任务文档明确
+  「验证通过前禁止任何 Browser Tool 实现」）。④ 更新 AGENTS.md（§1/§2 阶段指针
+  与接管顺序、§3 Agent 架构纪律/万能工具永久红线/T1 硬前置、§4 结构、§5 Third
+  Stage 契约速查、§8 注入边界、附 B/附 C）、README.md（当前状态/架构/目录/已知
+  限制）、本文件。⑤ doc/stage2/ 与第一阶段历史文档**原位保留未覆盖**。⑥ 验证：
+  全量回归（纯文档按 AGENTS.md 附 A 免构建/冒烟重跑——本会话已先行独立复跑过）
+  - 文档交叉引用与格式检查。**未调用任何付费 Provider、未输出/索取 API Key。**
 
 - **独立复验发现项修复闭环（2026-08-14，S6 后定向修复，非新阶段任务）**：test **326/326** ✅
   · typecheck ✅ · lint ✅ · format:check ✅ · build ✅ · Electron 冒烟 ✅ 四场景退出码 0
@@ -456,8 +498,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   时该拦截点是唯一防线（冒烟已用 custom:// 目标验证 handler 真实触发）。
 - 无 CI / 打包配置：第一阶段验收不要求（Second Stage 起评估 CI：lint + test + typecheck；
   打包属 Seventh Stage Product Hardening）。
-- shared/url 不支持 IDN（中文域名走搜索兜底，安全无副作用）；SearchProvider 尚未抽象
-  （Bing 硬编码，计划在 Second/Third Stage 前替换）。
+- shared/url 不支持 IDN（中文域名走搜索兜底，安全无副作用）；SearchProvider 抽象已定稿
+  于 Third Stage T4（doc/stage3/detailed-design.md §6：v1 Bing 页面实现 + 接口隔离
+  保替换；shared/url 的 SEARCH_ENGINE_URL 常量语义不变，由 SearchProvider 引用）。
 - UI 窗口（defaultSession）未注册权限处理器：UI 只加载自身内容，R-01 已关闭（导航保护落地）
   后无远程页面可达，当前无需处理；未来 UI 嵌入远程内容时重新评估。
 - 地址栏搜索的端到端验证在离线环境断言「导航目标为 Bing 搜索 URL」（did-start-navigation），
@@ -480,9 +523,13 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   写 Tool/写通道 + 请求无 tools 字段）或改变消息角色（程序字面量 + 单块闭合转义断言），
   详见 §12.1 审计。**不承诺（也不得宣称）Prompt Injection 完全免疫**：模型在语义层仍
   可能受网页文本诱导（如诱导生成误导性回答、诱导式表述）——当前阶段无浏览器写 Tool，
-  该诱导无法转化为真实操作，故不构成需要当前阶段继续修复的缺陷。**最迟复核点**：
-  Third Stage 引入 Browser Tool 前必须重建威胁模型（届时「网页文本诱导调用工具」
-  成为真实攻击面）。
+  该诱导无法转化为真实操作，故不构成需要当前阶段继续修复的缺陷。
+  **最迟复核点已执行**：2026-08-14 随 Third Stage 切换**威胁模型重建定稿**
+  （`doc/stage3/threat-model.md`）——「网页文本诱导调用工具」成为真实攻击面，
+  防线升级为五层（结构/能力/决策/审计/运行时）+ 红队矩阵 R-01～R-10（T7 实施）；
+  第三阶段语义层残余风险三类（诱导式工具参数/确认疲劳/低风险动作累积滥用）正式登记
+  为「已接受的剩余设计风险」（threat-model §5），不分配 R 编号；Fourth Stage 前按
+  ROADMAP.md 阶段切换原则重新评估。
 
 ## 阻塞项
 
@@ -490,11 +537,14 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **等待修复后独立确认（无新开发任务）**：Second Stage 内部验收已完成、独立复验
-  发现的 4 项非阻塞测试基础设施/文档缺陷已修复并全量回归。不切换到 Third Stage、
-  不设计/拆分 Third Stage 任务、不实现 Browser Agent（Second_stage.md §10 纪律 +
-  用户指令）。用户确认修复或安排阶段切换后，再按 ROADMAP.md 阶段切换原则进入
-  下一阶段（届时 Third Stage 引入 Browser Tool 前必须重建威胁模型，见风险与限制）。
+- **T1 tool-calling 兼容层（硬前置，新对话 = 一个可验证闭环）**：扩展 ProviderRequest/
+  ProviderEvent/ProviderMessage（tools/toolCalls/role='tool'）、OpenAI-compatible
+  适配器（请求体 tools + SSE tool_calls 增量解析 + mapMessages 重放）、
+  supportsToolCalling 校准为真实值、FakeProvider 确定性工具脚本、ContextBuilder
+  tools 透传。任务文档 `doc/stage3/tasks/T1-tool-calling-layer.md`；契约
+  `doc/stage3/detailed-design.md` §2.1/§3。**红线**：本任务严禁新增任何 Browser
+  Tool 实现/交互注入/UI/IPC 改动；共读路径行为不变（未传 tools 时请求无 tools
+  字段，矩阵 11 断言保持）；T1 验证通过前禁止开始 T2–T4 的任何 Browser Tool 实现。
 
 ## 第一阶段验收未完成项
 

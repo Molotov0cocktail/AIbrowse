@@ -1,10 +1,10 @@
 # AGENTS.md — AIbrowse 项目专属开发手册
 
 > 依据 `.agents/skills/project-rules/PROJECT_RULES.md` §8 于 2026-08-13 初始化；
-> 与根目录 `Second_stage.md`（当前阶段需求/验收标准）、`ROADMAP.md` + `First_stage.md` /
-> `Third_stage.md`～`Seventh_stage.md`（已完成/后续阶段需求与验收标准）配套；
-> 技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
-> 新会话接管顺序：本文件 → 当前阶段文件（现为 `Second_stage.md`）→ `doc/tasks/progress.md`
+> 与根目录 `Third_stage.md`（当前阶段需求/验收标准）、`ROADMAP.md` + `First_stage.md` /
+> `Second_stage.md`（已完成）、`Fourth_stage.md`～`Seventh_stage.md`（后续阶段需求与验收
+> 标准）配套；技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
+> 新会话接管顺序：本文件 → 当前阶段文件（现为 `Third_stage.md`）→ `doc/tasks/progress.md`
 > → git 状态与代码核对（§2 步骤 0）。
 > 与本文件冲突时以本文件为准，通用规则基线见 `.agents/skills/project-rules/PROJECT_RULES.md`。
 > 任务进度不记在本文件：唯一进度源 `doc/tasks/progress.md`（本文件仅在有长期变化时更新，见 §2）。
@@ -14,23 +14,32 @@
 - **一句话定位**：Windows 桌面「AI 信息浏览器 / AI Information Browser」——内置 Chromium 的
   多标签页浏览器，用户与 AI 共享同一浏览器会话与登录状态；AI 仅通过受限
   BrowserController / Tool Layer 操作浏览器，不得拥有任意系统权限。
-- **当前阶段（第二阶段，AI 共读）**：在不破坏第一阶段浏览器安全边界的前提下，实现
-  **PageSnapshot / Selection → AI Context → Conversation**——AI 侧栏、ConversationService、
-  ContextBuilder（纯函数）、LLMProvider（OpenAI-compatible 适配器 + FakeProvider，无厂商 SDK）、
-  SecureCredentialStore（Electron safeStorage / Windows DPAPI）。契约源
-  `doc/stage2/detailed-design.md`（2026-08-13 定稿）；任务 S1–S6 见 `doc/stage2/tasks/`。
-  **S1–S6 全部完成（2026-08-13）**；S6 最终验收：Second_stage.md §9 四组 16 项逐项
-  通过（含真实 Provider 多网站共读验证）+ §10 Exit Gate 判定通过——
-  **Second Stage 已完成内部验收，等待用户安排独立复验或阶段切换**（阶段指针不切换、
-  不实现 Browser Agent），证据见 Second_stage.md §9/§10 与 progress.md。
-  **本阶段不实现自主浏览 Agent**：严禁新增 click/fill/scroll、自动搜索、多步 Browser
-  Agent Tool（均属 Third Stage）。
+- **当前阶段（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
+  Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（T1 硬前置）、Tool Registry、
+  SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
+  Agent Loop（最大步数/超时/取消/防循环）、确定性权限分级与确认状态机（L0 自动 /
+  L1 自动显著展示 / L2 用户确认 / L3 禁止）、操作可见性与审计日志。契约源
+  `doc/stage3/detailed-design.md`（2026-08-14 定稿）+ 安全契约源
+  `doc/stage3/threat-model.md`（Prompt Injection 威胁模型已按第二阶段约定重建，
+  先于任何 Browser Tool 实现）；任务 T1–T8 见 `doc/stage3/tasks/`。
+  **设计定稿与任务拆分已完成（2026-08-14），尚未开始实现**——第一个实现任务 T1
+  （tool-calling 兼容层）为硬前置：T1 验证通过前禁止引入任何 Browser Tool 实现
+  （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
+  核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
+  是什么」。AI 不得直接获得 Electron API、webContents、Node.js、shell 或任意
+  JavaScript 执行权限。
+- **已完成（第二阶段，AI 共读）**：PageSnapshot / Selection → AI Context →
+  Conversation——AI 侧栏、ConversationService、ContextBuilder、LLMProvider
+  （OpenAI-compatible + FakeProvider）、SecureCredentialStore（safeStorage/DPAPI）。
+  §9 验收逐项通过 + §10 Exit Gate 通过（2026-08-13）；用户独立复验发现 4 项
+  非阻塞缺陷已修复并全量回归（2026-08-14，证据见 progress.md）。
 - **已完成（第一阶段，浏览器核心）**：`Browser → PageSnapshot → Browser Tool Interface`
   ——BrowserController/TabManager/PageReader/SessionManager + WebContentsView 多标签浏览器 +
   PageSnapshot 采集 + 调试面板；Exit Gate 已于 2026-08-13 通过（First_stage.md §十四）。
 - **阶段机制**：`ROADMAP.md` 描述全阶段路线与切换原则；各阶段需求/验收标准分文件存放
-  （当前 `Second_stage.md`；已完成 `First_stage.md`；后续 `Third_stage.md`～`Seventh_stage.md`）。
-  当前处于第二阶段；**只有当前 Stage 的 Exit Gate 通过后才切换下一 Stage**（纪律见 §2 文档职责划分）。
+  （当前 `Third_stage.md`；已完成 `First_stage.md` / `Second_stage.md`；后续
+  `Fourth_stage.md`～`Seventh_stage.md`）。当前处于第三阶段；**只有当前 Stage 的
+  Exit Gate 通过后才切换下一 Stage**（纪律见 §2 文档职责划分）。
   各 Stage 文件的完整内容不复制进本文件，需要时直接读对应 Stage 文件。
 - **技术栈**：Electron + TypeScript + React + Vite + Node.js；页面承载用官方当前推荐的
   **WebContentsView**（禁用已废弃的 BrowserView）；测试 **Vitest**、lint **ESLint**、格式 **Prettier**。
@@ -45,7 +54,7 @@
   `>=4.8.4 <6.1.0`）/ Vitest 4.1.10 / ESLint 10.8.1（flat config）/ Prettier 3.9.6；
   依赖全部精确版本固定（无 ^/~，`.npmrc` save-exact=true），`engines.node` `>=24 <25` +
   `.node-version` = 24.18.0；main/preload 输出 CJS（preload 必须 CJS 以兼容 `sandbox=true`）。
-  ⚠️ **基线冻结**：第二阶段内任何 Agent 不得擅自升级上述核心工具链；升级必须走 §3「技术基线升级流程」。
+  ⚠️ **基线冻结**：第三阶段内任何 Agent 不得擅自升级上述核心工具链；升级必须走 §3「技术基线升级流程」。
 - **交付形态**：Windows 桌面应用（Electron 产物）。
 - **git 双远程**（用户已提供，2026-08-13）：
   - Gitee（默认推送目标，国内直连，无需代理）：
@@ -65,24 +74,24 @@
 ```
 ROADMAP.md（全阶段路线与切换原则，低频修改）
   ↓
-当前阶段文件 Second_stage.md（已完成 First_stage.md；后续 Third_stage.md～Seventh_stage.md，
-Exit Gate 通过后依次启用）
+当前阶段文件 Third_stage.md（已完成 First_stage.md / Second_stage.md；后续
+Fourth_stage.md～Seventh_stage.md，Exit Gate 通过后依次启用）
   ↓
 AGENTS.md（长期规则/稳定架构/技术基线，低频修改）
   ↓
 doc/（第一阶段历史：proposal / high-level-design / detailed-design，定稿不覆盖；
-    Second Stage 起：doc/stage2/、doc/stage3/… 各自独立的 proposal / 高层设计 /
-    详细设计 / 任务文档——目录约定 2026-08-13 起）
+    Second Stage 起：doc/stage2/（定稿）、doc/stage3/（当前）… 各自独立的
+    proposal / 高层设计 / 详细设计 / 任务文档——目录约定 2026-08-13 起）
   ↓
 doc/tasks/progress.md（当前工程状态/短期记忆，高频更新）
   ↓
 Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ```
 
-- **阶段切换纪律**：当前处于第二阶段。只有当前 Stage 的 **Exit Gate** 全部通过（逐项核对该 Stage
+- **阶段切换纪律**：当前处于第三阶段。只有当前 Stage 的 **Exit Gate** 全部通过（逐项核对该 Stage
   文件的 Exit Gate/验收标准、progress.md 无阻塞级缺陷、全量验证通过）后，才可切换到下一 Stage；
   切换按 ROADMAP.md「阶段切换原则」执行；阶段完成后**停下向用户报告**，不得擅自进入下一阶段
-  （Second_stage.md §10 / 本文件附 C）。
+  （Third_stage.md §10 / 本文件附 C）。
 - 不引入额外的状态文件 / Agent 日志 / checklist / handoff / summary 文件，除非实际开发证明必要。
 - **文档用于理解需求与意图；Git、当前代码、测试和构建结果用于确认项目实际状态。**
   若 progress.md 声称某功能已完成、但代码/Git/测试证明没有：以实际工程状态为事实，修正文档，再继续开发。
@@ -91,7 +100,8 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ### 步骤 0：新对话接管（每次新对话开始先做）
 
 1. 阅读 `AGENTS.md`（本文件）
-2. 阅读当前阶段文件（现为 `Second_stage.md`；已完成 `First_stage.md`，后续 `Third_stage.md`～`Seventh_stage.md`）
+2. 阅读当前阶段文件（现为 `Third_stage.md`；已完成 `First_stage.md` / `Second_stage.md`，
+   后续 `Fourth_stage.md`～`Seventh_stage.md`）
 3. 阅读 `doc/tasks/progress.md`（如存在）
 4. `git status` + 最近若干条 `git log --oneline`
 5. 检查本次任务相关的实际代码和配置
@@ -103,7 +113,8 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 1. **稳定项目（含 git 前置）**：动工前摸清语言/框架/包管理器/测试/lint/构建/现有约定。
    git 远程已配置（§1）；新建项目时再执行 git init + 双远程 + .gitignore（`log/`、密钥/令牌本地文件、
    构建产物、IDE 个人配置）。
-2. **需求澄清**：Second_stage.md 已是阶段需求源（契约源 `doc/stage2/detailed-design.md`）；新需求先写 proposal。
+2. **需求澄清**：Third_stage.md 已是阶段需求源（契约源 `doc/stage3/detailed-design.md` +
+   安全契约源 `doc/stage3/threat-model.md`）；新需求先写 proposal。
 3. **设计先行**：风险、歧义、备选方案必须写明，不得用自信措辞掩盖不确定性。
 4. **任务拆分（闭环粒度）**：**一个新对话 ≈ 一个可验证的开发闭环**，不机械等于一个文件或一个模块。
    每个任务明确：目标 / 范围 / 非目标 / 涉及模块 / 验收标准 / 测试方式 / 完成定义。
@@ -164,6 +175,15 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
   禁止复用缓存快照——防串页核心）；禁止 LLMProvider 直接访问 webContents；禁止 React Chat UI
   接触 API Key（只写不读）；禁止网页内容直接拼接进 system prompt（只进 user 消息的
   `UNTRUSTED_WEB_CONTENT` 块，system 恒为应用常量）。
+- **Agent 子系统架构纪律（第三阶段新增，doc/stage3/detailed-design.md 定稿）**：依赖方向
+  `UI(AI 面板) → ConversationService(agent 模式) → AgentLoop → ToolRegistry →
+PermissionPolicy / ConfirmManager / ToolExecutor → BrowserController / SearchProvider`；
+  工具实现**只经 BrowserController / SearchProvider**操作浏览器（禁止绕过直连 webContents）；
+  AgentLoop/AgentContextBuilder 为纯核心零 Electron 依赖；**权限判定为确定性纯函数**
+  （模型只是提议者，无任何通道修改工具列表/权限矩阵/system 提示）；Tool Result 与网页
+  内容同等视为不可信（`UNTRUSTED_TOOL_RESULT` 块）；审计全量脱敏（fill 值只记长度）。
+  **硬前置**：T1 tool-calling 兼容层验证通过前禁止引入任何 Browser Tool 实现
+  （proposal §8 Entry Gate 校正方式）。
 - **安全红线**（First_stage.md §八，从第一版开始）：远程网页 `nodeIntegration=false`、
   `contextIsolation=true`、`sandbox=true`（架构允许时）、`webSecurity` 不得关闭；
   远程网页不得直接访问 Electron API / 文件系统 / 程序内部数据；preload bridge 最小权限，
@@ -177,13 +197,17 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
   检查解决；不得删除有意义的测试来让测试通过；不留明显 placeholder 实现然后声称完成。
 - **生命周期纪律**（First_stage.md §十二）：对 Electron 生命周期、Tab 销毁、WebContents 销毁
   做好清理；注意 memory leak 与 event listener 重复注册。
-- **范围纪律（第二阶段不做清单，Second_stage.md §4 + 三阶段红线）**：**严禁新增
-  click/fill/scroll、自动搜索、多步 Browser Agent Tool（均属 Third Stage）**；AI 自动
-  创建/关闭大量标签页、收藏/信源库、SQLite 业务数据层、向量数据库、RSS/Research/图表/
-  自动 Diff、多 Agent 编排、后台定时任务、完整浏览器历史记录系统、密码管理器
-  （SecureCredentialStore 仅管 API Key）、Markdown/富文本回答渲染、Playwright——
-  除非本阶段目标绝对必要，不得主动扩展。
-- **技术基线冻结（第二阶段同样生效）**：§1 已冻结版本不得由后续 Agent 擅自升级。升级流程：
+- **范围纪律（第三阶段不做清单，Third_stage.md §5.3/§6 + 任务红线）**：**严禁万能工具**
+  ——shell.exec、eval、任意 JavaScript 执行、任意文件系统读写、任意 HTTP POST、任意
+  Electron IPC、任意数据库 SQL（**永久红线**，本阶段及以后均禁止，grep 断言）；
+  **不放宽既有 Electron 安全边界**（远程网页隔离/Tab 无 preload/权限默认拒绝/
+  window.open deny/UI 导航保护均不变）；**T1 tool-calling 兼容层完成前禁止任何
+  Browser Tool 实现**。本阶段不做：长期信源数据库、AI 自动添加收藏、多源 Research
+  报告、图表/复杂结果渲染、RSS、Watch、定时任务、自动支付/购买/发布、浏览器扩展
+  生态、多 Agent 编排、Agent 记忆系统、向量数据库、page.extract 独立工具、
+  向 Agent 开放的关闭 Tab 工具（Agent 打开的 Tab 归用户管理）——除非本阶段目标
+  绝对必要，不得主动扩展。
+- **技术基线冻结（第三阶段同样生效）**：§1 已冻结版本不得由后续 Agent 擅自升级。升级流程：
   先说明理由 → 验证 typecheck + lint + test + build + Electron 冒烟全绿 → 同步相关文档 → 提交。
 - **依赖可复现**：`package-lock.json` 必须提交；禁止删除 lockfile 后重新解析依赖来「解决」问题；
   npm 出现 peer dependency / engine 警告时不得用 `--force` / `--legacy-peer-deps` 直接掩盖，
@@ -225,19 +249,39 @@ d:\AIbrowse\
     │       ├── session-manager.ts             # persist:aibrowse 分区（多 Profile 预留；双权限处理器默认拒绝）
     │       ├── permission-policy.ts / .test.ts  # 网页权限策略纯函数（v1 默认拒绝）+ 4 组用例（安全补丁）
     │       ├── page-reader.ts                 # （T4）快照编排：executeJavaScript 注入 + L0–L2 降级阶梯
-    │       ├── snapshot-script.ts             # （T4）注入脚本源（自安装 IIFE 字符串，DOM lib 引用保持 TS 检查）
+    │       │                                  #   （T3 规划：交互注入编排）
+    │       ├── snapshot-script.ts             # （T4）注入脚本源（自安装 IIFE 字符串，DOM lib 引用保持 TS 检查；
+    │       │                                  #   T3 规划：isSubmit 语义元数据）
+    │       ├── interaction-script.ts          # （T3 规划）固定模板交互脚本（click/fill/scroll，
+    │       │                                  #   参数只进 JSON 字面量）
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 46 用例
-    │   └── ai/                                # （Second Stage，契约见 doc/stage2/detailed-design.md）
+    │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
+    │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅）会话编排：ask 实时快照/中止/事件/持久化接线
-    │       ├── conversation-store.ts          # （S3 ✅）会话 JSON 持久化（原子写/上限/损坏容错）
+    │       │                                  #   （T5 规划：agentAsk/confirmTool/ToolStep 持久化接线）
+    │       ├── conversation-store.ts          # （S3 ✅）会话 JSON 持久化（原子写/上限/损坏容错；
+    │       │                                  #   T5 规划：version 2 ToolStep 消息）
     │       ├── context-builder.ts             # （S2 ✅）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
+    │       │                                  #   （T1 规划：tools 透传）
     │       ├── context-budget.ts              # （S2 ✅）纯函数：预算常量与确定性裁剪
     │       ├── credential-store.ts            # （S1 ✅）SecureCredentialStore：API Key 密文落盘
     │       │                                  #   （cipher 后端注入可替换，Q2）+ 纯文件格式 + 单测
     │       ├── safe-storage-cipher.ts         # （S1 ✅）Electron safeStorage（DPAPI）→ CipherBackend 薄胶水
     │       ├── config-store.ts                # （S1 ✅）Provider 配置 JSON（非机密，形状校验 fail-closed）+ 单测
-    │       └── provider/                      # （S1 ✅）LLMProvider 接口/工厂注册表/OpenAI-compatible
-    │                                          #   适配器（fetch+SSE）/FakeProvider/error-normalize + 单测
+    │       ├── provider/                      # （S1 ✅）LLMProvider 接口/工厂注册表/OpenAI-compatible
+    │       │                                  #   适配器（fetch+SSE）/FakeProvider/error-normalize + 单测
+    │       │                                  #   （T1 规划：tools/SSE tool_calls/FakeProvider 工具脚本）
+    │       ├── agent/                         # （T5 规划）agent-loop（纯编排状态机）/agent-context-builder/
+    │       │                                  #   agent-history/agent-safety（防循环纯函数）
+    │       ├── tools/                         # （T2 规划）tool-types/tool-registry（schema 校验）/
+    │       │                                  #   tool-executor（校验→权限→确认→执行→审计）/
+    │       │                                  #   browser-tools（T2 只读导航）/interaction-tools（T3）/
+    │       │                                  #   search-tool（T4）
+    │       ├── permission/                    # （T2 规划）permission-policy：L0–L3 确定性权限纯函数
+    │       ├── confirm-manager.ts             # （T2 规划）确认状态机（pending/approve/deny/作废）
+    │       ├── audit-log.ts                   # （T2 规划）结构化审计条目（参数脱敏摘要）
+    │       └── search/                        # （T4 规划）search-provider：接口 + Bing 页面实现
+    │                                          #   （临时 Tab → 快照解析 → 统一结果结构）
     ├── preload/
     │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui
     │   │                                      #   + conversation/config（S4 ✅）；事件通道单次注册）
@@ -260,7 +304,9 @@ d:\AIbrowse\
 
 分层方向（不可反向或跳跃）：`UI → BrowserController → TabManager / PageReader / SessionManager → Electron APIs`；
 AI 子系统：`UI(AI 面板) → ConversationService → ContextBuilder / LLMProvider → SecureCredentialStore`，
-网页上下文 `ConversationService → BrowserController.getPageSnapshot`。
+网页上下文 `ConversationService → BrowserController.getPageSnapshot`；
+Agent 子系统（第三阶段）：`UI → ConversationService(agent) → AgentLoop → ToolRegistry →
+PermissionPolicy / ConfirmManager / ToolExecutor → BrowserController / SearchProvider`。
 按实际 Electron 项目结构调整文件布局时，必须保持该分层不变。
 
 ## 5. 模块接口速查
@@ -508,7 +554,61 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
   同套扫描）。
   **不承诺（也不得宣称）模型语义层完全免疫**：语义层剩余风险经 S6 分类校准正式登记为
   「已接受的剩余设计风险/计划内限制」（progress.md，不分配 R 编号、开放风险为「无」）；
-  Third Stage 引入 Browser Tool 前**必须重建威胁模型**（最迟复核点）。
+  **威胁模型已于 2026-08-14 随 Third Stage 切换重建定稿**（`doc/stage3/threat-model.md`，
+  先于任何 Browser Tool 实现）。
+
+### Third Stage Browser Agent 契约速查（定稿 2026-08-14；T1–T8 待实现，实现后回填）
+
+> 唯一契约源 `doc/stage3/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
+> Q1–Q15 拍板与决议 #21–#28）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
+> T-01～T-10、五层防线、红队矩阵 R-01～R-10、诚实边界声明）；任务 T1–T8 见
+> `doc/stage3/tasks/`。以下为速查摘要，**尚未与实现核对**（T1 起逐步回填）。
+
+- **tool-calling 兼容层（T1，硬前置）**：`ProviderRequest.tools?: ProviderTool[]`
+  （Registry 序列化，程序生成）；`ProviderEvent` 增 `{type:'toolCalls',
+toolCalls: ProviderToolCallDelta[]}`（SSE `delta.tool_calls` 按 index 分槽累积，
+  finish_reason=tool_calls 收尾；非法帧/非法 arguments → provider-error）；
+  `ProviderMessage` role 增 `'tool'`（toolCallId 关联）+ assistant toolCalls 重放；
+  `supportsToolCalling` 校准为真实值；FakeProvider 工具脚本（离线确定性）；
+  `ContextBuildInput.tools` 透传。**T1 验证通过前禁止任何 Browser Tool 实现**。
+- **ToolRegistry（T2）**：`ToolDefinition`（name/description/parameters
+  （ProviderToolParameter 子集）/baseRisk/riskLift/executor）注册表；
+  `listTools(): ProviderTool[]` / `validateToolArgs`（JSON.parse 失败/未知工具/
+  缺必填/类型/enum/未知键/长度上限/tabId UUID 形状/elementId `el-N` 形状 → 失败）；
+  首批 13 工具分三批：T2 只读导航 8 个（get_tabs/get_active_tab/read/open/
+  navigate/back/forward/reload）、T3 交互 4 个（find/scroll/click/fill）、
+  T4 search.web；page.extract 与关闭 Tab 工具 v1 不实现（决议 #21/#28）。
+- **权限分级（T2，确定性纯函数）**：L0 自动（只读/滚动/查找/搜索）/ L1 自动显著
+  展示（导航/打开/click 普通元素/fill 筛选字段）/ L2 用户确认（click 提交类元素
+  ——isSubmit 结构化元数据升级）/ L3 禁止（password/file 填写、非 http/https URL；
+  购买支付等无对应工具）；`decide(toolName, args, elementSemantics)` 纯函数，
+  模型与网页无通道修改矩阵；确认状态机 pending/approve/deny/取消作废、
+  无自动批准、等待计入总超时。
+- **交互能力与 elementId 生命周期（T3）**：BrowserController 扩展
+  `clickElement/fillElement/scrollTab`（安全返回不抛异常）；interaction-script
+  固定模板（click=原生 el.click()、fill=原生 value setter+input/change、
+  scroll=window.scrollBy；参数只进 JSON 字面量）；elementId 仅当轮快照有效、
+  **执行时刻实时重新定位** + 元素类型复核、导航/刷新后旧 id → stale-element；
+  快照扩展 isSubmit 语义标志（inputs/buttons）。
+- **SearchProvider（T4）**：`search(query, signal) → SearchProviderResult`
+  （SearchResult {title/url/snippet/source}）；v1 Bing 搜索页实现（临时可见 Tab →
+  ready → 实时快照 → 确定性解析 → 关闭 Tab）；容忍设计（结构变化 → 空结果 +
+  warnings）；接口隔离保未来替换（决议 #22）。
+- **AgentRuntime（T5）**：AgentLoop 纯编排状态机（running/waiting-confirm/done/
+  cancelled/step-limit/timeout/loop-detected/no-progress/error）；上限常量
+  MAX_STEPS=12 / 总超时 420s（含确认等待）；防循环（签名=工具名+规范化参数，
+  连续 3 次/累计 5 次 → loop-detected，连续 2 步无工具无文本 → no-progress，
+  无白名单例外——决议 #24）；ToolResult ≤ 4000 字符截断（read 8000）+ 错误
+  结构化错误码（工具错误永不以 ok=true 出现）；agent-ask 与共读 ask 在途互斥；
+  ToolStep 消息持久化（精简版，fill 值替换「（已输入 N 字符）」，version 2
+  读兼容 v1）；AGENT_SYSTEM_PROMPT 编译期常量；Tool Result 进
+  UNTRUSTED_TOOL_RESULT 块（闭合转义同 UNTRUSTED 块）。
+- **审计与可见性（T2/T6）**：每工具调用恰好一条审计（requestId/toolCallId/工具/
+  参数摘要/决策 auto|auto-visible|confirmed|denied|forbidden/结果/耗时/错误码）；
+  fill 值只记长度；IPC 通道 conversation:agent-ask/agent-confirm/agent-step/
+  agent-confirm-request/agent-run-done（sender 校验 + 只发主窗口）；
+  UI：Agent 模式切换/AgentStatusBar/ToolCallList/ConfirmDialog（确定性 summary，
+  文案不经模型网页，deny 默认高亮）/停止按钮/ToolStep 紧凑条目。
 
 ## 6. 常用命令
 
@@ -678,10 +778,12 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
   Chromium 网络层拦截（ERR_UNSAFE_REDIRECT，探针实测不触发 will-redirect）；当前无自定义
   协议注册，未来注册 `aibrowse://` 等协议时该拦截点是唯一防线（冒烟以 custom:// 目标验证
   handler 真实触发）。
-- **Prompt Injection 边界声明（Second Stage 起，长期事实）**：结构性隔离保证网页内容不能
-  取得权限、读取密钥、调用写操作或改变消息角色（机器可验证，doc/stage2/detailed-design.md
-  §12）；但**不承诺**模型在语义层完全不受网页文本诱导（误导性回答/诱导式表述的剩余风险
-  如实登记于 progress.md）。Third Stage 引入 Browser Tool 前必须重建威胁模型。
+- **Prompt Injection 边界声明（长期事实，第三阶段已重建）**：第二阶段结构性隔离保证
+  网页内容不能取得权限、读取密钥、调用写操作或改变消息角色（doc/stage2/detailed-design.md
+  §12）；第三阶段引入 Browser Tool 前**威胁模型已重建定稿**（2026-08-14，
+  `doc/stage3/threat-model.md`：威胁枚举 T-01～T-10、五层防线、红队矩阵 R-01～R-10、
+  诚实边界声明——语义层诱导式工具参数/确认疲劳/低风险动作累积三类残余风险如实登记，
+  不宣称免疫）。
 
 ## 附 A：验证矩阵（「作业完成」的定义）
 
@@ -693,20 +795,21 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
 | 重大版本     | + Release 发布与独立验证        | tag + 上传 + 下载 URL 验证          |
 | 纯文档       | 免构建/重打包                   | 但提交推送必须                      |
 
-## 附 B：第二阶段验收标准（摘要，完整清单见 Second_stage.md §9）
+## 附 B：第三阶段验收标准（摘要，完整清单见 Third_stage.md §9）
 
-- **AI 配置**：可配置至少一种 LLM Provider（OpenAI-compatible）；API Key 不进入源码/日志/
-  网页/prompt/renderer 可读通道；Provider 抽象不绑定业务逻辑（无厂商 SDK）。
-- **共读**：可回答当前网页/选中文本问题；可总结页面；切 Tab 后上下文正确更新；
-  页面刷新/销毁不导致旧快照错误复用（提问时刻实时采集）；超长页面有明确裁剪策略。
-- **安全**：网页内容按不可信输入处理（UNTRUSTED_WEB_CONTENT 块 + 常量 system）；
-  网页 Prompt Injection 不能覆盖系统/用户指令（结构性断言）；当前阶段 AI 不具备自主浏览
-  写操作（无 click/fill/scroll/搜索 Tool）；Renderer/远程网页无法读取 API Key。
-- **Engineering**：test / typecheck / lint / build 全绿；Electron 实际共读冒烟通过
-  （FakeProvider 离线矩阵）；日志可用于定位 Provider/Context 问题且无敏感信息。
+- **Agent**：可完成多步低风险网页任务；有最大步骤（12）/超时（420s）/取消；
+  Tool 调用全程可审计；失败能安全停止而非无限重试（防循环三触发 + 结构化终止理由）。
+- **Browser Tools**：read/find/scroll/open/click/fill 等核心工具稳定；elementId
+  生命周期正确；页面刷新后不会误操作旧元素（执行时刻重新定位）。
+- **Search**：AI 可经统一 SearchProvider 查询；搜索结果可继续交给 Browser Agent
+  打开读取。
+- **Permission**：高风险动作无法无确认执行（L2 确认门）；网页文本无法提升 Tool
+  权限（确定性权限纯函数）；无万能 shell/eval/filesystem 工具（永久红线 grep 断言）。
+- **Engineering**：全量验证通过；多个真实网站 Agent smoke test 通过（真实 Provider
+  可选门控，需用户提供 Key）；Agent 操作日志无敏感信息。
 
-## 附 C：第二阶段完成报告格式（Second_stage.md §10）
+## 附 C：第三阶段完成报告格式（Third_stage.md §10）
 
-阶段完成后**停下**，不擅自开发第三阶段：更新 progress.md → 向用户报告（已实现内容 /
-验证结果 / 剩余风险 / Third Stage 详细设计的切入点建议）→ **不直接实现 Browser Agent**，
+阶段完成后**停下**，不擅自开发第四阶段：更新 progress.md → 向用户报告（已实现内容 /
+验证结果 / 剩余风险 / Fourth Stage 的切入点建议）→ **不直接实现信源数据库**，
 等待下一条指令。

@@ -1,29 +1,37 @@
 # AIbrowse — AI 信息浏览器
 
-> 第二阶段目标：**AI 共读与当前网页对话**——`PageSnapshot / Selection → AI Context → Conversation`：
-> AI 侧栏、ConversationService、ContextBuilder、LLMProvider（OpenAI-compatible 适配器 +
-> FakeProvider，无厂商 SDK）、SecureCredentialStore（safeStorage/DPAPI）。契约源
-> `doc/stage2/detailed-design.md`。本阶段不实现自主浏览 Agent（无 click/fill/scroll、
-> 自动搜索、多步 Browser Agent Tool——属 Third Stage）。**已实现并完成内部验收
-> （2026-08-13）**。
-> 需求源：`Second_stage.md`；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
+> 第三阶段目标：**Browser Agent 与受限工具系统**——AI 通过受限、可审计、可撤销的
+> Tool Layer 自主完成低风险浏览任务：tool-calling 兼容层（T1 硬前置）、Tool Registry、
+> SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
+> Agent Loop（最大步数/超时/取消/防循环）、确定性权限分级与确认状态机（L0 自动 /
+> L1 自动显著展示 / L2 用户确认 / L3 禁止）、操作可见性与审计日志。契约源
+> `doc/stage3/detailed-design.md`；安全契约源 `doc/stage3/threat-model.md`
+> （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
+> **设计定稿与任务拆分已完成（2026-08-14），尚未开始实现**（任务 T1–T8）。
+> 核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
+> 需求源：`Third_stage.md`；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
-## 当前状态（2026-08-13）
+## 当前状态（2026-08-14）
 
-- ✅ **第一阶段完成（Exit Gate 通过）**：T0 项目基线 → T1 详细设计定稿 → T2 浏览器核心
-  （BrowserController/TabManager/SessionManager + WebContentsView）→ T3 浏览器 UI
-  （工具栏/标签栏/地址栏/导航保护）→ T4 PageSnapshot（PageReader/采集脚本/normalize/调试面板）→
+- ✅ **第一阶段完成（Exit Gate 通过，2026-08-13）**：T0 项目基线 → T1 详细设计定稿 →
+  T2 浏览器核心（BrowserController/TabManager/SessionManager + WebContentsView）→
+  T3 浏览器 UI → T4 PageSnapshot（PageReader/采集脚本/normalize/调试面板）→
   T5 收尾（安全审计 + R-02 will-redirect 加固 + 验收清单逐项核对 + 文档同步）。
   验收证据见 `First_stage.md` §十四。
-- ✅ **第二阶段（AI 共读）已完成内部验收（2026-08-13）**：S1 Provider 抽象与凭据安全基座 →
-  S2 ContextBuilder 纯核心 → S3 ConversationService 与会话持久化 → S4 AI 侧栏 UI 与
-  IPC/bridge 扩展 → S5 安全审计与 Prompt Injection 验证 → S6 收尾验收（§9 逐项通过 +
-  §10 Exit Gate 判定通过，含真实 Provider 多网站共读验证）。
-  **独立复验（2026-08-14）**：Exit Gate 实质条件已通过，发现 4 项非阻塞测试基础设施/
-  文档缺陷（冒烟矩阵 9 新建 Tab 未自清理致 `AIBROWSE_SMOKE_URL` 变体退出码 1、README
-  状态表述陈旧、表格页问题可由模型先验知识回答、真实 Provider 日志扫描未覆盖装配期）——
-  **已修复并全量回归，等待修复后独立确认**。阶段指针不切换，**不实现 Third Stage
-  Browser Agent**。证据见 `Second_stage.md` §9/§10 与 `doc/tasks/progress.md`。
+- ✅ **第二阶段（AI 共读）完成并通过验收（2026-08-13/14）**：S1 Provider 抽象与凭据
+  安全基座 → S2 ContextBuilder 纯核心 → S3 ConversationService 与会话持久化 →
+  S4 AI 侧栏 UI 与 IPC/bridge 扩展 → S5 安全审计与 Prompt Injection 验证 →
+  S6 收尾验收（§9 四组 16 项逐项通过 + §10 Exit Gate 判定通过，含真实 Provider
+  多网站共读验证）。用户独立复验（2026-08-14）发现的 4 项非阻塞测试基础设施/
+  文档缺陷已修复并全量回归（红态退出码 1 → 绿态 0）。证据见 `Second_stage.md`
+  §9/§10 与 `doc/tasks/progress.md`。
+- 🔨 **第三阶段（Browser Agent）设计定稿与任务拆分完成（2026-08-14）**：Entry Gate
+  逐项核验通过（「tool calling」项经循环式门槛判定记录校正——该能力属第三阶段自身
+  交付物，校正为 T1 硬前置：T1 验证通过前禁止引入任何 Browser Tool 实现，判定证据
+  见 `doc/stage3/proposal.md` §8）；Prompt Injection 威胁模型重建定稿
+  （`doc/stage3/threat-model.md`）；契约定稿 `doc/stage3/detailed-design.md`；
+  任务 T1–T8 见 `doc/stage3/tasks/`（**下一个推荐任务：T1**）。**尚未开始实现，
+  不引入任何 Browser Tool。**
 
 ## 技术栈（实际落地版本）
 
@@ -114,12 +122,19 @@ React UI（渲染进程）→ BrowserController（主进程，浏览器能力统
   url/title）/ L3（tab 不可用，null）。type=password 不采集 value。
 - 纯逻辑（地址栏输入判断 `src/shared/url.ts`、Tab 状态机、权限策略、UI 导航保护、
   快照 normalize）零环境依赖、可单测；UI/IO 副作用在外层胶水。
-- AI 子系统（第二阶段，已实现并通过内部验收）：依赖方向 `UI(AI 面板) → ConversationService →
+- AI 子系统（第二阶段，已实现并通过验收）：依赖方向 `UI(AI 面板) → ConversationService →
 ContextBuilder / LLMProvider → SecureCredentialStore`；网页上下文经 `ConversationService →
 BrowserController.getPageSnapshot`（**提问时刻实时采集**，禁止复用缓存快照——防串页）。
   LLM 请求仅在主进程发起（API Key 不出主进程，渲染层只写不读）；网页内容只进 user 消息的
   `UNTRUSTED_WEB_CONTENT` 块（system 恒为应用常量）；Key 落盘仅 safeStorage（Windows DPAPI）
   密文；会话持久化为 userData 下 JSON（不存快照正文，支持「不保存」会话）。
+- Browser Agent（第三阶段，设计定稿待实现）：`UI → ConversationService(agent 模式) →
+AgentLoop → ToolRegistry → PermissionPolicy / ConfirmManager / ToolExecutor →
+BrowserController / SearchProvider`；工具实现只经 BrowserController/SearchProvider 操作
+  浏览器；权限判定为确定性纯函数（模型只是提议者）；Tool Result 与网页内容同等视为不可信；
+  禁止万能工具（shell/eval/任意 JS/文件系统/HTTP POST/任意 IPC/SQL 永久红线）；
+  Element 交互经固定模板注入脚本（click/fill/scroll，参数只进 JSON 字面量），
+  elementId 执行时刻重新定位；威胁模型见 `doc/stage3/threat-model.md`。
 
 ## 目录结构
 
@@ -127,18 +142,24 @@ BrowserController.getPageSnapshot`（**提问时刻实时采集**，禁止复用
 src/
 ├── main/          # 主进程：入口（生命周期/窗口/安全默认值/IPC 装配/导航保护）、logger、
 │   │              #   smoke（冒烟自检：多 Tab/导航保护/真实采集/敌对页/302/UI 端到端/Session/
-│   │              #             AI 共读矩阵（S3/S4 实现后））
+│   │              #             AI 共读矩阵）
 │   ├── browser/   # BrowserController / TabManager / SessionManager / PageReader /
 │   │              #   snapshot-script + snapshot-normalize / tab-state / permission-policy
-│   └── ai/        # （第二阶段，S1–S4 实现）ConversationService / ConversationStore /
+│   │              #   （第三阶段 T3 规划：interaction-script 交互注入）
+│   └── ai/        # （第二阶段已实现）ConversationService / ConversationStore /
 │                  #   ContextBuilder + budget / CredentialStore / ConfigStore /
 │                  #   provider（LLMProvider/OpenAI-compatible/FakeProvider/error-normalize）
-├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config）
-├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏，S4）
-└── shared/        # 共享类型（app/browser/ipc/conversation）+ 纯逻辑（url.ts）
+│                  # （第三阶段规划）agent/（AgentLoop 等）+ tools/（Registry/executor）
+│                  #   + permission/ + confirm-manager + audit-log + search/（T1–T5）
+├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
+│                  #   第三阶段 T6 规划 agent 通道）
+├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏；
+│                  #   第三阶段 T6 规划 Agent 模式/状态栏/确认对话框）
+└── shared/        # 共享类型（app/browser/ipc/conversation + 第三阶段 T2 规划 agent）+ 纯逻辑（url.ts）
 ```
 
-完整结构与职责见 `AGENTS.md` §4；第二阶段契约与任务见 `doc/stage2/`。
+完整结构与职责见 `AGENTS.md` §4；第二阶段契约与任务见 `doc/stage2/`（定稿）；
+第三阶段契约与任务见 `doc/stage3/`。
 
 ## 日志
 
@@ -161,7 +182,9 @@ Electron 行为由冒烟自检真实启动验证（见上）。约定见 `AGENTS
 - 地址栏不支持中文/国际化域名（IDN，走搜索兜底）；搜索引擎暂硬编码 Bing（后续换 SearchProvider）。
 - 无 CI / 打包配置（第一阶段验收不要求；打包属 Seventh Stage）。
 - 冒烟中的搜索验证在离线环境断言「发起 Bing 搜索导航」而非页面加载完成（联网冒烟变体可验证）。
-- Prompt Injection 边界（第二阶段定稿）：结构性隔离保证网页内容不能取得权限、读取密钥、
-  调用写操作或改变消息角色（机器可验证）；但**不承诺**模型在语义层完全不受网页文本诱导
-  ——剩余风险如实登记于 `doc/tasks/progress.md`，Third Stage 引入工具前重建威胁模型。
+- Prompt Injection 边界：第二阶段结构性隔离保证网页内容不能取得权限、读取密钥、调用写
+  操作或改变消息角色（机器可验证）；第三阶段引入 Browser Tool 前**威胁模型已重建定稿**
+  （`doc/stage3/threat-model.md`：五层防线 + 红队矩阵 R-01～R-10）。仍**不承诺**模型在
+  语义层完全不受网页文本诱导——第三阶段三类残余风险（诱导式工具参数/确认疲劳/低风险
+  动作累积）如实登记，不宣称免疫。
 - 详细清单见 `doc/tasks/progress.md`「计划内限制与延期项」。
