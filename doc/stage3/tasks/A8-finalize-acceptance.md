@@ -56,10 +56,12 @@
 
 ## 完成定义
 
-- ~~Exit Gate 判定通过且证据齐备~~ → **按 2026-08-14 实施结果校准**：Exit Gate
-  五项技术条件逐项判定（1/2/3/4/5 PASS，条件 4 的 RT-10 真实观察 NOT RUN），
-  **总 Exit 决策 HOLD/PENDING**（§9 Engineering 真实网站 smoke BLOCKED——
-  唯一已配置 Provider 不支持 tools；不伪造通过、不放宽验收标准）；
-  文档与代码一致；提交推送双远程；progress.md 标记 A8 完成（总判定
-  HOLD/PENDING）；**停下向用户报告**：已实现内容 / 验证结果（含 BLOCKED 项
-  与证据）/ 剩余风险 / 下一任务（真实 Provider Agent 验收补验），等待用户指令。
+- **按 2026-08-14 补验最终结果校准**：Exit Gate 五项技术条件逐项判定全部 PASS
+  （含条件 1/4 真实模型证据），**第三阶段总 Exit 决策 = `GO/PASS`**（§9 五组
+  全 PASS——Engineering「多个真实网站 Agent smoke test 通过」由 A7 补验最终
+  执行改判：deepseek-v4-pro，§7 场景 1–6 全部真实完成，`LIVE_SMOKE_PASS`
+  退出码 0；此前 BLOCKED 根因 = wire 名称契约，非「Provider 不支持 tools」；
+  不伪造通过、不放宽验收标准）；文档与代码一致；提交推送双远程；progress.md
+  标记 A8 完成（总判定 GO/PASS）；**停下向用户报告**：已实现内容 / 验证结果 /
+  剩余风险（威胁模型 §5 四类语义层残余风险不变）/ 下一任务（Fourth Stage
+  进入前需求澄清与详细设计，不直接实现），等待用户指令。

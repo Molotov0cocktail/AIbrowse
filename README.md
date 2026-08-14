@@ -10,11 +10,10 @@
 > **A1 tool-calling 兼容层、A2 Tool Registry/权限分级与确认状态机/审计日志、
 > A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）、
 > A4 SearchProvider 与 search_web、A5 Agent Runtime、A6 操作可见性 UI 与通道、
-> A7 红队矩阵与安全审计（离线部分 RT-01～RT-08 + RT-11）、A8 收尾验收
-> 已实施（2026-08-14）；总 Exit 决策 HOLD/PENDING——真实网站 Agent smoke
-> BLOCKED：真实调用首轮 400 根因已确诊为 wire 名称契约（13 工具名携带点号
-> 违反 function.name 约束，非「模型不支持 tools」），离线修复已落地（决议 #35），
-> 待用户重新授权后真实补验**
+> A7 红队矩阵与安全审计（RT-01～RT-08 + RT-11 + RT-10 真实模型证据）、
+> A8 收尾验收已实施（2026-08-14）；**第三阶段总 Exit 决策 = GO/PASS**——
+> 完整真实 Provider 验收通过（deepseek-v4-pro，§7 场景 1–6 全部真实完成，
+> LIVE_SMOKE_PASS 退出码 0；此前首轮 400 根因 = wire 名称契约，修复见决议 #35）**
 > （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
 > T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
 > 见 `doc/stage3/proposal.md` §11）。
@@ -69,14 +68,15 @@
     AgentStatusBar/ToolCallList/ConfirmDialog（deny 默认焦点、elementText
     页面提供不可信纯文本渲染）/停止按钮/ToolStep 历史渲染 + agent-run-state
     纯 reducer + UI 端到端冒烟 A6-UI-01～A6-UI-12——dev/生产双场景退出码 0）；
-    **A7 红队矩阵与安全审计已完成（2026-08-14，离线部分）**——冒烟 8.6
+    **A7 红队矩阵与安全审计已完成（2026-08-14）**——冒烟 8.6
     RT-01～RT-08 + RT-11（dev/生产双场景退出码 0）+ RT-09 全仓库 grep +
-    logger 日志行伪造防御修复；RT-10 与真实 Provider 场景 NOT RUN（兼容性
-    证据登记）；
-    **A8 第三阶段收尾已完成（2026-08-14）**——§9 验收逐项核对（14 项 PASS、
-    1 项 BLOCKED）+ §10 五项技术条件逐项判定，**总 Exit 决策 HOLD/PENDING**
-    （真实网站 Agent smoke 受 Provider 能力限制未执行，待 tools 兼容
-    Provider + 用户授权后补验，不进入 Fourth Stage）。
+    logger 日志行伪造防御修复；**A7 补验真实验收已完成（2026-08-14）**——
+    wire 兼容性修复（决议 #35）+ 最小预检 + 完整真实 Provider 验收
+    （deepseek-v4-pro，§7 场景 1–6 全部真实完成 + RT-10 真实模型证据 +
+    停止收敛 + 零泄漏终检，`LIVE_SMOKE_PASS` 退出码 0）；
+    **A8 第三阶段收尾已完成（2026-08-14）**——§9 五组验收全部 PASS +
+    §10 五项技术条件逐项判定 PASS，**第三阶段总 Exit 决策 = GO/PASS**
+    （等待用户 Fourth Stage 切换指令，不进入 Fourth Stage）。
 
 ## 技术栈（实际落地版本）
 
@@ -183,8 +183,8 @@ BrowserController.getPageSnapshot`（**提问时刻实时采集**，禁止复用
   LLM 请求仅在主进程发起（API Key 不出主进程，渲染层只写不读）；网页内容只进 user 消息的
   `UNTRUSTED_WEB_CONTENT` 块（system 恒为应用常量）；Key 落盘仅 safeStorage（Windows DPAPI）
   密文；会话持久化为 userData 下 JSON（不存快照正文，支持「不保存」会话）。
-- Browser Agent（第三阶段，A1–A7 已实现，A8 收尾完成——总 Exit 决策 HOLD/PENDING，
-  真实网站 Agent smoke 待 tools 兼容 Provider 补验）：`UI → ConversationService(agent 模式) →
+- Browser Agent（第三阶段，A1–A8 已实现——**总 Exit 决策 GO/PASS**，完整真实 Provider
+  验收通过）：`UI → ConversationService(agent 模式) →
 AgentLoop → ToolRegistry → PermissionPolicy / ConfirmManager / ToolExecutor →
 BrowserController / SearchProvider`；工具实现只经 BrowserController/SearchProvider 操作
   浏览器；权限判定为确定性纯函数（模型只是提议者）；**click 走确定性允许列表
@@ -320,16 +320,14 @@ ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元
   语义层完全不受网页文本诱导——第三阶段四类残余风险（诱导式工具参数/确认疲劳/低风险
   动作累积/click 允许列表目标的页内 JS 副作用）如实登记，不宣称免疫。
 - 详细清单见 `doc/tasks/progress.md`「计划内限制与延期项」。
-- **第三阶段最终验收缺口（2026-08-14 A8 判定；补验预检后根因更新，如实登记）**：
-  §9 Engineering「多个真实网站 Agent smoke test 通过」BLOCKED + Third_stage.md
-  §7 真实场景 1–6 与 RT-10 真实模型观察性证据 NOT RUN——真实调用首轮 400 的根因
-  已确诊为 **wire 名称契约**：既有 13 个工具名全部携带点号（`browser.*` 前缀与
-  `search.web`），违反 OpenAI 兼容端点对 `function.name` 的通行约束（仅字母/数字/
-  下划线/连字符 ≤64；DeepSeek 官方契约），整组 tools 载荷被拒——**并非
-  「DeepSeek V4 不支持 tools」**（官方声明 V4 Flash/Pro 支持 Tool Calls）。
-  **离线修复已落地（决议 #35）**：wire-safe 下划线工具名 + ToolRegistry 注册/
-  序列化双闸门 + thinking 模式 reasoning_content 不透明回传（不持久化/不进 UI/
-  不进日志）；未发任何真实请求。受控本地页面 FakeProvider 冒烟不替代真实验证；
-  `AIBROWSE_LIVE_AGENT_PRE=1` 最小预检与 `AIBROWSE_LIVE_AGENT=1` 场景门控、
-  本地安全夹具均已就绪，待用户重新授权后补验。第三阶段总 Exit 决策
-  HOLD/PENDING（§10 五项技术条件逐项判定已通过，见 Third_stage.md §10）。
+- **第三阶段验收结论（2026-08-14，最终状态）**：§9 五组验收全部 PASS +
+  §10 五项技术条件逐项判定 PASS + §7 真实场景 1–6 与 RT-10 真实模型证据取得——
+  **第三阶段总 Exit 决策 = GO/PASS**。过程回顾（如实登记）：首轮 400 根因 =
+  **wire 名称契约**（13 工具名携带点号违反 `function.name` 约束，非「模型不支持
+  tools」）→ 决议 #35 修复（wire-safe 下划线名 + 注册/序列化双闸门 +
+  reasoning_content 不透明回传 + 程序内内容相等校验）→ 最小预检 → 完整真实
+  Provider 验收（deepseek-v4-pro，`LIVE_SMOKE_PASS` 退出码 0，最终执行 20 次
+  HTTP 请求全部 200，当日累计 133 次零 400）。真实验证过程中发现的缺陷均为
+  测试基础设施类（冒烟断言/驱动校准），权限面/工具清单/验收标准零放宽。
+  受控本地页面 FakeProvider 冒烟不替代真实验证的规则不变（今后真实 Provider
+  变更时沿用 `-Pre` 最小预检 → `-Agent` 完整验收流程）。

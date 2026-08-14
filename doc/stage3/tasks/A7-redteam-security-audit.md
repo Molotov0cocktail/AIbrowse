@@ -51,22 +51,20 @@
 - [x] 红队矩阵夹具落地（RT-01 敌对页/RT-07 探测页/RT-04 敌对搜索页/RT-03 提交
       并存特征页/RT-05 禁填字段页/RT-11 click 越权页 + 注入文案 + 断言），
       冒烟 8.6 RT-01～RT-08 + RT-11 全量复跑（dev 连跑 + 生产产物双场景退出码 0）
-- [ ] 真实 Provider 验证（用户提供 Key 时）：真实场景 1–6 + RT-10 + 真 Key 零暴露
-      扫描；报告调用次数与用途（不报凭据）——**已获用户授权（2026-08-14）并尝试
-      执行，真实调用首轮 400 未完成，证据如实登记（不标记为通过）**：既有配置
-      （baseURL=https://api.deepseek.com，model=deepseek-v4-flash，仓库外 DPAPI
-      harness）对项目 tools 载荷返回 HTTP 400（含 stream 与否两形态），无 tools
-      请求返回 200（鉴权/端点正常）。**根因已确诊（2026-08-14 补验，用户纠正）**：
-      项目 13 个工具名全部携带点号（`browser.*` 前缀与 `search.web`），违反 OpenAI
-      兼容端点对 `function.name` 的通行约束（仅字母/数字/下划线/连字符 ≤64）——
-      **并非「DeepSeek V4 不支持 tools」**（官方声明 V4 Flash/Pro 支持 Tool
-      Calls）。**离线修复已落地（决议 #35）**：wire-safe 下划线工具名 +
-      ToolRegistry 注册/序列化双闸门 + thinking 模式 reasoning_content 不透明回传
-      （不持久化/不进 UI/不进日志）；零真实请求。未修改权限/未删工具/未改
-      supportsToolCalling。真实 Agent 场景门控 `AIBROWSE_LIVE_AGENT=1`、
-      最小预检门控 `AIBROWSE_LIVE_AGENT_PRE=1` 与 runLiveAgentScenarios
-      （场景 1–6 + RT-10 + 停止 + 零泄漏终检）代码已就绪（typecheck/lint 通过），
-      待用户重新授权后执行。
+- [x] 真实 Provider 验证（用户提供 Key 时）：真实场景 1–6 + RT-10 + 真 Key 零暴露
+      扫描；报告调用次数与用途（不报凭据）——**已完成（2026-08-14 补验最终执行，
+      `LIVE_SMOKE_PASS` 退出码 0）**：Provider=deepseek-v4-pro（仓库外 DPAPI
+      harness `-Agent`）。根因回顾：首次真实调用首轮 400 = **wire 名称契约**
+      （13 工具名携带点号违反 function.name 约束，非「模型不支持 tools」——
+      官方声明 V4 Flash/Pro 支持 Tool Calls）→ 离线修复（决议 #35：wire-safe
+      下划线名 + 注册/序列化双闸门 + reasoning_content 不透明回传 + 程序内内容
+      相等校验）→ 最小预检（协议判定 PASS）→ 完整真实验收：§7 场景 1–6 全部
+      真实通过（场景 1 搜索+新标签页打开+读取/场景 2 找 security/场景 3 双新
+      标签页对比/场景 4 筛选框 fill+read/场景 5 提交确认门 deny 零动作/场景 6
+      RT-10 结构性阻断 + 模型拒绝执行网页指令——观察性结果如实登记）+ 停止收敛 +
+      零泄漏终检（Tab/pending/临时目录/监听器/真 Key 零暴露扫描）。最终执行
+      20 次 HTTP 请求全部 200；当日累计 9 次执行 133 次请求零 400。权限面/
+      工具清单/验收标准零放宽（执行过程缺陷均为测试基础设施类，commit 分类登记）。
 - [x] 安全基线清单逐项核对（Second Stage §14 增量 + threat-model §3）：第一阶段
       隔离（Tab 无 preload/nodeIntegration=false/contextIsolation+sandbox=true/
       webSecurity 未关闭/window.open deny/权限默认拒绝/UI 导航白名单）、第二阶段
@@ -90,7 +88,8 @@
 ## 完成定义
 
 - RT-01～RT-09 + RT-11 全部有自动化断言且通过（冒烟 8.6 离线落地，dev/生产双场景
-  退出码 0）；RT-10 因 Provider 能力限制未能执行（兼容性证据登记，**不标记为
-  通过**——见实施步骤）；审计未发现需修改契约的缺陷（实现侧真实缺陷 1 处已修复
-  回归：logger 日志行伪造防御）；威胁模型 §5 残余风险分类校准写入 progress.md；
-  progress.md 标记 A7 ✅（离线部分）并推荐 A8（真实部分待 tools 兼容 Provider）。
+  退出码 0）；RT-10 真实模型证据取得（2026-08-14 补验场景 6：结构性防线全部生效 +
+  观察性结果如实登记，三类诚实边界不变）；审计未发现需修改契约的缺陷（实现侧真实
+  缺陷已修复回归：logger 日志行伪造防御 + wire 名称契约 + LIVE 模式冒烟装配 +
+  台账计数）；威胁模型 §5 残余风险分类校准写入 progress.md；
+  progress.md 标记 A7 ✅（离线 + 真实验证全部完成）。

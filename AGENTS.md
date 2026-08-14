@@ -55,10 +55,12 @@
     约束，非「模型不支持 tools」；补验离线修复已落地，见决议 #35；
     `AIBROWSE_LIVE_AGENT=1` 完整场景与 `AIBROWSE_LIVE_AGENT_PRE=1` 最小预检
     门控均就绪，真实验证待用户重新授权）。
-    **A8 第三阶段收尾已完成（2026-08-14）**——§9 验收逐项核对（14 项 PASS、
-    1 项 BLOCKED——真实网站 Agent smoke）+ §10 五项技术条件逐项判定 PASS，
-    **总 Exit 决策 HOLD/PENDING**（真实 Provider 验证缺口，不标记最终验收通过，
-    不进入 Fourth Stage）。
+    **A8 第三阶段收尾已完成（2026-08-14）**——§9 验收逐项核对 + §10 五项技术
+    条件逐项判定 PASS；**A7 补验真实验收已完成（2026-08-14）**——wire 兼容性
+    修复（决议 #35）+ 最小预检 + 完整真实 Provider 验收（deepseek-v4-pro，
+    §7 场景 1–6 + RT-10 + 停止全部真实通过，`LIVE_SMOKE_PASS` 退出码 0），
+    **第三阶段总 Exit 决策 = `GO/PASS`**（等待用户 Fourth Stage 切换指令，
+    不擅自进入）。
     纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
     （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
     核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
@@ -619,15 +621,15 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
 > Q1–Q15 拍板与决议 #21–#34）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
 > T-01～T-10、五层防线、红队矩阵 RT-01～RT-11、诚实边界声明）；任务 A1–A8 见
 > `doc/stage3/tasks/`。以下为速查摘要，**A1–A6 部分已于 2026-08-14 实现并经
-> `grep -n "^export"` 逐项核对**；A7 红队矩阵与安全审计已实施（离线部分——
-> RT-01～RT-08 + RT-11 冒烟 8.6 落地、RT-09 grep 断言、RT-10 真实模型观察
-> NOT RUN）；A8 收尾验收已完成——§9 验收逐项核对 + §10 技术条件逐项判定，
-> **总 Exit 决策 HOLD/PENDING**（真实 Provider 验证缺口：真实调用首轮 400 的
-> 根因已确诊为 **wire 名称契约**——既有 13 工具名全部携带点号违反 OpenAI 兼容
-> 端点 function.name 约束（非「模型不支持 tools」）；补验离线修复已落地（决议
-> #35：wire-safe 下划线名 + 注册/序列化双闸门 + reasoning_content 不透明回传），
-> 待用户重新授权后以 `AIBROWSE_LIVE_AGENT_PRE=1` 最小预检 → 二次授权
-> `AIBROWSE_LIVE_AGENT=1` 完整场景补验）。
+> `grep -n "^export"` 逐项核对**；A7 红队矩阵与安全审计已实施（RT-01～RT-08 +
+> RT-11 冒烟 8.6、RT-09 grep 断言、**RT-10 真实模型证据**——2026-08-14 补验
+> 场景 6：结构性防线全部生效，观察性结果如实登记）；A8 收尾验收已完成——
+> §9 五组全 PASS + §10 五项条件 PASS，**第三阶段总 Exit 决策 = `GO/PASS`**
+> （真实 Provider 验证缺口已解除：首轮 400 根因 = wire 名称契约——13 工具名
+> 携带点号违反 function.name 约束，非「模型不支持 tools」；修复见决议 #35
+> （wire-safe 下划线名 + 注册/序列化双闸门 + reasoning_content 不透明回传 +
+> 程序内内容相等校验）；完整真实验收 deepseek-v4-pro `LIVE_SMOKE_PASS`
+> 退出码 0）。
 
 - **tool-calling 兼容层（A1 ✅ 已实现，2026-08-14 grep 核对）**：shared/types/
   conversation.ts 新增 `ProviderToolParameter`/`ProviderTool`/`ProviderToolCall`
@@ -870,10 +872,12 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   `export function` 已核对，13 用例）+ `runLiveAgentScenarios`
   （`AIBROWSE_LIVE_AGENT=1` 门控：Third_stage §7 场景 1–6 + RT-10 敌对页
   （诱导目标全部指向本地安全地址）+ 停止/取消 + 零泄漏终检（Tab/pending/
-  临时目录/监听器）+ 真 Key 零暴露扫描 + 模型轮次台账；代码就绪，**未经用户
-  授权不联网调用付费 API**）。A8 验收结论：§9 逐项核对 + §10 技术条件逐项
-  判定，**总 Exit 决策 HOLD/PENDING**（真实 Provider 缺口，证据见
-  Third_stage.md §9/§10 与 progress.md）。
+  临时目录/监听器）+ 真 Key 零暴露扫描 + 模型轮次台账；**未经用户
+  授权不联网调用付费 API**）。**A7 补验（2026-08-14）**：wire 兼容性修复
+  （决议 #35）+ 最小预检（`AIBROWSE_LIVE_AGENT_PRE=1`，harness `-Pre`）+
+  完整真实验收（deepseek-v4-pro，§7 场景 1–6 + RT-10 + 停止全部真实通过，
+  `LIVE_SMOKE_PASS` 退出码 0）——**第三阶段总 Exit 决策 = `GO/PASS`**
+  （证据见 Third_stage.md §9/§10 与 progress.md）。
 
 ## 6. 常用命令
 
@@ -1269,12 +1273,12 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   打开读取。
 - **Permission**：高风险动作无法无确认执行（L2 确认门）；网页文本无法提升 Tool
   权限（确定性权限纯函数）；无万能 shell/eval/filesystem 工具（永久红线 grep 断言）。
-- **Engineering**：全量验证通过；多个真实网站 Agent smoke test 通过（**A8 判定
-  BLOCKED，补验预检后根因已确诊为 wire 名称契约**——13 工具名携带点号违反
-  function.name 约束致整组 tools 400；离线修复已落地（决议 #35），真实补验待
-  用户重新授权；不得以离线 FakeProvider 冒烟替代；`AIBROWSE_LIVE_AGENT_PRE=1`
-  最小预检与 `AIBROWSE_LIVE_AGENT=1` 完整场景门控均就绪）；Agent 操作日志无
-  敏感信息（离线证据通过；真 Key 零暴露扫描随真实补验执行）。
+- **Engineering**：全量验证通过；多个真实网站 Agent smoke test 通过（**PASS，
+  2026-08-14 A7 补验最终执行**——deepseek-v4-pro，§7 场景 1–6 全部真实完成，
+  `LIVE_SMOKE_PASS` 退出码 0；此前 BLOCKED 根因 = wire 名称契约（13 工具名
+  携带点号致整组 tools 400），修复见决议 #35；不得以离线 FakeProvider 冒烟
+  替代真实验证的规则不变）；Agent 操作日志无敏感信息（离线证据 + 真 Key 零
+  暴露扫描随真实验收执行通过）。
 
 ## 附 C：第三阶段完成报告格式（Third_stage.md §10）
 
