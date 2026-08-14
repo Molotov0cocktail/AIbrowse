@@ -5,7 +5,7 @@
 // The store is the real ConversationStore on a temp dir (real persistence files);
 // browser/config/credentials/provider-resolver are injected stubs per 分层纪律.
 // Contract source: doc/stage2/detailed-design.md §3.1/§6/§8.3/§9.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { existsSync, readFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -838,6 +838,7 @@ import type { BrowserController } from '../browser/browser-controller';
 import type {
   AgentConfirmRequest,
   AgentRunDoneEvent,
+  AgentStatusEvent,
   AgentStepEvent,
 } from '../../shared/types/agent';
 import type { AuditEntry } from './audit-log';
@@ -888,7 +889,29 @@ const agentToolDefs: ToolDefinition[] = [
       required: [],
     },
     baseRisk: 0,
-    executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '页面摘要' }),
+    // 与真实 read 同语义：实时采集快照并登记语义（click 权限判定与 A6 确认摘要的语义来源）
+    executor: async ({ id }, ctx) => {
+      const tab = await ctx.browser.getActiveTab();
+      if (tab !== null) {
+        const snap = await ctx.browser.getPageSnapshot(tab.id);
+        if (snap !== null) ctx.recordSnapshot?.(tab.id, snap);
+      }
+      return { toolCallId: id, ok: true, content: '页面摘要' };
+    },
+  },
+  {
+    name: 'browser.click',
+    description: '点击页面元素',
+    parameters: {
+      properties: {
+        elementId: { type: 'string', description: 'el-N' },
+        tabId: { type: 'string', description: '标签页 id（可选）' },
+      },
+      required: ['elementId'],
+    },
+    baseRisk: 1,
+    riskLift: { submitClick: 2 },
+    executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '已点击' }),
   },
 ];
 
@@ -899,6 +922,7 @@ interface AgentServiceFixture {
   runs: AgentRunDoneEvent[];
   steps: AgentStepEvent[];
   confirms: AgentConfirmRequest[];
+  statuses: AgentStatusEvent[];
   browser: StubBrowser;
   configStore: ConfigStore;
   store: ConversationStore;
@@ -912,7 +936,8 @@ interface AgentServiceFixture {
 function makeAgentService(
   overrides: {
     limits?: Partial<AgentLoopLimits>;
-    browser?: StubBrowser;
+    browser?: StubBrowser; // 会话上下文 SnapshotSource（goal 启动快照来源）
+    agentBrowserOverride?: BrowserController; // Agent 运行时浏览器（工具执行通道）
     skipConfig?: boolean; // true = 不写配置（模拟 Provider 未配置）
   } = {},
 ): AgentServiceFixture {
@@ -926,6 +951,7 @@ function makeAgentService(
   const runs: AgentRunDoneEvent[] = [];
   const steps: AgentStepEvent[] = [];
   const confirms: AgentConfirmRequest[] = [];
+  const statuses: AgentStatusEvent[] = [];
   const auditEntries: AuditEntry[] = [];
   const confirm = new ConfirmManager();
   let script: FakeProviderScript = {};
@@ -944,8 +970,9 @@ function makeAgentService(
     onAgentStep: (e) => steps.push(e),
     onAgentConfirmRequest: (e) => confirms.push(e),
     onAgentRunDone: (e) => runs.push(e),
+    onAgentStatus: (e) => statuses.push(e),
     agent: {
-      browser: agentBrowser(),
+      browser: overrides.agentBrowserOverride ?? agentBrowser(),
       confirmManager: confirm,
       audit: (entry) => auditEntries.push(entry),
       limits: overrides.limits,
@@ -958,6 +985,7 @@ function makeAgentService(
     runs,
     steps,
     confirms,
+    statuses,
     browser,
     configStore,
     store,
@@ -1315,5 +1343,218 @@ describe('ConversationService — confirmTool 与确认事件', () => {
     expect(await f.service.confirmTool('tc-evt', false)).toBe(true); // 经 service 决议
     await expect(p).resolves.toBe('denied');
     expect(f.confirm.getPending()).toBeNull();
+  });
+});
+
+// ---------- A6：onAgentStatus 状态事件（实时可见性）与 step 参数摘要（审计同源） ----------
+
+describe('ConversationService — A6 状态事件（onAgentStatus）与 step 参数摘要', () => {
+  // L2 场景：agent 运行时浏览器返回含提交按钮的快照（read 工具登记语义 → click 提交类 → L2）
+  const submitSnapshot: PageSnapshot = makeSnapshot({
+    buttons: [{ id: 'el-1', text: '提交按钮', isSubmit: true }],
+  });
+  const agentL2Browser = agentBrowser({
+    getActiveTab: async () => makeTab({ id: 't1', url: 'https://example.com/a' }),
+    getPageSnapshot: async () => submitSnapshot,
+  });
+  const l2Rounds: FakeProviderScript = {
+    rounds: [
+      [{ kind: 'toolCalls', toolCalls: [{ id: 's-read', name: 'browser.read', arguments: '{}' }] }],
+      [
+        {
+          kind: 'toolCalls',
+          toolCalls: [{ id: 's-click', name: 'browser.click', arguments: '{"elementId":"el-1"}' }],
+        },
+      ],
+      [{ text: '完成' }],
+    ],
+  };
+
+  it('agentAsk 成功后发出 starting（stepsUsed=0/maxSteps=12，程序事实先于本地 start）', async () => {
+    const f = makeAgentService();
+    f.setScript({ rounds: [[{ text: '完成' }]] });
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    const { result } = await agentAskAndWait(f, sid, '任务');
+    const starting = f.statuses.find((s) => s.phase === 'starting');
+    expect(starting).toBeDefined();
+    expect(starting).toMatchObject({
+      requestId: result.requestId,
+      sessionId: sid,
+      phase: 'starting',
+      stepsUsed: 0,
+      maxSteps: 12,
+    });
+  });
+
+  it('L2 pending 建立 → waiting-confirm；confirmTool approve → confirm-resolved(approved)', async () => {
+    const f = makeAgentService({ agentBrowserOverride: agentL2Browser });
+    f.setScript(l2Rounds);
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    const ask = await f.service.agentAsk({ sessionId: sid, goal: '任务' });
+    expect(ask.ok).toBe(true);
+    await vi.waitFor(
+      () => {
+        expect(f.statuses.some((s) => s.phase === 'waiting-confirm')).toBe(true);
+      },
+      { timeout: 5000 },
+    );
+    const waiting = f.statuses.find((s) => s.phase === 'waiting-confirm');
+    expect(waiting?.toolName).toBe('browser.click');
+    expect(f.confirms.some((c) => c.toolCallId === 's-click')).toBe(true);
+    // 决议经 service.confirmTool（A6 IPC 转发入口）
+    expect(await f.service.confirmTool('s-click', true)).toBe(true);
+    await waitForRun(f.runs, ask.ok === true ? ask.requestId : '');
+    const resolved = f.statuses.find((s) => s.phase === 'confirm-resolved');
+    expect(resolved).toMatchObject({ confirmOutcome: 'approved' });
+    // 顺序：starting → thinking → waiting-confirm → confirm-resolved → run-done
+    const order = ['starting', 'thinking', 'waiting-confirm', 'confirm-resolved'].map((p) =>
+      f.statuses.findIndex((s) => s.phase === p),
+    );
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect(order.every((v, i, arr) => i === 0 || v > (arr[i - 1] ?? -1))).toBe(true);
+  });
+
+  it('confirmTool deny → confirm-resolved(denied)；步骤 denied 事件随后到达', async () => {
+    const f = makeAgentService({ agentBrowserOverride: agentL2Browser });
+    f.setScript(l2Rounds);
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    const ask = await f.service.agentAsk({ sessionId: sid, goal: '任务' });
+    await vi.waitFor(
+      () => {
+        expect(f.statuses.some((s) => s.phase === 'waiting-confirm')).toBe(true);
+      },
+      { timeout: 5000 },
+    );
+    expect(await f.service.confirmTool('s-click', false)).toBe(true);
+    await waitForRun(f.runs, ask.ok === true ? ask.requestId : '');
+    expect(
+      f.statuses.some((s) => s.phase === 'confirm-resolved' && s.confirmOutcome === 'denied'),
+    ).toBe(true);
+    const clickStep = f.steps.find((s) => s.step.toolCallId === 's-click');
+    expect(clickStep?.step.decision).toBe('denied');
+    expect(clickStep?.step.errorCode).toBe('denied-by-user');
+  });
+
+  it('abort 作废 pending → confirm-resolved(cancelled) + run-done cancelled', async () => {
+    const f = makeAgentService({ agentBrowserOverride: agentL2Browser });
+    f.setScript(l2Rounds);
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    const ask = await f.service.agentAsk({ sessionId: sid, goal: '任务' });
+    await vi.waitFor(
+      () => {
+        expect(f.statuses.some((s) => s.phase === 'waiting-confirm')).toBe(true);
+      },
+      { timeout: 5000 },
+    );
+    expect(ask.ok === true && f.service.abort(ask.requestId)).toBe(true);
+    const run = await waitForRun(f.runs, ask.ok === true ? ask.requestId : '');
+    expect(run.run?.status).toBe('cancelled');
+    expect(
+      f.statuses.some((s) => s.phase === 'confirm-resolved' && s.confirmOutcome === 'cancelled'),
+    ).toBe(true);
+    // 作废后迟到 approve 无效（幂等 false）
+    expect(await f.service.confirmTool('s-click', true)).toBe(false);
+  });
+
+  it('非在途 runId 的 pending/settled 不发出状态事件（防串 run）', async () => {
+    const f = makeAgentService();
+    const p = f.confirm.requestConfirm('evt-run-not-inflight', 'tc-evt', 'browser.click', {
+      url: 'https://example.com/form',
+      detail: '提交表单',
+    });
+    expect(f.statuses).toHaveLength(0);
+    expect(await f.service.confirmTool('tc-evt', false)).toBe(true);
+    await expect(p).resolves.toBe('denied');
+    expect(f.statuses).toHaveLength(0); // settled 同样只对在途 run 发出
+  });
+
+  it('onAgentStep 事件携带 argsSummary（审计同源脱敏摘要，非持久化可见性字段）', async () => {
+    const f = makeAgentService();
+    f.setScript({
+      rounds: [
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [{ id: 's-read', name: 'browser.read', arguments: '{}' }],
+          },
+        ],
+        [{ text: '完成' }],
+      ],
+    });
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    await agentAskAndWait(f, sid, '任务');
+    expect(f.steps).toHaveLength(1);
+    expect(f.steps[0]?.argsSummary).toBe('{}');
+    expect(f.steps[0]?.argsSummary).toBe(f.auditEntries[0]?.argsSummary); // 与审计同源一致
+  });
+});
+
+describe('ConversationService — A6 共享 ConfirmManager 多监听者（关闭 A5 计划内限制）', () => {
+  it('两个 Service 共享同一 ConfirmManager：确认事件各只对自身在途 run 发出（互不覆盖/串扰）', async () => {
+    // A5 计划内限制「回调所有权为最后构造的 Service 实例」的关闭验证：
+    // ConfirmManager 多监听者 Set 分发 + 每 Service 按自身 in-flight 映射。
+    const shared = new ConfirmManager();
+    const f1 = makeAgentService();
+    const f2 = makeAgentService();
+    // 重新构造两个共享状态机的 Service（fixture 自带私有 manager，此处显式重建）
+    const dir1 = join(baseDir, `case-shared-${Math.floor(Math.random() * 1e9)}`);
+    const configStore1 = new ConfigStore(dir1, stubCredentials);
+    configStore1.set(FAKE_CONFIG);
+    const svc1 = new ConversationServiceImpl({
+      browser: new StubBrowser(),
+      store: new ConversationStore(dir1),
+      configStore: configStore1,
+      credentials: stubCredentials,
+      resolveProviderFn: async () => new FakeProvider({ rounds: [[{ text: '完成' }]] }),
+      onAgentConfirmRequest: (e) => f1.confirms.push(e),
+      onAgentStatus: (e) => f1.statuses.push(e),
+      agent: { browser: agentBrowser(), confirmManager: shared, audit: () => {} },
+    });
+    const dir2 = join(baseDir, `case-shared2-${Math.floor(Math.random() * 1e9)}`);
+    const configStore2 = new ConfigStore(dir2, stubCredentials);
+    configStore2.set(FAKE_CONFIG);
+    const svc2 = new ConversationServiceImpl({
+      browser: new StubBrowser(),
+      store: new ConversationStore(dir2),
+      configStore: configStore2,
+      credentials: stubCredentials,
+      resolveProviderFn: async () => new FakeProvider({ rounds: [[{ text: '完成' }]] }),
+      onAgentConfirmRequest: (e) => f2.confirms.push(e),
+      onAgentStatus: (e) => f2.statuses.push(e),
+      agent: { browser: agentBrowser(), confirmManager: shared, audit: () => {} },
+    });
+    // 直接经共享状态机建立 pending（runId 模拟 svc1 的在途 run）→ 仅 svc1 收到事件
+    const s1 = await svc1.createSession();
+    const ask1 = await svc1.agentAsk({ sessionId: s1?.id ?? '', goal: '任务一' });
+    expect(ask1.ok).toBe(true);
+    const p = shared.requestConfirm(
+      ask1.ok === true ? ask1.requestId : '',
+      'tc-shared',
+      'browser.click',
+      {
+        detail: '共享状态机',
+      },
+    );
+    expect(f1.confirms.some((c) => c.toolCallId === 'tc-shared')).toBe(true);
+    expect(f2.confirms.some((c) => c.toolCallId === 'tc-shared')).toBe(false);
+    expect(await svc1.confirmTool('tc-shared', false)).toBe(true);
+    await expect(p).resolves.toBe('denied');
+    expect(
+      f1.statuses.some((s) => s.phase === 'confirm-resolved' && s.confirmOutcome === 'denied'),
+    ).toBe(true);
+    expect(f2.statuses.some((s) => s.phase === 'confirm-resolved')).toBe(false);
+    // 退订：svc1 dispose 后不再收到事件（多 Service 共享不泄漏）
+    svc1.dispose();
+    const p2 = shared.requestConfirm('no-run', 'tc-after', 'browser.click', { detail: 'x' });
+    expect(shared.deny('tc-after')).toBe(true);
+    await p2;
+    const svc1StatusCount = f1.statuses.length;
+    expect(f1.statuses.length).toBe(svc1StatusCount); // dispose 后退订，无新事件
+    svc2.dispose();
   });
 });

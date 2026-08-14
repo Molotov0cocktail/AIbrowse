@@ -20,6 +20,9 @@ export interface UseConversationResult {
   deleteSession: (sessionId: string) => Promise<void>;
   setCurrentEphemeral: (ephemeral: boolean) => Promise<void>;
   noteQuestionAsked: (message: ConversationMessage) => void;
+  // A6：重新拉取当前会话磁盘真值（Agent run 终态后刷新——含全部轮次与 ToolStep 消息；
+  // reduceHistory 按消息 id 去重防御与 turn-done 事件的竞态）
+  refreshHistory: () => Promise<void>;
 }
 
 export function useConversation(): UseConversationResult {
@@ -108,6 +111,15 @@ export function useConversation(): UseConversationResult {
     dispatchHistory({ type: 'append-user', message });
   }, []);
 
+  const refreshHistory = useCallback(async (): Promise<void> => {
+    const sessionId = currentRef.current;
+    if (sessionId === null) return;
+    const messages = await window.aibrowse.conversation.getHistory(sessionId);
+    if (currentRef.current === sessionId) {
+      dispatchHistory({ type: 'replace', messages: messages ?? [] });
+    }
+  }, []);
+
   return {
     sessions,
     currentSessionId,
@@ -118,5 +130,6 @@ export function useConversation(): UseConversationResult {
     deleteSession,
     setCurrentEphemeral,
     noteQuestionAsked,
+    refreshHistory,
   };
 }

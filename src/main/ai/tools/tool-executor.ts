@@ -12,7 +12,7 @@ import type {
 import { TRUNCATION_MARK } from '../context-budget';
 import type { AuditDecision, AuditEntry } from '../audit-log';
 import { summarizeArgs, summarizeRawArgs } from '../audit-log';
-import type { ConfirmManager } from '../confirm-manager';
+import type { ConfirmManager, ConfirmSummary } from '../confirm-manager';
 import { classifyClickTarget, decide } from '../permission/permission-policy';
 import { getTool, validateToolArgs } from './tool-registry';
 import type { ToolExecutionContext, ToolDefinition, ToolExecutionDerived } from './tool-types';
@@ -94,7 +94,7 @@ export class ToolExecutor {
             ctx.runId,
             call.id,
             call.name,
-            this.buildConfirmSummary(call.name, validated.args),
+            await this.buildConfirmSummary(call.name, validated.args, binding?.semantics.text, ctx),
           );
           argsSummary = summarizeArgs(call.name, validated.args);
           if (outcome === 'approved') {
@@ -176,10 +176,32 @@ export class ToolExecutor {
     return undefined;
   }
 
-  // L2 确认展示摘要：程序组装确定性事实（A3/A6 起含元素文本摘要；文案不经模型/网页）
-  private buildConfirmSummary(toolName: string, args: Record<string, unknown>) {
-    const url = typeof args.url === 'string' ? args.url : undefined;
-    return { url, detail: `工具「${toolName}」需要用户确认后执行` };
+  // L2 确认展示摘要：程序组装确定性事实（工具名/URL/权限原因为程序常量；文案不经模型）。
+  // elementText 来自语义 binding（快照采集的 links/buttons 可见文本）——**页面提供的目标
+  // 文本，不可信输入**（A6 确认 UI 只作纯文本渲染 + 控制字符清理 + 截断，见
+  // renderer/src/ai/agent-display.ts）；缺失时不含该字段（宁缺勿错，不伪造）。
+  // 目标站点：参数无 url 的工具（click/fill 提交类）取目标 Tab 的 URL——主进程可信
+  // TabInfo（程序事实，非页面提供）；目标 Tab 不可用时不含该字段（宁缺勿错）。
+  private async buildConfirmSummary(
+    toolName: string,
+    args: Record<string, unknown>,
+    elementText: string | undefined,
+    ctx: ToolExecutionContext,
+  ): Promise<ConfirmSummary> {
+    let url = typeof args.url === 'string' ? args.url : undefined;
+    if (url === undefined) {
+      const tabId =
+        typeof args.tabId === 'string' ? args.tabId : (await ctx.browser.getActiveTab())?.id;
+      if (tabId !== undefined) {
+        const tab = (await ctx.browser.getTabs()).find((t) => t.id === tabId);
+        if (tab !== undefined && tab.url !== '') url = tab.url;
+      }
+    }
+    return {
+      ...(url !== undefined ? { url } : {}),
+      ...(elementText !== undefined && elementText !== '' ? { elementText } : {}),
+      detail: `工具「${toolName}」需要用户确认后执行`,
+    };
   }
 
   private async runTool(

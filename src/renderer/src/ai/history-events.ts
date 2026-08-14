@@ -19,6 +19,9 @@ export function reduceHistory(
     case 'append-user':
       return [...history, event.message];
     case 'turn-done': {
+      // A6：历史刷新（replace，磁盘真值）与终态事件竞态防御——同一 message.id 已存在
+      // 时不重复追加（replace 可能已含终态消息；Agent 终态与共读同路径）
+      if (history.some((m) => m.id === event.message.id)) return history;
       // 补全乐观 user 消息的 contextSource（磁盘加载的历史已携带，跳过补全避免覆盖）
       const last = history[history.length - 1];
       const withSource =

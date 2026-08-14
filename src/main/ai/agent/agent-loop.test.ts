@@ -222,6 +222,8 @@ interface LoopFixture {
   auditEntries: AuditEntry[];
   deltas: string[];
   steps: ToolStep[];
+  stepArgs: string[];
+  statuses: Array<{ phase: string; toolName: string | null; stepsUsed: number; maxSteps: number }>;
   rounds: Array<{ roundText: string; toolCalls: ProviderToolCall[] }>;
   runSignal: AbortController;
 }
@@ -240,6 +242,8 @@ function makeFixture(
   const auditEntries: AuditEntry[] = [];
   const deltas: string[] = [];
   const steps: ToolStep[] = [];
+  const stepArgs: string[] = [];
+  const statuses: LoopFixture['statuses'] = [];
   const rounds: Array<{ roundText: string; toolCalls: ProviderToolCall[] }> = [];
   const runSignal = new AbortController();
   const loop = new AgentLoop({
@@ -256,11 +260,26 @@ function makeFixture(
     limits: options.limits,
     callbacks: {
       onStreamChunk: (delta) => deltas.push(delta),
-      onAgentStep: (e) => steps.push(e.step),
+      onAgentStep: (e) => {
+        steps.push(e.step);
+        stepArgs.push(e.argsSummary);
+      },
       onAgentRound: (e) => rounds.push(e),
+      onStatus: (e) => statuses.push(e),
     },
   });
-  return { loop, provider, confirm, auditEntries, deltas, steps, rounds, runSignal };
+  return {
+    loop,
+    provider,
+    confirm,
+    auditEntries,
+    deltas,
+    steps,
+    stepArgs,
+    statuses,
+    rounds,
+    runSignal,
+  };
 }
 
 function tc(id: string, name: string, args: string): ProviderToolCall {
@@ -268,9 +287,12 @@ function tc(id: string, name: string, args: string): ProviderToolCall {
 }
 
 async function waitForPending(confirm: ConfirmManager, toolCallId: string): Promise<void> {
-  await vi.waitFor(() => {
-    expect(confirm.getPending()?.toolCallId).toBe(toolCallId);
-  });
+  await vi.waitFor(
+    () => {
+      expect(confirm.getPending()?.toolCallId).toBe(toolCallId);
+    },
+    { timeout: 5000 },
+  );
 }
 
 // ---------- 多步任务与协议历史 ----------
@@ -726,9 +748,12 @@ describe('AgentLoop — 总超时 / Provider 错误 / 用户取消', () => {
     };
     const f = makeFixture({ script });
     const promise = f.loop.run(f.runSignal.signal);
-    await vi.waitFor(() => {
-      expect(f.deltas.length).toBe(1);
-    });
+    await vi.waitFor(
+      () => {
+        expect(f.deltas.length).toBe(1);
+      },
+      { timeout: 5000 },
+    );
     f.runSignal.abort();
     const result = await promise;
     expect(result.status).toBe('cancelled');
@@ -760,9 +785,12 @@ describe('AgentLoop — 总超时 / Provider 错误 / 用户取消', () => {
     };
     const f = makeFixture({ provider: gated });
     const promise = f.loop.run(f.runSignal.signal);
-    await vi.waitFor(() => {
-      expect(f.deltas.length).toBe(1);
-    });
+    await vi.waitFor(
+      () => {
+        expect(f.deltas.length).toBe(1);
+      },
+      { timeout: 5000 },
+    );
     f.runSignal.abort(); // abort 先于 done 到达
     const result = await promise;
     expect(result.status).toBe('cancelled');
@@ -912,9 +940,12 @@ describe('AgentLoop — 终态竞态与迟到事件', () => {
     };
     const f = makeFixture({ script, tools: [toProviderTool(def)] });
     const promise = f.loop.run(f.runSignal.signal);
-    await vi.waitFor(() => {
-      expect(started.value).toBe(true);
-    });
+    await vi.waitFor(
+      () => {
+        expect(started.value).toBe(true);
+      },
+      { timeout: 5000 },
+    );
     f.runSignal.abort();
     const result = await promise;
     expect(result.status).toBe('cancelled');
@@ -933,5 +964,165 @@ describe('AgentLoop — 上限常量', () => {
     expect(AGENT_TOTAL_TIMEOUT_MS).toBe(420_000);
     const partial: Partial<AgentLoopLimits> = { maxSteps: 3 };
     expect(partial.maxSteps).toBe(3);
+  });
+});
+
+// ---------- A6：状态事件（onStatus）与 step 参数摘要（argsSummary 审计同源） ----------
+
+describe('AgentLoop — onStatus 阶段事件（A6 实时可见性，确定性运行事实）', () => {
+  it('阶段序列：thinking → executing（工具名+计数）→ finalizing，与步数一致', async () => {
+    const script: FakeProviderScript = {
+      rounds: [
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.read', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser.scroll', '{"dy":10}')] }],
+        [{ text: '任务完成，这是最终回答。' }],
+      ],
+    };
+    const f = makeFixture({ script });
+    const result = await f.loop.run(f.runSignal.signal);
+    expect(result.status).toBe('done');
+    expect(f.statuses).toEqual([
+      { phase: 'thinking', toolName: null, stepsUsed: 0, maxSteps: 12 },
+      { phase: 'executing', toolName: 'browser.read', stepsUsed: 1, maxSteps: 12 },
+      { phase: 'thinking', toolName: null, stepsUsed: 1, maxSteps: 12 },
+      { phase: 'executing', toolName: 'browser.scroll', stepsUsed: 2, maxSteps: 12 },
+      { phase: 'thinking', toolName: null, stepsUsed: 2, maxSteps: 12 },
+      { phase: 'finalizing', toolName: null, stepsUsed: 2, maxSteps: 12 },
+    ]);
+  });
+
+  it('executing 事件在执行管线前发出（stepsUsed 已计当前步，与 A5 计数一致）', async () => {
+    const script: FakeProviderScript = {
+      rounds: [
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [tc('c1', 'browser.get_tabs', '{}'), tc('c2', 'browser.read', '{}')],
+          },
+        ],
+        [{ text: '完成' }],
+      ],
+    };
+    const f = makeFixture({ script });
+    await f.loop.run(f.runSignal.signal);
+    const executing = f.statuses.filter((s) => s.phase === 'executing');
+    expect(executing.map((s) => [s.toolName, s.stepsUsed])).toEqual([
+      ['browser.get_tabs', 1],
+      ['browser.read', 2],
+    ]);
+  });
+
+  it('终态后无迟到状态事件（慢模型轮中取消——cancelled 且取消后零状态事件）', async () => {
+    // 第二轮为慢模型轮（FakeProvider 延迟块）：thinking(2) 已发出后取消——终态后
+    // 不得再有 thinking/executing/finalizing（迟到事件被忽略）
+    const f = makeFixture({
+      script: {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [tc('c1', 'browser.read', '{}')],
+            },
+          ],
+          [{ text: '慢速回答', delayMs: 10_000 }],
+        ],
+      },
+    });
+    const run = f.loop.run(f.runSignal.signal);
+    await vi.waitFor(
+      () => {
+        expect(f.statuses.filter((s) => s.phase === 'thinking').length).toBe(2);
+      },
+      { timeout: 5000 },
+    );
+    f.runSignal.abort();
+    const result = await run;
+    expect(result.status).toBe('cancelled');
+    expect(f.statuses.some((s) => s.phase === 'finalizing')).toBe(false); // done 不触发
+    const afterCancel = f.statuses.length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(f.statuses.length).toBe(afterCancel); // 终态后零状态事件
+  });
+
+  it('防循环阻断的调用不产生 executing 事件（触发次零副作用）', async () => {
+    const script: FakeProviderScript = {
+      rounds: [
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [tc('c1', 'browser.scroll', '{"dy":1}')],
+          },
+        ],
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [tc('c2', 'browser.scroll', '{"dy":1}')],
+          },
+        ],
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [tc('c3', 'browser.scroll', '{"dy":1}')],
+          },
+        ],
+      ],
+    };
+    const f = makeFixture({ script });
+    const result = await f.loop.run(f.runSignal.signal);
+    expect(result.status).toBe('loop-detected');
+    expect(f.statuses.filter((s) => s.phase === 'executing')).toHaveLength(2); // 仅前两次真实执行
+  });
+});
+
+describe('AgentLoop — onAgentStep argsSummary（审计同源脱敏摘要，A6 非持久化可见性）', () => {
+  it('合法参数：argsSummary 与审计条目同源一致', async () => {
+    const script: FakeProviderScript = {
+      rounds: [
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [tc('c1', 'browser.scroll', '{"dy":10}')],
+          },
+        ],
+        [{ text: '完成' }],
+      ],
+    };
+    const f = makeFixture({ script });
+    await f.loop.run(f.runSignal.signal);
+    expect(f.stepArgs).toEqual([f.auditEntries[0]?.argsSummary]);
+    expect(f.stepArgs[0]).toBe('{dy:10}');
+  });
+
+  it('fill 参数：argsSummary 只记长度（原文零出现）', async () => {
+    const script: FakeProviderScript = {
+      rounds: [
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [tc('c1', 'browser.fill', '{"elementId":"el-9","text":"绝密输入值"}')],
+          },
+        ],
+        [{ text: '完成' }],
+      ],
+    };
+    const f = makeFixture({ script });
+    await f.loop.run(f.runSignal.signal);
+    expect(f.stepArgs.join('')).not.toContain('绝密输入值');
+    expect(f.stepArgs[0]).toContain('text=len:');
+  });
+
+  it('防循环阻断路径：argsSummary 用原始参数截断（与审计一致）', async () => {
+    const script: FakeProviderScript = {
+      rounds: [1, 2, 3].map((i) => [
+        { kind: 'toolCalls', toolCalls: [tc(`c${i}`, 'browser.scroll', '{"dy":1}')] },
+      ]),
+    };
+    const f = makeFixture({ script });
+    await f.loop.run(f.runSignal.signal);
+    expect(f.steps).toHaveLength(3);
+    const blocked = f.auditEntries[2];
+    expect(blocked?.decision).toBe('invalid');
+    expect(f.stepArgs[2]).toBe(blocked?.argsSummary);
+    expect(f.stepArgs[2]).toBe('{"dy":1}');
   });
 });

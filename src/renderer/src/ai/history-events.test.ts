@@ -26,8 +26,8 @@ const userMessage = (content: string, withSource = false): ConversationMessage =
   ...(withSource ? { contextSource: source } : {}),
 });
 
-const assistantMessage = (content: string): ConversationMessage => ({
-  id: 'a1',
+const assistantMessage = (content: string, id = 'a1'): ConversationMessage => ({
+  id,
   role: 'assistant',
   content,
   createdAt: 2,
@@ -93,11 +93,28 @@ describe('reduceHistory', () => {
     history = reduceHistory(history, { type: 'append-user', message: userMessage('第二问') });
     history = reduceHistory(history, {
       type: 'turn-done',
-      message: assistantMessage('第二答'),
+      message: assistantMessage('第二答', 'a2'), // 真实消息 id 唯一（去重按 id 判定）
       contextSource: { ...source, capturedAt: 2000 },
     });
     expect(history.map((m) => m.content)).toEqual(['第一问', '第一答', '第二问', '第二答']);
     expect(history[0]?.contextSource?.capturedAt).toBe(1000);
     expect(history[2]?.contextSource?.capturedAt).toBe(2000);
+  });
+
+  it('turn-done 消息 id 已存在 → 不重复追加（历史刷新与终态事件竞态防御，A6）', () => {
+    const terminal = assistantMessage('回答');
+    // 历史刷新（replace，磁盘真值）已包含终态消息；随后 turn-done 同 id 到达 → 去重
+    const replaced = reduceHistory([], {
+      type: 'replace',
+      messages: [userMessage('提问', true), terminal],
+    });
+    const next = reduceHistory(replaced, {
+      type: 'turn-done',
+      message: terminal,
+      contextSource: source,
+    });
+    expect(next).toHaveLength(2);
+    expect(next.filter((m) => m.id === terminal.id)).toHaveLength(1);
+    expect(next[1]).toBe(terminal);
   });
 });

@@ -33,24 +33,34 @@ function makeSnapshot(overrides: Partial<PageSnapshot> = {}): PageSnapshot {
 }
 
 describe('buildSnapshotSemantics（快照 → ElementSemantics 确定性映射）', () => {
-  it('links → href；buttons → isSubmit/ariaExpanded（缺失不产生字段）；inputs → inputType', () => {
+  it('links → href/text；buttons → text/isSubmit/ariaExpanded；inputs → inputType（无 text）', () => {
     const map = buildSnapshotSemantics(makeSnapshot());
-    expect(map.get('el-0')).toEqual({ href: 'https://page.example/next' });
-    expect(map.get('el-1')).toEqual({ isSubmit: true });
-    expect(map.get('el-2')).toEqual({ ariaExpanded: false });
-    expect(map.get('el-3')).toEqual({}); // 普通按钮：语义空对象 → 权限层 L3 fail-closed
+    expect(map.get('el-0')).toEqual({ href: 'https://page.example/next', text: '导航' });
+    expect(map.get('el-1')).toEqual({ text: '提交', isSubmit: true });
+    expect(map.get('el-2')).toEqual({ text: '展开', ariaExpanded: false });
+    expect(map.get('el-3')).toEqual({ text: '普通' }); // 普通按钮：仅可见文本 → 权限层 L3 fail-closed
     expect(map.get('el-4')).toEqual({ inputType: 'text' });
     expect(map.get('el-5')).toEqual({ inputType: 'password' });
     expect(map.get('el-6')).toEqual({ inputType: 'checkbox' });
   });
 
-  it('跨集合元素合并语义（input[type=submit] 同时进入 buttons 与 inputs：isSubmit 与 inputType 并存）', () => {
+  it('inputs 不产生 text 字段（placeholder/value 非可见文本证据，宁缺勿错——A6 确认摘要源）', () => {
+    const map = buildSnapshotSemantics(
+      makeSnapshot({
+        inputs: [{ id: 'el-8', type: 'submit', placeholder: '占位', value: '值', isSubmit: true }],
+      }),
+    );
+    expect(map.get('el-8')).toEqual({ inputType: 'submit', isSubmit: true });
+    expect('text' in (map.get('el-8') ?? {})).toBe(false);
+  });
+
+  it('跨集合元素合并语义（input[type=submit] 同时进入 buttons 与 inputs：text/isSubmit/inputType 并存）', () => {
     const snap = makeSnapshot({
       buttons: [{ id: 'el-7', text: '确定', isSubmit: true }],
       inputs: [{ id: 'el-7', type: 'submit', isSubmit: true }],
     });
     const map = buildSnapshotSemantics(snap);
-    expect(map.get('el-7')).toEqual({ isSubmit: true, inputType: 'submit' });
+    expect(map.get('el-7')).toEqual({ text: '确定', isSubmit: true, inputType: 'submit' });
   });
 
   it('确定性：同一快照两次构建结果一致', () => {
@@ -63,7 +73,7 @@ describe('InteractionSemanticsStore（按 Tab 存储 + 世代绑定）', () => {
     const store = new InteractionSemanticsStore();
     store.updateFromSnapshot('t1', makeSnapshot());
     expect(store.lookup('t1', 'el-0')).toEqual({
-      semantics: { href: 'https://page.example/next' },
+      semantics: { href: 'https://page.example/next', text: '导航' },
       documentId: 11,
     });
   });

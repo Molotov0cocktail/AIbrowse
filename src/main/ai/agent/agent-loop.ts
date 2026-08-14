@@ -67,7 +67,14 @@ export interface AgentRunResult {
 export interface AgentLoopCallbacks {
   onStreamChunk?: (delta: string) => void; // 全部轮次 delta 逐块转发
   onAgentRound?: (e: { roundText: string; toolCalls: ProviderToolCall[] }) => void; // 轮完成（执行前）
-  onAgentStep?: (e: { step: ToolStep }) => void; // 每步终态（含安全阻断）
+  onAgentStep?: (e: { step: ToolStep; argsSummary: string }) => void; // 每步终态（含安全阻断）；
+  // argsSummary 与审计同源（捕获审计条目 argsSummary；安全阻断路径用 summarizeRawArgs）
+  onStatus?: (e: {
+    phase: 'thinking' | 'executing' | 'finalizing'; // A6 实时可见性（确定性运行事实）
+    toolName: string | null; // executing 时当前工具名
+    stepsUsed: number; // A5 实际计数（本循环内部计数器直出）
+    maxSteps: number;
+  }) => void;
 }
 
 export interface AgentLoopOptions {
@@ -159,6 +166,15 @@ export class AgentLoop {
     this.loopController.abort();
     this.options.confirmManager.cancelAll(this.options.requestId);
     this.resolveTerminal?.();
+    // A6：最终回答已生成（done 唯一触发），正在组装终态消息（确定性命中，非猜测）
+    if (status === 'done') {
+      this.options.callbacks?.onStatus?.({
+        phase: 'finalizing',
+        toolName: null,
+        stepsUsed: this.stepsUsed,
+        maxSteps: this.limits.maxSteps,
+      });
+    }
   }
 
   async run(externalSignal: AbortSignal): Promise<AgentRunResult> {
@@ -207,6 +223,13 @@ export class AgentLoop {
       const toolsToSend = supportsTools ? this.options.tools : undefined;
 
       while (this.terminal === null) {
+        // A6：模型轮开始（确定性运行事实——Provider 等待/流式累积均属本相位）
+        this.options.callbacks?.onStatus?.({
+          phase: 'thinking',
+          toolName: null,
+          stepsUsed: this.stepsUsed,
+          maxSteps: this.limits.maxSteps,
+        });
         const request: ProviderRequest = buildAgentRequest({
           replayMessages: this.options.replayMessages,
           transcriptMessages: this.transcript,
@@ -295,7 +318,10 @@ export class AgentLoop {
               errorCode: null,
               durationMs: 0,
             });
-            this.options.callbacks?.onAgentStep?.({ step: blockedStep });
+            this.options.callbacks?.onAgentStep?.({
+              step: blockedStep,
+              argsSummary: summarizeRawArgs(call.arguments), // 与审计条目同源（解析失败路径）
+            });
             this.finish(
               'loop-detected',
               internalError('任务已终止：检测到重复的工具调用（防循环）', context),
@@ -304,6 +330,14 @@ export class AgentLoop {
           }
           this.safety.record(signature);
           this.stepsUsed += 1;
+          // A6：工具即将进入执行管线（当前步已计入 stepsUsed——与 A5 计数一致；
+          // 防循环阻断的调用不产生本事件——触发次零副作用）
+          this.options.callbacks?.onStatus?.({
+            phase: 'executing',
+            toolName: call.name,
+            stepsUsed: this.stepsUsed,
+            maxSteps: this.limits.maxSteps,
+          });
           // 工具执行与终态竞争（决议 #33⑤：cancel/超时时 executor 尚未返回 → run 不挂起；
           // 迟到结果被忽略——不记录步骤/事件/不继续执行后续工具；底层审计由 ToolExecutor
           // 单出口保证恰好一条）
@@ -329,7 +363,11 @@ export class AgentLoop {
           const step = buildToolStep(call, result, captured?.decision ?? 'auto', this.now());
           roundRecord.steps.push(step);
           this.toolSteps.push(step);
-          this.options.callbacks?.onAgentStep?.({ step });
+          this.options.callbacks?.onAgentStep?.({
+            step,
+            // A6 参数摘要：与审计同源（同一脱敏纯函数产出的捕获条目；兜底防御用原始串截断）
+            argsSummary: captured?.argsSummary ?? summarizeRawArgs(call.arguments),
+          });
           this.transcript.push(buildToolResultMessage(call.id, call.name, result));
         }
         if (this.terminal !== null) break;

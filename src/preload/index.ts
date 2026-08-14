@@ -10,6 +10,12 @@ import type {
   StreamChunkEvent,
   TurnDoneEvent,
 } from '../shared/types/conversation';
+import type {
+  AgentConfirmRequest,
+  AgentRunDoneEvent,
+  AgentStatusEvent,
+  AgentStepEvent,
+} from '../shared/types/agent';
 import { IPC } from '../shared/types/ipc';
 
 // Minimal-privilege bridge (design §3.2 + stage2 §4.2): only whitelisted methods are
@@ -40,6 +46,11 @@ function eventRelay<T>(channel: string): {
 const tabsUpdatedRelay = eventRelay<TabsState>(IPC.TabsUpdated);
 const streamChunkRelay = eventRelay<StreamChunkEvent>(IPC.ConversationStreamChunk);
 const turnDoneRelay = eventRelay<TurnDoneEvent>(IPC.ConversationTurnDone);
+// A6：Agent 可见性事件（每个通道只注册一次 ipcRenderer 监听，JS 侧 Set 分发与退订）
+const agentStepRelay = eventRelay<AgentStepEvent>(IPC.AgentStep);
+const agentConfirmRequestRelay = eventRelay<AgentConfirmRequest>(IPC.AgentConfirmRequest);
+const agentRunDoneRelay = eventRelay<AgentRunDoneEvent>(IPC.AgentRunDone);
+const agentStatusRelay = eventRelay<AgentStatusEvent>(IPC.AgentStatus);
 
 const bridge: AibrowseBridge = {
   getAppInfo: () => invoke<AppInfo>(IPC.AppGetInfo),
@@ -79,8 +90,16 @@ const bridge: AibrowseBridge = {
     ask: (sessionId, question) => invoke<AskResult>(IPC.ConversationAsk, { sessionId, question }),
     abort: (requestId) => invoke<boolean>(IPC.ConversationAbort, { requestId }),
     preview: () => invoke<ContextPreview | null>(IPC.ConversationPreview),
+    // —— Third Stage（A6，§11.1）：Agent 任务与可见性（invoke 经 main 侧 sender+主帧校验） ——
+    agentAsk: (sessionId, goal) => invoke<AskResult>(IPC.AgentAsk, { sessionId, goal }),
+    confirmTool: (toolCallId, approve) =>
+      invoke<boolean>(IPC.AgentConfirm, { toolCallId, approve }),
     onStreamChunk: streamChunkRelay.subscribe,
     onTurnDone: turnDoneRelay.subscribe,
+    onAgentStep: agentStepRelay.subscribe,
+    onAgentConfirmRequest: agentConfirmRequestRelay.subscribe,
+    onAgentRunDone: agentRunDoneRelay.subscribe,
+    onAgentStatus: agentStatusRelay.subscribe,
   },
   config: {
     providers: {

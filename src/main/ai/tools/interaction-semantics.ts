@@ -9,8 +9,9 @@ import type { ElementSemantics, ElementSemanticsBinding } from '../../../shared/
 import type { PageSnapshot } from '../../../shared/types/browser';
 
 // 快照结构化条目 → ElementSemantics 确定性映射（纯函数，可单测）：
-// links → href；buttons → isSubmit/ariaExpanded；inputs → inputType/isSubmit。
-// 字段存在 = 采集脚本显式证明（§5.4）；普通按钮得到空语义对象（权限层 L3 fail-closed）。
+// links → href/text；buttons → text/isSubmit/ariaExpanded；inputs → inputType/isSubmit
+// （inputs 不产生 text——placeholder/value 非可见文本证据，宁缺勿错，A6 确认摘要源）。
+// 字段存在 = 采集脚本显式证明（§5.4）；普通按钮得到仅 text 的语义对象（权限层 L3 fail-closed）。
 export function buildSnapshotSemantics(snapshot: PageSnapshot): Map<string, ElementSemantics> {
   const map = new Map<string, ElementSemantics>();
   const entryOf = (id: string): ElementSemantics => map.get(id) ?? {};
@@ -18,14 +19,15 @@ export function buildSnapshotSemantics(snapshot: PageSnapshot): Map<string, Elem
     const existing = entryOf(id);
     const merged: ElementSemantics = { ...existing };
     if (fields.href !== undefined) merged.href = fields.href;
+    if (fields.text !== undefined) merged.text = fields.text;
     if (fields.ariaExpanded !== undefined) merged.ariaExpanded = fields.ariaExpanded;
     if (fields.inputType !== undefined) merged.inputType = fields.inputType;
     if (fields.isSubmit === true) merged.isSubmit = true; // 任一集合证明提交类即升级（跨集合同元素）
     map.set(id, merged);
   };
-  for (const link of snapshot.links) merge(link.id, { href: link.href });
+  for (const link of snapshot.links) merge(link.id, { href: link.href, text: link.text });
   for (const button of snapshot.buttons) {
-    const fields: ElementSemantics = {};
+    const fields: ElementSemantics = { text: button.text };
     if (button.isSubmit !== undefined) fields.isSubmit = button.isSubmit;
     if (button.ariaExpanded !== undefined) fields.ariaExpanded = button.ariaExpanded;
     merge(button.id, fields);

@@ -13,6 +13,12 @@ import type {
   StreamChunkEvent,
   TurnDoneEvent,
 } from './conversation';
+import type {
+  AgentConfirmRequest,
+  AgentRunDoneEvent,
+  AgentStatusEvent,
+  AgentStepEvent,
+} from './agent';
 import type { ContentBounds } from './ipc';
 
 export interface AppInfo {
@@ -61,9 +67,16 @@ export interface AibrowseBridge {
     ask(sessionId: string, question: string): Promise<AskResult>;
     abort(requestId: string): Promise<boolean>; // 无匹配在途 → false（幂等）
     preview(): Promise<ContextPreview | null>; // 实时快照摘要，不含正文
+    // —— Third Stage（A6，§11.1）：Agent 任务与可见性白名单 ——
+    agentAsk(sessionId: string, goal: string): Promise<AskResult>; // 共读与 Agent 共享每会话单在途
+    confirmTool(toolCallId: string, approve: boolean): Promise<boolean>; // L2 确认决定（未知/迟到 → false）
     // 事件订阅：返回退订函数（preload 内同一通道只注册一次 ipcRenderer 监听，JS 侧管理列表）
     onStreamChunk(listener: (e: StreamChunkEvent) => void): () => void;
     onTurnDone(listener: (e: TurnDoneEvent) => void): () => void;
+    onAgentStep(listener: (e: AgentStepEvent) => void): () => void;
+    onAgentConfirmRequest(listener: (e: AgentConfirmRequest) => void): () => void;
+    onAgentRunDone(listener: (e: AgentRunDoneEvent) => void): () => void;
+    onAgentStatus(listener: (e: AgentStatusEvent) => void): () => void;
   };
   config: {
     providers: {

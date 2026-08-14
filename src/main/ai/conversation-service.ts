@@ -14,6 +14,7 @@ import type {
   AgentConfirmRequest,
   AgentRunDoneEvent,
   AgentRunSummary,
+  AgentStatusEvent,
   AgentStepEvent,
 } from '../../shared/types/agent';
 import type {
@@ -56,7 +57,7 @@ import {
   buildToolStepMessage,
   replayToProviderMessages,
 } from './agent/agent-history';
-import { AgentLoop, type AgentLoopLimits } from './agent/agent-loop';
+import { AGENT_LOOP_LIMITS, AgentLoop, type AgentLoopLimits } from './agent/agent-loop';
 import type { ConfirmManager } from './confirm-manager';
 import type { SearchProvider } from './search/search-provider';
 import { listTools } from './tools/tool-registry';
@@ -110,6 +111,9 @@ export interface ConversationServiceOptions {
   onAgentStep?: (e: AgentStepEvent) => void;
   onAgentConfirmRequest?: (e: AgentConfirmRequest) => void;
   onAgentRunDone?: (e: AgentRunDoneEvent) => void; // 终态恰好一次（与 onTurnDone 同路径）
+  // A6：实时状态事件（确定性运行事实——starting/thinking/executing/waiting-confirm/
+  // confirm-resolved/finalizing；不含思维过程/模型解释；A5 计数直出）
+  onAgentStatus?: (e: AgentStatusEvent) => void;
 }
 
 export interface ConversationService {
@@ -152,21 +156,29 @@ export class ConversationServiceImpl implements ConversationService {
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly inFlight = new Map<string, InFlight>(); // 每会话单在途（决议 Q8）
   private disposed = false;
+  // A6：ConfirmManager 多监听者（Set 分发）——dispose 时退订（多 Service 共享同一
+  // ConfirmManager 时互不覆盖、互不串扰；A5 计划内限制「最后构造实例所有权」关闭）
+  private unsubscribePendingChange: (() => void) | null = null;
 
   constructor(private readonly options: ConversationServiceOptions) {
     // 启动加载磁盘会话（index.json 损坏容错在 store 内 fail-closed）
     for (const session of options.store.loadSessions()) {
       this.sessions.set(session.id, { session, messages: null });
     }
-    // A5：确认请求可见性事件源——ConfirmManager.onPendingChange 在 Service 层接线一次
-    // （映射 runId → sessionId 经在途注册表查找；多会话并行 run 不串事件；非在途 runId
-    // 不发出——防串 run）。决议/作废（null）不需要事件（A6 UI 以 run 终态收口）。
+    // A5/A6：确认请求可见性事件源——ConfirmManager.addPendingChangeListener 在 Service
+    // 层接线一次（映射 runId → sessionId 经在途注册表查找；多会话并行 run 不串事件；
+    // 非在途 runId 不发出——防串 run）。判别联合：pending → confirm-request 事件 +
+    // waiting-confirm 状态；settled（approve/deny/cancelAll 作废）→ confirm-resolved
+    // 状态（确认 UI 自动关闭源）。
     const agent = options.agent;
     if (agent !== undefined) {
-      agent.confirmManager.onPendingChange = (request) => {
-        if (request === null) return;
+      this.unsubscribePendingChange = agent.confirmManager.addPendingChangeListener((change) => {
+        // 判别联合：runId 在两种形态下的位置不同（pending 在 request 内、settled 在顶层）
+        const runId = change.kind === 'pending' ? change.request.runId : change.runId;
         for (const [sessionId, inflight] of this.inFlight) {
-          if (inflight.requestId === request.runId) {
+          if (inflight.requestId !== runId) continue;
+          if (change.kind === 'pending') {
+            const request = change.request;
             this.options.onAgentConfirmRequest?.({
               requestId: request.runId,
               sessionId,
@@ -175,10 +187,23 @@ export class ConversationServiceImpl implements ConversationService {
               summary: request.summary,
               createdAt: request.createdAt,
             });
-            return;
+            this.options.onAgentStatus?.({
+              requestId: request.runId,
+              sessionId,
+              phase: 'waiting-confirm',
+              toolName: request.toolName,
+            });
+          } else {
+            this.options.onAgentStatus?.({
+              requestId: change.runId,
+              sessionId,
+              phase: 'confirm-resolved',
+              confirmOutcome: change.outcome,
+            });
           }
+          return;
         }
-      };
+      });
     }
   }
 
@@ -299,6 +324,15 @@ export class ConversationServiceImpl implements ConversationService {
     const requestId = randomUUID();
     const controller = new AbortController();
     this.inFlight.set(input.sessionId, { requestId, controller });
+    // A6：run 已启动（在途注册后的确定性事实；先于 IPC 返回到达 renderer——reducer 以
+    // starting 相位收养 run）。stepsUsed=0/maxSteps 取装配 limits（单事实源）。
+    this.options.onAgentStatus?.({
+      requestId,
+      sessionId: input.sessionId,
+      phase: 'starting',
+      stepsUsed: 0,
+      maxSteps: this.options.agent?.limits?.maxSteps ?? AGENT_LOOP_LIMITS.maxSteps,
+    });
     void this.runAgentRun(entry, goal, requestId, controller).catch((err: unknown) => {
       logError('conversation', `agentAsk 编排未预期失败（requestId=${requestId}）`, err);
     });
@@ -348,6 +382,8 @@ export class ConversationServiceImpl implements ConversationService {
   dispose(): void {
     if (this.disposed) return; // 幂等（before-quit 与窗口 closed 可能重复调用）
     this.disposed = true;
+    this.unsubscribePendingChange?.(); // A6：退订确认事件监听（多 Service 共享状态机不泄漏）
+    this.unsubscribePendingChange = null;
     let aborted = 0;
     for (const entry of this.inFlight.values()) {
       entry.controller.abort();
@@ -671,11 +707,28 @@ export class ConversationServiceImpl implements ConversationService {
           },
           onAgentStep: (e) => {
             // 每步终态：ToolStep 持久化（§9.3 精简版，fill 值/快照正文/内部参数零落盘）+ 可见性事件
+            // （argsSummary 为 A6 非持久化字段——审计同源脱敏摘要，渲染层不得自行解析参数）
             this.appendMessage(
               entry,
               buildToolStepMessage({ id: randomUUID(), step: e.step, now: Date.now() }),
             );
-            this.options.onAgentStep?.({ requestId, sessionId, step: e.step });
+            this.options.onAgentStep?.({
+              requestId,
+              sessionId,
+              step: e.step,
+              argsSummary: e.argsSummary,
+            });
+          },
+          onStatus: (e) => {
+            // A6：循环内相位直出（thinking/executing/finalizing，计数为 A5 实际值）
+            this.options.onAgentStatus?.({
+              requestId,
+              sessionId,
+              phase: e.phase,
+              ...(e.toolName !== null ? { toolName: e.toolName } : {}),
+              stepsUsed: e.stepsUsed,
+              maxSteps: e.maxSteps,
+            });
           },
         },
       });

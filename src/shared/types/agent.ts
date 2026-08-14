@@ -41,6 +41,11 @@ export interface ElementSemantics {
   ariaExpanded?: boolean; // buttons 条目：显式声明 aria-expanded 状态——true/false
   // 均为展开/折叠控件的结构化证明；字段缺失不能证明（fail-closed）
   inputType?: string; // inputs 条目 type（click 切换=checkbox/radio；fill 禁 password/file）
+  // A6：links/buttons 条目的可见文本（采集脚本显式采集；inputs 不采集——placeholder/value
+  // 非可见文本证据，宁缺勿错）。确认对话框 elementText 的唯一来源——**页面提供的目标
+  // 文本，视为不可信输入**（渲染层只作纯文本展示 + 控制字符清理 + 截断）。
+  // 不影响权限判定：decide/classifyClickTarget 不消费本字段。
+  text?: string;
 }
 
 // click 执行器内部允许类别（A3）：权限决策派生的执行器内部参数——不进入工具 schema、
@@ -112,6 +117,35 @@ export interface AgentStepEvent {
   requestId: string;
   sessionId: string;
   step: ToolStep; // 每一步工具调用的可见性推送
+  // A6：参数摘要（非持久化可见性字段）——与审计同源（audit-log.summarizeArgs 同一脱敏
+  // 纯函数，主进程生成）：fill text 只记 len=N、URL/query 全量、其余 ≤200 确定性截断；
+  // 不含请求头/响应体/内部参数/documentId/allowedKind。ToolStep 持久化结构不变。
+  argsSummary: string;
+}
+
+// A6 确认决议结果（与 ConfirmManager.ConfirmOutcome 单一事实源——此处为共享定义，
+// confirm-manager 以别名引用，renderer 事件 payload 直接复用）
+export type AgentConfirmOutcome = 'approved' | 'denied' | 'cancelled';
+
+// A6 实时状态相位（程序生成的确定性运行事实，不含思维过程/模型解释）：
+// starting=run 已启动（在途注册后）／thinking=模型轮进行中（等待/累积 Provider 流）/
+// executing=某个工具已通过防循环判定、即将进入执行管线（当前步已计入 stepsUsed）/
+// waiting-confirm=L2 pending 已建立／confirm-resolved=pending 已决议或作废（携带 outcome）/
+// finalizing=最终回答已生成，正在组装终态消息（done 终态前）。
+export type AgentStatusPhase =
+  'starting' | 'thinking' | 'executing' | 'waiting-confirm' | 'confirm-resolved' | 'finalizing';
+
+export interface AgentStatusEvent {
+  requestId: string;
+  sessionId: string;
+  phase: AgentStatusPhase;
+  // executing 时当前工具名（程序事实，来自 ToolCall.name）；waiting-confirm 时同理
+  toolName?: string;
+  // 循环内相位携带 A5 实际计数（AgentLoop 内部计数器直出；starting 恒 0/maxSteps）。
+  // confirm-resolved 相位不携带（决议时刻无新计数事实，UI 保留最近一次权威值）。
+  stepsUsed?: number;
+  maxSteps?: number;
+  confirmOutcome?: AgentConfirmOutcome; // confirm-resolved 相位必带（approved/denied/cancelled）
 }
 
 // 复用共读 turn-done 形态（§2.2）：Agent 终态事件的权威终止理由在 run.status。

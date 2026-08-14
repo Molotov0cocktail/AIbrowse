@@ -14,7 +14,13 @@ import {
   logInfo,
   logWarn,
 } from './logger';
-import { runSessionSmokeScenario, runSmokeScenario, smokeUiFake } from './smoke';
+import {
+  runSessionSmokeScenario,
+  runSmokeScenario,
+  smokeAgentLimits,
+  smokeAgentSearchProvider,
+  smokeUiFake,
+} from './smoke';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
 import { resolveAddressBarInput } from '../shared/url';
@@ -28,6 +34,8 @@ import type {
   ProviderInfo,
 } from '../shared/types/conversation';
 import type {
+  AgentAskPayload,
+  AgentConfirmPayload,
   ConfigProvidersSetKeyPayload,
   ContentBounds,
   ConversationAskPayload,
@@ -57,7 +65,7 @@ import {
 // 为 A5 AgentLoop 历史提取接线点——本阶段由冒烟场景注入快照语义存储驱动验证。
 import { createAuditLogger } from './ai/audit-log';
 import { ConfirmManager } from './ai/confirm-manager';
-import { BingSearchProvider } from './ai/search/search-provider';
+import { BingSearchProvider, type SearchProvider } from './ai/search/search-provider';
 import { BROWSER_TOOL_DEFINITIONS } from './ai/tools/browser-tools';
 import { INTERACTION_TOOL_DEFINITIONS } from './ai/tools/interaction-tools';
 import { createSearchTool } from './ai/tools/search-tool';
@@ -359,6 +367,42 @@ if (!gotLock) {
         conversationService?.previewContext() ?? Promise.resolve(null),
     );
 
+    // —— Third Stage A6（§11.1）：Agent 任务与确认 invoke 通道（sender+主帧校验复用 handle()）——
+    // 逐字段验证安全返回不抛异常；goal 校验/截断与共读 ask 同款纪律（§8.5/§11.1）。
+
+    handle(IPC.AgentAsk, (payload): Promise<AskResult> => {
+      const p = payload as AgentAskPayload;
+      const sessionId = typeof p?.sessionId === 'string' && p.sessionId !== '' ? p.sessionId : null;
+      let goal: string | null = typeof p?.goal === 'string' ? p.goal : null;
+      if (sessionId === null || goal === null || goal.trim() === '') {
+        // 空串/非串 → 参数无效安全返回（internal），不抛异常
+        logWarn('main', 'conversation:agent-ask 参数无效（sessionId 或 goal 缺失/为空）');
+        return Promise.resolve(askFail());
+      }
+      if (goal.length > CONTEXT_BUDGET.questionMaxChars) {
+        // > 16 000 字符确定性截断（截断标记 + warn；service 内为纵深防御）
+        goal = truncateWithMark(goal, CONTEXT_BUDGET.questionMaxChars);
+        logWarn(
+          'main',
+          `conversation:agent-ask 任务目标超长，已确定性截断（上限 ${CONTEXT_BUDGET.questionMaxChars} 字符）`,
+        );
+      }
+      return conversationService?.agentAsk({ sessionId, goal }) ?? Promise.resolve(askFail());
+    });
+
+    handle(IPC.AgentConfirm, (payload): Promise<boolean> => {
+      const p = payload as AgentConfirmPayload;
+      const toolCallId =
+        typeof p?.toolCallId === 'string' && p.toolCallId !== '' ? p.toolCallId : null;
+      const approve = typeof p?.approve === 'boolean' ? p.approve : null;
+      if (toolCallId === null || approve === null) {
+        logWarn('main', 'conversation:agent-confirm 参数无效（toolCallId/approve 缺失）');
+        return Promise.resolve(false);
+      }
+      // 未知/迟到/已终结 id → ConfirmManager 幂等返回 false（不抛异常）
+      return conversationService?.confirmTool(toolCallId, approve) ?? Promise.resolve(false);
+    });
+
     handle(
       IPC.ConfigProvidersList,
       (): Promise<ProviderInfo[]> => configStore?.list() ?? Promise.resolve([]),
@@ -472,6 +516,14 @@ function createBrowserWindow(): void {
   // A5：SearchProvider 实例化后同时用于工具注册与 Agent 运行时装配（决议 #32⑥ 注入点）
   const searchProvider = new BingSearchProvider({ browser: controller });
   registerTool(createSearchTool(searchProvider));
+  // A6 UI 矩阵（仅冒烟模式）：委托 Provider——每次 search() 调用时读取受控夹具 holder
+  // （离线确定性；生产模式直用 Bing 实现，行为不变）
+  const agentSearchProvider: SearchProvider = {
+    id: searchProvider.id,
+    search: (query, signal) =>
+      smokeAgentSearchProvider.current?.search(query, signal) ??
+      searchProvider.search(query, signal),
+  };
   confirmManager = new ConfirmManager();
   toolExecutor = new ToolExecutor(confirmManager, createAuditLogger());
   // S4 完整装配（§3.1/§4）：AI 共读子系统接线——事件回调转发主窗口 send（事件只发
@@ -563,34 +615,51 @@ function createBrowserWindow(): void {
         win.webContents.send(IPC.ConversationTurnDone, e);
       }
     },
-    // Third Stage A5：Agent 运行时装配（§8.1 构造注入复用 A2–A4 实例；A5 只提供主进程
-    // 事件回调 + 冒烟驱动——不新增 renderer 可调用的 IPC 通道/preload bridge/UI（A6 红线））。
-    // 事件出口：delta/turn-done 走既有共读通道；step/confirm/run-done 暂为日志可见性
-    // （A6 起接 conversation:agent-* 事件通道）。
+    // Third Stage A5/A6：Agent 运行时装配（§8.1 构造注入复用 A2–A4 实例）+ 事件出口
+    // （A6 起接 conversation:agent-* 事件通道——只发主窗口；日志可见性保持）。
+    // SMOKE_MODE 下 limits 为冒烟可注入 holder（A6 UI 矩阵 step-limit/timeout 场景）——
+    // 生产模式不传（默认 12 步/420s）；受控 searchProvider 注入同理（离线确定性）。
     agent: {
       browser: controller, // ToolExecutionContext 唯一浏览器通道
       confirmManager, // L2 确认状态机（A2 实例复用）
       searchProvider, // ctx.searchProvider 注入点（决议 #32⑥；冒烟服务自建实例注入受控夹具）
       audit: createAuditLogger(), // 每次工具调用恰好一条审计（ToolExecutor 单出口保证）
       auditRun: (message) => logInfo('audit', message), // run 开始/终止条目（§10.1）
+      // A6 UI 矩阵（仅冒烟模式）：limits 为可注入 holder（step-limit/timeout 场景，每 run
+      // 启动时读取）；searchProvider 为委托实现（调用时读取受控夹具 holder——离线确定性）
+      ...(SMOKE_MODE ? { limits: smokeAgentLimits, searchProvider: agentSearchProvider } : {}),
     },
     onAgentStep: (e) => {
       logInfo(
         'agent',
         `工具步骤（requestId=${e.requestId}，tool=${e.step.name}，ok=${String(e.step.ok)}，decision=${e.step.decision}${e.step.errorCode !== undefined ? `，errorCode=${e.step.errorCode}` : ''}）`,
       );
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send(IPC.AgentStep, e);
+      }
     },
     onAgentConfirmRequest: (e) => {
       logInfo(
         'agent',
         `确认请求（requestId=${e.requestId}，tool=${e.toolName}，toolCallId=${e.toolCallId}）`,
       );
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send(IPC.AgentConfirmRequest, e);
+      }
     },
     onAgentRunDone: (e) => {
       logInfo(
         'agent',
         `Agent run 终态（requestId=${e.requestId}，status=${e.run.status}，步数=${e.run.stepsUsed}/${e.run.maxSteps}）`,
       );
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send(IPC.AgentRunDone, e);
+      }
+    },
+    onAgentStatus: (e) => {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send(IPC.AgentStatus, e);
+      }
     },
   });
   void controller.createTab(); // 初始空白标签页（浏览器常驻形态）

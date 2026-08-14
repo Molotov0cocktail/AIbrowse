@@ -35,6 +35,15 @@ export const IPC = {
   ConfigProvidersSet: 'config:providers:set', // payload: { providerId, baseUrl, model } → boolean
   ConfigProvidersSetKey: 'config:providers:set-key', // payload: { providerId, apiKey } → boolean
   //（apiKey='' = 删除；只写不回读）
+  // —— Third Stage（A6，§11.1）：Agent 操作可见性通道 ——
+  AgentAsk: 'conversation:agent-ask', // payload: { sessionId, goal } → AskResult
+  AgentConfirm: 'conversation:agent-confirm', // payload: { toolCallId, approve } → boolean
+  //（未知/迟到/已终结 id → false 幂等，主进程 ConfirmManager 保证）
+  AgentStep: 'conversation:agent-step', // AgentStepEvent（每步终态，含审计同源 argsSummary）
+  AgentConfirmRequest: 'conversation:agent-confirm-request', // AgentConfirmRequest（L2 pending 建立）
+  AgentRunDone: 'conversation:agent-run-done', // AgentRunDoneEvent（run 终态恰好一次）
+  AgentStatus: 'conversation:agent-status', // AgentStatusEvent（A6 实时状态：starting/thinking/
+  // executing/waiting-confirm/confirm-resolved/finalizing——确定性运行事实，非思维过程）
 } as const;
 
 export interface ContentBounds {
@@ -91,4 +100,16 @@ export interface ConfigProvidersSetPayload {
 export interface ConfigProvidersSetKeyPayload {
   providerId: string;
   apiKey: string; // 只写不回读；'' = 删除
+}
+
+// —— Third Stage（A6，§11.1）：Agent invoke payload ——
+
+export interface AgentAskPayload {
+  sessionId: string;
+  goal: string; // 空串/非串 → internal 拒绝；>16000 字符 main 侧确定性截断（与 ask 同款纪律）
+}
+
+export interface AgentConfirmPayload {
+  toolCallId: string; // 非空串；未知/迟到/已终结 → false（幂等，不抛异常）
+  approve: boolean; // true=允许一次；false=拒绝（deny）
 }

@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserController } from '../../browser/browser-controller';
 import type { ElementSemantics } from '../../../shared/types/agent';
 import type { AuditEntry } from '../audit-log';
-import { ConfirmManager } from '../confirm-manager';
+import { ConfirmManager, type PendingChange } from '../confirm-manager';
 import { registerTool, resetToolRegistry } from './tool-registry';
 import type { ToolExecutionContext, ToolDefinition } from './tool-types';
 import type { ToolPermissionLevel } from '../../../shared/types/agent';
@@ -274,6 +274,93 @@ describe('ToolExecutor 管线', () => {
     expect(r.ok).toBe(false);
     expect(r.errorCode).toBe('denied-by-user');
     expect(audits[0]?.decision).toBe('denied');
+  });
+
+  it('L2 确认 summary 含 elementText（页面提供的目标文本，经语义 binding 程序组装，A6）', async () => {
+    const changes: PendingChange[] = [];
+    confirm.addPendingChangeListener((change) => {
+      changes.push(change);
+    });
+    const p = executor.execute(
+      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-2"}' },
+      ctx({ isSubmit: true, text: '提交按钮' }),
+      signal,
+    );
+    await vi.waitFor(() => expect(changes.length).toBe(1));
+    const first = changes[0];
+    expect(first?.kind).toBe('pending');
+    if (first?.kind !== 'pending') throw new Error('应建立 pending');
+    expect(first.request.toolName).toBe('browser.click');
+    expect(first.request.summary.elementText).toBe('提交按钮');
+    expect(first.request.summary.detail).toContain('browser.click');
+    // 决议 → settled 判别联合（A6 confirm-resolved 状态事件源）
+    expect(confirm.approve('c2')).toBe(true);
+    const r = await p;
+    expect(r.ok).toBe(true);
+    expect(changes.at(-1)).toEqual({
+      kind: 'settled',
+      runId: 'run-1',
+      toolCallId: 'c2',
+      outcome: 'approved',
+    });
+  });
+
+  it('L2 确认 summary 无元素语义文本时不含 elementText（宁缺勿错，不伪造）', async () => {
+    const changes: PendingChange[] = [];
+    confirm.addPendingChangeListener((change) => {
+      changes.push(change);
+    });
+    const p = executor.execute(
+      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-2"}' },
+      ctx({ isSubmit: true }), // 无 text 字段（如 input[type=submit]，inputs 不采集可见文本）
+      signal,
+    );
+    await vi.waitFor(() => expect(changes.length).toBe(1));
+    const first = changes[0];
+    if (first?.kind !== 'pending') throw new Error('应建立 pending');
+    expect('elementText' in first.request.summary).toBe(false);
+    confirm.deny('c2');
+    await p;
+  });
+
+  it('L2 确认 summary 含目标站点 URL（参数无 url 的工具取目标 Tab 的 URL——主进程可信信息，A6）', async () => {
+    const changes: PendingChange[] = [];
+    confirm.addPendingChangeListener((change) => {
+      changes.push(change);
+    });
+    const tabCtx = (semantics?: ElementSemantics | null): ToolExecutionContext => ({
+      browser: fakeBrowser({
+        getActiveTab: async () => ({
+          id: 'tab-x',
+          title: '表单页',
+          url: 'https://page.example/form',
+          active: true,
+          state: 'ready',
+        }),
+        getTabs: async () => [
+          {
+            id: 'tab-x',
+            title: '表单页',
+            url: 'https://page.example/form',
+            active: true,
+            state: 'ready',
+          },
+        ],
+      }),
+      runId: 'run-1',
+      getElementSemantics: () => (semantics == null ? null : { semantics, documentId: 1 }),
+    });
+    const p = executor.execute(
+      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-2"}' },
+      tabCtx({ isSubmit: true }),
+      signal,
+    );
+    await vi.waitFor(() => expect(changes.length).toBe(1));
+    const first = changes[0];
+    if (first?.kind !== 'pending') throw new Error('应建立 pending');
+    expect(first.request.summary.url).toBe('https://page.example/form');
+    confirm.deny('c2');
+    await p;
   });
 
   it('click 无语义元数据 → L3 forbidden（fail-closed 不回落到基础 L1）', async () => {

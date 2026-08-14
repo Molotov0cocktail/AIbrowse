@@ -681,3 +681,304 @@ body {
   color: var(--text);
   white-space: pre;
 }
+
+/* ---------- A6：Agent 可见性 UI（模式切换/状态栏/工具列表/确认对话框） ---------- */
+
+.ai-mode-switch {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 6px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.ai-mode-switch button {
+  height: 22px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-mode-switch button.active {
+  background: var(--accent);
+  color: var(--text);
+}
+
+.ai-agent-status {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.ai-agent-status-text {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ai-agent-status-page {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+.ai-tool-calls {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  margin: 0;
+}
+
+.ai-tool-calls-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ai-tool-calls-toggle {
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-tool-calls-toggle:hover {
+  background: var(--accent);
+  color: var(--text);
+}
+
+.ai-tool-call-items {
+  list-style: none;
+  margin: 0;
+  padding: 0 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.ai-tool-call-item {
+  border-left: 3px solid var(--border);
+  padding-left: 8px;
+  font-size: 12px;
+}
+
+.ai-tool-call-line,
+.ai-tool-step-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-tool-call-name,
+.ai-tool-step-name {
+  font-family: Consolas, 'Courier New', monospace;
+  color: var(--text);
+}
+
+.ai-tool-call-decision,
+.ai-tool-step-decision {
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  background: var(--accent);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.ai-decision-auto-visible {
+  background: light-dark(#e3ecfa, #33415c);
+}
+
+.ai-decision-failure {
+  background: light-dark(#fbe4e1, #4a3433);
+  color: var(--danger);
+}
+
+.ai-tool-call-ok {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.ai-tool-call-ok-failure {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ai-tool-call-args {
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.ai-tool-call-error,
+.ai-tool-step-error {
+  color: var(--danger);
+}
+
+.ai-tool-call-preview,
+.ai-tool-step-preview {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ai-message-tool {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.ai-agent-run {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ai-agent-run-done {
+  color: light-dark(#2e7d32, #7cc77f);
+}
+
+.ai-agent-run-error,
+.ai-agent-run-step-limit,
+.ai-agent-run-timeout,
+.ai-agent-run-loop-detected,
+.ai-agent-run-no-progress {
+  color: var(--danger);
+}
+
+.ai-agent-process {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ai-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.ai-confirm-dialog {
+  width: 420px;
+  max-width: calc(100vw - 48px);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+.ai-confirm-title {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.ai-confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.ai-confirm-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.ai-confirm-label {
+  color: var(--muted);
+  flex-shrink: 0;
+  min-width: 56px;
+}
+
+.ai-confirm-value {
+  color: var(--text);
+  word-break: break-all;
+}
+
+.ai-confirm-url,
+.ai-confirm-element-text {
+  font-family: Consolas, 'Courier New', monospace;
+}
+
+.ai-confirm-source {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ai-confirm-failed {
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.ai-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ai-confirm-deny,
+.ai-confirm-approve {
+  height: 30px;
+  padding: 0 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ai-confirm-deny {
+  /* 拒绝为默认高亮与默认焦点（Enter 只激活焦点按钮——默认拒绝，不存在误批准） */
+  background: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ai-confirm-approve {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.ai-confirm-deny:disabled,
+.ai-confirm-approve:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ai-composer-note {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
