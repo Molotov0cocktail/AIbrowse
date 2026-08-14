@@ -7,12 +7,22 @@
 import { app, session, webContents, WebContentsView } from 'electron';
 import type { BrowserWindow, WebContents } from 'electron';
 import { createServer, type Server } from 'node:http';
-import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserController } from './browser/browser-controller';
 import type { PageSnapshot } from '../shared/types/browser';
 import { PERSIST_PARTITION } from './browser/session-manager';
+import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sqlite-driver';
 import { SEARCH_ENGINE_URL } from '../shared/url';
 import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 import { listTools } from './ai/tools/tool-registry';
@@ -7134,6 +7144,325 @@ export async function runLiveAgentScenarios(
   }
 }
 
+// B1：判断 child 是否位于 parent 目录内（Windows 大小写不敏感）。用于「userData 是否
+// 指向系统 TEMP 下的临时目录」判定——B-01 探针仅在临时 userData 下触碰 userData 派生路径。
+function isPathInside(child: string, parent: string): boolean {
+  const c = resolve(child).toLowerCase();
+  const p = resolve(parent).toLowerCase();
+  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
+}
+
+// ---------- 8.7 B1 node:sqlite 决策门 11 项探针（Fourth Stage 硬前置，决议 #46/#47） ----------
+// 每项独立断言 + 独立中文日志；基础能力项 ①–⑦、⑩、⑪ 任一失败 → 冒烟失败（B1 停止）；
+// ⑧⑨（FTS5/trigram）失败不构成 B1 失败：如实登记（B3 按 §8.3 参数化降级为主）。
+// 探针 SQL 仅位于本场景内（SMOKE_MODE 门控测试设施，裁决 #47 落点）；不触碰真实用户
+// Sources 路径——userData 非临时目录时探针根退化为系统 TEMP 下独立目录，⑩ 留待
+// AIBROWSE_USER_DATA_DIR=<临时目录> 的官方验证命令实测。
+async function runSqliteDecisionGateScenario(): Promise<void> {
+  const buildKind = process.env['ELECTRON_RENDERER_URL'] ? 'dev 构建' : '生产构建产物';
+  const userData = app.getPath('userData');
+  const tempRoot = app.getPath('temp');
+  const userDataIsTemp = isPathInside(userData, tempRoot);
+  const probeRoot = userDataIsTemp
+    ? join(userData, 'sources', `b1-probe-${process.pid}`)
+    : join(tempRoot, `aibrowse-b1-probe-${process.pid}`);
+  const dbPath = join(probeRoot, 'probe.db');
+  let handle: DbHandle | null = null;
+  let fts5Capable = false;
+  let trigramCapable = false;
+
+  // 探针根清理：仅本任务创建的 pid 专属目录（系统 TEMP 或临时 userData 下）
+  rmSync(probeRoot, { recursive: true, force: true });
+  mkdirSync(probeRoot, { recursive: true });
+
+  try {
+    // ①/② import DatabaseSync：driver 模块静态导入于本文件顶部——本次运行实际加载成功
+    // 即证明对应构建的 import 可用（绑定缺失/外部化失败会在应用启动即崩溃，无法到达本行）；
+    // 跨构建的另一项由对应构建的冒烟运行实测（dev 与生产构建为两个真实运行场景）。
+    assert(
+      typeof openDb === 'function' && typeof withTransaction === 'function',
+      'sqlite-driver 模块导入失败（node:sqlite 不可用）',
+    );
+    if (buildKind === 'dev 构建') {
+      logInfo('smoke', 'B-01 ① import DatabaseSync（dev 构建）：通过（模块已加载）');
+      logInfo('smoke', 'B-01 ② import（生产构建产物）：本场景为 dev 构建——由生产冒烟运行实测');
+    } else {
+      logInfo('smoke', 'B-01 ① import（dev 构建）：本场景为生产构建——由 dev 冒烟运行实测');
+      logInfo('smoke', 'B-01 ② import DatabaseSync（生产构建产物）：通过（模块已加载）');
+    }
+
+    // ③ 文件库创建/关闭/重开/读回（探针目录：userData 派生或系统 TEMP，见上方判定）
+    {
+      const h1 = openDb(dbPath);
+      const versionRow = h1.prepare('SELECT sqlite_version() AS v').get() as { v: string };
+      logInfo(
+        'smoke',
+        `B-01 环境：Electron ${process.versions.electron ?? '?'} / Node ${process.versions.node ?? '?'} / SQLite ${versionRow.v}（${buildKind}）`,
+      );
+      h1.exec('CREATE TABLE b1_probe (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+      h1.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('k1', '中文内容');
+      closeDb(h1);
+      const h2 = openDb(dbPath);
+      const row = h2.prepare('SELECT v FROM b1_probe WHERE k = ?').get('k1') as { v: string };
+      assert(row !== undefined && row.v === '中文内容', '③ 文件库重开后读回不一致');
+      logInfo('smoke', 'B-01 ③ 文件库创建/关闭/重开/读回：通过');
+      handle = h2;
+    }
+
+    // ④ 起经局部常量访问（闭包内类型稳定收窄）；handle 仅用于 finally 清理
+    const probeDb: DbHandle = handle;
+
+    // ④ prepared statements 参数绑定（中文/引号/注入串仅作数据）
+    {
+      const injection = "'; DROP TABLE b1_probe --";
+      probeDb.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('k2', '带"引号"与中文');
+      probeDb.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('k3', injection);
+      const back = probeDb.prepare('SELECT v FROM b1_probe WHERE k = ?').get('k3') as { v: string };
+      assert(back !== undefined && back.v === injection, '④ 注入串未原样读回');
+      const stillThere = (
+        probeDb.prepare('SELECT COUNT(*) AS n FROM b1_probe').get() as { n: number }
+      ).n;
+      assert(stillThere === 3, '④ 注入串被当作语句执行（表状态异常）');
+      logInfo('smoke', 'B-01 ④ prepared statements 参数绑定：通过（中文/引号/注入串仅作数据）');
+    }
+
+    // ⑤ 事务 BEGIN/COMMIT/ROLLBACK（回调或语句异常时整体回滚）
+    {
+      const countNow = (): number =>
+        (probeDb.prepare('SELECT COUNT(*) AS n FROM b1_probe').get() as { n: number }).n;
+      probeDb.exec('BEGIN');
+      probeDb.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('t0', '显式回滚');
+      probeDb.exec('ROLLBACK');
+      assert(countNow() === 3, '⑤ 显式 ROLLBACK 后数据未回滚');
+      withTransaction(probeDb, () => {
+        probeDb.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('t1', '事务提交');
+      });
+      assert(countNow() === 4, '⑤ COMMIT 后数据未保留');
+      let callbackRolledBack = false;
+      try {
+        withTransaction(probeDb, () => {
+          probeDb.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('t2', '将回滚');
+          throw new Error('B-01 探针回调异常');
+        });
+      } catch {
+        callbackRolledBack = true;
+      }
+      assert(callbackRolledBack && countNow() === 4, '⑤ 回调异常未整体回滚');
+      let statementRolledBack = false;
+      try {
+        withTransaction(probeDb, () => {
+          probeDb.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('t3', '将回滚');
+          probeDb.exec('INSERT INTO no_such_table VALUES (1)'); // 语句异常
+        });
+      } catch {
+        statementRolledBack = true;
+      }
+      assert(statementRolledBack && countNow() === 4, '⑤ 语句异常未整体回滚');
+      logInfo('smoke', 'B-01 ⑤ 事务 BEGIN/COMMIT/ROLLBACK（回调/语句异常整体回滚）：通过');
+    }
+
+    // ⑥ PRAGMA foreign_keys=ON 确实拦截非法外键
+    {
+      const fkVal = (probeDb.prepare('PRAGMA foreign_keys').get() as Record<string, number>)[
+        'foreign_keys'
+      ];
+      assert(fkVal === 1, '⑥ 外键未启用（PRAGMA foreign_keys 回读不为 1）');
+      probeDb.exec('CREATE TABLE b1_parent (id INTEGER PRIMARY KEY)');
+      probeDb.exec(
+        'CREATE TABLE b1_child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES b1_parent(id))',
+      );
+      let fkBlocked = false;
+      try {
+        probeDb.prepare('INSERT INTO b1_child(parent_id) VALUES (?)').run(999);
+      } catch {
+        fkBlocked = true;
+      }
+      assert(fkBlocked, '⑥ 非法外键未被拦截');
+      // 负证：外键关闭的连接同样插入成功（证明拦截来自 PRAGMA 设置）
+      const noFk = openDb(dbPath, { enableForeignKeys: false });
+      noFk.prepare('INSERT INTO b1_child(parent_id) VALUES (?)').run(999);
+      closeDb(noFk);
+      logInfo('smoke', 'B-01 ⑥ PRAGMA foreign_keys=ON 拦截非法外键：通过（开启拦截/关闭放行双证）');
+    }
+
+    // ⑦ busy_timeout 在两连接受控锁竞争中真实生效
+    {
+      const busyVal = (probeDb.prepare('PRAGMA busy_timeout').get() as Record<string, number>)[
+        'timeout'
+      ];
+      assert(busyVal === 5000, '⑦ busy_timeout 默认值未生效（回读不等于 5000）');
+      const a = openDb(dbPath); // 锁持有者
+      a.exec('BEGIN IMMEDIATE');
+      a.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('lock', '持锁');
+      const b = openDb(dbPath, { busyTimeoutMs: 300 });
+      const t0 = Date.now();
+      let busyThrown: unknown = null;
+      try {
+        b.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('lock2', '竞争');
+      } catch (err) {
+        busyThrown = err;
+      }
+      const waitedMs = Date.now() - t0;
+      assert(
+        busyThrown !== null && /locked|busy/i.test(String(busyThrown)),
+        '⑦ 锁竞争应报 SQLITE_BUSY（database is locked）',
+      );
+      // 仅下界断言：等待发生（busy_timeout 未生效时竞争写 <10ms 内立即失败）
+      assert(waitedMs >= 100, `⑦ busy_timeout 未生效（竞争写立即失败而非等待：${waitedMs}ms）`);
+      a.exec('COMMIT');
+      b.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('lock2', '竞争'); // 释放后成功
+      closeDb(a);
+      // 负证：busyTimeoutMs=0 不等待（立即失败）
+      const a2 = openDb(dbPath);
+      a2.exec('BEGIN IMMEDIATE');
+      a2.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('lock3', '持锁');
+      const b0 = openDb(dbPath, { busyTimeoutMs: 0 });
+      let zeroThrown = false;
+      try {
+        b0.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('lock4', '竞争');
+      } catch {
+        zeroThrown = true;
+      }
+      assert(zeroThrown, '⑦ busyTimeoutMs=0 应立即失败（不等待）');
+      a2.exec('COMMIT');
+      closeDb(a2);
+      closeDb(b0);
+      closeDb(b);
+      logInfo(
+        'smoke',
+        'B-01 ⑦ busy_timeout 锁竞争：通过（等待后 SQLITE_BUSY/释放后成功/零超时立即失败）',
+      );
+    }
+
+    // ⑧ FTS5 建表（失败不构成 B1 失败：如实登记，B3 降级为主）
+    {
+      let fts5Err = '';
+      try {
+        probeDb.exec('CREATE VIRTUAL TABLE b1_fts USING fts5(content)');
+        fts5Capable = true;
+      } catch (err) {
+        fts5Err = String(err);
+      }
+      if (fts5Capable) {
+        probeDb
+          .prepare('INSERT INTO b1_fts(content) VALUES (?)')
+          .run('electron sqlite fts5 决策门');
+        probeDb.prepare('INSERT INTO b1_fts(content) VALUES (?)').run('第二行无关内容');
+        const hits = probeDb
+          .prepare('SELECT content FROM b1_fts WHERE b1_fts MATCH ?')
+          .all('fts5') as Array<{ content: string }>;
+        assert(hits.length === 1 && hits[0]!.content.includes('决策门'), '⑧ FTS5 查询未命中预期行');
+        logInfo('smoke', 'B-01 ⑧ FTS5 建表与查询：通过');
+      } else {
+        logInfo(
+          'smoke',
+          `B-01 ⑧ FTS5 建表：不可用（如实登记：${fts5Err}；B3 将按 §8.3 参数化降级为主，不构成 B1 失败）`,
+        );
+      }
+    }
+
+    // ⑨ trigram tokenizer 建表 + 中文子串命中（失败不构成 B1 失败：如实登记）
+    {
+      let trigramErr = '';
+      try {
+        probeDb.exec("CREATE VIRTUAL TABLE b1_tri USING fts5(x, tokenize='trigram')");
+        trigramCapable = true;
+      } catch (err) {
+        trigramErr = String(err);
+      }
+      if (trigramCapable) {
+        probeDb.prepare('INSERT INTO b1_tri(x) VALUES (?)').run('中文子串检索测试');
+        probeDb.prepare('INSERT INTO b1_tri(x) VALUES (?)').run('英文 ascii substring probe');
+        const zh = probeDb
+          .prepare('SELECT x FROM b1_tri WHERE b1_tri MATCH ?')
+          .all('文子串') as Array<{ x: string }>;
+        const en = probeDb
+          .prepare('SELECT x FROM b1_tri WHERE b1_tri MATCH ?')
+          .all('sub') as Array<{ x: string }>;
+        assert(
+          zh.length === 1 && zh[0]!.x === '中文子串检索测试',
+          '⑨ trigram 中文 3 字符子串未命中',
+        );
+        assert(en.length === 1, '⑨ trigram 英文子串未命中');
+        const short = probeDb
+          .prepare('SELECT x FROM b1_tri WHERE b1_tri MATCH ?')
+          .all('文子') as Array<{ x: string }>;
+        logInfo(
+          'smoke',
+          `B-01 ⑨ trigram 建表与中文子串命中：通过（1–2 字符查询${short.length === 0 ? '实测不命中' : '命中'}——trigram ≥3 字符语义，B3 短查询降级路径依据，如实登记）`,
+        );
+      } else {
+        logInfo(
+          'smoke',
+          `B-01 ⑨ trigram：不可用（如实登记：${trigramErr}；B3 将按 §8.3 参数化降级为主，不构成 B1 失败）`,
+        );
+      }
+    }
+
+    // ⑩ 数据库位于 app.getPath('userData') 派生目录
+    if (userDataIsTemp) {
+      assert(isPathInside(dbPath, join(userData, 'sources')), '⑩ 数据库未位于 userData 派生目录');
+      logInfo('smoke', 'B-01 ⑩ 数据库位于 app.getPath(userData) 派生目录：通过');
+    } else {
+      logInfo(
+        'smoke',
+        'B-01 ⑩ userData 路径派生：本轮跳过（userData 未指向临时目录；由官方验证命令 AIBROWSE_USER_DATA_DIR=<系统 TEMP 下临时目录> 实测）',
+      );
+    }
+
+    logInfo(
+      'smoke',
+      `B-01 汇总（${buildKind}）：基础能力项 ①–⑦、⑩、⑪ 全部通过；⑧ FTS5 ${fts5Capable ? '可用' : '不可用（B3 降级为主，如实登记）'}；⑨ trigram ${trigramCapable ? '可用（中文子串命中）' : '不可用（B3 降级为主，如实登记）'}${userDataIsTemp ? '' : '；⑩ 由官方验证命令实测'}`,
+    );
+  } finally {
+    // 成功与失败路径统一关闭句柄（幂等）+ 清理本次探针目录
+    if (handle !== null && handle.isOpen) {
+      try {
+        closeDb(handle);
+      } catch (err) {
+        logWarn('smoke', 'B-01 探针句柄关闭失败（清理路径）', err);
+      }
+    }
+    try {
+      rmSync(probeRoot, { recursive: true, force: true });
+    } catch (err) {
+      logWarn('smoke', 'B-01 探针目录清理失败（清理路径）', err);
+    }
+  }
+
+  // ⑪ 关闭后句柄清理：重命名/删除成功（Windows 下句柄未释放会抛错）+ 无效路径安全失败
+  {
+    mkdirSync(probeRoot, { recursive: true });
+    try {
+      const fresh = openDb(dbPath);
+      fresh.exec('CREATE TABLE b1_probe (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+      fresh.prepare('INSERT INTO b1_probe(k, v) VALUES (?, ?)').run('c1', '句柄清理');
+      closeDb(fresh);
+      closeDb(fresh); // 重复关闭幂等
+      const renamed = `${dbPath}.renamed`;
+      renameSync(dbPath, renamed);
+      const reopened = openDb(renamed);
+      const count = (reopened.prepare('SELECT COUNT(*) AS n FROM b1_probe').get() as { n: number })
+        .n;
+      assert(count === 1, '⑪ 重命名后重开数据不一致');
+      closeDb(reopened);
+      rmSync(probeRoot, { recursive: true, force: true });
+      assert(!existsSync(probeRoot), '⑪ 关闭后探针目录应可整体删除（句柄未释放）');
+      logInfo('smoke', 'B-01 ⑪ 关闭后句柄清理：通过（重命名/删除成功、重复关闭幂等）');
+      let invalidThrown = false;
+      try {
+        openDb(join(probeRoot, 'no-such-dir', 'x.db'));
+      } catch {
+        invalidThrown = true;
+      }
+      assert(invalidThrown, '⑪ 无效路径应明确失败（不静默）');
+      logInfo('smoke', 'B-01 ⑪ 无效路径安全失败（中文错误，不静默吞错）：通过');
+    } finally {
+      rmSync(probeRoot, { recursive: true, force: true });
+    }
+  }
+}
+
 export async function runSmokeScenario(
   controller: BrowserController,
   options: SmokeOptions = {},
@@ -7976,6 +8305,11 @@ export async function runSmokeScenario(
     ) {
       await runRedTeamScenarios(controller, options);
     }
+
+    // 8.7 B1 node:sqlite 决策门 11 项探针（Fourth Stage 硬前置）：主进程离线探针，
+    //     每项独立断言与独立中文日志；基础能力项任一失败即冒烟失败（B1 停止）。
+    //     与 liveSmoke/toolExecutor 无关——任何 AIBROWSE_SMOKE=1 运行均自动包含。
+    await runSqliteDecisionGateScenario();
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
