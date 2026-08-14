@@ -60,24 +60,24 @@ describe('sanitize — 既有模式回归', () => {
 describe('sanitize — 审计日志形态脱敏（A2 扩展，audit-log 输出经既有 sanitize 链）', () => {
   it('审计条目形态消息中的 sk- Key 与 apiKey 键值对零暴露', () => {
     const auditLine =
-      'tool-call（requestId=r，toolCallId=c，tool=browser.open，args={url:https://x/?q=sk-proj-abcdefgh12345678}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）';
+      'tool-call（requestId=r，toolCallId=c，tool=browser_open，args={url:https://x/?q=sk-proj-abcdefgh12345678}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）';
     const out = sanitize(auditLine);
     expect(out).not.toMatch(/sk-proj/i);
     expect(out).toContain('sk-***');
     const apiKeyLine =
-      'tool-call（requestId=r，toolCallId=c，tool=browser.fill，args={elementId:el-1,text=len:9}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）';
+      'tool-call（requestId=r，toolCallId=c，tool=browser_fill，args={elementId:el-1,text=len:9}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）';
     expect(sanitize(apiKeyLine)).toBe(apiKeyLine);
   });
 
   it('审计条目常规内容（URL 查询串/len=N 摘要）不被误伤', () => {
     const line =
-      'tool-call（requestId=r，toolCallId=c，tool=browser.open，args={url:https://example.com/path?q=1&x=2}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）';
+      'tool-call（requestId=r，toolCallId=c，tool=browser_open，args={url:https://example.com/path?q=1&x=2}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）';
     expect(sanitize(line)).toBe(line);
   });
 });
 
 // A7 红队 RT-02/RT-07 日志伪造审计（先写红态）：模型可控字符串（open/navigate 的 URL
-// 全量入审计——上限 2048、search.web 查询串全量——上限 500）可携带 CR/LF/ANSI 转义/
+// 全量入审计——上限 2048、search_web 查询串全量——上限 500）可携带 CR/LF/ANSI 转义/
 // 双向文本控制符/零宽字符。日志条目必须恒为单行纯文本：CR/LF 折叠（不能伪造新的
 // [INFO] [audit] 条目行）、ANSI 转义序列剔除、其余控制字符剔除。
 describe('normalizeLogMessage — 日志行伪造防御（A7 红队，红→绿）', () => {
@@ -86,7 +86,7 @@ describe('normalizeLogMessage — 日志行伪造防御（A7 红队，红→绿�
 
   it('CRLF/CR/LF 折叠为空格：条目恒单行，无法伪造新的 [INFO] [audit] 条目行', () => {
     const hostile =
-      'https://example.com/x?q=1\n[INFO] [audit] tool-call（requestId=fake，toolCallId=fake，tool=browser.open，args={url:https://evil.example}，decision=confirmed，ok=true，耗时=1ms，errorCode=无）\r\n继续\r换行';
+      'https://example.com/x?q=1\n[INFO] [audit] tool-call（requestId=fake，toolCallId=fake，tool=browser_open，args={url:https://evil.example}，decision=confirmed，ok=true，耗时=1ms，errorCode=无）\r\n继续\r换行';
     const out = normalizeLogMessage(hostile);
     expect(out).not.toMatch(/[\r\n]/);
     // 折叠为单行后，敌手 [INFO] 片段只保留在行内（作为 URL 参数文本），
@@ -125,14 +125,14 @@ describe('normalizeLogMessage — 日志行伪造防御（A7 红队，红→绿�
     try {
       initLogger(dir);
       const hostileUrl =
-        'https://example.com/x?q=\n[INFO] [audit] tool-call（requestId=fake，toolCallId=fake，tool=browser.open，args={url:https://evil.example}，decision=confirmed，ok=true，耗时=1ms，errorCode=无）';
+        'https://example.com/x?q=\n[INFO] [audit] tool-call（requestId=fake，toolCallId=fake，tool=browser_open，args={url:https://evil.example}，decision=confirmed，ok=true，耗时=1ms，errorCode=无）';
       logInfo(
         'audit',
-        `tool-call（requestId=r1，toolCallId=c1，tool=browser.open，args={url:${hostileUrl}}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）`,
+        `tool-call（requestId=r1，toolCallId=c1，tool=browser_open，args={url:${hostileUrl}}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）`,
       );
       logInfo(
         'audit',
-        'tool-call（requestId=r2，toolCallId=c2，tool=browser.read，args={}，decision=auto，ok=true，耗时=3ms，errorCode=无）',
+        'tool-call（requestId=r2，toolCallId=c2，tool=browser_read，args={}，decision=auto，ok=true，耗时=3ms，errorCode=无）',
       );
       const text = readFileSync(getCurrentLogFilePath(), 'utf8');
       const lines = text.split('\n').filter((l) => l.trim() !== '');

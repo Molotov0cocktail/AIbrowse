@@ -23,19 +23,19 @@ import type {
 
 // §7.1 权限矩阵基础级别（编译期常量——模型与网页无通道修改本矩阵，threat-model T-06）
 export const TOOL_BASE_RISK: Readonly<Record<string, ToolPermissionLevel>> = {
-  'browser.get_tabs': 0,
-  'browser.get_active_tab': 0,
-  'browser.read': 0,
-  'browser.find': 0,
-  'browser.scroll': 0,
-  'search.web': 0,
-  'browser.open': 1,
-  'browser.navigate': 1,
-  'browser.back': 1,
-  'browser.forward': 1,
-  'browser.reload': 1,
-  'browser.click': 1,
-  'browser.fill': 1,
+  browser_get_tabs: 0,
+  browser_get_active_tab: 0,
+  browser_read: 0,
+  browser_find: 0,
+  browser_scroll: 0,
+  search_web: 0,
+  browser_open: 1,
+  browser_navigate: 1,
+  browser_back: 1,
+  browser_forward: 1,
+  browser_reload: 1,
+  browser_click: 1,
+  browser_fill: 1,
 };
 
 export interface PermissionDecision {
@@ -59,17 +59,17 @@ export function decide(
     return { level: 3, reason: `未知工具「${toolName}」，权限层拒绝` };
   }
 
-  if (toolName === 'browser.open' || toolName === 'browser.navigate') {
+  if (toolName === 'browser_open' || toolName === 'browser_navigate') {
     const url = args.url;
     if (typeof url !== 'string' || !isHttpUrl(url)) {
       return { level: 3, reason: 'URL 非 http/https，禁止该导航操作' };
     }
     return { level: 1, reason: '导航到公开网页（自动显著展示）' };
   }
-  if (toolName === 'browser.click') {
+  if (toolName === 'browser_click') {
     return decideClick(elementSemantics);
   }
-  if (toolName === 'browser.fill') {
+  if (toolName === 'browser_fill') {
     return decideFill(elementSemantics);
   }
 

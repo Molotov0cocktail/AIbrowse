@@ -20,7 +20,7 @@ import {
   runForSession,
 } from './agent-run-state';
 
-const stepOf = (toolCallId: string, name = 'browser.read'): ToolStep => ({
+const stepOf = (toolCallId: string, name = 'browser_read'): ToolStep => ({
   id: toolCallId,
   toolCallId,
   name,
@@ -49,7 +49,7 @@ const confirmRequest = (toolCallId = 'c2'): AgentConfirmRequest => ({
   requestId: 'r1',
   sessionId: 's1',
   toolCallId,
-  toolName: 'browser.click',
+  toolName: 'browser_click',
   summary: { url: 'https://example.com/form', elementText: '提交按钮', detail: '提交表单' },
   createdAt: 1,
 });
@@ -196,14 +196,14 @@ describe('reduceAgentRuns — status/step/confirm 合并与竞态', () => {
       type: 'status',
       event: statusEvent({
         phase: 'executing',
-        toolName: 'browser.read',
+        toolName: 'browser_read',
         stepsUsed: 3,
         maxSteps: 12,
       }),
     });
     expect(runForSession(state, 's1')).toMatchObject({
       phase: 'executing',
-      toolName: 'browser.read',
+      toolName: 'browser_read',
       stepsUsed: 3,
       maxSteps: 12,
     });
@@ -214,7 +214,7 @@ describe('reduceAgentRuns — status/step/confirm 合并与竞态', () => {
     state = reduceAgentRuns(state, { type: 'confirm', event: confirmRequest('c2') });
     expect(runForSession(state, 's1')).toMatchObject({
       phase: 'waiting-confirm',
-      toolName: 'browser.click',
+      toolName: 'browser_click',
       pendingConfirm: expect.objectContaining({ toolCallId: 'c2' }),
     });
   });
@@ -250,7 +250,7 @@ describe('reduceAgentRuns — status/step/confirm 合并与竞态', () => {
     state = reduceAgentRuns(state, { type: 'confirm', event: confirmRequest('c2') });
     state = reduceAgentRuns(state, {
       type: 'step',
-      event: stepEvent('c2', { step: stepOf('c2', 'browser.click') }),
+      event: stepEvent('c2', { step: stepOf('c2', 'browser_click') }),
     });
     expect(runForSession(state, 's1')?.pendingConfirm).toBeNull();
   });

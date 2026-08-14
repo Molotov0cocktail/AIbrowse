@@ -25,39 +25,39 @@ describe('agent-safety — 签名规范化（确定性）', () => {
   });
 
   it('JSON 键顺序不同 → 同一签名（键排序确定性）', () => {
-    const a = buildToolSignature('browser.scroll', '{"dy":10,"tabId":"t1"}');
-    const b = buildToolSignature('browser.scroll', '{"tabId":"t1","dy":10}');
+    const a = buildToolSignature('browser_scroll', '{"dy":10,"tabId":"t1"}');
+    const b = buildToolSignature('browser_scroll', '{"tabId":"t1","dy":10}');
     expect(a).toBe(b);
   });
 
   it('Unicode NFC 归一化：组合型与预组型等价', () => {
     // 'é' 的两种表示（U+0065 U+0301 与 U+00E9）
-    const a = buildToolSignature('browser.find', '{"text":"café"}');
-    const b = buildToolSignature('browser.find', '{"text":"café"}');
+    const a = buildToolSignature('browser_find', '{"text":"café"}');
+    const b = buildToolSignature('browser_find', '{"text":"café"}');
     expect(a).toBe(b);
   });
 
   it('工具名不同 → 签名不同', () => {
-    expect(buildToolSignature('browser.read', '{}')).not.toBe(
-      buildToolSignature('browser.find', '{}'),
+    expect(buildToolSignature('browser_read', '{}')).not.toBe(
+      buildToolSignature('browser_find', '{}'),
     );
   });
 
   it('参数值不同 → 签名不同', () => {
-    expect(buildToolSignature('browser.scroll', '{"dy":1}')).not.toBe(
-      buildToolSignature('browser.scroll', '{"dy":2}'),
+    expect(buildToolSignature('browser_scroll', '{"dy":1}')).not.toBe(
+      buildToolSignature('browser_scroll', '{"dy":2}'),
     );
   });
 
   it('非法 JSON（无法取得合法参数）仍有稳定签名（NFC 原始串，不抛异常）', () => {
     const raw = '{"dy": 10';
     expect(normalizeSignatureArguments(raw)).toBe(raw.normalize('NFC'));
-    expect(buildToolSignature('browser.scroll', raw)).toBe(
-      buildToolSignature('browser.scroll', '{"dy": 10'),
+    expect(buildToolSignature('browser_scroll', raw)).toBe(
+      buildToolSignature('browser_scroll', '{"dy": 10'),
     );
     // 非对象 JSON 同样安全
-    expect(buildToolSignature('browser.scroll', '[1,2]')).toBe(
-      buildToolSignature('browser.scroll', '[1,2]'),
+    expect(buildToolSignature('browser_scroll', '[1,2]')).toBe(
+      buildToolSignature('browser_scroll', '[1,2]'),
     );
   });
 
@@ -67,8 +67,8 @@ describe('agent-safety — 签名规范化（确定性）', () => {
   });
 
   it('数字/布尔参数与字符串表示区分（JSON 语义确定性）', () => {
-    expect(buildToolSignature('browser.scroll', '{"dy":1}')).not.toBe(
-      buildToolSignature('browser.scroll', '{"dy":"1"}'),
+    expect(buildToolSignature('browser_scroll', '{"dy":1}')).not.toBe(
+      buildToolSignature('browser_scroll', '{"dy":"1"}'),
     );
   });
 });
@@ -76,7 +76,7 @@ describe('agent-safety — 签名规范化（确定性）', () => {
 describe('agent-safety — 循环判定（阻断必须发生在触发次执行前）', () => {
   it('前两次同签名执行，第三次 wouldTriggerLoop=true（触发次在执行前阻断）', () => {
     const s = new AgentSafety();
-    const sig = buildToolSignature('browser.read', '{}');
+    const sig = buildToolSignature('browser_read', '{}');
     expect(s.wouldTriggerLoop(sig)).toBe(false);
     s.record(sig); // 第 1 次执行
     expect(s.wouldTriggerLoop(sig)).toBe(false);
@@ -86,8 +86,8 @@ describe('agent-safety — 循环判定（阻断必须发生在触发次执行�
 
   it('非连续累计：前四次执行，第五次在执行前阻断', () => {
     const s = new AgentSafety();
-    const sig = buildToolSignature('browser.read', '{}');
-    const other = buildToolSignature('browser.scroll', '{"dy":1}');
+    const sig = buildToolSignature('browser_read', '{}');
+    const other = buildToolSignature('browser_scroll', '{"dy":1}');
     for (let i = 1; i <= 3; i++) {
       s.record(sig);
       expect(s.wouldTriggerLoop(sig)).toBe(false); // 第 i 次后判定：未达累计阈值
@@ -100,7 +100,7 @@ describe('agent-safety — 循环判定（阻断必须发生在触发次执行�
 
   it('read 等工具无白名单例外（决议 #24：防死循环优先）', () => {
     const s = new AgentSafety();
-    const sig = buildToolSignature('browser.read', '{}');
+    const sig = buildToolSignature('browser_read', '{}');
     s.record(sig);
     s.record(sig);
     expect(s.wouldTriggerLoop(sig)).toBe(true);
@@ -108,7 +108,7 @@ describe('agent-safety — 循环判定（阻断必须发生在触发次执行�
 
   it('被拒/失败/试图执行的调用同样计签（校验失败与执行失败不能逃避检测）', () => {
     const s = new AgentSafety();
-    const sig = buildToolSignature('browser.navigate', '{"tabId":"bad","url":"https://x.com/"}');
+    const sig = buildToolSignature('browser_navigate', '{"tabId":"bad","url":"https://x.com/"}');
     s.record(sig); // invalid-args（试图执行）
     s.record(sig); // 再次失败
     expect(s.wouldTriggerLoop(sig)).toBe(true);
@@ -116,8 +116,8 @@ describe('agent-safety — 循环判定（阻断必须发生在触发次执行�
 
   it('不同签名打断连续计数（连续计数器重置、累计保留）', () => {
     const s = new AgentSafety();
-    const a = buildToolSignature('browser.read', '{}');
-    const b = buildToolSignature('browser.read', '{"tabId":"t1"}');
+    const a = buildToolSignature('browser_read', '{}');
+    const b = buildToolSignature('browser_read', '{"tabId":"t1"}');
     s.record(a);
     s.record(a);
     s.record(b); // 打断
@@ -130,7 +130,7 @@ describe('agent-safety — 循环判定（阻断必须发生在触发次执行�
 
   it('触发次调用也被计入（阻断的调用 record 后连续计数已达阈值）', () => {
     const s = new AgentSafety();
-    const sig = buildToolSignature('browser.read', '{}');
+    const sig = buildToolSignature('browser_read', '{}');
     s.record(sig);
     s.record(sig);
     expect(s.wouldTriggerLoop(sig)).toBe(true);
@@ -140,11 +140,11 @@ describe('agent-safety — 循环判定（阻断必须发生在触发次执行�
 
   it('阈值可注入（测试不依赖生产常量）', () => {
     const s = new AgentSafety({ consecutive: 2, total: 3, noProgressSteps: 1 });
-    const sig = buildToolSignature('browser.read', '{}');
+    const sig = buildToolSignature('browser_read', '{}');
     s.record(sig);
     expect(s.wouldTriggerLoop(sig)).toBe(true); // 连续第 2 次即触发
     const s2 = new AgentSafety({ consecutive: 2, total: 3 });
-    const other = buildToolSignature('browser.scroll', '{"dy":1}');
+    const other = buildToolSignature('browser_scroll', '{"dy":1}');
     s2.record(other);
     s2.record(other);
     s2.record(other);

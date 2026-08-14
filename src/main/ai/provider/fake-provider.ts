@@ -38,7 +38,15 @@ export interface FakeToolCallsChunk {
   delayMs?: number;
 }
 
-export type FakeChunk = FakeTextChunk | FakeToolCallsChunk;
+// A7 补验校准：thinking 模式思维增量（与真实适配器 reasoning 事件形态一致；
+// 离线确定性驱动 Agent 轮 reasoning 累积/回传/零暴露断言）。
+export interface FakeReasoningChunk {
+  kind: 'reasoning';
+  text: string;
+  delayMs?: number;
+}
+
+export type FakeChunk = FakeTextChunk | FakeToolCallsChunk | FakeReasoningChunk;
 
 export interface FakeProviderScript {
   chunks?: Array<string | FakeChunk>; // Default: fixed default script
@@ -107,6 +115,8 @@ export class FakeProvider implements LLMProvider {
       }
       if ('toolCalls' in chunk) {
         yield { type: 'toolCalls', toolCalls: chunk.toolCalls };
+      } else if ('kind' in chunk && chunk.kind === 'reasoning') {
+        yield { type: 'reasoning', text: chunk.text };
       } else {
         yield { type: 'delta', text: chunk.text };
       }

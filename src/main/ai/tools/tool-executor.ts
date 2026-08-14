@@ -49,8 +49,8 @@ function toolFailure(
 }
 
 function contentBudgetFor(toolName: string): number {
-  if (toolName === 'browser.read') return READ_TOOL_CONTENT_MAX;
-  if (toolName === 'search.web') return SEARCH_TOOL_CONTENT_MAX;
+  if (toolName === 'browser_read') return READ_TOOL_CONTENT_MAX;
+  if (toolName === 'search_web') return SEARCH_TOOL_CONTENT_MAX;
   return TOOL_RESULT_CONTENT_MAX;
 }
 
@@ -166,11 +166,11 @@ export class ToolExecutor {
     level: 0 | 1 | 2,
   ): ToolExecutionDerived | undefined {
     if (binding === null) return undefined;
-    if (toolName === 'browser.click') {
+    if (toolName === 'browser_click') {
       const allowedKind = level <= 2 ? classifyClickTarget(binding.semantics) : null;
       return { allowedKind: allowedKind ?? undefined, documentId: binding.documentId };
     }
-    if (toolName === 'browser.fill') {
+    if (toolName === 'browser_fill') {
       return { documentId: binding.documentId };
     }
     return undefined;

@@ -36,7 +36,7 @@ export interface ConversationMessage {
   toolCallId?: string; // role='tool' 必填：关联该轮 assistant.toolCalls 的调用 id
   toolStep?: ToolStep; // role='tool' 必填：精简步骤（§2.2 agent.ts）
   toolCalls?: ProviderToolCall[]; // role='assistant' 可选：该轮工具调用（脱敏持久化——
-  // browser.fill 的 arguments.text 已替换；重放时按完整交互组裁剪）
+  // browser_fill 的 arguments.text 已替换；重放时按完整交互组裁剪）
   agentRun?: AgentRunSummary; // role='assistant' 可选：Agent run 终态摘要（§8.5）
 }
 
@@ -120,6 +120,10 @@ export interface ProviderMessage {
   content: string; // inside the user message's UNTRUSTED_WEB_CONTENT block (§7.3)
   toolCallId?: string; // role='tool' 时必填：关联 ProviderToolCall.id（A1 扩展）
   toolCalls?: ProviderToolCall[]; // role='assistant' 时可选：该轮工具调用（历史重放，A1 扩展）
+  // A7 补验校准：供应商不透明思维内容（如 DeepSeek thinking 模式 delta.reasoning_content）。
+  // 仅运行时 transcript 内用于工具轮的原样回传（mapMessages → reasoning_content）；
+  // 禁止持久化/UI/日志（思维过程零暴露红线），跨 run 重放不携带（决议 #35）。
+  reasoning?: string;
 }
 
 export interface ProviderRequest {
@@ -168,6 +172,10 @@ export type ProviderEvent =
   // 聚合完成、校验通过的整组工具调用——适配器在 finish_reason=tool_calls 末帧后按
   // index 升序产出，恰好在 done 之前；绝不携带半截 arguments。
   | { type: 'toolCalls'; toolCalls: ProviderToolCall[] }
+  // A7 补验校准：供应商不透明思维增量（thinking 模式 reasoning_content）。
+  // 调用方职责：Agent 循环累积并在工具轮后续请求原样回传；共读路径忽略；
+  // 一律不进 UI/日志/持久化（思维过程零暴露红线，决议 #35）。
+  | { type: 'reasoning'; text: string }
   | { type: 'done'; usage?: ProviderUsage }
   | { type: 'error'; error: NormalizedProviderError };
 

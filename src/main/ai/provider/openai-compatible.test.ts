@@ -317,7 +317,7 @@ describe('applyToolCallFragments / finalizeToolCalls — 分槽累积与聚合�
     expect(
       applyToolCallFragments(slots, [
         { index: 0, id: 'call_1', name: 'get_weather', arguments: '{"city":' },
-        { index: 1, id: 'call_2', name: 'search.web', arguments: '{"q":' },
+        { index: 1, id: 'call_2', name: 'search_web', arguments: '{"q":' },
       ]),
     ).toBe('ok');
     expect(
@@ -328,7 +328,7 @@ describe('applyToolCallFragments / finalizeToolCalls — 分槽累积与聚合�
     ).toBe('ok');
     expect([...slots.values()]).toEqual([
       { id: 'call_1', name: 'get_weather', arguments: '{"city":"Paris"}' },
-      { id: 'call_2', name: 'search.web', arguments: '{"q":"docs"}' },
+      { id: 'call_2', name: 'search_web', arguments: '{"q":"docs"}' },
     ]);
     expect([...slots.keys()]).toEqual([0, 1]);
   });
@@ -347,24 +347,24 @@ describe('applyToolCallFragments / finalizeToolCalls — 分槽累积与聚合�
 
   it('finalize：按 index 升序输出完整 ProviderToolCall[]', () => {
     const slots = new Map<number, ToolCallSlot>([
-      [2, { id: 'c2', name: 'browser.back', arguments: '{}' }],
-      [0, { id: 'c0', name: 'browser.read', arguments: '{"tabId":null}' }],
-      [1, { id: 'c1', name: 'browser.find', arguments: '{"text":"安全"}' }],
+      [2, { id: 'c2', name: 'browser_back', arguments: '{}' }],
+      [0, { id: 'c0', name: 'browser_read', arguments: '{"tabId":null}' }],
+      [1, { id: 'c1', name: 'browser_find', arguments: '{"text":"安全"}' }],
     ]);
     const result = finalizeToolCalls(slots);
     expect(result).toEqual({
       ok: true,
       calls: [
-        { id: 'c0', name: 'browser.read', arguments: '{"tabId":null}' },
-        { id: 'c1', name: 'browser.find', arguments: '{"text":"安全"}' },
-        { id: 'c2', name: 'browser.back', arguments: '{}' },
+        { id: 'c0', name: 'browser_read', arguments: '{"tabId":null}' },
+        { id: 'c1', name: 'browser_find', arguments: '{"text":"安全"}' },
+        { id: 'c2', name: 'browser_back', arguments: '{}' },
       ],
     });
   });
 
   it('finalize：arguments 非法 JSON → 失败（不产出半截工具调用）', () => {
     const slots = new Map<number, ToolCallSlot>([
-      [0, { id: 'c0', name: 'browser.read', arguments: '{"unclosed"' }],
+      [0, { id: 'c0', name: 'browser_read', arguments: '{"unclosed"' }],
     ]);
     expect(finalizeToolCalls(slots)).toEqual({ ok: false });
   });
@@ -372,7 +372,7 @@ describe('applyToolCallFragments / finalizeToolCalls — 分槽累积与聚合�
   it('finalize：arguments 合法 JSON 但非对象（数字/字符串/null/数组）→ 失败', () => {
     for (const argumentsText of ['42', '"str"', 'null', '[1,2]']) {
       const slots = new Map<number, ToolCallSlot>([
-        [0, { id: 'c0', name: 'browser.read', arguments: argumentsText }],
+        [0, { id: 'c0', name: 'browser_read', arguments: argumentsText }],
       ]);
       expect(finalizeToolCalls(slots)).toEqual({ ok: false });
     }
@@ -380,7 +380,7 @@ describe('applyToolCallFragments / finalizeToolCalls — 分槽累积与聚合�
 
   it('finalize：id/name 为空 → 失败；空 slots → ok 空数组', () => {
     expect(
-      finalizeToolCalls(new Map([[0, { id: '', name: 'browser.read', arguments: '{}' }]])),
+      finalizeToolCalls(new Map([[0, { id: '', name: 'browser_read', arguments: '{}' }]])),
     ).toEqual({ ok: false });
     expect(finalizeToolCalls(new Map([[0, { id: 'c0', name: '', arguments: '{}' }]]))).toEqual({
       ok: false,
@@ -424,13 +424,13 @@ describe('streamSseBody — SSE 管道（toolCalls 聚合产出，恰好在 done
                     index: 0,
                     id: 'call_0',
                     type: 'function',
-                    function: { name: 'browser.read', arguments: '' },
+                    function: { name: 'browser_read', arguments: '' },
                   },
                   {
                     index: 1,
                     id: 'call_1',
                     type: 'function',
-                    function: { name: 'browser.find', arguments: '' },
+                    function: { name: 'browser_find', arguments: '' },
                   },
                 ],
               },
@@ -450,8 +450,8 @@ describe('streamSseBody — SSE 管道（toolCalls 聚合产出，恰好在 done
       {
         type: 'toolCalls',
         toolCalls: [
-          { id: 'call_0', name: 'browser.read', arguments: '{"tabId":null}' },
-          { id: 'call_1', name: 'browser.find', arguments: '{"text":"安全"}' },
+          { id: 'call_0', name: 'browser_read', arguments: '{"tabId":null}' },
+          { id: 'call_1', name: 'browser_find', arguments: '{"text":"安全"}' },
         ],
       },
       { type: 'done' },
@@ -467,7 +467,7 @@ describe('streamSseBody — SSE 管道（toolCalls 聚合产出，恰好在 done
               delta: {
                 content: '即将调用工具。',
                 tool_calls: [
-                  { index: 0, id: 'c0', function: { name: 'browser.read', arguments: '{}' } },
+                  { index: 0, id: 'c0', function: { name: 'browser_read', arguments: '{}' } },
                 ],
               },
               finish_reason: 'tool_calls',
@@ -479,14 +479,14 @@ describe('streamSseBody — SSE 管道（toolCalls 聚合产出，恰好在 done
     ]);
     expect(events).toEqual([
       { type: 'delta', text: '即将调用工具。' },
-      { type: 'toolCalls', toolCalls: [{ id: 'c0', name: 'browser.read', arguments: '{}' }] },
+      { type: 'toolCalls', toolCalls: [{ id: 'c0', name: 'browser_read', arguments: '{}' }] },
       { type: 'done' },
     ]);
   });
 
   it('末帧 usage 透传到 done（toolCalls 与 usage 同帧不丢）', async () => {
     const events = await feedSse([
-      frame(toolStartFrame(0, 'call_b', 'browser.read')),
+      frame(toolStartFrame(0, 'call_b', 'browser_read')),
       frame(toolFrame(0, '{"x":1}')),
       frame(
         JSON.stringify({
@@ -499,7 +499,7 @@ describe('streamSseBody — SSE 管道（toolCalls 聚合产出，恰好在 done
     expect(events).toEqual([
       {
         type: 'toolCalls',
-        toolCalls: [{ id: 'call_b', name: 'browser.read', arguments: '{"x":1}' }],
+        toolCalls: [{ id: 'call_b', name: 'browser_read', arguments: '{"x":1}' }],
       },
       { type: 'done', usage: { inputTokens: 5, outputTokens: 2 } },
     ]);
@@ -547,14 +547,14 @@ describe('streamSseBody — SSE 管道（toolCalls 聚合产出，恰好在 done
 
   it('无 [DONE] 干净结束（tail 帧含 finish_reason）→ toolCalls 后 done', async () => {
     const events = await feedSse([
-      frame(toolStartFrame(0, 'call_c', 'browser.back')),
+      frame(toolStartFrame(0, 'call_c', 'browser_back')),
       frame(toolFrame(0, '{}')),
       finishFrame('tool_calls'),
     ]);
     expect(events).toEqual([
       {
         type: 'toolCalls',
-        toolCalls: [{ id: 'call_c', name: 'browser.back', arguments: '{}' }],
+        toolCalls: [{ id: 'call_c', name: 'browser_back', arguments: '{}' }],
       },
       { type: 'done' },
     ]);
@@ -564,7 +564,7 @@ describe('streamSseBody — SSE 管道（toolCalls 聚合产出，恰好在 done
     const crlf = (payload: string): string => `data: ${payload}\r\n\r\n`;
     const events = await feedSse([
       ': keep-alive\n\n',
-      crlf(toolStartFrame(0, 'call_d', 'browser.read')),
+      crlf(toolStartFrame(0, 'call_d', 'browser_read')),
       crlf(toolFrame(0, '{}')),
       crlf('{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'),
       crlf('[DONE]'),
@@ -572,7 +572,7 @@ describe('streamSseBody — SSE 管道（toolCalls 聚合产出，恰好在 done
     expect(events).toEqual([
       {
         type: 'toolCalls',
-        toolCalls: [{ id: 'call_d', name: 'browser.read', arguments: '{}' }],
+        toolCalls: [{ id: 'call_d', name: 'browser_read', arguments: '{}' }],
       },
       { type: 'done' },
     ]);
@@ -602,7 +602,7 @@ describe('mapMessages — tool 消息与 assistant toolCalls 重放（A1）', ()
         {
           role: 'assistant',
           content: '需要读取页面',
-          toolCalls: [{ id: 'call_1', name: 'browser.read', arguments: '{"tabId":null}' }],
+          toolCalls: [{ id: 'call_1', name: 'browser_read', arguments: '{"tabId":null}' }],
         },
       ],
     };
@@ -615,7 +615,7 @@ describe('mapMessages — tool 消息与 assistant toolCalls 重放（A1）', ()
           {
             id: 'call_1',
             type: 'function',
-            function: { name: 'browser.read', arguments: '{"tabId":null}' },
+            function: { name: 'browser_read', arguments: '{"tabId":null}' },
           },
         ],
       },
@@ -630,5 +630,83 @@ describe('mapMessages — tool 消息与 assistant toolCalls 重放（A1）', ()
       messages: [{ role: 'tool', content: 'x' }],
     };
     expect(mapMessages(request)[1]).toEqual({ role: 'tool', content: 'x', tool_call_id: '' });
+  });
+});
+
+describe('reasoning_content 不透明透传（A7 补验校准：thinking 模式工具轮后续请求必须原样回传）', () => {
+  it('interpretSsePayload 提取 delta.reasoning_content（与 content 同帧 / 独立 reasoning 帧 / 与 tool_calls 同帧）', () => {
+    const both = interpretSsePayload(
+      JSON.stringify({
+        choices: [{ delta: { content: '正文', reasoning_content: '思考一' } }],
+      }),
+    );
+    expect(both).toMatchObject({ type: 'delta', text: '正文', reasoningText: '思考一' });
+
+    const only = interpretSsePayload(
+      JSON.stringify({ choices: [{ delta: { reasoning_content: '思考二' } }] }),
+    );
+    expect(only).toMatchObject({ type: 'reasoning', text: '思考二' });
+
+    const withTool = interpretSsePayload(
+      JSON.stringify({
+        choices: [
+          {
+            delta: {
+              reasoning_content: '思考三',
+              tool_calls: [{ index: 0, function: { name: 'browser_read', arguments: '{}' } }],
+            },
+          },
+        ],
+      }),
+    );
+    expect(withTool).toMatchObject({ type: 'tool-delta', reasoningText: '思考三' });
+
+    const none = interpretSsePayload(JSON.stringify({ choices: [{ delta: { content: 'x' } }] }));
+    expect(none).not.toHaveProperty('reasoningText');
+  });
+
+  it('streamSseBody 将 reasoning 增量按序产出为 reasoning 事件（不混入 delta 文本）', async () => {
+    const events = await feedSse([
+      frame(JSON.stringify({ choices: [{ delta: { reasoning_content: '思考A' } }] })),
+      frame(JSON.stringify({ choices: [{ delta: { content: '答案' } }] })),
+      frame(
+        JSON.stringify({
+          choices: [{ delta: { reasoning_content: '思考B' }, finish_reason: null }],
+        }),
+      ),
+      'data: [DONE]\n\n',
+    ]);
+    expect(events).toEqual([
+      { type: 'reasoning', text: '思考A' },
+      { type: 'delta', text: '答案' },
+      { type: 'reasoning', text: '思考B' },
+      { type: 'done', usage: undefined },
+    ]);
+  });
+
+  it('mapMessages：assistant 带 toolCalls 且带 reasoning 时输出 reasoning_content；无 reasoning 不输出该字段', () => {
+    const calls = [{ id: 'c1', name: 'browser_read', arguments: '{}' }];
+    const wire = mapMessages({
+      system: 'S',
+      messages: [
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: calls,
+          reasoning: '思考一',
+        },
+        { role: 'tool', content: 'R', toolCallId: 'c1' },
+        { role: 'assistant', content: '回答' },
+      ],
+    });
+    expect(wire[1]).toEqual({
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        { id: 'c1', type: 'function', function: { name: 'browser_read', arguments: '{}' } },
+      ],
+      reasoning_content: '思考一',
+    });
+    expect(wire[3]).toEqual({ role: 'assistant', content: '回答' }); // 无 toolCalls 轮不携带
   });
 });

@@ -512,7 +512,7 @@ function createBrowserWindow(): void {
     },
   });
   browserController = controller;
-  // Third Stage A2/A3/A4：工具层装配——注册表 8 个只读/导航 + 4 个交互 + search.web
+  // Third Stage A2/A3/A4：工具层装配——注册表 8 个只读/导航 + 4 个交互 + search_web
   // （工具实现只经 BrowserController/SearchProvider 接口执行，不 import Electron）+
   // 确认状态机 + 审计薄封装 + ToolExecutor 管线。A5 AgentLoop 接线复用本实例；本任务
   // 由冒烟工具层探针驱动验证全链路（校验→权限→确认→执行→审计）。

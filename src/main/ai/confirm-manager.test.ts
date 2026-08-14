@@ -16,11 +16,11 @@ function settled(p: Promise<ConfirmOutcome>): Promise<ConfirmOutcome | 'timeout'
 describe('ConfirmManager 确认状态机', () => {
   it('requestConfirm 建立 pending（含全部字段）；approve 决议 approved 且返回 true；pending 清空', async () => {
     const m = new ConfirmManager();
-    const p = m.requestConfirm('run-1', 'call-1', 'browser.click', summary);
+    const p = m.requestConfirm('run-1', 'call-1', 'browser_click', summary);
     const pending = m.getPending();
     expect(pending?.toolCallId).toBe('call-1');
     expect(pending?.runId).toBe('run-1');
-    expect(pending?.toolName).toBe('browser.click');
+    expect(pending?.toolName).toBe('browser_click');
     expect(pending?.summary).toEqual(summary);
     expect(typeof pending?.createdAt).toBe('number');
     expect(m.approve('call-1')).toBe(true);
@@ -112,11 +112,11 @@ describe('ConfirmManager — onPendingChange 回调（A5 可见性事件源 + A6
     m.addPendingChangeListener((change) => {
       changes.push(change);
     });
-    const p = m.requestConfirm('run-1', 'call-1', 'browser.click', summary);
+    const p = m.requestConfirm('run-1', 'call-1', 'browser_click', summary);
     expect(changes).toEqual([
       {
         kind: 'pending',
-        request: expect.objectContaining({ toolCallId: 'call-1', toolName: 'browser.click' }),
+        request: expect.objectContaining({ toolCallId: 'call-1', toolName: 'browser_click' }),
       },
     ]);
     expect(m.deny('call-1')).toBe(true);

@@ -95,15 +95,15 @@ describe('TOOL_ERROR_LABELS（ToolResultErrorCode 中文文案，闭合枚举）
 
 describe('toolActionLabel（程序确定的动作类型文案）', () => {
   it('已知工具映射', () => {
-    expect(toolActionLabel('browser.click')).toBe('点击页面元素');
-    expect(toolActionLabel('browser.fill')).toBe('填写输入框');
-    expect(toolActionLabel('browser.open')).toBe('打开页面');
-    expect(toolActionLabel('browser.navigate')).toBe('导航到页面');
-    expect(toolActionLabel('search.web')).toBe('网页搜索');
+    expect(toolActionLabel('browser_click')).toBe('点击页面元素');
+    expect(toolActionLabel('browser_fill')).toBe('填写输入框');
+    expect(toolActionLabel('browser_open')).toBe('打开页面');
+    expect(toolActionLabel('browser_navigate')).toBe('导航到页面');
+    expect(toolActionLabel('search_web')).toBe('网页搜索');
   });
 
   it('未知工具兜底文案（不解析模型/页面文本）', () => {
-    expect(toolActionLabel('browser.scroll')).toBe('执行浏览器操作');
+    expect(toolActionLabel('browser_scroll')).toBe('执行浏览器操作');
     expect(toolActionLabel('')).toBe('执行浏览器操作');
   });
 });
@@ -141,15 +141,15 @@ describe('describeAgentStatus（状态栏确定性中文文案）', () => {
   it('executing → 执行工具 + 当前工具名 + stepsUsed/maxSteps（A5 实际计数）', () => {
     expect(
       describeAgentStatus(
-        entry({ phase: 'executing', toolName: 'browser.read', stepsUsed: 3, maxSteps: 12 }),
+        entry({ phase: 'executing', toolName: 'browser_read', stepsUsed: 3, maxSteps: 12 }),
       ),
-    ).toBe('执行工具 browser.read（第 3/12 步）');
+    ).toBe('执行工具 browser_read（第 3/12 步）');
   });
 
   it('waiting-confirm → 等待确认 + 工具名', () => {
     expect(
-      describeAgentStatus(entry({ phase: 'waiting-confirm', toolName: 'browser.click' })),
-    ).toBe('等待确认：browser.click');
+      describeAgentStatus(entry({ phase: 'waiting-confirm', toolName: 'browser_click' })),
+    ).toBe('等待确认：browser_click');
   });
 
   it('confirm-resolved：批准/拒绝/作废三态', () => {

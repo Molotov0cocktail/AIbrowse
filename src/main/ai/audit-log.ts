@@ -37,19 +37,19 @@ function renderValue(value: unknown): string {
   return JSON.stringify(value) ?? String(value); // 防御：校验已拒嵌套结构
 }
 
-// 参数摘要：键排序确定性；browser.fill 的 text → len=N（不记原值）；url 全量
-// （审计可追溯，校验上限 2048）；search.web 的 query 全量（T-03 外发审查可追溯，
+// 参数摘要：键排序确定性；browser_fill 的 text → len=N（不记原值）；url 全量
+// （审计可追溯，校验上限 2048）；search_web 的 query 全量（T-03 外发审查可追溯，
 // 校验上限 500 有界——决议 #32）；其余值确定性截断 ≤ ARGS_SUMMARY_MAX。
 export function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
   const parts = Object.keys(args)
     .sort()
     .map((key) => {
       const value = args[key];
-      if (toolName === 'browser.fill' && key === 'text') {
+      if (toolName === 'browser_fill' && key === 'text') {
         // 隐私红线（决议 #13）：fill 输入值只记长度——普通字段与未来扩展一致脱敏
         return `text=len:${String(value).length}`;
       }
-      if (key === 'url' || (toolName === 'search.web' && key === 'query')) {
+      if (key === 'url' || (toolName === 'search_web' && key === 'query')) {
         return `${key}:${renderValue(value)}`;
       }
       return `${key}:${truncate(renderValue(value))}`;

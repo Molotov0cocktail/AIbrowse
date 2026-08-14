@@ -100,17 +100,17 @@ function testToolDefs(): ToolDefinition[] {
   const snapshot = makeSnapshot();
   return [
     {
-      name: 'browser.get_tabs',
+      name: 'browser_get_tabs',
       description: '列出标签页',
       parameters: { properties: {}, required: [] },
       baseRisk: 0,
       executor: async ({ id }) => {
-        toolLog.push({ name: 'browser.get_tabs', args: {} });
+        toolLog.push({ name: 'browser_get_tabs', args: {} });
         return { toolCallId: id, ok: true, content: '标签页摘要' };
       },
     },
     {
-      name: 'browser.read',
+      name: 'browser_read',
       description: '读取页面',
       parameters: {
         properties: { tabId: { type: 'string', description: '标签页 id（可选）' } },
@@ -123,12 +123,12 @@ function testToolDefs(): ToolDefinition[] {
             ? args.tabId
             : ((await ctx.browser.getActiveTab())?.id ?? 't1');
         ctx.recordSnapshot?.(tabId, snapshot); // 登记点击语义（isSubmit 按钮 el-1）
-        toolLog.push({ name: 'browser.read', args });
+        toolLog.push({ name: 'browser_read', args });
         return { toolCallId: id, ok: true, content: '页面章节摘要' };
       },
     },
     {
-      name: 'browser.scroll',
+      name: 'browser_scroll',
       description: '滚动页面',
       parameters: {
         properties: { dy: { type: 'number', description: '像素' } },
@@ -138,7 +138,7 @@ function testToolDefs(): ToolDefinition[] {
       baseRisk: 0,
       executor: async ({ id, args }, ctx) => {
         const res = await ctx.browser.scrollTab(TOOL_TAB, Number(args.dy));
-        toolLog.push({ name: 'browser.scroll', args });
+        toolLog.push({ name: 'browser_scroll', args });
         if (!res.ok) {
           return {
             toolCallId: id,
@@ -151,7 +151,7 @@ function testToolDefs(): ToolDefinition[] {
       },
     },
     {
-      name: 'browser.click',
+      name: 'browser_click',
       description: '点击元素',
       parameters: {
         properties: {
@@ -163,12 +163,12 @@ function testToolDefs(): ToolDefinition[] {
       baseRisk: 1,
       riskLift: { submitClick: 2 },
       executor: async ({ id, args }) => {
-        toolLog.push({ name: 'browser.click', args });
+        toolLog.push({ name: 'browser_click', args });
         return { toolCallId: id, ok: true, content: `已点击 ${String(args.elementId)}` };
       },
     },
     {
-      name: 'browser.fill',
+      name: 'browser_fill',
       description: '填写输入框',
       parameters: {
         properties: {
@@ -179,7 +179,7 @@ function testToolDefs(): ToolDefinition[] {
       },
       baseRisk: 1,
       executor: async ({ id, args }) => {
-        toolLog.push({ name: 'browser.fill', args });
+        toolLog.push({ name: 'browser_fill', args });
         return { toolCallId: id, ok: true, content: `已填写 ${String(args.elementId)}` };
       },
     },
@@ -301,8 +301,8 @@ describe('AgentLoop — 正常多步任务与协议历史', () => {
   it('多步：工具调用 → ToolResult → 模型继续 → 最终文本（done）', async () => {
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.read', '{}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser.scroll', '{"dy":10}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser_scroll', '{"dy":10}')] }],
         [{ text: '任务完成，这是最终回答。' }],
       ],
     };
@@ -313,7 +313,7 @@ describe('AgentLoop — 正常多步任务与协议历史', () => {
     expect(result.stepsUsed).toBe(2);
     expect(result.toolStepCount).toBe(2);
     expect(result.maxSteps).toBe(AGENT_MAX_STEPS);
-    expect(f.steps.map((s) => s.name)).toEqual(['browser.read', 'browser.scroll']);
+    expect(f.steps.map((s) => s.name)).toEqual(['browser_read', 'browser_scroll']);
     expect(f.steps.every((s) => s.ok)).toBe(true);
     expect(f.deltas).toEqual(['任务完成，这是最终回答。']);
     expect(f.auditEntries.length).toBe(2); // 每步恰好一条审计
@@ -328,8 +328,8 @@ describe('AgentLoop — 正常多步任务与协议历史', () => {
           {
             kind: 'toolCalls',
             toolCalls: [
-              tc('c-a', 'browser.scroll', '{"dy":1}'),
-              tc('c-b', 'browser.get_tabs', '{}'),
+              tc('c-a', 'browser_scroll', '{"dy":1}'),
+              tc('c-b', 'browser_get_tabs', '{}'),
             ],
           },
         ],
@@ -353,7 +353,7 @@ describe('AgentLoop — 正常多步任务与协议历史', () => {
     expect(messages[assistantIdx + 2].toolCallId).toBe('c-b');
     // tool 消息内容为 UNTRUSTED_TOOL_RESULT 块（受控结构）
     expect(messages[assistantIdx + 1].content).toContain('<UNTRUSTED_TOOL_RESULT ok="true"');
-    expect(messages[assistantIdx + 1].content).toContain('tool="browser.scroll"');
+    expect(messages[assistantIdx + 1].content).toContain('tool="browser_scroll"');
   });
 
   it('文本+toolCalls 同轮：文本为过程性输出（流事件转发、非最终回答），执行后继续模型轮', async () => {
@@ -361,7 +361,7 @@ describe('AgentLoop — 正常多步任务与协议历史', () => {
       rounds: [
         [
           { text: '我先看一下页面。' },
-          { kind: 'toolCalls', toolCalls: [tc('c1', 'browser.read', '{}')] },
+          { kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] },
         ],
         [{ text: '看完后的最终回答。' }],
       ],
@@ -377,8 +377,8 @@ describe('AgentLoop — 正常多步任务与协议历史', () => {
   it('多轮请求共享同一运行时 transcript：goal 不重复插入末条', async () => {
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.read', '{}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser.get_tabs', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser_get_tabs', '{}')] }],
         [{ text: '完成' }],
       ],
     };
@@ -401,10 +401,10 @@ describe('AgentLoop — 工具错误结构化回注与模型调整', () => {
         [
           {
             kind: 'toolCalls',
-            toolCalls: [tc('c1', 'browser.scroll', '{"tabId":"bad","dy":1}')], // 未知参数 → invalid-args
+            toolCalls: [tc('c1', 'browser_scroll', '{"tabId":"bad","dy":1}')], // 未知参数 → invalid-args
           },
         ],
-        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser.get_tabs', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser_get_tabs', '{}')] }],
         [{ text: '调整后完成' }],
       ],
     };
@@ -431,8 +431,8 @@ describe('AgentLoop — 工具错误结构化回注与模型调整', () => {
             kind: 'toolCalls',
             toolCalls: [
               tc('c1', 'browser.nonexistent', '{}'),
-              tc('c2', 'browser.click', '{"elementId":"el-9"}'), // 无语义 → L3
-              tc('c3', 'browser.scroll', '{"dy":1,"unknownKey":2}'), // 校验失败（未知键）
+              tc('c2', 'browser_click', '{"elementId":"el-9"}'), // 无语义 → L3
+              tc('c3', 'browser_scroll', '{"dy":1,"unknownKey":2}'), // 校验失败（未知键）
             ],
           },
         ],
@@ -454,7 +454,7 @@ describe('AgentLoop — 工具错误结构化回注与模型调整', () => {
   it('execution-failed 保留实际权限决策（L0 工具决策仍为 auto），每步审计恰好一条', async () => {
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.scroll', '{"dy":1}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_scroll', '{"dy":1}')] }],
         [{ text: '结束' }],
       ],
     };
@@ -476,11 +476,11 @@ describe('AgentLoop — 工具错误结构化回注与模型调整', () => {
 describe('AgentLoop — L2 确认（approve/deny/取消/超时）', () => {
   const submitScript = (): FakeProviderScript => ({
     rounds: [
-      [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.read', '{}')] }],
+      [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] }],
       [
         {
           kind: 'toolCalls',
-          toolCalls: [tc('c2', 'browser.click', `{"elementId":"el-1","tabId":"${TOOL_TAB}"}`)],
+          toolCalls: [tc('c2', 'browser_click', `{"elementId":"el-1","tabId":"${TOOL_TAB}"}`)],
         },
       ],
       [{ text: '确认流程完成。' }],
@@ -498,7 +498,7 @@ describe('AgentLoop — L2 确认（approve/deny/取消/超时）', () => {
     expect(clickStep?.ok).toBe(false);
     expect(clickStep?.errorCode).toBe('denied-by-user');
     expect(clickStep?.decision).toBe('denied');
-    expect(toolLog.filter((t) => t.name === 'browser.click').length).toBe(0); // 无执行
+    expect(toolLog.filter((t) => t.name === 'browser_click').length).toBe(0); // 无执行
     expect(f.confirm.getPending()).toBeNull();
   });
 
@@ -512,7 +512,7 @@ describe('AgentLoop — L2 确认（approve/deny/取消/超时）', () => {
     const clickStep = f.steps.find((s) => s.toolCallId === 'c2');
     expect(clickStep?.ok).toBe(true);
     expect(clickStep?.decision).toBe('confirmed');
-    expect(toolLog.filter((t) => t.name === 'browser.click').length).toBe(1);
+    expect(toolLog.filter((t) => t.name === 'browser_click').length).toBe(1);
   });
 
   it('取消（外部 abort）→ pending 作废 + cancelled 终态 + 无执行；终态后确认被忽略', async () => {
@@ -523,7 +523,7 @@ describe('AgentLoop — L2 确认（approve/deny/取消/超时）', () => {
     const result = await promise;
     expect(result.status).toBe('cancelled');
     expect(f.confirm.getPending()).toBeNull(); // pending 全部作废
-    expect(toolLog.filter((t) => t.name === 'browser.click').length).toBe(0); // 无执行
+    expect(toolLog.filter((t) => t.name === 'browser_click').length).toBe(0); // 无执行
     // 终态后 approve/deny 幂等安全返回 false
     expect(f.confirm.approve('c2')).toBe(false);
     expect(f.confirm.deny('c2')).toBe(false);
@@ -540,7 +540,7 @@ describe('AgentLoop — L2 确认（approve/deny/取消/超时）', () => {
       const result = await promise;
       expect(result.status).toBe('timeout');
       expect(f.confirm.getPending()).toBeNull();
-      expect(toolLog.filter((t) => t.name === 'browser.click').length).toBe(0);
+      expect(toolLog.filter((t) => t.name === 'browser_click').length).toBe(0);
     } finally {
       vi.useRealTimers();
     }
@@ -557,9 +557,9 @@ describe('AgentLoop — step-limit 边界', () => {
           {
             kind: 'toolCalls',
             toolCalls: [
-              tc('c1', 'browser.scroll', '{"dy":1}'),
-              tc('c2', 'browser.scroll', '{"dy":2}'),
-              tc('c3', 'browser.scroll', '{"dy":3}'),
+              tc('c1', 'browser_scroll', '{"dy":1}'),
+              tc('c2', 'browser_scroll', '{"dy":2}'),
+              tc('c3', 'browser_scroll', '{"dy":3}'),
             ],
           },
         ],
@@ -570,7 +570,7 @@ describe('AgentLoop — step-limit 边界', () => {
     expect(result.status).toBe('step-limit');
     expect(result.stepsUsed).toBe(2);
     expect(result.maxSteps).toBe(2);
-    expect(toolLog.filter((t) => t.name === 'browser.scroll').map((t) => t.args.dy)).toEqual([
+    expect(toolLog.filter((t) => t.name === 'browser_scroll').map((t) => t.args.dy)).toEqual([
       1, 2,
     ]);
     expect(f.steps.length).toBe(2);
@@ -580,21 +580,21 @@ describe('AgentLoop — step-limit 边界', () => {
 
   it('默认 12 步：绝不执行第 13 步（13 个不同签名调用 → 12 执行后 step-limit）', async () => {
     const calls = Array.from({ length: 13 }, (_, i) =>
-      tc(`c${i}`, 'browser.scroll', `{"dy":${i + 1}}`),
+      tc(`c${i}`, 'browser_scroll', `{"dy":${i + 1}}`),
     );
     const script: FakeProviderScript = { rounds: [[{ kind: 'toolCalls', toolCalls: calls }]] };
     const f = makeFixture({ script });
     const result = await f.loop.run(f.runSignal.signal);
     expect(result.status).toBe('step-limit');
     expect(result.stepsUsed).toBe(12);
-    expect(toolLog.filter((t) => t.name === 'browser.scroll').length).toBe(12);
+    expect(toolLog.filter((t) => t.name === 'browser_scroll').length).toBe(12);
     expect(f.auditEntries.length).toBe(12);
   });
 
   it('步数用尽后下一轮若为最终回答 → done（不误判 step-limit）', async () => {
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.scroll', '{"dy":1}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_scroll', '{"dy":1}')] }],
         [{ text: '用尽步数后的回答。' }],
       ],
     };
@@ -612,16 +612,16 @@ describe('AgentLoop — 防循环（触发次执行前阻断，零副作用）',
   it('连续第三次同签名调用不执行（loop-detected；前两次已执行）', async () => {
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.scroll', '{"dy":5}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser.scroll', '{"dy":5}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('c3', 'browser.scroll', '{"dy":5}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_scroll', '{"dy":5}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser_scroll', '{"dy":5}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c3', 'browser_scroll', '{"dy":5}')] }],
       ],
     };
     const f = makeFixture({ script });
     const result = await f.loop.run(f.runSignal.signal);
     expect(result.status).toBe('loop-detected');
     expect(result.stepsUsed).toBe(3); // 触发次也计入
-    expect(toolLog.filter((t) => t.name === 'browser.scroll').length).toBe(2); // 第三次零副作用
+    expect(toolLog.filter((t) => t.name === 'browser_scroll').length).toBe(2); // 第三次零副作用
     // 阻断步骤：decision=invalid + 恰好一条审计（无审计缺失/重复）
     expect(f.steps[2].ok).toBe(false);
     expect(f.steps[2].decision).toBe('invalid');
@@ -634,38 +634,38 @@ describe('AgentLoop — 防循环（触发次执行前阻断，零副作用）',
   it('非连续累计第五次在执行前阻断（连续被其他签名打断）', async () => {
     const rounds: FakeProviderScript['rounds'] = [];
     for (let i = 1; i <= 4; i++) {
-      rounds?.push([{ kind: 'toolCalls', toolCalls: [tc(`s${i}`, 'browser.scroll', '{"dy":7}')] }]);
-      rounds?.push([{ kind: 'toolCalls', toolCalls: [tc(`r${i}`, 'browser.read', '{}')] }]);
+      rounds?.push([{ kind: 'toolCalls', toolCalls: [tc(`s${i}`, 'browser_scroll', '{"dy":7}')] }]);
+      rounds?.push([{ kind: 'toolCalls', toolCalls: [tc(`r${i}`, 'browser_read', '{}')] }]);
     }
-    rounds?.push([{ kind: 'toolCalls', toolCalls: [tc('s5', 'browser.scroll', '{"dy":7}')] }]);
+    rounds?.push([{ kind: 'toolCalls', toolCalls: [tc('s5', 'browser_scroll', '{"dy":7}')] }]);
     const f = makeFixture({ script: { rounds } });
     const result = await f.loop.run(f.runSignal.signal);
     expect(result.status).toBe('loop-detected');
-    expect(toolLog.filter((t) => t.name === 'browser.scroll').length).toBe(4); // 第五次阻断
+    expect(toolLog.filter((t) => t.name === 'browser_scroll').length).toBe(4); // 第五次阻断
     expect(result.stepsUsed).toBe(9);
   });
 
   it('read 无白名单例外：连续第三次 read 阻断（决议 #24）', async () => {
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.read', '{}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser.read', '{}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('c3', 'browser.read', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser_read', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c3', 'browser_read', '{}')] }],
       ],
     };
     const f = makeFixture({ script });
     const result = await f.loop.run(f.runSignal.signal);
     expect(result.status).toBe('loop-detected');
-    expect(toolLog.filter((t) => t.name === 'browser.read').length).toBe(2);
+    expect(toolLog.filter((t) => t.name === 'browser_read').length).toBe(2);
   });
 
   it('invalid-args 的失败调用同样计签（键序变化不能逃避检测）', async () => {
     // 3 次同规范化签名（校验均失败 → invalid-args，但同样计签）→ 第三次在执行前阻断
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.scroll', '{"dy":1,"badKey":2}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser.scroll', '{"badKey":2,"dy":1}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('c3', 'browser.scroll', '{"badKey":2,"dy":1}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_scroll', '{"dy":1,"badKey":2}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser_scroll', '{"badKey":2,"dy":1}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c3', 'browser_scroll', '{"badKey":2,"dy":1}')] }],
       ],
     };
     const f = makeFixture({ script });
@@ -675,7 +675,7 @@ describe('AgentLoop — 防循环（触发次执行前阻断，零副作用）',
     expect(f.steps[0].errorCode).toBe('invalid-args');
     expect(f.steps[1].errorCode).toBe('invalid-args');
     expect(f.steps[2].decision).toBe('invalid'); // 安全阻断
-    expect(toolLog.filter((t) => t.name === 'browser.scroll').length).toBe(0); // 全程零执行
+    expect(toolLog.filter((t) => t.name === 'browser_scroll').length).toBe(0); // 全程零执行
   });
 });
 
@@ -685,7 +685,7 @@ describe('AgentLoop — no-progress 两轮终止', () => {
   it('连续两轮无文本无工具 → no-progress；第一轮空轮进入 transcript（重试痕迹）', async () => {
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.read', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] }],
         [], // 空轮 1
         [], // 空轮 2 → 终止
       ],
@@ -705,7 +705,7 @@ describe('AgentLoop — no-progress 两轮终止', () => {
     const script: FakeProviderScript = {
       rounds: [
         [],
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.read', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] }],
         [{ text: '恢复后的回答。' }],
       ],
     };
@@ -802,7 +802,7 @@ describe('AgentLoop — 总超时 / Provider 错误 / 用户取消', () => {
     try {
       const script: FakeProviderScript = {
         rounds: [
-          [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.scroll', '{"dy":1}')] }],
+          [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_scroll', '{"dy":1}')] }],
           // 第二轮慢流（delay 远超总超时）→ 超时先于本轮完成（Provider 中止感知睡眠即停）
           [{ text: '慢', delayMs: 9_999_999 }],
         ],
@@ -825,7 +825,7 @@ describe('AgentLoop — 总超时 / Provider 错误 / 用户取消', () => {
 describe('AgentLoop — 工具调用协议非法 fail-closed', () => {
   it('空 toolCallId → error 终态，零执行零确认', async () => {
     const script: FakeProviderScript = {
-      rounds: [[{ kind: 'toolCalls', toolCalls: [tc('', 'browser.scroll', '{"dy":1}')] }]],
+      rounds: [[{ kind: 'toolCalls', toolCalls: [tc('', 'browser_scroll', '{"dy":1}')] }]],
     };
     const f = makeFixture({ script });
     const result = await f.loop.run(f.runSignal.signal);
@@ -842,8 +842,8 @@ describe('AgentLoop — 工具调用协议非法 fail-closed', () => {
           {
             kind: 'toolCalls',
             toolCalls: [
-              tc('dup', 'browser.scroll', '{"dy":1}'),
-              tc('dup', 'browser.get_tabs', '{}'),
+              tc('dup', 'browser_scroll', '{"dy":1}'),
+              tc('dup', 'browser_get_tabs', '{}'),
             ],
           },
         ],
@@ -858,15 +858,15 @@ describe('AgentLoop — 工具调用协议非法 fail-closed', () => {
   it('跨轮重复 toolCallId → error 终态', async () => {
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('same', 'browser.scroll', '{"dy":1}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('same', 'browser.get_tabs', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('same', 'browser_scroll', '{"dy":1}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('same', 'browser_get_tabs', '{}')] }],
       ],
     };
     const f = makeFixture({ script });
     const result = await f.loop.run(f.runSignal.signal);
     expect(result.status).toBe('error');
-    expect(toolLog.filter((t) => t.name === 'browser.scroll').length).toBe(1); // 第一轮已执行
-    expect(toolLog.filter((t) => t.name === 'browser.get_tabs').length).toBe(0); // 第二轮零执行
+    expect(toolLog.filter((t) => t.name === 'browser_scroll').length).toBe(1); // 第一轮已执行
+    expect(toolLog.filter((t) => t.name === 'browser_get_tabs').length).toBe(0); // 第二轮零执行
   });
 });
 
@@ -875,7 +875,7 @@ describe('AgentLoop — 工具调用协议非法 fail-closed', () => {
 describe('AgentLoop — 终态竞态与迟到事件', () => {
   // 门闩工具：进入执行即置 started 标志，然后挂在 gate 上（模拟慢工具/不响应中止的工具）
   const slowScrollDef = (gate: Promise<void>, started: { value: boolean }): ToolDefinition => ({
-    name: 'browser.scroll',
+    name: 'browser_scroll',
     description: '慢滚动',
     parameters: { properties: { dy: { type: 'number', description: 'x' } }, required: ['dy'] },
     paramRules: { dy: { integer: true, min: -50000, max: 50000 } },
@@ -883,7 +883,7 @@ describe('AgentLoop — 终态竞态与迟到事件', () => {
     executor: async ({ id }) => {
       started.value = true;
       await gate;
-      toolLog.push({ name: 'browser.scroll', args: {} });
+      toolLog.push({ name: 'browser_scroll', args: {} });
       return { toolCallId: id, ok: true, content: '迟到结果' };
     },
   });
@@ -898,7 +898,7 @@ describe('AgentLoop — 终态竞态与迟到事件', () => {
     const def = slowScrollDef(gate, started);
     registerTool(def);
     const script: FakeProviderScript = {
-      rounds: [[{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.scroll', '{"dy":1}')] }]],
+      rounds: [[{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_scroll', '{"dy":1}')] }]],
     };
     const f = makeFixture({ script, tools: [toProviderTool(def)] });
     const promise = f.loop.run(f.runSignal.signal);
@@ -930,9 +930,9 @@ describe('AgentLoop — 终态竞态与迟到事件', () => {
           {
             kind: 'toolCalls',
             toolCalls: [
-              tc('c1', 'browser.scroll', '{"dy":1}'),
-              tc('c2', 'browser.scroll', '{"dy":2}'),
-              tc('c3', 'browser.scroll', '{"dy":3}'),
+              tc('c1', 'browser_scroll', '{"dy":1}'),
+              tc('c2', 'browser_scroll', '{"dy":2}'),
+              tc('c3', 'browser_scroll', '{"dy":3}'),
             ],
           },
         ],
@@ -973,8 +973,8 @@ describe('AgentLoop — onStatus 阶段事件（A6 实时可见性，确定性�
   it('阶段序列：thinking → executing（工具名+计数）→ finalizing，与步数一致', async () => {
     const script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser.read', '{}')] }],
-        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser.scroll', '{"dy":10}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c2', 'browser_scroll', '{"dy":10}')] }],
         [{ text: '任务完成，这是最终回答。' }],
       ],
     };
@@ -983,9 +983,9 @@ describe('AgentLoop — onStatus 阶段事件（A6 实时可见性，确定性�
     expect(result.status).toBe('done');
     expect(f.statuses).toEqual([
       { phase: 'thinking', toolName: null, stepsUsed: 0, maxSteps: 12 },
-      { phase: 'executing', toolName: 'browser.read', stepsUsed: 1, maxSteps: 12 },
+      { phase: 'executing', toolName: 'browser_read', stepsUsed: 1, maxSteps: 12 },
       { phase: 'thinking', toolName: null, stepsUsed: 1, maxSteps: 12 },
-      { phase: 'executing', toolName: 'browser.scroll', stepsUsed: 2, maxSteps: 12 },
+      { phase: 'executing', toolName: 'browser_scroll', stepsUsed: 2, maxSteps: 12 },
       { phase: 'thinking', toolName: null, stepsUsed: 2, maxSteps: 12 },
       { phase: 'finalizing', toolName: null, stepsUsed: 2, maxSteps: 12 },
     ]);
@@ -997,7 +997,7 @@ describe('AgentLoop — onStatus 阶段事件（A6 实时可见性，确定性�
         [
           {
             kind: 'toolCalls',
-            toolCalls: [tc('c1', 'browser.get_tabs', '{}'), tc('c2', 'browser.read', '{}')],
+            toolCalls: [tc('c1', 'browser_get_tabs', '{}'), tc('c2', 'browser_read', '{}')],
           },
         ],
         [{ text: '完成' }],
@@ -1007,8 +1007,8 @@ describe('AgentLoop — onStatus 阶段事件（A6 实时可见性，确定性�
     await f.loop.run(f.runSignal.signal);
     const executing = f.statuses.filter((s) => s.phase === 'executing');
     expect(executing.map((s) => [s.toolName, s.stepsUsed])).toEqual([
-      ['browser.get_tabs', 1],
-      ['browser.read', 2],
+      ['browser_get_tabs', 1],
+      ['browser_read', 2],
     ]);
   });
 
@@ -1021,7 +1021,7 @@ describe('AgentLoop — onStatus 阶段事件（A6 实时可见性，确定性�
           [
             {
               kind: 'toolCalls',
-              toolCalls: [tc('c1', 'browser.read', '{}')],
+              toolCalls: [tc('c1', 'browser_read', '{}')],
             },
           ],
           [{ text: '慢速回答', delayMs: 10_000 }],
@@ -1050,19 +1050,19 @@ describe('AgentLoop — onStatus 阶段事件（A6 实时可见性，确定性�
         [
           {
             kind: 'toolCalls',
-            toolCalls: [tc('c1', 'browser.scroll', '{"dy":1}')],
+            toolCalls: [tc('c1', 'browser_scroll', '{"dy":1}')],
           },
         ],
         [
           {
             kind: 'toolCalls',
-            toolCalls: [tc('c2', 'browser.scroll', '{"dy":1}')],
+            toolCalls: [tc('c2', 'browser_scroll', '{"dy":1}')],
           },
         ],
         [
           {
             kind: 'toolCalls',
-            toolCalls: [tc('c3', 'browser.scroll', '{"dy":1}')],
+            toolCalls: [tc('c3', 'browser_scroll', '{"dy":1}')],
           },
         ],
       ],
@@ -1081,7 +1081,7 @@ describe('AgentLoop — onAgentStep argsSummary（审计同源脱敏摘要，A6 
         [
           {
             kind: 'toolCalls',
-            toolCalls: [tc('c1', 'browser.scroll', '{"dy":10}')],
+            toolCalls: [tc('c1', 'browser_scroll', '{"dy":10}')],
           },
         ],
         [{ text: '完成' }],
@@ -1099,7 +1099,7 @@ describe('AgentLoop — onAgentStep argsSummary（审计同源脱敏摘要，A6 
         [
           {
             kind: 'toolCalls',
-            toolCalls: [tc('c1', 'browser.fill', '{"elementId":"el-9","text":"绝密输入值"}')],
+            toolCalls: [tc('c1', 'browser_fill', '{"elementId":"el-9","text":"绝密输入值"}')],
           },
         ],
         [{ text: '完成' }],
@@ -1114,7 +1114,7 @@ describe('AgentLoop — onAgentStep argsSummary（审计同源脱敏摘要，A6 
   it('防循环阻断路径：argsSummary 用原始参数截断（与审计一致）', async () => {
     const script: FakeProviderScript = {
       rounds: [1, 2, 3].map((i) => [
-        { kind: 'toolCalls', toolCalls: [tc(`c${i}`, 'browser.scroll', '{"dy":1}')] },
+        { kind: 'toolCalls', toolCalls: [tc(`c${i}`, 'browser_scroll', '{"dy":1}')] },
       ]),
     };
     const f = makeFixture({ script });
@@ -1124,5 +1124,55 @@ describe('AgentLoop — onAgentStep argsSummary（审计同源脱敏摘要，A6 
     expect(blocked?.decision).toBe('invalid');
     expect(f.stepArgs[2]).toBe(blocked?.argsSummary);
     expect(f.stepArgs[2]).toBe('{"dy":1}');
+  });
+});
+
+describe('reasoning 不透明回传（A7 补验校准：thinking 模式工具轮 reasoning 只进下一轮请求，不进结果/回调/审计）', () => {
+  it('模型轮 reasoning 累积并在下一轮请求的 assistant 消息中原样回传；run 结果与回调零暴露', async () => {
+    const script: FakeProviderScript = {
+      rounds: [
+        [
+          { kind: 'reasoning', text: '先读取页面再决定' },
+          { kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] },
+        ],
+        [{ kind: 'reasoning', text: '内容已足够，直接回答' }, { text: '任务完成' }],
+      ],
+    };
+    const f = makeFixture({ script });
+    const result = await f.loop.run(f.runSignal.signal);
+    expect(result.status).toBe('done');
+    const requests = (f.provider as FakeProvider).getRequests();
+    expect(requests).toHaveLength(2);
+    // 第二轮请求必须携带第一轮 assistant（toolCalls）的 reasoning_content 等价 IR 字段
+    const assistantWithTools = requests[1].messages.find(
+      (m) => m.role === 'assistant' && m.toolCalls !== undefined,
+    );
+    expect(assistantWithTools?.reasoning).toBe('先读取页面再决定');
+    // 第二轮请求中的 assistant 只有工具轮一条（终态轮在其后才产生，不进入任何请求）
+    expect(requests[1].messages.filter((m) => m.role === 'assistant')).toHaveLength(1);
+    // run 结果与回调零暴露：rounds 记录无 reasoning 字段；round 回调载荷无 reasoning
+    expect(JSON.stringify(result.rounds)).not.toContain('先读取页面再决定');
+    expect(JSON.stringify(f.rounds)).not.toContain('先读取页面再决定');
+    // 审计/步骤零暴露
+    expect(JSON.stringify(f.auditEntries)).not.toContain('先读取页面再决定');
+    expect(JSON.stringify(f.steps)).not.toContain('先读取页面再决定');
+  });
+
+  it('无 toolCalls 的空轮不携带 reasoning（Provider 只要求工具轮回传）', async () => {
+    const script: FakeProviderScript = {
+      rounds: [
+        [{ kind: 'reasoning', text: '空想一轮' }],
+        [{ kind: 'toolCalls', toolCalls: [tc('c1', 'browser_read', '{}')] }],
+        [{ text: '完成' }],
+      ],
+    };
+    const f = makeFixture({ script });
+    const result = await f.loop.run(f.runSignal.signal);
+    expect(result.status).toBe('done');
+    const requests = (f.provider as FakeProvider).getRequests();
+    const emptyAssistant = requests[1].messages.find(
+      (m) => m.role === 'assistant' && m.content === '' && m.toolCalls === undefined,
+    );
+    expect(emptyAssistant?.reasoning).toBeUndefined();
   });
 });

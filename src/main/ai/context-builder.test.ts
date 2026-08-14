@@ -415,7 +415,7 @@ describe('buildContext — tools 透传（A1，doc/stage3/detailed-design.md §3
     {
       type: 'function' as const,
       function: {
-        name: 'browser.read',
+        name: 'browser_read',
         description: '读取当前页面',
         parameters: {
           type: 'object' as const,

@@ -1,5 +1,5 @@
 // A2 首批 8 个只读/导航工具测试：executor 只经构造注入的 BrowserController 接口执行
-// （不 import Electron、不直连 webContents）；browser.read 每次实时采集
+// （不 import Electron、不直连 webContents）；browser_read 每次实时采集
 // （getPageSnapshot 逐次调用，不复用缓存快照——防串页契约）；结果确定性序列化与截断；
 // BrowserController 失败语义（false/null）安全映射为 execution-failed。
 // 契约源：doc/stage3/detailed-design.md §4.2/§8.4 + Second_stage 防串页纪律。
@@ -75,21 +75,21 @@ describe('A2 首批 8 工具定义', () => {
   it('恰好 8 个、全部只读/导航；无交互（find/scroll/click/fill）与搜索工具（A3/A4 红线）', () => {
     const names = BROWSER_TOOL_DEFINITIONS.map((d) => d.name).sort();
     expect(names).toEqual([
-      'browser.back',
-      'browser.forward',
-      'browser.get_active_tab',
-      'browser.get_tabs',
-      'browser.navigate',
-      'browser.open',
-      'browser.read',
-      'browser.reload',
+      'browser_back',
+      'browser_forward',
+      'browser_get_active_tab',
+      'browser_get_tabs',
+      'browser_navigate',
+      'browser_open',
+      'browser_read',
+      'browser_reload',
     ]);
     for (const forbidden of [
-      'browser.find',
-      'browser.scroll',
-      'browser.click',
-      'browser.fill',
-      'search.web',
+      'browser_find',
+      'browser_scroll',
+      'browser_click',
+      'browser_fill',
+      'search_web',
     ]) {
       expect(
         BROWSER_TOOL_DEFINITIONS.some((d) => d.name === forbidden),
@@ -105,14 +105,14 @@ describe('A2 首批 8 工具定义', () => {
   });
 });
 
-describe('browser.get_tabs / get_active_tab', () => {
+describe('browser_get_tabs / get_active_tab', () => {
   it('get_tabs 经注入 BrowserController.getTabs 输出确定性摘要（含 id/标题/URL/活动/状态）', async () => {
     const tabs = [
       makeTab({ id: 'a-1', title: '甲', active: true }),
       makeTab({ id: 'b-2', title: '', url: 'about:blank', state: 'loading' }),
     ];
     const browser = fakeBrowser({ getTabs: async () => tabs });
-    const r = await toolDef('browser.get_tabs').executor(
+    const r = await toolDef('browser_get_tabs').executor(
       { id: 'c1', args: {} },
       ctxFor(browser),
       signal,
@@ -127,7 +127,7 @@ describe('browser.get_tabs / get_active_tab', () => {
   });
 
   it('get_tabs 空结果 → ok 空说明（空 ≠ 失败，Third_stage.md §8 语义）', async () => {
-    const r = await toolDef('browser.get_tabs').executor(
+    const r = await toolDef('browser_get_tabs').executor(
       { id: 'c1', args: {} },
       ctxFor(fakeBrowser()),
       signal,
@@ -137,7 +137,7 @@ describe('browser.get_tabs / get_active_tab', () => {
   });
 
   it('get_active_tab 摘要含 id/标题/URL/状态；null → ok 空说明', async () => {
-    const r = await toolDef('browser.get_active_tab').executor(
+    const r = await toolDef('browser_get_active_tab').executor(
       { id: 'c1', args: {} },
       ctxFor(fakeBrowser({ getActiveTab: async () => makeTab({ id: 'act-1', active: true }) })),
       signal,
@@ -145,7 +145,7 @@ describe('browser.get_tabs / get_active_tab', () => {
     expect(r.ok).toBe(true);
     expect(r.content).toContain('act-1');
     expect(r.content).toContain('示例页');
-    const empty = await toolDef('browser.get_active_tab').executor(
+    const empty = await toolDef('browser_get_active_tab').executor(
       { id: 'c2', args: {} },
       ctxFor(fakeBrowser()),
       signal,
@@ -155,7 +155,7 @@ describe('browser.get_tabs / get_active_tab', () => {
   });
 });
 
-describe('browser.read（实时采集）', () => {
+describe('browser_read（实时采集）', () => {
   it('缺省 tabId 解析为活动 Tab；每次调用实时 getPageSnapshot（不复用缓存）', async () => {
     let calls = 0;
     const browser = fakeBrowser({
@@ -165,7 +165,7 @@ describe('browser.read（实时采集）', () => {
         return makeSnapshot({ url: `https://x/${tabId}` });
       },
     });
-    const d = toolDef('browser.read');
+    const d = toolDef('browser_read');
     const r1 = await d.executor({ id: 'c1', args: {} }, ctxFor(browser), signal);
     const r2 = await d.executor({ id: 'c2', args: {} }, ctxFor(browser), signal);
     expect(r1.ok).toBe(true);
@@ -183,7 +183,7 @@ describe('browser.read（实时采集）', () => {
         return null;
       },
     });
-    const r = await toolDef('browser.read').executor(
+    const r = await toolDef('browser_read').executor(
       { id: 'c1', args: { tabId: 't-9' } },
       ctxFor(browser),
       signal,
@@ -201,7 +201,7 @@ describe('browser.read（实时采集）', () => {
         return null;
       },
     });
-    const r = await toolDef('browser.read').executor(
+    const r = await toolDef('browser_read').executor(
       { id: 'c1', args: {} },
       ctxFor(browser),
       signal,
@@ -270,7 +270,7 @@ describe('serializeSnapshotForTool（确定性序列化 + 独立预算）', () =
   });
 });
 
-describe('browser.open / navigate / back / forward / reload', () => {
+describe('browser_open / navigate / back / forward / reload', () => {
   it('open 经 createTab 执行并报告新 Tab；Tab 保留（不关闭，决议 #28）', async () => {
     let created: string | undefined;
     let closed = false;
@@ -284,7 +284,7 @@ describe('browser.open / navigate / back / forward / reload', () => {
         return true;
       },
     });
-    const r = await toolDef('browser.open').executor(
+    const r = await toolDef('browser_open').executor(
       { id: 'c1', args: { url: 'https://example.com/' } },
       ctxFor(browser),
       signal,
@@ -304,14 +304,14 @@ describe('browser.open / navigate / back / forward / reload', () => {
         return true;
       },
     });
-    const r = await toolDef('browser.navigate').executor(
+    const r = await toolDef('browser_navigate').executor(
       { id: 'c1', args: { url: 'https://b.example/' } },
       ctxFor(browser),
       signal,
     );
     expect(calls).toEqual([['act-1', 'https://b.example/']]);
     expect(r.ok).toBe(true);
-    const bad = await toolDef('browser.navigate').executor(
+    const bad = await toolDef('browser_navigate').executor(
       { id: 'c2', args: { url: 'https://x/' } },
       ctxFor(fakeBrowser({ getActiveTab: async () => makeTab(), navigate: async () => false })),
       signal,
@@ -328,7 +328,7 @@ describe('browser.open / navigate / back / forward / reload', () => {
         return true;
       },
     });
-    const r = await toolDef('browser.navigate').executor(
+    const r = await toolDef('browser_navigate').executor(
       { id: 'c1', args: { url: 'https://x/' } },
       ctxFor(browser),
       signal,
@@ -347,7 +347,7 @@ describe('browser.open / navigate / back / forward / reload', () => {
       goForward: async () => true,
       reload: async () => true,
     });
-    const rBack = await toolDef('browser.back').executor(
+    const rBack = await toolDef('browser_back').executor(
       { id: 'c1', args: { tabId: 't-9' } },
       ctxFor(okBrowser),
       signal,
@@ -360,7 +360,7 @@ describe('browser.open / navigate / back / forward / reload', () => {
       goForward: async () => false,
       reload: async () => false,
     });
-    for (const name of ['browser.back', 'browser.forward', 'browser.reload']) {
+    for (const name of ['browser_back', 'browser_forward', 'browser_reload']) {
       const r = await toolDef(name).executor({ id: 'c1', args: {} }, ctxFor(badBrowser), signal);
       expect(r.ok, name).toBe(false);
       expect(r.errorCode, name).toBe('execution-failed');
@@ -375,7 +375,7 @@ describe('browser.open / navigate / back / forward / reload', () => {
         return true;
       },
     });
-    const r = await toolDef('browser.back').executor(
+    const r = await toolDef('browser_back').executor(
       { id: 'c1', args: {} },
       ctxFor(browser),
       signal,
@@ -385,7 +385,7 @@ describe('browser.open / navigate / back / forward / reload', () => {
   });
 });
 
-describe('A3 接线：browser.read 快照语义登记（recordSnapshot，点击前置）', () => {
+describe('A3 接线：browser_read 快照语义登记（recordSnapshot，点击前置）', () => {
   it('read 成功后经 ctx.recordSnapshot 登记语义来源（未接线时不影响既有行为）', async () => {
     const snapshot = makeSnapshot();
     const recordSpy = vi.fn();
@@ -393,7 +393,7 @@ describe('A3 接线：browser.read 快照语义登记（recordSnapshot，点击�
       getPageSnapshot: async () => snapshot,
       getActiveTab: async () => makeTab({ id: 't1', active: true }),
     });
-    const r = await toolDef('browser.read').executor(
+    const r = await toolDef('browser_read').executor(
       { id: 'c1', args: {} },
       { browser, runId: 'test-run', recordSnapshot: recordSpy },
       signal,
@@ -401,7 +401,7 @@ describe('A3 接线：browser.read 快照语义登记（recordSnapshot，点击�
     expect(r.ok).toBe(true);
     expect(recordSpy).toHaveBeenCalledWith('t1', snapshot);
     // 未接线（A2 原路径）：不登记、行为不变
-    const r2 = await toolDef('browser.read').executor(
+    const r2 = await toolDef('browser_read').executor(
       { id: 'c2', args: {} },
       ctxFor(browser),
       signal,

@@ -87,7 +87,7 @@ const signal = new AbortController().signal;
 describe('A3 交互工具定义（find/scroll/click/fill）', () => {
   it('恰好 4 个；allowedKind 与 documentId 不出现在任何模型可见 schema（模型不可见不可写）', () => {
     const names = INTERACTION_TOOL_DEFINITIONS.map((d) => d.name).sort();
-    expect(names).toEqual(['browser.click', 'browser.fill', 'browser.find', 'browser.scroll']);
+    expect(names).toEqual(['browser_click', 'browser_fill', 'browser_find', 'browser_scroll']);
     for (const def of INTERACTION_TOOL_DEFINITIONS) {
       const schema = JSON.stringify(def.parameters);
       expect(schema).not.toContain('allowedKind');
@@ -140,14 +140,14 @@ describe('findMatches（确定性匹配纯函数）', () => {
   });
 });
 
-describe('browser.find executor（实时快照 + 命中集合 + recordSnapshot 语义登记）', () => {
+describe('browser_find executor（实时快照 + 命中集合 + recordSnapshot 语义登记）', () => {
   it('实时采集快照并登记语义来源；无命中返回 ok 空结果', async () => {
     const snapshotSpy = vi.fn(async () => makeSnapshot());
     const recordSpy = vi.fn();
     const ctx = ctxFor(fakeBrowser({ getPageSnapshot: snapshotSpy }), {
       recordSnapshot: recordSpy,
     });
-    const hit = await toolDef('browser.find').executor(
+    const hit = await toolDef('browser_find').executor(
       { id: 'c1', args: { text: '安全' } },
       ctx,
       signal,
@@ -156,7 +156,7 @@ describe('browser.find executor（实时快照 + 命中集合 + recordSnapshot �
     expect(hit.content).toContain('[el-0]');
     expect(snapshotSpy).toHaveBeenCalledTimes(1);
     expect(recordSpy).toHaveBeenCalledWith('t1', makeSnapshot());
-    const miss = await toolDef('browser.find').executor(
+    const miss = await toolDef('browser_find').executor(
       { id: 'c2', args: { text: '不存在' } },
       ctx,
       signal,
@@ -167,7 +167,7 @@ describe('browser.find executor（实时快照 + 命中集合 + recordSnapshot �
 
   it('快照不可用 → execution-failed', async () => {
     const ctx = ctxFor(fakeBrowser({ getPageSnapshot: async () => null }));
-    const r = await toolDef('browser.find').executor(
+    const r = await toolDef('browser_find').executor(
       { id: 'c1', args: { text: 'x' } },
       ctx,
       signal,
@@ -176,14 +176,14 @@ describe('browser.find executor（实时快照 + 命中集合 + recordSnapshot �
   });
 });
 
-describe('browser.scroll executor', () => {
+describe('browser_scroll executor', () => {
   it('经 BrowserController.scrollTab 执行并返回 viewport 摘要', async () => {
     const scrollSpy = vi.fn(async (): Promise<ScrollActionResult> => ({
       ok: true,
       viewport: { scrollX: 0, scrollY: 100, width: 800, height: 600 },
     }));
     const ctx = ctxFor(fakeBrowser({ scrollTab: scrollSpy }));
-    const r = await toolDef('browser.scroll').executor(
+    const r = await toolDef('browser_scroll').executor(
       { id: 'c1', args: { dy: 100 } },
       ctx,
       signal,
@@ -197,12 +197,12 @@ describe('browser.scroll executor', () => {
     const ctx = ctxFor(
       fakeBrowser({ scrollTab: async () => ({ ok: false, reason: '页面不可用' }) }),
     );
-    const r = await toolDef('browser.scroll').executor({ id: 'c1', args: { dy: 1 } }, ctx, signal);
+    const r = await toolDef('browser_scroll').executor({ id: 'c1', args: { dy: 1 } }, ctx, signal);
     expect(r).toMatchObject({ ok: false, errorCode: 'execution-failed', content: '页面不可用' });
   });
 });
 
-describe('browser.click executor（allowedKind/documentId 只来自权限决策派生）', () => {
+describe('browser_click executor（allowedKind/documentId 只来自权限决策派生）', () => {
   it('无派生执行参数（derived 缺失）→ 拒绝执行，不触碰 BrowserController', async () => {
     const clickSpy = vi.fn(async (): Promise<ElementActionResult> => ({
       ok: true,
@@ -210,7 +210,7 @@ describe('browser.click executor（allowedKind/documentId 只来自权限决策�
       text: 'x',
     }));
     const ctx = ctxFor(fakeBrowser({ clickElement: clickSpy }));
-    const executor = toolDef('browser.click').executor as ToolExecutorFn;
+    const executor = toolDef('browser_click').executor as ToolExecutorFn;
     const r = await executor({ id: 'c1', args: { elementId: 'el-0' } }, ctx, signal);
     expect(r).toMatchObject({ ok: false, errorCode: 'execution-failed' });
     expect(clickSpy).not.toHaveBeenCalled();
@@ -223,7 +223,7 @@ describe('browser.click executor（allowedKind/documentId 只来自权限决策�
       text: '导航链接',
     }));
     const ctx = ctxFor(fakeBrowser({ clickElement: clickSpy }));
-    const executor = toolDef('browser.click').executor as ToolExecutorFn;
+    const executor = toolDef('browser_click').executor as ToolExecutorFn;
     const r = await executor(
       {
         id: 'c1',
@@ -249,7 +249,7 @@ describe('browser.click executor（allowedKind/documentId 只来自权限决策�
         }),
       }),
     );
-    const executor = toolDef('browser.click').executor as ToolExecutorFn;
+    const executor = toolDef('browser_click').executor as ToolExecutorFn;
     const r = await executor(
       { id: 'c1', args: { elementId: 'el-0' }, derived: { allowedKind: 'expand', documentId: 3 } },
       ctx,
@@ -260,7 +260,7 @@ describe('browser.click executor（allowedKind/documentId 只来自权限决策�
   });
 });
 
-describe('browser.fill executor（输入原文零外泄）', () => {
+describe('browser_fill executor（输入原文零外泄）', () => {
   it('经 BrowserController.fillElement 执行（派生 documentId 透传）；结果只含标签/类型/长度', async () => {
     const fillSpy = vi.fn(async (): Promise<ElementActionResult> => ({
       ok: true,
@@ -268,7 +268,7 @@ describe('browser.fill executor（输入原文零外泄）', () => {
       type: 'text',
     }));
     const ctx = ctxFor(fakeBrowser({ fillElement: fillSpy }));
-    const executor = toolDef('browser.fill').executor as ToolExecutorFn;
+    const executor = toolDef('browser_fill').executor as ToolExecutorFn;
     const r = await executor(
       {
         id: 'c1',
@@ -292,7 +292,7 @@ describe('browser.fill executor（输入原文零外泄）', () => {
       type: 'text',
     }));
     const ctx = ctxFor(fakeBrowser({ fillElement: fillSpy }));
-    const executor = toolDef('browser.fill').executor as ToolExecutorFn;
+    const executor = toolDef('browser_fill').executor as ToolExecutorFn;
     const r = await executor({ id: 'c1', args: { elementId: 'el-3', text: 'x' } }, ctx, signal);
     expect(r).toMatchObject({ ok: false, errorCode: 'execution-failed' });
     expect(fillSpy).not.toHaveBeenCalled();

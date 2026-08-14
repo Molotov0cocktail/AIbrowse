@@ -205,7 +205,7 @@ const fill: ToolExecutorFn = async ({ id, args, derived }, ctx) => {
 // （单测交叉断言防漂移）；paramRules 为校验层确定性规则（不进模型可见 schema）。
 export const INTERACTION_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
-    name: 'browser.find',
+    name: 'browser_find',
     description:
       '在页面中确定性匹配文本（实时快照；返回命中元素 id/文本/章节位置；无命中返回空结果）',
     parameters: {
@@ -220,7 +220,7 @@ export const INTERACTION_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     executor: find,
   },
   {
-    name: 'browser.scroll',
+    name: 'browser_scroll',
     description: '纵向滚动页面（dy 为正向下/为负向上，整数，±50000 以内）',
     parameters: {
       properties: {
@@ -234,7 +234,7 @@ export const INTERACTION_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     executor: scroll,
   },
   {
-    name: 'browser.click',
+    name: 'browser_click',
     description:
       '点击页面元素（elementId 来自最近一次 read/find 结果；仅允许链接/展开/折叠控件/复选单选（自动执行）、提交类按钮（需用户确认）；其他目标被拒绝）',
     parameters: {
@@ -249,7 +249,7 @@ export const INTERACTION_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     executor: click,
   },
   {
-    name: 'browser.fill',
+    name: 'browser_fill',
     description:
       '向输入框填写文本（elementId 来自最近一次 read/find 结果；仅允许普通 input/textarea，密码与文件输入被禁止）',
     parameters: {

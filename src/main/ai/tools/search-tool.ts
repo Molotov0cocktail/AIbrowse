@@ -1,4 +1,4 @@
-// A4 search.web 工具：executor 只经注入 SearchProvider 执行（不 import Electron、
+// A4 search_web 工具：executor 只经注入 SearchProvider 执行（不 import Electron、
 // 不触碰 BrowserController——搜索走独立 Provider 通道）；ctx.searchProvider 优先于
 // 注册注入（冒烟受控夹具与 A5 AgentLoop 的注入点，设计 §4.1「browser 能力 + search」
 // 的 search 落点）。契约源：doc/stage3/detailed-design.md §4.2/§6/§8.4 +
@@ -13,7 +13,7 @@
 import type { SearchProvider, SearchResult } from '../search/search-provider';
 import type { ToolDefinition, ToolExecutorFn } from './tool-types';
 
-export const SEARCH_TOOL_NAME = 'search.web';
+export const SEARCH_TOOL_NAME = 'search_web';
 
 // 工具名/description/schema 为程序常量（模型/网页无通道修改，threat-model T-06）
 export const SEARCH_TOOL_DESCRIPTION =
@@ -74,7 +74,7 @@ export function createSearchTool(searchProvider: SearchProvider): ToolDefinition
       required: ['query'],
     },
     paramRules: { query: { nonEmpty: true } }, // 长度上限走注册表字符串默认 500（同源）
-    baseRisk: 0, // §7.1 矩阵：search.web L0 自动（查询串全量审计+可见）
+    baseRisk: 0, // §7.1 矩阵：search_web L0 自动（查询串全量审计+可见）
     executor,
   };
 }

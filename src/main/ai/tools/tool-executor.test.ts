@@ -1,7 +1,7 @@
 // ToolExecutor 管线测试（红→绿，A2）：注册表查找/参数校验 → 权限判定 → 确认状态机 →
 // executor → 结构化 ToolResult → 审计（每次调用恰好一条）。任何错误不得以 ok:true 返回
 // （Third_stage.md §8）。契约源：doc/stage3/detailed-design.md §4.1/§7.2/§8.4/§10.1。
-// 注：本文件以测试专用 stub 注册 browser.click/browser.open 走真实 decide 分支——生产
+// 注：本文件以测试专用 stub 注册 browser_click/browser_open 走真实 decide 分支——生产
 // 注册表（index.ts 装配）只含 A2 首批 8 工具，交互工具不注册不实现（A3 红线）。
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserController } from '../../browser/browser-controller';
@@ -50,7 +50,7 @@ function fakeBrowser(overrides: Partial<BrowserController> = {}): BrowserControl
 
 function makeDef(overrides: Partial<ToolDefinition>): ToolDefinition {
   return {
-    name: 'test.ok',
+    name: 'test_ok',
     description: '',
     parameters: { properties: {}, required: [] },
     baseRisk: 0,
@@ -66,7 +66,7 @@ describe('ToolExecutor 管线', () => {
   let openCalls: number;
 
   // 注：管线经 decide（§7.1 编译期矩阵）判定权限——矩阵外工具名 fail-closed L3，
-  // 故本文件全部使用矩阵内真实工具名（工具集封闭契约）；测试用 browser.click 为
+  // 故本文件全部使用矩阵内真实工具名（工具集封闭契约）；测试用 browser_click 为
   // 测试专用 stub（走真实 decide 分支），生产注册表不含交互工具（A3 红线）。
   beforeEach(() => {
     resetToolRegistry();
@@ -78,14 +78,14 @@ describe('ToolExecutor 管线', () => {
     openCalls = 0;
     registerTool(
       makeDef({
-        name: 'browser.get_tabs',
+        name: 'browser_get_tabs',
         parameters: { properties: {}, required: [] },
         baseRisk: 0,
       }),
     );
     registerTool(
       makeDef({
-        name: 'browser.get_active_tab',
+        name: 'browser_get_active_tab',
         parameters: { properties: {}, required: [] },
         baseRisk: 0,
         executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '长'.repeat(3000) }),
@@ -93,7 +93,7 @@ describe('ToolExecutor 管线', () => {
     );
     registerTool(
       makeDef({
-        name: 'browser.back',
+        name: 'browser_back',
         parameters: { properties: { tabId: { type: 'string' } }, required: [] },
         baseRisk: 1,
         // 测试 stub：委托注入的 BrowserController.goBack（异常经管线归一化验证）
@@ -119,7 +119,7 @@ describe('ToolExecutor 管线', () => {
     );
     registerTool(
       makeDef({
-        name: 'browser.reload',
+        name: 'browser_reload',
         parameters: { properties: { tabId: { type: 'string' } }, required: [] },
         baseRisk: 1,
         executor: async ({ id }) => ({
@@ -132,7 +132,7 @@ describe('ToolExecutor 管线', () => {
     );
     registerTool(
       makeDef({
-        name: 'browser.open',
+        name: 'browser_open',
         parameters: { properties: { url: { type: 'string' } }, required: ['url'] },
         baseRisk: 1,
         executor: async ({ id }) => {
@@ -143,7 +143,7 @@ describe('ToolExecutor 管线', () => {
     );
     registerTool(
       makeDef({
-        name: 'browser.click',
+        name: 'browser_click',
         parameters: {
           properties: { elementId: { type: 'string' } },
           required: ['elementId'],
@@ -165,7 +165,7 @@ describe('ToolExecutor 管线', () => {
 
   it('成功路径（L0）：执行 + 审计恰好一条（decision=auto，argsSummary 确定性）', async () => {
     const r = await executor.execute(
-      { id: 'c1', name: 'browser.get_tabs', arguments: '{}' },
+      { id: 'c1', name: 'browser_get_tabs', arguments: '{}' },
       ctx(),
       signal,
     );
@@ -174,7 +174,7 @@ describe('ToolExecutor 管线', () => {
     expect(audits[0]).toMatchObject({
       requestId: 'run-1',
       toolCallId: 'c1',
-      tool: 'browser.get_tabs',
+      tool: 'browser_get_tabs',
       argsSummary: '{}',
       decision: 'auto',
       ok: true,
@@ -185,7 +185,7 @@ describe('ToolExecutor 管线', () => {
 
   it('L1 路径：decision=auto-visible（open 合法 URL 执行）', async () => {
     const r = await executor.execute(
-      { id: 'c1', name: 'browser.open', arguments: '{"url":"https://example.com/"}' },
+      { id: 'c1', name: 'browser_open', arguments: '{"url":"https://example.com/"}' },
       ctx(),
       signal,
     );
@@ -208,7 +208,7 @@ describe('ToolExecutor 管线', () => {
 
   it('参数校验失败 → invalid-args + 审计恰好一条（executor 不被调用）', async () => {
     const r = await executor.execute(
-      { id: 'c1', name: 'browser.open', arguments: '{}' },
+      { id: 'c1', name: 'browser_open', arguments: '{}' },
       ctx(),
       signal,
     );
@@ -221,7 +221,7 @@ describe('ToolExecutor 管线', () => {
 
   it('L3 禁止 → forbidden + 审计恰好一条（executor 不被调用，即使参数合法）', async () => {
     const r = await executor.execute(
-      { id: 'c1', name: 'browser.open', arguments: '{"url":"javascript:alert(1)"}' },
+      { id: 'c1', name: 'browser_open', arguments: '{"url":"javascript:alert(1)"}' },
       ctx(),
       signal,
     );
@@ -235,7 +235,7 @@ describe('ToolExecutor 管线', () => {
 
   it('L2 确认：deny → denied-by-user + 审计 decision=denied（executor 不执行）', async () => {
     const p = executor.execute(
-      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-2"}' },
+      { id: 'c2', name: 'browser_click', arguments: '{"elementId":"el-2"}' },
       ctx({ isSubmit: true }),
       signal,
     );
@@ -250,7 +250,7 @@ describe('ToolExecutor 管线', () => {
 
   it('L2 确认：approve → 执行 + decision=confirmed', async () => {
     const p = executor.execute(
-      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-2"}' },
+      { id: 'c2', name: 'browser_click', arguments: '{"elementId":"el-2"}' },
       ctx({ isSubmit: true }),
       signal,
     );
@@ -264,7 +264,7 @@ describe('ToolExecutor 管线', () => {
 
   it('L2 确认：cancelAll 作废 → denied-by-user（fail-closed 不执行）', async () => {
     const p = executor.execute(
-      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-2"}' },
+      { id: 'c2', name: 'browser_click', arguments: '{"elementId":"el-2"}' },
       ctx({ isSubmit: true }),
       signal,
     );
@@ -282,7 +282,7 @@ describe('ToolExecutor 管线', () => {
       changes.push(change);
     });
     const p = executor.execute(
-      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-2"}' },
+      { id: 'c2', name: 'browser_click', arguments: '{"elementId":"el-2"}' },
       ctx({ isSubmit: true, text: '提交按钮' }),
       signal,
     );
@@ -290,9 +290,9 @@ describe('ToolExecutor 管线', () => {
     const first = changes[0];
     expect(first?.kind).toBe('pending');
     if (first?.kind !== 'pending') throw new Error('应建立 pending');
-    expect(first.request.toolName).toBe('browser.click');
+    expect(first.request.toolName).toBe('browser_click');
     expect(first.request.summary.elementText).toBe('提交按钮');
-    expect(first.request.summary.detail).toContain('browser.click');
+    expect(first.request.summary.detail).toContain('browser_click');
     // 决议 → settled 判别联合（A6 confirm-resolved 状态事件源）
     expect(confirm.approve('c2')).toBe(true);
     const r = await p;
@@ -311,7 +311,7 @@ describe('ToolExecutor 管线', () => {
       changes.push(change);
     });
     const p = executor.execute(
-      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-2"}' },
+      { id: 'c2', name: 'browser_click', arguments: '{"elementId":"el-2"}' },
       ctx({ isSubmit: true }), // 无 text 字段（如 input[type=submit]，inputs 不采集可见文本）
       signal,
     );
@@ -351,7 +351,7 @@ describe('ToolExecutor 管线', () => {
       getElementSemantics: () => (semantics == null ? null : { semantics, documentId: 1 }),
     });
     const p = executor.execute(
-      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-2"}' },
+      { id: 'c2', name: 'browser_click', arguments: '{"elementId":"el-2"}' },
       tabCtx({ isSubmit: true }),
       signal,
     );
@@ -365,7 +365,7 @@ describe('ToolExecutor 管线', () => {
 
   it('click 无语义元数据 → L3 forbidden（fail-closed 不回落到基础 L1）', async () => {
     const r = await executor.execute(
-      { id: 'c3', name: 'browser.click', arguments: '{"elementId":"el-9"}' },
+      { id: 'c3', name: 'browser_click', arguments: '{"elementId":"el-9"}' },
       ctx(null),
       signal,
     );
@@ -376,7 +376,7 @@ describe('ToolExecutor 管线', () => {
 
   it('click 非允许列表目标（普通按钮）→ L3 forbidden', async () => {
     const r = await executor.execute(
-      { id: 'c3', name: 'browser.click', arguments: '{"elementId":"el-3"}' },
+      { id: 'c3', name: 'browser_click', arguments: '{"elementId":"el-3"}' },
       ctx({ isSubmit: false, inputType: 'button' }),
       signal,
     );
@@ -397,7 +397,7 @@ describe('ToolExecutor 管线', () => {
       },
     });
     const r = await executor.execute(
-      { id: 'c3', name: 'browser.back', arguments: '{}' },
+      { id: 'c3', name: 'browser_back', arguments: '{}' },
       { browser: throwingBrowser, runId: 'run-1' },
       signal,
     );
@@ -409,7 +409,7 @@ describe('ToolExecutor 管线', () => {
 
   it('ok 结果确定性截断 2000（内容 + 截断标记 + warnings）', async () => {
     const r = await executor.execute(
-      { id: 'c4', name: 'browser.get_active_tab', arguments: '{}' },
+      { id: 'c4', name: 'browser_get_active_tab', arguments: '{}' },
       ctx(),
       signal,
     );
@@ -421,7 +421,7 @@ describe('ToolExecutor 管线', () => {
 
   it('executor 返回 ok:false 保持 ok:false（错误永不以 ok:true 出现）', async () => {
     const r = await executor.execute(
-      { id: 'c5', name: 'browser.reload', arguments: '{}' },
+      { id: 'c5', name: 'browser_reload', arguments: '{}' },
       ctx(),
       signal,
     );
@@ -434,7 +434,7 @@ describe('ToolExecutor 管线', () => {
     const ac = new AbortController();
     ac.abort();
     const r = await executor.execute(
-      { id: 'c6', name: 'browser.get_tabs', arguments: '{}' },
+      { id: 'c6', name: 'browser_get_tabs', arguments: '{}' },
       ctx(),
       ac.signal,
     );
@@ -477,10 +477,10 @@ describe('A3 derived 执行参数（allowedKind/documentId 权限决策派生）
             tabId: { type: 'string' },
             text: { type: 'string' },
           },
-          required: name === 'browser.click' ? ['elementId'] : ['elementId', 'text'],
+          required: name === 'browser_click' ? ['elementId'] : ['elementId', 'text'],
         },
         baseRisk,
-        riskLift: name === 'browser.click' ? { submitClick: 2 } : undefined,
+        riskLift: name === 'browser_click' ? { submitClick: 2 } : undefined,
         executor: async (call, toolCtx, signalArg) => {
           captured.push({
             name,
@@ -490,18 +490,18 @@ describe('A3 derived 执行参数（allowedKind/documentId 权限决策派生）
         },
       });
     };
-    captureDef('browser.click', async ({ id }) => ({
+    captureDef('browser_click', async ({ id }) => ({
       toolCallId: id,
       ok: true,
       content: '已点击',
     }));
-    captureDef('browser.fill', async ({ id }) => ({ toolCallId: id, ok: true, content: '已填写' }));
+    captureDef('browser_fill', async ({ id }) => ({ toolCallId: id, ok: true, content: '已填写' }));
   });
 
   it('click L1（nav 链接）→ executor 收到与 classifyClickTarget 同源派生的 {allowedKind:nav, documentId}', async () => {
     const binding = { semantics: { href: 'https://example.com/' }, documentId: 7 };
     const r = await executor.execute(
-      { id: 'c1', name: 'browser.click', arguments: '{"elementId":"el-0"}' },
+      { id: 'c1', name: 'browser_click', arguments: '{"elementId":"el-0"}' },
       { browser: fakeBrowser(), runId: 'run-1', getElementSemantics: () => binding },
       signal,
     );
@@ -512,7 +512,7 @@ describe('A3 derived 执行参数（allowedKind/documentId 权限决策派生）
   it('click L2（提交类）approve 后 → derived 携带 allowedKind:submit（不降为其他类别）', async () => {
     const binding = { semantics: { isSubmit: true, href: 'https://example.com/' }, documentId: 2 };
     const p = executor.execute(
-      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-1"}' },
+      { id: 'c2', name: 'browser_click', arguments: '{"elementId":"el-1"}' },
       { browser: fakeBrowser(), runId: 'run-1', getElementSemantics: () => binding },
       signal,
     );
@@ -526,7 +526,7 @@ describe('A3 derived 执行参数（allowedKind/documentId 权限决策派生）
   it('fill L1（普通输入）→ derived 携带 documentId（无 allowedKind）', async () => {
     const binding = { semantics: { inputType: 'text' }, documentId: 5 };
     const r = await executor.execute(
-      { id: 'c3', name: 'browser.fill', arguments: '{"elementId":"el-2","text":"x"}' },
+      { id: 'c3', name: 'browser_fill', arguments: '{"elementId":"el-2","text":"x"}' },
       { browser: fakeBrowser(), runId: 'run-1', getElementSemantics: () => binding },
       signal,
     );
@@ -536,7 +536,7 @@ describe('A3 derived 执行参数（allowedKind/documentId 权限决策派生）
 
   it('click L3（非允许列表/语义缺失）→ 不执行、无 derived（执行器层无任何通道）', async () => {
     const r = await executor.execute(
-      { id: 'c4', name: 'browser.click', arguments: '{"elementId":"el-3"}' },
+      { id: 'c4', name: 'browser_click', arguments: '{"elementId":"el-3"}' },
       {
         browser: fakeBrowser(),
         runId: 'run-1',
@@ -564,7 +564,7 @@ describe('A3 derived 执行参数（allowedKind/documentId 权限决策派生）
     await executor.execute(
       {
         id: 'c5',
-        name: 'browser.click',
+        name: 'browser_click',
         arguments: '{"elementId":"el-0","tabId":"00000000-0000-4000-8000-000000000001"}',
       },
       {
@@ -578,7 +578,7 @@ describe('A3 derived 执行参数（allowedKind/documentId 权限决策派生）
       signal,
     );
     await executor.execute(
-      { id: 'c6', name: 'browser.click', arguments: '{"elementId":"el-0"}' },
+      { id: 'c6', name: 'browser_click', arguments: '{"elementId":"el-0"}' },
       {
         browser,
         runId: 'run-1',

@@ -17,7 +17,7 @@ function entry(overrides: Partial<AuditEntry> = {}): AuditEntry {
   return {
     requestId: 'req-1',
     toolCallId: 'call-1',
-    tool: 'browser.click',
+    tool: 'browser_click',
     argsSummary: '{elementId:el-12}',
     decision: 'confirmed',
     ok: true,
@@ -28,8 +28,8 @@ function entry(overrides: Partial<AuditEntry> = {}): AuditEntry {
 }
 
 describe('summarizeArgs 参数摘要（确定性 + 脱敏）', () => {
-  it('browser.fill 的 text 只记录 len=N，原文零出现（含 Key 形态值）', () => {
-    const out = summarizeArgs('browser.fill', {
+  it('browser_fill 的 text 只记录 len=N，原文零出现（含 Key 形态值）', () => {
+    const out = summarizeArgs('browser_fill', {
       elementId: 'el-1',
       text: '我的密码是sk-secret-12345678',
     });
@@ -40,25 +40,25 @@ describe('summarizeArgs 参数摘要（确定性 + 脱敏）', () => {
   });
 
   it('非字符串 text 防御性处理（len 按字符串化长度）', () => {
-    expect(summarizeArgs('browser.fill', { text: 42 })).toContain('text=len:2');
+    expect(summarizeArgs('browser_fill', { text: 42 })).toContain('text=len:2');
   });
 
   it('URL 参数全量记录（审计可追溯），超 200 字符不截断', () => {
     const longUrl = 'https://example.com/search?q=' + 'x'.repeat(260);
-    const out = summarizeArgs('browser.open', { url: longUrl });
+    const out = summarizeArgs('browser_open', { url: longUrl });
     expect(out).toContain(longUrl);
   });
 
   it('其余参数确定性截断 ≤ ARGS_SUMMARY_MAX 并带截断标记', () => {
-    const out = summarizeArgs('browser.find', { text: 'x'.repeat(600) });
+    const out = summarizeArgs('browser_find', { text: 'x'.repeat(600) });
     expect(out).toContain('…[已截断]');
     const value = out.slice(out.indexOf('text:') + 'text:'.length, out.indexOf('}'));
     expect(value.length).toBeLessThanOrEqual(ARGS_SUMMARY_MAX + '…[已截断]'.length);
   });
 
-  it('search.web 查询串全量记录（T-03 外发审查可追溯，决议 #32；校验上限 500 有界）', () => {
+  it('search_web 查询串全量记录（T-03 外发审查可追溯，决议 #32；校验上限 500 有界）', () => {
     const query = 'x'.repeat(500);
-    const out = summarizeArgs('search.web', { query });
+    const out = summarizeArgs('search_web', { query });
     expect(out).toContain(query);
     expect(out).not.toContain('…[已截断]');
   });
@@ -85,7 +85,7 @@ describe('summarizeArgs 参数摘要（确定性 + 脱敏）', () => {
   });
 
   it('无参数 → 空摘要花括号', () => {
-    expect(summarizeArgs('browser.get_tabs', {})).toBe('{}');
+    expect(summarizeArgs('browser_get_tabs', {})).toBe('{}');
   });
 });
 
@@ -101,7 +101,7 @@ describe('summarizeRawArgs（解析失败路径原文确定性截断）', () => 
 describe('formatAuditMessage（确定性中文格式，§10.1 样例同构）', () => {
   it('全字段条目 → 与 §10.1 样例格式一致', () => {
     expect(formatAuditMessage(entry())).toBe(
-      'tool-call（requestId=req-1，toolCallId=call-1，tool=browser.click，args={elementId:el-12}，decision=confirmed，ok=true，耗时=23ms，errorCode=无）',
+      'tool-call（requestId=req-1，toolCallId=call-1，tool=browser_click，args={elementId:el-12}，decision=confirmed，ok=true，耗时=23ms，errorCode=无）',
     );
   });
 
@@ -151,7 +151,7 @@ describe('审计脱敏链（logger sanitize 端到端，Key 形态零出现）',
   });
 
   it('fill 参数摘要经全链路后原文零出现（len=N 形态保留）', () => {
-    const argsSummary = summarizeArgs('browser.fill', { text: '机密输入值12345' });
+    const argsSummary = summarizeArgs('browser_fill', { text: '机密输入值12345' });
     const msg = formatAuditMessage(entry({ argsSummary }));
     expect(msg).not.toContain('机密输入值12345');
     expect(sanitize(msg)).not.toContain('机密输入值12345');

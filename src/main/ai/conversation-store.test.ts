@@ -321,7 +321,7 @@ function makeToolStepMessage(overrides: Record<string, unknown> = {}): Conversat
   const step = {
     id: 'tc-1',
     toolCallId: 'tc-1',
-    name: 'browser.read',
+    name: 'browser_read',
     ok: true,
     contentPreview: '页面摘要',
     decision: 'auto',
@@ -346,7 +346,7 @@ function makeAssistantWithCalls(): ConversationMessage {
     content: '我先读取页面。',
     createdAt: 1500,
     status: 'complete',
-    toolCalls: [{ id: 'tc-1', name: 'browser.read', arguments: '{}' }],
+    toolCalls: [{ id: 'tc-1', name: 'browser_read', arguments: '{}' }],
   };
 }
 
@@ -500,7 +500,7 @@ describe('cropMessagesToLimit — 200 条裁剪组感知（不产生孤立 tool 
         content: '',
         createdAt: n,
         status: 'complete',
-        toolCalls: [{ id: `c${n}`, name: 'browser.read', arguments: '{}' }],
+        toolCalls: [{ id: `c${n}`, name: 'browser_read', arguments: '{}' }],
       },
       {
         id: `t${n}`,
@@ -512,7 +512,7 @@ describe('cropMessagesToLimit — 200 条裁剪组感知（不产生孤立 tool 
         toolStep: {
           id: `c${n}`,
           toolCallId: `c${n}`,
-          name: 'browser.read',
+          name: 'browser_read',
           ok: true,
           contentPreview: '摘要',
           decision: 'auto',
@@ -569,7 +569,7 @@ describe('conversation-store v2 — 零持久化红线（真实文件字节断�
       toolCalls: sanitizeToolCallsForPersistence([
         {
           id: 'c-fill',
-          name: 'browser.fill',
+          name: 'browser_fill',
           arguments: JSON.stringify({ elementId: 'el-1', text: fillSecret }),
         },
       ]),
@@ -577,7 +577,7 @@ describe('conversation-store v2 — 零持久化红线（真实文件字节断�
     const toolStep = {
       id: 'c-fill',
       toolCallId: 'c-fill',
-      name: 'browser.fill',
+      name: 'browser_fill',
       ok: true,
       contentPreview: `已填写元素 [el-1]（<input> type=text，输入 ${fillSecret.length} 个字符）`,
       decision: 'auto-visible' as const,

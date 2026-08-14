@@ -142,6 +142,10 @@ export class AgentLoop {
   private roundCalls: ProviderToolCall[] = [];
   private roundCommitted = false;
   private roundSawDone = false;
+  // A7 补验校准（决议 #35）：本轮供应商不透明思维增量（thinking 模式 reasoning_content）。
+  // 仅工具轮写入 transcript 的 assistant 消息并在下一轮请求原样回传；终态轮/空轮不携带；
+  // 不进入 rounds 结果、回调、审计、持久化（思维过程零暴露红线）。
+  private roundReasoning = '';
 
   constructor(private readonly options: AgentLoopOptions) {
     this.limits = { ...AGENT_LOOP_LIMITS, ...options.limits };
@@ -242,6 +246,7 @@ export class AgentLoop {
         this.roundText = '';
         this.roundCalls = [];
         this.roundCommitted = false;
+        this.roundReasoning = '';
         await Promise.race([
           this.streamRound(provider, request, supportsTools),
           this.terminalReached,
@@ -280,7 +285,12 @@ export class AgentLoop {
           );
           break;
         }
-        this.transcript.push({ role: 'assistant', content: text, toolCalls: calls });
+        this.transcript.push({
+          role: 'assistant',
+          content: text,
+          toolCalls: calls,
+          ...(this.roundReasoning !== '' ? { reasoning: this.roundReasoning } : {}),
+        });
         const roundRecord: AgentRoundRecord = { text, toolCalls: calls, steps: [] };
         this.rounds.push(roundRecord);
         this.roundCommitted = true;
@@ -398,6 +408,9 @@ export class AgentLoop {
         if (event.type === 'delta') {
           this.roundText += event.text;
           this.options.callbacks?.onStreamChunk?.(event.text);
+        } else if (event.type === 'reasoning') {
+          // 供应商思维增量：仅累积供工具轮回传；不转发 UI/回调/审计（决议 #35）
+          this.roundReasoning += event.text;
         } else if (event.type === 'toolCalls') {
           if (!supportsTools) {
             this.finish(

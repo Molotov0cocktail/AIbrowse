@@ -1,5 +1,5 @@
 // A2 首批 8 个只读/导航工具：executor 只经构造注入的 BrowserController 接口执行
-// （不 import Electron、不直连 webContents——Agent 架构纪律）；browser.read 每次
+// （不 import Electron、不直连 webContents——Agent 架构纪律）；browser_read 每次
 // 实时采集 getPageSnapshot（禁止复用缓存快照——Second_stage 防串页契约的 Agent 侧延续）。
 // 契约源：doc/stage3/detailed-design.md §4.2/§8.4；BrowserController 失败语义
 // （false/null）安全映射为 execution-failed（管线层归一，不抛异常）。
@@ -175,25 +175,25 @@ const reload: ToolExecutorFn = async ({ id, args }, ctx) => {
     : fail(id, '刷新失败（标签页不存在或不可刷新）');
 };
 
-// A2 首批 8 个只读/导航工具（§4.2）；A3 增 find/scroll/click/fill、A4 增 search.web。
+// A2 首批 8 个只读/导航工具（§4.2）；A3 增 find/scroll/click/fill、A4 增 search_web。
 // baseRisk 与 permission-policy TOOL_BASE_RISK 矩阵一致（单测交叉断言防漂移）。
 export const BROWSER_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
-    name: 'browser.get_tabs',
+    name: 'browser_get_tabs',
     description: '列出所有标签页（id/标题/URL/是否活动/加载状态）',
     parameters: { properties: {}, required: [] },
     baseRisk: 0,
     executor: getTabs,
   },
   {
-    name: 'browser.get_active_tab',
+    name: 'browser_get_active_tab',
     description: '获取当前活动标签页信息',
     parameters: { properties: {}, required: [] },
     baseRisk: 0,
     executor: getActiveTab,
   },
   {
-    name: 'browser.read',
+    name: 'browser_read',
     description: '实时读取标签页内容快照（缺省活动标签页；页面刷新后需重新读取）',
     parameters: {
       properties: { tabId: { type: 'string', description: '标签页 id（可选，缺省为活动标签页）' } },
@@ -203,7 +203,7 @@ export const BROWSER_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     executor: read,
   },
   {
-    name: 'browser.open',
+    name: 'browser_open',
     description: '在新标签页打开 http/https 网页（标签页保留，由用户关闭）',
     parameters: {
       properties: { url: { type: 'string', description: 'http/https 地址' } },
@@ -213,7 +213,7 @@ export const BROWSER_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     executor: open,
   },
   {
-    name: 'browser.navigate',
+    name: 'browser_navigate',
     description: '导航指定标签页到新地址（http/https，缺省活动标签页）',
     parameters: {
       properties: {
@@ -226,7 +226,7 @@ export const BROWSER_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     executor: navigate,
   },
   {
-    name: 'browser.back',
+    name: 'browser_back',
     description: '后退指定标签页（缺省活动标签页）',
     parameters: {
       properties: { tabId: { type: 'string', description: '标签页 id（可选，缺省为活动标签页）' } },
@@ -236,7 +236,7 @@ export const BROWSER_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     executor: back,
   },
   {
-    name: 'browser.forward',
+    name: 'browser_forward',
     description: '前进指定标签页（缺省活动标签页）',
     parameters: {
       properties: { tabId: { type: 'string', description: '标签页 id（可选，缺省为活动标签页）' } },
@@ -246,7 +246,7 @@ export const BROWSER_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     executor: forward,
   },
   {
-    name: 'browser.reload',
+    name: 'browser_reload',
     description: '刷新指定标签页（缺省活动标签页）',
     parameters: {
       properties: { tabId: { type: 'string', description: '标签页 id（可选，缺省为活动标签页）' } },

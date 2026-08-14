@@ -74,14 +74,14 @@ describe('FakeProvider — 确定性分块', () => {
 
 describe('FakeProvider — 工具脚本（A1，doc/stage3/detailed-design.md §3.2）', () => {
   const TOOL_CALLS = [
-    { id: 'call-1', name: 'browser.read', arguments: '{"tabId":null}' },
-    { id: 'call-2', name: 'browser.find', arguments: '{"text":"安全"}' },
+    { id: 'call-1', name: 'browser_read', arguments: '{"tabId":null}' },
+    { id: 'call-2', name: 'browser_find', arguments: '{"text":"安全"}' },
   ];
   const TOOLS: ProviderTool[] = [
     {
       type: 'function',
       function: {
-        name: 'browser.read',
+        name: 'browser_read',
         description: '读取页面',
         parameters: { type: 'object', properties: {}, required: [] },
       },
@@ -223,7 +223,7 @@ describe('FakeProvider — 多轮脚本（A5 rounds 扩展）', () => {
   it('每次 stream 调用消费下一轮脚本；耗尽回退 chunks', async () => {
     const provider = new FakeProvider({
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] }],
+        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser_read', arguments: '{}' }] }],
         [{ text: '最终回答' }],
       ],
       chunks: ['回退块'],
@@ -231,7 +231,7 @@ describe('FakeProvider — 多轮脚本（A5 rounds 扩展）', () => {
     const round1 = await collect(provider, REQUEST);
     expect(round1[0]).toEqual({
       type: 'toolCalls',
-      toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }],
+      toolCalls: [{ id: 'c1', name: 'browser_read', arguments: '{}' }],
     });
     expect(round1.at(-1)).toEqual({ type: 'done' });
     const round2 = await collect(provider, REQUEST);
@@ -275,5 +275,24 @@ describe('FakeProvider — 多轮脚本（A5 rounds 扩展）', () => {
     await collect(provider, { ...REQUEST, requestId: 'req-2' });
     expect(provider.getRequests().map((r) => r.requestId)).toEqual(['req-1', 'req-2']);
     expect(provider.getLastRequest()?.requestId).toBe('req-2');
+  });
+});
+
+describe('reasoning 脚本块（A7 补验校准：thinking 模式离线确定性驱动）', () => {
+  it('reasoning 块按脚本顺序产出 reasoning 事件（不产出 delta 文本、不混入后续正文）', async () => {
+    const provider = new FakeProvider({
+      chunks: [
+        { kind: 'reasoning', text: '步骤一' },
+        { kind: 'reasoning', text: '步骤二' },
+        { text: '最终回答' },
+      ],
+    });
+    const events = await collect(provider, REQUEST);
+    expect(events).toEqual([
+      { type: 'reasoning', text: '步骤一' },
+      { type: 'reasoning', text: '步骤二' },
+      { type: 'delta', text: '最终回答' },
+      { type: 'done', usage: undefined },
+    ]);
   });
 });

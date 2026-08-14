@@ -1,4 +1,4 @@
-// A4 search.web 工具测试（红→绿先写）：工具常量（name/description/schema 程序常量）、
+// A4 search_web 工具测试（红→绿先写）：工具常量（name/description/schema 程序常量）、
 // executor 经注入 SearchProvider 执行（ctx.searchProvider 优先——冒烟/A5 注入点）、
 // 结果序列化为纯文本行（标题/网址/摘要——不可信数据零指令性/富文本特权，不暴露
 // documentId/内部 tabId/快照正文/调试字段）、失败与取消诚实映射闭合枚举
@@ -51,7 +51,7 @@ const ctxFor = (searchProvider?: SearchProvider): ToolExecutionContext => ({
   searchProvider,
 });
 
-// search.web 不触碰 BrowserController（只经 SearchProvider）——stub 仅满足 ctx 形状
+// search_web 不触碰 BrowserController（只经 SearchProvider）——stub 仅满足 ctx 形状
 function fakeBrowserStub(): ToolExecutionContext['browser'] {
   return {
     createTab: async () => ({ id: 't', title: '', url: '', active: true, state: 'idle' }),
@@ -71,12 +71,12 @@ function fakeBrowserStub(): ToolExecutionContext['browser'] {
   };
 }
 
-describe('search.web 工具定义（程序常量）', () => {
+describe('search_web 工具定义（程序常量）', () => {
   it('name/description/schema/paramRules 为常量：仅 {query}、非空、baseRisk=L0 与权限矩阵一致', () => {
     const provider = fakeProvider(async () => ({ ok: true, results: [] }));
     const def = createSearchTool(provider);
     expect(def.name).toBe(SEARCH_TOOL_NAME);
-    expect(SEARCH_TOOL_NAME).toBe('search.web');
+    expect(SEARCH_TOOL_NAME).toBe('search_web');
     expect(typeof def.description).toBe('string');
     expect(def.description.length).toBeGreaterThan(0);
     expect(Object.keys(def.parameters.properties)).toEqual(['query']);
@@ -84,7 +84,7 @@ describe('search.web 工具定义（程序常量）', () => {
     expect(def.parameters.properties.query.type).toBe('string');
     expect(def.paramRules?.query.nonEmpty).toBe(true);
     expect(def.baseRisk).toBe(0);
-    expect(def.baseRisk).toBe(TOOL_BASE_RISK['search.web']);
+    expect(def.baseRisk).toBe(TOOL_BASE_RISK['search_web']);
 
     // 模型可见 schema（listTools 序列化）不含任何内部字段
     resetToolRegistry();
@@ -113,7 +113,7 @@ describe('formatSearchResults 序列化', () => {
   });
 });
 
-describe('search.web executor', () => {
+describe('search_web executor', () => {
   it('成功：经注入 SearchProvider 执行，返回序列化结果与 provider warnings 透传', async () => {
     const provider = fakeProvider(async () => ({
       ok: true,
@@ -178,7 +178,7 @@ describe('search.web executor', () => {
   });
 });
 
-describe('search.web 经 ToolExecutor 管线（校验→权限→审计→截断）', () => {
+describe('search_web 经 ToolExecutor 管线（校验→权限→审计→截断）', () => {
   let audits: AuditEntry[];
 
   beforeEach(() => {
@@ -206,14 +206,14 @@ describe('search.web 经 ToolExecutor 管线（校验→权限→审计→截断
   it('L0 自动执行：decision=auto，每次调用恰好一条审计，审计含 query 摘要', async () => {
     const { executor, ctx } = makeExecutor();
     const r = await executor.execute(
-      { id: 't1', name: 'search.web', arguments: '{"query":"electron 文档"}' },
+      { id: 't1', name: 'search_web', arguments: '{"query":"electron 文档"}' },
       ctx,
       signal,
     );
     expect(r.ok).toBe(true);
     expect(r.content).toContain('管线结果');
     expect(audits).toHaveLength(1);
-    expect(audits[0]).toMatchObject({ tool: 'search.web', decision: 'auto', ok: true });
+    expect(audits[0]).toMatchObject({ tool: 'search_web', decision: 'auto', ok: true });
     expect(audits[0].argsSummary).toContain('query:electron 文档');
   });
 
@@ -229,7 +229,7 @@ describe('search.web 经 ToolExecutor 管线（校验→权限→审计→截断
     ];
     for (const c of cases) {
       const r = await executor.execute(
-        { id: 't', name: 'search.web', arguments: c.args },
+        { id: 't', name: 'search_web', arguments: c.args },
         ctx,
         signal,
       );
@@ -243,12 +243,12 @@ describe('search.web 经 ToolExecutor 管线（校验→权限→审计→截断
   it('query 恰好 500 字符通过校验；结果超 4000 字符经管线确定性截断 + 截断 warning', async () => {
     const { executor, ctx } = makeExecutor();
     const ok500 = await executor.execute(
-      { id: 't1', name: 'search.web', arguments: `{"query":"${'q'.repeat(500)}"}` },
+      { id: 't1', name: 'search_web', arguments: `{"query":"${'q'.repeat(500)}"}` },
       ctx,
       signal,
     );
     expect(ok500.ok).toBe(true);
-    // 审计参数摘要：search.web 查询串全量记录（T-03 外发审查可追溯，决议 #32）
+    // 审计参数摘要：search_web 查询串全量记录（T-03 外发审查可追溯，决议 #32）
     expect(audits[audits.length - 1].argsSummary).toContain('q'.repeat(500));
 
     // 大量长结果 → 序列化内容远超 4000 → 确定性截断（含标记）+ warning
@@ -264,7 +264,7 @@ describe('search.web 经 ToolExecutor 管线（校验→权限→审计→截断
     resetToolRegistry();
     registerTool(createSearchTool(many));
     const r = await executor.execute(
-      { id: 't2', name: 'search.web', arguments: '{"query":"long"}' },
+      { id: 't2', name: 'search_web', arguments: '{"query":"long"}' },
       ctx,
       signal,
     );

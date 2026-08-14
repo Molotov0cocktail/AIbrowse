@@ -23,7 +23,7 @@ const NOW = 1_700_000_000_000;
 describe('buildToolStep（精简步骤组装）', () => {
   it('成功步骤：id/toolCallId/name/ok/contentPreview/decision/createdAt；不含内部能力字段', () => {
     const step = buildToolStep(
-      { id: 'tc-1', name: 'browser.read', arguments: '{}' },
+      { id: 'tc-1', name: 'browser_read', arguments: '{}' },
       { toolCallId: 'tc-1', ok: true, content: '页面章节摘要' },
       'auto',
       NOW,
@@ -31,7 +31,7 @@ describe('buildToolStep（精简步骤组装）', () => {
     expect(step).toEqual({
       id: 'tc-1',
       toolCallId: 'tc-1',
-      name: 'browser.read',
+      name: 'browser_read',
       ok: true,
       contentPreview: '页面章节摘要',
       decision: 'auto',
@@ -46,7 +46,7 @@ describe('buildToolStep（精简步骤组装）', () => {
 
   it('失败步骤：ok=false + errorCode + 决策保留（execution-failed 保留实际权限决策）', () => {
     const step = buildToolStep(
-      { id: 'tc-2', name: 'browser.click', arguments: '{"elementId":"el-1"}' },
+      { id: 'tc-2', name: 'browser_click', arguments: '{"elementId":"el-1"}' },
       {
         toolCallId: 'tc-2',
         ok: false,
@@ -64,7 +64,7 @@ describe('buildToolStep（精简步骤组装）', () => {
   it('contentPreview 确定性截断 ≤ 200；fill 值以「（已输入 N 字符）」形态出现（原文零出现）', () => {
     const long = '长'.repeat(300);
     const step = buildToolStep(
-      { id: 'tc-3', name: 'browser.read', arguments: '{}' },
+      { id: 'tc-3', name: 'browser_read', arguments: '{}' },
       { toolCallId: 'tc-3', ok: true, content: long },
       'auto',
       NOW,
@@ -86,7 +86,7 @@ describe('buildToolStep（精简步骤组装）', () => {
     ];
     for (const decision of decisions) {
       const step = buildToolStep(
-        { id: 't', name: 'browser.read', arguments: '{}' },
+        { id: 't', name: 'browser_read', arguments: '{}' },
         { toolCallId: 't', ok: false, content: 'x' },
         decision,
         NOW,
@@ -97,29 +97,29 @@ describe('buildToolStep（精简步骤组装）', () => {
 });
 
 describe('sanitizeToolCallsForPersistence（assistant toolCalls 脱敏）', () => {
-  it('browser.fill 的 arguments 中 text 替换为「（已输入 N 字符）」；其余工具原样', () => {
+  it('browser_fill 的 arguments 中 text 替换为「（已输入 N 字符）」；其余工具原样', () => {
     const out = sanitizeToolCallsForPersistence([
-      { id: 'c1', name: 'browser.fill', arguments: '{"elementId":"el-1","text":"机密值XYZ"}' },
-      { id: 'c2', name: 'browser.read', arguments: '{"tabId":"t1"}' },
+      { id: 'c1', name: 'browser_fill', arguments: '{"elementId":"el-1","text":"机密值XYZ"}' },
+      { id: 'c2', name: 'browser_read', arguments: '{"tabId":"t1"}' },
     ]);
-    expect(out[0].name).toBe('browser.fill');
+    expect(out[0].name).toBe('browser_fill');
     const args = JSON.parse(out[0].arguments) as Record<string, unknown>;
     expect(args.text).toBe('（已输入 6 字符）'); // 机密值XYZ → 6 字符
     expect(out[0].arguments).not.toContain('机密值XYZ');
     expect(args.elementId).toBe('el-1');
-    expect(out[1]).toEqual({ id: 'c2', name: 'browser.read', arguments: '{"tabId":"t1"}' });
+    expect(out[1]).toEqual({ id: 'c2', name: 'browser_read', arguments: '{"tabId":"t1"}' });
   });
 
   it('fill arguments 非法 JSON → 原样保留（不抛异常；已存在的原文形态属模型输入回显）', () => {
     const raw = '{"text":"x"';
     const out = sanitizeToolCallsForPersistence([
-      { id: 'c1', name: 'browser.fill', arguments: raw },
+      { id: 'c1', name: 'browser_fill', arguments: raw },
     ]);
     expect(out[0].arguments).toBe(raw);
   });
 
   it('返回全新数组（不修改入参）', () => {
-    const input = [{ id: 'c1', name: 'browser.fill', arguments: '{"text":"abc"}' }];
+    const input = [{ id: 'c1', name: 'browser_fill', arguments: '{"text":"abc"}' }];
     const out = sanitizeToolCallsForPersistence(input);
     expect(out).not.toBe(input);
     expect(input[0].arguments).toBe('{"text":"abc"}');
@@ -131,7 +131,7 @@ describe('持久化消息组装（每轮文本恰好落盘一次，无重复拼�
     const message = buildRoundAssistantMessage({
       id: 'm1',
       text: '我先读取页面。',
-      toolCalls: [{ id: 'c1', name: 'browser.fill', arguments: '{"text":"秘密"}' }],
+      toolCalls: [{ id: 'c1', name: 'browser_fill', arguments: '{"text":"秘密"}' }],
       now: NOW,
     });
     expect(message.role).toBe('assistant');
@@ -143,7 +143,7 @@ describe('持久化消息组装（每轮文本恰好落盘一次，无重复拼�
 
   it('tool 消息：toolCallId 精确关联 + content = 摘要 + toolStep 携带精简步骤', () => {
     const step = buildToolStep(
-      { id: 'tc-1', name: 'browser.read' },
+      { id: 'tc-1', name: 'browser_read' },
       { toolCallId: 'tc-1', ok: true, content: '摘要内容' },
       'auto',
       NOW,
@@ -187,7 +187,7 @@ describe('持久化消息组装（每轮文本恰好落盘一次，无重复拼�
       text: '',
       status: 'error',
       errorCode: 'internal',
-      toolCalls: [{ id: 'c9', name: 'browser.fill', arguments: '{"text":"未执行的秘密"}' }],
+      toolCalls: [{ id: 'c9', name: 'browser_fill', arguments: '{"text":"未执行的秘密"}' }],
       agentRun: {
         requestId: 'r1',
         sessionId: 's1',
@@ -211,7 +211,7 @@ describe('filterIncompleteToolGroups（完整交互组校验）', () => {
     content: '',
     createdAt: NOW,
     status: 'complete',
-    toolCalls: ids.map((tc) => ({ id: tc, name: 'browser.read', arguments: '{}' })),
+    toolCalls: ids.map((tc) => ({ id: tc, name: 'browser_read', arguments: '{}' })),
   });
   const tool = (id: string, tc: string): ConversationMessage => ({
     id,
@@ -223,7 +223,7 @@ describe('filterIncompleteToolGroups（完整交互组校验）', () => {
     toolStep: {
       id: tc,
       toolCallId: tc,
-      name: 'browser.read',
+      name: 'browser_read',
       ok: true,
       contentPreview: '摘要',
       decision: 'auto',
@@ -314,7 +314,7 @@ describe('replayToProviderMessages（跨 run 重放：摘要 + 预算 + 合法�
     content: text,
     createdAt: NOW,
     status: 'complete',
-    toolCalls: [{ id: `${id}-c`, name: 'browser.read', arguments: '{}' }],
+    toolCalls: [{ id: `${id}-c`, name: 'browser_read', arguments: '{}' }],
   });
   const toolMsg = (id: string): ConversationMessage => ({
     id,
@@ -326,7 +326,7 @@ describe('replayToProviderMessages（跨 run 重放：摘要 + 预算 + 合法�
     toolStep: {
       id: `${id}-c`,
       toolCallId: `${id}-c`,
-      name: 'browser.read',
+      name: 'browser_read',
       ok: true,
       contentPreview: '页面摘要（≤200）',
       decision: 'auto',

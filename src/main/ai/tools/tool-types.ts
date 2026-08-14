@@ -54,7 +54,7 @@ export type ToolExecutorFn = (
 export interface ToolExecutionContext {
   browser: BrowserController; // 唯一浏览器通道（构造注入；A2 工具只经它执行）
   runId: string; // 审计与确认归属（A5 传 requestId）
-  // A4：search.web 的搜索通道注入点（设计 §4.1「browser 能力 + search」）——executor
+  // A4：search_web 的搜索通道注入点（设计 §4.1「browser 能力 + search」）——executor
   // 优先使用本注入（冒烟受控夹具离线驱动/A5 AgentLoop 装配），缺省回退注册注入。
   searchProvider?: SearchProvider;
   // A3：click/fill 元素语义来源（语义与文档世代绑定）。tabId 由管线解析后传入

@@ -880,6 +880,9 @@ export class ConversationServiceImpl implements ConversationService {
         if (event.type === 'delta') {
           text += event.text;
           this.options.onStreamChunk?.({ requestId, sessionId, delta: event.text });
+        } else if (event.type === 'reasoning') {
+          // 供应商思维增量：共读不消费、不回传 UI、不记录（思维过程零暴露红线，决议 #35）
+          // —— thinking 模式 Provider 的正常事件，不视为异常
         } else if (event.type === 'done') {
           return { text, status: 'complete', error: null };
         } else if (event.type === 'error') {

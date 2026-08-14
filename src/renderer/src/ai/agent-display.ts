@@ -63,15 +63,15 @@ export const AGENT_RUN_STATUS_LABELS: Record<AgentRunStatus, string> = {
 // 程序确定的动作类型文案（工具名为程序事实；未知工具不解析模型/页面文本）
 export function toolActionLabel(toolName: string): string {
   switch (toolName) {
-    case 'browser.click':
+    case 'browser_click':
       return '点击页面元素';
-    case 'browser.fill':
+    case 'browser_fill':
       return '填写输入框';
-    case 'browser.open':
+    case 'browser_open':
       return '打开页面';
-    case 'browser.navigate':
+    case 'browser_navigate':
       return '导航到页面';
-    case 'search.web':
+    case 'search_web':
       return '网页搜索';
     default:
       return '执行浏览器操作';

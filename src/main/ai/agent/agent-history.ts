@@ -1,5 +1,5 @@
 // agent-history 纯函数（A5，零 Electron 依赖）：ToolStep 组装（不含 fill 原文/快照正文/
-// documentId/allowedKind 等内部能力信息）、assistant toolCalls 脱敏持久化（browser.fill 的
+// documentId/allowedKind 等内部能力信息）、assistant toolCalls 脱敏持久化（browser_fill 的
 // arguments.text →「（已输入 N 字符）」）、持久化消息组装（每轮文本恰好落盘一次，无重复拼接）、
 // 完整交互组校验与跨 run 重放（tool 消息只重放摘要；不完整组/孤立 tool 消息整体过滤）。
 // 契约源：doc/stage3/detailed-design.md §9.1/§9.3 + 决议 #33。
@@ -58,12 +58,12 @@ export function buildToolStep(
   };
 }
 
-// assistant toolCalls 脱敏（持久化前调用）：browser.fill 的 text → FILL_MASK(len)；
+// assistant toolCalls 脱敏（持久化前调用）：browser_fill 的 text → FILL_MASK(len)；
 // 其余工具 arguments 原样（read 的 tabId/search 的 query 等为模型回显，属可持久化形态）；
 // 非法 JSON 原样保留（不抛异常）。
 export function sanitizeToolCallsForPersistence(toolCalls: ProviderToolCall[]): ProviderToolCall[] {
   return toolCalls.map((call) => {
-    if (call.name !== 'browser.fill') return call;
+    if (call.name !== 'browser_fill') return call;
     let parsed: unknown;
     try {
       parsed = JSON.parse(call.arguments);

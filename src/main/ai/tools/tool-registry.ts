@@ -5,6 +5,13 @@
 import type { ProviderTool } from '../../../shared/types/conversation';
 import type { ToolDefinition } from './tool-types';
 
+// wire 名称契约（A7 补验校准，决议 #35）：OpenAI 兼容端点对 function.name 的通行约束为
+// 字母/数字/下划线/连字符、1–64 位（DeepSeek 官方契约明确拒绝点号等字符并整组 400——
+// 既有 13 工具名全部带点即为真实 Provider 首轮 400 的根因）。内部名 = wire 名（无映射层，
+// 冲突不可能性由本契约 + 注册唯一性保证）；注册与序列化双阶段确定性拒绝，防止未来再把
+// 非法工具名发给任何 Provider。
+export const TOOL_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
 // 校验上限常量（§4.1）：字符串参数统一 ≤ 500（url 参数 ≤ 2048）；tabId=UUID 形状、
 // elementId=el-N 形状（与 snapshot-normalize 同款正则）。
 export const VALIDATION_LIMITS = {
@@ -18,6 +25,13 @@ const ELEMENT_ID_PATTERN = /^el-\d{1,10}$/;
 const registry = new Map<string, ToolDefinition>();
 
 export function registerTool(def: ToolDefinition): void {
+  // wire 名称契约（决议 #35）：注册阶段确定性拒绝非法名——违反契约的工具名会导致
+  // Provider 侧整组 tools 请求被拒（HTTP 400），装配期失败比运行时失败安全
+  if (!TOOL_NAME_PATTERN.test(def.name)) {
+    throw new Error(
+      `工具名违反 wire 名称契约（仅允许字母/数字/下划线/连字符，1–64 位）：${def.name}`,
+    );
+  }
   // 工具名唯一：重复注册为装配错误，确定性抛出（启动期失败比静默缺工具安全）
   if (registry.has(def.name)) {
     throw new Error(`工具重复注册：${def.name}`);
@@ -39,18 +53,25 @@ export function getTool(name: string): ToolDefinition | null {
 export function listTools(): ProviderTool[] {
   return [...registry.values()]
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-    .map((def) => ({
-      type: 'function',
-      function: {
-        name: def.name,
-        description: def.description,
-        parameters: {
-          type: 'object',
-          properties: { ...def.parameters.properties },
-          required: [...def.parameters.required],
+    .map((def) => {
+      // 序列化阶段纵深防御（决议 #35）：注册期已拒绝非法名，此处为第二道确定性闸门
+      // （防止未来绕过 registerTool 直改注册表的路径把非法名发给 Provider）
+      if (!TOOL_NAME_PATTERN.test(def.name)) {
+        throw new Error(`工具名违反 wire 名称契约（序列化阶段拒绝）：${def.name}`);
+      }
+      return {
+        type: 'function' as const,
+        function: {
+          name: def.name,
+          description: def.description,
+          parameters: {
+            type: 'object' as const,
+            properties: { ...def.parameters.properties },
+            required: [...def.parameters.required],
+          },
         },
-      },
-    }));
+      };
+    });
 }
 
 // 确定性校验：JSON.parse 失败 / 未知工具 / 缺必填 / 类型不符 / enum 越界 / 未知键（拒绝）

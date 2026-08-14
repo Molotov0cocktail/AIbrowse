@@ -64,12 +64,14 @@ export interface ToolCallSlot {
 }
 
 export type SseChunkEvent =
-  // choices[0].delta.content；同帧可再携带 tool_calls 分片与 finish_reason（先文本后工具）
+  // choices[0].delta.content；同帧可再携带 tool_calls 分片、reasoning_content 与
+  // finish_reason（先文本后工具）
   | {
       type: 'delta';
       text: string;
       usage?: ProviderUsage;
       toolFragments?: ToolCallFragment[];
+      reasoningText?: string;
       finishReason?: string;
     }
   // 纯 tool_calls 分片帧；末分片帧可同帧携带 finish_reason
@@ -77,8 +79,11 @@ export type SseChunkEvent =
       type: 'tool-delta';
       fragments: ToolCallFragment[];
       usage?: ProviderUsage;
+      reasoningText?: string;
       finishReason?: string;
     }
+  // 仅携带 delta.reasoning_content 的帧（thinking 模式推理增量，决议 #35）
+  | { type: 'reasoning'; text: string; usage?: ProviderUsage; finishReason?: string }
   // delta 为空对象、仅携带 finish_reason 的收尾帧
   | { type: 'finish'; reason: string; usage?: ProviderUsage }
   | { type: 'usage'; usage: ProviderUsage } // servers put the last delta + usage in one frame
@@ -114,10 +119,14 @@ export function interpretSsePayload(payload: string): SseChunkEvent {
     typeof firstRecord.finish_reason === 'string' ? firstRecord.finish_reason : undefined;
   let text: string | undefined;
   let fragments: ToolCallFragment[] | undefined;
+  let reasoningText: string | undefined;
   const delta = firstRecord.delta;
   if (typeof delta === 'object' && delta !== null) {
     const deltaRecord = delta as Record<string, unknown>;
     if (typeof deltaRecord.content === 'string') text = deltaRecord.content;
+    if (typeof deltaRecord.reasoning_content === 'string') {
+      reasoningText = deltaRecord.reasoning_content;
+    }
     if (deltaRecord.tool_calls !== undefined) {
       const parsed = parseToolCallFragments(deltaRecord.tool_calls);
       if (parsed === 'error') return { type: 'error' };
@@ -131,17 +140,29 @@ export function interpretSsePayload(payload: string): SseChunkEvent {
       toolFragments: fragments,
     };
     if (usage !== null) event.usage = usage;
+    if (reasoningText !== undefined) event.reasoningText = reasoningText;
     if (finishReason !== undefined) event.finishReason = finishReason;
     return event;
   }
   if (fragments !== undefined) {
     const event: Extract<SseChunkEvent, { type: 'tool-delta' }> = { type: 'tool-delta', fragments };
     if (usage !== null) event.usage = usage;
+    if (reasoningText !== undefined) event.reasoningText = reasoningText;
     if (finishReason !== undefined) event.finishReason = finishReason;
     return event;
   }
   if (text !== undefined) {
     const event: Extract<SseChunkEvent, { type: 'delta' }> = { type: 'delta', text };
+    if (usage !== null) event.usage = usage;
+    if (reasoningText !== undefined) event.reasoningText = reasoningText;
+    if (finishReason !== undefined) event.finishReason = finishReason;
+    return event;
+  }
+  if (reasoningText !== undefined) {
+    const event: Extract<SseChunkEvent, { type: 'reasoning' }> = {
+      type: 'reasoning',
+      text: reasoningText,
+    };
     if (usage !== null) event.usage = usage;
     if (finishReason !== undefined) event.finishReason = finishReason;
     return event;
@@ -281,6 +302,10 @@ export async function* streamSseBody(
     };
     if (event.type === 'delta') {
       carryUsage(event.usage);
+      // reasoning 增量先于正文产出（与 Provider 流内顺序一致；累积方按事件顺序拼接）
+      if (event.reasoningText !== undefined && event.reasoningText !== '') {
+        yield { type: 'reasoning', text: event.reasoningText };
+      }
       if (event.text !== '') yield { type: 'delta', text: event.text };
       if (event.toolFragments !== undefined) {
         if (applyToolCallFragments(state.toolSlots, event.toolFragments) !== 'ok') {
@@ -290,9 +315,16 @@ export async function* streamSseBody(
       if (event.finishReason !== undefined) state.finishReason = event.finishReason;
     } else if (event.type === 'tool-delta') {
       carryUsage(event.usage);
+      if (event.reasoningText !== undefined && event.reasoningText !== '') {
+        yield { type: 'reasoning', text: event.reasoningText };
+      }
       if (applyToolCallFragments(state.toolSlots, event.fragments) !== 'ok') {
         return yield* failParse();
       }
+      if (event.finishReason !== undefined) state.finishReason = event.finishReason;
+    } else if (event.type === 'reasoning') {
+      carryUsage(event.usage);
+      if (event.text !== '') yield { type: 'reasoning', text: event.text };
       if (event.finishReason !== undefined) state.finishReason = event.finishReason;
     } else if (event.type === 'finish') {
       carryUsage(event.usage);
@@ -355,6 +387,9 @@ export interface WireMessage {
     type: 'function';
     function: { name: string; arguments: string };
   }>; // role='assistant' 且带 toolCalls 时重放
+  // 供应商不透明思维内容原样回传（决议 #35：thinking 模式工具轮后续请求要求携带；
+  // 仅当 IR 消息带 reasoning 时输出——同源 Provider 自产字段自回传，不跨 Provider 注入）
+  reasoning_content?: string;
 }
 
 export function mapMessages(request: {
@@ -364,6 +399,7 @@ export function mapMessages(request: {
     content: string;
     toolCallId?: string;
     toolCalls?: ProviderToolCall[];
+    reasoning?: string;
   }>;
 }): WireMessage[] {
   const wire: WireMessage[] = [{ role: 'system', content: request.system }];
@@ -375,7 +411,7 @@ export function mapMessages(request: {
         tool_call_id: message.toolCallId ?? '',
       });
     } else if (message.role === 'assistant' && message.toolCalls !== undefined) {
-      wire.push({
+      const assistant: WireMessage = {
         role: 'assistant',
         content: message.content,
         tool_calls: message.toolCalls.map((call) => ({
@@ -383,9 +419,17 @@ export function mapMessages(request: {
           type: 'function' as const,
           function: { name: call.name, arguments: call.arguments },
         })),
-      });
+      };
+      if (message.reasoning !== undefined && message.reasoning !== '') {
+        assistant.reasoning_content = message.reasoning;
+      }
+      wire.push(assistant);
     } else {
-      wire.push({ role: message.role, content: message.content });
+      const plain: WireMessage = { role: message.role, content: message.content };
+      if (message.reasoning !== undefined && message.reasoning !== '') {
+        plain.reasoning_content = message.reasoning;
+      }
+      wire.push(plain);
     }
   }
   return wire;

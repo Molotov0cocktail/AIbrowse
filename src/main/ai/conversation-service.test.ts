@@ -875,14 +875,14 @@ function agentBrowser(overrides: Partial<BrowserController> = {}): BrowserContro
 
 const agentToolDefs: ToolDefinition[] = [
   {
-    name: 'browser.get_tabs',
+    name: 'browser_get_tabs',
     description: '列出标签页',
     parameters: { properties: {}, required: [] },
     baseRisk: 0,
     executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '标签页摘要' }),
   },
   {
-    name: 'browser.read',
+    name: 'browser_read',
     description: '读取页面',
     parameters: {
       properties: { tabId: { type: 'string', description: '标签页 id（可选）' } },
@@ -900,7 +900,7 @@ const agentToolDefs: ToolDefinition[] = [
     },
   },
   {
-    name: 'browser.click',
+    name: 'browser_click',
     description: '点击页面元素',
     parameters: {
       properties: {
@@ -1129,7 +1129,7 @@ describe('ConversationService — agentAsk 编排（Provider 未配置/不支持
     // 不支持工具却产出 toolCalls 事件 → fail-closed internal（不把工具调用误当成功）
     const badProvider = new NoToolsProvider({
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] }],
+        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser_read', arguments: '{}' }] }],
       ],
     });
     const runs2: AgentRunDoneEvent[] = [];
@@ -1163,12 +1163,12 @@ describe('ConversationService — agentAsk 多步编排与持久化', () => {
       rounds: [
         [
           { text: '先读取。' },
-          { kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] },
+          { kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser_read', arguments: '{}' }] },
         ],
         [
           {
             kind: 'toolCalls',
-            toolCalls: [{ id: 'c2', name: 'browser.get_tabs', arguments: '{}' }],
+            toolCalls: [{ id: 'c2', name: 'browser_get_tabs', arguments: '{}' }],
           },
         ],
         [{ text: '最终回答全文。' }],
@@ -1210,7 +1210,7 @@ describe('ConversationService — agentAsk 多步编排与持久化', () => {
     const f = makeAgentService();
     f.setScript({
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] }],
+        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser_read', arguments: '{}' }] }],
         [{ text: '回答' }],
       ],
     });
@@ -1228,7 +1228,7 @@ describe('ConversationService — agentAsk 多步编排与持久化', () => {
     const runs1: AgentRunDoneEvent[] = [];
     let script: FakeProviderScript = {
       rounds: [
-        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] }],
+        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser_read', arguments: '{}' }] }],
         [{ text: '回答甲' }],
       ],
     };
@@ -1257,7 +1257,7 @@ describe('ConversationService — agentAsk 多步编排与持久化', () => {
     });
     const history = await service2.getHistory(session?.id ?? '');
     expect(history?.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
-    expect(history?.find((m) => m.role === 'tool')?.toolStep?.name).toBe('browser.read');
+    expect(history?.find((m) => m.role === 'tool')?.toolStep?.name).toBe('browser_read');
     expect(history?.at(-1)?.agentRun?.status).toBe('done');
     service2.dispose();
   });
@@ -1316,13 +1316,13 @@ describe('ConversationService — confirmTool 与确认事件', () => {
     expect(await f.service.confirmTool('no-such', true)).toBe(false); // 未知 id → false
     expect(await f.service.confirmTool('no-such', false)).toBe(false);
     // 真实 pending：直接经 confirmManager 建立后经 service 决议
-    const p = f.confirm.requestConfirm('req-x', 'tc-x', 'browser.click', {
+    const p = f.confirm.requestConfirm('req-x', 'tc-x', 'browser_click', {
       url: 'https://example.com/',
       detail: '提交表单',
     });
     expect(await f.service.confirmTool('tc-x', false)).toBe(true);
     await expect(p).resolves.toBe('denied');
-    const p2 = f.confirm.requestConfirm('req-x', 'tc-x2', 'browser.click', { detail: 'x' });
+    const p2 = f.confirm.requestConfirm('req-x', 'tc-x2', 'browser_click', { detail: 'x' });
     expect(await f.service.confirmTool('tc-x2', true)).toBe(true);
     await expect(p2).resolves.toBe('approved');
     // 已终结 id 二次决议 → false（幂等）
@@ -1334,7 +1334,7 @@ describe('ConversationService — confirmTool 与确认事件', () => {
     // service 层验证防串 run 与 pending 清理）
     const f = makeAgentService();
     const requestId = 'evt-run-not-inflight';
-    const p = f.confirm.requestConfirm(requestId, 'tc-evt', 'browser.click', {
+    const p = f.confirm.requestConfirm(requestId, 'tc-evt', 'browser_click', {
       url: 'https://example.com/form',
       detail: '提交表单',
     });
@@ -1359,11 +1359,11 @@ describe('ConversationService — A6 状态事件（onAgentStatus）与 step 参
   });
   const l2Rounds: FakeProviderScript = {
     rounds: [
-      [{ kind: 'toolCalls', toolCalls: [{ id: 's-read', name: 'browser.read', arguments: '{}' }] }],
+      [{ kind: 'toolCalls', toolCalls: [{ id: 's-read', name: 'browser_read', arguments: '{}' }] }],
       [
         {
           kind: 'toolCalls',
-          toolCalls: [{ id: 's-click', name: 'browser.click', arguments: '{"elementId":"el-1"}' }],
+          toolCalls: [{ id: 's-click', name: 'browser_click', arguments: '{"elementId":"el-1"}' }],
         },
       ],
       [{ text: '完成' }],
@@ -1401,7 +1401,7 @@ describe('ConversationService — A6 状态事件（onAgentStatus）与 step 参
       { timeout: 5000 },
     );
     const waiting = f.statuses.find((s) => s.phase === 'waiting-confirm');
-    expect(waiting?.toolName).toBe('browser.click');
+    expect(waiting?.toolName).toBe('browser_click');
     expect(f.confirms.some((c) => c.toolCallId === 's-click')).toBe(true);
     // 决议经 service.confirmTool（A6 IPC 转发入口）
     expect(await f.service.confirmTool('s-click', true)).toBe(true);
@@ -1462,7 +1462,7 @@ describe('ConversationService — A6 状态事件（onAgentStatus）与 step 参
 
   it('非在途 runId 的 pending/settled 不发出状态事件（防串 run）', async () => {
     const f = makeAgentService();
-    const p = f.confirm.requestConfirm('evt-run-not-inflight', 'tc-evt', 'browser.click', {
+    const p = f.confirm.requestConfirm('evt-run-not-inflight', 'tc-evt', 'browser_click', {
       url: 'https://example.com/form',
       detail: '提交表单',
     });
@@ -1479,7 +1479,7 @@ describe('ConversationService — A6 状态事件（onAgentStatus）与 step 参
         [
           {
             kind: 'toolCalls',
-            toolCalls: [{ id: 's-read', name: 'browser.read', arguments: '{}' }],
+            toolCalls: [{ id: 's-read', name: 'browser_read', arguments: '{}' }],
           },
         ],
         [{ text: '完成' }],
@@ -1535,7 +1535,7 @@ describe('ConversationService — A6 共享 ConfirmManager 多监听者（关闭
     const p = shared.requestConfirm(
       ask1.ok === true ? ask1.requestId : '',
       'tc-shared',
-      'browser.click',
+      'browser_click',
       {
         detail: '共享状态机',
       },
@@ -1550,11 +1550,29 @@ describe('ConversationService — A6 共享 ConfirmManager 多监听者（关闭
     expect(f2.statuses.some((s) => s.phase === 'confirm-resolved')).toBe(false);
     // 退订：svc1 dispose 后不再收到事件（多 Service 共享不泄漏）
     svc1.dispose();
-    const p2 = shared.requestConfirm('no-run', 'tc-after', 'browser.click', { detail: 'x' });
+    const p2 = shared.requestConfirm('no-run', 'tc-after', 'browser_click', { detail: 'x' });
     expect(shared.deny('tc-after')).toBe(true);
     await p2;
     const svc1StatusCount = f1.statuses.length;
     expect(f1.statuses.length).toBe(svc1StatusCount); // dispose 后退订，无新事件
     svc2.dispose();
+  });
+});
+
+describe('ConversationService — 共读路径 reasoning 事件忽略（A7 补验校准）', () => {
+  it('Provider 产出 reasoning 事件时共读照常完成：不回传 UI、不视为工具异常、终态文本只含正文', async () => {
+    const f = makeService();
+    f.browser.activeTab = makeTab();
+    f.browser.snapshot = makeSnapshot();
+    f.configStore.set(FAKE_CONFIG);
+    const session = await f.service.createSession();
+    f.setScript({
+      chunks: [{ kind: 'reasoning', text: '这段思考不应出现在任何 UI 通道' }, { text: '回答正文' }],
+    });
+    const { turn } = await askAndWait(f, session?.id ?? '', '你好');
+    expect(turn.status).toBe('complete');
+    expect(turn.message.content).toBe('回答正文');
+    expect(f.chunks.map((c) => c.delta).join('')).toBe('回答正文');
+    expect(JSON.stringify(f.chunks)).not.toContain('这段思考不应出现在任何 UI 通道');
   });
 });

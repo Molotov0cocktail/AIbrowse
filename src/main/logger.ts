@@ -110,7 +110,7 @@ function scrubControlChars(text: string): string {
 }
 
 // A7 红队（RT-02/RT-07 日志伪造审计，红→绿）：模型可控字符串（open/navigate 的 URL
-// 全量入审计——上限 2048、search.web 查询串全量——上限 500、确认摘要等）可携带
+// 全量入审计——上限 2048、search_web 查询串全量——上限 500、确认摘要等）可携带
 // CR/LF/ANSI 转义/双向文本控制符。日志条目必须恒为单行纯文本：CR/LF 折叠为空格
 // （条目一行一条，敌手内容不能伪造新的 [INFO] [audit] 条目行）、ANSI 转义整体剔除、
 // 其余控制字符剔除（终端走私/bidi 伪装）。仅作用于 message 段；错误详情块保留其
