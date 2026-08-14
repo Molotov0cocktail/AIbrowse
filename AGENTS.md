@@ -24,7 +24,11 @@
   先于任何 Browser Tool 实现）；任务 A1–A8 见 `doc/stage3/tasks/`（2026-08-14
   实施前校正：任务编号由 T1–T8 改为 A1–A8，避免与第一阶段任务 T1–T5 重名）。
   **A1 tool-calling 兼容层已实现并通过验证（2026-08-14，硬前置解除）**；
-  A2–A8 待实现。纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
+  **A2 Tool Registry + 权限分级与确认状态机 + 审计日志已实现（2026-08-14）**
+  ——首批 8 个只读/导航工具（get_tabs/get_active_tab/read/open/navigate/
+  back/forward/reload）已接线，仅经 BrowserController 执行；find/scroll/
+  click/fill（A3）、SearchProvider（A4）、AgentLoop（A5）未实现。A3–A8 待实现。
+  纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
   （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
   核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
   是什么」。AI 不得直接获得 Electron API、webContents、Node.js、shell 或任意
@@ -274,13 +278,13 @@ d:\AIbrowse\
     │       │                                  #   （A1 规划：tools/SSE tool_calls/FakeProvider 工具脚本）
     │       ├── agent/                         # （A5 规划）agent-loop（纯编排状态机）/agent-context-builder/
     │       │                                  #   agent-history/agent-safety（防循环纯函数）
-    │       ├── tools/                         # （A2 规划）tool-types/tool-registry（schema 校验）/
+    │       ├── tools/                         # （A2 ✅）tool-types/tool-registry（schema 校验）/
     │       │                                  #   tool-executor（校验→权限→确认→执行→审计）/
-    │       │                                  #   browser-tools（A2 只读导航）/interaction-tools（A3）/
+    │       │                                  #   browser-tools（A2 只读导航 8 工具）/interaction-tools（A3）/
     │       │                                  #   search-tool（A4）
-    │       ├── permission/                    # （A2 规划）permission-policy：L0–L3 确定性权限纯函数
-    │       ├── confirm-manager.ts             # （A2 规划）确认状态机（pending/approve/deny/作废）
-    │       ├── audit-log.ts                   # （A2 规划）结构化审计条目（参数脱敏摘要）
+    │       ├── permission/                    # （A2 ✅）permission-policy：L0–L3 确定性权限纯函数
+    │       ├── confirm-manager.ts             # （A2 ✅）确认状态机（pending/approve/deny/作废）
+    │       ├── audit-log.ts                   # （A2 ✅）结构化审计条目（参数脱敏摘要）
     │       └── search/                        # （A4 规划）search-provider：接口 + Bing 页面实现
     │                                          #   （临时 Tab → 快照解析 → 统一结果结构）
     ├── preload/
@@ -300,6 +304,8 @@ d:\AIbrowse\
         ├── types/conversation.ts              # （S1 ✅）会话/消息/上下文/错误码/Provider 类型
         │                                      #   （§2+§3.3+§3.5；S4 增 ProviderInfo/kind 常量）
         ├── types/ipc.ts                       # IPC 通道常量 + payload 类型（T2 基线 + S4 conversation/config 扩展 ✅）
+        ├── types/agent.ts                     # （A2 ✅）ToolCall/ToolResult/权限级别/ElementSemantics
+        │                                      #   （A5/A6 扩展 Agent 事件 payload）
         └── url.ts / url.test.ts               # 地址栏输入判断纯函数 + 15 用例
 ```
 
@@ -563,8 +569,8 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
 > 唯一契约源 `doc/stage3/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
 > Q1–Q15 拍板与决议 #21–#30）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
 > T-01～T-10、五层防线、红队矩阵 RT-01～RT-11、诚实边界声明）；任务 A1–A8 见
-> `doc/stage3/tasks/`。以下为速查摘要，**A1 部分已于 2026-08-14 实现并经
-> `grep -n "^export"` 逐项核对**；A2–A8 待实现，实现后回填。
+> `doc/stage3/tasks/`。以下为速查摘要，**A1/A2 部分已于 2026-08-14 实现并经
+> `grep -n "^export"` 逐项核对**；A3–A8 待实现，实现后回填。
 
 - **tool-calling 兼容层（A1 ✅ 已实现，2026-08-14 grep 核对）**：shared/types/
   conversation.ts 新增 `ProviderToolParameter`/`ProviderTool`/`ProviderToolCall`
@@ -586,21 +592,70 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
 true`、getLastRequest 含 tools 断言。context-builder.ts：`ContextBuildInput.
 tools?` 恒等透传（未传 tools 时请求字段缺失）。conversation-service.ts 共读
   流出现 toolCalls 事件（供应商异常）→ fail-closed 归一化 internal。
-- **ToolRegistry（A2）**：`ToolDefinition`（name/description/parameters
-  （ProviderToolParameter 子集）/baseRisk/riskLift/executor）注册表；
-  `listTools(): ProviderTool[]` / `validateToolArgs`（JSON.parse 失败/未知工具/
-  缺必填/类型/enum/未知键/长度上限/tabId UUID 形状/elementId `el-N` 形状 → 失败）；
+- **共享 Agent 类型（shared/types/agent.ts，A2 ✅ 已实现，grep 核对）**：
+  `ToolPermissionLevel`（0=auto/1=auto-visible/2=confirm/3=forbid）、`ToolCall`
+  （id/name/arguments 原始 JSON）、`ToolResultErrorCode`（invalid-args/
+  tool-not-found/element-not-found/stale-element/not-interactable/forbidden/
+  denied-by-user/execution-failed/search-failed 闭合枚举）、`ToolResult`
+  （toolCallId/ok/content/errorCode?/warnings?）、`ElementSemantics`（href?/
+  isSubmit?/ariaExpanded?/inputType?——click/fill 决策输入，来自历史快照
+  结构化条目；字段存在=采集脚本显式证明，缺失=无法证明）。A5/A6 类型
+  （ToolStep/AgentRunStatus 等）未提前落地。
+- **ToolRegistry（A2 ✅ 已实现，grep 核对）**：tool-types.ts——`ToolDefinition`
+  （name/description/parameters（ProviderToolParameter 子集）/baseRisk/
+  riskLift?{submitClick?}/executor）+ `ToolExecutorFn(call, ctx, signal) →
+Promise<ToolResult>` + `ToolExecutionContext`（browser: BrowserController /
+  runId / getElementSemantics?）。tool-registry.ts——`registerTool(def): void`
+  （工具名唯一，重复注册确定性抛出）/ `getTool(name): ToolDefinition | null` /
+  `listTools(): ProviderTool[]`（只从注册表序列化，按名排序、每次全新对象）/
+  `validateToolArgs(name, rawArgs) → {ok:true,args}|{ok:false,reason}`
+  （JSON.parse 失败/未知工具/缺必填/类型/enum/未知键/长度上限——字符串 500、
+  url 2048（`VALIDATION_LIMITS`）/tabId UUID 形状/elementId `el-N` 形状，
+  任何非法输入安全返回不抛异常）/ `resetToolRegistry()`（测试专用）。
   首批 13 工具分三批：A2 只读导航 8 个（get_tabs/get_active_tab/read/open/
-  navigate/back/forward/reload）、A3 交互 4 个（find/scroll/click/fill）、
-  A4 search.web；page.extract 与关闭 Tab 工具 v1 不实现（决议 #21/#28）。
-- **权限分级（A2，确定性纯函数）**：L0 自动（只读/滚动/查找/搜索）/ L1 自动显著
-  展示（导航/打开/fill 筛选字段/click 确定性允许列表——链接 http/https、
-  aria-expanded 展开控件、checkbox・radio 切换）/ L2 用户确认（click 提交类元素
-  ——isSubmit 结构化元数据升级）/ L3 禁止（password/file 填写、非 http/https
-  URL、click 非允许列表目标 fail-closed——无法排除购买/发送/删除/发布等远程写
-  副作用时禁止，即使确认也不执行）；`decide(toolName, args, elementSemantics)`
-  纯函数，模型与网页无通道修改矩阵；确认状态机 pending/approve/deny/取消作废、
-  无自动批准、等待计入总超时。
+  navigate/back/forward/reload，browser-tools.ts `BROWSER_TOOL_DEFINITIONS`
+  只经注入 BrowserController 执行，不 import Electron）、A3 交互 4 个
+  （find/scroll/click/fill）、A4 search.web；page.extract 与关闭 Tab 工具
+  v1 不实现（决议 #21/#28）。
+- **权限分级（A2 ✅ 已实现，grep 核对）**：permission-policy.ts——
+  `TOOL_BASE_RISK`（13 工具编译期常量矩阵，模型/网页无通道修改，T-06）、
+  `isHttpUrl(value): boolean`（仅 http/https，与 Tab 导航白名单同源判定）、
+  `decide(toolName, args, elementSemantics | null) → PermissionDecision
+{level, reason}` 纯函数。click 确定性允许列表判定优先级：isSubmit===true
+  **首先**升级 L2（不因并存 href/ariaExpanded 等特征降回 L1）→ href 存在且
+  http/https → L1（href 存在但非 http/https → L3，危险特征不放行）→
+  **ariaExpanded 字段存在 → L1（true 与 false 均为展开/折叠控件——§5.4
+  「显式声明」语义，A2 实施前校准原 §7.1「=true」为文档疏漏）** → inputType
+  checkbox/radio → L1 → 其余（普通按钮/语义不明）→ L3；elementSemantics
+  null（历史无该 elementId 元数据）→ L3 fail-closed，不回落到基础 L1、不以
+  执行时检查代替。fill：inputType password/file **恒 L3**；类型元数据缺失 →
+  L3。open/navigate：URL 非 http/https 恒 L3。未知工具名 → L3（防御）。
+  权限层判定结果映射审计决策 auto/auto-visible/confirmed/denied/forbidden
+  （校验前失败 = invalid）。
+- **确认状态机（A2 ✅ 已实现，grep 核对）**：confirm-manager.ts——
+  `ConfirmManager` 类（单 pending；`requestConfirm(runId, toolCallId, toolName,
+summary) → Promise<ConfirmOutcome>`（同步段建立 pending；已有 pending 时
+  新请求立即决议 denied，fail-closed 不覆盖））；`approve/deny(toolCallId):
+boolean`（未知/已终结 id → false，幂等）、`cancelAll(runId): void`（作废
+  决议 cancelled，幂等）、`getPending()/isPending(toolCallId)`；**无自动批准**；
+  确认等待计入总超时由 A5 执行。
+- **审计（A2 ✅ 已实现，grep 核对）**：audit-log.ts——`AuditDecision`
+  （auto/auto-visible/confirmed/denied/forbidden/invalid）、`AuditEntry`
+  （requestId/toolCallId/tool/argsSummary/decision/ok/errorCode/durationMs）、
+  `summarizeArgs(toolName, args)`（键排序确定性；browser.fill 的 text →
+  `len=N` 原文零出现；url 全量；其余 ≤ `ARGS_SUMMARY_MAX`=200 截断）、
+  `summarizeRawArgs`（解析失败路径原文截断）、`formatAuditMessage(entry)`
+  （§10.1 确定性中文格式）、`createAuditLogger(log=logInfo)`（薄封装，装配
+  注入；全部经 logger sanitize 脱敏）。tool-executor.ts——`ToolExecutor
+(confirmManager, audit)` 类 + `execute(call, ctx, signal) →
+Promise<ToolResult>`（注册表查找/参数校验 → 权限判定 → 确认状态机 →
+  executor → 结构化结果 → 审计**每次调用恰好一条**；任何错误不以 ok:true
+  返回；执行层异常归一化 execution-failed 并 logWarn）；预算常量
+  `TOOL_RESULT_CONTENT_MAX`=2000 / `READ_TOOL_CONTENT_MAX`=8000 /
+  `SEARCH_TOOL_CONTENT_MAX`=4000（A4 接线）+ `truncateToolContent`（总长 ≤
+  预算含截断标记，超限附 warnings）。browser-tools.ts 另有
+  `serializeSnapshotForTool(snapshot, budget)`（read 章节化序列化纯函数：
+  可见文本→标题→表格→链接→按钮→输入固定顺序 + 各节条目上限 + 确定性截断）。
 - **交互能力与 elementId 生命周期（A3）**：BrowserController 扩展
   `clickElement(tabId, elementId, allowedKind)/fillElement/scrollTab`（安全返回
   不抛异常；allowedKind 为执行器内部参数——权限决策派生，模型不可见不可写）；
@@ -645,7 +700,7 @@ tools?` 恒等透传（未传 tools 时请求字段缺失）。conversation-serv
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 361 用例）
+  - `npm test` — Vitest 全量测试（当前 452 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -663,7 +718,11 @@ tools?` 恒等透传（未传 tools 时请求字段缺失）。conversation-serv
       再验证 UI 端到端矩阵 1–12（流式分块渐进 DOM/selection/防串页/L3/薄快照/中止/错误
       归一化/会话管理 UI/布局 bounds 380 收缩与恢复/Key 不可达——DOM 与日志字节扫描 +
       credentials.json 密文 + 白名单无读回/注入结构断言/远程隔离回归；矩阵见
-      doc/stage2/detailed-design.md §13.2）→ 自动退出，退出码 0 即通过；日志链见 log/）。
+      doc/stage2/detailed-design.md §13.2）→ A2 起再验证工具层探针（注册表恰好 8 个
+      A2 工具 + listTools 恒等 + 经 ToolExecutor 走真实 BrowserController 的
+      get_tabs/read 成功、javascript: URL forbidden 不建 Tab、非法 tabId →
+      invalid-args、未知 tabId read → execution-failed + 日志切片 5 条审计恰好
+      一次一条）→ 自动退出，退出码 0 即通过；日志链见 log/）。
       生产产物路径同样可跑：
       `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
       （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
@@ -771,6 +830,23 @@ tools?` 恒等透传（未传 tools 时请求字段缺失）。conversation-serv
     assistant tool_calls 重放、FakeProvider 工具脚本（整组产出/延迟/确定性/
     getLastRequest tools 恒等/abort 不产出工具调用）、buildContext tools 恒等透传
     （未传 tools 无字段）；冒烟矩阵 11 校准 + A1 工具探针。
+  - ✅ A2（2026-08-14 红→绿落地，91 新增：tool-registry 17 / permission-policy 18 /
+    confirm-manager 9 / audit-log 14 / tool-executor 14 / browser-tools 17 /
+    logger 审计形态回归 2，基线 361 → 452）：注册表（重复注册拒绝/listTools 恒等与
+    排序/executor 不外泄/校验矩阵——JSON 解析失败/非对象/缺必填/未知键/类型/enum/
+    长度 500 与 url 2048 边界/tabId UUID 形状/elementId el-N 形状/任意垃圾输入不抛
+    异常）、权限矩阵全表（13 工具 × 条件判定；click 允许列表各分支——nav 链接/
+    ariaExpanded true 与 false 均为 L1/isSubmit 优先升级 L2 且不因并存特征降回/
+    checkbox・radio/普通按钮与危险 href L3/语义缺失 fail-closed；fill password・
+    file 恒 L3；open/navigate scheme L3；确定性同一输入同一决策）、确认状态机
+    （单 pending/approve/deny/未知与已终结 id false/幂等/cancelAll 作废/无自动
+    批准/并发请求 fail-closed）、审计脱敏（fill text len=N 原文零出现/URL 全量/
+    确定性截断与键序/Key 形态 sanitize 链零暴露/无堆栈形态）、ToolExecutor 管线
+    （成功/校验失败/L3 不执行/deny 与 approve 与作废/执行异常归一化/结果截断
+    2000+标记+警告/已中止信号/错误永不以 ok:true 出现/每次调用审计恰好一条）、
+    8 工具 BrowserController 注入调用（read 实时采集逐次调用/tabId 缺省解析/
+    false・null 失败安全映射/序列化章节顺序与条目上限与确定性）、冒烟工具层探针
+    （dev + 生产双场景，5 条审计日志实证）。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。

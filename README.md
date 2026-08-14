@@ -7,10 +7,10 @@
 > L1 自动显著展示 / L2 用户确认 / L3 禁止）、操作可见性与审计日志。契约源
 > `doc/stage3/detailed-design.md`；安全契约源 `doc/stage3/threat-model.md`
 > （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
-> **A1 tool-calling 兼容层已实现（2026-08-14）；A2–A8 待实现**（任务编号
-> 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务 T1–T5 重名、
-> 红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，见
-> `doc/stage3/proposal.md` §11）。
+> **A1 tool-calling 兼容层 + A2 Tool Registry/权限分级与确认状态机/审计日志已实现
+> （2026-08-14）；A3–A8 待实现**（任务编号 2026-08-14 实施前校正：T1–T8 改为
+> A1–A8 避免与第一阶段任务 T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为
+> click 确定性允许列表，见 `doc/stage3/proposal.md` §11）。
 > 核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
 > 需求源：`Third_stage.md`；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
@@ -34,7 +34,13 @@
   重建定稿（`doc/stage3/threat-model.md`）；契约定稿 `doc/stage3/detailed-design.md`。
   **A1 tool-calling 兼容层已完成**（Provider 类型扩展 + SSE tool_calls 聚合解析 +
   FakeProvider 工具脚本 + ContextBuilder tools 透传，全量验证通过，硬前置解除）；
-  任务 A2–A8 待实现（**下一个推荐任务：A2**），仍未引入任何 Browser Tool。
+  **A2 Tool Registry + 权限分级与确认状态机 + 审计日志已完成**（注册表确定性校验/
+  listTools、13 工具权限矩阵纯函数（click 确定性允许列表 + fail-closed）、
+  ConfirmManager 单 pending 状态机、审计参数脱敏（fill 只记长度）、ToolExecutor
+  管线（校验→权限→确认→执行→审计，每次调用恰好一条）、首批 8 个只读/导航工具
+  接线 BrowserController——冒烟工具层探针通过，审计日志实证）；
+  任务 A3–A8 待实现（**下一个推荐任务：A3**）；find/scroll/click/fill 交互能力
+  与 SearchProvider/AgentLoop 未实现。
 
 ## 技术栈（实际落地版本）
 
@@ -90,7 +96,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 361 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 452 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -155,8 +161,17 @@ src/
 │                  #   ContextBuilder + budget / CredentialStore / ConfigStore /
 │                  #   provider（LLMProvider/OpenAI-compatible/FakeProvider/error-normalize；
 │                  #   A1 ✅ tool-calling 兼容层：tools/SSE tool_calls 聚合/工具脚本）
-│                  # （第三阶段规划）agent/（AgentLoop 等）+ tools/（Registry/executor）
-│                  #   + permission/ + confirm-manager + audit-log + search/（A2–A5）
+│                  # （第三阶段）tools/（A2 ✅ tool-types/tool-registry 校验/tool-executor
+│                  #   管线/browser-tools 首批 8 只读导航工具）+ permission/（A2 ✅
+│                  #   permission-policy 确定性权限纯函数）+ confirm-manager（A2 ✅ 确认
+│                  #   状态机）+ audit-log（A2 ✅ 审计参数脱敏）；agent/（A5 AgentLoop）+
+│                  #   search/（A4 SearchProvider）规划
+├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
+│                  #   第三阶段 A6 规划 agent 通道）
+├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏；
+│                  #   第三阶段 A6 规划 Agent 模式/状态栏/确认对话框）
+└── shared/        # 共享类型（app/browser/ipc/conversation + agent——A2 ✅ ToolCall/ToolResult/
+                   #   权限级别/ElementSemantics）+ 纯逻辑（url.ts）
 ├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
 │                  #   第三阶段 A6 规划 agent 通道）
 ├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏；
@@ -174,7 +189,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 361 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 452 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（46，页面视为敌手）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
@@ -183,6 +198,14 @@ UI 纯 reducer 与徽标文案（22）、logger 脱敏密钥专项用例；
 第三阶段 A1 新增（35）：SSE tool_calls 聚合解析（分槽累积/收尾顺序/非法帧与非法
 arguments → provider-error）、mapMessages tool 与 tool_calls 重放、FakeProvider
 工具脚本、ContextBuilder tools 恒等透传。
+第三阶段 A2 新增（91）：工具注册表（重复注册拒绝/listTools 恒等/校验矩阵——JSON 解析/
+必填/类型/enum/未知键/长度/tabId UUID/elementId el-N）、权限矩阵全表（13 工具 ×
+条件判定：click 确定性允许列表各分支与特征冲突/isSubmit 优先升级 L2/ariaExpanded
+true 与 false 均为展开控件/语义缺失 fail-closed/fill password・file 恒 L3/URL
+scheme L3）、ConfirmManager 状态机（单 pending/approve/deny/作废/幂等/无自动批准）、
+审计脱敏（fill len=N 原文零出现/URL 全量/截断确定性/Key 形态零暴露链）、ToolExecutor
+管线（成功/校验失败/L3/deny/执行失败/审计恰好一条/结果截断）、8 个只读导航工具的
+BrowserController 注入调用与失败安全返回、logger 审计形态脱敏回归。
 Electron 行为由冒烟自检真实启动验证（见上）。约定见 `AGENTS.md` §7。
 
 ## 已知限制
