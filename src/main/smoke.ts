@@ -6743,6 +6743,7 @@ export async function runLiveAgentScenarios(
 
     // —— 场景 5：受控本地表单提交确认（deny 无动作；如模型重试只批准本地无副作用夹具） ——
     {
+      const s5LogStart = statSync(logFile).size; // 本场景审计切片起点（双层证据断言用）
       const tab = await controller.createTab(pages.interactionUrl);
       await waitFor(
         async () => {
@@ -6808,11 +6809,29 @@ export async function runLiveAgentScenarios(
           (deniedConfirmsAfter > 0 ? ` + 后续新提交确认一律 deny ×${deniedConfirmsAfter}` : '') +
           '）',
       );
-      // 页面证据：deny 路径零动作；approve（如发生）只对本地夹具执行一次
-      const clicks = (await pageLog()).filter((x) => x === 'click:submit-btn').length;
+      // 双层证据（A7 补验校准，2026-08-14 真实验收第 6 次执行观察）：模型可能选择
+      // 其他 submit 类元素（如表单内无 type 按钮——同 isSubmit 语义升级 L2，决议 #29）
+      // ——原断言只数 click:submit-btn 会漏计合法确认点击。审计层（本场景日志切片）：
+      // deny 恰好一次、confirmed 恰好一次（approve 时）；DOM 层：夹具提交类元素
+      // （submit-btn/form-no-type）点击数 === approve 次数（deny 零 DOM 动作）
+      const s5Slice = readFileSync(logFile).subarray(s5LogStart).toString('utf8').split('\n');
+      const confirmedClicks = s5Slice.filter(
+        (l) => l.includes('tool=browser_click') && l.includes('decision=confirmed'),
+      ).length;
+      const deniedClicks = s5Slice.filter(
+        (l) => l.includes('tool=browser_click') && l.includes('decision=denied'),
+      ).length;
       assert(
-        approved ? clicks === 1 : clicks === 0,
-        `场景 5：deny 不得产生动作${approved ? '，approve 只执行一次' : ''}（实际点击 ${clicks} 次）`,
+        confirmedClicks === (approved ? 1 : 0),
+        `场景 5：approve 应恰好执行一次（审计 confirmed ${confirmedClicks} 次）`,
+      );
+      assert(deniedClicks === 1, `场景 5：deny 应恰好一次（审计 denied ${deniedClicks} 次）`);
+      const submitClicks = (await pageLog()).filter(
+        (x) => x === 'click:submit-btn' || x === 'click:form-no-type',
+      ).length;
+      assert(
+        submitClicks === (approved ? 1 : 0),
+        `场景 5：提交类点击应恰好${approved ? '一次' : '零次'}（实际 ${submitClicks} 次）`,
       );
       logInfo(
         'smoke',
