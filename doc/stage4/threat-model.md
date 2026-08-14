@@ -57,12 +57,15 @@
 
 ### 3.2 能力层（数据访问边界 + 禁具，Fourth_stage.md §3.1 + detailed-design §3）
 
-- **SQL 封闭**：唯一 SQL 执行点是主进程 `SourceRepository`（编译期常量语句）与
-  migration 定义；renderer/preload/AgentLoop/Tool 实现零 SQL；所有用户/网页/模型
-  文本只能作为 prepared statement 参数绑定；禁止 `exec(sql)` 接受任何动态串、禁止
-  动态表名/列名/排序表达式、禁止加载 SQLite 扩展（node:sqlite `enableLoadExtension`
-  永不开）；FTS 查询串只经纯函数构造（短语包裹/参数绑定，§3.3 ST-04 细节），绝不
-  把原始输入拼接进 MATCH 表达式。
+- **SQL 封闭**：唯一**业务 SQL** 执行点是主进程 `SourceRepository`（编译期常量语句）
+  与 migration 定义；driver 仅允许连接级运维 SQL 编译期常量（PRAGMA busy_timeout/
+  foreign_keys/journal_mode 与 BEGIN/COMMIT/ROLLBACK，不含业务语句）；测试专用
+  SQL 仅限 SMOKE_MODE 门控冒烟 B-01 与 `*.test.ts`（决议 #47）；renderer/preload/
+  AgentLoop/Tool 实现零 SQL；所有用户/网页/模型文本只能作为 prepared statement
+  参数绑定；禁止 `exec(sql)` 接受任何动态串、禁止动态表名/列名/排序表达式、禁止
+  加载 SQLite 扩展（node:sqlite `enableLoadExtension` 永不开）；FTS 查询串只经
+  纯函数构造（短语包裹/参数绑定，§3.3 ST-04 细节），绝不把原始输入拼接进 MATCH
+  表达式。
 - **禁具（不存在，grep 断言）**：`source_sql`、`source_delete_hard`、`source_export_all`、
   任意路径导入、任意网络抓取、任意通用数据库工具。Source Tool 不新增任何网络能力
   ——打开网页继续复用既有 `browser_open/browser_read`（经 BrowserController）。
@@ -205,9 +208,9 @@
 - 第三阶段红线（无万能工具——shell/eval/任意 JS/任意文件系统/任意 HTTP POST/
   任意 Electron IPC/任意 SQL；click 允许列表 + fail-closed；L2 确认门；审计恰好
   一条）**一律不变**——**任意 SQL 永久红线的含义校准**：禁止的是「模型/网页可达的
-  任意 SQL」与「任意数据库工具」；第四阶段 SQLite 的全部 SQL 仅为 Repository 内
-  编译期常量与 migration（prepared statement 参数绑定），Agent/网页无任何 SQL
-  通道（第三阶段「当时禁用 SQLite 作为阶段范围」的历史语义保留于 Third_stage.md
-  §5.3/§6 原文，不改写）。
+  任意 SQL」与「任意数据库工具」；第四阶段 SQLite 的业务 SQL 仅为 Repository 内
+  编译期常量与 migration（prepared statement 参数绑定），driver 仅连接级运维
+  SQL（决议 #47），Agent/网页无任何 SQL 通道（第三阶段「当时禁用 SQLite 作为
+  阶段范围」的历史语义保留于 Third_stage.md §5.3/§6 原文，不改写）。
 - 本阶段新增 IPC 通道同样受 sender+主帧校验、参数逐字段验证、事件只发主窗口约束；
   preload bridge 白名单最小化（Sources 通道与既有通道同模式）。

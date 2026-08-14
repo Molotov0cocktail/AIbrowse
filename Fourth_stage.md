@@ -49,11 +49,13 @@ AI 应理解为长期信源指令，并在安全规则允许时创建/更新 Sou
 
 引入 SQLite 及 migration 机制。
 
-> （2026-08-15 设计闭环校准）driver 首选 `node:sqlite`（零依赖、无 native addon
-> ABI/rebuild），但**必须经 B1 决策门在 Electron dev+生产构建实测 11 项能力全部
-> 通过后才冻结**（import/文件库/prepared statements/事务/外键/busy timeout/FTS5/
-> trigram/userData 路径/句柄清理）；失败则 B1 停止并提交证据，再评估
-> better-sqlite3 等备选。官方声明不替代本项目实跑（详细设计 §3.2）。
+> （2026-08-15 设计闭环校准；2026-08-15 B1 实施前裁决校准，决议 #46）driver 首选
+> `node:sqlite`（零依赖、无 native addon ABI/rebuild），但**必须经 B1 决策门在
+> Electron dev+生产构建逐项实测 11 项能力（import/文件库/prepared statements/事务/
+> 外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）并全部报告；基础能力项
+> 全部通过后才冻结**；FTS5/trigram（⑧⑨）失败不构成 B1 失败（B3 以降级路径为主
+> 并如实登记）；任一基础能力项失败则 B1 停止并提交证据，再评估 better-sqlite3
+> 等备选。官方声明不替代本项目实跑（详细设计 §3.2）。
 
 需要建立 Repository / Service 边界，禁止 UI 或 Agent 直接执行 SQL：
 
@@ -264,7 +266,7 @@ AI 自动操作和手工操作应落入同一 SourceService。
 > Gate 边界校准原草案；逐项核对与证据回填由 B9 实施，映射见 detailed-design §14。）
 
 ### Storage
-- [ ] SQLite 与 migration 稳定（B1 决策门 11 项实测通过 + 单调逐级迁移 + 一致性备份）
+- [ ] SQLite 与 migration 稳定（B1 决策门 11 项逐项实测 + 驱动冻结决议 + 单调逐级迁移 + 一致性备份）
 - [ ] Source CRUD 走 Service/Repository（UI 与 Agent 共用 SourceService；SQL 封闭）
 - [ ] 重启后数据保留（跨进程双进程验证，含 change journal/Undo 数据）
 

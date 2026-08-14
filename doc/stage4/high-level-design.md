@@ -37,38 +37,38 @@ SourceRepository / SourceSearchIndex / SourceChangeJournal → SQLite driver`。
 
 ## 2. 关键技术决策
 
-| #   | 决策                                                      | 理由                                                                                                                     |
-| --- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 1   | SQLite driver：node:sqlite 首选 + B1 决策门               | 零新依赖、无 native addon ABI/rebuild；官方资料不足以放行（Electron 曾有缺失缺陷、FTS5 编译项无官方确认）→ 11 项实测冻结 |
-| 2   | Source 身份：origin/page 双作用域 + 保守 canonicalization | 域模型最小表达「整个站点」与「具体页面」；保守规则不丢用户数据；duplicate 由唯一约束保证                                 |
-| 3   | 写入统一为 change set（≤20 项）+ L2 确认 + 单事务         | 权限面最小（1 个写工具 vs 8 个细粒度）；确认一次看全 diff；事务化保证一致性与可 Undo                                     |
-| 4   | provenance 五元组（trust_value/asserted_by/verification） | AI 推断永远不能伪装成用户断言；UI 明示来源                                                                               |
-| 5   | 分享模式三态（full/metadata/blocked）+ 有界检索           | 私人备注默认不外发；blocked 工具视角不可见；本地过滤排序禁止整库进模型                                                   |
-| 6   | FTS5 trigram 为主 + 参数化降级                            | 中文/日文子串检索零外部依赖；短查询/特殊串/FTS 不可用安全降级；查询串只作数据                                            |
-| 7   | 幂等键（主进程生成）+ expectedVersion 乐观并发            | 重放不重复写；确认前状态变化被确定性拒绝                                                                                 |
-| 8   | durable Undo（journal 有界 100 条/30 天）                 | 重启后可用；版本冲突拒绝不覆盖；有界控制暴露面                                                                           |
-| 9   | migration 单调逐级 + 迁移前一致性备份 + 只读恢复态        | 迁移中断可恢复；损坏/未来版本不静默读写；浏览器其余能力继续可用                                                          |
-| 10  | usage/health 仅 Agent 实际打开/读取后记录最近一次         | 无后台巡检；不保存正文；不宣称长期健康                                                                                   |
-| 11  | v1 本地明文 + 不承诺静态加密                              | 本地检索需要明文；README/UI 如实说明；Key 仍只走 safeStorage/DPAPI                                                       |
+| #   | 决策                                                      | 理由                                                                                                                                                                    |
+| --- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | SQLite driver：node:sqlite 首选 + B1 决策门               | 零新依赖、无 native addon ABI/rebuild；官方资料不足以放行（Electron 曾有缺失缺陷、FTS5 编译项无官方确认）→ 11 项逐项实测，基础能力项（①–⑦、⑩、⑪）全过才冻结（决议 #46） |
+| 2   | Source 身份：origin/page 双作用域 + 保守 canonicalization | 域模型最小表达「整个站点」与「具体页面」；保守规则不丢用户数据；duplicate 由唯一约束保证                                                                                |
+| 3   | 写入统一为 change set（≤20 项）+ L2 确认 + 单事务         | 权限面最小（1 个写工具 vs 8 个细粒度）；确认一次看全 diff；事务化保证一致性与可 Undo                                                                                    |
+| 4   | provenance 五元组（trust_value/asserted_by/verification） | AI 推断永远不能伪装成用户断言；UI 明示来源                                                                                                                              |
+| 5   | 分享模式三态（full/metadata/blocked）+ 有界检索           | 私人备注默认不外发；blocked 工具视角不可见；本地过滤排序禁止整库进模型                                                                                                  |
+| 6   | FTS5 trigram 为主 + 参数化降级                            | 中文/日文子串检索零外部依赖；短查询/特殊串/FTS 不可用安全降级；查询串只作数据                                                                                           |
+| 7   | 幂等键（主进程生成）+ expectedVersion 乐观并发            | 重放不重复写；确认前状态变化被确定性拒绝                                                                                                                                |
+| 8   | durable Undo（journal 有界 100 条/30 天）                 | 重启后可用；版本冲突拒绝不覆盖；有界控制暴露面                                                                                                                          |
+| 9   | migration 单调逐级 + 迁移前一致性备份 + 只读恢复态        | 迁移中断可恢复；损坏/未来版本不静默读写；浏览器其余能力继续可用                                                                                                         |
+| 10  | usage/health 仅 Agent 实际打开/读取后记录最近一次         | 无后台巡检；不保存正文；不宣称长期健康                                                                                                                                  |
+| 11  | v1 本地明文 + 不承诺静态加密                              | 本地检索需要明文；README/UI 如实说明；Key 仍只走 safeStorage/DPAPI                                                                                                      |
 
 ## 3. 模块职责
 
-| 模块（新）               | 文件（规划）                                       | 职责 / 边界                                                                                   | 任务     |
-| ------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------- |
-| SQLite driver            | src/main/sources/db/sqlite-driver.ts               | node:sqlite 薄封装：打开（userData 路径）/busy timeout/外键/WAL/关闭句柄清理；无 SQL 语句定义 | B1       |
-| migration 引擎           | src/main/sources/db/migrations.ts                  | schema 版本（PRAGMA user_version）单调逐级；每级单事务；异常 rollback；迁移前触发备份         | B1/B2/B7 |
-| 备份模块                 | src/main/sources/db/backup.ts                      | 一致性备份（方案 B1 实测冻结）；integrity/foreign_key 检查；只读恢复态判定                    | B1/B7    |
-| Source 域类型            | src/shared/types/sources.ts                        | Source/SourceGroup/SourceTag/change set/provenance/share mode 共享类型（单一事实源）          | B2       |
-| canonicalization 纯函数  | src/main/sources/domain/source-canonical.ts        | 规范化 origin/page key；纯函数零依赖                                                          | B2       |
-| change set / diff 纯函数 | src/main/sources/domain/source-change-set.ts       | change set 结构校验（字段白名单/长度/枚举/≤20）；确定性 before/after diff 生成                | B2/B4    |
-| Repository               | src/main/sources/repository/source-repository.ts   | **唯一 SQL 执行点**：编译期常量语句 + prepared statement 参数绑定；唯一约束落地               | B2       |
-| FTS 索引维护             | src/main/sources/repository/source-search-index.ts | FTS5 表与主表事务内同步；查询串纯函数构造；诊断性 rebuild                                     | B3       |
-| Change Journal           | src/main/sources/repository/change-journal.ts      | 持久 Undo 数据（before/after payload）；有界清理（可注入时间）                                | B2       |
-| SourceService            | src/main/sources/source-service.ts                 | UI 与 Agent 共用唯一入口：CRUD/search/applyChangeset/undo/hardDelete/usage/recovery 态        | B2       |
-| UsageTracker             | src/main/sources/usage/usage-tracker.ts            | 仅记录 Agent 实际打开/读取后的最近一次 usage（五态）                                          | B7       |
-| Source Tools             | src/main/sources/tools/source-tools.ts             | 四工具定义与 executor（只经 ctx.sourceService，零 Electron import）                           | B4       |
-| Sources UI               | src/renderer/src/ai/sources/                       | 面板/列表/详情/快速添加/冲突与恢复态提示/Undo（纯文本渲染 note）                              | B5       |
-| IPC/bridge 扩展          | shared/types/ipc.ts + preload                      | sources 通道白名单（sender+主帧校验、逐参数验证、事件只发主窗口）                             | B5       |
+| 模块（新）               | 文件（规划）                                       | 职责 / 边界                                                                                                                                                 | 任务     |
+| ------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| SQLite driver            | src/main/sources/db/sqlite-driver.ts               | node:sqlite 薄封装：打开（userData 路径）/busy timeout/外键/WAL/关闭句柄清理；仅连接级运维 SQL 编译期常量（PRAGMA/事务控制，决议 #47），无业务 SQL 语句定义 | B1       |
+| migration 引擎           | src/main/sources/db/migrations.ts                  | schema 版本（PRAGMA user_version）单调逐级；每级单事务；异常 rollback；迁移前触发备份                                                                       | B1/B2/B7 |
+| 备份模块                 | src/main/sources/db/backup.ts                      | 一致性备份（方案 B1 实测冻结）；integrity/foreign_key 检查；只读恢复态判定                                                                                  | B1/B7    |
+| Source 域类型            | src/shared/types/sources.ts                        | Source/SourceGroup/SourceTag/change set/provenance/share mode 共享类型（单一事实源）                                                                        | B2       |
+| canonicalization 纯函数  | src/main/sources/domain/source-canonical.ts        | 规范化 origin/page key；纯函数零依赖                                                                                                                        | B2       |
+| change set / diff 纯函数 | src/main/sources/domain/source-change-set.ts       | change set 结构校验（字段白名单/长度/枚举/≤20）；确定性 before/after diff 生成                                                                              | B2/B4    |
+| Repository               | src/main/sources/repository/source-repository.ts   | **唯一 SQL 执行点**：编译期常量语句 + prepared statement 参数绑定；唯一约束落地                                                                             | B2       |
+| FTS 索引维护             | src/main/sources/repository/source-search-index.ts | FTS5 表与主表事务内同步；查询串纯函数构造；诊断性 rebuild                                                                                                   | B3       |
+| Change Journal           | src/main/sources/repository/change-journal.ts      | 持久 Undo 数据（before/after payload）；有界清理（可注入时间）                                                                                              | B2       |
+| SourceService            | src/main/sources/source-service.ts                 | UI 与 Agent 共用唯一入口：CRUD/search/applyChangeset/undo/hardDelete/usage/recovery 态                                                                      | B2       |
+| UsageTracker             | src/main/sources/usage/usage-tracker.ts            | 仅记录 Agent 实际打开/读取后的最近一次 usage（五态）                                                                                                        | B7       |
+| Source Tools             | src/main/sources/tools/source-tools.ts             | 四工具定义与 executor（只经 ctx.sourceService，零 Electron import）                                                                                         | B4       |
+| Sources UI               | src/renderer/src/ai/sources/                       | 面板/列表/详情/快速添加/冲突与恢复态提示/Undo（纯文本渲染 note）                                                                                            | B5       |
+| IPC/bridge 扩展          | shared/types/ipc.ts + preload                      | sources 通道白名单（sender+主帧校验、逐参数验证、事件只发主窗口）                                                                                           | B5       |
 
 既有模块扩展点（本会话代码核对确认）：`ToolExecutionContext` 增 `sourceService?`
 （类比 `searchProvider?`）；`TOOL_BASE_RISK` 增 4 条目；`contentBudgetFor` 增
@@ -185,11 +185,13 @@ app ready → userData 路径（主进程唯一确定）
 ## 8. 风险与不确定性
 
 - **B1 决策门失败**（最大不确定性）：node:sqlite 在 Electron 43.4.0 dev/生产构建
-  的 11 项实测任一失败 → B1 停止提交证据 → 评估 better-sqlite3（native addon：
-  ABI 对齐/rebuild/electron-vite 外部化成本）。设计已按「Repository 独占 SQL +
-  驱动薄封装」隔离，替换 driver 不影响上层契约。
+  的**基础能力项（①–⑦、⑩、⑪）任一失败** → B1 停止提交证据 → 评估 better-sqlite3
+  （native addon：ABI 对齐/rebuild/electron-vite 外部化成本）；⑧⑨ 失败不构成
+  B1 失败（决议 #46）。设计已按「Repository 独占 SQL + 驱动薄封装」隔离，替换
+  driver 不影响上层契约。
 - **FTS5/trigram 不可用**：Node 官方构建是否启用 SQLITE_ENABLE_FTS5 无官方确认
-  → B3 降级路径（参数化精确匹配/LIKE）为完整可交付实现，FTS 仅为增强；如实登记。
+  → B3 降级路径（参数化精确匹配/LIKE）为完整可交付实现，FTS 仅为增强；如实登记
+  （⑧⑨ 实测结论由 B1 报告，不构成 B1 失败）。
 - **node:sqlite Stability 1.1（实验性）**：API 可能变动——Repository 内语句与
   驱动调用集中在薄层，升级 Node/Electron 时按基线升级流程回归；ExperimentalWarning
   如实记录不压制。

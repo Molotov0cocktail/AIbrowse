@@ -116,7 +116,7 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
 
 | #   | 问题                                              | 拍板（2026-08-15）                                                                                                                                                                                                    |
 | --- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Q1  | SQLite driver：node:sqlite vs better-sqlite3      | **node:sqlite 首选 + B1 决策门实测**（11 项全过才冻结）；失败 → B1 停止提交证据 → 评估 better-sqlite3（不得在纯文档任务新增依赖）                                                                                     |
+| Q1  | SQLite driver：node:sqlite vs better-sqlite3      | **node:sqlite 首选 + B1 决策门实测**（11 项逐项实测报告，基础能力项全过才冻结——⑧⑨ 失败不构成 B1 失败，B3 降级为主；决议 #46）；任一基础能力项失败 → B1 停止提交证据 → 评估 better-sqlite3（不得在纯文档任务新增依赖） |
 | Q2  | Source 身份模型：单作用域 vs origin/page 双作用域 | **origin/page 双作用域**；origin 唯一键 = 规范化 origin；page 唯一键 = 去 fragment 规范化完整 URL；duplicate 由数据库唯一约束保证（不靠先查后写）                                                                     |
 | Q3  | canonicalization 规则强度                         | **保守规则集**：仅 http/https、拒 userinfo、scheme/host 小写、IDN 用标准 URL 解析后稳定 host、去默认端口与 fragment、保留路径大小写/非默认端口/普通 query；不自动删 query、不自动合并同域；utm_* 默认保留             |
 | Q4  | Source Tool 集合：8 个细粒度 vs 最小 4 工具       | **最小 4 工具**：source_search/source_list/source_get/source_apply_changes（add/update/move/tag/disable/restore 全部走受控 change set，权限面最小）                                                                   |
@@ -186,11 +186,13 @@ HEAD（ls-remote 实测）、工作区干净、基线 test 785/785 待本闭环�
 | B8   | SRT-01～SRT-12 红队矩阵 + 安全审计 + 隐私扫描 + 真实 Provider/真实网页可选验证                                             | B1–B7  |
 | B9   | Fourth Stage 独立最终验收：**在当前 HEAD 重新复验（不采信 B1–B8 完成报告）** + Exit Gate 判定 + 文档同步                   | B1–B8  |
 
-**红线（每个任务文档重申）**：B1 决策门实测全部通过前禁止任何 Source 域模型/
+**红线（每个任务文档重申）**：B1 决策门实测基础能力项全部通过前禁止任何 Source 域模型/
 Repository/Tool/UI 实现；无万能工具（source_sql/source_delete_hard/
 source_export_all/任意导入/任意抓取/任意通用数据库工具不存在，grep 断言）；
-SQL 仅为 Repository 编译期常量与 migration（prepared statement 参数绑定，无
-exec 动态串、无扩展加载）；不得放宽第一阶段 Electron 安全边界、第二阶段 Key
+业务 SQL 仅为 Repository 编译期常量与 migration（prepared statement 参数绑定，无
+exec 动态串、无扩展加载）；driver 仅连接级运维 SQL 编译期常量（PRAGMA/事务
+控制）；测试专用 SQL 仅限冒烟 B-01 与单测（决议 #47）；不得放宽第一阶段
+Electron 安全边界、第二阶段 Key
 零暴露红线与第三阶段权限/确认/审计契约；威胁模型（doc/stage4/threat-model.md）
 先于任何 Source 实现定稿（已满足）。
 
