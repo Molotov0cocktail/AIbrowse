@@ -6682,6 +6682,26 @@ export async function runLiveAgentScenarios(
     // 要求证明多 Tab 页面身份与上下文不串页（用户验收规格），任务文案按场景 1 同款
     // 明确「在新标签页打开」；断言不降低（≥2 browser_open + 非空总结）。
     {
+      // 前置清场（A7 补验校准，2026-08-14 真实验收第 8 次执行观察）：顺序执行残留
+      // 的 Tab/页面内容会让模型复用既有页（目标启动快照已含场景 2 的 WCV 正文——
+      // 模型只新开一页即作答）；验收要求场景内多 Tab 证据（页面身份/不串页），
+      // 清场后模型必须经 browser_open 在场景内打开两页。断言不降低。
+      const extraBefore3 = (await controller.getTabs()).filter((t) => !beforeIds.has(t.id));
+      for (const tab of extraBefore3) await controller.closeTab(tab.id);
+      const firstTab = (await controller.getTabs())[0];
+      assert(firstTab !== undefined, '场景 3 前置清场后应保留进入前 Tab');
+      assert(
+        await controller.navigate(firstTab.id, 'about:blank'),
+        '场景 3 前置清场：回到空白页应成功',
+      );
+      await waitFor(
+        async () => {
+          const t = (await controller.getTabs()).find((x) => x.id === firstTab.id);
+          return t !== undefined && t.url === 'about:blank' && t.state === 'ready';
+        },
+        10000,
+        '场景 3 前置清场：空白页未在 10 秒内就绪',
+      );
       await freshSession();
       await sendTask(
         '在新标签页分别打开 Electron 的 BrowserView 与 WebContentsView 两个官方文档页面，各读取一遍主要内容后直接比较两者的区别并总结，不要深入探索细节',
