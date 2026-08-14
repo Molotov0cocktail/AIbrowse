@@ -2,10 +2,31 @@
 // + getLastRequest capture for smoke assertions.
 // Contract source: doc/stage2/detailed-design.md §3.3; A1 工具脚本：
 // doc/stage3/detailed-design.md §3.2.
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FAKE_PROVIDER_METADATA, FakeProvider } from './fake-provider';
 import type { ProviderEvent } from '../../../shared/types/conversation';
 import type { ProviderRequest, ProviderTool } from '../../../shared/types/conversation';
+
+// F-1 修复（2026-08-14）：node:timers/promises 的 setTimeout 被本文件级 mock 替换为
+// 手动控制的 Promise——延迟语义改为确定性验证，消除真实墙钟断言（≥30ms）在并行
+// 负载下的间歇失败（验收期实测 ~17% 失败率，实测值 29.86ms < 30ms）。
+// 断言语义不弱化：仍校验 provider 按脚本配置的完整延迟值调用 sleep（30/20 毫秒原样
+// 传入）、延迟推进前流输出未完成、推进到约定延迟后才继续，以及等待延迟期间
+// abort 立即生效（中止感知语义，与真实适配器一致的 Promise.race 路径）。
+const { sleepMock } = vi.hoisted(() => ({
+  sleepMock: vi.fn<(ms: number) => Promise<void>>(),
+}));
+
+vi.mock('node:timers/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:timers/promises')>();
+  return { ...actual, setTimeout: sleepMock };
+});
+
+beforeEach(() => {
+  sleepMock.mockReset();
+  // 缺省立即推进：仅断言事件顺序（不断言延迟）的用例携带 delayMs 时按 0 延迟推进
+  sleepMock.mockResolvedValue(undefined);
+});
 
 const REQUEST: ProviderRequest = {
   requestId: 'req-1',
@@ -58,9 +79,26 @@ describe('FakeProvider — 确定性分块', () => {
 
   it('延迟块实际等待（可用于中止/超时场景编排）', async () => {
     const provider = new FakeProvider({ chunks: [{ text: 'x', delayMs: 30 }] });
-    const started = performance.now();
-    await collect(provider, REQUEST);
-    expect(performance.now() - started).toBeGreaterThanOrEqual(30);
+    let advanceDelay!: () => void;
+    sleepMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          advanceDelay = resolve;
+        }),
+    );
+    const eventsPromise = collect(provider, REQUEST);
+    // 流已运行到延迟块：sleep 以脚本配置的完整延迟值调用（30ms 阈值语义不弱化）
+    expect(sleepMock).toHaveBeenCalledTimes(1);
+    expect(sleepMock).toHaveBeenCalledWith(30);
+    let settled = false;
+    void eventsPromise.then(() => {
+      settled = true;
+    });
+    await Promise.resolve(); // 微任务排空：延迟推进前流不得产出任何事件
+    expect(settled).toBe(false);
+    advanceDelay(); // 推进到约定延迟后才继续
+    const events = await eventsPromise;
+    expect(events).toEqual([{ type: 'delta', text: 'x' }, { type: 'done' }]);
   });
 
   it('metadata：streaming=true / supportsToolCalling=true（A1 校准为真实值）/ id=fake', () => {
@@ -113,9 +151,26 @@ describe('FakeProvider — 工具脚本（A1，doc/stage3/detailed-design.md §3
     const provider = new FakeProvider({
       chunks: [{ kind: 'toolCalls', toolCalls: TOOL_CALLS, delayMs: 20 }],
     });
-    const started = performance.now();
-    await collect(provider, TOOL_REQUEST);
-    expect(performance.now() - started).toBeGreaterThanOrEqual(20);
+    let advanceDelay!: () => void;
+    sleepMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          advanceDelay = resolve;
+        }),
+    );
+    const eventsPromise = collect(provider, TOOL_REQUEST);
+    // sleep 以脚本配置的完整延迟值调用（20ms 语义不弱化）；推进前 toolCalls 不得产出
+    expect(sleepMock).toHaveBeenCalledTimes(1);
+    expect(sleepMock).toHaveBeenCalledWith(20);
+    let settled = false;
+    void eventsPromise.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    advanceDelay();
+    const events = await eventsPromise;
+    expect(events).toEqual([{ type: 'toolCalls', toolCalls: TOOL_CALLS }, { type: 'done' }]);
   });
 
   it('同脚本两次运行事件序列完全一致（含 toolCalls，确定性）', async () => {
@@ -252,6 +307,9 @@ describe('FakeProvider — 多轮脚本（A5 rounds 扩展）', () => {
     const provider = new FakeProvider({
       rounds: [[{ text: 'x', delayMs: 60_000 }]],
     });
+    // sleep 永不自行完成：流只能经 abort 通道结束（确定性验证中止感知语义——
+    // 与真实适配器一致的 Promise.race 路径，不依赖真实墙钟等待）
+    sleepMock.mockImplementationOnce(() => new Promise<void>(() => {}));
     const promise = (async () => {
       const events: ProviderEvent[] = [];
       for await (const event of provider.stream(REQUEST, controller.signal)) {
@@ -259,8 +317,9 @@ describe('FakeProvider — 多轮脚本（A5 rounds 扩展）', () => {
       }
       return events;
     })();
-    // 等 sleep 开始后中止
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    // 流已进入延迟等待（sleep 以 60000ms 调用），此时中止必须立即终结
+    expect(sleepMock).toHaveBeenCalledTimes(1);
+    expect(sleepMock).toHaveBeenCalledWith(60_000);
     controller.abort();
     const events = await promise;
     expect(events).toEqual([
