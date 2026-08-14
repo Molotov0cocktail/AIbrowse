@@ -33,7 +33,7 @@
   探针（dev + 生产双场景）；**A4 SearchProvider 已完成（2026-08-14）**：接口 +
   Bing 搜索页实现（临时 Tab 精确 tabId 所有权与恢复语义 + try/finally 清理，
   决议 #32）+ 确定性解析（包装链接还原/过滤/去重/snippet 空串容忍设计）+
-  search.web 工具注册（L0，注册表 13 工具）+ 受控搜索页冒烟全链路 + 公网 Bing
+  search_web 工具注册（L0，注册表 13 工具）+ 受控搜索页冒烟全链路 + 公网 Bing
   探针（10 条真实结果）；**A5 Agent Runtime 已完成（2026-08-14）**：
   AgentLoop 纯编排状态机（MAX_STEPS=12/总超时 420s/取消/防循环执行前阻断/
   终态单一所有权，决议 #33 六点校准）+ AgentContextBuilder（AGENT_SYSTEM_PROMPT
@@ -85,7 +85,7 @@
 | A1 | tool-calling 兼容层（硬前置）：ProviderRequest/Event/Message 扩展 + 适配器 tools/SSE tool_calls + FakeProvider 工具脚本 | ✅ | 2026-08-14 完成（见下）；契约 §2.1/§3 + 决议 #30；任务文档 doc/stage3/tasks/A1-tool-calling-layer.md |
 | A2 | Tool Registry + 权限分级与确认状态机（click 确定性允许列表 + fail-closed）+ 审计日志（接线既有只读/导航工具 8 个） | ✅ | 2026-08-14 完成（见下）；契约 §4/§7/§10；任务文档 doc/stage3/tasks/A2-tool-registry-permission-audit.md |
 | A3 | 浏览器交互能力：scroll/click/fill/find + click 语义元数据 + elementId 生命周期验证 + click 执行器层白名单复核 | ✅ | 2026-08-14 完成（见下）；契约 §5 + 决议 #31（文档世代绑定）；任务文档 doc/stage3/tasks/A3-browser-interaction.md |
-| A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search.web 工具 | ✅ | 2026-08-14 完成（见下）；契约 §6 + 决议 #32（临时 Tab 所有权/错误映射/snippet 空串/包装链接/查询串全量审计）；任务文档 doc/stage3/tasks/A4-search-provider.md |
+| A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search_web 工具 | ✅ | 2026-08-14 完成（见下）；契约 §6 + 决议 #32（临时 Tab 所有权/错误映射/snippet 空串/包装链接/查询串全量审计）；任务文档 doc/stage3/tasks/A4-search-provider.md |
 | A5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ✅ | 2026-08-14 完成（见下）；契约 §8–§9 + 决议 #33；任务文档 doc/stage3/tasks/A5-agent-runtime.md |
 | A6 | 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI + UI 端到端冒烟矩阵 | ✅ | 2026-08-14 完成（见下）；契约 §11 + 决议 #34（实时状态通道/参数摘要源/确认信任边界/多监听者）；任务文档 doc/stage3/tasks/A6-agent-ui-visibility.md |
 | A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | ✅ | 离线部分（RT-01～RT-08 + RT-11 + 审计 + RT-10 校准）已完成并推送；真实 Provider 已获授权但受 Provider 能力限制未执行（deepseek-v4-flash 端点对任何 tools 载荷返回 400 空响应体——兼容性证据登记，不标记通过；场景代码就绪待 tools 兼容 Provider）；契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
@@ -97,6 +97,36 @@
 
 ## 最近验证结果（2026-08-14）
 
+- **A7 补验 wire 兼容性离线修复（2026-08-14，纯离线闭环，零真实请求）**：
+  用户纠正根因判定后确诊：既有 13 个工具名全部携带点号（`browser.*` 前缀 +
+  `search.web`），违反 OpenAI 兼容端点 function.name 契约（仅字母/数字/下划线/
+  连字符、1–64 位，DeepSeek 官方契约）→ 整组 tools 载荷 HTTP 400。**① 红态测试**
+  （新增 10 用例，先红后绿）：tool-registry wire 名称契约（TOOL_NAME_PATTERN 恒等
+  断言 + 注册阶段确定性拒绝点号/超长/空/非 ASCII + listTools 序列化阶段纵深防御）、
+  openai-compatible reasoning_content（interpret 同帧/独立帧/与 tool_calls 同帧提取、
+  streamSseBody 按序产出 reasoning 事件不混入 delta、mapMessages 带 reasoning 输出
+  reasoning_content 无则无字段）、fake-provider reasoning 脚本块、agent-loop 工具轮
+  reasoning 累积并仅进下一轮请求（run 结果/回调/审计零暴露）、conversation-service
+  共读路径忽略 reasoning 事件（不回传 UI 不视为异常）。**② 修复**：
+  13 工具名点号→下划线全局改名（`browser_get_tabs`～`browser_fill` + `search_web`；
+  权限矩阵 TOOL_BASE_RISK/审计特判/执行器预算特判/UI 文案映射/全部测试与冒烟夹具
+  同步）；tool-registry 注册与序列化双闸门拒绝非法名（TOOL_NAME_PATTERN 导出）；
+  shared ProviderMessage.reasoning + ProviderEvent reasoning 增量；适配器解析
+  delta.reasoning_content 产出 reasoning 事件 + mapMessages 输出 reasoning_content
+  （仅当 IR 携带，同源自产自回传，无任意 extraBody）；AgentLoop 每轮累积仅工具轮
+  assistant 附加（终态轮/空轮不携带）；共读路径显式忽略；FakeProvider reasoning
+  脚本块（离线确定性）。**顺带修复**：真实场景 6（RT-10）冒烟中 13 工具允许名单
+  为前缀缺失的错名单（该场景从未真实执行故未暴露）→ 校正为注册表真实 13 名。
+  **③ 验证**：test **781/781**（新增 10）· typecheck · lint · format:check ·
+  build · dev+生产双场景冒烟退出码 0（8.6 红队矩阵全过）；敌对夹具 `browser_pwn`
+  伪造名未受影响（tool-not-found 断言保持）。**④ 契约文档**：detailed-design
+  §2.1/§4.1/§4.2/§15（决议 #35：wire 名称契约 + 双闸门 + reasoning 不透明回传 +
+  跨 run 不携带边界）、threat-model/AGENTS.md/README 工具名同步。**未调用任何付费
+  Provider、未输出/索取 API Key。** 计划内限制新增：跨 run 重放不携带
+  reasoning_content（持久化红线所致）——要求回传的 Provider 旧会话重问可能 400 →
+  结构化 provider-error 安全失败（见下「计划内限制」）。下一步：用户重新授权后以
+  `-Pre` 最小探针验证真实 wire 兼容性（预计 2 次 HTTP 请求）。
+
 - **A7 补验预检（2026-08-14，真实 Provider 最小 tools 兼容性预检，用户授权 1 次调用）**：
   步骤 0 独立核对——HEAD `6aefcb0` = 双远程 HEAD、工作区干净、基线 test 771/771 独立
   复跑全绿、`AIBROWSE_LIVE_AGENT=1` 门控与仓库外 harness 在位（不采信交接，逐项自查）。
@@ -106,15 +136,17 @@
   零泄漏终检与台账汇总提取为 `finalizeLiveRun` 复用（完整模式行为不变）；index.ts 环境门
   `AIBROWSE_LIVE_AGENT_PRE=1`（与 LIVE_AGENT 互斥）；仓库外 harness 增 `-Pre` 开关。
   权限矩阵/工具清单/适配器零改动。离线全量验证全绿（test 771/771·typecheck·lint·
-  format:check·build·dev+生产双场景冒烟退出码 0）。**② 预检结果：失败——deepseek-v4-pro
-  同样不支持 tools**。真实调用台账：**1 次 HTTP 请求**（场景 1 首个模型轮，标准 OpenAI
+  format:check·build·dev+生产双场景冒烟退出码 0）。**② 预检结果：失败（首轮 400）——
+  根因已按用户纠正重新归类为 wire 名称契约问题，非「模型不支持 tools」**（DeepSeek
+  官方明确声明 V4 Flash/Pro 支持 Tool Calls；官方契约要求 function.name 仅字母/数字/
+  下划线/连字符 ≤64，而项目 13 个工具名全部携带点号——`browser.*` 前缀与 `search.web`，
+  足以整组 400）。真实调用台账：**1 次 HTTP 请求**（场景 1 首个模型轮，标准 OpenAI
   tools 载荷）→ **HTTP 400**，0 模型轮成功、0 工具执行，errorCode=provider-error
-  （非 invalid-key/rate-limit/context-too-long）。签名与 v4-flash 完全一致（首轮即 400、
-  无响应可解析），判定为 Provider/模型侧 tools 兼容性限制（DeepSeek V4 系模型 tool calling
-  问题），非适配器缺陷（wire 为标准 OpenAI 形态、适配器零改动）。按用户指示**立即停止，
-  不重复请求、不修改权限或适配器**；日志 sk- 形态扫描 0 命中、临时目录零残留、工作区干净。
-  第三阶段判定维持 `HOLD/PENDING`；`-Pre` 预检门控已就绪——下次换 Provider/model 后先以
-  最小预检（1 次调用量级）验证 tools 兼容性，再申请完整场景授权。
+  （非 invalid-key/rate-limit/context-too-long）。诊断结论：请求被拒的是 tools 载荷
+  本身（名称契约），适配器 wire 形状其余部分为标准 OpenAI 形态；真实调用按用户指示
+  **立即停止、零重试**；日志 sk- 形态扫描 0 命中、临时目录零残留、工作区干净。
+  第三阶段判定维持 `HOLD/PENDING`；离线修复（wire 名称 + reasoning_content 回传）
+  见本会话下一闭环条目。
 
 - **A8 第三阶段收尾与验收（2026-08-14，第八个闭环；总 Exit 决策 = HOLD/PENDING）**：
   步骤 0 独立核对——HEAD `0461c04` = Gitee/GitHub 双远程 HEAD（ls-remote 实测，
@@ -1076,6 +1108,12 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 - shared/url 不支持 IDN（中文域名走搜索兜底，安全无副作用）；SearchProvider 抽象已定稿
   于 Third Stage A4（doc/stage3/detailed-design.md §6：v1 Bing 页面实现 + 接口隔离
   保替换；shared/url 的 SEARCH_ENGINE_URL 常量语义不变，由 SearchProvider 引用）。
+- **A7 补验 reasoning_content 回传边界（2026-08-14 决议 #35，容忍设计如实登记）**：
+  跨 run 重放不携带 reasoning_content（思维过程不持久化红线所致）——对要求原样回传的
+  Provider（DeepSeek V4 thinking 模式），**旧会话重问**可能 400 → 结构化
+  provider-error 安全失败（不泄露思维过程、不伪造成功）；验收场景均使用新会话，
+  不受影响。另：运行时 transcript 内 reasoning 原样保留（不截断）——请求规模由
+  步数上限 12 与 Provider 自身输出约束，属确定性上界内的计划内限制。
 - **A4 SearchProvider 计划内限制（2026-08-14 决议 #32，容忍设计如实登记）**：
   ① v1 搜索 snippet 恒空串 + warning——扁平快照无法为每条结果提供可靠的摘要
   关联证据，不得把相邻但无依据的文本错误配给结果（宁缺勿错；未来供应商实现可
@@ -1142,42 +1180,45 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 阻塞项
 
-- **第三阶段最终验收阻塞（非开发阻塞，2026-08-14 A8 登记；A7 补验预检追加证据）**：
-  §9 Engineering「多个真实网站 Agent smoke test 通过」BLOCKED——唯一已配置 Provider
-  系 DeepSeek V4 模型对任何 OpenAI 标准 tools 载荷返回 HTTP 400（A7 诊断台账：
-  deepseek-v4-flash 真实调用 1 次 + 定向诊断 3 次，stream/非 stream 两形态均 400、
-  无 tools 200 正常；2026-08-14 补验预检：deepseek-v4-pro 真实调用 1 次，首轮 tools
-  载荷同样 HTTP 400 + 0 模型轮，签名一致——判定 Provider/模型兼容性限制，非适配器
-  缺陷）；连带 §7 真实场景 1–6 与 RT-10 真实模型观察性证据 NOT RUN。解除条件：
-  配置一个**非 DeepSeek V4 系**、与 OpenAI 标准 tool calling 兼容的 Provider/model
-  （仓库外 DPAPI/harness 流程注入）→ 用户授权最小预检（`AIBROWSE_LIVE_AGENT_PRE=1`，
-  harness `-Pre`，1 次调用量级）→ 预检通过后用户二次授权 → 运行
-  `AIBROWSE_LIVE_AGENT=1` 完整场景 → 取得充分证据后改判 GO/PASS。解除前不进入
-  Fourth Stage。
+- **第三阶段最终验收阻塞（非开发阻塞，2026-08-14 A8 登记；A7 补验预检更新证据与
+  根因）**：§9 Engineering「多个真实网站 Agent smoke test 通过」BLOCKED——历史证据：
+  唯一已配置 Provider（deepseek-v4-flash → 后改 deepseek-v4-pro，均 DeepSeek V4 系）
+  对项目 tools 载荷首轮返回 HTTP 400（A7 台账：v4-flash 真实调用 1 + 定向诊断 3；
+  补验预检：v4-pro 真实调用 1）。**根因（2026-08-14 用户纠正后确诊）**：项目 13 个
+  工具名全部携带点号（`browser.*`/`search.web`），违反 OpenAI 兼容端点对
+  function.name 的通行约束（仅字母/数字/下划线/连字符 ≤64，DeepSeek 官方契约），
+  整组 tools 被拒——**并非「DeepSeek V4 不支持 tools」**（官方声明 V4 Flash/Pro
+  支持 Tool Calls）。**离线修复已完成**（wire 名称下划线化 + 注册/序列化双闸门 +
+  reasoning_content 不透明回传，见最近验证结果；未发任何真实请求）。连带 §7 真实
+  场景 1–6 与 RT-10 真实模型观察性证据 NOT RUN。解除条件：用户重新授权最小真实
+  探针（`AIBROWSE_LIVE_AGENT_PRE=1`，harness `-Pre`）验证修复后的 wire 兼容性 →
+  预检通过后用户二次授权 → 运行 `AIBROWSE_LIVE_AGENT=1` 完整场景 → 取得充分证据
+  后改判 GO/PASS。解除前不进入 Fourth Stage。
 
 ## 下一个推荐任务
 
 - **真实 Provider Agent 验收补验（新对话 = 一个可验证闭环，唯一解除第三阶段
-  HOLD/PENDING 的路径）**：前置 = 用户已配置一个与 OpenAI 标准 tool calling
-  兼容的 Provider/model（**注意：DeepSeek V4 系（v4-flash/v4-pro）均已实测
-  tools 载荷 400，勿再使用**）且**明确授权付费联网验证**（询问边界：先报告
-  拟用 baseURL/model/场景/预计模型轮数与 HTTP 请求用途，等待授权；不要求
-  对话中粘贴 Key；只用仓库外 DPAPI/harness 流程 + 环境变量注入）。执行顺序：
-  先 `AIBROWSE_LIVE_AGENT_PRE=1`（harness `-Pre`）最小预检——仅场景 1 +
-  零泄漏终检（1 次调用量级，验证请求被接受/有效 tool_calls/重放正常结束）；
-  预检通过并获用户**二次授权**后再 `AIBROWSE_LIVE_AGENT=1` 完整场景
-  （Third_stage §7 场景 2–7 + RT-10 敌对页——诱导目标全部指向本地安全地址 +
-  停止/取消 + 零泄漏终检 + 真 Key 零暴露扫描 + 模型轮次台账；代码已就绪于
-  src/main/smoke.ts）；提交动作只在受控本地页面验证 deny/approve，禁止对真实
-  外部网站产生提交/发布/购买/发送/账户变更。完成后：报告实际 Agent run、模型
-  轮次与 HTTP 请求数及用途 + 真 Key 零暴露扫描 → 将 §9 Engineering BLOCKED 项
-  与 §10 总判定改判（取得充分证据 → GO/PASS；否则如实登记继续 HOLD）。未获
-  授权/无兼容 Provider 时不执行联网。
-  **红线**：不索取/不输出 API Key；不放宽 click 允许列表/documentId 世代
-  校验/临时搜索 Tab 所有权；不通过删除 tools、放宽权限、自动确认、修改敌手
-  夹具或降低验收标准制造通过；A1–A7 已落地的链路不得削弱。
-  （进入 Fourth Stage 的条件：上述补验取得充分证据 + §10 总判定改判
-  GO/PASS；之后才建议 Fourth Stage 需求澄清/详细设计任务。）
+  HOLD/PENDING 的路径）**：前置 = 用户**重新授权付费联网验证**（询问边界：先
+  报告拟用 baseURL/model/场景/预计模型轮数与 HTTP 请求用途，等待授权；不要求
+  对话中粘贴 Key；只用仓库外 DPAPI/harness 流程 + 环境变量注入）。**wire 兼容
+  离线修复已完成**（决议 #35：13 工具名 wire-safe 下划线化 + 注册/序列化双闸门
+  - reasoning_content 不透明回传）；已知旧结论「DeepSeek V4 不支持 tools」已
+    修正为 wire 名称契约根因。执行顺序：先 `AIBROWSE_LIVE_AGENT_PRE=1`（harness
+    `-Pre`）最小预检——仅场景 1 + 零泄漏终检（**预计 1 个 Agent run、2 次 HTTP
+    请求**：首轮 tools 载荷验证接受与 tool_calls 产出、次轮验证工具结果 +
+    reasoning_content 重放后正常结束）；预检通过并获用户**二次授权**后再
+    `AIBROWSE_LIVE_AGENT=1` 完整场景（Third_stage §7 场景 2–7 + RT-10 敌对页——
+    诱导目标全部指向本地安全地址 + 停止/取消 + 零泄漏终检 + 真 Key 零暴露扫描 +
+    模型轮次台账；代码已就绪于 src/main/smoke.ts）；提交动作只在受控本地页面验证
+    deny/approve，禁止对真实外部网站产生提交/发布/购买/发送/账户变更。完成后：
+    报告实际 Agent run、模型轮次与 HTTP 请求数及用途 + 真 Key 零暴露扫描 → 将
+    §9 Engineering BLOCKED 项与 §10 总判定改判（取得充分证据 → GO/PASS；否则
+    如实登记继续 HOLD）。未获授权时不执行联网。
+    **红线**：不索取/不输出 API Key；不放宽 click 允许列表/documentId 世代
+    校验/临时搜索 Tab 所有权；不通过删除 tools、放宽权限、自动确认、修改敌手
+    夹具或降低验收标准制造通过；A1–A7 已落地的链路不得削弱。
+    （进入 Fourth Stage 的条件：上述补验取得充分证据 + §10 总判定改判
+    GO/PASS；之后才建议 Fourth Stage 需求澄清/详细设计任务。）
 
 ## 第一阶段验收未完成项
 

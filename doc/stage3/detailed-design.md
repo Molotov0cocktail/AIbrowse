@@ -36,7 +36,7 @@ src/
 │       │   ├── tool-executor.ts      # 执行接线：校验→权限→确认→执行→审计（A2 框架，A3/A4 补工具）
 │       │   ├── browser-tools.ts      # get_tabs/get_active_tab/read/open/navigate/back/forward/reload（A2）
 │       │   ├── interaction-tools.ts  # find/scroll/click/fill（A3）
-│       │   └── search-tool.ts        # search.web（A4）
+│       │   └── search-tool.ts        # search_web（A4）
 │       ├── permission/
 │       │   └── permission-policy.ts  # 确定性权限纯函数（A2）
 │       ├── confirm-manager.ts        # 确认状态机（A2）
@@ -110,6 +110,9 @@ export interface ProviderMessage {
   content: string;
   toolCallId?: string; // role='tool' 时必填：关联 ToolCall.id
   toolCalls?: ProviderToolCall[]; // role='assistant' 时可选：该轮工具调用（重放进历史）
+  // A7 补验扩展（决议 #35）：供应商不透明思维内容（thinking 模式 reasoning_content）。
+  // 仅运行时 transcript 内工具轮的原样回传用；禁止持久化/UI/日志；跨 run 重放不携带。
+  reasoning?: string;
 }
 
 export interface ProviderToolCall {
@@ -131,6 +134,9 @@ export type ProviderEvent =
   // A1 新增：聚合完成、校验通过的整组工具调用——适配器在 finish_reason=tool_calls
   // 末帧后按 index 升序产出，恰好在 done 之前；绝不携带半截 arguments。
   | { type: 'toolCalls'; toolCalls: ProviderToolCall[] }
+  // A7 补验新增（决议 #35）：供应商不透明思维增量（thinking 模式 reasoning_content）。
+  // Agent 循环累积并在工具轮后续请求原样回传；共读路径忽略；不进 UI/日志/持久化。
+  | { type: 'reasoning'; text: string }
   | { type: 'done'; usage?: ProviderUsage }
   | { type: 'error'; error: NormalizedProviderError };
 ```
@@ -320,7 +326,8 @@ delayMs?: number}`——整组工具调用一步产出（arguments 为已拼接�
 
 ```ts
 export interface ToolDefinition {
-  name: string; // 唯一；命名空间前缀 browser./search.（Third_stage.md §3.1）
+  name: string; // 唯一；命名空间前缀 browser_/search_（wire 名称契约：仅字母/数字/
+  // 下划线/连字符、1–64 位——注册与序列化双闸门拒绝非法名，决议 #35）
   description: string; // 模型可见说明（程序常量，描述能力与限制）
   parameters: {
     properties: Record<string, ProviderToolParameter>;
@@ -359,23 +366,28 @@ export function validateToolArgs(
 
 | 工具                     | 任务 | 基础级别 | 参数                                       | 执行（只经 BrowserController/SearchProvider）                                                                                                              |
 | ------------------------ | ---- | -------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `browser.get_tabs`       | A2   | 0        | 无                                         | `getTabs()` → TabInfo[] 摘要（id/title/url/active/state）                                                                                                  |
-| `browser.get_active_tab` | A2   | 0        | 无                                         | `getActiveTab()` 摘要                                                                                                                                      |
-| `browser.read`           | A2   | 0        | `{tabId?}`（缺省=活动 Tab）                | `getPageSnapshot` 实时采集 → §8.4 序列化截断（复用 fillWebContentSections 风格，独立 budget）                                                              |
-| `browser.open`           | A2   | 1        | `{url}`（http/https，§7.2）                | `createTab(url)` → TabInfo；任务 Tab **保留**（用户可见结果）                                                                                              |
-| `browser.navigate`       | A2   | 1        | `{tabId?, url}`                            | `navigate(tabId, url)` → boolean                                                                                                                           |
-| `browser.back`           | A2   | 1        | `{tabId?}`                                 | `goBack` → boolean                                                                                                                                         |
-| `browser.forward`        | A2   | 1        | `{tabId?}`                                 | `goForward` → boolean                                                                                                                                      |
-| `browser.reload`         | A2   | 1        | `{tabId?}`                                 | `reload` → boolean                                                                                                                                         |
-| `browser.find`           | A3   | 0        | `{text, tabId?}`（text ≤ 200 字符非空）    | 实时快照 → 在 visibleText/headings/links/buttons/inputs 文本中确定性匹配 → 命中集合（元素 id + 文本 + 章节位置），无命中 → ok 空结果（「未找到」，非错误） |
-| `browser.scroll`         | A3   | 0        | `{dy, tabId?}`（dy 整数，±50000 白名单）   | 交互脚本 window.scrollBy(0, dy)（固定模板）；返回滚动后 viewport                                                                                           |
-| `browser.click`          | A3   | 1        | `{elementId, tabId?}`                      | 交互脚本定位+click（§5）；级别按确定性允许列表：链接/展开/切换 L1、提交类 L2、非允许列表 L3 fail-closed（§7.1）                                            |
-| `browser.fill`           | A3   | 1        | `{elementId, text, tabId?}`（text ≤ 2000） | 交互脚本定位+fill（§5）；password/file 目标 L3 拒绝                                                                                                        |
-| `search.web`             | A4   | 0        | `{query}`（≤ 500 字符非空）                | SearchProvider.search（§6）；结果统一结构                                                                                                                  |
+| `browser_get_tabs`       | A2   | 0        | 无                                         | `getTabs()` → TabInfo[] 摘要（id/title/url/active/state）                                                                                                  |
+| `browser_get_active_tab` | A2   | 0        | 无                                         | `getActiveTab()` 摘要                                                                                                                                      |
+| `browser_read`           | A2   | 0        | `{tabId?}`（缺省=活动 Tab）                | `getPageSnapshot` 实时采集 → §8.4 序列化截断（复用 fillWebContentSections 风格，独立 budget）                                                              |
+| `browser_open`           | A2   | 1        | `{url}`（http/https，§7.2）                | `createTab(url)` → TabInfo；任务 Tab **保留**（用户可见结果）                                                                                              |
+| `browser_navigate`       | A2   | 1        | `{tabId?, url}`                            | `navigate(tabId, url)` → boolean                                                                                                                           |
+| `browser_back`           | A2   | 1        | `{tabId?}`                                 | `goBack` → boolean                                                                                                                                         |
+| `browser_forward`        | A2   | 1        | `{tabId?}`                                 | `goForward` → boolean                                                                                                                                      |
+| `browser_reload`         | A2   | 1        | `{tabId?}`                                 | `reload` → boolean                                                                                                                                         |
+| `browser_find`           | A3   | 0        | `{text, tabId?}`（text ≤ 200 字符非空）    | 实时快照 → 在 visibleText/headings/links/buttons/inputs 文本中确定性匹配 → 命中集合（元素 id + 文本 + 章节位置），无命中 → ok 空结果（「未找到」，非错误） |
+| `browser_scroll`         | A3   | 0        | `{dy, tabId?}`（dy 整数，±50000 白名单）   | 交互脚本 window.scrollBy(0, dy)（固定模板）；返回滚动后 viewport                                                                                           |
+| `browser_click`          | A3   | 1        | `{elementId, tabId?}`                      | 交互脚本定位+click（§5）；级别按确定性允许列表：链接/展开/切换 L1、提交类 L2、非允许列表 L3 fail-closed（§7.1）                                            |
+| `browser_fill`           | A3   | 1        | `{elementId, text, tabId?}`（text ≤ 2000） | 交互脚本定位+fill（§5）；password/file 目标 L3 拒绝                                                                                                        |
+| `search_web`             | A4   | 0        | `{query}`（≤ 500 字符非空）                | SearchProvider.search（§6）；结果统一结构                                                                                                                  |
 
 - `page.extract`（Third_stage.md §3.1 概念清单）**v1 不单独实现**（决议 #21）：
-  `browser.read` 的快照已含结构化 text/headings/tables 章节，page.extract 无增量
+  `browser_read` 的快照已含结构化 text/headings/tables 章节，page.extract 无增量
   能力；避免同名多义的第二个「读取」工具增加权限矩阵面。
+- **wire 名称契约（决议 #35，2026-08-14 A7 补验校准）**：全部工具名仅含字母/数字/
+  下划线/连字符、1–64 位（`TOOL_NAME_PATTERN`）——OpenAI 兼容端点对
+  `function.name` 的通行约束；违反者（如点号）会被 Provider 整组拒绝（HTTP 400）。
+  注册阶段与 `listTools()` 序列化阶段双闸门确定性拒绝非法名，防止未来再向任何
+  Provider 发送非法工具名。
 - 结果文本长度：所有工具结果经 §8.4 统一截断。
 
 ## 5. 浏览器交互能力与 elementId 生命周期（A3）
@@ -543,7 +555,7 @@ export interface SearchProviderResult {
    `ok:false + search-failed`——工具错误不得被模型误认为成功；页面有内容但无
    有机结果（合法空结果）→ `ok:true` 空数组 + 明确提示；AbortSignal →
    errorCode `aborted`（由工具层/A5 归一）。
-7. **外发审查**（threat-model §3.3 T-03）：search.web 查询串与 open/navigate
+7. **外发审查**（threat-model §3.3 T-03）：search_web 查询串与 open/navigate
    URL 同等级全量进入审计（校验上限 500 有界；§10.1 已同步）。
 
 - **容忍设计**：解析启发式不追求完美——结构变化 → 降级 warnings，不抛异常、
@@ -557,7 +569,7 @@ export interface SearchProviderResult {
 | 工具                                     | 基础级别 | 条件判定（确定性）                                                                                                                                                                                                                                                                     | 结果级别 | 判定依据（结构化元数据，不经模型）                                   |
 | ---------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------- |
 | get_tabs/get_active_tab/read/find/scroll | 0        | —                                                                                                                                                                                                                                                                                      | —        | —                                                                    |
-| search.web                               | 0        | —                                                                                                                                                                                                                                                                                      | —        | —（查询串全量审计+可见）                                             |
+| search_web                               | 0        | —                                                                                                                                                                                                                                                                                      | —        | —（查询串全量审计+可见）                                             |
 | open                                     | 1        | URL 非 http/https                                                                                                                                                                                                                                                                      | 3        | scheme 白名单（复用 Tab 导航白名单同源判定）                         |
 | navigate/back/forward/reload             | 1        | navigate URL 非 http/https                                                                                                                                                                                                                                                             | 3        | 同上                                                                 |
 | click（允许列表）                        | 1        | 链接：links 条目 href http/https；展开：buttons 条目 ariaExpanded 字段存在（显式声明，true/false 均为展开/折叠控件——A2 实施前校准，原「=true」为文档疏漏，与 §5.4「显式声明」/A3 模板 `[aria-expanded]` 属性存在选择器/threat-model §3.3 一致）；切换：inputs 条目 type=checkbox/radio | 1        | 低风险目标的结构化证明（Third_stage.md §3.5 L1「普通导航/展开」）    |
@@ -740,7 +752,7 @@ export const AGENT_SYSTEM_PROMPT: string = `你是 AIbrowse 的浏览器任务�
 - ConversationMessage 扩展：`role` 增 `'tool'`（消息类型判别联合）；
   `toolStep?: ToolStep` + `toolCallId?`（tool 消息携带精简步骤与协议关联键，
   §2.2）；assistant 可选 `toolCalls?: ProviderToolCall[]`（该轮工具调用，
-  **脱敏持久化**——browser.fill 的 arguments.text 替换为「（已输入 N 字符）」，
+  **脱敏持久化**——browser_fill 的 arguments.text 替换为「（已输入 N 字符）」，
   决议 #33③）与 `agentRun?: AgentRunSummary`（run 终态摘要，§8.5）。
 - **持久化结构（决议 #33③ 校准）**：每 run = user(goal) → [assistant(轮次文本 +
   脱敏 toolCalls) + tool(toolStep)]×N → 终态 assistant（finalText + agentRun）。
@@ -762,14 +774,14 @@ export const AGENT_SYSTEM_PROMPT: string = `你是 AIbrowse 的浏览器任务�
 ### 10.1 条目结构（audit-log.ts + logger）
 
 ```
-[INFO] [audit] tool-call（requestId=…，toolCallId=…，tool=browser.click，args={elementId:el-12}，
+[INFO] [audit] tool-call（requestId=…，toolCallId=…，tool=browser_click，args={elementId:el-12}，
 decision=confirmed，ok=true，耗时=23ms，errorCode=无）
 ```
 
 - 全量覆盖：每个工具调用恰好一条（含 validateToolArgs 失败、L3 拒绝、确认 deny、
   执行失败）；run 开始/终止各一条（status/步数/终止理由）。
 - 参数摘要脱敏：fill 的 text → 「len=N」（不记内容）；URL 全量记录（审计需要）；
-  search.web 查询串全量记录（T-03 外发审查可追溯，上限 500 有界——决议 #32）；
+  search_web 查询串全量记录（T-03 外发审查可追溯，上限 500 有界——决议 #32）；
   其余参数截断 ≤ 200 字符。**审计与错误文案不含 API Key/响应体/请求头**
   （logger sanitize 沿用 + A2 专项用例）。
 - 实现为 `audit(toolCallId, entry)` 薄封装（logInfo + 结构化字段），装配注入
@@ -935,7 +947,7 @@ onAgentRunDone/onAgentStatus`（退订函数，既有 eventRelay 模式——每
 | Q8  | MAX_STEPS=12；总超时 420s（含确认等待）                                   | 覆盖典型多步任务；确认不单独设限（计入总超时）                 |
 | Q9  | ToolResult ≤ 4000 字符（read 独立 8000）截断 + 标记                       | 控制历史与上下文预算；错误走结构化错误码                       |
 | Q10 | 审计 = logger 结构化条目 + 会话 ToolStep 精简持久化                       | 无新存储层；实时可查 + 重启可回溯                              |
-| Q11 | 搜索临时 Tab 可见执行后关闭；browser.open 的 Tab 保留                     | 操作可见性；结果 Tab 归用户                                    |
+| Q11 | 搜索临时 Tab 可见执行后关闭；browser_open 的 Tab 保留                     | 操作可见性；结果 Tab 归用户                                    |
 | Q12 | 取消 = abort 模型流 + 作废 pending + cancelled 终态                       | 复用既有 abort 语义，幂等                                      |
 | Q13 | fill 值不持久化、审计只记长度；password/file 禁止                         | 隐私最小化 + L3 红线                                           |
 | Q14 | 独立 AGENT_SYSTEM_PROMPT 常量                                             | Agent 安全规则与共读不同；两提示互不混用                       |
@@ -943,7 +955,7 @@ onAgentRunDone/onAgentStatus`（退订函数，既有 eventRelay 模式——每
 
 ### 相对 Third_stage.md 建议边界的细化
 
-21. **page.extract 不单独实现**：browser.read 的快照已含结构化章节，避免同名多义
+21. **page.extract 不单独实现**：browser_read 的快照已含结构化章节，避免同名多义
     的第二读取工具增加权限面（§4.2）。
 22. **SearchProvider 替换点**：接口隔离（§6.1）；v1 页面实现为容忍设计；未来 API
     供应商实现同接口，切换不改调用方。
@@ -1007,7 +1019,7 @@ onAgentRunDone/onAgentStatus`（退订函数，既有 eventRelay 模式——每
     计划内限制；原 §6.2「从 visibleText 提取相邻摘要片段」废止）。④ **ck/a 包装
     链接确定性还原**（u=a1 base64url 解码，仅 http/https 目标；公网探针实测当前
     Bing 主要返回直接目标 URL，两形态均覆盖测试）。⑤ **查询串全量审计**
-    （threat-model §3.3 T-03 外发审查）：search.web 的 query 与 url 同等级全量
+    （threat-model §3.3 T-03 外发审查）：search_web 的 query 与 url 同等级全量
     进入审计（上限 500 有界），§10.1 与 audit-log 实现已同步。⑥ ctx.searchProvider
     为工具层注入点（设计 §4.1「browser 能力 + search」落点，A5 AgentLoop 装配）。
 33. **A5 Agent Runtime 实施校准（2026-08-14，A5 实施前，六点固定）**：
@@ -1105,6 +1117,31 @@ onPendingChange` 载荷扩展为判别联合 `{kind:'pending',request} |
     （step-limit/timeout 场景的 AgentLoopLimits holder，每 run 启动时读取）与
     smokeAgentSearchProvider（受控搜索夹具 holder，经委托 SearchProvider 在
     search() 调用时读取——离线确定性）。§2.2/§11.1/§11.2 已同步。
+35. **wire 名称契约与 reasoning_content 回传校准（2026-08-14，A7 补验实施中）**：
+    真实 Provider 首轮 400 的根因诊断修正——**不是「DeepSeek V4 不支持 tools」**
+    （官方明确声明 V4 Flash/Pro 支持 Tool Calls），而是既有 13 个工具名全部携带
+    点号（`browser.*` 前缀与 `search.web`），违反 OpenAI 兼容端点对
+    `function.name` 的通行约束（仅字母/数字/下划线/连字符、1–64 位；DeepSeek
+    官方契约明确拒绝并整组 HTTP 400）。校准三点：
+    ① **工具名统一改为 wire-safe 下划线形态**（`browser_get_tabs`～`browser_fill`
+    - `search_web`）——内部名 = wire 名（无映射层；碰撞不可能性由名称契约 +
+      注册唯一性保证）。同步面：权限矩阵（TOOL_BASE_RISK）、审计特判
+      （search_web query 全量）、执行器预算特判、UI 文案映射、Agent 历史/持久化
+      读取路径、全部单测与冒烟夹具、本契约文档。
+      ② **ToolRegistry 双闸门**——注册阶段与 `listTools()` 序列化阶段以
+      `TOOL_NAME_PATTERN` 确定性拒绝非法/超长名（装配期失败），防止未来再把
+      非法工具名发给任何 Provider。
+      ③ **reasoning_content 不透明回传**——thinking 模式 Provider（DeepSeek V4
+      默认开启）在工具调用后的后续请求要求原样回传该轮 assistant 消息的
+      reasoning_content（缺失 → 400）。实现：共享类型 `ProviderMessage.reasoning`
+    - `ProviderEvent` reasoning 增量；适配器解析 `delta.reasoning_content` 并产出
+      reasoning 事件、`mapMessages` 输出 `reasoning_content`（仅当 IR 消息携带时——
+      同源自产字段自回传，不跨 Provider 注入、无任意 extraBody）；AgentLoop 每轮
+      累积并仅对工具轮 assistant 附加；共读路径忽略 reasoning 事件；
+      **不持久化、不进 UI、不进日志**（思维过程零暴露红线）。
+      已登记边界（计划内限制）：跨 run 重放不携带 reasoning_content（持久化红线
+      所致）——对要求回传的 Provider，旧会话重问可能 400 → 结构化 provider-error
+      安全失败，不泄露思维过程。
 
 ## 16. 实现顺序与范围边界（A1–A8 映射）
 
@@ -1114,7 +1151,7 @@ onPendingChange` 载荷扩展为判别联合 `{kind:'pending',request} |
 - **A3**：§5 交互能力（BrowserController 扩展 + interaction-script + click 语义
   元数据 + elementId 生命周期）+ interaction-tools + 对应单测与冒烟
   （含 A-12 click 允许列表与执行器复核）。
-- **A4**：§6 SearchProvider + search.web + 对应单测。
+- **A4**：§6 SearchProvider + search_web + 对应单测。
 - **A5**：§8–§9 Agent Runtime/上下文/历史/持久化 + 主进程冒烟矩阵 A-01～A-09。
 - **A6**：§11 UI/通道 + UI 端到端冒烟（矩阵 A 全量 UI 化）+ 共读回归 A-11。
 - **A7**：§12 红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证（真实场景 1–6）。

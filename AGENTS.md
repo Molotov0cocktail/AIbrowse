@@ -31,9 +31,9 @@
   BrowserController 扩展（clickElement/fillElement/scrollTab + elementId
   文档世代绑定）+ find/scroll/click/fill 四工具经既有 ToolExecutor 链路接线
   （allowedKind 由 classifyClickTarget 单一事实源派生）；
-  **A4 SearchProvider 与 search.web 已实现（2026-08-14）**——Bing 搜索页实现
+  **A4 SearchProvider 与 search_web 已实现（2026-08-14）**——Bing 搜索页实现
   （临时 Tab 精确 tabId 所有权 + finally 清理 + 恢复语义，决议 #32）+ 确定性
-  解析 + search.web 工具（L0，注册表 13 工具）；
+  解析 + search_web 工具（L0，注册表 13 工具）；
   **A5 Agent Runtime 已实现（2026-08-14）**——AgentLoop 纯编排状态机
   （MAX_STEPS=12/总超时 420s/取消/防循环执行前阻断/终态单一所有权，决议 #33）
   - AgentContextBuilder（AGENT_SYSTEM_PROMPT + UNTRUSTED_TOOL_RESULT 块）
@@ -50,12 +50,14 @@
     **A7 红队矩阵与安全审计已完成（2026-08-14，离线部分）**——冒烟 8.6
     RT-01～RT-08 + RT-11（dev/生产双场景退出码 0）+ RT-09 全仓库 grep +
     增量安全审计 + logger 日志行伪造防御修复（normalizeLogMessage）；
-    RT-10 与真实 Provider 场景受 Provider 能力限制 NOT RUN（deepseek-v4-flash
-    对任何 tools 载荷 400——兼容性证据登记，不标记通过；`AIBROWSE_LIVE_AGENT=1`
-    门控就绪）。
+    RT-10 与真实 Provider 场景 NOT RUN（真实调用首轮 400 的**根因已确诊为
+    wire 名称契约**——13 工具名全部携带点号违反 OpenAI 兼容端点 function.name
+    约束，非「模型不支持 tools」；补验离线修复已落地，见决议 #35；
+    `AIBROWSE_LIVE_AGENT=1` 完整场景与 `AIBROWSE_LIVE_AGENT_PRE=1` 最小预检
+    门控均就绪，真实验证待用户重新授权）。
     **A8 第三阶段收尾已完成（2026-08-14）**——§9 验收逐项核对（14 项 PASS、
     1 项 BLOCKED——真实网站 Agent smoke）+ §10 五项技术条件逐项判定 PASS，
-    **总 Exit 决策 HOLD/PENDING**（真实 Provider 缺口，不标记最终验收通过，
+    **总 Exit 决策 HOLD/PENDING**（真实 Provider 验证缺口，不标记最终验收通过，
     不进入 Fourth Stage）。
     纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
     （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
@@ -318,12 +320,12 @@ d:\AIbrowse\
     │       │                                  #   browser-tools（A2 只读导航 8 工具）/
     │       │                                  #   interaction-tools（A3 ✅ find/scroll/click/fill）/
     │       │                                  #   interaction-semantics（A3 ✅ 快照语义存储+世代绑定；A6 text 映射）/
-    │       │                                  #   search-tool（A4 ✅ search.web 注册/序列化）
+    │       │                                  #   search-tool（A4 ✅ search_web 注册/序列化）
     │       ├── permission/                    # （A2 ✅）permission-policy：L0–L3 确定性权限纯函数
     │       ├── confirm-manager.ts             # （A2 ✅ + A6 ✅）确认状态机（pending/approve/deny/作废；
     │       │                                  #   A6 判别联合 PendingChange + 多监听者 Set 分发）
     │       ├── audit-log.ts                   # （A2 ✅）结构化审计条目（参数脱敏摘要；
-    │       │                                  #   A4 search.web query 全量记录，决议 #32）
+    │       │                                  #   A4 search_web query 全量记录，决议 #32）
     │       └── search/                        # （A4 ✅）search-provider：接口 + Bing 页面实现 +
     │                                          #   确定性解析（临时 Tab 精确所有权 → 快照解析
     │                                          #   → 统一结果结构，零 Electron import）
@@ -620,9 +622,12 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
 > `grep -n "^export"` 逐项核对**；A7 红队矩阵与安全审计已实施（离线部分——
 > RT-01～RT-08 + RT-11 冒烟 8.6 落地、RT-09 grep 断言、RT-10 真实模型观察
 > NOT RUN）；A8 收尾验收已完成——§9 验收逐项核对 + §10 技术条件逐项判定，
-> **总 Exit 决策 HOLD/PENDING**（真实 Provider 缺口：唯一已配置
-> deepseek-v4-flash 对任何 tools 载荷 HTTP 400；待 tools 兼容 Provider +
-> 用户授权后执行 `AIBROWSE_LIVE_AGENT=1` 真实 Agent 补验）。
+> **总 Exit 决策 HOLD/PENDING**（真实 Provider 验证缺口：真实调用首轮 400 的
+> 根因已确诊为 **wire 名称契约**——既有 13 工具名全部携带点号违反 OpenAI 兼容
+> 端点 function.name 约束（非「模型不支持 tools」）；补验离线修复已落地（决议
+> #35：wire-safe 下划线名 + 注册/序列化双闸门 + reasoning_content 不透明回传），
+> 待用户重新授权后以 `AIBROWSE_LIVE_AGENT_PRE=1` 最小预检 → 二次授权
+> `AIBROWSE_LIVE_AGENT=1` 完整场景补验）。
 
 - **tool-calling 兼容层（A1 ✅ 已实现，2026-08-14 grep 核对）**：shared/types/
   conversation.ts 新增 `ProviderToolParameter`/`ProviderTool`/`ProviderToolCall`
@@ -672,7 +677,7 @@ Promise<ToolResult>` + `ToolExecutionContext`（browser: BrowserController /
   首批 13 工具分三批：A2 只读导航 8 个（get_tabs/get_active_tab/read/open/
   navigate/back/forward/reload，browser-tools.ts `BROWSER_TOOL_DEFINITIONS`
   只经注入 BrowserController 执行，不 import Electron）、A3 交互 4 个
-  （find/scroll/click/fill）、A4 search.web；page.extract 与关闭 Tab 工具
+  （find/scroll/click/fill）、A4 search_web；page.extract 与关闭 Tab 工具
   v1 不实现（决议 #21/#28）。
 - **权限分级（A2 ✅ 已实现，grep 核对）**：permission-policy.ts——
   `TOOL_BASE_RISK`（13 工具编译期常量矩阵，模型/网页无通道修改，T-06）、
@@ -699,7 +704,7 @@ boolean`（未知/已终结 id → false，幂等）、`cancelAll(runId): void`�
 - **审计（A2 ✅ 已实现，grep 核对）**：audit-log.ts——`AuditDecision`
   （auto/auto-visible/confirmed/denied/forbidden/invalid）、`AuditEntry`
   （requestId/toolCallId/tool/argsSummary/decision/ok/errorCode/durationMs）、
-  `summarizeArgs(toolName, args)`（键排序确定性；browser.fill 的 text →
+  `summarizeArgs(toolName, args)`（键排序确定性；browser_fill 的 text →
   `len=N` 原文零出现；url 全量；其余 ≤ `ARGS_SUMMARY_MAX`=200 截断）、
   `summarizeRawArgs`（解析失败路径原文截断）、`formatAuditMessage(entry)`
   （§10.1 确定性中文格式）、`createAuditLogger(log=logInfo)`（薄封装，装配
@@ -763,7 +768,7 @@ hasContent}`（bing 自身域 + 中英双语非结果标签过滤/非 http/https
   `formatSearchResults(results)`/`createSearchTool(searchProvider)`（schema
   仅 {query}、paramRules nonEmpty、baseRisk 0；ctx.searchProvider 优先于注册
   注入；结果纯文本行零指令性/富文本特权；不暴露 documentId/内部 tabId/快照
-  正文/调试字段）。审计：search.web 查询串与 url 同等级**全量**记录（T-03 外发
+  正文/调试字段）。审计：search_web 查询串与 url 同等级**全量**记录（T-03 外发
   审查可追溯，上限 500 有界）；ToolExecutionContext 增 `searchProvider?`
   （A4 注入点，设计 §4.1 落点，A5 AgentLoop 装配复用）。
 - **AgentRuntime（A5 ✅ 已实现，2026-08-14 grep 核对）**：agent-loop.ts——
@@ -905,10 +910,10 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
       归一化/会话管理 UI/布局 bounds 380 收缩与恢复/Key 不可达——DOM 与日志字节扫描 +
       credentials.json 密文 + 白名单无读回/注入结构断言/远程隔离回归；矩阵见
       doc/stage2/detailed-design.md §13.2）→ A2/A3/A4 起再验证工具层探针（注册表恰好
-      13 个工具（A2 8 + A3 4 + A4 search.web）+ listTools 恒等 + 经 ToolExecutor
+      13 个工具（A2 8 + A3 4 + A4 search_web）+ listTools 恒等 + 经 ToolExecutor
       走真实 BrowserController 的 get_tabs/read 成功、javascript: URL forbidden
       不建 Tab、非法 tabId → invalid-args、未知 tabId read → execution-failed、
-      search.web 空查询/超长 invalid-args + 日志切片 7 条审计恰好一次一条）→
+      search_web 空查询/超长 invalid-args + 日志切片 7 条审计恰好一次一条）→
       A3 起再验证交互场景 8.2（真实 DOM：
       A-12 click 允许列表四类点击（含 nav 真实导航）/提交类 deny・approve 确认门/
       非允许列表与「立即购买/删除账户」forbidden 零 DOM 动作/权限判定后动态变化
@@ -926,7 +931,7 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
       零泄漏）→ A5 起再验证 Agent Runtime 场景 8.4 A-01～A-09（FakeProvider
       多轮脚本离线确定性，主进程驱动完整生产链路 agentAsk → AgentLoop → 13 工具
       注册表 → 权限/确认/审计 → 真实 BrowserController/SearchProvider 受控夹具：
-      A-01 多步任务（open/read/find/search.web/scroll/click 真实执行 + 最终回答 +
+      A-01 多步任务（open/read/find/search_web/scroll/click 真实执行 + 最终回答 +
       协议历史合法序 + 13 工具请求 + system 恒等 + goal 恰一次 + 搜索临时 Tab
       run 内零泄漏）/A-02 提交类确认 deny 零动作・approve 执行（审计 denied/
       confirmed 各一）/A-03 慢模型中停 cancelled 部分保留 + pending 作废零执行/
@@ -1108,7 +1113,7 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
     重新分配证据）；8.1 校准为注册表 12 工具。dev + 生产双场景退出码 0。
   - ✅ A4（2026-08-14 红→绿落地，43 新增：search-provider 28 / search-tool 14 /
     audit-log 1，基线 533 → 576；既有用例零删除零削弱——audit-log「其余截断」
-    用例改用 browser.find 覆盖属决议 #32 契约校准）：解析矩阵（正常结果组装与
+    用例改用 browser_find 覆盖属决议 #32 契约校准）：解析矩阵（正常结果组装与
     顺序/确定性去重保持首现/source 恒 bing/非 http・https 与畸形 URL 丢弃计数
     警告/bing.com 子域过滤与形似域名不误伤/中英双语非结果标签过滤/ck/a 包装
     链接 base64url 还原与非法形态丢弃/前 10 条/title 200 截断/snippet 恒空串 +
@@ -1118,7 +1123,7 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
     操作/ready 超时注入时钟/导航 error 快速失败/快照 null（L3）与 L2 降级
     search-failed/结构无法识别 vs 合法空结果区分/Abort 前后两阶段/query 校验
     不建 Tab/控制器异常归一化/敌手 createTab 返回已存在 id 不纳入清理/并发
-    调用互不清理对方 Tab/任何路径无临时 Tab 泄漏）、search.web 工具（常量
+    调用互不清理对方 Tab/任何路径无临时 Tab 泄漏）、search_web 工具（常量
     schema/序列化纯文本行/snippet 空省略/成功与失败与取消映射/ctx.searchProvider
     优先/管线 L0 auto 恰好一条审计/query 空串・超长・缺失・未知键・类型不符
     invalid-args 零 Provider 调用/500 边界/4000 截断附 warning/查询串全量审计）。
@@ -1265,9 +1270,10 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
 - **Permission**：高风险动作无法无确认执行（L2 确认门）；网页文本无法提升 Tool
   权限（确定性权限纯函数）；无万能 shell/eval/filesystem 工具（永久红线 grep 断言）。
 - **Engineering**：全量验证通过；多个真实网站 Agent smoke test 通过（**A8 判定
-  BLOCKED**——唯一已配置 Provider deepseek-v4-flash 对任何 tools 载荷 HTTP 400，
-  无 tools 兼容 Provider；不得以离线 FakeProvider 冒烟替代；`AIBROWSE_LIVE_AGENT=1`
-  门控就绪，待 tools 兼容 Provider 配置 + 用户授权后补验）；Agent 操作日志无
+  BLOCKED，补验预检后根因已确诊为 wire 名称契约**——13 工具名携带点号违反
+  function.name 约束致整组 tools 400；离线修复已落地（决议 #35），真实补验待
+  用户重新授权；不得以离线 FakeProvider 冒烟替代；`AIBROWSE_LIVE_AGENT_PRE=1`
+  最小预检与 `AIBROWSE_LIVE_AGENT=1` 完整场景门控均就绪）；Agent 操作日志无
   敏感信息（离线证据通过；真 Key 零暴露扫描随真实补验执行）。
 
 ## 附 C：第三阶段完成报告格式（Third_stage.md §10）
