@@ -6779,9 +6779,34 @@ export async function runLiveAgentScenarios(
           '场景 5：approve 后确认框应关闭',
         );
       }
-      await waitTerminal('场景 5');
+      // A7 补验校准（2026-08-14，真实验收第 5 次执行证据）：模型在 deny + 一次 approve
+      // 之后可能再次提出新的提交确认（RT-03 契约行为「每次新提交必须产生新确认」）——
+      // 冒烟驱动不再批准：后续所有确认一律 deny（用户拒绝语义），直至 run 终态
+      // （此前仅 waitTerminal——第三次确认悬挂 pending 无人决议，180s 等待超时）
+      let deniedConfirmsAfter = 0;
+      const denyDeadline = Date.now() + 180000;
+      for (;;) {
+        if ((await uiCount(uiWc, '.ai-agent-run')) >= 1) break;
+        if (await uiHas(uiWc, '.ai-confirm-dialog')) {
+          await clickUi(uiWc, '.ai-confirm-deny');
+          deniedConfirmsAfter += 1;
+          await waitFor(
+            async () => (await uiHas(uiWc, '.ai-confirm-dialog')) === false,
+            10000,
+            '场景 5：后续确认 deny 后应关闭',
+          );
+        } else {
+          if (Date.now() >= denyDeadline) {
+            throw new Error('场景 5：run 未在 180 秒内到达终态');
+          }
+          await delay(1500);
+        }
+      }
       recordRounds(
-        '场景 5：提交确认门（deny 无动作' + (approved ? ' + 重试 approve 本地夹具' : '') + '）',
+        '场景 5：提交确认门（deny 无动作' +
+          (approved ? ' + 重试 approve 本地夹具' : '') +
+          (deniedConfirmsAfter > 0 ? ` + 后续新提交确认一律 deny ×${deniedConfirmsAfter}` : '') +
+          '）',
       );
       // 页面证据：deny 路径零动作；approve（如发生）只对本地夹具执行一次
       const clicks = (await pageLog()).filter((x) => x === 'click:submit-btn').length;
