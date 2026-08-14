@@ -8,16 +8,21 @@
 > Browser Agent 复用既有 browser_open/browser_read 打开读取检索结果。
 > **阶段状态（2026-08-15）：B1 完成（node:sqlite 决策门实测通过并冻结）、
 > B2 已完成（Source 域模型 + Repository + SourceService + journal + Undo）、
-> B3 待开始**——Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9
+> B3 已完成（多语言 Source Search + 有界 Retrieval + 分享模式）、
+> B4 待开始**——Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9
 > 任务拆分已完成；**B1：node:sqlite 在 Electron 43.4.0 dev+生产构建
 > 11 项逐项实测通过（基础能力项全过 + FTS5/trigram 可用），驱动冻结决议 #48 +
 > sqlite-driver/migrations 基座落地；B2：九项契约缺口实施前裁决（决议
 > #49–#57）+ schema v1（Sources/Groups/Tags/links/change journal/usage/FTS5）+
 > canonicalization + Repository（唯一 SQL 执行点）+ SourceService + durable
-> Undo 已落地（全量 test 947/947，B-02 双进程冒烟通过）；Sources 功能对用户/
-> Agent 尚不可用（UI/Tools 未实现——B3–B5 完成前不得宣称可用）**；下一个推荐
-> 任务 = **B3**（多语言 Source Search：FTS5/trigram + 短查询安全降级 + 有界
-> Retrieval + 分享模式 + 确定性排序）。契约源 `doc/stage4/detailed-design.md`；安全契约源
+> Undo 已落地（全量 test 947/947，B-02 双进程冒烟通过）；**B3：六项契约裁决
+> （决议 #58–#63）+ 多语言检索（FTS5/trigram 主路径 + 短查询安全降级）+ 有界
+> Retrieval（硬上限 10/每页 20）+ 分享模式（audience 必填）+ 确定性排序 +
+> note 摘录 ≤200 + rebuild 一致性已落地（全量 test 1007/1007，B-04 B3 子集
+> dev+生产双场景冒烟通过）**；Sources 功能对用户/Agent 尚不可用（UI/Tools
+> 未实现——B4/B5 完成前不得宣称可用）**；下一个推荐任务 = **B4**（Source
+> Tools + 权限矩阵 + L2 change set 确认/审计 + Agent 上下文隔离）。契约源
+> `doc/stage4/detailed-design.md`；安全契约源
 > `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
 > Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
 > 历史阶段（已完成）：第三阶段 Browser Agent 契约源 `doc/stage3/detailed-design.md`；
@@ -41,7 +46,7 @@
 ## 当前状态（2026-08-15）
 
 - 🔨 **第四阶段（Sources）进行中（2026-08-15，用户切换指令）：设计完成、
-  B1 已完成、B2 已完成、B3 待开始**——设计闭环（proposal/高层设计/详细设计/
+  B1 已完成、B2 已完成、B3 已完成、B4 待开始**——设计闭环（proposal/高层设计/详细设计/
   威胁模型/B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：
   Electron 43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared
   statements/事务/外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）
@@ -54,9 +59,17 @@
     共用唯一入口）+ change journal（100 条/30 天有界）+ durable Undo（重启后
     可用、版本冲突拒绝、消费幂等）+ hard delete 私人 payload 清理 + 冒烟 B-02
     （`AIBROWSE_SOURCES_SMOKE=set|check` 双进程跨进程读回与 Undo，生产退出码 0）；
-    **Sources 功能对用户/Agent 尚不可用（UI/Tools 未实现——B3–B5 完成前不得
-    宣称可用）**；下一个唯一任务 = **B3**（多语言 Source Search：FTS5/trigram
-  - 短查询安全降级 + 有界 Retrieval + 分享模式 + 确定性排序）。契约
+    **B3 已落地**：六项契约裁决（决议 #58–#63：audience 必填 user|agent /
+    SourceSearchItem 独立类型 / 1 精确·2 精确+前缀+子串·≥3 FTS·URL 判定集合 /
+    档位不可跨档全序 / FTS 不可用仅指建库后 MATCH/构造失败 / B-04 分段记录）+
+    source-search-query 纯函数（归一化/分流/FTS 短语构造/档位/排序/note 摘录）+
+    source-search-index（四条编译期候选 SQL + 参数绑定 + 有界 200 + rebuild/
+    一致性探针）+ SourceService.search/list/get 完整实现（硬上限 10/每页 20/
+    分享模式矩阵/note ≤200 + provenance/bidi 补齐 U+061C/U+2066–U+2069）+
+    冒烟 8.9 B-04 B3 子集（默认矩阵 dev+生产双场景真实 node:sqlite）。
+    **Sources 功能对用户/Agent 尚不可用（UI/Tools 未实现——B4/B5 完成前不得
+    宣称可用）**；下一个唯一任务 = **B4**（Source Tools + 权限矩阵 + L2 change
+    set 确认/审计 + Agent 上下文隔离）。契约
     `doc/stage4/detailed-design.md` + 安全契约 `doc/stage4/threat-model.md`。
 
 - ✅ **第一阶段完成（Exit Gate 通过，2026-08-13）**：T0 项目基线 → T1 详细设计定稿 →
@@ -149,7 +162,10 @@ RT-11：诱导文案结构隔离/URL 白名单 + 日志行伪造防御/提交确
 事务回滚/外键拦截/busy_timeout 锁竞争/FTS5/trigram 中文子串/userData 派生路径/
 句柄清理；基础能力项任一失败即冒烟失败；⑩ 的 userData 路径实测用官方验证命令
 `AIBROWSE_USER_DATA_DIR=<系统 TEMP 下临时目录>`，默认矩阵运行 userData 非临时时
-如实跳过并注明）→
+如实跳过并注明）→ B3 起再验证 8.9 B-04 B3 子集（有界检索/分享模式矩阵/
+中·日·英命中/短查询降级/硬上限 10/URL 查询/注入串/rebuild 一致性——真实
+Electron 内置 node:sqlite/FTS5/trigram；SOURCE_TOOL_CONTENT_MAX=4000/
+ToolResult/块隔离/审计为 B4 待完成，决议 #63）→
 自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
 `doc/stage3/detailed-design.md` §13.2 + `doc/stage4/detailed-design.md` §13.2）。
 **B-02 Sources 跨进程持久化冒烟（B2 专属门控，决议 #57，两进程均需
@@ -197,7 +213,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 947 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 1007 用例）                   |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -304,7 +320,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 947 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 1007 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具

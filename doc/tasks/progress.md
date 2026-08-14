@@ -23,13 +23,21 @@
   门控）+ Source 域模型/canonicalization/schema v1/Repository（唯一 SQL 执行点）/
   SourceService/change journal/durable Undo/冒烟 B-02 双进程 set/check 落地；
   全量 test 947/947（+131）；dev+生产双场景默认矩阵与 B-02 双进程退出码 0。
-  **B3–B9 待开始**；下一个推荐任务 = **B3**（多语言 Source Search：FTS5/trigram
-  - 短查询安全降级 + 有界 Retrieval + 分享模式 + 确定性排序）。
-    Sources 功能对用户/Agent 尚不可用（UI/Tools 未实现——B3–B5 完成前不得宣称
-    可用；SourceService 已可经代码调用）。步骤 0 独立核对：HEAD
-    `b2eb8d5` = Gitee/GitHub 双远程 HEAD（ls-remote 实测，三方一致）、工作区干净；
-    既有接口经代码核对与 AGENTS.md §5 契约一致（4 处文档滞后性遗漏登记为决议 #45，
-    留待速查回填）。Entry Gate 判定证据见 `doc/stage4/proposal.md` §8。
+  **B3 已完成（2026-08-15）**——六项契约冲突实施前用户裁决（决议 #58–#63：
+  audience 必填 user|agent/SourceSearchItem 独立类型/1 精确·2 精确+前缀+子串·
+  ≥3 FTS·URL 判定集合/档位不可跨档 + scope+canonicalKey+id 收尾全序/FTS 不可用
+  仅指建库后 MATCH/构造失败/B-04 记 B3/B4 分段）+ 多语言 Source Search（FTS5/
+  trigram 主路径 + 短查询安全降级 + 有界 Retrieval 硬上限 10/每页 20 + 分享模式
+  full/metadata/blocked + 确定性排序 + note 摘录 ≤200 + provenance + bidi 补齐
+  U+061C/U+2066–U+2069）+ 诊断性 rebuild/一致性校验 + 冒烟 B-04 B3 子集（默认
+  矩阵 dev+生产双场景）；全量 test 1007/1007（+60）。**B4–B9 待开始**；下一个
+  推荐任务 = **B4**（Source Tools + 权限矩阵 + L2 change set 确认/审计 + Agent
+  上下文隔离）。Sources 功能对用户/Agent 尚不可用（UI/Tools 未实现——B4/B5 完成前
+  不得宣称可用；SourceService 已可经代码调用）。步骤 0 独立核对（2026-08-15，B3
+  会话）：HEAD `e26bfd8` = Gitee/GitHub 双远程 HEAD（ls-remote 实测，三方一致）、
+  工作区干净；基线 test 947/947·typecheck·lint·format:check 独立复跑全绿；B1/B2
+  代码与接口在位（决议 #45 的速查回填已于 B2 收尾完成）。Entry Gate 判定证据见
+  `doc/stage4/proposal.md` §8。
 - 已完成（第三阶段，历史）：**第三阶段（Browser Agent）**，已于 2026-08-14 正式切换（用户指令）。Entry
   Gate 逐项核验通过（判定证据见 doc/stage3/proposal.md §8）；**设计定稿与任务拆分
   已完成（2026-08-14，纯文档）**——`doc/stage3/`：threat-model（Prompt Injection
@@ -126,7 +134,7 @@
 
 | B1 | node:sqlite 决策门 spike（硬前置）：Electron dev+生产构建实测 11 项（import/文件库/prepared statements/事务/外键/busy timeout/FTS5/trigram/userData/句柄清理）+ SQLite/migration 基座 | ✅ | 2026-08-15 完成（见下）：11 项逐项实测，基础能力项 ①–⑦、⑩、⑪ 全过 + ⑧⑨ 可用 → 按决议 #46/#47 冻结 node:sqlite（决议 #48）；driver/migrations/冒烟 B-01/单测 +31 落地；全量 816/816；任务文档 doc/stage4/tasks/B1-sqlite-foundation.md（实测证据节已回填） |
 | B2 | Source 域模型 + canonicalization + Repository（唯一约束）+ SourceService + 事务 + change journal + Undo | ✅ | 2026-08-15 完成（见下）：九项契约缺口实施前用户裁决（决议 #49–#57）+ schema v1 + 全模块落地 + 冒烟 B-02 双进程；任务文档 doc/stage4/tasks/B2-source-domain-service.md（红→绿证据已回填） |
-| B3 | 多语言 Source Search：FTS5/trigram + 短查询安全降级 + 有界 Retrieval（硬上限 10/每页 20/allowlist）+ 分享模式 + 确定性排序 | ⏳ | 2026-08-15 设计定稿；契约 detailed-design §8；任务文档 doc/stage4/tasks/B3-source-search-retrieval.md |
+| B3 | 多语言 Source Search：FTS5/trigram + 短查询安全降级 + 有界 Retrieval（硬上限 10/每页 20/allowlist）+ 分享模式 + 确定性排序 | ✅ | 2026-08-15 完成（见下）：六项契约裁决（决议 #58–#63）+ 检索/降级/排序/分享模式/note 摘录/rebuild 全落地 + B-04 B3 子集冒烟；任务文档 doc/stage4/tasks/B3-source-search-retrieval.md（红→绿证据已回填） |
 | B4 | Source Tools 四工具（search/list/get L0 + apply_changes L2）+ 权限矩阵 + change set 确认/幂等键/expectedVersion/审计 + Agent 上下文隔离 | ⏳ | 2026-08-15 设计定稿；注册后 17 工具（冒烟 8.1 断言校准）；任务文档 doc/stage4/tasks/B4-source-tools-permission.md |
 | B5 | Sources UI + 手工管理 + 当前页快速添加 + 冲突/恢复态/Undo 展示 + IPC/bridge 扩展 | ⏳ | 2026-08-15 设计定稿；任务文档 doc/stage4/tasks/B5-sources-ui.md |
 | B6 | AI 自然语言管理端到端（change set 全链路 + Undo）+ Browser Agent 复用（source_search → browser_open/read）+ usage 记录接线 | ⏳ | 2026-08-15 设计定稿；真实 Provider 可选验证门控 AIBROWSE_LIVE_AGENT_SOURCES=1；任务文档 doc/stage4/tasks/B6-ai-source-management.md |
@@ -139,7 +147,70 @@
 > 编号一律不变。（2026-08-15）第四阶段任务编号 B1–B9、威胁 ST-01～ST-12、红队
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1/B2 条目）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1/B2/B3 条目）
+
+- **B3 多语言 Source Search + 有界 Retrieval + 分享模式（2026-08-15，第三个实现
+  闭环）**：① 步骤 0 独立核对——HEAD `e26bfd8` = Gitee/GitHub 双远程 HEAD
+  （ls-remote 实测三方一致）、工作区干净、基线 test 947/947·typecheck·lint·
+  format:check 独立复跑全绿；B3 零实现（无 source-search-query/source-search-
+  index 文件）；已知文档矛盾核验属实并校准——Fourth_stage.md 头部「尚未实现任何
+  Sources 功能、下一任务 B1」、progress 当前状态仍记起始 HEAD `b2eb8d5`、底部
+  「下一个推荐任务」仍为 B2（三处按实际状态精确校准，不保留多个「下一任务」，
+  未改写历史验收记录）。② **实施前硬停点：六项契约冲突逐项核验全部属实**
+  （search/list/get 无可信 audience 参数、SourceSearchResult.results 无 note
+  类型、详细设计「中文 2+ 子串」与 B1 实测 trigram ≥3 语义矛盾、「priority
+  ±1 档」无算法且 origin/page 同 canonical key 时 canonical_key 不能保证全序、
+  schema v1 无条件建 sources_fts 与「FTS 不可用降级」范围未界定、B-04 断言含
+  B4 的 ToolResult/块接线）→ **用户一次性裁决（六项全部采纳推荐）** = 决议
+  #58–#63（audience 必填 user|agent，B4/B5 主进程适配器硬编码 / 新增
+  SourceSearchItem+SourceSearchNote 独立类型，SourceListItem 永不含 note /
+  查询 trim+NFC 按码点计数：1 字符仅精确、2 字符精确+前缀+参数化字面子串 LIKE
+  （中文 2 字符子串经降级路径诚实交付，不声称 trigram 原生支持两字符）、≥3 字符
+  FTS、URL 判定集合 = normalizeSourceUrl 可解析或 http(s):// 前缀 / 档位严格
+  不可跨档 + priority/recency 仅同档内 + lastUsedAt=null 末位 + scope+
+  canonicalKey+id 收尾全序 / FTS 不可用仅指建库后 MATCH/构造失败，migration v1
+  不改写 / B-04 记 B3/B4 分段，B3 不提前实现工具层）；detailed-design
+  §2/§3.1/§6/§8/§13/§15 + HLD + B3 任务文档 + threat-model §3.3/§3.4 +
+  proposal Q7 同步校准。另核验属实并在本任务修复：stripControlChars 未覆盖
+  U+061C、U+2066–U+2069（bidi 隔离控制符）——写入侧补齐 + 读取侧防御性清洗
+  （旧数据/损坏数据同样覆盖）+ 敌手测试。③ **红→绿**：先写测试——红态 4 files
+  failed / 16 failed / 955 passed（2 新文件模块缺失 + 8 个 service B3 行为断言
+  在 B2 实现下真实失败：audience 被忽略（`{ok:true,query:'q',results:[]}` 而非
+  invalid-change）、agent 视角 blocked 搜索命中泄漏、`note` undefined、中文
+  2 字符 '测试' 在 B2 LIKE 前缀语义下不命中、档位排序在 B2 created_at 排序下
+  失败（note 命中条目不在结果集）、agent list total 4 而非 3、bidi 敌手 8 例
+  （`expected 'xyzy' received 'xy⁦z⁩؜⁧y'` 等真实形态失败）；既有 947 用例零删除
+  零削弱（audience 为机械校准 + 语义保留 + 隐私断言新增）。实现后全量
+  **1007/1007**（新增 60：source-search-query 23 / source-search-index 13 /
+  source-service B3 14 / source-change-set bidi 10——9 敌手 case + 1 幂等）。
+  实现期修正如实登记：**SQLite 3.53.1 新增实测事实**——FTS5 外部内容表语义下
+  COUNT(_)/全表扫描读取内容侧（索引滞留行在查询期被 FTS5 自动忽略、计数不可
+  见），故一致性校验采用逐行 MATCH 回查探针检出「内容有行、索引缺行」方向
+  （搜索漏命中），滞留方向如实登记由 rebuild 清除；origin/page 同 canonicalKey
+  在决议 #50 语义下实际不可达（page 键恒带 '/'），全序收尾的 scope 三元组由
+  纯函数单测覆盖 + 服务层以同源键族（'https://example.com' 前驱/'/' 后驱）实测
+  确定性排序；测试自身缺陷若干（'基准' 实为 2 字符、默认夹具 tag 与查询词相撞、
+  'ENCHMARK' 为 'Benchmark' 子串、'OR'/'--'/'_'/'^' 为短 token 被过滤——均按
+  契约修正测试，无实现迁就）。④ **冒烟**：默认完整 dev 矩阵退出码 0（B-01 +
+  8.9 B-04 B3 子集：中/日/英命中 + 短查询降级 + 分享模式矩阵 + 硬上限 10 + URL
+  查询 + 注入串 + rebuild 一致性，真实 Electron 内置 node:sqlite/FTS5/trigram）；
+  默认完整生产矩阵退出码 0（同矩阵，out/ 产物运行）；**B-02 生产双进程**
+  `AIBROWSE_SOURCES_SMOKE=set` 退出码 0 → 新进程 `check` 退出码 0（读回一致 +
+  重启后 Undo + B3 补充证据「重启后经 B3 检索命中 s1」——B-02 原有断言零改
+  动）；两进程共用同一预先核验位于系统 TEMP 下的独立 userData，结束后仅删除该
+  本次专属目录。⑤ **红线与敏感扫描**：候选 SQL 全部编译期常量 + 参数绑定（四条
+  候选路径 + rebuild/探针均 prepared statement，无 exec 动态串）；renderer/
+  preload/tools/agent 零 SQL；source_sql/source_delete_hard/source_export_all
+  零命中；新代码零 any/@ts-ignore/@ts-nocheck；package/lockfile 零改动；工具
+  注册表仍既有 13 个（冒烟 8.1 断言通过）；日志零 note 正文/URL token/sk- 形态
+  （当日日志字节扫描 0 命中）；冒烟临时目录零残留（本会话 B-02 遗留 2 个
+  fake-provider 空配置目录已清理，更早会话遗留目录非本任务创建未动）。**未调用
+  任何付费 Provider、未输出/索取 API Key、未新增依赖、未改 B1 冻结 driver 与
+  B2 冻结 schema v1（migrations.ts/sqlite-driver.ts 零 diff）。** B-04 剩余
+  部分（SOURCE_TOOL_CONTENT_MAX=4000/ToolResult 序列化/UNTRUSTED_TOOL_RESULT
+  块接线/审计）按决议 #63 明确标注 B4 待完成，本任务不宣称 B-04 全过；B3 尚未
+  接 Agent 运行与可取消异步任务，Agent cancel/ConfirmManager 场景 N/A（检索
+  路径无句柄/监听器/临时库泄漏——异常路径均经单测与 dispose 幂等覆盖）。
 
 - **B2 Source 域模型 + Repository + SourceService + journal + Undo（2026-08-15，
   第二个实现闭环）**：① 步骤 0 独立核对——HEAD `b2eb8d5` = Gitee/GitHub 双远程
@@ -1458,15 +1529,17 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **B2 — Source 域模型 + canonicalization + Repository（唯一约束）+ SourceService
-  - change journal + Undo（新对话 = 一个可验证闭环）**：B1 已完成（node:sqlite
-    冻结，决议 #48；driver/migrations 基座在位，B1 通过前禁止 Source 实现的
-    硬前置已解除）。B2 按 `doc/stage4/tasks/B2-source-domain-service.md` 落地
-    shared/types/sources.ts、source-canonical 纯函数、migrations v1（schema 语句
-    追加为编译期常量 v1）、source-repository（唯一业务 SQL 执行点）、change-journal
-    （有界 100 条/30 天，注入时钟）、SourceService（UI 与 Agent 共用唯一入口）
-    与冒烟 B-02（跨进程持久化）。完成后按 B3→B4→B5→B6→B7→B8→B9 顺序推进，
-    B9 独立复验不采信前序报告；本提示内不再继续实现，等待用户下一条指令。
+- **B4 — Source Tools 四工具（search/list/get L0 + apply_changes L2）+ 权限矩阵
+  - L2 change set 确认/审计 + Agent 上下文隔离（新对话 = 一个可验证闭环）**：
+    B1–B3 已完成（node:sqlite 冻结决议 #48；schema v1/Repository/Service/journal/
+    Undo/多语言检索在位；基线 1007/1007 全绿）。B4 按
+    `doc/stage4/tasks/B4-source-tools-permission.md` 落地 source-tools.ts 四工具
+    （executor 零 Electron import，ctx.sourceService 注入点）、TOOL_BASE_RISK 增
+    4 条目、change set 确认全链路（确定性 diff → L2 ConfirmManager → 幂等键 →
+    expectedVersion → 单事务）、审计脱敏、SOURCE_TOOL_CONTENT_MAX=4000 结果预算
+    （决议 #63 的 B-04 剩余部分）、UNTRUSTED_TOOL_RESULT 块隔离回归、注册表
+    13 → 17 工具与冒烟 8.1 断言校准。完成后按 B5→B6→B7→B8→B9 顺序推进，B9 独立
+    复验不采信前序报告；本提示内不再继续实现，等待用户下一条指令。
 
 ## 第一阶段验收未完成项
 
