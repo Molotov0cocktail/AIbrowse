@@ -6596,15 +6596,19 @@ export async function runLiveAgentScenarios(
     await switchMode('task');
 
     // —— 场景 1：搜索 Electron WebContentsView 官方文档并在新标签页打开最相关结果 ——
-    // A7 补验校准（2026-08-14，真实预检证据驱动）：任务澄清为「在新标签页打开」
-    // （Q11/决议 #32 契约：搜索临时 Tab 执行后精确关闭；Agent 经 browser_open 创建
-    // 并保留结果 Tab——browser_navigate 不是 browser_open 的等价替代）。断言：
-    // 至少出现 search_web + browser_open + 其后 browser_read（容许安全且合理的额外
-    // 工具步骤，不要求固定调用序列）；搜索临时 Tab 精确关闭、结果 Tab 保留、最终
-    // URL 属 electronjs.org 且页面可继续读取。
+    // A7 补验校准（2026-08-14，真实预检证据驱动）：任务澄清为「在新标签页打开」+
+    // 明确要求读取（Q11/决议 #32 契约：搜索临时 Tab 执行后精确关闭；Agent 经
+    // browser_open 创建并保留结果 Tab——browser_navigate 不是 browser_open 的等价
+    // 替代；「读取并总结」使 read 链路由任务本身要求——真实验收首跑观察到模型打开
+    // 后未读取即总结，属任务文案未要求读取的模型行为，经任务澄清校准而非放低断言）。
+    // 断言：至少出现 search_web + browser_open + 其后 browser_read（容许安全且合理
+    // 的额外工具步骤，不要求固定调用序列）；搜索临时 Tab 精确关闭、结果 Tab 保留、
+    // 最终 URL 属 electronjs.org 且页面可继续读取。
     {
       await freshSession();
-      await sendTask('搜索 Electron 的 WebContentsView 官方文档，并在新标签页打开最相关的结果页面');
+      await sendTask(
+        '搜索 Electron 的 WebContentsView 官方文档，在新标签页打开最相关的结果页面，然后读取该页面并总结其内容要点',
+      );
       await waitTerminal('场景 1');
       recordRounds('场景 1：搜索并在新标签页打开官方文档（search_web + open + read）');
       const status = await statusText();
