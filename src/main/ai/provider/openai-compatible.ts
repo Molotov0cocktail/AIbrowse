@@ -272,6 +272,18 @@ export async function* streamSseBody(
     toolSlots: new Map<number, ToolCallSlot>(),
     finishReason: null as string | null,
     toolCallsEmitted: false,
+    // A7 补验：本流 reasoning_content 增量总长（仅长度入日志，内容零暴露，决议 #35）
+    reasoningLen: 0,
+  };
+
+  // 流结束时输出 reasoning_content 仅长度观测（布尔 + 长度，内容永不记录）
+  const flushReasoningLog = (): void => {
+    if (state.reasoningLen > 0) {
+      logDebug(
+        'provider',
+        `本轮流 reasoning_content（长度=${state.reasoningLen}，req=${context.requestId}）`,
+      );
+    }
   };
 
   function* failParse(): Generator<ProviderEvent, 'error'> {
@@ -294,6 +306,7 @@ export async function* streamSseBody(
     }
     if (event.type === 'skip') return 'continue';
     if (event.type === 'done-marker') {
+      flushReasoningLog();
       yield { type: 'done', usage: state.usage };
       return 'done';
     }
@@ -304,6 +317,7 @@ export async function* streamSseBody(
       carryUsage(event.usage);
       // reasoning 增量先于正文产出（与 Provider 流内顺序一致；累积方按事件顺序拼接）
       if (event.reasoningText !== undefined && event.reasoningText !== '') {
+        state.reasoningLen += event.reasoningText.length;
         yield { type: 'reasoning', text: event.reasoningText };
       }
       if (event.text !== '') yield { type: 'delta', text: event.text };
@@ -316,6 +330,7 @@ export async function* streamSseBody(
     } else if (event.type === 'tool-delta') {
       carryUsage(event.usage);
       if (event.reasoningText !== undefined && event.reasoningText !== '') {
+        state.reasoningLen += event.reasoningText.length;
         yield { type: 'reasoning', text: event.reasoningText };
       }
       if (applyToolCallFragments(state.toolSlots, event.fragments) !== 'ok') {
@@ -324,7 +339,10 @@ export async function* streamSseBody(
       if (event.finishReason !== undefined) state.finishReason = event.finishReason;
     } else if (event.type === 'reasoning') {
       carryUsage(event.usage);
-      if (event.text !== '') yield { type: 'reasoning', text: event.text };
+      if (event.text !== '') {
+        state.reasoningLen += event.text.length;
+        yield { type: 'reasoning', text: event.text };
+      }
       if (event.finishReason !== undefined) state.finishReason = event.finishReason;
     } else if (event.type === 'finish') {
       carryUsage(event.usage);
@@ -361,6 +379,7 @@ export async function* streamSseBody(
     const outcome = yield* processFrame(interpretSsePayload(tail));
     if (outcome === 'done' || outcome === 'error') return;
   }
+  flushReasoningLog();
   yield { type: 'done', usage: state.usage };
 }
 
@@ -499,6 +518,18 @@ export class OpenAICompatibleProvider implements LLMProvider {
       }, this.timeouts.idleMs);
     };
     try {
+      // A7 补验：reasoning_content 回传仅长度观测（布尔 + 长度；内容零暴露，决议 #35）——
+      // 与请求同 req 关联，供真实预检逐轮核对「已收到长度 === 回传长度」（原样回传）
+      const replayReasoningLen = request.messages.reduce(
+        (sum, message) => sum + (message.reasoning?.length ?? 0),
+        0,
+      );
+      if (replayReasoningLen > 0) {
+        logDebug(
+          'provider',
+          `回传 reasoning_content（长度=${replayReasoningLen}，req=${context.requestId}）`,
+        );
+      }
       logDebug(
         'provider',
         `开始流式请求 provider=${context.providerId} model=${context.model ?? '-'} req=${context.requestId}`,

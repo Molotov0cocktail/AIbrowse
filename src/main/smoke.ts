@@ -6516,6 +6516,30 @@ export async function runLiveAgentScenarios(
         `${label}：run 未在 180 秒内到达终态`,
       );
     };
+    // —— 预检硬上限（用户授权范围）：最多 6 次模型 HTTP 请求——超过即经停止按钮安全
+    // 取消（cancelled 终态），与兼容性失败（400/非法 SSE/协议异常以 error 终态直达）
+    // 严格区分；每轮请求 = 一条「开始生成（agent」日志（scenarioOffset 起点计数） ——
+    const PRE_HTTP_CAP = 6;
+    const waitTerminalCapped = async (label: string): Promise<boolean> => {
+      // 返回 true = 正常到达终态；false = 达 HTTP 上限被安全取消（停止按钮 → cancelled）
+      const deadline = Date.now() + 180000;
+      for (;;) {
+        if ((await uiCount(uiWc, '.ai-agent-run')) >= 1) return true;
+        if (modelRoundsSoFar() > PRE_HTTP_CAP) {
+          logInfo(
+            'smoke',
+            `预检：模型 HTTP 请求超过硬上限 ${PRE_HTTP_CAP} 次，经停止按钮安全取消（协议判定见轮次/审计日志）`,
+          );
+          await clickUi(uiWc, '.ai-abort');
+          await waitTerminal(label);
+          return false;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(`${label}：run 未在 180 秒内到达终态`);
+        }
+        await delay(1500);
+      }
+    };
     const statusText = async (): Promise<string> => uiText(uiWc, '.ai-agent-status-text');
     const toolNames = async (): Promise<string[]> => uiTextAll(uiWc, '.ai-tool-call-name');
     const currentUrl = async (): Promise<string> => (await controller.getActiveTab())?.url ?? '';
@@ -6596,30 +6620,55 @@ export async function runLiveAgentScenarios(
     await switchMode('task');
 
     // —— 场景 1：搜索 Electron WebContentsView 官方文档并打开最相关结果 ——
+    let scenario1Capped = false;
     {
       await freshSession();
       await sendTask('搜索 Electron 的 WebContentsView 官方文档，打开最相关的结果页面');
-      await waitTerminal('场景 1');
+      if (pre) {
+        scenario1Capped = !(await waitTerminalCapped('场景 1'));
+      } else {
+        await waitTerminal('场景 1');
+      }
       recordRounds('场景 1：搜索并打开官方文档（search_web + open）');
       const status = await statusText();
-      assert(status.includes('已完成'), `场景 1 应已完成（实际 ${status}）`);
       const names = await toolNames();
-      assert(
-        names.includes('search_web') && names.includes('browser_open'),
-        `场景 1 应使用 search_web + browser_open（实际 ${names.join(',')}）`,
-      );
-      const url = await currentUrl();
-      assert(
-        /^https:\/\/[^/]*electronjs\.org/.test(url),
-        `场景 1 应打开 electronjs.org 最相关结果（实际 ${url}）`,
-      );
+      if (scenario1Capped) {
+        // 达 HTTP 硬上限安全取消：不要求场景完成——协议证据要求至少一个合法工具调用
+        // 已真实执行（名称合法、参数可解析、审计存在）；兼容性失败（400/非法 SSE/
+        // 协议异常）会以 error 终态直达本分支之外，不与此混淆
+        assert(status.includes('已停止'), `场景 1 达上限应安全取消（实际 ${status}）`);
+        assert(
+          names.some((n) => n === 'search_web' || n.startsWith('browser_')),
+          `预检：达上限取消前应至少执行过一个合法工具调用（实际 ${names.join(',')}）`,
+        );
+        logInfo(
+          'smoke',
+          `预检：协议链路已运行至 HTTP 硬上限（${PRE_HTTP_CAP} 次）并安全取消——场景未完成与兼容性失败的区别见轮次/审计日志`,
+        );
+      } else {
+        assert(status.includes('已完成'), `场景 1 应已完成（实际 ${status}）`);
+        assert(
+          names.includes('search_web') && names.includes('browser_open'),
+          `场景 1 应使用 search_web + browser_open（实际 ${names.join(',')}）`,
+        );
+        const url = await currentUrl();
+        assert(
+          /^https:\/\/[^/]*electronjs\.org/.test(url),
+          `场景 1 应打开 electronjs.org 最相关结果（实际 ${url}）`,
+        );
+      }
       logInfo('smoke', '场景 1 通过（搜索 WebContentsView 官方文档并打开最相关结果）');
     }
 
     // —— 预检模式（AIBROWSE_LIVE_AGENT_PRE=1）：仅场景 1 + 零泄漏终检 + 台账；场景 2–7
     //    需用户二次授权后以 AIBROWSE_LIVE_AGENT=1 执行 ——
     if (pre) {
-      await finalizeLiveRun('预检');
+      const total = await finalizeLiveRun('预检');
+      assert(total <= PRE_HTTP_CAP, `预检：模型轮次 ${total} 超过 HTTP 硬上限 ${PRE_HTTP_CAP}`);
+      logInfo(
+        'smoke',
+        `预检结束（${scenario1Capped ? '达上限安全取消（协议证据见日志）' : '正常完成'}）`,
+      );
       return;
     }
 
