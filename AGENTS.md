@@ -17,28 +17,31 @@
   BrowserController / Tool Layer 操作浏览器，不得拥有任意系统权限。
 - **当前阶段（第四阶段，Sources 长期信源系统）**：把传统浏览器「收藏夹」升级为
   可被 AI 理解、检索、自动维护的长期信息源系统。**阶段状态（2026-08-15）：
-  Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9 任务拆分已完成
-  （纯文档设计闭环，零产品代码改动）；尚未实现任何 Sources 功能（B1–B9 全部
-  待开始）**；下一个推荐任务 = **B1**（node:sqlite 决策门 spike，硬前置）。
-  契约源 `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
-  `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
-  实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
-  **架构纪律（第四阶段）**：依赖方向固定
-  `Sources UI / Agent Source Tools → SourceService → SourceRepository /
+  Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9 任务拆分已完成；
+  B1 已完成——node:sqlite 决策门 dev+生产双场景 11 项逐项实测，基础能力项
+  ①–⑦、⑩、⑪ 全部通过、⑧ FTS5/⑨ trigram 实测可用，驱动冻结 = node:sqlite
+  （决议 #48）+ sqlite-driver/migrations 基座与冒烟 B-01 已落地；B2–B9 待
+  开始（Sources 功能尚未实现，完成前不得宣称可用）**；下一个推荐任务 = **B2**
+  （Source 域模型 + canonicalization + Repository + SourceService + journal
+  - Undo）。契约源 `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
+    `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
+    实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
+    **架构纪律（第四阶段）**：依赖方向固定
+    `Sources UI / Agent Source Tools → SourceService → SourceRepository /
 SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
-  renderer/preload/AgentLoop/Tool 实现不得直接执行 SQL；UI 与 Agent 共用同一
-  SourceService；SQL 只能是 Repository 内的编译期常量或 migration，所有用户/
-  网页/模型文本只能作为 prepared statement 参数；禁止 `exec(sql)` 动态串、
-  动态表名/列名/排序表达式、SQLite 扩展加载；Source Tool 不新增网络能力
-  （打开网页继续 browser_open/browser_read）；v1 最小 4 工具
-  （source_search/source_list/source_get 为 L0 有界检索、source_apply_changes
-  为 L2 确认门），禁具 source_sql/source_delete_hard/source_export_all/任意
-  导入/任意抓取/任意通用数据库工具；AI 写入统一 change set（≤20 项、幂等键、
-  expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
-  永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
-  数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
-  **⚠️ 以上全部为「规划/待实现」**：Sources 相关接口在 B1–B9 对应任务完成前
-  不得在文档/报告/UI 中宣称已实现。
+    renderer/preload/AgentLoop/Tool 实现不得直接执行 SQL；UI 与 Agent 共用同一
+    SourceService；SQL 只能是 Repository 内的编译期常量或 migration，所有用户/
+    网页/模型文本只能作为 prepared statement 参数；禁止 `exec(sql)` 动态串、
+    动态表名/列名/排序表达式、SQLite 扩展加载；Source Tool 不新增网络能力
+    （打开网页继续 browser_open/browser_read）；v1 最小 4 工具
+    （source_search/source_list/source_get 为 L0 有界检索、source_apply_changes
+    为 L2 确认门），禁具 source_sql/source_delete_hard/source_export_all/任意
+    导入/任意抓取/任意通用数据库工具；AI 写入统一 change set（≤20 项、幂等键、
+    expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
+    永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
+    数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
+    **⚠️ 以上全部为「规划/待实现」**：Sources 相关接口在 B1–B9 对应任务完成前
+    不得在文档/报告/UI 中宣称已实现。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
@@ -116,9 +119,10 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
   零新依赖）、Markdown/富文本回答渲染库。⚠️ **SQLite 语义（第四阶段校准）**：
   第三阶段当时将 SQLite 列为阶段禁用项（历史语义保留于 Third_stage.md §5.3/§6 原文
   与 progress.md 历史条目，不改写）；第四阶段引入 SQLite 作为 Sources 持久化层——
-  driver 首选 `node:sqlite` 且必须经 B1 决策门实测冻结（`doc/stage4/detailed-design.md`
-  §3.2，通过前禁止任何 Source 实现）；**「任意 SQL/任意通用数据库工具」仍是永久红线**
-  （模型/网页无任何 SQL 通道；SQL 仅为 Repository 编译期常量与 migration，参数绑定）。
+  driver = `node:sqlite` **已由 B1 决策门实测冻结（2026-08-15，决议 #48：基础能力项
+  ①–⑦、⑩、⑪ 全过，⑧ FTS5/⑨ trigram 可用；`doc/stage4/detailed-design.md` §3.2）**；
+  **「任意 SQL/任意通用数据库工具」仍是永久红线**（模型/网页无任何 SQL 通道；业务
+  SQL 仅为 Repository 编译期常量与 migration，参数绑定；driver 仅连接级运维 SQL）。
   ⚠️ LLM API 调用**允许**（既有能力）但仅限主进程内 Provider 适配器发起；API Key
   不得进入源码/日志/prompt/网页/renderer 可读通道，也绝不进入 Sources 数据库。
   若某技术选择与最新版 Electron 明显不兼容，可选更合理实现，但**必须在修改前说明原因**。
@@ -341,8 +345,9 @@ d:\AIbrowse\
     │       │                                  #   参数只进 JSON 字面量；node:vm 敌手参数逃逸测试）
     │       ├── interaction-normalize.ts / .test.ts # （A3 ✅）交互结果形状校验纯函数（页面视为敌手）
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 51 用例（A3 扩展语义元数据）
-    │   └── sources/                           # （Fourth Stage 规划/待实现，契约见 doc/stage4/detailed-design.md §1）：
-    │       │                                  #   db/（sqlite-driver 薄封装 + migrations + backup，B1/B7）、
+    │   └── sources/                           # （Fourth Stage，契约见 doc/stage4/detailed-design.md §1）：
+    │       │                                  #   db/（✅ B1：sqlite-driver 薄封装 + migrations 骨架已落地，决议 #48；
+    │       │                                  #        backup 归 B7）、
     │       │                                  #   domain/（source-canonical/source-change-set/
     │       │                                  #   source-search-query 纯函数，B2/B3）、
     │       │                                  #   repository/（source-repository 唯一 SQL 执行点 +
@@ -948,12 +953,21 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
 SourceRepository / SourceSearchIndex / SourceChangeJournal → SQLite driver
 （主进程）`；renderer/preload/AgentLoop/Tool 零 SQL；UI 与 Agent 共用同一
   SourceService；打开网页继续 browser_open/browser_read（Source Tool 零网络能力）。
-- **SQLite driver 决策门（B1 硬前置）**：`node:sqlite` 首选（Node 24 内置，
-  Stability 1.1 实验性；Electron 43.4.0 需 dev+生产构建实测 11 项——import/文件库/
-  prepared statements/事务/外键/busy timeout/FTS5/trigram/userData/句柄清理——
-  全部通过才冻结）；失败 → B1 停止提交证据 → 评估 better-sqlite3。官方声明不替代
-  本项目实跑。SQL 仅为 Repository 编译期常量 + migration（参数绑定）；禁止
-  exec 动态串/动态表名列名/排序表达式/扩展加载。
+- **SQLite driver（B1 ✅ 已完成并冻结，2026-08-15）**：驱动 = `node:sqlite`
+  （Electron 43.4.0 / Node 24.18.1 / SQLite 3.53.1 实测；决议 #48 冻结记录——
+  基础能力项 ①–⑦、⑩、⑪ 全过，⑧ FTS5/⑨ trigram 可用，中文 ≥3 字符子串命中；
+  1–2 字符查询不命中为 trigram 语义 → B3 短查询降级路径）。ExperimentalWarning
+  实测不产生（如实记录未压制）。备份三候选：VACUUM INTO 可用 / node:sqlite
+  backup API 不存在 / 关闭后复制可行（B7 定稿）。落地：
+  `src/main/sources/db/sqlite-driver.ts`——`openDb(path, {busyTimeoutMs,
+enableForeignKeys, wal}) → DbHandle` / `closeDb`（幂等）/ `withTransaction`
+  （同步语义、异常整体回滚、连接可诊断）；`migrations.ts` 骨架——
+  `MIGRATIONS`（B1 恒空，v1 随 B2 追加）/ `validateMigrationList` /
+  `planMigration` / `readUserVersion` / `runMigrations`（每级单事务、失败回滚
+  保留原库、未知更高版本 newer-than-program 零写入）。冒烟 B-01 自动包含于默认
+  AIBROWSE_SMOKE=1 矩阵。业务 SQL 仅为 Repository 编译期常量 + migration
+  （参数绑定）；driver 仅允许连接级运维 SQL 编译期常量（PRAGMA/事务控制，决议
+  #47）；禁止 exec 动态串/动态表名列名/排序表达式/扩展加载。
 - **域模型（shared/types/sources.ts，B2）**：Source（origin/page 双作用域 +
   canonicalKey 唯一）/SourceGroup/SourceTag + source_tag_links/change_journal
   （幂等键主键 + before/after payload，有界 100 条/30 天）/usage_events（每
@@ -1028,7 +1042,7 @@ SourceRepository / SourceSearchIndex / SourceChangeJournal → SQLite driver
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 785 用例）
+  - `npm test` — Vitest 全量测试（当前 816 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`

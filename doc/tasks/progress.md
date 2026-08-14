@@ -9,22 +9,20 @@
 
 ## 当前状态
 
-- 阶段：**第四阶段（Sources 长期信源系统）**，已于 2026-08-15 正式切换（用户指令，
-  本提示即切换指令）。**本闭环为纯文档设计与任务拆分（零产品代码改动）**：
-  `doc/stage4/` 定稿——threat-model（ST-01～ST-12 威胁 + SRT-01～SRT-12 红队，
-  继承第三阶段全部结构性边界与四类残余风险，先于任何 Source 实现）、proposal
-  （Q1–Q12 拍板 + Entry Gate 核验记录 + 相对草案 11 条收紧）、high-level-design、
-  detailed-design（唯一契约源 §2–§16：数据访问边界/node:sqlite 决策门/
-  canonicalization/provenance/change set 写入安全/4 工具与权限/有界检索与分享
-  模式/多语言检索/migration·backup·恢复/明文边界/usage/决议 #36–#45）、
-  tasks/B1–B9（每任务 = 一个可验证闭环；**B1 为硬前置**：node:sqlite 11 项实测
-  全部通过前禁止任何 Source 实现）；Fourth_stage.md（保留需求源职责，§9/§10 用
-  最终权限/隐私/撤销/检索/migration/Exit Gate 边界校准原草案）、AGENTS.md、README
-  已同步。**Sources 功能尚未实现（B1–B9 全部待开始）**；下一个推荐任务 = **B1**
-  （node:sqlite 决策门 spike）。步骤 0 独立核对：HEAD `82f7838` = Gitee/GitHub
-  双远程 HEAD（ls-remote 实测，三方一致）、工作区干净；既有接口经代码核对与
-  AGENTS.md §5 契约一致（4 处文档滞后性遗漏登记为决议 #45，留待速查回填）。
-  Entry Gate 判定证据见 `doc/stage4/proposal.md` §8。
+- 阶段：**第四阶段（Sources 长期信源系统）**，已于 2026-08-15 正式切换（用户指令）。
+  **设计闭环与 B1 决策门已完成**：`doc/stage4/` 定稿（threat-model/proposal/
+  high-level-design/detailed-design/tasks B1–B9）；**B1 已完成（2026-08-15）**——
+  node:sqlite 决策门 dev+生产双场景 11 项逐项实测，基础能力项 ①–⑦、⑩、⑪ 全部
+  通过、⑧ FTS5 与 ⑨ trigram 实测**可用**（中文 ≥3 字符子串命中；1–2 字符查询
+  不命中为 trigram 语义，B3 短查询降级路径依据），按用户裁决（决议 #46/#47）
+  **驱动冻结 = node:sqlite**（详细设计 §15 决议 #48）+ sqlite-driver.ts 薄封装 +
+  migrations.ts 骨架 + 冒烟 B-01（自动包含于默认 AIBROWSE_SMOKE=1 矩阵）+ 单测
+  +31（全量 816/816）。**B2–B9 全部待开始**；下一个推荐任务 = **B2**（Source
+  域模型 + canonicalization + Repository + SourceService + journal + Undo）。
+  Sources 功能尚未实现（B2–B9 完成前不得宣称可用）。步骤 0 独立核对：HEAD
+  `818dd5e` = Gitee/GitHub 双远程 HEAD（ls-remote 实测，三方一致）、工作区干净；
+  既有接口经代码核对与 AGENTS.md §5 契约一致（4 处文档滞后性遗漏登记为决议 #45，
+  留待速查回填）。Entry Gate 判定证据见 `doc/stage4/proposal.md` §8。
 - 已完成（第三阶段，历史）：**第三阶段（Browser Agent）**，已于 2026-08-14 正式切换（用户指令）。Entry
   Gate 逐项核验通过（判定证据见 doc/stage3/proposal.md §8）；**设计定稿与任务拆分
   已完成（2026-08-14，纯文档）**——`doc/stage3/`：threat-model（Prompt Injection
@@ -119,7 +117,7 @@
 | A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | ✅ | 离线部分（RT-01～RT-08 + RT-11 + 审计 + RT-10 校准）已完成并推送；真实 Provider 验证已完成（2026-08-14 补验：wire 兼容性修复 + 最小预检 + 完整真实验收 §7 场景 1–6 + RT-10 全部真实通过——deepseek-v4-pro，LIVE_SMOKE_PASS 退出码 0；RT-10 观察性结果如实登记）；**2026-08-14 定向补验**：场景 2 修订（真实长页面 read/find/scroll 工具链）+ 场景 3 修订（真实搜索后两个不同 origin 公开来源）+ A3 状态机补齐，LIVE_SMOKE_PASS 退出码 0；契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
 | A8 | 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步 | ✅ | 2026-08-14 完成（§9 逐项证据 + §10 总判定 HOLD/PENDING）；**2026-08-14 A7 补验后改判 GO/PASS**（§9 五组全 PASS + §10 五项条件 PASS + 真实场景与 RT-10 证据）；任务文档 doc/stage3/tasks/A8-finalize-acceptance.md；证据见下 |
 
-| B1 | node:sqlite 决策门 spike（硬前置）：Electron dev+生产构建实测 11 项（import/文件库/prepared statements/事务/外键/busy timeout/FTS5/trigram/userData/句柄清理）+ SQLite/migration 基座 | ⏳ | 2026-08-15 设计定稿；全部通过前禁止任何 Source 实现；失败则停止提交证据并评估 better-sqlite3；任务文档 doc/stage4/tasks/B1-sqlite-foundation.md |
+| B1 | node:sqlite 决策门 spike（硬前置）：Electron dev+生产构建实测 11 项（import/文件库/prepared statements/事务/外键/busy timeout/FTS5/trigram/userData/句柄清理）+ SQLite/migration 基座 | ✅ | 2026-08-15 完成（见下）：11 项逐项实测，基础能力项 ①–⑦、⑩、⑪ 全过 + ⑧⑨ 可用 → 按决议 #46/#47 冻结 node:sqlite（决议 #48）；driver/migrations/冒烟 B-01/单测 +31 落地；全量 816/816；任务文档 doc/stage4/tasks/B1-sqlite-foundation.md（实测证据节已回填） |
 | B2 | Source 域模型 + canonicalization + Repository（唯一约束）+ SourceService + 事务 + change journal + Undo | ⏳ | 2026-08-15 设计定稿；契约 detailed-design §2/§4/§5/§6/§7.4–7.6；任务文档 doc/stage4/tasks/B2-source-domain-service.md |
 | B3 | 多语言 Source Search：FTS5/trigram + 短查询安全降级 + 有界 Retrieval（硬上限 10/每页 20/allowlist）+ 分享模式 + 确定性排序 | ⏳ | 2026-08-15 设计定稿；契约 detailed-design §8；任务文档 doc/stage4/tasks/B3-source-search-retrieval.md |
 | B4 | Source Tools 四工具（search/list/get L0 + apply_changes L2）+ 权限矩阵 + change set 确认/幂等键/expectedVersion/审计 + Agent 上下文隔离 | ⏳ | 2026-08-15 设计定稿；注册后 17 工具（冒烟 8.1 断言校准）；任务文档 doc/stage4/tasks/B4-source-tools-permission.md |
@@ -134,7 +132,46 @@
 > 编号一律不变。（2026-08-15）第四阶段任务编号 B1–B9、威胁 ST-01～ST-12、红队
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环条目）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1 条目）
+
+- **B1 node:sqlite 决策门 spike + SQLite/migration 基座（2026-08-15，第一个
+  实现闭环；驱动冻结 = node:sqlite，决议 #48）**：① 步骤 0 独立核对——HEAD
+  `818dd5e` = Gitee/GitHub 双远程 HEAD（ls-remote 实测三方一致）、工作区干净、
+  基线 test 785/785·typecheck·lint·format:check 独立复跑全绿；全仓库 SQLite/
+  SourceService 代码零命中（B1 未被部分实现）。② **契约矛盾核验 + 用户裁决**
+  （实现前硬停点）：两处实质冲突确认属实——⑧⑨ 冻结门槛（§3.2「任一失败」vs
+  B1 任务文档「⑧⑨ 不构成失败」，HLD §8 自身两句并存）与 SQL 落点（§3.1/HLD
+  「driver 无 SQL 语句定义」vs B1 要求 busy timeout/外键/WAL/withTransaction/
+  探针 SQL 且禁止提前建 Repository）。用户裁决：**⑧⑨ 非硬门槛**（基础能力项
+  ①–⑦、⑩、⑪ 全过即冻结，⑧⑨ 失败 B3 降级为主）+ **driver 内置连接级运维
+  SQL 常量**（探针 SQL 仅限 SMOKE_MODE 冒烟 B-01 与 `*.test.ts`）→ 决议
+  #46/#47 落 detailed-design §15，§3.1/§3.2/HLD/AGENTS/Fourth_stage/proposal/
+  threat-model/B1 任务文档同步校准。③ **红→绿**：先写测试与 B-01 冒烟断言——
+  红态 = 单测 2 文件「Cannot find module」失败（785 通过维持）+ 冒烟构建失败
+  （Could not resolve ./sources/db/sqlite-driver）；实现后全量 **816/816**
+  （新增 31：sqlite-driver 17 / migrations 14——文件库重开/注入串仅作数据/事务
+  三路回滚/外键双证/WAL/busy 读回/两连接锁竞争（worker 正证 + 零超时负证 +
+  等待下界）/重复关闭/重命名删除/无效路径；迁移列表空/重复/乱序/缺级/非正整数/
+  未知更高版本/第 N 步失败该步整体回滚零部分状态/续跑），既有用例零删除零削弱。
+  实现期修正均为测试自身断言缺陷（迁移回滚作用域按「每级单事务」契约校准；外键
+  负证暴露**本机 SQLite 构建默认 SQLITE_DEFAULT_FOREIGN_KEYS=1**——driver 显式
+  双分支保证跨构建确定性；busyTimeoutMs 允许 0=禁用；测试句柄泄漏致 EPERM——
+  全部改为 finally 清理）。④ **冒烟**：B-01 自动包含于默认 AIBROWSE_SMOKE=1
+  矩阵（与 LIVE 门控无关，任何冒烟运行均执行）——dev 默认矩阵退出码 0（⑩ 如实
+  跳过）；dev 官方命令（`AIBROWSE_USER_DATA_DIR=<系统 TEMP 下临时目录> npm run
+dev`）退出码 0，①③④⑤⑥⑦⑧⑨⑩⑪ 全部通过；生产官方命令（`npm run build` 后
+  `AIBROWSE_USER_DATA_DIR=<另一临时目录> npm run start`）首跑退出码 1——失败点
+  为**既有 S4 UI 矩阵 9**（面板 bounds 收缩断言，先于 B-01 的既有场景代码路径，
+  非本任务改动），复跑连续 2 次退出码 0（A7「环境瞬态」先例，如实登记），②③④
+  ⑤⑥⑦⑧⑨⑩⑪ 全部通过。**Electron 43.4.0（Node 24.18.1）/ SQLite 3.53.1
+  实测**；ExperimentalWarning 实测**不产生**（Electron 与系统 Node 均零 warning
+  事件，如实记录未压制）。备份三候选观察：VACUUM INTO 可用（WAL 活跃一致性快照
+  integrity ok）；node:sqlite backup API 不存在；关闭后复制可行（干净关闭后
+  -wal/-shm 自动清除）。⑤ 临时 userData/探针目录零残留；未新增依赖、未改既有
+  产品行为（index.ts/electron.vite.config 零改动——driver 随 smoke 静态导入自动
+  进入 dev/生产构建）、13 工具注册表不变；⑥ 文档同步（detailed-design §15 决议
+  #48 冻结、B1 任务文档实测证据节、本文件、README/AGENTS）。**未调用任何付费
+  Provider、未输出/索取 API Key。**
 
 - **Fourth Stage 切换与设计定稿（2026-08-15，纯文档任务，零代码改动，不实现任何
   Sources 功能）**：① 步骤 0 独立核对——Git HEAD `82f7838` = Gitee/GitHub 双远程
@@ -1369,16 +1406,15 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **B1 — node:sqlite 决策门 spike + SQLite/migration 基座（第四阶段硬前置，
-  新对话 = 一个可验证闭环）**：Fourth Stage 已正式进入、设计定稿与 B1–B9 拆分
-  完成（见上）。B1 在 Electron 43.4.0 dev+生产构建实测 11 项
-  （import/文件库/prepared statements/事务/外键/busy timeout/FTS5/trigram/
-  userData/句柄清理），全部通过后冻结 driver 并落地薄封装 + migration 骨架；
-  任一基础能力项失败 → 停止提交证据，再评估 better-sqlite3（需用户决策）。
-  **B1 通过前禁止任何 Source 域模型/Repository/Tool/UI 实现**（任务文档
-  `doc/stage4/tasks/B1-sqlite-foundation.md`）。完成后按 B2→B3→B4→B5→B6→B7→
-  B8→B9 顺序推进，B9 独立复验不采信前序报告；本提示内不再继续实现，等待
-  用户下一条指令。
+- **B2 — Source 域模型 + canonicalization + Repository（唯一约束）+ SourceService
+  - change journal + Undo（新对话 = 一个可验证闭环）**：B1 已完成（node:sqlite
+    冻结，决议 #48；driver/migrations 基座在位，B1 通过前禁止 Source 实现的
+    硬前置已解除）。B2 按 `doc/stage4/tasks/B2-source-domain-service.md` 落地
+    shared/types/sources.ts、source-canonical 纯函数、migrations v1（schema 语句
+    追加为编译期常量 v1）、source-repository（唯一业务 SQL 执行点）、change-journal
+    （有界 100 条/30 天，注入时钟）、SourceService（UI 与 Agent 共用唯一入口）
+    与冒烟 B-02（跨进程持久化）。完成后按 B3→B4→B5→B6→B7→B8→B9 顺序推进，
+    B9 独立复验不采信前序报告；本提示内不再继续实现，等待用户下一条指令。
 
 ## 第一阶段验收未完成项
 

@@ -166,8 +166,13 @@ export type SourceToolErrorCode =
 
 ### 3.1 SQL 封闭规则（红线，grep 断言）
 
-- SQL 只能是 `source-repository.ts` 与 `migrations.ts` 内的**编译期常量**（模块级
-  const 字符串）或 migration 定义；
+- **业务 SQL** 只能是 `source-repository.ts` 与 `migrations.ts` 内的**编译期常量**
+  （模块级 const 字符串）或 migration 定义；
+- `sqlite-driver.ts` 仅允许**连接级运维 SQL** 编译期常量（PRAGMA busy_timeout/
+  foreign_keys/journal_mode 与 BEGIN/COMMIT/ROLLBACK，值仅为程序校验后的整数选项
+  或编译期常量），不含任何业务语句（决议 #47）；
+- 测试专用 SQL（探针建表/FTS5/trigram/测试数据）仅允许位于 SMOKE_MODE 门控的
+  冒烟 B-01 场景与 `*.test.ts` 单测（测试设施，非产品数据访问路径）；
 - 所有用户/网页/模型文本只能作为 prepared statement 参数绑定（`?` 占位）；
 - 禁止：`exec(sql)` 接受任何动态拼接串、动态表名/列名/排序表达式、`enableLoadExtension`
   开启扩展加载、SQL 出现在 renderer/preload/tools/agent/ 目录；
@@ -188,7 +193,8 @@ export type SourceToolErrorCode =
     （vite discussion #19278）→ **必须 dev+生产构建双场景实测 import**；
   - **Node 官方构建是否启用 SQLITE_ENABLE_FTS5（trigram tokenizer 前提）无官方
     文档确认** → B1 实测。
-- **B1 实测清单（11 项，全部通过才冻结 driver）**：
+- **B1 实测清单（11 项，逐项独立实测与报告；冻结条件 = 基础能力项 ①–⑦、⑩、⑪
+  全部通过，决议 #46）**：
   1. Electron main 进程 `import { DatabaseSync } from 'node:sqlite'` 成功
      （无 No such binding、无 externalized 错误）——dev 构建；
   2. 同上——生产构建产物（npm run build + start）；
@@ -202,10 +208,12 @@ export type SourceToolErrorCode =
      实际命中断言）；
   10. userData 路径建库（app.getPath('userData') 派生目录）；
   11. 关闭后句柄清理（close 后删除/重命名库文件成功，无锁定残留）。
-- 任一失败 → **B1 停止**，提交实测证据（红态断言 + 日志）→ 评估备选
-  better-sqlite3（native addon：需 ABI 对齐/rebuild/electron-vite externalize
-  处理）——**不得在本纯文档任务新增依赖**；上层契约（Repository/SourceService）
-  因驱动薄封装而不变。
+- 任一**基础能力项（①–⑦、⑩、⑪）**失败 → **B1 停止**，提交实测证据（红态断言 +
+  日志）→ 评估备选 better-sqlite3（native addon：需 ABI 对齐/rebuild/electron-vite
+  externalize 处理）——**不得在本纯文档任务新增依赖**；上层契约（Repository/
+  SourceService）因驱动薄封装而不变。
+- ⑧⑨（FTS5/trigram）失败**不构成 B1 失败**：如实登记实测结论，B3 按 §8.3
+  参数化精确匹配/LIKE 安全降级路径为主实现（决议 #46）。
 - 冻结记录：B1 完成后在本文 §15 追加决议（驱动 = node:sqlite + 实测证据编号 +
   ExperimentalWarning 处置：如实记录不压制）。
 - **driver 封装契约**（sqlite-driver.ts，屏蔽稳定性风险）：
@@ -685,6 +693,50 @@ ESCAPE '\'` 参数化）——降级路径是完整交付实现（FTS 为增强�
     ③ shared/types/agent.ts 枚举清单遗漏 ClickAllowedKind/ElementSemanticsBinding
     两个导出类型名；④ AgentRuntime bullet 未列 verifyReasoningReplay、审计 bullet
     未列 formatAgentRunAuditMessage。均为文档滞后，与代码契约无冲突。
+46. **B1 决策门冻结语义校准（2026-08-15，B1 实施前用户裁决）**：⑧⑨（FTS5 建表/
+    trigram 中文命中）**不构成 B1 冻结硬门槛**——11 项全部逐项实测与独立报告；
+    驱动冻结仅要求基础能力项 ①–⑦、⑩、⑪ 全部通过；⑧⑨ 失败不停止，B3 按 §8.3
+    参数化精确匹配/LIKE 安全降级路径为主实现并如实登记。原 §3.2「任一失败 → B1
+    停止」与 B1 任务文档「⑧⑨ 不构成失败」及 high-level-design §8 两处表述矛盾，
+    按此裁决校准（§3.2/AGENTS/Fourth_stage/HLD/proposal 已同步）。
+47. **SQL 封闭边界校准（2026-08-15，B1 实施前用户裁决）**：SQL 封闭的永久红线
+    目标不变（模型/网页/用户文本零 SQL 通道、无动态串、无扩展加载）；实施边界
+    校准为——业务 SQL 仅 Repository/migrations 编译期常量；**driver 仅允许连接级
+    运维 SQL 编译期常量**（PRAGMA busy_timeout/foreign_keys/journal_mode +
+    BEGIN/COMMIT/ROLLBACK；PRAGMA 实测不支持参数绑定，值只能为程序校验后的整数
+    选项或编译期常量，绝不接收任何文本）；测试专用 SQL 仅限 SMOKE_MODE 门控冒烟
+    B-01 与 `*.test.ts`。原 §3.1「SQL 只能位于 Repository/migrations」与
+    high-level-design「driver 无 SQL 语句定义」及 B1 实测需求（busy timeout/外键/
+    WAL/withTransaction/探针）矛盾，按此裁决校准（§3.1/§3.2/HLD/threat-model/
+    proposal/B1 任务文档已同步）。
+48. **B1 决策门实测结论：node:sqlite 冻结（2026-08-15，dev+生产双场景实测通过）**：
+    驱动 = `node:sqlite`（Electron 43.4.0 内置 Node 24.18.1 / SQLite 3.53.1，实测；
+    系统 Node 24.18.0 同为 SQLite 3.53.1）。11 项逐项实测结果——① dev 构建 import ✅
+    ② 生产构建产物 import ✅（electron-vite externalize 无问题，零配置改动）③ 文件库
+    创建/关闭/重开/读回一致 ✅ ④ prepared statements 参数绑定（中文/引号/`'; DROP
+TABLE` 注入串仅作数据）✅ ⑤ BEGIN/COMMIT/ROLLBACK（回调与语句异常整体回滚）✅
+    ⑥ PRAGMA foreign_keys=ON 拦截非法外键 + OFF 放行双证 ✅（本机 SQLite 构建默认
+    SQLITE_DEFAULT_FOREIGN_KEYS=1，与 stock 默认 OFF 不同——driver 显式双分支保证
+    跨构建确定性）⑦ busy_timeout 两连接锁竞争（等待下界证据/释放后成功/零超时立即
+    失败）✅ ⑧ FTS5 建表与查询 ✅（可用）⑨ trigram 建表与中文 ≥3 字符子串命中 ✅
+    （可用；1–2 字符查询不命中为 trigram 语义，B3 短查询降级路径依据）⑩ 数据库位于
+    app.getPath('userData') 派生目录 ✅（官方验证命令 AIBROWSE_USER_DATA_DIR=<系统
+    TEMP 下临时目录> 实测）⑪ 关闭后重命名/删除成功 + 重复关闭幂等 + 无效路径中文
+    错误安全失败 ✅。**ExperimentalWarning 实测形态**：Electron 43.4.0 与系统 Node
+    24.18.0 导入 node:sqlite 均**不产生** warning 事件（进程 warning 监听零触发、
+    无 stderr 输出）——如实记录，未做任何压制（决议 #44 处置）。**基础能力项
+    ①–⑦、⑩、⑪ 全部通过 → 按决议 #46 冻结**；⑧⑨ 可用 → B3 以 FTS5 trigram 为
+    主路径。**备份三候选可行性观察**（B7 定稿）：① VACUUM INTO 可用（连接打开、
+    WAL 活跃时生成一致性快照，integrity ok）✅；② node:sqlite backup API
+    **不存在**（DatabaseSync.prototype.backup === undefined）❌；③ 关闭后复制
+    可行（干净关闭后 -wal/-shm 自动清除，仅主文件；WAL 活跃时文件形态 = 主文件 +
+    -wal + -shm，不得只复制主文件）✅。落地：sqlite-driver.ts
+    （openDb(path, {busyTimeoutMs, enableForeignKeys, wal}) → DbHandle /
+    closeDb 幂等 / withTransaction 同步语义·异常整体回滚·连接可诊断）+ migrations.ts
+    骨架（validateMigrationList/planMigration/readUserVersion/runMigrations：
+    每级单事务、失败回滚保留原库、未知更高版本 newer-than-program 零写入）。
+    单测 +31 用例（sqlite-driver 17 / migrations 14，真实 node:sqlite + worker
+    两连接锁竞争正证），全量 test 816/816。
 
 ## 16. 实现顺序与范围边界（B1–B9 映射）
 

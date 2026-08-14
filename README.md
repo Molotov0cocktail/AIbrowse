@@ -6,13 +6,15 @@
 > 整理/禁用/恢复（结构化 change set + L2 确认 + 单事务 + durable Undo）、有界
 > Source Retrieval（FTS5 trigram 多语言 + 分享模式 full/metadata/blocked）、
 > Browser Agent 复用既有 browser_open/browser_read 打开读取检索结果。
-> **阶段状态（2026-08-15）：设计完成、B1 待开始**——Fourth Stage 已正式进入
-> （用户切换指令）；详细设计与 B1–B9 任务拆分已完成（纯文档设计闭环）；
-> **尚未实现任何 Sources 功能（Sources 尚不可用，无产品代码改动）**；
-> 下一个推荐任务 = **B1**（node:sqlite 决策门 spike，硬前置）。契约源
-> `doc/stage4/detailed-design.md`；安全契约源 `doc/stage4/threat-model.md`
-> （ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source 实现定稿）；需求源
-> `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
+> **阶段状态（2026-08-15）：B1 完成（node:sqlite 决策门实测通过并冻结）、
+> B2 待开始**——Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9
+> 任务拆分已完成；**B1 已完成：node:sqlite 在 Electron 43.4.0 dev+生产构建
+> 11 项逐项实测通过（基础能力项全过 + FTS5/trigram 可用），驱动冻结决议 #48 +
+> sqlite-driver/migrations 基座落地；Sources 功能尚未实现（B2–B9 完成前
+> Sources 尚不可用）**；下一个推荐任务 = **B2**（Source 域模型 + Repository
+> 与 SourceService）。契约源 `doc/stage4/detailed-design.md`；安全契约源
+> `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
+> Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
 > 历史阶段（已完成）：第三阶段 Browser Agent 契约源 `doc/stage3/detailed-design.md`；
 > 安全契约源 `doc/stage3/threat-model.md`（Prompt Injection 威胁模型已重建定稿，
 > 先于任何 Browser Tool 实现）。
@@ -33,12 +35,18 @@
 
 ## 当前状态（2026-08-15）
 
-- 🔨→📋 **第四阶段（Sources）已正式进入（2026-08-15，用户切换指令）：设计完成、
-  B1 待开始**——本闭环为纯文档设计（proposal/高层设计/详细设计/威胁模型/B1–B9
-  任务拆分 + Fourth_stage.md/AGENTS.md/README/progress 同步），零产品代码改动；
-  **Sources 功能尚未实现、不可用**；下一个唯一任务 = **B1**（node:sqlite 决策门
-  实测，硬前置——11 项全部通过前禁止任何 Source 实现）。契约
-  `doc/stage4/detailed-design.md` + 安全契约 `doc/stage4/threat-model.md`。
+- 🔨 **第四阶段（Sources）进行中（2026-08-15，用户切换指令）：设计完成、
+  B1 已完成、B2 待开始**——设计闭环（proposal/高层设计/详细设计/威胁模型/
+  B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：Electron
+  43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared statements/事务/
+  外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）基础能力项全过、
+  FTS5 与 trigram 均可用（中文 ≥3 字符子串命中；1–2 字符查询不命中为 trigram
+  语义，B3 短查询降级路径依据）；驱动冻结决议 #48 + `src/main/sources/db/`
+  基座（sqlite-driver 薄封装 + migrations 骨架）+ 冒烟 B-01（自动包含于默认
+  AIBROWSE_SMOKE=1 矩阵）；**Sources 功能尚未实现、不可用（B2–B9 待开始）**；
+  下一个唯一任务 = **B2**（Source 域模型 + Repository + SourceService + journal
+  与 Undo）。契约 `doc/stage4/detailed-design.md` + 安全契约
+  `doc/stage4/threat-model.md`。
 
 - ✅ **第一阶段完成（Exit Gate 通过，2026-08-13）**：T0 项目基线 → T1 详细设计定稿 →
   T2 浏览器核心（BrowserController/TabManager/SessionManager + WebContentsView）→
@@ -99,7 +107,7 @@
     退出码 0（12 次 HTTP 全部 200）；
     **A8 第三阶段收尾已完成（2026-08-14）**——§9 五组验收全部 PASS +
     §10 五项技术条件逐项判定 PASS，**第三阶段总 Exit 决策 = GO/PASS**
-    （2026-08-15 已切换 Fourth Stage：设计完成、B1 待开始，见上）。
+    （2026-08-15 已切换 Fourth Stage：设计完成、B1 已完成，见上）。
 
 ## 技术栈（实际落地版本）
 
@@ -125,9 +133,14 @@ pending 停止/慢模型停止/四种终止理由中文/invalid 条目/切换不
 磁盘重读/fill 零原文/敌对确认文本/共读回归）→ A7 红队矩阵 8.6（RT-01～RT-08 +
 RT-11：诱导文案结构隔离/URL 白名单 + 日志行伪造防御/提交确认门/搜索结果注入
 块隔离/密码・文件零写入/陈旧 elementId/system・Key 探测/确认疲劳/通用 click
-越权 L3 零 DOM）→
+越权 L3 零 DOM）→ B1 起再验证 node:sqlite 决策门 B-01 探针（8.7：11 项逐项
+独立断言——import（dev/生产产物）/文件库重开/prepared statements 注入仅作数据/
+事务回滚/外键拦截/busy_timeout 锁竞争/FTS5/trigram 中文子串/userData 派生路径/
+句柄清理；基础能力项任一失败即冒烟失败；⑩ 的 userData 路径实测用官方验证命令
+`AIBROWSE_USER_DATA_DIR=<系统 TEMP 下临时目录>`，默认矩阵运行 userData 非临时时
+如实跳过并注明）→
 自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
-`doc/stage3/detailed-design.md` §13.2）：
+`doc/stage3/detailed-design.md` §13.2 + `doc/stage4/detailed-design.md` §13.2）：
 
 ```bash
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev
@@ -165,7 +178,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 785 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 816 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -227,6 +240,9 @@ src/
 │   │              #             AI 共读矩阵 + 8.4/8.5/8.6 Agent/可见性/红队矩阵 +
 │   │              #             A7 ✅ LIVE_AGENT/LIVE_AGENT_SUPPLEMENT 门控
 │   │              #             runLiveAgentScenarios（完整验收 + 定向补验））
+│   ├── sources/   # （Fourth Stage）db/（✅ B1：sqlite-driver 薄封装——node:sqlite 冻结
+│   │              #   （决议 #48）：openDb/closeDb/withTransaction，仅连接级运维 SQL；
+│   │              #   migrations 骨架——user_version 单调逐级 + 单事务 + 回滚；B2+ 扩展）
 │   ├── browser/   # BrowserController / TabManager（A3 ✅ 导航世代计数）/ SessionManager /
 │   │              #   PageReader（A3 ✅ 交互编排）/ snapshot-script + snapshot-normalize /
 │   │              #   interaction-script + interaction-normalize（A3 ✅ 固定模板交互注入与
@@ -269,7 +285,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 785 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 816 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
@@ -329,6 +345,13 @@ ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元
   折叠为空格条目恒单行/ANSI CSI・OSC 整体剔除/C0・DEL・NEL・双向・零宽・BOM・
   行段分隔符按码点剔除/\t 保留/sanitize 凭据脱敏行为零改动）；红队矩阵由冒烟
   8.6（RT-01～RT-08 + RT-11）+ RT-09 grep 断言覆盖。
+  第四阶段 B1 新增（31）：sqlite-driver（17——真实 node:sqlite：文件库创建/重开
+  读回/prepared statement 注入串仅作数据/withTransaction 提交与回调・语句异常
+  整体回滚且连接可诊断/外键开启拦截与关闭放行双证/WAL・busy_timeout 回读/两连接
+  锁竞争（worker 正证等待至释放成功 + 零超时负证 + 等待下界证据）/重复关闭幂等/
+  关闭后重命名删除/无效路径中文安全失败/关闭后使用拒绝）、migrations（14——
+  迁移列表空/重复/乱序/缺级/非正整数、当前版本/未知更高版本判定、成功逐级迁移、
+  第 N 步失败该步整体回滚零部分状态、部分迁移续跑）。
   Electron 行为由冒烟自检真实启动验证（见上）。 约定见 `AGENTS.md` §7。
 
 ## 已知限制
