@@ -80,7 +80,7 @@
 | A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search.web 工具 | ✅ | 2026-08-14 完成（见下）；契约 §6 + 决议 #32（临时 Tab 所有权/错误映射/snippet 空串/包装链接/查询串全量审计）；任务文档 doc/stage3/tasks/A4-search-provider.md |
 | A5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ✅ | 2026-08-14 完成（见下）；契约 §8–§9 + 决议 #33；任务文档 doc/stage3/tasks/A5-agent-runtime.md |
 | A6 | 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI + UI 端到端冒烟矩阵 | ✅ | 2026-08-14 完成（见下）；契约 §11 + 决议 #34（实时状态通道/参数摘要源/确认信任边界/多监听者）；任务文档 doc/stage3/tasks/A6-agent-ui-visibility.md |
-| A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | ⏳ | 契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
+| A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | 🔨 | 离线部分（RT-01～RT-08 + RT-11 + 审计 + RT-10 校准）已完成并推送；真实 Provider/RT-10 待用户授权（询问边界）；契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
 | A8 | 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步 | ⏳ | Third_stage.md §9/§10；任务文档 doc/stage3/tasks/A8-finalize-acceptance.md |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
@@ -88,6 +88,73 @@
 > 编号一律不变。
 
 ## 最近验证结果（2026-08-14）
+
+- **A7 红队矩阵与安全审计（2026-08-14，第七个闭环；离线部分完成，真实 Provider
+  待授权）**：步骤 0 独立核对——HEAD `82dcfc5` = 双远程 HEAD（ls-remote 实测）、
+  工作区干净、基线 test 766/766 独立复跑全绿。**① 审计发现并修复实现侧真实缺陷
+  1 处（红→绿）**：logger 无换行/控制字符规范化——模型可控字符串（open/navigate
+  URL 全量入审计上限 2048、search.web 查询串全量上限 500）可携带 CR/LF/ANSI 转义/
+  双向文本控制符/零宽字符在日志文件中伪造新的 `[INFO] [audit]` 条目行（RT-02/RT-07
+  日志伪造审计）。红态：5 个新用例失败（13 用例 8 过）→ 修复 `normalizeLogMessage`
+  （CR/LF 折叠为空格——条目恒单行、ANSI CSI/OSC 整体剔除、C0/DEL/NEL/双向/零宽/
+  BOM/行段分隔符按码点剔除、\t 保留；write() message 段经规范化，错误详情块保留
+  多行结构但同样剔控制字符；sanitize 凭据脱敏行为零改动）→ 13/13 全绿；期间 3 处
+  失败为测试断言自身笔误（ANSI 剥离后正文保留/0x3f 保留/双向剥离后字母全保留），
+  1 处实现边角（孤立 ST `ESC \` 双字节剔除）。**② 冒烟 8.6 红队矩阵 RT-01～RT-08
+  - RT-11（主进程驱动完整生产链路，FakeProvider 多轮离线确定性，6 组新夹具页面）**：
+    RT-01 敌对页结构隔离（全量诱导文案——忽略指令/伪造 system・assistant・tool 角色/
+    伪造工具名与 schema/要求点击・填写・搜索・外发/原始闭合尝试/bidi・控制字符/超长
+    指令；system 每轮恒等/13 工具与注册表恒等/角色仅程序字面量/敌手闭合转义为
+    `<\\/` 形态且原始闭合至多程序化一次/伪造工具 tool-not-found/脚本行为不被改写/
+    零 DOM 动作）；RT-02 URL 白名单（5 个非 http/https 恒 L3 forbidden 零 Tab 零导航
+  - 审计含完整 URL；http/https 含 userinfo 与控制字符形态仍 L1 可见 + 审计全量 +
+    各建 Tab；日志行首时间戳前缀真实审计行数 == 工具调用数——敌手 [INFO] 片段不得
+    伪造条目行）；RT-03 提交类与并存低风险特征（isSubmit 优先 L2 确认门必现/deny 零
+    DOM/approve 一次/迟到・未知 id 批准无效/第三次必须新确认——防循环同签名阻断
+    红态实证后以 read 打断）；RT-04 搜索结果注入（敌手搜索夹具——UNTRUSTED_TOOL_RESULT
+    块包裹 + 原始闭合转义 + tool_call_id 程序关联 + 完整搜索正文不持久化：尾部唯一
+    标记仅运行时 transcript）；RT-05 密码・文件・动态变形（权限层 L3 + 执行器层复核
+    execution-failed，DOM/事件/审计/会话文件/日志零原文，错误语义真实不伪装成功）；
+    RT-06 陈旧 elementId（run 内跨 URL 导航/新文档复用 el-N 旧绑定恒 stale-element
+    且新绑定正常——传递性证明/Tab 销毁 fail-closed/documentId 不进 schema・事件摘要・
+    审计・持久化）；RT-07 系统提示与密钥探测（探测页 + 不可提交标记——system 恒等/
+    标记只以 URL 查询串形式出现在审计与上下文 URL 表面/错误归一化 invalid-key 程序
+    文案/run-done・审计・日志零标记/sk- 形态零出现；网页询问 Key 不构成泄漏证据）；
+    RT-08 确认疲劳（3 L1 独立 step 事件 + 2 L2 各需新确认、批准不复用、无降级自动
+    批准、stepsUsed 计数）；RT-11 通用 click 越权（公开发布/发送消息/普通按钮/语义
+    不明 → L3 forbidden 零 DOM；真链接 onclick 副作用仅验证 L1 可见性与审计——
+    threat-model §5 残余风险 4 如实登记不宣称免疫）。**③ 增量安全审计证据表**：
+    第一阶段隔离（Tab 无 preload/nodeIntegration=false/contextIsolation+sandbox=true/
+    webSecurity 未关闭/window.open deny/权限双处理器默认拒绝/UI will-navigate+
+    will-redirect 白名单）与第二阶段 Key 安全（主进程只读/DPAPI 密文/renderer 只写
+    不回读/config 无明文/logger・error-normalize 脱敏）无回退；第三阶段边界逐项核对
+    （schema 只由注册表生成/权限纯函数/allowedKind・documentId 不进模型 schema/每
+    调用恰一条审计/fill 只记长度/搜索临时 Tab 精确所有权/Agent 上限与防循环执行前
+    阻断/ConfirmDialog 精确 toolCallId 一次/AgentStatusEvent 无思维过程/IPC sender+
+    主帧校验/事件只发主窗口/preload eventRelay 单监听无泄漏/ToolStep v2 不持久化完整
+    ToolResult・快照正文・内部安全参数）；RT-09 全仓库 grep（零 shell.exec・
+    child_process・eval・Function・任意 executeJavaScript（仅固定模板采集/交互脚本）・
+    任意 fs 读写（仅应用自有 config/conversation JSON）・任意 fetch（仅 Provider 适配器
+    固定端点）・任意 IPC・SQL；工具实现零 Electron import 不可绕过
+    BrowserController/SearchProvider；node:vm 敌手参数逃逸测试固化——参数只能作为
+    JSON 数据进入固定模板）。**④ RT-10 三类诚实边界校准**（threat-model §4 /
+    detailed-design §13.2 / A7 任务文档最小同步）：机器可验证（程序边界对诱导式提议
+    的强制阻断）/观察性（真实模型在本次固定网页与固定任务中是否遵守「不把网页文字
+    当指令」，如实记录不推广）/不保证（模型永远不会被诱导产出合法 L0/L1 参数，按
+    §5 残余风险 1/3 登记）；真实测试失败不得放宽权限、自动确认或修改红队夹具制造
+    通过。**⑤ 验证与终检**：test 771/771（新增 5 logger 用例）· typecheck · lint ·
+    format:check · build 全绿；dev 离线全矩阵（连跑 3 次通过；期间 1 次退出码 1 无
+    捕获错误信息，随后连跑 2 次全过，判定为环境瞬态）与生产产物双场景退出码 0
+    （8.6 通过日志实证）；红线 grep（万能工具/Key 读回/dangerouslySetInnerHTML
+    零命中）；敏感信息扫描与 diff 终检零命中；临时目录零残留。红→绿期间修正均为
+    冒烟断言自身缺陷（块程序化闭合计数/审计行 requestId 为服务 UUID/Tab 计数与 L1
+    轮竞态拆双 run/首轮缺 read 登记语义绑定/防循环同签名阻断/每 Tab 独立世代计数/
+    标记在上下文 URL 表面的合法出现/L1 确认竞态改 toolCallId 判定）。已提交并推送
+    双远程（9b8a5e4 logger 修复 + 3075eaa A7 红队矩阵，Gitee/GitHub 实测一致）。
+    **未调用任何付费 Provider、未输出/索取 API Key。真实 Provider 可选验证（真实
+    场景 1–6 + RT-10 + 真 Key 零暴露扫描）暂停于询问边界——仓库外既有说明
+    `%LOCALAPPDATA%\AIbrowse\S5\live-provider-test.md` 与 DPAPI 密文/启动脚本存在
+    （未读取/未触碰），待用户授权后从提交 3075eaa 继续。**
 
 - **A6 操作可见性 UI 与通道（2026-08-14，第六个实现闭环）**：步骤 0 独立核对——
   HEAD `405f494` = Gitee/GitHub 双远程 HEAD（GitHub 经代理 ls-remote 实测）、工作区
