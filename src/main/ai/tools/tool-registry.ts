@@ -102,16 +102,34 @@ export function validateToolArgs(
     }
   }
   for (const [key, value] of Object.entries(args)) {
-    if (typeof value !== 'string') continue;
-    const max = key === 'url' ? VALIDATION_LIMITS.urlMax : VALIDATION_LIMITS.stringMax;
-    if (value.length > max) {
-      return { ok: false, reason: `参数超长：${key} 超过 ${max} 字符上限` };
+    const rule = def.paramRules?.[key];
+    if (typeof value === 'string') {
+      const max =
+        rule?.maxLength ?? (key === 'url' ? VALIDATION_LIMITS.urlMax : VALIDATION_LIMITS.stringMax);
+      if (value.length > max) {
+        return { ok: false, reason: `参数超长：${key} 超过 ${max} 字符上限` };
+      }
+      if (rule?.nonEmpty === true && value.trim() === '') {
+        return { ok: false, reason: `参数不能为空：${key}` };
+      }
+      if (key === 'tabId' && !TAB_ID_PATTERN.test(value)) {
+        return { ok: false, reason: '参数格式不合法：tabId 必须为 UUID 形状' };
+      }
+      if (key === 'elementId' && !ELEMENT_ID_PATTERN.test(value)) {
+        return { ok: false, reason: '参数格式不合法：elementId 必须为 el-N 形状' };
+      }
     }
-    if (key === 'tabId' && !TAB_ID_PATTERN.test(value)) {
-      return { ok: false, reason: '参数格式不合法：tabId 必须为 UUID 形状' };
-    }
-    if (key === 'elementId' && !ELEMENT_ID_PATTERN.test(value)) {
-      return { ok: false, reason: '参数格式不合法：elementId 必须为 el-N 形状' };
+    if (typeof value === 'number' && rule !== undefined) {
+      // A3：数字规则（整数/范围）——任意非法输入安全返回不抛异常
+      if (rule.integer === true && !Number.isInteger(value)) {
+        return { ok: false, reason: `参数必须为整数：${key}` };
+      }
+      if (rule.min !== undefined && value < rule.min) {
+        return { ok: false, reason: `参数越界：${key} 不得小于 ${rule.min}` };
+      }
+      if (rule.max !== undefined && value > rule.max) {
+        return { ok: false, reason: `参数越界：${key} 不得超过 ${rule.max}` };
+      }
     }
   }
 

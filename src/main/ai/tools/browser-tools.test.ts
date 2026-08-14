@@ -3,7 +3,7 @@
 // （getPageSnapshot 逐次调用，不复用缓存快照——防串页契约）；结果确定性序列化与截断；
 // BrowserController 失败语义（false/null）安全映射为 execution-failed。
 // 契约源：doc/stage3/detailed-design.md §4.2/§8.4 + Second_stage 防串页纪律。
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BrowserController } from '../../browser/browser-controller';
 import type { PageSnapshot, TabInfo } from '../../../shared/types/browser';
 import { TOOL_BASE_RISK } from '../permission/permission-policy';
@@ -28,6 +28,9 @@ function fakeBrowser(overrides: Partial<BrowserController> = {}): BrowserControl
     getTabs: async () => [],
     getActiveTab: async () => null,
     getPageSnapshot: async () => null,
+    clickElement: async () => ({ ok: false, reason: '未接线', errorCode: 'execution-failed' }),
+    fillElement: async () => ({ ok: false, reason: '未接线', errorCode: 'execution-failed' }),
+    scrollTab: async () => ({ ok: false, reason: '未接线' }),
     dispose: () => {},
     ...overrides,
   };
@@ -51,7 +54,7 @@ function makeSnapshot(overrides: Partial<PageSnapshot> = {}): PageSnapshot {
     headings: [],
     links: [],
     buttons: [],
-    meta: { capturedAt: 1, readyState: 'complete', degraded: 'none', warnings: [] },
+    meta: { documentId: 1, capturedAt: 1, readyState: 'complete', degraded: 'none', warnings: [] },
     ...overrides,
   };
 }
@@ -379,5 +382,31 @@ describe('browser.open / navigate / back / forward / reload', () => {
     );
     expect(r.ok).toBe(false);
     expect(called).toBe(false);
+  });
+});
+
+describe('A3 接线：browser.read 快照语义登记（recordSnapshot，点击前置）', () => {
+  it('read 成功后经 ctx.recordSnapshot 登记语义来源（未接线时不影响既有行为）', async () => {
+    const snapshot = makeSnapshot();
+    const recordSpy = vi.fn();
+    const browser = fakeBrowser({
+      getPageSnapshot: async () => snapshot,
+      getActiveTab: async () => makeTab({ id: 't1', active: true }),
+    });
+    const r = await toolDef('browser.read').executor(
+      { id: 'c1', args: {} },
+      { browser, runId: 'test-run', recordSnapshot: recordSpy },
+      signal,
+    );
+    expect(r.ok).toBe(true);
+    expect(recordSpy).toHaveBeenCalledWith('t1', snapshot);
+    // 未接线（A2 原路径）：不登记、行为不变
+    const r2 = await toolDef('browser.read').executor(
+      { id: 'c2', args: {} },
+      ctxFor(browser),
+      signal,
+    );
+    expect(r2.ok).toBe(true);
+    expect(recordSpy).toHaveBeenCalledTimes(1);
   });
 });

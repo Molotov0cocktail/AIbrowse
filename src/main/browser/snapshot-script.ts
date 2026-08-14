@@ -156,7 +156,13 @@ function collectSnapshot(): unknown {
     }
 
     // ---------- buttons（§8.2：button / input[type=button|submit|reset] / [role=button]） ----------
-    const buttons: Array<{ id: string; text: string }> = [];
+    // A3（§5.4）：click 语义元数据——isSubmit（升级 L2 唯一依据）与 ariaExpanded
+    // （字段存在 = 显式声明展开状态，true/false 均保留；字段缺失 = 无法证明）。
+    // isSubmit 判定与 interaction-script 的 submit 复核同源：
+    //   INPUT → type=submit；BUTTON → type=submit，或（无显式 type 且位于 form 内）。
+    // 非布尔形状不产出字段（敌手输入纪律，fail-closed）。
+    const buttons: Array<{ id: string; text: string; isSubmit?: boolean; ariaExpanded?: boolean }> =
+      [];
     const buttonEls = doc.querySelectorAll(
       'button, input[type=button], input[type=submit], input[type=reset], [role=button]',
     );
@@ -171,11 +177,34 @@ function collectSnapshot(): unknown {
         el.tagName === 'INPUT'
           ? cap((el as HTMLInputElement).value.trim().replace(/\s+/g, ' '), LIMITS.text)
           : cap(textOf(el), LIMITS.text);
-      buttons.push({ id: elementIdOf(el), text });
+      const entry: { id: string; text: string; isSubmit?: boolean; ariaExpanded?: boolean } = {
+        id: elementIdOf(el),
+        text,
+      };
+      const tag = el.tagName;
+      const typeAttr = el.getAttribute('type');
+      const isSubmitValue =
+        tag === 'INPUT'
+          ? typeAttr === 'submit'
+          : tag === 'BUTTON'
+            ? typeAttr === 'submit' ||
+              ((typeAttr === null || typeAttr === '') && el.closest('form') !== null)
+            : false;
+      if (isSubmitValue) entry.isSubmit = true;
+      const ariaExpandedAttr = el.getAttribute('aria-expanded');
+      if (ariaExpandedAttr === 'true') entry.ariaExpanded = true;
+      else if (ariaExpandedAttr === 'false') entry.ariaExpanded = false;
+      buttons.push(entry);
     }
 
     // ---------- inputs（§8.2：input:not([type=hidden]) / textarea / select） ----------
-    const inputs: Array<{ id: string; type: string; placeholder?: string; value?: string }> = [];
+    const inputs: Array<{
+      id: string;
+      type: string;
+      placeholder?: string;
+      value?: string;
+      isSubmit?: boolean;
+    }> = [];
     const inputEls = doc.querySelectorAll('input:not([type=hidden]), textarea, select');
     for (const el of inputEls) {
       if (inputs.length >= LIMITS.inputs) {
@@ -190,10 +219,17 @@ function collectSnapshot(): unknown {
           : tag === 'TEXTAREA'
             ? 'textarea'
             : 'select';
-      const entry: { id: string; type: string; placeholder?: string; value?: string } = {
+      const entry: {
+        id: string;
+        type: string;
+        placeholder?: string;
+        value?: string;
+        isSubmit?: boolean;
+      } = {
         id: elementIdOf(el),
         type,
       };
+      if (type === 'submit') entry.isSubmit = true; // A3（§5.4）：inputs 提交类标志
       const placeholder = el.getAttribute('placeholder');
       if (placeholder !== null && placeholder !== '') {
         entry.placeholder = cap(placeholder.trim().replace(/\s+/g, ' '), LIMITS.text);

@@ -42,3 +42,16 @@ export interface ElementSemantics {
   // 均为展开/折叠控件的结构化证明；字段缺失不能证明（fail-closed）
   inputType?: string; // inputs 条目 type（click 切换=checkbox/radio；fill 禁 password/file）
 }
+
+// click 执行器内部允许类别（A3）：权限决策派生的执行器内部参数——不进入工具 schema、
+// 模型与网页均不可见不可写（threat-model §3.3 执行器层不可达）。唯一派生源为
+// permission-policy.classifyClickTarget（单一事实源，执行器不自行分类）。
+export type ClickAllowedKind = 'submit' | 'nav' | 'expand' | 'toggle';
+
+// 语义与可信文档世代绑定（A3 elementId 生命周期根因修复）：documentId 为快照时刻主进程
+// 维护的导航世代计数（PageSnapshot.meta.documentId），模型/网页不可提供或修改；click/fill
+// 执行前由 BrowserController 校验当前世代一致，导航/刷新后旧引用 → stale-element。
+export interface ElementSemanticsBinding {
+  semantics: ElementSemantics;
+  documentId: number;
+}

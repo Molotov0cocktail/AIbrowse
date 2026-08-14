@@ -52,10 +52,13 @@ import {
   PROVIDER_KIND_OPENAI_COMPATIBLE,
   registerProviderFactory,
 } from './ai/provider/llm-provider';
-// Third Stage A2：工具层装配（首批 8 个只读/导航工具 + 确认状态机 + 审计 + 执行管线）
+// Third Stage A2/A3：工具层装配（只读/导航 8 工具 + A3 交互 4 工具 + 确认状态机 +
+// 审计 + 执行管线）。A3 的 click/fill 语义来源（getElementSemantics/recordSnapshot）
+// 为 A5 AgentLoop 历史提取接线点——本阶段由冒烟场景注入快照语义存储驱动验证。
 import { createAuditLogger } from './ai/audit-log';
 import { ConfirmManager } from './ai/confirm-manager';
 import { BROWSER_TOOL_DEFINITIONS } from './ai/tools/browser-tools';
+import { INTERACTION_TOOL_DEFINITIONS } from './ai/tools/interaction-tools';
 import { ToolExecutor } from './ai/tools/tool-executor';
 import { registerTool } from './ai/tools/tool-registry';
 
@@ -108,8 +111,10 @@ let conversationService: ConversationService | null = null;
 // S4：config:providers:* handler 需要直接引用生产 ConfigStore/凭据实例
 let configStore: ConfigStore | null = null;
 let credentials: SecureCredentialStore | null = null;
-// Third Stage A2：工具执行管线（A5 AgentLoop 接线复用；本任务由冒烟工具层探针驱动验证）
+// Third Stage A2/A3：工具执行管线（A5 AgentLoop 接线复用；本任务由冒烟工具层探针驱动验证）。
+// confirmManager 暴露给冒烟场景程序化驱动 L2 approve/deny（A6 起接 UI）。
 let toolExecutor: ToolExecutor | null = null;
+let confirmManager: ConfirmManager | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -418,7 +423,8 @@ if (!gotLock) {
                 aiSmokeDir: SMOKE_AI_DATA_DIR, // S4：UI 端到端矩阵断言/清理用
                 liveSmoke, // S5：AIBROWSE_LIVE_PROVIDER=1 时非 undefined（真实 Provider 场景）
                 liveSites: LIVE_SITES_MODE, // S6：AIBROWSE_LIVE_SITES=1 时启用多网站共读验证
-                toolExecutor: toolExecutor ?? undefined, // A2：工具层探针（注册表/校验/权限/执行/审计全链路）
+                toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
+                confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
               });
         run
           .then(() => {
@@ -451,12 +457,15 @@ function createBrowserWindow(): void {
     },
   });
   browserController = controller;
-  // Third Stage A2：工具层装配——注册表首批 8 个只读/导航工具（工具实现只经
-  // BrowserController 接口执行，不 import Electron）+ 确认状态机 + 审计薄封装 +
-  // ToolExecutor 管线。A5 AgentLoop 接线复用本实例；本任务由冒烟工具层探针驱动验证
-  // 全链路（校验→权限→执行→审计）。交互工具（A3）/SearchProvider（A4）未注册。
+  // Third Stage A2/A3：工具层装配——注册表 8 个只读/导航工具 + 4 个交互工具
+  // （工具实现只经 BrowserController 接口执行，不 import Electron）+ 确认状态机 +
+  // 审计薄封装 + ToolExecutor 管线。A5 AgentLoop 接线复用本实例；本任务由冒烟
+  // 工具层探针驱动验证全链路（校验→权限→确认→执行→审计）。SearchProvider（A4）未注册。
+  // A3 的 click/fill 语义来源接线为 A5 历史提取——本阶段冒烟注入快照语义存储驱动。
   for (const def of BROWSER_TOOL_DEFINITIONS) registerTool(def);
-  toolExecutor = new ToolExecutor(new ConfirmManager(), createAuditLogger());
+  for (const def of INTERACTION_TOOL_DEFINITIONS) registerTool(def);
+  confirmManager = new ConfirmManager();
+  toolExecutor = new ToolExecutor(confirmManager, createAuditLogger());
   // S4 完整装配（§3.1/§4）：AI 共读子系统接线——事件回调转发主窗口 send（事件只发
   // 主窗口，§4）。生产走真实 userData + resolveProvider（openai-compatible）；
   // 冒烟模式走进程专属临时目录（不触碰用户 userData）+ FakeProvider 注入（§13.2

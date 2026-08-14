@@ -5,7 +5,7 @@
 // 历史无语义元数据 fail-closed——同一输入同一决策（确定性纯函数，模型/网页无通道）。
 import { describe, expect, it } from 'vitest';
 import type { ElementSemantics } from '../../../shared/types/agent';
-import { decide, isHttpUrl, TOOL_BASE_RISK } from './permission-policy';
+import { classifyClickTarget, decide, isHttpUrl, TOOL_BASE_RISK } from './permission-policy';
 
 describe('isHttpUrl（URL scheme 判定，复用 Tab 导航白名单同源判定）', () => {
   it('http/https 大小写不敏感通过；其余 scheme 与畸形输入拒绝', () => {
@@ -215,6 +215,42 @@ describe('决策输出形状与确定性', () => {
       expect([0, 1, 2, 3], name).toContain(d.level);
       expect(d.reason.length, name).toBeGreaterThan(0);
       expect(decide(name, args, semantics)).toEqual(d);
+    }
+  });
+});
+
+// —— A3 扩展：classifyClickTarget 单一事实源（权限级别与 allowedKind 同源派生） ——
+describe('classifyClickTarget：allowedKind 单一事实源（A3，执行器内部参数派生）', () => {
+  it('与 decide 同源一致：classify 结果 ⇔ decide 级别映射（submit→L2、nav/expand/toggle→L1、null→L3）', () => {
+    const cases: Array<[ElementSemantics | null, string | null, number]> = [
+      [null, null, 3],
+      [{ isSubmit: true, href: 'https://x/' }, 'submit', 2], // isSubmit 优先，不因并存特征降回
+      [{ href: 'https://example.com/' }, 'nav', 1],
+      [{ href: '/relative' }, null, 3], // 快照 href 恒为解析后的绝对 URL；非 http/https 一律不放行
+      [{ href: 'javascript:alert(1)' }, null, 3],
+      [{ ariaExpanded: true }, 'expand', 1],
+      [{ ariaExpanded: false }, 'expand', 1], // 显式 false 同样是展开/折叠控件
+      [{ inputType: 'checkbox' }, 'toggle', 1],
+      [{ inputType: 'radio' }, 'toggle', 1],
+      [{ inputType: 'text' }, null, 3],
+      [{}, null, 3],
+    ];
+    for (const [semantics, kind, level] of cases) {
+      expect(classifyClickTarget(semantics), JSON.stringify(semantics)).toBe(kind);
+      expect(decide('browser.click', { elementId: 'el-1' }, semantics).level).toBe(level);
+    }
+  });
+
+  it('语义缺失（null）与语义空对象 → null（权限层 L3，执行器无 allowedKind 可派生）', () => {
+    expect(classifyClickTarget(null)).toBeNull();
+    expect(classifyClickTarget({})).toBeNull();
+    expect(classifyClickTarget({ inputType: 'submit' })).toBeNull(); // 只有 isSubmit 布尔才升级
+  });
+
+  it('确定性：同一输入同一分类（无随机、无模型/网页通道）', () => {
+    const semantics = { href: 'https://x/', isSubmit: false };
+    for (let i = 0; i < 5; i++) {
+      expect(classifyClickTarget(semantics)).toBe('nav');
     }
   });
 });

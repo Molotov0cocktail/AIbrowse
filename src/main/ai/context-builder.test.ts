@@ -21,7 +21,13 @@ function makeSnapshot(overrides: Partial<PageSnapshot> = {}): PageSnapshot {
     headings: [],
     links: [],
     buttons: [],
-    meta: { capturedAt: 1_752_000_000_000, readyState: 'complete', degraded: 'none', warnings: [] },
+    meta: {
+      documentId: 1,
+      capturedAt: 1_752_000_000_000,
+      readyState: 'complete',
+      degraded: 'none',
+      warnings: [],
+    },
     ...overrides,
   };
 }
@@ -95,7 +101,13 @@ describe('deriveContextMode — §7.2 模式推导矩阵（selection 优先独�
 
   it('L2（degraded 且正文空）→ snapshot（保留身份降级）', () => {
     const l2 = makeSnapshot({
-      meta: { capturedAt: 1, readyState: 'unknown', degraded: 'main-process-only', warnings: [] },
+      meta: {
+        documentId: 1,
+        capturedAt: 1,
+        readyState: 'unknown',
+        degraded: 'main-process-only',
+        warnings: [],
+      },
     });
     expect(deriveContextMode(l2, true)).toBe('snapshot');
   });
@@ -247,6 +259,8 @@ describe('buildContext — L2 降级（§7.2 规则 5）', () => {
   it('degraded 块仅身份信息；warnings 含采集失败原因', () => {
     const l2 = makeSnapshot({
       meta: {
+        documentId: 1,
+
         capturedAt: 1_752_000_000_000,
         readyState: 'unknown',
         degraded: 'main-process-only',
@@ -315,6 +329,8 @@ describe('buildContext — warnings 合并去重', () => {
     const snapshot = makeSnapshot({
       visibleText: 'a'.repeat(12_001),
       meta: {
+        documentId: 1,
+
         capturedAt: 1_752_000_000_000,
         readyState: 'complete',
         degraded: 'none',
@@ -345,6 +361,8 @@ describe('buildContextSource — ContextSource 映射（§2/§3.2）', () => {
   it('snapshot 模式：身份字段 + degraded/thin + warnings 拷贝', () => {
     const snapshot = makeSnapshot({
       meta: {
+        documentId: 1,
+
         capturedAt: 1_752_000_000_123,
         readyState: 'interactive',
         degraded: 'partial',

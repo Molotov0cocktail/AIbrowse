@@ -29,6 +29,9 @@ export const NORMALIZE_LIMITS = {
 export interface SnapshotFallback {
   url: string;
   title: string;
+  // A3：主进程侧导航世代（TabManager 维护，快照时刻盖章）——elementId 与可信文档绑定的
+  // 唯一依据；脚本输出中的任何 documentId 字段一律忽略（页面不可伪造世代）。
+  documentId: number;
 }
 
 // elementId 格式（§8.4）：el-<n>，n 为非负十进制整数（页面试图伪造格式会被整条丢弃）
@@ -118,6 +121,7 @@ export function normalizeSnapshot(raw: unknown, fallback: SnapshotFallback): Pag
       buttons: [],
       meta: {
         capturedAt: Date.now(),
+        documentId: fallback.documentId,
         readyState: 'unknown',
         degraded: 'main-process-only',
         warnings: l2Warnings,
@@ -180,6 +184,7 @@ export function normalizeSnapshot(raw: unknown, fallback: SnapshotFallback): Pag
     buttons,
     meta: {
       capturedAt: Date.now(),
+      documentId: fallback.documentId, // A3：世代由主进程盖章，脚本输出中的 documentId 被忽略
       readyState,
       degraded,
       warnings: warnings.slice(0, NORMALIZE_LIMITS.warnings),
@@ -294,7 +299,15 @@ function readButtons(value: unknown, addWarning: AddWarning): PageSnapshot['butt
       dropped++;
       continue;
     }
-    result.push({ id, text: textField(text, NORMALIZE_LIMITS.text) });
+    const entry: PageSnapshot['buttons'][number] = {
+      id,
+      text: textField(text, NORMALIZE_LIMITS.text),
+    };
+    // A3（§5.4）：click 语义元数据——严格布尔校验，非布尔形状丢弃字段（敌手输入纪律；
+    // 字段缺失 = 无法证明 → 权限层 fail-closed，不整条丢弃条目）
+    if (typeof rec['isSubmit'] === 'boolean') entry.isSubmit = rec['isSubmit'];
+    if (typeof rec['ariaExpanded'] === 'boolean') entry.ariaExpanded = rec['ariaExpanded'];
+    result.push(entry);
   }
   if (dropped > 0) addWarning(`丢弃 ${dropped} 条无效 button`);
   return result;
@@ -320,6 +333,8 @@ function readInputs(value: unknown, addWarning: AddWarning): PageSnapshot['input
       continue;
     }
     const entry: NonNullable<PageSnapshot['inputs']>[number] = { id, type };
+    // A3（§5.4）：inputs 提交类标志——严格布尔，非布尔丢弃字段（fail-closed）
+    if (typeof rec['isSubmit'] === 'boolean') entry.isSubmit = rec['isSubmit'];
     const placeholder = textField(rec['placeholder'], NORMALIZE_LIMITS.text);
     if (placeholder !== '') entry.placeholder = placeholder;
     const valueValue = asString(rec['value']);

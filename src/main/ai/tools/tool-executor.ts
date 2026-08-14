@@ -4,7 +4,7 @@
 // 错误永不以 ok:true 出现（Third_stage.md §8）；未预期异常归一化 execution-failed 并
 // logWarn（详尽日志），审计条目本身不含堆栈/响应体/Key（audit-log 契约）。
 import type {
-  ElementSemantics,
+  ElementSemanticsBinding,
   ToolCall,
   ToolResult,
   ToolResultErrorCode,
@@ -13,9 +13,9 @@ import { TRUNCATION_MARK } from '../context-budget';
 import type { AuditDecision, AuditEntry } from '../audit-log';
 import { summarizeArgs, summarizeRawArgs } from '../audit-log';
 import type { ConfirmManager } from '../confirm-manager';
-import { decide } from '../permission/permission-policy';
+import { classifyClickTarget, decide } from '../permission/permission-policy';
 import { getTool, validateToolArgs } from './tool-registry';
-import type { ToolExecutionContext, ToolDefinition } from './tool-types';
+import type { ToolExecutionContext, ToolDefinition, ToolExecutionDerived } from './tool-types';
 import { logWarn } from '../../logger';
 
 // §8.4 结果长度预算：read 独立 8000（快照章节化），其余工具 2000，search 4000（A4 接线）
@@ -83,8 +83,8 @@ export class ToolExecutor {
         argsSummary = summarizeRawArgs(call.arguments);
         result = toolFailure(call.id, 'invalid-args', `参数校验失败：${validated.reason}`);
       } else {
-        const semantics = this.extractSemantics(validated.args, ctx);
-        const perm = decide(call.name, validated.args, semantics);
+        const binding = await this.extractSemantics(validated.args, ctx);
+        const perm = decide(call.name, validated.args, binding?.semantics ?? null);
         if (perm.level === 3) {
           decision = 'forbidden';
           argsSummary = summarizeArgs(call.name, validated.args);
@@ -99,7 +99,14 @@ export class ToolExecutor {
           argsSummary = summarizeArgs(call.name, validated.args);
           if (outcome === 'approved') {
             decision = 'confirmed';
-            result = await this.runTool(call, def, validated.args, ctx, signal);
+            result = await this.runTool(
+              call,
+              def,
+              validated.args,
+              ctx,
+              signal,
+              this.buildDerived(call.name, binding, 2),
+            );
           } else {
             // denied / cancelled：fail-closed 不执行（无自动批准）
             decision = 'denied';
@@ -108,7 +115,14 @@ export class ToolExecutor {
         } else {
           decision = perm.level === 0 ? 'auto' : 'auto-visible';
           argsSummary = summarizeArgs(call.name, validated.args);
-          result = await this.runTool(call, def, validated.args, ctx, signal);
+          result = await this.runTool(
+            call,
+            def,
+            validated.args,
+            ctx,
+            signal,
+            this.buildDerived(call.name, binding, perm.level),
+          );
         }
       }
     }
@@ -126,15 +140,40 @@ export class ToolExecutor {
     return result;
   }
 
-  // click/fill 的 elementId 语义提取（A5 接线为历史快照提取；未接线 → null → 权限层
-  // fail-closed L3——执行器层实时复核属 A3 纵深防御，不得替代权限层判定）
-  private extractSemantics(
+  // click/fill 的 elementId 语义提取（语义与文档世代绑定）：tabId 由管线解析后传入
+  // （args.tabId 优先，缺省解析活动 Tab id；A5 历史提取可忽略 tabId）。未接线/无活动
+  // Tab → null → 权限层 fail-closed L3——执行器层实时复核属 A3 纵深防御，不得替代权限层判定。
+  private async extractSemantics(
     args: Record<string, unknown>,
     ctx: ToolExecutionContext,
-  ): ElementSemantics | null {
+  ): Promise<ElementSemanticsBinding | null> {
     const elementId = typeof args.elementId === 'string' ? args.elementId : undefined;
     if (elementId === undefined || ctx.getElementSemantics === undefined) return null;
-    return ctx.getElementSemantics(elementId);
+    let tabId: string | null = typeof args.tabId === 'string' ? args.tabId : null;
+    if (tabId === null) {
+      tabId = (await ctx.browser.getActiveTab())?.id ?? null;
+    }
+    return ctx.getElementSemantics(tabId, elementId);
+  }
+
+  // A3：allowedKind/documentId 由权限决策同源派生（执行器内部参数，模型不可见不可写）。
+  // allowedKind 只由 classifyClickTarget 对同一语义 binding 派生（decide 同源）——
+  // executor 与交互脚本均不自行分类；binding 缺失/分类为 null 时不产生任何执行参数
+  // （权限层已 L3 拒绝，此处为纵深防御，防御性传递 undefined 由 executor fail-closed）。
+  private buildDerived(
+    toolName: string,
+    binding: ElementSemanticsBinding | null,
+    level: 0 | 1 | 2,
+  ): ToolExecutionDerived | undefined {
+    if (binding === null) return undefined;
+    if (toolName === 'browser.click') {
+      const allowedKind = level <= 2 ? classifyClickTarget(binding.semantics) : null;
+      return { allowedKind: allowedKind ?? undefined, documentId: binding.documentId };
+    }
+    if (toolName === 'browser.fill') {
+      return { documentId: binding.documentId };
+    }
+    return undefined;
   }
 
   // L2 确认展示摘要：程序组装确定性事实（A3/A6 起含元素文本摘要；文案不经模型/网页）
@@ -149,12 +188,13 @@ export class ToolExecutor {
     args: Record<string, unknown>,
     ctx: ToolExecutionContext,
     signal: AbortSignal,
+    derived?: ToolExecutionDerived,
   ): Promise<ToolResult> {
     if (signal.aborted) {
       return toolFailure(call.id, 'execution-failed', '任务已取消，未执行工具');
     }
     try {
-      const raw = await def.executor({ id: call.id, args }, ctx, signal);
+      const raw = await def.executor({ id: call.id, args, derived }, ctx, signal);
       const content = typeof raw.content === 'string' ? raw.content : '';
       const { content: cut, truncated } = truncateToolContent(content, contentBudgetFor(def.name));
       const warnings = [...(raw.warnings ?? [])];

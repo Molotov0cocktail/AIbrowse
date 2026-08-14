@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { NORMALIZE_LIMITS, normalizeSnapshot } from './snapshot-normalize';
 
-const FALLBACK = { url: 'https://fallback.example/', title: '兜底标题' };
+const FALLBACK = { url: 'https://fallback.example/', title: '兜底标题', documentId: 7 };
 const L = NORMALIZE_LIMITS;
 
 // 一个合法的完整脚本输出（L0 基准），字段用 overrides 局部替换
@@ -390,5 +390,92 @@ describe('normalizeSnapshot — warnings 上限与 capturedAt', () => {
   it('capturedAt 始终为有限数字（主进程盖章）', () => {
     expect(Number.isFinite(normalizeSnapshot(null, FALLBACK).meta.capturedAt)).toBe(true);
     expect(Number.isFinite(normalizeSnapshot(validRaw(), FALLBACK).meta.capturedAt)).toBe(true);
+  });
+});
+
+describe('normalizeSnapshot — click 语义元数据（A3：buttons isSubmit/ariaExpanded、inputs isSubmit、documentId 主进程盖章）', () => {
+  it('buttons 条目的 isSubmit/ariaExpanded 严格布尔透传（true 与 false 均保留）', () => {
+    const snap = normalizeSnapshot(
+      validRaw({
+        buttons: [
+          { id: 'el-1', text: '提交', isSubmit: true },
+          { id: 'el-2', text: '展开', ariaExpanded: true },
+          { id: 'el-3', text: '折叠', ariaExpanded: false },
+          { id: 'el-4', text: '普通' },
+        ],
+      }),
+      FALLBACK,
+    );
+    expect(snap.buttons).toEqual([
+      { id: 'el-1', text: '提交', isSubmit: true },
+      { id: 'el-2', text: '展开', ariaExpanded: true },
+      { id: 'el-3', text: '折叠', ariaExpanded: false },
+      { id: 'el-4', text: '普通' },
+    ]);
+  });
+
+  it('布尔形状非法（字符串 "true"/数字/对象/数组）→ 按敌手输入纪律丢弃字段，不整条丢弃、不抛异常', () => {
+    const snap = normalizeSnapshot(
+      validRaw({
+        buttons: [
+          { id: 'el-1', text: '甲', isSubmit: 'true' },
+          { id: 'el-2', text: '乙', isSubmit: 1 },
+          { id: 'el-3', text: '丙', ariaExpanded: 'false' },
+          { id: 'el-4', text: '丁', ariaExpanded: { value: false } },
+          { id: 'el-5', text: '戊', isSubmit: [true] },
+        ],
+      }),
+      FALLBACK,
+    );
+    expect(snap.buttons.map((b) => ({ id: b.id, text: b.text }))).toEqual([
+      { id: 'el-1', text: '甲' },
+      { id: 'el-2', text: '乙' },
+      { id: 'el-3', text: '丙' },
+      { id: 'el-4', text: '丁' },
+      { id: 'el-5', text: '戊' },
+    ]);
+    expect(
+      snap.buttons.every((b) => b.isSubmit === undefined && b.ariaExpanded === undefined),
+    ).toBe(true);
+  });
+
+  it('inputs 条目 isSubmit 严格布尔透传（normalize 不合成：脚本未证明则字段缺失，字段缺失 ≠ false）', () => {
+    const snap = normalizeSnapshot(
+      validRaw({
+        inputs: [
+          { id: 'el-2', type: 'text', placeholder: '占位', value: '输入值' },
+          { id: 'el-3', type: 'submit', isSubmit: true },
+          { id: 'el-4', type: 'submit' }, // 脚本未产出 isSubmit → 透传后缺失（fail-closed）
+        ],
+      }),
+      FALLBACK,
+    );
+    expect(snap.inputs).toEqual([
+      { id: 'el-2', type: 'text', placeholder: '占位', value: '输入值' },
+      { id: 'el-3', type: 'submit', isSubmit: true },
+      { id: 'el-4', type: 'submit' },
+    ]);
+  });
+
+  it('inputs isSubmit 非法形状 → 字段丢弃（fail-closed：无法证明提交类即不升级 L2）', () => {
+    const snap = normalizeSnapshot(
+      validRaw({ inputs: [{ id: 'el-2', type: 'submit', isSubmit: 'yes' }] }),
+      FALLBACK,
+    );
+    expect(snap.inputs).toEqual([{ id: 'el-2', type: 'submit' }]);
+  });
+
+  it('meta.documentId 由主进程 fallback 盖章（页面无法伪造——即使脚本伪造 documentId 字段也被忽略）', () => {
+    const good = normalizeSnapshot(validRaw(), FALLBACK);
+    expect(good.meta.documentId).toBe(FALLBACK.documentId);
+    // 敌手在脚本输出中伪造 documentId：必须被主进程侧值覆盖
+    const hostile = normalizeSnapshot(
+      validRaw({ meta: { documentId: 999 }, documentId: 999 }),
+      FALLBACK,
+    );
+    expect(hostile.meta.documentId).toBe(FALLBACK.documentId);
+    // L2 降级路径同样盖章
+    const l2 = normalizeSnapshot(null, FALLBACK);
+    expect(l2.meta.documentId).toBe(FALLBACK.documentId);
   });
 });

@@ -131,6 +131,7 @@ const read: ToolExecutorFn = async ({ id, args }, ctx) => {
   if (tabId === null) return fail(id, '没有活动标签页，无法读取页面');
   const snapshot = await ctx.browser.getPageSnapshot(tabId); // 实时采集，不复用缓存快照
   if (snapshot === null) return fail(id, '页面快照不可用（标签页不存在或页面不可读）');
+  ctx.recordSnapshot?.(tabId, snapshot); // A3：登记点击语义来源（世代随快照绑定；未接线不影响）
   const serialized = serializeSnapshotForTool(snapshot, READ_TOOL_CONTENT_MAX);
   return ok(id, serialized.content, serialized.warnings);
 };

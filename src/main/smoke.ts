@@ -14,9 +14,11 @@ import type { BrowserController } from './browser/browser-controller';
 import type { PageSnapshot } from '../shared/types/browser';
 import { PERSIST_PARTITION } from './browser/session-manager';
 import { SEARCH_ENGINE_URL } from '../shared/url';
-import { getCurrentLogFilePath, logError, logInfo } from './logger';
+import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 import { listTools } from './ai/tools/tool-registry';
 import type { ToolExecutor } from './ai/tools/tool-executor';
+import { InteractionSemanticsStore } from './ai/tools/interaction-semantics';
+import type { ConfirmManager } from './ai/confirm-manager';
 import { ConversationServiceImpl } from './ai/conversation-service';
 import { ConversationStore, parseMessagesFile } from './ai/conversation-store';
 import { ConfigStore } from './ai/config-store';
@@ -80,7 +82,8 @@ export interface SmokeOptions {
   aiSmokeDir?: string; // S4：冒烟模式 AI 子系统数据目录（UI 端到端矩阵断言/清理用）
   liveSmoke?: LiveProviderSmoke; // S5：真实 Provider 场景（AIBROWSE_LIVE_PROVIDER=1 时注入）
   liveSites?: boolean; // S6：真实 Provider 多网站共读验证（AIBROWSE_LIVE_SITES=1 时启用）
-  toolExecutor?: ToolExecutor; // A2：工具层探针（注册表/校验/权限/执行/审计全链路）
+  toolExecutor?: ToolExecutor; // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
+  confirmManager?: ConfirmManager; // A3：L2 确认程序化驱动（approve/deny，A6 起接 UI）
 }
 
 // ---------- S5：真实 Provider 可选冒烟（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY） ----------
@@ -127,6 +130,13 @@ const SIMPLE_HTML = `<!doctype html>
       <tr><td>a2</td><td>b2</td></tr>
     </tbody>
   </table>
+  <script>
+    // A3 交互冒烟：页面点击计数（证明「无 DOM 动作」断言）——不影响快照采集内容
+    window.__clickCount = 0;
+    document.body.addEventListener('click', function () {
+      window.__clickCount++;
+    }, true);
+  </script>
 </body>
 </html>`;
 
@@ -184,6 +194,60 @@ const HOSTILE_HTML = `<!doctype html>
 </body>
 </html>`;
 
+// A3：交互受控页（find/scroll/click/fill + elementId 生命周期 + A-12 允许列表）。
+// 页面脚本仅记录交互事实（window.__log），不参与任何权限判定（决策在主进程确定性程序）。
+// 注意：hidden-input 初始可见（快照必须能采集到它），动态隐藏由冒烟场景在快照后驱动，
+// 以验证执行器层对「权限判定后元素状态变化」的实时复核。
+const INTERACTION_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>交互测试页</title></head>
+<body>
+  <h1>交互测试页</h1>
+  <p>用于交互能力冒烟的受控页面。</p>
+  <a id="nav-link" href="/interaction-landed">导航链接</a>
+  <a id="evil-href" href="javascript:alert(1)">危险链接</a>
+  <a id="dynamic-href" href="https://example.com/">动态链接</a>
+  <button type="button" aria-expanded="false" id="expand-false">折叠控件</button>
+  <button type="button" aria-expanded="true" id="expand-true">展开控件</button>
+  <input type="checkbox" id="toggle-box">
+  <input type="radio" name="r" id="toggle-radio">
+  <form onsubmit="return false">
+    <button type="submit" id="submit-btn">提交按钮</button>
+    <button id="form-no-type">表单内按钮</button>
+  </form>
+  <button type="button" id="plain-btn">普通按钮</button>
+  <button type="button" id="buy-btn">立即购买</button>
+  <button type="button" id="delete-btn">删除账户</button>
+  <input type="text" id="text-input" placeholder="请输入">
+  <textarea id="text-area"></textarea>
+  <input type="password" id="pass-input">
+  <input type="file" id="file-input">
+  <input type="text" id="disabled-input" disabled>
+  <input type="text" id="readonly-input" readonly value="只读值">
+  <input type="text" id="hidden-input">
+  <div style="height:2000px"></div>
+  <script>
+    window.__log = [];
+    document.body.addEventListener('click', function (e) {
+      if (e.target && e.target.id) window.__log.push('click:' + e.target.id);
+    }, true);
+    document.body.addEventListener('input', function (e) {
+      if (e.target && e.target.id) window.__log.push('input:' + e.target.id);
+    });
+    document.body.addEventListener('change', function (e) {
+      if (e.target && e.target.id) window.__log.push('change:' + e.target.id);
+    });
+  </script>
+</body>
+</html>`;
+
+// 交互点击导航的落地页（本地受控，证明 click 真实触发导航且不依赖外网）
+const INTERACTION_LANDED_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>交互落地页</title></head>
+<body><h1>交互落地页</h1><p>已到达。</p></body>
+</html>`;
+
 // Session 冒烟（T5）：受控 Set-Cookie 页面（HttpOnly 证明不依赖 document.cookie 读取，
 // 跨进程持久化只能来自 persist: 分区落盘）。
 const COOKIE_NAME = 'aibrowse_session_probe';
@@ -197,6 +261,8 @@ interface ControlledPages {
   redirectOkUrl: string;
   redirectEvilUrl: string;
   setCookieUrl: string;
+  interactionUrl: string;
+  interactionLandedUrl: string;
   base: string;
   close: () => Promise<void>;
 }
@@ -262,6 +328,16 @@ async function startControlledPages(): Promise<ControlledPages> {
       res.end('<!doctype html><title>会话冒烟页</title><p>ok</p>');
       return;
     }
+    if (req.url === '/interaction') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(INTERACTION_HTML);
+      return;
+    }
+    if (req.url === '/interaction-landed') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(INTERACTION_LANDED_HTML);
+      return;
+    }
     res.writeHead(404);
     res.end();
   });
@@ -288,9 +364,629 @@ async function startControlledPages(): Promise<ControlledPages> {
     redirectOkUrl: `${base}/redirect-ok`,
     redirectEvilUrl: `${base}/redirect-evil`,
     setCookieUrl: `${base}/set-cookie`,
+    interactionUrl: `${base}/interaction`,
+    interactionLandedUrl: `${base}/interaction-landed`,
     base,
     close,
   };
+}
+
+// ---------- A3 安全核查红态探针：elementId 跨导航/刷新重新分配（先于实现，真实 DOM） ----------
+// 验证「导航/刷新后 DOM 重建 → 旧 elementId 自然定位失败」的文档论证是否成立。步骤：
+// 1) 页面 A 快照取得旧 elementId；2) 重复快照验证同文档稳定；3) 跨 URL 导航到新文档；
+// 4) 新文档再次快照；5) 同 URL 刷新后再次快照；6) 断言新文档按契约重新分配相同 el-N 字符串
+// ——即旧引用不因「id 不复用」而自然失效，必须由主进程侧文档世代绑定兜底（A3 修复）。
+// URL/标题/capturedAt 均不能证明文档身份（同 URL 刷新三者不变/仅 capturedAt 变）。
+async function runElementIdLifecycleProbe(
+  controller: BrowserController,
+  pages: ControlledPages,
+): Promise<void> {
+  const tab = await controller.createTab(pages.interactionUrl);
+  await waitFor(
+    async () => {
+      const t = (await controller.getTabs()).find((x) => x.id === tab.id);
+      return t !== undefined && t.state === 'ready';
+    },
+    10000,
+    '交互页未在 10 秒内就绪（elementId 生命周期探针）',
+  );
+  const snapA = await controller.getPageSnapshot(tab.id);
+  assert(snapA !== null, '探针：交互页快照不应为 null');
+  const oldId = snapA.links.find((l) => l.text === '导航链接')?.id;
+  assert(oldId !== undefined, '探针：交互页应采集到「导航链接」的 elementId');
+
+  // 同文档重复快照 → 同一活元素保持稳定（既有契约，探针前提）
+  const snapA2 = await controller.getPageSnapshot(tab.id);
+  assert(snapA2 !== null, '探针：重复快照不应为 null');
+  assert(
+    snapA2.links.find((l) => l.text === '导航链接')?.id === oldId,
+    '探针前提：同一文档内重复快照 elementId 应稳定',
+  );
+  const urlA = snapA.url;
+  const titleA = snapA.title;
+  logInfo(
+    'smoke',
+    `elementId 生命周期探针：页面 A（${urlA}）旧 elementId=${oldId}，同文档重复快照稳定`,
+  );
+
+  // 跨 URL 导航 → 新文档 → 再次快照
+  assert(await controller.navigate(tab.id, pages.simpleUrl), '探针：跨 URL 导航应成功');
+  await waitFor(
+    async () => {
+      const t = (await controller.getTabs()).find((x) => x.id === tab.id);
+      return t !== undefined && t.state === 'ready' && t.url === pages.simpleUrl;
+    },
+    10000,
+    '探针：跨 URL 导航后未在 10 秒内就绪',
+  );
+  const snapB = await controller.getPageSnapshot(tab.id);
+  assert(snapB !== null, '探针：新文档快照不应为 null');
+  const newDocId = snapB.links.find((l) => l.text === '示例链接')?.id;
+  assert(newDocId !== undefined, '探针：新文档应采集到「示例链接」的 elementId');
+  assert(snapB.url !== urlA && snapB.title !== titleA, '探针前提：两文档 URL/标题不同');
+  // 红态证据核心：新文档重新分配相同 el-N 字符串——「旧 id 自然失效」不成立
+  assert(
+    newDocId === oldId,
+    `探针红态证据：跨 URL 导航后新文档重新分配相同 el-N（旧 ${oldId} 与新 ${newDocId} 为同一字符串）`,
+  );
+  logInfo(
+    'smoke',
+    `elementId 生命周期探针（红态证据）：跨导航后旧 elementId=${oldId} 被新文档重新分配（示例链接=${newDocId}）——旧 id 非自然失效，需世代绑定`,
+  );
+
+  // 同 URL 刷新 → 又一个新文档（URL/标题不变，capturedAt 变——三者均不能证明文档身份）
+  const capturedBefore = snapB.meta.capturedAt;
+  assert(await controller.reload(tab.id), '探针：刷新应成功');
+  await waitFor(
+    async () => {
+      const t = (await controller.getTabs()).find((x) => x.id === tab.id);
+      return t !== undefined && t.state === 'ready';
+    },
+    10000,
+    '探针：刷新后未在 10 秒内就绪',
+  );
+  const snapC = await controller.getPageSnapshot(tab.id);
+  assert(snapC !== null, '探针：刷新后快照不应为 null');
+  assert(
+    snapC.url === snapB.url && snapC.title === snapB.title,
+    '探针前提：同 URL 刷新后 URL/标题不变（不能证明文档身份）',
+  );
+  assert(
+    snapC.meta.capturedAt > capturedBefore,
+    '探针前提：capturedAt 仅证明时间流逝，不能证明文档身份（同 URL 刷新）',
+  );
+  const reloadId = snapC.links.find((l) => l.text === '示例链接')?.id;
+  assert(
+    reloadId === oldId,
+    `探针红态证据：同 URL 刷新后同样重新分配相同 el-N（旧 ${oldId} 与新 ${reloadId} 为同一字符串）`,
+  );
+  logInfo(
+    'smoke',
+    `elementId 生命周期探针（红态证据）：同 URL 刷新后旧 elementId=${oldId} 再次被重新分配——URL/标题/capturedAt 均不足区分文档身份`,
+  );
+  assert(await controller.closeTab(tab.id), '探针：关闭探针标签页应返回 true');
+}
+
+// ---------- A3 交互场景（8.2，A-12 + elementId 生命周期 + 审计脱敏，真实 DOM） ----------
+// 全部 click/fill/scroll/find 经 ToolExecutor → PermissionPolicy → ConfirmManager →
+// BrowserController 真实链路；语义来源 = 本场景注入的 InteractionSemanticsStore
+// （read/find 实时快照经 recordSnapshot 登记，世代随 meta.documentId 绑定）。
+// 断言覆盖：允许列表四类点击（nav/expand/toggle/submit 确认门 approve/deny）、
+// 非允许列表/「立即购买/删除账户」/危险链接 forbidden 无 DOM 动作、权限判定后页面
+// 动态变化 → 执行器复核拒绝（execution-failed）无 DOM 动作、fill 隐私（结果/审计零原文、
+// input/change 事件真实触发、password/file/disabled/readonly/隐藏无写入）、scroll 边界、
+// find 多章节与无命中、elementId 世代（同文档稳定/导航后失效/刷新后失效/重新快照不碰撞/
+// 类型变化）、每次调用审计恰好一条。
+async function runAgentInteractionScenario(
+  controller: BrowserController,
+  options: SmokeOptions,
+): Promise<void> {
+  const executor = options.toolExecutor;
+  const confirm = options.confirmManager;
+  if (executor === undefined || confirm === undefined) {
+    logWarn('smoke', '交互场景跳过：未装配 ToolExecutor/ConfirmManager');
+    return;
+  }
+  const pages = await startControlledPages();
+  try {
+    // —— 1. elementId 生命周期红态探针（真实 DOM 证据 + 世代前提） ——
+    await runElementIdLifecycleProbe(controller, pages);
+
+    const tab = await controller.createTab(pages.interactionUrl);
+    await waitFor(
+      async () => {
+        const t = (await controller.getTabs()).find((x) => x.id === tab.id);
+        return t !== undefined && t.state === 'ready';
+      },
+      10000,
+      '交互页未在 10 秒内就绪',
+    );
+
+    const store = new InteractionSemanticsStore();
+    const toolCtx = {
+      browser: controller,
+      runId: 'smoke-a3',
+      getElementSemantics: (tabId: string | null, elementId: string) =>
+        store.lookup(tabId, elementId),
+      recordSnapshot: (tabId: string, snapshot: PageSnapshot) =>
+        store.updateFromSnapshot(tabId, snapshot),
+    };
+    const toolSignal = new AbortController().signal;
+    let toolCallCount = 0;
+    const executeTool = (name: string, args: string) => {
+      toolCallCount++;
+      return executor.execute(
+        { id: `smoke-a3-${toolCallCount}`, name, arguments: args },
+        toolCtx,
+        toolSignal,
+      );
+    };
+    const auditLogFile = getCurrentLogFilePath();
+    const auditOffsetBefore = statSync(auditLogFile).size;
+
+    // 页面 JS 驱动/读取（活动 Tab = 交互 Tab；不引入 Playwright）
+    const activeWc = (): WebContents => {
+      const wc = visibleTabView(options.uiWindow)?.webContents;
+      assert(wc !== undefined, '交互场景需要可见的活动 Tab 视图');
+      return wc;
+    };
+    const pageJs = async (script: string): Promise<unknown> => activeWc().executeJavaScript(script);
+    const pageLog = async (): Promise<string[]> => (await pageJs('window.__log')) as string[];
+
+    // 快照与 elementId（与 store 登记同文档同世代）
+    const snap = await controller.getPageSnapshot(tab.id);
+    assert(snap !== null, '交互页快照不应为 null');
+    assert(
+      Number.isInteger(snap.meta.documentId),
+      '快照 meta.documentId 应由主进程世代盖章（整数）',
+    );
+    const idByText = <T extends { id: string; text: string }>(items: T[], text: string): string => {
+      const id = items.find((x) => x.text === text)?.id;
+      assert(id !== undefined, `交互页应采集到「${text}」的 elementId`);
+      return id;
+    };
+    const navLinkId = idByText(snap.links, '导航链接');
+    const evilHrefId = idByText(snap.links, '危险链接');
+    const dynamicHrefId = idByText(snap.links, '动态链接');
+    const expandFalseId = idByText(snap.buttons, '折叠控件');
+    const expandTrueId = idByText(snap.buttons, '展开控件');
+    const submitId = idByText(snap.buttons, '提交按钮');
+    const formNoTypeId = idByText(snap.buttons, '表单内按钮');
+    const plainId = idByText(snap.buttons, '普通按钮');
+    const buyId = idByText(snap.buttons, '立即购买');
+    const deleteId = idByText(snap.buttons, '删除账户');
+    const inputById = (type: string): string => {
+      const entry = (snap.inputs ?? []).find((x) => x.type === type);
+      assert(entry !== undefined, `交互页应采集到 type=${type} 输入框的 elementId`);
+      return entry.id;
+    };
+    const textInputId = inputById('text');
+    const passInputId = inputById('password');
+    const fileInputId = inputById('file');
+
+    // —— 2. read 登记语义（点击前置：语义来源 = 最近一次工具快照） ——
+    const readRes = await executeTool('browser.read', '{}');
+    assert(readRes.ok, 'browser.read 应执行成功并登记点击语义来源');
+
+    // —— 3. A-12 允许列表点击（L1 自动执行，页面交互日志证实真实 DOM 动作） ——
+    const expandRes = await executeTool(
+      'browser.click',
+      JSON.stringify({ elementId: expandFalseId }),
+    );
+    assert(
+      expandRes.ok,
+      `aria-expanded=false 的展开/折叠控件应允许点击（实际 ${expandRes.content}）`,
+    );
+    const checkboxId = inputById('checkbox');
+    const toggleRes = await executeTool('browser.click', JSON.stringify({ elementId: checkboxId }));
+    assert(toggleRes.ok, 'checkbox 切换控件点击应成功');
+    const toggleChecked = (await pageJs(
+      `document.querySelector('[data-aibrowse-el="${checkboxId.slice(3)}"]').checked`,
+    )) as boolean;
+    assert(toggleChecked === true, 'checkbox 点击后应变为选中');
+
+    // —— 4. 导航链接点击（nav，真实导航） ——
+    const navRes = await executeTool('browser.click', JSON.stringify({ elementId: navLinkId }));
+    assert(navRes.ok, '导航链接点击应成功（nav 允许列表）');
+    await waitFor(
+      async () => {
+        const t = (await controller.getTabs()).find((x) => x.id === tab.id);
+        return t !== undefined && t.url === pages.interactionLandedUrl && t.state === 'ready';
+      },
+      10000,
+      '点击导航链接后未到达落地页',
+    );
+    assert((await controller.getActiveTab())?.title === '交互落地页', '落地页标题应生效');
+    assert(await controller.navigate(tab.id, pages.interactionUrl), '返回交互页导航应成功');
+    await waitFor(
+      async () => {
+        const t = (await controller.getTabs()).find((x) => x.id === tab.id);
+        return t !== undefined && t.state === 'ready' && t.url === pages.interactionUrl;
+      },
+      10000,
+      '返回交互页失败',
+    );
+    // 导航后重新 read：刷新语义与世代（旧绑定自然过期）
+    assert((await executeTool('browser.read', '{}')).ok, '导航后重新 read 应成功');
+
+    // —— 5. L2 提交类：deny → 无动作；重跑 approve → 执行（确认门必经） ——
+    // 调用编号：1 read / 2 expand / 3 toggle / 4 nav / 5 read（导航后）→ 6 deny / 7 approve / 8 form
+    const submitDenyP = executeTool('browser.click', JSON.stringify({ elementId: submitId }));
+    await waitFor(
+      async () => confirm.getPending()?.toolCallId === 'smoke-a3-6',
+      5000,
+      '提交类 click 应进入确认 pending',
+    );
+    assert(confirm.deny('smoke-a3-6'), 'deny 应返回 true');
+    const submitDenyRes = await submitDenyP;
+    assert(
+      !submitDenyRes.ok && submitDenyRes.errorCode === 'denied-by-user',
+      'deny 后应返回 denied-by-user',
+    );
+    assert(
+      !(await pageLog()).includes('click:submit-btn'),
+      'deny 后提交按钮不得被点击（无 DOM 动作）',
+    );
+    const submitApproveP = executeTool('browser.click', JSON.stringify({ elementId: submitId }));
+    await waitFor(
+      async () => confirm.getPending()?.toolCallId === 'smoke-a3-7',
+      5000,
+      '重跑提交类 click 应再次进入确认 pending',
+    );
+    assert(confirm.approve('smoke-a3-7'), 'approve 应返回 true');
+    const submitApproveRes = await submitApproveP;
+    assert(submitApproveRes.ok, 'approve 后提交类点击应执行');
+    assert((await pageLog()).includes('click:submit-btn'), 'approve 后提交按钮应被真实点击');
+    const formNoTypeP = executeTool('browser.click', JSON.stringify({ elementId: formNoTypeId }));
+    await waitFor(
+      async () => confirm.getPending() !== null,
+      5000,
+      'form 内无显式 type 的按钮（提交类）应进入确认 pending',
+    );
+    assert(confirm.approve(confirm.getPending()?.toolCallId ?? ''), 'approve 应返回 true');
+    assert((await formNoTypeP).ok, '表单内无 type 按钮 approve 后应执行');
+
+    // —— 6. 非允许列表与语义缺失 → forbidden，无 DOM 动作 ——
+    const logBeforeForbidden = await pageLog();
+    for (const [label, id] of [
+      ['普通按钮', plainId],
+      ['立即购买按钮', buyId],
+      ['删除账户按钮', deleteId],
+      ['危险链接（javascript:）', evilHrefId],
+    ] as const) {
+      const r = await executeTool('browser.click', JSON.stringify({ elementId: id }));
+      assert(
+        !r.ok && r.errorCode === 'forbidden',
+        `${label} 应被权限层 forbidden（实际 ${r.errorCode}）`,
+      );
+    }
+    const unknownIdRes = await executeTool(
+      'browser.click',
+      JSON.stringify({ elementId: 'el-99999' }),
+    );
+    assert(
+      !unknownIdRes.ok && unknownIdRes.errorCode === 'forbidden',
+      '语义元数据缺失应 fail-closed forbidden',
+    );
+    assert(
+      JSON.stringify(await pageLog()) === JSON.stringify(logBeforeForbidden),
+      'forbidden 路径不得产生任何 DOM 动作（页面交互日志不变）',
+    );
+
+    // —— 7. 执行器复核：权限判定后页面动态变化 → execution-failed，无 DOM 动作 ——
+    const expandTrueRes = await executeTool(
+      'browser.click',
+      JSON.stringify({ elementId: expandTrueId }),
+    );
+    assert(expandTrueRes.ok, 'aria-expanded=true 的展开控件应允许点击');
+    const logBeforeDynamic = await pageLog();
+    await pageJs(`document.getElementById('expand-true').removeAttribute('aria-expanded')`);
+    const expandChangedRes = await executeTool(
+      'browser.click',
+      JSON.stringify({ elementId: expandTrueId }),
+    );
+    assert(
+      !expandChangedRes.ok && expandChangedRes.errorCode === 'execution-failed',
+      '权限判定后元素失去 aria-expanded 应被执行器复核拒绝',
+    );
+    assert(
+      JSON.stringify(await pageLog()) === JSON.stringify(logBeforeDynamic),
+      '执行器复核拒绝不得产生 DOM 动作',
+    );
+    await pageJs(
+      `document.getElementById('dynamic-href').setAttribute('href', 'javascript:alert(1)')`,
+    );
+    const dynamicHrefRes = await executeTool(
+      'browser.click',
+      JSON.stringify({ elementId: dynamicHrefId }),
+    );
+    assert(
+      !dynamicHrefRes.ok && dynamicHrefRes.errorCode === 'execution-failed',
+      '权限判定后链接变为 javascript: 应被执行器复核拒绝',
+    );
+    assert(
+      (await controller.getTabs()).find((x) => x.id === tab.id)?.url === pages.interactionUrl,
+      '复核拒绝不得产生导航（当前文档不被替换）',
+    );
+    const toggleId = (snap.inputs ?? []).find((x) => x.type === 'checkbox')?.id ?? '';
+    await pageJs(
+      `document.querySelector('[data-aibrowse-el="${toggleId.slice(3)}"]').setAttribute('type', 'text')`,
+    );
+    const toggleChangedRes = await executeTool(
+      'browser.click',
+      JSON.stringify({ elementId: toggleId }),
+    );
+    assert(
+      !toggleChangedRes.ok && toggleChangedRes.errorCode === 'execution-failed',
+      '权限判定后 checkbox 变为 text 应被执行器复核拒绝',
+    );
+    assert(
+      JSON.stringify(await pageLog()) === JSON.stringify(logBeforeDynamic),
+      '类型变化复核拒绝不得产生 DOM 动作',
+    );
+
+    // —— 8. fill：普通输入成功（事件真实触发）＋结果零原文；禁填目标无写入 ——
+    const fillText = '冒烟填写值';
+    const fillRes = await executeTool(
+      'browser.fill',
+      JSON.stringify({ elementId: textInputId, text: fillText }),
+    );
+    assert(fillRes.ok, '普通 text 输入框应允许填写');
+    assert(!fillRes.content.includes(fillText), 'fill 结果不得包含输入原文');
+    const filledValue = (await pageJs(
+      `document.querySelector('[data-aibrowse-el="${textInputId.slice(3)}"]').value`,
+    )) as string;
+    assert(filledValue === fillText, 'fill 应经原生 setter 真实写入 value');
+    const fillLog = await pageLog();
+    assert(
+      fillLog.includes('input:text-input') && fillLog.includes('change:text-input'),
+      'fill 应真实触发可冒泡的 input/change 事件（React 兼容）',
+    );
+    const textAreaId = inputById('textarea');
+    const areaRes = await executeTool(
+      'browser.fill',
+      JSON.stringify({ elementId: textAreaId, text: '多行内容' }),
+    );
+    assert(areaRes.ok, 'textarea 应允许填写');
+    for (const [label, id] of [
+      ['password', passInputId],
+      ['file', fileInputId],
+    ] as const) {
+      const r = await executeTool('browser.fill', JSON.stringify({ elementId: id, text: 'x' }));
+      assert(
+        !r.ok && r.errorCode === 'forbidden',
+        `fill ${label} 应被权限层 forbidden（实际 ${r.errorCode}）`,
+      );
+    }
+    const passValue = (await pageJs(
+      `document.querySelector('[data-aibrowse-el="${passInputId.slice(3)}"]').value`,
+    )) as string;
+    assert(passValue === '', 'password 输入框不得被写入');
+    // disabled / readonly / 动态隐藏：权限层判 L1 后执行器层拒绝，无写入
+    const disabledId = (snap.inputs ?? []).find(
+      (x) => x.type === 'text' && x.id !== textInputId,
+    )?.id;
+    assert(disabledId !== undefined, '应采集到 disabled 输入框');
+    const disabledRes = await executeTool(
+      'browser.fill',
+      JSON.stringify({ elementId: disabledId, text: 'x' }),
+    );
+    assert(
+      !disabledRes.ok && disabledRes.errorCode === 'not-interactable',
+      'disabled 输入框应执行器层 not-interactable',
+    );
+    // snapshot 不采集 disabled/readonly/隐藏状态（§8.2 语义元数据仅 type/placeholder/value）：
+    // 按固定 HTML 的 DOM 顺序确定性定位——disabled 为第一个非 text-input 的 text 输入框，
+    // readonly 以 value=只读值 唯一定位，hidden-input 为剩余的那个 text 输入框。
+    const readonlyEntry = (snap.inputs ?? []).find((x) => x.value === '只读值');
+    assert(readonlyEntry !== undefined, '应采集到 readonly 输入框（value=只读值）');
+    const readonlyRes = await executeTool(
+      'browser.fill',
+      JSON.stringify({ elementId: readonlyEntry.id, text: 'x' }),
+    );
+    assert(
+      !readonlyRes.ok && readonlyRes.errorCode === 'not-interactable',
+      'readonly 输入框应执行器层 not-interactable',
+    );
+    const readonlyValue = (await pageJs(
+      `document.querySelector('[data-aibrowse-el="${readonlyEntry.id.slice(3)}"]').value`,
+    )) as string;
+    assert(readonlyValue === '只读值', 'readonly 输入框不得被写入');
+    const hiddenEntry = (snap.inputs ?? []).find(
+      (x) =>
+        x.type === 'text' &&
+        x.id !== textInputId &&
+        x.id !== disabledId &&
+        x.id !== readonlyEntry.id,
+    );
+    assert(hiddenEntry !== undefined, '应采集到 hidden-input（初始可见）');
+    await pageJs(
+      `document.querySelector('[data-aibrowse-el="${hiddenEntry.id.slice(3)}"]').style.display = 'none'`,
+    );
+    const hiddenRes = await executeTool(
+      'browser.fill',
+      JSON.stringify({ elementId: hiddenEntry.id, text: 'x' }),
+    );
+    assert(
+      !hiddenRes.ok && hiddenRes.errorCode === 'not-interactable',
+      '隐藏输入框应执行器层 not-interactable',
+    );
+    // 类型变化：text → password（权限判定后动态变化，执行器层再次拒绝）
+    await pageJs(
+      `document.querySelector('[data-aibrowse-el="${textInputId.slice(3)}"]').setAttribute('type', 'password')`,
+    );
+    const typeChangedRes = await executeTool(
+      'browser.fill',
+      JSON.stringify({ elementId: textInputId, text: '第二次填写' }),
+    );
+    assert(
+      !typeChangedRes.ok && typeChangedRes.errorCode === 'execution-failed',
+      '权限判定后输入框变为 password 应执行器层拒绝',
+    );
+    const afterTypeChangeValue = (await pageJs(
+      `document.querySelector('[data-aibrowse-el="${textInputId.slice(3)}"]').value`,
+    )) as string;
+    assert(afterTypeChangeValue === fillText, '类型变化后不得改写既有值');
+
+    // —— 9. scroll 边界与 viewport；find 多章节与无命中 ——
+    const scrollRes = await executeTool('browser.scroll', JSON.stringify({ dy: 100 }));
+    assert(scrollRes.ok, 'scroll 应执行成功');
+    assert(scrollRes.content.includes('scrollY='), 'scroll 结果应含 viewport 摘要');
+    const scrollY = (await pageJs('window.scrollY')) as number;
+    assert(scrollY === 100, `scrollBy(0, 100) 后 scrollY 应为 100（实际 ${scrollY}）`);
+    for (const badArgs of ['{"dy":100000}', '{"dy":-50001}', '{"dy":0.5}']) {
+      const r = await executeTool('browser.scroll', badArgs);
+      assert(!r.ok && r.errorCode === 'invalid-args', 'scroll 越界/非整数参数应 invalid-args');
+    }
+    const findRes = await executeTool('browser.find', JSON.stringify({ text: '导航链接' }));
+    assert(
+      findRes.ok && findRes.content.includes('命中 2 条'),
+      'find 应命中导航链接（可见文本 + 链接章节）',
+    );
+    assert(findRes.content.includes('链接'), 'find 结果应含章节位置');
+    const findMiss = await executeTool('browser.find', JSON.stringify({ text: '不存在的词' }));
+    assert(
+      findMiss.ok && findMiss.content.includes('未找到'),
+      'find 无命中应是 ok 空结果（非错误）',
+    );
+    const findMulti = await executeTool('browser.find', JSON.stringify({ text: '交互测试页' }));
+    assert(findMulti.ok && findMulti.content.includes('命中'), 'find 多章节匹配应返回命中集合');
+    const findEmpty = await executeTool('browser.find', JSON.stringify({ text: '   ' }));
+    assert(!findEmpty.ok && findEmpty.errorCode === 'invalid-args', 'find 空白文本应 invalid-args');
+
+    // —— 10. elementId 生命周期（执行层世代校验，controller 级） ——
+    const docSnap = await controller.getPageSnapshot(tab.id);
+    assert(docSnap !== null, '世代校验前快照不应为 null');
+    const currentDocId = docSnap.meta.documentId;
+    // 10.1 同文档稳定：当前世代绑定 → 执行成功
+    const sameDocRes = await controller.clickElement(tab.id, expandFalseId, 'expand', currentDocId);
+    assert(sameDocRes.ok, '同一文档内当前世代绑定应可执行');
+    // 10.2 导航后失效：旧世代 → stale-element（不注入脚本）
+    assert(await controller.navigate(tab.id, pages.simpleUrl), '导航到简单页应成功');
+    await waitFor(
+      async () => {
+        const t = (await controller.getTabs()).find((x) => x.id === tab.id);
+        return t !== undefined && t.state === 'ready' && t.url === pages.simpleUrl;
+      },
+      10000,
+      '导航到简单页失败',
+    );
+    const staleNavRes = await controller.clickElement(tab.id, 'el-2', 'nav', currentDocId);
+    assert(
+      !staleNavRes.ok && staleNavRes.errorCode === 'stale-element',
+      '导航后旧世代绑定应 stale-element',
+    );
+    assert(
+      ((await pageJs('window.__clickCount')) as number) === 0,
+      'stale-element 不得在新文档产生任何 DOM 动作（即使新文档重新分配相同 el-N）',
+    );
+    // 工具级 stale 路径（审计证据）：store 仍持有导航前的语义绑定 → ToolExecutor 全链路
+    // 权限判定通过（expand L1）→ 执行层世代校验拒绝 → 审计 errorCode=stale-element
+    const toolStaleRes = await executeTool(
+      'browser.click',
+      JSON.stringify({ elementId: expandFalseId }),
+    );
+    assert(
+      !toolStaleRes.ok && toolStaleRes.errorCode === 'stale-element',
+      '导航后经 ToolExecutor 点击旧绑定应 stale-element（旧引用不命中新文档元素）',
+    );
+    assert(
+      ((await pageJs('window.__clickCount')) as number) === 0,
+      '工具级 stale-element 同样不得产生 DOM 动作',
+    );
+    // 10.3 重新快照后不碰撞：新文档已重新分配相同 el-N（红态探针结论），旧世代仍拒绝
+    const simpleSnap = await controller.getPageSnapshot(tab.id);
+    assert(simpleSnap !== null, '简单页快照不应为 null');
+    const simpleButtonId = simpleSnap.buttons.find((b) => b.text === '点击我')?.id;
+    assert(
+      simpleButtonId === 'el-2',
+      '简单页按钮应重新分配 el-2（与旧文档同字符串，碰撞前提成立）',
+    );
+    assert(
+      Number.isInteger(simpleSnap.meta.documentId) && simpleSnap.meta.documentId > currentDocId,
+      '导航后世代应严格递增',
+    );
+    const staleAfterResnap = await controller.clickElement(tab.id, 'el-2', 'nav', currentDocId);
+    assert(
+      !staleAfterResnap.ok && staleAfterResnap.errorCode === 'stale-element',
+      '重新快照后旧世代绑定仍应 stale-element（旧引用不命中新元素）',
+    );
+    // 新世代绑定 + 类型复核：el-2 现在是 button（非 A 标签）→ 复核拒绝，无动作
+    const kindMismatchRes = await controller.clickElement(
+      tab.id,
+      'el-2',
+      'nav',
+      simpleSnap.meta.documentId,
+    );
+    assert(
+      !kindMismatchRes.ok && kindMismatchRes.errorCode === 'execution-failed',
+      '同字符串 id 绑定新世代时指向新文档元素，类型复核（nav≠button）拒绝',
+    );
+    assert(((await pageJs('window.__clickCount')) as number) === 0, '复核拒绝不得产生 DOM 动作');
+    // 10.4 同 URL 刷新：世代再次递增（URL/标题不变），旧世代失效
+    const preReloadDocId = simpleSnap.meta.documentId;
+    assert(await controller.reload(tab.id), '刷新应成功');
+    await waitFor(
+      async () => {
+        const t = (await controller.getTabs()).find((x) => x.id === tab.id);
+        return t !== undefined && t.state === 'ready';
+      },
+      10000,
+      '刷新后未就绪',
+    );
+    const reloadedSnap = await controller.getPageSnapshot(tab.id);
+    assert(reloadedSnap !== null, '刷新后快照不应为 null');
+    assert(
+      reloadedSnap.url === simpleSnap.url && reloadedSnap.title === simpleSnap.title,
+      '同 URL 刷新 URL/标题不变（不能证明文档身份）',
+    );
+    assert(
+      Number.isInteger(reloadedSnap.meta.documentId) &&
+        reloadedSnap.meta.documentId > preReloadDocId,
+      '同 URL 刷新后世代应再次递增',
+    );
+    const staleReloadRes = await controller.clickElement(tab.id, 'el-2', 'nav', preReloadDocId);
+    assert(
+      !staleReloadRes.ok && staleReloadRes.errorCode === 'stale-element',
+      '刷新后旧世代绑定应 stale-element',
+    );
+    // 10.5 类型变化（fill 目标非输入框）→ 复核拒绝（execution-failed），无写入
+    const wrongTypeFill = await controller.fillElement(
+      tab.id,
+      'el-2',
+      'x',
+      reloadedSnap.meta.documentId,
+    );
+    assert(
+      !wrongTypeFill.ok && wrongTypeFill.errorCode === 'execution-failed',
+      'fill 目标为 button 应执行器层拒绝（not-fillable）',
+    );
+
+    // —— 11. 审计：每次调用恰好一条 + fill 脱敏（len=N）零原文 + 决策正确 ——
+    const auditTail = readFileSync(auditLogFile).subarray(auditOffsetBefore).toString('utf8');
+    const auditCount = auditTail.split('[audit] tool-call').length - 1;
+    assert(
+      auditCount === toolCallCount,
+      `A3 交互场景 ${toolCallCount} 次工具调用应恰好 ${toolCallCount} 条审计（实际 ${auditCount}）`,
+    );
+    assert(auditTail.includes(`text=len:${fillText.length}`), 'fill 审计应只记长度（len=N）');
+    assert(!auditTail.includes(fillText), '审计与日志不得包含 fill 输入原文');
+    assert(auditTail.includes('decision=forbidden'), '审计应含 forbidden 决策（非允许列表路径）');
+    assert(auditTail.includes('decision=denied'), '审计应含 denied 决策（提交类 deny 路径）');
+    assert(
+      auditTail.includes('decision=confirmed'),
+      '审计应含 confirmed 决策（提交类 approve 路径）',
+    );
+    assert(auditTail.includes('errorCode=stale-element'), '审计应含 stale-element 错误码');
+
+    assert(await controller.closeTab(tab.id), '关闭交互测试标签页应返回 true');
+    logInfo(
+      'smoke',
+      'A3 交互场景通过（A-12 允许列表/确认门/执行器复核/elementId 世代/fill 隐私/审计全链路）',
+    );
+  } finally {
+    await pages.close();
+  }
 }
 
 // 活动 Tab 对应的可见 WebContentsView（bounds 上报验证：§6 全量覆盖式应用）
@@ -2903,9 +3599,9 @@ export async function runSmokeScenario(
       );
     }
 
-    // 8.1 A2 工具层探针（离线确定性）：注册表已装配 8 个只读/导航工具，经 ToolExecutor
-    //     走真实 BrowserController 验证 校验→权限→执行→审计 全链路；审计条目经日志
-    //     字节切片断言每次调用恰好一条（audit-log 契约 §10.1）。
+    // 8.1 A2/A3 工具层探针（离线确定性）：注册表已装配 8 个只读/导航 + 4 个交互工具，
+    //     经 ToolExecutor 走真实 BrowserController 验证 校验→权限→执行→审计 全链路；
+    //     审计条目经日志字节切片断言每次调用恰好一条（audit-log 契约 §10.1）。
     if (options.toolExecutor !== undefined) {
       const executor = options.toolExecutor;
       const toolCtx = { browser: controller, runId: 'smoke-a2' };
@@ -2916,9 +3612,12 @@ export async function runSmokeScenario(
         executor.execute({ id, name, arguments: args }, toolCtx, toolSignal);
 
       const listed = listTools();
-      assert(listed.length === 8, `工具注册表应恰好装配 8 个 A2 工具（实际 ${listed.length}）`);
+      assert(listed.length === 12, `工具注册表应恰好装配 12 个工具（实际 ${listed.length}）`);
       const expectedNames = [
         'browser.back',
+        'browser.click',
+        'browser.fill',
+        'browser.find',
         'browser.forward',
         'browser.get_active_tab',
         'browser.get_tabs',
@@ -2926,6 +3625,7 @@ export async function runSmokeScenario(
         'browser.open',
         'browser.read',
         'browser.reload',
+        'browser.scroll',
       ]
         .sort()
         .join(',');
@@ -2934,7 +3634,7 @@ export async function runSmokeScenario(
           .map((t) => t.function.name)
           .sort()
           .join(',') === expectedNames,
-        '注册表工具名集合与 A2 首批 8 工具不符',
+        '注册表工具名集合与 A2 首批 8 + A3 交互 4 工具不符',
       );
       assert(
         JSON.stringify(listTools()) === JSON.stringify(listed),
@@ -2983,7 +3683,17 @@ export async function runSmokeScenario(
       const auditTail = readFileSync(auditLogFile).subarray(auditOffsetBefore).toString('utf8');
       const auditCount = auditTail.split('[audit] tool-call').length - 1;
       assert(auditCount === 5, `5 次工具调用应恰好 5 条审计（实际 ${auditCount}）`);
-      logInfo('smoke', 'A2 工具层探针通过（注册表 8 工具/listTools 恒等/校验/权限/执行/审计链路）');
+      logInfo(
+        'smoke',
+        'A2 工具层探针通过（注册表 12 工具/listTools 恒等/校验/权限/执行/审计链路）',
+      );
+    }
+
+    // 8.2 A3 交互场景（离线确定性，真实 DOM）：elementId 生命周期红态探针证据 +
+    //     A-12 click 允许列表与执行器复核 + fill 隐私 + scroll/find + 世代校验（导航/
+    //     刷新后旧 id → stale-element，重新快照不碰撞）+ 审计恰好一条与脱敏断言
+    if (options.toolExecutor !== undefined && options.confirmManager !== undefined) {
+      await runAgentInteractionScenario(controller, options);
     }
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）

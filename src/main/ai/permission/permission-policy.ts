@@ -15,7 +15,11 @@
 // fill：inputType ∈ {password, file} 恒 L3；语义元数据缺失 → L3（无法证明目标不是
 // 密码/文件字段）。
 // open/navigate：URL 非 http/https 恒 L3（scheme 白名单，与 Tab 导航白名单同源判定）。
-import type { ElementSemantics, ToolPermissionLevel } from '../../../shared/types/agent';
+import type {
+  ClickAllowedKind,
+  ElementSemantics,
+  ToolPermissionLevel,
+} from '../../../shared/types/agent';
 
 // §7.1 权限矩阵基础级别（编译期常量——模型与网页无通道修改本矩阵，threat-model T-06）
 export const TOOL_BASE_RISK: Readonly<Record<string, ToolPermissionLevel>> = {
@@ -74,24 +78,34 @@ export function decide(
     : { level: 1, reason: '低风险操作（自动显著展示）' };
 }
 
-function decideClick(semantics: ElementSemantics | null): PermissionDecision {
-  if (semantics === null) {
-    return { level: 3, reason: '历史快照中无该 elementId 的语义元数据，click 禁止' };
-  }
-  if (semantics.isSubmit === true) {
-    return { level: 2, reason: '提交类元素：需用户确认' };
-  }
+// A3：click 确定性允许列表的单一事实源（决议 #29 判定优先级）。权限级别（decideClick）
+// 与执行器内部参数 allowedKind（ToolExecutor 派生、交互脚本复核）都必须由本函数结果
+// 派生——不得在 ToolExecutor 或 interaction-script 中另写一套分类规则（A3 单测双表对照）。
+export function classifyClickTarget(semantics: ElementSemantics | null): ClickAllowedKind | null {
+  if (semantics === null) return null;
+  if (semantics.isSubmit === true) return 'submit'; // 首先升级，不因并存特征降回
   if (semantics.href !== undefined) {
-    return isHttpUrl(semantics.href)
-      ? { level: 1, reason: '导航链接（http/https）' }
-      : { level: 3, reason: '链接目标非 http/https，click 禁止' };
+    return isHttpUrl(semantics.href) ? 'nav' : null; // href 存在但非 http/https → 不放行
   }
-  if (semantics.ariaExpanded !== undefined) {
+  if (semantics.ariaExpanded !== undefined) return 'expand'; // true/false 均为展开/折叠控件
+  if (semantics.inputType === 'checkbox' || semantics.inputType === 'radio') return 'toggle';
+  return null; // 普通按钮/语义不明 → 无 allowedKind（权限层 L3 无执行通道）
+}
+
+function decideClick(semantics: ElementSemantics | null): PermissionDecision {
+  const kind = classifyClickTarget(semantics);
+  if (kind === 'submit') return { level: 2, reason: '提交类元素：需用户确认' };
+  if (kind === 'nav') return { level: 1, reason: '导航链接（http/https）' };
+  if (kind === 'expand') {
     // true/false 均为展开/折叠控件（§5.4「显式声明展开状态」= 字段存在）
     return { level: 1, reason: '展开/折叠控件（显式声明 aria-expanded）' };
   }
-  if (semantics.inputType === 'checkbox' || semantics.inputType === 'radio') {
-    return { level: 1, reason: '复选/单选切换控件' };
+  if (kind === 'toggle') return { level: 1, reason: '复选/单选切换控件' };
+  if (semantics === null) {
+    return { level: 3, reason: '历史快照中无该 elementId 的语义元数据，click 禁止' };
+  }
+  if (semantics.href !== undefined) {
+    return { level: 3, reason: '链接目标非 http/https，click 禁止' };
   }
   return { level: 3, reason: '非允许列表目标或语义不明，click 禁止' };
 }

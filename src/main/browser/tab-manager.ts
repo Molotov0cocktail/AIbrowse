@@ -16,6 +16,11 @@ export interface TabEntry {
   view: WebContentsView;
   info: TabEntryInfo;
   cleanupFns: Array<() => void>;
+  // A3 elementId 生命周期：导航世代计数（主框架 did-navigate 提交时递增）。快照
+  // meta.documentId 由此盖章，click/fill 执行前校验世代一致——URL/标题/capturedAt
+  // 均不能证明文档身份（同 URL 刷新世代同样递增；页内导航/hash 变化不递增，
+  // 文档未重建时旧 elementId 依然有效）。主进程侧可信状态，页面/模型不可读写。
+  generation: number;
 }
 
 export interface TabManagerOptions {
@@ -52,7 +57,7 @@ export class TabManager {
     const cleanupFns = this.wireEvents(wc, info);
     this.options.ownerWindow.contentView.addChildView(view);
     view.setVisible(false); // 可见性由 controller 统一管理（活动 Tab 才可见）
-    this.entries.set(info.id, { view, info, cleanupFns });
+    this.entries.set(info.id, { view, info, cleanupFns, generation: 1 });
 
     // 防御：正常情况下 closeTab/dispose 先移除条目；此处兜底意外销毁
     wc.once('destroyed', () => {
@@ -64,7 +69,7 @@ export class TabManager {
     });
 
     this.options.onChanged();
-    return { view, info, cleanupFns };
+    return { view, info, cleanupFns, generation: 1 };
   }
 
   get(tabId: string): TabEntry | undefined {
@@ -143,6 +148,11 @@ export class TabManager {
 
     const onNavigate = (_e: Electron.Event, url: string): void => {
       info.url = url; // 主框架导航提交后的实际 URL（含重定向结果）
+      // A3：主框架提交 = 新文档建立（跨 URL 导航与同 URL 刷新均触发；did-navigate
+      // 仅主框架、页内导航走 did-navigate-in-page 不触发）→ 导航世代递增，旧 elementId
+      // 世代过期（执行前主进程侧校验 → stale-element）。事件触发时条目已登记。
+      const entry = this.entries.get(info.id);
+      if (entry !== undefined) entry.generation += 1;
       this.options.onChanged();
     };
     wc.on('did-navigate', onNavigate);

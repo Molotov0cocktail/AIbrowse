@@ -24,7 +24,13 @@ function makeSnapshot(overrides: Partial<PageSnapshot> = {}): PageSnapshot {
     headings: [],
     links: [],
     buttons: [],
-    meta: { capturedAt: 1_752_000_000_000, readyState: 'complete', degraded: 'none', warnings: [] },
+    meta: {
+      documentId: 1,
+      capturedAt: 1_752_000_000_000,
+      readyState: 'complete',
+      degraded: 'none',
+      warnings: [],
+    },
     ...overrides,
   };
 }

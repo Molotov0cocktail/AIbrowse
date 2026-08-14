@@ -4,13 +4,23 @@
 // 失败语义（§4）：参数/状态问题安全返回 false/null，不抛异常；仅未预期内部异常 reject。
 
 import type { BaseWindow, Rectangle } from 'electron';
-import type { PageSnapshot, TabInfo, TabsState } from '../../shared/types/browser';
+import type {
+  ElementActionResult,
+  PageSnapshot,
+  ScrollActionResult,
+  TabInfo,
+  TabsState,
+} from '../../shared/types/browser';
+import type { ClickAllowedKind } from '../../shared/types/agent';
 import type { ContentBounds } from '../../shared/types/ipc';
 import { logInfo, logWarn } from '../logger';
 import { PageReader } from './page-reader';
 import type { SessionManager } from './session-manager';
 import { TabManager, type TabEntry } from './tab-manager';
 import { selectNextActive } from './tab-state';
+
+const ELEMENT_ID_PATTERN = /^el-\d{1,10}$/;
+const ALLOWED_KINDS: ReadonlySet<string> = new Set(['nav', 'expand', 'toggle', 'submit']);
 
 export interface BrowserController {
   createTab(url?: string): Promise<TabInfo>;
@@ -23,6 +33,25 @@ export interface BrowserController {
   getTabs(): Promise<TabInfo[]>;
   getActiveTab(): Promise<TabInfo | null>;
   getPageSnapshot(tabId: string): Promise<PageSnapshot | null>;
+  // —— A3 交互能力（AI Tool 层专用；UI 不接线）——
+  // expectedDocumentId 为执行器内部参数：来自权限决策派生绑定的快照世代（meta.documentId），
+  // 模型/网页不可见不可写。执行前主进程侧校验「当前世代 === expectedDocumentId」——
+  // 导航/刷新后旧引用 → stale-element，不注入脚本、不产生任何 DOM 动作（elementId
+  // 生命周期根因修复：旧 id 不得因新文档重新分配相同 el-N 而命中新元素）。
+  clickElement(
+    tabId: string,
+    elementId: string,
+    allowedKind: ClickAllowedKind,
+    expectedDocumentId: number,
+  ): Promise<ElementActionResult>;
+  fillElement(
+    tabId: string,
+    elementId: string,
+    text: string,
+    expectedDocumentId: number,
+  ): Promise<ElementActionResult>;
+  scrollTab(tabId: string, dy: number): Promise<ScrollActionResult>;
+  // 参数/状态问题安全返回（ok:false + 中文原因 + 结构化错误码），不抛异常（既有失败语义）
   dispose(): void; // 窗口关闭前全量清理（销毁全部 view 与监听器，不触发「最后 Tab 自动新建」）
 }
 
@@ -180,8 +209,121 @@ export class BrowserControllerImpl implements BrowserController {
     if (entry === undefined) return null; // L3：tab 不存在
     const wc = entry.view.webContents;
     if (wc.isDestroyed()) return null; // L3：webContents 已销毁
-    // L0–L2 由 PageReader 编排（§8.1/§8.5）：注入只读采集脚本 + normalize 校验 + 降级阶梯
-    return this.pageReader.snapshot(wc);
+    // L0–L2 由 PageReader 编排（§8.1/§8.5）：注入只读采集脚本 + normalize 校验 + 降级阶梯；
+    // A3：documentId 由主进程侧导航世代盖章（快照时刻），页面/模型不可提供或修改
+    return this.pageReader.snapshot(wc, entry.generation);
+  }
+
+  // A3：交互前置守卫（tab 存在/未销毁/参数形状）——安全返回 ok:false，不抛异常
+  private guardInteraction(tabId: string, elementId: string): ElementActionResult | null {
+    if (this.disposed) {
+      return { ok: false, errorCode: 'execution-failed', reason: '浏览器已销毁，无法执行交互' };
+    }
+    if (!ELEMENT_ID_PATTERN.test(elementId)) {
+      return { ok: false, errorCode: 'execution-failed', reason: 'elementId 参数不合法' };
+    }
+    const entry = this.tabManager.get(tabId);
+    if (entry === undefined) {
+      logWarn('browser', `交互请求未知 tabId=${tabId}`);
+      return { ok: false, errorCode: 'execution-failed', reason: '标签页不存在' };
+    }
+    const wc = entry.view.webContents;
+    if (wc.isDestroyed()) {
+      return { ok: false, errorCode: 'execution-failed', reason: '标签页已销毁' };
+    }
+    return null;
+  }
+
+  async clickElement(
+    tabId: string,
+    elementId: string,
+    allowedKind: ClickAllowedKind,
+    expectedDocumentId: number,
+  ): Promise<ElementActionResult> {
+    const guard = this.guardInteraction(tabId, elementId);
+    if (guard !== null) return guard;
+    if (!ALLOWED_KINDS.has(allowedKind) || !Number.isInteger(expectedDocumentId)) {
+      // allowedKind/documentId 为执行器内部参数：非法值 = 内部装配错误，安全拒绝
+      return { ok: false, errorCode: 'execution-failed', reason: '交互执行参数不合法' };
+    }
+    const entry = this.tabManager.get(tabId);
+    if (entry === undefined) {
+      return { ok: false, errorCode: 'execution-failed', reason: '标签页不存在' };
+    }
+    // elementId 生命周期核心防线（主进程侧可信状态校验）：语义绑定世代 ≠ 当前世代
+    // → 旧引用（导航/刷新前快照的 id）绝不注入脚本——即使新文档已重新分配相同 el-N
+    if (entry.generation !== expectedDocumentId) {
+      logWarn(
+        'browser',
+        `click 拒绝陈旧 elementId（tabId=${tabId}，elementId=${elementId}，` +
+          `expectedDocumentId=${expectedDocumentId}，当前世代=${entry.generation}）`,
+      );
+      return {
+        ok: false,
+        errorCode: 'stale-element',
+        reason: '元素所属的快照已过期（页面已导航或刷新），请重新读取页面',
+      };
+    }
+    const norm = await this.pageReader.click(entry.view.webContents, elementId, allowedKind);
+    return norm.ok
+      ? { ok: true, tag: norm.tag, text: norm.text }
+      : { ok: false, errorCode: norm.errorCode, reason: norm.reason };
+  }
+
+  async fillElement(
+    tabId: string,
+    elementId: string,
+    text: string,
+    expectedDocumentId: number,
+  ): Promise<ElementActionResult> {
+    const guard = this.guardInteraction(tabId, elementId);
+    if (guard !== null) return guard;
+    if (typeof text !== 'string' || !Number.isInteger(expectedDocumentId)) {
+      return { ok: false, errorCode: 'execution-failed', reason: '交互执行参数不合法' };
+    }
+    const entry = this.tabManager.get(tabId);
+    if (entry === undefined) {
+      return { ok: false, errorCode: 'execution-failed', reason: '标签页不存在' };
+    }
+    if (entry.generation !== expectedDocumentId) {
+      logWarn(
+        'browser',
+        `fill 拒绝陈旧 elementId（tabId=${tabId}，elementId=${elementId}，` +
+          `expectedDocumentId=${expectedDocumentId}，当前世代=${entry.generation}）`,
+      );
+      return {
+        ok: false,
+        errorCode: 'stale-element',
+        reason: '元素所属的快照已过期（页面已导航或刷新），请重新读取页面',
+      };
+    }
+    const norm = await this.pageReader.fill(entry.view.webContents, elementId, text);
+    return norm.ok
+      ? { ok: true, tag: norm.tag, type: norm.type }
+      : { ok: false, errorCode: norm.errorCode, reason: norm.reason };
+  }
+
+  async scrollTab(tabId: string, dy: number): Promise<ScrollActionResult> {
+    if (this.disposed) {
+      return { ok: false, reason: '浏览器已销毁，无法执行交互' };
+    }
+    if (!Number.isInteger(dy) || dy < -50000 || dy > 50000) {
+      return { ok: false, reason: '滚动参数不合法（整数且 |dy| ≤ 50000）' };
+    }
+    const entry = this.tabManager.get(tabId);
+    if (entry === undefined) {
+      logWarn('browser', `scrollTab 未知 tabId=${tabId}`);
+      return { ok: false, reason: '标签页不存在' };
+    }
+    const wc = entry.view.webContents;
+    if (wc.isDestroyed()) {
+      return { ok: false, reason: '标签页已销毁' };
+    }
+    // scroll 无 elementId 绑定：作用于当前文档本身，不存在陈旧元素引用问题
+    const norm = await this.pageReader.scroll(wc, dy);
+    return norm.ok && norm.viewport !== undefined
+      ? { ok: true, viewport: norm.viewport }
+      : { ok: false, reason: norm.reason ?? '页面滚动失败' };
   }
 
   dispose(): void {

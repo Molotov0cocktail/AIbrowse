@@ -250,3 +250,85 @@ describe('validateToolArgs 校验矩阵', () => {
     }
   });
 });
+
+describe('A3 参数规则扩展（paramRules：长度/非空/整数/数值范围，交互工具）', () => {
+  beforeEach(() => {
+    resetToolRegistry();
+  });
+
+  function makeInteractionDef(overrides: Partial<ToolDefinition> = {}): ToolDefinition {
+    return makeDef({
+      name: 'browser.scroll',
+      parameters: {
+        properties: { dy: { type: 'number' } },
+        required: ['dy'],
+      },
+      paramRules: { dy: { integer: true, min: -50000, max: 50000 } },
+      ...overrides,
+    });
+  }
+
+  it('dy 整数与 ±50000 边界通过；越界/非整数 → 安全拒绝', () => {
+    registerTool(makeInteractionDef());
+    expect(validateToolArgs('browser.scroll', '{"dy":0}').ok).toBe(true);
+    expect(validateToolArgs('browser.scroll', '{"dy":-50000}').ok).toBe(true);
+    expect(validateToolArgs('browser.scroll', '{"dy":50000}').ok).toBe(true);
+    for (const bad of [50001, -50001, 0.5, -0.1]) {
+      const r = validateToolArgs('browser.scroll', JSON.stringify({ dy: bad }));
+      expect(r.ok).toBe(false);
+      expect((r as { reason: string }).reason).toContain('dy');
+    }
+  });
+
+  it('paramRules.maxLength 优先于全局上限（find text ≤200 / fill text ≤2000 可共存于同名字段）', () => {
+    registerTool(
+      makeDef({
+        name: 'browser.find',
+        parameters: { properties: { text: { type: 'string' } }, required: ['text'] },
+        paramRules: { text: { maxLength: 200, nonEmpty: true } },
+      }),
+    );
+    registerTool(
+      makeDef({
+        name: 'browser.fill',
+        parameters: { properties: { text: { type: 'string' } }, required: ['text'] },
+        paramRules: { text: { maxLength: 2000 } },
+      }),
+    );
+    expect(validateToolArgs('browser.find', JSON.stringify({ text: 'x'.repeat(200) })).ok).toBe(
+      true,
+    );
+    expect(validateToolArgs('browser.find', JSON.stringify({ text: 'x'.repeat(201) })).ok).toBe(
+      false,
+    );
+    expect(validateToolArgs('browser.fill', JSON.stringify({ text: 'x'.repeat(2000) })).ok).toBe(
+      true,
+    );
+    expect(validateToolArgs('browser.fill', JSON.stringify({ text: 'x'.repeat(2001) })).ok).toBe(
+      false,
+    );
+  });
+
+  it('nonEmpty：空串与纯空白 → 拒绝；无规则工具不受影响', () => {
+    registerTool(
+      makeDef({
+        name: 'browser.find',
+        parameters: { properties: { text: { type: 'string' } }, required: ['text'] },
+        paramRules: { text: { nonEmpty: true } },
+      }),
+    );
+    for (const text of ['', '   ', '\n\t']) {
+      const r = validateToolArgs('browser.find', JSON.stringify({ text }));
+      expect(r.ok).toBe(false);
+    }
+    registerTool(makeDef({ name: 'test.echo2' }));
+    expect(validateToolArgs('test.echo2', JSON.stringify({ text: '' })).ok).toBe(true);
+  });
+
+  it('paramRules 非法输入（超长字符串仍走 maxLength；数字规则不适用于字符串）安全返回不抛异常', () => {
+    registerTool(makeInteractionDef());
+    const r = validateToolArgs('browser.scroll', JSON.stringify({ dy: '100' }));
+    expect(r.ok).toBe(false);
+    expect(() => validateToolArgs('browser.scroll', 'not json')).not.toThrow();
+  });
+});

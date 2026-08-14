@@ -10,6 +10,7 @@ import type { AuditEntry } from '../audit-log';
 import { ConfirmManager } from '../confirm-manager';
 import { registerTool, resetToolRegistry } from './tool-registry';
 import type { ToolExecutionContext, ToolDefinition } from './tool-types';
+import type { ToolPermissionLevel } from '../../../shared/types/agent';
 import { ToolExecutor, TOOL_RESULT_CONTENT_MAX } from './tool-executor';
 
 // 管线异常路径会 logWarn——单测环境下 logger 未初始化（logDir=''），避免向 CWD 写
@@ -39,6 +40,9 @@ function fakeBrowser(overrides: Partial<BrowserController> = {}): BrowserControl
     getTabs: async () => [],
     getActiveTab: async () => null,
     getPageSnapshot: async () => null,
+    clickElement: async () => ({ ok: false, reason: '未接线', errorCode: 'execution-failed' }),
+    fillElement: async () => ({ ok: false, reason: '未接线', errorCode: 'execution-failed' }),
+    scrollTab: async () => ({ ok: false, reason: '未接线' }),
     dispose: () => {},
     ...overrides,
   };
@@ -150,10 +154,12 @@ describe('ToolExecutor 管线', () => {
     );
   });
 
+  // A3：getElementSemantics 返回语义与文档世代绑定（tabId 由管线解析后传入——
+  // A5 历史提取可忽略 tabId；A3 快照语义源按 Tab 键控）。测试替身以 documentId=1 简化。
   const ctx = (semantics?: ElementSemantics | null): ToolExecutionContext => ({
     browser: fakeBrowser(),
     runId: 'run-1',
-    getElementSemantics: () => semantics ?? null,
+    getElementSemantics: () => (semantics == null ? null : { semantics, documentId: 1 }),
   });
   const signal = new AbortController().signal;
 
@@ -233,7 +239,7 @@ describe('ToolExecutor 管线', () => {
       ctx({ isSubmit: true }),
       signal,
     );
-    expect(confirm.getPending()?.toolCallId).toBe('c2');
+    await vi.waitFor(() => expect(confirm.getPending()?.toolCallId).toBe('c2'));
     expect(confirm.deny('c2')).toBe(true);
     const r = await p;
     expect(r.ok).toBe(false);
@@ -248,6 +254,7 @@ describe('ToolExecutor 管线', () => {
       ctx({ isSubmit: true }),
       signal,
     );
+    await vi.waitFor(() => expect(confirm.getPending()?.toolCallId).toBe('c2'));
     expect(confirm.approve('c2')).toBe(true);
     const r = await p;
     expect(r.ok).toBe(true);
@@ -261,6 +268,7 @@ describe('ToolExecutor 管线', () => {
       ctx({ isSubmit: true }),
       signal,
     );
+    await vi.waitFor(() => expect(confirm.getPending()?.toolCallId).toBe('c2'));
     confirm.cancelAll('run-1');
     const r = await p;
     expect(r.ok).toBe(false);
@@ -346,5 +354,154 @@ describe('ToolExecutor 管线', () => {
     expect(r.ok).toBe(false);
     expect(r.errorCode).toBe('execution-failed');
     expect(audits).toHaveLength(1);
+  });
+});
+
+// —— A3 扩展：derived 执行参数（allowedKind/documentId 由权限决策同源派生，模型不可写） ——
+describe('A3 derived 执行参数（allowedKind/documentId 权限决策派生）', () => {
+  const signal = new AbortController().signal;
+  let executor: ToolExecutor;
+  let audits: AuditEntry[];
+  let confirm: ConfirmManager;
+  let captured: Array<{
+    name: string;
+    derived: { allowedKind?: string; documentId?: number } | undefined;
+  }>;
+
+  beforeEach(() => {
+    resetToolRegistry();
+    audits = [];
+    confirm = new ConfirmManager();
+    executor = new ToolExecutor(confirm, (entry) => {
+      audits.push(entry);
+    });
+    captured = [];
+    const captureDef = (
+      name: string,
+      executorFn: ToolDefinition['executor'],
+      baseRisk: ToolPermissionLevel = 1,
+    ): void => {
+      registerTool({
+        name,
+        description: '',
+        parameters: {
+          properties: {
+            elementId: { type: 'string' },
+            tabId: { type: 'string' },
+            text: { type: 'string' },
+          },
+          required: name === 'browser.click' ? ['elementId'] : ['elementId', 'text'],
+        },
+        baseRisk,
+        riskLift: name === 'browser.click' ? { submitClick: 2 } : undefined,
+        executor: async (call, toolCtx, signalArg) => {
+          captured.push({
+            name,
+            derived: call.derived === undefined ? undefined : { ...call.derived },
+          });
+          return executorFn(call, toolCtx, signalArg);
+        },
+      });
+    };
+    captureDef('browser.click', async ({ id }) => ({
+      toolCallId: id,
+      ok: true,
+      content: '已点击',
+    }));
+    captureDef('browser.fill', async ({ id }) => ({ toolCallId: id, ok: true, content: '已填写' }));
+  });
+
+  it('click L1（nav 链接）→ executor 收到与 classifyClickTarget 同源派生的 {allowedKind:nav, documentId}', async () => {
+    const binding = { semantics: { href: 'https://example.com/' }, documentId: 7 };
+    const r = await executor.execute(
+      { id: 'c1', name: 'browser.click', arguments: '{"elementId":"el-0"}' },
+      { browser: fakeBrowser(), runId: 'run-1', getElementSemantics: () => binding },
+      signal,
+    );
+    expect(r.ok).toBe(true);
+    expect(captured[0]?.derived).toEqual({ allowedKind: 'nav', documentId: 7 });
+  });
+
+  it('click L2（提交类）approve 后 → derived 携带 allowedKind:submit（不降为其他类别）', async () => {
+    const binding = { semantics: { isSubmit: true, href: 'https://example.com/' }, documentId: 2 };
+    const p = executor.execute(
+      { id: 'c2', name: 'browser.click', arguments: '{"elementId":"el-1"}' },
+      { browser: fakeBrowser(), runId: 'run-1', getElementSemantics: () => binding },
+      signal,
+    );
+    await vi.waitFor(() => expect(confirm.getPending()?.toolCallId).toBe('c2'));
+    confirm.approve('c2');
+    const r = await p;
+    expect(r.ok).toBe(true);
+    expect(captured[0]?.derived).toEqual({ allowedKind: 'submit', documentId: 2 });
+  });
+
+  it('fill L1（普通输入）→ derived 携带 documentId（无 allowedKind）', async () => {
+    const binding = { semantics: { inputType: 'text' }, documentId: 5 };
+    const r = await executor.execute(
+      { id: 'c3', name: 'browser.fill', arguments: '{"elementId":"el-2","text":"x"}' },
+      { browser: fakeBrowser(), runId: 'run-1', getElementSemantics: () => binding },
+      signal,
+    );
+    expect(r.ok).toBe(true);
+    expect(captured[0]?.derived).toEqual({ documentId: 5 });
+  });
+
+  it('click L3（非允许列表/语义缺失）→ 不执行、无 derived（执行器层无任何通道）', async () => {
+    const r = await executor.execute(
+      { id: 'c4', name: 'browser.click', arguments: '{"elementId":"el-3"}' },
+      {
+        browser: fakeBrowser(),
+        runId: 'run-1',
+        getElementSemantics: () => ({ semantics: {}, documentId: 1 }),
+      },
+      signal,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errorCode).toBe('forbidden');
+    expect(captured).toHaveLength(0);
+  });
+
+  it('getElementSemantics 收到解析后的 tabId（args.tabId 优先，缺省解析活动 Tab id）', async () => {
+    const seen: Array<string | null> = [];
+    const browser = fakeBrowser({
+      getActiveTab: async () => ({
+        id: 't-active',
+        title: '',
+        url: 'about:blank',
+        active: true,
+        state: 'ready',
+      }),
+    });
+    const binding = { semantics: { href: 'https://example.com/' }, documentId: 1 };
+    await executor.execute(
+      {
+        id: 'c5',
+        name: 'browser.click',
+        arguments: '{"elementId":"el-0","tabId":"00000000-0000-4000-8000-000000000001"}',
+      },
+      {
+        browser,
+        runId: 'run-1',
+        getElementSemantics: (tabId) => {
+          seen.push(tabId);
+          return binding;
+        },
+      },
+      signal,
+    );
+    await executor.execute(
+      { id: 'c6', name: 'browser.click', arguments: '{"elementId":"el-0"}' },
+      {
+        browser,
+        runId: 'run-1',
+        getElementSemantics: (tabId) => {
+          seen.push(tabId);
+          return binding;
+        },
+      },
+      signal,
+    );
+    expect(seen).toEqual(['00000000-0000-4000-8000-000000000001', 't-active']);
   });
 });
