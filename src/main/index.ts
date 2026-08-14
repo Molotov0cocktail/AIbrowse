@@ -17,6 +17,7 @@ import {
 import {
   runSessionSmokeScenario,
   runSmokeScenario,
+  runSourcesSmokeScenario,
   smokeAgentLimits,
   smokeAgentSearchProvider,
   smokeUiFake,
@@ -474,22 +475,40 @@ if (!gotLock) {
         smokeStarted = true;
         const loadUrl = process.env['AIBROWSE_SMOKE_URL'];
         const sessionMode = process.env['AIBROWSE_SESSION_SMOKE'];
+        const sourcesMode = process.env['AIBROWSE_SOURCES_SMOKE'];
         // Session 跨进程持久化冒烟（T5）：set/check 两进程共用临时 userData（§十四 Session 验收）
-        const run =
-          sessionMode === 'set' || sessionMode === 'check'
-            ? runSessionSmokeScenario(browserController, sessionMode)
-            : runSmokeScenario(browserController, {
-                loadUrl: loadUrl === '' ? undefined : loadUrl,
-                uiWindow: mainWindow, // T3：导航保护拦截与 bounds 上报生效验证
-                aiSmokeDir: SMOKE_AI_DATA_DIR, // S4：UI 端到端矩阵断言/清理用
-                liveSmoke, // S5：AIBROWSE_LIVE_PROVIDER=1 时非 undefined（真实 Provider 场景）
-                liveSites: LIVE_SITES_MODE, // S6：AIBROWSE_LIVE_SITES=1 时启用多网站共读验证
-                liveAgent: LIVE_AGENT_MODE, // A7：AIBROWSE_LIVE_AGENT=1 时启用真实 Provider Agent 验证
-                liveAgentPre: LIVE_AGENT_PRE_MODE, // A7 补验：AIBROWSE_LIVE_AGENT_PRE=1 时启用最小 tools 兼容性预检
-                liveAgentSupplement: LIVE_AGENT_SUPPLEMENT_MODE, // A7 补验补证：AIBROWSE_LIVE_AGENT_SUPPLEMENT=1 时启用定向补验（仅修订场景 2/3 + 零泄漏终检）
-                toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
-                confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
-              });
+        // B-02 Sources 跨进程冒烟（B2，决议 #57）：专属 set/check 门控，与 SESSION_SMOKE 互斥
+        if ((sessionMode === 'set' || sessionMode === 'check') && sourcesMode !== undefined) {
+          logError(
+            'main',
+            'AIBROWSE_SESSION_SMOKE 与 AIBROWSE_SOURCES_SMOKE 互斥（决议 #57），请二选一',
+          );
+          app.exit(1);
+          return;
+        }
+        let run: Promise<void>;
+        if (sourcesMode === 'set' || sourcesMode === 'check') {
+          run = runSourcesSmokeScenario(sourcesMode);
+        } else if (sourcesMode !== undefined) {
+          logError('main', `AIBROWSE_SOURCES_SMOKE 值非法：${sourcesMode}（仅支持 set|check）`);
+          app.exit(1);
+          return;
+        } else if (sessionMode === 'set' || sessionMode === 'check') {
+          run = runSessionSmokeScenario(browserController, sessionMode);
+        } else {
+          run = runSmokeScenario(browserController, {
+            loadUrl: loadUrl === '' ? undefined : loadUrl,
+            uiWindow: mainWindow, // T3：导航保护拦截与 bounds 上报生效验证
+            aiSmokeDir: SMOKE_AI_DATA_DIR, // S4：UI 端到端矩阵断言/清理用
+            liveSmoke, // S5：AIBROWSE_LIVE_PROVIDER=1 时非 undefined（真实 Provider 场景）
+            liveSites: LIVE_SITES_MODE, // S6：AIBROWSE_LIVE_SITES=1 时启用多网站共读验证
+            liveAgent: LIVE_AGENT_MODE, // A7：AIBROWSE_LIVE_AGENT=1 时启用真实 Provider Agent 验证
+            liveAgentPre: LIVE_AGENT_PRE_MODE, // A7 补验：AIBROWSE_LIVE_AGENT_PRE=1 时启用最小 tools 兼容性预检
+            liveAgentSupplement: LIVE_AGENT_SUPPLEMENT_MODE, // A7 补验补证：AIBROWSE_LIVE_AGENT_SUPPLEMENT=1 时启用定向补验（仅修订场景 2/3 + 零泄漏终检）
+            toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
+            confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
+          });
+        }
         run
           .then(() => {
             logInfo('main', '冒烟自检通过，正常退出');

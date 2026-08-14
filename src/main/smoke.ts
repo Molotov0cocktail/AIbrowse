@@ -23,6 +23,8 @@ import type { BrowserController } from './browser/browser-controller';
 import type { PageSnapshot } from '../shared/types/browser';
 import { PERSIST_PARTITION } from './browser/session-manager';
 import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sqlite-driver';
+import { runMigrations } from './sources/db/migrations';
+import { SourceServiceImpl } from './sources/source-service';
 import { SEARCH_ENGINE_URL } from '../shared/url';
 import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 import { listTools } from './ai/tools/tool-registry';
@@ -8396,4 +8398,198 @@ export async function runSessionSmokeScenario(
     logError('smoke', 'Session 冒烟失败', err);
     throw err;
   }
+}
+
+// ---------- 8.8 B-02 Sources 跨进程持久化冒烟（B2，决议 #57 专属门控） ----------
+// 两个独立 Electron 进程共用同一临时 userData：set 进程建库迁移 v1 → SourceService
+// CRUD + journal + disable → finally 关库干净退出；check 进程新进程读回全量断言 →
+// 执行 Undo（重启后可用证据）→ 版本冲突拒绝 → 退出码 0。本场景断言 userData 位于
+// 系统 TEMP 下（保护真实 userData，与 B-01 ⑩ 同判定）。
+export async function runSourcesSmokeScenario(mode: 'set' | 'check'): Promise<void> {
+  try {
+    const userData = app.getPath('userData');
+    assert(
+      isPathInside(userData, app.getPath('temp')),
+      'B-02 要求 userData 位于系统 TEMP 下（请提供 AIBROWSE_USER_DATA_DIR=<临时目录>；拒绝触碰真实 userData）',
+    );
+    const dbDir = join(userData, 'sources');
+    mkdirSync(dbDir, { recursive: true });
+    const dbPath = join(dbDir, 'sources.db');
+    const handle = openDb(dbPath);
+    let service: SourceServiceImpl | null = null;
+    try {
+      const outcome = runMigrations(handle);
+      if (mode === 'set') {
+        assert(
+          outcome.state === 'migrated' && outcome.toVersion === 1,
+          'B-02 set：v0→v1 迁移应完成',
+        );
+      } else {
+        assert(
+          outcome.state === 'up-to-date' && outcome.toVersion === 1,
+          'B-02 check：重开不重复迁移（user_version=1）',
+        );
+      }
+      service = new SourceServiceImpl({ db: handle });
+      if (mode === 'set') {
+        await runSourcesSmokeSet(service);
+      } else {
+        await runSourcesSmokeCheck(service);
+      }
+    } finally {
+      // 进程退出路径：句柄必须关闭（service 未构造成功时兜底关闭）
+      if (service !== null) service.dispose();
+      else closeDb(handle);
+    }
+  } catch (err) {
+    logError('smoke', 'B-02 Sources 冒烟失败', err);
+    throw err;
+  }
+}
+
+async function runSourcesSmokeSet(service: SourceServiceImpl): Promise<void> {
+  // 1. 手工添加 origin Source（全字段 + provenance 手工通道）
+  const s1r = await service.addManual({
+    scope: 'origin',
+    url: 'https://example.com',
+    name: '示例站点',
+    groupName: 'AI组',
+    tags: ['benchmark', 'docs'],
+    priority: 5,
+    shareMode: 'full',
+    userNote: '用于基准测试',
+    trust: { value: 'official' },
+  });
+  assert(s1r.ok, 'B-02 set：添加 origin Source 应成功');
+  // 2. 手工添加 page Source：fragment 从键去除（决议 #50）、键空间独立（决议 #49）
+  const s2r = await service.addManual({
+    scope: 'page',
+    url: 'https://example.com/benchmark?q=1#frag',
+  });
+  assert(
+    s2r.ok && s2r.source.canonicalKey === 'https://example.com/benchmark?q=1',
+    'B-02 set：page 键应去除 fragment 并保留 query',
+  );
+  // 3. 重复 canonical → source-duplicate 安全返回（复合唯一约束兜底，非先查后写）
+  const dup = await service.addManual({ scope: 'origin', url: 'https://EXAMPLE.com' });
+  assert(
+    !dup.ok && dup.errorCode === 'source-duplicate',
+    'B-02 set：重复 canonical 应 source-duplicate',
+  );
+  // 4. 手工更新：expectedVersion 命中 → 版本恰 +1
+  if (!s1r.ok) return;
+  const upd = await service.updateManual(
+    s1r.source.id,
+    { groupName: '重命名组', tags: ['benchmark'] },
+    1,
+  );
+  assert(upd.ok && upd.source.version === 2, 'B-02 set：update 应版本恰 +1');
+  // 5. disable：enabled/deleted_at 联动（决议 #51 状态机）
+  if (!s2r.ok) return;
+  const dis = await service.disableManual(s2r.source.id, 1);
+  assert(
+    dis.ok && !dis.source.enabled && dis.source.deletedAt !== null,
+    'B-02 set：disable 应联动 enabled/deleted_at',
+  );
+  // 6. change set：restore + add（幂等键 + 单事务 + journal）
+  const ops = [
+    { kind: 'restore', sourceId: s2r.source.id, expectedVersion: 2 },
+    { kind: 'add', scope: 'page', url: 'https://example.org/docs' },
+  ] as const;
+  const meta = { runId: 'b02-run', toolCallId: 'b02-tool' };
+  const cs = await service.applyChangeSet({ ops: [...ops] }, meta);
+  assert(
+    cs.ok && cs.idempotencyKey !== '' && cs.results.every((x) => x.ok),
+    'B-02 set：change set 应整体成功',
+  );
+  // 7. 幂等重放：同 (run, tool) 同指纹 → 原结果同 key、零重写（决议 #53）
+  const replay = await service.applyChangeSet({ ops: [...ops] }, meta);
+  assert(
+    replay.ok && replay.idempotencyKey === cs.idempotencyKey,
+    'B-02 set：幂等重放应返回同 key',
+  );
+  // 8. journal 持久化断言（add×2 + update + disable + change set ≥ 5 条）
+  const undoable = await service.listUndoable();
+  assert(undoable.length >= 5, `B-02 set：journal 行数应 ≥5（实际 ${undoable.length}）`);
+  logInfo('smoke', `B-02 set 完成：CRUD + journal 写入（${undoable.length} 条可 Undo 记录）`);
+}
+
+async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
+  // 1. 跨进程读回：3 个 source（origin 示例站点、page benchmark、change set 新增 example.org）
+  const list = await service.list({ page: 0, pageSize: 20 });
+  assert(
+    list.ok && list.total === 3,
+    `B-02 check：读回应为 3 个 source（实际 ${list.ok ? list.total : '读回失败'}）`,
+  );
+  if (!list.ok) return;
+  const byKey = new Map(list.items.map((i) => [i.canonicalKey, i]));
+  const s1 = byKey.get('https://example.com');
+  const s2 = byKey.get('https://example.com/benchmark?q=1');
+  const s3 = byKey.get('https://example.org/docs');
+  assert(
+    s1 !== undefined && s2 !== undefined && s3 !== undefined,
+    'B-02 check：三个 source 全部跨进程读回',
+  );
+  // 2. 内容读回一致（新进程、同 userData、同库）
+  assert(
+    s1!.name === '示例站点' && s1!.priority === 5 && s1!.shareMode === 'full',
+    'B-02 check：s1 字段读回一致',
+  );
+  const s1Full = await service.get(s1!.id);
+  assert(
+    s1Full.ok && s1Full.source.version === 2 && s1Full.source.groupName === '重命名组',
+    'B-02 check：s1 版本/分组读回一致',
+  );
+  assert(
+    s1Full.ok && s1Full.source.tags.length === 1 && s1Full.source.tags[0] === 'benchmark',
+    'B-02 check：s1 tags 读回一致',
+  );
+  assert(s2!.enabled === true, 'B-02 check：s2 已由 change set restore（跨进程生效）');
+  // 3. journal 跨进程读回
+  const undoable = await service.listUndoable();
+  assert(undoable.length >= 5, `B-02 check：journal 跨进程读回应 ≥5（实际 ${undoable.length}）`);
+  const csEntry = undoable.find((u) => u.changeType === 'agent-change-set');
+  assert(csEntry !== undefined, 'B-02 check：change set journal 行存在');
+  // 4. 重启后 Undo 生效：undo change set → s3 移除、s2 回到 disable 后（disabled）状态
+  // （list 默认过滤 deleted_at IS NULL——决议 #51，故列表总数 1；s2 经 get 断言 disabled）
+  const undo = await service.undoChange(csEntry!.idempotencyKey);
+  assert(undo.ok, 'B-02 check：重启后 Undo 应成功');
+  const after = await service.list({ page: 0, pageSize: 20 });
+  assert(
+    after.ok && after.total === 1,
+    `B-02 check：Undo 后列表应剩 1 个 source（实际 ${after.ok ? after.total : '读回失败'}）`,
+  );
+  assert(
+    after.ok && after.items.every((i) => i.canonicalKey !== 'https://example.org/docs'),
+    'B-02 check：s3 已被 Undo 移除',
+  );
+  const s2After = await service.get(s2!.id);
+  assert(
+    s2After.ok && s2After.source.enabled === false,
+    'B-02 check：s2 恢复到 change set 前（disabled）状态',
+  );
+  // 5. 重复 Undo 幂等（消费后 undo-not-found 零写入）
+  const again = await service.undoChange(csEntry!.idempotencyKey);
+  assert(
+    !again.ok && again.errorCode === 'source-undo-not-found',
+    'B-02 check：重复 Undo 应 undo-not-found',
+  );
+  // 6. 版本冲突拒绝：undo 前用户另行修改 → source-undo-conflict 不覆盖
+  const updAgain = await service.updateManual(s1!.id, { name: '再次修改' }, 2);
+  assert(updAgain.ok, 'B-02 check：后续手工修改应成功');
+  const s2AddEntry = undoable.find(
+    (u) => u.changeType === 'manual' && u.sourceIds[0] === s2!.id && u.summary.includes('新增'),
+  );
+  assert(s2AddEntry !== undefined, 'B-02 check：s2 的 add journal 行存在（summary 含「新增」）');
+  const conflict = await service.undoChange(s2AddEntry!.idempotencyKey);
+  assert(
+    !conflict.ok && conflict.errorCode === 'source-undo-conflict',
+    'B-02 check：版本冲突应拒绝（source-undo-conflict）',
+  );
+  const s2Still = await service.get(s2!.id);
+  assert(s2Still.ok && s2Still.source.enabled === false, 'B-02 check：冲突拒绝后 s2 状态未被覆盖');
+  logInfo(
+    'smoke',
+    'B-02 check 完成：跨进程读回一致 + 重启后 Undo 生效 + 重复 Undo 幂等 + 版本冲突拒绝',
+  );
 }

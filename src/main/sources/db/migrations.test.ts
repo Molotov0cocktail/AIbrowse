@@ -22,9 +22,9 @@ const stepV1 = step(1, ['CREATE TABLE m1 (k TEXT)']);
 const stepV2 = step(2, ['CREATE TABLE m2 (k TEXT)']);
 
 describe('validateMigrationList — 列表校验矩阵', () => {
-  it('空列表合法（B1 骨架 v0；schema v1 随 B2 追加）', () => {
+  it('空列表合法；程序列表恒合法（B2 起 MIGRATIONS 含 schema v1）', () => {
     expect(validateMigrationList([]).ok).toBe(true);
-    expect(validateMigrationList(MIGRATIONS).ok).toBe(true); // B1 恒为空
+    expect(validateMigrationList(MIGRATIONS).ok).toBe(true);
   });
 
   it('版本重复 → 拒绝', () => {
@@ -184,6 +184,208 @@ describe('runMigrations — 真实 node:sqlite 临时库行为', () => {
     } finally {
       // h 已在上面关闭；此处兜底（重复关闭幂等）
       if (h.isOpen) closeDb(h);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// schema v1 契约断言（B2，决议 #49/#51/#53/#54/#55）：语句恒等 + 约束真实生效。
+// 探针 SQL 仅限本测试文件（决议 #47：测试专用 SQL 仅允许 *.test.ts 与冒烟 B-01）。
+// ---------------------------------------------------------------------------
+describe('schema v1 契约（B2 红→绿：旧 MIGRATIONS 空列表下本组以真实断言失败）', () => {
+  const v1Statements = (): string[] => {
+    if (MIGRATIONS.length !== 1 || MIGRATIONS[0]!.version !== 1) {
+      throw new Error(
+        `schema v1 未定义：期望 MIGRATIONS 恰含 1 级 v1（实际 ${MIGRATIONS.length} 级）`,
+      );
+    }
+    return [...MIGRATIONS[0]!.statements];
+  };
+
+  it('MIGRATIONS 恰含 v1（version 1，语句非空）', () => {
+    expect(MIGRATIONS.length).toBe(1);
+    expect(MIGRATIONS[0]!.version).toBe(1);
+    expect(MIGRATIONS[0]!.statements.length).toBeGreaterThan(0);
+  });
+
+  it('复合唯一约束语句恒等（决议 #49：UNIQUE(scope, canonical_key)）', () => {
+    expect(v1Statements()).toContain(
+      'CREATE UNIQUE INDEX idx_sources_scope_key ON sources(scope, canonical_key)',
+    );
+  });
+
+  it('负向：不存在单列 canonical_key UNIQUE（决议 #49 取代原 §5 单列约束）', () => {
+    expect(v1Statements().some((s) => /canonical_key TEXT NOT NULL UNIQUE/.test(s))).toBe(false);
+  });
+
+  it('部分唯一索引语句恒等（决议 #53：(run_id, tool_call_id) WHERE agent 行）', () => {
+    const idx = v1Statements().find((s) =>
+      s.startsWith('CREATE UNIQUE INDEX idx_change_journal_run_tool'),
+    );
+    expect(idx).toBeDefined();
+    expect(idx).toContain("WHERE change_type = 'agent-change-set'");
+  });
+
+  it('journal 指纹/结果列存在（决议 #53）', () => {
+    const journal = v1Statements().find((s) => s.startsWith('CREATE TABLE change_journal'));
+    expect(journal).toBeDefined();
+    expect(journal).toContain('request_fingerprint TEXT');
+    expect(journal).toContain('result_payload TEXT');
+  });
+
+  it('FTS 虚拟表语句恒等（决议 #54：trigram + 外部内容 + rowid 映射）', () => {
+    expect(v1Statements()).toContain(
+      "CREATE VIRTUAL TABLE sources_fts USING fts5(name, url, user_note, ai_note, content='sources', content_rowid='rowid', tokenize='trigram')",
+    );
+  });
+
+  it('v0→v1 全表创建 + user_version=1', () => {
+    const dbPath = join(root, 'v1.db');
+    const h = openDb(dbPath);
+    try {
+      const out = runMigrations(h);
+      expect(out.state).toBe('migrated');
+      expect(out.toVersion).toBe(1);
+      expect(readUserVersion(h)).toBe(1);
+      for (const name of [
+        'sources',
+        'source_groups',
+        'source_tags',
+        'source_tag_links',
+        'change_journal',
+        'usage_events',
+        'sources_fts',
+      ]) {
+        const n = (
+          h.prepare('SELECT COUNT(*) AS n FROM sqlite_master WHERE name = ?').get(name) as {
+            n: number;
+          }
+        ).n;
+        expect(n, `表 ${name} 应存在`).toBe(1);
+      }
+    } finally {
+      closeDb(h);
+    }
+  });
+
+  it('重开不重复迁移（user_version=1 → up-to-date）', () => {
+    const dbPath = join(root, 'v1-reopen.db');
+    const h = openDb(dbPath);
+    try {
+      expect(runMigrations(h).state).toBe('migrated');
+      closeDb(h);
+      const h2 = openDb(dbPath);
+      try {
+        const out = runMigrations(h2);
+        expect(out.state).toBe('up-to-date');
+        expect(readUserVersion(h2)).toBe(1);
+      } finally {
+        closeDb(h2);
+      }
+    } finally {
+      if (h.isOpen) closeDb(h);
+    }
+  });
+
+  it('未知更高版本（user_version=2）→ newer-than-program 零写入', () => {
+    const dbPath = join(root, 'v1-newer.db');
+    const h = openDb(dbPath);
+    try {
+      h.exec('PRAGMA user_version = 2'); // 测试专用：模拟未来版本库
+      const out = runMigrations(h);
+      expect(out.state).toBe('newer-than-program');
+      expect(out.ok).toBe(false);
+      const n = (
+        h.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'sources'").get() as {
+          n: number;
+        }
+      ).n;
+      expect(n).toBe(0);
+    } finally {
+      closeDb(h);
+    }
+  });
+
+  it('CHECK 约束真实生效（scope/priority/share_mode/change_type）', () => {
+    const dbPath = join(root, 'v1-check.db');
+    const h = openDb(dbPath);
+    try {
+      runMigrations(h);
+      const base = {
+        id: 'c-1',
+        scope: 'origin',
+        canonical_key: 'https://example.com',
+        url: 'https://example.com',
+        name: 'n',
+        created_at: '2026-08-15T00:00:00.000Z',
+        updated_at: '2026-08-15T00:00:00.000Z',
+      };
+      const runInsert = (over: Record<string, unknown>): void => {
+        const values = { ...base, ...over };
+        const cols = Object.keys(values);
+        h.prepare(
+          `INSERT INTO sources (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+        ).run(...Object.values(values));
+      };
+      expect(() => runInsert({ scope: 'site' })).toThrow();
+      expect(() => runInsert({ priority: 9 })).toThrow();
+      expect(() => runInsert({ share_mode: 'secret' })).toThrow();
+      expect(() => runInsert({ created_by: 'model' })).toThrow();
+      expect(() =>
+        h
+          .prepare(
+            "INSERT INTO change_journal (idempotency_key, change_type, before_payload, after_payload, source_ids, applied_at) VALUES ('k1','weird','{}','{}','[]','2026-08-15')",
+          )
+          .run(),
+      ).toThrow(); // change_type 枚举 CHECK（'weird' 非法）
+    } finally {
+      closeDb(h);
+    }
+  });
+
+  it('FK 约束真实生效（group_id 与 tag_links 引用）', () => {
+    const dbPath = join(root, 'v1-fk.db');
+    const h = openDb(dbPath);
+    try {
+      runMigrations(h);
+      const insert = h.prepare(
+        `INSERT INTO sources (id, scope, canonical_key, url, name, group_id, created_at, updated_at)
+         VALUES (?, 'origin', ?, ?, 'n', ?, ?, ?)`,
+      );
+      expect(() =>
+        insert.run('fk-1', 'https://example.com', 'https://example.com', 'no-such-group', 't', 't'),
+      ).toThrow(); // group_id 不存在 → FK 拦截（PRAGMA foreign_keys=ON）
+      expect(() =>
+        h
+          .prepare(
+            "INSERT INTO source_tag_links (source_id, tag_id) VALUES ('no-such-source', 'no-such-tag')",
+          )
+          .run(),
+      ).toThrow(); // 两列 FK 均拦截
+    } finally {
+      closeDb(h);
+    }
+  });
+
+  it('复合 UNIQUE 真实生效（同 (scope, canonical_key) 双写 → 第二写失败）', () => {
+    const dbPath = join(root, 'v1-unique.db');
+    const h = openDb(dbPath);
+    try {
+      runMigrations(h);
+      const insert = h.prepare(
+        `INSERT INTO sources (id, scope, canonical_key, url, name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'n', 't', 't')`,
+      );
+      insert.run('u-1', 'page', 'https://example.com/p', 'https://example.com/p');
+      expect(() =>
+        insert.run('u-2', 'page', 'https://example.com/p', 'https://example.com/p'),
+      ).toThrow();
+      // 键空间独立：同 canonical_key 不同 scope 合法（决议 #49）
+      expect(() =>
+        insert.run('u-3', 'origin', 'https://example.com/p', 'https://example.com/p'),
+      ).not.toThrow();
+    } finally {
+      closeDb(h);
     }
   });
 });
