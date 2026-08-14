@@ -1,11 +1,12 @@
 # AGENTS.md — AIbrowse 项目专属开发手册
 
 > 依据 `.agents/skills/project-rules/PROJECT_RULES.md` §8 于 2026-08-13 初始化；
-> 与根目录 `Third_stage.md`（当前阶段需求/验收标准）、`ROADMAP.md` + `First_stage.md` /
-> `Second_stage.md`（已完成）、`Fourth_stage.md`～`Seventh_stage.md`（后续阶段需求与验收
-> 标准）配套；技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
-> 新会话接管顺序：本文件 → 当前阶段文件（现为 `Third_stage.md`）→ `doc/tasks/progress.md`
-> → git 状态与代码核对（§2 步骤 0）。
+> 与根目录 `Fourth_stage.md`（当前阶段需求/验收标准）、`ROADMAP.md` + `First_stage.md` /
+> `Second_stage.md` / `Third_stage.md`（已完成）、`Fifth_stage.md`～`Seventh_stage.md`
+> （后续阶段需求与验收标准）配套；技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
+> 新会话接管顺序：本文件 → 当前阶段文件（现为 `Fourth_stage.md`）+ `doc/stage4/`
+> （proposal / high-level-design / detailed-design / threat-model / tasks/B1–B9）
+> → `doc/tasks/progress.md` → git 状态与代码核对（§2 步骤 0）。
 > 与本文件冲突时以本文件为准，通用规则基线见 `.agents/skills/project-rules/PROJECT_RULES.md`。
 > 任务进度不记在本文件：唯一进度源 `doc/tasks/progress.md`（本文件仅在有长期变化时更新，见 §2）。
 
@@ -14,7 +15,31 @@
 - **一句话定位**：Windows 桌面「AI 信息浏览器 / AI Information Browser」——内置 Chromium 的
   多标签页浏览器，用户与 AI 共享同一浏览器会话与登录状态；AI 仅通过受限
   BrowserController / Tool Layer 操作浏览器，不得拥有任意系统权限。
-- **当前阶段（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
+- **当前阶段（第四阶段，Sources 长期信源系统）**：把传统浏览器「收藏夹」升级为
+  可被 AI 理解、检索、自动维护的长期信息源系统。**阶段状态（2026-08-15）：
+  Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9 任务拆分已完成
+  （纯文档设计闭环，零产品代码改动）；尚未实现任何 Sources 功能（B1–B9 全部
+  待开始）**；下一个推荐任务 = **B1**（node:sqlite 决策门 spike，硬前置）。
+  契约源 `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
+  `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
+  实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
+  **架构纪律（第四阶段）**：依赖方向固定
+  `Sources UI / Agent Source Tools → SourceService → SourceRepository /
+SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
+  renderer/preload/AgentLoop/Tool 实现不得直接执行 SQL；UI 与 Agent 共用同一
+  SourceService；SQL 只能是 Repository 内的编译期常量或 migration，所有用户/
+  网页/模型文本只能作为 prepared statement 参数；禁止 `exec(sql)` 动态串、
+  动态表名/列名/排序表达式、SQLite 扩展加载；Source Tool 不新增网络能力
+  （打开网页继续 browser_open/browser_read）；v1 最小 4 工具
+  （source_search/source_list/source_get 为 L0 有界检索、source_apply_changes
+  为 L2 确认门），禁具 source_sql/source_delete_hard/source_export_all/任意
+  导入/任意抓取/任意通用数据库工具；AI 写入统一 change set（≤20 项、幂等键、
+  expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
+  永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
+  数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
+  **⚠️ 以上全部为「规划/待实现」**：Sources 相关接口在 B1–B9 对应任务完成前
+  不得在文档/报告/UI 中宣称已实现。
+- **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
   Agent Loop（最大步数/超时/取消/防循环）、确定性权限分级与确认状态机（L0 自动 /
@@ -63,8 +88,8 @@
     read/find/scroll 三类工具真实调用链）+ 场景 3 修订（真实搜索后两个不同
     origin 公开来源各自读取比较）+ A3 确认门状态机补齐（迟到/未知 toolCallId
     决议无效），`LIVE_SMOKE_PASS` 退出码 0（12 次 HTTP 全部 200），
-    **第三阶段总 Exit 决策 = `GO/PASS`**（等待用户 Fourth Stage 切换指令，
-    不擅自进入）。
+    **第三阶段总 Exit 决策 = `GO/PASS`**（2026-08-15 已按用户指令正式切换
+    Fourth Stage；第四阶段设计闭环详见 progress.md 与 doc/stage4/）。
     纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
     （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
     核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
@@ -79,16 +104,23 @@
   ——BrowserController/TabManager/PageReader/SessionManager + WebContentsView 多标签浏览器 +
   PageSnapshot 采集 + 调试面板；Exit Gate 已于 2026-08-13 通过（First_stage.md §十四）。
 - **阶段机制**：`ROADMAP.md` 描述全阶段路线与切换原则；各阶段需求/验收标准分文件存放
-  （当前 `Third_stage.md`；已完成 `First_stage.md` / `Second_stage.md`；后续
-  `Fourth_stage.md`～`Seventh_stage.md`）。当前处于第三阶段；**只有当前 Stage 的
-  Exit Gate 通过后才切换下一 Stage**（纪律见 §2 文档职责划分）。
-  各 Stage 文件的完整内容不复制进本文件，需要时直接读对应 Stage 文件。
+  （当前 `Fourth_stage.md`；已完成 `First_stage.md` / `Second_stage.md` /
+  `Third_stage.md`；后续 `Fifth_stage.md`～`Seventh_stage.md`）。当前处于
+  第四阶段；**只有当前 Stage 的 Exit Gate 通过后才切换下一 Stage**（纪律见
+  §2 文档职责划分）。各 Stage 文件的完整内容不复制进本文件，需要时直接读对应
+  Stage 文件。
 - **技术栈**：Electron + TypeScript + React + Vite + Node.js；页面承载用官方当前推荐的
   **WebContentsView**（禁用已废弃的 BrowserView）；测试 **Vitest**、lint **ESLint**、格式 **Prettier**。
-  本阶段明确禁用：Playwright（作为浏览器主体）、SQLite、向量数据库、RSS、Research Agent、
+  本阶段明确禁用：Playwright（作为浏览器主体）、向量数据库、RSS、Research Agent、
   图表系统、登录账号系统、云同步、厂商 LLM SDK（Provider 调用用原生 fetch + SSE 自实现，
-  零新依赖）、Markdown/富文本回答渲染库。⚠️ LLM API 调用**允许**（本阶段核心）但仅限
-  主进程内 Provider 适配器发起；API Key 不得进入源码/日志/prompt/网页/renderer 可读通道。
+  零新依赖）、Markdown/富文本回答渲染库。⚠️ **SQLite 语义（第四阶段校准）**：
+  第三阶段当时将 SQLite 列为阶段禁用项（历史语义保留于 Third_stage.md §5.3/§6 原文
+  与 progress.md 历史条目，不改写）；第四阶段引入 SQLite 作为 Sources 持久化层——
+  driver 首选 `node:sqlite` 且必须经 B1 决策门实测冻结（`doc/stage4/detailed-design.md`
+  §3.2，通过前禁止任何 Source 实现）；**「任意 SQL/任意通用数据库工具」仍是永久红线**
+  （模型/网页无任何 SQL 通道；SQL 仅为 Repository 编译期常量与 migration，参数绑定）。
+  ⚠️ LLM API 调用**允许**（既有能力）但仅限主进程内 Provider 适配器发起；API Key
+  不得进入源码/日志/prompt/网页/renderer 可读通道，也绝不进入 Sources 数据库。
   若某技术选择与最新版 Electron 明显不兼容，可选更合理实现，但**必须在修改前说明原因**。
   **技术基线（2026-08-13 按官方来源验证后冻结）**：Node.js 24.x（Active LTS，本机 24.18.0；
   Electron 43.4.0 内置 Node 24.18.1，运行时实测）/ Electron 43.4.0 / electron-vite 5.0.0 / Vite 7.3.6 /
@@ -116,24 +148,25 @@
 ```
 ROADMAP.md（全阶段路线与切换原则，低频修改）
   ↓
-当前阶段文件 Third_stage.md（已完成 First_stage.md / Second_stage.md；后续
-Fourth_stage.md～Seventh_stage.md，Exit Gate 通过后依次启用）
+当前阶段文件 Fourth_stage.md（已完成 First_stage.md / Second_stage.md /
+Third_stage.md；后续 Fifth_stage.md～Seventh_stage.md，Exit Gate 通过后依次启用）
   ↓
 AGENTS.md（长期规则/稳定架构/技术基线，低频修改）
   ↓
 doc/（第一阶段历史：proposal / high-level-design / detailed-design，定稿不覆盖；
-    Second Stage 起：doc/stage2/（定稿）、doc/stage3/（当前）… 各自独立的
-    proposal / 高层设计 / 详细设计 / 任务文档——目录约定 2026-08-13 起）
+    Second Stage 起：doc/stage2/（定稿）、doc/stage3/（定稿）、doc/stage4/
+    （当前）… 各自独立的 proposal / 高层设计 / 详细设计 / 威胁模型 / 任务文档
+    ——目录约定 2026-08-13 起）
   ↓
 doc/tasks/progress.md（当前工程状态/短期记忆，高频更新）
   ↓
 Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ```
 
-- **阶段切换纪律**：当前处于第三阶段。只有当前 Stage 的 **Exit Gate** 全部通过（逐项核对该 Stage
+- **阶段切换纪律**：当前处于第四阶段。只有当前 Stage 的 **Exit Gate** 全部通过（逐项核对该 Stage
   文件的 Exit Gate/验收标准、progress.md 无阻塞级缺陷、全量验证通过）后，才可切换到下一 Stage；
   切换按 ROADMAP.md「阶段切换原则」执行；阶段完成后**停下向用户报告**，不得擅自进入下一阶段
-  （Third_stage.md §10 / 本文件附 C）。
+  （Fourth_stage.md §10；B9 必须独立复验、不采信 B1–B8 完成报告）。
 - 不引入额外的状态文件 / Agent 日志 / checklist / handoff / summary 文件，除非实际开发证明必要。
 - **文档用于理解需求与意图；Git、当前代码、测试和构建结果用于确认项目实际状态。**
   若 progress.md 声称某功能已完成、但代码/Git/测试证明没有：以实际工程状态为事实，修正文档，再继续开发。
@@ -142,8 +175,10 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ### 步骤 0：新对话接管（每次新对话开始先做）
 
 1. 阅读 `AGENTS.md`（本文件）
-2. 阅读当前阶段文件（现为 `Third_stage.md`；已完成 `First_stage.md` / `Second_stage.md`，
-   后续 `Fourth_stage.md`～`Seventh_stage.md`）
+2. 阅读当前阶段文件（现为 `Fourth_stage.md`）+ 当前阶段设计文档（现为
+   `doc/stage4/`：proposal / high-level-design / detailed-design / threat-model /
+   tasks/B1–B9；已完成 `First_stage.md` / `Second_stage.md` / `Third_stage.md`
+   与 `doc/stage2/`、`doc/stage3/`）
 3. 阅读 `doc/tasks/progress.md`（如存在）
 4. `git status` + 最近若干条 `git log --oneline`
 5. 检查本次任务相关的实际代码和配置
@@ -249,7 +284,14 @@ PermissionPolicy / ConfirmManager / ToolExecutor → BrowserController / SearchP
   生态、多 Agent 编排、Agent 记忆系统、向量数据库、page.extract 独立工具、
   向 Agent 开放的关闭 Tab 工具（Agent 打开的 Tab 归用户管理）——除非本阶段目标
   绝对必要，不得主动扩展。
-- **技术基线冻结（第三阶段同样生效）**：§1 已冻结版本不得由后续 Agent 擅自升级。升级流程：
+- **范围纪律（第四阶段不做清单，Fourth_stage.md §5 + 任务红线）**：Sources 子系统纪律见
+  §1「当前阶段」与 §5 Sources 契约速查；本阶段不做——Research 报告/多源自动交叉核验/
+  引用渲染/图表、RSS/Watch/Diff/后台定时请求、云同步/多设备/账号、embedding/向量
+  数据库、任意 SQL/任意文件系统/任意 HTTP POST/后台抓取（永久红线）、Agent 硬删除
+  （无 source_delete_hard 工具）、把 AI 推断的 official/primary 当已核验事实、
+  Fifth Stage 代码；**B1 决策门实测通过前禁止任何 Source 实现**（同第三阶段 A1
+  硬前置纪律）；SQLite 静态加密不在本阶段承诺（v1 本地明文，README/UI 如实说明）。
+- **技术基线冻结（第三阶段起长期生效）**：§1 已冻结版本不得由后续 Agent 擅自升级。升级流程：
   先说明理由 → 验证 typecheck + lint + test + build + Electron 冒烟全绿 → 同步相关文档 → 提交。
 - **依赖可复现**：`package-lock.json` 必须提交；禁止删除 lockfile 后重新解析依赖来「解决」问题；
   npm 出现 peer dependency / engine 警告时不得用 `--force` / `--legacy-peer-deps` 直接掩盖，
@@ -299,6 +341,14 @@ d:\AIbrowse\
     │       │                                  #   参数只进 JSON 字面量；node:vm 敌手参数逃逸测试）
     │       ├── interaction-normalize.ts / .test.ts # （A3 ✅）交互结果形状校验纯函数（页面视为敌手）
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 51 用例（A3 扩展语义元数据）
+    │   └── sources/                           # （Fourth Stage 规划/待实现，契约见 doc/stage4/detailed-design.md §1）：
+    │       │                                  #   db/（sqlite-driver 薄封装 + migrations + backup，B1/B7）、
+    │       │                                  #   domain/（source-canonical/source-change-set/
+    │       │                                  #   source-search-query 纯函数，B2/B3）、
+    │       │                                  #   repository/（source-repository 唯一 SQL 执行点 +
+    │       │                                  #   source-search-index + change-journal，B2/B3）、
+    │       │                                  #   source-service（UI 与 Agent 共用唯一入口，B2）、
+    │       │                                  #   usage/usage-tracker（B7）、tools/source-tools（B4）
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅ + A6 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
@@ -885,6 +935,82 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   `LIVE_SMOKE_PASS` 退出码 0）+ **定向补验（`-Supplement`，场景 2/3 修订 +
   A3 状态机补齐，12 次 HTTP 全部 200）**——**第三阶段总 Exit 决策 =
   `GO/PASS`**（证据见 Third_stage.md §9/§10 与 progress.md）。
+
+### Fourth Stage Sources 契约速查（定稿 2026-08-15；⚠️ 全部「规划/待实现」——B1–B9 完成前不得宣称已实现）
+
+> 唯一契约源 `doc/stage4/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
+> Q1–Q12 拍板）；安全契约源 `doc/stage4/threat-model.md`（威胁 ST-01～ST-12、
+> 五层防线继承 + 检索/持久化/数据完整新防线、红队矩阵 SRT-01～SRT-12、诚实边界
+> 六类残余风险）；任务 B1–B9 见 `doc/stage4/tasks/`（B1 为硬前置决策门）。以下为
+> 速查摘要，**签名以详细设计为准，实施后按 `grep -n "^export"` 回填核对**。
+
+- **依赖方向（不可反向）**：`Sources UI / Agent Source Tools → SourceService →
+SourceRepository / SourceSearchIndex / SourceChangeJournal → SQLite driver
+（主进程）`；renderer/preload/AgentLoop/Tool 零 SQL；UI 与 Agent 共用同一
+  SourceService；打开网页继续 browser_open/browser_read（Source Tool 零网络能力）。
+- **SQLite driver 决策门（B1 硬前置）**：`node:sqlite` 首选（Node 24 内置，
+  Stability 1.1 实验性；Electron 43.4.0 需 dev+生产构建实测 11 项——import/文件库/
+  prepared statements/事务/外键/busy timeout/FTS5/trigram/userData/句柄清理——
+  全部通过才冻结）；失败 → B1 停止提交证据 → 评估 better-sqlite3。官方声明不替代
+  本项目实跑。SQL 仅为 Repository 编译期常量 + migration（参数绑定）；禁止
+  exec 动态串/动态表名列名/排序表达式/扩展加载。
+- **域模型（shared/types/sources.ts，B2）**：Source（origin/page 双作用域 +
+  canonicalKey 唯一）/SourceGroup/SourceTag + source_tag_links/change_journal
+  （幂等键主键 + before/after payload，有界 100 条/30 天）/usage_events（每
+  Source 最近一次五态）。Source 字段：id/scope/canonicalKey/url/name/groupId/
+  tags/priority(1–5)/enabled/shareMode(full|metadata|blocked)/trust{value,
+  assertedBy,verification}/userNote/aiNote/createdBy/version/时间戳/deletedAt/
+  lastUsedAt/lastUsageOutcome。note ≤2000、name ≤200、tag ≤32×20 个。
+- **canonicalization（source-canonical 纯函数，B2）**：仅 http/https、拒
+  userinfo、scheme/host 小写、IDN 用 WHATWG URL 解析后稳定 host、去默认端口与
+  fragment、保留路径大小写/非默认端口/普通 query（utm_* 默认保留）；origin 键 =
+  规范化 origin、page 键 = 去 fragment 规范化完整 URL；duplicate 由唯一约束
+  保证（不靠先查后写），同 origin 只提示「可能相关」不自动覆盖。
+- **SourceService（B2，UI 与 Agent 共用唯一入口）**：search（默认/硬上限 10）/
+  list（每页 ≤20）/get/applyChangeSet({runId,toolCallId})/addManual/updateManual/
+  disableManual/restoreManual/hardDeleteManual(confirmToken)/undoChange/undoable/
+  recordUsage/getState({mode:'normal'|'readonly-recovery'})/dispose；构造注入
+  {db, now?}；非法输入安全返回不抛异常。
+- **写入安全（change set 全链路，B4）**：模型提 ≤20 项 change set → 主进程读
+  当前状态 → 确定性 before/after diff → L2 确认（ConfirmManager 复用，deny 默认
+  焦点）→ approve 后单事务提交（全部成功或全部 rollback）；确认前数据库零变化；
+  主进程生成 idempotency key（重放幂等）；expectedVersion 乐观并发（不符整体
+  拒绝）；deny/timeout/cancel/迟到/未知 toolCallId 零写入；Agent 无硬删除工具
+  （disable/restore 显式）；手工永久删除二次确认 + 清理 FTS/usage/journal 私有
+  payload；手工 UI 同经 SourceService + Undo；审计脱敏（note 正文零出现，查询串
+  全量 ≤500）。
+- **provenance（B2/B5）**：trust{value: official|primary|secondary|community|
+  unknown；assertedBy: user|ai；verification: asserted|unverified}；用户明示 →
+  official+user-asserted；AI 推断恒 official+ai+unverified；模型 change set 不能
+  写 assertedBy=user（仅用户 UI 通道）、不能设 blocked（防自我隐藏）；UI 必须
+  展示来源。
+- **Source Tools v1（B4，wire-safe 名）**：source_search/source_list/source_get
+  = L0（有界 + 分享模式过滤 + allowlist）；source_apply_changes = L2；禁具
+  source_sql/source_delete_hard/source_export_all/任意导入/任意抓取/任意通用
+  数据库工具（grep 断言）。注册后 17 工具（冒烟 8.1 断言校准）。错误码扩展
+  source-invalid-change/version-conflict/duplicate/not-found/forbidden/limit/
+  unavailable/conflict。ToolResult 预算 SOURCE_TOOL_CONTENT_MAX=4000。
+- **有界 Retrieval 与隐私（B3）**：source_search 硬上限 10、list 每页 ≤20、
+  本地过滤排序（整库不进模型）、返回 allowlist；note 仅 full 模式命中少量返回
+  （≤200 截断 + provenance + 控制字符剔除）；blocked 工具视角完全不可见；
+  无备注快速收藏默认 metadata、用户写备注默认 full（UI 明示）；检索结果进
+  UNTRUSTED_TOOL_RESULT 块（无特权块）；普通日志只记 sourceId/字段名/数量/长度/
+  结果数；ToolStep 不复制完整备注。
+- **多语言检索（B3）**：FTS5 trigram 主路径（B1 实测冻结）+ 1–2 字符短查询/特殊
+  URL/FTS 不可用 → 参数化精确匹配/LIKE ESCAPE 安全降级（完整交付实现）；查询串
+  纯函数短语包裹转义（引号/通配符/FTS 操作符/SQL 片段只作数据）；排序确定性
+  （精确>前缀>tag/group>name/domain>note；priority ±1 档有限加分；recency 次级；
+  canonical_key 全序）；FTS 与主表同事务同步 + 诊断性 rebuild。
+- **migration/backup/recovery（B1/B7）**：user_version 单调逐级 + 每级单事务 +
+  异常 rollback；迁移前一致性备份（VACUUM INTO/backup API/关闭后复制由 B1 实测
+  冻结；WAL 活跃不得只复制主文件）；integrity/foreign_key 检查失败不覆盖原库；
+  未知更高版本/损坏 → Sources 只读恢复态（写读入口拒绝 + 中文诊断 + 浏览器其余
+  能力正常）；数据库/备份/journal 不进模型上下文。
+- **本地明文边界（B5 如实说明）**：v1 明文保存 URL/分组/标签/备注（OS 用户权限
+  保护），不承诺静态加密；API Key 仍只走 safeStorage/DPAPI，绝不进 Sources 库。
+- **usage/health（B7）**：无后台巡检；仅 Agent 实际经 Source 打开/读取后记录
+  最近一次（unknown/reachable/unreachable/auth-required/blocked 五态；v1 可靠
+  信号仅 reachable/unreachable，其余占位宁缺勿错）；不保存正文、不宣称长期健康。
 
 ## 6. 常用命令
 

@@ -1,12 +1,21 @@
 # AIbrowse — AI 信息浏览器
 
-> 第三阶段目标：**Browser Agent 与受限工具系统**——AI 通过受限、可审计、可撤销的
-> Tool Layer 自主完成低风险浏览任务：tool-calling 兼容层（A1 硬前置）、Tool Registry、
-> SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
-> Agent Loop（最大步数/超时/取消/防循环）、确定性权限分级与确认状态机（L0 自动 /
-> L1 自动显著展示 / L2 用户确认 / L3 禁止）、操作可见性与审计日志。契约源
-> `doc/stage3/detailed-design.md`；安全契约源 `doc/stage3/threat-model.md`
-> （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
+> 当前阶段（第四阶段）：**Sources 长期信源系统**——SQLite 持久化与 migration/
+> recovery、Source（origin/page 双作用域）/Group/Tag/备注/优先级/启用状态/
+> provenance（信任与来源）、用户手工管理与当前网页快速收藏、AI 自然语言添加/修改/
+> 整理/禁用/恢复（结构化 change set + L2 确认 + 单事务 + durable Undo）、有界
+> Source Retrieval（FTS5 trigram 多语言 + 分享模式 full/metadata/blocked）、
+> Browser Agent 复用既有 browser_open/browser_read 打开读取检索结果。
+> **阶段状态（2026-08-15）：设计完成、B1 待开始**——Fourth Stage 已正式进入
+> （用户切换指令）；详细设计与 B1–B9 任务拆分已完成（纯文档设计闭环）；
+> **尚未实现任何 Sources 功能（Sources 尚不可用，无产品代码改动）**；
+> 下一个推荐任务 = **B1**（node:sqlite 决策门 spike，硬前置）。契约源
+> `doc/stage4/detailed-design.md`；安全契约源 `doc/stage4/threat-model.md`
+> （ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source 实现定稿）；需求源
+> `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
+> 历史阶段（已完成）：第三阶段 Browser Agent 契约源 `doc/stage3/detailed-design.md`；
+> 安全契约源 `doc/stage3/threat-model.md`（Prompt Injection 威胁模型已重建定稿，
+> 先于任何 Browser Tool 实现）。
 > **A1 tool-calling 兼容层、A2 Tool Registry/权限分级与确认状态机/审计日志、
 > A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）、
 > A4 SearchProvider 与 search_web、A5 Agent Runtime、A6 操作可见性 UI 与通道、
@@ -20,9 +29,16 @@
 > T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
 > 见 `doc/stage3/proposal.md` §11）。
 > 核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
-> 需求源：`Third_stage.md`；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
+> 需求源：`Fourth_stage.md`（当前）；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
-## 当前状态（2026-08-14）
+## 当前状态（2026-08-15）
+
+- 🔨→📋 **第四阶段（Sources）已正式进入（2026-08-15，用户切换指令）：设计完成、
+  B1 待开始**——本闭环为纯文档设计（proposal/高层设计/详细设计/威胁模型/B1–B9
+  任务拆分 + Fourth_stage.md/AGENTS.md/README/progress 同步），零产品代码改动；
+  **Sources 功能尚未实现、不可用**；下一个唯一任务 = **B1**（node:sqlite 决策门
+  实测，硬前置——11 项全部通过前禁止任何 Source 实现）。契约
+  `doc/stage4/detailed-design.md` + 安全契约 `doc/stage4/threat-model.md`。
 
 - ✅ **第一阶段完成（Exit Gate 通过，2026-08-13）**：T0 项目基线 → T1 详细设计定稿 →
   T2 浏览器核心（BrowserController/TabManager/SessionManager + WebContentsView）→
@@ -36,8 +52,8 @@
   多网站共读验证）。用户独立复验（2026-08-14）发现的 4 项非阻塞测试基础设施/
   文档缺陷已修复并全量回归（红态退出码 1 → 绿态 0）。证据见 `Second_stage.md`
   §9/§10 与 `doc/tasks/progress.md`。
-- ✅ **第三阶段（Browser Agent）已完成并通过验收，等待 Fourth Stage 切换/设计指令
-  （2026-08-14）**：Entry Gate 逐项核验通过
+- ✅ **第三阶段（Browser Agent）已完成并通过验收（2026-08-14 总 Exit 决策 =
+  GO/PASS；2026-08-15 已按用户指令切换 Fourth Stage）**：Entry Gate 逐项核验通过
   （「tool calling」项经循环式门槛判定记录校正——该能力属第三阶段自身交付物，校正为
   A1 硬前置，判定证据见 `doc/stage3/proposal.md` §8）；Prompt Injection 威胁模型
   重建定稿（`doc/stage3/threat-model.md`）；契约定稿 `doc/stage3/detailed-design.md`。
@@ -83,7 +99,7 @@
     退出码 0（12 次 HTTP 全部 200）；
     **A8 第三阶段收尾已完成（2026-08-14）**——§9 五组验收全部 PASS +
     §10 五项技术条件逐项判定 PASS，**第三阶段总 Exit 决策 = GO/PASS**
-    （等待用户 Fourth Stage 切换指令，不进入 Fourth Stage）。
+    （2026-08-15 已切换 Fourth Stage：设计完成、B1 待开始，见上）。
 
 ## 技术栈（实际落地版本）
 
