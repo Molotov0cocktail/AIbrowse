@@ -52,7 +52,17 @@
       并存特征页/RT-05 禁填字段页/RT-11 click 越权页 + 注入文案 + 断言），
       冒烟 8.6 RT-01～RT-08 + RT-11 全量复跑（dev 连跑 + 生产产物双场景退出码 0）
 - [ ] 真实 Provider 验证（用户提供 Key 时）：真实场景 1–6 + RT-10 + 真 Key 零暴露
-      扫描；报告调用次数与用途（不报凭据）——**待用户授权（询问边界）**
+      扫描；报告调用次数与用途（不报凭据）——**已获用户授权（2026-08-14），但受
+      Provider 能力限制未能执行，登记兼容性证据（不标记为通过）**：既有配置
+      （baseURL=https://api.deepseek.com，model=deepseek-v4-flash，仓库外 DPAPI
+      harness）对**任何** tools 载荷返回 HTTP 400 + 空响应体（含 stream 与否两形态），
+      无 tools 请求返回 200（鉴权/端点正常）——该 Provider 配置不接受
+      OpenAI 标准 tools 字段（与社区报告一致：DeepSeek V4 模型 tool calling 存在
+      provider 侧 400 问题）。**未修改适配器/未降级权限/未改 supportsToolCalling**
+      （规则：只有确定属于适配器通用缺陷才修复——本 wire 格式为标准 OpenAI 形态，
+      判定为 Provider/模型兼容性限制）。真实 Agent 场景门控 `AIBROWSE_LIVE_AGENT=1`
+      与 runLiveAgentScenarios（场景 1–6 + RT-10 + 停止 + 零泄漏终检）代码已就绪
+      （typecheck/lint 通过），待 tools 兼容 Provider 配置后可直接执行。
 - [x] 安全基线清单逐项核对（Second Stage §14 增量 + threat-model §3）：第一阶段
       隔离（Tab 无 preload/nodeIntegration=false/contextIsolation+sandbox=true/
       webSecurity 未关闭/window.open deny/权限默认拒绝/UI 导航白名单）、第二阶段
@@ -75,6 +85,8 @@
 
 ## 完成定义
 
-- RT-01～RT-09 + RT-11 全部有自动化断言且通过；RT-10（如真实验证进行）通过；
-  审计未发现需修改契约的缺陷（或缺陷已修复回归）；威胁模型 §5 残余风险分类
-  校准写入 progress.md；progress.md 标记 A7 ✅ 并推荐 A8。
+- RT-01～RT-09 + RT-11 全部有自动化断言且通过（冒烟 8.6 离线落地，dev/生产双场景
+  退出码 0）；RT-10 因 Provider 能力限制未能执行（兼容性证据登记，**不标记为
+  通过**——见实施步骤）；审计未发现需修改契约的缺陷（实现侧真实缺陷 1 处已修复
+  回归：logger 日志行伪造防御）；威胁模型 §5 残余风险分类校准写入 progress.md；
+  progress.md 标记 A7 ✅（离线部分）并推荐 A8（真实部分待 tools 兼容 Provider）。

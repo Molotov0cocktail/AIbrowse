@@ -46,7 +46,9 @@
   任务模式/AgentStatusBar/ToolCallList/ConfirmDialog（deny 默认焦点、elementText
   不可信纯文本渲染）/停止按钮/ToolStep 历史渲染 + agent-run-state 纯 reducer +
   UI 端到端冒烟 A6-UI-01～A6-UI-12（dev/生产双场景退出码 0）；
-  下一个推荐任务 = **A7 红队矩阵与安全审计**。
+  下一个推荐任务 = **A8 第三阶段收尾**（A7 离线部分已完成——红队矩阵 RT-01～
+  RT-08 + RT-11/增量安全审计/RT-10 校准；真实 Provider 受能力限制未执行，证据
+  见下）。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Exit Gate 通过（2026-08-13 判定 + 2026-08-14 用户独立复验，4 项
   非阻塞缺陷已修复并全量回归，红态退出码 1 → 绿态 0；证据见 Second_stage.md
@@ -80,7 +82,7 @@
 | A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search.web 工具 | ✅ | 2026-08-14 完成（见下）；契约 §6 + 决议 #32（临时 Tab 所有权/错误映射/snippet 空串/包装链接/查询串全量审计）；任务文档 doc/stage3/tasks/A4-search-provider.md |
 | A5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ✅ | 2026-08-14 完成（见下）；契约 §8–§9 + 决议 #33；任务文档 doc/stage3/tasks/A5-agent-runtime.md |
 | A6 | 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI + UI 端到端冒烟矩阵 | ✅ | 2026-08-14 完成（见下）；契约 §11 + 决议 #34（实时状态通道/参数摘要源/确认信任边界/多监听者）；任务文档 doc/stage3/tasks/A6-agent-ui-visibility.md |
-| A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | 🔨 | 离线部分（RT-01～RT-08 + RT-11 + 审计 + RT-10 校准）已完成并推送；真实 Provider/RT-10 待用户授权（询问边界）；契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
+| A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | ✅ | 离线部分（RT-01～RT-08 + RT-11 + 审计 + RT-10 校准）已完成并推送；真实 Provider 已获授权但受 Provider 能力限制未执行（deepseek-v4-flash 端点对任何 tools 载荷返回 400 空响应体——兼容性证据登记，不标记通过；场景代码就绪待 tools 兼容 Provider）；契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
 | A8 | 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步 | ⏳ | Third_stage.md §9/§10；任务文档 doc/stage3/tasks/A8-finalize-acceptance.md |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
@@ -152,9 +154,20 @@
     标记在上下文 URL 表面的合法出现/L1 确认竞态改 toolCallId 判定）。已提交并推送
     双远程（9b8a5e4 logger 修复 + 3075eaa A7 红队矩阵，Gitee/GitHub 实测一致）。
     **未调用任何付费 Provider、未输出/索取 API Key。真实 Provider 可选验证（真实
-    场景 1–6 + RT-10 + 真 Key 零暴露扫描）暂停于询问边界——仓库外既有说明
-    `%LOCALAPPDATA%\AIbrowse\S5\live-provider-test.md` 与 DPAPI 密文/启动脚本存在
-    （未读取/未触碰），待用户授权后从提交 3075eaa 继续。**
+    场景 1–6 + RT-10 + 真 Key 零暴露扫描）已获用户授权（2026-08-14）并尝试执行，
+    但受 Provider 能力限制未能完成，如实登记（不标记为通过）：既有配置
+    （baseURL=https://api.deepseek.com，model=deepseek-v4-flash，仓库外 DPAPI
+    harness 注入）对**任何** tools 载荷（含 stream 与否两形态、最小/完整 schema）
+    返回 HTTP 400 + 空响应体；无 tools 请求返回 200（鉴权/端点/模型名正常）——
+    判定为 Provider/模型兼容性限制（与社区报告一致：DeepSeek V4 模型 tool calling
+    存在 provider 侧 400 问题），**非适配器缺陷（wire 格式为标准 OpenAI 形态），
+    未修改适配器/未降级权限/未改 supportsToolCalling**。真实 Agent 场景门控
+    `AIBROWSE_LIVE_AGENT=1`（runLiveAgentScenarios：场景 1–6 + RT-10 敌对页 +
+    停止 + 零泄漏终检 + 真 Key 零暴露扫描）与仓库外 harness `-Agent`/`-Prod` 开关
+    已就绪（typecheck/lint 通过；真实调用前需先经离线矩阵回归），待 tools 兼容
+    Provider 配置后可直接执行。诊断台账：真实调用 1 次（agent run 首请求 400，
+    0 模型轮）+ 定向诊断 3 次（tools+stream 400 / tools+nostream 400 / no-tools
+    200 基线）。**
 
 - **A6 操作可见性 UI 与通道（2026-08-14，第六个实现闭环）**：步骤 0 独立核对——
   HEAD `405f494` = Gitee/GitHub 双远程 HEAD（GitHub 经代理 ls-remote 实测）、工作区
@@ -1057,20 +1070,18 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **A7 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证
-  （新对话 = 一个可验证闭环）**：威胁模型红队矩阵（RT-01～RT-11，全部机器可
-  验证——RT-01 敌对页诱导/RT-02 URL 白名单/RT-03 提交确认门/RT-04 搜索结果
-  注入/RT-05 密码字段/RT-06 旧 elementId/RT-07 系统提示与密钥探测/RT-08
-  确认疲劳/RT-09 模型无权限通道 grep/RT-11 通用 click 越权）+ 全仓库安全审计
-  （万能工具 grep/Key 零暴露/远程隔离回归）+ 真实 Provider 可选验证（Third_
-  stage.md §7 六场景，需用户提供 Key——询问边界，沿用仓库外凭据流程）。
-  A6 已就绪的交接点：6 IPC 通道与事件链路、agent-run-state reducer、确认 UI
-  信任边界（elementText 不可信渲染）、审计/可见性数据全链路、A6-UI 冒烟矩阵
-  （可复用 UI 驱动手法）、smokeAgentLimits/smokeAgentSearchProvider 注入点。
-  任务文档 `doc/stage3/tasks/A7-redteam-security-audit.md`；
-  契约 `doc/stage3/threat-model.md` §4（红队矩阵）+ detailed-design §12。
+- **A8 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（新对话 = 一个可
+  验证闭环）**：Third_stage.md §9 验收逐项核对（§14 清单 + 真实场景 1–6 项——
+  真实场景需 tools 兼容 Provider，未执行项如实登记不伪造证据）+ §10 Exit Gate
+  五条件判定 + 契约回填 AGENTS.md §5（A7 红队矩阵与审计结论）+ README 同步。
+  A7 交接点：冒烟 8.6 红队矩阵（RT-01～RT-08 + RT-11 离线全绿）、增量安全审计
+  证据表、RT-10 三类诚实边界校准（threat-model §4）、真实 Provider 兼容性证据
+  （deepseek-v4-flash 端点对任何 tools 载荷返回 400 空响应体——如需真实 Agent
+  场景，先经仓库外 harness 配置 tools 兼容 Provider 再跑
+  `AIBROWSE_LIVE_AGENT=1` 门控；**未经授权不联网调用付费 API**）。
+  任务文档 `doc/stage3/tasks/A8-finalize-acceptance.md`。
   **红线**：不索取/不输出 API Key；不放宽 click 允许列表/documentId 世代
-  校验/临时搜索 Tab 所有权；A1–A6 已落地的链路不得削弱。
+  校验/临时搜索 Tab 所有权；A1–A7 已落地的链路不得削弱。
 
 ## 第一阶段验收未完成项
 
