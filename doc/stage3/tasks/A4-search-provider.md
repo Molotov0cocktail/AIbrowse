@@ -1,4 +1,4 @@
-# T4 SearchProvider 与 search.web 工具（可验证闭环）
+# A4 SearchProvider 与 search.web 工具（可验证闭环）
 
 - **目标**：SearchProvider 接口 + v1 Bing 搜索页实现（临时可见 Tab → ready →
   实时快照 → 确定性解析 → 关闭 Tab）；统一结果结构（title/url/snippet/source）；
@@ -12,7 +12,7 @@
   （正常快照/结构不符/空 links/畸形 URL/超长截断）。
 - **非目标**：**严禁搜索 API/新依赖/新 Key**（v1 页面实现）；不持久化搜索结果；
   不改 shared/url 的 SEARCH_ENGINE_URL 常量语义（SearchProvider 引用它）；
-  无 UI 改动（T6）；Agent Loop 不在此任务（T5）。
+  无 UI 改动（A6）；Agent Loop 不在此任务（A5）。
 
 ## 涉及文件
 
@@ -33,10 +33,10 @@
 
 ## 测试与检查
 
-- 全量验证矩阵（AGENTS.md 附 A）；单测见 detailed-design §13.1 T4 行；
+- 全量验证矩阵（AGENTS.md 附 A）；单测见 detailed-design §13.1 A4 行；
   红线 grep：diff 无新依赖、无万能工具、无 Key 形态。
 
 ## 完成定义
 
 - 单测全绿；全量回归通过；冒烟退出码 0；搜索降级路径有断言（空结果非崩溃）；
-  progress.md 标记 T4 ✅ 并推荐 T5。
+  progress.md 标记 A4 ✅ 并推荐 A5。

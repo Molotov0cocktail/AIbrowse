@@ -1,4 +1,4 @@
-# T5 Agent Runtime：Loop 状态机 / 上限 / 取消 / 防循环 / 上下文与持久化（可验证闭环）
+# A5 Agent Runtime：Loop 状态机 / 上限 / 取消 / 防循环 / 上下文与持久化（可验证闭环）
 
 - **目标**：最小可控 Agent Loop（用户目标 → 模型选工具 → 校验 → 权限 → 执行 →
   结构化结果 → 继续 → 最终回答）；最大步数 12 / 总超时 420s / 取消 / 防循环三触发；
@@ -15,8 +15,8 @@
   conversation-store.ts version 2（读兼容 v1/ToolStep 形状校验/脱敏断言）；
   index.ts 装配（agent 事件转发主窗口、before-quit 取消在途 run）；
   smoke.ts 主进程矩阵 A-01～A-09（FakeProvider 工具脚本离线）。
-- **非目标**：**严禁 UI/IPC 通道改动（T6）**——事件出口经构造注入回调，本任务
-  仅主进程验证；不实现真实 Provider 验证（T7）；不做多 Agent/并发 run。
+- **非目标**：**严禁 UI/IPC 通道改动(A6)**——事件出口经构造注入回调，本任务
+  仅主进程验证；不实现真实 Provider 验证（A7）；不做多 Agent/并发 run。
 
 ## 涉及文件
 
@@ -41,11 +41,11 @@
 
 ## 测试与检查
 
-- 全量验证矩阵（AGENTS.md 附 A）；单测见 detailed-design §13.1 T5 行；
+- 全量验证矩阵（AGENTS.md 附 A）；单测见 detailed-design §13.1 A5 行；
   红线 grep：fill 值不持久化断言 / 审计脱敏 / 无万能工具。
 
 ## 完成定义
 
 - 单测全绿；全量回归通过；冒烟离线矩阵（既有 + A-01～A-09）退出码 0；
   终止理由四种（step-limit/timeout/loop-detected/no-progress/cancelled）均有
-  断言；progress.md 标记 T5 ✅ 并推荐 T6。
+  断言；progress.md 标记 A5 ✅ 并推荐 A6。

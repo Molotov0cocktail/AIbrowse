@@ -1,4 +1,4 @@
-# T8 第三阶段收尾与验收（可验证闭环）
+# A8 第三阶段收尾与验收（可验证闭环）
 
 - **目标**：Third_stage.md §9 验收清单逐项核对 + §10 Exit Gate 判定 + 全量文档
   同步（契约签名 grep 回填 AGENTS.md §5、README、progress.md）+ 停下向用户报告。
@@ -21,7 +21,7 @@
 - [ ] §9 五组清单逐项核对（Agent/Browser Tools/Search/Permission/Engineering），
       每项标注证据（冒烟场景编号/单测文件/审计条目/运行时日志）
 - [ ] 契约签名用 `grep -n "^export"` 与实际代码核对，确认 AGENTS.md §5 最终状态
-- [ ] 真实网站 Agent 冒烟复核（已有 T7 证据则引用并复核）
+- [ ] 真实网站 Agent 冒烟复核（已有 A7 证据则引用并复核）
 - [ ] §10 Exit Gate 逐项判定（无频繁死循环/Tool API 稳定可复用/Permission 可扩展/
       注入红队基础测试/无放宽网页权限换成功率的技术债）
 - [ ] Prompt Injection 残余风险分类校准（威胁模型 §5 三类）

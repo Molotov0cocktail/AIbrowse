@@ -15,15 +15,16 @@
   多标签页浏览器，用户与 AI 共享同一浏览器会话与登录状态；AI 仅通过受限
   BrowserController / Tool Layer 操作浏览器，不得拥有任意系统权限。
 - **当前阶段（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
-  Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（T1 硬前置）、Tool Registry、
+  Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
   Agent Loop（最大步数/超时/取消/防循环）、确定性权限分级与确认状态机（L0 自动 /
   L1 自动显著展示 / L2 用户确认 / L3 禁止）、操作可见性与审计日志。契约源
   `doc/stage3/detailed-design.md`（2026-08-14 定稿）+ 安全契约源
   `doc/stage3/threat-model.md`（Prompt Injection 威胁模型已按第二阶段约定重建，
-  先于任何 Browser Tool 实现）；任务 T1–T8 见 `doc/stage3/tasks/`。
-  **设计定稿与任务拆分已完成（2026-08-14），尚未开始实现**——第一个实现任务 T1
-  （tool-calling 兼容层）为硬前置：T1 验证通过前禁止引入任何 Browser Tool 实现
+  先于任何 Browser Tool 实现）；任务 A1–A8 见 `doc/stage3/tasks/`（2026-08-14
+  实施前校正：任务编号由 T1–T8 改为 A1–A8，避免与第一阶段任务 T1–T5 重名）。
+  **设计定稿与任务拆分已完成（2026-08-14），尚未开始实现**——第一个实现任务 A1
+  （tool-calling 兼容层）为硬前置：A1 验证通过前禁止引入任何 Browser Tool 实现
   （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
   核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
   是什么」。AI 不得直接获得 Electron API、webContents、Node.js、shell 或任意
@@ -182,7 +183,7 @@ PermissionPolicy / ConfirmManager / ToolExecutor → BrowserController / SearchP
   AgentLoop/AgentContextBuilder 为纯核心零 Electron 依赖；**权限判定为确定性纯函数**
   （模型只是提议者，无任何通道修改工具列表/权限矩阵/system 提示）；Tool Result 与网页
   内容同等视为不可信（`UNTRUSTED_TOOL_RESULT` 块）；审计全量脱敏（fill 值只记长度）。
-  **硬前置**：T1 tool-calling 兼容层验证通过前禁止引入任何 Browser Tool 实现
+  **硬前置**：A1 tool-calling 兼容层验证通过前禁止引入任何 Browser Tool 实现
   （proposal §8 Entry Gate 校正方式）。
 - **安全红线**（First_stage.md §八，从第一版开始）：远程网页 `nodeIntegration=false`、
   `contextIsolation=true`、`sandbox=true`（架构允许时）、`webSecurity` 不得关闭；
@@ -201,7 +202,7 @@ PermissionPolicy / ConfirmManager / ToolExecutor → BrowserController / SearchP
   ——shell.exec、eval、任意 JavaScript 执行、任意文件系统读写、任意 HTTP POST、任意
   Electron IPC、任意数据库 SQL（**永久红线**，本阶段及以后均禁止，grep 断言）；
   **不放宽既有 Electron 安全边界**（远程网页隔离/Tab 无 preload/权限默认拒绝/
-  window.open deny/UI 导航保护均不变）；**T1 tool-calling 兼容层完成前禁止任何
+  window.open deny/UI 导航保护均不变）；**A1 tool-calling 兼容层完成前禁止任何
   Browser Tool 实现**。本阶段不做：长期信源数据库、AI 自动添加收藏、多源 Research
   报告、图表/复杂结果渲染、RSS、Watch、定时任务、自动支付/购买/发布、浏览器扩展
   生态、多 Agent 编排、Agent 记忆系统、向量数据库、page.extract 独立工具、
@@ -249,20 +250,20 @@ d:\AIbrowse\
     │       ├── session-manager.ts             # persist:aibrowse 分区（多 Profile 预留；双权限处理器默认拒绝）
     │       ├── permission-policy.ts / .test.ts  # 网页权限策略纯函数（v1 默认拒绝）+ 4 组用例（安全补丁）
     │       ├── page-reader.ts                 # （T4）快照编排：executeJavaScript 注入 + L0–L2 降级阶梯
-    │       │                                  #   （T3 规划：交互注入编排）
+    │       │                                  #   （A3 规划：交互注入编排）
     │       ├── snapshot-script.ts             # （T4）注入脚本源（自安装 IIFE 字符串，DOM lib 引用保持 TS 检查；
-    │       │                                  #   T3 规划：isSubmit 语义元数据）
-    │       ├── interaction-script.ts          # （T3 规划）固定模板交互脚本（click/fill/scroll，
+    │       │                                  #   A3 规划：isSubmit 语义元数据）
+    │       ├── interaction-script.ts          # （A3 规划）固定模板交互脚本（click/fill/scroll，
     │       │                                  #   参数只进 JSON 字面量）
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 46 用例
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅）会话编排：ask 实时快照/中止/事件/持久化接线
-    │       │                                  #   （T5 规划：agentAsk/confirmTool/ToolStep 持久化接线）
+    │       │                                  #   （A5 规划：agentAsk/confirmTool/ToolStep 持久化接线）
     │       ├── conversation-store.ts          # （S3 ✅）会话 JSON 持久化（原子写/上限/损坏容错；
-    │       │                                  #   T5 规划：version 2 ToolStep 消息）
+    │       │                                  #   A5 规划：version 2 ToolStep 消息）
     │       ├── context-builder.ts             # （S2 ✅）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
-    │       │                                  #   （T1 规划：tools 透传）
+    │       │                                  #   （A1 规划：tools 透传）
     │       ├── context-budget.ts              # （S2 ✅）纯函数：预算常量与确定性裁剪
     │       ├── credential-store.ts            # （S1 ✅）SecureCredentialStore：API Key 密文落盘
     │       │                                  #   （cipher 后端注入可替换，Q2）+ 纯文件格式 + 单测
@@ -270,17 +271,17 @@ d:\AIbrowse\
     │       ├── config-store.ts                # （S1 ✅）Provider 配置 JSON（非机密，形状校验 fail-closed）+ 单测
     │       ├── provider/                      # （S1 ✅）LLMProvider 接口/工厂注册表/OpenAI-compatible
     │       │                                  #   适配器（fetch+SSE）/FakeProvider/error-normalize + 单测
-    │       │                                  #   （T1 规划：tools/SSE tool_calls/FakeProvider 工具脚本）
-    │       ├── agent/                         # （T5 规划）agent-loop（纯编排状态机）/agent-context-builder/
+    │       │                                  #   （A1 规划：tools/SSE tool_calls/FakeProvider 工具脚本）
+    │       ├── agent/                         # （A5 规划）agent-loop（纯编排状态机）/agent-context-builder/
     │       │                                  #   agent-history/agent-safety（防循环纯函数）
-    │       ├── tools/                         # （T2 规划）tool-types/tool-registry（schema 校验）/
+    │       ├── tools/                         # （A2 规划）tool-types/tool-registry（schema 校验）/
     │       │                                  #   tool-executor（校验→权限→确认→执行→审计）/
-    │       │                                  #   browser-tools（T2 只读导航）/interaction-tools（T3）/
-    │       │                                  #   search-tool（T4）
-    │       ├── permission/                    # （T2 规划）permission-policy：L0–L3 确定性权限纯函数
-    │       ├── confirm-manager.ts             # （T2 规划）确认状态机（pending/approve/deny/作废）
-    │       ├── audit-log.ts                   # （T2 规划）结构化审计条目（参数脱敏摘要）
-    │       └── search/                        # （T4 规划）search-provider：接口 + Bing 页面实现
+    │       │                                  #   browser-tools（A2 只读导航）/interaction-tools（A3）/
+    │       │                                  #   search-tool（A4）
+    │       ├── permission/                    # （A2 规划）permission-policy：L0–L3 确定性权限纯函数
+    │       ├── confirm-manager.ts             # （A2 规划）确认状态机（pending/approve/deny/作废）
+    │       ├── audit-log.ts                   # （A2 规划）结构化审计条目（参数脱敏摘要）
+    │       └── search/                        # （A4 规划）search-provider：接口 + Bing 页面实现
     │                                          #   （临时 Tab → 快照解析 → 统一结果结构）
     ├── preload/
     │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui
@@ -557,44 +558,48 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
   **威胁模型已于 2026-08-14 随 Third Stage 切换重建定稿**（`doc/stage3/threat-model.md`，
   先于任何 Browser Tool 实现）。
 
-### Third Stage Browser Agent 契约速查（定稿 2026-08-14；T1–T8 待实现，实现后回填）
+### Third Stage Browser Agent 契约速查（定稿 2026-08-14；A1–A8 待实现，实现后回填）
 
 > 唯一契约源 `doc/stage3/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
-> Q1–Q15 拍板与决议 #21–#28）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
-> T-01～T-10、五层防线、红队矩阵 R-01～R-10、诚实边界声明）；任务 T1–T8 见
-> `doc/stage3/tasks/`。以下为速查摘要，**尚未与实现核对**（T1 起逐步回填）。
+> Q1–Q15 拍板与决议 #21–#29）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
+> T-01～T-10、五层防线、红队矩阵 RT-01～RT-11、诚实边界声明）；任务 A1–A8 见
+> `doc/stage3/tasks/`。以下为速查摘要，**尚未与实现核对**（A1 起逐步回填）。
 
-- **tool-calling 兼容层（T1，硬前置）**：`ProviderRequest.tools?: ProviderTool[]`
+- **tool-calling 兼容层（A1，硬前置）**：`ProviderRequest.tools?: ProviderTool[]`
   （Registry 序列化，程序生成）；`ProviderEvent` 增 `{type:'toolCalls',
 toolCalls: ProviderToolCallDelta[]}`（SSE `delta.tool_calls` 按 index 分槽累积，
   finish_reason=tool_calls 收尾；非法帧/非法 arguments → provider-error）；
   `ProviderMessage` role 增 `'tool'`（toolCallId 关联）+ assistant toolCalls 重放；
   `supportsToolCalling` 校准为真实值；FakeProvider 工具脚本（离线确定性）；
-  `ContextBuildInput.tools` 透传。**T1 验证通过前禁止任何 Browser Tool 实现**。
-- **ToolRegistry（T2）**：`ToolDefinition`（name/description/parameters
+  `ContextBuildInput.tools` 透传。**A1 验证通过前禁止任何 Browser Tool 实现**。
+- **ToolRegistry（A2）**：`ToolDefinition`（name/description/parameters
   （ProviderToolParameter 子集）/baseRisk/riskLift/executor）注册表；
   `listTools(): ProviderTool[]` / `validateToolArgs`（JSON.parse 失败/未知工具/
   缺必填/类型/enum/未知键/长度上限/tabId UUID 形状/elementId `el-N` 形状 → 失败）；
-  首批 13 工具分三批：T2 只读导航 8 个（get_tabs/get_active_tab/read/open/
-  navigate/back/forward/reload）、T3 交互 4 个（find/scroll/click/fill）、
-  T4 search.web；page.extract 与关闭 Tab 工具 v1 不实现（决议 #21/#28）。
-- **权限分级（T2，确定性纯函数）**：L0 自动（只读/滚动/查找/搜索）/ L1 自动显著
-  展示（导航/打开/click 普通元素/fill 筛选字段）/ L2 用户确认（click 提交类元素
-  ——isSubmit 结构化元数据升级）/ L3 禁止（password/file 填写、非 http/https URL；
-  购买支付等无对应工具）；`decide(toolName, args, elementSemantics)` 纯函数，
-  模型与网页无通道修改矩阵；确认状态机 pending/approve/deny/取消作废、
+  首批 13 工具分三批：A2 只读导航 8 个（get_tabs/get_active_tab/read/open/
+  navigate/back/forward/reload）、A3 交互 4 个（find/scroll/click/fill）、
+  A4 search.web；page.extract 与关闭 Tab 工具 v1 不实现（决议 #21/#28）。
+- **权限分级（A2，确定性纯函数）**：L0 自动（只读/滚动/查找/搜索）/ L1 自动显著
+  展示（导航/打开/fill 筛选字段/click 确定性允许列表——链接 http/https、
+  aria-expanded 展开控件、checkbox・radio 切换）/ L2 用户确认（click 提交类元素
+  ——isSubmit 结构化元数据升级）/ L3 禁止（password/file 填写、非 http/https
+  URL、click 非允许列表目标 fail-closed——无法排除购买/发送/删除/发布等远程写
+  副作用时禁止，即使确认也不执行）；`decide(toolName, args, elementSemantics)`
+  纯函数，模型与网页无通道修改矩阵；确认状态机 pending/approve/deny/取消作废、
   无自动批准、等待计入总超时。
-- **交互能力与 elementId 生命周期（T3）**：BrowserController 扩展
-  `clickElement/fillElement/scrollTab`（安全返回不抛异常）；interaction-script
-  固定模板（click=原生 el.click()、fill=原生 value setter+input/change、
-  scroll=window.scrollBy；参数只进 JSON 字面量）；elementId 仅当轮快照有效、
-  **执行时刻实时重新定位** + 元素类型复核、导航/刷新后旧 id → stale-element；
-  快照扩展 isSubmit 语义标志（inputs/buttons）。
-- **SearchProvider（T4）**：`search(query, signal) → SearchProviderResult`
+- **交互能力与 elementId 生命周期（A3）**：BrowserController 扩展
+  `clickElement(tabId, elementId, allowedKind)/fillElement/scrollTab`（安全返回
+  不抛异常；allowedKind 为执行器内部参数——权限决策派生，模型不可见不可写）；
+  interaction-script 固定模板（click=allowedKind 白名单复核后原生 el.click()、
+  fill=原生 value setter+input/change、scroll=window.scrollBy；参数只进 JSON
+  字面量）；elementId 仅当轮快照有效、**执行时刻实时重新定位** + 元素类型与
+  允许列表语义复核、导航/刷新后旧 id → stale-element；快照扩展 click 语义元数据
+  （buttons 条目 isSubmit/ariaExpanded，inputs 条目 type 已有）。
+- **SearchProvider（A4）**：`search(query, signal) → SearchProviderResult`
   （SearchResult {title/url/snippet/source}）；v1 Bing 搜索页实现（临时可见 Tab →
   ready → 实时快照 → 确定性解析 → 关闭 Tab）；容忍设计（结构变化 → 空结果 +
   warnings）；接口隔离保未来替换（决议 #22）。
-- **AgentRuntime（T5）**：AgentLoop 纯编排状态机（running/waiting-confirm/done/
+- **AgentRuntime（A5）**：AgentLoop 纯编排状态机（running/waiting-confirm/done/
   cancelled/step-limit/timeout/loop-detected/no-progress/error）；上限常量
   MAX_STEPS=12 / 总超时 420s（含确认等待）；防循环（签名=工具名+规范化参数，
   连续 3 次/累计 5 次 → loop-detected，连续 2 步无工具无文本 → no-progress，
@@ -603,7 +608,7 @@ toolCalls: ProviderToolCallDelta[]}`（SSE `delta.tool_calls` 按 index 分槽�
   ToolStep 消息持久化（精简版，fill 值替换「（已输入 N 字符）」，version 2
   读兼容 v1）；AGENT_SYSTEM_PROMPT 编译期常量；Tool Result 进
   UNTRUSTED_TOOL_RESULT 块（闭合转义同 UNTRUSTED 块）。
-- **审计与可见性（T2/T6）**：每工具调用恰好一条审计（requestId/toolCallId/工具/
+- **审计与可见性（A2/A6）**：每工具调用恰好一条审计（requestId/toolCallId/工具/
   参数摘要/决策 auto|auto-visible|confirmed|denied|forbidden/结果/耗时/错误码）；
   fill 值只记长度；IPC 通道 conversation:agent-ask/agent-confirm/agent-step/
   agent-confirm-request/agent-run-done（sender 校验 + 只发主窗口）；
@@ -781,9 +786,9 @@ toolCalls: ProviderToolCallDelta[]}`（SSE `delta.tool_calls` 按 index 分槽�
 - **Prompt Injection 边界声明（长期事实，第三阶段已重建）**：第二阶段结构性隔离保证
   网页内容不能取得权限、读取密钥、调用写操作或改变消息角色（doc/stage2/detailed-design.md
   §12）；第三阶段引入 Browser Tool 前**威胁模型已重建定稿**（2026-08-14，
-  `doc/stage3/threat-model.md`：威胁枚举 T-01～T-10、五层防线、红队矩阵 R-01～R-10、
-  诚实边界声明——语义层诱导式工具参数/确认疲劳/低风险动作累积三类残余风险如实登记，
-  不宣称免疫）。
+  `doc/stage3/threat-model.md`：威胁枚举 T-01～T-10、五层防线、红队矩阵
+  RT-01～RT-11、诚实边界声明——语义层诱导式工具参数/确认疲劳/低风险动作累积/
+  click 允许列表目标的页内 JS 副作用四类残余风险如实登记，不宣称免疫）。
 
 ## 附 A：验证矩阵（「作业完成」的定义）
 

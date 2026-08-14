@@ -1,8 +1,10 @@
 # AIbrowse 第三阶段 高层设计
 
-> 状态：定稿（随 Third Stage 切换建立，2026-08-14）。接口契约定稿由
+> 状态：定稿（随 Third Stage 切换建立，2026-08-14；同日实施前校正：任务编号
+> T1–T8 → A1–A8、红队编号 R-01～R-10 → RT-01～RT-11、权限契约收紧为 click 确定性
+> 允许列表，见 proposal §11 校正记录）。接口契约定稿由
 > `doc/stage3/detailed-design.md`（本阶段唯一契约源）承担；安全契约源
-> `doc/stage3/threat-model.md`；实现任务 T1–T8。第一/二阶段契约不变
+> `doc/stage3/threat-model.md`；实现任务 A1–A8。第一/二阶段契约不变
 > （`doc/detailed-design.md` / `doc/stage2/detailed-design.md`）。
 
 ## 1. 架构总览
@@ -30,9 +32,10 @@
 │                      └─► AuditLog（结构化审计，脱敏）                      │
 │   工具实现（只经 BrowserController / SearchProvider）：                    │
 │     浏览器只读/导航工具（复用既有接口）                                    │
-│     浏览器交互工具 scroll/click/fill/find（T3 扩展 BrowserController，     │
-│        固定模板交互脚本 + elementId 执行时刻重新验证）                     │
-│     search.web → SearchProvider（v1 浏览器搜索页 + 快照解析，T4）          │
+│     浏览器交互工具 scroll/click/fill/find（A3 扩展 BrowserController，     │
+│        固定模板交互脚本 + elementId 执行时刻重新验证 + click 执行器层      │
+│        白名单复核）                                                        │
+│     search.web → SearchProvider（v1 浏览器搜索页 + 快照解析，A4）          │
 │  浏览器核心：BrowserController → TabManager / PageReader /                │
 │     SessionManager → WebContentsView（远程网页安全默认值全开，不变）      │
 └────────────────────────────────────────────────────────────────────────┘
@@ -49,50 +52,52 @@
 
 ## 2. 关键技术决策
 
-| 决策点            | 选项                                  | 选择                                                      | 理由                                                                                               |
-| ----------------- | ------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| tool calling 落点 | 新增 Provider kind / 扩展现有适配器   | **扩展 OpenAI-compatible 适配器 + FakeProvider 工具脚本** | tools 参数是 chat/completions 原生能力；零新依赖；FakeProvider 工具脚本保离线确定性（proposal Q1） |
-| Agent 编排形态    | 改造共读 ask / 独立编排               | **独立 agent-ask + AgentLoop**                            | 共读是已验收稳定能力，不回归；Agent 循环是新增状态机，共用底层模块（proposal Q2）                  |
-| SearchProvider    | 搜索 API（新 Key/依赖）/ 浏览器搜索页 | **浏览器搜索页（Bing）+ 快照解析**                        | 零新依赖零新 Key；复用已验证采集管线；接口隔离保未来替换；容忍设计（proposal Q3）                  |
-| click/fill 实现   | 任意注入脚本 / 固定模板               | **固定模板交互脚本（与 snapshot-script 同模式）**         | 无任意 JS 红线；click=原生 el.click()；fill=原生 setter+input/change（React 兼容）（proposal Q4）  |
-| 权限判定          | 模型判断 / 确定性纯函数               | **确定性纯函数 permission-policy**                        | 模型只是提议者；同一输入同一决策；网页文本无法影响（threat-model §3.3）（proposal Q5）             |
-| 提交类识别        | 模型看快照判断 / 采集脚本结构化标志   | **快照采集扩展 isSubmit 标志**                            | 结构化元数据不经模型，L2 升级判定确定性（proposal Q6）                                             |
-| 防循环            | 仅步数上限 / 签名检测组合             | **签名连续 3 次/累计 5 次 + 无进展 2 步 + 步数 12**       | 三重复合判定，终止理由结构化（proposal Q7）                                                        |
-| 审计落点          | 独立数据库 / 日志+会话持久化          | **logger 结构化条目 + 会话 ToolStep 精简持久化**          | 无新存储层；实时可查 + 重启可回溯；fill 值不持久化（proposal Q10）                                 |
-| Agent system 提示 | 复用共读 SYSTEM_PROMPT / 独立常量     | **独立 AGENT_SYSTEM_PROMPT 编译期常量**                   | Agent 模式安全规则不同（工具使用边界）；共读提示不变（proposal Q14）                               |
-| 工具错误传播      | 异常穿透 / 结构化 ToolResult 错误     | **结构化 ToolResult（ok=false + 错误码）回注历史**        | 模型能区分「执行失败」与「结果为空」；Third_stage.md §8「工具错误不会被模型误认为成功」            |
+| 决策点            | 选项                                  | 选择                                                         | 理由                                                                                               |
+| ----------------- | ------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| tool calling 落点 | 新增 Provider kind / 扩展现有适配器   | **扩展 OpenAI-compatible 适配器 + FakeProvider 工具脚本**    | tools 参数是 chat/completions 原生能力；零新依赖；FakeProvider 工具脚本保离线确定性（proposal Q1） |
+| Agent 编排形态    | 改造共读 ask / 独立编排               | **独立 agent-ask + AgentLoop**                               | 共读是已验收稳定能力，不回归；Agent 循环是新增状态机，共用底层模块（proposal Q2）                  |
+| SearchProvider    | 搜索 API（新 Key/依赖）/ 浏览器搜索页 | **浏览器搜索页（Bing）+ 快照解析**                           | 零新依赖零新 Key；复用已验证采集管线；接口隔离保未来替换；容忍设计（proposal Q3）                  |
+| click/fill 实现   | 任意注入脚本 / 固定模板               | **固定模板交互脚本（与 snapshot-script 同模式）**            | 无任意 JS 红线；click=原生 el.click()；fill=原生 setter+input/change（React 兼容）（proposal Q4）  |
+| 权限判定          | 模型判断 / 确定性纯函数               | **确定性纯函数 permission-policy**                           | 模型只是提议者；同一输入同一决策；网页文本无法影响（threat-model §3.3）（proposal Q5）             |
+| 提交类识别        | 模型看快照判断 / 采集脚本结构化标志   | **快照采集扩展 click 语义元数据（isSubmit + ariaExpanded）** | 结构化元数据不经模型，click 允许列表与 L2 升级判定确定性（proposal Q6，2026-08-14 校正）           |
+| 防循环            | 仅步数上限 / 签名检测组合             | **签名连续 3 次/累计 5 次 + 无进展 2 步 + 步数 12**          | 三重复合判定，终止理由结构化（proposal Q7）                                                        |
+| 审计落点          | 独立数据库 / 日志+会话持久化          | **logger 结构化条目 + 会话 ToolStep 精简持久化**             | 无新存储层；实时可查 + 重启可回溯；fill 值不持久化（proposal Q10）                                 |
+| Agent system 提示 | 复用共读 SYSTEM_PROMPT / 独立常量     | **独立 AGENT_SYSTEM_PROMPT 编译期常量**                      | Agent 模式安全规则不同（工具使用边界）；共读提示不变（proposal Q14）                               |
+| 工具错误传播      | 异常穿透 / 结构化 ToolResult 错误     | **结构化 ToolResult（ok=false + 错误码）回注历史**           | 模型能区分「执行失败」与「结果为空」；Third_stage.md §8「工具错误不会被模型误认为成功」            |
 
 ## 3. 模块职责
 
-- **AgentLoop（main/ai/agent/，T5，纯核心零 Electron 依赖）**：单 run 状态机
+- **AgentLoop（main/ai/agent/，A5，纯核心零 Electron 依赖）**：单 run 状态机
   （idle → running → waiting-confirm → done/aborted/error/cancelled/loop-detected/
   no-progress/step-limit/timeout）；单步编排 = 构建上下文 → Provider 流（累积
   tool_calls）→ 逐工具校验/权限判定/确认 → 执行 → ToolResult 回注 → 循环；
   上限/超时/取消/防循环；审计与可见性事件出口。
-- **ToolRegistry（main/ai/tools/，T2）**：ToolDefinition（name/description/
+- **ToolRegistry（main/ai/tools/，A2）**：ToolDefinition（name/description/
   JSON-Schema 子集/风险级别/executor）注册表；`listTools()` 序列化为模型可见
   tools 列表（程序生成）；`validateToolArgs` 确定性校验；未知工具 → tool-not-found。
-- **PermissionPolicy（main/ai/permission/，T2，纯函数）**：`decide(toolName,
+- **PermissionPolicy（main/ai/permission/，A2，纯函数）**：`decide(toolName,
 args, elementSemantics?) → {level, reason}`；L0/L1/L2/L3 矩阵为编译期常量；
-  提交类升级/密码字段禁止为确定性规则（threat-model §3.3）。
-- **ConfirmManager（T2）**：pending 确认登记/approve/deny/取消作废；等待计入
+  click 确定性允许列表（链接/展开/切换 → L1）、提交类升级（isSubmit → L2）、
+  非允许列表目标 fail-closed（→ L3）、密码字段禁止为确定性规则（threat-model §3.3）。
+- **ConfirmManager（A2）**：pending 确认登记/approve/deny/取消作废；等待计入
   Agent 总超时；无自动批准。
-- **AuditLog（T2）**：结构化审计条目（时间/requestId/toolCallId/工具/参数摘要/
+- **AuditLog（A2）**：结构化审计条目（时间/requestId/toolCallId/工具/参数摘要/
   决策/结果/耗时/错误码）；fill 值只记长度与目标类型；沿用 logger 脱敏。
-- **工具实现（T2–T4）**：首批工具分三批接线——
-  T2 只读/导航（get_tabs/get_active_tab/read/open/navigate/back/forward/reload，
+- **工具实现（A2–A4）**：首批工具分三批接线——
+  A2 只读/导航（get_tabs/get_active_tab/read/open/navigate/back/forward/reload，
   全部复用既有 BrowserController 接口，零新浏览器能力）；
-  T3 交互（scroll/click/fill/find + BrowserController 扩展 + elementId 生命周期）；
-  T4 search.web（SearchProvider）。
-- **SearchProvider（main/ai/search/，T4）**：接口隔离；v1 实现经 BrowserController
+  A3 交互（scroll/click/fill/find + BrowserController 扩展 + elementId 生命周期 +
+  click 执行器层白名单复核）；
+  A4 search.web（SearchProvider）。
+- **SearchProvider（main/ai/search/，A4）**：接口隔离；v1 实现经 BrowserController
   临时 Tab → Bing 搜索页 → 快照解析 → 统一结果结构 → 关闭 Tab；解析失败/结构变化
   → 空结果 + warnings（容忍设计）。
-- **AgentContextBuilder（T5，纯函数）**：复用 ContextBuilder 角色隔离机制；
+- **AgentContextBuilder（A5，纯函数）**：复用 ContextBuilder 角色隔离机制；
   tools 序列化透传；历史含 tool 消息（role='tool'，tool_call_id 关联）；
   ToolResult 进 `UNTRUSTED_TOOL_RESULT` 标记块；AGENT_SYSTEM_PROMPT 常量。
-- **ConversationService 扩展（T5）**：agent-ask 编排入口（校验/单在途互斥/
+- **ConversationService 扩展（A5）**：agent-ask 编排入口（校验/单在途互斥/
   run 生命周期接线）；ToolStep 消息持久化（精简，不含 fill 值）。
-- **渲染层（T6）**：Agent 模式输入、AgentStatusBar、ToolCallList、ConfirmDialog、
+- **渲染层（A6）**：Agent 模式输入、AgentStatusBar、ToolCallList、ConfirmDialog、
   停止按钮；消息流渲染 ToolStep 紧凑条目。
 
 ## 4. 数据流（Agent run 关键路径）
@@ -133,7 +138,10 @@ args, elementSemantics?) → {level, reason}`；L0/L1/L2/L3 矩阵为编译期�
 - **不可信输入**：网页内容（UNTRUSTED_WEB_CONTENT 块）与 Tool Result
   （UNTRUSTED_TOOL_RESULT 块）同等视为不可信；闭合转义机制沿用。
 - **能力边界**：工具白名单封闭；无万能工具（grep 断言）；交互注入脚本固定模板、
-  参数白名单；URL 仅 http/https；fill 禁止 password/file；L3 动作无对应工具。
+  参数白名单；URL 仅 http/https；fill 禁止 password/file；**click 确定性允许列表**
+  （L1 仅链接/展开/切换类目标；提交类 → L2；非允许列表目标 fail-closed → L3）；
+  **L3 动作在权限层与执行器层双重封死，无执行通道**（click 模板 allowedKind
+  复核，权限层判 L1/L2 后页面动态变化同样被拒）。
 - **Electron 安全边界不变**：远程网页隔离/无 preload/权限默认拒绝/window.open
   deny/UI 导航保护全部保持；本阶段不注册自定义协议、不放宽任何权限。
 - **Key 零暴露不变**：Agent 上下文/审计/日志全部受 logger sanitize 与
@@ -143,7 +151,7 @@ args, elementSemantics?) → {level, reason}`；L0/L1/L2/L3 矩阵为编译期�
 
 - 会话持久化扩展（userData/conversations，既有位置）：消息文件增 ToolStep 消息
   （tool 名/结果摘要/时间/错误码——**不含 fill 输入值、不含快照正文**）；
-  version 升 2（向后兼容读取 v1，写入恒 v2，T5 定稿迁移规则）。
+  version 升 2（向后兼容读取 v1，写入恒 v2，A5 定稿迁移规则）。
 - 审计：主进程日志（log/，既有轮转与脱敏）；不新增数据库/独立审计文件。
 - SearchProvider：无持久化（结果即用即弃，不落盘）。
 
@@ -157,10 +165,11 @@ args, elementSemantics?) → {level, reason}`；L0/L1/L2/L3 矩阵为编译期�
   search-provider 解析纯函数、交互脚本参数模板校验、审计条目脱敏断言。
 - **集成/冒烟（Electron 真实启动，FakeProvider 工具脚本，离线确定性）**：
   受控本地页面 Agent 多步任务（open → read → find → scroll → click → fill →
-  结果断言）；确认流（提交类 click → 确认对话框 → approve/deny）；取消/步数上限/
-  防循环触发；审计日志断言；敌对页红队矩阵 R-01～R-09（R-10 需真实 Key）。
+  结果断言）；click 允许列表与执行器复核（允许目标执行/提交类确认/非允许目标
+  无 DOM 动作）；确认流（提交类 click → 确认对话框 → approve/deny）；取消/步数
+  上限/防循环触发；审计日志断言；敌对页红队矩阵 RT-01～RT-09（RT-10 需真实 Key）。
   矩阵清单见 detailed-design §13。
-- **真实 Provider 可选验证（T7，需用户提供 Key，询问边界）**：真实 tool calling
+- **真实 Provider 可选验证（A7，需用户提供 Key，询问边界）**：真实 tool calling
   多步任务 + Third_stage.md §7 六个关键真实场景；沿用第二阶段凭据流程与真 Key
   零暴露扫描；无 Key 跳过并记录，不阻塞验收。
 - **静态检查**：typecheck / ESLint / Prettier（规则不变）+ 红线 grep 断言
@@ -168,12 +177,12 @@ args, elementSemantics?) → {level, reason}`；L0/L1/L2/L3 矩阵为编译期�
 
 ## 8. 风险与不确定性
 
-| 风险                                              | 影响                   | 缓解                                                                                |
-| ------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------- |
-| 网页文本诱导模型提议「合法但恶意」的工具调用      | 导航到钓鱼页等         | 权限分级 + L2 确认 + 全量审计 + 威胁模型 R-02；语义层残余风险如实登记（不承诺免疫） |
-| 确认疲劳                                          | 用户误批准高危动作     | 确认 UI 确定性事实 + deny 默认高亮 + 步数上限；残余风险登记                         |
-| 搜索页结构变化导致解析失败                        | search.web 返回空/降级 | 容忍设计：空结果 + warnings + 结构化错误；接口隔离保替换 API 供应商                 |
-| 交互注入在动态框架页面失效（虚拟 DOM/Shadow DOM） | click/fill 成功率受限  | 原生事件派发（最接近用户语义）；失败 → not-interactable 安全返回；真实网站冒烟验证  |
-| 模型多轮循环消耗预算/时间                         | 任务失败               | 步数 12 + 总超时 420s + 防循环三触发 + 结构化终止理由                               |
-| Provider 对 tools 的支持差异                      | 部分兼容端点无工具能力 | supportsToolCalling 元数据（T1 校准为真实值）；FakeProvider 离线保底                |
-| 审计日志体积增长                                  | 日志膨胀               | 既有按日轮转 + 参数摘要截断；不新增持久化层                                         |
+| 风险                                              | 影响                   | 缓解                                                                                                  |
+| ------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| 网页文本诱导模型提议「合法但恶意」的工具调用      | 导航到钓鱼页等         | 权限分级 + click 允许列表 + L2 确认 + 全量审计 + 威胁模型 RT-02；语义层残余风险如实登记（不承诺免疫） |
+| 确认疲劳                                          | 用户误批准高危动作     | 确认 UI 确定性事实 + deny 默认高亮 + 步数上限；残余风险登记                                           |
+| 搜索页结构变化导致解析失败                        | search.web 返回空/降级 | 容忍设计：空结果 + warnings + 结构化错误；接口隔离保替换 API 供应商                                   |
+| 交互注入在动态框架页面失效（虚拟 DOM/Shadow DOM） | click/fill 成功率受限  | 原生事件派发（最接近用户语义）；失败 → not-interactable 安全返回；真实网站冒烟验证                    |
+| 模型多轮循环消耗预算/时间                         | 任务失败               | 步数 12 + 总超时 420s + 防循环三触发 + 结构化终止理由                                                 |
+| Provider 对 tools 的支持差异                      | 部分兼容端点无工具能力 | supportsToolCalling 元数据（A1 校准为真实值）；FakeProvider 离线保底                                  |
+| 审计日志体积增长                                  | 日志膨胀               | 既有按日轮转 + 参数摘要截断；不新增持久化层                                                           |

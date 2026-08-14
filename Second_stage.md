@@ -293,4 +293,5 @@ ContextBuilder
 > > doc/stage3/proposal.md §8）。
 
 阶段完成后停止，更新 `progress.md`，提出 Third Stage 的详细设计任务，不直接实现 Browser Agent。
-（Third Stage 已按本节建议执行：设计定稿与任务拆分见 `doc/stage3/`，实现任务 T1–T8。）
+（Third Stage 已按本节建议执行：设计定稿与任务拆分见 `doc/stage3/`，实现任务 A1–A8
+——2026-08-14 实施前校正由 T1–T8 改编号，见 doc/stage3/proposal.md §11。）

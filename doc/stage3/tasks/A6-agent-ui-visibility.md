@@ -1,4 +1,4 @@
-# T6 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI（可验证闭环）
+# A6 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI（可验证闭环）
 
 - **目标**：用户可实时知道 AI 在做什么——Agent 状态栏、正在访问的网页、最近
   Tool 调用、等待确认的动作、停止按钮；确认对话框（确定性事实展示，文案不经
@@ -13,7 +13,7 @@
   纯函数 agent-run-state（reducer 单测）；冒烟 UI 矩阵（React DOM 事件驱动：
   任务输入发送/step 事件渐进/确认 approve/deny 两路/停止/终止理由展示/共读
   回归 A-11）。
-- **非目标**：**严禁**真实 Provider 验证（T7）、威胁模型红队专项（T7）、
+- **非目标**：**严禁**真实 Provider 验证（A7）、威胁模型红队专项（A7）、
   多窗口、面板拖拽动画；不改共读 UI 行为。
 
 ## 涉及文件
@@ -37,10 +37,10 @@
 
 ## 测试与检查
 
-- 全量验证矩阵（AGENTS.md 附 A）；单测见 detailed-design §13.1 T6 行；
+- 全量验证矩阵（AGENTS.md 附 A）；单测见 detailed-design §13.1 A6 行；
   红线 grep：确认 UI 文案不来自模型/网页（summary 为程序组装）、bridge 无 Key 读回。
 
 ## 完成定义
 
 - 单测全绿；全量回归通过；冒烟 UI 矩阵退出码 0；共读矩阵 1–12 回归通过；
-  progress.md 标记 T6 ✅ 并推荐 T7。
+  progress.md 标记 A6 ✅ 并推荐 A7。

@@ -1,4 +1,4 @@
-# T1 tool-calling 兼容层（可验证闭环，**本阶段硬前置**）
+# A1 tool-calling 兼容层（可验证闭环，**本阶段硬前置**）
 
 - **目标**：扩展 LLMProvider/ProviderRequest/SSE 解析使模型可提议工具调用
   （detailed-design §2.1/§3）；FakeProvider 增确定性工具脚本。**本任务完成后才能
@@ -12,7 +12,7 @@
   FakeProvider 工具脚本（整组 toolCalls 一步产出 + 延迟 + getLastRequest 断言）；
   ContextBuildInput.tools 透传。
 - **非目标**：**严禁新增任何 Browser Tool 实现、click/fill/scroll 交互、SearchProvider、
-  Agent Loop、UI 改动、IPC 通道**；不改 SYSTEM_PROMPT（AGENT_SYSTEM_PROMPT 属 T5）；
+  Agent Loop、UI 改动、IPC 通道**；不改 SYSTEM_PROMPT（AGENT_SYSTEM_PROMPT 属 A5）；
   共读路径行为不变（未传 tools 时请求无 tools 字段——矩阵 11 断言保持）。
 
 ## 涉及文件
@@ -39,10 +39,10 @@
 
 ## 测试与检查
 
-- 全量验证矩阵（AGENTS.md 附 A）；新增单测见 detailed-design §13.1 T1 行；
+- 全量验证矩阵（AGENTS.md 附 A）；新增单测见 detailed-design §13.1 A1 行；
   红线 grep 断言：本任务 diff 不含任何工具执行/交互注入代码。
 
 ## 完成定义
 
 - 单测全绿且既有 326 用例不弱化；全量回归通过；冒烟离线矩阵退出码 0；
-  FakeProvider 工具脚本可被后续 T2/T5 直接复用；progress.md 标记 T1 ✅ 并推荐 T2。
+  FakeProvider 工具脚本可被后续 A2/A5 直接复用；progress.md 标记 A1 ✅ 并推荐 A2。

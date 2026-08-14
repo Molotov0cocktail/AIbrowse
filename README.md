@@ -1,13 +1,16 @@
 # AIbrowse — AI 信息浏览器
 
 > 第三阶段目标：**Browser Agent 与受限工具系统**——AI 通过受限、可审计、可撤销的
-> Tool Layer 自主完成低风险浏览任务：tool-calling 兼容层（T1 硬前置）、Tool Registry、
+> Tool Layer 自主完成低风险浏览任务：tool-calling 兼容层（A1 硬前置）、Tool Registry、
 > SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
 > Agent Loop（最大步数/超时/取消/防循环）、确定性权限分级与确认状态机（L0 自动 /
 > L1 自动显著展示 / L2 用户确认 / L3 禁止）、操作可见性与审计日志。契约源
 > `doc/stage3/detailed-design.md`；安全契约源 `doc/stage3/threat-model.md`
 > （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
-> **设计定稿与任务拆分已完成（2026-08-14），尚未开始实现**（任务 T1–T8）。
+> **设计定稿与任务拆分已完成（2026-08-14），尚未开始实现**（任务 A1–A8；
+> 2026-08-14 实施前校正：任务编号由 T1–T8 改为 A1–A8 避免与第一阶段任务 T1–T5 重名、
+> 红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，见
+> `doc/stage3/proposal.md` §11）。
 > 核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
 > 需求源：`Third_stage.md`；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
@@ -27,10 +30,10 @@
   §9/§10 与 `doc/tasks/progress.md`。
 - 🔨 **第三阶段（Browser Agent）设计定稿与任务拆分完成（2026-08-14）**：Entry Gate
   逐项核验通过（「tool calling」项经循环式门槛判定记录校正——该能力属第三阶段自身
-  交付物，校正为 T1 硬前置：T1 验证通过前禁止引入任何 Browser Tool 实现，判定证据
+  交付物，校正为 A1 硬前置：A1 验证通过前禁止引入任何 Browser Tool 实现，判定证据
   见 `doc/stage3/proposal.md` §8）；Prompt Injection 威胁模型重建定稿
   （`doc/stage3/threat-model.md`）；契约定稿 `doc/stage3/detailed-design.md`；
-  任务 T1–T8 见 `doc/stage3/tasks/`（**下一个推荐任务：T1**）。**尚未开始实现，
+  任务 A1–A8 见 `doc/stage3/tasks/`（**下一个推荐任务：A1**）。**尚未开始实现，
   不引入任何 Browser Tool。**
 
 ## 技术栈（实际落地版本）
@@ -131,7 +134,9 @@ BrowserController.getPageSnapshot`（**提问时刻实时采集**，禁止复用
 - Browser Agent（第三阶段，设计定稿待实现）：`UI → ConversationService(agent 模式) →
 AgentLoop → ToolRegistry → PermissionPolicy / ConfirmManager / ToolExecutor →
 BrowserController / SearchProvider`；工具实现只经 BrowserController/SearchProvider 操作
-  浏览器；权限判定为确定性纯函数（模型只是提议者）；Tool Result 与网页内容同等视为不可信；
+  浏览器；权限判定为确定性纯函数（模型只是提议者）；**click 走确定性允许列表
+  （链接/展开/切换 L1、提交类 L2、非允许列表目标 fail-closed L3），L3 敏感动作
+  在权限层与执行器层双重封死无执行通道**；Tool Result 与网页内容同等视为不可信；
   禁止万能工具（shell/eval/任意 JS/文件系统/HTTP POST/任意 IPC/SQL 永久红线）；
   Element 交互经固定模板注入脚本（click/fill/scroll，参数只进 JSON 字面量），
   elementId 执行时刻重新定位；威胁模型见 `doc/stage3/threat-model.md`。
@@ -145,17 +150,17 @@ src/
 │   │              #             AI 共读矩阵）
 │   ├── browser/   # BrowserController / TabManager / SessionManager / PageReader /
 │   │              #   snapshot-script + snapshot-normalize / tab-state / permission-policy
-│   │              #   （第三阶段 T3 规划：interaction-script 交互注入）
+│   │              #   （第三阶段 A3 规划：interaction-script 交互注入）
 │   └── ai/        # （第二阶段已实现）ConversationService / ConversationStore /
 │                  #   ContextBuilder + budget / CredentialStore / ConfigStore /
 │                  #   provider（LLMProvider/OpenAI-compatible/FakeProvider/error-normalize）
 │                  # （第三阶段规划）agent/（AgentLoop 等）+ tools/（Registry/executor）
-│                  #   + permission/ + confirm-manager + audit-log + search/（T1–T5）
+│                  #   + permission/ + confirm-manager + audit-log + search/（A1–A5）
 ├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
-│                  #   第三阶段 T6 规划 agent 通道）
+│                  #   第三阶段 A6 规划 agent 通道）
 ├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏；
-│                  #   第三阶段 T6 规划 Agent 模式/状态栏/确认对话框）
-└── shared/        # 共享类型（app/browser/ipc/conversation + 第三阶段 T2 规划 agent）+ 纯逻辑（url.ts）
+│                  #   第三阶段 A6 规划 Agent 模式/状态栏/确认对话框）
+└── shared/        # 共享类型（app/browser/ipc/conversation + 第三阶段 A2 规划 agent）+ 纯逻辑（url.ts）
 ```
 
 完整结构与职责见 `AGENTS.md` §4；第二阶段契约与任务见 `doc/stage2/`（定稿）；
@@ -184,7 +189,7 @@ Electron 行为由冒烟自检真实启动验证（见上）。约定见 `AGENTS
 - 冒烟中的搜索验证在离线环境断言「发起 Bing 搜索导航」而非页面加载完成（联网冒烟变体可验证）。
 - Prompt Injection 边界：第二阶段结构性隔离保证网页内容不能取得权限、读取密钥、调用写
   操作或改变消息角色（机器可验证）；第三阶段引入 Browser Tool 前**威胁模型已重建定稿**
-  （`doc/stage3/threat-model.md`：五层防线 + 红队矩阵 R-01～R-10）。仍**不承诺**模型在
-  语义层完全不受网页文本诱导——第三阶段三类残余风险（诱导式工具参数/确认疲劳/低风险
-  动作累积）如实登记，不宣称免疫。
+  （`doc/stage3/threat-model.md`：五层防线 + 红队矩阵 RT-01～RT-11）。仍**不承诺**模型在
+  语义层完全不受网页文本诱导——第三阶段四类残余风险（诱导式工具参数/确认疲劳/低风险
+  动作累积/click 允许列表目标的页内 JS 副作用）如实登记，不宣称免疫。
 - 详细清单见 `doc/tasks/progress.md`「计划内限制与延期项」。
