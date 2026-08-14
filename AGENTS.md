@@ -994,6 +994,8 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
       ③ 仅通过受控子进程的环境变量 `AIBROWSE_TEST_API_KEY` 短暂注入（应用读取后立即从
       process.env 移除；禁止命令行参数/明文文件/聊天输入）；测试子进程用仓库外启动脚本
       `%LOCALAPPDATA%\AIbrowse\S5\run-live-smoke.ps1`（`-Sites` 开关进入 S6 多网站场景；
+      `-Agent` 进入 A7 真实 Agent 完整场景；`-Pre` 进入 A7 补验最小 tools 兼容性预检
+      （仅场景 1 + 零泄漏终检，1 次调用量级，完整场景需用户二次授权）；
       DPAPI 解密 → 短暂赋环境变量 → 启动冒烟 → finally 清环境变量 + ZeroFreeBSTR 清零
       明文内存 + 清理临时 userData；脚本纯 ASCII——PowerShell 5.1 按 ANSI 解析无 BOM 的
       .ps1，中文会破坏解析）；④ 测试结束清除环境变量、明文内存和临时目录；⑤ 完成报告

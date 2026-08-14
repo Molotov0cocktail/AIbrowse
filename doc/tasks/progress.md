@@ -97,6 +97,25 @@
 
 ## 最近验证结果（2026-08-14）
 
+- **A7 补验预检（2026-08-14，真实 Provider 最小 tools 兼容性预检，用户授权 1 次调用）**：
+  步骤 0 独立核对——HEAD `6aefcb0` = 双远程 HEAD、工作区干净、基线 test 771/771 独立
+  复跑全绿、`AIBROWSE_LIVE_AGENT=1` 门控与仓库外 harness 在位（不采信交接，逐项自查）。
+  用户将仓库外配置 model 改为 `deepseek-v4-pro`（baseURL 不变，沿用 DPAPI Key）并授权
+  一次最小预检。**① 新增预检门控（commit dafd2bd，已推送双远程）**：`runLiveAgentScenarios`
+  增 `pre` 参数（预检模式仅场景 1 + 零泄漏终检 + 台账，场景 2–7 需用户二次授权）；
+  零泄漏终检与台账汇总提取为 `finalizeLiveRun` 复用（完整模式行为不变）；index.ts 环境门
+  `AIBROWSE_LIVE_AGENT_PRE=1`（与 LIVE_AGENT 互斥）；仓库外 harness 增 `-Pre` 开关。
+  权限矩阵/工具清单/适配器零改动。离线全量验证全绿（test 771/771·typecheck·lint·
+  format:check·build·dev+生产双场景冒烟退出码 0）。**② 预检结果：失败——deepseek-v4-pro
+  同样不支持 tools**。真实调用台账：**1 次 HTTP 请求**（场景 1 首个模型轮，标准 OpenAI
+  tools 载荷）→ **HTTP 400**，0 模型轮成功、0 工具执行，errorCode=provider-error
+  （非 invalid-key/rate-limit/context-too-long）。签名与 v4-flash 完全一致（首轮即 400、
+  无响应可解析），判定为 Provider/模型侧 tools 兼容性限制（DeepSeek V4 系模型 tool calling
+  问题），非适配器缺陷（wire 为标准 OpenAI 形态、适配器零改动）。按用户指示**立即停止，
+  不重复请求、不修改权限或适配器**；日志 sk- 形态扫描 0 命中、临时目录零残留、工作区干净。
+  第三阶段判定维持 `HOLD/PENDING`；`-Pre` 预检门控已就绪——下次换 Provider/model 后先以
+  最小预检（1 次调用量级）验证 tools 兼容性，再申请完整场景授权。
+
 - **A8 第三阶段收尾与验收（2026-08-14，第八个闭环；总 Exit 决策 = HOLD/PENDING）**：
   步骤 0 独立核对——HEAD `0461c04` = Gitee/GitHub 双远程 HEAD（ls-remote 实测，
   三方一致）、工作区干净、基线 test 771/771 独立复跑全绿（与 A7 交接预期一致，
@@ -1123,31 +1142,37 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 阻塞项
 
-- **第三阶段最终验收阻塞（非开发阻塞，2026-08-14 A8 登记）**：§9 Engineering
-  「多个真实网站 Agent smoke test 通过」BLOCKED——唯一已配置 Provider
-  （deepseek-v4-flash）对任何 OpenAI 标准 tools 载荷返回 HTTP 400（A7 诊断
-  台账：真实调用 1 次 + 定向诊断 3 次，stream/非 stream 两形态均 400、无 tools
-  200 正常；判定 Provider/模型兼容性限制，非适配器缺陷）；连带 §7 真实场景
-  1–6 与 RT-10 真实模型观察性证据 NOT RUN。解除条件：配置一个与 OpenAI 标准
-  tool calling 兼容的 Provider/model（仓库外 DPAPI/harness 流程注入）→ 用户
-  授权付费联网 → 运行 `AIBROWSE_LIVE_AGENT=1` 门控场景（代码已就绪）→ 取得
-  充分证据后改判 GO/PASS。解除前不进入 Fourth Stage。
+- **第三阶段最终验收阻塞（非开发阻塞，2026-08-14 A8 登记；A7 补验预检追加证据）**：
+  §9 Engineering「多个真实网站 Agent smoke test 通过」BLOCKED——唯一已配置 Provider
+  系 DeepSeek V4 模型对任何 OpenAI 标准 tools 载荷返回 HTTP 400（A7 诊断台账：
+  deepseek-v4-flash 真实调用 1 次 + 定向诊断 3 次，stream/非 stream 两形态均 400、
+  无 tools 200 正常；2026-08-14 补验预检：deepseek-v4-pro 真实调用 1 次，首轮 tools
+  载荷同样 HTTP 400 + 0 模型轮，签名一致——判定 Provider/模型兼容性限制，非适配器
+  缺陷）；连带 §7 真实场景 1–6 与 RT-10 真实模型观察性证据 NOT RUN。解除条件：
+  配置一个**非 DeepSeek V4 系**、与 OpenAI 标准 tool calling 兼容的 Provider/model
+  （仓库外 DPAPI/harness 流程注入）→ 用户授权最小预检（`AIBROWSE_LIVE_AGENT_PRE=1`，
+  harness `-Pre`，1 次调用量级）→ 预检通过后用户二次授权 → 运行
+  `AIBROWSE_LIVE_AGENT=1` 完整场景 → 取得充分证据后改判 GO/PASS。解除前不进入
+  Fourth Stage。
 
 ## 下一个推荐任务
 
 - **真实 Provider Agent 验收补验（新对话 = 一个可验证闭环，唯一解除第三阶段
   HOLD/PENDING 的路径）**：前置 = 用户已配置一个与 OpenAI 标准 tool calling
-  兼容的 Provider/model（不同于 deepseek-v4-flash，其任何 tools 载荷 400）
-  且**明确授权付费联网验证**（询问边界：先报告拟用 baseURL/model/场景/预计
-  模型轮数与 HTTP 请求用途，等待授权；不要求对话中粘贴 Key；只用仓库外
-  DPAPI/harness 流程 + 环境变量注入）。执行：`AIBROWSE_LIVE_AGENT=1` 门控
-  runLiveAgentScenarios（Third_stage §7 场景 1–6 + RT-10 敌对页——诱导目标
-  全部指向本地安全地址 + 停止/取消 + 零泄漏终检 + 真 Key 零暴露扫描 + 模型
-  轮次台账；代码已就绪于 src/main/smoke.ts）；提交动作只在受控本地页面验证
-  deny/approve，禁止对真实外部网站产生提交/发布/购买/发送/账户变更。完成后：
-  报告实际 Agent run、模型轮次与 HTTP 请求数及用途 + 真 Key 零暴露扫描 →
-  将 §9 Engineering BLOCKED 项与 §10 总判定改判（取得充分证据 → GO/PASS；
-  否则如实登记继续 HOLD）。未获授权/无兼容 Provider 时不执行联网。
+  兼容的 Provider/model（**注意：DeepSeek V4 系（v4-flash/v4-pro）均已实测
+  tools 载荷 400，勿再使用**）且**明确授权付费联网验证**（询问边界：先报告
+  拟用 baseURL/model/场景/预计模型轮数与 HTTP 请求用途，等待授权；不要求
+  对话中粘贴 Key；只用仓库外 DPAPI/harness 流程 + 环境变量注入）。执行顺序：
+  先 `AIBROWSE_LIVE_AGENT_PRE=1`（harness `-Pre`）最小预检——仅场景 1 +
+  零泄漏终检（1 次调用量级，验证请求被接受/有效 tool_calls/重放正常结束）；
+  预检通过并获用户**二次授权**后再 `AIBROWSE_LIVE_AGENT=1` 完整场景
+  （Third_stage §7 场景 2–7 + RT-10 敌对页——诱导目标全部指向本地安全地址 +
+  停止/取消 + 零泄漏终检 + 真 Key 零暴露扫描 + 模型轮次台账；代码已就绪于
+  src/main/smoke.ts）；提交动作只在受控本地页面验证 deny/approve，禁止对真实
+  外部网站产生提交/发布/购买/发送/账户变更。完成后：报告实际 Agent run、模型
+  轮次与 HTTP 请求数及用途 + 真 Key 零暴露扫描 → 将 §9 Engineering BLOCKED 项
+  与 §10 总判定改判（取得充分证据 → GO/PASS；否则如实登记继续 HOLD）。未获
+  授权/无兼容 Provider 时不执行联网。
   **红线**：不索取/不输出 API Key；不放宽 click 允许列表/documentId 世代
   校验/临时搜索 Tab 所有权；不通过删除 tools、放宽权限、自动确认、修改敌手
   夹具或降低验收标准制造通过；A1–A7 已落地的链路不得削弱。
