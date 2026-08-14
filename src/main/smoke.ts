@@ -112,6 +112,7 @@ export interface SmokeOptions {
   liveSmoke?: LiveProviderSmoke; // S5：真实 Provider 场景（AIBROWSE_LIVE_PROVIDER=1 时注入）
   liveSites?: boolean; // S6：真实 Provider 多网站共读验证（AIBROWSE_LIVE_SITES=1 时启用）
   liveAgent?: boolean; // A7：真实 Provider Agent 验证（AIBROWSE_LIVE_AGENT=1 时启用，需用户授权）
+  liveAgentPre?: boolean; // A7 补验：最小 tools 兼容性预检（AIBROWSE_LIVE_AGENT_PRE=1，仅场景 1 + 零泄漏终检）
   toolExecutor?: ToolExecutor; // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
   confirmManager?: ConfirmManager; // A3：L2 确认程序化驱动（approve/deny，A6 起接 UI）
 }
@@ -6442,6 +6443,7 @@ export async function runLiveAgentScenarios(
   uiWindow: BrowserWindow,
   aiSmokeDir: string,
   live: LiveProviderSmoke,
+  pre = false, // A7 补验预检：仅场景 1 + 零泄漏终检 + 台账；完整场景 2–7 需用户二次授权
 ): Promise<void> {
   const uiWc = uiWindow.webContents;
   const { file: logFile, offsetBefore: keyScanOffset } = live.logScan;
@@ -6534,6 +6536,62 @@ export async function runLiveAgentScenarios(
     };
     const pageLog = async (): Promise<string[]> => (await pageJs('window.__log')) as string[];
 
+    // —— 零泄漏终检 + 台账汇总（场景 8；预检模式在场景 1 后直接执行）——
+    // Tab 恢复进入前/pending 零残留/真 Key 零暴露扫描（DOM/日志/临时文件/密文形态）/
+    // 临时配置与日志使用记录 + 模型轮次台账（每次 HTTP 请求对应明确验收项；不报凭据）
+    const finalizeLiveRun = async (label: string): Promise<number> => {
+      await restoreTabs(label);
+      assert(
+        (await controller.getActiveTab())?.id === activeBefore,
+        `${label}：活动 Tab 应恢复进入前`,
+      );
+      const domDump = String(await uiJs(uiWc, 'document.body.innerHTML'));
+      assert(!domDump.includes(live.key), '真实 Agent：渲染 DOM 不得包含明文 Key');
+      const logSlice = readFileSync(logFile).subarray(keyScanOffset).toString('utf8');
+      assert(!logSlice.includes(live.key), '真实 Agent：日志（启动偏移起）不得包含明文 Key');
+      const tempFiles = readdirSync(aiSmokeDir, { recursive: true, encoding: 'utf8' })
+        .filter((n) => n.endsWith('.json') || n.endsWith('.tmp'))
+        .map((n) => join(aiSmokeDir, n));
+      for (const f of tempFiles) {
+        assert(
+          !readFileSync(f, 'utf8').includes(live.key),
+          `真实 Agent：临时文件不得包含明文 Key（${f}）`,
+        );
+      }
+      const credFile = join(aiSmokeDir, 'credentials.json');
+      assert(existsSync(credFile), '真实 Agent：凭据文件应落盘（真实 safeStorage 密文）');
+      const credRecord = JSON.parse(readFileSync(credFile, 'utf8')) as {
+        providers: Record<string, string>;
+      };
+      assert(
+        isCiphertextShape(credRecord.providers[PROVIDER_KIND_OPENAI_COMPATIBLE]),
+        '真实 Agent：凭据文件应为密文形态（无明文 Key）',
+      );
+      const configText = readFileSync(join(aiSmokeDir, 'provider-config.json'), 'utf8');
+      assert(
+        configText.includes(`"baseUrl": "${live.baseUrl}"`),
+        '真实 Agent：临时配置应含本次 baseUrl（唯一配置源）',
+      );
+      assert(
+        configText.includes(`"model": "${live.model}"`),
+        '真实 Agent：临时配置应含本次 model（唯一配置源）',
+      );
+      assert(
+        logSlice.includes(`provider=${PROVIDER_KIND_OPENAI_COMPATIBLE}`),
+        '真实 Agent：日志应记录实际 provider（openai-compatible 链路）',
+      );
+      assert(logSlice.includes(`model=${live.model}`), '真实 Agent：日志应记录实际 model');
+      const totalRounds = callLedger.reduce((a, b) => a + b.modelRounds, 0);
+      const ledgerSummary = callLedger.map((c) => `${c.task}：${c.modelRounds} 轮`).join('；');
+      logInfo(
+        'smoke',
+        `真实 Provider Agent ${label}通过（${
+          pre ? '最小 tools 兼容性预检：用户任务 1 项' : '用户任务 7 项 + 停止 1 次'
+        }；模型轮次/HTTP 请求共 ${totalRounds} 次——${ledgerSummary}；真 Key 零暴露扫描覆盖 DOM/日志/临时文件/密文形态）`,
+      );
+      return totalRounds;
+    };
+
     await ensurePanelOpen();
     await switchMode('task');
 
@@ -6556,6 +6614,13 @@ export async function runLiveAgentScenarios(
         `场景 1 应打开 electronjs.org 最相关结果（实际 ${url}）`,
       );
       logInfo('smoke', '场景 1 通过（搜索 WebContentsView 官方文档并打开最相关结果）');
+    }
+
+    // —— 预检模式（AIBROWSE_LIVE_AGENT_PRE=1）：仅场景 1 + 零泄漏终检 + 台账；场景 2–7
+    //    需用户二次授权后以 AIBROWSE_LIVE_AGENT=1 执行 ——
+    if (pre) {
+      await finalizeLiveRun('预检');
+      return;
     }
 
     // —— 场景 2：在官方文档中找到 security 部分 ——
@@ -6803,59 +6868,8 @@ export async function runLiveAgentScenarios(
       logInfo('smoke', '场景 7 通过（真实模型流停止 + 收敛）');
     }
 
-    // —— 场景 8：零泄漏终检（Tab/pending/临时目录/监听器 + 真 Key 零暴露扫描） ——
-    {
-      await restoreTabs('场景 8');
-      assert(
-        (await controller.getActiveTab())?.id === activeBefore,
-        '场景 8：活动 Tab 应恢复进入前',
-      );
-      // pending 零残留（确认管理器全局单 pending）
-      const domDump = String(await uiJs(uiWc, 'document.body.innerHTML'));
-      assert(!domDump.includes(live.key), '真实 Agent：渲染 DOM 不得包含明文 Key');
-      const logSlice = readFileSync(logFile).subarray(keyScanOffset).toString('utf8');
-      assert(!logSlice.includes(live.key), '真实 Agent：日志（启动偏移起）不得包含明文 Key');
-      const tempFiles = readdirSync(aiSmokeDir, { recursive: true, encoding: 'utf8' })
-        .filter((n) => n.endsWith('.json') || n.endsWith('.tmp'))
-        .map((n) => join(aiSmokeDir, n));
-      for (const f of tempFiles) {
-        assert(
-          !readFileSync(f, 'utf8').includes(live.key),
-          `真实 Agent：临时文件不得包含明文 Key（${f}）`,
-        );
-      }
-      const credFile = join(aiSmokeDir, 'credentials.json');
-      assert(existsSync(credFile), '真实 Agent：凭据文件应落盘（真实 safeStorage 密文）');
-      const credRecord = JSON.parse(readFileSync(credFile, 'utf8')) as {
-        providers: Record<string, string>;
-      };
-      assert(
-        isCiphertextShape(credRecord.providers[PROVIDER_KIND_OPENAI_COMPATIBLE]),
-        '真实 Agent：凭据文件应为密文形态（无明文 Key）',
-      );
-      const configText = readFileSync(join(aiSmokeDir, 'provider-config.json'), 'utf8');
-      assert(
-        configText.includes(`"baseUrl": "${live.baseUrl}"`),
-        '真实 Agent：临时配置应含本次 baseUrl（唯一配置源）',
-      );
-      assert(
-        configText.includes(`"model": "${live.model}"`),
-        '真实 Agent：临时配置应含本次 model（唯一配置源）',
-      );
-      assert(
-        logSlice.includes(`provider=${PROVIDER_KIND_OPENAI_COMPATIBLE}`),
-        '真实 Agent：日志应记录实际 provider（openai-compatible 链路）',
-      );
-      assert(logSlice.includes(`model=${live.model}`), '真实 Agent：日志应记录实际 model');
-    }
-
-    // —— 台账汇总（每次模型 HTTP 请求对应明确验收项；不报凭据） ——
-    const totalRounds = callLedger.reduce((a, b) => a + b.modelRounds, 0);
-    const ledgerSummary = callLedger.map((c) => `${c.task}：${c.modelRounds} 轮`).join('；');
-    logInfo(
-      'smoke',
-      `真实 Provider Agent 验证通过（用户任务 7 项 + 停止 1 次；模型轮次/HTTP 请求共 ${totalRounds} 次——${ledgerSummary}；真 Key 零暴露扫描覆盖 DOM/日志/临时文件/密文形态）`,
-    );
+    // —— 场景 8：零泄漏终检 + 台账汇总（Tab/pending/临时目录/监听器 + 真 Key 零暴露扫描） ——
+    await finalizeLiveRun('验证');
   } catch (err) {
     logError('smoke', '真实 Provider Agent 验证失败', err);
     throw err;
@@ -7478,14 +7492,16 @@ export async function runSmokeScenario(
           options.aiSmokeDir !== undefined,
         '真实 Provider 冒烟需要 UI 窗口与数据目录选项',
       );
-      if (options.liveAgent === true) {
+      if (options.liveAgent === true || options.liveAgentPre === true) {
         // A7：真实 Provider Agent 验证（AIBROWSE_LIVE_AGENT=1，需用户授权——询问边界；
-        // 场景 1–6 + RT-10 敌对页 + 停止 + 零泄漏终检 + 真 Key 零暴露扫描）
+        // 场景 1–6 + RT-10 敌对页 + 停止 + 零泄漏终检 + 真 Key 零暴露扫描）；
+        // 补验预检（AIBROWSE_LIVE_AGENT_PRE=1）：仅场景 1 + 零泄漏终检 + 台账
         await runLiveAgentScenarios(
           controller,
           options.uiWindow,
           options.aiSmokeDir,
           options.liveSmoke,
+          options.liveAgentPre === true,
         );
       } else if (options.liveSites === true) {
         // S6：§10 Exit Gate 多网站共读验证（AIBROWSE_LIVE_SITES=1）

@@ -90,6 +90,10 @@ const LIVE_SITES_MODE = LIVE_PROVIDER_MODE && process.env['AIBROWSE_LIVE_SITES']
 // A7：真实 Provider Agent 验证门控（AIBROWSE_LIVE_AGENT=1；需用户授权——询问边界，
 // 沿用仓库外 DPAPI harness：AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY 注入）
 const LIVE_AGENT_MODE = LIVE_PROVIDER_MODE && process.env['AIBROWSE_LIVE_AGENT'] === '1';
+// A7 补验：最小 tools 兼容性预检（AIBROWSE_LIVE_AGENT_PRE=1；需用户授权）——仅场景 1
+// + 零泄漏终检 + 台账；完整场景 2–7 需用户二次授权后以 AIBROWSE_LIVE_AGENT=1 执行
+const LIVE_AGENT_PRE_MODE =
+  LIVE_PROVIDER_MODE && process.env['AIBROWSE_LIVE_AGENT_PRE'] === '1' && !LIVE_AGENT_MODE;
 let liveSmoke: LiveProviderSmoke | undefined = undefined;
 let liveStreamChunkCount = 0; // 真实 Provider 场景 delta 计数（流式证据，index.ts 装配侧统计）
 
@@ -473,6 +477,7 @@ if (!gotLock) {
                 liveSmoke, // S5：AIBROWSE_LIVE_PROVIDER=1 时非 undefined（真实 Provider 场景）
                 liveSites: LIVE_SITES_MODE, // S6：AIBROWSE_LIVE_SITES=1 时启用多网站共读验证
                 liveAgent: LIVE_AGENT_MODE, // A7：AIBROWSE_LIVE_AGENT=1 时启用真实 Provider Agent 验证
+                liveAgentPre: LIVE_AGENT_PRE_MODE, // A7 补验：AIBROWSE_LIVE_AGENT_PRE=1 时启用最小 tools 兼容性预检
                 toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
                 confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
               });
