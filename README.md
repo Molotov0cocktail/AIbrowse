@@ -8,10 +8,11 @@
 > `doc/stage3/detailed-design.md`；安全契约源 `doc/stage3/threat-model.md`
 > （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
 > **A1 tool-calling 兼容层 + A2 Tool Registry/权限分级与确认状态机/审计日志 +
-> A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）已实现
-> （2026-08-14）；A4–A8 待实现**（任务编号 2026-08-14 实施前校正：T1–T8 改为
-> A1–A8 避免与第一阶段任务 T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为
-> click 确定性允许列表，见 `doc/stage3/proposal.md` §11）。
+> A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）+
+> A4 SearchProvider 与 search.web 已实现（2026-08-14）；A5–A8 待实现**
+> （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
+> T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
+> 见 `doc/stage3/proposal.md` §11）。
 > 核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
 > 需求源：`Third_stage.md`；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
@@ -46,8 +47,12 @@
   快照 meta.documentId 主进程盖章 + 执行前校验，旧 id 不因新文档复用相同 el-N
   而命中新元素）+ find/scroll/click/fill 四工具经既有 ToolExecutor 链路接线——
   冒烟 A-12 与 elementId 生命周期真实 DOM 探针通过，dev/生产双场景）；
-  任务 A4–A8 待实现（**下一个推荐任务：A4 SearchProvider**）；SearchProvider/
-  AgentLoop 未实现。
+  **A4 SearchProvider 与 search.web 已完成**（接口 + Bing 搜索页实现——临时 Tab
+  精确 tabId 所有权与恢复语义（决议 #32）+ 确定性解析（ck/a 包装链接还原/过滤/
+  去重/snippet 空串容忍设计）+ 错误诚实映射（合法空结果 vs 结构无法识别/L2/L3）
+  + search.web 注册（L0，注册表 13 工具，查询串全量审计）——受控搜索页冒烟
+  全链路 + 公网 Bing 探针 10 条真实结果通过，dev/生产双场景）；
+  任务 A5–A8 待实现（**下一个推荐任务：A5 Agent Runtime**）；AgentLoop 未实现。
 
 ## 技术栈（实际落地版本）
 
@@ -65,7 +70,10 @@ npm run dev      # 开发模式启动（真实启动 Electron 应用）
 T3 UI 导航保护/bounds → T4 PageSnapshot 真实采集 → T5 敌对页/302 拦截/UI 端到端/远程隔离 →
 S3/S4 AI 共读场景：FakeProvider 离线矩阵流式端到端/selection 独占/防串页/L3 降级/薄快照/
 中止/错误归一化/会话持久化/UI 端到端/bounds 协调/Key 不可达/注入结构断言 →
-自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2）：
+A2/A3 工具层探针与交互场景 → A4 搜索生命周期场景（受控搜索页夹具三形态 + 临时 Tab
+精确所有权与恢复 + 审计恰好一条；可选公网 Bing 探针 `AIBROWSE_SMOKE_LIVE_SEARCH=1`）→
+自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
+`doc/stage3/detailed-design.md` §13.2）：
 
 ```bash
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev
@@ -103,7 +111,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 533 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 576 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -171,22 +179,20 @@ src/
 │                  #   A1 ✅ tool-calling 兼容层：tools/SSE tool_calls 聚合/工具脚本）
 │                  # （第三阶段）tools/（A2 ✅ tool-types/tool-registry 校验/tool-executor
 │                  #   管线/browser-tools 首批 8 只读导航工具 + A3 ✅ interaction-tools
-│                  #   find/scroll/click/fill、interaction-semantics 语义存储+世代绑定）+
+│                  #   find/scroll/click/fill、interaction-semantics 语义存储+世代绑定 +
+│                  #   A4 ✅ search-tool search.web 注册与序列化）+
 │                  #   permission/（A2 ✅ permission-policy + A3 ✅ classifyClickTarget）+
-│                  #   confirm-manager（A2 ✅ 确认状态机）+ audit-log（A2 ✅ 审计参数脱敏）；
+│                  #   confirm-manager（A2 ✅ 确认状态机）+ audit-log（A2 ✅ 审计参数脱敏，
+│                  #   A4 ✅ search.web 查询串全量记录）；
 │                  #   agent/（A5 AgentLoop）+
-│                  #   search/（A4 SearchProvider）规划
+│                  #   search/（A4 ✅ search-provider：接口 + Bing 页面实现 + 确定性解析，
+│                  #   临时 Tab 精确所有权零 Electron import）
 ├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
 │                  #   第三阶段 A6 规划 agent 通道）
 ├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏；
 │                  #   第三阶段 A6 规划 Agent 模式/状态栏/确认对话框）
 └── shared/        # 共享类型（app/browser/ipc/conversation + agent——A2 ✅ ToolCall/ToolResult/
                    #   权限级别/ElementSemantics）+ 纯逻辑（url.ts）
-├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
-│                  #   第三阶段 A6 规划 agent 通道）
-├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏；
-│                  #   第三阶段 A6 规划 Agent 模式/状态栏/确认对话框）
-└── shared/        # 共享类型（app/browser/ipc/conversation + 第三阶段 A2 规划 agent）+ 纯逻辑（url.ts）
 ```
 
 完整结构与职责见 `AGENTS.md` §4；第二阶段契约与任务见 `doc/stage2/`（定稿）；
@@ -199,7 +205,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 533 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 576 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
@@ -225,12 +231,20 @@ executor（派生参数透传/无派生 fail-closed/fill 内容零原文）、cl
 与 decide 同源双表对照、paramRules（dy ±50000 整数/text 长度差异化）、
 ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元数据
 （isSubmit/ariaExpanded 严格布尔）、meta.documentId 主进程盖章。
+第三阶段 A4 新增（43）：搜索解析矩阵（正常组装/去重保持首现/非 http・https 与畸形
+URL 丢弃/bing 自身域与非结果标签过滤/ck/a 包装链接 base64url 还原/前 10/title 200
+截断/snippet 空串容忍设计/空与 null 安全降级）、临时搜索 Tab 所有权与恢复语义
+（精确 tabId 独占/只关本调用创建的确切 id/提前关闭安全无操作/活动 Tab 恢复与
+不抢焦点/并发隔离/超时・取消・异常全路径零泄漏——注入时钟确定性）、search.web
+工具（常量 schema/L0 管线决策/序列化纯文本零特权/4000 截断/空结果明确提示/
+结构无法识别 search-failed/取消归一/每次调用恰好一条审计/查询串全量审计）。
 Electron 行为由冒烟自检真实启动验证（见上）。 约定见 `AGENTS.md` §7。
 
 ## 已知限制
 
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过（设计决议，点时刻尽力采样）。
-- 地址栏不支持中文/国际化域名（IDN，走搜索兜底）；搜索引擎暂硬编码 Bing（后续换 SearchProvider）。
+- 地址栏不支持中文/国际化域名（IDN，走搜索兜底）；搜索引擎暂硬编码 Bing（SearchProvider
+  接口隔离已落地，v1 为 Bing 搜索页实现，未来 API 供应商实现同接口即可替换）。
 - 无 CI / 打包配置（第一阶段验收不要求；打包属 Seventh Stage）。
 - 冒烟中的搜索验证在离线环境断言「发起 Bing 搜索导航」而非页面加载完成（联网冒烟变体可验证）。
 - Prompt Injection 边界：第二阶段结构性隔离保证网页内容不能取得权限、读取密钥、调用写

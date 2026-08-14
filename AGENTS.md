@@ -31,7 +31,10 @@
   BrowserController 扩展（clickElement/fillElement/scrollTab + elementId
   文档世代绑定）+ find/scroll/click/fill 四工具经既有 ToolExecutor 链路接线
   （allowedKind 由 classifyClickTarget 单一事实源派生）；
-  SearchProvider（A4）、AgentLoop（A5）未实现。A4–A8 待实现。
+  **A4 SearchProvider 与 search.web 已实现（2026-08-14）**——Bing 搜索页实现
+  （临时 Tab 精确 tabId 所有权 + finally 清理 + 恢复语义，决议 #32）+ 确定性
+  解析 + search.web 工具（L0，注册表 13 工具）；
+  AgentLoop（A5）未实现。A5–A8 待实现。
   纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
   （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
   核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
@@ -283,17 +286,19 @@ d:\AIbrowse\
     │       │                                  #   （A1 规划：tools/SSE tool_calls/FakeProvider 工具脚本）
     │       ├── agent/                         # （A5 规划）agent-loop（纯编排状态机）/agent-context-builder/
     │       │                                  #   agent-history/agent-safety（防循环纯函数）
-    │       ├── tools/                         # （A2 ✅ + A3 ✅）tool-types/tool-registry（schema 校验）/
+    │       ├── tools/                         # （A2 ✅ + A3 ✅ + A4 ✅）tool-types/tool-registry（schema 校验）/
     │       │                                  #   tool-executor（校验→权限→确认→执行→审计）/
     │       │                                  #   browser-tools（A2 只读导航 8 工具）/
     │       │                                  #   interaction-tools（A3 ✅ find/scroll/click/fill）/
     │       │                                  #   interaction-semantics（A3 ✅ 快照语义存储+世代绑定）/
-    │       │                                  #   search-tool（A4）
+    │       │                                  #   search-tool（A4 ✅ search.web 注册/序列化）
     │       ├── permission/                    # （A2 ✅）permission-policy：L0–L3 确定性权限纯函数
     │       ├── confirm-manager.ts             # （A2 ✅）确认状态机（pending/approve/deny/作废）
-    │       ├── audit-log.ts                   # （A2 ✅）结构化审计条目（参数脱敏摘要）
-    │       └── search/                        # （A4 规划）search-provider：接口 + Bing 页面实现
-    │                                          #   （临时 Tab → 快照解析 → 统一结果结构）
+    │       ├── audit-log.ts                   # （A2 ✅）结构化审计条目（参数脱敏摘要；
+    │       │                                  #   A4 search.web query 全量记录，决议 #32）
+    │       └── search/                        # （A4 ✅）search-provider：接口 + Bing 页面实现 +
+    │                                          #   确定性解析（临时 Tab 精确所有权 → 快照解析
+    │                                          #   → 统一结果结构，零 Electron import）
     ├── preload/
     │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui
     │   │                                      #   + conversation/config（S4 ✅）；事件通道单次注册）
@@ -688,10 +693,34 @@ scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执
   tool-registry paramRules（find text ≤200 非空/fill text ≤2000/dy 整数
   ±50000）；A2 起 ToolExecutionContext 扩展（getElementSemantics 绑定签名/
   recordSnapshot/ToolExecutionDerived）。
-- **SearchProvider（A4）**：`search(query, signal) → SearchProviderResult`
-  （SearchResult {title/url/snippet/source}）；v1 Bing 搜索页实现（临时可见 Tab →
-  ready → 实时快照 → 确定性解析 → 关闭 Tab）；容忍设计（结构变化 → 空结果 +
-  warnings）；接口隔离保未来替换（决议 #22）。
+- **SearchProvider（A4 ✅ 已实现，2026-08-14 grep 核对）**：
+  search-provider.ts——`SearchResult`（title ≤200/url http/https/snippet/source）/
+  `SearchProviderResult`（ok/results/errorCode 'search-failed'|'aborted'/
+  warnings）/`SearchProvider` 接口（id + search(query, signal)）/
+  `BingSearchProvider`（实现类，构造注入 browser/timeoutMs/pollIntervalMs/
+  now/sleep/searchBaseUrl——零 Electron import，只经 BrowserController）/
+  纯函数 `buildSearchUrl(query, baseUrl=SEARCH_ENGINE_URL)`（encodeURIComponent，
+  常量语义不变）/`unwrapBingWrapper`（ck/a u=a1 base64url 确定性还原，仅
+  http/https）/`parseBingSearchResults(snapshot | null) → {results, warnings,
+  hasContent}`（bing 自身域 + 中英双语非结果标签过滤/非 http/https/畸形丢弃/
+  URL 去重保持首现/前 10/snippet 恒空串 + warning——扁平快照无可靠关联证据，
+  宁缺勿错）+ 常量 `SEARCH_QUERY_MAX_LENGTH`=500/`SEARCH_READY_TIMEOUT_MS`=15000。
+  **临时 Tab 所有权与恢复语义（决议 #32）**：本次调用以精确 tabId 独占
+  （createTab 返回值，绝不按位置/标题/URL/活动 Tab 推断）；任何路径
+  try/finally 最佳努力清理；只关本调用创建的确切 id，已关闭安全无操作不关
+  替代 Tab；用户停留 → 恢复调用前仍存在的活动 Tab，已切换 → 不抢焦点，调用前
+  活动 Tab 已关闭 → 不重建不激活（沿用 closeTab 正常策略）；并发各持局部
+  tabId 零共享状态。**错误映射**：ready 超时/导航失败/Tab 提前关闭/快照 null
+  （L3）/L2 降级/空内容快照（结构无法识别）/控制器异常 → ok:false +
+  search-failed（不伪装成功空结果）；页面有内容无有机结果（合法空结果）→
+  ok:true 空数组 + 明确提示；aborted 由工具层归一 execution-failed。
+  search-tool.ts——`SEARCH_TOOL_NAME`/`SEARCH_TOOL_DESCRIPTION`/
+  `formatSearchResults(results)`/`createSearchTool(searchProvider)`（schema
+  仅 {query}、paramRules nonEmpty、baseRisk 0；ctx.searchProvider 优先于注册
+  注入；结果纯文本行零指令性/富文本特权；不暴露 documentId/内部 tabId/快照
+  正文/调试字段）。审计：search.web 查询串与 url 同等级**全量**记录（T-03 外发
+  审查可追溯，上限 500 有界）；ToolExecutionContext 增 `searchProvider?`
+  （A4 注入点，设计 §4.1 落点，A5 AgentLoop 装配复用）。
 - **AgentRuntime（A5）**：AgentLoop 纯编排状态机（running/waiting-confirm/done/
   cancelled/step-limit/timeout/loop-detected/no-progress/error）；上限常量
   MAX_STEPS=12 / 总超时 420s（含确认等待）；防循环（签名=工具名+规范化参数，
@@ -724,7 +753,7 @@ scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 533 用例）
+  - `npm test` — Vitest 全量测试（当前 576 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -742,19 +771,26 @@ scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执
       再验证 UI 端到端矩阵 1–12（流式分块渐进 DOM/selection/防串页/L3/薄快照/中止/错误
       归一化/会话管理 UI/布局 bounds 380 收缩与恢复/Key 不可达——DOM 与日志字节扫描 +
       credentials.json 密文 + 白名单无读回/注入结构断言/远程隔离回归；矩阵见
-      doc/stage2/detailed-design.md §13.2）→ A2/A3 起再验证工具层探针（注册表恰好
-      12 个工具（A2 8 + A3 4）+ listTools 恒等 + 经 ToolExecutor 走真实
-      BrowserController 的 get_tabs/read 成功、javascript: URL forbidden 不建
-      Tab、非法 tabId → invalid-args、未知 tabId read → execution-failed +
-      日志切片 5 条审计恰好一次一条）→ A3 起再验证交互场景 8.2（真实 DOM：
+      doc/stage2/detailed-design.md §13.2）→ A2/A3/A4 起再验证工具层探针（注册表恰好
+      13 个工具（A2 8 + A3 4 + A4 search.web）+ listTools 恒等 + 经 ToolExecutor
+      走真实 BrowserController 的 get_tabs/read 成功、javascript: URL forbidden
+      不建 Tab、非法 tabId → invalid-args、未知 tabId read → execution-failed、
+      search.web 空查询/超长 invalid-args + 日志切片 7 条审计恰好一次一条）→
+      A3 起再验证交互场景 8.2（真实 DOM：
       A-12 click 允许列表四类点击（含 nav 真实导航）/提交类 deny・approve 确认门/
       非允许列表与「立即购买/删除账户」forbidden 零 DOM 动作/权限判定后动态变化
       执行器复核拒绝/fill 隐私（len=N 零原文 + input/change 事件真实触发 +
       password/file/disabled/readonly/隐藏零写入）/scroll 边界/find 多章节与
       无命中/elementId 世代（同文档稳定、导航/刷新后 stale-element、重新快照
       不碰撞、类型复核）/每次调用审计恰好一条）→ elementId 生命周期红态探针
-      （跨导航/同 URL 刷新重新分配 el-N 证据）→ 自动退出，退出码 0 即通过；
-      日志链见 log/）。
+      （跨导航/同 URL 刷新重新分配 el-N 证据）→ A4 起再验证搜索生命周期场景 8.3
+      （受控搜索页夹具三形态：有结果——包装链接还原/自身导航・重复・非 http・
+      非结果标签过滤/摘要空串零误配/documentId 零暴露/服务端命中计数证明真实
+      loadURL、合法空结果 ok:true 明确提示、结构无法识别 ok:false search-failed；
+      临时 Tab 精确清理 + 数量恢复进入前 + 活动 Tab 恢复调用前；审计恰好一条
+      decision=auto）→ 可选公网 Bing 探针（`AIBROWSE_SMOKE_LIVE_SEARCH=1`，
+      需网络；成功断言结构、失败仅记录跳过原因不作失败，硬性断言只有临时 Tab
+      零泄漏）→ 自动退出，退出码 0 即通过；日志链见 log/）。
       生产产物路径同样可跑：
       `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
       （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
@@ -904,6 +940,25 @@ scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执
     冒烟 8.2 A3 交互场景（真实 DOM：A-12 允许列表/确认门/执行器复核/世代校验/
     fill 隐私/审计恰好一条）+ elementId 生命周期红态探针（跨导航/同 URL 刷新
     重新分配证据）；8.1 校准为注册表 12 工具。dev + 生产双场景退出码 0。
+  - ✅ A4（2026-08-14 红→绿落地，43 新增：search-provider 28 / search-tool 14 /
+    audit-log 1，基线 533 → 576；既有用例零删除零削弱——audit-log「其余截断」
+    用例改用 browser.find 覆盖属决议 #32 契约校准）：解析矩阵（正常结果组装与
+    顺序/确定性去重保持首现/source 恒 bing/非 http・https 与畸形 URL 丢弃计数
+    警告/bing.com 子域过滤与形似域名不误伤/中英双语非结果标签过滤/ck/a 包装
+    链接 base64url 还原与非法形态丢弃/前 10 条/title 200 截断/snippet 恒空串 +
+    warning/空 links 与 null 与结构退化安全降级）、生命周期所有权矩阵
+    （成功链路精确 tabId 快照与关闭/URL 编码构造/用户停留恢复活动 Tab/用户
+    切换不抢焦点/调用前活动 Tab 已关闭不重建不激活/临时 Tab 提前关闭安全无
+    操作/ready 超时注入时钟/导航 error 快速失败/快照 null（L3）与 L2 降级
+    search-failed/结构无法识别 vs 合法空结果区分/Abort 前后两阶段/query 校验
+    不建 Tab/控制器异常归一化/敌手 createTab 返回已存在 id 不纳入清理/并发
+    调用互不清理对方 Tab/任何路径无临时 Tab 泄漏）、search.web 工具（常量
+    schema/序列化纯文本行/snippet 空省略/成功与失败与取消映射/ctx.searchProvider
+    优先/管线 L0 auto 恰好一条审计/query 空串・超长・缺失・未知键・类型不符
+    invalid-args 零 Provider 调用/500 边界/4000 截断附 warning/查询串全量审计）。
+    冒烟 8.3 受控搜索页生命周期（三夹具形态 + 服务端命中计数 + 活动 Tab 恢复 +
+    审计恰好一条）；8.1 校准为注册表 13 工具；可选公网 Bing 探针成功
+    （10 条真实结果）。dev + 生产双场景退出码 0。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。

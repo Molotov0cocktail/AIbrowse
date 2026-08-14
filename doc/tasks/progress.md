@@ -30,8 +30,12 @@
   世代绑定，决议 #31）+ 快照 isSubmit/ariaExpanded 语义元数据 +
   find/scroll/click/fill 四工具经既有 ToolExecutor 链路接线（allowedKind 由
   classifyClickTarget 单一事实源派生）+ 冒烟 A-12 与 elementId 生命周期真实 DOM
-  探针（dev + 生产双场景）；SearchProvider（A4）/AgentLoop（A5）未实现；
-  下一个推荐任务 = **A4 SearchProvider**。
+  探针（dev + 生产双场景）；**A4 SearchProvider 已完成（2026-08-14）**：接口 +
+  Bing 搜索页实现（临时 Tab 精确 tabId 所有权与恢复语义 + try/finally 清理，
+  决议 #32）+ 确定性解析（包装链接还原/过滤/去重/snippet 空串容忍设计）+
+  search.web 工具注册（L0，注册表 13 工具）+ 受控搜索页冒烟全链路 + 公网 Bing
+  探针（10 条真实结果）；AgentLoop（A5）未实现；
+  下一个推荐任务 = **A5 Agent Runtime**。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Exit Gate 通过（2026-08-13 判定 + 2026-08-14 用户独立复验，4 项
   非阻塞缺陷已修复并全量回归，红态退出码 1 → 绿态 0；证据见 Second_stage.md
@@ -62,7 +66,7 @@
 | A1 | tool-calling 兼容层（硬前置）：ProviderRequest/Event/Message 扩展 + 适配器 tools/SSE tool_calls + FakeProvider 工具脚本 | ✅ | 2026-08-14 完成（见下）；契约 §2.1/§3 + 决议 #30；任务文档 doc/stage3/tasks/A1-tool-calling-layer.md |
 | A2 | Tool Registry + 权限分级与确认状态机（click 确定性允许列表 + fail-closed）+ 审计日志（接线既有只读/导航工具 8 个） | ✅ | 2026-08-14 完成（见下）；契约 §4/§7/§10；任务文档 doc/stage3/tasks/A2-tool-registry-permission-audit.md |
 | A3 | 浏览器交互能力：scroll/click/fill/find + click 语义元数据 + elementId 生命周期验证 + click 执行器层白名单复核 | ✅ | 2026-08-14 完成（见下）；契约 §5 + 决议 #31（文档世代绑定）；任务文档 doc/stage3/tasks/A3-browser-interaction.md |
-| A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search.web 工具 | ⏳ | 契约 §6；任务文档 doc/stage3/tasks/A4-search-provider.md |
+| A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search.web 工具 | ✅ | 2026-08-14 完成（见下）；契约 §6 + 决议 #32（临时 Tab 所有权/错误映射/snippet 空串/包装链接/查询串全量审计）；任务文档 doc/stage3/tasks/A4-search-provider.md |
 | A5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ⏳ | 契约 §8–§9；任务文档 doc/stage3/tasks/A5-agent-runtime.md |
 | A6 | 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI + UI 端到端冒烟矩阵 | ⏳ | 契约 §11；任务文档 doc/stage3/tasks/A6-agent-ui-visibility.md |
 | A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | ⏳ | 契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
@@ -73,6 +77,56 @@
 > 编号一律不变。
 
 ## 最近验证结果（2026-08-14）
+
+- **A4 SearchProvider 与 search.web 工具（2026-08-14，第四个实现闭环）**：步骤 0
+  独立核对——HEAD `65c6b9c` = Gitee/GitHub 双远程 HEAD（ls-remote 实测）、工作区
+  干净、基线 test 533/533 独立复跑全绿（与上一轮报告一致，已独立确认）。**① 编码前
+  核查**：临时搜索 Tab 所有权与恢复语义 8 条规则先固定（精确 tabId 独占、不得把
+  用户已有 Tab 标记为临时资源、只关本调用创建的确切 id、任何路径 try/finally
+  最佳努力清理、已关闭安全无操作不关替代 Tab、用户停留恢复/已切换不抢焦点/
+  调用前活动 Tab 已关闭不重建不激活、并发各持局部 tabId 零共享状态）；公网 Bing
+  非 LLM 探针实测形态（10 个 b_algo、当前主要返回直接目标 URL、无 ck/a 包装）。
+  **② 契约校准（决议 #32，先于编码）**：a) 错误映射——「工具错误不得被模型误认为
+  成功」上位要求下，ready 超时/导航失败/Tab 被提前关闭/快照 null（L3）/快照 L2
+  降级/空内容快照（结构无法识别）/BrowserController 异常 → ok:false +
+  search-failed；页面有内容但无有机结果（合法空结果）→ ok:true 空数组 + 明确
+  提示；b) snippet v1 恒空串 + warning（扁平快照无可靠关联证据，宁缺勿错，原
+  §6.2「从 visibleText 提取相邻摘要片段」废止）；c) ck/a 包装链接确定性还原
+  （u=a1 base64url 解码，仅 http/https）；d) search.web 查询串与 url 同等级全量
+  进入审计（T-03 外发审查可追溯，上限 500 有界）——audit-log「其余 ≤200」对
+  search.web 的 query 例外，A2 既有截断用例改用 browser.find 覆盖（契约变化，
+  非削弱）；e) ctx.searchProvider 为工具层注入点（设计 §4.1 落点）。
+  **③ 红→绿**：先写 2 个新测试文件——红态 **2 files failed（模块不存在）**；
+  实现后 42/42；期间 3 处夹具断言修正均为测试自身缺陷（空结构解析层保持沉默、
+  「活动 Tab 已关闭」模拟需持续过滤、「审计摘要截断」按值级 ≤200 语义校准后随
+  决议 #32 改为全量断言）。全量 **576/576**（新增 43：search-provider 28 /
+  search-tool 14 / audit-log 1；既有用例零删除零削弱）。**④ 实现**：
+  search-provider.ts（接口 SearchResult/SearchProvider/SearchProviderResult +
+  BingSearchProvider——零 Electron import、只经注入 BrowserController；轮询
+  getTabs 等待精确 tabId ready（15s 超时/时钟/睡眠可注入、abort 感知零定时器
+  泄漏、无事件监听器）；查询串全量审计（audit-log.ts）；buildSearchUrl 由
+  SEARCH_ENGINE_URL + encodeURIComponent 构造（常量语义不变）；parseBingSearch
+  Results 纯函数——bing.com 自身域 + 中英双语非结果标签过滤/非 http/https/畸形
+  URL 丢弃/ck/a 还原/URL 去重保持首现/前 10/title ≤200/snippet 空串）；
+  search-tool.ts（名称/描述/schema 程序常量、L0、ctx.searchProvider 优先于注册
+  注入、formatSearchResults 纯文本行零特权、aborted 归一 execution-failed）；
+  index.ts 注册 13 工具；ToolExecutionContext.searchProvider。
+  **⑤ 冒烟**：8.1 校准注册表 13 工具（A2 8 + A3 4 + A4 1）+ search.web 空查询/
+  超长 invalid-args 探针（7 条审计恰好一条）；**8.3 受控搜索页生命周期场景**——
+  三夹具路由（有结果/合法空结果/空内容页）+ 服务端命中计数证明真实 loadURL；
+  经 ToolExecutor 全链路（校验→L0 权限→执行→审计）：3 条结果正确解析（包装链接
+  还原/自身导航与重复与非 http/非结果标签过滤/摘要空串零误配/documentId 零暴露）、
+  临时 Tab 精确清理 + 活动 Tab 恢复调用前 + 数量恢复进入前、合法空结果 ok:true
+  明确提示、结构无法识别 ok:false search-failed、审计恰好 3 条 decision=auto——
+  **dev 离线 + 生产产物双场景退出码 0**；**可选公网 Bing 探针**
+  （AIBROWSE_SMOKE_LIVE_SEARCH=1）成功：完整生产链路 10 条真实结果
+  （938ms，首条 electronjs.org WebContentsView 官方文档），临时 Tab 零泄漏。
+  **⑥ 验证与终检**：test 576/576 · typecheck · lint · format:check · build 全绿；
+  红线 grep（新代码零 electron import/无万能工具形态/package 零改动/UI・preload・
+  IPC・SYSTEM_PROMPT 零改动/结果不暴露 documentId・内部 tabId）；敏感信息扫描与
+  diff 终检零命中；根目录杂散日志清理。**未调用任何付费 Provider、未输出/索取
+  API Key。** 计划内限制登记：snippet 恒空串、非结果标签精确匹配代价、结构识别
+  依赖内容性证据、公网包装链接形态观察（见下「计划内限制」）。
 
 - **A3 浏览器交互能力（2026-08-14，第三个实现闭环）**：步骤 0 独立核对——HEAD
   `9df48a7` = Gitee/GitHub 双远程 HEAD、工作区干净、基线 test 452/452 独立复跑
@@ -700,6 +754,16 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 - shared/url 不支持 IDN（中文域名走搜索兜底，安全无副作用）；SearchProvider 抽象已定稿
   于 Third Stage A4（doc/stage3/detailed-design.md §6：v1 Bing 页面实现 + 接口隔离
   保替换；shared/url 的 SEARCH_ENGINE_URL 常量语义不变，由 SearchProvider 引用）。
+- **A4 SearchProvider 计划内限制（2026-08-14 决议 #32，容忍设计如实登记）**：
+  ① v1 搜索 snippet 恒空串 + warning——扁平快照无法为每条结果提供可靠的摘要
+  关联证据，不得把相邻但无依据的文本错误配给结果（宁缺勿错；未来供应商实现可
+  自带摘要）；② Bing 非结果标签精确匹配过滤——与标签完全同名的合法结果标题会
+  被一并过滤（宁简勿误配）；③ 结构识别依赖内容性证据——空内容快照 →
+  search-failed（不伪装成功空结果），有内容无有机结果 → 合法空结果（页面结构
+  变化与确实无结果无法进一步区分，warnings 如实说明）；④ 公网探针实测
+  （2026-08-14）：Bing 当前主要返回直接目标 URL，ck/a 包装还原为确定性兜底
+  规则（两形态均覆盖单测与冒烟夹具）；⑤ 轮询等待 ready（无事件订阅）——
+  getTabs 每 50ms 一次、15s 上限，临时 Tab 生命周期极短，负载可忽略。
 - UI 窗口（defaultSession）未注册权限处理器：UI 只加载自身内容，R-01 已关闭（导航保护落地）
   后无远程页面可达，当前无需处理；未来 UI 嵌入远程内容时重新评估。
 - 地址栏搜索的端到端验证在离线环境断言「导航目标为 Bing 搜索 URL」（did-start-navigation），
@@ -737,16 +801,17 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **A4 SearchProvider（新对话 = 一个可验证闭环）**：`search(query, signal) →
-SearchProviderResult`（SearchResult {title/url/snippet/source}）；v1 Bing 搜索页
-  实现（临时可见 Tab → ready → 实时快照 → 确定性解析纯函数 `parseBingSearchResults`
-  → 关闭 Tab）；容忍设计（结构变化 → 空结果 + warnings，不抛异常）；接口隔离保
-  未来替换（决议 #22）；`search.web` 工具注册（{query} ≤500 字符非空，L0，结果
-  预算 4000 已备）。任务文档 `doc/stage3/tasks/A4-search-provider.md`；
-  契约 `doc/stage3/detailed-design.md` §6 + §13.1 A4 行。
-  **红线**：不实现 AgentLoop（A5）/UI/IPC（A6）；不联网调用真实 Provider；
-  搜索实现不得绕过 BrowserController 或放宽既有安全边界；A3 已落地的 click
-  允许列表/世代绑定/审计链路不得削弱。
+- **A5 Agent Runtime（新对话 = 一个可验证闭环）**：AgentLoop 纯编排状态机
+  （running/waiting-confirm/done/cancelled/step-limit/timeout/loop-detected/
+  no-progress/error）+ 上限常量（MAX_STEPS=12/总超时 420s 可注入）+ 防循环
+  （agent-safety 纯函数：连续 3 次/累计 5 次/无进展 2 步）+ AgentContextBuilder
+  （AGENT_SYSTEM_PROMPT 常量 + UNTRUSTED_TOOL_RESULT 块）+ conversation-store
+  version 2 ToolStep 持久化（fill 值不落盘）+ ConversationService agentAsk/
+  confirmTool 接线 + 主进程冒烟 A-01～A-09（FakeProvider 工具脚本离线确定性）。
+  任务文档 `doc/stage3/tasks/A5-agent-runtime.md`；
+  契约 `doc/stage3/detailed-design.md` §8–§9 + §13.1 A5 行。
+  **红线**：不实现 UI/IPC（A6）；不联网调用真实 Provider；A1–A4 已落地的
+  tool-calling/注册表/交互/搜索/审计链路不得削弱。
 
 ## 第一阶段验收未完成项
 

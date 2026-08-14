@@ -472,17 +472,36 @@ export interface SearchProviderResult {
 }
 ```
 
-### 6.2 v1 实现（Bing 搜索页，proposal Q3/Q11）
+### 6.2 v1 实现（Bing 搜索页，proposal Q3/Q11；2026-08-14 A4 实施校准决议 #32）
 
-1. 参数校验（query 非空 ≤ 500）；
+1. 参数校验（query 非空 ≤ 500，超限拒绝不截断）；
 2. 经 BrowserController `createTab(SEARCH_ENGINE_URL + query 编码)` → 可见 Tab
-   （操作可见性）；等待 `state === 'ready'`（复用冒烟等待工具，超时 15s →
-   search-failed）；
-3. `getPageSnapshot` 实时采集；
+   （操作可见性）；等待 `state === 'ready'`（轮询 getTabs 精确 tabId，超时 15s →
+   search-failed，时钟/超时可注入）；
+3. `getPageSnapshot` 实时采集（不复用缓存）；
 4. **确定性解析纯函数** `parseBingSearchResults(snapshot)`（独立单测）：从 links
-   章节取标题（text）+URL（href，过滤非 http/https 与引擎自身链接）、从
-   visibleText 提取相邻摘要片段 → 组装前 10 条；结构不符 → 空结果 + warnings；
-5. 关闭临时 Tab（BrowserController 产品链路）；返回结果（即用即弃，不落盘）。
+   章节取标题（text）+URL（href，过滤非 http/https、引擎自身域 bing.com、
+   明确非结果导航标签、畸形 URL）→ 确定性去重（URL 字符串，保持首次出现顺序）→
+   前 10 条；标题 ≤200 确定性截断；**snippet v1 恒空串 + warning**——扁平快照
+   无法为每条结果提供可靠关联证据，不得把相邻但无依据的文本错误配给结果
+   （宁缺勿错，计划内限制）；Bing ck/a 包装链接按确定性规则还原（u=a1 base64url
+   解码，仅 http/https 目标；实测 2026-08-14 公网 Bing 主要返回直接目标 URL，
+   两形态均覆盖测试）；
+5. **临时搜索 Tab 所有权与恢复语义（本任务实施固定）**：临时 Tab 由本次调用以
+   精确 tabId 独占（createTab 返回值，绝不按位置/标题/URL/活动 Tab 推断）；任何
+   路径（成功/失败/超时/取消/异常）经 try/finally 最佳努力清理；只关闭本调用
+   创建的确切 tabId，已被用户/其他流程关闭时 finally 安全无操作（不关闭替代
+   Tab）；清理时用户仍停留在临时搜索 Tab → 恢复调用前仍存在的活动 Tab，用户已
+   主动切换 → 不抢回焦点，调用前活动 Tab 已被关闭 → 不重建不激活（沿用
+   closeTab 正常活动 Tab 策略）；并发调用各持局部 tabId（无共享状态）→
+   关闭临时 Tab（BrowserController 产品链路）；返回结果（即用即弃，不落盘）。
+6. **错误映射校准**：ready 超时/导航失败（state=error）/Tab 被提前关闭/快照
+   null（L3）/快照 L2 降级/空内容快照（结构无法识别）/BrowserController 异常 →
+   `ok:false + search-failed`——工具错误不得被模型误认为成功；页面有内容但无
+   有机结果（合法空结果）→ `ok:true` 空数组 + 明确提示；AbortSignal →
+   errorCode `aborted`（由工具层/A5 归一）。
+7. **外发审查**（threat-model §3.3 T-03）：search.web 查询串与 open/navigate
+   URL 同等级全量进入审计（校验上限 500 有界；§10.1 已同步）。
 
 - **容忍设计**：解析启发式不追求完美——结构变化 → 降级 warnings，不抛异常、
   不阻塞 Agent（模型收到 search-failed/空结果可换策略）。
@@ -676,6 +695,7 @@ decision=confirmed，ok=true，耗时=23ms，errorCode=无）
 - 全量覆盖：每个工具调用恰好一条（含 validateToolArgs 失败、L3 拒绝、确认 deny、
   执行失败）；run 开始/终止各一条（status/步数/终止理由）。
 - 参数摘要脱敏：fill 的 text → 「len=N」（不记内容）；URL 全量记录（审计需要）；
+  search.web 查询串全量记录（T-03 外发审查可追溯，上限 500 有界——决议 #32）；
   其余参数截断 ≤ 200 字符。**审计与错误文案不含 API Key/响应体/请求头**
   （logger sanitize 沿用 + A2 专项用例）。
 - 实现为 `audit(toolCallId, entry)` 薄封装（logInfo + 结构化字段），装配注入
@@ -866,6 +886,25 @@ onAgentRunDone`（退订函数，既有 eventRelay 模式）。
     schema `{tabId?, elementId}` 不变，世代为内部参数）。同源校准：ElementActionResult
     增 errorCode 字段（闭合枚举诚实映射，§5.3）；click 分类单一事实源
     classifyClickTarget（§7.1）。
+32. **A4 SearchProvider 实施校准（2026-08-14，A4 实施前）**：① **临时搜索 Tab
+    所有权与恢复语义**——临时 Tab 由本次调用以精确 tabId 独占（createTab 返回值，
+    绝不按位置/标题/URL/活动 Tab 推断）；任何路径 try/finally 最佳努力清理；
+    只关闭本调用创建的确切 tabId，已被用户/其他流程关闭时 finally 安全无操作
+    （不关闭替代 Tab）；用户仍停留在临时搜索 Tab → 恢复调用前仍存在的活动 Tab，
+    用户已切换 → 不抢回焦点，调用前活动 Tab 已被关闭 → 不重建不激活（沿用
+    closeTab 正常策略）；并发调用各持局部 tabId（无进程级共享状态）。② **错误
+    映射**（「工具错误不得被模型误认为成功」上位要求）：ready 超时/导航失败/Tab
+    被提前关闭/快照 null（L3）/快照 L2 降级/空内容快照（结构无法识别）/
+    BrowserController 异常 → `ok:false + search-failed`；页面有内容但无有机结果
+    （合法空结果）→ `ok:true` 空数组 + 明确提示；aborted 由工具层归一为
+    execution-failed（A5 循环层结构化输出）。③ **snippet v1 恒空串**——扁平快照
+    无法可靠关联每条结果的摘要，不得把相邻但无依据的文本错误配给结果（宁缺勿错，
+    计划内限制；原 §6.2「从 visibleText 提取相邻摘要片段」废止）。④ **ck/a 包装
+    链接确定性还原**（u=a1 base64url 解码，仅 http/https 目标；公网探针实测当前
+    Bing 主要返回直接目标 URL，两形态均覆盖测试）。⑤ **查询串全量审计**
+    （threat-model §3.3 T-03 外发审查）：search.web 的 query 与 url 同等级全量
+    进入审计（上限 500 有界），§10.1 与 audit-log 实现已同步。⑥ ctx.searchProvider
+    为工具层注入点（设计 §4.1「browser 能力 + search」落点，A5 AgentLoop 装配）。
 
 ## 16. 实现顺序与范围边界（A1–A8 映射）
 

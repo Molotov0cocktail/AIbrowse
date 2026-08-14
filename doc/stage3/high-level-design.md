@@ -92,8 +92,11 @@ args, elementSemantics?) → {level, reason}`；L0/L1/L2/L3 矩阵为编译期�
   click 执行器层白名单复核）；
   A4 search.web（SearchProvider）。
 - **SearchProvider（main/ai/search/，A4）**：接口隔离；v1 实现经 BrowserController
-  临时 Tab → Bing 搜索页 → 快照解析 → 统一结果结构 → 关闭 Tab；解析失败/结构变化
-  → 空结果 + warnings（容忍设计）。
+  临时 Tab（本次调用精确 tabId 独占所有权，任何路径 finally 清理——决议 #32）→
+  Bing 搜索页 → ready 等待（15s 可注入）→ 实时快照 → 确定性解析 → 统一结果结构 →
+  关闭 Tab；解析失败/结构变化 → 降级（错误诚实映射：结构无法识别/L2/L3/超时 →
+  search-failed，合法空结果 → ok 空数组 + 提示）；v1 snippet 恒空串（扁平快照无
+  可靠关联证据，宁缺勿错）。
 - **AgentContextBuilder（A5，纯函数）**：复用 ContextBuilder 角色隔离机制；
   tools 序列化透传；历史含 tool 消息（role='tool'，tool_call_id 关联）；
   ToolResult 进 `UNTRUSTED_TOOL_RESULT` 标记块；AGENT_SYSTEM_PROMPT 常量。
