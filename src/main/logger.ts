@@ -47,16 +47,91 @@ export function sanitize(text: string): string {
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gi, 'sk-***');
 }
 
+// ANSI 转义序列（CSI 着色/光标 + OSC 标题/超链接形态）整体剔除。
+// 除 \t 外的 C0 控制字符、DEL、NEL、双向文本控制符、零宽字符、BOM 与行/段分隔符
+// 一律剔除；CR/LF 由 normalizeLogMessage 折叠为空格（日志条目恒为单行）。
+function isControlChar(code: number): boolean {
+  return (
+    (code >= 0x00 && code <= 0x08) ||
+    code === 0x0b ||
+    code === 0x0c ||
+    (code >= 0x0e && code <= 0x1f) ||
+    code === 0x7f ||
+    code === 0x85 ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    code === 0x061c ||
+    (code >= 0x200b && code <= 0x200d) ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069) ||
+    code === 0xfeff
+  );
+}
+
+// 扫描剔除：ANSI 转义序列（CSI：ESC [ … 最终字节 0x40–0x7E；OSC：ESC ] … BEL 或 ESC \）
+// 与全部控制字符；保留 \t、CR/LF（CR/LF 由 normalizeLogMessage 折叠）。
+function scrubControlChars(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const code = text.charCodeAt(i);
+    if (code === 0x1b) {
+      const next = text.charCodeAt(i + 1);
+      if (next === 0x5b) {
+        i += 2;
+        while (i < text.length) {
+          const b = text.charCodeAt(i);
+          i += 1;
+          if (b >= 0x40 && b <= 0x7e) break;
+        }
+      } else if (next === 0x5d) {
+        i += 2;
+        while (i < text.length) {
+          const b = text.charCodeAt(i);
+          i += 1;
+          if (b === 0x07 || (b === 0x1b && text.charCodeAt(i) === 0x5c)) break;
+        }
+      } else if (next === 0x5c) {
+        // ST（ESC \）单独出现（无 OSC 起始）：双字节整体剔除
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+    if (isControlChar(code)) {
+      i += 1;
+      continue;
+    }
+    out += text[i]!;
+    i += 1;
+  }
+  return out;
+}
+
+// A7 红队（RT-02/RT-07 日志伪造审计，红→绿）：模型可控字符串（open/navigate 的 URL
+// 全量入审计——上限 2048、search.web 查询串全量——上限 500、确认摘要等）可携带
+// CR/LF/ANSI 转义/双向文本控制符。日志条目必须恒为单行纯文本：CR/LF 折叠为空格
+// （条目一行一条，敌手内容不能伪造新的 [INFO] [audit] 条目行）、ANSI 转义整体剔除、
+// 其余控制字符剔除（终端走私/bidi 伪装）。仅作用于 message 段；错误详情块保留其
+// 多行结构（程序文本），但同样经 scrubControlChars 剔除控制字符。
+export function normalizeLogMessage(text: string): string {
+  return scrubControlChars(text.replace(/\r\n|\r|\n/g, ' '));
+}
+
+// 错误详情块：剔除 ANSI/控制字符，但保留换行（堆栈多行结构；每行已由 write 缩进，
+// 敌手换行只会产生带缩进的子行，无法成为条目前缀）。
 function write(level: LogLevel, category: string, message: string, error?: unknown): void {
   ensureLogFile();
-  let text = `[${timeStamp(new Date())}] [${level.padEnd(5)}] [${category}] ${message}`;
+  let text = `[${timeStamp(new Date())}] [${level.padEnd(5)}] [${category}] ${normalizeLogMessage(message)}`;
   if (error !== undefined) {
     const detail =
       error instanceof Error
         ? `${error.name}: ${error.message}\n${error.stack ?? ''}`
         : String(error);
-    text += `\n  ${detail.replace(/\n/g, '\n  ')}`;
+    text += `\n  ${scrubControlChars(detail).replace(/\n/g, '\n  ')}`;
   }
+
   const safe = sanitize(text);
   try {
     appendFileSync(currentLogFile, `${safe}\n`);
