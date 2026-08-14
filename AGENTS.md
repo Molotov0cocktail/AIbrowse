@@ -39,7 +39,14 @@
   - AgentContextBuilder（AGENT_SYSTEM_PROMPT + UNTRUSTED_TOOL_RESULT 块）
   - agent-history（ToolStep/脱敏 toolCalls/完整交互组）+ ConversationStore
     version 2 + ConversationService agentAsk/confirmTool + 主进程冒烟
-    A-01～A-09（dev/生产双场景退出码 0）。A6–A8 待实现。
+    A-01～A-09（dev/生产双场景退出码 0）。
+    **A6 操作可见性 UI 与通道已实现（2026-08-14）**——6 IPC 通道（agent-ask/
+    agent-confirm invoke + agent-step/agent-confirm-request/agent-run-done/
+    agent-status 事件；决议 #34 新增实时状态通道）+ preload bridge 白名单 +
+    任务模式/AgentStatusBar/ToolCallList/ConfirmDialog（deny 默认焦点、
+    elementText 不可信纯文本渲染）/停止按钮/ToolStep 历史渲染 +
+    agent-run-state 纯 reducer + UI 端到端冒烟 A6-UI-01～A6-UI-12（dev/生产
+    双场景退出码 0）。A7–A8 待实现。
     纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
     （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
     核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
@@ -275,8 +282,9 @@ d:\AIbrowse\
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 51 用例（A3 扩展语义元数据）
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
-    │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
-    │       │                                  #   agentAsk/confirmTool/ToolStep 持久化/Agent 终态恰好一次
+    │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅ + A6 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
+    │       │                                  #   agentAsk/confirmTool/ToolStep 持久化/Agent 终态恰好一次/
+    │       │                                  #   A6 onAgentStatus 状态事件（starting/waiting-confirm/confirm-resolved）
     │       ├── conversation-store.ts          # （S3 ✅ + A5 ✅）会话 JSON 持久化（原子写/上限/损坏容错；
     │       │                                  #   version 2 ToolStep 消息，读兼容 v1，孤立 tool 丢弃）
     │       ├── context-builder.ts             # （S2 ✅ + A5 ✅）纯函数：角色隔离 IR 构建 + UNTRUSTED 块
@@ -289,17 +297,20 @@ d:\AIbrowse\
     │       ├── provider/                      # （S1 ✅）LLMProvider 接口/工厂注册表/OpenAI-compatible
     │       │                                  #   适配器（fetch+SSE）/FakeProvider/error-normalize + 单测
     │       │                                  #   （A1 规划：tools/SSE tool_calls/FakeProvider 工具脚本）
-    │       ├── agent/                         # （A5 ✅）agent-loop（纯编排状态机，零 Electron import）/
+    │       ├── agent/                         # （A5 ✅ + A6 ✅）agent-loop（纯编排状态机，零 Electron import；
+    │       │                                  #   A6 onStatus 相位回调 + onAgentStep argsSummary）/
     │       │                                  #   agent-context-builder/agent-history/agent-safety
     │       │                                  #   （防循环纯函数）+ 各自 .test.ts
-    │       ├── tools/                         # （A2 ✅ + A3 ✅ + A4 ✅）tool-types/tool-registry（schema 校验）/
-    │       │                                  #   tool-executor（校验→权限→确认→执行→审计）/
+    │       ├── tools/                         # （A2 ✅ + A3 ✅ + A4 ✅ + A6 ✅）tool-types/tool-registry（schema 校验）/
+    │       │                                  #   tool-executor（校验→权限→确认→执行→审计；A6 确认摘要
+    │       │                                  #   elementText/目标站点 URL）/
     │       │                                  #   browser-tools（A2 只读导航 8 工具）/
     │       │                                  #   interaction-tools（A3 ✅ find/scroll/click/fill）/
-    │       │                                  #   interaction-semantics（A3 ✅ 快照语义存储+世代绑定）/
+    │       │                                  #   interaction-semantics（A3 ✅ 快照语义存储+世代绑定；A6 text 映射）/
     │       │                                  #   search-tool（A4 ✅ search.web 注册/序列化）
     │       ├── permission/                    # （A2 ✅）permission-policy：L0–L3 确定性权限纯函数
-    │       ├── confirm-manager.ts             # （A2 ✅）确认状态机（pending/approve/deny/作废）
+    │       ├── confirm-manager.ts             # （A2 ✅ + A6 ✅）确认状态机（pending/approve/deny/作废；
+    │       │                                  #   A6 判别联合 PendingChange + 多监听者 Set 分发）
     │       ├── audit-log.ts                   # （A2 ✅）结构化审计条目（参数脱敏摘要；
     │       │                                  #   A4 search.web query 全量记录，决议 #32）
     │       └── search/                        # （A4 ✅）search-provider：接口 + Bing 页面实现 +
@@ -307,23 +318,30 @@ d:\AIbrowse\
     │                                          #   → 统一结果结构，零 Electron import）
     ├── preload/
     │   ├── index.ts                           # UI bridge（contextBridge 白名单：tabs/nav/page/ui
-    │   │                                      #   + conversation/config（S4 ✅）；事件通道单次注册）
+    │   │                                      #   + conversation/config（S4 ✅）+ agent 可见性（A6 ✅）；
+    │   │                                      #   事件通道单次注册 + JS 侧 listener 集合退订）
     │   └── index.d.ts                         # renderer 侧 window.aibrowse 类型
     ├── renderer/                              # React UI（index.html + src/）
     │   ├── src/browser/                       # （T3/T4）chrome：Toolbar/TabBar/AddressBar +
     │   │                                      #   DebugPanel + useTabsState/useContentBounds（hooks）
-    │   └── src/ai/                            # （S4 ✅）AI 侧栏：AiPanel/ChatView/Composer/
+    │   └── src/ai/                            # （S4 ✅ + A6 ✅）AI 侧栏：AiPanel（对话/任务模式切换）/
+    │                                          #   ChatView（ToolStep 条目 + agentRun 徽标）/Composer/
     │                                          #   ContextBadge/CitationCard/ProviderSettings +
-    │                                          #   useConversation/useStream + 纯函数
-    │                                          #   （stream-state/history-events/context-badge-format）
+    │                                          #   useConversation/useStream/useAgent + 纯函数
+    │                                          #   （stream-state/history-events/context-badge-format/
+    │                                          #   A6 agent-run-state（reducer）/agent-display（脱敏/文案）；
+    │                                          #   A6 AgentStatusBar/ToolCallList/ConfirmDialog 组件）
     └── shared/
-        ├── types/app.ts                       # 共享类型（AppInfo / AibrowseBridge，S4 conversation/config 扩展 ✅）
+        ├── types/app.ts                       # 共享类型（AppInfo / AibrowseBridge，S4 conversation/config
+        │                                      #   + A6 agent 可见性扩展 ✅）
         ├── types/browser.ts                   # TabInfo/TabsState/PageSnapshot/meta（T2）
         ├── types/conversation.ts              # （S1 ✅）会话/消息/上下文/错误码/Provider 类型
         │                                      #   （§2+§3.3+§3.5；S4 增 ProviderInfo/kind 常量）
-        ├── types/ipc.ts                       # IPC 通道常量 + payload 类型（T2 基线 + S4 conversation/config 扩展 ✅）
-        ├── types/agent.ts                     # （A2 ✅）ToolCall/ToolResult/权限级别/ElementSemantics
-        │                                      #   （A5/A6 扩展 Agent 事件 payload）
+        ├── types/ipc.ts                       # IPC 通道常量 + payload 类型（T2 基线 + S4 conversation/config
+        │                                      #   + A6 agent-ask/agent-confirm/4 事件通道扩展 ✅）
+        ├── types/agent.ts                     # （A2 ✅）ToolCall/ToolResult/权限级别/ElementSemantics（A6 增 text）
+        │                                      #   （A5/A6 扩展 Agent 事件 payload：A6 增 AgentStatusPhase/Event/
+        │                                      #   AgentConfirmOutcome/AgentStepEvent.argsSummary）
         └── url.ts / url.test.ts               # 地址栏输入判断纯函数 + 15 用例
 ```
 
@@ -587,8 +605,8 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
 > 唯一契约源 `doc/stage3/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
 > Q1–Q15 拍板与决议 #21–#30）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
 > T-01～T-10、五层防线、红队矩阵 RT-01～RT-11、诚实边界声明）；任务 A1–A8 见
-> `doc/stage3/tasks/`。以下为速查摘要，**A1–A5 部分已于 2026-08-14 实现并经
-> `grep -n "^export"` 逐项核对**；A6–A8 待实现，实现后回填。
+> `doc/stage3/tasks/`。以下为速查摘要，**A1–A6 部分已于 2026-08-14 实现并经
+> `grep -n "^export"` 逐项核对**；A7–A8 待实现，实现后回填。
 
 - **tool-calling 兼容层（A1 ✅ 已实现，2026-08-14 grep 核对）**：shared/types/
   conversation.ts 新增 `ProviderToolParameter`/`ProviderTool`/`ProviderToolCall`
@@ -610,15 +628,20 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
 true`、getLastRequest 含 tools 断言。context-builder.ts：`ContextBuildInput.
 tools?` 恒等透传（未传 tools 时请求字段缺失）。conversation-service.ts 共读
   流出现 toolCalls 事件（供应商异常）→ fail-closed 归一化 internal。
-- **共享 Agent 类型（shared/types/agent.ts，A2 ✅ 已实现，grep 核对）**：
+- **共享 Agent 类型（shared/types/agent.ts，A2/A5/A6 ✅ 已实现，grep 核对）**：
   `ToolPermissionLevel`（0=auto/1=auto-visible/2=confirm/3=forbid）、`ToolCall`
   （id/name/arguments 原始 JSON）、`ToolResultErrorCode`（invalid-args/
   tool-not-found/element-not-found/stale-element/not-interactable/forbidden/
   denied-by-user/execution-failed/search-failed 闭合枚举）、`ToolResult`
   （toolCallId/ok/content/errorCode?/warnings?）、`ElementSemantics`（href?/
-  isSubmit?/ariaExpanded?/inputType?——click/fill 决策输入，来自历史快照
-  结构化条目；字段存在=采集脚本显式证明，缺失=无法证明）。A5/A6 类型
-  （ToolStep/AgentRunStatus 等）未提前落地。
+  isSubmit?/ariaExpanded?/inputType?/A6 增 text?——links/buttons 可见文本，
+  确认框 elementText 唯一来源（页面提供不可信）；inputs 不采集；不影响权限
+  判定）、`ToolStepDecision` 六值（决议 #33 单一事实源）、`ToolStep`/
+  `AgentRunStatus`/`AgentRunSummary`/`AgentConfirmRequest`/`AgentStepEvent`
+  （A6 增 argsSummary——审计同源脱敏摘要，非持久化）/`AgentConfirmOutcome`/
+  `AgentStatusPhase`（starting/thinking/executing/waiting-confirm/
+  confirm-resolved/finalizing）/`AgentStatusEvent`（决议 #34 实时状态——
+  确定性运行事实）/`AgentRunDoneEvent`。
 - **ToolRegistry（A2 ✅ 已实现，grep 核对）**：tool-types.ts——`ToolDefinition`
   （name/description/parameters（ProviderToolParameter 子集）/baseRisk/
   riskLift?{submitClick?}/executor）+ `ToolExecutorFn(call, ctx, signal) →
@@ -772,14 +795,52 @@ Message`/`buildRoundAssistantMessage`/`buildFinalAgentMessage`（finalText +
   A-01～A-09（多步任务/确认 deny・approve/取消含 pending 作废/step-limit/
   loop-detected 触发次零 DOM 副作用/invalid-args 修正/世代 stale/fill 隐私 +
   密码 forbidden/审计恰好一条 + 日志字节扫描）——dev + 生产双场景退出码 0。
-- **审计与可见性（A2 ✅/A5 ✅/A6）**：每工具调用恰好一条审计（requestId/toolCallId/工具/
-  参数摘要/决策 auto|auto-visible|confirmed|denied|forbidden|invalid/结果/耗时/错误码——
-  决议 #33 单一事实源；run 开始/终止各一条 `formatAgentRunAuditMessage`）；
-  fill 值只记长度；IPC 通道 conversation:agent-ask/agent-confirm/agent-step/
-  agent-confirm-request/agent-run-done（A6 落地；A5 仅主进程事件回调 + 冒烟驱动，
-  不新增 renderer 可调用的 IPC 通道/preload bridge/UI）；
-  UI：Agent 模式切换/AgentStatusBar/ToolCallList/ConfirmDialog（确定性 summary，
-  文案不经模型网页，deny 默认高亮）/停止按钮/ToolStep 紧凑条目。
+- **操作可见性 UI 与通道（A6 ✅ 已实现，2026-08-14 grep 核对）**：IPC 6 通道
+  （invoke：conversation:agent-ask/agent-confirm——payload AgentAskPayload/
+  AgentConfirmPayload，goal 空串/非串 internal 拒绝 + >16000 确定性截断、
+  confirm 逐字段校验未知/迟到 id 幂等 false；事件：agent-step/agent-confirm-
+  request/agent-run-done/agent-status——sender+主帧校验复用、只发主窗口）。
+  preload bridge 白名单：`agentAsk(sessionId, goal)`/`confirmTool(toolCallId,
+approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
+  （eventRelay 模式，每个原生通道只注册一个底层监听、JS 侧 Set 分发与退订）。
+  决议 #34 实时状态：shared/types/agent.ts——`AgentStatusPhase`（starting/
+  thinking/executing/waiting-confirm/confirm-resolved/finalizing）/
+  `AgentStatusEvent`（requestId/sessionId/phase + toolName?/stepsUsed?/
+  maxSteps?/confirmOutcome?——确定性运行事实，不含思维过程；stepsUsed 与 A5
+  计数一致）/`AgentConfirmOutcome`/`AgentStepEvent.argsSummary`（非持久化
+  参数摘要——审计同源 summarizeArgs 脱敏纯函数主进程生成：fill len=N/URL・
+  query 全量/其余 ≤200 截断；Store v2 持久化结构不变）/`ElementSemantics.text?`
+  （links/buttons 可见文本——确认框 elementText 唯一来源，页面提供不可信；
+  inputs 不采集；不影响权限判定）。ConfirmManager：`PendingChange` 判别联合
+  （pending/settled 携带 outcome）+ `addPendingChangeListener` 多监听者 Set
+  分发 + dispose 退订（关闭 A5「最后构造实例所有权」计划内限制）；tool-executor
+  `buildConfirmSummary` 填充 elementText + 目标站点 URL（参数无 url 的工具取
+  目标 Tab 的主进程可信 URL）。渲染层：`agent-run-state.ts`——
+  `AgentRunUiStatus`/`AgentRunEntry`/`AgentRunsState`/`INITIAL_AGENT_RUNS_STATE`/
+  `AgentRunEvent`/`reduceAgentRuns`（按 sessionId/requestId 键控：step 去重、
+  错误会话/旧 run/终态后迟到事件忽略、run-done 幂等、新 run 不继承、确认作废
+  收敛、会话切换隔离）/`runForSession`/`globalPendingRequest`（确认 UI 全局
+  跟随精确 pending）；`agent-display.ts`——`CONFIRM_TEXT_MAX=120`/
+  `sanitizeConfirmText`（控制字符与双向控制符剔除 + 截断）/`TOOL_DECISION_LABELS`
+  六值含 invalid/`TOOL_ERROR_LABELS`/`AGENT_RUN_STATUS_LABELS` 九值/
+  `toolActionLabel`/`describeAgentStatus`（思考中/执行工具 N/12/等待确认/已完成/
+  已停止/五种终止理由全覆盖——run.status 权威）。UI 组件：AgentStatusBar（当前
+  页面来自 tabs:updated 可信订阅）、ToolCallList（事件顺序渐进/argsSummary/
+  失败不可伪装成功）、ConfirmDialog（App 级全局；deny 默认高亮+焦点、Enter 只
+  激活焦点按钮、Escape=拒绝、approve 精确 toolCallId 一次提交即禁用、无始终
+  允许、confirmTool 返回 false 显示已失效、作废自动关闭）、停止按钮（真实
+  requestId abort、双击幂等、「正在停止」非终态）、任务模式（对话/任务切换仅
+  渲染层状态；共读 Composer 行为不变；同会话 busy 互斥；模式/折叠/会话切换不
+  静默取消 Agent）、ChatView ToolStep 紧凑条目（只渲染持久化 contentPreview/
+  decision/errorCode）+ agentRun 徽标、reduceHistory 按消息 id 去重（历史刷新
+  与 run-done 竞态不重复气泡）。冒烟 8.5 A6-UI-01～A6-UI-12（React DOM 事件
+  驱动真实链路：多步任务状态渐进/search 临时 Tab 零泄漏/确认 deny 默认焦点・
+  approve 一次执行/pending 停止作废・迟到 approve 无效/慢模型停止/四种终止
+  理由中文/invalid 非成功样式/切换不串 run/磁盘重读 ToolStep 7 条目/fill 零
+  原文/敌对 elementText 纯文本/共读互斥）——dev + 生产双场景退出码 0。
+  冒烟注入点（仅 SMOKE_MODE，生产不变）：smokeAgentLimits（step-limit/
+  timeout 场景）/smokeAgentSearchProvider（受控搜索夹具，委托 Provider 调用
+  时读取）。
 
 ## 6. 常用命令
 
@@ -797,7 +858,7 @@ Message`/`buildRoundAssistantMessage`/`buildFinalAgentMessage`（finalText +
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 699 用例）
+  - `npm test` — Vitest 全量测试（当前 766 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -846,11 +907,21 @@ Message`/`buildRoundAssistantMessage`/`buildFinalAgentMessage`（finalText +
       A-06 invalid-args 回注后调整成功/A-07 reload 后旧 elementId stale-element
       新快照正常（传递性证明零误操作）/A-08 fill 隐私（审计 len=N + password
       forbidden 零写入 + 会话文件/日志字节扫描零原文）/A-09 每步审计恰好一条 +
-      run 审计 2 条 + 日志无 Key/fill 值）→ 自动退出，退出码 0 即通过；日志链见 log/）。
-      生产产物路径同样可跑：
-      `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
-      （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
-      state=ready + 标题非空）。
+      run 审计 2 条 + 日志无 Key/fill 值）→ A6 起再验证操作可见性 UI 场景 8.5
+      A6-UI-01～A6-UI-12（React DOM 事件驱动真实链路：任务模式多步任务状态
+      渐进（思考→执行工具→已完成、ToolCallList 7 步顺序/参数摘要/7-12 徽标/
+      搜索临时 Tab 零泄漏）/确认框 deny 默认焦点（document.activeElement）+
+      拒绝零 DOM 动作 + approve 一次执行（审计 denied/confirmed 各一）/pending
+      停止→确认框作废关闭→迟到 approve 无效/慢模型中途停止 cancelled + 部分
+      保留/step-limit・loop-detected・no-progress・timeout 中文理由 + invalid
+      条目非成功样式/invalid-args 回注修正/模式・会话・面板切换不串 run + 共读
+      互斥/历史刷新无重复回答 + ToolStep v2 磁盘重读 7 条目/fill 页面真实写入
+      - DOM・日志・会话文件零原文/敌对 elementText 纯文本截断 + 无富文本注入 +
+        无自动批准/共读回归）→ 自动退出，退出码 0 即通过；日志链见 log/）。
+        生产产物路径同样可跑：
+        `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
+        （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
+        state=ready + 标题非空）。
   - **Session 跨进程持久化冒烟**（§十四 Session 验收，以生产产物验收，需先 `npm run build`）：
     两个独立应用进程共用同一临时 userData——进程 A
     `AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=set` 经受控页 Set-Cookie（HttpOnly）写入
@@ -1054,6 +1125,33 @@ Message`/`buildRoundAssistantMessage`/`buildFinalAgentMessage`（finalText +
     搜索临时 Tab 零泄漏/确认 deny・approve/取消含 pending 作废/step-limit/
     loop-detected 触发次零 DOM 副作用/invalid-args 修正/世代 stale/fill 隐私 +
     密码 forbidden/审计恰好一条 + 日志字节扫描）。dev + 生产双场景退出码 0。
+  - ✅ A6（2026-08-14 红→绿落地，67 新增：agent-run-state 23 / agent-display 23 /
+    history-events 1 / confirm-manager 2 / interaction-semantics 1 /
+    tool-executor 3 / agent-loop 7 / conversation-service 7，基线 699 → 766；
+    既有用例零删除零削弱——confirm-manager 3 与 interaction-semantics 3 为
+    决议 #34 契约校准原位更新）：agent-run-state（start/starting 收养/thinking・
+    executing 合并计数/confirm 建立 pending/waiting-confirm 相位/confirm-
+    resolved 清 pending 记 outcome/step 按序追加与 toolCallId 去重/错误
+    requestId・未知会话・旧 run 事件忽略/run-done 收敛与幂等/终态后迟到
+    status・step・confirm 忽略（不把终态改回 running）/终态后新 starting 新
+    run（不继承 steps/pending/终态）/running 中异 requestId starting 防御忽略/
+    stop-requested stopping 与重复幂等/rejected 竞态残留忽略/两会话隔离/
+    runForSession・globalPendingRequest 选择器）；agent-display（sanitize
+    控制字符・双向控制符・零宽字符剔除/120 截断/非串空串安全返回/决策六值・
+    错误码・run 状态九值文案全映射/工具动作文案/状态栏描述全相位与五种终止
+    理由——run.status 权威）；history-events turn-done 按消息 id 去重（历史
+    刷新与终态事件竞态）；confirm-manager 判别联合（pending/settled 携带
+    outcome approve・deny・cancelled/未知与已终结 id 不触发/并发 fail-closed/
+    幂等）+ 多监听者 Set 分发；interaction-semantics text 映射（links/buttons
+    有 text、inputs 无——宁缺勿错）；tool-executor 确认摘要（elementText 页面
+    提供目标文本/目标站点 URL 主进程可信 TabInfo/缺失宁缺勿错）；agent-loop
+    onStatus 相位（thinking/executing 计数一致/finalizing 仅 done/终态后零
+    迟到/防循环阻断零 executing）+ onAgentStep argsSummary（审计同源一致/
+    fill 只记长度/阻断路径原始串截断）；conversation-service onAgentStatus
+    （starting 0/maxSteps/waiting-confirm/confirm-resolved 三态/abort 作废/
+    非在途防串）+ step argsSummary 转发 + 共享 ConfirmManager 双 Service 互不
+    串扰与 dispose 退订。冒烟 8.5 A6-UI-01～A6-UI-12（React DOM 事件驱动真实
+    链路，见 §6）。dev + 生产双场景退出码 0。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。

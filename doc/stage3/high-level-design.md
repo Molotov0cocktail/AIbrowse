@@ -127,8 +127,14 @@ args, elementSemantics?) → {level, reason}`；L0/L1/L2/L3 矩阵为编译期�
       （pending + agent:confirm-request 事件 → 等待用户 approve/deny，计入总超时；
         deny → denied-by-user 回注）
       执行 → ToolExecutor → 结构化 ToolResult（≤4000 字符截断）→ 审计条目
-      → ToolStep 持久化 → agent:step 事件（UI 可见性）→ 回注历史
+      → ToolStep 持久化 → agent:step 事件（含审计同源 argsSummary 脱敏摘要，
+        决议 #34——UI 可见性，不扩大持久化）→ 回注历史
    e. 步数/超时/防循环检查 → 继续或终止（结构化理由）
+   —— **A6 实时可见性**（决议 #34）：每步执行前 agent:status 事件
+      （starting/thinking/executing（含当前工具名与 stepsUsed/maxSteps）/
+      waiting-confirm/confirm-resolved（含 approve/deny/cancelled outcome）/
+      finalizing——全部为确定性运行事实，不含思维过程）；ConfirmManager 多监听者
+      Set 分发（多 Service 共享状态机互不覆盖，dispose 退订）
 5. 终态：done（最终回答全文）/ cancelled / aborted / 终止理由 → turn-done 事件
    → 持久化 assistant 消息（含 run 摘要）
    —— **决议 #33 校准**：终态单一所有权（done/abort/超时/取消先到先得，恰好一次

@@ -223,9 +223,47 @@ export interface AgentStepEvent {
   requestId: string;
   sessionId: string;
   step: ToolStep; // 每一步工具调用的可见性推送
+  argsSummary: string; // A6（决议 #34）：参数摘要——与审计同源（audit-log.summarizeArgs
+  // 同一脱敏纯函数，主进程生成；fill text 只记 len=N、URL/query 全量、其余 ≤200 截断）。
+  // 非持久化可见性字段（ToolStep/Store v2 持久化结构不变）
 }
 
 export type AgentRunDoneEvent = TurnDoneEvent & { run?: AgentRunSummary }; // 复用共读 turn-done 形态
+
+// —— A6 实时状态（决议 #34，2026-08-14 实施校准新增） ——
+
+export type AgentConfirmOutcome = 'approved' | 'denied' | 'cancelled';
+//（ConfirmManager.ConfirmOutcome 为别名；pending 作废 = cancelled）
+
+// 实时状态相位——全部为确定性运行事实（程序生成，不含思维过程/模型解释/网页指令）：
+// starting=run 已启动（在途注册后）／thinking=模型轮进行中（Provider 等待/流式累积）/
+// executing=工具已通过防循环判定、即将进入执行管线（当前步已计入 stepsUsed）/
+// waiting-confirm=L2 pending 已建立／confirm-resolved=pending 已决议或作废（携带 outcome）/
+// finalizing=最终回答已生成，正在组装终态消息（仅 done 触发）。
+export type AgentStatusPhase =
+  'starting' | 'thinking' | 'executing' | 'waiting-confirm' | 'confirm-resolved' | 'finalizing';
+
+export interface AgentStatusEvent {
+  requestId: string;
+  sessionId: string;
+  phase: AgentStatusPhase;
+  toolName?: string; // executing/waiting-confirm 时当前工具名（程序事实）
+  stepsUsed?: number; // 循环内相位携带 A5 实际计数（AgentLoop 内部计数器直出；starting 恒 0）
+  maxSteps?: number;
+  confirmOutcome?: AgentConfirmOutcome; // confirm-resolved 必带（approve/deny/cancelled）
+}
+```
+
+ElementSemantics 增补（A6，决议 #34）：
+
+```ts
+export interface ElementSemantics {
+  // ……既有字段不变……
+  text?: string; // A6：links/buttons 条目的可见文本（采集脚本显式采集；inputs 不采集——
+  // placeholder/value 非可见文本证据，宁缺勿错）。确认对话框 elementText 的唯一来源——
+  // **页面提供的目标文本，不可信输入**（渲染层纯文本 + 控制字符清理 + 截断）。
+  // 不影响权限判定：decide/classifyClickTarget 不消费本字段。
+}
 ```
 
 ## 3. tool-calling 兼容层（A1，硬前置）
@@ -746,35 +784,60 @@ decision=confirmed，ok=true，耗时=23ms，errorCode=无）
 AgentAsk: 'conversation:agent-ask',       // { sessionId, goal } → AskResult
 AgentConfirm: 'conversation:agent-confirm', // { toolCallId, approve } → boolean
 // —— Third Stage 新增（main → renderer，事件推送）——
-AgentStep: 'conversation:agent-step',             // AgentStepEvent
+AgentStep: 'conversation:agent-step',             // AgentStepEvent（含审计同源 argsSummary）
 AgentConfirmRequest: 'conversation:agent-confirm-request', // AgentConfirmRequest
 AgentRunDone: 'conversation:agent-run-done',      // AgentRunDoneEvent（run 终态）
+AgentStatus: 'conversation:agent-status',         // AgentStatusEvent（A6 决议 #34 新增：
+// 实时状态相位——事件充分性核查结论：仅有 step 完成/confirm request/run done 三类事件
+// 无法诚实表达「run 已启动/模型思考/工具即将执行及当前 stepsUsed/maxSteps/等待确认/
+// pending 决议作废/收敛最终回答」，故新增程序生成的最小状态通道）
 // 既有 conversation:* 通道不变；事件全部只发主窗口、sender 校验复用既有 handle() 包装
 ```
 
 - preload bridge 扩展：`conversation.agentAsk(sessionId, goal)`、
   `confirmTool(toolCallId, approve)`、`onAgentStep/onAgentConfirmRequest/
-onAgentRunDone`（退订函数，既有 eventRelay 模式）。
+onAgentRunDone/onAgentStatus`（退订函数，既有 eventRelay 模式——每个原生 IPC
+  channel 只注册一个底层 listener，JS 侧 Set 分发并正确退订）。
 - goal 参数校验：空串/非串 → internal 拒绝；> 16000 字符确定性截断 + warn
-  （复用 ask 同款纪律）。
+  （复用 ask 同款纪律）。agent-confirm 逐字段校验（toolCallId 非空串/approve
+  布尔）→ 未知/迟到/已终结 id 由 ConfirmManager 幂等返回 false。
 
 ### 11.2 UI 组件（renderer/src/ai/，A6）
 
 - **Agent 模式**：AiPanel header 增「对话 / 任务」模式切换（共读 Composer 与
   任务输入共用 textarea 但发送走不同通道；模式为渲染层状态，不持久化）。
 - **AgentStatusBar**：状态中文文案（思考中/执行工具 N/12/等待确认/已完成/已停止/
-  终止理由）+ 当前工具名。
+  终止理由五种全覆盖）+ 当前工具名；当前页面信息来自既有可信 tabs:updated 订阅
+  （不从模型文本提取）；run.status 为终止理由权威来源（不以通用 error 替代）。
 - **ToolCallList**：本次 run 的工具调用条目（工具名/参数摘要/结果摘要/决策标记
-  auto/confirmed/denied/forbidden），可折叠；数据源 onAgentStep 事件。
-- **ConfirmDialog**：模态（agent:confirm-request 驱动）——展示确定性 summary
-  （工具名/URL/元素文本摘要）+ 「允许一次」/「拒绝」按钮（deny 默认高亮）；
-  请求作废（run 取消/超时）时自动关闭并提示。
-- **停止按钮**：任务模式 Composer 发送后显示「停止」→ conversation:abort
-  （复用 requestId abort 语义，§8.2 取消）。
-- **消息流**：ToolStep 消息渲染为紧凑条目（工具名 + 结果摘要 + 状态色标），
-  不展开 fill 输入值（内容预览已脱敏）。
-- 纯函数：agent 相关 reducer（`agent-run-state.ts`：step 追加/确认请求/run 终态
-  收敛）单测覆盖（与 stream-state 同纪律）。
+  六值 ToolStepDecision 含 invalid），可折叠；数据源 onAgentStep 事件（含
+  argsSummary——渲染层不解析原始 arguments）；失败/denied/forbidden/invalid
+  以失败样式呈现，不可伪装成功；fill 原文与内部能力参数永不渲染。
+- **ConfirmDialog**：App 级全局模态（agent:confirm-request 驱动，全局跟随精确
+  pending——不因切换会话/模式/折叠面板不可访问）——展示确定性 summary（工具名/
+  动作类型/目标站点 URL（主进程可信 TabInfo）/elementText/权限原因）；elementText
+  **视为页面提供的不可信文本**：纯文本渲染（无 dangerouslySetInnerHTML/Markdown/
+  URL 富文本解析）+ 控制字符与双向控制符剔除 + 截断，原始值不进 DOM 属性；
+  「拒绝」默认高亮 + 默认焦点（Enter 只激活焦点按钮——不存在未明确聚焦允许按钮
+  时的批准）、Escape = 拒绝；approve 只对精确 toolCallId 生效一次（main 幂等），
+  提交后按钮立即禁用；无「始终允许/本次会话全部允许/自动批准」；confirmTool
+  返回 false 显示「该确认已失效」（绝不显示「已允许」）；请求作废（run 取消/超时/
+  终结）时自动关闭。
+- **停止按钮**：任务模式在途 run 显示「停止」→ 使用 agentAsk 返回的真实
+  requestId 调 conversation:abort（双击/重复点击幂等）；点击后进入「正在停止」
+  （UI 事实），收到权威 run-done 后才进入终态；不能中止其他会话或旧 requestId。
+- **消息流**：ToolStep 消息渲染为紧凑条目（工具名 + 结果摘要 + 决策徽标 +
+  errorCode），只使用持久化的 contentPreview/decision/errorCode——不展开
+  UNTRUSTED_TOOL_RESULT 包装原文/完整 ToolResult/fill 输入值；assistant
+  agentRun 消息展示 run 终态徽标（status 文案 + steps/maxSteps）；Agent 轮次
+  文本为过程性输出（状态栏相位给出确定性标记），最终显示文本以 run-done 的
+  message.content（= finalText）为准；v1 会话/普通 user/assistant 消息行为不回归。
+- 纯函数：agent 相关 reducer（`agent-run-state.ts`：按 sessionId/requestId 键控
+  ——step 追加/去重、确认请求、run 终态收敛与幂等、终态后迟到事件忽略、新 run
+  不继承旧状态、确认作废收敛、会话切换隔离）+ 展示纯函数（`agent-display.ts`：
+  sanitizeConfirmText/决策与状态中文文案/状态描述）单测覆盖（与 stream-state
+  同纪律）。同一会话 busy（共读流式或 Agent run）时不可重复发起（主进程单在途
+  - UI 侧禁用双保险）；模式切换/面板折叠/会话切换不静默取消正在运行的 Agent。
 
 ## 12. 安全契约（引用 threat-model）
 
@@ -991,6 +1054,51 @@ onAgentRunDone`（退订函数，既有 eventRelay 模式）。
     execution-failed 保留实际权限决策（L0 工具执行失败 → decision=auto）；
     校验失败/未知工具/防循环安全阻断 = invalid。§2.2/§8.1/§8.3/§9.1/§9.3/§10.1
     已同步。
+34. **A6 操作可见性 UI 实施校准（2026-08-14，A6 实施前，五点固定）**：
+    ① **事件充分性（最小契约扩展）**——A5 仅三类事件（step 完成/confirm
+    request/run done）无法诚实表达「run 已启动/模型思考/工具即将执行及当前
+    stepsUsed/maxSteps/等待确认/pending 决议作废/收敛最终回答」。新增程序生成
+    的 `AgentStatusEvent`（相位 starting/thinking/executing/waiting-confirm/
+    confirm-resolved/finalizing + 可选 toolName/stepsUsed/maxSteps/
+    confirmOutcome）与单向通道 `conversation:agent-status`；数据只来自
+    AgentLoop/ConversationService 确定性运行事实（thinking=每模型轮开始、
+    executing=防循环判定后执行管线前且当前步已计入、finalizing=done 终态触发；
+    starting=agentAsk 在途注册后；waiting-confirm/confirm-resolved 由
+    ConfirmManager 判别联合事件映射）；不含思维过程/模型解释；迟到事件在
+    reducer 终态后一律忽略（不得把终态改回 running）。`ConfirmManager.
+onPendingChange` 载荷扩展为判别联合 `{kind:'pending',request} |
+{kind:'settled',runId,toolCallId,outcome}`（决议/作废携带 outcome），并改为
+    **多监听者 Set 分发**（addPendingChangeListener + dispose 退订）——关闭
+    A5 计划内限制「回调所有权为最后构造的 Service 实例」（多 Service 共享
+    ConfirmManager 互不覆盖、互不串扰）。
+    ② **参数摘要数据源**——ToolCallList 的参数摘要不得在 renderer 从原始
+    arguments/日志/ToolResult 重新解析。复用 A2 审计同源脱敏纯函数
+    `summarizeArgs`（fill text → len=N、URL/query 全量、其余 ≤200 截断），
+    主进程（AgentLoop 捕获的审计条目）生成，经**非持久化**
+    `AgentStepEvent.argsSummary` 下发；ToolStep/ConversationStore v2 持久化
+    结构不变；不含请求头/响应体/内部参数/documentId/allowedKind。
+    ③ **确认信息信任边界**——确认对话框的 toolName/权限级别/固定 detail 为
+    程序事实，但 elementText 来源于网页（URL 也可能含敌手控制字符）。扩展
+    `ElementSemantics.text?`（links/buttons 快照条目既有 text——采集脚本显式
+    采集；inputs 不采集 placeholder/value，宁缺勿错；不影响 decide/classify
+    权限判定）；`buildConfirmSummary` 填充 elementText + 目标站点 URL（参数
+    无 url 的工具取目标 Tab 的 URL——主进程可信 TabInfo）。渲染层：React 纯
+    文本（禁止 dangerouslySetInnerHTML/Markdown/HTML 解析/URL 自动富文本）+
+    控制字符/双向控制符剔除 + 截断（原始值不进 DOM 属性）；「拒绝」默认高亮与
+    默认焦点（Enter 只激活焦点按钮）、Escape=拒绝；approve 只对精确 toolCallId
+    生效一次（提交即禁用）；无「始终允许/本次会话全部允许/自动批准」。
+    ④ **任务模式与状态纪律**——「对话/任务」模式为渲染层状态不持久化；共读
+    Composer 行为不变；同一会话 busy 时共读与 Agent 互斥（主进程单在途 + UI
+    禁用双保险）；模式切换/面板折叠/会话切换不静默取消正在运行的 Agent（停止
+    必须显式点击）；ConfirmDialog 在 App 级全局挂载（pending 不因切换会话/模式/
+    折叠面板不可访问）。停止按钮：agentAsk 返回的真实 requestId 调 abort、
+    双击幂等、「正在停止」非终态（run-done 到达才收敛）、不中止其他会话/旧
+    requestId。ToolStep 历史只渲染持久化的 contentPreview/decision/errorCode；
+    run-done 与历史刷新竞态由 reduceHistory 按消息 id 去重防御（不重复气泡）。
+    ⑤ **冒烟注入点（仅 SMOKE_MODE，生产行为不变）**——smokeAgentLimits
+    （step-limit/timeout 场景的 AgentLoopLimits holder，每 run 启动时读取）与
+    smokeAgentSearchProvider（受控搜索夹具 holder，经委托 SearchProvider 在
+    search() 调用时读取——离线确定性）。§2.2/§11.1/§11.2 已同步。
 
 ## 16. 实现顺序与范围边界（A1–A8 映射）
 

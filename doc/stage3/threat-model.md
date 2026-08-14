@@ -91,8 +91,16 @@
   分类规则；allowedKind/documentId 为执行器内部参数，不进入模型可见工具 schema，
   模型与网页不可写。
 - **确认状态机**：L2 动作进入 pending → 用户 approve/deny；确认 UI 只展示确定性事实
-  （工具名/URL/目标元素文本摘要），文案不来自模型或网页；deny → denied-by-user
-  错误回注（模型可提议替代路径）；**不允许自动批准**。
+  （工具名/动作类型/目标站点 URL（主进程可信 TabInfo）/权限原因），文案不来自模型或
+  网页；deny → denied-by-user 错误回注（模型可提议替代路径）；**不允许自动批准**。
+  **A6 校准（决议 #34）**：确认框的 `elementText` 为**页面提供的目标文本（不可信
+  输入）**——渲染层纯文本（禁止 dangerouslySetInnerHTML/Markdown/HTML 解析）+
+  不可见控制字符与双向文本控制符剔除 + 截断（原始值不进 DOM 属性），并明确标注
+  「页面提供，仅供参考」；「拒绝」默认高亮与默认焦点（Enter 只激活焦点按钮，
+  不存在未明确聚焦允许按钮时的批准）、Escape=拒绝；approve 只对精确 toolCallId
+  生效一次（提交即禁用，主进程幂等）；无「始终允许/本次会话全部允许/自动批准」；
+  pending 作废（run 取消/超时/终结）时确认框自动关闭；ConfirmDialog 在 App 级
+  全局挂载（不因切换会话/模式/折叠面板而不可访问——L2 确认必须可达）。
 - **外发审查**：search.web 查询串与 open/navigate URL 全量进入审计与可见性 UI
   （T-03 可追溯）；无任意 HTTP POST 通道，页面数据外发的唯一形态（写入搜索查询/
   URL query）属于语义层残余风险（§5 如实登记）。

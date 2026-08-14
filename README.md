@@ -9,8 +9,8 @@
 > （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
 > **A1 tool-calling 兼容层 + A2 Tool Registry/权限分级与确认状态机/审计日志 +
 > A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）+
-> A4 SearchProvider 与 search.web + A5 Agent Runtime 已实现（2026-08-14）；
-> A6–A8 待实现**
+> A4 SearchProvider 与 search.web + A5 Agent Runtime + A6 操作可见性 UI 与通道
+> 已实现（2026-08-14）；A7–A8 待实现**
 > （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
 > T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
 > 见 `doc/stage3/proposal.md` §11）。
@@ -59,7 +59,13 @@
     块）+ agent-history（ToolStep/脱敏 toolCalls/完整交互组）+ ConversationStore
     version 2 + ConversationService agentAsk/confirmTool + 主进程冒烟 A-01～A-09
     ——dev/生产双场景退出码 0）；
-    任务 A6–A8 待实现（**下一个推荐任务：A6 操作可见性 UI 与通道**）。
+    **A6 操作可见性 UI 与通道已完成**（6 IPC 通道（agent-ask/agent-confirm
+    invoke + agent-step/agent-confirm-request/agent-run-done/agent-status 事件
+    ——决议 #34 新增实时状态通道）+ preload bridge 白名单 + 任务模式/
+    AgentStatusBar/ToolCallList/ConfirmDialog（deny 默认焦点、elementText
+    页面提供不可信纯文本渲染）/停止按钮/ToolStep 历史渲染 + agent-run-state
+    纯 reducer + UI 端到端冒烟 A6-UI-01～A6-UI-12——dev/生产双场景退出码 0）；
+    任务 A7–A8 待实现（**下一个推荐任务：A7 红队矩阵与安全审计**）。
 
 ## 技术栈（实际落地版本）
 
@@ -79,6 +85,10 @@ S3/S4 AI 共读场景：FakeProvider 离线矩阵流式端到端/selection 独�
 中止/错误归一化/会话持久化/UI 端到端/bounds 协调/Key 不可达/注入结构断言 →
 A2/A3 工具层探针与交互场景 → A4 搜索生命周期场景（受控搜索页夹具三形态 + 临时 Tab
 精确所有权与恢复 + 审计恰好一条；可选公网 Bing 探针 `AIBROWSE_SMOKE_LIVE_SEARCH=1`）→
+A5 Agent Runtime 场景 8.4（A-01～A-09 主进程驱动）→ A6 操作可见性 UI 场景 8.5
+（A6-UI-01～A6-UI-12 React DOM 事件驱动：任务模式多步任务/确认 deny・approve/
+pending 停止/慢模型停止/四种终止理由中文/invalid 条目/切换不串 run/ToolStep v2
+磁盘重读/fill 零原文/敌对确认文本/共读回归）→
 自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
 `doc/stage3/detailed-design.md` §13.2）：
 
@@ -118,7 +128,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 699 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 766 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -189,19 +199,23 @@ src/
 │                  #   find/scroll/click/fill、interaction-semantics 语义存储+世代绑定 +
 │                  #   A4 ✅ search-tool search.web 注册与序列化）+
 │                  #   permission/（A2 ✅ permission-policy + A3 ✅ classifyClickTarget）+
-│                  #   confirm-manager（A2 ✅ 确认状态机 + A5 ✅ onPendingChange 可见性回调）+
+│                  #   confirm-manager（A2 ✅ 确认状态机 + A5 ✅ onPendingChange 可见性回调 +
+│                  #   A6 ✅ 判别联合 PendingChange + 多监听者 Set 分发）+
 │                  #   audit-log（A2 ✅ 审计参数脱敏 + A4 ✅ search.web 查询串全量记录 +
 │                  #   A5 ✅ decision 单一事实源（ToolStepDecision 别名）+ agent-run 条目）；
 │                  #   agent/（A5 ✅ agent-loop 纯编排状态机 + agent-context-builder +
-│                  #   agent-history + agent-safety 防循环纯函数，零 Electron import）+
+│                  #   agent-history + agent-safety 防循环纯函数，零 Electron import；
+│                  #   A6 ✅ onStatus 相位 + onAgentStep argsSummary）+
 │                  #   search/（A4 ✅ search-provider：接口 + Bing 页面实现 + 确定性解析，
 │                  #   临时 Tab 精确所有权零 Electron import）
 ├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
-│                  #   第三阶段 A6 规划 agent 通道）
+│                  #   A6 ✅ agent 可见性：agentAsk/confirmTool + 4 事件订阅）
 ├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏；
-│                  #   第三阶段 A6 规划 Agent 模式/状态栏/确认对话框）
+│                  #   A6 ✅ 对话/任务模式 + AgentStatusBar/ToolCallList/ConfirmDialog +
+│                  #   agent-run-state/agent-display 纯函数）
 └── shared/        # 共享类型（app/browser/ipc/conversation + agent——A2 ✅ ToolCall/ToolResult/
-                   #   权限级别/ElementSemantics）+ 纯逻辑（url.ts）
+                   #   权限级别/ElementSemantics（A6 ✅ 增 text）+ A5/A6 ✅ 事件 payload）+
+                   #   纯逻辑（url.ts）
 ```
 
 完整结构与职责见 `AGENTS.md` §4；第二阶段契约与任务见 `doc/stage2/`（定稿）；
@@ -214,7 +228,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 699 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 766 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
@@ -269,6 +283,7 @@ ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元
   不抢焦点/并发隔离/超时・取消・异常全路径零泄漏——注入时钟确定性）、search.web
   工具（常量 schema/L0 管线决策/序列化纯文本零特权/4000 截断/空结果明确提示/
   结构无法识别 search-failed/取消归一/每次调用恰好一条审计/查询串全量审计）。
+  第三阶段 A6 新增（67）：agent-run-state 纯 reducer（按 sessionId/requestId 键控：starting 收养/相位合并/step 去重/错误会话与旧 run 事件忽略/run-done 幂等/终态后迟到事件忽略/新 run 不继承/stop-requested stopping 与幂等/会话隔离/全局 pending 选择器）、agent-display 展示纯函数（sanitizeConfirmText 控制字符与双向控制符剔除 + 截断/决策六值・错误码・run 状态九值中文文案/状态栏全相位与五种终止理由描述——run.status 权威）、history-events turn-done 消息 id 去重（历史刷新与终态事件竞态防御）、confirm-manager 判别联合（pending/settled 携带 outcome）+ 多监听者 Set 分发、interaction-semantics text 映射（inputs 不采集宁缺勿错）、tool-executor 确认摘要（elementText 页面提供目标文本/目标站点 URL 主进程可信）、agent-loop onStatus 相位（thinking/executing 计数一致/finalizing 仅 done/终态后零迟到/防循环阻断零 executing）+ onAgentStep argsSummary（审计同源一致/fill 只记长度）、conversation-service onAgentStatus（starting/waiting-confirm/confirm-resolved 三态/abort 作废/非在途防串）+ 共享 ConfirmManager 双 Service 互不串扰与 dispose 退订。
   Electron 行为由冒烟自检真实启动验证（见上）。 约定见 `AGENTS.md` §7。
 
 ## 已知限制
