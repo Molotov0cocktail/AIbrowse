@@ -42,6 +42,9 @@ export type FakeChunk = FakeTextChunk | FakeToolCallsChunk;
 
 export interface FakeProviderScript {
   chunks?: Array<string | FakeChunk>; // Default: fixed default script
+  // A5：多轮 agent 脚本——每次 stream() 调用消费下一轮（AgentLoop 多轮确定性驱动）；
+  // 耗尽后回退 chunks（缺省行为不变）。单轮 = 该轮的事件序列（含文本+整组 toolCalls）。
+  rounds?: Array<Array<string | FakeChunk>>;
   error?: { code?: NormalizedErrorCode; httpStatus?: number }; // Injected error (httpStatus wins → status matrix)
   usage?: ProviderUsage; // Attached to the done event
 }
@@ -52,14 +55,25 @@ const DEFAULT_CHUNKS: FakeChunk[] = [
   { text: '确定性回答。' },
 ];
 
+// A5：中止感知睡眠辅助（等待中 abort 即停；监听器 once 自动清理）
+function abortSignal(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
+
 export class FakeProvider implements LLMProvider {
   readonly metadata: ProviderMetadata = FAKE_PROVIDER_METADATA;
   private lastRequest: ProviderRequest | null = null;
+  private readonly requests: ProviderRequest[] = []; // A5：全量请求（多轮断言）
+  private roundIndex = 0;
 
   constructor(private readonly script: FakeProviderScript = {}) {}
 
   async *stream(request: ProviderRequest, signal: AbortSignal): AsyncIterable<ProviderEvent> {
     this.lastRequest = request;
+    this.requests.push(request);
     const context: ErrorNormalizeContext = {
       requestId: request.requestId,
       providerId: this.metadata.id,
@@ -69,7 +83,13 @@ export class FakeProvider implements LLMProvider {
       yield { type: 'error', error: this.buildInjectedError(this.script.error, context) };
       return;
     }
-    const chunks: FakeChunk[] = (this.script.chunks ?? DEFAULT_CHUNKS).map((chunk) =>
+    // A5 多轮脚本：rounds 存在时按调用序消费；耗尽回退 chunks（缺省行为不变）
+    const round =
+      this.script.rounds !== undefined && this.roundIndex < this.script.rounds.length
+        ? this.script.rounds[this.roundIndex]
+        : undefined;
+    if (this.script.rounds !== undefined) this.roundIndex += 1;
+    const chunks: FakeChunk[] = (round ?? this.script.chunks ?? DEFAULT_CHUNKS).map((chunk) =>
       typeof chunk === 'string' ? { text: chunk } : chunk,
     );
     for (const chunk of chunks) {
@@ -77,7 +97,10 @@ export class FakeProvider implements LLMProvider {
         yield { type: 'error', error: normalizeProviderError({ kind: 'aborted', context }) };
         return;
       }
-      if (chunk.delayMs !== undefined && chunk.delayMs > 0) await sleep(chunk.delayMs);
+      if (chunk.delayMs !== undefined && chunk.delayMs > 0) {
+        // A5：中止感知睡眠（与真实适配器一致——等待中 abort 即停，无泄漏悬挂）
+        await Promise.race([sleep(chunk.delayMs), abortSignal(signal)]);
+      }
       if (signal.aborted) {
         yield { type: 'error', error: normalizeProviderError({ kind: 'aborted', context }) };
         return;
@@ -94,6 +117,11 @@ export class FakeProvider implements LLMProvider {
   // Smoke assertions inspect what the provider actually received (requestId/messages/system).
   getLastRequest(): ProviderRequest | null {
     return this.lastRequest;
+  }
+
+  // A5：全量请求列表（多轮 agent run 的 transcript 断言）
+  getRequests(): ProviderRequest[] {
+    return [...this.requests];
   }
 
   // Injected errors go through the same normalization the real adapter uses, so consumers

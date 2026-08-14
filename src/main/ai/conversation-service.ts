@@ -9,6 +9,13 @@
 // touches Electron APIs directly — 分层纪律; BrowserControllerImpl satisfies it structurally.
 import { randomUUID } from 'node:crypto';
 import type { PageSnapshot, TabInfo } from '../../shared/types/browser';
+import type { BrowserController } from '../browser/browser-controller';
+import type {
+  AgentConfirmRequest,
+  AgentRunDoneEvent,
+  AgentRunSummary,
+  AgentStepEvent,
+} from '../../shared/types/agent';
 import type {
   AskResult,
   ContextPreview,
@@ -17,6 +24,7 @@ import type {
   ConversationSession,
   NormalizedProviderError,
   ProviderRequest,
+  ProviderToolCall,
   StreamChunkEvent,
   TurnDoneEvent,
 } from '../../shared/types/conversation';
@@ -36,9 +44,22 @@ import {
   deriveContextMode,
   isThinSnapshot,
 } from './context-builder';
-import { trimHistory } from './context-budget';
+import { CONTEXT_BUDGET, trimHistory, truncateWithMark } from './context-budget';
 import { normalizeProviderError } from './provider/error-normalize';
 import { listProviderKinds, resolveProvider, type LLMProvider } from './provider/llm-provider';
+// Third Stage A5：Agent Runtime 接线（AgentLoop 纯核心 + 上下文/历史纯函数 + 审计 run 条目）
+import { formatAgentRunAuditMessage, type AuditEntry } from './audit-log';
+import { buildAgentGoalMessage } from './agent/agent-context-builder';
+import {
+  buildFinalAgentMessage,
+  buildRoundAssistantMessage,
+  buildToolStepMessage,
+  replayToProviderMessages,
+} from './agent/agent-history';
+import { AgentLoop, type AgentLoopLimits } from './agent/agent-loop';
+import type { ConfirmManager } from './confirm-manager';
+import type { SearchProvider } from './search/search-provider';
+import { listTools } from './tools/tool-registry';
 
 // v1 单 Provider 选择契约（决议 #20，§6.1）：返回 providerId 属于已注册工厂 kind 的
 // 配置。v1 仅注册 PROVIDER_KIND_OPENAI_COMPATIBLE 一种 kind，且 ConfigStore 以
@@ -62,6 +83,18 @@ export interface SnapshotSource {
   getPageSnapshot(tabId: string): Promise<PageSnapshot | null>; // null = L3（tab 不可用）
 }
 
+// Third Stage A5：Agent Runtime 装配（§8.1/§8.5 + 决议 #33）——browser 为完整
+// BrowserController（ToolExecutionContext 唯一浏览器通道）；confirmManager/audit 复用
+// A2 装配实例；searchProvider 为工具层注入点（决议 #32⑥）；limits 可注入（冒烟/测试）。
+export interface AgentRuntimeOptions {
+  browser: BrowserController;
+  confirmManager: ConfirmManager;
+  searchProvider?: SearchProvider;
+  audit: (entry: AuditEntry) => void; // 工具审计出口（每次调用恰好一条由 ToolExecutor 保证）
+  auditRun?: (message: string) => void; // run 开始/终止条目（§10.1）
+  limits?: Partial<AgentLoopLimits>; // 冒烟/测试注入（生产用默认 12 步/420s）
+}
+
 export interface ConversationServiceOptions {
   browser: SnapshotSource;
   store: ConversationStore;
@@ -71,7 +104,12 @@ export interface ConversationServiceOptions {
   resolveProviderFn?: typeof resolveProvider;
   // 事件输出（§3.1，构造时注入；由 index.ts 转发主窗口 send，事件只发主窗口 §4）
   onStreamChunk?: (e: StreamChunkEvent) => void;
-  onTurnDone?: (e: TurnDoneEvent) => void; // 终态恰好一次
+  onTurnDone?: (e: TurnDoneEvent) => void; // 终态恰好一次（共读与 Agent 共用）
+  // A5：Agent 运行时装配与事件出口（主进程回调 + 冒烟驱动；IPC/UI 属 A6）
+  agent?: AgentRuntimeOptions;
+  onAgentStep?: (e: AgentStepEvent) => void;
+  onAgentConfirmRequest?: (e: AgentConfirmRequest) => void;
+  onAgentRunDone?: (e: AgentRunDoneEvent) => void; // 终态恰好一次（与 onTurnDone 同路径）
 }
 
 export interface ConversationService {
@@ -83,6 +121,10 @@ export interface ConversationService {
   deleteSession(sessionId: string): Promise<boolean>; // 中止其进行中生成 → 删内存+落盘
   setEphemeral(sessionId: string, ephemeral: boolean): Promise<boolean>;
   ask(input: { sessionId: string; question: string }): Promise<AskResult>;
+  // A5：Agent 任务入口（复用 ask 校验语义：会话存在/共读与 Agent 共享每会话单在途互斥/
+  // goal 非字符串或空串安全拒绝、超 16000 确定性截断 + warn——§8.5 + 决议 #33）
+  agentAsk(input: { sessionId: string; goal: string }): Promise<AskResult>;
+  confirmTool(toolCallId: string, approve: boolean): Promise<boolean>; // L2 确认决定（A6 IPC 转发）
   abort(requestId: string): boolean; // 无匹配在途 → false（幂等）
   previewContext(): Promise<ContextPreview>; // 实时快照摘要（§6.3，不含正文）
   dispose(): void; // 退出：中止全部在途生成
@@ -115,6 +157,28 @@ export class ConversationServiceImpl implements ConversationService {
     // 启动加载磁盘会话（index.json 损坏容错在 store 内 fail-closed）
     for (const session of options.store.loadSessions()) {
       this.sessions.set(session.id, { session, messages: null });
+    }
+    // A5：确认请求可见性事件源——ConfirmManager.onPendingChange 在 Service 层接线一次
+    // （映射 runId → sessionId 经在途注册表查找；多会话并行 run 不串事件；非在途 runId
+    // 不发出——防串 run）。决议/作废（null）不需要事件（A6 UI 以 run 终态收口）。
+    const agent = options.agent;
+    if (agent !== undefined) {
+      agent.confirmManager.onPendingChange = (request) => {
+        if (request === null) return;
+        for (const [sessionId, inflight] of this.inFlight) {
+          if (inflight.requestId === request.runId) {
+            this.options.onAgentConfirmRequest?.({
+              requestId: request.runId,
+              sessionId,
+              toolCallId: request.toolCallId,
+              toolName: request.toolName,
+              summary: request.summary,
+              createdAt: request.createdAt,
+            });
+            return;
+          }
+        }
+      };
     }
   }
 
@@ -212,10 +276,47 @@ export class ConversationServiceImpl implements ConversationService {
     return { ok: true, requestId };
   }
 
+  // A5：Agent 任务入口（§8.5 + 决议 #33）。同步段完成参数/状态校验并注册在途（与共读 ask
+  // 共享同一 in-flight 注册表——决议 #25 互斥）；生成后台执行经事件回调推送。
+  async agentAsk(input: { sessionId: string; goal: string }): Promise<AskResult> {
+    if (this.disposed) return this.failResult('internal');
+    const entry = this.sessions.get(input.sessionId);
+    if (entry === undefined) return this.failResult('not-found');
+    if (this.inFlight.has(input.sessionId)) return this.failResult('busy');
+    let goal = input.goal;
+    if (typeof goal !== 'string' || goal.trim() === '') {
+      logWarn('conversation', `agentAsk 参数无效（sessionId=${input.sessionId}，goal 为空或非串）`);
+      return this.failResult('internal');
+    }
+    if (goal.length > CONTEXT_BUDGET.questionMaxChars) {
+      // §8.5/§11.1：> 16000 确定性截断 + 非敏感 warn（buildAgentGoalMessage 内为纵深防御）
+      goal = truncateWithMark(goal, CONTEXT_BUDGET.questionMaxChars);
+      logWarn(
+        'conversation',
+        `agentAsk 任务目标超长，已确定性截断（上限 ${CONTEXT_BUDGET.questionMaxChars} 字符）`,
+      );
+    }
+    const requestId = randomUUID();
+    const controller = new AbortController();
+    this.inFlight.set(input.sessionId, { requestId, controller });
+    void this.runAgentRun(entry, goal, requestId, controller).catch((err: unknown) => {
+      logError('conversation', `agentAsk 编排未预期失败（requestId=${requestId}）`, err);
+    });
+    return { ok: true, requestId };
+  }
+
+  // A5：L2 确认决定（A6 起经 IPC 转发；未知/已终结 id → false 幂等，由 ConfirmManager 保证）
+  async confirmTool(toolCallId: string, approve: boolean): Promise<boolean> {
+    const manager = this.options.agent?.confirmManager;
+    if (manager === undefined) return false;
+    return approve ? manager.approve(toolCallId) : manager.deny(toolCallId);
+  }
+
   abort(requestId: string): boolean {
     for (const entry of this.inFlight.values()) {
       if (entry.requestId === requestId) {
-        entry.controller.abort(); // 流以 aborted 终态结束（§8.3：保留部分 + 标记）
+        entry.controller.abort(); // 流/工具等待以 aborted 终态结束（保留部分 + 标记）
+        // A5：pending 确认作废由 AgentLoop 终态路径统一执行（finish → cancelAll，幂等）
         logInfo('conversation', `已请求中止（requestId=${requestId}）`);
         return true;
       }
@@ -404,6 +505,305 @@ export class ConversationServiceImpl implements ConversationService {
     }
   }
 
+  // ---------- agentAsk 编排（§8.5 时序即契约 + 决议 #33） ----------
+  // 实时快照（防串页）→ 先持久化 goal user 消息 → 跨 run 重放（完整交互组裁剪/过滤）→
+  // Provider 解析（null → not-configured 零工具执行；不支持 tool calling → 请求无 tools）→
+  // AgentLoop 运行（ToolStep 逐步持久化 + step 事件）→ 终态组装（assistant 终态消息 +
+  // AgentRunSummary + turn-done/agent-run-done 恰好一次）。
+  private async runAgentRun(
+    entry: SessionEntry,
+    goal: string,
+    requestId: string,
+    controller: AbortController,
+  ): Promise<void> {
+    const sessionId = entry.session.id;
+    const startedAt = performance.now();
+    let contextSource = buildContextSource(null, 'none', false, null);
+    let userAppended = false;
+    try {
+      // 1. 启动时刻实时采集（防串页契约，与共读 ask 同路径）
+      const activeTab = await this.options.browser.getActiveTab();
+      const snapshot =
+        activeTab === null ? null : await this.options.browser.getPageSnapshot(activeTab.id);
+      const thin = snapshot !== null && isThinSnapshot(snapshot);
+      const mode = deriveContextMode(snapshot, thin);
+      contextSource = buildContextSource(snapshot, mode, thin, activeTab?.id ?? null);
+
+      // 2. Provider 配置（决议 #20 同 ask；model 来自配置）
+      const info = selectRegisteredProviderInfo(
+        await this.options.configStore.list(),
+        listProviderKinds(),
+      );
+      const config = info === null ? null : this.options.configStore.get(info.providerId);
+
+      // 3. 先持久化 goal user 消息（含 ContextSource）——引用链先于生成落地；
+      //    重放历史取 append 之前的既有消息（不含本轮 goal——goal 由 AgentLoop 装入 transcript）
+      if (this.ensureMessages(entry).length === 0) {
+        entry.session.title = deriveTitle(goal);
+      }
+      const prior = [...this.ensureMessages(entry)];
+      this.appendMessage(entry, {
+        id: randomUUID(),
+        role: 'user',
+        content: goal,
+        createdAt: Date.now(),
+        status: 'complete',
+        contextSource,
+      });
+      userAppended = true;
+
+      // 4. Agent 运行时未装配 → 参数级失败（终态仍恰好一次）
+      const agent = this.options.agent;
+      if (agent === undefined) {
+        logWarn(
+          'conversation',
+          `Agent 运行时未装配，agentAsk 以内部错误终止（requestId=${requestId}）`,
+        );
+        this.emitAgentTerminal(entry, {
+          requestId,
+          sessionId,
+          contextSource,
+          finalText: '',
+          finalToolCalls: [],
+          status: 'error',
+          error: normalizeProviderError({
+            kind: 'internal',
+            context: { requestId, providerId: null, model: null },
+          }),
+          summary: {
+            requestId,
+            sessionId,
+            status: 'error',
+            stepsUsed: 0,
+            maxSteps: 0,
+            finalText: '',
+            toolStepCount: 0,
+          },
+          startedAt,
+        });
+        return;
+      }
+
+      // 5. resolveProvider → null → not-configured 终态（零网络请求零工具执行）
+      const provider =
+        config === null
+          ? null
+          : await (this.options.resolveProviderFn ?? resolveProvider)(
+              config,
+              this.options.credentials,
+            );
+      if (provider === null) {
+        logWarn(
+          'conversation',
+          `本轮无可用 Provider（requestId=${requestId}，sessionId=${sessionId}）`,
+        );
+        this.emitAgentTerminal(entry, {
+          requestId,
+          sessionId,
+          contextSource,
+          finalText: '',
+          finalToolCalls: [],
+          status: 'error',
+          error: normalizeProviderError({ kind: 'not-configured', requestId }),
+          summary: {
+            requestId,
+            sessionId,
+            status: 'error',
+            stepsUsed: 0,
+            maxSteps: 0,
+            finalText: '',
+            toolStepCount: 0,
+          },
+          startedAt,
+        });
+        return;
+      }
+
+      // 6. 首轮上下文：goal 消息（启动快照块，构建一次——后续轮不重复插入）+ 跨 run 重放
+      //    （完整交互组裁剪/孤立过滤，决议 #33③）
+      const goalBuilt = buildAgentGoalMessage({ goal, snapshot });
+      contextSource.warnings = [
+        ...contextSource.warnings,
+        ...goalBuilt.warnings.filter((w) => !contextSource.warnings.includes(w)),
+      ];
+
+      agent.auditRun?.(
+        formatAgentRunAuditMessage({
+          requestId,
+          status: 'running',
+          stepsUsed: 0,
+          maxSteps: agent.limits?.maxSteps ?? 12,
+        }),
+      );
+      logInfo(
+        'conversation',
+        `开始生成（agent，requestId=${requestId}，sessionId=${sessionId}，providerId=${provider.metadata.id}，model=${config?.model ?? ''}，mode=${contextSource.mode}，url=${contextSource.url ?? '无'}）`,
+      );
+
+      // 7. AgentLoop 运行（纯核心状态机；ToolStep 逐步持久化 + 事件转发）
+      const loop = new AgentLoop({
+        requestId,
+        model: config?.model ?? '',
+        goalMessage: goalBuilt.message,
+        replayMessages: replayToProviderMessages(prior),
+        tools: listTools(), // 注册表 13 工具模型可见 schema（Provider 不支持 tool calling 时不发送）
+        providerResolver: async () => provider,
+        confirmManager: agent.confirmManager,
+        browser: agent.browser,
+        ...(agent.searchProvider !== undefined ? { searchProvider: agent.searchProvider } : {}),
+        audit: agent.audit,
+        limits: agent.limits,
+        callbacks: {
+          onStreamChunk: (delta) => {
+            this.options.onStreamChunk?.({ requestId, sessionId, delta });
+          },
+          onAgentRound: (e) => {
+            // 每轮 assistant 消息（轮次文本 + 脱敏 toolCalls）先于其 tool 消息持久化（协议合法序）
+            this.appendMessage(
+              entry,
+              buildRoundAssistantMessage({
+                id: randomUUID(),
+                text: e.roundText,
+                toolCalls: e.toolCalls,
+                now: Date.now(),
+              }),
+            );
+          },
+          onAgentStep: (e) => {
+            // 每步终态：ToolStep 持久化（§9.3 精简版，fill 值/快照正文/内部参数零落盘）+ 可见性事件
+            this.appendMessage(
+              entry,
+              buildToolStepMessage({ id: randomUUID(), step: e.step, now: Date.now() }),
+            );
+            this.options.onAgentStep?.({ requestId, sessionId, step: e.step });
+          },
+        },
+      });
+      const result = await loop.run(controller.signal);
+
+      // 8. 终态组装（决议 #33⑤ 映射：done→complete；cancelled→aborted；其余→error，
+      //    权威终止理由在 AgentRunSummary.status——timeout 错误码直传）
+      const mapped = mapAgentTerminal(result);
+      const summary: AgentRunSummary = {
+        requestId,
+        sessionId,
+        status: result.status,
+        stepsUsed: result.stepsUsed,
+        maxSteps: result.maxSteps,
+        finalText: result.finalText,
+        toolStepCount: result.toolStepCount,
+      };
+      agent.auditRun?.(
+        formatAgentRunAuditMessage({
+          requestId,
+          status: result.status,
+          stepsUsed: result.stepsUsed,
+          maxSteps: result.maxSteps,
+        }),
+      );
+      this.emitAgentTerminal(entry, {
+        requestId,
+        sessionId,
+        contextSource,
+        finalText: result.finalText,
+        finalToolCalls: result.finalToolCalls,
+        status: mapped.status,
+        error: mapped.error,
+        summary,
+        startedAt,
+      });
+    } catch (err) {
+      // 未预期异常（§5）：error 日志 + 归一化 internal；尽力保住引用链与终态事件恰好一次
+      logError(
+        'conversation',
+        `agentAsk 编排未预期异常（requestId=${requestId}，sessionId=${sessionId}）`,
+        err,
+      );
+      if (!userAppended) {
+        try {
+          this.appendMessage(entry, {
+            id: randomUUID(),
+            role: 'user',
+            content: goal,
+            createdAt: Date.now(),
+            status: 'complete',
+            contextSource,
+          });
+        } catch (appendErr) {
+          logError('conversation', 'agent 异常路径 user 消息落盘失败', appendErr);
+        }
+      }
+      this.emitAgentTerminal(entry, {
+        requestId,
+        sessionId,
+        contextSource,
+        finalText: '',
+        finalToolCalls: [],
+        status: 'error',
+        error: normalizeProviderError({
+          kind: 'internal',
+          context: { requestId, providerId: null, model: null },
+        }),
+        summary: {
+          requestId,
+          sessionId,
+          status: 'error',
+          stepsUsed: 0,
+          maxSteps: 0,
+          finalText: '',
+          toolStepCount: 0,
+        },
+        startedAt,
+      });
+    } finally {
+      this.inFlight.delete(sessionId);
+    }
+  }
+
+  // Agent 终态组装 + 持久化 + 事件转发（turn-done/agent-run-done 恰好一次——所有路径必经此处）
+  private emitAgentTerminal(
+    entry: SessionEntry,
+    e: {
+      requestId: string;
+      sessionId: string;
+      contextSource: ContextSource;
+      finalText: string;
+      finalToolCalls: ProviderToolCall[];
+      status: 'complete' | 'aborted' | 'error';
+      error: NormalizedProviderError | null;
+      summary: AgentRunSummary;
+      startedAt: number;
+    },
+  ): void {
+    const message: ConversationMessage = buildFinalAgentMessage({
+      id: randomUUID(),
+      text: e.finalText, // aborted/error 保留终止轮部分文本（决议 #33④：每轮文本恰好落盘一次）
+      status: e.status,
+      ...(e.status === 'error' && e.error !== null ? { errorCode: e.error.code } : {}),
+      ...(e.finalToolCalls.length > 0 ? { toolCalls: e.finalToolCalls } : {}),
+      agentRun: e.summary,
+      now: Date.now(),
+    });
+    // 会话可能已在生成中被删除 → appendMessage 内部跳过持久化（存活守卫），事件仍发送
+    this.appendMessage(entry, message);
+
+    const elapsed = Math.round(performance.now() - e.startedAt);
+    logInfo(
+      'conversation',
+      `生成结束（agent，requestId=${e.requestId}，耗时=${elapsed}ms，status=${e.summary.status}，步数=${e.summary.stepsUsed}/${e.summary.maxSteps}${e.error !== null ? `，errorCode=${e.error.code}` : ''}）`,
+    );
+    const turnDone: TurnDoneEvent = {
+      requestId: e.requestId,
+      sessionId: e.sessionId,
+      status: e.status,
+      message,
+      error: e.error,
+      contextSource: e.contextSource,
+    };
+    this.options.onTurnDone?.(turnDone);
+    this.options.onAgentRunDone?.({ ...turnDone, run: e.summary });
+  }
+
   private async runStream(
     provider: LLMProvider,
     request: ProviderRequest | null,
@@ -548,4 +948,16 @@ export class ConversationServiceImpl implements ConversationService {
       },
     };
   }
+}
+
+// A5 终态映射（决议 #33⑤，机器可验证）：done→complete；cancelled→aborted；timeout→error
+// （errorCode=timeout 直传）；step-limit/loop-detected/no-progress/error→error（错误直传；
+// 安全终止的权威理由在 AgentRunSummary.status，A6 UI 以 run.status 为准）。
+function mapAgentTerminal(result: { status: string; error: NormalizedProviderError | null }): {
+  status: 'complete' | 'aborted' | 'error';
+  error: NormalizedProviderError | null;
+} {
+  if (result.status === 'done') return { status: 'complete', error: null };
+  if (result.status === 'cancelled') return { status: 'aborted', error: result.error };
+  return { status: 'error', error: result.error };
 }

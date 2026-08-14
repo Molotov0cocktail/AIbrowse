@@ -113,7 +113,10 @@ export function buildContext(input: ContextBuildInput): ContextBuildOutput {
   // §7.6 replay: web blocks are NOT replayed (only the current turn carries one);
   // user messages with contextSource get a one-line 「该轮引用页面」 prefix.
   // Defensive re-trim keeps the request within budget even if the caller forgot (idempotent).
-  const historyMessages: ProviderMessage[] = trimHistory(input.history, budget).map((message) => ({
+  // A5（决议 #33③）：共读重放过滤 Agent 工具轮——role='tool' 消息整体跳过、assistant 的
+  // toolCalls 不回放（共读请求无 tools 字段，重放工具组无协议意义且会引入孤立 tool 消息）。
+  const coReadHistory = input.history.filter((message) => message.role !== 'tool');
+  const historyMessages: ProviderMessage[] = trimHistory(coReadHistory, budget).map((message) => ({
     role: message.role, // program literal — never derived from any content
     content: renderHistoryMessageContent(message, budget),
   }));
@@ -186,11 +189,12 @@ function escapeAttribute(value: string): string {
 
 // §7.1 closing-tag escape: every "</" inside block content becomes "<\/", so hostile
 // text cannot close the UNTRUSTED_WEB_CONTENT block (or any section element).
-function escapeBlockContent(value: string): string {
+export function escapeBlockContent(value: string): string {
   return value.replace(/<\//g, '<\\/');
 }
 
-function serializeUntrustedBlock(
+// A5：导出供 agent-context-builder 复用（启动快照块与共读同块格式，单一事实源）
+export function serializeUntrustedBlock(
   snapshot: PageSnapshot,
   mode: ContextMode,
   sections: WebContentSection[],

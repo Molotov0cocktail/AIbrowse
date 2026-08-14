@@ -21,6 +21,9 @@ export type ConfirmOutcome = 'approved' | 'denied' | 'cancelled';
 export class ConfirmManager {
   private pending: ConfirmRequest | null = null;
   private settle: ((outcome: ConfirmOutcome) => void) | null = null;
+  // A5：pending 变化回调（确认请求可见性事件源——建立时回传请求、决议/作废时回传 null；
+  // 由 ConversationService 构造时接线，映射 runId → sessionId 后经 onAgentConfirmRequest 出口）
+  onPendingChange: ((request: ConfirmRequest | null) => void) | null = null;
 
   // 建立 pending 并返回决议 Promise。同步段内即建立 pending（调用方随后可 approve/deny）。
   // 单 pending：已有 pending 时新请求立即决议 'denied'（fail-closed 不执行、不覆盖既有
@@ -35,6 +38,7 @@ export class ConfirmManager {
       return Promise.resolve('denied');
     }
     this.pending = { runId, toolCallId, toolName, summary, createdAt: Date.now() };
+    this.onPendingChange?.(this.pending);
     return new Promise<ConfirmOutcome>((resolve) => {
       this.settle = resolve;
     });
@@ -55,6 +59,7 @@ export class ConfirmManager {
       this.settle = null;
       this.pending = null;
       settle?.('cancelled');
+      this.onPendingChange?.(null);
     }
   }
 
@@ -75,6 +80,7 @@ export class ConfirmManager {
     this.settle = null;
     this.pending = null;
     settle?.(outcome);
+    this.onPendingChange?.(null); // A5：决议/作废后 pending 清空可见
     return true;
   }
 }

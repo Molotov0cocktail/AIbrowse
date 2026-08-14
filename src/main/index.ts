@@ -469,7 +469,9 @@ function createBrowserWindow(): void {
   // 本阶段冒烟注入快照语义存储驱动。
   for (const def of BROWSER_TOOL_DEFINITIONS) registerTool(def);
   for (const def of INTERACTION_TOOL_DEFINITIONS) registerTool(def);
-  registerTool(createSearchTool(new BingSearchProvider({ browser: controller })));
+  // A5：SearchProvider 实例化后同时用于工具注册与 Agent 运行时装配（决议 #32⑥ 注入点）
+  const searchProvider = new BingSearchProvider({ browser: controller });
+  registerTool(createSearchTool(searchProvider));
   confirmManager = new ConfirmManager();
   toolExecutor = new ToolExecutor(confirmManager, createAuditLogger());
   // S4 完整装配（§3.1/§4）：AI 共读子系统接线——事件回调转发主窗口 send（事件只发
@@ -560,6 +562,35 @@ function createBrowserWindow(): void {
       if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
         win.webContents.send(IPC.ConversationTurnDone, e);
       }
+    },
+    // Third Stage A5：Agent 运行时装配（§8.1 构造注入复用 A2–A4 实例；A5 只提供主进程
+    // 事件回调 + 冒烟驱动——不新增 renderer 可调用的 IPC 通道/preload bridge/UI（A6 红线））。
+    // 事件出口：delta/turn-done 走既有共读通道；step/confirm/run-done 暂为日志可见性
+    // （A6 起接 conversation:agent-* 事件通道）。
+    agent: {
+      browser: controller, // ToolExecutionContext 唯一浏览器通道
+      confirmManager, // L2 确认状态机（A2 实例复用）
+      searchProvider, // ctx.searchProvider 注入点（决议 #32⑥；冒烟服务自建实例注入受控夹具）
+      audit: createAuditLogger(), // 每次工具调用恰好一条审计（ToolExecutor 单出口保证）
+      auditRun: (message) => logInfo('audit', message), // run 开始/终止条目（§10.1）
+    },
+    onAgentStep: (e) => {
+      logInfo(
+        'agent',
+        `工具步骤（requestId=${e.requestId}，tool=${e.step.name}，ok=${String(e.step.ok)}，decision=${e.step.decision}${e.step.errorCode !== undefined ? `，errorCode=${e.step.errorCode}` : ''}）`,
+      );
+    },
+    onAgentConfirmRequest: (e) => {
+      logInfo(
+        'agent',
+        `确认请求（requestId=${e.requestId}，tool=${e.toolName}，toolCallId=${e.toolCallId}）`,
+      );
+    },
+    onAgentRunDone: (e) => {
+      logInfo(
+        'agent',
+        `Agent run 终态（requestId=${e.requestId}，status=${e.run.status}，步数=${e.run.stepsUsed}/${e.run.maxSteps}）`,
+      );
     },
   });
   void controller.createTab(); // 初始空白标签页（浏览器常驻形态）

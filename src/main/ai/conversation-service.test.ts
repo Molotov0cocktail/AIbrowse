@@ -831,3 +831,489 @@ describe('ConversationService — previewContext', () => {
     expect(preview.readyState).toBeNull();
   });
 });
+
+// ---------- A5：agentAsk / confirmTool（Agent Runtime 接线） ----------
+
+import type { BrowserController } from '../browser/browser-controller';
+import type {
+  AgentConfirmRequest,
+  AgentRunDoneEvent,
+  AgentStepEvent,
+} from '../../shared/types/agent';
+import type { AuditEntry } from './audit-log';
+import { ConfirmManager } from './confirm-manager';
+import { registerTool, resetToolRegistry } from './tools/tool-registry';
+import type { ToolDefinition } from './tools/tool-types';
+import type { AgentLoopLimits } from './agent/agent-loop';
+
+function agentBrowser(overrides: Partial<BrowserController> = {}): BrowserController {
+  return {
+    createTab: async () => ({
+      id: 't-new',
+      title: '',
+      url: 'about:blank',
+      active: true,
+      state: 'idle',
+    }),
+    closeTab: async () => false,
+    activateTab: async () => false,
+    navigate: async () => false,
+    goBack: async () => false,
+    goForward: async () => false,
+    reload: async () => false,
+    getTabs: async () => [],
+    getActiveTab: async () => null,
+    getPageSnapshot: async () => null,
+    clickElement: async () => ({ ok: false, reason: '未接线', errorCode: 'execution-failed' }),
+    fillElement: async () => ({ ok: false, reason: '未接线', errorCode: 'execution-failed' }),
+    scrollTab: async () => ({ ok: false, reason: '未接线' }),
+    dispose: () => {},
+    ...overrides,
+  };
+}
+
+const agentToolDefs: ToolDefinition[] = [
+  {
+    name: 'browser.get_tabs',
+    description: '列出标签页',
+    parameters: { properties: {}, required: [] },
+    baseRisk: 0,
+    executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '标签页摘要' }),
+  },
+  {
+    name: 'browser.read',
+    description: '读取页面',
+    parameters: {
+      properties: { tabId: { type: 'string', description: '标签页 id（可选）' } },
+      required: [],
+    },
+    baseRisk: 0,
+    executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '页面摘要' }),
+  },
+];
+
+interface AgentServiceFixture {
+  service: ConversationServiceImpl;
+  chunks: StreamChunkEvent[];
+  turns: TurnDoneEvent[];
+  runs: AgentRunDoneEvent[];
+  steps: AgentStepEvent[];
+  confirms: AgentConfirmRequest[];
+  browser: StubBrowser;
+  configStore: ConfigStore;
+  store: ConversationStore;
+  dir: string;
+  confirm: ConfirmManager;
+  auditEntries: AuditEntry[];
+  setScript: (script: FakeProviderScript) => void;
+  lastFake: () => FakeProvider | null;
+}
+
+function makeAgentService(
+  overrides: {
+    limits?: Partial<AgentLoopLimits>;
+    browser?: StubBrowser;
+    skipConfig?: boolean; // true = 不写配置（模拟 Provider 未配置）
+  } = {},
+): AgentServiceFixture {
+  const dir = join(baseDir, `case-agent-${Math.floor(Math.random() * 1e9)}`);
+  const browser = overrides.browser ?? new StubBrowser();
+  const configStore = new ConfigStore(dir, stubCredentials);
+  if (overrides.skipConfig !== true) configStore.set(FAKE_CONFIG);
+  const store = new ConversationStore(dir);
+  const chunks: StreamChunkEvent[] = [];
+  const turns: TurnDoneEvent[] = [];
+  const runs: AgentRunDoneEvent[] = [];
+  const steps: AgentStepEvent[] = [];
+  const confirms: AgentConfirmRequest[] = [];
+  const auditEntries: AuditEntry[] = [];
+  const confirm = new ConfirmManager();
+  let script: FakeProviderScript = {};
+  let fake: FakeProvider | null = null;
+  const service = new ConversationServiceImpl({
+    browser,
+    store,
+    configStore,
+    credentials: stubCredentials,
+    resolveProviderFn: async () => {
+      fake = new FakeProvider(script);
+      return fake;
+    },
+    onStreamChunk: (e) => chunks.push(e),
+    onTurnDone: (e) => turns.push(e),
+    onAgentStep: (e) => steps.push(e),
+    onAgentConfirmRequest: (e) => confirms.push(e),
+    onAgentRunDone: (e) => runs.push(e),
+    agent: {
+      browser: agentBrowser(),
+      confirmManager: confirm,
+      audit: (entry) => auditEntries.push(entry),
+      limits: overrides.limits,
+    },
+  });
+  return {
+    service,
+    chunks,
+    turns,
+    runs,
+    steps,
+    confirms,
+    browser,
+    configStore,
+    store,
+    dir,
+    confirm,
+    auditEntries,
+    setScript: (s) => {
+      script = s;
+    },
+    lastFake: () => fake,
+  };
+}
+
+async function agentAskAndWait(f: AgentServiceFixture, sessionId: string, goal: string) {
+  const result = await f.service.agentAsk({ sessionId, goal });
+  if (!result.ok) throw new Error(`agentAsk 失败：${result.error.code} ${result.error.message}`);
+  const run = await waitForRun(f.runs, result.requestId);
+  return { result, run };
+}
+
+async function waitForRun(
+  runs: AgentRunDoneEvent[],
+  requestId: string,
+): Promise<AgentRunDoneEvent> {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const found = runs.find((t) => t.requestId === requestId);
+    if (found !== undefined) return found;
+    if (Date.now() > deadline)
+      throw new Error(`等待 agent-run-done 超时（requestId=${requestId}）`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+beforeAll(() => {
+  for (const def of agentToolDefs) registerTool(def);
+});
+afterAll(() => {
+  resetToolRegistry();
+});
+
+describe('ConversationService — agentAsk 参数校验与在途互斥', () => {
+  it('goal 非字符串/空串 → internal 拒绝（安全返回不抛异常）', async () => {
+    const f = makeAgentService();
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    const bad = await f.service.agentAsk({ sessionId: sid, goal: '   ' });
+    expect(bad.ok).toBe(false);
+    expect(bad.ok === false && bad.error.code === 'internal').toBe(true);
+    const nonString = await f.service.agentAsk({ sessionId: sid, goal: 42 as never });
+    expect(nonString.ok).toBe(false);
+    expect(f.runs.length).toBe(0); // 零生成
+  });
+
+  it('goal 超 16000 字符 → 确定性截断 + 截断后仍执行（请求中 goal 带截断标记）', async () => {
+    const f = makeAgentService();
+    const session = await f.service.createSession();
+    const long = '长'.repeat(17000);
+    f.setScript({ rounds: [[{ text: '完成' }]] });
+    const { run } = await agentAskAndWait(f, session?.id ?? '', long);
+    expect(run.status).toBe('complete');
+    const req = f.lastFake()?.getLastRequest();
+    const goalMsg = req?.messages.find((m) => m.role === 'user');
+    expect(goalMsg?.content).toContain(TRUNCATION_MARK);
+    expect(goalMsg?.content.length).toBeLessThan(long.length);
+  });
+
+  it('共读 ask 与 agentAsk 共享每会话单在途（双向互斥 busy）', async () => {
+    const f = makeAgentService();
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    // 慢脚本占用在途
+    f.setScript({ rounds: [[{ text: 'a', delayMs: 300 }, { text: 'b' }]] });
+    const first = await f.service.agentAsk({ sessionId: sid, goal: '任务甲' });
+    expect(first.ok).toBe(true);
+    const busyAsk = await f.service.ask({ sessionId: sid, question: '共读问题' });
+    expect(busyAsk.ok).toBe(false);
+    expect(busyAsk.ok === false && busyAsk.error.code === 'busy').toBe(true);
+    const busyAgent = await f.service.agentAsk({ sessionId: sid, goal: '任务乙' });
+    expect(busyAgent.ok).toBe(false);
+    await waitForRun(f.runs, first.ok ? first.requestId : '');
+  });
+
+  it('会话不存在 → not-found', async () => {
+    const f = makeAgentService();
+    const result = await f.service.agentAsk({ sessionId: 'no-such', goal: '任务' });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error.code === 'not-found').toBe(true);
+  });
+});
+
+describe('ConversationService — agentAsk 编排（Provider 未配置/不支持工具 → 零工具执行）', () => {
+  it('provider 未配置 → not-configured 终态，零工具执行零审计', async () => {
+    const f = makeAgentService({ skipConfig: true }); // 无已注册 kind 配置 → not-configured
+    const session = await f.service.createSession();
+    const { run } = await agentAskAndWait(f, session?.id ?? '', '任务');
+    expect(run.status).toBe('error');
+    expect(run.error?.code).toBe('not-configured');
+    expect(run.run?.stepsUsed).toBe(0);
+    expect(f.auditEntries.length).toBe(0);
+  });
+
+  it('Provider 不支持 tool calling → 请求无 tools 字段、零工具执行；出现 toolCalls 事件 → fail-closed internal', async () => {
+    // 子类覆盖 metadata（不得修改共享的 FAKE_PROVIDER_METADATA——模块级对象全实例共享）
+    class NoToolsProvider extends FakeProvider {
+      override readonly metadata = {
+        ...FAKE_PROVIDER_METADATA,
+        supportsToolCalling: false,
+      };
+    }
+    const dir = join(baseDir, `case-agent-notools-${Math.floor(Math.random() * 1e9)}`);
+    const browser = new StubBrowser();
+    const configStore = new ConfigStore(dir, stubCredentials);
+    configStore.set(FAKE_CONFIG);
+    const runs: AgentRunDoneEvent[] = [];
+    const auditEntries: AuditEntry[] = [];
+    const noToolsProvider = new NoToolsProvider({ rounds: [[{ text: '直接回答' }]] });
+    const service = new ConversationServiceImpl({
+      browser,
+      store: new ConversationStore(dir),
+      configStore,
+      credentials: stubCredentials,
+      resolveProviderFn: async () => noToolsProvider,
+      onAgentRunDone: (e) => runs.push(e),
+      agent: {
+        browser: agentBrowser(),
+        confirmManager: new ConfirmManager(),
+        audit: (entry) => auditEntries.push(entry),
+      },
+    });
+    const session = await service.createSession();
+    const result = await service.agentAsk({ sessionId: session?.id ?? '', goal: '任务' });
+    expect(result.ok).toBe(true);
+    const run = await waitForRun(runs, result.ok ? result.requestId : '');
+    expect(run.status).toBe('complete'); // 无工具调用事件 → 正常回答
+    const req = noToolsProvider.getLastRequest();
+    expect('tools' in (req ?? {})).toBe(false); // 请求无 tools 字段（零工具执行）
+    expect(auditEntries.length).toBe(0);
+    service.dispose();
+
+    // 不支持工具却产出 toolCalls 事件 → fail-closed internal（不把工具调用误当成功）
+    const badProvider = new NoToolsProvider({
+      rounds: [
+        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] }],
+      ],
+    });
+    const runs2: AgentRunDoneEvent[] = [];
+    const service2 = new ConversationServiceImpl({
+      browser,
+      store: new ConversationStore(dir),
+      configStore,
+      credentials: stubCredentials,
+      resolveProviderFn: async () => badProvider,
+      onAgentRunDone: (e) => runs2.push(e),
+      agent: {
+        browser: agentBrowser(),
+        confirmManager: new ConfirmManager(),
+        audit: () => {},
+      },
+    });
+    const session2 = await service2.createSession();
+    const result2 = await service2.agentAsk({ sessionId: session2?.id ?? '', goal: '任务' });
+    const run2 = await waitForRun(runs2, result2.ok ? result2.requestId : '');
+    expect(run2.status).toBe('error');
+    expect(run2.error?.code).toBe('internal');
+    expect(run2.run?.stepsUsed).toBe(0); // 零工具执行
+    service2.dispose();
+  });
+});
+
+describe('ConversationService — agentAsk 多步编排与持久化', () => {
+  it('多步 run：ToolStep 持久化 + 终态 assistant 恰好一次 + turn-done/agent-run-done 各恰好一次', async () => {
+    const f = makeAgentService();
+    f.setScript({
+      rounds: [
+        [
+          { text: '先读取。' },
+          { kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] },
+        ],
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [{ id: 'c2', name: 'browser.get_tabs', arguments: '{}' }],
+          },
+        ],
+        [{ text: '最终回答全文。' }],
+      ],
+    });
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    const { result, run } = await agentAskAndWait(f, sid, '帮我完成多步任务');
+    expect(run.status).toBe('complete');
+    expect(run.run).toMatchObject({ status: 'done', stepsUsed: 2, toolStepCount: 2 });
+    expect(run.message.content).toBe('最终回答全文。');
+    // 历史持久化：user → assistant(轮次+toolCalls) → tool → assistant(轮次) → tool → assistant(终态)
+    const history = await f.service.getHistory(sid);
+    expect(history?.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+      'tool',
+      'assistant',
+    ]);
+    const toolMessages = history?.filter((m) => m.role === 'tool') ?? [];
+    expect(toolMessages.length).toBe(2);
+    expect(toolMessages[0].toolStep?.toolCallId).toBe('c1');
+    expect(toolMessages[0].toolCallId).toBe('c1');
+    const final = history?.at(-1);
+    expect(final?.agentRun?.status).toBe('done');
+    expect(final?.agentRun?.finalText).toBe('最终回答全文。');
+    // 事件恰好一次
+    expect(f.turns.filter((t) => t.requestId === result.requestId).length).toBe(1);
+    expect(f.runs.filter((t) => t.requestId === result.requestId).length).toBe(1);
+    expect(f.steps.length).toBe(2); // 每步一次 step 事件
+    expect(f.auditEntries.length).toBe(2); // 每步恰好一条审计
+    // goal 消息先于工具轮持久化（引用链先落地）
+    expect(history?.[0].content).toBe('帮我完成多步任务');
+  });
+
+  it('ephemeral 会话：goal/ToolStep/终态均不落盘（既有规则不回归）', async () => {
+    const f = makeAgentService();
+    f.setScript({
+      rounds: [
+        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] }],
+        [{ text: '回答' }],
+      ],
+    });
+    const session = await f.service.createSession({ ephemeral: true });
+    const { run } = await agentAskAndWait(f, session?.id ?? '', '任务');
+    expect(run.status).toBe('complete');
+    expect(existsSync(join(f.dir, 'conversations', `${session?.id ?? ''}.json`))).toBe(false);
+  });
+
+  it('重启恢复（新 Service 实例同目录）：v2 历史完整读回（含 ToolStep）', async () => {
+    const dir = join(baseDir, `case-agent-reload-${Math.floor(Math.random() * 1e9)}`);
+    const browser = new StubBrowser();
+    const configStore = new ConfigStore(dir, stubCredentials);
+    configStore.set(FAKE_CONFIG);
+    const runs1: AgentRunDoneEvent[] = [];
+    let script: FakeProviderScript = {
+      rounds: [
+        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] }],
+        [{ text: '回答甲' }],
+      ],
+    };
+    const service1 = new ConversationServiceImpl({
+      browser,
+      store: new ConversationStore(dir),
+      configStore,
+      credentials: stubCredentials,
+      resolveProviderFn: async () => new FakeProvider(script),
+      onAgentRunDone: (e) => runs1.push(e),
+      agent: { browser: agentBrowser(), confirmManager: new ConfirmManager(), audit: () => {} },
+    });
+    const session = await service1.createSession();
+    const result = await service1.agentAsk({ sessionId: session?.id ?? '', goal: '任务' });
+    await waitForRun(runs1, result.ok ? result.requestId : '');
+    service1.dispose();
+    // 新实例同目录
+    script = { rounds: [[{ text: '第二次回答' }]] };
+    const service2 = new ConversationServiceImpl({
+      browser,
+      store: new ConversationStore(dir),
+      configStore,
+      credentials: stubCredentials,
+      resolveProviderFn: async () => new FakeProvider(script),
+      agent: { browser: agentBrowser(), confirmManager: new ConfirmManager(), audit: () => {} },
+    });
+    const history = await service2.getHistory(session?.id ?? '');
+    expect(history?.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+    expect(history?.find((m) => m.role === 'tool')?.toolStep?.name).toBe('browser.read');
+    expect(history?.at(-1)?.agentRun?.status).toBe('done');
+    service2.dispose();
+  });
+
+  it('abort：模型流/工具等待/pending 确认同时中止 → cancelled 终态 + pending 作废 + 部分保留', async () => {
+    const f = makeAgentService();
+    f.setScript({
+      // 第一块立即可达（部分保留依据）；第二块 60s 延迟（慢流中止点）
+      rounds: [[{ text: '第一块部分' }, { text: '更多', delayMs: 60_000 }]],
+    });
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    const result = await f.service.agentAsk({ sessionId: sid, goal: '任务' });
+    expect(result.ok).toBe(true);
+    const requestId = result.ok ? result.requestId : '';
+    // 等第一个 delta 后中止（中止感知睡眠即停——不依赖 60s 真实墙钟）
+    const deadline = Date.now() + 2000;
+    while (
+      f.chunks.filter((c) => c.requestId === requestId).length === 0 &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(f.chunks.filter((c) => c.requestId === requestId).length).toBe(1);
+    expect(f.service.abort(requestId)).toBe(true);
+    const run = await waitForRun(f.runs, requestId);
+    expect(run.status).toBe('aborted');
+    expect(run.run?.status).toBe('cancelled');
+    expect(run.message.content).toBe('第一块部分'); // 部分保留
+    // 终态后再次 abort 幂等 false
+    expect(f.service.abort(requestId)).toBe(false);
+  });
+
+  it('deleteSession 与 run 竞争：删除后不复活文件（存活守卫不回归）', async () => {
+    const f = makeAgentService();
+    f.setScript({
+      rounds: [[{ text: 'a', delayMs: 200 }, { text: 'b' }]],
+    });
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    const result = await f.service.agentAsk({ sessionId: sid, goal: '任务' });
+    expect(result.ok).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20)); // 生成进行中删除
+    expect(await f.service.deleteSession(sid)).toBe(true);
+    const messageFile = join(f.dir, 'conversations', `${sid}.json`);
+    await new Promise((resolve) => setTimeout(resolve, 400)); // 等待在途编排终态
+    expect(existsSync(messageFile)).toBe(false); // 不复活
+    expect(await f.service.getHistory(sid)).toBeNull();
+  });
+});
+
+describe('ConversationService — confirmTool 与确认事件', () => {
+  it('confirmTool 转发确认状态机（deny → denied-by-user 步骤；重跑 approve → confirmed）', async () => {
+    // 提交类 click 需语义元数据 → 本用例用「未知 id」验证转发语义 + 简单工具验证 approve/deny 通道
+    const f = makeAgentService();
+    expect(await f.service.confirmTool('no-such', true)).toBe(false); // 未知 id → false
+    expect(await f.service.confirmTool('no-such', false)).toBe(false);
+    // 真实 pending：直接经 confirmManager 建立后经 service 决议
+    const p = f.confirm.requestConfirm('req-x', 'tc-x', 'browser.click', {
+      url: 'https://example.com/',
+      detail: '提交表单',
+    });
+    expect(await f.service.confirmTool('tc-x', false)).toBe(true);
+    await expect(p).resolves.toBe('denied');
+    const p2 = f.confirm.requestConfirm('req-x', 'tc-x2', 'browser.click', { detail: 'x' });
+    expect(await f.service.confirmTool('tc-x2', true)).toBe(true);
+    await expect(p2).resolves.toBe('approved');
+    // 已终结 id 二次决议 → false（幂等）
+    expect(await f.service.confirmTool('tc-x2', true)).toBe(false);
+  });
+
+  it('L2 确认请求事件映射：非在途 runId 不发出事件（防串 run）；作废后 pending 清空', async () => {
+    // 事件映射依赖 in-flight requestId 查找（L2 事件全链路正向由 agent-loop 单测覆盖；
+    // service 层验证防串 run 与 pending 清理）
+    const f = makeAgentService();
+    const requestId = 'evt-run-not-inflight';
+    const p = f.confirm.requestConfirm(requestId, 'tc-evt', 'browser.click', {
+      url: 'https://example.com/form',
+      detail: '提交表单',
+    });
+    expect(f.confirms.length).toBe(0); // 无匹配在途 run → 不发出
+    expect(f.confirm.isPending('tc-evt')).toBe(true);
+    expect(await f.service.confirmTool('tc-evt', false)).toBe(true); // 经 service 决议
+    await expect(p).resolves.toBe('denied');
+    expect(f.confirm.getPending()).toBeNull();
+  });
+});

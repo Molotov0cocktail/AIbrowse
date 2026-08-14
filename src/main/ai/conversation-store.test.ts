@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initLogger } from '../logger';
 import type { ConversationMessage, ConversationSession } from '../../shared/types/conversation';
+import { sanitizeToolCallsForPersistence } from './agent/agent-history';
 import {
   ConversationStore,
   MESSAGE_LIMIT,
@@ -133,7 +134,8 @@ describe('serialize/parseMessagesFile — 消息文件纯格式', () => {
   it('整体不可解析 → null（非法 JSON / 非对象 / 版本不符 / messages 缺失或非数组）', () => {
     expect(parseMessagesFile('{not json')).toBeNull();
     expect(parseMessagesFile('42')).toBeNull();
-    expect(parseMessagesFile(JSON.stringify({ version: 2, messages: [] }))).toBeNull();
+    // A5 契约校准：version 2 为写入版本（合法）；未知 version 3 → null
+    expect(parseMessagesFile(JSON.stringify({ version: 3, messages: [] }))).toBeNull();
     expect(parseMessagesFile(JSON.stringify({ version: 1 }))).toBeNull();
     expect(parseMessagesFile(JSON.stringify({ version: 1, messages: 'x' }))).toBeNull();
   });
@@ -310,5 +312,327 @@ describe('ConversationStore — JSON 文件读写（§9：原子写/损坏容错
     store.deleteFiles('sess-1');
     expect(existsSync(join(storeDir, 'sess-1.json'))).toBe(false);
     expect(existsSync(join(storeDir, 'sess-1.json.tmp'))).toBe(false);
+  });
+});
+
+// ---------- A5：version 2 扩展（ToolStep 消息/读兼容 v1/零持久化断言） ----------
+
+function makeToolStepMessage(overrides: Record<string, unknown> = {}): ConversationMessage {
+  const step = {
+    id: 'tc-1',
+    toolCallId: 'tc-1',
+    name: 'browser.read',
+    ok: true,
+    contentPreview: '页面摘要',
+    decision: 'auto',
+    createdAt: 2000,
+    ...overrides,
+  };
+  return {
+    id: 'msg-tool',
+    role: 'tool',
+    toolCallId: 'tc-1',
+    content: '页面摘要',
+    createdAt: 2000,
+    status: 'complete',
+    toolStep: step as never,
+  };
+}
+
+function makeAssistantWithCalls(): ConversationMessage {
+  return {
+    id: 'msg-assist',
+    role: 'assistant',
+    content: '我先读取页面。',
+    createdAt: 1500,
+    status: 'complete',
+    toolCalls: [{ id: 'tc-1', name: 'browser.read', arguments: '{}' }],
+  };
+}
+
+describe('conversation-store v2 — 消息形状校验（role=tool / toolCalls / agentRun）', () => {
+  it('role=tool 合法消息通过（toolStep 必填、toolCallId 非空）', () => {
+    expect(validateMessageShape(makeToolStepMessage())).not.toBeNull();
+  });
+
+  it('tool 消息缺 toolStep / toolCallId → 丢弃（fail-closed）', () => {
+    expect(validateMessageShape({ ...makeToolStepMessage(), toolStep: undefined })).toBeNull();
+    expect(validateMessageShape({ ...makeToolStepMessage(), toolCallId: undefined })).toBeNull();
+    expect(validateMessageShape({ ...makeToolStepMessage(), toolCallId: '' })).toBeNull();
+  });
+
+  it('ToolStep 逐字段校验：id/name/ok/contentPreview/decision/createdAt 非法 → 丢弃', () => {
+    const bad = (step: Record<string, unknown>): void => {
+      expect(validateMessageShape(makeToolStepMessage(step))).toBeNull();
+    };
+    bad({ id: 42 });
+    bad({ toolCallId: '' });
+    bad({ name: '' });
+    bad({ ok: 'yes' });
+    bad({ contentPreview: 42 });
+    bad({ decision: 'auto-approve' }); // 不在闭合枚举
+    bad({ createdAt: 'yesterday' });
+    bad({ errorCode: 'not-a-code' }); // errorCode 枚举闭合
+  });
+
+  it('decision 闭合枚举六值（含 A2 遗留的 invalid，决议 #33 单一事实源）', () => {
+    for (const decision of [
+      'auto',
+      'auto-visible',
+      'confirmed',
+      'denied',
+      'forbidden',
+      'invalid',
+    ]) {
+      expect(
+        validateMessageShape(makeToolStepMessage({ decision })),
+        `decision=${decision}`,
+      ).not.toBeNull();
+    }
+  });
+
+  it('assistant 合法 toolCalls（id/name/arguments 全字符串）通过', () => {
+    expect(validateMessageShape(makeAssistantWithCalls())).not.toBeNull();
+  });
+
+  it('assistant toolCalls 形状非法 → 丢弃该字段保留文本（内容仍可用）', () => {
+    const bad = { ...makeAssistantWithCalls(), toolCalls: [{ id: '' }] };
+    const valid = validateMessageShape(bad);
+    expect(valid).not.toBeNull();
+    expect(valid?.toolCalls).toBeUndefined(); // 非法扩展字段被丢弃（fail-closed）
+  });
+
+  it('assistant agentRun 形状非法 → 丢弃该字段；合法则保留', () => {
+    const withRun = {
+      ...makeAssistantWithCalls(),
+      agentRun: {
+        requestId: 'r1',
+        sessionId: 's1',
+        status: 'done',
+        stepsUsed: 1,
+        maxSteps: 12,
+        finalText: '',
+        toolStepCount: 1,
+      },
+    };
+    expect(validateMessageShape(withRun)?.agentRun?.status).toBe('done');
+    const badRun = { ...makeAssistantWithCalls(), agentRun: { status: 'flying' } };
+    expect(validateMessageShape(badRun)?.agentRun).toBeUndefined();
+  });
+
+  it('未知 role 仍丢弃（v1 纪律不回归）', () => {
+    expect(validateMessageShape(makeMessage({ role: 'system' as never }))).toBeNull();
+  });
+});
+
+describe('conversation-store v2 — 文件格式（写入恒 v2，读取兼容 v1）', () => {
+  it('serializeMessagesFile 写入 version: 2', () => {
+    const text = serializeMessagesFile([makeMessage()]);
+    const parsed = JSON.parse(text) as { version: number; messages: unknown[] };
+    expect(parsed.version).toBe(2);
+    expect(parsed.messages.length).toBe(1);
+  });
+
+  it('parseMessagesFile 读 v1 文件（无迁移写回要求）', () => {
+    const v1 = JSON.stringify({ version: 1, messages: [makeMessage()] });
+    const parsed = parseMessagesFile(v1);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.messages).toEqual([makeMessage()]);
+    expect(parsed?.dropped).toBe(0);
+  });
+
+  it('parseMessagesFile 读 v2 文件（完整工具组：user → assistant toolCalls → tool）', () => {
+    const v2 = JSON.stringify({
+      version: 2,
+      messages: [makeMessage(), makeAssistantWithCalls(), makeToolStepMessage()],
+    });
+    const parsed = parseMessagesFile(v2);
+    expect(parsed?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
+    expect(parsed?.dropped).toBe(0);
+  });
+
+  it('未知 version → null（fail-closed 按空处理）', () => {
+    expect(parseMessagesFile(JSON.stringify({ version: 3, messages: [] }))).toBeNull();
+  });
+
+  it('孤立 tool 消息（无前导 assistant toolCalls 对应）→ 解析时丢弃 + dropped 计数', () => {
+    const v2 = JSON.stringify({ version: 2, messages: [makeMessage(), makeToolStepMessage()] });
+    const parsed = parseMessagesFile(v2);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.messages.map((m) => m.role)).toEqual(['user']);
+    expect(parsed?.dropped).toBe(1);
+  });
+
+  it('toolCallId 重复的 tool 消息 → 后续丢弃', () => {
+    const v2 = JSON.stringify({
+      version: 2,
+      messages: [
+        makeAssistantWithCalls(),
+        makeToolStepMessage(),
+        { ...makeToolStepMessage(), id: 'msg-tool-2' },
+      ],
+    });
+    const parsed = parseMessagesFile(v2);
+    expect(parsed?.messages.filter((m) => m.role === 'tool').length).toBe(1);
+    expect(parsed?.dropped).toBe(1);
+  });
+
+  it('完整工具组（assistant toolCalls + 同序 tool 消息）保留', () => {
+    const v2 = JSON.stringify({
+      version: 2,
+      messages: [makeMessage(), makeAssistantWithCalls(), makeToolStepMessage()],
+    });
+    const parsed = parseMessagesFile(v2);
+    expect(parsed?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
+  });
+
+  it('v1 文件整体损坏 → null（既有纪律不回归）', () => {
+    expect(parseMessagesFile('{version:1')).toBeNull();
+  });
+});
+
+describe('cropMessagesToLimit — 200 条裁剪组感知（不产生孤立 tool 消息）', () => {
+  it('裁剪边界切过工具组时整组保留（assistant toolCalls 与其 tool 消息同生共死）', () => {
+    const group = (n: number): ConversationMessage[] => [
+      {
+        id: `a${n}`,
+        role: 'assistant',
+        content: '',
+        createdAt: n,
+        status: 'complete',
+        toolCalls: [{ id: `c${n}`, name: 'browser.read', arguments: '{}' }],
+      },
+      {
+        id: `t${n}`,
+        role: 'tool',
+        toolCallId: `c${n}`,
+        content: '摘要',
+        createdAt: n,
+        status: 'complete',
+        toolStep: {
+          id: `c${n}`,
+          toolCallId: `c${n}`,
+          name: 'browser.read',
+          ok: true,
+          contentPreview: '摘要',
+          decision: 'auto',
+          createdAt: n,
+        },
+      },
+    ];
+    // 5 组（10 条）+ 首条 user；limit 8 → 裁掉 user + 第一组 → 剩余 4 组整组
+    const messages = [
+      makeMessage({ id: 'u1' }),
+      ...group(1),
+      ...group(2),
+      ...group(3),
+      ...group(4),
+      ...group(5),
+    ];
+    const cropped = cropMessagesToLimit(messages, 8);
+    expect(cropped.dropped).toBe(3);
+    expect(cropped.kept[0].role).toBe('assistant'); // 不从 tool 消息开始（组完整）
+    expect(cropped.kept[0].id).toBe('a2');
+  });
+
+  it('裁剪头部恰为孤立 tool（历史缺陷数据）→ 一并丢弃，不产生新孤立', () => {
+    const messages: ConversationMessage[] = [
+      makeToolStepMessage(),
+      makeAssistantWithCalls(),
+      makeToolStepMessage(),
+    ];
+    const cropped = cropMessagesToLimit(messages, 2);
+    expect(cropped.kept[0].role).toBe('assistant');
+    expect(cropped.kept.map((m) => m.role)).toEqual(['assistant', 'tool']);
+  });
+
+  it('不超限时不裁剪（既有行为不回归）', () => {
+    const cropped = cropMessagesToLimit([makeMessage()], MESSAGE_LIMIT);
+    expect(cropped).toEqual({ kept: [makeMessage()], dropped: 0 });
+  });
+});
+
+describe('conversation-store v2 — 零持久化红线（真实文件字节断言）', () => {
+  it('fill 原文/快照正文/Key 形态/documentId 零落盘（经 agent-history 脱敏管线落盘）', () => {
+    const dir = join(baseDir, 'case-v2-redline');
+    const store = new ConversationStore(dir);
+    const fillSecret = '机密填写值A5-9f3k';
+    const snapshotBody = '页面快照正文内容';
+    // 走真实持久化管线：assistant toolCalls 经 sanitizeToolCallsForPersistence 脱敏；
+    // user 消息只携带 ContextSource 摘要（url/title——快照正文按契约永不进入持久化结构）
+    const roundAssistant = {
+      id: 'a1',
+      role: 'assistant' as const,
+      content: '',
+      createdAt: 1500,
+      status: 'complete' as const,
+      toolCalls: sanitizeToolCallsForPersistence([
+        {
+          id: 'c-fill',
+          name: 'browser.fill',
+          arguments: JSON.stringify({ elementId: 'el-1', text: fillSecret }),
+        },
+      ]),
+    };
+    const toolStep = {
+      id: 'c-fill',
+      toolCallId: 'c-fill',
+      name: 'browser.fill',
+      ok: true,
+      contentPreview: `已填写元素 [el-1]（<input> type=text，输入 ${fillSecret.length} 个字符）`,
+      decision: 'auto-visible' as const,
+      createdAt: 2000,
+    };
+    const messages: ConversationMessage[] = [
+      makeMessage({
+        content: '目标',
+        contextSource: {
+          mode: 'snapshot',
+          tabId: null,
+          url: 'https://example.com/page',
+          title: '示例页',
+          capturedAt: 1000,
+          degraded: false,
+          thin: false,
+          selectionExcerpt: null,
+          warnings: [],
+        },
+      }),
+      roundAssistant,
+      {
+        id: 't1',
+        role: 'tool',
+        toolCallId: 'c-fill',
+        content: toolStep.contentPreview,
+        createdAt: 2000,
+        status: 'complete',
+        toolStep,
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        content: '任务完成（不含页面原文的回答摘要）',
+        createdAt: 2500,
+        status: 'complete',
+      },
+    ];
+    expect(store.saveMessages('sess-red', messages)).toBe(true);
+    const bytes = readFileSync(join(dir, 'conversations', 'sess-red.json'), 'utf8');
+    expect(bytes).not.toContain(fillSecret); // fill 原文零落盘
+    expect(bytes).not.toContain(snapshotBody); // 快照正文零落盘
+    expect(bytes).not.toContain('sk-'); // Key 形态零落盘
+    expect(bytes).not.toContain('documentId'); // 内部能力字段零落盘
+    expect(bytes).not.toContain('allowedKind'); // 执行器内部参数零落盘
+    // 脱敏形态存在（len 形式）
+    expect(bytes).toContain(`输入 ${fillSecret.length} 个字符`);
+  });
+
+  it('saveMessages 写入恒 v2（原子写/tmp 无残留不回归）', () => {
+    const dir = join(baseDir, 'case-v2-atomic');
+    const store = new ConversationStore(dir);
+    expect(store.saveMessages('sess-x', [makeMessage()])).toBe(true);
+    const text = readFileSync(join(dir, 'conversations', 'sess-x.json'), 'utf8');
+    expect((JSON.parse(text) as { version: number }).version).toBe(2);
+    expect(existsSync(join(dir, 'conversations', 'sess-x.json.tmp'))).toBe(false);
   });
 });

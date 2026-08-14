@@ -4,6 +4,9 @@
 // shared by main/preload/renderer. Note: PageSnapshot bodies are never persisted (§2).
 // Provider data types live here (not in main/) so preload/renderer can import them in S4.
 
+// A5：消息扩展字段的类型引用（ToolStep/AgentRunSummary 定义于 agent.ts §2.2）
+import type { AgentRunSummary, ToolStep } from './agent';
+
 export type ContextMode = 'selection' | 'snapshot' | 'none';
 
 export interface ContextSource {
@@ -18,16 +21,23 @@ export interface ContextSource {
   warnings: string[]; // Display-oriented Chinese warnings
 }
 
-export type ConversationMessageRole = 'user' | 'assistant';
+export type ConversationMessageRole = 'user' | 'assistant' | 'tool'; // A5 扩展 role='tool'
 
 export interface ConversationMessage {
   id: string; // crypto.randomUUID()，主进程生成
   role: ConversationMessageRole;
-  content: string; // user=question text; assistant=answer text (including aborted part)
+  content: string; // user=question text; assistant=answer text (including aborted part);
+  // tool=精简结果摘要（= toolStep.contentPreview，跨 run 重放内容）
   createdAt: number; // Main-process stamp
   status: 'complete' | 'aborted' | 'error';
   errorCode?: NormalizedErrorCode; // assistant + status=error only
   contextSource?: ContextSource; // user messages only (web context referenced by that turn)
+  // —— A5 扩展（doc/stage3/detailed-design.md §9.3 + 决议 #33）——
+  toolCallId?: string; // role='tool' 必填：关联该轮 assistant.toolCalls 的调用 id
+  toolStep?: ToolStep; // role='tool' 必填：精简步骤（§2.2 agent.ts）
+  toolCalls?: ProviderToolCall[]; // role='assistant' 可选：该轮工具调用（脱敏持久化——
+  // browser.fill 的 arguments.text 已替换；重放时按完整交互组裁剪）
+  agentRun?: AgentRunSummary; // role='assistant' 可选：Agent run 终态摘要（§8.5）
 }
 
 export interface ConversationSession {

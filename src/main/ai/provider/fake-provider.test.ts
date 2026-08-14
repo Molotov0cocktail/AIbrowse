@@ -216,3 +216,64 @@ describe('FakeProvider — getLastRequest（冒烟断言用）', () => {
     expect(provider.getLastRequest()?.requestId).toBe('req-2');
   });
 });
+
+// ---------- A5：多轮 agent 脚本（rounds 每轮消费） + getRequests 全量请求 ----------
+
+describe('FakeProvider — 多轮脚本（A5 rounds 扩展）', () => {
+  it('每次 stream 调用消费下一轮脚本；耗尽回退 chunks', async () => {
+    const provider = new FakeProvider({
+      rounds: [
+        [{ kind: 'toolCalls', toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }] }],
+        [{ text: '最终回答' }],
+      ],
+      chunks: ['回退块'],
+    });
+    const round1 = await collect(provider, REQUEST);
+    expect(round1[0]).toEqual({
+      type: 'toolCalls',
+      toolCalls: [{ id: 'c1', name: 'browser.read', arguments: '{}' }],
+    });
+    expect(round1.at(-1)).toEqual({ type: 'done' });
+    const round2 = await collect(provider, REQUEST);
+    expect(round2).toEqual([{ type: 'delta', text: '最终回答' }, { type: 'done' }]);
+    const round3 = await collect(provider, REQUEST);
+    expect(round3[0]).toEqual({ type: 'delta', text: '回退块' }); // 耗尽 → 回退 chunks
+  });
+
+  it('未提供 rounds 时行为不变（chunks 每轮重复）', async () => {
+    const provider = new FakeProvider({ chunks: ['固定'] });
+    const a = await collect(provider, REQUEST);
+    const b = await collect(provider, REQUEST);
+    expect(a).toEqual(b);
+  });
+
+  it('rounds 内 delayMs 感知中止（abort 等待中的 sleep 即停，无泄漏悬挂）', async () => {
+    const controller = new AbortController();
+    const provider = new FakeProvider({
+      rounds: [[{ text: 'x', delayMs: 60_000 }]],
+    });
+    const promise = (async () => {
+      const events: ProviderEvent[] = [];
+      for await (const event of provider.stream(REQUEST, controller.signal)) {
+        events.push(event);
+      }
+      return events;
+    })();
+    // 等 sleep 开始后中止
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    controller.abort();
+    const events = await promise;
+    expect(events).toEqual([
+      { type: 'error', error: expect.objectContaining({ code: 'aborted' }) },
+    ]);
+  });
+
+  it('getRequests 记录全部请求（按调用序）', async () => {
+    const provider = new FakeProvider();
+    expect(provider.getRequests()).toEqual([]);
+    await collect(provider, REQUEST);
+    await collect(provider, { ...REQUEST, requestId: 'req-2' });
+    expect(provider.getRequests().map((r) => r.requestId)).toEqual(['req-1', 'req-2']);
+    expect(provider.getLastRequest()?.requestId).toBe('req-2');
+  });
+});

@@ -55,3 +55,66 @@ export interface ElementSemanticsBinding {
   semantics: ElementSemantics;
   documentId: number;
 }
+
+// —— A5 扩展：Agent Runtime 类型（doc/stage3/detailed-design.md §2.2 + 决议 #33） ——
+
+// ToolStep/审计/可见性消费的决策枚举单一事实源（决议 #33，2026-08-14）：
+// 校验前失败（tool-not-found/invalid-args/防循环安全阻断）→ invalid；L3 → forbidden；
+// L2 确认 → confirmed/denied（作废按 denied 计）；L0/L1 自动 → auto/auto-visible。
+// execution-failed 保留实际权限决策（如 L0 工具执行失败 → decision=auto）。
+// audit-log.AuditDecision 为本类型别名，不另立枚举。
+export type ToolStepDecision =
+  'auto' | 'auto-visible' | 'confirmed' | 'denied' | 'forbidden' | 'invalid';
+
+export interface ToolStep {
+  // 会话内持久化精简版（§9.3；不含 fill 输入值、不含快照正文、不含内部能力参数）
+  id: string; // ToolCall.id（与 toolCallId 恒等——协议关联键）
+  toolCallId: string;
+  name: string;
+  ok: boolean;
+  contentPreview: string; // 结果摘要 ≤ 200 字符（fill 值替换为「（已输入 N 字符）」）
+  errorCode?: ToolResultErrorCode; // ok=false 时
+  decision: ToolStepDecision;
+  createdAt: number; // 主进程盖章
+}
+
+export type AgentRunStatus =
+  | 'running'
+  | 'waiting-confirm'
+  | 'done'
+  | 'cancelled'
+  | 'step-limit'
+  | 'timeout'
+  | 'loop-detected'
+  | 'no-progress'
+  | 'error';
+
+export interface AgentRunSummary {
+  requestId: string;
+  sessionId: string;
+  status: AgentRunStatus; // 终态（running/waiting-confirm 为过程态，不出现在摘要）
+  stepsUsed: number; // 已执行/试图执行的工具步数（含被拒/失败/安全阻断）
+  maxSteps: number;
+  finalText: string; // 最后一个模型轮的文本（done=最终回答；其余=终止轮部分文本）
+  toolStepCount: number; // 已记录的 ToolStep 数
+}
+
+export interface AgentConfirmRequest {
+  requestId: string;
+  sessionId: string;
+  toolCallId: string;
+  toolName: string;
+  summary: { url?: string; elementText?: string; detail: string }; // 确定性事实（程序组装）
+  createdAt: number;
+}
+
+export interface AgentStepEvent {
+  requestId: string;
+  sessionId: string;
+  step: ToolStep; // 每一步工具调用的可见性推送
+}
+
+// 复用共读 turn-done 形态（§2.2）：Agent 终态事件的权威终止理由在 run.status。
+export type AgentRunDoneEvent = import('./conversation').TurnDoneEvent & {
+  run: AgentRunSummary;
+};

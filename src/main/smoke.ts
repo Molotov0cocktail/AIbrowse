@@ -19,21 +19,26 @@ import { listTools } from './ai/tools/tool-registry';
 import type { ToolExecutor } from './ai/tools/tool-executor';
 import type { ToolExecutionContext } from './ai/tools/tool-types';
 import { BingSearchProvider } from './ai/search/search-provider';
+import type { SearchProvider } from './ai/search/search-provider';
 import { InteractionSemanticsStore } from './ai/tools/interaction-semantics';
 import type { ConfirmManager } from './ai/confirm-manager';
+import { createAuditLogger, type AuditEntry } from './ai/audit-log';
 import { ConversationServiceImpl } from './ai/conversation-service';
 import { ConversationStore, parseMessagesFile } from './ai/conversation-store';
 import { ConfigStore } from './ai/config-store';
 import { isCiphertextShape, SecureCredentialStoreImpl } from './ai/credential-store';
 import { SafeStorageCipher } from './ai/safe-storage-cipher';
 import { isThinSnapshot, SYSTEM_PROMPT } from './ai/context-builder';
+import { AGENT_SYSTEM_PROMPT } from './ai/agent/agent-context-builder';
+import type { AgentLoopLimits } from './ai/agent/agent-loop';
+import type { AgentConfirmRequest, AgentRunDoneEvent, AgentStepEvent } from '../shared/types/agent';
 import {
   CONTEXT_BUDGET,
   countSnapshotBodyChars,
   fillWebContentSections,
   filterLayoutTables,
 } from './ai/context-budget';
-import { FakeProvider, type FakeProviderScript } from './ai/provider/fake-provider';
+import { FakeProvider, type FakeChunk, type FakeProviderScript } from './ai/provider/fake-provider';
 import {
   PROVIDER_KIND_OPENAI_COMPATIBLE,
   registerProviderFactory,
@@ -3173,6 +3178,794 @@ export async function runLiveProviderSitesScenario(
   }
 }
 
+// ---------- 8.4 A5 Agent Runtime 场景（A-01～A-09，主进程驱动，FakeProvider 离线确定性） ----------
+// 完整生产链路：ConversationService.agentAsk → AgentLoop → ToolRegistry（13 工具）→
+// PermissionPolicy/ConfirmManager/ToolExecutor → 真实 BrowserController/SearchProvider
+// （受控夹具）→ 审计 → ToolStep v2 持久化 → 事件回调（主进程收集）。
+// 断言覆盖：多步任务完成（open/read/find/search/scroll/click 真实执行 + 最终回答）、
+// 协议历史合法序（assistant toolCalls → tool 消息）、搜索临时 Tab run 内零泄漏、
+// L2 确认 deny 无动作/approve 执行、慢模型与 pending 取消、step-limit、loop-detected
+// 触发次零 DOM 副作用、invalid-args 回注后修正、elementId 世代（导航后 stale）、
+// fill 隐私（审计 len=N + 日志/会话文件零原文 + password forbidden）、每步审计恰好一条。
+async function runAgentRuntimeScenarios(
+  controller: BrowserController,
+  options: SmokeOptions,
+): Promise<void> {
+  const confirm = options.confirmManager;
+  if (confirm === undefined) {
+    logWarn('smoke', 'A5 场景跳过：未装配 ConfirmManager');
+    return;
+  }
+  const pages = await startControlledPages();
+  const convDir = join(app.getPath('temp'), `aibrowse-smoke-agent-${process.pid}`);
+  const cleanupAll = async (): Promise<void> => {
+    try {
+      rmSync(convDir, { recursive: true, force: true });
+    } catch (error) {
+      logError('smoke', 'A5 冒烟临时目录清理失败', error);
+    }
+  };
+  const openAndReady = async (url: string): Promise<string> => {
+    const tab = await controller.createTab(url);
+    await waitFor(
+      async () => (await controller.getTabs()).find((t) => t.id === tab.id)?.state === 'ready',
+      10000,
+      'A5 场景页面未在 10 秒内就绪',
+    );
+    return tab.id;
+  };
+  // 页面 JS 驱动（活动 Tab = 场景页；不引入 Playwright）
+  const activeWc = (): WebContents => {
+    const wc = visibleTabView(options.uiWindow)?.webContents;
+    assert(wc !== undefined, 'A5 场景需要可见的活动 Tab 视图');
+    return wc;
+  };
+  const pageJs = async (script: string): Promise<unknown> => activeWc().executeJavaScript(script);
+  const pageLog = async (): Promise<string[]> => (await pageJs('window.__log')) as string[];
+
+  try {
+    const tabsBefore = await controller.getTabs();
+    const activeBefore = (await controller.getActiveTab())?.id ?? null;
+    assert(activeBefore !== null, 'A5 场景需要进入前存在活动 Tab');
+    const beforeIds = new Set(tabsBefore.map((t) => t.id));
+    const restoreTabs = async (label: string): Promise<void> => {
+      // 关闭场景新建的 Tab（Agent open 与手工打开），恢复进入前数量与活动 Tab
+      const extra = (await controller.getTabs()).filter((t) => !beforeIds.has(t.id));
+      for (const tab of extra) await controller.closeTab(tab.id);
+      const rest = await controller.getTabs();
+      assert(rest.length === tabsBefore.length, `${label}：Tab 数量应恢复进入前`);
+      const activeNow = (await controller.getActiveTab())?.id ?? null;
+      if (activeNow !== activeBefore) {
+        assert(await controller.activateTab(activeBefore), `${label}：活动 Tab 应能恢复进入前`);
+      }
+    };
+
+    // 前置探针：交互页 elementId（同一 HTML 文档的 elementId 分配确定性——Agent open
+    // 的页面同构；提交/文本/密码输入框 id 供 A-02/A-07/A-08 脚本使用）
+    const probeId = await openAndReady(pages.interactionUrl);
+    const probeSnap = await controller.getPageSnapshot(probeId);
+    assert(probeSnap !== null, 'A5 交互页探针快照不应为 null');
+    const elId = (items: Array<{ id: string; text: string }>, text: string): string => {
+      const item = items.find((x) => x.text === text);
+      assert(item !== undefined, `交互页应采集到「${text}」的 elementId`);
+      return item.id;
+    };
+    const navLinkId = elId(probeSnap.links, '导航链接');
+    const submitBtnId = elId(probeSnap.buttons, '提交按钮');
+    const inputByType = (type: string): string => {
+      const entry = (probeSnap.inputs ?? []).find((x) => x.type === type);
+      assert(entry !== undefined, `交互页应采集到 type=${type} 输入框的 elementId`);
+      return entry.id;
+    };
+    const textInputId = inputByType('text');
+    const passInputId = inputByType('password');
+    assert(await controller.closeTab(probeId), 'A5 探针 Tab 应关闭');
+
+    // —— A-01：端到端多步任务（open → read → find → search.web → scroll → click → read → 回答）——
+    {
+      const h = buildAgentSmokeService(
+        join(convDir, 'a01'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              { text: '我先打开目标页面。' },
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'a1-open',
+                    name: 'browser.open',
+                    arguments: JSON.stringify({ url: pages.interactionUrl }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [{ id: 'a1-read', name: 'browser.read', arguments: '{}' }],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'a1-find',
+                    name: 'browser.find',
+                    arguments: JSON.stringify({ text: '导航链接' }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'a1-search',
+                    name: 'search.web',
+                    arguments: JSON.stringify({ query: 'webcontentsview' }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [{ id: 'a1-scroll', name: 'browser.scroll', arguments: '{"dy":50}' }],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'a1-click',
+                    name: 'browser.click',
+                    arguments: JSON.stringify({ elementId: navLinkId }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [{ id: 'a1-read2', name: 'browser.read', arguments: '{}' }],
+              },
+            ],
+            [{ text: '任务完成，已到达落地页并总结。' }],
+          ],
+        },
+        undefined,
+        new BingSearchProvider({
+          browser: controller,
+          searchBaseUrl: pages.searchBaseUrl,
+          timeoutMs: 15000,
+          pollIntervalMs: 50,
+        }),
+      );
+      const session = await h.service.createSession();
+      assert(session !== null, 'A-01 应能创建会话');
+      const result = await h.service.agentAsk({
+        sessionId: session.id,
+        goal: '打开受控交互页，找到导航链接并点击，最后总结页面',
+      });
+      assert(result.ok, 'A-01 agentAsk 应返回 ok');
+      const requestId = result.ok ? result.requestId : '';
+      const run = await waitForAgentRun(h.runs, requestId);
+      assert(run.status === 'complete', `A-01 应 complete（实际 ${run.status}）`);
+      assert(run.run?.status === 'done', `A-01 run 状态应为 done（实际 ${run.run?.status}）`);
+      assert(run.run?.stepsUsed === 7, `A-01 应 7 步（实际 ${run.run?.stepsUsed}）`);
+      assert(run.message.content.includes('任务完成'), 'A-01 最终回答应包含任务完成文案');
+      assert(h.steps.length === 7, 'A-01 应有 7 个 step 事件');
+      assert(h.auditEntries.length === 7, `A-01 审计应恰好 7 条（实际 ${h.auditEntries.length}）`);
+      // ToolStep v2 持久化：user + 7×（assistant+tool）+ 终态 assistant = 16 条
+      const history = await h.service.getHistory(session.id);
+      assert(
+        history !== null && history.length === 1 + 7 * 2 + 1,
+        `A-01 历史应为 16 条（实际 ${history?.length}）`,
+      );
+      assert(
+        history?.[0].role === 'user' &&
+          history[1].role === 'assistant' &&
+          history[2].role === 'tool',
+        'A-01 历史应保持协议合法序（user → assistant toolCalls → tool）',
+      );
+      // 搜索结果回注（受控夹具内容进入 ToolResult）
+      const searchMsg = history?.find(
+        (m) => m.role === 'tool' && m.toolStep?.name === 'search.web',
+      );
+      assert(
+        searchMsg !== undefined && searchMsg.content.includes('WebContentsView 文档'),
+        'A-01 搜索结果应回注（受控夹具结果一）',
+      );
+      // 搜索临时 Tab run 内零泄漏（open 保留 1 个用户 Tab；临时搜索 Tab 已清理）
+      const tabsAfter = await controller.getTabs();
+      assert(
+        tabsAfter.length === tabsBefore.length + 1,
+        `A-01 搜索临时 Tab 应无泄漏（进入前 ${tabsBefore.length}，现在 ${tabsAfter.length}）`,
+      );
+      // 点击真实导航（nav 允许列表 → 落地页）
+      const active = await controller.getActiveTab();
+      assert(
+        active !== null && active.url === pages.interactionLandedUrl,
+        `A-01 点击应真实导航到落地页（实际 ${active?.url}）`,
+      );
+      // 请求结构：13 工具 + AGENT_SYSTEM_PROMPT 恒等 + goal 恰一次（后续轮不重复插入）
+      const req = h.lastFake()?.getLastRequest();
+      assert(req !== null && req !== undefined, 'A-01 应有 Provider 请求');
+      assert(req.tools?.length === 13, `A-01 请求应含 13 工具（实际 ${req.tools?.length}）`);
+      assert(req.system === AGENT_SYSTEM_PROMPT, 'A-01 system 应恒等 AGENT_SYSTEM_PROMPT');
+      const goalCount = req.messages.filter((m) => m.role === 'user').length;
+      assert(goalCount === 1, 'A-01 goal 应恰好一次（不随轮次重复）');
+      h.service.dispose();
+      await restoreTabs('A-01');
+    }
+
+    // —— A-02：L2 确认流（提交类 click）——deny 无动作，模型重试 approve 后执行 ——
+    {
+      const tabId = await openAndReady(pages.interactionUrl);
+      const h = buildAgentSmokeService(join(convDir, 'a02'), controller, confirm, {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [{ id: 'a2-read', name: 'browser.read', arguments: '{}' }],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'a2-click1',
+                  name: 'browser.click',
+                  arguments: JSON.stringify({ elementId: submitBtnId, tabId }),
+                },
+              ],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'a2-click2',
+                  name: 'browser.click',
+                  arguments: JSON.stringify({ elementId: submitBtnId, tabId }),
+                },
+              ],
+            },
+          ],
+          [{ text: '确认流程完成。' }],
+        ],
+      });
+      const session = await h.service.createSession();
+      assert(session !== null, 'A-02 应能创建会话');
+      const result = await h.service.agentAsk({ sessionId: session.id, goal: '提交测试表单' });
+      assert(result.ok, 'A-02 agentAsk 应返回 ok');
+      await waitFor(
+        async () => h.confirms.length === 1,
+        10000,
+        'A-02 第一个确认请求未在 10 秒内到达',
+      );
+      const c1 = h.confirms[0];
+      assert(c1.toolName === 'browser.click', 'A-02 确认请求应为 browser.click');
+      assert(c1.summary.detail.includes('确认'), 'A-02 确认摘要应为确定性程序文案');
+      assert(await h.service.confirmTool(c1.toolCallId, false), 'A-02 deny 应经 confirmTool 生效');
+      await waitFor(
+        async () => h.confirms.length === 2,
+        10000,
+        'A-02 第二个确认请求（模型重试）未在 10 秒内到达',
+      );
+      assert(
+        await h.service.confirmTool(h.confirms[1].toolCallId, true),
+        'A-02 approve 应经 confirmTool 生效',
+      );
+      const run = await waitForAgentRun(h.runs, result.ok ? result.requestId : '');
+      assert(run.run?.status === 'done', `A-02 应 done（实际 ${run.run?.status}）`);
+      const deniedStep = h.steps.find((s) => s.step.toolCallId === c1.toolCallId);
+      assert(
+        deniedStep?.step.ok === false && deniedStep.step.errorCode === 'denied-by-user',
+        'A-02 deny 的步骤应 denied-by-user',
+      );
+      assert(deniedStep?.step.decision === 'denied', 'A-02 deny 步骤决策应为 denied');
+      const approvedStep = h.steps.find((s) => s.step.toolCallId === h.confirms[1].toolCallId);
+      assert(
+        approvedStep?.step.ok === true && approvedStep.step.decision === 'confirmed',
+        'A-02 approve 的步骤应 confirmed',
+      );
+      // 页面证据：只有 approve 的点击真实执行（一次 submit 点击日志）
+      const log = await pageLog();
+      assert(
+        log.filter((x) => x === 'click:submit-btn').length === 1,
+        `A-02 应恰好一次提交点击执行（实际 ${log.filter((x) => x === 'click:submit-btn').length}）`,
+      );
+      assert(
+        h.auditEntries.filter((a) => a.decision === 'denied').length === 1,
+        'A-02 审计应恰一条 denied',
+      );
+      assert(
+        h.auditEntries.filter((a) => a.decision === 'confirmed').length === 1,
+        'A-02 审计应恰一条 confirmed',
+      );
+      h.service.dispose();
+      await restoreTabs('A-02');
+    }
+
+    // —— A-03：取消（慢模型中途停止 + pending 作废） ——
+    {
+      // 3a：慢模型流中途 abort → cancelled + 部分保留
+      const h3a = buildAgentSmokeService(join(convDir, 'a03a'), controller, confirm, {
+        rounds: [[{ text: '第一块部分' }, { text: '第二块', delayMs: 60_000 }]],
+      });
+      const session3a = await h3a.service.createSession();
+      assert(session3a !== null, 'A-03a 应能创建会话');
+      const r3a = await h3a.service.agentAsk({ sessionId: session3a.id, goal: '慢任务' });
+      assert(r3a.ok, 'A-03a agentAsk 应返回 ok');
+      const requestId3a = r3a.ok ? r3a.requestId : '';
+      await waitFor(
+        async () => h3a.chunks.filter((c) => c.requestId === requestId3a).length === 1,
+        10000,
+        'A-03a 第一块 delta 未到达',
+      );
+      assert(h3a.service.abort(requestId3a), 'A-03a abort 应返回 true');
+      const run3a = await waitForAgentRun(h3a.runs, requestId3a);
+      assert(run3a.status === 'aborted', `A-03a 应 aborted（实际 ${run3a.status}）`);
+      assert(
+        run3a.run?.status === 'cancelled',
+        `A-03a run 应 cancelled（实际 ${run3a.run?.status}）`,
+      );
+      assert(run3a.message.content === '第一块部分', 'A-03a 部分文本应保留');
+      h3a.service.dispose();
+
+      // 3b：pending 确认中 abort → pending 作废 + 无执行
+      const tabId = await openAndReady(pages.interactionUrl);
+      const h3b = buildAgentSmokeService(join(convDir, 'a03b'), controller, confirm, {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [{ id: 'a3b-read', name: 'browser.read', arguments: '{}' }],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'a3b-click',
+                  name: 'browser.click',
+                  arguments: JSON.stringify({ elementId: submitBtnId, tabId }),
+                },
+              ],
+            },
+          ],
+          [{ text: '收尾' }],
+        ],
+      });
+      const session3b = await h3b.service.createSession();
+      assert(session3b !== null, 'A-03b 应能创建会话');
+      const r3b = await h3b.service.agentAsk({ sessionId: session3b.id, goal: '待确认任务' });
+      assert(r3b.ok, 'A-03b agentAsk 应返回 ok');
+      await waitFor(async () => h3b.confirms.length === 1, 10000, 'A-03b 确认请求未到达');
+      assert(h3b.service.abort(r3b.ok ? r3b.requestId : ''), 'A-03b abort 应返回 true');
+      const run3b = await waitForAgentRun(h3b.runs, r3b.ok ? r3b.requestId : '');
+      assert(run3b.run?.status === 'cancelled', `A-03b 应 cancelled（实际 ${run3b.run?.status}）`);
+      assert(confirm.getPending() === null, 'A-03b pending 应全部作废');
+      const log3b = await pageLog();
+      assert(!log3b.includes('click:submit-btn'), 'A-03b 取消后不得执行任何工具');
+      h3b.service.dispose();
+      await restoreTabs('A-03b');
+    }
+
+    // —— A-04：step-limit（注入 maxSteps=3；绝不执行第 4 步） ——
+    {
+      const tabId = await openAndReady(pages.interactionUrl);
+      await pageJs('window.scrollTo(0, 0)');
+      const scrollRound = (id: string, dy: number): Array<Array<string | FakeChunk>> => [
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [
+              { id, name: 'browser.scroll', arguments: `{"dy":${dy},"tabId":"${tabId}"}` },
+            ],
+          },
+        ],
+      ];
+      const rounds = [
+        ...scrollRound('a4-s1', 1),
+        ...scrollRound('a4-s2', 2),
+        ...scrollRound('a4-s3', 3),
+        ...scrollRound('a4-s4', 4),
+      ];
+      const h = buildAgentSmokeService(
+        join(convDir, 'a04'),
+        controller,
+        confirm,
+        { rounds },
+        { maxSteps: 3 },
+      );
+      const session = await h.service.createSession();
+      assert(session !== null, 'A-04 应能创建会话');
+      const result = await h.service.agentAsk({ sessionId: session.id, goal: '步数上限任务' });
+      assert(result.ok, 'A-04 agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, result.ok ? result.requestId : '');
+      assert(run.run?.status === 'step-limit', `A-04 应 step-limit（实际 ${run.run?.status}）`);
+      assert(run.run?.stepsUsed === 3, `A-04 应 3 步（实际 ${run.run?.stepsUsed}）`);
+      const scrollY = (await pageJs('window.scrollY')) as number;
+      assert(scrollY === 6, `A-04 只应执行 3 次滚动（scrollY 应累计 1+2+3=6，实际 ${scrollY}）`);
+      assert(h.auditEntries.length === 3, 'A-04 审计应恰好 3 条（未执行调用零审计零伪造）');
+      h.service.dispose();
+      await restoreTabs('A-04');
+    }
+
+    // —— A-05：防循环（连续第三次同签名在执行前阻断，触发次零 DOM 副作用） ——
+    {
+      const tabId = await openAndReady(pages.interactionUrl);
+      await pageJs('window.scrollTo(0, 0)');
+      const scrollRound = (id: string): Array<Array<string | FakeChunk>> => [
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [{ id, name: 'browser.scroll', arguments: `{"dy":10,"tabId":"${tabId}"}` }],
+          },
+        ],
+      ];
+      const rounds = [...scrollRound('a5-s1'), ...scrollRound('a5-s2'), ...scrollRound('a5-s3')];
+      const h = buildAgentSmokeService(join(convDir, 'a05'), controller, confirm, { rounds });
+      const session = await h.service.createSession();
+      assert(session !== null, 'A-05 应能创建会话');
+      const result = await h.service.agentAsk({ sessionId: session.id, goal: '循环任务' });
+      assert(result.ok, 'A-05 agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, result.ok ? result.requestId : '');
+      assert(
+        run.run?.status === 'loop-detected',
+        `A-05 应 loop-detected（实际 ${run.run?.status}）`,
+      );
+      assert(
+        run.run?.stepsUsed === 3,
+        `A-05 应计 3 步（含阻断调用）（实际 ${run.run?.stepsUsed}）`,
+      );
+      const scrollY = (await pageJs('window.scrollY')) as number;
+      assert(scrollY === 20, `A-05 触发次不得执行（应只滚动 2 次 scrollY=20，实际 ${scrollY}）`);
+      const blocked = h.steps.at(-1);
+      assert(
+        blocked?.step.ok === false && blocked.step.decision === 'invalid',
+        'A-05 阻断步骤应 decision=invalid',
+      );
+      assert(
+        h.auditEntries.length === 3 && h.auditEntries.at(-1)?.decision === 'invalid',
+        'A-05 审计应恰好 3 条（阻断调用恰好一条，无缺失/重复）',
+      );
+      h.service.dispose();
+      await restoreTabs('A-05');
+    }
+
+    // —— A-06：invalid-args 回注后模型调整策略成功 ——
+    {
+      const h = buildAgentSmokeService(join(convDir, 'a06'), controller, confirm, {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'a6-bad',
+                  name: 'browser.navigate',
+                  arguments: JSON.stringify({ tabId: 'not-a-uuid', url: pages.interactionUrl }),
+                },
+              ],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [{ id: 'a6-ok', name: 'browser.get_tabs', arguments: '{}' }],
+            },
+          ],
+          [{ text: '调整后完成任务。' }],
+        ],
+      });
+      const session = await h.service.createSession();
+      assert(session !== null, 'A-06 应能创建会话');
+      const result = await h.service.agentAsk({ sessionId: session.id, goal: '调整策略任务' });
+      assert(result.ok, 'A-06 agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, result.ok ? result.requestId : '');
+      assert(run.run?.status === 'done', `A-06 应 done（实际 ${run.run?.status}）`);
+      assert(
+        h.steps[0]?.step.errorCode === 'invalid-args' && h.steps[0].step.decision === 'invalid',
+        'A-06 第一步应 invalid-args（decision=invalid）',
+      );
+      assert(h.steps[1]?.step.ok === true, 'A-06 第二步应执行成功');
+      assert(run.message.content.includes('调整后完成'), 'A-06 最终回答应完成');
+      h.service.dispose();
+    }
+
+    // —— A-07：elementId 生命周期（导航世代——旧 id stale，新快照正常执行） ——
+    {
+      const tabId = await openAndReady(pages.interactionUrl);
+      const h = buildAgentSmokeService(join(convDir, 'a07'), controller, confirm, {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                { id: 'a7-read1', name: 'browser.read', arguments: JSON.stringify({ tabId }) },
+              ],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                { id: 'a7-reload', name: 'browser.reload', arguments: JSON.stringify({ tabId }) },
+              ],
+            },
+          ],
+          // 世代递增后旧 elementId → stale-element（delay 保证 reload 的 did-navigate 已提交）
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'a7-stale',
+                  name: 'browser.click',
+                  arguments: JSON.stringify({ elementId: navLinkId, tabId }),
+                },
+              ],
+              delayMs: 500,
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                { id: 'a7-read2', name: 'browser.read', arguments: JSON.stringify({ tabId }) },
+              ],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'a7-click',
+                  name: 'browser.click',
+                  arguments: JSON.stringify({ elementId: navLinkId, tabId }),
+                },
+              ],
+            },
+          ],
+          [{ text: '世代校验完成。' }],
+        ],
+      });
+      const session = await h.service.createSession();
+      assert(session !== null, 'A-07 应能创建会话');
+      const result = await h.service.agentAsk({ sessionId: session.id, goal: '元素生命周期任务' });
+      assert(result.ok, 'A-07 agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, result.ok ? result.requestId : '');
+      assert(run.run?.status === 'done', `A-07 应 done（实际 ${run.run?.status}）`);
+      const staleStep = h.steps.find((s) => s.step.toolCallId === 'a7-stale');
+      assert(
+        staleStep?.step.ok === false && staleStep.step.errorCode === 'stale-element',
+        `A-07 旧 elementId 应 stale-element（实际 ${staleStep?.step.errorCode}）`,
+      );
+      const okStep = h.steps.find((s) => s.step.toolCallId === 'a7-click');
+      assert(okStep?.step.ok === true, 'A-07 新快照 id 应正常执行');
+      assert(okStep?.step.decision === 'auto-visible', 'A-07 新绑定点击应为 L1 导航允许列表');
+      // 传递性证明（落地页无 window.__log，不能事后读交互日志）：
+      // r5 点击成功且终态 URL 为落地页 ⇒ r5 真实导航；若 r3 曾执行过导航，r4 read 将读到
+      // 落地页（无 navLink 语义）⇒ r5 的 elementId 在语义库缺失 ⇒ L3 拒绝——r5 ok 即证 r3 零动作
+      await waitFor(
+        async () =>
+          (await controller.getTabs()).find((t) => t.id === tabId)?.url ===
+          pages.interactionLandedUrl,
+        10000,
+        'A-07 新绑定点击应真实导航到落地页',
+      );
+      h.service.dispose();
+      await restoreTabs('A-07');
+    }
+
+    // —— A-08：fill 隐私与禁止（普通输入成功脱敏；password forbidden 零写入） ——
+    // —— A-09（并入本窗口）：每步审计恰好一条 + 日志字节扫描无 Key/fill 原文 ——
+    {
+      const tabId = await openAndReady(pages.interactionUrl);
+      const FILL_SECRET = 'A5冒烟机密值9f3k';
+      const auditLogFile = getCurrentLogFilePath();
+      const auditOffsetBefore = statSync(auditLogFile).size;
+      const h = buildAgentSmokeService(join(convDir, 'a08'), controller, confirm, {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                { id: 'a8-read', name: 'browser.read', arguments: JSON.stringify({ tabId }) },
+              ],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'a8-fill',
+                  name: 'browser.fill',
+                  arguments: JSON.stringify({ elementId: textInputId, text: FILL_SECRET, tabId }),
+                },
+              ],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'a8-pass',
+                  name: 'browser.fill',
+                  arguments: JSON.stringify({ elementId: passInputId, text: '不该写入', tabId }),
+                },
+              ],
+            },
+          ],
+          [{ text: '填写完成。' }],
+        ],
+      });
+      const session = await h.service.createSession();
+      assert(session !== null, 'A-08 应能创建会话');
+      const result = await h.service.agentAsk({ sessionId: session.id, goal: '填写表单任务' });
+      assert(result.ok, 'A-08 agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, result.ok ? result.requestId : '');
+      assert(run.run?.status === 'done', `A-08 应 done（实际 ${run.run?.status}）`);
+      const fillStep = h.steps.find((s) => s.step.toolCallId === 'a8-fill');
+      assert(
+        fillStep?.step.ok === true && fillStep.step.decision === 'auto-visible',
+        'A-08 普通输入应执行成功（L1 auto-visible）',
+      );
+      const passStep = h.steps.find((s) => s.step.toolCallId === 'a8-pass');
+      assert(
+        passStep?.step.ok === false && passStep.step.errorCode === 'forbidden',
+        'A-08 密码输入应 forbidden',
+      );
+      assert(passStep?.step.decision === 'forbidden', 'A-08 密码步骤决策应为 forbidden');
+      // 页面证据：普通输入真实写入（input+change 事件）；密码零写入
+      const log = await pageLog();
+      assert(
+        log.includes('input:text-input') && log.includes('change:text-input'),
+        'A-08 普通输入事件应真实触发',
+      );
+      assert(!log.includes('input:pass-input'), 'A-08 密码输入零写入');
+      assert(
+        ((await pageJs(`document.getElementById('pass-input').value`)) as string) === '',
+        'A-08 密码值应为空',
+      );
+      // 审计脱敏：fill 值只记 len=N（原文零出现）
+      const fillAudit = h.auditEntries.find((a) => a.toolCallId === 'a8-fill');
+      assert(
+        fillAudit?.argsSummary.includes(`text=len:${FILL_SECRET.length}`) === true &&
+          !fillAudit.argsSummary.includes(FILL_SECRET),
+        'A-08 审计应只记 fill 长度',
+      );
+      assert(h.auditEntries.length === 3, 'A-08 审计应恰好 3 条（A-09 每步恰好一条）');
+      // 持久化零原文（会话文件字节扫描）
+      const messageFile = join(convDir, 'a08', 'conversations', `${session.id}.json`);
+      assert(existsSync(messageFile), 'A-08 会话文件应存在');
+      const fileBytes = readFileSync(messageFile, 'utf8');
+      assert(!fileBytes.includes(FILL_SECRET), 'A-08 会话文件不得含 fill 原文');
+      assert(!fileBytes.includes('documentId'), 'A-08 会话文件不得含内部世代字段');
+      // 日志字节扫描（A-09）：本窗口内 3 条 tool-call + 2 条 agent-run，无 fill 原文/Key 形态
+      const logTail = readFileSync(auditLogFile).subarray(auditOffsetBefore).toString('utf8');
+      assert(
+        logTail.split('[audit] tool-call').length - 1 === 3,
+        `A-09 日志应恰好 3 条工具审计（实际 ${logTail.split('[audit] tool-call').length - 1}）`,
+      );
+      assert(
+        logTail.split('[audit] agent-run').length - 1 === 2,
+        'A-09 日志应恰好 2 条 run 审计（开始/终止）',
+      );
+      assert(!logTail.includes(FILL_SECRET), 'A-09 日志不得含 fill 原文');
+      assert(!logTail.includes('sk-'), 'A-09 日志不得含 Key 形态');
+      h.service.dispose();
+      await restoreTabs('A-08');
+    }
+
+    logInfo(
+      'smoke',
+      '8.4 A5 Agent Runtime 场景 A-01～A-09 全部通过（多步任务/确认/取消/上限/防循环/错误回注/世代/fill 隐私/审计脱敏）',
+    );
+  } finally {
+    await pages.close();
+    await cleanupAll();
+  }
+}
+
+// A5 冒烟服务装配：与 buildSmokeConversationService 同模式 + Agent 运行时
+// （真实 13 工具注册表/权限/确认/审计管线经 AgentLoop 驱动；FakeProvider 多轮脚本）。
+function buildAgentSmokeService(
+  dir: string,
+  controller: BrowserController,
+  confirm: ConfirmManager,
+  script: FakeProviderScript,
+  limits?: Partial<AgentLoopLimits>,
+  searchProvider?: SearchProvider,
+): {
+  service: ConversationServiceImpl;
+  runs: AgentRunDoneEvent[];
+  steps: AgentStepEvent[];
+  confirms: AgentConfirmRequest[];
+  chunks: StreamChunkEvent[];
+  turns: TurnDoneEvent[];
+  auditEntries: AuditEntry[];
+  lastFake: () => FakeProvider | null;
+} {
+  const configStore = new ConfigStore(dir, smokeCredentials);
+  configStore.set({ providerId: 'fake', baseUrl: 'https://fake.example/v1', model: FAKE_MODEL });
+  const runs: AgentRunDoneEvent[] = [];
+  const steps: AgentStepEvent[] = [];
+  const confirms: AgentConfirmRequest[] = [];
+  const chunks: StreamChunkEvent[] = [];
+  const turns: TurnDoneEvent[] = [];
+  const auditEntries: AuditEntry[] = [];
+  let fake: FakeProvider | null = null;
+  const logAudit = createAuditLogger();
+  const service = new ConversationServiceImpl({
+    browser: controller, // 真实 BrowserController（实时快照防串页）
+    store: new ConversationStore(dir),
+    configStore,
+    credentials: smokeCredentials,
+    resolveProviderFn: async () => {
+      fake = new FakeProvider(script);
+      return fake;
+    },
+    onStreamChunk: (e) => chunks.push(e),
+    onTurnDone: (e) => turns.push(e),
+    onAgentStep: (e) => steps.push(e),
+    onAgentConfirmRequest: (e) => confirms.push(e),
+    onAgentRunDone: (e) => runs.push(e),
+    agent: {
+      browser: controller,
+      confirmManager: confirm,
+      ...(searchProvider !== undefined ? { searchProvider } : {}),
+      audit: (entry) => {
+        auditEntries.push(entry);
+        logAudit(entry);
+      },
+      auditRun: (message) => logInfo('audit', message), // run 开始/终止条目（§10.1）
+      ...(limits !== undefined ? { limits } : {}),
+    },
+  });
+  return {
+    service,
+    runs,
+    steps,
+    confirms,
+    chunks,
+    turns,
+    auditEntries,
+    lastFake: () => fake,
+  };
+}
+
+async function waitForAgentRun(
+  runs: AgentRunDoneEvent[],
+  requestId: string,
+): Promise<AgentRunDoneEvent> {
+  let found: AgentRunDoneEvent | undefined;
+  await waitFor(
+    async () => {
+      found = runs.find((t) => t.requestId === requestId);
+      return found !== undefined;
+    },
+    15000,
+    `agent-run-done 未在 15 秒内到达（requestId=${requestId}）`,
+  );
+  return found as AgentRunDoneEvent;
+}
+
 export async function runSmokeScenario(
   controller: BrowserController,
   options: SmokeOptions = {},
@@ -3945,6 +4738,14 @@ export async function runSmokeScenario(
     //     可选公网 Bing 探针（AIBROWSE_SMOKE_LIVE_SEARCH=1，需网络，不作失败）
     if (options.toolExecutor !== undefined) {
       await runSearchScenario(controller, options);
+    }
+
+    // 8.4 A5 Agent Runtime 场景 A-01～A-09（主进程驱动，FakeProvider 多轮脚本离线确定性）：
+    //     完整生产链路（agentAsk → AgentLoop → 13 工具注册表 → 权限/确认/审计 → 真实
+    //     BrowserController/SearchProvider 受控夹具）——多步任务/确认门/取消/上限/防循环/
+    //     错误回注/世代校验/fill 隐私/审计脱敏；共读既有场景（矩阵 1–12）回归在前
+    if (options.toolExecutor !== undefined && options.confirmManager !== undefined) {
+      await runAgentRuntimeScenarios(controller, options);
     }
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）

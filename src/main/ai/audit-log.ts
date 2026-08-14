@@ -5,14 +5,13 @@
 // sanitize 全量脱敏（既有规则，Key 零暴露）。
 import { TRUNCATION_MARK } from './context-budget';
 import { logInfo } from '../logger';
+import type { ToolStepDecision } from '../../shared/types/agent';
 
-export type AuditDecision =
-  | 'auto' // L0 自动
-  | 'auto-visible' // L1 自动显著展示
-  | 'confirmed' // L2 用户批准
-  | 'denied' // 确认被拒绝/作废
-  | 'forbidden' // L3 禁止
-  | 'invalid'; // 校验前失败（tool-not-found / invalid-args，未进入权限判定）
+// 决策枚举单一事实源（决议 #33）：shared/types/agent.ts 的 ToolStepDecision——
+// ToolStep/审计/UI 将来消费同一枚举；此处为别名（A2 既有导入路径不变）。
+// auto=L0 自动；auto-visible=L1 自动显著展示；confirmed=L2 用户批准；denied=确认被拒绝/作废；
+// forbidden=L3 禁止；invalid=校验前失败（tool-not-found/invalid-args/防循环安全阻断）。
+export type AuditDecision = ToolStepDecision;
 
 export interface AuditEntry {
   requestId: string;
@@ -79,4 +78,20 @@ export function createAuditLogger(
   return (entry) => {
     log('audit', formatAuditMessage(entry));
   };
+}
+
+// A5：Agent run 开始/终止审计条目（§10.1「run 开始/终止各一条（status/步数/终止理由）」——
+// 与工具调用条目同审计类目，消息前缀 agent-run 区分；不含参数/内容/Key）
+export function formatAgentRunAuditMessage(run: {
+  requestId: string;
+  status: string;
+  stepsUsed: number;
+  maxSteps: number;
+  reason?: string;
+}): string {
+  const reason = run.reason === undefined ? '' : `，理由=${run.reason}`;
+  return (
+    `agent-run（requestId=${run.requestId}，status=${run.status}，` +
+    `步数=${run.stepsUsed}/${run.maxSteps}${reason}）`
+  );
 }

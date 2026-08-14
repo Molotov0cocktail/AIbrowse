@@ -101,3 +101,47 @@ describe('ConfirmManager 确认状态机', () => {
     await expect(p).resolves.toBe('approved');
   });
 });
+
+// ---------- A5：pending 变化回调（确认请求可见性事件源，A6 UI 驱动） ----------
+
+describe('ConfirmManager — onPendingChange 回调（A5 可见性事件源）', () => {
+  it('pending 建立 → 回调（请求）；决议/作废 → 回调（null）；幂等', async () => {
+    const changes: Array<{ toolCallId: string; toolName: string } | null> = [];
+    const m = new ConfirmManager();
+    m.onPendingChange = (req) => {
+      changes.push(req === null ? null : { toolCallId: req.toolCallId, toolName: req.toolName });
+    };
+    const p = m.requestConfirm('run-1', 'call-1', 'browser.click', summary);
+    expect(changes).toEqual([{ toolCallId: 'call-1', toolName: 'browser.click' }]);
+    expect(m.deny('call-1')).toBe(true);
+    await p;
+    expect(changes).toEqual([{ toolCallId: 'call-1', toolName: 'browser.click' }, null]);
+  });
+
+  it('cancelAll 作废 → 回调（null）', async () => {
+    const changes: Array<{ toolCallId: string } | null> = [];
+    const m = new ConfirmManager();
+    m.onPendingChange = (req) => {
+      changes.push(req === null ? null : { toolCallId: req.toolCallId });
+    };
+    const p = m.requestConfirm('run-1', 'call-1', 't', summary);
+    m.cancelAll('run-1');
+    await expect(p).resolves.toBe('cancelled');
+    expect(changes).toEqual([{ toolCallId: 'call-1' }, null]);
+    m.cancelAll('run-1'); // 幂等：不再触发回调
+    expect(changes).toHaveLength(2);
+  });
+
+  it('并发请求 fail-closed（立即 denied）不触发回调（未建立 pending）', async () => {
+    const changes: unknown[] = [];
+    const m = new ConfirmManager();
+    m.onPendingChange = (req) => {
+      changes.push(req);
+    };
+    const first = m.requestConfirm('run-1', 'call-1', 't', summary);
+    await expect(m.requestConfirm('run-1', 'call-2', 't', summary)).resolves.toBe('denied');
+    expect(changes).toHaveLength(1); // 只有第一个建立了 pending
+    expect(m.approve('call-1')).toBe(true);
+    await first;
+  });
+});
