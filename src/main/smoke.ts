@@ -25,6 +25,7 @@ import { PERSIST_PARTITION } from './browser/session-manager';
 import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sqlite-driver';
 import { runMigrations } from './sources/db/migrations';
 import { SourceServiceImpl } from './sources/source-service';
+import { SourceSearchIndex } from './sources/repository/source-search-index';
 import { SEARCH_ENGINE_URL } from '../shared/url';
 import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 import { listTools } from './ai/tools/tool-registry';
@@ -7465,6 +7466,215 @@ async function runSqliteDecisionGateScenario(): Promise<void> {
   }
 }
 
+// ---------- 8.9 B-04 B3 子集——有界检索/分享模式/多语言（B3 部分，决议 #63） ----------
+// 默认矩阵自动包含（任何 AIBROWSE_SMOKE=1 运行均执行，dev+生产双场景）——真实
+// Electron 内置 node:sqlite/FTS5/trigram 实测：中/日/英命中、短查询降级（不声称
+// trigram 原生支持两字符）、分享模式矩阵（agent blocked 不可见·metadata 零 note
+// 字节·full 摘录 ≤200）、硬上限 10、URL 查询、注入串只作数据、rebuild 一致性。
+// SOURCE_TOOL_CONTENT_MAX=4000/ToolResult 序列化/UNTRUSTED_TOOL_RESULT 块接线与
+// 审计为 B4 待完成（本任务不宣称 B-04 全过）。临时目录为系统 TEMP 下 pid 专属，
+// finally 整体清理（与 B-01 同模式）；不触碰真实 userData 的 Sources 库。
+async function runSourcesRetrievalSmoke(): Promise<void> {
+  const buildKind = process.env['ELECTRON_RENDERER_URL'] ? 'dev 构建' : '生产构建产物';
+  const tempRoot = app.getPath('temp');
+  const probeRoot = join(tempRoot, `aibrowse-b3-retrieval-${process.pid}`);
+  rmSync(probeRoot, { recursive: true, force: true });
+  mkdirSync(probeRoot, { recursive: true });
+  let handle: DbHandle | null = null;
+  let service: SourceServiceImpl | null = null;
+  try {
+    const dbPath = join(probeRoot, 'retrieval.db');
+    handle = openDb(dbPath);
+    const outcome = runMigrations(handle);
+    assert(
+      outcome.state === 'migrated' && outcome.toVersion === 1,
+      'B-04 B3 子集：v0→v1 迁移应完成',
+    );
+    service = new SourceServiceImpl({ db: handle });
+
+    // 种子：中文（full+note）/日文/英文（metadata+秘密 note）/blocked + 12 条批量
+    const zh = await service.addManual({
+      scope: 'page',
+      url: 'https://example.com/zh',
+      name: '基准测试站',
+      tags: ['benchmark'],
+      groupName: 'AI组',
+      shareMode: 'full',
+      userNote: '看大模型评测优先看这里',
+      aiNote: 'AI 推断的中文备注',
+      priority: 5,
+    });
+    assert(zh.ok, 'B-04 B3 子集：中文 full 源应添加成功');
+    const zh2 = await service.addManual({
+      scope: 'page',
+      url: 'https://example.com/openai',
+      name: '开放AI',
+      shareMode: 'metadata',
+    });
+    assert(zh2.ok, 'B-04 B3 子集：短查询夹具源应添加成功');
+    const ja = await service.addManual({
+      scope: 'page',
+      url: 'https://example.com/ja',
+      name: '日本語情報源',
+      shareMode: 'full',
+    });
+    assert(ja.ok, 'B-04 B3 子集：日文源应添加成功');
+    const en = await service.addManual({
+      scope: 'page',
+      url: 'https://www.electronjs.org/docs',
+      name: 'Electron Docs',
+      shareMode: 'metadata',
+      userNote: 'META_SECRET_MARKER',
+    });
+    assert(en.ok, 'B-04 B3 子集：英文 metadata 源应添加成功');
+    const blocked = await service.addManual({
+      scope: 'page',
+      url: 'https://example.com/hidden',
+      name: '隐藏站',
+      shareMode: 'blocked',
+      userNote: 'BLOCKED_SECRET_MARKER',
+    });
+    assert(blocked.ok, 'B-04 B3 子集：blocked 源应添加成功');
+    for (let i = 0; i < 12; i += 1) {
+      const bulk = await service.addManual({
+        scope: 'page',
+        url: `https://example.com/bulk-${i}`,
+        name: `批量站点${i}`,
+      });
+      assert(bulk.ok, 'B-04 B3 子集：批量源应添加成功');
+    }
+    const blockedId = blocked.ok ? blocked.source.id : '';
+
+    // 1. 中文 ≥3 字符 FTS 主路径 + full note 摘录（≤200 码点 + provenance 字段分离）
+    const zhId = zh.ok ? zh.source.id : '';
+    const hitZh = await service.search('基准测试', { audience: 'agent' });
+    assert(
+      hitZh.ok &&
+        hitZh.results.some((r) => r.id === zhId) &&
+        hitZh.results.some((r) => (r.note?.userNote ?? '').includes('看大模型评测')),
+      'B-04 B3 子集：中文 ≥3 字符 FTS 命中且 full 摘录含 userNote（≤200 码点，provenance 字段分离）',
+    );
+    if (hitZh.ok) {
+      const zhItem = hitZh.results.find((r) => r.note !== null && r.note.userNote !== null);
+      assert(
+        zhItem !== undefined && [...(zhItem.note!.userNote ?? '')].length <= 200,
+        'B-04 B3 子集：note 摘录 ≤200 码点',
+      );
+    }
+    // 2. 中文 2 字符降级路径命中（不声称 trigram 原生支持两字符——trigram ≥3 语义）
+    const hitShort2 = await service.search('测试', { audience: 'agent' });
+    assert(
+      hitShort2.ok && hitShort2.results.some((r) => r.name === '基准测试站'),
+      'B-04 B3 子集：中文 2 字符经参数化降级路径诚实命中',
+    );
+    // 3. 1 字符仅精确：'站' 不应命中 '基准测试站'
+    const hitShort1 = await service.search('站', { audience: 'agent' });
+    assert(
+      hitShort1.ok && hitShort1.results.every((r) => r.name !== '基准测试站'),
+      'B-04 B3 子集：1 字符仅精确匹配',
+    );
+    // 4. 日文 ≥3 字符 FTS 命中
+    const hitJa = await service.search('日本語', { audience: 'agent' });
+    assert(
+      hitJa.ok && hitJa.results.some((r) => r.name === '日本語情報源'),
+      'B-04 B3 子集：日文 ≥3 字符 FTS 命中',
+    );
+    // 5. 英文命中；metadata 零 note 字节（结果 JSON 不含秘密 note 正文）
+    const hitEn = await service.search('electron', { audience: 'agent' });
+    assert(
+      hitEn.ok && hitEn.results.some((r) => r.name === 'Electron Docs'),
+      'B-04 B3 子集：英文命中',
+    );
+    assert(
+      !JSON.stringify(hitEn).includes('META_SECRET_MARKER'),
+      'B-04 B3 子集：metadata 条目零 note 字节',
+    );
+    // 6. metadata note 不参与命中（agent）；user 视角可检索到（UI 检索语义）
+    const hitMetaNote = await service.search('META_SECRET_MARKER', { audience: 'agent' });
+    assert(
+      hitMetaNote.ok && hitMetaNote.results.length === 0,
+      'B-04 B3 子集：agent 视角 metadata 的 note 不参与命中',
+    );
+    const hitMetaUser = await service.search('META_SECRET_MARKER', { audience: 'user' });
+    assert(
+      hitMetaUser.ok && hitMetaUser.results.length === 1,
+      'B-04 B3 子集：user 视角 note 检索可用',
+    );
+    // 7. blocked 完全不可见（agent）vs 可见可管理（user）；get 视同不存在
+    const hitBlocked = await service.search('隐藏', { audience: 'agent' });
+    assert(
+      hitBlocked.ok && hitBlocked.results.length === 0,
+      'B-04 B3 子集：agent 视角 blocked 搜索不可见',
+    );
+    const hitBlockedUser = await service.search('隐藏', { audience: 'user' });
+    assert(
+      hitBlockedUser.ok && hitBlockedUser.results.length === 1,
+      'B-04 B3 子集：user 视角 blocked 可见',
+    );
+    const listAgent = await service.list({ page: 0, pageSize: 20, audience: 'agent' });
+    const listUser = await service.list({ page: 0, pageSize: 20, audience: 'user' });
+    assert(
+      listAgent.ok && listUser.ok && listUser.total === listAgent.total + 1,
+      'B-04 B3 子集：list total 按 audience 过滤一致（不分页空洞）',
+    );
+    const userTotal = listUser.ok ? listUser.total : -1;
+    assert(
+      (await service.get(blockedId, 'agent')).ok === false,
+      'B-04 B3 子集：agent get blocked 视同不存在',
+    );
+    const blockedUserGet = await service.get(blockedId, 'user');
+    assert(
+      blockedUserGet.ok && blockedUserGet.source.userNote === 'BLOCKED_SECRET_MARKER',
+      'B-04 B3 子集：user get blocked 可见可管理（含 note）',
+    );
+    // 8. 硬上限 10：默认 limit 10 条；limit=11 → source-limit
+    const hitBulk = await service.search('批量站点', { audience: 'agent' });
+    assert(hitBulk.ok && hitBulk.results.length === 10, 'B-04 B3 子集：search 硬上限 10');
+    assert(
+      (await service.search('批量站点', { limit: 11, audience: 'agent' })).ok === false,
+      'B-04 B3 子集：limit=11 应 source-limit',
+    );
+    // 9. URL 查询确定性判定集合：canonicalKey 精确命中
+    const hitUrl = await service.search('https://example.com/zh', { audience: 'agent' });
+    assert(
+      hitUrl.ok && hitUrl.results.length === 1 && hitUrl.results[0]!.name === '基准测试站',
+      'B-04 B3 子集：URL 查询 canonicalKey 精确命中',
+    );
+    // 10. 注入串只作数据（FTS/LIKE 两路径）；数据完好
+    const evil = "'; DROP TABLE sources; --";
+    assert(
+      (await service.search(evil, { audience: 'user' })).ok === true,
+      'B-04 B3 子集：注入串查询安全返回',
+    );
+    const listAfter = await service.list({ page: 0, pageSize: 20, audience: 'user' });
+    assert(listAfter.ok && listAfter.total === userTotal, 'B-04 B3 子集：注入串未破坏数据');
+    // 11. 诊断性 rebuild + 主表/FTS 一致性校验（真实 node:sqlite）
+    const index = new SourceSearchIndex(handle);
+    const consistent = index.verifyFtsConsistency();
+    assert(
+      consistent.ok && consistent.missingFromIndex.length === 0,
+      'B-04 B3 子集：rebuild 前主表/FTS 一致',
+    );
+    index.rebuildFts();
+    const afterRebuild = index.verifyFtsConsistency();
+    assert(
+      afterRebuild.ok && afterRebuild.missingFromIndex.length === 0,
+      'B-04 B3 子集：rebuild 后主表/FTS 一致',
+    );
+    // 12. 重复查询输出确定性（同输入同输出）
+    const again = await service.search('基准测试', { audience: 'agent' });
+    assert(JSON.stringify(hitZh) === JSON.stringify(again), 'B-04 B3 子集：重复查询输出确定性');
+    logInfo(
+      'smoke',
+      `B-04 B3 子集（${buildKind}）：中/日/英命中 + 短查询降级 + 分享模式矩阵 + 硬上限 + rebuild 一致全部通过（SOURCE_TOOL_CONTENT_MAX=4000/ToolResult 序列化/UNTRUSTED_TOOL_RESULT 块接线/审计为 B4 待完成——决议 #63，本任务不宣称 B-04 全过）`,
+    );
+  } finally {
+    if (service !== null) service.dispose();
+    else if (handle !== null) closeDb(handle);
+    rmSync(probeRoot, { recursive: true, force: true });
+  }
+}
+
 export async function runSmokeScenario(
   controller: BrowserController,
   options: SmokeOptions = {},
@@ -8313,6 +8523,10 @@ export async function runSmokeScenario(
     //     与 liveSmoke/toolExecutor 无关——任何 AIBROWSE_SMOKE=1 运行均自动包含。
     await runSqliteDecisionGateScenario();
 
+    // 8.9 B-04 B3 子集——有界检索/分享模式/多语言（B3 部分，决议 #63）：默认矩阵
+    //     自动包含（真实 Electron 内置 node:sqlite/FTS5/trigram，dev+生产双场景）。
+    await runSourcesRetrievalSmoke();
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -8516,7 +8730,7 @@ async function runSourcesSmokeSet(service: SourceServiceImpl): Promise<void> {
 
 async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
   // 1. 跨进程读回：3 个 source（origin 示例站点、page benchmark、change set 新增 example.org）
-  const list = await service.list({ page: 0, pageSize: 20 });
+  const list = await service.list({ page: 0, pageSize: 20, audience: 'user' });
   assert(
     list.ok && list.total === 3,
     `B-02 check：读回应为 3 个 source（实际 ${list.ok ? list.total : '读回失败'}）`,
@@ -8535,7 +8749,7 @@ async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
     s1!.name === '示例站点' && s1!.priority === 5 && s1!.shareMode === 'full',
     'B-02 check：s1 字段读回一致',
   );
-  const s1Full = await service.get(s1!.id);
+  const s1Full = await service.get(s1!.id, 'user');
   assert(
     s1Full.ok && s1Full.source.version === 2 && s1Full.source.groupName === '重命名组',
     'B-02 check：s1 版本/分组读回一致',
@@ -8545,6 +8759,13 @@ async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
     'B-02 check：s1 tags 读回一致',
   );
   assert(s2!.enabled === true, 'B-02 check：s2 已由 change set restore（跨进程生效）');
+  // 2.1 B3 补充证据（不改动 B-02 原有断言）：重启后经 B3 检索路径命中 s1
+  // （'示例' 2 字符 → 参数化子串降级路径；跨进程新连接查询证据）
+  const b3Hit = await service.search('示例', { audience: 'user' });
+  assert(
+    b3Hit.ok && b3Hit.results.some((r) => r.id === s1!.id),
+    'B-02 check：重启后经 B3 检索命中 s1（跨进程查询证据）',
+  );
   // 3. journal 跨进程读回
   const undoable = await service.listUndoable();
   assert(undoable.length >= 5, `B-02 check：journal 跨进程读回应 ≥5（实际 ${undoable.length}）`);
@@ -8554,7 +8775,7 @@ async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
   // （list 默认过滤 deleted_at IS NULL——决议 #51，故列表总数 1；s2 经 get 断言 disabled）
   const undo = await service.undoChange(csEntry!.idempotencyKey);
   assert(undo.ok, 'B-02 check：重启后 Undo 应成功');
-  const after = await service.list({ page: 0, pageSize: 20 });
+  const after = await service.list({ page: 0, pageSize: 20, audience: 'user' });
   assert(
     after.ok && after.total === 1,
     `B-02 check：Undo 后列表应剩 1 个 source（实际 ${after.ok ? after.total : '读回失败'}）`,
@@ -8563,7 +8784,7 @@ async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
     after.ok && after.items.every((i) => i.canonicalKey !== 'https://example.org/docs'),
     'B-02 check：s3 已被 Undo 移除',
   );
-  const s2After = await service.get(s2!.id);
+  const s2After = await service.get(s2!.id, 'user');
   assert(
     s2After.ok && s2After.source.enabled === false,
     'B-02 check：s2 恢复到 change set 前（disabled）状态',
@@ -8586,7 +8807,7 @@ async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
     !conflict.ok && conflict.errorCode === 'source-undo-conflict',
     'B-02 check：版本冲突应拒绝（source-undo-conflict）',
   );
-  const s2Still = await service.get(s2!.id);
+  const s2Still = await service.get(s2!.id, 'user');
   assert(s2Still.ok && s2Still.source.enabled === false, 'B-02 check：冲突拒绝后 s2 状态未被覆盖');
   logInfo(
     'smoke',

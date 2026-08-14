@@ -129,7 +129,9 @@ export interface ManualPatchValidation {
 
 export function stripControlChars(text: string): string {
   // 剔除全部 C0（仅保留 \t）/DEL/NEL/零宽/bidi/行段分隔符/BOM——对齐 logger 家族；
-  // \n/\r 一并剔除（name/note 为单行字段，折叠为直接剔除，确定性）
+  // \n/\r 一并剔除（name/note 为单行字段，折叠为直接剔除，确定性）。
+  // B3 补齐（§8.2 note 返回剔除双向控制符）：U+061C（阿拉伯字母标记）与
+  // U+2066–U+2069（LRI/RLI/FSI/PDI bidi 隔离控制符）——原实现未覆盖，敌手测试固化。
   let out = '';
   for (const ch of text) {
     const cp = ch.codePointAt(0) ?? 0;
@@ -140,6 +142,8 @@ export function stripControlChars(text: string): string {
       (cp >= 0x200b && cp <= 0x200f) || // 零宽 + 双向控制符
       (cp >= 0x2028 && cp <= 0x202e) || // 行段分隔符 + 双向嵌入
       cp === 0x2060 || // 词连接符
+      cp === 0x061c || // 阿拉伯字母标记（B3 补齐）
+      (cp >= 0x2066 && cp <= 0x2069) || // bidi 隔离控制符（B3 补齐）
       cp === 0xfeff; // BOM
     if (!strip) out += ch;
   }

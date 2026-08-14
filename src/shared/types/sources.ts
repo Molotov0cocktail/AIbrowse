@@ -6,6 +6,10 @@
 
 export type SourceScope = 'origin' | 'page';
 export type SourceShareMode = 'full' | 'metadata' | 'blocked';
+// 决议 #58：显式读取视角（必填，无缺省）——agent 视角 blocked 完全不可见；
+// user 视角 blocked 可见可管理。B4/B5 主进程适配器硬编码，模型参数与
+// renderer 原始 payload 均不能自行选择。
+export type SourceReadAudience = 'user' | 'agent';
 export type SourceTrustValue = 'official' | 'primary' | 'secondary' | 'community' | 'unknown';
 export type SourceTrustAssertedBy = 'user' | 'ai';
 export type SourceTrustVerification = 'asserted' | 'unverified';
@@ -134,15 +138,27 @@ export interface SourceListItem {
   trust: SourceTrust;
   shareMode: SourceShareMode;
   lastUsedAt: string | null;
-  // 不含 note 正文（B3 按分享模式对命中少量条目补充有界 note + provenance）
+  // 永不含 note 正文（决议 #59）——note 摘录只在 SourceSearchItem 上按 §8.2 规则出现
 }
 
 export interface SourceView extends Source {
   groupName: string | null; // 服务层视图（UI 手工路径需要 version/deletedAt；工具序列化按 §8.1 裁剪）
 }
 
+// 决议 #59：搜索结果条目独立类型——note 摘录只在此类型出现，SourceListItem 永不含 note
+export interface SourceSearchNote {
+  userNote: string | null; // ≤200 字符截断 + 控制/bidi 剔除后的正文（null = 无）
+  aiNote: string | null;
+}
+
+export interface SourceSearchItem extends SourceListItem {
+  // note 仅 agent 视角 + shareMode='full' + 对应 note 非空时携带；
+  // user 视角与 metadata 条目恒 null（零 note 字节，决议 #59/#58）
+  note: SourceSearchNote | null;
+}
+
 export type SourceSearchResult =
-  | { ok: true; query: string; results: SourceListItem[] }
+  | { ok: true; query: string; results: SourceSearchItem[] }
   | { ok: false; errorCode: SourceErrorCode };
 
 export type SourceListResult =
@@ -199,15 +215,19 @@ export interface UndoableChange {
 
 export interface SourceService {
   readonly id: string; // 'sources'
-  // 检索（§8；B2 为参数化精确/前缀最小实现，FTS 归 B3）
-  search(query: string, opts: { limit?: number }): Promise<SourceSearchResult>; // 默认/硬上限 10
+  // 检索（§8；audience 必填——决议 #58：agent 视角 blocked 不可见，user 视角可见可管理）
+  search(
+    query: string,
+    opts: { limit?: number; audience: SourceReadAudience },
+  ): Promise<SourceSearchResult>; // 默认/硬上限 10
   list(opts: {
     page: number;
     pageSize?: number;
     groupId?: string | null;
     enabledOnly?: boolean;
+    audience: SourceReadAudience;
   }): Promise<SourceListResult>; // 每页 ≤20
-  get(id: string): Promise<SourceResult>;
+  get(id: string, audience: SourceReadAudience): Promise<SourceResult>;
   // 写入（Agent change set，§7）
   applyChangeSet(
     cs: SourceChangeSet,

@@ -99,6 +99,7 @@ export interface SourceListFilter {
   offset: number;
   groupId?: string | null; // undefined = 不过滤；null = 未分组；string = 该组
   enabledOnly?: boolean;
+  excludeBlocked?: boolean; // B3（决议 #58）：agent 视角 list 过滤 blocked（参数化开关）
 }
 
 export type SourceInsert = SourceRow;
@@ -164,16 +165,19 @@ const SQL_DELETE_FTS = `INSERT INTO sources_fts (sources_fts, rowid, name, url, 
 const SQL_UPSERT_USAGE = `INSERT INTO usage_events (source_id, outcome, recorded_at) VALUES (?, ?, ?)
   ON CONFLICT(source_id) DO UPDATE SET outcome = excluded.outcome, recorded_at = excluded.recorded_at`;
 // groupId 三态：mode 0 = 不过滤；mode 1 = 未分组（group_id IS NULL）；mode 2 = 指定组
+// excludeBlocked：B3（决议 #58）agent 视角参数化开关（?=0 不过滤 / 1 过滤 blocked）
 const SQL_LIST_SOURCES = `SELECT s.*, g.name AS group_name FROM sources s
   LEFT JOIN source_groups g ON g.id = s.group_id
   WHERE s.deleted_at IS NULL
     AND (? = 0 OR (? = 1 AND s.group_id IS NULL) OR (? = 2 AND s.group_id = ?))
     AND (? = 0 OR s.enabled = 1)
+    AND (? = 0 OR s.share_mode <> 'blocked')
   ORDER BY s.created_at DESC, s.id ASC LIMIT ? OFFSET ?`;
 const SQL_COUNT_SOURCES = `SELECT COUNT(*) AS n FROM sources s
   WHERE s.deleted_at IS NULL
     AND (? = 0 OR (? = 1 AND s.group_id IS NULL) OR (? = 2 AND s.group_id = ?))
-    AND (? = 0 OR s.enabled = 1)`;
+    AND (? = 0 OR s.enabled = 1)
+    AND (? = 0 OR s.share_mode <> 'blocked')`;
 const SQL_SEARCH_SOURCES = `SELECT s.*, g.name AS group_name FROM sources s
   LEFT JOIN source_groups g ON g.id = s.group_id
   WHERE s.deleted_at IS NULL AND (
@@ -285,17 +289,32 @@ export class SourceRepository {
   listSources(filter: SourceListFilter): SourceListRow[] {
     const { mode, value } = groupFilterParams(filter.groupId);
     const enabledOnly = filter.enabledOnly === true ? 1 : 0;
+    const excludeBlocked = filter.excludeBlocked === true ? 1 : 0;
     return this.handle
       .prepare(SQL_LIST_SOURCES)
-      .all(mode, mode, mode, value, enabledOnly, filter.limit, filter.offset) as SourceListRow[];
+      .all(
+        mode,
+        mode,
+        mode,
+        value,
+        enabledOnly,
+        excludeBlocked,
+        filter.limit,
+        filter.offset,
+      ) as SourceListRow[];
   }
 
-  countSources(filter: { groupId?: string | null; enabledOnly?: boolean }): number {
+  countSources(filter: {
+    groupId?: string | null;
+    enabledOnly?: boolean;
+    excludeBlocked?: boolean;
+  }): number {
     const { mode, value } = groupFilterParams(filter.groupId);
     const enabledOnly = filter.enabledOnly === true ? 1 : 0;
+    const excludeBlocked = filter.excludeBlocked === true ? 1 : 0;
     const row = this.handle
       .prepare(SQL_COUNT_SOURCES)
-      .get(mode, mode, mode, value, enabledOnly) as { n: number };
+      .get(mode, mode, mode, value, enabledOnly, excludeBlocked) as { n: number };
     return row.n;
   }
 

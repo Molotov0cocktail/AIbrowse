@@ -14,6 +14,7 @@ import { logWarn } from '../logger';
 import { normalizeSourceUrl } from './domain/source-canonical';
 import {
   isUuidShape,
+  stripControlChars,
   validateChangeSet,
   validateManualAddInput,
   validateManualPatch,
@@ -23,12 +24,22 @@ import {
   type NormalizedPatch,
 } from './domain/source-change-set';
 import {
+  SEARCH_CANDIDATE_MAX,
+  buildFtsQuery,
+  buildNoteExcerpt,
+  classifySearchQuery,
+  compareSearchItems,
+  computeMatchTier,
+  normalizeSearchQuery,
+} from './domain/source-search-query';
+import {
   ChangeJournal,
   JOURNAL_MAX_ENTRIES,
   parseSnapshotMap,
   serializeSnapshotMap,
   type SnapshotMap,
 } from './repository/change-journal';
+import { SourceSearchIndex } from './repository/source-search-index';
 import {
   RepositoryError,
   SourceRepository,
@@ -46,7 +57,9 @@ import type {
   SourceErrorCode,
   SourceListItem,
   SourceListResult,
+  SourceReadAudience,
   SourceResult,
+  SourceSearchItem,
   SourceSearchResult,
   SourceService,
   SourceUsageOutcome,
@@ -113,6 +126,7 @@ export class SourceServiceImpl implements SourceService {
 
   private readonly repo: SourceRepository;
   private readonly journal: ChangeJournal;
+  private readonly index: SourceSearchIndex;
   private readonly nowMs: () => number;
   private readonly tokenIssuer: InMemoryConfirmTokenIssuer;
   private readonly dbHandle: DbHandle;
@@ -123,13 +137,20 @@ export class SourceServiceImpl implements SourceService {
     this.nowMs = options.now ?? (() => Date.now());
     this.repo = new SourceRepository(options.db);
     this.journal = new ChangeJournal(options.db, this.nowMs);
+    this.index = new SourceSearchIndex(options.db);
     this.tokenIssuer = new InMemoryConfirmTokenIssuer(this.nowMs);
   }
 
-  // --- 检索/列表/get（B2 最小实现；FTS 检索与分享模式过滤归 B3） ---
+  // --- 检索/列表/get（B3 完整实现：audience 必填（决议 #58）+ FTS/LIKE 分流（决议 #60）
+  //     + 档位排序全序（决议 #61）+ FTS 不可用降级（决议 #62）+ note 摘录（决议 #59）） ---
 
-  async search(query: string, opts: { limit?: number }): Promise<SourceSearchResult> {
+  async search(
+    query: string,
+    opts: { limit?: number; audience: SourceReadAudience },
+  ): Promise<SourceSearchResult> {
     if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    const audience = this.validAudience(opts?.audience);
+    if (audience === null) return { ok: false, errorCode: 'source-invalid-change' };
     if (
       typeof query !== 'string' ||
       query.trim() === '' ||
@@ -141,9 +162,36 @@ export class SourceServiceImpl implements SourceService {
     if (!Number.isInteger(limit) || limit < 1)
       return { ok: false, errorCode: 'source-invalid-change' };
     if (limit > SEARCH_LIMIT_MAX) return { ok: false, errorCode: 'source-limit' };
+    const normalized = normalizeSearchQuery(query);
+    if (normalized === null) return { ok: false, errorCode: 'source-invalid-change' };
     try {
-      const rows = this.repo.searchBasic(query, limit);
-      return { ok: true, query, results: rows.map((r) => this.buildListItem(r)) };
+      const rows = this.searchCandidatesSafe(normalized, audience);
+      const ranked = rows
+        .map((row) => this.toSearchItem(row, normalized, audience))
+        .filter((x): x is NonNullable<typeof x> => x !== null);
+      // 确定性排序（决议 #61 全序）：档位不可跨档 + priority/recency 同档内 +
+      // lastUsedAt=null 末位 + scope/canonicalKey/id 收尾——同输入同输出
+      ranked.sort((a, b) =>
+        compareSearchItems(
+          {
+            tier: a.tier,
+            priority: a.item.priority,
+            lastUsedAt: a.item.lastUsedAt,
+            scope: a.item.scope,
+            canonicalKey: a.item.canonicalKey,
+            id: a.item.id,
+          },
+          {
+            tier: b.tier,
+            priority: b.item.priority,
+            lastUsedAt: b.item.lastUsedAt,
+            scope: b.item.scope,
+            canonicalKey: b.item.canonicalKey,
+            id: b.item.id,
+          },
+        ),
+      );
+      return { ok: true, query, results: ranked.slice(0, limit).map((x) => x.item) };
     } catch (err) {
       return this.unavailable('search', err);
     }
@@ -154,8 +202,11 @@ export class SourceServiceImpl implements SourceService {
     pageSize?: number;
     groupId?: string | null;
     enabledOnly?: boolean;
+    audience: SourceReadAudience;
   }): Promise<SourceListResult> {
     if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    const audience = this.validAudience(opts?.audience);
+    if (audience === null) return { ok: false, errorCode: 'source-invalid-change' };
     const page = opts?.page;
     if (typeof page !== 'number' || !Number.isInteger(page) || page < 0) {
       return { ok: false, errorCode: 'source-invalid-change' };
@@ -169,7 +220,11 @@ export class SourceServiceImpl implements SourceService {
       return { ok: false, errorCode: 'source-invalid-change' };
     }
     try {
-      const filter = { groupId, enabledOnly: opts?.enabledOnly };
+      const filter = {
+        groupId,
+        enabledOnly: opts?.enabledOnly,
+        excludeBlocked: audience === 'agent', // 决议 #58：agent 视角 blocked 不列出
+      };
       const total = this.repo.countSources(filter);
       const rows = this.repo.listSources({ limit: pageSize, offset: page * pageSize, ...filter });
       return { ok: true, page, pageSize, total, items: rows.map((r) => this.buildListItem(r)) };
@@ -178,13 +233,24 @@ export class SourceServiceImpl implements SourceService {
     }
   }
 
-  async get(id: string): Promise<SourceResult> {
+  async get(id: string, audience: SourceReadAudience): Promise<SourceResult> {
     if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    if (this.validAudience(audience) === null) {
+      return { ok: false, errorCode: 'source-invalid-change' };
+    }
     if (!isUuidShape(id)) return { ok: false, errorCode: 'source-invalid-change' };
     try {
       const row = this.repo.getSourceById(id);
       if (row === null) return { ok: false, errorCode: 'source-not-found' };
-      return { ok: true, source: this.buildView(row) };
+      if (audience === 'agent' && row.share_mode === 'blocked') {
+        return { ok: false, errorCode: 'source-not-found' }; // 视同不存在（决议 #58，错误差异不泄漏）
+      }
+      const view = this.buildView(row);
+      if (audience === 'agent' && row.share_mode === 'metadata') {
+        view.userNote = ''; // metadata：get 无 note 正文（零 note 字节，§8.2）
+        view.aiNote = '';
+      }
+      return { ok: true, source: view };
     } catch (err) {
       return this.unavailable('get', err);
     }
@@ -711,6 +777,87 @@ export class SourceServiceImpl implements SourceService {
     return { ok: false, errorCode: 'source-unavailable' };
   }
 
+  // --- B3 检索内部实现 ---
+
+  private validAudience(value: unknown): SourceReadAudience | null {
+    return value === 'user' || value === 'agent' ? value : null;
+  }
+
+  // 候选检索（决议 #62）：≥3 字符且 FTS 可用 → fts；FTS 建库后被破坏/MATCH 失败 →
+  // 降级 like-long（不伪装成功——降级路径为完整交付实现，note 检索随之不可用并
+  // 如实登记）；无 ≥3 字符 token → like-long；数据库整体不可用 → 异常上抛归一化
+  // source-unavailable。日志不含查询串与 note 正文（ST-08）。
+  private searchCandidatesSafe(normalized: string, audience: SourceReadAudience): SourceListRow[] {
+    let kind = classifySearchQuery(normalized);
+    let ftsQuery: string | null = null;
+    if (kind === 'fts') {
+      const built = buildFtsQuery(normalized);
+      if (!built.ok) {
+        kind = 'like-long'; // 无 ≥3 字符 token（trigram 语义不可达）
+      } else {
+        ftsQuery = built.query;
+      }
+    }
+    const candidateMax = SEARCH_CANDIDATE_MAX;
+    if (kind === 'fts' && this.index.isFtsAvailable()) {
+      try {
+        return this.index.searchCandidates({
+          audience,
+          kind,
+          query: normalized,
+          ftsQuery,
+          candidateMax,
+        });
+      } catch (err) {
+        logWarn('sources', 'search：FTS 路径失败，降级 LIKE 路径（不伪装成功，如实登记）', err);
+        kind = 'like-long';
+        ftsQuery = null;
+      }
+    } else if (kind === 'fts') {
+      kind = 'like-long'; // 建库后 FTS 表缺失/破坏（决议 #62 范围）
+    }
+    return this.index.searchCandidates({
+      audience,
+      kind,
+      query: normalized,
+      ftsQuery,
+      candidateMax,
+    });
+  }
+
+  // 候选行 → 档位计算（决议 #61）→ 组装 SourceSearchItem（决议 #59：
+  // note 摘录仅 agent + full 携带；user 视角与 metadata 恒 null——零 note 字节）
+  private toSearchItem(
+    row: SourceListRow,
+    query: string,
+    audience: SourceReadAudience,
+  ): { item: SourceSearchItem; tier: 0 | 1 | 2 | 3 | 4 } | null {
+    const source = rowToSource(row);
+    const kind = classifySearchQuery(query);
+    const tier = computeMatchTier(
+      {
+        name: source.name,
+        url: source.url,
+        canonicalKey: source.canonicalKey,
+        tags: this.repo.listTagsBySource(row.id),
+        groupName: row.group_name,
+        userNote: source.userNote,
+        aiNote: source.aiNote,
+        shareMode: source.shareMode,
+      },
+      query,
+      kind,
+      audience,
+    );
+    if (tier === null) return null; // 防御性丢弃（候选 SQL 与档位判定语义分歧宁缺勿错）
+    const base = this.buildListItem(row);
+    const note =
+      audience === 'agent' && source.shareMode === 'full'
+        ? buildNoteExcerpt(source.userNote, source.aiNote) // 读取侧防御性清洗（旧数据同样覆盖）
+        : null;
+    return { item: { ...base, note }, tier };
+  }
+
   private buildListItem(row: SourceListRow): SourceListItem {
     const source = rowToSource(row);
     return {
@@ -733,6 +880,9 @@ export class SourceServiceImpl implements SourceService {
   private buildView(row: SourceRow): SourceView {
     const source = rowToSource(row);
     source.tags = this.repo.listTagsBySource(row.id);
+    // 读取侧防御性清洗（旧数据/损坏数据同样覆盖——不依赖写入时已清洗）
+    source.userNote = stripControlChars(source.userNote);
+    source.aiNote = stripControlChars(source.aiNote);
     return {
       ...source,
       groupName: row.group_id === null ? null : this.repo.getGroupNameById(row.group_id),

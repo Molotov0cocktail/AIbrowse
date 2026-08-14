@@ -60,21 +60,21 @@ const addOne = async (
 
 describe('search / list / get — 非法输入安全返回', () => {
   it('search：query 非串/空/超 500 → source-invalid-change；limit 0/负/小数 → invalid；>10 → source-limit', async () => {
-    const inv = await service.search('' as unknown as string, {});
+    const inv = await service.search('' as unknown as string, { audience: 'user' });
     expect(inv).toEqual({ ok: false, errorCode: 'source-invalid-change' });
-    expect(await service.search('x'.repeat(501), {})).toEqual({
+    expect(await service.search('x'.repeat(501), { audience: 'user' })).toEqual({
       ok: false,
       errorCode: 'source-invalid-change',
     });
-    expect(await service.search('q', { limit: 0 })).toEqual({
+    expect(await service.search('q', { limit: 0, audience: 'user' })).toEqual({
       ok: false,
       errorCode: 'source-invalid-change',
     });
-    expect(await service.search('q', { limit: 1.5 })).toEqual({
+    expect(await service.search('q', { limit: 1.5, audience: 'user' })).toEqual({
       ok: false,
       errorCode: 'source-invalid-change',
     });
-    expect(await service.search('q', { limit: 11 })).toEqual({
+    expect(await service.search('q', { limit: 11, audience: 'user' })).toEqual({
       ok: false,
       errorCode: 'source-limit',
     });
@@ -87,16 +87,16 @@ describe('search / list / get — 非法输入安全返回', () => {
       groupName: 'AI组',
       userNote: 'SECRET_NOTE_MARKER',
     });
-    const hit = await service.search('benchmark', {});
+    const hit = await service.search('benchmark', { audience: 'user' });
     expect(hit.ok).toBe(true);
     if (hit.ok) {
       expect(hit.results).toHaveLength(1);
       expect(hit.results[0]?.id).toBe(s.id);
       expect(JSON.stringify(hit.results)).not.toContain('SECRET_NOTE_MARKER');
     }
-    expect(await service.search('AI组', {})).toMatchObject({ ok: true });
+    expect(await service.search('AI组', { audience: 'user' })).toMatchObject({ ok: true });
     await service.disableManual(s.id, 1);
-    const miss = await service.search('Benchmark', {});
+    const miss = await service.search('Benchmark', { audience: 'user' });
     expect(miss.ok).toBe(true);
     if (miss.ok) expect(miss.results).toHaveLength(0);
   });
@@ -104,42 +104,42 @@ describe('search / list / get — 非法输入安全返回', () => {
   it('list：page/pageSize 校验、分页切割、total、groupId、enabledOnly、确定性排序', async () => {
     const a = await addOne('https://example.com/a', { name: 'a' });
     const b = await addOne('https://example.com/b', { name: 'b', groupName: '组' });
-    expect(await service.list({ page: -1 })).toEqual({
+    expect(await service.list({ page: -1, audience: 'user' })).toEqual({
       ok: false,
       errorCode: 'source-invalid-change',
     });
-    expect(await service.list({ page: 0, pageSize: 21 })).toEqual({
+    expect(await service.list({ page: 0, pageSize: 21, audience: 'user' })).toEqual({
       ok: false,
       errorCode: 'source-limit',
     });
-    expect(await service.list({ page: 0, pageSize: 0 })).toEqual({
+    expect(await service.list({ page: 0, pageSize: 0, audience: 'user' })).toEqual({
       ok: false,
       errorCode: 'source-invalid-change',
     });
-    const page1 = await service.list({ page: 0, pageSize: 1 });
+    const page1 = await service.list({ page: 0, pageSize: 1, audience: 'user' });
     expect(page1).toMatchObject({ ok: true, page: 0, pageSize: 1, total: 2 });
     if (page1.ok) expect(page1.items).toHaveLength(1);
-    const page2 = await service.list({ page: 1, pageSize: 1 });
+    const page2 = await service.list({ page: 1, pageSize: 1, audience: 'user' });
     if (page2.ok) expect(page2.items).toHaveLength(1);
-    const byGroup = await service.list({ page: 0, groupId: null });
+    const byGroup = await service.list({ page: 0, groupId: null, audience: 'user' });
     if (byGroup.ok) expect(byGroup.items.map((i) => i.id)).toEqual([a.id]);
     await service.disableManual(b.id, 1);
-    const enabledOnly = await service.list({ page: 0, enabledOnly: true });
+    const enabledOnly = await service.list({ page: 0, enabledOnly: true, audience: 'user' });
     if (enabledOnly.ok) expect(enabledOnly.items.map((i) => i.id)).toEqual([a.id]);
   });
 
   it('get：形状非法 → invalid-change；不存在 → not-found；命中返回完整视图（version/deletedAt/note/groupName）', async () => {
-    expect(await service.get('not-a-uuid')).toEqual({
+    expect(await service.get('not-a-uuid', 'user')).toEqual({
       ok: false,
       errorCode: 'source-invalid-change',
     });
-    expect(await service.get(UUID)).toEqual({ ok: false, errorCode: 'source-not-found' });
+    expect(await service.get(UUID, 'user')).toEqual({ ok: false, errorCode: 'source-not-found' });
     const s = await addOne('https://example.com/p', {
       name: 'n',
       groupName: 'g',
       userNote: '备注正文',
     });
-    const got = await service.get(s.id);
+    const got = await service.get(s.id, 'user');
     expect(got.ok).toBe(true);
     if (got.ok) {
       expect(got.source.version).toBe(1);
@@ -204,7 +204,7 @@ describe('手工写路径（决议 #51 状态机 + journal）', () => {
     expect(
       await service.addManual({ scope: 'page', url: 'https://e.com', name: 'x'.repeat(201) }),
     ).toEqual({ ok: false, errorCode: 'source-invalid-change' });
-    expect(await service.list({ page: 0 })).toMatchObject({ ok: true, total: 0 });
+    expect(await service.list({ page: 0, audience: 'user' })).toMatchObject({ ok: true, total: 0 });
   });
 
   it('updateManual：expectedVersion 匹配 → 恰 +1；过期 → version-conflict 零写入；不存在 → not-found', async () => {
@@ -224,7 +224,7 @@ describe('手工写路径（决议 #51 状态机 + journal）', () => {
       ok: false,
       errorCode: 'source-not-found',
     });
-    const afterStale = await service.get(s.id);
+    const afterStale = await service.get(s.id, 'user');
     if (afterStale.ok) expect(afterStale.source.name).toBe('新名'); // 过期写未生效
   });
 
@@ -285,7 +285,7 @@ describe('hardDeleteManual（决议 #56 能力令牌 + #55 精确清理）', () 
       ok: false,
       errorCode: 'source-conflict',
     }); // 错绑定
-    expect((await service.get(s.id)).ok).toBe(true); // 零删除
+    expect((await service.get(s.id, 'user')).ok).toBe(true); // 零删除
   });
 
   it('过期（TTL 300s，注入时钟）与重用 → source-conflict 零删除', async () => {
@@ -326,7 +326,7 @@ describe('hardDeleteManual（决议 #56 能力令牌 + #55 精确清理）', () 
     const token = service.issueDeleteConfirmToken(s1.id);
     const r = await service.hardDeleteManual(s1.id, token);
     expect(r).toMatchObject({ ok: true, undoable: false, idempotencyKey: '' });
-    expect(await service.get(s1.id)).toEqual({ ok: false, errorCode: 'source-not-found' });
+    expect(await service.get(s1.id, 'user')).toEqual({ ok: false, errorCode: 'source-not-found' });
     // FTS 行清理（镜像行数 == 主表行数）
     const ftsCount = (
       handle.prepare('SELECT COUNT(*) AS n FROM sources_fts').get() as { n: number }
@@ -346,8 +346,8 @@ describe('hardDeleteManual（决议 #56 能力令牌 + #55 精确清理）', () 
     expect(undoable.some((u) => u.changeType === 'manual' && u.sourceIds[0] === s1.id)).toBe(false);
     // Undo 不复活已 hard-deleted 的 s1：undo 该 change set → s2 恢复、s1 仍不存在
     expect((await service.undoChange(setEntry?.idempotencyKey ?? '')).ok).toBe(true);
-    expect((await service.get(s2.id)).ok).toBe(true);
-    expect(await service.get(s1.id)).toEqual({ ok: false, errorCode: 'source-not-found' });
+    expect((await service.get(s2.id, 'user')).ok).toBe(true);
+    expect(await service.get(s1.id, 'user')).toEqual({ ok: false, errorCode: 'source-not-found' });
   });
 });
 
@@ -389,7 +389,7 @@ describe('applyChangeSet — 结构校验与整体拒绝', () => {
         },
       ),
     ).toMatchObject({ ok: false, errorCode: 'source-invalid-change' });
-    expect(await service.list({ page: 0 })).toMatchObject({ ok: true, total: 0 });
+    expect(await service.list({ page: 0, audience: 'user' })).toMatchObject({ ok: true, total: 0 });
     expect(await service.listUndoable()).toHaveLength(0);
   });
 
@@ -406,13 +406,14 @@ describe('applyChangeSet — 结构校验与整体拒绝', () => {
     );
     failChange(r, 'source-version-conflict');
     expect(r.results.map((x) => x.errorCode)).toEqual([undefined, 'source-version-conflict']);
-    expect(await service.get(s.id)).toMatchObject({
+    expect(await service.get(s.id, 'user')).toMatchObject({
       ok: true,
       source: { name: 'example.com/p', version: 1 },
     });
-    expect((await service.list({ page: 0 })).ok && (await service.list({ page: 0 }))).toMatchObject(
-      { total: 1 },
-    );
+    expect(
+      (await service.list({ page: 0, audience: 'user' })).ok &&
+        (await service.list({ page: 0, audience: 'user' })),
+    ).toMatchObject({ total: 1 });
   });
 
   it('目标不存在 → source-not-found 整体拒绝', async () => {
@@ -444,7 +445,7 @@ describe('applyChangeSet — 结构校验与整体拒绝', () => {
       { runId: 'r4', toolCallId: 't4' },
     );
     failChange(r, 'source-duplicate');
-    expect(await service.list({ page: 0 })).toMatchObject({ ok: true, total: 0 });
+    expect(await service.list({ page: 0, audience: 'user' })).toMatchObject({ ok: true, total: 0 });
     expect(await service.listUndoable()).toHaveLength(0);
     expect((handle.prepare('SELECT COUNT(*) AS n FROM source_tags').get() as { n: number }).n).toBe(
       0,
@@ -479,9 +480,9 @@ describe('applyChangeSet — 成功提交与幂等重放（决议 #53）', () =>
     );
     expect(r.idempotencyKey).not.toBe('');
     expect(r.results.map((x) => x.ok)).toEqual([true, true, true, true, true]);
-    const v1 = await service.get(t1.id);
-    const v2 = await service.get(t2.id);
-    const v3 = await service.get(t3.id);
+    const v1 = await service.get(t1.id, 'user');
+    const v2 = await service.get(t2.id, 'user');
+    const v3 = await service.get(t3.id, 'user');
     if (v1.ok) expect(v1.source.version).toBe(2); // 每次成功提交恰 +1
     if (v2.ok) expect(v2.source.enabled).toBe(false); // disable 状态机
     if (v3.ok) expect(v3.source.enabled).toBe(true); // restore 状态机
@@ -507,7 +508,7 @@ describe('applyChangeSet — 成功提交与幂等重放（决议 #53）', () =>
       ),
     );
     const id = r.results[0]?.sourceId ?? '';
-    const got = await service.get(id);
+    const got = await service.get(id, 'user');
     if (got.ok)
       expect(got.source.trust).toEqual({
         value: 'official',
@@ -524,7 +525,7 @@ describe('applyChangeSet — 成功提交与幂等重放（决议 #53）', () =>
     const replay = await service.applyChangeSet({ ops: [...ops] }, meta);
     expect(replay.ok).toBe(true);
     expect(replay.idempotencyKey).toBe(first.idempotencyKey);
-    const afterReplay = await service.get(id);
+    const afterReplay = await service.get(id, 'user');
     if (afterReplay.ok) expect(afterReplay.source.version).toBe(1); // 未重写（版本未变）
     expect(await service.listUndoable()).toHaveLength(1);
     const tampered = await service.applyChangeSet(
@@ -584,7 +585,7 @@ describe('applyChangeSet — 成功提交与幂等重放（决议 #53）', () =>
         { runId: 'r9', toolCallId: 't9' },
       ),
     );
-    const hit = await service.search(evil, {});
+    const hit = await service.search(evil, { audience: 'user' });
     if (hit.ok) expect(hit.results).toHaveLength(1);
     expect(
       (
@@ -616,7 +617,7 @@ describe('undoChange — durable Undo（决议 #52 消费语义 / #55）', () =>
     );
     const id = r.results[0]?.sourceId ?? '';
     expect((await service.undoChange(r.idempotencyKey)).ok).toBe(true);
-    expect(await service.get(id)).toEqual({ ok: false, errorCode: 'source-not-found' });
+    expect(await service.get(id, 'user')).toEqual({ ok: false, errorCode: 'source-not-found' });
     expect((handle.prepare('SELECT COUNT(*) AS n FROM sources_fts').get() as { n: number }).n).toBe(
       0,
     );
@@ -630,7 +631,7 @@ describe('undoChange — durable Undo（决议 #52 消费语义 / #55）', () =>
     const upd = await service.updateManual(s.id, { name: '新名' }, 1);
     if (upd.ok) {
       expect((await service.undoChange(upd.idempotencyKey)).ok).toBe(true);
-      const v = await service.get(s.id);
+      const v = await service.get(s.id, 'user');
       if (v.ok) {
         expect(v.source.name).toBe('example.com/p'); // addOne 缺省 name（默认生成）
         expect(v.source.version).toBe(1); // before 快照恢复（含版本）
@@ -639,7 +640,7 @@ describe('undoChange — durable Undo（决议 #52 消费语义 / #55）', () =>
     const dis = await service.disableManual(s.id, 1);
     if (dis.ok) {
       expect((await service.undoChange(dis.idempotencyKey)).ok).toBe(true);
-      const v = await service.get(s.id);
+      const v = await service.get(s.id, 'user');
       if (v.ok) expect(v.source.enabled).toBe(true);
     }
   });
@@ -651,7 +652,7 @@ describe('undoChange — durable Undo（决议 #52 消费语义 / #55）', () =>
     await service.updateManual(s.id, { name: '后续修改' }, 2); // undo 目标版本已过期
     const r = await service.undoChange(upd.idempotencyKey);
     expect(r).toEqual({ ok: false, errorCode: 'source-undo-conflict' });
-    const v = await service.get(s.id);
+    const v = await service.get(s.id, 'user');
     if (v.ok) expect(v.source.name).toBe('后续修改'); // 用户修改未被覆盖
   });
 
@@ -683,7 +684,7 @@ describe('undoChange — durable Undo（决议 #52 消费语义 / #55）', () =>
       .run('not-json', r.idempotencyKey);
     const res: UndoResult = await service.undoChange(r.idempotencyKey);
     expect(res).toEqual({ ok: false, errorCode: 'source-unavailable' });
-    expect(await service.list({ page: 0 })).toMatchObject({ ok: true, total: 1 }); // 零写入
+    expect(await service.list({ page: 0, audience: 'user' })).toMatchObject({ ok: true, total: 1 }); // 零写入
   });
 
   it('重启后 Undo 可用（新连接新实例）', async () => {
@@ -702,7 +703,7 @@ describe('undoChange — durable Undo（决议 #52 消费语义 / #55）', () =>
     const s2 = new SourceServiceImpl({ db: h2, now: () => nowMs });
     try {
       expect((await s2.undoChange(r.idempotencyKey)).ok).toBe(true);
-      expect(await s2.list({ page: 0 })).toMatchObject({ ok: true, total: 0 });
+      expect(await s2.list({ page: 0, audience: 'user' })).toMatchObject({ ok: true, total: 0 });
     } finally {
       s2.dispose();
       closeDb(h1); // 已由 s1.dispose 关闭；重复关闭幂等兜底
@@ -744,17 +745,289 @@ describe('recordUsage / getState / dispose / 异常归一化', () => {
   it('dispose 幂等；dispose 后调用 → source-unavailable 安全返回（不抛）', async () => {
     service.dispose();
     service.dispose();
-    expect(await service.list({ page: 0 })).toEqual({ ok: false, errorCode: 'source-unavailable' });
-    expect(await service.get(UUID)).toEqual({ ok: false, errorCode: 'source-unavailable' });
+    expect(await service.list({ page: 0, audience: 'user' })).toEqual({
+      ok: false,
+      errorCode: 'source-unavailable',
+    });
+    expect(await service.get(UUID, 'user')).toEqual({ ok: false, errorCode: 'source-unavailable' });
   });
 
   it('不可预期 DB 错误 → source-unavailable（日志可诊断、不抛、不泄数据）', async () => {
     handle.exec('DROP TABLE sources'); // 测试专用 SQL：模拟不可预期故障
-    expect(await service.list({ page: 0 })).toEqual({ ok: false, errorCode: 'source-unavailable' });
+    expect(await service.list({ page: 0, audience: 'user' })).toEqual({
+      ok: false,
+      errorCode: 'source-unavailable',
+    });
     const r = await service.applyChangeSet(
       { ops: [{ kind: 'add', scope: 'page', url: 'https://example.com/x' }] },
       { runId: 'r14', toolCallId: 't14' },
     );
     expect(r).toMatchObject({ ok: false, errorCode: 'source-unavailable', idempotencyKey: '' });
+  });
+});
+// ---------- B3 检索：audience × 分享模式 × 多语言 × 排序 × 有界（决议 #58–#63） ----------
+
+describe('B3 search/list/get — audience 契约与分享模式矩阵', () => {
+  const addFull = () =>
+    addOne('https://example.com/zh', {
+      name: '基准测试站',
+      tags: ['benchmark'],
+      groupName: 'AI组',
+      shareMode: 'full',
+      userNote: '看大模型评测优先看这里',
+      aiNote: 'AI 推断的中文备注',
+      priority: 5,
+    });
+  const addMeta = () =>
+    addOne('https://example.com/en', {
+      name: 'Electron Docs',
+      shareMode: 'metadata',
+      userNote: 'META_SECRET_1',
+      aiNote: 'META_SECRET_2',
+    });
+  const addBlocked = () =>
+    addOne('https://example.com/hidden', {
+      name: '隐藏站',
+      shareMode: 'blocked',
+      userNote: 'BLOCKED_SECRET',
+    });
+
+  it('audience 必填：缺失/非法值 → source-invalid-change（search/list/get 一致）', async () => {
+    expect(await service.search('q', { audience: undefined as never })).toEqual({
+      ok: false,
+      errorCode: 'source-invalid-change',
+    });
+    expect(await service.search('q', { audience: 'x' as never })).toEqual({
+      ok: false,
+      errorCode: 'source-invalid-change',
+    });
+    expect(await service.list({ page: 0, audience: undefined as never })).toEqual({
+      ok: false,
+      errorCode: 'source-invalid-change',
+    });
+    expect(await service.get(UUID, 'x' as never)).toEqual({
+      ok: false,
+      errorCode: 'source-invalid-change',
+    });
+  });
+
+  it('agent 视角 blocked 完全不可见：search 不命中/list 不列出/get 视同不存在；user 视角可见可管理', async () => {
+    await addFull();
+    await addBlocked();
+    const agentSearch = await service.search('隐藏', { audience: 'agent' });
+    expect(agentSearch.ok && agentSearch.results).toHaveLength(0);
+    const userSearch = await service.search('隐藏', { audience: 'user' });
+    expect(userSearch.ok && userSearch.results.map((r) => r.name)).toContain('隐藏站');
+    const agentList = await service.list({ page: 0, audience: 'agent' });
+    expect(agentList.ok && agentList.total).toBe(1); // blocked 不计入 total（不分页空洞）
+    expect(agentList.ok && agentList.items.every((i) => i.shareMode !== 'blocked')).toBe(true);
+    const userList = await service.list({ page: 0, audience: 'user' });
+    expect(userList.ok && userList.total).toBe(2);
+    expect(userList.ok && userList.items.some((i) => i.shareMode === 'blocked')).toBe(true);
+    const blockedId = userList.ok ? userList.items.find((i) => i.shareMode === 'blocked')!.id : '';
+    expect(await service.get(blockedId, 'agent')).toEqual({
+      ok: false,
+      errorCode: 'source-not-found',
+    });
+    const userGet = await service.get(blockedId, 'user');
+    expect(userGet.ok && userGet.source.userNote).toBe('BLOCKED_SECRET');
+  });
+
+  it('agent 视角 metadata 零 note 字节（含 note 不参与命中）；user get 恒完整视图', async () => {
+    await addMeta();
+    const hit = await service.search('Electron', { audience: 'agent' });
+    expect(hit.ok && hit.results).toHaveLength(1);
+    if (!hit.ok) return;
+    expect(hit.results[0]!.note).toBeNull();
+    expect(JSON.stringify(hit.results)).not.toContain('META_SECRET_1');
+    expect(JSON.stringify(hit.results)).not.toContain('META_SECRET_2');
+    // metadata 的 note 不参与命中：仅 note 命中的查询不返回该条目
+    const noteOnly = await service.search('META_SECRET_1', { audience: 'agent' });
+    expect(noteOnly.ok && noteOnly.results).toHaveLength(0);
+    const noteOnlyUser = await service.search('META_SECRET_1', { audience: 'user' });
+    expect(noteOnlyUser.ok && noteOnlyUser.results).toHaveLength(1);
+    // agent get metadata：无 note 正文（两字段空串）
+    const got = await service.get(hit.results[0]!.id, 'agent');
+    expect(got.ok && got.source.userNote === '' && got.source.aiNote === '').toBe(true);
+    const userGot = await service.get(hit.results[0]!.id, 'user');
+    expect(userGot.ok && userGot.source.userNote).toBe('META_SECRET_1');
+  });
+
+  it('agent 视角 full 命中附有界 note 摘录 + provenance 字段分离；user 视角 search 恒无 note', async () => {
+    await addFull();
+    const hit = await service.search('基准', { audience: 'agent' });
+    expect(hit.ok && hit.results).toHaveLength(1);
+    if (!hit.ok) return;
+    const item = hit.results[0]!;
+    expect(item.note?.userNote).toContain('看大模型评测');
+    expect(item.note?.aiNote).toContain('AI 推断');
+    expect([...(item.note?.userNote ?? '')].length).toBeLessThanOrEqual(200);
+    const userHit = await service.search('基准', { audience: 'user' });
+    expect(userHit.ok && userHit.results[0]!.note).toBeNull();
+  });
+
+  it('note 摘录防御性清洗：bidi 隔离符与换行在读取侧剔除（旧数据/损坏数据同样覆盖）', async () => {
+    const s = await addFull();
+    // 测试专用 SQL：直接写入含 bidi 隔离符的旧数据（模拟写入侧未清洗的历史数据）
+    handle.prepare('UPDATE sources SET user_note = ? WHERE id = ?').run('脏⁦数据⁩\n第二行', s.id);
+    const hit = await service.search('基准', { audience: 'agent' });
+    if (!hit.ok) return;
+    const note = hit.results[0]!.note?.userNote ?? '';
+    expect(note).not.toMatch(/[؜⁦-⁩]/);
+    expect(note).not.toContain('\n');
+    expect(note).toBe('脏数据第二行');
+  });
+});
+
+describe('B3 search — 多语言/分流/排序/有界/异常', () => {
+  it('中文 2 字符降级路径诚实命中（不声称 trigram 原生支持两字符）；1 字符仅精确', async () => {
+    await addOne('https://example.com/zh', { name: '基准测试站' });
+    const r2 = await service.search('测试', { audience: 'user' });
+    expect(r2.ok && r2.results.map((r) => r.name)).toContain('基准测试站');
+    const r1 = await service.search('站', { audience: 'user' });
+    expect(r1.ok && r1.results).toHaveLength(0);
+    const exact1 = await addOne('https://example.com/c', { name: 'C' });
+    const r1e = await service.search('C', { audience: 'user' });
+    expect(r1e.ok && r1e.results.map((r) => r.id)).toEqual([exact1.id]);
+  });
+
+  it('日文假名/汉字 ≥3 字符 FTS 命中；英文词命中（LIKE 前缀 ASCII 不区分大小写兜底）', async () => {
+    const ja = await addOne('https://example.com/ja', { name: '日本語情報源', shareMode: 'full' });
+    const r = await service.search('日本語', { audience: 'user' });
+    expect(r.ok && r.results.map((x) => x.id)).toContain(ja.id);
+    const en = await addOne('https://example.com/en2', {
+      name: 'Electron Docs',
+      shareMode: 'full',
+    });
+    const re = await service.search('electron', { audience: 'user' });
+    expect(re.ok && re.results.map((x) => x.id)).toContain(en.id);
+  });
+
+  it('URL 查询确定性集合：normalizeSourceUrl 可解析 → canonical 精确命中', async () => {
+    const s = await addOne('https://example.com/docs?x=1#frag', { name: '文档页' });
+    const r = await service.search('https://example.com/docs?x=1', { audience: 'user' });
+    expect(r.ok && r.results.map((x) => x.id)).toContain(s.id);
+    const rFull = await service.search('https://example.com/docs?x=1#frag', { audience: 'user' });
+    expect(rFull.ok && rFull.results.map((x) => x.id)).toContain(s.id);
+  });
+
+  it('排序全序：档位不可被 priority 反转；同档 priority 降序；recency null 末位；origin/page 同键全序', async () => {
+    // tier0（精确）priority=1 vs tier3（note 命中）priority=5：档位优先
+    const exact = await addOne('https://example.com/exact', {
+      name: 'exact',
+      shareMode: 'full',
+      priority: 1,
+    });
+    const noteHit = await addOne('https://example.com/notehit', {
+      name: '其他',
+      shareMode: 'full',
+      priority: 5,
+      userNote: '包含 exact 的备注',
+    });
+    const r = await service.search('exact', { audience: 'user' });
+    if (!r.ok) return;
+    const ids = r.results.map((x) => x.id);
+    expect(ids.indexOf(exact.id)).toBeLessThan(ids.indexOf(noteHit.id));
+    // 同档（前缀）priority 降序：priority 5 在 priority 1 前
+    const p5 = await addOne('https://example.com/p5', { name: '前缀甲一', priority: 5 });
+    const p1 = await addOne('https://example.com/p1', { name: '前缀甲二', priority: 1 });
+    const rp = await service.search('前缀甲', { audience: 'user' });
+    if (!rp.ok) return;
+    const pIds = rp.results.map((x) => x.id);
+    expect(pIds.indexOf(p5.id)).toBeLessThan(pIds.indexOf(p1.id));
+    // recency：null 恒排最末（同档同 priority）
+    const recent = await addOne('https://example.com/recent', { name: 'recency站' });
+    handle
+      .prepare("UPDATE sources SET last_used_at = '2026-08-15T00:00:00.000Z' WHERE id = ?")
+      .run(recent.id);
+    const oldNull = await addOne('https://example.com/oldnull', { name: 'recency站乙' });
+    const rr = await service.search('recency站', { audience: 'user' });
+    if (!rr.ok) return;
+    expect(rr.results[0]!.id).toBe(recent.id);
+    expect(rr.results.at(-1)!.id).toBe(oldNull.id);
+    // origin/page 同源键族：canonicalKey 前驱/后驱（'https://example.com' 与
+    // 'https://example.com/'，决议 #50 页面键恒带 '/'）——scope + canonicalKey +
+    // id 收尾全序（确定性；同 canonicalKey 的收尾语义由纯函数单测覆盖）
+    const origin = await addOne('https://example.com', { scope: 'origin', name: '同键origin' });
+    const page = await addOne('https://example.com', { scope: 'page', name: '同键page' });
+    const rk = await service.search('example.com', { audience: 'user' });
+    if (!rk.ok) return;
+    const keyIds = rk.results
+      .filter((x) => x.id === origin.id || x.id === page.id)
+      .map((x) => x.id);
+    expect(keyIds).toEqual([origin.id, page.id]);
+  });
+
+  it('硬上限 10：默认 10；limit=11 → source-limit；并发/重复查询输出确定性', async () => {
+    for (let i = 0; i < 12; i += 1) {
+      await addOne(`https://example.com/bulk-${i}`, { name: `批量站点${i}` });
+    }
+    const d = await service.search('批量站点', { audience: 'user' });
+    expect(d.ok && d.results).toHaveLength(10);
+    expect(await service.search('批量站点', { limit: 11, audience: 'user' })).toEqual({
+      ok: false,
+      errorCode: 'source-limit',
+    });
+    const a = await service.search('批量站点', { audience: 'user' });
+    const b = await service.search('批量站点', { audience: 'user' });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it('list 每页硬上限 20 与 total 一致（agent 过滤 blocked 后 total 同步）', async () => {
+    for (let i = 0; i < 3; i += 1) {
+      await addOne(`https://example.com/l-${i}`);
+    }
+    await addOne('https://example.com/lb', { shareMode: 'blocked' });
+    const agent = await service.list({ page: 0, pageSize: 20, audience: 'agent' });
+    expect(agent.ok && agent.total).toBe(3);
+    expect(agent.ok && agent.items.length === agent.total).toBe(true);
+    expect(await service.list({ page: 0, pageSize: 21, audience: 'agent' })).toEqual({
+      ok: false,
+      errorCode: 'source-limit',
+    });
+  });
+
+  it('注入串（SQL/FTS 语法/引号/通配符/反斜杠）只作数据；查询后数据完好', async () => {
+    await addOne('https://example.com/keep', { name: '保留站点' });
+    for (const evil of [
+      "'; DROP TABLE sources; --",
+      'AND OR NOT NEAR * ^',
+      'a"b',
+      '%_\\',
+      'x⁦y⁩',
+    ]) {
+      const r = await service.search(evil, { audience: 'user' });
+      expect(r.ok).toBe(true);
+    }
+    const list = await service.list({ page: 0, audience: 'user' });
+    expect(list.ok && list.total).toBe(1);
+  });
+
+  it('FTS 表缺失 → 降级 LIKE 路径仍返回（不伪装成功也非 unavailable）；数据库整体不可用 → source-unavailable', async () => {
+    await addOne('https://example.com/zh2', { name: '基准站甲' });
+    handle.exec('DROP TABLE sources_fts'); // 建库后 FTS 被破坏（决议 #62 范围）
+    const r = await service.search('基准站甲', { audience: 'user' });
+    expect(r.ok && r.results.map((x) => x.name)).toContain('基准站甲');
+    const noteOnly = await service.search('只存在于备注的词', { audience: 'user' });
+    expect(noteOnly.ok && noteOnly.results).toHaveLength(0); // 降级路径不检索 note，如实登记
+    handle.exec('DROP TABLE sources');
+    expect(await service.search('基准站甲', { audience: 'user' })).toEqual({
+      ok: false,
+      errorCode: 'source-unavailable',
+    });
+  });
+
+  it('disposed 后 search/list/get 安全返回 source-unavailable', async () => {
+    await addOne('https://example.com/zz');
+    service.dispose();
+    expect(await service.search('q', { audience: 'user' })).toEqual({
+      ok: false,
+      errorCode: 'source-unavailable',
+    });
+    expect(await service.list({ page: 0, audience: 'user' })).toEqual({
+      ok: false,
+      errorCode: 'source-unavailable',
+    });
+    expect(await service.get(UUID, 'user')).toEqual({ ok: false, errorCode: 'source-unavailable' });
   });
 });
