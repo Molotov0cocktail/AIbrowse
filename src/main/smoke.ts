@@ -17,6 +17,8 @@ import { SEARCH_ENGINE_URL } from '../shared/url';
 import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 import { listTools } from './ai/tools/tool-registry';
 import type { ToolExecutor } from './ai/tools/tool-executor';
+import type { ToolExecutionContext } from './ai/tools/tool-types';
+import { BingSearchProvider } from './ai/search/search-provider';
 import { InteractionSemanticsStore } from './ai/tools/interaction-semantics';
 import type { ConfirmManager } from './ai/confirm-manager';
 import { ConversationServiceImpl } from './ai/conversation-service';
@@ -248,6 +250,44 @@ const INTERACTION_LANDED_HTML = `<!doctype html>
 <body><h1>交互落地页</h1><p>已到达。</p></body>
 </html>`;
 
+// A4 受控搜索页夹具（离线确定性，覆盖完整生产链路）：模拟 Bing 结果页形态——
+// 有机结果（直链 + ck/a 包装链接）+ 应被过滤的自身导航/重复/非 http/非结果标签链接。
+// 包装链接 u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS93cmFwcGVk = base64url('https://example.com/wrapped')。
+const SEARCH_RESULTS_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>受控搜索页 - electron 文档</title></head>
+<body>
+  <h1>搜索结果（受控夹具）</h1>
+  <a href="https://www.bing.com/account/general">设置</a>
+  <h2><a href="https://example.com/docs/webcontentsview">Electron WebContentsView 文档（受控结果一）</a></h2>
+  <p>这是受控夹具的摘要文本一，扁平快照下不应被错误关联给任何结果。</p>
+  <h2><a href="https://example.com/docs/window">Electron 窗口管理（受控结果二）</a></h2>
+  <p>受控夹具的摘要文本二。</p>
+  <h2><a href="https://example.com/docs/webcontentsview">重复链接（同 URL，应去重）</a></h2>
+  <a href="https://www.bing.com/ck/a?!&&p=x&u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS93cmFwcGVk">包装链接（受控）</a>
+  <a href="javascript:alert(1)">危险链接</a>
+  <a href="https://go.microsoft.com/fwlink/?linkid=123">隐私声明</a>
+  <p>没有更多结果。</p>
+</body>
+</html>`;
+
+// 合法空结果夹具：页面有内容但没有有机结果（Bing「无匹配结果」形态）
+const SEARCH_NO_RESULTS_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>受控搜索页 - 无结果</title></head>
+<body>
+  <h1>没有与此相关的结果。</h1>
+  <a href="https://www.bing.com/account/general">设置</a>
+</body>
+</html>`;
+
+// 结构无法识别夹具：空内容页（不得伪装成「合法空结果」）
+const SEARCH_EMPTY_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>受控搜索页 - 空</title></head>
+<body></body>
+</html>`;
+
 // Session 冒烟（T5）：受控 Set-Cookie 页面（HttpOnly 证明不依赖 document.cookie 读取，
 // 跨进程持久化只能来自 persist: 分区落盘）。
 const COOKIE_NAME = 'aibrowse_session_probe';
@@ -264,6 +304,11 @@ interface ControlledPages {
   interactionUrl: string;
   interactionLandedUrl: string;
   base: string;
+  // A4：受控搜索页夹具（SearchProvider 注入 seam——同一实现类/管线，仅 URL 基准替换）
+  searchBaseUrl: string;
+  searchNoResultsBaseUrl: string;
+  searchEmptyBaseUrl: string;
+  getSearchHits: () => number; // 真实 loadURL 证据（生产链路确实加载了搜索页）
   close: () => Promise<void>;
 }
 
@@ -282,10 +327,27 @@ async function startControlledPages(): Promise<ControlledPages> {
   }
   const innerUrl = `http://127.0.0.1:${innerAddr.port}`;
 
+  let searchHits = 0; // A4：/search-results 命中计数（临时 Tab 真实加载证据）
   const mainServer: Server = createServer((req, res) => {
     if (req.url === '/simple') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(SIMPLE_HTML);
+      return;
+    }
+    if (req.url !== undefined && req.url.startsWith('/search-results')) {
+      searchHits += 1;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(SEARCH_RESULTS_HTML);
+      return;
+    }
+    if (req.url !== undefined && req.url.startsWith('/search-noresults')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(SEARCH_NO_RESULTS_HTML);
+      return;
+    }
+    if (req.url !== undefined && req.url.startsWith('/search-empty')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(SEARCH_EMPTY_HTML);
       return;
     }
     if (req.url === '/iframe') {
@@ -367,6 +429,10 @@ async function startControlledPages(): Promise<ControlledPages> {
     interactionUrl: `${base}/interaction`,
     interactionLandedUrl: `${base}/interaction-landed`,
     base,
+    searchBaseUrl: `${base}/search-results`,
+    searchNoResultsBaseUrl: `${base}/search-noresults`,
+    searchEmptyBaseUrl: `${base}/search-empty`,
+    getSearchHits: () => searchHits,
     close,
   };
 }
@@ -983,6 +1049,165 @@ async function runAgentInteractionScenario(
     logInfo(
       'smoke',
       'A3 交互场景通过（A-12 允许列表/确认门/执行器复核/elementId 世代/fill 隐私/审计全链路）',
+    );
+  } finally {
+    await pages.close();
+  }
+}
+
+// ---------- 8.3 A4 搜索生命周期场景（受控搜索页夹具，离线确定性，完整生产链路） ----------
+// search.web 经既有 ToolExecutor 管线（校验→权限 L0→执行→审计）走真实
+// BrowserController + BingSearchProvider 实现类（仅 searchBaseUrl 指向本地受控页——
+// 离线确定性；生产缺省 SEARCH_ENGINE_URL 语义不变）。断言覆盖：临时 Tab 精确
+// 所有权（创建→ready→实时快照→解析→finally 清理）、活动 Tab 恢复、包装链接确定性
+// 还原、自身导航/重复/非 http/非结果标签过滤、合法空结果（ok:true 明确提示）与
+// 结构无法识别（ok:false search-failed，不伪装成功空结果）区分、每次调用恰好一条审计。
+// 可选公网 Bing 探针（AIBROWSE_SMOKE_LIVE_SEARCH=1，需网络）：经生产缺省 URL 走同一
+// 链路；网络不可用/结构变化仅记录跳过原因（不作为失败），硬性断言只有临时 Tab 零泄漏。
+async function runSearchScenario(
+  controller: BrowserController,
+  options: SmokeOptions,
+): Promise<void> {
+  const executor = options.toolExecutor;
+  if (executor === undefined) {
+    logWarn('smoke', '搜索场景跳过：未装配 ToolExecutor');
+    return;
+  }
+  const pages = await startControlledPages();
+  try {
+    const tabsBefore = await controller.getTabs();
+    const activeBefore = (await controller.getActiveTab())?.id ?? null;
+    assert(activeBefore !== null, '搜索场景需要进入前存在活动 Tab');
+    const beforeIds = new Set(tabsBefore.map((t) => t.id));
+
+    const toolSignal = new AbortController().signal;
+    const auditLogFile = getCurrentLogFilePath();
+    const auditOffsetBefore = statSync(auditLogFile).size;
+    const providerFor = (base: string) =>
+      new BingSearchProvider({
+        browser: controller,
+        searchBaseUrl: base,
+        timeoutMs: 15000,
+        pollIntervalMs: 50,
+      });
+    const executeTool = (ctx: ToolExecutionContext, id: string, name: string, args: string) =>
+      executor.execute({ id, name, arguments: args }, ctx, toolSignal);
+
+    // —— 有结果链路：临时 Tab 创建 → ready → 实时快照 → 解析 → 清理 + 活动 Tab 恢复 ——
+    const r1 = await executeTool(
+      {
+        browser: controller,
+        runId: 'smoke-a4-search',
+        searchProvider: providerFor(pages.searchBaseUrl),
+      },
+      'smoke-search-1',
+      'search.web',
+      '{"query":"electron 文档"}',
+    );
+    assert(r1.ok, `search.web 应执行成功（实际：${r1.content}）`);
+    assert(r1.content.includes('共 3 条搜索结果'), `结果条数不符：${r1.content}`);
+    assert(r1.content.includes('Electron WebContentsView 文档（受控结果一）'), '结果一标题缺失');
+    assert(r1.content.includes('https://example.com/docs/webcontentsview'), '结果一 URL 缺失');
+    assert(r1.content.includes('https://example.com/wrapped'), '包装链接应确定性还原为目标 URL');
+    assert(!r1.content.includes('设置'), 'Bing 自身导航链接不得出现在结果中');
+    assert(!r1.content.includes('javascript:'), '非 http/https 链接不得出现在结果中');
+    assert(!r1.content.includes('隐私声明'), '明确非结果标签不得出现在结果中');
+    assert(!r1.content.includes('重复链接'), '重复 URL 应确定性去重（保留首次出现）');
+    assert(!r1.content.includes('摘要：'), '扁平快照不得错误关联摘要（snippet 空串）');
+    assert(!r1.content.includes('documentId'), '模型可见结果不得暴露内部世代字段');
+    assert(r1.warnings?.some((w) => w.includes('摘要留空')) === true, '摘要留空 warning 缺失');
+    assert(pages.getSearchHits() === 1, `搜索页应恰好被加载 1 次（实际 ${pages.getSearchHits()}）`);
+
+    // 临时 Tab 生命周期终检：数量恢复、无新 tabId 残留（精确所有权清理证据）、
+    // 活动 Tab 恢复调用前（用户仍停留在临时 Tab 的恢复语义经真实链路验证）
+    const tabsAfter1 = await controller.getTabs();
+    assert(tabsAfter1.length === tabsBefore.length, '搜索后 Tab 数量应恢复进入前');
+    assert(
+      tabsAfter1.every((t) => beforeIds.has(t.id)),
+      '临时搜索 Tab 未清理（出现新 tabId）',
+    );
+    assert(
+      (await controller.getActiveTab())?.id === activeBefore,
+      '活动 Tab 应恢复到调用前（用户仍停留时的恢复语义）',
+    );
+
+    // —— 合法空结果：页面有内容但无有机结果 → ok:true 空数组 + 明确提示（非错误） ——
+    const r2 = await executeTool(
+      {
+        browser: controller,
+        runId: 'smoke-a4-search',
+        searchProvider: providerFor(pages.searchNoResultsBaseUrl),
+      },
+      'smoke-search-2',
+      'search.web',
+      '{"query":"绝对无结果的关键词"}',
+    );
+    assert(r2.ok, `合法空结果应 ok:true（实际：${r2.content}）`);
+    assert(r2.content === '未找到搜索结果', `空结果应有明确提示（实际：${r2.content}）`);
+
+    // —— 结构无法识别（空内容页）→ ok:false + search-failed，不伪装成功空结果 ——
+    const r3 = await executeTool(
+      {
+        browser: controller,
+        runId: 'smoke-a4-search',
+        searchProvider: providerFor(pages.searchEmptyBaseUrl),
+      },
+      'smoke-search-3',
+      'search.web',
+      '{"query":"结构无法识别"}',
+    );
+    assert(
+      !r3.ok && r3.errorCode === 'search-failed',
+      `结构无法识别应 ok:false + search-failed（实际 ok=${r3.ok} code=${r3.errorCode}）`,
+    );
+
+    // —— 搜索后 Tab 状态终检（三条路径均无泄漏）与审计恰好一条 ——
+    const tabsFinal = await controller.getTabs();
+    assert(tabsFinal.length === tabsBefore.length, '搜索场景结束 Tab 数量应恢复');
+    assert(
+      tabsFinal.every((t) => beforeIds.has(t.id)),
+      '搜索场景存在临时 Tab 泄漏',
+    );
+    assert((await controller.getActiveTab())?.id === activeBefore, '搜索场景结束活动 Tab 应恢复');
+    const auditTail = readFileSync(auditLogFile).subarray(auditOffsetBefore).toString('utf8');
+    const auditCount = auditTail.split('[audit] tool-call').length - 1;
+    assert(auditCount === 3, `3 次搜索调用应恰好 3 条审计（实际 ${auditCount}）`);
+    assert(auditTail.includes('tool=search.web'), '审计应含 search.web 工具名');
+    assert(auditTail.includes('decision=auto'), 'search.web 审计决策应为 auto（L0）');
+    assert(auditTail.includes('errorCode=search-failed'), '结构无法识别路径审计应含错误码');
+
+    // —— 可选公网 Bing 探针（AIBROWSE_SMOKE_LIVE_SEARCH=1，非必需，需网络）——
+    if (process.env['AIBROWSE_SMOKE_LIVE_SEARCH'] === '1') {
+      const liveCtx: ToolExecutionContext = { browser: controller, runId: 'smoke-a4-live' };
+      const rLive = await executor.execute(
+        {
+          id: 'smoke-live-search-1',
+          name: 'search.web',
+          arguments: '{"query":"electron webcontentsview"}',
+        },
+        liveCtx,
+        new AbortController().signal,
+      );
+      // 公网结果为补充证据：成功断言结构可用；网络不可用/结构变化仅记录（不作为失败）
+      if (rLive.ok) {
+        assert(
+          rLive.content.includes('条搜索结果'),
+          `公网结果结构异常：${rLive.content.slice(0, 120)}`,
+        );
+        logInfo('smoke', `公网 Bing 探针成功：${rLive.content.slice(0, 200)}`);
+      } else {
+        logWarn('smoke', `公网 Bing 探针未成功（${rLive.content}）——记录跳过原因，不作为失败`);
+      }
+      const tabsLive = await controller.getTabs();
+      assert(
+        tabsLive.every((t) => beforeIds.has(t.id)),
+        '公网 Bing 探针不得泄漏临时 Tab',
+      );
+    }
+
+    logInfo(
+      'smoke',
+      'A4 搜索场景通过（临时 Tab 精确所有权/恢复语义/包装链接还原/空结果与结构无法识别区分/审计全链路）',
     );
   } finally {
     await pages.close();
@@ -3599,9 +3824,10 @@ export async function runSmokeScenario(
       );
     }
 
-    // 8.1 A2/A3 工具层探针（离线确定性）：注册表已装配 8 个只读/导航 + 4 个交互工具，
-    //     经 ToolExecutor 走真实 BrowserController 验证 校验→权限→执行→审计 全链路；
-    //     审计条目经日志字节切片断言每次调用恰好一条（audit-log 契约 §10.1）。
+    // 8.1 A2/A3/A4 工具层探针（离线确定性）：注册表已装配 8 个只读/导航 + 4 个交互 +
+    //     search.web 工具，经 ToolExecutor 走真实 BrowserController 验证
+    //     校验→权限→执行→审计 全链路；审计条目经日志字节切片断言每次调用恰好一条
+    //     （audit-log 契约 §10.1）。
     if (options.toolExecutor !== undefined) {
       const executor = options.toolExecutor;
       const toolCtx = { browser: controller, runId: 'smoke-a2' };
@@ -3612,7 +3838,7 @@ export async function runSmokeScenario(
         executor.execute({ id, name, arguments: args }, toolCtx, toolSignal);
 
       const listed = listTools();
-      assert(listed.length === 12, `工具注册表应恰好装配 12 个工具（实际 ${listed.length}）`);
+      assert(listed.length === 13, `工具注册表应恰好装配 13 个工具（实际 ${listed.length}）`);
       const expectedNames = [
         'browser.back',
         'browser.click',
@@ -3626,6 +3852,7 @@ export async function runSmokeScenario(
         'browser.read',
         'browser.reload',
         'browser.scroll',
+        'search.web',
       ]
         .sort()
         .join(',');
@@ -3634,7 +3861,7 @@ export async function runSmokeScenario(
           .map((t) => t.function.name)
           .sort()
           .join(',') === expectedNames,
-        '注册表工具名集合与 A2 首批 8 + A3 交互 4 工具不符',
+        '注册表工具名集合与 A2 首批 8 + A3 交互 4 + A4 search.web 工具不符',
       );
       assert(
         JSON.stringify(listTools()) === JSON.stringify(listed),
@@ -3680,12 +3907,29 @@ export async function runSmokeScenario(
         '未知 tabId 读取应 execution-failed（失败安全返回）',
       );
 
+      // A4：search.web 校验层探针（离线安全——校验失败不会触达 SearchProvider）：
+      // 空查询与超 500 字符 → invalid-args（paramRules.nonEmpty + 字符串默认上限）
+      const searchEmpty = await executeTool('smoke-a2-6', 'search.web', '{"query":""}');
+      assert(
+        !searchEmpty.ok && searchEmpty.errorCode === 'invalid-args',
+        'search.web 空查询应 invalid-args',
+      );
+      const searchLong = await executeTool(
+        'smoke-a2-7',
+        'search.web',
+        `{"query":"${'x'.repeat(501)}"}`,
+      );
+      assert(
+        !searchLong.ok && searchLong.errorCode === 'invalid-args',
+        'search.web 超 500 字符查询应 invalid-args',
+      );
+
       const auditTail = readFileSync(auditLogFile).subarray(auditOffsetBefore).toString('utf8');
       const auditCount = auditTail.split('[audit] tool-call').length - 1;
-      assert(auditCount === 5, `5 次工具调用应恰好 5 条审计（实际 ${auditCount}）`);
+      assert(auditCount === 7, `7 次工具调用应恰好 7 条审计（实际 ${auditCount}）`);
       logInfo(
         'smoke',
-        'A2 工具层探针通过（注册表 12 工具/listTools 恒等/校验/权限/执行/审计链路）',
+        'A2 工具层探针通过（注册表 13 工具/listTools 恒等/校验/权限/执行/审计链路）',
       );
     }
 
@@ -3694,6 +3938,13 @@ export async function runSmokeScenario(
     //     刷新后旧 id → stale-element，重新快照不碰撞）+ 审计恰好一条与脱敏断言
     if (options.toolExecutor !== undefined && options.confirmManager !== undefined) {
       await runAgentInteractionScenario(controller, options);
+    }
+
+    // 8.3 A4 搜索生命周期场景（受控搜索页夹具，离线确定性）：临时 Tab 精确所有权/
+    //     恢复语义/包装链接还原/合法空结果与结构无法识别区分/审计恰好一条；
+    //     可选公网 Bing 探针（AIBROWSE_SMOKE_LIVE_SEARCH=1，需网络，不作失败）
+    if (options.toolExecutor !== undefined) {
+      await runSearchScenario(controller, options);
     }
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）

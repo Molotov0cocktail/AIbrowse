@@ -50,10 +50,17 @@ describe('summarizeArgs 参数摘要（确定性 + 脱敏）', () => {
   });
 
   it('其余参数确定性截断 ≤ ARGS_SUMMARY_MAX 并带截断标记', () => {
-    const out = summarizeArgs('search.web', { query: 'x'.repeat(600) });
+    const out = summarizeArgs('browser.find', { text: 'x'.repeat(600) });
     expect(out).toContain('…[已截断]');
-    const value = out.slice(out.indexOf('query:') + 'query:'.length, out.indexOf('}'));
+    const value = out.slice(out.indexOf('text:') + 'text:'.length, out.indexOf('}'));
     expect(value.length).toBeLessThanOrEqual(ARGS_SUMMARY_MAX + '…[已截断]'.length);
+  });
+
+  it('search.web 查询串全量记录（T-03 外发审查可追溯，决议 #32；校验上限 500 有界）', () => {
+    const query = 'x'.repeat(500);
+    const out = summarizeArgs('search.web', { query });
+    expect(out).toContain(query);
+    expect(out).not.toContain('…[已截断]');
   });
 
   it('键序确定性：不同插入顺序的同一参数集产出同一摘要', () => {

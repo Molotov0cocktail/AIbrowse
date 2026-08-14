@@ -57,8 +57,10 @@ import {
 // 为 A5 AgentLoop 历史提取接线点——本阶段由冒烟场景注入快照语义存储驱动验证。
 import { createAuditLogger } from './ai/audit-log';
 import { ConfirmManager } from './ai/confirm-manager';
+import { BingSearchProvider } from './ai/search/search-provider';
 import { BROWSER_TOOL_DEFINITIONS } from './ai/tools/browser-tools';
 import { INTERACTION_TOOL_DEFINITIONS } from './ai/tools/interaction-tools';
+import { createSearchTool } from './ai/tools/search-tool';
 import { ToolExecutor } from './ai/tools/tool-executor';
 import { registerTool } from './ai/tools/tool-registry';
 
@@ -457,13 +459,17 @@ function createBrowserWindow(): void {
     },
   });
   browserController = controller;
-  // Third Stage A2/A3：工具层装配——注册表 8 个只读/导航工具 + 4 个交互工具
-  // （工具实现只经 BrowserController 接口执行，不 import Electron）+ 确认状态机 +
-  // 审计薄封装 + ToolExecutor 管线。A5 AgentLoop 接线复用本实例；本任务由冒烟
-  // 工具层探针驱动验证全链路（校验→权限→确认→执行→审计）。SearchProvider（A4）未注册。
-  // A3 的 click/fill 语义来源接线为 A5 历史提取——本阶段冒烟注入快照语义存储驱动。
+  // Third Stage A2/A3/A4：工具层装配——注册表 8 个只读/导航 + 4 个交互 + search.web
+  // （工具实现只经 BrowserController/SearchProvider 接口执行，不 import Electron）+
+  // 确认状态机 + 审计薄封装 + ToolExecutor 管线。A5 AgentLoop 接线复用本实例；本任务
+  // 由冒烟工具层探针驱动验证全链路（校验→权限→确认→执行→审计）。
+  // A4：SearchProvider 生产装配（Bing 搜索页实现，临时 Tab 精确所有权 + finally 清理）；
+  // 冒烟受控夹具经 ctx.searchProvider 注入（同一 executor、同一管线，仅 URL 基准指向
+  // 本地受控页——离线确定性）。A3 的 click/fill 语义来源接线为 A5 历史提取——
+  // 本阶段冒烟注入快照语义存储驱动。
   for (const def of BROWSER_TOOL_DEFINITIONS) registerTool(def);
   for (const def of INTERACTION_TOOL_DEFINITIONS) registerTool(def);
+  registerTool(createSearchTool(new BingSearchProvider({ browser: controller })));
   confirmManager = new ConfirmManager();
   toolExecutor = new ToolExecutor(confirmManager, createAuditLogger());
   // S4 完整装配（§3.1/§4）：AI 共读子系统接线——事件回调转发主窗口 send（事件只发
