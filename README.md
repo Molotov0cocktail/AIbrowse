@@ -7,12 +7,17 @@
 > Source Retrieval（FTS5 trigram 多语言 + 分享模式 full/metadata/blocked）、
 > Browser Agent 复用既有 browser_open/browser_read 打开读取检索结果。
 > **阶段状态（2026-08-15）：B1 完成（node:sqlite 决策门实测通过并冻结）、
-> B2 待开始**——Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9
-> 任务拆分已完成；**B1 已完成：node:sqlite 在 Electron 43.4.0 dev+生产构建
+> B2 已完成（Source 域模型 + Repository + SourceService + journal + Undo）、
+> B3 待开始**——Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9
+> 任务拆分已完成；**B1：node:sqlite 在 Electron 43.4.0 dev+生产构建
 > 11 项逐项实测通过（基础能力项全过 + FTS5/trigram 可用），驱动冻结决议 #48 +
-> sqlite-driver/migrations 基座落地；Sources 功能尚未实现（B2–B9 完成前
-> Sources 尚不可用）**；下一个推荐任务 = **B2**（Source 域模型 + Repository
-> 与 SourceService）。契约源 `doc/stage4/detailed-design.md`；安全契约源
+> sqlite-driver/migrations 基座落地；B2：九项契约缺口实施前裁决（决议
+> #49–#57）+ schema v1（Sources/Groups/Tags/links/change journal/usage/FTS5）+
+> canonicalization + Repository（唯一 SQL 执行点）+ SourceService + durable
+> Undo 已落地（全量 test 947/947，B-02 双进程冒烟通过）；Sources 功能对用户/
+> Agent 尚不可用（UI/Tools 未实现——B3–B5 完成前不得宣称可用）**；下一个推荐
+> 任务 = **B3**（多语言 Source Search：FTS5/trigram + 短查询安全降级 + 有界
+> Retrieval + 分享模式 + 确定性排序）。契约源 `doc/stage4/detailed-design.md`；安全契约源
 > `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
 > Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
 > 历史阶段（已完成）：第三阶段 Browser Agent 契约源 `doc/stage3/detailed-design.md`；
@@ -36,17 +41,23 @@
 ## 当前状态（2026-08-15）
 
 - 🔨 **第四阶段（Sources）进行中（2026-08-15，用户切换指令）：设计完成、
-  B1 已完成、B2 待开始**——设计闭环（proposal/高层设计/详细设计/威胁模型/
-  B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：Electron
-  43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared statements/事务/
-  外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）基础能力项全过、
-  FTS5 与 trigram 均可用（中文 ≥3 字符子串命中；1–2 字符查询不命中为 trigram
-  语义，B3 短查询降级路径依据）；驱动冻结决议 #48 + `src/main/sources/db/`
-  基座（sqlite-driver 薄封装 + migrations 骨架）+ 冒烟 B-01（自动包含于默认
-  AIBROWSE_SMOKE=1 矩阵）；**Sources 功能尚未实现、不可用（B2–B9 待开始）**；
-  下一个唯一任务 = **B2**（Source 域模型 + Repository + SourceService + journal
-  与 Undo）。契约 `doc/stage4/detailed-design.md` + 安全契约
-  `doc/stage4/threat-model.md`。
+  B1 已完成、B2 已完成、B3 待开始**——设计闭环（proposal/高层设计/详细设计/
+  威胁模型/B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：
+  Electron 43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared
+  statements/事务/外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）
+  基础能力项全过、FTS5 与 trigram 均可用（中文 ≥3 字符子串命中；1–2 字符查询
+  不命中为 trigram 语义，B3 短查询降级路径依据）；驱动冻结决议 #48 +
+  `src/main/sources/db/` 基座（sqlite-driver 薄封装 + migrations 骨架）+ 冒烟
+  B-01（自动包含于默认 AIBROWSE_SMOKE=1 矩阵）；**B2 已落地**：九项契约缺口
+  实施前用户裁决（决议 #49–#57）+ schema v1 + Source 域模型 + canonicalization
+  - Repository（唯一 SQL 执行点，唯一约束兜底）+ SourceService（UI 与 Agent
+    共用唯一入口）+ change journal（100 条/30 天有界）+ durable Undo（重启后
+    可用、版本冲突拒绝、消费幂等）+ hard delete 私人 payload 清理 + 冒烟 B-02
+    （`AIBROWSE_SOURCES_SMOKE=set|check` 双进程跨进程读回与 Undo，生产退出码 0）；
+    **Sources 功能对用户/Agent 尚不可用（UI/Tools 未实现——B3–B5 完成前不得
+    宣称可用）**；下一个唯一任务 = **B3**（多语言 Source Search：FTS5/trigram
+  - 短查询安全降级 + 有界 Retrieval + 分享模式 + 确定性排序）。契约
+    `doc/stage4/detailed-design.md` + 安全契约 `doc/stage4/threat-model.md`。
 
 - ✅ **第一阶段完成（Exit Gate 通过，2026-08-13）**：T0 项目基线 → T1 详细设计定稿 →
   T2 浏览器核心（BrowserController/TabManager/SessionManager + WebContentsView）→
@@ -140,7 +151,15 @@ RT-11：诱导文案结构隔离/URL 白名单 + 日志行伪造防御/提交确
 `AIBROWSE_USER_DATA_DIR=<系统 TEMP 下临时目录>`，默认矩阵运行 userData 非临时时
 如实跳过并注明）→
 自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
-`doc/stage3/detailed-design.md` §13.2 + `doc/stage4/detailed-design.md` §13.2）：
+`doc/stage3/detailed-design.md` §13.2 + `doc/stage4/detailed-design.md` §13.2）。
+**B-02 Sources 跨进程持久化冒烟（B2 专属门控，决议 #57，两进程均需
+AIBROWSE_SMOKE=1 + 已核验系统 TEMP 子目录；与 SESSION_SMOKE 互斥）**：
+进程 A 写 CRUD + journal、进程 B 新进程读回并执行 Undo（生产产物需先 `npm run build`）：
+
+```bash
+env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SOURCES_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> npm run start
+env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SOURCES_SMOKE=check AIBROWSE_USER_DATA_DIR=<临时目录> npm run start
+```
 
 ```bash
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev
@@ -178,7 +197,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 816 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 947 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -285,7 +304,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 816 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 947 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具

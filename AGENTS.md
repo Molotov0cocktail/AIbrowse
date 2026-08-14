@@ -20,28 +20,32 @@
   Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9 任务拆分已完成；
   B1 已完成——node:sqlite 决策门 dev+生产双场景 11 项逐项实测，基础能力项
   ①–⑦、⑩、⑪ 全部通过、⑧ FTS5/⑨ trigram 实测可用，驱动冻结 = node:sqlite
-  （决议 #48）+ sqlite-driver/migrations 基座与冒烟 B-01 已落地；B2–B9 待
-  开始（Sources 功能尚未实现，完成前不得宣称可用）**；下一个推荐任务 = **B2**
-  （Source 域模型 + canonicalization + Repository + SourceService + journal
-  - Undo）。契约源 `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
-    `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
-    实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
-    **架构纪律（第四阶段）**：依赖方向固定
-    `Sources UI / Agent Source Tools → SourceService → SourceRepository /
+  （决议 #48）+ sqlite-driver/migrations 基座与冒烟 B-01 已落地；
+  B2 已完成——九项契约缺口实施前用户裁决（决议 #49–#57）+ schema v1 +
+  Source 域模型 + canonicalization + Repository（唯一 SQL 执行点）+
+  SourceService + change journal + durable Undo + 冒烟 B-02 双进程（全量
+  test 947/947）；B3–B9 待开始（Sources 功能对用户/Agent 尚不可用——UI/Tools
+  未实现，完成前不得宣称可用）**；下一个推荐任务 = **B3**（多语言 Source
+  Search：FTS5/trigram + 短查询安全降级 + 有界 Retrieval + 分享模式 +
+  确定性排序）。契约源 `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
+  `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
+  实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
+  **架构纪律（第四阶段）**：依赖方向固定
+  `Sources UI / Agent Source Tools → SourceService → SourceRepository /
 SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
-    renderer/preload/AgentLoop/Tool 实现不得直接执行 SQL；UI 与 Agent 共用同一
-    SourceService；SQL 只能是 Repository 内的编译期常量或 migration，所有用户/
-    网页/模型文本只能作为 prepared statement 参数；禁止 `exec(sql)` 动态串、
-    动态表名/列名/排序表达式、SQLite 扩展加载；Source Tool 不新增网络能力
-    （打开网页继续 browser_open/browser_read）；v1 最小 4 工具
-    （source_search/source_list/source_get 为 L0 有界检索、source_apply_changes
-    为 L2 确认门），禁具 source_sql/source_delete_hard/source_export_all/任意
-    导入/任意抓取/任意通用数据库工具；AI 写入统一 change set（≤20 项、幂等键、
-    expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
-    永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
-    数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
-    **⚠️ 以上全部为「规划/待实现」**：Sources 相关接口在 B1–B9 对应任务完成前
-    不得在文档/报告/UI 中宣称已实现。
+  renderer/preload/AgentLoop/Tool 实现不得直接执行 SQL；UI 与 Agent 共用同一
+  SourceService；SQL 只能是 Repository 内的编译期常量或 migration，所有用户/
+  网页/模型文本只能作为 prepared statement 参数；禁止 `exec(sql)` 动态串、
+  动态表名/列名/排序表达式、SQLite 扩展加载；Source Tool 不新增网络能力
+  （打开网页继续 browser_open/browser_read）；v1 最小 4 工具
+  （source_search/source_list/source_get 为 L0 有界检索、source_apply_changes
+  为 L2 确认门），禁具 source_sql/source_delete_hard/source_export_all/任意
+  导入/任意抓取/任意通用数据库工具；AI 写入统一 change set（≤20 项、幂等键、
+  expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
+  永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
+  数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
+  **⚠️ 以上全部为「规划/待实现」**：Sources 相关接口在 B1–B9 对应任务完成前
+  不得在文档/报告/UI 中宣称已实现。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
@@ -346,14 +350,15 @@ d:\AIbrowse\
     │       ├── interaction-normalize.ts / .test.ts # （A3 ✅）交互结果形状校验纯函数（页面视为敌手）
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 51 用例（A3 扩展语义元数据）
     │   └── sources/                           # （Fourth Stage，契约见 doc/stage4/detailed-design.md §1）：
-    │       │                                  #   db/（✅ B1：sqlite-driver 薄封装 + migrations 骨架已落地，决议 #48；
-    │       │                                  #        backup 归 B7）、
-    │       │                                  #   domain/（source-canonical/source-change-set/
-    │       │                                  #   source-search-query 纯函数，B2/B3）、
-    │       │                                  #   repository/（source-repository 唯一 SQL 执行点 +
-    │       │                                  #   source-search-index + change-journal，B2/B3）、
-    │       │                                  #   source-service（UI 与 Agent 共用唯一入口，B2）、
-    │       │                                  #   usage/usage-tracker（B7）、tools/source-tools（B4）
+    │       │                                  #   db/（✅ B1：sqlite-driver 薄封装 + migrations 引擎，决议 #48；
+    │       │                                  #        ✅ B2：schema v1 全表集（决议 #49–#55）；backup 归 B7）、
+    │       │                                  #   domain/（✅ B2：source-canonical/source-change-set
+    │       │                                  #   纯函数；source-search-query 归 B3）、
+    │       │                                  #   repository/（✅ B2：source-repository 唯一 SQL 执行点 +
+    │       │                                  #   change-journal；source-search-index 归 B3）、
+    │       │                                  #   ✅ B2：source-service（UI 与 Agent 共用唯一入口）、
+    │       │                                  #   usage/usage-tracker（B7）、tools/source-tools（B4）；
+    │       │                                  #   shared/types/sources.ts（✅ B2 单一事实源）
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅ + A6 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
@@ -961,38 +966,83 @@ SourceRepository / SourceSearchIndex / SourceChangeJournal → SQLite driver
   backup API 不存在 / 关闭后复制可行（B7 定稿）。落地：
   `src/main/sources/db/sqlite-driver.ts`——`openDb(path, {busyTimeoutMs,
 enableForeignKeys, wal}) → DbHandle` / `closeDb`（幂等）/ `withTransaction`
-  （同步语义、异常整体回滚、连接可诊断）；`migrations.ts` 骨架——
-  `MIGRATIONS`（B1 恒空，v1 随 B2 追加）/ `validateMigrationList` /
-  `planMigration` / `readUserVersion` / `runMigrations`（每级单事务、失败回滚
-  保留原库、未知更高版本 newer-than-program 零写入）。冒烟 B-01 自动包含于默认
-  AIBROWSE_SMOKE=1 矩阵。业务 SQL 仅为 Repository 编译期常量 + migration
-  （参数绑定）；driver 仅允许连接级运维 SQL 编译期常量（PRAGMA/事务控制，决议
-  #47）；禁止 exec 动态串/动态表名列名/排序表达式/扩展加载。
-- **域模型（shared/types/sources.ts，B2）**：Source（origin/page 双作用域 +
-  canonicalKey 唯一）/SourceGroup/SourceTag + source_tag_links/change_journal
-  （幂等键主键 + before/after payload，有界 100 条/30 天）/usage_events（每
-  Source 最近一次五态）。Source 字段：id/scope/canonicalKey/url/name/groupId/
-  tags/priority(1–5)/enabled/shareMode(full|metadata|blocked)/trust{value,
-  assertedBy,verification}/userNote/aiNote/createdBy/version/时间戳/deletedAt/
-  lastUsedAt/lastUsageOutcome。note ≤2000、name ≤200、tag ≤32×20 个。
-- **canonicalization（source-canonical 纯函数，B2）**：仅 http/https、拒
-  userinfo、scheme/host 小写、IDN 用 WHATWG URL 解析后稳定 host、去默认端口与
-  fragment、保留路径大小写/非默认端口/普通 query（utm_* 默认保留）；origin 键 =
-  规范化 origin、page 键 = 去 fragment 规范化完整 URL；duplicate 由唯一约束
-  保证（不靠先查后写），同 origin 只提示「可能相关」不自动覆盖。
-- **SourceService（B2，UI 与 Agent 共用唯一入口）**：search（默认/硬上限 10）/
-  list（每页 ≤20）/get/applyChangeSet({runId,toolCallId})/addManual/updateManual/
-  disableManual/restoreManual/hardDeleteManual(confirmToken)/undoChange/undoable/
-  recordUsage/getState({mode:'normal'|'readonly-recovery'})/dispose；构造注入
-  {db, now?}；非法输入安全返回不抛异常。
+  （同步语义、异常整体回滚、连接可诊断）；`migrations.ts`——`MIGRATION_V1`
+  （B2 ✅ schema v1 全表集，编译期常量、定稿不改写）/ `MIGRATIONS` /
+  `validateMigrationList` / `planMigration` / `readUserVersion` /
+  `runMigrations`（每级单事务、失败回滚保留原库、未知更高版本
+  newer-than-program 零写入）。冒烟 B-01 自动包含于默认
+  AIBROWSE_SMOKE=1 矩阵；**冒烟 B-02（B2 ✅，决议 #57 专属门控）**：
+  `AIBROWSE_SOURCES_SMOKE=set|check` 两进程共用同一已核验系统 TEMP 子目录
+  （均需 AIBROWSE_SMOKE=1 + AIBROWSE_USER_DATA_DIR；与 SESSION_SMOKE 互斥，
+  同设报错退出）——set 写 CRUD + journal、check 新进程读回并执行 Undo。业务
+  SQL 仅为 Repository 编译期常量 + migration（参数绑定）；driver 仅允许连接级
+  运维 SQL 编译期常量（PRAGMA/事务控制，决议 #47）；禁止 exec 动态串/动态表名
+  列名/排序表达式/扩展加载。
+- **域模型（shared/types/sources.ts，B2 ✅ 已实现，grep 核对）**：Source
+  （origin/page 双作用域 + canonicalKey 唯一）/SourceGroup/SourceTag +
+  SourcePatch/SourceChangeOp/Set/OpResult/ChangeResult + SourceListItem/
+  SourceView/SourceSearchResult/SourceListResult/SourceResult/ManualAddInput/
+  ManualPatch/ManualWriteResult/UndoResult/UndoableChange（判别联合）+
+  `SourceService` 接口（单一事实源，B4 工具零 Electron 依赖）。Source 字段：
+  id/scope/canonicalKey/url/name/groupId/tags/priority(1–5)/enabled/shareMode
+  (full|metadata|blocked)/trust{value,assertedBy,verification}/userNote/aiNote/
+  createdBy/version/时间戳/deletedAt/lastUsedAt/lastUsageOutcome。note ≤2000、
+  name ≤200、tag ≤32×20 个；错误码 `SourceErrorCode` 10 值（+undo-conflict/
+  undo-not-found，决议 #52）。schema v1 与 SQL 封闭（决议 #49/#51/#53/#54/#55）。
+- **canonicalization（source-canonical 纯函数，B2 ✅ 已实现，grep 核对）**：
+  `SOURCE_URL_MAX_LENGTH`=2048 / `containsUrlControlChar(text)` /
+  `normalizeSourceUrl(raw, scope) → {ok:true,canonicalKey,displayUrl} |
+{ok:false,reason}` / `defaultSourceName(raw, scope)`。仅 http/https、拒
+  userinfo 与控制字符、scheme/host 小写、IDN 用 WHATWG URL 解析后稳定 host
+  （非 ASCII 路径百分号编码）、去默认端口与 fragment（展示保留 fragment）、
+  保留路径大小写/非默认端口/普通 query（utm_* 默认保留）；origin 键 = 规范化
+  origin、page 键 = WHATWG href 去 fragment（决议 #50：空路径两形态同身份）；
+  duplicate 由 `UNIQUE(scope, canonical_key)` 唯一约束保证（决议 #49，不靠
+  先查后写），同 origin 只提示「可能相关」不自动覆盖。
+- **change set 结构校验（source-change-set.ts，B2 ✅ 已实现，grep 核对）**：
+  常量 CHANGE_SET_MAX_OPS=20/NAME 200/TAG 32×20/GROUP 64/NOTE 2000/SEARCH 500/
+  PRIORITY 1–5；`isUuidShape`/`stripControlChars`（C0 除 \t 全剔）/
+  `validateChangeSet(raw)`（字段白名单/长度/枚举/URL 形状/trust 通道规则/
+  缺省冻结/同 set 重复 sourceId 拒绝，决议 #52）/
+  `validateManualAddInput`/`validateManualPatch`（手工通道 blocked 可设、
+  trust 恒 user-asserted）/`computeChangeSetFingerprint(ops)`（规范化
+  SHA-256，决议 #53）。确认文案 diff 与 Tool 接线归 B4。
+- **Repository（source-repository.ts，B2 ✅ 已实现，grep 核对；唯一业务 SQL
+  执行点，全编译期常量 + 参数绑定）**：`RepositoryError`（duplicate-source/
+  duplicate-journal-key/duplicate-journal-run-tool/version-mismatch/
+  sqlite-error 五码）/`translateSqliteError`（实测 3.53.1 冲突消息为列名形态）/
+  `SourceRepository` 类（getSourceById/ByCanonical/getSourceRowid/
+  getGroupByName/getGroupNameById/getTagByName/listTagsBySource/listSources/
+  countSources（groupId 三态 mode 参数）/searchBasic（参数化 LIKE ESCAPE
+  前缀，B2 最小检索）/insertSource（唯一约束兜底）/updateSourceFields/
+  setSourceDisabled/Restored（决议 #51 状态机）/deleteSource/
+  restoreSourceSnapshot（Undo 回放）/upsertGroup/Tag（幂等）/setSourceTags/
+  ftsInsert/ftsDelete（决议 #54 镜像）/upsertUsage）。`change-journal.ts`：
+  `JOURNAL_MAX_ENTRIES`=100/`JOURNAL_MAX_AGE_MS`=30d/`ChangeJournal`
+  （record/findByKey/findByRunTool/listRecent/deleteByKey/removeSource
+  （决议 #55 JSON 精确拆分）/prune（双上限注入时钟））/serialize/parseSnapshotMap
+  （畸形 fail-closed null）。
+- **SourceService（source-service.ts，B2 ✅ 已实现，grep 核对；UI 与 Agent
+  共用唯一入口）**：`SourceServiceImpl`（构造注入 `{db, now?}`）——search
+  （默认/硬上限 10；B2 参数化最小实现）/list（每页 ≤20；默认过滤
+  deleted_at IS NULL）/get/applyChangeSet({runId,toolCallId})（结构校验→
+  指纹重放（决议 #53）→逐项预检→单事务全成或全退）/addManual/updateManual/
+  disableManual/restoreManual/hardDeleteManual(confirmToken)+
+  `issueDeleteConfirmToken(sourceId)`（决议 #56 能力令牌：256-bit/绑定/TTL
+  300s/消费即失效）/undoChange（版本冲突拒绝 + 消费幂等，决议 #52）/
+  listUndoable（畸形行跳过）/recordUsage/getState（恒 normal，B7 接管）/
+  dispose（幂等）；非法输入安全返回不抛异常，不可预期异常归一化
+  source-unavailable。
 - **写入安全（change set 全链路，B4）**：模型提 ≤20 项 change set → 主进程读
   当前状态 → 确定性 before/after diff → L2 确认（ConfirmManager 复用，deny 默认
   焦点）→ approve 后单事务提交（全部成功或全部 rollback）；确认前数据库零变化；
-  主进程生成 idempotency key（重放幂等）；expectedVersion 乐观并发（不符整体
-  拒绝）；deny/timeout/cancel/迟到/未知 toolCallId 零写入；Agent 无硬删除工具
-  （disable/restore 显式）；手工永久删除二次确认 + 清理 FTS/usage/journal 私有
-  payload；手工 UI 同经 SourceService + Undo；审计脱敏（note 正文零出现，查询串
-  全量 ≤500）。
+  主进程生成 idempotency key（重放幂等：同 (runId,toolCallId) 指纹一致幂等
+  返回、异指纹 fail-closed source-conflict、失败零落 journal——决议 #53 已落地
+  B2）；expectedVersion 乐观并发（不符整体拒绝）；deny/timeout/cancel/迟到/
+  未知 toolCallId 零写入；Agent 无硬删除工具（disable/restore 显式，决议 #51
+  状态机）；手工永久删除二次确认（能力令牌）+ 清理 FTS/usage/journal 私有
+  payload（B2 已落地）；手工 UI 同经 SourceService + Undo；审计脱敏（note
+  正文零出现，查询串全量 ≤500）。
 - **provenance（B2/B5）**：trust{value: official|primary|secondary|community|
   unknown；assertedBy: user|ai；verification: asserted|unverified}；用户明示 →
   official+user-asserted；AI 推断恒 official+ai+unverified；模型 change set 不能
@@ -1042,7 +1092,7 @@ enableForeignKeys, wal}) → DbHandle` / `closeDb`（幂等）/ `withTransaction
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 816 用例）
+  - `npm test` — Vitest 全量测试（当前 947 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -1356,6 +1406,23 @@ enableForeignKeys, wal}) → DbHandle` / `closeDb`（幂等）/ `withTransaction
     按码点剔除、\t 保留；sanitize 凭据脱敏行为零改动，既有 8 用例原位通过），
     基线 766 → 771；红队矩阵为冒烟 8.6（RT-01～RT-08 + RT-11）+ RT-09 grep
     断言（无单测新增）。
+- Fourth Stage（规格见 doc/stage4/detailed-design.md §13.1）：
+  - ✅ B1（2026-08-15 红→绿落地，+31：sqlite-driver 17 / migrations 14——
+    文件库重开/注入串仅作数据/事务三路回滚/外键双证/WAL/busy 读回/两连接锁竞争
+    （worker 正证 + 零超时负证 + 等待下界）/重复关闭/重命名删除/无效路径；迁移
+    列表空/重复/乱序/缺级/非正整数/未知更高版本/第 N 步失败该步整体回滚零部分
+    状态/续跑），基线 785 → 816。
+  - ✅ B2（2026-08-15 红→绿落地，+131：source-canonical 22 / source-change-set
+    28 / source-repository 17 / change-journal 15 / source-service 37 /
+    migrations schema v1 契约 +12——规范化矩阵（决议 #49/#50 空路径两形态同身份/
+    IDN 百分号编码/控制字符拒绝/确定性）；change set 白名单/长度/枚举/trust
+    通道/缺省/指纹；唯一约束双连接并发（列名形态冲突消息实测）；乐观版本；
+    FTS 镜像同步（决议 #54）；LIKE ESCAPE 前缀字面匹配（SQLite 3.53.1 实测
+    转义通配符首位前缀语义正常）；journal 100 条/30 天边界（注入时钟）/
+    removeSource 精确拆分（决议 #55）/畸形 payload 安全失败；service 幂等重放
+    （决议 #53）/Undo 消费幂等与版本冲突（决议 #52）/硬删令牌（决议 #56）/
+    非法输入安全返回/异常归一化/dispose 幂等/重启后 Undo），基线 816 → 947；
+    冒烟 B-02 为决议 #57 专属双进程门控（默认矩阵不含 B-02）。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。

@@ -17,12 +17,19 @@
   不命中为 trigram 语义，B3 短查询降级路径依据），按用户裁决（决议 #46/#47）
   **驱动冻结 = node:sqlite**（详细设计 §15 决议 #48）+ sqlite-driver.ts 薄封装 +
   migrations.ts 骨架 + 冒烟 B-01（自动包含于默认 AIBROWSE_SMOKE=1 矩阵）+ 单测
-  +31（全量 816/816）。**B2–B9 全部待开始**；下一个推荐任务 = **B2**（Source
-  域模型 + canonicalization + Repository + SourceService + journal + Undo）。
-  Sources 功能尚未实现（B2–B9 完成前不得宣称可用）。步骤 0 独立核对：HEAD
-  `818dd5e` = Gitee/GitHub 双远程 HEAD（ls-remote 实测，三方一致）、工作区干净；
-  既有接口经代码核对与 AGENTS.md §5 契约一致（4 处文档滞后性遗漏登记为决议 #45，
-  留待速查回填）。Entry Gate 判定证据见 `doc/stage4/proposal.md` §8。
+  +31（全量 816/816）。**B2 已完成（2026-08-15）**——九项契约缺口实施前裁决
+  （决议 #49–#57：复合唯一约束/WHATWG href 空路径/单一软删状态机/共享类型完整
+  定型/幂等指纹重放/FTS 最小写同步/journal JSON 精确清理/硬删能力令牌/B-02 专属
+  门控）+ Source 域模型/canonicalization/schema v1/Repository（唯一 SQL 执行点）/
+  SourceService/change journal/durable Undo/冒烟 B-02 双进程 set/check 落地；
+  全量 test 947/947（+131）；dev+生产双场景默认矩阵与 B-02 双进程退出码 0。
+  **B3–B9 待开始**；下一个推荐任务 = **B3**（多语言 Source Search：FTS5/trigram
+  - 短查询安全降级 + 有界 Retrieval + 分享模式 + 确定性排序）。
+    Sources 功能对用户/Agent 尚不可用（UI/Tools 未实现——B3–B5 完成前不得宣称
+    可用；SourceService 已可经代码调用）。步骤 0 独立核对：HEAD
+    `b2eb8d5` = Gitee/GitHub 双远程 HEAD（ls-remote 实测，三方一致）、工作区干净；
+    既有接口经代码核对与 AGENTS.md §5 契约一致（4 处文档滞后性遗漏登记为决议 #45，
+    留待速查回填）。Entry Gate 判定证据见 `doc/stage4/proposal.md` §8。
 - 已完成（第三阶段，历史）：**第三阶段（Browser Agent）**，已于 2026-08-14 正式切换（用户指令）。Entry
   Gate 逐项核验通过（判定证据见 doc/stage3/proposal.md §8）；**设计定稿与任务拆分
   已完成（2026-08-14，纯文档）**——`doc/stage3/`：threat-model（Prompt Injection
@@ -118,7 +125,7 @@
 | A8 | 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步 | ✅ | 2026-08-14 完成（§9 逐项证据 + §10 总判定 HOLD/PENDING）；**2026-08-14 A7 补验后改判 GO/PASS**（§9 五组全 PASS + §10 五项条件 PASS + 真实场景与 RT-10 证据）；任务文档 doc/stage3/tasks/A8-finalize-acceptance.md；证据见下 |
 
 | B1 | node:sqlite 决策门 spike（硬前置）：Electron dev+生产构建实测 11 项（import/文件库/prepared statements/事务/外键/busy timeout/FTS5/trigram/userData/句柄清理）+ SQLite/migration 基座 | ✅ | 2026-08-15 完成（见下）：11 项逐项实测，基础能力项 ①–⑦、⑩、⑪ 全过 + ⑧⑨ 可用 → 按决议 #46/#47 冻结 node:sqlite（决议 #48）；driver/migrations/冒烟 B-01/单测 +31 落地；全量 816/816；任务文档 doc/stage4/tasks/B1-sqlite-foundation.md（实测证据节已回填） |
-| B2 | Source 域模型 + canonicalization + Repository（唯一约束）+ SourceService + 事务 + change journal + Undo | ⏳ | 2026-08-15 设计定稿；契约 detailed-design §2/§4/§5/§6/§7.4–7.6；任务文档 doc/stage4/tasks/B2-source-domain-service.md |
+| B2 | Source 域模型 + canonicalization + Repository（唯一约束）+ SourceService + 事务 + change journal + Undo | ✅ | 2026-08-15 完成（见下）：九项契约缺口实施前用户裁决（决议 #49–#57）+ schema v1 + 全模块落地 + 冒烟 B-02 双进程；任务文档 doc/stage4/tasks/B2-source-domain-service.md（红→绿证据已回填） |
 | B3 | 多语言 Source Search：FTS5/trigram + 短查询安全降级 + 有界 Retrieval（硬上限 10/每页 20/allowlist）+ 分享模式 + 确定性排序 | ⏳ | 2026-08-15 设计定稿；契约 detailed-design §8；任务文档 doc/stage4/tasks/B3-source-search-retrieval.md |
 | B4 | Source Tools 四工具（search/list/get L0 + apply_changes L2）+ 权限矩阵 + change set 确认/幂等键/expectedVersion/审计 + Agent 上下文隔离 | ⏳ | 2026-08-15 设计定稿；注册后 17 工具（冒烟 8.1 断言校准）；任务文档 doc/stage4/tasks/B4-source-tools-permission.md |
 | B5 | Sources UI + 手工管理 + 当前页快速添加 + 冲突/恢复态/Undo 展示 + IPC/bridge 扩展 | ⏳ | 2026-08-15 设计定稿；任务文档 doc/stage4/tasks/B5-sources-ui.md |
@@ -132,7 +139,52 @@
 > 编号一律不变。（2026-08-15）第四阶段任务编号 B1–B9、威胁 ST-01～ST-12、红队
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1 条目）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1/B2 条目）
+
+- **B2 Source 域模型 + Repository + SourceService + journal + Undo（2026-08-15，
+  第二个实现闭环）**：① 步骤 0 独立核对——HEAD `b2eb8d5` = Gitee/GitHub 双远程
+  HEAD、工作区干净、基线 test 816/816·typecheck·lint·format:check 独立复跑全绿、
+  B1 代码在位（driver/migrations/冒烟 8.7）、B2 零实现（无 domain/repository/
+  service/shared 类型）。② **实现前硬停点：九项契约缺口逐项核验全部属实**
+  （origin/page 单列 UNIQUE 与键空间独立声明矛盾、WHATWG 解析丢失空路径原始
+  形态、enabled/deleted_at 双机制状态机未定义、共享类型不完整且错误码缺
+  undo-conflict、幂等键无指纹/无部分唯一索引无法完成重放识别、FTS 建表归 B2
+  与同步归 B3 冲突、journal 逗号分隔无法精确清理、hardDelete confirmToken 机制
+  缺失、B-02 无门控路由）→ **用户一次性裁决（九项全部采纳推荐）** = 决议
+  #49–#57（复合唯一约束/WHATWG href 空路径/单一软删状态机/共享类型完整定型/
+  指纹列+部分唯一索引/FTS 最小写同步/JSON 精确拆分/内置能力令牌/专属
+  AIBROWSE_SOURCES_SMOKE 门控），detailed-design §2/§4–§7/§13/§15 + B2 任务
+  文档 + HLD 同步校准。③ **红→绿**：先写测试——红态 6 files failed / 10 failed /
+  818 passed（5 新文件模块缺失 + schema v1 契约断言在旧 MIGRATIONS 空列表下
+  真实失败 + typecheck 红；既有 816 零删除零削弱）；实现后全量 **947/947**
+  （新增 131：canonical 22 / change-set 28 / repository 17 / journal 15 /
+  service 37 / migrations schema v1 契约 +12）。实现期修正如实登记：实现侧
+  真实缺陷 5 处（SQLite 3.53.1 唯一冲突消息为「列名」形态——translate 匹配串
+  校准（实测证据：复合唯一报 `t.a, t.b`、部分唯一报其列、主键报 `t.k`）；
+  listSources groupId=null（未分组）与不过滤混淆——三态 mode 参数；applyChangeSet
+  预检缺 try/catch 致不可预期错误泄漏；stripControlChars 漏 \n/\r——C0 除 \t
+  全剔；B-02 冒烟断言自身缺陷——Undo 后列表期望 2 实为 1（list 默认过滤
+  deleted_at IS NULL，决议 #51 语义））；测试自身缺陷若干（'https:///path' 经
+  WHATWG 解析 host='path' 合法、IDN 非 ASCII 路径百分号编码、LIKE 前缀语义下
+  '%可靠' 不命中 '100%可靠'、FK 前置与 canonical 夹具重复）——按契约修正测试，
+  无实现迁就。**SQLite 3.53.1 新增实测事实**：转义通配符位于 LIKE 模式首位时
+  前缀语义正常（`'\%bc%'` 匹配 `'%bc'`/`'%bcx'`、不匹配 `'x%bc'`）。④ **冒烟**：
+  默认完整 dev 矩阵退出码 0（B-01 ①–⑦、⑩、⑪ 全过）；默认完整生产矩阵退出码 0
+  （B-01 + 既有 T/S/A/RT 全矩阵回归，S4 bounds 本轮未复现）；**B-02 生产双进程**
+  （决议 #57 门控）——进程 A `AIBROWSE_SOURCES_SMOKE=set` 退出码 0（临时
+  userData 建库迁移 v1 → CRUD + 5 条 journal）→ 进程 B 新进程 `check` 退出码 0
+  （读回全量断言一致 + 重启后 Undo 生效 + 重复 Undo 幂等 undo-not-found +
+  版本冲突拒绝不覆盖），两进程均 AIBROWSE_SMOKE=1 + 已核验系统 TEMP 子目录
+  （smoke 内 isPathInside 断言拒碰真实 userData）；互斥路由实测（SESSION_SMOKE
+  与 SOURCES_SMOKE 同设 → 退出码 1 + 中文错误）；临时目录解析确认位于系统
+  TEMP 后仅删除本次目录、零残留。⑤ **红线与敏感扫描**：业务 SQL 仅 Repository/
+  migrations 编译期常量 + 参数绑定（grep 零命中他处）；driver 仅连接级 SQL；
+  exec() 仅迁移引擎执行编译期迁移语句；renderer/preload/tools/agent 零 SQL；
+  source_sql/source_delete_hard/source_export_all 零命中；新代码零 any/
+  @ts-ignore；日志零 note 正文/journal payload/URL token/sk- 形态；冒烟日志
+  同检零命中。⑥ **文档同步**（detailed-design §2/§4–§7/§13/§15 决议 #49–#57、
+  B2 任务文档红→绿证据、本文件、README/AGENTS）。**未调用任何付费 Provider、
+  未输出/索取 API Key、未新增依赖、未改 B1 冻结的 driver 行为（driver 零 diff）。**
 
 - **B1 node:sqlite 决策门 spike + SQLite/migration 基座（2026-08-15，第一个
   实现闭环；驱动冻结 = node:sqlite，决议 #48）**：① 步骤 0 独立核对——HEAD
