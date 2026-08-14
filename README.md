@@ -36,7 +36,8 @@
   多网站共读验证）。用户独立复验（2026-08-14）发现的 4 项非阻塞测试基础设施/
   文档缺陷已修复并全量回归（红态退出码 1 → 绿态 0）。证据见 `Second_stage.md`
   §9/§10 与 `doc/tasks/progress.md`。
-- 🔨 **第三阶段（Browser Agent）进行中（2026-08-14）**：Entry Gate 逐项核验通过
+- ✅ **第三阶段（Browser Agent）已完成并通过验收，等待 Fourth Stage 切换/设计指令
+  （2026-08-14）**：Entry Gate 逐项核验通过
   （「tool calling」项经循环式门槛判定记录校正——该能力属第三阶段自身交付物，校正为
   A1 硬前置，判定证据见 `doc/stage3/proposal.md` §8）；Prompt Injection 威胁模型
   重建定稿（`doc/stage3/threat-model.md`）；契约定稿 `doc/stage3/detailed-design.md`。

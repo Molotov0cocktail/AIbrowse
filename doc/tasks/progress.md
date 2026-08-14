@@ -64,6 +64,9 @@
   全部 200）；**GO/PASS 判定维持**（补证闭环，无缺口遗留）。
   下一个推荐任务 = **Fourth Stage 进入前需求澄清与详细设计**（按 ROADMAP 阶段
   切换原则，等待用户指令；不直接实现信源数据库）。
+  **最终验收发现项 F-1～F-4 修复闭环已完成（2026-08-14）**：测试设施墙钟断言
+  间歇失败（F-1）与 3 处文档矛盾/陈旧（F-2～F-4）全部关闭，O-1 观察已登记
+  （详见「最近验证结果」最新条目）；GO/PASS 维持，阶段指针不变。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Exit Gate 通过（2026-08-13 判定 + 2026-08-14 用户独立复验，4 项
   非阻塞缺陷已修复并全量回归，红态退出码 1 → 绿态 0；证据见 Second_stage.md
@@ -105,6 +108,37 @@
 > 编号一律不变。
 
 ## 最近验证结果（2026-08-14）
+
+- **验收发现项 F-1～F-4 修复闭环（2026-08-14，独立小型闭环；产品验收结论 GO/PASS
+  维持，不切换 Fourth Stage）**：最终严格验收发现的 4 项问题全部关闭，O-1 观察
+  登记入册。
+  **F-1 测试设施缺陷（fake-provider 延迟块墙钟断言间歇失败）**——红态证据：验收期
+  3 次实测失败（含捕获输出 `AssertionError: expected 29.857699999999994 to be
+greater than or equal to 30`，fake-provider.test.ts:63），单文件复跑约 17% 失败率
+  （本次闭环前 32 次复跑 0 失败——负载相关，间歇性确认）；根因：`performance.now()`
+  墙钟测量与 node:timers/promises setTimeout 在并行负载下的计时/舍入抖动，属测试
+  断言测量方式缺陷，非产品行为问题。修复方式（仅改测试文件，零生产代码改动）：
+  文件级 `vi.mock('node:timers/promises')` 将 sleep 替换为手动控制的 Promise——
+  延迟语义改为确定性验证：仍断言 sleep 以脚本配置的完整延迟值（30/20/60000 原样）
+  调用、延迟推进前流输出未完成（settled=false 断言）、推进到约定延迟后才继续
+  （事件序列全等断言）、等待延迟期间 abort 立即生效（中止感知语义保留，rounds
+  中止用例同步去真实墙钟化）。阈值语义零弱化、零自动重试、零删除、零 skip/only。
+  绿态证据：修复后单文件连续 **50 次全绿（50/50）**、全量 test 连续 **5 次
+  785/785** 全绿。
+  **F-2 文档矛盾（Third_stage.md §9）**：Agent 组「PASS·离线/真实模型维度未验证
+  （见 Engineering 组 BLOCKED 项）」、Search 组「PASS·离线/真实网站维度 NOT RUN」
+  残留补验前标签，与同文件 Engineering 组 PASS、§10 GO/PASS 并存——已校正为最终
+  状态（离线证据 + 后续真实 Provider 补验证据均通过，指向 §7/Engineering 组证据；
+  历史缺口明确标注「当时缺口，后续已关闭」，无两个现行结论并存）。
+  **F-3 文档矛盾（README 状态标记）**：「🔨 第三阶段进行中」与同段 GO/PASS 内容
+  矛盾——已改为「✅ 第三阶段已完成并通过验收，等待 Fourth Stage 切换/设计指令」。
+  **F-4 文档陈旧（AGENTS.md §6 测试计数）**：当前规模描述 771 → 785（仅改现行
+  声称处；历史阶段计数原位保留）。
+  **O-1 纵深硬化观察登记**（见「计划内限制与延期项」末尾，不分配开放风险编号，
+  不修改生产代码）。验证：typecheck · lint · format:check · build · dev 离线全矩阵
+  冒烟 + 生产产物冒烟双场景退出码 0 · git diff --check 零命中 · README/
+  Third_stage/AGENTS 现行状态表述 grep 复核唯一且一致。**未调用任何付费
+  Provider、未输出/索取 API Key、产品代码零 diff。**
 
 - **A7 补验完整真实验收（2026-08-14，最终执行第 9 次——`LIVE_SMOKE_PASS` 退出码
   0，第三阶段改判 `GO/PASS`）**：Provider=deepseek-v4-pro（仓库外 DPAPI harness
@@ -1174,6 +1208,14 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 - shared/url 不支持 IDN（中文域名走搜索兜底，安全无副作用）；SearchProvider 抽象已定稿
   于 Third Stage A4（doc/stage3/detailed-design.md §6：v1 Bing 页面实现 + 接口隔离
   保替换；shared/url 的 SEARCH_ENGINE_URL 常量语义不变，由 SearchProvider 引用）。
+- **O-1 纵深硬化观察（2026-08-14 最终验收发现，Info；不分配开放风险编号）**：
+  conversation-store 以 sessionId 直接拼接会话文件名（`<userData>/conversations/
+<sessionId>.json`），store 层无 UUID 形状校验。无已知攻击路径：getHistory/
+  deleteSession 均以内存索引成员资格为前置（索引由 createSession 随机 UUID 生成
+  或 parseIndexFile 形状校验产生），IPC 有 sender+主帧校验，UI 窗口导航锁定自身
+  来源；本地拥有 userData 写权限者本可直达数据。可选纵深防御（本闭环不改生产
+  代码）：store 层加 UUID 形状校验。**最迟在会话导入、外部同步或相关信任边界
+  变化时复核。**
 - **A7 补验 reasoning_content 回传边界（2026-08-14 决议 #35，容忍设计如实登记）**：
   跨 run 重放不携带 reasoning_content（思维过程不持久化红线所致）——对要求原样回传的
   Provider（DeepSeek V4 thinking 模式），**旧会话重问**可能 400 → 结构化

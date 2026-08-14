@@ -902,7 +902,7 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 771 用例）
+  - `npm test` — Vitest 全量测试（当前 785 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`

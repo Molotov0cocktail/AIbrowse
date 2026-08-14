@@ -265,10 +265,11 @@ PageSnapshot 中的 elementId 需要正式服务于浏览动作。
 > log/aibrowse-2026-08-14.log 当日 8.4/8.5/8.6 场景通过行）。
 
 ### Agent
-- [x] 可完成多步低风险网页任务（PASS·离线）——冒烟 8.4 A-01 多步任务
-  （open→read→find→search.web→scroll→click→read→最终回答，7 步真实执行）+
-  A6-UI-01 UI 链路 + agent-loop 单测 32 用例；真实模型维度受 Provider 限制
-  未验证（见 Engineering 组 BLOCKED 项）
+- [x] 可完成多步低风险网页任务（PASS——离线 + 真实 Provider 补验证据）——冒烟 8.4
+  A-01 多步任务（open→read→find→search.web→scroll→click→read→最终回答，7 步真实
+  执行）+ A6-UI-01 UI 链路 + agent-loop 单测 32 用例；真实模型维度证据见 Engineering
+  组「多个真实网站 Agent smoke test 通过」与 §7（该维度曾受 Provider tools 兼容性
+  限制未验证——当时缺口，2026-08-14 A7 补验最终执行后已关闭）
 - [x] 有最大步骤/超时/取消（PASS）——AGENT_MAX_STEPS=12 / 总超时 420s 编译期
   常量（agent-loop.ts）+ 冒烟 A-03（取消含 pending 作废）/A-04（step-limit
   第 4 步零执行）+ agent-loop/agent-safety 单测
@@ -279,9 +280,10 @@ PageSnapshot 中的 elementId 需要正式服务于浏览动作。
   agent-safety 单测 17 用例
 
 ### Browser Tools
-- [x] read/find/scroll/open/click/fill 等核心工具稳定（PASS·离线）——冒烟 8.2
-  A-12 允许列表四类点击/fill 隐私/scroll 边界/find 多章节 + 8.4 A-01 真实执行
-  + browser-tools/interaction-tools/interaction-script 单测
+- [x] read/find/scroll/open/click/fill 等核心工具稳定（PASS——离线确定性 + 真实
+  Provider 补验调用链证据：定向补验场景 2 真实长页面 read/find/scroll 三类工具
+  真实调用，见 §7）——冒烟 8.2 A-12 允许列表四类点击/fill 隐私/scroll 边界/find
+  多章节 + 8.4 A-01 真实执行 + browser-tools/interaction-tools/interaction-script 单测
 - [x] elementId 生命周期正确（PASS）——决议 #31 文档世代绑定（导航世代计数 +
   documentId 主进程盖章 + 执行前校验）+ 冒烟 A-07/A-12 + RT-06 +
   interaction-semantics 单测
@@ -292,8 +294,10 @@ PageSnapshot 中的 elementId 需要正式服务于浏览动作。
 - [x] AI 可通过统一 SearchProvider 查询（PASS）——search.web 经 13 工具注册表
   与 ToolExecutor 全链路 + 冒烟 8.3 受控搜索页三夹具 + search-provider 单测
   28 用例（临时 Tab 精确所有权/错误诚实映射）
-- [x] 搜索结果可继续交给 Browser Agent 打开读取（PASS·离线）——冒烟 8.4 A-01
-  search.web→open→read 链路真实执行；真实网站维度见 Engineering 组（NOT RUN）
+- [x] 搜索结果可继续交给 Browser Agent 打开读取（PASS——离线确定性 + 真实 Provider
+  补验证据：定向补验场景 3 真实搜索后打开并各自读取两个不同 origin 公开来源，见
+  §7/Engineering 组）——冒烟 8.4 A-01 search.web→open→read 链路真实执行；真实网站
+  维度曾为 NOT RUN（当时缺口，2026-08-14 A7 定向补验后已关闭）
 
 ### Permission
 - [x] 高风险动作无法无确认执行（PASS）——L2 确认门（isSubmit 优先升级、deny
