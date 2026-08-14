@@ -228,6 +228,16 @@ PageSnapshot 中的 elementId 需要正式服务于浏览动作。
 > 场景 6 RT-10 敌对页结构性阻断 + 模型拒绝执行网页指令——`LIVE_SMOKE_PASS` 退出码 0）。
 > 真实验收过程发现的冒烟断言/驱动缺陷均为测试基础设施类（分类如实登记于 git log 与
 > progress.md），权限面/验收标准零放宽。
+>
+> 补证（2026-08-14 定向补验执行，Provider=deepseek-v4-pro，`LIVE_SMOKE_PASS` 退出码 0，
+> 12 次 HTTP 全部 200）：① 场景 2 修订——真实长页面（electronjs.org WebContentsView
+> 文档页）read/find/scroll/read 三类工具真实调用链（find×3 + scroll dy=5000 + read
+> 在 scroll 后，6 轮 done，断言：三工具齐备且 scroll 后再次 read）；② 场景 3 修订——
+> 真实搜索后打开**两个不同 origin 公开来源**（blog.openreplay.com + peerlist.io）
+> 各自读取并比较（search_web 首次中文查询遇 bing HTTP2 瞬态失败 → 工具如实报
+> search-failed → 模型改用英文查询重试成功；两页 tabId 精确 read 各一次，无串页，
+> 总结同时提及两方，6 轮 done）；③ A3 工具层探针状态机补齐（deny 零动作/approve
+> 精确一次/新提交新确认/迟到・未知 toolCallId 决议无效——同执行内零 HTTP 验证通过）。
 
 ---
 
@@ -302,13 +312,17 @@ PageSnapshot 中的 elementId 需要正式服务于浏览动作。
 ### Engineering
 - [x] 全量验证通过（PASS）——A8 独立复核：test 771/771 · typecheck · lint ·
   format:check · build 全绿；dev 离线全矩阵 + 生产产物双场景冒烟退出码 0
-- [x] 多个真实网站 Agent smoke test 通过（**PASS**，2026-08-14 A7 补验最终执行）——
-  Provider=deepseek-v4-pro，`LIVE_SMOKE_PASS` 退出码 0：§7 场景 1–6 全部真实完成
-  （场景 1 搜索→新标签页打开→读取；场景 2 页面内找 security；场景 3 双新标签页
-  对比总结；场景 4 筛选框输入读取更新结果；场景 5 提交确认门 deny 零动作；场景 6
-  RT-10 敌对页结构性阻断）；真实公开站点 = electronjs.org 多页面（场景 1/2/3），
-  非受控本地夹具；wire 兼容性修复（决议 #35：工具名 wire-safe + reasoning_content
-  原样回传）与台账见 progress.md
+- [x] 多个真实网站 Agent smoke test 通过（**PASS**，2026-08-14 A7 补验最终执行 +
+  定向补验）——Provider=deepseek-v4-pro，`LIVE_SMOKE_PASS` 退出码 0：§7 场景 1–6
+  全部真实完成（场景 1 搜索→新标签页打开→读取；场景 2 页面内找 security；场景 3
+  双新标签页对比总结；场景 4 筛选框输入读取更新结果；场景 5 提交确认门 deny 零动作；
+  场景 6 RT-10 敌对页结构性阻断）；**多个真实网站证据（2026-08-14 定向补验场景 3
+  修订）**：真实搜索后打开并各自读取两个不同 origin 公开来源
+  （https://blog.openreplay.com + https://peerlist.io，tabId 精确对应零串页）+
+  场景 1/2 electronjs.org + bing 真实搜索——覆盖 ≥4 个真实公开 origin，非受控本地
+  夹具；场景 2 修订补证 read/find/scroll 三类工具真实调用链（真实长页面）；
+  wire 兼容性修复（决议 #35：工具名 wire-safe + reasoning_content 原样回传）与台账
+  见 progress.md
 - [x] Agent 操作日志无敏感信息（PASS）——离线证据：审计脱敏链（fill 只记 len=N/
   URL・查询串全量/其余截断）+ logger sanitize + normalizeLogMessage 日志行伪造
   防御（13 用例）+ 冒烟 A-09/A6-UI-10/A6-UI-12 字节扫描；真 Key 零暴露扫描随真实
@@ -331,9 +345,10 @@ PageSnapshot 中的 elementId 需要正式服务于浏览动作。
 
 1. **不会频繁死循环 —— PASS（离线 + 真实验证证据）**：防循环三触发（连续 3/累计 5/
    no-progress 2）在执行前阻断 + 步数上限 12（agent-safety/agent-loop 单测 +
-   冒烟 A-04/A-05/A6-UI-06）；真实模型证据（2026-08-14 补验，9 次执行共 133 次
-   真实请求零 400）：过度探索被 12 步上限确定性终止（第 3 次执行场景 3——防循环
-   未触发即已收敛，签名均不同），其余 8 次执行全部场景正常 done 收敛，零死循环。
+   冒烟 A-04/A-05/A6-UI-06）；真实模型证据（2026-08-14 补验，10 次执行共 145 次
+   真实请求零 400，含 2026-08-14 定向补验 12 次）：过度探索被 12 步上限确定性终止
+   （第 3 次执行场景 3——防循环未触发即已收敛，签名均不同），其余 9 次执行全部场景
+   正常 done 收敛，零死循环。
 2. **Tool API 稳定可复用 —— PASS**：接口契约定稿（§4/§5/§6 + 决议 #21～#34），
    A3–A6 均为其下游消费者（交互工具/SearchProvider/AgentLoop/可见性 UI 复用同一
    ToolRegistry/ToolExecutor 管线）；A6 后契约零变更。

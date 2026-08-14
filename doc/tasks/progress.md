@@ -56,6 +56,12 @@
   #35）+ 最小预检（协议判定 PASS）+ 完整真实 Provider 验收（deepseek-v4-pro，
   §7 场景 1–6 + RT-10 + 停止全部真实通过，`LIVE_SMOKE_PASS` 退出码 0）——
   **第三阶段总 Exit 决策改判 `GO/PASS`**（Third_stage.md §9/§10 已同步）。
+  **A7 补验补证已完成（2026-08-14，定向补验执行）**：证据缺口裁决后定向补证——
+  场景 2 修订（真实长页面 read/find/scroll 三类工具真实调用链断言）+ 场景 3 修订
+  （真实搜索后两个不同 origin 公开来源各自读取比较）+ A3 工具层探针确认门状态机
+  补齐（迟到/未知 toolCallId 决议无效）+ 新门控 `AIBROWSE_LIVE_AGENT_SUPPLEMENT=1`
+  （harness `-Supplement`）——真实执行 `LIVE_SMOKE_PASS` 退出码 0（12 次 HTTP
+  全部 200）；**GO/PASS 判定维持**（补证闭环，无缺口遗留）。
   下一个推荐任务 = **Fourth Stage 进入前需求澄清与详细设计**（按 ROADMAP 阶段
   切换原则，等待用户指令；不直接实现信源数据库）。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
@@ -91,7 +97,7 @@
 | A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search_web 工具 | ✅ | 2026-08-14 完成（见下）；契约 §6 + 决议 #32（临时 Tab 所有权/错误映射/snippet 空串/包装链接/查询串全量审计）；任务文档 doc/stage3/tasks/A4-search-provider.md |
 | A5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ✅ | 2026-08-14 完成（见下）；契约 §8–§9 + 决议 #33；任务文档 doc/stage3/tasks/A5-agent-runtime.md |
 | A6 | 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI + UI 端到端冒烟矩阵 | ✅ | 2026-08-14 完成（见下）；契约 §11 + 决议 #34（实时状态通道/参数摘要源/确认信任边界/多监听者）；任务文档 doc/stage3/tasks/A6-agent-ui-visibility.md |
-| A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | ✅ | 离线部分（RT-01～RT-08 + RT-11 + 审计 + RT-10 校准）已完成并推送；真实 Provider 验证已完成（2026-08-14 补验：wire 兼容性修复 + 最小预检 + 完整真实验收 §7 场景 1–6 + RT-10 全部真实通过——deepseek-v4-pro，LIVE_SMOKE_PASS 退出码 0；RT-10 观察性结果如实登记）；契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
+| A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | ✅ | 离线部分（RT-01～RT-08 + RT-11 + 审计 + RT-10 校准）已完成并推送；真实 Provider 验证已完成（2026-08-14 补验：wire 兼容性修复 + 最小预检 + 完整真实验收 §7 场景 1–6 + RT-10 全部真实通过——deepseek-v4-pro，LIVE_SMOKE_PASS 退出码 0；RT-10 观察性结果如实登记）；**2026-08-14 定向补验**：场景 2 修订（真实长页面 read/find/scroll 工具链）+ 场景 3 修订（真实搜索后两个不同 origin 公开来源）+ A3 状态机补齐，LIVE_SMOKE_PASS 退出码 0；契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
 | A8 | 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步 | ✅ | 2026-08-14 完成（§9 逐项证据 + §10 总判定 HOLD/PENDING）；**2026-08-14 A7 补验后改判 GO/PASS**（§9 五组全 PASS + §10 五项条件 PASS + 真实场景与 RT-10 证据）；任务文档 doc/stage3/tasks/A8-finalize-acceptance.md；证据见下 |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
@@ -125,6 +131,37 @@
   双层证据、LIVE 模式离线段跳过、台账计数），**权限面/工具清单/验收标准零放宽**
   （各 commit 分类登记）。离线全量验证最终状态：test 785/785 · typecheck ·
   lint · format:check · build · dev+生产双场景冒烟退出码 0。
+
+- **A7 补验补证定向补验（2026-08-14，用户证据缺口裁决后执行，`LIVE_SMOKE_PASS`
+  退出码 0，GO/PASS 维持）**：零付费证据复核（最终执行日志/真实 smoke 代码/工具
+  层探针/commit 694d0f8）确认三处缺口：① 场景 2 最终执行仅 find×2（read/scroll
+  未真实调用）；② 场景 3 两页同属 electronjs.org（不满足「至少两个不同真实公开
+  来源」）；③ 工具层探针（A3）未覆盖迟到/未知 toolCallId 决议（作废路径 A6-UI-04/
+  RT-03 已有离线证据——当日 dev+prod 冒烟退出码 0）。**离线改造**（测试基础设施，
+  权限面/工具清单零改动）：场景 2 修订（任务显式要求读取→find 定位→scroll 滚动→
+  再读取；断言三工具齐备且 scroll 后再次 read + 回答含 security）；场景 3 修订
+  （真实搜索→两个不同 origin 来源；断言 search_web + ≥2 open + origin ≥2 互异 +
+  每次 open 各建一 Tab + 每页 read tabId 精确对应零串页 + 两 Tab 保留 + 总结同时
+  提及两方 + 审计切片证据日志行）；A3 状态机补齐（approve 恰好一次 + 迟到/未知
+  toolCallId approve/deny 恒 false 且零 DOM）；新门控
+  `AIBROWSE_LIVE_AGENT_SUPPLEMENT=1`（与 LIVE_AGENT/PRE 互斥，仅修订场景 2/3 +
+  零泄漏终检）+ harness `-Supplement`。离线全量验证全绿（test 785/785 ·
+  typecheck · lint · format:check · build · dev+生产双场景冒烟退出码 0，新 A3
+  状态机与 8.6 红队矩阵通过行实证）。**真实补验台账（第 10 次执行）**：12 次
+  HTTP 请求全部 200（场景 2=6：find(security)→find(Security)→scroll(dy=5000)→
+  read→find(Security)→done 5 步——三类工具真实调用链；场景 3=6：search_web 中文
+  查询遇 bing HTTP2 瞬态失败→工具如实报 search-failed→模型改用英文查询重试成功→
+  browser_open ×2（https://blog.openreplay.com + https://peerlist.io 两个不同
+  origin）→get_tabs→两页各自 read（tabId 精确对应，read ×1 各）→对比总结 done
+  7 步）；reasoning_content 回传逐轮程序内内容相等校验零触发 fail-closed；零泄漏
+  终检（Tab 恢复进入前/DOM・日志・临时文件・密文形态真 Key 零暴露）断言全过；
+  当日累计真实调用台账：10 次执行共 **145 次 HTTP 请求，HTTP 400 = 0**（首轮
+  400 根因 = wire 名称契约，修复后零复发）。场景 5 四组状态机证据链汇总：deny
+  零 DOM（最终执行场景 5 审计 denied=1 + DOM 零提交点击 + A3）+ approve 一次
+  （A3 approve 后 click:submit-btn 恰一次 + RT-03 两次 approve 恰两次点击）+
+  新提交新确认（A3 三次独立 pending 新 toolCallId + RT-03 c1/c2/c3）+ 迟到/未知/
+  作废无效（A3 新断言 + RT-03 + A6-UI-04 pending 停止→作废→迟到 approve 无效）——
+  全部离线 dev+生产冒烟退出码 0 实证。
 
 - **A7 补验 wire 兼容性离线修复（2026-08-14，纯离线闭环，零真实请求）**：
   用户纠正根因判定后确诊：既有 13 个工具名全部携带点号（`browser.*` 前缀 +

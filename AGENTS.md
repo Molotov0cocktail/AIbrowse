@@ -59,6 +59,10 @@
     条件逐项判定 PASS；**A7 补验真实验收已完成（2026-08-14）**——wire 兼容性
     修复（决议 #35）+ 最小预检 + 完整真实 Provider 验收（deepseek-v4-pro，
     §7 场景 1–6 + RT-10 + 停止全部真实通过，`LIVE_SMOKE_PASS` 退出码 0），
+    **A7 补验补证已完成（2026-08-14 定向补验）**——场景 2 修订（真实长页面
+    read/find/scroll 三类工具真实调用链）+ 场景 3 修订（真实搜索后两个不同
+    origin 公开来源各自读取比较）+ A3 确认门状态机补齐（迟到/未知 toolCallId
+    决议无效），`LIVE_SMOKE_PASS` 退出码 0（12 次 HTTP 全部 200），
     **第三阶段总 Exit 决策 = `GO/PASS`**（等待用户 Fourth Stage 切换指令，
     不擅自进入）。
     纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
@@ -872,12 +876,15 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   `export function` 已核对，13 用例）+ `runLiveAgentScenarios`
   （`AIBROWSE_LIVE_AGENT=1` 门控：Third_stage §7 场景 1–6 + RT-10 敌对页
   （诱导目标全部指向本地安全地址）+ 停止/取消 + 零泄漏终检（Tab/pending/
-  临时目录/监听器）+ 真 Key 零暴露扫描 + 模型轮次台账；**未经用户
-  授权不联网调用付费 API**）。**A7 补验（2026-08-14）**：wire 兼容性修复
+  临时目录/监听器）+ 真 Key 零暴露扫描 + 模型轮次台账；
+  `AIBROWSE_LIVE_AGENT_SUPPLEMENT=1` 定向补验门控：仅修订场景 2/3 + 零泄漏
+  终检——2026-08-14 补证使用；**未经用户授权不联网调用付费 API**）。
+  **A7 补验（2026-08-14）**：wire 兼容性修复
   （决议 #35）+ 最小预检（`AIBROWSE_LIVE_AGENT_PRE=1`，harness `-Pre`）+
   完整真实验收（deepseek-v4-pro，§7 场景 1–6 + RT-10 + 停止全部真实通过，
-  `LIVE_SMOKE_PASS` 退出码 0）——**第三阶段总 Exit 决策 = `GO/PASS`**
-  （证据见 Third_stage.md §9/§10 与 progress.md）。
+  `LIVE_SMOKE_PASS` 退出码 0）+ **定向补验（`-Supplement`，场景 2/3 修订 +
+  A3 状态机补齐，12 次 HTTP 全部 200）**——**第三阶段总 Exit 决策 =
+  `GO/PASS`**（证据见 Third_stage.md §9/§10 与 progress.md）。
 
 ## 6. 常用命令
 
@@ -1005,6 +1012,8 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
       `%LOCALAPPDATA%\AIbrowse\S5\run-live-smoke.ps1`（`-Sites` 开关进入 S6 多网站场景；
       `-Agent` 进入 A7 真实 Agent 完整场景；`-Pre` 进入 A7 补验最小 tools 兼容性预检
       （仅场景 1 + 零泄漏终检，1 次调用量级，完整场景需用户二次授权）；
+      `-Supplement` 进入 A7 补验补证定向补验（仅修订场景 2/3 + 零泄漏终检，
+      2026-08-14 证据缺口裁决后使用）；
       DPAPI 解密 → 短暂赋环境变量 → 启动冒烟 → finally 清环境变量 + ZeroFreeBSTR 清零
       明文内存 + 清理临时 userData；脚本纯 ASCII——PowerShell 5.1 按 ANSI 解析无 BOM 的
       .ps1，中文会破坏解析）；④ 测试结束清除环境变量、明文内存和临时目录；⑤ 完成报告
@@ -1274,11 +1283,13 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
 - **Permission**：高风险动作无法无确认执行（L2 确认门）；网页文本无法提升 Tool
   权限（确定性权限纯函数）；无万能 shell/eval/filesystem 工具（永久红线 grep 断言）。
 - **Engineering**：全量验证通过；多个真实网站 Agent smoke test 通过（**PASS，
-  2026-08-14 A7 补验最终执行**——deepseek-v4-pro，§7 场景 1–6 全部真实完成，
-  `LIVE_SMOKE_PASS` 退出码 0；此前 BLOCKED 根因 = wire 名称契约（13 工具名
-  携带点号致整组 tools 400），修复见决议 #35；不得以离线 FakeProvider 冒烟
-  替代真实验证的规则不变）；Agent 操作日志无敏感信息（离线证据 + 真 Key 零
-  暴露扫描随真实验收执行通过）。
+  2026-08-14 A7 补验最终执行 + 定向补验**——deepseek-v4-pro，§7 场景 1–6 全部
+  真实完成，`LIVE_SMOKE_PASS` 退出码 0；**多网站证据 = 定向补验场景 3 修订：
+  真实搜索后两个不同 origin 公开来源（blog.openreplay.com + peerlist.io）
+  各自读取比较 + 场景 1/2 electronjs.org + bing 真实搜索 ≥4 个真实公开 origin**；
+  此前 BLOCKED 根因 = wire 名称契约（13 工具名携带点号致整组 tools 400），
+  修复见决议 #35；不得以离线 FakeProvider 冒烟替代真实验证的规则不变）；
+  Agent 操作日志无敏感信息（离线证据 + 真 Key 零暴露扫描随真实验收执行通过）。
 
 ## 附 C：第三阶段完成报告格式（Third_stage.md §10）
 

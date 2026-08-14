@@ -94,6 +94,14 @@ const LIVE_AGENT_MODE = LIVE_PROVIDER_MODE && process.env['AIBROWSE_LIVE_AGENT']
 // + 零泄漏终检 + 台账；完整场景 2–7 需用户二次授权后以 AIBROWSE_LIVE_AGENT=1 执行
 const LIVE_AGENT_PRE_MODE =
   LIVE_PROVIDER_MODE && process.env['AIBROWSE_LIVE_AGENT_PRE'] === '1' && !LIVE_AGENT_MODE;
+// A7 补验补证：定向补验门控（AIBROWSE_LIVE_AGENT_SUPPLEMENT=1；需用户授权）——仅修订
+// 场景 2（真实长页面 read/find/scroll 工具链）+ 场景 3（真实搜索后两个不同 origin 公开
+// 来源）+ 零泄漏终检 + 台账；与 LIVE_AGENT/LIVE_AGENT_PRE 互斥
+const LIVE_AGENT_SUPPLEMENT_MODE =
+  LIVE_PROVIDER_MODE &&
+  process.env['AIBROWSE_LIVE_AGENT_SUPPLEMENT'] === '1' &&
+  !LIVE_AGENT_MODE &&
+  !LIVE_AGENT_PRE_MODE;
 let liveSmoke: LiveProviderSmoke | undefined = undefined;
 let liveStreamChunkCount = 0; // 真实 Provider 场景 delta 计数（流式证据，index.ts 装配侧统计）
 
@@ -478,6 +486,7 @@ if (!gotLock) {
                 liveSites: LIVE_SITES_MODE, // S6：AIBROWSE_LIVE_SITES=1 时启用多网站共读验证
                 liveAgent: LIVE_AGENT_MODE, // A7：AIBROWSE_LIVE_AGENT=1 时启用真实 Provider Agent 验证
                 liveAgentPre: LIVE_AGENT_PRE_MODE, // A7 补验：AIBROWSE_LIVE_AGENT_PRE=1 时启用最小 tools 兼容性预检
+                liveAgentSupplement: LIVE_AGENT_SUPPLEMENT_MODE, // A7 补验补证：AIBROWSE_LIVE_AGENT_SUPPLEMENT=1 时启用定向补验（仅修订场景 2/3 + 零泄漏终检）
                 toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
                 confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
               });

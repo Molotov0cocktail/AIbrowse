@@ -13,7 +13,9 @@
 > A7 红队矩阵与安全审计（RT-01～RT-08 + RT-11 + RT-10 真实模型证据）、
 > A8 收尾验收已实施（2026-08-14）；**第三阶段总 Exit 决策 = GO/PASS**——
 > 完整真实 Provider 验收通过（deepseek-v4-pro，§7 场景 1–6 全部真实完成，
-> LIVE_SMOKE_PASS 退出码 0；此前首轮 400 根因 = wire 名称契约，修复见决议 #35）**
+> LIVE_SMOKE_PASS 退出码 0；此前首轮 400 根因 = wire 名称契约，修复见决议
+> #35）+ 定向补验通过（场景 2 三类工具真实调用链 + 场景 3 两个不同 origin
+> 公开来源，12 次 HTTP 全部 200）**
 > （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
 > T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
 > 见 `doc/stage3/proposal.md` §11）。
@@ -74,6 +76,10 @@
     wire 兼容性修复（决议 #35）+ 最小预检 + 完整真实 Provider 验收
     （deepseek-v4-pro，§7 场景 1–6 全部真实完成 + RT-10 真实模型证据 +
     停止收敛 + 零泄漏终检，`LIVE_SMOKE_PASS` 退出码 0）；
+    **A7 补验补证已完成（2026-08-14 定向补验）**——场景 2 修订（真实长页面
+    read/find/scroll 三类工具真实调用链）+ 场景 3 修订（真实搜索后两个不同
+    origin 公开来源各自读取比较）+ A3 确认门状态机补齐，`LIVE_SMOKE_PASS`
+    退出码 0（12 次 HTTP 全部 200）；
     **A8 第三阶段收尾已完成（2026-08-14）**——§9 五组验收全部 PASS +
     §10 五项技术条件逐项判定 PASS，**第三阶段总 Exit 决策 = GO/PASS**
     （等待用户 Fourth Stage 切换指令，不进入 Fourth Stage）。
@@ -142,7 +148,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 771 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 785 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -202,7 +208,8 @@ src/
 │   │              #   （A7 ✅ normalizeLogMessage 日志行伪造防御）、
 │   │              #   smoke（冒烟自检：多 Tab/导航保护/真实采集/敌对页/302/UI 端到端/Session/
 │   │              #             AI 共读矩阵 + 8.4/8.5/8.6 Agent/可见性/红队矩阵 +
-│   │              #             A7 ✅ LIVE_AGENT 门控 runLiveAgentScenarios）
+│   │              #             A7 ✅ LIVE_AGENT/LIVE_AGENT_SUPPLEMENT 门控
+│   │              #             runLiveAgentScenarios（完整验收 + 定向补验））
 │   ├── browser/   # BrowserController / TabManager（A3 ✅ 导航世代计数）/ SessionManager /
 │   │              #   PageReader（A3 ✅ 交互编排）/ snapshot-script + snapshot-normalize /
 │   │              #   interaction-script + interaction-normalize（A3 ✅ 固定模板交互注入与
@@ -245,7 +252,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 771 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 785 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
@@ -327,7 +334,10 @@ ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元
   tools」）→ 决议 #35 修复（wire-safe 下划线名 + 注册/序列化双闸门 +
   reasoning_content 不透明回传 + 程序内内容相等校验）→ 最小预检 → 完整真实
   Provider 验收（deepseek-v4-pro，`LIVE_SMOKE_PASS` 退出码 0，最终执行 20 次
-  HTTP 请求全部 200，当日累计 133 次零 400）。真实验证过程中发现的缺陷均为
-  测试基础设施类（冒烟断言/驱动校准），权限面/工具清单/验收标准零放宽。
-  受控本地页面 FakeProvider 冒烟不替代真实验证的规则不变（今后真实 Provider
-  变更时沿用 `-Pre` 最小预检 → `-Agent` 完整验收流程）。
+  HTTP 请求全部 200）→ **定向补验（证据缺口裁决后：场景 2 三类工具真实调用链
+  - 场景 3 两个不同 origin 公开来源各自读取比较 + A3 状态机补齐，12 次 HTTP
+    全部 200）**——当日累计 10 次执行 145 次零 400。真实验证过程中发现的缺陷均为
+    测试基础设施类（冒烟断言/驱动校准），权限面/工具清单/验收标准零放宽。
+    受控本地页面 FakeProvider 冒烟不替代真实验证的规则不变（今后真实 Provider
+    变更时沿用 `-Pre` 最小预检 → `-Agent` 完整验收流程；定向缺口补证可用
+    `-Supplement`）。

@@ -65,6 +65,17 @@
       零泄漏终检（Tab/pending/临时目录/监听器/真 Key 零暴露扫描）。最终执行
       20 次 HTTP 请求全部 200；当日累计 9 次执行 133 次请求零 400。权限面/
       工具清单/验收标准零放宽（执行过程缺陷均为测试基础设施类，commit 分类登记）。
+      **定向补验（2026-08-14，用户证据缺口裁决后执行，`LIVE_SMOKE_PASS` 退出码
+      0，GO/PASS 维持）**：① 场景 2 修订——真实长页面（electronjs.org WCV 文档页）
+      read/find/scroll 三类工具真实调用链（find×3 + scroll dy=5000 + scroll 后
+      read，断言三工具齐备且 scroll 后再次 read）；② 场景 3 修订——真实搜索后
+      打开两个不同 origin 公开来源（blog.openreplay.com + peerlist.io）各自读取
+      比较（首次中文查询遇 bing HTTP2 瞬态 → search-failed 如实报错 → 模型改用
+      英文查询重试成功；tabId 精确 read 各一次零串页）；③ A3 工具层探针确认门
+      状态机补齐（deny 零动作/approve 精确一次/新提交新确认/迟到・未知 toolCallId
+      决议无效——离线确定性，同执行内零 HTTP）。真实补验台账：12 次 HTTP 全部
+      200；当日累计 10 次执行 145 次请求零 400。新门控
+      `AIBROWSE_LIVE_AGENT_SUPPLEMENT=1`（harness `-Supplement`）就绪。
 - [x] 安全基线清单逐项核对（Second Stage §14 增量 + threat-model §3）：第一阶段
       隔离（Tab 无 preload/nodeIntegration=false/contextIsolation+sandbox=true/
       webSecurity 未关闭/window.open deny/权限默认拒绝/UI 导航白名单）、第二阶段
@@ -92,4 +103,6 @@
   观察性结果如实登记，三类诚实边界不变）；审计未发现需修改契约的缺陷（实现侧真实
   缺陷已修复回归：logger 日志行伪造防御 + wire 名称契约 + LIVE 模式冒烟装配 +
   台账计数）；威胁模型 §5 残余风险分类校准写入 progress.md；
-  progress.md 标记 A7 ✅（离线 + 真实验证全部完成）。
+  progress.md 标记 A7 ✅（离线 + 真实验证全部完成）；**2026-08-14 定向补验**
+  （场景 2 三类工具真实调用链 + 场景 3 两个不同 origin 公开来源 + A3 确认门状态机
+  补齐）完成，`LIVE_SMOKE_PASS` 退出码 0，GO/PASS 维持。

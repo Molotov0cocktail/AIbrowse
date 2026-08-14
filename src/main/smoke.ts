@@ -113,6 +113,7 @@ export interface SmokeOptions {
   liveSites?: boolean; // S6：真实 Provider 多网站共读验证（AIBROWSE_LIVE_SITES=1 时启用）
   liveAgent?: boolean; // A7：真实 Provider Agent 验证（AIBROWSE_LIVE_AGENT=1 时启用，需用户授权）
   liveAgentPre?: boolean; // A7 补验：最小 tools 兼容性预检（AIBROWSE_LIVE_AGENT_PRE=1，仅场景 1 + 零泄漏终检）
+  liveAgentSupplement?: boolean; // A7 补验补证：定向补验（AIBROWSE_LIVE_AGENT_SUPPLEMENT=1，仅修订场景 2/3 + 零泄漏终检）
   toolExecutor?: ToolExecutor; // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
   confirmManager?: ConfirmManager; // A3：L2 确认程序化驱动（approve/deny，A6 起接 UI）
 }
@@ -1034,6 +1035,23 @@ async function runAgentInteractionScenario(
     assert(confirm.approve(confirm.getPending()?.toolCallId ?? ''), 'approve 应返回 true');
     assert((await formNoTypeP).ok, '表单内无 type 按钮 approve 后应执行');
 
+    // —— 5.1 确认门状态机补证（A7 补验补证，2026-08-14 用户证据缺口裁决）：approve 精确
+    //    一次（deny 零动作、批准不叠加）+ 迟到/未知 toolCallId 决议无效（无新 DOM 动作；
+    //    作废路径由 A6-UI-04「pending 停止 → 作废关闭 → 迟到 approve 无效」与 RT-03 覆盖） ——
+    assert(
+      (await pageLog()).filter((x) => x === 'click:submit-btn').length === 1,
+      'approve 应恰好执行一次（deny 零动作、批准不叠加）',
+    );
+    const logBeforeLate = await pageLog();
+    assert(!(await confirm.approve('smoke-a3-7')), '已终结 toolCallId 的迟到批准应无效');
+    assert(!(await confirm.deny('smoke-a3-6')), '已终结 toolCallId 的迟到拒绝应无效');
+    assert(!(await confirm.approve('smoke-a3-unknown')), '未知 toolCallId 批准应无效');
+    assert(!(await confirm.deny('smoke-a3-unknown')), '未知 toolCallId 拒绝应无效');
+    assert(
+      JSON.stringify(await pageLog()) === JSON.stringify(logBeforeLate),
+      '迟到/未知决议不得产生任何 DOM 动作',
+    );
+
     // —— 6. 非允许列表与语义缺失 → forbidden，无 DOM 动作 ——
     const logBeforeForbidden = await pageLog();
     for (const [label, id] of [
@@ -1370,7 +1388,7 @@ async function runAgentInteractionScenario(
     assert(await controller.closeTab(tab.id), '关闭交互测试标签页应返回 true');
     logInfo(
       'smoke',
-      'A3 交互场景通过（A-12 允许列表/确认门/执行器复核/elementId 世代/fill 隐私/审计全链路）',
+      'A3 交互场景通过（A-12 允许列表/确认门状态机（deny 零动作/approve 一次/新提交新确认/迟到・未知 id 无效）/执行器复核/elementId 世代/fill 隐私/审计全链路）',
     );
   } finally {
     await pages.close();
@@ -6444,6 +6462,7 @@ export async function runLiveAgentScenarios(
   aiSmokeDir: string,
   live: LiveProviderSmoke,
   pre = false, // A7 补验预检：仅场景 1 + 零泄漏终检 + 台账；完整场景 2–7 需用户二次授权
+  supplement = false, // A7 补验补证：仅修订场景 2/3 + 零泄漏终检 + 台账（用户证据缺口裁决后定向补验）
 ): Promise<void> {
   const uiWc = uiWindow.webContents;
   const { file: logFile, offsetBefore: keyScanOffset } = live.logScan;
@@ -6589,7 +6608,11 @@ export async function runLiveAgentScenarios(
       logInfo(
         'smoke',
         `真实 Provider Agent ${label}通过（${
-          pre ? '最小 tools 兼容性预检：用户任务 1 项' : '用户任务 7 项 + 停止 1 次'
+          pre
+            ? '最小 tools 兼容性预检：用户任务 1 项'
+            : supplement
+              ? '定向补验：修订场景 2（read/find/scroll 工具链）+ 场景 3（真实搜索后两个不同 origin 来源）共 2 项'
+              : '用户任务 7 项 + 停止 1 次'
         }；模型轮次/HTTP 请求共 ${totalRounds} 次——${ledgerSummary}；真 Key 零暴露扫描覆盖 DOM/日志/临时文件/密文形态）`,
       );
       return totalRounds;
@@ -6607,7 +6630,7 @@ export async function runLiveAgentScenarios(
     // 断言：至少出现 search_web + browser_open + 其后 browser_read（容许安全且合理
     // 的额外工具步骤，不要求固定调用序列）；搜索临时 Tab 精确关闭、结果 Tab 保留、
     // 最终 URL 属 electronjs.org 且页面可继续读取。
-    {
+    if (!supplement) {
       await freshSession();
       await sendTask(
         '搜索 Electron 的 WebContentsView 官方文档，在新标签页打开最相关的结果页面，然后读取该页面并总结其内容要点',
@@ -6656,36 +6679,76 @@ export async function runLiveAgentScenarios(
     }
 
     // —— 预检模式（AIBROWSE_LIVE_AGENT_PRE=1）：仅场景 1 + 零泄漏终检 + 台账；场景 2–7
-    //    由用户二次授权后以 AIBROWSE_LIVE_AGENT=1 执行 ——
+    //    由用户二次授权后以 AIBROWSE_LIVE_AGENT=1 执行；定向补验
+    //    （AIBROWSE_LIVE_AGENT_SUPPLEMENT=1）跳过场景 1，直接执行修订场景 2/3 ——
     if (pre) {
       await finalizeLiveRun('预检');
       return;
     }
 
-    // —— 场景 2：在官方文档中找到 security 部分 ——
+    // —— 场景 2：真实长页面 read → find security → scroll → 再读取（三类工具真实可用） ——
+    // A7 补验补证校准（2026-08-14，用户证据缺口裁决）：原断言只验证回答含 security——
+    // 最终执行模型仅 find×2（read/scroll 未真实调用，模式快照已含正文）。校准为任务
+    // 显式要求 读取 → find 定位 → scroll 滚动 → 再读取；断言：browser_read、
+    // browser_find、browser_scroll 齐备且 scroll 后再次 read（工具序列证据），回答含
+    // security 要点。补验模式先由程序导航到真实长页面（Electron 官方文档
+    // WebContentsView 页；完整模式复用场景 1 结果 Tab）。
     {
+      if (supplement) {
+        const active = await controller.getActiveTab();
+        assert(active !== null, '补验场景 2：需要活动 Tab');
+        assert(
+          await controller.navigate(
+            active.id,
+            'https://www.electronjs.org/docs/latest/api/web-contents-view',
+          ),
+          '补验场景 2：导航到真实长页面应成功',
+        );
+        await waitFor(
+          async () => {
+            const t = await controller.getActiveTab();
+            return t !== null && t.url.includes('electronjs.org') && t.state === 'ready';
+          },
+          30000,
+          '补验场景 2：真实长页面未在 30 秒内就绪',
+        );
+      }
       await freshSession();
-      await sendTask('在当前页面中找到 security 相关部分，并总结其要点');
+      await sendTask(
+        '先读取当前页面内容，用 find 定位 security 相关部分，scroll 滚动到该区域，再读取该区域内容并总结其要点',
+      );
       await waitTerminal('场景 2');
-      recordRounds('场景 2：页面内找 security 部分（find/read + 总结）');
+      recordRounds('场景 2：真实长页面 read → find security → scroll → 再读取');
       const status = await statusText();
       assert(status.includes('已完成'), `场景 2 应已完成（实际 ${status}）`);
+      const names = await toolNames();
+      assert(names.includes('browser_read'), `场景 2 应先读取页面（实际 ${names.join(',')}）`);
+      assert(
+        names.includes('browser_find'),
+        `场景 2 应用 find 定位 security（实际 ${names.join(',')}）`,
+      );
+      assert(
+        names.includes('browser_scroll'),
+        `场景 2 应用 scroll 滚动到相关区域（实际 ${names.join(',')}）`,
+      );
+      assert(
+        names.lastIndexOf('browser_read') > names.indexOf('browser_scroll'),
+        `场景 2 应 scroll 后再次读取（实际 ${names.join(',')}）`,
+      );
       const lastAnswer = (await uiTextAll(uiWc, '.ai-message-assistant')).at(-1) ?? '';
       assert(/security/i.test(lastAnswer), '场景 2 的总结应包含 security 要点（内容依赖页面）');
-      logInfo('smoke', '场景 2 通过（官方文档 security 部分总结）');
+      logInfo('smoke', '场景 2 通过（真实长页面 read/find/scroll/read 工具链 + security 总结）');
     }
 
-    // —— 场景 3：打开两个页面并总结差异 ——
-    // A7 补验校准（2026-08-14，真实验收第 3/4 次执行证据）：① 模型以不同签名
-    // find/scroll/read 过度探索达 12 步上限（运行时边界按设计生效）——任务文案显式
-    // 限定探索深度；② 模型改用 browser_navigate 而非 browser_open——但本场景验收
-    // 要求证明多 Tab 页面身份与上下文不串页（用户验收规格），任务文案按场景 1 同款
-    // 明确「在新标签页打开」；断言不降低（≥2 browser_open + 非空总结）。
+    // —— 场景 3：真实搜索后打开两个不同 origin 的公开来源并比较 ——
+    // A7 补验补证校准（2026-08-14，用户证据缺口裁决）：原场景两个页面同属
+    // electronjs.org——只满足「两页面比较」，不满足 Engineering Gate「多个真实网站」
+    // 与「至少两个不同真实公开来源」。校准为真实搜索 → 打开两个不同来源（origin）
+    // 的结果页；断言：search_web 出现、≥2 browser_open 且 origin ≥2 个互异、每次
+    // open 各建一个结果 Tab、每个打开页均被 read（tabId 精确对应，无串页）、总结同时
+    // 提及两方、两结果 Tab 保留。前置清场保留（顺序执行残留 Tab/内容会让模型复用
+    // 既有页——原校准，断言不降低）。
     {
-      // 前置清场（A7 补验校准，2026-08-14 真实验收第 8 次执行观察）：顺序执行残留
-      // 的 Tab/页面内容会让模型复用既有页（目标启动快照已含场景 2 的 WCV 正文——
-      // 模型只新开一页即作答）；验收要求场景内多 Tab 证据（页面身份/不串页），
-      // 清场后模型必须经 browser_open 在场景内打开两页。断言不降低。
       const extraBefore3 = (await controller.getTabs()).filter((t) => !beforeIds.has(t.id));
       for (const tab of extraBefore3) await controller.closeTab(tab.id);
       const firstTab = (await controller.getTabs())[0];
@@ -6702,22 +6765,97 @@ export async function runLiveAgentScenarios(
         10000,
         '场景 3 前置清场：空白页未在 10 秒内就绪',
       );
+      const s3LogStart = statSync(logFile).size; // 审计切片起点（来源/身份/读取映射证据）
       await freshSession();
       await sendTask(
-        '在新标签页分别打开 Electron 的 BrowserView 与 WebContentsView 两个官方文档页面，各读取一遍主要内容后直接比较两者的区别并总结，不要深入探索细节',
+        '搜索 Electron 与 Tauri 桌面应用框架的对比，在新标签页分别打开搜索结果中两个不同网站来源的相关页面，先查看标签页列表，再分别读取每个新打开页面的内容，然后直接比较两者的区别并总结，不要深入探索细节',
       );
       await waitTerminal('场景 3');
-      recordRounds('场景 3：两页对比总结（open ×2 + read + 回答）');
+      recordRounds('场景 3：真实搜索 + 两个不同 origin 来源打开并各自读取比较');
       const status = await statusText();
       assert(status.includes('已完成'), `场景 3 应已完成（实际 ${status}）`);
       const names = await toolNames();
+      assert(names.includes('search_web'), `场景 3 应先真实搜索（实际 ${names.join(',')}）`);
       assert(
         names.filter((n) => n === 'browser_open').length >= 2,
         `场景 3 应至少打开两个页面（实际 ${names.join(',')}）`,
       );
+      // 审计切片证据：browser_open 请求 URL（工具审计参数）→ 来源 origin 集合
+      const s3Slice = readFileSync(logFile).subarray(s3LogStart).toString('utf8').split('\n');
+      const openedUrls = s3Slice
+        .filter((l) => l.includes('[audit] tool-call') && l.includes('tool=browser_open'))
+        .map((l) => {
+          const m = l.match(/url:(https?:\/\/[^,}]+)/);
+          assert(m !== null, '场景 3：browser_open 审计应含 url');
+          return m[1];
+        });
+      assert(
+        openedUrls.length >= 2,
+        `场景 3 应至少经 browser_open 打开两个页面（实际 ${openedUrls.length}）`,
+      );
+      const origins = [...new Set(openedUrls.map((u) => new URL(u).origin))];
+      assert(
+        origins.length >= 2,
+        `场景 3 应打开至少两个不同 origin 的公开来源（实际 ${origins.join(', ')}）`,
+      );
+      // Tab 身份：本场景切片内创建的标签页（search 临时 Tab 精确关闭、URL 不与打开页
+      // 重合，不入映射）；每次 open 各建一个结果 Tab
+      const created = new Map<string, string>();
+      for (const l of s3Slice) {
+        const m = l.match(/已创建标签页（tabId=([0-9a-f-]{36})，url=(https?:\/\/[^）]+)/);
+        if (m !== null && openedUrls.includes(m[2])) created.set(m[1], m[2]);
+      }
+      assert(
+        created.size === openedUrls.length,
+        `场景 3 每次 browser_open 应各建一个结果 Tab（open ${openedUrls.length} 次、创建 ${created.size} 个）`,
+      );
+      // 各自读取 + 不串页：read 显式 tabId 只指向本场景打开页，且每页至少读一次
+      const readTabIds = s3Slice
+        .filter((l) => l.includes('[audit] tool-call') && l.includes('tool=browser_read'))
+        .map((l) => l.match(/args={tabId:([0-9a-f-]{36})}/)?.[1])
+        .filter((x): x is string => x !== undefined);
+      assert(
+        readTabIds.length >= created.size,
+        `场景 3 每个打开页应被读取至少一次（read ${readTabIds.length} 次、打开 ${created.size} 页）`,
+      );
+      assert(
+        readTabIds.every((id) => created.has(id)),
+        '场景 3 读取的 tabId 应只指向本场景打开页（无串页）',
+      );
+      for (const id of created.keys()) {
+        assert(
+          readTabIds.includes(id),
+          `场景 3 打开页 ${id.slice(0, 8)} 应被读取（read tabId 精确对应）`,
+        );
+      }
+      const tabsAfter = await controller.getTabs();
+      assert(
+        tabsAfter.length === tabsBefore.length + 2,
+        `场景 3 应保留两个结果 Tab（进入前 ${tabsBefore.length}，实际 ${tabsAfter.length}）`,
+      );
       const lastAnswer = (await uiTextAll(uiWc, '.ai-message-assistant')).at(-1) ?? '';
       assert(lastAnswer.trim() !== '', '场景 3 总结应非空');
-      logInfo('smoke', '场景 3 通过（两页对比总结）');
+      assert(
+        /electron/i.test(lastAnswer) && /tauri/i.test(lastAnswer),
+        '场景 3 总结应同时提及两方（内容依赖页面）',
+      );
+      logInfo(
+        'smoke',
+        `场景 3 证据（来源/身份/读取）：${[...created.entries()]
+          .map(
+            ([id, u]) =>
+              `${new URL(u).origin}（tabId=${id.slice(0, 8)}，read ×${readTabIds.filter((r) => r === id).length}）`,
+          )
+          .join('；')}`,
+      );
+      logInfo('smoke', '场景 3 通过（真实搜索 + 两个不同 origin 公开来源各自读取比较，无串页）');
+    }
+
+    // —— 定向补验模式（AIBROWSE_LIVE_AGENT_SUPPLEMENT=1）：仅修订场景 2/3 +
+    //    零泄漏终检 + 台账；场景 4–7 已由第 9 次完整验收证明，不重跑 ——
+    if (supplement) {
+      await finalizeLiveRun('补验');
+      return;
     }
 
     // —— 场景 4：受控无副作用页面的普通筛选框输入并读取更新结果 ——
@@ -7610,16 +7748,22 @@ export async function runSmokeScenario(
           options.aiSmokeDir !== undefined,
         '真实 Provider 冒烟需要 UI 窗口与数据目录选项',
       );
-      if (options.liveAgent === true || options.liveAgentPre === true) {
+      if (
+        options.liveAgent === true ||
+        options.liveAgentPre === true ||
+        options.liveAgentSupplement === true
+      ) {
         // A7：真实 Provider Agent 验证（AIBROWSE_LIVE_AGENT=1，需用户授权——询问边界；
         // 场景 1–6 + RT-10 敌对页 + 停止 + 零泄漏终检 + 真 Key 零暴露扫描）；
-        // 补验预检（AIBROWSE_LIVE_AGENT_PRE=1）：仅场景 1 + 零泄漏终检 + 台账
+        // 补验预检（AIBROWSE_LIVE_AGENT_PRE=1）：仅场景 1 + 零泄漏终检 + 台账；
+        // 定向补验（AIBROWSE_LIVE_AGENT_SUPPLEMENT=1）：仅修订场景 2/3 + 零泄漏终检 + 台账
         await runLiveAgentScenarios(
           controller,
           options.uiWindow,
           options.aiSmokeDir,
           options.liveSmoke,
           options.liveAgentPre === true,
+          options.liveAgentSupplement === true,
         );
       } else if (options.liveSites === true) {
         // S6：§10 Exit Gate 多网站共读验证（AIBROWSE_LIVE_SITES=1）
