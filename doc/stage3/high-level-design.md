@@ -33,8 +33,10 @@
 │   工具实现（只经 BrowserController / SearchProvider）：                    │
 │     浏览器只读/导航工具（复用既有接口）                                    │
 │     浏览器交互工具 scroll/click/fill/find（A3 扩展 BrowserController，     │
-│        固定模板交互脚本 + elementId 执行时刻重新验证 + click 执行器层      │
-│        白名单复核）                                                        │
+│        固定模板交互脚本 + elementId 文档世代绑定（导航世代计数 + 快照      │
+│        meta.documentId 主进程盖章 + 执行前校验，决议 #31）+ 执行时刻       │
+│        重新验证 + click 执行器层白名单复核（allowedKind 由                  │
+│        classifyClickTarget 单一事实源派生））                              │
 │     search.web → SearchProvider（v1 浏览器搜索页 + 快照解析，A4）          │
 │  浏览器核心：BrowserController → TabManager / PageReader /                │
 │     SessionManager → WebContentsView（远程网页安全默认值全开，不变）      │

@@ -343,14 +343,16 @@ export function validateToolArgs(
   `.toString()` 序列化）；**模板编译期固定**，运行时仅注入参数 JSON 字面量——
   无拼接任意代码路径（红线：不允许 AI 直接构造任意 DOM JavaScript）。
 - 三个动作模板：
-  - `click`：定位 `[data-aibrowse-el="<id>"]` → 不可见/禁用 → 拒绝 → **按
-    allowedKind 复核 DOM 实时属性**——nav：A 标签且 href http/https；
-    expand：[aria-expanded]；toggle：INPUT[type=checkbox|radio]；submit：提交类
-    判定（INPUT/BUTTON type=submit，或 form 内无显式 type 的 button）→ 不符 →
+  - `click`：定位 `[data-aibrowse-el="<n>"]`（烙印值为纯数字，id `el-N` 取数字部分）→
+    不可见/禁用 → 拒绝 → **按 allowedKind 复核 DOM 实时属性**——nav：A 标签且实时
+    href 解析为 http/https；expand：[aria-expanded]（属性存在选择器）；toggle：
+    INPUT[type=checkbox|radio]；submit：提交类判定（BUTTON type=submit 或 form 内
+    无显式 type 的 button、INPUT type=submit，与快照 isSubmit 同源）→ 不符 →
     拒绝（execution-failed）→ 否则 `el.click()`（原生事件，最接近用户语义）；
     返回 `{ok:true, tag, text}`（tag 与可见文本摘要用于审计与确认展示）。
-    **allowedKind 由权限决策派生、executor 注入（JSON 字面量参数），模型参数
-    与页面内容均不可影响——L3 敏感动作在脚本层无执行通道。**
+    **allowedKind 由权限决策派生、executor 注入（JSON 字面量参数），唯一派生源为
+    permission-policy.classifyClickTarget（单一事实源）——executor 与交互脚本均不
+    自行分类，模型参数与页面内容均不可影响——L3 敏感动作在脚本层无执行通道。**
   - `fill`：定位 → 必须为 `input`/`textarea` → type ∈ {password,file} → 拒绝 →
     原生 value setter 赋值 + `input`/`change` 事件派发（React 受控组件兼容）→
     返回 `{ok:true, tag, type}`（**不返回输入值**）。
@@ -360,22 +362,29 @@ export function validateToolArgs(
 - 脚本返回一律经形状校验（页面视为敌手，复用 normalize 纪律）——畸形/异常 →
   execution-failed，不抛异常。
 
-### 5.2 elementId 生命周期（Third_stage.md §3.3 定稿）
+### 5.2 elementId 生命周期（Third_stage.md §3.3 定稿；A3 实施校准决议 #31）
 
 1. elementId 由快照采集时分配（data-aibrowse-el 烙印 + 每次快照重建的有界 Map，
    第一阶段契约）——**仅在该快照生命周期内有效**；
 2. click/fill 的参数 elementId 必须来自 Agent 历史中最近一次 read/find 结果
    （历史消息内的 id）——校验器检查格式（`el-N`），语义上无法强制「来自哪次快照」，
    因此第 3 条为真正防线；
-3. **执行时刻实时重新定位**：注入脚本在 DOM 中查找该烙印元素——页面导航/刷新后
-   DOM 重建，旧 id 自然定位失败 → element-not-found/stale-element 安全返回；
-   元素存在但类型不符（fill 目标非 input/textarea、click 目标不可点击）→
-   not-interactable/execution-failed；
-4. 定位成功也**重新验证元素类型与允许列表语义**（click 按 allowedKind 复核
+3. **文档世代绑定（2026-08-14 A3 实施校准，决议 #31）**：真实 DOM 红态探针证实
+   「导航/刷新后 DOM 重建 → 旧 id 自然定位失败」**不成立**——新文档按契约重新分配
+   相同 `el-N` 字符串（跨 URL 导航与同 URL 刷新均如此，URL/标题/capturedAt 不能
+   证明文档身份）。防线改为：TabManager 以主框架 `did-navigate` 提交事件维护每 Tab
+   导航世代计数（页内导航/hash 变化不递增）；快照 `meta.documentId` 由主进程世代
+   盖章（页面/模型不可提供或修改，脚本输出同名字段被忽略）；click/fill 执行前
+   BrowserController 校验「语义绑定世代 === 当前世代」，不符 → stale-element
+   不注入脚本、无任何 DOM 动作——旧引用不因新文档复用相同 el-N 而命中新元素；
+4. 世代一致时**执行时刻实时重新定位**：注入脚本在 DOM 中查找该烙印元素——元素
+   不存在 → element-not-found；存在但类型不符/不可交互 → not-interactable/
+   execution-failed；
+5. 定位成功也**重新验证元素类型与允许列表语义**（click 按 allowedKind 复核
    DOM 实时属性（§5.1）——权限层判 L1/L2 后页面动态变化 → 拒绝；fill 目标必须
-   是 input/textarea）；
-5. 找不到、失效、不可交互 → 结构化错误回注（模型可 read 新快照后重试）；
-6. 不允许 AI 直接构造任意 DOM JavaScript（§5.1 模板固定）。
+   是 input/textarea，password/file/disabled/readonly/隐藏执行层再次拒绝）；
+6. 找不到、失效、不可交互 → 结构化错误回注（模型可 read 新快照后重试）；
+7. 不允许 AI 直接构造任意 DOM JavaScript（§5.1 模板固定）。
 
 ### 5.3 BrowserController 扩展（A3）
 
@@ -387,14 +396,23 @@ export interface BrowserController {
     tabId: string,
     elementId: string,
     allowedKind: 'nav' | 'expand' | 'toggle' | 'submit',
+    expectedDocumentId: number, // 决议 #31：语义绑定的快照世代，执行前主进程侧校验
   ): Promise<ElementActionResult>;
-  fillElement(tabId: string, elementId: string, text: string): Promise<ElementActionResult>;
+  fillElement(
+    tabId: string,
+    elementId: string,
+    text: string,
+    expectedDocumentId: number,
+  ): Promise<ElementActionResult>;
   scrollTab(tabId: string, dy: number): Promise<ScrollActionResult>;
   // 参数/状态问题安全返回（ok:false + 中文原因），不抛异常（既有失败语义）
 }
 export interface ElementActionResult {
   ok: boolean;
-  reason?: string; // 中文（定位失败/不可交互/类型拒绝/页面崩溃等）
+  reason?: string; // 中文（定位失败/不可交互/类型拒绝/世代过期等）
+  errorCode?: ToolResultErrorCode; // ok=false 时（stale-element/element-not-found/
+  //   not-interactable/execution-failed——A3 实施校准：原 §5.3 缺结构化错误码，
+  //   工具层无法诚实映射闭合枚举，已补）
   tag?: string; // 成功时：目标元素标签
   text?: string; // 成功时：可见文本摘要 ≤ 100 字符（确认展示/审计用）
   type?: string; // fill 成功时：input type（不含值）
@@ -406,12 +424,16 @@ export interface ScrollActionResult {
 }
 ```
 
-- 实现：PageReader 侧新增交互编排（复用 executeJavaScript 通道）；前置守卫
-  （tab 不存在/L3）安全返回；注入失败 → ok:false。
+- 实现：PageReader 侧新增交互编排（复用 executeJavaScript 通道，固定模板 +
+  JSON 字面量参数 + interaction-normalize 逐字段校验）；前置守卫（tab 不存在/
+  已销毁/L3）安全返回；注入失败 → ok:false。clickElement/fillElement 先做
+  **世代校验**（entry.generation === expectedDocumentId，不符 → stale-element
+  不注入脚本——决议 #31）；scrollTab 无 elementId 绑定，不做世代校验。
 - tabId 缺省语义在工具层解析（活动 Tab id 由 executor 注入），BrowserController
   仍要求显式 tabId（契约不变）。
-- **allowedKind 为执行器内部参数**（由权限决策派生注入，§7.1）：**不进入工具
-  schema、模型不可见不可写**；未知/非法 kind 安全返回 ok:false。
+- **allowedKind/documentId 为执行器内部参数**（由权限决策派生注入，§7.1；
+  ToolExecutor 经 classifyClickTarget 对同一语义 binding 派生，executor 不自行
+  分类）：**不进入工具 schema、模型不可见不可写**；未知/非法 kind 安全返回 ok:false。
 
 ### 5.4 快照语义元数据扩展（click 语义，2026-08-14 校正）
 
@@ -419,8 +441,10 @@ export interface ScrollActionResult {
   true）；buttons 条目增 `isSubmit?: boolean`（type=submit 或位于 form 内且无
   显式 type 的 button → true）与 `ariaExpanded?: boolean`（元素显式声明展开
   状态）；inputs 条目 type 已有（checkbox/radio 判定直接可用）。
-- shared/types/browser.ts 与 snapshot-normalize 同步扩展（布尔形状校验，缺失
-  按 false/undefined；既有 46 用例不弱化，新增用例覆盖）。
+- shared/types/browser.ts 与 snapshot-normalize 同步扩展（严格布尔校验：缺失按
+  false/undefined 语义、**非法布尔形状按敌手输入纪律丢弃字段**——不整条丢弃条目；
+  既有 46 用例不弱化，新增用例覆盖；normalize 不合成字段——脚本未证明即缺失，
+  fail-closed）。
 - 用途：permission-policy 的 click 确定性允许列表与提交类升级判定（§7.1）与
   确认展示（「提交表单」）。
 
@@ -484,6 +508,10 @@ export interface SearchProviderResult {
   （executor 层从历史提取，模型不能伪造）。**click 的 fail-closed**：历史中无
   该 elementId / 语义元数据缺失 / 目标不在允许列表 → L3 拒绝——不得回落到
   基础 L1 或「执行时定位兜底」。
+- **A3：click 分类单一事实源 `classifyClickTarget(semantics) → 'submit'|'nav'|
+'expand'|'toggle'|null`**（permission-policy 导出）：decide 的级别映射与执行器
+  allowedKind 都由该函数对同一语义 binding 派生——ToolExecutor/交互脚本不得另写
+  分类规则（单测双表对照 + 冒烟 A-12 断言非允许目标无任何 DOM 动作）。
 - **模型与网页均无通道修改本矩阵**（编译期常量；threat-model T-06）。
 - **L3 敏感动作（购买/支付/密码修改/账号删除/公开发布/发送/删除/远程写）无
   专用工具，但通用 click 可间接触发——「无对应工具 = 自然不存在」不成立
@@ -706,39 +734,39 @@ onAgentRunDone`（退订函数，既有 eventRelay 模式）。
 
 ### 13.1 单测（Vitest，node 环境，纯逻辑）
 
-| 测试文件                               | 用例要点                                                                                                                                                     | 任务 |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---- |
-| openai-compatible.test.ts（扩展）      | SSE tool_calls 增量/多槽/跨帧 arguments/非法帧→provider-error/arguments 非法 JSON→error；mapMessages tool 与 assistant tool_calls 重放                       | A1   |
-| fake-provider.test.ts（扩展）          | 工具脚本产出/延迟/错误注入；getLastRequest 含 tools 断言                                                                                                     | A1   |
-| context-builder.test.ts（扩展）        | tools 透传恒等；未传 tools 时请求无 tools 字段（共读回归）                                                                                                   | A1   |
-| tool-registry.test.ts                  | schema 校验矩阵（缺必填/类型/enum/未知键/长度上限/tabId、elementId 格式）；listTools 序列化恒等                                                              | A2   |
-| permission-policy.test.ts              | 决策矩阵全表（13 工具 × 条件判定：click 允许列表各分支/submit 升级/非允许列表与语义缺失 fail-closed/密码禁止/URL scheme）；同一输入同一决策                  | A2   |
-| confirm-manager.test.ts                | pending 单并发/approve/deny/未知 id/取消作废/幂等                                                                                                            | A2   |
-| audit-log 脱敏用例（扩展 logger 测试） | fill 值不进审计（len=N）；URL 全量；无 Key 形态                                                                                                              | A2   |
-| interaction-script 模板校验            | 模板编译期固定（参数只进 JSON 字面量）；click/fill/scroll 参数白名单；click allowedKind 白名单与拒绝路径（nav/expand/toggle/submit 各分支 + 未知 kind 拒绝） | A3   |
-| agent-safety.test.ts                   | 签名规范化（键排序/NFC）/连续 3 次/累计 5 次/无进展 2 步边界                                                                                                 | A5   |
-| agent-loop.test.ts                     | 状态机全路径（FakeProvider 工具脚本：多步完成/步数上限/总超时/取消/防循环三触发/确认 approve、deny 两路/工具错误回注后调整策略成功/最终回答）                | A5   |
-| agent-context-builder.test.ts          | system 恒等/tools 透传/UNTRUSTED_TOOL_RESULT 块闭合转义/工具历史摘要重放/tool 消息预算                                                                       | A5   |
-| search-provider 解析纯函数             | Bing 快照→结果组装（标题/URL 过滤/摘要提取/结构不符降级）                                                                                                    | A4   |
-| conversation-store.test.ts（扩展）     | version 2 写入/v1 读取兼容/tool 消息形状校验/ToolStep 脱敏断言（fill 值不持久化）                                                                            | A5   |
-| agent-run-state.test.ts                | UI reducer：step 追加/确认请求/run 终态收敛                                                                                                                  | A6   |
+| 测试文件                               | 用例要点                                                                                                                                                                                                                                                                                                                                                       | 任务 |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| openai-compatible.test.ts（扩展）      | SSE tool_calls 增量/多槽/跨帧 arguments/非法帧→provider-error/arguments 非法 JSON→error；mapMessages tool 与 assistant tool_calls 重放                                                                                                                                                                                                                         | A1   |
+| fake-provider.test.ts（扩展）          | 工具脚本产出/延迟/错误注入；getLastRequest 含 tools 断言                                                                                                                                                                                                                                                                                                       | A1   |
+| context-builder.test.ts（扩展）        | tools 透传恒等；未传 tools 时请求无 tools 字段（共读回归）                                                                                                                                                                                                                                                                                                     | A1   |
+| tool-registry.test.ts                  | schema 校验矩阵（缺必填/类型/enum/未知键/长度上限/tabId、elementId 格式）；listTools 序列化恒等                                                                                                                                                                                                                                                                | A2   |
+| permission-policy.test.ts              | 决策矩阵全表（13 工具 × 条件判定：click 允许列表各分支/submit 升级/非允许列表与语义缺失 fail-closed/密码禁止/URL scheme）；同一输入同一决策                                                                                                                                                                                                                    | A2   |
+| confirm-manager.test.ts                | pending 单并发/approve/deny/未知 id/取消作废/幂等                                                                                                                                                                                                                                                                                                              | A2   |
+| audit-log 脱敏用例（扩展 logger 测试） | fill 值不进审计（len=N）；URL 全量；无 Key 形态                                                                                                                                                                                                                                                                                                                | A2   |
+| interaction-script 模板校验            | 模板编译期固定（参数只进 JSON 字面量，node:vm 假 DOM 真实执行 + 敌手参数逃逸证明）；click/fill/scroll 参数白名单；click allowedKind 白名单与拒绝路径（nav/expand/toggle/submit 各分支 + 未知 kind 拒绝）；fill 原生 setter + input/change 事件/password・file・disabled・readonly・隐藏拒绝；交互结果形状校验（interaction-normalize：页面视为敌手逐字段验证） | A3   |
+| agent-safety.test.ts                   | 签名规范化（键排序/NFC）/连续 3 次/累计 5 次/无进展 2 步边界                                                                                                                                                                                                                                                                                                   | A5   |
+| agent-loop.test.ts                     | 状态机全路径（FakeProvider 工具脚本：多步完成/步数上限/总超时/取消/防循环三触发/确认 approve、deny 两路/工具错误回注后调整策略成功/最终回答）                                                                                                                                                                                                                  | A5   |
+| agent-context-builder.test.ts          | system 恒等/tools 透传/UNTRUSTED_TOOL_RESULT 块闭合转义/工具历史摘要重放/tool 消息预算                                                                                                                                                                                                                                                                         | A5   |
+| search-provider 解析纯函数             | Bing 快照→结果组装（标题/URL 过滤/摘要提取/结构不符降级）                                                                                                                                                                                                                                                                                                      | A4   |
+| conversation-store.test.ts（扩展）     | version 2 写入/v1 读取兼容/tool 消息形状校验/ToolStep 脱敏断言（fill 值不持久化）                                                                                                                                                                                                                                                                              | A5   |
+| agent-run-state.test.ts                | UI reducer：step 追加/确认请求/run 终态收敛                                                                                                                                                                                                                                                                                                                    | A6   |
 
 ### 13.2 冒烟矩阵（Electron 真实启动，FakeProvider 工具脚本，离线确定性）
 
-| #    | 场景                                | 断言要点                                                                                                                                                                                                                                                                    |
-| ---- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A-01 | 端到端多步任务                      | 受控本地页面：open → read → find → scroll → click → read → 最终回答 complete；每步 agent-step 事件 + ToolStep 持久化                                                                                                                                                        |
-| A-02 | 确认流（提交类 click）              | L2 确认请求事件 → deny → denied-by-user 回注、无动作执行；重跑 approve → 执行 + decision=confirmed                                                                                                                                                                          |
-| A-03 | 取消                                | 慢速工具脚本中途「停止」→ cancelled 终态 + pending 作废 + 已生成部分保留                                                                                                                                                                                                    |
-| A-04 | 步数上限                            | 注入循环脚本 → step-limit 终态 + 结构化理由 + 审计含每步                                                                                                                                                                                                                    |
-| A-05 | 防循环                              | 注入同签名重复 → loop-detected（连续 3 次触发）                                                                                                                                                                                                                             |
-| A-06 | 工具错误回注                        | 注入 invalid-args → 回注 → 模型调整策略成功完成（FakeProvider 脚本分支）                                                                                                                                                                                                    |
-| A-07 | elementId 生命周期                  | 快照 → 导航 → 旧 id click → stale-element/element-not-found；新快照 id 正常执行                                                                                                                                                                                             |
-| A-08 | fill 隐私与禁止                     | fill 普通输入成功（审计 len=N、持久化无明文值）；fill password → forbidden 无 DOM 写入                                                                                                                                                                                      |
-| A-09 | 审计与脱敏                          | 每步恰好一条审计；日志字节扫描无 Key/fill 值                                                                                                                                                                                                                                |
-| A-10 | 敌对页红队 RT-01～RT-09             | 注入夹具：诱导文案仅作资料/RT-02 URL 白名单/RT-03 确认门/RT-05 密码拒绝/RT-06 陈旧 id/RT-07 system 恒等/RT-08 确认序列/RT-09 grep 断言                                                                                                                                      |
-| A-11 | 共读回归                            | 既有矩阵 1–12 全通过（共读路径请求仍无 tools 字段）                                                                                                                                                                                                                         |
-| A-12 | click 允许列表与执行器复核（RT-11） | 受控页含链接/展开/复选/提交/普通按钮/「立即购买」按钮：允许列表点击执行成功；提交类 → 确认门；普通按钮与「立即购买」按钮 → forbidden 无任何 DOM 动作；语义元数据缺失 → fail-closed；权限层判 L1 后页面动态变为按钮 → 执行器复核拒绝（execution-failed）——审计决策=forbidden |
+| #    | 场景                                | 断言要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A-01 | 端到端多步任务                      | 受控本地页面：open → read → find → scroll → click → read → 最终回答 complete；每步 agent-step 事件 + ToolStep 持久化                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| A-02 | 确认流（提交类 click）              | L2 确认请求事件 → deny → denied-by-user 回注、无动作执行；重跑 approve → 执行 + decision=confirmed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| A-03 | 取消                                | 慢速工具脚本中途「停止」→ cancelled 终态 + pending 作废 + 已生成部分保留                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| A-04 | 步数上限                            | 注入循环脚本 → step-limit 终态 + 结构化理由 + 审计含每步                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| A-05 | 防循环                              | 注入同签名重复 → loop-detected（连续 3 次触发）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| A-06 | 工具错误回注                        | 注入 invalid-args → 回注 → 模型调整策略成功完成（FakeProvider 脚本分支）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| A-07 | elementId 生命周期                  | 快照 → 导航 → 旧 id click → stale-element/element-not-found；新快照 id 正常执行                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| A-08 | fill 隐私与禁止                     | fill 普通输入成功（审计 len=N、持久化无明文值）；fill password → forbidden 无 DOM 写入                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| A-09 | 审计与脱敏                          | 每步恰好一条审计；日志字节扫描无 Key/fill 值                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| A-10 | 敌对页红队 RT-01～RT-09             | 注入夹具：诱导文案仅作资料/RT-02 URL 白名单/RT-03 确认门/RT-05 密码拒绝/RT-06 陈旧 id/RT-07 system 恒等/RT-08 确认序列/RT-09 grep 断言                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| A-11 | 共读回归                            | 既有矩阵 1–12 全通过（共读路径请求仍无 tools 字段）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| A-12 | click 允许列表与执行器复核（RT-11） | 受控页含链接/展开/复选/提交/普通按钮/「立即购买/删除账户」按钮/危险链接：允许列表点击执行成功（nav 真实导航）；提交类 → 确认门 deny 无动作、approve 执行（审计 decision=denied/confirmed）；普通按钮与「立即购买/删除账户」按钮/危险链接（javascript:）→ forbidden 无任何 DOM 动作（审计决策=forbidden）；语义元数据缺失 → fail-closed；权限层判 L1 后页面动态变化（失去 aria-expanded/href 变 javascript:/checkbox 变 text）→ 执行器复核拒绝 execution-failed 无 DOM 动作（审计决策=auto-visible + errorCode=execution-failed——A3 实施校准：原行「审计决策=forbidden」统指权限层拒绝路径，动态变化属执行层拒绝） |
 
 - 真实 Provider 可选验证（A7，需用户提供 Key，询问边界）：真实 tool calling
   多步任务 + Third_stage.md §7 六场景（1 搜索打开/2 找 security/3 两页对比/
@@ -828,6 +856,16 @@ onAgentRunDone`（退订函数，既有 eventRelay 模式）。
     对外 `ProviderEvent.toolCalls` 输出聚合校验完成的 `ProviderToolCall[]`
     （id/name 非空、arguments 整体 JSON.parse 成功且结果为对象），绝不暴露半截
     arguments 给调用方（§2.1/§3.1 已同步）。
+31. **elementId 文档世代绑定（2026-08-14，A3 实施中）**：真实 DOM 红态探针证实
+    「导航/刷新后旧 id 自然定位失败」不成立——新文档重新分配相同 `el-N` 字符串
+    （跨 URL 导航与同 URL 刷新均如此；URL/标题/capturedAt 不能证明文档身份）。
+    校准：TabManager 以主框架 did-navigate 提交事件维护每 Tab 导航世代计数；
+    快照 `meta.documentId` 由主进程世代盖章（脚本输出同名字段被忽略，页面/模型
+    不可提供或修改）；click/fill 执行前 BrowserController 校验「语义绑定世代 ===
+    当前世代」→ 不符 stale-element 不注入脚本（§5.2/§5.3 已同步；模型可见工具
+    schema `{tabId?, elementId}` 不变，世代为内部参数）。同源校准：ElementActionResult
+    增 errorCode 字段（闭合枚举诚实映射，§5.3）；click 分类单一事实源
+    classifyClickTarget（§7.1）。
 
 ## 16. 实现顺序与范围边界（A1–A8 映射）
 

@@ -7,8 +7,9 @@
 > L1 自动显著展示 / L2 用户确认 / L3 禁止）、操作可见性与审计日志。契约源
 > `doc/stage3/detailed-design.md`；安全契约源 `doc/stage3/threat-model.md`
 > （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
-> **A1 tool-calling 兼容层 + A2 Tool Registry/权限分级与确认状态机/审计日志已实现
-> （2026-08-14）；A3–A8 待实现**（任务编号 2026-08-14 实施前校正：T1–T8 改为
+> **A1 tool-calling 兼容层 + A2 Tool Registry/权限分级与确认状态机/审计日志 +
+> A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）已实现
+> （2026-08-14）；A4–A8 待实现**（任务编号 2026-08-14 实施前校正：T1–T8 改为
 > A1–A8 避免与第一阶段任务 T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为
 > click 确定性允许列表，见 `doc/stage3/proposal.md` §11）。
 > 核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
@@ -39,8 +40,14 @@
   ConfirmManager 单 pending 状态机、审计参数脱敏（fill 只记长度）、ToolExecutor
   管线（校验→权限→确认→执行→审计，每次调用恰好一条）、首批 8 个只读/导航工具
   接线 BrowserController——冒烟工具层探针通过，审计日志实证）；
-  任务 A3–A8 待实现（**下一个推荐任务：A3**）；find/scroll/click/fill 交互能力
-  与 SearchProvider/AgentLoop 未实现。
+  **A3 浏览器交互能力已完成**（interaction-script 固定模板 + click 确定性允许
+  列表单一事实源 classifyClickTarget + BrowserController 扩展（clickElement/
+  fillElement/scrollTab）+ elementId 文档世代绑定（决议 #31：导航世代计数 +
+  快照 meta.documentId 主进程盖章 + 执行前校验，旧 id 不因新文档复用相同 el-N
+  而命中新元素）+ find/scroll/click/fill 四工具经既有 ToolExecutor 链路接线——
+  冒烟 A-12 与 elementId 生命周期真实 DOM 探针通过，dev/生产双场景）；
+  任务 A4–A8 待实现（**下一个推荐任务：A4 SearchProvider**）；SearchProvider/
+  AgentLoop 未实现。
 
 ## 技术栈（实际落地版本）
 
@@ -96,7 +103,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 452 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 533 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -154,17 +161,20 @@ src/
 ├── main/          # 主进程：入口（生命周期/窗口/安全默认值/IPC 装配/导航保护）、logger、
 │   │              #   smoke（冒烟自检：多 Tab/导航保护/真实采集/敌对页/302/UI 端到端/Session/
 │   │              #             AI 共读矩阵）
-│   ├── browser/   # BrowserController / TabManager / SessionManager / PageReader /
-│   │              #   snapshot-script + snapshot-normalize / tab-state / permission-policy
-│   │              #   （第三阶段 A3 规划：interaction-script 交互注入）
+│   ├── browser/   # BrowserController / TabManager（A3 ✅ 导航世代计数）/ SessionManager /
+│   │              #   PageReader（A3 ✅ 交互编排）/ snapshot-script + snapshot-normalize /
+│   │              #   interaction-script + interaction-normalize（A3 ✅ 固定模板交互注入与
+│   │              #   结果形状校验）/ tab-state / permission-policy
 │   └── ai/        # （第二阶段已实现）ConversationService / ConversationStore /
 │                  #   ContextBuilder + budget / CredentialStore / ConfigStore /
 │                  #   provider（LLMProvider/OpenAI-compatible/FakeProvider/error-normalize；
 │                  #   A1 ✅ tool-calling 兼容层：tools/SSE tool_calls 聚合/工具脚本）
 │                  # （第三阶段）tools/（A2 ✅ tool-types/tool-registry 校验/tool-executor
-│                  #   管线/browser-tools 首批 8 只读导航工具）+ permission/（A2 ✅
-│                  #   permission-policy 确定性权限纯函数）+ confirm-manager（A2 ✅ 确认
-│                  #   状态机）+ audit-log（A2 ✅ 审计参数脱敏）；agent/（A5 AgentLoop）+
+│                  #   管线/browser-tools 首批 8 只读导航工具 + A3 ✅ interaction-tools
+│                  #   find/scroll/click/fill、interaction-semantics 语义存储+世代绑定）+
+│                  #   permission/（A2 ✅ permission-policy + A3 ✅ classifyClickTarget）+
+│                  #   confirm-manager（A2 ✅ 确认状态机）+ audit-log（A2 ✅ 审计参数脱敏）；
+│                  #   agent/（A5 AgentLoop）+
 │                  #   search/（A4 SearchProvider）规划
 ├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
 │                  #   第三阶段 A6 规划 agent 通道）
@@ -189,8 +199,8 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 452 用例）：地址栏输入判断（15）、Tab 状态机（14）、
-网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（46，页面视为敌手）；
+Vitest（node 环境）测核心纯逻辑（当前 533 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
 （system 恒等/块闭合转义/selection 独占）（72）、会话消息校验与编排（57）、
@@ -206,7 +216,16 @@ scheme L3）、ConfirmManager 状态机（单 pending/approve/deny/作废/幂等
 审计脱敏（fill len=N 原文零出现/URL 全量/截断确定性/Key 形态零暴露链）、ToolExecutor
 管线（成功/校验失败/L3/deny/执行失败/审计恰好一条/结果截断）、8 个只读导航工具的
 BrowserController 注入调用与失败安全返回、logger 审计形态脱敏回归。
-Electron 行为由冒烟自检真实启动验证（见上）。约定见 `AGENTS.md` §7。
+第三阶段 A3 新增（81）：交互脚本模板（node:vm 假 DOM 真实执行——模板编译期固定/
+JSON 字面量往返恒等/敌手参数引号・反斜杠・闭合片段・脚本字符串不能逃逸/click
+allowedKind 四类复核与拒绝路径/fill 原生 setter + input/change 事件与禁填目标/
+scroll 整数边界）、交互结果形状校验（页面视为敌手逐字段验证）、快照语义映射与
+存储（世代绑定）、find 确定性匹配（多章节/无命中空结果）、scroll/click/fill
+executor（派生参数透传/无派生 fail-closed/fill 内容零原文）、classifyClickTarget
+与 decide 同源双表对照、paramRules（dy ±50000 整数/text 长度差异化）、
+ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元数据
+（isSubmit/ariaExpanded 严格布尔）、meta.documentId 主进程盖章。
+Electron 行为由冒烟自检真实启动验证（见上）。 约定见 `AGENTS.md` §7。
 
 ## 已知限制
 

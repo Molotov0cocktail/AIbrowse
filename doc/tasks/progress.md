@@ -25,6 +25,13 @@
   ConfirmManager + 审计脱敏 + ToolExecutor 管线 + **首批 8 个只读/导航工具接线
   BrowserController**（get_tabs/get_active_tab/read/open/navigate/back/forward/
   reload；交互工具/搜索/AgentLoop 未实现）；下一个推荐任务 = **A3 交互能力**。
+  **A3 浏览器交互能力已完成（2026-08-14）**：interaction-script 固定模板 +
+  BrowserController 扩展（clickElement/fillElement/scrollTab + elementId 文档
+  世代绑定，决议 #31）+ 快照 isSubmit/ariaExpanded 语义元数据 +
+  find/scroll/click/fill 四工具经既有 ToolExecutor 链路接线（allowedKind 由
+  classifyClickTarget 单一事实源派生）+ 冒烟 A-12 与 elementId 生命周期真实 DOM
+  探针（dev + 生产双场景）；SearchProvider（A4）/AgentLoop（A5）未实现；
+  下一个推荐任务 = **A4 SearchProvider**。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Exit Gate 通过（2026-08-13 判定 + 2026-08-14 用户独立复验，4 项
   非阻塞缺陷已修复并全量回归，红态退出码 1 → 绿态 0；证据见 Second_stage.md
@@ -54,7 +61,7 @@
 
 | A1 | tool-calling 兼容层（硬前置）：ProviderRequest/Event/Message 扩展 + 适配器 tools/SSE tool_calls + FakeProvider 工具脚本 | ✅ | 2026-08-14 完成（见下）；契约 §2.1/§3 + 决议 #30；任务文档 doc/stage3/tasks/A1-tool-calling-layer.md |
 | A2 | Tool Registry + 权限分级与确认状态机（click 确定性允许列表 + fail-closed）+ 审计日志（接线既有只读/导航工具 8 个） | ✅ | 2026-08-14 完成（见下）；契约 §4/§7/§10；任务文档 doc/stage3/tasks/A2-tool-registry-permission-audit.md |
-| A3 | 浏览器交互能力：scroll/click/fill/find + click 语义元数据 + elementId 生命周期验证 + click 执行器层白名单复核 | ⏳ | 契约 §5；任务文档 doc/stage3/tasks/A3-browser-interaction.md |
+| A3 | 浏览器交互能力：scroll/click/fill/find + click 语义元数据 + elementId 生命周期验证 + click 执行器层白名单复核 | ✅ | 2026-08-14 完成（见下）；契约 §5 + 决议 #31（文档世代绑定）；任务文档 doc/stage3/tasks/A3-browser-interaction.md |
 | A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search.web 工具 | ⏳ | 契约 §6；任务文档 doc/stage3/tasks/A4-search-provider.md |
 | A5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ⏳ | 契约 §8–§9；任务文档 doc/stage3/tasks/A5-agent-runtime.md |
 | A6 | 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI + UI 端到端冒烟矩阵 | ⏳ | 契约 §11；任务文档 doc/stage3/tasks/A6-agent-ui-visibility.md |
@@ -66,6 +73,61 @@
 > 编号一律不变。
 
 ## 最近验证结果（2026-08-14）
+
+- **A3 浏览器交互能力（2026-08-14，第三个实现闭环）**：步骤 0 独立核对——HEAD
+  `9df48a7` = Gitee/GitHub 双远程 HEAD、工作区干净、基线 test 452/452 独立复跑
+  全绿（与上一轮报告一致，已独立确认）。**① 两项编码前安全核查**：a) elementId
+  生命周期真实 DOM 红态探针（先于实现，冒烟受控页面）——跨 URL 导航与同 URL
+  刷新后新文档均重新分配相同 `el-N` 字符串（旧 el-0 与新文档示例链接 el-0 同串），
+  URL/标题/capturedAt 均不能证明文档身份——「旧 id 自然失效」论证不成立；
+  b) allowedKind 单一事实源核查——A2 decide() 仅返回 {level, reason} 无共享
+  分类——导出 `classifyClickTarget(semantics) → 'submit'|'nav'|'expand'|
+'toggle'|null`（permission-policy），decide 级别映射与执行器 allowedKind 均由
+  该函数对同一语义 binding 派生，executor/交互脚本不自行分类。**② 契约校准
+  （决议 #31，elementId 文档世代绑定）**：TabManager 以主框架 did-navigate 提交
+  事件维护每 Tab 导航世代计数（页内导航不递增）；快照 `meta.documentId` 主进程
+  盖章（脚本输出同名字段被忽略）；click/fill 执行前 BrowserController 校验
+  「绑定世代 === 当前世代」→ stale-element 不注入脚本；模型可见工具 schema
+  `{tabId?, elementId}` 不变（世代为执行器内部参数）；ElementActionResult 增
+  errorCode 字段；§5.1/§5.2/§5.3/§7.1/§13.2/§15 + threat-model §3.2/§3.3/
+  RT-06 已同步。**③ 红→绿**：先写测试——红态 **9 files failed / 18 failed /
+  452 passed**（4 个新测试文件模块缺失 + 5 个既有文件扩展用例失败；既有用例
+  零删除、零断言削弱）；实现后全量 **533/533**（新增 81：interaction-script
+  28 / interaction-normalize 11 / interaction-semantics 9 / interaction-tools
+  12 / permission-policy 3 / snapshot-normalize 5 / tool-registry 4 /
+  tool-executor 8 / browser-tools 1；既有 452 用例仅机械夹具更新——meta 必填
+  documentId 与 fakeBrowser 三方法）。**④ 实现**：shared 类型扩展（ClickAllowedKind/
+  ElementSemanticsBinding/SnapshotMeta.documentId/buttons・inputs 语义元数据/
+  ElementActionResult/ScrollActionResult）；snapshot-script+normalize（isSubmit
+  判定与交互脚本 submit 复核同源；ariaExpanded true/false 均保留；非法布尔形状
+  丢弃字段）；interaction-script 固定模板（node:vm 敌手参数逃逸测试——引号/
+  反斜杠/闭合片段/脚本字符串不能逃逸、参数原样到达；click 四类 allowedKind
+  实时复核 + fill 原生 setter+input/change+password・file・disabled・readonly・
+  隐藏拒绝 + scroll 整数 ±50000）；interaction-normalize（页面视为敌手逐字段
+  校验，异常/堆栈/页面原文零穿透）；BrowserController 扩展 + PageReader 交互
+  编排 + TabManager 世代；ToolExecutor（语义 binding 提取 + derived 派生 +
+  tabId 解析）；tool-registry paramRules（find text ≤200 非空 / fill text ≤2000 /
+  dy 整数 ±50000）；interaction-semantics 存储（read/find 登记、按 Tab 键控、
+  世代随绑定）；interaction-tools 四工具注册（find 多章节确定性匹配、无命中
+  ok 空结果；click/fill 无派生参数 fail-closed——模型/网页不可写）。
+  **⑤ 冒烟**：A3 交互场景 8.2 + elementId 生命周期探针——A-12 允许列表四类
+  点击（含 nav 真实导航落地页）、提交类 deny/approve 确认门（审计 decision=
+  denied/confirmed）、非允许列表/「立即购买/删除账户」/危险链接 forbidden 零
+  DOM 动作（页面交互日志断言）、权限判定后动态变化（失去 aria-expanded/href
+  变 javascript:/checkbox 变 text/text 变 password）→ 执行器复核拒绝零 DOM
+  动作、fill 隐私（结果/审计 len=N 零原文 + input/change 事件真实触发 +
+  password/file/disabled/readonly/隐藏零写入）、scroll 边界与 viewport、find
+  多章节与无命中、elementId 世代（同文档稳定/导航后 stale/刷新后 stale/重新
+  快照不碰撞/类型复核/工具级 stale 审计证据）、每次调用审计恰好一条——
+  **dev 离线全矩阵 + 生产产物双场景退出码 0**；既有 8.1 探针校准为注册表
+  12 工具（A2 8 + A3 4）。**⑥ 验证与终检**：test 533/533（全量连跑 4 次全绿）
+  · typecheck · lint · format:check · build 全绿；红线 grep（无万能工具形态、
+  交互工具零 electron import、allowedKind/documentId 不出现在模型可见 schema、
+  package 零改动、SYSTEM_PROMPT/UI/preload/IPC 零改动）；敏感信息扫描与 diff
+  终检零命中；根目录杂散日志清理。**⑦ 计时用例抖动观察（延续 A2 观察，未放宽
+  阈值）**：期间一次全量运行出现 1 例未捕获具体测试名的失败，复跑 4 次全量 +
+  fake-provider 单文件 3 次均全绿——判定为既有 30ms 墙钟断言边缘抖动，如实
+  记录不放松阈值。**未调用任何付费 Provider、未输出/索取 API Key。**
 
 - **A2 Tool Registry + 权限分级与确认状态机 + 审计日志（2026-08-14，第二个实现
   闭环）**：步骤 0 独立核对——HEAD `b9ad38a` = Gitee/GitHub 双远程 HEAD、工作区
@@ -675,22 +737,16 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **A3 浏览器交互能力（新对话 = 一个可验证闭环）**：interaction-script 固定模板
-  （click=allowedKind 白名单复核后原生 el.click()、fill=原生 value setter+input/
-  change、scroll=window.scrollBy；参数只进 JSON 字面量）+ BrowserController 扩展
-  （clickElement(tabId, elementId, allowedKind)/fillElement/scrollTab，安全返回
-  不抛异常；allowedKind 为执行器内部参数——权限决策派生，模型不可见不可写）+
-  快照 click 语义元数据（buttons 条目 isSubmit/ariaExpanded、inputs 条目 type
-  已有，§5.4 布尔形状校验）+ interaction-tools 注册 find/scroll/click/fill +
-  elementId 生命周期（执行时刻实时重新定位、导航/刷新后旧 id → stale-element/
-  element-not-found）+ 冒烟 A-12（click 允许列表与执行器复核：受控页链接/展开/
-  复选/提交/普通按钮/「立即购买」——权限层判 L1 后页面动态变化 → 执行器复核拒绝）
-  - 对应单测。任务文档 `doc/stage3/tasks/A3-browser-interaction.md`；
-    契约 `doc/stage3/detailed-design.md` §5 + threat-model §3.2/§3.3。
-    **红线**：A2 已落地权限矩阵（click 判定优先级 isSubmit→href→ariaExpanded→
-    checkbox/radio→fail-closed；fill password/file 恒 L3）——A3 执行器层复核为
-    纵深防御，**不得**以执行时检查替代权限层判定；SearchProvider（A4）与
-    AgentLoop（A5）不得提前实现；无万能工具 grep 断言保持。
+- **A4 SearchProvider（新对话 = 一个可验证闭环）**：`search(query, signal) →
+SearchProviderResult`（SearchResult {title/url/snippet/source}）；v1 Bing 搜索页
+  实现（临时可见 Tab → ready → 实时快照 → 确定性解析纯函数 `parseBingSearchResults`
+  → 关闭 Tab）；容忍设计（结构变化 → 空结果 + warnings，不抛异常）；接口隔离保
+  未来替换（决议 #22）；`search.web` 工具注册（{query} ≤500 字符非空，L0，结果
+  预算 4000 已备）。任务文档 `doc/stage3/tasks/A4-search-provider.md`；
+  契约 `doc/stage3/detailed-design.md` §6 + §13.1 A4 行。
+  **红线**：不实现 AgentLoop（A5）/UI/IPC（A6）；不联网调用真实 Provider；
+  搜索实现不得绕过 BrowserController 或放宽既有安全边界；A3 已落地的 click
+  允许列表/世代绑定/审计链路不得削弱。
 
 ## 第一阶段验收未完成项
 

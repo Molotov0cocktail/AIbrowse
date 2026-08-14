@@ -26,8 +26,12 @@
   **A1 tool-calling 兼容层已实现并通过验证（2026-08-14，硬前置解除）**；
   **A2 Tool Registry + 权限分级与确认状态机 + 审计日志已实现（2026-08-14）**
   ——首批 8 个只读/导航工具（get_tabs/get_active_tab/read/open/navigate/
-  back/forward/reload）已接线，仅经 BrowserController 执行；find/scroll/
-  click/fill（A3）、SearchProvider（A4）、AgentLoop（A5）未实现。A3–A8 待实现。
+  back/forward/reload）已接线，仅经 BrowserController 执行；
+  **A3 浏览器交互能力已实现（2026-08-14）**——interaction-script 固定模板 +
+  BrowserController 扩展（clickElement/fillElement/scrollTab + elementId
+  文档世代绑定）+ find/scroll/click/fill 四工具经既有 ToolExecutor 链路接线
+  （allowedKind 由 classifyClickTarget 单一事实源派生）；
+  SearchProvider（A4）、AgentLoop（A5）未实现。A4–A8 待实现。
   纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
   （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
   核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
@@ -256,10 +260,11 @@ d:\AIbrowse\
     │       ├── page-reader.ts                 # （T4）快照编排：executeJavaScript 注入 + L0–L2 降级阶梯
     │       │                                  #   （A3 规划：交互注入编排）
     │       ├── snapshot-script.ts             # （T4）注入脚本源（自安装 IIFE 字符串，DOM lib 引用保持 TS 检查；
-    │       │                                  #   A3 规划：isSubmit 语义元数据）
-    │       ├── interaction-script.ts          # （A3 规划）固定模板交互脚本（click/fill/scroll，
-    │       │                                  #   参数只进 JSON 字面量）
-    │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 46 用例
+    │       │                                  #   A3 已扩展 isSubmit/ariaExpanded 语义元数据）
+    │       ├── interaction-script.ts / .test.ts # （A3 ✅）固定模板交互脚本（click/fill/scroll，
+    │       │                                  #   参数只进 JSON 字面量；node:vm 敌手参数逃逸测试）
+    │       ├── interaction-normalize.ts / .test.ts # （A3 ✅）交互结果形状校验纯函数（页面视为敌手）
+    │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 51 用例（A3 扩展语义元数据）
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅）会话编排：ask 实时快照/中止/事件/持久化接线
@@ -278,9 +283,11 @@ d:\AIbrowse\
     │       │                                  #   （A1 规划：tools/SSE tool_calls/FakeProvider 工具脚本）
     │       ├── agent/                         # （A5 规划）agent-loop（纯编排状态机）/agent-context-builder/
     │       │                                  #   agent-history/agent-safety（防循环纯函数）
-    │       ├── tools/                         # （A2 ✅）tool-types/tool-registry（schema 校验）/
+    │       ├── tools/                         # （A2 ✅ + A3 ✅）tool-types/tool-registry（schema 校验）/
     │       │                                  #   tool-executor（校验→权限→确认→执行→审计）/
-    │       │                                  #   browser-tools（A2 只读导航 8 工具）/interaction-tools（A3）/
+    │       │                                  #   browser-tools（A2 只读导航 8 工具）/
+    │       │                                  #   interaction-tools（A3 ✅ find/scroll/click/fill）/
+    │       │                                  #   interaction-semantics（A3 ✅ 快照语义存储+世代绑定）/
     │       │                                  #   search-tool（A4）
     │       ├── permission/                    # （A2 ✅）permission-policy：L0–L3 确定性权限纯函数
     │       ├── confirm-manager.ts             # （A2 ✅）确认状态机（pending/approve/deny/作废）
@@ -656,14 +663,31 @@ Promise<ToolResult>`（注册表查找/参数校验 → 权限判定 → 确认�
   预算含截断标记，超限附 warnings）。browser-tools.ts 另有
   `serializeSnapshotForTool(snapshot, budget)`（read 章节化序列化纯函数：
   可见文本→标题→表格→链接→按钮→输入固定顺序 + 各节条目上限 + 确定性截断）。
-- **交互能力与 elementId 生命周期（A3）**：BrowserController 扩展
-  `clickElement(tabId, elementId, allowedKind)/fillElement/scrollTab`（安全返回
-  不抛异常；allowedKind 为执行器内部参数——权限决策派生，模型不可见不可写）；
-  interaction-script 固定模板（click=allowedKind 白名单复核后原生 el.click()、
-  fill=原生 value setter+input/change、scroll=window.scrollBy；参数只进 JSON
-  字面量）；elementId 仅当轮快照有效、**执行时刻实时重新定位** + 元素类型与
-  允许列表语义复核、导航/刷新后旧 id → stale-element；快照扩展 click 语义元数据
-  （buttons 条目 isSubmit/ariaExpanded，inputs 条目 type 已有）。
+- **交互能力与 elementId 生命周期（A3 ✅ 已实现，2026-08-14 grep 核对）**：
+  BrowserController 扩展 `clickElement(tabId, elementId, allowedKind,
+expectedDocumentId)/fillElement(tabId, elementId, text, expectedDocumentId)/
+scrollTab(tabId, dy)`（安全返回不抛异常；allowedKind/documentId 为执行器
+  内部参数——权限决策派生，模型不可见不可写，不进入工具 schema）；
+  `classifyClickTarget(semantics) → 'submit'|'nav'|'expand'|'toggle'|null`
+  （permission-policy 导出，click 分类**单一事实源**——decide 级别映射与执行器
+  allowedKind 同源派生，executor/交互脚本不自行分类）；interaction-script
+  固定模板（click=allowedKind 白名单复核后原生 el.click()、fill=原生 value
+  setter+input/change、scroll=window.scrollBy；参数只进 JSON 字面量，node:vm
+  敌手参数逃逸测试固化）；interaction-normalize（交互结果逐字段校验，异常/
+  堆栈/页面原文零穿透）；**elementId 文档世代绑定（决议 #31）**——TabManager
+  主框架 did-navigate 提交计数（页内导航不递增）、快照 `meta.documentId` 主
+  进程盖章（页面/模型不可伪造）、click/fill 执行前 BrowserController 校验
+  「绑定世代 === 当前世代」→ 不符 stale-element 不注入脚本（真实 DOM 红态
+  探针实证：跨导航/同 URL 刷新后新文档重新分配相同 el-N，「旧 id 自然失效」
+  不成立）；执行时刻实时重新定位 + 元素类型与允许列表语义复核；快照扩展 click
+  语义元数据（buttons 条目 isSubmit/ariaExpanded、inputs 条目 isSubmit 已有
+  type；严格布尔校验，非法形状丢弃字段）；interaction-tools 四工具
+  find/scroll/click/fill（find 实时快照多章节确定性匹配、无命中 ok 空结果；
+  read/find 经 ctx.recordSnapshot 登记语义来源 InteractionSemanticsStore
+  （按 Tab 键控、世代随绑定）；click/fill 无派生参数 fail-closed）；
+  tool-registry paramRules（find text ≤200 非空/fill text ≤2000/dy 整数
+  ±50000）；A2 起 ToolExecutionContext 扩展（getElementSemantics 绑定签名/
+  recordSnapshot/ToolExecutionDerived）。
 - **SearchProvider（A4）**：`search(query, signal) → SearchProviderResult`
   （SearchResult {title/url/snippet/source}）；v1 Bing 搜索页实现（临时可见 Tab →
   ready → 实时快照 → 确定性解析 → 关闭 Tab）；容忍设计（结构变化 → 空结果 +
@@ -700,7 +724,7 @@ Promise<ToolResult>`（注册表查找/参数校验 → 权限判定 → 确认�
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 452 用例）
+  - `npm test` — Vitest 全量测试（当前 533 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -718,11 +742,19 @@ Promise<ToolResult>`（注册表查找/参数校验 → 权限判定 → 确认�
       再验证 UI 端到端矩阵 1–12（流式分块渐进 DOM/selection/防串页/L3/薄快照/中止/错误
       归一化/会话管理 UI/布局 bounds 380 收缩与恢复/Key 不可达——DOM 与日志字节扫描 +
       credentials.json 密文 + 白名单无读回/注入结构断言/远程隔离回归；矩阵见
-      doc/stage2/detailed-design.md §13.2）→ A2 起再验证工具层探针（注册表恰好 8 个
-      A2 工具 + listTools 恒等 + 经 ToolExecutor 走真实 BrowserController 的
-      get_tabs/read 成功、javascript: URL forbidden 不建 Tab、非法 tabId →
-      invalid-args、未知 tabId read → execution-failed + 日志切片 5 条审计恰好
-      一次一条）→ 自动退出，退出码 0 即通过；日志链见 log/）。
+      doc/stage2/detailed-design.md §13.2）→ A2/A3 起再验证工具层探针（注册表恰好
+      12 个工具（A2 8 + A3 4）+ listTools 恒等 + 经 ToolExecutor 走真实
+      BrowserController 的 get_tabs/read 成功、javascript: URL forbidden 不建
+      Tab、非法 tabId → invalid-args、未知 tabId read → execution-failed +
+      日志切片 5 条审计恰好一次一条）→ A3 起再验证交互场景 8.2（真实 DOM：
+      A-12 click 允许列表四类点击（含 nav 真实导航）/提交类 deny・approve 确认门/
+      非允许列表与「立即购买/删除账户」forbidden 零 DOM 动作/权限判定后动态变化
+      执行器复核拒绝/fill 隐私（len=N 零原文 + input/change 事件真实触发 +
+      password/file/disabled/readonly/隐藏零写入）/scroll 边界/find 多章节与
+      无命中/elementId 世代（同文档稳定、导航/刷新后 stale-element、重新快照
+      不碰撞、类型复核）/每次调用审计恰好一条）→ elementId 生命周期红态探针
+      （跨导航/同 URL 刷新重新分配 el-N 证据）→ 自动退出，退出码 0 即通过；
+      日志链见 log/）。
       生产产物路径同样可跑：
       `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
       （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
@@ -847,6 +879,31 @@ Promise<ToolResult>`（注册表查找/参数校验 → 权限判定 → 确认�
     8 工具 BrowserController 注入调用（read 实时采集逐次调用/tabId 缺省解析/
     false・null 失败安全映射/序列化章节顺序与条目上限与确定性）、冒烟工具层探针
     （dev + 生产双场景，5 条审计日志实证）。
+  - ✅ A3（2026-08-14 红→绿落地，81 新增：interaction-script 28 / interaction-normalize
+    11 / interaction-semantics 9 / interaction-tools 12 / permission-policy 3 /
+    snapshot-normalize 5 / tool-registry 4 / tool-executor 8 / browser-tools 1，
+    基线 452 → 533；既有 452 用例仅机械夹具更新零删除零削弱）：交互模板经 node:vm
+    假 DOM 真实执行（模板编译期固定/JSON 字面量往返恒等/敌手参数引号・反斜杠・
+    闭合片段・脚本字符串不能逃逸；click not-found/nav 接受与 javascript:・非 A
+    拒绝/expand true 与 false 接受・属性消失拒绝/toggle 接受・类型变化拒绝/submit
+    三形态接受・form 外无 type 与 reset 拒绝/未知 kind bad-args/不可见禁用
+    not-interactable；fill 原生 setter+冒泡 input/change 事件/password・file
+    执行层再拒/disabled・readonly・隐藏拒绝/非输入框 not-fillable/原型篡改 error；
+    scroll 整数 ±50000 与 viewport；querySelector・getAttribute 抛异常结构化
+    失败）、交互结果形状校验（click/fill/scroll 成功形状逐字段/失败 code→错误码
+    闭合映射/reason 截断折叠/畸形输入不抛异常）、快照语义映射与存储（links/buttons/
+    inputs 合并/跨集合同元素/按 Tab 隔离/世代绑定/clear）、find 确定性匹配
+    （章节固定顺序/无命中空结果/大小写敏感/inputs 多字段/节选截断）、scroll/click/
+    fill executor（无派生参数 fail-closed 不触碰 BrowserController/派生参数透传/
+    stale-element 映射/fill 内容零原文）、classifyClickTarget 与 decide 同源
+    双表对照（submit→L2、nav/expand/toggle→L1、null→L3）、paramRules（dy 边界/
+    text 长度同名字段差异化/非空）、ToolExecutor derived（L1/L2 approve 派生
+    allowedKind+documentId/fill 仅 documentId/L3 无 derived/tabId 解析）、read
+    recordSnapshot 登记、快照语义元数据（buttons isSubmit/ariaExpanded 严格
+    布尔、inputs isSubmit 透传不合成、meta.documentId 主进程盖章敌手伪造无效）。
+    冒烟 8.2 A3 交互场景（真实 DOM：A-12 允许列表/确认门/执行器复核/世代校验/
+    fill 隐私/审计恰好一条）+ elementId 生命周期红态探针（跨导航/同 URL 刷新
+    重新分配证据）；8.1 校准为注册表 12 工具。dev + 生产双场景退出码 0。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。
