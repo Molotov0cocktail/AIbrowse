@@ -27,6 +27,7 @@ import {
   AGENT_TOTAL_TIMEOUT_MS,
   AgentLoop,
   type AgentLoopLimits,
+  verifyReasoningReplay,
 } from './agent-loop';
 
 const NOW = 1_700_000_000_000;
@@ -1174,5 +1175,30 @@ describe('reasoning 不透明回传（A7 补验校准：thinking 模式工具轮
       (m) => m.role === 'assistant' && m.content === '' && m.toolCalls === undefined,
     );
     expect(emptyAssistant?.reasoning).toBeUndefined();
+  });
+});
+
+describe('verifyReasoningReplay — reasoning_content 回传内容相等校验纯函数（决议 #35）', () => {
+  it('数量/顺序/内容全等 → true（空数组亦通过）', () => {
+    expect(verifyReasoningReplay([], [])).toBe(true);
+    expect(verifyReasoningReplay(['思考甲'], ['思考甲'])).toBe(true);
+    expect(verifyReasoningReplay(['思考甲', '思考乙'], ['思考甲', '思考乙'])).toBe(true);
+    expect(verifyReasoningReplay(['', '思考乙'], ['', '思考乙'])).toBe(true);
+  });
+
+  it('内容不符 → false（不得仅凭长度判定——同长度不同内容必须拒绝）', () => {
+    expect(verifyReasoningReplay(['思考甲'], ['思考乙'])).toBe(false);
+    expect(verifyReasoningReplay(['甲乙丙'], ['甲丙乙'])).toBe(false); // 同长度、内容错位
+  });
+
+  it('数量不符（缺失/多出/截断）→ false', () => {
+    expect(verifyReasoningReplay(['思考甲'], [])).toBe(false); // 收到但未回传
+    expect(verifyReasoningReplay([], ['思考甲'])).toBe(false); // 多出
+    expect(verifyReasoningReplay(['思考甲', '思考乙'], ['思考甲'])).toBe(false); // 漏回传一轮
+    expect(verifyReasoningReplay(['思考甲'], ['思考甲', '思考乙'])).toBe(false); // 多回传一轮
+  });
+
+  it('顺序错位 → false', () => {
+    expect(verifyReasoningReplay(['思考甲', '思考乙'], ['思考乙', '思考甲'])).toBe(false);
   });
 });

@@ -6516,30 +6516,6 @@ export async function runLiveAgentScenarios(
         `${label}：run 未在 180 秒内到达终态`,
       );
     };
-    // —— 预检硬上限（用户授权范围）：最多 6 次模型 HTTP 请求——超过即经停止按钮安全
-    // 取消（cancelled 终态），与兼容性失败（400/非法 SSE/协议异常以 error 终态直达）
-    // 严格区分；每轮请求 = 一条「开始生成（agent」日志（scenarioOffset 起点计数） ——
-    const PRE_HTTP_CAP = 6;
-    const waitTerminalCapped = async (label: string): Promise<boolean> => {
-      // 返回 true = 正常到达终态；false = 达 HTTP 上限被安全取消（停止按钮 → cancelled）
-      const deadline = Date.now() + 180000;
-      for (;;) {
-        if ((await uiCount(uiWc, '.ai-agent-run')) >= 1) return true;
-        if (modelRoundsSoFar() > PRE_HTTP_CAP) {
-          logInfo(
-            'smoke',
-            `预检：模型 HTTP 请求超过硬上限 ${PRE_HTTP_CAP} 次，经停止按钮安全取消（协议判定见轮次/审计日志）`,
-          );
-          await clickUi(uiWc, '.ai-abort');
-          await waitTerminal(label);
-          return false;
-        }
-        if (Date.now() >= deadline) {
-          throw new Error(`${label}：run 未在 180 秒内到达终态`);
-        }
-        await delay(1500);
-      }
-    };
     const statusText = async (): Promise<string> => uiText(uiWc, '.ai-agent-status-text');
     const toolNames = async (): Promise<string[]> => uiTextAll(uiWc, '.ai-tool-call-name');
     const currentUrl = async (): Promise<string> => (await controller.getActiveTab())?.url ?? '';
@@ -6619,56 +6595,63 @@ export async function runLiveAgentScenarios(
     await ensurePanelOpen();
     await switchMode('task');
 
-    // —— 场景 1：搜索 Electron WebContentsView 官方文档并打开最相关结果 ——
-    let scenario1Capped = false;
+    // —— 场景 1：搜索 Electron WebContentsView 官方文档并在新标签页打开最相关结果 ——
+    // A7 补验校准（2026-08-14，真实预检证据驱动）：任务澄清为「在新标签页打开」
+    // （Q11/决议 #32 契约：搜索临时 Tab 执行后精确关闭；Agent 经 browser_open 创建
+    // 并保留结果 Tab——browser_navigate 不是 browser_open 的等价替代）。断言：
+    // 至少出现 search_web + browser_open + 其后 browser_read（容许安全且合理的额外
+    // 工具步骤，不要求固定调用序列）；搜索临时 Tab 精确关闭、结果 Tab 保留、最终
+    // URL 属 electronjs.org 且页面可继续读取。
     {
       await freshSession();
-      await sendTask('搜索 Electron 的 WebContentsView 官方文档，打开最相关的结果页面');
-      if (pre) {
-        scenario1Capped = !(await waitTerminalCapped('场景 1'));
-      } else {
-        await waitTerminal('场景 1');
-      }
-      recordRounds('场景 1：搜索并打开官方文档（search_web + open）');
+      await sendTask('搜索 Electron 的 WebContentsView 官方文档，并在新标签页打开最相关的结果页面');
+      await waitTerminal('场景 1');
+      recordRounds('场景 1：搜索并在新标签页打开官方文档（search_web + open + read）');
       const status = await statusText();
+      assert(status.includes('已完成'), `场景 1 应已完成（实际 ${status}）`);
       const names = await toolNames();
-      if (scenario1Capped) {
-        // 达 HTTP 硬上限安全取消：不要求场景完成——协议证据要求至少一个合法工具调用
-        // 已真实执行（名称合法、参数可解析、审计存在）；兼容性失败（400/非法 SSE/
-        // 协议异常）会以 error 终态直达本分支之外，不与此混淆
-        assert(status.includes('已停止'), `场景 1 达上限应安全取消（实际 ${status}）`);
-        assert(
-          names.some((n) => n === 'search_web' || n.startsWith('browser_')),
-          `预检：达上限取消前应至少执行过一个合法工具调用（实际 ${names.join(',')}）`,
-        );
-        logInfo(
-          'smoke',
-          `预检：协议链路已运行至 HTTP 硬上限（${PRE_HTTP_CAP} 次）并安全取消——场景未完成与兼容性失败的区别见轮次/审计日志`,
-        );
-      } else {
-        assert(status.includes('已完成'), `场景 1 应已完成（实际 ${status}）`);
-        assert(
-          names.includes('search_web') && names.includes('browser_open'),
-          `场景 1 应使用 search_web + browser_open（实际 ${names.join(',')}）`,
-        );
-        const url = await currentUrl();
-        assert(
-          /^https:\/\/[^/]*electronjs\.org/.test(url),
-          `场景 1 应打开 electronjs.org 最相关结果（实际 ${url}）`,
-        );
-      }
-      logInfo('smoke', '场景 1 通过（搜索 WebContentsView 官方文档并打开最相关结果）');
+      assert(
+        names.includes('search_web'),
+        `场景 1 应使用 search_web 搜索（实际 ${names.join(',')}）`,
+      );
+      assert(
+        names.includes('browser_open'),
+        `场景 1 应经 browser_open 在新标签页打开结果（实际 ${names.join(',')}）`,
+      );
+      assert(
+        names.lastIndexOf('browser_read') > names.indexOf('browser_open'),
+        `场景 1 应在打开结果页后继续读取（实际 ${names.join(',')}）`,
+      );
+      // 搜索临时 Tab 精确关闭（决议 #32）+ 结果 Tab 保留（Q11）：数量 = 进入前 + 1
+      const tabsAfter = await controller.getTabs();
+      assert(
+        tabsAfter.length === tabsBefore.length + 1,
+        `场景 1 应保留恰好 1 个结果 Tab（进入前 ${tabsBefore.length}，实际 ${tabsAfter.length}）`,
+      );
+      const extra = tabsAfter.filter((t) => !beforeIds.has(t.id));
+      assert(extra.length === 1, '场景 1 应恰好新增 1 个结果 Tab');
+      assert(
+        !tabsAfter.some((t) => t.url.includes('bing.com')),
+        '场景 1 搜索临时 Tab 应已精确关闭',
+      );
+      const url = extra[0]?.url ?? (await currentUrl());
+      assert(
+        /^https:\/\/[^/]*electronjs\.org/.test(url),
+        `场景 1 应打开 electronjs.org 最相关结果（实际 ${url}）`,
+      );
+      // 页面可继续读取：结果 Tab 实时快照可用（L0–L2；null = L3 不可读）
+      const snap = extra[0] !== undefined ? await controller.getPageSnapshot(extra[0].id) : null;
+      assert(snap !== null, '场景 1 结果页应可继续读取（快照可用）');
+      logInfo(
+        'smoke',
+        '场景 1 通过（搜索并在新标签页打开官方文档最相关结果，搜索临时 Tab 精确关闭、结果 Tab 保留可读）',
+      );
     }
 
     // —— 预检模式（AIBROWSE_LIVE_AGENT_PRE=1）：仅场景 1 + 零泄漏终检 + 台账；场景 2–7
-    //    需用户二次授权后以 AIBROWSE_LIVE_AGENT=1 执行 ——
+    //    由用户二次授权后以 AIBROWSE_LIVE_AGENT=1 执行 ——
     if (pre) {
-      const total = await finalizeLiveRun('预检');
-      assert(total <= PRE_HTTP_CAP, `预检：模型轮次 ${total} 超过 HTTP 硬上限 ${PRE_HTTP_CAP}`);
-      logInfo(
-        'smoke',
-        `预检结束（${scenario1Capped ? '达上限安全取消（协议证据见日志）' : '正常完成'}）`,
-      );
+      await finalizeLiveRun('预检');
       return;
     }
 

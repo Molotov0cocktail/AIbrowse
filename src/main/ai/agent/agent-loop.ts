@@ -36,6 +36,18 @@ import { buildToolStep } from './agent-history';
 export const AGENT_MAX_STEPS = 12;
 export const AGENT_TOTAL_TIMEOUT_MS = 420_000; // 总超时含模型轮、工具执行与确认等待
 
+// A7 补验（决议 #35）：reasoning_content 回传**内容相等**校验纯函数——transcript 中工具轮
+// assistant 携带的 reasoning 必须与各轮实际收到的内容逐字一致（数量/顺序/内容全等；
+// 缺失、错位、截断、内容不符任一即 false）。不得仅凭长度判定——内容相等是回传契约的
+// 唯一成立条件；校验失败由调用方 fail-closed 以 error 终态终止（内部协议缺陷）。
+export function verifyReasoningReplay(replayed: string[], received: string[]): boolean {
+  if (replayed.length !== received.length) return false;
+  for (let i = 0; i < replayed.length; i++) {
+    if (replayed[i] !== received[i]) return false;
+  }
+  return true;
+}
+
 export interface AgentLoopLimits {
   maxSteps: number;
   totalTimeoutMs: number;
@@ -146,6 +158,9 @@ export class AgentLoop {
   // 仅工具轮写入 transcript 的 assistant 消息并在下一轮请求原样回传；终态轮/空轮不携带；
   // 不进入 rounds 结果、回调、审计、持久化（思维过程零暴露红线）。
   private roundReasoning = '';
+  // A7 补验（决议 #35）：各工具轮实际收到的 reasoning 内容（仅内存，与 transcript
+  // 工具轮 assistant 一一对应）——每轮请求前做内容相等校验（verifyReasoningReplay）
+  private roundReasonings: string[] = [];
 
   constructor(private readonly options: AgentLoopOptions) {
     this.limits = { ...AGENT_LOOP_LIMITS, ...options.limits };
@@ -234,6 +249,20 @@ export class AgentLoop {
           stepsUsed: this.stepsUsed,
           maxSteps: this.limits.maxSteps,
         });
+        // A7 补验（决议 #35）：reasoning_content 回传内容相等校验（执行前、每轮）——
+        // transcript 工具轮 assistant 的 reasoning 与各轮实际收到内容逐字全等；
+        // 任何不一致 = 内部协议缺陷 → fail-closed error 终态（不得仅凭长度判定）
+        const replayedReasonings = this.transcript
+          .filter((m) => m.role === 'assistant' && m.toolCalls !== undefined)
+          .map((m) => m.reasoning ?? '');
+        if (!verifyReasoningReplay(replayedReasonings, this.roundReasonings)) {
+          this.finish(
+            'error',
+            internalError('reasoning_content 回传内容校验失败（内部协议缺陷）', context),
+          );
+          break;
+        }
+
         const request: ProviderRequest = buildAgentRequest({
           replayMessages: this.options.replayMessages,
           transcriptMessages: this.transcript,
@@ -291,6 +320,8 @@ export class AgentLoop {
           toolCalls: calls,
           ...(this.roundReasoning !== '' ? { reasoning: this.roundReasoning } : {}),
         });
+        // 与 transcript 工具轮一一对应的收到内容台账（内容相等校验的参照侧）
+        this.roundReasonings.push(this.roundReasoning);
         const roundRecord: AgentRoundRecord = { text, toolCalls: calls, steps: [] };
         this.rounds.push(roundRecord);
         this.roundCommitted = true;
