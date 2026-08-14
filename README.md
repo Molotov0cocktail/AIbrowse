@@ -7,10 +7,13 @@
 > L1 自动显著展示 / L2 用户确认 / L3 禁止）、操作可见性与审计日志。契约源
 > `doc/stage3/detailed-design.md`；安全契约源 `doc/stage3/threat-model.md`
 > （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
-> **A1 tool-calling 兼容层 + A2 Tool Registry/权限分级与确认状态机/审计日志 +
-> A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）+
-> A4 SearchProvider 与 search.web + A5 Agent Runtime + A6 操作可见性 UI 与通道
-> 已实现（2026-08-14）；A7–A8 待实现**
+> **A1 tool-calling 兼容层、A2 Tool Registry/权限分级与确认状态机/审计日志、
+> A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）、
+> A4 SearchProvider 与 search.web、A5 Agent Runtime、A6 操作可见性 UI 与通道、
+> A7 红队矩阵与安全审计（离线部分 RT-01～RT-08 + RT-11）、A8 收尾验收
+> 已实施（2026-08-14）；总 Exit 决策 HOLD/PENDING——真实网站 Agent smoke
+> 受 Provider 能力限制 BLOCKED（唯一已配置 deepseek-v4-flash 对任何 tools
+> 载荷 HTTP 400），待 tools 兼容 Provider + 用户授权后补验**
 > （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
 > T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
 > 见 `doc/stage3/proposal.md` §11）。
@@ -65,7 +68,14 @@
     AgentStatusBar/ToolCallList/ConfirmDialog（deny 默认焦点、elementText
     页面提供不可信纯文本渲染）/停止按钮/ToolStep 历史渲染 + agent-run-state
     纯 reducer + UI 端到端冒烟 A6-UI-01～A6-UI-12——dev/生产双场景退出码 0）；
-    任务 A7–A8 待实现（**下一个推荐任务：A7 红队矩阵与安全审计**）。
+    **A7 红队矩阵与安全审计已完成（2026-08-14，离线部分）**——冒烟 8.6
+    RT-01～RT-08 + RT-11（dev/生产双场景退出码 0）+ RT-09 全仓库 grep +
+    logger 日志行伪造防御修复；RT-10 与真实 Provider 场景 NOT RUN（兼容性
+    证据登记）；
+    **A8 第三阶段收尾已完成（2026-08-14）**——§9 验收逐项核对（14 项 PASS、
+    1 项 BLOCKED）+ §10 五项技术条件逐项判定，**总 Exit 决策 HOLD/PENDING**
+    （真实网站 Agent smoke 受 Provider 能力限制未执行，待 tools 兼容
+    Provider + 用户授权后补验，不进入 Fourth Stage）。
 
 ## 技术栈（实际落地版本）
 
@@ -88,7 +98,10 @@ A2/A3 工具层探针与交互场景 → A4 搜索生命周期场景（受控搜
 A5 Agent Runtime 场景 8.4（A-01～A-09 主进程驱动）→ A6 操作可见性 UI 场景 8.5
 （A6-UI-01～A6-UI-12 React DOM 事件驱动：任务模式多步任务/确认 deny・approve/
 pending 停止/慢模型停止/四种终止理由中文/invalid 条目/切换不串 run/ToolStep v2
-磁盘重读/fill 零原文/敌对确认文本/共读回归）→
+磁盘重读/fill 零原文/敌对确认文本/共读回归）→ A7 红队矩阵 8.6（RT-01～RT-08 +
+RT-11：诱导文案结构隔离/URL 白名单 + 日志行伪造防御/提交确认门/搜索结果注入
+块隔离/密码・文件零写入/陈旧 elementId/system・Key 探测/确认疲劳/通用 click
+越权 L3 零 DOM）→
 自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
 `doc/stage3/detailed-design.md` §13.2）：
 
@@ -128,7 +141,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 766 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 771 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -169,7 +182,8 @@ BrowserController.getPageSnapshot`（**提问时刻实时采集**，禁止复用
   LLM 请求仅在主进程发起（API Key 不出主进程，渲染层只写不读）；网页内容只进 user 消息的
   `UNTRUSTED_WEB_CONTENT` 块（system 恒为应用常量）；Key 落盘仅 safeStorage（Windows DPAPI）
   密文；会话持久化为 userData 下 JSON（不存快照正文，支持「不保存」会话）。
-- Browser Agent（第三阶段，设计定稿待实现）：`UI → ConversationService(agent 模式) →
+- Browser Agent（第三阶段，A1–A7 已实现，A8 收尾完成——总 Exit 决策 HOLD/PENDING，
+  真实网站 Agent smoke 待 tools 兼容 Provider 补验）：`UI → ConversationService(agent 模式) →
 AgentLoop → ToolRegistry → PermissionPolicy / ConfirmManager / ToolExecutor →
 BrowserController / SearchProvider`；工具实现只经 BrowserController/SearchProvider 操作
   浏览器；权限判定为确定性纯函数（模型只是提议者）；**click 走确定性允许列表
@@ -184,8 +198,10 @@ BrowserController / SearchProvider`；工具实现只经 BrowserController/Searc
 ```
 src/
 ├── main/          # 主进程：入口（生命周期/窗口/安全默认值/IPC 装配/导航保护）、logger、
+│   │              #   （A7 ✅ normalizeLogMessage 日志行伪造防御）、
 │   │              #   smoke（冒烟自检：多 Tab/导航保护/真实采集/敌对页/302/UI 端到端/Session/
-│   │              #             AI 共读矩阵）
+│   │              #             AI 共读矩阵 + 8.4/8.5/8.6 Agent/可见性/红队矩阵 +
+│   │              #             A7 ✅ LIVE_AGENT 门控 runLiveAgentScenarios）
 │   ├── browser/   # BrowserController / TabManager（A3 ✅ 导航世代计数）/ SessionManager /
 │   │              #   PageReader（A3 ✅ 交互编排）/ snapshot-script + snapshot-normalize /
 │   │              #   interaction-script + interaction-normalize（A3 ✅ 固定模板交互注入与
@@ -228,7 +244,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 766 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 771 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
@@ -284,6 +300,10 @@ ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元
   工具（常量 schema/L0 管线决策/序列化纯文本零特权/4000 截断/空结果明确提示/
   结构无法识别 search-failed/取消归一/每次调用恰好一条审计/查询串全量审计）。
   第三阶段 A6 新增（67）：agent-run-state 纯 reducer（按 sessionId/requestId 键控：starting 收养/相位合并/step 去重/错误会话与旧 run 事件忽略/run-done 幂等/终态后迟到事件忽略/新 run 不继承/stop-requested stopping 与幂等/会话隔离/全局 pending 选择器）、agent-display 展示纯函数（sanitizeConfirmText 控制字符与双向控制符剔除 + 截断/决策六值・错误码・run 状态九值中文文案/状态栏全相位与五种终止理由描述——run.status 权威）、history-events turn-done 消息 id 去重（历史刷新与终态事件竞态防御）、confirm-manager 判别联合（pending/settled 携带 outcome）+ 多监听者 Set 分发、interaction-semantics text 映射（inputs 不采集宁缺勿错）、tool-executor 确认摘要（elementText 页面提供目标文本/目标站点 URL 主进程可信）、agent-loop onStatus 相位（thinking/executing 计数一致/finalizing 仅 done/终态后零迟到/防循环阻断零 executing）+ onAgentStep argsSummary（审计同源一致/fill 只记长度）、conversation-service onAgentStatus（starting/waiting-confirm/confirm-resolved 三态/abort 作废/非在途防串）+ 共享 ConfirmManager 双 Service 互不串扰与 dispose 退订。
+  第三阶段 A7 新增（5，logger.test）：normalizeLogMessage 日志行伪造防御（CR/LF
+  折叠为空格条目恒单行/ANSI CSI・OSC 整体剔除/C0・DEL・NEL・双向・零宽・BOM・
+  行段分隔符按码点剔除/\t 保留/sanitize 凭据脱敏行为零改动）；红队矩阵由冒烟
+  8.6（RT-01～RT-08 + RT-11）+ RT-09 grep 断言覆盖。
   Electron 行为由冒烟自检真实启动验证（见上）。 约定见 `AGENTS.md` §7。
 
 ## 已知限制
@@ -299,3 +319,12 @@ ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元
   语义层完全不受网页文本诱导——第三阶段四类残余风险（诱导式工具参数/确认疲劳/低风险
   动作累积/click 允许列表目标的页内 JS 副作用）如实登记，不宣称免疫。
 - 详细清单见 `doc/tasks/progress.md`「计划内限制与延期项」。
+- **第三阶段最终验收缺口（2026-08-14 A8 判定，如实登记）**：§9 Engineering
+  「多个真实网站 Agent smoke test 通过」BLOCKED + Third_stage.md §7 真实场景
+  1–6 与 RT-10 真实模型观察性证据 NOT RUN——唯一已配置 Provider
+  （deepseek-v4-flash）对任何 OpenAI 标准 tools 载荷返回 HTTP 400（stream 与否
+  两形态复现、无 tools 200 正常，判定 Provider/模型兼容性限制、非适配器缺陷）；
+  受控本地页面 FakeProvider 冒烟不替代本项；`AIBROWSE_LIVE_AGENT=1` 场景门控与
+  本地安全夹具已就绪，待 tools 兼容 Provider 配置并获用户授权后补验。第三阶段
+  总 Exit 决策 HOLD/PENDING（§10 五项技术条件逐项判定已通过，见
+  Third_stage.md §10）。

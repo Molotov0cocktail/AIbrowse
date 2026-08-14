@@ -49,6 +49,12 @@
   下一个推荐任务 = **A8 第三阶段收尾**（A7 离线部分已完成——红队矩阵 RT-01～
   RT-08 + RT-11/增量安全审计/RT-10 校准；真实 Provider 受能力限制未执行，证据
   见下）。
+  **A8 第三阶段收尾已完成（2026-08-14）**：§9 五组 15 项 + §14 收紧项逐项核对
+  （14 项 PASS、1 项 BLOCKED——真实网站 Agent smoke）、§10 Exit Gate 五项技术
+  条件逐项判定 PASS 但**总 Exit 决策 = HOLD/PENDING**（真实 Provider 缺口：
+  唯一已配置 deepseek-v4-flash 不支持 tools；§7 真实场景 1–6 与 RT-10 真实
+  观察 NOT RUN，场景代码就绪）；文档全量同步。下一个推荐任务 =
+  **真实 Provider Agent 验收补验**（不进入 Fourth Stage）。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Exit Gate 通过（2026-08-13 判定 + 2026-08-14 用户独立复验，4 项
   非阻塞缺陷已修复并全量回归，红态退出码 1 → 绿态 0；证据见 Second_stage.md
@@ -83,13 +89,64 @@
 | A5 | Agent Runtime：Loop 状态机 / 最大步数 / 超时 / 取消 / 防循环 / Agent 上下文与历史 / 持久化扩展 + 主进程冒烟 | ✅ | 2026-08-14 完成（见下）；契约 §8–§9 + 决议 #33；任务文档 doc/stage3/tasks/A5-agent-runtime.md |
 | A6 | 操作可见性 UI + IPC/bridge 扩展 + 确认流 UI + UI 端到端冒烟矩阵 | ✅ | 2026-08-14 完成（见下）；契约 §11 + 决议 #34（实时状态通道/参数摘要源/确认信任边界/多监听者）；任务文档 doc/stage3/tasks/A6-agent-ui-visibility.md |
 | A7 | 威胁模型红队矩阵 RT-01～RT-11 + 安全审计 + 真实 Provider 可选验证 | ✅ | 离线部分（RT-01～RT-08 + RT-11 + 审计 + RT-10 校准）已完成并推送；真实 Provider 已获授权但受 Provider 能力限制未执行（deepseek-v4-flash 端点对任何 tools 载荷返回 400 空响应体——兼容性证据登记，不标记通过；场景代码就绪待 tools 兼容 Provider）；契约 doc/stage3/threat-model.md §4；任务文档 doc/stage3/tasks/A7-redteam-security-audit.md |
-| A8 | 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步 | ⏳ | Third_stage.md §9/§10；任务文档 doc/stage3/tasks/A8-finalize-acceptance.md |
+| A8 | 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步 | ✅ | 2026-08-14 完成（§9 逐项证据 + §10 总判定 HOLD/PENDING——真实 Provider 缺口如实登记；任务文档 doc/stage3/tasks/A8-finalize-acceptance.md；证据见下） |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
 > 上表第一阶段历史任务 T0–T5（已关闭，编号不可改）重名；第一、第二阶段历史任务
 > 编号一律不变。
 
 ## 最近验证结果（2026-08-14）
+
+- **A8 第三阶段收尾与验收（2026-08-14，第八个闭环；总 Exit 决策 = HOLD/PENDING）**：
+  步骤 0 独立核对——HEAD `0461c04` = Gitee/GitHub 双远程 HEAD（ls-remote 实测，
+  三方一致）、工作区干净、基线 test 771/771 独立复跑全绿（与 A7 交接预期一致，
+  独立确认不采信）。**① §9 验收逐项证据表（Third_stage.md §9 已勾选回填）**：
+  Agent 4 项 PASS（A-01 多步任务/A-03 取消/A-04 上限/A-05 防循环 + A-09 审计
+  恰好一条 + agent-loop 32/agent-safety 17 单测）· Browser Tools 3 项 PASS
+  （8.2 A-12/8.4 A-01/A-07 + RT-06 + interaction-script 28 等单测）· Search
+  2 项 PASS（8.3 三夹具 + A-01 search→open→read 链路 + search-provider 28 单测）
+  · Permission 3 项 PASS（A-02/A-12/RT-03 确认门 + RT-01 权限恒等 + RT-09 grep
+  A8 独立复核零命中 + permission-policy 单测）· **§14 收紧项 L3 执行器层不可达
+  PASS**（A-12/RT-11 零 DOM 动作 + classifyClickTarget 单一事实源 + 执行器层
+  allowedKind 复核）· Engineering：全量验证 PASS（test 771/771 · typecheck ·
+  lint · format:check · build 全绿；dev 离线全矩阵 + 生产产物双场景冒烟退出码 0，
+  当日日志实证 8.4 A-01～A-09/8.5 A6-UI-01～12/8.6 RT-01～RT-08 + RT-11 通过行）、
+  日志无敏感信息 PASS（审计脱敏链 + logger 13 用例 + 当日日志字节扫描 sk- 形态
+  0/fill 原文 0；真 Key 扫描属真实调用部分 NOT RUN）、
+  **「多个真实网站 Agent smoke test 通过」BLOCKED**——唯一已配置 Provider
+  （deepseek-v4-flash）对任何 tools 载荷返回 HTTP 400（A7 证据：stream 与否两
+  形态复现、无 tools 200 正常；本会话复核仓库外本地说明确认无新增 tools 兼容
+  Provider 配置）→ 按规则不重复付费诊断、不进入询问边界；受控本地页 FakeProvider
+  冒烟**不替代**本项；`AIBROWSE_LIVE_AGENT=1` 门控与场景夹具已就绪（A7 落地，
+  本会话核对代码在位）。§7 真实场景 1–6：NOT RUN（真实执行），离线确定性覆盖
+  已在 Third_stage.md §7 注记（场景 4→A6-UI-10、场景 5→A-02/RT-03、场景 6→
+  RT-01/03/11、场景 1/2/3 多步链路→A-01/8.3）。**② §10 Exit Gate 五项技术条件
+  逐项判定**：① 不会频繁死循环 PASS（离线确定性证据，真实模型观察 NOT RUN）；
+  ② Tool API 稳定可复用 PASS（契约零变更自 A6、A3–A6 均复用同一管线）；
+  ③ Permission Policy 可扩展 PASS（纯函数 + 编译期矩阵 + baseRisk 注入点）；
+  ④ Prompt Injection 红队基础测试 PASS（RT-01～RT-08 + RT-11 自动化 + RT-09
+  grep；RT-10 真实观察 NOT RUN，三类诚实边界不变）；⑤ 无放宽网页权限技术债
+  PASS（A1–A7 红线终检零放宽，click 允许列表为收紧）。**总 Exit 决策 =
+  HOLD/PENDING**：真实 Provider 缺口（§9 Engineering BLOCKED + §7 场景 1–6 +
+  RT-10 观察性证据 NOT RUN）→ 不得标记第三阶段最终验收通过；待 tools 兼容
+  Provider 配置 + 用户授权后执行真实 Agent 验收补验，取得充分证据后改判
+  GO/PASS（不进入 Fourth Stage）。**③ 文档同步**：Third_stage.md §7 状态注记/
+  §9 逐项勾选与证据/§10 判定块；本文件（任务表 A8 ✅ + 最近验证结果 + 阻塞项 +
+  下一个推荐任务）；AGENTS.md §1 阶段状态/§5 A7 状态与冒烟 8.6/§6 测试计数
+  771 + 冒烟 8.6 与 LIVE_AGENT 门控/§7 A7 用例行/附 B Engineering 项 BLOCKED
+  表述校准；README（当前状态/测试计数 771/冒烟与目录标注/A7 用例行/已知限制
+  真实 Provider 兼容性缺口）；A8 任务文档实施步骤与完成定义回填。AGENTS.md §5
+  契约速查 A1–A6 全部签名经 `grep -n "^export"` 实际核对无偏差。**④ 验证与
+  终检**：test 771/771 · typecheck · lint · format:check · build 全绿；dev
+  离线全矩阵 + 生产产物双场景冒烟退出码 0；RT 红线 grep（shell/child_process/
+  eval/Function/executeJavaScript/fs/fetch/IPC/SQL/dangerouslySetInnerHTML/
+  sendInputEvent 零命中——executeJavaScript 仅固定模板采集/交互脚本，fs 仅
+  应用自有 config/conversation/credential JSON，fetch 仅 Provider 适配器固定
+  端点，IPC 仅 preload+main index）；敏感信息扫描（sk- 形态仅 logger.test 测试
+  夹具 1 处）与 diff 终检零命中；冒烟后临时目录检查：清理上一会话调试期残留
+  aibrowse-dbg-* 2 个目录（内容仅为 fake provider 配置，无凭据）；本日日志
+  字节扫描零泄漏。**未调用任何付费 Provider、未输出/索取 API Key、未修改任何
+  代码（纯验收 + 文档闭环——无实现缺陷发现）。**
 
 - **A7 红队矩阵与安全审计（2026-08-14，第七个闭环；离线部分完成，真实 Provider
   待授权）**：步骤 0 独立核对——HEAD `82dcfc5` = 双远程 HEAD（ls-remote 实测）、
@@ -1066,22 +1123,36 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 阻塞项
 
-- 无。
+- **第三阶段最终验收阻塞（非开发阻塞，2026-08-14 A8 登记）**：§9 Engineering
+  「多个真实网站 Agent smoke test 通过」BLOCKED——唯一已配置 Provider
+  （deepseek-v4-flash）对任何 OpenAI 标准 tools 载荷返回 HTTP 400（A7 诊断
+  台账：真实调用 1 次 + 定向诊断 3 次，stream/非 stream 两形态均 400、无 tools
+  200 正常；判定 Provider/模型兼容性限制，非适配器缺陷）；连带 §7 真实场景
+  1–6 与 RT-10 真实模型观察性证据 NOT RUN。解除条件：配置一个与 OpenAI 标准
+  tool calling 兼容的 Provider/model（仓库外 DPAPI/harness 流程注入）→ 用户
+  授权付费联网 → 运行 `AIBROWSE_LIVE_AGENT=1` 门控场景（代码已就绪）→ 取得
+  充分证据后改判 GO/PASS。解除前不进入 Fourth Stage。
 
 ## 下一个推荐任务
 
-- **A8 第三阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（新对话 = 一个可
-  验证闭环）**：Third_stage.md §9 验收逐项核对（§14 清单 + 真实场景 1–6 项——
-  真实场景需 tools 兼容 Provider，未执行项如实登记不伪造证据）+ §10 Exit Gate
-  五条件判定 + 契约回填 AGENTS.md §5（A7 红队矩阵与审计结论）+ README 同步。
-  A7 交接点：冒烟 8.6 红队矩阵（RT-01～RT-08 + RT-11 离线全绿）、增量安全审计
-  证据表、RT-10 三类诚实边界校准（threat-model §4）、真实 Provider 兼容性证据
-  （deepseek-v4-flash 端点对任何 tools 载荷返回 400 空响应体——如需真实 Agent
-  场景，先经仓库外 harness 配置 tools 兼容 Provider 再跑
-  `AIBROWSE_LIVE_AGENT=1` 门控；**未经授权不联网调用付费 API**）。
-  任务文档 `doc/stage3/tasks/A8-finalize-acceptance.md`。
+- **真实 Provider Agent 验收补验（新对话 = 一个可验证闭环，唯一解除第三阶段
+  HOLD/PENDING 的路径）**：前置 = 用户已配置一个与 OpenAI 标准 tool calling
+  兼容的 Provider/model（不同于 deepseek-v4-flash，其任何 tools 载荷 400）
+  且**明确授权付费联网验证**（询问边界：先报告拟用 baseURL/model/场景/预计
+  模型轮数与 HTTP 请求用途，等待授权；不要求对话中粘贴 Key；只用仓库外
+  DPAPI/harness 流程 + 环境变量注入）。执行：`AIBROWSE_LIVE_AGENT=1` 门控
+  runLiveAgentScenarios（Third_stage §7 场景 1–6 + RT-10 敌对页——诱导目标
+  全部指向本地安全地址 + 停止/取消 + 零泄漏终检 + 真 Key 零暴露扫描 + 模型
+  轮次台账；代码已就绪于 src/main/smoke.ts）；提交动作只在受控本地页面验证
+  deny/approve，禁止对真实外部网站产生提交/发布/购买/发送/账户变更。完成后：
+  报告实际 Agent run、模型轮次与 HTTP 请求数及用途 + 真 Key 零暴露扫描 →
+  将 §9 Engineering BLOCKED 项与 §10 总判定改判（取得充分证据 → GO/PASS；
+  否则如实登记继续 HOLD）。未获授权/无兼容 Provider 时不执行联网。
   **红线**：不索取/不输出 API Key；不放宽 click 允许列表/documentId 世代
-  校验/临时搜索 Tab 所有权；A1–A7 已落地的链路不得削弱。
+  校验/临时搜索 Tab 所有权；不通过删除 tools、放宽权限、自动确认、修改敌手
+  夹具或降低验收标准制造通过；A1–A7 已落地的链路不得削弱。
+  （进入 Fourth Stage 的条件：上述补验取得充分证据 + §10 总判定改判
+  GO/PASS；之后才建议 Fourth Stage 需求澄清/详细设计任务。）
 
 ## 第一阶段验收未完成项
 

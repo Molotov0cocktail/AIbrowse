@@ -46,7 +46,17 @@
     任务模式/AgentStatusBar/ToolCallList/ConfirmDialog（deny 默认焦点、
     elementText 不可信纯文本渲染）/停止按钮/ToolStep 历史渲染 +
     agent-run-state 纯 reducer + UI 端到端冒烟 A6-UI-01～A6-UI-12（dev/生产
-    双场景退出码 0）。A7–A8 待实现。
+    双场景退出码 0）。
+    **A7 红队矩阵与安全审计已完成（2026-08-14，离线部分）**——冒烟 8.6
+    RT-01～RT-08 + RT-11（dev/生产双场景退出码 0）+ RT-09 全仓库 grep +
+    增量安全审计 + logger 日志行伪造防御修复（normalizeLogMessage）；
+    RT-10 与真实 Provider 场景受 Provider 能力限制 NOT RUN（deepseek-v4-flash
+    对任何 tools 载荷 400——兼容性证据登记，不标记通过；`AIBROWSE_LIVE_AGENT=1`
+    门控就绪）。
+    **A8 第三阶段收尾已完成（2026-08-14）**——§9 验收逐项核对（14 项 PASS、
+    1 项 BLOCKED——真实网站 Agent smoke）+ §10 五项技术条件逐项判定 PASS，
+    **总 Exit 决策 HOLD/PENDING**（真实 Provider 缺口，不标记最终验收通过，
+    不进入 Fourth Stage）。
     纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
     （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
     核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
@@ -264,7 +274,8 @@ d:\AIbrowse\
     ├── main/
     │   ├── index.ts                           # 入口：生命周期/单实例锁/安全默认值/IPC 装配（sender 校验）/UI 窗口导航保护/冒烟
     │   ├── logger.ts                          # log/ 文件日志（脱敏、按日轮转；logger.test.ts 脱敏专项用例，S1）
-    │   ├── smoke.ts                           # AIBROWSE_SMOKE 场景（T2 核心 + T3 导航保护拦截/bounds 上报 + S3 AI 共读矩阵 1–8）
+    │   ├── smoke.ts                           # AIBROWSE_SMOKE 场景（T2 核心 + T3 导航保护拦截/bounds 上报 + S3 AI 共读矩阵 1–8
+    │   │                                      #   + 8.4 A5/8.5 A6/8.6 A7 红队矩阵 + LIVE_AGENT 门控（A7））
     │   ├── ui-navigation-policy.ts / .test.ts # UI 窗口导航保护纯函数（自身来源白名单，T3 落地，9 用例）
     │   └── browser/
     │       ├── browser-controller.ts          # 浏览器能力统一入口（接口 BrowserController + 实现类）
@@ -600,13 +611,18 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
   **威胁模型已于 2026-08-14 随 Third Stage 切换重建定稿**（`doc/stage3/threat-model.md`，
   先于任何 Browser Tool 实现）。
 
-### Third Stage Browser Agent 契约速查（定稿 2026-08-14；A1–A8 待实现，实现后回填）
+### Third Stage Browser Agent 契约速查（定稿 2026-08-14；A1–A8 已实施）
 
 > 唯一契约源 `doc/stage3/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
-> Q1–Q15 拍板与决议 #21–#30）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
+> Q1–Q15 拍板与决议 #21–#34）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
 > T-01～T-10、五层防线、红队矩阵 RT-01～RT-11、诚实边界声明）；任务 A1–A8 见
 > `doc/stage3/tasks/`。以下为速查摘要，**A1–A6 部分已于 2026-08-14 实现并经
-> `grep -n "^export"` 逐项核对**；A7–A8 待实现，实现后回填。
+> `grep -n "^export"` 逐项核对**；A7 红队矩阵与安全审计已实施（离线部分——
+> RT-01～RT-08 + RT-11 冒烟 8.6 落地、RT-09 grep 断言、RT-10 真实模型观察
+> NOT RUN）；A8 收尾验收已完成——§9 验收逐项核对 + §10 技术条件逐项判定，
+> **总 Exit 决策 HOLD/PENDING**（真实 Provider 缺口：唯一已配置
+> deepseek-v4-flash 对任何 tools 载荷 HTTP 400；待 tools 兼容 Provider +
+> 用户授权后执行 `AIBROWSE_LIVE_AGENT=1` 真实 Agent 补验）。
 
 - **tool-calling 兼容层（A1 ✅ 已实现，2026-08-14 grep 核对）**：shared/types/
   conversation.ts 新增 `ProviderToolParameter`/`ProviderTool`/`ProviderToolCall`
@@ -841,6 +857,18 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   冒烟注入点（仅 SMOKE_MODE，生产不变）：smokeAgentLimits（step-limit/
   timeout 场景）/smokeAgentSearchProvider（受控搜索夹具，委托 Provider 调用
   时读取）。
+- **红队矩阵与安全审计（A7 ✅ 已实现，2026-08-14）**：smoke.ts
+  `runRedTeamScenarios`（8.6：RT-01～RT-08 + RT-11 离线确定性，6 组敌对夹具
+  ——敌对诱导页/探测页/敌对搜索页/提交并存特征页/禁填字段页/click 越权页；
+  RT-09 全仓库 grep 断言 + 增量安全审计）+ logger 日志行伪造防御
+  （`normalizeLogMessage`——CR/LF 折叠恒单行/ANSI/控制字符按码点剔除，
+  `export function` 已核对，13 用例）+ `runLiveAgentScenarios`
+  （`AIBROWSE_LIVE_AGENT=1` 门控：Third_stage §7 场景 1–6 + RT-10 敌对页
+  （诱导目标全部指向本地安全地址）+ 停止/取消 + 零泄漏终检（Tab/pending/
+  临时目录/监听器）+ 真 Key 零暴露扫描 + 模型轮次台账；代码就绪，**未经用户
+  授权不联网调用付费 API**）。A8 验收结论：§9 逐项核对 + §10 技术条件逐项
+  判定，**总 Exit 决策 HOLD/PENDING**（真实 Provider 缺口，证据见
+  Third_stage.md §9/§10 与 progress.md）。
 
 ## 6. 常用命令
 
@@ -858,7 +886,7 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 766 用例）
+  - `npm test` — Vitest 全量测试（当前 771 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -917,7 +945,16 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
       条目非成功样式/invalid-args 回注修正/模式・会话・面板切换不串 run + 共读
       互斥/历史刷新无重复回答 + ToolStep v2 磁盘重读 7 条目/fill 页面真实写入
       - DOM・日志・会话文件零原文/敌对 elementText 纯文本截断 + 无富文本注入 +
-        无自动批准/共读回归）→ 自动退出，退出码 0 即通过；日志链见 log/）。
+        无自动批准/共读回归）→ A7 起再验证 8.6 红队矩阵 RT-01～RT-08 + RT-11
+        （6 组敌对夹具：诱导文案结构隔离/URL 白名单 + 日志行伪造防御（行首
+        时间戳前缀真实审计行数 == 工具调用数）/提交并存特征确认门/搜索结果
+        注入块隔离/密码・文件・动态变形零写入/陈旧 elementId 传递性证明/
+        system・Key 探测零暴露/确认疲劳独立确认/通用 click 越权 L3 零 DOM——
+        RT-09 grep 断言与 RT-10 真实场景见验证与报告）→ 可选真实 Provider
+        Agent 验证（`AIBROWSE_LIVE_AGENT=1` 门控，需用户授权——询问边界，
+        未授权不联网调用付费 API：Third_stage §7 场景 1–6 + RT-10 + 停止/
+        取消 + 零泄漏终检 + 真 Key 零暴露扫描 + 模型轮次台账；诱导目标全部
+        指向本地安全地址）→ 自动退出，退出码 0 即通过；日志链见 log/）。
         生产产物路径同样可跑：
         `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
         （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
@@ -1152,6 +1189,13 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
     非在途防串）+ step argsSummary 转发 + 共享 ConfirmManager 双 Service 互不
     串扰与 dispose 退订。冒烟 8.5 A6-UI-01～A6-UI-12（React DOM 事件驱动真实
     链路，见 §6）。dev + 生产双场景退出码 0。
+  - ✅ A7（2026-08-14 红→绿落地，5 新增：logger.test normalizeLogMessage——
+    日志行伪造防御：模型可控字符串携带 CR/LF/ANSI 转义/双向文本控制符/零宽
+    字符不得在日志文件中伪造新的 `[INFO] [audit]` 条目行（CR/LF 折叠为空格
+    条目恒单行、ANSI CSI/OSC 整体剔除、C0/DEL/NEL/双向/零宽/BOM/行段分隔符
+    按码点剔除、\t 保留；sanitize 凭据脱敏行为零改动，既有 8 用例原位通过），
+    基线 766 → 771；红队矩阵为冒烟 8.6（RT-01～RT-08 + RT-11）+ RT-09 grep
+    断言（无单测新增）。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。
@@ -1218,8 +1262,11 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   打开读取。
 - **Permission**：高风险动作无法无确认执行（L2 确认门）；网页文本无法提升 Tool
   权限（确定性权限纯函数）；无万能 shell/eval/filesystem 工具（永久红线 grep 断言）。
-- **Engineering**：全量验证通过；多个真实网站 Agent smoke test 通过（真实 Provider
-  可选门控，需用户提供 Key）；Agent 操作日志无敏感信息。
+- **Engineering**：全量验证通过；多个真实网站 Agent smoke test 通过（**A8 判定
+  BLOCKED**——唯一已配置 Provider deepseek-v4-flash 对任何 tools 载荷 HTTP 400，
+  无 tools 兼容 Provider；不得以离线 FakeProvider 冒烟替代；`AIBROWSE_LIVE_AGENT=1`
+  门控就绪，待 tools 兼容 Provider 配置 + 用户授权后补验）；Agent 操作日志无
+  敏感信息（离线证据通过；真 Key 零暴露扫描随真实补验执行）。
 
 ## 附 C：第三阶段完成报告格式（Third_stage.md §10）
 
