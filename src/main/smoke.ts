@@ -6447,13 +6447,16 @@ export async function runLiveAgentScenarios(
 ): Promise<void> {
   const uiWc = uiWindow.webContents;
   const { file: logFile, offsetBefore: keyScanOffset } = live.logScan;
-  const scenarioOffset = statSync(logFile).size; // 场景内偏移（模型轮次计数；8.x 离线段在其后）
+  const scenarioOffset = statSync(logFile).size; // 场景内偏移（HTTP 请求计数；8.x 离线段在其后）
+  // 每次模型 HTTP 请求 = 一条适配器「开始流式请求」日志（openai-compatible 独有，
+  // FakeProvider 不产生——真实场景内即真实请求次数；「开始生成（agent」每 run 仅一条，
+  // 不能作请求计数——2026-08-14 完整验收首跑台账缺陷修复）
   const modelRoundsSoFar = (): number =>
     readFileSync(logFile)
       .subarray(scenarioOffset)
       .toString('utf8')
       .split('\n')
-      .filter((l) => l.includes('开始生成（agent')).length;
+      .filter((l) => l.includes('开始流式请求')).length;
   const callLedger: Array<{ task: string; modelRounds: number }> = [];
   let previousRounds = 0;
   const recordRounds = (task: string): void => {
@@ -7705,7 +7708,15 @@ export async function runSmokeScenario(
     //     完整生产链路（agentAsk → AgentLoop → 13 工具注册表 → 权限/确认/审计 → 真实
     //     BrowserController/SearchProvider 受控夹具）——多步任务/确认门/取消/上限/防循环/
     //     错误回注/世代校验/fill 隐私/审计脱敏；共读既有场景（矩阵 1–12）回归在前
-    if (options.toolExecutor !== undefined && options.confirmManager !== undefined) {
+    //     ⚠️ 真实 Provider 模式（liveSmoke）跳过本段及 8.5/8.6：LIVE 装配不注册 'fake'
+    //     kind（决议 #20 生产选择唯一性），A5/A6/RT 依赖 fake 配置选择与 FakeProvider
+    //     注入——真实段之后执行会 not-configured 或误发真实请求；离线矩阵由独立 dev/
+    //     生产离线冒烟全量验证（授权执行顺序第 1/2 步），不随真实场景重复执行
+    if (
+      options.liveSmoke === undefined &&
+      options.toolExecutor !== undefined &&
+      options.confirmManager !== undefined
+    ) {
       await runAgentRuntimeScenarios(controller, options);
     }
 
@@ -7713,7 +7724,10 @@ export async function runSmokeScenario(
     //     真实 preload bridge/IPC 链路 → 生产 ConversationServiceImpl → AgentLoop →
     //     真实 BrowserController/受控 SearchProvider——状态栏/ToolCallList/ConfirmDialog/
     //     停止按钮/ToolStep 历史/终止理由/fill 隐私/敌对确认文本/共读互斥回归）
+    //     ⚠️ 真实 Provider 模式跳过（理由同 8.4：经生产服务的 FakeProvider 注入在
+    //     LIVE 模式被禁用，本段在真实段后执行会误发真实请求或 not-configured）
     if (
+      options.liveSmoke === undefined &&
       options.confirmManager !== undefined &&
       options.uiWindow !== null &&
       options.uiWindow !== undefined &&
@@ -7732,7 +7746,13 @@ export async function runSmokeScenario(
     //     隔离与不持久化/密码・文件・动态变形零写入/陈旧 elementId 世代与 Tab 销毁
     //     fail-closed/system・Key 探测零暴露/确认疲劳独立确认/通用 click 越权 L3 零
     //     DOM（RT-09 grep 审计与 RT-10 真实场景在验证与报告阶段）
-    if (options.toolExecutor !== undefined && options.confirmManager !== undefined) {
+    //     ⚠️ 真实 Provider 模式跳过（理由同 8.4；RT-10 真实场景在 runLiveAgentScenarios
+    //     场景 6 内执行）
+    if (
+      options.liveSmoke === undefined &&
+      options.toolExecutor !== undefined &&
+      options.confirmManager !== undefined
+    ) {
       await runRedTeamScenarios(controller, options);
     }
 
