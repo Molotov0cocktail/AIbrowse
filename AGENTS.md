@@ -23,8 +23,8 @@
   `doc/stage3/threat-model.md`（Prompt Injection 威胁模型已按第二阶段约定重建，
   先于任何 Browser Tool 实现）；任务 A1–A8 见 `doc/stage3/tasks/`（2026-08-14
   实施前校正：任务编号由 T1–T8 改为 A1–A8，避免与第一阶段任务 T1–T5 重名）。
-  **设计定稿与任务拆分已完成（2026-08-14），尚未开始实现**——第一个实现任务 A1
-  （tool-calling 兼容层）为硬前置：A1 验证通过前禁止引入任何 Browser Tool 实现
+  **A1 tool-calling 兼容层已实现并通过验证（2026-08-14，硬前置解除）**；
+  A2–A8 待实现。纪律保持：任何 Browser Tool 实现必须在其任务闭环内落地
   （Entry Gate「tool calling」项校正方式，见 doc/stage3/proposal.md §8）。
   核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果
   是什么」。AI 不得直接获得 Electron API、webContents、Node.js、shell 或任意
@@ -561,17 +561,31 @@ ask/abort/preview/onStreamChunk/onTurnDone}` + `config.providers.{list/set/setKe
 ### Third Stage Browser Agent 契约速查（定稿 2026-08-14；A1–A8 待实现，实现后回填）
 
 > 唯一契约源 `doc/stage3/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
-> Q1–Q15 拍板与决议 #21–#29）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
+> Q1–Q15 拍板与决议 #21–#30）；安全契约源 `doc/stage3/threat-model.md`（威胁枚举
 > T-01～T-10、五层防线、红队矩阵 RT-01～RT-11、诚实边界声明）；任务 A1–A8 见
-> `doc/stage3/tasks/`。以下为速查摘要，**尚未与实现核对**（A1 起逐步回填）。
+> `doc/stage3/tasks/`。以下为速查摘要，**A1 部分已于 2026-08-14 实现并经
+> `grep -n "^export"` 逐项核对**；A2–A8 待实现，实现后回填。
 
-- **tool-calling 兼容层（A1，硬前置）**：`ProviderRequest.tools?: ProviderTool[]`
-  （Registry 序列化，程序生成）；`ProviderEvent` 增 `{type:'toolCalls',
-toolCalls: ProviderToolCallDelta[]}`（SSE `delta.tool_calls` 按 index 分槽累积，
-  finish_reason=tool_calls 收尾；非法帧/非法 arguments → provider-error）；
-  `ProviderMessage` role 增 `'tool'`（toolCallId 关联）+ assistant toolCalls 重放；
-  `supportsToolCalling` 校准为真实值；FakeProvider 工具脚本（离线确定性）；
-  `ContextBuildInput.tools` 透传。**A1 验证通过前禁止任何 Browser Tool 实现**。
+- **tool-calling 兼容层（A1 ✅ 已实现，2026-08-14 grep 核对）**：shared/types/
+  conversation.ts 新增 `ProviderToolParameter`/`ProviderTool`/`ProviderToolCall`
+  接口；`ProviderMessage` role 增 `'tool'`（`toolCallId?` 关联）+ assistant
+  `toolCalls?` 重放；`ProviderRequest.tools?: ProviderTool[]`（程序生成，缺省
+  undefined = 无工具，共读路径请求无 tools 字段）；`ProviderEvent` 增
+  `{type:'toolCalls', toolCalls: ProviderToolCall[]}`——聚合校验完成的整组调用，
+  恰好在 done 之前（SSE `delta.tool_calls` 原始分片 `ToolCallFragment` 仅为
+  openai-compatible.ts 适配器内部状态，对外不暴露半截 arguments——决议 #30）。
+  openai-compatible.ts：`interpretSsePayload` 扩展 tool-delta/finish 帧判定、
+  `applyToolCallFragments`（index 分槽累积）/`finalizeToolCalls`（index 升序 +
+  id/name 非空 + arguments JSON.parse 且结果为对象，失败 → provider-error）、
+  `streamSseBody`（fetch 之外纯管道：解码/分帧/聚合/产出）、`mapMessages`
+  （返回 WireMessage：tool → `tool_call_id`、assistant toolCalls → 线格式
+  tool_calls 重放）、请求体透传 tools（v1 不发 tool_choice）；
+  `supportsToolCalling: true`。fake-provider.ts：`FakeChunk` 联合增
+  `FakeToolCallsChunk {kind:'toolCalls', toolCalls, delayMs?}`（整组一步产出，
+  arguments 为已拼接合法 JSON）、`FAKE_PROVIDER_METADATA.supportsToolCalling:
+true`、getLastRequest 含 tools 断言。context-builder.ts：`ContextBuildInput.
+tools?` 恒等透传（未传 tools 时请求字段缺失）。conversation-service.ts 共读
+  流出现 toolCalls 事件（供应商异常）→ fail-closed 归一化 internal。
 - **ToolRegistry（A2）**：`ToolDefinition`（name/description/parameters
   （ProviderToolParameter 子集）/baseRisk/riskLift/executor）注册表；
   `listTools(): ProviderTool[]` / `validateToolArgs`（JSON.parse 失败/未知工具/
@@ -631,7 +645,7 @@ toolCalls: ProviderToolCallDelta[]}`（SSE `delta.tool_calls` 按 index 分槽�
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 326 用例）
+  - `npm test` — Vitest 全量测试（当前 361 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -744,6 +758,19 @@ toolCalls: ProviderToolCallDelta[]}`（SSE `delta.tool_calls` 按 index 分槽�
     追加终态/磁盘历史不覆盖/替换）、context-badge-format 徽标文案映射（6：selection
     N 字/snapshot thin-degraded 提示/none 原因）。UI 端到端矩阵 1–12 由 Electron 冒烟
     覆盖（§6）；IPC/bridge 参数校验与 Key 只写不回读为 main/preload 胶水层（冒烟断言）。
+- Third Stage（规格见 doc/stage3/detailed-design.md §13.1）：
+  - ✅ A1（2026-08-14 红→绿落地，35 新增：openai-compatible 27 / fake 5 / context-builder 3；
+    另有 fake/llm 各 1 处 metadata 断言原位校准为 supportsToolCalling=true，基线 326 → 361）：
+    interpretSsePayload tool_calls 帧判定
+    （首分片/arguments 分片/同帧多工具/content 同帧/finish 同帧/非法帧矩阵）、
+    applyToolCallFragments 分槽累积 + finalizeToolCalls 聚合校验（index 升序/
+    arguments 非法 JSON 与非对象/id・name 空 → 失败）、streamSseBody 管道
+    （跨帧拼接 + finish_reason 收尾顺序：toolCalls 恰在 done 之前/同帧多工具按
+    index 升序/文本先于工具/usage 透传/非法帧与非法 arguments → provider-error/
+    finish=stop 丢弃半成品/无 [DONE] 干净结束/CRLF 归一化）、mapMessages tool 与
+    assistant tool_calls 重放、FakeProvider 工具脚本（整组产出/延迟/确定性/
+    getLastRequest tools 恒等/abort 不产出工具调用）、buildContext tools 恒等透传
+    （未传 tools 无字段）；冒烟矩阵 11 校准 + A1 工具探针。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。

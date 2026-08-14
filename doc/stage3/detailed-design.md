@@ -128,17 +128,18 @@ export interface ProviderRequest {
 
 export type ProviderEvent =
   | { type: 'delta'; text: string }
-  | { type: 'toolCalls'; toolCalls: ProviderToolCallDelta[] } // A1 新增：增量（index 关联累积）
+  // A1 新增：聚合完成、校验通过的整组工具调用——适配器在 finish_reason=tool_calls
+  // 末帧后按 index 升序产出，恰好在 done 之前；绝不携带半截 arguments。
+  | { type: 'toolCalls'; toolCalls: ProviderToolCall[] }
   | { type: 'done'; usage?: ProviderUsage }
   | { type: 'error'; error: NormalizedProviderError };
-
-export interface ProviderToolCallDelta {
-  index: number; // SSE delta.tool_calls[].index：同 index 累积拼接
-  id?: string; // 首个分片携带
-  name?: string; // 首个分片携带（含在 tool_calls 函数名分片中的空串不算）
-  argumentsFragment: string; // 增量片段（字符串拼接，完成时整体 JSON.parse）
-}
 ```
+
+> SSE `delta.tool_calls` 的原始分片形状（index/id/name/arguments 片段）**只作为
+> OpenAI-compatible 适配器内部解析状态**（openai-compatible.ts 模块内类型，不导出进
+> 共享契约）：对外仅输出聚合完成、通过校验的 `ProviderToolCall[]`（2026-08-14 A1
+> 实施前契约校准——§2.1 原写 `ProviderToolCallDelta[]` 与 §3.1 聚合语义矛盾，已按
+> §3.1 语义校准，见 §15 决议 #30）。
 
 ### 2.2 Agent 类型（shared/types/agent.ts，A2/A5）
 
@@ -228,14 +229,17 @@ export type AgentRunDoneEvent = TurnDoneEvent & { run?: AgentRunSummary }; // �
 
 - 请求体：`tools?: ProviderTool[]` 序列化（`{type:'function', function:{name,
 description, parameters}}` 直接透传 IR）；v1 不发送 tool_choice（默认 auto）。
-- SSE 解析扩展：`choices[0].delta.tool_calls` 数组——按 `index` 分槽累积
+- SSE 解析扩展：`choices[0].delta.tool_calls` 数组——原始分片（index/id/name/
+  arguments 片段）为**适配器内部解析状态**（不对外暴露），按 `index` 分槽累积
   `id/name/arguments`（arguments 为字符串分片拼接）；`finish_reason === 'tool_calls'`
-  的末帧后，将累积槽按 index 升序产出 `{type:'toolCalls', toolCalls}` 事件
-  （恰好在 done 之前）；同帧可同时含 delta.content 与 delta.tool_calls
-  （先文本后工具，两者不互斥）。
-- **解析失败处理**：tool_calls 帧 JSON 非法/缺 index/arguments 拼接后 JSON.parse
-  失败 → 流以 error(provider-error) 终结（不产出半截工具调用——模型轮次不可用
-  半成品参数，与「工具错误不被误认为成功」同一原则）。
+  的末帧后，将累积槽按 index 升序**聚合校验**（id/name 非空、arguments 整体
+  JSON.parse 成功且结果为对象）产出 `{type:'toolCalls', toolCalls:
+ProviderToolCall[]}` 事件（恰好在 done 之前，聚合后不残留内部状态）；同帧可同时
+  含 delta.content 与 delta.tool_calls（先文本后工具，两者不互斥），也可同帧携带
+  finish_reason（先应用分片再收尾）。
+- **解析失败处理**：tool_calls 帧 JSON 非法/缺 index/分片结构非法/arguments 拼接后
+  JSON.parse 失败或结果非对象 → 流以 error(provider-error) 终结（不产出半截工具
+  调用——模型轮次不可用半成品参数，与「工具错误不被误认为成功」同一原则）。
 - mapMessages 扩展：IR role='tool' → 线格式 `{role:'tool', tool_call_id,
 content}`；IR assistant 消息含 toolCalls → 线格式重放
   `{role:'assistant', tool_calls:[{id,type:'function',function:{name,
@@ -817,6 +821,13 @@ onAgentRunDone`（退订函数，既有 eventRelay 模式）。
     代价（如实登记）：非提交类普通按钮不可点击（宁禁勿放，Third_stage.md §3.5
     授权本阶段内调整分类）；允许列表目标的页内 JS 副作用为威胁模型 §5 语义层
     残余风险。
+30. **ProviderEvent.toolCalls 聚合语义校准（2026-08-14，A1 实施前）**：§2.1 原将
+    `ProviderEvent.toolCalls` 写为 `ProviderToolCallDelta[]`，与 §3.1「按 index
+    聚合、finish_reason 收尾后输出完整工具调用、恰好在 done 之前」矛盾。校准：
+    SSE 原始分片仅为 OpenAI-compatible 适配器内部解析状态（不进入共享契约），
+    对外 `ProviderEvent.toolCalls` 输出聚合校验完成的 `ProviderToolCall[]`
+    （id/name 非空、arguments 整体 JSON.parse 成功且结果为对象），绝不暴露半截
+    arguments 给调用方（§2.1/§3.1 已同步）。
 
 ## 16. 实现顺序与范围边界（A1–A8 映射）
 

@@ -146,9 +146,6 @@ L3 敏感动作（click 允许列表 + fail-closed + 执行器层复核，无执
 以上四类登记为「已接受的剩余设计风险」，Third Stage 验收不要求消除；Fourth Stage
 前按 ROADMAP.md 阶段切换原则重新评估。
 
-以上三类登记为「已接受的剩余设计风险」，Third Stage 验收不要求消除；Fourth Stage
-前按 ROADMAP.md 阶段切换原则重新评估。
-
 ## 6. 与既有安全边界的兼容声明
 
 - 第一阶段红线（远程网页隔离/nodeIntegration=false/contextIsolation/sandbox=true/

@@ -24,7 +24,7 @@
 - [ ] 真实网站 Agent 冒烟复核（已有 A7 证据则引用并复核）
 - [ ] §10 Exit Gate 逐项判定（无频繁死循环/Tool API 稳定可复用/Permission 可扩展/
       注入红队基础测试/无放宽网页权限换成功率的技术债）
-- [ ] Prompt Injection 残余风险分类校准（威胁模型 §5 三类）
+- [ ] Prompt Injection 残余风险分类校准（威胁模型 §5 四类）
 - [ ] README / progress.md / AGENTS.md / Third_stage.md / 任务文档同步
 - [ ] 全量回归（test/typecheck/lint/format:check/build/冒烟全场景）→ 提交推送
 

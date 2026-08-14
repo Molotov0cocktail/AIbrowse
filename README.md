@@ -7,8 +7,8 @@
 > L1 自动显著展示 / L2 用户确认 / L3 禁止）、操作可见性与审计日志。契约源
 > `doc/stage3/detailed-design.md`；安全契约源 `doc/stage3/threat-model.md`
 > （Prompt Injection 威胁模型已重建定稿，先于任何 Browser Tool 实现）。
-> **设计定稿与任务拆分已完成（2026-08-14），尚未开始实现**（任务 A1–A8；
-> 2026-08-14 实施前校正：任务编号由 T1–T8 改为 A1–A8 避免与第一阶段任务 T1–T5 重名、
+> **A1 tool-calling 兼容层已实现（2026-08-14）；A2–A8 待实现**（任务编号
+> 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务 T1–T5 重名、
 > 红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，见
 > `doc/stage3/proposal.md` §11）。
 > 核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
@@ -28,13 +28,13 @@
   多网站共读验证）。用户独立复验（2026-08-14）发现的 4 项非阻塞测试基础设施/
   文档缺陷已修复并全量回归（红态退出码 1 → 绿态 0）。证据见 `Second_stage.md`
   §9/§10 与 `doc/tasks/progress.md`。
-- 🔨 **第三阶段（Browser Agent）设计定稿与任务拆分完成（2026-08-14）**：Entry Gate
-  逐项核验通过（「tool calling」项经循环式门槛判定记录校正——该能力属第三阶段自身
-  交付物，校正为 A1 硬前置：A1 验证通过前禁止引入任何 Browser Tool 实现，判定证据
-  见 `doc/stage3/proposal.md` §8）；Prompt Injection 威胁模型重建定稿
-  （`doc/stage3/threat-model.md`）；契约定稿 `doc/stage3/detailed-design.md`；
-  任务 A1–A8 见 `doc/stage3/tasks/`（**下一个推荐任务：A1**）。**尚未开始实现，
-  不引入任何 Browser Tool。**
+- 🔨 **第三阶段（Browser Agent）进行中（2026-08-14）**：Entry Gate 逐项核验通过
+  （「tool calling」项经循环式门槛判定记录校正——该能力属第三阶段自身交付物，校正为
+  A1 硬前置，判定证据见 `doc/stage3/proposal.md` §8）；Prompt Injection 威胁模型
+  重建定稿（`doc/stage3/threat-model.md`）；契约定稿 `doc/stage3/detailed-design.md`。
+  **A1 tool-calling 兼容层已完成**（Provider 类型扩展 + SSE tool_calls 聚合解析 +
+  FakeProvider 工具脚本 + ContextBuilder tools 透传，全量验证通过，硬前置解除）；
+  任务 A2–A8 待实现（**下一个推荐任务：A2**），仍未引入任何 Browser Tool。
 
 ## 技术栈（实际落地版本）
 
@@ -90,7 +90,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 326 用例）                    |
+| `npm test`                        | Vitest 全量测试（当前 361 用例）                    |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -153,9 +153,10 @@ src/
 │   │              #   （第三阶段 A3 规划：interaction-script 交互注入）
 │   └── ai/        # （第二阶段已实现）ConversationService / ConversationStore /
 │                  #   ContextBuilder + budget / CredentialStore / ConfigStore /
-│                  #   provider（LLMProvider/OpenAI-compatible/FakeProvider/error-normalize）
+│                  #   provider（LLMProvider/OpenAI-compatible/FakeProvider/error-normalize；
+│                  #   A1 ✅ tool-calling 兼容层：tools/SSE tool_calls 聚合/工具脚本）
 │                  # （第三阶段规划）agent/（AgentLoop 等）+ tools/（Registry/executor）
-│                  #   + permission/ + confirm-manager + audit-log + search/（A1–A5）
+│                  #   + permission/ + confirm-manager + audit-log + search/（A2–A5）
 ├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
 │                  #   第三阶段 A6 规划 agent 通道）
 ├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏；
@@ -173,12 +174,15 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 326 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 361 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（46，页面视为敌手）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
 （system 恒等/块闭合转义/selection 独占）（72）、会话消息校验与编排（57）、
-UI 纯 reducer 与徽标文案（22）、logger 脱敏密钥专项用例。
+UI 纯 reducer 与徽标文案（22）、logger 脱敏密钥专项用例；
+第三阶段 A1 新增（35）：SSE tool_calls 聚合解析（分槽累积/收尾顺序/非法帧与非法
+arguments → provider-error）、mapMessages tool 与 tool_calls 重放、FakeProvider
+工具脚本、ContextBuilder tools 恒等透传。
 Electron 行为由冒烟自检真实启动验证（见上）。约定见 `AGENTS.md` §7。
 
 ## 已知限制

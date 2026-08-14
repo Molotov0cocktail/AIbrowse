@@ -47,5 +47,5 @@
 ## 完成定义
 
 - 单测全绿；全量回归通过；冒烟离线矩阵（既有 + A-01～A-09）退出码 0；
-  终止理由四种（step-limit/timeout/loop-detected/no-progress/cancelled）均有
+  终止理由五种（step-limit/timeout/loop-detected/no-progress/cancelled）均有
   断言；progress.md 标记 A5 ✅ 并推荐 A6。

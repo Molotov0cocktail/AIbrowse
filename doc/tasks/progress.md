@@ -17,9 +17,11 @@
   任务 A1–A8（每任务 = 一个可验证闭环；**2026-08-14 实施前校正**：编号由 T1–T8
   改为 A1–A8 避免与第一阶段任务 T1–T5 重名，红队编号改 RT-01～RT-11，权限契约
   收紧为 click 确定性允许列表 + fail-closed——见 proposal §11 校正记录）。
-  **尚未开始实现**：A1–A8 全部待开始，**不引入任何 Browser Tool**；下一个推荐
-  任务 = **A1 tool-calling 兼容层**（硬前置：A1 验证通过前禁止任何 Browser Tool
-  实现）。
+  **A1 tool-calling 兼容层已完成（2026-08-14，硬前置解除）**：ProviderRequest/
+  Event/Message 类型扩展、适配器 tools/SSE tool_calls 聚合解析（契约校准决议 #30）、
+  FakeProvider 工具脚本、ContextBuilder tools 透传——全量验证通过（见下）。
+  **仍未引入任何 Browser Tool**；下一个推荐任务 = **A2 Tool Registry**（A2 起
+  才允许落地第一个 Browser Tool 实现，且只读/导航工具优先）。
 - 前置状态：第一阶段 Exit Gate 通过（2026-08-13，First_stage.md §十四）；
   Second Stage Exit Gate 通过（2026-08-13 判定 + 2026-08-14 用户独立复验，4 项
   非阻塞缺陷已修复并全量回归，红态退出码 1 → 绿态 0；证据见 Second_stage.md
@@ -47,7 +49,7 @@
 | S6   | 第二阶段收尾：验收清单核对 + Exit Gate 判定 + 文档同步（契约回填 AGENTS.md §5）                  | ✅   | 2026-08-13 完成（§9 逐项证据 + §10 Exit Gate 通过 + 真实 Provider 多网站验证，见下）；任务文档 doc/stage2/tasks/S6-finalize-acceptance.md                           |
 | 修复 | 独立复验发现项修复闭环（Tab 状态自清理 / 表格内容依赖证据 / Key 扫描窗口 / README 状态）         | ✅   | 2026-08-14 完成（独立复验后定向修复，不切换阶段；4 项发现 + 修复证据见下）                                                                                          |
 
-| A1 | tool-calling 兼容层（硬前置）：ProviderRequest/Event/Message 扩展 + 适配器 tools/SSE tool_calls + FakeProvider 工具脚本 | ⏳ | 契约 §2.1/§3；任务文档 doc/stage3/tasks/A1-tool-calling-layer.md；**验证通过前禁止任何 Browser Tool 实现** |
+| A1 | tool-calling 兼容层（硬前置）：ProviderRequest/Event/Message 扩展 + 适配器 tools/SSE tool_calls + FakeProvider 工具脚本 | ✅ | 2026-08-14 完成（见下）；契约 §2.1/§3 + 决议 #30；任务文档 doc/stage3/tasks/A1-tool-calling-layer.md |
 | A2 | Tool Registry + 权限分级与确认状态机（click 确定性允许列表 + fail-closed）+ 审计日志（接线既有只读/导航工具 8 个） | ⏳ | 契约 §4/§7/§10；任务文档 doc/stage3/tasks/A2-tool-registry-permission-audit.md |
 | A3 | 浏览器交互能力：scroll/click/fill/find + click 语义元数据 + elementId 生命周期验证 + click 执行器层白名单复核 | ⏳ | 契约 §5；任务文档 doc/stage3/tasks/A3-browser-interaction.md |
 | A4 | SearchProvider（Bing 页面实现 + 统一结果结构 + 降级）+ search.web 工具 | ⏳ | 契约 §6；任务文档 doc/stage3/tasks/A4-search-provider.md |
@@ -61,6 +63,42 @@
 > 编号一律不变。
 
 ## 最近验证结果（2026-08-14）
+
+- **A1 tool-calling 兼容层（2026-08-14，第一个实现闭环，硬前置解除）**：
+  步骤 0 独立核对——HEAD `525fae8` = Gitee/GitHub 双远程 HEAD、工作区干净。
+  **① 契约校准（先于编码，决议 #30）**：detailed-design §2.1 原写
+  `ProviderEvent.toolCalls: ProviderToolCallDelta[]` 与 §3.1 聚合语义矛盾——
+  校准为 SSE 原始分片仅作适配器内部解析状态（openai-compatible.ts 模块内
+  `ToolCallFragment`/`ToolCallSlot`，不进共享契约），对外 `ProviderEvent.toolCalls`
+  输出聚合校验完成的 `ProviderToolCall[]`（id/name 非空、arguments 整体
+  JSON.parse 成功且结果为对象），恰好在 done 之前，绝不暴露半截 arguments；
+  §2.1/§3.1/§15 已同步，AGENTS.md §5 契约速查同步校准。**② 文档残留校正**：
+  threat-model §5「以上三类」重复段删除（保留四类）；A8 任务文档「三类」→四类、
+  progress.md 风险与限制残余风险「三类」→四类（新增 click 允许列表目标页内 JS
+  副作用）；A5 任务文档「终止理由四种」→五种（实列 step-limit/timeout/
+  loop-detected/no-progress/cancelled）。**③ 红→绿**：先写失败用例——
+  4 个 A1 相关测试文件红态 **31 failed / 64 passed**（全部为新增用例与 2 处
+  元数据校准断言，既有用例零改动），实现后全量 **361/361**（新增 35 用例：
+  openai-compatible 27——interpret tool_calls 帧判定/分槽累积/聚合校验/SSE
+  管道收尾顺序/非法帧与非法 arguments → provider-error/mapMessages tool 与
+  tool_calls 重放；fake 5——工具脚本整组产出/延迟/确定性/getLastRequest
+  tools 恒等/abort 不产出；context-builder 3——tools 恒等透传/未传无字段）。
+  实现：shared 类型扩展（ProviderTool/ProviderToolCall/tool 角色/tools 字段）+
+  openai-compatible 适配器（请求体 tools 透传、v1 不发 tool_choice、SSE 管道
+  streamSseBody 抽出可单测、supportsToolCalling=true）+ FakeProvider 工具脚本
+  （kind:'toolCalls' 整组产出）+ ContextBuilder tools 恒等透传 +
+  conversation-service 共读流 toolCalls 事件 fail-closed 归一化 internal
+  （事件判别联合扩展所致最小改动）。**④ 冒烟**：矩阵 11 断言校准为「未传
+  tools → 请求无 tools 字段」（`'tools' in request === false`，tool_calls
+  字段断言保留）；S3 场景新增 A1 工具探针（FakeProvider 脚本级：事件严格按
+  脚本顺序 delta → toolCalls → delta → done + getLastRequest 保留 tools 恒等）。
+  冒烟双场景退出码 0（dev 离线全矩阵 + 生产产物），日志实证 A1 探针与矩阵 11
+  校准断言通过。**⑤ 验证与终检**：test 361/361 · typecheck · lint ·
+  format:check · build 全绿；红线 grep（无工具执行/交互注入/万能工具代码）、
+  敏感信息扫描、diff 终检零命中；SYSTEM_PROMPT 未改动、共读路径请求无 tools
+  字段保持；清理本次单测产生的根目录杂项日志。**未调用任何付费 Provider、
+  未输出/索取 API Key。** 红线遵守：无任何 Browser Tool/Registry/AgentLoop/
+  SearchProvider/UI/IPC 改动。
 
 - **第三阶段设计实施前校正（2026-08-14，独立纯文档闭环，零代码改动，不实现 tool
   calling 与任何 Browser Tool）**：① 步骤 0 独立核对——HEAD `0fb7047` =
@@ -565,7 +603,8 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   **最迟复核点已执行**：2026-08-14 随 Third Stage 切换**威胁模型重建定稿**
   （`doc/stage3/threat-model.md`）——「网页文本诱导调用工具」成为真实攻击面，
   防线升级为五层（结构/能力/决策/审计/运行时）+ 红队矩阵 RT-01～RT-11（A7 实施）；
-  第三阶段语义层残余风险三类（诱导式工具参数/确认疲劳/低风险动作累积滥用）正式登记
+  第三阶段语义层残余风险四类（诱导式工具参数/确认疲劳/低风险动作累积滥用/click
+  允许列表目标的页内 JS 副作用，2026-08-14 实施前校正新增）正式登记
   为「已接受的剩余设计风险」（threat-model §5），不分配 R 编号；Fourth Stage 前按
   ROADMAP.md 阶段切换原则重新评估。
 
@@ -575,14 +614,19 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **A1 tool-calling 兼容层（硬前置，新对话 = 一个可验证闭环）**：扩展 ProviderRequest/
-  ProviderEvent/ProviderMessage（tools/toolCalls/role='tool'）、OpenAI-compatible
-  适配器（请求体 tools + SSE tool_calls 增量解析 + mapMessages 重放）、
-  supportsToolCalling 校准为真实值、FakeProvider 确定性工具脚本、ContextBuilder
-  tools 透传。任务文档 `doc/stage3/tasks/A1-tool-calling-layer.md`；契约
-  `doc/stage3/detailed-design.md` §2.1/§3。**红线**：本任务严禁新增任何 Browser
-  Tool 实现/交互注入/UI/IPC 改动；共读路径行为不变（未传 tools 时请求无 tools
-  字段，矩阵 11 断言保持）；A1 验证通过前禁止开始 A2–A4 的任何 Browser Tool 实现。
+- **A2 Tool Registry + 权限分级与确认状态机 + 审计日志（新对话 = 一个可验证闭环）**：
+  `ToolDefinition` 注册表（listTools/validateToolArgs 确定性校验：JSON.parse 失败/
+  未知工具/缺必填/类型/enum/未知键/长度上限/tabId UUID 形状/elementId el-N 形状）
+  - permission-policy 决策纯函数（13 工具 × 条件判定全表：click 确定性允许列表各
+    分支/submit 升级 L2/非允许列表与语义缺失 fail-closed L3/password・file 禁止/
+    URL scheme）+ confirm-manager（pending 单并发/approve/deny/未知 id/取消作废）+
+    audit-log（每工具调用恰好一条、fill 值只记长度）+ 接线首批 8 个只读/导航工具
+    （get_tabs/get_active_tab/read/open/navigate/back/forward/reload，只经
+    BrowserController）。任务文档 `doc/stage3/tasks/A2-tool-registry-permission-audit.md`；
+    契约 `doc/stage3/detailed-design.md` §4/§7/§10 + threat-model §3.2/§3.3/§3.4。
+    **红线**：A1 已验证通过、硬前置解除；但 A2 只落地只读/导航工具——find/scroll/
+    click/fill 交互能力属 A3、SearchProvider 属 A4，不得提前实现；无万能工具
+    grep 断言保持；权限判定为确定性纯函数（模型只是提议者）。
 
 ## 第一阶段验收未完成项
 
