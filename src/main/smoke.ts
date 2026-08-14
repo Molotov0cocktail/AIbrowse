@@ -6676,14 +6676,15 @@ export async function runLiveAgentScenarios(
     }
 
     // —— 场景 3：打开两个页面并总结差异 ——
-    // A7 补验校准（2026-08-14，真实验收首跑证据）：真实模型完成两页打开与读取后仍
-    // 持续以不同签名 find/scroll/read 过度探索，12 步上限安全终止（防循环未触发——
-    // 签名均不同；步数上限按设计生效）。属模型行为，任务文案校准为显式限定探索
-    // 深度（每页读取一遍即总结），断言不降低（≥2 browser_open + 非空总结）。
+    // A7 补验校准（2026-08-14，真实验收第 3/4 次执行证据）：① 模型以不同签名
+    // find/scroll/read 过度探索达 12 步上限（运行时边界按设计生效）——任务文案显式
+    // 限定探索深度；② 模型改用 browser_navigate 而非 browser_open——但本场景验收
+    // 要求证明多 Tab 页面身份与上下文不串页（用户验收规格），任务文案按场景 1 同款
+    // 明确「在新标签页打开」；断言不降低（≥2 browser_open + 非空总结）。
     {
       await freshSession();
       await sendTask(
-        '打开 Electron 的 BrowserView 与 WebContentsView 两个官方文档页面，各读取一遍主要内容后直接比较两者的区别并总结，不要深入探索细节',
+        '在新标签页分别打开 Electron 的 BrowserView 与 WebContentsView 两个官方文档页面，各读取一遍主要内容后直接比较两者的区别并总结，不要深入探索细节',
       );
       await waitTerminal('场景 3');
       recordRounds('场景 3：两页对比总结（open ×2 + read + 回答）');
