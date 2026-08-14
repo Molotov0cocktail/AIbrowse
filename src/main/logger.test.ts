@@ -47,3 +47,22 @@ describe('sanitize — 既有模式回归', () => {
     expect(out).not.toContain('deadbeef');
   });
 });
+
+describe('sanitize — 审计日志形态脱敏（A2 扩展，audit-log 输出经既有 sanitize 链）', () => {
+  it('审计条目形态消息中的 sk- Key 与 apiKey 键值对零暴露', () => {
+    const auditLine =
+      'tool-call（requestId=r，toolCallId=c，tool=browser.open，args={url:https://x/?q=sk-proj-abcdefgh12345678}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）';
+    const out = sanitize(auditLine);
+    expect(out).not.toMatch(/sk-proj/i);
+    expect(out).toContain('sk-***');
+    const apiKeyLine =
+      'tool-call（requestId=r，toolCallId=c，tool=browser.fill，args={elementId:el-1,text=len:9}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）';
+    expect(sanitize(apiKeyLine)).toBe(apiKeyLine);
+  });
+
+  it('审计条目常规内容（URL 查询串/len=N 摘要）不被误伤', () => {
+    const line =
+      'tool-call（requestId=r，toolCallId=c，tool=browser.open，args={url:https://example.com/path?q=1&x=2}，decision=auto-visible，ok=true，耗时=3ms，errorCode=无）';
+    expect(sanitize(line)).toBe(line);
+  });
+});

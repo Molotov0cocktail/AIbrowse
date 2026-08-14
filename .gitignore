@@ -8,6 +8,8 @@ release/
 
 # 运行日志（运行时产物，绝不入库）
 log/
+# 单测在 logger 未初始化时触发的 CWD 日志（既有 provider 告警用例等，运行测试即重现）
+/aibrowse-*.log
 
 # 环境变量与密钥（本地文件，绝不入库）
 .env

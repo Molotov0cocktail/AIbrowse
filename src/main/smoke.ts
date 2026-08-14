@@ -15,6 +15,8 @@ import type { PageSnapshot } from '../shared/types/browser';
 import { PERSIST_PARTITION } from './browser/session-manager';
 import { SEARCH_ENGINE_URL } from '../shared/url';
 import { getCurrentLogFilePath, logError, logInfo } from './logger';
+import { listTools } from './ai/tools/tool-registry';
+import type { ToolExecutor } from './ai/tools/tool-executor';
 import { ConversationServiceImpl } from './ai/conversation-service';
 import { ConversationStore, parseMessagesFile } from './ai/conversation-store';
 import { ConfigStore } from './ai/config-store';
@@ -78,6 +80,7 @@ export interface SmokeOptions {
   aiSmokeDir?: string; // S4：冒烟模式 AI 子系统数据目录（UI 端到端矩阵断言/清理用）
   liveSmoke?: LiveProviderSmoke; // S5：真实 Provider 场景（AIBROWSE_LIVE_PROVIDER=1 时注入）
   liveSites?: boolean; // S6：真实 Provider 多网站共读验证（AIBROWSE_LIVE_SITES=1 时启用）
+  toolExecutor?: ToolExecutor; // A2：工具层探针（注册表/校验/权限/执行/审计全链路）
 }
 
 // ---------- S5：真实 Provider 可选冒烟（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY） ----------
@@ -2898,6 +2901,89 @@ export async function runSmokeScenario(
         5000,
         '关闭网页标签页后应回到单个标签页',
       );
+    }
+
+    // 8.1 A2 工具层探针（离线确定性）：注册表已装配 8 个只读/导航工具，经 ToolExecutor
+    //     走真实 BrowserController 验证 校验→权限→执行→审计 全链路；审计条目经日志
+    //     字节切片断言每次调用恰好一条（audit-log 契约 §10.1）。
+    if (options.toolExecutor !== undefined) {
+      const executor = options.toolExecutor;
+      const toolCtx = { browser: controller, runId: 'smoke-a2' };
+      const toolSignal = new AbortController().signal;
+      const auditLogFile = getCurrentLogFilePath();
+      const auditOffsetBefore = statSync(auditLogFile).size;
+      const executeTool = (id: string, name: string, args: string) =>
+        executor.execute({ id, name, arguments: args }, toolCtx, toolSignal);
+
+      const listed = listTools();
+      assert(listed.length === 8, `工具注册表应恰好装配 8 个 A2 工具（实际 ${listed.length}）`);
+      const expectedNames = [
+        'browser.back',
+        'browser.forward',
+        'browser.get_active_tab',
+        'browser.get_tabs',
+        'browser.navigate',
+        'browser.open',
+        'browser.read',
+        'browser.reload',
+      ]
+        .sort()
+        .join(',');
+      assert(
+        listed
+          .map((t) => t.function.name)
+          .sort()
+          .join(',') === expectedNames,
+        '注册表工具名集合与 A2 首批 8 工具不符',
+      );
+      assert(
+        JSON.stringify(listTools()) === JSON.stringify(listed),
+        'listTools 两次输出应恒等（确定性）',
+      );
+
+      const tabsResult = await executeTool('smoke-a2-1', 'browser.get_tabs', '{}');
+      assert(tabsResult.ok, 'browser.get_tabs 应执行成功');
+      assert(tabsResult.content.includes('标签页'), 'get_tabs 结果应含标签页摘要');
+
+      const readResult = await executeTool('smoke-a2-2', 'browser.read', '{}');
+      assert(readResult.ok, 'browser.read 应执行成功（活动标签页实时采集）');
+
+      const beforeOpen = (await controller.getTabs()).length;
+      const forbiddenOpen = await executeTool(
+        'smoke-a2-3',
+        'browser.open',
+        '{"url":"javascript:alert(1)"}',
+      );
+      assert(
+        !forbiddenOpen.ok && forbiddenOpen.errorCode === 'forbidden',
+        '非 http/https URL 应被权限层 forbidden',
+      );
+      assert((await controller.getTabs()).length === beforeOpen, 'forbidden 路径不得创建标签页');
+
+      const invalidArgs = await executeTool(
+        'smoke-a2-4',
+        'browser.navigate',
+        '{"tabId":"not-a-uuid","url":"https://example.com/"}',
+      );
+      assert(
+        !invalidArgs.ok && invalidArgs.errorCode === 'invalid-args',
+        '非法 tabId 应被校验层 invalid-args',
+      );
+
+      const unknownTab = await executeTool(
+        'smoke-a2-5',
+        'browser.read',
+        '{"tabId":"00000000-0000-4000-8000-000000000000"}',
+      );
+      assert(
+        !unknownTab.ok && unknownTab.errorCode === 'execution-failed',
+        '未知 tabId 读取应 execution-failed（失败安全返回）',
+      );
+
+      const auditTail = readFileSync(auditLogFile).subarray(auditOffsetBefore).toString('utf8');
+      const auditCount = auditTail.split('[audit] tool-call').length - 1;
+      assert(auditCount === 5, `5 次工具调用应恰好 5 条审计（实际 ${auditCount}）`);
+      logInfo('smoke', 'A2 工具层探针通过（注册表 8 工具/listTools 恒等/校验/权限/执行/审计链路）');
     }
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
