@@ -164,6 +164,19 @@ const SQL_DELETE_FTS = `INSERT INTO sources_fts (sources_fts, rowid, name, url, 
   VALUES ('delete', ?, ?, ?, ?, ?)`;
 const SQL_UPSERT_USAGE = `INSERT INTO usage_events (source_id, outcome, recorded_at) VALUES (?, ?, ?)
   ON CONFLICT(source_id) DO UPDATE SET outcome = excluded.outcome, recorded_at = excluded.recorded_at`;
+// B5（决议 #71）：分组浏览——软删过滤 + 确定性排序（名 NOCASE + id 收尾）+ 有界分页
+const SQL_LIST_GROUPS = `SELECT * FROM source_groups WHERE deleted_at IS NULL
+  ORDER BY name COLLATE NOCASE ASC, id ASC LIMIT ? OFFSET ?`;
+const SQL_COUNT_GROUPS = 'SELECT COUNT(*) AS n FROM source_groups WHERE deleted_at IS NULL';
+// B5（决议 #72）：同 origin「可能相关」有界读取——origin 作用域条目（键=origin 精确）
+// 与 page 条目（键=origin 路径前缀，LIKE 转义只作数据）；排除目标键（精确重复非「相关」
+// 页面）；软删过滤；确定性排序 + LIMIT 上限（由服务层传 QUICK_ADD_RELATED_MAX=5）。
+const SQL_FIND_RELATED = `SELECT s.*, g.name AS group_name FROM sources s
+  LEFT JOIN source_groups g ON g.id = s.group_id
+  WHERE s.deleted_at IS NULL
+    AND (s.canonical_key = ? OR s.canonical_key LIKE ? ESCAPE '\\')
+    AND s.canonical_key <> ?
+  ORDER BY s.created_at DESC, s.id ASC LIMIT ?`;
 // groupId 三态：mode 0 = 不过滤；mode 1 = 未分组（group_id IS NULL）；mode 2 = 指定组
 // excludeBlocked：B3（决议 #58）agent 视角参数化开关（?=0 不过滤 / 1 过滤 blocked）
 const SQL_LIST_SOURCES = `SELECT s.*, g.name AS group_name FROM sources s
@@ -325,6 +338,24 @@ export class SourceRepository {
     return this.handle
       .prepare(SQL_SEARCH_SOURCES)
       .all(query, prefix, query, prefix, query, prefix, query, query, limit) as SourceListRow[];
+  }
+
+  // B5（决议 #71）：分组浏览最小有界读取（编译期常量 SQL + 参数绑定；排序确定性）
+  listGroups(limit: number, offset: number): GroupRow[] {
+    return this.handle.prepare(SQL_LIST_GROUPS).all(limit, offset) as GroupRow[];
+  }
+
+  countGroups(): number {
+    const row = this.handle.prepare(SQL_COUNT_GROUPS).get() as { n: number };
+    return row.n;
+  }
+
+  // B5（决议 #72）：同 origin「可能相关」有界读取（≤QUICK_ADD_RELATED_MAX）；
+  // origin 前缀 LIKE 转义只作数据；排除精确重复键；绝不写入/合并。
+  findRelatedByOrigin(origin: string, excludeCanonicalKey: string, limit: number): SourceListRow[] {
+    return this.handle
+      .prepare(SQL_FIND_RELATED)
+      .all(origin, escapeLikePrefix(`${origin}/`), excludeCanonicalKey, limit) as SourceListRow[];
   }
 
   // --- 写（调用方事务内） ---

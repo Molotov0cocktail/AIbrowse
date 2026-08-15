@@ -45,6 +45,7 @@ import { SourceSearchIndex } from './repository/source-search-index';
 import {
   RepositoryError,
   SourceRepository,
+  rowToGroup,
   rowToSource,
   type SourceFieldValues,
   type SourceListRow,
@@ -54,9 +55,13 @@ import type {
   ManualAddInput,
   ManualPatch,
   ManualWriteResult,
+  QuickAddResult,
+  Source,
   SourceChangeResult,
   SourceChangeSet,
   SourceErrorCode,
+  SourceGroup,
+  SourceGroupsResult,
   SourceListItem,
   SourceListResult,
   SourcePreviewResult,
@@ -70,12 +75,15 @@ import type {
   UndoResult,
   UndoableChange,
 } from '../../shared/types/sources';
+import { QUICK_ADD_RELATED_MAX } from '../../shared/types/sources';
 
 export const CONFIRM_TOKEN_TTL_MS = 300_000; // 决议 #56：TTL 300s
 const SEARCH_LIMIT_DEFAULT = 10;
 const SEARCH_LIMIT_MAX = 10;
 const LIST_PAGE_SIZE_DEFAULT = 20;
 const LIST_PAGE_SIZE_MAX = 20;
+const GROUPS_PAGE_SIZE_DEFAULT = 20; // B5 决议 #71：分组浏览分页有界
+const GROUPS_PAGE_SIZE_MAX = 20;
 
 const USAGE_OUTCOMES: readonly SourceUsageOutcome[] = [
   'unknown',
@@ -256,6 +264,66 @@ export class SourceServiceImpl implements SourceService {
       return { ok: true, source: view };
     } catch (err) {
       return this.unavailable('get', err);
+    }
+  }
+
+  // B5 决议 #71：分组浏览最小有界读取路径——分页 pageSize ≤20、确定性排序
+  // （Repository 编译期常量 SQL：名 NOCASE + id 收尾）、软删过滤；非法输入安全返回。
+  async listGroups(opts: { page: number; pageSize?: number }): Promise<SourceGroupsResult> {
+    if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    const page = opts?.page;
+    if (typeof page !== 'number' || !Number.isInteger(page) || page < 0) {
+      return { ok: false, errorCode: 'source-invalid-change' };
+    }
+    const pageSize = opts?.pageSize === undefined ? GROUPS_PAGE_SIZE_DEFAULT : opts.pageSize;
+    if (!Number.isInteger(pageSize) || pageSize < 1)
+      return { ok: false, errorCode: 'source-invalid-change' };
+    if (pageSize > GROUPS_PAGE_SIZE_MAX) return { ok: false, errorCode: 'source-limit' };
+    try {
+      const total = this.repo.countGroups();
+      const groups: SourceGroup[] = this.repo
+        .listGroups(pageSize, page * pageSize)
+        .map((row) => rowToGroup(row));
+      return { ok: true, page, pageSize, total, groups };
+    } catch (err) {
+      return this.unavailableGroups(err);
+    }
+  }
+
+  // B5 决议 #72：当前页快速添加（服务入口——main 读取活动 Tab URL 后调用，renderer
+  // 不提供 URL/标题）。仅 http/https（normalizeSourceUrl 拒绝其余）；page scope +
+  // metadata 默认（手工通道缺省，决议 #52）；精确重复 → duplicate（唯一约束语义，
+  // 不自动覆盖/合并）；同 origin 不同页面 → ≤5 条「可能相关」有界提示。
+  async quickAddPage(rawUrl: string): Promise<QuickAddResult> {
+    if (this.disposed) return { status: 'error', errorCode: 'source-unavailable' };
+    const normalized = normalizeSourceUrl(rawUrl, 'page');
+    if (!normalized.ok) return { status: 'unsupported-url' };
+    try {
+      const added = await this.addManual({ scope: 'page', url: rawUrl });
+      if (added.ok) {
+        return {
+          status: 'added',
+          source: added.source,
+          idempotencyKey: added.idempotencyKey,
+          related: this.findRelatedForUrl(normalized.canonicalKey, normalized.canonicalKey),
+        };
+      }
+      if (added.errorCode === 'source-duplicate') {
+        const existingRow = this.repo.getSourceByCanonical('page', normalized.canonicalKey);
+        if (existingRow === null) {
+          // 唯一约束已判重但读回缺失（理论不可达）→ 结构化失败，不伪装成功
+          return { status: 'error', errorCode: 'source-unavailable' };
+        }
+        return {
+          status: 'duplicate',
+          existing: this.buildListItemFromRow(existingRow),
+          related: this.findRelatedForUrl(normalized.canonicalKey, normalized.canonicalKey),
+        };
+      }
+      return { status: 'error', errorCode: added.errorCode };
+    } catch (err) {
+      logWarn('sources', 'quickAddPage 不可预期错误（归一化）', err);
+      return { status: 'error', errorCode: 'source-unavailable' };
     }
   }
 
@@ -856,6 +924,11 @@ export class SourceServiceImpl implements SourceService {
     return { ok: false, errorCode: 'source-unavailable' };
   }
 
+  private unavailableGroups(err: unknown): SourceGroupsResult {
+    logWarn('sources', 'listGroups 不可预期错误（归一化 source-unavailable）', err);
+    return { ok: false, errorCode: 'source-unavailable' };
+  }
+
   private unavailableChange(reason: string, err: unknown): SourceChangeResult {
     logWarn('sources', reason, err);
     return { ok: false, idempotencyKey: '', errorCode: 'source-unavailable', results: [] };
@@ -948,7 +1021,18 @@ export class SourceServiceImpl implements SourceService {
   }
 
   private buildListItem(row: SourceListRow): SourceListItem {
+    return this.listItemFrom(rowToSource(row), row.group_name);
+  }
+
+  // B5 决议 #72：quickAddPage 重复分支需要从 SourceRow（getSourceByCanonical）组装
+  // 列表项——与 buildListItem 同源（groupName 从 group_id 读取）。
+  private buildListItemFromRow(row: SourceRow): SourceListItem {
     const source = rowToSource(row);
+    const groupName = row.group_id === null ? null : this.repo.getGroupNameById(row.group_id);
+    return this.listItemFrom(source, groupName);
+  }
+
+  private listItemFrom(source: Source, groupName: string | null): SourceListItem {
     return {
       id: source.id,
       scope: source.scope,
@@ -956,7 +1040,7 @@ export class SourceServiceImpl implements SourceService {
       url: source.url,
       name: source.name,
       groupId: source.groupId,
-      groupName: row.group_name,
+      groupName,
       tags: this.repo.listTagsBySource(source.id),
       priority: source.priority,
       enabled: source.enabled,
@@ -964,6 +1048,22 @@ export class SourceServiceImpl implements SourceService {
       shareMode: source.shareMode,
       lastUsedAt: source.lastUsedAt,
     };
+  }
+
+  // B5 决议 #72：同 origin「可能相关」有界读取（≤QUICK_ADD_RELATED_MAX；Repository
+  // 编译期常量 SQL + 参数绑定；origin 经 WHATWG URL 解析派生后仅作数据、前缀转义）。
+  private findRelatedForUrl(
+    pageCanonicalKey: string,
+    excludeCanonicalKey: string,
+  ): SourceListItem[] {
+    try {
+      const origin = new URL(pageCanonicalKey).origin;
+      return this.repo
+        .findRelatedByOrigin(origin, excludeCanonicalKey, QUICK_ADD_RELATED_MAX)
+        .map((row) => this.buildListItem(row));
+    } catch {
+      return []; // canonicalKey 形态异常（normalize 已保证，理论不可达）→ 空提示
+    }
   }
 
   private buildView(row: SourceRow): SourceView {

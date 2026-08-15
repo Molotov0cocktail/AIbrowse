@@ -219,6 +219,40 @@ export type SourcePreviewResult =
   | { ok: true; opsCount: number; diffText: string }
   | { ok: false; opsCount: number; errorCode: SourceErrorCode };
 
+// --- B5（决议 #71/#72/#73/#74）：分组浏览 / 快速添加 / 两阶段硬删除 / UI 状态 ---
+
+export type SourceGroupsResult =
+  | { ok: true; page: number; pageSize: number; total: number; groups: SourceGroup[] }
+  | { ok: false; errorCode: SourceErrorCode };
+
+// B5 决议 #74：UI-facing 状态三态——normal 全功能；readonly-recovery（B7 装配，磁盘
+// 只读语义，读入口按决议 #39 一并拒绝）与 unavailable（初始化失败）禁用全部写入口、
+// 显示中文原因与建议；renderer/preload 不得获得绝对数据库/备份路径（建议文案仅用
+// 「应用数据目录中的 Sources 数据库/备份目录」等安全标签）。
+export type SourcesUiMode = 'normal' | 'readonly-recovery' | 'unavailable';
+
+export interface SourcesState {
+  mode: SourcesUiMode;
+  reason: string | null; // 中文原因（normal 时为 null）
+}
+
+// B5 决议 #72：当前页快速添加——main 在点击时读取当前活动 Tab（renderer 不提供
+// URL/标题）；仅 http/https；page scope + metadata 默认；精确重复 → duplicate；
+// 同 origin 不同页面 ≤5 条「可能相关」，绝不覆盖或合并。
+export const QUICK_ADD_RELATED_MAX = 5;
+
+export type QuickAddResult =
+  | { status: 'added'; source: SourceView; idempotencyKey: string; related: SourceListItem[] }
+  | { status: 'duplicate'; existing: SourceListItem; related: SourceListItem[] }
+  | { status: 'no-active-page' } // main 适配器层：无活动 Tab（服务层不可达）
+  | { status: 'unsupported-url' } // 非 http(s)/含 userinfo 等规范化拒绝
+  | { status: 'error'; errorCode: SourceErrorCode };
+
+// B5 决议 #73：两阶段永久删除——prepare 签发一次性、source 绑定、300s 有效的
+// opaque 能力令牌；hard-delete 消费。取消/过期/错绑定/重放/并发双击均零删除。
+export type PrepareHardDeleteResult =
+  { ok: true; token: string } | { ok: false; errorCode: SourceErrorCode };
+
 export interface SourceService {
   readonly id: string; // 'sources'
   // 检索（§8；audience 必填——决议 #58：agent 视角 blocked 不可见，user 视角可见可管理）
@@ -234,6 +268,12 @@ export interface SourceService {
     audience: SourceReadAudience;
   }): Promise<SourceListResult>; // 每页 ≤20
   get(id: string, audience: SourceReadAudience): Promise<SourceResult>;
+  // B5 决议 #71：分组浏览最小有界读取路径——确定性排序（名 NOCASE + id 收尾）、
+  // 分页且 pageSize ≤ 20；SQL 仅为 Repository 编译期常量 + 参数绑定。
+  listGroups(opts: { page: number; pageSize?: number }): Promise<SourceGroupsResult>;
+  // B5 决议 #72：当前页快速添加（服务入口——main 读取活动 Tab URL 后调用；page
+  // scope + metadata 默认；重复/可能相关有界提示，绝不覆盖或合并）。
+  quickAddPage(rawUrl: string): Promise<QuickAddResult>;
   // 写入（Agent change set，§7）
   applyChangeSet(
     cs: SourceChangeSet,

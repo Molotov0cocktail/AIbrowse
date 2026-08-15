@@ -84,6 +84,8 @@ function stubSourceService(): SourceService {
     listUndoable: async () => [],
     recordUsage: async () => {},
     getState: () => ({ mode: 'normal', reason: null }),
+    listGroups: async () => unavailable, // B5（决议 #71）
+    quickAddPage: async () => ({ status: 'error', errorCode: 'source-unavailable' }), // B5（决议 #72）
     dispose: () => {},
   };
 }

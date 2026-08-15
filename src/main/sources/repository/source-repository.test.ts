@@ -375,3 +375,94 @@ describe('list/count/usage', () => {
     expect(count('SELECT COUNT(*) AS n FROM usage_events')).toBe(0);
   });
 });
+
+// ---------- B5 扩展（决议 #71/#72）：有界 listGroups + findRelatedByOrigin ----------
+// 测试探针 SQL 仅限本文件（决议 #47）。
+
+describe('B5：listGroups / countGroups', () => {
+  it('软删分组过滤 + 确定性排序（NOCASE）+ 分页', () => {
+    repo.upsertGroup('Beta', T0);
+    repo.upsertGroup('alpha', T0);
+    repo.upsertGroup('Gamma', T0);
+    // 测试探针：模拟已软删分组（产品无组删除路径；deleted_at IS NULL 过滤为纵深防御）
+    const g = repo.upsertGroup('zzz-deleted', T0);
+    handle.prepare('UPDATE source_groups SET deleted_at = ? WHERE id = ?').run(T0, g.id);
+    expect(repo.countGroups()).toBe(3);
+    const page0 = repo.listGroups(2, 0);
+    expect(page0.map((x) => x.name)).toEqual(['alpha', 'Beta']);
+    expect(page0.every((x) => x.deleted_at === null)).toBe(true);
+    const page1 = repo.listGroups(2, 2);
+    expect(page1.map((x) => x.name)).toEqual(['Gamma']);
+  });
+
+  it('limit/offset 边界：offset 超界 → 空结果（安全返回）', () => {
+    repo.upsertGroup('only', T0);
+    expect(repo.listGroups(20, 100)).toEqual([]);
+    expect(repo.countGroups()).toBe(1);
+  });
+});
+
+describe('B5：findRelatedByOrigin（有界同 origin 读取路径）', () => {
+  it('origin 前缀匹配：origin 作用域条目（键=origin）+ page 条目（键=origin+路径）', () => {
+    insertRow({
+      scope: 'origin',
+      canonical_key: 'https://example.com',
+      url: 'https://example.com',
+    });
+    insertRow({
+      id: '22222222-2222-4222-8222-222222222222',
+      canonical_key: 'https://example.com/p1',
+      url: 'https://example.com/p1',
+    });
+    insertRow({
+      id: '33333333-3333-4333-8333-333333333333',
+      canonical_key: 'https://example.org/p',
+      url: 'https://example.org/p',
+    });
+    const rows = repo.findRelatedByOrigin('https://example.com', 'https://example.com/p1', 5);
+    expect(rows.map((r) => r.canonical_key)).toEqual(['https://example.com']);
+  });
+
+  it('排除目标键 + 有界 LIMIT + 软删过滤 + 确定性排序（created_at DESC, id ASC）', () => {
+    for (let i = 0; i < 6; i += 1) {
+      insertRow({
+        id: `44444444-4444-4444-8444-44444444444${i}`,
+        canonical_key: `https://example.com/p-${i}`,
+        url: `https://example.com/p-${i}`,
+        created_at: `2026-08-15T00:00:0${i}.000Z`,
+      });
+    }
+    insertRow({
+      id: '55555555-5555-4555-8555-555555555555',
+      canonical_key: 'https://example.com/deleted',
+      url: 'https://example.com/deleted',
+      deleted_at: T0,
+    });
+    const rows = repo.findRelatedByOrigin('https://example.com', 'https://example.com/p-0', 5);
+    expect(rows.length).toBe(5);
+    expect(rows.map((r) => r.canonical_key)).toEqual([
+      'https://example.com/p-5',
+      'https://example.com/p-4',
+      'https://example.com/p-3',
+      'https://example.com/p-2',
+      'https://example.com/p-1',
+    ]);
+  });
+
+  it('前缀转义：origin 中的 LIKE 通配符只作数据（未转义会误命中其他行）', () => {
+    // origin 参数虽由服务层经 WHATWG URL 解析派生（不含通配符），Repository 仍须
+    // 将入参只作数据（纵深防御）：含 %/_ 的 origin 不得按通配符语义误命中
+    // （未转义时 'x%_/%' 会误命中 'xA/y'）。
+    insertRow({
+      canonical_key: 'https://example.com/x%_/y',
+      url: 'https://example.com/x%_/y',
+    });
+    insertRow({
+      id: '66666666-6666-4666-8666-666666666666',
+      canonical_key: 'https://example.com/xA/y',
+      url: 'https://example.com/xA/y',
+    });
+    const rows = repo.findRelatedByOrigin('https://example.com/x%_', 'https://example.com/none', 5);
+    expect(rows.map((r) => r.canonical_key)).toEqual(['https://example.com/x%_/y']);
+  });
+});

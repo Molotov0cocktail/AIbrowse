@@ -1172,3 +1172,135 @@ describe('B4 applyChangeSet — blocked 猜测防护（决议 #66）', () => {
     expect(res.results[0]?.existingSourceId).toBe(s.id);
   });
 });
+
+// ---------- B5 扩展（决议 #71/#72）：有界 listGroups + quickAddPage ----------
+
+describe('B5：listGroups（分组浏览，有界分页 + 确定性排序）', () => {
+  it('空库 → total 0；分页参数边界（pageSize>20 → source-limit；非法 → invalid）', async () => {
+    expect(await service.listGroups({ page: 0 })).toEqual({
+      ok: true,
+      page: 0,
+      pageSize: 20,
+      total: 0,
+      groups: [],
+    });
+    expect(await service.listGroups({ page: 0, pageSize: 21 })).toEqual({
+      ok: false,
+      errorCode: 'source-limit',
+    });
+    expect(await service.listGroups({ page: -1 })).toEqual({
+      ok: false,
+      errorCode: 'source-invalid-change',
+    });
+    expect(await service.listGroups({ page: 1.5 })).toEqual({
+      ok: false,
+      errorCode: 'source-invalid-change',
+    });
+    expect(await service.listGroups({ page: 0, pageSize: 0 })).toEqual({
+      ok: false,
+      errorCode: 'source-invalid-change',
+    });
+  });
+
+  it('分组按名确定性排序（NOCASE）+ 分页正确', async () => {
+    await addOne('https://example.com/a', { groupName: 'Beta' });
+    await addOne('https://example.com/b', { groupName: 'alpha' });
+    await addOne('https://example.com/c', { groupName: 'Gamma' });
+    const page0 = await service.listGroups({ page: 0, pageSize: 2 });
+    expect(page0.ok && page0.total).toBe(3);
+    expect(page0.ok && page0.groups.map((g) => g.name)).toEqual(['alpha', 'Beta']);
+    const page1 = await service.listGroups({ page: 1, pageSize: 2 });
+    expect(page1.ok && page1.groups.map((g) => g.name)).toEqual(['Gamma']);
+    expect(page1.ok && page1.pageSize).toBe(2);
+  });
+
+  it('重复分组名（幂等 get-or-create）不产生重复条目', async () => {
+    await addOne('https://example.com/a', { groupName: '研究' });
+    await addOne('https://example.com/b', { groupName: '研究' });
+    const res = await service.listGroups({ page: 0 });
+    expect(res.ok && res.total).toBe(1);
+    expect(res.ok && res.groups[0]?.name).toBe('研究');
+  });
+
+  it('disposed → source-unavailable；不可预期异常归一化', async () => {
+    service.dispose();
+    expect(await service.listGroups({ page: 0 })).toEqual({
+      ok: false,
+      errorCode: 'source-unavailable',
+    });
+  });
+});
+
+describe('B5：quickAddPage（当前页快速添加——main 读活动 Tab 后的服务入口）', () => {
+  it('非 http(s)/含 userinfo → unsupported-url 零写入', async () => {
+    expect(await service.quickAddPage('about:blank')).toEqual({ status: 'unsupported-url' });
+    expect(await service.quickAddPage('file:///C:/page.html')).toEqual({
+      status: 'unsupported-url',
+    });
+    expect(await service.quickAddPage('https://user:pass@example.com/a')).toEqual({
+      status: 'unsupported-url',
+    });
+    const afterList = await service.list({ page: 0, audience: 'user' });
+    expect(afterList.ok && afterList.total === 0).toBe(true);
+  });
+
+  it('添加成功：page scope + metadata 默认 + 名称由主进程确定性生成 + related 不含自身', async () => {
+    const other = await addOne('https://example.com/other');
+    const r = await service.quickAddPage('https://example.com/new-page#frag');
+    expect(r.status).toBe('added');
+    if (r.status !== 'added') return;
+    expect(r.source.scope).toBe('page');
+    expect(r.source.shareMode).toBe('metadata');
+    expect(r.source.name).toContain('example.com');
+    expect(r.idempotencyKey).not.toBe('');
+    expect(r.related.some((i) => i.id === other.id)).toBe(true);
+    expect(r.related.some((i) => i.id === r.source.id)).toBe(false);
+    // journal 与手工通道同语义（可 Undo）
+    expect((await service.listUndoable()).some((u) => u.sourceIds.includes(r.source.id))).toBe(
+      true,
+    );
+  });
+
+  it('精确重复 → duplicate + 既有条目（fragment 变体同身份，决议 #50）', async () => {
+    await addOne('https://example.com/target', { name: '目标页' });
+    const r = await service.quickAddPage('https://example.com/target#frag');
+    expect(r.status).toBe('duplicate');
+    if (r.status !== 'duplicate') return;
+    expect(r.existing.name).toBe('目标页');
+    expect(r.existing.canonicalKey).toBe('https://example.com/target');
+  });
+
+  it('同 origin 不同页面 ≤5 条可能相关（有界 + 排除自身 + 不同 origin 不出现）；绝不覆盖/合并', async () => {
+    for (let i = 0; i < 7; i += 1) {
+      await addOne(`https://example.com/p-${i}`);
+    }
+    await addOne('https://other.org/x');
+    const r = await service.quickAddPage('https://example.com/p-3');
+    expect(r.status).toBe('duplicate');
+    if (r.status !== 'duplicate') return;
+    expect(r.related.length).toBe(5);
+    expect(r.related.every((i) => i.canonicalKey !== 'https://example.com/p-3')).toBe(true);
+    expect(r.related.some((i) => i.canonicalKey === 'https://other.org/x')).toBe(false);
+    // 零覆盖零合并：总数不变（7 个 example.com 页面 + 1 个 other.org = 8）
+    const afterList = await service.list({ page: 0, audience: 'user' });
+    expect(afterList.ok && afterList.total === 8).toBe(true);
+  });
+
+  it('origin 作用域同 origin 条目进入 related（可能相关提示）', async () => {
+    const originSrc = await addOne('https://example.com', {
+      scope: 'origin',
+    });
+    const r = await service.quickAddPage('https://example.com/one');
+    expect(r.status).toBe('added');
+    if (r.status !== 'added') return;
+    expect(r.related.some((i) => i.id === originSrc.id)).toBe(true);
+  });
+
+  it('disposed → error source-unavailable', async () => {
+    service.dispose();
+    expect(await service.quickAddPage('https://example.com/a')).toEqual({
+      status: 'error',
+      errorCode: 'source-unavailable',
+    });
+  });
+});
