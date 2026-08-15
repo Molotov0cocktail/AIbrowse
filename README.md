@@ -56,9 +56,12 @@
 >   dev/生产冒烟全矩阵与 B-02/B-05/SESSION 双进程退出码 0；红线独立复核
 >   零回退；**总 Exit 判定 = HOLD/PENDING——唯一缺口 = 真实 Provider
 >   验收（本轮用户未授权，RT-10 与真实 SRT-01/02 = NOT RUN）**；
->   下一个推荐动作 = **真实 Provider 补验**（B6/B8 补验任务：仓库外
->   harness 补 -Sources 开关 + 用户授权后最小真实 Sources 验收——离线
->   矩阵不替代真实验证）；补验通过前不宣称第四阶段验收通过。
+>   **B6/B8 补验基础设施已闭环（2026-08-15）**——harness `-Sources`
+>   开关/真实场景扩展（L2 deny 零写入/approve 恰一次 + durable Undo/
+>   真实 SRT-01/02 观察）/Key 终检 Sources 库面/互斥补齐就绪，全量
+>   test 1243/1243；真实执行仍未发生（真实付费调用 0）——下一个推荐
+>   动作 = **用户单独授权后经 harness `-Sources` 执行最小真实 Sources
+>   验收**（离线矩阵不替代真实验证）；补验通过前不宣称第四阶段验收通过。
 >   契约源
 >   `doc/stage4/detailed-design.md`；安全契约源
 >   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
@@ -325,6 +328,8 @@ Key 永不写进命令行或项目文件）：
 # S5 固定问题一问一答 / S6 多网站共读验证（§10 Exit Gate）
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AIbrowse\S5\run-live-smoke.ps1"
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AIbrowse\S5\run-live-smoke.ps1" -Sites
+# B6/B8 真实 Provider Sources 验证（与 -Sites/-Agent/-Pre/-Supplement 互斥）
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AIbrowse\S5\run-live-smoke.ps1" -Sources
 ```
 
 3. 不设固定调用次数：每次真实调用必须对应明确的验收项或缺陷复验；完成报告列出调用

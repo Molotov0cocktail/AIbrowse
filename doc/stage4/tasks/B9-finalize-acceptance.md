@@ -106,23 +106,23 @@ Exit 决策 + 证据回填 + 文档同步 + 双远程推送 + 最终报告；B9 
 
 ### ② 受控独立验证（一次一条命令，单 worker，零重试变绿）
 
-| 命令 | 结果 | 退出码 |
-| ---- | ---- | ------ |
-| `npm test -- --maxWorkers=1 --no-color` | 52 文件 1229/1229 通过（19.55s） | 0 |
-| `npm run typecheck` | node+web 双 tsconfig 零错误 | 0 |
-| `npm run lint` | 零错误 | 0 |
-| `npm run format:check` | All matched files use Prettier code style | 0 |
-| `npm run build` | out/ 三目标（main 913.63 kB / preload 9.93 kB / renderer 660.43 kB） | 0 |
-| `git diff --check` | 零命中；工作区干净 | 0 |
+| 命令                                    | 结果                                                                 | 退出码 |
+| --------------------------------------- | -------------------------------------------------------------------- | ------ |
+| `npm test -- --maxWorkers=1 --no-color` | 52 文件 1229/1229 通过（19.55s）                                     | 0      |
+| `npm run typecheck`                     | node+web 双 tsconfig 零错误                                          | 0      |
+| `npm run lint`                          | 零错误                                                               | 0      |
+| `npm run format:check`                  | All matched files use Prettier code style                            | 0      |
+| `npm run build`                         | out/ 三目标（main 913.63 kB / preload 9.93 kB / renderer 660.43 kB） | 0      |
+| `git diff --check`                      | 零命中；工作区干净                                                   | 0      |
 
 ### ③ 冒烟矩阵（env -u ELECTRON_RUN_AS_NODE + 独立系统 TEMP 临时 userData）
 
-| 场景 | dev | 生产产物 | 说明 |
-| ---- | --- | -------- | ---- |
-| 默认全矩阵 `AIBROWSE_SMOKE=1` | 退出码 0（1644 行日志） | 退出码 0（1631 行） | 含 B-01 11 项（①–⑦、⑩、⑪ 全过、⑧⑨ 可用）、8.6 RT-01～08+RT-11、8.9/8.10 B-03/B-04、8.11 B-05、8.12/8.13 B-06/B-07、8.14 recovery、8.15 SRT-01～SRT-12 全部通过行日志实证 |
-| B-02 `AIBROWSE_SOURCES_SMOKE` | — | set 0 / check 0 | 跨进程读回 + 重启后 Undo + 重复 Undo 幂等 + 版本冲突拒绝 + usage 投影一致 + SRT-10 hard delete 清理 |
-| B-05 `AIBROWSE_SOURCES_UI_SMOKE` | — | set 0 / check 0 | 跨进程读回 + Undo + 两阶段永久删除（真实 UI 链路） |
-| SESSION `AIBROWSE_SESSION_SMOKE` | — | set 0 / check 0 | 新进程读取 Cookie（跨进程持久化生效） |
+| 场景                             | dev                     | 生产产物            | 说明                                                                                                                                                                     |
+| -------------------------------- | ----------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 默认全矩阵 `AIBROWSE_SMOKE=1`    | 退出码 0（1644 行日志） | 退出码 0（1631 行） | 含 B-01 11 项（①–⑦、⑩、⑪ 全过、⑧⑨ 可用）、8.6 RT-01～08+RT-11、8.9/8.10 B-03/B-04、8.11 B-05、8.12/8.13 B-06/B-07、8.14 recovery、8.15 SRT-01～SRT-12 全部通过行日志实证 |
+| B-02 `AIBROWSE_SOURCES_SMOKE`    | —                       | set 0 / check 0     | 跨进程读回 + 重启后 Undo + 重复 Undo 幂等 + 版本冲突拒绝 + usage 投影一致 + SRT-10 hard delete 清理                                                                      |
+| B-05 `AIBROWSE_SOURCES_UI_SMOKE` | —                       | set 0 / check 0     | 跨进程读回 + Undo + 两阶段永久删除（真实 UI 链路）                                                                                                                       |
+| SESSION `AIBROWSE_SESSION_SMOKE` | —                       | set 0 / check 0     | 新进程读取 Cookie（跨进程持久化生效）                                                                                                                                    |
 
 - 每轮后检查：零 Electron/Node 进程残留；冒烟临时 userData 的 sources/
   目录被场景自清（零 WAL/SHM 残留）；6 个 B9 专属临时目录全部精确清理
@@ -131,9 +131,9 @@ Exit 决策 + 证据回填 + 文档同步 + 双远程推送 + 最终报告；B9 
 ### ④ 红线独立复核（grep + 源码核对，不抄 B8 报告）
 
 - **工具注册表**：BROWSER_TOOL_DEFINITIONS(8) + INTERACTION_TOOL_DEFINITIONS(4)
-  + createSourceTools(4) + search_web(1) = **17**（index.ts 注册 + 冒烟断言）；
-  禁具 source_sql/source_delete_hard/source_export_all/shell/child_process
-  产品代码零命中（permission-policy.test 'shell.exec' 仅为 L3 测试夹具）。
+  - createSourceTools(4) + search_web(1) = **17**（index.ts 注册 + 冒烟断言）；
+    禁具 source_sql/source_delete_hard/source_export_all/shell/child_process
+    产品代码零命中（permission-policy.test 'shell.exec' 仅为 L3 测试夹具）。
 - **SQL 执行点分类**：业务 SQL 仅 `sources/repository/`（编译期常量 + 参数
   绑定）；`db/sqlite-driver.ts` 仅连接级 PRAGMA（busyTimeout 程序校验整数
   [0,30000]）/事务；`db/backup.ts` 仅 PRAGMA/VACUUM INTO 窄契约；
@@ -173,12 +173,12 @@ Exit 决策 + 证据回填 + 文档同步 + 双远程推送 + 最终报告；B9 
 
 ### ⑦ P2/P3 开放风险独立处置（不照抄「非阻塞」）
 
-| 项 | 触发条件 | 影响 | 现有缓解 | 判定 |
-| -- | -------- | ---- | -------- | ---- |
-| P2-2 日志无大小/保留上限 | 长期使用（每日一文件 appendFileSync 无界追加、无保留天数） | 磁盘占用缓慢无界增长 | .gitignore 防入库（与磁盘占用无关） | 不命中本阶段 §10 阻塞条件（§10 无日志保留要求；§9 诊断要求已满足）；为真实无界增长项 → 登记后续硬化（Seventh Stage Product Hardening 或专项闭环补大小/保留上限） |
-| P2-3 会话无字节上限 | 单会话 200 条消息内持续追问/超大单条 | 会话 JSON 文件可达 MB 级（有隐式上界：200 条 × 预算截断） | MESSAGE_LIMIT=200 条数上限 + 预算截断 + ToolStep 摘要化 | 不命中 Exit Gate（无卡死/数据丢失路径，规模有隐式界）；登记后续硬化 |
-| P2-4 Vitest 默认 worker | 直接 `npm test` 不带 --maxWorkers=1 时默认并行 | 墙钟断言在并行负载下边缘抖动（F-1 已去墙钟化） | 验证纪律显式单 worker（AGENTS §6）；本轮单 worker 全绿 | 不命中 Exit Gate（验证基础设施可信——命令显式固定）；建议后续 vitest.config 固化 |
-| P3 smoke 效率 | 每次冒烟矩阵分钟级 | 验证耗时 | 无 | 不命中 Exit Gate（效率非正确性）；登记后续优化 |
+| 项                       | 触发条件                                                   | 影响                                                      | 现有缓解                                                | 判定                                                                                                                                                             |
+| ------------------------ | ---------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P2-2 日志无大小/保留上限 | 长期使用（每日一文件 appendFileSync 无界追加、无保留天数） | 磁盘占用缓慢无界增长                                      | .gitignore 防入库（与磁盘占用无关）                     | 不命中本阶段 §10 阻塞条件（§10 无日志保留要求；§9 诊断要求已满足）；为真实无界增长项 → 登记后续硬化（Seventh Stage Product Hardening 或专项闭环补大小/保留上限） |
+| P2-3 会话无字节上限      | 单会话 200 条消息内持续追问/超大单条                       | 会话 JSON 文件可达 MB 级（有隐式上界：200 条 × 预算截断） | MESSAGE_LIMIT=200 条数上限 + 预算截断 + ToolStep 摘要化 | 不命中 Exit Gate（无卡死/数据丢失路径，规模有隐式界）；登记后续硬化                                                                                              |
+| P2-4 Vitest 默认 worker  | 直接 `npm test` 不带 --maxWorkers=1 时默认并行             | 墙钟断言在并行负载下边缘抖动（F-1 已去墙钟化）            | 验证纪律显式单 worker（AGENTS §6）；本轮单 worker 全绿  | 不命中 Exit Gate（验证基础设施可信——命令显式固定）；建议后续 vitest.config 固化                                                                                  |
+| P3 smoke 效率            | 每次冒烟矩阵分钟级                                         | 验证耗时                                                  | 无                                                      | 不命中 Exit Gate（效率非正确性）；登记后续优化                                                                                                                   |
 
 ### ⑧ 文档同步（本闭环）
 

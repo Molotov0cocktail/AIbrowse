@@ -139,3 +139,54 @@ store 装配——纯编排层最小接线）、`src/main/index.ts`（open 后�
   自动 shareMode=full」与 B2 冻结语义不符（决议 #52 缺省规则仅 add；update
   缺省保持现状）→ 夹具显式带 shareMode:'full'（模型为「备注供 AI 使用」意图
   显式声明），真实验证任务文案同步显式要求。
+
+## 补验基础设施闭环（2026-08-15 回填：真实 Provider 验收前置，本任务不执行真实调用）
+
+承接 B9 判定「仓库外 harness 缺 -Sources 开关属 B6/B8 补验任务」。本闭环只补
+真实验收的可执行基础设施；**真实付费调用次数 = 0**，未申请授权、未执行真实
+Provider。缺口核实（非假定）：`runLiveAgentSourcesScenarios` 原五组场景全部为
+approve 路径——L2 deny 零写入、durable Undo、真实 SRT-01/02 敌对观察场景
+缺失；Key 终检仅覆盖 DOM/日志/aiSmokeDir 下 .json/.tmp/凭据密文形态——
+**Sources 库目录（sources.db/WAL/SHM/backups/journal）不在扫描面**；index.ts
+LIVE_AGENT_SOURCES 与 LIVE_SITES 无互斥（smoke.ts 分支顺序静默择一）。逐项
+核实属实后按最小扩展补齐（红线：产品契约/权限矩阵/17 工具/schema 零改动）：
+
+1. **新文件 `src/main/smoke-sources-scan.ts`（纯函数，零 Electron 依赖）+
+   单测 14 用例**：`collectSecretScanTargets`（Sources 库含 WAL/SHM/backups/
+   journal + AI 目录全量普通文件清单；lstat 不跟随链接；目录缺失安全空清单）、
+   `LIVE_SOURCES_SCENARIO_MANIFEST`（11 场景：任务文案/用途/断言类别单一事实
+   源——s1a deny/s1b approve+Undo/s1c 数据供应/s2 改组备注/s3 官方/s4a-c
+   优先级/s5 usage 链路/srt-01/srt-02 观察）+ 校验函数 +
+   `describeLiveSourcesLedger`（台账只报任务项数/轮次 HTTP 次数/用途）。
+   红态 1 file failed（模块缺失）→ 14/14 绿；全量 1229 → **1243/1243**。
+2. **`runLiveAgentSourcesScenarios` 场景扩展**：1a L2 deny 必现 → deny →
+   库/journal 零新增（模型重提等价写操作会使确认框再挂起、run 无法终态——
+   waitTerminal 超时即失败，deny 后停止有机器断言）；1b approve 恰一次
+   （search 恰 1 条 + journal 恰 +1）→ durable Undo（幂等键回放 before 快照
+   → 零命中）；1c 再收藏供后续场景（台账如实登记用途）；场景 6 真实 SRT-01
+   敌对页观察（L2 必现则 deny 循环至终态 → 库/journal 零新增 + 敌对 URL 零
+   入库；观察性结果 logInfo 登记不入机器断言）；场景 7 真实 SRT-02 敌对 note
+   观察（手工通道种子 → 审计增量工具名全部 ∈ 注册表 17 工具 + 无 L2 批准 +
+   库零新增）。
+3. **Key 终检扩展**：扫描面 = DOM/日志/Sources 库（含 WAL/备份/journal）/
+   会话文件/ToolStep/审计（日志 audit 行）/临时文件/密文形态——清单由
+   collectSecretScanTargets 统一产出（报告含扫描文件数）。
+4. **index.ts 门控补齐**：LIVE_AGENT_SOURCES 与 LIVE_SITES 互斥（同设报错
+   退出 + 失败清理，实测退出码 1 零残留）；SMOKE_MODE-only 审计收集探针
+   （生产不收集，决议 #84 同精神测试设施）。
+5. **仓库外 harness `run-live-smoke.ps1` 增 `-Sources`**（仓库外文件不提交）：
+   与 -Sites/-Agent/-Pre/-Supplement 确定性互斥（组合实测退出码 1 + ASCII
+   互斥错误，互斥校验先于 DPAPI 读取）；仅 -Sources 分支注入
+   AIBROWSE_LIVE_AGENT_SOURCES=1；finally 清除；backstop 补
+   aibrowse-smoke-sources-* 清理；保持 ASCII、绝不输出 Key。静态断言红→绿：
+   旧脚本 3/8 PASS（缺 Sources/注入/互斥/清除/backstop 5 项 FAIL）→ 修改后
+   **8/8 PASS**（语法/AST 参数/ASCII/注入/互斥/清除/backstop/不打印 Key）。
+6. **验证**：test 1243/1243 · typecheck · lint · format:check（本闭环修复
+   B9 文档表格 prettier 对齐——HEAD 即有偏差，纯格式零内容变化）· build
+   全绿；dev/生产冒烟全矩阵退出码 0；无 Key 路由（LIVE_PROVIDER+
+   LIVE_AGENT_SOURCES 无 Key）dev+生产各一次：中文跳过提示 + 离线矩阵通过 +
+   真实 Provider 请求 0；B-02/B-05/SESSION 双进程全部退出码 0。
+
+**仍未执行（下一任务需用户授权）**：真实 Provider Sources 验收（deepseek-
+v4-pro 场景 1a-7 实测 + 真 Key 扫描 + 台账）。本闭环不申请授权、不执行真实
+调用、不进入 Fifth Stage。

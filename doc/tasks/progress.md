@@ -146,12 +146,40 @@
   rebuild 诊断）已闭环（B7；备份发布竞态已修复）；红队矩阵与安全审计已闭环
   （B8）；独立最终验收已闭环（B9；总 Exit = HOLD/PENDING，唯一缺口真实
   Provider）。
-  步骤 0 独立核对（2026-08-15，B4 会话）：HEAD `6d153ee` = Gitee/GitHub
-  双远程 HEAD（ls-remote 实测三方一致，GitHub 经代理确认可用）、工作区干净；
-  基线 test 1007/1007·typecheck·lint·format:check 独立复跑全绿；B1–B3 代码/
-  接口/测试在位；Fourth_stage.md 头部「B3–B9 待开始/下一任务 B3」矛盾已校准为
-  B1–B3 完成、B4 待开始（不改写历史记录）。Entry Gate 判定证据见
-  `doc/stage4/proposal.md` §8。
+  **B6/B8 补验基础设施闭环已完成（2026-08-15，本任务）**——真实 Provider
+  Sources 验收的前置可执行基础设施全部就绪（真实付费调用 0、未申请授权、
+  未进入 Fifth Stage；总 Exit 维持 HOLD/PENDING）：① 缺口逐项核实属实
+  （runLiveAgentSourcesScenarios 原五场景全 approve——L2 deny/durable Undo/
+  真实 SRT-01/02 观察缺失；Key 终检未覆盖 Sources 库 WAL/备份/journal；
+  LIVE_SITES 与 LIVE_AGENT_SOURCES 无互斥静默择一）→ 最小扩展补齐：
+  新纯函数模块 smoke-sources-scan.ts（扫描清单/场景清单/台账摘要，零
+  Electron 依赖）+ 14 用例红→绿（1 file failed → 14/14，全量 1229 →
+  **1243/1243**）；真实场景扩展（1a L2 deny 零写入 + 模型停止/1b approve
+  恰一次 + durable Undo/1c 数据供应/场景 6 真实 SRT-01 敌对页观察 deny 循环
+  /场景 7 真实 SRT-02 敌对 note 观察——审计工具名 ∈ 注册表 + 无 L2 批准 +
+  零写入，观察性结果如实登记不入断言）；Key 终检覆盖 DOM/日志/Sources 库
+  （含 WAL/备份/journal）/会话文件/ToolStep/审计/临时文件/密文形态；
+  index.ts LIVE_SITES 互斥补齐（实测退出码 1 + 失败清理零残留）+ SMOKE-only
+  审计收集探针（生产不收集）；仓库外 harness `run-live-smoke.ps1` 增
+  `-Sources`（与 -Sites/-Agent/-Pre/-Supplement 确定性互斥——组合实测退出码
+  1 + ASCII 互斥错误、互斥先于 DPAPI 读取；finally 清除 + backstop 清理；
+  静态断言红→绿 3/8 → **8/8 PASS**；脚本不提交 Git）。② 验证：test
+  1243/1243（53 文件）· typecheck · lint · format:check（修复 B9 文档表格
+  prettier 对齐——HEAD 既有偏差，纯格式零内容变化）· build 全绿；dev/生产
+  冒烟全矩阵退出码 0；无 Key 路由 dev+生产各一次（中文跳过提示 + 离线矩阵
+  - 真实 Provider 请求 0）；B-02/B-05/SESSION 双进程全部退出码 0；临时
+    userData/日志/断言脚本全部精确清理、零进程残留、日志 sk- 零命中、禁具/
+    敏感/TS 逃逸扫描零命中。
+    **唯一下一推荐任务 = 用户单独授权后执行最小真实 Provider Sources 验收**
+    （harness `-Sources` 一键执行场景 1a-7 + 真 Key 扫描 + 台账）并据证据更新
+    Fourth Stage Exit Gate；补验通过并改判 GO/PASS 前不得宣称第四阶段验收
+    通过；不得实现 Fifth Stage。
+    步骤 0 独立核对（2026-08-15，B4 会话）：HEAD `6d153ee` = Gitee/GitHub
+    双远程 HEAD（ls-remote 实测三方一致，GitHub 经代理确认可用）、工作区干净；
+    基线 test 1007/1007·typecheck·lint·format:check 独立复跑全绿；B1–B3 代码/
+    接口/测试在位；Fourth_stage.md 头部「B3–B9 待开始/下一任务 B3」矛盾已校准为
+    B1–B3 完成、B4 待开始（不改写历史记录）。Entry Gate 判定证据见
+    `doc/stage4/proposal.md` §8。
 - 已完成（第三阶段，历史）：**第三阶段（Browser Agent）**，已于 2026-08-14 正式切换（用户指令）。Entry
   Gate 逐项核验通过（判定证据见 doc/stage3/proposal.md §8）；**设计定稿与任务拆分
   已完成（2026-08-14，纯文档）**——`doc/stage3/`：threat-model（Prompt Injection
@@ -262,6 +290,37 @@
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目）
+
+- **B6/B8 补验基础设施闭环（2026-08-15，第十个闭环；真实 Provider 验收前置，
+  真实付费调用 0；总 Exit 维持 HOLD/PENDING）**：① 步骤 0 独立核对——HEAD
+  `a8c3376` = 候选 HEAD、工作区干净；缺口逐项核实属实（五场景全 approve；
+  Key 终检缺 Sources 库面；LIVE_SITES 无互斥；harness 缺 -Sources）。②
+  **红→绿**：smoke-sources-scan 新模块 1 file failed → 14/14；全量 test
+  **1243/1243**（53 文件，+14）；仓库外 harness 静态断言红 3/8（缺
+  Sources/注入/互斥/清除/backstop 5 项 FAIL）→ 修改后 **8/8 PASS** +
+  互斥组合运行实测退出码 1（ASCII 互斥错误、互斥先于 DPAPI 读取）。③
+  **受控验证**（一次一条，单 worker）：test 1243/1243（19.85s）· typecheck
+  · lint · format:check（修复 B9 文档表格 prettier 对齐——HEAD 既有偏差，
+  纯格式零内容变化，已如实登记）· build · git diff --check 全绿。④ **冒烟
+  矩阵**（env -u ELECTRON_RUN_AS_NODE + 8 个专属系统 TEMP 临时 userData，
+  串行）：dev 全矩阵退出码 0（8.12/8.13/8.14/8.15 SRT-01～12 通过行日志
+  实证）；生产产物全矩阵退出码 0；**无 Key 路由** dev+生产各一次（LIVE_
+  PROVIDER+LIVE_AGENT_SOURCES、无 AIBROWSE_TEST_API_KEY）退出码 0——中文
+  跳过提示（main + smoke 两层）+ 离线矩阵通过 + `providerId=openai-
+compatible` 日志零命中（真实 Provider 请求 0）；LIVE_SITES 互斥实测退出码
+  1 + 中文错误 + 失败清理零残留；B-02/B-05/SESSION 双进程全部退出码 0。⑤
+  清理与红线：8 个临时 userData/8 个冒烟日志/一次性断言脚本全部精确清理；
+  零 Electron/Node 进程残留；TEMP 下 aibrowse-smoke-* 零残留；今日日志 sk-
+  形态零命中；禁具/source_sql/child_process/TS 逃逸（any/@ts-ignore）扫描
+  零命中；Source 产品契约/权限矩阵/17 工具 schema/AGENT_SYSTEM_PROMPT/
+  SQLite schema 零改动；工具注册表仍 17；schema v1/migration 零改写；
+  未调用任何付费 Provider、未发起公网 Provider 请求、未新增依赖。⑥ 文档
+  同步：B6/B8 任务文档补验记录小节、本文件、AGENTS §1、README（harness
+  -Sources 用法）、Fourth_stage §10（harness 缺口表述更新）；threat-model
+  不把真实观察写成通过（§4.1 维持 NOT RUN 登记）。**唯一下一推荐任务 =
+  用户单独授权后执行最小真实 Provider Sources 验收**（仓库外 harness
+  `-Sources` 一键执行场景 1a-7 + 真 Key 零暴露扫描 + 台账）并据证据更新
+  Fourth Stage Exit Gate；不得实现 Fifth Stage。
 
 - **B9 Fourth Stage 独立最终验收（2026-08-15，第九个闭环；总 Exit 判定 =
   HOLD/PENDING）**：① 步骤 0 独立核对——HEAD `c8e4122` = Gitee/GitHub 双远程

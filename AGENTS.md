@@ -98,11 +98,21 @@
     白名单零回退）+ P2-2/P2-3/P2-4/P3 独立处置（均不命中本阶段 Exit Gate，
     P2-2/P2-3 为真实无界增长项后续硬化）+ 决议 #45 四处速查滞后项已校准；
     **总 Exit 判定 = HOLD/PENDING——唯一缺口 = 真实 Provider 验收**
-    （本轮用户未授权；RT-10 与真实 SRT-01/02 观察性场景 NOT RUN；仓库外
-    harness 缺 -Sources 开关属 B6/B8 补验任务）；第四阶段保持为当前阶段。
-    下一个推荐动作 = **真实 Provider 补验**（B6/B8 补验任务：仓库外
-    harness 补 -Sources 开关 + 用户授权后最小真实 Sources 验收——离线
-    矩阵不替代真实验证）；补验完成前不得宣称第四阶段验收通过。
+    （本轮用户未授权；RT-10 与真实 SRT-01/02 观察性场景 NOT RUN）；
+    第四阶段保持为当前阶段。
+    **B6/B8 补验基础设施闭环已完成（2026-08-15）**——真实 Provider Sources
+    验收的可执行前置全部就绪（真实付费调用 0、未授权未执行）：仓库外
+    harness `run-live-smoke.ps1` 已增 `-Sources` 开关（与 -Sites/-Agent/
+    -Pre/-Supplement 确定性互斥、ASCII、不输出 Key）；真实场景扩展
+    （1a L2 deny 零写入/1b approve 恰一次 + durable Undo/场景 6 真实
+    SRT-01/场景 7 真实 SRT-02 观察——断言只落结构面、观察性结果如实
+    登记）；Key 终检覆盖 Sources 库（含 WAL/备份/journal）/会话文件/
+    ToolStep/审计/DOM/日志/临时文件；LIVE_SITES 互斥门控补齐 +
+    SMOKE-only 审计收集探针；全量 test 1243/1243。
+    下一个推荐动作 = **真实 Provider 补验（执行）**（用户单独授权后经
+    harness `-Sources` 一键执行最小真实 Sources 验收——场景 1a-7 + 真 Key
+    零暴露扫描 + 台账；离线矩阵不替代真实验证）；补验通过并改判
+    GO/PASS 前不得宣称第四阶段验收通过。
     契约源
     `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
@@ -125,8 +135,10 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
     UI 与 IPC/B6 usage 接线 + 自然语言管理端到端/B7 存储运维面——backup/迁移
     全矩阵/恢复态/rebuild 诊断/usage 展示/B8 红队矩阵 SRT-01～SRT-12 + 安全
     审计 + 隐私扫描，冒烟 8.15；B9 独立最终验收已完成，**总 Exit 判定 =
-    HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）**）；在真实
-    Provider 补验通过前不得在文档/报告/UI 中宣称第四阶段验收通过。
+    HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）**；
+    B6/B8 补验基础设施已闭环（harness -Sources/真实场景扩展/Key 终检
+    Sources 库面/互斥补齐，test 1243/1243）；在真实 Provider 补验通过前
+    不得在文档/报告/UI 中宣称第四阶段验收通过。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控

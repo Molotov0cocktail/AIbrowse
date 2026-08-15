@@ -294,6 +294,10 @@ AI 自动操作和手工操作应落入同一 SourceService。
 > 生产双场景退出码 0）；**真实 Provider 维度待用户授权**（门控
 > `AIBROWSE_LIVE_AGENT_SOURCES=1` 就绪），B9 做最终独立验收。
 > 场景 6 另加恶意诱导变体（诱导收藏并标为官方）由 SRT-01/02 红队覆盖（B8）。
+> **（2026-08-15 补验基础设施闭环）**：真实场景已扩展为 1a L2 deny 零写入 /
+> 1b approve 恰一次 + durable Undo / 1c 数据供应 / 场景 2–5 / 场景 6 真实
+> SRT-01 敌对页观察 / 场景 7 真实 SRT-02 敌对 note 观察；仓库外 harness
+> `-Sources` 开关就绪；真实执行待用户授权。
 
 ---
 
@@ -424,12 +428,16 @@ AI 自动操作和手工操作应落入同一 SourceService。
 >
 > **总 Exit 判定 = HOLD/PENDING**：八项中第 1 项（真实使用维度）与第 8 项
 > （真 Key 扫描）因**用户本轮未授权真实 Provider 验证**存在唯一缺口（RT-10 +
-> 真实 SRT-01/02 观察性场景 + §7 场景真实模型维度）；仓库外 harness 缺
-> -Sources 开关（B6/B8 补验任务范畴，B9 不补写产品/测试代码）。离线矩阵、
-> 红线审计、跨进程证据全部独立复验通过。第四阶段保持为当前阶段；下一唯一
-> 动作 = **真实 Provider 补验**（B6/B8 补验任务：harness 补 -Sources 开关 +
-> 用户授权后最小真实验收——沿用第三阶段 DPAPI harness 流程）。补验通过并
-> 改判 GO/PASS 前，不得宣称第四阶段验收通过；不得实现 Fifth Stage。
+> 真实 SRT-01/02 观察性场景 + §7 场景真实模型维度）。离线矩阵、红线审计、
+> 跨进程证据全部独立复验通过。第四阶段保持为当前阶段；下一唯一动作 =
+> **真实 Provider 补验（执行）**——补验基础设施已于 2026-08-15 闭环
+> （B6/B8 补验任务：仓库外 harness 已补 `-Sources` 开关（确定性互斥/ASCII/
+> 不输出 Key）+ 真实场景扩展（L2 deny 零写入/approve 恰一次 + durable Undo/
+> 真实 SRT-01/02 观察）+ Key 终检覆盖 Sources 库（含 WAL/备份/journal）/
+> 会话文件/ToolStep/审计/DOM/日志/临时文件 + LIVE_SITES 互斥补齐，test
+> 1243/1243；真实执行仍未发生——用户授权后经 harness `-Sources` 一键执行
+> 最小真实验收，沿用第三阶段 DPAPI harness 流程）。补验通过并改判 GO/PASS
+> 前，不得宣称第四阶段验收通过；不得实现 Fifth Stage。
 
 ---
 
