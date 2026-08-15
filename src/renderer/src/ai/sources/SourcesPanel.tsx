@@ -87,6 +87,16 @@ export function SourcesPanel({ onCollapse }: SourcesPanelProps) {
         >
           刷新
         </button>
+        {/* B7 决议 #91：FTS 诊断性 rebuild——仅 normal 状态可触发（canWrite 门控 +
+            main 适配器门控双保险）；重复点击由 write 互斥受控 */}
+        <button
+          type="button"
+          className="sources-rebuild-index"
+          disabled={busy || !panel.canWrite}
+          onClick={() => void panel.rebuildIndex()}
+        >
+          重建索引
+        </button>
         <button
           type="button"
           className="sources-collapse"

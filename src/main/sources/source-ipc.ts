@@ -8,12 +8,14 @@
 // 零 Electron import：可用真实 node:sqlite + SourceServiceImpl 单测（source-ipc.test.ts）。
 // stateOverride 为 SMOKE_MODE 专属注入点（生产行为不变）——冒烟驱动恢复态/
 // 不可用态 UI 断言（决议 #74 测试落点）。
+import { logInfo } from '../logger';
 import {
   isUuidShape,
   validateManualAddInput,
   validateManualPatch,
 } from './domain/source-change-set';
 import type {
+  FtsRebuildResult,
   ManualAddInput,
   ManualPatch,
   ManualWriteResult,
@@ -321,6 +323,9 @@ export interface SourcesAdapter {
   prepareHardDelete(payload: unknown): Promise<PrepareHardDeleteResult>;
   hardDelete(payload: unknown): Promise<ManualWriteResult>;
   quickAdd(activeTab: { url: string } | null): Promise<QuickAddResult>;
+  // B7（决议 #91）：FTS 诊断性 rebuild——无 payload（零 SQL/路径参数通道）；
+  // 仅 normal 状态门控放行；不算 Source 数据变更（零 manual 审计、零 changed）
+  rebuildIndex(): Promise<FtsRebuildResult>;
 }
 
 export function createSourcesAdapter(options: SourcesAdapterOptions): SourcesAdapter {
@@ -364,6 +369,12 @@ export function createSourcesAdapter(options: SourcesAdapterOptions): SourcesAda
   const unavailableWrite = (): ManualWriteResult => ({
     ok: false,
     errorCode: 'source-unavailable',
+  });
+  const unavailableRebuild = (): FtsRebuildResult => ({
+    ok: false,
+    sourceCount: 0,
+    ftsCount: 0,
+    message: '信源数据暂不可用（恢复态/不可用态）',
   });
 
   const adapter: SourcesAdapter = {
@@ -588,6 +599,22 @@ export function createSourcesAdapter(options: SourcesAdapterOptions): SourcesAda
       );
       if (res.status === 'added') options.onChanged();
       return res;
+    },
+
+    // —— B7 决议 #91：FTS 诊断性 rebuild——无 payload（零 SQL/路径参数通道）；
+    // 仅 normal 状态（writable 门控）放行；零 manual 审计、零 changed（不算
+    // Source 数据变更）。service 内部再按状态拒绝（纵深防御）。 ——
+    async rebuildIndex() {
+      if (!writable()) return unavailableRebuild();
+      const svc = currentService();
+      if (svc === null) return unavailableRebuild();
+      const result = await svc.rebuildSearchIndex();
+      // 普通信息日志（非 manual 审计——rebuild 非 Source 写操作，决议 #91）
+      logInfo(
+        'sources',
+        `FTS rebuild 诊断（ok=${String(result.ok)}，行数=${result.sourceCount}/${result.ftsCount}）`,
+      );
+      return result;
     },
   };
 

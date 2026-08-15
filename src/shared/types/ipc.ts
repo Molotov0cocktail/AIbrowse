@@ -60,6 +60,8 @@ export const IPC = {
   SourcesState: 'sources:state', // → SourcesState（normal/readonly-recovery/unavailable）
   SourcesPrepareHardDelete: 'sources:prepare-hard-delete', // payload: SourcesIdPayload → PrepareHardDeleteResult
   SourcesHardDelete: 'sources:hard-delete', // payload: SourcesHardDeletePayload → ManualWriteResult
+  SourcesRebuildIndex: 'sources:rebuild-index', // 无 payload → FtsRebuildResult（B7 决议 #91：
+  // 诊断入口零 SQL/路径参数通道；仅 normal 状态门控；不算 Source 数据变更）
   SourcesChanged: 'sources:changed', // main → renderer 事件（仅成功变更后发送最小 payload；
   // renderer 收到后重新读取——不携带任何数据正文）
 } as const;

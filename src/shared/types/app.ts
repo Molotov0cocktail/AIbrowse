@@ -34,6 +34,7 @@ import type {
   SourcesUpdatePayload,
 } from './ipc';
 import type {
+  FtsRebuildResult,
   ManualWriteResult,
   PrepareHardDeleteResult,
   QuickAddResult,
@@ -131,6 +132,9 @@ export interface AibrowseBridge {
     state(): Promise<SourcesState>;
     prepareHardDelete(payload: SourcesIdPayload): Promise<PrepareHardDeleteResult>;
     hardDelete(payload: SourcesHardDeletePayload): Promise<ManualWriteResult>;
+    // B7 决议 #91：FTS 诊断性 rebuild——无 payload（零 SQL/路径参数通道）；
+    // 仅 normal 状态可用（适配器门控）
+    rebuildIndex(): Promise<FtsRebuildResult>;
     onChanged(listener: (e: SourcesChangedEvent) => void): () => void;
   };
 }

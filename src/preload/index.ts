@@ -22,6 +22,7 @@ import type {
   QuickAddResult,
   SourceGroupsResult,
   SourceListResult,
+  FtsRebuildResult,
   SourceResult,
   SourceSearchResult,
   SourcesState,
@@ -163,6 +164,7 @@ const bridge: AibrowseBridge = {
       invoke<PrepareHardDeleteResult>(IPC.SourcesPrepareHardDelete, payload),
     hardDelete: (payload: SourcesHardDeletePayload) =>
       invoke<ManualWriteResult>(IPC.SourcesHardDelete, payload),
+    rebuildIndex: () => invoke<FtsRebuildResult>(IPC.SourcesRebuildIndex), // B7：无 payload 诊断入口
     onChanged: sourcesChangedRelay.subscribe,
   },
 };

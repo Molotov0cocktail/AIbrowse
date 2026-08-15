@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import type { SourceTrustValue, SourceView } from '../../../../shared/types/sources';
 import type { SourcesUpdatePayload } from '../../../../shared/types/ipc';
-import { shareModeLabel, trustFullLabel, trustValueLabel } from './sources-display';
+import {
+  describeLastUsage,
+  shareModeLabel,
+  trustFullLabel,
+  trustValueLabel,
+} from './sources-display';
 
 // 信源详情/编辑表单（B5）。决议 #75/#78：aiNote 只读展示（用户只编辑 user note）；
 // trust 仅可设 value（assertedBy/verification 由 main/SourceService 确定）；provenance
@@ -188,6 +193,11 @@ export function SourceDetailForm({
           <span className="sources-ai-note-text">{source.aiNote}</span>
         </div>
       )}
+      {/* B7：usage/health 展示边界——「上次使用结果」纯展示（v1 可靠信号仅
+          reachable/unreachable，其余如实标暂无可靠信号；不宣称健康/长期可用） */}
+      <div className="sources-last-usage">
+        {describeLastUsage(source.lastUsedAt, source.lastUsageOutcome)}
+      </div>
       <div className="sources-detail-actions">
         <button type="button" className="sources-save" disabled={busy} onClick={save}>
           保存修改

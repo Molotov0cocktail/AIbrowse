@@ -76,10 +76,12 @@ import { registerTool } from './ai/tools/tool-registry';
 // Fourth Stage B4：Source 子系统装配（<userData>/sources/sources.db + migration v1）
 // + Source 工具注册（13 → 17）。初始化失败 → Source 工具安全返回 source-unavailable，
 // 不拖垮浏览器其余能力；退出时幂等释放句柄（B4 红线：Source Tool 只经 SourceService）。
+// B7：装配改用 openSourcesStore（probe → 迁移前备份 → 逐级迁移 → 完整性/外键检查 →
+// normal | readonly-recovery | unavailable——恢复态为真实生产装配能力，非 SMOKE
+// override；未知高版本/损坏/截断/坏 magic/备份失败/迁移失败/迁移后检查失败均保留
+// 原库与已有备份进入只读恢复态，浏览器其余能力不受影响）。
 import { mkdirSync, rmSync } from 'node:fs';
-import { openDb } from './sources/db/sqlite-driver';
-import { runMigrations } from './sources/db/migrations';
-import { SourceServiceImpl } from './sources/source-service';
+import { openSourcesStore } from './sources/sources-store';
 import type { SourceService, SourcesState } from '../shared/types/sources';
 import { createSourceTools } from './sources/tools/source-tools';
 // B6：usage 接线（决议 #79/#81）——SourceSearchHintStore 每 run 独立 + browser_open
@@ -514,6 +516,9 @@ if (!gotLock) {
     handle(IPC.SourcesState, () => sourcesAdapter.state());
     handle(IPC.SourcesPrepareHardDelete, (payload) => sourcesAdapter.prepareHardDelete(payload));
     handle(IPC.SourcesHardDelete, (payload) => sourcesAdapter.hardDelete(payload));
+    // B7 决议 #91：FTS 诊断性 rebuild——无 payload（零 SQL/路径参数通道）；
+    // 状态门控在适配器内（仅 normal 放行）
+    handle(IPC.SourcesRebuildIndex, () => sourcesAdapter.rebuildIndex());
 
     handle(
       IPC.ConfigProvidersList,
@@ -710,7 +715,9 @@ function createBrowserWindow(): void {
   // 临时 userData（isPathInside 断言），生产 SourceService 指向 userData/sources——
   // 共享库才是跨进程读回/Undo/永久删除的验证对象（B-05 dev 冒烟实测抓出 pid 目录
   // 绕开共享状态的缺陷）。
-  // 初始化失败 → sourceService 保持 null，Source 工具安全返回 source-unavailable
+  // B7：openSourcesStore 装配——恢复态 service 也装配（db=null 门控拒绝全部读写），
+  // 适配器三态（normal/readonly-recovery/unavailable）经 getState/惰性解引用正确
+  // 呈现；初始化失败 → sourceService 保持 null，Source 工具安全返回 source-unavailable
   // （不拖垮浏览器其余能力；中文诊断入日志）。
   try {
     const sourcesDir =
@@ -720,10 +727,19 @@ function createBrowserWindow(): void {
     if (SMOKE_MODE && !SOURCES_UI_GATE_MODE) smokeSourcesDir = sourcesDir;
     if (SMOKE_MODE) smokeSourcesStateOverride = { current: null }; // B5：冒烟注入点装配
     mkdirSync(sourcesDir, { recursive: true });
-    const sourcesHandle = openDb(join(sourcesDir, 'sources.db'));
-    runMigrations(sourcesHandle);
-    sourceService = new SourceServiceImpl({ db: sourcesHandle });
-    logInfo('main', `Sources 子系统就绪（${join(sourcesDir, 'sources.db')}）`);
+    const outcome = openSourcesStore({
+      dbPath: join(sourcesDir, 'sources.db'),
+      backupsDir: join(sourcesDir, 'backups'),
+    });
+    if (outcome.mode === 'normal') {
+      sourceService = outcome.service;
+      logInfo('main', `Sources 子系统就绪（${join(sourcesDir, 'sources.db')}）`);
+    } else if (outcome.mode === 'readonly-recovery') {
+      // 只读恢复态：service 已装配（读写全拒），浏览器其余能力继续可用
+      sourceService = outcome.service;
+    } else {
+      sourceService = null;
+    }
   } catch (err) {
     sourceService = null;
     logError('main', 'Sources 子系统初始化失败（Source 工具将返回 source-unavailable）', err);

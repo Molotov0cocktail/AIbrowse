@@ -833,3 +833,54 @@ describe('sources:quick-add', () => {
     expect(listAfter.ok && listAfter.total === 0).toBe(true);
   });
 });
+
+// ---------- B7：rebuild 受控入口（仅 UI 通道 + normal 状态；无参数/无审计/无 changed） ----------
+
+describe('sources:rebuild-index — 诊断入口门控', () => {
+  it('normal 状态 → 调用 service.rebuildSearchIndex 并透传有界诊断；零审计零 changed', async () => {
+    const result = await adapter.rebuildIndex();
+    expect(result.ok).toBe(true);
+    expect(result.sourceCount).toBe(0);
+    expect(audits).toHaveLength(0); // rebuild 非 Source 数据变更（决议 #91：不产生 manual 审计）
+    expect(changedCount).toBe(0); // 不发 sources:changed
+  });
+
+  it('状态 override readonly-recovery → 拒绝且不触达 service', async () => {
+    stateOverrideHolder.current = { mode: 'readonly-recovery', reason: '测试恢复态' };
+    const gated = createSourcesAdapter({
+      service: () => service,
+      audit: (m) => audits.push(m),
+      onChanged: () => {
+        changedCount += 1;
+      },
+      stateOverride: () => stateOverrideHolder.current,
+    });
+    const result = await gated.rebuildIndex();
+    expect(result.ok).toBe(false);
+    expect(audits).toHaveLength(0);
+    expect(changedCount).toBe(0);
+    stateOverrideHolder.current = null;
+  });
+
+  it('service null → 结构化拒绝（ok=false）不抛', async () => {
+    const bare = createSourcesAdapter({
+      service: null,
+      audit: (m) => audits.push(m),
+      onChanged: () => {
+        changedCount += 1;
+      },
+    });
+    const result = await bare.rebuildIndex();
+    expect(result.ok).toBe(false);
+    expect(audits).toHaveLength(0);
+    expect(changedCount).toBe(0);
+  });
+
+  it('非法/多余参数一律忽略（无 payload 通道：SQL/路径/权限参数零暴露）', async () => {
+    const result = await adapter.rebuildIndex();
+    expect(typeof result.ok).toBe('boolean');
+    expect(typeof result.message).toBe('string');
+    expect(Number.isInteger(result.sourceCount)).toBe(true);
+    expect(Number.isInteger(result.ftsCount)).toBe(true);
+  });
+});

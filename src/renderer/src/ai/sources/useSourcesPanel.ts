@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  FtsRebuildResult,
   ManualWriteResult,
   QuickAddResult,
   SourceGroupsResult,
@@ -11,7 +12,7 @@ import type {
   SourceView,
 } from '../../../../shared/types/sources';
 import type { SourcesAddPayload, SourcesUpdatePayload } from '../../../../shared/types/ipc';
-import { sourceErrorLabel } from './sources-display';
+import { rebuildResultMessage, sourceErrorLabel } from './sources-display';
 
 // Sources 面板数据 hook（B5，决议 #69/#70/#77）：
 // - 异步请求序号守卫：每次加载取递增序号，仅最新序号的结果落地（迟到响应忽略）；
@@ -66,6 +67,9 @@ export interface SourcesPanelData {
     sourceId: string,
   ): Promise<{ ok: true; token: string } | { ok: false; errorCode: string }>;
   hardDelete(sourceId: string, token: string): Promise<ManualWriteResult>;
+  // B7 决议 #91：FTS 诊断性 rebuild——重复点击/并发提交受控（write 互斥）；
+  // 不算 Source 数据变更（不刷新 changed，仅展示有界诊断）
+  rebuildIndex(): Promise<FtsRebuildResult | null>;
   canWrite: boolean;
 }
 
@@ -393,6 +397,16 @@ export function useSourcesPanel(): SourcesPanelData {
     [],
   );
 
+  // B7 决议 #91：rebuild 诊断入口——write 互斥（重复点击/并发提交受控）；成功/失败
+  // 均经 notice 展示有界诊断；不算 Source 数据变更（不刷新 changed）。
+  const rebuildIndex = useCallback(async (): Promise<FtsRebuildResult | null> => {
+    setNotice(null);
+    const result = await write('rebuild-index', () => window.aibrowse.sources.rebuildIndex());
+    if (result === null) return null;
+    setNotice(rebuildResultMessage(result));
+    return result;
+  }, [write]);
+
   const hardDelete = useCallback(
     async (sourceId: string, token: string): Promise<ManualWriteResult> => {
       setNotice(null);
@@ -447,6 +461,7 @@ export function useSourcesPanel(): SourcesPanelData {
     undo,
     prepareHardDelete,
     hardDelete,
+    rebuildIndex,
     canWrite: state === null || state.mode === 'normal',
   };
 }

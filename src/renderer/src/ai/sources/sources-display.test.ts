@@ -6,7 +6,9 @@
 // backup paths — adjudication #74), quick-add result messaging (adjudication #72).
 import { describe, expect, it } from 'vitest';
 import {
+  describeLastUsage,
   describeSourcesState,
+  formatLocalTime,
   quickAddResultMessage,
   shareModeDescription,
   shareModeLabel,
@@ -170,5 +172,64 @@ describe('quick-add 结果文案（决议 #72）', () => {
         related: [],
       }),
     ).toContain('已存在');
+  });
+});
+
+// ---------- B7：usage/health 展示边界（「上次使用结果」，不宣称健康/长期可用） ----------
+
+describe('describeLastUsage — 最近一次使用结果（v1 可靠信号仅 reachable/unreachable）', () => {
+  it('尚未记录（lastUsedAt null）→ 明确「尚未记录」', () => {
+    expect(describeLastUsage(null, null)).toBe('上次使用结果：尚未记录');
+  });
+
+  it('reachable → 「可达」+ 时间；unreachable → 「不可达」+ 时间', () => {
+    const at = '2026-08-15T04:05:06.000Z';
+    const reachable = describeLastUsage(at, 'reachable');
+    expect(reachable.startsWith('上次使用结果：可达（')).toBe(true);
+    expect(reachable).toContain(formatLocalTime(at));
+    const unreachable = describeLastUsage(at, 'unreachable');
+    expect(unreachable.startsWith('上次使用结果：不可达（')).toBe(true);
+    expect(unreachable).toContain(formatLocalTime(at));
+  });
+
+  it('unknown/auth-required/blocked → 如实标「暂无可靠信号」（不伪装健康结论）', () => {
+    const at = '2026-08-15T04:05:06.000Z';
+    for (const outcome of ['unknown', 'auth-required', 'blocked'] as const) {
+      const text = describeLastUsage(at, outcome);
+      expect(text).toContain('暂无可靠信号');
+      expect(text).toContain(formatLocalTime(at));
+      expect(text).not.toContain('健康');
+      expect(text).not.toContain('长期');
+    }
+  });
+
+  it('全部文案不含「健康/长期可用」字样（展示边界）', () => {
+    const samples = [
+      describeLastUsage(null, null),
+      describeLastUsage('2026-08-15T04:05:06.000Z', 'reachable'),
+      describeLastUsage('2026-08-15T04:05:06.000Z', 'unreachable'),
+      describeLastUsage('2026-08-15T04:05:06.000Z', 'unknown'),
+      describeLastUsage('2026-08-15T04:05:06.000Z', 'auth-required'),
+      describeLastUsage('2026-08-15T04:05:06.000Z', 'blocked'),
+    ];
+    for (const text of samples) {
+      expect(text).not.toMatch(/健康|长期可用/);
+    }
+  });
+});
+
+describe('formatLocalTime — 本地时间确定性格式（YYYY-MM-DD HH:mm）', () => {
+  it('固定 ISO → 与本地 Date 分量一致（补零/顺序正确）', () => {
+    const iso = '2026-08-15T04:05:06.000Z';
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const expected = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    expect(formatLocalTime(iso)).toBe(expected);
+    expect(formatLocalTime(iso)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  });
+
+  it('非法 ISO → 空串安全返回（不抛异常）', () => {
+    expect(formatLocalTime('not-a-date')).toBe('');
+    expect(formatLocalTime('')).toBe('');
   });
 });

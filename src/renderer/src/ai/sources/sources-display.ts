@@ -5,11 +5,13 @@
 // 结果中文文案（决议 #72）。note/name/tag 等文本仅作 React 纯文本渲染（决议 #78，
 // 本模块输出字符串由组件以文本节点渲染，无 HTML/Markdown 解释）。
 import type {
+  FtsRebuildResult,
   QuickAddResult,
   SourceErrorCode,
   SourceShareMode,
   SourceTrust,
   SourceTrustValue,
+  SourceUsageOutcome,
   SourcesState,
 } from '../../../../shared/types/sources';
 
@@ -117,3 +119,32 @@ export function quickAddResultMessage(result: QuickAddResult): string {
 
 // 相关提示条目上限（决议 #72：同 origin 不同页面 ≤5 条）
 export const QUICK_ADD_RELATED_TITLE = '可能相关（同站点其他收藏，未做任何修改）';
+
+// ---------- B7：usage/health 展示边界（「上次使用结果」，不宣称健康/长期可用） ----------
+
+// 本地时间确定性格式 YYYY-MM-DD HH:mm（非法输入安全返回空串，不抛异常）
+export function formatLocalTime(iso: string): string {
+  if (typeof iso !== 'string' || iso === '') return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// v1 可靠信号仅 reachable/unreachable（决议 #42/#79：其余三态为枚举占位，无可靠
+// 触发信号宁缺勿错——如实标「暂无可靠信号」，严禁写成「健康/长期可用」）。
+export function describeLastUsage(
+  lastUsedAt: string | null,
+  outcome: SourceUsageOutcome | null,
+): string {
+  if (lastUsedAt === null) return '上次使用结果：尚未记录';
+  const time = formatLocalTime(lastUsedAt);
+  if (outcome === 'reachable') return `上次使用结果：可达（${time}）`;
+  if (outcome === 'unreachable') return `上次使用结果：不可达（${time}）`;
+  return `上次使用结果：暂无可靠信号（${time}）`;
+}
+
+// B7 决议 #91：rebuild 诊断结果展示（成功/失败均有界中文诊断，无路径/SQL）
+export function rebuildResultMessage(result: FtsRebuildResult): string {
+  return result.message;
+}
