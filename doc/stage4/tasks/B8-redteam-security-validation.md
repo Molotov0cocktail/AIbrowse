@@ -91,6 +91,38 @@ B-02/B-05 set/check（不新建重复的跨进程框架）；无新增产品模�
 
 验收标准全绿 + threat-model §4 证据回填 + progress 任务表 B8 ✅ + 双远程推送。
 
+## 红→绿证据（2026-08-15 B8 实施完成）
+
+- **红态**（8.15 骨架接入默认矩阵）：12/12 项「断言未实现（红态骨架）」独立
+  失败收集，dev 冒烟退出码 1（日志 2026-08-15 21:19:35「8.15 红队矩阵红态
+  （12 项）」）；红态运行残留目录已精确清理。
+- **逐项实现至绿**：SRT-01～SRT-12 每项独立机器断言（无总布尔代替；断言落点
+  见 threat-model §4.1 证据表）。dev 冒烟最终退出码 0、生产产物冒烟最终退出
+  码 0（out/ 重新构建后运行，8.15 全矩阵通过日志实证）；全量 test
+  **1229/1229**（+3——SRT-08 缺陷修复固化用例）、typecheck/lint/format:check/
+  build/diff-check 全绿；B-02 set/check（含 SRT-10 扩展）退出码 0；B-05
+  set/check 退出码 0；SESSION set/check 退出码 0。
+- **实现期修正均为冒烟夹具/断言自身缺陷（如实登记，产品契约零迁就）**：
+  ① 静态扫描 needle 运行时分片构造（扫描器源码不含完整禁具字面量，防自身
+  误报——「不靠全仓库零字符串」纪律落地）；② 8.15 场景库注入递增时钟（同一
+  毫秒批量写入时 created_at 排序确定性）；③ SRT-03 尾部标记种子须最先添加
+  （list 排序 created_at DESC——最旧者第 2 页）；④ SRT-08 标记位置与 200
+  字符截断边界校准（可见前缀进摘录、尾部标记零持久化）+ WAL 模式库文件
+  集合扫描（新数据在 -wal）；⑤ 探针表名（source_groups/source_tags）与
+  step-limit 终态值（AgentRunStatus='step-limit'）校准；⑥ SRT-01 面板收尾
+  恢复进入前 AI 面板状态（9.1 矩阵 4 前置）；⑦ SRT-10 种子创建后立即
+  disable（既有 B-02「读回应为 3 个 source」断言零改动——扩展不破坏既有断言），
+  check 经 journal 定位（get 不过滤 deleted）读回后 hardDelete。
+- **红队发现产品缺陷 1 处（先写失败测试 → 最小修复 → 独立提交 33e14b0）**：
+  sanitizeToolCallsForPersistence 仅对 browser_fill.text 脱敏——source_search
+  的 query 与 browser_open 的 url 若为 URL 形态（含 ?token=/&key= 敏感 query）
+  会全量持久化进 ToolStep 会话文件（SRT-08 逐通道字节扫描实证），违反
+  threat-model §4 SRT-08 断言。红态 2 failed/21 passed → 修复（全部字符串
+  字段应用审计层同源 redactUrlQueryValue，fill.text 保持 FILL_MASK）→ 23/23。
+- **RT-10 与真实 SRT-01/02 = NOT RUN**（本轮未获用户授权，不发起付费/公网
+  请求，不把历史证据冒充本轮实测，不阻塞离线 B8）；真实验证门控
+  `AIBROWSE_LIVE_AGENT_SOURCES=1` 保持就绪待用户授权。
+
 ## 风险与停止条件
 
 - 红队发现无法在本任务范围内安全修复的真实缺陷 → 停止并升级（新增修复任务

@@ -42,8 +42,16 @@
 >   no-clobber 原子发布 + 所有权证明精确清理 + 任意路径公共导出移除），红→绿
 >   5 failed/32 passed → 37/37，全量 test **1226/1226**，dev/生产冒烟与 B-02
 >   双进程退出码 0**；
->   下一个推荐动作 = **B8 红队矩阵 SRT-01～SRT-12**（独立审计唯一 HOLD 已
->   解除；审计其余发现 P2-2/P2-3/P2-4/P3 登记于 progress.md 开放风险）。
+>   **B8 已完成（2026-08-15）**——红队矩阵 SRT-01～SRT-12 + 增量安全审计 +
+>   隐私扫描（决议 #93 校准：冒烟场景编号 8.15；SRT-12 边界 = RT-01～08、
+>   RT-11 本轮 dev/production 重跑 + RT-09 扩展静态审计 + RT-10 未授权
+>   NOT RUN）：12 项独立机器断言全部通过（threat-model §4.1 证据表）+
+>   SRT-08 发现并修复产品缺陷 1 处（持久化 toolCalls URL query 值脱敏，
+>   先测后修）+ B-02 SRT-10 跨进程扩展；全量 test **1229/1229**，dev+
+>   生产冒烟与 B-02/B-05/SESSION 双进程全部退出码 0；RT-10 与真实
+>   SRT-01/02 NOT RUN（待用户授权）；
+>   下一个推荐动作 = **B9 Fourth Stage 独立最终验收**（不采信 B1–B8 完成
+>   报告；审计其余发现 P2-2/P2-3/P2-4/P3 登记于 progress.md 开放风险）。
 >   契约源
 >   `doc/stage4/detailed-design.md`；安全契约源
 >   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
@@ -263,7 +271,10 @@ Sources UI 端到端矩阵（真实 DOM → preload → IPC → SourceService �
 收藏 approve → 保存 → durable Undo/搜索 → get → 改组备注/标 official 恒
 ai+unverified/降 priority ≠ disable → 明确 disable → restore）与 8.13 B-06
 UI DOM 端到端（真实任务模式 → ConfirmDialog approve/deny → Sources UI 可见 +
-AI 推断 provenance → UI Undo + usage 探针）→
+AI 推断 provenance → UI Undo + usage 探针）→ B8 起再验证 8.15 红队矩阵
+SRT-01～SRT-12（决议 #93 校准：敌对收藏诱导页/SRT-08 逐通道字节扫描含 UI
+DOM/8.14 证据核验/8.6 证据核验 + RT-09 扩展静态审计——每项独立断言，证据
+见 threat-model §4.1；RT-10 未授权 NOT RUN）→
 自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
 `doc/stage3/detailed-design.md` §13.2 + `doc/stage4/detailed-design.md` §13.2）。
 **B-02 Sources 跨进程持久化冒烟（B2 专属门控，决议 #57，两进程均需
@@ -320,7 +331,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 1226 用例）                   |
+| `npm test`                        | Vitest 全量测试（当前 1229 用例）                   |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -432,7 +443,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 1226 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 1229 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
@@ -499,6 +510,12 @@ ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元
   关闭后重命名删除/无效路径中文安全失败/关闭后使用拒绝）、migrations（14——
   迁移列表空/重复/乱序/缺级/非正整数、当前版本/未知更高版本判定、成功逐级迁移、
   第 N 步失败该步整体回滚零部分状态、部分迁移续跑）。
+  第四阶段 B8 新增（3，agent-history）：sanitizeToolCallsForPersistence 的 URL
+  形态参数 query 值脱敏（source_search query/browser_open url 含 ?token=/&key=
+  敏感 query →「query 值已脱敏 + 长度」；非 URL 形态原样；fill.text 保持
+  FILL_MASK——红队 SRT-08 逐通道字节扫描发现的产品缺陷，先测后修）；
+  红队矩阵 SRT-01～SRT-12 由冒烟 8.15 覆盖（dev+生产双场景，每项独立断言，
+  证据见 threat-model §4.1）。
   Electron 行为由冒烟自检真实启动验证（见上）。 约定见 `AGENTS.md` §7。
 
 ## 已知限制

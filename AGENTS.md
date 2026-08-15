@@ -74,12 +74,23 @@
     零删除）+ 备份源连接只读（不写源库）；红→绿 11 failed → 41/41）+ 受控
     串行重验（全量 test **1219/1219** + typecheck/lint/format:check/build +
     dev/生产冒烟 + B-02/B-05/SESSION 双进程退出码 0）；
-    **B8–B9 待开始**；独立审计 + B7 审计后定向修复已完成（2026-08-15，
+    **B8 已完成、B9 待开始**；独立审计 + B7 审计后定向修复已完成（2026-08-15，
     HOLD 解除：backup.ts 备份发布/失败清理 P2 竞态——决议 #92 两阶段私有
     staging + 硬链接 no-clobber 原子发布 + 所有权证明精确清理 + 任意路径
     公共导出移除；红→绿 5 failed/32 passed → 37/37，全量 1226/1226）；
-    下一个推荐动作 = **B8 红队矩阵 SRT-01～SRT-12**（审计其余发现
-    P2-2/P2-3/P2-4/P3 登记于 progress.md 开放风险，不阻塞 B8）。契约源
+    **B8 红队矩阵已完成（2026-08-15）**——冒烟 8.15（决议 #93 校准：8.7
+    已被 B1 SQLite 决策门占用，历史编号不复用）SRT-01～SRT-12 每项独立
+    机器断言 dev+生产双场景退出码 0（断言落点 threat-model §4.1 证据表）+
+    8.6/8.14 结构化证据核验（非日志字符串、不重复完整运行相同矩阵）+
+    RT-09 扩展静态审计（SQL 执行点分类证据/renderer-preload 零 SQL/
+    Electron 隔离・Key 零读回・Source Tool 零网络）+ SRT-08 发现并修复
+    产品缺陷（sanitizeToolCallsForPersistence 对 URL 形态参数 query 值
+    全量持久化——先测后修独立提交）+ B-02 SRT-10 跨进程扩展（hard delete
+    后 FTS/journal/usage 清理）；全量 test 1229/1229；**RT-10 与真实
+    SRT-01/02 = NOT RUN**（本轮未获用户授权，不冒充历史证据）；
+    下一个推荐动作 = **B9 Fourth Stage 独立最终验收**（不采信 B1–B8 完成
+    报告；审计其余发现 P2-2/P2-3/P2-4/P3 登记于 progress.md 开放风险）。
+    契约源
     `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
     实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
@@ -97,10 +108,11 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
     expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
     永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
     数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
-    **⚠️ B1–B6 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层/B5 Sources
-    UI 与 IPC/B6 usage 接线 + 自然语言管理端到端；B7 存储运维面已实现——
-    backup/迁移全矩阵/恢复态/rebuild 诊断/usage 展示）；B8–B9 对应能力（红队、
-    最终验收）在对应任务完成前不得在文档/报告/UI 中宣称已实现。
+    **⚠️ B1–B8 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层/B5 Sources
+    UI 与 IPC/B6 usage 接线 + 自然语言管理端到端/B7 存储运维面——backup/迁移
+    全矩阵/恢复态/rebuild 诊断/usage 展示/B8 红队矩阵 SRT-01～SRT-12 + 安全
+    审计 + 隐私扫描，冒烟 8.15）；B9 对应能力（第四阶段独立最终验收/Exit Gate
+    判定）在完成前不得在文档/报告/UI 中宣称第四阶段验收通过。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
@@ -1022,7 +1034,7 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   A3 状态机补齐，12 次 HTTP 全部 200）**——**第三阶段总 Exit 决策 =
   `GO/PASS`**（证据见 Third_stage.md §9/§10 与 progress.md）。
 
-### Fourth Stage Sources 契约速查（定稿 2026-08-15；B1–B7 已实现并 grep 核对，B8–B9 未实现前不得宣称）
+### Fourth Stage Sources 契约速查（定稿 2026-08-15；B1–B8 已实现并 grep 核对，B9 未实现前不得宣称第四阶段验收通过）
 
 > 唯一契约源 `doc/stage4/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
 > Q1–Q12 拍板）；安全契约源 `doc/stage4/threat-model.md`（威胁 ST-01～ST-12、
@@ -1310,7 +1322,7 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 1226 用例）
+  - `npm test` — Vitest 全量测试（当前 1229 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -1378,7 +1390,13 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
         Agent 验证（`AIBROWSE_LIVE_AGENT=1` 门控，需用户授权——询问边界，
         未授权不联网调用付费 API：Third_stage §7 场景 1–6 + RT-10 + 停止/
         取消 + 零泄漏终检 + 真 Key 零暴露扫描 + 模型轮次台账；诱导目标全部
-        指向本地安全地址）→ 自动退出，退出码 0 即通过；日志链见 log/）。
+        指向本地安全地址）→ B8 起再验证 8.15 红队矩阵 SRT-01～SRT-12
+        （决议 #93 校准，每项独立断言：敌对收藏诱导页/敌对 note 块隔离/
+        禁具与上限/注入仅作数据/canonicalization 欺骗/中途失败整体回滚/
+        重放・迟到・跨 run/逐通道字节级隐私扫描（敏感标记运行时分片构造）/
+        8.14 证据核验/hard delete 清理/垃圾上界/8.6 证据核验 + RT-09 扩展
+        静态审计分类证据；RT-10 未授权 NOT RUN——证据见 threat-model
+        §4.1）→ 自动退出，退出码 0 即通过；日志链见 log/）。
         生产产物路径同样可跑：
         `AIBROWSE_SMOKE=1 npm run start`（file: 入口精确匹配导航保护）。可选真实网页加载验证
         （需网络）：`AIBROWSE_SMOKE_URL=https://www.bing.com/` 附加设置（15 秒超时，验证
@@ -1704,6 +1722,25 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
     冒烟 8.14 B-06 B7 部分（真实启动迁移/备份/恢复态全矩阵 + rebuild + usage
     投影 + 保留清理）自动包含于默认矩阵（dev+生产双场景退出码 0；B-02 双进程
     扩展 usage 跨进程断言退出码 0；B-05/SESSION 双进程复跑退出码 0）。
+  - ✅ B8（2026-08-15 红→绿落地，+3：agent-history 3——sanitizeToolCallsForPersistence
+    URL 形态参数 query 值脱敏（source_search query/browser_open url 含
+    ?token=/&key= 敏感 query →「query 值已脱敏 + 长度」；非 URL 形态原样；
+    fill.text 保持 FILL_MASK），基线 1226 → 1229）：**红队发现的产品缺陷**
+    （SRT-08 逐通道字节扫描实证 ToolStep 会话文件 token 泄漏）——先写失败
+    测试（红态 2 failed/21 passed）→ 最小修复（复用审计层同源
+    redactUrlQueryValue）→ 23/23。红队矩阵 SRT-01～SRT-12 为冒烟 8.15
+    （决议 #93 校准：8.7 已被 B1 决策门占用，历史编号不复用；SRT-12 边界 =
+    RT-01～08、RT-11 本轮 dev/production 重跑 + RT-09 扩展静态审计 +
+    RT-10 未授权 NOT RUN）——每项独立断言（落点 threat-model §4.1 证据表，
+    12 项全部「机器可证明」）；8.6/8.14 返回结构化已通过证据由 8.15 精确
+    核验（非日志字符串、不重复完整运行相同矩阵）；SRT-08 敏感标记运行时
+    分片构造逐通道字节扫描（ToolResult/审计/日志/ToolStep/会话文件/UI
+    DOM）；SRT-10 扩展 B-02 set/check（hard delete 后 FTS/journal/usage
+    私人 payload 清理跨进程证据，既有断言零改动）；RT-09 扩展静态审计为
+    分类证据（SQL 执行点全部位于允许点：Repository/migrations/driver/
+    backup/SMOKE 测试设施 + snapshot-script 正则非 SQL 分类；renderer/
+    preload 零 SQL；Electron 隔离/Key 零读回/Source Tool 零网络代码证据）。
+    dev+生产双场景退出码 0；B-02/B-05/SESSION 双进程退出码 0。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。
