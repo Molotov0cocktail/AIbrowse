@@ -99,3 +99,53 @@ agent-display.ts`（错误码文案）、`src/main/index.ts`、`src/main/smoke.t
   「始终允许」）；
 - 工具注册导致既有 13 工具任何回归 → 修复回归为最高优先级，修复前不提交；
 - 红线：不新增网络能力、不改 AGENT_SYSTEM_PROMPT、不改既有工具 schema。
+
+## 实施记录（2026-08-15，B4 会话）
+
+### 实施前契约裁决（接口缺口核验属实）
+
+- **#64 结构化 schema**：ProviderToolParameter 冻结于「仅 string|number|boolean
+  无嵌套」——source_apply_changes 只能退化为 JSON 字符串通道。裁决：最小递归
+  object/array 扩展（properties/required/items/maxItems 缺省 20）+ 递归校验
+  （additionalProperties=false 未知字段拒绝/嵌套 enum/逐项/深度上限 4）；
+  既有 13 工具 schema、序列化、校验行为零变化（零回归断言固化）。
+- **#65 expectedVersion 并发令牌**：决议 #38「version 不回显」使模型无法获得
+  提交 update/disable/restore 所需的版本号。裁决：仅 source_get 的 agent
+  allowlist 返回 expectedVersion（值 = 服务层 version）；search/list 恒不返回；
+  blocked 视同不存在；version 字段名本身不回显（决议 #38 校准，§8.1 同步）。
+- **#66 previewChangeSet 只读预览 + 确认摘要钩子 + TOCTOU**：SourceService 增
+  `previewChangeSet(cs)`（与 apply 同一校验语义 + 逐项预检，只读生成 ≤2000
+  中文 diff——纯函数 `buildChangeDiff(ops, rows)`；零 journal/零幂等键）；
+  ToolDefinition 增 `confirmSummary?` 钩子（ToolExecutor 在 requestConfirm 前
+  调用；预览失败 → 钩子错误码 fail-closed 不进入确认）；批准后 applyChangeSet
+  重新校验版本（逐项预检 + 事务内版本条件更新双重校验）；blocked 猜测引用
+  （update/disable/restore）→ source-forbidden、add 撞 blocked → duplicate
+  不回注 id（零泄漏）。
+- **#67 审计隐私收紧**：note 正文零出现（仅字段名+长度）；URL 值零出现；
+  source_search 查询 ≤500 但 URL 形态 query 值脱敏；幂等键成功后由
+  ToolExecutor 追加（恰好一条审计纪律不变）。
+
+### 红→绿证据
+
+- **红态**：8 files failed / 25 failed / 1012 passed（source-tools.test.ts 模块
+  缺失；注册表嵌套校验缺失/审计 ops 整体 JSON 化泄漏 note/查询值未脱敏/
+  previewChangeSet 不存在/apply 对 blocked 照常写入且回注既有 id/确认钩子缺失
+  （base 2 被 decide 回落 L1 自动执行）/store 拒绝 source 错误码/agent-display
+  无文案——全部为决议 #64–#67 契约对照下的真实失败；既有 1007 用例零删除零削弱）。
+- **绿态**：全量 **1071/1071**（+64：source-tools 33 / tool-registry 6 /
+  tool-executor 5 / audit-log 3 / source-service 7 / source-change-set 4 /
+  conversation-store 1 / agent-display 5）。
+- **冒烟**：8.1 注册表断言校准 17 工具；新增 8.10 B-03/B-04 B4 部分（默认矩阵）
+  ——dev 完整矩阵退出码 0；生产产物完整矩阵退出码 0；B-02 生产双进程 set/check
+  退出码 0/0（回归）。
+- **红线**：禁具零命中；SQL 零扩散；零 any/@ts-ignore；Source 工具零 Electron
+  import；package/lockfile 零改动；既有 13 工具 schema 零改动；B1 driver/B2
+  schema v1 零 diff；敏感扫描与 git diff --check 零命中；临时目录零残留。
+
+### 验收标准核对
+
+- detailed-design §7.1/§9 全部落地并有单测 + 冒烟证据 ✅
+- SRT-01/02/06/07 相关断言先行可用 ✅（blocked 猜测/note 块隔离/单事务/重放
+  幂等/审计脱敏均有单测与冒烟断言；B8 汇总裁决）
+- 工具数 17（8.1 断言校准）且既有 13 工具行为零回归 ✅
+- 确认前数据库零变化 ✅（preview 零写入单测 + deny 字节级零变化冒烟断言）

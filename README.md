@@ -9,8 +9,9 @@
 > **阶段状态（2026-08-15）：B1 完成（node:sqlite 决策门实测通过并冻结）、
 > B2 已完成（Source 域模型 + Repository + SourceService + journal + Undo）、
 > B3 已完成（多语言 Source Search + 有界 Retrieval + 分享模式）、
-> B4 待开始**——Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9
-> 任务拆分已完成；**B1：node:sqlite 在 Electron 43.4.0 dev+生产构建
+> B4 已完成（Source Tools 四工具 + 权限矩阵 + L2 change set 确认/审计 +
+> Agent 上下文隔离）**——Fourth Stage 已正式进入（用户切换指令）；详细设计与
+> B1–B9 任务拆分已完成；**B1：node:sqlite 在 Electron 43.4.0 dev+生产构建
 > 11 项逐项实测通过（基础能力项全过 + FTS5/trigram 可用），驱动冻结决议 #48 +
 > sqlite-driver/migrations 基座落地；B2：九项契约缺口实施前裁决（决议
 > #49–#57）+ schema v1（Sources/Groups/Tags/links/change journal/usage/FTS5）+
@@ -19,34 +20,40 @@
 > （决议 #58–#63）+ 多语言检索（FTS5/trigram 主路径 + 短查询安全降级）+ 有界
 > Retrieval（硬上限 10/每页 20）+ 分享模式（audience 必填）+ 确定性排序 +
 > note 摘录 ≤200 + rebuild 一致性已落地（全量 test 1007/1007，B-04 B3 子集
-> dev+生产双场景冒烟通过）**；Sources 功能对用户/Agent 尚不可用（UI/Tools
-> 未实现——B4/B5 完成前不得宣称可用）**；下一个推荐任务 = **B4**（Source
-> Tools + 权限矩阵 + L2 change set 确认/审计 + Agent 上下文隔离）。契约源
-> `doc/stage4/detailed-design.md`；安全契约源
-> `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
-> Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
-> 历史阶段（已完成）：第三阶段 Browser Agent 契约源 `doc/stage3/detailed-design.md`；
-> 安全契约源 `doc/stage3/threat-model.md`（Prompt Injection 威胁模型已重建定稿，
-> 先于任何 Browser Tool 实现）。
-> **A1 tool-calling 兼容层、A2 Tool Registry/权限分级与确认状态机/审计日志、
-> A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）、
-> A4 SearchProvider 与 search_web、A5 Agent Runtime、A6 操作可见性 UI 与通道、
-> A7 红队矩阵与安全审计（RT-01～RT-08 + RT-11 + RT-10 真实模型证据）、
-> A8 收尾验收已实施（2026-08-14）；**第三阶段总 Exit 决策 = GO/PASS**——
-> 完整真实 Provider 验收通过（deepseek-v4-pro，§7 场景 1–6 全部真实完成，
-> LIVE_SMOKE_PASS 退出码 0；此前首轮 400 根因 = wire 名称契约，修复见决议
-> #35）+ 定向补验通过（场景 2 三类工具真实调用链 + 场景 3 两个不同 origin
-> 公开来源，12 次 HTTP 全部 200）**
-> （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
-> T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
-> 见 `doc/stage3/proposal.md` §11）。
-> 核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
-> 需求源：`Fourth_stage.md`（当前）；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
+> dev+生产双场景冒烟通过）；**B4：实施前裁决（决议 #64–#67：结构化递归
+> schema/expectedVersion 并发令牌/previewChangeSet 只读预览 + 确认摘要钩子 +
+> TOCTOU 版本复验 + blocked 猜测防护/审计隐私收紧）+ Source 四工具注册
+> （13 → 17 工具，L0×3 + L2×1，audience 硬编码 agent）+ change set 确认全链路
+>
+> - 审计脱敏 + UNTRUSTED_TOOL_RESULT 块隔离已落地（全量 test 1071/1071，
+>   B-03/B-04 冒烟 dev+生产双场景通过）**；Sources 功能对用户尚不可用（UI
+>   未实现——B5 完成前不得宣称可用；Agent 已可经 Source Tools 使用）**；下一个
+>   推荐任务 = **B5**（Sources UI + 手工管理 + 快速添加 + IPC/bridge）。契约源
+>   `doc/stage4/detailed-design.md`；安全契约源
+>   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
+>   Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
+>   历史阶段（已完成）：第三阶段 Browser Agent 契约源 `doc/stage3/detailed-design.md`；
+>   安全契约源 `doc/stage3/threat-model.md`（Prompt Injection 威胁模型已重建定稿，
+>   先于任何 Browser Tool 实现）。
+>   **A1 tool-calling 兼容层、A2 Tool Registry/权限分级与确认状态机/审计日志、
+>   A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）、
+>   A4 SearchProvider 与 search_web、A5 Agent Runtime、A6 操作可见性 UI 与通道、
+>   A7 红队矩阵与安全审计（RT-01～RT-08 + RT-11 + RT-10 真实模型证据）、
+>   A8 收尾验收已实施（2026-08-14）；**第三阶段总 Exit 决策 = GO/PASS**——
+>   完整真实 Provider 验收通过（deepseek-v4-pro，§7 场景 1–6 全部真实完成，
+>   LIVE_SMOKE_PASS 退出码 0；此前首轮 400 根因 = wire 名称契约，修复见决议
+>   #35）+ 定向补验通过（场景 2 三类工具真实调用链 + 场景 3 两个不同 origin
+>   公开来源，12 次 HTTP 全部 200）**
+>   （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
+>   T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
+>   见 `doc/stage3/proposal.md` §11）。
+>   核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
+>   需求源：`Fourth_stage.md`（当前）；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
 ## 当前状态（2026-08-15）
 
 - 🔨 **第四阶段（Sources）进行中（2026-08-15，用户切换指令）：设计完成、
-  B1 已完成、B2 已完成、B3 已完成、B4 待开始**——设计闭环（proposal/高层设计/详细设计/
+  B1 已完成、B2 已完成、B3 已完成、B4 已完成**——设计闭环（proposal/高层设计/详细设计/
   威胁模型/B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：
   Electron 43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared
   statements/事务/外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）
@@ -66,10 +73,22 @@
     source-search-index（四条编译期候选 SQL + 参数绑定 + 有界 200 + rebuild/
     一致性探针）+ SourceService.search/list/get 完整实现（硬上限 10/每页 20/
     分享模式矩阵/note ≤200 + provenance/bidi 补齐 U+061C/U+2066–U+2069）+
-    冒烟 8.9 B-04 B3 子集（默认矩阵 dev+生产双场景真实 node:sqlite）。
-    **Sources 功能对用户/Agent 尚不可用（UI/Tools 未实现——B4/B5 完成前不得
-    宣称可用）**；下一个唯一任务 = **B4**（Source Tools + 权限矩阵 + L2 change
-    set 确认/审计 + Agent 上下文隔离）。契约
+    冒烟 8.9 B-04 B3 子集（默认矩阵 dev+生产双场景真实 node:sqlite）；
+    **B4 已落地（2026-08-15）**：实施前契约裁决（决议 #64–#67：ProviderToolParameter
+    最小递归 object/array schema（数组上限 20/未知字段拒绝/深度有界，既有 13 工具零
+    回归）/source_get allowlist 返回 expectedVersion 并发令牌（search/list 恒不返回，
+    决议 #38 校准）/previewChangeSet 只读预览 + buildChangeDiff 纯函数（≤2000 中文
+    diff，零 journal 零幂等键）+ ToolDefinition.confirmSummary 钩子（ToolExecutor 在
+    requestConfirm 前调用）+ 批准后版本复验（TOCTOU 关闭）+ blocked 猜测引用
+    source-forbidden 零泄漏/审计隐私收紧（note 正文零出现、URL query 值脱敏））+
+    source-tools.ts 四工具（search/list/get L0 + apply_changes L2，audience 硬编码
+    agent，executor 零 Electron import）+ 权限矩阵 17 工具 + ToolResult 预算 4000 +
+    UNTRUSTED_TOOL_RESULT 块隔离 + 冒烟 8.10 B-03/B-04（默认矩阵 dev+生产双场景；
+    注册表 17 工具断言校准）+ 主进程 <userData>/sources/sources.db 装配（初始化失败
+    Source 工具安全返回 source-unavailable）。
+    **Sources 功能对用户尚不可用（UI 未实现——B5 完成前不得宣称可用；Agent 已可经
+    Source Tools 使用）**；下一个唯一任务 = **B5**（Sources UI + 手工管理 + 当前页
+    快速添加 + IPC/bridge 扩展）。契约
     `doc/stage4/detailed-design.md` + 安全契约 `doc/stage4/threat-model.md`。
 
 - ✅ **第一阶段完成（Exit Gate 通过，2026-08-13）**：T0 项目基线 → T1 详细设计定稿 →
@@ -164,8 +183,11 @@ RT-11：诱导文案结构隔离/URL 白名单 + 日志行伪造防御/提交确
 `AIBROWSE_USER_DATA_DIR=<系统 TEMP 下临时目录>`，默认矩阵运行 userData 非临时时
 如实跳过并注明）→ B3 起再验证 8.9 B-04 B3 子集（有界检索/分享模式矩阵/
 中·日·英命中/短查询降级/硬上限 10/URL 查询/注入串/rebuild 一致性——真实
-Electron 内置 node:sqlite/FTS5/trigram；SOURCE_TOOL_CONTENT_MAX=4000/
-ToolResult/块隔离/审计为 B4 待完成，决议 #63）→
+Electron 内置 node:sqlite/FTS5/trigram）→ B4 起再验证 8.10 B-03/B-04 B4 部分
+（change set 确认全链路：deny 零写入/approve 单事务/迟到与未知 id 无效/blocked
+猜测 source-forbidden/TOCTOU 版本复验/20-21 项边界/durable Undo；4000 预算截断/
+allowlist 序列化（expectedVersion 令牌）/UNTRUSTED_TOOL_RESULT 块隔离（注入 note
+夹具）/审计脱敏（note 与敏感 URL query 值零出现））→
 自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
 `doc/stage3/detailed-design.md` §13.2 + `doc/stage4/detailed-design.md` §13.2）。
 **B-02 Sources 跨进程持久化冒烟（B2 专属门控，决议 #57，两进程均需
@@ -213,7 +235,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 1007 用例）                   |
+| `npm test`                        | Vitest 全量测试（当前 1071 用例）                   |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -320,7 +342,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 1007 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 1071 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
@@ -330,7 +352,7 @@ UI 纯 reducer 与徽标文案（22）、logger 脱敏密钥专项用例；
 arguments → provider-error）、mapMessages tool 与 tool_calls 重放、FakeProvider
 工具脚本、ContextBuilder tools 恒等透传。
 第三阶段 A2 新增（91）：工具注册表（重复注册拒绝/listTools 恒等/校验矩阵——JSON 解析/
-必填/类型/enum/未知键/长度/tabId UUID/elementId el-N）、权限矩阵全表（13 工具 ×
+必填/类型/enum/未知键/长度/tabId UUID/elementId el-N；B4 递归 object/array schema）、权限矩阵全表（17 工具 ×
 条件判定：click 确定性允许列表各分支与特征冲突/isSubmit 优先升级 L2/ariaExpanded
 true 与 false 均为展开控件/语义缺失 fail-closed/fill password・file 恒 L3/URL
 scheme L3）、ConfirmManager 状态机（单 pending/approve/deny/作废/幂等/无自动批准）、

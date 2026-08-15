@@ -30,13 +30,26 @@
   trigram 主路径 + 短查询安全降级 + 有界 Retrieval 硬上限 10/每页 20 + 分享模式
   full/metadata/blocked + 确定性排序 + note 摘录 ≤200 + provenance + bidi 补齐
   U+061C/U+2066–U+2069）+ 诊断性 rebuild/一致性校验 + 冒烟 B-04 B3 子集（默认
-  矩阵 dev+生产双场景）；全量 test 1007/1007（+60）。**B4–B9 待开始**；下一个
-  推荐任务 = **B4**（Source Tools + 权限矩阵 + L2 change set 确认/审计 + Agent
-  上下文隔离）。Sources 功能对用户/Agent 尚不可用（UI/Tools 未实现——B4/B5 完成前
-  不得宣称可用；SourceService 已可经代码调用）。步骤 0 独立核对（2026-08-15，B3
-  会话）：HEAD `e26bfd8` = Gitee/GitHub 双远程 HEAD（ls-remote 实测，三方一致）、
-  工作区干净；基线 test 947/947·typecheck·lint·format:check 独立复跑全绿；B1/B2
-  代码与接口在位（决议 #45 的速查回填已于 B2 收尾完成）。Entry Gate 判定证据见
+  矩阵 dev+生产双场景）；全量 test 1007/1007（+60）。
+  **B4 已完成（2026-08-15）**——实施前契约裁决（决议 #64–#67：结构化递归
+  object/array schema（ProviderToolParameter 扩展 + 数组上限 20/未知字段拒绝/
+  additionalProperties=false/深度有界，既有 13 工具零回归）/source_get 仅 agent
+  allowlist 返回 expectedVersion 并发令牌（决议 #38 校准）/previewChangeSet
+  只读预览 + buildChangeDiff 纯函数（≤2000 中文 diff）+ ToolDefinition.
+  confirmSummary 钩子 + 批准后版本复验（TOCTOU）+ blocked 猜测防护/审计隐私
+  收紧（note 零出现、URL query 值脱敏））+ Source 四工具（search/list/get L0 +
+  apply_changes L2，注册表 13 → 17，audience 硬编码 agent，executor 零 Electron
+  import）+ change set 确认全链路 + 审计脱敏 + 4000 预算 + UNTRUSTED_TOOL_RESULT
+  块隔离 + 主进程 <userData>/sources/sources.db 装配（初始化失败 source-
+  unavailable 不拖垮浏览器）+ 冒烟 B-03/B-04 B4 部分；全量 test 1071/1071
+  （+64）。**B5–B9 待开始**；下一个推荐任务 = **B5**（Sources UI + 手工管理 +
+  当前页快速添加 + 冲突/恢复态/Undo 展示 + IPC/bridge 扩展）。Sources 功能对
+  用户尚不可用（UI 未实现——B5 完成前不得宣称可用；Agent 已可经 Source Tools
+  使用）。步骤 0 独立核对（2026-08-15，B4 会话）：HEAD `6d153ee` = Gitee/GitHub
+  双远程 HEAD（ls-remote 实测三方一致，GitHub 经代理确认可用）、工作区干净；
+  基线 test 1007/1007·typecheck·lint·format:check 独立复跑全绿；B1–B3 代码/
+  接口/测试在位；Fourth_stage.md 头部「B3–B9 待开始/下一任务 B3」矛盾已校准为
+  B1–B3 完成、B4 待开始（不改写历史记录）。Entry Gate 判定证据见
   `doc/stage4/proposal.md` §8。
 - 已完成（第三阶段，历史）：**第三阶段（Browser Agent）**，已于 2026-08-14 正式切换（用户指令）。Entry
   Gate 逐项核验通过（判定证据见 doc/stage3/proposal.md §8）；**设计定稿与任务拆分
@@ -135,7 +148,7 @@
 | B1 | node:sqlite 决策门 spike（硬前置）：Electron dev+生产构建实测 11 项（import/文件库/prepared statements/事务/外键/busy timeout/FTS5/trigram/userData/句柄清理）+ SQLite/migration 基座 | ✅ | 2026-08-15 完成（见下）：11 项逐项实测，基础能力项 ①–⑦、⑩、⑪ 全过 + ⑧⑨ 可用 → 按决议 #46/#47 冻结 node:sqlite（决议 #48）；driver/migrations/冒烟 B-01/单测 +31 落地；全量 816/816；任务文档 doc/stage4/tasks/B1-sqlite-foundation.md（实测证据节已回填） |
 | B2 | Source 域模型 + canonicalization + Repository（唯一约束）+ SourceService + 事务 + change journal + Undo | ✅ | 2026-08-15 完成（见下）：九项契约缺口实施前用户裁决（决议 #49–#57）+ schema v1 + 全模块落地 + 冒烟 B-02 双进程；任务文档 doc/stage4/tasks/B2-source-domain-service.md（红→绿证据已回填） |
 | B3 | 多语言 Source Search：FTS5/trigram + 短查询安全降级 + 有界 Retrieval（硬上限 10/每页 20/allowlist）+ 分享模式 + 确定性排序 | ✅ | 2026-08-15 完成（见下）：六项契约裁决（决议 #58–#63）+ 检索/降级/排序/分享模式/note 摘录/rebuild 全落地 + B-04 B3 子集冒烟；任务文档 doc/stage4/tasks/B3-source-search-retrieval.md（红→绿证据已回填） |
-| B4 | Source Tools 四工具（search/list/get L0 + apply_changes L2）+ 权限矩阵 + change set 确认/幂等键/expectedVersion/审计 + Agent 上下文隔离 | ⏳ | 2026-08-15 设计定稿；注册后 17 工具（冒烟 8.1 断言校准）；任务文档 doc/stage4/tasks/B4-source-tools-permission.md |
+| B4 | Source Tools 四工具（search/list/get L0 + apply_changes L2）+ 权限矩阵 + change set 确认/幂等键/expectedVersion/审计 + Agent 上下文隔离 | ✅ | 2026-08-15 完成（见下）：决议 #64–#67 + 四工具注册（13 → 17）+ preview/确认钩子/TOCTOU/blocked 防护 + 审计脱敏 + 冒烟 B-03/B-04 dev+生产双场景；任务文档 doc/stage4/tasks/B4-source-tools-permission.md（红→绿证据已回填） |
 | B5 | Sources UI + 手工管理 + 当前页快速添加 + 冲突/恢复态/Undo 展示 + IPC/bridge 扩展 | ⏳ | 2026-08-15 设计定稿；任务文档 doc/stage4/tasks/B5-sources-ui.md |
 | B6 | AI 自然语言管理端到端（change set 全链路 + Undo）+ Browser Agent 复用（source_search → browser_open/read）+ usage 记录接线 | ⏳ | 2026-08-15 设计定稿；真实 Provider 可选验证门控 AIBROWSE_LIVE_AGENT_SOURCES=1；任务文档 doc/stage4/tasks/B6-ai-source-management.md |
 | B7 | 跨进程持久化 + migration/backup/recovery 全矩阵 + FTS rebuild 诊断 + usage/health 边界 | ⏳ | 2026-08-15 设计定稿；任务文档 doc/stage4/tasks/B7-persistence-recovery-usage.md |
@@ -147,7 +160,68 @@
 > 编号一律不变。（2026-08-15）第四阶段任务编号 B1–B9、威胁 ST-01～ST-12、红队
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1/B2/B3 条目）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1/B2/B3/B4 条目）
+
+- **B4 Source Tools + 权限矩阵 + L2 change set 确认/审计 + Agent 上下文隔离
+  （2026-08-15，第四个实现闭环）**：① 步骤 0 独立核对——HEAD `6d153ee` =
+  Gitee/GitHub 双远程 HEAD（ls-remote 实测三方一致；GitHub 操作前先确认
+  127.0.0.1:7890 代理可用——HTTP 200 实测）、工作区干净；基线 test 1007/1007·
+  typecheck·lint·format:check 独立复跑全绿；B1–B3 代码与接口在位、B4 零实现
+  （无 source-tools 文件）；Fourth_stage.md 头部矛盾核验属实并校准（「B3–B9
+  待开始/下一任务 B3」→ B1–B3 完成、B4 待开始，未改写历史记录）。② **实施前
+  硬停点：接口缺口核验属实**（ProviderToolParameter 冻结于基础类型无嵌套——
+  source_apply_changes 只能退化成 JSON 字符串；决议 #38「version 不回显」使
+  expectedVersion 实际不可获得；无只读预览契约且确认与提交之间无版本复验——
+  TOCTOU 窗口；审计「查询串全量」与「敏感 URL query 不得记录」冲突）→ 按任务
+  授权结论记录决议 #64–#67（结构化递归 schema/expectedVersion 并发令牌/
+  previewChangeSet + confirmSummary 钩子 + blocked 猜测防护/审计隐私收紧）落
+  detailed-design §15 + §7.1/§7.6/§8.1/§9.1 + threat-model §3.3/§3.6 同步。
+  ③ **红→绿**：先写测试——红态 8 files failed / 25 failed / 1012 passed
+  （source-tools.test.ts 模块缺失 + 7 个既有测试文件 B4 扩展用例在旧结构下真实
+  失败：注册表不校验嵌套（未知字段/枚举/数组上限/深度全部放行）、审计把 ops
+  整体 JSON 化（note 正文泄漏入审计）、source_search URL 查询 query 值全量、
+  previewChangeSet 不存在、applyChangeSet 对 blocked 条目照常写入且 add 撞
+  blocked 回注既有 id（存在泄漏）、confirmSummary 钩子不存在（L2 直接走兜底
+  摘要）、base 2 权限被 decide 回落 L1 自动执行、store 拒绝 source 错误码、
+  agent-display 无文案——均与决议 #64–#67 契约对照的真实失败，既有 1007 用例
+  零删除零削弱）；实现后全量 **1071/1071**（新增 64：source-tools 33 /
+  tool-registry 递归 6 / tool-executor 钩子与预算 5 / audit-log 3 /
+  source-service preview+blocked 7 / source-change-set buildChangeDiff 4 /
+  conversation-store 1 / agent-display 4 + 权限矩阵恒等与文案校准 1）。实现期
+  修正如实登记：测试自身缺陷 6 处（手工通道 trust 夹具误带 assertedBy——契约
+  仅 value；metadata 种子未显式 shareMode 致 userNote 缺省 full（决议 #52
+  语义）；同 set 重复 sourceId 夹具（契约整体拒绝）；blocked 场景 journal 基线
+  含种子 addManual 条目——改相对断言；敌手 bidi 字面量触发 no-irregular-
+  whitespace——改转义构造；工具链重放断言与服务层幂等重放契约冲突——工具链
+  preview 先行 source-duplicate fail-closed 更保守，服务层幂等由 B2 测试固化）；
+  实现侧真实缺陷 0 处（红态后一次性全绿）。④ **冒烟**：8.1 注册表断言校准
+  17 工具 + A-01/RT-01 注释与工具数断言同步（13 → 17）；新增 8.10 B-03/B-04
+  B4 部分（默认矩阵自动包含，LIVE 跳过与 8.4–8.6 同条件）：change set 确认
+  全链路（deny 零写入 + 未知/迟到 toolCallId 无效/approve 恰一次单事务 +
+  审计含幂等键/durable Undo/blocked 猜测 source-forbidden 零泄漏/TOCTOU 版本
+  复验/20-21 项注册表边界）+ 4000 预算确定性截断 + warning + allowlist 序列化
+  （expectedVersion 令牌/metadata 与 blocked 零泄漏）+ FakeProvider 多轮 Agent
+  全链路（deny→修正重提→approve→search，审计决策 denied/confirmed/auto 各一）
+  - UNTRUSTED_TOOL_RESULT 块隔离（注入 note 夹具：块内出现/system 恒等/17 工具
+    恒等/ToolStep 摘要 ≤200 且完整备注尾部标记零出现）+ 审计字节扫描（13 次调用
+    恰好 13 条审计；note/敏感 query/凭据形态零命中）；**dev 完整矩阵退出码 0**；
+    **生产产物完整矩阵退出码 0**（同矩阵，out/ 产物运行）；**B-02 生产双进程**
+    `AIBROWSE_SOURCES_SMOKE=set` 退出码 0 → 新进程 `check` 退出码 0（跨进程读回
+    一致 + 重启后 Undo + 重复 Undo 幂等 + 版本冲突拒绝——B-02 断言零改动）；
+    两进程共用系统 TEMP 下本次专属目录，结束后清理。⑤ **红线与敏感扫描**：禁具
+    source_sql/source_delete_hard/source_export_all 零命中；业务 SQL 仍仅
+    Repository/migrations（renderer/preload/tools/agent/sources-tools 零 SQL）；
+    新代码零 any/@ts-ignore/@ts-nocheck；Source 工具零 Electron import、零网络
+    能力；package/lockfile 零改动；git diff --check 零命中（仅既有 CRLF 提示）；
+    敏感扫描（sk-/token=/apiKey 明文）零命中；临时 userData/探针目录零残留
+    （index.ts 冒烟 Sources 目录随 before-quit 清理；根目录杂散日志已清理）。
+    **未调用任何付费 Provider、未输出/索取 API Key、未新增依赖、未改 B1 冻结
+    driver 与 B2 冻结 schema v1（migrations.ts/sqlite-driver.ts 零 diff）、未改
+    既有 13 工具 schema。** ⑥ 文档同步：detailed-design §15 决议 #64–#67 +
+    §7.1/§7.6/§8.1/§9.1、threat-model §3.3/§3.6、B4 任务文档红→绿证据、本文件、
+    Fourth_stage/README/AGENTS（Sources 速查 B4 签名回填 + 工具数 17 + 测试计数
+    1071）。B-04 全过（B3 子集 + B4 部分）；SRT-01/02/06/07 断言先行可用
+    （B8 汇总裁决）；B5（Sources UI）为下一任务，本提示内不再继续实现。
 
 - **B3 多语言 Source Search + 有界 Retrieval + 分享模式（2026-08-15，第三个实现
   闭环）**：① 步骤 0 独立核对——HEAD `e26bfd8` = Gitee/GitHub 双远程 HEAD
@@ -1529,17 +1603,18 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **B4 — Source Tools 四工具（search/list/get L0 + apply_changes L2）+ 权限矩阵
-  - L2 change set 确认/审计 + Agent 上下文隔离（新对话 = 一个可验证闭环）**：
-    B1–B3 已完成（node:sqlite 冻结决议 #48；schema v1/Repository/Service/journal/
-    Undo/多语言检索在位；基线 1007/1007 全绿）。B4 按
-    `doc/stage4/tasks/B4-source-tools-permission.md` 落地 source-tools.ts 四工具
-    （executor 零 Electron import，ctx.sourceService 注入点）、TOOL_BASE_RISK 增
-    4 条目、change set 确认全链路（确定性 diff → L2 ConfirmManager → 幂等键 →
-    expectedVersion → 单事务）、审计脱敏、SOURCE_TOOL_CONTENT_MAX=4000 结果预算
-    （决议 #63 的 B-04 剩余部分）、UNTRUSTED_TOOL_RESULT 块隔离回归、注册表
-    13 → 17 工具与冒烟 8.1 断言校准。完成后按 B5→B6→B7→B8→B9 顺序推进，B9 独立
-    复验不采信前序报告；本提示内不再继续实现，等待用户下一条指令。
+- **B5 — Sources UI + 手工管理 + 当前页快速添加 + 冲突/恢复态/Undo 展示 +
+  IPC/bridge 扩展（新对话 = 一个可验证闭环）**：
+  B1–B4 已完成（node:sqlite 冻结决议 #48；schema v1/Repository/Service/journal/
+  Undo/多语言检索/Source 四工具（注册表 17 工具）/change set 确认全链路在位；
+  基线 1071/1071 全绿，dev+生产冒烟与 B-02 双进程退出码 0）。B5 按
+  `doc/stage4/tasks/B5-sources-ui.md` 落地 Sources 面板（分组浏览/搜索/备注与
+  标签/手工添加编辑/当前页快速添加/Undo 与恢复态中文诊断/provenance 展示/
+  v1 明文如实说明）+ IPC 通道与 preload 白名单（复用 handle() sender+主帧校验
+  与事件只发主窗口纪律）+ 手工操作经同一 SourceService（addManual/updateManual/
+  disableManual/restoreManual/hardDeleteManual 能力令牌二次确认）。完成后按
+  B6→B7→B8→B9 顺序推进，B9 独立复验不采信前序报告；本提示内不再继续实现，
+  等待用户下一条指令。
 
 ## 第一阶段验收未完成项
 

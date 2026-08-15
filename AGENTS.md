@@ -27,11 +27,17 @@
   test 947/947）；B3 已完成——六项契约裁决（决议 #58–#63）+ 多语言 Source
   Search（FTS5/trigram 主路径 + 短查询安全降级）+ 有界 Retrieval（硬上限
   10/每页 20）+ 分享模式（audience 必填）+ 确定性排序 + note 摘录 ≤200 +
-  rebuild 一致性 + 冒烟 B-04 B3 子集（全量 test 1007/1007）；B4–B9 待开始
-  （Sources 功能对用户/Agent 尚不可用——UI/Tools 未实现，完成前不得宣称
-  可用）**；下一个推荐任务 = **B4**（Source Tools + 权限矩阵 + L2 change set
-  确认/审计 + Agent 上下文隔离）。契约源 `doc/stage4/detailed-design.md`
-  （2026-08-15 定稿）+ 安全契约源
+  rebuild 一致性 + 冒烟 B-04 B3 子集（全量 test 1007/1007）；
+  B4 已完成（2026-08-15）——实施前契约裁决（决议 #64–#67）+ Source 四工具
+  （注册表 13 → 17；source_search/list/get L0 + source_apply_changes L2，
+  audience 硬编码 agent，executor 零 Electron import）+ change set 确认全链路
+  （previewChangeSet 只读 diff → confirmSummary 钩子 → ConfirmManager →
+  applyChangeSet 版本复验/单事务/journal）+ 审计脱敏 + 4000 预算 +
+  UNTRUSTED_TOOL_RESULT 块隔离 + 主进程 <userData>/sources/sources.db 装配 +
+  冒烟 B-03/B-04（全量 test 1071/1071）；B5–B9 待开始（Sources UI 未实现——
+  B5 完成前不得宣称对用户可用）**；下一个推荐任务 = **B5**（Sources UI +
+  手工管理 + 当前页快速添加 + IPC/bridge 扩展）。契约源
+  `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
   实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
   **架构纪律（第四阶段）**：依赖方向固定
@@ -48,8 +54,9 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
   expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
   永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
   数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
-  **⚠️ 以上全部为「规划/待实现」**：Sources 相关接口在 B1–B9 对应任务完成前
-  不得在文档/报告/UI 中宣称已实现。
+  **⚠️ B1–B4 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层）；B5–B9
+  对应能力（Sources UI/IPC、真实 Provider 端到端、backup/usage、红队、最终
+  验收）在对应任务完成前不得在文档/报告/UI 中宣称已实现。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
@@ -1041,27 +1048,50 @@ enableForeignKeys, wal}) → DbHandle` / `closeDb`（幂等）/ `withTransaction
   listUndoable（畸形行跳过）/recordUsage/getState（恒 normal，B7 接管）/
   dispose（幂等）；非法输入安全返回不抛异常，不可预期异常归一化
   source-unavailable。
-- **写入安全（change set 全链路，B4）**：模型提 ≤20 项 change set → 主进程读
-  当前状态 → 确定性 before/after diff → L2 确认（ConfirmManager 复用，deny 默认
-  焦点）→ approve 后单事务提交（全部成功或全部 rollback）；确认前数据库零变化；
-  主进程生成 idempotency key（重放幂等：同 (runId,toolCallId) 指纹一致幂等
-  返回、异指纹 fail-closed source-conflict、失败零落 journal——决议 #53 已落地
-  B2）；expectedVersion 乐观并发（不符整体拒绝）；deny/timeout/cancel/迟到/
-  未知 toolCallId 零写入；Agent 无硬删除工具（disable/restore 显式，决议 #51
-  状态机）；手工永久删除二次确认（能力令牌）+ 清理 FTS/usage/journal 私有
-  payload（B2 已落地）；手工 UI 同经 SourceService + Undo；审计脱敏（note
-  正文零出现，查询串全量 ≤500）。
+- **写入安全（change set 全链路，B4 ✅ 已实现，grep 核对）**：模型提 ≤20 项
+  change set → ToolRegistry 递归 schema 校验（决议 #64）→ ToolDefinition.
+  confirmSummary 钩子（决议 #66，ToolExecutor 在 requestConfirm 前调用）→
+  `SourceService.previewChangeSet(cs)` 只读预览（与 apply 同一校验语义 +
+  逐项预检（版本/blocked 猜测/重复），`buildChangeDiff(ops, rows)` 纯函数
+  （≤2000 中文 diff，note 仅长度+首 40 字符预览，控制/bidi 剔除）——零 journal/
+  零幂等键/确认前数据库零变化）→ L2 确认（ConfirmManager 复用，deny 默认焦点）
+  → approve 后 `applyChangeSet` **重新校验版本（TOCTOU 关闭）** + 单事务提交
+  （全部成功或全部 rollback）；主进程生成 idempotency key（重放幂等：同
+  (runId,toolCallId) 指纹一致幂等返回、异指纹 fail-closed source-conflict、
+  失败零落 journal——决议 #53 已落地 B2）；expectedVersion 乐观并发（不符整体
+  拒绝）；blocked 猜测引用（update/disable/restore）→ source-forbidden 零写入
+  零泄漏（add 撞 blocked canonicalKey → duplicate 不回注 id，决议 #66）；
+  deny/timeout/cancel/迟到/未知 toolCallId 零写入；Agent 无硬删除工具
+  （disable/restore 显式，决议 #51 状态机）；手工永久删除二次确认（能力令牌）
+  - 清理 FTS/usage/journal 私有 payload（B2 已落地）；手工 UI 同经
+    SourceService + Undo；审计脱敏（决议 #67：ops 计数/字段名/长度/版本/成功后
+    幂等键；note 正文与 URL 值零出现；source_search 查询 ≤500 但 URL 形态
+    query 值脱敏——`redactUrlQueryValue`/`summarizeSourceChangeSet`）。
 - **provenance（B2/B5）**：trust{value: official|primary|secondary|community|
   unknown；assertedBy: user|ai；verification: asserted|unverified}；用户明示 →
   official+user-asserted；AI 推断恒 official+ai+unverified；模型 change set 不能
   写 assertedBy=user（仅用户 UI 通道）、不能设 blocked（防自我隐藏）；UI 必须
   展示来源。
-- **Source Tools v1（B4，wire-safe 名）**：source_search/source_list/source_get
-  = L0（有界 + 分享模式过滤 + allowlist）；source_apply_changes = L2；禁具
-  source_sql/source_delete_hard/source_export_all/任意导入/任意抓取/任意通用
-  数据库工具（grep 断言）。注册后 17 工具（冒烟 8.1 断言校准）。错误码扩展
-  source-invalid-change/version-conflict/duplicate/not-found/forbidden/limit/
-  unavailable/conflict。ToolResult 预算 SOURCE_TOOL_CONTENT_MAX=4000。
+- **Source Tools v1（B4 ✅ 已实现，grep 核对）**：`src/main/sources/tools/
+source-tools.ts`——`createSourceTools(sourceService: SourceService | null)`
+  → ToolDefinition[]（source_search/source_list/source_get = L0 有界 + 分享
+  模式过滤 + allowlist；source_apply_changes = L2 + confirmSummary 钩子）；
+  executor 只经 `ctx.sourceService`（ToolExecutionContext 扩展，缺省回退注册
+  注入，两者皆缺 → source-unavailable 安全失败）、零 Electron import、零网络；
+  audience 硬编码 'agent'（schema 无该字段，决议 #58）；序列化纯函数
+  `formatSourceSearchResults/formatSourceListItems/formatSourceDetail`
+  （allowlist；`source_get` 返回 expectedVersion 并发令牌（决议 #65）、version
+  字段名不回显（决议 #38 校准）、search/list 恒无版本字段；metadata 零 note
+  字节；provenance 标注「用户标定/AI 推断·未核验」）；错误码 8 值恒等映射
+  （mapSourceError；ToolResultErrorCode/TOOL_RESULT_ERROR_CODES/agent-display
+  文案同步）；禁具 source_sql/source_delete_hard/source_export_all/任意导入/
+  任意抓取/任意通用数据库工具（grep 断言）。注册后 17 工具（冒烟 8.1 断言
+  校准）；ToolResult 预算 SOURCE_TOOL_CONTENT_MAX=4000（确定性截断 + warning）。
+  **递归 schema（决议 #64）**：ProviderToolParameter type 增 object/array
+  （properties/required/items/maxItems）；tool-registry 导出
+  `MAX_ARRAY_ITEMS`=20/`MAX_NESTING_DEPTH`=4 + 递归校验（additionalProperties
+  =false 未知字段拒绝/嵌套 enum/逐项校验）；既有 13 工具 schema 与序列化零
+  变化（零回归断言固化）。
 - **有界 Retrieval 与隐私（B3 ✅ 已实现，grep 核对）**：search 硬上限 10（默认
   10、limit>10 → source-limit）、list 每页 ≤20、候选有界 200（SQL LIMIT 编译期
   常量）、本地过滤排序（整库不进模型）、返回 allowlist；读取视角**必填**
@@ -1075,8 +1105,10 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
   恒 null 零 note 字节）；agent get：metadata 无 note 正文（两字段空串）、full
   返回 note；note 读取侧防御性清洗（旧数据/损坏数据同样覆盖）；无备注快速收藏
   默认 metadata、用户写备注默认 full（UI 明示）；检索结果进 UNTRUSTED_TOOL_RESULT
-  块与 ToolResult 预算（B4）；普通日志只记 sourceId/字段名/数量/长度/结果数；
-  ToolStep 不复制完整备注。
+  块（B4 ✅ 已接线——ToolExecutor/AgentLoop 既有 formatToolResultBlock 同源路径，
+  冒烟注入 note 夹具断言块隔离 + 闭合转义）与 ToolResult 预算 4000（B4 ✅）；
+  普通日志只记 sourceId/字段名/数量/长度/结果数；ToolStep 不复制完整备注
+  （contentPreview ≤200 摘要，B-03/B-04 冒烟尾部标记零出现断言）。
 - **多语言检索（B3 ✅ 已实现，grep 核对）**：`source-search-query.ts` 纯函数——
   `SEARCH_CANDIDATE_MAX`=200/`SEARCH_NOTE_EXCERPT_MAX`=200/`SearchQueryKind`
   （url|short1|short2|fts|like-long）/`SearchMatchTier`（0–4）/
@@ -1130,7 +1162,7 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 1007 用例）
+  - `npm test` — Vitest 全量测试（当前 1071 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
