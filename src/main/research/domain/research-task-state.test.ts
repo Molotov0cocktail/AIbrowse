@@ -199,6 +199,89 @@ describe('now 形状契约（决议 #116：ISO 8601 为输入有效性约束）'
   });
 });
 
+describe('决议 #116 二次补修：偏移形态日历回滚拒绝（2026-08-16）', () => {
+  it.each([
+    // Offset-form calendar rollover — the value-level Date.parse round-trip is
+    // nearly always true for successfully parsed timestamps, so it cannot
+    // detect JS date rollover (e.g. 2026-02-30+08:00 → 2026-03-01T16:00:00.000Z)
+    '2026-02-30T00:00:00+08:00', // 2 月 30 日（偏移回滚）
+    '2026-04-31T12:00:00-05:00', // 4 月 31 日（偏移回滚）
+    '2025-02-29T00:00:00Z', // 非闰年 2 月 29 日（Z 形态）
+    '2025-02-29T00:00:00+08:00', // 非闰年 2 月 29 日（偏移形态）
+    '2026-00-15T00:00:00Z', // 月 00
+    '2026-13-01T00:00:00Z', // 月 13
+    '2026-13-01T00:00:00+08:00', // 月越界（偏移形态）
+    '2026-01-00T00:00:00Z', // 日 00
+    '2026-01-32T00:00:00Z', // 日 32
+    '2026-06-31T00:00:00Z', // 30 天月 31 日（Z 形态）
+    '2026-06-31T00:00:00+08:00', // 30 天月 31 日（偏移回滚）
+    '2026-09-31T12:00:00-05:00', // 30 天月 31 日（偏移回滚）
+    '2026-11-31T00:00:00Z', // 30 天月 31 日（Z 形态）
+    '2026-08-16T24:00:00Z', // 24:00（不属既有语法范围）
+    '2026-08-16T24:00:00+08:00', // 24:00 偏移形态（值级往返恒真放行）
+    '2026-08-16T23:60:00Z', // 分 60
+    '2026-08-16T23:60:00+08:00', // 分 60（偏移形态）
+    '2026-08-16T23:59:60Z', // 秒 60（闰秒不属既有语法范围）
+    '2026-08-16T23:59:60+08:00', // 秒 60（偏移形态）
+    '2026-08-16T12:00:00+24:00', // 偏移小时越界
+    '2026-08-16T12:00:00-24:00', // 偏移小时越界（负）
+    '2026-08-16T12:00:00+14:60', // 偏移分钟越界
+    '2026-08-16T12:00:00-14:60', // 偏移分钟越界（负）
+  ])('非法偏移日期「%s」：isIso8601Timestamp=false 且全部事件零变化', (bad) => {
+    expect(isIso8601Timestamp(bad)).toBe(false);
+    const created = makeTask();
+    const running = runningTask();
+    expect(transitionTask(created, { kind: 'start', now: bad })).toEqual(created);
+    expect(transitionTask(running, { kind: 'phase', phase: 'reading', now: bad })).toEqual(running);
+    expect(transitionTask(running, { kind: 'finish-done', resultId: RESULT_ID, now: bad })).toEqual(
+      running,
+    );
+    expect(
+      transitionTask(running, { kind: 'finish-error', errorCode: 'research-timeout', now: bad }),
+    ).toEqual(running);
+    expect(transitionTask(running, { kind: 'finish-budget', now: bad })).toEqual(running);
+    expect(transitionTask(running, { kind: 'stop', now: bad })).toEqual(running);
+    expect(transitionTask(running, { kind: 'mark-interrupted', now: bad })).toEqual(running);
+  });
+
+  it.each([
+    '2024-02-29T00:00:00Z', // 闰年 2 月末（Z 形态）
+    '2024-02-29T23:59:59.999+08:00', // 闰年 2 月末（偏移 + 3 位毫秒）
+    '2026-04-30T00:00:00Z', // 4 月末
+    '2026-12-31T12:00:00-05:00', // 12 月末（负偏移）
+    '2026-01-31T00:00:00+14:00', // 1 月末（+14:00）
+    '2026-08-16T00:01:00Z', // 无毫秒 Z
+    '2026-08-16T00:01:00.1Z', // 1 位毫秒
+    '2026-08-16T00:01:00.12Z', // 2 位毫秒
+    '2026-08-16T00:01:00.123Z', // 3 位毫秒
+    '2026-08-16T08:01:00+08:00', // 正偏移
+    '2026-08-16T00:01:00-05:00', // 负偏移
+    '2026-08-16T00:01:00+00:00', // 显式零偏移
+    '2026-08-16T00:01:00-00:00', // 负零偏移（Date.parse 既有接受形态）
+    '2026-08-16T23:59:59+23:59', // 偏移小时既有接受上界（实测 Date.parse 可解析）
+    '2026-08-16T23:59:59-23:59', // 偏移小时既有接受下界
+    '2026-08-16T00:00:00.000Z', // 调用方 toISOString 恒产出形态
+  ])('合法 ISO 时间「%s」→ isIso8601Timestamp=true', (ok) => {
+    expect(isIso8601Timestamp(ok)).toBe(true);
+  });
+
+  it('合法偏移形态 → 事件正常迁移（now 原样注入，不依赖本地时区）', () => {
+    const now = '2024-02-29T00:00:00+08:00';
+    const next = transitionTask(makeTask(), { kind: 'start', now });
+    expect(next.status).toBe('running');
+    expect(next.startedAt).toBe(now);
+    expect(next.updatedAt).toBe(now);
+  });
+
+  it('真实调用方 toISOString 输出形态恒通过（Service.nowIso/store 装配契约）', () => {
+    const now = new Date(1723766400000).toISOString(); // 2024-08-16T00:00:00.000Z（UTC 确定性）
+    expect(isIso8601Timestamp(now)).toBe(true);
+    const next = transitionTask(makeTask(), { kind: 'start', now });
+    expect(next.status).toBe('running');
+    expect(next.startedAt).toBe(now);
+  });
+});
+
 describe('running 内事件', () => {
   it.each<ResearchPhase>(['planning', 'reading', 'verifying', 'synthesizing'])(
     'phase → %s 合法（updatedAt=now、其余不变）',

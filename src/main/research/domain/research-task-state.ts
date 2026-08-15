@@ -20,7 +20,35 @@ import {
 
 // 决议 #116：ISO 8601 时间戳形状（含可选毫秒；Z 或 ±HH:MM 时区）
 const ISO_8601_TIMESTAMP_RE =
-  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/;
+
+// Deterministic calendar helpers（决议 #116 二次补修）：日历字段合法性不得依赖
+// Date.parse 自动回滚判定。
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+function daysInMonth(month: number, leapYear: boolean): number {
+  switch (month) {
+    case 1:
+    case 3:
+    case 5:
+    case 7:
+    case 8:
+    case 10:
+    case 12:
+      return 31;
+    case 4:
+    case 6:
+    case 9:
+    case 11:
+      return 30;
+    case 2:
+      return leapYear ? 29 : 28;
+    default:
+      return 0;
+  }
+}
 
 // 决议 #116：now 的 ISO 8601 输入有效性约束（确定性纯函数）。调用方仅
 // ResearchService.nowIso 与 research-store 装配（恒 new Date(ms).toISOString()）。
@@ -30,16 +58,37 @@ export function isIso8601Timestamp(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   const match = value.match(ISO_8601_TIMESTAMP_RE);
   if (match === null) return false;
-  const [, core, ms, zone] = match;
+  const [, y, mo, d, h, mi, s, ms, zone] = match;
+  // 决议 #116 二次补修：先做确定性日历字段校验（年月日时分秒 + 偏移边界），
+  // 不依赖 Date.parse 自动回滚判定日历合法性。偏移形态的值级往返对已成功解析
+  // 的时间近似恒真，无法甄别 JS 日期回滚（2026-02-30+08:00 →
+  // 2026-03-01T16:00:00.000Z）；24:00 与闰秒 60 不属既有语法范围。日历字段
+  // 判定为纯范围判定、不参与本地时区（下方 Date 仅作可解析/往返纵深，不参与
+  // 字段判定）。
+  const year = Number(y);
+  const month = Number(mo);
+  const day = Number(d);
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth(month, isLeapYear(year))) return false;
+  if (Number(h) > 23) return false;
+  if (Number(mi) > 59) return false;
+  if (Number(s) > 59) return false;
+  if (zone !== 'Z') {
+    const offsetHour = Number(zone.slice(1, 3));
+    const offsetMinute = Number(zone.slice(4, 6));
+    // 既有偏移格式边界保持（Date.parse 实测接受 ±HH:MM 且 HH≤23、MM≤59；
+    // ±24:00 / +14:60 为 NaN）——不收缩、不扩张
+    if (offsetHour > 23 || offsetMinute > 59) return false;
+  }
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return false;
   if (zone === 'Z') {
     // Z 形态做字符串级日历往返校验（拒绝 2026-02-30 等 JS 回滚形态）；
     // 毫秒位补齐至 .sss 后与 toISOString 恒等
-    const normalized = `${core}.${(ms ?? '').padEnd(3, '0')}Z`;
+    const normalized = `${y}-${mo}-${d}T${h}:${mi}:${s}.${(ms ?? '').padEnd(3, '0')}Z`;
     return new Date(parsed).toISOString() === normalized;
   }
-  // 偏移形态：Date.parse 值级往返（toISOString 归一化为 Z——值相等即同一时刻）
+  // 偏移形态：值级往返（纵深防御——日历合法性已由上方确定性字段校验保证）
   return Date.parse(new Date(parsed).toISOString()) === parsed;
 }
 
