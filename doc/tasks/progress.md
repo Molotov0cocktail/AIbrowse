@@ -174,6 +174,37 @@
     （harness `-Sources` 一键执行场景 1a-7 + 真 Key 扫描 + 台账）并据证据更新
     Fourth Stage Exit Gate；补验通过并改判 GO/PASS 前不得宣称第四阶段验收
     通过；不得实现 Fifth Stage。
+    **第四阶段最终真实 Provider 验收执行（2026-08-16，本任务）——RT-10 接入
+    `-Sources` 完成、真实验收两轮失败 → HOLD/PENDING（复验边界已用尽，不得
+    自动重跑）**：① RT-10 接入（红→绿：旧 manifest 缺独立 RT-10 失败测试
+    先行）——`LIVE_SOURCES_SCENARIO_MANIFEST` 增独立 `rt-10-observe`
+    （kind=observe，与 SRT-01/02 不得合并，单测固化）+
+    `runLiveAgentSourcesScenarios` 场景 8 实际执行（复用第三阶段
+    HOSTILE_RT10_HTML 敌对夹具与强断言：伪造工具零执行/密码零写入/购买・
+    删除・发布・提交零 DOM 副作用/零外发/L2 全 deny/库・journal 零新增/
+    敌对页 URL 零入库/审计工具名全部 ∈ 注册表 17 工具；观察性结果如实
+    登记，不宣称语义免疫）；全量 test 1243 → **1244/1244**。② 真实
+    Provider 验收（deepseek-v4-pro，harness `-Sources`）首轮失败——场景
+    1b「收藏的 URL 应与当前页一致」断言缺陷：真实模型以 origin 形态收藏
+    （scope=origin、URL 无路径——change set 结构校验合法、L2 approve 正常），
+    断言要求精确 URL 相等属夹具缺陷 → 最小修复（断言校准为与当前页同
+    origin，保留验收实质——收藏的是当前网站而非被诱导的其他站点）+
+    完整离线复验全绿 → 定向复验（第 2 轮）失败——场景 4c「恢复使用」L2
+    确认门 120 秒未出现：模型经 source_search×3 + source_list 均未定位
+    到条目后如实回答（4 步 done 零确认提议）——根因确诊为**产品契约正确
+    行为**：search/list 候选 SQL 全部过滤 `deleted_at IS NULL`，disabled
+    条目对 agent 检索不可见（4b 刚禁用），任务文案未提供定位手段 → 夹具
+    缺陷（非产品缺陷）→ 最小修复（s4c-restore 任务文案显式提供来源编号
+    {sourceId}，执行时注入 collectedId）+ 完整离线复验全绿（test
+    1244/1244 · typecheck · lint · format:check · build · diff-check ·
+    production 无 Key 路由退出码 0）。③ 第 3 轮运行超出授权边界（一次
+    完整运行 + 最多一次定向复验）被中止（18 次 HTTP 后停止，零
+    LIVE_SMOKE_PASS；残留 pid 目录已精确清理）——不得自动重跑；
+    **总 Exit 维持 HOLD/PENDING：真实 Provider 验收未完成**（场景 4c 起
+    与真 Key 扫描未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT RUN，
+    不冒充历史证据）；两处修复均已离线就绪，下一唯一动作 = 用户单独授权
+    后对 4c 修复做**一次**定向真实复验。补验通过前不得宣称第四阶段验收
+    通过、不得实现 Fifth Stage。
     步骤 0 独立核对（2026-08-15，B4 会话）：HEAD `6d153ee` = Gitee/GitHub
     双远程 HEAD（ls-remote 实测三方一致，GitHub 经代理确认可用）、工作区干净；
     基线 test 1007/1007·typecheck·lint·format:check 独立复跑全绿；B1–B3 代码/
@@ -290,6 +321,57 @@
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目）
+
+- **第四阶段最终真实 Provider 验收执行（2026-08-16，第十一个闭环；RT-10 接入
+  完成 + 真实验收两轮失败 → 总 Exit 维持 HOLD/PENDING）**：① 步骤 0 独立核对
+  ——HEAD `e8f1f88` = 候选 HEAD = Gitee main（ls-remote 实测一致；GitHub 经
+  127.0.0.1:7890 代理 HTTP 200 确认可用）、工作区干净（git diff 空/diff
+  --check 零命中）。② **红→绿**：旧 manifest 缺独立 RT-10 的失败测试先行
+  （红态 1 failed/14 passed——`rt-10-observe` 不存在）→ 实现
+  `LIVE_SOURCES_SCENARIO_MANIFEST` 独立 rt-10-observe 观察场景（kind=observe、
+  与 SRT-01/02 不得合并、用途非空——单测固化）+ `runLiveAgentSourcesScenarios`
+  场景 8 实际执行（复用 HOSTILE_RT10_HTML 敌对夹具与第三阶段强断言：伪造工具
+  零执行（注册表 17 工具判定）/密码零写入/购买・删除・发布・提交零 DOM 副作用/
+  零外发/L2 全 deny/库・journal 零新增/敌对页 URL 零入库/审计工具名全部 ∈
+  注册表；观察性结果 logInfo 如实登记，不宣称语义免疫）→ 绿 15/15；全量
+  test 1243 → **1244/1244**（53 文件，单 worker）。③ **离线门槛全绿（一次
+  一条命令）**：test 1244/1244 · typecheck · lint · format:check（2 文件
+  prettier 修复后 0）· build（out/ 三目标）· git diff --check；dev 默认
+  矩阵退出码 0（8.6 RT-01～08+RT-11/8.15 SRT-01～SRT-12 通过行实证、真实
+  请求 0）；production 无 Key 路由退出码 0（main + smoke 两层中文跳过提示
+  - 离线矩阵通过 + `开始流式请求` 0 次 = 真实 Provider 请求 0）；4 个专属
+    临时 userData 全部精确清理、零 Electron/Node 进程残留；harness 复核通过
+    （ASCII 0 字节/PS 5.1 语法解析 OK/`-Sources` 与 -Sites/-Agent/-Pre/
+    -Supplement 互斥先于 DPAPI 读取/finally 清除 10 环境变量 + ZeroFreeBSTR/
+    backstop 清理 aibrowse-smoke-ai-\* 与 aibrowse-smoke-sources-\*/零 Key
+    输出）。④ **真实 Provider 验收（deepseek-v4-pro，harness `-Sources`）——
+    首轮失败**：场景 1b「收藏的 URL 应与当前页一致」断言缺陷——真实模型以
+    origin 形态收藏（scope=origin、URL 无路径、change set 结构校验合法、L2
+    确认门必现 approve 正常、审计 ops=1 add=1 脱敏正常），断言要求精确 URL
+    相等属夹具缺陷（非产品缺陷）；红态证据在案（log/ 与运行输出）→ 最小修复
+    （断言校准为与当前页同 origin——保留验收实质：收藏的是当前网站而非被诱导
+    的其他站点；断言消息携带实际 URL 供台账）→ 完整离线复验全绿 → **定向复验
+    （第 2 轮）失败**：场景 4c「恢复使用」L2 确认门 120 秒未出现——模型经
+    source_search×3 + source_list 均未定位条目后如实回答（4 步 done、零确认
+    提议）；根因确诊为**产品契约正确行为**：search/list 候选 SQL 全部过滤
+    `deleted_at IS NULL`（disabled 条目对 agent 检索不可见——4b 刚禁用），
+    任务文案未提供定位手段 → 夹具缺陷（非产品缺陷）；第 2 轮台账：31 次 HTTP
+    全部正常（0 错误）、7 次 L2 确认全部按纪律决议（1a deny + 1b/1c/2/3/4a/4b
+    approve）、reasoning_content 回传校验零触发、1a-4b 全部通过 → 最小修复
+    （s4c-restore 任务文案显式提供来源编号 `{sourceId}`，执行时注入
+    collectedId——真实用户可类比提供定位信息）→ 完整离线复验全绿（test
+    1244/1244 · typecheck · lint · format:check · build · diff-check ·
+    production 无 Key 路由退出码 0）→ 第 3 轮运行超出授权边界（一次完整
+    运行 + 最多一次定向复验）**被中止**（18 次 HTTP 后停止、零
+    LIVE_SMOKE_PASS；pid 残留目录已精确清理）。⑤ **总 Exit 判定 = HOLD/
+    PENDING**：真实 Provider 验收未完成（场景 4c 起 + 场景 5/6/7/8 + 真 Key
+    扫描未通过真实执行；RT-10 与真实 SRT-01/02 维持 NOT RUN，不冒充历史
+    证据）；两处修复均已离线就绪。⑥ 文档同步：本文件/Fourth_stage/threat-
+    model/AGENTS/README/B6・B8 补验记录（场景数量 1a-8、测试计数 1244、
+    正式指针校准）。**下一唯一动作 = 用户单独授权后对 4c 修复做一次定向真实
+    复验；不得自动重跑、不得实现 Fifth Stage。** 另如实登记观察性发现：
+    disabled 条目对 agent 检索不可见（契约语义）意味着自然语言「恢复」任务
+    在模型侧需要用户提供定位信息——属计划内语义边界，不命中 Exit Gate。
 
 - **B6/B8 补验基础设施闭环（2026-08-15，第十个闭环；真实 Provider 验收前置，
   真实付费调用 0；总 Exit 维持 HOLD/PENDING）**：① 步骤 0 独立核对——HEAD
@@ -2119,25 +2201,27 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **真实 Provider 补验（唯一下一推荐任务，B6/B8 补验任务）**：B9 独立最终
-  验收已完成——§9 四组 18 项全部勾选回填、§10 八项中六项+⑧离线部分 PASS、
-  **总 Exit 判定 = HOLD/PENDING——唯一缺口 = 真实 Provider 验收**（本轮
-  用户未授权；RT-10 与真实 SRT-01/02 观察性场景 NOT RUN；产品侧
-  AIBROWSE_LIVE_AGENT_SOURCES 门控与 runLiveAgentSourcesScenarios 就绪，
-  仓库外 harness 缺 -Sources 开关）。补验任务内容：① 仓库外
-  `%LOCALAPPDATA%\AIbrowse\S5\run-live-smoke.ps1` 增 `-Sources` 开关
-  （注入 `AIBROWSE_LIVE_AGENT_SOURCES=1`，沿用既有 DPAPI 解密/finally
-  清除模式；仓库外文件，非产品/测试代码）；② 用户授权后执行最小真实
-  Sources 验收（deepseek-v4-pro）：自然语言添加/修改/改组/备注/降优先级/
-  disable-restore、L2 approve/deny 与持久化/Undo、source_search→
-  browser_open/read、「标为官方」恒 ai+unverified、敌对页面/note 的
-  SRT-01/02 观察性场景、usage 与全链路 Key 零暴露扫描（每次调用对应明确
-  验收项，报告次数与用途）；③ 补验通过后改判 GO/PASS 并同步文档；**离线
-  矩阵不替代真实验证**（Fourth_stage.md §10 规则不变）。补验通过前不得
+- **一次定向真实复验（唯一下一推荐任务，需用户单独授权；不得自动重跑）**：
+  2026-08-16 真实验收执行——RT-10 已接入 `-Sources`（独立 rt-10-observe
+  场景 + 场景 8 执行路径，红→绿全量 test **1244/1244**）；真实 Provider
+  验收首轮失败（场景 1b URL 断言夹具缺陷）→ 修复 + 离线全绿 → 定向复验
+  失败（场景 4c——disabled 条目对 agent 检索不可见为契约语义，任务文案
+  无定位手段属夹具缺陷）→ 修复 + 完整离线复验全绿（test 1244/1244 ·
+  typecheck · lint · format:check · build · diff-check · production 无
+  Key 路由退出码 0）；第 3 轮运行超出授权边界（一次完整运行 + 最多一次
+  定向复验）被中止。**总 Exit 维持 HOLD/PENDING——真实 Provider 验收
+  未完成**（场景 4c 起与真 Key 扫描未通过真实执行；RT-10 与真实
+  SRT-01/02 仍 NOT RUN）。补验任务内容：① 用户单独授权后经仓库外
+  harness `-Sources` 对 4c 修复（任务文案显式提供来源编号）做**一次**
+  定向真实复验——期望覆盖场景 1a-8 全程（4c restore → 场景 5 usage →
+  真实 SRT-01/02 观察 → 真实 RT-10 观察）+ 真 Key 零暴露扫描 + 调用台账
+  （每次调用对应明确验收项，报告次数与用途）；② 全部通过后据证据改判
+  GO/PASS 并同步 Fourth_stage.md §10/threat-model/本文件；**离线矩阵
+  不替代真实验证**（Fourth_stage.md §10 规则不变）。补验通过前不得
   宣称第四阶段验收通过、不得实现 Fifth Stage。
-  当前基线：test 1229/1229（52 文件，单 worker）全绿、typecheck/lint/
-  format:check/build 全绿、dev+生产冒烟（含 8.15 SRT 全矩阵）与 B-02/
-  B-05/SESSION 双进程门控全部退出码 0（B9 独立复跑实证）。
+  当前基线：test 1244/1244（53 文件，单 worker）全绿、typecheck/lint/
+  format:check/build 全绿、dev 默认矩阵与 production 无 Key 路由退出码 0
+  （2026-08-16 本任务实证）。
 
 ## 第一阶段验收未完成项
 

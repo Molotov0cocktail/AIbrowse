@@ -59,9 +59,17 @@
 >   **B6/B8 补验基础设施已闭环（2026-08-15）**——harness `-Sources`
 >   开关/真实场景扩展（L2 deny 零写入/approve 恰一次 + durable Undo/
 >   真实 SRT-01/02 观察）/Key 终检 Sources 库面/互斥补齐就绪，全量
->   test 1243/1243；真实执行仍未发生（真实付费调用 0）——下一个推荐
->   动作 = **用户单独授权后经 harness `-Sources` 执行最小真实 Sources
->   验收**（离线矩阵不替代真实验证）；补验通过前不宣称第四阶段验收通过。
+>   test 1243/1243；真实执行仍未发生（真实付费调用 0）。
+>   **真实 Provider 验收执行（2026-08-16）**——RT-10 已接入 `-Sources`
+>   （独立 rt-10-observe 观察场景 + 场景 8 执行路径，红→绿全量 test
+>   **1244/1244**）；真实验收两轮失败（首轮场景 1b URL 断言夹具缺陷 →
+>   修复；定向复验场景 4c——disabled 条目对 agent 检索不可见为契约语义，
+>   任务文案无定位手段属夹具缺陷 → 修复；两处修复均已完整离线复验全绿）；
+>   第 3 轮运行超出授权边界（一次 + 最多一次定向复验）被中止。
+>   **总 Exit 维持 HOLD/PENDING——真实 Provider 验收未完成**（场景 4c
+>   起与真 Key 扫描未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT RUN）；
+>   下一唯一动作 = 用户单独授权后对 4c 修复做一次定向真实复验（离线矩阵
+>   不替代真实验证）；补验通过前不宣称第四阶段验收通过。
 >   契约源
 >   `doc/stage4/detailed-design.md`；安全契约源
 >   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
@@ -173,9 +181,15 @@
     **B9 独立最终验收已完成（2026-08-15）**：§9 全组勾选证据 + §10 八项
     判定（离线全 PASS）+ 全量验证独立复跑全绿 + dev/生产冒烟与跨进程门控
     退出码 0 + 红线独立复核零回退；**总 Exit 判定 = HOLD/PENDING——唯一
-    缺口 = 真实 Provider 验收（本轮用户未授权）**；下一唯一动作 = 真实
-    Provider 补验（B6/B8 补验任务：仓库外 harness 补 -Sources 开关 +
-    用户授权后最小真实验收）；补验通过前不宣称第四阶段验收通过。
+    缺口 = 真实 Provider 验收（本轮用户未授权）**。
+    **真实 Provider 验收执行（2026-08-16）**：RT-10 已接入 `-Sources`
+    （独立 rt-10-observe + 场景 8 执行路径，全量 test 1244/1244）；真实
+    验收两轮失败（场景 1b URL 断言夹具缺陷 → 修复；场景 4c 定位文案夹具
+    缺陷 → 修复，两处修复完整离线复验全绿）；第 3 轮超出授权边界被中止。
+    **总 Exit 维持 HOLD/PENDING——真实 Provider 验收未完成**（场景 4c
+    起与真 Key 扫描未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT RUN）；
+    下一唯一动作 = 用户单独授权后对 4c 修复做一次定向真实复验；补验通过
+    前不宣称第四阶段验收通过。
     契约 `doc/stage4/detailed-design.md` + 安全契约
     `doc/stage4/threat-model.md`。
 
@@ -349,7 +363,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 1229 用例）                   |
+| `npm test`                        | Vitest 全量测试（当前 1244 用例）                   |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -461,7 +475,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 1229 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 1244 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具

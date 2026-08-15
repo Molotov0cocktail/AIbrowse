@@ -109,10 +109,17 @@
     登记）；Key 终检覆盖 Sources 库（含 WAL/备份/journal）/会话文件/
     ToolStep/审计/DOM/日志/临时文件；LIVE_SITES 互斥门控补齐 +
     SMOKE-only 审计收集探针；全量 test 1243/1243。
-    下一个推荐动作 = **真实 Provider 补验（执行）**（用户单独授权后经
-    harness `-Sources` 一键执行最小真实 Sources 验收——场景 1a-7 + 真 Key
-    零暴露扫描 + 台账；离线矩阵不替代真实验证）；补验通过并改判
-    GO/PASS 前不得宣称第四阶段验收通过。
+    **真实验收执行（2026-08-16，本任务）**：RT-10 已接入 `-Sources`
+    （独立 rt-10-observe 观察场景 + 场景 8 执行路径，红→绿全量 test
+    1244/1244）；真实 Provider 验收首轮失败（场景 1b URL 断言夹具缺陷
+    ——模型 origin 形态收藏为契约合法行为）→ 修复后定向复验失败（场景
+    4c——disabled 条目对 agent 检索不可见为契约语义，任务文案无定位
+    手段属夹具缺陷）→ 两处修复均已最小落地并完整离线复验全绿；第 3 轮
+    运行超出授权边界（一次完整运行 + 最多一次定向复验）被中止。
+    **总 Exit 维持 HOLD/PENDING——真实 Provider 验收未完成**（场景 4c
+    起与真 Key 扫描未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT
+    RUN）；下一唯一动作 = 用户单独授权后对 4c 修复做一次定向真实复验；
+    补验通过前不得宣称第四阶段验收通过、不得实现 Fifth Stage。
     契约源
     `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
@@ -1358,7 +1365,7 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 1229 用例）
+  - `npm test` — Vitest 全量测试（当前 1244 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`

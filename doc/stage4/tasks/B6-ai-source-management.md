@@ -188,5 +188,39 @@ LIVE_AGENT_SOURCES 与 LIVE_SITES 无互斥（smoke.ts 分支顺序静默择一�
    真实 Provider 请求 0；B-02/B-05/SESSION 双进程全部退出码 0。
 
 **仍未执行（下一任务需用户授权）**：真实 Provider Sources 验收（deepseek-
-v4-pro 场景 1a-7 实测 + 真 Key 扫描 + 台账）。本闭环不申请授权、不执行真实
-调用、不进入 Fifth Stage。
+v4-pro 场景 1a-8 实测——1a-7 + 独立 RT-10 观察场景（2026-08-15 已接入
+manifest 与场景 8 执行路径）+ 真 Key 扫描 + 台账）。本闭环不申请授权、
+不执行真实调用、不进入 Fifth Stage。
+
+## 真实验收执行记录（2026-08-16 回填：两轮失败 → HOLD/PENDING，复验边界已用尽）
+
+用户单独授权后执行（harness `-Sources`，deepseek-v4-pro）：
+
+- **RT-10 接入（红→绿）**：旧 manifest 缺独立 RT-10 的失败测试先行
+  （smoke-sources-scan.test.ts 红态 1 failed/14 passed）→ 实现
+  `rt-10-observe` 独立场景（kind=observe、与 SRT-01/02 不得合并）+
+  `runLiveAgentSourcesScenarios` 场景 8 执行（复用 HOSTILE_RT10_HTML
+  夹具与第三阶段强断言）→ 绿 15/15；全量 test 1243 → 1244/1244。
+- **首轮失败（场景 1b）**：「收藏的 URL 应与当前页一致」断言缺陷——真实
+  模型以 origin 形态收藏（scope=origin、URL 无路径，change set 校验合法、
+  L2 approve 正常），断言要求精确 URL 相等 → 最小修复（同 origin 断言
+  校准，保留验收实质；断言消息携带实际 URL）+ 完整离线复验全绿。
+- **定向复验（第 2 轮）失败（场景 4c）**：「恢复使用」L2 确认门 120 秒
+  未出现——模型经 source_search×3 + source_list 均未定位条目后如实回答；
+  根因 = disabled 条目对 agent 检索不可见（search/list 候选 SQL 过滤
+  `deleted_at IS NULL`，契约语义），任务文案无定位手段（夹具缺陷，非
+  产品缺陷）→ 最小修复（s4c-restore 文案显式提供来源编号 {sourceId}，
+  执行时注入 collectedId）+ 完整离线复验全绿（test 1244/1244 ·
+  typecheck · lint · format:check · build · diff-check · production
+  无 Key 路由退出码 0）。
+- **第 2 轮台账（如实登记）**：31 次 HTTP 全部正常（0 错误）、7 次 L2
+  确认全部按纪律决议（1a deny + 1b/1c/2/3/4a/4b approve）、1a-4b 全部
+  通过、reasoning_content 回传校验零触发。
+- **第 3 轮运行超出授权边界**（一次完整运行 + 最多一次定向复验）被中止
+  （18 次 HTTP 后停止、零 LIVE_SMOKE_PASS；残留 pid 目录已精确清理）。
+- **结论**：总 Exit 维持 HOLD/PENDING——真实 Provider 验收未完成（场景
+  4c 起 + 场景 5/6/7/8 + 真 Key 扫描未通过真实执行；RT-10 与真实
+  SRT-01/02 仍 NOT RUN）；两处修复均已离线就绪，下一唯一动作 = 用户
+  单独授权后对 4c 修复做一次定向真实复验。另如实登记观察性发现：
+  disabled 条目对 agent 检索不可见（契约语义）意味着自然语言「恢复」
+  任务在模型侧需用户提供定位信息——计划内语义边界，不命中 Exit Gate。
