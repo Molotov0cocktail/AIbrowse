@@ -980,6 +980,10 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
     ③ shared/types/agent.ts 枚举清单遗漏 ClickAllowedKind/ElementSemanticsBinding
     两个导出类型名；④ AgentRuntime bullet 未列 verifyReasoningReplay、审计 bullet
     未列 formatAgentRunAuditMessage。均为文档滞后，与代码契约无冲突。
+    **（B9 收尾，2026-08-15）四处已由 B9 独立最终验收同步校准**（AGENTS.md §5：
+    ConversationStore v2 演进注记/ToolRegistry wire 名称双闸门/ClickAllowedKind・
+    ElementSemanticsBinding 类型补列/verifyReasoningReplay・
+    formatAgentRunAuditMessage 补列）。
 46. **B1 决策门冻结语义校准（2026-08-15，B1 实施前用户裁决）**：⑧⑨（FTS5 建表/
     trigram 中文命中）**不构成 B1 冻结硬门槛**——11 项全部逐项实测与独立报告；
     驱动冻结仅要求基础能力项 ①–⑦、⑩、⑪ 全部通过；⑧⑨ 失败不停止，B3 按 §8.3

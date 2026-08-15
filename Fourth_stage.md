@@ -42,10 +42,16 @@
 > B-02 SRT-10 跨进程扩展；全量 test 1229/1229，dev+生产冒烟与 B-02/B-05/
 > SESSION 双进程全部退出码 0；RT-10 与真实 SRT-01/02 NOT RUN（待用户
 > 授权）；
-> **B9 待开始**；
-> 下一个推荐动作 = **B9 Fourth Stage 独立最终验收**（不采信 B1–B8 完成
-> 报告，在当前 HEAD 重新独立复验；审计其余发现 P2-2/P2-3/P2-4/P3 登记于
-> progress.md 开放风险，B9 或专项闭环评估处置）。
+> **B9 已完成（2026-08-15）**——独立最终验收（不采信 B1–B8 报告，当前
+> HEAD c8e4122 独立复验）：§9 逐项勾选证据 + §10 八项判定已回填；全量
+> test 1229/1229（单 worker）· typecheck · lint · format:check · build
+> 全绿；dev/生产冒烟全矩阵（B-01 11 项/8.6 RT/8.14 recovery/8.15
+> SRT-01～SRT-12）与 B-02/B-05/SESSION 双进程退出码 0；红线独立复核
+> 零回退；**总 Exit 判定 = HOLD/PENDING——唯一缺口 = 真实 Provider
+> 验收（本轮用户未授权，RT-10 与真实 SRT-01/02 = NOT RUN）**；
+> 下一个推荐动作 = **真实 Provider 补验**（B6/B8 补验任务：仓库外
+> harness 补 -Sources 开关 + 用户授权后最小真实 Sources 验收——离线
+> 矩阵不替代真实验证）；补验通过前不宣称第四阶段验收通过。
 > **契约与安全契约源**：本文保留阶段需求源职责（目标/验收标准/Exit Gate），
 > 具体接口、schema、权限矩阵、预算与决议以 `doc/stage4/detailed-design.md` 为
 > **唯一契约源**；威胁与红队以 `doc/stage4/threat-model.md` 为**安全契约源**。
@@ -315,32 +321,50 @@ AI 自动操作和手工操作应落入同一 SourceService。
 > Gate 边界校准原草案；逐项核对与证据回填由 B9 实施，映射见 detailed-design §14。）
 
 ### Storage
-- [ ] SQLite 与 migration 稳定（B1 决策门 11 项逐项实测 + 驱动冻结决议 + 单调逐级迁移 + 一致性备份）
-- [ ] Source CRUD 走 Service/Repository（UI 与 Agent 共用 SourceService；SQL 封闭）
-- [ ] 重启后数据保留（跨进程双进程验证，含 change journal/Undo 数据）
+- [x] SQLite 与 migration 稳定（B1 决策门 11 项逐项实测 + 驱动冻结决议 + 单调逐级迁移 + 一致性备份）
+      → **B9 独立复验 PASS**：B-01 11 项本轮 dev+生产双场景实测通过（①–⑦、⑩、⑪ 基础能力项全过，⑧ FTS5/⑨ trigram 可用）；决议 #48 冻结记录在 detailed-design §15；migrations 14 用例 + backup 20 用例 + sources-store 9 用例全绿
+- [x] Source CRUD 走 Service/Repository（UI 与 Agent 共用 SourceService；SQL 封闭）
+      → **B9 独立复验 PASS**：SQL 执行点 grep 分类——业务 SQL 仅 `sources/repository/`（source-repository/change-journal/source-search-index 编译期常量 + 参数绑定）+ `db/`（driver 连接级 PRAGMA/事务、backup PRAGMA/VACUUM INTO 窄契约、migrations 编译期语句）；source-service/source-ipc/renderer/preload 零 SQL
+- [x] 重启后数据保留（跨进程双进程验证，含 change journal/Undo 数据）
+      → **B9 独立复验 PASS**：B-02 set/check 本轮生产产物双进程退出码 0（跨进程读回一致 + 重启后 Undo + 重复 Undo 幂等 + 版本冲突拒绝 + usage 投影一致 + SRT-10 hard delete 清理）
 
 ### Sources
-- [ ] 可分组、标签、备注、优先级
-- [ ] 可手工管理（含当前页快速添加、禁用/恢复、Undo、二次确认永久删除）
-- [ ] 可自然语言让 AI 添加/修改/整理/禁用/恢复（change set 全链路）
-- [ ] 可搜索长期信源（多语言 + 降级路径 + 确定性排序）
+- [x] 可分组、标签、备注、优先级
+      → **B9 独立复验 PASS**：schema v1（source_groups/source_tags/priority 1–5/user_note/ai_note）；8.11 B-05 UI 冒烟（分组分页 22 条/标签/备注编辑）本轮 dev+生产通过
+- [x] 可手工管理（含当前页快速添加、禁用/恢复、Undo、二次确认永久删除）
+      → **B9 独立复验 PASS**：8.11 B-05 默认矩阵 + B-05 UI 双进程（快速添加/编辑/disable/restore/手工 Undo/两阶段永久删除取消与确认/token 零 DOM）本轮退出码 0
+- [x] 可自然语言让 AI 添加/修改/整理/禁用/恢复（change set 全链路）
+      → **B9 独立复验 PASS（离线确定性）**：8.12 B-06/B-07（deny 零写入/approve 保存+Undo/改组备注/标 official 恒 ai+unverified/降 priority≠disable/明确 disable→restore）+ 8.13 UI DOM 本轮 dev+生产通过；**真实 Provider 维度 = NOT RUN（用户未授权）**
+- [x] 可搜索长期信源（多语言 + 降级路径 + 确定性排序）
+      → **B9 独立复验 PASS**：8.9 B-04 B3 子集（中/日/英命中 + 短查询降级 + 分享模式矩阵 + 硬上限 10 + rebuild 一致性）本轮 dev+生产通过；source-search-query 23 用例 + source-search-index 13 用例（档位不可跨档全序）
 
 ### AI
-- [ ] Agent 能检索相关 Sources（有界：硬上限 10/每页 20/allowlist/分享模式）
-- [ ] Source 用户备注能影响检索/使用策略（检索命中与排序，有限度）
-- [ ] 用户备注不能突破安全政策（不可信块 + 权限恒等 + 不提升权限）
+- [x] Agent 能检索相关 Sources（有界：硬上限 10/每页 20/allowlist/分享模式）
+      → **B9 独立复验 PASS**：SEARCH_LIMIT_MAX=10（source-service.ts:83）/LIST_PAGE_SIZE_MAX=20（:85）/SEARCH_CANDIDATE_MAX=200；SRT-03 禁具与上限断言本轮 dev+生产通过
+- [x] Source 用户备注能影响检索/使用策略（检索命中与排序，有限度）
+      → **B9 独立复验 PASS**：note 参与检索（FTS/LIKE 路径）与排序（档位内），有限度——档位不可跨档、priority 不得反转档位（决议 #61）
+- [x] 用户备注不能突破安全政策（不可信块 + 权限恒等 + 不提升权限）
+      → **B9 独立复验 PASS**：SRT-02（system 每轮恒等 AGENT_SYSTEM_PROMPT/工具列表与注册表 17 恒等/诱导文本仅 UNTRUSTED_TOOL_RESULT 块内/零额外工具调用）本轮 dev+生产通过
 
 ### Privacy / Trust
-- [ ] provenance 分离：AI 推断永远是 unverified，UI 明示来源
-- [ ] 无硬删除工具；disable/restore 显式；手工永久删除二次确认 + 私有 payload 清理
-- [ ] 审计/日志/ToolStep 不含备注正文与敏感 URL query；数据库/备份/journal 不进模型上下文
-- [ ] v1 明文边界如实说明（README/UI）；API Key 绝不进 Sources 数据库
+- [x] provenance 分离：AI 推断永远是 unverified，UI 明示来源
+      → **B9 独立复验 PASS**：trust 三元组（value/assertedBy/verification）+ validateChangeSet 通道规则（assertedBy=user 结构拒绝）+ SRT-01（approve 恒 {official, ai, unverified} + UI「AI 推断」不含「用户标定」）
+- [x] 无硬删除工具；disable/restore 显式；手工永久删除二次确认 + 私有 payload 清理
+      → **B9 独立复验 PASS**：禁具 grep 零命中（source_sql/source_delete_hard/source_export_all）；两阶段能力令牌（300s TTL/消费即失效）；SRT-10（FTS/journal/usage 私有 payload 清理 + 令牌重放零删除）进程内 + B-02 跨进程
+- [x] 审计/日志/ToolStep 不含备注正文与敏感 URL query；数据库/备份/journal 不进模型上下文
+      → **B9 独立复验 PASS**：redactUrlQueryValue + sanitizeToolCallsForPersistence（SRT-08 修复 33e14b0 在位）+ SRT-08 逐通道字节扫描本轮 dev+生产通过；SRT-03 整库 JSON 不进模型上下文；审计仅 ops 计数/字段名/长度
+- [x] v1 明文边界如实说明（README/UI）；API Key 绝不进 Sources 数据库
+      → **B9 独立复验 PASS**：UI SourcesPanel「说明：信源的网址、分组、标签与备注以明文保存在本机（依赖操作系统用户权限保护，不承诺静态加密）」+ 冒烟断言；README 已知限制已补明文边界条目（B9）；Key 仅 safeStorage/DPAPI（grep 零 Sources 库 Key 路径）
 
 ### Engineering
-- [ ] migration / FTS / SourceService 有自动测试
-- [ ] SRT-01～SRT-12 红队矩阵全部通过 + RT-01～RT-11 回归通过
-- [ ] 全量验证通过（test/typecheck/lint/format:check/build/冒烟双场景）
-- [ ] 数据库失败有可诊断日志（中文诊断 + 恢复态不阻塞浏览器其余能力）
+- [x] migration / FTS / SourceService 有自动测试
+      → **B9 独立复验 PASS**：migrations.test（14）/source-search-index.test（13）/source-service.test（37+B3 14+B5 10）/backup.test（20）/sources-store.test（9）——52 文件 1229 用例全绿
+- [x] SRT-01～SRT-12 红队矩阵全部通过 + RT-01～RT-11 回归通过
+      → **B9 独立复验 PASS（离线机器证据）**：8.15 SRT-01～SRT-12 每项独立断言 dev+生产退出码 0（本轮实测）；8.6 RT-01～08+RT-11 本轮重跑通过；RT-09 扩展静态审计（SQL 分类/renderer-preload 零 SQL/Electron 隔离/Key 零读回/Source Tool 零网络）；**RT-10 = NOT RUN（真实 Provider 观察性验证，用户未授权）**
+- [x] 全量验证通过（test/typecheck/lint/format:check/build/冒烟双场景）
+      → **B9 独立复验 PASS**：test 1229/1229（单 worker，19.55s）· typecheck · lint · format:check · build · git diff --check 全绿；dev+生产冒烟全矩阵退出码 0
+- [x] 数据库失败有可诊断日志（中文诊断 + 恢复态不阻塞浏览器其余能力）
+      → **B9 独立复验 PASS**：sources-store.ts 中文诊断（「Sources 进入只读恢复态：…（浏览器其余能力不受影响）」）；8.14 recovery（恢复态读写/Undo/usage/rebuild 全拒 + 浏览器其余能力继续可用断言）本轮 dev+生产通过
 
 ---
 
@@ -361,6 +385,51 @@ AI 自动操作和手工操作应落入同一 SourceService。
 
 **B9 不采信 B1–B8 完成报告**：在当前 HEAD 上重新独立复验全部清单与 Gate。
 完成后停止，不直接实现 Research（Fifth Stage）。
+
+> **B9 独立判定（2026-08-15，HEAD c8e4122）逐项结论：**
+>
+> 1. **Source 系统真实使用中稳定保存/搜索/修改** —— **HOLD（真实 Provider 缺口）**：
+>    离线维度 PASS（B-02/B-05 双进程跨进程读回 + Undo + 8.12/8.13/8.14 冒烟，本轮
+>    全部退出码 0；FakeProvider 不冒充真实模型）。真实 Provider 维度 = **NOT RUN**
+>    （本轮用户未授权；B8 的 RT-10 与真实 SRT-01/02 同样 NOT RUN，不得写成已通过）。
+> 2. **重复 URL、canonicalization、删除语义明确** —— **PASS**：UNIQUE(scope,
+>    canonical_key) 唯一约束（SRT-05 并发双写仅一成功）；canonicalization 纯函数
+>    22 用例；disable/restore 显式状态机；手工永久删除二次确认 + FTS/journal/usage
+>    私有 payload 清理（SRT-10）；Undo 重启后可用（B-02 双进程）。
+> 3. **Agent 不会一次把整个数据库塞给模型** —— **PASS**：SEARCH_LIMIT_MAX=10 /
+>    LIST_PAGE_SIZE_MAX=20 / SEARCH_CANDIDATE_MAX=200 编译期常量 + allowlist
+>    序列化 + 分享模式过滤 + SRT-03（整库 JSON 不进模型上下文、第 2 页尾部标记
+>    零进模型请求）。
+> 4. **备注与权限边界明确** —— **PASS**：分享模式 full/metadata/blocked +
+>    audience 硬编码；provenance 三元组（AI 恒 ai+unverified，SRT-01）；note 仅
+>    UNTRUSTED_TOOL_RESULT 块（SRT-02 system/工具列表/权限矩阵恒等）。
+> 5. **FTS 是否足够（如实结论）** —— **PASS**：**结论区分主路径与降级，不宣称
+>    万能检索**——trigram ≥3 字符主路径（中/日/英子串实测命中，B1 实测 1–2 字符
+>    不命中为 trigram 语义）；1 字符仅精确、2 字符精确+前缀+参数化字面子串 LIKE、
+>    URL 判定集合精确+前缀为安全降级路径；「FTS 不可用」（MATCH/构造失败）参数化
+>    降级且 note 检索随之不可用（如实登记）。
+> 6. **B1 node:sqlite 决策门证据在案** —— **PASS**：B-01 11 项本轮 dev+生产双
+>    场景实测通过（①–⑦、⑩、⑪ 全过，⑧⑨ 可用）；驱动冻结决议 #48
+>    （detailed-design §15，Electron 43.4.0 / Node 24.18.1 / SQLite 3.53.1）。
+> 7. **红队矩阵 SRT-01～SRT-12 与第三阶段回归** —— **PASS（离线机器证据）**：
+>    8.15 SRT-01～SRT-12 每项独立机器断言 dev+生产退出码 0（本轮实测，断言落点
+>    threat-model §4.1）；8.6 RT-01～08+RT-11 本轮重跑通过；RT-09 扩展静态审计；
+>    **RT-10 = NOT RUN**（真实 Provider 观察性验证，计入第 1/8 项同一缺口）。
+>    注：SRT 结论只证明结构边界，不宣称模型语义层免疫（threat-model §5 六类
+>    残余风险维持登记）。
+> 8. **隐私扫描与真 Key 零暴露扫描** —— 离线部分 **PASS**（SRT-08 逐通道字节
+>    扫描——note 正文/`?token=`/`&key=` 形态在审计（query 值脱敏）/日志/ToolStep/
+>    会话文件/UI DOM 零出现，dev+生产实测）；**真 Key 零暴露扫描 = NOT RUN**
+>    （真实 Provider 未执行，扫描路径 runLiveAgentSourcesScenarios 就绪）。
+>
+> **总 Exit 判定 = HOLD/PENDING**：八项中第 1 项（真实使用维度）与第 8 项
+> （真 Key 扫描）因**用户本轮未授权真实 Provider 验证**存在唯一缺口（RT-10 +
+> 真实 SRT-01/02 观察性场景 + §7 场景真实模型维度）；仓库外 harness 缺
+> -Sources 开关（B6/B8 补验任务范畴，B9 不补写产品/测试代码）。离线矩阵、
+> 红线审计、跨进程证据全部独立复验通过。第四阶段保持为当前阶段；下一唯一
+> 动作 = **真实 Provider 补验**（B6/B8 补验任务：harness 补 -Sources 开关 +
+> 用户授权后最小真实验收——沿用第三阶段 DPAPI harness 流程）。补验通过并
+> 改判 GO/PASS 前，不得宣称第四阶段验收通过；不得实现 Fifth Stage。
 
 ---
 

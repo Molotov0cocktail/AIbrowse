@@ -50,8 +50,15 @@
 >   先测后修）+ B-02 SRT-10 跨进程扩展；全量 test **1229/1229**，dev+
 >   生产冒烟与 B-02/B-05/SESSION 双进程全部退出码 0；RT-10 与真实
 >   SRT-01/02 NOT RUN（待用户授权）；
->   下一个推荐动作 = **B9 Fourth Stage 独立最终验收**（不采信 B1–B8 完成
->   报告；审计其余发现 P2-2/P2-3/P2-4/P3 登记于 progress.md 开放风险）。
+>   **B9 已完成（2026-08-15）**——独立最终验收（不采信 B1–B8 报告，HEAD
+>   c8e4122 独立复验）：§9 逐项勾选证据 + §10 八项判定已回填；全量 test
+>   1229/1229（单 worker）· typecheck · lint · format:check · build 全绿；
+>   dev/生产冒烟全矩阵与 B-02/B-05/SESSION 双进程退出码 0；红线独立复核
+>   零回退；**总 Exit 判定 = HOLD/PENDING——唯一缺口 = 真实 Provider
+>   验收（本轮用户未授权，RT-10 与真实 SRT-01/02 = NOT RUN）**；
+>   下一个推荐动作 = **真实 Provider 补验**（B6/B8 补验任务：仓库外
+>   harness 补 -Sources 开关 + 用户授权后最小真实 Sources 验收——离线
+>   矩阵不替代真实验证）；补验通过前不宣称第四阶段验收通过。
 >   契约源
 >   `doc/stage4/detailed-design.md`；安全契约源
 >   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
@@ -77,7 +84,7 @@
 ## 当前状态（2026-08-15）
 
 - 🔨 **第四阶段（Sources）进行中（2026-08-15，用户切换指令）：设计完成、
-  B1 已完成、B2 已完成、B3 已完成、B4 已完成、B5 已完成、B6 已完成、B7 已完成**——设计闭环（proposal/高层设计/详细设计/
+  B1–B9 全部完成**——设计闭环（proposal/高层设计/详细设计/
   威胁模型/B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：
   Electron 43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared
   statements/事务/外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）
@@ -157,9 +164,15 @@
     HOLD；本闭环修复（决议 #92：两阶段私有 staging + 硬链接 no-clobber 原子
     发布 + 所有权证明精确清理 + `createConsistentBackupAt` 任意路径公共导出
     移除），红→绿 5 failed/32 passed → 37/37，全量 test **1226/1226**，
-    dev/生产冒烟（B-06 全矩阵）与 B-02 双进程退出码 0。**下一个推荐动作 =
-    B8 红队矩阵 SRT-01～SRT-12**（审计其余发现 P2-2/P2-3/P2-4/P3 登记于
-    progress.md 开放风险，不阻塞 B8）。
+    dev/生产冒烟（B-06 全矩阵）与 B-02 双进程退出码 0。
+    **B8 已完成**（红队矩阵 SRT-01～SRT-12 + 增量安全审计 + 隐私扫描，
+    全量 test 1229/1229；RT-10 与真实 SRT-01/02 NOT RUN）。
+    **B9 独立最终验收已完成（2026-08-15）**：§9 全组勾选证据 + §10 八项
+    判定（离线全 PASS）+ 全量验证独立复跑全绿 + dev/生产冒烟与跨进程门控
+    退出码 0 + 红线独立复核零回退；**总 Exit 判定 = HOLD/PENDING——唯一
+    缺口 = 真实 Provider 验收（本轮用户未授权）**；下一唯一动作 = 真实
+    Provider 补验（B6/B8 补验任务：仓库外 harness 补 -Sources 开关 +
+    用户授权后最小真实验收）；补验通过前不宣称第四阶段验收通过。
     契约 `doc/stage4/detailed-design.md` + 安全契约
     `doc/stage4/threat-model.md`。
 
@@ -525,6 +538,10 @@ ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元
   接口隔离已落地，v1 为 Bing 搜索页实现，未来 API 供应商实现同接口即可替换）。
 - 无 CI / 打包配置（第一阶段验收不要求；打包属 Seventh Stage）。
 - 冒烟中的搜索验证在离线环境断言「发起 Bing 搜索导航」而非页面加载完成（联网冒烟变体可验证）。
+- **Sources v1 本地明文边界（如实声明）**：信源的网址、分组、标签与备注以明文保存在
+  本机 `<userData>/sources/sources.db`（本地检索所需），依赖操作系统用户权限保护；
+  本阶段不承诺数据库静态加密（Sources UI 内同样如实说明）；API Key 仍只走既有
+  safeStorage/DPAPI，绝不进入 Sources 数据库。
 - Prompt Injection 边界：第二阶段结构性隔离保证网页内容不能取得权限、读取密钥、调用写
   操作或改变消息角色（机器可验证）；第三阶段引入 Browser Tool 前**威胁模型已重建定稿**
   （`doc/stage3/threat-model.md`：五层防线 + 红队矩阵 RT-01～RT-11）。仍**不承诺**模型在

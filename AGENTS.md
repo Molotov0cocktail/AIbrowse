@@ -74,7 +74,7 @@
     零删除）+ 备份源连接只读（不写源库）；红→绿 11 failed → 41/41）+ 受控
     串行重验（全量 test **1219/1219** + typecheck/lint/format:check/build +
     dev/生产冒烟 + B-02/B-05/SESSION 双进程退出码 0）；
-    **B8 已完成、B9 待开始**；独立审计 + B7 审计后定向修复已完成（2026-08-15，
+    **B8 已完成**；独立审计 + B7 审计后定向修复已完成（2026-08-15，
     HOLD 解除：backup.ts 备份发布/失败清理 P2 竞态——决议 #92 两阶段私有
     staging + 硬链接 no-clobber 原子发布 + 所有权证明精确清理 + 任意路径
     公共导出移除；红→绿 5 failed/32 passed → 37/37，全量 1226/1226）；
@@ -88,8 +88,21 @@
     全量持久化——先测后修独立提交）+ B-02 SRT-10 跨进程扩展（hard delete
     后 FTS/journal/usage 清理）；全量 test 1229/1229；**RT-10 与真实
     SRT-01/02 = NOT RUN**（本轮未获用户授权，不冒充历史证据）；
-    下一个推荐动作 = **B9 Fourth Stage 独立最终验收**（不采信 B1–B8 完成
-    报告；审计其余发现 P2-2/P2-3/P2-4/P3 登记于 progress.md 开放风险）。
+    **B9 已完成（2026-08-15）**——独立最终验收（不采信 B1–B8 报告）：步骤 0
+    三方 SHA 一致（c8e4122，本地/Gitee/GitHub）+ 全量 test 1229/1229（单
+    worker）· typecheck · lint · format:check · build 独立复跑全绿 + dev/
+    生产冒烟全矩阵（B-01 11 项/8.6 RT/8.14 recovery/8.15 SRT-01～SRT-12）
+    退出码 0 + B-02/B-05/SESSION 双进程退出码 0 + 红线独立复核（SQL 仅
+    Repository/migrations/driver/backup 窄契约/SMOKE 设施；renderer/preload
+    零 SQL；禁具零命中；工具注册表 17；Electron 隔离/IPC sender+主帧/preload
+    白名单零回退）+ P2-2/P2-3/P2-4/P3 独立处置（均不命中本阶段 Exit Gate，
+    P2-2/P2-3 为真实无界增长项后续硬化）+ 决议 #45 四处速查滞后项已校准；
+    **总 Exit 判定 = HOLD/PENDING——唯一缺口 = 真实 Provider 验收**
+    （本轮用户未授权；RT-10 与真实 SRT-01/02 观察性场景 NOT RUN；仓库外
+    harness 缺 -Sources 开关属 B6/B8 补验任务）；第四阶段保持为当前阶段。
+    下一个推荐动作 = **真实 Provider 补验**（B6/B8 补验任务：仓库外
+    harness 补 -Sources 开关 + 用户授权后最小真实 Sources 验收——离线
+    矩阵不替代真实验证）；补验完成前不得宣称第四阶段验收通过。
     契约源
     `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
@@ -108,11 +121,12 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
     expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
     永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
     数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
-    **⚠️ B1–B8 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层/B5 Sources
+    **⚠️ B1–B9 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层/B5 Sources
     UI 与 IPC/B6 usage 接线 + 自然语言管理端到端/B7 存储运维面——backup/迁移
     全矩阵/恢复态/rebuild 诊断/usage 展示/B8 红队矩阵 SRT-01～SRT-12 + 安全
-    审计 + 隐私扫描，冒烟 8.15）；B9 对应能力（第四阶段独立最终验收/Exit Gate
-    判定）在完成前不得在文档/报告/UI 中宣称第四阶段验收通过。
+    审计 + 隐私扫描，冒烟 8.15；B9 独立最终验收已完成，**总 Exit 判定 =
+    HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）**）；在真实
+    Provider 补验通过前不得在文档/报告/UI 中宣称第四阶段验收通过。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
@@ -673,6 +687,8 @@ ConversationStore(userDataDir)`——`dirPath`/`loadSessions`/`saveSessions`（�
   （§9 逐条校验）、`serialize/parseMessagesFile`/`serialize/parseIndexFile`（version 1；
   整体不可解析 → null；索引解析丢弃 ephemeral 条目）、`cropMessagesToLimit`（200 条
   裁最早）、常量 `SESSION_LIMIT=50`/`MESSAGE_LIMIT=200`/`TITLE_MAX_CHARS=30`。
+  **A5 版本演进（决议 #45 校准）**：写入恒 v2（ToolStep 消息），读兼容 v1
+  （孤立 tool 丢弃），见 Third Stage 段落。
   布局 `<userData>/conversations/index.json + <sessionId>.json`（运行时目录，不入库）。
 - **ContextBuilder（S2 ✅ 已实现，2026-08-13 grep 核对）**：`buildContext({question,
 snapshot, history, system, requestId, model, budget?}) → {request, meta}`——
@@ -816,13 +832,18 @@ tools?` 恒等透传（未传 tools 时请求字段缺失）。conversation-serv
   （A6 增 argsSummary——审计同源脱敏摘要，非持久化）/`AgentConfirmOutcome`/
   `AgentStatusPhase`（starting/thinking/executing/waiting-confirm/
   confirm-resolved/finalizing）/`AgentStatusEvent`（决议 #34 实时状态——
-  确定性运行事实）/`AgentRunDoneEvent`。
+  确定性运行事实）/`AgentRunDoneEvent`/`ClickAllowedKind`（'submit'|'nav'|
+  'expand'|'toggle'|null——click 分类单一事实源 classifyClickTarget 返回值
+  类型，A3）/`ElementSemanticsBinding`（elementId + documentId 世代绑定，
+  执行器内部参数，A3）。
 - **ToolRegistry（A2 ✅ 已实现，grep 核对）**：tool-types.ts——`ToolDefinition`
   （name/description/parameters（ProviderToolParameter 子集）/baseRisk/
   riskLift?{submitClick?}/executor）+ `ToolExecutorFn(call, ctx, signal) →
 Promise<ToolResult>` + `ToolExecutionContext`（browser: BrowserController /
   runId / getElementSemantics?）。tool-registry.ts——`registerTool(def): void`
-  （工具名唯一，重复注册确定性抛出）/ `getTool(name): ToolDefinition | null` /
+  （工具名唯一，重复注册确定性抛出；**wire 名称双闸门（决议 #35）**——
+  `TOOL_NAME_PATTERN` `/^[A-Za-z0-9_-]{1,64}$/` 注册阶段与 listTools 序列化
+  阶段双重拒绝非法名（点号/超长/空/非 ASCII））/ `getTool(name): ToolDefinition | null` /
   `listTools(): ProviderTool[]`（只从注册表序列化，按名排序、每次全新对象）/
   `validateToolArgs(name, rawArgs) → {ok:true,args}|{ok:false,reason}`
   （JSON.parse 失败/未知工具/缺必填/类型/enum/未知键/长度上限——字符串 500、
@@ -861,7 +882,8 @@ boolean`（未知/已终结 id → false，幂等）、`cancelAll(runId): void`�
   `summarizeArgs(toolName, args)`（键排序确定性；browser_fill 的 text →
   `len=N` 原文零出现；url 全量；其余 ≤ `ARGS_SUMMARY_MAX`=200 截断）、
   `summarizeRawArgs`（解析失败路径原文截断）、`formatAuditMessage(entry)`
-  （§10.1 确定性中文格式）、`createAuditLogger(log=logInfo)`（薄封装，装配
+  （§10.1 确定性中文格式）、`formatAgentRunAuditMessage(run)`（A5 agent-run
+  出口审计条目格式）、`createAuditLogger(log=logInfo)`（薄封装，装配
   注入；全部经 logger sanitize 脱敏）。tool-executor.ts——`ToolExecutor
 (confirmManager, audit)` 类 + `execute(call, ctx, signal) →
 Promise<ToolResult>`（注册表查找/参数校验 → 权限判定 → 确认状态机 →
@@ -934,7 +956,9 @@ hasContent}`（bing 自身域 + 中英双语非结果标签过滤/非 http/https
   ToolExecutor 管线 → 步数/防循环执行前判定；终态单一所有权 finish() 守卫——
   终态时 abort 模型流 + cancelAll 作废 pending + 零后续执行 + 迟到事件忽略；
   工具执行与 Provider 解析与终态 Promise.race（cancel 不挂起）；协议非法
-  （空/重复/跨轮冲突 toolCallId）fail-closed error 终态；每 run 独立
+  （空/重复/跨轮冲突 toolCallId）fail-closed error 终态；
+  `verifyReasoningReplay`（决议 #35：reasoning_content 回传程序内内容相等
+  校验，任何不一致 fail-closed error 终态）；每 run 独立
   InteractionSemanticsStore）。agent-safety.ts——`AGENT_LOOP_SAME_SIGNATURE_
 CONSECUTIVE=3`/`AGENT_LOOP_SAME_SIGNATURE_TOTAL=5`/`AGENT_LOOP_NO_PROGRESS_
 STEPS=2`/`AgentSafetyLimits`/`AGENT_SAFETY_LIMITS`/`normalizeSignatureArguments`/

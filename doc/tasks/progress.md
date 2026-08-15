@@ -105,13 +105,47 @@
   全绿，dev+生产冒烟（含 8.15 全矩阵）与 B-02/B-05/SESSION 双进程全部退出
   码 0；临时 userData/运行日志全部精确清理。**RT-10 与真实 SRT-01/02 =
   NOT RUN**（本轮未获用户授权，不发起付费/公网请求，不冒充历史证据）；
-  LIVE_AGENT_SOURCES 门控保持就绪。**唯一下一推荐任务 = B9**（Fourth
-  Stage 独立最终验收，不采信 B1–B8 完成报告）。B9 完成前不得宣称第四阶段
-  验收通过。
+  LIVE_AGENT_SOURCES 门控保持就绪。
+  **B9 已完成（2026-08-15）**——Fourth Stage 独立最终验收（不采信 B1–B8
+  完成报告，当前 HEAD c8e4122 独立复验）：① 步骤 0 三方 SHA 一致（本地=
+  Gitee=GitHub，GitHub 经代理确认）、工作区干净；② 受控独立验证（一次一条
+  命令，单 worker，零重试变绿）——test **1229/1229**（52 文件 19.55s）·
+  typecheck · lint · format:check · build · git diff --check 全绿；③ 冒烟
+  矩阵（env -u ELECTRON_RUN_AS_NODE + 独立系统 TEMP 临时 userData）——dev
+  全矩阵退出码 0（含 B-01 11 项/8.6 RT/8.14 recovery/8.15 SRT-01～SRT-12
+  通过行日志实证）、生产产物全矩阵退出码 0、B-02/B-05/SESSION 双进程全部
+  退出码 0；每轮后零 Electron/Node 进程残留 + 零 WAL/SHM + 6 个 B9 专属
+  临时目录全部精确清理 + 今日日志 sk- 形态零命中；④ 红线独立复核（不抄 B8
+  报告）——SQL 执行点分类（业务 SQL 仅 Repository 编译期常量+参数绑定；
+  driver 仅连接级 PRAGMA/事务；backup 仅 PRAGMA/VACUUM INTO 窄契约；
+  migrations 编译期语句；smoke/test 为测试设施；snapshot-script `.exec`
+  为正则非 SQL）；renderer/preload/AgentLoop/Tool 零 SQL；禁具零命中；
+  工具注册表 17（8+4+4+1）；Electron 隔离（sandbox/contextIsolation/
+  nodeIntegration=false/window.open deny/UI 导航白名单/IPC sender+主帧/
+  preload 白名单零回退）；Source Tool 零 Electron import 零网络；
+  usage-tracker 零 timer 零网络；SRT-08 修复
+  （sanitizeToolCallsForPersistence+redactUrlQueryValue）在位；⑤ §9 四组
+  18 项全部勾选回填证据（Fourth_stage.md §9）；⑥ §10 八项判定——②③④⑤⑥⑦
+  与⑧离线部分 PASS、①与⑧真 Key 扫描 **HOLD（唯一缺口 = 真实 Provider
+  验收）**；**总 Exit 判定 = HOLD/PENDING**（用户本轮未授权真实 Provider；
+  RT-10 与真实 SRT-01/02 观察性场景 = NOT RUN；产品侧
+  AIBROWSE_LIVE_AGENT_SOURCES 门控就绪，仓库外 harness 缺 -Sources 开关
+  ——B6/B8 补验任务范畴，B9 不越界补写产品/测试代码）；⑦ P2/P3 开放风险
+  独立处置（见「风险与限制」——均不命中本阶段 Exit Gate，P2-2/P2-3 为真实
+  无界增长项登记后续硬化，P2-4 建议 vitest.config 固化单 worker）；⑧ 文档
+  同步（Fourth_stage §9/§10、B9 任务台账、本文件、AGENTS §1+决议 #45 四处
+  速查校准、README 状态+明文边界已知限制）。
+  **唯一下一推荐任务 = 真实 Provider 补验**（B6/B8 补验任务：仓库外
+  harness 补 -Sources 开关 + 用户授权后最小真实 Sources 验收——自然语言
+  添加/修改/改组/备注/降优先级/disable-restore、L2 approve/deny、
+  source_search→browser_open/read、「标为官方」恒 ai+unverified、敌对页/
+  note 的 SRT-01/02 观察性场景、usage 与全链路 Key 零暴露扫描）。补验通过
+  并改判 GO/PASS 前不得宣称第四阶段验收通过；不得实现 Fifth Stage。
   Sources 功能对用户已可用（Sources 面板）；Agent 已可经 Source Tools 使用；
   usage 接线已闭环（B6）+ 双投影一致（B7）；存储运维面（备份/迁移/恢复/
   rebuild 诊断）已闭环（B7；备份发布竞态已修复）；红队矩阵与安全审计已闭环
-  （B8）。
+  （B8）；独立最终验收已闭环（B9；总 Exit = HOLD/PENDING，唯一缺口真实
+  Provider）。
   步骤 0 独立核对（2026-08-15，B4 会话）：HEAD `6d153ee` = Gitee/GitHub
   双远程 HEAD（ls-remote 实测三方一致，GitHub 经代理确认可用）、工作区干净；
   基线 test 1007/1007·typecheck·lint·format:check 独立复跑全绿；B1–B3 代码/
@@ -220,14 +254,65 @@
 | B6 | AI 自然语言管理端到端（change set 全链路 + Undo）+ Browser Agent 复用（source_search → browser_open/read）+ usage 记录接线 | ✅ | 2026-08-15 完成（见下）：决议 #79–#85 + usage-tracker + 序列化 allowlist 补齐 + description 校准 + 冒烟 8.12/8.13 + LIVE_AGENT_SOURCES 门控；任务文档 doc/stage4/tasks/B6-ai-source-management.md（红→绿证据已回填） |
 | B7 | 跨进程持久化 + migration/backup/recovery 全矩阵 + FTS rebuild 诊断 + usage/health 边界 | ✅ | 2026-08-15 完成（见下）：决议 #86–#91 + db/backup.ts + sources-store.ts + 恢复态装配 + rebuild 诊断入口 + usage 双投影与「上次使用结果」展示 + 冒烟 8.14 B-06 B7 部分 + B-02 usage 跨进程扩展；**2026-08-15 事故恢复与安全加固闭环**（头部固定 16 字节读取/目标 fail-closed/碰撞换新名/目录链接真实路径校验/prune 参数边界，红→绿 11→41/41，全量 1219/1219）；任务文档 doc/stage4/tasks/B7-persistence-recovery-usage.md（实施裁决与红→绿证据已回填） |
 | B8 | 红队矩阵 SRT-01～SRT-12 + 安全审计 + 隐私扫描 + 真实 Provider/真实网页可选验证 | ✅ | 2026-08-15 完成（见下）：冒烟 8.15（决议 #93 校准：8.7 已被 B1 决策门占用）12 项独立断言 dev+生产双场景退出码 0 + 8.6/8.14 结构化证据核验 + RT-09 扩展静态审计 + SRT-08 发现并修复产品缺陷（持久化 toolCalls URL query 值脱敏，33e14b0）+ B-02 SRT-10 跨进程扩展；全量 test 1229/1229；RT-10 与真实 SRT-01/02 NOT RUN（未授权）；任务文档 doc/stage4/tasks/B8-redteam-security-validation.md（红→绿证据已回填） |
-| B9 | Fourth Stage 独立最终验收（当前 HEAD 重新复验，不采信 B1–B8 报告）+ Exit Gate 判定 + 文档同步；完成后停止不实现 Fifth Stage | ⏳ | 2026-08-15 设计定稿；任务文档 doc/stage4/tasks/B9-finalize-acceptance.md |
+| B9 | Fourth Stage 独立最终验收（当前 HEAD 重新复验，不采信 B1–B8 报告）+ Exit Gate 判定 + 文档同步；完成后停止不实现 Fifth Stage | ✅ | 2026-08-15 完成（见下）：独立复验台账见任务文档「独立复验台账」小节；总 Exit 判定 = HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）；任务文档 doc/stage4/tasks/B9-finalize-acceptance.md |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
 > 上表第一阶段历史任务 T0–T5（已关闭，编号不可改）重名；第一、第二阶段历史任务
 > 编号一律不变。（2026-08-15）第四阶段任务编号 B1–B9、威胁 ST-01～ST-12、红队
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B8 条目）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目）
+
+- **B9 Fourth Stage 独立最终验收（2026-08-15，第九个闭环；总 Exit 判定 =
+  HOLD/PENDING）**：① 步骤 0 独立核对——HEAD `c8e4122` = Gitee/GitHub 双远程
+  HEAD（ls-remote 实测三方一致；GitHub 操作前确认 127.0.0.1:7890 代理
+  HTTP 200）、工作区干净（git diff 空/diff --check 零命中）、c8e4122 为纯
+  文档提交（show --stat 核验）、B1–B8 代码与测试全部在位（sources/ 全模块 +
+  52 测试文件）。② **受控独立验证**（一次一条命令、单 worker、零重试变绿）：
+  test **1229/1229**（52 文件，19.55s）· typecheck · lint · format:check ·
+  build（out/ 三目标）· git diff --check 全部退出码 0。③ **冒烟矩阵独立复跑**
+  （env -u ELECTRON_RUN_AS_NODE + 6 个 B9 专属系统 TEMP 临时 userData，串行）：
+  dev 全矩阵退出码 0（1644 行日志；B-01 11 项 ①–⑦、⑩、⑪ 全过/⑧⑨ 可用、
+  8.6 RT-01～08+RT-11、8.9/8.10、8.11 B-05、8.12/8.13、8.14 recovery、
+  8.15 SRT-01～SRT-12 通过行日志实证）；生产产物全矩阵退出码 0（1631 行，
+  同矩阵）；B-02 set/check 退出码 0（跨进程读回+Undo+usage 投影+SRT-10
+  hard delete 清理）；B-05 set/check 退出码 0（真实 UI 链路两阶段删除）；
+  SESSION set/check 退出码 0。每轮后检查：零 Electron/Node 进程残留、
+  sources/ 目录冒烟自清（零 WAL/SHM）、临时目录全部精确清理、今日日志
+  sk- 形态零命中、未触碰真实 userData。④ **红线独立复核**（不抄 B8 报告）：
+  SQL 执行点 grep 分类——业务 SQL 仅 `sources/repository/`（编译期常量+
+  参数绑定）；`db/sqlite-driver.ts` 连接级 PRAGMA（busyTimeout 程序校验
+  整数 [0,30000]）/事务；`db/backup.ts` PRAGMA/VACUUM INTO 窄契约；
+  `db/migrations.ts` 编译期语句；smoke/`*.test.ts` 为测试设施；
+  snapshot-script `.exec` 为正则（非 SQL）；renderer/preload/AgentLoop/
+  Tool 零 SQL；禁具（source_sql/source_delete_hard/source_export_all/
+  shell/child_process）产品代码零命中；工具注册表 17（8+4+4+1）；
+  Electron 隔离（sandbox/contextIsolation/nodeIntegration=false/window.open
+  deny/UI will-navigate+will-redirect 白名单/IPC 全部 handle() sender+主帧
+  校验/preload 白名单零回退）；Source Tool 零 Electron import 零网络；
+  usage-tracker 零 timer 零网络；SRT-08 修复
+  （sanitizeToolCallsForPersistence+redactUrlQueryValue）在位。⑤ **§9 四组
+  18 项全部勾选回填证据**（Fourth_stage.md §9，每项含本轮独立复验来源）；
+  ⑥ **§10 八项判定**：① HOLD（真实 Provider 缺口；离线 PASS）② PASS
+  （唯一约束/删除语义/Undo 重启后可用）③ PASS（10/20/200 上限+allowlist+
+  分享模式）④ PASS（provenance 三元组+不可信块+权限恒等）⑤ PASS（如实
+  结论：trigram ≥3 主路径 + 1–2 字符安全降级，不宣称万能检索）⑥ PASS（B1
+  决策门 11 项本轮实测+决议 #48 在案）⑦ PASS（SRT 全矩阵+RT 回归；
+  RT-10 NOT RUN 计入①⑧同一缺口）⑧ 离线隐私扫描 PASS（SRT-08 逐通道字节
+  扫描）/真 Key 扫描 NOT RUN；**总 Exit 判定 = HOLD/PENDING——唯一缺口 =
+  真实 Provider 验收**。⑦ **真实 Provider 硬门**：按流程只询问用户一次 →
+  用户选择**不授权**；本轮零付费调用零公网请求；真实 Provider = NOT RUN
+  （不冒充历史证据、不以 FakeProvider 替代）；检查结果——产品侧
+  `AIBROWSE_LIVE_AGENT_SOURCES` 门控与 runLiveAgentSourcesScenarios
+  （§7 场景 1–5 AI 侧+L2 确认门+usage+真 Key 零暴露扫描）就绪；仓库外
+  harness 缺 -Sources 开关（实测 grep 零命中，B6 记录属实）——补开关属
+  B6/B8 补验任务（仓库外文件），B9 不越界补写。⑧ **P2/P3 开放风险独立
+  处置**（见「风险与限制」独立处置结论）。⑨ **文档同步**：Fourth_stage
+  §9/§10、B9 任务台账、本文件、AGENTS（§1 状态+决议 #45 四处速查校准）、
+  README（状态+明文边界已知限制）；detailed-design/threat-model 无陈旧
+  未改。**B9 标记完成；总 Exit = HOLD/PENDING；第四阶段保持为当前阶段；
+  下一唯一动作 = 真实 Provider 补验（B6/B8 补验任务）；不得实现
+  Fifth Stage。**
 
 - **B8 红队矩阵 SRT-01～SRT-12 + 增量安全审计 + 隐私扫描（2026-08-15，
   第八个实现闭环；GO 判定见下）**：① 步骤 0 独立核对——HEAD `4c3a011` =
@@ -1834,18 +1919,34 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ### 开放风险登记
 
-- **审计 P2-2 日志队列/保留（未处理，2026-08-15 独立审计发现，登记待办）**：
-  日志写入为同步队列/保留策略相关发现——本闭环按范围纪律未处理，仅登记；
-  B8/B9 或专项闭环评估处置。
-- **审计 P2-3 会话字节上限（未处理，2026-08-15 独立审计发现，登记待办）**：
-  会话持久化字节上限相关发现——本闭环按范围纪律未处理，仅登记；B8/B9 或
-  专项闭环评估处置。
-- **审计 P2-4 Vitest 默认 worker（未处理，2026-08-15 独立审计发现，登记
-  待办）**：Vitest 默认并行 worker 配置相关发现——本闭环按范围纪律未处理
-  （验证仍按既有纪律单 worker 串行执行），仅登记；后续闭环评估配置收紧。
-- **审计 P3 smoke 效率（未处理，2026-08-15 独立审计发现，登记待办）**：
-  冒烟矩阵运行效率相关发现——本闭环按范围纪律未处理，仅登记；后续闭环
-  评估优化。
+- **审计 P2-2 日志队列/保留（B9 独立处置，2026-08-15；未修复，后续硬化）**：
+  logger 按日轮转 + appendFileSync 同步追加，**无大小上限、无保留天数/文件数
+  上限**——触发条件 = 长期使用（每日一文件无界追加）；影响 = 磁盘占用缓慢
+  无界增长；现有缓解 = .gitignore 防入库（与磁盘占用无关）。**B9 独立判定：
+  不命中 Fourth Stage §10 阻塞条件**（§10 八项无日志保留要求；§9「数据库
+  失败有可诊断日志」已满足且本轮冒烟实证）；但为**真实的无界增长项**，不得
+  以「非阻塞」掩盖——登记于 Seventh Stage Product Hardening（性能/稳定性/
+  发布闭环）或其后专项闭环：补日志大小上限与保留天数上限。
+- **审计 P2-3 会话字节上限（B9 独立处置，2026-08-15；未修复，后续硬化）**：
+  会话持久化有会话数（50）与消息条数（200）上限，**无字节上限**——触发
+  条件 = 单会话 200 条内持续追问或超大单条消息；影响 = 会话 JSON 文件可达
+  MB 级（存在隐式上界：200 条 × 上下文预算/摘要截断）；现有缓解 =
+  MESSAGE_LIMIT=200 + 预算截断 + ToolStep 摘要化（fill 脱敏/快照正文零持久化）。
+  **B9 独立判定：不命中本阶段 Exit Gate**（无卡死/数据丢失路径，规模有隐式
+  界）；登记后续硬化（Seventh Stage 或专项闭环评估单文件字节上限）。
+- **审计 P2-4 Vitest 默认 worker（B9 独立处置，2026-08-15；未修复，建议
+  配置固化）**：vitest.config.ts 未固化单 worker，直接 `npm test` 走默认
+  并行；触发条件 = 未按纪律显式 `--maxWorkers=1` 的调用；影响 = 墙钟断言
+  在并行负载下边缘抖动（F-1 已去墙钟化，风险显著降低）；现有缓解 = 验证
+  纪律显式单 worker（AGENTS.md §6）+ 本轮 B9 单 worker 1229/1229 全绿。
+  **B9 独立判定：不命中 Exit Gate**（验证基础设施可信——命令显式固定，本轮
+  与历史验证均单 worker 全绿）；建议后续闭环在 vitest.config.ts 固化
+  maxWorkers=1（一行配置，消除纪律依赖）。
+- **审计 P3 smoke 效率（B9 独立处置，2026-08-15；未修复，后续优化）**：
+  冒烟全矩阵运行分钟级（本轮 dev 约 4.7 分钟/生产约 4.2 分钟，双场景+
+  跨进程门控合计约 15 分钟）；触发条件 = 每次全量验证；影响 = 验证耗时
+  （非正确性）；**B9 独立判定：不命中 Exit Gate**（效率非阻塞条件；§9
+  全量验证已通过）；登记后续闭环评估优化（不影响断言强度的前提下）。
 
 ### 计划内限制与延期项
 
@@ -1959,19 +2060,25 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **B9 Fourth Stage 独立最终验收（唯一下一推荐任务）**：B8 红队矩阵已完成
-  （SRT-01～SRT-12 dev+生产双场景退出码 0 + RT-01～08/RT-11 本轮回归 +
-  RT-09 扩展静态审计 + SRT-08 产品缺陷修复 + B-02 SRT-10 跨进程扩展；全量
-  test 1229/1229）。B9 在当前 HEAD 上重新独立复验（不采信 B1–B8 完成
-  报告）——§9 验收逐项证据 + §10 Exit Gate 判定 + 冒烟全矩阵复跑 + 红线
-  grep 独立复核 + 文档一致性核对（含 AGENTS §5 速查回填与决议 #45 登记）；
-  任务文档 doc/stage4/tasks/B9-finalize-acceptance.md。审计开放风险
-  （P2-2 日志队列/保留、P2-3 会话字节上限、P2-4 Vitest 默认 worker、
-  P3 smoke 效率）登记于「风险与限制」，B9 或专项闭环评估处置。RT-10 与
-  真实 Provider 观察性验证待用户单独授权（授权后沿用仓库外 DPAPI harness
-  流程——Key 不入仓库/命令行/日志）。当前基线：test 1229/1229（52 文件，
-  单 worker）全绿、typecheck/lint/format:check/build 全绿、dev+生产冒烟
-  （含 8.15 SRT 全矩阵）与 B-02/B-05/SESSION 双进程门控全部退出码 0。
+- **真实 Provider 补验（唯一下一推荐任务，B6/B8 补验任务）**：B9 独立最终
+  验收已完成——§9 四组 18 项全部勾选回填、§10 八项中六项+⑧离线部分 PASS、
+  **总 Exit 判定 = HOLD/PENDING——唯一缺口 = 真实 Provider 验收**（本轮
+  用户未授权；RT-10 与真实 SRT-01/02 观察性场景 NOT RUN；产品侧
+  AIBROWSE_LIVE_AGENT_SOURCES 门控与 runLiveAgentSourcesScenarios 就绪，
+  仓库外 harness 缺 -Sources 开关）。补验任务内容：① 仓库外
+  `%LOCALAPPDATA%\AIbrowse\S5\run-live-smoke.ps1` 增 `-Sources` 开关
+  （注入 `AIBROWSE_LIVE_AGENT_SOURCES=1`，沿用既有 DPAPI 解密/finally
+  清除模式；仓库外文件，非产品/测试代码）；② 用户授权后执行最小真实
+  Sources 验收（deepseek-v4-pro）：自然语言添加/修改/改组/备注/降优先级/
+  disable-restore、L2 approve/deny 与持久化/Undo、source_search→
+  browser_open/read、「标为官方」恒 ai+unverified、敌对页面/note 的
+  SRT-01/02 观察性场景、usage 与全链路 Key 零暴露扫描（每次调用对应明确
+  验收项，报告次数与用途）；③ 补验通过后改判 GO/PASS 并同步文档；**离线
+  矩阵不替代真实验证**（Fourth_stage.md §10 规则不变）。补验通过前不得
+  宣称第四阶段验收通过、不得实现 Fifth Stage。
+  当前基线：test 1229/1229（52 文件，单 worker）全绿、typecheck/lint/
+  format:check/build 全绿、dev+生产冒烟（含 8.15 SRT 全矩阵）与 B-02/
+  B-05/SESSION 双进程门控全部退出码 0（B9 独立复跑实证）。
 
 ## 第一阶段验收未完成项
 
