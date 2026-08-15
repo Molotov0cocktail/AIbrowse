@@ -19,7 +19,32 @@ import type {
   AgentStatusEvent,
   AgentStepEvent,
 } from './agent';
-import type { ContentBounds } from './ipc';
+import type {
+  ContentBounds,
+  SourcesAddPayload,
+  SourcesChangedEvent,
+  SourcesGetPayload,
+  SourcesGroupsPayload,
+  SourcesHardDeletePayload,
+  SourcesIdPayload,
+  SourcesIdVersionPayload,
+  SourcesListPayload,
+  SourcesSearchPayload,
+  SourcesUndoPayload,
+  SourcesUpdatePayload,
+} from './ipc';
+import type {
+  ManualWriteResult,
+  PrepareHardDeleteResult,
+  QuickAddResult,
+  SourceGroupsResult,
+  SourceListResult,
+  SourceResult,
+  SourceSearchResult,
+  SourcesState,
+  UndoResult,
+  UndoableChange,
+} from './sources';
 
 export interface AppInfo {
   appVersion: string;
@@ -85,5 +110,27 @@ export interface AibrowseBridge {
       // API Key 只写不回读（§10）：setKey 之后 Key 无法经任何通道回到渲染层
       setKey(providerId: string, apiKey: string): Promise<boolean>; // apiKey='' = 删除
     };
+  };
+  // —— Fourth Stage B5（决议 #69/#70/#72/#73/#74）：Sources 面板白名单 ——
+  // 全部经 main 侧 sender+主帧校验 + 参数严格白名单验证；audience 由主进程适配器
+  // 硬编码 'user'（renderer 无 audience/数据库路径/SQL 通道）；quick-add 无参数
+  // （main 在点击时读取当前活动 Tab）；sources:changed 仅成功变更后推送最小
+  // payload，renderer 收到后重新读取。原始 ipcRenderer 不暴露（既有 eventRelay 模式）。
+  sources: {
+    list(payload: SourcesListPayload): Promise<SourceListResult>;
+    get(payload: SourcesGetPayload): Promise<SourceResult>;
+    search(payload: SourcesSearchPayload): Promise<SourceSearchResult>;
+    groups(payload: SourcesGroupsPayload): Promise<SourceGroupsResult>;
+    add(input: SourcesAddPayload): Promise<ManualWriteResult>;
+    update(payload: SourcesUpdatePayload): Promise<ManualWriteResult>;
+    disable(payload: SourcesIdVersionPayload): Promise<ManualWriteResult>;
+    restore(payload: SourcesIdVersionPayload): Promise<ManualWriteResult>;
+    quickAdd(): Promise<QuickAddResult>; // 无参数：main 读取当前活动 Tab（决议 #72）
+    undoable(): Promise<UndoableChange[]>;
+    undo(payload: SourcesUndoPayload): Promise<UndoResult>;
+    state(): Promise<SourcesState>;
+    prepareHardDelete(payload: SourcesIdPayload): Promise<PrepareHardDeleteResult>;
+    hardDelete(payload: SourcesHardDeletePayload): Promise<ManualWriteResult>;
+    onChanged(listener: (e: SourcesChangedEvent) => void): () => void;
   };
 }

@@ -44,6 +44,24 @@ export const IPC = {
   AgentRunDone: 'conversation:agent-run-done', // AgentRunDoneEvent（run 终态恰好一次）
   AgentStatus: 'conversation:agent-status', // AgentStatusEvent（A6 实时状态：starting/thinking/
   // executing/waiting-confirm/confirm-resolved/finalizing——确定性运行事实，非思维过程）
+  // —— Fourth Stage B5：Sources 面板手工管理通道（决议 #69/#70；全部复用 handle()
+  // sender+主帧校验；参数严格白名单验证；audience 由主进程适配器硬编码 'user'）——
+  SourcesList: 'sources:list', // payload: SourcesListPayload → SourceListResult
+  SourcesGet: 'sources:get', // payload: SourcesGetPayload → SourceResult
+  SourcesSearch: 'sources:search', // payload: SourcesSearchPayload → SourceSearchResult
+  SourcesGroups: 'sources:groups', // payload: SourcesGroupsPayload → SourceGroupsResult
+  SourcesAdd: 'sources:add', // payload: SourcesAddPayload → ManualWriteResult
+  SourcesUpdate: 'sources:update', // payload: SourcesUpdatePayload → ManualWriteResult
+  SourcesDisable: 'sources:disable', // payload: SourcesIdVersionPayload → ManualWriteResult
+  SourcesRestore: 'sources:restore', // payload: SourcesIdVersionPayload → ManualWriteResult
+  SourcesUndoable: 'sources:undoable', // → UndoableChange[]（最近 100 条有界）
+  SourcesUndo: 'sources:undo', // payload: SourcesUndoPayload → UndoResult
+  SourcesQuickAdd: 'sources:quick-add', // 无 payload：main 在点击时读取当前活动 Tab（决议 #72）
+  SourcesState: 'sources:state', // → SourcesState（normal/readonly-recovery/unavailable）
+  SourcesPrepareHardDelete: 'sources:prepare-hard-delete', // payload: SourcesIdPayload → PrepareHardDeleteResult
+  SourcesHardDelete: 'sources:hard-delete', // payload: SourcesHardDeletePayload → ManualWriteResult
+  SourcesChanged: 'sources:changed', // main → renderer 事件（仅成功变更后发送最小 payload；
+  // renderer 收到后重新读取——不携带任何数据正文）
 } as const;
 
 export interface ContentBounds {
@@ -112,4 +130,85 @@ export interface AgentAskPayload {
 export interface AgentConfirmPayload {
   toolCallId: string; // 非空串；未知/迟到/已终结 → false（幂等，不抛异常）
   approve: boolean; // true=允许一次；false=拒绝（deny）
+}
+
+// —— Fourth Stage B5：Sources 通道 payload 类型（严格白名单；renderer 不得提供
+// audience / 数据库路径 / SQL；aiNote 只读展示不进写 payload（决议 #75））——
+
+export interface SourcesListPayload {
+  page: number; // ≥0 整数
+  pageSize?: number; // 1–20（>20 → source-limit）
+  groupId?: string | null; // undefined=不过滤；null=未分组；string=指定组
+  enabledOnly?: boolean;
+}
+
+export interface SourcesGetPayload {
+  sourceId: string; // UUID 形状
+}
+
+export interface SourcesSearchPayload {
+  query: string; // 非空 ≤500
+  limit?: number; // 1–10（>10 → source-limit）
+}
+
+export interface SourcesGroupsPayload {
+  page: number; // ≥0 整数
+  pageSize?: number; // 1–20
+}
+
+export interface SourcesAddPayload {
+  scope: 'origin' | 'page';
+  url: string;
+  name?: string;
+  groupName?: string;
+  tags?: string[];
+  priority?: number;
+  shareMode?: 'full' | 'metadata' | 'blocked';
+  userNote?: string;
+  trust?: { value: 'official' | 'primary' | 'secondary' | 'community' | 'unknown' };
+  // 无 aiNote（AI note 只读展示，用户只编辑 user note，决议 #75）；
+  // trust 无 assertedBy/verification（由 main/SourceService 确定：手工通道恒
+  // user-asserted，renderer 不得伪造）。
+}
+
+export interface SourcesUpdatePatchPayload {
+  name?: string;
+  url?: string;
+  groupName?: string | null; // null = 移出分组
+  tags?: string[];
+  priority?: number;
+  shareMode?: 'full' | 'metadata' | 'blocked';
+  userNote?: string;
+  trust?: { value: 'official' | 'primary' | 'secondary' | 'community' | 'unknown' };
+  // 无 aiNote / enabled / assertedBy / verification（决议 #75/#51）
+}
+
+export interface SourcesUpdatePayload {
+  sourceId: string;
+  expectedVersion: number; // 正整数（并发令牌，决议 #65/#77 冲突提示刷新）
+  patch: SourcesUpdatePatchPayload;
+}
+
+export interface SourcesIdVersionPayload {
+  sourceId: string;
+  expectedVersion: number;
+}
+
+export interface SourcesIdPayload {
+  sourceId: string;
+}
+
+export interface SourcesHardDeletePayload {
+  sourceId: string;
+  token: string; // 64 位小写 hex 一次性能力令牌（prepare-hard-delete 签发）
+}
+
+export interface SourcesUndoPayload {
+  idempotencyKey: string; // 非空串
+}
+
+// sources:changed 最小 payload（决议 #70）：不含任何数据正文——renderer 收到后
+// 重新读取当前视图。
+export interface SourcesChangedEvent {
+  reason: 'sources-changed';
 }

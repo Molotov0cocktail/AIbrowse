@@ -16,6 +16,31 @@ import type {
   AgentStatusEvent,
   AgentStepEvent,
 } from '../shared/types/agent';
+import type {
+  ManualWriteResult,
+  PrepareHardDeleteResult,
+  QuickAddResult,
+  SourceGroupsResult,
+  SourceListResult,
+  SourceResult,
+  SourceSearchResult,
+  SourcesState,
+  UndoResult,
+  UndoableChange,
+} from '../shared/types/sources';
+import type {
+  SourcesAddPayload,
+  SourcesChangedEvent,
+  SourcesGetPayload,
+  SourcesGroupsPayload,
+  SourcesHardDeletePayload,
+  SourcesIdPayload,
+  SourcesIdVersionPayload,
+  SourcesListPayload,
+  SourcesSearchPayload,
+  SourcesUndoPayload,
+  SourcesUpdatePayload,
+} from '../shared/types/ipc';
 import { IPC } from '../shared/types/ipc';
 
 // Minimal-privilege bridge (design §3.2 + stage2 §4.2): only whitelisted methods are
@@ -51,6 +76,8 @@ const agentStepRelay = eventRelay<AgentStepEvent>(IPC.AgentStep);
 const agentConfirmRequestRelay = eventRelay<AgentConfirmRequest>(IPC.AgentConfirmRequest);
 const agentRunDoneRelay = eventRelay<AgentRunDoneEvent>(IPC.AgentRunDone);
 const agentStatusRelay = eventRelay<AgentStatusEvent>(IPC.AgentStatus);
+// B5：sources:changed 事件（同一 eventRelay 模式：单次注册 + JS 侧 Set 分发/退订）
+const sourcesChangedRelay = eventRelay<SourcesChangedEvent>(IPC.SourcesChanged);
 
 const bridge: AibrowseBridge = {
   getAppInfo: () => invoke<AppInfo>(IPC.AppGetInfo),
@@ -109,6 +136,34 @@ const bridge: AibrowseBridge = {
       setKey: (providerId, apiKey) =>
         invoke<boolean>(IPC.ConfigProvidersSetKey, { providerId, apiKey }),
     },
+  },
+  // —— Fourth Stage B5（决议 #69/#70/#72/#73/#74）：Sources 面板白名单 ——
+  // invoke 全部经 main 侧 handle() sender+主帧校验 + 严格白名单验证；audience 由
+  // 主进程适配器硬编码 'user'（renderer 无 audience/路径/SQL 通道）；quick-add 无
+  // 参数（main 读取当前活动 Tab）；sources:changed 仅成功变更后推送最小 payload。
+  sources: {
+    list: (payload: SourcesListPayload) => invoke<SourceListResult>(IPC.SourcesList, payload),
+    get: (payload: SourcesGetPayload) => invoke<SourceResult>(IPC.SourcesGet, payload),
+    search: (payload: SourcesSearchPayload) =>
+      invoke<SourceSearchResult>(IPC.SourcesSearch, payload),
+    groups: (payload: SourcesGroupsPayload) =>
+      invoke<SourceGroupsResult>(IPC.SourcesGroups, payload),
+    add: (input: SourcesAddPayload) => invoke<ManualWriteResult>(IPC.SourcesAdd, input),
+    update: (payload: SourcesUpdatePayload) =>
+      invoke<ManualWriteResult>(IPC.SourcesUpdate, payload),
+    disable: (payload: SourcesIdVersionPayload) =>
+      invoke<ManualWriteResult>(IPC.SourcesDisable, payload),
+    restore: (payload: SourcesIdVersionPayload) =>
+      invoke<ManualWriteResult>(IPC.SourcesRestore, payload),
+    quickAdd: () => invoke<QuickAddResult>(IPC.SourcesQuickAdd),
+    undoable: () => invoke<UndoableChange[]>(IPC.SourcesUndoable),
+    undo: (payload: SourcesUndoPayload) => invoke<UndoResult>(IPC.SourcesUndo, payload),
+    state: () => invoke<SourcesState>(IPC.SourcesState),
+    prepareHardDelete: (payload: SourcesIdPayload) =>
+      invoke<PrepareHardDeleteResult>(IPC.SourcesPrepareHardDelete, payload),
+    hardDelete: (payload: SourcesHardDeletePayload) =>
+      invoke<ManualWriteResult>(IPC.SourcesHardDelete, payload),
+    onChanged: sourcesChangedRelay.subscribe,
   },
 };
 
