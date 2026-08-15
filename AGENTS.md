@@ -20,11 +20,12 @@
   Sources 组合成可靠的多源信息研究系统，并以可验证、可交互的形式展示结果。
   *_阶段状态（2026-08-16）：Fifth Stage 已正式进入（用户切换指令）；设计闭环
   已完成——`doc/stage5/` 定稿（proposal（决策表 D1–D13 + Entry Gate 证据表）/
-  high-level-design / detailed-design（唯一契约源 §2–§16，决议 #94–#100）/
-  threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
-  任务 C1–C10）；C1–C10 全部待开始，下一唯一任务 = C1。**本阶段内禁止实现
-  Sixth Stage 代码、禁止安装依赖、禁止未经授权调用真实 Provider**（真实验收
-  归 C9/C10 另获授权）。架构纪律（第五阶段）：依赖方向固定
+  high-level-design / detailed-design（唯一契约源 §2–§16，决议以 §15 当前
+  记录为准）/ threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research
+  实现定稿）/ 任务 C1–C10）；**第五阶段已进入实施阶段——具体完成项、当前
+  HEAD 与下一唯一任务以 `doc/tasks/progress.md` 为准；已实现能力不再标为
+  「全部待实现」。**本阶段内禁止实现 Sixth Stage 代码、禁止安装依赖、
+  禁止未经授权调用真实 Provider**（真实验收归 C9/C10 另获授权）。架构纪律（第五阶段）：依赖方向固定
   `Research UI → ResearchService → ResearchRuntime → SourceSelector /
 ResearchWorkspace / EvidenceValidator / ResultValidator → SourceService /
 BrowserController / SearchProvider / LLMProvider → ResearchRepository
@@ -554,12 +555,14 @@ d:\AIbrowse\
     │       │                                  #   SourceReadAudience/SourceSearchItem/SourceSearchNote，决议 #58/#59；
     │       │                                  #   B5 增 SourceGroupsResult/SourcesState/QuickAddResult/
     │       │                                  #   PrepareHardDeleteResult，决议 #71–#74）
-    │   └── research/                          # （Fifth Stage 规划，契约见 doc/stage5/detailed-design.md §1：
-    │       │                                  #   C1 research.db 存储基座（migration v1/Repository/store 装配）/
+    │   └── research/                          # （Fifth Stage，契约见 doc/stage5/detailed-design.md §1：
+    │       │                                  #   ✅ C1 已完成——契约基座 + 存储基座（domain 状态机/预算常量/
+    │       │                                  #   migration v1/Repository/store 装配/Service 骨架；
+    │       │                                  #   完成状态与下一任务以 progress.md 为准）/
     │       │                                  #   C2 research-workspace（task Tab 所有权）/C3 source-selector/
     │       │                                  #   C4 capture-service + evidence-validator/C5 research-runtime/
     │       │                                  #   C6 synthesis（claim-model/research-prompts）/
-    │       │                                  #   C7 result-validator/C8 research-ipc——C1–C10 全部待开始）
+    │       │                                  #   C7 result-validator/C8 research-ipc（C2–C8 待实现））
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅ + A6 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
@@ -1432,15 +1435,16 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   结果」（describeLastUsage：可达/不可达/其余「暂无可靠信号」+ 时间；严禁
   「健康/长期可用」）。
 
-### Fifth Stage Research 契约速查（定稿 2026-08-16；C1–C10 待实现，实施后按 `grep -n "^export"` 回填核对）
+### Fifth Stage Research 契约速查（定稿 2026-08-16；C1 已实现，其余任务实施后按 `grep -n "^export"` 回填核对）
 
 > 唯一契约源 `doc/stage5/detailed-design.md`（§2 类型 / §3 状态机 / §4 候选合并
 > 排序 / §5 capture·evidence / §6 ResearchRuntime 与预算 / §7 cross-check /
 > §8 Result Schema·Renderer / §9 存储 / §10 Tab 所有权 / §11 IPC / §12 边界 /
-> §13 测试 / §14 验收 / §15 决议 #94–#100）；安全契约源 `doc/stage5/threat-model.md`
-> （FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类）；任务 C1–C10 见
-> `doc/stage5/tasks/`。**当前全部为「规划/待实现」——在对应任务完成前不得宣称
-> 已实现。**
+> §13 测试 / §14 验收 / §15 决议——编号范围以 §15 当前记录为准）；安全契约源
+> `doc/stage5/threat-model.md`（FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类）；
+> 任务 C1–C10 见 `doc/stage5/tasks/`。**C1（契约基座 + 存储基座）已实现**；
+> C2–C10 为「规划/待实现」——在对应任务完成前不得宣称已实现（完成状态以
+> progress.md 为准）。
 
 - **依赖方向（不可反向）**：`Research UI → ResearchService → ResearchRuntime →
 SourceSelector / ResearchWorkspace / EvidenceValidator / ResultValidator →

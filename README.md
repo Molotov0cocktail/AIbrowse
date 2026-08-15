@@ -11,10 +11,12 @@
 > （排序/筛选/来源详情/复制/CSV 导出带公式注入防护）。
 > **阶段状态（2026-08-16）：Fifth Stage 已正式进入（用户切换指令）；
 > 设计已定稿（`doc/stage5/`：proposal（决策表 D1–D13 + Entry Gate 证据表）/
-> high-level-design / detailed-design（唯一契约源，决议 #94–#100）/
+> high-level-design / detailed-design（唯一契约源，决议以 §15 当前记录为准）/
 > threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
-> 任务 C1–C10）——C1–C10 全部待开始，下一唯一任务 = C1；本阶段禁止安装
-> 依赖、禁止未经授权调用真实 Provider（真实验收归 C9/C10 另获授权）。**
+> 任务 C1–C10）——**第五阶段已进入实施阶段：具体完成项、当前 HEAD 与下一
+> 唯一任务以 `doc/tasks/progress.md` 为准；已实现能力不再标为「全部待实现」。
+> 本阶段禁止安装依赖、禁止未经授权调用真实 Provider（真实验收归 C9/C10
+> 另获授权）。**
 > 契约源 `doc/stage5/detailed-design.md`；安全契约源
 > `doc/stage5/threat-model.md`；需求源 `Fifth_stage.md`；
 > 任务 `doc/stage5/tasks/C1–C10`。
@@ -141,15 +143,16 @@
 
 ## 当前状态（2026-08-16）
 
-- 🔨 **第五阶段（Research & Rendering）设计已定稿、C1–C10 待实施（2026-08-16，
+- 🔨 **第五阶段（Research & Rendering）设计已定稿、实施进行中（2026-08-16，
   用户切换指令）**——Entry Gate 五项逐项核验全部通过（证据表
   `doc/stage5/proposal.md` §7）；设计闭环完成：proposal（目标/非目标/场景/
   Entry Gate 证据/遗留风险分级/决策表 D1–D13/里程碑）+ high-level-design
   （依赖方向 UI → Service → Runtime → … → ResearchRepository）+ detailed-design（唯一契约源：类型/状态机/预算全表/
   capture·evidence/Result Schema/IPC/存储）+ threat-model（FT-01～FT-17 /
   FRT-01～FRT-12）+ 任务 C1–C10（每任务 = 一个可验证开发闭环）。
-  **本阶段禁止安装依赖、禁止未经授权调用真实 Provider、禁止实现 Sixth Stage；
-  下一唯一任务 = C1（ResearchTask/Evidence/Result 核心契约 + 存储基座）。**
+  **C1（ResearchTask/Evidence/Result 核心契约 + research.db 存储基座）已完成；
+  具体完成项、当前 HEAD 与下一唯一任务以 `doc/tasks/progress.md` 为准。**
+  **本阶段禁止安装依赖、禁止未经授权调用真实 Provider、禁止实现 Sixth Stage。**
   遗留风险分级：无阻塞项；P2-3（会话字节上限）与第四阶段六类注入残余风险等
   **必须吸收**进本阶段设计（独立 research.db 字节预算 + FT 威胁模型）；
   P2-2/P2-4/P3 延期 Seventh Stage（判定见 proposal §8）。

@@ -2,12 +2,14 @@
 
 > 前置阶段：`Fourth_stage.md`（第四阶段总 Exit 判定 = `GO/PASS`，2026-08-16）。
 > 核心目标：把 Browser Agent + Sources 组合成可靠的多源信息研究系统，并以可验证、可交互的形式展示结果。
-> **阶段状态（2026-08-16）**：Fifth Stage 已正式进入（用户切换指令，本提示）——
+> **阶段状态（2026-08-16）**：Fifth Stage 已正式进入（用户切换指令）——
 > Entry Gate 五项逐项核验**全部通过**（证据表见 `doc/stage5/proposal.md` §7）；
 > 设计闭环已完成（proposal / high-level-design / detailed-design /
 > threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
-> 任务 C1–C10）；**C1–C10 全部待开始**，下一唯一任务 = C1。本阶段内不实现
-> Sixth Stage 任何代码；真实 Provider 验收归 C9/C10，届时须另获用户授权。
+> 任务 C1–C10）。**本阶段已进入实施阶段**：具体完成项、当前 HEAD 与下一
+> 唯一任务以 `doc/tasks/progress.md` 为准；已实现能力不再标为「全部待实现」。
+> 本阶段内不实现 Sixth Stage 任何代码；真实 Provider 验收归 C9/C10，届时须
+> 另获用户授权。
 > **契约与安全契约源**：本文保留阶段需求源职责（目标/验收标准/Exit Gate），
 > 具体接口、schema、状态机、预算与决议以 `doc/stage5/detailed-design.md` 为
 > **唯一契约源**；威胁与红队以 `doc/stage5/threat-model.md` 为**安全契约源**。

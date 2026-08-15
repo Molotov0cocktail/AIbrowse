@@ -17,8 +17,9 @@
   D1–D13/里程碑）、high-level-design（依赖方向/模块/数据流/安全模型）、
   detailed-design（唯一契约源 §2–§16：类型/状态机/候选合并排序/capture·
   evidence/ResearchRuntime/预算全表/cross-check/Result Schema·Renderer/
-  storage/IPC/决议 #94–#100）、threat-model（FT-01～FT-17 / FRT-01～FRT-12 /
-  诚实边界十一类，先于任何 Research 实现定稿）、任务 C1–C10。
+  storage/IPC/决议——范围以 §15 当前记录为准，现已至 #116）、threat-model
+  （FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类，先于任何 Research 实现
+  定稿）、任务 C1–C10。
   Entry Gate（Fifth_stage.md §2 五项）逐项核验**全部通过**（证据表见
   proposal §7：三方 SHA 一致 6d730a6/基线 test 1255/1255 独立复跑全绿/
   17 工具契约与 Sources 检索真实 Provider 证据）。**C1 已完成（2026-08-16）**
@@ -35,7 +36,15 @@
   Interrupted 整体拒绝零写入）、启动装配清理后仍超限 → unavailable
   （created 零删除）、状态机 now 为 ISO 8601 输入有效性约束——证据见 C1
   任务文档「定向修复与契约边界复核」小节。
-  **下一任务 = C2/C3（并行，均仅依赖 C1）。** 本阶段红线：禁止安装依赖、
+  **C1 第二次定向补修已完成（2026-08-16）**——ISO 8601 偏移日期回滚校验：
+  偏移形态原仅做 Date.parse 值级往返（对已成功解析的时间近似恒真），
+  2026-02-30+08:00 / 2026-04-31-05:00 等回滚日期被静默放行；先红后修
+  （红态 6 failed → 聚焦 **215/215**、全量 **1470/1470**）——确定性
+  日历字段校验（月范围/闰年/各月天数/时≤23/分秒≤59/偏移既有边界），
+  Z 形态保留字符串级往返；#116 仅补实现说明不改结论；migration v1/
+  Repository/Store/Service 零改动。证据见 C1 任务文档「第二次定向补修」
+  小节。
+  **下一唯一任务 = C2。** 本阶段红线：禁止安装依赖、
   禁止未经授权调用真实 Provider（C9/C10 真实验收须另获用户授权）、禁止
   实现 Sixth Stage。
   设计要点（详见 proposal §10 决策表）：独立有界 ResearchRuntime（AgentLoop
@@ -402,7 +411,7 @@
 | B8 | 红队矩阵 SRT-01～SRT-12 + 安全审计 + 隐私扫描 + 真实 Provider/真实网页可选验证 | ✅ | 2026-08-15 完成（见下）：冒烟 8.15（决议 #93 校准：8.7 已被 B1 决策门占用）12 项独立断言 dev+生产双场景退出码 0 + 8.6/8.14 结构化证据核验 + RT-09 扩展静态审计 + SRT-08 发现并修复产品缺陷（持久化 toolCalls URL query 值脱敏，33e14b0）+ B-02 SRT-10 跨进程扩展；全量 test 1229/1229；RT-10 与真实 SRT-01/02 NOT RUN（未授权）；任务文档 doc/stage4/tasks/B8-redteam-security-validation.md（红→绿证据已回填） |
 | B9 | Fourth Stage 独立最终验收（当前 HEAD 重新复验，不采信 B1–B8 报告）+ Exit Gate 判定 + 文档同步；完成后停止不实现 Fifth Stage | ✅ | 2026-08-15 完成（见下）：独立复验台账见任务文档「独立复验台账」小节；总 Exit 判定 = HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）；**2026-08-16 第五轮真实 Provider 验收通过后改判 `GO/PASS`**（场景 1a–8 全部真实通过 + 真 Key 扫描零命中，见「真实 Provider 验收通过后判定更新」小节）；任务文档 doc/stage4/tasks/B9-finalize-acceptance.md |
 
-| C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ✅ | 2026-08-16 完成（见「最近验证结果」第十四个闭环）：实施前契约裁决 #101–#111 + 红→绿 9/9 失败→131/131 + 全量 test 1386/1386 + dev/生产冒烟 17 工具/SRT-12 零回归 + smoke.ts SRT-12 白名单契约同步（+5 行，唯一既有改动）；**2026-08-16 定向修复与契约边界复核完成（第十五个闭环）**：决议 #112–#116 先红后修（红态 34 failed → 聚焦 174/174、全量 test 1429/1429；migration v1 零改写、sources/ai/browser/renderer/preload 零 diff）；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md（红→绿证据与定向修复记录已回填） |
+| C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ✅ | 2026-08-16 完成（见「最近验证结果」第十四个闭环）：实施前契约裁决 #101–#111 + 红→绿 9/9 失败→131/131 + 全量 test 1386/1386 + dev/生产冒烟 17 工具/SRT-12 零回归 + smoke.ts SRT-12 白名单契约同步（+5 行，唯一既有改动）；**2026-08-16 定向修复与契约边界复核完成（第十五个闭环）**：决议 #112–#116 先红后修（红态 34 failed → 聚焦 174/174、全量 test 1429/1429；migration v1 零改写、sources/ai/browser/renderer/preload 零 diff）；**2026-08-16 第二次定向补修完成（第十六个闭环）**：ISO 8601 偏移日期回滚校验（红态 6 failed → 聚焦 215/215、全量 test 1470/1470；仅 task-state 纯函数改动）；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md（红→绿证据、定向修复与第二次定向补修记录已回填） |
 | C2 | ResearchWorkspace 与 task-owned Tab 隔离、数量上限、取消/异常清理 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §10；任务文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md |
 | C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §4；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md |
 | C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §5；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
@@ -420,7 +429,43 @@
 > （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修）
+
+- **C1 第二次定向补修：ISO 8601 偏移日期校验 + 第五阶段状态指针校准
+  （2026-08-16，第十六个闭环；fix 与 docs 两个逻辑提交见 git log）**：
+  ① 步骤 0 独立核对——HEAD `a169fe5` 与预期一致、工作区干净；基线
+  test **1429/1429**（单 worker）· 聚焦 174/174 独立复跑全绿。② **缺陷
+  确认（只读 Node 证据）**：`isIso8601Timestamp` 偏移形态仅做
+  `Date.parse(new Date(parsed).toISOString()) === parsed` 值级往返——对
+  已成功解析的时间近似恒真，无法甄别 JS 日期回滚
+  （`2026-02-30T00:00:00+08:00` → `2026-03-01T16:00:00.000Z`、
+  `2026-04-31T12:00:00-05:00` → `2026-05-01T17:00:00.000Z`），违反
+  决议 #116「形状 + 可解析 + 日历回滚拒绝」。③ **红→绿**：新增 41 例
+  （23 非法——含偏移回滚/非闰年 2 月/月日时分秒与偏移边界外形态 + 16
+  合法——闰年 2024-02-29/月末/毫秒 1–3 位/正负偏移 ±23:59 既有边界/
+  toISOString 形态 + 2 迁移断言，两层断言：
+  isIso8601Timestamp=false + transitionTask 全部事件零变化）→ 红态
+  **6 failed / 80 passed**（断言落点 `expected true to be false`——恰好
+  6 个偏移回滚用例）→ 最小修复（仅 task-state 纯函数：确定性日历字段
+  校验——月范围/闰年/各月天数/时≤23/分秒≤59/偏移 HH≤23·MM≤59 既有
+  边界；纯字段范围判定不参与本地时区；Z 形态保留字符串级往返；24:00 与
+  闰秒 60 拒绝）→ 聚焦 **215/215**、全量 **1470/1470**（63 文件，单
+  worker，退出码 0）。④ **红线零回归**：migration v1/Repository/Store/
+  Service 零改动；sources/ai/browser/renderer/preload/index.ts 零 diff；
+  零新依赖；AgentLoop 12/420s 零变化；17 工具注册表零变化。⑤ **文档
+  漂移修正**：Fifth_stage.md 头部与 AGENTS.md 三处（§1 当前阶段/§4 目录树
+  /§5 Research 速查）「C1–C10 全部待开始」改为实施阶段表述（完成项/
+  HEAD/下一任务以 progress.md 为准）；决议范围引用改为「以 detailed-design
+  §15 当前记录为准」；#116 仅补「Z 与偏移形态均进行日历字段校验」实现
+  说明不改结论；C1 任务文档登记补修小节；**下一唯一任务 = C2**（不再写
+  「C2/C3 并行」）。⑥ **验证矩阵**：typecheck · lint · format:check ·
+  build · git diff --check 全绿；**dev 冒烟退出码 0**（A2 探针 17 工具
+  恒等 + SRT-01～SRT-12 全过 + 8.13 B-06 UI DOM 全过）；**生产冒烟退出码
+  0**（同矩阵；8.13 UI DOM 探针本轮**一次通过**——无重跑，上轮生产首轮
+  瞬时失败未复现；7 处 ERROR 行均为 8.14 recovery 注入诊断）；TEMP 残留
+  三目录（C1 store 测试 db/wal/shm 文件）白名单校验后精确删除零残留。
+  ⑦ 安全扫描：密钥形态零命中/动态 SQL 零新增/renderer-preload 零 SQL/
+  禁具零命中/零新依赖。**不开始 C2。下一唯一任务 = C2。**
 
 - **C1 定向修复与契约边界复核（2026-08-16，第十五个闭环；fix 提交见 git
   log）**：① 步骤 0 独立核对——HEAD `285c74c` 与预期一致、工作区干净；
@@ -2467,17 +2512,15 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **C2 + C3（并行，均仅依赖 C1）**：C1 已完成（2026-08-16，契约基座 +
-  存储基座落地，红→绿证据见 C1 任务文档）。下一推荐任务 = **C2
-  （ResearchWorkspace 与 task-owned Tab 隔离，契约 §10，任务文档
-  doc/stage5/tasks/C2-research-workspace-tab-isolation.md）与 C3
-  （Source Selection 候选合并/provenance/确定性排序，契约 §4，任务文档
-  doc/stage5/tasks/C3-source-selection-candidate-merge.md）**——二者
-  仅依赖 C1，可并行推进（建议新对话各开一个闭环）。此后按依赖链推进
-  C4 → C5 → C6/C7 → C8 → C9 → C10；每个任务一个可验证开发闭环；本阶段
-  禁止安装依赖、禁止未经授权调用真实 Provider（C9/C10 真实验收须另获
-  用户授权）、禁止实现 Sixth Stage。C7 前置复核项：proposal D9 与决议
-  #99 Markdown 表格漂移（C1 已登记未修复）。
+- **C2（唯一，依赖 C1）**：C1 已完成（2026-08-16，契约基座 + 存储基座
+  落地 + 定向修复 + 第二次定向补修，红→绿证据见 C1 任务文档）。下一唯一
+  任务 = **C2（ResearchWorkspace 与 task-owned Tab 隔离，契约 §10，任务
+  文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md）**；C3
+  在 C2 完成后按依赖链推进（C4 → C5 → C6/C7 → C8 → C9 → C10），每个
+  任务一个可验证开发闭环；本阶段禁止安装依赖、禁止未经授权调用真实
+  Provider（C9/C10 真实验收须另获用户授权）、禁止实现 Sixth Stage。
+  C7 前置复核项：proposal D9 与决议 #99 Markdown 表格漂移（C1 已登记
+  未修复）。
 
 ## 第一阶段验收未完成项
 
