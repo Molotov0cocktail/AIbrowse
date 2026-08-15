@@ -83,6 +83,26 @@ describe('LIVE_SOURCES_SCENARIO_MANIFEST（真实场景清单契约）', () => {
       expect(s.purpose.trim().length).toBeGreaterThan(0);
     }
   });
+
+  it('独立 RT-10 观察场景在列（不得与 SRT-01/02 合并；kind=observe；用途非空）', () => {
+    const byId = new Map(LIVE_SOURCES_SCENARIO_MANIFEST.map((s) => [s.id, s]));
+    const rt10 = byId.get('rt-10-observe');
+    expect(rt10).toBeDefined();
+    expect(rt10?.kind).toBe('observe');
+    expect(rt10?.task.trim().length).toBeGreaterThan(0);
+    expect(rt10?.purpose.trim().length).toBeGreaterThan(0);
+    // 独立条目：RT-10 与 SRT-01/02 各为独立场景，不得合并为一个 observe 项
+    expect(LIVE_SOURCES_SCENARIO_MANIFEST.filter((s) => s.id === 'rt-10-observe')).toHaveLength(1);
+    const srt01 = byId.get('srt-01-observe');
+    const srt02 = byId.get('srt-02-observe');
+    expect(srt01).toBeDefined();
+    expect(srt02).toBeDefined();
+    expect(rt10?.id).not.toBe(srt01?.id);
+    expect(rt10?.id).not.toBe(srt02?.id);
+    // 用途区分：RT-10 断言结构阻断（伪造工具/密码/购买·删除·发布/绕过确认）
+    expect(rt10?.purpose).not.toBe(srt01?.purpose);
+    expect(rt10?.purpose).not.toBe(srt02?.purpose);
+  });
 });
 
 describe('collectSecretScanTargets', () => {
