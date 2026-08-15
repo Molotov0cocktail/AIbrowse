@@ -1,11 +1,12 @@
 # AGENTS.md — AIbrowse 项目专属开发手册
 
 > 依据 `.agents/skills/project-rules/PROJECT_RULES.md` §8 于 2026-08-13 初始化；
-> 与根目录 `Fourth_stage.md`（当前阶段需求/验收标准）、`ROADMAP.md` + `First_stage.md` /
-> `Second_stage.md` / `Third_stage.md`（已完成）、`Fifth_stage.md`～`Seventh_stage.md`
-> （后续阶段需求与验收标准）配套；技术基线已于 2026-08-13 按官方来源验证冻结（§1）。
-> 新会话接管顺序：本文件 → 当前阶段文件（现为 `Fourth_stage.md`）+ `doc/stage4/`
-> （proposal / high-level-design / detailed-design / threat-model / tasks/B1–B9）
+> 与根目录 `Fifth_stage.md`（当前阶段需求/验收标准）、`ROADMAP.md` + `First_stage.md` /
+> `Second_stage.md` / `Third_stage.md` / `Fourth_stage.md`（已完成）、
+> `Sixth_stage.md`～`Seventh_stage.md`（后续阶段需求与验收标准）配套；技术基线已于
+> 2026-08-13 按官方来源验证冻结（§1）。
+> 新会话接管顺序：本文件 → 当前阶段文件（现为 `Fifth_stage.md`）+ `doc/stage5/`
+> （proposal / high-level-design / detailed-design / threat-model / tasks/C1–C10）
 > → `doc/tasks/progress.md` → git 状态与代码核对（§2 步骤 0）。
 > 与本文件冲突时以本文件为准，通用规则基线见 `.agents/skills/project-rules/PROJECT_RULES.md`。
 > 任务进度不记在本文件：唯一进度源 `doc/tasks/progress.md`（本文件仅在有长期变化时更新，见 §2）。
@@ -15,7 +16,28 @@
 - **一句话定位**：Windows 桌面「AI 信息浏览器 / AI Information Browser」——内置 Chromium 的
   多标签页浏览器，用户与 AI 共享同一浏览器会话与登录状态；AI 仅通过受限
   BrowserController / Tool Layer 操作浏览器，不得拥有任意系统权限。
-- **当前阶段（第四阶段，Sources 长期信源系统）**：把传统浏览器「收藏夹」升级为
+- **当前阶段（第五阶段，多源 Research、证据链与结构化展示）**：把 Browser Agent +
+  Sources 组合成可靠的多源信息研究系统，并以可验证、可交互的形式展示结果。
+  *_阶段状态（2026-08-16）：Fifth Stage 已正式进入（用户切换指令）；设计闭环
+  已完成——`doc/stage5/` 定稿（proposal（决策表 D1–D13 + Entry Gate 证据表）/
+  high-level-design / detailed-design（唯一契约源 §2–§16，决议 #94–#100）/
+  threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
+  任务 C1–C10）；C1–C10 全部待开始，下一唯一任务 = C1。**本阶段内禁止实现
+  Sixth Stage 代码、禁止安装依赖、禁止未经授权调用真实 Provider**（真实验收
+  归 C9/C10 另获授权）。架构纪律（第五阶段）：依赖方向固定
+  `Research UI → ResearchService → ResearchRuntime → SourceSelector /
+ResearchWorkspace / EvidenceValidator / ResultValidator → SourceService /
+BrowserController / SearchProvider / LLMProvider → ResearchRepository
+（独立 research.db）`；Renderer 只消费已验证 Result Schema（不接触
+  BrowserController/SQLite/Electron/Provider）；Research 不经 ToolRegistry
+  新增工具（注册表保持 17；模型轮工具为六工具编译期子集，决议 #96）；
+  AgentLoop 12 步/420s 契约零改动（独立有界 ResearchRuntime，决策 D2）；
+  模型只提引用与结论，Evidence/Result 由确定性程序验证；capture 正文/模型
+  思维/完整 transcript 零落盘；全部确定性预算为编译期常量（详细设计 §6.8）；
+  Markdown 渲染自实现安全子集零新依赖（决策 D9：raw HTML 关闭、URL 仅
+  http/https、纯文本兜底）；CSV 导出仅主进程 dialog 安全通道 + 公式注入
+  防护；Research 库 v1 本地明文如实说明。
+- **已完成（第四阶段，Sources 长期信源系统）**：把传统浏览器「收藏夹」升级为
   可被 AI 理解、检索、自动维护的长期信息源系统。*_阶段状态（2026-08-15）：
   Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9 任务拆分已完成；
   B1 已完成——node:sqlite 决策门 dev+生产双场景 11 项逐项实测，基础能力项
@@ -178,9 +200,10 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
     **2026-08-16 第五轮真实 Provider 验收通过后总 Exit 改判 `GO/PASS`**
     （场景 1a–8 全部真实通过 + 真 Key 零暴露扫描通过，见上）；
     B6/B8 补验基础设施已闭环（harness -Sources/真实场景扩展/Key 终检
-    Sources 库面/互斥补齐，test 1243/1243）；第四阶段验收已通过，但阶段
-    切换仍须按 ROADMAP.md 阶段切换原则由用户指令执行，不得擅自进入
-    Fifth Stage。
+    Sources 库面/互斥补齐，test 1243/1243）；**第四阶段验收通过（总 Exit =
+    GO/PASS，2026-08-16）；2026-08-16 已按用户指令正式切换 Fifth Stage
+    （本阶段指针移至 Fifth_stage.md + doc/stage5/，本段保留为第四阶段历史
+    验收过程）。**
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
@@ -246,16 +269,20 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
   ——BrowserController/TabManager/PageReader/SessionManager + WebContentsView 多标签浏览器 +
   PageSnapshot 采集 + 调试面板；Exit Gate 已于 2026-08-13 通过（First_stage.md §十四）。
 - **阶段机制**：`ROADMAP.md` 描述全阶段路线与切换原则；各阶段需求/验收标准分文件存放
-  （当前 `Fourth_stage.md`；已完成 `First_stage.md` / `Second_stage.md` /
-  `Third_stage.md`；后续 `Fifth_stage.md`～`Seventh_stage.md`）。当前处于
-  第四阶段；**只有当前 Stage 的 Exit Gate 通过后才切换下一 Stage**（纪律见
-  §2 文档职责划分）。各 Stage 文件的完整内容不复制进本文件，需要时直接读对应
-  Stage 文件。
+  （当前 `Fifth_stage.md`；已完成 `First_stage.md` / `Second_stage.md` /
+  `Third_stage.md` / `Fourth_stage.md`；后续 `Sixth_stage.md`～
+  `Seventh_stage.md`）。当前处于第五阶段；**只有当前 Stage 的 Exit Gate
+  通过后才切换下一 Stage**（纪律见 §2 文档职责划分）。各 Stage 文件的完整
+  内容不复制进本文件，需要时直接读对应 Stage 文件。
 - **技术栈**：Electron + TypeScript + React + Vite + Node.js；页面承载用官方当前推荐的
   **WebContentsView**（禁用已废弃的 BrowserView）；测试 **Vitest**、lint **ESLint**、格式 **Prettier**。
-  本阶段明确禁用：Playwright（作为浏览器主体）、向量数据库、RSS、Research Agent、
-  图表系统、登录账号系统、云同步、厂商 LLM SDK（Provider 调用用原生 fetch + SSE 自实现，
-  零新依赖）、Markdown/富文本回答渲染库。⚠️ **SQLite 语义（第四阶段校准）**：
+  历史阶段禁用语义（第三阶段冻结，保留原文语义）：Playwright（作为浏览器主体）、
+  向量数据库、RSS、图表系统、登录账号系统、云同步、厂商 LLM SDK（Provider 调用用
+  原生 fetch + SSE 自实现，零新依赖）、Markdown/富文本回答渲染库。**第五阶段校准
+  （2026-08-16）**：Research 单 Agent Runtime 已为本阶段目标（不再是禁用项——
+  但禁用项「多 Agent 编排/任意渲染库/图表系统/RSS/向量数据库」在第五阶段
+  继续成立）；Markdown 渲染由自实现安全子集承担（决策 D9，仍零新依赖——
+  不引入任何 Markdown/富文本渲染库）。⚠️ **SQLite 语义（第四阶段校准）**：
   第三阶段当时将 SQLite 列为阶段禁用项（历史语义保留于 Third_stage.md §5.3/§6 原文
   与 progress.md 历史条目，不改写）；第四阶段引入 SQLite 作为 Sources 持久化层——
   driver = `node:sqlite` **已由 B1 决策门实测冻结（2026-08-15，决议 #48：基础能力项
@@ -291,25 +318,26 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
 ```
 ROADMAP.md（全阶段路线与切换原则，低频修改）
   ↓
-当前阶段文件 Fourth_stage.md（已完成 First_stage.md / Second_stage.md /
-Third_stage.md；后续 Fifth_stage.md～Seventh_stage.md，Exit Gate 通过后依次启用）
+当前阶段文件 Fifth_stage.md（已完成 First_stage.md / Second_stage.md /
+Third_stage.md / Fourth_stage.md；后续 Sixth_stage.md～Seventh_stage.md，
+Exit Gate 通过后依次启用）
   ↓
 AGENTS.md（长期规则/稳定架构/技术基线，低频修改）
   ↓
 doc/（第一阶段历史：proposal / high-level-design / detailed-design，定稿不覆盖；
     Second Stage 起：doc/stage2/（定稿）、doc/stage3/（定稿）、doc/stage4/
-    （当前）… 各自独立的 proposal / 高层设计 / 详细设计 / 威胁模型 / 任务文档
-    ——目录约定 2026-08-13 起）
+    （定稿）、doc/stage5/（当前）… 各自独立的 proposal / 高层设计 / 详细设计 /
+    威胁模型 / 任务文档——目录约定 2026-08-13 起）
   ↓
 doc/tasks/progress.md（当前工程状态/短期记忆，高频更新）
   ↓
 Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ```
 
-- **阶段切换纪律**：当前处于第四阶段。只有当前 Stage 的 **Exit Gate** 全部通过（逐项核对该 Stage
+- **阶段切换纪律**：当前处于第五阶段。只有当前 Stage 的 **Exit Gate** 全部通过（逐项核对该 Stage
   文件的 Exit Gate/验收标准、progress.md 无阻塞级缺陷、全量验证通过）后，才可切换到下一 Stage；
   切换按 ROADMAP.md「阶段切换原则」执行；阶段完成后**停下向用户报告**，不得擅自进入下一阶段
-  （Fourth_stage.md §10；B9 必须独立复验、不采信 B1–B8 完成报告）。
+  （Fifth_stage.md §10；C10 必须独立复验、不采信 C1–C9 完成报告）。
 - 不引入额外的状态文件 / Agent 日志 / checklist / handoff / summary 文件，除非实际开发证明必要。
 - **文档用于理解需求与意图；Git、当前代码、测试和构建结果用于确认项目实际状态。**
   若 progress.md 声称某功能已完成、但代码/Git/测试证明没有：以实际工程状态为事实，修正文档，再继续开发。
@@ -318,10 +346,10 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 ### 步骤 0：新对话接管（每次新对话开始先做）
 
 1. 阅读 `AGENTS.md`（本文件）
-2. 阅读当前阶段文件（现为 `Fourth_stage.md`）+ 当前阶段设计文档（现为
-   `doc/stage4/`：proposal / high-level-design / detailed-design / threat-model /
-   tasks/B1–B9；已完成 `First_stage.md` / `Second_stage.md` / `Third_stage.md`
-   与 `doc/stage2/`、`doc/stage3/`）
+2. 阅读当前阶段文件（现为 `Fifth_stage.md`）+ 当前阶段设计文档（现为
+   `doc/stage5/`：proposal / high-level-design / detailed-design / threat-model /
+   tasks/C1–C10；已完成 `First_stage.md` / `Second_stage.md` / `Third_stage.md` /
+   `Fourth_stage.md` 与 `doc/stage2/`、`doc/stage3/`、`doc/stage4/`）
 3. 阅读 `doc/tasks/progress.md`（如存在）
 4. `git status` + 最近若干条 `git log --oneline`
 5. 检查本次任务相关的实际代码和配置
@@ -333,8 +361,8 @@ Git + 代码 + Test/Typecheck/Lint/Build/冒烟（真实历史与机器验证）
 1. **稳定项目（含 git 前置）**：动工前摸清语言/框架/包管理器/测试/lint/构建/现有约定。
    git 远程已配置（§1）；新建项目时再执行 git init + 双远程 + .gitignore（`log/`、密钥/令牌本地文件、
    构建产物、IDE 个人配置）。
-2. **需求澄清**：Third_stage.md 已是阶段需求源（契约源 `doc/stage3/detailed-design.md` +
-   安全契约源 `doc/stage3/threat-model.md`）；新需求先写 proposal。
+2. **需求澄清**：Fifth_stage.md 已是阶段需求源（契约源 `doc/stage5/detailed-design.md` +
+   安全契约源 `doc/stage5/threat-model.md`）；新需求先写 proposal。
 3. **设计先行**：风险、歧义、备选方案必须写明，不得用自信措辞掩盖不确定性。
 4. **任务拆分（闭环粒度）**：**一个新对话 ≈ 一个可验证的开发闭环**，不机械等于一个文件或一个模块。
    每个任务明确：目标 / 范围 / 非目标 / 涉及模块 / 验收标准 / 测试方式 / 完成定义。
@@ -427,13 +455,27 @@ PermissionPolicy / ConfirmManager / ToolExecutor → BrowserController / SearchP
   生态、多 Agent 编排、Agent 记忆系统、向量数据库、page.extract 独立工具、
   向 Agent 开放的关闭 Tab 工具（Agent 打开的 Tab 归用户管理）——除非本阶段目标
   绝对必要，不得主动扩展。
-- **范围纪律（第四阶段不做清单，Fourth_stage.md §5 + 任务红线）**：Sources 子系统纪律见
-  §1「当前阶段」与 §5 Sources 契约速查；本阶段不做——Research 报告/多源自动交叉核验/
-  引用渲染/图表、RSS/Watch/Diff/后台定时请求、云同步/多设备/账号、embedding/向量
-  数据库、任意 SQL/任意文件系统/任意 HTTP POST/后台抓取（永久红线）、Agent 硬删除
-  （无 source_delete_hard 工具）、把 AI 推断的 official/primary 当已核验事实、
-  Fifth Stage 代码；**B1 决策门实测通过前禁止任何 Source 实现**（同第三阶段 A1
-  硬前置纪律）；SQLite 静态加密不在本阶段承诺（v1 本地明文，README/UI 如实说明）。
+- **范围纪律（第四阶段不做清单，Fourth_stage.md §5 + 任务红线；历史语义保留，
+  2026-08-16 第四阶段已完成）**：Sources 子系统纪律见
+  §1「已完成（第四阶段）」与 §5 Sources 契约速查；第四阶段当时不做——Research
+  报告/多源自动交叉核验/引用渲染/图表、RSS/Watch/Diff/后台定时请求、云同步/
+  多设备/账号、embedding/向量数据库、任意 SQL/任意文件系统/任意 HTTP POST/
+  后台抓取（永久红线）、Agent 硬删除（无 source_delete_hard 工具）、把 AI 推断
+  的 official/primary 当已核验事实、Fifth Stage 代码；**B1 决策门实测通过前
+  禁止任何 Source 实现**（同第三阶段 A1 硬前置纪律）；SQLite 静态加密不在本
+  阶段承诺（v1 本地明文，README/UI 如实说明）。
+- **范围纪律（第五阶段不做清单，Fifth_stage.md §6 + 任务红线）**：Research 子系统
+  纪律见 §1「当前阶段（第五阶段）」与 §5 Research 契约速查；本阶段不做——
+  多 Agent 编排/Planner-Worker 架构、持续监控/RSS/Watch/Diff/后台定时任务
+  （Sixth Stage）、Timeline/Chart/图表系统（本阶段后半或独立闭环再评估）、
+  跨重启续跑（resume——运行中任务重启后标 interrupted 可重新开始）、云同步/
+  多设备/账号、embedding/向量数据库、任意 SQL/任意文件系统/任意 HTTP POST/
+  任意 shell/eval/JS（永久红线）、任意 Markdown/富文本渲染库（自实现安全
+  子集，决策 D9）、把收藏/优先级/用户备注自动等同可信、虚构可信度百分比、
+  无限上下文/无限 Agent steps、Sixth Stage 代码；**threat-model
+  （doc/stage5/threat-model.md）先于任何 Research 实现定稿**（已满足）；
+  Research 库 v1 本地明文（README/UI 如实说明）；C10 通过后停止不实现
+  RSS/Watch/Sixth Stage。
 - **技术基线冻结（第三阶段起长期生效）**：§1 已冻结版本不得由后续 Agent 擅自升级。升级流程：
   先说明理由 → 验证 typecheck + lint + test + build + Electron 冒烟全绿 → 同步相关文档 → 提交。
 - **依赖可复现**：`package-lock.json` 必须提交；禁止删除 lockfile 后重新解析依赖来「解决」问题；
@@ -450,7 +492,7 @@ PermissionPolicy / ConfirmManager / ToolExecutor → BrowserController / SearchP
 
 ```
 d:\AIbrowse\
-├── AGENTS.md / Second_stage.md / README.md    # 手册 / 当前阶段需求与验收 / 启动与架构简介
+├── AGENTS.md / Fifth_stage.md / README.md      # 手册 / 当前阶段需求与验收 / 启动与架构简介
 ├── ROADMAP.md / First_stage.md / Third_stage.md～Seventh_stage.md  # 路线图 / 已完成与后续阶段需求
 ├── .agents/skills/…                           # 规则基线 + references/prompt-templates.md
 ├── .gitignore / .editorconfig                 # 忽略 log/、密钥、构建产物、IDE 个人配置
@@ -512,6 +554,12 @@ d:\AIbrowse\
     │       │                                  #   SourceReadAudience/SourceSearchItem/SourceSearchNote，决议 #58/#59；
     │       │                                  #   B5 增 SourceGroupsResult/SourcesState/QuickAddResult/
     │       │                                  #   PrepareHardDeleteResult，决议 #71–#74）
+    │   └── research/                          # （Fifth Stage 规划，契约见 doc/stage5/detailed-design.md §1：
+    │       │                                  #   C1 research.db 存储基座（migration v1/Repository/store 装配）/
+    │       │                                  #   C2 research-workspace（task Tab 所有权）/C3 source-selector/
+    │       │                                  #   C4 capture-service + evidence-validator/C5 research-runtime/
+    │       │                                  #   C6 synthesis（claim-model/research-prompts）/
+    │       │                                  #   C7 result-validator/C8 research-ipc——C1–C10 全部待开始）
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅ + A6 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
@@ -1112,7 +1160,7 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   A3 状态机补齐，12 次 HTTP 全部 200）**——**第三阶段总 Exit 决策 =
   `GO/PASS`**（证据见 Third_stage.md §9/§10 与 progress.md）。
 
-### Fourth Stage Sources 契约速查（定稿 2026-08-15；B1–B8 已实现并 grep 核对，B9 未实现前不得宣称第四阶段验收通过）
+### Fourth Stage Sources 契约速查（定稿 2026-08-15；B1–B9 已实现并 grep 核对，第四阶段总 Exit = GO/PASS（2026-08-16））
 
 > 唯一契约源 `doc/stage4/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
 > Q1–Q12 拍板）；安全契约源 `doc/stage4/threat-model.md`（威胁 ST-01～ST-12、
@@ -1383,6 +1431,53 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   索引」按钮（仅 normal 状态可触发，pending 互斥受控）；详情显示「上次使用
   结果」（describeLastUsage：可达/不可达/其余「暂无可靠信号」+ 时间；严禁
   「健康/长期可用」）。
+
+### Fifth Stage Research 契约速查（定稿 2026-08-16；C1–C10 待实现，实施后按 `grep -n "^export"` 回填核对）
+
+> 唯一契约源 `doc/stage5/detailed-design.md`（§2 类型 / §3 状态机 / §4 候选合并
+> 排序 / §5 capture·evidence / §6 ResearchRuntime 与预算 / §7 cross-check /
+> §8 Result Schema·Renderer / §9 存储 / §10 Tab 所有权 / §11 IPC / §12 边界 /
+> §13 测试 / §14 验收 / §15 决议 #94–#100）；安全契约源 `doc/stage5/threat-model.md`
+> （FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类）；任务 C1–C10 见
+> `doc/stage5/tasks/`。**当前全部为「规划/待实现」——在对应任务完成前不得宣称
+> 已实现。**
+
+- **依赖方向（不可反向）**：`Research UI → ResearchService → ResearchRuntime →
+SourceSelector / ResearchWorkspace / EvidenceValidator / ResultValidator →
+SourceService / BrowserController / SearchProvider / LLMProvider →
+ResearchRepository（独立 research.db）`；Renderer 只消费已验证 Result Schema
+  （不得访问 BrowserController、SQLite、Electron、Provider）；renderer/preload/
+  Runtime/Tool 零 SQL；Research 不新增注册工具（注册表保持 17；模型轮 tools 为
+  六工具编译期子集 browser_open/browser_read/search_web/source_search/
+  source_list/source_get——决议 #96）。
+- **任务**：ResearchTask（status: created/running/completed/failed/cancelled/
+  interrupted + phase: planning/reading/verifying/synthesizing）；单 running
+  互斥；start 前置 = Sources 库 normal 态 + Provider 已配置；v1 不承诺跨重启
+  续跑（interrupted 可重新开始）。
+- **Evidence**：模型只提引用（captureId/type/locator/excerpt 草案）；
+  EvidenceValidator 确定性验证（归属/来源存在/摘录规范化匹配/表格坐标边界/
+  字段路径存在）；url/title/accessTime/documentId/contentHash 主进程盖章；
+  未验证引用不渲染不入库；capture 正文零落盘（仅哈希 + 摘要元数据）。
+- **Cross-check**：Claim（severity=high 强制多源）/Coverage（程序计算）/
+  sourceTypes（vendor/third-party/community 程序判定）/Conflict（positions ≥2、
+  resolved 恒 unresolved——不静默抹平）/Uncertainty 正式输出；**无百分比/分数
+  型可信度字段**（schema 白名单红线）。
+- **Result Schema**：闭合判别联合（markdown/table/cards/ranking/uncertain）+
+  字段白名单 + ResultValidator 逐块校验；Markdown 渲染自实现安全子集（决策 D9：
+  raw HTML 关闭、URL 仅 http/https、纯文本兜底、零新依赖）；Timeline/Chart
+  非本阶段目标。
+- **预算（§6.8 全表，编译期常量）**：候选 ≤24 / 选定 ≤8 / 并发 Tab ≤3 / 单页
+  ≤60k 字符 / Evidence ≤60 条·摘录 ≤500 / 轮次 ≤24 / 步数 ≤64 / 时长 ≤30 分钟 /
+  请求上下文 ≤200k 字符 / Result ≤200k 字符 / 单任务持久化 ≤500k 字符 /
+  保留任务 ≤30；预算用尽 = 正式终态（failed + Evidence 保留，不自动扩预算）。
+- **Tab 所有权**：精确 tabId（createTab 返回值）；清理只关本任务 Tab；用户 Tab
+  永不关闭；用户关 task Tab → 读取失败继续；跨任务引用拒绝。
+- **IPC**：research:create/start/stop/get/result/list/delete/export-csv +
+  progress/task-done 事件（sender+主帧校验/参数白名单/事件只发主窗口）；CSV
+  导出仅主进程 dialog 安全通道（renderer 零路径参数）+ 公式注入防护 + BOM。
+- **UI**：侧栏 ResearchPanel（380px 同模式）仅控制/进度 + 主窗口内大结果画布
+  （viewMode 切换，不新开窗口）；表格排序/筛选/来源详情/复制；Evidence 下钻
+  （点击结论看来源）。
 
 ## 6. 常用命令
 

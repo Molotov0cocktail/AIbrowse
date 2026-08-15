@@ -1,7 +1,7 @@
 {
   "name": "aibrowse",
   "version": "0.1.0",
-  "description": "AI 信息浏览器 —— 第一阶段：安全、稳定、可扩展的浏览器核心原型（Windows 桌面）",
+  "description": "AI 信息浏览器 —— Windows 桌面多标签页浏览器：内置 Chromium，AI 与用户共享同一浏览器会话，可共读网页、自主浏览、管理长期信源并完成多源研究",
   "main": "./out/main/index.js",
   "private": true,
   "engines": {

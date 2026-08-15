@@ -64,6 +64,11 @@
 > 具体接口、schema、权限矩阵、预算与决议以 `doc/stage4/detailed-design.md` 为
 > **唯一契约源**；威胁与红队以 `doc/stage4/threat-model.md` 为**安全契约源**。
 > 任务里程碑 B1–B9 见 `doc/stage4/tasks/`。
+> **（2026-08-16 冻结为已完成历史阶段）**：本阶段总 Exit 判定 = `GO/PASS`
+> （2026-08-16 第五轮真实 Provider 验收通过，§10 八项全部 PASS）。用户已正式
+> 下达 Fifth Stage 切换指令（2026-08-16），当前阶段指针移至 `Fifth_stage.md`，
+> 设计文档指针移至 `doc/stage5/`；本文既有验收过程**原位保留、不改写**，
+> 此后不再作为当前阶段需求源（历史查证仍以本文与 `doc/stage4/` 为准）。
 
 ## 1. 阶段定位
 

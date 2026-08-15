@@ -1,11 +1,32 @@
 # AIbrowse — AI 信息浏览器
 
-> 当前阶段（第四阶段）：**Sources 长期信源系统**——SQLite 持久化与 migration/
-> recovery、Source（origin/page 双作用域）/Group/Tag/备注/优先级/启用状态/
-> provenance（信任与来源）、用户手工管理与当前网页快速收藏、AI 自然语言添加/修改/
-> 整理/禁用/恢复（结构化 change set + L2 确认 + 单事务 + durable Undo）、有界
-> Source Retrieval（FTS5 trigram 多语言 + 分享模式 full/metadata/blocked）、
-> Browser Agent 复用既有 browser_open/browser_read 打开读取检索结果。
+> 当前阶段（第五阶段）：**多源 Research、证据链与结构化展示**——把 Browser Agent +
+> Sources 组合成可靠的多源信息研究系统：ResearchTask（独立有界 ResearchRuntime，
+> 不复用/不改 AgentLoop 12 步/420s 契约）、Sources + Web Search 候选合并
+> （同 URL 合并身份 + 保留双发现路径，收藏 ≠ 可信）、task-owned Tab 隔离
+> （用户 Tab 永不关闭）、Evidence 锚点（模型只提引用、确定性程序验证）、
+> Cross-check（冲突显式保留 + 「不确定」正式输出，禁止虚构百分比）、统一
+> Result Schema（闭合判别联合 + 字段白名单）+ 安全 Renderer（Markdown 安全
+> 子集/Table/Cards/Ranking，raw HTML 关闭、零新依赖）+ 大结果画布与表格
+> （排序/筛选/来源详情/复制/CSV 导出带公式注入防护）。
+> **阶段状态（2026-08-16）：Fifth Stage 已正式进入（用户切换指令）；
+> 设计已定稿（`doc/stage5/`：proposal（决策表 D1–D13 + Entry Gate 证据表）/
+> high-level-design / detailed-design（唯一契约源，决议 #94–#100）/
+> threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
+> 任务 C1–C10）——C1–C10 全部待开始，下一唯一任务 = C1；本阶段禁止安装
+> 依赖、禁止未经授权调用真实 Provider（真实验收归 C9/C10 另获授权）。**
+> 契约源 `doc/stage5/detailed-design.md`；安全契约源
+> `doc/stage5/threat-model.md`；需求源 `Fifth_stage.md`；
+> 任务 `doc/stage5/tasks/C1–C10`。
+>
+> 已完成（第四阶段，历史）：**Sources 长期信源系统**——SQLite 持久化与
+> migration/recovery、Source（origin/page 双作用域）/Group/Tag/备注/优先级/
+> 启用状态/provenance（信任与来源）、用户手工管理与当前网页快速收藏、AI 自然
+> 语言添加/修改/整理/禁用/恢复（结构化 change set + L2 确认 + 单事务 + durable
+> Undo）、有界 Source Retrieval（FTS5 trigram 多语言 + 分享模式
+> full/metadata/blocked）、Browser Agent 复用既有 browser_open/browser_read
+> 打开读取检索结果。**总 Exit = `GO/PASS`（2026-08-16）**——验收过程台账
+> （含多轮真实 Provider 复验与夹具修复历史）见下，**原位保留不改写**。
 > **阶段状态（2026-08-15）：B1 完成（node:sqlite 决策门实测通过并冻结）、
 > B2 已完成（Source 域模型 + Repository + SourceService + journal + Undo）、
 > B3 已完成（多语言 Source Search + 有界 Retrieval + 分享模式）、
@@ -93,8 +114,9 @@
 >     restore/usage=reachable 实测；真实 SRT-01/02 与 RT-10 观察场景实际
 >     到达、结构断言全部通过；真 Key 零暴露扫描 18 文件零命中 + 进程外
 >     sk-/Bearer 零命中）；**总 Exit 判定 = `GO/PASS`（第四阶段验收通过；
->     阶段指针保持 Fourth Stage；下一推荐动作 = 提交本轮报告供只读复核；
->     不得设计或实施 Fifth Stage）**。
+>     当时阶段指针保持 Fourth Stage；下一推荐动作 = 提交本轮报告供只读
+>     复核；当时不得设计或实施 Fifth Stage——2026-08-16 用户切换指令后
+>     阶段指针已移至 Fifth_stage.md + doc/stage5/）**。
 >     契约源
 >     `doc/stage4/detailed-design.md`；安全契约源
 >     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
@@ -117,10 +139,22 @@
 >     核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
 >     需求源：`Fourth_stage.md`（当前）；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
-## 当前状态（2026-08-15）
+## 当前状态（2026-08-16）
 
-- 🔨 **第四阶段（Sources）进行中（2026-08-15，用户切换指令）：设计完成、
-  B1–B9 全部完成**——设计闭环（proposal/高层设计/详细设计/
+- 🔨 **第五阶段（Research & Rendering）设计已定稿、C1–C10 待实施（2026-08-16，
+  用户切换指令）**——Entry Gate 五项逐项核验全部通过（证据表
+  `doc/stage5/proposal.md` §7）；设计闭环完成：proposal（目标/非目标/场景/
+  Entry Gate 证据/遗留风险分级/决策表 D1–D13/里程碑）+ high-level-design
+  （依赖方向 UI → Service → Runtime → … → ResearchRepository）+ detailed-design（唯一契约源：类型/状态机/预算全表/
+  capture·evidence/Result Schema/IPC/存储）+ threat-model（FT-01～FT-17 /
+  FRT-01～FRT-12）+ 任务 C1–C10（每任务 = 一个可验证开发闭环）。
+  **本阶段禁止安装依赖、禁止未经授权调用真实 Provider、禁止实现 Sixth Stage；
+  下一唯一任务 = C1（ResearchTask/Evidence/Result 核心契约 + 存储基座）。**
+  遗留风险分级：无阻塞项；P2-3（会话字节上限）与第四阶段六类注入残余风险等
+  **必须吸收**进本阶段设计（独立 research.db 字节预算 + FT 威胁模型）；
+  P2-2/P2-4/P3 延期 Seventh Stage（判定见 proposal §8）。
+- ✅ **第四阶段（Sources）已完成并通过验收（GO/PASS，2026-08-16；历史台账
+  保留不改写）**——设计闭环（proposal/高层设计/详细设计/
   威胁模型/B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：
   Electron 43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared
   statements/事务/外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）
@@ -224,9 +258,10 @@
     test 1255/1255）后一次完整 `-Sources` 复验——**场景 1a–8 全部真实
     通过**（34 次 HTTP 全部 200、8 次 L2 确认全部按纪律决议、真实
     SRT-01/02 与 RT-10 观察场景实际到达 + 真 Key 零暴露扫描通过）；
-    **总 Exit 判定 = `GO/PASS`——第四阶段验收通过**（阶段指针保持
-    Fourth Stage；下一推荐动作 = 提交本轮报告供只读复核；不得设计或
-    实施 Fifth Stage）。
+    **总 Exit 判定 = `GO/PASS`——第四阶段验收通过**（当时阶段指针保持
+    Fourth Stage；下一推荐动作 = 提交本轮报告供只读复核；当时不得设计或
+    实施 Fifth Stage——2026-08-16 用户切换指令后阶段指针已移至
+    Fifth_stage.md + doc/stage5/）。
     契约 `doc/stage4/detailed-design.md` + 安全契约
     `doc/stage4/threat-model.md`。
 

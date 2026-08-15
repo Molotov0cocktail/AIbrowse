@@ -9,8 +9,30 @@
 
 ## 当前状态
 
-- 阶段：**第四阶段（Sources 长期信源系统）**，已于 2026-08-15 正式切换（用户指令）。
-  **设计闭环与 B1 决策门已完成**：`doc/stage4/` 定稿（threat-model/proposal/
+- 阶段：**第五阶段（多源 Research、证据链与结构化展示）**，已于 2026-08-16 正式
+  切换（用户指令；第四阶段总 Exit = `GO/PASS` 在前，证据见 Fourth_stage.md
+  §10 与本文件历史条目）。**设计闭环已完成（2026-08-16，纯文档任务，零产品
+  代码、零新依赖、零真实 Provider 调用）**——`doc/stage5/` 定稿：
+  proposal（目标/非目标/场景/Entry Gate 证据表/遗留风险分级/决策表
+  D1–D13/里程碑）、high-level-design（依赖方向/模块/数据流/安全模型）、
+  detailed-design（唯一契约源 §2–§16：类型/状态机/候选合并排序/capture·
+  evidence/ResearchRuntime/预算全表/cross-check/Result Schema·Renderer/
+  storage/IPC/决议 #94–#100）、threat-model（FT-01～FT-17 / FRT-01～FRT-12 /
+  诚实边界十一类，先于任何 Research 实现定稿）、任务 C1–C10。
+  Entry Gate（Fifth_stage.md §2 五项）逐项核验**全部通过**（证据表见
+  proposal §7：三方 SHA 一致 6d730a6/基线 test 1255/1255 独立复跑全绿/
+  17 工具契约与 Sources 检索真实 Provider 证据）。**C1–C10 全部待开始；
+  下一唯一任务 = C1。** 本阶段红线：禁止安装依赖、禁止未经授权调用真实
+  Provider（C9/C10 真实验收须另获用户授权）、禁止实现 Sixth Stage。
+  设计要点（详见 proposal §10 决策表）：独立有界 ResearchRuntime（AgentLoop
+  12 步/420s 契约零改动）/研究数据不进入会话 JSON（独立 research.db +
+  字节预算，吸收 P2-3）/模型只提引用、Evidence 确定性验证/capture 正文零
+  落盘/Result Schema 白名单 + 自实现 Markdown 安全子集（零新依赖）/CSV 经
+  主进程 dialog 通道 + 公式注入防护/侧栏控制进度 + 大结果画布。
+- 已完成（第四阶段，历史）：**第四阶段（Sources 长期信源系统）**，已于
+  2026-08-15 正式切换（用户指令），2026-08-16 验收通过（总 Exit =
+  `GO/PASS`）后正式切换第五阶段。**设计闭环与 B1 决策门已完成**：
+  `doc/stage4/` 定稿（threat-model/proposal/
   high-level-design/detailed-design/tasks B1–B9）；**B1 已完成（2026-08-15）**——
   node:sqlite 决策门 dev+生产双场景 11 项逐项实测，基础能力项 ①–⑦、⑩、⑪ 全部
   通过、⑧ FTS5 与 ⑨ trigram 实测**可用**（中文 ≥3 字符子串命中；1–2 字符查询
@@ -366,12 +388,57 @@
 | B8 | 红队矩阵 SRT-01～SRT-12 + 安全审计 + 隐私扫描 + 真实 Provider/真实网页可选验证 | ✅ | 2026-08-15 完成（见下）：冒烟 8.15（决议 #93 校准：8.7 已被 B1 决策门占用）12 项独立断言 dev+生产双场景退出码 0 + 8.6/8.14 结构化证据核验 + RT-09 扩展静态审计 + SRT-08 发现并修复产品缺陷（持久化 toolCalls URL query 值脱敏，33e14b0）+ B-02 SRT-10 跨进程扩展；全量 test 1229/1229；RT-10 与真实 SRT-01/02 NOT RUN（未授权）；任务文档 doc/stage4/tasks/B8-redteam-security-validation.md（红→绿证据已回填） |
 | B9 | Fourth Stage 独立最终验收（当前 HEAD 重新复验，不采信 B1–B8 报告）+ Exit Gate 判定 + 文档同步；完成后停止不实现 Fifth Stage | ✅ | 2026-08-15 完成（见下）：独立复验台账见任务文档「独立复验台账」小节；总 Exit 判定 = HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）；**2026-08-16 第五轮真实 Provider 验收通过后改判 `GO/PASS`**（场景 1a–8 全部真实通过 + 真 Key 扫描零命中，见「真实 Provider 验收通过后判定更新」小节）；任务文档 doc/stage4/tasks/B9-finalize-acceptance.md |
 
+| C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ⏳ | 2026-08-16 设计定稿，待实施；契约 doc/stage5/detailed-design.md §2/§3/§9；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md |
+| C2 | ResearchWorkspace 与 task-owned Tab 隔离、数量上限、取消/异常清理 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §10；任务文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md |
+| C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §4；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md |
+| C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §5；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
+| C5 | 独立有界 ResearchRuntime：进度、停止、失败继续、预算与终态 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §6；任务文档 doc/stage5/tasks/C5-research-runtime.md |
+| C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §7；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
+| C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ⏳ | 2026-08-16 设计定稿，待实施；契约 §8 + 决策 D9；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
+| C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §11 + 决策 D10/D11；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
+| C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ⏳ | 2026-08-16 设计定稿，待实施；threat-model §4；任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md；真实执行需用户另行授权 |
+| C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ⏳ | 2026-08-16 设计定稿，待实施；任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；完成后停止不实现 Sixth Stage |
+
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
 > 上表第一阶段历史任务 T0–T5（已关闭，编号不可改）重名；第一、第二阶段历史任务
 > 编号一律不变。（2026-08-15）第四阶段任务编号 B1–B9、威胁 ST-01～ST-12、红队
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
+> （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
+> FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环）
+
+- **Fifth Stage 切换与设计定稿（2026-08-16，第十三个闭环；纯文档任务，零代码
+  改动、零新依赖、零真实 Provider 调用，不实现任何 Research 功能）**：① 步骤 0
+  独立核对——HEAD `6d730a6` = Gitee main = GitHub main（ls-remote 实测三方
+  一致；GitHub 操作前确认 127.0.0.1:7890 代理 HTTP 200）、工作区干净；
+  基线 test **1255/1255**（单 worker）· typecheck · lint · format:check
+  独立复跑全绿；第四阶段 GO/PASS 证据与 B9/第五轮台账一致（Fourth_stage §10
+  八项 PASS）。② **Entry Gate 逐项核验通过**（Fifth_stage.md §2 五项，证据
+  表见 `doc/stage5/proposal.md` §7：工具接口稳定/Sources 检索可靠/备注参与
+  选择/权限与注入防线稳定/可追踪来源标识——含真实 Provider 证据，无阻塞项）。
+  ③ 新建 `doc/stage5/`：proposal.md（Q 拍板由决策表 D1–D13 承担 + Entry Gate
+  核验记录 + 遗留风险分级 + 验收映射 + 里程碑）、high-level-design.md、
+  detailed-design.md（唯一契约源 §2–§16：完整类型与接口签名/状态迁移表/
+  候选合并排序/capture·evidence/ResearchRuntime/预算全表 §6.8/cross-check/
+  Result Schema 与 Renderer/storage·migration/IPC 白名单/边界情况/测试规格/
+  决议 #94–#100）、threat-model.md（FT-01～FT-17/FRT-01～FRT-12/诚实边界
+  十一类/兼容声明，先于任何 Research 实现定稿）、tasks/C1–C10（每任务 =
+  一个可验证开发闭环）。④ **遗留风险重新分级**（proposal §8 + 本文「风险与
+  限制」）：无阻塞项；P2-3/六类注入残余/AgentLoop 固定预算/snippet 恒空/
+  CitationCard 无结论级 Evidence/快照不持久化正文等**必须吸收**进本阶段设计
+  （独立 research.db 字节预算 + FT 威胁模型 + 决策 D2/D5）；P2-2/P2-4/P3
+  延期 Seventh Stage（判定已更新）。⑤ 更新 Fifth_stage.md（Entry Gate 结论 +
+  doc/stage5 指针 + 正式进入标记）、Fourth_stage.md（冻结为已完成历史阶段 +
+  切换注记，不改写既有验收过程）、AGENTS.md（§1 当前阶段/接管顺序/阶段机制/
+  步骤链需求源/第五阶段架构纪律与不做清单/§3/§4/§5 速查）、README.md（顶部
+  当前阶段 + 历史标记 + stage5 指针）、package.json.description（产品级描述
+  不含阶段号）、本文件。⑥ 验证：全量回归（test 1255/1255 · typecheck · lint
+  · format:check · build · git diff --check 全绿）+ 产品代码零 diff 确认 +
+  交叉引用 grep（阶段名/任务编号/当前阶段/下一推荐任务/「B9 未实现」等表述
+  唯一且一致）+ C/FT/FRT 编号无冲突 + 新文档无占位 TODO + 敏感信息扫描零
+  命中 + 根目录过期残留日志 aibrowse-2026-08-15.log（测试生成，核验后精确
+  删除）。**未调用任何付费 Provider、未安装任何依赖、未提前实现 C1。**
 
 - **第四阶段最终真实 Provider 验收通过（2026-08-16，第十二个闭环；场景
   1a–8 全部真实通过 → 总 Exit 改判 `GO/PASS`）**：① 步骤 0 独立核对——
@@ -2175,6 +2242,10 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   失败有可诊断日志」已满足且本轮冒烟实证）；但为**真实的无界增长项**，不得
   以「非阻塞」掩盖——登记于 Seventh Stage Product Hardening（性能/稳定性/
   发布闭环）或其后专项闭环：补日志大小上限与保留天数上限。
+  **2026-08-16 Fifth Stage 切换重新分级**：维持**可延期至 Seventh Stage**
+  （通用基础设施硬化，不阻塞 Research）；但 Research 侧日志纪律
+  （不记正文/Evidence 摘录/URL query 值/结果全文，仅元数据）作为
+  threat-model FT-16 防线在本阶段落地（判定见 proposal §8.3）。
 - **审计 P2-3 会话字节上限（B9 独立处置，2026-08-15；未修复，后续硬化）**：
   会话持久化有会话数（50）与消息条数（200）上限，**无字节上限**——触发
   条件 = 单会话 200 条内持续追问或超大单条消息；影响 = 会话 JSON 文件可达
@@ -2182,6 +2253,12 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   MESSAGE_LIMIT=200 + 预算截断 + ToolStep 摘要化（fill 脱敏/快照正文零持久化）。
   **B9 独立判定：不命中本阶段 Exit Gate**（无卡死/数据丢失路径，规模有隐式
   界）；登记后续硬化（Seventh Stage 或专项闭环评估单文件字节上限）。
+  **2026-08-16 Fifth Stage 切换重新分级：升级为「Fifth Stage 必须吸收」**——
+  不得机械延期：若 Research 结果/证据/运行记录进入 ConversationStore 会把
+  长 Research 塞进会话 JSON 放大无界风险。处置（已落入设计）：Research 数据
+  **不进入会话 JSON**——独立 research.db + 独立字节预算（单任务持久化
+  ≤500k 字符/保留任务 ≤30/最旧清理）+ 会话侧仅挂任务 id 引用
+  （detailed-design §9 + proposal §8.2）。
 - **审计 P2-4 Vitest 默认 worker（B9 独立处置，2026-08-15；未修复，建议
   配置固化）**：vitest.config.ts 未固化单 worker，直接 `npm test` 走默认
   并行；触发条件 = 未按纪律显式 `--maxWorkers=1` 的调用；影响 = 墙钟断言
@@ -2190,11 +2267,17 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   **B9 独立判定：不命中 Exit Gate**（验证基础设施可信——命令显式固定，本轮
   与历史验证均单 worker 全绿）；建议后续闭环在 vitest.config.ts 固化
   maxWorkers=1（一行配置，消除纪律依赖）。
+  **2026-08-16 Fifth Stage 切换重新分级**：维持**可延期至 Seventh Stage**
+  （验证基础设施，不阻塞 Research；验证纪律显式 `--maxWorkers=1` 延续；
+  若任一 C 系列实现任务顺手固化须在其任务闭环内单独验证——proposal §8.3）。
 - **审计 P3 smoke 效率（B9 独立处置，2026-08-15；未修复，后续优化）**：
   冒烟全矩阵运行分钟级（本轮 dev 约 4.7 分钟/生产约 4.2 分钟，双场景+
   跨进程门控合计约 15 分钟）；触发条件 = 每次全量验证；影响 = 验证耗时
   （非正确性）；**B9 独立判定：不命中 Exit Gate**（效率非阻塞条件；§9
   全量验证已通过）；登记后续闭环评估优化（不影响断言强度的前提下）。
+  **2026-08-16 Fifth Stage 切换重新分级**：维持**可延期至 Seventh Stage**
+  （效率非正确性）；但 C 系列冒烟必须不显著加重默认矩阵（新场景编号独立、
+  断言不重复完整运行既有矩阵，延续决议 #93 纪律——proposal §8.3）。
 
 ### 计划内限制与延期项
 
@@ -2308,32 +2391,17 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **场景 6/7 导航夹具修复（唯一下一推荐任务；本轮不修改代码，需先完成
-  离线红→绿）**：2026-08-16 第四轮真实验收（用户单独授权的一次完整
-  `-Sources` 复验）场景 1a–5 全部真实通过（含 4c 定位修复实测生效、37
-  次 HTTP 全部 200、9 次 L2 确认全部按纪律决议），**失败于场景 6（真实
-  SRT-01）**：「敌对页未就绪」——harness 夹具缺陷（非产品缺陷、非模型
-  观察性问题）：场景 5 真实模型经 browser_open（auto-visible 契约）打开
-  并激活新 Tab 后，场景 6 断言等待**活动 Tab** URL 变为敌对页 URL，但
-  `navigate()` 契约只加载目标 Tab 不激活（browser-controller.ts
-  `navigate` = 仅 loadURL）→ 等待恒不满足、10 秒超时；场景 7 同模式；
-  场景 8 与 A7 场景 6 用 createTab（自动激活）不受影响。**总 Exit 维持
-  HOLD/PENDING——真实 Provider 验收未完成**（场景 6/7/8 + 真 Key 扫描
-  未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT RUN）。补验任务内容：
-  ① 最小修复 = 场景 6/7 导航前 `activateTab(activeBefore)`（场景 6 至少
-  一处；场景 7 依赖场景 6 已激活则同修复一致）——红→绿纪律：先写离线
-  可测断言（如 smoke-sources-scan 或既有导航场景）固化「navigate 不改变
-  活动 Tab」语义，再修夹具，全量 test/typecheck/lint/format:check/
-  build/diff-check + production 无 Key 路由全绿；② 修复闭环后待用户
-  单独授权，经仓库外 harness `-Sources` 做**一次**定向真实复验——期望
-  覆盖场景 6 起剩余全程（真实 SRT-01/02 观察 → 真实 RT-10 观察 → 真 Key
-  零暴露扫描）+ 调用台账（每次调用对应明确验收项，报告次数与用途）；
-  ③ 全部通过后据证据改判 GO/PASS 并同步 Fourth_stage.md §10/
-  threat-model/本文件；**离线矩阵不替代真实验证**（Fourth_stage.md §10
-  规则不变）。补验通过前不得宣称第四阶段验收通过、不得实现 Fifth Stage。
-  当前基线：test 1244/1244（53 文件，单 worker）全绿、typecheck/lint/
-  format:check/build 全绿、dev 默认矩阵与 production 无 Key 路由退出码 0
-  （2026-08-16 本任务实证）。
+- **C1 — ResearchTask/Evidence/Result 核心契约、状态机纯函数、存储与服务基座
+  （唯一下一推荐任务）**：第五阶段设计闭环已完成（2026-08-16，doc/stage5/
+  定稿 + 阶段指针已切换）；下一唯一任务 = 实施 C1（契约
+  `doc/stage5/detailed-design.md` §2/§3/§6.8/§9/§15；任务文档
+  `doc/stage5/tasks/C1-research-contract-foundation.md`）。C1 完成后按
+  依赖链推进 C2/C3 → C4 → C5 → C6/C7 → C8 → C9 → C10；每个任务一个
+  可验证开发闭环；本阶段禁止安装依赖、禁止未经授权调用真实 Provider
+  （C9/C10 真实验收须另获用户授权）、禁止实现 Sixth Stage。
+  （历史注记：此前「下一推荐任务 = 场景 6/7 导航夹具修复」已于 2026-08-16
+  第五轮完成——场景 1a–8 全部真实通过、总 Exit 改判 GO/PASS，历史记录见
+  上方「最近验证结果」第十二个闭环条目，原位保留。）
 
 ## 第一阶段验收未完成项
 
