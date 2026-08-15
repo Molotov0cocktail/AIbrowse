@@ -26,7 +26,7 @@ import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sq
 import { runMigrations } from './sources/db/migrations';
 import { SourceServiceImpl } from './sources/source-service';
 import { SourceSearchIndex } from './sources/repository/source-search-index';
-import type { SourceService } from '../shared/types/sources';
+import type { SourceService, SourcesState, SourceView } from '../shared/types/sources';
 import { SEARCH_ENGINE_URL } from '../shared/url';
 import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 import { listTools } from './ai/tools/tool-registry';
@@ -130,6 +130,10 @@ export interface SmokeOptions {
   liveAgentSupplement?: boolean; // A7 补验补证：定向补验（AIBROWSE_LIVE_AGENT_SUPPLEMENT=1，仅修订场景 2/3 + 零泄漏终检）
   toolExecutor?: ToolExecutor; // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
   confirmManager?: ConfirmManager; // A3：L2 确认程序化驱动（approve/deny，A6 起接 UI）
+  sourcesService?: SourceService; // B5：冒烟模式共享生产 SourceService 实例（8.11 B-05 UI
+  // 矩阵的后台写/版本冲突/清理断言用；仅 SMOKE_MODE 注入，生产行为不变）
+  sourcesStateOverride?: { current: SourcesState | null } | null; // B5：SMOKE_MODE 专属
+  // 恢复态/不可用态注入点（决议 #74 测试落点；生产不传）
 }
 
 // ---------- S5：真实 Provider 可选冒烟（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY） ----------
@@ -1705,6 +1709,47 @@ async function typeIntoUiInput(uiWc: WebContents, selector: string, text: string
     })()`,
   );
   await delay(100);
+}
+
+// B5：受控 textarea 写入（Sources 备注表单）：与 typeIntoComposer 同一手法
+async function typeIntoUiTextarea(
+  uiWc: WebContents,
+  selector: string,
+  text: string,
+): Promise<void> {
+  await uiJs(
+    uiWc,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) throw new Error('textarea 不存在：' + ${JSON.stringify(selector)});
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(el, ${JSON.stringify(text)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`,
+  );
+  await delay(100);
+}
+
+// B5：受控 select 写入（Sources 分组筛选/分享模式等）：原生 value setter + change 事件
+async function setUiSelect(uiWc: WebContents, selector: string, value: string): Promise<void> {
+  await uiJs(
+    uiWc,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) throw new Error('select 不存在：' + ${JSON.stringify(selector)});
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      setter.call(el, ${JSON.stringify(value)});
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`,
+  );
+  await delay(100);
+}
+
+async function uiInputValue(uiWc: WebContents, selector: string): Promise<string> {
+  return (await uiJs(
+    uiWc,
+    `document.querySelector(${JSON.stringify(selector)})?.value ?? ''`,
+  )) as string;
 }
 
 async function waitForUiText(
@@ -9011,6 +9056,19 @@ export async function runSmokeScenario(
       await runSourcesToolsSmoke(controller, options);
     }
 
+    // 8.11 B-05 Sources UI 端到端矩阵（决议 #68–#78 测试落点）：真实 React DOM →
+    // preload bridge → IPC（sender+主帧校验）→ source-ipc 适配器 → 生产 SourceService
+    // 全链路。LIVE 模式跳过（同 8.4–8.6 条件）；需要 uiWindow 与 sourcesService
+    // （index.ts 冒烟装配注入，SMOKE_MODE 专属）。
+    if (
+      options.liveSmoke === undefined &&
+      options.uiWindow !== null &&
+      options.uiWindow !== undefined &&
+      options.sourcesService !== undefined
+    ) {
+      await runSourcesUiMatrix(options, controller);
+    }
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -9297,4 +9355,694 @@ async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
     'smoke',
     'B-02 check 完成：跨进程读回一致 + 重启后 Undo 生效 + 重复 Undo 幂等 + 版本冲突拒绝',
   );
+}
+
+// ---------- 8.11 B-05 Sources UI 端到端矩阵（决议 #68–#78 测试落点；默认矩阵自动
+// 包含，LIVE 模式跳过——与 8.4–8.6 同条件） ----------
+// 真实 React DOM → preload bridge（白名单）→ IPC（sender+主帧校验）→ source-ipc
+// 适配器（严格白名单/audience 硬编码 user/状态门控/手动审计/changed 事件）→ 生产
+// SourceService 全链路。断言覆盖：明文边界说明/快速添加（默认 metadata + 精确重复 +
+// 「可能相关」）/非 http 拒绝/分组浏览与分页/搜索 user 视角 blocked 可见/详情编辑
+// （provenance 展示 + aiNote 只读 + 敌手 note 纯文本渲染）/版本冲突提示刷新零静默
+// 覆盖/禁用恢复/手工 Undo/两阶段永久删除（取消零删除 + 确认后无 Undo + token 零
+// DOM）/恢复态与不可用态（中文原因 + 写入口禁用 + 写入零变化，决议 #39 读入口拒绝）
+// /面板互斥切换 + App 级确认框不被卸载遮断（决议 #68）/sources:changed 驱动面板刷新。
+async function runSourcesUiMatrix(
+  options: SmokeOptions,
+  controller: BrowserController,
+): Promise<void> {
+  const uiWindow = options.uiWindow;
+  if (uiWindow === null || uiWindow === undefined) {
+    throw new Error('B-05 需要 UI 窗口（index.ts 冒烟装配注入）');
+  }
+  const service = options.sourcesService;
+  if (service === undefined) {
+    throw new Error('B-05 需要生产 SourceService（index.ts 冒烟装配注入）');
+  }
+  const uiWc = uiWindow.webContents;
+  const pages = await startControlledPages();
+  const beforeIds = new Set((await controller.getTabs()).map((t) => t.id));
+  // 进入前 AI 面板状态（9.1 矩阵 4 runL3Ui 依赖 AI 面板打开——B-05 结束须原样恢复）
+  const aiPanelOpenAtEntry = await uiHas(uiWc, '.ai-panel');
+
+  const svcGet = async (id: string): Promise<SourceView> => {
+    const r = await service.get(id, 'user');
+    assert(r.ok, `B-05：服务层 get 应成功（${JSON.stringify(r)}）`);
+    return r.source;
+  };
+  const findSourceByUrl = async (url: string): Promise<SourceView | null> => {
+    const r = await service.search(url, { audience: 'user' });
+    if (!r.ok) return null;
+    const item = r.results.find((x) => x.url === url);
+    return item === undefined ? null : await svcGet(item.id);
+  };
+  const openDetailByName = async (name: string): Promise<void> => {
+    await uiJs(
+      uiWc,
+      `(() => {
+        const btn = [...document.querySelectorAll('.sources-item-name')]
+          .find((el) => el.textContent === ${JSON.stringify(name)});
+        if (!btn) throw new Error('B-05：列表条目不存在：' + ${JSON.stringify(name)});
+        btn.click();
+      })()`,
+    );
+    await waitFor(async () => await uiHas(uiWc, '.sources-detail'), 5000, 'B-05：详情未打开');
+  };
+
+  try {
+    // 1. 打开面板：标题 + 明文边界说明 + normal 态无横幅
+    if (!(await uiHas(uiWc, '.sources-panel'))) {
+      await clickUi(uiWc, '.sources-toggle');
+    }
+    await waitForUiText(uiWc, '.sources-panel-title', '信源', 5000, 'B-05：信源面板未打开');
+    await waitForUiText(
+      uiWc,
+      '.sources-plaintext-note',
+      '明文保存在本机',
+      5000,
+      'B-05：本地明文边界说明缺失',
+    );
+    assert(!(await uiHas(uiWc, '.sources-state-banner')), 'B-05：normal 态不应显示状态横幅');
+    const uiState = (await uiJs(uiWc, 'window.aibrowse.sources.state()')) as { mode: string };
+    assert(uiState.mode === 'normal', `B-05：面板状态应为 normal（实际 ${uiState.mode}）`);
+
+    // 2. 搜索 user 视角：blocked 可见可管理（决议 #58 主进程适配器硬编码）
+    await service.addManual({
+      scope: 'page',
+      url: 'https://example.com/b05-blocked',
+      name: 'B05受限站',
+      shareMode: 'blocked',
+    });
+    await clickUi(uiWc, '.sources-view-search');
+    await waitFor(
+      async () => await uiHas(uiWc, '.sources-search-input'),
+      5000,
+      'B-05：搜索模式未切换',
+    );
+    await typeIntoUiInput(uiWc, '.sources-search-input', 'B05受限站');
+    await waitFor(
+      async () => (await uiCount(uiWc, '.sources-item')) >= 1,
+      5000,
+      'B-05：搜索应命中 blocked（user 视角可见可管理）',
+    );
+    await clickUi(uiWc, '.sources-view-browse');
+    await delay(200);
+
+    // 3. 分组浏览 + 分页：22 条同组 + 组筛选 + 每页 20 + 翻页
+    for (let i = 0; i < 22; i += 1) {
+      await service.addManual({
+        scope: 'page',
+        url: `https://example.com/b05-p-${i}`,
+        groupName: 'B05组',
+      });
+    }
+    const groupsRes = await service.listGroups({ page: 0 });
+    assert(groupsRes.ok, 'B-05：listGroups 应成功');
+    const b05Group = groupsRes.groups.find((g) => g.name === 'B05组');
+    assert(b05Group !== undefined, 'B-05：B05组 应存在');
+    // 种子为直接服务写入（无 sources:changed）→ 面板重读分组/列表
+    await clickUi(uiWc, '.sources-refresh');
+    await delay(200);
+    await setUiSelect(uiWc, '.sources-group-filter', `group:${b05Group.id}`);
+    await waitFor(
+      async () => (await uiCount(uiWc, '.sources-item')) === 20,
+      5000,
+      'B-05：组筛选第一页应恰 20 条',
+    );
+    const pageInfo1 = await uiText(uiWc, '.sources-page-info');
+    assert(pageInfo1.includes('22'), `B-05：分页信息应含总数 22（实际 ${pageInfo1}）`);
+    await clickUi(uiWc, '.sources-next');
+    await waitFor(
+      async () => (await uiCount(uiWc, '.sources-item')) === 2,
+      5000,
+      'B-05：第二页应恰 2 条',
+    );
+    await clickUi(uiWc, '.sources-prev');
+    await delay(200);
+    await setUiSelect(uiWc, '.sources-group-filter', 'all');
+    await delay(200);
+
+    // 4. 快速添加（决议 #72）：main 读活动 Tab；page scope + metadata 默认 + 主进程
+    //    生成名称；精确重复 → duplicate；同 origin 不同页面 → 可能相关（不覆盖）
+    const qaTab = await controller.createTab(pages.simpleUrl);
+    await waitFor(
+      async () => (await controller.getTabs()).find((t) => t.id === qaTab.id)?.state === 'ready',
+      10000,
+      'B-05：快速添加受控页未就绪',
+    );
+    await clickUi(uiWc, '.sources-quick-add');
+    await waitForUiText(uiWc, '.sources-quick-add-message', '已添加', 8000, 'B-05：快速添加失败');
+    const qaView = await findSourceByUrl(pages.simpleUrl);
+    assert(qaView !== null, 'B-05：快速添加条目未落库');
+    assert(qaView.scope === 'page', 'B-05：快速添加应为 page scope');
+    assert(qaView.shareMode === 'metadata', 'B-05：无备注快速收藏默认 metadata');
+    assert(qaView.name.length > 0 && qaView.name.includes('127.0.0.1'), 'B-05：名称应由主进程生成');
+    // 同 origin 不同页面 → 相关提示（绝不覆盖/合并）
+    await service.addManual({ scope: 'page', url: `${pages.base}/b05-other` });
+    await clickUi(uiWc, '.sources-quick-add');
+    await waitForUiText(uiWc, '.sources-quick-add-message', '已存在', 8000, 'B-05：精确重复未识别');
+    await waitFor(
+      async () => (await uiCount(uiWc, '.sources-related-item')) >= 1,
+      5000,
+      'B-05：「可能相关」提示缺失',
+    );
+    const qaAgain = await svcGet(qaView.id);
+    assert(qaAgain.version === qaView.version, 'B-05：重复快速添加不得覆盖/合并既有条目');
+    // 非 http(s) 拒绝：空白页
+    const blankTab = await controller.createTab();
+    await waitFor(
+      async () => (await controller.getTabs()).find((t) => t.id === blankTab.id)?.state === 'ready',
+      10000,
+      'B-05：空白页未就绪',
+    );
+    await clickUi(uiWc, '.sources-quick-add');
+    await waitForUiText(
+      uiWc,
+      '.sources-quick-add-message',
+      '不是 http/https',
+      8000,
+      'B-05：非 http 未拒绝',
+    );
+
+    // 5. 详情编辑：provenance（用户标定）+ 修改名称/分享模式/备注 → 持久化 + 版本 +1
+    await openDetailByName(qaView.name); // quick-add 成功停留列表视图（hook 契约）
+    await waitForUiText(
+      uiWc,
+      '.sources-provenance',
+      '用户标定',
+      5000,
+      'B-05：手工通道 provenance 应为用户标定',
+    );
+    await typeIntoUiInput(uiWc, '.sources-edit-name', 'B05收藏页');
+    await setUiSelect(uiWc, '.sources-edit-share', 'full');
+    await typeIntoUiTextarea(uiWc, '.sources-edit-note', 'B05备注文本');
+    await clickUi(uiWc, '.sources-save');
+    await waitFor(
+      async () => (await uiInputValue(uiWc, '.sources-edit-name')) === 'B05收藏页',
+      8000,
+      'B-05：编辑保存后详情未刷新',
+    );
+    const qaEdited = await svcGet(qaView.id);
+    assert(qaEdited.name === 'B05收藏页', 'B-05：编辑未持久化（name）');
+    assert(qaEdited.shareMode === 'full', 'B-05：编辑未持久化（shareMode）');
+    assert(qaEdited.userNote === 'B05备注文本', 'B-05：编辑未持久化（userNote）');
+    assert(qaEdited.version === qaView.version + 1, 'B-05：编辑应版本恰 +1');
+
+    // 5.1 手工添加表单（B5 任务要求：手工添加 UI 全链路）
+    await clickUi(uiWc, '.sources-add-open');
+    await waitFor(async () => await uiHas(uiWc, '.sources-add-form'), 5000, 'B-05：添加表单未打开');
+    await typeIntoUiInput(uiWc, '.sources-add-url', 'https://example.com/b05-manual');
+    await typeIntoUiInput(uiWc, '.sources-add-name', 'B05手工站');
+    await typeIntoUiInput(uiWc, '.sources-add-group', '手工组');
+    await clickUi(uiWc, '.sources-add-form .sources-save');
+    await waitFor(
+      async () => await uiHas(uiWc, '.sources-detail'),
+      8000,
+      'B-05：手工添加未进入详情',
+    );
+    await waitForUiText(
+      uiWc,
+      '.sources-provenance',
+      '用户标定',
+      5000,
+      'B-05：手工添加 provenance 应为用户标定',
+    );
+    const manualView = await findSourceByUrl('https://example.com/b05-manual');
+    assert(manualView !== null, 'B-05：手工添加未落库');
+    assert(manualView.groupName === '手工组', 'B-05：手工添加分组未持久化');
+    assert(manualView.shareMode === 'metadata', 'B-05：手工添加无备注默认 metadata');
+    await panelGoBack(uiWc);
+
+    // 6. 版本冲突（决议 #77）：后台修改 → UI 保存 → 中文提示刷新 + 零静默覆盖
+    await openDetailByName(qaEdited.name); // 手工添加步骤后回到列表 → 重开 qa 详情
+    await service.updateManual(qaEdited.id, { name: '后台改名' }, qaEdited.version);
+    await typeIntoUiInput(uiWc, '.sources-edit-name', '不该写入');
+    await clickUi(uiWc, '.sources-save');
+    await waitForUiText(uiWc, '.sources-notice', '刷新', 8000, 'B-05：版本冲突未提示刷新');
+    const qaConflict = await svcGet(qaEdited.id);
+    assert(qaConflict.name === '后台改名', 'B-05：冲突后不得静默覆盖后台修改');
+    await waitFor(
+      async () => (await uiInputValue(uiWc, '.sources-edit-name')) === '后台改名',
+      8000,
+      'B-05：冲突后详情未自动刷新',
+    );
+
+    // 7. 手工 Undo（UI）：撤销最近一次（后台改名）→ journal 消费 + 版本回退
+    const undoableBefore = await service.listUndoable();
+    assert(undoableBefore.length >= 2, 'B-05：journal 应有可撤销条目');
+    await clickUi(uiWc, '.sources-undo-btn');
+    await waitFor(
+      async () => (await service.listUndoable()).length === undoableBefore.length - 1,
+      8000,
+      'B-05：撤销未消费 journal 条目',
+    );
+    const qaUndone = await svcGet(qaEdited.id);
+    assert(qaUndone.name === 'B05收藏页', 'B-05：撤销后名称未回退');
+
+    // 8. 禁用/恢复（决议 #51 状态机）：UI 切换 + deleted_at 联动。
+    // Undo 后详情为异步重读——先等表单重挂载为撤销后数据（版本最新），再点禁用
+    // （否则携带陈旧 expectedVersion → 版本冲突，UI 契约即提示刷新）。
+    await waitFor(
+      async () => (await uiInputValue(uiWc, '.sources-edit-name')) === 'B05收藏页',
+      8000,
+      'B-05：撤销后详情未刷新（禁用前需最新版本）',
+    );
+    await clickUi(uiWc, '.sources-toggle-enabled');
+    await waitFor(
+      async () => (await svcGet(qaEdited.id)).enabled === false,
+      8000,
+      'B-05：禁用未生效',
+    );
+    const qaDisabled = await svcGet(qaEdited.id);
+    assert(qaDisabled.deletedAt !== null, 'B-05：禁用应联动 deleted_at');
+    await waitForUiText(uiWc, '.sources-toggle-enabled', '恢复', 8000, 'B-05：禁用后详情未刷新');
+    await clickUi(uiWc, '.sources-toggle-enabled');
+    await waitFor(
+      async () => (await svcGet(qaEdited.id)).enabled === true,
+      8000,
+      'B-05：恢复未生效',
+    );
+
+    // 9. AI 推断 provenance + aiNote 只读展示 + 敌手 note 纯文本渲染（决议 #75/#78）
+    await service.applyChangeSet(
+      {
+        ops: [
+          {
+            kind: 'add',
+            scope: 'page',
+            url: 'https://example.com/b05-ai',
+            name: 'B05AI站',
+            trust: { value: 'official', assertedBy: 'ai' },
+            aiNote: 'AI 推断备注',
+          },
+        ],
+      },
+      { runId: 'b05-run', toolCallId: 'b05-cs' },
+    );
+    await service.addManual({
+      scope: 'page',
+      url: 'https://example.com/b05-note',
+      name: 'B05备注站',
+      userNote: '<b id="pwn-b05">注入文本</b>',
+    });
+    await panelGoBack(uiWc);
+    await clickUi(uiWc, '.sources-refresh'); // 直接服务种子无 changed 事件 → 面板重读列表
+    await delay(200);
+    await openDetailByName('B05AI站');
+    await waitForUiText(
+      uiWc,
+      '.sources-provenance',
+      'AI 推断·未核验',
+      5000,
+      'B-05：AI provenance 展示错误',
+    );
+    await waitForUiText(
+      uiWc,
+      '.sources-ai-note-text',
+      'AI 推断备注',
+      5000,
+      'B-05：aiNote 只读展示缺失',
+    );
+    await panelGoBack(uiWc);
+    await openDetailByName('B05备注站');
+    const noteValue = await uiInputValue(uiWc, '.sources-edit-note');
+    assert(noteValue.includes('<b id="pwn-b05">'), 'B-05：备注应原样显示为纯文本');
+    const pwnProbe = (await uiJs(
+      uiWc,
+      `document.getElementById('pwn-b05') !== null || document.querySelector('b#pwn-b05') !== null`,
+    )) as boolean;
+    assert(!pwnProbe, 'B-05：敌手 note 不得被解释为 DOM（纯文本渲染）');
+    await panelGoBack(uiWc);
+
+    // 10. 两阶段永久删除（决议 #73）：取消零删除 → 确认后消失 + 无 Undo + token 零 DOM
+    await openDetailByName('B05备注站');
+    const delTarget = (await findSourceByUrl('https://example.com/b05-note'))!;
+    await clickUi(uiWc, '.sources-delete-open');
+    await waitFor(
+      async () => await uiHas(uiWc, '.sources-hard-delete-dialog'),
+      5000,
+      'B-05：删除对话框未出现',
+    );
+    const dialogText = await uiText(uiWc, '.sources-hard-delete-dialog');
+    assert(dialogText.includes('不可撤销'), 'B-05：对话框应明确「不可撤销且不能 Undo」');
+    assert(!/[0-9a-f]{64}/.test(dialogText), 'B-05：删除令牌不得出现在 DOM');
+    await clickUi(uiWc, '.sources-hard-delete-cancel');
+    await waitFor(
+      async () => !(await uiHas(uiWc, '.sources-hard-delete-dialog')),
+      5000,
+      'B-05：取消未关闭对话框',
+    );
+    assert((await service.get(delTarget.id, 'user')).ok, 'B-05：取消应零删除');
+    await clickUi(uiWc, '.sources-delete-open');
+    await waitFor(
+      async () => await uiHas(uiWc, '.sources-hard-delete-dialog'),
+      5000,
+      'B-05：删除对话框未重新出现',
+    );
+    await clickUi(uiWc, '.sources-hard-delete-confirm');
+    await waitFor(
+      async () => !(await service.get(delTarget.id, 'user')).ok,
+      8000,
+      'B-05：确认后未删除',
+    );
+    const undoableAfterDelete = await service.listUndoable();
+    assert(
+      !undoableAfterDelete.some((u) => u.sourceIds.includes(delTarget.id)),
+      'B-05：永久删除后 journal 应精确清理（无 Undo 入口）',
+    );
+
+    // 11. 恢复态/不可用态（决议 #74 + 决议 #39）：中文原因 + 写入口禁用 + 写入零变化
+    const holder = options.sourcesStateOverride;
+    assert(holder !== undefined && holder !== null, 'B-05：需要 sourcesStateOverride 注入点');
+    holder.current = { mode: 'readonly-recovery', reason: 'B05 注入只读恢复态' };
+    await clickUi(uiWc, '.sources-refresh'); // 面板重读状态（state 经 bridge 拉取）
+    await waitForUiText(
+      uiWc,
+      '.sources-state-reason',
+      '只读恢复态',
+      5000,
+      'B-05：恢复态横幅未显示',
+    );
+    await waitForUiText(
+      uiWc,
+      '.sources-state-advice',
+      '应用数据目录',
+      5000,
+      'B-05：恢复态建议缺失',
+    );
+    assert(
+      (await uiJs(uiWc, `document.querySelector('.sources-quick-add')?.disabled`)) === true,
+      'B-05：恢复态写入口未禁用',
+    );
+    const deniedAdd = (await uiJs(
+      uiWc,
+      `window.aibrowse.sources.add({ scope: 'page', url: 'https://example.com/b05-denied' })`,
+    )) as { ok: boolean; errorCode: string };
+    assert(
+      !deniedAdd.ok && deniedAdd.errorCode === 'source-unavailable',
+      'B-05：恢复态写入应结构化拒绝',
+    );
+    const deniedList = (await uiJs(uiWc, `window.aibrowse.sources.list({ page: 0 })`)) as {
+      ok: boolean;
+    };
+    assert(!deniedList.ok, 'B-05：恢复态读入口应按决议 #39 一并拒绝');
+    const deniedSearch = await service.search('https://example.com/b05-denied', {
+      audience: 'user',
+    });
+    assert(deniedSearch.ok && deniedSearch.results.length === 0, 'B-05：恢复态写入零变化');
+    // 不可用态
+    holder.current = { mode: 'unavailable', reason: 'B05 注入不可用态' };
+    await clickUi(uiWc, '.sources-refresh'); // 面板重读状态
+    await waitForUiText(uiWc, '.sources-state-reason', '不可用', 5000, 'B-05：不可用态横幅未显示');
+    holder.current = null;
+    await clickUi(uiWc, '.sources-refresh');
+    await waitFor(
+      async () => !(await uiHas(uiWc, '.sources-state-banner')),
+      5000,
+      'B-05：恢复 normal 后横幅未消失',
+    );
+
+    // 12. 决议 #68：面板互斥切换 + App 级确认框不被卸载/遮断
+    await clickUi(uiWc, '.sources-collapse');
+    await waitFor(async () => !(await uiHas(uiWc, '.sources-panel')), 5000, 'B-05：信源面板未收起');
+    await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
+    await waitForUiText(uiWc, '.ai-panel-title', 'AI 共读助手', 5000, 'B-05：AI 面板未打开');
+    assert(!(await uiHas(uiWc, '.sources-panel')), 'B-05：AI 与信源面板应互斥');
+    // L2 确认流中切换面板：确认框仍可达（App 级挂载，决议 #68）
+    const probeTab = await controller.createTab(pages.interactionUrl);
+    await waitFor(
+      async () => (await controller.getTabs()).find((t) => t.id === probeTab.id)?.state === 'ready',
+      10000,
+      'B-05：交互页未就绪',
+    );
+    const probeSnap = await controller.getPageSnapshot(probeTab.id);
+    assert(probeSnap !== null, 'B-05：交互页快照不应为 null');
+    const submitBtnId = probeSnap.buttons.find((b) => b.text === '提交按钮')?.id;
+    assert(submitBtnId !== undefined, 'B-05：交互页应采集到提交按钮 elementId');
+    await clickUi(uiWc, '.ai-new-session');
+    await waitFor(
+      async () => (await uiCount(uiWc, '.ai-session-item')) >= 1,
+      5000,
+      'B-05：新建会话失败',
+    );
+    await clickUi(uiWc, '.ai-mode-task'); // 任务模式（chat 模式不执行 Agent 工具）
+    await delay(150);
+    setSmokeUiFakeScript({
+      rounds: [
+        [
+          { text: '先定位提交按钮。', delayMs: 300 },
+          {
+            kind: 'toolCalls',
+            toolCalls: [
+              {
+                id: 'b05-find',
+                name: 'browser_find',
+                arguments: JSON.stringify({ text: '提交按钮' }),
+              },
+            ],
+          },
+        ],
+        [
+          { text: '点击提交按钮。', delayMs: 300 },
+          {
+            kind: 'toolCalls',
+            toolCalls: [
+              {
+                id: 'b05-click',
+                name: 'browser_click',
+                arguments: JSON.stringify({ elementId: submitBtnId }),
+              },
+            ],
+          },
+        ],
+        [{ text: '已完成。', delayMs: 200 }],
+      ],
+    });
+    await typeIntoComposer(uiWc, 'B05 确认门切换面板');
+    await waitFor(
+      async () => await uiHas(uiWc, '.ai-confirm-dialog'),
+      15000,
+      'B-05：L2 确认框未出现',
+    );
+    await clickUi(uiWc, '.sources-toggle');
+    await waitFor(async () => await uiHas(uiWc, '.sources-panel'), 5000, 'B-05：切面板失败');
+    assert(await uiHas(uiWc, '.ai-confirm-dialog'), 'B-05：面板切换不得卸载 App 级确认框');
+    await clickUi(uiWc, '.ai-confirm-deny');
+    await waitFor(
+      async () => !(await uiHas(uiWc, '.ai-confirm-dialog')),
+      8000,
+      'B-05：deny 后确认框未关闭',
+    );
+    await delay(2500); // run 收敛（第二轮文本轮）
+
+    // 13. 收尾：面板关闭 + Tab 恢复进入前 + AI 面板状态原样恢复（9.1 矩阵 4 前置）
+    await clickUi(uiWc, '.sources-collapse');
+    await waitFor(async () => !(await uiHas(uiWc, '.sources-panel')), 5000, 'B-05：面板未收起');
+    if (aiPanelOpenAtEntry && !(await uiHas(uiWc, '.ai-panel'))) {
+      await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
+      await waitForUiText(uiWc, '.ai-panel-title', 'AI 共读助手', 5000, 'B-05：恢复 AI 面板失败');
+    }
+    const extra = (await controller.getTabs()).filter((t) => !beforeIds.has(t.id));
+    for (const tab of extra) await controller.closeTab(tab.id);
+    assert((await controller.getTabs()).length === beforeIds.size, 'B-05：Tab 数量应恢复进入前');
+
+    logInfo(
+      'smoke',
+      'B-05 Sources UI 端到端矩阵全部通过（明文说明/快速添加与重复・可能相关/分组分页/搜索 user 视角 blocked 可见/详情编辑与 provenance・aiNote 只读・敌手 note 纯文本/版本冲突提示刷新/禁用恢复/手工 Undo/两阶段永久删除取消与确认/token 零 DOM/恢复态・不可用态中文诊断与零写入/面板互斥与 App 级确认框不遮断/changed 刷新）',
+    );
+  } catch (err) {
+    logError('smoke', 'B-05 Sources UI 端到端矩阵失败', err);
+    throw err;
+  } finally {
+    await pages.close();
+  }
+}
+
+// 详情 → 返回列表（无 detail 时安全 no-op）
+async function panelGoBack(uiWc: WebContents): Promise<void> {
+  if (await uiHas(uiWc, '.sources-back')) {
+    await clickUi(uiWc, '.sources-back');
+    await delay(200);
+  }
+}
+
+// ---------- B-05 Sources UI 跨进程持久化冒烟（B5 专属门控：AIBROWSE_SOURCES_UI_SMOKE
+// = set|check，与 SESSION_SMOKE/SOURCES_SMOKE 互斥——index.ts 路由） ----------
+// 两个独立生产进程共用同一系统 TEMP 下临时 userData：set 经真实 DOM → preload →
+// IPC → SourceService 完成当前页快速添加与编辑（shareMode/备注）；check 新进程
+// 读回一致 → 经真实 DOM 执行 Undo → 两阶段永久删除 → 确认消失且无 Undo。不得触碰
+// 真实用户数据（isPathInside 断言）；失败路径由 index.ts catch 清理 pid 专属目录。
+export async function runSourcesUiSmokeScenario(
+  mode: 'set' | 'check',
+  opts: { uiWindow: BrowserWindow | null; sourcesService?: SourceService },
+): Promise<void> {
+  try {
+    const userData = app.getPath('userData');
+    assert(
+      isPathInside(userData, app.getPath('temp')),
+      'B-05 双进程要求 userData 位于系统 TEMP 下（请提供 AIBROWSE_USER_DATA_DIR=<临时目录>；拒绝触碰真实 userData）',
+    );
+    const uiWindow = opts.uiWindow;
+    assert(uiWindow !== null && uiWindow !== undefined, 'B-05 双进程需要 UI 窗口');
+    const service = opts.sourcesService;
+    assert(service !== undefined, 'B-05 双进程需要生产 SourceService（index.ts 冒烟装配注入）');
+    const uiWc = uiWindow.webContents;
+    const pages = await startControlledPages();
+
+    const svcGet = async (id: string): Promise<SourceView> => {
+      const r = await service.get(id, 'user');
+      assert(r.ok, `B-05 双进程：get 应成功（${JSON.stringify(r)}）`);
+      return r.source;
+    };
+    const findSourceByUrl = async (url: string): Promise<SourceView | null> => {
+      const r = await service.search(url, { audience: 'user' });
+      if (!r.ok) return null;
+      const item = r.results.find((x) => x.url === url);
+      return item === undefined ? null : await svcGet(item.id);
+    };
+
+    try {
+      // 打开面板（两进程同路径）
+      if (!(await uiHas(uiWc, '.sources-panel'))) {
+        await clickUi(uiWc, '.sources-toggle');
+      }
+      await waitForUiText(
+        uiWc,
+        '.sources-panel-title',
+        '信源',
+        5000,
+        'B-05 双进程：信源面板未打开',
+      );
+
+      if (mode === 'set') {
+        // 1. 当前页快速添加（真实 DOM → preload → IPC → SourceService）
+        await controllerTabCreate(uiWc, pages.simpleUrl);
+        await clickUi(uiWc, '.sources-quick-add');
+        await waitForUiText(
+          uiWc,
+          '.sources-quick-add-message',
+          '已添加',
+          10000,
+          'B-05 set：快速添加失败',
+        );
+        const qa = await findSourceByUrl(pages.simpleUrl);
+        assert(qa !== null, 'B-05 set：快速添加条目未落库');
+        assert(qa.shareMode === 'metadata', 'B-05 set：默认 metadata');
+        // 2. 编辑（真实 DOM）：改分享模式 + 备注 + 名称
+        await openDetailByNameIn(uiWc, qa.name);
+        await typeIntoUiInput(uiWc, '.sources-edit-name', 'B05双进程页');
+        await setUiSelect(uiWc, '.sources-edit-share', 'full');
+        await typeIntoUiTextarea(uiWc, '.sources-edit-note', 'B05双进程备注');
+        await clickUi(uiWc, '.sources-save');
+        await waitFor(
+          async () => (await uiInputValue(uiWc, '.sources-edit-name')) === 'B05双进程页',
+          10000,
+          'B-05 set：编辑未生效',
+        );
+        const edited = await svcGet(qa.id);
+        assert(
+          edited.shareMode === 'full' && edited.userNote === 'B05双进程备注',
+          'B-05 set：编辑未持久化',
+        );
+        logInfo('smoke', 'B-05 set 完成：快速添加 + 编辑（真实 UI 链路）已持久化');
+      } else {
+        // check：新进程读回 → Undo → 两阶段永久删除。
+        // 受控页服务器为每进程随机端口——quick-add 条目 URL 携带 set 进程端口，
+        // 跨进程读回按名称（set 阶段显式设置，跨进程稳定）检索。
+        const qaSearch = await service.search('B05双进程页', { audience: 'user' });
+        const qaHit = qaSearch.ok
+          ? qaSearch.results.find((x) => x.name === 'B05双进程页')
+          : undefined;
+        assert(qaHit !== undefined, 'B-05 check：跨进程读回失败（快速添加条目缺失）');
+        const qa = await svcGet(qaHit.id);
+        assert(qa.name === 'B05双进程页', 'B-05 check：名称读回不一致');
+        assert(qa.shareMode === 'full', 'B-05 check：shareMode 读回不一致');
+        assert(qa.userNote === 'B05双进程备注', 'B-05 check：备注读回不一致');
+        // UI 读回：打开详情断言表单值
+        await openDetailByNameIn(uiWc, 'B05双进程页');
+        await waitFor(
+          async () => (await uiInputValue(uiWc, '.sources-edit-note')) === 'B05双进程备注',
+          10000,
+          'B-05 check：UI 读回不一致（备注）',
+        );
+        // 重启后 Undo（真实 DOM）：撤销最近一次变更（编辑）→ shareMode 回 metadata
+        const undoableBefore = await service.listUndoable();
+        assert(undoableBefore.length >= 2, 'B-05 check：journal 跨进程读回缺失');
+        await clickUi(uiWc, '.sources-undo-btn');
+        await waitFor(
+          async () => (await service.listUndoable()).length === undoableBefore.length - 1,
+          10000,
+          'B-05 check：Undo 未消费 journal',
+        );
+        const undone = await svcGet(qa.id);
+        assert(
+          undone.shareMode === 'metadata' && undone.userNote === '',
+          'B-05 check：重启后 Undo 未生效',
+        );
+        assert(undone.name !== 'B05双进程页', 'B-05 check：Undo 未回退名称');
+        // 两阶段永久删除（真实 DOM）：prepare → 确认 → 消失 + 无 Undo 入口
+        await panelGoBack(uiWc); // 从详情（Undo 视图）返回列表后再开目标详情
+        await openDetailByNameIn(uiWc, undone.name);
+        await clickUi(uiWc, '.sources-delete-open');
+        await waitFor(
+          async () => await uiHas(uiWc, '.sources-hard-delete-dialog'),
+          5000,
+          'B-05 check：删除对话框未出现',
+        );
+        await clickUi(uiWc, '.sources-hard-delete-confirm');
+        await waitFor(
+          async () => !(await service.get(qa.id, 'user')).ok,
+          10000,
+          'B-05 check：永久删除未生效',
+        );
+        const undoableAfter = await service.listUndoable();
+        assert(
+          !undoableAfter.some((u) => u.sourceIds.includes(qa.id)),
+          'B-05 check：删除后无 Undo 入口（journal 精确清理）',
+        );
+        logInfo(
+          'smoke',
+          'B-05 check 完成：跨进程读回 + 重启后 Undo + 两阶段永久删除（真实 UI 链路）',
+        );
+      }
+    } finally {
+      await pages.close();
+    }
+  } catch (err) {
+    logError('smoke', 'B-05 Sources UI 双进程冒烟失败', err);
+    throw err;
+  }
+}
+
+// 经 UI 新建 Tab 并等待就绪（真实 product 链路；双进程场景无 BrowserController 注入）
+async function controllerTabCreate(uiWc: WebContents, url: string): Promise<string> {
+  const tab = (await uiJs(uiWc, `window.aibrowse.tabs.create(${JSON.stringify(url)})`)) as {
+    id: string;
+  } | null;
+  assert(tab !== null, 'B-05 set：经 bridge 创建 Tab 失败');
+  await waitFor(
+    async () => {
+      const tabs = (await uiJs(uiWc, 'window.aibrowse.tabs.list()')) as Array<{
+        id: string;
+        state: string;
+      }>;
+      return tabs.find((t) => t.id === tab.id)?.state === 'ready';
+    },
+    10000,
+    'B-05 set：受控页未就绪',
+  );
+  return tab.id;
+}
+
+async function openDetailByNameIn(uiWc: WebContents, name: string): Promise<void> {
+  await uiJs(
+    uiWc,
+    `(() => {
+      const btn = [...document.querySelectorAll('.sources-item-name')]
+        .find((el) => el.textContent === ${JSON.stringify(name)});
+      if (!btn) throw new Error('B-05 双进程：列表条目不存在：' + ${JSON.stringify(name)});
+      btn.click();
+    })()`,
+  );
+  await waitFor(async () => await uiHas(uiWc, '.sources-detail'), 5000, 'B-05 双进程：详情未打开');
 }

@@ -18,6 +18,7 @@ import {
   runSessionSmokeScenario,
   runSmokeScenario,
   runSourcesSmokeScenario,
+  runSourcesUiSmokeScenario,
   smokeAgentLimits,
   smokeAgentSearchProvider,
   smokeUiFake,
@@ -79,8 +80,11 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { openDb } from './sources/db/sqlite-driver';
 import { runMigrations } from './sources/db/migrations';
 import { SourceServiceImpl } from './sources/source-service';
-import type { SourceService } from '../shared/types/sources';
+import type { SourceService, SourcesState } from '../shared/types/sources';
 import { createSourceTools } from './sources/tools/source-tools';
+// B5：Sources IPC 适配器（参数严格白名单 + audience 硬编码 user + 状态门控 +
+// 独立 manual 审计 + sources:changed 仅成功后触发）
+import { createSourcesAdapter } from './sources/source-ipc';
 
 // 冒烟模式 AI 子系统数据目录（进程专属临时目录，不触碰用户真实 userData）——S4 起
 // UI 端到端矩阵经真实 IPC/bridge 链路驱动同一实例；路径经 SmokeOptions 传给冒烟场景断言。
@@ -114,6 +118,14 @@ const LIVE_AGENT_SUPPLEMENT_MODE =
   !LIVE_AGENT_PRE_MODE;
 let liveSmoke: LiveProviderSmoke | undefined = undefined;
 let liveStreamChunkCount = 0; // 真实 Provider 场景 delta 计数（流式证据，index.ts 装配侧统计）
+
+// B-05 Sources UI 跨进程门控（AIBROWSE_SOURCES_UI_SMOKE=set|check）：两独立生产进程
+// 共用同一已核验系统 TEMP 临时 userData——生产 SourceService 须指向 userData/sources
+// （共享库），而非默认矩阵的 pid 专属临时目录。
+const SOURCES_UI_GATE_MODE =
+  SMOKE_MODE &&
+  (process.env['AIBROWSE_SOURCES_UI_SMOKE'] === 'set' ||
+    process.env['AIBROWSE_SOURCES_UI_SMOKE'] === 'check');
 
 // Session 冒烟/测试隔离（§十四 Session 验收）：指定临时 userData 目录，避免触碰用户真实数据。
 // 必须在 app ready 前设置（Electron 官方 API）；仅测试/验证环境使用（AIBROWSE_SESSION_SMOKE）。
@@ -154,6 +166,9 @@ let confirmManager: ConfirmManager | null = null;
 // 系统 TEMP 下 pid 专属目录——不触碰真实 userData 的 Sources 库）
 let sourceService: SourceService | null = null;
 let smokeSourcesDir: string | null = null;
+// B5 冒烟注入点（仅 SMOKE_MODE 消费，生产行为不变）：恢复态/不可用态 UI 断言——
+// sources:state 与全部读写入口经适配器 stateOverride 门控（决议 #74 测试落点）
+let smokeSourcesStateOverride: { current: SourcesState | null } | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -198,6 +213,11 @@ if (!gotLock) {
     if (smokeSourcesDir !== null) {
       rmSync(smokeSourcesDir, { recursive: true, force: true }); // 冒烟临时 Sources 目录
       smokeSourcesDir = null;
+    }
+    if (SMOKE_MODE) {
+      // 冒烟 AI 数据目录兜底清理（默认矩阵由 aiSmoke.cleanup 主路径清理；
+      // SESSION/SOURCES/SOURCES_UI 门控跳过矩阵——此前残留 pid 专属目录）
+      rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
     }
     browserController?.dispose();
     logInfo('main', '应用退出');
@@ -437,6 +457,52 @@ if (!gotLock) {
       return conversationService?.confirmTool(toolCallId, approve) ?? Promise.resolve(false);
     });
 
+    // —— Fourth Stage B5（决议 #69/#70/#72/#73/#74/#76）：Sources 面板通道 ——
+    // 全部复用 handle() 的 sender+主帧校验；业务校验/audience 硬编码/状态门控/审计/
+    // changed 事件在 source-ipc 适配器内（零 Electron import，可单测）。
+    // onChanged 只发主窗口（事件只发主窗口纪律）；审计经 logInfo('audit', …) 脱敏链。
+    // service 与 stateOverride 均为 getter 调用时解引用：handler 注册早于
+    // createBrowserWindow 内的 SourceService 装配与冒烟注入点装配（B-05 dev 冒烟
+    // 实测抓出两处构造期捕获 null 的同类缺陷，均已单测固化）。
+    const sourcesAdapter = createSourcesAdapter({
+      service: () => sourceService,
+      audit: (message) => logInfo('audit', message),
+      onChanged: () => {
+        if (
+          mainWindow !== null &&
+          !mainWindow.isDestroyed() &&
+          !mainWindow.webContents.isDestroyed()
+        ) {
+          mainWindow.webContents.send(IPC.SourcesChanged, { reason: 'sources-changed' });
+        }
+      },
+      stateOverride: SMOKE_MODE
+        ? () => {
+            const holder = smokeSourcesStateOverride; // 调用时解引用（装配时序）
+            return holder === null ? null : holder.current;
+          }
+        : undefined,
+    });
+
+    handle(IPC.SourcesList, (payload) => sourcesAdapter.list(payload));
+    handle(IPC.SourcesGet, (payload) => sourcesAdapter.get(payload));
+    handle(IPC.SourcesSearch, (payload) => sourcesAdapter.search(payload));
+    handle(IPC.SourcesGroups, (payload) => sourcesAdapter.groups(payload));
+    handle(IPC.SourcesAdd, (payload) => sourcesAdapter.add(payload));
+    handle(IPC.SourcesUpdate, (payload) => sourcesAdapter.update(payload));
+    handle(IPC.SourcesDisable, (payload) => sourcesAdapter.disable(payload));
+    handle(IPC.SourcesRestore, (payload) => sourcesAdapter.restore(payload));
+    handle(IPC.SourcesUndoable, () => sourcesAdapter.undoable());
+    handle(IPC.SourcesUndo, (payload) => sourcesAdapter.undo(payload));
+    // 决议 #72：quick-add 不接收 renderer 提供的 URL/标题——main 在点击时读取当前
+    // 活动 Tab（仅 http/https，其余由服务层 unsupported-url 结构化拒绝）。
+    handle(IPC.SourcesQuickAdd, async () =>
+      sourcesAdapter.quickAdd((await browserController?.getActiveTab()) ?? null),
+    );
+    handle(IPC.SourcesState, () => sourcesAdapter.state());
+    handle(IPC.SourcesPrepareHardDelete, (payload) => sourcesAdapter.prepareHardDelete(payload));
+    handle(IPC.SourcesHardDelete, (payload) => sourcesAdapter.hardDelete(payload));
+
     handle(
       IPC.ConfigProvidersList,
       (): Promise<ProviderInfo[]> => configStore?.list() ?? Promise.resolve([]),
@@ -494,18 +560,35 @@ if (!gotLock) {
         const loadUrl = process.env['AIBROWSE_SMOKE_URL'];
         const sessionMode = process.env['AIBROWSE_SESSION_SMOKE'];
         const sourcesMode = process.env['AIBROWSE_SOURCES_SMOKE'];
+        const sourcesUiMode = process.env['AIBROWSE_SOURCES_UI_SMOKE'];
         // Session 跨进程持久化冒烟（T5）：set/check 两进程共用临时 userData（§十四 Session 验收）
-        // B-02 Sources 跨进程冒烟（B2，决议 #57）：专属 set/check 门控，与 SESSION_SMOKE 互斥
-        if ((sessionMode === 'set' || sessionMode === 'check') && sourcesMode !== undefined) {
+        // B-02 Sources 跨进程冒烟（B2，决议 #57）与 B-05 Sources UI 跨进程冒烟（B5 专属
+        // 门控）：三者互斥（同时设置报错退出）
+        const exclusiveModes = [sessionMode, sourcesMode, sourcesUiMode].filter(
+          (m) => m !== undefined,
+        );
+        if (exclusiveModes.length > 1) {
           logError(
             'main',
-            'AIBROWSE_SESSION_SMOKE 与 AIBROWSE_SOURCES_SMOKE 互斥（决议 #57），请二选一',
+            'AIBROWSE_SESSION_SMOKE / AIBROWSE_SOURCES_SMOKE / AIBROWSE_SOURCES_UI_SMOKE 互斥，请只选其一',
           );
           app.exit(1);
           return;
         }
         let run: Promise<void>;
-        if (sourcesMode === 'set' || sourcesMode === 'check') {
+        if (sourcesUiMode === 'set' || sourcesUiMode === 'check') {
+          run = runSourcesUiSmokeScenario(sourcesUiMode, {
+            uiWindow: mainWindow,
+            sourcesService: sourceService ?? undefined,
+          });
+        } else if (sourcesUiMode !== undefined) {
+          logError(
+            'main',
+            `AIBROWSE_SOURCES_UI_SMOKE 值非法：${sourcesUiMode}（仅支持 set|check）`,
+          );
+          app.exit(1);
+          return;
+        } else if (sourcesMode === 'set' || sourcesMode === 'check') {
           run = runSourcesSmokeScenario(sourcesMode);
         } else if (sourcesMode !== undefined) {
           logError('main', `AIBROWSE_SOURCES_SMOKE 值非法：${sourcesMode}（仅支持 set|check）`);
@@ -525,6 +608,8 @@ if (!gotLock) {
             liveAgentSupplement: LIVE_AGENT_SUPPLEMENT_MODE, // A7 补验补证：AIBROWSE_LIVE_AGENT_SUPPLEMENT=1 时启用定向补验（仅修订场景 2/3 + 零泄漏终检）
             toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
             confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
+            sourcesService: sourceService ?? undefined, // B5：8.11 UI 矩阵后台写/冲突/清理断言
+            sourcesStateOverride: smokeSourcesStateOverride, // B5：恢复态/不可用态注入点
           });
         }
         run
@@ -575,13 +660,19 @@ function createBrowserWindow(): void {
   // 本阶段冒烟注入快照语义存储驱动。
   // B4：Source 子系统装配——生产用 <userData>/sources/sources.db + 既有 migration v1；
   // 冒烟模式用系统 TEMP 下 pid 专属目录（不触碰真实 userData，退出时整体清理）。
+  // B5 双进程门控（AIBROWSE_SOURCES_UI_SMOKE）例外：两进程共用同一已核验系统 TEMP
+  // 临时 userData（isPathInside 断言），生产 SourceService 指向 userData/sources——
+  // 共享库才是跨进程读回/Undo/永久删除的验证对象（B-05 dev 冒烟实测抓出 pid 目录
+  // 绕开共享状态的缺陷）。
   // 初始化失败 → sourceService 保持 null，Source 工具安全返回 source-unavailable
   // （不拖垮浏览器其余能力；中文诊断入日志）。
   try {
-    const sourcesDir = SMOKE_MODE
-      ? join(app.getPath('temp'), `aibrowse-smoke-sources-${process.pid}`)
-      : join(app.getPath('userData'), 'sources');
-    if (SMOKE_MODE) smokeSourcesDir = sourcesDir;
+    const sourcesDir =
+      SMOKE_MODE && !SOURCES_UI_GATE_MODE
+        ? join(app.getPath('temp'), `aibrowse-smoke-sources-${process.pid}`)
+        : join(app.getPath('userData'), 'sources');
+    if (SMOKE_MODE && !SOURCES_UI_GATE_MODE) smokeSourcesDir = sourcesDir;
+    if (SMOKE_MODE) smokeSourcesStateOverride = { current: null }; // B5：冒烟注入点装配
     mkdirSync(sourcesDir, { recursive: true });
     const sourcesHandle = openDb(join(sourcesDir, 'sources.db'));
     runMigrations(sourcesHandle);
