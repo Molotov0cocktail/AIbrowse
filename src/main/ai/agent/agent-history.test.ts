@@ -124,6 +124,47 @@ describe('sanitizeToolCallsForPersistence（assistant toolCalls 脱敏）', () =
     expect(out).not.toBe(input);
     expect(input[0].arguments).toBe('{"text":"abc"}');
   });
+
+  it('B8 SRT-08：source_search 的 query 为 URL 形态含 token query → 持久化脱敏（query 值零落盘）', () => {
+    const out = sanitizeToolCallsForPersistence([
+      {
+        id: 'c1',
+        name: 'source_search',
+        arguments: '{"query":"https://example.org/s?token=secret123"}',
+      },
+    ]);
+    const args = JSON.parse(out[0].arguments) as Record<string, unknown>;
+    expect(String(args.query)).toBe('https://example.org/s?（query 值已脱敏，len=15）');
+    expect(out[0].arguments).not.toContain('secret123');
+    expect(out[0].arguments).not.toContain('?token=');
+  });
+
+  it('B8 SRT-08：browser_open 的 url 含敏感 query 形态 → 持久化脱敏（query 值零落盘）', () => {
+    const out = sanitizeToolCallsForPersistence([
+      {
+        id: 'c1',
+        name: 'browser_open',
+        arguments: '{"url":"https://example.org/a?key=abcdef123"}',
+      },
+    ]);
+    const args = JSON.parse(out[0].arguments) as Record<string, unknown>;
+    expect(String(args.url)).toBe('https://example.org/a?（query 值已脱敏，len=13）');
+    expect(out[0].arguments).not.toContain('abcdef123');
+    expect(out[0].arguments).not.toContain('?key=');
+  });
+
+  it('B8 SRT-08：非 URL 形态 query 原样持久化（普通关键词查询语义不变）', () => {
+    const out = sanitizeToolCallsForPersistence([
+      { id: 'c1', name: 'source_search', arguments: '{"query":"AI benchmark 中文关键词"}' },
+      { id: 'c2', name: 'source_search', arguments: '{"query":"https://example.org/plain"}' },
+    ]);
+    expect(JSON.parse(out[0].arguments) as Record<string, unknown>).toEqual({
+      query: 'AI benchmark 中文关键词',
+    });
+    expect(JSON.parse(out[1].arguments) as Record<string, unknown>).toEqual({
+      query: 'https://example.org/plain',
+    });
+  });
 });
 
 describe('持久化消息组装（每轮文本恰好落盘一次，无重复拼接）', () => {

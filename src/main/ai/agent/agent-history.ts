@@ -23,6 +23,9 @@ import {
   truncateWithMark,
   type ContextBudget,
 } from '../context-budget';
+// B8 SRT-08 修复：持久化 toolCalls 的 URL 形态字符串 query 值脱敏（与审计层同源
+// 纯函数——决议 #67 redactUrlQueryValue；分层同层引用 audit-log，无反向依赖）
+import { redactUrlQueryValue } from '../audit-log';
 
 export const TOOL_STEP_PREVIEW_MAX = 200;
 
@@ -59,11 +62,12 @@ export function buildToolStep(
 }
 
 // assistant toolCalls 脱敏（持久化前调用）：browser_fill 的 text → FILL_MASK(len)；
-// 其余工具 arguments 原样（read 的 tabId/search 的 query 等为模型回显，属可持久化形态）；
+// URL 形态字符串（url 字段/query 字段等）含 query → 敏感 query 值脱敏（B8 SRT-08
+// 修复：ToolStep 持久化字节扫描 ?token=/&key= 形态零出现——threat-model §4）；
+// 其余字符串（read 的 tabId、非 URL 形态 query 等）为模型回显，属可持久化形态；
 // 非法 JSON 原样保留（不抛异常）。
 export function sanitizeToolCallsForPersistence(toolCalls: ProviderToolCall[]): ProviderToolCall[] {
   return toolCalls.map((call) => {
-    if (call.name !== 'browser_fill') return call;
     let parsed: unknown;
     try {
       parsed = JSON.parse(call.arguments);
@@ -72,10 +76,22 @@ export function sanitizeToolCallsForPersistence(toolCalls: ProviderToolCall[]): 
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return call;
     const record = parsed as Record<string, unknown>;
-    if (typeof record.text === 'string') {
-      record.text = FILL_MASK(record.text.length);
+    let changed = false;
+    for (const [key, value] of Object.entries(record)) {
+      if (typeof value !== 'string') continue;
+      if (call.name === 'browser_fill' && key === 'text') {
+        record[key] = FILL_MASK(value.length);
+        changed = true;
+        continue;
+      }
+      // 仅 URL 形态（http/https 开头）且含 query 时脱敏 query 值；其余原样
+      const redacted = redactUrlQueryValue(value);
+      if (redacted !== null && redacted !== value) {
+        record[key] = redacted;
+        changed = true;
+      }
     }
-    return { ...call, arguments: JSON.stringify(record) };
+    return changed ? { ...call, arguments: JSON.stringify(record) } : call;
   });
 }
 
