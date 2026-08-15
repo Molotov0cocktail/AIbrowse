@@ -201,3 +201,27 @@ Exit 决策 + 证据回填 + 文档同步 + 双远程推送 + 最终报告；B9 
 - 下一唯一动作 = 真实 Provider 补验（B6/B8 补验任务：仓库外 harness 补
   -Sources 开关 + 用户授权后最小真实 Sources 验收；授权后沿用第三阶段
   DPAPI harness 流程）；**不得实现 Fifth Stage**。
+
+## 真实 Provider 验收通过后判定更新（2026-08-16 回填：第五轮运行，总 Exit 改判 GO/PASS）
+
+B9 判定时的唯一缺口（§10 第 1 项真实使用维度 + 第 8 项真 Key 扫描）已于
+2026-08-16 第五轮真实 Provider 验收关闭（历史：首轮 1b 夹具 → 定向复验
+4c 夹具 → 第 3 轮越界中止 → 第四轮场景 6 导航夹具缺陷 → 第五轮夹具修复后
+一次完整复验全部通过——不重写为一次通过）：
+
+- **场景 1a–8 全部真实通过**（deepseek-v4-pro，harness `-Sources`）：
+  L2 deny 零写入/approve 恰一次 + durable Undo/改组备注/official 恒
+  ai+unverified/降 priority/disable/restore/source_search →
+  browser_open → browser_read + usage=reachable + 真实 SRT-01/02 与
+  RT-10 观察场景实际到达（结构断言全部通过，观察性结果如实登记）；34 次
+  HTTP 全部正常、8 次 L2 确认全部按纪律决议（1a deny + 7 approve）。
+- **真 Key 零暴露扫描通过**：DOM/日志/Sources 库（含 WAL/备份/journal）/
+  会话文件/ToolStep/审计/临时文件/密文形态共 18 文件零命中 + 进程外当日
+  日志 sk-/Bearer 形态零命中；DPAPI 密文文件保留；环境变量/进程/临时目录
+  零残留。
+- **§10 八项改判**：① PASS（真实使用含真实 Provider——本轮 1a–8 实测）
+  ②–⑦ 维持 PASS（离线证据 + 本轮真实执行补强）⑧ PASS（SRT-08 离线字节
+  扫描 + 本轮真 Key 扫描）。**总 Exit 判定 = GO/PASS——第四阶段验收
+  通过。** 阶段指针保持 Fourth Stage；下一推荐动作 = 提交本轮报告供
+  只读复核；切换 Fifth Stage 须按 ROADMAP.md 阶段切换原则由用户指令执行，
+  不得擅自设计或实施。

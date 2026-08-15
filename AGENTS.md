@@ -133,6 +133,25 @@
     RT-10 与真实 SRT-01/02 仍 NOT RUN）；场景 6/7 导航夹具修复 + 离线
     复验全绿后，下一唯一动作 = 用户单独授权的一次定向真实复验；补验通过
     前不得宣称第四阶段验收通过、不得实现 Fifth Stage。
+    **第四阶段最终真实 Provider 验收通过（2026-08-16，第五轮运行）——总
+    Exit 改判 `GO/PASS`（第四阶段验收通过）**：场景 6/7 导航夹具修复——
+    SMOKE 辅助逻辑 `src/main/smoke-activate-navigate.ts`
+    `activateThenNavigate`（激活先于导航；激活失败/取消/超时零导航且不
+    触发 Provider；安全返回 false 不抛异常；结构接口，BrowserController
+    产品契约零改动），红→绿 11 用例（旧夹具仅 navigate 无激活在顺序断言
+    下失败），全量 test **1255/1255** + typecheck/lint/format:check/
+    build/diff-check 全绿 + production 无 Key 路由退出码 0；一次完整
+    `-Sources` 复验（deepseek-v4-pro）：**场景 1a–8 全部真实通过**
+    （34 次 HTTP 全部正常、8 次 L2 确认全部按纪律决议——1a deny + 7
+    approve；durable Undo/restore/usage=reachable 实测；真实 SRT-01/02
+    与 RT-10 观察场景实际到达，结构断言全部通过、观察性结果如实登记；
+    真 Key 零暴露扫描 18 文件零命中 + 进程外 sk-/Bearer 零命中；DPAPI
+    密文文件保留；进程/临时目录/环境变量零残留）。**Fourth_stage §10
+    八项全部 PASS；阶段指针保持 Fourth Stage；下一推荐动作 = 提交本轮
+    报告供只读复核；不得设计或实施 Fifth Stage**（切换须按 ROADMAP.md
+    阶段切换原则由用户指令执行）。历史保持：首轮（1b 夹具）→ 定向复验
+    （4c 夹具）→ 第 3 轮越界中止 → 第四轮（1a–5 过/场景 6 夹具缺陷）→
+    本轮——不重写为一次通过。
     契约源
     `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
@@ -154,11 +173,14 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
     **⚠️ B1–B9 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层/B5 Sources
     UI 与 IPC/B6 usage 接线 + 自然语言管理端到端/B7 存储运维面——backup/迁移
     全矩阵/恢复态/rebuild 诊断/usage 展示/B8 红队矩阵 SRT-01～SRT-12 + 安全
-    审计 + 隐私扫描，冒烟 8.15；B9 独立最终验收已完成，**总 Exit 判定 =
-    HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）**；
+    审计 + 隐私扫描，冒烟 8.15；B9 独立最终验收已完成，当时总 Exit 判定 =
+    HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）；
+    **2026-08-16 第五轮真实 Provider 验收通过后总 Exit 改判 `GO/PASS`**
+    （场景 1a–8 全部真实通过 + 真 Key 零暴露扫描通过，见上）；
     B6/B8 补验基础设施已闭环（harness -Sources/真实场景扩展/Key 终检
-    Sources 库面/互斥补齐，test 1243/1243）；在真实 Provider 补验通过前
-    不得在文档/报告/UI 中宣称第四阶段验收通过。
+    Sources 库面/互斥补齐，test 1243/1243）；第四阶段验收已通过，但阶段
+    切换仍须按 ROADMAP.md 阶段切换原则由用户指令执行，不得擅自进入
+    Fifth Stage。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
@@ -1378,7 +1400,7 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 1244 用例）
+  - `npm test` — Vitest 全量测试（当前 1255 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
