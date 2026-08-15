@@ -12,7 +12,7 @@ import type {
 } from '../../../shared/types/agent';
 import type { ProviderToolParameter } from '../../../shared/types/conversation';
 import type { SearchProvider } from '../search/search-provider';
-import type { SourceService } from '../../../shared/types/sources';
+import type { SourceService, SourceUsageContext } from '../../../shared/types/sources';
 import type { ConfirmSummary } from '../confirm-manager';
 
 // A3：参数级校验规则（校验器按工具定义逐参数应用；不进模型可见 schema）
@@ -84,4 +84,9 @@ export interface ToolExecutionContext {
   getElementSemantics?: (tabId: string | null, elementId: string) => ElementSemanticsBinding | null;
   // A3：工具实时采集的快照语义登记（read/find 成功时调用；A5 可由历史提取替换）
   recordSnapshot?: (tabId: string, snapshot: PageSnapshot) => void;
+  // B6（决议 #79/#81）：run 级 usage 桥（SourceSearchHintStore 关联，Q10）——source_search
+  // 成功登记结构化命中、browser_open 执行后比对写 usage（写入失败安全 no-op）、AgentLoop
+  // 终态 clearRun（取消/超时/终态后清空 hints，迟到工具结果零写入）。装配层每 run 创建；
+  // 未接线 → 零行为（不记录）。
+  sourceUsage?: SourceUsageContext;
 }

@@ -253,6 +253,25 @@ export type QuickAddResult =
 export type PrepareHardDeleteResult =
   { ok: true; token: string } | { ok: false; errorCode: SourceErrorCode };
 
+// B6（决议 #79/#81）：usage 接线的 run 级桥。SourceSearchHintStore 由装配层持有
+// （每 run 创建绑定 runId 的闭包）——模型/工具无任何通道指定 run 或伪造命中；
+// 命中只来自 source_search 成功后的结构化结果（禁止解析 ToolResult 文本）。
+export interface SourceUsageHit {
+  sourceId: string;
+  scope: SourceScope;
+  canonicalKey: string;
+}
+
+// ToolExecutionContext 最小扩展（仅一个可选字段）：recordSearchHits（source_search
+// executor 调用）、onBrowserOpen（browser_open executor 执行后调用，成功=true/
+// 执行失败=false；比对命中后写 usage，写入失败安全 no-op 不影响工具结果）、
+// clearRun（AgentLoop 终态调用——取消/超时/终态后清空 hints，迟到工具结果零写入）。
+export interface SourceUsageContext {
+  recordSearchHits(hits: readonly SourceUsageHit[]): void;
+  onBrowserOpen(url: string, ok: boolean): void;
+  clearRun(): void;
+}
+
 export interface SourceService {
   readonly id: string; // 'sources'
   // 检索（§8；audience 必填——决议 #58：agent 视角 blocked 不可见，user 视角可见可管理）

@@ -10,6 +10,14 @@ import { TOOL_BASE_RISK } from '../permission/permission-policy';
 import type { ToolExecutionContext } from './tool-types';
 import { BROWSER_TOOL_DEFINITIONS, serializeSnapshotForTool } from './browser-tools';
 
+// B6 桥回调纵深防御路径会 logWarn——单测环境避免向 CWD 写日志文件
+vi.mock('../../logger', () => ({
+  logDebug: () => {},
+  logInfo: () => {},
+  logWarn: () => {},
+  logError: () => {},
+}));
+
 function fakeBrowser(overrides: Partial<BrowserController> = {}): BrowserController {
   return {
     createTab: async () => ({
@@ -293,6 +301,72 @@ describe('browser_open / navigate / back / forward / reload', () => {
     expect(closed).toBe(false);
     expect(r.ok).toBe(true);
     expect(r.content).toContain('n-1');
+  });
+
+  // B6（决议 #79/#81）：browser_open 执行后经 ctx.sourceUsage.onBrowserOpen 比对
+  // 同一 run 的 source_search 命中（成功 → reachable、执行失败 → unreachable）；
+  // 回调异常绝不改变 ToolResult（usage 写入失败安全 no-op 契约）。
+  it('open 成功 → onBrowserOpen(url, true)；回调抛异常不影响结果', async () => {
+    const calls: Array<[string, boolean]> = [];
+    const browser = fakeBrowser();
+    const ctx = {
+      ...ctxFor(browser),
+      sourceUsage: {
+        recordSearchHits: () => {},
+        onBrowserOpen: (url: string, ok: boolean) => calls.push([url, ok]),
+        clearRun: () => {},
+      },
+    };
+    const r = await toolDef('browser_open').executor(
+      { id: 'c1', args: { url: 'https://example.com/' } },
+      ctx,
+      signal,
+    );
+    expect(calls).toEqual([['https://example.com/', true]]);
+    expect(r.ok).toBe(true);
+
+    // 回调异常（usage 写入失败形态）不得影响 open 结果
+    const throwingCtx = {
+      ...ctxFor(browser),
+      sourceUsage: {
+        recordSearchHits: () => {},
+        onBrowserOpen: () => {
+          throw new Error('usage 桥异常');
+        },
+        clearRun: () => {},
+      },
+    };
+    const r2 = await toolDef('browser_open').executor(
+      { id: 'c2', args: { url: 'https://example.com/' } },
+      throwingCtx,
+      signal,
+    );
+    expect(r2.ok).toBe(true);
+  });
+
+  it('open 执行失败（createTab 抛异常）→ onBrowserOpen(url, false) 且异常原样抛出（管线归一 execution-failed）', async () => {
+    const calls: Array<[string, boolean]> = [];
+    const browser = fakeBrowser({
+      createTab: async () => {
+        throw new Error('窗口已销毁');
+      },
+    });
+    const ctx = {
+      ...ctxFor(browser),
+      sourceUsage: {
+        recordSearchHits: () => {},
+        onBrowserOpen: (url: string, ok: boolean) => calls.push([url, ok]),
+        clearRun: () => {},
+      },
+    };
+    await expect(
+      toolDef('browser_open').executor(
+        { id: 'c1', args: { url: 'https://example.com/' } },
+        ctx,
+        signal,
+      ),
+    ).rejects.toThrow('窗口已销毁');
+    expect(calls).toEqual([['https://example.com/', false]]);
   });
 
   it('navigate：缺省 tabId 用活动 Tab；true → ok、false → execution-failed', async () => {

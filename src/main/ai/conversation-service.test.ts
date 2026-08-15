@@ -842,6 +842,7 @@ import type {
   AgentStepEvent,
 } from '../../shared/types/agent';
 import type { AuditEntry } from './audit-log';
+import type { SourceUsageContext } from '../../shared/types/sources';
 import { ConfirmManager } from './confirm-manager';
 import { registerTool, resetToolRegistry } from './tools/tool-registry';
 import type { ToolDefinition } from './tools/tool-types';
@@ -939,6 +940,7 @@ function makeAgentService(
     browser?: StubBrowser; // 会话上下文 SnapshotSource（goal 启动快照来源）
     agentBrowserOverride?: BrowserController; // Agent 运行时浏览器（工具执行通道）
     skipConfig?: boolean; // true = 不写配置（模拟 Provider 未配置）
+    usageBridge?: (runId: string) => SourceUsageContext; // B6（决议 #79/#81）
   } = {},
 ): AgentServiceFixture {
   const dir = join(baseDir, `case-agent-${Math.floor(Math.random() * 1e9)}`);
@@ -976,6 +978,7 @@ function makeAgentService(
       confirmManager: confirm,
       audit: (entry) => auditEntries.push(entry),
       limits: overrides.limits,
+      ...(overrides.usageBridge !== undefined ? { usageBridge: overrides.usageBridge } : {}),
     },
   });
   return {
@@ -1574,5 +1577,71 @@ describe('ConversationService — 共读路径 reasoning 事件忽略（A7 补�
     expect(turn.message.content).toBe('回答正文');
     expect(f.chunks.map((c) => c.delta).join('')).toBe('回答正文');
     expect(JSON.stringify(f.chunks)).not.toContain('这段思考不应出现在任何 UI 通道');
+  });
+});
+
+describe('ConversationService — B6 usageBridge 每 run 装配（决议 #79/#81）', () => {
+  it('usageBridge 按 run 创建（requestId 传入）+ run 终态后 bridge.clearRun 被调用（AgentLoop 终态清理）', async () => {
+    const createdFor: string[] = [];
+    const clears = vi.fn();
+    const contexts = new Map<string, SourceUsageContext>();
+    const f = makeAgentService({
+      usageBridge: (runId) => {
+        createdFor.push(runId);
+        const ctx: SourceUsageContext = {
+          recordSearchHits: () => {},
+          onBrowserOpen: () => {},
+          clearRun: clears,
+        };
+        contexts.set(runId, ctx);
+        return ctx;
+      },
+    });
+    f.setScript({
+      rounds: [
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [{ id: 'c1', name: 'browser_read', arguments: '{}' }],
+          },
+        ],
+        [{ text: '完成' }],
+      ],
+    });
+    const session = await f.service.createSession();
+    const { result, run } = await agentAskAndWait(f, session?.id ?? '', '任务');
+    expect(run.status).toBe('complete');
+    expect(result.ok).toBe(true);
+    expect(createdFor).toEqual([result.ok ? result.requestId : '']);
+    expect(contexts.size).toBe(1);
+    // 终态后清空（迟到工具结果不得写 usage）
+    expect(clears).toHaveBeenCalledTimes(1);
+  });
+
+  it('未装配 usageBridge → 零调用（既有行为零回归）', async () => {
+    const f = makeAgentService();
+    f.setScript({ rounds: [[{ text: '直接回答' }]] });
+    const session = await f.service.createSession();
+    const { run } = await agentAskAndWait(f, session?.id ?? '', '任务');
+    expect(run.status).toBe('complete');
+  });
+
+  it('连续两个 run 各自独立 bridge（跨 run 隔离的装配层证据）', async () => {
+    const createdFor: string[] = [];
+    const f = makeAgentService({
+      usageBridge: (runId) => {
+        createdFor.push(runId);
+        return { recordSearchHits: () => {}, onBrowserOpen: () => {}, clearRun: () => {} };
+      },
+    });
+    f.setScript({ rounds: [[{ text: '第一次' }]] });
+    const session = await f.service.createSession();
+    const first = await agentAskAndWait(f, session?.id ?? '', '任务甲');
+    f.setScript({ rounds: [[{ text: '第二次' }]] });
+    const second = await agentAskAndWait(f, session?.id ?? '', '任务乙');
+    expect(createdFor.length).toBe(2);
+    expect(createdFor[0]).not.toBe(createdFor[1]);
+    expect(first.result.requestId).toBe(createdFor[0]);
+    expect(second.result.requestId).toBe(createdFor[1]);
   });
 });

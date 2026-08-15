@@ -22,7 +22,7 @@ import type {
   ProviderToolCall,
 } from '../../../shared/types/conversation';
 import type { AgentRunStatus, ToolStep } from '../../../shared/types/agent';
-import type { SourceService } from '../../../shared/types/sources';
+import type { SourceService, SourceUsageContext } from '../../../shared/types/sources';
 import type { AuditEntry } from '../audit-log';
 import { summarizeRawArgs } from '../audit-log';
 import { ConfirmManager } from '../confirm-manager';
@@ -101,6 +101,7 @@ export interface AgentLoopOptions {
   browser: BrowserController; // ToolExecutionContext.browser（工具唯一浏览器通道）
   searchProvider?: SearchProvider; // ctx.searchProvider 注入点（A4 决议 #32⑥）
   sourceService?: SourceService; // ctx.sourceService 注入点（B4：Source 工具唯一通道）
+  sourceUsage?: SourceUsageContext; // B6：run 级 usage 桥（决议 #79/#81，装配层每 run 创建）
   audit: (entry: AuditEntry) => void; // 工具审计出口（ToolExecutor 恰好一条）
   limits?: Partial<AgentLoopLimits>;
   now?: () => number; // 时钟注入（ToolStep.createdAt 主进程盖章；测试确定性）
@@ -186,6 +187,8 @@ export class AgentLoop {
     this.terminal = { status, error };
     this.loopController.abort();
     this.options.confirmManager.cancelAll(this.options.requestId);
+    // B6（决议 #79/#81）：终态清空 hints（取消/超时/终态后迟到工具结果零 usage 写入）
+    this.options.sourceUsage?.clearRun();
     this.resolveTerminal?.();
     // A6：最终回答已生成（done 唯一触发），正在组装终态消息（确定性命中，非猜测）
     if (status === 'done') {
@@ -395,6 +398,9 @@ export class AgentLoop {
                   : {}),
                 ...(this.options.sourceService !== undefined
                   ? { sourceService: this.options.sourceService }
+                  : {}),
+                ...(this.options.sourceUsage !== undefined
+                  ? { sourceUsage: this.options.sourceUsage }
                   : {}),
                 getElementSemantics: (tabId, elementId) => this.semantics.lookup(tabId, elementId),
                 recordSnapshot: (tabId, snapshot) =>

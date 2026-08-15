@@ -29,17 +29,28 @@ import type { ToolDefinition, ToolExecutorFn } from '../../ai/tools/tool-types';
 // 决议 #58：四工具一律 agent 视角（主进程适配器硬编码；模型参数无 audience 通道）
 const AUDIENCE: SourceReadAudience = 'agent';
 
+// B6（决议 #83）：description 校准——说明 search/list→get→apply 的正确引用链路与
+// 自然语言管理语义（「不再优先」= 降低 priority，不等同 disable；仅明确禁用/恢复
+// 意图才用对应 op）。description 只描述能力与用法，不描述或改变权限（权限由
+// decide 确定性纯函数判定，AGENT_SYSTEM_PROMPT 不变）。
 export const SOURCE_TOOL_DESCRIPTIONS = {
   search:
     '搜索用户长期维护的信源库（本地检索，最多返回 10 条）。支持按名称/网址/标签/分组/备注关键词检索；' +
-    '返回条目不含版本号，备注仅在分享模式允许时出现。',
-  list: '分页列出信源库条目（每页最多 20 条）。不含备注正文与版本号。',
+    '返回条目含 ID（供 source_get/source_apply_changes 引用的唯一标识）与规范键/作用域；' +
+    '不含版本号，备注仅在分享模式允许时出现。搜索命中不会自动打开或修改信源——' +
+    '打开网页用 browser_open，修改需先 source_get 取得 expectedVersion 再 source_apply_changes。',
+  list: '分页列出信源库条目（每页最多 20 条）。条目含 ID 与分组 ID（按组过滤用）；不含备注正文与版本号。',
   get:
-    '按 ID 查看单个信源详情。返回 expectedVersion（变更时需携带的并发版本号）；' +
+    '按 ID 查看单个信源详情（ID 来自 source_search/source_list 条目）。' +
+    '返回 expectedVersion（提交 update/disable/restore 时需携带的并发版本号）；' +
     '无权限或受限条目视为不存在。',
   applyChanges:
     '批量变更信源（新增/修改/禁用/恢复，最多 20 项，需用户确认后单事务生效）。' +
-    'update/disable/restore 必须携带 source_get 返回的 expectedVersion；' +
+    '正确链路：先 source_search/source_list 取得条目 ID，必要时 source_get 取得 expectedVersion，再提交本工具。' +
+    'update/disable/restore 必须携带 expectedVersion。自然语言意图映射：' +
+    '「以后不再优先用某站」= 降低 priority（1–5，仅在检索排序同档内起作用），不是禁用；' +
+    '只有明确要求禁用/停止使用某信源时才用 disable op，明确要求恢复使用时才用 restore op。' +
+    '「标成官方」会把信任值设为 official，但来源仍标记为 AI 推断·未核验。' +
     '不能把分享模式设为 blocked，信任断言只能由 AI 提出（恒未核验）。',
 } as const;
 
@@ -100,8 +111,15 @@ function lastUsedLabel(lastUsedAt: string | null): string | null {
 }
 
 function appendListItem(lines: string[], item: SourceListItem | SourceSearchItem): void {
+  // B6（决议 #80）：§8.1 allowlist 的引用链路字段——ID 是模型引用条目的唯一标识
+  // （source_get/update/disable/restore 的 sourceId 来源）；规范键为规范化身份
+  // （fragment/默认端口等变体同身份）；groupId 供 source_list 按组过滤。
+  lines.push(`   ID：${item.id}`);
   lines.push(`   网址：${item.url}`);
+  lines.push(`   规范键：${item.canonicalKey}`);
+  lines.push(`   作用域：${item.scope === 'origin' ? '整个站点' : '具体页面'}`);
   if (item.groupName !== null) lines.push(`   分组：${item.groupName}`);
+  if (item.groupId !== null) lines.push(`   分组 ID：${item.groupId}`);
   if (item.tags.length > 0) lines.push(`   标签：${item.tags.join('，')}`);
   lines.push(`   优先级：${item.priority}`);
   lines.push(`   状态：${stateLabel(item.enabled)}`);
@@ -118,10 +136,14 @@ function appendListItem(lines: string[], item: SourceListItem | SourceSearchItem
 }
 
 function appendSourceView(lines: string[], source: SourceView): void {
+  // B6（决议 #80）：get 同样补齐 allowlist 引用链路字段（ID/规范键/分组 ID）
+  lines.push(`ID：${source.id}`);
   lines.push(`名称：${source.name}`);
   lines.push(`网址：${source.url}`);
+  lines.push(`规范键：${source.canonicalKey}`);
   lines.push(`作用域：${source.scope === 'origin' ? '整个站点' : '具体页面'}`);
   if (source.groupName !== null) lines.push(`分组：${source.groupName}`);
+  if (source.groupId !== null) lines.push(`分组 ID：${source.groupId}`);
   if (source.tags.length > 0) lines.push(`标签：${source.tags.join('，')}`);
   lines.push(`优先级：${source.priority}`);
   lines.push(`状态：${stateLabel(source.enabled)}`);
@@ -270,6 +292,11 @@ export function createSourceTools(sourceService: SourceService | null): ToolDefi
     if (!res.ok) {
       return sourceFailure(id, mapSourceError(res.errorCode), `搜索信源失败：${res.errorCode}`);
     }
+    // B6（决议 #79）：usage 关联只经结构化命中登记（id/scope/canonicalKey）——
+    // 禁止解析 ToolResult 文本建立关联；失败/空结果零登记（登记在 ok 之后）。
+    ctx.sourceUsage?.recordSearchHits(
+      res.results.map((r) => ({ sourceId: r.id, scope: r.scope, canonicalKey: r.canonicalKey })),
+    );
     return { toolCallId: id, ok: true, content: formatSourceSearchResults(res) };
   };
 

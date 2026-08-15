@@ -10,7 +10,11 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { openDb, type DbHandle } from '../db/sqlite-driver';
 import { runMigrations } from '../db/migrations';
 import { SourceServiceImpl } from '../source-service';
-import type { SourceService } from '../../../shared/types/sources';
+import type {
+  SourceService,
+  SourceUsageContext,
+  SourceUsageHit,
+} from '../../../shared/types/sources';
 import type { BrowserController } from '../../browser/browser-controller';
 import type { AuditEntry } from '../../ai/audit-log';
 import { resetToolRegistry, registerTool, validateToolArgs } from '../../ai/tools/tool-registry';
@@ -126,6 +130,7 @@ const exec = (
   args: string,
   sourceService: SourceService | undefined,
   runId = 'run-b4',
+  sourceUsage?: SourceUsageContext,
 ): Promise<ToolResult> =>
   executor.execute(
     { id, name, arguments: args },
@@ -133,6 +138,7 @@ const exec = (
       browser: fakeBrowser(),
       runId,
       ...(sourceService !== undefined ? { sourceService } : {}),
+      ...(sourceUsage !== undefined ? { sourceUsage } : {}),
     },
     new AbortController().signal,
   );
@@ -411,6 +417,77 @@ describe('B4 序列化 allowlist（§8.1 + 决议 #65）', () => {
     const text = formatSourceSearchResults({ ok: true, query: 'q', results: [] });
     expect(text).toContain('共 0 条信源');
   });
+
+  // B6（决议 #80）：§8.1 allowlist 要求 id/canonicalKey/groupId 进 search/list/get
+  // 序列化（模型执行 source_get/update/disable/restore 的引用链路——无 id 无法引用）。
+  it('search 结果含 ID/规范键/作用域/分组 ID（allowlist 引用链路）', async () => {
+    await addManual('https://example.com/idref', {
+      name: '引用站',
+      groupName: '引用组',
+    });
+    const res = await service.search('引用', { audience: 'agent' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const item = res.results.find((x) => x.name === '引用站');
+    expect(item).toBeDefined();
+    if (item === undefined) return;
+    const text = formatSourceSearchResults(res);
+    expect(text).toContain(`ID：${item.id}`);
+    expect(text).toContain(`规范键：${item.canonicalKey}`);
+    expect(text).toContain('作用域：具体页面');
+    expect(text).toContain('分组：引用组');
+    expect(text).toContain(`分组 ID：${item.groupId}`);
+    expect(text).not.toContain('expectedVersion');
+    expect(text).not.toContain('deletedAt');
+  });
+
+  it('list 结果含 ID/规范键/作用域/分组 ID；无分组条目无分组行', async () => {
+    const grouped = await addManual('https://example.com/lg', {
+      name: '分组条目',
+      groupName: '列表组',
+    });
+    const ungrouped = await addManual('https://example.com/lu', { name: '无组条目' });
+    const res = await service.list({ page: 0, pageSize: 20, audience: 'agent' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const text = formatSourceListItems(res);
+    expect(text).toContain(`ID：${grouped!.id}`);
+    expect(text).toContain('分组：列表组');
+    expect(text).toContain(`分组 ID：${grouped!.groupId}`);
+    expect(text).toContain(`规范键：${grouped!.canonicalKey}`);
+    expect(text).toContain(`ID：${ungrouped!.id}`);
+    expect(text).toContain('作用域：具体页面');
+    expect(text).not.toContain('expectedVersion');
+  });
+
+  it('get 详情含 ID/规范键/分组 ID（与 expectedVersion 令牌并存）', async () => {
+    const s = await addManual('https://example.com/gid', {
+      name: '详情引用',
+      groupName: '详情组',
+    });
+    const res = await service.get(s!.id, 'agent');
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const text = formatSourceDetail(res);
+    expect(text).toContain(`ID：${s!.id}`);
+    expect(text).toContain(`规范键：${s!.canonicalKey}`);
+    expect(text).toContain('分组：详情组');
+    expect(text).toContain(`分组 ID：${s!.groupId}`);
+    expect(text).toContain('expectedVersion：1');
+    expect(text).not.toContain('version：');
+    expect(text).not.toContain('deletedAt');
+  });
+
+  it('origin 作用域条目：作用域标注「整个站点」', async () => {
+    await addManual('https://example.com/', {
+      name: '整站',
+      scope: 'origin',
+    });
+    const res = await service.search('整站', { audience: 'agent' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(formatSourceSearchResults(res)).toContain('作用域：整个站点');
+  });
 });
 
 describe('B4 executor 集成（真实 node:sqlite，audience 硬编码 agent）', () => {
@@ -458,6 +535,59 @@ describe('B4 executor 集成（真实 node:sqlite，audience 硬编码 agent）'
     expect(hit.content).not.toContain('隐藏站');
     expect(hit.content.length).toBeLessThanOrEqual(4000);
     void blocked;
+  });
+
+  // B6（决议 #79/#81）：source_search 成功后从结构化结果登记 usage hints
+  // （id/scope/canonicalKey；禁止解析 ToolResult 文本建立关联）。
+  it('source_search 成功 → ctx.sourceUsage.recordSearchHits 收到结构化命中', async () => {
+    const hits: SourceUsageHit[] = [];
+    const usage: SourceUsageContext = {
+      recordSearchHits: (h) => hits.push(...h),
+      onBrowserOpen: () => {},
+      clearRun: () => {},
+    };
+    const s = await addManual('https://example.com/hint', { name: '命中站' });
+    const res = await exec(
+      executor,
+      't4h',
+      'source_search',
+      '{"query":"命中"}',
+      service,
+      'run-b4',
+      usage,
+    );
+    expect(res.ok).toBe(true);
+    expect(hits).toEqual([{ sourceId: s!.id, scope: s!.scope, canonicalKey: s!.canonicalKey }]);
+  });
+
+  it('source_search 失败/空结果 → 不登记；其他三工具不登记（仅 search 是 hint 来源）', async () => {
+    const hits: SourceUsageHit[] = [];
+    const usage: SourceUsageContext = {
+      recordSearchHits: (h) => hits.push(...h),
+      onBrowserOpen: () => {},
+      clearRun: () => {},
+    };
+    // 空结果（无命中）
+    const empty = await exec(
+      executor,
+      't4e1',
+      'source_search',
+      '{"query":"绝不存在的词"}',
+      service,
+      'run-b4',
+      usage,
+    );
+    expect(empty.ok).toBe(true);
+    expect(hits).toEqual([]);
+    // 失败路径（invalid-args）
+    await exec(executor, 't4e2', 'source_search', '{"query":""}', service, 'run-b4', usage);
+    expect(hits).toEqual([]);
+    // list/get 不登记
+    await exec(executor, 't4e3', 'source_list', '{"page":0}', service, 'run-b4', usage);
+    expect(hits).toEqual([]);
+    const s = await addManual('https://example.com/hint2', { name: '命中站二' });
+    await exec(executor, 't4e4', 'source_get', `{"sourceId":"${s!.id}"}`, service, 'run-b4', usage);
+    expect(hits).toEqual([]);
   });
 
   it('source_get：非 UUID invalid-args；未知 not-found；blocked 视同不存在；metadata 零 note 字节', async () => {

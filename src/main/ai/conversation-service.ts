@@ -60,7 +60,7 @@ import {
 import { AGENT_LOOP_LIMITS, AgentLoop, type AgentLoopLimits } from './agent/agent-loop';
 import type { ConfirmManager } from './confirm-manager';
 import type { SearchProvider } from './search/search-provider';
-import type { SourceService } from '../../shared/types/sources';
+import type { SourceService, SourceUsageContext } from '../../shared/types/sources';
 import { listTools } from './tools/tool-registry';
 
 // v1 单 Provider 选择契约（决议 #20，§6.1）：返回 providerId 属于已注册工厂 kind 的
@@ -93,6 +93,10 @@ export interface AgentRuntimeOptions {
   confirmManager: ConfirmManager;
   searchProvider?: SearchProvider;
   sourceService?: SourceService; // B4：ctx.sourceService 注入点（Source 工具唯一通道）
+  // B6（决议 #79/#81）：run 级 usage 桥工厂（装配层注入——index.ts 传
+  // SourceUsageTracker.bridge 绑定；每个 agentAsk 以 requestId 创建独立桥，
+  // AgentLoop 终态调用其 clearRun；未装配 → 零行为）
+  usageBridge?: (runId: string) => SourceUsageContext;
   audit: (entry: AuditEntry) => void; // 工具审计出口（每次调用恰好一条由 ToolExecutor 保证）
   auditRun?: (message: string) => void; // run 开始/终止条目（§10.1）
   limits?: Partial<AgentLoopLimits>; // 冒烟/测试注入（生产用默认 12 步/420s）
@@ -679,6 +683,9 @@ export class ConversationServiceImpl implements ConversationService {
       );
 
       // 7. AgentLoop 运行（纯核心状态机；ToolStep 逐步持久化 + 事件转发）
+      //    B6（决议 #79/#81）：每 run 独立 usage 桥（SourceSearchHintStore 关联）——
+      //    AgentLoop 终态（含取消/超时）调用其 clearRun，迟到工具结果零写入。
+      const runUsage = agent.usageBridge?.(requestId);
       const loop = new AgentLoop({
         requestId,
         model: config?.model ?? '',
@@ -690,6 +697,7 @@ export class ConversationServiceImpl implements ConversationService {
         browser: agent.browser,
         ...(agent.searchProvider !== undefined ? { searchProvider: agent.searchProvider } : {}),
         ...(agent.sourceService !== undefined ? { sourceService: agent.sourceService } : {}),
+        ...(runUsage !== undefined ? { sourceUsage: runUsage } : {}),
         audit: agent.audit,
         limits: agent.limits,
         callbacks: {

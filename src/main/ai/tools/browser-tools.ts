@@ -5,6 +5,7 @@
 // （false/null）安全映射为 execution-failed（管线层归一，不抛异常）。
 import type { PageSnapshot, TabInfo } from '../../../shared/types/browser';
 import { TRUNCATION_MARK } from '../context-budget';
+import { logWarn } from '../../logger';
 import { READ_TOOL_CONTENT_MAX } from './tool-executor';
 import type { ToolDefinition, ToolExecutorFn, ToolExecutionContext } from './tool-types';
 
@@ -138,10 +139,35 @@ const read: ToolExecutorFn = async ({ id, args }, ctx) => {
 
 const open: ToolExecutorFn = async ({ id, args }, ctx) => {
   const url = String(args.url); // 校验已保证 string；scheme 已由权限层 gate（L3）
-  const tab = await ctx.browser.createTab(url);
-  // 任务 Tab 保留（用户可见结果），由用户关闭（决议 #11/#28）
-  return ok(id, `已打开新标签页：${tabLine(tab)}`);
+  // B6（决议 #79/#81）：执行后经 ctx.sourceUsage.onBrowserOpen 与同一 run 的
+  // source_search 结构化命中比对写 usage（成功 → reachable、执行失败 → unreachable）。
+  // 无关 URL/先 open 后 search/跨 run/终态后（hints 已清空）→ 零写入；桥内部对
+  // 写入失败安全 no-op——本回调绝不改变 ToolResult（Task Tab 保留语义不变）。
+  try {
+    const tab = await ctx.browser.createTab(url);
+    notifyOpen(ctx, id, url, true);
+    // 任务 Tab 保留（用户可见结果），由用户关闭（决议 #11/#28）
+    return ok(id, `已打开新标签页：${tabLine(tab)}`);
+  } catch (err) {
+    notifyOpen(ctx, id, url, false);
+    throw err; // 管线归一 execution-failed（审计恰好一条保持）
+  }
 };
+
+// B6（决议 #79/#81）：usage 比对回调的纵深防御——桥契约本身不抛异常（写入失败在
+// tracker 内部安全 no-op），此处再兜底：即使装配异常也不得改变 browser_open 的
+// ToolResult/权限/Agent 终态（脱敏告警仅含 toolCallId，无 URL/note/query）。
+function notifyOpen(ctx: ToolExecutionContext, toolCallId: string, url: string, ok: boolean): void {
+  try {
+    ctx.sourceUsage?.onBrowserOpen(url, ok);
+  } catch (err) {
+    logWarn(
+      'browser-tools',
+      `sourceUsage 回调异常（已忽略，不影响工具结果；toolCallId=${toolCallId}）`,
+      err,
+    );
+  }
+}
 
 const navigate: ToolExecutorFn = async ({ id, args }, ctx) => {
   const tabId = await resolveTabId(args, ctx);

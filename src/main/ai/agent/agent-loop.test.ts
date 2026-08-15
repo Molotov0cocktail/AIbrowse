@@ -11,6 +11,7 @@ import type {
   ProviderToolCall,
 } from '../../../shared/types/conversation';
 import type { ToolStep } from '../../../shared/types/agent';
+import type { SourceUsageContext } from '../../../shared/types/sources';
 import type { AuditEntry } from '../audit-log';
 import type { BrowserController } from '../../browser/browser-controller';
 import { ConfirmManager } from '../confirm-manager';
@@ -236,6 +237,7 @@ function makeFixture(
     limits?: Partial<AgentLoopLimits>;
     tools?: ProviderTool[];
     browser?: BrowserController;
+    sourceUsage?: SourceUsageContext;
   } = {},
 ): LoopFixture {
   const provider = options.provider ?? new FakeProvider(options.script ?? {});
@@ -259,6 +261,7 @@ function makeFixture(
     audit: (entry) => auditEntries.push(entry),
     now: () => NOW,
     limits: options.limits,
+    ...(options.sourceUsage !== undefined ? { sourceUsage: options.sourceUsage } : {}),
     callbacks: {
       onStreamChunk: (delta) => deltas.push(delta),
       onAgentStep: (e) => {
@@ -1200,5 +1203,146 @@ describe('verifyReasoningReplay — reasoning_content 回传内容相等校验�
 
   it('顺序错位 → false', () => {
     expect(verifyReasoningReplay(['思考甲', '思考乙'], ['思考乙', '思考甲'])).toBe(false);
+  });
+});
+
+describe('B6 sourceUsage 桥（决议 #79/#81：run 级 hints 装配透传 + 终态清空）', () => {
+  function usageSpy(): { context: SourceUsageContext; clearRun: ReturnType<typeof vi.fn> } {
+    const clearRun = vi.fn();
+    const context: SourceUsageContext = {
+      recordSearchHits: () => {},
+      onBrowserOpen: () => {},
+      clearRun,
+    };
+    return { context, clearRun };
+  }
+
+  it('ctx 透传：executor 收到的 ctx.sourceUsage 为装配实例', async () => {
+    let seen: unknown = null;
+    const probe: ToolDefinition = {
+      // 真实工具名（权限矩阵 TOOL_BASE_RISK 判定生效——探针名不可走 L3 拒绝路径）
+      name: 'browser_read',
+      description: '探针',
+      parameters: { properties: {}, required: [] },
+      baseRisk: 0,
+      executor: async ({ id }, ctx) => {
+        seen = ctx.sourceUsage ?? null;
+        return { toolCallId: id, ok: true, content: 'ok' };
+      },
+    };
+    resetToolRegistry();
+    registerTool(probe);
+    const usage = usageSpy();
+    const f = makeFixture({
+      script: {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [{ id: 'c1', name: 'browser_read', arguments: '{}' }],
+            },
+          ],
+          [{ text: '完成' }],
+        ],
+      },
+      tools: [toProviderTool(probe)],
+      sourceUsage: usage.context,
+    });
+    const res = await f.loop.run(f.runSignal.signal);
+    expect(res.status).toBe('done');
+    expect(seen).toBe(usage.context);
+  });
+
+  it('终态（done）→ clearRun 恰好一次', async () => {
+    const usage = usageSpy();
+    const f = makeFixture({
+      script: { rounds: [[{ text: '直接回答' }]] },
+      sourceUsage: usage.context,
+    });
+    const res = await f.loop.run(f.runSignal.signal);
+    expect(res.status).toBe('done');
+    expect(usage.clearRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('终态（cancelled）→ clearRun 恰好一次', async () => {
+    const usage = usageSpy();
+    const f = makeFixture({
+      // 首块立即可达（取消时机锚点）；第二块 60s 延迟（慢流中止点）
+      script: { chunks: [{ text: '首块' }, { text: '慢', delayMs: 60_000 }] },
+      sourceUsage: usage.context,
+    });
+    const runPromise = f.loop.run(f.runSignal.signal);
+    await vi.waitFor(() => {
+      expect(f.deltas.length).toBeGreaterThan(0);
+    });
+    f.runSignal.abort();
+    const res = await runPromise;
+    expect(res.status).toBe('cancelled');
+    expect(usage.clearRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('终态（timeout）→ clearRun 恰好一次', async () => {
+    const usage = usageSpy();
+    const f = makeFixture({
+      script: { chunks: [{ text: '慢', delayMs: 60_000 }] },
+      limits: { totalTimeoutMs: 20, maxSteps: 12 },
+      sourceUsage: usage.context,
+    });
+    const res = await f.loop.run(f.runSignal.signal);
+    expect(res.status).toBe('timeout');
+    expect(usage.clearRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('终态后迟到工具结果的 usage 回调发生在 clearRun 之后（hints 已清空，零写入）', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const events: string[] = [];
+    const probe: ToolDefinition = {
+      // 真实工具名（权限矩阵判定生效；探针名走 L3 拒绝路径则 executor 不执行）
+      name: 'browser_read',
+      description: '慢工具',
+      parameters: { properties: {}, required: [] },
+      baseRisk: 0,
+      executor: async ({ id }, ctx) => {
+        await gate; // 终态后才返回（迟到结果）
+        ctx.sourceUsage?.onBrowserOpen('https://example.com/x', true);
+        events.push('late-callback');
+        return { toolCallId: id, ok: true, content: 'ok' };
+      },
+    };
+    resetToolRegistry();
+    registerTool(probe);
+    const usage: SourceUsageContext = {
+      recordSearchHits: () => {},
+      onBrowserOpen: () => {},
+      clearRun: () => events.push('clearRun'),
+    };
+    const f = makeFixture({
+      script: {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [{ id: 'c1', name: 'browser_read', arguments: '{}' }],
+            },
+          ],
+        ],
+      },
+      tools: [toProviderTool(probe)],
+      sourceUsage: usage,
+    });
+    const runPromise = f.loop.run(f.runSignal.signal);
+    await vi.waitFor(() => {
+      expect(f.statuses.some((s) => s.phase === 'executing')).toBe(true);
+    });
+    f.runSignal.abort();
+    const res = await runPromise;
+    expect(res.status).toBe('cancelled');
+    release();
+    await gate;
+    await new Promise((resolve) => setTimeout(resolve, 0)); // 迟到回调微任务冲刷
+    expect(events).toEqual(['clearRun', 'late-callback']);
   });
 });
