@@ -94,7 +94,7 @@ export type ResearchPhase =
   | 'synthesizing'; // 综合与 Result 生成
 
 export type ResearchErrorCode =
-  | 'research-invalid-goal' // goal 空/超长/非串
+  | 'research-invalid-goal' // goal 空/非串（超长确定性截断 + warn，决议 #107）
   | 'research-busy' // 单 running 任务互斥
   | 'research-not-found' // 任务不存在
   | 'research-invalid-state' // 状态不允许该操作
@@ -102,11 +102,13 @@ export type ResearchErrorCode =
   | 'research-sources-unavailable' // Sources 库非 normal 态拒绝启动
   | 'research-provider-unavailable' // Provider 未配置/不支持
   | 'research-budget-exhausted' // 任一确定性预算用尽（正式终态）
+  | 'research-timeout' // 总超时独立错误码（决议 #108：不以 research-internal 含混代替）
+  | 'research-task-limit' // 任务总数达上限且无可清理终态（决议 #104：新建拒绝）
   | 'research-internal';
 
 export interface ResearchTask {
   id: string; // UUID（主进程生成）
-  goal: string; // ≤2000 字符（确定性截断 + warn）
+  goal: string; // ≤MAX_GOAL_CHARS(2000) 字符（非串/空拒绝；超长确定性截断 + warn，决议 #107）
   status: ResearchTaskStatus;
   phase: ResearchPhase | null; // running 时的子相位
   createdAt: string; // ISO 8601
@@ -212,7 +214,9 @@ export interface Evidence {
   excerpt: string; // 受控 excerpt/字段值：≤ MAX_EVIDENCE_EXCERPT_CHARS（500），
   // 规范化后来自捕获内容（验证结果）
   value: string | null; // table-cell/field 的单元格/字段值（≤200）
-  verification: EvidenceVerification;
+  verification: EvidenceVerification; // 运行期判别联合：'rejected' 仅回注模型修正，
+  // 永不进 Evidence 集合与 research.db（决议 #102：Repository 写入仅接受
+  // verified 窄类型 + schema CHECK 兜底）
 }
 
 // ---------- Cross-check（C6） ----------
@@ -291,32 +295,58 @@ export interface ResearchResult {
 ```
 
 字段红线：所有字符串按既有 sanitize 家族规则剔除控制字符/bidi（模型/网页文本
-视为不可信输入）；`goal` ≤2000；Evidence.excerpt ≤500；单元格/字段值 ≤200；
-Result 总字符 ≤ MAX_RESULT_CHARS（200k）；禁止字段：任意 HTML/CSS/JS 形态、
-raw URL 之外的协议、百分比型「可信度」数值（Fifth §5）。
+视为不可信输入）；`goal` ≤ MAX_GOAL_CHARS（2000）；Evidence.excerpt ≤
+MAX_EVIDENCE_EXCERPT_CHARS（500）；单元格/字段值 ≤
+MAX_EVIDENCE_FIELD_VALUE_CHARS（200）；Result 总字符 ≤ MAX_RESULT_CHARS
+（200k）；禁止字段：任意 HTML/CSS/JS 形态、raw URL 之外的协议、百分比型
+「可信度」数值（Fifth §5）。**常量单一事实源（决议 #110）**：§2 全部数值
+上限与 §6.8 全表集中在 `shared/types/research.ts`——候选 title/note ≤
+MAX_CANDIDATE_TITLE_CHARS/MAX_CANDIDATE_NOTE_CHARS（200）、Claim.text ≤
+MAX_CLAIM_TEXT_CHARS（500）、冲突 topic ≤ MAX_CONFLICT_TOPIC_CHARS（200）、
+positionText ≤ MAX_CONFLICT_POSITION_CHARS（300）、Result title ≤
+MAX_RESULT_TITLE_CHARS（120）、summary ≤ MAX_RESULT_SUMMARY_CHARS（2000）、
+Markdown 块 ≤ MAX_MARKDOWN_BLOCK_CHARS（4000）、表格单元格 ≤
+MAX_TABLE_CELL_CHARS（200）、cards title ≤ MAX_CARDS_TITLE_CHARS（120）/
+body ≤ MAX_CARDS_BODY_CHARS（1000）、ranking title ≤ MAX_RANKING_TITLE_CHARS
+（120）/detail ≤ MAX_RANKING_DETAIL_CHARS（1000）、uncertain text/reason ≤
+MAX_UNCERTAIN_TEXT_CHARS（1000）、field 路径 ≤
+MAX_EVIDENCE_LOCATOR_FIELD_PATH_CHARS（200）；实现与测试禁止魔法数字。
 
 ## 3. 研究任务状态机（C1 纯函数）
 
 ### 3.1 状态迁移表
 
-| 当前状态                             | 事件                                            | 下一状态    | 说明                                                                                       |
-| ------------------------------------ | ----------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------ |
-| created                              | start                                           | running     | 前置：单 running 互斥 + Sources 库 normal 态 + Provider 已配置；记录 startedAt             |
-| running                              | phase → planning/reading/verifying/synthesizing | running     | 子相位随阶段推进（phase 字段，非状态膨胀）                                                 |
-| running                              | finish(done)                                    | completed   | Result 持久化成功后唯一成功终态；记录 finishedAt/resultId                                  |
-| running                              | finish(error)                                   | failed      | 致命错误终态（provider/sources/internal）；已收集 Evidence 保留；errorCode 记录            |
-| running                              | finish(budget)                                  | failed      | 任一确定性预算用尽 = 正式终态（errorCode=research-budget-exhausted）；已收集 Evidence 保留 |
-| running                              | stop                                            | cancelled   | 用户停止；部分数据保留、无最终 Result；Workspace 清理只关本任务 Tab                        |
-| running                              | process-exit                                    | interrupted | 启动装配时对「上次进程遗留 running」任务执行（不自动续跑）                                 |
-| interrupted                          | start（用户重新开始）                           | running     | 以同 goal 重新开始（新 run；旧 Evidence/captures 标记废弃）                                |
-| created/cancelled/failed/interrupted | start                                           | running     | 同 interrupted 语义（重新开始 = 新 run）                                                   |
-| completed                            | delete                                          | （删除）    | 删除任务记录（含 evidence/claims/result 行）                                               |
-| 任意终态                             | —                                               | —           | 终态不可变（finish() 单一所有权守卫；迟到事件/写入忽略——A5 决议 #33 模式）                 |
+| 当前状态                             | 事件                                            | 下一状态    | 说明                                                                                                                  |
+| ------------------------------------ | ----------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| created                              | start                                           | running     | 前置：单 running 互斥 + Sources 库 normal 态 + Provider 已配置；记录 startedAt                                        |
+| running                              | phase → planning/reading/verifying/synthesizing | running     | 子相位随阶段推进（phase 字段，非状态膨胀）                                                                            |
+| running                              | finish(done)                                    | completed   | Result 持久化成功后唯一成功终态；记录 finishedAt/resultId                                                             |
+| running                              | finish(error)                                   | failed      | 致命错误终态（provider/sources/internal/timeout）；已收集 Evidence 保留；errorCode 记录                               |
+| running                              | finish(budget)                                  | failed      | 任一确定性预算用尽 = 正式终态（errorCode=research-budget-exhausted）；已收集 Evidence 保留                            |
+| running                              | stop                                            | cancelled   | 用户停止；部分数据保留、无最终 Result；Workspace 清理只关本任务 Tab                                                   |
+| running                              | process-exit                                    | interrupted | 启动装配时对「上次进程遗留 running」任务执行（不自动续跑）                                                            |
+| interrupted                          | start（用户重新开始）                           | running     | 以同 goal 重新开始（新 run；旧 run 数据原子清理——决议 #106）                                                          |
+| created/cancelled/failed/interrupted | start                                           | running     | 同 interrupted 语义（重新开始 = 新 run）；**completed 不可 start**（决议 #105：Result 已持久化，重新研究 = 新建任务） |
+| completed                            | delete                                          | （删除）    | 删除任务记录（含 evidence/claims/result 行）                                                                          |
+| 任意终态                             | —                                               | —           | 终态不可变（finish() 单一所有权守卫；迟到事件/写入忽略——A5 决议 #33 模式；start 为唯一例外）                          |
 
-- **start 前置校验（确定性，缺一即拒绝）**：goal 非空且 ≤2000；无其他 running
-  任务（research-busy）；Sources 库 state=mode normal（research-sources-
-  unavailable）；Provider 已配置且 supportsToolCalling（research-provider-
-  unavailable）。校验失败不改变任务状态（保持 created/interrupted 可重试）。
+- **start 前置校验（确定性，缺一即拒绝）**：goal 非空（create 时已截断 ≤2000）；
+  无其他 running 任务（research-busy）；Sources 库 state=mode normal
+  （research-sources-unavailable）；Provider 已配置且 supportsToolCalling
+  （research-provider-unavailable）。校验失败不改变任务状态（保持
+  created/interrupted 可重试）。C1 以可注入状态查询实现（缺省就绪；C5 接线
+  真实查询——决议 #107）。
+- **delete 合法矩阵（决议 #105）**：created/completed/failed/cancelled/
+  interrupted 可删除（CASCADE 清全部子行）；running 拒绝
+  （research-invalid-state——§11 IPC research:delete「仅终态任务；running
+  拒绝」与 §2「created 可删除」合并语义）；不存在 → research-not-found。
+- **restart 原子清理（决议 #106）**：start 在 cancelled/failed/interrupted
+  任务上触发时，Service 层在**单事务内**删除本任务全部旧 run 行
+  （candidates/captures/evidence/claims/conflicts/result）并重置
+  stats 全零/resultId=null/errorCode=null/finishedAt=null/
+  interruptedAt=null/phase='planning'/startedAt=now/updatedAt=now——
+  「标记废弃」以删除实现，防跨 run 混用（FT-09/15）；created 首次 start
+  无旧数据仅状态迁移。
 - **interrupted 持久化**：ResearchRuntime 每进入新阶段前将任务心跳
   （status=running + phase + updatedAt）落库；启动装配（research-store）
   发现遗留 running 任务 → 标 interrupted（interruptedAt=now，phase 置 null）。
@@ -326,18 +356,21 @@ raw URL 之外的协议、百分比型「可信度」数值（Fifth §5）。
 
 ```ts
 export type ResearchTaskEvent =
-  | { kind: 'start' }
-  | { kind: 'phase'; phase: ResearchPhase }
-  | { kind: 'finish-done'; resultId: string }
-  | { kind: 'finish-error'; errorCode: ResearchErrorCode }
-  | { kind: 'finish-budget' }
-  | { kind: 'stop' }
+  | { kind: 'start'; now: string } // 决议 #105：全部事件统一携带 now（ISO 8601，
+  | { kind: 'phase'; phase: ResearchPhase; now: string } //   调用方时钟注入——纯函数确定性；
+  | { kind: 'finish-done'; resultId: string; now: string } //   resultId 非空校验）
+  | { kind: 'finish-error'; errorCode: ResearchErrorCode; now: string }
+  | { kind: 'finish-budget'; now: string }
+  | { kind: 'stop'; now: string }
   | { kind: 'mark-interrupted'; now: string };
 
 export function transitionTask(task: ResearchTask, event: ResearchTaskEvent): ResearchTask;
-// 纯函数：未知/非法事件安全返回原任务副本（不抛异常）；终态后任何事件零变化
-// （单一所有权）；start 在 created/cancelled/failed/interrupted 上合法，
-// 在 running/completed 上零变化（互斥前置在 Service 层校验并回注错误码）。
+// 纯函数：未知/非法事件（含非法 resultId/errorCode/now 形状）安全返回原任务副本
+// （不抛异常）；终态（completed/failed/cancelled/interrupted）后除 start 外任何
+// 事件零变化（单一所有权）；start 在 created/cancelled/failed/interrupted 上合法
+// （→ running + phase='planning'），在 running/completed 上零变化（互斥前置在
+// Service 层校验并回注错误码）。start 状态迁移只改任务行；旧 run 数据原子清理
+// 由 Service 层事务完成（决议 #106）。
 ```
 
 ## 4. 候选来源合并与排序（C3 纯函数，source-selector.ts）
@@ -470,10 +503,9 @@ run(taskId, goal):
 
 - `RESEARCH_TOTAL_TIMEOUT_MS = 1_800_000`（30 分钟，含确认等待——Research
   v1 无 L2 确认工具，但 browser_open L1 展示与 Provider 等待计入）。
-- 超时 → failed（research-budget-exhausted？不——超时为独立错误码
-  `research-internal` + 理由 timeout；§6.8 预算表另有轮次/步数预算）。
-  修正：超时 → failed，errorCode='research-internal'，TaskStats 记录
-  （timeout 理由进日志与任务 errorCode 文案，不虚构）。
+- 超时 → failed，errorCode=**'research-timeout'**（决议 #108：独立错误码，
+  不以 research-internal 含混代替无法展示的原因；errorCode 文案在
+  research-errors.ts 单一事实源；timeout 理由进日志，不虚构）。
 
 ### 6.7 页面变化/陈旧
 
@@ -485,36 +517,46 @@ run(taskId, goal):
 
 ### 6.8 确定性预算（D12 全表；编译期常量 + 可注入 + 测试断言）
 
-| 常量                                | 值       | 语义                                                                                                                   |
-| ----------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------- |
-| MAX_GOAL_CHARS                      | 2000     | goal 截断上限                                                                                                          |
-| MAX_SOURCE_CANDIDATES               | 24       | 合并后候选上限（Sources ≤10 + Search ≤10 + 溢出裁剪）                                                                  |
-| MAX_SELECTED_SOURCES                | 8        | 选定来源上限                                                                                                           |
-| MAX_RESEARCH_TABS                   | 3        | 同任务同时打开的 task Tab 上限（v1 串行读取实际 1 个，上限为纵深防御）                                                 |
-| MAX_PAGE_CAPTURE_CHARS              | 60000    | 单页规范化正文预算（确定性截断 + summary.charCount）                                                                   |
-| MAX_PAGE_READ_RETRIES               | 1        | 同候选读取失败重试上限（最多 2 次尝试）                                                                                |
-| MAX_CAPTURES_PER_TASK               | 16       | 8 候选 × 2 尝试的捕获记录上限                                                                                          |
-| MAX_EVIDENCE_EXCERPT_CHARS          | 500      | 单条 Evidence excerpt 上限                                                                                             |
-| MAX_EVIDENCE_FIELD_VALUE_CHARS      | 200      | 单元格/字段值上限                                                                                                      |
-| MAX_EVIDENCE_PER_TASK               | 60       | 任务 Evidence 总数上限（超出拒绝新提案）                                                                               |
-| MAX_CLAIMS_PER_TASK                 | 30       | claims 总数上限                                                                                                        |
-| MAX_CONFLICTS_PER_TASK              | 10       | 冲突数上限                                                                                                             |
-| MAX_RESEARCH_ROUNDS                 | 24       | 模型轮次上限（规划 2 + 读取 8 + 核验 4 + 综合 3 + 修正余量 7）                                                         |
-| MAX_RESEARCH_TOOL_STEPS             | 64       | 工具步数上限（read/open/search 计数；不注册新工具，计数语义为 Runtime 内部审计口径）                                   |
-| RESEARCH_TOTAL_TIMEOUT_MS           | 1800000  | 总时长上限（30 分钟，含等待）                                                                                          |
-| MAX_REQUEST_CONTEXT_CHARS           | 200000   | 单轮请求上下文字符预算（含 UNTRUSTED 块回注）                                                                          |
-| MAX_TRANSCRIPT_REPLAY_ROUNDS        | 6        | transcript 回放最近轮数（更早轮压缩为摘要行）                                                                          |
-| MAX_RESULT_CHARS                    | 200000   | Result JSON 总字符                                                                                                     |
-| MAX_RESULT_BLOCKS                   | 20       | Result 块数                                                                                                            |
-| MAX_TABLE_ROWS / MAX_TABLE_COLUMNS  | 200 / 20 | Table 块行列界（Renderer 与 Validator 同源常量）                                                                       |
-| MAX_CARDS_ITEMS / MAX_RANKING_ITEMS | 20 / 20  | Cards/Ranking 条目界                                                                                                   |
-| MAX_TASK_PERSISTED_CHARS            | 500000   | 单任务持久化总预算（元数据+evidence+claims+result 序列化后）                                                           |
-| MAX_STORED_TASKS                    | 30       | 保留任务数（completed/failed/cancelled/interrupted 合计；超限清理最旧——created 除外；被清理任务不可再看详情，UI 明示） |
+| 常量                                | 值       | 语义                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MAX_GOAL_CHARS                      | 2000     | goal 截断上限                                                                                                                                                                                                                                                                                                                                                                          |
+| MAX_SOURCE_CANDIDATES               | 24       | 合并后候选上限（Sources ≤10 + Search ≤10 + 溢出裁剪）                                                                                                                                                                                                                                                                                                                                  |
+| MAX_SELECTED_SOURCES                | 8        | 选定来源上限                                                                                                                                                                                                                                                                                                                                                                           |
+| MAX_RESEARCH_TABS                   | 3        | 同任务同时打开的 task Tab 上限（v1 串行读取实际 1 个，上限为纵深防御）                                                                                                                                                                                                                                                                                                                 |
+| MAX_PAGE_CAPTURE_CHARS              | 60000    | 单页规范化正文预算（确定性截断 + summary.charCount）                                                                                                                                                                                                                                                                                                                                   |
+| MAX_PAGE_READ_RETRIES               | 1        | 同候选读取失败重试上限（最多 2 次尝试）                                                                                                                                                                                                                                                                                                                                                |
+| MAX_CAPTURES_PER_TASK               | 16       | 8 候选 × 2 尝试的捕获记录上限                                                                                                                                                                                                                                                                                                                                                          |
+| MAX_EVIDENCE_EXCERPT_CHARS          | 500      | 单条 Evidence excerpt 上限                                                                                                                                                                                                                                                                                                                                                             |
+| MAX_EVIDENCE_FIELD_VALUE_CHARS      | 200      | 单元格/字段值上限                                                                                                                                                                                                                                                                                                                                                                      |
+| MAX_EVIDENCE_PER_TASK               | 60       | 任务 Evidence 总数上限（超出拒绝新提案）                                                                                                                                                                                                                                                                                                                                               |
+| MAX_CLAIMS_PER_TASK                 | 30       | claims 总数上限                                                                                                                                                                                                                                                                                                                                                                        |
+| MAX_CONFLICTS_PER_TASK              | 10       | 冲突数上限                                                                                                                                                                                                                                                                                                                                                                             |
+| MAX_RESEARCH_ROUNDS                 | 24       | 模型轮次上限（规划 2 + 读取 8 + 核验 4 + 综合 3 + 修正余量 7）                                                                                                                                                                                                                                                                                                                         |
+| MAX_RESEARCH_TOOL_STEPS             | 64       | 工具步数上限（read/open/search 计数；不注册新工具，计数语义为 Runtime 内部审计口径）                                                                                                                                                                                                                                                                                                   |
+| RESEARCH_TOTAL_TIMEOUT_MS           | 1800000  | 总时长上限（30 分钟，含等待）                                                                                                                                                                                                                                                                                                                                                          |
+| MAX_REQUEST_CONTEXT_CHARS           | 200000   | 单轮请求上下文字符预算（含 UNTRUSTED 块回注）                                                                                                                                                                                                                                                                                                                                          |
+| MAX_TRANSCRIPT_REPLAY_ROUNDS        | 6        | transcript 回放最近轮数（更早轮压缩为摘要行）                                                                                                                                                                                                                                                                                                                                          |
+| MAX_RESULT_CHARS                    | 200000   | Result JSON 总字符                                                                                                                                                                                                                                                                                                                                                                     |
+| MAX_RESULT_BLOCKS                   | 20       | Result 块数                                                                                                                                                                                                                                                                                                                                                                            |
+| MAX_TABLE_ROWS / MAX_TABLE_COLUMNS  | 200 / 20 | Table 块行列界（Renderer 与 Validator 同源常量）                                                                                                                                                                                                                                                                                                                                       |
+| MAX_CARDS_ITEMS / MAX_RANKING_ITEMS | 20 / 20  | Cards/Ranking 条目界                                                                                                                                                                                                                                                                                                                                                                   |
+| MAX_TASK_PERSISTED_CHARS            | 500000   | 单任务持久化总预算 = **UTF-8 字节数**（决议 #103：Buffer.byteLength——实际持久化大小有界，P2-3 目标）；覆盖任务全部持久化行（task+candidates+captures+evidence+claims+conflicts+result）；写库前事务内检查，超限拒绝写入                                                                                                                                                                |
+| MAX_STORED_TASKS                    | 30       | **任务总数硬上限（含 created，决议 #104）**；清理对象仅最旧终态（completed/failed/cancelled/interrupted；created 永不清除、计入总数）；触发 = 任务进终态写入后 + 启动装配 interrupted 标记后 + create 总数检查；最旧排序键 = COALESCE(finished_at, interrupted_at) DESC, created_at DESC, id ASC；总数满且无可清理终态 → 新建拒绝 research-task-limit；被清理任务不可再看详情，UI 明示 |
 
+- **§2 字段常量（决议 #110，与 §6.8 同源集中在 shared/types/research.ts）**：
+  MAX_CANDIDATE_TITLE_CHARS/MAX_CANDIDATE_NOTE_CHARS = 200、
+  MAX_CLAIM_TEXT_CHARS = 500、MAX_CONFLICT_TOPIC_CHARS = 200、
+  MAX_CONFLICT_POSITION_CHARS = 300、MAX_RESULT_TITLE_CHARS = 120、
+  MAX_RESULT_SUMMARY_CHARS = 2000、MAX_MARKDOWN_BLOCK_CHARS = 4000、
+  MAX_TABLE_CELL_CHARS = 200、MAX_CARDS_TITLE_CHARS = 120、
+  MAX_CARDS_BODY_CHARS = 1000、MAX_RANKING_TITLE_CHARS = 120、
+  MAX_RANKING_DETAIL_CHARS = 1000、MAX_UNCERTAIN_TEXT_CHARS = 1000、
+  MAX_EVIDENCE_LOCATOR_FIELD_PATH_CHARS = 200。
 - 预算用尽语义：来源/证据/轮次/步数/超时/持久化预算用尽 → **正式终态**
-  failed（research-budget-exhausted）+ 已收集 Evidence 保留；不自动扩预算。
+  failed（research-budget-exhausted；超时用 research-timeout，决议 #108）
+  - 已收集 Evidence 保留；不自动扩预算。
 - 全部常量集中在 shared/types/research.ts（单一事实源）+ research-budget.ts
-  裁剪纯函数（确定性截断 + 标记）。
+  裁剪纯函数（确定性截断 + 标记）；实现与测试禁止魔法数字（决议 #110）。
 
 ## 7. Cross-check 与综合（C6）
 
@@ -604,7 +646,7 @@ run(taskId, goal):
 ### 9.1 数据库与 schema（research.db，migration v1）
 
 ```sql
-PRAGMA user_version;  -- 1 = 本表集
+PRAGMA user_version;  -- 1 = 本表集（决议 #101/#102 校准后定稿）
 
 CREATE TABLE research_tasks (
   id TEXT PRIMARY KEY,                -- UUID
@@ -618,6 +660,35 @@ CREATE TABLE research_tasks (
 );
 CREATE INDEX idx_research_tasks_status ON research_tasks(status);
 
+-- 决议 #101：Fifth_stage.md §3.1 上位需求（记录已用 Sources/搜索候选/成功失败
+-- 读取）——独立表承载（受控 JSON 投影否决：与 §2 实体类型/id 引用/§5.2 验证
+-- 锚点/CASCADE 清理不一致）；capture 正文零落盘（仅元数据行）。
+CREATE TABLE research_candidates (
+  candidate_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES research_tasks(id) ON DELETE CASCADE,
+  url TEXT NOT NULL, display_url TEXT NOT NULL, title TEXT NOT NULL,
+  canonical_key TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('origin','page')),
+  discovered_via_json TEXT NOT NULL,  -- CandidateOrigin[] JSON（形状校验）
+  source_id TEXT,                     -- Sources 命中才有
+  trust_value TEXT, trust_asserted_by TEXT, trust_verification TEXT,  -- 三元组或全 NULL
+  priority INTEGER, last_used_at TEXT, note TEXT,
+  sort_key TEXT NOT NULL
+);
+CREATE INDEX idx_research_candidates_task ON research_candidates(task_id);
+
+CREATE TABLE research_captures (
+  capture_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES research_tasks(id) ON DELETE CASCADE,
+  candidate_id TEXT NOT NULL,
+  tab_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL,
+  access_time TEXT NOT NULL, document_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+  summary_json TEXT NOT NULL,         -- CaptureSummary JSON（形状校验）
+  failed INTEGER NOT NULL CHECK (failed IN (0,1)),
+  failure_reason TEXT CHECK (failure_reason IN ('page-load-failed','snapshot-degraded','tab-closed-by-user','timeout','aborted','http-scheme-rejected') OR failure_reason IS NULL)
+);
+CREATE INDEX idx_research_captures_task ON research_captures(task_id);
+
 CREATE TABLE research_evidence (
   evidence_id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES research_tasks(id) ON DELETE CASCADE,
@@ -627,7 +698,7 @@ CREATE TABLE research_evidence (
   type TEXT NOT NULL CHECK (type IN ('quote','table-cell','field','summary-point')),
   locator_json TEXT NOT NULL,         -- EvidenceLocator JSON（形状校验）
   excerpt TEXT NOT NULL, value TEXT,
-  verification TEXT NOT NULL CHECK (verification IN ('verified','rejected'))
+  verification TEXT NOT NULL CHECK (verification = 'verified')  -- 决议 #102：rejected 永不落库（数据库层兜底）
 );
 CREATE INDEX idx_research_evidence_task ON research_evidence(task_id);
 
@@ -658,23 +729,62 @@ CREATE TABLE research_results (
 - 业务 SQL 仅为 ResearchRepository 编译期常量 + 参数绑定（决议 #47 模式）；
   JSON 列逐字段形状校验（复用 validateMessageShape 同族纯函数，畸形
   fail-closed 丢弃/拒绝）。
-- **字节预算执行**：任务写库前序列化合计 ≤ MAX_TASK_PERSISTED_CHARS，
-  超限 → 拒绝写入并缩减（裁剪 Evidence 摘录/Result 块）或 failed；
-  MAX_STORED_TASKS 超限清理最旧终态任务（created 除外；CASCADE 清行）。
+- **字节预算执行（决议 #103）**：任务写库前序列化合计（UTF-8 字节数）
+  ≤ MAX_TASK_PERSISTED_CHARS，超限 → 事务内拒绝写入（RepositoryError
+  'task-persisted-budget-exceeded' → research-budget-exhausted）——由
+  C4/C6/C7 层裁剪摘录/Result 块后重试，仍失败 → failed；
+  MAX_STORED_TASKS 超限清理最旧终态任务（决议 #104：触发/排序键/拒绝语义
+  见 §6.8；created 永不清除；CASCADE 清行）。
+- **接口契约（决议 #109，§13.1 测试规格的契约源）**：
+  - `ResearchRepository`（research.db 唯一 SQL 执行点，编译期常量 +
+    参数绑定）：任务 CRUD（insertTask/getTaskById/getRunningTask/
+    listTasks/countTasks/setTaskRunning/setTaskCompleted/setTaskFailed/
+    setTaskCancelled/setTaskInterrupted/updateTaskPhase/deleteTask/
+    clearTaskRunData/listOldestFinishedTasks/deleteTasksByIds/
+    countFinishedTasks）+ 行集合 CRUD（candidates/captures/evidence
+    （仅 VerifiedEvidence 窄类型，决议 #102）/claims/conflicts/results：
+    insert/listByTask/countByTask/getResultByTaskId/deleteXByTask）+
+    字节预算（computeTaskPersistedBytes + 写入前置事务内检查）+ 行↔域
+    转换与 JSON 形状校验纯函数（畸形 fail-closed null，不抛穿）。
+  - `ResearchStore`：`openResearchStore({dbPath, migrations?, nowMs?}) →
+{ mode:'normal', service, reason:null } | { mode:'unavailable',
+service:null, reason }`——probe（16 字节头部/只读 user_version）→
+    新库迁移 v1 → 当前版本 quick_check → 旧版本迁移 → integrity/外键
+    检查 → normal；损坏/坏 magic/未来版本/迁移失败/检查失败 →
+    unavailable（中文诊断；research:* 全拒）；装配成功时**单事务**原子
+    标记遗留 running → interrupted（interruptedAt=now、phase=null）+
+    清理超限终态。
+  - `ResearchService`（接口在 shared/types/research.ts）：构造注入
+    `{ db: DbHandle | null, now?, getSourcesState?, getProviderState? }`
+    （缺省就绪，C5 接线真实查询）；createTask(goal)/getTask(id)/
+    listTasks(opts)/deleteTask(id)/startTask(id)/stopTask(id)/dispose()
+    （幂等关闭句柄）；返回判别联合 `{ok:true,...} | {ok:false,errorCode}`
+    （ResearchCreateResult/ResearchTaskResult/ResearchListResult/
+    ResearchDeleteResult/ResearchStartResult/ResearchStopResult）；非法
+    输入安全返回结构化错误不抛异常；未预期异常 → 归一化
+    research-internal + warn 日志；db=null 装配（disposed）→ 全部方法
+    结构化 research-unavailable（与 Sources B7 模式一致）。
 
 ### 9.2 启动装配（research-store.ts，复用 sources-store 模式）
 
 ```
-app ready → probe（只读连接，固定 16 字节头部探测）→ 缺失 → 新建 + 迁移 v1
+app ready → probe（只读连接，固定 16 字节头部探测——决议 #111：复用
+  sources/db/backup.ts 只读探测原语 probeDbFile/quickCheckDb/
+  checkDbIntegrity，零修改）→ 缺失 → 新建 + 迁移 v1
 → 旧版本 → 单事务逐级迁移（v1 起无历史版本——模式就绪）→ 检查 → normal
-→ 损坏/未来版本 → unavailable（Research 功能全拒 + 中文诊断；
-  浏览器/Sources/Agent 其余能力不受影响）
-→ 遗留 running 任务标 interrupted（§3.1）
+→ 损坏/未来版本/迁移失败/检查失败 → unavailable（两态，无恢复态——
+  Research 功能全拒 + 中文诊断；浏览器/Sources/Agent 其余能力不受影响）
+→ 遗留 running 任务标 interrupted（§3.1，单事务原子）+ 清理超限终态
 ```
 
 - v1 不做备份模块（research.db 无历史迁移需求；若未来 schema 演进引入
   migration v2 时，在同一闭环补 VACUUM INTO 备份——复用 B7 冻结模式；
   本阶段任务文档不承诺）。
+- 模式复用边界（决议 #111）：research-driver.ts import 复用
+  `sources/db/sqlite-driver.ts` 连接级原语（openDb/closeDb/
+  withTransaction/DbHandle——零修改）并提供 openResearchDb(path,
+  options?) 薄封装（独立库独立句柄语义）；Research 与 Sources 独立
+  数据库、独立句柄、独立迁移列表（research-migrations.ts MIGRATIONS）。
 
 ### 9.3 本地明文边界
 
@@ -829,6 +939,88 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
       Evidence 摘录正文/claims/冲突（最小导出面）；主进程 dialog 安全通道 +
       路径校验（扩展名 .csv、位于用户选定路径）；renderer 零路径参数
       （§11）。
+
+> 以下 #101–#111 为 C1 实施前契约裁决（2026-08-16，C1 闭环；先改本文与
+> 测试、再改实现——§15 流程）。七项契约缺口均由 Fifth_stage.md 上位需求、
+> threat-model 安全契约与本文既有条款唯一裁决，无需用户拍板。
+
+101.  **schema v1 补全候选与捕获表**：Fifth_stage.md §3.1 上位需求（记录
+      已用 Sources、搜索候选、成功/失败读取）由 `research_candidates` /
+      `research_captures` 两张独立表承载（受控 JSON 投影否决——与 §2 实体
+      类型/id 引用/§5.2 验证锚点/CASCADE 清理语义不一致）；capture 正文
+      仍零落盘（仅元数据行：url/title/accessTime/documentId/contentHash/
+      summary/failed/failureReason）；行数有界由 MAX_SOURCE_CANDIDATES/
+      MAX_CAPTURES_PER_TASK 强制（C3/C4）。
+102.  **rejected Evidence 三重一致**：`Evidence.verification` 判别联合保留
+      （'rejected' 为运行期回注事实）；Repository 写入 API 仅接受
+      verification='verified' 的窄类型（`VerifiedEvidence = Evidence & {
+verification:'verified' }`）；schema CHECK 收窄为
+      `verification = 'verified'`（数据库层兜底）——rejected 不进 Evidence
+      集合、不进 research.db（FT-11/§5.2），类型/API/CHECK/测试一致。
+103.  **持久化预算 = UTF-8 字节**：MAX_TASK_PERSISTED_CHARS（500000）=
+      UTF-8 字节数（Buffer.byteLength——实际持久化大小有界，P2-3 目标）；
+      其余 CHARS 常量 = JavaScript 字符数（String.length）。预算覆盖任务
+      全部持久化行（task+candidates+captures+evidence+claims+conflicts+
+      result）；写库前事务内检查，超限拒绝写入（RepositoryError
+      'task-persisted-budget-exceeded' → research-budget-exhausted）。
+104.  **MAX_STORED_TASKS 总数硬上限**：30 = 任务总数上限（created 计入
+      总数、永不清除——「created 除外」仅指清理对象除外；无界增长封闭）。
+      触发 = 任务进终态写入后 + 启动装配 interrupted 标记后 + create
+      总数检查；最旧排序键 = COALESCE(finished_at, interrupted_at) DESC,
+      created_at DESC, id ASC（全序）；清理对象仅 completed/failed/
+      cancelled/interrupted（CASCADE）；总数满且无可清理终态 → 新建拒绝
+      research-task-limit（新增码）。
+105.  **状态机矩阵定稿**：start 合法状态 = created/cancelled/failed/
+      interrupted（completed 不可 start——Result 已持久化，重新研究 = 新建
+      任务）；delete 合法状态 = created/completed/failed/cancelled/
+      interrupted（running 拒绝 research-invalid-state）；终态集合 =
+      completed/failed/cancelled/interrupted（对 finish/stop/phase/
+      mark-interrupted 不可变，start 为唯一例外）；transitionTask 纯函数
+      全部事件统一携带 now（ISO 8601，调用方时钟注入——确定性；§3.2
+      事件类型补齐 now 字段）。
+106.  **restart 原子清理**：start 在 cancelled/failed/interrupted 任务上
+      触发时，Service 层在**单事务内**删除本任务全部旧 run 行（candidates/
+      captures/evidence/claims/conflicts/result）并重置 stats 全零/
+      resultId=null/errorCode=null/finishedAt=null/interruptedAt=null/
+      phase='planning'/startedAt=now/updatedAt=now——「标记废弃」以删除
+      实现（v1 无历史 run 保留），防跨 run 混用（FT-09/15）；created
+      首次 start 无旧数据仅状态迁移。
+107.  **goal 语义统一**：createTask 输入非字符串/trim 后空串 → 拒绝
+      research-invalid-goal（错误码注释校准为「goal 空/非串」）；超长 >
+      MAX_GOAL_CHARS → 确定性截断至 2000 + warn 日志（§2 字段注释
+      「确定性截断 + warn」优先于 §12 二选一表述）；start 前置校验
+      goal 非空（create 时已截断）+ 单 running 互斥（research-busy）+
+      Sources 库 normal（research-sources-unavailable）+ Provider 已配置
+      且 supportsToolCalling（research-provider-unavailable）——C1 以
+      可注入状态查询实现（缺省就绪；C5 接线真实查询）；前置失败不改变
+      任务状态。
+108.  **总超时独立错误码**：超时 → failed + errorCode='research-timeout'
+      （新增码；不以 research-internal 含混代替无法展示的原因；§6.6
+      校准）；ResearchErrorCode 共 11 码（增 research-timeout /
+      research-task-limit）；错误码中文文案表在 research-errors.ts
+      单一事实源。
+109.  **接口契约补齐**：ResearchRepository/ResearchStore/ResearchService
+      精确签名与返回判别联合见 §9.1 校准段落（错误映射/dispose 幂等/
+      unavailable 全拒语义）；service dispose 幂等关闭 db 句柄（driver
+      closeDb 幂等）；store unavailable 返回 service=null（research:*
+      全拒）；Service 构造支持 db=null（disposed 门控全拒
+      research-unavailable——与 Sources B7 模式一致）。
+110.  **常量单一事实源**：§2 字段注释全部数值上限进入 shared/types/
+      research.ts 常量（MAX_CANDIDATE_TITLE_CHARS/MAX_CANDIDATE_NOTE_
+      CHARS/MAX_CLAIM_TEXT_CHARS/MAX_CONFLICT_TOPIC_CHARS/MAX_CONFLICT_
+      POSITION_CHARS/MAX_RESULT_TITLE_CHARS/MAX_RESULT_SUMMARY_CHARS/
+      MAX_MARKDOWN_BLOCK_CHARS/MAX_TABLE_CELL_CHARS/MAX_CARDS_TITLE_
+      CHARS/MAX_CARDS_BODY_CHARS/MAX_RANKING_TITLE_CHARS/MAX_RANKING_
+      DETAIL_CHARS/MAX_UNCERTAIN_TEXT_CHARS/MAX_EVIDENCE_LOCATOR_FIELD_
+      PATH_CHARS——值见 §6.8 校准段落）；实现与测试禁止魔法数字。
+111.  **模式复用边界**：research-driver.ts import 复用
+      `sources/db/sqlite-driver.ts` 连接级原语（openDb/closeDb/
+      withTransaction/DbHandle 等，零修改）并提供 openResearchDb 薄封装；
+      research-store 复用 `sources/db/backup.ts` 只读探测原语
+      （probeDbFile/quickCheckDb/checkDbIntegrity，零修改）；research
+      v1 无 backup/恢复态（损坏/未来版本/迁移失败/检查失败 →
+      unavailable 两态）；Research 与 Sources 独立数据库、独立句柄、
+      独立迁移列表。
 
 ## 16. 实现顺序与范围边界（C1–C10 映射）
 

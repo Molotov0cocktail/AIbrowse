@@ -13065,6 +13065,11 @@ async function runSrtScenarios(
           'backup.ts': 'backup 存储运维窄契约允许点（决议 #86）',
           'smoke.ts': 'SMOKE 门控测试设施（决议 #47 同精神）',
           'snapshot-script.ts': 'RegExp.exec 正则匹配（非 SQL，已审查分类）',
+          // C1（2026-08-16）：第五阶段契约新增合法执行点——业务 SQL 仅为
+          // ResearchRepository 编译期常量 + 参数绑定、migration 冻结列表
+          // （detailed-design §1/§9.1，决议 #101/#102）；本白名单为契约同步，
+          // 不放宽 SQL 封闭语义（renderer/preload 零 SQL 断言不变）。
+          'research-repository.ts': '业务 SQL 允许点（编译期常量 + 参数绑定，C1）',
         };
         const sqlHits: string[] = [];
         const rendererPreloadSql: string[] = [];

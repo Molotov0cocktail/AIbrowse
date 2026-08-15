@@ -21,9 +21,15 @@
   诚实边界十一类，先于任何 Research 实现定稿）、任务 C1–C10。
   Entry Gate（Fifth_stage.md §2 五项）逐项核验**全部通过**（证据表见
   proposal §7：三方 SHA 一致 6d730a6/基线 test 1255/1255 独立复跑全绿/
-  17 工具契约与 Sources 检索真实 Provider 证据）。**C1–C10 全部待开始；
-  下一唯一任务 = C1。** 本阶段红线：禁止安装依赖、禁止未经授权调用真实
-  Provider（C9/C10 真实验收须另获用户授权）、禁止实现 Sixth Stage。
+  17 工具契约与 Sources 检索真实 Provider 证据）。**C1 已完成（2026-08-16）**
+  ——Research 核心契约（shared/types/research.ts 单一事实源）/状态机纯函数/
+  预算常量全表/research.db migration v1 七表集/Repository（唯一 SQL 执行点）/
+  store 装配（normal|unavailable 两态 + 遗留 running 标 interrupted）/
+  Service 生命周期骨架（create/get/list/delete/start 前置/stop）全部落地
+  （契约裁决 #101–#111，全量 test 1386/1386，红→绿证据见 C1 任务文档）；
+  **下一任务 = C2/C3（并行，均仅依赖 C1）。** 本阶段红线：禁止安装依赖、
+  禁止未经授权调用真实 Provider（C9/C10 真实验收须另获用户授权）、禁止
+  实现 Sixth Stage。
   设计要点（详见 proposal §10 决策表）：独立有界 ResearchRuntime（AgentLoop
   12 步/420s 契约零改动）/研究数据不进入会话 JSON（独立 research.db +
   字节预算，吸收 P2-3）/模型只提引用、Evidence 确定性验证/capture 正文零
@@ -388,7 +394,7 @@
 | B8 | 红队矩阵 SRT-01～SRT-12 + 安全审计 + 隐私扫描 + 真实 Provider/真实网页可选验证 | ✅ | 2026-08-15 完成（见下）：冒烟 8.15（决议 #93 校准：8.7 已被 B1 决策门占用）12 项独立断言 dev+生产双场景退出码 0 + 8.6/8.14 结构化证据核验 + RT-09 扩展静态审计 + SRT-08 发现并修复产品缺陷（持久化 toolCalls URL query 值脱敏，33e14b0）+ B-02 SRT-10 跨进程扩展；全量 test 1229/1229；RT-10 与真实 SRT-01/02 NOT RUN（未授权）；任务文档 doc/stage4/tasks/B8-redteam-security-validation.md（红→绿证据已回填） |
 | B9 | Fourth Stage 独立最终验收（当前 HEAD 重新复验，不采信 B1–B8 报告）+ Exit Gate 判定 + 文档同步；完成后停止不实现 Fifth Stage | ✅ | 2026-08-15 完成（见下）：独立复验台账见任务文档「独立复验台账」小节；总 Exit 判定 = HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）；**2026-08-16 第五轮真实 Provider 验收通过后改判 `GO/PASS`**（场景 1a–8 全部真实通过 + 真 Key 扫描零命中，见「真实 Provider 验收通过后判定更新」小节）；任务文档 doc/stage4/tasks/B9-finalize-acceptance.md |
 
-| C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ⏳ | 2026-08-16 设计定稿，待实施；契约 doc/stage5/detailed-design.md §2/§3/§9；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md |
+| C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ✅ | 2026-08-16 完成（见「最近验证结果」第十四个闭环）：实施前契约裁决 #101–#111 + 红→绿 9/9 失败→131/131 + 全量 test 1386/1386 + dev/生产冒烟 17 工具/SRT-12 零回归 + smoke.ts SRT-12 白名单契约同步（+5 行，唯一既有改动）；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md（红→绿证据已回填） |
 | C2 | ResearchWorkspace 与 task-owned Tab 隔离、数量上限、取消/异常清理 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §10；任务文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md |
 | C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §4；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md |
 | C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §5；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
@@ -406,8 +412,33 @@
 > （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1）
 
+- **C1 Research 契约与存储基座（2026-08-16，第十四个闭环；feat 提交见 git log）**：
+  ① 步骤 0 接管——HEAD c0f3dbc、工作区干净、Node 24.18.0；基线 test
+  1255/1255（单 worker）· typecheck · lint · format:check 独立复跑全绿；
+  C1 相关实现零存在（红态可甄别）。② **实施前契约裁决 #101–#111**（七项
+  缺口逐项唯一裁决，detailed-design §2/§3/§6.6/§6.8/§9/§15 校准）：schema
+  v1 补 research_candidates/research_captures 两表（7 表集）；rejected
+  Evidence 三重一致（窄类型 API + CHECK 收窄）；500k = UTF-8 字节；任务
+  总数硬上限 30（created 计入永不清）；状态机矩阵（completed 不可 start/
+  delete 矩阵/事件统一 now 注入）；restart 单事务原子清理；goal 空拒绝
+  超长截断；research-timeout 独立码（11 码）；Repository/Store/Service
+  精确接口；§2 字段常量全表集中（单一事实源）；模式复用边界（import
+  复用 sources 连接级与只读探测原语，零修改）。③ 红→绿：先写 9 测试文件
+  （131 用例）→ **9/9 失败于模块缺失**（红态证据）→ 实现 10 文件 → 聚焦
+  **131/131**；全量 test **1386/1386**（既有 1255 + 新增 131，单 worker）
+  · typecheck · lint · format:check · build（三目标）· git diff --check
+  全绿；dev/生产冒烟退出码 0 +「冒烟自检通过」+ 8.1 探针 **17 工具恒等**
+  - SRT-01～SRT-12 全过。④ 既有改动仅 1 处：smoke.ts SRT-12 允许点表 +
+    research-repository.ts 分类键（契约同步非放宽，+5 行）；sources/ai/
+    browser/renderer/preload/index.ts 零 diff；AgentLoop 12/420s 零变化；
+    package.json/lock 零 diff。⑤ 红线扫描：product 零动态 SQL（业务 SQL 仅
+    ResearchRepository 编译期常量 + migration 冻结列表）/零 shell/零网络/
+    renderer-preload 零 SQL/真 Key 形态零命中/禁具零命中/零新依赖。⑥ 杂散
+    日志清理（根目录 aibrowse-2026-08-16.log，冒烟生成、gitignore 已覆盖）。
+    ⑦ 前置复核登记：proposal D9 与决议 #99 表格漂移 → C7 前置复核项
+    （C1 任务文档登记，未顺手修复）。**下一任务 = C2/C3（并行，均仅依赖 C1）。**
 - **Fifth Stage 切换与设计定稿（2026-08-16，第十三个闭环；纯文档任务，零代码
   改动、零新依赖、零真实 Provider 调用，不实现任何 Research 功能）**：① 步骤 0
   独立核对——HEAD `6d730a6` = Gitee main = GitHub main（ls-remote 实测三方
@@ -2391,17 +2422,17 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **C1 — ResearchTask/Evidence/Result 核心契约、状态机纯函数、存储与服务基座
-  （唯一下一推荐任务）**：第五阶段设计闭环已完成（2026-08-16，doc/stage5/
-  定稿 + 阶段指针已切换）；下一唯一任务 = 实施 C1（契约
-  `doc/stage5/detailed-design.md` §2/§3/§6.8/§9/§15；任务文档
-  `doc/stage5/tasks/C1-research-contract-foundation.md`）。C1 完成后按
-  依赖链推进 C2/C3 → C4 → C5 → C6/C7 → C8 → C9 → C10；每个任务一个
-  可验证开发闭环；本阶段禁止安装依赖、禁止未经授权调用真实 Provider
-  （C9/C10 真实验收须另获用户授权）、禁止实现 Sixth Stage。
-  （历史注记：此前「下一推荐任务 = 场景 6/7 导航夹具修复」已于 2026-08-16
-  第五轮完成——场景 1a–8 全部真实通过、总 Exit 改判 GO/PASS，历史记录见
-  上方「最近验证结果」第十二个闭环条目，原位保留。）
+- **C2 + C3（并行，均仅依赖 C1）**：C1 已完成（2026-08-16，契约基座 +
+  存储基座落地，红→绿证据见 C1 任务文档）。下一推荐任务 = **C2
+  （ResearchWorkspace 与 task-owned Tab 隔离，契约 §10，任务文档
+  doc/stage5/tasks/C2-research-workspace-tab-isolation.md）与 C3
+  （Source Selection 候选合并/provenance/确定性排序，契约 §4，任务文档
+  doc/stage5/tasks/C3-source-selection-candidate-merge.md）**——二者
+  仅依赖 C1，可并行推进（建议新对话各开一个闭环）。此后按依赖链推进
+  C4 → C5 → C6/C7 → C8 → C9 → C10；每个任务一个可验证开发闭环；本阶段
+  禁止安装依赖、禁止未经授权调用真实 Provider（C9/C10 真实验收须另获
+  用户授权）、禁止实现 Sixth Stage。C7 前置复核项：proposal D9 与决议
+  #99 Markdown 表格漂移（C1 已登记未修复）。
 
 ## 第一阶段验收未完成项
 
