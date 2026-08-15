@@ -533,6 +533,13 @@ if (!gotLock) {
             app.quit();
           })
           .catch(() => {
+            // 失败路径同样清理冒烟 Sources 临时目录（app.exit 不触发 before-quit，
+            // 否则每次失败运行残留 pid 专属目录——清理纪律）
+            sourceService?.dispose();
+            if (smokeSourcesDir !== null) {
+              rmSync(smokeSourcesDir, { recursive: true, force: true });
+              smokeSourcesDir = null;
+            }
             app.exit(1); // 失败原因已由 runSessionSmokeScenario / runSmokeScenario 记录 error 日志
           });
       }
