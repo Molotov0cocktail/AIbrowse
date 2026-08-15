@@ -82,6 +82,9 @@ import { runMigrations } from './sources/db/migrations';
 import { SourceServiceImpl } from './sources/source-service';
 import type { SourceService, SourcesState } from '../shared/types/sources';
 import { createSourceTools } from './sources/tools/source-tools';
+// B6：usage 接线（决议 #79/#81）——SourceSearchHintStore 每 run 独立 + browser_open
+// 打开后比对写 usage；写入失败安全 no-op，不影响工具结果与 Agent 终态。
+import { SourceUsageTracker } from './sources/usage/usage-tracker';
 // B5：Sources IPC 适配器（参数严格白名单 + audience 硬编码 user + 状态门控 +
 // 独立 manual 审计 + sources:changed 仅成功后触发）
 import { createSourcesAdapter } from './sources/source-ipc';
@@ -116,6 +119,15 @@ const LIVE_AGENT_SUPPLEMENT_MODE =
   process.env['AIBROWSE_LIVE_AGENT_SUPPLEMENT'] === '1' &&
   !LIVE_AGENT_MODE &&
   !LIVE_AGENT_PRE_MODE;
+// B6：真实 Provider AI 自然语言管理验证（AIBROWSE_LIVE_AGENT_SOURCES=1；需用户授权——
+// 询问边界；与 LIVE_AGENT/LIVE_AGENT_PRE/LIVE_AGENT_SUPPLEMENT 互斥，同时设置报错
+// 退出）。未提供 Key 时回退离线矩阵（离线可测路由），不发起付费请求。
+const LIVE_AGENT_SOURCES_MODE =
+  LIVE_PROVIDER_MODE &&
+  process.env['AIBROWSE_LIVE_AGENT_SOURCES'] === '1' &&
+  !LIVE_AGENT_MODE &&
+  !LIVE_AGENT_PRE_MODE &&
+  !LIVE_AGENT_SUPPLEMENT_MODE;
 let liveSmoke: LiveProviderSmoke | undefined = undefined;
 let liveStreamChunkCount = 0; // 真实 Provider 场景 delta 计数（流式证据，index.ts 装配侧统计）
 
@@ -572,6 +584,35 @@ if (!gotLock) {
             'main',
             'AIBROWSE_SESSION_SMOKE / AIBROWSE_SOURCES_SMOKE / AIBROWSE_SOURCES_UI_SMOKE 互斥，请只选其一',
           );
+          // 失败路径清理（app.exit 不触发 before-quit；B6 会话实测同类 LIVE 互斥
+          // 路径残留 pid 专属目录——此处为同缺陷预防性补齐）
+          sourceService?.dispose();
+          if (smokeSourcesDir !== null) {
+            rmSync(smokeSourcesDir, { recursive: true, force: true });
+            smokeSourcesDir = null;
+          }
+          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+          app.exit(1);
+          return;
+        }
+        // B6：AIBROWSE_LIVE_AGENT_SOURCES 与 LIVE_AGENT/PRE/SUPPLEMENT 互斥（决议 #85；
+        // 与既有 LIVE 门控同纪律——同时设置报错退出，不静默择一）
+        if (
+          process.env['AIBROWSE_LIVE_AGENT_SOURCES'] === '1' &&
+          (LIVE_AGENT_MODE || LIVE_AGENT_PRE_MODE || LIVE_AGENT_SUPPLEMENT_MODE)
+        ) {
+          logError(
+            'main',
+            'AIBROWSE_LIVE_AGENT_SOURCES 与 AIBROWSE_LIVE_AGENT / LIVE_AGENT_PRE / LIVE_AGENT_SUPPLEMENT 互斥，请只选其一',
+          );
+          // 失败路径清理（app.exit 不触发 before-quit；同 B5 532ea78 修复的
+          // SESSION/SOURCES 互斥路径——否则每次失败运行残留 pid 专属冒烟目录）
+          sourceService?.dispose();
+          if (smokeSourcesDir !== null) {
+            rmSync(smokeSourcesDir, { recursive: true, force: true });
+            smokeSourcesDir = null;
+          }
+          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
           app.exit(1);
           return;
         }
@@ -606,10 +647,15 @@ if (!gotLock) {
             liveAgent: LIVE_AGENT_MODE, // A7：AIBROWSE_LIVE_AGENT=1 时启用真实 Provider Agent 验证
             liveAgentPre: LIVE_AGENT_PRE_MODE, // A7 补验：AIBROWSE_LIVE_AGENT_PRE=1 时启用最小 tools 兼容性预检
             liveAgentSupplement: LIVE_AGENT_SUPPLEMENT_MODE, // A7 补验补证：AIBROWSE_LIVE_AGENT_SUPPLEMENT=1 时启用定向补验（仅修订场景 2/3 + 零泄漏终检）
+            liveAgentSources: LIVE_AGENT_SOURCES_MODE, // B6：AIBROWSE_LIVE_AGENT_SOURCES=1 时启用真实 Provider 自然语言管理验证（未提供 Key 回退离线矩阵）
             toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
             confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
             sourcesService: sourceService ?? undefined, // B5：8.11 UI 矩阵后台写/冲突/清理断言
             sourcesStateOverride: smokeSourcesStateOverride, // B5：恢复态/不可用态注入点
+            sourcesDbPath:
+              smokeSourcesDir !== null && sourceService !== null
+                ? join(smokeSourcesDir, 'sources.db')
+                : undefined, // B6：8.13 UI 场景 usage_events 只读探针（决议 #84；仅 SMOKE_MODE 注入）
           });
         }
         run
@@ -682,6 +728,12 @@ function createBrowserWindow(): void {
     sourceService = null;
     logError('main', 'Sources 子系统初始化失败（Source 工具将返回 source-unavailable）', err);
   }
+  // B6（决议 #79/#81）：usage tracker 装配——writer 闭包调用时解引用 sourceService
+  // （初始化失败为 null → 零写入，无 SourceService 不记录）；bridge 每 run 创建
+  // （AgentLoop 终态调用 clearRun）。
+  const usageTracker = new SourceUsageTracker(
+    (sourceId, outcome) => sourceService?.recordUsage(sourceId, outcome) ?? Promise.resolve(),
+  );
   for (const def of BROWSER_TOOL_DEFINITIONS) registerTool(def);
   for (const def of INTERACTION_TOOL_DEFINITIONS) registerTool(def);
   // B4：Source 四工具注册（13 → 17；executor 零 Electron import，只经 ctx.sourceService）
@@ -797,6 +849,7 @@ function createBrowserWindow(): void {
       confirmManager, // L2 确认状态机（A2 实例复用）
       searchProvider, // ctx.searchProvider 注入点（决议 #32⑥；冒烟服务自建实例注入受控夹具）
       ...(sourceService !== null ? { sourceService } : {}), // B4：ctx.sourceService 注入点
+      usageBridge: (runId) => usageTracker.bridge(runId), // B6：run 级 usage 桥（决议 #79/#81）
       audit: createAuditLogger(), // 每次工具调用恰好一条审计（ToolExecutor 单出口保证）
       auditRun: (message) => logInfo('audit', message), // run 开始/终止条目（§10.1）
       // A6 UI 矩阵（仅冒烟模式）：limits 为可注入 holder（step-limit/timeout 场景，每 run

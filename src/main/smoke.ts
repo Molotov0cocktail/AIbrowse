@@ -26,7 +26,13 @@ import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sq
 import { runMigrations } from './sources/db/migrations';
 import { SourceServiceImpl } from './sources/source-service';
 import { SourceSearchIndex } from './sources/repository/source-search-index';
-import type { SourceService, SourcesState, SourceView } from '../shared/types/sources';
+import { SourceUsageTracker } from './sources/usage/usage-tracker';
+import type {
+  SourceService,
+  SourcesState,
+  SourceUsageContext,
+  SourceView,
+} from '../shared/types/sources';
 import { SEARCH_ENGINE_URL } from '../shared/url';
 import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 import { listTools } from './ai/tools/tool-registry';
@@ -128,12 +134,16 @@ export interface SmokeOptions {
   liveAgent?: boolean; // A7：真实 Provider Agent 验证（AIBROWSE_LIVE_AGENT=1 时启用，需用户授权）
   liveAgentPre?: boolean; // A7 补验：最小 tools 兼容性预检（AIBROWSE_LIVE_AGENT_PRE=1，仅场景 1 + 零泄漏终检）
   liveAgentSupplement?: boolean; // A7 补验补证：定向补验（AIBROWSE_LIVE_AGENT_SUPPLEMENT=1，仅修订场景 2/3 + 零泄漏终检）
+  liveAgentSources?: boolean; // B6：真实 Provider AI 自然语言管理验证（AIBROWSE_LIVE_AGENT_SOURCES=1；
+  // 与 LIVE_AGENT/PRE/SUPPLEMENT 互斥；未提供 Key 回退离线矩阵，不发起付费请求）
   toolExecutor?: ToolExecutor; // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
   confirmManager?: ConfirmManager; // A3：L2 确认程序化驱动（approve/deny，A6 起接 UI）
   sourcesService?: SourceService; // B5：冒烟模式共享生产 SourceService 实例（8.11 B-05 UI
   // 矩阵的后台写/版本冲突/清理断言用；仅 SMOKE_MODE 注入，生产行为不变）
   sourcesStateOverride?: { current: SourcesState | null } | null; // B5：SMOKE_MODE 专属
   // 恢复态/不可用态注入点（决议 #74 测试落点；生产不传）
+  sourcesDbPath?: string; // B6：冒烟模式生产 Sources 库路径（8.13 B-06 UI 场景 usage_events
+  // 只读探针断言用；仅 SMOKE_MODE 注入，生产行为不变——决议 #84 测试设施）
 }
 
 // ---------- S5：真实 Provider 可选冒烟（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY） ----------
@@ -4287,6 +4297,7 @@ function buildAgentSmokeService(
   limits?: Partial<AgentLoopLimits>,
   searchProvider?: SearchProvider,
   sourceService?: SourceService,
+  usageBridge?: (runId: string) => SourceUsageContext, // B6（决议 #79/#81）
 ): {
   service: ConversationServiceImpl;
   runs: AgentRunDoneEvent[];
@@ -4326,6 +4337,7 @@ function buildAgentSmokeService(
       confirmManager: confirm,
       ...(searchProvider !== undefined ? { searchProvider } : {}),
       ...(sourceService !== undefined ? { sourceService } : {}),
+      ...(usageBridge !== undefined ? { usageBridge } : {}),
       audit: (entry) => {
         auditEntries.push(entry);
         logAudit(entry);
@@ -8188,6 +8200,1195 @@ async function runSourcesToolsSmoke(
   }
 }
 
+// ---------- B6 真实 Provider AI 自然语言管理验证（AIBROWSE_LIVE_AGENT_SOURCES=1，需用户授权） ----------
+// Fourth_stage.md §7 场景 1–5 的 AI 侧（离线确定性由 8.12/8.13 覆盖；本函数为真实模型
+// 证据——与 A7 runLiveAgentScenarios 同纪律：任务文案要求明确、断言落在结果语义
+// （容许合理额外工具步骤）、确认门真实 UI 驱动、真 Key 零暴露扫描、台账只报次数与
+// 用途不报凭据）。调用规则：不设固定次数；每次模型 HTTP 请求对应明确验收项。
+export async function runLiveAgentSourcesScenarios(
+  controller: BrowserController,
+  uiWindow: BrowserWindow,
+  aiSmokeDir: string,
+  live: LiveProviderSmoke,
+  service: SourceService | null,
+  dbPath: string | null,
+): Promise<void> {
+  const uiWc = uiWindow.webContents;
+  const { file: logFile, offsetBefore: keyScanOffset } = live.logScan;
+  const scenarioOffset = statSync(logFile).size;
+  const modelRoundsSoFar = (): number =>
+    readFileSync(logFile)
+      .subarray(scenarioOffset)
+      .toString('utf8')
+      .split('\n')
+      .filter((l) => l.includes('开始流式请求')).length;
+  const callLedger: Array<{ task: string; modelRounds: number }> = [];
+  let previousRounds = 0;
+  const recordRounds = (task: string): void => {
+    const total = modelRoundsSoFar();
+    callLedger.push({ task, modelRounds: total - previousRounds });
+    previousRounds = total;
+  };
+  assert(service !== null, 'B6 真实验证需要生产 SourceService（初始化失败则无法验收）');
+  const pages = await startControlledPages();
+  const tabsBefore = await controller.getTabs();
+  const beforeIds = new Set(tabsBefore.map((t) => t.id));
+  const activeBefore = (await controller.getActiveTab())?.id ?? null;
+  assert(activeBefore !== null, 'B6 真实验证：需要进入前存在活动 Tab');
+  try {
+    assert(await live.ready, 'B6 真实验证装配失败（配置写入或 Key 密文落盘未成功）');
+    const ensurePanelOpen = async (): Promise<void> => {
+      if (!(await uiHas(uiWc, '.ai-panel'))) {
+        await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
+        await waitForUiText(
+          uiWc,
+          '.ai-panel-title',
+          'AI 共读助手',
+          5000,
+          'B6 真实验证：面板未打开',
+        );
+      }
+    };
+    const switchMode = async (mode: 'chat' | 'task'): Promise<void> => {
+      await clickUi(uiWc, mode === 'task' ? '.ai-mode-task' : '.ai-mode-chat');
+      await delay(150);
+    };
+    const freshSession = async (): Promise<void> => {
+      await clickUi(uiWc, '.ai-new-session');
+      await waitFor(
+        async () => (await uiCount(uiWc, '.ai-session-item')) >= 1,
+        5000,
+        'B6 真实验证：新建会话失败',
+      );
+      await delay(200);
+    };
+    const sendTask = async (goal: string): Promise<void> => {
+      await typeIntoComposer(uiWc, goal);
+    };
+    const waitTerminal = async (label: string): Promise<void> => {
+      await waitFor(
+        async () => (await uiCount(uiWc, '.ai-agent-run')) >= 1,
+        240000,
+        `${label}：run 未在 240 秒内到达终态`,
+      );
+    };
+    const approveConfirm = async (label: string): Promise<void> => {
+      await waitFor(
+        async () => await uiHas(uiWc, '.ai-confirm-dialog'),
+        120000,
+        `${label}：L2 确认框未出现（确认门必现）`,
+      );
+      await clickUi(uiWc, '.ai-confirm-approve');
+      await waitFor(
+        async () => !(await uiHas(uiWc, '.ai-confirm-dialog')),
+        15000,
+        `${label}：approve 后确认框未关闭`,
+      );
+    };
+    const toolNames = async (): Promise<string[]> => uiTextAll(uiWc, '.ai-tool-call-name');
+    const svcGet = async (id: string): Promise<SourceView> => {
+      const r = await service.get(id, 'user');
+      assert(r.ok, `B6 真实验证：get 应成功（${JSON.stringify(r)}）`);
+      return r.source;
+    };
+    const probeUsage = (sourceId: string): { outcome: string } | null => {
+      if (dbPath === null) return null;
+      const probeDb = openDb(dbPath);
+      try {
+        const row = probeDb
+          .prepare('SELECT outcome FROM usage_events WHERE source_id = ?')
+          .get(sourceId) as { outcome: string } | undefined;
+        return row ?? null;
+      } finally {
+        closeDb(probeDb);
+      }
+    };
+    const restoreTabs = async (label: string): Promise<void> => {
+      const extra = (await controller.getTabs()).filter((t) => !beforeIds.has(t.id));
+      for (const tab of extra) await controller.closeTab(tab.id);
+      assert(
+        (await controller.getTabs()).length === tabsBefore.length,
+        `${label}：Tab 应恢复进入前`,
+      );
+      const activeNow = (await controller.getActiveTab())?.id ?? null;
+      if (activeNow !== activeBefore) {
+        assert(await controller.activateTab(activeBefore), `${label}：活动 Tab 应恢复进入前`);
+      }
+    };
+    const finalizeLiveRun = async (label: string): Promise<number> => {
+      await restoreTabs(label);
+      assert(
+        (await controller.getActiveTab())?.id === activeBefore,
+        `${label}：活动 Tab 应恢复进入前`,
+      );
+      const domDump = String(await uiJs(uiWc, 'document.body.innerHTML'));
+      assert(!domDump.includes(live.key), 'B6 真实验证：渲染 DOM 不得包含明文 Key');
+      const logSlice = readFileSync(logFile).subarray(keyScanOffset).toString('utf8');
+      assert(!logSlice.includes(live.key), 'B6 真实验证：日志不得包含明文 Key');
+      const tempFiles = readdirSync(aiSmokeDir, { recursive: true, encoding: 'utf8' })
+        .filter((n) => n.endsWith('.json') || n.endsWith('.tmp'))
+        .map((n) => join(aiSmokeDir, n));
+      for (const f of tempFiles) {
+        assert(
+          !readFileSync(f, 'utf8').includes(live.key),
+          `B6 真实验证：临时文件不得含 Key（${f}）`,
+        );
+      }
+      const credFile = join(aiSmokeDir, 'credentials.json');
+      assert(existsSync(credFile), 'B6 真实验证：凭据文件应落盘');
+      const credRecord = JSON.parse(readFileSync(credFile, 'utf8')) as {
+        providers: Record<string, string>;
+      };
+      assert(
+        isCiphertextShape(credRecord.providers[PROVIDER_KIND_OPENAI_COMPATIBLE]),
+        'B6 真实验证：凭据文件应为密文形态',
+      );
+      const totalRounds = callLedger.reduce((a, b) => a + b.modelRounds, 0);
+      const ledgerSummary = callLedger.map((c) => `${c.task}：${c.modelRounds} 轮`).join('；');
+      logInfo(
+        'smoke',
+        `真实 Provider Sources ${label}通过（用户任务 ${callLedger.length} 项；模型轮次/HTTP 请求共 ${totalRounds} 次——${ledgerSummary}；真 Key 零暴露扫描覆盖 DOM/日志/临时文件/密文形态）`,
+      );
+      return totalRounds;
+    };
+
+    await ensurePanelOpen();
+    await switchMode('task');
+
+    // —— 场景 1：收藏当前页（自然语言 → change set → L2 确认 approve → 持久化）——
+    assert(
+      await controller.navigate(activeBefore, pages.interactionUrl),
+      'B6 真实验证：导航到受控页应成功',
+    );
+    await waitFor(
+      async () => (await controller.getActiveTab())?.url === pages.interactionUrl,
+      10000,
+      'B6 真实验证：受控页未就绪',
+    );
+    await freshSession();
+    await sendTask('收藏当前这个网站，名称用「真实验证收藏页」');
+    await approveConfirm('场景 1');
+    await waitTerminal('场景 1');
+    recordRounds('场景 1：收藏当前页（change set → 确认 approve → 持久化）');
+    const collected = await service.search('真实验证收藏页', { audience: 'user' });
+    assert(collected.ok && collected.results.length >= 1, 'B6 真实验证 1：收藏页未持久化');
+    assert(
+      collected.ok && collected.results.some((x) => x.url === pages.interactionUrl),
+      'B6 真实验证 1：收藏的 URL 应与当前页一致',
+    );
+    const collectedId = collected.ok ? collected.results[0].id : '';
+    const collectedView = await svcGet(collectedId);
+    assert(
+      collectedView.trust.assertedBy === 'ai' && collectedView.trust.verification === 'unverified',
+      'B6 真实验证 1：AI change set provenance 恒 ai+unverified',
+    );
+
+    // —— 场景 2：搜索已有源 → 改组与备注（复用 search 结果的 ID 链路）——
+    await freshSession();
+    await sendTask(
+      '把我刚收藏的「真实验证收藏页」改到「日本购物」分组，并备注「只用于中古价格」，分享模式设为 full 以便该备注长期供 AI 检索',
+    );
+    await approveConfirm('场景 2');
+    await waitTerminal('场景 2');
+    recordRounds('场景 2：搜索→get→改组与 userNote（change set 确认）');
+    const reorged = await svcGet(collectedId);
+    assert(reorged.groupName === '日本购物', 'B6 真实验证 2：分组未更新');
+    assert(reorged.userNote === '只用于中古价格', 'B6 真实验证 2：备注未更新');
+    assert(reorged.shareMode === 'full', 'B6 真实验证 2：写 userNote 默认 shareMode=full');
+
+    // —— 场景 3：标成官方 → provenance 恒 AI 推断·未核验 ——
+    await freshSession();
+    await sendTask('把「真实验证收藏页」这个来源标成官方来源');
+    await approveConfirm('场景 3');
+    await waitTerminal('场景 3');
+    recordRounds('场景 3：标成官方（provenance 恒 ai+unverified）');
+    const official = await svcGet(collectedId);
+    assert(official.trust.value === 'official', 'B6 真实验证 3：trust.value 未设为 official');
+    assert(
+      official.trust.assertedBy === 'ai' && official.trust.verification === 'unverified',
+      'B6 真实验证 3：「标成官方」不得伪装 user-asserted',
+    );
+
+    // —— 场景 4：不再优先（priority 降）→ 明确禁用 → 恢复 ——
+    await freshSession();
+    await sendTask('以后不要再优先用「真实验证收藏页」这个站');
+    await approveConfirm('场景 4a');
+    await waitTerminal('场景 4a');
+    recordRounds('场景 4a：不再优先（降 priority，非禁用）');
+    const lowered = await svcGet(collectedId);
+    assert(
+      lowered.priority >= 1 && lowered.priority < reorged.priority && lowered.enabled,
+      'B6 真实验证 4a：应降低 priority 且保持启用（不等同 disable）',
+    );
+    await freshSession();
+    await sendTask('明确禁用「真实验证收藏页」这个来源');
+    await approveConfirm('场景 4b');
+    await waitTerminal('场景 4b');
+    recordRounds('场景 4b：明确禁用（disable op）');
+    const disabled = await svcGet(collectedId);
+    assert(!disabled.enabled && disabled.deletedAt !== null, 'B6 真实验证 4b：禁用未生效');
+    await freshSession();
+    await sendTask('恢复使用「真实验证收藏页」这个来源');
+    await approveConfirm('场景 4c');
+    await waitTerminal('场景 4c');
+    recordRounds('场景 4c：恢复使用（restore op）');
+    const restored = await svcGet(collectedId);
+    assert(restored.enabled && restored.deletedAt === null, 'B6 真实验证 4c：恢复未生效');
+
+    // —— 场景 5：搜索 → 打开 → 读取 → 总结（usage=reachable 全链路）——
+    await freshSession();
+    await sendTask('搜索我的信源库，在新标签页打开「真实验证收藏页」并读取该页面后总结要点');
+    await waitTerminal('场景 5');
+    recordRounds('场景 5：source_search → browser_open → browser_read → 回答');
+    const names5 = await toolNames();
+    assert(names5.includes('source_search'), 'B6 真实验证 5：应出现 source_search');
+    assert(names5.includes('browser_open'), 'B6 真实验证 5：应出现 browser_open');
+    assert(names5.includes('browser_read'), 'B6 真实验证 5：应出现 browser_read');
+    if (dbPath !== null) {
+      await waitFor(
+        async () => probeUsage(collectedId)?.outcome === 'reachable',
+        10000,
+        'B6 真实验证 5：usage 未落库 reachable',
+      );
+    }
+    await finalizeLiveRun('AI 自然语言管理验证');
+  } catch (err) {
+    logError('smoke', 'B6 真实 Provider 验证失败（观察性结果如实登记，不放宽断言）', err);
+    throw err;
+  } finally {
+    await pages.close();
+  }
+}
+
+// ---------- 8.12 B-06/B-07 AI 自然语言管理端到端 + usage 记录（决议 #79/#81/#83/#84） ----------
+// 主进程驱动完整生产链路（自建临时库 + 真实 SourceService + SourceUsageTracker +
+// buildAgentSmokeService 装配 usageBridge → ConversationService.agentAsk → AgentLoop →
+// ToolRegistry（17 工具）→ 权限/确认/审计 → FakeProvider 多轮确定性脚本）。断言覆盖：
+// B-07 全链路（source_search 命中 → browser_open（fragment 变体规范化命中）→ read → 回答；
+// usage_events = reachable；无关 URL/先 open 后 search/跨 run 零记录；open 执行失败 →
+// unreachable 且工具结果 execution-failed；usage 写入失败不影响工具结果）；自然语言管理
+// 五场景（收藏 → L2 deny 零写入且模型收到 denied-by-user 后停止；approve 保存 → 服务层
+// 可见 → Undo；搜索已有 → get → 改组与备注；标 official → trust 恒 ai+unverified；
+// 降 priority/disable/restore）。usage 断言的只读探针 SQL 为 SMOKE_MODE 门控冒烟场景内
+// 测试设施（决议 #84，同决议 #47 精神——非产品数据访问路径）。
+async function runSourcesAgentScenarios(
+  controller: BrowserController,
+  options: SmokeOptions,
+): Promise<void> {
+  const confirm = options.confirmManager;
+  if (confirm === undefined) {
+    logWarn('smoke', 'B-06 场景跳过：未装配 ConfirmManager');
+    return;
+  }
+  const tempRoot = app.getPath('temp');
+  const probeRoot = join(tempRoot, `aibrowse-b6-usage-${process.pid}`);
+  rmSync(probeRoot, { recursive: true, force: true });
+  mkdirSync(probeRoot, { recursive: true });
+  let handle: DbHandle | null = null;
+  let service: SourceServiceImpl | null = null;
+  try {
+    handle = openDb(join(probeRoot, 'usage.db'));
+    const outcome = runMigrations(handle);
+    assert(outcome.state === 'migrated' && outcome.toVersion === 1, 'B-06：v0→v1 迁移应完成');
+    service = new SourceServiceImpl({ db: handle });
+    const tracker = new SourceUsageTracker((sourceId, o) => service?.recordUsage(sourceId, o));
+    // usage_events 只读探针（同决议 #47 精神：SMOKE_MODE 冒烟场景测试设施）
+    const probeUsage = (sourceId: string): { outcome: string } | null => {
+      const row = handle
+        ?.prepare('SELECT outcome FROM usage_events WHERE source_id = ?')
+        .get(sourceId) as { outcome: string } | undefined;
+      return row ?? null;
+    };
+    const probeUsageCount = (): number => {
+      const row = handle?.prepare('SELECT COUNT(*) AS n FROM usage_events').get() as {
+        n: number;
+      };
+      return row?.n ?? 0;
+    };
+    const pages = await startControlledPages();
+
+    // —— 种子：usage 目标源（page scope，受控页真实 URL）——
+    const usageSeed = await service.addManual({
+      scope: 'page',
+      url: pages.interactionUrl,
+      name: 'B06使用站',
+    });
+    assert(usageSeed.ok, 'B-06 种子：usage 目标源应添加成功');
+    const usageSeedId = usageSeed.ok ? usageSeed.source.id : '';
+
+    // —— B-07a：search 命中 → open（fragment 变体，规范化命中）→ read → 回答 ——
+    // usage_events = reachable；审计恰好 3 条 tool-call + 各 run 审计
+    {
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-a'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-s1',
+                    name: 'source_search',
+                    arguments: JSON.stringify({ query: 'B06使用站' }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-o1',
+                    name: 'browser_open',
+                    arguments: JSON.stringify({ url: `${pages.interactionUrl}#b6` }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [{ id: 'b6-r1', name: 'browser_read', arguments: '{}' }],
+              },
+            ],
+            [{ text: '已打开并使用该信源。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({ sessionId: session?.id ?? '', goal: '使用信源任务' });
+      assert(ask.ok, 'B-07a agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B-07a：run 应 done 终态');
+      await waitFor(
+        async () => probeUsage(usageSeedId)?.outcome === 'reachable',
+        5000,
+        'B-07：usage 未落库 reachable',
+      );
+      assert(h.auditEntries.length === 3, 'B-07a：审计恰好 3 条 tool-call');
+      const openStep = h.steps.find((s) => s.step.toolCallId === 'b6-o1');
+      assert(openStep !== undefined && openStep.step.ok, 'B-07a：open 步骤应成功');
+      // 无关 URL（同 origin 不同 page）零记录；未打开的源零记录
+      assert(probeUsageCount() === 1, 'B-07：usage_events 应仅 1 行');
+      h.service.dispose();
+    }
+
+    // —— B-07b：无关 URL open（同 origin 不同 page / 未命中）→ 零记录 ——
+    {
+      const unrelatedSeed = await service.addManual({
+        scope: 'page',
+        url: 'https://example.com/b6-never-opened',
+        name: 'B06未打开站',
+      });
+      assert(unrelatedSeed.ok, 'B-06 种子：未打开源应添加成功');
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-b'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-s2',
+                    name: 'source_search',
+                    arguments: JSON.stringify({ query: 'B06使用站' }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-o2',
+                    name: 'browser_open',
+                    arguments: JSON.stringify({ url: pages.hostileUrl }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '已打开其他页面。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({ sessionId: session?.id ?? '', goal: '打开其他页面' });
+      assert(ask.ok, 'B-07b agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B-07b：run 应 done 终态');
+      await delay(200); // 潜在误写冲刷窗口
+      assert(probeUsageCount() === 1, 'B-07：无关 URL 不得新增 usage 行');
+      assert(
+        probeUsage(unrelatedSeed.ok ? unrelatedSeed.source.id : '') === null,
+        'B-07：未打开的源零记录',
+      );
+      h.service.dispose();
+    }
+
+    // —— B-07c：先 open 后 search → 零记录（hints 登记于 open 之后）——
+    {
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-c'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-o3',
+                    name: 'browser_open',
+                    arguments: JSON.stringify({ url: pages.interactionUrl }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-s3',
+                    name: 'source_search',
+                    arguments: JSON.stringify({ query: 'B06使用站' }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '先打开后搜索。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({ sessionId: session?.id ?? '', goal: '先开后搜' });
+      assert(ask.ok, 'B-07c agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B-07c：run 应 done 终态');
+      await delay(200);
+      assert(probeUsageCount() === 1, 'B-07：先 open 后 search 不得新增 usage 行');
+      h.service.dispose();
+    }
+
+    // —— B-07d：跨 run 隔离——run A 仅 search（登记 hints）、run B 仅 open → 零记录 ——
+    {
+      // run A：仅 search
+      const hA = buildAgentSmokeService(
+        join(probeRoot, 'conv-da'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-sa',
+                    name: 'source_search',
+                    arguments: JSON.stringify({ query: 'B06使用站' }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '已检索。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const sessionA = await hA.service.createSession();
+      const askA = await hA.service.agentAsk({ sessionId: sessionA?.id ?? '', goal: '检索信源' });
+      assert(askA.ok, 'B-07d run A agentAsk 应返回 ok');
+      const runA = await waitForAgentRun(hA.runs, askA.requestId);
+      assert(runA.run.status === 'done', 'B-07d：run A 应 done 终态');
+      hA.service.dispose();
+      // run B：仅 open（跨 run hints 不可见——终态清理 + 每 run 独立）
+      const hB = buildAgentSmokeService(
+        join(probeRoot, 'conv-db'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-ob',
+                    name: 'browser_open',
+                    arguments: JSON.stringify({ url: pages.interactionUrl }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '已打开。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const sessionB = await hB.service.createSession();
+      const askB = await hB.service.agentAsk({ sessionId: sessionB?.id ?? '', goal: '打开页面' });
+      assert(askB.ok, 'B-07d run B agentAsk 应返回 ok');
+      const runB = await waitForAgentRun(hB.runs, askB.requestId);
+      assert(runB.run.status === 'done', 'B-07d：run B 应 done 终态');
+      await delay(200);
+      assert(probeUsageCount() === 1, 'B-07：跨 run 不得新增 usage 行（hints 不跨 run）');
+      hB.service.dispose();
+    }
+
+    // —— B-07e：open 执行失败（createTab 抛异常）→ unreachable + 工具结果 execution-failed ——
+    {
+      // 原型链继承真实 controller 的全部方法，仅覆写 createTab（对象展开会丢失
+      // 类原型方法——BrowserControllerImpl 方法在 prototype 上，非自有可枚举属性）
+      const throwingBrowser = Object.create(controller) as BrowserController;
+      throwingBrowser.createTab = async () => {
+        throw new Error('B-06 注入：窗口已销毁');
+      };
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-e'),
+        throwingBrowser,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-s5',
+                    name: 'source_search',
+                    arguments: JSON.stringify({ query: 'B06使用站' }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-o5',
+                    name: 'browser_open',
+                    arguments: JSON.stringify({ url: pages.interactionUrl }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '打开失败。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({ sessionId: session?.id ?? '', goal: '打开会失败' });
+      assert(ask.ok, 'B-07e agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B-07e：run 应 done 终态（工具失败不终止 run）');
+      const openStep = h.steps.find((s) => s.step.toolCallId === 'b6-o5');
+      assert(
+        openStep !== undefined &&
+          !openStep.step.ok &&
+          openStep.step.errorCode === 'execution-failed',
+        'B-07e：open 失败应为 execution-failed',
+      );
+      await waitFor(
+        async () => probeUsage(usageSeedId)?.outcome === 'unreachable',
+        5000,
+        'B-07：执行失败应落库 unreachable（最近一次语义）',
+      );
+      h.service.dispose();
+    }
+
+    // —— B-07f：usage 写入失败（writer 抛异常）→ 工具结果 ok、run 正常 done、零崩溃 ——
+    {
+      const badTracker = new SourceUsageTracker(() => {
+        throw new Error('B-06 注入：usage 写入失败');
+      });
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-f'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-s6',
+                    name: 'source_search',
+                    arguments: JSON.stringify({ query: 'B06使用站' }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-o6',
+                    name: 'browser_open',
+                    arguments: JSON.stringify({ url: pages.interactionUrl }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '写入失败但任务正常。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => badTracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({
+        sessionId: session?.id ?? '',
+        goal: 'usage 失败任务',
+      });
+      assert(ask.ok, 'B-07f agentAsk 应返回 ok');
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B-07f：run 应 done 终态（写入失败不影响 Agent 终态）');
+      const openStep = h.steps.find((s) => s.step.toolCallId === 'b6-o6');
+      assert(openStep !== undefined && openStep.step.ok, 'B-07f：open 结果不受写入失败影响');
+      h.service.dispose();
+    }
+
+    // —— B6 自然语言管理（决议 #83 语义）：deny 零写入 + 模型收到 denied-by-user 后停止 ——
+    {
+      const denyScript: FakeProviderScript = {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'b6-apply-1',
+                  name: 'source_apply_changes',
+                  arguments: JSON.stringify({
+                    ops: [
+                      {
+                        kind: 'add',
+                        scope: 'page',
+                        url: 'https://example.com/b6-deny',
+                        name: 'B06拒绝站',
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          ],
+          [{ text: '好的，已停止该操作。' }], // deny 后转为只读解释并停止（不重提等价写入）
+        ],
+      };
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-deny'),
+        controller,
+        confirm,
+        denyScript,
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({ sessionId: session?.id ?? '', goal: '收藏一个网站' });
+      assert(ask.ok, 'B6 deny agentAsk 应返回 ok');
+      await waitFor(
+        async () => h.confirms.length >= 1,
+        5000,
+        'B6：change set 应建立确认 pending（L2 确认必现）',
+      );
+      assert(
+        await h.service.confirmTool(h.confirms[0].toolCallId, false),
+        'B6：deny 应经 confirmTool 生效',
+      );
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B6 deny：run 应 done 终态（deny 后停止）');
+      const deniedStep = h.steps.find((s) => s.step.toolCallId === 'b6-apply-1');
+      assert(
+        deniedStep !== undefined && deniedStep.step.errorCode === 'denied-by-user',
+        'B6：deny 后模型必须收到 denied-by-user 结构化回注',
+      );
+      const deniedHit = await service.search('B06拒绝站', { audience: 'user' });
+      assert(deniedHit.ok && deniedHit.results.length === 0, 'B6：deny 零写入（未持久化任何条目）');
+      assert(
+        h.auditEntries.filter((e) => e.toolCallId === 'b6-apply-1').length === 1,
+        'B6：deny 审计恰好一条 decision=denied',
+      );
+      assert(
+        h.auditEntries.find((e) => e.toolCallId === 'b6-apply-1')?.decision === 'denied',
+        'B6：deny 审计决策应为 denied',
+      );
+      assert(run.run.stepsUsed === 1, 'B6：deny 后模型不得自动重提等价写操作（仅 1 步）');
+      h.service.dispose();
+    }
+
+    // —— B6 场景 1+5：收藏当前页（approve）→ 保存 → 服务层可见 → durable Undo ——
+    let officialId = '';
+    {
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-approve'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-apply-2',
+                    name: 'source_apply_changes',
+                    arguments: JSON.stringify({
+                      ops: [
+                        {
+                          kind: 'add',
+                          scope: 'page',
+                          url: 'https://example.com/b6-collect',
+                          name: 'B06收藏站',
+                          groupName: 'B06组',
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '已收藏该网站。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({ sessionId: session?.id ?? '', goal: '收藏这个网站' });
+      assert(ask.ok, 'B6 approve agentAsk 应返回 ok');
+      await waitFor(
+        async () => h.confirms.length >= 1,
+        5000,
+        'B6：收藏 change set 应建立确认 pending',
+      );
+      assert(await h.service.confirmTool(h.confirms[0].toolCallId, true), 'B6：approve 应生效');
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B6 approve：run 应 done 终态');
+      const collected = await service.search('B06收藏站', { audience: 'user' });
+      assert(
+        collected.ok && collected.results.length === 1,
+        'B6：approve 后信源持久化（服务层可见）',
+      );
+      assert(collected.ok && collected.results[0].groupName === 'B06组', 'B6：分组名持久化');
+      assert(
+        h.auditEntries.find((e) => e.toolCallId === 'b6-apply-2')?.decision === 'confirmed',
+        'B6：approve 审计决策应为 confirmed',
+      );
+      // durable Undo（消费幂等；重启语义由 B-02 双进程固化）
+      const undoable = await service.listUndoable();
+      const entry = undoable.find((u) => u.changeType === 'agent-change-set');
+      assert(entry !== undefined, 'B6：journal 应有 agent-change-set 可撤销条目');
+      const undoRes = await service.undoChange(entry.idempotencyKey);
+      assert(undoRes.ok, 'B6：Undo 生效');
+      const afterUndo = await service.search('B06收藏站', { audience: 'user' });
+      assert(
+        afterUndo.ok && afterUndo.results.length === 0,
+        'B6：Undo 后条目消失（durable Undo 全链路）',
+      );
+      h.service.dispose();
+    }
+
+    // —— B6 场景 2：搜索已有 → get → 改组与 userNote（shareMode 随 userNote 变 full）——
+    {
+      const target = await service.addManual({
+        scope: 'page',
+        url: 'https://example.com/b6-reorg',
+        name: 'B06重排站',
+        shareMode: 'metadata',
+      });
+      assert(target.ok, 'B6 种子：重排站应添加成功');
+      const targetId = target.ok ? target.source.id : '';
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-reorg'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-q1',
+                    name: 'source_search',
+                    arguments: JSON.stringify({ query: 'B06重排站' }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-g1',
+                    name: 'source_get',
+                    arguments: JSON.stringify({ sourceId: targetId }),
+                  },
+                ],
+              },
+            ],
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-u1',
+                    name: 'source_apply_changes',
+                    arguments: JSON.stringify({
+                      ops: [
+                        {
+                          kind: 'update',
+                          sourceId: targetId,
+                          expectedVersion: 1,
+                          patch: {
+                            groupName: 'B06购物组',
+                            userNote: '只用于中古价格',
+                            // 备注供 AI 长期使用的意图 → 模型显式设 full（决议 #52 缺省
+                            // 规则仅 add；update 缺省保持现状，不自动提升分享模式）
+                            shareMode: 'full',
+                          },
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '已改组并备注。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({
+        sessionId: session?.id ?? '',
+        goal: '把它改到购物组并备注只用于中古价格',
+      });
+      assert(ask.ok, 'B6 reorg agentAsk 应返回 ok');
+      await waitFor(
+        async () => h.confirms.length >= 1,
+        5000,
+        'B6：改组 change set 应建立确认 pending',
+      );
+      assert(
+        await h.service.confirmTool(h.confirms[0].toolCallId, true),
+        'B6：改组 approve 应生效',
+      );
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B6 reorg：run 应 done 终态');
+      const reorged = await service.get(targetId, 'user');
+      assert(reorged.ok, 'B6：改组后 get 应成功');
+      if (reorged.ok) {
+        assert(reorged.source.groupName === 'B06购物组', 'B6：分组名已持久化');
+        assert(reorged.source.userNote === '只用于中古价格', 'B6：userNote 已持久化');
+        assert(reorged.source.shareMode === 'full', 'B6：写 userNote 默认 shareMode=full');
+        assert(reorged.source.version === 2, 'B6：版本递进（乐观并发）');
+      }
+      h.service.dispose();
+    }
+
+    // —— B6 场景 3：标 official → trust 恒 {official, ai, unverified}（用户措辞不改变通道）——
+    {
+      const target = await service.addManual({
+        scope: 'page',
+        url: 'https://example.com/b6-official',
+        name: 'B06官方站',
+      });
+      assert(target.ok, 'B6 种子：官方站应添加成功');
+      const targetId = target.ok ? target.source.id : '';
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-official'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-u2',
+                    name: 'source_apply_changes',
+                    arguments: JSON.stringify({
+                      ops: [
+                        {
+                          kind: 'update',
+                          sourceId: targetId,
+                          expectedVersion: 1,
+                          patch: { trust: { value: 'official' } },
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '已标为官方来源（AI 推断·未核验）。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({
+        sessionId: session?.id ?? '',
+        goal: '把这个来源标成官方来源',
+      });
+      assert(ask.ok, 'B6 official agentAsk 应返回 ok');
+      await waitFor(
+        async () => h.confirms.length >= 1,
+        5000,
+        'B6：official change set 应建立确认 pending',
+      );
+      assert(
+        await h.service.confirmTool(h.confirms[0].toolCallId, true),
+        'B6：official approve 应生效',
+      );
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B6 official：run 应 done 终态');
+      const view = await service.get(targetId, 'user');
+      assert(view.ok, 'B6：official 后 get 应成功');
+      if (view.ok) {
+        assert(view.source.trust.value === 'official', 'B6：trust.value 已设为 official');
+        assert(view.source.trust.assertedBy === 'ai', 'B6：AI change set 恒 assertedBy=ai');
+        assert(view.source.trust.verification === 'unverified', 'B6：AI 断言恒 unverified');
+      }
+      officialId = targetId;
+      h.service.dispose();
+    }
+
+    // —— B6 场景 4：降低 priority（「不再优先」≠ disable）→ 明确 disable → restore ——
+    {
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-priority'),
+        controller,
+        confirm,
+        {
+          rounds: [
+            [
+              {
+                kind: 'toolCalls',
+                toolCalls: [
+                  {
+                    id: 'b6-u3',
+                    name: 'source_apply_changes',
+                    arguments: JSON.stringify({
+                      ops: [
+                        {
+                          kind: 'update',
+                          sourceId: officialId,
+                          expectedVersion: 2,
+                          patch: { priority: 1 },
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              },
+            ],
+            [{ text: '已降低优先级。' }],
+          ],
+        },
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({
+        sessionId: session?.id ?? '',
+        goal: '以后不要再优先用这个站',
+      });
+      assert(ask.ok, 'B6 priority agentAsk 应返回 ok');
+      await waitFor(
+        async () => h.confirms.length >= 1,
+        5000,
+        'B6：priority change set 应建立确认 pending',
+      );
+      assert(
+        await h.service.confirmTool(h.confirms[0].toolCallId, true),
+        'B6：priority approve 应生效',
+      );
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B6 priority：run 应 done 终态');
+      const lowered = await service.get(officialId, 'user');
+      assert(
+        lowered.ok && lowered.source.priority === 1 && lowered.source.enabled,
+        'B6：「不再优先」= 降 priority（1）且保持启用（非禁用）',
+      );
+      h.service.dispose();
+    }
+    {
+      const disableScript: FakeProviderScript = {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'b6-u4',
+                  name: 'source_apply_changes',
+                  arguments: JSON.stringify({
+                    ops: [{ kind: 'disable', sourceId: officialId, expectedVersion: 3 }],
+                  }),
+                },
+              ],
+            },
+          ],
+          [{ text: '已禁用该信源。' }],
+        ],
+      };
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-disable'),
+        controller,
+        confirm,
+        disableScript,
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({
+        sessionId: session?.id ?? '',
+        goal: '明确禁用这个来源',
+      });
+      assert(ask.ok, 'B6 disable agentAsk 应返回 ok');
+      await waitFor(
+        async () => h.confirms.length >= 1,
+        5000,
+        'B6：disable change set 应建立确认 pending',
+      );
+      assert(
+        await h.service.confirmTool(h.confirms[0].toolCallId, true),
+        'B6：disable approve 应生效',
+      );
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B6 disable：run 应 done 终态');
+      const disabled = await service.get(officialId, 'user');
+      assert(
+        disabled.ok && !disabled.source.enabled && disabled.source.deletedAt !== null,
+        'B6：明确 disable → enabled=0 + deleted_at 联动（决议 #51）',
+      );
+      h.service.dispose();
+    }
+    {
+      const restoreScript: FakeProviderScript = {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'b6-u5',
+                  name: 'source_apply_changes',
+                  arguments: JSON.stringify({
+                    ops: [{ kind: 'restore', sourceId: officialId, expectedVersion: 4 }],
+                  }),
+                },
+              ],
+            },
+          ],
+          [{ text: '已恢复该信源。' }],
+        ],
+      };
+      const h = buildAgentSmokeService(
+        join(probeRoot, 'conv-restore'),
+        controller,
+        confirm,
+        restoreScript,
+        undefined,
+        undefined,
+        service,
+        (runId) => tracker.bridge(runId),
+      );
+      const session = await h.service.createSession();
+      const ask = await h.service.agentAsk({
+        sessionId: session?.id ?? '',
+        goal: '恢复使用这个来源',
+      });
+      assert(ask.ok, 'B6 restore agentAsk 应返回 ok');
+      await waitFor(
+        async () => h.confirms.length >= 1,
+        5000,
+        'B6：restore change set 应建立确认 pending',
+      );
+      assert(
+        await h.service.confirmTool(h.confirms[0].toolCallId, true),
+        'B6：restore approve 应生效',
+      );
+      const run = await waitForAgentRun(h.runs, ask.requestId);
+      assert(run.run.status === 'done', 'B6 restore：run 应 done 终态');
+      const restored = await service.get(officialId, 'user');
+      assert(
+        restored.ok && restored.source.enabled && restored.source.deletedAt === null,
+        'B6：restore → enabled=1 + deleted_at 清空（决议 #51）',
+      );
+      h.service.dispose();
+    }
+
+    logInfo(
+      'smoke',
+      '8.12 B-06/B-07 全部通过（usage：命中→open→read 全链路 reachable/无关・先开后搜・跨 run 零记录/执行失败 unreachable/写入失败零影响；自然语言管理：deny 零写入+denied-by-user 停止/收藏 approve→保存→Undo/搜索→get→改组备注/标 official 恒 ai+unverified/降 priority≠disable/明确 disable→restore）',
+    );
+  } catch (err) {
+    logError('smoke', '8.12 B-06/B-07 场景失败', err);
+    throw err;
+  } finally {
+    if (service !== null) service.dispose();
+    else if (handle !== null) closeDb(handle);
+    rmSync(probeRoot, { recursive: true, force: true });
+  }
+}
+
 export async function runSmokeScenario(
   controller: BrowserController,
   options: SmokeOptions = {},
@@ -8788,6 +9989,14 @@ export async function runSmokeScenario(
     //     离线确定性）；AIBROWSE_LIVE_PROVIDER=1 时替换为 S5 真实 Provider 场景
     //     （完整生产链路，§13.2 真实流式一问一答）
     if (options.liveSmoke === undefined) {
+      if (options.liveAgentSources === true) {
+        // B6（决议 #85）：AIBROWSE_LIVE_AGENT_SOURCES=1 但未提供 Key → 回退离线矩阵
+        // （离线可测路由——不发起付费/公网 Provider 请求）
+        logWarn(
+          'smoke',
+          '真实 Provider Sources 验证跳过：未提供 AIBROWSE_TEST_API_KEY（回退离线矩阵）',
+        );
+      }
       aiSmoke = await runAiConversationScenarios(controller, options.uiWindow);
       aiUiSmoke =
         options.uiWindow !== null &&
@@ -8802,7 +10011,19 @@ export async function runSmokeScenario(
           options.aiSmokeDir !== undefined,
         '真实 Provider 冒烟需要 UI 窗口与数据目录选项',
       );
-      if (
+      if (options.liveAgentSources === true) {
+        // B6：真实 Provider AI 自然语言管理验证（AIBROWSE_LIVE_AGENT_SOURCES=1，
+        // 需用户授权——询问边界；场景见 runLiveAgentSourcesScenarios；与
+        // LIVE_AGENT/PRE/SUPPLEMENT 互斥由 index.ts 门控保证）
+        await runLiveAgentSourcesScenarios(
+          controller,
+          options.uiWindow,
+          options.aiSmokeDir,
+          options.liveSmoke,
+          options.sourcesService ?? null,
+          options.sourcesDbPath ?? null,
+        );
+      } else if (
         options.liveAgent === true ||
         options.liveAgentPre === true ||
         options.liveAgentSupplement === true
@@ -9067,6 +10288,25 @@ export async function runSmokeScenario(
       options.sourcesService !== undefined
     ) {
       await runSourcesUiMatrix(options, controller);
+    }
+
+    // 8.12 B-06/B-07：AI 自然语言管理端到端 + usage 记录（自建临时库 harness 驱动
+    // 完整生产链路；LIVE 模式跳过同 8.4–8.6 条件）
+    if (options.liveSmoke === undefined && options.confirmManager !== undefined) {
+      await runSourcesAgentScenarios(controller, options);
+    }
+
+    // 8.13 B-06 UI DOM：真实任务模式 → ConfirmDialog approve/deny → preload/IPC →
+    // AgentLoop → 生产 SourceService → Sources UI 可见/Undo + usage_events 只读探针
+    // （决议 #84 测试设施；需要 uiWindow/sourcesService/sourcesDbPath）
+    if (
+      options.liveSmoke === undefined &&
+      options.uiWindow !== null &&
+      options.uiWindow !== undefined &&
+      options.sourcesService !== undefined &&
+      options.sourcesDbPath !== undefined
+    ) {
+      await runSourcesAgentUiScenarios(options, controller);
     }
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
@@ -9647,7 +10887,14 @@ async function runSourcesUiMatrix(
     });
     await panelGoBack(uiWc);
     await clickUi(uiWc, '.sources-refresh'); // 直接服务种子无 changed 事件 → 面板重读列表
-    await delay(200);
+    // B6 会话修正（冒烟断言自身时序缺陷）：固定 delay(200) 在并行负载下可能早于
+    // 列表重渲染完成（openDetailByName 找不到条目 → executeJavaScript 抛异常，
+    // 2026-08-15 B6 冒烟复跑实测一次）——改为确定性等待条目出现。
+    await waitFor(
+      async () => (await uiTextAll(uiWc, '.sources-item-name')).some((t) => t === 'B05AI站'),
+      8000,
+      'B-05：刷新后列表未见 B05AI站',
+    );
     await openDetailByName('B05AI站');
     await waitForUiText(
       uiWc,
@@ -9863,6 +11110,360 @@ async function panelGoBack(uiWc: WebContents): Promise<void> {
   if (await uiHas(uiWc, '.sources-back')) {
     await clickUi(uiWc, '.sources-back');
     await delay(200);
+  }
+}
+
+// ---------- 8.13 B-06 UI DOM 端到端（决议 #79/#81/#83/#84；默认矩阵自动包含） ----------
+// 真实 DOM 任务模式 → ConfirmDialog approve/deny → preload bridge → IPC（sender+主帧
+// 校验）→ 生产 ConversationServiceImpl.agentAsk（smokeUiFake 脚本）→ AgentLoop →
+// ToolRegistry → 生产 SourceService（usageBridge 装配于 index.ts 冒烟装配）→ Sources
+// UI 可见/Undo。断言覆盖（至少一条真实 DOM 链路，不直接调用服务驱动写）：
+// 收藏当前页 → L2 确认 approve → 保存 → Sources UI 可见 + provenance「AI 推断·未核验」
+// → UI Undo；deny 零写入且 ToolStep 展示「已拒绝」；source_search → browser_open
+// （fragment 变体）→ browser_read → 回答 → usage_events = reachable（只读探针 SQL，
+// 决议 #84 测试设施）；无关 URL open 零记录。
+async function runSourcesAgentUiScenarios(
+  options: SmokeOptions,
+  controller: BrowserController,
+): Promise<void> {
+  const uiWindow = options.uiWindow;
+  if (uiWindow === null || uiWindow === undefined) {
+    throw new Error('B-06 UI 需要 UI 窗口（index.ts 冒烟装配注入）');
+  }
+  const service = options.sourcesService;
+  if (service === undefined) {
+    throw new Error('B-06 UI 需要生产 SourceService（index.ts 冒烟装配注入）');
+  }
+  const dbPath = options.sourcesDbPath;
+  if (dbPath === undefined) {
+    throw new Error('B-06 UI 需要生产 Sources 库路径（usage 探针，决议 #84）');
+  }
+  const uiWc = uiWindow.webContents;
+  const pages = await startControlledPages();
+  const beforeIds = new Set((await controller.getTabs()).map((t) => t.id));
+  const activeBefore = (await controller.getActiveTab())?.id ?? null;
+  assert(activeBefore !== null, 'B-06 UI：需要进入前存在活动 Tab');
+
+  const ensurePanelOpen = async (): Promise<void> => {
+    if (!(await uiHas(uiWc, '.ai-panel'))) {
+      await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
+      await waitForUiText(uiWc, '.ai-panel-title', 'AI 共读助手', 5000, 'B-06 UI：AI 面板未打开');
+    }
+  };
+  const switchMode = async (mode: 'chat' | 'task'): Promise<void> => {
+    await clickUi(uiWc, mode === 'task' ? '.ai-mode-task' : '.ai-mode-chat');
+    await delay(150);
+  };
+  const freshSession = async (): Promise<void> => {
+    await clickUi(uiWc, '.ai-new-session');
+    await waitFor(
+      async () => (await uiCount(uiWc, '.ai-session-item')) >= 1,
+      5000,
+      'B-06 UI：新建会话失败',
+    );
+    await delay(200);
+  };
+  const runTask = async (goal: string, script: FakeProviderScript): Promise<void> => {
+    setSmokeUiFakeScript(script);
+    await typeIntoComposer(uiWc, goal);
+  };
+  const waitRunDone = async (label: string): Promise<void> => {
+    await waitFor(
+      async () => (await uiCount(uiWc, '.ai-agent-run')) >= 1,
+      30000,
+      `${label}：run 未在 30 秒内到达终态`,
+    );
+  };
+  // usage_events 只读探针（决议 #84：SMOKE_MODE 门控冒烟场景测试设施——非产品数据
+  // 访问路径；只读 SELECT 经独立连接，不改写任何数据）
+  const probeUsage = (sourceId: string): { outcome: string } | null => {
+    const probeDb = openDb(dbPath);
+    try {
+      const row = probeDb
+        .prepare('SELECT outcome FROM usage_events WHERE source_id = ?')
+        .get(sourceId) as { outcome: string } | undefined;
+      return row ?? null;
+    } finally {
+      closeDb(probeDb);
+    }
+  };
+  const probeUsageCount = (): number => {
+    const probeDb = openDb(dbPath);
+    try {
+      const row = probeDb.prepare('SELECT COUNT(*) AS n FROM usage_events').get() as {
+        n: number;
+      };
+      return row?.n ?? 0;
+    } finally {
+      closeDb(probeDb);
+    }
+  };
+
+  try {
+    await ensurePanelOpen();
+    await switchMode('task');
+
+    // —— U1：收藏当前页 → L2 确认 approve（真实 ConfirmDialog）→ 保存 → UI 可见 → UI Undo ——
+    {
+      // 当前页 = 受控交互页（真实 http 本地页面，normalize 可规范化）
+      assert(
+        await controller.navigate(activeBefore, pages.interactionUrl),
+        'B-06 U1：导航到受控页应成功',
+      );
+      await waitFor(
+        async () => (await controller.getActiveTab())?.url === pages.interactionUrl,
+        10000,
+        'B-06 U1：受控页未在 10 秒内就绪',
+      );
+      await freshSession();
+      await runTask('收藏当前这个网站', {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'b6ui-apply-1',
+                  name: 'source_apply_changes',
+                  arguments: JSON.stringify({
+                    ops: [
+                      {
+                        kind: 'add',
+                        scope: 'page',
+                        url: pages.interactionUrl,
+                        name: 'B06UI收藏页',
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          ],
+          [{ text: '已收藏该网站，可在信源面板查看与撤销。' }],
+        ],
+      });
+      await waitFor(
+        async () => await uiHas(uiWc, '.ai-confirm-dialog'),
+        15000,
+        'B-06 U1：L2 确认框未出现',
+      );
+      await clickUi(uiWc, '.ai-confirm-approve');
+      await waitFor(
+        async () => !(await uiHas(uiWc, '.ai-confirm-dialog')),
+        8000,
+        'B-06 U1：approve 后确认框未关闭',
+      );
+      await waitRunDone('B-06 U1');
+      // 保存断言（服务层 + UI 均可见）
+      const hit = await service.search('B06UI收藏页', { audience: 'user' });
+      assert(hit.ok && hit.results.length === 1, 'B-06 U1：approve 后信源持久化');
+      const collectedId = hit.ok ? hit.results[0].id : '';
+      await clickUi(uiWc, '.sources-toggle');
+      await waitFor(
+        async () => await uiHas(uiWc, '.sources-panel'),
+        5000,
+        'B-06 U1：信源面板未打开',
+      );
+      await waitForUiText(uiWc, '.sources-panel-title', '信源', 5000, 'B-06 U1：信源面板标题缺失');
+      await waitFor(
+        async () => (await uiTextAll(uiWc, '.sources-item-name')).some((t) => t === 'B06UI收藏页'),
+        8000,
+        'B-06 U1：Sources UI 列表未见收藏条目',
+      );
+      // 详情 provenance = AI 推断·未核验（AI change set 通道恒 ai+unverified）
+      await uiJs(
+        uiWc,
+        `(() => {
+          const btn = [...document.querySelectorAll('.sources-item-name')]
+            .find((el) => el.textContent === 'B06UI收藏页');
+          if (!btn) throw new Error('B-06 U1：列表条目不存在');
+          btn.click();
+        })()`,
+      );
+      await waitFor(async () => await uiHas(uiWc, '.sources-detail'), 5000, 'B-06 U1：详情未打开');
+      const provenance = await uiText(uiWc, '.sources-provenance');
+      assert(
+        provenance.includes('AI 推断'),
+        `B-06 U1：provenance 应为 AI 推断（实际 ${provenance}）`,
+      );
+      // UI Undo（真实 DOM 按钮 → IPC → SourceService.undoChange）
+      const undoableBefore = await service.listUndoable();
+      await clickUi(uiWc, '.sources-undo-btn');
+      await waitFor(
+        async () => (await service.listUndoable()).length === undoableBefore.length - 1,
+        8000,
+        'B-06 U1：UI Undo 未消费 journal 条目',
+      );
+      const afterUndo = await service.search('B06UI收藏页', { audience: 'user' });
+      assert(afterUndo.ok && afterUndo.results.length === 0, 'B-06 U1：UI Undo 后条目消失');
+      void collectedId;
+      await panelGoBack(uiWc);
+      await clickUi(uiWc, '.sources-collapse');
+      await waitFor(
+        async () => !(await uiHas(uiWc, '.sources-panel')),
+        5000,
+        'B-06 U1：面板未收起',
+      );
+      await ensurePanelOpen();
+      await switchMode('task');
+    }
+
+    // —— U2：deny 零写入 + ToolStep「已拒绝」展示（真实 ConfirmDialog deny 默认）——
+    {
+      await freshSession();
+      await runTask('收藏一个网站', {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'b6ui-apply-2',
+                  name: 'source_apply_changes',
+                  arguments: JSON.stringify({
+                    ops: [
+                      {
+                        kind: 'add',
+                        scope: 'page',
+                        url: 'https://example.com/b6ui-deny',
+                        name: 'B06UI拒绝站',
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          ],
+          [{ text: '好的，已停止该操作。' }],
+        ],
+      });
+      await waitFor(
+        async () => await uiHas(uiWc, '.ai-confirm-dialog'),
+        15000,
+        'B-06 U2：L2 确认框未出现',
+      );
+      await clickUi(uiWc, '.ai-confirm-deny');
+      await waitFor(
+        async () => !(await uiHas(uiWc, '.ai-confirm-dialog')),
+        8000,
+        'B-06 U2：deny 后确认框未关闭',
+      );
+      await waitRunDone('B-06 U2');
+      const deniedHit = await service.search('B06UI拒绝站', { audience: 'user' });
+      assert(
+        deniedHit.ok && deniedHit.results.length === 0,
+        'B-06 U2：deny 零写入（未持久化任何条目）',
+      );
+      // ToolStep 展示「已拒绝」+ 工具名（模型收到 denied-by-user 的结构化可见证据）
+      assert(
+        (await uiTextAll(uiWc, '.ai-tool-call-name')).some((t) => t === 'source_apply_changes'),
+        'B-06 U2：ToolCallList 应展示 source_apply_changes 步骤',
+      );
+      assert(
+        (await uiTextAll(uiWc, '.ai-tool-call-decision')).some((t) => t === '已拒绝'),
+        'B-06 U2：deny 步骤应展示「已拒绝」',
+      );
+    }
+
+    // —— U3：source_search → browser_open（fragment 变体）→ browser_read → 回答；
+    //    usage_events = reachable（生产装配 usageBridge 全链路）——
+    {
+      const seed = await service.addManual({
+        scope: 'page',
+        url: pages.interactionUrl,
+        name: 'B06UI使用站',
+      });
+      assert(seed.ok, 'B-06 U3 种子：usage 目标源应添加成功');
+      const seedId = seed.ok ? seed.source.id : '';
+      const usageCountBefore = probeUsageCount();
+      await freshSession();
+      await runTask('使用信源 B06UI使用站打开并读取该页面', {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'b6ui-s1',
+                  name: 'source_search',
+                  arguments: JSON.stringify({ query: 'B06UI使用站' }),
+                },
+              ],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'b6ui-o1',
+                  name: 'browser_open',
+                  arguments: JSON.stringify({ url: `${pages.interactionUrl}#b6ui` }),
+                },
+              ],
+            },
+          ],
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [{ id: 'b6ui-r1', name: 'browser_read', arguments: '{}' }],
+            },
+          ],
+          [{ text: '已打开并读取该信源页面。' }],
+        ],
+      });
+      await waitRunDone('B-06 U3');
+      await waitFor(
+        async () => probeUsage(seedId)?.outcome === 'reachable',
+        5000,
+        'B-06 U3：usage 未落库 reachable（生产 usageBridge 全链路）',
+      );
+      assert(probeUsageCount() === usageCountBefore + 1, 'B-06 U3：usage_events 应恰新增 1 行');
+      // 无关 URL（同 origin 不同 page）：零记录
+      await freshSession();
+      await runTask('打开这个页面', {
+        rounds: [
+          [
+            {
+              kind: 'toolCalls',
+              toolCalls: [
+                {
+                  id: 'b6ui-o2',
+                  name: 'browser_open',
+                  arguments: JSON.stringify({ url: pages.hostileUrl }),
+                },
+              ],
+            },
+          ],
+          [{ text: '已打开。' }],
+        ],
+      });
+      await waitRunDone('B-06 U3b');
+      await delay(300); // 潜在误写冲刷窗口
+      assert(probeUsageCount() === usageCountBefore + 1, 'B-06 U3b：无关 URL 不得新增 usage 行');
+    }
+
+    // 收尾：Tab 恢复进入前 + 面板收起（9.1 矩阵 4 前置保持一致）
+    const extra = (await controller.getTabs()).filter((t) => !beforeIds.has(t.id));
+    for (const tab of extra) await controller.closeTab(tab.id);
+    assert((await controller.getTabs()).length === beforeIds.size, 'B-06 UI：Tab 数量应恢复进入前');
+    const activeNow = (await controller.getActiveTab())?.id ?? null;
+    if (activeNow !== activeBefore) {
+      assert(await controller.activateTab(activeBefore), 'B-06 UI：活动 Tab 应恢复进入前');
+    }
+    if (await uiHas(uiWc, '.sources-panel')) {
+      await clickUi(uiWc, '.sources-collapse');
+    }
+
+    logInfo(
+      'smoke',
+      '8.13 B-06 UI DOM 端到端全部通过（收藏当前页 approve→保存→Sources UI 可见+AI 推断 provenance→UI Undo/deny 零写入+「已拒绝」展示/source_search→browser_open（fragment 变体）→read→回答 usage=reachable/无关 URL 零记录）',
+    );
+  } catch (err) {
+    logError('smoke', '8.13 B-06 UI DOM 端到端失败', err);
+    throw err;
+  } finally {
+    await pages.close();
   }
 }
 
