@@ -10,9 +10,11 @@
 > **B3 已完成**（多语言 Source Search：FTS5/trigram 主路径 + 短查询安全降级 +
 > 有界 Retrieval 硬上限 10/每页 20 + 分享模式 full/metadata/blocked + 确定性排序
 > 全序 + note 摘录 ≤200 + provenance + bidi 补齐，决议 #58–#63，全量 test
-> 1007/1007）；**B4–B9 待开始**（Sources 功能对用户/Agent 尚不可用——UI/Tools
-> 未实现，完成前不得宣称可用）；下一个推荐任务 = **B4**（Source Tools +
-> 权限矩阵 + L2 change set 确认/审计 + Agent 上下文隔离）。
+> 1007/1007）；**B4 已完成**（Source Tools 四工具 + 权限矩阵 + L2 change set
+> 确认/审计 + Agent 上下文隔离，决议 #64–#67，全量 test 1071/1071）；
+> **B5–B9 待开始**（Sources UI 未实现——B5 完成前不得宣称对用户可用；Agent
+> 已可经 Source Tools 使用）；下一个推荐任务 = **B5**（Sources UI +
+> 手工管理 + 当前页快速添加 + IPC/bridge 扩展）。
 > **契约与安全契约源**：本文保留阶段需求源职责（目标/验收标准/Exit Gate），
 > 具体接口、schema、权限矩阵、预算与决议以 `doc/stage4/detailed-design.md` 为
 > **唯一契约源**；威胁与红队以 `doc/stage4/threat-model.md` 为**安全契约源**。
