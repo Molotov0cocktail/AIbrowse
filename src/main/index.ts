@@ -65,7 +65,7 @@ import {
 // Third Stage A2/A3：工具层装配（只读/导航 8 工具 + A3 交互 4 工具 + 确认状态机 +
 // 审计 + 执行管线）。A3 的 click/fill 语义来源（getElementSemantics/recordSnapshot）
 // 为 A5 AgentLoop 历史提取接线点——本阶段由冒烟场景注入快照语义存储驱动验证。
-import { createAuditLogger } from './ai/audit-log';
+import { createAuditLogger, type AuditEntry } from './ai/audit-log';
 import { ConfirmManager } from './ai/confirm-manager';
 import { BingSearchProvider, type SearchProvider } from './ai/search/search-provider';
 import { BROWSER_TOOL_DEFINITIONS } from './ai/tools/browser-tools';
@@ -183,6 +183,9 @@ let smokeSourcesDir: string | null = null;
 // B5 冒烟注入点（仅 SMOKE_MODE 消费，生产行为不变）：恢复态/不可用态 UI 断言——
 // sources:state 与全部读写入口经适配器 stateOverride 门控（决议 #74 测试落点）
 let smokeSourcesStateOverride: { current: SourcesState | null } | null = null;
+// B6/B8 补验（2026-08-15）：SMOKE_MODE 审计收集探针——真实 SRT-02 观察场景
+// 「审计工具名全部为注册表工具」机器断言用；生产不收集（决议 #84 同精神测试设施）
+const smokeAuditCollector: AuditEntry[] = [];
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -621,6 +624,21 @@ if (!gotLock) {
           app.exit(1);
           return;
         }
+        // B6/B8 补验（2026-08-15）：AIBROWSE_LIVE_AGENT_SOURCES 与 LIVE_SITES 互斥
+        // （决议 #85 仅声明与 LIVE_AGENT/PRE/SUPPLEMENT 互斥；smoke.ts 分支顺序使
+        // 同设时静默择一——确定性互斥原则补齐，不静默择一）
+        if (LIVE_AGENT_SOURCES_MODE && LIVE_SITES_MODE) {
+          logError('main', 'AIBROWSE_LIVE_AGENT_SOURCES 与 AIBROWSE_LIVE_SITES 互斥，请只选其一');
+          // 失败路径清理（app.exit 不触发 before-quit；同现有互斥路径纪律）
+          sourceService?.dispose();
+          if (smokeSourcesDir !== null) {
+            rmSync(smokeSourcesDir, { recursive: true, force: true });
+            smokeSourcesDir = null;
+          }
+          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+          app.exit(1);
+          return;
+        }
         let run: Promise<void>;
         if (sourcesUiMode === 'set' || sourcesUiMode === 'check') {
           run = runSourcesUiSmokeScenario(sourcesUiMode, {
@@ -661,6 +679,7 @@ if (!gotLock) {
               smokeSourcesDir !== null && sourceService !== null
                 ? join(smokeSourcesDir, 'sources.db')
                 : undefined, // B6：8.13 UI 场景 usage_events 只读探针（决议 #84；仅 SMOKE_MODE 注入）
+            auditEntries: SMOKE_MODE ? smokeAuditCollector : undefined, // B6/B8 补验：真实 SRT-02 观察场景审计探针
           });
         }
         run
@@ -766,7 +785,14 @@ function createBrowserWindow(): void {
       searchProvider.search(query, signal),
   };
   confirmManager = new ConfirmManager();
-  toolExecutor = new ToolExecutor(confirmManager, createAuditLogger());
+  // B6/B8 补验：审计落盘（logInfo）与 SMOKE_MODE 收集探针共用同一出口——
+  // 生产行为不变（仅 logInfo）；真实观察场景经 SmokeOptions.auditEntries 断言
+  const auditSink = createAuditLogger();
+  const auditWithProbe = (entry: AuditEntry): void => {
+    auditSink(entry);
+    if (SMOKE_MODE) smokeAuditCollector.push(entry);
+  };
+  toolExecutor = new ToolExecutor(confirmManager, auditWithProbe);
   // S4 完整装配（§3.1/§4）：AI 共读子系统接线——事件回调转发主窗口 send（事件只发
   // 主窗口，§4）。生产走真实 userData + resolveProvider（openai-compatible）；
   // 冒烟模式走进程专属临时目录（不触碰用户 userData）+ FakeProvider 注入（§13.2
@@ -866,7 +892,7 @@ function createBrowserWindow(): void {
       searchProvider, // ctx.searchProvider 注入点（决议 #32⑥；冒烟服务自建实例注入受控夹具）
       ...(sourceService !== null ? { sourceService } : {}), // B4：ctx.sourceService 注入点
       usageBridge: (runId) => usageTracker.bridge(runId), // B6：run 级 usage 桥（决议 #79/#81）
-      audit: createAuditLogger(), // 每次工具调用恰好一条审计（ToolExecutor 单出口保证）
+      audit: auditWithProbe, // 每次工具调用恰好一条审计（ToolExecutor 单出口保证）
       auditRun: (message) => logInfo('audit', message), // run 开始/终止条目（§10.1）
       // A6 UI 矩阵（仅冒烟模式）：limits 为可注入 holder（step-limit/timeout 场景，每 run
       // 启动时读取）；searchProvider 为委托实现（调用时读取受控夹具 holder——离线确定性）
