@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AiPanel } from './ai/AiPanel';
 import { ConfirmDialog } from './ai/ConfirmDialog';
+import { SourcesPanel } from './ai/sources/SourcesPanel';
 import { globalPendingRequest } from './ai/agent-run-state';
 import { useAgent } from './ai/useAgent';
 import { DebugPanel } from './browser/DebugPanel';
@@ -21,8 +22,11 @@ export default function App() {
   const contentRef = useRef<HTMLDivElement>(null);
   useContentBounds(contentRef);
   const addressBarRef = useRef<HTMLInputElement>(null);
-  // 面板打开状态存渲染层内存：默认收起、不持久化（§11.2）；定宽 380px、无拖拽/动画
-  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  // 面板打开状态存渲染层内存：默认收起、不持久化（§11.2）；定宽 380px、无拖拽/动画。
+  // B5 决议 #68：sidePanel 'ai'|'sources'|null 互斥切换（AI 与 Sources 面板并列，
+  // 同时至多一个）；App 级 Agent ConfirmDialog 挂载于面板之外——切换/卸载面板
+  // 不遮断 L2 确认。
+  const [sidePanel, setSidePanel] = useState<'ai' | 'sources' | null>(null);
   const agent = useAgent();
   const pendingConfirm = globalPendingRequest(agent.agentState);
 
@@ -57,7 +61,8 @@ export default function App() {
               addressBarRef.current?.focus(); // 新标签页聚焦地址栏，便于直接输入
             });
           }}
-          onToggleAiPanel={() => setAiPanelOpen((open) => !open)}
+          onToggleAiPanel={() => setSidePanel((p) => (p === 'ai' ? null : 'ai'))}
+          onToggleSourcesPanel={() => setSidePanel((p) => (p === 'sources' ? null : 'sources'))}
           addressBarRef={addressBarRef}
         />
         <TabBar
@@ -67,14 +72,17 @@ export default function App() {
           onClose={(tabId) => void window.aibrowse.tabs.close(tabId)}
         />
       </header>
-      {/* 内容行：内容容器（WebContentsView 覆盖区）+ AI 面板停靠（§11.1） */}
+      {/* 内容行：内容容器（WebContentsView 覆盖区）+ 面板停靠（§11.1；B5 决议 #68：
+          AI 与 Sources 互斥切换，380px 同模式） */}
       <div className="main-row">
         <main className="content-area" ref={contentRef} />
-        {aiPanelOpen && <AiPanel onCollapse={() => setAiPanelOpen(false)} agent={agent} />}
+        {sidePanel === 'ai' && <AiPanel onCollapse={() => setSidePanel(null)} agent={agent} />}
+        {sidePanel === 'sources' && <SourcesPanel onCollapse={() => setSidePanel(null)} />}
       </div>
       {/* 调试面板在底部通栏：高度变化被内容容器的 ResizeObserver 测量并上报 bounds（§11.2） */}
       <DebugPanel activeTabId={tabsState?.activeTabId ?? null} />
-      {/* L2 确认对话框（App 级全局）：deny 默认高亮/焦点；pending 作废自动关闭 */}
+      {/* L2 确认对话框（App 级全局，独立于面板挂载——切换/折叠面板不遮断确认）：
+          deny 默认高亮/焦点；pending 作废自动关闭 */}
       <ConfirmDialog pending={pendingConfirm} onDecide={agent.confirmTool} />
     </div>
   );

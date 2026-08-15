@@ -982,3 +982,417 @@ body {
   font-size: 11px;
   color: var(--muted);
 }
+
+/* —— Sources 面板（B5，决议 #68/#74/#78）：与 AI 面板同模式——定宽 380px、
+   无拖拽/动画；note/name/tag 纯文本渲染 —— */
+
+.sources-panel {
+  box-sizing: border-box;
+  width: 380px; /* 与 .ai-panel 同宽度契约（§11.2 bounds 断言基准） */
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.sources-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sources-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-right: auto;
+}
+
+.sources-panel-header button {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sources-panel-header button:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.sources-panel-header button:disabled,
+.sources-detail-actions button:disabled,
+.sources-toolbar button:disabled,
+.sources-pagination button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 状态横幅（决议 #74：恢复态/不可用态中文原因 + 建议；写入口禁用） */
+.sources-state-banner {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: light-dark(#fdecea, #4a3030);
+  color: var(--text);
+}
+
+.sources-state-reason {
+  font-weight: 600;
+}
+
+.sources-state-advice {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+/* 本地明文边界说明（§11） */
+.sources-plaintext-note {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sources-notice,
+.sources-quick-add-message {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.sources-related-title {
+  display: block;
+  margin-top: 4px;
+}
+
+.sources-related-list {
+  margin: 2px 0 0;
+  padding-left: 18px;
+}
+
+.sources-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sources-view-switch button {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px 0 0 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sources-view-switch button + button {
+  border-radius: 0 6px 6px 0;
+  border-left: none;
+}
+
+.sources-view-switch button.active {
+  background: var(--accent);
+  font-weight: 600;
+}
+
+.sources-group-filter,
+.sources-search-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  padding: 0 6px;
+}
+
+.sources-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sources-list-empty {
+  padding: 12px 8px;
+  color: var(--muted);
+}
+
+.sources-item {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sources-item.disabled {
+  opacity: 0.65;
+}
+
+.sources-item-name {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+}
+
+.sources-item-name:hover {
+  text-decoration: underline;
+}
+
+.sources-item-url {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sources-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.sources-badge {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: light-dark(#fdf3d7, #4a4030);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sources-pagination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.sources-pagination button {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sources-page-info {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+/* 详情/编辑与添加表单 */
+.sources-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sources-back {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sources-provenance {
+  color: var(--muted);
+}
+
+.sources-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px;
+}
+
+.sources-form-field label {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sources-form-field input,
+.sources-form-field select,
+.sources-form-field textarea {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  padding: 3px 6px;
+  font-family: inherit;
+}
+
+.sources-form-row {
+  display: flex;
+  gap: 6px;
+}
+
+.sources-form-row .sources-form-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.sources-ai-note {
+  padding: 4px 8px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sources-ai-note-title {
+  font-size: 11px;
+}
+
+.sources-detail-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.sources-detail-actions button {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sources-detail-actions .sources-save {
+  background: var(--accent);
+  font-weight: 600;
+}
+
+.sources-detail-actions .sources-delete-open {
+  margin-left: auto;
+  color: light-dark(#b3261e, #f2b8b5);
+  border-color: light-dark(#b3261e, #8c1d18);
+}
+
+/* Undo 列表 */
+.sources-undo-list {
+  border-top: 1px solid var(--border);
+  padding: 4px 8px;
+}
+
+.sources-undo-title {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.sources-undo-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.sources-undo-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sources-undo-btn {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* 永久删除二次确认（决议 #73：不可撤销且不能 Undo 的明确文案） */
+.sources-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 100;
+}
+
+.sources-hard-delete-dialog {
+  box-sizing: border-box;
+  max-width: 320px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.sources-hard-delete-text {
+  font-weight: 600;
+}
+
+.sources-hard-delete-warning {
+  margin-top: 8px;
+  color: light-dark(#b3261e, #f2b8b5);
+}
+
+.sources-hard-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sources-hard-delete-actions button {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sources-hard-delete-actions .sources-hard-delete-confirm {
+  background: light-dark(#b3261e, #8c1d18);
+  color: light-dark(#ffffff, #ffffff);
+  font-weight: 600;
+}
+
+.sources-hard-delete-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

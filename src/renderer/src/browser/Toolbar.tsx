@@ -10,6 +10,7 @@ interface ToolbarProps {
   onReload: () => void;
   onCreateTab: () => void;
   onToggleAiPanel: () => void;
+  onToggleSourcesPanel: () => void; // B5：信源面板开关（与 AI 面板互斥，决议 #68）
   addressBarRef: Ref<HTMLInputElement>;
 }
 
@@ -23,6 +24,7 @@ export function Toolbar({
   onReload,
   onCreateTab,
   onToggleAiPanel,
+  onToggleSourcesPanel,
   addressBarRef,
 }: ToolbarProps) {
   return (
@@ -57,6 +59,15 @@ export function Toolbar({
         onClick={onToggleAiPanel}
       >
         AI
+      </button>
+      <button
+        type="button"
+        className="nav-button sources-toggle"
+        aria-label="信源面板"
+        title="信源面板"
+        onClick={onToggleSourcesPanel}
+      >
+        信源
       </button>
       <button
         type="button"
