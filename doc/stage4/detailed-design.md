@@ -23,7 +23,11 @@ src/
 │       ├── db/
 │       │   ├── sqlite-driver.ts      # B1：node:sqlite 薄封装（打开/busy/外键/WAL/关闭句柄清理）
 │       │   ├── migrations.ts         # B1/B2：schema 编译期常量 + user_version 单调逐级迁移
-│       │   └── backup.ts             # B1/B7：一致性备份（方案 B1 实测冻结）+ integrity/恢复态判定
+│       │   └── backup.ts             # B1/B7 ✅：存储运维 SQL（决议 #86）——只读探测/
+│       │                             #   VACUUM INTO 一致性备份（决议 #87 冻结）/
+│       │                             #   integrity·外键检查/有界保留清理（决议 #89）
+│       ├── sources-store.ts          # B7 ✅：启动存储装配（probe → 备份 → 迁移 → 检查 →
+│       │                             #   normal | readonly-recovery | unavailable）
 │       ├── domain/                   # B2/B4：纯核心零 Electron 依赖，可单测
 │       │   ├── source-canonical.ts   # URL 规范化（origin/page key）
 │       │   ├── source-change-set.ts  # change set 结构校验 + 确定性 before/after diff
@@ -281,8 +285,13 @@ B2 的 search 为参数化精确/前缀最小实现（FTS 检索接口由 B3 补
 - `sqlite-driver.ts` 仅允许**连接级运维 SQL** 编译期常量（PRAGMA busy_timeout/
   foreign_keys/journal_mode 与 BEGIN/COMMIT/ROLLBACK，值仅为程序校验后的整数选项
   或编译期常量），不含任何业务语句（决议 #47）；
+- `db/backup.ts` 仅允许**存储运维 SQL** 编译期固定语句（B7 决议 #86）：PRAGMA
+  user_version / quick_check / integrity_check / foreign_key_check（只读探测与
+  检查）+ `VACUUM INTO`（路径由主进程生成、严格校验后**参数绑定**——本任务实测
+  node:sqlite 支持 `VACUUM INTO ?` 绑定）；不得放入业务 CRUD、动态 SQL 或模型/
+  网页输入；
 - 测试专用 SQL（探针建表/FTS5/trigram/测试数据）仅允许位于 SMOKE_MODE 门控的
-  冒烟 B-01 场景与 `*.test.ts` 单测（测试设施，非产品数据访问路径）；
+  冒烟 B-01/B-06 场景与 `*.test.ts` 单测（测试设施，非产品数据访问路径）；
 - 所有用户/网页/模型文本只能作为 prepared statement 参数绑定（`?` 占位）；
 - 禁止：`exec(sql)` 接受任何动态拼接串、动态表名/列名/排序表达式、`enableLoadExtension`
   开启扩展加载、SQL 出现在 renderer/preload/tools/agent/ 目录；
@@ -761,27 +770,49 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
 - L0 工具仍计入防循环签名（读操作重复 3 次同样触发 loop-detected，决议 #24 无
   白名单例外）。
 
-## 10. migration、backup 与恢复（决策 9）
+## 10. migration、backup 与恢复（决策 9；B7 落地 + 决议 #86–#89 校准）
 
 - **路径**：数据库路径只能由主进程在 Electron userData 下确定
   （`<userData>/sources/sources.db` 与 `<userData>/sources/backups/`）；renderer/
-  preload 不得感知路径。
+  preload 不得感知路径（诊断文案仅安全标签）。
+- **启动顺序（B7 落地契约）**：先以**只读连接**探测版本与完整性（文件头 magic
+  - PRAGMA user_version；只读连接不创建 -wal/-shm、写操作确定性失败——本任务
+    实测），**绝不先以默认 WAL 写连接打开再判断未来版本**：
+  * 文件缺失 → 新库创建（直接迁移至最新版本，**不生成无意义备份**）；
+  * user_version 与程序一致 → quick_check → 通过即 normal；
+  * user_version 为有效旧版本 → **先一致性备份**（决议 #87 VACUUM INTO，备份
+    内容校验：可打开 + integrity ok + user_version 与迁移前一致）→ 逐级单事务
+    迁移 → `PRAGMA integrity_check` + `PRAGMA foreign_key_check` → normal
+    （迁移期间工作连接 `wal:false`——失败路径主文件字节不变，决议 #88）；
+  * user_version > 程序版本 / 坏 magic / 截断 / 无法打开 / 备份失败 / 迁移失败 /
+    迁移后检查失败 → **保留原库与已有备份，进入只读恢复态**（中文诊断入日志与
+    UI；原库零写入——未来版本路径字节恒等实测断言）；
+  * 普通目录权限/无法创建数据库等**非恢复性初始化故障 → unavailable**
+    （与恢复态区分——「只读」指磁盘文件不被写，不代表允许读取）。
 - **单调逐级迁移**：`PRAGMA user_version` 为 schema 版本；migration 列表
-  `[{ version, statements }]` 编译期常量；启动时逐级执行（每级单事务，异常明确
-  rollback + 日志）；未知更高版本（user_version > 程序版本）→ Sources 进入
-  **只读恢复态**（§10.3）。
-- **迁移前一致性备份**：不得在 WAL 活跃时只复制主数据库文件；具体方案由 B1
-  实测冻结三候选——① `VACUUM INTO '…backups/vN.db'`（SQLite ≥3.27 官方文档
-  支持，生成一致性快照，主连接可用）；② node:sqlite backup API（若实测存在且
-  稳定）；③ 关闭连接后复制主文件 + -wal/-shm（迁移时机为启动早期，可行）——
-  B1 报告实测结论，B7 定稿保留策略（备份文件有界保留：最近 5 个版本 + 30 天）。
-- **完整性检查**：迁移后 `PRAGMA integrity_check` + `PRAGMA foreign_key_check`
-  ——失败 → 不得覆盖原库（保留原文件与备份）→ 只读恢复态 + 中文诊断。
-- **只读恢复态**：SourceService 全部写入口拒绝（source-unavailable）；
-  读入口同样拒绝或受限（B7 定稿：v1 读入口一并拒绝，UI 显示恢复说明——避免
-  半损坏库读出误导数据；「只读」指磁盘文件不被写，不代表允许读取）；**浏览器
-  其余能力继续安全可用**（恢复态仅影响 Sources 子系统）；恢复流程保留原库
-  （UI 中文诊断：检测结果/原库位置/备份位置/建议动作）。
+  `[{ version, statements }]` 编译期常量；每级单事务，异常明确 rollback（原库
+  user_version/schema/数据逻辑恒等——决议 #88 校准：**不得要求 WAL/SHM 元数据
+  文件逐字节恒等**）。
+- **备份保留策略（决议 #89 冻结；2026-08-15 事故恢复加固校准）**：仅处理严格
+  命名（`sources-backup-<ISO 时间>-v<版本>-<8hex>.db`）、位于 backups 目录内的
+  普通文件（非链接/非目录）；最多保留最新 5 个且清理超过 30 天者（两上界同时
+  生效）；绝不跟随链接、删除原库或无关文件；清理失败仅记录不阻塞启动。**目标
+  碰撞 fail-closed（加固）**：VACUUM INTO 遇已存在目标失败（SQLite 语义，实测）
+  → 目标已存在（任何形态）一律拒绝（绝不删除/覆盖调用前已存在的文件），主进程
+  换新名有限重试、全部碰撞失败；快照校验失败即删除**本次新建**的部分备份
+  （零残留）。**目录链接越界拒绝（加固）**：backups 目录经 realpath 解析校验
+  （symlink/junction 越界拒绝，解析后必须仍位于 Sources 目录内）；prune 不跟随
+  目录链接越界（链接形态 → 安全空结果），删除前对每个候选做 lstat/realpath
+  复核（TOCTOU 防御）；prune 参数边界验证（非有限/负数/非整数 → 安全空结果
+  零删除）。**头部探测固定 16 字节读取（加固）**：文件头 magic 探测仅
+  open/read/close 固定 16 字节，绝不整库读入内存；备份源连接以只读打开
+  （备份过程不写源库）。
+- **只读恢复态（真实生产装配，非 SMOKE override 冒充）**：SourceService 以
+  `db=null + state=readonly-recovery` 装配（不打开磁盘库）——全部读写/Undo/
+  usage/rebuild 拒绝（source-unavailable）且数据库零变化；四 Agent Source
+  工具同样 fail-closed；**浏览器其余能力继续安全可用**（恢复态仅影响 Sources
+  子系统）；恢复流程保留原库（UI 中文诊断：检测结果/原库位置/备份位置/建议
+  动作——仅安全标签无绝对路径）。
 - 数据库、备份、change journal **不进入模型上下文**。
 
 ## 11. 本地明文边界与 usage/health（决策 10/11）
@@ -806,6 +837,18 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
   （hints 清空，迟到工具结果零写入）/无 SourceService 均不记录；每 run 独立、
   确定性有界（120 条 FIFO）、按 sourceId 去重；usage 写入失败仅脱敏告警并安全
   no-op（不改变 browser_open 的 ToolResult/权限/Agent 终态）；零 timer/零网络。
+  **B7 落地语义（决议 #90/#91）**：recordUsage 在**同一事务**内同时更新
+  usage_events（唯一行 upsert）与 sources.last_used_at/last_usage_outcome
+  （SourceView 读取路径）——两处最近一次投影一致（最近一次覆盖；写失败事务整体
+  回滚安全 no-op）；usage 不算 Source 数据变更（不 bump version/updated_at、
+  零 journal、零 Undo、零 changed）；**Undo 回放不覆盖 usage 两列**。Sources
+  详情 UI 显示「上次使用结果」+ 时间（`describeLastUsage` 纯函数）：v1 可靠
+  信号仅 reachable→可达 / unreachable→不可达；unknown/auth-required/blocked
+  如实标「暂无可靠信号」，**严禁写成「健康/长期可用」**。FTS 诊断性 rebuild
+  受控入口：`sources:rebuild-index`（无 payload）→
+  SourceService.rebuildSearchIndex（复用 B3 rebuild/一致性能力）——仅 UI 通道 +
+  normal 状态；零 Undo/零 changed/零 manual 审计；成功/失败均返回有界中文诊断
+  （行数对比，无绝对路径）。
 
 ## 12. 安全契约（引用 threat-model）
 
@@ -822,19 +865,21 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
 
 ### 13.1 单测（Vitest，node 环境，纯逻辑）
 
-| 测试文件                    | 用例要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | 任务  |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| source-canonical.test.ts    | 规范化矩阵：大小写/默认端口/fragment/userinfo 拒绝/IDN/query 保留/非默认端口/空路径（决议 #50：两形态同身份）；origin 与 page 键独立性（决议 #49）；确定性同输入同输出                                                                                                                                                                                                                                                                                                                                                                                                             | B2    |
-| source-change-set.test.ts   | 结构校验（1–20 边界/字段白名单/长度/枚举/URL 形状/trust 通道规则——模型不能 assertedBy=user、不能设 blocked；缺省冻结决议 #52；同 set 重复 sourceId 拒绝）                                                                                                                                                                                                                                                                                                                                                                                                                          | B2    |
-| source-search-query.test.ts | FTS 查询纯函数转义（引号/操作符/通配符只作数据、短语包裹/双引号转义/短 token 过滤）；归一化与分流判定（trim/NFC/码点计数、1/2/3 字符边界、URL 判定集合，决议 #60）；排序器全序（档位不可跨档 + priority/recency 同档内 + lastUsedAt=null 末位 + scope/canonicalKey/id 收尾，决议 #61）；note 摘录（200/201 码点边界、C0/换行/零宽/U+061C/U+202A–U+202E/U+2066–U+2069 剔除）                                                                                                                                                                                                        | B3    |
-| source-search-index.test.ts | 候选集 SQL（FTS/LIKE/短查询/URL 四条编译期常量路径）注入串仅作数据；FTS 可用性判定与降级（决议 #62：MATCH/构造失败降级、数据库不可用 source-unavailable）；rebuild 前后行数与内容一致、失败不破坏现有索引；FTS 与主表同事务同步回归（B2 路径不重写）                                                                                                                                                                                                                                                                                                                               | B3    |
-| migrations.test.ts          | 逐级事务性/异常 rollback/版本单调/未知高版本判定；**schema v1 契约断言**（表集/约束/索引/部分唯一索引/user_version=1 恒等，决议 #49/#51/#54/#55）                                                                                                                                                                                                                                                                                                                                                                                                                                  | B2/B7 |
-| change-journal.test.ts      | 有界清理（条数/年龄任一触发，注入时钟，恰好 30 天保留、超过清理）/Undo 消费幂等（决议 #52）/版本冲突拒绝/payload 形状校验/畸形 payload 安全失败/hard delete 精确拆分（决议 #55）                                                                                                                                                                                                                                                                                                                                                                                                   | B2    |
-| source-service.test.ts      | 注入真实 node:sqlite：CRUD/唯一约束并发（双连接同 canonical 仅一成功）/change set 事务回滚（第 N 项冲突整体零写入）/幂等键重放（同指纹幂等、异指纹 fail-closed，决议 #53）/expectedVersion/undo/hardDelete 清理（FTS/journal/usage 字节级）/非法输入安全返回/异常归一化/dispose 幂等；**B3 扩展**：search/list/get 的 audience 完整矩阵（agent blocked 不可见·metadata 零 note 字节·full 摘录有界；user 可见可管理）、硬上限 10/每页 20/分页 total 与过滤一致、多语言命中（中/日/英/混合）、排序全序证据（priority 上下界/origin+page 同 canonicalKey）、disposed/句柄关闭安全返回 | B2/B3 |
-| source-tools.test.ts        | 四工具 schema 校验/serialize 纯文本零特权/错误码映射/ctx.sourceService 优先于注入/audit 摘要形状                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | B4    |
-| usage-tracker.test.ts       | **B6（决议 #79/#81）**：hint 上限（120 FIFO 淘汰）/按 sourceId 去重（首现）/同 run 累积/跨 run 隔离/clearRun・dispose；origin/page/fragment/默认端口/query 规范化匹配 + 一 URL 多命中全记录；无关 URL/先 open 后 search/规范化失败零命中；tracker 桥：成功 reachable/失败 unreachable/全部命中逐一写入/同步与异步写失败安全 no-op（无 unhandledRejection）/无 writer 零写入/run 级闭包绑定/终态后迟到回调零写入；零 timer（fake timers 断言）                                                                                                                                      | B6    |
-| source-ipc.test.ts          | **B5（决议 #69/#70/#72/#73/#74/#76）**：全部载荷校验矩阵（非法 id/未知字段/页码/长度/枚举边界）、audience 硬编码 user（blocked 可见）、状态门控（service null 与 override 下读写拒绝/写审计一条/零 changed/零变化）、changed 仅成功后恰好一次、每次写尝试恰好一条脱敏审计（note/URL/敏感 query/token/路径零出现）、两阶段硬删除（取消/错绑定不消费/过期/重放/成功无 Undo）、quick-add（无活动页/非 http/精确重复 + related ≤5 有界/绝不覆盖/主进程生成名称）、getter 惰性解析回归                                                                                                  | B5    |
-| sources-display.test.ts     | **B5（决议 #74/#75/#78）**：provenance 两形态文案/分享模式三态说明/错误码 10 码中文/状态诊断（中文原因 + 建议仅安全标签、无盘符路径/sources.db）/quick-add 结果文案                                                                                                                                                                                                                                                                                                                                                                                                                | B5    |
+| 测试文件                    | 用例要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | 任务  |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| source-canonical.test.ts    | 规范化矩阵：大小写/默认端口/fragment/userinfo 拒绝/IDN/query 保留/非默认端口/空路径（决议 #50：两形态同身份）；origin 与 page 键独立性（决议 #49）；确定性同输入同输出                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | B2    |
+| source-change-set.test.ts   | 结构校验（1–20 边界/字段白名单/长度/枚举/URL 形状/trust 通道规则——模型不能 assertedBy=user、不能设 blocked；缺省冻结决议 #52；同 set 重复 sourceId 拒绝）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | B2    |
+| source-search-query.test.ts | FTS 查询纯函数转义（引号/操作符/通配符只作数据、短语包裹/双引号转义/短 token 过滤）；归一化与分流判定（trim/NFC/码点计数、1/2/3 字符边界、URL 判定集合，决议 #60）；排序器全序（档位不可跨档 + priority/recency 同档内 + lastUsedAt=null 末位 + scope/canonicalKey/id 收尾，决议 #61）；note 摘录（200/201 码点边界、C0/换行/零宽/U+061C/U+202A–U+202E/U+2066–U+2069 剔除）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | B3    |
+| source-search-index.test.ts | 候选集 SQL（FTS/LIKE/短查询/URL 四条编译期常量路径）注入串仅作数据；FTS 可用性判定与降级（决议 #62：MATCH/构造失败降级、数据库不可用 source-unavailable）；rebuild 前后行数与内容一致、失败不破坏现有索引；FTS 与主表同事务同步回归（B2 路径不重写）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | B3    |
+| migrations.test.ts          | 逐级事务性/异常 rollback/版本单调/未知高版本判定；**schema v1 契约断言**（表集/约束/索引/部分唯一索引/user_version=1 恒等，决议 #49/#51/#54/#55）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | B2/B7 |
+| backup.test.ts              | **B7 ✅（决议 #86–#89，真实 node:sqlite）**：只读探测矩阵（missing/坏 magic/空文件截断/截断库 unopenable/目录 not-a-file；探测前后主文件字节不变）；quick_check/integrity+外键检查（外键违例检出）；WAL 活跃一致性备份（严格命名 + 可打开 + 数据完整 + integrity ok + user_version 匹配）；目标已存在 fail-closed 拒绝（绝不删除/覆盖已有文件）；版本不匹配失败且删除部分备份（零残留）；路径校验（非严格命名/相对/穿越拒绝；源库缺失失败不创建文件）；保留清理（5/6 上界、30/31/29 天边界、恰好 30 天保留、非严格命名/目录/符号链接/无关文件/原库一律不动、确定性排序、目录缺失安全空结果）；**B7 加固（2026-08-15 事故恢复）**：头部固定 16 字节读取（readFileSync 零调用 + 1 GiB 稀疏坏头库）；目标名碰撞换新名/持续碰撞 fail-closed；backups 目录 junction 越界拒绝（链接目标零写入）；外部目录拒绝；备份不写源库（WAL 活跃库字节恒等）；prune 参数边界（NaN/负值/非整数 → 安全空结果零删除）；prune junction 安全空结果；sourcesDir 真实路径越界安全空结果 | B7    |
+| sources-store.test.ts       | **B7 ✅（决议 #86–#89，真实 node:sqlite）**：启动装配矩阵——新库 normal + 零无意义备份；v0→v1 先备份（严格命名、可打开、内容完整、迁移前版本）后迁移 normal；当前版本 normal 不重复迁移；注入迁移失败 → readonly-recovery + 原库 user_version/schema/数据逻辑恒等 + 主文件字节不变 + 备份完整（决议 #88）；未来版本 → readonly-recovery + 字节恒等 + 零备份；坏 magic/截断 → readonly-recovery + 原文件保留；dbPath 为目录 → unavailable（非恢复态）；恢复态 service 全拒矩阵（读/写/Undo/usage/rebuild/令牌/quickAdd + getState + dispose 幂等）且数据库零变化；**B7 加固（2026-08-15 事故恢复）**：backupsDir 为 junction/位于源库目录外 → 备份失败恢复态 + 原库字节不变 + 链接目标零写入                                                                                                                                                                                                                                                                      | B7    |
+| change-journal.test.ts      | 有界清理（条数/年龄任一触发，注入时钟，恰好 30 天保留、超过清理）/Undo 消费幂等（决议 #52）/版本冲突拒绝/payload 形状校验/畸形 payload 安全失败/hard delete 精确拆分（决议 #55）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | B2    |
+| source-service.test.ts      | 注入真实 node:sqlite：CRUD/唯一约束并发（双连接同 canonical 仅一成功）/change set 事务回滚（第 N 项冲突整体零写入）/幂等键重放（同指纹幂等、异指纹 fail-closed，决议 #53）/expectedVersion/undo/hardDelete 清理（FTS/journal/usage 字节级）/非法输入安全返回/异常归一化/dispose 幂等；**B3 扩展**：search/list/get 的 audience 完整矩阵（agent blocked 不可见·metadata 零 note 字节·full 摘录有界；user 可见可管理）、硬上限 10/每页 20/分页 total 与过滤一致、多语言命中（中/日/英/混合）、排序全序证据（priority 上下界/origin+page 同 canonicalKey）、disposed/句柄关闭安全返回                                                                                                                                                                                                                                                                                                                                                                              | B2/B3 |
+| source-tools.test.ts        | 四工具 schema 校验/serialize 纯文本零特权/错误码映射/ctx.sourceService 优先于注入/audit 摘要形状                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | B4    |
+| usage-tracker.test.ts       | **B6（决议 #79/#81）**：hint 上限（120 FIFO 淘汰）/按 sourceId 去重（首现）/同 run 累积/跨 run 隔离/clearRun・dispose；origin/page/fragment/默认端口/query 规范化匹配 + 一 URL 多命中全记录；无关 URL/先 open 后 search/规范化失败零命中；tracker 桥：成功 reachable/失败 unreachable/全部命中逐一写入/同步与异步写失败安全 no-op（无 unhandledRejection）/无 writer 零写入/run 级闭包绑定/终态后迟到回调零写入；零 timer（fake timers 断言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | B6    |
+| source-ipc.test.ts          | **B5（决议 #69/#70/#72/#73/#74/#76）**：全部载荷校验矩阵（非法 id/未知字段/页码/长度/枚举边界）、audience 硬编码 user（blocked 可见）、状态门控（service null 与 override 下读写拒绝/写审计一条/零 changed/零变化）、changed 仅成功后恰好一次、每次写尝试恰好一条脱敏审计（note/URL/敏感 query/token/路径零出现）、两阶段硬删除（取消/错绑定不消费/过期/重放/成功无 Undo）、quick-add（无活动页/非 http/精确重复 + related ≤5 有界/绝不覆盖/主进程生成名称）、getter 惰性解析回归                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | B5    |
+| sources-display.test.ts     | **B5（决议 #74/#75/#78）**：provenance 两形态文案/分享模式三态说明/错误码 10 码中文/状态诊断（中文原因 + 建议仅安全标签、无盘符路径/sources.db）/quick-add 结果文案                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | B5    |
 
 ### 13.2 冒烟矩阵（Electron 真实启动，临时 userData；dev+生产双场景）
 
@@ -845,7 +890,7 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
 | B-03 | change set 确认全链路 | 模型（FakeProvider 脚本）提 change set → L2 确认必现 → deny 零写入/approve 单事务提交 → 审计恰好一条 → Undo 生效；迟到/未知 toolCallId 零写入                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | B4    |
 | B-04 | 有界检索              | **B3/B4 分段完成（决议 #63）**——B3 子集（默认矩阵 dev+production 双场景，真实 Electron 内置 node:sqlite/FTS5/trigram）：source_search 硬上限 10/分享模式过滤（agent blocked 不可见、metadata 零 note 字节、full 摘录 ≤200 + provenance）/allowlist/中·日·英命中/短查询降级/rebuild 一致性；B4 待完成：SOURCE_TOOL_CONTENT_MAX=4000 结果预算截断/ToolResult 序列化/UNTRUSTED_TOOL_RESULT 块隔离（含注入 note 夹具）/审计——B3 不得宣称 B-04 全过                                                                                                                                                                   | B3/B4 |
 | B-05 | 快速添加 UI 端到端    | 当前页快速收藏（默认 metadata）→ 列表出现 → 修改分享模式/备注 → 手工 Undo → 永久删除二次确认后消失且不可 Undo。**B5 落地扩展（8.11 默认矩阵 + AIBROWSE_SOURCES_UI_SMOKE 双进程门控，决议 #68–#78）**：真实 DOM → preload → IPC → SourceService 全链路（明文说明/快速添加重复与「可能相关」/分组分页/搜索 user 视角 blocked 可见/详情编辑与 provenance/aiNote 只读/敌手 note 纯文本/版本冲突提示刷新零覆盖/禁用恢复/手工 Undo/两阶段永久删除取消与确认/token 零 DOM/恢复态·不可用态中文诊断与零写入/面板互斥 + App 级确认框不遮断）；双进程门控 set（快速添加+编辑）→ check（新进程读回 → Undo → 两阶段永久删除） | B5    |
-| B-06 | migration/恢复        | 旧版本库自动迁移（备份生成）；注入迁移失败 → rollback + 原库完好；损坏库/更高版本 → 只读恢复态 + 中文诊断 + 浏览器其余能力正常（既有冒烟场景回归）                                                                                                                                                                                                                                                                                                                                                                                                                                                               | B7    |
+| B-06 | migration/恢复        | **B7 ✅ 落地（8.14 默认矩阵，dev+生产双场景）**：真实启动装配路径 openSourcesStore——新库零备份；v0→v1 先备份后迁移（备份严格命名/可打开/内容完整）；注入迁移失败 → rollback + 原库逻辑恒等 + 主文件字节不变 + 备份仍在；未来版本零写入（字节恒等）零备份；坏 magic/截断原文件保留；恢复态下读写/Undo/usage/rebuild 全拒 + 四 Agent Source 工具 fail-closed + 数据库零变化 + 浏览器其余能力继续可用；备份保留清理（5+30 天上界 + 无关文件不动）；rebuild 受控诊断（行数一致/失败安全）；usage 两处投影一致（usage_events 与 sources 列同事务同时钟）                                                              | B7    |
 | B-07 | usage 记录            | **归 B6（决议 #79）**：同 run source_search 命中 → browser_open 该 URL → usage 落库 reachable；无关 URL/先 open 后 search/跨 run 不记录；执行失败 unreachable；写入失败不影响工具结果；无后台请求（零 timer 断言 + 日志零巡检）                                                                                                                                                                                                                                                                                                                                                                                  | B6    |
 | B-08 | 红队 SRT-01～SRT-12   | §4 矩阵全表（dev+生产双场景）+ RT-01～RT-11 全量回归                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | B8    |
 | B-09 | 共读与工具层回归      | 既有矩阵 1–12/8.1（注册表 17 工具）/8.2/8.3/8.4/8.5/8.6 全量回归；日志敏感扫描零命中                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | B4/B8 |
@@ -1231,6 +1276,65 @@ undoable/undo/quick-add/state/prepare-hard-delete/hard-delete` + 事件
     报错退出）+ harness `-Sources`（仓库外，沿用凭据流程）。未提供 Key →
     回退离线矩阵（离线可测路由），不发起付费/公网 Provider 请求；真实 Provider
     非 B6 离线验收硬门槛（用户授权后执行，台账规则沿用第三阶段）。
+
+### B7 实施前契约裁决（2026-08-15，六项，本任务授权直接校准——不向用户询问）
+
+86. **backup.ts SQL 窄契约（SQL 封闭红线扩展）**：`db/backup.ts` 仅允许**编译期
+    固定的存储运维 SQL**——PRAGMA user_version / quick_check / integrity_check /
+    foreign_key_check（只读探测与检查）+ `VACUUM INTO` + BEGIN/COMMIT/ROLLBACK
+    （rebuild 事务经既有 SourceSearchIndex 路径）。不得放入业务 CRUD、动态 SQL
+    （动态表名/列名/排序表达式）或模型/网页输入。**VACUUM INTO 路径参数绑定
+    实测成立**（本任务实测：node:sqlite `prepare('VACUUM INTO ?')` 支持绑定，
+    Node 24.18.0 / SQLite 3.53.1）——路径必须由主进程生成、经严格校验
+    （绝对路径 + 位于 backups 目录内 + 严格命名模式 + 非链接）后参数绑定；
+    校验失败固定中文拒绝。§3.1/threat-model §3.2 已同步。
+87. **备份方案冻结 = VACUUM INTO 主路径**：B1 实测（WAL 活跃一致性快照 +
+    integrity ok）+ 本任务实测（备份可打开、数据完整、user_version 匹配）双证据
+    冻结；**node:sqlite backup API 不存在**（B1 实测
+    `DatabaseSync.prototype.backup === undefined`）——不实现；关闭后复制仅为
+    已验证的后备设计，**不静默启用**。目标碰撞语义：VACUUM INTO 遇已存在目标
+    会失败（SQLite 语义，本任务实测）——覆盖前先移除本次主进程生成的严格命名
+    目标；快照校验（可打开 + integrity ok + user_version 与迁移前版本一致）
+    失败即删除部分备份（零残留）。
+    **2026-08-15 事故恢复加固校准（§10 已同步）**：原「覆盖前先移除」语义
+    收紧为 **fail-closed**——实现无法证明「已存在目标 = 本次生成」，故目标已
+    存在（任何形态）一律拒绝、绝不删除/覆盖调用前已存在文件；碰撞由主进程换
+    新名有限重试（5 次），全部碰撞失败；失败路径清理仅限「本次尝试新建且调用
+    前已验证不存在」的部分文件。另两项加固：backups 目录 realpath 解析校验
+    （symlink/junction 越界拒绝）；prune 参数边界验证（非有限/负数/非整数 →
+    安全空结果零删除——旧实现 keepCount=NaN 全量误删，红态实测）。备份源
+    连接改只读（备份过程不写源库）；头部探测固定 16 字节读取（不整库读入）。
+88. **「迁移失败原库完好」语义校准**：原路径**不得被替换、截断或自动恢复覆盖**；
+    事务回滚后 user_version/schema/数据**逻辑恒等**（可重开读回一致）；迁移前
+    一致性备份可打开且完整。**不得要求 WAL/SQLite 元数据文件逐字节恒等**。
+    实现额外保证（本任务落地并测试固化）：迁移期间工作连接以 `wal:false` 打开
+    （迁移成败前零 journal-mode 元数据写入），失败路径主文件字节不变；迁移+
+    检查全部成功后才切换 WAL 运行时模式。§10 已同步。
+89. **备份保留策略冻结**：仅处理**严格命名**（
+    `sources-backup-<ISO 时间>-v<版本>-<8hex>.db`）、位于 backups 目录内的
+    **普通文件**（lstat 非链接、非目录）备份；最多保留**最新 5 个**且清理
+    **超过 30 天**者（两个上界同时生效，测试覆盖 5/6 与 30 天边界）；排序按
+    解析时间戳升序、同名按全名（随机后缀收尾）确定性；**绝不跟随链接、删除
+    原库或无关文件**；清理失败仅记录不阻塞启动（最佳努力）。§10 已同步。
+90. **usage 两处投影同事务一致**：recordUsage 在同一事务内同时更新
+    usage_events（唯一行 upsert）与 sources.last_used_at/last_usage_outcome
+    （SourceView 读取路径）——最近一次覆盖语义两处一致；usage 不算 Source
+    数据变更（不 bump version/updated_at、零 journal、零 Undo、零 changed）；
+    写失败继续 B6 安全 no-op 契约（事务整体回滚，不改变 browser_open 的
+    ToolResult/权限/Agent 终态）。**Undo 回放不覆盖 usage 两列**（观测数据
+    不属于业务快照回放范围——否则 Undo 会制造两处投影不一致）。§11 已同步。
+91. **rebuild 受控入口（决议 #91）**：SourceService 新增
+    `rebuildSearchIndex(): Promise<FtsRebuildResult>`（复用 B3
+    SourceSearchIndex.rebuildFts/verifyFtsConsistency）；**仅 Sources UI 通道
+    （`sources:rebuild-index` 无 payload——零 SQL/路径参数通道）+ normal 状态
+    可触发**（UI pending 互斥 + 适配器状态门控双保险，重复点击/并发提交受控）；
+    无 Agent 工具、无 L2 权限变更；**rebuild 不算 Source 数据变更**——零
+    Undo、零 sources:changed、零 manual 审计（普通信息日志记录行数对比）；
+    成功/失败均返回有界中文诊断（`FtsRebuildResult{ok, sourceCount, ftsCount,
+message}`），renderer 不得获得绝对路径。**usage/health 展示边界**：Sources
+    详情显示「上次使用结果」+ 时间（`describeLastUsage` 纯函数）；v1 可靠信号
+    仅 reachable→可达 / unreachable→不可达，unknown/auth-required/blocked 如实
+    标「暂无可靠信号」——严禁写成「健康/长期可用」。§6/§11/§13 已同步。
 
 ## 16. 实现顺序与范围边界（B1–B9 映射）
 

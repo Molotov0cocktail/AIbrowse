@@ -51,9 +51,32 @@
     no-op）+ search/list/get 序列化补齐 ID/规范键/作用域/分组 ID + 自然语言
     管理 description + 冒烟 8.12 B-06/B-07 与 8.13 B-06 UI DOM（dev+生产双
     场景、B-02/B-05 双进程复跑、LIVE 门控互斥与离线回退全部退出码 0；全量
-    test 1160/1160）；真实 Provider 场景待用户授权；**B7–B9 待开始**；下一个
-    推荐任务 = **B7**（跨进程持久化 + migration/backup/recovery 全矩阵 + FTS
-    rebuild 诊断 + usage/health 边界）。契约源
+    test 1160/1160）；真实 Provider 场景待用户授权；
+    B7 已完成（2026-08-15）——实施前契约裁决（决议 #86–#91：backup.ts 存储运维
+    SQL 窄契约（VACUUM INTO 路径参数绑定实测成立）/备份方案冻结 = VACUUM INTO
+    （node:sqlite backup API 不存在，不实现；关闭后复制仅为已验证后备不静默
+    启用）/「迁移失败原库完好」逻辑恒等校准（原路径不得被替换/截断/自动恢复
+    覆盖；不要求 WAL/SHM 逐字节恒等）/保留策略冻结（严格命名 + backups 目录内
+    普通文件 + 最新 5 个 + 30 天）/usage 两处投影同事务一致 + Undo 回放不覆盖
+    usage/rebuild 受控入口（仅 UI 通道 + normal 状态 + 零 Undo 零 changed））+
+    `db/backup.ts`（只读探测/VACUUM INTO 一致性备份/完整性·外键检查/有界保留
+    清理）+ `sources-store.ts` 启动存储装配（probe → 备份 → 逐级迁移 → 检查 →
+    normal|readonly-recovery|unavailable——恢复态为真实生产装配能力，非 SMOKE
+    override）+ 恢复态全拒 + FTS rebuild 诊断入口（IPC/bridge/UI）+
+    usage「上次使用结果」展示边界 + 冒烟 8.14 B-06 B7 部分（真实启动迁移/备份/
+    恢复态全矩阵）+ B-02 usage 跨进程扩展；
+    **B7 事故恢复与安全加固已完成（2026-08-15）**——环境事故止损（根目录
+    46 个零字节文档碎片 + npm Unknown command 错误输出文件 + 事故日志精确
+    清理）+ 5 项数据安全修复（backup.ts 头部探测固定 16 字节读取（不整库读
+    入）/目标已存在 fail-closed 拒绝（绝不删除/覆盖调用前已有文件）/碰撞换
+    新名有限重试/backups 目录 realpath 解析校验（symlink/junction 越界拒绝，
+    prune 不跟随目录链接）+ prune 参数边界验证（NaN/负值/非整数 → 安全空结果
+    零删除）+ 备份源连接只读（不写源库）；红→绿 11 failed → 41/41）+ 受控
+    串行重验（全量 test **1219/1219** + typecheck/lint/format:check/build +
+    dev/生产冒烟 + B-02/B-05/SESSION 双进程退出码 0）；
+    **B8–B9 待开始**；下一个推荐动作 = **新开独立对话全项目严格安全/资源/
+    进程生命周期/事故复盘审查（不采信 B1–B7 既有完成报告）**，而非直接实现
+    B8。契约源
     `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
     实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
@@ -71,8 +94,9 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
     expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
     永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
     数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
-    **⚠️ B1–B5 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层/B5 Sources
-    UI 与 IPC）；B6–B9 对应能力（真实 Provider 端到端、backup/recovery、红队、
+    **⚠️ B1–B6 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层/B5 Sources
+    UI 与 IPC/B6 usage 接线 + 自然语言管理端到端；B7 存储运维面已实现——
+    backup/迁移全矩阵/恢复态/rebuild 诊断/usage 展示）；B8–B9 对应能力（红队、
     最终验收）在对应任务完成前不得在文档/报告/UI 中宣称已实现。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
@@ -379,7 +403,12 @@ d:\AIbrowse\
     │       └── snapshot-normalize.ts / .test.ts  # （T4）脚本输出校验纯函数 + 51 用例（A3 扩展语义元数据）
     │   └── sources/                           # （Fourth Stage，契约见 doc/stage4/detailed-design.md §1）：
     │       │                                  #   db/（✅ B1：sqlite-driver 薄封装 + migrations 引擎，决议 #48；
-    │       │                                  #        ✅ B2：schema v1 全表集（决议 #49–#55）；backup 归 B7）、
+    │       │                                  #        ✅ B2：schema v1 全表集（决议 #49–#55）；
+    │       │                                  #        ✅ B7：backup.ts 存储运维（决议 #86——只读探测/
+    │       │                                  #        VACUUM INTO 一致性备份（决议 #87）/
+    │       │                                  #        integrity·外键检查/有界保留清理（决议 #89）））、
+    │       │                                  #   ✅ B7：sources-store.ts 启动存储装配（probe → 备份 →
+    │       │                                  #   逐级迁移 → 检查 → normal|readonly-recovery|unavailable）、
     │       │                                  #   domain/（✅ B2：source-canonical/source-change-set
     │       │                                  #   纯函数；✅ B3：source-search-query 检索纯函数——归一化/分流/
     │       │                                  #   FTS 短语构造/档位/排序全序/note 摘录，决议 #60/#61）、
@@ -387,7 +416,9 @@ d:\AIbrowse\
     │       │                                  #   change-journal；✅ B3：source-search-index 候选查询
     │       │                                  #   （四条编译期常量 SQL + 参数绑定）/FTS 可用性/rebuild/一致性）,
     │       │                                  #   ✅ B2/B3：source-service（UI 与 Agent 共用唯一入口；
-    │       │                                  #   B3 起 search/list/get 必填 audience，决议 #58）、
+    │       │                                  #   B3 起 search/list/get 必填 audience，决议 #58；
+    │       │                                  #   B7：恢复态装配（db=null 全拒）/rebuildSearchIndex
+    │       │                                  #   受控诊断入口（决议 #91）/usage 双投影事务，决议 #90）、
     │       │                                  #   usage/usage-tracker（B6：SourceSearchHintStore 每 run
     │       │                                  #   独立 + Agent 打开后 usage 写入，决议 #79/#81）、
     │       │                                  #   tools/source-tools（B4）、
@@ -988,7 +1019,7 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   A3 状态机补齐，12 次 HTTP 全部 200）**——**第三阶段总 Exit 决策 =
   `GO/PASS`**（证据见 Third_stage.md §9/§10 与 progress.md）。
 
-### Fourth Stage Sources 契约速查（定稿 2026-08-15；B1–B5 已实现并 grep 核对，B6–B9 未实现前不得宣称）
+### Fourth Stage Sources 契约速查（定稿 2026-08-15；B1–B7 已实现并 grep 核对，B8–B9 未实现前不得宣称）
 
 > 唯一契约源 `doc/stage4/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
 > Q1–Q12 拍板）；安全契约源 `doc/stage4/threat-model.md`（威胁 ST-01～ST-12、
@@ -1168,11 +1199,27 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
     读取内容侧——一致性探针为逐行 MATCH 回查，滞留行查询期被 FTS5 自动忽略、
     rebuild 清除）。bidi 补齐：stripControlChars 增 U+061C/U+2066–U+2069
     （写入侧 + 读取侧同源清洗）。
-- **migration/backup/recovery（B1/B7）**：user_version 单调逐级 + 每级单事务 +
-  异常 rollback；迁移前一致性备份（VACUUM INTO/backup API/关闭后复制由 B1 实测
-  冻结；WAL 活跃不得只复制主文件）；integrity/foreign_key 检查失败不覆盖原库；
-  未知更高版本/损坏 → Sources 只读恢复态（写读入口拒绝 + 中文诊断 + 浏览器其余
-  能力正常）；数据库/备份/journal 不进模型上下文。
+- **migration/backup/recovery（B1/B7 ✅ 已实现，决议 #86–#89 校准；2026-08-15
+  事故恢复加固）**：启动顺序
+  ——只读探测（magic/user_version，不修改原库；绝不先以 WAL 写连接打开；头部
+  探测仅固定 16 字节 open/read/close，绝不整库读入）→ 新库
+  直接迁移（零无意义备份）/ 当前版本 quick_check → normal / 有效旧版本 →
+  VACUUM INTO 一致性备份（决议 #87 冻结；路径参数绑定，决议 #86；源连接只读
+  ——备份不写源库；快照校验：可打开 + integrity ok + 版本匹配，失败即删除
+  **本次新建**的部分备份）→ 逐级单事务迁移 →
+  integrity_check/foreign_key_check → normal（迁移期间工作连接 wal:false——
+  失败路径主文件字节不变，决议 #88：原路径不得被替换/截断/自动恢复覆盖，
+  user_version/schema/数据逻辑恒等，不要求 WAL/SHM 逐字节恒等）；未知更高
+  版本/损坏/截断/坏 magic/备份失败/迁移失败/迁移后检查失败 → **只读恢复态**
+  （真实生产装配——SourceService db=null 全拒读写/Undo/usage/rebuild + 四
+  Source 工具 fail-closed + 中文诊断 + 浏览器其余能力正常 + 原库与备份保留）；
+  目录/链接形态与无法创建数据库 → unavailable（非恢复态）；备份保留（决议
+  #89 + 加固）：严格命名 + backups 目录内普通文件 + 最新 5 个 + 30 天（两上界
+  同时生效），绝不跟随链接/删除原库或无关文件；**目标已存在 fail-closed
+  （绝不删除/覆盖调用前已有文件，碰撞换新名有限重试）；backups 目录
+  realpath 解析校验（symlink/junction 越界拒绝，prune 链接形态安全空结果 +
+  删除前 lstat/realpath 复核）；prune 参数边界验证（非有限/负数/非整数 →
+  安全空结果零删除）**；数据库/备份/journal 不进模型上下文。
 - **usage 接线（B6 ✅ 已实现，决议 #79/#81）**：`src/main/sources/usage/
 usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   （recordHits(runId, hits)/matchOpenUrl(runId, rawUrl)/clearRun/dispose——
@@ -1189,18 +1236,28 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   B7 保留 UI 展示「上次使用结果」与运维边界。
 - **本地明文边界（B5 如实说明）**：v1 明文保存 URL/分组/标签/备注（OS 用户权限
   保护），不承诺静态加密；API Key 仍只走 safeStorage/DPAPI，绝不进 Sources 库。
-- **usage/health（B6 接线，决议 #79/#81；B7 保留 UI 展示与运维边界）**：无后台
-  巡检；仅 Agent 实际经 Source 打开/读取后记录最近一次（unknown/reachable/
-  unreachable/auth-required/blocked 五态；v1 可靠信号仅 reachable/unreachable，
-  其余占位宁缺勿错）。SourceSearchHintStore 每 run 独立/有界（120 FIFO）/按
-  sourceId 去重/跨 run 隔离；source_search 成功从结构化结果登记（禁止解析
-  ToolResult 文本）；browser_open 经 ctx.sourceUsage 比对（origin/page 各自
-  规范化匹配；一 URL 多命中全记录）；无关 URL/先 open 后 search/跨 run/取消·
-  超时·终态后（AgentLoop.finish 清空 hints，迟到工具结果零写入）/无
-  SourceService 均不记录；usage 写入失败仅脱敏告警安全 no-op（不改变
-  browser_open 的 ToolResult/权限/Agent 终态）；零 timer/零网络；不保存正文、
-  不宣称长期健康。
-- **Sources UI 与 IPC（B5 ✅ 已实现，grep 核对；决议 #68–#78）**：
+- **usage/health（B6 接线 + B7 ✅ 决议 #90/#91）**：无后台巡检；仅 Agent 实际
+  经 Source 打开/读取后记录最近一次（unknown/reachable/unreachable/
+  auth-required/blocked 五态；v1 可靠信号仅 reachable/unreachable，其余占位
+  宁缺勿错）。SourceSearchHintStore 每 run 独立/有界（120 FIFO）/按 sourceId
+  去重/跨 run 隔离；source_search 成功从结构化结果登记（禁止解析 ToolResult
+  文本）；browser_open 经 ctx.sourceUsage 比对（origin/page 各自规范化匹配；
+  一 URL 多命中全记录）；无关 URL/先 open 后 search/跨 run/取消·超时·终态后
+  （AgentLoop.finish 清空 hints，迟到工具结果零写入）/无 SourceService 均不
+  记录；usage 写入失败仅脱敏告警安全 no-op（不改变 browser_open 的 ToolResult/
+  权限/Agent 终态）；零 timer/零网络；不保存正文、不宣称长期健康。
+  **B7（决议 #90）**：recordUsage 同一事务更新 usage_events + sources
+  last_used_at/last_usage_outcome（两处最近一次投影一致；usage 不算数据变更：
+  零 version bump/零 journal/零 Undo/零 changed；Undo 回放不覆盖 usage 两列）。
+  **B7（决议 #91）**：FTS 诊断性 rebuild 受控入口 `sources:rebuild-index`（无
+  payload）→ SourceService.rebuildSearchIndex（复用 B3 rebuild/一致性）——仅
+  Sources UI 通道 + normal 状态（pending 互斥 + 状态门控双保险）；零 Agent
+  工具/零 L2 权限变更/零 Undo/零 changed/零 manual 审计；成功失败均有界中文
+  诊断（行数对比，无绝对路径）。详情展示「上次使用结果」+ 时间
+  （`describeLastUsage`：可达/不可达/其余如实标「暂无可靠信号」），严禁写成
+  「健康/长期可用」。
+- **Sources UI 与 IPC（B5 ✅ 已实现，grep 核对；决议 #68–#78；B7 ✅ 决议
+  #91 扩展）**：
   `renderer/src/ai/sources/`——SourcesPanel（与 AiPanel 互斥切换 sidePanel
   'ai'|'sources'|null，380px 同模式；切换不卸载/遮断 App 级 Agent ConfirmDialog）/
   SourceDetailForm（aiNote 只读展示，trust 仅可设 value，provenance 区分
@@ -1223,7 +1280,11 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   Repository 增 SQL_LIST_GROUPS/SQL_COUNT_GROUPS/SQL_FIND_RELATED（编译期常量 +
   参数绑定）。冒烟 8.11 B-05 默认矩阵 + AIBROWSE_SOURCES_UI_SMOKE=set|check
   双进程门控（与 SESSION_SMOKE/SOURCES_SMOKE 互斥；共享系统 TEMP 临时
-  userData）。
+  userData）。**B7 扩展（决议 #91）**：`sources:rebuild-index` 通道（无
+  payload——零 SQL/路径参数）→ SourceService.rebuildSearchIndex；面板「重建
+  索引」按钮（仅 normal 状态可触发，pending 互斥受控）；详情显示「上次使用
+  结果」（describeLastUsage：可达/不可达/其余「暂无可靠信号」+ 时间；严禁
+  「健康/长期可用」）。
 
 ## 6. 常用命令
 
@@ -1241,7 +1302,7 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 1160 用例）
+  - `npm test` — Vitest 全量测试（当前 1219 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -1612,6 +1673,29 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
     run 创建/未装配零行为/连续 run 独立。冒烟 8.12 B-06/B-07 与 8.13 B-06
     UI DOM 自动包含于默认矩阵（dev+生产双场景退出码 0；B-02/B-05 双进程
     复跑退出码 0）。
+  - ✅ B7（2026-08-15 红→绿落地，+47：backup 20 / sources-store 9 /
+    source-service 9 / source-ipc 4 / sources-display 5，基线 1160 → 1207；
+    既有用例零删除零削弱；**2026-08-15 事故恢复加固 +12 安全用例，最终
+    1219**）：backup（只读探测矩阵 missing/坏 magic/空文件/
+    截断/目录形态；WAL 活跃一致性备份 + 目标已存在 fail-closed 拒绝 + 版本
+    不匹配删除部分备份 + 路径校验拒绝；integrity/外键检查；保留清理 5/6 与
+    30 天边界/非严格命名与目录不动/确定性排序；**加固：头部固定 16 字节读取
+    （readFileSync 零调用 + 1 GiB 稀疏坏头）/碰撞换新名与持续碰撞 fail-closed/
+    backups 目录 junction 越界拒绝/外部目录拒绝/备份不写源库字节恒等/prune
+    参数边界（NaN/负值/非整数安全空结果）/prune junction 安全空结果/sourcesDir
+    越界安全空结果**）；sources-store 启动装配矩阵（新库零备份/
+    v0→v1 先备份后迁移/注入迁移失败回滚原库逻辑恒等 + 主文件字节不变 + 备份
+    完整/未来版本零写/坏 magic 与截断保留/目录形态 unavailable/恢复态 service
+    全拒矩阵 + 数据库零变化；**加固：backupsDir junction/源库目录外 → 备份
+    失败恢复态 + 原库字节不变 + 链接目标零写入**）；source-service（recordUsage
+    双投影同事务一致/最近一次覆盖/usage 非数据变更/未知 sourceId 零写入/
+    Undo 回放保留 usage；rebuildSearchIndex 行数一致 + FTS 破坏失败安全 +
+    disposed 拒绝）；
+    source-ipc（rebuild-index 门控：normal 透传/恢复态拒绝/零审计零 changed）；
+    sources-display（describeLastUsage 五态文案矩阵 + 时间格式 + 无「健康」）。
+    冒烟 8.14 B-06 B7 部分（真实启动迁移/备份/恢复态全矩阵 + rebuild + usage
+    投影 + 保留清理）自动包含于默认矩阵（dev+生产双场景退出码 0；B-02 双进程
+    扩展 usage 跨进程断言退出码 0；B-05/SESSION 双进程复跑退出码 0）。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。

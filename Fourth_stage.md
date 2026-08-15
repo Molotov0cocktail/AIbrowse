@@ -17,9 +17,20 @@
 > 对用户已可用）；**B6 已完成**（AI 自然语言管理端到端 + Browser Agent 复用 +
 > usage 接线，决议 #79–#85，全量 test 1160/1160，冒烟 8.12/8.13 dev+生产双
 > 场景、B-02/B-05 双进程复跑、LIVE_AGENT_SOURCES 互斥与离线回退门控全部退出
-> 码 0——usage 接线闭环，真实 Provider 场景待用户授权）；**B7–B9 待开始**；
-> 下一个推荐任务 = **B7**（跨进程持久化 + migration/backup/recovery 全矩阵 +
-> FTS rebuild 诊断 + usage/health 边界）。
+> 码 0——usage 接线闭环，真实 Provider 场景待用户授权）；
+> **B7 已完成**（跨进程持久化 + migration/backup/recovery 全矩阵 + FTS
+> rebuild 诊断 + usage/health 展示边界——决议 #86–#91：backup.ts 存储运维
+> SQL 窄契约/备份冻结 VACUUM INTO/「迁移失败原库完好」逻辑恒等校准/保留策略
+> 冻结（最新 5 + 30 天）/usage 双投影同事务一致/rebuild 受控入口；`db/backup.ts`
+> + `sources-store.ts` 启动装配 + 只读恢复态真实生产装配 + 冒烟 8.14 B-06
+> B7 部分 + B-02 usage 跨进程扩展；**2026-08-15 事故恢复与安全加固**——环境
+> 事故止损（46 个零字节文档碎片 + npm 错误输出文件 + 事故日志精确清理）+ 5 项
+> 数据安全修复（头部固定 16 字节读取/目标 fail-closed/碰撞换新名/目录链接
+> 真实路径校验/prune 参数边界 + 备份源连接只读，红→绿 11→41/41）+ 受控串行
+> 重验，全量 test 1219/1219，dev/生产冒烟与 B-02/B-05/SESSION 双进程退出码 0）；
+> **B8–B9 待开始**；
+> 下一个推荐动作 = **新开独立对话全项目严格安全/资源/进程生命周期/事故复盘
+> 审查（不采信 B1–B7 既有完成报告）**，而非直接实现 B8。
 > **契约与安全契约源**：本文保留阶段需求源职责（目标/验收标准/Exit Gate），
 > 具体接口、schema、权限矩阵、预算与决议以 `doc/stage4/detailed-design.md` 为
 > **唯一契约源**；威胁与红队以 `doc/stage4/threat-model.md` 为**安全契约源**。

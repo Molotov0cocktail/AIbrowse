@@ -61,10 +61,27 @@
   harness 场景（usage 全链路 + 自然语言管理五场景 + deny 零写入）与 8.13 UI
   DOM 端到端（真实任务模式/ConfirmDialog/Sources UI/Undo/usage 探针）+
   AIBROWSE_LIVE_AGENT_SOURCES 互斥门控与离线可测路由；全量 test 1160/1160
-  （+35）。**B7–B9 待开始**；下一个推荐任务 = **B7**（跨进程持久化 +
-  migration/backup/recovery 全矩阵 + FTS rebuild 诊断 + usage/health 边界）。
+  （+35）。**B7 已完成（2026-08-15）**——实施前契约裁决（决议 #86–#91：
+  backup.ts 存储运维 SQL 窄契约（VACUUM INTO 路径参数绑定实测成立）/备份冻结
+  VACUUM INTO（backup API 不存在不实现）/「迁移失败原库完好」逻辑恒等校准/
+  保留策略（严格命名 + 最新 5 + 30 天）/usage 双投影同事务一致 + Undo 回放不
+  覆盖/rebuild 受控入口）+ `db/backup.ts` + `sources-store.ts` 启动装配 +
+  只读恢复态真实生产装配 + FTS rebuild 诊断入口 + 「上次使用结果」展示 +
+  冒烟 8.14 B-06 B7 部分 + B-02 usage 跨进程扩展；全量 test 1207/1207
+  （+47；2026-08-15 事故恢复加固 +12 安全用例后最终 **1219/1219**）。
+  **B7 事故恢复与安全加固已完成（2026-08-15，本任务）**——环境
+  事故已止损（根目录 46 个零字节文档碎片 + 1 个 npm Unknown command 错误
+  输出文件 + 事故日志经四项标准逐项核验后精确清理；3 个红态测试夹具残留
+  目录清理；工作区恢复干净形态）；B7 实现安全审查发现并修复 5 项数据安全
+  问题（红→绿 11 failed → 41/41：头部固定 16 字节读取/目标已存在
+  fail-closed/碰撞换新名/backups 目录 symlink-junction 真实路径校验/
+  prune 参数边界验证 + 备份源连接只读）；全量验证稳定复跑 test
+  **1219/1219**（+12 安全用例）全绿。**B8–B9 待开始**；下一个推荐动作 =
+  **新开独立对话对全项目严格安全/资源/进程生命周期/事故复盘审查**（不采信
+  B1–B7 既有完成报告），而非直接实现 B8。
   Sources 功能对用户已可用（Sources 面板）；Agent 已可经 Source Tools 使用；
-  usage 接线已闭环（B6）。
+  usage 接线已闭环（B6）+ 双投影一致（B7）；存储运维面（备份/迁移/恢复/
+  rebuild 诊断）已闭环（B7）。
   步骤 0 独立核对（2026-08-15，B4 会话）：HEAD `6d153ee` = Gitee/GitHub
   双远程 HEAD（ls-remote 实测三方一致，GitHub 经代理确认可用）、工作区干净；
   基线 test 1007/1007·typecheck·lint·format:check 独立复跑全绿；B1–B3 代码/
@@ -171,7 +188,7 @@
 | B4 | Source Tools 四工具（search/list/get L0 + apply_changes L2）+ 权限矩阵 + change set 确认/幂等键/expectedVersion/审计 + Agent 上下文隔离 | ✅ | 2026-08-15 完成（见下）：决议 #64–#67 + 四工具注册（13 → 17）+ preview/确认钩子/TOCTOU/blocked 防护 + 审计脱敏 + 冒烟 B-03/B-04 dev+生产双场景；任务文档 doc/stage4/tasks/B4-source-tools-permission.md（红→绿证据已回填） |
 | B5 | Sources UI + 手工管理 + 当前页快速添加 + 冲突/恢复态/Undo 展示 + IPC/bridge 扩展 | ✅ | 2026-08-15 完成（见下）：决议 #68–#78 + Sources 面板 + 14 通道 + source-ipc 适配器 + 8.11 默认矩阵 + AIBROWSE_SOURCES_UI_SMOKE 双进程门控；任务文档 doc/stage4/tasks/B5-sources-ui.md（红→绿证据已回填） |
 | B6 | AI 自然语言管理端到端（change set 全链路 + Undo）+ Browser Agent 复用（source_search → browser_open/read）+ usage 记录接线 | ✅ | 2026-08-15 完成（见下）：决议 #79–#85 + usage-tracker + 序列化 allowlist 补齐 + description 校准 + 冒烟 8.12/8.13 + LIVE_AGENT_SOURCES 门控；任务文档 doc/stage4/tasks/B6-ai-source-management.md（红→绿证据已回填） |
-| B7 | 跨进程持久化 + migration/backup/recovery 全矩阵 + FTS rebuild 诊断 + usage/health 边界 | ⏳ | 2026-08-15 设计定稿；usage 接线与 B-07 冒烟已归 B6（决议 #79），B7 保留 UI 展示与运维边界；任务文档 doc/stage4/tasks/B7-persistence-recovery-usage.md |
+| B7 | 跨进程持久化 + migration/backup/recovery 全矩阵 + FTS rebuild 诊断 + usage/health 边界 | ✅ | 2026-08-15 完成（见下）：决议 #86–#91 + db/backup.ts + sources-store.ts + 恢复态装配 + rebuild 诊断入口 + usage 双投影与「上次使用结果」展示 + 冒烟 8.14 B-06 B7 部分 + B-02 usage 跨进程扩展；**2026-08-15 事故恢复与安全加固闭环**（头部固定 16 字节读取/目标 fail-closed/碰撞换新名/目录链接真实路径校验/prune 参数边界，红→绿 11→41/41，全量 1219/1219）；任务文档 doc/stage4/tasks/B7-persistence-recovery-usage.md（实施裁决与红→绿证据已回填） |
 | B8 | 红队矩阵 SRT-01～SRT-12 + 安全审计 + 隐私扫描 + 真实 Provider/真实网页可选验证 | ⏳ | 2026-08-15 设计定稿；安全契约源 doc/stage4/threat-model.md；任务文档 doc/stage4/tasks/B8-redteam-security-validation.md |
 | B9 | Fourth Stage 独立最终验收（当前 HEAD 重新复验，不采信 B1–B8 报告）+ Exit Gate 判定 + 文档同步；完成后停止不实现 Fifth Stage | ⏳ | 2026-08-15 设计定稿；任务文档 doc/stage4/tasks/B9-finalize-acceptance.md |
 
@@ -180,7 +197,109 @@
 > 编号一律不变。（2026-08-15）第四阶段任务编号 B1–B9、威胁 ST-01～ST-12、红队
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B6 条目）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B7 条目）
+
+- **B7 跨进程持久化 + migration/backup/recovery 全矩阵 + FTS rebuild 诊断 +
+  usage/health 展示边界（2026-08-15，第七个实现闭环）**：① 步骤 0 独立核对
+  ——HEAD `910c764` = Gitee/GitHub 双远程 HEAD（ls-remote 实测三方一致；
+  GitHub 经代理确认可用）、工作区干净；基线 test 1160/1160·typecheck·lint·
+  format:check 独立复跑全绿；B1–B6 代码/接口/测试在位（B7 零实现——无
+  backup.ts/sources-store.ts）；任务授权实施前校准项核验属实（AGENTS 速查
+  「B1–B5 已实现」陈旧、shared/types/sources.ts「UsageTracker 归 B7」注释
+  陈旧、backup.ts SQL 红线未覆盖 VACUUM INTO/integrity 检查、「字节级完好」
+  表述过强、备份三候选未冻结、保留策略未定）。② **实施前契约裁决（决议
+  #86–#91，落 detailed-design §15 + §3.1/§10/§11/§13 + threat-model
+  §3.2/§3.5 + B7 任务文档，本任务授权直接校准未向用户询问）**：backup.ts
+  存储运维 SQL 窄契约（**VACUUM INTO 路径参数绑定实测成立**——node:sqlite
+  `prepare('VACUUM INTO ?')` 支持绑定，本任务实测证据）/备份冻结 VACUUM
+  INTO（node:sqlite backup API 不存在（B1 实测），不实现；关闭后复制仅为
+  已验证后备不静默启用）/「迁移失败原库完好」逻辑恒等校准（原路径不得被
+  替换/截断/自动恢复覆盖；不要求 WAL/SHM 逐字节恒等）/保留策略冻结（严格
+  命名 + backups 目录内普通文件 + 最新 5 + 30 天）/usage 两处投影同事务一致
+  - Undo 回放不覆盖 usage/rebuild 受控入口（仅 UI 通道 + normal 状态 + 零
+    Undo 零 changed 零 manual 审计）。③ **红→绿**：先写测试——红态 5 files
+    failed / **16 failed / 110 passed**（backup/store 两新文件模块缺失 +
+    recordUsage 双投影 3 例 + rebuildSearchIndex 3 例 + adapter.rebuildIndex
+    4 例 + describeLastUsage/formatLocalTime 6 例；既有 1160 用例零删除零
+    削弱）；实现后全量 **1207/1207**（新增 47：backup 20 / sources-store 9 /
+    source-service 9 / source-ipc 4 / sources-display 5）。实现期修正均为测试
+    自身断言缺陷 5 处；**实现侧真实缺陷 3 处**（红→绿期间实测抓出，各有断言
+    固化）：① 迁移失败路径主文件字节变化——openDb 默认切 WAL 写文件头 →
+    迁移期间工作连接 `wal:false`、成功后才切换 WAL；② VACUUM INTO 遇已存在
+    目标失败（SQLite 语义）→ 覆盖前先移除本次生成的严格命名目标；③ 快照校验
+    失败 Windows 下先关只读句柄再删除（EPERM）。④ **冒烟 8.14 B-06 B7 部分
+    （默认矩阵自动包含，dev+生产双场景退出码 0）**：真实启动装配路径
+    openSourcesStore——新库零备份/v0→v1 先备份后迁移/注入迁移失败回滚 + 原库
+    user_version 与数据逻辑恒等 + 主文件字节不变 + 备份完整/未来版本零写入
+    （字节恒等）零备份/坏 magic 与截断原文件保留/恢复态读写 Undo usage
+    rebuild 全拒 + 四 Agent Source 工具 fail-closed + 数据库零变化 + 浏览器
+    其余能力继续可用（受控页加载断言）/保留清理（5+30 天上界 + 无关文件不动）/
+    rebuild 诊断（行数一致 + FTS 破坏失败安全）/usage 两处投影一致（同事务
+    同时钟）。**B-02 双进程扩展**（AIBROWSE_SOURCES_SMOKE=set|check 生产产物）：
+    set 写 CRUD + journal + usage → check 新进程读回内容/版本/usage（两处投影
+    一致断言）→ durable Undo → 退出码 0；**B-05 与 SESSION 双进程复跑退出码
+    0**（启动存储路径改动回归）；全部互斥 gate 分进程运行，临时目录清理完毕。
+    ⑤ **红线与敏感扫描**：SQL 仍仅 Repository/migrations 编译期常量 + backup.ts
+    存储运维窄契约（决议 #86）；rebuild 通道零 payload（零 SQL/路径参数）；
+    renderer/preload/tools/agent 零 SQL；新代码零 any/@ts-ignore/@ts-nocheck；
+    工具注册表仍 17 工具（零新增）、schema v1 零改写、package/lockfile 零改动、
+    AGENT_SYSTEM_PROMPT 恒等；恢复态为真实生产装配（非 SMOKE override）；
+    git diff --check 零命中；敏感信息扫描零命中；临时 userData/备份夹具/WAL/
+    SHM 零残留。**未调用任何付费 Provider、未发起任何公网请求、未新增依赖。**
+    ⑥ 文档同步：detailed-design §1/§3.1/§10/§11/§13/§15（决议 #86–#91）、
+    threat-model §3.2/§3.5、B7 任务文档红→绿证据、本文件、Fourth_stage/
+    README/AGENTS（§1 状态校准 B1–B6 已完成、B8 为下一任务 + §4/§5/§7 速查
+    回填）。B7 完成即停止，不实现 B8。（2026-08-15 事故恢复与安全加固后
+    最终测试计数 1219/1219，见下一条目。）
+
+- **B7 事故恢复与安全加固闭环（2026-08-15，事故止损 + 数据安全修复 + 可信
+  收尾）**：承接上一条目 B7 主体工作（未提交），本任务按用户指令完成事故
+  恢复、安全修正与可信重验。① **事故止损**——症状（VS Code 卡死/插件闪退/
+  电脑长时间卡顿/uv_spawn unknown error/无法确定 Node.js 安装目录/退出码
+  45）与「此前某次通过」不采信：先只读检查（无 node/electron/npm/vitest
+  进程；内存 8.8GB 空闲/15.8GB；CPU 1%；node v24.18.0/npm 11.16.0 定位
+  正常），未终止任何进程（MATCH_COUNT=0 无可终止目标，明确未批量结束
+  VS Code/Electron/Node）。根目录事故产物逐项核验后精确清理（同一
+  PowerShell 会话 + Remove-Item -LiteralPath，零 glob 零跨 shell）：
+  **47 项删除**——45 个零字节文档碎片文件（文件名 = 各阶段文档片段，时间
+  18:37–18:53）+ 1 个 157 字节「*_本设计闭环不新增任何」文件（内容为
+  npm `Unknown command:` 错误输出——文档文本曾以某种方式进入 npm 命令
+  解析，为事故机制的直接证据）+ 根目录事故日志
+  aibrowse-2026-08-15.log（274KB；扫描确认内容为 B7 冒烟 8.14 注入矩阵的
+  预期中文错误诊断 + vitest 堆栈，无秘密——sk-/apiKey/token=/Bearer/
+  Authorization/DPAPI 六类扫描零命中）；清理后根目录零异常条目，工作区
+  恢复「24 个 B7 修改 + 4 个预期新文件」形态。② **安全审查与修复（红→绿）**
+  ——发现并修复 5 项数据安全问题（backup.ts/sources-store.ts）：a) 头部
+  探测原 `readFileSync(dbPath)` 整库读入内存（大库无界内存/磁盘压力）→
+  固定 16 字节 open/read/close（句柄 finally 可靠关闭）；b)
+  createConsistentBackupAt 原可接受任意路径并先 rmSync（可删除仓库外文件/
+  覆盖已有有效备份）→ 目标已存在（任何形态）fail-closed 拒绝，绝不删除/
+  覆盖调用前已有文件；失败清理仅限「本次尝试新建且调用前已验证不存在」的
+  部分文件；c) 目标名碰撞原「删除旧目标再覆盖」→ 换新名有限重试（5 次），
+  全部碰撞 fail-closed；d) backups 目录原仅字符串前缀校验 → realpath
+  解析校验（symlink/junction 越界拒绝，解析后必须仍位于 Sources 目录内）；
+  pruneBackups 不跟随目录链接越界（junction → 安全空结果）+ 删除前
+  lstat/realpath 复核（TOCTOU 防御）+ keepCount/maxAgeMs/nowMs 参数边界
+  验证（非有限/负数/非整数 → 安全空结果零删除——旧实现 keepCount=NaN
+  会全量误删，红态实测）；e) 备份源连接改只读（备份过程不写源库，WAL
+  活跃库主文件字节恒等断言）。**红态证据**：先写测试，旧实现真实失败
+  **11 failed / 30 passed**（目标碰撞覆盖 true、readFileSync 被调用、
+  junction 跟随写入、外部目录放行、NaN 参数误删 2 文件、junction prune
+  删除链接目标内文件、store junction/外部目录 normal 等）；实现后
+  **41/41 全绿**（新增 12 用例：头部固定读取 2/碰撞与越界 5/prune 边界
+  3/store 越界 2；既有碰撞用例按新契约改写为 fail-closed 语义——契约
+  收紧非削弱）。实现期测试自身修正 2 处（ESM 命名空间不可 spy → 模块级
+  mock/randomHex 注入；junction 夹具目标须在 root 外 + rmdirSync 显式
+  清理）。③ **受控串行验证**（每次一条命令，单 worker）：定向
+  41/41 → typecheck 0 → lint 0 → format:check（修复 backup.test.ts 格式
+  后 0）→ build 0 → 全量 **1219/1219**（52 文件，19.56s，单 worker）→
+  git diff --check 0 → dev 冒烟 0（1537 行日志，8.14 B-06 全矩阵通过）→
+  生产冒烟 0（1525 行）→ B-02 set/check 0（usage 投影跨进程一致）→
+  B-05 set/check 0 → SESSION set/check 0；每次 Electron 验证后进程/
+  WAL-SHM/临时目录检查零残留，5 个专属 userData 目录 + 3 个红态测试夹具
+  残留目录全部清理，TEMP 下 aibrowse-_ 零残留。④ 未调用任何付费 Provider、
+  未发起任何公网请求、未新增依赖、schema v1/migration 零改写、工具注册表
+  仍 17 工具、恢复态仍为真实生产装配。
 
 - **B6 AI 自然语言管理端到端 + Browser Agent 复用 + usage 接线（2026-08-15，
   第六个实现闭环）**：① 步骤 0 独立核对——HEAD `6cde82b` = Gitee/GitHub 双远程
@@ -1742,18 +1861,15 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **B7 — 跨进程持久化 + migration/backup/recovery 全矩阵 + FTS rebuild 诊断 +
-  usage/health 边界（新对话 = 一个可验证闭环）**：
-  B1–B6 已完成（node:sqlite 冻结决议 #48；schema v1/Repository/Service/journal/
-  Undo/多语言检索/Source 四工具（注册表 17 工具）/change set 确认全链路/
-  Sources UI + 手工管理 + 快速添加 + 两阶段永久删除 + IPC/bridge 在位；usage
-  接线（SourceSearchHintStore 每 run 独立 + browser_open 比对写入）与冒烟
-  B-07 已归 B6 完成（决议 #79）；基线 1160/1160 全绿，dev+生产冒烟（含
-  8.12/8.13）、B-02 与 B-05 双进程门控退出码 0）。B7 按
-  `doc/stage4/tasks/B7-persistence-recovery-usage.md` 落地 backup.ts 定稿、
-  migration 全矩阵、只读恢复态装配、FTS rebuild 受控入口与 usage/health 展示
-  边界（「上次使用结果」文案 + 无后台巡检断言）。完成后按 B8→B9 顺序推进，
-  B9 独立复验不采信前序报告；本提示内不再继续实现，等待用户下一条指令。
+- **新开独立对话：全项目严格安全/资源/进程生命周期/事故复盘审查（非 B8）**：
+  B7 事故恢复与安全加固闭环已完成（2026-08-15）。**下一个推荐动作不是直接
+  实现 B8**，而是另开独立对话，对整个项目（第一～四阶段全部代码/测试/冒烟/
+  文档）进行严格安全、资源、进程生命周期与事故复盘审查；**该审查不得采信
+  B1–B7 既有完成报告**，需在当前 HEAD 上独立复验并重做敏感扫描、SQL 边界、
+  资源与句柄审计。B8（SRT-01～SRT-12 红队矩阵）与 B9（独立最终验收）应在
+  该审查通过后另行安排。当前基线：test 1219/1219（52 文件，单 worker）全绿、
+  typecheck/lint/format:check/build 全绿、dev+生产冒烟（含 8.14 B-06 B7
+  部分）与 B-02/B-05/SESSION 双进程门控全部退出码 0。
 
 ## 第一阶段验收未完成项
 

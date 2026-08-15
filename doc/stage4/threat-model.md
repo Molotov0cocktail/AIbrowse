@@ -59,8 +59,12 @@
 
 - **SQL 封闭**：唯一**业务 SQL** 执行点是主进程 `SourceRepository`（编译期常量语句）
   与 migration 定义；driver 仅允许连接级运维 SQL 编译期常量（PRAGMA busy_timeout/
-  foreign_keys/journal_mode 与 BEGIN/COMMIT/ROLLBACK，不含业务语句）；测试专用
-  SQL 仅限 SMOKE_MODE 门控冒烟 B-01 与 `*.test.ts`（决议 #47）；renderer/preload/
+  foreign_keys/journal_mode 与 BEGIN/COMMIT/ROLLBACK，不含业务语句）；**B7 决议
+  #86 扩展**：`db/backup.ts` 仅允许编译期固定的**存储运维 SQL**（PRAGMA
+  user_version/quick_check/integrity_check/foreign_key_check + VACUUM INTO——
+  备份路径由主进程生成、严格校验后**参数绑定**（实测 node:sqlite 支持
+  `VACUUM INTO ?`），不含业务 CRUD/动态 SQL）；测试专用 SQL 仅限 SMOKE_MODE
+  门控冒烟 B-01/B-06 与 `*.test.ts`（决议 #47）；renderer/preload/
   AgentLoop/Tool 实现零 SQL；所有用户/网页/模型文本只能作为 prepared statement
   参数绑定；禁止 `exec(sql)` 接受任何动态串、禁止动态表名/列名/排序表达式、禁止
   加载 SQLite 扩展（node:sqlite `enableLoadExtension` 永不开）；FTS 查询串只经
@@ -141,19 +145,38 @@
   set 一次——模型批量制造垃圾的速率被确定性地约束；分组/标签创建无上限的残余
   风险如实登记（§5）。
 
-### 3.5 数据完整性与恢复防线（ST-09/ST-10）
+### 3.5 数据完整性与恢复防线（ST-09/ST-10；B7 落地 + 决议 #86–#89 校准）
 
 - **migration 单调逐级 + 事务**：schema 版本用 `PRAGMA user_version` 单调递增；
-  每级迁移在单事务内执行，异常明确 rollback；**迁移前生成一致性备份**（不得在
-  WAL 活跃时只复制主数据库文件——具体 backup API/VACUUM INTO/关闭后快照方案由
-  B1 实测冻结）；`integrity_check`/`foreign_key_check` 失败不得覆盖原库。
-- **只读恢复态**：未知更高版本（user_version > 程序版本）或损坏库 → Sources 进入
-  只读恢复态（Source 工具返回结构化 unavailable 错误、UI 显示中文诊断与恢复建议），
-  **浏览器其余能力继续安全可用**；恢复流程保留原库文件。
+  每级迁移在单事务内执行，异常明确 rollback——**「迁移失败原库完好」语义（决议
+  #88）**：原路径不得被替换、截断或自动恢复覆盖；回滚后 user_version/schema/
+  数据逻辑恒等（可重开读回一致）；迁移前一致性备份可打开且完整；不得要求 WAL/
+  SHM 元数据文件逐字节恒等（实现额外保证：迁移期间工作连接 `wal:false`——失败
+  路径主文件字节不变，测试固化）。**启动顺序**：先以只读连接探测版本与完整性
+  （绝不先以默认 WAL 写连接打开再判断未来版本）；**迁移前一致性备份**（决议
+  #87 冻结 VACUUM INTO——备份可打开 + integrity ok + 版本匹配校验，失败即删除
+  部分备份）；`integrity_check`/`foreign_key_check` 失败不得覆盖原库。
+- **只读恢复态（真实生产装配能力，非 SMOKE override 冒充）**：未知更高版本
+  （user_version > 程序版本）或损坏/截断/坏 magic/备份失败/迁移失败/迁移后检查
+  失败 → Sources 进入只读恢复态（Source 工具返回结构化 unavailable 错误、UI
+  显示中文诊断与恢复建议——仅安全标签无绝对路径），**浏览器其余能力继续安全
+  可用**；恢复流程保留原库与已有备份；恢复态下全部读写/Undo/usage/rebuild
+  拒绝且数据库零变化（字节恒等断言）。普通目录权限/无法创建数据库等非恢复性
+  初始化故障 → unavailable（与恢复态区分）。
+- **备份保留（决议 #89；2026-08-15 事故恢复加固）**：仅处理严格命名、位于
+  backups 目录内的普通备份文件（非链接/非目录）；最多保留最新 5 个且清理超过
+  30 天者（两上界同时生效）；绝不跟随链接、删除原库或无关文件；清理失败仅记录
+  不阻塞启动。加固：目标已存在 fail-closed（绝不删除/覆盖调用前已存在文件，
+  碰撞换新名有限重试）；backups 目录 realpath 解析校验（symlink/junction
+  越界拒绝，prune 对链接形态安全空结果 + 删除前 lstat/realpath 复核）；
+  prune 参数边界验证（非有限/负数/非整数 → 安全空结果零删除）；备份源连接
+  只读（备份不写源库）；头部探测固定 16 字节读取。
 - **Undo 语义**：Undo = 单事务回放 journal 中的 before 快照；**重启后可用**
   （journal 持久化）；Undo 前校验当前 version 与 journal 记录的 after 版本一致，
   不一致 → 拒绝并提示（不覆盖用户后续修改）；Undo 幂等（已撤销的 change set
-  重复 Undo 安全无操作）。
+  重复 Undo 安全无操作）。**B7 决议 #90**：Undo 回放不覆盖 usage 两列
+  （last_used_at/last_usage_outcome 保持当前值——观测数据不属于业务快照回放
+  范围，否则 Undo 会制造两处投影不一致）。
 
 ### 3.6 审计层（继承 + 扩展）
 

@@ -33,8 +33,12 @@
 >   set|check 双进程门控，全量 test 1125/1125）——Sources 功能对用户已可用**；
 >   **B6 已落地（决议 #79–#85 + usage-tracker + 序列化 allowlist 补齐 +
 >   冒烟 8.12/8.13，全量 test 1160/1160）——usage 接线闭环**；
->   下一个推荐任务 = **B7**（跨进程持久化 + migration/backup/recovery 全矩阵 +
->   FTS rebuild 诊断 + usage/health 边界）。契约源
+>   **B7 已落地（决议 #86–#91 + `db/backup.ts` 存储运维 + `sources-store.ts`
+>   启动装配 + 只读恢复态 + FTS rebuild 诊断 + usage 双投影与「上次使用结果」
+>   展示，冒烟 8.14 B-06 B7 部分 + B-02 usage 跨进程扩展；2026-08-15 事故
+>   恢复与安全加固后全量 test **1219/1219**）——存储运维面闭环**；
+>   下一个推荐动作 = **新开独立对话全项目严格审查**（安全/资源/进程生命周期/
+>   事故复盘，不采信 B1–B7 既有完成报告），而非直接实现 B8。契约源
 >   `doc/stage4/detailed-design.md`；安全契约源
 >   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
 >   Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
@@ -59,7 +63,7 @@
 ## 当前状态（2026-08-15）
 
 - 🔨 **第四阶段（Sources）进行中（2026-08-15，用户切换指令）：设计完成、
-  B1 已完成、B2 已完成、B3 已完成、B4 已完成、B5 已完成、B6 已完成**——设计闭环（proposal/高层设计/详细设计/
+  B1 已完成、B2 已完成、B3 已完成、B4 已完成、B5 已完成、B6 已完成、B7 已完成**——设计闭环（proposal/高层设计/详细设计/
   威胁模型/B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：
   Electron 43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared
   statements/事务/外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）
@@ -115,10 +119,29 @@
     8.13 B-06 UI DOM 端到端（真实任务模式/ConfirmDialog/Sources UI/Undo/
     usage 探针，dev+生产双场景退出码 0）+ B-02/B-05 双进程复跑退出码 0；
     **Sources 功能对用户已可用，usage 接线已闭环**（全量 test 1160/1160）。
+    **B7 存储运维面已落地（2026-08-15）**：实施前契约裁决（决议 #86–#91）+
+    `db/backup.ts`（只读探测/VACUUM INTO 一致性备份（决议 #87 冻结）/
+    integrity·外键检查/严格命名保留清理（最新 5 + 30 天，决议 #89））+
+    `sources-store.ts` 启动装配（probe → 备份 → 逐级迁移 → 检查 →
+    normal|readonly-recovery|unavailable——恢复态为真实生产装配能力）+ 恢复态
+    全拒（读写/Undo/usage/rebuild/四 Agent Source 工具零写入，浏览器其余能力
+    正常）+ FTS rebuild 诊断入口（sources:rebuild-index 无 payload，仅 UI +
+    normal 状态，零 Undo 零 changed）+ usage 两处投影同事务一致（决议 #90）+
+    详情「上次使用结果」展示（可达/不可达/其余「暂无可靠信号」）+
+    冒烟 8.14 B-06 B7 部分（dev+生产双场景退出码 0）+ B-02 usage 跨进程扩展
+    （set/check 退出码 0）+ B-05/SESSION 双进程复跑退出码 0。
     真实 Provider 自然语言管理验证待用户授权（门控就绪，未授权不发起付费请求）。
-    下一个唯一任务 = **B7**（跨进程持久化 + migration/backup/recovery 全矩阵 +
-    FTS rebuild 诊断 + usage/health 边界）。契约
-    `doc/stage4/detailed-design.md` + 安全契约 `doc/stage4/threat-model.md`。
+    **B7 事故恢复与安全加固（2026-08-15）**：环境事故已止损（根目录 46 个
+    零字节文档碎片 + 1 个 npm Unknown command 错误输出文件 + 事故日志经四项
+    标准核验后精确清理，工作区恢复干净形态）；B7 实现安全审查发现并修复 5 项
+    数据安全问题（头部固定 16 字节读取/目标已存在 fail-closed/碰撞换新名/
+    backups 目录 symlink-junction 真实路径校验/prune 参数边界验证 + 备份源
+    连接只读，红→绿 11 failed → 41/41）；全量验证稳定复跑 test
+    **1219/1219**（52 文件，单 worker）。**下一个推荐动作不是 B8**：新开
+    独立对话对全项目严格安全/资源/进程生命周期/事故复盘审查（不采信
+    B1–B7 既有完成报告）。
+    契约 `doc/stage4/detailed-design.md` + 安全契约
+    `doc/stage4/threat-model.md`。
 
 - ✅ **第一阶段完成（Exit Gate 通过，2026-08-13）**：T0 项目基线 → T1 详细设计定稿 →
   T2 浏览器核心（BrowserController/TabManager/SessionManager + WebContentsView）→
@@ -285,7 +308,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 1160 用例）                   |
+| `npm test`                        | Vitest 全量测试（当前 1219 用例）                   |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -397,7 +420,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 1160 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 1219 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具
