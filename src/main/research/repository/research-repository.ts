@@ -255,14 +255,17 @@ export function parseLocatorJson(raw: unknown): EvidenceLocator | null {
   }
   if (kind === 'table') {
     if (!isNonNegativeInt(obj['row']) || !isNonNegativeInt(obj['col'])) return null;
+    // 决议 #115：header 仅允许 string | null | 缺省（undefined → null）；
+    // object/array/number/boolean 等非法形态使整个 locator 无效（fail-closed，
+    // 不得静默转 null）
     const header = obj['header'];
-    return {
-      kind: 'table',
-      row: obj['row'] as number,
-      col: obj['col'] as number,
-      header:
-        header === null || header === undefined ? null : typeof header === 'string' ? header : null,
-    };
+    if (header === undefined || header === null) {
+      return { kind: 'table', row: obj['row'] as number, col: obj['col'] as number, header: null };
+    }
+    if (typeof header === 'string') {
+      return { kind: 'table', row: obj['row'] as number, col: obj['col'] as number, header };
+    }
+    return null;
   }
   if (kind === 'field') {
     return typeof obj['fieldPath'] === 'string'
@@ -609,6 +612,8 @@ const SQL_INSERT_TASK = `INSERT INTO research_tasks (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 const SQL_SELECT_TASK_BY_ID = 'SELECT * FROM research_tasks WHERE id = ?';
 const SQL_SELECT_RUNNING_TASK = "SELECT * FROM research_tasks WHERE status = 'running' LIMIT 1";
+// 决议 #113：markAllRunningInterrupted 投影预算检查用（全部 running 行）
+const SQL_LIST_RUNNING_TASKS = "SELECT * FROM research_tasks WHERE status = 'running'";
 const SQL_COUNT_TASKS = 'SELECT COUNT(*) AS n FROM research_tasks';
 const SQL_COUNT_TASKS_BY_STATUS = 'SELECT COUNT(*) AS n FROM research_tasks WHERE status = ?';
 const SQL_COUNT_FINISHED_TASKS = `SELECT COUNT(*) AS n FROM research_tasks
@@ -766,9 +771,16 @@ export class ResearchRepository {
   }
 
   getTaskById(id: string): ResearchTask | null {
+    const row = this.getRawTaskRow(id);
+    if (row === null) return null;
+    return rowToTask(row);
+  }
+
+  // 原始任务行（不经域转换——投影预算检查需要以原始行为基做字段补丁）
+  private getRawTaskRow(id: string): ResearchTaskRow | null {
     const row = this.db.prepare(SQL_SELECT_TASK_BY_ID).get(id) as unknown;
     if (!isRecord(row)) return null;
-    return rowToTask(row as unknown as ResearchTaskRow);
+    return row as unknown as ResearchTaskRow;
   }
 
   getRunningTask(): ResearchTask | null {
@@ -810,12 +822,28 @@ export class ResearchRepository {
     return (this.db.prepare(SQL_COUNT_FINISHED_TASKS).get() as { n: number }).n;
   }
 
-  // --- 状态迁移写入（事务由调用方持有） ---
+  // --- 状态迁移写入（事务由调用方持有；决议 #113：全部按更新后任务投影做
+  // 字节预算检查——替换写不是新增行，任何成功写入后的持久化投影不得超过上限） ---
 
   setTaskRunning(
     id: string,
     write: { phase: ResearchPhase; startedAt: string; updatedAt: string; stats: ResearchTaskStats },
   ): void {
+    const raw = this.getRawTaskRow(id);
+    if (raw !== null) {
+      this.assertProjectedTaskBudget(id, {
+        ...raw,
+        status: 'running',
+        phase: write.phase,
+        started_at: write.startedAt,
+        updated_at: write.updatedAt,
+        stats_json: serializeStatsJson(write.stats),
+        finished_at: null,
+        interrupted_at: null,
+        error_code: null,
+        result_id: null,
+      });
+    }
     this.db
       .prepare(SQL_SET_TASK_RUNNING)
       .run(write.phase, write.startedAt, write.updatedAt, serializeStatsJson(write.stats), id);
@@ -830,6 +858,19 @@ export class ResearchRepository {
       stats: ResearchTaskStats;
     },
   ): void {
+    const raw = this.getRawTaskRow(id);
+    if (raw !== null) {
+      this.assertProjectedTaskBudget(id, {
+        ...raw,
+        status: 'completed',
+        phase: null,
+        finished_at: write.finishedAt,
+        updated_at: write.updatedAt,
+        stats_json: serializeStatsJson(write.stats),
+        result_id: write.resultId,
+        error_code: null,
+      });
+    }
     this.db
       .prepare(SQL_SET_TASK_COMPLETED)
       .run(write.finishedAt, write.updatedAt, serializeStatsJson(write.stats), write.resultId, id);
@@ -844,6 +885,19 @@ export class ResearchRepository {
       stats: ResearchTaskStats;
     },
   ): void {
+    const raw = this.getRawTaskRow(id);
+    if (raw !== null) {
+      this.assertProjectedTaskBudget(id, {
+        ...raw,
+        status: 'failed',
+        phase: null,
+        finished_at: write.finishedAt,
+        updated_at: write.updatedAt,
+        stats_json: serializeStatsJson(write.stats),
+        error_code: write.errorCode,
+        result_id: null,
+      });
+    }
     this.db
       .prepare(SQL_SET_TASK_FAILED)
       .run(write.finishedAt, write.updatedAt, serializeStatsJson(write.stats), write.errorCode, id);
@@ -853,21 +907,62 @@ export class ResearchRepository {
     id: string,
     write: { finishedAt: string; updatedAt: string; stats: ResearchTaskStats },
   ): void {
+    const raw = this.getRawTaskRow(id);
+    if (raw !== null) {
+      this.assertProjectedTaskBudget(id, {
+        ...raw,
+        status: 'cancelled',
+        phase: null,
+        finished_at: write.finishedAt,
+        updated_at: write.updatedAt,
+        stats_json: serializeStatsJson(write.stats),
+        error_code: null,
+        result_id: null,
+      });
+    }
     this.db
       .prepare(SQL_SET_TASK_CANCELLED)
       .run(write.finishedAt, write.updatedAt, serializeStatsJson(write.stats), id);
   }
 
   setTaskInterrupted(id: string, write: { interruptedAt: string; updatedAt: string }): void {
+    const raw = this.getRawTaskRow(id);
+    if (raw !== null) {
+      this.assertProjectedTaskBudget(id, {
+        ...raw,
+        status: 'interrupted',
+        phase: null,
+        interrupted_at: write.interruptedAt,
+        updated_at: write.updatedAt,
+      });
+    }
     this.db.prepare(SQL_SET_TASK_INTERRUPTED).run(write.interruptedAt, write.updatedAt, id);
   }
 
   updateTaskPhase(id: string, phase: ResearchPhase, updatedAt: string): void {
+    const raw = this.getRawTaskRow(id);
+    if (raw !== null) {
+      this.assertProjectedTaskBudget(id, { ...raw, phase, updated_at: updatedAt });
+    }
     this.db.prepare(SQL_UPDATE_TASK_PHASE).run(phase, updatedAt, id);
   }
 
-  // 决议 #109：启动装配遗留 running 原子标 interrupted（单条 UPDATE，事务内）
+  // 决议 #109：启动装配遗留 running 原子标 interrupted（单条 UPDATE，事务内）。
+  // 决议 #113：任一受影响任务的更新后投影超限 → 整体拒绝零写入（store 装配
+  // 将其归一化 unavailable）
   markAllRunningInterrupted(interruptedAt: string, updatedAt: string): number {
+    const rows = this.db.prepare(SQL_LIST_RUNNING_TASKS).all() as unknown[];
+    for (const raw of rows) {
+      if (!isRecord(raw)) continue;
+      const row = raw as unknown as ResearchTaskRow;
+      this.assertProjectedTaskBudget(row.id, {
+        ...row,
+        status: 'interrupted',
+        phase: null,
+        interrupted_at: interruptedAt,
+        updated_at: updatedAt,
+      });
+    }
     return Number(
       this.db.prepare(SQL_MARK_ALL_RUNNING_INTERRUPTED).run(interruptedAt, updatedAt).changes,
     );
@@ -1182,6 +1277,28 @@ export class ResearchRepository {
       throw new RepositoryError(
         'task-persisted-budget-exceeded',
         `任务持久化字节预算超限（当前 ${current} + 新增 ${additional} > ${MAX_TASK_PERSISTED_CHARS} 字节）`,
+      );
+    }
+  }
+
+  // 决议 #113：任务行更新（状态/resultId/stats/时间字段）按**更新后的任务
+  // 投影**检查——子行字节 + 更新后任务行字节 ≤ 上限（替换写不得误算为完整
+  // 新增、不得把既有任务行重复计入）；任何成功写入后的持久化投影不得超过
+  // 上限。畸形行读取路径跳过 → 不计入（与 #103 既有语义一致）；目标行不
+  // 存在时 UPDATE 零行，无写入可越界。
+  private assertProjectedTaskBudget(taskId: string, projectedRow: ResearchTaskRow): void {
+    const currentTask = this.getTaskById(taskId);
+    const currentTotal = this.computeTaskPersistedBytes(taskId);
+    const currentTaskBytes =
+      currentTask === null ? 0 : computeUtf8Bytes(JSON.stringify(currentTask));
+    const childrenBytes = currentTotal - currentTaskBytes;
+    const projectedTask = rowToTask(projectedRow);
+    const projectedTaskBytes =
+      projectedTask === null ? 0 : computeUtf8Bytes(JSON.stringify(projectedTask));
+    if (!isWithinPersistedBudget(childrenBytes, projectedTaskBytes)) {
+      throw new RepositoryError(
+        'task-persisted-budget-exceeded',
+        `任务持久化字节预算超限（更新后投影 ${childrenBytes + projectedTaskBytes} > ${MAX_TASK_PERSISTED_CHARS} 字节）`,
       );
     }
   }

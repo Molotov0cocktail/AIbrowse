@@ -16,11 +16,21 @@ export interface TruncationResult {
   truncated: boolean;
 }
 
-// 确定性截断 + 标记：超限时截断至 maxChars 并追加标记（总长 = max + 标记长）
+// 确定性截断 + 标记（决议 #114）：截断标记计入 maxChars——返回文本
+// String.length 恒 ≤ maxChars（前缀 = maxChars − 标记长）；标记放不下时仅按
+// maxChars 截断原文、绝不输出半截标记。单位 = JavaScript 字符数（#103 CHARS
+// 单位不改为 UTF-8 字节）；非法 maxChars（负数/非整数）安全空返回不抛异常。
 export function truncateWithMark(text: string, maxChars: number): TruncationResult {
-  if (typeof text !== 'string') return { text: '', truncated: false };
+  if (typeof text !== 'string' || !Number.isInteger(maxChars) || maxChars < 0) {
+    return { text: '', truncated: false };
+  }
   if (text.length > maxChars) {
-    return { text: `${text.slice(0, maxChars)}${RESEARCH_TRUNCATION_MARK}`, truncated: true };
+    const prefixLen = maxChars - RESEARCH_TRUNCATION_MARK.length;
+    const cut =
+      prefixLen >= 0
+        ? `${text.slice(0, prefixLen)}${RESEARCH_TRUNCATION_MARK}`
+        : text.slice(0, maxChars);
+    return { text: cut, truncated: true };
   }
   return { text, truncated: false };
 }

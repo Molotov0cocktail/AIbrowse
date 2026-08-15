@@ -14,7 +14,9 @@ import { runResearchMigrations } from '../db/research-migrations';
 import {
   RepositoryError,
   ResearchRepository,
+  parseLocatorJson,
   parseStatsJson,
+  rowToEvidence,
   rowToTask,
   type ResearchCaptureRow,
   type ResearchCandidateRow,
@@ -22,7 +24,9 @@ import {
   type ResearchResultRow,
   type ResearchTaskRow,
 } from './research-repository';
-import type { ResearchTask } from '../../../shared/types/research';
+import { computeUtf8Bytes } from '../domain/research-budget';
+import type { ResearchTask, ResearchTaskStats } from '../../../shared/types/research';
+import { MAX_TASK_PERSISTED_CHARS } from '../../../shared/types/research';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-research-repo-'));
 const T0 = '2026-08-16T00:00:00.000Z';
@@ -503,6 +507,278 @@ describe('累计持久化预算（决议 #103：UTF-8 字节、事务内前置�
     const fine = '中'.repeat(160_000); // 480k 字节 < 500k
     repo.insertEvidence(makeEvidenceRow({ excerpt: fine }));
     expect(repo.listEvidenceByTask('11111111-1111-4111-8111-111111111111')).toHaveLength(1);
+  });
+});
+
+describe('EvidenceLocator.table.header 形状（决议 #115：非法形态整体拒绝，fail-closed）', () => {
+  it('合法形态：string / null / 缺省（undefined）→ locator 正常解析', () => {
+    expect(
+      parseLocatorJson(JSON.stringify({ kind: 'table', row: 0, col: 1, header: '列名' })),
+    ).toEqual({
+      kind: 'table',
+      row: 0,
+      col: 1,
+      header: '列名',
+    });
+    expect(
+      parseLocatorJson(JSON.stringify({ kind: 'table', row: 0, col: 1, header: null })),
+    ).toEqual({
+      kind: 'table',
+      row: 0,
+      col: 1,
+      header: null,
+    });
+    expect(parseLocatorJson(JSON.stringify({ kind: 'table', row: 0, col: 1 }))).toEqual({
+      kind: 'table',
+      row: 0,
+      col: 1,
+      header: null,
+    });
+  });
+
+  it.each([42, true, ['列名'], { name: '列名' }])(
+    'header 非法形态 %j → 整个 locator 返回 null（不得静默转 null）',
+    (bad) => {
+      expect(
+        parseLocatorJson(JSON.stringify({ kind: 'table', row: 0, col: 1, header: bad })),
+      ).toBeNull();
+    },
+  );
+
+  it('Repository 写入对应 Evidence fail-closed：非法 header 整体拒绝、零落库', () => {
+    repo.insertTask(makeTaskRow());
+    for (const bad of [42, true, { name: 'x' }]) {
+      expect(() =>
+        repo.insertEvidence(
+          makeEvidenceRow({
+            evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            type: 'table-cell',
+            locator_json: JSON.stringify({ kind: 'table', row: 0, col: 0, header: bad }),
+            excerpt: '摘录',
+            value: '单元格',
+          }),
+        ),
+      ).toThrowError(RepositoryError);
+    }
+    expect(repo.listEvidenceByTask('11111111-1111-4111-8111-111111111111')).toHaveLength(0);
+  });
+
+  it('读取侧 fail-closed：库内非法 header 行被跳过（其余行正常）', () => {
+    repo.insertTask(makeTaskRow());
+    repo.insertCapture(makeCaptureRow());
+    repo.insertEvidence(makeEvidenceRow());
+    handle
+      .prepare('UPDATE research_evidence SET locator_json = ? WHERE evidence_id = ?')
+      .run(
+        JSON.stringify({ kind: 'table', row: 0, col: 0, header: 42 }),
+        'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      );
+    expect(repo.listEvidenceByTask('11111111-1111-4111-8111-111111111111')).toHaveLength(0);
+  });
+
+  it('合法 header 的 table locator 写入/读回恒等', () => {
+    repo.insertTask(makeTaskRow());
+    repo.insertCapture(makeCaptureRow());
+    repo.insertEvidence(
+      makeEvidenceRow({
+        type: 'table-cell',
+        locator_json: JSON.stringify({ kind: 'table', row: 1, col: 2, header: '价格' }),
+        value: '¥100',
+      }),
+    );
+    const evidence = repo.listEvidenceByTask('11111111-1111-4111-8111-111111111111')[0]!;
+    expect(evidence.locator).toEqual({ kind: 'table', row: 1, col: 2, header: '价格' });
+  });
+});
+
+describe('任务状态更新路径的持久化预算（决议 #113：按更新后任务投影检查）', () => {
+  const TASK_ID = '11111111-1111-4111-8111-111111111111';
+  // 距 500k 上限仅剩 3 字节：任何状态/时间字段更新（增量 ≥5 字节）都会推过上限——
+  // 红态证明当前更新路径无预算检查、可突破上限
+  const HEADROOM = 3;
+
+  const STATS: ResearchTaskStats = {
+    candidateCount: 0,
+    selectedCount: 0,
+    captureCount: 0,
+    failedReadCount: 0,
+    evidenceCount: 0,
+    rejectedEvidenceCount: 0,
+    claimCount: 0,
+    conflictCount: 0,
+    stepsUsed: 0,
+    roundsUsed: 0,
+  };
+
+  // 构造「距离 500000 UTF-8 字节上限仅剩少量空间」的任务：任务行 + 1 条大
+  // Evidence（ASCII 1 字节/字符，字节精确可控）；返回构造后的持久化字节数
+  function fillTaskNearBudget(taskOver: Partial<ResearchTaskRow> = {}): number {
+    repo.insertTask(makeTaskRow(taskOver));
+    const base = repo.computeTaskPersistedBytes(TASK_ID);
+    const overhead = computeUtf8Bytes(
+      JSON.stringify(
+        rowToEvidence(
+          makeEvidenceRow({
+            evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            excerpt: '',
+          }),
+        )!,
+      ),
+    );
+    const filler = MAX_TASK_PERSISTED_CHARS - HEADROOM - base - overhead;
+    expect(filler).toBeGreaterThan(0);
+    repo.insertEvidence(
+      makeEvidenceRow({
+        evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        excerpt: 'x'.repeat(filler),
+      }),
+    );
+    const current = repo.computeTaskPersistedBytes(TASK_ID);
+    expect(current).toBe(MAX_TASK_PERSISTED_CHARS - HEADROOM);
+    return current;
+  }
+
+  it.each([
+    [
+      'setTaskRunning',
+      () =>
+        repo.setTaskRunning(TASK_ID, {
+          phase: 'planning',
+          startedAt: T1,
+          updatedAt: T1,
+          stats: STATS,
+        }),
+    ],
+    [
+      'setTaskCompleted',
+      () =>
+        repo.setTaskCompleted(TASK_ID, {
+          resultId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+          finishedAt: T1,
+          updatedAt: T1,
+          stats: STATS,
+        }),
+    ],
+    [
+      'setTaskFailed',
+      () =>
+        repo.setTaskFailed(TASK_ID, {
+          errorCode: 'research-timeout',
+          finishedAt: T1,
+          updatedAt: T1,
+          stats: STATS,
+        }),
+    ],
+    [
+      'setTaskCancelled',
+      () => repo.setTaskCancelled(TASK_ID, { finishedAt: T1, updatedAt: T1, stats: STATS }),
+    ],
+    [
+      'setTaskInterrupted',
+      () => repo.setTaskInterrupted(TASK_ID, { interruptedAt: T1, updatedAt: T1 }),
+    ],
+    ['updateTaskPhase', () => repo.updateTaskPhase(TASK_ID, 'reading', T1)],
+  ])('%s 会把近上限任务推过 500k → RepositoryError(budget) + 零写入', (_name, apply) => {
+    fillTaskNearBudget();
+    expect(apply).toThrowError(RepositoryError);
+    try {
+      apply();
+    } catch (err) {
+      expect(err).toBeInstanceOf(RepositoryError);
+      expect((err as RepositoryError).code).toBe('task-persisted-budget-exceeded');
+    }
+    // 零写入：任务行未变、持久化投影未变（created 状态与字节数原样）
+    expect(repo.getTaskById(TASK_ID)!.status).toBe('created');
+    expect(repo.computeTaskPersistedBytes(TASK_ID)).toBe(MAX_TASK_PERSISTED_CHARS - HEADROOM);
+  });
+
+  it('更新后投影仍在预算内 → 成功写入且投影 ≤ 500k（替换写不得误算为完整新增）', () => {
+    // 距上限 300 字节：状态更新只替换任务行字段——投影检查（子行字节 + 更新后
+    // 任务行字节）必须放行；若把替换写误算为「当前 + 新增完整任务行」会假拒绝
+    const headroomProbe = 300;
+    repo.insertTask(makeTaskRow());
+    const base = repo.computeTaskPersistedBytes(TASK_ID);
+    const overhead = computeUtf8Bytes(
+      JSON.stringify(
+        rowToEvidence(
+          makeEvidenceRow({ evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', excerpt: '' }),
+        )!,
+      ),
+    );
+    const filler = MAX_TASK_PERSISTED_CHARS - headroomProbe - base - overhead;
+    expect(filler).toBeGreaterThan(0);
+    repo.insertEvidence(
+      makeEvidenceRow({
+        evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        excerpt: 'x'.repeat(filler),
+      }),
+    );
+    expect(repo.computeTaskPersistedBytes(TASK_ID)).toBe(MAX_TASK_PERSISTED_CHARS - headroomProbe);
+    repo.setTaskCancelled(TASK_ID, { finishedAt: T1, updatedAt: T1, stats: STATS });
+    expect(repo.getTaskById(TASK_ID)!.status).toBe('cancelled');
+    expect(repo.computeTaskPersistedBytes(TASK_ID)).toBeLessThanOrEqual(MAX_TASK_PERSISTED_CHARS);
+    // 更新只增大了 finished_at 等时间字段：投影仍远小于上限（未把任务行双重计入）
+    expect(repo.computeTaskPersistedBytes(TASK_ID)).toBeLessThan(MAX_TASK_PERSISTED_CHARS - 200);
+  });
+
+  it('检查与写入处于调用方事务内：超限更新整体回滚、零残留', () => {
+    repo.insertTask(makeTaskRow());
+    expect(() =>
+      withTransaction(handle, () => {
+        repo.insertEvidence(
+          makeEvidenceRow({
+            evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            excerpt: '中'.repeat(170_000), // 510k 字节——插入即超限（既有 #103 路径）
+          }),
+        );
+        repo.setTaskRunning(TASK_ID, {
+          phase: 'planning',
+          startedAt: T1,
+          updatedAt: T1,
+          stats: STATS,
+        });
+      }),
+    ).toThrowError(RepositoryError);
+    // 事务回滚：Evidence 零残留、任务行零变化（setTaskRunning 未生效）
+    expect(repo.listEvidenceByTask(TASK_ID)).toHaveLength(0);
+    expect(repo.getTaskById(TASK_ID)!.status).toBe('created');
+  });
+
+  it('markAllRunningInterrupted：任一运行任务投影超限 → 整体拒绝 + 零写入', () => {
+    fillTaskNearBudget({ status: 'running', phase: 'planning', started_at: T1 });
+    repo.insertTask(
+      makeTaskRow({
+        id: '22222222-2222-4222-8222-222222222222',
+        status: 'running',
+        phase: 'reading',
+        started_at: T1,
+      }),
+    );
+    expect(() => repo.markAllRunningInterrupted(T1, T1)).toThrowError(RepositoryError);
+    try {
+      repo.markAllRunningInterrupted(T1, T1);
+    } catch (err) {
+      expect((err as RepositoryError).code).toBe('task-persisted-budget-exceeded');
+    }
+    // 零写入：两个 running 任务均未被标记
+    expect(repo.countTasksByStatus('running')).toBe(2);
+    expect(repo.getTaskById(TASK_ID)!.status).toBe('running');
+  });
+
+  it('markAllRunningInterrupted：全部在预算内 → 原子标记成功', () => {
+    repo.insertTask(makeTaskRow({ status: 'running', phase: 'planning', started_at: T1 }));
+    repo.insertTask(
+      makeTaskRow({
+        id: '22222222-2222-4222-8222-222222222222',
+        status: 'running',
+        phase: 'reading',
+        started_at: T1,
+      }),
+    );
+    expect(repo.markAllRunningInterrupted(T1, T1)).toBe(2);
+    expect(repo.countTasksByStatus('running')).toBe(0);
+    expect(repo.getTaskById(TASK_ID)!.status).toBe('interrupted');
+    expect(repo.getTaskById('22222222-2222-4222-8222-222222222222')!.status).toBe('interrupted');
   });
 });
 

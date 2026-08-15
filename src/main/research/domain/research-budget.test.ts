@@ -4,7 +4,12 @@
 // (adjudication #104), and constant-boundary ±1 coverage for the truncation
 // primitives. Constant values themselves are asserted in shared/types tests.
 import { describe, expect, it } from 'vitest';
-import { computeUtf8Bytes, isWithinPersistedBudget, truncateWithMark } from './research-budget';
+import {
+  computeUtf8Bytes,
+  isWithinPersistedBudget,
+  RESEARCH_TRUNCATION_MARK,
+  truncateWithMark,
+} from './research-budget';
 import {
   MAX_GOAL_CHARS,
   MAX_TASK_PERSISTED_CHARS,
@@ -29,8 +34,58 @@ describe('truncateWithMark：确定性截断 + 标记', () => {
     expect(truncateWithMark(at, MAX_GOAL_CHARS).truncated).toBe(false);
     const cut = truncateWithMark(above, MAX_GOAL_CHARS);
     expect(cut.truncated).toBe(true);
+    // 决议 #114：截断标记计入 maxChars——返回文本 String.length 恒 ≤ maxChars
     expect(cut.text).toContain('已截断');
-    expect(cut.text.startsWith('x'.repeat(MAX_GOAL_CHARS))).toBe(true);
+    expect(cut.text.length).toBe(MAX_GOAL_CHARS);
+    expect(cut.text.endsWith(RESEARCH_TRUNCATION_MARK)).toBe(true);
+    expect(cut.text.startsWith('x'.repeat(MAX_GOAL_CHARS - RESEARCH_TRUNCATION_MARK.length))).toBe(
+      true,
+    );
+  });
+
+  it('超限截断结果恒 ≤ maxChars（标记计入上限，多档 maxChars 边界）', () => {
+    for (const max of [
+      1,
+      5,
+      RESEARCH_TRUNCATION_MARK.length - 1,
+      RESEARCH_TRUNCATION_MARK.length,
+      7,
+      10,
+      100,
+      MAX_GOAL_CHARS,
+    ]) {
+      const cut = truncateWithMark('x'.repeat(max + 50), max);
+      expect(cut.truncated).toBe(true);
+      expect(cut.text.length).toBeLessThanOrEqual(max);
+      if (max >= RESEARCH_TRUNCATION_MARK.length) {
+        expect(cut.text).toContain(RESEARCH_TRUNCATION_MARK);
+        expect(cut.text.length).toBe(max);
+      } else {
+        // 标记放不下：只按 maxChars 截断原文，绝不输出半截标记
+        expect(cut.text).not.toContain('已截断');
+        expect(cut.text).toBe('x'.repeat(max));
+      }
+    }
+  });
+
+  it('中文与多字节字符按 String.length 计（决议 #103 CHARS 单位不变、不用 UTF-8 字节）', () => {
+    const input = '中'.repeat(MAX_GOAL_CHARS + 100) + '😀';
+    const cut = truncateWithMark(input, MAX_GOAL_CHARS);
+    expect(cut.text.length).toBe(MAX_GOAL_CHARS);
+    expect(cut.text.endsWith(RESEARCH_TRUNCATION_MARK)).toBe(true);
+    expect(cut.text.startsWith('中'.repeat(MAX_GOAL_CHARS - RESEARCH_TRUNCATION_MARK.length))).toBe(
+      true,
+    );
+    // 多字节字符按码元截断的确定性：同一输入两次结果恒等（含标记）
+    const again = truncateWithMark(input, MAX_GOAL_CHARS);
+    expect(again).toEqual(cut);
+  });
+
+  it('maxChars 边界：0 → 空串；负数/非整数 → 安全空返回（不抛异常）', () => {
+    expect(truncateWithMark('abc', 0)).toEqual({ text: '', truncated: true });
+    expect(truncateWithMark('abc', -1)).toEqual({ text: '', truncated: false });
+    expect(truncateWithMark('abc', 1.5)).toEqual({ text: '', truncated: false });
+    expect(truncateWithMark('abc', Number.NaN)).toEqual({ text: '', truncated: false });
   });
 
   it('确定性：同输入同输出（含标记字节恒等）', () => {

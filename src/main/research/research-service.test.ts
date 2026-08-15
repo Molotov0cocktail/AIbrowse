@@ -11,9 +11,14 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDb, closeDb, type DbHandle } from '../sources/db/sqlite-driver';
 import { runResearchMigrations } from './db/research-migrations';
-import { ResearchRepository } from './repository/research-repository';
+import { ResearchRepository, rowToEvidence } from './repository/research-repository';
 import { ResearchServiceImpl, type ResearchServiceOptions } from './research-service';
-import { MAX_GOAL_CHARS, MAX_STORED_TASKS } from '../../shared/types/research';
+import { computeUtf8Bytes, RESEARCH_TRUNCATION_MARK } from './domain/research-budget';
+import {
+  MAX_GOAL_CHARS,
+  MAX_STORED_TASKS,
+  MAX_TASK_PERSISTED_CHARS,
+} from '../../shared/types/research';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-research-svc-'));
 const T0 = Date.UTC(2026, 7, 16, 0, 0, 0);
@@ -68,14 +73,18 @@ describe('createTask：goal 语义（决议 #107）', () => {
     expect((await svc.listTasks()).ok && (await svc.listTasks()).ok ? 0 : 0).toBe(0);
   });
 
-  it('超长 goal → 确定性截断至 2000 + 标记（不拒绝）', async () => {
+  it('超长 goal → 确定性截断（标记计入上限，总长 ≤ 2000 字符）', async () => {
     const long = '长'.repeat(MAX_GOAL_CHARS + 100);
     const result = await svc.createTask(long);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.task.goal.length).toBeGreaterThan(MAX_GOAL_CHARS); // 含截断标记
-    expect(result.task.goal.startsWith('长'.repeat(MAX_GOAL_CHARS))).toBe(true);
+    // 决议 #114：截断标记计入 MAX_GOAL_CHARS——返回 String.length 恒 ≤ 2000
+    expect(result.task.goal.length).toBe(MAX_GOAL_CHARS);
     expect(result.task.goal).toContain('已截断');
+    expect(result.task.goal.endsWith(RESEARCH_TRUNCATION_MARK)).toBe(true);
+    expect(
+      result.task.goal.startsWith('长'.repeat(MAX_GOAL_CHARS - RESEARCH_TRUNCATION_MARK.length)),
+    ).toBe(true);
   });
 
   it('边界 ±1：1999/2000 不截断、2001 截断', async () => {
@@ -436,6 +445,64 @@ describe('stopTask（决议 #105/#104：cancelled + 幂等 + 清理触发）', (
     expect(list.items.some((t) => t.goal === 't0')).toBe(false);
     expect(list.items.some((t) => t.goal === 't1')).toBe(false);
     expect(list.items.some((t) => t.goal === 't31')).toBe(true);
+  });
+});
+
+describe('持久化预算映射（决议 #113：状态更新路径 → research-budget-exhausted）', () => {
+  it('startTask 在近上限任务上触发预算超限 → research-budget-exhausted 且状态不变', async () => {
+    const c = await svc.createTask('x');
+    const id = (c as { ok: true; task: { id: string } }).task.id;
+    // 用大 Evidence 行把任务推到 500k - 3 字节（ASCII 精确核算——与 repository
+    // 测试同源构造；setTaskRunning 的时间/相位字段更新必推过上限）
+    const repo = new ResearchRepository(handle);
+    const base = repo.computeTaskPersistedBytes(id);
+    const overhead = computeUtf8Bytes(
+      JSON.stringify(
+        rowToEvidence({
+          evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          task_id: id,
+          candidate_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          source_id: null,
+          capture_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          url: 'https://example.com',
+          title: 't',
+          access_time: '2026-08-16T00:01:00.000Z',
+          document_id: 'd1',
+          content_hash: 'h',
+          type: 'quote',
+          locator_json: JSON.stringify({ kind: 'text', excerpt: '' }),
+          excerpt: '',
+          value: null,
+          verification: 'verified',
+        })!,
+      ),
+    );
+    const filler = MAX_TASK_PERSISTED_CHARS - 3 - base - overhead;
+    expect(filler).toBeGreaterThan(0);
+    repo.insertEvidence({
+      evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      task_id: id,
+      candidate_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      source_id: null,
+      capture_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      url: 'https://example.com',
+      title: 't',
+      access_time: '2026-08-16T00:01:00.000Z',
+      document_id: 'd1',
+      content_hash: 'h',
+      type: 'quote',
+      locator_json: JSON.stringify({ kind: 'text', excerpt: '' }),
+      excerpt: 'x'.repeat(filler),
+      value: null,
+      verification: 'verified',
+    });
+    expect(repo.computeTaskPersistedBytes(id)).toBe(MAX_TASK_PERSISTED_CHARS - 3);
+    const started = await svc.startTask(id);
+    expect(started.ok).toBe(false);
+    if (!started.ok) expect(started.errorCode).toBe('research-budget-exhausted');
+    // 前置失败/存储拒绝均不改变任务状态
+    const still = await svc.getTask(id);
+    expect(still.ok && still.task!.status).toBe('created');
   });
 });
 

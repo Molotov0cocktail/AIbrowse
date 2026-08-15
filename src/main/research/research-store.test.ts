@@ -13,7 +13,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import type { MigrationStep } from '../sources/db/migrations';
 import { openResearchStore } from './research-store';
+import { RESEARCH_MIGRATION_V1 } from './db/research-migrations';
 import type { ResearchService } from '../../shared/types/research';
+import { MAX_STORED_TASKS } from '../../shared/types/research';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-research-store-'));
 const T0 = '2026-08-16T00:00:00.000Z';
@@ -45,20 +47,13 @@ const GOOD_STATS = JSON.stringify({
 });
 
 function makeSeededDb(path: string, status: string): void {
-  // 合法 v1 库 + 指定状态的任务行（模拟上次进程遗留；stats_json 为完整形状）
+  // 合法 v1 库（产品 migration 全表集——决议 #113 投影预算检查需读全部子表；
+  // 夹具校准：真实 v1 库恒为 7 表集）+ 指定状态的任务行（模拟上次进程遗留；
+  // stats_json 为完整形状）
   const db = new DatabaseSync(path);
-  db.exec(
-    `CREATE TABLE research_tasks (
-  id TEXT PRIMARY KEY,
-  goal TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('created','running','completed','failed','cancelled','interrupted')),
-  phase TEXT CHECK (phase IN ('planning','reading','verifying','synthesizing') OR phase IS NULL),
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  started_at TEXT, finished_at TEXT, interrupted_at TEXT,
-  error_code TEXT, result_id TEXT,
-  stats_json TEXT NOT NULL
-)`,
-  );
+  for (const statement of RESEARCH_MIGRATION_V1.statements) {
+    db.exec(statement);
+  }
   db.exec('PRAGMA user_version = 1');
   db.prepare(
     `INSERT INTO research_tasks (id, goal, status, phase, created_at, updated_at, started_at, stats_json)
@@ -207,6 +202,111 @@ describe('遗留 running → interrupted（原子、phase 置 null、不自动�
     expect(first.ok && first.task!.status).toBe('created');
     expect(second.ok && second.task!.status).toBe('interrupted');
     svc.dispose();
+  });
+});
+
+describe('启动装配总数硬上限（决议 #112：overflowRemaining 不得静默忽略）', () => {
+  // 用产品迁移生成合法 v1 库后直接种入 N 行任务（模拟外部/遗留状态）
+  function seedTasks(path: string, rows: Array<{ status: string; finishedAt?: string }>): void {
+    const first = openResearchStore({ dbPath: path });
+    expect(first.mode).toBe('normal');
+    first.service!.dispose();
+    const db = new DatabaseSync(path);
+    try {
+      const ins = db.prepare(
+        `INSERT INTO research_tasks (id, goal, status, phase, created_at, updated_at, started_at, finished_at, stats_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (let i = 0; i < rows.length; i += 1) {
+        const id = `00000000-0000-4000-8000-0000000000${String(i).padStart(2, '0')}`;
+        ins.run(
+          id,
+          `任务${i}`,
+          rows[i]!.status,
+          rows[i]!.status === 'running' ? 'planning' : null,
+          T0,
+          T0,
+          T0,
+          rows[i]!.finishedAt ?? null,
+          GOOD_STATS,
+        );
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  function countRows(path: string): number {
+    const probe = new DatabaseSync(path, { readOnly: true });
+    try {
+      return (probe.prepare('SELECT COUNT(*) AS n FROM research_tasks').get() as { n: number }).n;
+    } finally {
+      probe.close();
+    }
+  }
+
+  it('31 个 created + 零可清理终态 → unavailable（不静默忽略溢出、created 零删除）', () => {
+    const path = join(root, 'overflow-created.db');
+    seedTasks(
+      path,
+      Array.from({ length: MAX_STORED_TASKS + 1 }, () => ({ status: 'created' })),
+    );
+    const outcome = openResearchStore({ dbPath: path });
+    outcome.service?.dispose(); // 绿态 service=null；红态（历史缺陷形态）防御性关闭
+    expect(outcome.mode).toBe('unavailable');
+    expect(outcome.service).toBeNull();
+    expect(outcome.reason!.length).toBeGreaterThan(0);
+    expect(outcome.reason).toContain('上限'); // 中文诊断定位根因
+    // created 任务零删除：库内仍为 31 行
+    expect(countRows(path)).toBe(MAX_STORED_TASKS + 1);
+  });
+
+  it('31 个含 1 个终态：清理最旧终态后 normal（30 行、created 保留）', () => {
+    const path = join(root, 'overflow-finished.db');
+    const rows: Array<{ status: string; finishedAt?: string }> = Array.from(
+      { length: MAX_STORED_TASKS },
+      () => ({ status: 'created' }),
+    );
+    rows.push({ status: 'completed', finishedAt: '2026-08-16T00:02:00.000Z' });
+    seedTasks(path, rows);
+    const outcome = openResearchStore({ dbPath: path });
+    expect(outcome.mode).toBe('normal');
+    expect(outcome.service).not.toBeNull();
+    outcome.service!.dispose();
+    expect(countRows(path)).toBe(MAX_STORED_TASKS);
+    // 唯一终态已被清理；created 全部保留
+    const probe = new DatabaseSync(path, { readOnly: true });
+    try {
+      const created = probe
+        .prepare("SELECT COUNT(*) AS n FROM research_tasks WHERE status = 'created'")
+        .get() as { n: number };
+      expect(created.n).toBe(MAX_STORED_TASKS);
+    } finally {
+      probe.close();
+    }
+  });
+
+  it('31 个全 running：标记 interrupted 后可清理 → normal（30 行）', () => {
+    const path = join(root, 'overflow-running.db');
+    seedTasks(
+      path,
+      Array.from({ length: MAX_STORED_TASKS + 1 }, () => ({ status: 'running' })),
+    );
+    const outcome = openResearchStore({ dbPath: path });
+    expect(outcome.mode).toBe('normal');
+    expect(outcome.service).not.toBeNull();
+    outcome.service!.dispose();
+    // 标记后全部可清理：清理最旧 1 个 → 30 行、无 running 残留
+    expect(countRows(path)).toBe(MAX_STORED_TASKS);
+    const probe = new DatabaseSync(path, { readOnly: true });
+    try {
+      const running = probe
+        .prepare("SELECT COUNT(*) AS n FROM research_tasks WHERE status = 'running'")
+        .get() as { n: number };
+      expect(running.n).toBe(0);
+    } finally {
+      probe.close();
+    }
   });
 });
 

@@ -26,7 +26,15 @@
   预算常量全表/research.db migration v1 七表集/Repository（唯一 SQL 执行点）/
   store 装配（normal|unavailable 两态 + 遗留 running 标 interrupted）/
   Service 生命周期骨架（create/get/list/delete/start 前置/stop）全部落地
-  （契约裁决 #101–#111，全量 test 1386/1386，红→绿证据见 C1 任务文档）；
+  （契约裁决 #101–#111，全量 test 1386/1386，红→绿证据见 C1 任务文档）。
+  **C1 定向修复与契约边界复核已完成（2026-08-16）**——五个契约边界缺口
+  先红后修（决议 #112–#116，红态 34 failed → 聚焦 174/174、全量
+  **1429/1429**）：goal 截断标记计入上限（String.length 恒 ≤2000）、
+  EvidenceLocator.table.header 非法形态整体拒绝、全部任务状态更新写路径
+  按更新后任务投影做 500k UTF-8 字节预算检查（事务内、markAllRunning
+  Interrupted 整体拒绝零写入）、启动装配清理后仍超限 → unavailable
+  （created 零删除）、状态机 now 为 ISO 8601 输入有效性约束——证据见 C1
+  任务文档「定向修复与契约边界复核」小节。
   **下一任务 = C2/C3（并行，均仅依赖 C1）。** 本阶段红线：禁止安装依赖、
   禁止未经授权调用真实 Provider（C9/C10 真实验收须另获用户授权）、禁止
   实现 Sixth Stage。
@@ -394,7 +402,7 @@
 | B8 | 红队矩阵 SRT-01～SRT-12 + 安全审计 + 隐私扫描 + 真实 Provider/真实网页可选验证 | ✅ | 2026-08-15 完成（见下）：冒烟 8.15（决议 #93 校准：8.7 已被 B1 决策门占用）12 项独立断言 dev+生产双场景退出码 0 + 8.6/8.14 结构化证据核验 + RT-09 扩展静态审计 + SRT-08 发现并修复产品缺陷（持久化 toolCalls URL query 值脱敏，33e14b0）+ B-02 SRT-10 跨进程扩展；全量 test 1229/1229；RT-10 与真实 SRT-01/02 NOT RUN（未授权）；任务文档 doc/stage4/tasks/B8-redteam-security-validation.md（红→绿证据已回填） |
 | B9 | Fourth Stage 独立最终验收（当前 HEAD 重新复验，不采信 B1–B8 报告）+ Exit Gate 判定 + 文档同步；完成后停止不实现 Fifth Stage | ✅ | 2026-08-15 完成（见下）：独立复验台账见任务文档「独立复验台账」小节；总 Exit 判定 = HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）；**2026-08-16 第五轮真实 Provider 验收通过后改判 `GO/PASS`**（场景 1a–8 全部真实通过 + 真 Key 扫描零命中，见「真实 Provider 验收通过后判定更新」小节）；任务文档 doc/stage4/tasks/B9-finalize-acceptance.md |
 
-| C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ✅ | 2026-08-16 完成（见「最近验证结果」第十四个闭环）：实施前契约裁决 #101–#111 + 红→绿 9/9 失败→131/131 + 全量 test 1386/1386 + dev/生产冒烟 17 工具/SRT-12 零回归 + smoke.ts SRT-12 白名单契约同步（+5 行，唯一既有改动）；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md（红→绿证据已回填） |
+| C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ✅ | 2026-08-16 完成（见「最近验证结果」第十四个闭环）：实施前契约裁决 #101–#111 + 红→绿 9/9 失败→131/131 + 全量 test 1386/1386 + dev/生产冒烟 17 工具/SRT-12 零回归 + smoke.ts SRT-12 白名单契约同步（+5 行，唯一既有改动）；**2026-08-16 定向修复与契约边界复核完成（第十五个闭环）**：决议 #112–#116 先红后修（红态 34 failed → 聚焦 174/174、全量 test 1429/1429；migration v1 零改写、sources/ai/browser/renderer/preload 零 diff）；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md（红→绿证据与定向修复记录已回填） |
 | C2 | ResearchWorkspace 与 task-owned Tab 隔离、数量上限、取消/异常清理 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §10；任务文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md |
 | C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §4；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md |
 | C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §5；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
@@ -412,7 +420,44 @@
 > （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复）
+
+- **C1 定向修复与契约边界复核（2026-08-16，第十五个闭环；fix 提交见 git
+  log）**：① 步骤 0 独立核对——HEAD `285c74c` 与预期一致、工作区干净；
+  基线 test 1386/1386（单 worker）· 聚焦 131/131 独立复跑全绿；C1 产物
+  全部在位。② **五个契约边界缺口先红后修**（决议 #112–#116，落
+  detailed-design §15 + §2/§3.2/§6.8/§9.1/§9.2 校准，不改写 #101–#111）：
+  a) goal 截断标记未计入 MAX_GOAL_CHARS（返回 2006>2000，测试还固化错误
+  期望）→ truncateWithMark 标记计入上限（String.length 恒 ≤maxChars、
+  标记放不下绝不输出半截标记、CHARS 单位不变——#114）；b) table.header
+  非 string/null/缺省被静默转 null → 非法形态整体拒绝（读取跳过、写入
+  零落库——#115）；c) 六条任务状态更新路径 + markAllRunningInterrupted
+  无预算检查——真实 node:sqlite 构造距 500k 仅 3 字节的任务实证可突破
+  → 全部按更新后任务投影检查（子行字节 + 更新后任务行字节 ≤500k；替换
+  写不误算为完整新增——离上限 300 字节控制用例；检查与写入在调用方事务
+  内、超限整体回滚；markAll 任一投影超限整体拒绝零写入；映射
+  research-budget-exhausted 不变——#113）；d) 31 created + 零终态启动
+  溢出被静默忽略 → 单事务回滚（含标记）+ unavailable（中文诊断；created
+  零删除；可清理形态（31 含 1 终态/31 全 running）不受影响——#112 依据
+  #104 与两态唯一裁决）；e) now 注释声称 ISO 实现只查非空 → 状态机
+  isIso8601Timestamp 输入有效性约束（形状 + 可解析 + 日历回滚拒绝；调用方
+  恒 toISOString，责任边界入契约——#116）。③ **红→绿证据**：新增用例
+  43 例（budget +3/task-state +18/repository +18/store +3/service +1 +
+  错误期望修正 2 处）→ 红态 **34 failed**（断言落点逐项记录于 C1 任务
+  文档）→ 修复后聚焦 **174/174**（9 文件）→ 全量 **1429/1429**（63 文件，
+  单 worker）。绿态期间发现既有 store 夹具缺陷 1 处（makeSeededDb 仅建
+  research_tasks 单表——投影检查需读全部子表；夹具改用产品 migration 全表
+  集，非产品迁就）。④ **红线零回归**：migration v1 零改写（schema 零变化）；
+  sources/ai/browser/renderer/preload/index.ts 零 diff；AgentLoop
+  12/420s 零变化；17 工具注册表零变化；零新依赖（package.json/lock 零
+  diff）；新增 SQL 仅 SQL_LIST_RUNNING_TASKS 一条（Repository 编译期常量 +
+  参数绑定）；renderer/preload 零 SQL；research 零 shell/child_process/
+  网络。⑤ **全量验证矩阵**：test 1429/1429（单 worker）· typecheck · lint ·
+  format:check · build · git diff --check 全绿；dev 冒烟一次通过（17 工具
+  恒等 + SRT-01～SRT-12 全过 + SRT-12 SQL 分类证据）；生产冒烟首轮瞬时
+  失败于 8.13 UI DOM 探针（零 renderer 改动、dev 同场景同轮通过）→ 重跑
+  一次全矩阵通过（如实登记，未复现）；临时冒烟日志已清理。
+  **下一任务 = C2/C3（并行，均仅依赖 C1；本闭环不实施）。**
 
 - **C1 Research 契约与存储基座（2026-08-16，第十四个闭环；feat 提交见 git log）**：
   ① 步骤 0 接管——HEAD c0f3dbc、工作区干净、Node 24.18.0；基线 test

@@ -4,7 +4,7 @@
 // function; run-data cleanup is a Service-layer transaction), late events after
 // terminal states, and invalid event payloads safely returning task copies.
 import { describe, expect, it } from 'vitest';
-import { transitionTask } from './research-task-state';
+import { isIso8601Timestamp, transitionTask } from './research-task-state';
 import type { ResearchPhase, ResearchTask } from '../../../shared/types/research';
 
 const T0 = '2026-08-16T00:00:00.000Z';
@@ -139,6 +139,63 @@ describe('start 事件（决议 #105：created/cancelled/failed/interrupted 合�
     const task = makeTask();
     expect(transitionTask(task, { kind: 'start', now: '' })).toEqual(task);
     expect(transitionTask(task, { kind: 'start', now: 123 as unknown as string })).toEqual(task);
+  });
+});
+
+describe('now 形状契约（决议 #116：ISO 8601 为输入有效性约束）', () => {
+  it.each([
+    '', // 空串
+    '   ', // 纯空白
+    '2026-08-16', // 仅日期（无时间）
+    '2026-08-16T00:01', // 无秒
+    '2026-08-16 00:01:00Z', // 空格分隔（非 ISO T）
+    '2026-08-16T00:01:00', // 无时区
+    '20260816T000100Z', // 紧凑格式
+    '2026-08-16T00:01:00+8:00', // 偏移未补零
+    'not-a-time', // 垃圾字符串
+    '2026-13-45T99:99:99.999Z', // 非法日期（月份越界）
+    '2026-02-30T00:00:00.000Z', // 非法日历日期（JS 回滚形态）
+    '2026-08-16T00:01:00.000', // 毫秒但无时区
+    'Tue, 16 Aug 2026 00:00:00 GMT', // RFC 形状
+    '💥💥💥', // 任意非空垃圾
+  ])('非法 now「%s」→ 全部事件零变化（不得静默接受）', (bad) => {
+    const created = makeTask();
+    const running = runningTask();
+    expect(transitionTask(created, { kind: 'start', now: bad })).toEqual(created);
+    expect(transitionTask(running, { kind: 'phase', phase: 'reading', now: bad })).toEqual(running);
+    expect(transitionTask(running, { kind: 'finish-done', resultId: RESULT_ID, now: bad })).toEqual(
+      running,
+    );
+    expect(
+      transitionTask(running, { kind: 'finish-error', errorCode: 'research-timeout', now: bad }),
+    ).toEqual(running);
+    expect(transitionTask(running, { kind: 'finish-budget', now: bad })).toEqual(running);
+    expect(transitionTask(running, { kind: 'stop', now: bad })).toEqual(running);
+    expect(transitionTask(running, { kind: 'mark-interrupted', now: bad })).toEqual(running);
+  });
+
+  it.each(['2026-08-16T00:01:00.000Z', '2026-08-16T00:01:00Z', '2026-08-16T08:01:00+08:00'])(
+    '合法 ISO 时间「%s」→ 事件正常迁移（now 原样注入）',
+    (now) => {
+      const next = transitionTask(makeTask(), { kind: 'start', now });
+      expect(next.status).toBe('running');
+      expect(next.startedAt).toBe(now);
+      expect(next.updatedAt).toBe(now);
+    },
+  );
+
+  it('isIso8601Timestamp 直接调用矩阵（合法/非法/非串）', () => {
+    expect(isIso8601Timestamp('2026-08-16T00:01:00.000Z')).toBe(true);
+    expect(isIso8601Timestamp('2026-08-16T00:01:00Z')).toBe(true);
+    expect(isIso8601Timestamp('2026-08-16T08:01:00+08:00')).toBe(true);
+    expect(isIso8601Timestamp('2026-08-16T00:01:00.5Z')).toBe(true);
+    expect(isIso8601Timestamp('')).toBe(false);
+    expect(isIso8601Timestamp('2026-08-16')).toBe(false);
+    expect(isIso8601Timestamp('2026-02-30T00:00:00.000Z')).toBe(false);
+    expect(isIso8601Timestamp('2026-13-45T99:99:99.999Z')).toBe(false);
+    expect(isIso8601Timestamp(null)).toBe(false);
+    expect(isIso8601Timestamp(42)).toBe(false);
+    expect(isIso8601Timestamp(undefined)).toBe(false);
   });
 });
 

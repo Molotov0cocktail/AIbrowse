@@ -1,7 +1,8 @@
 # C1 — ResearchTask/Evidence/Result 核心契约、状态机纯函数、存储与服务基座
 
 > 第五阶段任务文档。契约 `doc/stage5/detailed-design.md` §2/§3/§6.8/§9/§15
-> （决议 #94–#100 设计期 + **#101–#111 C1 实施前契约裁决**，2026-08-16）；
+> （决议 #94–#100 设计期 + **#101–#111 C1 实施前契约裁决** +
+> **#112–#116 C1 定向修复与契约边界复核裁决**，2026-08-16）；
 > 安全契约 `doc/stage5/threat-model.md`（先于任何实现定稿——已满足）。
 
 ## 实施前契约裁决（决议 #101–#111，先改契约与测试、再改实现）
@@ -197,3 +198,91 @@ research.test.ts`、`src/main/research/domain/research-task-state.ts`
     `research-service.ts`（生命周期骨架 + 测试）。
 - 契约文档：detailed-design.md（§2/§3/§6.6/§6.8/§9/§15 决议 #101–#111
   校准）+ 本任务文档。
+
+## 定向修复与契约边界复核（2026-08-16，决议 #112–#116）
+
+> 本任务第二闭环：对 C1 产物做定向复核，发现五个契约边界缺口。纪律：
+> 先写可甄别当前实现的红态测试 → 改契约（detailed-design §15 连续编号
+> #112–#116）与错误测试期望 → 再改实现；不改写 #101–#111 历史；migration
+> v1 冻结不动；零既有产品模块改动（sources/ai/browser/renderer/preload/
+> index.ts/AgentLoop/17 工具零 diff）；零新依赖。
+
+### 缺口与红态证据（先测后改）
+
+1. **goal 截断总长度越界（#114）**：truncateWithMark 保留 maxChars 字符后
+   再追加标记，返回 2006 > MAX_GOAL_CHARS(2000)；research-budget 测试与
+   ResearchService 测试还固化了该错误期望。红态：`expected 2006 to be 2000`
+   （budget 边界 ±1/多档 maxChars/中文多字节 4 例 + service 1 例失败）。
+   修复：标记计入 maxChars（前缀 = maxChars − 标记长；标记放不下时仅按
+   maxChars 截断原文、绝不输出半截标记）；单位保持 JavaScript 字符数
+   （#103 CHARS 不改为 UTF-8 字节）；边界/中文/多字节/确定性/非法 maxChars
+   均有单测。
+2. **EvidenceLocator.table.header fail-open（#115）**：非 null/undefined/
+   string 的 header 被静默转换为 null。红态：header=42/true/数组/对象 →
+   parseLocatorJson 静默转 null 而测试要求整体拒绝（4 例）+ 写入路径
+   fail-closed + 读取侧跳过（2 例）失败。修复：header 仅允许 string|null|
+   缺省；object/array/number/boolean 使整个 locator 返回 null（读取跳过、
+   写入整体拒绝零落库）。
+3. **持久化预算未覆盖任务状态更新路径（#113）**：setTaskRunning/
+   setTaskCompleted/setTaskFailed/setTaskCancelled/setTaskInterrupted/
+   updateTaskPhase/markAllRunningInterrupted 全部无预算检查。红态：用真实
+   node:sqlite 构造「距 500000 UTF-8 字节上限仅剩 3 字节」的任务（任务行 +
+   1 条大 Evidence，ASCII 字节精确核算），六条单任务更新路径与
+   markAllRunningInterrupted 全部静默写入并把持久化投影推过 500k
+   （7 例失败 + service 映射 1 例失败）。修复：更新路径按**更新后的任务
+   投影**检查（子行字节 + 更新后任务行字节 ≤ 上限——替换写不得误算为完整
+   新增，控制用例证明离上限 300 字节时更新成功且不把任务行双重计入）；
+   检查与写入处于调用方已有事务内（超限整体回滚零残留，单测固化）；
+   markAllRunningInterrupted 任一受影响任务投影超限 → 整体拒绝零写入
+   （store 装配归一化 unavailable）；错误继续映射
+   research-budget-exhausted（service 层集成用例固化：近上限任务
+   startTask → research-budget-exhausted 且状态不变）；任何成功写入后的
+   持久化投影 ≤ 上限。
+4. **MAX_STORED_TASKS 启动溢出（#112）**：31 个 created + 零可清理终态的
+   合法 v1 库，启动装配静默忽略 cleanupOldestFinishedOverflow().
+   overflowRemaining → normal（31 行，总数硬上限被突破）。红态：
+   `expected 'normal' to be 'unavailable'`。裁决（依据 #104 总数硬上限 +
+   normal|unavailable 两态，§9.2「检查失败 → unavailable」语义）：标记
+   interrupted 与清理同单事务，清理后仍超限（无可清理终态——created 永不
+   清除）→ 事务回滚（含标记）+ unavailable + 中文诊断（created 零删除、
+   零业务写入、不引入第三种模式）；可清理形态不受影响（31 含 1 终态 →
+   清理后 normal 30 行；31 全 running → 标记后清理 → normal 30 行，单测
+   固化）。
+5. **now 的 ISO 8601 契约漂移（#116）**：注释声称 ISO、实现只检查非空。
+   裁决：决议 #105 的「ISO 8601」为**输入有效性约束** → 修复纯状态机
+   校验（`isIso8601Timestamp`：形状 + 可解析 + 日历回滚拒绝——Z 形态字符串
+   级往返、偏移形态值级往返；导出单测固化）。红态：14 例非法 now
+   （垃圾串/非法日期 2026-13-45/日历回滚 2026-02-30/无时区/紧凑/RFC 形态）
+   全部被旧实现静默接受而失败；合法 ISO（毫秒 Z/无毫秒 Z/偏移形态）正常
+   迁移。调用方责任边界：now 仅由受控调用方产生（Service.nowIso/store
+   装配恒 `new Date(ms).toISOString()`，既有测试断言精确输出）。
+   既有 store 夹具 makeSeededDb 校准为产品 migration 全表集（决议 #113
+   投影检查需读全部子表——真实 v1 库恒为 7 表集，夹具校准非产品迁就）。
+
+### 验证证据
+
+- 红→绿：新用例 **43 例**（budget +3、task-state +18、repository +18、
+  store +3、service +1；既有错误期望修正 2 处——budget 边界 ±1 与
+  service 超长 goal）——红态 **34 failed**（断言落点：2006>2000 长度
+  断言、header 静默转 null 6 例、更新路径无预算检查 7 例、store 溢出
+  静默忽略 1 例、now 仅查非空 14 例、service 截断/映射 2 例）；修复后
+  聚焦 **174/174**（9 文件）；全量 **1429/1429**（63 文件，单 worker）。
+  绿态期间发现并校准既有 store 夹具缺陷 1 处（makeSeededDb 仅建
+  research_tasks 单表——决议 #113 投影检查需读全部子表，真实 v1 库恒为
+  7 表集；夹具改用产品 migration 全表集，非产品迁就）。
+- `npm run typecheck` / `npm run lint` / `npm run format:check` /
+  `npm run build` / `git diff --check` 全绿；dev 冒烟一次通过（17 工具注册表
+  恒等 + SRT-01～SRT-12 全过 + SRT-12 SQL 分类审计含 research-repository
+  允许点、research 零 shell/child_process/网络）；生产冒烟**首轮瞬时失败于
+  8.13 B-06 UI DOM 探针**（渲染进程脚本执行错误、无 renderer 控制台上下文、
+  本闭环零 renderer/装配改动）→ 重跑一次**全矩阵通过**（8.13 全过 + SRT-12
+  分类证据 + 「冒烟自检通过」，退出码 0）——如实登记：首轮失败为一次性
+  瞬时现象，未复现（dev 同场景同轮通过）；冒烟日志已按清理纪律移除。
+- 红线扫描：product 零动态 SQL（新增 SQL_LIST_RUNNING_TASKS 为
+  research-repository 编译期常量 + 参数绑定零变化）；research 零 shell/
+  child_process/网络；renderer/preload 零 SQL；package.json/lock 零 diff；
+  AgentLoop 12/420s 零变化；migration v1 零改写。
+- 既有文件改动仅限 C1 自身文件（budget/repository/store/task-state +
+  各自测试 + service 测试）与契约文档——sources/ai/browser/renderer/
+  preload/index.ts 零 diff（smoke.ts SRT-12 白名单为 C1 首闭环既有改动，
+  本闭环零新增）。

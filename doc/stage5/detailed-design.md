@@ -195,7 +195,9 @@ export type EvidenceVerification = 'verified' | 'rejected';
 
 export type EvidenceLocator =
   | { kind: 'text'; excerpt: string } // ≤500 字符
-  | { kind: 'table'; row: number; col: number; header: string | null } // 0-based 行列
+  | { kind: 'table'; row: number; col: number; header: string | null } // 0-based 行列；
+  // header 仅允许 string | null | 缺省——object/array/number/boolean 等非法形态
+  // 使整个 locator 无效（fail-closed 整体拒绝，不得静默转 null——决议 #115）
   | { kind: 'field'; fieldPath: string }; // 提取字段路径（≤200）
 
 export interface Evidence {
@@ -371,6 +373,10 @@ export function transitionTask(task: ResearchTask, event: ResearchTaskEvent): Re
 // （→ running + phase='planning'），在 running/completed 上零变化（互斥前置在
 // Service 层校验并回注错误码）。start 状态迁移只改任务行；旧 run 数据原子清理
 // 由 Service 层事务完成（决议 #106）。
+// now 形状（决议 #116）：ISO 8601 时间戳为**输入有效性约束**——非 ISO 8601
+// 时间戳形状（垃圾字符串/非法日期/无时区等）的 now 属非法载荷，事件零变化。
+// 调用方（Service.nowIso/store 装配）恒经 new Date(ms).toISOString() 产生；
+// 校验纯函数 isIso8601Timestamp 导出并单测固化。
 ```
 
 ## 4. 候选来源合并与排序（C3 纯函数，source-selector.ts）
@@ -519,7 +525,7 @@ run(taskId, goal):
 
 | 常量                                | 值       | 语义                                                                                                                                                                                                                                                                                                                                                                                   |
 | ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| MAX_GOAL_CHARS                      | 2000     | goal 截断上限                                                                                                                                                                                                                                                                                                                                                                          |
+| MAX_GOAL_CHARS                      | 2000     | goal 截断上限（截断标记计入上限——返回文本 String.length 恒 ≤2000，决议 #114；单位 = JavaScript 字符数，非 UTF-8 字节，决议 #103）                                                                                                                                                                                                                                                      |
 | MAX_SOURCE_CANDIDATES               | 24       | 合并后候选上限（Sources ≤10 + Search ≤10 + 溢出裁剪）                                                                                                                                                                                                                                                                                                                                  |
 | MAX_SELECTED_SOURCES                | 8        | 选定来源上限                                                                                                                                                                                                                                                                                                                                                                           |
 | MAX_RESEARCH_TABS                   | 3        | 同任务同时打开的 task Tab 上限（v1 串行读取实际 1 个，上限为纵深防御）                                                                                                                                                                                                                                                                                                                 |
@@ -729,12 +735,19 @@ CREATE TABLE research_results (
 - 业务 SQL 仅为 ResearchRepository 编译期常量 + 参数绑定（决议 #47 模式）；
   JSON 列逐字段形状校验（复用 validateMessageShape 同族纯函数，畸形
   fail-closed 丢弃/拒绝）。
-- **字节预算执行（决议 #103）**：任务写库前序列化合计（UTF-8 字节数）
+- **字节预算执行（决议 #103/#113）**：任务写库前序列化合计（UTF-8 字节数）
   ≤ MAX_TASK_PERSISTED_CHARS，超限 → 事务内拒绝写入（RepositoryError
   'task-persisted-budget-exceeded' → research-budget-exhausted）——由
   C4/C6/C7 层裁剪摘录/Result 块后重试，仍失败 → failed；
-  MAX_STORED_TASKS 超限清理最旧终态任务（决议 #104：触发/排序键/拒绝语义
-  见 §6.8；created 永不清除；CASCADE 清行）。
+  子行插入（candidates/captures/evidence/claims/conflicts/result）按
+  「当前已持久化字节 + 新增行字节」检查；**任务行更新（setTaskRunning/
+  setTaskCompleted/setTaskFailed/setTaskCancelled/setTaskInterrupted/
+  updateTaskPhase/markAllRunningInterrupted）按「更新后的任务投影」检查**
+  （决议 #113：子行字节 + 更新后任务行字节——替换写不得误算为完整新增；
+  任何成功写入后的任务持久化投影不得超过上限；检查与写入处于调用方已有
+  事务内；markAllRunningInterrupted 任一受影响任务投影超限 → 整体拒绝
+  零写入）；MAX_STORED_TASKS 超限清理最旧终态任务（决议 #104：触发/排序键/
+  拒绝语义见 §6.8；created 永不清除；CASCADE 清行）。
 - **接口契约（决议 #109，§13.1 测试规格的契约源）**：
   - `ResearchRepository`（research.db 唯一 SQL 执行点，编译期常量 +
     参数绑定）：任务 CRUD（insertTask/getTaskById/getRunningTask/
@@ -775,6 +788,9 @@ app ready → probe（只读连接，固定 16 字节头部探测——决议 #1
 → 损坏/未来版本/迁移失败/检查失败 → unavailable（两态，无恢复态——
   Research 功能全拒 + 中文诊断；浏览器/Sources/Agent 其余能力不受影响）
 → 遗留 running 任务标 interrupted（§3.1，单事务原子）+ 清理超限终态
+  （决议 #112：清理后仍超限——总数 >30 且无可清理终态（created 永不清除）
+  → 单事务回滚（含 interrupted 标记）+ unavailable（溢出不得静默忽略；
+  不删除 created 任务；不引入第三种模式））
 ```
 
 - v1 不做备份模块（research.db 无历史迁移需求；若未来 schema 演进引入
@@ -1021,6 +1037,54 @@ verification:'verified' }`）；schema CHECK 收窄为
       v1 无 backup/恢复态（损坏/未来版本/迁移失败/检查失败 →
       unavailable 两态）；Research 与 Sources 独立数据库、独立句柄、
       独立迁移列表。
+
+> 以下 #112–#116 为 C1 定向修复与契约边界复核决议（2026-08-16；先写红态
+> 测试 → 改契约与测试 → 再改实现，§15 流程）。五个边界缺口均由
+> C1 定向复核审计发现，裁决依据 #103/#104/#105 既有条款与 fail-closed
+> 纪律唯一导出，无需用户拍板。
+
+112.  **启动装配总数硬上限缺口**：§9.2 装配的「清理超限终态」步骤在
+      cleanupOldestFinishedOverflow 返回 overflowRemaining > 0 时不得
+      静默忽略。裁决（依据 #104「总数硬上限」+ normal|unavailable 两态）：
+      标记 interrupted 与清理超限终态同在单事务内，清理后仍超限（总数 >30
+      且无可清理终态——created 永不清除）→ **事务回滚（含 interrupted
+      标记）+ unavailable**（= §9.2「检查失败 → unavailable」语义：装配
+      后置条件「总数 ≤30」无法恢复即装配失败；零业务写入、created 零删除、
+      不引入第三种模式；中文诊断明示根因）。产品代码无法产生该形态
+      （create 路径总数检查先行），仅外部/遗留库触发；可清理形态（含
+      running 标记后转为终态）不受影响。
+113.  **持久化预算未覆盖任务状态更新路径**：setTaskRunning/setTaskCompleted/
+      setTaskFailed/setTaskCancelled/setTaskInterrupted/updateTaskPhase/
+      markAllRunningInterrupted 全部按**更新后的任务投影**做字节预算检查
+      （子行字节 + 更新后任务行字节 ≤ MAX_TASK_PERSISTED_CHARS——替换写
+      不是新增行，不得把既有任务行重复计入造成假拒绝，也不得因无检查而
+      突破上限）；检查与写入处于调用方已有事务内（超限整体回滚零残留）；
+      任何成功写入后的任务持久化投影不得超过上限；超限 →
+      RepositoryError('task-persisted-budget-exceeded') →
+      research-budget-exhausted（映射 #109 不变）；markAllRunningInterrupted
+      任一受影响任务投影超限 → 整体拒绝零写入（store 装配将其归一化
+      unavailable）。畸形行读取路径跳过 → 不计入（与 #103 既有语义一致）。
+      不得依赖 C4/C5 将来裁剪掩盖 Repository 硬边界缺口。
+114.  **goal 截断标记计入上限**：truncateWithMark 截断标记必须计入
+      maxChars——返回文本 JavaScript String.length 恒 ≤ maxChars（前缀 =
+      maxChars − 标记长；标记放不下时仅按 maxChars 截断原文、绝不输出
+      半截标记）；单位保持 JavaScript 字符数（#103 CHARS 单位不改为
+      UTF-8 字节）；中文/多字节字符/边界/确定性均有单测。修正
+      research-budget 与 ResearchService 中固化「maxChars + 标记长」
+      的错误测试期望。
+115.  **EvidenceLocator.table.header fail-open**：header 仅允许 string |
+      null | 缺省（undefined → null）；object/array/number/boolean 等
+      非法形态使**整个 locator 无效**（parseLocatorJson 返回 null——
+      读取路径跳过该行、Repository 写入对应 Evidence 整体拒绝零落库），
+      不得静默转换为 null。
+116.  **now 的 ISO 8601 输入有效性约束**：决议 #105「全部事件携带 now
+      （ISO 8601）」为**输入有效性约束**——transitionTask 以确定性纯函数
+      `isIso8601Timestamp`（形状 + 可解析 + 日历回滚拒绝）校验 now，非法
+      （任意非空垃圾/非法日期/无时区/非 ISO 形状）→ 事件零变化；合法 ISO
+      时间（毫秒 Z/无毫秒 Z/偏移形态）→ 正常迁移。调用方责任边界：now 仅
+      由受控调用方产生（ResearchService.nowIso / research-store 装配，
+      恒 `new Date(ms).toISOString()`，单测断言精确输出）——注释声称 ISO
+      而实现只查非空的漂移就此关闭。
 
 ## 16. 实现顺序与范围边界（C1–C10 映射）
 

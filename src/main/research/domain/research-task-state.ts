@@ -1,11 +1,14 @@
 // Fifth Stage C1: research task state machine — pure functions, zero Electron
-// imports (detailed-design §3.1/§3.2, adjudications #105/#106). All events
-// carry an injected `now` ISO string for determinism; illegal events and
-// illegal payloads safely return a copy of the input task (never throw);
-// terminal states are immutable except for `start` (single-ownership guard,
-// A5 adjudication #33 pattern). `start` resets run fields on restart
-// (stats zeroed, run timestamps/error/result cleared, phase='planning') — the
-// old run's child rows are cleaned by a Service-layer transaction (#106).
+// imports (detailed-design §3.1/§3.2, adjudications #105/#106/#116). All events
+// carry an injected `now` ISO string for determinism; `now` is validated as an
+// ISO 8601 timestamp input-validity constraint (adjudication #116: any
+// non-ISO-8601 shape — garbage, invalid calendar dates, missing timezone — is
+// an illegal payload and the event is a no-op); illegal events and illegal
+// payloads safely return a copy of the input task (never throw); terminal
+// states are immutable except for `start` (single-ownership guard, A5
+// adjudication #33 pattern). `start` resets run fields on restart (stats
+// zeroed, run timestamps/error/result cleared, phase='planning') — the old
+// run's child rows are cleaned by a Service-layer transaction (#106).
 import {
   RESEARCH_ERROR_CODES,
   RESEARCH_PHASES,
@@ -14,6 +17,31 @@ import {
   type ResearchTask,
   type ResearchTaskStats,
 } from '../../../shared/types/research';
+
+// 决议 #116：ISO 8601 时间戳形状（含可选毫秒；Z 或 ±HH:MM 时区）
+const ISO_8601_TIMESTAMP_RE =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?(Z|[+-]\d{2}:\d{2})$/;
+
+// 决议 #116：now 的 ISO 8601 输入有效性约束（确定性纯函数）。调用方仅
+// ResearchService.nowIso 与 research-store 装配（恒 new Date(ms).toISOString()）。
+// 注：此处用 String.match 而非正则对象的 exec 方法——语义相同，且本模块零
+// SQL，避免 SRT-12 静态审计的 SQL 形态误报（审计白名单无需为此放宽）。
+export function isIso8601Timestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = value.match(ISO_8601_TIMESTAMP_RE);
+  if (match === null) return false;
+  const [, core, ms, zone] = match;
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return false;
+  if (zone === 'Z') {
+    // Z 形态做字符串级日历往返校验（拒绝 2026-02-30 等 JS 回滚形态）；
+    // 毫秒位补齐至 .sss 后与 toISOString 恒等
+    const normalized = `${core}.${(ms ?? '').padEnd(3, '0')}Z`;
+    return new Date(parsed).toISOString() === normalized;
+  }
+  // 偏移形态：Date.parse 值级往返（toISOString 归一化为 Z——值相等即同一时刻）
+  return Date.parse(new Date(parsed).toISOString()) === parsed;
+}
 
 export type ResearchTaskEvent =
   | { kind: 'start'; now: string }
@@ -59,7 +87,8 @@ export function canStart(status: ResearchTask['status']): boolean {
 }
 
 function isValidNow(now: string): boolean {
-  return typeof now === 'string' && now.length > 0;
+  // 决议 #116：ISO 8601 时间戳为输入有效性约束（非仅查非空）
+  return isIso8601Timestamp(now);
 }
 
 function isValidPhase(value: unknown): value is ResearchPhase {

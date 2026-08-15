@@ -125,6 +125,8 @@ export function openResearchStore(options: ResearchStoreOptions): ResearchStoreO
 
 // 正常装配：构造 Repository + 单事务原子标记遗留 running → interrupted
 // （决议 #105/#109）+ 清理超限终态（决议 #104 触发点：启动装配）+ 构造 Service。
+// 决议 #112：清理后仍超限（总数 > 上限且无可清理终态——created 永不清除）
+// → 单事务回滚（含 interrupted 标记）+ unavailable（溢出不得静默忽略）。
 // 失败路径不抛穿——内部异常归一化 unavailable（句柄已尽力关闭）。
 function assembleNormal(
   handle: DbHandle,
@@ -137,35 +139,51 @@ function assembleNormal(
     withTransaction(handle, () => {
       const nowIso = new Date(nowMs()).toISOString();
       const marked = repo.markAllRunningInterrupted(nowIso, nowIso);
+      const pruned = repo.cleanupOldestFinishedOverflow();
+      if (pruned.overflowRemaining > 0) {
+        // 决议 #112：清理无法恢复总数硬上限（created 永不清除）→ 回滚整笔
+        // 装配写入（含标记）→ unavailable（检查失败语义；零业务写入）
+        throw new TaskLimitUnrecoverableError(pruned.overflowRemaining);
+      }
       if (marked > 0) {
         logWarn(
           'research',
           `检测到 ${marked} 个遗留运行中任务，已标记为 interrupted（不自动续跑）`,
         );
       }
-      // 决议 #104：启动装配后清理超限最旧终态（created 永不清除）
-      pruneFinishedTasks(repo);
+      if (pruned.deleted > 0) {
+        logInfo('research', `保留策略清理：移除 ${pruned.deleted} 个最旧终态任务`);
+      }
     });
     const service = new ResearchServiceImpl({ db: handle, now: nowMs });
     logInfo('research', `Research 子系统就绪（${label}，schema v${latestVersion}）`);
     return { mode: 'normal', service, reason: null };
   } catch (err) {
     closeDb(handle);
+    if (err instanceof TaskLimitUnrecoverableError) {
+      logError(
+        'research',
+        `研究数据库任务总数超过硬上限且无可清理的终态任务（溢出 ${err.overflow} 个；created 任务永不被自动清理）——研究功能不可用，原文件已保留`,
+      );
+      return {
+        mode: 'unavailable',
+        service: null,
+        reason:
+          '研究任务总数超过硬上限且无可清理的终态任务（created 任务不会被自动清理）。原数据库文件已保留，可备份后手工整理研究数据库再重启应用',
+      };
+    }
     logError('research', 'Research 正常装配失败（句柄已关闭）', err);
     return { mode: 'unavailable', service: null, reason: '研究数据库初始化失败（详见日志）' };
   }
 }
 
-// 决议 #104：总数硬上限清理（cleanupOldestFinishedOverflow——created 永不清除）。
-// 最佳努力——清理失败仅记录不阻塞启动（与 Sources B7 tryPrune 同族纪律）。
-// 调用方须持有事务。
-function pruneFinishedTasks(repo: ResearchRepository): void {
-  try {
-    const result = repo.cleanupOldestFinishedOverflow();
-    if (result.deleted > 0) {
-      logInfo('research', `保留策略清理：移除 ${result.deleted} 个最旧终态任务`);
-    }
-  } catch (err) {
-    logWarn('research', '任务保留清理失败（不阻塞启动）', err);
+// 决议 #112：清理后仍超限的装配内部异常哨兵（区分于通用装配失败，携带溢出数）
+class TaskLimitUnrecoverableError extends Error {
+  readonly overflow: number;
+
+  constructor(overflow: number) {
+    super('任务总数超硬上限且无可清理终态');
+    this.name = 'TaskLimitUnrecoverableError';
+    this.overflow = overflow;
   }
 }
