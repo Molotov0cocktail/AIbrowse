@@ -458,6 +458,27 @@ AI 自动操作和手工操作应落入同一 SourceService。
 > Key 扫描未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT RUN，不冒充
 > 历史证据）。下一唯一动作 = 用户单独授权后对 4c 修复做**一次**定向真实
 > 复验；补验通过前不得宣称第四阶段验收通过、不得实现 Fifth Stage。
+>
+> **真实 Provider 补验第二次执行（2026-08-16，第四轮运行）判定：HOLD/PENDING
+> 维持。** 用户单独授权的一次完整 `-Sources` 复验（前置验证全绿：test
+> 1244/1244 · typecheck · lint · format:check · build · diff-check；三方
+> SHA 一致 8f972dd）。场景 1a/1b/1c/2/3/4a/4b/4c/5 **全部真实通过**——
+> 1a L2 deny 零写入 + denied-by-user 后停止；1b approve 恰一次 + durable
+> Undo；4c 恢复使用实测生效（s4c 定位修复验证通过）；场景 5
+> source_search → browser_open → browser_read 全链路 + usage=reachable；
+> 37 次 HTTP 全部 200、9 次 L2 确认全部按纪律决议（1a deny，其余
+> approve）。**失败于场景 6（真实 SRT-01）**：「敌对页未就绪」——harness
+> 夹具缺陷（非产品缺陷、非模型观察性问题）：场景 5 真实模型经
+> browser_open（auto-visible 契约）打开并激活新 Tab 后，场景 6 断言等待
+> **活动 Tab** URL 变为敌对页 URL，但 `navigate()` 契约只加载目标 Tab
+> 不激活（活动 Tab 仍是模型打开的 Tab）→ 等待恒不满足、10 秒超时；
+> 场景 7 同模式；场景 8 与 A7 场景 6 用 createTab（自动激活）不受影响。
+> 修复方案（唯一下一任务，本轮不修改代码）：场景 6/7 导航前
+> `activateTab(activeBefore)`。**总 Exit 判定 = HOLD/PENDING——真实
+> Provider 验收未完成**（场景 6/7/8 + 真 Key 扫描未通过真实执行；RT-10
+> 与真实 SRT-01/02 仍 NOT RUN，不冒充历史证据）。场景 6/7 导航夹具修复
+> + 完整离线复验全绿后，下一唯一动作 = 用户单独授权的一次定向真实复验；
+> 补验通过前不得宣称第四阶段验收通过、不得实现 Fifth Stage。
 
 ---
 

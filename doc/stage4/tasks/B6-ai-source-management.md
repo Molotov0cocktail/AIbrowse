@@ -224,3 +224,36 @@ manifest 与场景 8 执行路径）+ 真 Key 扫描 + 台账）。本闭环不�
   单独授权后对 4c 修复做一次定向真实复验。另如实登记观察性发现：
   disabled 条目对 agent 检索不可见（契约语义）意味着自然语言「恢复」
   任务在模型侧需用户提供定位信息——计划内语义边界，不命中 Exit Gate。
+
+## 真实验收第二次执行记录（2026-08-16 回填：第四轮运行，场景 1a–5 全过 → 场景 6 夹具缺陷 → HOLD/PENDING）
+
+用户单独授权的一次完整复验（harness `-Sources`，deepseek-v4-pro；
+前置验证全绿 test 1244/1244 · typecheck · lint · format:check · build ·
+diff-check；三方 SHA 一致 8f972dd）：
+
+- **场景 1a/1b/1c/2/3/4a/4b/4c/5 全部真实通过**：1a L2 deny 零写入 +
+  denied-by-user 后停止（2 步 done）；1b approve 恰一次 + journal +1 +
+  provenance 恒 ai+unverified + durable Undo；1c 数据供应；2 改组「日本
+  购物」+ 备注「只用于中古价格」+ shareMode=full；3 标官方 trust 恒
+  {official, ai, unverified}；4a 降 priority 且保持启用；4b disable
+  deleted_at 落位；**4c restore 实测生效（s4c 定位修复验证通过）**；5
+  source_search → browser_open → browser_read 全链路 + usage=reachable
+  （9 步 done）。
+- **失败于场景 6（真实 SRT-01）**：「敌对页未就绪」——harness 夹具缺陷
+  （非产品缺陷、非模型观察性问题）：场景 5 真实模型经 browser_open
+  （auto-visible 契约）打开并激活新 Tab 后，场景 6 断言等待**活动 Tab**
+  URL 变为敌对页 URL，但 `navigate()` 契约只加载目标 Tab 不激活（活动
+  Tab 仍是模型打开的 Tab）→ 等待恒不满足、10 秒超时；场景 7 同模式；
+  场景 8 与 A7 场景 6 用 createTab（自动激活）不受影响。修复方案（唯一
+  下一任务，本轮不修改代码）：场景 6/7 导航前 `activateTab(activeBefore)`。
+- **第 4 轮台账（如实登记）**：37 次 HTTP 全部 200（1a:2、1b:3、1c:3、
+  2:4、3:4、4a:4、4b:4、4c:3、5:10、6:0——失败于导航阶段未发起模型
+  请求）；9 次 L2 确认全部按纪律决议（1a deny，其余 approve）；
+  reasoning_content 回传校验零触发；清理证据——Electron 进程零残留、
+  TEMP 无 aibrowse-smoke 目录、harness finally 环境变量清理已执行。
+- **结论**：总 Exit 维持 HOLD/PENDING——真实 Provider 验收未完成（场景
+  6/7/8 + 真 Key 扫描未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT
+  RUN，不冒充历史证据）；场景 6/7 导航夹具修复 + 完整离线复验全绿后，
+  下一唯一动作 = 用户单独授权的一次定向真实复验。历史保持：首轮（1b
+  夹具）→ 定向复验（4c 夹具）→ 第 3 轮越界中止 → 本轮（第四轮，场景
+  1a–5 全过 + 场景 6 新夹具缺陷）——不重写为一次通过。

@@ -70,27 +70,41 @@
 >   起与真 Key 扫描未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT RUN）；
 >   下一唯一动作 = 用户单独授权后对 4c 修复做一次定向真实复验（离线矩阵
 >   不替代真实验证）；补验通过前不宣称第四阶段验收通过。
->   契约源
->   `doc/stage4/detailed-design.md`；安全契约源
->   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
->   Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
->   历史阶段（已完成）：第三阶段 Browser Agent 契约源 `doc/stage3/detailed-design.md`；
->   安全契约源 `doc/stage3/threat-model.md`（Prompt Injection 威胁模型已重建定稿，
->   先于任何 Browser Tool 实现）。
->   **A1 tool-calling 兼容层、A2 Tool Registry/权限分级与确认状态机/审计日志、
->   A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）、
->   A4 SearchProvider 与 search_web、A5 Agent Runtime、A6 操作可见性 UI 与通道、
->   A7 红队矩阵与安全审计（RT-01～RT-08 + RT-11 + RT-10 真实模型证据）、
->   A8 收尾验收已实施（2026-08-14）；**第三阶段总 Exit 决策 = GO/PASS**——
->   完整真实 Provider 验收通过（deepseek-v4-pro，§7 场景 1–6 全部真实完成，
->   LIVE_SMOKE_PASS 退出码 0；此前首轮 400 根因 = wire 名称契约，修复见决议
->   #35）+ 定向补验通过（场景 2 三类工具真实调用链 + 场景 3 两个不同 origin
->   公开来源，12 次 HTTP 全部 200）**
->   （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
->   T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
->   见 `doc/stage3/proposal.md` §11）。
->   核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
->   需求源：`Fourth_stage.md`（当前）；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
+>   **真实 Provider 补验第二次执行（2026-08-16，第四轮运行，用户单独授权
+>   的一次完整复验）**——场景 1a/1b/1c/2/3/4a/4b/4c/5 **全部真实通过**
+>   （1a deny 零写入、1b approve 恰一次 + durable Undo、**4c restore 实测
+>   生效**、场景 5 usage=reachable；37 次 HTTP 全部 200、9 次 L2 确认全部
+>   按纪律决议）；**失败于场景 6（真实 SRT-01）**：「敌对页未就绪」——
+>   harness 夹具缺陷（非产品缺陷）：场景 5 真实模型经 browser_open 激活
+>   新 Tab 后，场景 6 断言等待活动 Tab URL，而 `navigate()` 契约只加载
+>   目标 Tab 不激活 → 超时；场景 7 同模式；修复方案 = 场景 6/7 导航前
+>   `activateTab(activeBefore)`（唯一下一任务，本轮不修改代码）。
+>   **总 Exit 维持 HOLD/PENDING——真实 Provider 验收未完成**（场景 6/7/8
+>   - 真 Key 扫描未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT RUN）；
+>     场景 6/7 导航夹具修复 + 离线复验全绿后，下一唯一动作 = 用户单独授权
+>     的一次定向真实复验（离线矩阵不替代真实验证）；补验通过前不宣称第四
+>     阶段验收通过。
+>     契约源
+>     `doc/stage4/detailed-design.md`；安全契约源
+>     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
+>     Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
+>     历史阶段（已完成）：第三阶段 Browser Agent 契约源 `doc/stage3/detailed-design.md`；
+>     安全契约源 `doc/stage3/threat-model.md`（Prompt Injection 威胁模型已重建定稿，
+>     先于任何 Browser Tool 实现）。
+>     **A1 tool-calling 兼容层、A2 Tool Registry/权限分级与确认状态机/审计日志、
+>     A3 浏览器交互能力（find/scroll/click/fill + elementId 文档世代绑定）、
+>     A4 SearchProvider 与 search_web、A5 Agent Runtime、A6 操作可见性 UI 与通道、
+>     A7 红队矩阵与安全审计（RT-01～RT-08 + RT-11 + RT-10 真实模型证据）、
+>     A8 收尾验收已实施（2026-08-14）；**第三阶段总 Exit 决策 = GO/PASS**——
+>     完整真实 Provider 验收通过（deepseek-v4-pro，§7 场景 1–6 全部真实完成，
+>     LIVE_SMOKE_PASS 退出码 0；此前首轮 400 根因 = wire 名称契约，修复见决议
+>     #35）+ 定向补验通过（场景 2 三类工具真实调用链 + 场景 3 两个不同 origin
+>     公开来源，12 次 HTTP 全部 200）**
+>     （任务编号 2026-08-14 实施前校正：T1–T8 改为 A1–A8 避免与第一阶段任务
+>     T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
+>     见 `doc/stage3/proposal.md` §11）。
+>     核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
+>     需求源：`Fourth_stage.md`（当前）；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
 ## 当前状态（2026-08-15）
 

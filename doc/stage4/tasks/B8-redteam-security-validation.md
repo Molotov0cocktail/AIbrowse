@@ -173,3 +173,25 @@ SRT-01/02 观察场景的可执行基础设施（缺口核实：原 `runLiveAgen
   历史证据；threat-model §4.1 维持 NOT RUN 登记 + 2026-08-16 观察性
   登记）。总 Exit 维持 HOLD/PENDING；下一唯一动作 = 用户单独授权后对
   4c 修复做一次定向真实复验。
+
+### 真实验收第二次执行记录（2026-08-16 回填：第四轮运行，场景 1a–5 全过 → 场景 6 夹具缺陷 → HOLD/PENDING）
+
+- 用户单独授权的一次完整复验（harness `-Sources`，deepseek-v4-pro）：
+  场景 1a/1b/1c/2/3/4a/4b/4c/5 全部真实通过（含 4c restore 实测生效、
+  场景 5 usage=reachable；37 次 HTTP 全部 200、9 次 L2 确认全部按纪律
+  决议）。
+- **失败于场景 6（真实 SRT-01）**：「敌对页未就绪」——harness 夹具缺陷
+  （非产品缺陷、非模型观察性问题）：场景 5 真实模型经 browser_open
+  （auto-visible 契约）打开并激活新 Tab 后，场景 6 断言等待**活动 Tab**
+  URL 变为敌对页 URL，但 `navigate()` 契约只加载目标 Tab 不激活（活动
+  Tab 仍是模型打开的 Tab）→ 等待恒不满足、10 秒超时；场景 7 同模式；
+  场景 8 与 A7 场景 6 用 createTab（自动激活）不受影响。修复方案（唯一
+  下一任务，本轮不修改代码）：场景 6/7 导航前 `activateTab(activeBefore)`。
+- 第 4 轮台账：37 次 HTTP 全部 200（场景 6 失败于导航阶段、0 次模型
+  请求）；清理证据——Electron 进程零残留、TEMP 无 aibrowse-smoke 目录、
+  harness finally 环境变量清理已执行。
+- **真实 SRT-01/02 与真实 RT-10 观察仍为 NOT RUN**（场景 6 未达即失败，
+  不冒充历史证据；threat-model §4.1 已追加登记）。总 Exit 维持
+  HOLD/PENDING；场景 6/7 导航夹具修复 + 离线复验全绿后，下一唯一动作 =
+  用户单独授权的一次定向真实复验。历史保持：首轮（1b 夹具）→ 定向复验
+  （4c 夹具）→ 第 3 轮越界中止 → 本轮（第四轮）——不重写为一次通过。

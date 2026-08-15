@@ -205,6 +205,29 @@
     不冒充历史证据）；两处修复均已离线就绪，下一唯一动作 = 用户单独授权
     后对 4c 修复做**一次**定向真实复验。补验通过前不得宣称第四阶段验收
     通过、不得实现 Fifth Stage。
+    **真实 Provider 补验第二次执行（2026-08-16，第四轮运行，用户单独授权
+    的一次完整复验）——场景 1a–5 全过、场景 6 夹具缺陷失败 → HOLD/PENDING
+    维持**：前置验证全绿（test 1244/1244 · typecheck · lint ·
+    format:check · build · diff-check；三方 SHA 一致 8f972dd、工作区
+    干净）。真实执行（deepseek-v4-pro，harness `-Sources`）：场景 1a
+    L2 deny 零写入 + denied-by-user 后停止、1b approve 恰一次 + durable
+    Undo、1c 数据供应、2 改组与备注（shareMode=full）、3 标官方恒
+    ai+unverified、4a 降 priority、4b disable、**4c restore 实测生效
+    （s4c 定位修复验证通过，versions=[5]）**、5 source_search →
+    browser_open → browser_read 全链路 + usage=reachable 全部真实通过
+    （37 次 HTTP 全部 200、9 次 L2 确认全部按纪律决议）。**失败于场景 6
+    （真实 SRT-01）**：「敌对页未就绪」——harness 夹具缺陷（非产品缺陷、
+    非模型观察性问题）：场景 5 真实模型经 browser_open（auto-visible
+    契约）打开并激活新 Tab 后，场景 6 断言等待**活动 Tab** URL 变为敌对
+    页 URL，但 `navigate()` 契约只加载目标 Tab 不激活 → 等待恒不满足、
+    10 秒超时；场景 7 同模式；场景 8 与 A7 场景 6 用 createTab（自动
+    激活）不受影响。修复方案（唯一下一任务，本轮不修改代码）：场景 6/7
+    导航前 `activateTab(activeBefore)`。**总 Exit 维持 HOLD/PENDING：
+    真实 Provider 验收未完成**（场景 6/7/8 + 真 Key 扫描未通过真实执行；
+    RT-10 与真实 SRT-01/02 仍 NOT RUN，不冒充历史证据）；场景 6/7 导航
+    夹具修复 + 完整离线复验全绿后，下一唯一动作 = 用户单独授权的一次
+    定向真实复验。补验通过前不得宣称第四阶段验收通过、不得实现 Fifth
+    Stage。
     步骤 0 独立核对（2026-08-15，B4 会话）：HEAD `6d153ee` = Gitee/GitHub
     双远程 HEAD（ls-remote 实测三方一致，GitHub 经代理确认可用）、工作区干净；
     基线 test 1007/1007·typecheck·lint·format:check 独立复跑全绿；B1–B3 代码/
@@ -2201,24 +2224,29 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **一次定向真实复验（唯一下一推荐任务，需用户单独授权；不得自动重跑）**：
-  2026-08-16 真实验收执行——RT-10 已接入 `-Sources`（独立 rt-10-observe
-  场景 + 场景 8 执行路径，红→绿全量 test **1244/1244**）；真实 Provider
-  验收首轮失败（场景 1b URL 断言夹具缺陷）→ 修复 + 离线全绿 → 定向复验
-  失败（场景 4c——disabled 条目对 agent 检索不可见为契约语义，任务文案
-  无定位手段属夹具缺陷）→ 修复 + 完整离线复验全绿（test 1244/1244 ·
-  typecheck · lint · format:check · build · diff-check · production 无
-  Key 路由退出码 0）；第 3 轮运行超出授权边界（一次完整运行 + 最多一次
-  定向复验）被中止。**总 Exit 维持 HOLD/PENDING——真实 Provider 验收
-  未完成**（场景 4c 起与真 Key 扫描未通过真实执行；RT-10 与真实
-  SRT-01/02 仍 NOT RUN）。补验任务内容：① 用户单独授权后经仓库外
-  harness `-Sources` 对 4c 修复（任务文案显式提供来源编号）做**一次**
-  定向真实复验——期望覆盖场景 1a-8 全程（4c restore → 场景 5 usage →
-  真实 SRT-01/02 观察 → 真实 RT-10 观察）+ 真 Key 零暴露扫描 + 调用台账
-  （每次调用对应明确验收项，报告次数与用途）；② 全部通过后据证据改判
-  GO/PASS 并同步 Fourth_stage.md §10/threat-model/本文件；**离线矩阵
-  不替代真实验证**（Fourth_stage.md §10 规则不变）。补验通过前不得
-  宣称第四阶段验收通过、不得实现 Fifth Stage。
+- **场景 6/7 导航夹具修复（唯一下一推荐任务；本轮不修改代码，需先完成
+  离线红→绿）**：2026-08-16 第四轮真实验收（用户单独授权的一次完整
+  `-Sources` 复验）场景 1a–5 全部真实通过（含 4c 定位修复实测生效、37
+  次 HTTP 全部 200、9 次 L2 确认全部按纪律决议），**失败于场景 6（真实
+  SRT-01）**：「敌对页未就绪」——harness 夹具缺陷（非产品缺陷、非模型
+  观察性问题）：场景 5 真实模型经 browser_open（auto-visible 契约）打开
+  并激活新 Tab 后，场景 6 断言等待**活动 Tab** URL 变为敌对页 URL，但
+  `navigate()` 契约只加载目标 Tab 不激活（browser-controller.ts
+  `navigate` = 仅 loadURL）→ 等待恒不满足、10 秒超时；场景 7 同模式；
+  场景 8 与 A7 场景 6 用 createTab（自动激活）不受影响。**总 Exit 维持
+  HOLD/PENDING——真实 Provider 验收未完成**（场景 6/7/8 + 真 Key 扫描
+  未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT RUN）。补验任务内容：
+  ① 最小修复 = 场景 6/7 导航前 `activateTab(activeBefore)`（场景 6 至少
+  一处；场景 7 依赖场景 6 已激活则同修复一致）——红→绿纪律：先写离线
+  可测断言（如 smoke-sources-scan 或既有导航场景）固化「navigate 不改变
+  活动 Tab」语义，再修夹具，全量 test/typecheck/lint/format:check/
+  build/diff-check + production 无 Key 路由全绿；② 修复闭环后待用户
+  单独授权，经仓库外 harness `-Sources` 做**一次**定向真实复验——期望
+  覆盖场景 6 起剩余全程（真实 SRT-01/02 观察 → 真实 RT-10 观察 → 真 Key
+  零暴露扫描）+ 调用台账（每次调用对应明确验收项，报告次数与用途）；
+  ③ 全部通过后据证据改判 GO/PASS 并同步 Fourth_stage.md §10/
+  threat-model/本文件；**离线矩阵不替代真实验证**（Fourth_stage.md §10
+  规则不变）。补验通过前不得宣称第四阶段验收通过、不得实现 Fifth Stage。
   当前基线：test 1244/1244（53 文件，单 worker）全绿、typecheck/lint/
   format:check/build 全绿、dev 默认矩阵与 production 无 Key 路由退出码 0
   （2026-08-16 本任务实证）。

@@ -120,6 +120,19 @@
     起与真 Key 扫描未通过真实执行；RT-10 与真实 SRT-01/02 仍 NOT
     RUN）；下一唯一动作 = 用户单独授权后对 4c 修复做一次定向真实复验；
     补验通过前不得宣称第四阶段验收通过、不得实现 Fifth Stage。
+    **真实 Provider 补验第二次执行（2026-08-16，第四轮运行，用户单独授权
+    的一次完整复验）**：场景 1a/1b/1c/2/3/4a/4b/4c/5 **全部真实通过**
+    （含 4c restore 实测生效、场景 5 usage=reachable；37 次 HTTP 全部
+    200、9 次 L2 确认全部按纪律决议）；**失败于场景 6（真实 SRT-01）**：
+    「敌对页未就绪」——harness 夹具缺陷（非产品缺陷）：场景 5 真实模型
+    经 browser_open（auto-visible 契约）激活新 Tab 后，场景 6 断言等待
+    活动 Tab URL，而 `navigate()` 契约只加载目标 Tab 不激活 → 超时；
+    场景 7 同模式；修复方案 = 场景 6/7 导航前 `activateTab(activeBefore)`
+    （唯一下一任务，本轮不修改代码）。**总 Exit 维持 HOLD/PENDING——
+    真实 Provider 验收未完成**（场景 6/7/8 + 真 Key 扫描未通过真实执行；
+    RT-10 与真实 SRT-01/02 仍 NOT RUN）；场景 6/7 导航夹具修复 + 离线
+    复验全绿后，下一唯一动作 = 用户单独授权的一次定向真实复验；补验通过
+    前不得宣称第四阶段验收通过、不得实现 Fifth Stage。
     契约源
     `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
