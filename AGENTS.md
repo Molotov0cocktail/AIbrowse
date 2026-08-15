@@ -42,8 +42,18 @@
   （参数严格白名单/audience 硬编码 user/状态门控/独立 manual 审计，零 Electron
   import）+ preload 白名单 + 冒烟 8.11 B-05 默认矩阵（dev+生产双场景退出码 0）
   - AIBROWSE_SOURCES_UI_SMOKE=set|check 双进程门控（退出码 0，全量 test
-    1125/1125）——**Sources 功能对用户已可用**；B6–B9 待开始**；下一个推荐任务 =
-    **B6**（AI 自然语言管理端到端 + Browser Agent 复用 + usage 接线）。契约源
+    1125/1125）——**Sources 功能对用户已可用**；B6 已完成（2026-08-15）——
+    实施前契约裁决（决议 #79–#85：usage 接线归属 B6/序列化 allowlist 引用链路
+    缺口/ToolExecutionContext 最小 usage 桥/provenance 表述校准/description
+    校准/B-07 冒烟探针/AIBROWSE_LIVE_AGENT_SOURCES 互斥门控与离线可测路由）+
+    SourceSearchHintStore（每 run 独立/有界 120/按 sourceId 去重/跨 run 隔离/
+    终态清空）+ browser_open 比对写 usage（reachable/unreachable/写失败安全
+    no-op）+ search/list/get 序列化补齐 ID/规范键/作用域/分组 ID + 自然语言
+    管理 description + 冒烟 8.12 B-06/B-07 与 8.13 B-06 UI DOM（dev+生产双
+    场景、B-02/B-05 双进程复跑、LIVE 门控互斥与离线回退全部退出码 0；全量
+    test 1160/1160）；真实 Provider 场景待用户授权；**B7–B9 待开始**；下一个
+    推荐任务 = **B7**（跨进程持久化 + migration/backup/recovery 全矩阵 + FTS
+    rebuild 诊断 + usage/health 边界）。契约源
     `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
     实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
@@ -61,9 +71,9 @@ SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
     expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
     永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
     数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
-    **⚠️ B1–B4 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层）；B5–B9
-    对应能力（Sources UI/IPC、真实 Provider 端到端、backup/usage、红队、最终
-    验收）在对应任务完成前不得在文档/报告/UI 中宣称已实现。
+    **⚠️ B1–B5 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层/B5 Sources
+    UI 与 IPC）；B6–B9 对应能力（真实 Provider 端到端、backup/recovery、红队、
+    最终验收）在对应任务完成前不得在文档/报告/UI 中宣称已实现。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
@@ -378,7 +388,9 @@ d:\AIbrowse\
     │       │                                  #   （四条编译期常量 SQL + 参数绑定）/FTS 可用性/rebuild/一致性）,
     │       │                                  #   ✅ B2/B3：source-service（UI 与 Agent 共用唯一入口；
     │       │                                  #   B3 起 search/list/get 必填 audience，决议 #58）、
-    │       │                                  #   usage/usage-tracker（B7）、tools/source-tools（B4）、
+    │       │                                  #   usage/usage-tracker（B6：SourceSearchHintStore 每 run
+    │       │                                  #   独立 + Agent 打开后 usage 写入，决议 #79/#81）、
+    │       │                                  #   tools/source-tools（B4）、
     │       │                                  #   ✅ B5：source-ipc（sources:* 适配器：白名单校验/
     │       │                                  #   audience 硬编码 user/状态门控/独立 manual 审计/
     │       │                                  #   changed 事件，零 Electron import）；
@@ -1082,12 +1094,13 @@ enableForeignKeys, wal}) → DbHandle` / `closeDb`（幂等）/ `withTransaction
     SourceService + Undo；审计脱敏（决议 #67：ops 计数/字段名/长度/版本/成功后
     幂等键；note 正文与 URL 值零出现；source_search 查询 ≤500 但 URL 形态
     query 值脱敏——`redactUrlQueryValue`/`summarizeSourceChangeSet`）。
-- **provenance（B2/B5）**：trust{value: official|primary|secondary|community|
-  unknown；assertedBy: user|ai；verification: asserted|unverified}；用户明示 →
-  official+user-asserted；AI 推断恒 official+ai+unverified；模型 change set 不能
-  写 assertedBy=user（仅用户 UI 通道）、不能设 blocked（防自我隐藏）；UI 必须
-  展示来源。
-- **Source Tools v1（B4 ✅ 已实现，grep 核对）**：`src/main/sources/tools/
+- **provenance（B2/B5；B6 决议 #82 表述校准）**：trust{value: official|primary|
+  secondary|community|unknown；assertedBy: user|ai；verification: asserted|
+  unverified}；用户经**手工 Sources UI** 标定 → official+user-asserted；经 AI
+  change set（含用户口头「标成官方」——用户确认对话不等于用户通道断言）恒
+  official/任意值 + ai + unverified；模型 change set 不能写 assertedBy=user
+  （仅用户 UI 通道）、不能设 blocked（防自我隐藏）；UI 必须展示来源。
+- **Source Tools v1（B4 ✅ 已实现，grep 核对；B6 决议 #80/#83 校准）**：`src/main/sources/tools/
 source-tools.ts`——`createSourceTools(sourceService: SourceService | null)`
   → ToolDefinition[]（source_search/source_list/source_get = L0 有界 + 分享
   模式过滤 + allowlist；source_apply_changes = L2 + confirmSummary 钩子）；
@@ -1095,13 +1108,18 @@ source-tools.ts`——`createSourceTools(sourceService: SourceService | null)`
   注入，两者皆缺 → source-unavailable 安全失败）、零 Electron import、零网络；
   audience 硬编码 'agent'（schema 无该字段，决议 #58）；序列化纯函数
   `formatSourceSearchResults/formatSourceListItems/formatSourceDetail`
-  （allowlist；`source_get` 返回 expectedVersion 并发令牌（决议 #65）、version
-  字段名不回显（决议 #38 校准）、search/list 恒无版本字段；metadata 零 note
-  字节；provenance 标注「用户标定/AI 推断·未核验」）；错误码 8 值恒等映射
+  （allowlist：**B6 补齐 ID/规范键/作用域/分组 ID 引用链路**——模型经
+  search/list→get→apply 引用条目的唯一标识；`source_get` 返回 expectedVersion
+  并发令牌（决议 #65）、version 字段名不回显（决议 #38 校准）、search/list 恒
+  无版本字段；metadata 零 note 字节；provenance 标注「用户标定/AI 推断·未核
+  验」）；**B6 description 校准（决议 #83）**：说明引用链路与自然语言管理语义
+  （「不再优先」= 降 priority ≠ disable；明确禁用/恢复意图才用对应 op；
+  description 不描述权限，AGENT_SYSTEM_PROMPT 恒等不变）；错误码 8 值恒等映射
   （mapSourceError；ToolResultErrorCode/TOOL_RESULT_ERROR_CODES/agent-display
   文案同步）；禁具 source_sql/source_delete_hard/source_export_all/任意导入/
   任意抓取/任意通用数据库工具（grep 断言）。注册后 17 工具（冒烟 8.1 断言
-  校准）；ToolResult 预算 SOURCE_TOOL_CONTENT_MAX=4000（确定性截断 + warning）。
+  校准，B6 零新增工具）；ToolResult 预算 SOURCE_TOOL_CONTENT_MAX=4000
+  （确定性截断 + warning）。
   **递归 schema（决议 #64）**：ProviderToolParameter type 增 object/array
   （properties/required/items/maxItems）；tool-registry 导出
   `MAX_ARRAY_ITEMS`=20/`MAX_NESTING_DEPTH`=4 + 递归校验（additionalProperties
@@ -1155,11 +1173,33 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
   冻结；WAL 活跃不得只复制主文件）；integrity/foreign_key 检查失败不覆盖原库；
   未知更高版本/损坏 → Sources 只读恢复态（写读入口拒绝 + 中文诊断 + 浏览器其余
   能力正常）；数据库/备份/journal 不进模型上下文。
+- **usage 接线（B6 ✅ 已实现，决议 #79/#81）**：`src/main/sources/usage/
+usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
+  （recordHits(runId, hits)/matchOpenUrl(runId, rawUrl)/clearRun/dispose——
+  每 run 独立、按 sourceId 去重首现、FIFO 有界、跨 run 隔离、零 timer 零网络）/
+  `SourceUsageTracker`（构造注入 `SourceUsageWriter | null` + `bridge(runId)
+→ SourceUsageContext`）。`SourceUsageHit`/`SourceUsageContext` 定义于
+  shared/types/sources.ts；ToolExecutionContext 增唯一可选字段 `sourceUsage?`
+  （决议 #81）；source_search 成功从结构化结果登记（禁止解析 ToolResult 文本）；
+  browser_open 执行后回调（成功→reachable/失败→unreachable/executor 层纵深
+  防御 notifyOpen）；AgentLoop.finish() 终态 clearRun（取消/超时/终态后迟到
+  工具结果零写入）；conversation-service `AgentRuntimeOptions.usageBridge?
+(runId)` 工厂（index.ts 传 SourceUsageTracker.bridge 绑定）。usage 写入
+  失败仅脱敏告警（只记 sourceId）安全 no-op——不改变 ToolResult/权限/终态；
+  B7 保留 UI 展示「上次使用结果」与运维边界。
 - **本地明文边界（B5 如实说明）**：v1 明文保存 URL/分组/标签/备注（OS 用户权限
   保护），不承诺静态加密；API Key 仍只走 safeStorage/DPAPI，绝不进 Sources 库。
-- **usage/health（B7）**：无后台巡检；仅 Agent 实际经 Source 打开/读取后记录
-  最近一次（unknown/reachable/unreachable/auth-required/blocked 五态；v1 可靠
-  信号仅 reachable/unreachable，其余占位宁缺勿错）；不保存正文、不宣称长期健康。
+- **usage/health（B6 接线，决议 #79/#81；B7 保留 UI 展示与运维边界）**：无后台
+  巡检；仅 Agent 实际经 Source 打开/读取后记录最近一次（unknown/reachable/
+  unreachable/auth-required/blocked 五态；v1 可靠信号仅 reachable/unreachable，
+  其余占位宁缺勿错）。SourceSearchHintStore 每 run 独立/有界（120 FIFO）/按
+  sourceId 去重/跨 run 隔离；source_search 成功从结构化结果登记（禁止解析
+  ToolResult 文本）；browser_open 经 ctx.sourceUsage 比对（origin/page 各自
+  规范化匹配；一 URL 多命中全记录）；无关 URL/先 open 后 search/跨 run/取消·
+  超时·终态后（AgentLoop.finish 清空 hints，迟到工具结果零写入）/无
+  SourceService 均不记录；usage 写入失败仅脱敏告警安全 no-op（不改变
+  browser_open 的 ToolResult/权限/Agent 终态）；零 timer/零网络；不保存正文、
+  不宣称长期健康。
 - **Sources UI 与 IPC（B5 ✅ 已实现，grep 核对；决议 #68–#78）**：
   `renderer/src/ai/sources/`——SourcesPanel（与 AiPanel 互斥切换 sidePanel
   'ai'|'sources'|null，380px 同模式；切换不卸载/遮断 App 级 Agent ConfirmDialog）/
@@ -1201,7 +1241,7 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 1125 用例）
+  - `npm test` — Vitest 全量测试（当前 1160 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -1554,6 +1594,24 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
     排序全序证据、硬上限 10/每页 20 与 total 一致、注入串/降级/数据库不可用/
     disposed 安全返回。冒烟 8.9 B-04 B3 子集自动包含于默认矩阵（dev+生产双
     场景）；B-02 check 增 B3 检索命中证据（原有断言零改动）。
+  - ✅ B6（2026-08-15 红→绿落地，+35：usage-tracker 19 / source-tools 6 /
+    browser-tools 2 / agent-loop 5 / conversation-service 3，基线 1125 →
+    1160；既有用例零删除零削弱——serializer 既有断言按决议 #80 契约校准机械
+    更新）：hint store（每 run 独立/有界 120 FIFO/按 sourceId 去重/跨 run
+    隔离/clearRun・dispose/零 timer——fake timers 断言）；匹配语义（origin/
+    page 各自规范化：fragment/默认端口变体命中、query 差异不命中、一 URL 多
+    命中全记录、无关/先 open 后 search/规范化失败零命中）；tracker 桥（成功
+    reachable/失败 unreachable/同步与异步写失败安全 no-op 无
+    unhandledRejection/无 writer 零写入/run 级闭包绑定/终态后迟到回调零
+    写入）；serializer allowlist 引用链路（search/list/get 含 ID/规范键/作用
+    域/分组 ID；get 仍为 expectedVersion 唯一来源；version/deletedAt 零回显）；
+    source_search 结构化命中登记（失败/空结果零登记；仅 search 是 hint 来源）；
+    browser_open onBrowserOpen 回调（成功/失败/桥异常纵深防御不影响结果）；
+    AgentLoop ctx 透传 + 终态（done/cancelled/timeout）clearRun 恰好一次 +
+    迟到工具回调发生在 clearRun 之后；conversation-service usageBridge 每
+    run 创建/未装配零行为/连续 run 独立。冒烟 8.12 B-06/B-07 与 8.13 B-06
+    UI DOM 自动包含于默认矩阵（dev+生产双场景退出码 0；B-02/B-05 双进程
+    复跑退出码 0）。
 - Electron 本身难以单元测试的部分**不强 mock 成复杂系统**；纯逻辑与 Electron 壳分层
   （§3 分层纪律），让可测逻辑零环境依赖；真实采集行为由冒烟集成场景覆盖（§6）。
 - 红→绿纪律 + 作业完成必跑全量回归（§3）。

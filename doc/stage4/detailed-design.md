@@ -33,7 +33,8 @@ src/
 │       │   ├── source-search-index.ts# B3：FTS5/trigram 索引维护（与主表同事务）+ rebuild
 │       │   └── change-journal.ts     # B2：持久 Undo 数据（有界 100 条/30 天）
 │       ├── source-service.ts         # B2：SourceService（UI 与 Agent 共用唯一入口）
-│       ├── usage/usage-tracker.ts    # B7：仅 Agent 打开/读取后记录最近一次 usage
+│       ├── usage/usage-tracker.ts    # B6（决议 #79）：SourceSearchHintStore（每 run 独立）
+│       │                             #   + Agent 打开后的 usage 写入；B7 保留 UI 展示/运维边界
 │       └── tools/source-tools.ts     # B4：四工具定义与 executor（零 Electron import）
 ├── preload/index.ts                  # 既有：B5 扩展 sources 通道白名单
 ├── renderer/src/ai/sources/          # B5：Sources 面板（列表/详情/快速添加/恢复态/Undo）
@@ -515,8 +516,10 @@ export interface SourceService {
   source-conflict 零删除；B5 接 UI 时复用同一签发器（二次确认 UI 先 issue 后
   消费）。
 - **B2 边界（决议 #52 冻结）**：getState 恒 `{mode:'normal', reason:null}`
-  （只读恢复态装配归 B7）；recordUsage 为 usage_events 最近一次最小 upsert
-  （UsageTracker/巡检归 B7）；dispose 幂等关闭句柄。
+  （只读恢复态装配归 B7）；recordUsage 为 usage_events 最近一次最小 upsert；
+  dispose 幂等关闭句柄。**B6 校准（决议 #79）**：SourceSearchHintStore 与 Agent
+  打开后的 usage 写入接线归 B6（B-07 冒烟同属 B6）；B7 保留 usage/health 的
+  UI 展示与存储运维边界。
 - **读取视角（决议 #58，B3 冻结）**：search/list/get 的 `audience` 必填无缺省
   ——`agent` 视角：blocked 完全不可见（search 不命中/list 不列出/get 视同不存在
   source-not-found）、metadata 的 get 无 note（两字段空串）、full 的 search 命中
@@ -790,10 +793,19 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
   safeStorage/DPAPI）。
 - **usage/health**：无后台巡检、无定时请求。仅当 Browser Agent 实际经某 Source
   打开/读取后才记录最近一次（§12 高层数据流 4.4 的 SourceSearchHintStore 关联
-  机制，B7）：outcome ∈ unknown/reachable/unreachable/auth-required/blocked；
-  v1 可靠信号仅为「打开成功 → reachable」「导航失败 → unreachable」，其余三态
-  为枚举占位（无可靠触发信号，宁缺勿错如实登记）；不保存网页正文；**最近一次
-  结果不宣称长期健康状态**（UI 文案「上次使用结果」）。
+  机制——**接线归 B6（决议 #79），B-07 冒烟同属 B6；B7 保留 UI 展示
+  「上次使用结果」与存储运维边界**）：outcome ∈ unknown/reachable/unreachable/
+  auth-required/blocked；v1 可靠信号仅为「打开成功 → reachable」「执行失败 →
+  unreachable」，其余三态为枚举占位（无可靠触发信号，宁缺勿错如实登记）；不保存
+  网页正文；**最近一次结果不宣称长期健康状态**（UI 文案「上次使用结果」）。
+  B6 落地语义（决议 #79/#81）：source_search 成功从**结构化结果**登记
+  id/scope/canonicalKey（禁止解析 ToolResult 文本）；browser_open 用同一 run 的
+  hints 经 normalizeSourceUrl 分别匹配 origin/page canonicalKey（fragment/
+  默认端口等规范化变体命中；query 差异不命中）；一个 URL 同时命中 origin/page →
+  全部去重命中逐一记录；无关 URL/先 open 后 search/跨 run/取消·超时·终态后
+  （hints 清空，迟到工具结果零写入）/无 SourceService 均不记录；每 run 独立、
+  确定性有界（120 条 FIFO）、按 sourceId 去重；usage 写入失败仅脱敏告警并安全
+  no-op（不改变 browser_open 的 ToolResult/权限/Agent 终态）；零 timer/零网络。
 
 ## 12. 安全契约（引用 threat-model）
 
@@ -820,7 +832,7 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
 | change-journal.test.ts      | 有界清理（条数/年龄任一触发，注入时钟，恰好 30 天保留、超过清理）/Undo 消费幂等（决议 #52）/版本冲突拒绝/payload 形状校验/畸形 payload 安全失败/hard delete 精确拆分（决议 #55）                                                                                                                                                                                                                                                                                                                                                                                                   | B2    |
 | source-service.test.ts      | 注入真实 node:sqlite：CRUD/唯一约束并发（双连接同 canonical 仅一成功）/change set 事务回滚（第 N 项冲突整体零写入）/幂等键重放（同指纹幂等、异指纹 fail-closed，决议 #53）/expectedVersion/undo/hardDelete 清理（FTS/journal/usage 字节级）/非法输入安全返回/异常归一化/dispose 幂等；**B3 扩展**：search/list/get 的 audience 完整矩阵（agent blocked 不可见·metadata 零 note 字节·full 摘录有界；user 可见可管理）、硬上限 10/每页 20/分页 total 与过滤一致、多语言命中（中/日/英/混合）、排序全序证据（priority 上下界/origin+page 同 canonicalKey）、disposed/句柄关闭安全返回 | B2/B3 |
 | source-tools.test.ts        | 四工具 schema 校验/serialize 纯文本零特权/错误码映射/ctx.sourceService 优先于注入/audit 摘要形状                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | B4    |
-| usage-tracker.test.ts       | 命中登记/URL 比对/仅最近一次/未知来源不记录                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | B7    |
+| usage-tracker.test.ts       | **B6（决议 #79/#81）**：hint 上限（120 FIFO 淘汰）/按 sourceId 去重（首现）/同 run 累积/跨 run 隔离/clearRun・dispose；origin/page/fragment/默认端口/query 规范化匹配 + 一 URL 多命中全记录；无关 URL/先 open 后 search/规范化失败零命中；tracker 桥：成功 reachable/失败 unreachable/全部命中逐一写入/同步与异步写失败安全 no-op（无 unhandledRejection）/无 writer 零写入/run 级闭包绑定/终态后迟到回调零写入；零 timer（fake timers 断言）                                                                                                                                      | B6    |
 | source-ipc.test.ts          | **B5（决议 #69/#70/#72/#73/#74/#76）**：全部载荷校验矩阵（非法 id/未知字段/页码/长度/枚举边界）、audience 硬编码 user（blocked 可见）、状态门控（service null 与 override 下读写拒绝/写审计一条/零 changed/零变化）、changed 仅成功后恰好一次、每次写尝试恰好一条脱敏审计（note/URL/敏感 query/token/路径零出现）、两阶段硬删除（取消/错绑定不消费/过期/重放/成功无 Undo）、quick-add（无活动页/非 http/精确重复 + related ≤5 有界/绝不覆盖/主进程生成名称）、getter 惰性解析回归                                                                                                  | B5    |
 | sources-display.test.ts     | **B5（决议 #74/#75/#78）**：provenance 两形态文案/分享模式三态说明/错误码 10 码中文/状态诊断（中文原因 + 建议仅安全标签、无盘符路径/sources.db）/quick-add 结果文案                                                                                                                                                                                                                                                                                                                                                                                                                | B5    |
 
@@ -834,7 +846,7 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
 | B-04 | 有界检索              | **B3/B4 分段完成（决议 #63）**——B3 子集（默认矩阵 dev+production 双场景，真实 Electron 内置 node:sqlite/FTS5/trigram）：source_search 硬上限 10/分享模式过滤（agent blocked 不可见、metadata 零 note 字节、full 摘录 ≤200 + provenance）/allowlist/中·日·英命中/短查询降级/rebuild 一致性；B4 待完成：SOURCE_TOOL_CONTENT_MAX=4000 结果预算截断/ToolResult 序列化/UNTRUSTED_TOOL_RESULT 块隔离（含注入 note 夹具）/审计——B3 不得宣称 B-04 全过                                                                                                                                                                   | B3/B4 |
 | B-05 | 快速添加 UI 端到端    | 当前页快速收藏（默认 metadata）→ 列表出现 → 修改分享模式/备注 → 手工 Undo → 永久删除二次确认后消失且不可 Undo。**B5 落地扩展（8.11 默认矩阵 + AIBROWSE_SOURCES_UI_SMOKE 双进程门控，决议 #68–#78）**：真实 DOM → preload → IPC → SourceService 全链路（明文说明/快速添加重复与「可能相关」/分组分页/搜索 user 视角 blocked 可见/详情编辑与 provenance/aiNote 只读/敌手 note 纯文本/版本冲突提示刷新零覆盖/禁用恢复/手工 Undo/两阶段永久删除取消与确认/token 零 DOM/恢复态·不可用态中文诊断与零写入/面板互斥 + App 级确认框不遮断）；双进程门控 set（快速添加+编辑）→ check（新进程读回 → Undo → 两阶段永久删除） | B5    |
 | B-06 | migration/恢复        | 旧版本库自动迁移（备份生成）；注入迁移失败 → rollback + 原库完好；损坏库/更高版本 → 只读恢复态 + 中文诊断 + 浏览器其余能力正常（既有冒烟场景回归）                                                                                                                                                                                                                                                                                                                                                                                                                                                               | B7    |
-| B-07 | usage 记录            | 同 run source_search 命中 → browser_open 该 URL → usage 落库 reachable；无关 URL 不记录；无后台请求（日志断言零巡检）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | B7    |
+| B-07 | usage 记录            | **归 B6（决议 #79）**：同 run source_search 命中 → browser_open 该 URL → usage 落库 reachable；无关 URL/先 open 后 search/跨 run 不记录；执行失败 unreachable；写入失败不影响工具结果；无后台请求（零 timer 断言 + 日志零巡检）                                                                                                                                                                                                                                                                                                                                                                                  | B6    |
 | B-08 | 红队 SRT-01～SRT-12   | §4 矩阵全表（dev+生产双场景）+ RT-01～RT-11 全量回归                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | B8    |
 | B-09 | 共读与工具层回归      | 既有矩阵 1–12/8.1（注册表 17 工具）/8.2/8.3/8.4/8.5/8.6 全量回归；日志敏感扫描零命中                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | B4/B8 |
 
@@ -1172,6 +1184,53 @@ undoable/undo/quick-add/state/prepare-hard-delete/hard-delete` + 事件
 78. **纯文本渲染**：note/name/tag 等网页或用户文本只用 React 纯文本渲染
     （禁止 dangerouslySetInnerHTML、Markdown/富文本解释；冒烟敌手 note
     `<b id=…>` 原样显示且零 DOM 元素断言）。
+
+### B6 实施前契约裁决（2026-08-15，usage 归属/allowlist 缺口/provenance 表述/门控）
+
+79. **usage 接线归属（B6/B7 边界校准）**：原「UsageTracker/B-07 归 B7」与 B6 任务
+    （SourceSearchHintStore 每 run 独立 + browser_open 打开后写入 + 冒烟 B-07）、
+    B7 前置依赖（「B6（usage 记录接线）」）冲突。裁决：**SourceSearchHintStore、
+    Agent 打开后的 usage 写入接线与冒烟 B-07 归 B6**；B7 保留 usage/health 的
+    UI 展示（「上次使用结果」文案）与存储运维边界（备份/恢复/巡检断言）。落地：
+    `usage/usage-tracker.ts`（B6）、§11 语义细化、§13.1/§13.2 归属校准。
+80. **serializer allowlist 缺口（§8.1 引用链路）**：B4 实现的 search/list/get 序列化
+    未输出 §8.1 已要求的 id/canonicalKey/groupId（scope 亦缺）——模型无法执行
+    source_get/update/disable/restore 引用链路（红态测试证实）。裁决：B6 内补齐
+    `ID/规范键/作用域/分组 ID` 行（get 亦补齐 ID/规范键/分组 ID）；source_get 继续
+    是 expectedVersion 唯一来源；version/deletedAt/blocked 条目/越界 note 仍零
+    返回；既有序列化断言机械校准（契约变化，非削弱）。
+81. **ToolExecutionContext 最小扩展（hint/usage 桥）**：新增唯一可选字段
+    `sourceUsage?: SourceUsageContext`（shared/types/sources.ts：
+    recordSearchHits/onBrowserOpen/clearRun 三方法，run 级闭包——装配层每 run
+    创建绑定 runId，模型/工具无通道指定或跨 run）。source_search 成功后从结构化
+    结果登记（禁止解析 ToolResult 文本）；browser_open 执行后回调（成功→reachable、
+    执行失败→unreachable；executor 层对回调异常纵深防御——绝不改变 ToolResult/
+    权限/终态）；AgentLoop.finish()（终态单一所有权点）调用 clearRun——取消/超时/
+    终态后 hints 清空，迟到工具结果零写入；conversation-service
+    AgentRuntimeOptions.usageBridge(runId) 工厂为装配层注入点（index.ts 传
+    SourceUsageTracker.bridge 绑定）。Source 工具仍只经 SourceService、Browser
+    工具仍只经 BrowserController，不互相直接依赖、不新增网络能力；工具数仍 17；
+    schema/migration/依赖零变化。
+82. **provenance 表述校准**：AI change set 无论用户措辞如何（含口头「标成官方」）
+    恒落 `value + assertedBy=ai + verification=unverified`——用户确认对话不等于
+    用户通道断言；「标成官方」可把 value 设为 official，但绝不伪装 user-asserted；
+    user-asserted 仍仅 Sources 手工 UI 通道可写。同步修正 Fourth_stage §4、
+    proposal §3 场景 4、AGENTS §5 provenance bullet 等易误解表述；threat-model
+    红线不放宽。
+83. **四工具 description 校准**：说明 search/list→get→apply 的正确引用链路、
+    自然语言管理语义与「以后不要再优先」= 降低 priority（1–5，同档内排序）不等同
+    disable；仅明确禁用/恢复意图才用对应 op；「标成官方」仍标记 AI 推断·未核验。
+    description 只描述能力与用法，不描述或改变权限（decide 确定性纯函数为唯一
+    权限事实源）；AGENT_SYSTEM_PROMPT 恒等不变（既有恒等断言保持）。
+84. **B-07 冒烟 usage 断言探针**：usage_events 只读 probe SELECT 位于 SMOKE_MODE
+    门控冒烟场景（8.12/8.13）与 `*.test.ts`——测试设施、非产品数据访问路径
+    （决议 #47 同精神）；index.ts 冒烟模式经 SmokeOptions.sourcesDbPath 注入生产
+    冒烟库路径（仅 SMOKE_MODE，生产不传）。
+85. **AIBROWSE_LIVE_AGENT_SOURCES 门控**：`AIBROWSE_LIVE_AGENT_SOURCES=1`
+    （需 LIVE_PROVIDER+Key 注入，与 LIVE_AGENT/PRE/SUPPLEMENT 互斥——同时设置
+    报错退出）+ harness `-Sources`（仓库外，沿用凭据流程）。未提供 Key →
+    回退离线矩阵（离线可测路由），不发起付费/公网 Provider 请求；真实 Provider
+    非 B6 离线验收硬门槛（用户授权后执行，台账规则沿用第三阶段）。
 
 ## 16. 实现顺序与范围边界（B1–B9 映射）
 

@@ -11,7 +11,8 @@
 > B3 已完成（多语言 Source Search + 有界 Retrieval + 分享模式）、
 > B4 已完成（Source Tools 四工具 + 权限矩阵 + L2 change set 确认/审计 +
 > Agent 上下文隔离）、B5 已完成（Sources UI + 手工管理 + 当前页快速添加 +
-> IPC/bridge）**——Fourth Stage 已正式进入（用户切换指令）；详细设计与
+> IPC/bridge）、B6 已完成（AI 自然语言管理端到端 + Browser Agent 复用 +
+> usage 接线）**——Fourth Stage 已正式进入（用户切换指令）；详细设计与
 > B1–B9 任务拆分已完成；**B1：node:sqlite 在 Electron 43.4.0 dev+生产构建
 > 11 项逐项实测通过（基础能力项全过 + FTS5/trigram 可用），驱动冻结决议 #48 +
 > sqlite-driver/migrations 基座落地；B2：九项契约缺口实施前裁决（决议
@@ -30,8 +31,10 @@
 >   B-03/B-04 冒烟 dev+生产双场景通过）；**B5 已落地（决议 #68–#78 + Sources
 >   面板 + 14 通道 + source-ipc 适配器 + 8.11 默认矩阵 + AIBROWSE_SOURCES_UI_SMOKE
 >   set|check 双进程门控，全量 test 1125/1125）——Sources 功能对用户已可用**；
->   下一个推荐任务 = **B6**（AI 自然语言管理端到端 + Browser Agent 复用 +
->   usage 接线）。契约源
+>   **B6 已落地（决议 #79–#85 + usage-tracker + 序列化 allowlist 补齐 +
+>   冒烟 8.12/8.13，全量 test 1160/1160）——usage 接线闭环**；
+>   下一个推荐任务 = **B7**（跨进程持久化 + migration/backup/recovery 全矩阵 +
+>   FTS rebuild 诊断 + usage/health 边界）。契约源
 >   `doc/stage4/detailed-design.md`；安全契约源
 >   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
 >   Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
@@ -56,7 +59,7 @@
 ## 当前状态（2026-08-15）
 
 - 🔨 **第四阶段（Sources）进行中（2026-08-15，用户切换指令）：设计完成、
-  B1 已完成、B2 已完成、B3 已完成、B4 已完成、B5 已完成**——设计闭环（proposal/高层设计/详细设计/
+  B1 已完成、B2 已完成、B3 已完成、B4 已完成、B5 已完成、B6 已完成**——设计闭环（proposal/高层设计/详细设计/
   威胁模型/B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：
   Electron 43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared
   statements/事务/外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）
@@ -99,8 +102,22 @@
     `src/main/sources/source-ipc.ts` 适配器（零 Electron import）+ preload
     bridge 白名单 + 冒烟 8.11 B-05 默认矩阵（dev+生产双场景退出码 0）+
     `AIBROWSE_SOURCES_UI_SMOKE=set|check` 双进程门控（退出码 0）；
-    **Sources 功能对用户已可用**（全量 test 1125/1125）。下一个唯一任务 =
-    **B6**（AI 自然语言管理端到端 + Browser Agent 复用 + usage 接线）。契约
+    **B6 已落地（2026-08-15）**：实施前契约裁决（决议 #79–#85：usage 接线归属
+    B6 / 序列化 allowlist 引用链路缺口 / ToolExecutionContext 最小 usage 桥 /
+    provenance 表述校准 / description 校准 / B-07 冒烟探针 /
+    AIBROWSE_LIVE_AGENT_SOURCES 互斥门控与离线可测路由）+
+    `src/main/sources/usage/usage-tracker.ts`（SourceSearchHintStore 每 run
+    独立/有界 120/按 sourceId 去重/跨 run 隔离/终态清空 + browser_open 比对写
+    usage：成功 reachable/失败 unreachable/写失败安全 no-op 不影响工具结果）+
+    search/list/get 序列化补齐 ID/规范键/作用域/分组 ID（模型引用链路）+ 四
+    工具自然语言管理 description（「不再优先」= 降 priority ≠ disable）+
+    冒烟 8.12 B-06/B-07（usage 全链路 + 自然语言管理五场景 + deny 零写入）与
+    8.13 B-06 UI DOM 端到端（真实任务模式/ConfirmDialog/Sources UI/Undo/
+    usage 探针，dev+生产双场景退出码 0）+ B-02/B-05 双进程复跑退出码 0；
+    **Sources 功能对用户已可用，usage 接线已闭环**（全量 test 1160/1160）。
+    真实 Provider 自然语言管理验证待用户授权（门控就绪，未授权不发起付费请求）。
+    下一个唯一任务 = **B7**（跨进程持久化 + migration/backup/recovery 全矩阵 +
+    FTS rebuild 诊断 + usage/health 边界）。契约
     `doc/stage4/detailed-design.md` + 安全契约 `doc/stage4/threat-model.md`。
 
 - ✅ **第一阶段完成（Exit Gate 通过，2026-08-13）**：T0 项目基线 → T1 详细设计定稿 →
@@ -204,7 +221,14 @@ Sources UI 端到端矩阵（真实 DOM → preload → IPC → SourceService �
 说明/快速添加与重复・可能相关/分组分页/搜索 user 视角 blocked 可见/手工添加/
 详情编辑与 provenance・aiNote 只读・敌手 note 纯文本/版本冲突提示刷新/禁用恢复/
 手工 Undo/两阶段永久删除取消与确认 + token 零 DOM/恢复态・不可用态中文诊断与零
-写入/面板互斥 + App 级确认框不遮断）→
+写入/面板互斥 + App 级确认框不遮断）→ B6 起再验证 8.12 B-06/B-07（usage 全
+链路：source_search 命中 → browser_open（fragment 变体规范化命中）→ read →
+回答 usage=reachable/无关・先开后搜・跨 run 零记录/执行失败 unreachable/写入
+失败不影响工具结果；自然语言管理五场景：deny 零写入 + denied-by-user 停止/
+收藏 approve → 保存 → durable Undo/搜索 → get → 改组备注/标 official 恒
+ai+unverified/降 priority ≠ disable → 明确 disable → restore）与 8.13 B-06
+UI DOM 端到端（真实任务模式 → ConfirmDialog approve/deny → Sources UI 可见 +
+AI 推断 provenance → UI Undo + usage 探针）→
 自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
 `doc/stage3/detailed-design.md` §13.2 + `doc/stage4/detailed-design.md` §13.2）。
 **B-02 Sources 跨进程持久化冒烟（B2 专属门控，决议 #57，两进程均需
@@ -261,7 +285,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 1125 用例）                   |
+| `npm test`                        | Vitest 全量测试（当前 1160 用例）                   |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -373,7 +397,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 1125 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 1160 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具

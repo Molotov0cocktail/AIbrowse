@@ -65,7 +65,7 @@ SourceRepository / SourceSearchIndex / SourceChangeJournal → SQLite driver`。
 | FTS 索引维护与检索       | src/main/sources/repository/source-search-index.ts | FTS5 表与主表**事务内写同步落 B2**（Repository 显式语句，决议 #54：FTS 行 = 非 hard-deleted 行镜像、查询期过滤归 B3）；B3：候选集查询（FTS/LIKE/短查询/URL 四条编译期常量 SQL，全部参数绑定 + 有界候选 200）、FTS 可用性判定、诊断性 rebuild 与主表/FTS 一致性校验 | B2/B3                                                              |
 | Change Journal           | src/main/sources/repository/change-journal.ts      | 持久 Undo 数据（before/after payload）；有界清理（可注入时间）                                                                                                                                                                                                     | B2                                                                 |
 | SourceService            | src/main/sources/source-service.ts                 | UI 与 Agent 共用唯一入口：CRUD/search/applyChangeset/undo/hardDelete/usage/recovery 态                                                                                                                                                                             | B2                                                                 |
-| UsageTracker             | src/main/sources/usage/usage-tracker.ts            | 仅记录 Agent 实际打开/读取后的最近一次 usage（五态）                                                                                                                                                                                                               | B7                                                                 |
+| UsageTracker             | src/main/sources/usage/usage-tracker.ts            | B6（决议 #79）：SourceSearchHintStore（每 run 独立/有界 120/按 sourceId 去重/跨 run 隔离）+ Agent 打开后的 usage 写入（成功 reachable、失败 unreachable；写入失败安全 no-op 不影响工具结果）；B7 保留 UI 展示「上次使用结果」与运维边界                            | B6/B7                                                              |
 | Source Tools             | src/main/sources/tools/source-tools.ts             | 四工具定义与 executor（只经 ctx.sourceService，零 Electron import）                                                                                                                                                                                                | B4                                                                 |
 | Sources UI               | src/renderer/src/ai/sources/                       | 面板/列表/详情/快速添加/冲突与恢复态提示/Undo（纯文本渲染 note，决议 #78）；sidePanel 'ai'                                                                                                                                                                         | 'sources' 互斥（决议 #68）；序号守卫/退订/pending 互斥（决议 #77） | B5 ✅ |
 | Sources IPC 适配器       | src/main/sources/source-ipc.ts                     | sources:* 业务层：参数严格白名单 + audience 硬编码 'user' + 状态门控（三态）+ 独立 manual 审计（每次写尝试恰好一条脱敏）+ changed 仅成功后（决议 #69/#70/#72–#76；零 Electron import）                                                                             | B5 ✅                                                              |
@@ -125,13 +125,17 @@ UI（Sources 面板/快速添加按钮）
 → 手工永久删除：UI 二次确认 → hardDelete（不可 Undo，清理 FTS/usage/journal 私人 payload）
 ```
 
-### 4.4 usage/health（B7，仅事后记录）
+### 4.4 usage/health（B6 接线 + B7 展示，决议 #79，仅事后记录）
 
 ```
-run 内 source_search 命中 → 主进程按 runId 登记 canonical key（SourceSearchHintStore）
-→ 同 run 内 browser_open(url) 执行成功 → 规范化 URL 与命中 key 比对
-→ 命中 → SourceService.recordUsage(sourceId, reachable/unreachable/…)
-（unknown/auth-required/blocked 为枚举占位——v1 无可靠触发信号者如实登记宁缺勿错）
+run 内 source_search 成功 → 从结构化结果登记 id/scope/canonicalKey
+  （SourceSearchHintStore，每 run 独立/有界/去重；禁止解析 ToolResult 文本）
+→ 同 run 内 browser_open(url) 执行后 → 经 ctx.sourceUsage 回调
+  → 规范化 URL 与命中 key 比对（origin/page 各自匹配；一 URL 多命中全记录）
+→ 命中 → SourceService.recordUsage(sourceId, reachable/unreachable)
+  （写入失败仅脱敏告警安全 no-op，不改变 ToolResult/权限/终态）
+（无关 URL/先 open 后 search/跨 run/取消·超时·终态后 hints 清空 → 零写入；
+unknown/auth-required/blocked 为枚举占位——v1 无可靠触发信号者如实登记宁缺勿错）
 ```
 
 ### 4.5 启动/迁移/恢复（B1/B7）

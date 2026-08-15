@@ -87,3 +87,55 @@ store 装配——纯编排层最小接线）、`src/main/index.ts`（open 后�
 - 真实验证暴露「模型不理解 change set 语义」类问题 → 属观察性结果如实登记，
   不通过放宽权限/自动确认/修改夹具制造通过（第三阶段 RT-10 校准规则）；
 - 若 hint store 关联引入既有 open 工具行为回归 → 修复回归优先，修复前不提交。
+
+## 实施裁决与红→绿证据（2026-08-15 回填）
+
+### 实施前契约裁决（落 detailed-design §15，决议 #79–#85）
+
+1. **usage 接线归属（#79）**：SourceSearchHintStore + Agent 打开后 usage 写入 +
+   冒烟 B-07 归 B6（原 detailed-design/HLD/AGENTS 标 B7，与 B6 任务及 B7 前置
+   「B6（usage 记录接线）」冲突）；B7 保留 usage UI/health 展示与运维边界。
+2. **serializer allowlist 缺口（#80）**：B4 序列化未输出 §8.1 已要求的
+   id/canonicalKey/groupId（scope 亦缺）——模型无法执行 source_get/apply 引用
+   链路（红态证实）；B6 补齐 ID/规范键/作用域/分组 ID 行。
+3. **ToolExecutionContext 最小扩展（#81）**：`sourceUsage?: SourceUsageContext`
+   （recordSearchHits/onBrowserOpen/clearRun，run 级闭包）；AgentLoop.finish()
+   终态 clearRun；conversation-service `usageBridge(runId)` 工厂；Source 工具
+   仍只经 SourceService、Browser 工具仍只经 BrowserController。
+4. **provenance 表述校准（#82）**：AI change set 恒 ai+unverified（含口头
+   「标成官方」）；user-asserted 仅手工 UI 通道；同步 Fourth_stage/proposal/
+   AGENTS 易误解表述，不放宽 threat-model 红线。
+5. **description 校准（#83）**：search→list→get→apply 链路 + 「不再优先」= 降
+   priority ≠ disable + 明确禁用/恢复语义；不描述权限；AGENT_SYSTEM_PROMPT 恒等。
+6. **B-07 冒烟探针（#84）**：usage_events 只读 probe SELECT 为 SMOKE_MODE 门控
+   冒烟场景测试设施（决议 #47 同精神）+ SmokeOptions.sourcesDbPath（仅 SMOKE_MODE）。
+7. **LIVE_AGENT_SOURCES 门控（#85）**：与 LIVE_AGENT/PRE/SUPPLEMENT 互斥（同设
+   报错退出）；未提供 Key 回退离线矩阵（离线可测路由），不发起付费请求。
+
+### 红→绿
+
+- **红态（旧结构真实失败）**：5 files failed / 14 failed / 1127 passed——
+  usage-tracker.test.ts 模块缺失（Cannot find module）；serializer 断言
+  （ID/规范键/分组 ID/作用域）4 例失败（旧序列化无引用链路字段）；source_search
+  命中登记 1 例失败（旧 executor 无 sourceUsage 回调）；browser_open 回调 2 例
+  失败（旧 open executor 无 onBrowserOpen + 异常语义）；agent-loop sourceUsage
+  透传/终态清理 5 例失败（旧 AgentLoopOptions 无该选项）；conversation-service
+  usageBridge 2 例失败（旧 AgentRuntimeOptions 无工厂）。既有 1125 用例零删除
+  零削弱。
+- **实现后绿态**：全量 **1160/1160**（新增 35：usage-tracker 19 / source-tools
+  6 / browser-tools 2 / agent-loop 5 / conversation-service 3）。实现期修正
+  如实登记：测试自身缺陷 4 处（探针工具名不在 TOOL_BASE_RISK → 权限层 L3 拒绝
+  executor 未执行——改用真实工具名 + 注册表重置；cancelled 夹具首块不可达——
+  改首块立即 + 第二块慢；usage-tracker「无关 URL」夹具误用同 origin URL——
+  origin 命中语义本就应命中，改真无关 URL 与命中失败分支；browser-tools 桥异常
+  夹具——executor 层增纵深防御 notifyOpen）；实现侧真实缺陷 0 处。
+- **冒烟 8.12/8.13 + LIVE 门控**：见 progress.md 最近验证结果（dev/生产双场景
+  退出码 0 证据 + B-02/B-05 双进程复跑）。冒烟期修正 3 处（均为冒烟夹具自身
+  缺陷，产品契约零迁就）：① B-07e throwingBrowser 对象展开丢失类原型方法
+  （BrowserControllerImpl 方法在 prototype 上，非自有可枚举属性）→ 改
+  Object.create 原型链继承；② B-05 固定 delay(200) 在并行负载下早于列表重渲染
+  （openDetailByName 找不到条目抛异常，复跑实测一次）→ 改确定性 waitFor 条目
+  出现（B6 会话修正，冒烟断言自身时序缺陷）；③ B6 改组场景断言「写 userNote
+  自动 shareMode=full」与 B2 冻结语义不符（决议 #52 缺省规则仅 add；update
+  缺省保持现状）→ 夹具显式带 shareMode:'full'（模型为「备注供 AI 使用」意图
+  显式声明），真实验证任务文案同步显式要求。

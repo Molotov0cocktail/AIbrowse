@@ -57,8 +57,10 @@
    命中 ≤10 条，note 仅 full 模式有界返回 + provenance）；
 3. 用户说：「把它改到日本购物组，并备注只用于中古价格。」→ change set（update
    group + user_note）→ L2 确认 → 单事务提交 → 变更正确持久化（重启后仍在）；
-4. 用户说：「把这个来源标成官方来源。」→ user 明示 → trust = official +
-   user-asserted（若模型自行推断则只能是 official + ai + unverified）；
+4. 用户说：「把这个来源标成官方来源。」→ 经 AI change set 落 trust =
+   official + ai + unverified（用户经**手工 Sources UI** 标定才是 official +
+   user-asserted——B6 决议 #82：用户确认对话不等于用户通道断言；若模型自行
+   推断同样只能是 official + ai + unverified）；
 5. Browser Agent 打开 source_search 返回的网站 → 复用 browser_open/browser_read；
    打开/读取后主进程记录该 Source 最近一次 usage（unknown/reachable/unreachable/
    auth-required/blocked），不保存网页正文、不宣称长期健康；

@@ -26,8 +26,10 @@ AIBROWSE_SESSION_SMOKE 同模式）、migration 全矩阵（旧库升级/失败�
 - 只读恢复态装配：SourceService 全部写入口拒绝（source-unavailable），UI 诊断
   展示；浏览器其余能力回归（既有冒烟场景全过）；
 - FTS rebuild 受控入口（UI 诊断按钮 + 冒烟探针）：rebuild 后行数一致校验；
-- usage/health 边界：无后台巡检（日志断言零定时请求）；最近一次语义 UI 展示
-  （「上次使用结果」文案，不宣称长期健康）；
+- usage/health 边界（**B6 决议 #79 校准：SourceSearchHintStore 与 Agent 打开后
+  的 usage 写入接线、冒烟 B-07 已归 B6 完成；B7 保留以下展示与运维边界**）：
+  无后台巡检（日志断言零定时请求）；最近一次语义 UI 展示（「上次使用结果」
+  文案，不宣称长期健康）；
 - 跨进程持久化冒烟：进程 A 写入 CRUD + journal → 退出 → 进程 B 读回一致 +
   Undo 可用（B-02 扩展）。
 

@@ -14,8 +14,12 @@
 > 确认/审计 + Agent 上下文隔离，决议 #64–#67，全量 test 1071/1071）；
 > **B5 已完成**（Sources UI + 手工管理 + 当前页快速添加 + IPC/bridge，决议
 > #68–#78，全量 test 1125/1125，B-05 默认矩阵与双进程门控通过——Sources 功能
-> 对用户已可用）；**B6–B9 待开始**；下一个推荐任务 = **B6**（AI 自然语言管理
-> 端到端 + Browser Agent 复用 + usage 接线）。
+> 对用户已可用）；**B6 已完成**（AI 自然语言管理端到端 + Browser Agent 复用 +
+> usage 接线，决议 #79–#85，全量 test 1160/1160，冒烟 8.12/8.13 dev+生产双
+> 场景、B-02/B-05 双进程复跑、LIVE_AGENT_SOURCES 互斥与离线回退门控全部退出
+> 码 0——usage 接线闭环，真实 Provider 场景待用户授权）；**B7–B9 待开始**；
+> 下一个推荐任务 = **B7**（跨进程持久化 + migration/backup/recovery 全矩阵 +
+> FTS rebuild 诊断 + usage/health 边界）。
 > **契约与安全契约源**：本文保留阶段需求源职责（目标/验收标准/Exit Gate），
 > 具体接口、schema、权限矩阵、预算与决议以 `doc/stage4/detailed-design.md` 为
 > **唯一契约源**；威胁与红队以 `doc/stage4/threat-model.md` 为**安全契约源**。
@@ -189,11 +193,13 @@ AI 自动操作和手工操作应落入同一 SourceService。
 - 用途标签（news / benchmark / docs / academic / price / forum / blog）以普通
   tag 承载，不设无法扩展的大枚举
 
-> （2026-08-15 设计闭环校准）trust 三元组：`trust_value + trust_asserted_by
-> （user|ai）+ trust_verification（asserted|unverified）`。用户明确说“标成官方
-> 来源”可记为 `official + user-asserted`；AI 自行推断只能是 `official + ai +
-> unverified`；模型不能经 change set 写入 asserted_by=user（仅用户手工 UI 通道）。
-> **不把 AI 推断的 official/primary 当成已核验事实**，UI 必须展示来源。
+> （2026-08-15 设计闭环校准；2026-08-15 B6 决议 #82 表述校准）trust 三元组：
+> `trust_value + trust_asserted_by（user|ai）+ trust_verification（asserted|
+> unverified）`。用户经**手工 Sources UI** 标定 → `official + user-asserted`；
+> 经 AI 任务口头说“标成官方”（change set 通道——用户确认对话不等于用户通道
+> 断言）恒落 `official + ai + unverified`；AI 自行推断同样只能是 `official +
+> ai + unverified`；模型不能经 change set 写入 asserted_by=user（仅用户手工 UI
+> 通道）。**不把 AI 推断的 official/primary 当成已核验事实**，UI 必须展示来源。
 
 ---
 
@@ -248,8 +254,14 @@ AI 自动操作和手工操作应落入同一 SourceService。
    `browser_open/browser_read`）。
 
 > 状态（2026-08-15）：场景 1–7 的设计落点已映射（proposal §3 / detailed-design
-> §13.2 冒烟矩阵 + §14 验收清单）；**真实执行待 B1–B6 实现后由 B6/B9 验收**。
-> 场景 6 另加恶意诱导变体（诱导收藏并标为官方）由 SRT-01/02 红队覆盖。
+> §13.2 冒烟矩阵 + §14 验收清单）；**B6 已落地离线确定性全链路**（冒烟 8.12
+> B-06/B-07 + 8.13 UI DOM：收藏当前页 → L2 确认 → 保存 → Sources UI 可见 →
+> Undo；搜索已有 Source → source_get → 改组和备注；标 official → provenance
+> AI 推断·未核验；降 priority/明确 disable/restore；deny 零写入；
+> source_search → browser_open → browser_read → 回答 usage=reachable，dev+
+> 生产双场景退出码 0）；**真实 Provider 维度待用户授权**（门控
+> `AIBROWSE_LIVE_AGENT_SOURCES=1` 就绪），B9 做最终独立验收。
+> 场景 6 另加恶意诱导变体（诱导收藏并标为官方）由 SRT-01/02 红队覆盖（B8）。
 
 ---
 
