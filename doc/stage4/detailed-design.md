@@ -479,6 +479,11 @@ export interface SourceService {
     audience: SourceReadAudience;
   }): Promise<SourceListResult>; // 每页 ≤20
   get(id: string, audience: SourceReadAudience): Promise<SourceResult>;
+  // 分组浏览（B5 决议 #71）：最小有界读取路径——确定性排序/分页 pageSize ≤20
+  listGroups(opts: { page: number; pageSize?: number }): Promise<SourceGroupsResult>;
+  // 当前页快速添加（B5 决议 #72）：main 读取活动 Tab URL 后调用；page scope +
+  // metadata 默认；重复/≤5 条「可能相关」有界提示，绝不覆盖或合并
+  quickAddPage(rawUrl: string): Promise<QuickAddResult>;
   // 写入（Agent change set，§7）
   applyChangeSet(
     cs: SourceChangeSet,
@@ -816,20 +821,22 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
 | source-service.test.ts      | 注入真实 node:sqlite：CRUD/唯一约束并发（双连接同 canonical 仅一成功）/change set 事务回滚（第 N 项冲突整体零写入）/幂等键重放（同指纹幂等、异指纹 fail-closed，决议 #53）/expectedVersion/undo/hardDelete 清理（FTS/journal/usage 字节级）/非法输入安全返回/异常归一化/dispose 幂等；**B3 扩展**：search/list/get 的 audience 完整矩阵（agent blocked 不可见·metadata 零 note 字节·full 摘录有界；user 可见可管理）、硬上限 10/每页 20/分页 total 与过滤一致、多语言命中（中/日/英/混合）、排序全序证据（priority 上下界/origin+page 同 canonicalKey）、disposed/句柄关闭安全返回 | B2/B3 |
 | source-tools.test.ts        | 四工具 schema 校验/serialize 纯文本零特权/错误码映射/ctx.sourceService 优先于注入/audit 摘要形状                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | B4    |
 | usage-tracker.test.ts       | 命中登记/URL 比对/仅最近一次/未知来源不记录                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | B7    |
+| source-ipc.test.ts          | **B5（决议 #69/#70/#72/#73/#74/#76）**：全部载荷校验矩阵（非法 id/未知字段/页码/长度/枚举边界）、audience 硬编码 user（blocked 可见）、状态门控（service null 与 override 下读写拒绝/写审计一条/零 changed/零变化）、changed 仅成功后恰好一次、每次写尝试恰好一条脱敏审计（note/URL/敏感 query/token/路径零出现）、两阶段硬删除（取消/错绑定不消费/过期/重放/成功无 Undo）、quick-add（无活动页/非 http/精确重复 + related ≤5 有界/绝不覆盖/主进程生成名称）、getter 惰性解析回归                                                                                                  | B5    |
+| sources-display.test.ts     | **B5（决议 #74/#75/#78）**：provenance 两形态文案/分享模式三态说明/错误码 10 码中文/状态诊断（中文原因 + 建议仅安全标签、无盘符路径/sources.db）/quick-add 结果文案                                                                                                                                                                                                                                                                                                                                                                                                                | B5    |
 
 ### 13.2 冒烟矩阵（Electron 真实启动，临时 userData；dev+生产双场景）
 
-| #    | 场景                  | 断言要点                                                                                                                                                                                                                                                                                                                                                                                                                                       | 任务  |
-| ---- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| B-01 | B1 决策门 11 项探针   | §3.2 清单逐项断言（含中文 trigram 命中与生产构建 import）；失败即红并停止                                                                                                                                                                                                                                                                                                                                                                      | B1    |
-| B-02 | CRUD 持久化           | 专属门控 `AIBROWSE_SOURCES_SMOKE=set\|check`（决议 #57：与 SESSION_SMOKE 并列互斥）；set 进程临时 userData 建库迁移 v1 → SourceService CRUD+journal+disable → 干净退出；check 进程新进程读回全量断言（行数/内容/版本）→ 执行 Undo → 断言 Undo 生效 → 退出码 0；唯一约束冲突安全返回                                                                                                                                                            | B2    |
-| B-03 | change set 确认全链路 | 模型（FakeProvider 脚本）提 change set → L2 确认必现 → deny 零写入/approve 单事务提交 → 审计恰好一条 → Undo 生效；迟到/未知 toolCallId 零写入                                                                                                                                                                                                                                                                                                  | B4    |
-| B-04 | 有界检索              | **B3/B4 分段完成（决议 #63）**——B3 子集（默认矩阵 dev+production 双场景，真实 Electron 内置 node:sqlite/FTS5/trigram）：source_search 硬上限 10/分享模式过滤（agent blocked 不可见、metadata 零 note 字节、full 摘录 ≤200 + provenance）/allowlist/中·日·英命中/短查询降级/rebuild 一致性；B4 待完成：SOURCE_TOOL_CONTENT_MAX=4000 结果预算截断/ToolResult 序列化/UNTRUSTED_TOOL_RESULT 块隔离（含注入 note 夹具）/审计——B3 不得宣称 B-04 全过 | B3/B4 |
-| B-05 | 快速添加 UI 端到端    | 当前页快速收藏（默认 metadata）→ 列表出现 → 修改分享模式/备注 → 手工 Undo → 永久删除二次确认后消失且不可 Undo                                                                                                                                                                                                                                                                                                                                  | B5    |
-| B-06 | migration/恢复        | 旧版本库自动迁移（备份生成）；注入迁移失败 → rollback + 原库完好；损坏库/更高版本 → 只读恢复态 + 中文诊断 + 浏览器其余能力正常（既有冒烟场景回归）                                                                                                                                                                                                                                                                                             | B7    |
-| B-07 | usage 记录            | 同 run source_search 命中 → browser_open 该 URL → usage 落库 reachable；无关 URL 不记录；无后台请求（日志断言零巡检）                                                                                                                                                                                                                                                                                                                          | B7    |
-| B-08 | 红队 SRT-01～SRT-12   | §4 矩阵全表（dev+生产双场景）+ RT-01～RT-11 全量回归                                                                                                                                                                                                                                                                                                                                                                                           | B8    |
-| B-09 | 共读与工具层回归      | 既有矩阵 1–12/8.1（注册表 17 工具）/8.2/8.3/8.4/8.5/8.6 全量回归；日志敏感扫描零命中                                                                                                                                                                                                                                                                                                                                                           | B4/B8 |
+| #    | 场景                  | 断言要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | 任务  |
+| ---- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| B-01 | B1 决策门 11 项探针   | §3.2 清单逐项断言（含中文 trigram 命中与生产构建 import）；失败即红并停止                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | B1    |
+| B-02 | CRUD 持久化           | 专属门控 `AIBROWSE_SOURCES_SMOKE=set\|check`（决议 #57：与 SESSION_SMOKE 并列互斥）；set 进程临时 userData 建库迁移 v1 → SourceService CRUD+journal+disable → 干净退出；check 进程新进程读回全量断言（行数/内容/版本）→ 执行 Undo → 断言 Undo 生效 → 退出码 0；唯一约束冲突安全返回                                                                                                                                                                                                                                                                                                                              | B2    |
+| B-03 | change set 确认全链路 | 模型（FakeProvider 脚本）提 change set → L2 确认必现 → deny 零写入/approve 单事务提交 → 审计恰好一条 → Undo 生效；迟到/未知 toolCallId 零写入                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | B4    |
+| B-04 | 有界检索              | **B3/B4 分段完成（决议 #63）**——B3 子集（默认矩阵 dev+production 双场景，真实 Electron 内置 node:sqlite/FTS5/trigram）：source_search 硬上限 10/分享模式过滤（agent blocked 不可见、metadata 零 note 字节、full 摘录 ≤200 + provenance）/allowlist/中·日·英命中/短查询降级/rebuild 一致性；B4 待完成：SOURCE_TOOL_CONTENT_MAX=4000 结果预算截断/ToolResult 序列化/UNTRUSTED_TOOL_RESULT 块隔离（含注入 note 夹具）/审计——B3 不得宣称 B-04 全过                                                                                                                                                                   | B3/B4 |
+| B-05 | 快速添加 UI 端到端    | 当前页快速收藏（默认 metadata）→ 列表出现 → 修改分享模式/备注 → 手工 Undo → 永久删除二次确认后消失且不可 Undo。**B5 落地扩展（8.11 默认矩阵 + AIBROWSE_SOURCES_UI_SMOKE 双进程门控，决议 #68–#78）**：真实 DOM → preload → IPC → SourceService 全链路（明文说明/快速添加重复与「可能相关」/分组分页/搜索 user 视角 blocked 可见/详情编辑与 provenance/aiNote 只读/敌手 note 纯文本/版本冲突提示刷新零覆盖/禁用恢复/手工 Undo/两阶段永久删除取消与确认/token 零 DOM/恢复态·不可用态中文诊断与零写入/面板互斥 + App 级确认框不遮断）；双进程门控 set（快速添加+编辑）→ check（新进程读回 → Undo → 两阶段永久删除） | B5    |
+| B-06 | migration/恢复        | 旧版本库自动迁移（备份生成）；注入迁移失败 → rollback + 原库完好；损坏库/更高版本 → 只读恢复态 + 中文诊断 + 浏览器其余能力正常（既有冒烟场景回归）                                                                                                                                                                                                                                                                                                                                                                                                                                                               | B7    |
+| B-07 | usage 记录            | 同 run source_search 命中 → browser_open 该 URL → usage 落库 reachable；无关 URL 不记录；无后台请求（日志断言零巡检）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | B7    |
+| B-08 | 红队 SRT-01～SRT-12   | §4 矩阵全表（dev+生产双场景）+ RT-01～RT-11 全量回归                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | B8    |
+| B-09 | 共读与工具层回归      | 既有矩阵 1–12/8.1（注册表 17 工具）/8.2/8.3/8.4/8.5/8.6 全量回归；日志敏感扫描零命中                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | B4/B8 |
 
 - 真实 Provider 可选验证（B6/B8，需用户提供 Key，询问边界）：AI 自然语言管理
   端到端（「收藏这个网站/把它改到日本购物组并备注只用于中古价格/把这个来源标
@@ -1104,6 +1111,67 @@ TABLE` 注入串仅作数据）✅ ⑤ BEGIN/COMMIT/ROLLBACK（回调与语句�
     （≤500）但**不得记录敏感 URL query 值**（URL 形态查询按「scheme://host/path
     - query 值已脱敏」确定性脱敏）；source_list/get 记分页/返回条数不变。
       审计/日志/ToolStep 字节扫描零命中敏感 query 值与 note 正文（SRT-08 断言先行）。
+
+### B5 实施前契约裁决（2026-08-15，十一项，Sources UI/IPC 落地前固定）
+
+68. **面板互斥切换**：App 使用 `sidePanel: 'ai' | 'sources' | null`（默认收起、
+    不持久化、380px 同模式）；AI 与 Sources 面板互斥（同时至多一个）；**切换面板
+    不能卸载或遮断 App 级 Agent ConfirmDialog**（对话框挂载于面板之外——冒烟
+    B-05 以「L2 确认 pending 中切面板 → 确认框仍在可达 → deny」断言）。
+69. **Sources IPC 复用既有 sender+主帧校验**：全部通道经 index.ts `handle()`
+    包装；参数**严格白名单验证**（未知字段拒绝、非法输入结构化安全返回不抛异常）；
+    main 适配器（新增 `src/main/sources/source-ipc.ts`，零 Electron import 可单测）
+    **硬编码 audience='user'**——renderer 无权指定 audience、数据库路径或 SQL；
+    适配器选项 `service` 支持 getter 惰性解析（handler 注册早于 SourceService
+    装配——装配时序与调用时序解耦，单测固化）。
+70. **通道清单**：`sources:list/get/search/groups/add/update/disable/restore/
+undoable/undo/quick-add/state/prepare-hard-delete/hard-delete` + 事件
+    `sources:changed`。事件仅发主窗口且**只在成功变更后发送最小 payload**
+    （`{reason:'sources-changed'}`，零数据正文）；renderer 收到后重新读取当前
+    视图（不携带增量数据）。
+71. **有界 listGroups**：为完整分组浏览新增最小有界读取路径（Service.listGroups
+    - Repository 编译期常量 SQL + 参数绑定）：确定性排序（名 NOCASE ASC + id ASC
+      收尾）、软删过滤、分页且 pageSize ≤ 20（超限 source-limit）。
+72. **quick-add 契约**：`sources:quick-add` **不接收 renderer 提供的 URL/标题**；
+    main 在点击时读取当前活动 Tab，仅接受 http/https（其余 unsupported-url
+    结构化拒绝）；按 page scope、metadata 默认值（无备注 → metadata，决议 #52）
+    添加；精确重复返回 duplicate（含既有条目，不回注 blocked）；同 origin 不同
+    页面最多返回 5 条「可能相关」（绝不覆盖或合并）。为此新增有界
+    `findRelatedForUrl` 服务/Repository 读取路径（Service.quickAddPage 组装；
+    Repository.findRelatedByOrigin：origin 精确（origin 作用域条目）+ origin
+    路径前缀 LIKE 转义（page 条目）+ 排除精确重复键 + LIMIT 5）。
+73. **两阶段永久删除**：`sources:prepare-hard-delete` 为目标 source 签发一次性、
+    source 绑定、300 秒有效的 opaque 能力令牌（复用 B2 ConfirmTokenIssuer，决议
+    #56）；UI 显示明确「不可撤销且不能 Undo」的第二次确认；确认后
+    `sources:hard-delete` 才消费令牌。取消、过期、错绑定、重放、并发双击均零
+    删除（消费即失效）；令牌形态 64 位小写 hex（载荷白名单校验），绝不进入
+    审计/日志/DOM。
+74. **UI 状态三态**：`SourcesState { mode: 'normal'|'readonly-recovery'|
+'unavailable', reason }`（`sources:state`）。恢复态与不可用态显示中文原因和
+    建议并**禁用全部写入口**（UI 禁用 + main 适配器拒绝双保险）；读入口按决议
+    #39 一并拒绝（结构化错误）；B7 前不实现备份或恢复（恢复态装配归 B7；B5 以
+    SMOKE_MODE 专属 stateOverride 注入点驱动 UI 断言，生产行为不变）。renderer/
+    preload **不得获得绝对数据库/备份路径**——建议文案仅用「应用数据目录中的
+    Sources 数据库/备份目录」等安全标签（单测断言无盘符路径/sources.db）。
+75. **provenance 与可编辑字段**：UI 必须区分「用户标定」与「AI 推断·未核验」
+    （trust 展示两形态）；**aiNote 只读展示，用户只编辑 userNote**（IPC 写通道
+    白名单不含 aiNote）；用户可设置 trust.value，但 assertedBy/verification 由
+    main/SourceService 确定（手工通道恒 user-asserted）——renderer 不得伪造
+    （payload 白名单校验 + 域层校验双拒绝）。
+76. **独立 manual 审计适配器**：手工写操作经同一 SourceService 事务/journal
+    语义，并走**独立的 manual 审计适配器**（source-ipc.ts
+    `formatManualSourcesAudit`；不并入 ToolStepDecision）。每次写尝试恰好一条
+    脱敏审计，允许 sourceId、操作、字段名、长度、结果码；**禁止 note 正文、
+    完整 URL/query、删除 token、数据库路径**（单测字节扫描固化）；prepare-
+    hard-delete 为只读签发（零写入），不产生审计条目。
+77. **UI 异步纪律**：异步请求使用序号守卫忽略迟到响应；卸载时退订
+    sources:changed（bridge 退订函数 + effect cleanup）；重复提交受控（写操作
+    pending 互斥：UI 禁用 + hook 兜底结构化拒绝）；expectedVersion 冲突显示
+    中文提示并自动刷新，**严禁静默覆盖**（冒烟以「后台改名 → UI 保存 → 提示
+    刷新且零覆盖」断言）。
+78. **纯文本渲染**：note/name/tag 等网页或用户文本只用 React 纯文本渲染
+    （禁止 dangerouslySetInnerHTML、Markdown/富文本解释；冒烟敌手 note
+    `<b id=…>` 原样显示且零 DOM 元素断言）。
 
 ## 16. 实现顺序与范围边界（B1–B9 映射）
 

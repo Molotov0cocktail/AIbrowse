@@ -102,6 +102,15 @@
     删除**（仅 UI 通道）：二次确认、不可 Undo、同事务清理 FTS 索引、usage 与
     change journal 中该 Source 的私人 payload（ST-08 纵深）。
   - 手工 UI 同样经 SourceService（同一事务/审计/Undo 语义），不经旁路。
+    **B5 落地（决议 #68–#78）**：Sources IPC 复用 sender+主帧校验 + 参数严格
+    白名单（audience 由主进程适配器硬编码 'user'，renderer 无 audience/数据库
+    路径/SQL 通道）；quick-add 由 main 读取活动 Tab（renderer 不提供 URL/标题）；
+    两阶段永久删除（prepare 签发 300s 能力令牌 → hard-delete 消费，取消/过期/
+    错绑定/重放/并发双击零删除）；UI 状态三态 normal/readonly-recovery/
+    unavailable（恢复/不可用态中文原因与建议 + 写入口禁用 + 读入口按决议 #39
+    拒绝，建议文案仅安全标签无绝对路径）；provenance 区分用户标定/AI 推断·未核验
+    （aiNote 只读，renderer 只可设 trust.value）；UI 异步序号守卫 + 卸载退订 +
+    expectedVersion 冲突提示刷新严禁静默覆盖；note/name/tag 仅 React 纯文本渲染。
 - **写操作外发审查**：source_search 查询保持有界可追溯（≤500），但**不得记录
   敏感 URL query 值**（URL 形态查询按决议 #67 确定性脱敏：scheme://host/path +
   query 值已脱敏）；change set 审计只记项数/字段名/各字段长度/版本/成功后幂等键
@@ -153,7 +162,11 @@
   确定性脱敏）；source_list/get 分页参数与返回条数；source_apply_changes 记
   changeSet 摘要（项数/操作类型/字段名/长度/版本/成功后幂等键）与决策
   （confirmed/denied/forbidden/invalid）；手工 UI 操作经同一审计出口（decision 记为
-  manual 系映射）。**审计与普通日志永不记录 note 正文与完整敏感 URL query**。
+  manual 系映射）。**B5 落地（决议 #76）**：手工写操作走独立 manual 审计适配器
+  （`formatManualSourcesAudit`，不并入 ToolStepDecision）——每次写尝试恰好一条
+  脱敏审计（sourceId/操作/字段名/长度/结果码；note 正文/完整 URL/敏感 query/
+  删除 token/数据库路径零出现）。**审计与普通日志永不记录 note 正文与完整敏感
+  URL query**。
 - ToolStep 持久化沿用 v2 契约：Source 工具结果仅 contentPreview 摘要，**不复制
   完整私人备注**（ST-08）。
 - 数据库、备份文件、change journal **不进入模型上下文**（无任何通道读取——不含

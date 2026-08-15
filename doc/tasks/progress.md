@@ -42,10 +42,19 @@
   import）+ change set 确认全链路 + 审计脱敏 + 4000 预算 + UNTRUSTED_TOOL_RESULT
   块隔离 + 主进程 <userData>/sources/sources.db 装配（初始化失败 source-
   unavailable 不拖垮浏览器）+ 冒烟 B-03/B-04 B4 部分；全量 test 1071/1071
-  （+64）。**B5–B9 待开始**；下一个推荐任务 = **B5**（Sources UI + 手工管理 +
-  当前页快速添加 + 冲突/恢复态/Undo 展示 + IPC/bridge 扩展）。Sources 功能对
-  用户尚不可用（UI 未实现——B5 完成前不得宣称可用；Agent 已可经 Source Tools
-  使用）。步骤 0 独立核对（2026-08-15，B4 会话）：HEAD `6d153ee` = Gitee/GitHub
+  （+64）。**B5 已完成（2026-08-15）**——实施前契约裁决（决议 #68–#78：面板
+  互斥切换 sidePanel 'ai'|'sources' 不遮断 App 级确认框/通道白名单 + audience
+  硬编码 user/有界 listGroups/quick-add 主进程读活动 Tab/两阶段硬删除/三态 UI
+  状态与安全路径标签/provenance 与 aiNote 只读/独立 manual 审计/UI 异步序号与
+  冲突刷新/纯文本渲染）+ Sources 面板（分组浏览/搜索/详情编辑/手工添加/快速
+  添加/禁用恢复/手工 Undo/永久删除二次确认/恢复态与不可用态中文诊断/明文边界
+  说明）+ 14 invoke 通道 + sources:changed 事件 + source-ipc 适配器（零
+  Electron import）+ preload bridge 白名单 + 冒烟 8.11 B-05 默认矩阵（dev+生产
+  双场景退出码 0）+ AIBROWSE_SOURCES_UI_SMOKE=set|check 双进程门控（退出码 0）；
+  全量 test 1125/1125（+54）。**B6–B9 待开始**；下一个推荐任务 = **B6**（AI
+  自然语言管理端到端 + Browser Agent 复用 + usage 接线）。Sources 功能对用户
+  已可用（Sources 面板）；Agent 已可经 Source Tools 使用。
+  步骤 0 独立核对（2026-08-15，B4 会话）：HEAD `6d153ee` = Gitee/GitHub
   双远程 HEAD（ls-remote 实测三方一致，GitHub 经代理确认可用）、工作区干净；
   基线 test 1007/1007·typecheck·lint·format:check 独立复跑全绿；B1–B3 代码/
   接口/测试在位；Fourth_stage.md 头部「B3–B9 待开始/下一任务 B3」矛盾已校准为
@@ -149,7 +158,7 @@
 | B2 | Source 域模型 + canonicalization + Repository（唯一约束）+ SourceService + 事务 + change journal + Undo | ✅ | 2026-08-15 完成（见下）：九项契约缺口实施前用户裁决（决议 #49–#57）+ schema v1 + 全模块落地 + 冒烟 B-02 双进程；任务文档 doc/stage4/tasks/B2-source-domain-service.md（红→绿证据已回填） |
 | B3 | 多语言 Source Search：FTS5/trigram + 短查询安全降级 + 有界 Retrieval（硬上限 10/每页 20/allowlist）+ 分享模式 + 确定性排序 | ✅ | 2026-08-15 完成（见下）：六项契约裁决（决议 #58–#63）+ 检索/降级/排序/分享模式/note 摘录/rebuild 全落地 + B-04 B3 子集冒烟；任务文档 doc/stage4/tasks/B3-source-search-retrieval.md（红→绿证据已回填） |
 | B4 | Source Tools 四工具（search/list/get L0 + apply_changes L2）+ 权限矩阵 + change set 确认/幂等键/expectedVersion/审计 + Agent 上下文隔离 | ✅ | 2026-08-15 完成（见下）：决议 #64–#67 + 四工具注册（13 → 17）+ preview/确认钩子/TOCTOU/blocked 防护 + 审计脱敏 + 冒烟 B-03/B-04 dev+生产双场景；任务文档 doc/stage4/tasks/B4-source-tools-permission.md（红→绿证据已回填） |
-| B5 | Sources UI + 手工管理 + 当前页快速添加 + 冲突/恢复态/Undo 展示 + IPC/bridge 扩展 | ⏳ | 2026-08-15 设计定稿；任务文档 doc/stage4/tasks/B5-sources-ui.md |
+| B5 | Sources UI + 手工管理 + 当前页快速添加 + 冲突/恢复态/Undo 展示 + IPC/bridge 扩展 | ✅ | 2026-08-15 完成（见下）：决议 #68–#78 + Sources 面板 + 14 通道 + source-ipc 适配器 + 8.11 默认矩阵 + AIBROWSE_SOURCES_UI_SMOKE 双进程门控；任务文档 doc/stage4/tasks/B5-sources-ui.md（红→绿证据已回填） |
 | B6 | AI 自然语言管理端到端（change set 全链路 + Undo）+ Browser Agent 复用（source_search → browser_open/read）+ usage 记录接线 | ⏳ | 2026-08-15 设计定稿；真实 Provider 可选验证门控 AIBROWSE_LIVE_AGENT_SOURCES=1；任务文档 doc/stage4/tasks/B6-ai-source-management.md |
 | B7 | 跨进程持久化 + migration/backup/recovery 全矩阵 + FTS rebuild 诊断 + usage/health 边界 | ⏳ | 2026-08-15 设计定稿；任务文档 doc/stage4/tasks/B7-persistence-recovery-usage.md |
 | B8 | 红队矩阵 SRT-01～SRT-12 + 安全审计 + 隐私扫描 + 真实 Provider/真实网页可选验证 | ⏳ | 2026-08-15 设计定稿；安全契约源 doc/stage4/threat-model.md；任务文档 doc/stage4/tasks/B8-redteam-security-validation.md |
@@ -160,7 +169,58 @@
 > 编号一律不变。（2026-08-15）第四阶段任务编号 B1–B9、威胁 ST-01～ST-12、红队
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1/B2/B3/B4 条目）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B5 条目）
+
+- **B5 Sources UI + 手工管理 + 快速添加 + IPC/bridge（2026-08-15，第五个实现
+  闭环）**：① 步骤 0 独立核对——HEAD `532ea78` = Gitee/GitHub 双远程 HEAD
+  （ls-remote 实测三方一致）、工作区干净；基线 test 1071/1071·typecheck·lint·
+  format:check 独立复跑全绿；B1–B4 代码/接口/测试在位（SourceService 手工路径 +
+  令牌签发、Repository 唯一 SQL 点、四工具 + confirmSummary 钩子、冒烟
+  8.7/8.9/8.10/B-02）、B5 零实现（无 source-ipc/renderer sources 目录/sources:*
+  通道）；Fourth_stage.md 头部「B4–B9 待开始/下一任务 B4」陈旧属实 → 校准为
+  B1–B4 完成、B5 待开始（未改写历史记录）。② **实施前契约裁决（决议 #68–#78，
+  十一项，落 detailed-design §15 + §6/§13.1/§13.2 + threat-model §3.3/§3.6 +
+  HLD）**：面板互斥切换与 App 级确认框不遮断/sources:* 白名单 + audience 硬编码
+  user/有界 listGroups/quick-add 契约/两阶段硬删除/三态 UI 状态（readonly-
+  recovery/unavailable 中文原因+建议+写入口禁用+读入口按决议 #39 拒绝；建议仅
+  安全标签无绝对路径）/provenance 两形态 + aiNote 只读/独立 manual 审计适配器/
+  UI 异步序号守卫与冲突刷新/纯文本渲染。③ **红→绿**：先写测试——红态 4 files
+  failed / 15 failed / 76 passed（2 新文件模块缺失 + service/repo B5 扩展用例在
+  旧结构下真实失败）；实现后全量 **1125/1125**（新增 54：source-ipc 30 /
+  sources-display 9 / source-service B5 10 / source-repository B5 5；既有 1071
+  用例零删除零削弱）。**冒烟期真实实现缺陷 4 处**（均已修复并单测/冒烟固化）：
+  ① IPC 适配器在 handler 注册期捕获 sourceService=null（注册早于装配）→ 适配
+  器 service 改 getter 惰性解析；② stateOverride 冒烟注入点同类构造期捕获 null
+  → index.ts 改调用时解引用；③ 面板 hook 共享序号守卫把同批 refreshAll 内先发出
+  的响应全部误判迟到（分组/状态/列表恒空）→ 改每种加载独立计数；④ quick-add
+  成功后自动打开详情遮挡列表与「可能相关」提示 → 成功停留列表视图。冒烟断言
+  自身缺陷 5 处（受控页每进程随机端口致跨进程按 URL 读回失败 → 改按名称；分组
+  选项经直接服务种子无 changed 事件 → 面板先刷新；Undo 后详情异步重读竞态 →
+  等表单重挂载再操作；B-05 结束未恢复 AI 面板破坏矩阵 4 前置 → 记录并恢复进入
+  前面板状态；双进程门控生产服务指向 pid 专属目录绕开共享 userData → 门控模式
+  改指 userData/sources）。④ **冒烟**：8.11 B-05 Sources UI 端到端矩阵自动
+  包含于默认矩阵——dev 完整矩阵退出码 0、生产产物完整矩阵退出码 0（明文说明/
+  快速添加与重复・可能相关/非 http 拒绝/分组分页 22 条/搜索 user 视角 blocked
+  可见/手工添加表单/详情编辑 provenance・版本恰 +1/版本冲突提示刷新零静默覆盖/
+  手工 Undo/禁用・恢复 deleted_at 联动/AI provenance + aiNote 只读 + 敌手 note
+  纯文本零 DOM/两阶段永久删除取消与确认 + token 零 DOM/恢复态・不可用态中文诊断
+  - 写入口禁用 + 写入零变化 + 读入口拒绝/面板互斥 + L2 确认框切换面板不遮断/
+    sources:changed 刷新）。**B-05 双进程门控**（AIBROWSE_SOURCES_UI_SMOKE=
+    set|check，与 SESSION_SMOKE/SOURCES_SMOKE 互斥；两独立生产进程共用同一系统
+    TEMP 临时 userData，isPathInside 断言拒碰真实数据）：set 退出码 0（真实 DOM →
+    preload → IPC → SourceService 快速添加 + 编辑持久化）→ check 退出码 0（新进程
+    读回一致 → 真实 DOM Undo 生效 → 两阶段永久删除确认消失且无 Undo）；临时目录
+    已清理。⑤ **红线与敏感扫描**：新代码零 any/@ts-ignore；渲染层零
+    dangerouslySetInnerHTML/Markdown 库；SQL 仍仅 Repository/migrations 编译期
+    常量 + 参数绑定；renderer/preload 零 SQL；source_sql/source_delete_hard/
+    source_export_all 零命中；审计/日志零 note 正文・完整 URL/敏感 query・删除
+    token・数据库路径（单测字节扫描 + 冒烟审计恰好一条）；package/lockfile 零
+    改动；既有 17 工具 schema 与注册表零变化（8.1 断言回归）；浏览器 bounds/AI
+    面板/Agent 确认对话框全回归（默认矩阵）。**未调用任何付费 Provider、未新增
+    依赖、未改 B1 冻结 driver 与 B2 冻结 schema v1（migrations/sqlite-driver 零
+    diff）。** ⑥ 文档同步：detailed-design §6/§13.1/§13.2/§15 决议 #68–#78、
+    threat-model §3.3/§3.6、HLD 模块表、B5 任务文档红→绿证据、本文件、
+    Fourth_stage/README/AGENTS（Sources 速查 B5 回填）。B5 完成即停止，不实现 B6。
 
 - **B4 Source Tools + 权限矩阵 + L2 change set 确认/审计 + Agent 上下文隔离
   （2026-08-15，第四个实现闭环）**：① 步骤 0 独立核对——HEAD `6d153ee` =
@@ -1603,18 +1663,19 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **B5 — Sources UI + 手工管理 + 当前页快速添加 + 冲突/恢复态/Undo 展示 +
-  IPC/bridge 扩展（新对话 = 一个可验证闭环）**：
-  B1–B4 已完成（node:sqlite 冻结决议 #48；schema v1/Repository/Service/journal/
-  Undo/多语言检索/Source 四工具（注册表 17 工具）/change set 确认全链路在位；
-  基线 1071/1071 全绿，dev+生产冒烟与 B-02 双进程退出码 0）。B5 按
-  `doc/stage4/tasks/B5-sources-ui.md` 落地 Sources 面板（分组浏览/搜索/备注与
-  标签/手工添加编辑/当前页快速添加/Undo 与恢复态中文诊断/provenance 展示/
-  v1 明文如实说明）+ IPC 通道与 preload 白名单（复用 handle() sender+主帧校验
-  与事件只发主窗口纪律）+ 手工操作经同一 SourceService（addManual/updateManual/
-  disableManual/restoreManual/hardDeleteManual 能力令牌二次确认）。完成后按
-  B6→B7→B8→B9 顺序推进，B9 独立复验不采信前序报告；本提示内不再继续实现，
-  等待用户下一条指令。
+- **B6 — AI 自然语言管理端到端（change set 全链路 + Undo）+ Browser Agent 复用
+  （source_search → browser_open/read）+ usage 记录接线（新对话 = 一个可验证
+  闭环）**：
+  B1–B5 已完成（node:sqlite 冻结决议 #48；schema v1/Repository/Service/journal/
+  Undo/多语言检索/Source 四工具（注册表 17 工具）/change set 确认全链路/
+  Sources UI + 手工管理 + 快速添加 + 两阶段永久删除 + IPC/bridge 在位；基线
+  1125/1125 全绿，dev+生产冒烟、B-02 与 B-05 双进程门控退出码 0）。B6 按
+  `doc/stage4/tasks/B6-ai-source-management.md` 落地 AI 自然语言管理端到端
+  （「收藏这个网站/改到某组并备注/标成官方/不再优先」→ change set → L2 确认 →
+  持久化 → Undo）+ Browser Agent 复用既有 browser_open/browser_read 打开检索
+  结果 + SourceSearchHintStore usage 接线（真实 Provider 可选验证门控
+  `AIBROWSE_LIVE_AGENT_SOURCES=1`，需用户授权）。完成后按 B7→B8→B9 顺序推进，
+  B9 独立复验不采信前序报告；本提示内不再继续实现，等待用户下一条指令。
 
 ## 第一阶段验收未完成项
 

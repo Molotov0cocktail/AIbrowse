@@ -10,7 +10,8 @@
 > B2 已完成（Source 域模型 + Repository + SourceService + journal + Undo）、
 > B3 已完成（多语言 Source Search + 有界 Retrieval + 分享模式）、
 > B4 已完成（Source Tools 四工具 + 权限矩阵 + L2 change set 确认/审计 +
-> Agent 上下文隔离）**——Fourth Stage 已正式进入（用户切换指令）；详细设计与
+> Agent 上下文隔离）、B5 已完成（Sources UI + 手工管理 + 当前页快速添加 +
+> IPC/bridge）**——Fourth Stage 已正式进入（用户切换指令）；详细设计与
 > B1–B9 任务拆分已完成；**B1：node:sqlite 在 Electron 43.4.0 dev+生产构建
 > 11 项逐项实测通过（基础能力项全过 + FTS5/trigram 可用），驱动冻结决议 #48 +
 > sqlite-driver/migrations 基座落地；B2：九项契约缺口实施前裁决（决议
@@ -26,9 +27,11 @@
 > （13 → 17 工具，L0×3 + L2×1，audience 硬编码 agent）+ change set 确认全链路
 >
 > - 审计脱敏 + UNTRUSTED_TOOL_RESULT 块隔离已落地（全量 test 1071/1071，
->   B-03/B-04 冒烟 dev+生产双场景通过）**；Sources 功能对用户尚不可用（UI
->   未实现——B5 完成前不得宣称可用；Agent 已可经 Source Tools 使用）**；下一个
->   推荐任务 = **B5**（Sources UI + 手工管理 + 快速添加 + IPC/bridge）。契约源
+>   B-03/B-04 冒烟 dev+生产双场景通过）；**B5 已落地（决议 #68–#78 + Sources
+>   面板 + 14 通道 + source-ipc 适配器 + 8.11 默认矩阵 + AIBROWSE_SOURCES_UI_SMOKE
+>   set|check 双进程门控，全量 test 1125/1125）——Sources 功能对用户已可用**；
+>   下一个推荐任务 = **B6**（AI 自然语言管理端到端 + Browser Agent 复用 +
+>   usage 接线）。契约源
 >   `doc/stage4/detailed-design.md`；安全契约源
 >   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
 >   Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
@@ -53,7 +56,7 @@
 ## 当前状态（2026-08-15）
 
 - 🔨 **第四阶段（Sources）进行中（2026-08-15，用户切换指令）：设计完成、
-  B1 已完成、B2 已完成、B3 已完成、B4 已完成**——设计闭环（proposal/高层设计/详细设计/
+  B1 已完成、B2 已完成、B3 已完成、B4 已完成、B5 已完成**——设计闭环（proposal/高层设计/详细设计/
   威胁模型/B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：
   Electron 43.4.0 dev+生产构建 11 项逐项实测（import/文件库/prepared
   statements/事务/外键/busy timeout/FTS5/trigram/userData 路径/句柄清理）
@@ -86,9 +89,18 @@
     UNTRUSTED_TOOL_RESULT 块隔离 + 冒烟 8.10 B-03/B-04（默认矩阵 dev+生产双场景；
     注册表 17 工具断言校准）+ 主进程 <userData>/sources/sources.db 装配（初始化失败
     Source 工具安全返回 source-unavailable）。
-    **Sources 功能对用户尚不可用（UI 未实现——B5 完成前不得宣称可用；Agent 已可经
-    Source Tools 使用）**；下一个唯一任务 = **B5**（Sources UI + 手工管理 + 当前页
-    快速添加 + IPC/bridge 扩展）。契约
+    **B5 已落地（2026-08-15）**：实施前契约裁决（决议 #68–#78：面板互斥切换
+    sidePanel 'ai'|'sources' 不遮断 App 级确认框 / sources:* 14 通道白名单 +
+    audience 硬编码 user / 有界 listGroups / quick-add 主进程读活动 Tab / 两阶段
+    永久删除 / 三态 UI 状态中文诊断 / provenance 两形态 + aiNote 只读 / 独立
+    manual 审计 / UI 异步序号守卫与冲突刷新 / 纯文本渲染）+
+    `src/renderer/src/ai/sources/` 面板（分组浏览/搜索/详情编辑/手工添加/快速
+    添加/禁用恢复/手工 Undo/永久删除二次确认/恢复态诊断/明文边界说明）+
+    `src/main/sources/source-ipc.ts` 适配器（零 Electron import）+ preload
+    bridge 白名单 + 冒烟 8.11 B-05 默认矩阵（dev+生产双场景退出码 0）+
+    `AIBROWSE_SOURCES_UI_SMOKE=set|check` 双进程门控（退出码 0）；
+    **Sources 功能对用户已可用**（全量 test 1125/1125）。下一个唯一任务 =
+    **B6**（AI 自然语言管理端到端 + Browser Agent 复用 + usage 接线）。契约
     `doc/stage4/detailed-design.md` + 安全契约 `doc/stage4/threat-model.md`。
 
 - ✅ **第一阶段完成（Exit Gate 通过，2026-08-13）**：T0 项目基线 → T1 详细设计定稿 →
@@ -187,7 +199,12 @@ Electron 内置 node:sqlite/FTS5/trigram）→ B4 起再验证 8.10 B-03/B-04 B4
 （change set 确认全链路：deny 零写入/approve 单事务/迟到与未知 id 无效/blocked
 猜测 source-forbidden/TOCTOU 版本复验/20-21 项边界/durable Undo；4000 预算截断/
 allowlist 序列化（expectedVersion 令牌）/UNTRUSTED_TOOL_RESULT 块隔离（注入 note
-夹具）/审计脱敏（note 与敏感 URL query 值零出现））→
+夹具）/审计脱敏（note 与敏感 URL query 值零出现））→ B5 起再验证 8.11 B-05
+Sources UI 端到端矩阵（真实 DOM → preload → IPC → SourceService 全链路：明文
+说明/快速添加与重复・可能相关/分组分页/搜索 user 视角 blocked 可见/手工添加/
+详情编辑与 provenance・aiNote 只读・敌手 note 纯文本/版本冲突提示刷新/禁用恢复/
+手工 Undo/两阶段永久删除取消与确认 + token 零 DOM/恢复态・不可用态中文诊断与零
+写入/面板互斥 + App 级确认框不遮断）→
 自动退出，退出码 0 即通过；矩阵见 `doc/stage2/detailed-design.md` §13.2 +
 `doc/stage3/detailed-design.md` §13.2 + `doc/stage4/detailed-design.md` §13.2）。
 **B-02 Sources 跨进程持久化冒烟（B2 专属门控，决议 #57，两进程均需
@@ -197,6 +214,15 @@ AIBROWSE_SMOKE=1 + 已核验系统 TEMP 子目录；与 SESSION_SMOKE 互斥）*
 ```bash
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SOURCES_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> npm run start
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SOURCES_SMOKE=check AIBROWSE_USER_DATA_DIR=<临时目录> npm run start
+```
+
+**B-05 Sources UI 跨进程持久化冒烟（B5 专属门控，与 SESSION_SMOKE/SOURCES_SMOKE
+互斥；两独立生产进程共用同一系统 TEMP 临时 userData，测试后清理）**：
+进程 A 经真实 UI 快速添加 + 编辑、进程 B 新进程读回 → Undo → 两阶段永久删除：
+
+```bash
+env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SOURCES_UI_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> npm run start
+env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SOURCES_UI_SMOKE=check AIBROWSE_USER_DATA_DIR=<临时目录> npm run start
 ```
 
 ```bash
@@ -235,7 +261,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 1071 用例）                   |
+| `npm test`                        | Vitest 全量测试（当前 1125 用例）                   |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -299,7 +325,9 @@ src/
 │   │              #             runLiveAgentScenarios（完整验收 + 定向补验））
 │   ├── sources/   # （Fourth Stage）db/（✅ B1：sqlite-driver 薄封装——node:sqlite 冻结
 │   │              #   （决议 #48）：openDb/closeDb/withTransaction，仅连接级运维 SQL；
-│   │              #   migrations 骨架——user_version 单调逐级 + 单事务 + 回滚；B2+ 扩展）
+│   │              #   migrations 骨架——user_version 单调逐级 + 单事务 + 回滚；B2+ 扩展）；
+│   │              #   ✅ B5：source-ipc.ts（sources:* 适配器：白名单校验/audience 硬编码
+│   │              #   user/状态门控/独立 manual 审计/changed 事件，零 Electron import）
 │   ├── browser/   # BrowserController / TabManager（A3 ✅ 导航世代计数）/ SessionManager /
 │   │              #   PageReader（A3 ✅ 交互编排）/ snapshot-script + snapshot-normalize /
 │   │              #   interaction-script + interaction-normalize（A3 ✅ 固定模板交互注入与
@@ -323,10 +351,13 @@ src/
 │                  #   search/（A4 ✅ search-provider：接口 + Bing 页面实现 + 确定性解析，
 │                  #   临时 Tab 精确所有权零 Electron import）
 ├── preload/       # UI bridge（contextBridge，白名单 IPC：tabs/nav/page/ui + conversation/config；
-│                  #   A6 ✅ agent 可见性：agentAsk/confirmTool + 4 事件订阅）
+│                  #   A6 ✅ agent 可见性：agentAsk/confirmTool + 4 事件订阅；
+│                  #   B5 ✅ sources：14 通道 + sources:changed 事件订阅）
 ├── renderer/      # React UI：chrome（Toolbar/TabBar/AddressBar/DebugPanel）+ ai/（AI 侧栏；
 │                  #   A6 ✅ 对话/任务模式 + AgentStatusBar/ToolCallList/ConfirmDialog +
-│                  #   agent-run-state/agent-display 纯函数）
+│                  #   agent-run-state/agent-display 纯函数）+ ai/sources/（B5 ✅ Sources
+│                  #   面板：分组浏览/搜索/详情编辑/手工添加/快速添加/Undo/两阶段永久删除/
+│                  #   恢复态诊断 + sources-display 纯函数；与 AI 面板互斥切换）
 └── shared/        # 共享类型（app/browser/ipc/conversation + agent——A2 ✅ ToolCall/ToolResult/
                    #   权限级别/ElementSemantics（A6 ✅ 增 text）+ A5/A6 ✅ 事件 payload）+
                    #   纯逻辑（url.ts）
@@ -342,7 +373,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 1071 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 1125 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具

@@ -16,7 +16,7 @@
   多标签页浏览器，用户与 AI 共享同一浏览器会话与登录状态；AI 仅通过受限
   BrowserController / Tool Layer 操作浏览器，不得拥有任意系统权限。
 - **当前阶段（第四阶段，Sources 长期信源系统）**：把传统浏览器「收藏夹」升级为
-  可被 AI 理解、检索、自动维护的长期信息源系统。**阶段状态（2026-08-15）：
+  可被 AI 理解、检索、自动维护的长期信息源系统。*_阶段状态（2026-08-15）：
   Fourth Stage 已正式进入（用户切换指令）；详细设计与 B1–B9 任务拆分已完成；
   B1 已完成——node:sqlite 决策门 dev+生产双场景 11 项逐项实测，基础能力项
   ①–⑦、⑩、⑪ 全部通过、⑧ FTS5/⑨ trigram 实测可用，驱动冻结 = node:sqlite
@@ -34,29 +34,36 @@
   （previewChangeSet 只读 diff → confirmSummary 钩子 → ConfirmManager →
   applyChangeSet 版本复验/单事务/journal）+ 审计脱敏 + 4000 预算 +
   UNTRUSTED_TOOL_RESULT 块隔离 + 主进程 <userData>/sources/sources.db 装配 +
-  冒烟 B-03/B-04（全量 test 1071/1071）；B5–B9 待开始（Sources UI 未实现——
-  B5 完成前不得宣称对用户可用）**；下一个推荐任务 = **B5**（Sources UI +
-  手工管理 + 当前页快速添加 + IPC/bridge 扩展）。契约源
-  `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
-  `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
-  实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
-  **架构纪律（第四阶段）**：依赖方向固定
-  `Sources UI / Agent Source Tools → SourceService → SourceRepository /
+  冒烟 B-03/B-04（全量 test 1071/1071）；B5 已完成（2026-08-15）——实施前
+  契约裁决（决议 #68–#78）+ Sources 面板（分组浏览/搜索/详情编辑/手工添加/
+  快速添加/禁用恢复/手工 Undo/两阶段永久删除二次确认/恢复态与不可用态中文
+  诊断/明文边界说明，与 AI 面板互斥切换不遮断 App 级确认框）+ 14 个 sources:_
+  通道 + sources:changed 事件（仅成功变更后最小 payload）+ source-ipc 适配器
+  （参数严格白名单/audience 硬编码 user/状态门控/独立 manual 审计，零 Electron
+  import）+ preload 白名单 + 冒烟 8.11 B-05 默认矩阵（dev+生产双场景退出码 0）
+  - AIBROWSE_SOURCES_UI_SMOKE=set|check 双进程门控（退出码 0，全量 test
+    1125/1125）——**Sources 功能对用户已可用**；B6–B9 待开始**；下一个推荐任务 =
+    **B6**（AI 自然语言管理端到端 + Browser Agent 复用 + usage 接线）。契约源
+    `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
+    `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
+    实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
+    **架构纪律（第四阶段）**：依赖方向固定
+    `Sources UI / Agent Source Tools → SourceService → SourceRepository /
 SourceSearchIndex / SourceChangeJournal → SQLite driver（主进程）`；
-  renderer/preload/AgentLoop/Tool 实现不得直接执行 SQL；UI 与 Agent 共用同一
-  SourceService；SQL 只能是 Repository 内的编译期常量或 migration，所有用户/
-  网页/模型文本只能作为 prepared statement 参数；禁止 `exec(sql)` 动态串、
-  动态表名/列名/排序表达式、SQLite 扩展加载；Source Tool 不新增网络能力
-  （打开网页继续 browser_open/browser_read）；v1 最小 4 工具
-  （source_search/source_list/source_get 为 L0 有界检索、source_apply_changes
-  为 L2 确认门），禁具 source_sql/source_delete_hard/source_export_all/任意
-  导入/任意抓取/任意通用数据库工具；AI 写入统一 change set（≤20 项、幂等键、
-  expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
-  永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
-  数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
-  **⚠️ B1–B4 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层）；B5–B9
-  对应能力（Sources UI/IPC、真实 Provider 端到端、backup/usage、红队、最终
-  验收）在对应任务完成前不得在文档/报告/UI 中宣称已实现。
+    renderer/preload/AgentLoop/Tool 实现不得直接执行 SQL；UI 与 Agent 共用同一
+    SourceService；SQL 只能是 Repository 内的编译期常量或 migration，所有用户/
+    网页/模型文本只能作为 prepared statement 参数；禁止 `exec(sql)` 动态串、
+    动态表名/列名/排序表达式、SQLite 扩展加载；Source Tool 不新增网络能力
+    （打开网页继续 browser_open/browser_read）；v1 最小 4 工具
+    （source_search/source_list/source_get 为 L0 有界检索、source_apply_changes
+    为 L2 确认门），禁具 source_sql/source_delete_hard/source_export_all/任意
+    导入/任意抓取/任意通用数据库工具；AI 写入统一 change set（≤20 项、幂等键、
+    expectedVersion、单事务、确认前数据库零变化、durable Undo）；AI 推断的 trust
+    永远是 unverified（provenance 三元组）；分享模式 full/metadata/blocked；
+    数据库/备份/change journal 不进模型上下文；API Key 绝不进 Sources 数据库。
+    **⚠️ B1–B4 已实现**（B1 驱动冻结/B2 数据层/B3 检索/B4 工具层）；B5–B9
+    对应能力（Sources UI/IPC、真实 Provider 端到端、backup/usage、红队、最终
+    验收）在对应任务完成前不得在文档/报告/UI 中宣称已实现。
 - **已完成（第三阶段，Browser Agent）**：让 AI 可以通过受限、可审计、可撤销的
   Tool Layer 自主完成低风险浏览任务——tool-calling 兼容层（A1 硬前置）、Tool Registry、
   SearchProvider、scroll/click/fill/find 交互能力（elementId 生命周期）、最小可控
@@ -371,9 +378,14 @@ d:\AIbrowse\
     │       │                                  #   （四条编译期常量 SQL + 参数绑定）/FTS 可用性/rebuild/一致性）,
     │       │                                  #   ✅ B2/B3：source-service（UI 与 Agent 共用唯一入口；
     │       │                                  #   B3 起 search/list/get 必填 audience，决议 #58）、
-    │       │                                  #   usage/usage-tracker（B7）、tools/source-tools（B4）；
+    │       │                                  #   usage/usage-tracker（B7）、tools/source-tools（B4）、
+    │       │                                  #   ✅ B5：source-ipc（sources:* 适配器：白名单校验/
+    │       │                                  #   audience 硬编码 user/状态门控/独立 manual 审计/
+    │       │                                  #   changed 事件，零 Electron import）；
     │       │                                  #   shared/types/sources.ts（✅ B2 单一事实源；B3 增
-    │       │                                  #   SourceReadAudience/SourceSearchItem/SourceSearchNote，决议 #58/#59）
+    │       │                                  #   SourceReadAudience/SourceSearchItem/SourceSearchNote，决议 #58/#59；
+    │       │                                  #   B5 增 SourceGroupsResult/SourcesState/QuickAddResult/
+    │       │                                  #   PrepareHardDeleteResult，决议 #71–#74）
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅ + A6 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
@@ -418,6 +430,9 @@ d:\AIbrowse\
     ├── renderer/                              # React UI（index.html + src/）
     │   ├── src/browser/                       # （T3/T4）chrome：Toolbar/TabBar/AddressBar +
     │   │                                      #   DebugPanel + useTabsState/useContentBounds（hooks）
+    │   ├── src/ai/sources/                    # （B5 ✅）Sources 面板：SourcesPanel/SourceDetailForm/
+    │   │                                      #   SourceAddForm/HardDeleteDialog/useSourcesPanel/
+    │   │                                      #   sources-display 纯函数（决议 #68–#78）
     │   └── src/ai/                            # （S4 ✅ + A6 ✅）AI 侧栏：AiPanel（对话/任务模式切换）/
     │                                          #   ChatView（ToolStep 条目 + agentRun 徽标）/Composer/
     │                                          #   ContextBadge/CitationCard/ProviderSettings +
@@ -961,7 +976,7 @@ approve)`/`onAgentStep/onAgentConfirmRequest/onAgentRunDone/onAgentStatus`
   A3 状态机补齐，12 次 HTTP 全部 200）**——**第三阶段总 Exit 决策 =
   `GO/PASS`**（证据见 Third_stage.md §9/§10 与 progress.md）。
 
-### Fourth Stage Sources 契约速查（定稿 2026-08-15；⚠️ 全部「规划/待实现」——B1–B9 完成前不得宣称已实现）
+### Fourth Stage Sources 契约速查（定稿 2026-08-15；B1–B5 已实现并 grep 核对，B6–B9 未实现前不得宣称）
 
 > 唯一契约源 `doc/stage4/detailed-design.md`（§2–§16 + §15 决议记录，含 proposal
 > Q1–Q12 拍板）；安全契约源 `doc/stage4/threat-model.md`（威胁 ST-01～ST-12、
@@ -1145,6 +1160,30 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
 - **usage/health（B7）**：无后台巡检；仅 Agent 实际经 Source 打开/读取后记录
   最近一次（unknown/reachable/unreachable/auth-required/blocked 五态；v1 可靠
   信号仅 reachable/unreachable，其余占位宁缺勿错）；不保存正文、不宣称长期健康。
+- **Sources UI 与 IPC（B5 ✅ 已实现，grep 核对；决议 #68–#78）**：
+  `renderer/src/ai/sources/`——SourcesPanel（与 AiPanel 互斥切换 sidePanel
+  'ai'|'sources'|null，380px 同模式；切换不卸载/遮断 App 级 Agent ConfirmDialog）/
+  SourceDetailForm（aiNote 只读展示，trust 仅可设 value，provenance 区分
+  用户标定/AI 推断·未核验）/SourceAddForm/HardDeleteDialog（「不可撤销且不能
+  Undo」二次确认）/useSourcesPanel（每种加载独立序号守卫忽略迟到响应、卸载
+  退订 sources:changed、写 pending 互斥、expectedVersion 冲突提示刷新严禁静默
+  覆盖）/sources-display 纯函数（错误码 10 码中文、状态诊断仅「应用数据目录」
+  安全标签无绝对路径）；note/name/tag 纯文本渲染（零 dangerouslySetInnerHTML/
+  Markdown）。`src/main/sources/source-ipc.ts`——sources:list/get/search/groups/
+  add/update/disable/restore/undoable/undo/quick-add/state/prepare-hard-delete/
+  hard-delete 适配器（零 Electron import）：参数严格白名单验证（未知字段拒绝）、
+  audience 硬编码 'user'、状态三态门控（normal/readonly-recovery/unavailable：
+  写入口全拒 + 读入口按决议 #39 一并拒绝）、每次写尝试恰好一条脱敏审计
+  （sourceId/操作/字段名/长度/结果码；note 正文/完整 URL/query/删除 token/路径
+  零出现）、sources:changed 仅成功变更后最小 payload（renderer 重读）；quick-add
+  无参数（main 读取活动 Tab，仅 http/https、page scope + metadata 默认、重复
+  →duplicate、同 origin 不同页面 ≤5 条「可能相关」绝不覆盖）；两阶段永久删除
+  （prepare 签发 300s 能力令牌 → hard-delete 消费；取消/过期/错绑定/重放零删除）。
+  Service 增 listGroups（有界分页 ≤20、名 NOCASE+id 收尾全序）与 quickAddPage；
+  Repository 增 SQL_LIST_GROUPS/SQL_COUNT_GROUPS/SQL_FIND_RELATED（编译期常量 +
+  参数绑定）。冒烟 8.11 B-05 默认矩阵 + AIBROWSE_SOURCES_UI_SMOKE=set|check
+  双进程门控（与 SESSION_SMOKE/SOURCES_SMOKE 互斥；共享系统 TEMP 临时
+  userData）。
 
 ## 6. 常用命令
 
@@ -1162,7 +1201,7 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 1071 用例）
+  - `npm test` — Vitest 全量测试（当前 1125 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`
@@ -1244,6 +1283,10 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
     清理该目录）；命令（与 README 一致）：
     `env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=set AIBROWSE_USER_DATA_DIR=<临时目录> npm run start`
     （check 同理），退出码 0 即通过。
+  - **B-05 Sources UI 跨进程冒烟（B5 专属门控）**：`AIBROWSE_SOURCES_UI_SMOKE=set|check`
+    两独立生产进程共用同一系统 TEMP 临时 userData（与 SESSION_SMOKE/SOURCES_SMOKE
+    互斥）；set 经真实 DOM → preload → IPC → SourceService 快速添加 + 编辑；check
+    新进程读回 → Undo → 两阶段永久删除并确认消失且无 Undo；测试后清理临时目录。
   - **真实 Provider 可选验证（S5 落地，长期安全测试流程，S6 起为通用规则）**：
     两个 env 门控场景，均需 `AIBROWSE_SMOKE=1` + `AIBROWSE_LIVE_PROVIDER=1` +
     `AIBROWSE_TEST_API_KEY`（无 Key 环境跳过并记录、回退离线矩阵，不作为失败）：

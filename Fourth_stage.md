@@ -12,9 +12,10 @@
 > 全序 + note 摘录 ≤200 + provenance + bidi 补齐，决议 #58–#63，全量 test
 > 1007/1007）；**B4 已完成**（Source Tools 四工具 + 权限矩阵 + L2 change set
 > 确认/审计 + Agent 上下文隔离，决议 #64–#67，全量 test 1071/1071）；
-> **B5–B9 待开始**（Sources UI 未实现——B5 完成前不得宣称对用户可用；Agent
-> 已可经 Source Tools 使用）；下一个推荐任务 = **B5**（Sources UI +
-> 手工管理 + 当前页快速添加 + IPC/bridge 扩展）。
+> **B5 已完成**（Sources UI + 手工管理 + 当前页快速添加 + IPC/bridge，决议
+> #68–#78，全量 test 1125/1125，B-05 默认矩阵与双进程门控通过——Sources 功能
+> 对用户已可用）；**B6–B9 待开始**；下一个推荐任务 = **B6**（AI 自然语言管理
+> 端到端 + Browser Agent 复用 + usage 接线）。
 > **契约与安全契约源**：本文保留阶段需求源职责（目标/验收标准/Exit Gate），
 > 具体接口、schema、权限矩阵、预算与决议以 `doc/stage4/detailed-design.md` 为
 > **唯一契约源**；威胁与红队以 `doc/stage4/threat-model.md` 为**安全契约源**。
