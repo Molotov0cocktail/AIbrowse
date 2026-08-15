@@ -1031,3 +1031,144 @@ describe('B3 search — 多语言/分流/排序/有界/异常', () => {
     expect(await service.get(UUID, 'user')).toEqual({ ok: false, errorCode: 'source-unavailable' });
   });
 });
+
+// —— B4 决议 #66：previewChangeSet 只读预览 + blocked 猜测防护 + TOCTOU 版本复验 ——
+describe('B4 previewChangeSet — 只读预览（决议 #66）', () => {
+  it('与 applyChangeSet 同一校验语义：结构非法/超限 → 同码拒绝，零写入', async () => {
+    const before = await service.list({ page: 0, audience: 'user' });
+    const bad = await service.previewChangeSet({ ops: [] } as never);
+    expect(bad).toMatchObject({ ok: false, errorCode: 'source-limit' });
+    const badOp = await service.previewChangeSet({
+      ops: [{ kind: 'update', sourceId: 'x' }] as never,
+    });
+    expect(badOp).toMatchObject({ ok: false, errorCode: 'source-invalid-change' });
+    const after = await service.list({ page: 0, audience: 'user' });
+    expect(after).toEqual(before); // 预览零写入
+  });
+
+  it('生成 ≤2000 字符中文 diff（「共 N 项变更」+ 字段级 before/after；note 仅长度+首 40 字符预览）', async () => {
+    const s = await addOne('https://example.com/diff', {
+      name: '旧名',
+      userNote: '旧备注内容',
+      shareMode: 'full',
+    });
+    const s2 = await addOne('https://example.com/diff2', { name: '待禁用站' });
+    const preview = await service.previewChangeSet({
+      ops: [
+        {
+          kind: 'update',
+          sourceId: s.id,
+          expectedVersion: 1,
+          patch: { name: '新名', priority: 5 },
+        },
+        { kind: 'disable', sourceId: s2.id, expectedVersion: 1 },
+      ],
+    });
+    expect(preview.ok).toBe(true);
+    if (preview.ok) {
+      expect(preview.opsCount).toBe(2);
+      expect(preview.diffText).toContain('共 2 项变更');
+      expect(preview.diffText).toContain('旧名');
+      expect(preview.diffText).toContain('新名');
+      expect(preview.diffText).toContain('禁用');
+      expect([...preview.diffText].length).toBeLessThanOrEqual(2000);
+    }
+  });
+
+  it('预览零写入：不生成 journal/幂等键，行数与可撤销列表不变', async () => {
+    await addOne('https://example.com/zero', { name: '零写入站' });
+    const undoableBefore = await service.listUndoable();
+    const preview = await service.previewChangeSet({
+      ops: [
+        {
+          kind: 'add',
+          scope: 'page',
+          url: 'https://example.com/preview-add',
+          name: '预览新增',
+        },
+      ],
+    });
+    expect(preview.ok).toBe(true);
+    expect(await service.listUndoable()).toHaveLength(undoableBefore.length);
+    const hit = await service.search('预览新增', { audience: 'user' });
+    expect(hit.ok && hit.results).toHaveLength(0); // 未写入
+  });
+
+  it('blocked 猜测：update/disable/restore 引用 blocked → source-forbidden（不得泄漏存在/内容）', async () => {
+    const blocked = await addOne('https://example.com/bz', {
+      name: '受限站',
+      shareMode: 'blocked',
+      userNote: 'BLOCKED_PREVIEW_MARKER',
+    });
+    const preview = await service.previewChangeSet({
+      ops: [{ kind: 'disable', sourceId: blocked.id, expectedVersion: 1 }],
+    });
+    expect(preview).toMatchObject({ ok: false, errorCode: 'source-forbidden' });
+    expect(JSON.stringify(preview)).not.toContain('BLOCKED_PREVIEW_MARKER');
+    expect(JSON.stringify(preview)).not.toContain('受限站');
+  });
+
+  it('版本冲突 → source-version-conflict；预览与提交之间漂移 → apply 拒绝零写入（TOCTOU）', async () => {
+    const s = await addOne('https://example.com/toctou', { name: 'TOCTOU 站' });
+    const preview = await service.previewChangeSet({
+      ops: [{ kind: 'update', sourceId: s.id, expectedVersion: 2, patch: { name: '漂移' } }],
+    });
+    expect(preview).toMatchObject({ ok: false, errorCode: 'source-version-conflict' });
+    const previewOk = await service.previewChangeSet({
+      ops: [{ kind: 'update', sourceId: s.id, expectedVersion: 1, patch: { name: '漂移' } }],
+    });
+    expect(previewOk.ok).toBe(true);
+    // 预览通过后、正式提交前：版本漂移（手工修改 1 → 2）
+    await service.updateManual(s.id, { name: '手工抢先' }, 1);
+    const apply = await service.applyChangeSet(
+      { ops: [{ kind: 'update', sourceId: s.id, expectedVersion: 1, patch: { name: '漂移' } }] },
+      { runId: 'run-b4', toolCallId: 'call-b4' },
+    );
+    expect(apply).toMatchObject({ ok: false, errorCode: 'source-version-conflict' });
+    const current = await service.get(s.id, 'user');
+    expect(current.ok && current.source.name).toBe('手工抢先');
+  });
+});
+
+describe('B4 applyChangeSet — blocked 猜测防护（决议 #66）', () => {
+  it('update/disable/restore 引用 blocked（agent 变更通道）→ source-forbidden 零写入', async () => {
+    const blocked = await addOne('https://example.com/bq', {
+      name: '受限站',
+      shareMode: 'blocked',
+    });
+    const before = await service.list({ page: 0, audience: 'user' });
+    const undoableBefore = await service.listUndoable(); // 种子 addManual 自身 journal
+    const res = await service.applyChangeSet(
+      { ops: [{ kind: 'disable', sourceId: blocked.id, expectedVersion: 1 }] },
+      { runId: 'run-b4', toolCallId: 'call-b4-1' },
+    );
+    expect(res).toMatchObject({ ok: false, errorCode: 'source-forbidden' });
+    const after = await service.list({ page: 0, audience: 'user' });
+    expect(after).toEqual(before);
+    expect(await service.listUndoable()).toHaveLength(undoableBefore.length); // 零新增 journal
+  });
+
+  it('add 撞 blocked canonicalKey → source-duplicate 但不回注 existingSourceId（零泄漏）', async () => {
+    const blocked = await addOne('https://example.com/bc', {
+      name: '受限站',
+      shareMode: 'blocked',
+    });
+    const res = await service.applyChangeSet(
+      { ops: [{ kind: 'add', scope: 'page', url: 'https://example.com/bc' }] },
+      { runId: 'run-b4', toolCallId: 'call-b4-2' },
+    );
+    expect(res).toMatchObject({ ok: false, errorCode: 'source-duplicate' });
+    expect(res.results[0]?.existingSourceId).toBeUndefined(); // 不回注 blocked 条目 id
+    expect(JSON.stringify(res)).not.toContain(blocked.id);
+  });
+
+  it('非 blocked 重复 add 仍回注既有 id（「可能相关」语义不回退）', async () => {
+    const s = await addOne('https://example.com/dup', { name: '公开站' });
+    const res = await service.applyChangeSet(
+      { ops: [{ kind: 'add', scope: 'page', url: 'https://example.com/dup' }] },
+      { runId: 'run-b4', toolCallId: 'call-b4-3' },
+    );
+    expect(res).toMatchObject({ ok: false, errorCode: 'source-duplicate' });
+    expect(res.results[0]?.existingSourceId).toBe(s.id);
+  });
+});

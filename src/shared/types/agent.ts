@@ -22,7 +22,16 @@ export type ToolResultErrorCode =
   | 'forbidden' // L3 拒绝（如 fill password）
   | 'denied-by-user' // L2 确认被用户拒绝
   | 'execution-failed' // 执行层失败（含交互脚本拒绝）
-  | 'search-failed'; // 搜索降级（空结果/解析失败，warnings 携带，A4 起使用）
+  | 'search-failed' // 搜索降级（空结果/解析失败，warnings 携带，A4 起使用）
+  // —— B4：Source 工具错误码（与 SourceErrorCode 8 值恒等映射，决议 #64 系列）——
+  | 'source-invalid-change' // change set 结构/语义非法
+  | 'source-version-conflict' // expectedVersion 与当前版本不符（乐观并发/TOCTOU）
+  | 'source-duplicate' // 唯一约束命中（重复添加）
+  | 'source-not-found' // 目标不存在（blocked 视同不存在）
+  | 'source-forbidden' // blocked 猜测引用（决议 #66，不泄漏存在/内容）
+  | 'source-limit' // 数量/分页/预算超限
+  | 'source-unavailable' // 信源服务不可用（缺失装配/disposed/DB 异常）
+  | 'source-conflict'; // 幂等重放指纹冲突等 fail-closed 冲突
 
 export interface ToolResult {
   toolCallId: string;
@@ -30,6 +39,10 @@ export interface ToolResult {
   content: string; // ok=true：结构化结果文本（确定性截断 §8.4）；ok=false：中文错误说明
   errorCode?: ToolResultErrorCode; // ok=false 时
   warnings?: string[]; // 中文警告（截断/降级/启发式过滤）
+  // B4（决议 #67）：source_apply_changes 成功时主进程生成的幂等键——仅供 ToolExecutor
+  // 审计出口读取（argsSummary 追加）；不进 UNTRUSTED_TOOL_RESULT 块、不进 ToolStep
+  // 持久化、不进 UI（无消费通道）。
+  idempotencyKey?: string;
 }
 
 // click/fill 权限判定的元素语义元数据（§7.1/§5.4）：来自 Agent 历史最近一次快照的

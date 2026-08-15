@@ -72,6 +72,15 @@ import { INTERACTION_TOOL_DEFINITIONS } from './ai/tools/interaction-tools';
 import { createSearchTool } from './ai/tools/search-tool';
 import { ToolExecutor } from './ai/tools/tool-executor';
 import { registerTool } from './ai/tools/tool-registry';
+// Fourth Stage B4：Source 子系统装配（<userData>/sources/sources.db + migration v1）
+// + Source 工具注册（13 → 17）。初始化失败 → Source 工具安全返回 source-unavailable，
+// 不拖垮浏览器其余能力；退出时幂等释放句柄（B4 红线：Source Tool 只经 SourceService）。
+import { mkdirSync, rmSync } from 'node:fs';
+import { openDb } from './sources/db/sqlite-driver';
+import { runMigrations } from './sources/db/migrations';
+import { SourceServiceImpl } from './sources/source-service';
+import type { SourceService } from '../shared/types/sources';
+import { createSourceTools } from './sources/tools/source-tools';
 
 // 冒烟模式 AI 子系统数据目录（进程专属临时目录，不触碰用户真实 userData）——S4 起
 // UI 端到端矩阵经真实 IPC/bridge 链路驱动同一实例；路径经 SmokeOptions 传给冒烟场景断言。
@@ -141,6 +150,10 @@ let credentials: SecureCredentialStore | null = null;
 // confirmManager 暴露给冒烟场景程序化驱动 L2 approve/deny（A6 起接 UI）。
 let toolExecutor: ToolExecutor | null = null;
 let confirmManager: ConfirmManager | null = null;
+// Fourth Stage B4：SourceService 唯一实例（UI/B5 与 Source 工具共享；冒烟模式使用
+// 系统 TEMP 下 pid 专属目录——不触碰真实 userData 的 Sources 库）
+let sourceService: SourceService | null = null;
+let smokeSourcesDir: string | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -181,6 +194,11 @@ if (!gotLock) {
   app.on('before-quit', () => {
     // 退出路径兜底清理（幂等）；主路径为窗口 closed → dispose（§5）
     conversationService?.dispose(); // S3：中止全部在途生成
+    sourceService?.dispose(); // B4：Sources 句柄幂等释放（driver closeDb 幂等）
+    if (smokeSourcesDir !== null) {
+      rmSync(smokeSourcesDir, { recursive: true, force: true }); // 冒烟临时 Sources 目录
+      smokeSourcesDir = null;
+    }
     browserController?.dispose();
     logInfo('main', '应用退出');
   });
@@ -548,8 +566,28 @@ function createBrowserWindow(): void {
   // 冒烟受控夹具经 ctx.searchProvider 注入（同一 executor、同一管线，仅 URL 基准指向
   // 本地受控页——离线确定性）。A3 的 click/fill 语义来源接线为 A5 历史提取——
   // 本阶段冒烟注入快照语义存储驱动。
+  // B4：Source 子系统装配——生产用 <userData>/sources/sources.db + 既有 migration v1；
+  // 冒烟模式用系统 TEMP 下 pid 专属目录（不触碰真实 userData，退出时整体清理）。
+  // 初始化失败 → sourceService 保持 null，Source 工具安全返回 source-unavailable
+  // （不拖垮浏览器其余能力；中文诊断入日志）。
+  try {
+    const sourcesDir = SMOKE_MODE
+      ? join(app.getPath('temp'), `aibrowse-smoke-sources-${process.pid}`)
+      : join(app.getPath('userData'), 'sources');
+    if (SMOKE_MODE) smokeSourcesDir = sourcesDir;
+    mkdirSync(sourcesDir, { recursive: true });
+    const sourcesHandle = openDb(join(sourcesDir, 'sources.db'));
+    runMigrations(sourcesHandle);
+    sourceService = new SourceServiceImpl({ db: sourcesHandle });
+    logInfo('main', `Sources 子系统就绪（${join(sourcesDir, 'sources.db')}）`);
+  } catch (err) {
+    sourceService = null;
+    logError('main', 'Sources 子系统初始化失败（Source 工具将返回 source-unavailable）', err);
+  }
   for (const def of BROWSER_TOOL_DEFINITIONS) registerTool(def);
   for (const def of INTERACTION_TOOL_DEFINITIONS) registerTool(def);
+  // B4：Source 四工具注册（13 → 17；executor 零 Electron import，只经 ctx.sourceService）
+  for (const def of createSourceTools(sourceService)) registerTool(def);
   // A5：SearchProvider 实例化后同时用于工具注册与 Agent 运行时装配（决议 #32⑥ 注入点）
   const searchProvider = new BingSearchProvider({ browser: controller });
   registerTool(createSearchTool(searchProvider));
@@ -660,6 +698,7 @@ function createBrowserWindow(): void {
       browser: controller, // ToolExecutionContext 唯一浏览器通道
       confirmManager, // L2 确认状态机（A2 实例复用）
       searchProvider, // ctx.searchProvider 注入点（决议 #32⑥；冒烟服务自建实例注入受控夹具）
+      ...(sourceService !== null ? { sourceService } : {}), // B4：ctx.sourceService 注入点
       audit: createAuditLogger(), // 每次工具调用恰好一条审计（ToolExecutor 单出口保证）
       auditRun: (message) => logInfo('audit', message), // run 开始/终止条目（§10.1）
       // A6 UI 矩阵（仅冒烟模式）：limits 为可注入 holder（step-limit/timeout 场景，每 run

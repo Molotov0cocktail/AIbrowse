@@ -9,6 +9,7 @@ import {
   summarizeArgs,
   summarizeRawArgs,
   ARGS_SUMMARY_MAX,
+  SOURCE_ARGS_SUMMARY_MAX,
   type AuditEntry,
 } from './audit-log';
 import { sanitize } from '../logger';
@@ -161,5 +162,60 @@ describe('审计脱敏链（logger sanitize 端到端，Key 形态零出现）',
     const msg = formatAuditMessage(entry({ ok: false, errorCode: 'execution-failed' }));
     expect(msg).not.toContain('at ');
     expect(msg).not.toContain('Error:');
+  });
+});
+
+// —— B4 决议 #67：Source 工具审计摘要（note 零出现/URL query 值脱敏/幂等键由执行器追加）——
+describe('summarizeArgs — Source 工具（B4 决议 #67 隐私边界）', () => {
+  it('source_apply_changes：ops 计数/字段名/长度/版本确定性摘要；note 正文零出现', () => {
+    const args = {
+      ops: [
+        {
+          kind: 'add',
+          scope: 'page',
+          url: 'https://example.com/new?token=TOKEN_SECRET_VALUE',
+          name: '新站',
+          userNote: 'PRIVATE_NOTE_BODY_12345',
+          trust: { value: 'unknown', assertedBy: 'ai' },
+        },
+        {
+          kind: 'update',
+          sourceId: '11111111-1111-4111-8111-111111111111',
+          expectedVersion: 2,
+          patch: { name: '改名', aiNote: 'SECOND_PRIVATE_NOTE' },
+        },
+      ],
+    };
+    const summary = summarizeArgs('source_apply_changes', args);
+    expect(summary).toMatch(/ops=2 add=1 update=1 disable=0 restore=0/);
+    expect(summary).toContain('fields=[');
+    expect(summary).toContain('lens=[');
+    expect(summary).toContain('versions=[2]');
+    expect(summary).not.toContain('PRIVATE_NOTE_BODY_12345');
+    expect(summary).not.toContain('SECOND_PRIVATE_NOTE');
+    expect(summary).not.toContain('TOKEN_SECRET_VALUE');
+    expect(summary).not.toContain('token=');
+    expect(summary.length).toBeLessThanOrEqual(SOURCE_ARGS_SUMMARY_MAX);
+  });
+
+  it('source_search：普通查询全量（≤500）；URL 形态查询的 query 值脱敏', () => {
+    expect(summarizeArgs('source_search', { query: '大模型 benchmark' })).toBe(
+      '{query:大模型 benchmark}',
+    );
+    const urlQuery = summarizeArgs('source_search', {
+      query: 'https://example.com/deep/path?token=SECRET_123&key=sk-live-abc',
+    });
+    expect(urlQuery).toContain('https://example.com/deep/path');
+    expect(urlQuery).toContain('已脱敏');
+    expect(urlQuery).not.toContain('SECRET_123');
+    expect(urlQuery).not.toContain('sk-live-abc');
+    expect(urlQuery).not.toContain('token=');
+  });
+
+  it('source_list/get：分页参数与 id 正常记录（无敏感形态）', () => {
+    expect(summarizeArgs('source_list', { page: 0, pageSize: 20 })).toBe('{page:0，pageSize:20}');
+    expect(summarizeArgs('source_get', { sourceId: '11111111-1111-4111-8111-111111111111' })).toBe(
+      '{sourceId:11111111-1111-4111-8111-111111111111}',
+    );
   });
 });

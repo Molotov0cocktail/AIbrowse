@@ -74,8 +74,17 @@ export function ConfirmDialog({ pending, onDecide }: ConfirmDialogProps) {
           )}
           <div className="ai-confirm-line">
             <span className="ai-confirm-label">原因</span>
-            <span className="ai-confirm-value">
-              {sanitizeConfirmText(pending.summary.detail, 200)}
+            {/* B4（决议 #66）：source_apply_changes 的 detail 为程序生成的确定性
+                before/after diff（≤2000 字符多行文本）——逐行 sanitize（控制/bidi
+                剔除）+ 行尾 <br/> 保持多行展示；既有工具 detail 为单行短文案，行为不变。
+                模型/网页文本仅以不可信纯文本呈现（无 HTML/Markdown 解析）。 */}
+            <span className="ai-confirm-value ai-confirm-detail">
+              {pending.summary.detail.split('\n').map((line, i, lines) => (
+                <span key={i}>
+                  {sanitizeConfirmText(line, 2000)}
+                  {i < lines.length - 1 ? <br /> : null}
+                </span>
+              ))}
             </span>
           </div>
         </div>

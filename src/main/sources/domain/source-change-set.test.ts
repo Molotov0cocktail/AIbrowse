@@ -2,11 +2,14 @@
 // enums, URL shape, trust channel rules, defaults (adjudication #52), fingerprint.
 import { describe, expect, it } from 'vitest';
 import {
+  buildChangeDiff,
   computeChangeSetFingerprint,
   stripControlChars,
   validateChangeSet,
   validateManualAddInput,
   validateManualPatch,
+  type DiffSourceView,
+  type NormalizedChangeOp,
 } from './source-change-set';
 
 const addOp = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -401,5 +404,115 @@ describe('validateManualAddInput / validateManualPatch — 手工通道', () => 
     expect(validateManualPatch({ shareMode: 'blocked' }).ok).toBe(true);
     expect(validateManualPatch({ enabled: false }).ok).toBe(false);
     expect(validateManualPatch({ groupName: null }).ok).toBe(true);
+  });
+});
+
+// —— B4 决议 #66：buildChangeDiff 确定性 before/after diff 纯函数 ——
+describe('buildChangeDiff — 确定性 before/after diff（B4 决议 #66）', () => {
+  const row = (over: Record<string, unknown> = {}): DiffSourceView => ({
+    id: '11111111-1111-4111-8111-111111111111',
+    name: '旧名',
+    url: 'https://example.com/old',
+    version: 1,
+    priority: 3,
+    shareMode: 'metadata',
+    tags: ['旧标签'],
+    groupName: '旧组',
+    userNote: '',
+    aiNote: '',
+    trust: { value: 'unknown', assertedBy: 'user', verification: 'asserted' },
+    enabled: true,
+    ...over,
+  });
+  const rows = new Map<string, DiffSourceView>([['11111111-1111-4111-8111-111111111111', row()]]);
+
+  it('update：字段级「字段：A → B」；未变化字段不输出；note 仅长度+首 40 字符预览', () => {
+    const ops: NormalizedChangeOp[] = [
+      {
+        kind: 'update',
+        sourceId: '11111111-1111-4111-8111-111111111111',
+        expectedVersion: 1,
+        patch: {
+          name: '新名',
+          priority: 5,
+          userNote: '这是一个较长的用户备注内容，用于验证预览截断。',
+        },
+      },
+    ];
+    const diff = buildChangeDiff(ops, rows);
+    expect(diff.opsCount).toBe(1);
+    expect(diff.text).toContain('名称：旧名 → 新名');
+    expect(diff.text).toContain('优先级：3 → 5');
+    expect(diff.text).toContain('用户备注：');
+    expect(diff.text).toContain('共 1 项变更');
+    expect(diff.text.length).toBeLessThanOrEqual(2000);
+    expect(diff.truncated).toBe(false);
+  });
+
+  it('note 预览剔除控制字符/bidi（零宽/U+061C/U+2066–U+2069 敌手形态）', () => {
+    const evil = '正常​؜⁦⁩‮后缀';
+    const ops: NormalizedChangeOp[] = [
+      {
+        kind: 'update',
+        sourceId: '11111111-1111-4111-8111-111111111111',
+        expectedVersion: 1,
+        patch: { userNote: evil },
+      },
+    ];
+    const diff = buildChangeDiff(ops, rows);
+    expect(diff.text).toContain('正常后缀');
+    expect(diff.text).not.toContain('​');
+    expect(diff.text).not.toContain('؜');
+    expect(diff.text).not.toContain('\u2066');
+    expect(diff.text).not.toContain('\u2069');
+    expect(diff.text).not.toContain('\u202E');
+  });
+
+  it('add/disable/restore 逐项中文 diff；groupName=null 输出「移出分组」', () => {
+    const ops: NormalizedChangeOp[] = [
+      {
+        kind: 'add',
+        scope: 'page',
+        url: 'https://example.com/new',
+        canonicalKey: 'https://example.com/new',
+        name: '新增站',
+        groupName: '新组',
+        tags: ['a', 'b'],
+        priority: 4,
+        shareMode: 'full',
+        userNote: '新增备注',
+        aiNote: '',
+        trust: { value: 'official', assertedBy: 'ai', verification: 'unverified' },
+      },
+      { kind: 'disable', sourceId: '11111111-1111-4111-8111-111111111111', expectedVersion: 1 },
+      { kind: 'restore', sourceId: '11111111-1111-4111-8111-111111111111', expectedVersion: 1 },
+    ];
+    const diff = buildChangeDiff(ops, rows);
+    expect(diff.text).toContain('新增来源');
+    expect(diff.text).toContain('新增站');
+    expect(diff.text).toContain('禁用来源：旧名');
+    expect(diff.text).toContain('恢复来源：旧名');
+    expect(diff.text).toContain('official（AI 推断·未核验）');
+    expect(diff.text).toContain('共 3 项变更');
+  });
+
+  it('总长超限确定性截断（≤2000 含截断标记，计数行保留）', () => {
+    // 20 项 update × 全字段变更（note 预览仅 40 字符——超长来自 op 数量 × 字段数）
+    const ops: NormalizedChangeOp[] = Array.from({ length: 20 }, (_, i) => ({
+      kind: 'update' as const,
+      sourceId: '11111111-1111-4111-8111-111111111111',
+      expectedVersion: 1,
+      patch: {
+        name: `超长名称用于触发总长截断${i}`.repeat(3),
+        userNote: '超长备注内容'.repeat(20),
+        aiNote: '超长备注内容'.repeat(20),
+        tags: ['a', 'b', 'c', 'd'],
+        priority: 5,
+      },
+    }));
+    const diff = buildChangeDiff(ops, rows);
+    expect(diff.text.length).toBeLessThanOrEqual(2000);
+    expect(diff.truncated).toBe(true);
+    expect(diff.text).toContain('共 20 项变更');
   });
 });

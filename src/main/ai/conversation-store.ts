@@ -48,6 +48,15 @@ const TOOL_RESULT_ERROR_CODES = new Set([
   'denied-by-user',
   'execution-failed',
   'search-failed',
+  // B4：Source 工具错误码（ToolResultErrorCode 扩展 8 值）
+  'source-invalid-change',
+  'source-version-conflict',
+  'source-duplicate',
+  'source-not-found',
+  'source-forbidden',
+  'source-limit',
+  'source-unavailable',
+  'source-conflict',
 ]);
 
 const AGENT_RUN_STATUSES = new Set([

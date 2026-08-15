@@ -16,6 +16,7 @@ import type {
   SourceScope,
   SourceShareMode,
   SourceTrust,
+  SourceTrustAssertedBy,
   SourceTrustValue,
 } from '../../../shared/types/sources';
 
@@ -577,4 +578,124 @@ function stableStringify(value: unknown): string {
 
 export function computeChangeSetFingerprint(ops: NormalizedChangeOp[]): string {
   return createHash('sha256').update(stableStringify(ops), 'utf8').digest('hex');
+}
+
+// --- B4 决议 #66：确定性 before/after diff 纯函数（确认展示；模型/网页无通道提供文案）---
+
+export const SOURCE_DIFF_MAX_LENGTH = 2000; // §7.3：单 change set diff 总长上限
+export const SOURCE_DIFF_NOTE_PREVIEW_MAX = 40; // note 仅长度 + 首 40 字符截断预览
+const SOURCE_DIFF_TRUNCATION_MARK = '…[diff 已截断]';
+
+// diff 渲染所需的目标行视图（Service 层由 Repository 行组装；不依赖仓库内部类型）
+export interface DiffSourceView {
+  id: string;
+  name: string;
+  url: string;
+  version: number;
+  priority: number;
+  shareMode: SourceShareMode;
+  tags: string[];
+  groupName: string | null;
+  userNote: string;
+  aiNote: string;
+  trust: SourceTrust;
+  enabled: boolean;
+}
+
+const TRUST_PROVENANCE: Record<SourceTrustAssertedBy, string> = {
+  user: '用户标定',
+  ai: 'AI 推断·未核验',
+};
+
+function trustLabel(trust: SourceTrust): string {
+  return `${trust.value}（${TRUST_PROVENANCE[trust.assertedBy] ?? trust.assertedBy}）`;
+}
+
+// note 预览：控制/bidi 剔除（stripControlChars 同族）+ 首 40 字符截断 + 原长度——
+// 正文不完整进入 diff（隐私有界）；长度以原始值计（审计语义一致）。
+function notePreview(text: string): string {
+  const cleaned = stripControlChars(text);
+  const cut =
+    cleaned.length <= SOURCE_DIFF_NOTE_PREVIEW_MAX
+      ? cleaned
+      : `${cleaned.slice(0, SOURCE_DIFF_NOTE_PREVIEW_MAX)}…`;
+  return `长度 ${text.length}（预览：${cut}）`;
+}
+
+// 字段级中文 diff（「字段：A → B」）；「共 N 项变更」计数行；总长 ≤ SOURCE_DIFF_MAX_LENGTH
+// （超限确定性截断 + 截断标记）。add 无需 rows；update/disable/restore 以 rows 中当前
+// 行渲染 before 侧；rows 缺失（防御）→ 仅输出 sourceId 行（不泄漏内容）。
+export function buildChangeDiff(
+  ops: NormalizedChangeOp[],
+  rows: ReadonlyMap<string, DiffSourceView>,
+): { text: string; truncated: boolean; opsCount: number } {
+  const lines: string[] = [`共 ${ops.length} 项变更`];
+  for (const op of ops) {
+    if (op.kind === 'add') {
+      lines.push(`新增来源：${op.name}（${op.url}）`);
+      lines.push(`    作用域：${op.scope === 'origin' ? '整个站点' : '具体页面'}`);
+      if (op.groupName !== null) lines.push(`    分组：${op.groupName}`);
+      if (op.tags.length > 0) lines.push(`    标签：${op.tags.join('，')}`);
+      lines.push(`    优先级：${op.priority}`);
+      lines.push(`    分享模式：${op.shareMode}`);
+      lines.push(`    信任：${trustLabel(op.trust)}`);
+      if (op.userNote !== '') lines.push(`    用户备注：${notePreview(op.userNote)}`);
+      if (op.aiNote !== '') lines.push(`    AI 备注：${notePreview(op.aiNote)}`);
+      continue;
+    }
+    const row = rows.get(op.sourceId);
+    if (row === undefined) {
+      lines.push(`目标来源：${op.sourceId}`);
+      continue;
+    }
+    if (op.kind === 'disable') {
+      lines.push(`禁用来源：${row.name}（${row.url}）`);
+      continue;
+    }
+    if (op.kind === 'restore') {
+      lines.push(`恢复来源：${row.name}（${row.url}）`);
+      continue;
+    }
+    if (op.kind !== 'update') {
+      continue; // 防御：非 update 已在上面 continue（类型收窄锚点）
+    }
+    const patch = op.patch;
+    lines.push(`更新来源：${row.name}（${row.url}）`);
+    if (patch.name !== undefined && patch.name !== row.name) {
+      lines.push(`    名称：${row.name} → ${patch.name}`);
+    }
+    if (patch.url !== undefined && patch.url !== row.url) {
+      lines.push(`    网址：${row.url} → ${patch.url}`);
+    }
+    if (patch.groupName !== undefined) {
+      const from = row.groupName ?? '（无分组）';
+      const to = patch.groupName ?? '（移出分组）';
+      if (from !== to) lines.push(`    分组：${from} → ${to}`);
+    }
+    if (patch.tags !== undefined) {
+      lines.push(`    标签：[${row.tags.join('，')}] → [${patch.tags.join('，')}]`);
+    }
+    if (patch.priority !== undefined && patch.priority !== row.priority) {
+      lines.push(`    优先级：${row.priority} → ${patch.priority}`);
+    }
+    if (patch.shareMode !== undefined && patch.shareMode !== row.shareMode) {
+      lines.push(`    分享模式：${row.shareMode} → ${patch.shareMode}`);
+    }
+    if (patch.trust !== undefined) {
+      lines.push(`    信任：${trustLabel(row.trust)} → ${trustLabel(patch.trust)}`);
+    }
+    if (patch.userNote !== undefined && patch.userNote !== row.userNote) {
+      lines.push(`    用户备注：${notePreview(row.userNote)} → ${notePreview(patch.userNote)}`);
+    }
+    if (patch.aiNote !== undefined && patch.aiNote !== row.aiNote) {
+      lines.push(`    AI 备注：${notePreview(row.aiNote)} → ${notePreview(patch.aiNote)}`);
+    }
+  }
+  let text = lines.join('\n');
+  if (text.length > SOURCE_DIFF_MAX_LENGTH) {
+    text = text.slice(0, SOURCE_DIFF_MAX_LENGTH - SOURCE_DIFF_TRUNCATION_MARK.length);
+    text += SOURCE_DIFF_TRUNCATION_MARK;
+    return { text, truncated: true, opsCount: ops.length };
+  }
+  return { text, truncated: false, opsCount: ops.length };
 }

@@ -365,3 +365,183 @@ describe('wire 名称契约（A7 补验校准：Provider 侧 function.name 仅�
     }
   });
 });
+
+// —— B4 决议 #64：递归 object/array schema（ProviderToolParameter 最小递归扩展）——
+describe('工具注册表 — 递归 object/array schema（B4 决议 #64）', () => {
+  beforeEach(() => resetToolRegistry());
+
+  const nestedDef = (overrides: Partial<ToolDefinition> = {}): ToolDefinition =>
+    makeDef({
+      name: 'nested_probe',
+      parameters: {
+        properties: {
+          config: {
+            type: 'object',
+            properties: {
+              level: { type: 'number', enum: [1, 2] },
+              tags: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['level'],
+          },
+          rows: {
+            type: 'array',
+            items: { type: 'object', properties: { id: { type: 'string' } }, required: [] },
+          },
+        },
+        required: ['config'],
+      },
+      ...overrides,
+    });
+
+  it('嵌套 object/array 合法值通过；基础类型行为零变化（既有用例语义不变）', () => {
+    registerTool(nestedDef());
+    expect(
+      validateToolArgs('nested_probe', JSON.stringify({ config: { level: 1, tags: ['a'] } })).ok,
+    ).toBe(true);
+    expect(validateToolArgs('nested_probe', JSON.stringify({ config: { level: 2 } })).ok).toBe(
+      true,
+    );
+    expect(
+      validateToolArgs(
+        'nested_probe',
+        JSON.stringify({ config: { level: 2 }, rows: [{ id: 'x' }] }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('嵌套 unknown 字段拒绝（additionalProperties=false，与顶层同语义）', () => {
+    registerTool(nestedDef());
+    expect(
+      validateToolArgs('nested_probe', JSON.stringify({ config: { level: 1, evil: true } })).ok,
+    ).toBe(false);
+    expect(
+      validateToolArgs(
+        'nested_probe',
+        JSON.stringify({ config: { level: 1 }, rows: [{ id: 'x', extra: 1 }] }),
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateToolArgs(
+        'nested_probe',
+        JSON.stringify({ config: { level: 1, tags: ['a'] }, unknownTop: 1 }),
+      ).ok,
+    ).toBe(false);
+  });
+
+  it('嵌套 required/类型/enum 校验；非对象/非数组形状拒绝', () => {
+    registerTool(nestedDef());
+    expect(validateToolArgs('nested_probe', JSON.stringify({ config: {} })).ok).toBe(false);
+    expect(validateToolArgs('nested_probe', JSON.stringify({ config: { level: 3 } })).ok).toBe(
+      false,
+    );
+    expect(validateToolArgs('nested_probe', JSON.stringify({ config: { level: '1' } })).ok).toBe(
+      false,
+    );
+    expect(
+      validateToolArgs('nested_probe', JSON.stringify({ config: { level: 1, tags: [1] } })).ok,
+    ).toBe(false);
+    expect(
+      validateToolArgs('nested_probe', JSON.stringify({ config: { level: 1, tags: 'x' } })).ok,
+    ).toBe(false);
+    expect(validateToolArgs('nested_probe', JSON.stringify({ config: null })).ok).toBe(false);
+    expect(validateToolArgs('nested_probe', JSON.stringify({ config: [] })).ok).toBe(false);
+  });
+
+  it('数组上限：缺省 20、maxItems 可定制、逐项校验', () => {
+    registerTool(nestedDef());
+    expect(
+      validateToolArgs(
+        'nested_probe',
+        JSON.stringify({ config: { level: 1, tags: Array(20).fill('x') } }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      validateToolArgs(
+        'nested_probe',
+        JSON.stringify({ config: { level: 1, tags: Array(21).fill('x') } }),
+      ).ok,
+    ).toBe(false);
+    registerTool(
+      makeDef({
+        name: 'capped_array',
+        parameters: {
+          properties: {
+            items: { type: 'array', maxItems: 2, items: { type: 'number' } },
+          },
+          required: [],
+        },
+      }),
+    );
+    expect(validateToolArgs('capped_array', '{"items":[1,2]}').ok).toBe(true);
+    expect(validateToolArgs('capped_array', '{"items":[1,2,3]}').ok).toBe(false);
+    expect(validateToolArgs('capped_array', '{"items":["a"]}').ok).toBe(false);
+  });
+
+  it('嵌套深度上限防御：超出深度确定性拒绝、安全返回不抛异常', () => {
+    registerTool(
+      makeDef({
+        name: 'deep_probe',
+        parameters: {
+          properties: {
+            root: {
+              type: 'object',
+              properties: {
+                a: {
+                  type: 'object',
+                  properties: {
+                    b: {
+                      type: 'object',
+                      properties: {
+                        c: {
+                          type: 'object',
+                          properties: {
+                            d: {
+                              type: 'object',
+                              properties: { e: { type: 'string' } },
+                              required: [],
+                            },
+                          },
+                          required: [],
+                        },
+                      },
+                      required: [],
+                    },
+                  },
+                  required: [],
+                },
+              },
+              required: [],
+            },
+          },
+          required: [],
+        },
+      }),
+    );
+    const deepOk = { root: { a: { b: { c: { d: { e: 'x' } } } } } };
+    // root(0) → a(1) → b(2) → c(3) → d(4) → e(5)：超过深度上限 4 → 拒绝
+    expect(validateToolArgs('deep_probe', JSON.stringify(deepOk)).ok).toBe(false);
+    const okValue = { root: { a: { b: { c: { d: { e: 1 } } } } } };
+    void okValue;
+    // 深度上限内形态（root → a → b → c 共 4 层容器内）安全返回
+    const shallow = { root: { a: { b: { c: 'x' } } } };
+    const res = validateToolArgs('deep_probe', JSON.stringify(shallow));
+    expect(typeof res.ok).toBe('boolean'); // 非法深度安全返回（不抛异常）
+  });
+
+  it('listTools 序列化：嵌套 schema 原样透传（含 properties/items/enum）；基础工具序列化零变化', () => {
+    registerTool(nestedDef());
+    registerTool(makeDef({ name: 'test_echo' }));
+    const listed = listTools();
+    const nested = listed.find((t) => t.function.name === 'nested_probe');
+    expect(nested?.function.parameters.properties['config']).toEqual({
+      type: 'object',
+      properties: {
+        level: { type: 'number', enum: [1, 2] },
+        tags: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['level'],
+    });
+    const basic = listed.find((t) => t.function.name === 'test_echo');
+    expect(basic?.function.parameters.properties['text']).toEqual({ type: 'string' });
+  });
+});

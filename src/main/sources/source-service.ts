@@ -21,6 +21,7 @@ import {
   computeChangeSetFingerprint,
   SOURCE_SEARCH_QUERY_MAX_LENGTH,
   type NormalizedAddOp,
+  type NormalizedChangeOp,
   type NormalizedPatch,
 } from './domain/source-change-set';
 import {
@@ -32,6 +33,7 @@ import {
   computeMatchTier,
   normalizeSearchQuery,
 } from './domain/source-search-query';
+import { buildChangeDiff, type DiffSourceView } from './domain/source-change-set';
 import {
   ChangeJournal,
   JOURNAL_MAX_ENTRIES,
@@ -57,6 +59,7 @@ import type {
   SourceErrorCode,
   SourceListItem,
   SourceListResult,
+  SourcePreviewResult,
   SourceReadAudience,
   SourceResult,
   SourceSearchItem,
@@ -306,53 +309,31 @@ export class SourceServiceImpl implements SourceService {
     } catch (err) {
       return this.unavailableChange('applyChangeSet 重放查询失败', err);
     }
-    // 逐项预检（先于事务）：add 重复回注既有 id（约束仍为并发兜底）；update/disable/
-    // restore 存在性 + expectedVersion。任一不符 → 整体拒绝零写入。
-    const opErrors: (SourceErrorCode | undefined)[] = ops.map(() => undefined);
-    const existingIds = new Map<number, string>();
-    const targets = new Map<string, SourceRow>();
-    let firstError: SourceErrorCode | null = null;
+    // 逐项预检（先于事务；决议 #66：preview 与 apply 同一语义——apply 批准后重新
+    // 校验版本以关闭 TOCTOU）：add 重复回注既有 id（约束仍为并发兜底；撞 blocked 条目
+    // 不回注——零泄漏）；update/disable/restore 存在性 + blocked 猜测 source-forbidden
+    // + expectedVersion。任一不符 → 整体拒绝零写入。
+    let pre;
     try {
-      for (let i = 0; i < ops.length; i += 1) {
-        const op = ops[i];
-        if (op.kind === 'add') {
-          const existing = this.repo.getSourceByCanonical(op.scope, op.canonicalKey);
-          if (existing !== null) {
-            opErrors[i] = 'source-duplicate';
-            existingIds.set(i, existing.id);
-            if (firstError === null) firstError = 'source-duplicate';
-          }
-          continue;
-        }
-        const row = this.repo.getSourceById(op.sourceId);
-        if (row === null) {
-          opErrors[i] = 'source-not-found';
-          if (firstError === null) firstError = 'source-not-found';
-          continue;
-        }
-        targets.set(op.sourceId, row);
-        if (row.version !== op.expectedVersion) {
-          opErrors[i] = 'source-version-conflict';
-          if (firstError === null) firstError = 'source-version-conflict';
-        }
-      }
+      pre = this.precheckOps(ops);
     } catch (err) {
       return this.unavailableChange('applyChangeSet 预检失败', err);
     }
-    if (firstError !== null) {
+    if (!pre.ok) {
       return {
         ok: false,
         idempotencyKey: '',
-        errorCode: firstError,
+        errorCode: pre.errorCode ?? 'source-invalid-change',
         results: ops.map((op, i) => ({
           opIndex: i,
           ok: false,
           sourceId: op.kind !== 'add' ? op.sourceId : undefined,
-          existingSourceId: existingIds.get(i),
-          errorCode: opErrors[i],
+          existingSourceId: pre.existingIds.get(i),
+          errorCode: pre.opErrors[i],
         })),
       };
     }
+    const targets = pre.targets;
     const idempotencyKey = randomUUID();
     const beforeMap: SnapshotMap = {};
     const afterMap: SnapshotMap = {};
@@ -416,6 +397,7 @@ export class SourceServiceImpl implements SourceService {
     } catch (err) {
       if (err instanceof RepositoryError && err.code === 'duplicate-source') {
         // 唯一约束兜底（并发/同 set 内重复）：回滚后定位冲突 add 并回注既有 id
+        // （决议 #66：撞 blocked 条目不回注——零泄漏）
         const results2 = ops.map((op, i) => {
           if (op.kind !== 'add') {
             return { opIndex: i, ok: false, sourceId: op.sourceId, errorCode: undefined };
@@ -424,7 +406,8 @@ export class SourceServiceImpl implements SourceService {
           return {
             opIndex: i,
             ok: false,
-            existingSourceId: existing?.id,
+            existingSourceId:
+              existing !== null && existing.share_mode !== 'blocked' ? existing.id : undefined,
             errorCode: 'source-duplicate' as SourceErrorCode,
           };
         });
@@ -456,6 +439,66 @@ export class SourceServiceImpl implements SourceService {
       return this.unavailableChange('applyChangeSet 事务失败', err);
     }
     return { ok: true, idempotencyKey, results };
+  }
+
+  // 只读预览（B4 决议 #66）：与 applyChangeSet 同一校验语义（validateChangeSet +
+  // precheckOps——版本/blocked 猜测/重复），生成 ≤2000 字符确定性中文 diff；零写入
+  // （不生成 journal/idempotency key、不触碰任何写路径）。预览失败 → 对应错误码
+  // （调用方 fail-closed，模型可修正重提）。
+  async previewChangeSet(cs: SourceChangeSet): Promise<SourcePreviewResult> {
+    if (this.disposed) return { ok: false, opsCount: 0, errorCode: 'source-unavailable' };
+    const opsCount =
+      (cs as { ops?: unknown })?.ops !== undefined && Array.isArray((cs as { ops: unknown }).ops)
+        ? (cs as { ops: unknown[] }).ops.length
+        : 0;
+    const validation = validateChangeSet(cs);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        opsCount,
+        errorCode: validation.errorCode ?? 'source-invalid-change',
+      };
+    }
+    const ops = validation.ops;
+    let pre;
+    try {
+      pre = this.precheckOps(ops);
+    } catch (err) {
+      logWarn('sources', 'previewChangeSet 预检失败（归一化 source-unavailable）', err);
+      return { ok: false, opsCount: ops.length, errorCode: 'source-unavailable' };
+    }
+    if (!pre.ok) {
+      return {
+        ok: false,
+        opsCount: ops.length,
+        errorCode: pre.errorCode ?? 'source-invalid-change',
+      };
+    }
+    try {
+      const rows = new Map<string, DiffSourceView>();
+      for (const [id, row] of pre.targets) {
+        const source = rowToSource(row);
+        rows.set(id, {
+          id: source.id,
+          name: source.name,
+          url: source.url,
+          version: source.version,
+          priority: source.priority,
+          shareMode: source.shareMode,
+          tags: this.repo.listTagsBySource(id),
+          groupName: row.group_id === null ? null : this.repo.getGroupNameById(row.group_id),
+          userNote: source.userNote,
+          aiNote: source.aiNote,
+          trust: source.trust,
+          enabled: source.enabled,
+        });
+      }
+      const diff = buildChangeDiff(ops, rows);
+      return { ok: true, opsCount: ops.length, diffText: diff.text };
+    } catch (err) {
+      logWarn('sources', 'previewChangeSet diff 生成失败（归一化 source-unavailable）', err);
+      return { ok: false, opsCount: ops.length, errorCode: 'source-unavailable' };
+    }
   }
 
   // --- 手工操作（UI 通道：同一事务/journal 语义；trust 恒 user-asserted） ---
@@ -753,6 +796,52 @@ export class SourceServiceImpl implements SourceService {
   }
 
   // --- 内部执行器（全部在调用方事务内） ---
+
+  // 逐项预检（B4 决议 #66：preview 与 apply 共用——「同一校验语义」单一事实源）：
+  // add → canonicalKey 重复回注既有 id（撞 blocked 不回注——零泄漏）；
+  // update/disable/restore → 存在性（null → source-not-found）、blocked 猜测引用
+  // → source-forbidden（不得泄漏存在/内容）、expectedVersion 不符 → version-conflict。
+  private precheckOps(ops: NormalizedChangeOp[]): {
+    ok: boolean;
+    errorCode: SourceErrorCode | null;
+    opErrors: (SourceErrorCode | undefined)[];
+    existingIds: Map<number, string>;
+    targets: Map<string, SourceRow>;
+  } {
+    const opErrors: (SourceErrorCode | undefined)[] = ops.map(() => undefined);
+    const existingIds = new Map<number, string>();
+    const targets = new Map<string, SourceRow>();
+    let firstError: SourceErrorCode | null = null;
+    for (let i = 0; i < ops.length; i += 1) {
+      const op = ops[i];
+      if (op.kind === 'add') {
+        const existing = this.repo.getSourceByCanonical(op.scope, op.canonicalKey);
+        if (existing !== null) {
+          opErrors[i] = 'source-duplicate';
+          if (existing.share_mode !== 'blocked') existingIds.set(i, existing.id);
+          if (firstError === null) firstError = 'source-duplicate';
+        }
+        continue;
+      }
+      const row = this.repo.getSourceById(op.sourceId);
+      if (row === null) {
+        opErrors[i] = 'source-not-found';
+        if (firstError === null) firstError = 'source-not-found';
+        continue;
+      }
+      if (row.share_mode === 'blocked') {
+        opErrors[i] = 'source-forbidden';
+        if (firstError === null) firstError = 'source-forbidden';
+        continue;
+      }
+      targets.set(op.sourceId, row);
+      if (row.version !== op.expectedVersion) {
+        opErrors[i] = 'source-version-conflict';
+        if (firstError === null) firstError = 'source-version-conflict';
+      }
+    }
+    return { ok: firstError === null, errorCode: firstError, opErrors, existingIds, targets };
+  }
 
   private get handle(): DbHandle {
     return this.dbHandle;

@@ -44,6 +44,15 @@ export const TOOL_ERROR_LABELS: Record<string, string> = {
   'denied-by-user': '用户未批准',
   'execution-failed': '执行失败',
   'search-failed': '搜索失败',
+  // B4：Source 工具错误码中文文案（ToolResultErrorCode 扩展 8 值同步）
+  'source-invalid-change': '信源变更无效',
+  'source-version-conflict': '信源版本冲突（已被修改）',
+  'source-duplicate': '信源已存在',
+  'source-not-found': '信源不存在',
+  'source-forbidden': '信源不可访问',
+  'source-limit': '超出信源数量上限',
+  'source-unavailable': '信源服务不可用',
+  'source-conflict': '信源变更冲突',
 };
 
 // AgentRunStatus 中文文案（run.status 为终止理由权威来源，§11.2/决议 #33⑤——UI 不以
@@ -73,6 +82,15 @@ export function toolActionLabel(toolName: string): string {
       return '导航到页面';
     case 'search_web':
       return '网页搜索';
+    // B4：Source 工具动作类型（确认对话框展示用）
+    case 'source_search':
+      return '搜索信源';
+    case 'source_list':
+      return '列出信源';
+    case 'source_get':
+      return '查看信源';
+    case 'source_apply_changes':
+      return '变更信源（需确认）';
     default:
       return '执行浏览器操作';
   }

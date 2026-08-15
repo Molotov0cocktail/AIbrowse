@@ -26,9 +26,9 @@ export interface AuditEntry {
 
 export const ARGS_SUMMARY_MAX = 200;
 
-function truncate(text: string): string {
-  if (text.length <= ARGS_SUMMARY_MAX) return text;
-  return text.slice(0, ARGS_SUMMARY_MAX - TRUNCATION_MARK.length) + TRUNCATION_MARK;
+function truncate(text: string, max = ARGS_SUMMARY_MAX): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max - TRUNCATION_MARK.length) + TRUNCATION_MARK;
 }
 
 function renderValue(value: unknown): string {
@@ -37,10 +37,74 @@ function renderValue(value: unknown): string {
   return JSON.stringify(value) ?? String(value); // 防御：校验已拒嵌套结构
 }
 
+// B4 决议 #67：URL 形态字符串的敏感 query 值脱敏（凭据形态 ?token=/&key= 等零进入
+// 审计）。URL 形态判定（保守）：trim 后以 http(s):// 开头；无 query → 原样；有 query
+// → scheme://host/path + 「query 值已脱敏 + 长度」。非 URL 形态 → null（调用方按
+// 普通文本处理）。不依赖 Sources 域模块（分层纪律：ai/ 不反向依赖 sources/）。
+export function redactUrlQueryValue(value: string): string | null {
+  const trimmed = value.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  const q = trimmed.indexOf('?');
+  if (q === -1) return trimmed;
+  return `${trimmed.slice(0, q)}?（query 值已脱敏，len=${trimmed.length - q - 1}）`;
+}
+
+// B4 决议 #67：source_apply_changes 审计摘要——操作计数/字段名/各字段长度/版本
+// 确定性输出；note 正文与 URL 值零出现（仅长度）；有界（≤ SOURCE_ARGS_SUMMARY_MAX；
+// 字段名集合有自然上界（change set 白名单），lens 截取前 10 项 + 截断标记，versions
+// 先于 lens 保证不被截断——版本为乐观并发审计的关键字段）。幂等键由 ToolExecutor
+// 在成功后追加（恰好一条审计纪律不变）。
+export const SOURCE_ARGS_SUMMARY_MAX = 400;
+const SOURCE_LENS_ENTRY_MAX = 10;
+
+export function summarizeSourceChangeSet(ops: unknown): string {
+  if (!Array.isArray(ops)) return 'ops=?';
+  const counts = { add: 0, update: 0, disable: 0, restore: 0 };
+  const fields = new Set<string>();
+  const lens: string[] = [];
+  const versions: unknown[] = [];
+  for (const raw of ops) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
+    const op = raw as Record<string, unknown>;
+    const kind = typeof op['kind'] === 'string' ? op['kind'] : '?';
+    if (kind === 'add' || kind === 'update' || kind === 'disable' || kind === 'restore') {
+      counts[kind] += 1;
+    }
+    for (const [key, value] of Object.entries(op)) {
+      if (key === 'kind') continue; // 计数已覆盖
+      if (key === 'patch' && typeof value === 'object' && value !== null) {
+        for (const [pk, pv] of Object.entries(value as Record<string, unknown>)) {
+          fields.add(pk);
+          if (typeof pv === 'string') lens.push(`${pk}:${pv.length}`);
+        }
+        continue;
+      }
+      fields.add(key);
+      if (typeof value === 'string') lens.push(`${key}:${value.length}`);
+      if (key === 'expectedVersion') versions.push(value);
+    }
+  }
+  const lensPart =
+    lens.length <= SOURCE_LENS_ENTRY_MAX
+      ? lens.join(',')
+      : `${lens.slice(0, SOURCE_LENS_ENTRY_MAX).join(',')},…`;
+  const summary =
+    `ops=${ops.length} add=${counts.add} update=${counts.update} disable=${counts.disable} restore=${counts.restore};` +
+    `fields=[${[...fields].sort().join(',')}];` +
+    `versions=[${versions.join(',')}];` +
+    `lens=[${lensPart}]`;
+  return truncate(summary, SOURCE_ARGS_SUMMARY_MAX);
+}
+
 // 参数摘要：键排序确定性；browser_fill 的 text → len=N（不记原值）；url 全量
 // （审计可追溯，校验上限 2048）；search_web 的 query 全量（T-03 外发审查可追溯，
-// 校验上限 500 有界——决议 #32）；其余值确定性截断 ≤ ARGS_SUMMARY_MAX。
+// 校验上限 500 有界——决议 #32）；source_apply_changes → 结构化 change set 摘要
+// （决议 #67）；source_search 的 query 全量 ≤500 但 URL 形态 query 值脱敏（决议 #67）；
+// 其余值确定性截断 ≤ ARGS_SUMMARY_MAX。
 export function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
+  if (toolName === 'source_apply_changes') {
+    return summarizeSourceChangeSet(args['ops']);
+  }
   const parts = Object.keys(args)
     .sort()
     .map((key) => {
@@ -51,6 +115,10 @@ export function summarizeArgs(toolName: string, args: Record<string, unknown>): 
       }
       if (key === 'url' || (toolName === 'search_web' && key === 'query')) {
         return `${key}:${renderValue(value)}`;
+      }
+      if (toolName === 'source_search' && key === 'query' && typeof value === 'string') {
+        const redacted = redactUrlQueryValue(value); // URL 形态 → 敏感 query 值脱敏
+        return `${key}:${redacted ?? value}`;
       }
       return `${key}:${truncate(renderValue(value))}`;
     });

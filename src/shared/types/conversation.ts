@@ -143,9 +143,16 @@ export type ProviderUsage = { inputTokens?: number; outputTokens?: number };
 // 共享契约内）；对外 ProviderEvent.toolCalls 输出聚合校验完成的整组调用（决议 #30）。
 
 export interface ProviderToolParameter {
-  type: 'string' | 'number' | 'boolean'; // v1 仅基础类型（无 object/array 嵌套）
+  type: 'string' | 'number' | 'boolean' | 'object' | 'array'; // B4 决议 #64：最小递归扩展
   description?: string;
-  enum?: Array<string | number | boolean>; // 枚举约束（确定性校验用）
+  enum?: Array<string | number | boolean>; // 枚举约束（仅基础类型；确定性校验用）
+  // object 子结构（B4 决议 #64）：未知字段一律拒绝（additionalProperties=false，
+  // 校验层与序列化层同语义——properties 即字段白名单）
+  properties?: Record<string, ProviderToolParameter>;
+  required?: string[];
+  // array 子结构（B4 决议 #64）：逐项校验；maxItems 缺省 20（数组上限）
+  items?: ProviderToolParameter;
+  maxItems?: number;
 }
 
 export interface ProviderTool {

@@ -213,6 +213,12 @@ export interface UndoableChange {
   summary: string; // 中文字段级摘要（版本区间「新增@vN / a→b」，note 正文零出现）
 }
 
+// B4 决议 #66：只读预览结果——与 applyChangeSet 同一校验语义；零写入（不生成
+// journal/幂等键）；diffText ≤2000 字符中文 before/after diff（含「共 N 项变更」）。
+export type SourcePreviewResult =
+  | { ok: true; opsCount: number; diffText: string }
+  | { ok: false; opsCount: number; errorCode: SourceErrorCode };
+
 export interface SourceService {
   readonly id: string; // 'sources'
   // 检索（§8；audience 必填——决议 #58：agent 视角 blocked 不可见，user 视角可见可管理）
@@ -233,6 +239,9 @@ export interface SourceService {
     cs: SourceChangeSet,
     meta: { runId: string; toolCallId: string },
   ): Promise<SourceChangeResult>;
+  // 只读预览（B4 决议 #66）：与 applyChangeSet 同一校验语义 + 逐项预检（版本/
+  // blocked 猜测/重复），生成 ≤2000 字符确定性 diff——零写入、零 journal、零幂等键
+  previewChangeSet(cs: SourceChangeSet): Promise<SourcePreviewResult>;
   // 手工操作（UI 通道，同一事务/审计/journal 语义）
   addManual(input: ManualAddInput): Promise<ManualWriteResult>;
   updateManual(id: string, patch: ManualPatch, expectedVersion: number): Promise<ManualWriteResult>;

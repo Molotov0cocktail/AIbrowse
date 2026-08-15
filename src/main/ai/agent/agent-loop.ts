@@ -22,6 +22,7 @@ import type {
   ProviderToolCall,
 } from '../../../shared/types/conversation';
 import type { AgentRunStatus, ToolStep } from '../../../shared/types/agent';
+import type { SourceService } from '../../../shared/types/sources';
 import type { AuditEntry } from '../audit-log';
 import { summarizeRawArgs } from '../audit-log';
 import { ConfirmManager } from '../confirm-manager';
@@ -99,6 +100,7 @@ export interface AgentLoopOptions {
   confirmManager: ConfirmManager;
   browser: BrowserController; // ToolExecutionContext.browser（工具唯一浏览器通道）
   searchProvider?: SearchProvider; // ctx.searchProvider 注入点（A4 决议 #32⑥）
+  sourceService?: SourceService; // ctx.sourceService 注入点（B4：Source 工具唯一通道）
   audit: (entry: AuditEntry) => void; // 工具审计出口（ToolExecutor 恰好一条）
   limits?: Partial<AgentLoopLimits>;
   now?: () => number; // 时钟注入（ToolStep.createdAt 主进程盖章；测试确定性）
@@ -390,6 +392,9 @@ export class AgentLoop {
                 runId: this.options.requestId,
                 ...(this.options.searchProvider !== undefined
                   ? { searchProvider: this.options.searchProvider }
+                  : {}),
+                ...(this.options.sourceService !== undefined
+                  ? { sourceService: this.options.sourceService }
                   : {}),
                 getElementSemantics: (tabId, elementId) => this.semantics.lookup(tabId, elementId),
                 recordSnapshot: (tabId, snapshot) =>

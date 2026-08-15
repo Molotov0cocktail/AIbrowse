@@ -592,3 +592,166 @@ describe('A3 derived 执行参数（allowedKind/documentId 权限决策派生）
     expect(seen).toEqual(['00000000-0000-4000-8000-000000000001', 't-active']);
   });
 });
+
+// —— B4 决议 #66/#67：程序化确认摘要钩子 + 幂等键入审计 + Source 结果预算 ——
+describe('ToolExecutor — confirmSummary 钩子与 Source 工具管线（B4 决议 #66/#67）', () => {
+  let audits: AuditEntry[];
+  let executor: ToolExecutor;
+  let confirm: ConfirmManager;
+
+  beforeEach(() => {
+    resetToolRegistry();
+    audits = [];
+    confirm = new ConfirmManager();
+    executor = new ToolExecutor(confirm, (entry) => {
+      audits.push(entry);
+    });
+  });
+
+  it('钩子在 ConfirmManager.requestConfirm 前调用；返回摘要被用作确认详情', async () => {
+    const order: string[] = [];
+    registerTool(
+      makeDef({
+        name: 'source_apply_changes',
+        parameters: {
+          properties: {
+            ops: { type: 'array', items: { type: 'object', properties: {}, required: [] } },
+          },
+          required: ['ops'],
+        },
+        baseRisk: 2,
+        confirmSummary: async () => {
+          order.push('hook');
+          return { ok: true, summary: { detail: '程序生成的确定性 diff（≤2000）' } };
+        },
+        executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '已应用' }),
+      }),
+    );
+    confirm.addPendingChangeListener(() => order.push('confirm-request'));
+    const run = executor.execute(
+      { id: 'b4-1', name: 'source_apply_changes', arguments: '{"ops":[{}]}' },
+      { browser: fakeBrowser(), runId: 'run-b4' },
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => {
+      expect(confirm.getPending()).not.toBeNull();
+    });
+    expect(order).toEqual(['hook', 'confirm-request']); // 钩子先于确认请求
+    expect(confirm.getPending()?.summary.detail).toBe('程序生成的确定性 diff（≤2000）');
+    expect(confirm.approve('b4-1')).toBe(true);
+    await run;
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.decision).toBe('confirmed');
+  });
+
+  it('钩子返回拒绝（预览失败）→ 不进入确认、以钩子错误码 fail-closed、审计 invalid 恰一条', async () => {
+    registerTool(
+      makeDef({
+        name: 'source_apply_changes',
+        parameters: {
+          properties: {
+            ops: { type: 'array', items: { type: 'object', properties: {}, required: [] } },
+          },
+          required: ['ops'],
+        },
+        baseRisk: 2,
+        confirmSummary: async () => ({
+          ok: false,
+          errorCode: 'source-version-conflict',
+          content: '变更预览失败：版本冲突',
+        }),
+        executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '不应执行' }),
+      }),
+    );
+    const res = await executor.execute(
+      { id: 'b4-2', name: 'source_apply_changes', arguments: '{"ops":[{}]}' },
+      { browser: fakeBrowser(), runId: 'run-b4' },
+      new AbortController().signal,
+    );
+    expect(res).toMatchObject({ ok: false, errorCode: 'source-version-conflict' });
+    expect(confirm.getPending()).toBeNull(); // 从未建立确认
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ decision: 'invalid', ok: false });
+  });
+
+  it('无钩子工具走既有 buildConfirmSummary 兜底（行为零回归）', async () => {
+    registerTool(
+      makeDef({
+        name: 'source_apply_changes',
+        parameters: {
+          properties: {
+            ops: { type: 'array', items: { type: 'object', properties: {}, required: [] } },
+          },
+          required: ['ops'],
+        },
+        baseRisk: 2,
+        executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '完成' }),
+      }),
+    );
+    const run = executor.execute(
+      { id: 'b4-3', name: 'source_apply_changes', arguments: '{"ops":[{}]}' },
+      { browser: fakeBrowser(), runId: 'run-b4' },
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => {
+      expect(confirm.getPending()).not.toBeNull();
+    });
+    expect(confirm.getPending()?.summary.detail).toContain('需要用户确认');
+    expect(confirm.approve('b4-3')).toBe(true);
+    await run;
+  });
+
+  it('成功结果携带 idempotencyKey → 审计 argsSummary 追加幂等键（恰好一条审计不变）', async () => {
+    registerTool(
+      makeDef({
+        name: 'source_apply_changes',
+        parameters: {
+          properties: {
+            ops: { type: 'array', items: { type: 'object', properties: {}, required: [] } },
+          },
+          required: ['ops'],
+        },
+        baseRisk: 2,
+        confirmSummary: async () => ({ ok: true, summary: { detail: 'diff' } }),
+        executor: async ({ id }) => ({
+          toolCallId: id,
+          ok: true,
+          content: '已应用 1 项变更',
+          idempotencyKey: '11111111-1111-4111-8111-111111111111',
+        }),
+      }),
+    );
+    const run = executor.execute(
+      { id: 'b4-4', name: 'source_apply_changes', arguments: '{"ops":[{}]}' },
+      { browser: fakeBrowser(), runId: 'run-b4' },
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => {
+      expect(confirm.getPending()).not.toBeNull();
+    });
+    expect(confirm.approve('b4-4')).toBe(true);
+    const res = await run;
+    expect(res.ok).toBe(true);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.argsSummary).toContain('idempotencyKey=11111111-1111-4111-8111-111111111111');
+  });
+
+  it('SOURCE_TOOL_CONTENT_MAX=4000：source 工具结果确定性截断 + warning', async () => {
+    registerTool(
+      makeDef({
+        name: 'source_search',
+        parameters: { properties: { query: { type: 'string' } }, required: ['query'] },
+        baseRisk: 0,
+        executor: async ({ id }) => ({ toolCallId: id, ok: true, content: '长'.repeat(5000) }),
+      }),
+    );
+    const res = await executor.execute(
+      { id: 'b4-5', name: 'source_search', arguments: '{"query":"x"}' },
+      { browser: fakeBrowser(), runId: 'run-b4' },
+      new AbortController().signal,
+    );
+    expect(res.ok).toBe(true);
+    expect(res.content.length).toBeLessThanOrEqual(4000);
+    expect(res.warnings?.some((w) => w.includes('截断'))).toBe(true);
+  });
+});

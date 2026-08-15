@@ -636,3 +636,30 @@ describe('conversation-store v2 — 零持久化红线（真实文件字节断�
     expect(existsSync(join(dir, 'conversations', 'sess-x.json.tmp'))).toBe(false);
   });
 });
+
+// —— B4：ToolStep 错误码枚举扩展（8 个 source 错误码进闭合集合）——
+describe('conversation-store v2 — B4 source 错误码（ToolResultErrorCode 扩展）', () => {
+  const sourceCodes = [
+    'source-invalid-change',
+    'source-version-conflict',
+    'source-duplicate',
+    'source-not-found',
+    'source-forbidden',
+    'source-limit',
+    'source-unavailable',
+    'source-conflict',
+  ];
+
+  it('8 个 source 错误码全部被 ToolStep 形状校验接受', () => {
+    for (const code of sourceCodes) {
+      expect(
+        validateMessageShape(makeToolStepMessage({ errorCode: code })),
+        `errorCode=${code}`,
+      ).not.toBeNull();
+    }
+  });
+
+  it('非枚举错误码仍拒绝（闭合集合不放松）', () => {
+    expect(validateMessageShape(makeToolStepMessage({ errorCode: 'source-sql' }))).toBeNull();
+  });
+});

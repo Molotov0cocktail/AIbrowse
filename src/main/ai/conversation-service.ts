@@ -60,6 +60,7 @@ import {
 import { AGENT_LOOP_LIMITS, AgentLoop, type AgentLoopLimits } from './agent/agent-loop';
 import type { ConfirmManager } from './confirm-manager';
 import type { SearchProvider } from './search/search-provider';
+import type { SourceService } from '../../shared/types/sources';
 import { listTools } from './tools/tool-registry';
 
 // v1 单 Provider 选择契约（决议 #20，§6.1）：返回 providerId 属于已注册工厂 kind 的
@@ -91,6 +92,7 @@ export interface AgentRuntimeOptions {
   browser: BrowserController;
   confirmManager: ConfirmManager;
   searchProvider?: SearchProvider;
+  sourceService?: SourceService; // B4：ctx.sourceService 注入点（Source 工具唯一通道）
   audit: (entry: AuditEntry) => void; // 工具审计出口（每次调用恰好一条由 ToolExecutor 保证）
   auditRun?: (message: string) => void; // run 开始/终止条目（§10.1）
   limits?: Partial<AgentLoopLimits>; // 冒烟/测试注入（生产用默认 12 步/420s）
@@ -687,6 +689,7 @@ export class ConversationServiceImpl implements ConversationService {
         confirmManager: agent.confirmManager,
         browser: agent.browser,
         ...(agent.searchProvider !== undefined ? { searchProvider: agent.searchProvider } : {}),
+        ...(agent.sourceService !== undefined ? { sourceService: agent.sourceService } : {}),
         audit: agent.audit,
         limits: agent.limits,
         callbacks: {

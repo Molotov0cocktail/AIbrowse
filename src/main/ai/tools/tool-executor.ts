@@ -18,12 +18,21 @@ import { getTool, validateToolArgs } from './tool-registry';
 import type { ToolExecutionContext, ToolDefinition, ToolExecutionDerived } from './tool-types';
 import { logWarn } from '../../logger';
 
-// §8.4 结果长度预算：read 独立 8000（快照章节化），其余工具 2000，search 4000（A4 接线）
+// §8.4 结果长度预算：read 独立 8000（快照章节化），其余工具 2000，search 4000（A4 接线）；
+// B4（§8.1）：Source 工具统一 4000（与 search_web 同级）
 export const TOOL_RESULT_CONTENT_MAX = 2000;
 export const READ_TOOL_CONTENT_MAX = 8000;
 export const SEARCH_TOOL_CONTENT_MAX = 4000;
+export const SOURCE_TOOL_CONTENT_MAX = 4000;
 
 const WARNING_TRUNCATED = '工具结果超过长度预算，已确定性截断';
+
+const SOURCE_TOOL_NAMES: readonly string[] = [
+  'source_search',
+  'source_list',
+  'source_get',
+  'source_apply_changes',
+];
 
 // 确定性截断：总长 ≤ maxChars（含截断标记）
 export function truncateToolContent(
@@ -51,6 +60,7 @@ function toolFailure(
 function contentBudgetFor(toolName: string): number {
   if (toolName === 'browser_read') return READ_TOOL_CONTENT_MAX;
   if (toolName === 'search_web') return SEARCH_TOOL_CONTENT_MAX;
+  if (SOURCE_TOOL_NAMES.includes(toolName)) return SOURCE_TOOL_CONTENT_MAX;
   return TOOL_RESULT_CONTENT_MAX;
 }
 
@@ -90,27 +100,47 @@ export class ToolExecutor {
           argsSummary = summarizeArgs(call.name, validated.args);
           result = toolFailure(call.id, 'forbidden', `操作被禁止：${perm.reason}`);
         } else if (perm.level === 2) {
-          const outcome = await this.confirmManager.requestConfirm(
-            ctx.runId,
-            call.id,
-            call.name,
-            await this.buildConfirmSummary(call.name, validated.args, binding?.semantics.text, ctx),
-          );
-          argsSummary = summarizeArgs(call.name, validated.args);
-          if (outcome === 'approved') {
-            decision = 'confirmed';
-            result = await this.runTool(
-              call,
-              def,
-              validated.args,
-              ctx,
-              signal,
-              this.buildDerived(call.name, binding, 2),
-            );
+          // B4 决议 #66：程序化确认摘要钩子（source_apply_changes 的只读 preview diff）
+          // 在 ConfirmManager.requestConfirm 之前调用；预览失败 → 以钩子错误码
+          // fail-closed 终止（不进入确认、零写入、审计恰好一条 decision=invalid）。
+          const hookResult =
+            def.confirmSummary !== undefined ? await def.confirmSummary(validated.args, ctx) : null;
+          if (hookResult !== null && !hookResult.ok) {
+            decision = 'invalid';
+            argsSummary = summarizeArgs(call.name, validated.args);
+            result = toolFailure(call.id, hookResult.errorCode, hookResult.content);
           } else {
-            // denied / cancelled：fail-closed 不执行（无自动批准）
-            decision = 'denied';
-            result = toolFailure(call.id, 'denied-by-user', '用户未批准该操作');
+            const summary =
+              hookResult !== null
+                ? hookResult.summary
+                : await this.buildConfirmSummary(
+                    call.name,
+                    validated.args,
+                    binding?.semantics.text,
+                    ctx,
+                  );
+            const outcome = await this.confirmManager.requestConfirm(
+              ctx.runId,
+              call.id,
+              call.name,
+              summary,
+            );
+            argsSummary = summarizeArgs(call.name, validated.args);
+            if (outcome === 'approved') {
+              decision = 'confirmed';
+              result = await this.runTool(
+                call,
+                def,
+                validated.args,
+                ctx,
+                signal,
+                this.buildDerived(call.name, binding, 2),
+              );
+            } else {
+              // denied / cancelled：fail-closed 不执行（无自动批准）
+              decision = 'denied';
+              result = toolFailure(call.id, 'denied-by-user', '用户未批准该操作');
+            }
           }
         } else {
           decision = perm.level === 0 ? 'auto' : 'auto-visible';
@@ -127,6 +157,12 @@ export class ToolExecutor {
       }
     }
 
+    // B4 决议 #67：source_apply_changes 成功后幂等键入审计（ToolExecutor 单出口的
+    // 恰好一条纪律不变——仅追加，不新增条目）；幂等键不进 UNTRUSTED_TOOL_RESULT 块/
+    // ToolStep/UI（ToolResult.idempotencyKey 仅供本审计出口读取）。
+    if (call.name === 'source_apply_changes' && result.ok && result.idempotencyKey !== undefined) {
+      argsSummary = `${argsSummary};idempotencyKey=${result.idempotencyKey}`;
+    }
     this.audit({
       requestId: ctx.runId,
       toolCallId: call.id,
@@ -228,6 +264,8 @@ export class ToolExecutor {
         // 最小形状：errorCode 仅失败时携带；warnings 仅非空时携带（§2.2 可选字段语义）
         ...(raw.ok ? {} : { errorCode: raw.errorCode }),
         ...(warnings.length > 0 ? { warnings } : {}),
+        // B4 决议 #67：审计出口专用幂等键透传（见 execute() 追加逻辑）
+        ...(raw.idempotencyKey !== undefined ? { idempotencyKey: raw.idempotencyKey } : {}),
       };
     } catch (err) {
       logWarn('tool-executor', `工具「${def.name}」执行异常（toolCallId=${call.id}）`, err);

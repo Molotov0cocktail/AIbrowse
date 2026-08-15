@@ -8,9 +8,12 @@ import type {
   ElementSemanticsBinding,
   ToolPermissionLevel,
   ToolResult,
+  ToolResultErrorCode,
 } from '../../../shared/types/agent';
 import type { ProviderToolParameter } from '../../../shared/types/conversation';
 import type { SearchProvider } from '../search/search-provider';
+import type { SourceService } from '../../../shared/types/sources';
+import type { ConfirmSummary } from '../confirm-manager';
 
 // A3：参数级校验规则（校验器按工具定义逐参数应用；不进模型可见 schema）
 export interface ToolParamRule {
@@ -20,6 +23,13 @@ export interface ToolParamRule {
   min?: number; // 数字下界（含）
   max?: number; // 数字上界（含）
 }
+
+// B4 决议 #66：程序化确认摘要钩子结果——ok:true 携带摘要（由 ToolExecutor 直接用于
+// ConfirmManager.requestConfirm）；ok:false = 预览失败（版本冲突/blocked 猜测/结构拒绝），
+// ToolExecutor 以钩子错误码 fail-closed 终止调用（不进入确认、零写入、审计恰好一条）。
+export type ConfirmSummaryHookResult =
+  | { ok: true; summary: ConfirmSummary }
+  | { ok: false; errorCode: ToolResultErrorCode; content: string };
 
 export interface ToolDefinition {
   name: string; // 唯一；命名空间前缀 browser./search.（§4.1）
@@ -35,6 +45,13 @@ export interface ToolDefinition {
     submitClick?: ToolPermissionLevel; // click 目标为提交类元素的级别
   };
   executor: ToolExecutorFn; // 注入式执行函数（依赖由装配时提供，工具实现不 import Electron）
+  // B4 决议 #66：可选程序化确认摘要钩子——L2 路径在 ConfirmManager.requestConfirm
+  // 之前调用（source_apply_changes 借此经 SourceService.previewChangeSet 产出确定性
+  // diff）；未设置的工具体走既有 buildConfirmSummary 兜底（行为零回归）。
+  confirmSummary?: (
+    args: Record<string, unknown>,
+    ctx: ToolExecutionContext,
+  ) => Promise<ConfirmSummaryHookResult>;
 }
 
 // A3：ToolExecutor 权限决策派生的执行参数（执行器内部参数，模型不可见不可写）——
@@ -57,6 +74,10 @@ export interface ToolExecutionContext {
   // A4：search_web 的搜索通道注入点（设计 §4.1「browser 能力 + search」）——executor
   // 优先使用本注入（冒烟受控夹具离线驱动/A5 AgentLoop 装配），缺省回退注册注入。
   searchProvider?: SearchProvider;
+  // B4：Source 工具唯一通道（设计 §9.1 注入点，类比 searchProvider）——executor 优先
+  // 使用本注入（冒烟临时库/A5 AgentLoop 装配），缺省回退注册注入；两者皆缺 →
+  // source-unavailable 安全失败（不拖垮浏览器）。
+  sourceService?: SourceService;
   // A3：click/fill 元素语义来源（语义与文档世代绑定）。tabId 由管线解析后传入
   // （args.tabId 优先，缺省活动 Tab；A5 历史提取可忽略 tabId）——未接线时 click/fill
   // 因 null 语义 fail-closed L3；绑定 documentId 与当前世代不符 → 执行层 stale-element。

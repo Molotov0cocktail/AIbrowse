@@ -21,7 +21,9 @@ import type {
   ToolPermissionLevel,
 } from '../../../shared/types/agent';
 
-// §7.1 权限矩阵基础级别（编译期常量——模型与网页无通道修改本矩阵，threat-model T-06）
+// §7.1 权限矩阵基础级别（编译期常量——模型与网页无通道修改本矩阵，threat-model T-06）；
+// B4（决议 #64 系列，detailed-design §9.2）：source_search/list/get L0（有界 + 分享模式
+// 过滤为执行层保证）、source_apply_changes L2 无条件（任何 change set 都必须确认）。
 export const TOOL_BASE_RISK: Readonly<Record<string, ToolPermissionLevel>> = {
   browser_get_tabs: 0,
   browser_get_active_tab: 0,
@@ -36,6 +38,10 @@ export const TOOL_BASE_RISK: Readonly<Record<string, ToolPermissionLevel>> = {
   browser_reload: 1,
   browser_click: 1,
   browser_fill: 1,
+  source_search: 0,
+  source_list: 0,
+  source_get: 0,
+  source_apply_changes: 2,
 };
 
 export interface PermissionDecision {
@@ -73,6 +79,11 @@ export function decide(
     return decideFill(elementSemantics);
   }
 
+  // B4（§9.2）：source_apply_changes 基础级别 2 无条件升级确认（任何 change set 都
+  // 必须确认——不回落 L1 自动执行；确认门为写入安全的唯一通道）
+  if (base === 2) {
+    return { level: 2, reason: '变更类操作，需用户确认' };
+  }
   return base === 0
     ? { level: 0, reason: '只读/低风险操作（自动执行）' }
     : { level: 1, reason: '低风险操作（自动显著展示）' };

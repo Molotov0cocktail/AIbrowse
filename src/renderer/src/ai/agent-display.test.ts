@@ -78,7 +78,7 @@ describe('AGENT_RUN_STATUS_LABELS（run.status 权威终止理由文案源）', 
 });
 
 describe('TOOL_ERROR_LABELS（ToolResultErrorCode 中文文案，闭合枚举）', () => {
-  it('九值全覆盖', () => {
+  it('十七值全覆盖（9 既有 + B4 8 个 source 错误码）', () => {
     expect(TOOL_ERROR_LABELS).toEqual({
       'invalid-args': '参数无效',
       'tool-not-found': '未知工具',
@@ -89,6 +89,14 @@ describe('TOOL_ERROR_LABELS（ToolResultErrorCode 中文文案，闭合枚举）
       'denied-by-user': '用户未批准',
       'execution-failed': '执行失败',
       'search-failed': '搜索失败',
+      'source-invalid-change': '信源变更无效',
+      'source-version-conflict': '信源版本冲突（已被修改）',
+      'source-duplicate': '信源已存在',
+      'source-not-found': '信源不存在',
+      'source-forbidden': '信源不可访问',
+      'source-limit': '超出信源数量上限',
+      'source-unavailable': '信源服务不可用',
+      'source-conflict': '信源变更冲突',
     });
   });
 });
@@ -217,5 +225,26 @@ describe('describeAgentStatus（状态栏确定性中文文案）', () => {
         }),
       ),
     ).toBe('已终止：未配置可用的 AI 服务');
+  });
+});
+
+// —— B4：Source 工具错误码中文文案 + 动作类型（ToolResultErrorCode 扩展同步）——
+describe('B4 Source 工具文案（TOOL_ERROR_LABELS / toolActionLabel）', () => {
+  it('8 个 source 错误码中文文案齐备（闭合枚举全覆盖）', () => {
+    expect(TOOL_ERROR_LABELS['source-invalid-change']).toBeTruthy();
+    expect(TOOL_ERROR_LABELS['source-version-conflict']).toBeTruthy();
+    expect(TOOL_ERROR_LABELS['source-duplicate']).toBeTruthy();
+    expect(TOOL_ERROR_LABELS['source-not-found']).toBeTruthy();
+    expect(TOOL_ERROR_LABELS['source-forbidden']).toBeTruthy();
+    expect(TOOL_ERROR_LABELS['source-limit']).toBeTruthy();
+    expect(TOOL_ERROR_LABELS['source-unavailable']).toBeTruthy();
+    expect(TOOL_ERROR_LABELS['source-conflict']).toBeTruthy();
+  });
+
+  it('四工具动作类型中文文案（确认对话框展示）', () => {
+    expect(toolActionLabel('source_search')).not.toBe('执行浏览器操作');
+    expect(toolActionLabel('source_list')).not.toBe('执行浏览器操作');
+    expect(toolActionLabel('source_get')).not.toBe('执行浏览器操作');
+    expect(toolActionLabel('source_apply_changes')).not.toBe('执行浏览器操作');
   });
 });
