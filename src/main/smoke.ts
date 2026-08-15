@@ -6,6 +6,7 @@
 
 import { app, session, webContents, WebContentsView } from 'electron';
 import type { BrowserWindow, WebContents } from 'electron';
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import {
   existsSync,
@@ -27,6 +28,12 @@ import { runMigrations } from './sources/db/migrations';
 import { SourceServiceImpl } from './sources/source-service';
 import { SourceSearchIndex } from './sources/repository/source-search-index';
 import { SourceUsageTracker } from './sources/usage/usage-tracker';
+// B7：存储装配（probe → 备份 → 迁移 → 检查）与保留清理——冒烟 B-06 真实启动
+// 状态矩阵（正常装配/迁移失败/未来版本/损坏/截断）直接调用生产装配路径。
+import { openSourcesStore } from './sources/sources-store';
+import { BACKUP_NAME_PATTERN, pruneBackups } from './sources/db/backup';
+import { createSourceTools } from './sources/tools/source-tools';
+import { DatabaseSync } from 'node:sqlite';
 import type {
   SourceService,
   SourcesState,
@@ -10309,6 +10316,12 @@ export async function runSmokeScenario(
       await runSourcesAgentUiScenarios(options, controller);
     }
 
+    // 8.14 B-06 B7 部分：真实启动迁移/备份/恢复态全矩阵 + rebuild 诊断 + usage 投影
+    // + 保留清理（生产装配路径 openSourcesStore；LIVE 模式跳过同 8.4–8.6 条件）
+    if (options.liveSmoke === undefined) {
+      await runSourcesRecoverySmoke(controller, options);
+    }
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -10430,7 +10443,7 @@ export async function runSourcesSmokeScenario(mode: 'set' | 'check'): Promise<vo
       if (mode === 'set') {
         await runSourcesSmokeSet(service);
       } else {
-        await runSourcesSmokeCheck(service);
+        await runSourcesSmokeCheck(service, dbPath);
       }
     } finally {
       // 进程退出路径：句柄必须关闭（service 未构造成功时兜底关闭）
@@ -10507,10 +10520,24 @@ async function runSourcesSmokeSet(service: SourceServiceImpl): Promise<void> {
   // 8. journal 持久化断言（add×2 + update + disable + change set ≥ 5 条）
   const undoable = await service.listUndoable();
   assert(undoable.length >= 5, `B-02 set：journal 行数应 ≥5（实际 ${undoable.length}）`);
-  logInfo('smoke', `B-02 set 完成：CRUD + journal 写入（${undoable.length} 条可 Undo 记录）`);
+  // 9. B7（决议 #90）：usage 跨进程写入——recordUsage 后 sources 最近一次投影与
+  //    usage_events 同事务一致更新（check 进程读回断言两处投影一致）
+  if (!s1r.ok) return;
+  await service.recordUsage(s1r.source.id, 'reachable');
+  const usageView = await service.get(s1r.source.id, 'user');
+  assert(
+    usageView.ok &&
+      usageView.source.lastUsedAt !== null &&
+      usageView.source.lastUsageOutcome === 'reachable',
+    'B-02 set：usage 写入后 SourceView 最近一次投影应一致更新',
+  );
+  logInfo(
+    'smoke',
+    `B-02 set 完成：CRUD + journal + usage 写入（${undoable.length} 条可 Undo 记录）`,
+  );
 }
 
-async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
+async function runSourcesSmokeCheck(service: SourceServiceImpl, dbPath: string): Promise<void> {
   // 1. 跨进程读回：3 个 source（origin 示例站点、page benchmark、change set 新增 example.org）
   const list = await service.list({ page: 0, pageSize: 20, audience: 'user' });
   assert(
@@ -10540,6 +10567,43 @@ async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
     s1Full.ok && s1Full.source.tags.length === 1 && s1Full.source.tags[0] === 'benchmark',
     'B-02 check：s1 tags 读回一致',
   );
+  // 1.1 B7（决议 #90）：usage 跨进程读回——两处最近一次投影一致（sources 列 +
+  //     usage_events 行；只读探针为 SMOKE 门控测试设施，决议 #84 同精神）
+  assert(
+    s1Full.ok &&
+      s1Full.source.lastUsedAt !== null &&
+      s1Full.source.lastUsageOutcome === 'reachable',
+    'B-02 check：usage 投影跨进程读回（sources.last_used_at/last_usage_outcome）',
+  );
+  {
+    const probeDb = new DatabaseSync(dbPath, {
+      readOnly: true,
+    });
+    try {
+      const event = probeDb
+        .prepare('SELECT outcome FROM usage_events WHERE source_id = ?')
+        .get(s1!.id) as { outcome: string } | undefined;
+      const projection = probeDb
+        .prepare('SELECT last_used_at, last_usage_outcome FROM sources WHERE id = ?')
+        .get(s1!.id) as
+        { last_used_at: string | null; last_usage_outcome: string | null } | undefined;
+      assert(
+        event?.outcome === 'reachable' &&
+          projection !== undefined &&
+          projection.last_usage_outcome === 'reachable' &&
+          projection.last_used_at !== null &&
+          projection.last_used_at ===
+            (
+              probeDb
+                .prepare('SELECT recorded_at FROM usage_events WHERE source_id = ?')
+                .get(s1!.id) as { recorded_at: string }
+            ).recorded_at,
+        'B-02 check：usage_events 与 sources 投影跨进程一致（同事务同时钟）',
+      );
+    } finally {
+      probeDb.close();
+    }
+  }
   assert(s2!.enabled === true, 'B-02 check：s2 已由 change set restore（跨进程生效）');
   // 2.1 B3 补充证据（不改动 B-02 原有断言）：重启后经 B3 检索路径命中 s1
   // （'示例' 2 字符 → 参数化子串降级路径；跨进程新连接查询证据）
@@ -10593,8 +10657,356 @@ async function runSourcesSmokeCheck(service: SourceServiceImpl): Promise<void> {
   assert(s2Still.ok && s2Still.source.enabled === false, 'B-02 check：冲突拒绝后 s2 状态未被覆盖');
   logInfo(
     'smoke',
-    'B-02 check 完成：跨进程读回一致 + 重启后 Undo 生效 + 重复 Undo 幂等 + 版本冲突拒绝',
+    'B-02 check 完成：跨进程读回一致 + 重启后 Undo 生效 + 重复 Undo 幂等 + 版本冲突拒绝 + usage 投影一致',
   );
+}
+
+// ---------- 8.14 B-06 B7 部分：真实启动迁移/备份/恢复态全矩阵（默认矩阵自动包含，
+// LIVE 模式跳过——与 8.4–8.6 同条件） ----------
+// 直接调用生产装配路径 openSourcesStore（非 SMOKE override 冒充）：新库零备份/
+// v0→v1 先备份后迁移/迁移失败回滚原库逻辑恒等/未来版本与损坏·截断·坏 magic 零
+// 写入恢复态/恢复态下四 Agent Source 工具全拒且数据库零变化/浏览器其余能力继续
+// 可用/备份保留清理（5+30 天上界）/rebuild 受控诊断入口/usage 两处投影一致。
+// 全部使用本场景专属系统 TEMP 子目录（不触碰默认矩阵 pid 专属目录与真实 userData），
+// finally 整体清理。
+async function runSourcesRecoverySmoke(
+  controller: BrowserController,
+  options: SmokeOptions,
+): Promise<void> {
+  const dir = join(app.getPath('temp'), `aibrowse-b7-${process.pid}`);
+  const v0Path = join(dir, 'v0.db');
+  const backupPathAt = (sub: string): string => join(dir, sub, 'backups');
+  const readVersion = (path: string): number => {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+    } finally {
+      db.close();
+    }
+  };
+  const readLegacy = (path: string): string | null => {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      const row = db.prepare("SELECT v FROM b7_legacy WHERE k = 'm'").get() as
+        { v: string } | undefined;
+      return row === undefined ? null : row.v;
+    } catch {
+      return null;
+    } finally {
+      db.close();
+    }
+  };
+  const sha256 = (path: string): string =>
+    createHash('sha256').update(readFileSync(path)).digest('hex');
+  const strictBackups = (sub: string): string[] => {
+    const dirPath = backupPathAt(sub);
+    if (!existsSync(dirPath)) return [];
+    return readdirSync(dirPath)
+      .filter((n) => BACKUP_NAME_PATTERN.test(n))
+      .sort();
+  };
+  const makeV0 = (path: string): void => {
+    const db = new DatabaseSync(path);
+    db.exec('PRAGMA user_version = 0');
+    db.exec('CREATE TABLE b7_legacy (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+    db.prepare('INSERT INTO b7_legacy(k, v) VALUES (?, ?)').run('m', '遗留数据');
+    db.close();
+  };
+
+  try {
+    mkdirSync(dir, { recursive: true });
+
+    // 1. 新库首次创建：normal + 零无意义备份（backups 目录不存在或为空）
+    {
+      const outcome = openSourcesStore({
+        dbPath: join(dir, 'fresh.db'),
+        backupsDir: backupPathAt('fresh'),
+      });
+      assert(outcome.mode === 'normal', 'B-06：新库首次创建应进入 normal');
+      assert(strictBackups('fresh').length === 0, 'B-06：新库不得生成无意义备份');
+      const list = await outcome.service.list({ page: 0, audience: 'user' });
+      assert(list.ok && list.total === 0, 'B-06：新库 service 可用');
+      outcome.service.dispose();
+    }
+
+    // 2. v0 → v1：先备份后迁移；备份严格命名、可打开且内容完整（决议 #88）
+    {
+      makeV0(v0Path);
+      const outcome = openSourcesStore({ dbPath: v0Path, backupsDir: backupPathAt('mig') });
+      assert(outcome.mode === 'normal', 'B-06：v0→v1 应进入 normal');
+      assert(readVersion(v0Path) === 1, 'B-06：迁移后 user_version 应为 1');
+      const backups = strictBackups('mig');
+      assert(backups.length === 1, `B-06：迁移前应恰好 1 个一致性备份（实际 ${backups.length}）`);
+      assert(readVersion(join(backupPathAt('mig'), backups[0]!)) === 0, 'B-06：备份为迁移前版本');
+      assert(
+        readLegacy(join(backupPathAt('mig'), backups[0]!)) === '遗留数据',
+        'B-06：迁移前备份可打开且内容完整',
+      );
+      const list = await outcome.service.list({ page: 0, audience: 'user' });
+      assert(list.ok, 'B-06：迁移后 service 可用');
+      // 2.1 usage 两处投影一致（决议 #90，真实启动装配路径）
+      const added = await outcome.service.addManual({
+        scope: 'page',
+        url: 'https://example.com/b7-usage',
+      });
+      assert(added.ok, 'B-06：usage 场景添加 source 应成功');
+      if (added.ok) {
+        await outcome.service.recordUsage(added.source.id, 'reachable');
+        const view = await outcome.service.get(added.source.id, 'user');
+        assert(
+          view.ok &&
+            view.source.lastUsedAt !== null &&
+            view.source.lastUsageOutcome === 'reachable',
+          'B-06：usage 最近一次投影应一致更新（sources 列）',
+        );
+        const probeDb = new DatabaseSync(v0Path, { readOnly: true });
+        try {
+          const event = probeDb
+            .prepare('SELECT outcome, recorded_at FROM usage_events WHERE source_id = ?')
+            .get(added.source.id) as { outcome: string; recorded_at: string };
+          assert(
+            event.outcome === 'reachable' && event.recorded_at === view.source.lastUsedAt,
+            'B-06：usage_events 与 sources 投影一致（同事务同时钟）',
+          );
+        } finally {
+          probeDb.close();
+        }
+      }
+      // 2.2 rebuild 受控诊断入口（决议 #91）：重建前后行数一致、内容不变、零 Undo
+      const before = await outcome.service.list({ page: 0, audience: 'user' });
+      const undoableBefore = (await outcome.service.listUndoable()).length;
+      const rebuild = await outcome.service.rebuildSearchIndex();
+      assert(
+        rebuild.ok && rebuild.sourceCount === rebuild.ftsCount && rebuild.sourceCount === 1,
+        `B-06：rebuild 应成功且行数对比一致（实际 ${JSON.stringify(rebuild)}）`,
+      );
+      const after = await outcome.service.list({ page: 0, audience: 'user' });
+      assert(
+        before.ok && after.ok && after.total === before.total,
+        'B-06：rebuild 前后行数不变（rebuild 不算 Source 数据变更）',
+      );
+      assert(
+        (await outcome.service.listUndoable()).length === undoableBefore,
+        'B-06：rebuild 零 Undo 记录',
+      );
+      // 2.3 FTS 表损坏 → rebuild 失败安全返回（有界诊断，不破坏其余数据）
+      {
+        const db = new DatabaseSync(v0Path);
+        db.exec('DROP TABLE sources_fts'); // SMOKE 测试设施（决议 #47 同精神）
+        db.close();
+      }
+      const brokenRebuild = await outcome.service.rebuildSearchIndex();
+      assert(!brokenRebuild.ok, 'B-06：FTS 表损坏时 rebuild 应失败安全返回');
+      const degradedList = await outcome.service.list({ page: 0, audience: 'user' });
+      assert(
+        degradedList.ok && degradedList.total === 1,
+        'B-06：rebuild 失败不破坏其余数据（主表完好）',
+      );
+      outcome.service.dispose();
+    }
+
+    // 3. 迁移失败注入：回滚 + 原库逻辑恒等（user_version/数据）+ 备份完整 + 主文件字节不变
+    {
+      const failPath = join(dir, 'fail.db');
+      makeV0(failPath);
+      const hashBefore = sha256(failPath);
+      const failing = {
+        version: 1,
+        statements: ['CREATE TABLE ok_step (x TEXT)', 'THIS IS NOT VALID SQL ((('],
+      } as const;
+      const outcome = openSourcesStore({
+        dbPath: failPath,
+        backupsDir: backupPathAt('fail'),
+        migrations: [failing],
+      });
+      assert(outcome.mode === 'readonly-recovery', 'B-06：迁移失败应进入 readonly-recovery');
+      assert(outcome.reason.includes('迁移'), 'B-06：恢复态原因应为中文迁移失败诊断');
+      assert(readVersion(failPath) === 0, 'B-06：迁移失败后 user_version 逻辑恒等');
+      assert(readLegacy(failPath) === '遗留数据', 'B-06：迁移失败后数据逻辑恒等');
+      assert(sha256(failPath) === hashBefore, 'B-06：迁移失败后主文件字节不变（未被替换/截断）');
+      assert(strictBackups('fail').length === 1, 'B-06：迁移失败前一致性备份仍在');
+      outcome.service.dispose();
+    }
+
+    // 4. 未来版本：零写入（字节恒等）+ 零备份
+    {
+      const futurePath = join(dir, 'future.db');
+      makeV0(futurePath);
+      {
+        const db = new DatabaseSync(futurePath);
+        db.exec('PRAGMA user_version = 99');
+        db.close();
+      }
+      const hashBefore = sha256(futurePath);
+      const outcome = openSourcesStore({ dbPath: futurePath, backupsDir: backupPathAt('future') });
+      assert(outcome.mode === 'readonly-recovery', 'B-06：未来版本应进入 readonly-recovery');
+      assert(outcome.reason.includes('版本'), 'B-06：未来版本中文诊断');
+      assert(sha256(futurePath) === hashBefore, 'B-06：未来版本零写入（字节恒等）');
+      assert(strictBackups('future').length === 0, 'B-06：未来版本零备份');
+      outcome.service.dispose();
+    }
+
+    // 5. 损坏/截断/坏 magic：原文件保留（字节不变）
+    {
+      const corruptPath = join(dir, 'corrupt.db');
+      writeFileSync(corruptPath, 'definitely not sqlite at all');
+      const hashBefore = sha256(corruptPath);
+      const outcome = openSourcesStore({
+        dbPath: corruptPath,
+        backupsDir: backupPathAt('corrupt'),
+      });
+      assert(outcome.mode === 'readonly-recovery', 'B-06：坏 magic 应进入 readonly-recovery');
+      assert(sha256(corruptPath) === hashBefore, 'B-06：坏 magic 原文件保留');
+
+      const truncPath = join(dir, 'trunc.db');
+      const srcBytes = new Uint8Array(readFileSync(v0Path));
+      writeFileSync(truncPath, srcBytes.subarray(0, 300));
+      const truncHash = sha256(truncPath);
+      const truncOutcome = openSourcesStore({
+        dbPath: truncPath,
+        backupsDir: backupPathAt('trunc'),
+      });
+      assert(truncOutcome.mode === 'readonly-recovery', 'B-06：截断库应进入 readonly-recovery');
+      assert(sha256(truncPath) === truncHash, 'B-06：截断库原文件保留');
+      truncOutcome.service.dispose();
+      outcome.service.dispose();
+    }
+
+    // 6. 恢复态：读写/Undo/usage/rebuild 全拒 + 四 Agent Source 工具全拒 + 数据库零变化
+    //    + 浏览器其余能力继续可用（恢复态仅局部于 Sources 子系统）
+    {
+      const recoveryPath = join(dir, 'recovery.db');
+      makeV0(recoveryPath);
+      const outcome = openSourcesStore({
+        dbPath: recoveryPath,
+        backupsDir: backupPathAt('recovery'),
+        migrations: [{ version: 1, statements: ['INVALID SQL (('] }],
+      });
+      assert(outcome.mode === 'readonly-recovery', 'B-06：恢复态装配应为 readonly-recovery');
+      const service = outcome.service;
+      const hashBefore = sha256(recoveryPath);
+      assert(
+        (await service.list({ page: 0, audience: 'user' })).ok === false,
+        'B-06：恢复态读入口拒绝（决议 #39）',
+      );
+      assert(
+        (await service.addManual({ scope: 'page', url: 'https://example.com/r' })).ok === false,
+        'B-06：恢复态写入口拒绝',
+      );
+      assert((await service.undoChange('k')).ok === false, 'B-06：恢复态 Undo 拒绝');
+      assert((await service.rebuildSearchIndex()).ok === false, 'B-06：恢复态 rebuild 拒绝');
+      await service.recordUsage('11111111-1111-4111-8111-111111111111', 'reachable'); // 零写入安全 no-op
+      // 四 Agent Source 工具全拒（L0 走真实 ToolExecutor 管线；L2 走 executor 直调——
+      // preview 先行 fail-closed，绝不触达确认/写入）
+      const toolDefs = createSourceTools(service);
+      const byName = new Map(toolDefs.map((d) => [d.name, d]));
+      if (options.toolExecutor !== undefined) {
+        // ctx.sourceService 注入恢复态服务（B4 注入点优先于注册期捕获的生产服务——
+        // 否则经生产注册表执行会落到正常冒烟库）
+        const execCtx = {
+          browser: controller,
+          runId: 'smoke-b6-recovery',
+          sourceService: service,
+        };
+        for (const name of ['source_search', 'source_list', 'source_get']) {
+          const tool = byName.get(name);
+          assert(tool !== undefined, `B-06：应找到 ${name} 工具定义`);
+          const args =
+            name === 'source_search'
+              ? { query: 'anything' }
+              : name === 'source_list'
+                ? { page: 0 }
+                : { sourceId: '11111111-1111-4111-8111-111111111111' };
+          const result = await options.toolExecutor.execute(
+            { id: `smoke-b6-${name}`, name, arguments: JSON.stringify(args) },
+            execCtx,
+            new AbortController().signal,
+          );
+          assert(
+            !result.ok && result.errorCode === 'source-unavailable',
+            `B-06：恢复态 ${name} 应 source-unavailable 拒绝`,
+          );
+        }
+        // source_apply_changes：executor 直调（ToolExecutor 会进入 L2 确认等待；
+        // 此处验证 executor 自身 preview fail-closed 零写入——确认前数据库零变化）
+        const applyTool = byName.get('source_apply_changes');
+        assert(applyTool !== undefined, 'B-06：应找到 source_apply_changes 工具定义');
+        const applyResult = await applyTool.executor(
+          {
+            id: 'smoke-b6-apply',
+            args: {
+              ops: [{ kind: 'add', scope: 'page', url: 'https://example.com/never' }],
+            },
+          },
+          { ...execCtx, sourceService: service } as ToolExecutionContext,
+          new AbortController().signal,
+        );
+        assert(
+          !applyResult.ok && applyResult.errorCode === 'source-unavailable',
+          'B-06：恢复态 source_apply_changes 应 fail-closed 零写入',
+        );
+      }
+      assert(sha256(recoveryPath) === hashBefore, 'B-06：恢复态全部拒绝后数据库零变化');
+      // 浏览器其余能力继续可用（恢复态仅局部于 Sources 子系统）
+      const pages = await startControlledPages();
+      try {
+        const tab = await controller.createTab(pages.simpleUrl);
+        await waitFor(
+          async () =>
+            (await controller.getTabs()).some((t) => t.id === tab.id && t.state === 'ready'),
+          10000,
+          'B-06：恢复态下浏览器其余能力应继续可用（受控页加载失败）',
+        );
+        assert(await controller.closeTab(tab.id), 'B-06：恢复态下关闭标签页应正常');
+      } finally {
+        await pages.close();
+      }
+      outcome.service.dispose();
+    }
+
+    // 7. 备份保留清理（决议 #89）：5 上界 + 30 天上界 + 严格命名过滤（真实产品函数）
+    {
+      const sub = 'prune';
+      const backupsDir = join(dir, sub, 'backups');
+      mkdirSync(backupsDir, { recursive: true });
+      const nowMs = Date.UTC(2026, 7, 15, 0, 0, 0);
+      const names: string[] = [];
+      for (let i = 0; i < 6; i += 1) {
+        const ts = new Date(nowMs + i * 1000).toISOString().replace(/[:.]/g, '-');
+        const name = `sources-backup-${ts}-v0-${i.toString(16).padStart(8, '0')}.db`;
+        writeFileSync(join(backupsDir, name), 'fixture');
+        names.push(name);
+      }
+      const oldTs = new Date(nowMs - 31 * 24 * 60 * 60 * 1000).toISOString().replace(/[:.]/g, '-');
+      const oldName = `sources-backup-${oldTs}-v0-ffffffff.db`;
+      writeFileSync(join(backupsDir, oldName), 'fixture');
+      writeFileSync(join(backupsDir, 'notes.txt'), 'unrelated');
+      writeFileSync(join(backupsDir, 'sources-backup-WEIRD.db'), 'unrelated');
+      const pruned = pruneBackups(backupsDir, { nowMs });
+      assert(
+        pruned.removed.length === 2,
+        `B-06：应清理最旧 1 个 + 31 天前 1 个（实际 ${pruned.removed.length}）`,
+      );
+      assert(
+        !existsSync(join(backupsDir, names[0]!)) && !existsSync(join(backupsDir, oldName)),
+        'B-06：清理目标应为最旧备份与超 30 天备份',
+      );
+      assert(
+        existsSync(join(backupsDir, names[5]!)) &&
+          existsSync(join(backupsDir, 'notes.txt')) &&
+          existsSync(join(backupsDir, 'sources-backup-WEIRD.db')),
+        'B-06：最新备份与无关文件一律保留（绝不删除原库或无关文件）',
+      );
+      assert(strictBackups(sub).length === 5, 'B-06：清理后恰好保留 5 个严格命名备份');
+    }
+
+    logInfo(
+      'smoke',
+      '8.14 B-06 B7 部分通过（新库零备份/v0→v1 备份迁移/迁移失败回滚/未来版本零写/损坏截断坏 magic/恢复态全拒+浏览器可用/保留清理/rebuild/usage 投影）',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true }); // 本场景专属临时目录整体清理
+  }
 }
 
 // ---------- 8.11 B-05 Sources UI 端到端矩阵（决议 #68–#78 测试落点；默认矩阵自动
