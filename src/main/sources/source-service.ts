@@ -52,6 +52,7 @@ import {
   type SourceRow,
 } from './repository/source-repository';
 import type {
+  FtsRebuildResult,
   ManualAddInput,
   ManualPatch,
   ManualWriteResult,
@@ -124,8 +125,12 @@ export class InMemoryConfirmTokenIssuer implements ConfirmTokenIssuer {
 }
 
 export interface SourceServiceOptions {
-  db: DbHandle;
+  // B7（决议 #39/#52）：db 可为 null = 只读恢复态装配（不打开磁盘库——磁盘文件
+  // 不被写、读入口一并拒绝）；缺省正常装配。恢复态下全部读写/Undo/usage/rebuild
+  // 经既有 disposed 门控结构化拒绝且零写入。
+  db: DbHandle | null;
   now?: () => number; // 时间可注入（journal 清理/令牌过期测试）
+  state?: { mode: 'normal' | 'readonly-recovery'; reason: string | null }; // B7 恢复态装配（缺省 normal）
 }
 
 interface OpTarget {
@@ -135,21 +140,49 @@ interface OpTarget {
 export class SourceServiceImpl implements SourceService {
   readonly id = 'sources';
 
-  private readonly repo: SourceRepository;
-  private readonly journal: ChangeJournal;
-  private readonly index: SourceSearchIndex;
+  private readonly repoImpl: SourceRepository | null;
+  private readonly journalImpl: ChangeJournal | null;
+  private readonly indexImpl: SourceSearchIndex | null;
   private readonly nowMs: () => number;
   private readonly tokenIssuer: InMemoryConfirmTokenIssuer;
-  private readonly dbHandle: DbHandle;
+  private readonly dbHandle: DbHandle | null;
+  private readonly state: { mode: 'normal' | 'readonly-recovery'; reason: string | null };
   private disposed = false;
 
   constructor(options: SourceServiceOptions) {
     this.dbHandle = options.db;
     this.nowMs = options.now ?? (() => Date.now());
-    this.repo = new SourceRepository(options.db);
-    this.journal = new ChangeJournal(options.db, this.nowMs);
-    this.index = new SourceSearchIndex(options.db);
+    this.state = options.state ?? { mode: 'normal', reason: null };
+    // B7 恢复态（db=null）：不构造任何数据库访问器；disposed=true 复用全部既有
+    // 门控（读写/Undo/usage/rebuild 均结构化 source-unavailable，零磁盘写入）
+    if (options.db === null) {
+      this.repoImpl = null;
+      this.journalImpl = null;
+      this.indexImpl = null;
+      this.disposed = true;
+    } else {
+      this.repoImpl = new SourceRepository(options.db);
+      this.journalImpl = new ChangeJournal(options.db, this.nowMs);
+      this.indexImpl = new SourceSearchIndex(options.db);
+    }
     this.tokenIssuer = new InMemoryConfirmTokenIssuer(this.nowMs);
+  }
+
+  // 数据库访问器：正常装配必非空；恢复态（disposed）下所有公开方法在触达前
+  // 已由门控返回（防御性抛错仅暴露程序缺陷，不静默）
+  private get repo(): SourceRepository {
+    if (this.repoImpl === null) throw new Error('程序缺陷：恢复态下访问 Repository');
+    return this.repoImpl;
+  }
+
+  private get journal(): ChangeJournal {
+    if (this.journalImpl === null) throw new Error('程序缺陷：恢复态下访问 ChangeJournal');
+    return this.journalImpl;
+  }
+
+  private get index(): SourceSearchIndex {
+    if (this.indexImpl === null) throw new Error('程序缺陷：恢复态下访问 SourceSearchIndex');
+    return this.indexImpl;
   }
 
   // --- 检索/列表/get（B3 完整实现：audience 必填（决议 #58）+ FTS/LIKE 分流（决议 #60）
@@ -718,6 +751,7 @@ export class SourceServiceImpl implements SourceService {
   }
 
   issueDeleteConfirmToken(sourceId: string): string {
+    if (this.disposed) return ''; // 恢复态/不可用态：删除通道整体关闭
     return this.tokenIssuer.issue(sourceId);
   }
 
@@ -840,6 +874,11 @@ export class SourceServiceImpl implements SourceService {
     }
   }
 
+  // B7（决议 #90）：usage 两处最近一次投影在同一事务内一致更新——
+  // usage_events（唯一行 upsert）与 sources.last_used_at/last_usage_outcome
+  // （SourceView 读取路径）。usage 不算 Source 数据变更：不 bump version/
+  // updated_at、不写 journal、不触发 changed。写失败继续 B6 安全 no-op 契约
+  // （不改变 browser_open 的 ToolResult/权限/Agent 终态）。
   async recordUsage(sourceId: string, outcome: SourceUsageOutcome): Promise<void> {
     if (this.disposed) return;
     if (!isUuidShape(sourceId) || !USAGE_OUTCOMES.includes(outcome)) {
@@ -847,20 +886,61 @@ export class SourceServiceImpl implements SourceService {
       return;
     }
     try {
-      this.repo.upsertUsage(sourceId, outcome, this.iso(this.nowMs()));
+      const recordedAt = this.iso(this.nowMs());
+      withTransaction(this.handle, () => {
+        this.repo.upsertUsage(sourceId, outcome, recordedAt);
+        this.repo.updateSourceUsageProjection(sourceId, outcome, recordedAt);
+      });
     } catch (err) {
-      logWarn('sources', 'recordUsage 写入失败（安全 no-op）', err);
+      logWarn('sources', 'recordUsage 写入失败（安全 no-op，事务已整体回滚）', err);
+    }
+  }
+
+  // B7（决议 #91）：FTS 诊断性 rebuild 受控入口——仅 Sources UI 通道 + normal
+  // 状态可达（IPC 适配器门控）；无 Agent 工具、无 SQL/路径参数、无 L2 权限变更。
+  // rebuild 不算 Source 数据变更：不生成 Undo、不发 sources:changed。成功/失败
+  // 均返回有界中文诊断（行数对比；renderer 不得获得绝对路径）。复用
+  // SourceSearchIndex.rebuildFts/verifyFtsConsistency（B3 内部能力）。
+  async rebuildSearchIndex(): Promise<FtsRebuildResult> {
+    if (this.disposed) {
+      return {
+        ok: false,
+        sourceCount: 0,
+        ftsCount: 0,
+        message: '信源数据暂不可用（恢复态/不可用态）',
+      };
+    }
+    try {
+      this.index.rebuildFts();
+      const after = this.index.verifyFtsConsistency();
+      if (!after.ok || after.sourceCount !== after.ftsCount) {
+        return {
+          ok: false,
+          sourceCount: after.sourceCount,
+          ftsCount: after.ftsCount,
+          message: `搜索索引重建后校验未通过（信源 ${after.sourceCount} 条，索引 ${after.ftsCount} 条）`,
+        };
+      }
+      return {
+        ok: true,
+        sourceCount: after.sourceCount,
+        ftsCount: after.ftsCount,
+        message: `搜索索引重建完成（${after.sourceCount} 个信源）`,
+      };
+    } catch (err) {
+      logWarn('sources', 'rebuildSearchIndex 执行失败（有界诊断返回，不抛异常）', err);
+      return { ok: false, sourceCount: 0, ftsCount: 0, message: '搜索索引重建失败（详情见日志）' };
     }
   }
 
   getState(): { mode: 'normal' | 'readonly-recovery'; reason: string | null } {
-    return { mode: 'normal', reason: null }; // 恢复态装配归 B7（决议 #52）
+    return this.state;
   }
 
   dispose(): void {
     if (this.disposed) return; // 幂等
     this.disposed = true;
-    closeDb(this.handle);
+    if (this.dbHandle !== null) closeDb(this.dbHandle);
   }
 
   // --- 内部执行器（全部在调用方事务内） ---
@@ -912,6 +992,7 @@ export class SourceServiceImpl implements SourceService {
   }
 
   private get handle(): DbHandle {
+    if (this.dbHandle === null) throw new Error('程序缺陷：恢复态下访问数据库句柄');
     return this.dbHandle;
   }
 

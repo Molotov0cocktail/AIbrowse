@@ -765,6 +765,132 @@ describe('recordUsage / getState / dispose / 异常归一化', () => {
     expect(r).toMatchObject({ ok: false, errorCode: 'source-unavailable', idempotencyKey: '' });
   });
 });
+
+// ---------- B7：usage 两处投影同事务一致 + Undo 保留 usage + rebuild 受控入口 ----------
+
+describe('B7 recordUsage — usage_events 与 sources 最近一次投影同事务一致', () => {
+  it('recordUsage 同时更新 usage_events 与 sources.last_used_at/last_usage_outcome', async () => {
+    const s = await addOne('https://example.com/usage-a');
+    await service.recordUsage(s.id, 'reachable');
+    const row = handle
+      .prepare('SELECT last_used_at, last_usage_outcome FROM sources WHERE id = ?')
+      .get(s.id) as { last_used_at: string | null; last_usage_outcome: string | null };
+    expect(row.last_used_at).not.toBeNull();
+    expect(row.last_usage_outcome).toBe('reachable');
+    const event = handle
+      .prepare('SELECT outcome, recorded_at FROM usage_events WHERE source_id = ?')
+      .get(s.id) as { outcome: string; recorded_at: string };
+    expect(event.outcome).toBe('reachable');
+    // 两处时间戳一致（同一事务同一时钟）
+    expect(event.recorded_at).toBe(row.last_used_at);
+    // 视图投影（SourceView 读取路径）
+    const view = await service.get(s.id, 'user');
+    expect(view.ok && view.source.lastUsedAt).toBe(row.last_used_at);
+    expect(view.ok && view.source.lastUsageOutcome).toBe('reachable');
+  });
+
+  it('最近一次覆盖：两处投影都只保留最新结果', async () => {
+    const s = await addOne('https://example.com/usage-b');
+    await service.recordUsage(s.id, 'reachable');
+    await service.recordUsage(s.id, 'unreachable');
+    const row = handle
+      .prepare('SELECT last_used_at, last_usage_outcome FROM sources WHERE id = ?')
+      .get(s.id) as { last_used_at: string; last_usage_outcome: string };
+    expect(row.last_usage_outcome).toBe('unreachable');
+    const event = handle
+      .prepare('SELECT outcome FROM usage_events WHERE source_id = ?')
+      .get(s.id) as { outcome: string };
+    expect(event.outcome).toBe('unreachable');
+    expect(
+      (handle.prepare('SELECT COUNT(*) AS n FROM usage_events').get() as { n: number }).n,
+    ).toBe(1);
+  });
+
+  it('usage 不算 Source 数据变更：version/updated_at 不变、零 journal、零 Undo 记录', async () => {
+    const s = await addOne('https://example.com/usage-c');
+    const before = handle
+      .prepare('SELECT version, updated_at FROM sources WHERE id = ?')
+      .get(s.id) as { version: number; updated_at: string };
+    const undoableBefore = (await service.listUndoable()).length;
+    await service.recordUsage(s.id, 'reachable');
+    const after = handle
+      .prepare('SELECT version, updated_at FROM sources WHERE id = ?')
+      .get(s.id) as { version: number; updated_at: string };
+    expect(after).toEqual(before);
+    expect((await service.listUndoable()).length).toBe(undoableBefore);
+  });
+
+  it('未知 sourceId（UUID 形状但无行）→ 事务整体回滚零写入不抛', async () => {
+    await service.recordUsage('99999999-9999-4999-8999-999999999999', 'reachable');
+    expect(
+      (handle.prepare('SELECT COUNT(*) AS n FROM usage_events').get() as { n: number }).n,
+    ).toBe(0);
+    expect((handle.prepare('SELECT COUNT(*) AS n FROM sources').get() as { n: number }).n).toBe(0);
+  });
+
+  it('Undo 回放保留当前 usage 投影（观测数据不属于业务快照回放范围）', async () => {
+    const s = await addOne('https://example.com/usage-undo');
+    const nameBefore = s.name;
+    await service.recordUsage(s.id, 'reachable');
+    // 后续业务变更 → 其 before 快照的 usage 列为旧值（null）
+    const upd = await service.updateManual(s.id, { name: '改名后' }, 1);
+    expect(upd.ok).toBe(true);
+    const undoable = (await service.listUndoable()).filter(
+      (u) => u.sourceIds[0] === s.id && !u.summary.includes('新增'),
+    );
+    expect(undoable.length).toBe(1);
+    expect((await service.undoChange(undoable[0]!.idempotencyKey)).ok).toBe(true);
+    // Undo 后 usage 投影仍在（不被快照回放覆盖）
+    const row = handle
+      .prepare('SELECT last_used_at, last_usage_outcome FROM sources WHERE id = ?')
+      .get(s.id) as { last_used_at: string | null; last_usage_outcome: string | null };
+    expect(row.last_used_at).not.toBeNull();
+    expect(row.last_usage_outcome).toBe('reachable');
+    const event = handle
+      .prepare('SELECT outcome FROM usage_events WHERE source_id = ?')
+      .get(s.id) as { outcome: string };
+    expect(event.outcome).toBe('reachable');
+    // 业务字段确实回滚（Undo 本体语义不受影响）
+    const view = await service.get(s.id, 'user');
+    expect(view.ok && view.source.name).toBe(nameBefore);
+  });
+});
+
+describe('B7 rebuildSearchIndex — 受控诊断入口（normal 状态；无 Undo/无 changed）', () => {
+  it('正常库 → ok + 行数对比诊断；rebuild 前后行数与内容一致', async () => {
+    const s1 = await addOne('https://example.com/rebuild-a', { name: '重建甲' });
+    await addOne('https://example.com/rebuild-b', { name: '重建乙' });
+    const before = handle.prepare('SELECT COUNT(*) AS n FROM sources').get() as { n: number };
+    const result = await service.rebuildSearchIndex();
+    expect(result.ok).toBe(true);
+    expect(result.sourceCount).toBe(before.n);
+    expect(result.ftsCount).toBe(before.n);
+    expect(result.message.length).toBeGreaterThan(0);
+    // 内容一致：rebuild 后仍能经 FTS 检索命中（外部内容表语义）
+    const hit = await service.search('重建甲', { audience: 'user' });
+    expect(hit.ok && hit.results.some((r) => r.id === s1.id)).toBe(true);
+    // rebuild 不算 Source 数据变更：零 journal 零 Undo 记录
+    const undoable = await service.listUndoable();
+    expect(undoable.some((u) => u.summary.includes('重建'))).toBe(false);
+  });
+
+  it('FTS 表被破坏 → rebuild 失败安全返回（ok=false 有界诊断，不抛不破坏其余数据）', async () => {
+    await addOne('https://example.com/rebuild-broken');
+    handle.exec('DROP TABLE sources_fts'); // 测试专用 SQL：模拟 FTS 表损坏
+    const result = await service.rebuildSearchIndex();
+    expect(result.ok).toBe(false);
+    expect(result.message.length).toBeGreaterThan(0);
+    // 主表数据不受影响（降级检索路径仍可用——决议 #62）
+    const list = await service.list({ page: 0, audience: 'user' });
+    expect(list.ok && list.total).toBe(1);
+  });
+
+  it('disposed → 拒绝（ok=false，不抛）', async () => {
+    service.dispose();
+    const result = await service.rebuildSearchIndex();
+    expect(result.ok).toBe(false);
+  });
+});
 // ---------- B3 检索：audience × 分享模式 × 多语言 × 排序 × 有界（决议 #58–#63） ----------
 
 describe('B3 search/list/get — audience 契约与分享模式矩阵', () => {

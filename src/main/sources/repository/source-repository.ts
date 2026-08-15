@@ -146,11 +146,14 @@ const SQL_SET_SOURCE_RESTORED = `UPDATE sources SET
   enabled = 1, deleted_at = NULL, version = version + 1, updated_at = ?
   WHERE id = ? AND version = ?`;
 const SQL_DELETE_SOURCE = 'DELETE FROM sources WHERE id = ?';
+// B7（决议 #90）：Undo 回放不覆盖 usage 两列——观测数据不属于业务快照回放范围
+// （否则 Undo 会把最近一次使用结果回滚为快照旧值，而 usage_events 行仍在 → 两处
+// 投影不一致）。last_used_at/last_usage_outcome 保持当前值。
 const SQL_RESTORE_SOURCE = `UPDATE sources SET
   scope = ?, canonical_key = ?, url = ?, name = ?, group_id = ?, priority = ?,
   enabled = ?, share_mode = ?, trust_value = ?, trust_asserted_by = ?,
   trust_verification = ?, user_note = ?, ai_note = ?, created_by = ?, version = ?,
-  created_at = ?, updated_at = ?, deleted_at = ?, last_used_at = ?, last_usage_outcome = ?
+  created_at = ?, updated_at = ?, deleted_at = ?
   WHERE id = ?`;
 const SQL_SELECT_GROUP_NAME_BY_ID = 'SELECT name FROM source_groups WHERE id = ?';
 const SQL_INSERT_GROUP = `INSERT OR IGNORE INTO source_groups (id, name, created_at, deleted_at)
@@ -164,6 +167,10 @@ const SQL_DELETE_FTS = `INSERT INTO sources_fts (sources_fts, rowid, name, url, 
   VALUES ('delete', ?, ?, ?, ?, ?)`;
 const SQL_UPSERT_USAGE = `INSERT INTO usage_events (source_id, outcome, recorded_at) VALUES (?, ?, ?)
   ON CONFLICT(source_id) DO UPDATE SET outcome = excluded.outcome, recorded_at = excluded.recorded_at`;
+// B7（决议 #90）：sources 最近一次使用投影（SourceView 读取路径）——与
+// usage_events 在同一事务内一致更新；不 bump version/updated_at（usage 非数据变更）
+const SQL_UPDATE_SOURCE_USAGE =
+  'UPDATE sources SET last_used_at = ?, last_usage_outcome = ? WHERE id = ?';
 // B5（决议 #71）：分组浏览——软删过滤 + 确定性排序（名 NOCASE + id 收尾）+ 有界分页
 const SQL_LIST_GROUPS = `SELECT * FROM source_groups WHERE deleted_at IS NULL
   ORDER BY name COLLATE NOCASE ASC, id ASC LIMIT ? OFFSET ?`;
@@ -450,7 +457,7 @@ export class SourceRepository {
 
   // Undo 回放：整行快照恢复（含 version/enabled/deleted_at——决议 #52 消费语义的
   // 前置版本校验在 Service 层完成，此处为权威写入）。WHERE 仅 id（回放不以乐观
-  // 版本为条件——已通过冲突预检）。
+  // 版本为条件——已通过冲突预检）。B7（决议 #90）：usage 两列不回放（保持当前值）。
   restoreSourceSnapshot(row: SourceRow): void {
     try {
       this.handle
@@ -474,8 +481,6 @@ export class SourceRepository {
           row.created_at,
           row.updated_at,
           row.deleted_at,
-          row.last_used_at,
-          row.last_usage_outcome,
           row.id,
         );
     } catch (err) {
@@ -538,6 +543,19 @@ export class SourceRepository {
   upsertUsage(sourceId: string, outcome: SourceUsageOutcome, recordedAt: string): void {
     try {
       this.handle.prepare(SQL_UPSERT_USAGE).run(sourceId, outcome, recordedAt);
+    } catch (err) {
+      throw translateSqliteError(err);
+    }
+  }
+
+  // B7（决议 #90）：最近一次使用投影更新（调用方事务内与 upsertUsage 同事务执行）
+  updateSourceUsageProjection(
+    sourceId: string,
+    outcome: SourceUsageOutcome,
+    recordedAt: string,
+  ): void {
+    try {
+      this.handle.prepare(SQL_UPDATE_SOURCE_USAGE).run(recordedAt, outcome, sourceId);
     } catch (err) {
       throw translateSqliteError(err);
     }

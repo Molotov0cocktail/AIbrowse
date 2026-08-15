@@ -87,6 +87,13 @@ function stubSourceService(): SourceService {
     undoChange: async () => ({ ok: false, errorCode: 'source-unavailable' }),
     listUndoable: async () => [],
     recordUsage: async () => {},
+    // B7：diagnostic rebuild stub（source-unavailable 语义同其余入口）
+    rebuildSearchIndex: async () => ({
+      ok: false,
+      sourceCount: 0,
+      ftsCount: 0,
+      message: '暂不可用',
+    }),
     getState: () => ({ mode: 'normal', reason: null }),
     listGroups: async () => unavailable, // B5（决议 #71）
     quickAddPage: async () => ({ status: 'error', errorCode: 'source-unavailable' }), // B5（决议 #72）

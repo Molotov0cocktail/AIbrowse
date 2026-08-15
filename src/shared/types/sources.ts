@@ -253,6 +253,15 @@ export type QuickAddResult =
 export type PrepareHardDeleteResult =
   { ok: true; token: string } | { ok: false; errorCode: SourceErrorCode };
 
+// B7 决议 #91：FTS 诊断性 rebuild 结果——有界诊断（行数对比 + 中文消息），
+// renderer 不得获得绝对路径/表结构/SQL。ok=false 时 message 为中文原因。
+export interface FtsRebuildResult {
+  ok: boolean;
+  sourceCount: number; // 主表行数（有界诊断）
+  ftsCount: number; // 索引行数
+  message: string; // 中文有界诊断（成功/失败均有）
+}
+
 // B6（决议 #79/#81）：usage 接线的 run 级桥。SourceSearchHintStore 由装配层持有
 // （每 run 创建绑定 runId 的闭包）——模型/工具无任何通道指定 run 或伪造命中；
 // 命中只来自 source_search 成功后的结构化结果（禁止解析 ToolResult 文本）。
@@ -312,9 +321,14 @@ export interface SourceService {
   // Undo（§7.5）
   undoChange(idempotencyKey: string): Promise<UndoResult>;
   listUndoable(): Promise<UndoableChange[]>; // 最近 100 条有界
-  // usage（§11；B2 最小 upsert，UsageTracker 归 B7）
+  // usage（§11；B6 已接线——SourceSearchHintStore 与 Agent 打开后写入归 B6（决议
+  // #79）；B7 决议 #90：两处最近一次投影（usage_events + sources.last_used_at/
+  // last_usage_outcome）在同一事务内一致更新）
   recordUsage(sourceId: string, outcome: SourceUsageOutcome): Promise<void>;
-  // 恢复态（§10；B2 恒 normal，装配归 B7）
+  // B7 决议 #91：FTS 诊断性 rebuild 受控入口——仅 Sources UI 通道 + normal 状态
+  // 可达；不算 Source 数据变更（零 Undo/零 sources:changed）
+  rebuildSearchIndex(): Promise<FtsRebuildResult>;
+  // 恢复态（§10；B7 装配：只读恢复态为真实生产装配能力，缺省 normal）
   getState(): { mode: 'normal' | 'readonly-recovery'; reason: string | null };
   dispose(): void;
 }
