@@ -527,15 +527,21 @@ export interface SourceService {
 ### 7.1 全链路（source_apply_changes，L2）
 
 ```
-ToolRegistry 校验（结构：1–20 项、字段白名单、长度/枚举/URL 形状）
+ToolRegistry 校验（结构：递归 object/array schema——1–20 项、字段白名单、
+    未知字段拒绝/additionalProperties=false、深度/数组上限，决议 #64）
 → PermissionPolicy decide → L2
+→ ToolDefinition.confirmSummary 钩子（程序化确认摘要，决议 #66）→
+    SourceService.previewChangeSet（只读：同一校验语义 + 逐项预检 +
+    buildChangeDiff 确定性 before/after diff；确认前数据库零变化；预览失败
+    ——版本冲突/blocked 猜测/结构拒绝——fail-closed 终止调用零写入）
 → ConfirmManager.requestConfirm(runId, toolCallId, 'source_apply_changes', summary)
     summary.detail = 主进程生成的确定性 before/after diff 纯文本（§7.3）
-    ——确认前数据库零变化（diff 计算只读）
-→ approve 精确一次 → SourceService.applyChangeSet：
+→ approve 精确一次 → SourceService.applyChangeSet（决议 #66：批准后**重新校验**
+    版本以关闭 TOCTOU——预览与提交之间状态漂移同样拒绝）：
     ① 读当前状态；逐项 expectedVersion 校验（update/disable/restore）
        任一不符 → 整体拒绝零写入（source-version-conflict）
-    ② 单事务：全部变更 + FTS 同步 + journal 写入（idempotency_key UNIQUE）
+    ② 单事务：全部变更 + FTS 同步 + journal 写入（idempotency_key UNIQUE；
+       事务内版本条件更新为第二重校验）
     ③ 全部成功提交 / 任一异常 rollback（source-invalid-change 结构化回注）
 → ToolResult（ok + 每项结果 / ok:false + 错误码）
 → 审计恰好一条（§7.6）
@@ -612,13 +618,16 @@ ToolRegistry 校验（结构：1–20 项、字段白名单、长度/枚举/URL 
   payload；清理时机与年龄判定用注入时钟测试定稿，B2）；被清理的 change 不可
   Undo（UI 明示）。
 
-### 7.6 审计与持久化脱敏
+### 7.6 审计与持久化脱敏（决议 #67 更严格隐私边界）
 
-- source_apply_changes：审计恰好一条，argsSummary = `ops=N add=X update=Y …;
-fields=[…]; lens=[…]; versions=[…]`（note 正文零出现；URL 变更记录规范化
-  结果与长度——url 属外发审查等级，全量记录但 ≤2048 有界）；
-- source_search：查询串全量审计（≤500，与 search_web 同等级）；source_list/get：
-  分页参数与返回条数；手工 UI 操作：同一审计出口（decision 映射 manual 系）；
+- source_apply_changes：审计恰好一条，argsSummary = `ops=N add=X update=Y
+disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等键
+  （note 正文零出现——仅字段名与长度；**URL 值零出现**——仅长度，凭据形态
+  （?token=/&key= 等敏感 query）无从进入审计）；
+- source_search：查询保持有界可追溯（≤500），但**不得记录敏感 URL query 值**——
+  URL 形态查询（决议 #60 判定集合）按「scheme://host/path + query 值已脱敏」
+  确定性脱敏；source_list/get：分页参数与返回条数；手工 UI 操作：同一审计出口
+  （decision 映射 manual 系）；
 - ToolStep 持久化（v2 契约不变）：Source 工具结果仅 contentPreview 摘要，
   **不复制完整私人备注**（SRT-08 字节扫描断言）。
 
@@ -632,9 +641,12 @@ fields=[…]; lens=[…]; versions=[…]`（note 正文零出现；URL 变更记
   结果也不得无界）；
 - 返回 allowlist：id/name/url/scope/canonicalKey 摘要/groupId 与 group 名/tags/
   priority/enabled/trust（三字段）/shareMode/provenance 标注/lastUsedAt 摘要——
-  note 仅命中少量条目时按 §8.2 规则附带；**任何情况下不返回**：canonicalKey 内部
-  形态之外的信息、版本号（version 仅 change set 通道语义，不回显）、deletedAt
-  细节、journal 内容；
+  note 仅命中少量条目时按 §8.2 规则附带；**任何情况下不返回**：deletedAt 细节、
+  journal 内容；**版本令牌（决议 #65）**：`source_get` 的 agent 视角 allowlist
+  返回名为 `expectedVersion` 的并发令牌（值 = 服务层 version，模型提交
+  update/disable/restore 的乐观并发依据）；search/list 恒不返回任何版本字段；
+  blocked 条目视同不存在（source-not-found，无令牌可猜测）；version 字段名本身
+  不回显（决议 #38 校准）；
 - ToolResult 预算：Source 工具统一 `SOURCE_TOOL_CONTENT_MAX = 4000`（与
   search_web 同级；contentBudgetFor 增分支），复用 truncateToolContent 确定性
   截断 + warning；
@@ -705,12 +717,15 @@ fields=[…]; lens=[…]; versions=[…]`（note 正文零出现；URL 变更记
 
 ### 9.1 工具清单（wire-safe 名，满足 TOOL_NAME_PATTERN，决议 #35 契约）
 
-| 工具名               | schema 要点                                     | 权限 | 说明                                                    |
-| -------------------- | ----------------------------------------------- | ---- | ------------------------------------------------------- |
-| source_search        | {query ≤500 非空}                               | L0   | 硬上限 10；分享模式过滤；allowlist；查询串全量审计      |
-| source_list          | {page ≥0, pageSize ≤20, groupId?, enabledOnly?} | L0   | 每页 ≤20；blocked 不列出；不含 note                     |
-| source_get           | {sourceId UUID 形状}                            | L0   | 单条；blocked 视同不存在；note 按分享模式               |
-| source_apply_changes | {ops ≤20 项, 结构见 §7.2}                       | L2   | 确认门 + 幂等键 + 版本 + 单事务 + journal；审计恰好一条 |
+| 工具名               | schema 要点                                                     | 权限 | 说明                                                                                                |
+| -------------------- | --------------------------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------- |
+| source_search        | {query ≤500 非空}                                               | L0   | 硬上限 10；分享模式过滤；allowlist；查询审计（决议 #67 脱敏）                                       |
+| source_list          | {page ≥0, pageSize ≤20, groupId?, enabledOnly?}                 | L0   | 每页 ≤20；blocked 不列出；不含 note 与版本字段                                                      |
+| source_get           | {sourceId UUID 形状}                                            | L0   | 单条；blocked 视同不存在；note 按分享模式；返回 expectedVersion 并发令牌（决议 #65）                |
+| source_apply_changes | {ops ≤20 项, 结构见 §7.2}（递归 object/array schema，决议 #64） | L2   | 只读 preview diff → 确认门 + 幂等键 + 版本（TOCTOU 复验，决议 #66）+ 单事务 + journal；审计恰好一条 |
+
+- **audience 硬编码（决议 #58）**：四工具 executor 一律以 `audience='agent'` 调用
+  SourceService；模型工具参数中不得出现 audience（schema 无该字段）。
 
 - **禁具（不存在，grep 断言）**：source_sql / source_delete_hard / source_export_all /
   任意路径导入 / 任意网络抓取 / 任意通用数据库工具；打开网页继续 browser_open
@@ -1037,6 +1052,58 @@ TABLE` 注入串仅作数据）✅ ⑤ BEGIN/COMMIT/ROLLBACK（回调与语句�
     UNTRUSTED_TOOL_RESULT 块接线与审计为 **B4 待完成**——B3 不提前实现 Source
     Tools/工具预算/Agent 接线（工具注册表保持既有 13 个），不宣称 B-04 全过
     （§13.2/B3 任务文档）。
+
+### B4 实施前契约裁决（2026-08-15，接口缺口逐项核验属实，按任务授权结论记录；先写测试后实现）
+
+64. **source_apply_changes 结构化 schema（ProviderToolParameter 递归扩展）**：
+    source_apply_changes 必须使用真正的结构化 ops（递归 object/array schema），
+    不得退化为「ops 为 JSON 字符串」的弱类型通道（既有 ProviderToolParameter 冻结
+    于「仅 string|number|boolean 无嵌套」，与 §9.1 change set 结构冲突）。裁决：
+    ProviderToolParameter 扩展最小递归形态——type 增 `'object' | 'array'`；
+    object 带 `properties`（子参数映射）与 `required`；array 带 `items`（子参数）
+    与可选 `maxItems`（缺省 20）；**数组上限 20**、**未知字段拒绝**
+    （所有 object 一律 additionalProperties=false——校验层与序列化层同语义）；
+    嵌套 object/array 深度上限 4（root 对象 → ops 数组 → op 对象 → patch/tags
+    等第三层容器 → 第四层叶容器，防御性有界递归）；嵌套 enum/类型同样校验；
+    既有 13 工具的 schema、listTools 序列化输出与 validateToolArgs 行为
+    **零变化**（基础类型路径不变，新能力仅由 source_apply_changes 消费，
+    既有 13 工具零回归断言固化）。
+65. **expectedVersion 并发令牌（source_get allowlist）**：模型需以 expectedVersion
+    引用条目才能提交 update/disable/restore，但决议 #38「version 不回显」使其实际
+    不可获得。裁决：仅 `source_get` 的 agent 视角 allowlist 返回名为
+    `expectedVersion` 的并发令牌（值 = 服务层 version）；`source_search`/
+    `source_list` 恒不返回；blocked 条目仍视同不存在（source-not-found，无令牌
+    可猜测）；user 视角（B5 UI）不受影响（服务层 SourceView 完整返回）。决议 #38
+    校准为「**version 字段名**不回显工具（search/list 恒不携带任何版本；
+    get 仅以 expectedVersion 令牌形态返回，不返回 version 字段名本身）」——
+    §8.1「任何情况下不返回」清单同步修正冲突表述。
+66. **previewChangeSet 只读预览 + 确认摘要钩子 + TOCTOU 版本复验**：SourceService
+    增只读契约 `previewChangeSet(cs, meta)`——与 applyChangeSet 使用**同一**结构
+    校验语义（validateChangeSet + 逐项预检：add 重复回注/update・disable・restore
+    存在性 + 版本），只读读取当前行生成 ≤2000 字符中文 diff（纯函数
+    `buildChangeDiff(ops, currentRows)`：note 仅长度 + 首 40 字符截断预览 +
+    控制/bidi 剔除；「共 N 项变更」计数行；超限确定性截断）；**不生成 journal/
+    idempotency key、不写数据库**（确认前零写入字节级断言）。ToolDefinition 增
+    可选钩子 `confirmSummary?`（程序化确认摘要，由 ToolExecutor 在
+    ConfirmManager.requestConfirm **前**调用；source_apply_changes 借此调用
+    previewChangeSet 产出确定性 diff；既有工具不设置、行为不变；预览失败 →
+    以对应错误码 fail-closed 终止调用，不进入确认、零写入、审计恰好一条）。
+    **批准后 applyChangeSet 必须重新校验版本以关闭 TOCTOU**（逐项预检 +
+    事务内版本条件更新双重校验，B4 单测固化：预览与提交之间版本漂移 →
+    source-version-conflict 零写入）。**blocked 猜测防护**：preview 与 apply 对
+    update/disable/restore 引用的 blocked（agent 视角）sourceId 均
+    source-forbidden；add 的 canonicalKey 撞 blocked 条目 → source-duplicate
+    但**不回注** existingSourceId（不得泄漏条目存在或内容；非 blocked 重复的
+    「可能相关」回注不变）。
+67. **审计隐私边界收紧（B4 实施前校准）**：原 §7.6「URL 变更记录规范化结果与长度」
+    与「查询串全量审计」按更严格隐私边界处理——note 正文**零出现**（仅字段名 +
+    长度）；source_apply_changes 审计仅记录操作计数（ops=N add=X update=Y
+    disable=Z restore=W）、字段名、各字段长度、expectedVersion 值与**成功后**
+    的幂等键；**URL 值及凭据形态（?token=/&key= 等敏感 query）必须脱敏**
+    （change set 审计不含 URL 值，仅长度）；source_search 查询保持有界可追溯
+    （≤500）但**不得记录敏感 URL query 值**（URL 形态查询按「scheme://host/path
+    - query 值已脱敏」确定性脱敏）；source_list/get 记分页/返回条数不变。
+      审计/日志/ToolStep 字节扫描零命中敏感 query 值与 note 正文（SRT-08 断言先行）。
 
 ## 16. 实现顺序与范围边界（B1–B9 映射）
 

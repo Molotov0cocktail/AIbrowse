@@ -102,9 +102,10 @@
     删除**（仅 UI 通道）：二次确认、不可 Undo、同事务清理 FTS 索引、usage 与
     change journal 中该 Source 的私人 payload（ST-08 纵深）。
   - 手工 UI 同样经 SourceService（同一事务/审计/Undo 语义），不经旁路。
-- **写操作外发审查**：source_search 查询串全量审计（与 search_web 同等级，≤500
-  有界）；change set 审计只记项数/字段名/各字段长度/版本/幂等键——note 正文、
-  敏感 URL query 零出现（ST-08）。
+- **写操作外发审查**：source_search 查询保持有界可追溯（≤500），但**不得记录
+  敏感 URL query 值**（URL 形态查询按决议 #67 确定性脱敏：scheme://host/path +
+  query 值已脱敏）；change set 审计只记项数/字段名/各字段长度/版本/成功后幂等键
+  ——note 正文、URL 值、敏感 URL query 零出现（ST-08）。
 
 ### 3.4 检索与持久化防线（有界 Retrieval + 有界 Journal，ST-03/ST-08/ST-11）
 
@@ -147,9 +148,10 @@
 
 ### 3.6 审计层（继承 + 扩展）
 
-- 每个 Source 工具调用恰好一条审计（ToolExecutor 管线不变）：source_search 查询串
-  全量（≤500）；source_list/get 分页参数与返回条数；source_apply_changes 记
-  changeSet 摘要（项数/操作类型/字段名/长度/版本/幂等键）与决策
+- 每个 Source 工具调用恰好一条审计（ToolExecutor 管线不变）：source_search 查询
+  保持有界可追溯（≤500）但**不得记录敏感 URL query 值**（URL 形态查询按决议 #67
+  确定性脱敏）；source_list/get 分页参数与返回条数；source_apply_changes 记
+  changeSet 摘要（项数/操作类型/字段名/长度/版本/成功后幂等键）与决策
   （confirmed/denied/forbidden/invalid）；手工 UI 操作经同一审计出口（decision 记为
   manual 系映射）。**审计与普通日志永不记录 note 正文与完整敏感 URL query**。
 - ToolStep 持久化沿用 v2 契约：Source 工具结果仅 contentPreview 摘要，**不复制

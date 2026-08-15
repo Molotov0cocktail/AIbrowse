@@ -6,10 +6,13 @@
 > B1–B9 任务拆分已完成（纯文档设计闭环）；**B1 已完成**（node:sqlite 决策门
 > dev+生产双场景实测通过并冻结，决议 #48 + sqlite-driver/migrations 基座 + 冒烟
 > B-01）；**B2 已完成**（Source 域模型 + canonicalization + schema v1 +
-> Repository + SourceService + change journal + durable Undo + 冒烟 B-02 双进程，
-> 全量 test 947/947）；**B3–B9 待开始**（Sources 功能对用户/Agent 尚不可用——
-> UI/Tools 未实现，完成前不得宣称可用）；下一个推荐任务 = **B3**（多语言 Source
-> Search：FTS5/trigram + 短查询安全降级 + 有界 Retrieval + 分享模式 + 确定性排序）。
+> Repository + SourceService + change journal + durable Undo + 冒烟 B-02 双进程）；
+> **B3 已完成**（多语言 Source Search：FTS5/trigram 主路径 + 短查询安全降级 +
+> 有界 Retrieval 硬上限 10/每页 20 + 分享模式 full/metadata/blocked + 确定性排序
+> 全序 + note 摘录 ≤200 + provenance + bidi 补齐，决议 #58–#63，全量 test
+> 1007/1007）；**B4–B9 待开始**（Sources 功能对用户/Agent 尚不可用——UI/Tools
+> 未实现，完成前不得宣称可用）；下一个推荐任务 = **B4**（Source Tools +
+> 权限矩阵 + L2 change set 确认/审计 + Agent 上下文隔离）。
 > **契约与安全契约源**：本文保留阶段需求源职责（目标/验收标准/Exit Gate），
 > 具体接口、schema、权限矩阵、预算与决议以 `doc/stage4/detailed-design.md` 为
 > **唯一契约源**；威胁与红队以 `doc/stage4/threat-model.md` 为**安全契约源**。
