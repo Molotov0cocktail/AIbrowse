@@ -194,3 +194,51 @@ B7 实现安全审查与修复、可信重验：
    userData 零残留。**此前记录的 1207/1207 不作数——以本次 1219/1219
    为准**（+12 安全用例）。未调用任何付费 Provider、未发起公网请求、
    未新增依赖；schema v1/migration 零改写、工具注册表仍 17 工具。
+
+### 独立审计后定向修复（2026-08-15，B7 审计后 P2 竞态修复闭环，决议 #92）
+
+B7 完成后独立审计（新开独立对话，不采信 B1–B7 既有完成报告）复验全量
+1219/1219 通过，但发现 `backup.ts` 存在 **P2 数据删除竞态**，结论 HOLD：
+旧实现「lstat 判定不存在 → VACUUM INTO → 失败/校验失败无条件 rmSync」在
+lstat 与 VACUUM 之间的并发窗口会误删并发进程创建的文件——existsSync/
+lstatSync 检查只能用于拒绝/诊断，不能作为后续 rmSync 的所有权证明。本闭环
+为进入 B8 前唯一的 HOLD 解除任务：
+
+1. **实施前契约裁决（决议 #92，落 detailed-design §10/§15 + threat-model
+   §3.5；本任务授权直接校准，未向用户询问）**：两阶段 staging + no-clobber
+   发布——① VACUUM INTO 只写本次调用独占的私有 staging（mkdtemp 原子创建
+   于已验证 backups 目录内，名不匹配严格命名模式）；② 快照校验在 staging
+   上进行；③ 校验通过后以**硬链接 no-clobber 原子发布**（目标已存在 →
+   EEXIST 原子失败绝不覆盖——Node 24.18.0/Windows NTFS 实测 2026-08-15：
+   linkSync 目标存在 → EEXIST 且目标字节保持；staging 与最终路径同目录
+   必然同卷；COPYFILE_EXCL 为等价备选，未采用——硬链接零拷贝且实测成立），
+   碰撞换新名有界重试（5 次），全部碰撞 fail-closed 保留碰撞方原始字节，
+   其他发布错误 fail-closed 不重试；④ 失败仅精确清理本次创建的 staging
+   文件与空目录（rmSync 单一文件 + rmdirSync 空目录——非空残留保留现场，
+   绝不递归删除未知内容）；⑤ `createConsistentBackupAt` 不再作为任意路径
+   公共导出（模块内部 `vacuumIntoStaging`），生产调用只能经
+   `createConsistentBackup`。不得退化：源库连接 readOnly、VACUUM INTO 参数
+   绑定、完整性检查、版本匹配、最新 5/30 天保留策略与 symlink/junction
+   防护全部保持。
+2. **红→绿**：先写测试——红态 **5 failed / 32 passed（37 tests，退出码
+   1）**，旧实现真实失败证据：① 竞态窗口注入（mock lstatSync 在「判定
+   不存在」后创建并发最终文件）→ 旧实现 VACUUM 失败后 rmSync 误删并发文件
+   （readFileSync ENOENT——P2 竞态确定性复现）；② 私有 staging 目录零创建
+   （旧实现无 staging 概念）；③ linkSync 发布失败注入不触发（旧实现备份
+   成功，无 no-clobber 发布原语）；④ 碰撞有界重试断言 linkCalls=5 实际 0
+   （旧实现无发布尝试）；⑤ createConsistentBackupAt 仍为公共导出。实现后
+   **37/37 全绿**（新增 7 用例：竞态窗口/staging 位置与零残留/校验失败既有
+   备份字节不变+零 WAL-SHM/发布失败 fail-closed+零新增/碰撞有界重试 5 次/
+   任意路径入口不存在/失败后句柄全关可整体删除；既有「目标碰撞」用例按新
+   契约改写为经生产入口 + 恒同名注入——契约收紧非削弱，无删除无跳过）。
+3. **受控串行验证**（每次一条命令，单 worker）：backup 定向 37/37 →
+   sources-store 定向 11/11 → 全量 **1226/1226**（52 文件，+7 用例）→
+   typecheck 0 → lint 0 → format:check 0 → build 0 → git diff --check 0
+   （仅仓库惯常 LF/CRLF 提示）→ dev 冒烟退出码 0（8.14 B-06 B7 部分全
+   矩阵，隔离临时 userData）→ 生产冒烟退出码 0 → B-02 Sources set/check
+   双进程退出码 0（跨进程读回一致 + Undo 生效 + usage 投影一致）；每次
+   Electron 验证后进程/WAL-SHM 零残留，3 个专属临时 userData 目录精确
+   清理，TEMP 下 aibrowse-backup-_/aibrowse-sources-store-_/staging-_
+   零残留。未调用任何付费 Provider、未发起公网请求、未新增依赖；schema
+   v1/migration 零改写、工具注册表仍 17 工具、恢复态仍为真实生产装配。
+   **既有 1219 用例零删除零弱化**（改写 1 例为更严格契约形态）。

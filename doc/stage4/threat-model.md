@@ -154,8 +154,10 @@
   SHM 元数据文件逐字节恒等（实现额外保证：迁移期间工作连接 `wal:false`——失败
   路径主文件字节不变，测试固化）。**启动顺序**：先以只读连接探测版本与完整性
   （绝不先以默认 WAL 写连接打开再判断未来版本）；**迁移前一致性备份**（决议
-  #87 冻结 VACUUM INTO——备份可打开 + integrity ok + 版本匹配校验，失败即删除
-  部分备份）；`integrity_check`/`foreign_key_check` 失败不得覆盖原库。
+  #87 冻结 VACUUM INTO——备份可打开 + integrity ok + 版本匹配校验；决议 #92：
+  VACUUM 只写私有 staging，校验通过后硬链接 no-clobber 原子发布，失败仅精确
+  清理本次创建的 staging 内容）；
+  `integrity_check`/`foreign_key_check` 失败不得覆盖原库。
 - **只读恢复态（真实生产装配能力，非 SMOKE override 冒充）**：未知更高版本
   （user_version > 程序版本）或损坏/截断/坏 magic/备份失败/迁移失败/迁移后检查
   失败 → Sources 进入只读恢复态（Source 工具返回结构化 unavailable 错误、UI
@@ -166,11 +168,15 @@
 - **备份保留（决议 #89；2026-08-15 事故恢复加固）**：仅处理严格命名、位于
   backups 目录内的普通备份文件（非链接/非目录）；最多保留最新 5 个且清理超过
   30 天者（两上界同时生效）；绝不跟随链接、删除原库或无关文件；清理失败仅记录
-  不阻塞启动。加固：目标已存在 fail-closed（绝不删除/覆盖调用前已存在文件，
-  碰撞换新名有限重试）；backups 目录 realpath 解析校验（symlink/junction
+  不阻塞启动。加固：backups 目录 realpath 解析校验（symlink/junction
   越界拒绝，prune 对链接形态安全空结果 + 删除前 lstat/realpath 复核）；
   prune 参数边界验证（非有限/负数/非整数 → 安全空结果零删除）；备份源连接
-  只读（备份不写源库）；头部探测固定 16 字节读取。
+  只读（备份不写源库）；头部探测固定 16 字节读取。**发布与失败清理（决议
+  #92，2026-08-15 独立审计 P2 竞态修复）**：VACUUM INTO 只写本次调用独占的
+  私有 staging；快照校验通过后硬链接 no-clobber 原子发布（目标已存在 →
+  EEXIST 原子失败绝不覆盖，碰撞换新名有界重试，全碰撞 fail-closed 保留碰撞
+  方原始字节）；失败仅精确清理本次创建的 staging 文件与空目录，绝不递归删除
+  未知内容；`createConsistentBackupAt` 不再作为任意路径公共导出。
 - **Undo 语义**：Undo = 单事务回放 journal 中的 before 快照；**重启后可用**
   （journal 持久化）；Undo 前校验当前 version 与 journal 记录的 after 版本一致，
   不一致 → 拒绝并提示（不覆盖用户后续修改）；Undo 幂等（已撤销的 change set

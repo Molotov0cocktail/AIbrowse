@@ -74,9 +74,12 @@
     零删除）+ 备份源连接只读（不写源库）；红→绿 11 failed → 41/41）+ 受控
     串行重验（全量 test **1219/1219** + typecheck/lint/format:check/build +
     dev/生产冒烟 + B-02/B-05/SESSION 双进程退出码 0）；
-    **B8–B9 待开始**；下一个推荐动作 = **新开独立对话全项目严格安全/资源/
-    进程生命周期/事故复盘审查（不采信 B1–B7 既有完成报告）**，而非直接实现
-    B8。契约源
+    **B8–B9 待开始**；独立审计 + B7 审计后定向修复已完成（2026-08-15，
+    HOLD 解除：backup.ts 备份发布/失败清理 P2 竞态——决议 #92 两阶段私有
+    staging + 硬链接 no-clobber 原子发布 + 所有权证明精确清理 + 任意路径
+    公共导出移除；红→绿 5 failed/32 passed → 37/37，全量 1226/1226）；
+    下一个推荐动作 = **B8 红队矩阵 SRT-01～SRT-12**（审计其余发现
+    P2-2/P2-3/P2-4/P3 登记于 progress.md 开放风险，不阻塞 B8）。契约源
     `doc/stage4/detailed-design.md`（2026-08-15 定稿）+ 安全契约源
     `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何 Source
     实现定稿）；任务 B1–B9 见 `doc/stage4/tasks/`；需求源 `Fourth_stage.md`。
@@ -1200,13 +1203,18 @@ string|null} | null` 仅 agent + full 命中携带——userNote/aiNote 各 ≤2
     rebuild 清除）。bidi 补齐：stripControlChars 增 U+061C/U+2066–U+2069
     （写入侧 + 读取侧同源清洗）。
 - **migration/backup/recovery（B1/B7 ✅ 已实现，决议 #86–#89 校准；2026-08-15
-  事故恢复加固）**：启动顺序
+  事故恢复加固 + 独立审计 P2 竞态修复，决议 #92）**：启动顺序
   ——只读探测（magic/user_version，不修改原库；绝不先以 WAL 写连接打开；头部
   探测仅固定 16 字节 open/read/close，绝不整库读入）→ 新库
   直接迁移（零无意义备份）/ 当前版本 quick_check → normal / 有效旧版本 →
   VACUUM INTO 一致性备份（决议 #87 冻结；路径参数绑定，决议 #86；源连接只读
-  ——备份不写源库；快照校验：可打开 + integrity ok + 版本匹配，失败即删除
-  **本次新建**的部分备份）→ 逐级单事务迁移 →
+  ——备份不写源库；决议 #92 两阶段发布：VACUUM 只写本次调用独占的私有
+  staging（mkdtemp 原子创建于已验证 backups 目录内）→ 快照校验（可打开 +
+  integrity ok + 版本匹配）→ 硬链接 no-clobber 原子发布（目标已存在 →
+  EEXIST 原子失败绝不覆盖，碰撞换新名有界重试，全碰撞 fail-closed；失败仅
+  精确清理本次 staging 文件与空目录，绝不递归删除未知内容；
+  `createConsistentBackupAt` 任意路径公共导出已移除，生产仅经
+  `createConsistentBackup`））→ 逐级单事务迁移 →
   integrity_check/foreign_key_check → normal（迁移期间工作连接 wal:false——
   失败路径主文件字节不变，决议 #88：原路径不得被替换/截断/自动恢复覆盖，
   user_version/schema/数据逻辑恒等，不要求 WAL/SHM 逐字节恒等）；未知更高
@@ -1302,7 +1310,7 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 1219 用例）
+  - `npm test` — Vitest 全量测试（当前 1226 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`

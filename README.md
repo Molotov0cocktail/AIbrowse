@@ -37,8 +37,14 @@
 >   启动装配 + 只读恢复态 + FTS rebuild 诊断 + usage 双投影与「上次使用结果」
 >   展示，冒烟 8.14 B-06 B7 部分 + B-02 usage 跨进程扩展；2026-08-15 事故
 >   恢复与安全加固后全量 test **1219/1219**）——存储运维面闭环**；
->   下一个推荐动作 = **新开独立对话全项目严格审查**（安全/资源/进程生命周期/
->   事故复盘，不采信 B1–B7 既有完成报告），而非直接实现 B8。契约源
+>   **独立审计 + B7 审计后定向修复已完成（2026-08-15，HOLD 解除）**——审计
+>   发现备份发布/失败清理 P2 竞态已修复（决议 #92：两阶段 staging + 硬链接
+>   no-clobber 原子发布 + 所有权证明精确清理 + 任意路径公共导出移除），红→绿
+>   5 failed/32 passed → 37/37，全量 test **1226/1226**，dev/生产冒烟与 B-02
+>   双进程退出码 0**；
+>   下一个推荐动作 = **B8 红队矩阵 SRT-01～SRT-12**（独立审计唯一 HOLD 已
+>   解除；审计其余发现 P2-2/P2-3/P2-4/P3 登记于 progress.md 开放风险）。
+>   契约源
 >   `doc/stage4/detailed-design.md`；安全契约源
 >   `doc/stage4/threat-model.md`（ST-01～ST-12 / SRT-01～SRT-12，先于任何
 >   Source 实现定稿）；需求源 `Fourth_stage.md`；任务 `doc/stage4/tasks/B1–B9`。
@@ -137,9 +143,15 @@
     数据安全问题（头部固定 16 字节读取/目标已存在 fail-closed/碰撞换新名/
     backups 目录 symlink-junction 真实路径校验/prune 参数边界验证 + 备份源
     连接只读，红→绿 11 failed → 41/41）；全量验证稳定复跑 test
-    **1219/1219**（52 文件，单 worker）。**下一个推荐动作不是 B8**：新开
-    独立对话对全项目严格安全/资源/进程生命周期/事故复盘审查（不采信
-    B1–B7 既有完成报告）。
+    **1219/1219**（52 文件，单 worker）。
+    **独立审计 + B7 审计后定向修复（2026-08-15，HOLD 解除）**：独立审计
+    （不采信 B1–B7 报告）发现 backup.ts 备份发布/失败清理 **P2 竞态**并判
+    HOLD；本闭环修复（决议 #92：两阶段私有 staging + 硬链接 no-clobber 原子
+    发布 + 所有权证明精确清理 + `createConsistentBackupAt` 任意路径公共导出
+    移除），红→绿 5 failed/32 passed → 37/37，全量 test **1226/1226**，
+    dev/生产冒烟（B-06 全矩阵）与 B-02 双进程退出码 0。**下一个推荐动作 =
+    B8 红队矩阵 SRT-01～SRT-12**（审计其余发现 P2-2/P2-3/P2-4/P3 登记于
+    progress.md 开放风险，不阻塞 B8）。
     契约 `doc/stage4/detailed-design.md` + 安全契约
     `doc/stage4/threat-model.md`。
 
@@ -308,7 +320,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 1219 用例）                   |
+| `npm test`                        | Vitest 全量测试（当前 1226 用例）                   |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -420,7 +432,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 1219 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 1226 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具

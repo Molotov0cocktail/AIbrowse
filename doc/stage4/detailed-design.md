@@ -796,17 +796,28 @@ disable=Z restore=W; fields=[…]; lens=[…]; versions=[…]` + 成功后幂等
 - **备份保留策略（决议 #89 冻结；2026-08-15 事故恢复加固校准）**：仅处理严格
   命名（`sources-backup-<ISO 时间>-v<版本>-<8hex>.db`）、位于 backups 目录内的
   普通文件（非链接/非目录）；最多保留最新 5 个且清理超过 30 天者（两上界同时
-  生效）；绝不跟随链接、删除原库或无关文件；清理失败仅记录不阻塞启动。**目标
-  碰撞 fail-closed（加固）**：VACUUM INTO 遇已存在目标失败（SQLite 语义，实测）
-  → 目标已存在（任何形态）一律拒绝（绝不删除/覆盖调用前已存在的文件），主进程
-  换新名有限重试、全部碰撞失败；快照校验失败即删除**本次新建**的部分备份
-  （零残留）。**目录链接越界拒绝（加固）**：backups 目录经 realpath 解析校验
-  （symlink/junction 越界拒绝，解析后必须仍位于 Sources 目录内）；prune 不跟随
-  目录链接越界（链接形态 → 安全空结果），删除前对每个候选做 lstat/realpath
-  复核（TOCTOU 防御）；prune 参数边界验证（非有限/负数/非整数 → 安全空结果
-  零删除）。**头部探测固定 16 字节读取（加固）**：文件头 magic 探测仅
-  open/read/close 固定 16 字节，绝不整库读入内存；备份源连接以只读打开
-  （备份过程不写源库）。
+  生效）；绝不跟随链接、删除原库或无关文件；清理失败仅记录不阻塞启动。
+  **两阶段 staging + no-clobber 发布（2026-08-15 独立审计 P2 竞态修复，决议
+  #92）**：旧序列「lstat 判定不存在 → VACUUM INTO → 失败无条件 rmSync」在
+  lstat 与 VACUUM 之间的并发窗口会误删并发进程创建的文件——existsSync/lstatSync
+  检查只能用于拒绝/诊断，绝不作为后续 rmSync 的所有权证明。新契约：① VACUUM
+  INTO 只写**本次调用独占的私有 staging**（mkdtemp 原子创建于已验证 backups
+  目录内；staging 名不匹配严格命名模式——prune 永不处理残留）；② 快照校验
+  （可打开 + integrity ok + user_version 匹配）在 staging 上进行；③ 校验通过
+  后以**硬链接 no-clobber 原子发布**到严格命名的最终路径（目标已存在 → EEXIST
+  原子失败绝不覆盖——Node 24/Windows 实测，本任务 2026-08-15；staging 与最终
+  路径同目录必然同卷），碰撞换新名有限重试（5 次）全部碰撞 fail-closed 且
+  保留碰撞方原始字节；其他发布错误 fail-closed 不重试；④ 失败仅精确清理
+  本次创建的 staging 文件与空目录（rmSync 单一文件 + rmdirSync 空目录——非空
+  残留保留现场，绝不递归删除未知内容）；⑤ `createConsistentBackupAt` 不再作为
+  任意路径公共导出——生产调用只能经 `createConsistentBackup`（内部完成目录/
+  严格命名/真实路径校验）。**目录链接越界拒绝（加固）**：backups 目录经
+  realpath 解析校验（symlink/junction 越界拒绝，解析后必须仍位于 Sources
+  目录内）；prune 不跟随目录链接越界（链接形态 → 安全空结果），删除前对每个
+  候选做 lstat/realpath 复核（TOCTOU 防御）；prune 参数边界验证（非有限/负数/
+  非整数 → 安全空结果零删除）。**头部探测固定 16 字节读取（加固）**：文件头
+  magic 探测仅 open/read/close 固定 16 字节，绝不整库读入内存；备份源连接以
+  只读打开（备份过程不写源库）。
 - **只读恢复态（真实生产装配，非 SMOKE override 冒充）**：SourceService 以
   `db=null + state=readonly-recovery` 装配（不打开磁盘库）——全部读写/Undo/
   usage/rebuild 拒绝（source-unavailable）且数据库零变化；四 Agent Source
@@ -1335,6 +1346,27 @@ message}`），renderer 不得获得绝对路径。**usage/health 展示边界**
     详情显示「上次使用结果」+ 时间（`describeLastUsage` 纯函数）；v1 可靠信号
     仅 reachable→可达 / unreachable→不可达，unknown/auth-required/blocked 如实
     标「暂无可靠信号」——严禁写成「健康/长期可用」。§6/§11/§13 已同步。
+
+### B7 审计后定向修复（2026-08-15 独立审计 P2 竞态，本任务授权直接校准——不向用户询问）
+
+92. **备份两阶段 staging + no-clobber 发布（P2 竞态修复）**：独立审计发现
+    旧实现「lstat 判定不存在 → VACUUM INTO → 失败/校验失败无条件 rmSync」在
+    lstat 与 VACUUM 之间的并发窗口会误删并发进程创建的文件（existsSync/
+    lstatSync 检查不能作为后续 rmSync 的所有权证明——只能用于拒绝/诊断）。
+    新契约：① VACUUM INTO 只写本次调用独占的私有 staging（mkdtemp 原子创建
+    于已验证 backups 目录内，名不匹配严格命名模式——prune 永不处理）；②
+    快照校验在 staging 上进行；③ 校验通过后以**硬链接 no-clobber 原子发布**
+    （目标已存在 → EEXIST 原子失败绝不覆盖，Node 24.18.0/Windows NTFS 实测
+    2026-08-15；staging 与最终路径同目录必然同卷；COPYFILE_EXCL 为等价备选
+    ），碰撞换新名有界重试（5 次），全部碰撞 fail-closed 且保留碰撞方原始
+    字节，其他发布错误 fail-closed 不重试；④ 失败仅精确清理本次创建的
+    staging 文件与空目录（rmSync 单一文件 + rmdirSync 空目录——非空残留保留
+    现场，绝不递归删除未知内容）；⑤ `createConsistentBackupAt` 不再作为任意
+    路径公共导出（模块内部 `vacuumIntoStaging`），生产调用只能经
+    `createConsistentBackup`（内部完成目录/严格命名/真实路径校验）。**不得
+    退化**：源库连接保持 readOnly、VACUUM INTO 参数绑定、完整性检查、版本
+    匹配、最新 5 个/30 天保留策略及 symlink/junction 防护全部保持。§10/
+    threat-model §3.5 已同步。
 
 ## 16. 实现顺序与范围边界（B1–B9 映射）
 
