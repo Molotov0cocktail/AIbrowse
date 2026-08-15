@@ -19,9 +19,8 @@
 // B7 hardening (2026-08-15 incident-recovery review, red→green):
 // 1. Header probing reads a fixed 16 bytes via open/read/close — never
 //    readFileSync whole-file (unbounded memory/IO on large databases).
-// 2. createConsistentBackupAt fails closed when the target already exists —
-//    never deletes/overwrites pre-existing files; partial-file cleanup only
-//    applies to targets verified absent before this attempt.
+// 2. Backup targets that already exist are rejected fail-closed — never
+//    deletes/overwrites pre-existing files.
 // 3. Target collisions retry with a fresh name (bounded); all attempts
 //    colliding → fail-closed. Never remove an existing valid backup.
 // 4. The backups directory is resolved via realpath (symlink/junction
@@ -29,16 +28,41 @@
 //    Sources directory; pruning never follows directory links out of bounds.
 // 5. pruneBackups validates keepCount/maxAgeMs/nowMs (finite, non-negative
 //    integers); invalid options → safe empty result, zero deletion.
+//
+// B7 audit remediation (2026-08-15 independent audit P2 race, red→green,
+// decision #92): the old sequence 「lstat says absent → VACUUM INTO → rmSync on
+// failure」 could delete a file created concurrently between the lstat check and
+// the VACUUM. existsSync/lstatSync checks are for rejection/diagnostics only —
+// never ownership proof for a later rmSync. New contract:
+// 1. Two-phase publish: VACUUM INTO writes ONLY to a private staging path
+//    (mkdtemp-created, exclusively owned by this call, inside the verified
+//    backups directory); snapshot verification happens on the staging file.
+// 2. After verification, publish to the strictly-named final path with an
+//    atomic no-clobber primitive (hard link — target exists → EEXIST, never
+//    overwrites; verified on Node 24.18.0 / Windows NTFS, 2026-08-15). Staging
+//    and final live in the same directory tree → same volume.
+// 3. Collision (EEXIST) → fresh name, bounded retries; exhausted → fail-closed
+//    keeping the colliding file's original bytes. Any other publish error →
+//    fail-closed immediately.
+// 4. Failure cleanup touches only what this call provably created: the staging
+//    file (rmSync single file) and the empty staging directory (rmdirSync —
+//    non-empty leftovers stay visible; never recursively delete unknown
+//    content).
+// 5. createConsistentBackupAt no longer exists as a public arbitrary-path
+//    entry point — production callers only ever use createConsistentBackup.
 import { randomBytes } from 'node:crypto';
 import {
   closeSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readSync,
   readdirSync,
   realpathSync,
+  rmdirSync,
   rmSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
@@ -269,88 +293,83 @@ export function checkDbIntegrity(dbPath: string): DbIntegrityResult {
   }
 }
 
-// ---------- 一致性备份（决议 #87：VACUUM INTO 主路径；B7 加固 #2/#3） ----------
+// ---------- 一致性备份（决议 #87：VACUUM INTO 主路径；B7 加固 #2/#3；
+// 独立审计 P2 竞态修复：两阶段 staging + no-clobber 发布，决议 #92） ----------
 
 export interface BackupResult {
   ok: boolean;
-  backupPath: string | null; // 失败时为 null（本次新建的部分备份已清理，零残留）
+  backupPath: string | null; // 失败时为 null（本次 staging 已精确清理，零残留）
   reason: string | null;
 }
 
-// 核心操作：对源库执行 VACUUM INTO 到显式目标路径。
-// B7 加固契约：目标必须为「本次新建」——调用前已存在（任何形态）→ fail-closed
-// 拒绝，绝不删除/覆盖调用前已存在的文件（含既有有效备份与无关文件）；失败路径
-// 的清理只针对本次尝试新建且已严格验证的不完整文件。源库以只读连接打开（备份
-// 过程绝不写源库——WAL 活跃时仅读取一致性快照）。备份内容校验：可打开 +
-// integrity ok + user_version 与预期迁移前版本一致。
-export function createConsistentBackupAt(
+// 私有 staging 命名（决议 #92）：目录名不匹配严格命名模式（prune 永不处理
+// staging 残留——纵深防御）；snapshot.db 为本调用 VACUUM INTO 的唯一目标文件。
+const STAGING_DIR_PREFIX = 'staging-';
+const STAGING_FILE_NAME = 'snapshot.db';
+
+// 内部实现（不导出——任意路径入口不复存在，决议 #92）：对源库执行 VACUUM INTO
+// 到调用方所有的私有 staging 路径并校验快照（可打开 + integrity ok +
+// user_version 与预期迁移前版本一致）。本函数绝不删除/覆盖任何文件——staging
+// 清理由调用方按所有权执行。源库以只读连接打开（备份过程绝不写源库——WAL
+// 活跃时仅读取一致性快照）；existsSync 仅用于拒绝/诊断，不构成任何所有权证明。
+function vacuumIntoStaging(
   dbPath: string,
-  backupPath: string,
+  stagingPath: string,
   expectedVersion: number,
-): BackupResult {
+): { ok: boolean; reason: string | null } {
   // 源库缺失 → 失败（绝不因备份而创建数据库文件）
   if (!existsSync(dbPath)) {
-    return { ok: false, backupPath: null, reason: '备份失败：源数据库不存在' };
-  }
-  // 目标已存在（含链接/目录等任何形态）→ fail-closed 拒绝（绝不删除已有文件）
-  try {
-    lstatSync(backupPath);
-    return { ok: false, backupPath: null, reason: '备份失败：目标文件已存在（拒绝覆盖）' };
-  } catch {
-    // 目标不存在 → 本次新建，继续
+    return { ok: false, reason: '备份失败：源数据库不存在' };
   }
   let source: DatabaseSync;
   try {
     source = new DatabaseSync(dbPath, { readOnly: true });
   } catch {
-    return { ok: false, backupPath: null, reason: '备份失败：源数据库无法打开' };
+    return { ok: false, reason: '备份失败：源数据库无法打开' };
   }
   try {
-    source.prepare(SQL_VACUUM_INTO).run(backupPath);
+    source.prepare(SQL_VACUUM_INTO).run(stagingPath);
   } catch {
-    // 仅清理本次尝试新建的部分文件（调用前不存在已由前序检查保证）
-    try {
-      rmSync(backupPath, { force: true });
-    } catch {
-      // 清理失败不掩盖原始错误
-    }
-    return { ok: false, backupPath: null, reason: '备份失败：VACUUM INTO 执行失败' };
+    // 不删除任何文件：staging 路径归调用方所有，由调用方按所有权精确清理
+    return { ok: false, reason: '备份失败：VACUUM INTO 执行失败' };
   } finally {
     source.close();
   }
-  // 快照校验（一致性备份必须可打开且完整；失败即删除本次新建的部分备份——零残留）
+  // 快照校验（一致性备份必须可打开且完整；失败 → 调用方清理本次 staging）
   let snapshot: DatabaseSync;
   try {
-    snapshot = new DatabaseSync(backupPath, { readOnly: true });
+    snapshot = new DatabaseSync(stagingPath, { readOnly: true });
   } catch {
-    rmSync(backupPath, { force: true });
-    return { ok: false, backupPath: null, reason: '备份失败：快照无法打开' };
+    return { ok: false, reason: '备份失败：快照无法打开' };
   }
-  let verifyOk = false;
   try {
     const integrity = snapshot.prepare('PRAGMA integrity_check').get() as Record<string, unknown>;
     const version = snapshot.prepare('PRAGMA user_version').get() as { user_version: unknown };
     if (String(Object.values(integrity)[0] ?? '') !== 'ok') {
-      throw new Error('快照完整性检查未通过');
+      return { ok: false, reason: '备份失败：快照完整性检查未通过' };
     }
     if (version.user_version !== expectedVersion) {
-      throw new Error('快照版本与迁移前版本不符');
+      return { ok: false, reason: '备份失败：快照版本与迁移前版本不符' };
     }
-    verifyOk = true;
-    return { ok: true, backupPath, reason: null };
+    return { ok: true, reason: null };
   } catch {
-    return { ok: false, backupPath: null, reason: '备份失败：快照校验未通过' };
+    return { ok: false, reason: '备份失败：快照校验未通过' };
   } finally {
-    // Windows：删除前必须先关闭只读句柄（否则 EPERM）
+    // Windows：后续清理前必须先关闭只读句柄（否则 EPERM）
     snapshot.close();
-    if (!verifyOk) rmSync(backupPath, { force: true });
   }
 }
 
-// 便捷入口：主进程生成严格命名 + 校验目标路径 + 建目录 + 核心操作。
-// B7 加固 #3/#4：备份目录解析后必须仍位于源库所在目录（Sources 目录）内
-// （symlink/junction 越界拒绝）；目标名碰撞 → 重新生成新名（有限重试），
-// 全部碰撞 → fail-closed 失败。randomHex 为测试注入点（缺省 crypto 随机）。
+// 便捷入口（生产唯一备份入口，决议 #92）：主进程生成严格命名 + 校验目标路径 +
+// 建目录 + 两阶段 staging 发布。备份目录解析后必须仍位于源库所在目录（Sources
+// 目录）内（symlink/junction 越界拒绝）。发布契约：VACUUM INTO 只写本次调用
+// 独占的私有 staging 目录（mkdtemp 原子创建，位于已验证 backups 目录内）；
+// 快照校验通过后以硬链接 no-clobber 原子发布到严格命名的最终路径（目标已存在
+// → EEXIST 原子失败绝不覆盖——Node 24/Windows 实测，本任务 2026-08-15——换
+// 新名有界重试，全部碰撞 fail-closed；其他错误 fail-closed 不重试）；失败仅
+// 精确清理本次创建的 staging 文件与空目录（rmSync 单一文件 + rmdirSync 空目录
+// ——非空残留保留现场，绝不递归删除未知内容）。randomHex 为测试注入点（缺省
+// crypto 随机）。
 export function createConsistentBackup(
   dbPath: string,
   backupsDir: string,
@@ -371,15 +390,57 @@ export function createConsistentBackup(
   } catch {
     return { ok: false, backupPath: null, reason: '备份失败：备份目录无法创建' };
   }
+  // 私有 staging 目录：mkdtemp 原子独占创建（本次调用所有权证明）
+  let stagingDir: string;
+  try {
+    stagingDir = mkdtempSync(join(backupsReal, STAGING_DIR_PREFIX));
+  } catch {
+    return { ok: false, backupPath: null, reason: '备份失败：staging 目录无法创建' };
+  }
+  const stagingPath = join(stagingDir, STAGING_FILE_NAME);
+  // 所有权清理：仅删除本次创建的 staging 文件与空目录；目录非空（理论并发异常
+  // 写入）→ rmdirSync 失败保留现场，绝不递归删除未知内容
+  const cleanupStaging = (): void => {
+    try {
+      rmSync(stagingPath, { force: true });
+    } catch {
+      // 清理失败不掩盖原始错误
+    }
+    try {
+      rmdirSync(stagingDir);
+    } catch {
+      // 非空残留保留现场（不递归删除）
+    }
+  };
+  // 阶段 1：VACUUM INTO 只写 staging + 快照校验（失败 → 精确清理本次 staging）
+  const vacuum = vacuumIntoStaging(dbPath, stagingPath, version);
+  if (!vacuum.ok) {
+    cleanupStaging();
+    return { ok: false, backupPath: null, reason: vacuum.reason };
+  }
+  // 阶段 2：no-clobber 原子发布（硬链接——staging 与最终路径同目录必然同卷）
   for (let attempt = 0; attempt < BACKUP_NAME_RETRY; attempt += 1) {
     const candidate = validateBackupTarget(
       backupsReal,
       buildBackupFileName(version, nowMs(), randomHex),
     );
-    if (!candidate.ok) return { ok: false, backupPath: null, reason: candidate.reason };
-    if (existsSync(candidate.path)) continue; // 碰撞 → 重新生成新名（绝不删除已有文件）
-    return createConsistentBackupAt(dbPath, candidate.path, version);
+    if (!candidate.ok) {
+      cleanupStaging();
+      return { ok: false, backupPath: null, reason: candidate.reason };
+    }
+    try {
+      linkSync(stagingPath, candidate.path);
+      cleanupStaging(); // 发布成功：移除本次 staging 链接（最终文件字节不变）
+      return { ok: true, backupPath: candidate.path, reason: null };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        cleanupStaging();
+        return { ok: false, backupPath: null, reason: '备份失败：最终文件发布失败' };
+      }
+      // EEXIST = 最终名已被并发占用 → 保留其原始字节，换新名重试（有界）
+    }
   }
+  cleanupStaging();
   return { ok: false, backupPath: null, reason: '备份失败：目标命名冲突（请稍后重试）' };
 }
 

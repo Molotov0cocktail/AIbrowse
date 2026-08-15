@@ -15,6 +15,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmdirSync,
   rmSync,
   statSync,
@@ -22,15 +23,58 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 
-// readFileSync 计数包装（行为透传；B7 安全加固断言「头部探测不整库读入」用）。
-// vi.spyOn 对 ESM 命名空间不可用（Cannot redefine property），改用模块级 mock。
+// node:fs 模块级 mock（行为透传 + 注入钩子；vi.spyOn 对 ESM 命名空间不可用——
+// Cannot redefine property）。readFileSync 计数用于「头部探测不整库读入」断言；
+// lstatSync/linkSync/mkdtempSync 钩子用于 B7 审计后定向修复（P2 备份发布与失败
+// 清理竞态）的确定性红态注入与 no-clobber 发布契约断言。
+const fsProbe = vi.hoisted(() => ({
+  // lstat 判定目标不存在（抛错）后立即创建并发文件——模拟「检查与动作之间」
+  // 的并发进程写入窗口（旧实现 rmSync 误删注入，确定性红态）
+  lstatHook: null as { path: string; onMissing: (p: string) => void } | null,
+  // linkSync 发布失败注入（非碰撞错误码 → fail-closed 断言）
+  linkFailure: null as { path: string; code: string } | null,
+  linkCalls: [] as string[],
+  mkdtempCalls: [] as string[],
+}));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+  return {
+    ...actual,
+    readFileSync: vi.fn(actual.readFileSync),
+    lstatSync: vi.fn((...args: Parameters<typeof actual.lstatSync>) => {
+      try {
+        return actual.lstatSync(...args);
+      } catch (err) {
+        const hook = fsProbe.lstatHook;
+        if (hook && String(args[0]).toLowerCase() === hook.path.toLowerCase()) {
+          fsProbe.lstatHook = null;
+          hook.onMissing(hook.path);
+        }
+        throw err;
+      }
+    }),
+    linkSync: vi.fn((...args: Parameters<typeof actual.linkSync>) => {
+      const target = String(args[1]);
+      fsProbe.linkCalls.push(target);
+      const failure = fsProbe.linkFailure;
+      if (failure && target.toLowerCase() === failure.path.toLowerCase()) {
+        fsProbe.linkFailure = null;
+        const e = new Error('injected link failure') as NodeJS.ErrnoException;
+        e.code = failure.code;
+        throw e;
+      }
+      return actual.linkSync(...args);
+    }),
+    mkdtempSync: vi.fn((...args: Parameters<typeof actual.mkdtempSync>) => {
+      const created = actual.mkdtempSync(...args);
+      fsProbe.mkdtempCalls.push(created);
+      return created;
+    }),
+  };
 });
 import {
   BACKUP_KEEP_COUNT,
@@ -39,7 +83,6 @@ import {
   buildBackupFileName,
   checkDbIntegrity,
   createConsistentBackup,
-  createConsistentBackupAt,
   probeDbFile,
   pruneBackups,
   quickCheckDb,
@@ -188,15 +231,25 @@ describe('createConsistentBackup — WAL 活跃一致性备份', () => {
     expect(integrity.ok).toBe(true);
   });
 
-  it('目标碰撞（目标已存在）→ fail-closed 拒绝且已有文件不被删除/覆盖', () => {
+  it('目标碰撞（最终名已存在）→ fail-closed 拒绝且已有文件不被删除/覆盖', () => {
+    // 契约收紧（B7 审计后定向修复）：不再存在可接受任意路径的 createConsistentBackupAt
+    // 公共入口——碰撞语义一律经生产入口 createConsistentBackup 验证（注入恒同名 → 有界
+    // 重试全碰撞 → fail-closed）。
     const dbPath = join(root, 'backup-collide.db');
     makeWalDb(dbPath);
     const backupsDir = join(root, 'backups-collide');
     mkdirSync(backupsDir, { recursive: true });
     const name = buildBackupFileName(0, BASE_MS);
+    const hex = name.split('-v0-')[1]!.replace(/\.db$/, '');
     const target = join(backupsDir, name);
     writeFileSync(target, 'garbage-not-a-database');
-    const result = createConsistentBackupAt(dbPath, target, 0);
+    const result = createConsistentBackup(
+      dbPath,
+      backupsDir,
+      0,
+      () => BASE_MS,
+      () => hex,
+    );
     expect(result.ok).toBe(false);
     expect(result.backupPath).toBeNull();
     expect(readFileSync(target, 'utf8')).toBe('garbage-not-a-database'); // 绝不删除/覆盖
@@ -545,5 +598,171 @@ describe('pruneBackups — 参数边界验证（非有限/负值 → 安全空�
     } finally {
       rmSync(outsideRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------- 6. B7 审计后定向修复（2026-08-15 独立审计 P2 竞态，红→绿） ----------
+// 独立审计发现（P2）：旧实现「lstat 判定不存在 → VACUUM INTO → 失败/校验失败
+// 无条件 rmSync」在 lstat 与 VACUUM 之间的并发窗口会误删并发进程创建的文件——
+// existsSync/lstatSync 检查不能作为后续 rmSync 的所有权证明。新契约：
+// ① 本次调用独占的私有 staging 目录（mkdtemp 原子创建，位于已验证 backups
+// 目录内）；② VACUUM INTO 只写 staging；③ 快照校验通过后以硬链接 no-clobber
+// 原子发布到严格命名的最终路径（目标已存在 → EEXIST 原子失败绝不覆盖，换新名
+// 有界重试；其他错误 fail-closed）；④ 失败仅精确清理本次创建的 staging 文件与
+// 空目录（rmSync 单一文件 + rmdirSync 空目录——绝不递归删除未知内容）；
+// ⑤ createConsistentBackupAt 不再作为任意路径公共导出。
+
+describe('createConsistentBackup — 两阶段 staging + no-clobber 发布契约', () => {
+  function inside(child: string, parent: string): boolean {
+    const c = resolve(child).toLowerCase();
+    const p = resolve(parent).toLowerCase();
+    return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
+  }
+
+  function isoName(hex: string): string {
+    const ts = new Date(BASE_MS).toISOString().replace(/[:.]/g, '-');
+    return `sources-backup-${ts}-v0-${hex}.db`;
+  }
+
+  it('lstat 判定不存在后、VACUUM 执行前并发创建最终文件 → 并发文件字节必须保持不变', () => {
+    const dbPath = join(root, 'race-window.db');
+    makeWalDb(dbPath);
+    const backupsDir = join(root, 'race-window-bk');
+    mkdirSync(backupsDir, { recursive: true });
+    const finalPath = join(backupsDir, isoName('a1b2c3d4'));
+    const race = { injected: false };
+    // 注入：目标路径首次 lstat 判定「不存在」后、VACUUM 之前并发进程创建最终文件
+    fsProbe.lstatHook = {
+      path: finalPath,
+      onMissing: (p) => {
+        writeFileSync(p, 'concurrent-bytes');
+        race.injected = true;
+      },
+    };
+    try {
+      const result = createConsistentBackup(
+        dbPath,
+        backupsDir,
+        0,
+        () => BASE_MS,
+        () => 'a1b2c3d4',
+      );
+      if (race.injected) {
+        // 旧实现竞态窗口：失败清理不得删除并发创建的文件
+        expect(readFileSync(finalPath, 'utf8')).toBe('concurrent-bytes');
+      } else {
+        // 新实现无「先检查后清理」窗口：no-clobber 原子发布直接成功
+        expect(result.ok, result.reason ?? '').toBe(true);
+        expect(result.backupPath).toBe(finalPath);
+      }
+    } finally {
+      fsProbe.lstatHook = null;
+    }
+  });
+
+  it('staging 必须在本调用独占的 backups 目录内创建；发布成功后零 staging 残留', () => {
+    const dbPath = join(root, 'staging-loc.db');
+    makeWalDb(dbPath);
+    const backupsDir = join(root, 'staging-loc-bk');
+    fsProbe.mkdtempCalls.length = 0;
+    const result = createConsistentBackup(dbPath, backupsDir, 0, () => BASE_MS);
+    expect(result.ok, result.reason ?? '').toBe(true);
+    // 私有 staging 目录必须真实创建（旧实现无 staging 概念 → 红）
+    const stagingDirs = fsProbe.mkdtempCalls.filter((p) =>
+      p.split(/[\\/]/).pop()!.startsWith('staging-'),
+    );
+    expect(stagingDirs.length).toBeGreaterThan(0);
+    const backupsReal = realpathSync(backupsDir);
+    for (const staging of stagingDirs) {
+      expect(inside(staging, backupsReal)).toBe(true); // staging 绝不越出 backups
+    }
+    // 发布成功 → 零 staging 残留（仅严格命名的最终备份文件）
+    const entries = readdirSync(backupsDir);
+    expect(entries.filter((n) => n.startsWith('staging-'))).toHaveLength(0);
+    expect(entries.filter((n) => BACKUP_NAME_PATTERN.test(n))).toHaveLength(1);
+  });
+
+  it('快照校验失败（版本不匹配）→ 既有备份字节不变、零 staging 残留、无 WAL/SHM 残留', () => {
+    const dbPath = join(root, 'verify-fail.db');
+    makeWalDb(dbPath);
+    const backupsDir = join(root, 'verify-fail-bk');
+    mkdirSync(backupsDir, { recursive: true });
+    const existingName = 'sources-backup-2020-01-01T00-00-00Z-v1-00000000.db';
+    writeFileSync(join(backupsDir, existingName), 'existing-backup-bytes');
+    const result = createConsistentBackup(dbPath, backupsDir, 5, () => BASE_MS); // 预期 5 实际 0
+    expect(result.ok).toBe(false);
+    expect(result.backupPath).toBeNull();
+    // 既有备份零变化；staging 精确清理零残留；无 -wal/-shm 产物
+    const entries = readdirSync(backupsDir);
+    expect(entries).toEqual([existingName]);
+    expect(readFileSync(join(backupsDir, existingName), 'utf8')).toBe('existing-backup-bytes');
+    expect(entries.some((n) => n.endsWith('-wal') || n.endsWith('-shm'))).toBe(false);
+  });
+
+  it('no-clobber 发布原语失败（非碰撞）→ fail-closed 且 staging 精确清理、backups 零新增', () => {
+    const dbPath = join(root, 'publish-fail.db');
+    makeWalDb(dbPath);
+    const backupsDir = join(root, 'publish-fail-bk');
+    mkdirSync(backupsDir, { recursive: true });
+    const finalPath = join(backupsDir, isoName('a1b2c3d4'));
+    fsProbe.linkFailure = { path: finalPath, code: 'EPERM' };
+    try {
+      const result = createConsistentBackup(
+        dbPath,
+        backupsDir,
+        0,
+        () => BASE_MS,
+        () => 'a1b2c3d4',
+      );
+      expect(result.ok).toBe(false);
+      expect(result.backupPath).toBeNull();
+      expect(result.reason).not.toBeNull();
+      // 零残留：staging 清理、最终文件未出现（旧实现不调 linkSync → 备份成功 → 红）
+      expect(readdirSync(backupsDir)).toHaveLength(0);
+    } finally {
+      fsProbe.linkFailure = null;
+    }
+  });
+
+  it('最终名持续碰撞 → 有界重试（恰好 5 次发布尝试）后 fail-closed；碰撞方字节不变', () => {
+    const dbPath = join(root, 'bounded-retry.db');
+    makeWalDb(dbPath);
+    const backupsDir = join(root, 'bounded-retry-bk');
+    mkdirSync(backupsDir, { recursive: true });
+    const collideName = isoName('a1b2c3d4');
+    const collidePath = join(backupsDir, collideName);
+    writeFileSync(collidePath, 'colliding-backup-bytes');
+    fsProbe.linkCalls.length = 0;
+    const result = createConsistentBackup(
+      dbPath,
+      backupsDir,
+      0,
+      () => BASE_MS,
+      () => 'a1b2c3d4',
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).not.toBeNull();
+    expect(fsProbe.linkCalls).toHaveLength(5); // 有界重试上界（旧实现零 linkSync → 红）
+    expect(readFileSync(collidePath, 'utf8')).toBe('colliding-backup-bytes');
+    // staging 精确清理：仅碰撞文件残留
+    expect(readdirSync(backupsDir)).toEqual([collideName]);
+  });
+
+  it('createConsistentBackupAt 不再是公共导出（任意路径入口已收窄为模块内部实现）', async () => {
+    const ns = await import('./backup');
+    expect('createConsistentBackupAt' in ns).toBe(false);
+    // 生产入口唯一性：调用方仅能经 createConsistentBackup（内部完成目录/命名/真实路径校验）
+    expect(typeof ns.createConsistentBackup).toBe('function');
+  });
+
+  it('失败后句柄全部关闭：源库目录可立即整体删除（Windows 未关句柄会 EPERM）', () => {
+    const srcDir = join(root, 'handles-closed-src');
+    mkdirSync(srcDir, { recursive: true });
+    const dbPath = join(srcDir, 'sources.db');
+    makeWalDb(dbPath);
+    const result = createConsistentBackup(dbPath, join(srcDir, 'backups'), 5, () => BASE_MS); // 校验失败路径
+    expect(result.ok).toBe(false);
+    rmSync(srcDir, { recursive: true, force: true }); // 句柄未关 → EPERM → 测试失败
+    expect(existsSync(srcDir)).toBe(false);
   });
 });
