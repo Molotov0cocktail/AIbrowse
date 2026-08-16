@@ -1,4 +1,5 @@
-// C8 决议 #163(4)：useResearch/reducer 契约（纯函数，零 React 依赖可单测）：
+// C8 决议 #163(4)：useResearch/reducer 契约（reducer 纯函数零 React 依赖可
+// 单测；hook 部分在下方——订阅/退订/invoke 接线）。
 // taskId 键控（其他任务事件不覆盖当前选中任务）；progress running 有界节流/
 // 合并（语义变化才刷新——相同 phase/status/stats 快照合并）；terminal 立即
 // 刷新；task-done 触发 task/result/list 重读标记；事件可能早于 start invoke
@@ -157,7 +158,7 @@ export function reduceResearchUi(state: ResearchUiState, event: ResearchUiEvent)
         selectedTaskId: event.task.id,
         task: event.task,
         status: RESEARCH_STATUS_LABELS[event.task.status] ?? null,
-        phase: event.task.status === 'running' ? RESEARCH_PHASE_LABELS['planning'] ?? null : null,
+        phase: event.task.status === 'running' ? (RESEARCH_PHASE_LABELS['planning'] ?? null) : null,
         stats: event.task.stats,
         busy: false,
         error: null,
@@ -180,7 +181,7 @@ export function reduceResearchUi(state: ResearchUiState, event: ResearchUiEvent)
         status: RESEARCH_STATUS_LABELS[event.task.status] ?? null,
         phase:
           event.task.status === 'running' && event.task.phase !== null
-            ? RESEARCH_PHASE_LABELS[event.task.phase] ?? null
+            ? (RESEARCH_PHASE_LABELS[event.task.phase] ?? null)
             : null,
         stats: event.task.stats,
         finishedAt: event.task.finishedAt,
@@ -204,7 +205,7 @@ export function reduceResearchUi(state: ResearchUiState, event: ResearchUiEvent)
       return {
         ...state,
         status: RESEARCH_STATUS_LABELS[e.status] ?? state.status,
-        phase: e.phase !== null ? RESEARCH_PHASE_LABELS[e.phase] ?? null : null,
+        phase: e.phase !== null ? (RESEARCH_PHASE_LABELS[e.phase] ?? null) : null,
         stats: e.stats,
         finishedAt: e.finishedAt,
         error: null,
@@ -274,6 +275,196 @@ export function reduceResearchUi(state: ResearchUiState, event: ResearchUiEvent)
     case 'canvas-cleared-consumed':
       return { ...state, resultCanvasCleared: false };
     case 'reset':
-      return { ...INITIAL_RESEARCH_UI_STATE, available: state.available, unavailableReason: state.unavailableReason };
+      return {
+        ...INITIAL_RESEARCH_UI_STATE,
+        available: state.available,
+        unavailableReason: state.unavailableReason,
+      };
   }
+}
+
+// ---------- useResearch hook（React 接线：订阅/退订/invoke；reducer 纯函数已单测） ----------
+
+import { useCallback, useEffect, useReducer, useRef } from 'react';
+import type { ExportCsvResult, ResearchExportCsvView } from '../../../shared/types/research';
+
+export interface ResearchExportCsvOptions {
+  taskId: string;
+  tableBlockIndex: number;
+  view: ResearchExportCsvView;
+}
+
+export interface UseResearchApi {
+  state: ResearchUiState;
+  createAndStart(goal: string): Promise<void>;
+  stop(): Promise<void>;
+  deleteSelected(): Promise<void>;
+  openResult(taskId: string): Promise<void>;
+  selectTask(taskId: string): Promise<void>;
+  refreshList(page?: number): Promise<void>;
+  exportCsv(options: ResearchExportCsvOptions): Promise<ExportCsvResult>;
+  consumeCanvasCleared(): void; // 消费 resultCanvasCleared 标记（App 切回 browser 后调用）
+}
+
+export function useResearch(): UseResearchApi {
+  const [state, dispatch] = useReducer(reduceResearchUi, INITIAL_RESEARCH_UI_STATE);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false; // 退订后零 setState（决议 #163(4)）
+    };
+  }, []);
+
+  // 事件订阅：progress/task-done（eventRelay 退订函数）
+  useEffect(() => {
+    const offProgress = window.aibrowse.research.onProgress((event) => {
+      dispatch({ kind: 'progress', event });
+    });
+    const offDone = window.aibrowse.research.onTaskDone((event) => {
+      dispatch({ kind: 'task-done', taskId: event.taskId, status: event.status });
+    });
+    return () => {
+      offProgress();
+      offDone();
+    };
+  }, []);
+
+  // 挂载即拉取历史（可用时）
+  useEffect(() => {
+    void refreshList(1);
+  }, []);
+
+  // task-done → 重读 task/result/list（reloadRequested 标记由 reducer 置位）
+  useEffect(() => {
+    if (!state.reloadRequested) return;
+    dispatch({ kind: 'reload-consumed' });
+    if (state.selectedTaskId !== null) {
+      void loadTaskAndResult(state.selectedTaskId);
+    }
+    void refreshList(state.historyPage);
+  }, [state.reloadRequested]);
+
+  const loadTaskAndResult = useCallback(async (taskId: string): Promise<void> => {
+    if (!mounted.current) return;
+    const got = await window.aibrowse.research.get(taskId);
+    if (!mounted.current) return;
+    if (got.ok) {
+      dispatch({ kind: 'get-ok', task: got.value.task });
+      if (got.value.task.status === 'completed') {
+        const res = await window.aibrowse.research.result(taskId);
+        if (!mounted.current) return;
+        if (res.ok) dispatch({ kind: 'result-ok', view: res.value.view });
+        else dispatch({ kind: 'result-error', errorCode: res.errorCode });
+      }
+    } else {
+      dispatch({ kind: 'invoke-error', errorCode: got.errorCode });
+    }
+  }, []);
+
+  const refreshList = useCallback(async (page?: number): Promise<void> => {
+    if (!mounted.current) return;
+    const pageSize = 20;
+    const target = page ?? 1;
+    const res = await window.aibrowse.research.list({ page: target, pageSize });
+    if (!mounted.current) return;
+    if (res.ok) {
+      dispatch({
+        kind: 'list-ok',
+        items: res.value.items,
+        page: res.value.page,
+        pageSize: res.value.pageSize,
+        total: res.value.total,
+      });
+    } else {
+      dispatch({ kind: 'invoke-error', errorCode: res.errorCode });
+    }
+  }, []);
+
+  const createAndStart = useCallback(
+    async (goal: string): Promise<void> => {
+      if (!mounted.current) return;
+      const trimmed = goal.trim();
+      if (trimmed === '') {
+        dispatch({ kind: 'invoke-error', errorCode: 'research-invalid-goal' });
+        return;
+      }
+      dispatch({ kind: 'busy' });
+      const created = await window.aibrowse.research.create(trimmed);
+      if (!mounted.current) return;
+      if (!created.ok) {
+        dispatch({ kind: 'invoke-error', errorCode: created.errorCode });
+        return;
+      }
+      dispatch({ kind: 'create-ok', task: created.value.task });
+      // 决议 #163(3)：「开始研究」按 create→start 顺序执行；start 失败时
+      // created 任务仍进入历史（reducer 保留），可重新启动或删除
+      const started = await window.aibrowse.research.start(created.value.task.id);
+      if (!mounted.current) return;
+      if (started.ok) dispatch({ kind: 'start-ok', task: started.value.task });
+      else dispatch({ kind: 'invoke-error', errorCode: started.errorCode });
+      void refreshList(1);
+    },
+    [refreshList],
+  );
+
+  const stop = useCallback(async (): Promise<void> => {
+    if (!mounted.current || state.selectedTaskId === null) return;
+    dispatch({ kind: 'busy' });
+    const res = await window.aibrowse.research.stop(state.selectedTaskId);
+    if (!mounted.current) return;
+    if (res.ok) dispatch({ kind: 'stop-ok', task: res.value.task });
+    else dispatch({ kind: 'invoke-error', errorCode: res.errorCode });
+  }, [state.selectedTaskId]);
+
+  const deleteSelected = useCallback(async (): Promise<void> => {
+    if (!mounted.current || state.selectedTaskId === null) return;
+    dispatch({ kind: 'busy' });
+    const res = await window.aibrowse.research.delete(state.selectedTaskId);
+    if (!mounted.current) return;
+    if (res.ok) dispatch({ kind: 'delete-ok', taskId: state.selectedTaskId });
+    else dispatch({ kind: 'invoke-error', errorCode: res.errorCode });
+    void refreshList(1);
+  }, [state.selectedTaskId, refreshList]);
+
+  const openResult = useCallback(
+    async (taskId: string): Promise<void> => {
+      if (!mounted.current) return;
+      await loadTaskAndResult(taskId);
+    },
+    [loadTaskAndResult],
+  );
+
+  const selectTask = useCallback(
+    async (taskId: string): Promise<void> => {
+      if (!mounted.current) return;
+      await loadTaskAndResult(taskId);
+    },
+    [loadTaskAndResult],
+  );
+
+  const exportCsv = useCallback(
+    async (options: ResearchExportCsvOptions): Promise<ExportCsvResult> => {
+      const res = await window.aibrowse.research.exportCsv(options);
+      return res;
+    },
+    [],
+  );
+
+  const consumeCanvasCleared = useCallback((): void => {
+    dispatch({ kind: 'canvas-cleared-consumed' });
+  }, []);
+
+  return {
+    state,
+    createAndStart,
+    stop,
+    deleteSelected,
+    openResult,
+    selectTask,
+    refreshList,
+    exportCsv,
+    consumeCanvasCleared,
+  };
 }

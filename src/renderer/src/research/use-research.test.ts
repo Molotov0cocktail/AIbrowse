@@ -27,7 +27,10 @@ const STATS: ResearchTaskStats = {
   roundsUsed: 0,
 };
 
-function makeTask(id: string, status: 'created' | 'running' | 'completed' | 'failed' | 'cancelled'): ResearchTask {
+function makeTask(
+  id: string,
+  status: 'created' | 'running' | 'completed' | 'failed' | 'cancelled',
+): ResearchTask {
   return {
     id,
     goal: `目标-${id}`,
@@ -186,7 +189,14 @@ describe('reduceResearchUi（决议 #163(4)）', () => {
           blocks: [],
           evidenceMap: {},
           conflicts: [],
-          coverage: { total: 0, multiSource: 0, singleSource: 0, vendor: 0, thirdParty: 0, community: 0 },
+          coverage: {
+            total: 0,
+            multiSource: 0,
+            singleSource: 0,
+            vendor: 0,
+            thirdParty: 0,
+            community: 0,
+          },
           fetchedAt: '2026-08-16T00:00:00.000Z',
         },
         evidence: [],

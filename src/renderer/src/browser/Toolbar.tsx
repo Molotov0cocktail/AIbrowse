@@ -11,6 +11,7 @@ interface ToolbarProps {
   onCreateTab: () => void;
   onToggleAiPanel: () => void;
   onToggleSourcesPanel: () => void; // B5：信源面板开关（与 AI 面板互斥，决议 #68）
+  onToggleResearchPanel: () => void; // C8 决议 #163(1)：研究面板（三态互斥）
   addressBarRef: Ref<HTMLInputElement>;
 }
 
@@ -25,6 +26,7 @@ export function Toolbar({
   onCreateTab,
   onToggleAiPanel,
   onToggleSourcesPanel,
+  onToggleResearchPanel,
   addressBarRef,
 }: ToolbarProps) {
   return (
@@ -68,6 +70,15 @@ export function Toolbar({
         onClick={onToggleSourcesPanel}
       >
         信源
+      </button>
+      <button
+        type="button"
+        className="nav-button research-toggle"
+        aria-label="研究面板"
+        title="研究面板"
+        onClick={onToggleResearchPanel}
+      >
+        研究
       </button>
       <button
         type="button"

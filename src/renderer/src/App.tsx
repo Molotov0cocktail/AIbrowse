@@ -9,6 +9,13 @@ import { TabBar } from './browser/TabBar';
 import { Toolbar } from './browser/Toolbar';
 import { useContentBounds } from './browser/useContentBounds';
 import { useTabsState } from './browser/useTabsState';
+import { ResearchPanel } from './research/ResearchPanel';
+import { ResultView } from './research/ResultView';
+import { TableView } from './research/TableView';
+import { useResearch } from './research/use-research';
+import { isSafeMarkdownUrl } from '../../shared/markdown/markdown-url';
+import type { ResearchResultView } from '../../shared/types/research';
+import type { TableViewState } from '../../shared/research/table-utils';
 
 // 浏览器 chrome（T3）+ AI 侧栏停靠（S4，design §11.1）+ Agent 确认对话框（A6 §11.2，
 // App 级全局挂载）：顶部工具栏 + 标签栏为渲染层 UI，主内容区由主进程 WebContentsView
@@ -17,17 +24,22 @@ import { useTabsState } from './browser/useTabsState';
 // 所有浏览器操作经 window.aibrowse bridge → BrowserController（分层纪律）。
 // useAgent 在 App 级：ConfirmDialog 全局跟随精确 pending（ConfirmManager 单 pending
 // 事实）——不因切换会话/模式/折叠面板而不可访问（L2 确认必须可达）。
+// C8 决议 #163(1)/#158(6)：sidePanel 三态互斥 'ai'|'sources'|'research'|null；
+// viewMode 'browser'|'research-result'——research-result 时经
+// ui.setBrowserContentVisible(false) 隐藏全部 WebContentsView（原生视图覆盖 DOM，
+// 仅 React 切 viewMode 不够），React 结果画布独立滚动；返回浏览/创建激活 Tab/
+// 从结果打开来源后恢复 browser 模式。
 export default function App() {
   const tabsState = useTabsState();
   const contentRef = useRef<HTMLDivElement>(null);
   useContentBounds(contentRef);
   const addressBarRef = useRef<HTMLInputElement>(null);
-  // 面板打开状态存渲染层内存：默认收起、不持久化（§11.2）；定宽 380px、无拖拽/动画。
-  // B5 决议 #68：sidePanel 'ai'|'sources'|null 互斥切换（AI 与 Sources 面板并列，
-  // 同时至多一个）；App 级 Agent ConfirmDialog 挂载于面板之外——切换/卸载面板
-  // 不遮断 L2 确认。
-  const [sidePanel, setSidePanel] = useState<'ai' | 'sources' | null>(null);
+  const [sidePanel, setSidePanel] = useState<'ai' | 'sources' | 'research' | null>(null);
+  const [viewMode, setViewMode] = useState<'browser' | 'research-result'>('browser');
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
+  const [canvasError, setCanvasError] = useState<string | null>(null);
   const agent = useAgent();
+  const research = useResearch();
   const pendingConfirm = globalPendingRequest(agent.agentState);
 
   useEffect(() => {
@@ -36,6 +48,21 @@ export default function App() {
     window.aibrowse.notifyRendererReady();
   }, []);
 
+  // C8 决议 #158(6)：viewMode → WebContentsView 可见性（受控 UI send 通道）
+  useEffect(() => {
+    window.aibrowse.ui.setBrowserContentVisible(viewMode === 'browser');
+  }, [viewMode]);
+
+  // 决议 #163(4)：删除当前画布任务 → 清空结果画布并切回 browser 模式
+  useEffect(() => {
+    if (research.state.resultCanvasCleared) {
+      research.consumeCanvasCleared(); // 消费标记（避免重复触发）
+      setViewMode('browser');
+      setSelectedCandidateId(null);
+      setCanvasError(null);
+    }
+  }, [research.state.resultCanvasCleared]);
+
   const activeTab =
     tabsState === null
       ? null
@@ -43,6 +70,83 @@ export default function App() {
 
   const withActiveTab = (action: (tabId: string) => Promise<boolean>): void => {
     if (activeTab !== null) void action(activeTab.id);
+  };
+
+  // 决议 #159(5)：打开 Markdown/Evidence URL——先经 shared URL 白名单（仅绝对
+  // http/https 无 userinfo），再调用既有 window.aibrowse.tabs.create(url)（主进程
+  // 再次规范化）；创建成功后切回 browser 模式；失败留在结果页 + 固定中文错误；
+  // 禁止覆盖用户当前 Tab、禁止 renderer 直接调用 Electron
+  const openSafeUrl = (url: string): void => {
+    if (!isSafeMarkdownUrl(url)) {
+      setCanvasError('无法打开该链接（仅支持 http/https 地址）');
+      return;
+    }
+    void window.aibrowse.tabs.create(url).then((tab) => {
+      if (tab !== null) {
+        setViewMode('browser');
+        setCanvasError(null);
+      } else {
+        setCanvasError('打开链接失败，请重试');
+      }
+    });
+  };
+
+  // 结果画布：TableView 包装（表格块使用交互组件；其余块 ResultView 渲染）
+  const renderResultCanvas = (view: ResearchResultView): React.ReactNode => {
+    const result = view.result;
+    return (
+      <div className="research-canvas">
+        <div className="research-canvas-header">
+          <button
+            type="button"
+            className="research-canvas-back"
+            onClick={() => {
+              setViewMode('browser');
+              setSelectedCandidateId(null);
+              setCanvasError(null);
+            }}
+          >
+            ← 返回浏览
+          </button>
+          <span className="research-canvas-title">
+            {result.title}（任务 {result.taskId.slice(0, 8)}）
+          </span>
+        </div>
+        {canvasError !== null && <div className="research-canvas-error">{canvasError}</div>}
+        <div className="research-canvas-body">
+          {result.blocks.map((block, i) =>
+            block.kind === 'table' ? (
+              <TableView
+                key={i}
+                columns={block.columns}
+                rows={block.rows}
+                sourceRefs={block.sourceRefs}
+                onSelectSource={(candidateId) => setSelectedCandidateId(candidateId)}
+                onExportCsv={(viewState: TableViewState) =>
+                  research.exportCsv({
+                    taskId: result.taskId,
+                    tableBlockIndex: i,
+                    view: {
+                      sort: viewState.sort,
+                      filter: viewState.filter,
+                    },
+                  })
+                }
+              />
+            ) : null,
+          )}
+          <ResultView
+            result={result}
+            evidence={view.evidence}
+            selectedCandidateId={selectedCandidateId}
+            onSelectSource={(candidateId) => setSelectedCandidateId(candidateId)}
+            onCloseEvidence={() => setSelectedCandidateId(null)}
+            onOpenUrl={openSafeUrl}
+            skipTableBlocks
+          />
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -63,6 +167,7 @@ export default function App() {
           }}
           onToggleAiPanel={() => setSidePanel((p) => (p === 'ai' ? null : 'ai'))}
           onToggleSourcesPanel={() => setSidePanel((p) => (p === 'sources' ? null : 'sources'))}
+          onToggleResearchPanel={() => setSidePanel((p) => (p === 'research' ? null : 'research'))}
           addressBarRef={addressBarRef}
         />
         <TabBar
@@ -72,12 +177,27 @@ export default function App() {
           onClose={(tabId) => void window.aibrowse.tabs.close(tabId)}
         />
       </header>
-      {/* 内容行：内容容器（WebContentsView 覆盖区）+ 面板停靠（§11.1；B5 决议 #68：
-          AI 与 Sources 互斥切换，380px 同模式） */}
+      {/* 内容行：内容容器（WebContentsView 覆盖区）+ 面板停靠（C8 决议 #163(1)：
+          AI/Sources/Research 三态互斥，380px 同模式） */}
       <div className="main-row">
-        <main className="content-area" ref={contentRef} />
+        <main className="content-area" ref={contentRef}>
+          {/* C8 决议 #158(6)：research-result 模式 → React 结果画布（独立滚动）；
+              browser 模式 → 空容器（WebContentsView 覆盖） */}
+          {viewMode === 'research-result' && research.state.resultView !== null
+            ? renderResultCanvas(research.state.resultView)
+            : null}
+        </main>
         {sidePanel === 'ai' && <AiPanel onCollapse={() => setSidePanel(null)} agent={agent} />}
         {sidePanel === 'sources' && <SourcesPanel onCollapse={() => setSidePanel(null)} />}
+        {sidePanel === 'research' && (
+          <ResearchPanel
+            research={research}
+            onCollapse={() => setSidePanel(null)}
+            onOpenResult={(taskId) => {
+              void research.openResult(taskId).then(() => setViewMode('research-result'));
+            }}
+          />
+        )}
       </div>
       {/* 调试面板在底部通栏：高度变化被内容容器的 ResizeObserver 测量并上报 bounds（§11.2） */}
       <DebugPanel activeTabId={tabsState?.activeTabId ?? null} />

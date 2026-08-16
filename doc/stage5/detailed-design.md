@@ -1566,7 +1566,7 @@ export class ResearchWorkspace {
   `research:get {taskId}` / `research:result {taskId}` /
   `research:list {page, pageSize≤20}` / `research:delete {taskId}`（仅终态
   任务；running 拒绝）/ `research:export-csv {taskId, tableBlockIndex,
-  view:{sort,filter}}`（决议 #161：view 为受限排序/筛选状态——renderer
+view:{sort,filter}}`（决议 #161：view 为受限排序/筛选状态——renderer
   不得提供 rows/CSV 内容/文件路径；主进程 dialog.showSaveDialog 用户选定
   路径 → 主进程校验扩展名大小写不敏感精确 .csv → 按同一 applyTableView
   纯函数重投影 → 写入；取消零写入 + 恰好一条脱敏审计）。
@@ -1625,10 +1625,10 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 | research-runtime.test.ts            | 四阶段顺序与每 phase 心跳/六工具子集恒等 + 未知工具/非法参数/跨任务与未知 candidate/tab 安全结果/UUID v4 预分配与冲突 fail-closed/ResearchPlan 白名单矩阵（来源模式互斥/groupId·candidateId 只能引用程序集合/webQueries ≤1/重提与安全默认计划）/24 候选·8 选择·16 Capture·60 Evidence/capture attempts 与 stats 精确对应/Sources-only 与 Search-only 降级 + Sources 不可用失败/模型轮重试与连续失败计数/context-too-long 裁剪重试/step·round 边界上最后一次合法调用与溢出调用零执行/stop 与 Provider done、timeout、终态提交竞态/restart 不得与旧 run settling 重叠/late event·late tool result·late DB write 全 no-op/progress 首尾·去重·listener throw/每个终态 cleanupAll + 用户 Tab 集合恒等/shutdown·dispose 幂等与 database-closed race/Candidate·Capture·Evidence·stats 原子回滚/Result+completed 同事务/500k 终态预留边界/CaptureContent·transcript·reasoning 零持久化/终态优先级（stop>timeout>budget）/终态单一所有权与 runToken 守卫（决议 #132–#138）                                                            | C5   |
 | result-validator.test.ts            | 判别联合逐块校验矩阵/长度边界/表格行列界/ranking rank 连续/evidenceId 存在与归属/sourceRefs ∈ 候选集/URL 白名单/未知 kind 拒绝/失败语义回注                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | C7   |
 | markdown-parse.test.ts              | 子集解析矩阵/raw HTML 关闭（`<script>`/`<img onerror>` 形态纯文本）/URL 白名单（javascript:/data: 拒绝）/转义与 bidi 剔除/超预算安全降级                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | C7   |
-| csv-serializer.test.ts              | 公式注入（=,+,-,@ 前缀 `'` 转义——CSV quoting 前执行）/CRLF 与引号转义（RFC 4180 同族：含分隔符/引号/换行单元格整体双引号包裹、内部双引号双写）/UTF-8 BOM/空表/超长单元格截断/MAX_CSV_EXPORT_BYTES 边界 ±1/输入不修改输出确定性（决议 #161/#162）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | C8   |
-| research-ipc.test.ts                | 八通道载荷白名单矩阵（未知字段/原型链键/超长/非法 UUID/NaN·Infinity·非整数/分页边界 page≥1·pageSize 1..20/export table index·view state——无 renderer 路径·rows·内容通道）/service=null·unavailable 全拒/状态门控（running 不可 delete；starting slot 预占不可 delete）/每个 create/start/stop/delete/export 尝试恰好一条脱敏审计（goal 长度/taskId/统计/导出块索引·行列计数/结果码；URL·摘录·标题·路径·文件名·单元格零出现）/export payload 无 path/rows/content/adapter 零 Repository·SQL·Electron import（决议 #156/#157/#162）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C8   |
-| table-utils.test.ts                 | 排序（合法 columnIndex/asc·desc/原始字符串二元比较非 localeCompare/相等稳定收尾）/筛选（全行任一单元格含规范化查询保留/查询 ≤200 边界/空查询恢复全部/无正则）/输入零修改输出确定性/当前视图 TSV 复制文本（header+rows/CRLF）与 UI 行顺序逐项一致/spreadsheet-cell 防护（=,+,-,@、TAB、CR 前缀加 `'`）（决议 #160）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | C8   |
-| use-research.test.ts                | reducer 契约（taskId 键控/多 task 事件不串线/事件早于 invoke 返回安全收敛/progress running 有界节流·terminal 立即刷新/task-done 触发重读/退订后零 setState/删除当前画布任务清空或退回 browser/start 失败 created 保留进历史/不可用中文诊断/固定中文状态·phase·错误码映射）（决议 #163）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | C8   |
+| csv-serializer.test.ts              | 公式注入（=,+,-,@ 前缀 `'` 转义——CSV quoting 前执行）/CRLF 与引号转义（RFC 4180 同族：含分隔符/引号/换行单元格整体双引号包裹、内部双引号双写）/UTF-8 BOM/空表/超长单元格截断/MAX_CSV_EXPORT_BYTES 边界 ±1/输入不修改输出确定性（决议 #161/#162）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | C8   |
+| research-ipc.test.ts                | 八通道载荷白名单矩阵（未知字段/原型链键/超长/非法 UUID/NaN·Infinity·非整数/分页边界 page≥1·pageSize 1..20/export table index·view state——无 renderer 路径·rows·内容通道）/service=null·unavailable 全拒/状态门控（running 不可 delete；starting slot 预占不可 delete）/每个 create/start/stop/delete/export 尝试恰好一条脱敏审计（goal 长度/taskId/统计/导出块索引·行列计数/结果码；URL·摘录·标题·路径·文件名·单元格零出现）/export payload 无 path/rows/content/adapter 零 Repository·SQL·Electron import（决议 #156/#157/#162）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | C8   |
+| table-utils.test.ts                 | 排序（合法 columnIndex/asc·desc/原始字符串二元比较非 localeCompare/相等稳定收尾）/筛选（全行任一单元格含规范化查询保留/查询 ≤200 边界/空查询恢复全部/无正则）/输入零修改输出确定性/当前视图 TSV 复制文本（header+rows/CRLF）与 UI 行顺序逐项一致/spreadsheet-cell 防护（=,+,-,@、TAB、CR 前缀加 `'`）（决议 #160）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | C8   |
+| use-research.test.ts                | reducer 契约（taskId 键控/多 task 事件不串线/事件早于 invoke 返回安全收敛/progress running 有界节流·terminal 立即刷新/task-done 触发重读/退订后零 setState/删除当前画布任务清空或退回 browser/start 失败 created 保留进历史/不可用中文诊断/固定中文状态·phase·错误码映射）（决议 #163）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | C8   |
 
 ### 13.2 冒烟矩阵（Electron 真实启动，临时 userData；dev+生产双场景）
 
@@ -1638,7 +1638,7 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 | 8.17   | Runtime 场景                   | FakeProvider 多轮脚本驱动全阶段（planning→reading→verifying→synthesizing）→ completed + 候选/Capture/VerifiedEvidence/Result 落库读回 + CaptureContent 正文零落盘 + 用户 Tab 集合前后恒等；stop 中途 → cancelled + 本任务 Tab 清理 + 用户 Tab 保留；预算注入用尽 → failed（research-budget-exhausted）+ 此前 Evidence 保留；终态后迟到事件零影响（决议 #132–#139）                                                                                                                                                                                                                                                                                       | C5   |
 | 8.18   | 综合场景                       | 两个不同 canonicalKey 的受控来源 + ≥2 条 VerifiedEvidence + C6 真实 ResearchPromptsPort/ResearchSynthesisPort + FakeProvider 确定性返回两条相反 Claim 和一个 Conflict + 严格但仅限 smoke 的 C7 Validator stub：Claim.coverage/sourceTypes/singleSourceFields 断言；Conflict 显式落库、resolved=unresolved、双向引用一致；synthesizing 请求真实包含经验证 Claim/Conflict（UNTRUSTED 块）；Result 含同一 Conflict（程序装配，模型草案不可替换）；Result coverage 为计数（不含 score/percent/confidence）；Result ≥1 uncertain 块；CaptureContent、Provider raw、transcript、reasoning 零落盘；用户 Tab 前后恒等；本场景不解除生产 fail-closed（决议 #140） | C6   |
 | 8.19-A | C7 静态渲染与生产 factory 闭环 | **C7（本任务实施）**：① 真实 C7 ResultValidator + 安全 Markdown 解析（shared）在 Node 测试环境的静态渲染验证（react-dom/server + ResultView——敌对 HTML 只出现为转义文本、危险 URL 零 href、table/cards/ranking/evidence/uncertain 稳定渲染）；② 生产 factory 主进程闭环：真实 C6+C7 端口经生产 research-runtime-factory + FakeProvider（冒烟注入确定性 Provider 脚本，经同一生产 factory 代码路径）完成 startTask → completed，可信字段全部程序生成、正文/transcript/reasoning/Key 零持久化、用户 Tab 集合不变、缺 Provider/Sources 精确拒绝；dev+生产双场景                                                                                             | C7   |
-| 8.19-B | UI DOM 场景                    | **C8（本任务实施，决议 #156–#163）**：真实 DOM：Research 侧栏创建/启动/planning→reading→verifying→synthesizing 渐进进度/stop→cancelled/FakeProvider+生产 factory 完成 completed/大结果画布（viewMode 切换 WebContentsView 实际不可见）Table 排序/筛选/复制/Cards/Ranking/Conflict/Uncertain 渲染/Evidence 下钻（点击结论看来源）/safe URL 新建 Tab 后返回 browser 模式/敌对 Markdown·HTML·URL 零 DOM 注入/viewMode 往返前后用户 Tab id·url·title·active 恒等/CSV 注入 dialog 桩写系统 TEMP 真实字节断言（BOM/CRLF/公式防护/当前视图一致性/Evidence 摘录零出现）后 finally 精确清理/Research unavailable 不影响 Browser/Sources/Chat；dev+生产双场景                                                                                                                                                                                                                             | C8   |
+| 8.19-B | UI DOM 场景                    | **C8（本任务实施，决议 #156–#163）**：真实 DOM：Research 侧栏创建/启动/planning→reading→verifying→synthesizing 渐进进度/stop→cancelled/FakeProvider+生产 factory 完成 completed/大结果画布（viewMode 切换 WebContentsView 实际不可见）Table 排序/筛选/复制/Cards/Ranking/Conflict/Uncertain 渲染/Evidence 下钻（点击结论看来源）/safe URL 新建 Tab 后返回 browser 模式/敌对 Markdown·HTML·URL 零 DOM 注入/viewMode 往返前后用户 Tab id·url·title·active 恒等/CSV 注入 dialog 桩写系统 TEMP 真实字节断言（BOM/CRLF/公式防护/当前视图一致性/Evidence 摘录零出现）后 finally 精确清理/Research unavailable 不影响 Browser/Sources/Chat；dev+生产双场景      | C8   |
 | 8.20   | 红队 FRT-01～FRT-12            | threat-model §4 矩阵全表（dev+生产双场景，每项独立断言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C9   |
 
 - 双进程持久化：`AIBROWSE_RESEARCH_SMOKE=set|check`（与
@@ -3081,34 +3081,34 @@ Evidence 支撑`、`blocks[1] 含危险链接`），**不回显敌对正文**。
      - progress 订阅（`onProgress(listener)`——Runtime onProgress 正式
        转发；C8 前 onProgress 为空操作，C8 起转发）；
      - task-done 订阅（`onTaskDone(listener)`）。
-     （3）**listener 异常隔离**：Service 逐 listener try/catch + 脱敏
-     warn——单个 listener 抛错不影响其他 listener 与 Runtime。
-     （4）**终态事件时序**：终态数据库提交成功后，**先发 terminal
-     progress（finishedAt 非空），再发 task-done**，二者各恰好一次
-     （事件挂 Runtime onSettle 链；重入/重复调用 no-op）。
-     （5）**shutdown/dispose 后零事件**：shuttingDown/disposed 后不再
-     发事件并清除 listener；迟到事件安全 no-op（服务侧幂等；renderer
-     侧退订后零 setState）。
-     （6）**deleteTask 预占互斥**：deleteTask 必须把同 taskId 的
-     starting slot（决议 #154 预占中）视为不可删除，返回
-     research-invalid-state；不得在 Provider resolve 期间删除 created
-     行（resolve 完成后 start 会写 running——删除会导致孤儿 Runtime）。
-     （7）**结果详情只允许 completed 且 Result 存在的任务**：
+       （3）**listener 异常隔离**：Service 逐 listener try/catch + 脱敏
+       warn——单个 listener 抛错不影响其他 listener 与 Runtime。
+       （4）**终态事件时序**：终态数据库提交成功后，**先发 terminal
+       progress（finishedAt 非空），再发 task-done**，二者各恰好一次
+       （事件挂 Runtime onSettle 链；重入/重复调用 no-op）。
+       （5）**shutdown/dispose 后零事件**：shuttingDown/disposed 后不再
+       发事件并清除 listener；迟到事件安全 no-op（服务侧幂等；renderer
+       侧退订后零 setState）。
+       （6）**deleteTask 预占互斥**：deleteTask 必须把同 taskId 的
+       starting slot（决议 #154 预占中）视为不可删除，返回
+       research-invalid-state；不得在 Provider resolve 期间删除 created
+       行（resolve 完成后 start 会写 running——删除会导致孤儿 Runtime）。
+       （7）**结果详情只允许 completed 且 Result 存在的任务**：
      - 非 completed → research-invalid-state；
      - 任务不存在 → research-not-found；
      - completed 但 Result 缺失、taskId/resultId 不一致或引用关系损坏
        → research-internal（禁止把不一致数据交给 Renderer）。
-     （8）**最小 ResearchResultView**：task + 已验证 ResearchResult +
-     Evidence 展示 DTO 列表。
-     （9）**Evidence DTO 只暴露下钻必需字段**：evidenceId/candidateId/
-     url/title/accessTime/type/locator/excerpt/value/verification；
-     不暴露无 UI 需要的数据库或运行时内部字段（documentId/contentHash/
-     captureId/sourceId 不进 DTO）。
-     （10）**读取时复核（fail-closed）**：taskId/resultId 一致；evidence
-     全属于本任务且 verification='verified'；result.evidenceMap 与
-     Evidence 一致（键集 = DTO evidenceId 集）；每个 sourceRef 均有对应
-     candidateId 的 verified Evidence（引用完整性）。畸形/外部篡改
-     数据库 → research-internal（零渲染、零透传）。
+       （8）**最小 ResearchResultView**：task + 已验证 ResearchResult +
+       Evidence 展示 DTO 列表。
+       （9）**Evidence DTO 只暴露下钻必需字段**：evidenceId/candidateId/
+       url/title/accessTime/type/locator/excerpt/value/verification；
+       不暴露无 UI 需要的数据库或运行时内部字段（documentId/contentHash/
+       captureId/sourceId 不进 DTO）。
+       （10）**读取时复核（fail-closed）**：taskId/resultId 一致；evidence
+       全属于本任务且 verification='verified'；result.evidenceMap 与
+       Evidence 一致（键集 = DTO evidenceId 集）；每个 sourceRef 均有对应
+       candidateId 的 verified Evidence（引用完整性）。畸形/外部篡改
+       数据库 → research-internal（零渲染、零透传）。
 
 158. **大结果画布与 WebContentsView 可见性**：
      （1）**仅在 React 中切 viewMode 不足以显示结果画布**：原生
@@ -3122,21 +3122,21 @@ Evidence 支撑`、`blocks[1] 含危险链接`），**不回显敌对正文**。
        显示或 focus（applyActiveVisual 检查 contentVisible）；
      - true 时仅重新显示当前 active Tab，并应用最后一次合法 bounds；
      - 用户 Tab URL/title/active 状态保持不变。
-     （3）**该方法不得进入 AI BrowserController/Tool 能力接口**
-     （BrowserController 接口零改动——仅实现类新增；Tool 层无通道）。
-     （4）**受控 UI send 通道 `ui:browser-content-visible`**：sender+
-     主帧校验；payload 只允许 {visible:boolean}（严格白名单，其余
-     拒绝 + warn）。
-     （5）**preload 只暴露 `ui.setBrowserContentVisible(boolean)`**，
-     不暴露 Electron 对象。
-     （6）**App viewMode = 'browser' | 'research-result'**：
+       （3）**该方法不得进入 AI BrowserController/Tool 能力接口**
+       （BrowserController 接口零改动——仅实现类新增；Tool 层无通道）。
+       （4）**受控 UI send 通道 `ui:browser-content-visible`**：sender+
+       主帧校验；payload 只允许 {visible:boolean}（严格白名单，其余
+       拒绝 + warn）。
+       （5）**preload 只暴露 `ui.setBrowserContentVisible(boolean)`**，
+       不暴露 Electron 对象。
+       （6）**App viewMode = 'browser' | 'research-result'**：
      - browser → WebContentsView 可见（contentVisible=true）；
      - research-result → WebContentsView 隐藏（contentVisible=false），
        React 结果画布可见且独立滚动；
      - 返回浏览、创建/激活 Tab、从结果打开来源后恢复 browser 模式；
      - DebugPanel、侧栏和 ResizeObserver 既有 bounds 行为不回归。
-     （7）**Controller 测试**：隐藏期间 activate/create 不泄漏可见
-     view（所有 view 仍 setVisible(false)）；恢复后只显示 active Tab。
+       （7）**Controller 测试**：隐藏期间 activate/create 不泄漏可见
+       view（所有 view 仍 setVisible(false)）；恢复后只显示 active Tab。
 
 159. **Evidence 下钻与安全导航**：
      （1）**ResultView 扩展为支持 block/item/Conflict position 的
@@ -3144,15 +3144,15 @@ Evidence 支撑`、`blocks[1] 含危险链接`），**不回显敌对正文**。
      - Table 使用 block 级 refs（决议 #150(6) v1 无逐列映射）；
      - Cards/Ranking 使用 item 级 refs；
      - 不得伪造逐列来源。
-     （2）**Evidence drawer/detail 纯文本展示**：URL、标题、获取时间、
-     类型、locator、excerpt、value、verified 标识（零 HTML、零
-     dangerouslySetInnerHTML）。
-     （3）**sourceRefs 为 candidateId**，通过 Evidence DTO 按
-     candidateId 过滤下钻（一 candidate 多 evidence 全列出）。
-     （4）**ResultView 现有 emphasis/strong 递归渲染继续透传
-     onOpenUrl**（嵌套链接回归测试：`**text [link](url)**` 与
-     `*[link](url)*` 的链接仍触发回调）。
-     （5）**打开 Markdown/Evidence URL（安全导航）**：
+       （2）**Evidence drawer/detail 纯文本展示**：URL、标题、获取时间、
+       类型、locator、excerpt、value、verified 标识（零 HTML、零
+       dangerouslySetInnerHTML）。
+       （3）**sourceRefs 为 candidateId**，通过 Evidence DTO 按
+       candidateId 过滤下钻（一 candidate 多 evidence 全列出）。
+       （4）**ResultView 现有 emphasis/strong 递归渲染继续透传
+       onOpenUrl**（嵌套链接回归测试：`**text [link](url)**` 与
+       `*[link](url)*` 的链接仍触发回调）。
+       （5）**打开 Markdown/Evidence URL（安全导航）**：
      - Renderer 不渲染 `<a href>`（既有）；
      - URL 先经 shared URL 白名单（isSafeMarkdownUrl——仅绝对
        http/https 无 userinfo）；
@@ -3161,8 +3161,8 @@ Evidence 支撑`、`blocks[1] 含危险链接`），**不回显敌对正文**。
      - 创建成功后切回 browser view（viewMode='browser'）；
      - 失败时留在结果页并显示固定中文错误；
      - 禁止覆盖用户当前 Tab，禁止 renderer 直接调用 Electron。
-     （6）**危险 URL 即使绕过上层也只能显示为纯文本**（结果画布纵深
-     防御——渲染层永不因 URL 生成可点击元素）。
+       （6）**危险 URL 即使绕过上层也只能显示为纯文本**（结果画布纵深
+       防御——渲染层永不因 URL 生成可点击元素）。
 
 160. **TableView 纯函数与 UI 语义**：
      （1）**shared 或 renderer 可复用的纯函数**：TableViewState、
@@ -3174,26 +3174,26 @@ Evidence 支撑`、`blocks[1] 含危险链接`），**不回显敌对正文**。
      - 使用原始字符串二元比较（`<`/`>`，与 SQLite BINARY 排序一致——
        不用 localeCompare）；
      - 相等时按原始 row index 稳定收尾（稳定排序）。
-     （3）**筛选**：
+       （3）**筛选**：
      - 全行任一单元格包含规范化查询即保留（大小写不敏感按小写归一）；
      - 查询 ≤200（超长拒绝/截断确定性）；
      - 空查询恢复全部；
      - 不使用无界正则（字面包含匹配）。
-     （4）**UI 支持**：表头点击排序、基础筛选、清除筛选、复制当前
-     视图。
-     （5）**复制内容**：header + 当前排序/筛选后的 rows，TSV + CRLF。
-     （6）**Clipboard 只能在明确用户点击后调用
-     navigator.clipboard.writeText**；失败显示固定中文诊断，不记录
-     单元格内容（FT-16）。
-     （7）**spreadsheet-cell 防护**：TSV 与 CSV 共用——以 =、+、-、@、
-     TAB、CR 开头时加单引号（防复制后直接粘贴进电子表格执行公式）。
-     （8）**不实现**：复杂列类型推断、正则筛选、编辑、图表、虚拟滚动。
+       （4）**UI 支持**：表头点击排序、基础筛选、清除筛选、复制当前
+       视图。
+       （5）**复制内容**：header + 当前排序/筛选后的 rows，TSV + CRLF。
+       （6）**Clipboard 只能在明确用户点击后调用
+       navigator.clipboard.writeText**；失败显示固定中文诊断，不记录
+       单元格内容（FT-16）。
+       （7）**spreadsheet-cell 防护**：TSV 与 CSV 共用——以 =、+、-、@、
+       TAB、CR 开头时加单引号（防复制后直接粘贴进电子表格执行公式）。
+       （8）**不实现**：复杂列类型推断、正则筛选、编辑、图表、虚拟滚动。
 
 161. **CSV 必须导出「当前 UI 视图」**：
      （1）现有 {taskId, tableBlockIndex} 无法表达当前排序/筛选，不能
      证明「导出内容与 UI 数据一致」（Fifth_stage §8 测试重点）——
      export-csv payload 冻结为 `{taskId, tableBlockIndex,
-     view:{sort,filter}}`。
+view:{sort,filter}}`。
      （2）**Renderer 只能提供受限 view state**（columnIndex/direction/
      query）；不得提供 rows、CSV 内容或文件路径（FT-13）。
      （3）**主进程重新读取已持久化并验证的 Result**，按同一
@@ -3208,11 +3208,11 @@ Evidence 支撑`、`blocks[1] 含危险链接`），**不回显敌对正文**。
        单元格整体用双引号包裹、内部双引号写成两个双引号）；
      - 公式防护在 CSV quoting **前**执行（#160(7) spreadsheet-cell）；
      - Evidence、Claim、Conflict、URL 元数据和 Result 其他块零进入。
-     （6）**编译期 MAX_CSV_EXPORT_BYTES**（按 UTF-8 字节检查；超限零
-     写入 + 固定中文错误）。
-     （7）**CSV serializer 位于 main 可安全复用的 shared/main 纯模块**
-     （不得只放在 renderer 后再让主进程反向依赖 renderer——依赖方向
-     保持 UI → main）。
+       （6）**编译期 MAX_CSV_EXPORT_BYTES**（按 UTF-8 字节检查；超限零
+       写入 + 固定中文错误）。
+       （7）**CSV serializer 位于 main 可安全复用的 shared/main 纯模块**
+       （不得只放在 renderer 后再让主进程反向依赖 renderer——依赖方向
+       保持 UI → main）。
 
 162. **Dialog、文件写入与导出错误语义**：
      （1）**research-ipc.ts 保持零 Electron import**：通过注入式窄端口
@@ -3257,10 +3257,10 @@ Evidence 支撑`、`blocks[1] 含危险链接`），**不回显敌对正文**。
        收敛（以事件为主、invoke 结果只补缺）；
      - 退订后零 setState；
      - 删除当前画布任务后退回 browser 或清空结果画布。
-     （5）**所有状态、phase、错误码映射为固定中文 UI**；不得把异常、
-     SQL、路径或 Provider 原始消息显示给用户（FT-16）。
-     （6）**Research 库 unavailable 时所有入口禁用**并显示固定中文
-     诊断，其余浏览器/Sources/Chat 正常（决议 #109 store 契约）。
+       （5）**所有状态、phase、错误码映射为固定中文 UI**；不得把异常、
+       SQL、路径或 Provider 原始消息显示给用户（FT-16）。
+       （6）**Research 库 unavailable 时所有入口禁用**并显示固定中文
+       诊断，其余浏览器/Sources/Chat 正常（决议 #109 store 契约）。
 
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4/C5 端口）/C7（依赖 C1/C5 端口，可与

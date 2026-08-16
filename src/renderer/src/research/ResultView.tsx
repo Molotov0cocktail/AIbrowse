@@ -30,6 +30,9 @@ export interface ResultViewProps {
   evidence?: ResearchEvidenceDto[]; // 完整 Evidence DTO（view.evidence；drawer 数据源）
   selectedCandidateId?: string | null; // 非空时渲染 Evidence drawer（该候选的 evidence）
   onCloseEvidence?: () => void;
+  // C8 画布模式：table 块由 TableView 交互组件承载（排序/筛选/复制/导出）——
+  // ResultView 跳过 table 块避免双渲染（独立展示场景不传）
+  skipTableBlocks?: boolean;
 }
 
 // 渲染层防御性清洗（已由 Validator 规范化；纵深防御覆盖绕过路径）
@@ -313,14 +316,23 @@ function EvidenceDrawer({
 // ---------- 主组件 ----------
 
 export function ResultView(props: ResultViewProps): ReactElement {
-  const { result, onOpenUrl, onSelectSource, evidence, selectedCandidateId, onCloseEvidence } =
-    props;
+  const {
+    result,
+    onOpenUrl,
+    onSelectSource,
+    evidence,
+    selectedCandidateId,
+    onCloseEvidence,
+    skipTableBlocks = false,
+  } = props;
   const evidenceEntries = Object.entries(result.evidenceMap);
   return (
     <div className="research-result-view">
       <h2 className="research-result-title">{safeText(result.title)}</h2>
       <p className="research-result-summary">{safeText(result.summary)}</p>
-      {result.blocks.map((block, i) => renderResultBlock(block, i, onOpenUrl, onSelectSource))}
+      {result.blocks
+        .filter((block) => !(skipTableBlocks && block.kind === 'table'))
+        .map((block, i) => renderResultBlock(block, i, onOpenUrl, onSelectSource))}
       {result.conflicts.length > 0 && (
         <div className="research-conflicts">
           <h3>冲突（未解决）</h3>
@@ -334,7 +346,11 @@ export function ResultView(props: ResultViewProps): ReactElement {
                     {pos.sourceRefs.length > 0 && (
                       <span className="research-source-refs">
                         {pos.sourceRefs.map((ref) => (
-                          <SourceEntry key={ref} candidateId={ref} onSelectSource={onSelectSource} />
+                          <SourceEntry
+                            key={ref}
+                            candidateId={ref}
+                            onSelectSource={onSelectSource}
+                          />
                         ))}
                       </span>
                     )}
