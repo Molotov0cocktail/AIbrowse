@@ -27,6 +27,7 @@ import {
   smokeResearchServiceOverride,
   smokeUiFake,
 } from './smoke';
+import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
 import { resolveAddressBarInput } from '../shared/url';
@@ -788,7 +789,23 @@ if (!gotLock) {
             'main',
             'AIBROWSE_RESEARCH_SMOKE 与 AIBROWSE_SESSION_SMOKE / AIBROWSE_SOURCES_SMOKE / AIBROWSE_SOURCES_UI_SMOKE 互斥，请只选其一',
           );
+          // C8 定向修复（2026-08-17）：本互斥分支缺冒烟临时目录清理（与
+          // SESSION/SOURCES 互斥分支 532ea78 同款缺陷）——失败路径残留
+          // aibrowse-smoke-ai-<pid>/aibrowse-smoke-sources-<pid> 目录
           sourceService?.dispose();
+          if (smokeSourcesDir !== null) {
+            rmSync(smokeSourcesDir, { recursive: true, force: true });
+            smokeSourcesDir = null;
+          }
+          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+          if (smokeResearchDir !== null) {
+            try {
+              rmSync(smokeResearchDir, { recursive: true, force: true });
+            } catch {
+              // research db 句柄可能未关（EPERM）——不阻塞退出
+            }
+            smokeResearchDir = null;
+          }
           app.exit(1);
           return;
         }
@@ -878,7 +895,7 @@ if (!gotLock) {
             }
             app.quit();
           })
-          .catch((err: unknown) => {
+          .catch(async (err: unknown) => {
             logError('main', '冒烟场景失败（调度层）', err);
             // 失败路径同样清理冒烟 Sources 临时目录（app.exit 不触发 before-quit，
             // 否则每次失败运行残留 pid 专属目录——清理纪律）
@@ -888,13 +905,21 @@ if (!gotLock) {
               smokeSourcesDir = null;
             }
             if (smokeResearchDir !== null) {
-              // 失败路径 db 句柄可能未关——安全尝试（EPERM 不阻塞退出，
-              // 残留目录由下次冒烟自清——目录名含 pid 且位于系统 TEMP）
+              // C8 定向修复（2026-08-17，与 factory-smoke 残留同根因）：失败路径
+              // 单次 rmSync 遇 db 句柄未关（Windows EPERM）静默放弃 → 每次失败
+              // 运行残留 `aibrowse-smoke-research-<pid>` 目录。修复：先
+              // researchService.shutdown()（幂等——关闭 store 句柄）再
+              // removeSmokeDirWithRetry（有限重试吸收句柄延迟释放窗口）
               try {
-                rmSync(smokeResearchDir, { recursive: true, force: true });
+                await researchService?.shutdown();
+              } catch {
+                // 忽略（关闭失败不阻塞退出）
+              }
+              try {
+                await removeSmokeDirWithRetry(smokeResearchDir);
                 smokeResearchDir = null;
               } catch {
-                smokeResearchDir = null; // 不阻塞 app.exit（句柄随进程退出释放）
+                smokeResearchDir = null; // 最终保留不阻塞退出（极少数持久占用）
               }
             }
             app.exit(1); // 失败原因已由 runSessionSmokeScenario / runSmokeScenario 记录 error 日志
