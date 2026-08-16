@@ -1506,7 +1506,7 @@ ResearchRepository（独立 research.db）`；Renderer 只消费已验证 Result
   completed|failed|cancelled）+ ui:browser-content-visible 受控 send 通道
   （决议 #158：WebContentsView 可见性，仅供受信 UI，不进 AI 接口）；CSV
   导出仅主进程 dialog 安全通道（renderer 零路径参数）+ 公式注入防护 + BOM
-  + 当前 UI 视图重投影（决议 #161）。
+  - 当前 UI 视图重投影（决议 #161）。
 - **UI**：侧栏 ResearchPanel（380px 同模式，sidePanel 三态互斥）仅控制/
   进度 + 主窗口内大结果画布（viewMode 切换 + contentVisible 联动，不新开
   窗口）；表格排序/筛选/来源详情/复制（TableView 纯函数 shared 模块）；
