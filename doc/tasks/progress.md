@@ -195,7 +195,45 @@
   复跑通过如实登记）；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码
   0/0；真实 Provider 调用 0 次（无真实 Provider 产品链路）。证据见
   C7 任务文档「红→绿证据」小节。
-  **下一唯一任务 = C8。** 本阶段红线：禁止安装依赖、禁止实现
+  **C8 已完成（2026-08-17）**——Research UI/IPC/bridge：侧栏控制/进度、
+  大结果画布、Evidence 下钻、表格交互与 CSV 安全导出（实施前契约裁决
+  #156–#163：Research IPC 精确契约（**八 invoke + 两事件**——原「7 个
+  invoke」漂移以八为准；payload 严格白名单 fail-closed；list 分页 1-based
+  严格拒绝；task-done.status 收窄三值；Progress/Done 事件零敏感内容）/
+  Service 查询视图·事件出口·生命周期（getResearchResultView 读取复核
+  fail-closed；listener 异常隔离；终态先 terminal progress 再 task-done
+  各恰好一次；shutdown 后零事件；deleteTask 与 starting slot 预占互斥）/
+  大结果画布与 WebContentsView 可见性（BrowserControllerImpl
+  contentVisible——不进 AI 接口；ui:browser-content-visible 受控通道；
+  viewMode 'browser'|'research-result'）/
+  Evidence 下钻与安全导航（block/item/position sourceRefs；drawer 纯文本；
+  safe URL 经 tabs.create + 白名单；危险 URL 纯文本）/
+  TableView 纯函数（原始字符串二元比较/稳定排序/无正则筛选/TSV+CRLF 复制/
+  spreadsheet-cell 防护）/
+  CSV 导出当前 UI 视图（export-csv payload 冻结 {taskId, tableBlockIndex,
+  view:{sort,filter}}；主进程同一 applyTableView 重投影；UTF-8 BOM/CRLF/
+  RFC 4180 引用；MAX_CSV_EXPORT_BYTES 编译期上限；ExportCsvResult 闭合
+  错误联合；dialog 注入式窄端口；取消零写入 + 恰好一条脱敏审计；CSV
+  serializer 位于 shared 纯模块——主进程不反向依赖 renderer）/
+  UI 状态·事件收敛·可达性（sidePanel 三态互斥；ResearchPanel 380px 仅
+  控制/进度；useResearch reducer taskId 键控/事件早于 invoke 返回收敛/
+  退订零 setState；固定中文 UI 零原始消息透传））；红→绿聚焦 **99/99**
+  （8 文件）+ 全量 **2054/2054**（基线 1964 + 90 新增，既有用例零删除零
+  削弱）；冒烟 **8.19-B** dev+生产双场景退出码 0（真实 DOM 全链路：侧栏
+  创建/启动/四阶段渐进/stop→cancelled/FakeProvider 完成 completed/画布
+  WebContentsView 不可见机器证据（Tab webContents 零聚焦）/Table 排序·
+  筛选·复制/Cards·Ranking·Conflict·Uncertain/Evidence 下钻/safe URL
+  新建 Tab 返回 browser/敌对 Markdown 零 DOM 注入/viewMode 往返用户 Tab
+  恒等/CSV 注入 dialog 桩写系统 TEMP 真实字节断言（BOM/CRLF/公式防护/
+  当前视图一致性/Evidence 摘录零出现）后 finally 精确清理）；8.13 瞬态
+  失败 3 次（历史先例同款）复跑通过如实登记；AIBROWSE_RESEARCH_SMOKE
+  set|check 双进程退出码 0/0；**TEMP 遗留根因修复**（2026-08-16 23:30
+  factory-smoke EPERM 遗留：失败路径句柄未关闭 → smoke-cleanup 模块 +
+  8.19-A finally 修复 + index.ts 失败路径/互斥分支清理补齐——终检 TEMP/
+  根目录日志/Electron 进程零残留）；真实 Provider 调用 **0 次**（8.19-B
+  无真实 Provider 产品链路——FakeProvider 确定性脚本不冒充真实证据）。
+  证据见 C8 任务文档「红→绿证据」小节。
+  **下一唯一任务 = C9。** 本阶段红线：禁止安装依赖、禁止实现
   Sixth Stage。**真实 Provider 长期授权（2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
   每次调用仍须服务于明确开发/验收/定位/复验目的，禁止无界循环、无诊断

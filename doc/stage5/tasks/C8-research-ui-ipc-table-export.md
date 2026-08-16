@@ -110,3 +110,68 @@ C5（Service/事件）、C6（数据模型）、C7（Renderer 组件）。
 ## 提交边界
 
 逻辑提交；不夹带 C9 红队/验收代码。
+
+## 红→绿证据
+
+- **红态**（2026-08-17，模块缺失/旧结构）：8 个测试文件红态——research-ipc/
+  research-service-events/view-visibility/table-utils/csv-serializer/
+  use-research/smoke-cleanup 模块缺失 + ResultView C8 新用例（sourceRefs
+  入口/嵌套链接透传）在旧实现下失败——**红态 8 files failed / 14 failed |
+  13 passed**（vitest 输出实证；既有 ResultView 13 用例零削弱）。
+- **TEMP 遗留根因与修复（决议 #156 前置，先红测后修）**：2026-08-16 23:30
+  生产冒烟机器证据（日志 EPERM 实证）：8.19-A 场景失败路径（assert 抛错）
+  跳 finally 时 research.db 句柄未关闭（service.shutdown 只在正常路径调用）
+  → rmSync 在 Windows 上 EPERM → 系统 TEMP 遗留
+  `aibrowse-research-factory-smoke-t0DXYo\research.db`（90112 字节，扫描零
+  敏感形态后按既有流程精确删除）。红测：`smoke-cleanup.test.ts`（模块缺失
+  红 + 语义护栏「句柄未关闭删除必须失败」+ 关闭后删除成功零残留）→ 绿
+  **6/6**；修复 = `src/main/smoke-cleanup.ts`（零 Electron import、
+  EPERM/EBUSY 有限重试）+ 8.19-A finally 先 shutdown/closeDb 再
+  removeSmokeDirWithRetry；**同日发现同类缺陷**（失败路径单次 rmSync 静默
+  放弃 EPERM → 每次失败运行残留 `aibrowse-smoke-research-<pid>`）——
+  index.ts 失败路径先 researchService.shutdown() 再 removeSmokeDirWithRetry
+  + RESEARCH 互斥分支补齐 ai/sources 目录清理——**终检 TEMP/根目录日志/
+  Electron 进程零残留**（互斥失败路径实测零残留）。
+- **转绿**：实现 research-ipc（八通道严格白名单 fail-closed/审计恰好一条/
+  CSV 重投影）、research-service（事件出口 getResearchResultView/deleteTask
+  预占互斥）、view-visibility（contentVisible 纯函数）、table-utils/
+  csv-serializer（shared 纯模块）、use-research（reducer+hook 竞态守卫）、
+  ResultView 扩展（sourceRefs/Evidence drawer/嵌套链接透传）、
+  BrowserControllerImpl contentVisible + ui:browser-content-visible、
+  preload/index 装配、ResearchPanel/TableView/App 接线后——C8 聚焦
+  **99/99**（8 文件）；全量 **2054/2054**（基线 1964 + 90 新增；既有用例
+  零删除零削弱）。
+- **冒烟 8.19-B**（默认矩阵自动包含；dev+生产双场景退出码 0）：真实 DOM
+  驱动全链路——侧栏创建/启动/planning→reading→verifying→synthesizing
+  渐进（脚本轮次 delayMs 防 React 批处理合并）/stop→cancelled（reducer
+  start-ok 合并分支补全 task——stop 按钮状态修复）/FakeProvider + SMOKE
+  service 完成 completed（双候选双 canonicalKey——conflict 装配 ≥2 要求；
+  确定性 createId/createCaptureId 注入）/大结果画布（viewMode 切换
+  WebContentsView 不可见机器证据 = 全部 Tab webContents 零聚焦；隐藏期间
+  activate 不重新显示不 focus）/Table 排序（asc/desc 二元序断言）·筛选
+  （2 行/4 行）·复制（clipboard-sanitized-write SMOKE 权限 + 固定中文
+  诊断——Electron 后台窗口无 OS 焦点时失败为合法产品行为）/Cards·
+  Ranking·Conflict·Uncertain 渲染/Evidence 下钻（candidateId → drawer
+  摘录）/safe URL 新建 Tab 后返回 browser（画布消失 + 新 Tab）/敌对
+  Markdown 零 DOM 注入/viewMode 往返前后用户 Tab id·url·title·active 恒等/
+  CSV 注入 dialog 桩写系统 TEMP 真实字节断言（BOM/CRLF/公式防护
+  `'=cmd`/当前视图一致性 4 行首行乙/Evidence 摘录·URL·其他块零出现）后
+  finally 精确清理（零残留）。8.13 B-06 场景瞬态失败 3 次（历史先例
+  C7 记载 14:47/16:55/19:37 同款）——复跑均通过，如实登记。
+- **AIBROWSE_RESEARCH_SMOKE=set|check**（生产产物）退出码 0/0（set
+  completed + 遗留 running；check 读回 + interrupted 标记）——零回归。
+- **红线扫描台账**：migration v1 零改写；renderer/preload 零 SQL 零
+  Electron/fs/path import；research-ipc 零 Repository/SQL/Electron import
+  （只 import shared 类型与 service）；零 dangerouslySetInnerHTML 实际
+  使用、零 `<a href>` 导航（ResultView/TableView 均 span/button）；零
+  shell/child_process/eval；CSV renderer 零路径/任意数据通道（export-csv
+  payload 仅 {taskId, tableBlockIndex, view}——grep 断言）；package.json/
+  lockfile 零 diff；工具注册表仍 17、AgentLoop 12/420s 零 diff；
+  BrowserController 接口零 contentVisible（仅实现类新增）；Key/base URL/
+  认证头零进入新代码；真实 Provider 调用 **0 次**（8.19-B 无真实 Provider
+  产品链路——FakeProvider 确定性脚本，不冒充真实证据；决议 #117 长期授权
+  不等于强制无关调用）。
+- 验证命令：`npm test -- --maxWorkers=1` **2054/2054** 绿；typecheck/
+  lint/format:check/build/diff-check 绿；dev + 生产默认冒烟（含 8.19-B）
+  退出码 0；set/check 双进程退出码 0/0；终检 TEMP/根目录日志/Electron
+  进程零残留。

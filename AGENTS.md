@@ -567,7 +567,10 @@ d:\AIbrowse\
     │       │                                  #   C6 synthesis（claim-model/research-prompts）/
     │       │                                  #   ✅ C7 result-validator（#148–#152）+ research-runtime-factory
     │       │                                  #      （#155 生产装配）+ renderer ResultView + shared/markdown/
-    │       │                                  #   C8 research-ipc（待实现））
+    │       │                                  #   ✅ C8 research-ipc（八通道 + 两事件 +
+    │       │                                  #      ui:browser-content-visible）/ResearchPanel/
+    │       │                                  #      TableView/use-research/csv-serializer
+    │       │                                  #      （shared 纯模块）/冒烟 8.19-B）
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅ + A6 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
@@ -1440,15 +1443,15 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   结果」（describeLastUsage：可达/不可达/其余「暂无可靠信号」+ 时间；严禁
   「健康/长期可用」）。
 
-### Fifth Stage Research 契约速查（定稿 2026-08-16；C1–C7 已实现，其余任务实施后按 `grep -n "^export"` 回填核对）
+### Fifth Stage Research 契约速查（定稿 2026-08-16；C1–C8 已实现，其余任务实施后按 `grep -n "^export"` 回填核对）
 
 > 唯一契约源 `doc/stage5/detailed-design.md`（§2 类型 / §3 状态机 / §4 候选合并
 > 排序 / §5 capture·evidence / §6 ResearchRuntime 与预算 / §7 cross-check /
 > §8 Result Schema·Renderer / §9 存储 / §10 Tab 所有权 / §11 IPC / §12 边界 /
 > §13 测试 / §14 验收 / §15 决议——编号范围以 §15 当前记录为准）；安全契约源
 > `doc/stage5/threat-model.md`（FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类）；
-> 任务 C1–C10 见 `doc/stage5/tasks/`。**C1–C7 已实现**（C1 契约基座 + 存储基座/C2 ResearchWorkspace/C3 SourceSelector/C4 CaptureService + EvidenceValidator/C5 ResearchRuntime/C6 Cross-check + 冲突模型 + 带证据综合/C7 ResultValidator + 安全 Markdown 子集 + ResultView + 真实生产装配——完成状态以 progress.md 为准）；
-> C8–C10 为「规划/待实现」——在对应任务完成前不得宣称已实现（完成状态以
+> 任务 C1–C10 见 `doc/stage5/tasks/`。**C1–C8 已实现**（C1 契约基座 + 存储基座/C2 ResearchWorkspace/C3 SourceSelector/C4 CaptureService + EvidenceValidator/C5 ResearchRuntime/C6 Cross-check + 冲突模型 + 带证据综合/C7 ResultValidator + 安全 Markdown 子集 + ResultView + 真实生产装配/C8 Research IPC 八通道 + 侧栏/结果画布/Evidence 下钻/表格交互/CSV 安全导出 + 冒烟 8.19-B——完成状态以 progress.md 为准）；
+> C9–C10 为「规划/待实现」——在对应任务完成前不得宣称已实现（完成状态以
 > progress.md 为准）。
 
 - **依赖方向（不可反向）**：`Research UI → ResearchService → ResearchRuntime →
@@ -1498,11 +1501,17 @@ ResearchRepository（独立 research.db）`；Renderer 只消费已验证 Result
 - **Tab 所有权**：精确 tabId（createTab 返回值）；清理只关本任务 Tab；用户 Tab
   永不关闭；用户关 task Tab → 读取失败继续；跨任务引用拒绝。
 - **IPC**：research:create/start/stop/get/result/list/delete/export-csv +
-  progress/task-done 事件（sender+主帧校验/参数白名单/事件只发主窗口）；CSV
-  导出仅主进程 dialog 安全通道（renderer 零路径参数）+ 公式注入防护 + BOM。
-- **UI**：侧栏 ResearchPanel（380px 同模式）仅控制/进度 + 主窗口内大结果画布
-  （viewMode 切换，不新开窗口）；表格排序/筛选/来源详情/复制；Evidence 下钻
-  （点击结论看来源）。
+  progress/task-done 事件（**八 invoke + 两事件，决议 #156**——sender+主帧
+  校验/参数严格白名单 fail-closed/事件只发主窗口；task-done.status 收窄
+  completed|failed|cancelled）+ ui:browser-content-visible 受控 send 通道
+  （决议 #158：WebContentsView 可见性，仅供受信 UI，不进 AI 接口）；CSV
+  导出仅主进程 dialog 安全通道（renderer 零路径参数）+ 公式注入防护 + BOM
+  + 当前 UI 视图重投影（决议 #161）。
+- **UI**：侧栏 ResearchPanel（380px 同模式，sidePanel 三态互斥）仅控制/
+  进度 + 主窗口内大结果画布（viewMode 切换 + contentVisible 联动，不新开
+  窗口）；表格排序/筛选/来源详情/复制（TableView 纯函数 shared 模块）；
+  Evidence 下钻（点击结论看来源，safe URL 经 tabs.create + 白名单）；冒烟
+  8.19-B。
 
 ## 6. 常用命令
 
