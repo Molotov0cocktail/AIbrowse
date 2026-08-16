@@ -152,7 +152,9 @@
   （依赖方向 UI → Service → Runtime → … → ResearchRepository）+ detailed-design（唯一契约源：类型/状态机/预算全表/
   capture·evidence/Result Schema/IPC/存储）+ threat-model（FT-01～FT-17 /
   FRT-01～FRT-12）+ 任务 C1–C10（每任务 = 一个可验证开发闭环）。
-  **C1（ResearchTask/Evidence/Result 核心契约 + research.db 存储基座）已完成；
+  **C1–C7 已完成（契约基座/C2–C7 见 `doc/tasks/progress.md`：候选合并/
+  Tab 所有权/多源捕获与 Evidence 验证/ResearchRuntime/Cross-check 综合/
+  ResultValidator + 安全 Markdown 子集 + 真实生产装配）；
   具体完成项、当前 HEAD 与下一唯一任务以 `doc/tasks/progress.md` 为准。**
   **本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider 已于 2026-08-16
   获用户长期授权（决议 #117）：后续任务无需逐次申请授权，凭据可用即执行
@@ -444,7 +446,7 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SESSION_SMOKE=check AIBROW
 | `npm run dev`                     | Electron 开发模式（渲染进程 HMR）                   |
 | `npm run build`                   | 构建产物 `out/`（main / preload / renderer 三目标） |
 | `npm run start`                   | 以构建产物启动（preview）                           |
-| `npm test`                        | Vitest 全量测试（当前 1255 用例）                   |
+| `npm test`                        | Vitest 全量测试（当前 1964 用例）                   |
 | `npm run typecheck`               | 严格类型检查（node + web 两套 tsconfig）            |
 | `npm run lint`                    | ESLint 检查                                         |
 | `npm run format` / `format:check` | Prettier 格式化 / 检查                              |
@@ -556,7 +558,7 @@ src/
 
 ## 测试
 
-Vitest（node 环境）测核心纯逻辑（当前 1255 用例）：地址栏输入判断（15）、Tab 状态机（14）、
+Vitest（node 环境）测核心纯逻辑（当前 1964 用例）：地址栏输入判断（15）、Tab 状态机（14）、
 网页权限策略（4 组）、UI 导航保护（10）、PageSnapshot 数据规范化（51，页面视为敌手；A3 扩展 click 语义元数据）；
 第二阶段（S1–S4）新增：错误归一化状态码矩阵与脱敏、FakeProvider 确定性行为、
 credential/config 校验（81）、上下文预算确定性裁剪、ContextBuilder 角色隔离与注入夹具

@@ -565,7 +565,9 @@ d:\AIbrowse\
     │       │                                  #   ✅ C2 research-workspace（task Tab 所有权）/✅ C3 source-selector/
     │       │                                  #   ✅ C4 capture-service + evidence-validator/✅ C5 research-runtime +
     │       │                                  #   C6 synthesis（claim-model/research-prompts）/
-    │       │                                  #   C7 result-validator/C8 research-ipc（C6–C8 待实现））
+    │       │                                  #   ✅ C7 result-validator（#148–#152）+ research-runtime-factory
+    │       │                                  #      （#155 生产装配）+ renderer ResultView + shared/markdown/
+    │       │                                  #   C8 research-ipc（待实现））
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅ + A6 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
@@ -1438,15 +1440,15 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   结果」（describeLastUsage：可达/不可达/其余「暂无可靠信号」+ 时间；严禁
   「健康/长期可用」）。
 
-### Fifth Stage Research 契约速查（定稿 2026-08-16；C1 已实现，其余任务实施后按 `grep -n "^export"` 回填核对）
+### Fifth Stage Research 契约速查（定稿 2026-08-16；C1–C7 已实现，其余任务实施后按 `grep -n "^export"` 回填核对）
 
 > 唯一契约源 `doc/stage5/detailed-design.md`（§2 类型 / §3 状态机 / §4 候选合并
 > 排序 / §5 capture·evidence / §6 ResearchRuntime 与预算 / §7 cross-check /
 > §8 Result Schema·Renderer / §9 存储 / §10 Tab 所有权 / §11 IPC / §12 边界 /
 > §13 测试 / §14 验收 / §15 决议——编号范围以 §15 当前记录为准）；安全契约源
 > `doc/stage5/threat-model.md`（FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类）；
-> 任务 C1–C10 见 `doc/stage5/tasks/`。**C1–C5 已实现**（C1 契约基座 + 存储基座/C2 ResearchWorkspace/C3 SourceSelector/C4 CaptureService + EvidenceValidator/C5 ResearchRuntime——完成状态以 progress.md 为准）；
-> C6–C10 为「规划/待实现」——在对应任务完成前不得宣称已实现（完成状态以
+> 任务 C1–C10 见 `doc/stage5/tasks/`。**C1–C7 已实现**（C1 契约基座 + 存储基座/C2 ResearchWorkspace/C3 SourceSelector/C4 CaptureService + EvidenceValidator/C5 ResearchRuntime/C6 Cross-check + 冲突模型 + 带证据综合/C7 ResultValidator + 安全 Markdown 子集 + ResultView + 真实生产装配——完成状态以 progress.md 为准）；
+> C8–C10 为「规划/待实现」——在对应任务完成前不得宣称已实现（完成状态以
 > progress.md 为准）。
 
 - **依赖方向（不可反向）**：`Research UI → ResearchService → ResearchRuntime →
@@ -1469,10 +1471,26 @@ ResearchRepository（独立 research.db）`；Renderer 只消费已验证 Result
   sourceTypes（vendor/third-party/community 程序判定）/Conflict（positions ≥2、
   resolved 恒 unresolved——不静默抹平）/Uncertainty 正式输出；**无百分比/分数
   型可信度字段**（schema 白名单红线）。
-- **Result Schema**：闭合判别联合（markdown/table/cards/ranking/uncertain）+
-  字段白名单 + ResultValidator 逐块校验；Markdown 渲染自实现安全子集（决策 D9：
-  raw HTML 关闭、URL 仅 http/https、纯文本兜底、零新依赖）；Timeline/Chart
-  非本阶段目标。
+- **Result Schema**（C7 ✅ 已实现，决议 #148–#152）：闭合判别联合
+  （markdown/table/cards/ranking/uncertain）+ 字段白名单 + ResultValidator
+  逐块校验（模型草案仅 title/summary/blocks——resultId/taskId/evidenceMap/
+  conflicts/coverage/fetchedAt 全由程序生成，模型提供即整份拒绝；表格行列
+  严格一致/ranking 1..N/sourceRefs 有 verified Evidence 支撑（table block
+  级——v1 无逐列映射）/强制 uncertainty 五条件矩阵/总大小 200k）；Markdown
+  渲染自实现安全子集（决策 D9：raw HTML 关闭、URL 仅绝对 http/https 无
+  userinfo、纯文本兜底、零新依赖；解析器在 `src/shared/markdown/`——main
+  Validator 与 renderer 共用；AST 有界降级 + 单遍线性扫描防 ReDoS；
+  ResultView 零 `<a href>` + onOpenUrl 回调（C8 接安全导航））；Timeline/
+  Chart 非本阶段目标。
+- **生产装配**（C7 ✅ 已实现，决议 #154/#155）：`research-runtime-factory.ts`
+  生产工厂（真实 SearchProvider/SourceService/BrowserController/Provider
+  config+credential 每次 start 动态读取、Key 短生命周期零缓存、真实 C6+C7
+  冻结端口、每次 run 独立 Workspace/CaptureService/Runtime）；ResearchService
+  starting slot 原子预占 + 一次性 prepared Provider（launch/release 恰好
+  一次）；缺配置/缺 Key/不支持 tools → research-provider-unavailable、
+  Sources 缺失或非 normal → research-sources-unavailable（任务保持
+  created）；**生产 startTask 不再固定 research-runtime-unavailable**；
+  logger 未初始化仅脱敏 console 输出（零 cwd 落盘，决议 #153）。
 - **预算（§6.8 全表，编译期常量）**：候选 ≤24 / 选定 ≤8 / 并发 Tab ≤3 / 单页
   ≤60k 字符 / Evidence ≤60 条·摘录 ≤500 / 轮次 ≤24 / 步数 ≤64 / 时长 ≤30 分钟 /
   请求上下文 ≤200k 字符 / Result ≤200k 字符 / 单任务持久化 ≤500k 字符 /
@@ -1502,7 +1520,7 @@ ResearchRepository（独立 research.db）`；Renderer 只消费已验证 Result
   - `npm run dev` — Electron 开发模式（渲染进程 HMR）
   - `npm run build` — 构建产物 `out/`（main/preload/renderer 三目标，CJS）
   - `npm run start` — 以构建产物启动
-  - `npm test` — Vitest 全量测试（当前 1255 用例）
+  - `npm test` — Vitest 全量测试（当前 1964 用例）
   - `npm run typecheck` — tsc 严格检查（node + web 两套 tsconfig）
   - `npm run lint` / `npm run format` / `npm run format:check` — ESLint / Prettier 格式化 / 检查
   - **冒烟自检**：`env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev`

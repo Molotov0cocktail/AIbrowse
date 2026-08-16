@@ -146,7 +146,56 @@
   0/0；真实 Provider 调用 0 次（无真实 Provider 产品链路）。**生产
   Research 仍 fail-closed**（决议 #140：缺 C7 真实端口——startTask →
   research-runtime-unavailable）。证据见 C6 任务文档「红→绿证据」小节。
-  **下一唯一任务 = C7。** 本阶段红线：禁止安装依赖、禁止实现
+  **C7 已完成（2026-08-16）**——ResultValidator + 安全 Markdown 子集 +
+  Research Result Renderer + 真实 C6+C7 生产装配（实施前契约裁决
+  #148–#155：D9/#99 Markdown 单一事实源（表格不实现——Table 块唯一
+  结构化通道；解析器进 shared 供 main Validator 与 renderer 共用）/
+  ResultDraft 三字段白名单（title/summary/blocks——resultId/taskId/
+  evidenceMap/conflicts/coverage/fetchedAt 全部程序生成；模型提供即整份
+  拒绝；fetchedAt = Evidence 最大 accessTime 或 Runtime 可信时钟；
+  context 增 now）/ResultValidator 严格验证（不 throw 预期失败/未知字段·
+  错误类型·越界·非法引用·重复 ID 整份拒绝/两种规范化/表格行列严格一致/
+  ranking 1..N 连续/sourceRefs 非空去重有界∈候选且有 verified Evidence
+  支撑（table block 级——v1 无逐列映射）/总大小 200k/错误零敌对正文回显/
+  强制 uncertainty 五条件矩阵）/Conflict·Coverage·「不确定」（evidenceMap/
+  conflicts 程序投影、coverage 由 claims 确定性计数——类别计数可重叠不
+  要求相加等于 total）/Markdown AST 与 Renderer（子集定稿：标题 1–3/
+  段落/列表/引用/围栏代码/行内五型；未闭合标记字面化/深度·节点数·输入
+  长度有界降级/单遍线性扫描防 ReDoS/raw HTML 零解释/URL 双防线——
+  Validator 拒绝 + Renderer 纵深降级/ResultView 零 `<a href>` +
+  onOpenUrl 回调预留）/logger 未初始化落盘修复（红态机器证据：基线测试
+  前根目录零日志 → 测试后生成 aibrowse-2026-08-16.log；修复后未 init 仅
+  脱敏 console 输出 + getCurrentLogFilePath 未 init 返回 '' + re-init
+  重置轮转 + 真实临时 cwd 探针零文件；修复后多次全量测试根目录日志文件
+  零写入）/ResearchService 启动预占与 Provider 交接（starting slot 原子
+  预占——并发 start 先到先得、另一个立即 research-busy 零二次 resolve；
+  shutdown-during-resolve 迟到 continuation 零 DB 写入零 launch +
+  prepared 释放；resolve 失败任务保持 created 精确错误码；stopTask 在
+  resolving 阶段 research-invalid-state 零副作用；Factory 接口窄幅修改
+  ——resolveProvider 返回一次性 prepared（launch/release 恰好一次，等价
+  竞态证明见 §15 #154）；C1/C5 既有测试 stub 机械校准）/真实生产装配
+  （新模块 research-runtime-factory：真实 SearchProvider/SourceService/
+  BrowserController/Provider config+credential 每次 start 动态读取、
+  Key 短生命周期零缓存、真实 C6+C7 冻结端口、每次 run 独立 Workspace/
+  CaptureService/Runtime；缺配置/缺 Key/不支持 tools → provider-
+  unavailable、Sources 缺失或非 normal → sources-unavailable；
+  index.ts 装配顺序调整——Research store 移至 Sources/SearchProvider/
+  ConfigStore/CredentialStore 之后 + 真实状态查询闭包（不谎报：同步仅
+  粗粒度、异步 resolve 权威）；**生产 startTask 不再固定
+  research-runtime-unavailable**（决议 #140 解除）；SRT-12 白名单补
+  parse-markdown 正则分类）；红→绿 聚焦 **172/172**（markdown 26 +
+  validator 45 + ResultView 9 + logger 17 + preemption 8 + factory 7 +
+  service/store/prompts 回归）+ 全量 **1964/1964**（基线 1865 + 99，
+  既有用例零删除零削弱）；冒烟 **8.18 真实 C7 端口**（伪造可信字段草案
+  整份拒绝 → 回注重提 → 三字段草案完成）+ **8.19-A 生产 factory 主进程
+  闭环**（FakeProvider 经 createProductionResearchRuntimeFactory 真实
+  代码路径 → completed + 可信字段程序生成 + 危险链接草案拒绝重提 + 缺
+  Provider 配置精确拒绝 + 用户 Tab 恒等）dev+生产双场景退出码 0/0
+  （既有 8.13 场景瞬态失败一次——当日 14:47/16:55/19:37 同款历史先例，
+  复跑通过如实登记）；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码
+  0/0；真实 Provider 调用 0 次（无真实 Provider 产品链路）。证据见
+  C7 任务文档「红→绿证据」小节。
+  **下一唯一任务 = C8。** 本阶段红线：禁止安装依赖、禁止实现
   Sixth Stage。**真实 Provider 长期授权（2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
   每次调用仍须服务于明确开发/验收/定位/复验目的，禁止无界循环、无诊断
@@ -528,7 +577,7 @@
 | C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #124–#131（Tab 生命周期零双导航/冻结判别联合与重试矩阵/failed Capture sentinel/ready・L0–L3 映射/CaptureContent 60k 预算与哈希覆盖/多表 tableIndex/不可信 proposal 六字段/Chromium 错误页判定）+ CaptureService + EvidenceValidator + repository tableIndex 严格解析 + 冒烟 8.16（dev+生产双场景退出码 0、正文零持久化探针、用户 Tab 集合不变、真实 Provider 0 次）；红→绿聚焦 136/136、全量 test 1691/1691；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
 | C5 | 独立有界 ResearchRuntime：进度、停止、失败继续、预算与终态 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #132–#139（六工具专属执行模型/ResearchPlan 判别联合/C6/C7 稳定端口 fail-closed/Service 异步装配/预算与 Provider 失败映射/原子持久化与 500k 终态预留/Progress·heartbeat·终态优先级/index.ts 最小装配）；红→绿聚焦 113/113、全量 test 1804/1804；冒烟 8.17 dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider 0 次；任务文档 doc/stage5/tasks/C5-research-runtime.md |
 | C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #140–#147（C6/C7 分阶段装配边界/Provider 响应侧有界性/VerificationDraft 严格协议/Claim 确定性装配与厂商分类/Conflict 引用完整性/数据交接/Prompt 所有权/parseResultDraft 边界）；红→绿聚焦 61/61、全量 test 1865/1865；冒烟 8.18 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 Research 仍 fail-closed（缺 C7）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
-| C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ⏳ | 2026-08-16 设计定稿，待实施；契约 §8 + 决策 D9；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
+| C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #148–#155（Markdown 单一事实源/ResultDraft 三字段白名单/Validator 严格验证/Conflict·Coverage·不确定/Markdown AST 与 Renderer/logger 未初始化落盘修复/启动预占与 prepared Provider 交接/真实生产装配）；红→绿聚焦 172/172、全量 test 1964/1964；冒烟 8.18 真实 C7 端口 + 8.19-A 生产 factory 闭环 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 startTask 解除 fail-closed（决议 #140/#155）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
 | C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §11 + 决策 D10/D11；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
 | C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ⏳ | 2026-08-16 设计定稿，待实施；threat-model §4；任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md；**决议 #117 长期授权**：基础设施落地后凭据可用即真实执行（凭据不可用如实记录「凭据不可用」） |
 | C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ⏳ | 2026-08-16 设计定稿，待实施；任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；完成后停止不实现 Sixth Stage |
@@ -540,7 +589,72 @@
 > （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3、C4、C5）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3、C4、C5、C6、C7）
+
+- **C7 ResultValidator + 安全 Markdown 子集 + Renderer + 真实生产装配
+  （2026-08-16，第二十二个闭环；docs/fix/feat 逻辑提交见 git log）**：
+  ① 步骤 0 独立核对——HEAD `deb94cb`（C6 指针校准）与预期一致、工作区
+  干净；基线 test 1865/1865·typecheck·lint·format:check 独立复跑全绿；
+  **基线测试前根目录零 aibrowse-\*.log → 测试后生成
+  aibrowse-2026-08-16.log（35116 字节）——logger 未初始化落盘缺陷红态
+  机器证据**（#153(1)）。② **实施前契约裁决 #148–#155**（八项缺口逐一
+  冻结，落 detailed-design §8 重写 + §13.2 冒烟表 8.19 拆分 + §15 +
+  proposal D9/HLD §8/threat-model §3.5/C7 任务文档同步）：#148 D9/#99
+  Markdown 单一事实源（表格不实现——proposal D9「表格」漂移废止；
+  解析器进 shared 零 main→renderer 依赖）；#149 ResultDraft 三字段
+  白名单（可信字段全由程序生成——模型提供即整份拒绝；fetchedAt =
+  Evidence 最大 accessTime 或 ctx.now；context 增 now）；#150
+  Validator 严格验证（不 throw/整份拒绝/两种规范化/表格行列严格一致/
+  ranking 1..N/sourceRefs 有 Evidence 支撑/table block 级 sourceRefs
+  （v1 无逐列映射——不伪造能力）/200k 总大小/错误零敌对正文）；#151
+  Conflict·Coverage·不确定（evidenceMap/conflicts 程序投影/coverage
+  由 claims 计数——类别可重叠/强制 uncertainty 五条件矩阵）；#152
+  Markdown AST 与 Renderer（子集定稿/未闭合字面化/深度·节点·长度有界
+  降级/单遍线性扫描防 ReDoS/raw HTML 零解释/URL 双防线/ResultView 零
+  `<a href>` + onOpenUrl 预留）；#153 logger 未初始化落盘修复（未 init
+  仅脱敏 console/getCurrentLogFilePath 未 init 返回 ''/re-init 重置/
+  真实临时 cwd 探针）；#154 启动预占与 Provider 交接（starting slot
+  原子预占/shutdown-during-resolve 迟到 continuation 零 DB 写入零
+  launch + prepared 释放/resolve 失败任务保持 created/stopTask 在
+  resolving 阶段 research-invalid-state/Factory 接口窄幅修改——
+  resolveProvider 返回一次性 prepared（launch/release 恰好一次，等价
+  竞态证明在 §15））；#155 真实生产装配（research-runtime-factory 新
+  模块/真实 SearchProvider·SourceService·BrowserController·Provider
+  config+credential 动态读取/Key 短生命周期零缓存/缺配置·缺 Key·不支持
+  tools → provider-unavailable、Sources 缺失非 normal → sources-
+  unavailable/状态查询不谎报（同步粗粒度 + 异步 resolve 权威）/index.ts
+  装配顺序调整——Research store 移至 Sources/SearchProvider/Config/
+  Credential 之后/生产 startTask 解除 fail-closed）。③ **红→绿**：
+  7 新测试文件红态（模块缺失 + logger 旧实现真实失败 + 旧 factory
+  形状 typecheck 红）→ 聚焦 **172/172**（markdown 26 + validator 45
+  - ResultView 9 + logger 17 + preemption 8 + factory 7 + service/
+    store/prompts 回归）→ 全量 **1964/1964**（基线 1865 + 99；既有
+    用例零删除零削弱——async/service 测试 factory stub 按 #154(7) 机械
+    校准；8.18 的 C7 stub 移除改真实端口）。④ **冒烟**：8.18 真实 C7
+    端口（第一轮伪造可信字段草案整份拒绝 → 回注重提 → 三字段草案完成 +
+    Claim/Conflict 断言全保持）+ **8.19-A 生产 factory 主进程闭环**
+    （FakeProvider 经 createProductionResearchRuntimeFactory 真实代码
+    路径（真实 config/credential resolution + 真实 C6+C7 端口）经
+    ResearchService.startTask → completed + 可信字段全部程序生成 +
+    危险链接草案被真实 C7 拒绝重提 + 缺 Provider 配置精确拒绝 + 用户
+    Tab 恒等）——dev+生产双场景退出码 0/0（dev 冒烟期间 SRT-12 白名单
+    补 parse-markdown 正则分类（契约同步非放宽）+ 8.13 既有瞬态失败
+    一次（当日 14:47/16:55/19:37 同款先例，复跑通过如实登记）+ 8.17/
+    8.19-A 脚本 vendorCandidateIds/getState 夹具校准（真实端口契约
+    严格化所致））。⑤ **AIBROWSE_RESEARCH_SMOKE=set|check** 双进程
+    退出码 0/0（SMOKE factory 改真实 C6+C7 端口后零回归）。⑥ **红线
+    零回归**：migration v1 零改写；新模块零 SQL（parse-markdown
+    `.exec` 为正则——SRT-12 分类证据）；renderer/preload 零 SQL；零
+    dangerouslySetInnerHTML 实际使用；零 shell/child_process/eval；工具
+    注册表仍 17、AgentLoop 12/420s 零改动（diff 断言）；package.json/
+    lockfile 零 diff；**根目录 aibrowse-_.log 修复后多次全量测试零写入
+    （mtime 证据）→ 修复前残留文件核验后精确删除（测试日志、gitignore
+    覆盖、敏感形态为脱敏后的 apiKey=_**/sk-*** 形态）**；结束后零
+    Electron 进程、零 aibrowse-* TEMP 残留（冒烟失败路径遗留的 5 个
+    research pid 目录已精确清理）。⑦ **真实 Provider 台账**：0 次调用
+    （C7 无真实 Provider 产品链路——FakeProvider 经生产 factory 路径；
+    决议 #117 长期授权不等于强制无关调用）。**不开始 C8。下一唯一任务
+    = C8。**
 
 - **C5 ResearchRuntime（2026-08-16，第二十一个闭环；docs 与 feat 两个逻辑
   提交见 git log）**：① 步骤 0 独立核对——HEAD `686e052`（C4 指针校准）
@@ -2846,26 +2960,29 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **C7（唯一）**：C6 已完成（2026-08-16，Cross-check 与带证据综合，
-  实施前契约裁决 #140–#147——C6/C7 分阶段装配边界/Provider 响应侧
-  有界性/VerificationDraft 严格协议/Claim 确定性装配/Conflict 引用
-  完整性/C5→C6→C7 数据交接/Prompt 所有权/parseResultDraft 边界，红→绿
-  证据见 C6 任务文档「红→绿证据」小节；全量 test 1865/1865，冒烟
-  8.18 dev+生产双场景退出码 0，AIBROWSE_RESEARCH_SMOKE 双进程退出码
-  0/0）。
-  下一唯一任务 = **C7（ResultValidator + 安全 Markdown/Table/Cards/
-  Ranking Renderer，契约 §8，任务文档
-  doc/stage5/tasks/C7-result-validator-renderer.md）**——
-  **C7 按决议 #134/#140/#145 实现**：result-validator 实现
-  ResearchResultValidationPort.validate（签名不变，context 已含
-  claims/conflicts/verificationState——据此程序重算 coverage、核对
-  Result.conflicts、实施 uncertainty 强制规则）；**C7 完成时才统一
-  装配真实 C6+C7 端口并解除生产 fail-closed**（index.ts 生产
-  RuntimeFactory 建立由 C7 执行；C6 冒烟的严格测试 stub 不得装入
-  生产——决议 #140）；Markdown 渲染自实现安全子集（决策 D9，零新
-  依赖）。C7 前置复核项：proposal D9 与决议 #99 Markdown 表格漂移
-  （C1 已登记未修复，由 C7 处置——C6 未顺手处理）。
-  C7 完成后按依赖链推进（C8 → C9 → C10），每个任务一个可验证开发
+- **C8（唯一）**：C7 已完成（2026-08-16，ResultValidator + 安全
+  Markdown/Table/Cards/Ranking Renderer + 真实 C6+C7 生产装配，
+  实施前契约裁决 #148–#155——Markdown 单一事实源（解析器进 shared）/
+  ResultDraft 三字段白名单/Validator 严格验证与程序组装可信字段/
+  强制 uncertainty 矩阵/Markdown AST 有界降级与 Renderer 双防线/
+  logger 未初始化落盘修复（红态机器证据）/ResearchService 启动预占与
+  prepared Provider 交接（Factory 接口窄幅修改 + 等价竞态证明）/真实
+  生产 factory + index.ts 装配顺序调整（生产 startTask 解除
+  fail-closed——决议 #140/#155），红→绿证据见 C7 任务文档「红→绿
+  证据」小节；全量 test 1964/1964，冒烟 8.18 真实 C7 端口 + 8.19-A
+  生产 factory 闭环 dev+生产双场景退出码 0/0，
+  AIBROWSE_RESEARCH_SMOKE 双进程退出码 0/0）。
+  下一唯一任务 = **C8（Research UI/IPC/bridge：侧栏控制/进度 +
+  大结果画布 + 证据下钻 + 表格排序/筛选/复制 + CSV 导出，契约 §11 +
+  决策 D10/D11，任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-
+  export.md）**——C8 按 §11 实现：research:create/start/stop/get/
+  result/list/delete/export-csv 通道 + progress/task-done 事件 +
+  preload bridge 白名单 + ResearchPanel（380px 同模式）+ 大结果画布
+  （viewMode 切换）+ 8.19-B UI DOM 场景（表格排序/筛选/复制/Evidence
+  下钻/敌对 Markdown 纯文本零 DOM 注入）；CSV 仅主进程 dialog 安全
+  通道 + 公式注入防护；ResultView 的 onOpenUrl 回调在 C8 接安全导航
+  （经主进程 BrowserController/UI 导航白名单）。
+  C8 完成后按依赖链推进（C9 → C10），每个任务一个可验证开发
   闭环；本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider 按
   决议 #117 长期授权（2026-08-16 起长期生效）：后续任务按需使用、无需
   逐次申请授权；每次调用仍须服务于明确开发/验收/定位/复验目的；无真实
