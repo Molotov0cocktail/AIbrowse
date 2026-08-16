@@ -187,7 +187,8 @@ const bridge: AibrowseBridge = {
   // —— Fifth Stage C8（决议 #156/#158）：Research 白名单 ——
   research: {
     create: (goal) => invoke<ResearchIpcResult<ResearchIpcTaskValue>>(IPC.ResearchCreate, { goal }),
-    start: (taskId) => invoke<ResearchIpcResult<ResearchIpcTaskValue>>(IPC.ResearchStart, { taskId }),
+    start: (taskId) =>
+      invoke<ResearchIpcResult<ResearchIpcTaskValue>>(IPC.ResearchStart, { taskId }),
     stop: (taskId) => invoke<ResearchIpcResult<ResearchIpcTaskValue>>(IPC.ResearchStop, { taskId }),
     get: (taskId) => invoke<ResearchIpcResult<ResearchIpcTaskValue>>(IPC.ResearchGet, { taskId }),
     result: (taskId) =>

@@ -68,7 +68,7 @@ describe('serializeCsv 字节契约（决议 #161(5)）', () => {
 
   it('MAX_CSV_EXPORT_BYTES 边界：合法输入恒低于上限；超限输入字节计数正确暴露', () => {
     expect(MAX_CSV_EXPORT_BYTES).toBeGreaterThan(0);
-    const big = serializeCsv(['c'], [[ 'x'.repeat(200) ]]);
+    const big = serializeCsv(['c'], [['x'.repeat(200)]]);
     expect(big.utf8Bytes).toBeLessThan(MAX_CSV_EXPORT_BYTES);
     // 多字节字符字节计数准确（中文 3 字节/字符）
     const zh = serializeCsv(['中'], [['文']]);

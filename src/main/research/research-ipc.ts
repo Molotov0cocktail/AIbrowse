@@ -92,7 +92,12 @@ export function validateResearchListPayload(
   if (typeof page !== 'number' || !Number.isInteger(page) || page < 1) return invalid();
   const pageSize = raw['pageSize'];
   if (pageSize !== undefined) {
-    if (typeof pageSize !== 'number' || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 20) {
+    if (
+      typeof pageSize !== 'number' ||
+      !Number.isInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 20
+    ) {
       return invalid();
     }
   }
@@ -125,12 +130,18 @@ export interface ValidatedResearchExportCsv {
 
 export function validateResearchExportCsvPayload(
   raw: unknown,
-): { ok: true; value: ValidatedResearchExportCsv } | { ok: false; errorCode: 'research-invalid-goal' } {
+):
+  | { ok: true; value: ValidatedResearchExportCsv }
+  | { ok: false; errorCode: 'research-invalid-goal' } {
   if (!isRecord(raw) || !checkKeys(raw, ['taskId', 'tableBlockIndex', 'view'])) return invalid();
   const taskId = raw['taskId'];
   if (typeof taskId !== 'string' || !isUuidShape(taskId)) return invalid();
   const tableBlockIndex = raw['tableBlockIndex'];
-  if (typeof tableBlockIndex !== 'number' || !Number.isInteger(tableBlockIndex) || tableBlockIndex < 0) {
+  if (
+    typeof tableBlockIndex !== 'number' ||
+    !Number.isInteger(tableBlockIndex) ||
+    tableBlockIndex < 0
+  ) {
     return invalid();
   }
   const view = raw['view'];
@@ -141,11 +152,7 @@ export function validateResearchExportCsvPayload(
   if (sort !== null) {
     if (!isRecord(sort) || !checkKeys(sort, ['columnIndex', 'direction'])) return invalid();
     const columnIndex = sort['columnIndex'];
-    if (
-      typeof columnIndex !== 'number' ||
-      !Number.isInteger(columnIndex) ||
-      columnIndex < 0
-    ) {
+    if (typeof columnIndex !== 'number' || !Number.isInteger(columnIndex) || columnIndex < 0) {
       return invalid();
     }
     const direction = sort['direction'];
@@ -233,7 +240,15 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
     async create(payload) {
       const v = validateResearchCreatePayload(payload);
       if (!v.ok) {
-        auditEntry({ op: 'create', taskId: null, goalLen: null, tableBlockIndex: null, rows: null, columns: null, result: v.errorCode });
+        auditEntry({
+          op: 'create',
+          taskId: null,
+          goalLen: null,
+          tableBlockIndex: null,
+          rows: null,
+          columns: null,
+          result: v.errorCode,
+        });
         return { ok: false, errorCode: v.errorCode };
       }
       const svc = currentService();
@@ -248,13 +263,23 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         columns: null,
         result: res.ok ? 'ok' : res.errorCode,
       });
-      return res.ok ? { ok: true, value: { task: res.task } } : { ok: false, errorCode: res.errorCode };
+      return res.ok
+        ? { ok: true, value: { task: res.task } }
+        : { ok: false, errorCode: res.errorCode };
     },
 
     async start(payload) {
       const v = validateResearchTaskIdPayload(payload);
       if (!v.ok) {
-        auditEntry({ op: 'start', taskId: null, goalLen: null, tableBlockIndex: null, rows: null, columns: null, result: v.errorCode });
+        auditEntry({
+          op: 'start',
+          taskId: null,
+          goalLen: null,
+          tableBlockIndex: null,
+          rows: null,
+          columns: null,
+          result: v.errorCode,
+        });
         return { ok: false, errorCode: v.errorCode };
       }
       const svc = currentService();
@@ -269,13 +294,23 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         columns: null,
         result: res.ok ? 'ok' : res.errorCode,
       });
-      return res.ok ? { ok: true, value: { task: res.task } } : { ok: false, errorCode: res.errorCode };
+      return res.ok
+        ? { ok: true, value: { task: res.task } }
+        : { ok: false, errorCode: res.errorCode };
     },
 
     async stop(payload) {
       const v = validateResearchTaskIdPayload(payload);
       if (!v.ok) {
-        auditEntry({ op: 'stop', taskId: null, goalLen: null, tableBlockIndex: null, rows: null, columns: null, result: v.errorCode });
+        auditEntry({
+          op: 'stop',
+          taskId: null,
+          goalLen: null,
+          tableBlockIndex: null,
+          rows: null,
+          columns: null,
+          result: v.errorCode,
+        });
         return { ok: false, errorCode: v.errorCode };
       }
       const svc = currentService();
@@ -290,7 +325,9 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         columns: null,
         result: res.ok ? 'ok' : res.errorCode,
       });
-      return res.ok ? { ok: true, value: { task: res.task } } : { ok: false, errorCode: res.errorCode };
+      return res.ok
+        ? { ok: true, value: { task: res.task } }
+        : { ok: false, errorCode: res.errorCode };
     },
 
     async get(payload) {
@@ -299,7 +336,9 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
       const svc = currentService();
       if (svc === null) return unavailable();
       const res = await svc.getTask(v.taskId);
-      return res.ok ? { ok: true, value: { task: res.task } } : { ok: false, errorCode: res.errorCode };
+      return res.ok
+        ? { ok: true, value: { task: res.task } }
+        : { ok: false, errorCode: res.errorCode };
     },
 
     async result(payload) {
@@ -308,7 +347,9 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
       const svc = currentService();
       if (svc === null) return unavailable();
       const res = await svc.getResearchResultView(v.taskId);
-      return res.ok ? { ok: true, value: { view: res.view } } : { ok: false, errorCode: res.errorCode };
+      return res.ok
+        ? { ok: true, value: { view: res.view } }
+        : { ok: false, errorCode: res.errorCode };
     },
 
     async list(payload) {
@@ -316,7 +357,11 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
       if (!v.ok) return { ok: false, errorCode: v.errorCode };
       const svc = currentService();
       if (svc === null) return unavailable();
-      const res = await svc.listTasks({ page: v.value.page, pageSize: v.value.pageSize, status: v.value.status as never });
+      const res = await svc.listTasks({
+        page: v.value.page,
+        pageSize: v.value.pageSize,
+        status: v.value.status as never,
+      });
       if (!res.ok) return { ok: false, errorCode: res.errorCode };
       return {
         ok: true,
@@ -327,7 +372,15 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
     async delete(payload) {
       const v = validateResearchTaskIdPayload(payload);
       if (!v.ok) {
-        auditEntry({ op: 'delete', taskId: null, goalLen: null, tableBlockIndex: null, rows: null, columns: null, result: v.errorCode });
+        auditEntry({
+          op: 'delete',
+          taskId: null,
+          goalLen: null,
+          tableBlockIndex: null,
+          rows: null,
+          columns: null,
+          result: v.errorCode,
+        });
         return { ok: false, errorCode: v.errorCode };
       }
       const svc = currentService();
@@ -342,7 +395,9 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         columns: null,
         result: res.ok ? 'ok' : res.errorCode,
       });
-      return res.ok ? { ok: true, value: { deleted: true } } : { ok: false, errorCode: res.errorCode };
+      return res.ok
+        ? { ok: true, value: { deleted: true } }
+        : { ok: false, errorCode: res.errorCode };
     },
 
     // 决议 #161(3)/(4)：主进程重新读取已持久化并验证的 Result，按同一
@@ -351,7 +406,15 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
     async exportCsv(payload) {
       const v = validateResearchExportCsvPayload(payload);
       if (!v.ok) {
-        auditEntry({ op: 'export', taskId: null, goalLen: null, tableBlockIndex: null, rows: null, columns: null, result: 'invalid-payload' });
+        auditEntry({
+          op: 'export',
+          taskId: null,
+          goalLen: null,
+          tableBlockIndex: null,
+          rows: null,
+          columns: null,
+          result: 'invalid-payload',
+        });
         return { ok: false, errorCode: 'invalid-payload' };
       }
       const svc = currentService();

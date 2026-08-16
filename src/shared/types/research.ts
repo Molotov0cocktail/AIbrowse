@@ -615,8 +615,7 @@ export interface ResearchResultView {
 }
 
 export type ResearchResultViewResult =
-  | { ok: true; view: ResearchResultView }
-  | { ok: false; errorCode: ResearchErrorCode };
+  { ok: true; view: ResearchResultView } | { ok: false; errorCode: ResearchErrorCode };
 
 // 决议 #156(6)：task-done.status 收窄三值（interrupted 是启动装配事实，
 // 不推送 UI 事件）
@@ -650,8 +649,7 @@ export interface ResearchService {
 
 // 共享判别联合返回类型（禁止 boolean/null 混合表达多种失败）
 export type ResearchIpcResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; errorCode: ResearchErrorCode };
+  { ok: true; value: T } | { ok: false; errorCode: ResearchErrorCode };
 
 export interface ResearchIpcTaskValue {
   task: ResearchTask;
@@ -683,12 +681,10 @@ export type ExportCsvResult =
 // 决议 #161(1)：export-csv payload——view 为受限排序/筛选状态
 // （renderer 不得提供 rows/CSV 内容/文件路径）
 export interface ResearchExportCsvView {
-  sort:
-    | {
-        columnIndex: number; // 非负整数（< columns.length）
-        direction: 'asc' | 'desc';
-      }
-    | null;
+  sort: {
+    columnIndex: number; // 非负整数（< columns.length）
+    direction: 'asc' | 'desc';
+  } | null;
   filter: string; // ≤200；空串=全部
 }
 

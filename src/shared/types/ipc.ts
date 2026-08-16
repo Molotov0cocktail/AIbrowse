@@ -258,12 +258,10 @@ export interface ResearchExportCsvPayload {
   taskId: string;
   tableBlockIndex: number; // Result.blocks 原始 0-based 索引（非负整数）
   view: {
-    sort:
-      | {
-          columnIndex: number; // 非负整数（< columns.length）
-          direction: 'asc' | 'desc';
-        }
-      | null;
+    sort: {
+      columnIndex: number; // 非负整数（< columns.length）
+      direction: 'asc' | 'desc';
+    } | null;
     filter: string; // ≤200；空串=全部
   };
 }

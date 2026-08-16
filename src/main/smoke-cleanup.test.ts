@@ -40,10 +40,13 @@ afterAll(() => {
 describe('removeSmokeDirWithRetry（决议 #156 前置：工厂冒烟临时库清理修复）', () => {
   it('不存在的目录安全返回（force 语义，不抛异常）', async () => {
     await expect(
-      removeSmokeDirWithRetry(join(tmpdir(), 'aibrowse-smoke-cleanup-does-not-exist-' + Date.now()), {
-        attempts: 2,
-        delayMs: 1,
-      }),
+      removeSmokeDirWithRetry(
+        join(tmpdir(), 'aibrowse-smoke-cleanup-does-not-exist-' + Date.now()),
+        {
+          attempts: 2,
+          delayMs: 1,
+        },
+      ),
     ).resolves.toBeUndefined();
   });
 

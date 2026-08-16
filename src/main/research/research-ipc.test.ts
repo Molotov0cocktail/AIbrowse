@@ -229,9 +229,7 @@ describe('payload 严格白名单（决议 #156(2)/(3)/(4)）', () => {
     const proto = JSON.parse('{"goal":"x","__proto__":{}}');
     expect(validateResearchCreatePayload(proto).ok).toBe(false);
     expect(validateResearchCreatePayload({ goal: 'x', constructor: {} }).ok).toBe(false);
-    expect(validateResearchCreatePayload({ goal: '长'.repeat(MAX_GOAL_CHARS + 1) }).ok).toBe(
-      false,
-    );
+    expect(validateResearchCreatePayload({ goal: '长'.repeat(MAX_GOAL_CHARS + 1) }).ok).toBe(false);
     expect(validateResearchCreatePayload(null).ok).toBe(false);
     expect(validateResearchCreatePayload('goal').ok).toBe(false);
   });
@@ -287,9 +285,9 @@ describe('payload 严格白名单（决议 #156(2)/(3)/(4)）', () => {
       view: { sort: { columnIndex: 1, direction: 'desc' }, filter: '' },
     };
     expect(validateResearchExportCsvPayload(good).ok).toBe(true);
-    expect(validateResearchExportCsvPayload({ ...good, view: { sort: null, filter: 'x' } }).ok).toBe(
-      true,
-    );
+    expect(
+      validateResearchExportCsvPayload({ ...good, view: { sort: null, filter: 'x' } }).ok,
+    ).toBe(true);
     for (const bad of [
       { ...good, path: 'C:\\evil.csv' },
       { ...good, rows: [['a']] },
@@ -509,7 +507,14 @@ describe('八通道行为（真实 service；决议 #156/#157/#162）', () => {
           {
             kind: 'table',
             columns: ['值'],
-            rows: [['=cmd|/C calc'], ['+1+2'], ['-1+1'], ['@SUM(1,2)'], ['\t前导TAB'], ['\r前导CR']],
+            rows: [
+              ['=cmd|/C calc'],
+              ['+1+2'],
+              ['-1+1'],
+              ['@SUM(1,2)'],
+              ['\t前导TAB'],
+              ['\r前导CR'],
+            ],
             sourceRefs: [],
           },
         ]),

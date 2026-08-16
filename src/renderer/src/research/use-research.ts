@@ -147,10 +147,15 @@ export function reduceResearchUi(state: ResearchUiState, event: ResearchUiEvent)
         busy: false,
         resultCanvasCleared: false,
       };
-    case 'start-ok':
+    case 'start-ok': {
       // 决议 #163(4)：事件可能早于 invoke 返回——若 progress 已把状态推到
-      // running，迟到 start-ok（created 快照）只补缺不覆盖（以事件为主）
-      if (state.task !== null && state.status === RESEARCH_STATUS_LABELS['running']) {
+      // running，迟到 start-ok 只补 task/stats（以事件为主；startTask 返回的
+      // 任务恒 running——补全 task 使 stop/delete 按钮状态正确）
+      if (state.status === RESEARCH_STATUS_LABELS['running']) {
+        return { ...state, task: event.task, stats: event.task.stats, busy: false };
+      }
+      // 终态已由事件收敛（已完成/已取消/失败）→ 迟到 start-ok 零覆盖（只清 busy）
+      if (state.status !== null && state.status !== RESEARCH_STATUS_LABELS['created']) {
         return { ...state, busy: false };
       }
       return {
@@ -163,6 +168,7 @@ export function reduceResearchUi(state: ResearchUiState, event: ResearchUiEvent)
         busy: false,
         error: null,
       };
+    }
     case 'stop-ok':
       return {
         ...state,
@@ -309,6 +315,8 @@ export interface UseResearchApi {
 export function useResearch(): UseResearchApi {
   const [state, dispatch] = useReducer(reduceResearchUi, INITIAL_RESEARCH_UI_STATE);
   const mounted = useRef(true);
+  const stateRef = useRef(state);
+  stateRef.current = state; // 同步最新 state（异步回调竞态守卫读）
 
   useEffect(() => {
     mounted.current = true;
@@ -350,11 +358,15 @@ export function useResearch(): UseResearchApi {
     if (!mounted.current) return;
     const got = await window.aibrowse.research.get(taskId);
     if (!mounted.current) return;
+    // 竞态守卫：请求期间选中任务已变化（新任务被创建/选中）→ 丢弃旧结果
+    // （旧任务的 reload 重读不得覆盖新建任务——决议 #163(4) 键控语义）
+    if (stateRef.current.selectedTaskId !== taskId) return;
     if (got.ok) {
       dispatch({ kind: 'get-ok', task: got.value.task });
       if (got.value.task.status === 'completed') {
         const res = await window.aibrowse.research.result(taskId);
         if (!mounted.current) return;
+        if (stateRef.current.selectedTaskId !== taskId) return;
         if (res.ok) dispatch({ kind: 'result-ok', view: res.value.view });
         else dispatch({ kind: 'result-error', errorCode: res.errorCode });
       }
