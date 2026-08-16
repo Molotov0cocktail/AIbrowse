@@ -37,6 +37,8 @@ import type {
 import type { CaptureContent, CaptureReadResult } from './capture-service';
 import type {
   Capture,
+  Claim,
+  Conflict,
   ResearchErrorCode,
   ResearchPhase,
   ResearchPlan,
@@ -45,6 +47,7 @@ import type {
   ResearchResultValidationPort,
   ResearchSynthesisPort,
   ResearchTaskStats,
+  ResearchVerificationState,
   SourceCandidate,
   VerifiedEvidence,
 } from '../../shared/types/research';
@@ -53,6 +56,14 @@ import {
   MAX_CLAIMS_PER_TASK,
   MAX_CONFLICTS_PER_TASK,
   MAX_EVIDENCE_PER_TASK,
+  MAX_PROVIDER_TEXT_CHARS_PER_STREAM,
+  MAX_PROVIDER_TOOL_ARGUMENTS_CHARS_PER_CALL,
+  MAX_PROVIDER_TOOL_ARGS_CHARS_PER_STREAM,
+  MAX_PROVIDER_TOOL_CALL_ID_CHARS,
+  MAX_PROVIDER_TOOL_CALL_NAME_CHARS,
+  MAX_PROVIDER_TOOL_CALLS_PER_STREAM,
+  MAX_PROVIDER_TOOL_ID_CHARS_PER_STREAM,
+  MAX_PROVIDER_TOOL_NAME_CHARS_PER_STREAM,
   MAX_REQUEST_CONTEXT_CHARS,
   MAX_RESEARCH_ROUNDS,
   MAX_RESEARCH_TOOL_STEPS,
@@ -237,6 +248,11 @@ export class ResearchRuntime {
   private selected: SourceCandidate[] = [];
   private allCaptures: Capture[] = [];
   private evidence: VerifiedEvidence[] = [];
+  // 决议 #145：C5→C6→C7 数据交接——最终 claims/conflicts/verificationState
+  // 同一不可变快照（持久化与 synthesis/C7 交接对象恒等；终态后清空）
+  private claims: Claim[] = [];
+  private conflicts: Conflict[] = [];
+  private verificationState: ResearchVerificationState = 'unavailable';
   // tabId → 捕获内容索引（决议 #132(2)：browser_read 只读本 run 内存内容）
   private readonly contentsByTab: Map<string, { captureId: string; content: CaptureContent }> =
     new Map();
@@ -392,6 +408,55 @@ export class ResearchRuntime {
     throw new RoundFailedError(null, '模型轮失败（可恢复）');
   }
 
+  // 决议 #141：每段 stream 的 Provider 输出侧预算——toolCalls 数量/id/name/
+  // arguments 单项与累计上限（超限整段拒绝执行）；错误消息为固定中文短句，
+  // 仅含常量数字（超限 Provider 原文零回显）
+  private assertToolCallBudget(calls: readonly ProviderToolCall[]): void {
+    if (calls.length > MAX_PROVIDER_TOOL_CALLS_PER_STREAM) {
+      throw new BudgetExhaustedError(
+        `Provider 工具调用数量超限（${MAX_PROVIDER_TOOL_CALLS_PER_STREAM}）`,
+      );
+    }
+    let idChars = 0;
+    let nameChars = 0;
+    let argsChars = 0;
+    for (const call of calls) {
+      if (call.id.length > MAX_PROVIDER_TOOL_CALL_ID_CHARS) {
+        throw new BudgetExhaustedError(
+          `Provider 工具调用 id 超限（${MAX_PROVIDER_TOOL_CALL_ID_CHARS}）`,
+        );
+      }
+      if (call.name.length > MAX_PROVIDER_TOOL_CALL_NAME_CHARS) {
+        throw new BudgetExhaustedError(
+          `Provider 工具调用 name 超限（${MAX_PROVIDER_TOOL_CALL_NAME_CHARS}）`,
+        );
+      }
+      if (call.arguments.length > MAX_PROVIDER_TOOL_ARGUMENTS_CHARS_PER_CALL) {
+        throw new BudgetExhaustedError(
+          `Provider 工具调用 arguments 超限（${MAX_PROVIDER_TOOL_ARGUMENTS_CHARS_PER_CALL}）`,
+        );
+      }
+      idChars += call.id.length;
+      nameChars += call.name.length;
+      argsChars += call.arguments.length;
+    }
+    if (idChars > MAX_PROVIDER_TOOL_ID_CHARS_PER_STREAM) {
+      throw new BudgetExhaustedError(
+        `Provider 工具调用 id 累计超限（${MAX_PROVIDER_TOOL_ID_CHARS_PER_STREAM}）`,
+      );
+    }
+    if (nameChars > MAX_PROVIDER_TOOL_NAME_CHARS_PER_STREAM) {
+      throw new BudgetExhaustedError(
+        `Provider 工具调用 name 累计超限（${MAX_PROVIDER_TOOL_NAME_CHARS_PER_STREAM}）`,
+      );
+    }
+    if (argsChars > MAX_PROVIDER_TOOL_ARGS_CHARS_PER_STREAM) {
+      throw new BudgetExhaustedError(
+        `Provider 工具调用 arguments 累计超限（${MAX_PROVIDER_TOOL_ARGS_CHARS_PER_STREAM}）`,
+      );
+    }
+  }
+
   // 工具循环：每段 stream 前 roundsUsed++（含重试）；tool calls 逐条执行（计步）
   // 后回放继续；段数防御上限 = 2 + MAX_TRANSCRIPT_REPLAY_ROUNDS
   private async streamUntilDone(
@@ -406,15 +471,25 @@ export class ResearchRuntime {
       this.stats.roundsUsed += 1;
       const request = this.buildRequest(system, userBlocks, transcript);
       const toolCalls: ProviderToolCall[] = [];
-      let reasoning = '';
       let text = '';
       try {
         for await (const event of this.options.provider.stream(request, this.effectiveSignal())) {
-          if (event.type === 'delta') text += event.text;
-          else if (event.type === 'toolCalls') toolCalls.push(...event.toolCalls);
-          else if (event.type === 'reasoning')
-            reasoning += event.text; // 不透明（当前 run）
-          else if (event.type === 'done') {
+          if (event.type === 'delta') {
+            text += event.text;
+            // 决议 #141(2)：文本 delta 累计超限 → 立即停止消费 → 预算终态
+            if (text.length > MAX_PROVIDER_TEXT_CHARS_PER_STREAM) {
+              throw new BudgetExhaustedError(
+                `Provider 文本输出超限（${MAX_PROVIDER_TEXT_CHARS_PER_STREAM}）`,
+              );
+            }
+          } else if (event.type === 'toolCalls') {
+            toolCalls.push(...event.toolCalls);
+            this.assertToolCallBudget(toolCalls); // 超限整段拒绝执行（决议 #141(3)）
+          } else if (event.type === 'reasoning') {
+            // 决议 #141(4)：reasoning 完全不用——直接丢弃，零字符串累积、
+            // 零 transcript、零回放、零持久化（决议 #136(3) 的「如 Provider
+            // 协议需要」v1 不需要）
+          } else if (event.type === 'done') {
             // 正常终帧
           } else if (event.type === 'error') {
             // aborted 错误：归属 stop/deadline（决议 #138(3) 优先级）
@@ -429,7 +504,8 @@ export class ResearchRuntime {
         if (
           err instanceof RoundFailedError ||
           err instanceof StopObservedError ||
-          err instanceof DeadlineExceededError
+          err instanceof DeadlineExceededError ||
+          err instanceof BudgetExhaustedError // 决议 #141：预算哨兵不吞入网络归一化
         ) {
           throw err;
         }
@@ -438,7 +514,6 @@ export class ResearchRuntime {
         if (this.deadlineController.signal.aborted) throw new DeadlineExceededError();
         throw new RoundFailedError('network', '模型流异常中断');
       }
-      void reasoning; // 决议 #136(3)：reasoning 零记录/显示/持久化
       this.guard();
       if (toolCalls.length > 0) {
         transcript.push({ role: 'assistant', content: text, toolCalls });
@@ -1004,6 +1079,11 @@ export class ResearchRuntime {
           this.stats.claimCount = claims.length;
           this.stats.conflictCount = conflicts.length;
           this.options.persistence.commitClaimsAndConflicts(claims, conflicts, this.stats);
+          // 决议 #145(1)/(2)：保存并持久化同一组不可变快照（内存对象此后
+          // 不再变换；synthesis 上下文与 C7 context 消费同一组对象）
+          this.claims = claims;
+          this.conflicts = conflicts;
+          this.verificationState = 'verified';
           this.emit('running', 'verifying');
           return;
         }
@@ -1022,10 +1102,43 @@ export class ResearchRuntime {
         }
       }
     }
-    // 端口/模型两轮失败 → 空 claims/conflicts 继续（不确定输出归 C6/C7）
+    // 决议 #145(3)：两次核验输出仍非法 → 空 claims/conflicts + unavailable，
+    // 任务允许继续 synthesizing（synthesis 上下文必须明确要求输出 uncertain 块）
+    this.claims = [];
+    this.conflicts = [];
+    this.verificationState = 'unavailable';
   }
 
-  // ---------- 阶段：synthesizing（决议 #134/#138） ----------
+  // ---------- 阶段：synthesizing（决议 #134/#138/#145/#147） ----------
+
+  // 决议 #145(4)：synthesis 上下文 = 程序装配的 Claim/Conflict 白名单序列化 +
+  // verificationState 明确标记；文本进既有 UNTRUSTED 块（不进 system prompt）；
+  // 模型文本不可信（claim.text/topic/positions 均为模型提议、程序装配后的受控值）
+  private buildCrossCheckBlock(): string {
+    if (this.verificationState === 'unavailable') {
+      return `核验状态：不可用（核验输出未通过程序校验）——必须在结果中输出 uncertain 块说明不确定之处。`;
+    }
+    const serialized = JSON.stringify({
+      claims: this.claims.map((c) => ({
+        claimId: c.claimId,
+        text: c.text,
+        severity: c.severity,
+        coverage: c.coverage,
+        sourceTypes: c.sourceTypes,
+        evidenceIds: c.evidenceIds,
+        singleSourceFields: c.singleSourceFields,
+        conflictIds: c.conflictIds,
+      })),
+      conflicts: this.conflicts.map((cf) => ({
+        conflictId: cf.conflictId,
+        topic: cf.topic,
+        positions: cf.positions,
+        claimIds: cf.claimIds,
+        resolved: cf.resolved,
+      })),
+    });
+    return `核验状态：已通过程序校验。经程序装配的结论（${this.claims.length} 条）与冲突（${this.conflicts.length} 条）——冲突必须在结果中如实引用，不得静默抹平：\n${buildUntrustedBlock('claims-conflicts', truncateBlock(serialized, 16000))}`;
+  }
 
   private async phaseSynthesizing(): Promise<void> {
     this.options.persistence.commitPhaseHeartbeat('synthesizing', this.stats);
@@ -1041,6 +1154,7 @@ export class ResearchRuntime {
       .join('\n');
     const blocks = [
       `已验证证据（${this.evidence.length} 条）：\n${buildUntrustedBlock('evidence', truncateBlock(evidenceBlock, 12000))}`,
+      this.buildCrossCheckBlock(),
       '请输出结果草案 JSON（{"result":{…}}）。',
     ];
     // 决议 §6.4：非法 Result 回注重提 ≤2 次 → failed(research-internal)
@@ -1054,10 +1168,15 @@ export class ResearchRuntime {
         }
         throw new InternalRuntimeError('结果草案解析失败（重提耗尽）');
       }
+      // 决议 #145(5)：validate 签名不变，context 扩充 claims/conflicts/
+      // verificationState（C7 据此程序重算 coverage、核对 Result.conflicts）
       const validated = this.options.resultValidation.validate(draft.draft, {
         taskId: this.options.taskId,
         candidates: this.merged,
         evidence: this.evidence,
+        claims: this.claims,
+        conflicts: this.conflicts,
+        verificationState: this.verificationState,
         createId: this.createId,
       });
       if (!validated.ok) {
@@ -1073,10 +1192,21 @@ export class ResearchRuntime {
       }
       this.options.persistence.commitResultAndComplete(result, this.stats);
       this.finished = true;
+      this.clearRuntimeState(); // 决议 #145(7)：completed 终态清空内存状态
       this.emit('completed', null);
       return;
     }
     throw new InternalRuntimeError('结果生成失败');
+  }
+
+  // 决议 #145(7)：完成/失败/取消后清空内存 Claim/Conflict/正文状态
+  // （CaptureContent 索引同清——终态单一所有权与内存最小化）
+  private clearRuntimeState(): void {
+    this.claims = [];
+    this.conflicts = [];
+    this.verificationState = 'unavailable';
+    this.contentsByTab.clear();
+    this.contentsByCapture.clear();
   }
 
   // ---------- 终态收敛（决议 #138(3)：stop > deadline > budget） ----------
@@ -1107,11 +1237,13 @@ export class ResearchRuntime {
         this.options.persistence.commitFailed(errorCode, this.stats);
       }
       this.finished = true;
+      this.clearRuntimeState(); // 决议 #145(7)：failed/cancelled 终态清空内存状态
       this.emit(terminal, null);
     } catch (commitErr) {
       // 终态写失败防御：StaleRunError = 终态已由他处写入（重复提交防御）；
       // 其余（含预算拒绝）= 记录脱敏诊断并保留所有权供 shutdown 重试；
       // 不抛出失控 rejection（决议 #138(4)）
+      this.clearRuntimeState(); // 终态路径统一清空（运行已收敛）
       if (!(commitErr instanceof StaleRunError)) {
         void commitErr;
       }

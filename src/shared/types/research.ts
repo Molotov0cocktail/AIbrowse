@@ -55,6 +55,40 @@ export const MAX_PLAN_WEB_QUERIES = 1;
 // 只进模型回放消息，不进日志/UI/持久化）
 export const RESEARCH_TOOL_RESULT_CONTENT_MAX = 8000;
 
+// 决议 #141：Provider 响应侧有界性——每段 stream 输出同样有界（请求侧
+// MAX_REQUEST_CONTEXT_CHARS 之外的响应侧防线）；超限立即停止消费 →
+// research-budget-exhausted；超限 Provider 原文零记录/零回显。
+// 文本 delta 累计上限：覆盖最大合法载荷（Result 草案 ≤MAX_RESULT_CHARS
+// 字符 + JSON 包装 + 转义余量）
+export const MAX_PROVIDER_TEXT_CHARS_PER_STREAM = 250_000;
+export const MAX_PROVIDER_TOOL_CALLS_PER_STREAM = 32;
+export const MAX_PROVIDER_TOOL_CALL_ID_CHARS = 64;
+// 与 TOOL_NAME_PATTERN 上界一致（决议 #35 双闸门）
+export const MAX_PROVIDER_TOOL_CALL_NAME_CHARS = 64;
+// 最大合法单参数值（url 2048）+ JSON 包装余量
+export const MAX_PROVIDER_TOOL_ARGUMENTS_CHARS_PER_CALL = 5000;
+// 累计上限 = 数量 × 单项（派生常量，禁止魔法数字）
+export const MAX_PROVIDER_TOOL_ID_CHARS_PER_STREAM =
+  MAX_PROVIDER_TOOL_CALLS_PER_STREAM * MAX_PROVIDER_TOOL_CALL_ID_CHARS;
+export const MAX_PROVIDER_TOOL_NAME_CHARS_PER_STREAM =
+  MAX_PROVIDER_TOOL_CALLS_PER_STREAM * MAX_PROVIDER_TOOL_CALL_NAME_CHARS;
+export const MAX_PROVIDER_TOOL_ARGS_CHARS_PER_STREAM =
+  MAX_PROVIDER_TOOL_CALLS_PER_STREAM * MAX_PROVIDER_TOOL_ARGUMENTS_CHARS_PER_CALL;
+
+// 决议 #141/#142/#147：全部 reason/error 安全中文短句上限（与决议 #134
+// 端口 reason 契约同源；超限 Provider 原文零回显）
+export const MAX_RESEARCH_REASON_CHARS = 200;
+
+// 决议 #142：VerificationDraft 细粒度上限（单一事实源；实现与测试禁止
+// 魔法数字）
+export const MAX_VERIFICATION_DRAFT_CHARS = 100_000; // raw 总字符（解析前防线）
+export const MAX_VENDOR_CANDIDATE_IDS = MAX_SELECTED_SOURCES; // vendorCandidateIds 上限
+export const MAX_CLAIM_KEY_CHARS = 64; // claimKey 局部引用长度
+export const MAX_CLAIM_EVIDENCE_REFS = MAX_EVIDENCE_PER_TASK; // 单 Claim evidenceIds 上限
+export const MAX_CONFLICT_POSITIONS = 8; // 单 Conflict positions 上限（下界 2）
+export const MAX_CONFLICT_POSITION_SOURCE_REFS = 8; // 单 position sourceRefs 上限
+export const MAX_CONFLICT_CLAIM_REFS = 8; // 单 Conflict claimKeys 上限（下界 2）
+
 // 决议 #132：Research 模型轮六工具编译期固定集合（名称与注册表同名工具
 // 一致——测试交叉断言；描述与执行器为 Research 专属，不经 ToolRegistry/
 // ToolExecutor/权限链/ConfirmManager）
@@ -304,6 +338,42 @@ export interface Conflict {
   resolved: 'explicit' | 'unresolved'; // v1 恒 'unresolved'（不自动裁决、不静默抹平）
 }
 
+// ---------- VerificationDraft（C6；决议 #142，不可信输入） ----------
+
+// 模型核验轮输出 = 严格白名单 VerificationDraft——模型只能提议局部引用
+// （claimKey/vendorCandidateIds），全部可信字段（claimId/conflictId/taskId/
+// coverage/sourceTypes/singleSourceFields/conflictIds/resolved）由程序产生，
+// 模型无字段通道提交（未知字段整份拒绝）。raw 必须是纯 JSON（不接受
+// Markdown fence、前后说明文字或宽松修复）。
+export interface VerificationDraftClaim {
+  claimKey: string; // 本次 proposal 局部引用（非空、唯一、≤MAX_CLAIM_KEY_CHARS）
+  text: string; // ≤MAX_CLAIM_TEXT_CHARS（规范化后）
+  severity: ClaimSeverity;
+  evidenceIds: string[]; // 非空、唯一、≤MAX_CLAIM_EVIDENCE_REFS
+}
+
+export interface VerificationDraftPosition {
+  positionText: string; // ≤MAX_CONFLICT_POSITION_CHARS（规范化后）
+  sourceRefs: string[]; // candidateId 引用（非空、≤MAX_CONFLICT_POSITION_SOURCE_REFS）
+}
+
+export interface VerificationDraftConflict {
+  topic: string; // ≤MAX_CONFLICT_TOPIC_CHARS（规范化后）
+  positions: VerificationDraftPosition[]; // ≥2 且 ≤MAX_CONFLICT_POSITIONS
+  claimKeys: string[]; // ≥2 个不同且存在的局部 claimKey（≤MAX_CONFLICT_CLAIM_REFS）
+}
+
+export interface VerificationDraft {
+  vendorCandidateIds: string[]; // ≤MAX_VENDOR_CANDIDATE_IDS；模型对「厂商候选」的提议
+  claims: VerificationDraftClaim[]; // ≤MAX_CLAIMS_PER_TASK（可为空——零结论有效语义）
+  conflicts: VerificationDraftConflict[]; // ≤MAX_CONFLICTS_PER_TASK（可为空）
+}
+
+// 决议 #145：核验状态（C6 Runtime 内存持有 → synthesis/C7 交接）；
+// unavailable = 两次核验输出仍非法（claims/conflicts 为空，synthesis 上下文
+// 明确要求输出 uncertain 块）
+export type ResearchVerificationState = 'verified' | 'unavailable';
+
 // ---------- Result Schema（C7/C8；Fifth_stage.md §3.6/§5） ----------
 
 export type ResultBlock =
@@ -439,6 +509,12 @@ export interface ResearchResultValidationContext {
   taskId: string;
   candidates: readonly SourceCandidate[];
   evidence: readonly VerifiedEvidence[]; // evidenceMap 主进程元数据来源
+  // 决议 #145(5)：C6 数据交接——Runtime 持有的程序装配快照（validate 签名
+  // 不变，只扩充 context；C7 据此程序重算 coverage、核对 Result.conflicts、
+  // 实施 uncertainty 强制规则）
+  claims: readonly Claim[];
+  conflicts: readonly Conflict[];
+  verificationState: ResearchVerificationState;
   createId: () => string; // resultId 预分配（主进程可信）
 }
 

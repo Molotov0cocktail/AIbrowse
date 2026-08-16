@@ -52,6 +52,16 @@ import type {
 } from '../shared/types/research';
 import type { Capture, SourceCandidate } from '../shared/types/research';
 import { runMigrations } from './sources/db/migrations';
+// 8.18 C6：真实 ResearchPromptsPort + ResearchSynthesisPort（决议 #140——
+// 仅 SMOKE 设施使用真实 C6 端口 + 严格 C7 stub；生产 fail-closed 不变）
+import { RESEARCH_PROMPTS_PORT } from './research/synthesis/research-prompts';
+import { RESEARCH_SYNTHESIS_PORT } from './research/synthesis/claim-model';
+import type {
+  Claim,
+  Conflict,
+  ResearchVerificationState,
+  ResultBlock,
+} from '../shared/types/research';
 import { SourceServiceImpl } from './sources/source-service';
 import { SourceSearchIndex } from './sources/repository/source-search-index';
 import { SourceUsageTracker } from './sources/usage/usage-tracker';
@@ -389,6 +399,19 @@ const RESEARCH_CAPTURE_HTML = `<!doctype html>
 </body>
 </html>`;
 
+// 8.18 研究冲突页 B（C6）：第二受控来源——与 A 页不同 canonicalKey（不同路径），
+// 正文主张相反结论（冲突夹具）。探针标记 CAPTURE-B-PROBE 拆散节点，规范化后仅存于
+// 捕获内存（零落盘断言用）。
+const RESEARCH_CAPTURE_B_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>研究采集页B</title></head>
+<body>
+  <h1>研究主标题 B</h1>
+  <p>这是研究采集页B的第一段正文，主张结果应为 B 版本。</p>
+  <p>探针标记：CAP<span>TURE-B-</span>PRO<span>BE</span>（拆散节点，规范化后仅存于捕获内存）。</p>
+</body>
+</html>`;
+
 // A6：确认对话框敌对文本页——提交按钮的可见文本（textContent）含 HTML 标记尝试
 // （<b> 富文本）、双向文本控制符与误导文案（「已允许」）与注入标签；页面脚本记录
 // 点击事实。预期：ConfirmDialog 只作纯文本渲染 + 控制字符剔除 + 截断（页面提供的
@@ -698,6 +721,7 @@ interface ControlledPages {
   rt05Url: string; // RT-05 密码/文件/动态变形页
   rt11Url: string; // RT-11 通用 click 越权页
   researchCaptureUrl: string; // 8.16 研究采集页（多章节/两表格/字段/拆分探针标记）
+  researchCaptureUrlB: string; // 8.18 研究冲突页 B（第二来源，相反主张夹具）
   hostileRt10Url: string; // RT-10 真实 Provider 敌对页（诱导目标全部为本地安全地址）
   hostileSrt1Url: string; // B8 SRT-01 敌对收藏诱导页（诱导收藏并标官方）
   liveFilterUrl: string; // 真实 Provider 场景 4：受控无副作用筛选页
@@ -855,6 +879,11 @@ async function startControlledPages(): Promise<ControlledPages> {
       res.end(RESEARCH_CAPTURE_HTML);
       return;
     }
+    if (req.url === '/research-capture-b') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(RESEARCH_CAPTURE_B_HTML);
+      return;
+    }
     res.writeHead(404);
     res.end();
   });
@@ -891,6 +920,7 @@ async function startControlledPages(): Promise<ControlledPages> {
     rt05Url: `${base}/rt5`,
     rt11Url: `${base}/rt11`,
     researchCaptureUrl: `${base}/research-capture`,
+    researchCaptureUrlB: `${base}/research-capture-b`,
     hostileRt10Url: `${base}/rt10`,
     hostileSrt1Url: `${base}/srt1-hostile`,
     liveFilterUrl: `${base}/live-filter`,
@@ -10802,6 +10832,13 @@ export async function runSmokeScenario(
     // Evidence 保留；终态后迟到事件零影响。零真实 Provider 调用。
     await runResearchRuntimeScenario(controller);
 
+    // 8.18 C6 综合场景（决议 #140–#147；默认矩阵自动包含）：两个不同
+    // canonicalKey 受控来源 + C6 真实 prompts/synthesis 端口 + 严格 C7 stub →
+    // Claim/Conflict 确定性装配断言 + 双向一致 + synthesis 上下文快照 +
+    // Result coverage 计数（零百分比）+ ≥1 uncertain + 正文/reasoning 零落盘。
+    // 零真实 Provider 调用；本场景不解除生产 fail-closed（决议 #140）。
+    await runResearchSynthesisScenario(controller);
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -14858,13 +14895,24 @@ function makeSmokeRuntimeScript(candidateId: string): FakeProviderScript {
 export class SmokeSearchFixture implements SearchProvider {
   readonly id = 'smoke-search-fixture';
 
-  constructor(private readonly resultUrl: string | null) {}
+  // 8.18 扩展：受控多来源（保持既有单 URL/null 用法兼容——数组即多来源）
+  private readonly resultUrls: string[];
+
+  constructor(resultUrl: string | string[] | null) {
+    if (resultUrl === null) this.resultUrls = [];
+    else if (Array.isArray(resultUrl)) this.resultUrls = [...resultUrl];
+    else this.resultUrls = [resultUrl];
+  }
 
   async search(): Promise<SearchProviderResult> {
-    if (this.resultUrl === null) return { ok: true, results: [] };
     return {
       ok: true,
-      results: [{ title: '冒烟受控页', url: this.resultUrl, snippet: '', source: 'smoke' }],
+      results: this.resultUrls.map((url, i) => ({
+        title: `冒烟受控页${this.resultUrls.length > 1 ? i + 1 : ''}`,
+        url,
+        snippet: '',
+        source: 'smoke',
+      })),
     };
   }
 }
@@ -15222,6 +15270,458 @@ async function runResearchRuntimeScenario(controller: BrowserController): Promis
   } finally {
     if (db !== null) closeDb(db);
     rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// 8.18 C6 综合场景（决议 #140–#147；默认矩阵自动包含）：两个不同 canonicalKey
+// 的受控来源（研究采集页 A + 冲突页 B）+ C6 真实 ResearchPromptsPort/
+// ResearchSynthesisPort + FakeProvider 确定性返回两条 Claim 与一个 Conflict +
+// 严格但仅限 smoke 的 C7 Validator stub（模型草案的 conflicts/coverage 一律
+// 忽略，程序从 ctx 快照装配；必须含 uncertain 块）。断言：Claim.coverage/
+// sourceTypes/singleSourceFields；Conflict 显式落库、resolved=unresolved、
+// 双向引用一致；synthesizing 请求真实包含经验证 Claim/Conflict（UNTRUSTED
+// 块）；C7 stub 收到同一不可变快照；Result 含同一 Conflict（程序装配）；
+// Result coverage 为计数（零 score/percent/confidence）；Result ≥1 uncertain
+// 块；CaptureContent、Provider raw、transcript、reasoning 零落盘；用户 Tab
+// 前后恒等；本场景不解除生产 fail-closed（决议 #140——index.ts 生产装配零
+// 改动）。零真实 Provider 调用。
+async function runResearchSynthesisScenario(controller: BrowserController): Promise<void> {
+  const taskId = randomUUID();
+  const tmpDir = mkdtempSync(join(tmpdir(), 'aibrowse-research-synth-smoke-'));
+  const dbPath = join(tmpDir, 'research.db');
+  let db: DbHandle | null = null;
+  const pages = await startControlledPages();
+  const IDS = {
+    candA: 'aaaaaaaa-aaaa-4aaa-8aaa-000000000001',
+    candB: 'aaaaaaaa-aaaa-4aaa-8aaa-000000000002',
+    evA: 'bbbbbbbb-bbbb-4bbb-8bbb-000000000001',
+    evB: 'bbbbbbbb-bbbb-4bbb-8bbb-000000000002',
+    claim1: 'cccccccc-cccc-4ccc-8ccc-000000000001',
+    claim2: 'cccccccc-cccc-4ccc-8ccc-000000000002',
+    conflict1: 'dddddddd-dddd-4ddd-8ddd-000000000001',
+    result1: 'eeeeeeee-eeee-4eee-8eee-000000000001',
+  };
+  const idQueue = [
+    IDS.candA,
+    IDS.candB,
+    IDS.evA,
+    IDS.evB,
+    IDS.claim1,
+    IDS.claim2,
+    IDS.conflict1,
+    IDS.result1,
+  ];
+  let seqN = 0;
+  const createId = (): string => {
+    const next = idQueue.shift();
+    if (next !== undefined) return next;
+    seqN += 1;
+    return `f0000000-0000-4f00-8f00-${String(seqN).padStart(12, '0')}`;
+  };
+  try {
+    // 用户 Tab 基线
+    const userTabIds = (await controller.getTabs()).map((t) => t.id).sort();
+    db = openDb(dbPath);
+    runResearchMigrations(db);
+    const repo = new ResearchRepository(db);
+    const nowIso = (): string => new Date().toISOString();
+    const zeroStats = (): string =>
+      JSON.stringify({
+        candidateCount: 0,
+        selectedCount: 0,
+        captureCount: 0,
+        failedReadCount: 0,
+        evidenceCount: 0,
+        rejectedEvidenceCount: 0,
+        claimCount: 0,
+        conflictCount: 0,
+        stepsUsed: 0,
+        roundsUsed: 0,
+      });
+    repo.insertTask({
+      id: taskId,
+      goal: '冒烟冲突研究',
+      status: 'running',
+      phase: 'planning',
+      created_at: nowIso(),
+      updated_at: nowIso(),
+      started_at: nowIso(),
+      finished_at: null,
+      interrupted_at: null,
+      error_code: null,
+      result_id: null,
+      stats_json: zeroStats(),
+    });
+    // 8.18 脚本：plan → select(A+B) → toolA → propA → toolB → propB →
+    // verify（两条 Claim + 一个 Conflict，vendorCandidateIds=[]——search 命中
+    // trust=null → 保守 third-party）→ synth（模型草案含伪造 conflicts/
+    // coverage/score/percent/confidence + uncertain 块——严格 C7 stub 全部
+    // 忽略并程序装配）
+    const reasoningProbe = 'REASONING-PROBE-818-零落盘';
+    const script: FakeProviderScript = {
+      rounds: [
+        [
+          {
+            text: JSON.stringify({
+              sourceMode: 'search',
+              sourceQuery: '冲突研究',
+              groupId: null,
+              webQueries: ['冒烟'],
+            }),
+          },
+        ],
+        [{ text: JSON.stringify({ selectedCandidateIds: [IDS.candA, IDS.candB] }) }],
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [{ id: 'smoke-tc-a', name: 'browser_read', arguments: JSON.stringify({}) }],
+          },
+          { kind: 'reasoning', text: `${reasoningProbe}-${'思'.repeat(4096)}` },
+        ],
+        [
+          {
+            text: JSON.stringify([
+              {
+                captureId: 'smoke-capture-1',
+                candidateId: IDS.candA,
+                type: 'quote',
+                locator: {
+                  kind: 'text',
+                  excerpt: '这是研究采集页的第一段正文，用于验证捕获内容与证据摘录。',
+                },
+                excerpt: '这是研究采集页的第一段正文，用于验证捕获内容与证据摘录。',
+                value: null,
+              },
+            ]),
+          },
+        ],
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [{ id: 'smoke-tc-b', name: 'browser_read', arguments: JSON.stringify({}) }],
+          },
+        ],
+        [
+          {
+            text: JSON.stringify([
+              {
+                captureId: 'smoke-capture-2',
+                candidateId: IDS.candB,
+                type: 'quote',
+                locator: {
+                  kind: 'text',
+                  excerpt: '这是研究采集页B的第一段正文，主张结果应为 B 版本。',
+                },
+                excerpt: '这是研究采集页B的第一段正文，主张结果应为 B 版本。',
+                value: null,
+              },
+            ]),
+          },
+        ],
+        [
+          {
+            text: JSON.stringify({
+              vendorCandidateIds: [],
+              claims: [
+                {
+                  claimKey: 'c1',
+                  text: '结论甲：结果为 A 版本',
+                  severity: 'high',
+                  evidenceIds: [IDS.evA, IDS.evB],
+                },
+                {
+                  claimKey: 'c2',
+                  text: '结论乙：单一来源观察',
+                  severity: 'low',
+                  evidenceIds: [IDS.evA],
+                },
+              ],
+              conflicts: [
+                {
+                  topic: '冲突主题：结果版本分歧',
+                  positions: [
+                    { positionText: '采集页A主张A版本', sourceRefs: [IDS.candA] },
+                    { positionText: '冲突页B主张B版本', sourceRefs: [IDS.candB] },
+                  ],
+                  claimKeys: ['c1', 'c2'],
+                },
+              ],
+            }),
+          },
+        ],
+        [
+          {
+            text: JSON.stringify({
+              result: {
+                title: '冒烟冲突研究结果',
+                summary: '确定性综合结果',
+                blocks: [
+                  { kind: 'markdown', text: '冒烟综合正文' },
+                  {
+                    kind: 'uncertain',
+                    text: '存在未解决冲突且含单源结论，暂不确定最终版本',
+                    reason: '冲突未收敛',
+                  },
+                ],
+                conflicts: [{ conflictId: 'fake-conflict', topic: '模型伪造冲突', positions: [] }],
+                coverage: {
+                  total: 99,
+                  multiSource: 99,
+                  singleSource: 0,
+                  vendor: 99,
+                  thirdParty: 0,
+                  community: 0,
+                },
+                score: 0.99,
+                percent: 88,
+                confidence: 'high',
+              },
+            }),
+          },
+        ],
+      ],
+    };
+    let capturedCapN = 0;
+    // 严格但仅限 smoke 的 C7 Validator stub（决议 #140(2)/#147(2)）：
+    // 模型草案的 conflicts/coverage 一律忽略，程序从 ctx 快照装配；必须含
+    // uncertain 块；不装入生产（生产 fail-closed 维持——决议 #140）
+    const c7Box: {
+      snapshot: {
+        claims: readonly Claim[];
+        conflicts: readonly Conflict[];
+        verificationState: ResearchVerificationState;
+      } | null;
+    } = { snapshot: null };
+    const strictC7: ResearchResultValidationPort = {
+      validate(draft, ctx) {
+        c7Box.snapshot = {
+          claims: ctx.claims,
+          conflicts: ctx.conflicts,
+          verificationState: ctx.verificationState,
+        };
+        if (draft === null || typeof draft !== 'object' || Array.isArray(draft)) {
+          return { ok: false, reasons: ['结果草案必须是对象'] };
+        }
+        const d = draft as Record<string, unknown>;
+        if (typeof d.title !== 'string' || typeof d.summary !== 'string') {
+          return { ok: false, reasons: ['title/summary 必须为字符串'] };
+        }
+        if (!Array.isArray(d.blocks)) {
+          return { ok: false, reasons: ['blocks 必须为数组'] };
+        }
+        if (
+          !d.blocks.some(
+            (b) =>
+              typeof b === 'object' &&
+              b !== null &&
+              (b as Record<string, unknown>).kind === 'uncertain',
+          )
+        ) {
+          return { ok: false, reasons: ['结果必须包含至少一个 uncertain 块'] };
+        }
+        const blocks = (d.blocks as ResultBlock[]).slice(0, 20);
+        const coverage = {
+          total: ctx.claims.length,
+          multiSource: ctx.claims.filter((c) => c.coverage === 'multi-source').length,
+          singleSource: ctx.claims.filter((c) => c.coverage === 'single-source').length,
+          vendor: ctx.claims.filter((c) => c.sourceTypes.includes('vendor')).length,
+          thirdParty: ctx.claims.filter((c) => c.sourceTypes.includes('third-party')).length,
+          community: ctx.claims.filter((c) => c.sourceTypes.includes('community')).length,
+        };
+        return {
+          ok: true,
+          result: {
+            resultId: ctx.createId(),
+            taskId: ctx.taskId,
+            title: d.title,
+            summary: d.summary,
+            blocks,
+            evidenceMap: {},
+            conflicts: ctx.conflicts.map((c) => ({
+              conflictId: c.conflictId,
+              topic: c.topic,
+              positions: c.positions,
+            })),
+            coverage,
+            fetchedAt: nowIso(),
+          },
+        };
+      },
+    };
+    const stopController = new AbortController();
+    const provider = new FakeProvider(script);
+    const searchFixture = new SmokeSearchFixture([
+      pages.researchCaptureUrl,
+      pages.researchCaptureUrlB,
+    ]);
+    const runtime = new ResearchRuntime({
+      taskId,
+      goal: '冒烟冲突研究',
+      runToken: 'smoke-run-818',
+      model: 'smoke-model',
+      provider,
+      sourceService: makeEmptySmokeSourceService(),
+      searchProvider: searchFixture,
+      captureService: new CaptureService({
+        workspace: new ResearchWorkspace(taskId, controller),
+        browser: controller,
+        createCaptureId: () => {
+          capturedCapN += 1;
+          return `smoke-capture-${capturedCapN}`;
+        },
+      }),
+      persistence: createRepositoryPersistence(db, taskId),
+      prompts: RESEARCH_PROMPTS_PORT,
+      synthesis: RESEARCH_SYNTHESIS_PORT,
+      resultValidation: strictC7,
+      createId,
+      stopSignal: stopController.signal,
+    });
+    await runtime.run();
+
+    // —— 任务终态与落库 ——
+    const task = repo.getTaskById(taskId);
+    assert(task !== null && task.status === 'completed', '8.18：任务应 completed');
+    assert(task!.resultId === IDS.result1, '8.18：resultId 由程序预分配');
+
+    // —— Claim 确定性装配断言 ——
+    const claims = repo.listClaimsByTask(taskId);
+    assert(claims.length === 2, '8.18：claims 应落库 2 条');
+    assert(
+      claims[0]!.claimId === IDS.claim1 && claims[1]!.claimId === IDS.claim2,
+      '8.18：claimId 程序分配',
+    );
+    assert(claims[0]!.coverage === 'multi-source', '8.18：c1 双 canonicalKey → multi-source');
+    assert(claims[0]!.severity === 'high', '8.18：c1 severity 保持模型提议 high');
+    assert(claims[1]!.coverage === 'single-source', '8.18：c2 单源 → single-source');
+    assert(
+      JSON.stringify(claims[1]!.singleSourceFields) === JSON.stringify(['整条结论']),
+      '8.18：单源结论 singleSourceFields 程序标记',
+    );
+    assert(
+      JSON.stringify(claims[0]!.sourceTypes) === JSON.stringify(['third-party']) &&
+        JSON.stringify(claims[1]!.sourceTypes) === JSON.stringify(['third-party']),
+      '8.18：search 命中 trust=null → 保守 third-party',
+    );
+
+    // —— Conflict 显式落库 + 双向一致 ——
+    const conflicts = repo.listConflictsByTask(taskId);
+    assert(conflicts.length === 1, '8.18：Conflict 应显式落库 1 条');
+    const conflict = conflicts[0]!;
+    assert(conflict.conflictId === IDS.conflict1, '8.18：conflictId 程序分配');
+    assert(conflict.resolved === 'unresolved', '8.18：resolved 恒 unresolved（不静默抹平）');
+    assert(
+      JSON.stringify(conflict.claimIds) === JSON.stringify([IDS.claim1, IDS.claim2]),
+      '8.18：Conflict.claimIds = 程序映射',
+    );
+    assert(conflict.positions.length === 2, '8.18：positions ≥2');
+    assert(
+      JSON.stringify(claims[0]!.conflictIds) === JSON.stringify([IDS.conflict1]) &&
+        JSON.stringify(claims[1]!.conflictIds) === JSON.stringify([IDS.conflict1]),
+      '8.18：Claim.conflictIds 双向一致',
+    );
+
+    // —— C7 stub 收到同一不可变快照（与入库对象深相等） ——
+    const c7Snapshot = c7Box.snapshot;
+    assert(c7Snapshot !== null, '8.18：C7 stub 应收到 ctx 快照');
+    assert(c7Snapshot.verificationState === 'verified', '8.18：verificationState=verified');
+    assert(
+      JSON.stringify(c7Snapshot.claims) === JSON.stringify(claims),
+      '8.18：C7 ctx 快照与持久化 Claim 恒等',
+    );
+    assert(
+      JSON.stringify(c7Snapshot.conflicts) === JSON.stringify(conflicts),
+      '8.18：C7 ctx 快照与持久化 Conflict 恒等',
+    );
+
+    // —— synthesizing 请求真实包含经验证 Claim/Conflict（UNTRUSTED 块内） ——
+    const requests = provider.getRequests();
+    const systems = requests.map((r) => r.system);
+    assert(
+      systems.includes(RESEARCH_PROMPTS_PORT.planning) &&
+        systems.includes(RESEARCH_PROMPTS_PORT.reading) &&
+        systems.includes(RESEARCH_PROMPTS_PORT.verifying) &&
+        systems.includes(RESEARCH_PROMPTS_PORT.synthesizing),
+      '8.18：四个真实 C6 system 常量全部出现在请求中',
+    );
+    const last = requests[requests.length - 1]!;
+    assert(
+      last.system === RESEARCH_PROMPTS_PORT.synthesizing,
+      '8.18：synthesis 轮 system 为 C6 常量',
+    );
+    const userContent = last.messages.map((m) => m.content).join('\n');
+    assert(userContent.includes('核验状态：已通过程序校验'), '8.18：synthesis 上下文核验状态标记');
+    assert(userContent.includes('结论甲：结果为 A 版本'), '8.18：synthesis 上下文包含装配 Claim');
+    assert(
+      userContent.includes('冲突主题：结果版本分歧'),
+      '8.18：synthesis 上下文包含装配 Conflict',
+    );
+    const blockStart = userContent.indexOf('<UNTRUSTED_WEB_CONTENT>');
+    const blockEnd = userContent.lastIndexOf('</UNTRUSTED_WEB_CONTENT>');
+    assert(blockStart >= 0 && blockEnd > blockStart, '8.18：Claim/Conflict 位于 UNTRUSTED 块');
+    const inside = userContent.slice(blockStart, blockEnd);
+    assert(
+      inside.includes('结论甲：结果为 A 版本') && inside.includes(IDS.claim1),
+      '8.18：块内包含 Claim 文本与程序 ID',
+    );
+
+    // —— Result：模型草案不可替换程序快照；coverage 为计数 ——
+    const result = repo.getResultByTaskId(taskId);
+    assert(result !== null, '8.18：Result 应落库');
+    assert(result!.conflicts.length === 1, '8.18：Result.conflicts 来自程序快照');
+    assert(
+      result!.conflicts[0]!.conflictId === IDS.conflict1 &&
+        result!.conflicts[0]!.topic === '冲突主题：结果版本分歧',
+      '8.18：Result 含同一 Conflict（模型伪造冲突被忽略）',
+    );
+    assert(
+      JSON.stringify(result!.coverage) ===
+        JSON.stringify({
+          total: 2,
+          multiSource: 1,
+          singleSource: 1,
+          vendor: 0,
+          thirdParty: 2,
+          community: 0,
+        }),
+      '8.18：Result coverage 为程序重算计数（零百分比字段）',
+    );
+    const resultRaw = JSON.stringify(result);
+    assert(
+      !resultRaw.includes('score') &&
+        !resultRaw.includes('percent') &&
+        !resultRaw.includes('confidence') &&
+        !resultRaw.includes('模型伪造冲突'),
+      '8.18：Result 零 score/percent/confidence/伪造冲突',
+    );
+    assert(
+      result!.blocks.some((b) => b.kind === 'uncertain'),
+      '8.18：Result 至少一个 uncertain 块（未解决冲突 + 单源结论）',
+    );
+
+    // —— 零落盘：CaptureContent/Provider raw/transcript/reasoning ——
+    const persisted = JSON.stringify({
+      task: repo.getTaskById(taskId),
+      candidates: repo.listCandidatesByTask(taskId),
+      captures: repo.listCapturesByTask(taskId),
+      evidence: repo.listEvidenceByTask(taskId),
+      claims: repo.listClaimsByTask(taskId),
+      conflicts: repo.listConflictsByTask(taskId),
+      result: repo.getResultByTaskId(taskId),
+    });
+    assert(!persisted.includes('TURE-PROBE'), '8.18：capture 正文探针零落盘（A 页）');
+    assert(!persisted.includes('TURE-B-PROBE'), '8.18：capture 正文探针零落盘（B 页）');
+    assert(!persisted.includes(reasoningProbe), '8.18：reasoning 零落盘');
+    const requestsRaw = JSON.stringify(requests);
+    assert(!requestsRaw.includes(reasoningProbe), '8.18：reasoning 零进入 transcript/请求');
+
+    // —— 用户 Tab 前后恒等 ——
+    const afterTabs = (await controller.getTabs()).map((t) => t.id).sort();
+    assert(JSON.stringify(afterTabs) === JSON.stringify(userTabIds), '8.18：用户 Tab 集合恒等');
+  } finally {
+    if (db !== null) closeDb(db);
+    rmSync(tmpDir, { recursive: true, force: true });
+    void pages;
   }
 }
 
