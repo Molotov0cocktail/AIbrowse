@@ -63,7 +63,23 @@
   Tab 永久失联 → provisional ownership（全新精确 id 先登记后清理）+
   清理事实语义（确认关闭才移除所有权；清理失败 → cleanup-failed +
   cleanupAll 精确重试）——证据见 C2 任务文档「定向安全修复」小节。
-  **下一唯一任务 = C3。** 本阶段红线：禁止安装依赖、禁止实现
+  **C3 已完成（2026-08-16）**——Source Selection：Sources + Search
+  候选合并、provenance 与确定性排序（实施前契约裁决 #120–#123 + 详细
+  设计 §4 重写 + 各文档同步；红→绿 **80/80** + 全量 **1598/1598**）：
+  三档发现路径排序（tier 1 source-search 保留 SourceService 输入顺序/
+  tier 2 group-list priority 降序 + lastUsedAt 降序 + scope/canonicalKey/
+  id 收尾/tier 3 web-search 保留 Provider 顺序且 trust/priority/
+  lastUsedAt/note 恒 null——trust 仅 provenance 元数据不改变基础排序，
+  废止旧五档描述；同身份 Sources+Search 合并采用 Sources 档位与字段 +
+  双 discoveredVia）；note 映射（作者标签/清洗/截断不拆 surrogate/无
+  空标签/不进 sortKey）；candidateId 输入契约（C5 预分配小写 v4 UUID、
+  非法/重复整次 fail-closed）；sortKey 编码
+  `TT|RRRRR|P|I|S|canonicalKey|candidateId`（真实 node:sqlite probe
+  证明内存 binary 顺序 === listCandidatesByTask() 顺序）；hostile
+  input 矩阵（危险 scheme/userinfo/控制字符/超长/canonicalKey 不一致/
+  disabled/blocked 单条安全丢弃零 throw 零日志正文）；预算（24 裁剪/
+  选定 ≤8/深冻结零修改输入）。证据见 C3 任务文档「红→绿证据」小节。
+  **下一唯一任务 = C4。** 本阶段红线：禁止安装依赖、禁止实现
   Sixth Stage。**真实 Provider 长期授权（2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
   每次调用仍须服务于明确开发/验收/定位/复验目的，禁止无界循环、无诊断
@@ -441,7 +457,7 @@
 
 | C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ✅ | 2026-08-16 完成（见「最近验证结果」第十四个闭环）：实施前契约裁决 #101–#111 + 红→绿 9/9 失败→131/131 + 全量 test 1386/1386 + dev/生产冒烟 17 工具/SRT-12 零回归 + smoke.ts SRT-12 白名单契约同步（+5 行，唯一既有改动）；**2026-08-16 定向修复与契约边界复核完成（第十五个闭环）**：决议 #112–#116 先红后修（红态 34 failed → 聚焦 174/174、全量 test 1429/1429；migration v1 零改写、sources/ai/browser/renderer/preload 零 diff）；**2026-08-16 第二次定向补修完成（第十六个闭环）**：ISO 8601 偏移日期回滚校验（红态 6 failed → 聚焦 215/215、全量 test 1470/1470；仅 task-state 纯函数改动）；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md（红→绿证据、定向修复与第二次定向补修记录已回填） |
 | C2 | ResearchWorkspace 与 task-owned Tab 隔离、数量上限、取消/异常清理 | ✅ | 2026-08-16 完成（见「最近验证结果」第十八个闭环）：实施前契约裁决 #118（八项：形态与接口/最小端口/URL 边界/精确所有权/并发上限/焦点恢复/用户关闭感知/释放取消竞态）+ 精确接口 §10.1；红→绿 39/39（模块缺失红 → Fake BrowserController 全离线矩阵）；全量 test 1509/1509；BrowserController/TabManager/SearchProvider 产品契约零改动；任务文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md（红→绿证据已回填） |
-| C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §4；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md；**实施前复核项 4 项已登记**（§4.2 五档可达性/note 映射/candidate_id 生成/sortKey 字典序编码——详见任务文档「实施前复核项」小节，C2 定向修复闭环登记） |
+| C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ✅ | 2026-08-16 完成（见「最近验证结果」第二十个闭环）：实施前契约裁决 #120–#123（三档发现路径排序/note 映射/candidate_id 输入契约/sortKey 编码——详见任务文档「实施前复核项」小节，均已裁决）+ 详细设计 §4 重写；红→绿 80/80（模块缺失红态）→ 全量 test 1598/1598；真实 node:sqlite 排序一致性 probe；C1/C2/Source/Search 产品代码零改动；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md（红→绿证据已回填） |
 | C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §5；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
 | C5 | 独立有界 ResearchRuntime：进度、停止、失败继续、预算与终态 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §6；任务文档 doc/stage5/tasks/C5-research-runtime.md |
 | C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §7；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
@@ -457,7 +473,61 @@
 > （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3）
+
+- **C3 Source Selection 候选合并与确定性排序（2026-08-16，第二十个闭环；
+  docs 与 feat 两个逻辑提交见 git log）**：① 步骤 0 独立核对——HEAD
+  `674cdbe` 与预期一致、工作区干净；基线 test **1518/1518**（64 文件，单
+  worker）· typecheck · lint · format:check 独立复跑全绿。② **实施前契约
+  裁决 #120–#123**（先改契约、再写红测、最后实现；C3 任务文档「实施前
+  复核项」四项逐一裁决）：#120 三档发现路径排序（废止旧五档——档位 3/5
+  对合法 merge 输出不可达；tier 1 source-search 保留 SourceService 输入
+  顺序/tier 2 group-list priority 降序 + lastUsedAt 降序 + scope/
+  canonicalKey/id 收尾/tier 3 web-search 保留 Provider 顺序且 trust/
+  priority/lastUsedAt/note 恒 null；同身份合并采用 Sources 档位与字段 +
+  双 discoveredVia；trust 仅 provenance 元数据不改变基础排序——来源选择
+  顺序不是可信度评分；user+asserted ≠ 程序已核验；ai+unverified 恒显示
+  未核验；official/primary/community 进一步选择归 C5 有界计划调整与 C6
+  sourceTypes/交叉核验；Fifth_stage §3.2 为策略建议，经 source-search
+  上游排序/group 限定/Search 补充/C5 有界调整实现）；#121 note 映射
+  （group-list/search-only 恒 null；source-search 按「用户备注：」/「AI
+  备注：」作者标签 + 换行连接 + NFC/trim/控制·bidi 清洗 + 标签·换行·正文
+  共同计入 200 + 截断不拆 surrogate pair + 第二段预算不足不得留下无正文
+  标签 + 不进 sortKey/模型上下文）；#122 candidateId 输入契约（C3 纯函数
+  不生成 id；C5 预分配小写 RFC 4122 v4 UUID、全局唯一；非法 →
+  candidate-invalid-input、重复 → candidate-id-conflict 整次 fail-closed；
+  同身份合并采用 Sources 条目 candidateId；不同 task 每次新 UUID）；#123
+  sortKey 编码 `TT|RRRRR|P|I|S|canonicalKey|candidateId`（tier 两位/rank
+  5 位补零 group-list 固定 99999/priority 补码 6−p null=9/ISO 时间 UTC
+  规范化后数字反转 null=`~`×24/scope 0|1/canonicalKey ASCII/小写 UUID；
+  原始二元 `<` 比较不用 localeCompare，与 SQLite BINARY 排序一致）。
+  同步：detailed-design §4 重写（输入契约/合并语义/档位/验证降级/note/
+  sortKey/有界性）+ §15 + §13.1 测试行、high-level-design §4.2、
+  threat-model FRT-07、proposal §3 场景 2 映射、C3 任务文档、本文件。
+  ③ **红→绿**：`source-selector.ts` 不存在 → 测试 80 用例（A 三档可达性
+  与互斥/B 上游顺序/C 合并矩阵/D provenance 防洗白/E note/F ID 契约/
+  G sortKey 含真实 node:sqlite probe/H hostile input/I 预算）import 失败
+  红态（1 file failed / 0 tests）→ 实现纯函数 → 聚焦 **80/80** → 全量
+  test **1598/1598**（65 文件，单 worker，退出码 0）。真实 node:sqlite
+  probe：三档混合 8 候选 insertCandidate 写入真实 research.db 后
+  listCandidatesByTask() 顺序与内存 binary 排序逐元素一致（测试设施仅限
+  测试文件）。实施中途修正三处测试夹具缺陷（fixture 默认 sourceId 非
+  UUID 形状、预算组 candidateId 长度 12 位 hex、sortKey 断言未考虑
+  candidateId 收尾差异——均为测试自身问题，非实现缺陷）。④ **红线零
+  回归**：src/main/sources、src/main/ai、src/shared、src/renderer、
+  src/preload、research db/domain/repository/store/service/workspace、
+  package.json/lockfile 零 diff；migration v1 零改写；C3 模块零
+  Electron/SQL/shell/child_process/网络/logger（grep 断言——「单条非法
+  只增 droppedCount 零日志正文」由模块不产生日志保证）；renderer/preload
+  零 SQL；密钥形态（sk-/Bearer/Authorization/baseURL/token）零新增；
+  AgentLoop 12/420s 零变化；工具注册表 17（8+4+4+1）零变化。⑤ **验证
+  矩阵**：typecheck · lint · format:check · build · git diff --check 全
+  绿；**dev 冒烟退出码 0**（默认矩阵全过）；**production 冒烟退出码 0**
+  （同矩阵，含 B8 红队 SRT-01～SRT-12 与 AI 共读矩阵）；冒烟临时 userData
+  精确清理、零 Electron 进程残留；早期测试版本遗留的 3 个空临时目录精确
+  清理。⑥ **真实 Provider 台账**：0 次调用（C3 为纯函数任务，无真实
+  Provider 产品调用链；决议 #117 长期授权不等于强制无关调用）。
+  **不开始 C4。下一唯一任务 = C4。**
 
 - **C2 定向安全修复：取消/异常清理的 Tab 所有权漏洞（2026-08-16，第十九个
   闭环；fix 与 docs 两个逻辑提交见 git log）**：① 步骤 0 独立核对——HEAD
@@ -2673,29 +2743,20 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **C3（唯一）**：C2 已完成（2026-08-16，ResearchWorkspace 与 task-owned
-  Tab 隔离，实施前契约裁决 #118）并经 2026-08-16 **定向安全修复**闭环
-  （决议 #119：取消/异常清理路径的 Tab 所有权漏洞——所有权验证优先/
-  provisional ownership/清理事实语义，红→绿证据见 C2 任务文档「定向安全
-  修复」小节）。下一唯一任务 = **C3（Source Selection：Sources + Search
-  候选合并、provenance 与确定性排序，契约 §4，任务文档
-  doc/stage5/tasks/C3-source-selection-candidate-merge.md）**；C3 完成后
-  按依赖链推进（C4 → C5 → C6/C7 → C8 → C9 → C10），每个任务一个可验证
-  开发闭环；本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider 按
-  决议 #117 长期授权（2026-08-16 起长期生效）：后续任务按需使用、无需
+- **C4（唯一）**：C3 已完成（2026-08-16，Source Selection 候选合并与
+  确定性排序，实施前契约裁决 #120–#123——三档发现路径排序/note 映射/
+  candidateId 输入契约/sortKey 编码，红→绿证据见 C3 任务文档「红→绿
+  证据」小节）。下一唯一任务 = **C4（多源读取、结构化提取、capture 记录
+  与 Evidence 确定性验证，契约 §5，任务文档
+  doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md）**；
+  C4 完成后按依赖链推进（C5 → C6/C7 → C8 → C9 → C10），每个任务一个可
+  验证开发闭环；本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider
+  按决议 #117 长期授权（2026-08-16 起长期生效）：后续任务按需使用、无需
   逐次申请授权；每次调用仍须服务于明确开发/验收/定位/复验目的；无真实
   Provider 产品链路的任务不强制调用；凭据不可用如实记录「凭据不可用」，
-  不得写「未获授权」。**C3 实施前复核项**（详见 C3 任务文档「实施前复核
-  项」小节）：① detailed-design §4.2 五档条件互相覆盖——档位 3、档位 5
-  对 mergeCandidates 的合法输出可能不可达，须先裁决为互斥、可达且不洗白
-  trust 的规则；② SourceSearchItem.note 与 SourceCandidate.note 缺少
-  确定性、有作者标识、总长 ≤MAX_CANDIDATE_NOTE_CHARS 的映射规则；③
-  SourceCandidate.id 合并后唯一且主进程生成，但纯函数接口尚未规定
-  taskId/idFactory/失败语义——不得以 canonicalKey 直接充当 candidate_id
-  （跨任务主键冲突）；④ sortKey 按 ASC 排序但 priority/lastUsedAt 要求
-  降序——须冻结可字典序排序的反向编码、null/非法时间语义，并验证内存排序
-  与 SQLite ORDER BY sort_key 一致。C7 前置复核项：proposal D9 与决议
-  #99 Markdown 表格漂移（C1 已登记未修复）。
+  不得写「未获授权」。**C3 实施前复核项四项已全部裁决**（决议
+  #120–#123，详见 C3 任务文档「实施前复核项」小节）。C7 前置复核项：
+  proposal D9 与决议 #99 Markdown 表格漂移（C1 已登记未修复，继续保留）。
 
 ## 第一阶段验收未完成项
 
