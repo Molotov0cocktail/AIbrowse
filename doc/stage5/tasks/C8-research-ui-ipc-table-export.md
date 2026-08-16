@@ -130,8 +130,8 @@ C5（Service/事件）、C6（数据模型）、C7（Renderer 组件）。
   removeSmokeDirWithRetry；**同日发现同类缺陷**（失败路径单次 rmSync 静默
   放弃 EPERM → 每次失败运行残留 `aibrowse-smoke-research-<pid>`）——
   index.ts 失败路径先 researchService.shutdown() 再 removeSmokeDirWithRetry
-  + RESEARCH 互斥分支补齐 ai/sources 目录清理——**终检 TEMP/根目录日志/
-  Electron 进程零残留**（互斥失败路径实测零残留）。
+  - RESEARCH 互斥分支补齐 ai/sources 目录清理——**终检 TEMP/根目录日志/
+    Electron 进程零残留**（互斥失败路径实测零残留）。
 - **转绿**：实现 research-ipc（八通道严格白名单 fail-closed/审计恰好一条/
   CSV 重投影）、research-service（事件出口 getResearchResultView/deleteTask
   预占互斥）、view-visibility（contentVisible 纯函数）、table-utils/
