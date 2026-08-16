@@ -168,10 +168,10 @@ export type CaptureFailureReason =
   | 'http-scheme-rejected';
 
 export interface CaptureSummary {
-  sectionCount: number; // 可见文本章节数
-  tableCount: number; // 表格数（行×列合计）
-  headingCount: number;
-  charCount: number; // 规范化正文总字符（≤ MAX_PAGE_CAPTURE_CHARS）
+  sectionCount: number; // 实际保留的非空 textSections 数
+  tableCount: number; // 实际保留的表格数量（决议 #128：不是单元格数量/行列合计）
+  headingCount: number; // 实际保留的 heading 数
+  charCount: number; // 最终 canonicalText.length（≤ MAX_PAGE_CAPTURE_CHARS）
 }
 
 export interface Capture {
@@ -195,10 +195,17 @@ export type EvidenceVerification = 'verified' | 'rejected';
 
 export type EvidenceLocator =
   | { kind: 'text'; excerpt: string } // ≤500 字符
-  | { kind: 'table'; row: number; col: number; header: string | null } // 0-based 行列；
-  // header 仅允许 string | null | 缺省——object/array/number/boolean 等非法形态
-  // 使整个 locator 无效（fail-closed 整体拒绝，不得静默转 null——决议 #115）
-  | { kind: 'field'; fieldPath: string }; // 提取字段路径（≤200）
+  | {
+      kind: 'table';
+      tableIndex: number; // 决议 #129：多表唯一定位——0-based 非负整数；
+      // 缺失/负数/非整数/字符串/超界全部 fail-closed
+      row: number; // 0-based 数据行（不含 header）
+      col: number; // 0-based
+      header: string | null; // 程序由真实表头生成；proposal 提供非空 header 须与
+      // 真实表头一致；仅 string | null | 缺省合法——object/array/number/boolean
+      // 等非法形态使整个 locator 无效（fail-closed 整体拒绝，不得静默转 null——决议 #115）
+    }
+  | { kind: 'field'; fieldPath: string }; // 提取字段路径（≤200，闭合白名单）
 
 export interface Evidence {
   evidenceId: string;
@@ -220,6 +227,41 @@ export interface Evidence {
   // 永不进 Evidence 集合与 research.db（决议 #102：Repository 写入仅接受
   // verified 窄类型 + schema CHECK 兜底）
 }
+
+// 决议 #102：Repository 写入 API 仅接受 verified 窄类型
+export type VerifiedEvidence = Evidence & { verification: 'verified' };
+
+// 决议 #130：模型只提「不可信 proposal」（C4 新增，shared/types/research.ts）——
+// 仅允许六个字段；evidenceId 由可信调用方预分配；taskId/sourceId/url/title/
+// accessTime/documentId/contentHash/verification 全部不得由 proposal 提供
+// （未知字段 fail-closed）。模型绝不能直接构造 Evidence。
+export interface EvidenceProposal {
+  captureId: string;
+  candidateId: string;
+  type: EvidenceType;
+  locator: EvidenceLocator;
+  excerpt: string | null; // text/summary-point：非空摘录草案；table-cell/field：受控值草案（可与 value 二选一）
+  value: string | null; // table-cell/field 的单元格/字段值草案
+}
+
+export type EvidenceRejectionCode =
+  | 'proposal-invalid' // 形状/未知字段/字段长度/type-locator 组合非法
+  | 'capture-not-found' // captureId 不属于当前 task（跨任务引用）
+  | 'capture-failed' // failed capture（sentinel 先拒）
+  | 'candidate-mismatch' // candidateId 不存在或与 capture.candidateId 不一致
+  | 'content-missing' // 对应 CaptureContent 缺失/绑定错位
+  | 'excerpt-invalid' // 摘录为空/超长/与 locator 不一致
+  | 'excerpt-not-in-content' // 规范化后不是任一 section 的连续子串（伪造/错绑/跨 section 拼接）
+  | 'table-coordinate-invalid' // tableIndex/row/col 越界或非法
+  | 'table-value-mismatch' // 单元格真实值与 proposal 不一致
+  | 'table-header-mismatch' // proposal 提供非空 header 且与真实表头不一致
+  | 'field-path-invalid' // fieldPath 不在闭合字段白名单（含原型链键/通配符/动态路径）
+  | 'field-value-mismatch' // 字段真实值与 proposal 不一致
+  | 'value-invalid'; // value 形状/长度非法
+
+export type EvidenceVerifyResult =
+  | { ok: true; evidence: VerifiedEvidence }
+  | { ok: false; code: EvidenceRejectionCode; reason: string }; // reason ≤200 安全中文短句
 
 // ---------- Cross-check（C6） ----------
 export type ClaimSeverity = 'high' | 'medium' | 'low'; // high = 高影响事实（必须多源）
@@ -554,46 +596,171 @@ candidateId  = 小写 UUID
 
 ## 5. Capture 与 Evidence 数据契约（C4）
 
+> 本节已按决议 #124–#130 重写（2026-08-16，C4 实施前契约裁决）：旧草案的
+> 「loadURL 双导航」「throw 式失败控制流」「单表 locator」「模型直接构造
+> Evidence」均已废止，精确语义以下文与 §15 决议为准。
+
 ### 5.1 读取与提取（capture-service.ts）
 
+**输入**：已合并排序的 SourceCandidate（C3 形状）——只使用候选的展示值与
+身份键（url/displayUrl/title/candidateId）。
+
+**浏览器最小端口（决议 #124）**：CaptureService 不直接拥有 BrowserController，
+仅注入读取所需最小端口：
+
+```ts
+export interface CaptureBrowserPort {
+  getTabs(): Promise<TabInfo[]>;
+  getPageSnapshot(tabId: string): Promise<PageSnapshot | null>;
+}
 ```
-read(candidate)：
- ① 前置：候选 url 为 http/https（白名单，与导航白名单同源判定）
- ② Workspace 分配 task Tab（§6 所有权）→ loadURL
- ③ 等待 ready（复用 search-provider 轮询模式，READY_TIMEOUT 15s 可注入）
- ④ getPageSnapshot（实时采集；L0 正常/L1 partial/L2 降级/L3 失败阶梯沿用）
- ⑤ 结构化提取（快照结构为准，不新建采集通道）：
-    - 章节 = visibleText/headings/tables/links 结构
-    - 规范化正文 = 提取内容合并（≤ MAX_PAGE_CAPTURE_CHARS=60k 确定性截断）
-    - 表格坐标 = 快照 tables[i] 行列（0-based）
-    - 字段路径 = 提取的键路径（field 类型证据用）
- ⑥ capture 记录组装：contentHash = SHA-256(规范化正文) 前 32 hex
- ⑦ 正文仅内存保留至任务终态（不持久化——决策 D3；FT-14/16）
-失败语义：load 失败/timeout/snapshot L3 → failed capture（failureReason），
- 统计 failedReadCount，任务继续（Fifth §7.7）；同一候选允许重试 1 次
-（MAX_PAGE_READ_RETRIES=1，即最多 2 次尝试；重试换新 tabId）
+
+Tab 创建/归属/检查/释放全部通过 ResearchWorkspace。**禁止双导航**：
+`acquire` 已通过 `createTab(url)` 创建并开始加载页面（#118 契约），
+C4 绝不调用 navigate/loadURL/reload。
+
+**每次尝试的固定时序（决议 #124/#127）**：
+
 ```
+acquire(candidate.url, signal)
+  → ready 轮询（getTabs 精确 tabId；READY_TIMEOUT_MS=15000/poll/sleep/
+     时钟注入；AbortSignal 贯穿）
+  → checkTab(tabId)（读前快照感知用户关闭）
+  → getPageSnapshot(tabId)（实时采集）
+  → snapshot 返回后、接纳内容前：再次检查 signal + checkTab
+  → finally release(tabId)
+```
+
+**读取结果判别联合（决议 #125，禁 throw 作预期失败控制流）**：
+
+```ts
+type CaptureReadResult =
+  | { ok: true; attempts: Capture[]; capture: Capture; content: CaptureContent; warnings: string[] }
+  | { ok: false; attempts: Capture[]; failureReason: CaptureFailureReason; warnings: string[] };
+```
+
+- 同一候选最多 2 次尝试（MAX_PAGE_READ_RETRIES=1）；每次尝试独立 captureId
+  （注入式 UUID v4 工厂，主进程可信输入）；重试必须重新 acquire（新 tabId）。
+- attempts 记录每次尝试（含失败的 failed Capture）。
+- C4 不修改 ResearchTask.stats（captureCount/failedReadCount 持久化递增属
+  C5 Runtime）。
+
+**重试矩阵（决议 #125 冻结）**：
+
+| 失败原因                 | 重试                                                   |
+| ------------------------ | ------------------------------------------------------ |
+| page-load-failed         | ≤1 次                                                  |
+| timeout                  | ≤1 次                                                  |
+| snapshot-degraded        | ≤1 次                                                  |
+| aborted                  | 不重试                                                 |
+| http-scheme-rejected     | 不重试                                                 |
+| tab-closed-by-user       | 不重试                                                 |
+| Workspace cleanup-failed | 不继续创建更多 Tab（映射失败 + 无 URL/正文的 warning） |
+| 其他可恢复创建/读取异常  | 归一 page-load-failed，可重试一次                      |
+
+release 失败不得误报已清理：所有权保留供 C5 终态 cleanupAll 重试；内容已
+成功捕获时 release 失败只产生安全 warning（不丢弃已完成 Capture）。
+
+**成功路径（决议 #127）**：
+
+- 快照阶梯：L0（none）成功；L1（partial）成功 + 降级 warning；
+  L2（main-process-only）snapshot-degraded；L3（null）先再次 checkTab
+  （已关闭 → tab-closed-by-user，否则 snapshot-degraded）。
+- url/title 取**实际快照**（不取候选/模型输入）；最终 URL 重新验证为安全
+  http/https 且无 userinfo（非法重定向 → http-scheme-rejected；
+  **chrome-error:// 错误页 → page-load-failed 可重试——决议 #131**）；
+  accessTime = 合法 snapshot.meta.capturedAt 转 ISO 8601（主进程盖章）；
+  documentId = String(snapshot.meta.documentId)（要求非负整数）；
+  非法 capturedAt/documentId/快照形状 → snapshot-degraded。
+
+**failed Capture sentinel（决议 #126，schema v1 非空字段的确定性语义）**：
+
+| 字段                   | 失败值                                           |
+| ---------------------- | ------------------------------------------------ |
+| tabId                  | `unallocated`（Tab 尚未分配）                    |
+| documentId             | `unavailable`（快照不存在）                      |
+| contentHash            | SHA-256(UTF-8 空串) 前 32 小写 hex（编译期常量） |
+| summary                | 四项全部 0                                       |
+| url/title              | 已校验的候选展示值（不取自失败页面）             |
+| accessTime             | 注入主进程时钟（ISO 8601）                       |
+| failed / failureReason | true / 非 null（必须）                           |
+
+sentinel 只能出现在 failed Capture；EvidenceValidator 必须先拒绝 failed
+Capture，绝不把 sentinel 组装进 VerifiedEvidence。
+
+**结构化提取与 CaptureContent（决议 #128，纯内存、零落盘）**：
+
+```ts
+export interface CaptureContent {
+  captureId: string;
+  canonicalText: string; // ≤ MAX_PAGE_CAPTURE_CHARS，确定性截断
+  textSections: string[]; // 非空章节（每节独立规范化）
+  tables: CaptureTable[]; // { headers: string[]; rows: string[][] }（规范化）
+  fields: Record<string, string>; // 闭合字段路径 → 规范值
+}
+```
+
+- 只能从现有 PageSnapshot 的 url/title/visibleText/headings/links/tables
+  构造；禁止修改采集管线、禁止新建采集通道。
+- 规范化：NFC、trim、控制字符/bidi 清除、连续空白折叠；无模糊/语义/
+  大小写猜测匹配。
+- canonicalText 为有类型标签、顺序固定的串行格式，来源顺序：
+  `visibleText → headings → tables（表头 + row-major 单元格）→ links`。
+- 所有可被 EvidenceValidator 引用的 section/table/field 值都必须实际进入
+  canonicalText 的 60k 预算和哈希覆盖范围；预算耗尽后不得保留「未进入
+  哈希」的表格/字段/章节。
+- 字段路径闭合集合（白名单，不支持任意网页字段）：`page.url`/
+  `page.title`/`headings[0].text`/`links[0].text`/`links[0].href` +
+  固定数组索引表格路径（如 `tables[0].cell[1][2]`）；不解析任意对象路径、
+  原型链或表达式。
+- summary：sectionCount/tableCount（表格数量，非单元格）/headingCount/
+  charCount = canonicalText.length；contentHash = SHA-256(UTF-8
+  canonicalText) 前 32 小写 hex。
+- 正文/完整快照只在内存 CaptureContent，不进 Capture、Repository、日志或
+  会话文件（FT-14/16）；任务终态丢弃。
 
 ### 5.2 Evidence 验证（evidence-validator.ts，决策 D5）
 
-```
-verifyEvidence(proposal, captures, task): { ok: true, evidence } | { ok: false, reason }
- ① 归属校验：proposal.captureId ∈ 本任务 captures（跨任务引用 → 拒绝，
-    FT-09/15）；capture.failed → 拒绝
- ② 来源存在：proposal.candidateId 存在且 capture.candidateId === candidateId
- ③ 摘录校验（text/summary-point 类）：normalizeExcerpt(excerpt)（trim/NFC/
-    控制字符/bidi 剔除/连续空白折叠）后 ⊆ normalizeText(捕获对应章节)；不匹配
-    → 拒绝（伪造/错绑/脱离上下文——FT-03/04/06）；excerpt 超长 → 拒绝
- ④ 坐标校验（table 类）：row < 表格行数、col < 表格列数、单元格规范化文本
-    === normalizeText(proposal.value 或 excerpt 一致)；越界 → 拒绝
- ⑤ 字段校验（field 类）：fieldPath 存在于提取字段集（路径白名单匹配）
- ⑥ 通过 → Evidence 组装（verification='verified'；url/title/accessTime/
-    documentId/contentHash 全部取自主进程捕获记录——模型不可伪造）
+```ts
+verifyEvidence(input: {
+  proposal: EvidenceProposal;      // 不可信模型草案（§2 类型，仅六字段）
+  evidenceId: string;              // 可信调用方预分配
+  taskId: string;
+  captures: Capture[];             // 本任务捕获集
+  candidates: SourceCandidate[];   // 本任务候选集
+  contents: Map<string, CaptureContent>; // captureId → 内容
+}): EvidenceVerifyResult
 ```
 
-- 模型只能**提出**引用（evidence proposal 作为结构化请求消息内容）；
-  验证纯函数幂等、同输入同输出；rejected 回注模型修正（附原因，≤200 字符）。
-- 未验证引用**不渲染、不进 Evidence 集合、不进持久化**（FT-11）。
+**校验顺序（决议 #130，全部通过才组装）**：
+
+1. proposal 形状/未知字段/字段长度/type-locator 组合合法
+   （quote/summary-point → text locator 且 value 必须 null/缺省；
+   table-cell → table locator；field → field locator）→ proposal-invalid；
+2. capture 属于当前 task（capture-not-found）且 failed=false
+   （capture-failed——sentinel 先拒，FT-03/04）；
+3. candidate 存在且 capture.candidateId === proposal.candidateId
+   （candidate-mismatch，FT-04/09/15）；
+4. 对应 CaptureContent 存在且绑定同一 captureId（content-missing）；
+5. locator/value/excerpt 内容验证（下表）；
+6. 程序组装 VerifiedEvidence：evidenceId 取可信上下文；taskId/sourceId
+   （从候选取）/url/title/accessTime/documentId/contentHash 全部从成功
+   Capture 取——模型不可伪造。
+
+| 类型                        | 校验                                                                                                                                                                                                                       | 失败码                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| text（quote/summary-point） | locator.excerpt 与 proposal.excerpt 规范化后一致；非空且 ≤500；必须是某一个独立 textSection 的连续规范化子串（禁跨 section 拼接/模糊/语义/大小写猜测）                                                                     | excerpt-invalid / excerpt-not-in-content                                |
+| table-cell                  | tableIndex/row/col 全部在界内（row=数据行不含 header）；程序取真实单元格值，proposal.value/excerpt 规范化后必须与受控真实值完全一致；输出 locator.header 由程序按真实表头生成（proposal 提供非空 header 须与真实表头一致） | table-coordinate-invalid / table-value-mismatch / table-header-mismatch |
+| field                       | fieldPath 精确存在于闭合 fields map（禁前缀/通配符/动态路径/`__proto__`/constructor/prototype）；proposal.value/excerpt 与字段规范值完全一致                                                                               | field-path-invalid / field-value-mismatch                               |
+
+- 模型只能**提出**引用（EvidenceProposal 作为结构化请求消息内容）；模型
+  绝不能直接构造 Evidence（evidenceId/provenance 全部主进程侧，未知字段
+  fail-closed）。
+- 验证纯函数幂等、同输入同输出（无随机、无时钟副作用）；rejected 回注
+  模型修正（闭合错误码 + 安全中文 reason ≤200 字符，不回显正文/URL query/
+  敌对字段）。
+- 未验证引用**不渲染、不进 Evidence 集合、不进持久化**（FT-11；Repository
+  写入仅接受 VerifiedEvidence 窄类型 + schema CHECK 兜底——决议 #102）。
 
 ## 6. ResearchRuntime（C5，独立有界编排状态机）
 
@@ -629,7 +796,13 @@ run(taskId, goal):
 
 ### 6.4 失败继续
 
-- 单候选读取失败：failed capture + failedReadCount + 继续下一候选（不终止任务）。
+- 单候选读取失败：failed capture（sentinel 语义，决议 #126）+ 失败继续下一
+  候选（不终止任务）；重试矩阵见 §5.1（决议 #125：page-load-failed/timeout/
+  snapshot-degraded 重试 ≤1 次；aborted/http-scheme-rejected/
+  tab-closed-by-user 不重试；cleanup-failed 不继续创建更多 Tab）。
+  **C4 边界**：captureCount/failedReadCount 的 stats 持久化递增属 C5
+  Runtime 编排——C4 读取结果只返回 attempts 与最终 failureReason，
+  不直接修改 ResearchTask.stats（决议 #125）。
 - Search 失败（search-failed）：候选仅剩 Sources 侧 + 如实记录（warnings）。
 - Sources 检索失败：任务 failed（research-sources-unavailable——启动前置
   已校验 normal 态，运行中失败属异常路径）。
@@ -653,11 +826,12 @@ run(taskId, goal):
 
 ### 6.7 页面变化/陈旧
 
-- Evidence 验证基于**本次捕获内容**（内存快照）；页面在捕获后变化不使已
-  验证 Evidence 失效（accessTime + documentId 记录捕获时刻）；快照
-  documentId 世代由主进程盖章（页面不可伪造——A3 决议 #31 机制）。
-- 用户关闭 task Tab：Workspace 感知 → 该候选读失败（tab-closed-by-user）→
-  继续（FT-09 反面语义：用户永远可关闭任何 Tab）。
+- Evidence 验证基于**本次捕获内容**（内存 CaptureContent）；页面在捕获后
+  变化不使已验证 Evidence 失效（accessTime + documentId 记录捕获时刻）；
+  快照 documentId 世代由主进程盖章（页面不可伪造——A3 决议 #31 机制）。
+- 用户关闭 task Tab：读前 checkTab / 快照后二次 checkTab 感知（决议
+  #127）→ 该候选读失败（tab-closed-by-user，不重试）→ 继续（FT-09 反面
+  语义：用户永远可关闭任何 Tab）。
 
 ### 6.8 确定性预算（D12 全表；编译期常量 + 可注入 + 测试断言）
 
@@ -669,7 +843,7 @@ run(taskId, goal):
 | MAX_RESEARCH_TABS                   | 3        | 同任务同时打开的 task Tab 上限（v1 串行读取实际 1 个，上限为纵深防御）                                                                                                                                                                                                                                                                                                                 |
 | MAX_PAGE_CAPTURE_CHARS              | 60000    | 单页规范化正文预算（确定性截断 + summary.charCount）                                                                                                                                                                                                                                                                                                                                   |
 | MAX_PAGE_READ_RETRIES               | 1        | 同候选读取失败重试上限（最多 2 次尝试）                                                                                                                                                                                                                                                                                                                                                |
-| MAX_CAPTURES_PER_TASK               | 16       | 8 候选 × 2 尝试的捕获记录上限                                                                                                                                                                                                                                                                                                                                                          |
+| MAX_CAPTURES_PER_TASK               | 16       | 8 候选 × 2 尝试的捕获记录上限（每次尝试独立 captureId——决议 #125；失败尝试同样计入）                                                                                                                                                                                                                                                                                                   |
 | MAX_EVIDENCE_EXCERPT_CHARS          | 500      | 单条 Evidence excerpt 上限                                                                                                                                                                                                                                                                                                                                                             |
 | MAX_EVIDENCE_FIELD_VALUE_CHARS      | 200      | 单元格/字段值上限                                                                                                                                                                                                                                                                                                                                                                      |
 | MAX_EVIDENCE_PER_TASK               | 60       | 任务 Evidence 总数上限（超出拒绝新提案）                                                                                                                                                                                                                                                                                                                                               |
@@ -873,6 +1047,13 @@ CREATE TABLE research_results (
 - 业务 SQL 仅为 ResearchRepository 编译期常量 + 参数绑定（决议 #47 模式）；
   JSON 列逐字段形状校验（复用 validateMessageShape 同族纯函数，畸形
   fail-closed 丢弃/拒绝）。
+- **failed Capture sentinel（决议 #126）**：research_captures 的 tab_id/
+  document_id/content_hash 为 NOT NULL——失败记录以编译期 sentinel
+  填充（tabId=`unallocated`、documentId=`unavailable`、contentHash=
+  SHA-256(空串) 前 32 hex、summary 全 0、url/title 取已校验候选展示值、
+  accessTime 注入主进程时钟）；migration v1 零改动；sentinel 只能出现在
+  failed Capture（EvidenceValidator 先拒 failed Capture，绝不把 sentinel
+  组装进 VerifiedEvidence）。
 - **字节预算执行（决议 #103/#113）**：任务写库前序列化合计（UTF-8 字节数）
   ≤ MAX_TASK_PERSISTED_CHARS，超限 → 事务内拒绝写入（RepositoryError
   'task-persisted-budget-exceeded' → research-budget-exhausted）——由
@@ -1051,21 +1232,21 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 
 ## 12. 边界情况（统一处理表）
 
-| 情况                    | 处理                                                         |
-| ----------------------- | ------------------------------------------------------------ |
-| 空/超长 goal            | 校验拒绝/确定性截断（≤2000 + warn）                          |
-| 取消（stop）            | 幂等；abort 流 + 作废 pending + 只关本任务 Tab + cancelled   |
-| 超时                    | failed + 理由 timeout + Evidence 保留（§6.6）                |
-| 用户关 Tab              | 当前读取 failed（tab-closed-by-user）+ 继续（§10）           |
-| 页面变化（捕获后）      | 已验证 Evidence 不失效（accessTime/documentId 记录捕获时刻） |
-| 读取失败                | failed capture + failedReadCount + 重试 1 次 + 继续          |
-| Provider 失败           | 单轮重试 1 次；连续 2 轮 → failed；归一化错误码复用          |
-| 重复来源                | normalizeSourceUrl 身份键合并（discoveredVia 双路径）        |
-| 冲突                    | Conflict 数据模型 + 不自动裁决（§7.2）                       |
-| 预算用尽                | 正式终态 failed + Evidence 保留（§6.8）                      |
-| 进程退出                | interrupted 标记（不自动续跑）                               |
-| 迟到事件/取消后写入     | 终态单一所有权守卫 + 忽略（§3.1/§6.3）                       |
-| Research 库 unavailable | 全部 research:* 拒绝 + 中文诊断；其余子系统正常              |
+| 情况                    | 处理                                                                                                  |
+| ----------------------- | ----------------------------------------------------------------------------------------------------- |
+| 空/超长 goal            | 校验拒绝/确定性截断（≤2000 + warn）                                                                   |
+| 取消（stop）            | 幂等；abort 流 + 作废 pending + 只关本任务 Tab + cancelled                                            |
+| 超时                    | failed + 理由 timeout + Evidence 保留（§6.6）                                                         |
+| 用户关 Tab              | 当前读取 failed（tab-closed-by-user）+ 继续（§10）                                                    |
+| 页面变化（捕获后）      | 已验证 Evidence 不失效（accessTime/documentId 记录捕获时刻）                                          |
+| 读取失败                | failed capture（sentinel 语义，决议 #126）+ 按重试矩阵重试 ≤1 次 + 继续（决议 #125；stats 递增属 C5） |
+| Provider 失败           | 单轮重试 1 次；连续 2 轮 → failed；归一化错误码复用                                                   |
+| 重复来源                | normalizeSourceUrl 身份键合并（discoveredVia 双路径）                                                 |
+| 冲突                    | Conflict 数据模型 + 不自动裁决（§7.2）                                                                |
+| 预算用尽                | 正式终态 failed + Evidence 保留（§6.8）                                                               |
+| 进程退出                | interrupted 标记（不自动续跑）                                                                        |
+| 迟到事件/取消后写入     | 终态单一所有权守卫 + 忽略（§3.1/§6.3）                                                                |
+| Research 库 unavailable | 全部 research:* 拒绝 + 中文诊断；其余子系统正常                                                       |
 
 ## 13. 测试规格（红→绿纪律）
 
@@ -1079,8 +1260,8 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 | research-store.test.ts      | 装配矩阵：新库迁移 v1/坏 magic 保留/未来版本零写入/unavailable 全拒/遗留 running 标 interrupted/其余子系统不受影响（注：完整恢复态矩阵随 C1 定稿；backup 非 v1 承诺）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | C1   |
 | research-workspace.test.ts  | 注入 Fake BrowserController 替身（完全离线、可控 Promise）：精确 tabId 归属/只关本任务 Tab/用户 Tab 零关闭/已关闭安全无操作/并发上限（第 4 次 create 前拒绝 + deferred create 竞态）/abort 前与 create 期间/焦点恢复三态（未切换→恢复、已切换→零 activate、activeBefore 已关→不重建）/closeTab false 与抛错/cleanupAll 多 Tab·部分失败·重复·drain 屏障零泄漏/cleanup 后 acquire 拒绝/用户关 Tab → checkTab tab-closed-by-user/零 Electron import/常量单一事实源（决议 #118）                                                                                                                                                                                                                                                       | C2   |
 | source-selector.test.ts     | 三档可达性与互斥（1<2<3，trust/priority 不反转档位）/上游顺序保留（source-search 与 web-search 输入 rank；group-list 才按 priority/lastUsedAt）/合并矩阵（同 URL 双路径/不同 scope 不合并/键空间独立/字段优先级/discoveredVia 规范顺序/重复输入去重）/provenance 继承（search-only 恒 null 无 trust 断言；畸形 trust 降级 null）/note 映射（作者标签/清洗/截断不拆 surrogate/无空标签/不进 sortKey）/candidateId 输入契约（非法与重复 fail-closed）/sortKey 编码（priority 5 在前/新时间在前/null 末位/`<` 比较与真实 node:sqlite ORDER BY sort_key 一致）/hostile input 矩阵（javascript:/data:/userinfo/控制字符/超长 URL/canonicalKey 不一致/disabled/blocked 零 throw 零日志正文）/预算（24 裁剪/select ≤8/空输入/零修改输入） | C3   |
-| capture-service.test.ts     | 读取失败矩阵/重试语义/L0–L3 阶梯/正文不持久化（存储探针零命中）/contentHash 确定性/表格坐标与字段路径提取                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | C4   |
-| evidence-validator.test.ts  | 敌手矩阵：伪造（excerpt 不在捕获内容）/错绑（captureId 跨任务）/坐标越界/超长 excerpt/规范化匹配（空白折叠/NFC）/rejected 原因回注                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C4   |
+| capture-service.test.ts     | acquire 已加载零二次 navigate（browser 端口无 navigate 方法 + 断言零调用）/ready・error・missing・timeout・abort/读前・快照期间・读后用户关闭/L0–L3 阶梯映射/重试与不重试矩阵（决议 #125 全表）/重试产生新 captureId・新 tabId/每次尝试 finally release/release false・抛错保留 warning 不误报清理/redirect 后实际 URL・capturedAt・documentId 盖章/failed Capture sentinel（决议 #126 五字段）/NFC・空白・控制・bidi 规范化/60k 边界・surrogate 不拆分/table/section/field 在预算与哈希覆盖范围内/contentHash 确定性・输入零修改/正文零持久化存储探针                                                                                                                                                                             | C4   |
+| evidence-validator.test.ts  | 正确 quote/summary/table/field（多表相同 row/col 由 tableIndex 精确区分）/缺失・非法・越界 tableIndex/伪造摘录・跨 section 拼接・空摘录・超长摘录/错 task・capture・candidate・failed capture・内容绑定错位/header 非法形状与不一致/fieldPath 不存在・通配符・`__proto__`/constructor/prototype/模型伪造 trusted metadata・未知字段/value 不一致・超预算/rejected 不产生 Evidence・不落库/同输入幂等/Repository table locator 写入・读回恒等及非法行跳过（决议 #129/#130）                                                                                                                                                                                                                                                         | C4   |
 | claim-model.test.ts         | coverage 计算/severity=high 多源强制/sourceTypes 判定矩阵/冲突结构校验（positions ≥2/refs ∈ 候选集）/uncertainty 块                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | C6   |
 | research-prompts.test.ts    | 合成提示词恒等断言（编译期常量）/UNTRUSTED 块闭合转义/预算裁剪/与共读・Agent system prompt 互不混用                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | C6   |
 | research-runtime.test.ts    | 阶段循环全路径（FakeProvider 脚本注入）/终态单一所有权/stop 幂等/超时/预算用尽终态/失败继续/迟到事件忽略/心跳落库                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | C5   |
@@ -1091,13 +1272,13 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 
 ### 13.2 冒烟矩阵（Electron 真实启动，临时 userData；dev+生产双场景）
 
-| #    | 场景                  | 断言要点                                                                                                                                                                                                                                                      | 任务  |
-| ---- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| 8.16 | capture/evidence 场景 | 受控页夹具（多节/表格/字段）：真实 BrowserController 快照 → 提取 → capture 记录（documentId/哈希/accessTime 主进程盖章）；FakeProvider 提出正确引用 → verified；伪造/错绑/越界 → rejected；读取失败页 → failedReadCount 继续；正文零落盘（userData 字节扫描） | C4    |
-| 8.17 | Runtime 场景          | FakeProvider 多轮脚本驱动全阶段（planning→reading→verifying→synthesizing）→ completed + Result 落库；stop 中途 → cancelled + 本任务 Tab 清理 + 用户 Tab 保留；预算注入用尽 → failed + Evidence 保留；迟到事件零生效                                           | C5    |
-| 8.18 | 综合场景              | 两冲突夹具来源 + 冲突页：claims 装配/冲突显式保留/uncertainty 块产出/Result 含 coverage 计数（无百分比字段断言）                                                                                                                                              | C6    |
-| 8.19 | UI DOM 场景           | 真实 DOM：侧栏创建/启动/进度渐进/停止；结果画布 Table 排序/筛选/复制/Cards/Ranking 渲染/Evidence 下钻（点击结论看来源）；敌对 Markdown 文本纯文本渲染零 DOM 注入                                                                                              | C7/C8 |
-| 8.20 | 红队 FRT-01～FRT-12   | threat-model §4 矩阵全表（dev+生产双场景，每项独立断言）                                                                                                                                                                                                      | C9    |
+| #    | 场景                  | 断言要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | 任务  |
+| ---- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| 8.16 | capture/evidence 场景 | 受控页夹具（多章节/≥2 表格/heading/link 字段）：真实 ResearchWorkspace + CaptureService 读取 → capture 记录断言（实际 documentId/accessTime/hash/summary/tableIndex）；FakeProvider 只产确定性 proposal JSON（正确引用 → verified；伪造摘录/错绑 capture/错误 tableIndex/越界 → rejected）；失败 URL 后继续读取下一候选成功（C4 内不改 failedReadCount）；Capture 元数据 + 少量 VerifiedEvidence 写入临时 research.db（未验证引用零落库）；正文零持久化探针（拆分标记只存在于 CaptureContent、不进日志，扫描 research.db/WAL/SHM/Research 文件/隔离 userData 零命中）；场景 finally 精确释放 task Tab + 关闭库 + 清理隔离目录 + 用户 Tab 集合不变 | C4    |
+| 8.17 | Runtime 场景          | FakeProvider 多轮脚本驱动全阶段（planning→reading→verifying→synthesizing）→ completed + Result 落库；stop 中途 → cancelled + 本任务 Tab 清理 + 用户 Tab 保留；预算注入用尽 → failed + Evidence 保留；迟到事件零生效                                                                                                                                                                                                                                                                                                                                                                                                                               | C5    |
+| 8.18 | 综合场景              | 两冲突夹具来源 + 冲突页：claims 装配/冲突显式保留/uncertainty 块产出/Result 含 coverage 计数（无百分比字段断言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | C6    |
+| 8.19 | UI DOM 场景           | 真实 DOM：侧栏创建/启动/进度渐进/停止；结果画布 Table 排序/筛选/复制/Cards/Ranking 渲染/Evidence 下钻（点击结论看来源）；敌对 Markdown 文本纯文本渲染零 DOM 注入                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | C7/C8 |
+| 8.20 | 红队 FRT-01～FRT-12   | threat-model §4 矩阵全表（dev+生产双场景，每项独立断言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | C9    |
 
 - 双进程持久化：`AIBROWSE_RESEARCH_SMOKE=set|check`（与既有门控互斥；
   set 完成任务并退出 → check 新进程读回 task/evidence/result + interrupted
@@ -1534,6 +1715,178 @@ verification:'verified' }`）；schema CHECK 收窄为
        null、sortKey 使用 null sentinel、不抛异常。必须通过真实
        node:sqlite 测试证明：内存按 sortKey ASC 的顺序 ===
        ResearchRepository.listCandidatesByTask() 顺序。
+
+> 以下 #124–#130 为 C4 实施前契约裁决（2026-08-16，C4 闭环；先改本文与测试、
+> 再改实现——§15 流程）。当前 §5 的草案（loadURL 双导航/throw 式失败控制流/
+> 单表 locator/模型直接构造 Evidence）不能直接实现——逐项裁决并同步修正
+> §2/§5/§6.4/§6.7/§6.8/§9.1/§13.1、threat-model 与 C4 任务文档。裁决依据
+> Fifth_stage.md §3.3/§3.4 上位需求、threat-model FT-03/04/05/06/09/10/14/
+> 15/16/17、决议 #118/#119 既有 Workspace 契约与 fail-closed 纪律唯一导出，
+> 无需用户拍板；不改写 #101–#123 既有结论。
+
+124. **Tab 生命周期与最小端口（禁双导航）**：C2 契约中
+     `ResearchWorkspace.acquire(candidate.url, signal)` 已通过
+     `BrowserController.createTab(url)` 创建任务 Tab 并开始加载页面
+     （browser-controller.ts:95 `loadURL`）。C4 不得再次调用
+     navigate/loadURL/reload——否则产生双导航与竞态。CaptureService 的
+     浏览器最小端口只保留读取所需能力：
+     `{ getTabs(): Promise<TabInfo[]>; getPageSnapshot(tabId): Promise<PageSnapshot | null> }`
+     （BrowserControllerImpl 结构兼容，typecheck 保证）。Tab 的创建、归属、
+     检查、释放全部通过 ResearchWorkspace（acquire/checkTab/release）；
+     每次尝试必须 `acquire → ready 轮询 → checkTab → snapshot →
+checkTab → finally release`。release 失败（ok:false cleanup-failed）
+     不得误报已清理——保留 Workspace 所有权供 C5 终态 cleanupAll 重试；
+     若内容已成功捕获，release 失败只产生安全 warning（不得丢弃已经完成的
+     Capture、不得把成功改判失败）。
+
+125. **精确读取结果与重试矩阵（禁 throw 作预期失败控制流）**：C4 冻结
+     判别联合，任何预期失败都不以异常表达（未预期内部异常才 catch 归一）。
+     读取结果必须同时返回每次尝试的 Capture：
+     - 成功：`{ ok:true; attempts: Capture[]; capture: Capture; content:
+CaptureContent; warnings: string[] }`（capture = attempts 最后一项，
+       恒 failed=false）；
+     - 失败：`{ ok:false; attempts: Capture[]; failureReason:
+CaptureFailureReason; warnings: string[] }`（failureReason =
+       最后一次失败尝试的 failureReason；无任何尝试完成的内部异常归一为
+       page-load-failed）。
+       同一候选最多 2 次尝试（MAX_PAGE_READ_RETRIES=1）；每次尝试生成独立
+       captureId；重试必须重新 acquire（新 tabId），绝不复用旧 Tab。重试矩阵：
+     - page-load-failed / timeout / snapshot-degraded：最多重试一次；
+     - aborted / http-scheme-rejected / tab-closed-by-user：不重试；
+     - Workspace cleanup-failed（acquire/checkTab/release 报出）：不继续
+       创建更多 Tab——映射为失败并附不含 URL/正文的 warning（所有权保留
+       由 cleanupAll 重试）；
+     - 其他可恢复的创建/读取异常：归一为 page-load-failed，可重试一次。
+       每个失败尝试都计入 attempts；C4 **不直接修改 ResearchTask.stats**
+       （captureCount/failedReadCount 的持久化递增属于 C5 Runtime 编排——
+       本任务冒烟只证明「失败后下一候选仍可继续读取」）。Capture ID 必须由
+       主进程可信输入或注入式 UUID v4 工厂产生（构造注入 `createCaptureId`，
+       缺省 randomUUID），模型不得提供。
+
+126. **failed Capture 的非空字段语义（sentinel 冻结）**：schema v1 中
+     tabId/documentId/contentHash 非空（NOT NULL），migration v1 不得改写，
+     因此冻结失败记录的确定性语义：
+     - Tab 尚未分配：tabId = 编译期 sentinel `unallocated`；
+     - 快照不存在：documentId = 编译期 sentinel `unavailable`；
+     - 无正文：contentHash = SHA-256(UTF-8 空字符串) 的前 32 个小写 hex
+       （编译期常量，单测固化）；
+     - summary 四项全部为 0；
+     - url/title 使用已校验的候选展示值（不取自失败页面）；
+     - accessTime 使用注入主进程时钟（ISO 8601）；
+     - failed=true，failureReason 必须非 null。
+       sentinel 只能出现在 failed Capture；EvidenceValidator 必须**先拒绝
+       failed Capture**，绝不能把 sentinel 组装进 VerifiedEvidence（FT-03/04）。
+
+127. **ready、L0–L3 与页面关闭映射（冻结）**：复用 SearchProvider 的
+     轮询模式，但不得复制其私有实现、不得修改 SearchProvider。
+     `READY_TIMEOUT_MS=15000`、poll 间隔、sleep、时钟均可注入；
+     AbortSignal 必须贯穿（abort 感知睡眠，零定时器/监听器泄漏）。冻结映射：
+     - Tab state=ready：允许快照；
+     - state=error：page-load-failed；
+     - Tab 从列表消失 / checkTab=closed：tab-closed-by-user；
+     - 超时：timeout；
+     - abort：aborted；
+     - L0（none）：成功；
+     - L1（partial）：成功并附降级 warning；
+     - L2（main-process-only）：snapshot-degraded（可重试一次）；
+     - getPageSnapshot=null（L3）：**再次 checkTab**——已关闭为
+       tab-closed-by-user，否则 snapshot-degraded；
+     - 非法 capturedAt/documentId/快照形状：snapshot-degraded。
+       snapshot 返回后、接纳内容前再次检查 signal 与 checkTab——防止用户在
+       快照期间关闭 Tab 或取消任务。成功 Capture：url/title 取实际快照
+       （不取模型/候选输入）；最终 URL 必须重新验证为安全 http/https 且无
+       userinfo（非法重定向映射 http-scheme-rejected）；
+       accessTime = 合法 snapshot.meta.capturedAt 转 ISO（主进程盖章）；
+       documentId = String(snapshot.meta.documentId)（要求非负整数）。
+
+128. **CaptureContent 与字段路径（闭合集合）**：禁止修改 PageSnapshot
+     采集管线，禁止新建 DOM/JS/IPC 采集通道。定义纯内存 CaptureContent
+     （仅在 read 成功时随结果返回，任务终态丢弃，零落盘）：
+     - canonicalText：有类型标签、顺序固定的串行格式，按固定来源顺序
+       `visibleText → headings → tables（表头 + row-major 单元格）→
+links` 构造，≤ MAX_PAGE_CAPTURE_CHARS（60k）确定性截断；
+     - textSections：非空章节数组（每节独立规范化）；
+     - tables：保留的表格数组（表头 + 数据行，规范化后）；
+     - fields：闭合字段路径映射（编译期白名单，见下）。
+       只能从现有 PageSnapshot 的 url/title/visibleText/headings/links/
+       tables 构造。字段路径闭合集合（不支持任意网页字段）：
+       `page.url` / `page.title` / `headings[0].text` / `links[0].text` /
+       `links[0].href`；表格字段使用固定数组索引路径（如
+       `tables[0].cell[1][2]`——tableIndex/row/col 均为非负整数字面量），
+       不得解析任意对象路径、原型链或执行表达式。规范化固定为 NFC、trim、
+       控制字符/bidi 清除、连续空白折叠（复用 sanitize 同族规则）；不做
+       模糊匹配、大小写猜测或语义匹配。**所有可被 EvidenceValidator 引用的
+       section/table/field 值都必须实际进入 canonicalText 的 60k 预算和哈希
+       覆盖范围**；预算耗尽后不得继续保留「未进入哈希」的表格、字段或章节。
+       固定 summary：sectionCount = 实际保留的非空 textSections 数；
+       tableCount = 实际保留的表格数量（不是单元格数量——同步修正 shared
+       类型中「行×列合计」的歧义注释）；headingCount = 实际保留的 heading 数；
+       charCount = 最终 canonicalText.length。contentHash = SHA-256(UTF-8
+       canonicalText) 前 32 个小写 hex。正文和完整快照只存在于内存
+       CaptureContent，不进入 Capture、Repository、日志或会话文件（FT-14/16）。
+
+129. **多表 Evidence locator（tableIndex 修复）**：当前
+     `EvidenceLocator.table` 只有 row/col/header，多表页面无法唯一定位。
+     冻结 `{ kind:'table'; tableIndex: number; row: number; col: number;
+header: string | null }`——tableIndex/row/col 均为 0-based 非负整数
+     （row 指数据行，不含 header）。同步修改：shared/types/research.ts、
+     ResearchRepository.parseLocatorJson、对应 repository 测试、§2/§5、
+     C4 测试。缺失、负数、非整数、字符串或超界 tableIndex 全部 fail-closed
+     （parseLocatorJson 返回 null：读取路径跳过该行、Repository 写入对应
+     Evidence 整体拒绝零落库）。header 的 #115 契约保持：仅 string/null/
+     缺省合法；非法对象、数组、数字、布尔使整个 locator 无效。
+     locator_json 本来就是 JSON——不修改 migration v1、不新增 SQL、
+     不做 schema v2。
+
+130. **EvidenceProposal 与验证输出（不可信 proposal 类型）**：模型输入
+     必须使用独立的「不可信 proposal」类型，不能让模型直接构造 Evidence。
+     proposal 只允许六个字段：`{ captureId, candidateId, type, locator,
+excerpt, value }`（excerpt/value 按类型配对允许 null/缺省）；
+     evidenceId 由可信调用方预分配并作为 validator 上下文传入；taskId/
+     sourceId/url/title/accessTime/documentId/contentHash/verification
+     全部不得由 proposal 提供——未知字段 fail-closed。验证结果冻结为：
+     `{ ok:true; evidence: VerifiedEvidence }` 或
+     `{ ok:false; code: EvidenceRejectionCode; reason: string }`——
+     rejected 结果不是 Evidence，不进 Evidence 集合、不落库；reason 必须是
+     闭合错误码对应的安全中文短句（≤200 字符），不回显正文、URL query 或
+     敌对字段。校验顺序（全部通过才组装）：
+     ① proposal 形状、字段长度、type/locator 组合合法；
+     ② capture 属于当前 task 且 failed=false（sentinel 先拒）；
+     ③ candidate 存在且 capture.candidateId === proposal.candidateId；
+     ④ 对应 CaptureContent 存在且绑定同一 captureId；
+     ⑤ locator/value/excerpt 内容验证；
+     ⑥ 程序组装 VerifiedEvidence（evidenceId 取可信上下文，其余
+     provenance 字段全部从成功 Capture 取）。
+     类型配对：quote / summary-point → text locator，value 必须 null/缺省；
+     table-cell → table locator；field → field locator。text 校验：
+     locator.excerpt 与 proposal.excerpt 规范化后必须一致；非空且 ≤
+     MAX_EVIDENCE_EXCERPT_CHARS；必须是某一个独立 canonical text
+     section 的连续规范化子串（不允许跨 section 拼接，不允许模糊/语义/
+     大小写猜测匹配）。table 校验：tableIndex/row/col 全部在界内；row 指
+     数据行不含 header；程序取得真实单元格值——proposal.value/excerpt
+     规范化后必须与受控真实值完全一致；输出 locator.header 由程序根据
+     真实表头生成（无表头时为 null），若 proposal 提供非空 header 还必须
+     与真实表头一致（不一致拒绝）。field 校验：fieldPath 必须精确存在于
+     闭合 fields map；proposal.value/excerpt 与该字段规范值完全一致；
+     禁止前缀、通配符、动态路径、原型链键（`__proto__`/constructor/
+     prototype 恒拒绝）。VerifiedEvidence 的 sourceId 从候选取；验证纯
+     函数在相同上下文、相同可信 evidenceId、相同 proposal 下输出恒等
+     （幂等，无随机、无时钟副作用）。
+
+131. **Chromium 错误页判定（C4 冒烟实测发现的契约缺口，2026-08-16）**：
+     Chromium 加载失败（连接拒绝/重定向过多等）后渲染的内建错误页自身会
+     完成 did-finish-load——tab-state 状态机 finish-load 从任意状态转
+     ready，实测翻转窗口（约 8ms）小于 ready 轮询间隔（50ms），「state=error
+     → page-load-failed」快速路径捕捉不到；错误页快照会被当作成功读取
+     （FT-03/04：错误内容冒充页面内容）。冒烟探针实测错误页快照特征：
+     `url = chrome-error://chromewebdata/`（采集脚本 location.href）、
+     title = 失败 URL、readyState=complete、degraded=none（L0）、
+     visibleText/headings/links 全空、documentId 世代不变。冻结判定：
+     **快照最终 URL 校验失败时，若快照 url 以 `chrome-error://` 开头 →
+     page-load-failed（可重试一次——网络抖动可能恢复）；其余非法目标
+     （重定向到非法 scheme/userinfo）→ http-scheme-rejected（不重试）**。
+     error 快速失败路径保持（覆盖 error 持续场景）；不得把错误页快照组装
+     为成功 Capture。
 
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4）/C7（依赖 C1，可与 C6 并行）→

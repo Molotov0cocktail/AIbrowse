@@ -86,12 +86,19 @@ source_get` 六工具（编译期常量子集）；无 click/fill/scroll/find/na
 
 ### 3.3 决策层（确定性程序判定，模型只是提议者）
 
-- **引用验证（FT-03/04/05/06 核心防线，详细设计 §5.2）**：模型只能提出
-  Evidence 引用（captureId/type/locator/excerpt 草案）；`EvidenceValidator`
-  确定性验证——捕获归属（本任务）、来源存在、excerpt 规范化匹配、表格坐标
-  边界、字段路径存在；`url/title/accessTime/documentId/contentHash` 全部取
-  自主进程捕获记录（模型不可伪造）；验证失败 rejected + 原因回注；**未验证
-  引用不渲染、不进集合、不落库**。
+- **引用验证（FT-03/04/05/06 核心防线，详细设计 §5.2 + 决议 #130）**：模型
+  只能提出**不可信 EvidenceProposal**（仅 captureId/candidateId/type/
+  locator/excerpt/value 六字段，未知字段 fail-closed——evidenceId 与全部
+  provenance 字段不得由 proposal 提供）；`EvidenceValidator` 确定性验证——
+  捕获归属（本任务 + failed Capture 先拒，sentinel 绝不进 Evidence）、来源
+  存在与 candidate 一致、excerpt 规范化后必须是某一独立 section 的连续子串
+  （禁跨 section 拼接/模糊/语义/大小写猜测）、表格坐标（tableIndex/row/col）
+  边界 + 单元格真实值一致 + header 与真实表头一致（决议 #129）、字段路径
+  闭合白名单精确存在（禁原型链键/通配符/动态路径）；`url/title/accessTime/
+documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造）；验证失败
+  rejected（闭合错误码 + 安全中文 reason ≤200 字符，不回显正文/URL query/
+  敌对字段）+ 原因回注；**未验证引用不渲染、不进集合、不落库**（Repository
+  仅接受 VerifiedEvidence 窄类型 + schema CHECK 兜底）。
 - **陈旧防御（FT-05）**：Evidence 绑定「本次捕获」（captureId + documentId
   主进程盖章 + accessTime）；捕获后页面变化不使已验证 Evidence 失效
   （记录捕获时刻），但旧捕获不可冒充新证据（captureId 唯一绑定）；跨重启
@@ -120,7 +127,12 @@ source_get` 六工具（编译期常量子集）；无 click/fill/scroll/find/na
   goal/evidence（验证后）/claims/result/心跳；Evidence 摘录 ≤500 字符
   且为验证后的规范化片段——**登录页/敏感页防范**：无「URL 黑名单」可穷尽
   （FT-14 诚实登记），缓解为「仅验证后摘录落库 + 有界 + 任务删除级联清理 +
-  保留 30 任务上限 + 明文边界如实说明 + Key 绝不进库」。
+  保留 30 任务上限 + 明文边界如实说明 + Key 绝不进库」。CaptureContent
+  （canonicalText/textSections/tables/fields）为纯内存结构——决议 #128：
+  只从既有 PageSnapshot 构造，不进 Capture/Repository/日志/会话文件；
+  所有可被 EvidenceValidator 引用的值都在 60k 预算与哈希覆盖范围内
+  （「未进入哈希」的内容不得保留）。失败读取的 capture 行仅存 sentinel
+  元数据（决议 #126），同样零正文。
 - 数据库/备份/capture 正文**不进入模型上下文**（除经块按预算回注的受控
   摘录）。
 
