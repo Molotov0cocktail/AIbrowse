@@ -18,12 +18,16 @@ import { closeDb, openResearchDb, withTransaction, type DbHandle } from './db/re
 import { RESEARCH_MIGRATIONS } from './db/research-migrations';
 import { ResearchRepository } from './repository/research-repository';
 import { ResearchServiceImpl } from './research-service';
-import type { ResearchStoreOutcome } from '../../shared/types/research';
+import type { ResearchRuntimeFactory, ResearchStoreOutcome } from '../../shared/types/research';
 
 export interface ResearchStoreOptions {
   dbPath: string; // 主进程生成的绝对路径（<userData>/research/research.db 或冒烟临时目录）
   migrations?: readonly MigrationStep[]; // SMOKE_MODE 注入（迁移失败矩阵）；生产缺省 RESEARCH_MIGRATIONS
   nowMs?: () => number;
+  // 决议 #139：SMOKE 装配注入 Runtime 工厂（db 句柄由 store 在正常装配后提供）。
+  // 生产不注入 → startTask 前置拒绝 research-runtime-unavailable（决议 #134(3)
+  // 生产 C6/C7 端口缺失 fail-closed）
+  buildRuntimeFactory?: (db: DbHandle) => ResearchRuntimeFactory;
 }
 
 export function openResearchStore(options: ResearchStoreOptions): ResearchStoreOutcome {
@@ -55,7 +59,13 @@ export function openResearchStore(options: ResearchStoreOptions): ResearchStoreO
         closeDb(handle);
         return unavailable(`研究数据库初始化迁移失败（详见日志）：${String(err)}`);
       }
-      const outcome = assembleNormal(handle, nowMs, latestVersion, '新库');
+      const outcome = assembleNormal(
+        handle,
+        nowMs,
+        latestVersion,
+        '新库',
+        options.buildRuntimeFactory,
+      );
       if (outcome.mode === 'normal') {
         logInfo('research', `Research 子系统就绪（新库，schema v${latestVersion}）`);
       }
@@ -86,7 +96,13 @@ export function openResearchStore(options: ResearchStoreOptions): ResearchStoreO
     }
     try {
       const handle = openResearchDb(options.dbPath);
-      const outcome = assembleNormal(handle, nowMs, latestVersion, '已就绪');
+      const outcome = assembleNormal(
+        handle,
+        nowMs,
+        latestVersion,
+        '已就绪',
+        options.buildRuntimeFactory,
+      );
       return outcome;
     } catch (err) {
       logError('research', 'Research 数据库打开失败（不可用）', err);
@@ -111,7 +127,13 @@ export function openResearchStore(options: ResearchStoreOptions): ResearchStoreO
     }
     closeDb(handle);
     handle = openResearchDb(options.dbPath);
-    const outcome = assembleNormal(handle, nowMs, latestVersion, '迁移完成');
+    const outcome = assembleNormal(
+      handle,
+      nowMs,
+      latestVersion,
+      '迁移完成',
+      options.buildRuntimeFactory,
+    );
     if (outcome.mode === 'normal') {
       logInfo('research', `Research 子系统就绪（v${currentVersion} → v${latestVersion} 迁移完成）`);
     }
@@ -133,6 +155,7 @@ function assembleNormal(
   nowMs: () => number,
   latestVersion: number,
   label: string,
+  buildRuntimeFactory?: (db: DbHandle) => ResearchRuntimeFactory,
 ): ResearchStoreOutcome {
   try {
     const repo = new ResearchRepository(handle);
@@ -155,7 +178,11 @@ function assembleNormal(
         logInfo('research', `保留策略清理：移除 ${pruned.deleted} 个最旧终态任务`);
       }
     });
-    const service = new ResearchServiceImpl({ db: handle, now: nowMs });
+    const service = new ResearchServiceImpl({
+      db: handle,
+      now: nowMs,
+      runtimeFactory: buildRuntimeFactory === undefined ? undefined : buildRuntimeFactory(handle),
+    });
     logInfo('research', `Research 子系统就绪（${label}，schema v${latestVersion}）`);
     return { mode: 'normal', service, reason: null };
   } catch (err) {

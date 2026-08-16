@@ -25,6 +25,8 @@ import type {
   ResearchListOptions,
   ResearchListResult,
   ResearchProviderState,
+  ResearchRuntimeFactory,
+  ResearchRuntimeHandle,
   ResearchService,
   ResearchSourcesState,
   ResearchStartResult,
@@ -45,6 +47,9 @@ export interface ResearchServiceOptions {
   // 决议 #107：start 前置状态查询注入点——缺省就绪；C5 接线真实查询
   getSourcesState?: () => ResearchSourcesState;
   getProviderState?: () => ResearchProviderState;
+  // 决议 #135：异步 Runtime 工厂（C5 注入）；未注入 → startTask 前置拒绝
+  // research-runtime-unavailable（决议 #134(3)——生产 C6/C7 端口缺失 fail-closed）
+  runtimeFactory?: ResearchRuntimeFactory;
 }
 
 // 决议 #104（create 路径）：插入后超限时清理最旧终态；created 永不清除——
@@ -65,6 +70,13 @@ export function cleanupForInsert(
   return { ok: true, deleted: toDelete };
 }
 
+// 决议 #135：单一 active slot（taskId/runToken/runtime/done）
+interface ActiveRunSlot {
+  taskId: string;
+  runToken: string;
+  runtime: ResearchRuntimeHandle;
+}
+
 export class ResearchServiceImpl implements ResearchService {
   readonly id = 'research';
 
@@ -73,7 +85,11 @@ export class ResearchServiceImpl implements ResearchService {
   private readonly nowMs: () => number;
   private readonly getSourcesState: () => ResearchSourcesState;
   private readonly getProviderState: () => ResearchProviderState;
+  private readonly runtimeFactory: ResearchRuntimeFactory | null;
   private disposed = false;
+  private shuttingDown = false;
+  private shutdownPromise: Promise<void> | null = null;
+  private activeSlot: ActiveRunSlot | null = null;
 
   constructor(options: ResearchServiceOptions) {
     this.dbHandle = options.db;
@@ -85,6 +101,7 @@ export class ResearchServiceImpl implements ResearchService {
         configured: true,
         supportsToolCalling: true,
       }));
+    this.runtimeFactory = options.runtimeFactory ?? null;
     // unavailable 装配（db=null）：不构造数据库访问器；disposed=true 复用全部
     // 既有门控（全方法结构化 research-unavailable、零磁盘写入）
     if (options.db === null) {
@@ -209,12 +226,17 @@ export class ResearchServiceImpl implements ResearchService {
     try {
       const task = this.repo.getTaskById(id);
       if (task === null) return { ok: false, errorCode: 'research-not-found' };
+      // 决议 #135(3) restart 屏障：active run 完全 settle 前拒绝（busy 优先于
+      // 状态检查——stop 请求后 DB 任务在 Runtime 写终态前仍为 running）
+      if (this.activeSlot !== null) {
+        return { ok: false, errorCode: 'research-busy' };
+      }
       // 决议 #105：running/completed 不可 start
       if (task.status === 'running' || task.status === 'completed') {
         return { ok: false, errorCode: 'research-invalid-state' };
       }
       // 决议 #107 start 前置：单 running 互斥 + Sources normal + Provider 就绪 +
-      // goal 非空；任一失败不改变任务状态
+      // Runtime 已装配 + goal 非空；任一失败不改变任务状态
       const running = this.repo.getRunningTask();
       if (running !== null && running.id !== id) {
         return { ok: false, errorCode: 'research-busy' };
@@ -226,8 +248,22 @@ export class ResearchServiceImpl implements ResearchService {
       if (!provider.configured || !provider.supportsToolCalling) {
         return { ok: false, errorCode: 'research-provider-unavailable' };
       }
+      if (this.runtimeFactory === null) {
+        return { ok: false, errorCode: 'research-runtime-unavailable' }; // 决议 #134(3)
+      }
       if (task.goal.trim() === '') {
         return { ok: false, errorCode: 'research-invalid-goal' };
+      }
+      // 决议 #135(2)：Provider/config/key/tool-support 检查在进入 running 前完成
+      let providerOk = true;
+      try {
+        providerOk = (await this.runtimeFactory.resolveProvider()) !== null;
+      } catch (err) {
+        logWarn('research', 'Provider 解析异常（归一 research-provider-unavailable）', err);
+        providerOk = false;
+      }
+      if (!providerOk) {
+        return { ok: false, errorCode: 'research-provider-unavailable' };
       }
       const now = this.nowIso();
       const started = withTransaction(this.handle(), () => {
@@ -250,6 +286,42 @@ export class ResearchServiceImpl implements ResearchService {
         return this.repo.getTaskById(id);
       });
       if (started === null) return { ok: false, errorCode: 'research-not-found' };
+      // 决议 #135(1)：启动后台 Runtime 后立即返回（不等待最长 30 分钟）
+      const runToken = randomUUID();
+      const onSettle = (): void => {
+        // 决议 #135(5)：仅同一运行实例按 identity/CAS 清除
+        if (this.activeSlot !== null && this.activeSlot.runToken === runToken) {
+          this.activeSlot = null;
+        }
+      };
+      const onProgress = (): void => {
+        // 决议 #138(1)：C8 前不新增 Renderer IPC——progress 仅内部监听器消费
+      };
+      try {
+        const handle = this.runtimeFactory.launch({
+          taskId: id,
+          goal: task.goal,
+          runToken,
+          onProgress,
+          onSettle,
+        });
+        this.activeSlot = { taskId: id, runToken, runtime: handle };
+        // slot 清除挂在 done settle 上（同一运行实例 promise 链）
+        void handle.done.finally(onSettle);
+      } catch (err) {
+        // 决议 #135(2)：launch 失败不得留下永久 running → 立即写 failed
+        logWarn('research', 'ResearchRuntime 启动失败（归一 research-runtime-unavailable）', err);
+        withTransaction(this.handle(), () => {
+          this.repo.setTaskFailed(id, {
+            errorCode: 'research-runtime-unavailable',
+            finishedAt: this.nowIso(),
+            updatedAt: this.nowIso(),
+            stats: started.stats,
+          });
+          this.repo.cleanupOldestFinishedOverflow();
+        });
+        return { ok: false, errorCode: 'research-runtime-unavailable' };
+      }
       return { ok: true, task: started };
     } catch (err) {
       return this.unexpected(err);
@@ -266,6 +338,15 @@ export class ResearchServiceImpl implements ResearchService {
         return { ok: false, errorCode: 'research-invalid-state' };
       }
       if (task.status === 'cancelled') return { ok: true, task }; // 幂等（决议 #105）
+      // 决议 #135(4)：Runtime 是终态唯一写入者——stopTask 只请求 abort +
+      // 读取/返回最新状态，不与 Runtime 竞争写终态
+      const slot = this.activeSlot;
+      if (slot !== null && slot.taskId === id) {
+        slot.runtime.abort();
+        const latest = this.repo.getTaskById(id) ?? task;
+        return { ok: true, task: latest };
+      }
+      // 防御兜底：running 但无 active slot（无 Runtime 存在）→ C1 语义直接写 cancelled
       const now = this.nowIso();
       const stopped = withTransaction(this.handle(), () => {
         const next = transitionTask(task, { kind: 'stop', now });
@@ -288,10 +369,38 @@ export class ResearchServiceImpl implements ResearchService {
     }
   }
 
+  // 决议 #135(7)：幂等 async shutdown——abort → 等待 Runtime settle →
+  // cleanupAll（由 Runtime 终态执行，此处为补漏）→ 关闭 store；重复调用
+  // 返回同一 Promise；dispose 只在 shutdown 完成后关闭连接
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise !== null) return this.shutdownPromise;
+    this.shuttingDown = true;
+    this.shutdownPromise = this.doShutdown();
+    return this.shutdownPromise;
+  }
+
+  private async doShutdown(): Promise<void> {
+    const slot = this.activeSlot;
+    if (slot !== null) {
+      slot.runtime.abort();
+      try {
+        await slot.runtime.done;
+      } catch {
+        // done 自身不拒绝（Runtime 内部收敛）；防御性吞掉失控 rejection
+      }
+    }
+    this.dispose();
+  }
+
   dispose(): void {
     if (this.disposed) {
       // 已 disposed（含 db=null 装配）：句柄不存在或已关闭——幂等
       if (this.dbHandle !== null) closeDb(this.dbHandle);
+      return;
+    }
+    if (this.activeSlot !== null && !this.shuttingDown) {
+      // 决议 #135(7)：有在途 run 时不立即关库——触发 shutdown 流程（幂等）
+      void this.shutdown();
       return;
     }
     this.disposed = true;

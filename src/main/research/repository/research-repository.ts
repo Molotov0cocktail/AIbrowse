@@ -489,7 +489,7 @@ export function taskToRow(task: ResearchTask): ResearchTaskRow {
   };
 }
 
-function rowToCandidate(row: ResearchCandidateRow): SourceCandidate | null {
+export function rowToCandidate(row: ResearchCandidateRow): SourceCandidate | null {
   const discoveredVia = parseCandidateDiscoveredVia(row.discovered_via_json);
   if (discoveredVia === null) return null;
   const trust =
@@ -558,7 +558,7 @@ export function rowToEvidence(row: ResearchEvidenceRow): VerifiedEvidence | null
   };
 }
 
-function rowToClaim(row: ResearchClaimRow): Claim | null {
+export function rowToClaim(row: ResearchClaimRow): Claim | null {
   const sourceTypes = parseSourceTypes(row.source_types_json);
   const evidenceIds = parseStringArray(row.evidence_ids_json);
   const singleSourceFields = parseStringArray(row.single_source_fields_json);
@@ -584,7 +584,7 @@ function rowToClaim(row: ResearchClaimRow): Claim | null {
   };
 }
 
-function rowToConflict(row: ResearchConflictRow): Conflict | null {
+export function rowToConflict(row: ResearchConflictRow): Conflict | null {
   const positions = parsePositions(row.positions_json);
   const claimIds = parseStringArray(row.claim_ids_json);
   if (positions === null || claimIds === null) return null;
@@ -598,7 +598,7 @@ function rowToConflict(row: ResearchConflictRow): Conflict | null {
   };
 }
 
-function rowToResult(row: ResearchResultRow): ResearchResult | null {
+export function rowToResult(row: ResearchResultRow): ResearchResult | null {
   const blocks = parseBlocks(row.blocks_json);
   const evidenceMap = parseEvidenceMap(row.evidence_map_json);
   const conflicts = parseResultConflicts(row.conflicts_json);
@@ -664,6 +664,9 @@ const SQL_SET_TASK_INTERRUPTED = `UPDATE research_tasks SET
   status = 'interrupted', phase = NULL, interrupted_at = ?, updated_at = ?
   WHERE id = ?`;
 const SQL_UPDATE_TASK_PHASE = 'UPDATE research_tasks SET phase = ?, updated_at = ? WHERE id = ?';
+// 决议 #137(3)：stats 独立更新（C5 Runtime 每笔逻辑写入同步 stats——编译期常量）
+const SQL_UPDATE_TASK_STATS =
+  'UPDATE research_tasks SET stats_json = ?, updated_at = ? WHERE id = ?';
 const SQL_DELETE_TASK = 'DELETE FROM research_tasks WHERE id = ?';
 // 决议 #109（store 装配）：遗留 running 原子标 interrupted（单条 UPDATE，事务内）
 const SQL_MARK_ALL_RUNNING_INTERRUPTED = `UPDATE research_tasks SET
@@ -859,6 +862,8 @@ export class ResearchRepository {
         result_id: null,
       });
     }
+    // 决议 #137(2)：非终态任务行更新受终态预留约束
+    this.assertNonTerminalReserve(id);
     this.db
       .prepare(SQL_SET_TASK_RUNNING)
       .run(write.phase, write.startedAt, write.updatedAt, serializeStatsJson(write.stats), id);
@@ -959,7 +964,23 @@ export class ResearchRepository {
     if (raw !== null) {
       this.assertProjectedTaskBudget(id, { ...raw, phase, updated_at: updatedAt });
     }
+    // 决议 #137(2)：非终态任务行更新受终态预留约束
+    this.assertNonTerminalReserve(id);
     this.db.prepare(SQL_UPDATE_TASK_PHASE).run(phase, updatedAt, id);
+  }
+
+  // 决议 #137(3)：stats 独立更新（C5 Runtime 持久化端口用；非终态 → 终态预留）
+  updateTaskStats(id: string, stats: ResearchTaskStats, updatedAt: string): void {
+    const raw = this.getRawTaskRow(id);
+    if (raw !== null) {
+      this.assertProjectedTaskBudget(id, {
+        ...raw,
+        stats_json: serializeStatsJson(stats),
+        updated_at: updatedAt,
+      });
+    }
+    this.assertNonTerminalReserve(id);
+    this.db.prepare(SQL_UPDATE_TASK_STATS).run(serializeStatsJson(stats), updatedAt, id);
   }
 
   // 决议 #109：启动装配遗留 running 原子标 interrupted（单条 UPDATE，事务内）。
@@ -1036,6 +1057,8 @@ export class ResearchRepository {
       throw new RepositoryError('sqlite-error', '候选行 JSON 形状非法（拒绝写入）');
     }
     this.assertPersistedBudget(row.task_id, candidate);
+    // 决议 #137(2)：子行插入受终态预留约束（非终态写不得吃满预算）
+    this.assertChildInsertWithTerminalReserve(row.task_id, candidate);
     this.db
       .prepare(SQL_INSERT_CANDIDATE)
       .run(
@@ -1081,6 +1104,8 @@ export class ResearchRepository {
       throw new RepositoryError('sqlite-error', '捕获行 JSON 形状非法（拒绝写入）');
     }
     this.assertPersistedBudget(row.task_id, capture);
+    // 决议 #137(2)：子行插入受终态预留约束（非终态写不得吃满预算）
+    this.assertChildInsertWithTerminalReserve(row.task_id, capture);
     this.db
       .prepare(SQL_INSERT_CAPTURE)
       .run(
@@ -1122,6 +1147,8 @@ export class ResearchRepository {
       throw new RepositoryError('sqlite-error', '证据行 JSON 形状非法（拒绝写入）');
     }
     this.assertPersistedBudget(row.task_id, evidence);
+    // 决议 #137(2)：子行插入受终态预留约束（非终态写不得吃满预算）
+    this.assertChildInsertWithTerminalReserve(row.task_id, evidence);
     this.db
       .prepare(SQL_INSERT_EVIDENCE)
       .run(
@@ -1165,6 +1192,8 @@ export class ResearchRepository {
       throw new RepositoryError('sqlite-error', '结论行 JSON 形状非法（拒绝写入）');
     }
     this.assertPersistedBudget(row.task_id, claim);
+    // 决议 #137(2)：子行插入受终态预留约束（非终态写不得吃满预算）
+    this.assertChildInsertWithTerminalReserve(row.task_id, claim);
     this.db
       .prepare(SQL_INSERT_CLAIM)
       .run(
@@ -1201,6 +1230,8 @@ export class ResearchRepository {
       throw new RepositoryError('sqlite-error', '冲突行 JSON 形状非法（拒绝写入）');
     }
     this.assertPersistedBudget(row.task_id, conflict);
+    // 决议 #137(2)：子行插入受终态预留约束（非终态写不得吃满预算）
+    this.assertChildInsertWithTerminalReserve(row.task_id, conflict);
     this.db
       .prepare(SQL_INSERT_CONFLICT)
       .run(
@@ -1236,6 +1267,8 @@ export class ResearchRepository {
       throw new RepositoryError('sqlite-error', '结果行 JSON 形状非法（拒绝写入）');
     }
     this.assertPersistedBudget(row.task_id, result);
+    // 决议 #137(2)：子行插入受终态预留约束（非终态写不得吃满预算）
+    this.assertChildInsertWithTerminalReserve(row.task_id, result);
     this.db
       .prepare(SQL_INSERT_RESULT)
       .run(
@@ -1314,6 +1347,76 @@ export class ResearchRepository {
       throw new RepositoryError(
         'task-persisted-budget-exceeded',
         `任务持久化字节预算超限（更新后投影 ${childrenBytes + projectedTaskBytes} > ${MAX_TASK_PERSISTED_CHARS} 字节）`,
+      );
+    }
+  }
+
+  // ---------- 终态预留（决议 #137(2)） ----------
+
+  // 最坏终态任务行字节：goal 固定 + status='failed' + 最长 errorCode +
+  // stats_json 最大形态（全字段 10 位数值）——确定性上界，任何实际终态
+  // 任务行字节 ≤ 该上界（goal 恒等、时间字段定长、errorCode ≤ 最坏码）。
+  estimateWorstTerminalTaskRowBytes(taskId: string): number {
+    const task = this.getTaskById(taskId);
+    if (task === null) return 0;
+    const ts = '9999-12-31T23:59:59.999Z'; // 定长 ISO 时间上界（24 字符同长）
+    const worstStats: ResearchTaskStats = {
+      candidateCount: 9999999999,
+      selectedCount: 9999999999,
+      captureCount: 9999999999,
+      failedReadCount: 9999999999,
+      evidenceCount: 9999999999,
+      rejectedEvidenceCount: 9999999999,
+      claimCount: 9999999999,
+      conflictCount: 9999999999,
+      stepsUsed: 9999999999,
+      roundsUsed: 9999999999,
+    };
+    const worstTask: ResearchTask = {
+      ...task,
+      status: 'failed',
+      phase: null,
+      updatedAt: ts,
+      startedAt: ts,
+      finishedAt: ts,
+      interruptedAt: ts,
+      errorCode: 'research-provider-unavailable', // 最长错误码
+      resultId: null,
+      stats: worstStats,
+    };
+    return computeUtf8Bytes(JSON.stringify(worstTask));
+  }
+
+  // 终态预留断言（非终态任务行更新）：子行字节 + 最坏终态任务行字节 ≤ 上限
+  // ——任何非终态写入后仍至少可写 failed/cancelled 终态（任务永不卡 running）
+  private assertNonTerminalReserve(taskId: string): void {
+    const currentTotal = this.computeTaskPersistedBytes(taskId);
+    const currentTask = this.getTaskById(taskId);
+    const currentTaskBytes =
+      currentTask === null ? 0 : computeUtf8Bytes(JSON.stringify(currentTask));
+    const childrenBytes = currentTotal - currentTaskBytes;
+    const worstTerminal = this.estimateWorstTerminalTaskRowBytes(taskId);
+    if (!isWithinPersistedBudget(childrenBytes, worstTerminal)) {
+      throw new RepositoryError(
+        'task-persisted-budget-exceeded',
+        `任务持久化字节预算超限（终态预留：子行 ${childrenBytes} + 最坏终态行 ${worstTerminal} > ${MAX_TASK_PERSISTED_CHARS} 字节）`,
+      );
+    }
+  }
+
+  // 子行插入的终态预留断言：子行字节（含新增）+ 最坏终态任务行字节 ≤ 上限
+  private assertChildInsertWithTerminalReserve(taskId: string, domainObject: unknown): void {
+    const currentTotal = this.computeTaskPersistedBytes(taskId);
+    const currentTask = this.getTaskById(taskId);
+    const currentTaskBytes =
+      currentTask === null ? 0 : computeUtf8Bytes(JSON.stringify(currentTask));
+    const childrenBytes = currentTotal - currentTaskBytes;
+    const additional = computeUtf8Bytes(JSON.stringify(domainObject));
+    const worstTerminal = this.estimateWorstTerminalTaskRowBytes(taskId);
+    if (!isWithinPersistedBudget(childrenBytes + additional, worstTerminal)) {
+      throw new RepositoryError(
+        'task-persisted-budget-exceeded',
+        `任务持久化字节预算超限（终态预留：子行 ${childrenBytes + additional} + 最坏终态行 ${worstTerminal} > ${MAX_TASK_PERSISTED_CHARS} 字节）`,
       );
     }
   }

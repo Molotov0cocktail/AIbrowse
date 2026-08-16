@@ -18,6 +18,8 @@ export const RESEARCH_ERROR_MESSAGES: Record<ResearchErrorCode, string> = {
   'research-timeout': '研究总时长超限（任务以失败终态结束，已收集证据保留）',
   'research-task-limit': '研究任务数量已达上限（请删除历史任务后重试）',
   'research-internal': '研究服务内部错误（详见日志）',
+  // 决议 #134(3)：第 12 码——Runtime 未装配/无法构造（生产 C6/C7 端口缺失）
+  'research-runtime-unavailable': '研究运行时尚未就绪，任务无法启动（详见日志）',
 };
 
 export function isResearchErrorCode(value: unknown): value is ResearchErrorCode {

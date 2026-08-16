@@ -13,6 +13,7 @@ import { openDb, closeDb, type DbHandle } from '../sources/db/sqlite-driver';
 import { runResearchMigrations } from './db/research-migrations';
 import { ResearchRepository, rowToEvidence } from './repository/research-repository';
 import { ResearchServiceImpl, type ResearchServiceOptions } from './research-service';
+import type { ResearchRuntimeFactory } from '../../shared/types/research';
 import { computeUtf8Bytes, RESEARCH_TRUNCATION_MARK } from './domain/research-budget';
 import {
   MAX_GOAL_CHARS,
@@ -32,10 +33,31 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+// C5 决议 #135：startTask 需要 Runtime 装配——C1 用例注入 immediate-settle
+// stub factory（launch 后 done 即 resolve → slot 按 CAS 清除 → stopTask 走
+// C1 兜底语义；零行为变更的既有契约断言全部保持）
+function immediateSettleFactory(): ResearchRuntimeFactory {
+  return {
+    async resolveProvider() {
+      return { ok: true };
+    },
+    launch(input) {
+      void Promise.resolve().then(() => input.onSettle());
+      return {
+        taskId: input.taskId,
+        runToken: input.runToken,
+        done: Promise.resolve(),
+        abort() {},
+      };
+    },
+  };
+}
+
 function buildService(over: Partial<ResearchServiceOptions> = {}): ResearchServiceImpl {
   return new ResearchServiceImpl({
     db: handle,
     now: () => nowMs,
+    runtimeFactory: immediateSettleFactory(),
     ...over,
   });
 }
@@ -477,25 +499,28 @@ describe('持久化预算映射（决议 #113：状态更新路径 → research-
         })!,
       ),
     );
+    // 决议 #137(2) 终态预留使 Repository 写入路径（含 #113 投影检查对非终态
+    // 更新）恒放行——本用例以探针 SQL 直插绕过预留（模拟外部/遗留数据），
+    // 验证 #113 投影检查作为独立防线仍拒绝 startTask 的 setTaskRunning
     const filler = MAX_TASK_PERSISTED_CHARS - 3 - base - overhead;
     expect(filler).toBeGreaterThan(0);
-    repo.insertEvidence({
-      evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-      task_id: id,
-      candidate_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      source_id: null,
-      capture_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      url: 'https://example.com',
-      title: 't',
-      access_time: '2026-08-16T00:01:00.000Z',
-      document_id: 'd1',
-      content_hash: 'h',
-      type: 'quote',
-      locator_json: JSON.stringify({ kind: 'text', excerpt: '' }),
-      excerpt: 'x'.repeat(filler),
-      value: null,
-      verification: 'verified',
-    });
+    handle
+      .prepare(
+        "INSERT INTO research_evidence (evidence_id, task_id, candidate_id, source_id, capture_id, url, title, access_time, document_id, content_hash, type, locator_json, excerpt, value, verification) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'quote', ?, ?, NULL, 'verified')",
+      )
+      .run(
+        'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        id,
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        'https://example.com',
+        't',
+        '2026-08-16T00:01:00.000Z',
+        'd1',
+        'h',
+        JSON.stringify({ kind: 'text', excerpt: '' }),
+        'x'.repeat(filler),
+      );
     expect(repo.computeTaskPersistedBytes(id)).toBe(MAX_TASK_PERSISTED_CHARS - 3);
     const started = await svc.startTask(id);
     expect(started.ok).toBe(false);

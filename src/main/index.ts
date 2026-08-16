@@ -90,6 +90,17 @@ import { SourceUsageTracker } from './sources/usage/usage-tracker';
 // B5：Sources IPC 适配器（参数严格白名单 + audience 硬编码 user + 状态门控 +
 // 独立 manual 审计 + sources:changed 仅成功后触发）
 import { createSourcesAdapter } from './sources/source-ipc';
+// C5（决议 #139）：Research 子系统最小生产装配——store/service 生命周期；生产不建立
+// RuntimeFactory（C6/C7 端口缺失 fail-closed）；SMOKE 注入确定性 stub 工厂；
+// RESEARCH_SMOKE set/check 双进程门控；退出走安全 shutdown。
+import { openResearchStore } from './research/research-store';
+import type { ResearchService } from '../shared/types/research';
+import {
+  SmokeSearchFixture,
+  createSmokeResearchRuntimeFactory,
+  makeSmokeGateScript,
+  runResearchSmokeGate,
+} from './smoke';
 
 // 冒烟模式 AI 子系统数据目录（进程专属临时目录，不触碰用户真实 userData）——S4 起
 // UI 端到端矩阵经真实 IPC/bridge 链路驱动同一实例；路径经 SmokeOptions 传给冒烟场景断言。
@@ -141,6 +152,14 @@ const SOURCES_UI_GATE_MODE =
   (process.env['AIBROWSE_SOURCES_UI_SMOKE'] === 'set' ||
     process.env['AIBROWSE_SOURCES_UI_SMOKE'] === 'check');
 
+// C5 双进程门控（决议 #139）：AIBROWSE_RESEARCH_SMOKE=set|check——两独立生产
+// 进程共用受控共享临时 userData（AIBROWSE_USER_DATA_DIR）；set 经产品 Service/
+// Runtime 路径创建完成任务 + 遗留 running；check 读回 + interrupted 标记路径。
+const RESEARCH_GATE_MODE =
+  SMOKE_MODE &&
+  (process.env['AIBROWSE_RESEARCH_SMOKE'] === 'set' ||
+    process.env['AIBROWSE_RESEARCH_SMOKE'] === 'check');
+
 // Session 冒烟/测试隔离（§十四 Session 验收）：指定临时 userData 目录，避免触碰用户真实数据。
 // 必须在 app ready 前设置（Electron 官方 API）；仅测试/验证环境使用（AIBROWSE_SESSION_SMOKE）。
 const userDataOverride = process.env['AIBROWSE_USER_DATA_DIR'];
@@ -180,6 +199,9 @@ let confirmManager: ConfirmManager | null = null;
 // 系统 TEMP 下 pid 专属目录——不触碰真实 userData 的 Sources 库）
 let sourceService: SourceService | null = null;
 let smokeSourcesDir: string | null = null;
+let researchService: ResearchService | null = null;
+let smokeResearchDir: string | null = null;
+let researchShutdownDone = false;
 // B5 冒烟注入点（仅 SMOKE_MODE 消费，生产行为不变）：恢复态/不可用态 UI 断言——
 // sources:state 与全部读写入口经适配器 stateOverride 门控（决议 #74 测试落点）
 let smokeSourcesStateOverride: { current: SourcesState | null } | null = null;
@@ -223,7 +245,39 @@ if (!gotLock) {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
   });
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
+    // C5（决议 #139(5)）：Research 走安全 shutdown（abort → await settle →
+    // closeDb；幂等）。shutdown 完成前阻止退出（Windows 下 db 句柄未关时
+    // 删除目录会 EPERM——先关库再删临时目录，再放行退出）
+    if (!researchShutdownDone) {
+      event.preventDefault();
+      void (researchService?.shutdown() ?? Promise.resolve()).finally(() => {
+        researchShutdownDone = true;
+        // 冒烟临时 Research 目录：closeDb 后 Windows 句柄释放有微小窗口——
+        // 有限重试（EPERM 不阻塞退出；最终失败保留所有权由下次冒烟自清）
+        if (smokeResearchDir !== null) {
+          let removed = false;
+          for (let attempt = 0; attempt < 3 && !removed; attempt++) {
+            try {
+              rmSync(smokeResearchDir, { recursive: true, force: true });
+              removed = true;
+            } catch {
+              // 重试间隔由退出路径自然等待（同步循环 10ms 让步）
+              const waitUntil = Date.now() + 10;
+              while (Date.now() < waitUntil) {
+                // 忙等待让步（退出路径无计时器依赖）
+              }
+            }
+          }
+          if (removed) {
+            smokeResearchDir = null;
+          } else {
+            logWarn('main', '冒烟临时 Research 目录清理失败（将保留，请勿手动删除用户数据）');
+          }
+        }
+        app.quit(); // 再次触发 before-quit（researchShutdownDone=true → 放行）
+      });
+    }
     // 退出路径兜底清理（幂等）；主路径为窗口 closed → dispose（§5）
     conversationService?.dispose(); // S3：中止全部在途生成
     sourceService?.dispose(); // B4：Sources 句柄幂等释放（driver closeDb 幂等）
@@ -639,8 +693,30 @@ if (!gotLock) {
           app.exit(1);
           return;
         }
+        // C5（决议 #139）：AIBROWSE_RESEARCH_SMOKE 与 SESSION/SOURCES/SOURCES_UI
+        // 门控确定性互斥（互斥先于一切，不静默择一）
+        const researchMode = process.env['AIBROWSE_RESEARCH_SMOKE'];
+        if (
+          RESEARCH_GATE_MODE &&
+          (sessionMode !== undefined || sourcesMode !== undefined || sourcesUiMode !== undefined)
+        ) {
+          logError(
+            'main',
+            'AIBROWSE_RESEARCH_SMOKE 与 AIBROWSE_SESSION_SMOKE / AIBROWSE_SOURCES_SMOKE / AIBROWSE_SOURCES_UI_SMOKE 互斥，请只选其一',
+          );
+          sourceService?.dispose();
+          app.exit(1);
+          return;
+        }
+        if (researchMode !== undefined && !RESEARCH_GATE_MODE) {
+          logError('main', `AIBROWSE_RESEARCH_SMOKE 值非法：${researchMode}（仅支持 set|check）`);
+          app.exit(1);
+          return;
+        }
         let run: Promise<void>;
-        if (sourcesUiMode === 'set' || sourcesUiMode === 'check') {
+        if (RESEARCH_GATE_MODE) {
+          run = runResearchSmokeGate(researchMode as 'set' | 'check');
+        } else if (sourcesUiMode === 'set' || sourcesUiMode === 'check') {
           run = runSourcesUiSmokeScenario(sourcesUiMode, {
             uiWindow: mainWindow,
             sourcesService: sourceService ?? undefined,
@@ -685,15 +761,57 @@ if (!gotLock) {
         run
           .then(() => {
             logInfo('main', '冒烟自检通过，正常退出');
+            if (RESEARCH_GATE_MODE && researchMode === 'set') {
+              // 决议 #139：set 门控经 app.exit 直接退出（不触发 before-quit 的
+              // shutdown）——遗留 running 任务保持原状，由 check 进程验证
+              // interrupted 自动标记。app.exit 不触发 before-quit：冒烟临时
+              // 目录与进程资源在此精确清理（保留共享 userData 的 research.db；
+              // EPERM 容忍——db 句柄随进程退出由 OS 释放）
+              sourceService?.dispose();
+              try {
+                rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+              } catch {
+                // 不阻塞退出（EPERM 容忍）
+              }
+              if (smokeSourcesDir !== null) {
+                try {
+                  rmSync(smokeSourcesDir, { recursive: true, force: true });
+                  smokeSourcesDir = null;
+                } catch {
+                  smokeSourcesDir = null;
+                }
+              }
+              if (smokeResearchDir !== null) {
+                try {
+                  rmSync(smokeResearchDir, { recursive: true, force: true });
+                  smokeResearchDir = null;
+                } catch {
+                  smokeResearchDir = null;
+                }
+              }
+              app.exit(0);
+              return;
+            }
             app.quit();
           })
-          .catch(() => {
+          .catch((err: unknown) => {
+            logError('main', '冒烟场景失败（调度层）', err);
             // 失败路径同样清理冒烟 Sources 临时目录（app.exit 不触发 before-quit，
             // 否则每次失败运行残留 pid 专属目录——清理纪律）
             sourceService?.dispose();
             if (smokeSourcesDir !== null) {
               rmSync(smokeSourcesDir, { recursive: true, force: true });
               smokeSourcesDir = null;
+            }
+            if (smokeResearchDir !== null) {
+              // 失败路径 db 句柄可能未关——安全尝试（EPERM 不阻塞退出，
+              // 残留目录由下次冒烟自清——目录名含 pid 且位于系统 TEMP）
+              try {
+                rmSync(smokeResearchDir, { recursive: true, force: true });
+                smokeResearchDir = null;
+              } catch {
+                smokeResearchDir = null; // 不阻塞 app.exit（句柄随进程退出释放）
+              }
             }
             app.exit(1); // 失败原因已由 runSessionSmokeScenario / runSmokeScenario 记录 error 日志
           });
@@ -763,6 +881,41 @@ function createBrowserWindow(): void {
     sourceService = null;
     logError('main', 'Sources 子系统初始化失败（Source 工具将返回 source-unavailable）', err);
   }
+  // C5（决议 #139）：Research 子系统最小生产装配——<userData>/research/research.db
+  // （store 两态：normal|unavailable；Research 不可用不得破坏 Browser/Sources/Agent）。
+  // 生产不建立 RuntimeFactory（C6/C7 端口缺失 → startTask 前置拒绝
+  // research-runtime-unavailable，决议 #134(3)）；SMOKE 注入确定性 stub 工厂
+  // （决议 #139(3)，仅测试设施）。退出走安全 shutdown（before-quit）。
+  try {
+    const researchDir =
+      SMOKE_MODE && !RESEARCH_GATE_MODE
+        ? join(app.getPath('temp'), `aibrowse-smoke-research-${process.pid}`)
+        : join(app.getPath('userData'), 'research');
+    if (SMOKE_MODE && !RESEARCH_GATE_MODE) smokeResearchDir = researchDir;
+    mkdirSync(researchDir, { recursive: true });
+    const researchOutcome = openResearchStore({
+      dbPath: join(researchDir, 'research.db'),
+      buildRuntimeFactory: SMOKE_MODE
+        ? (db) =>
+            createSmokeResearchRuntimeFactory({
+              db,
+              browser: controller,
+              sourceService,
+              searchProvider: new SmokeSearchFixture(null),
+              providerScript: makeSmokeGateScript(),
+              model: 'smoke-model',
+            })
+        : undefined,
+    });
+    researchService = researchOutcome.service;
+    if (researchOutcome.mode === 'normal') {
+      logInfo('main', `Research 子系统就绪（${join(researchDir, 'research.db')}）`);
+    }
+  } catch (err) {
+    researchService = null;
+    logError('main', 'Research 子系统初始化失败（研究功能全拒，其余能力不受影响）', err);
+  }
+
   // B6（决议 #79/#81）：usage tracker 装配——writer 闭包调用时解引用 sourceService
   // （初始化失败为 null → 零写入，无 SourceService 不记录）；bridge 每 run 创建
   // （AgentLoop 终态调用 clearRun）。

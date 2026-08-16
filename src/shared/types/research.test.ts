@@ -97,8 +97,8 @@ describe('research 共享类型：预算常量单一事实源（§6.8 全表 + �
   });
 
   it('错误码表为 11 码且无重复（决议 #108）', () => {
-    expect(RESEARCH_ERROR_CODES).toHaveLength(11);
-    expect(new Set(RESEARCH_ERROR_CODES).size).toBe(11);
+    expect(RESEARCH_ERROR_CODES).toHaveLength(12);
+    expect(new Set(RESEARCH_ERROR_CODES).size).toBe(12);
     expect(RESEARCH_ERROR_CODES).toEqual([
       'research-invalid-goal',
       'research-busy',
@@ -111,6 +111,7 @@ describe('research 共享类型：预算常量单一事实源（§6.8 全表 + �
       'research-timeout',
       'research-task-limit',
       'research-internal',
+      'research-runtime-unavailable',
     ]);
   });
 

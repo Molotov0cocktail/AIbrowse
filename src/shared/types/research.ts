@@ -49,6 +49,26 @@ export const MAX_RANKING_DETAIL_CHARS = 1000;
 export const MAX_UNCERTAIN_TEXT_CHARS = 1000;
 export const MAX_EVIDENCE_LOCATOR_FIELD_PATH_CHARS = 200;
 
+// 决议 #133：规划轮 webQueries 数量上限（小型编译期上限，C5 基线）
+export const MAX_PLAN_WEB_QUERIES = 1;
+// 决议 #132(6)：单条 Research 工具结果序列化上限（确定性截断 + 标记；
+// 只进模型回放消息，不进日志/UI/持久化）
+export const RESEARCH_TOOL_RESULT_CONTENT_MAX = 8000;
+
+// 决议 #132：Research 模型轮六工具编译期固定集合（名称与注册表同名工具
+// 一致——测试交叉断言；描述与执行器为 Research 专属，不经 ToolRegistry/
+// ToolExecutor/权限链/ConfirmManager）
+export const RESEARCH_TOOL_NAMES = [
+  'browser_open',
+  'browser_read',
+  'search_web',
+  'source_search',
+  'source_list',
+  'source_get',
+] as const;
+
+export type ResearchToolName = (typeof RESEARCH_TOOL_NAMES)[number];
+
 // ---------- 枚举表（决议 #105/#108：校验用编译期常量） ----------
 
 export const RESEARCH_STATUSES = [
@@ -74,6 +94,9 @@ export const RESEARCH_ERROR_CODES = [
   'research-timeout',
   'research-task-limit',
   'research-internal',
+  // 决议 #134(3)：Runtime 未装配/无法构造（生产 C6/C7 端口缺失或端口构造
+  // 失败）→ startTask 前置拒绝——扩展决议 #108 的 11 码结论（#108 不改写）
+  'research-runtime-unavailable',
 ] as const;
 
 // ---------- 任务 ----------
@@ -361,6 +384,96 @@ export interface ResearchProviderState {
   supportsToolCalling: boolean;
 }
 
+// ---------- C5 规划/端口/进度/工厂契约（决议 #133/#134/#135/#138） ----------
+
+// 决议 #133：ResearchPlan 判别联合——全部模型字段视为不可信输入（白名单/
+// 类型/长度/数量校验）；groupId 只能引用程序在轮 1 上下文提供的 group 集合；
+// selectedCandidateIds 只能引用已合并候选集合（轮 1 时该集合不存在，必须空）
+export interface ResearchPlan {
+  sourceMode: 'search' | 'group';
+  sourceQuery: string; // search 模式必填非空 ≤SEARCH_QUERY_MAX_LENGTH；group 模式必须空串/缺省
+  groupId: string | null; // 仅 group 模式非 null；必须 ∈ 程序提供的 group 集合
+  webQueries: string[]; // ≤MAX_PLAN_WEB_QUERIES；每项非空 ≤SEARCH_QUERY_MAX_LENGTH
+  selectedCandidateIds: string[]; // ≤MAX_SELECTED_SOURCES；必须 ⊆ 已合并候选集合
+}
+
+// 决议 #138(1)：进度快照——仅确定性运行事实；phase/status/stats 语义变化
+// 才发新快照；事件中零 goal/URL/模型文本/网页正文/Evidence 内容
+export interface ResearchProgressEvent {
+  taskId: string;
+  status: ResearchTaskStatus;
+  phase: ResearchPhase | null;
+  stats: ResearchTaskStats;
+  finishedAt: string | null;
+}
+
+// 决议 #134(2)：C6/C7 稳定端口（C5 定义；C6 research-prompts/claim-model、
+// C7 result-validator 替换实现——形状冻结，C6/C7 按此实现不得另设）
+
+// 阶段提示词四槽（C6 提供真实常量；verifying 为决议 #134(4) 引入的第四槽）
+export interface ResearchPromptsPort {
+  planning: string;
+  reading: string;
+  verifying: string;
+  synthesizing: string;
+}
+
+export interface ResearchSynthesisContext {
+  taskId: string;
+  candidates: readonly SourceCandidate[];
+  evidence: readonly VerifiedEvidence[];
+  createId: () => string; // claimId/conflictId 预分配（主进程可信）
+}
+
+// 合成端口（C6 替换）：coverage/sourceTypes/positions≥2/refs∈候选集等
+// 确定性装配全部在端口实现内完成——返回的 claims/conflicts 可直接持久化
+export interface ResearchSynthesisPort {
+  processVerification(
+    raw: string,
+    ctx: ResearchSynthesisContext,
+  ): { ok: true; claims: Claim[]; conflicts: Conflict[] } | { ok: false; reason: string }; // 安全中文 ≤200
+  parseResultDraft(raw: string): { ok: true; draft: unknown } | { ok: false; reason: string };
+}
+
+export interface ResearchResultValidationContext {
+  taskId: string;
+  candidates: readonly SourceCandidate[];
+  evidence: readonly VerifiedEvidence[]; // evidenceMap 主进程元数据来源
+  createId: () => string; // resultId 预分配（主进程可信）
+}
+
+// C7 结果校验端口（result-validator 实现；§8.1 校验规则不变）
+export interface ResearchResultValidationPort {
+  validate(
+    draft: unknown,
+    ctx: ResearchResultValidationContext,
+  ): { ok: true; result: ResearchResult } | { ok: false; reasons: string[] }; // 回注：块索引 + 安全中文原因
+}
+
+// 决议 #135：异步 Runtime 工厂（Provider/config/key/tool-support 检查在
+// 进入 running 前完成）；launch 失败不得留下永久 running
+export interface ResearchRuntimeLaunchInput {
+  taskId: string;
+  goal: string;
+  runToken: string; // 运行身份（Service 生成；slot CAS 与守卫用）
+  onProgress: (event: ResearchProgressEvent) => void;
+  onSettle: () => void; // 同一运行实例 finally 中调用（Service 按 runToken CAS 清 slot）
+}
+
+export interface ResearchRuntimeHandle {
+  readonly taskId: string;
+  readonly runToken: string;
+  readonly done: Promise<void>; // run() 完整收敛（含终态写入与 cleanupAll）
+  abort(): void; // 幂等（stop/shutdown 请求）
+}
+
+export interface ResearchRuntimeFactory {
+  // 异步 Provider 解析：config + credential + supportsToolCalling 检查；
+  // 不可用 → null（startTask → research-provider-unavailable，任务零变化）
+  resolveProvider(): Promise<unknown>;
+  launch(input: ResearchRuntimeLaunchInput): ResearchRuntimeHandle; // 抛错 = 装配失败
+}
+
 export interface ResearchService {
   createTask(goal: string): Promise<ResearchCreateResult>;
   getTask(id: string): Promise<ResearchTaskResult>;
@@ -368,6 +481,7 @@ export interface ResearchService {
   deleteTask(id: string): Promise<ResearchDeleteResult>;
   startTask(id: string): Promise<ResearchStartResult>;
   stopTask(id: string): Promise<ResearchStopResult>;
+  shutdown(): Promise<void>; // 决议 #135(7)：幂等 async——abort → await settle → cleanupAll → closeDb
   dispose(): void;
 }
 

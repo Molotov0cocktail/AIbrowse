@@ -738,9 +738,9 @@ describe('任务状态更新路径的持久化预算（决议 #113：按更新�
     roundsUsed: 0,
   };
 
-  // 构造「距离 500000 UTF-8 字节上限仅剩少量空间」的任务：任务行 + 1 条大
-  // Evidence（ASCII 1 字节/字符，字节精确可控）；返回构造后的持久化字节数
-  function fillTaskNearBudget(taskOver: Partial<ResearchTaskRow> = {}): number {
+  // 探针 SQL 直插填充（绕过 Repository 终态预留）——测试 #113 投影检查作为
+  // 独立防线仍有效（防外部数据/未来代码路径绕过预留；探针 SQL 仅限本文件）
+  function fillTaskNearBudgetSql(taskOver: Partial<ResearchTaskRow> = {}): number {
     repo.insertTask(makeTaskRow(taskOver));
     const base = repo.computeTaskPersistedBytes(TASK_ID);
     const overhead = computeUtf8Bytes(
@@ -753,14 +753,27 @@ describe('任务状态更新路径的持久化预算（决议 #113：按更新�
         )!,
       ),
     );
-    const filler = MAX_TASK_PERSISTED_CHARS - HEADROOM - base - overhead;
+    // SQL 行序列化与 JSON 域对象字节存在 15 字节固定偏差（实测校准）——
+    // filler 补偿后精确落在 MAX - HEADROOM
+    const filler = MAX_TASK_PERSISTED_CHARS - HEADROOM - base - overhead + 15;
     expect(filler).toBeGreaterThan(0);
-    repo.insertEvidence(
-      makeEvidenceRow({
-        evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-        excerpt: 'x'.repeat(filler),
-      }),
-    );
+    handle
+      .prepare(
+        "INSERT INTO research_evidence (evidence_id, task_id, candidate_id, source_id, capture_id, url, title, access_time, document_id, content_hash, type, locator_json, excerpt, value, verification) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'quote', ?, ?, NULL, 'verified')",
+      )
+      .run(
+        'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        TASK_ID,
+        '22222222-2222-4222-8222-222222222222',
+        '33333333-3333-4333-8333-333333333333',
+        'https://c.example/page',
+        '页面',
+        T0,
+        '1',
+        'a'.repeat(32),
+        JSON.stringify({ kind: 'text', excerpt: '' }),
+        'x'.repeat(filler),
+      );
     const current = repo.computeTaskPersistedBytes(TASK_ID);
     expect(current).toBe(MAX_TASK_PERSISTED_CHARS - HEADROOM);
     return current;
@@ -807,7 +820,7 @@ describe('任务状态更新路径的持久化预算（决议 #113：按更新�
     ],
     ['updateTaskPhase', () => repo.updateTaskPhase(TASK_ID, 'reading', T1)],
   ])('%s 会把近上限任务推过 500k → RepositoryError(budget) + 零写入', (_name, apply) => {
-    fillTaskNearBudget();
+    fillTaskNearBudgetSql();
     expect(apply).toThrowError(RepositoryError);
     try {
       apply();
@@ -833,14 +846,27 @@ describe('任务状态更新路径的持久化预算（决议 #113：按更新�
         )!,
       ),
     );
-    const filler = MAX_TASK_PERSISTED_CHARS - headroomProbe - base - overhead;
+    // SQL 行序列化与 JSON 域对象字节存在 15 字节固定偏差（实测校准）
+    const filler = MAX_TASK_PERSISTED_CHARS - headroomProbe - base - overhead + 15;
     expect(filler).toBeGreaterThan(0);
-    repo.insertEvidence(
-      makeEvidenceRow({
-        evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-        excerpt: 'x'.repeat(filler),
-      }),
-    );
+    // 探针 SQL 直插（绕过终态预留——本用例验证 #113 投影检查对终态写入的独立防线）
+    handle
+      .prepare(
+        "INSERT INTO research_evidence (evidence_id, task_id, candidate_id, source_id, capture_id, url, title, access_time, document_id, content_hash, type, locator_json, excerpt, value, verification) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'quote', ?, ?, NULL, 'verified')",
+      )
+      .run(
+        'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        TASK_ID,
+        '22222222-2222-4222-8222-222222222222',
+        '33333333-3333-4333-8333-333333333333',
+        'https://c.example/page',
+        '页面',
+        T0,
+        '1',
+        'a'.repeat(32),
+        JSON.stringify({ kind: 'text', excerpt: '' }),
+        'x'.repeat(filler),
+      );
     expect(repo.computeTaskPersistedBytes(TASK_ID)).toBe(MAX_TASK_PERSISTED_CHARS - headroomProbe);
     repo.setTaskCancelled(TASK_ID, { finishedAt: T1, updatedAt: T1, stats: STATS });
     expect(repo.getTaskById(TASK_ID)!.status).toBe('cancelled');
@@ -873,7 +899,7 @@ describe('任务状态更新路径的持久化预算（决议 #113：按更新�
   });
 
   it('markAllRunningInterrupted：任一运行任务投影超限 → 整体拒绝 + 零写入', () => {
-    fillTaskNearBudget({ status: 'running', phase: 'planning', started_at: T1 });
+    fillTaskNearBudgetSql({ status: 'running', phase: 'planning', started_at: T1 });
     repo.insertTask(
       makeTaskRow({
         id: '22222222-2222-4222-8222-222222222222',

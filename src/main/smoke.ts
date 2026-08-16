@@ -38,6 +38,18 @@ import {
   type ResearchTaskRow,
 } from './research/repository/research-repository';
 import { runResearchMigrations } from './research/db/research-migrations';
+// 8.17 C5：真实 Runtime 全阶段链路（临时 research.db + FakeProvider 脚本 +
+// 确定性 stub 端口）；set/check 门控走产品 Service/Runtime 路径
+import { ResearchRuntime } from './research/research-runtime';
+import { createRepositoryPersistence } from './research/research-runtime-persistence';
+import { openResearchStore } from './research/research-store';
+import type {
+  ResearchPromptsPort,
+  ResearchResult,
+  ResearchResultValidationPort,
+  ResearchRuntimeFactory,
+  ResearchSynthesisPort,
+} from '../shared/types/research';
 import type { Capture, SourceCandidate } from '../shared/types/research';
 import { runMigrations } from './sources/db/migrations';
 import { SourceServiceImpl } from './sources/source-service';
@@ -61,7 +73,7 @@ import { listTools } from './ai/tools/tool-registry';
 import type { ToolExecutor } from './ai/tools/tool-executor';
 import type { ToolExecutionContext } from './ai/tools/tool-types';
 import { BingSearchProvider } from './ai/search/search-provider';
-import type { SearchProvider } from './ai/search/search-provider';
+import type { SearchProvider, SearchProviderResult } from './ai/search/search-provider';
 import { InteractionSemanticsStore } from './ai/tools/interaction-semantics';
 import type { ConfirmManager } from './ai/confirm-manager';
 import { createAuditLogger, type AuditEntry } from './ai/audit-log';
@@ -10784,6 +10796,12 @@ export async function runSmokeScenario(
     // 用户 Tab 集合不变。零 Provider 调用（proposal 为确定性 JSON 构造）。
     await runResearchCaptureScenario(controller);
 
+    // 8.17 C5 Runtime 场景（决议 #132–#139；默认矩阵自动包含）：真实 Workspace +
+    // CaptureService + FakeProvider 多轮脚本全阶段 → completed + 落库读回 +
+    // 正文零落盘 + 用户 Tab 恒等；stop 中途 → cancelled；预算注入 → failed +
+    // Evidence 保留；终态后迟到事件零影响。零真实 Provider 调用。
+    await runResearchRuntimeScenario(controller);
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -14718,4 +14736,590 @@ async function openDetailByNameIn(uiWc: WebContents, name: string): Promise<void
     })()`,
   );
   await waitFor(async () => await uiHas(uiWc, '.sources-detail'), 5000, 'B-05 双进程：详情未打开');
+}
+// ---------- C5 ResearchRuntime 冒烟（决议 #132–#139；8.17 默认矩阵 + set/check 门控） ----------
+
+// SMOKE 确定性 stub 端口（决议 #134(3)：仅测试设施——生产不建立）
+const SMOKE_RESEARCH_PROMPTS: ResearchPromptsPort = {
+  planning: 'SMOKE_RESEARCH_PLANNING_PROMPT',
+  reading: 'SMOKE_RESEARCH_READING_PROMPT',
+  verifying: 'SMOKE_RESEARCH_VERIFYING_PROMPT',
+  synthesizing: 'SMOKE_RESEARCH_SYNTHESIZING_PROMPT',
+};
+
+function makeSmokeResearchSynthesis(): ResearchSynthesisPort {
+  return {
+    processVerification(raw) {
+      const parsed = JSON.parse(raw) as { claims?: unknown[]; conflicts?: unknown[] };
+      return {
+        ok: true,
+        claims: (parsed.claims ?? []) as never,
+        conflicts: (parsed.conflicts ?? []) as never,
+      };
+    },
+    parseResultDraft(raw) {
+      const parsed = JSON.parse(raw) as { result?: unknown };
+      if (parsed === null || typeof parsed !== 'object' || !('result' in parsed)) {
+        return { ok: false, reason: '缺少 result 字段' };
+      }
+      return { ok: true, draft: parsed.result };
+    },
+  };
+}
+
+function makeSmokeResearchValidation(): ResearchResultValidationPort {
+  return {
+    validate(draft, ctx) {
+      // C5 stub：仅接受夹具形状（__stub:true）——拒绝一切其他形状
+      if (
+        draft === null ||
+        typeof draft !== 'object' ||
+        (draft as Record<string, unknown>).__stub !== true
+      ) {
+        return { ok: false, reasons: ['C5 冒烟 stub：拒绝未受控形状'] };
+      }
+      return {
+        ok: true,
+        result: {
+          ...(draft as unknown as ResearchResult),
+          resultId: ctx.createId(), // 主进程预分配（每任务唯一）
+          taskId: ctx.taskId,
+        },
+      };
+    },
+  };
+}
+
+function makeSmokeResultDraftJson(): string {
+  return JSON.stringify({
+    result: {
+      __stub: true,
+      resultId: randomUUID(),
+      title: '冒烟研究结果',
+      summary: '确定性冒烟结果摘要',
+      blocks: [{ kind: 'markdown', text: '冒烟正文' }],
+      evidenceMap: {},
+      conflicts: [],
+      coverage: {
+        total: 0,
+        multiSource: 0,
+        singleSource: 0,
+        vendor: 0,
+        thirdParty: 0,
+        community: 0,
+      },
+      fetchedAt: new Date().toISOString(),
+    },
+  });
+}
+
+// 8.17 完整链路脚本（plan → selection → reading 工具轮+proposals → verifying → synthesizing）
+function makeSmokeRuntimeScript(candidateId: string): FakeProviderScript {
+  return {
+    rounds: [
+      [
+        {
+          text: JSON.stringify({
+            sourceMode: 'search',
+            sourceQuery: '研究',
+            groupId: null,
+            webQueries: ['冒烟'],
+          }),
+        },
+      ],
+      [{ text: JSON.stringify({ selectedCandidateIds: [candidateId] }) }],
+      [
+        {
+          kind: 'toolCalls',
+          toolCalls: [{ id: 'smoke-tc-1', name: 'browser_read', arguments: '{}' }],
+        },
+      ],
+      [
+        {
+          text: JSON.stringify([
+            {
+              captureId: 'smoke-capture',
+              candidateId,
+              type: 'quote',
+              locator: { kind: 'text', excerpt: '这是研究采集页的第一段正文' },
+              excerpt: '这是研究采集页的第一段正文',
+              value: null,
+            },
+          ]),
+        },
+      ],
+      [{ text: JSON.stringify({ claims: [], conflicts: [] }) }],
+      [{ text: makeSmokeResultDraftJson() }],
+    ],
+  };
+}
+
+// SMOKE 受控 Search 夹具（决议 #139(3)：仅测试设施；生产行为不变）
+export class SmokeSearchFixture implements SearchProvider {
+  readonly id = 'smoke-search-fixture';
+
+  constructor(private readonly resultUrl: string | null) {}
+
+  async search(): Promise<SearchProviderResult> {
+    if (this.resultUrl === null) return { ok: true, results: [] };
+    return {
+      ok: true,
+      results: [{ title: '冒烟受控页', url: this.resultUrl, snippet: '', source: 'smoke' }],
+    };
+  }
+}
+
+interface SmokeResearchRuntimeDeps {
+  db: DbHandle;
+  browser: BrowserController;
+  sourceService: SourceService | null;
+  searchProvider: SearchProvider;
+  providerScript: FakeProviderScript;
+  model: string;
+}
+
+// 零候选研究的空 Sources 端口（set 门控用：Sources 检索恒空——合法空候选）
+function makeEmptySmokeSourceService(): SourceService {
+  return {
+    search: async () => ({ ok: true, query: '', results: [] }),
+    list: async () => ({ ok: true, page: 0, pageSize: 20, total: 0, items: [] }),
+    listGroups: async () => ({ ok: true, page: 0, pageSize: 20, total: 0, groups: [] }),
+    get: async () => ({ ok: false, errorCode: 'source-not-found' }),
+  } as unknown as SourceService;
+}
+
+// set 门控脚本（零候选研究：plan → 零选择 → 空 claims → 确定性 Result）
+export function makeSmokeGateScript(): FakeProviderScript {
+  return {
+    rounds: [
+      [
+        {
+          text: JSON.stringify({
+            sourceMode: 'search',
+            sourceQuery: '门控研究',
+            groupId: null,
+            webQueries: [],
+          }),
+          // 500ms 延迟：planning heartbeat 落库后任务仍停留于 plan 流——
+          // set 进程在 heartbeat 后 app.exit(0)，任务以 running 遗留（不写终态）
+          delayMs: 500,
+        },
+      ],
+      [{ text: JSON.stringify({ selectedCandidateIds: [] }) }],
+      [{ text: JSON.stringify({ claims: [], conflicts: [] }) }],
+      [{ text: makeSmokeResultDraftJson() }],
+    ],
+  };
+}
+
+// SMOKE Runtime 工厂（决议 #139(3)：SMOKE 装配注入；生产不建立——fail-closed）
+export function createSmokeResearchRuntimeFactory(
+  deps: SmokeResearchRuntimeDeps,
+): ResearchRuntimeFactory {
+  return {
+    async resolveProvider() {
+      return { ok: true }; // SMOKE 就绪（生产 Provider 检查由 index.ts 生产装配承担）
+    },
+    launch(input) {
+      const stopController = new AbortController();
+      const provider = new FakeProvider(deps.providerScript);
+      const runtime = new ResearchRuntime({
+        taskId: input.taskId,
+        goal: input.goal,
+        runToken: input.runToken,
+        model: deps.model,
+        provider,
+        sourceService: deps.sourceService ?? makeEmptySmokeSourceService(),
+        searchProvider: deps.searchProvider,
+        captureService: new CaptureService({
+          workspace: new ResearchWorkspace(input.taskId, deps.browser),
+          browser: deps.browser,
+        }),
+        persistence: createRepositoryPersistence(deps.db, input.taskId),
+        prompts: SMOKE_RESEARCH_PROMPTS,
+        synthesis: makeSmokeResearchSynthesis(),
+        resultValidation: makeSmokeResearchValidation(),
+        onProgress: input.onProgress,
+        onSettle: input.onSettle,
+        stopSignal: stopController.signal,
+      });
+      const done = runtime.run();
+      return {
+        taskId: input.taskId,
+        runToken: input.runToken,
+        done,
+        abort: () => stopController.abort(),
+      };
+    },
+  };
+}
+
+// 8.17 Runtime 场景（默认矩阵自动包含；dev+生产双场景）——真实 ResearchWorkspace +
+// CaptureService 读取受控页；FakeProvider 多轮脚本驱动全阶段；候选/Capture/
+// VerifiedEvidence/Result 落库读回；正文零落盘；用户 Tab 恒等；stop 中途 →
+// cancelled；预算注入 → failed + Evidence 保留；终态后迟到事件零影响。
+async function runResearchRuntimeScenario(controller: BrowserController): Promise<void> {
+  const taskId = randomUUID();
+  const tmpDir = mkdtempSync(join(tmpdir(), 'aibrowse-research-rt-smoke-'));
+  const dbPath = join(tmpDir, 'research.db');
+  let db: DbHandle | null = null;
+  const pages = await startControlledPages();
+
+  try {
+    // 用户 Tab 基线
+    const userTabIds = (await controller.getTabs()).map((t) => t.id).sort();
+    db = openDb(dbPath);
+    runResearchMigrations(db);
+    const repo = new ResearchRepository(db);
+    const nowIso = (): string => new Date().toISOString();
+    const zeroStats = (): string =>
+      JSON.stringify({
+        candidateCount: 0,
+        selectedCount: 0,
+        captureCount: 0,
+        failedReadCount: 0,
+        evidenceCount: 0,
+        rejectedEvidenceCount: 0,
+        claimCount: 0,
+        conflictCount: 0,
+        stepsUsed: 0,
+        roundsUsed: 0,
+      });
+    const makeSmokeSource = (): SourceService => makeEmptySmokeSourceService();
+    repo.insertTask({
+      id: taskId,
+      goal: '冒烟研究任务',
+      status: 'running',
+      phase: 'planning',
+      created_at: nowIso(),
+      updated_at: nowIso(),
+      started_at: nowIso(),
+      finished_at: null,
+      interrupted_at: null,
+      error_code: null,
+      result_id: null,
+      stats_json: zeroStats(),
+    });
+    const idSeq = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'];
+    const stopController = new AbortController();
+    const provider = new FakeProvider(
+      makeSmokeRuntimeScript('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+    );
+    const searchFixture = new SmokeSearchFixture(pages.researchCaptureUrl);
+    const events: unknown[] = [];
+    const runtime = new ResearchRuntime({
+      taskId,
+      goal: '冒烟研究任务',
+      runToken: 'smoke-run',
+      model: 'smoke-model',
+      provider,
+      sourceService: makeSmokeSource(),
+      searchProvider: searchFixture,
+      captureService: new CaptureService({
+        workspace: new ResearchWorkspace(taskId, controller),
+        browser: controller,
+        createCaptureId: () => 'smoke-capture', // 确定性 captureId（proposal 引用可预知）
+      }),
+      persistence: createRepositoryPersistence(db, taskId),
+      prompts: SMOKE_RESEARCH_PROMPTS,
+      synthesis: makeSmokeResearchSynthesis(),
+      resultValidation: makeSmokeResearchValidation(),
+      createId: () => idSeq.shift() ?? 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      onProgress: (e) => events.push(e),
+      stopSignal: stopController.signal,
+    });
+    await runtime.run();
+
+    // —— 正常场景断言：completed + 落库读回 ——
+    const task = repo.getTaskById(taskId);
+    assert(task !== null && task.status === 'completed', '8.17：任务应 completed');
+    assert(task!.resultId !== null && task!.resultId !== '', '8.17：resultId 落库');
+    const candidates = repo.listCandidatesByTask(taskId);
+    assert(candidates.length === 1, '8.17：候选应落库 1 条');
+    const captures = repo.listCapturesByTask(taskId);
+    assert(captures.length >= 1, '8.17：capture 元数据应落库');
+    const evidence = repo.listEvidenceByTask(taskId);
+    assert(evidence.length === 1, '8.17：VerifiedEvidence 应落库 1 条');
+    assert(evidence[0]!.verification === 'verified', '8.17：仅 verified 落库');
+    const result = repo.getResultByTaskId(taskId);
+    assert(result !== null, '8.17：Result 应落库');
+    // 进度事件：初始 running/planning + 终态 completed 恰好一次
+    const first = events[0] as { status?: string; phase?: string };
+    const terminals = (events as Array<{ status?: string }>).filter((e) => e.status !== 'running');
+    assert(first.status === 'running' && first.phase === 'planning', '8.17：初始进度快照');
+    assert(terminals.length === 1 && terminals[0]!.status === 'completed', '8.17：终态恰好一次');
+    // 正文零落盘：capture 正文（受控正文摘录）零持久化
+    const persisted = JSON.stringify({
+      task: repo.getTaskById(taskId),
+      candidates: repo.listCandidatesByTask(taskId),
+      captures: repo.listCapturesByTask(taskId),
+      evidence: repo.listEvidenceByTask(taskId),
+      result: repo.getResultByTaskId(taskId),
+    });
+    assert(!persisted.includes('受控正文摘录'), '8.17：capture 正文零持久化');
+    // 用户 Tab 恒等
+    const afterTabs = (await controller.getTabs()).map((t) => t.id).sort();
+    assert(JSON.stringify(afterTabs) === JSON.stringify(userTabIds), '8.17：用户 Tab 集合恒等');
+
+    // —— stop 中途 → cancelled ——
+    const task2 = randomUUID();
+    repo.insertTask({
+      id: task2,
+      goal: '冒烟停止场景',
+      status: 'running',
+      phase: 'planning',
+      created_at: nowIso(),
+      updated_at: nowIso(),
+      started_at: nowIso(),
+      finished_at: null,
+      interrupted_at: null,
+      error_code: null,
+      result_id: null,
+      stats_json: zeroStats(),
+    });
+    const slowScript: FakeProviderScript = {
+      rounds: [
+        [
+          {
+            text: JSON.stringify({
+              sourceMode: 'search',
+              sourceQuery: 'q',
+              groupId: null,
+              webQueries: [],
+            }),
+            delayMs: 1500,
+          },
+        ],
+      ],
+    };
+    const stopController2 = new AbortController();
+    const runtime2 = new ResearchRuntime({
+      taskId: task2,
+      goal: '冒烟停止场景',
+      runToken: 'smoke-stop',
+      model: 'smoke-model',
+      provider: new FakeProvider(slowScript),
+      sourceService: makeSmokeSource(),
+      searchProvider: new SmokeSearchFixture(null),
+      captureService: new CaptureService({
+        workspace: new ResearchWorkspace(task2, controller),
+        browser: controller,
+      }),
+      persistence: createRepositoryPersistence(db, task2),
+      prompts: SMOKE_RESEARCH_PROMPTS,
+      synthesis: makeSmokeResearchSynthesis(),
+      resultValidation: makeSmokeResearchValidation(),
+      stopSignal: stopController2.signal,
+    });
+    const done2 = runtime2.run();
+    await new Promise((r) => setTimeout(r, 150));
+    stopController2.abort(); // 用户停止
+    await done2;
+    const stopped = repo.getTaskById(task2);
+    assert(stopped !== null && stopped.status === 'cancelled', '8.17：stop 中途 → cancelled');
+    assert(stopped!.finishedAt !== null, '8.17：cancelled 记录 finishedAt');
+    // 终态后迟到事件零影响：数据库零新增
+    assert(repo.listCandidatesByTask(task2).length === 0, '8.17：迟到写入零生效');
+    const afterTabs2 = (await controller.getTabs()).map((t) => t.id).sort();
+    assert(
+      JSON.stringify(afterTabs2) === JSON.stringify(userTabIds),
+      '8.17：stop 后用户 Tab 集合恒等',
+    );
+
+    // —— 预算注入 → failed + 此前 Evidence 保留 ——
+    const task3 = randomUUID();
+    repo.insertTask({
+      id: task3,
+      goal: '冒烟预算场景',
+      status: 'running',
+      phase: 'planning',
+      created_at: nowIso(),
+      updated_at: nowIso(),
+      started_at: nowIso(),
+      finished_at: null,
+      interrupted_at: null,
+      error_code: null,
+      result_id: null,
+      stats_json: zeroStats(),
+    });
+    // 61 条相同 proposal：第 61 条触发 Evidence 上限（决议 #137(4)）
+    const proposals61 = Array.from({ length: 61 }, () => ({
+      captureId: 'smoke-capture-3',
+      candidateId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      type: 'quote',
+      locator: { kind: 'text', excerpt: '摘录' },
+      excerpt: '摘录',
+      value: null,
+    }));
+    const budgetScript: FakeProviderScript = {
+      rounds: [
+        [
+          {
+            text: JSON.stringify({
+              sourceMode: 'search',
+              sourceQuery: 'q',
+              groupId: null,
+              webQueries: ['冒烟'],
+            }),
+          },
+        ],
+        [
+          {
+            text: JSON.stringify({
+              selectedCandidateIds: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+            }),
+          },
+        ],
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [{ id: 'smoke-tc-3', name: 'browser_read', arguments: '{}' }],
+          },
+        ],
+        [{ text: JSON.stringify(proposals61) }],
+      ],
+    };
+    const idSeq3 = ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'];
+    let seqN3 = 0;
+    const runtime3 = new ResearchRuntime({
+      taskId: task3,
+      goal: '冒烟预算场景',
+      runToken: 'smoke-budget',
+      model: 'smoke-model',
+      provider: new FakeProvider(budgetScript),
+      sourceService: makeSmokeSource(),
+      searchProvider: new SmokeSearchFixture(pages.researchCaptureUrl),
+      captureService: new CaptureService({
+        workspace: new ResearchWorkspace(task3, controller),
+        browser: controller,
+        createCaptureId: () => 'smoke-capture-3', // 确定性 captureId（proposal 引用可预知）
+      }),
+      persistence: createRepositoryPersistence(db, task3),
+      prompts: SMOKE_RESEARCH_PROMPTS,
+      synthesis: makeSmokeResearchSynthesis(),
+      resultValidation: makeSmokeResearchValidation(),
+      createId: () => {
+        const next = idSeq3.shift();
+        if (next !== undefined) return next;
+        seqN3 += 1;
+        return `ffffffff-0000-4fff-8fff-${String(seqN3).padStart(12, '0')}`;
+      },
+      stopSignal: new AbortController().signal,
+    });
+    await runtime3.run();
+    const budgetTask = repo.getTaskById(task3);
+    assert(budgetTask !== null && budgetTask.status === 'failed', '8.17：预算用尽 → failed');
+    assert(
+      budgetTask!.errorCode === 'research-budget-exhausted',
+      '8.17：errorCode=research-budget-exhausted',
+    );
+    assert(repo.listEvidenceByTask(task3).length === 60, '8.17：此前已提交 Evidence 保留（60 条）');
+    const afterTabs3 = (await controller.getTabs()).map((t) => t.id).sort();
+    assert(
+      JSON.stringify(afterTabs3) === JSON.stringify(userTabIds),
+      '8.17：预算终态后用户 Tab 集合恒等',
+    );
+  } finally {
+    if (db !== null) closeDb(db);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// AIBROWSE_RESEARCH_SMOKE=set|check 双进程门控（决议 #139；与 SESSION/SOURCES/
+// SOURCES_UI 门控在 index.ts 确定性互斥）——两独立生产进程共用受控共享临时
+// userData；set 经产品 Service/Runtime 路径（openResearchStore + SMOKE 注入
+// RuntimeFactory）创建完成一个任务，再让一个任务在真实 phase heartbeat 后遗留
+// running 直接退出；check 新进程启动时验证前者可读、后者自动变 interrupted。
+// 不允许用测试 SQL 直接伪造核心产品状态。
+export async function runResearchSmokeGate(mode: 'set' | 'check'): Promise<void> {
+  const researchDir = join(app.getPath('userData'), 'research');
+  mkdirSync(researchDir, { recursive: true });
+  const dbPath = join(researchDir, 'research.db');
+  if (mode === 'set') {
+    // set：产品 Service/Runtime 路径创建完成一个任务（零候选研究——Sources 检索
+    // 恒空 + Search 夹具空 → 零候选 → completed + 空 Result）
+    const gateScript = makeSmokeGateScript();
+    const searchFixture = new SmokeSearchFixture(null);
+    const outcome = openResearchStore({
+      dbPath,
+      buildRuntimeFactory: (db) =>
+        createSmokeResearchRuntimeFactory({
+          db,
+          browser: smokeBrowserForGate(),
+          sourceService: null,
+          searchProvider: searchFixture,
+          providerScript: gateScript,
+          model: 'smoke-model',
+        }),
+    });
+    const service = outcome.service;
+    assert(service !== null, 'RESEARCH set：Research 子系统应正常装配');
+    const created = await service.createTask('双进程门控研究任务');
+    assert(created.ok, 'RESEARCH set：创建任务失败');
+    if (!created.ok) return;
+    const started = await service.startTask(created.task.id);
+    assert(started.ok, 'RESEARCH set：启动任务失败');
+    if (!started.ok) return;
+    // 等待完成（零候选研究快速收敛）
+    await waitFor(
+      async () => {
+        const t = await service.getTask(created.task.id);
+        return t.ok && t.task.status !== 'running' && t.task.status !== 'created';
+      },
+      30000,
+      'RESEARCH set：任务未在 30 秒内完成',
+    );
+    const done = await service.getTask(created.task.id);
+    assert(done.ok && done.task.status === 'completed', 'RESEARCH set：任务应 completed');
+    assert(done.ok && done.task.resultId !== null, 'RESEARCH set：Result 应落库');
+
+    // 第二个任务：等真实 phase heartbeat 落库后直接退出（遗留 running——
+    // 不 shutdown、不写终态；check 进程验证 interrupted）
+    const second = await service.createTask('遗留运行中任务');
+    assert(second.ok, 'RESEARCH set：创建遗留任务失败');
+    if (!second.ok) return;
+    const started2 = await service.startTask(second.task.id);
+    assert(started2.ok, 'RESEARCH set：启动遗留任务失败');
+    if (!started2.ok) return;
+    await waitFor(
+      async () => {
+        const t = await service.getTask(second.task.id);
+        return t.ok && t.task.phase === 'planning';
+      },
+      15000,
+      'RESEARCH set：遗留任务 planning heartbeat 未落库',
+    );
+    logInfo('smoke', 'RESEARCH set：completed 任务与遗留 running 任务已就绪，直接退出');
+    return; // 遗留 running 不清理（app.exit 路径）
+  }
+
+  // check：新进程启动装配——读回前者 + 遗留 running 自动 interrupted
+  const outcome = openResearchStore({ dbPath });
+  const service = outcome.service;
+  assert(service !== null, 'RESEARCH check：Research 子系统应正常装配');
+  const list = await service.listTasks({ page: 1, pageSize: 20 });
+  assert(list.ok && list.total >= 2, 'RESEARCH check：应读到 set 进程的两个任务');
+  const items = list.ok ? list.items : [];
+  const completedTask = items.find((t) => t.status === 'completed');
+  assert(completedTask !== undefined, 'RESEARCH check：completed 任务可读');
+  assert(completedTask!.resultId !== null, 'RESEARCH check：Result 引用可读');
+  const interruptedTask = items.find((t) => t.status === 'interrupted');
+  assert(interruptedTask !== undefined, 'RESEARCH check：遗留 running 应自动标 interrupted');
+  assert(interruptedTask!.interruptedAt !== null, 'RESEARCH check：interruptedAt 落库');
+  assert(interruptedTask!.phase === null, 'RESEARCH check：interrupted 后 phase 置空');
+  logInfo('smoke', 'RESEARCH check：读回与 interrupted 标记验证通过');
+}
+
+// set 门控的浏览器端口（零候选研究不创建 task Tab——最小结构占位）
+function smokeBrowserForGate(): BrowserController {
+  return {
+    createTab: async () => {
+      throw new Error('门控研究不应创建 Tab');
+    },
+    closeTab: async () => false,
+    activateTab: async () => false,
+    getTabs: async () => [],
+    getActiveTab: async () => null,
+    getPageSnapshot: async () => null,
+  } as unknown as BrowserController;
 }
