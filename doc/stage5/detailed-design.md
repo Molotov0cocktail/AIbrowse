@@ -381,38 +381,176 @@ export function transitionTask(task: ResearchTask, event: ResearchTaskEvent): Re
 
 ## 4. 候选来源合并与排序（C3 纯函数，source-selector.ts）
 
-### 4.1 合并语义（决策 D6）
+> 本节为 C3 唯一实现契约（决议 #120–#123 定稿；§15 决议为准）。旧「五档
+> （tier 1–5）」描述已于 #120 废止。
 
-- 输入：`SourceService.search/list`（audience='agent'，既有有界语义）+
-  `SearchProvider.search`（≤10 结果）+ 可选 groupId 过滤（场景 1「只看
-  AI Benchmark 分组」：list(groupId) 路径）。
-- 身份键：`normalizeSourceUrl(url, scope)`（复用 B2 canonicalization 纯函数）；
-  origin 候选与 page 候选**不互相合并**（键空间独立，决议 #49 语义）；同
-  canonicalKey 的 Sources 命中与 Search 命中合并为**一个候选**，
-  `discoveredVia` 累积两条路径（保序）。
-- 合并字段：url/title 取 Sources 侧（名称更可控），title 缺失取搜索标题；
-  trust/priority/lastUsedAt/note 仅 Sources 侧有；search 命中这些字段为
-  null（**无 trust 断言**——不虚构）。
-- **收藏/priority/用户备注不得自动等同可信**：候选携带字段仅为展示与排序
-  输入；provenance 语义继承 Sources trust 三元组（official+ai+unverified
-  仍显示「AI 推断·未核验」）；排序档位见 4.3（priority 不反转档位）。
+### 4.1 输入契约与合并语义（决议 #122）
 
-### 4.2 候选排序（确定性全序）
+```ts
+export type SourcesCandidateFeed =
+  | {
+      kind: 'source-search';
+      entries: readonly { candidateId: string; item: SourceSearchItem }[];
+    }
+  | {
+      kind: 'group-list';
+      entries: readonly { candidateId: string; item: SourceListItem }[];
+    };
+
+export interface WebSearchCandidateEntry {
+  candidateId: string;
+  result: SearchResult;
+}
+
+export interface MergeCandidatesInput {
+  sources: SourcesCandidateFeed | null; // null = 无 Sources 候选（合法输入）
+  search: readonly WebSearchCandidateEntry[];
+}
+
+export type CandidateMergeErrorCode =
+  | 'candidate-invalid-input' // 顶层结构非法 / candidateId 形状非法（§4.3）
+  | 'candidate-id-conflict'; // 原始输入 candidateId 全局重复（§4.3）
+
+export type MergeCandidatesResult =
+  | { ok: true; candidates: SourceCandidate[]; droppedCount: number }
+  | { ok: false; errorCode: CandidateMergeErrorCode; reason: string };
+```
+
+- **candidateId 预分配（决议 #122）**：C3 不生成 id；输入条目由 C5 主进程
+  调用方预先分配 candidateId。candidateId 必须是小写 RFC 4122 UUID 形状
+  （8-4-4-4-12 小写 hex，含 version 4/variant 位）；不得以 canonicalKey、
+  URL、sourceId 或数组序号充当；不同 task 由 C5 每次生成新的 UUID。
+- **身份键**：Sources 条目重新执行 `normalizeSourceUrl(item.url,
+item.scope)`；`item.canonicalKey` 与重新计算值不一致 → 该 Sources 条目
+  丢弃。Search 条目固定 scope='page'，`normalizeSourceUrl(result.url,
+'page')`。合并键 = `${scope}\0${canonicalKey}`；origin 与 page 键空间
+  独立、**永不互相合并**。
+- **同键合并（决策 D6）**：同合并键的 Sources 命中与 Search 命中合并为
+  **一个候选**；合并后 url/displayUrl/title/sourceId/trust/priority/
+  lastUsedAt/note 取 Sources 侧，`discoveredVia = ['sources','search']`
+  （固定规范顺序，不依赖数组到达顺序）；采用 Sources 条目的 candidateId
+  （未采用的 Search candidateId 安全丢弃）；档位采用 Sources 档位
+  （§4.2）。
+- **字段来源**：
+  - Sources 命中：url = item.url（B2 存储的展示 URL）；displayUrl =
+    重新计算的 normalizeSourceUrl displayUrl；title = item.name；
+    sourceId = item.id；trust/priority/lastUsedAt/note 按 §4.3/§4.4 校验
+    映射。
+  - search-only 候选：url = result.url；displayUrl = 重新计算的
+    normalizeSourceUrl displayUrl；title 取 result.title；sourceId/
+    trust/priority/lastUsedAt/note 恒 null（**无 trust 断言——不虚构**）。
+  - title 兜底：Sources title 清洗（§4.3）后为空 → Search title；Search
+    title 清洗后仍为空 → 使用安全的 URL host（`new URL(canonicalKey).host`
+    防御性取用，失败为空串）。title 规范化、控制字符清洗并限制至
+    MAX_CANDIDATE_TITLE_CHARS（截断不得拆 surrogate pair）。
+  - snippet 恒不参与候选字段、排序或 trust。
+  - **收藏/priority/用户备注不得自动等同可信**（FT-07）：候选携带字段仅
+    为展示与排序输入；provenance 语义继承 Sources trust 三元组
+    （official+ai+unverified 仍显示「AI 推断·未核验」）；排序档位见
+    §4.2（priority 不反转档位）。
+- **重复输入**：同一 feed 内相同身份重复时，保留排名更前（先到达）的合法
+  条目；后续重复计入 droppedCount。不修改任何输入数组或对象。
+- **纯函数**：零 randomUUID/零 idFactory/零日志/零 Electron import；相同
+  输入及相同预分配 ID → 输出完全确定。
+
+### 4.2 发现路径档位（决议 #120，确定性全序）
 
 ```
-sortKey = tier(2位) + "|" + priority(降序补齐) + "|" + lastUsedAt(降序, null=最末)
-        + "|" + canonicalKey + "|" + id
-tier 定义（档位严格不可跨档）：
-  1 = 收藏命中且 trust.assertedBy='user'（用户标定）
-  2 = 收藏命中（ai 断言或 unknown）
-  3 = trust.value ∈ {official, primary} 且 verification='asserted'
-  4 = 搜索命中（无 trust 断言）
-  5 = 其余（secondary/community/unknown）
+tier 1 = source-search：来自 SourceService.search(..., audience='agent')
+       ——保留 SourceService 已确定的输入顺序（决议 #61 全序）；
+         note 命中通过上游 #61 搜索排名参与选择；不解析 note 文本、
+         不把 note 写进 sortKey
+tier 2 = group-list：来自 SourceService.list(groupId, enabledOnly=true,
+         audience='agent')（场景 1「只看某个分组」）——同档内 priority
+         降序、lastUsedAt 降序、scope/canonicalKey/id 收尾
+tier 3 = web-search：仅由 SearchProvider 发现、没有合法 Sources 身份的
+         候选——保留 SearchProvider 结果顺序；trust/priority/
+         lastUsedAt/note 恒 null
 ```
 
-- 选定数：`MAX_SELECTED_SOURCES = 8`（候选 >8 时取前 8；模型可在计划阶段
-  要求调整选择（≤8 范围内）——选择意图为模型提议、程序按排序键执行裁剪）。
-- 确定性：同输入同输出；排序纯函数全表测试（含 null 字段/边界）。
+- 档位严格不可跨档（tier 1 < tier 2 < tier 3）；同档内顺序由 §4.5 sortKey
+  编码精确表达；trust 三元组仅作为 provenance 元数据，**不改变基础排序**
+  （这是来源选择顺序，不是可信度或质量评分）；user+asserted 不等于事实已
+  由程序核验；ai+unverified 永远显示为未核验。
+- official/primary/community 的进一步选择与构成控制由 C5 有界计划调整
+  （模型提议、程序执行）和 C6 sourceTypes/交叉核验承担；Fifth_stage.md
+  §3.2 是选择策略建议，C3 在不修改冻结 Sources 契约的前提下，通过
+  source-search 上游排序、group 限定、Search 补充及 C5 有界调整实现。
+- 同身份 Sources + Search 合并后采用 Sources 档位与 Sources 字段，
+  discoveredVia 累积两条路径。
+
+### 4.3 输入验证与安全降级（单条丢弃 fail-closed；零 throw 零日志正文）
+
+- **URL 边界**：非 http/https、userinfo、控制字符、超长（>2048）或无法
+  解析的 URL → 丢弃该条（normalizeSourceUrl 既有语义）。
+- **Sources 条目**：scope 非法（非 'origin'/'page'）→ 丢弃；
+  `item.canonicalKey` 与重算不一致 → 丢弃；disabled（enabled=false）或
+  shareMode='blocked' → 纵深防御丢弃；sourceId 非法（非 UUID 形状）→
+  丢弃。Sources 条目丢弃但同 URL Search 合法时，保留 search-only 候选
+  （trust=null——不继承已丢弃 Sources 的任何字段）。
+- **trust**：仅接受 `value ∈ {official,primary,secondary,community,
+unknown}` 且（assertedBy='user' 且 verification='asserted'）或
+  （assertedBy='ai' 且 verification='unverified'）；其余组合/畸形 →
+  整体降级为 null（候选保留，不抛异常）。
+- **priority**：非 1–5 整数 → null；**lastUsedAt**：非法 → null；
+  **note**：按 §4.4 映射。
+- **candidateId**：非字符串/非小写 UUID 形状 → 整次 fail-closed
+  （candidate-invalid-input）；重复 → 整次 fail-closed
+  （candidate-id-conflict）。
+- **顶层结构**：sources 非 null 且（kind 非法或 entries 非数组）/search
+  非数组/条目形状非法（候选对象缺 candidateId/item|result）→ 整次
+  fail-closed（candidate-invalid-input，reason 为中文原因不含 URL/note/
+  标题正文）。
+- **单条非法**：只增加 droppedCount；不把 URL、note 或标题写入日志。
+
+### 4.4 note 映射（决议 #121）
+
+- group-list 与 search-only 候选：note = null。
+- source-search 候选：userNote 非空 → `用户备注：${text}`；aiNote 非空 →
+  `AI 备注：${text}`；两者都有时按「用户备注 → AI 备注」顺序以换行连接；
+  每段先 NFC、trim、控制/bidi 字符清洗（复用 stripControlChars 同族规则）
+  后为空 → 视为无。
+- 预算：标签、换行和正文共同计入 MAX_CANDIDATE_NOTE_CHARS
+  （String.length）；完整组装 ≤ 上限直接输出；超上限时逐段分配：用户段
+  优先（截断至剩余预算，不拆 UTF-16 surrogate pair）；剩余预算不足
+  「AI 备注：」标签 + 至少 1 字符正文时，AI 段整体丢弃——**不得留下无
+  正文的作者标签**；最终 String.length 恒 ≤ MAX_CANDIDATE_NOTE_CHARS。
+- note 只展示/持久化，不进 sortKey、不进入模型上下文；不得把 userNote 与
+  aiNote 混成无法识别作者的一段文本。
+
+### 4.5 sortKey 编码（决议 #123）
+
+```
+TT|RRRRR|P|IIIIIIIIIIIIIIIIIIIIIIII|S|canonicalKey|candidateId
+TT    = '01'|'02'|'03'（tier）
+RRRRR = 原输入 rank（零起点、5 位补零；rank ≥ 100000 防御 clamp 99999）；
+        group-list 固定 '99999'
+P     = priority 1–5 → String(6−priority)（5→'1' 排最前）；null/非法 → '9'
+I     = 合法 ISO 时间（isIso8601Timestamp）→ new Date(...).toISOString()
+        后每个数字 d 替换为 9−d（反向时间字典序，标点原位保留——新时间
+        排前）；null/非法 → '~' × 24（固定长度，恒排最后）
+S     = '0'(origin) | '1'(page)
+canonicalKey = normalizeSourceUrl 输出（WHATWG 序列化保持 ASCII）
+candidateId  = 小写 UUID
+```
+
+- 比较用原始二元 `<`/`>`（**不得 localeCompare**）：sortKey 全 ASCII，JS
+  UTF-16 code unit 序与 SQLite BINARY 排序一致；Repository
+  `ORDER BY sort_key ASC, candidate_id ASC`（§9.1）与内存排序完全一致
+  （真实 node:sqlite 测试证明）。sortKey 为比较键，不要求可逆解析；
+  canonicalKey 内出现 `|` 不影响正确性。
+- lastUsedAt 非法：Candidate 字段降级 null + sortKey 用 null sentinel，
+  不抛异常。sortKey 由纯函数 buildCandidateSortKey 生成（C5 持久化时直接
+  使用；同一候选的 sortKey 唯一——candidateId 收尾）。
+
+### 4.6 有界性与选定裁剪（D12）
+
+- merge 后先按完整排序规则排序，截取 MAX_SOURCE_CANDIDATES（24），超出
+  部分计入 droppedCount（确定性：同输入同输出）。
+- `selectCandidates(candidates)` 对副本按 sortKey（+ candidateId 收尾）
+  排序并截取 MAX_SELECTED_SOURCES（8）；空输入成功返回空数组；不使用
+  魔法数字（常量来自 shared/types/research.ts）。模型可在计划阶段要求
+  调整选择（≤8 范围内）——选择意图为模型提议、程序按排序键执行裁剪。
 
 ## 5. Capture 与 Evidence 数据契约（C4）
 
@@ -933,23 +1071,23 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 
 ### 13.1 单测（Vitest，node 环境，纯逻辑）
 
-| 测试文件                    | 用例要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | 任务 |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| research-task-state.test.ts | 状态迁移全表（§3.1 每行）/非法事件安全返回/终态不可变/start 前置矩阵                                                                                                                                                                                                                                                                                                                                                                                                         | C1   |
-| research-budget.test.ts     | 全部常量边界（§6.8 表每项 ±1）/裁剪确定性/超限标记                                                                                                                                                                                                                                                                                                                                                                                                                           | C1   |
-| research-repository.test.ts | 真实 node:sqlite：CRUD/编译期 SQL + 注入串仅作数据/CASCADE/JSON 形状校验 fail-closed/字节预算拒绝/任务数清理                                                                                                                                                                                                                                                                                                                                                                 | C1   |
-| research-store.test.ts      | 装配矩阵：新库迁移 v1/坏 magic 保留/未来版本零写入/unavailable 全拒/遗留 running 标 interrupted/其余子系统不受影响（注：完整恢复态矩阵随 C1 定稿；backup 非 v1 承诺）                                                                                                                                                                                                                                                                                                        | C1   |
-| research-workspace.test.ts  | 注入 Fake BrowserController 替身（完全离线、可控 Promise）：精确 tabId 归属/只关本任务 Tab/用户 Tab 零关闭/已关闭安全无操作/并发上限（第 4 次 create 前拒绝 + deferred create 竞态）/abort 前与 create 期间/焦点恢复三态（未切换→恢复、已切换→零 activate、activeBefore 已关→不重建）/closeTab false 与抛错/cleanupAll 多 Tab·部分失败·重复·drain 屏障零泄漏/cleanup 后 acquire 拒绝/用户关 Tab → checkTab tab-closed-by-user/零 Electron import/常量单一事实源（决议 #118） | C2   |
-| source-selector.test.ts     | 合并矩阵（同 URL 双路径/不同 scope 不合并/键空间独立）/provenance 继承（search 无 trust）/排序全序（档位不可跨档/priority 不反转/null 末位/确定性）                                                                                                                                                                                                                                                                                                                          | C3   |
-| capture-service.test.ts     | 读取失败矩阵/重试语义/L0–L3 阶梯/正文不持久化（存储探针零命中）/contentHash 确定性/表格坐标与字段路径提取                                                                                                                                                                                                                                                                                                                                                                    | C4   |
-| evidence-validator.test.ts  | 敌手矩阵：伪造（excerpt 不在捕获内容）/错绑（captureId 跨任务）/坐标越界/超长 excerpt/规范化匹配（空白折叠/NFC）/rejected 原因回注                                                                                                                                                                                                                                                                                                                                           | C4   |
-| claim-model.test.ts         | coverage 计算/severity=high 多源强制/sourceTypes 判定矩阵/冲突结构校验（positions ≥2/refs ∈ 候选集）/uncertainty 块                                                                                                                                                                                                                                                                                                                                                          | C6   |
-| research-prompts.test.ts    | 合成提示词恒等断言（编译期常量）/UNTRUSTED 块闭合转义/预算裁剪/与共读・Agent system prompt 互不混用                                                                                                                                                                                                                                                                                                                                                                          | C6   |
-| research-runtime.test.ts    | 阶段循环全路径（FakeProvider 脚本注入）/终态单一所有权/stop 幂等/超时/预算用尽终态/失败继续/迟到事件忽略/心跳落库                                                                                                                                                                                                                                                                                                                                                            | C5   |
-| result-validator.test.ts    | 判别联合逐块校验矩阵/长度边界/表格行列界/ranking rank 连续/evidenceId 存在与归属/sourceRefs ∈ 候选集/URL 白名单/未知 kind 拒绝/失败语义回注                                                                                                                                                                                                                                                                                                                                  | C7   |
-| markdown-parse.test.ts      | 子集解析矩阵/raw HTML 关闭（`<script>`/`<img onerror>` 形态纯文本）/URL 白名单（javascript:/data: 拒绝）/转义与 bidi 剔除/超预算安全降级                                                                                                                                                                                                                                                                                                                                     | C7   |
-| csv-serializer.test.ts      | 公式注入（=,+,-,@ 前缀 `'` 转义）/CRLF 与引号转义/UTF-8 BOM/空表与超长单元格截断                                                                                                                                                                                                                                                                                                                                                                                             | C8   |
-| research-ipc.test.ts        | 载荷白名单矩阵（未知字段/超长/非法 id）/状态门控（running 不可 delete）/export 通道无 renderer 路径参数/审计恰好一条脱敏                                                                                                                                                                                                                                                                                                                                                     | C8   |
+| 测试文件                    | 用例要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | 任务 |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| research-task-state.test.ts | 状态迁移全表（§3.1 每行）/非法事件安全返回/终态不可变/start 前置矩阵                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | C1   |
+| research-budget.test.ts     | 全部常量边界（§6.8 表每项 ±1）/裁剪确定性/超限标记                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C1   |
+| research-repository.test.ts | 真实 node:sqlite：CRUD/编译期 SQL + 注入串仅作数据/CASCADE/JSON 形状校验 fail-closed/字节预算拒绝/任务数清理                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | C1   |
+| research-store.test.ts      | 装配矩阵：新库迁移 v1/坏 magic 保留/未来版本零写入/unavailable 全拒/遗留 running 标 interrupted/其余子系统不受影响（注：完整恢复态矩阵随 C1 定稿；backup 非 v1 承诺）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | C1   |
+| research-workspace.test.ts  | 注入 Fake BrowserController 替身（完全离线、可控 Promise）：精确 tabId 归属/只关本任务 Tab/用户 Tab 零关闭/已关闭安全无操作/并发上限（第 4 次 create 前拒绝 + deferred create 竞态）/abort 前与 create 期间/焦点恢复三态（未切换→恢复、已切换→零 activate、activeBefore 已关→不重建）/closeTab false 与抛错/cleanupAll 多 Tab·部分失败·重复·drain 屏障零泄漏/cleanup 后 acquire 拒绝/用户关 Tab → checkTab tab-closed-by-user/零 Electron import/常量单一事实源（决议 #118）                                                                                                                                                                                                                                                       | C2   |
+| source-selector.test.ts     | 三档可达性与互斥（1<2<3，trust/priority 不反转档位）/上游顺序保留（source-search 与 web-search 输入 rank；group-list 才按 priority/lastUsedAt）/合并矩阵（同 URL 双路径/不同 scope 不合并/键空间独立/字段优先级/discoveredVia 规范顺序/重复输入去重）/provenance 继承（search-only 恒 null 无 trust 断言；畸形 trust 降级 null）/note 映射（作者标签/清洗/截断不拆 surrogate/无空标签/不进 sortKey）/candidateId 输入契约（非法与重复 fail-closed）/sortKey 编码（priority 5 在前/新时间在前/null 末位/`<` 比较与真实 node:sqlite ORDER BY sort_key 一致）/hostile input 矩阵（javascript:/data:/userinfo/控制字符/超长 URL/canonicalKey 不一致/disabled/blocked 零 throw 零日志正文）/预算（24 裁剪/select ≤8/空输入/零修改输入） | C3   |
+| capture-service.test.ts     | 读取失败矩阵/重试语义/L0–L3 阶梯/正文不持久化（存储探针零命中）/contentHash 确定性/表格坐标与字段路径提取                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | C4   |
+| evidence-validator.test.ts  | 敌手矩阵：伪造（excerpt 不在捕获内容）/错绑（captureId 跨任务）/坐标越界/超长 excerpt/规范化匹配（空白折叠/NFC）/rejected 原因回注                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C4   |
+| claim-model.test.ts         | coverage 计算/severity=high 多源强制/sourceTypes 判定矩阵/冲突结构校验（positions ≥2/refs ∈ 候选集）/uncertainty 块                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | C6   |
+| research-prompts.test.ts    | 合成提示词恒等断言（编译期常量）/UNTRUSTED 块闭合转义/预算裁剪/与共读・Agent system prompt 互不混用                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | C6   |
+| research-runtime.test.ts    | 阶段循环全路径（FakeProvider 脚本注入）/终态单一所有权/stop 幂等/超时/预算用尽终态/失败继续/迟到事件忽略/心跳落库                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | C5   |
+| result-validator.test.ts    | 判别联合逐块校验矩阵/长度边界/表格行列界/ranking rank 连续/evidenceId 存在与归属/sourceRefs ∈ 候选集/URL 白名单/未知 kind 拒绝/失败语义回注                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | C7   |
+| markdown-parse.test.ts      | 子集解析矩阵/raw HTML 关闭（`<script>`/`<img onerror>` 形态纯文本）/URL 白名单（javascript:/data: 拒绝）/转义与 bidi 剔除/超预算安全降级                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | C7   |
+| csv-serializer.test.ts      | 公式注入（=,+,-,@ 前缀 `'` 转义）/CRLF 与引号转义/UTF-8 BOM/空表与超长单元格截断                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | C8   |
+| research-ipc.test.ts        | 载荷白名单矩阵（未知字段/超长/非法 id）/状态门控（running 不可 delete）/export 通道无 renderer 路径参数/审计恰好一条脱敏                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | C8   |
 
 ### 13.2 冒烟矩阵（Electron 真实启动，临时 userData；dev+生产双场景）
 
@@ -1299,6 +1437,103 @@ verification:'verified' }`）；schema CHECK 收窄为
      返回值直接交给 best-effort close；任何清理 helper 都只接收已确认
      「不属于 tabsBefore」的精确 id，并遵守「确认关闭后才移除所有权」——
      消除 closeBestEffort 式忽略 closeTab=false/抛错的失真语义。
+
+> 以下 #120–#123 为 C3 实施前契约裁决（2026-08-16，C3 闭环；先改本文与
+> 测试、再改实现——§15 流程）。C3 任务文档「实施前复核项」四项（§4.2 五档
+> 可达性/note 映射/candidate_id 生成/sortKey 字典序）逐一裁决；裁决依据
+> Fifth_stage.md §3.2 上位需求、决议 #49/#58/#59/#61 既有 Sources 契约、
+> §9.1 `ORDER BY sort_key ASC, candidate_id ASC` 既有存储契约与 threat-model
+> FT-07（provenance 诚实）唯一裁决，无需用户拍板。**不改写 #101–#119 既有
+> 结论**；§4 旧「五档（tier 1–5）」描述就此废止（档位 3/5 对合法 merge 输出
+> 不可达——合法 Sources 候选的 trust 不变量为 user+asserted 或 ai+unverified，
+> 档位 1/2 条件已覆盖全部收藏命中）。
+
+120. **三档发现路径排序（废止五档描述）**：候选排序改为三个互斥、可达的
+     「发现路径档位」（discovery-tier，§4.2）：
+     （1）**tier 1 — source-search**：来自
+     `SourceService.search(..., audience='agent')`；保留 SourceService
+     已确定的输入顺序（该顺序已包含决议 #61 匹配档位、priority、
+     lastUsedAt、scope/canonicalKey/id 全序）；note 命中通过上游 #61 搜索
+     排名参与选择；C3 不解析 note 文本、不把 note 写进 sortKey。
+     （2）**tier 2 — group-list**：来自
+     `SourceService.list(groupId, enabledOnly=true, audience='agent')`
+     （场景 1「只看某个分组」）；同档内 priority 降序、lastUsedAt 降序、
+     scope/canonicalKey/id 收尾。
+     （3）**tier 3 — web-search**：仅由 SearchProvider 发现、没有合法
+     Sources 身份的候选；保留 SearchProvider 结果顺序；trust/priority/
+     lastUsedAt/note 恒 null。
+     Sources + Search 同一 page 身份合并后采用 **Sources 档位与 Sources
+     字段**，同时保留 `discoveredVia = ['sources','search']`。
+     语义说明（同步至 §4 与 threat-model）：
+     - 这是**来源选择顺序**，不是可信度或质量评分；
+     - trust.value/assertedBy/verification 仅作为 provenance 元数据，
+       不改变基础排序；
+     - user+asserted 不等于事实已由程序核验；ai+unverified 永远显示为
+       未核验；
+     - official/primary/community 的进一步选择与构成控制由 C5 有界计划
+       调整（模型提议、程序执行）和 C6 sourceTypes/交叉核验承担；
+     - Fifth_stage.md §3.2 是选择策略建议，C3 在不修改冻结 Sources 契约
+       的前提下，通过 source-search 上游排序、group 限定、Search 补充及
+       C5 有界调整实现；
+     - 不修改 SourceService/SearchProvider 的现有类型或行为。
+       旧「档位 4/5」删除；不存在「tier 4/5」可达测试。
+
+121. **note 映射（SourceSearchItem.note → SourceCandidate.note）**：
+     - group-list 与 search-only 候选：note = null；
+     - source-search 候选（§4.4 精确规则）：userNote 非空 →
+       `用户备注：${text}`；aiNote 非空 → `AI 备注：${text}`；两者都有时
+       按「用户备注 → AI 备注」顺序以换行连接；先做 NFC、trim、控制/bidi
+       字符清洗；标签、换行和正文共同计入 MAX_CANDIDATE_NOTE_CHARS
+       （String.length）；截断不得拆开 UTF-16 surrogate pair；最终同时
+       满足 String.length ≤ MAX_CANDIDATE_NOTE_CHARS；若第二段因预算完全
+       放不下，不得留下无正文的作者标签；
+     - note 只展示/持久化，不进 sortKey、不进入模型上下文；
+     - 不得把 userNote 与 aiNote 混成无法识别作者的一段文本。
+
+122. **candidate_id 输入契约（SourceSelector 保持纯函数）**：C3 不调用
+     randomUUID、不接收有状态 idFactory；输入条目由未来 C5 主进程调用方
+     预先分配 candidateId：
+     - Sources 条目 `{ candidateId, item }`、Search 条目
+       `{ candidateId, result }`；
+     - candidateId 必须是小写 RFC 4122 UUID 形状（含 version 4/variant
+       位，与主进程 randomUUID 输出一致；大写 UUID 拒绝）；
+     - 原始输入中的 candidateId 必须全局互不重复；
+     - **非法或重复 ID → 整次 merge fail-closed**（错误码
+       candidate-invalid-input / candidate-id-conflict，§4.1）；
+     - 不得以 canonicalKey、URL、sourceId 或数组序号充当 candidate_id；
+     - 同身份 Sources + Search 合并时采用 Sources 条目的 candidateId；
+       未采用的 Search candidateId 安全丢弃；
+     - 不同 task 由 C5 每次生成新的 UUID，避免 research_candidates 全局
+       主键冲突；
+     - 相同输入及相同预分配 ID → 输出完全确定。
+       §4.1 精确接口（SourcesCandidateFeed/WebSearchCandidateEntry/
+       MergeCandidatesInput/MergeCandidatesResult）为 C3 实现契约，命名可
+       因现有 TypeScript 风格小幅调整，语义不得改变。
+
+123. **sortKey 编码（§4.5 精确规则）**：ResearchRepository 使用
+     `ORDER BY sort_key ASC, candidate_id ASC`，因此 sortKey 必须自身以
+     ASCII 字典序表达全部顺序（不得生成「看起来正确但 ASC 实际反转」的
+     字符串）。固定结构
+     `TT|RRRRR|P|IIIIIIIIIIIIIIIIIIIIIIII|S|canonicalKey|candidateId`：
+     - TT：tier，01/02/03；
+     - RRRRR：source-search/web-search 使用原输入 rank（零起点、5 位补
+       零；rank ≥ 100000 防御性 clamp 至 99999——输入有界不可达）；
+       group-list 使用固定 99999；
+     - P：priority 1–5 编码为 6-priority（5→1、1→5）；null/非法值编码 9；
+     - I：合法 ISO 时间先规范化为 UTC toISOString()；每个数字 d 替换为
+       9-d，得到反向时间字典序（新时间排前）；标点原位保留；null/非法
+       时间使用固定长度 `~~~~~~~~~~~~~~~~~~~~~~~~`（24 个 `~`），保证排在
+       最后；
+     - S：origin=0，page=1；
+     - canonicalKey：必须来自 normalizeSourceUrl（WHATWG 序列化保持
+       ASCII）；
+     - candidateId：小写 UUID。
+       比较必须使用原始二元 `<`/`>`（不得使用 localeCompare），保证与
+       SQLite BINARY 排序一致（sortKey 全 ASCII，JS UTF-16 code unit 序与
+       SQLite UTF-8 字节序一致）。lastUsedAt 非法时：Candidate 字段降级为
+       null、sortKey 使用 null sentinel、不抛异常。必须通过真实
+       node:sqlite 测试证明：内存按 sortKey ASC 的顺序 ===
+       ResearchRepository.listCandidatesByTask() 顺序。
 
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4）/C7（依赖 C1，可与 C6 并行）→

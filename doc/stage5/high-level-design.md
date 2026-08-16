@@ -111,7 +111,7 @@ UI research:create {goal} → IPC（sender+主帧校验；goal 校验/截断 ≤
 → 进度事件（research:progress：phase/stats/步骤计数——确定性运行事实，无思维过程）
 ```
 
-### 4.2 候选合并与排序（C3，纯函数）
+### 4.2 候选合并与排序（C3，纯函数；决议 #120–#123）
 
 ```
 输入：SourceService.search/list（audience='agent'，硬上限 10/每页 20）
@@ -119,13 +119,11 @@ UI research:create {goal} → IPC（sender+主帧校验；goal 校验/截断 ≤
 → normalizeSourceUrl 生成身份键（origin/page 语义）
 → 同键合并：候选 { url, title, canonicalKey, scope, discoveredVia: ['sources'|'search'],
     sourceId?, trust?（Sources 命中才携带三元组）, priority?, note?（仅 UI 展示不进模型） }
-→ 排序（确定性全序，档位不可跨档）：
-    档位 1 收藏命中且 trust.assertedBy='user'（用户标定优先）
-    档位 2 收藏命中（ai 断言/unknown）
-    档位 3 官方/primary（trust.value 且 verification='asserted'）
-    档位 4 搜索命中（无 trust 断言）
-    档位 5 其余（community/secondary/unknown）
-    同档内：priority 降序 → lastUsedAt 降序（null 末位）→ canonicalKey → id
+→ 排序（确定性全序，发现路径档位不可跨档）：
+    tier 1 source-search：保留 SourceService 输入顺序（#61 全序）
+    tier 2 group-list：priority 降序 → lastUsedAt 降序 → scope/canonicalKey/id
+    tier 3 web-search：保留 SearchProvider 结果顺序（trust/priority/lastUsedAt/note 恒 null）
+→ sortKey 编码（ASCII 字典序与 SQLite BINARY 一致）：TT|RRRRR|P|I|S|canonicalKey|candidateId
 → 选定 ≤ MAX_SELECTED_SOURCES（8）
 ```
 
