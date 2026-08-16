@@ -74,7 +74,7 @@ ResearchRepository`。Renderer 只消费已验证 Result Schema。
 | 预算纯函数          | src/main/research/domain/research-budget.ts         | 全部确定性预算常量与裁剪函数（字符预算/轮次回放/结果字节）                                           | C1                                    |
 | ResearchRepository  | src/main/research/repository/research-repository.ts | research.db **唯一 SQL 执行点**（编译期常量 + 参数绑定）；tasks/evidence/claims/results 表           | C1                                    |
 | research-store 装配 | src/main/research/research-store.ts                 | 启动装配（probe→迁移→检查→normal                                                                     | unavailable；模式复用 sources-store） | C1  |
-| ResearchService     | src/main/research/research-service.ts               | 任务生命周期编排唯一入口：createTask/start/stop/getTask/getResult/listTasks/deleteTask               | C1/C5                                 |
+| ResearchService     | src/main/research/research-service.ts               | 任务生命周期编排唯一入口：createTask/start/stop/getTask/getResult/listTasks/deleteTask；C8 扩展安全结果视图 getResearchResultView + progress/task-done 事件出口（listener 异常隔离；shutdown 后零事件） | C1/C5/C8 |
 | ResearchWorkspace   | src/main/research/research-workspace.ts             | task-owned Tab 所有权：精确 tabId、并发 ≤3、try/finally 清理、用户 Tab 永不关闭、用户关 Tab 处理     | C2                                    |
 | SourceSelector      | src/main/research/source-selector.ts                | 候选合并（normalizeSourceUrl 身份键 + discoveredVia 双路径）+ provenance 继承 + 确定性排序（纯函数） | C3                                    |
 | CaptureService      | src/main/research/capture-service.ts                | 打开/读取 task Tab（实时快照）、结构化提取（表格/字段）、capture 记录（哈希/摘要/不持久化正文）      | C4                                    |
@@ -83,14 +83,16 @@ ResearchRepository`。Renderer 只消费已验证 Result Schema。
 | 综合层              | src/main/research/synthesis/                        | Cross-check 数据模型装配 + 合成提示词构建（Claim/Conflict/Uncertainty）                              | C6                                    |
 | ResultValidator     | src/main/research/result-validator.ts               | Result Schema 逐块校验纯函数（结构/长度/evidenceId 存在/URL 安全/表格行列界）                        | C7                                    |
 | Renderer            | src/renderer/src/research/                          | Markdown 安全子集解析纯函数 + Table/Cards/Ranking 组件 + Evidence 下钻；零 Electron import           | C7                                    |
-| Research IPC 适配器 | src/main/research/research-ipc.ts                   | research:* 通道适配器（参数白名单/状态门控/审计；零 Electron import）                                | C8                                    |
-| Research UI         | src/renderer/src/research/ + App viewMode           | 侧栏控制/进度 + 大结果画布 + 表格排序/筛选/复制 + CSV 导出触发                                       | C8                                    |
+| Research IPC 适配器 | src/main/research/research-ipc.ts                   | research:* 八通道适配器（create/start/stop/get/result/list/delete/export-csv——参数严格白名单 fail-closed/状态门控/每次写尝试恰好一条脱敏审计；零 Electron import，export 经注入式窄端口调用 dialog+写入） | C8 |
+| Research UI         | src/renderer/src/research/ + App viewMode           | 侧栏控制/进度（380px 同模式，sidePanel 三态互斥）+ 大结果画布（viewMode 'browser'\|'research-result' + WebContentsView 可见性联动）+ 表格排序/筛选/复制纯函数 + Evidence 下钻 + CSV 导出触发（受限 view state） | C8 |
 
 既有模块扩展点（本会话代码核对确认）：`ToolExecutionContext` 无需扩展（Research
 不经 ToolRegistry——读取/打开走 ResearchService 直调 BrowserController/
 SourceService/SearchProvider，权限语义沿用对应工具契约）；`index.ts` 装配新增
 ResearchService 与 IPC 通道注册；preload bridge 白名单新增 research 方法；
-`App.tsx` 新增 viewMode 与 ResearchPanel。
+`App.tsx` 新增 viewMode 与 ResearchPanel；`BrowserControllerImpl` 新增仅供受信
+UI 的 contentVisible/setContentVisible（决议 #158——不进 AI BrowserController/
+Tool 能力接口）+ `ui:browser-content-visible` 受控 send 通道。
 
 ## 4. 数据流（关键路径）
 

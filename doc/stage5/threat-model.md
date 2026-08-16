@@ -212,10 +212,15 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
   文本节点（零 dangerouslySetInnerHTML 拼模型文本）；控制字符/bidi 剔除；
   AST 有界（深度/节点数/输入长度）+ 未闭合标记字面化 + 超限整块降级
   纯文本；解析器单遍线性扫描零无界正则/递归（防 ReDoS）。
-- **CSV 导出**（详细设计 §8.3/§11 决议 #100）：仅 Table 块；公式注入防护
-  （=,+,-,@ 开头单元格加 `'` 前缀）；CRLF/引号转义；UTF-8 BOM；主进程
-  dialog 安全通道（用户选定路径 + 扩展名/路径校验）；renderer 零路径参数；
-  不导出 Evidence 摘录/claims/冲突。
+- **CSV 导出**（详细设计 §8.3/§11 决议 #100/#161/#162）：仅 Table 块；
+  **导出当前 UI 视图**——renderer 只提供受限 view state（{sort,filter}），
+  主进程重新读取已持久化并验证的 Result 按同一 applyTableView 纯函数重投影
+  （禁止信任 renderer 数据/rows/路径/CSV 内容）；公式注入防护（=,+,-,@、
+  TAB、CR 开头单元格加 `'` 前缀，CSV quoting 前执行）；RFC 4180 同族
+  CRLF/引号转义；UTF-8 BOM；MAX_CSV_EXPORT_BYTES 编译期上限（超限零
+  写入）；主进程 dialog 安全通道（用户选定路径 + 扩展名大小写不敏感精确
+  .csv 校验）；renderer 零路径参数；不导出 Evidence 摘录/claims/冲突/
+  URL 元数据；审计只记 taskId/块索引/行列计数/结果码。
 
 ### 3.6 运行时与任务隔离防线（FT-09/FT-15/FT-17）
 
@@ -225,14 +230,17 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
   **cleanupAll 至少在所有终态执行**（失败只记录有界脱敏诊断并保留所有权
   供 shutdown 精确重试——决议 #138(4)）。
 - **事件与写入时序**：ResearchProgressEvent 携带 taskId（renderer 按
-  taskId 键控 reducer，跨任务串线忽略）；终态单一所有权守卫（finish()
-  后迟到事件/写入零生效——A5 决议 #33 模式）；终态优先级 stop > deadline
-  > 预算（决议 #138(3)）；**单一 active run + runToken 守卫 + restart
-  > 屏障**（schema 无 runId：旧 run 完全 settle 前禁止重启，旧 run 迟到
-  > 写入被终态守卫/runToken/CAS 三重拦截——决议 #135）；shutdown 契约
-  > （abort → await settle → cleanupAll → closeDb，零 database-closed
-  > race）；Progress 事件零 goal/URL/模型文本/网页正文/Evidence 内容
-  > （FT-16）。
+  taskId 键控 reducer，跨任务串线忽略）；task-done.status 收窄三值
+  （completed|failed|cancelled——决议 #156）；终态单一所有权守卫
+  （finish() 后迟到事件/写入零生效——A5 决议 #33 模式）；终态数据库提交
+  成功后先发 terminal progress 再发 task-done（各恰好一次；shutdown/
+  dispose 后零事件 + listener 清空 + 迟到 no-op——决议 #157）；终态
+  优先级 stop > deadline > 预算（决议 #138(3)）；**单一 active run +
+  runToken 守卫 + restart 屏障**（schema 无 runId：旧 run 完全 settle 前
+  禁止重启，旧 run 迟到写入被终态守卫/runToken/CAS 三重拦截——决议
+  #135）；shutdown 契约（abort → await settle → cleanupAll → closeDb，
+  零 database-closed race）；Progress/Done 事件零 goal/URL/模型文本/
+  网页正文/Evidence/Result 内容（FT-16）。
 - **校验器健壮性（FT-17）**：校验器为纯函数 + 敌手矩阵单测（长度边界 ±1、
   规范化等价绕过、JSON 深度/形状、重复键、超长嵌套）；任何校验异常
   fail-closed（不抛穿、不静默放行）；ResearchPlan/工具参数/端口输出
@@ -242,8 +250,9 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
 ### 3.7 审计层（继承 + 扩展）
 
 - research 操作（create/start/stop/delete/export）每次恰好一条脱敏审计
-  （goal 长度/taskId/统计/导出块索引；URL 值、Evidence 摘录、Result 正文、
-  凭据形态零出现）；普通日志仅任务元数据与统计（FT-16）。
+  （goal 长度/taskId/统计/导出块索引 + 行列计数/结果码；URL 值、Evidence
+  摘录、Result 正文、路径、文件名、单元格、凭据形态零出现——决议 #162；
+  导出取消同样恰好一条脱敏审计）；普通日志仅任务元数据与统计（FT-16）。
 - Key/凭据红线全部继承：API Key 绝不进 research.db/日志/审计/UI/导出
   （grep 断言 + 字节扫描）。
 

@@ -1,28 +1,45 @@
 # C8 — Research UI/IPC/bridge：侧栏控制/进度、大结果画布、证据下钻、表格交互与 CSV 导出
 
-> 第五阶段任务文档。契约 `doc/stage5/detailed-design.md` §11；安全契约
-> `doc/stage5/threat-model.md` §3.5/§3.7（FT-13/FT-15/FT-16）；决策
-> D10/D11（proposal §10）。
+> 第五阶段任务文档。契约 `doc/stage5/detailed-design.md` §11/§13（已按
+> 决议 #156–#163 校准）；安全契约 `doc/stage5/threat-model.md`
+> §3.5/§3.6/§3.7（FT-13/FT-15/FT-16）；决策 D10/D11（proposal §10）。
+> **实施前契约裁决 #156–#163 已完成（2026-08-17，C8 闭环）**——本文档已
+> 按裁决同步：research:\* 为**八个 invoke + 两事件**（原任务文档「7 个
+> invoke」漂移，以八个为准）；export-csv payload 冻结为 {taskId,
+> tableBlockIndex, view:{sort,filter}}（导出当前 UI 视图、主进程重投影）；
+> ResearchService 安全结果视图 + 事件出口；BrowserControllerImpl
+> contentVisible（不进 AI 接口）+ ui:browser-content-visible 受控通道；
+> Evidence 下钻安全导航（tabs.create + 白名单）；TableView 纯函数 +
+> spreadsheet-cell 防护；CSV 字节契约 + MAX_CSV_EXPORT_BYTES +
+> ExportCsvResult 闭合错误联合；sidePanel 三态互斥与 useResearch
+> 收敛契约。
 
 ## 目标
 
 落地 Research 用户面：侧栏 ResearchPanel（创建/启动/停止/进度/历史，380px
-同模式）+ 主窗口内独立大结果画布（viewMode 切换，不新开 BrowserWindow）+
-Evidence 下钻 + 表格排序/筛选/复制 + CSV 导出（主进程 dialog 安全通道 +
-公式注入防护）+ IPC/bridge 白名单——Chat 与 Research 模式区分清楚。
+同模式）+ 主窗口内独立大结果画布（viewMode 切换 + WebContentsView 可见性
+联动，不新开 BrowserWindow）+ Evidence 下钻 + 表格排序/筛选/复制 + CSV
+导出（主进程 dialog 安全通道 + 公式注入防护 + 当前 UI 视图重投影）+
+IPC/bridge 白名单——Chat 与 Research 模式区分清楚。
 
 ## 范围与非目标
 
-- **做**：research:* 7 个 invoke 通道 + 2 事件通道（§11 全表，handle()
-  sender+主帧校验 + 参数白名单）；preload bridge 白名单 + eventRelay；
-  research-ipc 适配器（零 Electron import；状态门控；export-csv 经主进程
-  dialog.showSaveDialog——renderer 零路径参数）；App viewMode
-  'browser'|'research-result'（浏览器内容区与结果画布互斥切换，不影响
-  Tab 状态）；ResearchPanel（侧栏）；ResultView 接线（C7 组件）；表格
-  排序/筛选/复制纯函数 + UI；csv-serializer（公式注入/CRLF/引号/BOM）+
-  导出审计；冒烟 8.19。
+- **做**：research:* **八个** invoke 通道 + 2 事件通道（§11 全表，handle()
+  sender+主帧校验 + 参数严格白名单 fail-closed）；preload bridge 白名单 +
+  eventRelay；research-ipc 适配器（零 Electron import；状态门控；
+  export-csv 经注入式窄端口调用 dialog.showSaveDialog + 写入——renderer
+  零路径参数，扩展名大小写不敏感精确 .csv）；App viewMode
+  'browser'|'research-result' + BrowserControllerImpl contentVisible/
+  setContentVisible（受信 UI 专用，不进 AI 接口）+ ui:browser-content-visible
+  受控 send 通道；ResearchPanel（侧栏，sidePanel 三态互斥）；ResultView
+  接线（C7 组件 + block/item/position sourceRefs 入口 + Evidence 下钻 +
+  安全导航回调）；表格排序/筛选/复制纯函数 + UI（原始字符串二元比较/
+  稳定排序/无正则筛选/TSV+CRLF 复制/spreadsheet-cell 防护）；csv-serializer
+  （公式注入/CRLF/引号/BOM/MAX_CSV_EXPORT_BYTES）+ 导出审计（当前 UI
+  视图重投影）；冒烟 8.19-B。
 - **不做**：修改 380px 侧栏布局契约之外的行为（面板定宽/收起模式不变）；
-  Timeline/Chart；多窗口；真实 Provider（C9）。
+  大表格/Evidence drawer 塞入侧栏（决策 D10 红线）；Timeline/Chart；
+  多窗口；真实 Provider（C9）。
 
 ## 涉及模块和输入文档
 
@@ -40,34 +57,43 @@ C5（Service/事件）、C6（数据模型）、C7（Renderer 组件）。
 
 ## 红→绿步骤
 
-1. **红**：先写测试（模块缺失红）——research-ipc 载荷白名单矩阵（未知
-   字段/超长/非法 id/状态门控 running 不可 delete/export 无 renderer
-   路径参数/审计恰好一条脱敏）；csv-serializer（公式注入 =,+,-,@ 前缀
-   转义/CRLF 引号/UTF-8 BOM/空表/超长单元格截断）；table-utils（排序
-   全序/筛选/复制文本生成）；useResearch reducer（taskId 键控/跨任务
-   事件串线忽略/进度节流收敛）。
+1. **红**：先写测试（模块缺失红）——research-ipc 八通道载荷白名单矩阵
+   （未知字段/原型链键/超长/非法 UUID/NaN·Infinity·非整数/分页边界
+   page≥1·pageSize 1..20/export table index·view state 无 path·rows·
+   content 通道/service=null·unavailable/状态门控 running 不可 delete·
+   starting slot 预占不可 delete/每次写尝试恰好一条脱敏审计·取消也恰好
+   一条/审计零 goal·URL·path·title·excerpt·cell）；csv-serializer
+   （公式注入 =,+,-,@ 前缀转义——quoting 前执行/CRLF 引号转义/BOM/空表/
+   超长截断/MAX_CSV_EXPORT_BYTES 边界 ±1）；table-utils（原始字符串
+   二元比较排序/相等稳定/筛选边界/无正则/输入零修改/TSV 复制文本）；
+   useResearch reducer（taskId 键控/跨任务串线忽略/事件早于 invoke 返回/
+   进度节流收敛/退订零 setState）；ResearchService 事件出口与结果视图；
+   BrowserController contentVisible；ResultView sourceRefs 入口与嵌套
+   链接透传。
 2. **绿**：实现各模块 + 接线；逐用例转绿。
-3. **冒烟 8.19**（dev+生产双场景）：真实 DOM——侧栏创建/启动/进度渐进/
-   停止；结果画布 Table 排序/筛选/复制、Cards/Ranking 渲染、Evidence
-   下钻（点击结论看来源）；敌对 Markdown 文本纯文本渲染零 DOM 注入；
-   viewMode 切换 Tab 状态不丢；CSV 导出触发（SMOKE_MODE 注入 dialog
-   路径桩——不触碰真实文件系统对话框，生产走 dialog）。
+3. **冒烟 8.19-B**（dev+生产双场景）：真实 DOM——侧栏创建/启动/
+   planning→reading→verifying→synthesizing 渐进进度/stop→cancelled/
+   FakeProvider+生产 factory 完成 completed；大结果画布（viewMode 切换
+   WebContentsView 实际不可见）Table 排序/筛选/复制、Cards/Ranking/
+   Conflict/Uncertain 渲染、Evidence 下钻（点击结论看来源）；safe URL
+   新建 Tab 后返回 browser 模式；敌对 Markdown/HTML/URL 零 DOM 注入；
+   viewMode 往返前后用户 Tab id·url·title·active 恒等；CSV 注入 dialog
+   桩写系统 TEMP 受控文件——读取字节断言（BOM/CRLF/公式防护/当前视图
+   一致性/Evidence 摘录零出现）后 finally 精确清理（不弹真实对话框）；
+   Research unavailable 不影响 Browser/Sources/Chat。
 4. 全量回归 + 红线扫描（renderer 零 dangerouslySetInnerHTML；导出仅
    主进程通道；审计/日志脱敏字节扫描）。
 
 ## 验收标准
 
-- §11 全通道落地 + 8.19 双场景通过；
-- 380px 侧栏仅控制/进度；大结果画布承载表格（排序/筛选/来源详情/复制）；
-- CSV 导出内容与 UI 数据一致（§8 测试重点断言）；公式注入防护字节级
-  断言；导出不开放任意文件系统工具（grep）。
-
-## 具体验证命令和期望结果
-
-- `npm test -- --maxWorkers=1` → 全量绿；
-- `npm run typecheck` / `npm run lint` / `npm run format:check` /
-  `npm run build` / `git diff --check` → 全部退出码 0；
-- dev + 生产冒烟默认矩阵（含 8.19）退出码 0。
+- §11 全通道（八 invoke + 两事件 + ui:browser-content-visible）落地 +
+  8.19-B 双场景通过；
+- 380px 侧栏仅控制/进度；大结果画布承载表格（排序/筛选/来源详情/复制）
+  与 Evidence drawer（决策 D10 红线）；
+- CSV 导出内容与 UI 当前视图一致（主进程按同一纯函数重投影——§8 测试
+  重点断言）；公式注入防护字节级断言；导出不开放任意文件系统工具（grep）；
+- BrowserControllerImpl contentVisible 不进入 AI BrowserController 接口
+  （grep 断言）；Progress/Done 事件零敏感内容（FT-16）。
 
 ## 完成定义
 

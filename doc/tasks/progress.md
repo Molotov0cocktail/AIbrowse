@@ -17,7 +17,7 @@
   D1–D13/里程碑）、high-level-design（依赖方向/模块/数据流/安全模型）、
   detailed-design（唯一契约源 §2–§16：类型/状态机/候选合并排序/capture·
   evidence/ResearchRuntime/预算全表/cross-check/Result Schema·Renderer/
-  storage/IPC/决议——范围以 §15 当前记录为准，现已至 #131）、threat-model
+  storage/IPC/决议——范围以 §15 当前记录为准，现已至 #163）、threat-model
   （FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类，先于任何 Research 实现
   定稿）、任务 C1–C10。
   Entry Gate（Fifth_stage.md §2 五项）逐项核验**全部通过**（证据表见
