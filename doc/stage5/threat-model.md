@@ -196,14 +196,22 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
 
 ### 3.5 输出安全防线（FT-11/FT-12/FT-13）
 
-- **ResultValidator**（详细设计 §8.1）：闭合判别联合逐块校验 + 字段白名单 +
-  长度边界 + 表格行列界 + ranking rank 连续 + evidenceId 存在与归属 +
-  sourceRefs ∈ 候选集 + URL 仅 http/https；未知 kind/任意 HTML-CSS-JS 形态
-  一律整体拒绝（fail-closed）→ 回注 → 重提 ≤2 次 → failed。
-- **Markdown 渲染**（详细设计 §8.2）：raw HTML 关闭（`<tag` 形态纯文本
-  渲染）；URL 仅 http/https（javascript:/data: 拒绝）；全部模型文本经
-  React 纯文本节点（零 dangerouslySetInnerHTML 拼模型文本）；控制字符/
-  bidi 剔除；解析失败安全降级纯文本。
+- **ResultValidator**（详细设计 §8.1 + 决议 #149–#151）：模型草案三字段
+  白名单（title/summary/blocks——可信字段由程序组装，模型提供即整份
+  拒绝）；闭合判别联合逐块校验 + 字段白名单 + 长度边界 + 表格行列界（每行
+  列数严格一致）+ ranking rank 连续 + sourceRefs 非空去重有界 ∈ 候选集且
+  有 verified Evidence 支撑（**table block 级**——v1 无逐列来源映射能力，
+  决议 #150(6)）+ URL 仅 http/https 无 userinfo + 强制 uncertainty 矩阵
+  （Evidence 空/claims 空/verification unavailable/未解决冲突/单源 high
+  ——决议 #151(5)）；未知 kind/任意 HTML-CSS-JS 形态一律整体拒绝
+  （fail-closed）→ 回注（零敌对正文回显）→ 重提 ≤2 次 → failed。
+- **Markdown 渲染**（详细设计 §8.2 + 决议 #148/#152）：shared 解析纯函数
+  （main Validator 与 renderer 共用同一实现）；raw HTML 关闭（`<tag` 形态
+  纯文本渲染）；URL 仅绝对 http/https 无 userinfo（javascript:/data: 拒绝；
+  Validator 拒绝 + Renderer 纵深降级双层防线）；全部模型文本经 React 纯
+  文本节点（零 dangerouslySetInnerHTML 拼模型文本）；控制字符/bidi 剔除；
+  AST 有界（深度/节点数/输入长度）+ 未闭合标记字面化 + 超限整块降级
+  纯文本；解析器单遍线性扫描零无界正则/递归（防 ReDoS）。
 - **CSV 导出**（详细设计 §8.3/§11 决议 #100）：仅 Table 块；公式注入防护
   （=,+,-,@ 开头单元格加 `'` 前缀）；CRLF/引号转义；UTF-8 BOM；主进程
   dialog 安全通道（用户选定路径 + 扩展名/路径校验）；renderer 零路径参数；

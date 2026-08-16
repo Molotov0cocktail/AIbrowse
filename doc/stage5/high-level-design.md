@@ -234,10 +234,13 @@ UI research:stop {taskId} → ResearchService.stop：
 - **搜索结果质量**：SearchProvider snippet 恒空（A4 计划内限制）——候选排序
   不依赖 snippet；capture 阶段生成受控摘要兜底；真实主题验收需容忍公开
   网页结构变化（C9 前置断言模式沿用 S6 表格页教训）。
-- **Markdown 子集范围**：自实现解析器覆盖 Research 结果需求（标题/强调/
-  列表/引用/代码/链接/表格）；超出子集的合法输入安全降级为纯文本（不丢内容、
-  不加特权）；未来需求变化经渲染器接口隔离评估 react-markdown（proposal §5
-  备选记录在案）。
+- **Markdown 子集范围**：自实现解析器（shared 模块，main 与 renderer 共用）
+  覆盖 Research 结果需求（标题 1–3/段落/强调/粗体/行内代码/列表/引用/代码/
+  链接——**Markdown 表格不实现（决议 #99/#148），表格唯一结构化通道 =
+  Table 块**）；超出子集的合法输入安全降级为纯文本（不丢内容、不加特权）；
+  AST 有界（深度/节点数/输入长度）+ 单遍线性扫描零无界正则/递归（防 ReDoS）；
+  未来需求变化经渲染器接口隔离评估 react-markdown（proposal §5 备选记录
+  在案）。
 - **运行时预算与模型行为的张力**：24 轮/64 步/30 分钟可能不足以完成复杂主题
   → 预算用尽为**正式终态**（failed: budget-exhausted + 已收集 Evidence 保留），
   不自动扩预算；用户可调整目标重新开始。

@@ -1212,36 +1212,65 @@ conflicts[{topic,positions[{positionText,sourceRefs}],claimKeys}]}`。
 
 ## 8. Result Schema 验证与 Renderer（C7）
 
+> 本节已按决议 #148–#152 校准（2026-08-16，C7 实施前契约裁决）：模型
+> ResultDraft 三字段白名单、Validator 严格验证与程序组装可信字段、Markdown
+> 解析器移至 shared、表格 block 级 sourceRefs、强制 uncertainty 矩阵——
+> 精确语义以下文与 §15 决议为准。
+
 ### 8.1 ResultValidator（result-validator.ts 纯函数）
 
-- 逐块校验：kind 白名单、结构形状（判别联合逐字段类型）、长度边界（§6.8）、
-  table 行列界、ranking rank 连续、cards/ranking 条目界、sourceRefs ∈ 本
-  任务候选集、uncertain 块字段非空；
-- evidenceMap：键 ∈ 已验证 evidenceId 集合、值来自主进程元数据（模型提供
-  的元数据被忽略/覆盖）；
-- URL 校验：Result 内任何 URL 字段仅 http/https（与导航白名单同源判定）；
+- **模型草案三字段白名单（#149）**：draft 仅允许 `{ title, summary,
+blocks }`；resultId/taskId/evidenceMap/conflicts/coverage/fetchedAt
+  及一切未知字段由模型提供 → 整次 draft fail-closed。
+- **逐块校验（#150）**：kind 白名单、结构形状（判别联合逐字段类型）、
+  长度边界（§6.8/§2 常量）、table 行列界（每行列数与 columns 严格相同）、
+  ranking rank 连续（rank[i]===i+1）、cards/ranking 条目界与字段白名单、
+  sourceRefs 非空去重有界 ∈ 本任务候选集且有 verified Evidence 支撑、
+  uncertain 块字段非空、blocks 1..20、markdown 块危险链接拒绝。
+- **程序组装可信字段（#151）**：evidenceMap 由 ctx.evidence 精确投影
+  （键升序）；conflicts 由 ctx.conflicts 投影；coverage 由 ctx.claims
+  确定性计数（total/multiSource/singleSource/vendor/thirdParty/
+  community——类别计数可重叠，不要求相加等于 total）；fetchedAt = 最大
+  Evidence accessTime，无 Evidence 时取 ctx.now（Runtime 注入可信时钟）；
+  resultId = ctx.createId()（小写 v4 UUID 校验）。
+- **强制 uncertainty 矩阵（#151(5)）**：Evidence 为空/claims 为空/
+  verificationState=unavailable/存在未解决冲突/存在单源 high Claim——
+  任一成立必须含 uncertain 块，否则整份拒绝；模型可主动保留额外
+  uncertainty，不能减少程序强制项。
+- **总大小**：JSON.stringify(result).length ≤ MAX_RESULT_CHARS（200k）。
+- **URL 校验**：Result 内任何 URL 仅 http/https 且禁止 userinfo（与导航
+  白名单同源判定 + shared Markdown URL 判定同源函数）。
 - 校验失败语义（§8.4）：整体拒绝（fail-closed）→ 回注结构化错误详情
-  （块索引 + 原因 ≤200）→ 模型重提 ≤2 次 → 仍失败 → failed 终态。
+  （块索引/字段路径 + 原因 ≤200，零敌对正文回显）→ 模型重提 ≤2 次 →
+  仍失败 → failed 终态。
 
 ### 8.2 Markdown 安全子集渲染器（决策 D9，零新依赖）
 
-- 自实现纯函数解析器（renderer/src/research/markdown/）：支持
-  `# 标题(1-3)` / 段落 / `*斜体*` `**粗体**` `` `行内代码` `` / 列表（有序/
-  无序） / `> 引用` / 围栏代码块 / `[文本](url)`（仅 http/https 渲染为链接，
-  其余降级纯文本）/ 简单表格扩展（Result 的表格走 Table 块不靠 Markdown 表格，
-  故 Markdown 表格不实现——Table 块为硬通道）。
-- 安全不变量：**raw HTML 关闭**（任何 `<tag` 形态按纯文本渲染，不解析不执行）；
-  URL 仅 http/https；所有模型文本经 React 纯文本节点渲染（零
+- 自实现纯函数解析器位于 **shared 模块 `src/shared/markdown/`**（决议
+  #148(3)：main ResultValidator 与 renderer 共用同一实现，零
+  React/Electron/Node API 依赖）：支持 `# 标题(1-3)` / 段落 /
+  `*斜体*` `**粗体**` `` `行内代码` `` / 列表（有序/无序，无嵌套） /
+  `> 引用` / 围栏代码块 / `[文本](url)`（仅绝对 http/https 且无 userinfo
+  渲染为链接，其余降级纯文本）；Markdown 表格不实现（决议 #99/#148）——
+  表格唯一结构化通道是 Table 块。
+- **AST 有界与确定性降级（#152(2)）**：未闭合标记自未闭合处起按字面
+  文本；嵌套深度 ≤4、AST 节点 ≤2000、输入 ≤4000——任一超限整块降级
+  纯文本；解析器单遍线性扫描 + 显式有界栈（零无界正则/递归，防 ReDoS）。
+- 安全不变量：**raw HTML 关闭**（任何 `<tag` 形态按纯文本渲染，不解析
+  不执行）；URL 仅 http/https（Validator 拒绝 + Renderer 纵深降级双层
+  防线）；所有模型文本经 React 纯文本节点渲染（零
   dangerouslySetInnerHTML 拼模型文本）；控制字符/bidi 剔除（复用
   sanitizeConfirmText 同族纯函数）；转义与 UNTRUSTED 块同族纪律。
 - 解析失败/超预算 → 安全降级纯文本（不丢内容、不加特权）。
 
 ### 8.3 Table/Cards/Ranking 块渲染
 
-- Table：columns/rows 白名单字段渲染；来源详情列（sourceRefs → 来源下钻）；
-  排序/筛选/复制为 C8 交互层（渲染器只负责纯展示 + 数据映射纯函数）。
-- Cards/Ranking：条目纯文本渲染 + sourceRefs 下钻；rank 由程序展示（模型
-  提供 rank 已经 Validator 连续性校验）。
+- Table：columns/rows 白名单字段渲染；**sourceRefs 为 table block 级**
+  （决议 #150(6)：v1 schema 无逐列来源映射能力——来源下钻按块级
+  sourceRefs 提供）；排序/筛选/复制为 C8 交互层（渲染器只负责纯展示 +
+  数据映射纯函数）。
+- Cards/Ranking：条目纯文本渲染 + sourceRefs 下钻；rank 由程序展示
+  （模型提供 rank 已经 Validator 连续性校验）。
 - Evidence 下钻：evidenceId → evidenceMap 元数据 + Evidence 全量（URL/
   时间/摘录/验证态）——点击结论看来源（Fifth §3.4/§7.6）。
 
@@ -1586,13 +1615,14 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 
 ### 13.2 冒烟矩阵（Electron 真实启动，临时 userData；dev+生产双场景）
 
-| #    | 场景                  | 断言要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | 任务  |
-| ---- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| 8.16 | capture/evidence 场景 | 受控页夹具（多章节/≥2 表格/heading/link 字段）：真实 ResearchWorkspace + CaptureService 读取 → capture 记录断言（实际 documentId/accessTime/hash/summary/tableIndex）；FakeProvider 只产确定性 proposal JSON（正确引用 → verified；伪造摘录/错绑 capture/错误 tableIndex/越界 → rejected）；失败 URL 后继续读取下一候选成功（C4 内不改 failedReadCount）；Capture 元数据 + 少量 VerifiedEvidence 写入临时 research.db（未验证引用零落库）；正文零持久化探针（拆分标记只存在于 CaptureContent、不进日志，扫描 research.db/WAL/SHM/Research 文件/隔离 userData 零命中）；场景 finally 精确释放 task Tab + 关闭库 + 清理隔离目录 + 用户 Tab 集合不变        | C4    |
-| 8.17 | Runtime 场景          | FakeProvider 多轮脚本驱动全阶段（planning→reading→verifying→synthesizing）→ completed + 候选/Capture/VerifiedEvidence/Result 落库读回 + CaptureContent 正文零落盘 + 用户 Tab 集合前后恒等；stop 中途 → cancelled + 本任务 Tab 清理 + 用户 Tab 保留；预算注入用尽 → failed（research-budget-exhausted）+ 此前 Evidence 保留；终态后迟到事件零影响（决议 #132–#139）                                                                                                                                                                                                                                                                                       | C5    |
-| 8.18 | 综合场景              | 两个不同 canonicalKey 的受控来源 + ≥2 条 VerifiedEvidence + C6 真实 ResearchPromptsPort/ResearchSynthesisPort + FakeProvider 确定性返回两条相反 Claim 和一个 Conflict + 严格但仅限 smoke 的 C7 Validator stub：Claim.coverage/sourceTypes/singleSourceFields 断言；Conflict 显式落库、resolved=unresolved、双向引用一致；synthesizing 请求真实包含经验证 Claim/Conflict（UNTRUSTED 块）；Result 含同一 Conflict（程序装配，模型草案不可替换）；Result coverage 为计数（不含 score/percent/confidence）；Result ≥1 uncertain 块；CaptureContent、Provider raw、transcript、reasoning 零落盘；用户 Tab 前后恒等；本场景不解除生产 fail-closed（决议 #140） | C6    |
-| 8.19 | UI DOM 场景           | 真实 DOM：侧栏创建/启动/进度渐进/停止；结果画布 Table 排序/筛选/复制/Cards/Ranking 渲染/Evidence 下钻（点击结论看来源）；敌对 Markdown 文本纯文本渲染零 DOM 注入                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | C7/C8 |
-| 8.20 | 红队 FRT-01～FRT-12   | threat-model §4 矩阵全表（dev+生产双场景，每项独立断言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C9    |
+| #      | 场景                           | 断言要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | 任务 |
+| ------ | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 8.16   | capture/evidence 场景          | 受控页夹具（多章节/≥2 表格/heading/link 字段）：真实 ResearchWorkspace + CaptureService 读取 → capture 记录断言（实际 documentId/accessTime/hash/summary/tableIndex）；FakeProvider 只产确定性 proposal JSON（正确引用 → verified；伪造摘录/错绑 capture/错误 tableIndex/越界 → rejected）；失败 URL 后继续读取下一候选成功（C4 内不改 failedReadCount）；Capture 元数据 + 少量 VerifiedEvidence 写入临时 research.db（未验证引用零落库）；正文零持久化探针（拆分标记只存在于 CaptureContent、不进日志，扫描 research.db/WAL/SHM/Research 文件/隔离 userData 零命中）；场景 finally 精确释放 task Tab + 关闭库 + 清理隔离目录 + 用户 Tab 集合不变        | C4   |
+| 8.17   | Runtime 场景                   | FakeProvider 多轮脚本驱动全阶段（planning→reading→verifying→synthesizing）→ completed + 候选/Capture/VerifiedEvidence/Result 落库读回 + CaptureContent 正文零落盘 + 用户 Tab 集合前后恒等；stop 中途 → cancelled + 本任务 Tab 清理 + 用户 Tab 保留；预算注入用尽 → failed（research-budget-exhausted）+ 此前 Evidence 保留；终态后迟到事件零影响（决议 #132–#139）                                                                                                                                                                                                                                                                                       | C5   |
+| 8.18   | 综合场景                       | 两个不同 canonicalKey 的受控来源 + ≥2 条 VerifiedEvidence + C6 真实 ResearchPromptsPort/ResearchSynthesisPort + FakeProvider 确定性返回两条相反 Claim 和一个 Conflict + 严格但仅限 smoke 的 C7 Validator stub：Claim.coverage/sourceTypes/singleSourceFields 断言；Conflict 显式落库、resolved=unresolved、双向引用一致；synthesizing 请求真实包含经验证 Claim/Conflict（UNTRUSTED 块）；Result 含同一 Conflict（程序装配，模型草案不可替换）；Result coverage 为计数（不含 score/percent/confidence）；Result ≥1 uncertain 块；CaptureContent、Provider raw、transcript、reasoning 零落盘；用户 Tab 前后恒等；本场景不解除生产 fail-closed（决议 #140） | C6   |
+| 8.19-A | C7 静态渲染与生产 factory 闭环 | **C7（本任务实施）**：① 真实 C7 ResultValidator + 安全 Markdown 解析（shared）在 Node 测试环境的静态渲染验证（react-dom/server + ResultView——敌对 HTML 只出现为转义文本、危险 URL 零 href、table/cards/ranking/evidence/uncertain 稳定渲染）；② 生产 factory 主进程闭环：真实 C6+C7 端口经生产 research-runtime-factory + FakeProvider（冒烟注入确定性 Provider 脚本，经同一生产 factory 代码路径）完成 startTask → completed，可信字段全部程序生成、正文/transcript/reasoning/Key 零持久化、用户 Tab 集合不变、缺 Provider/Sources 精确拒绝；dev+生产双场景                                                                                             | C7   |
+| 8.19-B | UI DOM 场景                    | **C8（保留）**：真实 DOM：侧栏创建/启动/进度渐进/停止；结果画布 Table 排序/筛选/复制/Cards/Ranking 渲染/Evidence 下钻（点击结论看来源）；敌对 Markdown 文本纯文本渲染零 DOM 注入                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | C8   |
+| 8.20   | 红队 FRT-01～FRT-12            | threat-model §4 矩阵全表（dev+生产双场景，每项独立断言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C9   |
 
 - 双进程持久化：`AIBROWSE_RESEARCH_SMOKE=set|check`（与
   SESSION/SOURCES/SOURCES_UI 门控确定性互斥；两独立生产进程共用受控共享
@@ -2714,6 +2744,285 @@ conflicts[{topic,positions[{positionText,sourceRefs}],claimKeys}]}`。
      conflicts/verificationState 真实传给 synthesis；冒烟 8.18 使用严格
      C7 测试 stub 断言上述场景确实生成 uncertain；不把测试 stub 装入
      生产（决议 #140）。
+
+> 以下 #148–#155 为 C7 实施前契约裁决（2026-08-16，C7 闭环；先改本文与
+> 测试、再改实现——§15 流程）。裁决依据 Fifth_stage.md §3.5/§3.6/§5/§9
+> 上位需求、threat-model FT-03/FT-07/FT-08/FT-11/FT-12/FT-16/FT-17、
+> 决策 D9、决议 #98/#99/#102/#110/#134/#140/#142/#145/#147 既有条款与
+> fail-closed 纪律唯一导出，无需用户拍板；不改写 #94–#147 既有结论。
+
+148. **D9/#99 与安全 Markdown 单一事实源（2026-08-16，C7 闭环）**：
+     （1）**以 #99 为准**：不实现 Markdown 表格语法——Result 表格数据的
+     唯一结构化通道是 Table 块（可排序/筛选/导出）；pipe/table-looking
+     Markdown（`| a | b |` 行、分隔行 `|---|---|`）按普通文本/段落处理
+     （不解析为表格、不加任何特权）。
+     （2）**修正文档漂移**：proposal D9 决策表「自实现子集（…/链接白名单/
+     表格）」中的「表格」废止（漂移点——#99 早已裁决不实现）；high-level-
+     design §8「链接/表格」同源废止；子集定稿 = 标题 1–3/段落/强调/粗体/
+     行内代码/列表/引用/围栏代码块/链接（http/https）；detailed-design
+     §8.2 与 C7 任务文档原表述已与 #99 一致（保留）；后续文档不得再写
+     「Markdown 表格」。
+     （3）**解析器位置**：Markdown 解析纯函数位于 shared 模块
+     `src/shared/markdown/`（纯 TypeScript，零 React/Electron/Node API
+     依赖），由 main 进程 ResultValidator 与 renderer ResultView **共用
+     同一实现**——禁止 main 依赖 renderer、禁止复制第二份解析器。
+     （4）**零新依赖**（D9 红线）、禁止 dangerouslySetInnerHTML、禁止 raw
+     HTML 解释执行（`<tag` 形态只作为文本经 React 转义）。
+
+149. **ResultDraft 与可信字段所有权（2026-08-16，C7 闭环）**：
+     （1）**模型 ResultDraft 只允许三字段**：`{ title, summary, blocks }`。
+     resultId、taskId、evidenceMap、conflicts、coverage、fetchedAt 全部
+     由确定性程序生成（C7 Validator 组装）；模型草案顶层出现这些字段或
+     任何未知字段 → **整次 draft fail-closed**（拒绝 + 安全中文原因回注，
+     不逐项丢弃）。
+     （2）**fetchedAt 冻结为可信程序值**：优先采用本任务 Evidence 的最大
+     accessTime（ISO 8601 UTC 毫秒形态，toISOString 同形态字符串比较即
+     时间序）；无 Evidence 时使用 Runtime 注入的验证时间（validation
+     context 可信时钟，ISO 8601）。不得接受模型时间。
+     （3）**context 增可信时间输入**：
+     `ResearchResultValidationContext` 新增 `now: string`（ISO 8601 UTC
+     毫秒形态，`new Date(ms).toISOString()` 生成——Runtime 注入；与决议
+     #116 同形契约；validate 方法签名不变，仅扩充 context）。
+     （4）**修正 C6 synthesis prompt**：`AGENT_RESEARCH_SYNTHESIS_PROMPT`
+     示例 JSON 模板删除要求模型生成 evidenceMap/conflicts/coverage/
+     fetchedAt 可信字段的部分（以及「用其 conflictId 引用冲突」的字段级
+     示例），改为「只输出 title/summary/blocks——其余字段由程序生成，
+     不得输出；冲突披露通过 uncertain 块文本如实说明」（C6 测试恒等断言
+     同步校准）。
+     （5）shared/types/research.ts 新增 `ResultDraft` 类型
+     （`{ title: string; summary: string; blocks: unknown[] }`，供
+     Validator 输入文档化；运行时仍按 unknown + 严格白名单校验）。
+
+150. **ResultValidator 严格验证（2026-08-16，C7 闭环）**：
+     （1）`validate(draft, ctx)` 实现 `ResearchResultValidationPort.
+validate` 端口（决议 #134 形状）——**不得以 throw 表示预期失败**，
+     任何输入安全返回闭合判别联合；输入 draft 与 context 均不修改
+     （纯函数、确定性、幂等）。
+     （2）**未知字段/错误类型/越界/非法引用/重复 ID → 整份 Result 拒绝**
+     （reasons 数组有界、顺序稳定——按块索引升序 + 字段路径）。
+     （3）**文本规范化分两种**（决议 #147 同族纪律）：
+     - 普通文本字段（title/summary/table 列名与单元格/cards 字段/ranking
+       字段/uncertain 字段）：NFC → trim → 清除控制字符与 bidi → 按契约
+       折叠连续空白（折叠为单空格）；
+     - Markdown 块文本：NFC → CRLF→LF 归一 → 清除非换行控制字符与 bidi
+       → **不折叠段落换行**（换行是 Markdown 结构信号）；清理后为空 →
+       拒绝。
+       （4）**blocks 1..20**（空 blocks 整份拒绝）：
+     - markdown：非空、单块 ≤ MAX_MARKDOWN_BLOCK_CHARS；内含危险链接
+       （非绝对 http/https 或含 userinfo）→ 整份拒绝（FT-12）；
+     - uncertain：text/reason 非空且分别 ≤ MAX_UNCERTAIN_TEXT_CHARS；
+     - table：columns 1..MAX_TABLE_COLUMNS、rows 1..MAX_TABLE_ROWS、
+       每行 cell 数与 columns **严格相同**、cell ≤ MAX_TABLE_CELL_CHARS、
+       列名非空且 ≤ MAX_TABLE_CELL_CHARS；
+     - cards/ranking：items 1..MAX_CARDS_ITEMS / 1..MAX_RANKING_ITEMS，
+       字段严格白名单（cards：title/subtitle/body/sourceRefs；ranking：
+       rank/title/detail/sourceRefs）；ranking 的 rank 必须与数组顺序严格
+       构成 1..N（rank[i] === i+1——缺失/重复/乱序/越界整份拒绝）；
+     - 各块长度上限按 §6.8/§2 常量（实现与测试禁止魔法数字）。
+       （5）**sourceRefs**（table/cards/ranking 块级）：非空、无重复、数量
+       有界（≤ MAX_CONFLICT_POSITION_SOURCE_REFS=8——与 C6 单 position
+       同源常量）、每条属于当前 task candidate 集合，且该 candidate 有本
+       任务 verified Evidence 支撑（否则整份拒绝）。
+       （6）**v1 schema 无逐列来源映射能力**：sourceRefs 冻结为 **table
+       block 级**；修正 §8.3 与 threat-model §3.5 中「每列映射来源/来源列」
+       的超出 schema 表述（不伪造逐列能力；逐列映射属未来 schema 演进，
+       届时走 §15 决议流程）。
+       （7）**总大小**：`JSON.stringify(result).length ≤ MAX_RESULT_CHARS`
+       （200000，JavaScript 字符数）；research.db 的 UTF-8 字节预算仍由
+       持久层（Repository，决议 #103）独立负责——Validator 不做 UTF-8
+       字节判定。
+       （8）**错误原因**：数量有界（≤ MAX_RESULT_VALIDATION_REASONS=10）、
+       单条 ≤ MAX_RESEARCH_REASON_CHARS（200）、只报字段路径/索引（如
+       `blocks[3].rows[2] 列数与 columns 不一致`、`sourceRefs[0] 无
+Evidence 支撑`、`blocks[1] 含危险链接`），**不回显敌对正文**。
+       （9）**可信字段组装**：resultId = ctx.createId()（结果必须为小写
+       RFC 4122 v4 UUID——非法/工厂异常整份拒绝）；taskId = ctx.taskId；
+       evidenceMap/conflicts/coverage/fetchedAt 按决议 #151 程序投影。
+
+151. **Conflict、Coverage 与「不确定」（2026-08-16，C7 闭环）**：
+     （1）**evidenceMap 程序投影**：由 ctx.evidence（verified）精确投影
+     ——键为 evidenceId（去重，输出按确定性顺序（字符串升序）），值为
+     `{candidateId, url, title, accessTime}` 全部取自 VerifiedEvidence
+     主进程字段；模型草案不得提供（#149）；Evidence 为空 → 空对象。
+     （2）**conflicts 程序投影**：精确由 ctx.conflicts 投影为
+     `{conflictId, topic, positions}`（与持久化 Conflict 同源；顺序 =
+     ctx 顺序）；模型不得增删或改写（草案顶层不得出现 conflicts 字段）。
+     （3）**coverage 程序计算**（由 ctx.claims 确定性计数，模型不得
+     提供——#149）：
+     - total = claims 数量（totalClaims）；
+     - multiSource = coverage='multi-source' 的 claim 数
+       （multiSourceClaims）；
+     - singleSource = coverage='single-source' 的 claim 数
+       （singleSourceClaims）；
+     - vendor/thirdParty/community = sourceTypes 包含该类别的 claim 数。
+       （4）**来源类别计数可能重叠**（一个 claim 可同时含 vendor 与
+       third-party 来源）：三者**不要求相加等于 totalClaims**——文档与
+       实现注释如实说明（Fifth §5 计数类事实，非百分比）。
+       （5）**强制 uncertainty 矩阵**——以下任一条件成立，Result 必须包含
+       至少一个 uncertain 块，否则整份拒绝：
+     - ctx.evidence 为空；
+     - ctx.claims 为空；
+     - ctx.verificationState === 'unavailable'；
+     - ctx.conflicts 中存在 resolved='unresolved' 的冲突；
+     - 存在 severity='high' 且 coverage='single-source' 的 claim。
+       （6）证据充分时**允许**模型主动保留额外 uncertainty（不拒绝），但
+       **不能减少程序强制项**；程序检查的是「至少一个 uncertain 块存在」
+       与强制条件集合，不审查 uncertain 文本语义（诚实边界维持）。
+
+152. **Markdown AST 与 Renderer（2026-08-16，C7 闭环）**：
+     （1）**shared parser 支持**（§8.2 子集定稿；解析纯函数，零依赖）：
+     - 块级：heading 1–3（`#`–`###` 后须空格或行尾）、paragraph、无序
+       列表（`-`/`*`/`+` + 空格）、有序列表（`N.` + 空格）、blockquote
+       （`>` + 空格）、fenced code（``` 围栏，内部内容不解析为 Markdown）；
+     - 行内：text/emphasis（`*x*`）/strong（`**x**`）/inline-code
+       （`` `x` ``）/safe-link（`[text](url)`——URL 仅绝对 http/https 且
+       禁止 userinfo；其余（javascript:/data:/file:/about:/相对/空/
+       userinfo）→ 降级为纯文本节点）；
+     - 嵌套列表与嵌套引用 v1 不支持（内层标记按字面文本处理）。
+       （2）**确定性降级规则（AST 有界）**：未闭合标记（`**`、`` ` ``、
+       围栏、链接括号）→ 自未闭合处起按字面文本处理；结构嵌套深度 ≤
+       MARKDOWN_MAX_NESTING=4；AST 节点总数 ≤ MARKDOWN_MAX_AST_NODES=2000；
+       输入长度 ≤ MAX_MARKDOWN_BLOCK_CHARS（4000）；任一超限 → **整块降级
+       纯文本**（不丢内容、不加特权）。常量进 shared（单一事实源）。
+       （3）**无 ReDoS**：解析器为单遍线性扫描 + 显式有界栈（零无界正则、
+       零递归下降、零回溯组合正则；链接括号匹配为有限前瞻——同层
+       `[`/`]` 配对单遍完成）。
+       （4）**HTML-looking 内容**（`<tag` 形态）只作为文本并由 React 转义
+       渲染，**不得解释为 HTML**（不建 DOM、不执行、零
+       dangerouslySetInnerHTML）。
+       （5）**URL 双防线**：Validator 遇到危险链接（非绝对 http/https 或
+       userinfo）→ 拒绝 draft（#150(4)）；Renderer 即使独立收到危险链接
+       （纵深防御）也必须降级为纯文本——两层共用同一 URL 判定纯函数
+       （shared/markdown）。
+       （6）**ResultView 只消费已验证 ResearchResult**：组件 props 类型 =
+       ResearchResult + 可选展示回调；不渲染 `<a href>`——链接用无副作用
+       的展示元素（span 样式）或显式 `onOpenUrl?(url)` 回调（由父组件
+       注入；C8 接安全导航——经主进程 BrowserController/UI 导航白名单，
+       本任务不接线）。
+       （7）**C7 不实现**：表格排序/筛选/复制、CSV、App 页面接线、新 IPC、
+       ResearchPanel/结果画布布局（全部 C8）。
+       （8）ResultView 测试在 Node 环境用 `react-dom/server` +
+       `React.createElement`（renderer 下 `*.test.ts`，沿用既有
+       agent-display 测试模式——**不扩大 Vitest include**）；断言输出
+       字符串零可执行元素（script/img/onerror/style）。
+
+153. **logger 未初始化落盘修复（2026-08-16，C7 闭环；先红测后实现）**：
+     （1）**缺陷确认（红态机器证据）**：基线全量测试前根目录无
+     aibrowse-_.log；测试后生成 `aibrowse-2026-08-16.log`（35116 字节）
+     ——测试进程 logWarn 在 initLogger 未调用时以 `logDir=''` 拼出相对
+     路径 `aibrowse-<date>.log` 由 appendFileSync 写入 cwd。
+     （2）**修复契约**：initLogger 调用前，日志只进行 sanitize +
+     normalizeLogMessage 后的 console 输出，**绝不能创建 cwd 文件**
+     （write 检查 logDir==='' 时跳过 ensureLogFile 与 appendFileSync）。
+     （3）**getCurrentLogFilePath 未初始化语义冻结**：未 init 返回
+     `''`（安全空串——表示无日志文件；冒烟断言仅在初始化后使用该函数）。
+     （4）**initLogger/re-init 正确重置**：initLogger 重入时重置
+     currentDate=''/currentLogFile=''（按新 baseDir 重新轮转，不得继续
+     写旧目录）；同一进程 init 一次后当日文件不变（按日轮转语义保持）。
+     （5）**真实临时 cwd 探针**：测试内 `process.chdir(mkdtempSync(...))`
+     到真实临时目录后写多级别日志，断言零文件生成；仓库级验证 = 完整
+     npm test 后根目录零 aibrowse-_.log（机器证据，收尾重验）。
+     （6）**不削弱既有防护**：normalizeLogMessage 换行注入防护、sanitize
+     Key 脱敏、正常生产日志能力（init 后写指定目录、按日轮转）保持既有
+     测试全绿。
+
+154. **ResearchService 启动预占与 Provider 交接（2026-08-16，C7 闭环；
+     先红测后实现）**：
+     （1）**缺陷确认（代码复核，research-service.ts startTask）**：
+     startTask 在 `await this.runtimeFactory.resolveProvider()` 前无任何
+     预占——两个并发 start 可同时通过全部前置检查并都进入 launch（第二
+     个覆盖 activeSlot，第一个 run 失控）；resolve 期间 shutdown 后，迟到
+     continuation 仍会写 running/launch Runtime（访问已关闭 DB）；现有
+     `resolveProvider(): Promise<unknown>` + `launch(input)` 分离接口使
+     prepared provider 无法与单次 start 绑定、无法在放弃路径释放。
+     （2）**starting slot 原子预占**：Service 新增同步段预占
+     `{ taskId, token } | null`（在第一个 await 之前建立）；已有预占 →
+     立即 research-busy；两个并发 start 中先调用者确定性占槽（同步段
+     单线程原子）。
+     （3）**resolve 后守卫**：await resolveProvider 返回后立即复检
+     `shuttingDown || disposed || 预占身份 !== 自己`——任一成立 →
+     释放 prepared（若成功解析）+ 按身份 CAS 清预占 + 返回
+     research-unavailable（任务保持 created）；**不得再访问已关闭 DB、
+     不得写 running、不得 launch Runtime**。
+     （4）**预占清除**：所有成功、失败、异常路径按身份 CAS 清除预占；
+     禁止旧 continuation 清除新 run 的槽位（token 比较）。
+     （5）**resolve 失败**：任务状态必须保持 created（零 DB 写入）；
+     research-provider-unavailable / research-sources-unavailable /
+     research-unavailable 按解析结果精确返回（#155 映射）。
+     （6）**stopTask 在 resolving 阶段**：任务 DB 状态仍为 created（未写
+     running）→ 返回 research-invalid-state、零副作用（不写 DB、不
+     abort、不建立 Runtime）——冻结并写入测试（resolve 窗口极小，语义
+     诚实「任务尚未运行」；与既有 #105 状态矩阵一致）。
+     （7）**Factory 接口窄幅修改（等价竞态证明）**：原
+     `resolveProvider(): Promise<unknown>` + `launch(input)` 分离接口
+     无法表达「prepared 与单次 start 绑定、放弃路径释放、恰好一次消费」。
+     改为：
+
+     ```ts
+     export type ResearchResolveErrorCode =
+       'research-provider-unavailable' | 'research-sources-unavailable' | 'research-unavailable';
+     export type ResearchPreparedLaunchResult =
+       | { ok: true; prepared: ResearchPreparedLaunch }
+       | { ok: false; errorCode: ResearchResolveErrorCode };
+     export interface ResearchRuntimeFactory {
+       resolveProvider(): Promise<ResearchPreparedLaunchResult>;
+     }
+     export interface ResearchPreparedLaunch {
+       // 恰好一次消费：launch 或 release 二选一；重复调用安全 no-op 或抛程序缺陷
+       launch(input: ResearchRuntimeLaunchInput): ResearchRuntimeHandle; // 抛错 = 装配失败
+       release(): void; // 不 launch 时丢弃 prepared（shutdown/取消/异常路径必须调用；幂等）
+     }
+     ```
+
+     等价竞态证明：原接口「resolve 成功 → Service 后续仍可能不 launch」
+     的放弃路径无表达（Provider 实例滞留 factory 内部状态 → 跨 task 复用
+     风险）；新接口把 prepared 生命周期绑定单次 start 调用闭包——factory
+     保持无状态（每次 resolveProvider 新建独立 prepared），跨 task/跨
+     runToken 复用由「launch/release 恰好一次 + prepared 不跨调用共享」
+     结构性消除；并发 start 的互斥由 Service starting slot 承担
+     （factory 无共享可变状态，解析可安全并发）。Provider 实例
+     （LLMProvider）封闭在 main 的 prepared 实现内部，**不进入 shared
+     类型**（shared 仅接口形状，无 Provider/unknown 类型字段）；
+     renderer 零接触。
+     （8）C1/C5 既有测试的工厂 stub 按新接口机械校准（注入语义不变、
+     断言不削弱；红态先行——旧形状在 typecheck/测试失败）。
+
+155. **真实生产装配（2026-08-16，C7 闭环；决议 #140 解除）**：
+     （1）**新模块**：`src/main/research/research-runtime-factory.ts`
+     （窄职责生产工厂）——避免继续膨胀 index.ts；每次 launch 创建独立
+     ResearchWorkspace（taskId 绑定）/CaptureService/ResearchRuntime；
+     prompts/synthesis/result-validation 使用真实 C6/C7 冻结端口
+     （RESEARCH_PROMPTS_PORT/RESEARCH_SYNTHESIS_PORT/
+     RESEARCH_RESULT_VALIDATION_PORT——C7 新增冻结端口对象，与 C6 同
+     模式）。
+     （2）**真实依赖接线**：SearchProvider（生产 Bing）、SourceService
+     （生产实例 + normal 态复验）、BrowserController、Provider config/
+     credential resolution（ConfigStore + SecureCredentialStore，每次
+     start 动态读取；model 来自配置；Key 只在主进程内短生命周期使用——
+     resolve 完成后立即释放引用，零缓存）。
+     （3）**错误精确映射**：config 缺失/无已注册 kind 配置 →
+     research-provider-unavailable；Key 缺失/凭据不可用 →
+     research-provider-unavailable；Provider 创建失败 →
+     research-provider-unavailable；supportsToolCalling=false →
+     research-provider-unavailable；SourceService 缺失或非 normal →
+     research-sources-unavailable——全部保持任务 created。
+     （4）**状态查询不谎报**：getProviderState 同步仅返回能同步证明的
+     粗粒度状态（`listProviderKinds()` 非空 → configured=true；
+     supportsToolCalling 同步为乐观 true——真实 capability 由异步
+     resolve 权威判定）；getSourcesState 同步查询
+     `sourceService?.getState().mode === 'normal'`。真正 Key/Provider/
+     tool capability 由 resolveProvider 再验证。
+     （5）**index.ts 装配顺序调整**：Research store 装配移动至 Sources +
+     SearchProvider + ConfigStore + CredentialStore 装配**之后**，并以
+     真实闭包注入 getSourcesState/getProviderState/runtimeFactory
+     （生产 = research-runtime-factory；SMOKE = 既有确定性 stub 工厂
+     ——仅测试设施）。Research 初始化失败仍 fail-closed（unavailable，
+     中文诊断）且不拖垮 Browser/Sources/Agent。
+     （6）**C7 完成后生产 startTask 不再固定返回
+     research-runtime-unavailable**（真实 C6+C7 端口齐备 → 正常启动）；
+     research-runtime-unavailable 仅保留为端口构造失败/预占异常的防御码。
+     （7）**不新增 Research IPC**（IPC/App UI 属 C8）；工具注册表保持
+     17、AgentLoop 12/420s 契约零变化（回归断言）。
 
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4/C5 端口）/C7（依赖 C1/C5 端口，可与
