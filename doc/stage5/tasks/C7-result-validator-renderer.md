@@ -6,6 +6,19 @@
 > result-validator 实现 `ResearchResultValidationPort.validate`（端口精确
 > 形状见 detailed-design §15 决议 #134——C5 已冻结，C7 按此实现，§8.1
 > 校验规则不变）。
+> **C6/C7 分阶段装配边界（2026-08-16，决议 #140，C7 实施时落地）**：
+> C6 完成时不解除生产 fail-closed；**C7 完成时才统一装配真实 C6+C7 端口
+> 并解除 fail-closed**（index.ts 生产 RuntimeFactory 建立由 C7 执行——
+> 两组真实端口齐备后才建立；C6 冒烟注入的严格 C7 stub 不得装入生产）。
+> **数据交接契约（决议 #145，C7 实施时落地）**：
+> `ResearchResultValidationContext` 已新增 claims/conflicts/
+> verificationState 字段（validate 签名不变，只扩充 context）——C7 据此
+> **程序重算 coverage**（从 ctx.claims 的 coverage/sourceTypes 计数，
+> 不采信模型草案的 coverage 数值）、核对 Result.conflicts 与
+> ctx.conflicts 一致，并实施 uncertainty 强制规则（Evidence 为空/
+> claims 为空/verificationState=unavailable/存在未解决冲突/单源 high
+> Claim 时必须存在 uncertain 块——§8.1 校验规则不变，本条款为 context
+> 扩展的消费语义）。
 
 ## 目标
 
@@ -41,13 +54,14 @@ BrowserController/SQLite/Electron/Provider。
   `result-validator.test.ts`、`src/renderer/src/research/markdown/
 parse-markdown.ts` + `parse-markdown.test.ts`、
   `src/renderer/src/research/ResultView.tsx`（组件，C8 接线）。
-- 修改：`src/main/index.ts`（生产装配注入 ResearchResultValidationPort——
-  决议 #134(3) fail-closed 解除；与 C6 端口装配同批或本任务单独注入，
-  两者齐备后 RuntimeFactory 才可建立）。
+- 修改：`src/main/index.ts`（决议 #140：**C7 完成时才统一装配真实
+  C6+C7 端口并解除生产 fail-closed**——两组真实端口齐备后 RuntimeFactory
+  才可建立；C6 冒烟的严格测试 stub 不得装入生产）。
 
 ## 依赖
 
-C1（Result Schema 类型）。
+C1（Result Schema 类型）、C5（端口形状 + Runtime 数据交接）、C6
+（claims/conflicts/verificationState 快照 + research-prompts 常量）。
 
 ## 红→绿步骤
 

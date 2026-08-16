@@ -363,6 +363,68 @@ RESEARCH_TOOL_RESULT_CONTENT_MAX（8000）、
 `ResearchProgressEvent`、`ResearchPromptsPort`/`ResearchSynthesisPort`/
 `ResearchResultValidationPort`（端口形状以 §15 决议 #134 为准）。
 
+C6 新增常量（决议 #141/#142，单一事实源；实现与测试禁止魔法数字）：
+
+- Provider 响应侧有界性（决议 #141）：每段 stream 文本 delta 累计 ≤
+  MAX_PROVIDER_TEXT_CHARS_PER_STREAM（250000——覆盖最大合法载荷：Result
+  草案 ≤200k 字符 + JSON 包装 + 转义余量）；每段 stream toolCalls ≤
+  MAX_PROVIDER_TOOL_CALLS_PER_STREAM（32）；单个 toolCall id/name ≤
+  MAX_PROVIDER_TOOL_CALL_ID_CHARS/MAX_PROVIDER_TOOL_CALL_NAME_CHARS
+  （64——TOOL_NAME_PATTERN 上界）；单个 toolCall arguments ≤
+  MAX_PROVIDER_TOOL_ARGUMENTS_CHARS_PER_CALL（5000——最大合法单参数值
+  url 2048 + JSON 包装余量）；id/name/arguments 每段累计上限 =
+  数量上限 × 单项上限（MAX_PROVIDER_TOOL_ID_CHARS_PER_STREAM /
+  MAX_PROVIDER_TOOL_NAME_CHARS_PER_STREAM /
+  MAX_PROVIDER_TOOL_ARGS_CHARS_PER_STREAM，派生常量）。
+- 安全短句（决议 #141/#142/#147）：所有 reason/error 安全中文短句 ≤
+  MAX_RESEARCH_REASON_CHARS（200——与决议 #134 端口 reason 契约同源）。
+- VerificationDraft 细粒度上限（决议 #142）：raw ≤
+  MAX_VERIFICATION_DRAFT_CHARS（100000）；vendorCandidateIds ≤
+  MAX_VENDOR_CANDIDATE_IDS（8，= MAX_SELECTED_SOURCES）；claimKey ≤
+  MAX_CLAIM_KEY_CHARS（64）；单 Claim evidenceIds ≤
+  MAX_CLAIM_EVIDENCE_REFS（60，= MAX_EVIDENCE_PER_TASK）；单 Conflict
+  positions ∈ [2, MAX_CONFLICT_POSITIONS]（8）；单 position sourceRefs ≤
+  MAX_CONFLICT_POSITION_SOURCE_REFS（8）；单 Conflict claimKeys ≤
+  MAX_CONFLICT_CLAIM_REFS（8）。
+
+C6 新增类型（决议 #142/#145，shared/types/research.ts）：
+
+```ts
+// 决议 #142：模型核验输出 = 严格白名单 VerificationDraft（不可信输入）——
+// 模型只能提议局部引用（claimKey/vendorCandidateIds），全部可信字段
+// （claimId/conflictId/taskId/coverage/sourceTypes/singleSourceFields/
+// conflictIds/resolved）由程序产生，模型无字段通道提交。
+export interface VerificationDraftClaim {
+  claimKey: string; // 本次 proposal 局部引用（非空、唯一、≤MAX_CLAIM_KEY_CHARS）
+  text: string; // ≤MAX_CLAIM_TEXT_CHARS（规范化后）
+  severity: ClaimSeverity;
+  evidenceIds: string[]; // 非空、唯一、≤MAX_CLAIM_EVIDENCE_REFS
+}
+export interface VerificationDraftPosition {
+  positionText: string; // ≤MAX_CONFLICT_POSITION_CHARS（规范化后）
+  sourceRefs: string[]; // candidateId 引用（非空、≤MAX_CONFLICT_POSITION_SOURCE_REFS）
+}
+export interface VerificationDraftConflict {
+  topic: string; // ≤MAX_CONFLICT_TOPIC_CHARS（规范化后）
+  positions: VerificationDraftPosition[]; // ≥2 且 ≤MAX_CONFLICT_POSITIONS
+  claimKeys: string[]; // ≥2 个不同且存在的局部 claimKey
+}
+export interface VerificationDraft {
+  vendorCandidateIds: string[]; // ≤MAX_VENDOR_CANDIDATE_IDS；模型对「厂商候选」的提议
+  claims: VerificationDraftClaim[]; // ≤MAX_CLAIMS_PER_TASK
+  conflicts: VerificationDraftConflict[]; // ≤MAX_CONFLICTS_PER_TASK
+}
+
+// 决议 #145：核验状态（C6 Runtime 内存持有 → synthesis/C7 交接）
+export type ResearchVerificationState = 'verified' | 'unavailable';
+```
+
+- 决议 #145(6)：`ResearchResultValidationContext` 以**新增字段**方式扩展
+  （validate 方法签名不变，只扩充 context）：`claims: readonly Claim[]`、
+  `conflicts: readonly Conflict[]`、`verificationState: ResearchVerificationState`。
+  `ResearchSynthesisContext` 形状不变（vendorCandidateIds 经
+  VerificationDraft 携带，不经 context）。
+
 ## 3. 研究任务状态机（C1 纯函数）
 
 ### 3.1 状态迁移表
@@ -871,33 +933,49 @@ C8 前不新增 Renderer IPC。
 
 ### 6.8 确定性预算（D12 全表；编译期常量 + 可注入 + 测试断言）
 
-| 常量                                | 值       | 语义                                                                                                                                                                                                                                                                                                                                                                                   |
-| ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| MAX_GOAL_CHARS                      | 2000     | goal 截断上限（截断标记计入上限——返回文本 String.length 恒 ≤2000，决议 #114；单位 = JavaScript 字符数，非 UTF-8 字节，决议 #103）                                                                                                                                                                                                                                                      |
-| MAX_SOURCE_CANDIDATES               | 24       | 合并后候选上限（Sources ≤10 + Search ≤10 + 溢出裁剪）                                                                                                                                                                                                                                                                                                                                  |
-| MAX_SELECTED_SOURCES                | 8        | 选定来源上限                                                                                                                                                                                                                                                                                                                                                                           |
-| MAX_RESEARCH_TABS                   | 3        | 同任务同时打开的 task Tab 上限（v1 串行读取实际 1 个，上限为纵深防御）                                                                                                                                                                                                                                                                                                                 |
-| MAX_PAGE_CAPTURE_CHARS              | 60000    | 单页规范化正文预算（确定性截断 + summary.charCount）                                                                                                                                                                                                                                                                                                                                   |
-| MAX_PAGE_READ_RETRIES               | 1        | 同候选读取失败重试上限（最多 2 次尝试）                                                                                                                                                                                                                                                                                                                                                |
-| MAX_CAPTURES_PER_TASK               | 16       | 8 候选 × 2 尝试的捕获记录上限（每次尝试独立 captureId——决议 #125；失败尝试同样计入）                                                                                                                                                                                                                                                                                                   |
-| MAX_EVIDENCE_EXCERPT_CHARS          | 500      | 单条 Evidence excerpt 上限                                                                                                                                                                                                                                                                                                                                                             |
-| MAX_EVIDENCE_FIELD_VALUE_CHARS      | 200      | 单元格/字段值上限                                                                                                                                                                                                                                                                                                                                                                      |
-| MAX_EVIDENCE_PER_TASK               | 60       | 任务 Evidence 总数上限（超出拒绝新提案）                                                                                                                                                                                                                                                                                                                                               |
-| MAX_CLAIMS_PER_TASK                 | 30       | claims 总数上限                                                                                                                                                                                                                                                                                                                                                                        |
-| MAX_CONFLICTS_PER_TASK              | 10       | 冲突数上限                                                                                                                                                                                                                                                                                                                                                                             |
-| MAX_RESEARCH_ROUNDS                 | 24       | 模型轮次上限（规划 2 + 读取 8 + 核验 4 + 综合 3 + 修正余量 7）                                                                                                                                                                                                                                                                                                                         |
-| MAX_RESEARCH_TOOL_STEPS             | 64       | 工具步数上限（read/open/search 计数；不注册新工具，计数语义为 Runtime 内部审计口径）                                                                                                                                                                                                                                                                                                   |
-| RESEARCH_TOTAL_TIMEOUT_MS           | 1800000  | 总时长上限（30 分钟，含等待）                                                                                                                                                                                                                                                                                                                                                          |
-| MAX_REQUEST_CONTEXT_CHARS           | 200000   | 单轮请求上下文字符预算（含 UNTRUSTED 块回注）                                                                                                                                                                                                                                                                                                                                          |
-| MAX_TRANSCRIPT_REPLAY_ROUNDS        | 6        | transcript 回放最近轮数（更早轮压缩为摘要行）                                                                                                                                                                                                                                                                                                                                          |
-| MAX_RESULT_CHARS                    | 200000   | Result JSON 总字符                                                                                                                                                                                                                                                                                                                                                                     |
-| MAX_RESULT_BLOCKS                   | 20       | Result 块数                                                                                                                                                                                                                                                                                                                                                                            |
-| MAX_TABLE_ROWS / MAX_TABLE_COLUMNS  | 200 / 20 | Table 块行列界（Renderer 与 Validator 同源常量）                                                                                                                                                                                                                                                                                                                                       |
-| MAX_CARDS_ITEMS / MAX_RANKING_ITEMS | 20 / 20  | Cards/Ranking 条目界                                                                                                                                                                                                                                                                                                                                                                   |
-| MAX_TASK_PERSISTED_CHARS            | 500000   | 单任务持久化总预算 = **UTF-8 字节数**（决议 #103：Buffer.byteLength——实际持久化大小有界，P2-3 目标）；覆盖任务全部持久化行（task+candidates+captures+evidence+claims+conflicts+result）；写库前事务内检查，超限拒绝写入                                                                                                                                                                |
-| MAX_STORED_TASKS                    | 30       | **任务总数硬上限（含 created，决议 #104）**；清理对象仅最旧终态（completed/failed/cancelled/interrupted；created 永不清除、计入总数）；触发 = 任务进终态写入后 + 启动装配 interrupted 标记后 + create 总数检查；最旧排序键 = COALESCE(finished_at, interrupted_at) DESC, created_at DESC, id ASC；总数满且无可清理终态 → 新建拒绝 research-task-limit；被清理任务不可再看详情，UI 明示 |
-| MAX_PLAN_WEB_QUERIES                | 1        | 规划轮 webQueries 数量上限（决议 #133：小型编译期上限，C5 基线）                                                                                                                                                                                                                                                                                                                       |
-| RESEARCH_TOOL_RESULT_CONTENT_MAX    | 8000     | 单条 Research 工具结果序列化上限（决议 #132(6)：确定性截断 + 标记；只进模型回放消息，不进日志/UI/持久化）                                                                                                                                                                                                                                                                              |
+| 常量                                       | 值       | 语义                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MAX_GOAL_CHARS                             | 2000     | goal 截断上限（截断标记计入上限——返回文本 String.length 恒 ≤2000，决议 #114；单位 = JavaScript 字符数，非 UTF-8 字节，决议 #103）                                                                                                                                                                                                                                                      |
+| MAX_SOURCE_CANDIDATES                      | 24       | 合并后候选上限（Sources ≤10 + Search ≤10 + 溢出裁剪）                                                                                                                                                                                                                                                                                                                                  |
+| MAX_SELECTED_SOURCES                       | 8        | 选定来源上限                                                                                                                                                                                                                                                                                                                                                                           |
+| MAX_RESEARCH_TABS                          | 3        | 同任务同时打开的 task Tab 上限（v1 串行读取实际 1 个，上限为纵深防御）                                                                                                                                                                                                                                                                                                                 |
+| MAX_PAGE_CAPTURE_CHARS                     | 60000    | 单页规范化正文预算（确定性截断 + summary.charCount）                                                                                                                                                                                                                                                                                                                                   |
+| MAX_PAGE_READ_RETRIES                      | 1        | 同候选读取失败重试上限（最多 2 次尝试）                                                                                                                                                                                                                                                                                                                                                |
+| MAX_CAPTURES_PER_TASK                      | 16       | 8 候选 × 2 尝试的捕获记录上限（每次尝试独立 captureId——决议 #125；失败尝试同样计入）                                                                                                                                                                                                                                                                                                   |
+| MAX_EVIDENCE_EXCERPT_CHARS                 | 500      | 单条 Evidence excerpt 上限                                                                                                                                                                                                                                                                                                                                                             |
+| MAX_EVIDENCE_FIELD_VALUE_CHARS             | 200      | 单元格/字段值上限                                                                                                                                                                                                                                                                                                                                                                      |
+| MAX_EVIDENCE_PER_TASK                      | 60       | 任务 Evidence 总数上限（超出拒绝新提案）                                                                                                                                                                                                                                                                                                                                               |
+| MAX_CLAIMS_PER_TASK                        | 30       | claims 总数上限                                                                                                                                                                                                                                                                                                                                                                        |
+| MAX_CONFLICTS_PER_TASK                     | 10       | 冲突数上限                                                                                                                                                                                                                                                                                                                                                                             |
+| MAX_RESEARCH_ROUNDS                        | 24       | 模型轮次上限（规划 2 + 读取 8 + 核验 4 + 综合 3 + 修正余量 7）                                                                                                                                                                                                                                                                                                                         |
+| MAX_RESEARCH_TOOL_STEPS                    | 64       | 工具步数上限（read/open/search 计数；不注册新工具，计数语义为 Runtime 内部审计口径）                                                                                                                                                                                                                                                                                                   |
+| RESEARCH_TOTAL_TIMEOUT_MS                  | 1800000  | 总时长上限（30 分钟，含等待）                                                                                                                                                                                                                                                                                                                                                          |
+| MAX_REQUEST_CONTEXT_CHARS                  | 200000   | 单轮请求上下文字符预算（含 UNTRUSTED 块回注）                                                                                                                                                                                                                                                                                                                                          |
+| MAX_TRANSCRIPT_REPLAY_ROUNDS               | 6        | transcript 回放最近轮数（更早轮压缩为摘要行）                                                                                                                                                                                                                                                                                                                                          |
+| MAX_RESULT_CHARS                           | 200000   | Result JSON 总字符                                                                                                                                                                                                                                                                                                                                                                     |
+| MAX_RESULT_BLOCKS                          | 20       | Result 块数                                                                                                                                                                                                                                                                                                                                                                            |
+| MAX_TABLE_ROWS / MAX_TABLE_COLUMNS         | 200 / 20 | Table 块行列界（Renderer 与 Validator 同源常量）                                                                                                                                                                                                                                                                                                                                       |
+| MAX_CARDS_ITEMS / MAX_RANKING_ITEMS        | 20 / 20  | Cards/Ranking 条目界                                                                                                                                                                                                                                                                                                                                                                   |
+| MAX_TASK_PERSISTED_CHARS                   | 500000   | 单任务持久化总预算 = **UTF-8 字节数**（决议 #103：Buffer.byteLength——实际持久化大小有界，P2-3 目标）；覆盖任务全部持久化行（task+candidates+captures+evidence+claims+conflicts+result）；写库前事务内检查，超限拒绝写入                                                                                                                                                                |
+| MAX_STORED_TASKS                           | 30       | **任务总数硬上限（含 created，决议 #104）**；清理对象仅最旧终态（completed/failed/cancelled/interrupted；created 永不清除、计入总数）；触发 = 任务进终态写入后 + 启动装配 interrupted 标记后 + create 总数检查；最旧排序键 = COALESCE(finished_at, interrupted_at) DESC, created_at DESC, id ASC；总数满且无可清理终态 → 新建拒绝 research-task-limit；被清理任务不可再看详情，UI 明示 |
+| MAX_PLAN_WEB_QUERIES                       | 1        | 规划轮 webQueries 数量上限（决议 #133：小型编译期上限，C5 基线）                                                                                                                                                                                                                                                                                                                       |
+| RESEARCH_TOOL_RESULT_CONTENT_MAX           | 8000     | 单条 Research 工具结果序列化上限（决议 #132(6)：确定性截断 + 标记；只进模型回放消息，不进日志/UI/持久化）                                                                                                                                                                                                                                                                              |
+| MAX_PROVIDER_TEXT_CHARS_PER_STREAM         | 250000   | 每段 stream 文本 delta 累计上限（决议 #141：覆盖最大合法载荷 = Result 草案 ≤200k + JSON 包装 + 转义余量；超限立即停止消费 → research-budget-exhausted）                                                                                                                                                                                                                                |
+| MAX_PROVIDER_TOOL_CALLS_PER_STREAM         | 32       | 每段 stream toolCalls 数量上限（决议 #141；超限整段拒绝执行）                                                                                                                                                                                                                                                                                                                          |
+| MAX_PROVIDER_TOOL_CALL_ID_CHARS            | 64       | 单个 toolCall id 长度上限（决议 #141）                                                                                                                                                                                                                                                                                                                                                 |
+| MAX_PROVIDER_TOOL_CALL_NAME_CHARS          | 64       | 单个 toolCall name 长度上限（决议 #141；与 TOOL_NAME_PATTERN 上界一致）                                                                                                                                                                                                                                                                                                                |
+| MAX_PROVIDER_TOOL_ARGUMENTS_CHARS_PER_CALL | 5000     | 单个 toolCall arguments 长度上限（决议 #141；最大合法单参数值 url 2048 + JSON 包装余量）                                                                                                                                                                                                                                                                                               |
+| MAX_PROVIDER_TOOL_ID_CHARS_PER_STREAM      | 2048     | 每段 stream toolCall id 累计上限（决议 #141；= 数量 × 单项，派生常量）                                                                                                                                                                                                                                                                                                                 |
+| MAX_PROVIDER_TOOL_NAME_CHARS_PER_STREAM    | 2048     | 每段 stream toolCall name 累计上限（决议 #141；派生常量）                                                                                                                                                                                                                                                                                                                              |
+| MAX_PROVIDER_TOOL_ARGS_CHARS_PER_STREAM    | 160000   | 每段 stream toolCall arguments 累计上限（决议 #141；派生常量）                                                                                                                                                                                                                                                                                                                         |
+| MAX_RESEARCH_REASON_CHARS                  | 200      | 全部 reason/error 安全中文短句上限（决议 #141/#142/#147；与决议 #134 端口 reason 契约同源；超限 Provider 原文零回显）                                                                                                                                                                                                                                                                  |
+| MAX_VERIFICATION_DRAFT_CHARS               | 100000   | VerificationDraft raw 总字符上限（决议 #142；解析前防线）                                                                                                                                                                                                                                                                                                                              |
+| MAX_VENDOR_CANDIDATE_IDS                   | 8        | vendorCandidateIds 数量上限（决议 #142；= MAX_SELECTED_SOURCES）                                                                                                                                                                                                                                                                                                                       |
+| MAX_CLAIM_KEY_CHARS                        | 64       | claimKey 局部引用长度上限（决议 #142）                                                                                                                                                                                                                                                                                                                                                 |
+| MAX_CLAIM_EVIDENCE_REFS                    | 60       | 单 Claim evidenceIds 数量上限（决议 #142；= MAX_EVIDENCE_PER_TASK）                                                                                                                                                                                                                                                                                                                    |
+| MAX_CONFLICT_POSITIONS                     | 8        | 单 Conflict positions 数量上限（决议 #142；下界 2）                                                                                                                                                                                                                                                                                                                                    |
+| MAX_CONFLICT_POSITION_SOURCE_REFS          | 8        | 单 position sourceRefs 数量上限（决议 #142）                                                                                                                                                                                                                                                                                                                                           |
+| MAX_CONFLICT_CLAIM_REFS                    | 8        | 单 Conflict claimKeys 数量上限（决议 #142；下界 2）                                                                                                                                                                                                                                                                                                                                    |
 
 - **§2 字段常量（决议 #110，与 §6.8 同源集中在 shared/types/research.ts）**：
   MAX_CANDIDATE_TITLE_CHARS/MAX_CANDIDATE_NOTE_CHARS = 200、
@@ -950,6 +1028,28 @@ C8 前不新增 Renderer IPC。
 - C5 测试/冒烟注入确定性 stub；产品装配无 C6/C7 → 不建立 Runtime →
   `research-runtime-unavailable`（第 12 码）；不得设置「永远有效」默认、
   不得把未验证模型输出写入 ResearchResult。
+- **C6/C7 分阶段装配边界（决议 #140）**：C6 完成时只有真实
+  ResearchPromptsPort + ResearchSynthesisPort——**生产 fail-closed 维持**
+  （不注入测试 Validator、「永远通过」Validator 或任何半真实装配）；
+  C6 冒烟（8.18）可显式注入严格、确定性的 C7 测试 stub（仅 SMOKE
+  设施）；**只有 C7 完成且 C6/C7 两组真实端口都存在时，生产
+  RuntimeFactory 才建立**（C7 任务统一执行，见 C7 任务文档）。
+- **Provider 响应侧有界性（决议 #141）**：请求侧预算（§6.8
+  MAX_REQUEST_CONTEXT_CHARS）之外，每段 stream 的输出侧同样有界——
+  文本 delta 累计/toolCalls 数量/id/name/arguments 单项与累计全部
+  编译期上限（§6.8 新行）；超限立即停止消费并抛预算错误 →
+  research-budget-exhausted 终态；超限的工具调用不得执行；reasoning
+  完全不用——收到直接丢弃（零字符串累积、零回放、零持久化）；
+  超限 Provider 原文零记录/零回显（reason 为安全中文短句）。
+- **C5→C6→C7 数据交接（决议 #145）**：Runtime 在内存保存最终
+  claims/conflicts/verificationState（verified|unavailable）；核验成功
+  → 持久化与内存为同一不可变快照；两次核验输出仍非法 → 空
+  claims/conflicts + unavailable + 继续 synthesizing（synthesis 上下文
+  明确要求输出 uncertain 块）；synthesizing 用户上下文必须包含程序装配
+  的 Claim/Conflict 与 verificationState（文本进既有 UNTRUSTED 块，不进
+  system prompt）；`ResearchResultValidationContext` 新增 claims/
+  conflicts/verificationState 字段（validate 签名不变，只扩充 context——
+  决议 #134 不回写）；完成/失败/取消后清空内存 Claim/Conflict/正文状态。
 
 ### 6.12 Service/Runtime/Provider 异步装配（决议 #135，详细语义）
 
@@ -986,43 +1086,129 @@ C8 前不新增 Renderer IPC。
 
 ## 7. Cross-check 与综合（C6）
 
-### 7.1 Claim 数据模型（§2 类型）
+> 本节已按决议 #140–#147 重写（2026-08-16，C6 实施前契约裁决）：C6/C7
+> 分阶段装配边界、Provider 响应侧有界性、VerificationDraft 严格输入协议、
+> Claim 确定性装配（含厂商分类缺口裁决）、Conflict 引用完整性、C5→C6→C7
+> 数据交接、Prompt 与上下文构建所有权、parseResultDraft 与 Uncertainty
+> 边界——精确语义以本节与 §15 决议为准。
 
-- severity='high' 的 claim **必须**多源（程序校验：引用的不同 canonicalKey
-  来源数 ≥2，否则降级为 single-source 并在 singleSourceFields 显式标注——
-  Fifth §5「哪些字段来自单一来源」；不自动补源、不虚构）。
-- sourceTypes 判定（确定性程序，不采信模型自述）：
-  - vendor：候选 trust.value='official' 且来源域名与主题厂商域匹配（任务
-    级厂商域列表由规划阶段模型提议、程序按候选 trust 三元组与域名比对）
-    ——厂商自述 vs 第三方区分（Fifth §3.5）；
-  - third-party：trust ∈ {primary, secondary} 或非厂商域官方/权威候选；
-  - community：trust='community' 或论坛/社区形态（tag 承载，第四阶段语义）；
-  - 未命中判定 → third-party（保守默认）。
-- coverage 由程序计算（不同 canonicalKey 数 ≥2 → multi-source），模型无权
-  改写；「来源数量」仅用于覆盖计数展示，**不合成质量分数/百分比**（FT-07）。
+### 7.1 VerificationDraft 严格输入协议（决议 #142）
 
-### 7.2 冲突模型
+- 模型核验轮只输出**严格白名单 VerificationDraft**（§2 类型）：
+  `{vendorCandidateIds, claims[{claimKey,text,severity,evidenceIds}],
+conflicts[{topic,positions[{positionText,sourceRefs}],claimKeys}]}`。
+- raw 必须是**纯 JSON**——不接受 Markdown fence、前后说明文字或宽松修复
+  （JSON.parse 失败/非对象/未知顶层字段/嵌套未知字段 → 整份拒绝 + 安全
+  中文 reason ≤MAX_RESEARCH_REASON_CHARS；回注重提 ≤1 次）。
+- 顶层与全部嵌套对象严格白名单；claimKey 只是本次 proposal 的局部引用
+  （非空、唯一、有界）；Claim/Conflict 的 UUID、taskId、coverage、
+  sourceTypes、singleSourceFields、conflictIds、resolved **全由程序产生**
+  ——模型无字段通道提交（未知字段整份拒绝）。
+- 数量与长度上限（§6.8）：claims ≤MAX_CLAIMS_PER_TASK、conflicts ≤
+  MAX_CONFLICTS_PER_TASK、raw ≤MAX_VERIFICATION_DRAFT_CHARS、
+  vendorCandidateIds ≤MAX_VENDOR_CANDIDATE_IDS、单 Claim evidenceIds ≤
+  MAX_CLAIM_EVIDENCE_REFS、单 Conflict positions ∈ [2,
+  MAX_CONFLICT_POSITIONS]、单 position sourceRefs ≤
+  MAX_CONFLICT_POSITION_SOURCE_REFS、单 Conflict claimKeys ∈ [2,
+  MAX_CONFLICT_CLAIM_REFS]。
+- 全部文本 NFC、trim、控制字符/bidi 清除、连续空白折叠（复用
+  normalizeCaptureText 同族纪律）；清理后为空 → 拒绝；长度按清理后检查。
+- processVerification 对任意 unknown/raw 均安全返回不抛异常（防御性
+  外层 try/catch → 安全中文短句，不回显模型原文）。
 
-- 模型提出冲突对（claimIds + positions + sourceRefs）→ 程序校验：positions
-  ≥2、sourceRefs ∈ 本任务候选集、claimIds 存在；不自动裁决、不静默抹平
-  （resolved 恒 'unresolved'；展示层「冲突」视图 + Fifth §7.3）。
+### 7.2 Claim 确定性装配（决议 #143）
+
+- **引用校验（结构/引用全部通过后才分配可信 ID）**：evidenceIds 非空、
+  唯一，且全部属于 ctx.evidence 和当前 task（evidence.taskId ===
+  ctx.taskId）；经 Evidence.candidateId 找到当前 Candidate——未知或错绑
+  整份拒绝。
+- **coverage 只按引用 Evidence 对应的不同 canonicalKey 数计算**：≥2 →
+  multi-source；1 → single-source。**不得按 Evidence 条数或 candidateId
+  条数冒充多源**（FT-07）；模型不得提交 coverage。
+- **sourceTypes 程序判定（固定顺序 vendor → third-party → community，
+  去重）**；模型不得提交 sourceTypes、不得把模型自述直接写成
+  sourceTypes；不引用 Candidate 中不存在的 tags（Candidate 无 tags
+  字段——第四阶段 tag 语义不进入 Research 候选）：
+  - trust.value='community' → community；
+  - trust.value='official' 且该 Evidence 来源 origin 命中
+    vendorCandidateIds 推导的精确 http/https origin 集合 → vendor；
+  - 其余 official/primary/secondary/unknown/null → third-party
+    （保守默认，不洗白 trust——FT-07）。
+- **厂商分类裁决（决议 #143）**：现有 ResearchPlan 没有「厂商域」字段、
+  Candidate 没有 tags——vendorCandidateIds 是模型对当前候选的提议，
+  程序只接受当前任务候选 ID，从这些候选推导精确 http/https origin
+  （WHATWG URL；仅 http/https）；只有 trust.value='official' 且 origin
+  命中该集合的 Evidence 来源才归 vendor；模型只提议、程序判定。
+- **severity 语义裁决**：severity 表示影响程度，不等于覆盖程度——保持
+  模型提出的 high；单源 high Claim 的 coverage 必须为 single-source，
+  singleSourceFields 由程序设置稳定标记 `['整条结论']`（coverage 为
+  single-source 的任意 severity Claim 均如此标记；multi-source 为空
+  数组）；**不自动补源、不把单源伪装成多源**；synthesis prompt 必须
+  要求对该结论作单源/不确定披露。high 不自动降为 medium（不改变
+  「影响程度」语义）。
+- **ID 分配**：全部结构/引用校验通过后，claimId/conflictId 由可信
+  createId 产生——必须为小写 RFC 4122 v4 UUID 且本次装配内全局不重复
+  （claimId 与 conflictId 亦不互相重复）；形状/重复失败整份拒绝
+  （避免半成品输出）。返回顺序保持模型 proposal 顺序（确定性）。
+
+### 7.3 冲突模型与引用完整性（决议 #144）
+
+- Conflict 由局部 claimKeys 映射为程序生成的 claimId（模型不能提交
+  claimIds/conflictId/resolved/conflictIds）：
+  - 至少 2 个**不同且存在**的 claimKey；
+  - 至少 2 个规范化后**不同**的 positions（同一位置复制 → 整份拒绝）；
+  - 每个 position 至少一个 sourceRef；sourceRef 必须属于当前候选，
+    并且有当前任务 VerifiedEvidence 支撑；
+  - sourceRefs 必须落在该 Conflict 引用 Claims 的 Evidence 来源并集内
+    （引用 Claims 的 evidenceIds → Evidence.candidateId 并集）；
+  - 整个 Conflict 至少覆盖两个不同 canonicalKey（并集内 Evidence
+    对应候选的 canonicalKey 数 ≥2）；
+  - topic/positionText 长度与规范化严格受限（§6.8）；
+  - conflictId 由可信 createId 生成（v4 校验同 Claim）；resolved 恒
+    'unresolved'（不自动裁决、不静默抹平）；
+  - **Claim.conflictIds 与 Conflict.claimIds 双向一致，由程序反向装配**
+    （Claim.conflictIds 按冲突装配顺序追加）；
+  - 重复 ID、悬空引用、同一位置复制、空 sourceRefs 全部整份拒绝。
+- **诚实边界保留**：程序只能验证结构和引用关系，不能证明两个自然语言
+  position 在语义上真的相反（threat-model §5 第 9 类语义残余——不宣称
+  语义免疫）。
 - 冲突计数进 stats.conflictCount 与 Result.conflicts。
 
-### 7.3 Uncertainty 输出
+### 7.4 Uncertainty 输出与 parseResultDraft（决议 #147）
 
-- 证据不足/来源矛盾无法收敛 → `uncertain` 块（正式输出类型：text + reason）；
-  禁止模型在证据不足时编造确定结论；合成提示词明确该契约。
+- **parseResultDraft 只负责结构解析**（C6 范围）：raw 必须是严格对象、
+  顶层只能有 result、result 字段存在、返回 draft=parsed.result；
+  不接受 fence、前后文本或未知顶层字段；**不执行 C7 的 Result 语义校验**
+  （§8.1 归 C7）；任意 hostile input 安全返回 ≤MAX_RESEARCH_REASON_CHARS
+  的中文 reason。
+- **Uncertainty 最终强制校验归 C7**，但 C6 必须：
+  - synthesis prompt（编译期常量）要求 Evidence 为空、claims 为空、
+    verificationState=unavailable、存在 unresolved conflict 或单源
+    high Claim 时**显式产生 uncertain 块**（禁止编造确定结论）；
+  - 将 claims/conflicts/verificationState 真实传给 synthesis（决议
+    #145——UNTRUSTED 块承载，不进 system prompt）；
+  - 冒烟 8.18 使用严格 C7 测试 stub 断言上述场景确实生成 uncertain
+    块（stub 不得装入生产——决议 #140）。
 
-### 7.4 合成提示词（research-prompts.ts）
+### 7.5 合成提示词与上下文构建所有权（决议 #146）
 
-- `AGENT_RESEARCH_PLANNING_PROMPT` / `AGENT_RESEARCH_READING_PROMPT` /
-  `AGENT_RESEARCH_VERIFYING_PROMPT`（决议 #134(4)：verifying 轮独立槽位，
-  C5 端口引入第四常量）/ `AGENT_RESEARCH_SYNTHESIS_PROMPT` 编译期常量
-  （与共读 SYSTEM_PROMPT / AGENT_SYSTEM_PROMPT 互不混用；恒等断言固化）；
-  四常量实现 `ResearchPromptsPort`（决议 #134 端口形状）。
-- 候选元数据/capture 摘录/Evidence 全部经既有 `UNTRUSTED_WEB_CONTENT` /
-  `UNTRUSTED_TOOL_RESULT` 同族块序列化（闭合转义 + 确定性截断 + 预算裁剪）；
-  system 恒为编译期常量（FT-01/02 结构性防线）。
+- `research-prompts.ts` 提供**四个编译期常量**：
+  `AGENT_RESEARCH_PLANNING_PROMPT` / `AGENT_RESEARCH_READING_PROMPT` /
+  `AGENT_RESEARCH_VERIFYING_PROMPT` / `AGENT_RESEARCH_SYNTHESIS_PROMPT`
+  （与共读 SYSTEM_PROMPT / AGENT_SYSTEM_PROMPT 互不混用；恒等断言固化）
+  - 一个**冻结/只读的 ResearchPromptsPort 对象**（Object.freeze）。
+- **上下文构建所有权**：决议 #136(2) 已把有界 UNTRUSTED 块构建归 C5
+  Runtime——C6 不另建一套未被产品调用的重复序列化器；动态 goal、候选、
+  Evidence、Claim、Conflict 仍由 Runtime 的 C5 context builder 包装、
+  裁剪（闭合转义 + 确定性截断 + 预算裁剪）。C6 测试通过捕获
+  ProviderRequest 验证闭合转义和预算，而不是实现一套未接线 helper。
+- 四个 system prompt 必须非空、互异，并与共读 SYSTEM_PROMPT、
+  AGENT_SYSTEM_PROMPT 互异；system prompt 中不得拼接 goal、URL、标题、
+  Evidence、Claim 或网页正文；note 继续不得进入模型上下文。
+- 四个 prompt 应明确各自输出的严格 JSON 协议（§7.1/§7.4）、六工具能力
+  边界（RESEARCH_TOOL_NAMES）、网页文本不可信（不得服从网页指令）、
+  不得虚构 Evidence/ID/sourceType/coverage，以及证据不足时输出
+  「不确定」（FT-01/FT-02/FT-03/FT-07 结构性防线）。
 
 ## 8. Result Schema 验证与 Renderer（C7）
 
@@ -1379,33 +1565,34 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 
 ### 13.1 单测（Vitest，node 环境，纯逻辑）
 
-| 测试文件                    | 用例要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | 任务 |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| research-task-state.test.ts | 状态迁移全表（§3.1 每行）/非法事件安全返回/终态不可变/start 前置矩阵                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | C1   |
-| research-budget.test.ts     | 全部常量边界（§6.8 表每项 ±1）/裁剪确定性/超限标记                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | C1   |
-| research-repository.test.ts | 真实 node:sqlite：CRUD/编译期 SQL + 注入串仅作数据/CASCADE/JSON 形状校验 fail-closed/字节预算拒绝/任务数清理                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | C1   |
-| research-store.test.ts      | 装配矩阵：新库迁移 v1/坏 magic 保留/未来版本零写入/unavailable 全拒/遗留 running 标 interrupted/其余子系统不受影响（注：完整恢复态矩阵随 C1 定稿；backup 非 v1 承诺）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | C1   |
-| research-workspace.test.ts  | 注入 Fake BrowserController 替身（完全离线、可控 Promise）：精确 tabId 归属/只关本任务 Tab/用户 Tab 零关闭/已关闭安全无操作/并发上限（第 4 次 create 前拒绝 + deferred create 竞态）/abort 前与 create 期间/焦点恢复三态（未切换→恢复、已切换→零 activate、activeBefore 已关→不重建）/closeTab false 与抛错/cleanupAll 多 Tab·部分失败·重复·drain 屏障零泄漏/cleanup 后 acquire 拒绝/用户关 Tab → checkTab tab-closed-by-user/零 Electron import/常量单一事实源（决议 #118）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | C2   |
-| source-selector.test.ts     | 三档可达性与互斥（1<2<3，trust/priority 不反转档位）/上游顺序保留（source-search 与 web-search 输入 rank；group-list 才按 priority/lastUsedAt）/合并矩阵（同 URL 双路径/不同 scope 不合并/键空间独立/字段优先级/discoveredVia 规范顺序/重复输入去重）/provenance 继承（search-only 恒 null 无 trust 断言；畸形 trust 降级 null）/note 映射（作者标签/清洗/截断不拆 surrogate/无空标签/不进 sortKey）/candidateId 输入契约（非法与重复 fail-closed）/sortKey 编码（priority 5 在前/新时间在前/null 末位/`<` 比较与真实 node:sqlite ORDER BY sort_key 一致）/hostile input 矩阵（javascript:/data:/userinfo/控制字符/超长 URL/canonicalKey 不一致/disabled/blocked 零 throw 零日志正文）/预算（24 裁剪/select ≤8/空输入/零修改输入）                                                                                                                                                                                                                                | C3   |
-| capture-service.test.ts     | acquire 已加载零二次 navigate（browser 端口无 navigate 方法 + 断言零调用）/ready・error・missing・timeout・abort/读前・快照期间・读后用户关闭/L0–L3 阶梯映射/重试与不重试矩阵（决议 #125 全表）/重试产生新 captureId・新 tabId/每次尝试 finally release/release false・抛错保留 warning 不误报清理/redirect 后实际 URL・capturedAt・documentId 盖章/failed Capture sentinel（决议 #126 五字段）/NFC・空白・控制・bidi 规范化/60k 边界・surrogate 不拆分/table/section/field 在预算与哈希覆盖范围内/contentHash 确定性・输入零修改/正文零持久化存储探针                                                                                                                                                                                                                                                                                                                                                                                                            | C4   |
-| evidence-validator.test.ts  | 正确 quote/summary/table/field（多表相同 row/col 由 tableIndex 精确区分）/缺失・非法・越界 tableIndex/伪造摘录・跨 section 拼接・空摘录・超长摘录/错 task・capture・candidate・failed capture・内容绑定错位/header 非法形状与不一致/fieldPath 不存在・通配符・`__proto__`/constructor/prototype/模型伪造 trusted metadata・未知字段/value 不一致・超预算/rejected 不产生 Evidence・不落库/同输入幂等/Repository table locator 写入・读回恒等及非法行跳过（决议 #129/#130）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | C4   |
-| claim-model.test.ts         | coverage 计算/severity=high 多源强制/sourceTypes 判定矩阵/冲突结构校验（positions ≥2/refs ∈ 候选集）/uncertainty 块                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | C6   |
-| research-prompts.test.ts    | 合成提示词恒等断言（编译期常量）/UNTRUSTED 块闭合转义/预算裁剪/与共读・Agent system prompt 互不混用                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | C6   |
-| research-runtime.test.ts    | 四阶段顺序与每 phase 心跳/六工具子集恒等 + 未知工具/非法参数/跨任务与未知 candidate/tab 安全结果/UUID v4 预分配与冲突 fail-closed/ResearchPlan 白名单矩阵（来源模式互斥/groupId·candidateId 只能引用程序集合/webQueries ≤1/重提与安全默认计划）/24 候选·8 选择·16 Capture·60 Evidence/capture attempts 与 stats 精确对应/Sources-only 与 Search-only 降级 + Sources 不可用失败/模型轮重试与连续失败计数/context-too-long 裁剪重试/step·round 边界上最后一次合法调用与溢出调用零执行/stop 与 Provider done、timeout、终态提交竞态/restart 不得与旧 run settling 重叠/late event·late tool result·late DB write 全 no-op/progress 首尾·去重·listener throw/每个终态 cleanupAll + 用户 Tab 集合恒等/shutdown·dispose 幂等与 database-closed race/Candidate·Capture·Evidence·stats 原子回滚/Result+completed 同事务/500k 终态预留边界/CaptureContent·transcript·reasoning 零持久化/终态优先级（stop>timeout>budget）/终态单一所有权与 runToken 守卫（决议 #132–#138） | C5   |
-| result-validator.test.ts    | 判别联合逐块校验矩阵/长度边界/表格行列界/ranking rank 连续/evidenceId 存在与归属/sourceRefs ∈ 候选集/URL 白名单/未知 kind 拒绝/失败语义回注                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | C7   |
-| markdown-parse.test.ts      | 子集解析矩阵/raw HTML 关闭（`<script>`/`<img onerror>` 形态纯文本）/URL 白名单（javascript:/data: 拒绝）/转义与 bidi 剔除/超预算安全降级                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | C7   |
-| csv-serializer.test.ts      | 公式注入（=,+,-,@ 前缀 `'` 转义）/CRLF 与引号转义/UTF-8 BOM/空表与超长单元格截断                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | C8   |
-| research-ipc.test.ts        | 载荷白名单矩阵（未知字段/超长/非法 id）/状态门控（running 不可 delete）/export 通道无 renderer 路径参数/审计恰好一条脱敏                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | C8   |
+| 测试文件                            | 用例要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | 任务 |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| research-task-state.test.ts         | 状态迁移全表（§3.1 每行）/非法事件安全返回/终态不可变/start 前置矩阵                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | C1   |
+| research-budget.test.ts             | 全部常量边界（§6.8 表每项 ±1）/裁剪确定性/超限标记                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | C1   |
+| research-repository.test.ts         | 真实 node:sqlite：CRUD/编译期 SQL + 注入串仅作数据/CASCADE/JSON 形状校验 fail-closed/字节预算拒绝/任务数清理                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C1   |
+| research-store.test.ts              | 装配矩阵：新库迁移 v1/坏 magic 保留/未来版本零写入/unavailable 全拒/遗留 running 标 interrupted/其余子系统不受影响（注：完整恢复态矩阵随 C1 定稿；backup 非 v1 承诺）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | C1   |
+| research-workspace.test.ts          | 注入 Fake BrowserController 替身（完全离线、可控 Promise）：精确 tabId 归属/只关本任务 Tab/用户 Tab 零关闭/已关闭安全无操作/并发上限（第 4 次 create 前拒绝 + deferred create 竞态）/abort 前与 create 期间/焦点恢复三态（未切换→恢复、已切换→零 activate、activeBefore 已关→不重建）/closeTab false 与抛错/cleanupAll 多 Tab·部分失败·重复·drain 屏障零泄漏/cleanup 后 acquire 拒绝/用户关 Tab → checkTab tab-closed-by-user/零 Electron import/常量单一事实源（决议 #118）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C2   |
+| source-selector.test.ts             | 三档可达性与互斥（1<2<3，trust/priority 不反转档位）/上游顺序保留（source-search 与 web-search 输入 rank；group-list 才按 priority/lastUsedAt）/合并矩阵（同 URL 双路径/不同 scope 不合并/键空间独立/字段优先级/discoveredVia 规范顺序/重复输入去重）/provenance 继承（search-only 恒 null 无 trust 断言；畸形 trust 降级 null）/note 映射（作者标签/清洗/截断不拆 surrogate/无空标签/不进 sortKey）/candidateId 输入契约（非法与重复 fail-closed）/sortKey 编码（priority 5 在前/新时间在前/null 末位/`<` 比较与真实 node:sqlite ORDER BY sort_key 一致）/hostile input 矩阵（javascript:/data:/userinfo/控制字符/超长 URL/canonicalKey 不一致/disabled/blocked 零 throw 零日志正文）/预算（24 裁剪/select ≤8/空输入/零修改输入）                                                                                                                                                                                                                                                                                           | C3   |
+| capture-service.test.ts             | acquire 已加载零二次 navigate（browser 端口无 navigate 方法 + 断言零调用）/ready・error・missing・timeout・abort/读前・快照期间・读后用户关闭/L0–L3 阶梯映射/重试与不重试矩阵（决议 #125 全表）/重试产生新 captureId・新 tabId/每次尝试 finally release/release false・抛错保留 warning 不误报清理/redirect 后实际 URL・capturedAt・documentId 盖章/failed Capture sentinel（决议 #126 五字段）/NFC・空白・控制・bidi 规范化/60k 边界・surrogate 不拆分/table/section/field 在预算与哈希覆盖范围内/contentHash 确定性・输入零修改/正文零持久化存储探针                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | C4   |
+| evidence-validator.test.ts          | 正确 quote/summary/table/field（多表相同 row/col 由 tableIndex 精确区分）/缺失・非法・越界 tableIndex/伪造摘录・跨 section 拼接・空摘录・超长摘录/错 task・capture・candidate・failed capture・内容绑定错位/header 非法形状与不一致/fieldPath 不存在・通配符・`__proto__`/constructor/prototype/模型伪造 trusted metadata・未知字段/value 不一致・超预算/rejected 不产生 Evidence・不落库/同输入幂等/Repository table locator 写入・读回恒等及非法行跳过（决议 #129/#130）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | C4   |
+| claim-model.test.ts                 | VerificationDraft 严格白名单（纯 JSON/fence・说明文字拒绝/未知字段整份拒绝/claimKey 非空唯一有界/数量与长度上限/清理后为空拒绝）/Claim 装配（Evidence 与 Candidate 归属/canonicalKey coverage 不按条数冒充多源/sourceTypes vendor→third-party→community 矩阵/official 非 vendor origin 保守 third-party/community/单源 high 保持 severity + singleSourceFields 程序标记/模型提交 coverage・sourceTypes・ID 等可信字段拒绝/UUID 小写 v4 + 重复拒绝 + 先校验后分配/返回顺序 = 模型顺序/输入零修改・输出确定性）/Conflict 装配（局部 claimKeys 映射/≥2 不同 claimKey/positions ≥2 规范化后不同/sourceRefs ∈ 候选 + 有 VerifiedEvidence 支撑 + 落在引用 Claims 来源并集/多 canonicalKey/悬空・重复・跨任务・无 Evidence・空 sourceRefs 整份拒绝/resolved 恒 unresolved/双向 conflictIds 一致）/processVerification 任意输入安全返回不抛异常/parseResultDraft hostile 矩阵（严格对象/顶层仅 result/未知顶层字段/fence・前后文本/任意输入安全返回 ≤MAX_RESEARCH_REASON_CHARS 中文 reason/零 C7 语义——决议 #147）（决议 #142–#144） | C6   |
+| research-prompts.test.ts            | 四常量恒等・互异・纯编译期（与共读 SYSTEM_PROMPT/AGENT_SYSTEM_PROMPT 互异）/system 零动态内容（零 goal・URL・标题・Evidence・Claim 拼接）/各相位严格 JSON 协议指令/六工具能力边界/不得虚构 Evidence・ID・sourceType・coverage/证据不足 → 不确定/冻结只读 ResearchPromptsPort 对象/敌手内容只在 Runtime UNTRUSTED 块（捕获 ProviderRequest 断言闭合转义与预算——决议 #146(4)）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C6   |
+| research-runtime.test.ts（C6 扩展） | Provider 响应侧预算（delta 恰好边界可完成/+1 失败/research-budget-exhausted 终态仍可写入/巨量 reasoning 零累积零进 transcript/巨量 toolCalls・arguments 执行前整段拒绝零执行/迟到工具调用零生效——决议 #141）/数据交接（C6 返回的 Claim/Conflict 原样进持久化与 synthesis 上下文/C7 stub 收到同一不可变快照/模型无法在 Result 草案替换 Runtime 持有的 Claim/Conflict/verification unavailable 时 synthesis 上下文明确标记/stop・timeout・late event 仍守 C5 终态守卫/终态清空内存状态——决议 #145）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | C6   |
+| research-runtime.test.ts            | 四阶段顺序与每 phase 心跳/六工具子集恒等 + 未知工具/非法参数/跨任务与未知 candidate/tab 安全结果/UUID v4 预分配与冲突 fail-closed/ResearchPlan 白名单矩阵（来源模式互斥/groupId·candidateId 只能引用程序集合/webQueries ≤1/重提与安全默认计划）/24 候选·8 选择·16 Capture·60 Evidence/capture attempts 与 stats 精确对应/Sources-only 与 Search-only 降级 + Sources 不可用失败/模型轮重试与连续失败计数/context-too-long 裁剪重试/step·round 边界上最后一次合法调用与溢出调用零执行/stop 与 Provider done、timeout、终态提交竞态/restart 不得与旧 run settling 重叠/late event·late tool result·late DB write 全 no-op/progress 首尾·去重·listener throw/每个终态 cleanupAll + 用户 Tab 集合恒等/shutdown·dispose 幂等与 database-closed race/Candidate·Capture·Evidence·stats 原子回滚/Result+completed 同事务/500k 终态预留边界/CaptureContent·transcript·reasoning 零持久化/终态优先级（stop>timeout>budget）/终态单一所有权与 runToken 守卫（决议 #132–#138）                                                            | C5   |
+| result-validator.test.ts            | 判别联合逐块校验矩阵/长度边界/表格行列界/ranking rank 连续/evidenceId 存在与归属/sourceRefs ∈ 候选集/URL 白名单/未知 kind 拒绝/失败语义回注                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | C7   |
+| markdown-parse.test.ts              | 子集解析矩阵/raw HTML 关闭（`<script>`/`<img onerror>` 形态纯文本）/URL 白名单（javascript:/data: 拒绝）/转义与 bidi 剔除/超预算安全降级                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | C7   |
+| csv-serializer.test.ts              | 公式注入（=,+,-,@ 前缀 `'` 转义）/CRLF 与引号转义/UTF-8 BOM/空表与超长单元格截断                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | C8   |
+| research-ipc.test.ts                | 载荷白名单矩阵（未知字段/超长/非法 id）/状态门控（running 不可 delete）/export 通道无 renderer 路径参数/审计恰好一条脱敏                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | C8   |
 
 ### 13.2 冒烟矩阵（Electron 真实启动，临时 userData；dev+生产双场景）
 
-| #    | 场景                  | 断言要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | 任务  |
-| ---- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| 8.16 | capture/evidence 场景 | 受控页夹具（多章节/≥2 表格/heading/link 字段）：真实 ResearchWorkspace + CaptureService 读取 → capture 记录断言（实际 documentId/accessTime/hash/summary/tableIndex）；FakeProvider 只产确定性 proposal JSON（正确引用 → verified；伪造摘录/错绑 capture/错误 tableIndex/越界 → rejected）；失败 URL 后继续读取下一候选成功（C4 内不改 failedReadCount）；Capture 元数据 + 少量 VerifiedEvidence 写入临时 research.db（未验证引用零落库）；正文零持久化探针（拆分标记只存在于 CaptureContent、不进日志，扫描 research.db/WAL/SHM/Research 文件/隔离 userData 零命中）；场景 finally 精确释放 task Tab + 关闭库 + 清理隔离目录 + 用户 Tab 集合不变 | C4    |
-| 8.17 | Runtime 场景          | FakeProvider 多轮脚本驱动全阶段（planning→reading→verifying→synthesizing）→ completed + 候选/Capture/VerifiedEvidence/Result 落库读回 + CaptureContent 正文零落盘 + 用户 Tab 集合前后恒等；stop 中途 → cancelled + 本任务 Tab 清理 + 用户 Tab 保留；预算注入用尽 → failed（research-budget-exhausted）+ 此前 Evidence 保留；终态后迟到事件零影响（决议 #132–#139）                                                                                                                                                                                                                                                                                | C5    |
-| 8.18 | 综合场景              | 两冲突夹具来源 + 冲突页：claims 装配/冲突显式保留/uncertainty 块产出/Result 含 coverage 计数（无百分比字段断言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | C6    |
-| 8.19 | UI DOM 场景           | 真实 DOM：侧栏创建/启动/进度渐进/停止；结果画布 Table 排序/筛选/复制/Cards/Ranking 渲染/Evidence 下钻（点击结论看来源）；敌对 Markdown 文本纯文本渲染零 DOM 注入                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | C7/C8 |
-| 8.20 | 红队 FRT-01～FRT-12   | threat-model §4 矩阵全表（dev+生产双场景，每项独立断言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | C9    |
+| #    | 场景                  | 断言要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | 任务  |
+| ---- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| 8.16 | capture/evidence 场景 | 受控页夹具（多章节/≥2 表格/heading/link 字段）：真实 ResearchWorkspace + CaptureService 读取 → capture 记录断言（实际 documentId/accessTime/hash/summary/tableIndex）；FakeProvider 只产确定性 proposal JSON（正确引用 → verified；伪造摘录/错绑 capture/错误 tableIndex/越界 → rejected）；失败 URL 后继续读取下一候选成功（C4 内不改 failedReadCount）；Capture 元数据 + 少量 VerifiedEvidence 写入临时 research.db（未验证引用零落库）；正文零持久化探针（拆分标记只存在于 CaptureContent、不进日志，扫描 research.db/WAL/SHM/Research 文件/隔离 userData 零命中）；场景 finally 精确释放 task Tab + 关闭库 + 清理隔离目录 + 用户 Tab 集合不变        | C4    |
+| 8.17 | Runtime 场景          | FakeProvider 多轮脚本驱动全阶段（planning→reading→verifying→synthesizing）→ completed + 候选/Capture/VerifiedEvidence/Result 落库读回 + CaptureContent 正文零落盘 + 用户 Tab 集合前后恒等；stop 中途 → cancelled + 本任务 Tab 清理 + 用户 Tab 保留；预算注入用尽 → failed（research-budget-exhausted）+ 此前 Evidence 保留；终态后迟到事件零影响（决议 #132–#139）                                                                                                                                                                                                                                                                                       | C5    |
+| 8.18 | 综合场景              | 两个不同 canonicalKey 的受控来源 + ≥2 条 VerifiedEvidence + C6 真实 ResearchPromptsPort/ResearchSynthesisPort + FakeProvider 确定性返回两条相反 Claim 和一个 Conflict + 严格但仅限 smoke 的 C7 Validator stub：Claim.coverage/sourceTypes/singleSourceFields 断言；Conflict 显式落库、resolved=unresolved、双向引用一致；synthesizing 请求真实包含经验证 Claim/Conflict（UNTRUSTED 块）；Result 含同一 Conflict（程序装配，模型草案不可替换）；Result coverage 为计数（不含 score/percent/confidence）；Result ≥1 uncertain 块；CaptureContent、Provider raw、transcript、reasoning 零落盘；用户 Tab 前后恒等；本场景不解除生产 fail-closed（决议 #140） | C6    |
+| 8.19 | UI DOM 场景           | 真实 DOM：侧栏创建/启动/进度渐进/停止；结果画布 Table 排序/筛选/复制/Cards/Ranking 渲染/Evidence 下钻（点击结论看来源）；敌对 Markdown 文本纯文本渲染零 DOM 注入                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | C7/C8 |
+| 8.20 | 红队 FRT-01～FRT-12   | threat-model §4 矩阵全表（dev+生产双场景，每项独立断言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | C9    |
 
 - 双进程持久化：`AIBROWSE_RESEARCH_SMOKE=set|check`（与
   SESSION/SOURCES/SOURCES_UI 门控确定性互斥；两独立生产进程共用受控共享
@@ -2367,6 +2554,166 @@ MAX_RESEARCH_TOOL_STEPS` / `roundsUsed < MAX_RESEARCH_ROUNDS`，
      （5）应用退出走安全 shutdown（决议 #135(7)）：before-quit →
      research shutdown（abort → await settle → cleanupAll → closeDb）
      → 其余既有清理；幂等。
+
+> 以下 #140–#147 为 C6 实施前契约裁决（2026-08-16，C6 闭环；先改本文与
+> 测试、再改实现——§15 流程）。八项契约缺口均由 Fifth_stage.md 上位需求、
+> threat-model 安全契约与本文既有条款唯一裁决，无需用户拍板。
+
+140. **C6/C7 生产装配边界（fail-closed 维持至 C7）**：
+     （1）C6 完成时只有真实 ResearchPromptsPort 与
+     ResearchSynthesisPort——**生产 fail-closed 维持**：index.ts 不得
+     注入测试 Validator、「永远通过」的生产 Validator 或任何半真实装配；
+     C6 不得单独解除生产 fail-closed（决议 #134(3)/#139(2) 语义不变，
+     不解除）。
+     （2）C6 冒烟（8.18）可以显式注入严格、确定性的 C7 测试 stub（仅
+     SMOKE 设施，生产行为不变）。
+     （3）只有 C7 完成且 C6/C7 两组真实端口都存在时，生产 RuntimeFactory
+     才能建立（C7 任务统一执行装配，C7 任务文档登记）。
+     （4）C6 任务文档修正：原「修改 index.ts（生产装配注入真实端口——
+     决议 #134(3) fail-closed 解除）」表述失效，按本决议改为「C6 不改动
+     index.ts 生产装配（除非实际 smoke 注册机制确实需要）」；C6 依赖 =
+     C1、C4、C5（原仅 C1/C4 漏列 C5 端口）。
+141. **Provider 响应侧有界性（FT-10 补强）**：
+     （1）当前 Runtime 只限制请求上下文（MAX_REQUEST_CONTEXT_CHARS），
+     **未限制 Provider 输出累计量**——冻结编译期常量（§6.8 新行）：
+     - 每个 stream segment 的文本 delta 累计 ≤
+       MAX_PROVIDER_TEXT_CHARS_PER_STREAM；
+     - 每段 toolCalls 数量 ≤MAX_PROVIDER_TOOL_CALLS_PER_STREAM；
+       id/name/arguments 单项与累计上限（派生常量，零魔法数字）。
+       （2）超限后**立即停止消费**（for-await 内抛出，迭代器 return →
+       Provider 流中止）并抛预算错误 → 映射 research-budget-exhausted
+       （BudgetExhaustedError 加入 streamUntilDone 的哨兵重抛清单，
+       runModelRound 重试逻辑不吞该哨兵）。
+       （3）**超限的工具调用不得执行**（预算错误在工具执行循环之前抛出，
+       整段 toolCalls 零执行）。
+       （4）**reasoning 完全不用**：收到后直接丢弃，不得字符串累积、不得
+       进入 transcript、不得回放、不得持久化（决议 #136(3) 的「如 Provider
+       协议需要」v1 不需要——C6 落地为纯丢弃）。
+       （5）上限全部进入 shared/types/research.ts；reason/error 安全短句
+       上限 MAX_RESEARCH_REASON_CHARS（200）同源入共享常量。
+       （6）不记录、不持久化、不回显超限的 Provider 原文（错误消息为固定
+       中文短句，仅含常量数字）。
+142. **VerificationDraft 严格输入协议（FT-03/FT-07/FT-17 核心防线）**：
+     模型不能直接构造 Claim/Conflict 的可信字段。冻结结构（§2 类型）：
+     `{vendorCandidateIds, claims[{claimKey,text,severity,evidenceIds}],
+conflicts[{topic,positions[{positionText,sourceRefs}],claimKeys}]}`。
+     （1）顶层和全部嵌套对象严格白名单；未知字段**整份拒绝**（不得逐项
+     丢弃）。
+     （2）raw 必须是**纯 JSON**——不接受 Markdown fence、前后说明文字或
+     宽松修复（trim 容差除外）。
+     （3）claimKey 只是本次 proposal 的局部引用：非空、唯一、≤
+     MAX_CLAIM_KEY_CHARS。
+     （4）Claim/Conflict 的 UUID、taskId、coverage、sourceTypes、
+     singleSourceFields、conflictIds、resolved 全由程序产生。
+     （5）claims ≤MAX_CLAIMS_PER_TASK；conflicts ≤MAX_CONFLICTS_PER_TASK；
+     数组/局部 key/sourceRefs 等缺失的细粒度上限补为共享编译期常量
+     （§6.8 新行）。
+     （6）所有文本 NFC、trim、控制字符/bidi 清除、有界；清理后为空 →
+     拒绝。
+     （7）错误 reason 为不含模型原文的安全中文短句（≤
+     MAX_RESEARCH_REASON_CHARS）。
+     （8）processVerification 对任意 unknown/raw 均安全返回，不抛异常
+     （防御性外层捕获，零模型原文回显）。
+143. **Claim 确定性装配（FT-07 不洗白 trust）**：
+     （1）每条 Claim：evidenceIds 非空、唯一，且全部属于 ctx.evidence 和
+     当前 task；通过 Evidence.candidateId 找到当前 Candidate——未知或
+     错绑整份拒绝。
+     （2）coverage 只按引用 Evidence 对应的不同 canonicalKey 数计算：
+     ≥2 → multi-source；1 → single-source。不得按 Evidence 条数或
+     candidateId 条数冒充多源。模型不得提交 coverage。
+     （3）sourceTypes 由程序从真实 Candidate 计算，固定顺序 vendor →
+     third-party → community，去重。模型不得提交 coverage/sourceTypes。
+     （4）createId 必须产生小写 RFC 4122 v4 UUID 且全局不重复（含
+     claimId/conflictId 互不重复）；失败整份拒绝。先完成全部结构/引用
+     校验，再分配可信 ID，避免半成品输出。
+     （5）返回顺序保持模型 proposal 顺序，确保确定性。
+     （6）**厂商分类缺口裁决**：现有 ResearchPlan 没有「厂商域」字段，
+     Candidate 也没有 tags——vendorCandidateIds 为模型对当前候选的
+     提议；程序只接受当前任务候选 ID；从这些候选推导精确 http/https
+     origin；只有 trust.value='official' 且 origin 命中该集合的
+     Evidence 来源才归 vendor；trust.value='community' → community；
+     其余 official/primary/secondary/unknown/null → third-party。不得
+     把模型自述直接写成 sourceTypes；不得引用 Candidate 中不存在的
+     tags。
+     （7）**severity 语义裁决**：severity 表示影响程度，不等于覆盖程度
+     ——保持模型提出的 high（不降为 medium，不改变「影响程度」语义）；
+     单源 high Claim 的 coverage 必须为 single-source；singleSourceFields
+     由程序设置稳定标记 `['整条结论']`（coverage=single-source 的任意
+     severity Claim 均如此）；不自动补源、不把单源伪装成多源；synthesis
+     prompt 必须要求对该结论作单源/不确定披露。
+144. **Conflict 引用完整性（FT-08 不静默抹平）**：
+     （1）Conflict 由局部 claimKeys 映射为程序生成的 claimId：至少 2 个
+     不同且存在的 claimKey；至少 2 个规范化后不同的 positions；每个
+     position 至少一个 sourceRef。
+     （2）sourceRef 必须属于当前候选，并且有当前任务 VerifiedEvidence
+     支撑；sourceRefs 必须落在该 Conflict 引用 Claims 的 Evidence 来源
+     并集内；整个 Conflict 至少覆盖两个不同 canonicalKey。
+     （3）topic、positionText 长度和规范化严格受限（§6.8）。
+     （4）conflictId 由可信 createId 生成（v4 校验同 #143(4)）；resolved
+     恒 unresolved；Claim.conflictIds 与 Conflict.claimIds 必须双向一致，
+     由程序反向装配。
+     （5）重复 ID、悬空引用、同一位置复制、空 sourceRefs 全部整份拒绝；
+     模型不能提交 resolved、conflictId、真实 claimId 或 conflictIds。
+     （6）**诚实边界保留**：程序只能验证结构和引用关系，不能证明两个
+     自然语言 position 在语义上真的相反——threat-model §5 第 9 类语义
+     残余继续保留，不宣称语义免疫。
+145. **C5→C6→C7 数据交接修复**：
+     当前 Runtime 在 verifying 后只持久化 Claim/Conflict，没有把它们
+     交给 synthesizing 或 C7。冻结窄的补充：
+     （1）Runtime 为当前 run 在内存中保存最终 claims、conflicts 和
+     verificationState（ResearchVerificationState：verified |
+     unavailable——至少区分两态）。
+     （2）processVerification 成功后，保存并持久化**同一组不可变快照**
+     （内存与入库对象恒等，Runtime 不再变换）。
+     （3）两次核验输出仍非法时：claims/conflicts 为空；
+     verificationState=unavailable；任务允许继续 synthesizing；
+     synthesis 上下文必须明确要求输出 uncertain 块。
+     （4）synthesizing 的用户上下文必须包含经程序装配的 Claim/Conflict
+     和 verificationState；文本仍放入现有 UNTRUSTED 数据块，不进入
+     system prompt（FT-01/FT-02）。
+     （5）ResultValidationContext 以新增字段方式携带：claims、conflicts、
+     verificationState。
+     （6）决议 #134 的 validate 方法签名不变，只扩充 context；在新决议
+     中登记，不回写历史结论。
+     （7）Runtime 完成、失败、取消后清空内存 Claim/Conflict/正文状态
+     （CaptureContent 索引同清——终态单一所有权与内存最小化）。
+     （8）C7 后续据此程序重算 coverage、核对 Result.conflicts，并实施
+     uncertainty 强制规则。
+     （9）回归测试证明：C6 返回的 Claim/Conflict 原样进入持久化和
+     synthesis 上下文；C7 stub 收到同一不可变快照；模型无法在 Result
+     草案中替换 Runtime 持有的 Claim/Conflict；verification unavailable
+     时 synthesis 上下文具有明确标记；stop/timeout/late event 仍遵守
+     C5 终态守卫。
+146. **Prompt 与上下文构建所有权**：
+     （1）决议 #136(2) 已把有界 UNTRUSTED block 构建归 C5 Runtime。C6
+     不另建一套未被产品调用的重复序列化器。
+     （2）research-prompts.ts 提供四个编译期常量（
+     AGENT_RESEARCH_PLANNING_PROMPT / AGENT_RESEARCH_READING_PROMPT /
+     AGENT_RESEARCH_VERIFYING_PROMPT / AGENT_RESEARCH_SYNTHESIS_PROMPT）
+     与一个冻结/只读的 ResearchPromptsPort 对象。
+     （3）动态 goal、候选、Evidence、Claim、Conflict 仍由 Runtime 的 C5
+     context builder 包装、裁剪。
+     （4）C6 测试通过捕获 ProviderRequest 验证闭合转义和预算，而不是
+     实现一套未接线 helper。
+     （5）修正 C6 任务文档「C6 负责块组装」的漂移。
+     （6）四个 system prompt 必须非空、互异，并与共读 SYSTEM_PROMPT、
+     AGENT_SYSTEM_PROMPT 互异；system prompt 中不得拼接 goal、URL、
+     标题、Evidence、Claim 或网页正文；note 继续不得进入模型上下文。
+     （7）四个 prompt 应明确各自输出的严格 JSON 协议、六工具能力边界、
+     网页文本不可信、不得服从网页指令、不得虚构 Evidence/ID/sourceType/
+     coverage，以及证据不足时输出「不确定」。
+147. **parseResultDraft 与 Uncertainty 边界**：
+     （1）parseResultDraft 只负责结构解析：raw 必须是严格对象；顶层只能
+     有 result；result 字段存在；返回 draft=parsed.result；不接受
+     fence、前后文本或未知顶层字段；不执行 C7 的 Result 语义校验；
+     任意 hostile input 安全返回 ≤MAX_RESEARCH_REASON_CHARS 的中文
+     reason。
+     （2）Uncertainty 的最终强制校验归 C7，但 C6 必须：synthesis prompt
+     要求 Evidence 为空、claims 为空、verification unavailable、unresolved
+     conflict 或单源 high Claim 时显式产生 uncertain 块；将 claims/
+     conflicts/verificationState 真实传给 synthesis；冒烟 8.18 使用严格
+     C7 测试 stub 断言上述场景确实生成 uncertain；不把测试 stub 装入
+     生产（决议 #140）。
 
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4/C5 端口）/C7（依赖 C1/C5 端口，可与

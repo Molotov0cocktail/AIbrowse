@@ -115,17 +115,43 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
   主进程盖章 + accessTime）；捕获后页面变化不使已验证 Evidence 失效
   （记录捕获时刻），但旧捕获不可冒充新证据（captureId 唯一绑定）；跨重启
   无捕获（正文不持久化）故无陈旧证据复活路径。
-- **provenance 诚实（FT-07）**：候选 trust 三元组继承（search 命中恒无
-  trust 断言）；收藏/priority/备注仅排序输入；排序键不含「可信度」分数；
-  Result coverage 为计数类事实（无百分比/分数字段——schema 白名单拒绝，
-  决议 #98）；厂商自述/第三方分类由程序按候选 trust 与域名判定（模型自述
-  不采信，详细设计 §7.1）。
-- **冲突保留（FT-08）**：Conflict 数据模型由程序装配校验（positions ≥2、
-  refs ∈ 候选集）；resolved 恒 'unresolved'（v1 无自动裁决）；冲突计数与
-  视图进入 Result/UI；综合提示词明令「有冲突必须显式报告」。
-- **不确定输出（FT-02 纵深）**：证据不足 → `uncertain` 块（正式类型）；
-  合成提示词明令禁止编造确定结论；severity=high 的 claim 强制多源
-  （程序校验，单源则显式标注）。
+- **VerificationDraft 信任边界（FT-03/FT-07/FT-17，决议 #142）**：模型核验
+  轮只能输出严格白名单 VerificationDraft（vendorCandidateIds +
+  claims[{claimKey,text,severity,evidenceIds}] +
+  conflicts[{topic,positions,claimKeys}]）——未知字段/非纯 JSON/fence/
+  说明文字整份拒绝；claimKey 仅为局部引用；Claim/Conflict 的 UUID、
+  taskId、coverage、sourceTypes、singleSourceFields、conflictIds、
+  resolved 全由程序产生，模型无字段通道提交；processVerification 对
+  任意输入安全返回不抛异常（FT-17）。
+- **provenance 诚实（FT-07，决议 #143）**：候选 trust 三元组继承（search
+  命中恒无 trust 断言）；收藏/priority/备注仅排序输入；排序键不含
+  「可信度」分数；Result coverage 为计数类事实（无百分比/分数字段——
+  schema 白名单拒绝，决议 #98）；coverage 只按引用 Evidence 的不同
+  canonicalKey 数计算（≥2 → multi-source；不得按 Evidence 条数/
+  candidateId 条数冒充多源）；sourceTypes 由程序判定（vendor →
+  third-party → community 固定顺序）——vendorCandidateIds 仅为模型
+  提议（程序只接受当前任务候选 ID → 推导精确 http/https origin），只有
+  trust.value='official' 且 origin 命中该集合才归 vendor；
+  community → community；其余（official 非厂商域/primary/secondary/
+  unknown/null）→ third-party 保守默认——模型自述不采信、不洗白 trust。
+  severity 表示影响程度 ≠ 覆盖程度：单源 high 保持 high，coverage 必须
+  single-source + singleSourceFields 程序标记 `['整条结论']`，不自动
+  补源、不伪装多源。
+- **冲突保留（FT-08，决议 #144）**：Conflict 由程序按局部 claimKeys 映射
+  装配校验（≥2 个不同且存在的 claimKey/≥2 个规范化后不同的 positions/
+  sourceRefs ∈ 当前候选且有 VerifiedEvidence 支撑且落在引用 Claims 的
+  Evidence 来源并集内/整个 Conflict ≥2 个不同 canonicalKey）；
+  resolved 恒 'unresolved'（v1 无自动裁决）；Claim.conflictIds 与
+  Conflict.claimIds 双向一致由程序反向装配；重复 ID/悬空引用/位置复制/
+  空 sourceRefs 整份拒绝；冲突计数与视图进入 Result/UI；综合提示词明令
+  「有冲突必须显式报告」。诚实边界：程序验证结构与引用关系，不证明两个
+  自然语言 position 语义上真的相反（§5 第 9 类）。
+- **不确定输出（FT-02 纵深，决议 #147）**：证据不足 → `uncertain` 块
+  （正式类型）；合成提示词明令禁止编造确定结论，并在 Evidence 为空/
+  claims 为空/核验不可用/存在未解决冲突/单源 high Claim 时要求显式
+  产生 uncertain 块（最终强制校验归 C7）；C6 将程序装配的 claims/
+  conflicts/verificationState 真实传入 synthesis（UNTRUSTED 块承载，
+  不进 system prompt——决议 #145）。
 
 ### 3.4 检索与持久化防线（有界性，FT-10/FT-14）
 
@@ -140,6 +166,16 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
 - **终态预留（FT-10 补强，决议 #137(2)）**：非终态写入额外断言「当前 +
   新增 + 最坏终态任务行 ≤ 500k」——非终态写吃满预算导致任务永久 running
   的缺口关闭（failed/cancelled 终态始终可落库）。
+- **Provider 响应侧有界性（FT-10 补强，决议 #141）**：请求上下文预算之外，
+  每段 stream 输出同样有界——文本 delta 累计 ≤
+  MAX_PROVIDER_TEXT_CHARS_PER_STREAM、toolCalls 数量/id/name/arguments
+  单项与累计全部编译期上限（shared/types/research.ts 单一事实源）；
+  超限立即停止消费并映射 research-budget-exhausted 终态（已收集
+  Evidence 保留、终态仍可写入）；超限的工具调用零执行；超限 Provider
+  原文零记录/零持久化/零回显（reason 为安全中文短句 ≤
+  MAX_RESEARCH_REASON_CHARS）。**reasoning 完全不用——收到直接丢弃**
+  （零字符串累积、零回放、零持久化；决议 #136(3) 的「如 Provider 协议
+  需要」v1 不需要）。
 - **持久化最小化（FT-14/FT-16）**：capture 正文/完整快照/模型思维/无限
   transcript **零落盘**（仅内容哈希 + 摘要元数据）；research.db 仅
   goal/evidence（验证后）/claims/result/心跳；Evidence 摘录 ≤500 字符
