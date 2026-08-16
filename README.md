@@ -15,8 +15,10 @@
 > threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
 > 任务 C1–C10）——**第五阶段已进入实施阶段：具体完成项、当前 HEAD 与下一
 > 唯一任务以 `doc/tasks/progress.md` 为准；已实现能力不再标为「全部待实现」。
-> 本阶段禁止安装依赖、禁止未经授权调用真实 Provider（真实验收归 C9/C10
-> 另获授权）。**
+> 本阶段禁止安装依赖。**真实 Provider 已于 2026-08-16 获用户长期授权
+> （决议 #117）**：C9/C10 真实验收无需逐次申请授权，凭据可用即执行
+> （凭据只走仓库外 DPAPI/harness 受控流程）；凭据不可用如实记录「凭据
+> 不可用」。**
 > 契约源 `doc/stage5/detailed-design.md`；安全契约源
 > `doc/stage5/threat-model.md`；需求源 `Fifth_stage.md`；
 > 任务 `doc/stage5/tasks/C1–C10`。
@@ -152,7 +154,9 @@
   FRT-01～FRT-12）+ 任务 C1–C10（每任务 = 一个可验证开发闭环）。
   **C1（ResearchTask/Evidence/Result 核心契约 + research.db 存储基座）已完成；
   具体完成项、当前 HEAD 与下一唯一任务以 `doc/tasks/progress.md` 为准。**
-  **本阶段禁止安装依赖、禁止未经授权调用真实 Provider、禁止实现 Sixth Stage。**
+  **本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider 已于 2026-08-16
+  获用户长期授权（决议 #117）：后续任务无需逐次申请授权，凭据可用即执行
+  （凭据只走仓库外 DPAPI/harness 受控流程，凭据不可用如实记录「凭据不可用」）。**
   遗留风险分级：无阻塞项；P2-3（会话字节上限）与第四阶段六类注入残余风险等
   **必须吸收**进本阶段设计（独立 research.db 字节预算 + FT 威胁模型）；
   P2-2/P2-4/P3 延期 Seventh Stage（判定见 proposal §8）。
@@ -404,8 +408,9 @@ env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 AIBROWSE_SOURCES_UI_SMOKE=check AIB
 env -u ELECTRON_RUN_AS_NODE AIBROWSE_SMOKE=1 npm run dev
 ```
 
-真实 Provider 可选验证（开发者流程，需用户已提供 Key——未经提供不联网调用付费 API；
-Key 永不写进命令行或项目文件）：
+真实 Provider 验证（开发者流程；**2026-08-16 起用户已长期授权（决议 #117）——
+后续任务无需逐次申请授权**，凭据可用即执行；本地凭据缺失时记录「凭据不可用」，
+无凭据不联网调用付费 API；Key 永不写进命令行或项目文件）：
 
 1. 先读取仓库外本地说明 `%LOCALAPPDATA%\AIbrowse\S5\live-provider-test.md`（记录测试用
    base URL / model / DPAPI 密钥文件路径与注入规则——凭据与机器专属配置不进本仓库）。
@@ -421,8 +426,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AIbrowse\
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AIbrowse\S5\run-live-smoke.ps1" -Sources
 ```
 
-3. 不设固定调用次数：每次真实调用必须对应明确的验收项或缺陷复验；完成报告列出调用
-   次数与用途，不包含凭据。
+3. 不设固定调用次数：每次真实调用必须对应明确的验收项、缺陷定位或复验；完成报告
+   列出调用次数与用途，不包含凭据；失败必须区分余额/权限/网络/服务端/模型兼容与
+   产品缺陷。
 
 Session 跨进程持久化验证（两个独立进程 + 同一临时目录，验证 Cookie 重启后保留；
 以生产产物验收，先执行 `npm run build`）：

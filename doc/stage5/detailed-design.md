@@ -893,29 +893,30 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 - 双进程持久化：`AIBROWSE_RESEARCH_SMOKE=set|check`（与既有门控互斥；
   set 完成任务并退出 → check 新进程读回 task/evidence/result + interrupted
   标记路径）——C5 起启用。
-- 真实 Provider 验收（C9，需用户另行授权，未授权不联网调用付费 API）：
-  `AIBROWSE_LIVE_RESEARCH=1` 门控 + harness 开关（与既有 LIVE 门控互斥）；
-  真实主题多源任务（Fifth §7 场景映射）+ 真实敌对页观察场景（FRT 观察性
-  子集）+ 真 Key 零暴露扫描 + 调用台账（沿用第三/四阶段纪律）。
+- 真实 Provider 验收（C9；决议 #117 长期授权，无需逐次申请，凭据可用
+  即执行）：`AIBROWSE_LIVE_RESEARCH=1` 门控 + harness 开关（与既有 LIVE
+  门控互斥）；真实主题多源任务（Fifth §7 场景映射）+ 真实敌对页观察场景
+  （FRT 观察性子集）+ 真 Key 零暴露扫描 + 调用台账（沿用第三/四阶段纪律；
+  凭据不可用如实记录「凭据不可用」，不得写「未获授权」）。
 
 ## 14. 验收核对清单（Fifth_stage.md §9 → 本阶段落点，C10 实施）
 
-| 组          | 条目                             | 落点                                      |
-| ----------- | -------------------------------- | ----------------------------------------- |
-| Research    | 可组合 Sources + Web Search      | C3/C4/C9（候选合并端到端）                |
-| Research    | 可读取多个来源                   | C4（capture 矩阵 + 8.16）                 |
-| Research    | 可处理来源失败                   | C4/C5（失败继续 + failedReadCount）       |
-| Research    | 可显示进度和停止                 | C5/C8（progress 事件 + UI）               |
-| Evidence    | 重要结论可追踪来源               | C1/C4/C6（Evidence 模型 + 下钻）          |
-| Evidence    | 冲突不静默抹平                   | C6（Conflict 模型 + 视图）                |
-| Evidence    | 可查看 URL/时间/证据             | C7/C8（下钻视图）                         |
-| Rendering   | Markdown/Table/Cards             | C7/C8（8.19 UI 断言）                     |
-| Rendering   | 结构化 schema 渲染               | C7（ResultValidator → Renderer 单一通道） |
-| Rendering   | 不执行任意 HTML/JS               | C7/C9（FRT-06/07 + grep 断言）            |
-| UX          | Chat 与 Research 区分清楚        | C8（模式互斥 UI + 8.19）                  |
-| UX          | Research Tabs 不严重干扰用户浏览 | C2/C8（所有权 + 恢复语义）                |
-| Engineering | 全量测试/构建/冒烟               | 每个任务闭环（AGENTS.md 附 A 矩阵）       |
-| Engineering | 真实多源任务验收                 | C9（真实 Provider，用户授权后）           |
+| 组          | 条目                             | 落点                                                    |
+| ----------- | -------------------------------- | ------------------------------------------------------- |
+| Research    | 可组合 Sources + Web Search      | C3/C4/C9（候选合并端到端）                              |
+| Research    | 可读取多个来源                   | C4（capture 矩阵 + 8.16）                               |
+| Research    | 可处理来源失败                   | C4/C5（失败继续 + failedReadCount）                     |
+| Research    | 可显示进度和停止                 | C5/C8（progress 事件 + UI）                             |
+| Evidence    | 重要结论可追踪来源               | C1/C4/C6（Evidence 模型 + 下钻）                        |
+| Evidence    | 冲突不静默抹平                   | C6（Conflict 模型 + 视图）                              |
+| Evidence    | 可查看 URL/时间/证据             | C7/C8（下钻视图）                                       |
+| Rendering   | Markdown/Table/Cards             | C7/C8（8.19 UI 断言）                                   |
+| Rendering   | 结构化 schema 渲染               | C7（ResultValidator → Renderer 单一通道）               |
+| Rendering   | 不执行任意 HTML/JS               | C7/C9（FRT-06/07 + grep 断言）                          |
+| UX          | Chat 与 Research 区分清楚        | C8（模式互斥 UI + 8.19）                                |
+| UX          | Research Tabs 不严重干扰用户浏览 | C2/C8（所有权 + 恢复语义）                              |
+| Engineering | 全量测试/构建/冒烟               | 每个任务闭环（AGENTS.md 附 A 矩阵）                     |
+| Engineering | 真实多源任务验收                 | C9（真实 Provider，决议 #117 长期授权；凭据可用即执行） |
 
 ## 15. 决议记录（2026-08-16）
 
@@ -1094,6 +1095,36 @@ verification:'verified' }`）；schema CHECK 收窄为
       与 Date.parse 既有接受范围一致，不收缩不扩张）；校验不参与本地时区
       （纯字段范围判定）；Z 形态保留字符串级日历往返。24:00 与闰秒 60
       不属既有语法范围（拒绝）。
+
+> 以下 #117 为真实 Provider 长期授权与保密规则（2026-08-16，用户明确要求
+> 的长期规则变更，面向后续所有任务生效）。历史阶段当时「未授权/NOT RUN/
+> 后来授权」的记录原位保留，不改写为当时已有长期授权。
+
+117. **真实 Provider 长期授权与保密规则（2026-08-16 起长期生效）**：
+     用户已于 2026-08-16 给出真实 Provider **长期授权**——后续 Agent 在
+     后续任务中可按需使用真实 Provider，**无需逐次申请授权、不设固定调用
+     次数**。同时生效的纪律（每条都是硬约束）：
+     **调用目的**：每次真实调用必须服务于明确的开发、验收、定位或复验
+     目的；禁止无界循环、无诊断依据的重复请求和无关测试；授权不等于
+     强制调用——没有真实 Provider 产品链路的任务（如 C2）正常预期为
+     0 次，不得为了「展示授权」发起无关调用。
+     **凭据通道**：凭据只能通过既有仓库外本地说明文件、DPAPI 密文和
+     受控 harness 注入；不得要求用户在聊天中粘贴 Key；Key/base URL/
+     认证头不得进入命令行、源码、Git、日志、prompt、DOM、research.db、
+     sources.db、会话文件、报告或工具输出；应用读取环境变量后立即移除；
+     运行结束清理子进程、环境变量和临时目录。
+     **报告纪律**：完成报告登记实际调用次数与每次用途，但不登记凭据或
+     机器专属配置。
+     **凭据缺失语义**：本地凭据缺失时记录「凭据不可用」，不得再写
+     「未获授权」。
+     **失败分类**：Provider 失败必须区分余额、权限、网络、服务端、模型
+     兼容与产品缺陷，不得混为单一「Provider 错误」。
+     **C9 契约调整**：实现基础设施后，如本地凭据和 Provider 可用，真实
+     执行属于 C9 范围（不再等待授权）；凭据/服务不可用则如实记录「凭据
+     不可用/NOT RUN」。**C10 契约调整**：不得再因「未授权」判 HOLD，只能
+     因真实验证未完成、凭据/服务不可用或验证失败而如实 HOLD/PENDING。
+     FakeProvider 仍不能冒充真实 Provider 证据（离线矩阵与真实验收分离，
+     观察性结果如实登记）。
 
 ## 16. 实现顺序与范围边界（C1–C10 映射）
 

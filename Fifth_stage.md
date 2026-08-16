@@ -8,8 +8,10 @@
 > threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
 > 任务 C1–C10）。**本阶段已进入实施阶段**：具体完成项、当前 HEAD 与下一
 > 唯一任务以 `doc/tasks/progress.md` 为准；已实现能力不再标为「全部待实现」。
-> 本阶段内不实现 Sixth Stage 任何代码；真实 Provider 验收归 C9/C10，届时须
-> 另获用户授权。
+> 本阶段内不实现 Sixth Stage 任何代码。**真实 Provider 已于 2026-08-16 获
+> 用户长期授权（决议 #117）**：C9/C10 真实验收无需逐次申请授权——凭据可用
+> 即执行（仍须严格保护凭据，走仓库外 DPAPI/harness 受控流程）；凭据不可用
+> 如实记录「凭据不可用」，不得写「未获授权」。
 > **契约与安全契约源**：本文保留阶段需求源职责（目标/验收标准/Exit Gate），
 > 具体接口、schema、状态机、预算与决议以 `doc/stage5/detailed-design.md` 为
 > **唯一契约源**；威胁与红队以 `doc/stage5/threat-model.md` 为**安全契约源**。

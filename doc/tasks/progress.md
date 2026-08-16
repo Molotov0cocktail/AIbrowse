@@ -44,9 +44,18 @@
   Z 形态保留字符串级往返；#116 仅补实现说明不改结论；migration v1/
   Repository/Store/Service 零改动。证据见 C1 任务文档「第二次定向补修」
   小节。
-  **下一唯一任务 = C2。** 本阶段红线：禁止安装依赖、
-  禁止未经授权调用真实 Provider（C9/C10 真实验收须另获用户授权）、禁止
-  实现 Sixth Stage。
+  **下一唯一任务 = C2。** 本阶段红线：禁止安装依赖、禁止实现
+  Sixth Stage。**真实 Provider 长期授权（2026-08-16，用户明确要求，
+  决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
+  每次调用仍须服务于明确开发/验收/定位/复验目的，禁止无界循环、无诊断
+  依据重复请求与无关测试；凭据只走仓库外本地说明/DPAPI 密文/受控
+  harness 注入，Key/base URL/认证头零进入命令行、源码、Git、日志、
+  prompt、DOM、research.db、sources.db、会话文件、报告或工具输出；
+  应用读取环境变量后立即移除，运行结束清理子进程/环境变量/临时目录；
+  报告登记调用次数与用途不登记凭据；凭据缺失记录「凭据不可用」（不再写
+  「未获授权」）；Provider 失败区分余额/权限/网络/服务端/模型兼容/产品
+  缺陷。C9 契约调整：基础设施落地后凭据可用即真实执行（属 C9 范围）；
+  C10 不得再因「未授权」判 HOLD；FakeProvider 不得冒充真实证据。
   设计要点（详见 proposal §10 决策表）：独立有界 ResearchRuntime（AgentLoop
   12 步/420s 契约零改动）/研究数据不进入会话 JSON（独立 research.db +
   字节预算，吸收 P2-3）/模型只提引用、Evidence 确定性验证/capture 正文零
@@ -419,7 +428,7 @@
 | C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §7；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
 | C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ⏳ | 2026-08-16 设计定稿，待实施；契约 §8 + 决策 D9；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
 | C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §11 + 决策 D10/D11；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
-| C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ⏳ | 2026-08-16 设计定稿，待实施；threat-model §4；任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md；真实执行需用户另行授权 |
+| C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ⏳ | 2026-08-16 设计定稿，待实施；threat-model §4；任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md；**决议 #117 长期授权**：基础设施落地后凭据可用即真实执行（凭据不可用如实记录「凭据不可用」） |
 | C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ⏳ | 2026-08-16 设计定稿，待实施；任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；完成后停止不实现 Sixth Stage |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与

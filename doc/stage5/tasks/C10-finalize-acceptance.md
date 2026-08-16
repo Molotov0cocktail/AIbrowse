@@ -21,8 +21,9 @@ C1–C9 全部完成；真实 Provider 验收状态按 C9 台账如实计入判�
 - §9 逐项证据表（Research/Evidence/Rendering/UX/Engineering 五组，每项
   证据来源：单测/冒烟场景/审计条目/源码核对——独立复验不抄报告）；
 - §10 Exit Gate 逐项判定：
-  1. Research 在若干真实主题上能稳定完成（真实 Provider 维度——未授权
-     则 HOLD 同第四阶段先例）；
+  1. Research 在若干真实主题上能稳定完成（真实 Provider 维度——**决议
+     #117 长期授权**：不得再因「未授权」判 HOLD；只能因真实验证未完成、
+     凭据/服务不可用或验证失败而如实 HOLD/PENDING）；
   2. Evidence 已成为数据模型的一部分而非 UI 装饰；
   3. Sources + Search 的选择逻辑经过实际反馈；
   4. Renderer schema 稳定；
@@ -61,8 +62,9 @@ C1–C9 全部完成；真实 Provider 验收状态按 C9 台账如实计入判�
 
 ## 验收标准
 
-- §9 全组 PASS（或如实 HOLD/PENDING + 缺口清单——真实 Provider 未授权
-  按第四阶段 B9 先例处理：询问一次、不授权则 NOT RUN 如实登记）；
+- §9 全组 PASS（或如实 HOLD/PENDING + 缺口清单——真实 Provider 维度按
+  决议 #117 长期授权：不得因「未授权」判 HOLD；真实验证未完成/凭据·服务
+  不可用/验证失败才如实 HOLD/PENDING 并登记缺口）；
 - §10 全项判定有证据；总 Exit 决策明确（GO/PASS 或 HOLD/PENDING）；
 - 全量验证全绿；文档与代码一致；
 - 完成后**停止**：progress 下一推荐任务唯一指向用户指令（Sixth Stage

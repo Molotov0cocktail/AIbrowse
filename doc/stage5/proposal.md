@@ -103,7 +103,10 @@
 - Research 存储复用第四阶段冻结的 `node:sqlite` driver 模式（决议 #48）：
   独立 `research.db` + 独立 migration 列表（不修改 sources.db 的 schema v1）。
 - 真实 Provider 验证沿用既有凭据流程（仓库外 DPAPI harness + 环境变量注入 +
-  真 Key 零暴露扫描；不设固定调用次数）——C9 门控与 harness 扩展。
+  真 Key 零暴露扫描；不设固定调用次数）。**2026-08-16 起真实 Provider 已获
+  长期授权**（决议 #117，detailed-design §15）：后续任务按需使用、无需逐次
+  申请授权；凭据/服务不可用如实记录「凭据不可用」；C9 门控与 harness 扩展
+  落地后凭据可用即执行真实验收。
 
 ## 6. 约束与假设
 

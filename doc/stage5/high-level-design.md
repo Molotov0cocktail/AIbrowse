@@ -218,9 +218,11 @@ UI research:stop {taskId} → ResearchService.stop：
   evidence 场景 8.16、C5 Runtime 场景 8.17、C6 综合场景 8.18、C8 UI DOM 场景
   8.19、C9 红队 FRT-01～FRT-12 场景 8.20（新场景编号独立、断言不重复完整
   运行既有矩阵——延续决议 #93 纪律，不显著加重默认矩阵）。
-- **真实 Provider 可选验证（C9）**：真实主题多源 Research 端到端 + 真实
+- **真实 Provider 验证（C9）**：真实主题多源 Research 端到端 + 真实
   敌对页观察场景（沿用凭据流程，新门控 `AIBROWSE_LIVE_RESEARCH=1` + harness
-  开关，与既有 LIVE 门控互斥；需用户另行授权，未授权不联网调用付费 API）。
+  开关，与既有 LIVE 门控互斥）。**2026-08-16 起真实 Provider 已获长期授权**
+  （决议 #117）：凭据可用即执行、无需逐次申请授权；凭据/服务不可用如实
+  记录「凭据不可用/NOT RUN」，不阻塞离线 C9。
 - **跨进程持久化**：沿用 AIBROWSE_SOURCES_SMOKE 同模式双进程验证（task
   元数据/evidence/result 写后读回；interrupted 标记路径）。
 
