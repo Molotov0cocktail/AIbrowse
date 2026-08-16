@@ -17,7 +17,7 @@
   D1–D13/里程碑）、high-level-design（依赖方向/模块/数据流/安全模型）、
   detailed-design（唯一契约源 §2–§16：类型/状态机/候选合并排序/capture·
   evidence/ResearchRuntime/预算全表/cross-check/Result Schema·Renderer/
-  storage/IPC/决议——范围以 §15 当前记录为准，现已至 #116）、threat-model
+  storage/IPC/决议——范围以 §15 当前记录为准，现已至 #131）、threat-model
   （FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类，先于任何 Research 实现
   定稿）、任务 C1–C10。
   Entry Gate（Fifth_stage.md §2 五项）逐项核验**全部通过**（证据表见
@@ -491,7 +491,7 @@
 | C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ✅ | 2026-08-16 完成（见「最近验证结果」第十四个闭环）：实施前契约裁决 #101–#111 + 红→绿 9/9 失败→131/131 + 全量 test 1386/1386 + dev/生产冒烟 17 工具/SRT-12 零回归 + smoke.ts SRT-12 白名单契约同步（+5 行，唯一既有改动）；**2026-08-16 定向修复与契约边界复核完成（第十五个闭环）**：决议 #112–#116 先红后修（红态 34 failed → 聚焦 174/174、全量 test 1429/1429；migration v1 零改写、sources/ai/browser/renderer/preload 零 diff）；**2026-08-16 第二次定向补修完成（第十六个闭环）**：ISO 8601 偏移日期回滚校验（红态 6 failed → 聚焦 215/215、全量 test 1470/1470；仅 task-state 纯函数改动）；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md（红→绿证据、定向修复与第二次定向补修记录已回填） |
 | C2 | ResearchWorkspace 与 task-owned Tab 隔离、数量上限、取消/异常清理 | ✅ | 2026-08-16 完成（见「最近验证结果」第十八个闭环）：实施前契约裁决 #118（八项：形态与接口/最小端口/URL 边界/精确所有权/并发上限/焦点恢复/用户关闭感知/释放取消竞态）+ 精确接口 §10.1；红→绿 39/39（模块缺失红 → Fake BrowserController 全离线矩阵）；全量 test 1509/1509；BrowserController/TabManager/SearchProvider 产品契约零改动；任务文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md（红→绿证据已回填） |
 | C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ✅ | 2026-08-16 完成（见「最近验证结果」第二十个闭环）：实施前契约裁决 #120–#123（三档发现路径排序/note 映射/candidate_id 输入契约/sortKey 编码——详见任务文档「实施前复核项」小节，均已裁决）+ 详细设计 §4 重写；红→绿 80/80（模块缺失红态）→ 全量 test 1598/1598；真实 node:sqlite 排序一致性 probe；C1/C2/Source/Search 产品代码零改动；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md（红→绿证据已回填） |
-| C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §5；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
+| C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #124–#131（Tab 生命周期零双导航/冻结判别联合与重试矩阵/failed Capture sentinel/ready・L0–L3 映射/CaptureContent 60k 预算与哈希覆盖/多表 tableIndex/不可信 proposal 六字段/Chromium 错误页判定）+ CaptureService + EvidenceValidator + repository tableIndex 严格解析 + 冒烟 8.16（dev+生产双场景退出码 0、正文零持久化探针、用户 Tab 集合不变、真实 Provider 0 次）；红→绿聚焦 136/136、全量 test 1691/1691；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
 | C5 | 独立有界 ResearchRuntime：进度、停止、失败继续、预算与终态 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §6；任务文档 doc/stage5/tasks/C5-research-runtime.md |
 | C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §7；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
 | C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ⏳ | 2026-08-16 设计定稿，待实施；契约 §8 + 决策 D9；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
@@ -506,7 +506,7 @@
 > （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3、C4）
 
 - **C3 Source Selection 候选合并与确定性排序（2026-08-16，第二十个闭环；
   docs 与 feat 两个逻辑提交见 git log）**：① 步骤 0 独立核对——HEAD
@@ -2776,19 +2776,22 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **C4（唯一）**：C3 已完成（2026-08-16，Source Selection 候选合并与
-  确定性排序，实施前契约裁决 #120–#123——三档发现路径排序/note 映射/
-  candidateId 输入契约/sortKey 编码，红→绿证据见 C3 任务文档「红→绿
-  证据」小节）。下一唯一任务 = **C4（多源读取、结构化提取、capture 记录
-  与 Evidence 确定性验证，契约 §5，任务文档
-  doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md）**；
-  C4 完成后按依赖链推进（C5 → C6/C7 → C8 → C9 → C10），每个任务一个可
+- **C5（唯一）**：C4 已完成（2026-08-16，多源读取、结构化提取、capture
+  记录与 Evidence 确定性验证，实施前契约裁决 #124–#131——Tab 生命周期
+  零双导航/冻结判别联合与重试矩阵/failed Capture sentinel/ready・L0–L3
+  映射/CaptureContent 60k 预算与哈希覆盖/多表 tableIndex/不可信
+  proposal 六字段/Chromium 错误页判定，红→绿证据见 C4 任务文档「红→绿
+  证据」小节；全量 test 1691/1691，冒烟 8.16 dev+生产双场景退出码 0）。
+  下一唯一任务 = **C5（独立有界 ResearchRuntime：阶段化、进度、停止、
+  失败继续、预算与终态，契约 §6，任务文档
+  doc/stage5/tasks/C5-research-runtime.md）**；
+  C5 完成后按依赖链推进（C6/C7 → C8 → C9 → C10），每个任务一个可
   验证开发闭环；本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider
   按决议 #117 长期授权（2026-08-16 起长期生效）：后续任务按需使用、无需
   逐次申请授权；每次调用仍须服务于明确开发/验收/定位/复验目的；无真实
   Provider 产品链路的任务不强制调用；凭据不可用如实记录「凭据不可用」，
-  不得写「未获授权」。**C3 实施前复核项四项已全部裁决**（决议
-  #120–#123，详见 C3 任务文档「实施前复核项」小节）。C7 前置复核项：
+  不得写「未获授权」。**C4 实施前复核项七项已全部裁决**（决议
+  #124–#131，详见 C4 任务文档与 detailed-design §15）。C7 前置复核项：
   proposal D9 与决议 #99 Markdown 表格漂移（C1 已登记未修复，继续保留）。
 
 ## 第一阶段验收未完成项
