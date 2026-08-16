@@ -44,7 +44,17 @@
   Z 形态保留字符串级往返；#116 仅补实现说明不改结论；migration v1/
   Repository/Store/Service 零改动。证据见 C1 任务文档「第二次定向补修」
   小节。
-  **下一唯一任务 = C2。** 本阶段红线：禁止安装依赖、禁止实现
+  **C2 已完成（2026-08-16）**——ResearchWorkspace 与 task-owned Tab 隔离
+  （实施前契约裁决 #118 + 精确接口 §10.1；红→绿 39/39 + 全量 **1509/1509**）：
+  精确 tabId 所有权（敌手 createTab 返回已存在 id 零关闭零登记）/并发上限
+  3（同步段槽检查，第 4 次 create 前确定性拒绝）/URL 边界复用
+  normalizeSourceUrl/焦点恢复三态（未切换→恢复、已切换→零 activate、
+  activeBefore 已关→不重建 + warning；activateTab 失败→精确关闭新 Tab +
+  tab-restore-focus-failed）/checkTab 显式快照感知用户关闭（零事件/计时器/
+  监听器）/cleanupAll drain 屏障（in-flight create 落定后精确关闭零泄漏）/
+  cleanup 后 acquire 拒绝/closeTab false·抛错不误报已清理/用户 Tab 集合
+  恒等/abort 前与 create 期间/零 Electron import/MAX_RESEARCH_TABS 单一
+  事实源。**下一唯一任务 = C3。** 本阶段红线：禁止安装依赖、禁止实现
   Sixth Stage。**真实 Provider 长期授权（2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
   每次调用仍须服务于明确开发/验收/定位/复验目的，禁止无界循环、无诊断
@@ -421,7 +431,7 @@
 | B9 | Fourth Stage 独立最终验收（当前 HEAD 重新复验，不采信 B1–B8 报告）+ Exit Gate 判定 + 文档同步；完成后停止不实现 Fifth Stage | ✅ | 2026-08-15 完成（见下）：独立复验台账见任务文档「独立复验台账」小节；总 Exit 判定 = HOLD/PENDING（唯一缺口 = 真实 Provider 验收，用户未授权）；**2026-08-16 第五轮真实 Provider 验收通过后改判 `GO/PASS`**（场景 1a–8 全部真实通过 + 真 Key 扫描零命中，见「真实 Provider 验收通过后判定更新」小节）；任务文档 doc/stage4/tasks/B9-finalize-acceptance.md |
 
 | C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ✅ | 2026-08-16 完成（见「最近验证结果」第十四个闭环）：实施前契约裁决 #101–#111 + 红→绿 9/9 失败→131/131 + 全量 test 1386/1386 + dev/生产冒烟 17 工具/SRT-12 零回归 + smoke.ts SRT-12 白名单契约同步（+5 行，唯一既有改动）；**2026-08-16 定向修复与契约边界复核完成（第十五个闭环）**：决议 #112–#116 先红后修（红态 34 failed → 聚焦 174/174、全量 test 1429/1429；migration v1 零改写、sources/ai/browser/renderer/preload 零 diff）；**2026-08-16 第二次定向补修完成（第十六个闭环）**：ISO 8601 偏移日期回滚校验（红态 6 failed → 聚焦 215/215、全量 test 1470/1470；仅 task-state 纯函数改动）；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md（红→绿证据、定向修复与第二次定向补修记录已回填） |
-| C2 | ResearchWorkspace 与 task-owned Tab 隔离、数量上限、取消/异常清理 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §10；任务文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md |
+| C2 | ResearchWorkspace 与 task-owned Tab 隔离、数量上限、取消/异常清理 | ✅ | 2026-08-16 完成（见「最近验证结果」第十八个闭环）：实施前契约裁决 #118（八项：形态与接口/最小端口/URL 边界/精确所有权/并发上限/焦点恢复/用户关闭感知/释放取消竞态）+ 精确接口 §10.1；红→绿 39/39（模块缺失红 → Fake BrowserController 全离线矩阵）；全量 test 1509/1509；BrowserController/TabManager/SearchProvider 产品契约零改动；任务文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md（红→绿证据已回填） |
 | C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §4；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md |
 | C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §5；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
 | C5 | 独立有界 ResearchRuntime：进度、停止、失败继续、预算与终态 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §6；任务文档 doc/stage5/tasks/C5-research-runtime.md |
@@ -438,7 +448,78 @@
 > （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修）
+## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2）
+
+- **C2 ResearchWorkspace 与 task-owned Tab 隔离（2026-08-16，第十八个闭环；
+  feat 提交见 git log）**：① 步骤 0 独立核对——HEAD `21aa0b0`（真实
+  Provider 长期规则 docs 提交）与预期一致、工作区干净；基线 test
+  **1470/1470**（单 worker）· typecheck · lint · format:check 独立复跑全绿；
+  research-workspace.ts/test 零存在（红态可甄别）。② **实施前契约裁决
+  #118**（八项，detailed-design §15 + §10.1 精确接口 + §13.1 测试行 +
+  C2 任务文档同步）：§10 原只有行为描述无精确接口；实测
+  BrowserController.createTab 自动激活新 Tab（browser-controller.ts:92），
+  任务文档遗漏焦点恢复所需 activateTab——(1) Workspace 形态与接口（单实例
+  单 taskId/ResearchWorkspaceBrowser 最小端口/局部闭合联合 WorkspaceErrorCode
+  十一码不扩张 C1 ResearchErrorCode/Lease 绑定 taskId+tabId+规范 URL）；
+  (2) 最小端口恰五方法（createTab/closeTab/activateTab/getTabs/getActiveTab）
+  零 Electron import；(3) URL 边界复用 normalizeSourceUrl(url,'page')
+  （http/https/userinfo/≤2048/控制字符），javascript:/data:/file:/about:/
+  畸形/空 createTab 前拒绝，地址栏转搜索语义不进入，日志零 query 值（仅
+  host）；(4) 精确所有权（tabsBefore/activeBefore 快照；createTab 返回已存在
+  id → tab-create-failed 零关闭零登记；创建后消失 → tab-closed-by-user 不
+  登记存活资源）；(5) 并发上限（MAX_RESEARCH_TABS 同时约束 owned 与
+  in-flight 预留槽；同步段（第一个 await 前）检查 → 第 4 次并发 acquire 在
+  createTab 前确定性拒绝；槽位覆盖整个 acquire 生命周期）；(6) 焦点恢复三态
+  （用户未切换且 activeBefore 存在 → activateTab(activeBefore)；用户已切换 →
+  零 activate；activeBefore 已关 → 不重建不激活 + 中文 warning；activateTab
+  返回 false/异常 → 精确关闭新 Tab + tab-restore-focus-failed——不允许新
+  Tab 无声留在前台仍称满足契约）；(7) 用户关闭感知 = checkTab 显式 getTabs
+  快照（零事件/计时器/监听器；C4 读取前后调用；owned tab 消失 → 移除集合 +
+  closed-by-user）；(8) 释放取消竞态（release/cleanupAll 幂等；closeTab
+  false/抛错 → cleanup-failed 所有权保留可重试不误报；cleanupAll 置 closing
+  - drain 屏障等待 in-flight acquire 终态后精确关闭零泄漏；cleanup 后
+    acquire → workspace-busy；abort 前零创建/abort during create 精确清理）。
+    ③ **红→绿**：先写 research-workspace.test.ts（39 用例，20 组覆盖任务书
+    全部清单 + 非法 taskId + 确定性/隔离断言；FakeBrowser 完全离线可控
+    Promise——manualCreate/completeCreate/waitForPending 时序控制）→ 红态
+    **1 file failed**（模块缺失，导入失败）→ 实现 research-workspace.ts
+    （293 行，决议 #118 §10.1 精确接口）→ 聚焦 **39/39** → 全量
+    **1509/1509**（64 文件，单 worker，退出码 0）。④ **红线零回归**：
+    BrowserController/TabManager/SearchProvider 产品契约零改动（diff 确认）；
+    sources/ai/browser/renderer/preload/index.ts 零 diff；package.json/lock
+    零 diff；C2 模块零 Electron/SQL/shell/child_process/网络；renderer/preload
+    零 SQL；密钥形态（sk- 长串/Bearer）零命中；AgentLoop 12/420s 零变化。
+    ⑤ **验证矩阵**：typecheck · lint · format:check · build · git diff
+    --check 全绿；**dev 冒烟退出码 0**（17 工具恒等 + SRT-01～SRT-12 全过 +
+    RT 红队矩阵回归 + 8.13 UI DOM 全过）；**production 冒烟退出码 0**（同矩阵）；
+    冒烟临时目录/日志精确清理 + 零 Electron 进程残留 + 根目录杂散日志
+    （aibrowse-2026-08-16.log，测试生成、gitignore 覆盖、密钥形态零命中）
+    精确删除。⑥ **真实 Provider 台账**：C2 无真实 Provider 产品链路（零
+    调用，决议 #117「授权不等于强制调用」——不得为展示授权发起无关调用）。
+    **下一唯一任务 = C3（Source Selection 候选合并与确定性排序）。**
+
+- **真实 Provider 长期调用与保密规则更新（2026-08-16，第十七个闭环；docs
+  提交 `21aa0b0`）**：用户明确要求的长期规则变更——真实 Provider 已获
+  **长期授权**（决议 #117，detailed-design §15）：后续任务按需使用、无需
+  逐次申请授权、不设固定调用次数；每次调用仍须服务于明确开发/验收/定位/
+  复验目的；禁止无界循环、无诊断依据重复请求和无关测试；凭据只能通过既有
+  仓库外说明、DPAPI 密文和受控 harness 注入；不得要求用户在聊天中粘贴
+  Key；Key/base URL/认证头不得进入命令行、源码、Git、日志、prompt、DOM、
+  research.db、sources.db、会话文件、报告或工具输出；应用读取环境变量后
+  立即移除；运行结束清理子进程、环境变量和临时目录；完成报告登记实际调用
+  次数和每次用途但不登记凭据；本地凭据缺失记录「凭据不可用」不得再写
+  「未获授权」；Provider 失败必须区分余额、权限、网络、服务端、模型兼容和
+  产品缺陷；授权不等于强制调用。修改文件：AGENTS.md（§1 第五阶段 + §6 长期
+  真实 Provider 流程）、Fifth_stage.md 顶部、README.md（当前阶段与开发者
+  真实验证流程）、doc/stage5/proposal.md §5、high-level-design.md §7、
+  detailed-design.md（§15 决议 #117 + §13.2/§14 校准）、threat-model.md
+  §4、C9/C10 任务文档、本文件。**C9 契约调整**：实现基础设施后，如本地
+  凭据和 Provider 可用，真实执行属于 C9 范围，不再等待授权；**C10 契约
+  调整**：不得再因「未授权」判 HOLD，只能因真实验证未完成、凭据/服务
+  不可用或验证失败而如实 HOLD；FakeProvider 仍不能冒充真实 Provider
+  证据。**历史保持**：第三/四阶段以及 progress/README/AGENTS 中记载当时
+  「未授权、NOT RUN、后来授权」的历史记录全部原位保留，未改写为当时已有
+  长期授权。
 
 - **C1 第二次定向补修：ISO 8601 偏移日期校验 + 第五阶段状态指针校准
   （2026-08-16，第十六个闭环；fix 与 docs 两个逻辑提交见 git log）**：

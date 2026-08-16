@@ -810,18 +810,86 @@ app ready → probe（只读连接，固定 16 字节头部探测——决议 #1
 
 ## 10. 任务/Tab 所有权（C2，research-workspace.ts）
 
-- **精确 tabId 所有权**（决议 #32 模式）：Workspace 记录本任务创建的 tabId
-  集合（createTab 返回值，绝不按位置/标题/URL/活动 Tab 推断）；并发
-  ≤ MAX_RESEARCH_TABS(3)；同任务 v1 串行读取（实际同时 ≤1 个页面读取，
-  上限为纵深防御）。
+- **精确 tabId 所有权**（决议 #32 模式 + 决议 #118 契约）：Workspace 记录
+  本任务创建的 tabId 集合（createTab 返回值，绝不按位置/标题/URL/活动
+  Tab 推断）；并发 ≤ MAX_RESEARCH_TABS(3)（owned 与 in-flight createTab
+  预留槽共同计数，同步段检查）；同任务 v1 串行读取（实际同时 ≤1 个页面
+  读取，上限为纵深防御）。
 - **用户 Tab 永不关闭**：清理只对「本任务创建的确切 tabId」执行
   （closeTab 已关闭安全无操作、不关替代 Tab）；用户手动关闭 task Tab →
-  Workspace 感知（getTabs 轮询/tab 事件）→ 当前读取失败
-  （tab-closed-by-user）→ 继续下一候选。
-- **取消/异常清理**：stop/终态/finally 最佳努力清理本任务全部 Tab；恢复
-  语义沿用：不抢用户焦点、不重建不激活。
+  `checkTab` 显式 getTabs 快照感知（C2 零事件/计时器/监听器）→ 当前读取
+  失败（tab-closed-by-user）→ 继续下一候选。
+- **取消/异常清理**：stop/终态/finally 最佳努力清理本任务全部 Tab
+  （cleanupAll 置 closing 屏障 + 等待 in-flight create 落定后精确关闭）；
+  恢复语义沿用：不抢用户焦点、不重建不激活。
 - **串任务防护**：taskId 绑定 captureId/evidenceId（§5.2 归属校验）；
   跨任务 tabId 引用在 Workspace 层拒绝（FT-09）。
+
+### 10.1 精确接口（决议 #118 定稿；C2 唯一实现契约）
+
+```ts
+// src/main/research/research-workspace.ts（零 Electron import）
+export type WorkspaceErrorCode =
+  | 'invalid-task-id'
+  | 'invalid-url'
+  | 'workspace-busy'
+  | 'tab-limit'
+  | 'not-owned'
+  | 'tab-closed-by-user'
+  | 'tab-create-aborted'
+  | 'tab-create-failed'
+  | 'tab-restore-focus-failed'
+  | 'cleanup-failed'
+  | 'workspace-internal'; // 局部闭合联合，不扩张 C1 ResearchErrorCode
+
+export interface WorkspaceLease {
+  taskId: string;
+  tabId: string; // 本次 createTab 返回的精确 id
+  url: string; // normalizeSourceUrl(url,'page') 的 displayUrl（规范展示 URL）
+}
+
+export interface ResearchWorkspaceBrowser {
+  // BrowserController 最小结构端口（BrowserControllerImpl 结构兼容，typecheck 保证）
+  createTab(url: string): Promise<TabInfo>;
+  closeTab(tabId: string): Promise<boolean>;
+  activateTab(tabId: string): Promise<boolean>;
+  getTabs(): Promise<TabInfo[]>;
+  getActiveTab(): Promise<TabInfo | null>;
+}
+
+export type AcquireResult =
+  | { ok: true; lease: WorkspaceLease; warnings?: string[] }
+  | { ok: false; errorCode: WorkspaceErrorCode; reason: string };
+
+export type ReleaseResult =
+  | { ok: true; closed: boolean; warnings?: string[] } // closed=false=已被用户关闭零动作
+  | { ok: false; errorCode: WorkspaceErrorCode; reason: string };
+
+export type CleanupAllResult =
+  | { ok: true; closedCount: number; skippedCount: number; warnings?: string[] }
+  | { ok: false; errorCode: WorkspaceErrorCode; reason: string; closedCount: number };
+
+export type CheckTabResult =
+  | { ok: true; status: 'alive'; lease: WorkspaceLease }
+  | { ok: true; status: 'closed-by-user'; warnings?: string[] } // 已从所有权集合移除
+  | { ok: false; errorCode: WorkspaceErrorCode; reason: string };
+
+export class ResearchWorkspace {
+  constructor(taskId: string, browser: ResearchWorkspaceBrowser);
+  readonly taskId: string;
+  // 同步归属检查（跨任务 Lease/伪造 tabId/非本实例 owned → false，零关闭动作）
+  isOwned(tabId: string): boolean;
+  getOwnedTabIds(): readonly string[];
+  // 创建 task Tab：URL 校验 → 同步段并发槽检查 → createTab → 敌手/消失检查
+  // → 登记精确 id → 焦点恢复。signal 在 create 前终止 → 零创建；
+  // create 期间终止 → 创建完成后精确关闭再返回 aborted。
+  acquire(url: string, signal: AbortSignal): Promise<AcquireResult>;
+  // 显式快照感知：C4 在读取前后调用；owned tab 消失 → 移除所有权集合
+  checkTab(tabId: string): Promise<CheckTabResult>;
+  release(tabId: string): Promise<ReleaseResult>;
+  cleanupAll(): Promise<CleanupAllResult>; // 置 closing + drain 屏障 + 逐个精确关闭
+}
+```
 
 ## 11. IPC / bridge 白名单（C8）
 
@@ -862,23 +930,23 @@ exportCsv/onProgress/onTaskDone}`（eventRelay 模式，单次注册 + 退订）
 
 ### 13.1 单测（Vitest，node 环境，纯逻辑）
 
-| 测试文件                    | 用例要点                                                                                                                                                              | 任务 |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| research-task-state.test.ts | 状态迁移全表（§3.1 每行）/非法事件安全返回/终态不可变/start 前置矩阵                                                                                                  | C1   |
-| research-budget.test.ts     | 全部常量边界（§6.8 表每项 ±1）/裁剪确定性/超限标记                                                                                                                    | C1   |
-| research-repository.test.ts | 真实 node:sqlite：CRUD/编译期 SQL + 注入串仅作数据/CASCADE/JSON 形状校验 fail-closed/字节预算拒绝/任务数清理                                                          | C1   |
-| research-store.test.ts      | 装配矩阵：新库迁移 v1/坏 magic 保留/未来版本零写入/unavailable 全拒/遗留 running 标 interrupted/其余子系统不受影响（注：完整恢复态矩阵随 C1 定稿；backup 非 v1 承诺） | C1   |
-| research-workspace.test.ts  | 注入 BrowserController 替身：精确 tabId 归属/只关本任务 Tab/用户 Tab 零关闭/已关闭安全无操作/并发上限/异常路径 finally/用户关 Tab → tab-closed-by-user                | C2   |
-| source-selector.test.ts     | 合并矩阵（同 URL 双路径/不同 scope 不合并/键空间独立）/provenance 继承（search 无 trust）/排序全序（档位不可跨档/priority 不反转/null 末位/确定性）                   | C3   |
-| capture-service.test.ts     | 读取失败矩阵/重试语义/L0–L3 阶梯/正文不持久化（存储探针零命中）/contentHash 确定性/表格坐标与字段路径提取                                                             | C4   |
-| evidence-validator.test.ts  | 敌手矩阵：伪造（excerpt 不在捕获内容）/错绑（captureId 跨任务）/坐标越界/超长 excerpt/规范化匹配（空白折叠/NFC）/rejected 原因回注                                    | C4   |
-| claim-model.test.ts         | coverage 计算/severity=high 多源强制/sourceTypes 判定矩阵/冲突结构校验（positions ≥2/refs ∈ 候选集）/uncertainty 块                                                   | C6   |
-| research-prompts.test.ts    | 合成提示词恒等断言（编译期常量）/UNTRUSTED 块闭合转义/预算裁剪/与共读・Agent system prompt 互不混用                                                                   | C6   |
-| research-runtime.test.ts    | 阶段循环全路径（FakeProvider 脚本注入）/终态单一所有权/stop 幂等/超时/预算用尽终态/失败继续/迟到事件忽略/心跳落库                                                     | C5   |
-| result-validator.test.ts    | 判别联合逐块校验矩阵/长度边界/表格行列界/ranking rank 连续/evidenceId 存在与归属/sourceRefs ∈ 候选集/URL 白名单/未知 kind 拒绝/失败语义回注                           | C7   |
-| markdown-parse.test.ts      | 子集解析矩阵/raw HTML 关闭（`<script>`/`<img onerror>` 形态纯文本）/URL 白名单（javascript:/data: 拒绝）/转义与 bidi 剔除/超预算安全降级                              | C7   |
-| csv-serializer.test.ts      | 公式注入（=,+,-,@ 前缀 `'` 转义）/CRLF 与引号转义/UTF-8 BOM/空表与超长单元格截断                                                                                      | C8   |
-| research-ipc.test.ts        | 载荷白名单矩阵（未知字段/超长/非法 id）/状态门控（running 不可 delete）/export 通道无 renderer 路径参数/审计恰好一条脱敏                                              | C8   |
+| 测试文件                    | 用例要点                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | 任务 |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| research-task-state.test.ts | 状态迁移全表（§3.1 每行）/非法事件安全返回/终态不可变/start 前置矩阵                                                                                                                                                                                                                                                                                                                                                                                                         | C1   |
+| research-budget.test.ts     | 全部常量边界（§6.8 表每项 ±1）/裁剪确定性/超限标记                                                                                                                                                                                                                                                                                                                                                                                                                           | C1   |
+| research-repository.test.ts | 真实 node:sqlite：CRUD/编译期 SQL + 注入串仅作数据/CASCADE/JSON 形状校验 fail-closed/字节预算拒绝/任务数清理                                                                                                                                                                                                                                                                                                                                                                 | C1   |
+| research-store.test.ts      | 装配矩阵：新库迁移 v1/坏 magic 保留/未来版本零写入/unavailable 全拒/遗留 running 标 interrupted/其余子系统不受影响（注：完整恢复态矩阵随 C1 定稿；backup 非 v1 承诺）                                                                                                                                                                                                                                                                                                        | C1   |
+| research-workspace.test.ts  | 注入 Fake BrowserController 替身（完全离线、可控 Promise）：精确 tabId 归属/只关本任务 Tab/用户 Tab 零关闭/已关闭安全无操作/并发上限（第 4 次 create 前拒绝 + deferred create 竞态）/abort 前与 create 期间/焦点恢复三态（未切换→恢复、已切换→零 activate、activeBefore 已关→不重建）/closeTab false 与抛错/cleanupAll 多 Tab·部分失败·重复·drain 屏障零泄漏/cleanup 后 acquire 拒绝/用户关 Tab → checkTab tab-closed-by-user/零 Electron import/常量单一事实源（决议 #118） | C2   |
+| source-selector.test.ts     | 合并矩阵（同 URL 双路径/不同 scope 不合并/键空间独立）/provenance 继承（search 无 trust）/排序全序（档位不可跨档/priority 不反转/null 末位/确定性）                                                                                                                                                                                                                                                                                                                          | C3   |
+| capture-service.test.ts     | 读取失败矩阵/重试语义/L0–L3 阶梯/正文不持久化（存储探针零命中）/contentHash 确定性/表格坐标与字段路径提取                                                                                                                                                                                                                                                                                                                                                                    | C4   |
+| evidence-validator.test.ts  | 敌手矩阵：伪造（excerpt 不在捕获内容）/错绑（captureId 跨任务）/坐标越界/超长 excerpt/规范化匹配（空白折叠/NFC）/rejected 原因回注                                                                                                                                                                                                                                                                                                                                           | C4   |
+| claim-model.test.ts         | coverage 计算/severity=high 多源强制/sourceTypes 判定矩阵/冲突结构校验（positions ≥2/refs ∈ 候选集）/uncertainty 块                                                                                                                                                                                                                                                                                                                                                          | C6   |
+| research-prompts.test.ts    | 合成提示词恒等断言（编译期常量）/UNTRUSTED 块闭合转义/预算裁剪/与共读・Agent system prompt 互不混用                                                                                                                                                                                                                                                                                                                                                                          | C6   |
+| research-runtime.test.ts    | 阶段循环全路径（FakeProvider 脚本注入）/终态单一所有权/stop 幂等/超时/预算用尽终态/失败继续/迟到事件忽略/心跳落库                                                                                                                                                                                                                                                                                                                                                            | C5   |
+| result-validator.test.ts    | 判别联合逐块校验矩阵/长度边界/表格行列界/ranking rank 连续/evidenceId 存在与归属/sourceRefs ∈ 候选集/URL 白名单/未知 kind 拒绝/失败语义回注                                                                                                                                                                                                                                                                                                                                  | C7   |
+| markdown-parse.test.ts      | 子集解析矩阵/raw HTML 关闭（`<script>`/`<img onerror>` 形态纯文本）/URL 白名单（javascript:/data: 拒绝）/转义与 bidi 剔除/超预算安全降级                                                                                                                                                                                                                                                                                                                                     | C7   |
+| csv-serializer.test.ts      | 公式注入（=,+,-,@ 前缀 `'` 转义）/CRLF 与引号转义/UTF-8 BOM/空表与超长单元格截断                                                                                                                                                                                                                                                                                                                                                                                             | C8   |
+| research-ipc.test.ts        | 载荷白名单矩阵（未知字段/超长/非法 id）/状态门控（running 不可 delete）/export 通道无 renderer 路径参数/审计恰好一条脱敏                                                                                                                                                                                                                                                                                                                                                     | C8   |
 
 ### 13.2 冒烟矩阵（Electron 真实启动，临时 userData；dev+生产双场景）
 
@@ -1126,7 +1194,73 @@ verification:'verified' }`）；schema CHECK 收窄为
      FakeProvider 仍不能冒充真实 Provider 证据（离线矩阵与真实验收分离，
      观察性结果如实登记）。
 
-## 16. 实现顺序与范围边界（C1–C10 映射）
+> 以下 #118 为 C2 实施前契约裁决（2026-08-16，C2 闭环；先改本文与测试、
+> 再改实现——§15 流程）。§10 原只有行为描述没有精确接口；实测
+> BrowserController.createTab 会自动激活新 Tab（browser-controller.ts:92
+> `this.activeTabId = entry.info.id`），任务文档遗漏焦点恢复所需的
+> activateTab。以下八项均由 Fifth_stage.md §9 UX「Research Tabs 不严重
+> 干扰用户手动浏览」、threat-model FT-09/§3.6、§10 既有条款与决议 #32
+> 模式唯一裁决，无需用户拍板。
+
+118. **C2 ResearchWorkspace 契约裁决（2026-08-16，C2 闭环）**：
+     （1）**Workspace 形态与接口**：一个 ResearchWorkspace 实例绑定唯一
+     taskId（构造参数；非串/空串使实例进入 invalid 态，全部操作返回
+     invalid-task-id，构造不抛异常）；浏览器能力以最小结构接口
+     `ResearchWorkspaceBrowser` 构造注入（BrowserControllerImpl 结构兼容，
+     typecheck 保证，不修改其产品契约）。错误码为 Workspace 局部闭合联合
+     `WorkspaceErrorCode`（invalid-task-id/invalid-url/workspace-busy/
+     tab-limit/not-owned/tab-closed-by-user/tab-create-aborted/
+     tab-create-failed/tab-restore-focus-failed/cleanup-failed/
+     workspace-internal 十一码），**不扩张 C1 ResearchErrorCode**
+     （错误码映射归 C5 Runtime）。Lease 绑定 {taskId, tabId, url}
+     （url = normalizeSourceUrl 的 displayUrl——规范化展示 URL）。
+     （2）**BrowserController 最小端口**：ResearchWorkspaceBrowser 恰含
+     createTab(url)/closeTab(tabId)/activateTab(tabId)/getTabs()/
+     getActiveTab() 五方法；模块零 Electron import；不修改
+     BrowserController/TabManager 产品契约。
+     （3）**URL 边界**：acquire 创建前复用 `normalizeSourceUrl(url,'page')`
+     校验（http/https、userinfo、长度 ≤2048、控制字符）；javascript:/
+     data:/file:/about:/畸形/空 URL 一律 invalid-url 在 createTab 前拒绝；
+     地址栏「非法输入转搜索」语义（resolveAddressBarInput）**不进入**
+     Workspace；日志仅记录 tabId/taskId 与 URL host（零 query 值）。
+     （4）**精确所有权**：acquire 创建前读取 tabsBefore/activeBefore
+     快照；createTab 返回 id ∈ tabsBefore → 敌手/异常实现 →
+     tab-create-failed、不登记所有权、**绝不关闭该 Tab**；不按位置/标题/
+     URL/活动状态/create 前后集合差推断所有权；成功所有权仅来自本次
+     createTab 返回的全新精确 id；创建后 getTabs 快照确认存在——不存在
+     → tab-closed-by-user（不登记为存活资源）。
+     （5）**并发上限**：MAX_RESEARCH_TABS=3（shared/types/research.ts
+     单一事实源，实现零魔法数字）同时约束已登记 owned 与 in-flight
+     createTab 预留槽；acquire 在**第一个 await 前**（同步段）检查
+     `owned.size + inFlightCount ≥ MAX_RESEARCH_TABS` → tab-limit 确定性
+     拒绝（不调用 createTab）；inFlightCount 在发起 createTab 前原子 +1、
+     resolve 后 -1；禁止「先 await、后计数」（并发四次 acquire 时第 4 次
+     必须在调用 createTab 前被拒绝）。
+     （6）**创建后的焦点恢复**（createTab 自动激活新 Tab 的实测契约）：
+     创建后读取 activeNow——activeNow === 新 tabId（用户未切换）且
+     activeBefore 仍存在 → 立即 activateTab(activeBefore)；activeBefore
+     已关闭 → 不重建、不激活猜测对象（成功 + 中文 warning）；用户已主动
+     切换到其他 Tab → 零 activate（成功、无 warning）；activateTab 返回
+     false（activeBefore 仍在但激活失败 = 未预期异常）→ **精确关闭新
+     Tab + tab-restore-focus-failed**——不允许新 Tab 无声留在前台仍声称
+     满足契约；task Tab 仍可出现在标签栏（UI 标识归 C8）。
+     （7）**用户关闭感知**：BrowserController 无 Tab 事件订阅接口
+     （tab-manager.ts onChanged 为内部推送通道）→ C2 不新增任何后台事件、
+     计时器或监听器；提供显式快照方法 `checkTab(tabId)`——owned tab 从
+     getTabs 快照消失 → 从所有权集合移除 + ok status='closed-by-user'；
+     C4 在读取前后调用；任务文档删除「事件回调」承诺与「时钟注入」要求
+     （无实际时间逻辑）。
+     （8）**释放、取消与竞态**：release/cleanupAll 幂等；release 非本实例
+     owned tabId（跨任务 Lease/伪造/已释放）→ not-owned 零关闭动作；owned
+     但快照已消失（用户已关）→ ok closed:false 零 closeTab；closeTab 返回
+     false 或抛错 → 保留所有权集合（可重试）+ ok:false cleanup-failed
+     （不误报已清理）；cleanupAll 置 closing 标志（此后 acquire →
+     workspace-busy）+ **等待全部 in-flight createTab 落定**（drain 屏障
+     ——create 完成后的新 Tab 必须被精确关闭，cleanupAll 返回后零 task Tab
+     泄漏）；AbortSignal：create 前终止 → 零创建 tab-create-aborted；
+     create 期间终止 → 创建完成后精确关闭再返回 aborted；多次 release/
+     cleanup 不重复关闭、不关闭替代 Tab；清理异常零用户 Tab 触碰、零未
+     处理 Promise rejection（catch 归一安全返回）。
 
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4）/C7（依赖 C1，可与 C6 并行）→
