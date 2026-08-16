@@ -79,7 +79,40 @@
   input 矩阵（危险 scheme/userinfo/控制字符/超长/canonicalKey 不一致/
   disabled/blocked 单条安全丢弃零 throw 零日志正文）；预算（24 裁剪/
   选定 ≤8/深冻结零修改输入）。证据见 C3 任务文档「红→绿证据」小节。
-  **下一唯一任务 = C4。** 本阶段红线：禁止安装依赖、禁止实现
+  **C4 已完成（2026-08-16）**——多源读取、结构化提取、Capture 记录与
+  Evidence 确定性验证（实施前契约裁决 #124–#131 + §2/§5 重写 + 各文档
+  同步；红→绿 聚焦 **136/136** + 全量 **1691/1691**）：CaptureService
+  （Tab 生命周期零双导航——Workspace acquire 已加载/浏览器最小端口仅
+  getTabs·getPageSnapshot/acquire→ready 轮询→checkTab→snapshot→checkTab
+  →finally release；冻结判别联合与重试矩阵——page-load-failed/timeout/
+  snapshot-degraded 重试 ≤1 次、aborted/http-scheme-rejected/
+  tab-closed-by-user 不重试、cleanup-failed 不继续建 Tab；release 失败
+  不误报清理——所有权保留供 C5 cleanupAll 重试、内容已捕获只附安全
+  warning；failed Capture sentinel——tabId=`unallocated`/documentId=
+  `unavailable`/contentHash=SHA-256(空串) 前 32 hex/summary 全 0/
+  url·title 取已校验候选展示值/accessTime 注入主进程时钟；**#131
+  Chromium 错误页判定**——加载失败错误页 finish-load 把状态翻回 ready
+  （冒烟探针实测），快照 chrome-error:// 前缀 → page-load-failed 可重试、
+  其余非法目标 → http-scheme-rejected；CaptureContent 纯内存——规范化
+  NFC/trim/控制/bidi 清除/空白折叠、canonicalText 顺序固定串行格式
+  visibleText→headings→tables→links→fields、60k 预算与哈希覆盖（超预算
+  条目整表丢弃、surrogate 不拆分）、闭合字段路径白名单、summary 四项
+  语义校准 tableCount=表格数量、contentHash 确定性）+
+  EvidenceValidator（不可信 proposal 六字段白名单、evidenceId 可信预分配、
+  十三闭合错误码 + 安全中文 reason、校验顺序六步、多表 tableIndex 精确
+  区分（决议 #129：0-based 必填、非法 fail-closed）、header 程序生成与
+  一致性、字段路径禁原型链键/通配符、rejected 不产生 Evidence 零落库、
+  幂等）+ repository tableIndex 严格解析 + 冒烟 8.16（真实
+  ResearchWorkspace+CaptureService+BrowserController 读取受控页、实际
+  documentId/accessTime/hash/summary/tableIndex 断言、确定性 proposal
+  verified/rejected 全链路、失败 URL 后继续下一候选成功、Capture 元数据
+  +2 条 VerifiedEvidence 临时 research.db 写入/读回恒等、正文零持久化
+  探针 CAPTURE-PROBE 拆散节点标记零命中、用户 Tab 集合不变；dev+生产
+  双场景退出码 0；真实 Provider 调用 **0 次**——无真实 Provider 产品
+  链路，不为展示授权发起无关调用）。C4 不修改 ResearchTask.stats
+  （captureCount/failedReadCount 递增归 C5 Runtime）。证据见 C4 任务
+  文档「红→绿证据」小节。
+  **下一唯一任务 = C5。** 本阶段红线：禁止安装依赖、禁止实现
   Sixth Stage。**真实 Provider 长期授权（2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
   每次调用仍须服务于明确开发/验收/定位/复验目的，禁止无界循环、无诊断

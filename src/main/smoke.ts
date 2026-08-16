@@ -6,11 +6,12 @@
 
 import { app, session, webContents, WebContentsView } from 'electron';
 import type { BrowserWindow, WebContents } from 'electron';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -18,12 +19,26 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserController } from './browser/browser-controller';
 import type { PageSnapshot } from '../shared/types/browser';
 import { PERSIST_PARTITION } from './browser/session-manager';
 import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sqlite-driver';
+// 8.16 C4：真实 Workspace + CaptureService + EvidenceValidator + Repository（临时 research.db）
+import { ResearchWorkspace } from './research/research-workspace';
+import { CaptureService, sha256hex, type CaptureContent } from './research/capture-service';
+import { verifyEvidence } from './research/evidence-validator';
+import {
+  ResearchRepository,
+  type ResearchCandidateRow,
+  type ResearchCaptureRow,
+  type ResearchEvidenceRow,
+  type ResearchTaskRow,
+} from './research/repository/research-repository';
+import { runResearchMigrations } from './research/db/research-migrations';
+import type { Capture, SourceCandidate } from '../shared/types/research';
 import { runMigrations } from './sources/db/migrations';
 import { SourceServiceImpl } from './sources/source-service';
 import { SourceSearchIndex } from './sources/repository/source-search-index';
@@ -329,6 +344,37 @@ const INTERACTION_LANDED_HTML = `<!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><title>交互落地页</title></head>
 <body><h1>交互落地页</h1><p>已到达。</p></body>
+</html>`;
+
+// 8.16 研究采集页（C4）：多章节、两个表格（tableIndex 区分）、heading/link 字段。
+// 正文零持久化探针标记 CAPTURE-PROBE 拆散在三个节点中（<span>CAP</span><span>TURE-</span>
+// <span>PROBE</span>）——原始响应字节不含连续标记；仅快照 textContent 拼接规范化后
+// 才在 CaptureContent 内存中连续出现。该标记不选作 Evidence excerpt、不进日志。
+const RESEARCH_CAPTURE_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>研究采集页</title></head>
+<body>
+  <h1>研究主标题</h1>
+  <h2>模型对比</h2>
+  <p>这是研究采集页的第一段正文，用于验证捕获内容与证据摘录。</p>
+  <p>探针标记：CAP<span>TURE-</span>PRO<span>BE</span>（拆散节点，规范化后仅存于捕获内存）。</p>
+  <a href="https://example.com/docs">官方文档链接</a>
+  <a href="https://example.com/blog">社区博客链接</a>
+  <table>
+    <thead><tr><th>模型</th><th>上下文窗口</th></tr></thead>
+    <tbody>
+      <tr><td>Alpha</td><td>200K</td></tr>
+      <tr><td>Beta</td><td>1M</td></tr>
+    </tbody>
+  </table>
+  <table>
+    <thead><tr><th>模型</th><th>价格</th></tr></thead>
+    <tbody>
+      <tr><td>Alpha</td><td>3</td></tr>
+      <tr><td>Beta</td><td>15</td></tr>
+    </tbody>
+  </table>
+</body>
 </html>`;
 
 // A6：确认对话框敌对文本页——提交按钮的可见文本（textContent）含 HTML 标记尝试
@@ -639,6 +685,7 @@ interface ControlledPages {
   rt03Url: string; // RT-03 提交类与并存低风险特征页
   rt05Url: string; // RT-05 密码/文件/动态变形页
   rt11Url: string; // RT-11 通用 click 越权页
+  researchCaptureUrl: string; // 8.16 研究采集页（多章节/两表格/字段/拆分探针标记）
   hostileRt10Url: string; // RT-10 真实 Provider 敌对页（诱导目标全部为本地安全地址）
   hostileSrt1Url: string; // B8 SRT-01 敌对收藏诱导页（诱导收藏并标官方）
   liveFilterUrl: string; // 真实 Provider 场景 4：受控无副作用筛选页
@@ -791,6 +838,11 @@ async function startControlledPages(): Promise<ControlledPages> {
       res.end(RT11_HTML);
       return;
     }
+    if (req.url === '/research-capture') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(RESEARCH_CAPTURE_HTML);
+      return;
+    }
     res.writeHead(404);
     res.end();
   });
@@ -826,6 +878,7 @@ async function startControlledPages(): Promise<ControlledPages> {
     rt03Url: `${base}/rt3`,
     rt05Url: `${base}/rt5`,
     rt11Url: `${base}/rt11`,
+    researchCaptureUrl: `${base}/research-capture`,
     hostileRt10Url: `${base}/rt10`,
     hostileSrt1Url: `${base}/srt1-hostile`,
     liveFilterUrl: `${base}/live-filter`,
@@ -10724,6 +10777,13 @@ export async function runSmokeScenario(
       await runSrtScenarios(controller, options, rtEvidence, recoveryEvidence);
     }
 
+    // 8.16 C4 capture/evidence 场景（决议 #124–#130；默认矩阵自动包含）：真实
+    // ResearchWorkspace + CaptureService 读取受控页 → 主进程盖章断言 → 确定性
+    // proposal 经 EvidenceValidator verified/rejected → 失败 URL 后继续下一候选 →
+    // 临时 research.db 写入/读回恒等（rejected 零落库）→ 正文零持久化探针 →
+    // 用户 Tab 集合不变。零 Provider 调用（proposal 为确定性 JSON 构造）。
+    await runResearchCaptureScenario(controller);
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -10765,6 +10825,436 @@ export async function runSmokeScenario(
     }
     logError('smoke', '冒烟场景失败', err);
     throw err;
+  }
+}
+
+// ---------- 8.16 C4 capture/evidence 场景（决议 #124–#130；默认矩阵自动包含） ----------
+// 真实 ResearchWorkspace + CaptureService 经真实 BrowserController 读取受控页；
+// 确定性 proposal（模拟模型输出 JSON，零 Provider 调用——不实现 C5 Runtime）；
+// EvidenceValidator verified/rejected 全链路；Capture 元数据 + 少量 VerifiedEvidence
+// 写入临时 research.db（未验证引用零落库）；正文零持久化探针（拆分标记零命中）；
+// finally 精确释放 task Tab + 关闭库 + 清理隔离目录 + 用户 Tab 集合不变。
+function makeSmokeCandidate(id: string, url: string): SourceCandidate {
+  return {
+    id,
+    url,
+    displayUrl: url,
+    title: '研究采集页',
+    canonicalKey: url,
+    scope: 'page',
+    discoveredVia: ['search'],
+    sourceId: null,
+    trust: null,
+    priority: null,
+    lastUsedAt: null,
+    note: null,
+    sortKey: `03|00000|9|~~~~~~~~~~~~~~~~~~~~~~~~|1|${url}|${id}`,
+  };
+}
+
+function captureToRow(capture: Capture): ResearchCaptureRow {
+  return {
+    capture_id: capture.captureId,
+    task_id: capture.taskId,
+    candidate_id: capture.candidateId,
+    tab_id: capture.tabId,
+    url: capture.url,
+    title: capture.title,
+    access_time: capture.accessTime,
+    document_id: capture.documentId,
+    content_hash: capture.contentHash,
+    summary_json: JSON.stringify(capture.summary),
+    failed: capture.failed ? 1 : 0,
+    failure_reason: capture.failureReason,
+  };
+}
+
+// 目录/文件字节扫描：needle 出现即 true（正文零持久化探针）
+function fileContainsText(file: string, needle: string): boolean {
+  try {
+    return readFileSync(file).includes(Buffer.from(needle, 'utf8'));
+  } catch {
+    return false; // 读取失败不算命中（文件本身存在性由调用方保证）
+  }
+}
+
+function dirContainsText(dir: string, needle: string): boolean {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (dirContainsText(p, needle)) return true;
+    } else if (fileContainsText(p, needle)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function runResearchCaptureScenario(controller: BrowserController): Promise<void> {
+  const PROBE = 'CAPTURE-PROBE'; // 拆散节点标记：仅存在于捕获内存的连续规范化文本
+  // 受控 HTML 源码字节级不含连续标记（拆散于三个 span 节点——夹具自证）
+  assert(!RESEARCH_CAPTURE_HTML.includes(PROBE), '8.16：受控页源码不应含连续探针标记');
+
+  const taskId = randomUUID();
+  const candidateId = randomUUID();
+  const tmpDir = mkdtempSync(join(tmpdir(), 'aibrowse-research-smoke-'));
+  const dbPath = join(tmpDir, 'research.db');
+  let db: DbHandle | null = null;
+  const workspace = new ResearchWorkspace(taskId, controller);
+  const captureService = new CaptureService({ workspace, browser: controller });
+  // 本场景专属受控页服务器（默认矩阵各场景自建自关——不复用其他场景的 pages）
+  const pages = await startControlledPages();
+
+  try {
+    // 用户 Tab 基线（场景前后集合恒等）
+    const userTabIds = (await controller.getTabs()).map((t) => t.id).sort();
+
+    // —— 0. 对照真实快照（场景自建 Tab，读取后关闭；与 Workspace Tab 各自首次
+    // 导航世代一致 → documentId 可精确对照；capturedAt 主进程盖章形状对照） ——
+    const referenceTab = await controller.createTab(pages.researchCaptureUrl);
+    await waitFor(
+      async () =>
+        (await controller.getTabs()).find((t) => t.id === referenceTab.id)?.state === 'ready',
+      10000,
+      '8.16：对照标签页未在 10 秒内就绪',
+    );
+    const reference = await controller.getPageSnapshot(referenceTab.id);
+    assert(reference !== null, '8.16：对照快照不应为 null');
+    if (reference === null) return;
+    assert(
+      Number.isInteger(reference.meta.documentId) && reference.meta.documentId >= 1,
+      '8.16：对照快照 documentId 应为非负整数世代',
+    );
+    assert(Number.isFinite(reference.meta.capturedAt), '8.16：对照快照 capturedAt 应为时间戳');
+    assert(reference.url === pages.researchCaptureUrl, '8.16：对照快照 URL 应为页面地址');
+    assert(await controller.closeTab(referenceTab.id), '8.16：关闭对照标签页应返回 true');
+
+    // —— 1. 受控页读取：实际 documentId/accessTime/hash/summary/tableIndex ——
+    const candidate = makeSmokeCandidate(candidateId, pages.researchCaptureUrl);
+    const readBefore = new Date().toISOString();
+    const r1 = await captureService.read(candidate, new AbortController().signal);
+    const readAfter = new Date().toISOString();
+    assert(r1.ok, '8.16：受控研究页读取应成功');
+    if (!r1.ok) return;
+    const content: CaptureContent = r1.content;
+    const capture = r1.capture;
+
+    assert(
+      /^\d+$/.test(capture.documentId) && capture.documentId === String(reference.meta.documentId),
+      '8.16：capture.documentId 应为真实快照世代盖章（与对照 Tab 首次导航世代一致）',
+    );
+    assert(
+      capture.accessTime >= readBefore && capture.accessTime <= readAfter,
+      '8.16：capture.accessTime 应为读取期间的主进程盖章 ISO 时间',
+    );
+    assert(capture.url === pages.researchCaptureUrl, '8.16：capture.url 应为实际页面地址');
+    assert(capture.title === '研究采集页', '8.16：capture.title 应取实际快照标题');
+    assert(
+      capture.contentHash === sha256hex(content.canonicalText),
+      '8.16：contentHash 应为规范化正文 SHA-256 前 32 hex',
+    );
+    assert(
+      capture.summary.charCount === content.canonicalText.length,
+      '8.16：summary.charCount 应等于 canonicalText 长度',
+    );
+    assert(content.tables.length === 2, '8.16：应保留两个表格（tableIndex 0/1 区分）');
+    assert(capture.summary.tableCount === 2, '8.16：summary.tableCount 应为表格数量');
+    assert(content.tables[0]!.headers[0] === '模型', '8.16：表格 0 表头应为「模型」');
+    assert(content.tables[0]!.rows[0]![0] === 'Alpha', '8.16：表格 0 单元格 [0][0]=Alpha');
+    assert(content.tables[1]!.headers[1] === '价格', '8.16：表格 1 表头应为「价格」');
+    assert(content.tables[1]!.rows[1]![1] === '15', '8.16：表格 1 单元格 [1][1]=15');
+    assert(content.fields['page.title'] === '研究采集页', '8.16：字段 page.title');
+    assert(content.fields['headings[0].text'] === '研究主标题', '8.16：字段 headings[0].text');
+    assert(capture.failed === false, '8.16：成功 capture 不应标记 failed');
+    // 探针标记进入捕获内存（规范化合并后连续出现）
+    assert(content.canonicalText.includes(PROBE), '8.16：探针标记应存在于捕获内容内存');
+
+    // —— 2. Evidence 确定性验证（确定性 proposal JSON = 模拟模型输出；零 Provider 调用） ——
+    const contents = new Map([[capture.captureId, content]]);
+    const candidates = [candidate];
+    const captures = [capture];
+    const baseProposal = {
+      captureId: capture.captureId,
+      candidateId,
+    };
+    // 2a. 正确 quote → verified
+    const quoteExcerpt = '用于验证捕获内容与证据摘录';
+    assert(content.canonicalText.includes(quoteExcerpt), '8.16：quote 摘录应存在于捕获内容');
+    const vQuote = verifyEvidence({
+      proposal: {
+        ...baseProposal,
+        type: 'quote',
+        locator: { kind: 'text', excerpt: quoteExcerpt },
+        excerpt: quoteExcerpt,
+        value: null,
+      },
+      evidenceId: randomUUID(),
+      taskId,
+      captures,
+      candidates,
+      contents,
+    });
+    assert(vQuote.ok, '8.16：正确 quote 引用应 verified');
+    if (!vQuote.ok) return;
+    assert(vQuote.evidence.url === capture.url, '8.16：证据 URL 应来自捕获记录');
+    assert(vQuote.evidence.documentId === capture.documentId, '8.16：证据 documentId 来自捕获记录');
+
+    // 2b. table-cell 用 tableIndex=1 精确区分（同 [0][0] 在表 0 是 Alpha）→ verified
+    const vTable = verifyEvidence({
+      proposal: {
+        ...baseProposal,
+        type: 'table-cell',
+        locator: { kind: 'table', tableIndex: 1, row: 1, col: 1, header: null },
+        excerpt: '15',
+        value: '15',
+      },
+      evidenceId: randomUUID(),
+      taskId,
+      captures,
+      candidates,
+      contents,
+    });
+    assert(vTable.ok, '8.16：tableIndex=1 的表格引用应 verified');
+    if (!vTable.ok) return;
+    assert(
+      vTable.evidence.locator.kind === 'table' && vTable.evidence.locator.tableIndex === 1,
+      '8.16：输出 locator 应保留 tableIndex=1',
+    );
+    assert(
+      vTable.evidence.locator.kind === 'table' && vTable.evidence.locator.header === '价格',
+      '8.16：输出 header 应由程序取真实表头「价格」',
+    );
+
+    // 2c. 伪造摘录 → rejected（不产生 Evidence）
+    const vForged = verifyEvidence({
+      proposal: {
+        ...baseProposal,
+        type: 'quote',
+        locator: { kind: 'text', excerpt: '不存在的伪造内容' },
+        excerpt: '不存在的伪造内容',
+        value: null,
+      },
+      evidenceId: randomUUID(),
+      taskId,
+      captures,
+      candidates,
+      contents,
+    });
+    assert(!vForged.ok && vForged.code === 'excerpt-not-in-content', '8.16：伪造摘录应 rejected');
+    // 2d. 错绑 capture（candidateId 与 capture 不一致）→ rejected
+    const vMismatch = verifyEvidence({
+      proposal: {
+        ...baseProposal,
+        candidateId: randomUUID(),
+        type: 'quote',
+        locator: { kind: 'text', excerpt: quoteExcerpt },
+        excerpt: quoteExcerpt,
+        value: null,
+      },
+      evidenceId: randomUUID(),
+      taskId,
+      captures,
+      candidates,
+      contents,
+    });
+    assert(!vMismatch.ok && vMismatch.code === 'candidate-mismatch', '8.16：错绑候选应 rejected');
+    // 2e. 错误 tableIndex 越界 → rejected
+    const vOob = verifyEvidence({
+      proposal: {
+        ...baseProposal,
+        type: 'table-cell',
+        locator: { kind: 'table', tableIndex: 2, row: 0, col: 0, header: null },
+        excerpt: 'Alpha',
+        value: 'Alpha',
+      },
+      evidenceId: randomUUID(),
+      taskId,
+      captures,
+      candidates,
+      contents,
+    });
+    assert(
+      !vOob.ok && vOob.code === 'table-coordinate-invalid',
+      '8.16：tableIndex 越界应 rejected',
+    );
+    // 2f. 探针标记不选作 Evidence excerpt（不被持久化通道引用）
+
+    // —— 3. 失败 URL 后继续读取下一候选成功（C4 内不修改 failedReadCount） ——
+    const failCandidate = makeSmokeCandidate(randomUUID(), 'http://127.0.0.1:1/fail');
+    const rFail = await captureService.read(failCandidate, new AbortController().signal);
+    assert(!rFail.ok, '8.16：连接拒绝的失败 URL 应读取失败');
+    if (rFail.ok) return;
+    assert(
+      rFail.failureReason === 'page-load-failed',
+      `8.16：失败原因应为 page-load-failed（实际 ${rFail.failureReason}）`,
+    );
+    assert(rFail.attempts.length === 2, '8.16：page-load-failed 应按重试矩阵重试一次（2 次尝试）');
+    assert(
+      rFail.attempts.every((a) => a.failed && a.failureReason !== null),
+      '8.16：每次失败尝试都应有 failed capture 记录',
+    );
+    const nextCandidate = makeSmokeCandidate(randomUUID(), pages.researchCaptureUrl);
+    const rNext = await captureService.read(nextCandidate, new AbortController().signal);
+    assert(rNext.ok, '8.16：失败后下一候选应继续读取成功');
+    if (!rNext.ok) return;
+    // C4 不修改 stats：本场景不执行任何 stats 递增（failedReadCount 归属 C5 Runtime）
+
+    // —— 4. 临时 research.db：Capture 元数据 + 少量 VerifiedEvidence 写入/读回恒等 ——
+    db = openDb(dbPath);
+    runResearchMigrations(db);
+    const repo = new ResearchRepository(db);
+    const nowIso = new Date().toISOString();
+    const taskRow: ResearchTaskRow = {
+      id: taskId,
+      goal: '8.16 冒烟任务',
+      status: 'created',
+      phase: null,
+      created_at: nowIso,
+      updated_at: nowIso,
+      started_at: null,
+      finished_at: null,
+      interrupted_at: null,
+      error_code: null,
+      result_id: null,
+      stats_json: JSON.stringify({
+        candidateCount: 0,
+        selectedCount: 0,
+        captureCount: 0,
+        failedReadCount: 0, // C4 不递增（C5 Runtime 职责）
+        evidenceCount: 0,
+        rejectedEvidenceCount: 0,
+        claimCount: 0,
+        conflictCount: 0,
+        stepsUsed: 0,
+        roundsUsed: 0,
+      }),
+    };
+    repo.insertTask(taskRow);
+    const candidateRow: ResearchCandidateRow = {
+      candidate_id: candidateId,
+      task_id: taskId,
+      url: candidate.url,
+      display_url: candidate.displayUrl,
+      title: candidate.title,
+      canonical_key: candidate.canonicalKey,
+      scope: 'page',
+      discovered_via_json: JSON.stringify(['search']),
+      source_id: null,
+      trust_value: null,
+      trust_asserted_by: null,
+      trust_verification: null,
+      priority: null,
+      last_used_at: null,
+      note: null,
+      sort_key: candidate.sortKey,
+    };
+    repo.insertCandidate(candidateRow);
+    repo.insertCapture(captureToRow(capture)); // 成功 capture 元数据（零正文）
+    repo.insertCapture(captureToRow(rFail.attempts[0]!)); // 失败 sentinel 元数据（零正文）
+    if (vQuote.ok) {
+      const ev = vQuote.evidence;
+      const evidenceRow: ResearchEvidenceRow = {
+        evidence_id: ev.evidenceId,
+        task_id: ev.taskId,
+        candidate_id: ev.candidateId,
+        source_id: ev.sourceId,
+        capture_id: ev.captureId,
+        url: ev.url,
+        title: ev.title,
+        access_time: ev.accessTime,
+        document_id: ev.documentId,
+        content_hash: ev.contentHash,
+        type: ev.type,
+        locator_json: JSON.stringify(ev.locator),
+        excerpt: ev.excerpt,
+        value: ev.value,
+        verification: 'verified',
+      };
+      repo.insertEvidence(evidenceRow);
+    }
+    if (vTable.ok) {
+      const ev = vTable.evidence;
+      repo.insertEvidence({
+        evidence_id: ev.evidenceId,
+        task_id: ev.taskId,
+        candidate_id: ev.candidateId,
+        source_id: ev.sourceId,
+        capture_id: ev.captureId,
+        url: ev.url,
+        title: ev.title,
+        access_time: ev.accessTime,
+        document_id: ev.documentId,
+        content_hash: ev.contentHash,
+        type: ev.type,
+        locator_json: JSON.stringify(ev.locator),
+        excerpt: ev.excerpt,
+        value: ev.value,
+        verification: 'verified',
+      });
+    }
+    // 读回恒等
+    const storedCaptures = repo.listCapturesByTask(taskId);
+    assert(storedCaptures.length === 2, '8.16：库中应有 2 条 capture 行');
+    const storedEvidence = repo.listEvidenceByTask(taskId);
+    assert(storedEvidence.length === 2, '8.16：库中应有 2 条 verified Evidence（rejected 零落库）');
+    const storedTable = storedEvidence.find((e) => e.type === 'table-cell');
+    assert(
+      storedTable !== undefined &&
+        storedTable.locator.kind === 'table' &&
+        storedTable.locator.tableIndex === 1,
+      '8.16：tableIndex 写入/读回恒等',
+    );
+    // 未验证引用零落库：rejected proposal 不在库中（计数即证）
+
+    // —— 5. 正文零持久化探针（避免 Chromium HTTP cache 假阳性：标记仅存于捕获内存） ——
+    for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+      if (existsSync(p)) {
+        assert(!fileContainsText(p, PROBE), `8.16：${p} 不得含探针正文标记`);
+      }
+    }
+    assert(!dirContainsText(tmpDir, PROBE), '8.16：隔离目录不得含探针正文标记');
+    const researchUserDataDir = join(app.getPath('userData'), 'research');
+    if (existsSync(researchUserDataDir)) {
+      assert(
+        !dirContainsText(researchUserDataDir, PROBE),
+        '8.16：隔离 userData research 目录不得含探针正文标记',
+      );
+    }
+
+    // 场景内成功路径收尾：task Tab 应已由 release 精确关闭（owned 集合空）
+    assert(workspace.getOwnedTabIds().length === 0, '8.16：任务标签页应全部释放');
+    // 用户 Tab 集合保持不变（场景后置断言：读取/释放全程零触碰用户 Tab）
+    const currentTabIds = (await controller.getTabs()).map((t) => t.id).sort();
+    assert(
+      JSON.stringify(currentTabIds) === JSON.stringify(userTabIds),
+      '8.16：用户 Tab 集合应保持不变',
+    );
+    logInfo('smoke', '8.16 C4 capture/evidence 场景全部通过');
+  } finally {
+    // finally 精确释放 task Tab（cleanupAll 幂等）+ 关闭库 + 清理隔离目录
+    try {
+      await workspace.cleanupAll();
+    } catch (err) {
+      logWarn('smoke', '8.16：任务标签页清理异常（不掩盖原始错误）', err);
+    }
+    if (db !== null) {
+      try {
+        closeDb(db);
+        db = null;
+      } catch (err) {
+        logWarn('smoke', '8.16：research.db 关闭异常', err);
+      }
+    }
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch (err) {
+      logWarn('smoke', '8.16：隔离目录清理异常', err);
+    }
+    try {
+      await pages.close();
+    } catch (err) {
+      logWarn('smoke', '8.16：受控页面服务器关闭异常', err);
+    }
   }
 }
 

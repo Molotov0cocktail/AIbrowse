@@ -2,39 +2,51 @@
 
 > 第五阶段任务文档。契约 `doc/stage5/detailed-design.md` §5；安全契约
 > `doc/stage5/threat-model.md` §3.3/§3.4（FT-03/04/05/06 核心防线）。
+> **实施前契约裁决 #124–#130 已完成（2026-08-16）**——本文档已按裁决同步。
 
 ## 目标
 
 落地 CaptureService（task Tab 读取/结构化提取/capture 记录，正文不持久化）
-与 EvidenceValidator（模型只提引用、程序验证来源存在/捕获归属/摘录与坐标
-来自捕获内容）——Research 证据链的确定性验证核心。
+与 EvidenceValidator（模型只提不可信 proposal、程序验证来源存在/捕获归属/
+摘录与坐标来自捕获内容）——Research 证据链的确定性验证核心。
 
 ## 范围与非目标
 
-- **做**：CaptureService.read（http/https 白名单 → Workspace Tab →
-  loadURL → ready 轮询 → getPageSnapshot 实时采集 → 结构化提取章节/表格
-  坐标/字段路径 → capture 记录组装：contentHash/documentId/accessTime
-  主进程盖章/summary/失败语义与重试 ≤1 次）；EvidenceValidator.verify
-  （归属校验/来源存在/摘录规范化匹配/表格坐标边界/字段路径存在/
-  rejected 原因回注）；正文内存保留至任务终态（零落盘）。
-- **不做**：Runtime 编排（C5）；claims/冲突（C6）；Renderer（C7）；
-  修改 PageSnapshot 采集管线（不新建采集通道——Fifth_stage 约束）；
-  search/source 服务修改。
+- **做**：CaptureService.read（候选 URL 校验 → Workspace acquire（已加载，
+  零二次 navigate——决议 #124）→ ready 轮询 → checkTab → getPageSnapshot
+  实时采集 → 结构化提取（CaptureContent：章节/表格 tableIndex 坐标/闭合
+  字段路径）→ capture 记录组装（contentHash/documentId/accessTime 主进程
+  盖章/summary/失败 sentinel 与重试 ≤1 次，决议 #125/#126/#127/#128））；
+  EvidenceValidator.verify（不可信 proposal 六字段 → 归属/来源/摘录/坐标/
+  字段确定性验证 → VerifiedEvidence 组装或闭合错误码拒绝，决议 #129/#130）；
+  正文内存保留至任务终态（零落盘）。
+- **不做**：Runtime 编排与 stats 递增（C5）；claims/冲突（C6）；
+  Renderer（C7）；修改 PageSnapshot 采集管线（不新建采集通道——Fifth_stage
+  约束）；修改 SearchProvider/ResearchWorkspace/SourceSelector/SourceService
+  产品行为；修改 migration v1。
 
 ## 涉及模块和输入文档
 
 - 新增 `src/main/research/capture-service.ts`、
-  `src/main/research/evidence-validator.ts` + 测试。
-- 输入：detailed-design §5；threat-model §3.3/§3.4；PageSnapshot/
-  SnapshotMeta 契约（shared/types/browser.ts，本会话核对）；C2 Workspace
-  接口；snapshot-normalize 同族清洗函数复用。
+  `src/main/research/evidence-validator.ts` + 同名 `*.test.ts`。
+- 输入：detailed-design §5（决议 #124–#130 重写后）；threat-model §3.3/
+  §3.4；PageSnapshot/SnapshotMeta 契约（shared/types/browser.ts，已核对）；
+  C2 Workspace 接口（research-workspace.ts，已核对）；snapshot-normalize
+  同族清洗函数复用。
 
 ## 预计修改文件
 
 - 新增：`src/main/research/capture-service.ts`、
   `src/main/research/evidence-validator.ts` + 同名 `*.test.ts`。
-- 既有文件零改动（冒烟 8.16 夹具归本任务新增于 smoke.ts 的**新场景**——
-  既有场景零改动；若 smoke.ts 需新入口函数，只增不改）。
+- 窄幅既有修改（决议 #129）：
+  `src/shared/types/research.ts`（EvidenceLocator.table 增 tableIndex +
+  CaptureSummary.tableCount 注释校准 + EvidenceProposal/EvidenceRejectionCode/
+  EvidenceVerifyResult 类型）；
+  `src/main/research/repository/research-repository.ts`（parseLocatorJson
+  严格 tableIndex 解析）+ 对应 `.test.ts`；
+  `src/main/smoke.ts`（新增 8.16 独立默认场景 + 受控夹具路由，只增不改）。
+- 契约文档同步：detailed-design §2/§5/§6.4/§6.7/§6.8/§9.1/§13/§15、
+  threat-model §3.3/§3.4、本任务文档、progress.md。
 
 ## 依赖
 
@@ -42,23 +54,33 @@ C1（Capture/Evidence 类型与预算）、C2（Workspace）、C3（候选形状
 
 ## 红→绿步骤
 
-1. **红**：先写测试——capture-service（读取失败矩阵/重试语义/L0–L3 阶梯/
-   正文不持久化存储探针/contentHash 确定性/表格坐标与字段路径提取/超预算
-   截断）；evidence-validator 敌手矩阵（伪造摘录/错绑 captureId 跨任务/
-   坐标越界/超长 excerpt/规范化匹配（NFC/空白折叠/控制字符）/rejected
-   原因回注/幂等）。旧结构（无模块）全部失败。
+1. **红**：先写测试——capture-service（acquire 已加载零二次 navigate/ready・
+   error・missing・timeout・abort/L0–L3 阶梯映射/重试与不重试矩阵/finally
+   release/release 失败不误报清理/redirect 实际 URL・capturedAt・documentId
+   盖章/failed Capture sentinel/规范化（NFC・空白・控制・bidi）/60k 边界・
+   surrogate 不拆分/预算与哈希覆盖/contentHash 确定性・输入零修改/正文零
+   持久化存储探针）；evidence-validator 敌手矩阵（多表 tableIndex 精确区分/
+   伪造摘录・跨 section 拼接・错绑 captureId 跨任务・failed capture・
+   坐标越界・超长 excerpt・header 非法形状与不一致/fieldPath 白名单・
+   原型链键・未知字段・value 不一致・rejected 不产生 Evidence・幂等）+
+   repository tableIndex 写入/读回恒等与非法行跳过。旧结构（无模块）全部失败。
 2. **绿**：实现两模块（Workspace/浏览器注入替身 + 真实快照夹具）；
    逐用例转绿。
-3. **冒烟 8.16**（smoke.ts 新场景，dev+生产双场景）：受控页夹具 →
-   真实 BrowserController 快照 → capture 记录断言（documentId/哈希/
-   accessTime 主进程盖章）→ FakeProvider 提出正确引用 verified / 伪造・
-   错绑・越界 rejected → 读取失败页 failedReadCount 继续 → 正文零落盘
-   （userData 字节扫描）。
+3. **冒烟 8.16**（smoke.ts 新场景，dev+生产双场景）：受控页夹具（多章节/
+   ≥2 表格/heading/link 字段）→ 真实 ResearchWorkspace + CaptureService 读取
+   → capture 记录断言（实际 documentId/accessTime/hash/summary/tableIndex）
+   → FakeProvider 只产确定性 proposal JSON：正确引用 verified / 伪造・错绑・
+   错误 tableIndex・越界 rejected → 失败 URL 后继续读取下一候选成功（C4 内
+   不改 failedReadCount）→ Capture 元数据 + 少量 VerifiedEvidence 写临时
+   research.db（未验证引用零落库）→ 正文零持久化探针（拆分标记只存在于
+   CaptureContent、不进日志；扫描 research.db/WAL/SHM/Research 文件/隔离
+   userData 零命中）→ finally 精确释放 task Tab + 关闭库 + 清理隔离目录 +
+   用户 Tab 集合不变。
 4. 全量回归 + 红线扫描。
 
 ## 验收标准
 
-- §5.1/§5.2 全部规则单测 + 冒烟 8.16 双场景通过；
+- §5.1/§5.2 全部规则单测（决议 #124–#130）+ 冒烟 8.16 双场景通过；
 - 未验证引用不渲染/不进集合/不落库（单测 + 冒烟断言）；
 - capture 正文零落盘（存储探针字节级）；Evidence 元数据全部主进程生成。
 
@@ -72,16 +94,61 @@ C1（Capture/Evidence 类型与预算）、C2（Workspace）、C3（候选形状
 ## 完成定义
 
 红→绿证据回填 + 8.16 双场景通过 + 全量验证全绿 + diff 终检 + progress.md
-更新 + 逻辑提交（feat: C4 …；smoke 8.16 可与主体同提交或独立提交）+
-双远程推送。
+更新 + 逻辑提交（docs: 裁决 C4 Capture 与 Evidence 验证契约 +
+feat: 完成 C4 多源捕获与 Evidence 确定性验证）+ 双远程推送。
 
 ## 风险与停止条件
 
 - PageSnapshot 结构不支持表格坐标/字段路径提取 → 停止并报告（不得新建
-  采集通道绕过；重新评估 locator 设计走 §15 决议流程）；
+  采集通道绕过；重新评估 locator 设计走 §15 决议流程）——已排除：快照
+  tables/headings/links 结构支持 tableIndex/row/col 与闭合字段路径
+  （决议 #128/#129）。
 - 规范化匹配误判（正当摘录被拒）→ 校准规范化函数与测试（不放宽到
   「包含即通过」；语义层残余风险维持 threat-model §5 登记）。
 
 ## 提交边界
 
-逻辑提交；不夹带 Runtime/综合层代码。
+逻辑提交；不夹带 Runtime/综合层代码。冒烟 8.16 场景可与主体同提交或独立
+提交（本任务建议两个逻辑提交：契约裁决文档 → 实现+测试+冒烟）。
+
+## 红→绿证据
+
+- **红态**（模块不存在/旧结构，2026-08-16）：
+  - capture-service.test.ts + evidence-validator.test.ts：2 个测试文件整体
+    失败（导入错误——模块尚不存在）；
+  - research-repository.test.ts：tableIndex 相关 **13 failed / 42 passed**
+    （旧 parseLocatorJson 忽略 tableIndex 字段：缺失/负数/字符串 tableIndex
+    被静默放行、合法 tableIndex 写入/读回丢失——决议 #129 红态成立）。
+- **转绿**：实现 capture-service.ts（最小端口/重试矩阵/sentinel/
+  CaptureContent 60k 预算与哈希覆盖）+ evidence-validator.ts（六字段
+  proposal 白名单/十三错误码/tableIndex/字段路径闭合白名单/幂等）+
+  repository 严格 tableIndex 解析后——C4 聚焦 **136/136**；全量
+  **1691/1691**（基线 1598 + 93 新增；既有用例零删除零削弱——#115 用例
+  按 #129 契约机械校准 tableIndex 必填）。
+- **冒烟 8.16**：dev 与生产双场景经真实 ResearchWorkspace +
+  CaptureService + BrowserController 读取受控页（多章节/两表格/heading/
+  link 字段）——capture 记录断言（实际 documentId 与对照 Tab 首次导航
+  世代一致/accessTime 位于读取时间窗口/hash/summary/tableIndex）；确定性
+  proposal（零 Provider 调用）：正确 quote/table-cell(tableIndex=1)
+  verified、伪造摘录/错绑 candidate/tableIndex 越界 rejected；失败 URL
+  （127.0.0.1:1）page-load-failed 重试 2 次尝试后**继续读取下一候选成功**
+  （C4 内不改 failedReadCount）；2 条 capture 元数据 + 2 条
+  VerifiedEvidence 写入临时 research.db 读回恒等（rejected 零落库）；
+  正文零持久化探针：CAPTURE-PROBE 拆散节点标记在原始响应零命中、仅存在于
+  捕获内存，扫描 research.db/-wal/-shm/隔离目录/隔离 userData research
+  目录全部零命中；finally 精确释放 task Tab + 关闭库 + 清理隔离目录 +
+  用户 Tab 集合不变。
+- **冒烟实测发现的契约缺口 → 决议 #131（Chromium 错误页判定）**：加载
+  失败后 Chromium 内建错误页自身完成 did-finish-load 把 tab 状态从 error
+  翻回 ready（实测翻转窗口约 8ms < 轮询间隔 50ms——error 快速失败路径
+  捕捉不到），错误页快照被误判为成功读取（首次 8.16 冒烟失败实证）。探针
+  实测错误页快照特征：url=chrome-error://chromewebdata/、title=失败 URL、
+  L0/集合全空、documentId 世代不变。冻结判定：快照最终 URL 校验失败时
+  chrome-error:// 前缀 → page-load-failed（可重试），其余非法目标 →
+  http-scheme-rejected（不重试）；单测固化。
+- **冒烟夹具缺陷修复（如实记录）**：首轮 8.16 复用步骤 7 已关闭的受控页
+  服务器 → 场景自建自关后通过；对照快照在 read 返回后 Tab 已 release →
+  改为场景自建对照 Tab（首次导航世代与 Workspace Tab 一致）精确对照。
+- 验证命令：`npm test -- --maxWorkers=1` **1691/1691** 绿；typecheck/
+  lint/format:check/build/diff-check 绿；dev + 生产默认冒烟（含 8.16）
+  退出码 0。

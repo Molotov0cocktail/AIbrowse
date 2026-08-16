@@ -510,26 +510,35 @@ describe('累计持久化预算（决议 #103：UTF-8 字节、事务内前置�
   });
 });
 
-describe('EvidenceLocator.table.header 形状（决议 #115：非法形态整体拒绝，fail-closed）', () => {
+describe('EvidenceLocator.table.header 形状（决议 #115：非法形态整体拒绝，fail-closed；#129 校准：tableIndex 必填）', () => {
   it('合法形态：string / null / 缺省（undefined）→ locator 正常解析', () => {
     expect(
-      parseLocatorJson(JSON.stringify({ kind: 'table', row: 0, col: 1, header: '列名' })),
+      parseLocatorJson(
+        JSON.stringify({ kind: 'table', tableIndex: 0, row: 0, col: 1, header: '列名' }),
+      ),
     ).toEqual({
       kind: 'table',
+      tableIndex: 0,
       row: 0,
       col: 1,
       header: '列名',
     });
     expect(
-      parseLocatorJson(JSON.stringify({ kind: 'table', row: 0, col: 1, header: null })),
+      parseLocatorJson(
+        JSON.stringify({ kind: 'table', tableIndex: 0, row: 0, col: 1, header: null }),
+      ),
     ).toEqual({
       kind: 'table',
+      tableIndex: 0,
       row: 0,
       col: 1,
       header: null,
     });
-    expect(parseLocatorJson(JSON.stringify({ kind: 'table', row: 0, col: 1 }))).toEqual({
+    expect(
+      parseLocatorJson(JSON.stringify({ kind: 'table', tableIndex: 0, row: 0, col: 1 })),
+    ).toEqual({
       kind: 'table',
+      tableIndex: 0,
       row: 0,
       col: 1,
       header: null,
@@ -540,7 +549,9 @@ describe('EvidenceLocator.table.header 形状（决议 #115：非法形态整体
     'header 非法形态 %j → 整个 locator 返回 null（不得静默转 null）',
     (bad) => {
       expect(
-        parseLocatorJson(JSON.stringify({ kind: 'table', row: 0, col: 1, header: bad })),
+        parseLocatorJson(
+          JSON.stringify({ kind: 'table', tableIndex: 0, row: 0, col: 1, header: bad }),
+        ),
       ).toBeNull();
     },
   );
@@ -553,7 +564,13 @@ describe('EvidenceLocator.table.header 形状（决议 #115：非法形态整体
           makeEvidenceRow({
             evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             type: 'table-cell',
-            locator_json: JSON.stringify({ kind: 'table', row: 0, col: 0, header: bad }),
+            locator_json: JSON.stringify({
+              kind: 'table',
+              tableIndex: 0,
+              row: 0,
+              col: 0,
+              header: bad,
+            }),
             excerpt: '摘录',
             value: '单元格',
           }),
@@ -570,7 +587,7 @@ describe('EvidenceLocator.table.header 形状（决议 #115：非法形态整体
     handle
       .prepare('UPDATE research_evidence SET locator_json = ? WHERE evidence_id = ?')
       .run(
-        JSON.stringify({ kind: 'table', row: 0, col: 0, header: 42 }),
+        JSON.stringify({ kind: 'table', tableIndex: 0, row: 0, col: 0, header: 42 }),
         'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       );
     expect(repo.listEvidenceByTask('11111111-1111-4111-8111-111111111111')).toHaveLength(0);
@@ -582,12 +599,123 @@ describe('EvidenceLocator.table.header 形状（决议 #115：非法形态整体
     repo.insertEvidence(
       makeEvidenceRow({
         type: 'table-cell',
-        locator_json: JSON.stringify({ kind: 'table', row: 1, col: 2, header: '价格' }),
+        locator_json: JSON.stringify({
+          kind: 'table',
+          tableIndex: 0,
+          row: 1,
+          col: 2,
+          header: '价格',
+        }),
         value: '¥100',
       }),
     );
     const evidence = repo.listEvidenceByTask('11111111-1111-4111-8111-111111111111')[0]!;
-    expect(evidence.locator).toEqual({ kind: 'table', row: 1, col: 2, header: '价格' });
+    expect(evidence.locator).toEqual({
+      kind: 'table',
+      tableIndex: 0,
+      row: 1,
+      col: 2,
+      header: '价格',
+    });
+  });
+});
+
+describe('EvidenceLocator.table.tableIndex 形状（决议 #129：多表唯一定位，fail-closed）', () => {
+  it('合法形态：tableIndex/row/col 均为 0-based 非负整数 → locator 正常解析', () => {
+    expect(
+      parseLocatorJson(
+        JSON.stringify({ kind: 'table', tableIndex: 1, row: 3, col: 4, header: null }),
+      ),
+    ).toEqual({ kind: 'table', tableIndex: 1, row: 3, col: 4, header: null });
+    expect(
+      parseLocatorJson(
+        JSON.stringify({ kind: 'table', tableIndex: 0, row: 0, col: 0, header: '列名' }),
+      ),
+    ).toEqual({ kind: 'table', tableIndex: 0, row: 0, col: 0, header: '列名' });
+  });
+
+  it.each([undefined, -1, 1.5, '0', true, null, { n: 0 }, ['0']])(
+    'tableIndex 非法形态 %j → 整个 locator 返回 null（不得静默缺省为 0）',
+    (bad) => {
+      const payload = { kind: 'table', row: 1, col: 2, header: null };
+      if (bad !== undefined) {
+        (payload as Record<string, unknown>)['tableIndex'] = bad;
+      }
+      expect(parseLocatorJson(JSON.stringify(payload))).toBeNull();
+    },
+  );
+
+  it('Repository 写入对应 Evidence fail-closed：缺失/非法 tableIndex 整体拒绝、零落库', () => {
+    repo.insertTask(makeTaskRow());
+    for (const badJson of [
+      JSON.stringify({ kind: 'table', row: 0, col: 0, header: null }), // 缺失
+      JSON.stringify({ kind: 'table', tableIndex: -1, row: 0, col: 0, header: null }), // 负数
+      JSON.stringify({ kind: 'table', tableIndex: '0', row: 0, col: 0, header: null }), // 字符串
+      JSON.stringify({ kind: 'table', tableIndex: 1.5, row: 0, col: 0, header: null }), // 非整数
+    ]) {
+      expect(() =>
+        repo.insertEvidence(
+          makeEvidenceRow({
+            evidence_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            type: 'table-cell',
+            locator_json: badJson,
+            excerpt: '摘录',
+            value: '单元格',
+          }),
+        ),
+      ).toThrowError(RepositoryError);
+    }
+    expect(repo.listEvidenceByTask('11111111-1111-4111-8111-111111111111')).toHaveLength(0);
+  });
+
+  it('读取侧 fail-closed：库内非法 tableIndex 行被跳过（其余行正常）', () => {
+    repo.insertTask(makeTaskRow());
+    repo.insertCapture(makeCaptureRow());
+    repo.insertEvidence(makeEvidenceRow());
+    repo.insertEvidence(
+      makeEvidenceRow({
+        evidence_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        type: 'table-cell',
+        locator_json: JSON.stringify({ kind: 'table', tableIndex: 0, row: 0, col: 0 }),
+        excerpt: '摘录',
+        value: '单元格',
+      }),
+    );
+    handle
+      .prepare('UPDATE research_evidence SET locator_json = ? WHERE evidence_id = ?')
+      .run(
+        JSON.stringify({ kind: 'table', row: 0, col: 0, header: null }),
+        'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      );
+    const list = repo.listEvidenceByTask('11111111-1111-4111-8111-111111111111');
+    expect(list).toHaveLength(1);
+    expect(list[0]!.locator).toEqual({ kind: 'text', excerpt: '摘录' });
+  });
+
+  it('tableIndex 写入/读回恒等（多表区分证据）', () => {
+    repo.insertTask(makeTaskRow());
+    repo.insertCapture(makeCaptureRow());
+    repo.insertEvidence(
+      makeEvidenceRow({
+        type: 'table-cell',
+        locator_json: JSON.stringify({
+          kind: 'table',
+          tableIndex: 2,
+          row: 5,
+          col: 1,
+          header: null,
+        }),
+        value: '¥42',
+      }),
+    );
+    const evidence = repo.listEvidenceByTask('11111111-1111-4111-8111-111111111111')[0]!;
+    expect(evidence.locator).toEqual({
+      kind: 'table',
+      tableIndex: 2,
+      row: 5,
+      col: 1,
+      header: null,
+    });
   });
 });
 

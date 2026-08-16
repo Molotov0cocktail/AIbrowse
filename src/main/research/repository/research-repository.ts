@@ -254,16 +254,31 @@ export function parseLocatorJson(raw: unknown): EvidenceLocator | null {
     return typeof obj['excerpt'] === 'string' ? { kind: 'text', excerpt: obj['excerpt'] } : null;
   }
   if (kind === 'table') {
+    // 决议 #129：tableIndex 必填、0-based 非负整数——多表唯一定位；
+    // 缺失/负数/非整数/字符串/超界全部 fail-closed（不得静默缺省为 0）
+    if (!isNonNegativeInt(obj['tableIndex'])) return null;
     if (!isNonNegativeInt(obj['row']) || !isNonNegativeInt(obj['col'])) return null;
     // 决议 #115：header 仅允许 string | null | 缺省（undefined → null）；
     // object/array/number/boolean 等非法形态使整个 locator 无效（fail-closed，
     // 不得静默转 null）
     const header = obj['header'];
     if (header === undefined || header === null) {
-      return { kind: 'table', row: obj['row'] as number, col: obj['col'] as number, header: null };
+      return {
+        kind: 'table',
+        tableIndex: obj['tableIndex'] as number,
+        row: obj['row'] as number,
+        col: obj['col'] as number,
+        header: null,
+      };
     }
     if (typeof header === 'string') {
-      return { kind: 'table', row: obj['row'] as number, col: obj['col'] as number, header };
+      return {
+        kind: 'table',
+        tableIndex: obj['tableIndex'] as number,
+        row: obj['row'] as number,
+        col: obj['col'] as number,
+        header,
+      };
     }
     return null;
   }

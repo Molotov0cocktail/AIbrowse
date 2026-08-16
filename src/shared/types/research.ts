@@ -152,10 +152,10 @@ export type CaptureFailureReason =
   | 'http-scheme-rejected';
 
 export interface CaptureSummary {
-  sectionCount: number; // 可见文本章节数
-  tableCount: number; // 表格数（行×列合计）
-  headingCount: number;
-  charCount: number; // 规范化正文总字符（≤ MAX_PAGE_CAPTURE_CHARS）
+  sectionCount: number; // 实际保留的非空 textSections 数
+  tableCount: number; // 实际保留的表格数量（决议 #128：不是单元格数量/行列合计）
+  headingCount: number; // 实际保留的 heading 数
+  charCount: number; // 最终 canonicalText.length（≤ MAX_PAGE_CAPTURE_CHARS）
 }
 
 export interface Capture {
@@ -180,8 +180,16 @@ export type EvidenceVerification = 'verified' | 'rejected';
 
 export type EvidenceLocator =
   | { kind: 'text'; excerpt: string } // ≤MAX_EVIDENCE_EXCERPT_CHARS 字符
-  | { kind: 'table'; row: number; col: number; header: string | null } // 0-based 行列
-  | { kind: 'field'; fieldPath: string }; // 提取字段路径（≤MAX_EVIDENCE_LOCATOR_FIELD_PATH_CHARS）
+  | {
+      kind: 'table';
+      tableIndex: number; // 决议 #129：多表唯一定位——0-based 非负整数；
+      // 缺失/负数/非整数/字符串/超界全部 fail-closed
+      row: number; // 0-based 数据行（不含 header）
+      col: number; // 0-based
+      header: string | null; // 程序由真实表头生成；proposal 提供非空 header 须与
+      // 真实表头一致；仅 string | null | 缺省合法（非法形态整体拒绝——决议 #115）
+    }
+  | { kind: 'field'; fieldPath: string }; // 提取字段路径（≤MAX_EVIDENCE_LOCATOR_FIELD_PATH_CHARS，闭合白名单）
 
 export interface Evidence {
   evidenceId: string;
@@ -206,6 +214,40 @@ export interface Evidence {
 
 // 决议 #102：Repository 写入 API 仅接受 verified 窄类型
 export type VerifiedEvidence = Evidence & { verification: 'verified' };
+
+// ---------- Evidence 验证（C4；决议 #130） ----------
+
+// 模型只提「不可信 proposal」——仅允许六个字段；evidenceId 由可信调用方
+// 预分配；taskId/sourceId/url/title/accessTime/documentId/contentHash/
+// verification 全部不得由 proposal 提供（未知字段 fail-closed）。
+// 模型绝不能直接构造 Evidence。
+export interface EvidenceProposal {
+  captureId: string;
+  candidateId: string;
+  type: EvidenceType;
+  locator: EvidenceLocator;
+  excerpt: string | null; // text/summary-point：非空摘录草案；table-cell/field：受控值草案（可与 value 二选一）
+  value: string | null; // table-cell/field 的单元格/字段值草案
+}
+
+export type EvidenceRejectionCode =
+  | 'proposal-invalid' // 形状/未知字段/字段长度/type-locator 组合非法
+  | 'capture-not-found' // captureId 不属于当前 task（跨任务引用）
+  | 'capture-failed' // failed capture（sentinel 先拒）
+  | 'candidate-mismatch' // candidateId 不存在或与 capture.candidateId 不一致
+  | 'content-missing' // 对应 CaptureContent 缺失/绑定错位
+  | 'excerpt-invalid' // 摘录为空/超长/与 locator 不一致
+  | 'excerpt-not-in-content' // 规范化后不是任一 section 的连续子串（伪造/错绑/跨 section 拼接）
+  | 'table-coordinate-invalid' // tableIndex/row/col 越界或非法
+  | 'table-value-mismatch' // 单元格真实值与 proposal 不一致
+  | 'table-header-mismatch' // proposal 提供非空 header 且与真实表头不一致
+  | 'field-path-invalid' // fieldPath 不在闭合字段白名单（含原型链键/通配符/动态路径）
+  | 'field-value-mismatch' // 字段真实值与 proposal 不一致
+  | 'value-invalid'; // value 形状/长度非法
+
+export type EvidenceVerifyResult =
+  | { ok: true; evidence: VerifiedEvidence }
+  | { ok: false; code: EvidenceRejectionCode; reason: string }; // reason ≤200 安全中文短句
 
 // ---------- Cross-check（C6） ----------
 
