@@ -562,10 +562,10 @@ d:\AIbrowse\
     │       │                                  #   ✅ C1 已完成——契约基座 + 存储基座（domain 状态机/预算常量/
     │       │                                  #   migration v1/Repository/store 装配/Service 骨架；
     │       │                                  #   完成状态与下一任务以 progress.md 为准）/
-    │       │                                  #   C2 research-workspace（task Tab 所有权）/C3 source-selector/
-    │       │                                  #   C4 capture-service + evidence-validator/C5 research-runtime/
+    │       │                                  #   ✅ C2 research-workspace（task Tab 所有权）/✅ C3 source-selector/
+    │       │                                  #   ✅ C4 capture-service + evidence-validator/✅ C5 research-runtime +
     │       │                                  #   C6 synthesis（claim-model/research-prompts）/
-    │       │                                  #   C7 result-validator/C8 research-ipc（C2–C8 待实现））
+    │       │                                  #   C7 result-validator/C8 research-ipc（C6–C8 待实现））
     │   └── ai/                                # （Second Stage 已实现，契约见 doc/stage2/detailed-design.md；
     │       │                                  #   Third Stage 规划，契约见 doc/stage3/detailed-design.md §1）
     │       ├── conversation-service.ts        # （S3 ✅ + A5 ✅ + A6 ✅）会话编排：ask 实时快照/中止/事件/持久化接线；
@@ -1445,8 +1445,8 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
 > §8 Result Schema·Renderer / §9 存储 / §10 Tab 所有权 / §11 IPC / §12 边界 /
 > §13 测试 / §14 验收 / §15 决议——编号范围以 §15 当前记录为准）；安全契约源
 > `doc/stage5/threat-model.md`（FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类）；
-> 任务 C1–C10 见 `doc/stage5/tasks/`。**C1（契约基座 + 存储基座）已实现**；
-> C2–C10 为「规划/待实现」——在对应任务完成前不得宣称已实现（完成状态以
+> 任务 C1–C10 见 `doc/stage5/tasks/`。**C1–C5 已实现**（C1 契约基座 + 存储基座/C2 ResearchWorkspace/C3 SourceSelector/C4 CaptureService + EvidenceValidator/C5 ResearchRuntime——完成状态以 progress.md 为准）；
+> C6–C10 为「规划/待实现」——在对应任务完成前不得宣称已实现（完成状态以
 > progress.md 为准）。
 
 - **依赖方向（不可反向）**：`Research UI → ResearchService → ResearchRuntime →

@@ -144,5 +144,42 @@ feat: 完成 C5 ResearchRuntime）+ 双远程推送。
 
 ## 红→绿证据
 
-（C5 闭环完成后回填：红态证据 → 转绿证据 → 冒烟 8.17 → 双进程门控 →
-红线扫描台账。）
+- **红态**（2026-08-16，模块不存在/旧结构）：
+  - 5 个测试文件（research-tools/research-plan/research-runtime-
+    persistence/research-runtime/research-service-async）整体失败
+    （导入错误——模块尚不存在）；
+  - 红态 5 files failed / 14 failed（vitest 输出实证）。
+- **转绿**：实现 6 个新模块（research-tools/research-plan/
+  research-runtime-persistence/research-runtime + research-service
+  异步装配 + research-store 工厂注入 + Repository 终态预留）后——
+  C5 聚焦 **113/113**（5 文件）；全量 **1804/1804**（基线 1691 + 113
+  新增；既有用例零删除零削弱——#113 投影检查用例按决议 #137(2) 语义
+  校准为探针 SQL 直插填充（终态预留使 Repository 写入路径恒放行，
+  投影检查作为独立防线可测）；错误码表 11→12 码（#134(3) 扩展）；
+  C1 service 测试注入 immediate-settle stub factory（#135 装配语义）。
+  实现期修复均为契约落地与测试夹具校准（候选 id 预分配/requestId 独立
+  计数/abort 错误事件归属/上下文预算裁剪等），无迁就实现。
+- **冒烟 8.17**（默认矩阵自动包含；dev+生产双场景退出码 0）：真实
+  ResearchWorkspace + CaptureService + FakeProvider 多轮脚本全阶段
+  （planning→reading→verifying→synthesizing）→ completed + 候选/
+  Capture/VerifiedEvidence/Result 落库读回 + capture 正文零落盘 +
+  用户 Tab 集合恒等 + 进度初始/终态各恰好一次；stop 中途 → cancelled
+  - 迟到写入零生效；预算注入（61 条 proposal）→
+    research-budget-exhausted + 此前 60 条 Evidence 保留。
+- **双进程门控** `AIBROWSE_RESEARCH_SMOKE=set|check`（与 SESSION/
+  SOURCES/SOURCES_UI 确定性互斥；生产产物）退出码 0/0：set 经产品
+  Service/Runtime 路径（openResearchStore + SMOKE RuntimeFactory）
+  创建完成一个任务 + 遗留 running 直接退出（app.exit 不经 shutdown）；
+  check 新进程读回 completed 任务与 Result + 遗留 running 自动标
+  interrupted（interruptedAt 落库、phase 置空）；零测试 SQL 伪造核心
+  状态；结束后零 Electron 进程、零临时数据库、根目录日志零残留。
+- **红线扫描台账**：migration v1 零改写；Runtime 零 SQL（SQL 仅
+  Repository 编译期常量 + migrations/driver；persistence 端口零 SQL）；
+  renderer/preload 零 SQL 零 Research IPC；零 shell/child_process/eval；
+  capture 正文/transcript/reasoning/Key 零持久化；工具注册表仍 17；
+  AgentLoop 12/420s 零 diff；package.json/lockfile 零 diff；用户 Tab
+  集合不变；真实 Provider 调用 **0 次**（C5 无真实 Provider 产品链路；
+  决议 #117 长期授权不等于强制无关调用）。
+- 验证命令：`npm test -- --maxWorkers=1` **1804/1804** 绿；typecheck/
+  lint/format:check/build/diff-check 绿；dev + 生产默认冒烟（含 8.17）
+  退出码 0；set/check 双进程退出码 0/0。
