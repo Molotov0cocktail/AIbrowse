@@ -1,10 +1,11 @@
 // Logger sanitize tests (S1 extension): real-world API key shapes (sk-…) must never reach
 // disk or console; existing token/secret/password patterns keep working.
 // Contract source: doc/stage2/detailed-design.md §5.1/§10（日志脱敏红线）.
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+// C7 决议 #153 追加：未初始化落盘修复红→绿（真实临时 cwd 探针/re-init 重置）。
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   getCurrentLogFilePath,
   initLogger,
@@ -148,6 +149,88 @@ describe('normalizeLogMessage — 日志行伪造防御（A7 红队，红→绿�
       expect(lines.every((l) => l.startsWith('[20'))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- 决议 #153：未初始化落盘修复（红→绿；真实临时 cwd 探针） ----------
+// vi.resetModules + 动态 import 取得「未 init」的干净模块实例（独立于顶层
+// import 的共享实例——单 worker 下既有测试可能已调用 initLogger）。
+describe('logger 未初始化落盘修复（决议 #153）', () => {
+  it('未 init 时写多级日志不产生 cwd 文件（真实临时 cwd 探针）+ 日志仍走脱敏 console', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-cwd-'));
+    const oldCwd = process.cwd();
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      process.chdir(dir);
+      fresh.logDebug('t', 'debug 条目');
+      fresh.logInfo('t', 'info 条目 sk-proj-abc1234567890xyz');
+      fresh.logWarn('t', 'warn 条目');
+      fresh.logError('t', 'error 条目', new Error('boom'));
+      // 真实临时 cwd 探针：零文件生成（旧实现在此生成 aibrowse-<date>.log）
+      expect(readdirSync(dir)).toEqual([]);
+      // getCurrentLogFilePath 未 init 语义冻结：''（无日志文件）
+      expect(fresh.getCurrentLogFilePath()).toBe('');
+      // 日志能力不削弱：脱敏后的 console 输出仍在
+      const out = consoleSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(out).toContain('info 条目');
+      expect(out).not.toContain('sk-proj-abc');
+      expect(out).toContain('sk-***');
+    } finally {
+      consoleSpy.mockRestore();
+      process.chdir(oldCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('未 init 时 getCurrentLogFilePath 返回空串（语义冻结）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    expect(fresh.getCurrentLogFilePath()).toBe('');
+  });
+
+  it('init 后只写指定目录（<dir>/log/aibrowse-<date>.log）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-init-'));
+    try {
+      fresh.initLogger(dir);
+      fresh.logInfo('t', '条目甲');
+      const file = fresh.getCurrentLogFilePath();
+      expect(file.startsWith(join(dir, 'log', 'aibrowse-'))).toBe(true);
+      expect(readFileSync(file, 'utf8')).toContain('条目甲');
+      expect(readdirSync(join(dir, 'log'))).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('re-init 后不继续写旧目录（currentDate/currentLogFile 重置）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dirA = mkdtempSync(join(tmpdir(), 'aibrowse-logger-rea-'));
+    const dirB = mkdtempSync(join(tmpdir(), 'aibrowse-logger-reb-'));
+    try {
+      fresh.initLogger(dirA);
+      fresh.logInfo('t', 'A1');
+      const fileA = fresh.getCurrentLogFilePath();
+      const sizeA = statSync(fileA).size;
+      fresh.initLogger(dirB);
+      const fileB = fresh.getCurrentLogFilePath();
+      expect(fileB).not.toBe(fileA); // 新目录（同日期不同 baseDir → 不同路径）
+      expect(fileB.startsWith(join(dirB, 'log', 'aibrowse-'))).toBe(true);
+      fresh.logInfo('t', 'B1');
+      fresh.logInfo('t', 'B2');
+      // 旧目录文件零增长
+      expect(statSync(fileA).size).toBe(sizeA);
+      // 新目录正常落盘
+      expect(readFileSync(fileB, 'utf8')).toContain('B2');
+      expect(readdirSync(join(dirB, 'log'))).toHaveLength(1);
+    } finally {
+      rmSync(dirA, { recursive: true, force: true });
+      rmSync(dirB, { recursive: true, force: true });
     }
   });
 });

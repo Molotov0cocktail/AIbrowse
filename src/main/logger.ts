@@ -10,7 +10,11 @@ let currentDate = '';
 let currentLogFile = '';
 
 export function initLogger(baseDir: string): void {
+  // 决议 #153(4)：重入重置——currentDate/currentLogFile 清空后按新 baseDir
+  // 重新轮转（不得继续写旧目录）
   logDir = join(baseDir, 'log');
+  currentDate = '';
+  currentLogFile = '';
   mkdirSync(logDir, { recursive: true });
 }
 
@@ -122,7 +126,6 @@ export function normalizeLogMessage(text: string): string {
 // 错误详情块：剔除 ANSI/控制字符，但保留换行（堆栈多行结构；每行已由 write 缩进，
 // 敌手换行只会产生带缩进的子行，无法成为条目前缀）。
 function write(level: LogLevel, category: string, message: string, error?: unknown): void {
-  ensureLogFile();
   let text = `[${timeStamp(new Date())}] [${level.padEnd(5)}] [${category}] ${normalizeLogMessage(message)}`;
   if (error !== undefined) {
     const detail =
@@ -133,11 +136,17 @@ function write(level: LogLevel, category: string, message: string, error?: unkno
   }
 
   const safe = sanitize(text);
-  try {
-    appendFileSync(currentLogFile, `${safe}\n`);
-  } catch (e) {
-    // Logging must never crash the app; fall back to console only.
-    console.error('[logger] 写入日志文件失败:', e);
+  // 决议 #153(2)：initLogger 未调用时（logDir 空）绝不落盘——旧实现以相对
+  // 路径把日志写进进程 cwd（红态机器证据：npm test 在根目录生成
+  // aibrowse-2026-08-16.log）；修复后仅脱敏 console 输出。
+  if (logDir !== '') {
+    ensureLogFile();
+    try {
+      appendFileSync(currentLogFile, `${safe}\n`);
+    } catch (e) {
+      // Logging must never crash the app; fall back to console only.
+      console.error('[logger] 写入日志文件失败:', e);
+    }
   }
   if (level === 'ERROR') console.error(safe);
   else if (level === 'WARN') console.warn(safe);
@@ -146,7 +155,9 @@ function write(level: LogLevel, category: string, message: string, error?: unkno
 
 // 冒烟断言用：当前日志文件路径（appendFileSync 同步写盘，读取即最新；仅测试/验证场景使用）。
 // 冒烟以「文件偏移切片」限定本次运行的日志区间，避免读到同日更早运行的内容。
+// 决议 #153(3)：未初始化返回 ''（无日志文件语义冻结）。
 export function getCurrentLogFilePath(): string {
+  if (logDir === '') return '';
   ensureLogFile();
   return currentLogFile;
 }
