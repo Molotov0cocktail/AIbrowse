@@ -26,6 +26,9 @@ import type { BrowserController } from './browser/browser-controller';
 import type { PageSnapshot } from '../shared/types/browser';
 import { PERSIST_PARTITION } from './browser/session-manager';
 import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sqlite-driver';
+// C8 定向修复（2026-08-17）：冒烟临时目录清理 helper（句柄关闭后删除 +
+// Windows EPERM 有限重试——工厂冒烟场景 2026-08-16 23:30 遗留根因）
+import { removeSmokeDirWithRetry } from './smoke-cleanup';
 // 8.16 C4：真实 Workspace + CaptureService + EvidenceValidator + Repository（临时 research.db）
 import { ResearchWorkspace } from './research/research-workspace';
 import { CaptureService, sha256hex, type CaptureContent } from './research/capture-service';
@@ -50,6 +53,7 @@ import {
 import { parseMarkdown } from '../shared/markdown/parse-markdown';
 import type { ResearchTask } from '../shared/types/research';
 import type { ResearchPreparedLaunch, ResearchRuntimeFactory } from '../shared/types/research';
+import type { ResearchService } from '../shared/types/research';
 import type { Capture, SourceCandidate } from '../shared/types/research';
 import { runMigrations } from './sources/db/migrations';
 // C7（决议 #155）：SMOKE 设施使用真实 C6 端口 + 真实 C7 端口（8.18/8.17/
@@ -15721,6 +15725,14 @@ async function runResearchProductionFactoryScenario(controller: BrowserControlle
     delete: async () => false,
   };
   const configStore = new ConfigStore(configDir, credentials);
+  // C8 定向修复（2026-08-17，决议 #156 前置）：service/db 作用域提升到 try 外——
+  // 失败路径（assert 抛错）跳 finally 时句柄仍打开 → rmSync 在 Windows 上
+  // EPERM → 系统 TEMP 遗留（2026-08-16 23:30 生产冒烟机器证据
+  // aibrowse-research-factory-smoke-t0DXYo\research.db）。修复：finally 先
+  // shutdown（幂等）再 closeDb 再 removeSmokeDirWithRetry（有限重试吸收
+  // Windows 句柄延迟释放窗口）。
+  let service: ResearchService | null = null;
+  let readbackDb: DbHandle | null = null;
   try {
     smokeProductionScript = makeProductionFactoryScript();
     const outcome = openResearchStore({
@@ -15742,7 +15754,7 @@ async function runResearchProductionFactoryScenario(controller: BrowserControlle
     });
     assert(outcome.mode === 'normal', '8.19-A：store 正常装配');
     if (outcome.mode !== 'normal') return;
-    const service = outcome.service;
+    service = outcome.service;
 
     // —— 缺 Provider 配置：精确拒绝 + 任务保持 created ——
     const noCfg = await service.createTask('缺配置目标');
@@ -15782,8 +15794,8 @@ async function runResearchProductionFactoryScenario(controller: BrowserControlle
     assert(terminal.resultId !== null && terminal.resultId !== '', '8.19-A：resultId 落库');
 
     // —— Result 读回：可信字段全部程序生成 ——
-    const db = openDb(join(tmpDir, 'research.db'));
-    const repo = new ResearchRepository(db);
+    readbackDb = openDb(join(tmpDir, 'research.db'));
+    const repo = new ResearchRepository(readbackDb);
     const result = repo.getResultByTaskId(created.task.id);
     assert(result !== null, '8.19-A：Result 应落库');
     assert(result!.title === '工厂冒烟结果', '8.19-A：标题来自模型三字段草案');
@@ -15836,10 +15848,23 @@ async function runResearchProductionFactoryScenario(controller: BrowserControlle
     // —— 用户 Tab 集合恒等 ——
     const afterTabs = (await controller.getTabs()).map((t) => t.id).sort();
     assert(JSON.stringify(afterTabs) === JSON.stringify(userTabIds), '8.19-A：用户 Tab 集合恒等');
-    closeDb(db);
-    await service.shutdown();
   } finally {
-    rmSync(tmpDir, { recursive: true, force: true });
+    // C8 定向修复（2026-08-17）：失败路径同样关闭句柄再清理——service.shutdown
+    // 幂等（正常路径已调用/失败路径补关闭 store 句柄）；readbackDb 幂等关闭；
+    // removeSmokeDirWithRetry 有限重试吸收 Windows 句柄延迟释放窗口；单个
+    // 清理环节失败不掩盖原始错误（记录后继续），但删除本身失败必须抛错——
+    // 绝不在 TEMP 留下未声明的残留（本场景收尾零遗留断言见终检）。
+    try {
+      if (service !== null) await service.shutdown();
+    } catch (err) {
+      logWarn('smoke', '8.19-A：Research store 关闭异常（不掩盖原始错误）', err);
+    }
+    try {
+      if (readbackDb !== null) closeDb(readbackDb);
+    } catch (err) {
+      logWarn('smoke', '8.19-A：research.db 读回连接关闭异常', err);
+    }
+    await removeSmokeDirWithRetry(tmpDir);
   }
 }
 
