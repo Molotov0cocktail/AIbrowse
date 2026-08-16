@@ -119,3 +119,40 @@ C1（域类型/预算常量）。
   冒烟临时目录/日志/进程/根目录杂散日志全部精确清理。
 - **真实 Provider**：0 次调用（C2 无真实 Provider 产品链路；决议 #117
   授权不等于强制调用）。
+
+## 定向安全修复（2026-08-16，决议 #119；红→绿证据回填）
+
+- **独立复核发现两类 Tab 所有权漏洞**（先写红测 → 改契约与测试 → 再改
+  实现，§15 流程；不改写 #118 既有结论）：
+  1. **可能关闭用户 Tab**：旧 acquire 在 abort 检查先于 tabsBefore
+     所有权验证——createTab 在 pending 期间返回 tabsBefore 中的既有
+     用户 Tab 且信号已终止时，会在验证所有权前调用 closeTab(tab.id)，
+     违反 #118(4)「绝不关闭该 Tab」。
+  2. **清理失败后所有权丢失**：create 期间 abort / 焦点恢复失败 /
+     后置快照异常三条路径均以 closeBestEffort 关闭新 Tab——它忽略
+     closeTab=false/抛错，且调用方未保留所有权（焦点恢复失败路径还在
+     关闭前从 owned/ownedUrls 删除 id）→ closeTab 失败后 Tab 继续存在
+     但 cleanupAll() 无法重试，违反「清理失败不得误报已清理」与「终态
+     前 cleanupAll 可补清理」契约。
+- **决议 #119**（detailed-design §15，五条）：① 所有权验证优先——
+  createTab 返回后先查 id 非空且不在 tabsBefore；属于 tabsBefore →
+  tab-create-failed，即使已 aborted 也零关闭零登记，用户 Tab 恒等；
+  ② provisional ownership——全新精确 id 在 abort 检查/创建后 getTabs/
+  焦点恢复前先登记，无「已知 id 未登记、清理失败即失联」窗口；
+  ③ 清理事实语义——仅 getTabs 确认不存在或 closeTab 明确 true 才移除
+  所有权；false/抛错 → cleanup-failed + 所有权保留 + cleanupAll 精确
+  重试；④ 错误优先级——abort/焦点失败/后置异常 + 清理成功保持原码，
+  任一路径清理失败 → cleanup-failed，不新增 WorkspaceErrorCode；
+  ⑤ 禁止不经所有权证明调用 closeTab——清理 helper 只接收已确认不属于
+  tabsBefore 的精确 id，消除 closeBestEffort 失真语义。§10.1 acquire
+  注释同步校准。
+- **红态**：新增决议 #119 矩阵 9 用例（A–G）→ **7 failed / 41 passed**
+  （A/B/C/D/E/F1/F2 失败——A 返回 tab-create-aborted 且关闭用户 Tab、
+  其余路径返回原码且所有权丢失；G1/G2 对照与既有 39 用例保持通过，
+  红态可甄别）。
+- **绿态**：实现见 research-workspace.ts（closeOwnedTab helper 替换
+  closeBestEffort）→ 聚焦/全量结果见 progress.md 最近验证结果条目。
+- **验证**：全量 test · typecheck · lint · format:check · build ·
+  git diff --check 全绿；dev + production 冒烟默认矩阵退出码 0；
+  BrowserController/TabManager/SearchProvider 零 diff；真实 Provider
+  0 次调用。

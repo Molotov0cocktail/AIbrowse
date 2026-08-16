@@ -102,6 +102,14 @@ class FakeBrowser implements ResearchWorkspaceBrowser {
     return tab;
   }
 
+  // 敌手夹具（决议 #119 矩阵）：以指定 TabInfo 完成 pending createTab——
+  // 不触碰 tabs 表/activeId（模拟敌手实现返回既有 Tab 或任意对象）
+  completeCreateWithTab(tab: TabInfo, index = 0): void {
+    const entry = this.pending[index];
+    if (entry === undefined) throw new Error('没有待完成的 createTab 调用');
+    entry.d.resolve(tab);
+  }
+
   pendingCreateCount(): number {
     return this.pending.length;
   }
@@ -708,5 +716,210 @@ describe('非法 taskId：构造不抛异常、全部操作安全返回', () => 
     expect(cleanup).toMatchObject({ ok: false, errorCode: 'invalid-task-id', closedCount: 0 });
     expect(fake.closeLog).toEqual([]);
     expect(userTabIds(fake)).toEqual(['U1']);
+  });
+});
+
+// 决议 #119 矩阵（先红后修）：所有权验证优先（即使已 aborted 也绝不关闭
+// tabsBefore 中的既有 Tab）+ provisional ownership（全新精确 id 先登记后清理）+
+// 清理事实语义（确认关闭才移除所有权；closeTab false/抛错 → cleanup-failed +
+// 所有权保留 + cleanupAll 可精确重试）。
+describe('21. 决议 #119：所有权验证优先 + provisional 清理事实语义', () => {
+  it('A. create 期间 abort 后 createTab 返回既有用户 Tab → tab-create-failed、零关闭、U1 逐字段恒等', async () => {
+    const fake = new FakeBrowser([
+      { id: 'U1', url: 'https://user.example/page', title: '用户页面' },
+    ]);
+    fake.manualCreate = true;
+    const ws = new ResearchWorkspace('task-1', fake);
+    const controller = new AbortController();
+    const p = ws.acquire('https://example.com/x', controller.signal);
+    await fake.waitForPending(1); // 基线 getTabs 已完成、createTab pending
+    controller.abort(); // create 期间终止
+    const u1Before = { ...fake.tabs.get('U1')! }; // U1 完整快照（id/url/title/state/active）
+    fake.completeCreateWithTab({ ...u1Before }); // 敌手：返回 tabsBefore 中已存在的用户 Tab
+    const result = await p;
+    expect(result).toMatchObject({ ok: false, errorCode: 'tab-create-failed' });
+    expect(fake.closeLog).toEqual([]); // 零关闭动作（即使已 aborted）
+    expect(ws.getOwnedTabIds()).toEqual([]); // 零登记
+    expect(fake.tabs.get('U1')).toEqual(u1Before); // U1 逐字段恒等（不按 URL/标题/位置/活动推断）
+    expect(userTabIds(fake)).toEqual(['U1']);
+  });
+
+  it('B. abort + closeTab=false → cleanup-failed、provisional 保留、cleanupAll 精确补清理零泄漏', async () => {
+    const fake = new FakeBrowser(USER_TABS);
+    fake.manualCreate = true;
+    const ws = new ResearchWorkspace('task-1', fake);
+    const controller = new AbortController();
+    const p = ws.acquire('https://example.com/x', controller.signal);
+    await fake.waitForPending(1);
+    controller.abort();
+    fake.closeResult = () => false; // 清理失败
+    const tab = fake.completeCreate(0); // 全新 task Tab
+    const result = await p;
+    expect(result).toMatchObject({ ok: false, errorCode: 'cleanup-failed' });
+    expect(ws.getOwnedTabIds()).toEqual([tab.id]); // 所有权保留（不误报已清理）
+    expect(fake.tabs.has(tab.id)).toBe(true); // Tab 仍存在但不再失联
+    expect(userTabIds(fake)).toEqual(['U1']);
+    // 恢复 closeTab 后 cleanupAll 只针对该精确 id 重试
+    fake.closeResult = null;
+    const cleanup = await ws.cleanupAll();
+    expect(cleanup.ok).toBe(true);
+    if (!cleanup.ok) return;
+    expect(cleanup.closedCount).toBe(1);
+    expect(cleanup.skippedCount).toBe(0);
+    expect(fake.closeLog.filter((id) => id === tab.id).length).toBe(2); // 失败尝试 + 补清理
+    expect(taskTabIds(fake)).toEqual([]); // 最终 task Tab 零泄漏
+    expect(userTabIds(fake)).toEqual(['U1']);
+    expect(ws.getOwnedTabIds()).toEqual([]);
+  });
+
+  it('C. abort + closeTab 抛错 → cleanup-failed、所有权保留、cleanupAll 补清理、零未处理 rejection', async () => {
+    const fake = new FakeBrowser(USER_TABS);
+    fake.manualCreate = true;
+    const ws = new ResearchWorkspace('task-1', fake);
+    const controller = new AbortController();
+    const p = ws.acquire('https://example.com/x', controller.signal);
+    await fake.waitForPending(1);
+    controller.abort();
+    fake.closeThrow = new Error('close boom');
+    const tab = fake.completeCreate(0);
+    const result = await p;
+    expect(result).toMatchObject({ ok: false, errorCode: 'cleanup-failed' });
+    expect(ws.getOwnedTabIds()).toEqual([tab.id]);
+    expect(fake.tabs.has(tab.id)).toBe(true);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    fake.closeThrow = null;
+    const cleanup = await ws.cleanupAll();
+    expect(cleanup.ok).toBe(true);
+    if (!cleanup.ok) return;
+    expect(cleanup.closedCount).toBe(1);
+    expect(taskTabIds(fake)).toEqual([]);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    expect(ws.getOwnedTabIds()).toEqual([]);
+  });
+
+  it('D. activateTab=false + closeTab=false → cleanup-failed、所有权保留、cleanupAll 重试成功、用户 Tab 零触碰', async () => {
+    const fake = new FakeBrowser(USER_TABS);
+    const ws = new ResearchWorkspace('task-1', fake);
+    fake.activateResult = () => false; // 焦点恢复失败
+    fake.closeResult = () => false; // 清理失败
+    const result = await ws.acquire('https://example.com/x', freshSignal());
+    expect(result).toMatchObject({ ok: false, errorCode: 'cleanup-failed' });
+    const owned = ws.getOwnedTabIds();
+    expect(owned.length).toBe(1);
+    const newId = owned[0];
+    expect(fake.tabs.has(newId)).toBe(true); // 清理失败 Tab 仍存在但所有权保留
+    expect(userTabIds(fake)).toEqual(['U1']);
+    // 恢复 closeTab 后 cleanupAll 只关闭该精确 id
+    fake.closeResult = null;
+    const cleanup = await ws.cleanupAll();
+    expect(cleanup.ok).toBe(true);
+    if (!cleanup.ok) return;
+    expect(cleanup.closedCount).toBe(1);
+    expect(fake.closeLog.filter((id) => id === newId).length).toBe(2);
+    expect(taskTabIds(fake)).toEqual([]);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    expect(ws.getOwnedTabIds()).toEqual([]);
+  });
+
+  it('E. activateTab 抛错 + closeTab 抛错 → cleanup-failed、所有权保留、重试成功、零未处理 rejection', async () => {
+    const fake = new FakeBrowser(USER_TABS);
+    const ws = new ResearchWorkspace('task-1', fake);
+    fake.activateResult = () => {
+      throw new Error('activate boom');
+    };
+    fake.closeThrow = new Error('close boom');
+    const result = await ws.acquire('https://example.com/x', freshSignal());
+    expect(result).toMatchObject({ ok: false, errorCode: 'cleanup-failed' });
+    const owned = ws.getOwnedTabIds();
+    expect(owned.length).toBe(1);
+    expect(fake.tabs.has(owned[0])).toBe(true);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    fake.closeThrow = null;
+    const cleanup = await ws.cleanupAll();
+    expect(cleanup.ok).toBe(true);
+    if (!cleanup.ok) return;
+    expect(cleanup.closedCount).toBe(1);
+    expect(taskTabIds(fake)).toEqual([]);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    expect(ws.getOwnedTabIds()).toEqual([]);
+  });
+
+  it('F1. 创建后 getTabs 抛错 + closeTab=false → cleanup-failed、provisional 由 cleanupAll 重试（不成为未登记泄漏）', async () => {
+    const fake = new FakeBrowser(USER_TABS);
+    fake.manualCreate = true;
+    const ws = new ResearchWorkspace('task-1', fake);
+    const p = ws.acquire('https://example.com/x', freshSignal());
+    await fake.waitForPending(1); // 基线 getTabs 已完成、createTab pending
+    fake.getTabsError = new Error('tabs boom'); // 仅创建后 getTabs 抛错
+    fake.closeResult = () => false;
+    const tab = fake.completeCreate(0);
+    const result = await p;
+    expect(result).toMatchObject({ ok: false, errorCode: 'cleanup-failed' });
+    expect(ws.getOwnedTabIds()).toEqual([tab.id]);
+    expect(fake.tabs.has(tab.id)).toBe(true);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    // 恢复后 cleanupAll 补清理
+    fake.getTabsError = null;
+    fake.closeResult = null;
+    const cleanup = await ws.cleanupAll();
+    expect(cleanup.ok).toBe(true);
+    if (!cleanup.ok) return;
+    expect(cleanup.closedCount).toBe(1);
+    expect(taskTabIds(fake)).toEqual([]);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    expect(ws.getOwnedTabIds()).toEqual([]);
+  });
+
+  it('F2. 创建后 getTabs 抛错 + closeTab 抛错 → cleanup-failed、可重试、零未处理 rejection', async () => {
+    const fake = new FakeBrowser(USER_TABS);
+    fake.manualCreate = true;
+    const ws = new ResearchWorkspace('task-1', fake);
+    const p = ws.acquire('https://example.com/x', freshSignal());
+    await fake.waitForPending(1);
+    fake.getTabsError = new Error('tabs boom');
+    fake.closeThrow = new Error('close boom');
+    const tab = fake.completeCreate(0);
+    const result = await p;
+    expect(result).toMatchObject({ ok: false, errorCode: 'cleanup-failed' });
+    expect(ws.getOwnedTabIds()).toEqual([tab.id]);
+    expect(fake.tabs.has(tab.id)).toBe(true);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    fake.getTabsError = null;
+    fake.closeThrow = null;
+    const cleanup = await ws.cleanupAll();
+    expect(cleanup.ok).toBe(true);
+    if (!cleanup.ok) return;
+    expect(cleanup.closedCount).toBe(1);
+    expect(taskTabIds(fake)).toEqual([]);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    expect(ws.getOwnedTabIds()).toEqual([]);
+  });
+
+  it('G1. 对照：abort + 清理成功 → 仍返回 tab-create-aborted、精确关闭零泄漏', async () => {
+    const fake = new FakeBrowser(USER_TABS);
+    fake.manualCreate = true;
+    const ws = new ResearchWorkspace('task-1', fake);
+    const controller = new AbortController();
+    const p = ws.acquire('https://example.com/x', controller.signal);
+    await fake.waitForPending(1);
+    controller.abort();
+    const tab = fake.completeCreate(0);
+    const result = await p;
+    expect(result).toMatchObject({ ok: false, errorCode: 'tab-create-aborted' });
+    expect(fake.closeLog).toEqual([tab.id]); // 只关闭本次创建的精确 id
+    expect(taskTabIds(fake)).toEqual([]);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    expect(ws.getOwnedTabIds()).toEqual([]);
+  });
+
+  it('G2. 对照：焦点恢复失败 + 清理成功 → 仍返回 tab-restore-focus-failed、精确关闭', async () => {
+    const fake = new FakeBrowser(USER_TABS);
+    const ws = new ResearchWorkspace('task-1', fake);
+    fake.activateResult = () => false;
+    const result = await ws.acquire('https://example.com/x', freshSignal());
+    expect(result).toMatchObject({ ok: false, errorCode: 'tab-restore-focus-failed' });
+    expect(taskTabIds(fake)).toEqual([]);
+    expect(userTabIds(fake)).toEqual(['U1']);
+    expect(ws.getOwnedTabIds()).toEqual([]);
   });
 });

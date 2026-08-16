@@ -880,9 +880,12 @@ export class ResearchWorkspace {
   // 同步归属检查（跨任务 Lease/伪造 tabId/非本实例 owned → false，零关闭动作）
   isOwned(tabId: string): boolean;
   getOwnedTabIds(): readonly string[];
-  // 创建 task Tab：URL 校验 → 同步段并发槽检查 → createTab → 敌手/消失检查
-  // → 登记精确 id → 焦点恢复。signal 在 create 前终止 → 零创建；
-  // create 期间终止 → 创建完成后精确关闭再返回 aborted。
+  // 创建 task Tab：URL 校验 → 同步段并发槽检查 → createTab → 所有权验证
+  // （id 非空且不在 tabsBefore，优先于取消分类——决议 #119(1)）→
+  // provisional 登记精确 id（决议 #119(2)）→ abort 检查 → 创建后 getTabs
+  // → 焦点恢复。signal 在 create 前终止 → 零创建；create 期间终止 →
+  // 清理成功返回 aborted；任何路径清理失败 → cleanup-failed 且所有权保留
+  // （cleanupAll 可精确重试——决议 #119(3)/(4)）。
   acquire(url: string, signal: AbortSignal): Promise<AcquireResult>;
   // 显式快照感知：C4 在读取前后调用；owned tab 消失 → 移除所有权集合
   checkTab(tabId: string): Promise<CheckTabResult>;
@@ -1261,6 +1264,41 @@ verification:'verified' }`）；schema CHECK 收窄为
      create 期间终止 → 创建完成后精确关闭再返回 aborted；多次 release/
      cleanup 不重复关闭、不关闭替代 Tab；清理异常零用户 Tab 触碰、零未
      处理 Promise rejection（catch 归一安全返回）。
+
+> 以下 #119 为 C2 定向安全修复契约裁决（2026-08-16；先写红测 → 改契约与
+> 测试 → 再改实现，§15 流程）。独立复核发现 C2 acquire 的 abort/异常清理
+> 路径存在两类 Tab 所有权漏洞（① abort 检查先于 tabsBefore 所有权验证，
+> 可能关闭用户 Tab；② closeBestEffort 忽略 closeTab=false/抛错且调用方
+> 已撤销/未登记所有权，清理失败后 task Tab 永久失联），依据 #118(4)/(8)、
+> threat-model FT-09/§3.6「用户 Tab 永不关闭」与「清理失败不得误报已
+> 清理」唯一裁决，无需用户拍板；不改写 #118 既有结论。
+
+119. **C2 取消/异常清理的 Tab 所有权漏洞修复（2026-08-16，C2 定向修复）**：
+     （1）**所有权验证优先**：createTab 返回后必须先检查 id 是否为非空
+     字符串且不存在于 tabsBefore；属于 tabsBefore → tab-create-failed，
+     即使 signal 此时已 aborted，也不得关闭、登记或修改该 Tab——用户
+     Tab 集合及 URL/title/active 状态保持不变；所有权安全优先于取消结果
+     分类。
+     （2）**临时所有权（provisional ownership）**：一旦 createTab 返回
+     不属于 tabsBefore 的全新精确 id，在进行 abort 检查、创建后 getTabs、
+     焦点恢复等任何可能失败的步骤**之前**，先把该精确 id 登记进内部
+     所有权集合——不得出现「已知全新精确 id 但尚未登记、best-effort
+     清理失败后永久失联」的窗口；AcquireResult 失败时无 Lease，保留的
+     provisional id 仍由 Workspace 内部持有，供 cleanupAll() 补清理。
+     （3）**清理事实语义**：只有满足任一条件才能从 owned/ownedUrls 移除
+     ——getTabs 明确确认该 id 已不存在，或 closeTab(id) 明确返回 true。
+     closeTab 返回 false 或抛错 → 不移除所有权、返回 cleanup-failed、
+     后续 cleanupAll() 必须可以只针对该精确 id 重试、不得关闭任何替代
+     Tab 或同 URL/同标题用户 Tab。
+     （4）**错误优先级**：fresh id + abort + 清理成功 → tab-create-
+     aborted；fresh id + 焦点恢复失败 + 清理成功 → tab-restore-focus-
+     failed；fresh id + 后置内部异常 + 清理成功 → workspace-internal；
+     上述任一路径清理失败 → cleanup-failed（内部所有权保留）。不新增
+     WorkspaceErrorCode。
+     （5）**禁止不经所有权证明调用 closeTab**：不得把任意 createTab
+     返回值直接交给 best-effort close；任何清理 helper 都只接收已确认
+     「不属于 tabsBefore」的精确 id，并遵守「确认关闭后才移除所有权」——
+     消除 closeBestEffort 式忽略 closeTab=false/抛错的失真语义。
 
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4）/C7（依赖 C1，可与 C6 并行）→

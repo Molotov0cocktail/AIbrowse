@@ -27,6 +27,17 @@
 // explicitly (C4 calls it before/after reads); a vanished owned tab is
 // removed from the owned set and reported as closed-by-user.
 //
+// Adjudication #119 (C2 directed security fix): ownership validation
+// precedes cancellation classification — a createTab return value whose id
+// is empty or already in tabsBefore is tab-create-failed with zero close/
+// zero registration, even if the signal already aborted. A fresh exact id
+// is registered as provisional ownership BEFORE any fallible step (abort
+// check, post-create getTabs, focus restoration), and every cleanup path
+// observes factual semantics: ownership is removed only when getTabs
+// explicitly confirms absence or closeTab explicitly returns true;
+// closeTab false/throw → cleanup-failed with ownership retained for a
+// precise cleanupAll retry. No closeTab call without ownership proof.
+//
 // Log discipline: only tabId/taskId and the URL host are logged (zero query
 // values).
 import type { TabInfo } from '../../shared/types/browser';
@@ -173,13 +184,18 @@ export class ResearchWorkspace {
       }
 
       let newTabId: string | null = null;
-      let registered = false;
       try {
         const tab = await this.browser.createTab(norm.displayUrl);
-        if (signal.aborted) {
-          // create 期间终止 → 创建完成后精确清理本次创建的 id 再返回 aborted
-          await this.closeBestEffort(tab.id);
-          return { ok: false, errorCode: 'tab-create-aborted', reason: '创建期间已取消' };
+        // 决议 #119(1)：所有权验证优先于取消分类——先验证 id 形状与
+        // tabsBefore；id 非法或属于 tabsBefore → tab-create-failed，
+        // 即使 signal 已 aborted 也零关闭、零登记（用户 Tab 永不关闭）
+        if (typeof tab.id !== 'string' || tab.id === '') {
+          logWarn('research', 'createTab 返回了非法 tabId，放弃登记');
+          return {
+            ok: false,
+            errorCode: 'tab-create-failed',
+            reason: '标签页创建异常（返回非法标签页）',
+          };
         }
         if (tabsBefore.has(tab.id)) {
           // 敌手/异常实现返回了已存在的 tabId → 不纳入所有权、绝不关闭该 Tab
@@ -190,24 +206,44 @@ export class ResearchWorkspace {
             reason: '标签页创建异常（返回已存在标签页）',
           };
         }
+        // 决议 #119(2)：provisional ownership——全新精确 id 先登记进所有权
+        // 集合；后续 abort 检查/创建后 getTabs/焦点恢复失败时的清理都有
+        // 明确的所有权记录（无「已知 id 未登记、清理失败即永久失联」窗口）
         newTabId = tab.id;
-        // 创建后存在性确认：已消失 → 不登记为存活资源
-        const tabsNow = await this.browser.getTabs();
-        if (!tabsNow.some((t) => t.id === newTabId)) {
-          return { ok: false, errorCode: 'tab-closed-by-user', reason: '标签页创建后已被关闭' };
-        }
-        // 成功所有权只来自本次 createTab 返回的全新精确 id
         this.owned.add(newTabId);
         this.ownedUrls.set(newTabId, norm.displayUrl);
-        registered = true;
+
+        if (signal.aborted) {
+          // create 期间终止 → 精确清理；确认关闭才移除所有权（#119(3)）
+          if (!(await this.closeOwnedTab(newTabId))) {
+            return {
+              ok: false,
+              errorCode: 'cleanup-failed',
+              reason: '关闭任务标签页失败（创建已取消）',
+            };
+          }
+          return { ok: false, errorCode: 'tab-create-aborted', reason: '创建期间已取消' };
+        }
+        // 创建后存在性确认：getTabs 明确确认已消失 → 移除所有权（#119(3)），
+        // 不登记为存活资源
+        const tabsNow = await this.browser.getTabs();
+        if (!tabsNow.some((t) => t.id === newTabId)) {
+          this.owned.delete(newTabId);
+          this.ownedUrls.delete(newTabId);
+          return { ok: false, errorCode: 'tab-closed-by-user', reason: '标签页创建后已被关闭' };
+        }
         // 焦点恢复（决议 #118(6)）
         const focus = await this.restoreFocus(newTabId, activeBefore, tabsNow);
         if (focus.errorCode !== null) {
-          // 不允许新 Tab 无声留在前台：精确关闭并失败
-          this.owned.delete(newTabId);
-          this.ownedUrls.delete(newTabId);
-          registered = false;
-          await this.closeBestEffort(newTabId);
+          // 不允许新 Tab 无声留在前台：精确关闭；确认关闭才移除所有权，
+          // 清理失败 → cleanup-failed + 所有权保留可重试（#119(3)/(4)）
+          if (!(await this.closeOwnedTab(newTabId))) {
+            return {
+              ok: false,
+              errorCode: 'cleanup-failed',
+              reason: '关闭任务标签页失败（焦点恢复失败）',
+            };
+          }
           return { ok: false, errorCode: 'tab-restore-focus-failed', reason: focus.reason };
         }
         // 成功日志只记 tabId/taskId/URL host（零 query 值）
@@ -228,9 +264,16 @@ export class ResearchWorkspace {
           `任务标签页创建异常（taskId=${this.taskId}，url=${urlHost(norm.displayUrl)}）`,
           err,
         );
-        if (newTabId !== null && !registered) {
-          // 已创建但未登记/登记后已撤销 → 精确清理，不触碰用户 Tab
-          await this.closeBestEffort(newTabId);
+        if (newTabId !== null) {
+          // 后置异常：provisional id 已在所有权集合 → 精确清理；确认关闭
+          // 才移除所有权，清理失败 → cleanup-failed 保留可重试（#119(3)/(4)）
+          if (!(await this.closeOwnedTab(newTabId))) {
+            return {
+              ok: false,
+              errorCode: 'cleanup-failed',
+              reason: '关闭任务标签页失败（创建异常清理）',
+            };
+          }
         }
         return { ok: false, errorCode: 'workspace-internal', reason: '标签页创建异常' };
       }
@@ -397,12 +440,24 @@ export class ResearchWorkspace {
     }
   }
 
-  // 最佳努力精确清理：吞异常零未处理 rejection；只关闭本次创建的精确 id
-  private async closeBestEffort(tabId: string): Promise<void> {
+  // 决议 #119(3)/(5)：清理事实语义——只接收已登记为本任务 provisional/
+  // owned 的精确 id（所有权证明由调用方保证：该 id 必为本次 createTab
+  // 返回且不属于 tabsBefore）；closeTab 明确返回 true 才移除所有权；
+  // false/抛错 → 保留所有权（cleanupAll 可精确重试），返回 false，
+  // 零未处理 rejection。消除 closeBestEffort 式忽略失败结果的失真语义。
+  private async closeOwnedTab(tabId: string): Promise<boolean> {
     try {
-      await this.browser.closeTab(tabId);
+      const ok = await this.browser.closeTab(tabId);
+      if (ok) {
+        this.owned.delete(tabId);
+        this.ownedUrls.delete(tabId);
+        return true;
+      }
+      logWarn('research', `关闭任务标签页失败（tabId=${tabId}），保留所有权可重试`);
+      return false;
     } catch (err) {
-      logWarn('research', `清理任务标签页异常（tabId=${tabId}）`, err);
+      logWarn('research', `关闭任务标签页异常（tabId=${tabId}），保留所有权可重试`, err);
+      return false;
     }
   }
 }
