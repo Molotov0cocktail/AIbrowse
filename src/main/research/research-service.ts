@@ -22,9 +22,13 @@ import type {
   ResearchCreateResult,
   ResearchDeleteResult,
   ResearchErrorCode,
+  ResearchEvidenceDto,
   ResearchListOptions,
   ResearchListResult,
+  ResearchProgressEvent,
   ResearchProviderState,
+  ResearchResult,
+  ResearchResultViewResult,
   ResearchRuntimeFactory,
   ResearchRuntimeHandle,
   ResearchService,
@@ -32,6 +36,7 @@ import type {
   ResearchStartResult,
   ResearchStopResult,
   ResearchTask,
+  ResearchTaskDoneEvent,
   ResearchTaskResult,
 } from '../../shared/types/research';
 import { MAX_GOAL_CHARS, MAX_STORED_TASKS, RESEARCH_STATUSES } from '../../shared/types/research';
@@ -98,6 +103,12 @@ export class ResearchServiceImpl implements ResearchService {
   private shutdownPromise: Promise<void> | null = null;
   private activeSlot: ActiveRunSlot | null = null;
   private startingSlot: StartingSlot | null = null;
+  // 决议 #157(2)-(5)：事件出口——Runtime onProgress/onSettle 经 Service 正式
+  // 转发；listener 异常隔离（逐个 try/catch + 脱敏 warn）；shutdown/dispose
+  // 后零事件并清除 listener；迟到事件安全 no-op
+  private readonly progressListeners = new Set<(e: ResearchProgressEvent) => void>();
+  private readonly taskDoneListeners = new Set<(e: ResearchTaskDoneEvent) => void>();
+  private taskDoneSent = new Set<string>(); // 终态 taskId（task-done 恰好一次）
 
   constructor(options: ResearchServiceOptions) {
     this.dbHandle = options.db;
@@ -130,6 +141,59 @@ export class ResearchServiceImpl implements ResearchService {
 
   private nowIso(): string {
     return new Date(this.nowMs()).toISOString();
+  }
+
+  // 决议 #157(2)：progress 订阅（返回退订函数；shutdown 后注册立即退订——零送达）
+  onProgress(listener: (event: ResearchProgressEvent) => void): () => void {
+    if (this.shuttingDown || this.disposed) return () => undefined;
+    this.progressListeners.add(listener);
+    return () => {
+      this.progressListeners.delete(listener);
+    };
+  }
+
+  onTaskDone(listener: (event: ResearchTaskDoneEvent) => void): () => void {
+    if (this.shuttingDown || this.disposed) return () => undefined;
+    this.taskDoneListeners.add(listener);
+    return () => {
+      this.taskDoneListeners.delete(listener);
+    };
+  }
+
+  // 决议 #157(3)：listener 异常隔离——逐 listener try/catch + 脱敏 warn，
+  // 单个 listener 抛错不影响其他 listener 与 Runtime
+  private emitProgress(event: ResearchProgressEvent): void {
+    if (this.shuttingDown || this.disposed) return; // 决议 #157(5)：shutdown 后零事件
+    for (const listener of [...this.progressListeners]) {
+      try {
+        listener(event);
+      } catch (err) {
+        logWarn('research', 'Research progress listener 异常已隔离', err);
+      }
+    }
+  }
+
+  private emitTaskDone(event: ResearchTaskDoneEvent): void {
+    if (this.shuttingDown || this.disposed) return;
+    for (const listener of [...this.taskDoneListeners]) {
+      try {
+        listener(event);
+      } catch (err) {
+        logWarn('research', 'Research task-done listener 异常已隔离', err);
+      }
+    }
+  }
+
+  // 决议 #157(4)：终态事件时序——Runtime 终态提交成功后先发 terminal progress
+  // （转发原事件，finishedAt 非空）再发 task-done（emitTaskDone 恰好一次按
+  // taskId 去重；status 收窄 completed|failed|cancelled——决议 #156(6)）
+  private emitTaskDoneOnce(taskId: string, status: ResearchTask['status']): void {
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      if (!this.taskDoneSent.has(taskId)) {
+        this.taskDoneSent.add(taskId);
+        this.emitTaskDone({ taskId, status });
+      }
+    }
   }
 
   async createTask(goal: string): Promise<ResearchCreateResult> {
@@ -217,6 +281,12 @@ export class ResearchServiceImpl implements ResearchService {
       if (task === null) return { ok: false, errorCode: 'research-not-found' };
       // 决议 #105：running 拒绝（仅 created/终态可删除；CASCADE 清子行）
       if (task.status === 'running') {
+        return { ok: false, errorCode: 'research-invalid-state' };
+      }
+      // 决议 #157(6)：starting slot 预占中的同 taskId 视为不可删除——Provider
+      // resolve 期间删除 created 行会导致 resolve 完成后 start 写 running 时
+      // 出现孤儿 Runtime（删除与启动竞态）；返回 research-invalid-state 零删除
+      if (this.startingSlot !== null && this.startingSlot.taskId === id) {
         return { ok: false, errorCode: 'research-invalid-state' };
       }
       withTransaction(this.handle(), () => {
@@ -333,8 +403,14 @@ export class ResearchServiceImpl implements ResearchService {
           this.activeSlot = null;
         }
       };
-      const onProgress = (): void => {
-        // 决议 #138(1)：C8 前不新增 Renderer IPC——progress 仅内部监听器消费
+      const onProgress = (event: ResearchProgressEvent): void => {
+        // 决议 #157(2)/(4)：C8 起正式转发——progress 订阅消费原事件（terminal
+        // progress 本身即转发的事件——finishedAt 非空）；终态进度 → 补发
+        // task-done 恰好一次
+        this.emitProgress(event);
+        if (event.finishedAt !== null && event.status !== 'running') {
+          this.emitTaskDoneOnce(event.taskId, event.status);
+        }
       };
       try {
         // 决议 #154(7)：prepared 恰好一次消费（launch 后内部置 consumed）
@@ -420,6 +496,94 @@ export class ResearchServiceImpl implements ResearchService {
     }
   }
 
+  // 决议 #157(7)-(10)：安全结果详情视图——只允许 completed 且 Result 存在的
+  // 任务；读取时复核（taskId/resultId 一致、evidence 全属本任务且 verified、
+  // evidenceMap 与 Evidence 键集一致、每个 sourceRef 均有对应候选的 verified
+  // Evidence 支撑）；畸形/外部篡改数据库 fail-closed research-internal（禁止
+  // 把不一致数据交给 Renderer）
+  async getResearchResultView(taskId: string): Promise<ResearchResultViewResult> {
+    if (this.disposed) return { ok: false, errorCode: 'research-unavailable' };
+    if (!isUuidShape(taskId)) return { ok: false, errorCode: 'research-not-found' };
+    try {
+      const task = this.repo.getTaskById(taskId);
+      if (task === null) return { ok: false, errorCode: 'research-not-found' };
+      if (task.status !== 'completed') {
+        return { ok: false, errorCode: 'research-invalid-state' };
+      }
+      const result = this.repo.getResultByTaskId(taskId);
+      if (result === null) {
+        // completed 但 Result 缺失 → 不一致数据，禁止渲染
+        return { ok: false, errorCode: 'research-internal' };
+      }
+      if (result.taskId !== task.id || task.resultId !== result.resultId) {
+        return { ok: false, errorCode: 'research-internal' };
+      }
+      // evidence 全属本任务且 verified（Repository 写入仅接受 verified 窄类型；
+      // 防御性复核外部篡改库）
+      const evidence = this.repo.listEvidenceByTask(taskId);
+      for (const ev of evidence) {
+        if (ev.taskId !== taskId || ev.verification !== 'verified') {
+          return { ok: false, errorCode: 'research-internal' };
+        }
+      }
+      // result.evidenceMap 与 Evidence 一致（键集相等——决议 #157(10)）
+      const evidenceKeys = [...evidence.map((e) => e.evidenceId)].sort();
+      const mapKeys = Object.keys(result.evidenceMap).sort();
+      if (JSON.stringify(evidenceKeys) !== JSON.stringify(mapKeys)) {
+        return { ok: false, errorCode: 'research-internal' };
+      }
+      // 每个 sourceRef 均有对应 candidateId 的 verified Evidence 支撑
+      const candidates = this.repo.listCandidatesByTask(taskId);
+      const candidateIds = new Set(candidates.map((c) => c.id));
+      const evidenceByCandidate = new Map<string, boolean>();
+      for (const ev of evidence) evidenceByCandidate.set(ev.candidateId, true);
+      if (!this.checkSourceRefs(result, candidateIds, evidenceByCandidate)) {
+        return { ok: false, errorCode: 'research-internal' };
+      }
+      const dto: ResearchEvidenceDto[] = evidence.map((ev) => ({
+        evidenceId: ev.evidenceId,
+        candidateId: ev.candidateId,
+        url: ev.url,
+        title: ev.title,
+        accessTime: ev.accessTime,
+        type: ev.type,
+        locator: ev.locator,
+        excerpt: ev.excerpt,
+        value: ev.value,
+        verification: 'verified',
+      }));
+      return { ok: true, view: { task, result, evidence: dto } };
+    } catch (err) {
+      return this.unexpected(err);
+    }
+  }
+
+  // 决议 #157(10)/#159(1)：全部 blocks（table 块级/cards/ranking item 级）与
+  // conflicts positions 的 sourceRefs 必须 ∈ 候选集且有 verified Evidence 支撑
+  private checkSourceRefs(
+    result: ResearchResult,
+    candidateIds: ReadonlySet<string>,
+    evidenceByCandidate: ReadonlyMap<string, boolean>,
+  ): boolean {
+    const refs = new Set<string>();
+    for (const block of result.blocks) {
+      if (block.kind === 'table') {
+        for (const r of block.sourceRefs) refs.add(r);
+      } else if (block.kind === 'cards') {
+        for (const item of block.items) for (const r of item.sourceRefs) refs.add(r);
+      } else if (block.kind === 'ranking') {
+        for (const item of block.items) for (const r of item.sourceRefs) refs.add(r);
+      }
+    }
+    for (const conflict of result.conflicts) {
+      for (const pos of conflict.positions) for (const r of pos.sourceRefs) refs.add(r);
+    }
+    for (const ref of refs) {
+      if (!candidateIds.has(ref) || !evidenceByCandidate.get(ref)) return false;
+    }
+    return true;
+  }
+
   // 决议 #135(7)：幂等 async shutdown——abort → 等待 Runtime settle →
   // cleanupAll（由 Runtime 终态执行，此处为补漏）→ 关闭 store；重复调用
   // 返回同一 Promise；dispose 只在 shutdown 完成后关闭连接
@@ -443,6 +607,13 @@ export class ResearchServiceImpl implements ResearchService {
     this.dispose();
   }
 
+  // 决议 #157(5)：dispose 后零事件并清除 listener（迟到事件安全 no-op——
+  // emitProgress/emitTaskDone 的 shuttingDown/disposed 守卫）
+  private clearListeners(): void {
+    this.progressListeners.clear();
+    this.taskDoneListeners.clear();
+  }
+
   dispose(): void {
     if (this.disposed) {
       // 已 disposed（含 db=null 装配）：句柄不存在或已关闭——幂等
@@ -455,6 +626,7 @@ export class ResearchServiceImpl implements ResearchService {
       return;
     }
     this.disposed = true;
+    this.clearListeners(); // 决议 #157(5)：dispose 后零事件 + 清除 listener
     if (this.dbHandle !== null) closeDb(this.dbHandle);
   }
 

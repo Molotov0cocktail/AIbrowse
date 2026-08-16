@@ -1,11 +1,19 @@
-// 决议 #152(6)/(8)：ResultView 只消费已验证 ResearchResult（props 类型 =
+// 决议 #152(6)/(8) + #159：ResultView 只消费已验证 ResearchResult（props 类型 =
 // ResearchResult）——Markdown/Table/Cards/Ranking/uncertain 块渲染 +
-// evidenceMap/conflicts/coverage 展示。安全不变量：零 dangerouslySetInnerHTML、
+// evidenceMap/conflicts/coverage 展示 + sourceRefs 来源入口（C8 决议 #159：
+// table block 级/cards·ranking item 级/conflict position 级——不伪造逐列
+// 来源）+ Evidence drawer（纯文本展示 URL/标题/获取时间/类型/locator/
+// excerpt/value/verified 标识）。安全不变量：零 dangerouslySetInnerHTML、
 // 零 `<a href>`（链接用无副作用展示元素 + 可选 onOpenUrl 回调——C8 接安全
 // 导航）；危险 URL 纵深防御降级纯文本；所有模型文本经 React 纯文本节点转义；
-// 控制字符/bidi 防御性剔除（shared 同源规范化）。
+// 控制字符/bidi 防御性剔除（shared 同源规范化）。C7 既有 props 零改动
+// （新增 props 全部可选）。
 import type { ReactElement } from 'react';
-import type { ResearchResult, ResultBlock } from '../../../shared/types/research';
+import type {
+  ResearchEvidenceDto,
+  ResearchResult,
+  ResultBlock,
+} from '../../../shared/types/research';
 import { isSafeMarkdownUrl } from '../../../shared/markdown/markdown-url';
 import {
   parseMarkdown,
@@ -16,7 +24,12 @@ import { normalizePlainText } from '../../../shared/markdown/markdown-text';
 
 export interface ResultViewProps {
   result: ResearchResult;
-  onOpenUrl?: (url: string) => void; // 决议 #152(6)：显式回调（C8 接安全导航；本任务不接线）
+  onOpenUrl?: (url: string) => void; // 决议 #152(6)：显式回调（C8 接安全导航）
+  // C8 决议 #159：Evidence 下钻——sourceRefs 入口点击 → candidateId
+  onSelectSource?: (candidateId: string) => void;
+  evidence?: ResearchEvidenceDto[]; // 完整 Evidence DTO（view.evidence；drawer 数据源）
+  selectedCandidateId?: string | null; // 非空时渲染 Evidence drawer（该候选的 evidence）
+  onCloseEvidence?: () => void;
 }
 
 // 渲染层防御性清洗（已由 Validator 规范化；纵深防御覆盖绕过路径）
@@ -128,36 +141,69 @@ function MarkdownView({
   );
 }
 
+// C8 决议 #159(1)：来源入口（candidateId 标识；无 <a> 无 href——按钮形态）
+function SourceEntry({
+  candidateId,
+  onSelectSource,
+}: {
+  candidateId: string;
+  onSelectSource?: (candidateId: string) => void;
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      className="research-source-entry"
+      data-candidate-id={candidateId}
+      title="查看来源证据"
+      onClick={onSelectSource === undefined ? undefined : () => onSelectSource(candidateId)}
+    >
+      来源
+    </button>
+  );
+}
+
 // ---------- 结果块渲染 ----------
 
 function renderResultBlock(
   block: ResultBlock,
   key: number,
   onOpenUrl?: (u: string) => void,
+  onSelectSource?: (candidateId: string) => void,
 ): ReactElement {
   switch (block.kind) {
     case 'markdown':
       return <MarkdownView key={key} text={block.text} onOpenUrl={onOpenUrl} />;
     case 'table':
+      // 决议 #159(1)：table 使用 block 级 sourceRefs（v1 无逐列来源映射——
+      // 不伪造逐列来源）
       return (
-        <table key={key} className="research-table">
-          <thead>
-            <tr>
-              {block.columns.map((col, i) => (
-                <th key={i}>{safeText(col)}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {block.rows.map((row, r) => (
-              <tr key={r}>
-                {row.map((cell, c) => (
-                  <td key={c}>{safeText(cell)}</td>
+        <div key={key} className="research-table-wrap">
+          <table className="research-table">
+            <thead>
+              <tr>
+                {block.columns.map((col, i) => (
+                  <th key={i}>{safeText(col)}</th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {block.rows.map((row, r) => (
+                <tr key={r}>
+                  {row.map((cell, c) => (
+                    <td key={c}>{safeText(cell)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {block.sourceRefs.length > 0 && (
+            <div className="research-source-refs">
+              {block.sourceRefs.map((ref) => (
+                <SourceEntry key={ref} candidateId={ref} onSelectSource={onSelectSource} />
+              ))}
+            </div>
+          )}
+        </div>
       );
     case 'cards':
       return (
@@ -169,6 +215,13 @@ function renderResultBlock(
                 <div className="research-card-subtitle">{safeText(item.subtitle)}</div>
               )}
               <div className="research-card-body">{safeText(item.body)}</div>
+              {item.sourceRefs.length > 0 && (
+                <div className="research-source-refs">
+                  {item.sourceRefs.map((ref) => (
+                    <SourceEntry key={ref} candidateId={ref} onSelectSource={onSelectSource} />
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -180,6 +233,13 @@ function renderResultBlock(
             <li key={i}>
               <div className="research-ranking-title">{safeText(item.title)}</div>
               <div className="research-ranking-detail">{safeText(item.detail)}</div>
+              {item.sourceRefs.length > 0 && (
+                <div className="research-source-refs">
+                  {item.sourceRefs.map((ref) => (
+                    <SourceEntry key={ref} candidateId={ref} onSelectSource={onSelectSource} />
+                  ))}
+                </div>
+              )}
             </li>
           ))}
         </ol>
@@ -194,16 +254,73 @@ function renderResultBlock(
   }
 }
 
+// C8 决议 #159(2)：Evidence drawer/detail——纯文本展示 URL/标题/获取时间/
+// 类型/locator/excerpt/value/verified 标识（零 HTML、零 dangerouslySet
+// InnerHTML）；按 candidateId 过滤下钻（一候选多 evidence 全列出）
+function EvidenceDrawer({
+  candidateId,
+  evidence,
+  onClose,
+  onOpenUrl,
+}: {
+  candidateId: string;
+  evidence: ResearchEvidenceDto[];
+  onClose: () => void;
+  onOpenUrl?: (url: string) => void;
+}): ReactElement {
+  const items = evidence.filter((e) => e.candidateId === candidateId);
+  return (
+    <div className="research-evidence-drawer" data-candidate-id={candidateId}>
+      <div className="research-evidence-drawer-header">
+        <span>来源证据</span>
+        <button type="button" className="research-evidence-close" onClick={onClose}>
+          关闭
+        </button>
+      </div>
+      {items.length === 0 && <div className="research-evidence-empty">该来源暂无证据详情</div>}
+      {items.map((ev) => (
+        <div key={ev.evidenceId} className="research-evidence-item">
+          <div className="research-evidence-title">{safeText(ev.title)}</div>
+          <div className="research-evidence-url">
+            {isSafeMarkdownUrl(ev.url) && onOpenUrl !== undefined ? (
+              <span
+                className="research-link"
+                role="button"
+                title={ev.url}
+                onClick={() => onOpenUrl(ev.url)}
+              >
+                {safeText(ev.url)}
+              </span>
+            ) : (
+              <span>{safeText(ev.url)}</span>
+            )}
+          </div>
+          <div className="research-evidence-meta">
+            获取时间：{safeText(ev.accessTime)} · 类型：{safeText(ev.type)}
+          </div>
+          <div className="research-evidence-locator">{safeText(JSON.stringify(ev.locator))}</div>
+          <div className="research-evidence-excerpt">{safeText(ev.excerpt)}</div>
+          {ev.value !== null && (
+            <div className="research-evidence-value">值：{safeText(ev.value)}</div>
+          )}
+          <div className="research-evidence-verified">已验证</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ---------- 主组件 ----------
 
 export function ResultView(props: ResultViewProps): ReactElement {
-  const { result, onOpenUrl } = props;
+  const { result, onOpenUrl, onSelectSource, evidence, selectedCandidateId, onCloseEvidence } =
+    props;
   const evidenceEntries = Object.entries(result.evidenceMap);
   return (
     <div className="research-result-view">
       <h2 className="research-result-title">{safeText(result.title)}</h2>
       <p className="research-result-summary">{safeText(result.summary)}</p>
-      {result.blocks.map((block, i) => renderResultBlock(block, i, onOpenUrl))}
+      {result.blocks.map((block, i) => renderResultBlock(block, i, onOpenUrl, onSelectSource))}
       {result.conflicts.length > 0 && (
         <div className="research-conflicts">
           <h3>冲突（未解决）</h3>
@@ -212,7 +329,16 @@ export function ResultView(props: ResultViewProps): ReactElement {
               <div className="research-conflict-topic">{safeText(conflict.topic)}</div>
               <ul>
                 {conflict.positions.map((pos, i) => (
-                  <li key={i}>{safeText(pos.positionText)}</li>
+                  <li key={i}>
+                    {safeText(pos.positionText)}
+                    {pos.sourceRefs.length > 0 && (
+                      <span className="research-source-refs">
+                        {pos.sourceRefs.map((ref) => (
+                          <SourceEntry key={ref} candidateId={ref} onSelectSource={onSelectSource} />
+                        ))}
+                      </span>
+                    )}
+                  </li>
                 ))}
               </ul>
             </div>
@@ -237,6 +363,16 @@ export function ResultView(props: ResultViewProps): ReactElement {
         {result.coverage.thirdParty} / 社区 {result.coverage.community}
       </div>
       <div className="research-fetched-at">数据获取时间：{safeText(result.fetchedAt)}</div>
+      {selectedCandidateId !== null &&
+        selectedCandidateId !== undefined &&
+        onCloseEvidence !== undefined && (
+          <EvidenceDrawer
+            candidateId={selectedCandidateId}
+            evidence={evidence ?? []}
+            onClose={onCloseEvidence}
+            onOpenUrl={onOpenUrl}
+          />
+        )}
     </div>
   );
 }

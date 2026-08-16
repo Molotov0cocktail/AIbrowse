@@ -46,6 +46,16 @@ import type {
   UndoResult,
   UndoableChange,
 } from './sources';
+import type {
+  ExportCsvResult,
+  ResearchIpcListValue,
+  ResearchIpcResult,
+  ResearchIpcTaskValue,
+  ResearchProgressEvent,
+  ResearchResultView,
+  ResearchTaskDoneEvent,
+} from './research';
+import type { ResearchExportCsvPayload, ResearchListPayload } from './ipc';
 
 export interface AppInfo {
   appVersion: string;
@@ -82,6 +92,10 @@ export interface AibrowseBridge {
   ui: {
     // 渲染层 ResizeObserver 测量内容容器两维矩形后上报（§11.2，单向 send）
     reportContentBounds(bounds: ContentBounds): void;
+    // C8 决议 #158(5)：受控 UI send——切换 WebContentsView 可见性
+    // （viewMode='research-result' 时隐藏原生视图露出结果画布；不暴露
+    // Electron 对象）
+    setBrowserContentVisible(visible: boolean): void;
   };
   // —— Second Stage（§4.2，S4 落地）：AI 共读白名单 ——
   conversation: {
@@ -136,5 +150,21 @@ export interface AibrowseBridge {
     // 仅 normal 状态可用（适配器门控）
     rebuildIndex(): Promise<FtsRebuildResult>;
     onChanged(listener: (e: SourcesChangedEvent) => void): () => void;
+  };
+  // —— Fifth Stage C8（决议 #156/#158）：Research 白名单 ——
+  // invoke 全部经 main 侧 sender+主帧校验 + 参数严格白名单 fail-closed；
+  // export-csv 的 dialog/路径/写入全部在主进程（renderer 零路径参数）；
+  // 事件订阅 eventRelay 模式（单次注册 + 退订）。
+  research: {
+    create(goal: string): Promise<ResearchIpcResult<ResearchIpcTaskValue>>;
+    start(taskId: string): Promise<ResearchIpcResult<ResearchIpcTaskValue>>;
+    stop(taskId: string): Promise<ResearchIpcResult<ResearchIpcTaskValue>>;
+    get(taskId: string): Promise<ResearchIpcResult<ResearchIpcTaskValue>>;
+    result(taskId: string): Promise<ResearchIpcResult<{ view: ResearchResultView }>>;
+    list(payload: ResearchListPayload): Promise<ResearchIpcResult<ResearchIpcListValue>>;
+    delete(taskId: string): Promise<ResearchIpcResult<{ deleted: true }>>;
+    exportCsv(payload: ResearchExportCsvPayload): Promise<ExportCsvResult>;
+    onProgress(listener: (e: ResearchProgressEvent) => void): () => void;
+    onTaskDone(listener: (e: ResearchTaskDoneEvent) => void): () => void;
   };
 }

@@ -388,7 +388,8 @@ export type ResultBlock =
   | { kind: 'markdown'; text: string } // ≤MAX_MARKDOWN_BLOCK_CHARS 字符/块
   | { kind: 'table'; columns: string[]; rows: string[][]; sourceRefs: string[] }
   // columns ≤ MAX_TABLE_COLUMNS(20)；rows ≤ MAX_TABLE_ROWS(200)；单元格 ≤MAX_TABLE_CELL_CHARS 字符；
-  // sourceRefs = candidateId[]（每列至少映射来源语义见 §8.3）
+  // sourceRefs = candidateId[]（决议 #150(6) 校准：table **block 级**来源引用——
+  // v1 schema 无逐列来源映射能力；来源下钻按块级 refs 提供，不伪造逐列来源）
   | {
       kind: 'cards';
       items: { title: string; subtitle: string | null; body: string; sourceRefs: string[] }[];
@@ -587,6 +588,45 @@ export interface ResearchPreparedLaunch {
   release(): void; // 不 launch 时丢弃 prepared（shutdown/取消/异常路径必须调用；幂等）
 }
 
+// ---------- C8 结果详情视图与事件出口（决议 #157） ----------
+
+// 决议 #157(9)：Evidence 展示 DTO 只暴露下钻必需字段——不暴露无 UI 需要的
+// 数据库或运行时内部字段（documentId/contentHash/captureId/sourceId 零出现）
+export interface ResearchEvidenceDto {
+  evidenceId: string;
+  candidateId: string;
+  url: string;
+  title: string;
+  accessTime: string;
+  type: EvidenceType;
+  locator: EvidenceLocator;
+  excerpt: string;
+  value: string | null;
+  verification: 'verified';
+}
+
+// 决议 #157(8)：最小 ResearchResultView = task + 已验证 ResearchResult +
+// Evidence 展示 DTO（全部经读取复核 fail-closed——task/result 引用一致、
+// evidence 属本任务且 verified、evidenceMap 键集一致、sourceRef 引用完整）
+export interface ResearchResultView {
+  task: ResearchTask;
+  result: ResearchResult;
+  evidence: ResearchEvidenceDto[];
+}
+
+export type ResearchResultViewResult =
+  | { ok: true; view: ResearchResultView }
+  | { ok: false; errorCode: ResearchErrorCode };
+
+// 决议 #156(6)：task-done.status 收窄三值（interrupted 是启动装配事实，
+// 不推送 UI 事件）
+export type ResearchTaskDoneStatus = 'completed' | 'failed' | 'cancelled';
+
+export interface ResearchTaskDoneEvent {
+  taskId: string;
+  status: ResearchTaskDoneStatus;
+}
+
 export interface ResearchService {
   createTask(goal: string): Promise<ResearchCreateResult>;
   getTask(id: string): Promise<ResearchTaskResult>;
@@ -594,9 +634,65 @@ export interface ResearchService {
   deleteTask(id: string): Promise<ResearchDeleteResult>;
   startTask(id: string): Promise<ResearchStartResult>;
   stopTask(id: string): Promise<ResearchStopResult>;
+  // 决议 #157：安全结果详情视图（completed + Result 存在 + 引用复核全部通过
+  // 才返回；畸形/外部篡改数据库 fail-closed research-internal）
+  getResearchResultView(taskId: string): Promise<ResearchResultViewResult>;
+  // 决议 #157(2)：事件出口——Runtime onProgress/onSettle 经 Service 正式转发；
+  // listener 异常隔离；终态数据库提交成功后先 terminal progress 再 task-done
+  // 各恰好一次；shutdown/dispose 后零事件并清除 listener；迟到事件安全 no-op
+  onProgress(listener: (event: ResearchProgressEvent) => void): () => void;
+  onTaskDone(listener: (event: ResearchTaskDoneEvent) => void): () => void;
   shutdown(): Promise<void>; // 决议 #135(7)：幂等 async——abort → await settle → cleanupAll → closeDb
   dispose(): void;
 }
+
+// ---------- C8 IPC 契约（决议 #156(5)/#162(7)） ----------
+
+// 共享判别联合返回类型（禁止 boolean/null 混合表达多种失败）
+export type ResearchIpcResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; errorCode: ResearchErrorCode };
+
+export interface ResearchIpcTaskValue {
+  task: ResearchTask;
+}
+
+export interface ResearchIpcListValue {
+  page: number;
+  pageSize: number;
+  total: number;
+  items: ResearchTask[];
+}
+
+// 决议 #162(7)：CSV 导出闭合错误联合——不扩张 C1 ResearchErrorCode 去混合
+// 文件导出错误（dialog/写入/扩展名/预算属导出面，非 Research 域错误）
+export type ExportCsvErrorCode =
+  | 'cancelled' // 用户取消（零写入 + 恰好一条脱敏审计）
+  | 'invalid-block' // tableBlockIndex 非整数/越界/非 table 块
+  | 'not-found' // 任务不存在
+  | 'invalid-state' // 任务非 completed / Result 缺失
+  | 'internal' // 引用复核失败/内部缺陷（零透传）
+  | 'budget-exceeded' // MAX_CSV_EXPORT_BYTES 超限（零写入）
+  | 'write-failed' // 文件写入失败
+  | 'invalid-payload'; // payload 白名单拒绝 / dialog 路径扩展名非 .csv
+
+export type ExportCsvResult =
+  | { ok: true; rows: number; columns: number; bytes: number }
+  | { ok: false; errorCode: ExportCsvErrorCode };
+
+// 决议 #161(1)：export-csv payload——view 为受限排序/筛选状态
+// （renderer 不得提供 rows/CSV 内容/文件路径）
+export interface ResearchExportCsvView {
+  sort:
+    | {
+        columnIndex: number; // 非负整数（< columns.length）
+        direction: 'asc' | 'desc';
+      }
+    | null;
+  filter: string; // ≤200；空串=全部
+}
+
+export const MAX_EXPORT_FILTER_CHARS = 200;
 
 // 决议 #109：store 两态装配（normal | unavailable；无备份/恢复态）
 export type ResearchStoreOutcome =

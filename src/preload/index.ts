@@ -42,6 +42,16 @@ import type {
   SourcesUndoPayload,
   SourcesUpdatePayload,
 } from '../shared/types/ipc';
+import type {
+  ExportCsvResult,
+  ResearchIpcListValue,
+  ResearchIpcResult,
+  ResearchIpcTaskValue,
+  ResearchProgressEvent,
+  ResearchResultView,
+  ResearchTaskDoneEvent,
+} from '../shared/types/research';
+import type { ResearchExportCsvPayload, ResearchListPayload } from '../shared/types/ipc';
 import { IPC } from '../shared/types/ipc';
 
 // Minimal-privilege bridge (design §3.2 + stage2 §4.2): only whitelisted methods are
@@ -79,6 +89,9 @@ const agentRunDoneRelay = eventRelay<AgentRunDoneEvent>(IPC.AgentRunDone);
 const agentStatusRelay = eventRelay<AgentStatusEvent>(IPC.AgentStatus);
 // B5：sources:changed 事件（同一 eventRelay 模式：单次注册 + JS 侧 Set 分发/退订）
 const sourcesChangedRelay = eventRelay<SourcesChangedEvent>(IPC.SourcesChanged);
+// C8：research:progress / research:task-done 事件（同一 eventRelay 模式）
+const researchProgressRelay = eventRelay<ResearchProgressEvent>(IPC.ResearchProgress);
+const researchTaskDoneRelay = eventRelay<ResearchTaskDoneEvent>(IPC.ResearchTaskDone);
 
 const bridge: AibrowseBridge = {
   getAppInfo: () => invoke<AppInfo>(IPC.AppGetInfo),
@@ -104,6 +117,10 @@ const bridge: AibrowseBridge = {
   ui: {
     reportContentBounds: (bounds) => {
       ipcRenderer.send(IPC.UiContentBounds, bounds);
+    },
+    // C8 决议 #158(5)：受控 send（payload 白名单在主进程校验；不暴露 Electron 对象）
+    setBrowserContentVisible: (visible) => {
+      ipcRenderer.send(IPC.UiBrowserContentVisible, { visible });
     },
   },
   // —— Second Stage（§4.2）：AI 共读白名单（invoke 全部经 main 侧 sender+主帧校验） ——
@@ -166,6 +183,23 @@ const bridge: AibrowseBridge = {
       invoke<ManualWriteResult>(IPC.SourcesHardDelete, payload),
     rebuildIndex: () => invoke<FtsRebuildResult>(IPC.SourcesRebuildIndex), // B7：无 payload 诊断入口
     onChanged: sourcesChangedRelay.subscribe,
+  },
+  // —— Fifth Stage C8（决议 #156/#158）：Research 白名单 ——
+  research: {
+    create: (goal) => invoke<ResearchIpcResult<ResearchIpcTaskValue>>(IPC.ResearchCreate, { goal }),
+    start: (taskId) => invoke<ResearchIpcResult<ResearchIpcTaskValue>>(IPC.ResearchStart, { taskId }),
+    stop: (taskId) => invoke<ResearchIpcResult<ResearchIpcTaskValue>>(IPC.ResearchStop, { taskId }),
+    get: (taskId) => invoke<ResearchIpcResult<ResearchIpcTaskValue>>(IPC.ResearchGet, { taskId }),
+    result: (taskId) =>
+      invoke<ResearchIpcResult<{ view: ResearchResultView }>>(IPC.ResearchResult, { taskId }),
+    list: (payload: ResearchListPayload) =>
+      invoke<ResearchIpcResult<ResearchIpcListValue>>(IPC.ResearchList, payload),
+    delete: (taskId) =>
+      invoke<ResearchIpcResult<{ deleted: true }>>(IPC.ResearchDelete, { taskId }),
+    exportCsv: (payload: ResearchExportCsvPayload) =>
+      invoke<ExportCsvResult>(IPC.ResearchExportCsv, payload),
+    onProgress: researchProgressRelay.subscribe,
+    onTaskDone: researchTaskDoneRelay.subscribe,
   },
 };
 

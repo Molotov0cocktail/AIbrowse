@@ -18,6 +18,7 @@ import { PageReader } from './page-reader';
 import type { SessionManager } from './session-manager';
 import { TabManager, type TabEntry } from './tab-manager';
 import { selectNextActive } from './tab-state';
+import { resolveViewVisibility } from './view-visibility';
 
 const ELEMENT_ID_PATTERN = /^el-\d{1,10}$/;
 const ALLOWED_KINDS: ReadonlySet<string> = new Set(['nav', 'expand', 'toggle', 'submit']);
@@ -70,6 +71,12 @@ export class BrowserControllerImpl implements BrowserController {
   private activeTabId: string | null = null;
   private lastContentBounds: Rectangle | null = null;
   private disposed = false;
+  // C8 决议 #158：contentVisible——仅供受信 UI 使用（ui:browser-content-visible
+  // 通道；不进 AI BrowserController/Tool 能力接口——本接口文件零新增方法）。
+  // false = 结果画布模式：全部 Tab view 不可见（不关闭/不导航/不改 Tab 集合）；
+  // 隐藏期间 create/activate/焦点恢复不得重新显示或 focus；true 时仅显示
+  // active Tab 并应用最后一次合法 bounds。
+  private contentVisible = true;
 
   constructor(private readonly options: BrowserControllerOptions) {
     this.tabManager = new TabManager({
@@ -352,23 +359,45 @@ export class BrowserControllerImpl implements BrowserController {
       return;
     }
     this.lastContentBounds = bounds;
-    if (this.activeTabId !== null) {
+    // C8 决议 #158(2)：隐藏期间（contentVisible=false）不应用 bounds 到任何
+    // view（结果画布模式；恢复可见时 applyActiveVisual 应用最后一次合法 bounds）
+    if (this.contentVisible && this.activeTabId !== null) {
       this.tabManager.get(this.activeTabId)?.view.setBounds(bounds);
     }
   }
 
   // 活动 Tab 可见 + 应用最新 bounds + 聚焦；其余全部不可见（§6：不用 removeChildView）
+  // C8 决议 #158(2)：可见性经 resolveViewVisibility 纯函数决策——contentVisible
+  // =false 时全部 view 不可见（结果画布模式；不泄漏任何可见 view）；
+  // =true 时仅显示 active Tab 并应用最后一次合法 bounds + focus（隐藏期间
+  // create/activate/焦点恢复均走本方法 → 不重新显示、不 focus）
   private applyActiveVisual(): void {
-    if (this.activeTabId === null) return;
+    const visibility = resolveViewVisibility(
+      this.tabManager.list().map((e) => e.info.id),
+      this.activeTabId,
+      this.contentVisible,
+    );
     const bounds = this.lastContentBounds ?? this.options.getFallbackBounds();
     for (const entry of this.tabManager.list()) {
-      const isActive = entry.info.id === this.activeTabId;
-      entry.view.setVisible(isActive);
-      if (isActive) {
+      const visible = visibility.get(entry.info.id) ?? false;
+      entry.view.setVisible(visible);
+      if (visible && entry.info.id === this.activeTabId) {
         entry.view.setBounds(bounds);
         entry.view.webContents.focus();
       }
     }
+  }
+
+  // C8 决议 #158(2)：仅供受信 UI 使用（不进 BrowserController 接口——Tool 层
+  // 无通道）；false 时全部 Tab view setVisible(false)（不关闭、不导航、不改
+  // Tab 集合）；true 时仅重新显示当前 active Tab 并应用最后一次合法 bounds；
+  // 用户 Tab URL/title/active 状态保持不变
+  setContentVisible(visible: boolean): void {
+    const next = visible === true;
+    if (next === this.contentVisible) return;
+    this.contentVisible = next;
+    logInfo('browser', `内容可见性切换（contentVisible=${String(next)}）`);
+    this.applyActiveVisual();
   }
 
   private guardNavigation(method: string, tabId: string): TabEntry | null {

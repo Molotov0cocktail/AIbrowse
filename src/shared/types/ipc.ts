@@ -1,6 +1,7 @@
 // IPC channel constants + payload types: shared single source of truth (main/preload/renderer).
 // Contract source: doc/detailed-design.md §3.1（定稿，T1）.
 // preload bridge 白名单（AibrowseBridge）T3 接入；main 侧 handler 已于 T2 落地。
+import type { ResearchTaskStatus } from './research';
 
 export const IPC = {
   // renderer → main（invoke）
@@ -64,6 +65,25 @@ export const IPC = {
   // 诊断入口零 SQL/路径参数通道；仅 normal 状态门控；不算 Source 数据变更）
   SourcesChanged: 'sources:changed', // main → renderer 事件（仅成功变更后发送最小 payload；
   // renderer 收到后重新读取——不携带任何数据正文）
+  // —— Fifth Stage C8：Research 八通道 + 两事件（决议 #156；export-csv 独立第八通道）——
+  ResearchCreate: 'research:create', // payload: { goal }（trim 非空 ≤2000；超长拒绝非截断）
+  ResearchStart: 'research:start', // payload: { taskId }（UUID 形状）
+  ResearchStop: 'research:stop', // payload: { taskId }
+  ResearchGet: 'research:get', // payload: { taskId }
+  ResearchResult: 'research:result', // payload: { taskId } → 安全结果详情视图（决议 #157）
+  ResearchList: 'research:list', // payload: { page ≥1, pageSize 1..20, status? }（严格拒绝非法值）
+  ResearchDelete: 'research:delete', // payload: { taskId }（仅终态/created；running·预占拒绝）
+  ResearchExportCsv: 'research:export-csv', // payload: { taskId, tableBlockIndex, view:{sort,filter} }
+  // （决议 #161：view 为受限排序/筛选状态——renderer 零 rows/路径/内容通道；
+  // 主进程 dialog 安全通道 + 同一 applyTableView 重投影）
+  ResearchProgress: 'research:progress', // main → renderer：ResearchProgressEvent（§6.5 节流推送；
+  // 零 goal/URL/模型文本/网页正文/Evidence/Result 正文——FT-16）
+  ResearchTaskDone: 'research:task-done', // main → renderer：ResearchTaskDoneEvent
+  // （status 收窄 completed|failed|cancelled——决议 #156(6)）
+  // —— Fifth Stage C8：受控 UI send 通道（决议 #158(4)）——
+  UiBrowserContentVisible: 'ui:browser-content-visible', // payload: { visible: boolean }
+  // （sender+主帧校验 + payload 白名单；仅供受信 UI 切换 WebContentsView 可见性，
+  // 不进入 AI BrowserController/Tool 能力接口）
 } as const;
 
 export interface ContentBounds {
@@ -213,4 +233,42 @@ export interface SourcesUndoPayload {
 // 重新读取当前视图。
 export interface SourcesChangedEvent {
   reason: 'sources-changed';
+}
+
+// —— Fifth Stage C8：Research 通道 payload（决议 #156/#161；main 侧 handler
+// 严格白名单验证 fail-closed——Service clamp 仅作非 IPC 调用方的纵深防御）——
+
+export interface ResearchCreatePayload {
+  goal: string; // trim 后非空且 ≤MAX_GOAL_CHARS（超长拒绝，不截断）
+}
+
+export interface ResearchTaskIdPayload {
+  taskId: string; // 小写 RFC 4122 UUID 形状
+}
+
+export interface ResearchListPayload {
+  page: number; // 1-based（≥1 整数；0/负数/非整数/NaN/Infinity 拒绝）
+  pageSize?: number; // 1–20（缺省 20；越界拒绝）
+  status?: ResearchTaskStatus;
+}
+
+// 决议 #161(1)：export-csv payload 冻结——view 为受限排序/筛选状态；
+// path/rows/content/文件名等任何字段零通道
+export interface ResearchExportCsvPayload {
+  taskId: string;
+  tableBlockIndex: number; // Result.blocks 原始 0-based 索引（非负整数）
+  view: {
+    sort:
+      | {
+          columnIndex: number; // 非负整数（< columns.length）
+          direction: 'asc' | 'desc';
+        }
+      | null;
+    filter: string; // ≤200；空串=全部
+  };
+}
+
+// 决议 #158(4)：受控 UI send 通道 payload——只允许 {visible:boolean}
+export interface UiBrowserContentVisiblePayload {
+  visible: boolean;
 }

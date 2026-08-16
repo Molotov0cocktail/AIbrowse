@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { existsSync, statSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { BrowserControllerImpl } from './browser/browser-controller';
 import { AppSessionManager } from './browser/session-manager';
@@ -96,6 +97,7 @@ import { createSourcesAdapter } from './sources/source-ipc';
 // RESEARCH_SMOKE set/check 双进程门控；退出走安全 shutdown。
 import { openResearchStore } from './research/research-store';
 import { createProductionResearchRuntimeFactory } from './research/research-runtime-factory';
+import { createResearchIpcAdapter } from './research/research-ipc';
 import type { ResearchService } from '../shared/types/research';
 import {
   SmokeSearchFixture,
@@ -579,6 +581,62 @@ if (!gotLock) {
     // 状态门控在适配器内（仅 normal 放行）
     handle(IPC.SourcesRebuildIndex, () => sourcesAdapter.rebuildIndex());
 
+    // —— Fifth Stage C8（决议 #156/#157/#162）：Research 八通道 ——
+    // 全部复用 handle() 的 sender+主帧校验；payload 严格白名单 fail-closed/
+    // 状态门控/审计/export 窄端口在 research-ipc 适配器内（零 Electron import，
+    // 可单测）；exportPort 生产装配 = Electron dialog.showSaveDialog + fs 写入
+    // （仅主进程；renderer 零路径参数）。audit 经 logInfo('audit', …) 脱敏链。
+    const researchIpcAdapter = createResearchIpcAdapter({
+      service: () => researchService,
+      audit: (message) => logInfo('audit', message),
+      exportPort: {
+        // 决议 #162(2)：生产装配才包装 Electron dialog 和文件写入（仅主进程；
+        // renderer 零路径参数）；defaultFileName 由 adapter 传入（安全固定前缀
+        // + taskId 短段——不使用 goal/Result title）
+        showSaveDialog: async (defaultFileName) => {
+          if (mainWindow === null || mainWindow.isDestroyed()) return null;
+          const result = await dialog.showSaveDialog(mainWindow, {
+            title: '导出研究表格',
+            defaultPath: defaultFileName ?? 'research-export.csv',
+            filters: [{ name: 'CSV 文件', extensions: ['csv'] }],
+            properties: ['createDirectory'],
+          });
+          return result.canceled ? null : (result.filePath ?? null);
+        },
+        writeCsv: async (path, bytes) => {
+          await writeFile(path, bytes);
+        },
+      },
+    });
+    handle(IPC.ResearchCreate, (payload) => researchIpcAdapter.create(payload));
+    handle(IPC.ResearchStart, (payload) => researchIpcAdapter.start(payload));
+    handle(IPC.ResearchStop, (payload) => researchIpcAdapter.stop(payload));
+    handle(IPC.ResearchGet, (payload) => researchIpcAdapter.get(payload));
+    handle(IPC.ResearchResult, (payload) => researchIpcAdapter.result(payload));
+    handle(IPC.ResearchList, (payload) => researchIpcAdapter.list(payload));
+    handle(IPC.ResearchDelete, (payload) => researchIpcAdapter.delete(payload));
+    handle(IPC.ResearchExportCsv, (payload) => researchIpcAdapter.exportCsv(payload));
+    // research:progress / research:task-done 事件出口（决议 #157：Service 转发 +
+    // 终态时序；只发主窗口；事件零敏感内容——payload 形状已由 Service 保证）
+    researchService?.onProgress((event) => {
+      if (
+        mainWindow !== null &&
+        !mainWindow.isDestroyed() &&
+        !mainWindow.webContents.isDestroyed()
+      ) {
+        mainWindow.webContents.send(IPC.ResearchProgress, event);
+      }
+    });
+    researchService?.onTaskDone((event) => {
+      if (
+        mainWindow !== null &&
+        !mainWindow.isDestroyed() &&
+        !mainWindow.webContents.isDestroyed()
+      ) {
+        mainWindow.webContents.send(IPC.ResearchTaskDone, event);
+      }
+    });
+
     handle(
       IPC.ConfigProvidersList,
       (): Promise<ProviderInfo[]> => configStore?.list() ?? Promise.resolve([]),
@@ -620,6 +678,20 @@ if (!gotLock) {
         return;
       }
       browserController?.setContentBounds(payload as ContentBounds); // 非法值在 controller 内忽略 + warn
+    });
+    // C8 决议 #158(4)：受控 UI send 通道——payload 白名单只允许 {visible:boolean}；
+    // 其余形态拒绝 + warn（fail-closed）；仅供受信 UI 切换 WebContentsView 可见性
+    ipcMain.on(IPC.UiBrowserContentVisible, (event, payload: unknown) => {
+      if (mainWindow === null || !isTrustedSender(event, mainWindow)) {
+        logWarn('main', `拒绝非主窗口的 IPC 消息：${IPC.UiBrowserContentVisible}`);
+        return;
+      }
+      const p = payload as { visible?: unknown } | null;
+      if (p === null || typeof p !== 'object' || typeof p.visible !== 'boolean') {
+        logWarn('main', `忽略非法 content-visible 载荷：${String(payload)}`);
+        return;
+      }
+      browserController?.setContentVisible(p.visible);
     });
     ipcMain.on(IPC.AppRendererReady, (event) => {
       if (mainWindow === null || !isTrustedSender(event, mainWindow)) {
