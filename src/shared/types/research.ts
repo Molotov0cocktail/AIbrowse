@@ -89,6 +89,14 @@ export const MAX_CONFLICT_POSITIONS = 8; // 单 Conflict positions 上限（下�
 export const MAX_CONFLICT_POSITION_SOURCE_REFS = 8; // 单 position sourceRefs 上限
 export const MAX_CONFLICT_CLAIM_REFS = 8; // 单 Conflict claimKeys 上限（下界 2）
 
+// 决议 #150(8)：Validator 错误原因数量上限（顺序稳定——按块索引升序）
+export const MAX_RESULT_VALIDATION_REASONS = 10;
+
+// 决议 #152(2)：Markdown 解析确定性降级上界（shared 单一事实源；
+// main Validator 与 renderer 共用）
+export const MARKDOWN_MAX_NESTING = 4; // 结构嵌套深度上限（超限整块降级纯文本）
+export const MARKDOWN_MAX_AST_NODES = 2000; // AST 节点总数上限（超限整块降级纯文本）
+
 // 决议 #132：Research 模型轮六工具编译期固定集合（名称与注册表同名工具
 // 一致——测试交叉断言；描述与执行器为 Research 专属，不经 ToolRegistry/
 // ToolExecutor/权限链/ConfirmManager）
@@ -515,6 +523,10 @@ export interface ResearchResultValidationContext {
   claims: readonly Claim[];
   conflicts: readonly Conflict[];
   verificationState: ResearchVerificationState;
+  // 决议 #149(3)：可信时间输入——ISO 8601 UTC 毫秒形态
+  // （new Date(ms).toISOString() 生成；Runtime 注入）。fetchedAt 无
+  // Evidence 时采用本值（决议 #149(2)）
+  now: string;
   createId: () => string; // resultId 预分配（主进程可信）
 }
 
@@ -526,8 +538,33 @@ export interface ResearchResultValidationPort {
   ): { ok: true; result: ResearchResult } | { ok: false; reasons: string[] }; // 回注：块索引 + 安全中文原因
 }
 
-// 决议 #135：异步 Runtime 工厂（Provider/config/key/tool-support 检查在
-// 进入 running 前完成）；launch 失败不得留下永久 running
+// 决议 #149(5)：模型 ResultDraft 只允许三字段（{title, summary, blocks}）；
+// 其余可信字段由 C7 Validator 程序组装。运行时仍按 unknown + 严格白名单校验，
+// 本类型仅作文档化输入契约。
+export interface ResultDraft {
+  title: string;
+  summary: string;
+  blocks: unknown[]; // ResultBlock[]（逐块严格校验）
+}
+
+// 决议 #154(7)：Factory 接口窄幅修改——prepared 绑定单次 start 调用，
+// launch/release 二选一恰好一次（等价竞态证明见 detailed-design §15 #154）
+export type ResearchResolveErrorCode =
+  'research-provider-unavailable' | 'research-sources-unavailable' | 'research-unavailable';
+
+export type ResearchPreparedLaunchResult =
+  | { ok: true; prepared: ResearchPreparedLaunch }
+  | { ok: false; errorCode: ResearchResolveErrorCode };
+
+export interface ResearchRuntimeFactory {
+  // 异步 Provider 解析：config + credential + supportsToolCalling 检查 +
+  // Sources 复验；不可用 → { ok:false, errorCode }（任务保持 created）。
+  // factory 无共享可变状态（每次调用新建独立 prepared），解析可安全并发；
+  // 并发 start 互斥由 Service starting slot 承担（决议 #154）。
+  resolveProvider(): Promise<ResearchPreparedLaunchResult>;
+}
+
+// 决议 #135：launch 失败不得留下永久 running
 export interface ResearchRuntimeLaunchInput {
   taskId: string;
   goal: string;
@@ -543,11 +580,11 @@ export interface ResearchRuntimeHandle {
   abort(): void; // 幂等（stop/shutdown 请求）
 }
 
-export interface ResearchRuntimeFactory {
-  // 异步 Provider 解析：config + credential + supportsToolCalling 检查；
-  // 不可用 → null（startTask → research-provider-unavailable，任务零变化）
-  resolveProvider(): Promise<unknown>;
+export interface ResearchPreparedLaunch {
+  // 恰好一次消费：launch 或 release 二选一；重复调用安全 no-op 或抛程序缺陷。
+  // prepared 不跨 task/runToken 共享（每次 resolveProvider 新建独立实例）。
   launch(input: ResearchRuntimeLaunchInput): ResearchRuntimeHandle; // 抛错 = 装配失败
+  release(): void; // 不 launch 时丢弃 prepared（shutdown/取消/异常路径必须调用；幂等）
 }
 
 export interface ResearchService {

@@ -77,6 +77,13 @@ interface ActiveRunSlot {
   runtime: ResearchRuntimeHandle;
 }
 
+// 决议 #154(2)：starting slot 原子预占——第一个 await（resolveProvider）前
+// 同步段建立；两个并发 start 中先调用者确定性占槽，另一个立即 research-busy
+interface StartingSlot {
+  taskId: string;
+  token: string;
+}
+
 export class ResearchServiceImpl implements ResearchService {
   readonly id = 'research';
 
@@ -90,6 +97,7 @@ export class ResearchServiceImpl implements ResearchService {
   private shuttingDown = false;
   private shutdownPromise: Promise<void> | null = null;
   private activeSlot: ActiveRunSlot | null = null;
+  private startingSlot: StartingSlot | null = null;
 
   constructor(options: ResearchServiceOptions) {
     this.dbHandle = options.db;
@@ -223,12 +231,19 @@ export class ResearchServiceImpl implements ResearchService {
   async startTask(id: string): Promise<ResearchStartResult> {
     if (this.disposed) return { ok: false, errorCode: 'research-unavailable' };
     if (!isUuidShape(id)) return { ok: false, errorCode: 'research-not-found' };
+    let startToken: string | null = null; // 决议 #154(4)：异常路径按身份清除预占
     try {
       const task = this.repo.getTaskById(id);
       if (task === null) return { ok: false, errorCode: 'research-not-found' };
       // 决议 #135(3) restart 屏障：active run 完全 settle 前拒绝（busy 优先于
       // 状态检查——stop 请求后 DB 任务在 Runtime 写终态前仍为 running）
       if (this.activeSlot !== null) {
+        return { ok: false, errorCode: 'research-busy' };
+      }
+      // 决议 #154(2)：starting slot 原子预占（第一个 await 之前同步段）——
+      // 并发 start 中先调用者确定性占槽，另一个立即 research-busy（不得等待
+      // resolve、不得二次解析 Provider）
+      if (this.startingSlot !== null) {
         return { ok: false, errorCode: 'research-busy' };
       }
       // 决议 #105：running/completed 不可 start
@@ -254,16 +269,36 @@ export class ResearchServiceImpl implements ResearchService {
       if (task.goal.trim() === '') {
         return { ok: false, errorCode: 'research-invalid-goal' };
       }
-      // 决议 #135(2)：Provider/config/key/tool-support 检查在进入 running 前完成
-      let providerOk = true;
+      startToken = randomUUID();
+      this.startingSlot = { taskId: id, token: startToken };
+      // 决议 #154(4)：全部成功/失败/异常路径按身份 CAS 清除预占
+      const clearStarting = (): void => {
+        if (this.startingSlot !== null && this.startingSlot.token === startToken) {
+          this.startingSlot = null;
+        }
+      };
+      // 决议 #135(2)/#154：Provider/config/key/tool-support 检查在进入 running
+      // 前完成（factory 返回 prepared——与单次 start 绑定，launch/release 二选一）
+      let resolved: Awaited<ReturnType<ResearchRuntimeFactory['resolveProvider']>>;
       try {
-        providerOk = (await this.runtimeFactory.resolveProvider()) !== null;
+        resolved = await this.runtimeFactory.resolveProvider();
       } catch (err) {
+        // 决议 #154(5)：解析异常 → research-provider-unavailable + 任务保持 created
         logWarn('research', 'Provider 解析异常（归一 research-provider-unavailable）', err);
-        providerOk = false;
-      }
-      if (!providerOk) {
+        clearStarting();
         return { ok: false, errorCode: 'research-provider-unavailable' };
+      }
+      // 决议 #154(3)：resolve 后守卫——shutdown/释放期间完成解析的迟到
+      // continuation 零 DB 写入、零 launch、prepared 被释放
+      if (this.shuttingDown || this.disposed || this.startingSlot?.token !== startToken) {
+        if (resolved.ok) resolved.prepared.release();
+        clearStarting();
+        return { ok: false, errorCode: 'research-unavailable' };
+      }
+      if (!resolved.ok) {
+        // 决议 #154(5)：精确错误码 + 任务保持 created（零 DB 写入）
+        clearStarting();
+        return { ok: false, errorCode: resolved.errorCode };
       }
       const now = this.nowIso();
       const started = withTransaction(this.handle(), () => {
@@ -285,7 +320,11 @@ export class ResearchServiceImpl implements ResearchService {
         });
         return this.repo.getTaskById(id);
       });
-      if (started === null) return { ok: false, errorCode: 'research-not-found' };
+      if (started === null) {
+        resolved.prepared.release();
+        clearStarting();
+        return { ok: false, errorCode: 'research-not-found' };
+      }
       // 决议 #135(1)：启动后台 Runtime 后立即返回（不等待最长 30 分钟）
       const runToken = randomUUID();
       const onSettle = (): void => {
@@ -298,7 +337,8 @@ export class ResearchServiceImpl implements ResearchService {
         // 决议 #138(1)：C8 前不新增 Renderer IPC——progress 仅内部监听器消费
       };
       try {
-        const handle = this.runtimeFactory.launch({
+        // 决议 #154(7)：prepared 恰好一次消费（launch 后内部置 consumed）
+        const handle = resolved.prepared.launch({
           taskId: id,
           goal: task.goal,
           runToken,
@@ -310,6 +350,7 @@ export class ResearchServiceImpl implements ResearchService {
         void handle.done.finally(onSettle);
       } catch (err) {
         // 决议 #135(2)：launch 失败不得留下永久 running → 立即写 failed
+        resolved.prepared.release();
         logWarn('research', 'ResearchRuntime 启动失败（归一 research-runtime-unavailable）', err);
         withTransaction(this.handle(), () => {
           this.repo.setTaskFailed(id, {
@@ -320,10 +361,20 @@ export class ResearchServiceImpl implements ResearchService {
           });
           this.repo.cleanupOldestFinishedOverflow();
         });
+        clearStarting();
         return { ok: false, errorCode: 'research-runtime-unavailable' };
       }
+      clearStarting();
       return { ok: true, task: started };
     } catch (err) {
+      // 决议 #154(4)：未预期异常路径同样按身份清除预占（禁止残留占槽）
+      if (
+        startToken !== null &&
+        this.startingSlot !== null &&
+        this.startingSlot.token === startToken
+      ) {
+        this.startingSlot = null;
+      }
       return this.unexpected(err);
     }
   }

@@ -18,7 +18,12 @@ import { closeDb, openResearchDb, withTransaction, type DbHandle } from './db/re
 import { RESEARCH_MIGRATIONS } from './db/research-migrations';
 import { ResearchRepository } from './repository/research-repository';
 import { ResearchServiceImpl } from './research-service';
-import type { ResearchRuntimeFactory, ResearchStoreOutcome } from '../../shared/types/research';
+import type {
+  ResearchProviderState,
+  ResearchRuntimeFactory,
+  ResearchSourcesState,
+  ResearchStoreOutcome,
+} from '../../shared/types/research';
 
 export interface ResearchStoreOptions {
   dbPath: string; // 主进程生成的绝对路径（<userData>/research/research.db 或冒烟临时目录）
@@ -26,8 +31,13 @@ export interface ResearchStoreOptions {
   nowMs?: () => number;
   // 决议 #139：SMOKE 装配注入 Runtime 工厂（db 句柄由 store 在正常装配后提供）。
   // 生产不注入 → startTask 前置拒绝 research-runtime-unavailable（决议 #134(3)
-  // 生产 C6/C7 端口缺失 fail-closed）
+  // 生产 C6/C7 端口缺失 fail-closed）。决议 #155：C7 起生产注入真实工厂
+  // （research-runtime-factory，C6+C7 端口齐备后解除 fail-closed）。
   buildRuntimeFactory?: (db: DbHandle) => ResearchRuntimeFactory;
+  // 决议 #155(4)：start 前置状态查询注入（Service 构造透传；缺省就绪——
+  // 状态查询不谎报：同步仅能证明的粗粒度状态，真实 capability 异步 resolve）
+  getSourcesState?: () => ResearchSourcesState;
+  getProviderState?: () => ResearchProviderState;
 }
 
 export function openResearchStore(options: ResearchStoreOptions): ResearchStoreOutcome {
@@ -65,6 +75,8 @@ export function openResearchStore(options: ResearchStoreOptions): ResearchStoreO
         latestVersion,
         '新库',
         options.buildRuntimeFactory,
+        options.getSourcesState,
+        options.getProviderState,
       );
       if (outcome.mode === 'normal') {
         logInfo('research', `Research 子系统就绪（新库，schema v${latestVersion}）`);
@@ -102,6 +114,8 @@ export function openResearchStore(options: ResearchStoreOptions): ResearchStoreO
         latestVersion,
         '已就绪',
         options.buildRuntimeFactory,
+        options.getSourcesState,
+        options.getProviderState,
       );
       return outcome;
     } catch (err) {
@@ -133,6 +147,8 @@ export function openResearchStore(options: ResearchStoreOptions): ResearchStoreO
       latestVersion,
       '迁移完成',
       options.buildRuntimeFactory,
+      options.getSourcesState,
+      options.getProviderState,
     );
     if (outcome.mode === 'normal') {
       logInfo('research', `Research 子系统就绪（v${currentVersion} → v${latestVersion} 迁移完成）`);
@@ -156,6 +172,8 @@ function assembleNormal(
   latestVersion: number,
   label: string,
   buildRuntimeFactory?: (db: DbHandle) => ResearchRuntimeFactory,
+  getSourcesState?: () => ResearchSourcesState,
+  getProviderState?: () => ResearchProviderState,
 ): ResearchStoreOutcome {
   try {
     const repo = new ResearchRepository(handle);
@@ -182,6 +200,8 @@ function assembleNormal(
       db: handle,
       now: nowMs,
       runtimeFactory: buildRuntimeFactory === undefined ? undefined : buildRuntimeFactory(handle),
+      getSourcesState,
+      getProviderState,
     });
     logInfo('research', `Research 子系统就绪（${label}，schema v${latestVersion}）`);
     return { mode: 'normal', service, reason: null };

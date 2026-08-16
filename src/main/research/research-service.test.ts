@@ -13,7 +13,7 @@ import { openDb, closeDb, type DbHandle } from '../sources/db/sqlite-driver';
 import { runResearchMigrations } from './db/research-migrations';
 import { ResearchRepository, rowToEvidence } from './repository/research-repository';
 import { ResearchServiceImpl, type ResearchServiceOptions } from './research-service';
-import type { ResearchRuntimeFactory } from '../../shared/types/research';
+import type { ResearchPreparedLaunch, ResearchRuntimeFactory } from '../../shared/types/research';
 import { computeUtf8Bytes, RESEARCH_TRUNCATION_MARK } from './domain/research-budget';
 import {
   MAX_GOAL_CHARS,
@@ -33,22 +33,30 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-// C5 决议 #135：startTask 需要 Runtime 装配——C1 用例注入 immediate-settle
-// stub factory（launch 后 done 即 resolve → slot 按 CAS 清除 → stopTask 走
-// C1 兜底语义；零行为变更的既有契约断言全部保持）
+// C5 决议 #135 + C7 决议 #154(7)：startTask 需要 Runtime 装配——C1 用例注入
+// immediate-settle stub（prepared.launch 后 done 即 resolve → slot 按 CAS 清除
+// → stopTask 走 C1 兜底语义；零行为变更的既有契约断言全部保持）
 function immediateSettleFactory(): ResearchRuntimeFactory {
   return {
     async resolveProvider() {
-      return { ok: true };
-    },
-    launch(input) {
-      void Promise.resolve().then(() => input.onSettle());
-      return {
-        taskId: input.taskId,
-        runToken: input.runToken,
-        done: Promise.resolve(),
-        abort() {},
+      let consumed = false;
+      const prepared: ResearchPreparedLaunch = {
+        launch(input) {
+          if (consumed) throw new Error('程序缺陷：prepared 已被消费');
+          consumed = true;
+          void Promise.resolve().then(() => input.onSettle());
+          return {
+            taskId: input.taskId,
+            runToken: input.runToken,
+            done: Promise.resolve(),
+            abort() {},
+          };
+        },
+        release() {
+          consumed = true;
+        },
       };
+      return { ok: true, prepared };
     },
   };
 }

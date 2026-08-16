@@ -15,6 +15,8 @@ import { runResearchMigrations } from './db/research-migrations';
 import { ResearchServiceImpl, type ResearchServiceOptions } from './research-service';
 import { ResearchRepository } from './repository/research-repository';
 import type {
+  ResearchPreparedLaunch,
+  ResearchPreparedLaunchResult,
   ResearchProgressEvent,
   ResearchRuntimeHandle,
   ResearchRuntimeLaunchInput,
@@ -78,17 +80,28 @@ function makeFactory(
     runs,
     resolveCalls: 0,
     launchCalls: 0,
-    async resolveProvider() {
+    async resolveProvider(): Promise<ResearchPreparedLaunchResult> {
       this.resolveCalls += 1;
-      return over.resolveProviderOutcome === 'null' ? null : { provider: true };
-    },
-    launch(input: ResearchRuntimeLaunchInput): ResearchRuntimeHandle {
-      this.launchCalls += 1;
-      const { handle, fake } = makeRuntimeHandle(input.taskId, input.runToken);
-      fake.input = input;
-      over.onLaunch?.(input, handle, fake);
-      runs.push({ handle, fake });
-      return handle;
+      if (over.resolveProviderOutcome === 'null') {
+        return { ok: false, errorCode: 'research-provider-unavailable' };
+      }
+      let consumed = false;
+      const prepared: ResearchPreparedLaunch = {
+        launch(input: ResearchRuntimeLaunchInput): ResearchRuntimeHandle {
+          if (consumed) throw new Error('程序缺陷：prepared 已被消费');
+          consumed = true;
+          factory.launchCalls += 1;
+          const { handle, fake } = makeRuntimeHandle(input.taskId, input.runToken);
+          fake.input = input;
+          over.onLaunch?.(input, handle, fake);
+          runs.push({ handle, fake });
+          return handle;
+        },
+        release() {
+          consumed = true;
+        },
+      };
+      return { ok: true, prepared };
     },
   };
   return factory;

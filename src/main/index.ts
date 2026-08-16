@@ -60,6 +60,7 @@ import { CONTEXT_BUDGET, truncateWithMark } from './ai/context-budget';
 import { FakeProvider } from './ai/provider/fake-provider';
 import {
   PROVIDER_KIND_OPENAI_COMPATIBLE,
+  listProviderKinds,
   registerProviderFactory,
 } from './ai/provider/llm-provider';
 // Third Stage A2/A3：工具层装配（只读/导航 8 工具 + A3 交互 4 工具 + 确认状态机 +
@@ -94,6 +95,7 @@ import { createSourcesAdapter } from './sources/source-ipc';
 // RuntimeFactory（C6/C7 端口缺失 fail-closed）；SMOKE 注入确定性 stub 工厂；
 // RESEARCH_SMOKE set/check 双进程门控；退出走安全 shutdown。
 import { openResearchStore } from './research/research-store';
+import { createProductionResearchRuntimeFactory } from './research/research-runtime-factory';
 import type { ResearchService } from '../shared/types/research';
 import {
   SmokeSearchFixture,
@@ -881,41 +883,6 @@ function createBrowserWindow(): void {
     sourceService = null;
     logError('main', 'Sources 子系统初始化失败（Source 工具将返回 source-unavailable）', err);
   }
-  // C5（决议 #139）：Research 子系统最小生产装配——<userData>/research/research.db
-  // （store 两态：normal|unavailable；Research 不可用不得破坏 Browser/Sources/Agent）。
-  // 生产不建立 RuntimeFactory（C6/C7 端口缺失 → startTask 前置拒绝
-  // research-runtime-unavailable，决议 #134(3)）；SMOKE 注入确定性 stub 工厂
-  // （决议 #139(3)，仅测试设施）。退出走安全 shutdown（before-quit）。
-  try {
-    const researchDir =
-      SMOKE_MODE && !RESEARCH_GATE_MODE
-        ? join(app.getPath('temp'), `aibrowse-smoke-research-${process.pid}`)
-        : join(app.getPath('userData'), 'research');
-    if (SMOKE_MODE && !RESEARCH_GATE_MODE) smokeResearchDir = researchDir;
-    mkdirSync(researchDir, { recursive: true });
-    const researchOutcome = openResearchStore({
-      dbPath: join(researchDir, 'research.db'),
-      buildRuntimeFactory: SMOKE_MODE
-        ? (db) =>
-            createSmokeResearchRuntimeFactory({
-              db,
-              browser: controller,
-              sourceService,
-              searchProvider: new SmokeSearchFixture(null),
-              providerScript: makeSmokeGateScript(),
-              model: 'smoke-model',
-            })
-        : undefined,
-    });
-    researchService = researchOutcome.service;
-    if (researchOutcome.mode === 'normal') {
-      logInfo('main', `Research 子系统就绪（${join(researchDir, 'research.db')}）`);
-    }
-  } catch (err) {
-    researchService = null;
-    logError('main', 'Research 子系统初始化失败（研究功能全拒，其余能力不受影响）', err);
-  }
-
   // B6（决议 #79/#81）：usage tracker 装配——writer 闭包调用时解引用 sourceService
   // （初始化失败为 null → 零写入，无 SourceService 不记录）；bridge 每 run 创建
   // （AgentLoop 终态调用 clearRun）。
@@ -953,6 +920,70 @@ function createBrowserWindow(): void {
   const aiDir = SMOKE_MODE ? SMOKE_AI_DATA_DIR : app.getPath('userData');
   credentials = new SecureCredentialStoreImpl(aiDir, new SafeStorageCipher());
   configStore = new ConfigStore(aiDir, credentials);
+
+  // C7（决议 #155）：Research 子系统生产装配——<userData>/research/research.db
+  // （store 两态：normal|unavailable；Research 不可用不得破坏 Browser/Sources/Agent）。
+  // 装配顺序调整（决议 #155(5)）：本块位于 Sources + SearchProvider +
+  // ConfigStore + CredentialStore 装配之后——生产 RuntimeFactory 接入真实
+  // SearchProvider/SourceService/BrowserController/Provider config+credential
+  // 解析与真实 C6+C7 端口（research-runtime-factory，决议 #140 解除——生产
+  // startTask 不再固定 research-runtime-unavailable）；SMOKE 注入确定性 stub
+  // 工厂（决议 #139(3)，仅测试设施）。状态查询不谎报（决议 #155(4)）：
+  // getSourcesState 同步查询 Sources normal；getProviderState 同步仅报能同步
+  // 证明的粗粒度状态（Provider kind 工厂已注册）——真正 Key/Provider/tool
+  // capability 由异步 resolve 权威判定。退出走安全 shutdown（before-quit）。
+  try {
+    const researchDir =
+      SMOKE_MODE && !RESEARCH_GATE_MODE
+        ? join(app.getPath('temp'), `aibrowse-smoke-research-${process.pid}`)
+        : join(app.getPath('userData'), 'research');
+    if (SMOKE_MODE && !RESEARCH_GATE_MODE) smokeResearchDir = researchDir;
+    mkdirSync(researchDir, { recursive: true });
+    const researchOutcome = openResearchStore({
+      dbPath: join(researchDir, 'research.db'),
+      // 决议 #155(4)：真实状态查询（Service 构造注入；闭包解引用——本块已位于
+      // Sources/SearchProvider/ConfigStore/CredentialStore 装配之后，变量就绪）
+      getSourcesState: () =>
+        sourceService !== null && sourceService.getState().mode === 'normal'
+          ? 'normal'
+          : 'unavailable',
+      getProviderState: () => ({
+        configured: listProviderKinds().length > 0, // 同步可证明的粗粒度状态
+        supportsToolCalling: true, // 乐观粗粒度——真实 capability 由异步 resolve 权威判定
+      }),
+      buildRuntimeFactory: SMOKE_MODE
+        ? (db) =>
+            createSmokeResearchRuntimeFactory({
+              db,
+              browser: controller,
+              sourceService,
+              searchProvider: new SmokeSearchFixture(null),
+              providerScript: makeSmokeGateScript(),
+              model: 'smoke-model',
+            })
+        : (db) => {
+            // 本块位于装配之后：configStore/credentials 非空（TS 局部解引用收窄）
+            if (configStore === null || credentials === null) {
+              throw new Error('程序缺陷：Research 装配先于 Provider 配置');
+            }
+            return createProductionResearchRuntimeFactory({
+              db,
+              browser: controller,
+              sourceService,
+              searchProvider,
+              configStore,
+              credentials,
+            });
+          },
+    });
+    researchService = researchOutcome.service;
+    if (researchOutcome.mode === 'normal') {
+      logInfo('main', `Research 子系统就绪（${join(researchDir, 'research.db')}）`);
+    }
+  } catch (err) {
+    researchService = null;
+    logError('main', 'Research 子系统初始化失败（研究功能全拒，其余能力不受影响）', err);
+  }
 
   // S5 真实 Provider 装配（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY，§6）：
   // baseUrl/model 写入进程专属临时配置（非机密，供冒烟场景对照断言）；Key 经

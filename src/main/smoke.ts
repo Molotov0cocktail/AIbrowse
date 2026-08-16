@@ -43,25 +43,20 @@ import { runResearchMigrations } from './research/db/research-migrations';
 import { ResearchRuntime } from './research/research-runtime';
 import { createRepositoryPersistence } from './research/research-runtime-persistence';
 import { openResearchStore } from './research/research-store';
-import type {
-  ResearchPromptsPort,
-  ResearchResult,
-  ResearchResultValidationPort,
-  ResearchRuntimeFactory,
-  ResearchSynthesisPort,
-} from '../shared/types/research';
+import {
+  createProductionResearchRuntimeFactory,
+  type ProductionSourcePort,
+} from './research/research-runtime-factory';
+import { parseMarkdown } from '../shared/markdown/parse-markdown';
+import type { ResearchTask } from '../shared/types/research';
+import type { ResearchPreparedLaunch, ResearchRuntimeFactory } from '../shared/types/research';
 import type { Capture, SourceCandidate } from '../shared/types/research';
 import { runMigrations } from './sources/db/migrations';
-// 8.18 C6：真实 ResearchPromptsPort + ResearchSynthesisPort（决议 #140——
-// 仅 SMOKE 设施使用真实 C6 端口 + 严格 C7 stub；生产 fail-closed 不变）
+// C7（决议 #155）：SMOKE 设施使用真实 C6 端口 + 真实 C7 端口（8.18/8.17/
+// set-check 门控不再注入 C7 stub——生产 fail-closed 由真实端口齐备解除）
 import { RESEARCH_PROMPTS_PORT } from './research/synthesis/research-prompts';
 import { RESEARCH_SYNTHESIS_PORT } from './research/synthesis/claim-model';
-import type {
-  Claim,
-  Conflict,
-  ResearchVerificationState,
-  ResultBlock,
-} from '../shared/types/research';
+import { RESEARCH_RESULT_VALIDATION_PORT } from './research/result-validator';
 import { SourceServiceImpl } from './sources/source-service';
 import { SourceSearchIndex } from './sources/repository/source-search-index';
 import { SourceUsageTracker } from './sources/usage/usage-tracker';
@@ -119,6 +114,7 @@ import {
 import { FakeProvider, type FakeChunk, type FakeProviderScript } from './ai/provider/fake-provider';
 import {
   PROVIDER_KIND_OPENAI_COMPATIBLE,
+  listProviderKinds,
   registerProviderFactory,
 } from './ai/provider/llm-provider';
 import type { SecureCredentialStore } from './ai/credential-store';
@@ -10833,11 +10829,20 @@ export async function runSmokeScenario(
     await runResearchRuntimeScenario(controller);
 
     // 8.18 C6 综合场景（决议 #140–#147；默认矩阵自动包含）：两个不同
-    // canonicalKey 受控来源 + C6 真实 prompts/synthesis 端口 + 严格 C7 stub →
-    // Claim/Conflict 确定性装配断言 + 双向一致 + synthesis 上下文快照 +
+    // canonicalKey 受控来源 + C6 真实 prompts/synthesis 端口 + 真实 C7 端口
+    // （决议 #155——C7 后不再注入 C7 stub）→ Claim/Conflict 确定性装配断言 +
+    // 双向一致 + synthesis 上下文快照 + 伪造可信字段草案被真实 C7 拒绝重提 +
     // Result coverage 计数（零百分比）+ ≥1 uncertain + 正文/reasoning 零落盘。
-    // 零真实 Provider 调用；本场景不解除生产 fail-closed（决议 #140）。
+    // 零真实 Provider 调用。
     await runResearchSynthesisScenario(controller);
+
+    // 8.19-A C7 生产 factory 主进程闭环（决议 #155；默认矩阵自动包含）：
+    // FakeProvider 经 createProductionResearchRuntimeFactory 真实代码路径
+    // （真实 C6+C7 端口 + 真实 config/credential resolution）经
+    // ResearchService.startTask → completed；可信字段程序生成；危险链接草案
+    // 真实 C7 拒绝重提；缺 Provider 配置精确拒绝；用户 Tab 恒等。零真实
+    // Provider 调用。
+    await runResearchProductionFactoryScenario(controller);
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
@@ -13615,6 +13620,10 @@ async function runSrtScenarios(
           // （detailed-design §1/§9.1，决议 #101/#102）；本白名单为契约同步，
           // 不放宽 SQL 封闭语义（renderer/preload 零 SQL 断言不变）。
           'research-repository.ts': '业务 SQL 允许点（编译期常量 + 参数绑定，C1）',
+          // C7（2026-08-16）：shared Markdown 解析器为块级正则匹配
+          // （/^#{1,3}(?= |$)/.exec 等——RegExp.exec 非 SQL，与
+          // snapshot-script 同族先例）；白名单为契约同步，不放宽 SQL 封闭
+          'parse-markdown.ts': 'RegExp.exec 正则匹配（非 SQL，已审查分类——C7 shared Markdown）',
         };
         const sqlHits: string[] = [];
         const rendererPreloadSql: string[] = [];
@@ -14776,76 +14785,21 @@ async function openDetailByNameIn(uiWc: WebContents, name: string): Promise<void
 }
 // ---------- C5 ResearchRuntime 冒烟（决议 #132–#139；8.17 默认矩阵 + set/check 门控） ----------
 
-// SMOKE 确定性 stub 端口（决议 #134(3)：仅测试设施——生产不建立）
-const SMOKE_RESEARCH_PROMPTS: ResearchPromptsPort = {
-  planning: 'SMOKE_RESEARCH_PLANNING_PROMPT',
-  reading: 'SMOKE_RESEARCH_READING_PROMPT',
-  verifying: 'SMOKE_RESEARCH_VERIFYING_PROMPT',
-  synthesizing: 'SMOKE_RESEARCH_SYNTHESIZING_PROMPT',
-};
-
-function makeSmokeResearchSynthesis(): ResearchSynthesisPort {
-  return {
-    processVerification(raw) {
-      const parsed = JSON.parse(raw) as { claims?: unknown[]; conflicts?: unknown[] };
-      return {
-        ok: true,
-        claims: (parsed.claims ?? []) as never,
-        conflicts: (parsed.conflicts ?? []) as never,
-      };
-    },
-    parseResultDraft(raw) {
-      const parsed = JSON.parse(raw) as { result?: unknown };
-      if (parsed === null || typeof parsed !== 'object' || !('result' in parsed)) {
-        return { ok: false, reason: '缺少 result 字段' };
-      }
-      return { ok: true, draft: parsed.result };
-    },
-  };
-}
-
-function makeSmokeResearchValidation(): ResearchResultValidationPort {
-  return {
-    validate(draft, ctx) {
-      // C5 stub：仅接受夹具形状（__stub:true）——拒绝一切其他形状
-      if (
-        draft === null ||
-        typeof draft !== 'object' ||
-        (draft as Record<string, unknown>).__stub !== true
-      ) {
-        return { ok: false, reasons: ['C5 冒烟 stub：拒绝未受控形状'] };
-      }
-      return {
-        ok: true,
-        result: {
-          ...(draft as unknown as ResearchResult),
-          resultId: ctx.createId(), // 主进程预分配（每任务唯一）
-          taskId: ctx.taskId,
-        },
-      };
-    },
-  };
-}
+// C7（决议 #155）：SMOKE 装配改用真实 C6+C7 端口（research-prompts/
+// claim-model/result-validator 冻结端口对象）——C5/C6 冒烟的确定性 stub
+// 不再使用；8.18 的严格 C7 stub 同步移除（真实端口直接校验）。
 
 function makeSmokeResultDraftJson(): string {
+  // 决议 #149(1)：模型草案仅三字段（title/summary/blocks——可信字段由程序
+  // 组装）；含 uncertain 块（零候选/空 claims 强制矩阵）
   return JSON.stringify({
     result: {
-      __stub: true,
-      resultId: randomUUID(),
       title: '冒烟研究结果',
       summary: '确定性冒烟结果摘要',
-      blocks: [{ kind: 'markdown', text: '冒烟正文' }],
-      evidenceMap: {},
-      conflicts: [],
-      coverage: {
-        total: 0,
-        multiSource: 0,
-        singleSource: 0,
-        vendor: 0,
-        thirdParty: 0,
-        community: 0,
-      },
-      fetchedAt: new Date().toISOString(),
+      blocks: [
+        { kind: 'markdown', text: '冒烟正文' },
+        { kind: 'uncertain', text: '无已核验证据', reason: '候选为空' },
+      ],
     },
   });
 }
@@ -14885,7 +14839,7 @@ function makeSmokeRuntimeScript(candidateId: string): FakeProviderScript {
           ]),
         },
       ],
-      [{ text: JSON.stringify({ claims: [], conflicts: [] }) }],
+      [{ text: JSON.stringify({ vendorCandidateIds: [], claims: [], conflicts: [] }) }],
       [{ text: makeSmokeResultDraftJson() }],
     ],
   };
@@ -14933,6 +14887,8 @@ function makeEmptySmokeSourceService(): SourceService {
     list: async () => ({ ok: true, page: 0, pageSize: 20, total: 0, items: [] }),
     listGroups: async () => ({ ok: true, page: 0, pageSize: 20, total: 0, groups: [] }),
     get: async () => ({ ok: false, errorCode: 'source-not-found' }),
+    // 8.19-A 生产 factory 的 normal 态复验需要（决议 #155(2)）
+    getState: () => ({ mode: 'normal', reason: null }),
   } as unknown as SourceService;
 }
 
@@ -14954,50 +14910,60 @@ export function makeSmokeGateScript(): FakeProviderScript {
         },
       ],
       [{ text: JSON.stringify({ selectedCandidateIds: [] }) }],
-      [{ text: JSON.stringify({ claims: [], conflicts: [] }) }],
+      [{ text: JSON.stringify({ vendorCandidateIds: [], claims: [], conflicts: [] }) }],
       [{ text: makeSmokeResultDraftJson() }],
     ],
   };
 }
 
-// SMOKE Runtime 工厂（决议 #139(3)：SMOKE 装配注入；生产不建立——fail-closed）
+// SMOKE Runtime 工厂（决议 #139(3)：SMOKE 装配注入；生产不建立——fail-closed。
+// 决议 #154(7) 新接口形状：resolveProvider 返回一次性 prepared——launch/
+// release 二选一恰好一次消费）
 export function createSmokeResearchRuntimeFactory(
   deps: SmokeResearchRuntimeDeps,
 ): ResearchRuntimeFactory {
   return {
     async resolveProvider() {
-      return { ok: true }; // SMOKE 就绪（生产 Provider 检查由 index.ts 生产装配承担）
-    },
-    launch(input) {
-      const stopController = new AbortController();
-      const provider = new FakeProvider(deps.providerScript);
-      const runtime = new ResearchRuntime({
-        taskId: input.taskId,
-        goal: input.goal,
-        runToken: input.runToken,
-        model: deps.model,
-        provider,
-        sourceService: deps.sourceService ?? makeEmptySmokeSourceService(),
-        searchProvider: deps.searchProvider,
-        captureService: new CaptureService({
-          workspace: new ResearchWorkspace(input.taskId, deps.browser),
-          browser: deps.browser,
-        }),
-        persistence: createRepositoryPersistence(deps.db, input.taskId),
-        prompts: SMOKE_RESEARCH_PROMPTS,
-        synthesis: makeSmokeResearchSynthesis(),
-        resultValidation: makeSmokeResearchValidation(),
-        onProgress: input.onProgress,
-        onSettle: input.onSettle,
-        stopSignal: stopController.signal,
-      });
-      const done = runtime.run();
-      return {
-        taskId: input.taskId,
-        runToken: input.runToken,
-        done,
-        abort: () => stopController.abort(),
+      let consumed = false;
+      const prepared: ResearchPreparedLaunch = {
+        launch(input) {
+          if (consumed) throw new Error('程序缺陷：prepared 已被消费');
+          consumed = true;
+          const stopController = new AbortController();
+          const provider = new FakeProvider(deps.providerScript);
+          const runtime = new ResearchRuntime({
+            taskId: input.taskId,
+            goal: input.goal,
+            runToken: input.runToken,
+            model: deps.model,
+            provider,
+            sourceService: deps.sourceService ?? makeEmptySmokeSourceService(),
+            searchProvider: deps.searchProvider,
+            captureService: new CaptureService({
+              workspace: new ResearchWorkspace(input.taskId, deps.browser),
+              browser: deps.browser,
+            }),
+            persistence: createRepositoryPersistence(deps.db, input.taskId),
+            prompts: RESEARCH_PROMPTS_PORT,
+            synthesis: RESEARCH_SYNTHESIS_PORT,
+            resultValidation: RESEARCH_RESULT_VALIDATION_PORT,
+            onProgress: input.onProgress,
+            onSettle: input.onSettle,
+            stopSignal: stopController.signal,
+          });
+          const done = runtime.run();
+          return {
+            taskId: input.taskId,
+            runToken: input.runToken,
+            done,
+            abort: () => stopController.abort(),
+          };
+        },
+        release() {
+          consumed = true;
+        },
       };
+      return { ok: true, prepared }; // SMOKE 就绪（生产 Provider 检查由生产工厂承担）
     },
   };
 }
@@ -15069,9 +15035,9 @@ async function runResearchRuntimeScenario(controller: BrowserController): Promis
         createCaptureId: () => 'smoke-capture', // 确定性 captureId（proposal 引用可预知）
       }),
       persistence: createRepositoryPersistence(db, taskId),
-      prompts: SMOKE_RESEARCH_PROMPTS,
-      synthesis: makeSmokeResearchSynthesis(),
-      resultValidation: makeSmokeResearchValidation(),
+      prompts: RESEARCH_PROMPTS_PORT,
+      synthesis: RESEARCH_SYNTHESIS_PORT,
+      resultValidation: RESEARCH_RESULT_VALIDATION_PORT,
       createId: () => idSeq.shift() ?? 'ffffffff-ffff-4fff-8fff-ffffffffffff',
       onProgress: (e) => events.push(e),
       stopSignal: stopController.signal,
@@ -15154,9 +15120,9 @@ async function runResearchRuntimeScenario(controller: BrowserController): Promis
         browser: controller,
       }),
       persistence: createRepositoryPersistence(db, task2),
-      prompts: SMOKE_RESEARCH_PROMPTS,
-      synthesis: makeSmokeResearchSynthesis(),
-      resultValidation: makeSmokeResearchValidation(),
+      prompts: RESEARCH_PROMPTS_PORT,
+      synthesis: RESEARCH_SYNTHESIS_PORT,
+      resultValidation: RESEARCH_RESULT_VALIDATION_PORT,
       stopSignal: stopController2.signal,
     });
     const done2 = runtime2.run();
@@ -15243,9 +15209,9 @@ async function runResearchRuntimeScenario(controller: BrowserController): Promis
         createCaptureId: () => 'smoke-capture-3', // 确定性 captureId（proposal 引用可预知）
       }),
       persistence: createRepositoryPersistence(db, task3),
-      prompts: SMOKE_RESEARCH_PROMPTS,
-      synthesis: makeSmokeResearchSynthesis(),
-      resultValidation: makeSmokeResearchValidation(),
+      prompts: RESEARCH_PROMPTS_PORT,
+      synthesis: RESEARCH_SYNTHESIS_PORT,
+      resultValidation: RESEARCH_RESULT_VALIDATION_PORT,
       createId: () => {
         const next = idSeq3.shift();
         if (next !== undefined) return next;
@@ -15463,6 +15429,8 @@ async function runResearchSynthesisScenario(controller: BrowserController): Prom
                     reason: '冲突未收敛',
                   },
                 ],
+                // 决议 #149(1)：模型提供可信字段/未知字段 → 真实 C7 Validator
+                // 整份拒绝（第一轮失败）→ Runtime 回注重提（下一轮合法草案）
                 conflicts: [{ conflictId: 'fake-conflict', topic: '模型伪造冲突', positions: [] }],
                 coverage: {
                   total: 99,
@@ -15479,75 +15447,27 @@ async function runResearchSynthesisScenario(controller: BrowserController): Prom
             }),
           },
         ],
+        [
+          {
+            text: JSON.stringify({
+              result: {
+                title: '冒烟冲突研究结果',
+                summary: '确定性综合结果',
+                blocks: [
+                  { kind: 'markdown', text: '冒烟综合正文' },
+                  {
+                    kind: 'uncertain',
+                    text: '存在未解决冲突且含单源结论，暂不确定最终版本',
+                    reason: '冲突未收敛',
+                  },
+                ],
+              },
+            }),
+          },
+        ],
       ],
     };
     let capturedCapN = 0;
-    // 严格但仅限 smoke 的 C7 Validator stub（决议 #140(2)/#147(2)）：
-    // 模型草案的 conflicts/coverage 一律忽略，程序从 ctx 快照装配；必须含
-    // uncertain 块；不装入生产（生产 fail-closed 维持——决议 #140）
-    const c7Box: {
-      snapshot: {
-        claims: readonly Claim[];
-        conflicts: readonly Conflict[];
-        verificationState: ResearchVerificationState;
-      } | null;
-    } = { snapshot: null };
-    const strictC7: ResearchResultValidationPort = {
-      validate(draft, ctx) {
-        c7Box.snapshot = {
-          claims: ctx.claims,
-          conflicts: ctx.conflicts,
-          verificationState: ctx.verificationState,
-        };
-        if (draft === null || typeof draft !== 'object' || Array.isArray(draft)) {
-          return { ok: false, reasons: ['结果草案必须是对象'] };
-        }
-        const d = draft as Record<string, unknown>;
-        if (typeof d.title !== 'string' || typeof d.summary !== 'string') {
-          return { ok: false, reasons: ['title/summary 必须为字符串'] };
-        }
-        if (!Array.isArray(d.blocks)) {
-          return { ok: false, reasons: ['blocks 必须为数组'] };
-        }
-        if (
-          !d.blocks.some(
-            (b) =>
-              typeof b === 'object' &&
-              b !== null &&
-              (b as Record<string, unknown>).kind === 'uncertain',
-          )
-        ) {
-          return { ok: false, reasons: ['结果必须包含至少一个 uncertain 块'] };
-        }
-        const blocks = (d.blocks as ResultBlock[]).slice(0, 20);
-        const coverage = {
-          total: ctx.claims.length,
-          multiSource: ctx.claims.filter((c) => c.coverage === 'multi-source').length,
-          singleSource: ctx.claims.filter((c) => c.coverage === 'single-source').length,
-          vendor: ctx.claims.filter((c) => c.sourceTypes.includes('vendor')).length,
-          thirdParty: ctx.claims.filter((c) => c.sourceTypes.includes('third-party')).length,
-          community: ctx.claims.filter((c) => c.sourceTypes.includes('community')).length,
-        };
-        return {
-          ok: true,
-          result: {
-            resultId: ctx.createId(),
-            taskId: ctx.taskId,
-            title: d.title,
-            summary: d.summary,
-            blocks,
-            evidenceMap: {},
-            conflicts: ctx.conflicts.map((c) => ({
-              conflictId: c.conflictId,
-              topic: c.topic,
-              positions: c.positions,
-            })),
-            coverage,
-            fetchedAt: nowIso(),
-          },
-        };
-      },
-    };
     const stopController = new AbortController();
     const provider = new FakeProvider(script);
     const searchFixture = new SmokeSearchFixture([
@@ -15573,7 +15493,8 @@ async function runResearchSynthesisScenario(controller: BrowserController): Prom
       persistence: createRepositoryPersistence(db, taskId),
       prompts: RESEARCH_PROMPTS_PORT,
       synthesis: RESEARCH_SYNTHESIS_PORT,
-      resultValidation: strictC7,
+      // C7：真实 ResultValidator 端口（决议 #155——8.18 不再注入 C7 stub）
+      resultValidation: RESEARCH_RESULT_VALIDATION_PORT,
       createId,
       stopSignal: stopController.signal,
     });
@@ -15621,18 +15542,11 @@ async function runResearchSynthesisScenario(controller: BrowserController): Prom
       '8.18：Claim.conflictIds 双向一致',
     );
 
-    // —— C7 stub 收到同一不可变快照（与入库对象深相等） ——
-    const c7Snapshot = c7Box.snapshot;
-    assert(c7Snapshot !== null, '8.18：C7 stub 应收到 ctx 快照');
-    assert(c7Snapshot.verificationState === 'verified', '8.18：verificationState=verified');
-    assert(
-      JSON.stringify(c7Snapshot.claims) === JSON.stringify(claims),
-      '8.18：C7 ctx 快照与持久化 Claim 恒等',
-    );
-    assert(
-      JSON.stringify(c7Snapshot.conflicts) === JSON.stringify(conflicts),
-      '8.18：C7 ctx 快照与持久化 Conflict 恒等',
-    );
+    // —— C7 真实端口（决议 #155）：第一轮伪造可信字段草案被整份拒绝 →
+    // Runtime 回注重提 → 第二轮三字段草案通过（重提证据在请求轮数中） ——
+    const requests0 = provider.getRequests();
+    const synthRounds = requests0.filter((r) => r.system === RESEARCH_PROMPTS_PORT.synthesizing);
+    assert(synthRounds.length === 2, '8.18：伪造可信字段草案被真实 C7 拒绝 → 重提一轮');
 
     // —— synthesizing 请求真实包含经验证 Claim/Conflict（UNTRUSTED 块内） ——
     const requests = provider.getRequests();
@@ -15722,6 +15636,210 @@ async function runResearchSynthesisScenario(controller: BrowserController): Prom
     if (db !== null) closeDb(db);
     rmSync(tmpDir, { recursive: true, force: true });
     void pages;
+  }
+}
+
+// ---------- 8.19-A C7 生产 factory 主进程闭环（决议 #155；默认矩阵） ----------
+
+// 冒烟生产 Provider 脚本 holder（8.19-A 注册 'fake-research-smoke' kind——
+// 经生产 factory 的真实 config/credential resolution 路径消费）
+let smokeProductionScript: FakeProviderScript = { rounds: [] };
+
+// 8.19-A 脚本：plan（零候选）→ 零选择 → 空 claims → 第一轮 synth 输出含危险
+// 链接草案（真实 C7 Validator 拒绝——FT-12）→ 回注重提第二轮三字段草案 → 完成
+function makeProductionFactoryScript(): FakeProviderScript {
+  return {
+    rounds: [
+      [
+        {
+          text: JSON.stringify({
+            sourceMode: 'search',
+            sourceQuery: '生产工厂冒烟',
+            groupId: null,
+            webQueries: [],
+          }),
+        },
+      ],
+      [{ text: JSON.stringify({ selectedCandidateIds: [] }) }],
+      [{ text: JSON.stringify({ vendorCandidateIds: [], claims: [], conflicts: [] }) }],
+      [
+        {
+          text: JSON.stringify({
+            result: {
+              title: '工厂冒烟结果',
+              summary: '摘要',
+              blocks: [
+                { kind: 'markdown', text: '[坏链接](javascript:alert(1))' },
+                { kind: 'uncertain', text: '无证据', reason: '候选为空' },
+              ],
+            },
+          }),
+        },
+      ],
+      [
+        {
+          text: JSON.stringify({
+            result: {
+              title: '工厂冒烟结果',
+              summary: '工厂路径确定性结果',
+              blocks: [
+                { kind: 'markdown', text: '工厂正文 [文档](https://example.com/doc)' },
+                { kind: 'uncertain', text: '无已核验证据', reason: '候选为空' },
+              ],
+            },
+          }),
+        },
+      ],
+    ],
+  };
+}
+
+// 8.19-A（决议 #155/§13.2）：C7 validator/renderer 静态渲染（ResultView
+// react-dom/server 单测矩阵）之外的**生产 factory 主进程闭环**——真实
+// ConfigStore/SecureCredentialStore/Provider kind 注册 + FakeProvider 脚本经
+// createProductionResearchRuntimeFactory 代码路径（真实 C6+C7 端口）经
+// ResearchService.startTask 完整链路 → completed；可信字段全部程序生成
+// （resultId v4/coverage 计数/conflicts 投影/fetchedAt 程序时钟/evidenceMap
+// 投影）；危险链接草案被真实 C7 拒绝 → 回注重提；缺 Provider 配置精确拒绝
+// （任务保持 created）；capture 零、正文零落盘、用户 Tab 集合恒等。零真实
+// Provider 调用（FakeProvider 确定性脚本）。
+async function runResearchProductionFactoryScenario(controller: BrowserController): Promise<void> {
+  const userTabIds = (await controller.getTabs()).map((t) => t.id).sort();
+  const tmpDir = mkdtempSync(join(tmpdir(), 'aibrowse-research-factory-smoke-'));
+  const configDir = join(tmpDir, 'config');
+  mkdirSync(configDir, { recursive: true });
+  // 注册冒烟生产 kind（与 8.19-A 的 config providerId 对应；模块级 holder 脚本）
+  registerProviderFactory({
+    kind: 'fake-research-smoke',
+    create: () => new FakeProvider(smokeProductionScript),
+  });
+  const credentials: SecureCredentialStore = {
+    isAvailable: () => true,
+    set: async () => false,
+    get: async () => null,
+    has: async (providerId: string) => providerId === 'fake-research-smoke',
+    delete: async () => false,
+  };
+  const configStore = new ConfigStore(configDir, credentials);
+  try {
+    smokeProductionScript = makeProductionFactoryScript();
+    const outcome = openResearchStore({
+      dbPath: join(tmpDir, 'research.db'),
+      getSourcesState: () => 'normal',
+      getProviderState: () => ({
+        configured: listProviderKinds().length > 0,
+        supportsToolCalling: true,
+      }),
+      buildRuntimeFactory: (db) =>
+        createProductionResearchRuntimeFactory({
+          db,
+          browser: controller,
+          sourceService: makeEmptySmokeSourceService() as unknown as ProductionSourcePort,
+          searchProvider: new SmokeSearchFixture(null),
+          configStore,
+          credentials,
+        }),
+    });
+    assert(outcome.mode === 'normal', '8.19-A：store 正常装配');
+    if (outcome.mode !== 'normal') return;
+    const service = outcome.service;
+
+    // —— 缺 Provider 配置：精确拒绝 + 任务保持 created ——
+    const noCfg = await service.createTask('缺配置目标');
+    assert(noCfg.ok, '8.19-A：任务创建成功');
+    if (!noCfg.ok) return;
+    const noCfgStart = await service.startTask(noCfg.task.id);
+    assert(
+      !noCfgStart.ok && noCfgStart.errorCode === 'research-provider-unavailable',
+      '8.19-A：缺 Provider 配置 → research-provider-unavailable',
+    );
+    assert((await service.getTask(noCfg.task.id)).ok, '8.19-A：任务可读（保持 created）');
+
+    // —— 写配置后：经生产 factory 完整链路完成 ——
+    const wrote = configStore.set({
+      providerId: 'fake-research-smoke',
+      baseUrl: 'https://smoke.invalid',
+      model: 'smoke-model',
+    });
+    assert(wrote, '8.19-A：Provider 配置写入成功');
+    const created = await service.createTask('生产工厂冒烟目标');
+    assert(created.ok, '8.19-A：任务创建成功');
+    if (!created.ok) return;
+    const started = await service.startTask(created.task.id);
+    assert(started.ok && started.task.status === 'running', '8.19-A：startTask 成功进入 running');
+    // 等待终态（生产 Service 异步启动——轮询收敛）
+    let terminal: ResearchTask | null = null;
+    for (let i = 0; i < 400; i += 1) {
+      const got = await service.getTask(created.task.id);
+      if (!got.ok) break;
+      if (got.task.status !== 'running') {
+        terminal = got.task;
+        break;
+      }
+      await delay(50);
+    }
+    assert(terminal !== null && terminal.status === 'completed', '8.19-A：任务 completed');
+    assert(terminal.resultId !== null && terminal.resultId !== '', '8.19-A：resultId 落库');
+
+    // —— Result 读回：可信字段全部程序生成 ——
+    const db = openDb(join(tmpDir, 'research.db'));
+    const repo = new ResearchRepository(db);
+    const result = repo.getResultByTaskId(created.task.id);
+    assert(result !== null, '8.19-A：Result 应落库');
+    assert(result!.title === '工厂冒烟结果', '8.19-A：标题来自模型三字段草案');
+    assert(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        result!.resultId,
+      ),
+      '8.19-A：resultId 为程序生成的小写 v4 UUID',
+    );
+    assert(result!.taskId === created.task.id, '8.19-A：taskId 程序绑定');
+    assert(
+      JSON.stringify(result!.coverage) ===
+        JSON.stringify({
+          total: 0,
+          multiSource: 0,
+          singleSource: 0,
+          vendor: 0,
+          thirdParty: 0,
+          community: 0,
+        }),
+      '8.19-A：coverage 程序计数（claims 空）',
+    );
+    assert(result!.conflicts.length === 0, '8.19-A：conflicts 程序投影（空）');
+    assert(Object.keys(result!.evidenceMap).length === 0, '8.19-A：evidenceMap 程序投影（空）');
+    assert(
+      /^\d{4}-\d{2}-\d{2}T/.test(result!.fetchedAt) && result!.fetchedAt !== '',
+      '8.19-A：fetchedAt 为程序时钟（ISO 形态，非模型时间）',
+    );
+    assert(
+      result!.blocks.some((b) => b.kind === 'uncertain'),
+      '8.19-A：uncertain 块存在（claims 空强制矩阵）',
+    );
+    // markdown 块经 shared 解析器可解析且链接安全（Validator 已保证）
+    const mdBlock = result!.blocks.find((b) => b.kind === 'markdown');
+    assert(mdBlock !== undefined && mdBlock.kind === 'markdown', '8.19-A：markdown 块存在');
+    if (mdBlock !== undefined && mdBlock.kind === 'markdown') {
+      const parsed = parseMarkdown(mdBlock.text);
+      assert(!parsed.degraded, '8.19-A：markdown 块解析非降级（shared 解析器同源）');
+    }
+    assert(
+      JSON.stringify(result).includes('工厂正文') &&
+        !JSON.stringify(result).includes('javascript:'),
+      '8.19-A：危险链接草案被真实 C7 拒绝（零进入 Result）',
+    );
+
+    // —— capture 零（零候选）→ 正文零落盘 ——
+    const captures = repo.listCapturesByTask(created.task.id);
+    assert(captures.length === 0, '8.19-A：capture 零（零候选研究）');
+
+    // —— 用户 Tab 集合恒等 ——
+    const afterTabs = (await controller.getTabs()).map((t) => t.id).sort();
+    assert(JSON.stringify(afterTabs) === JSON.stringify(userTabIds), '8.19-A：用户 Tab 集合恒等');
+    closeDb(db);
+    await service.shutdown();
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
   }
 }
 

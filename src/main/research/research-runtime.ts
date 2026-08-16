@@ -1168,8 +1168,9 @@ export class ResearchRuntime {
         }
         throw new InternalRuntimeError('结果草案解析失败（重提耗尽）');
       }
-      // 决议 #145(5)：validate 签名不变，context 扩充 claims/conflicts/
-      // verificationState（C7 据此程序重算 coverage、核对 Result.conflicts）
+      // 决议 #145(5)/#149(3)：validate 签名不变，context 扩充 claims/conflicts/
+      // verificationState/now（C7 据此程序重算 coverage、核对 Result.conflicts、
+      // fetchedAt 无 Evidence 时采用可信验证时间）
       const validated = this.options.resultValidation.validate(draft.draft, {
         taskId: this.options.taskId,
         candidates: this.merged,
@@ -1177,6 +1178,7 @@ export class ResearchRuntime {
         claims: this.claims,
         conflicts: this.conflicts,
         verificationState: this.verificationState,
+        now: new Date(this.nowMs()).toISOString(),
         createId: this.createId,
       });
       if (!validated.ok) {
