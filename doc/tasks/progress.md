@@ -122,7 +122,31 @@
   AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider
   调用 0 次（无真实 Provider 产品链路）。证据见 C5 任务文档「红→绿
   证据」小节。
-  **下一唯一任务 = C6。** 本阶段红线：禁止安装依赖、禁止实现
+  **C6 已完成（2026-08-16）**——Cross-check、冲突模型、带证据综合与
+  「不确定」输出（实施前契约裁决 #140–#147：C6/C7 分阶段装配边界
+  （C6 不单独解除生产 fail-closed——index.ts 生产装配零改动；C6 冒烟
+  注入严格 C7 stub）/Provider 响应侧有界性（每段 stream 文本/工具调用
+  数量/id/name/arguments 单项与累计编译期上限，超限立即停止消费映射
+  research-budget-exhausted、超限工具调用零执行、超限原文零回显、
+  reasoning 直接丢弃零累积）/VerificationDraft 严格输入协议（纯 JSON
+  严格白名单、可信字段全由程序产生）/Claim 确定性装配（canonicalKey
+  coverage 不按条数冒充多源/sourceTypes 程序判定——厂商分类缺口裁决：
+  vendorCandidateIds 模型提议 + 程序 origin 判定，不洗白 trust/
+  severity 影响程度语义——单源 high 保持 high + singleSourceFields
+  程序标记）/Conflict 引用完整性（局部 claimKeys 映射/双向 conflictIds
+  一致/诚实边界保留）/C5→C6→C7 数据交接（内存不可变快照 +
+  verificationState + C7 context 新字段）/Prompt 与上下文构建所有权
+  （四编译期常量 + 冻结端口对象，块组装仍归 C5 Runtime）/parseResultDraft
+  结构解析与 Uncertainty 分工）；红→绿 聚焦 **61/61**（claim-model 42 +
+  prompts 10 + runtime-c6 9）+ 全量 **1865/1865**（基线 1804 + 61，
+  既有用例零删除零削弱）；冒烟 8.18 dev+生产双场景退出码 0/0
+  （Claim/Conflict 确定性装配断言 + synthesis 上下文快照 + Result
+  coverage 计数零百分比 + ≥1 uncertain 块 + 正文/reasoning 零落盘 +
+  用户 Tab 恒等）；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码
+  0/0；真实 Provider 调用 0 次（无真实 Provider 产品链路）。**生产
+  Research 仍 fail-closed**（决议 #140：缺 C7 真实端口——startTask →
+  research-runtime-unavailable）。证据见 C6 任务文档「红→绿证据」小节。
+  **下一唯一任务 = C7。** 本阶段红线：禁止安装依赖、禁止实现
   Sixth Stage。**真实 Provider 长期授权（2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
   每次调用仍须服务于明确开发/验收/定位/复验目的，禁止无界循环、无诊断
@@ -503,7 +527,7 @@
 | C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ✅ | 2026-08-16 完成（见「最近验证结果」第二十个闭环）：实施前契约裁决 #120–#123（三档发现路径排序/note 映射/candidate_id 输入契约/sortKey 编码——详见任务文档「实施前复核项」小节，均已裁决）+ 详细设计 §4 重写；红→绿 80/80（模块缺失红态）→ 全量 test 1598/1598；真实 node:sqlite 排序一致性 probe；C1/C2/Source/Search 产品代码零改动；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md（红→绿证据已回填） |
 | C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #124–#131（Tab 生命周期零双导航/冻结判别联合与重试矩阵/failed Capture sentinel/ready・L0–L3 映射/CaptureContent 60k 预算与哈希覆盖/多表 tableIndex/不可信 proposal 六字段/Chromium 错误页判定）+ CaptureService + EvidenceValidator + repository tableIndex 严格解析 + 冒烟 8.16（dev+生产双场景退出码 0、正文零持久化探针、用户 Tab 集合不变、真实 Provider 0 次）；红→绿聚焦 136/136、全量 test 1691/1691；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
 | C5 | 独立有界 ResearchRuntime：进度、停止、失败继续、预算与终态 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #132–#139（六工具专属执行模型/ResearchPlan 判别联合/C6/C7 稳定端口 fail-closed/Service 异步装配/预算与 Provider 失败映射/原子持久化与 500k 终态预留/Progress·heartbeat·终态优先级/index.ts 最小装配）；红→绿聚焦 113/113、全量 test 1804/1804；冒烟 8.17 dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider 0 次；任务文档 doc/stage5/tasks/C5-research-runtime.md |
-| C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §7；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
+| C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #140–#147（C6/C7 分阶段装配边界/Provider 响应侧有界性/VerificationDraft 严格协议/Claim 确定性装配与厂商分类/Conflict 引用完整性/数据交接/Prompt 所有权/parseResultDraft 边界）；红→绿聚焦 61/61、全量 test 1865/1865；冒烟 8.18 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 Research 仍 fail-closed（缺 C7）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
 | C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ⏳ | 2026-08-16 设计定稿，待实施；契约 §8 + 决策 D9；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
 | C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §11 + 决策 D10/D11；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
 | C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ⏳ | 2026-08-16 设计定稿，待实施；threat-model §4；任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md；**决议 #117 长期授权**：基础设施落地后凭据可用即真实执行（凭据不可用如实记录「凭据不可用」） |
@@ -2822,26 +2846,31 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **C6（唯一）**：C5 已完成（2026-08-16，独立有界 ResearchRuntime，
-  实施前契约裁决 #132–#139——六工具专属执行模型/ResearchPlan 判别联合/
-  C6/C7 稳定端口 fail-closed/Service 异步装配/预算与 Provider 失败映射/
-  原子持久化与 500k 终态预留/Progress·heartbeat·终态优先级/index.ts
-  最小装配，红→绿证据见 C5 任务文档「红→绿证据」小节；全量 test
-  1804/1804，冒烟 8.17 dev+生产双场景退出码 0，AIBROWSE_RESEARCH_SMOKE
-  双进程退出码 0/0）。
-  下一唯一任务 = **C6（Cross-check、冲突模型、带证据综合与「不确定」
-  输出，契约 §7，任务文档
-  doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md）**——
-  **C6 按决议 #134 端口契约实现**（ResearchPromptsPort 四槽（含
-  AGENT_RESEARCH_VERIFYING_PROMPT）/ResearchSynthesisPort.
-  processVerification 与 parseResultDraft），替换 C5 的确定性 stub。
-  C6 完成后按依赖链推进（C7 → C8 → C9 → C10），每个任务一个可
-  验证开发闭环；本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider
-  按决议 #117 长期授权（2026-08-16 起长期生效）：后续任务按需使用、无需
+- **C7（唯一）**：C6 已完成（2026-08-16，Cross-check 与带证据综合，
+  实施前契约裁决 #140–#147——C6/C7 分阶段装配边界/Provider 响应侧
+  有界性/VerificationDraft 严格协议/Claim 确定性装配/Conflict 引用
+  完整性/C5→C6→C7 数据交接/Prompt 所有权/parseResultDraft 边界，红→绿
+  证据见 C6 任务文档「红→绿证据」小节；全量 test 1865/1865，冒烟
+  8.18 dev+生产双场景退出码 0，AIBROWSE_RESEARCH_SMOKE 双进程退出码
+  0/0）。
+  下一唯一任务 = **C7（ResultValidator + 安全 Markdown/Table/Cards/
+  Ranking Renderer，契约 §8，任务文档
+  doc/stage5/tasks/C7-result-validator-renderer.md）**——
+  **C7 按决议 #134/#140/#145 实现**：result-validator 实现
+  ResearchResultValidationPort.validate（签名不变，context 已含
+  claims/conflicts/verificationState——据此程序重算 coverage、核对
+  Result.conflicts、实施 uncertainty 强制规则）；**C7 完成时才统一
+  装配真实 C6+C7 端口并解除生产 fail-closed**（index.ts 生产
+  RuntimeFactory 建立由 C7 执行；C6 冒烟的严格测试 stub 不得装入
+  生产——决议 #140）；Markdown 渲染自实现安全子集（决策 D9，零新
+  依赖）。C7 前置复核项：proposal D9 与决议 #99 Markdown 表格漂移
+  （C1 已登记未修复，由 C7 处置——C6 未顺手处理）。
+  C7 完成后按依赖链推进（C8 → C9 → C10），每个任务一个可验证开发
+  闭环；本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider 按
+  决议 #117 长期授权（2026-08-16 起长期生效）：后续任务按需使用、无需
   逐次申请授权；每次调用仍须服务于明确开发/验收/定位/复验目的；无真实
   Provider 产品链路的任务不强制调用；凭据不可用如实记录「凭据不可用」，
-  不得写「未获授权」。C7 前置复核项：proposal D9 与决议 #99 Markdown
-  表格漂移（C1 已登记未修复，继续保留）。
+  不得写「未获授权」。
 
 ## 第一阶段验收未完成项
 

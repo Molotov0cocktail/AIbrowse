@@ -159,3 +159,41 @@ feat: 完成 C6 + docs: 回填证据）+ 双远程推送。
 
 逻辑提交（决议文档 → 输出预算 fix → feat C6 → 证据回填）；不夹带
 C7/C8 代码；不夹带 index.ts 生产装配改动。
+
+## 红→绿证据
+
+- **红态**（2026-08-16，模块不存在/旧结构）：
+  - 3 个新测试文件整体失败（导入错误——synthesis 模块尚不存在；
+    research-runtime-c6.test.ts 引用的端口常量缺失）；
+  - 红态 3 files failed / no tests（vitest 输出实证——模块缺失红）。
+- **转绿**：实现 shared/types/research.ts 新常量/类型（#141/#142/#145）、
+  synthesis/claim-model.ts（VerificationDraft 严格解析 + Claim/Conflict
+  确定性装配 + parseResultDraft）、synthesis/research-prompts.ts（四编译期
+  常量 + 冻结端口对象）+ Runtime 窄修改（输出预算/数据交接/终态清空）后——
+  C6 聚焦 **61/61**（claim-model 42 + prompts 10 + runtime-c6 9）；
+  全量 **1865/1865**（基线 1804 + 61 新增；既有用例零删除零削弱）。
+  实现期修正均为契约落地（fail 返回类型收窄/测试夹具数据库隔离——候选
+  表 candidate_id 为全局主键/边界测试脚本与 idQueue 消费序对齐），无迁就
+  实现。
+- **冒烟 8.18**（默认矩阵自动包含；dev 退出码 0）：两个不同 canonicalKey
+  受控来源（A/B 冲突页）+ C6 真实 prompts/synthesis 端口 + 严格 C7 stub
+  → completed；claims 2 条（c1 multi-source/severity=high 保持、c2
+  single-source + singleSourceFields=['整条结论']、sourceTypes 保守
+  third-party）；Conflict 显式落库（resolved=unresolved、claimIds 程序
+  映射、双向 conflictIds 一致）；C7 stub 收到与持久化深相等的不可变快照
+  （verificationState=verified）；synthesizing 请求真实包含装配
+  Claim/Conflict（UNTRUSTED 块内 + 核验状态标记 + 四真实 system 常量）；
+  Result.conflicts 来自程序快照（模型伪造冲突被忽略）、coverage 程序重算
+  计数（零 score/percent/confidence）、≥1 uncertain 块；capture 正文
+  探针/reasoning 探针零落盘、零进 transcript；用户 Tab 前后恒等；
+  本场景零真实 Provider 调用、不解除生产 fail-closed。
+- **红线扫描台账**：index.ts 零改动（生产 fail-closed 维持——决议 #140）；
+  migration v1 零改写；Runtime/synthesis 零 SQL（SQL 仅 Repository 编译期
+  常量 + migrations/driver）；零 shell/child_process/eval；工具注册表仍
+  17；AgentLoop 12/420s 零 diff；package.json/lockfile 零 diff；
+  renderer/preload 零改动；reasoning 零累计/零回放/零持久化；Provider
+  响应侧有界（文本/toolCalls/id/name/arguments 单项与累计编译期上限）；
+  Claim/Conflict/Result 草案原文零日志零持久化。
+- 验证命令：`npm test -- --maxWorkers=1` **1865/1865** 绿；typecheck/
+  lint/format:check/build/diff-check 绿；dev + 生产默认冒烟（含 8.18）
+  退出码 0；`AIBROWSE_RESEARCH_SMOKE=set|check` 双进程退出码 0/0。
