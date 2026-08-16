@@ -78,6 +78,35 @@ C1（SourceCandidate 类型）。
   对照记录）；
 - 需修改 normalizeSourceUrl 或 SearchResult 形状 → 停止并报告。
 
+## 实施前复核项（2026-08-16，C2 定向修复闭环登记；本轮不裁决不实现）
+
+> C3 实施前必须先对以下四项做契约裁决（写入 detailed-design §15 并同步
+> 本文与测试），否则不得开始实现：
+
+1. **§4.2 五档条件互相覆盖**：合法 Sources 候选先落入档位 1/2
+   （收藏命中且 assertedBy='user' 或 ai/unknown），而现有 trust 不变量为
+   user+asserted 或 ai+unverified——因此档位 3（trust.value ∈
+   {official, primary} 且 verification='asserted'）与档位 5（其余
+   secondary/community/unknown）对 mergeCandidates 的合法输出**可能
+   不可达**。C3 实施前必须先裁决为互斥、可达且不洗白 trust 的规则
+   （如档位 3 改为 verification='asserted' 且非收藏命中路径，或按
+   §4.1 合并语义重新切分），并补档位可达性测试。
+2. **note 映射规则缺失**：SourceSearchItem.note 为
+   `{userNote, aiNote} | null`（各 ≤200 码点、有作者标识），
+   SourceCandidate.note 为 `string | null`；缺少确定性、有作者标识、
+   总长 ≤MAX_CANDIDATE_NOTE_CHARS 的映射规则（用户备注与 AI 备注如何
+   拼接/取舍/标注作者），须先裁决。
+3. **candidate_id 生成契约缺失**：SourceCandidate.id 要求合并后唯一且
+   主进程生成，但 §4 纯函数接口尚未规定 taskId/idFactory/失败语义；不得
+   使用会导致跨任务主键冲突的 canonicalKey 直接充当 candidate_id——
+   须先裁决 id 生成方式（如 taskId + 序号/idFactory 注入）与非法输入
+   语义。
+4. **sortKey 字典序与降序矛盾**：sortKey 由 Repository 按 ASC 排序
+   （§9.1 research_candidates.sort_key），但 §4.2 中 priority/lastUsedAt
+   要求降序（null=最末）；C3 必须冻结可字典序排序的反向编码（如补码/
+   反向时间戳）、null/非法时间语义，并验证内存排序与 SQLite
+   ORDER BY sort_key 一致。
+
 ## 提交边界
 
 单一逻辑提交；不夹带装配胶水。
