@@ -22,6 +22,9 @@ import {
   runSourcesUiSmokeScenario,
   smokeAgentLimits,
   smokeAgentSearchProvider,
+  smokeCsvExportPath,
+  smokeResearchScript,
+  smokeResearchServiceOverride,
   smokeUiFake,
 } from './smoke';
 import type { LiveProviderSmoke } from './smoke';
@@ -587,13 +590,20 @@ if (!gotLock) {
     // 可单测）；exportPort 生产装配 = Electron dialog.showSaveDialog + fs 写入
     // （仅主进程；renderer 零路径参数）。audit 经 logInfo('audit', …) 脱敏链。
     const researchIpcAdapter = createResearchIpcAdapter({
-      service: () => researchService,
+      // C8（8.19-B）：SMOKE 专属 override——场景自建受控 service 经真实
+      // IPC/preload/bridge 链路驱动 UI；生产/其余冒烟路径 = researchService
+      service: () => smokeResearchServiceOverride.current ?? researchService,
       audit: (message) => logInfo('audit', message),
       exportPort: {
         // 决议 #162(2)：生产装配才包装 Electron dialog 和文件写入（仅主进程；
         // renderer 零路径参数）；defaultFileName 由 adapter 传入（安全固定前缀
         // + taskId 短段——不使用 goal/Result title）
         showSaveDialog: async (defaultFileName) => {
+          // C8（8.19-B）：SMOKE_MODE 注入 dialog 桩——写系统 TEMP 受控文件
+          // （场景读取做字节断言后精确清理；不弹真实对话框）
+          if (SMOKE_MODE && smokeCsvExportPath.current !== null) {
+            return smokeCsvExportPath.current;
+          }
           if (mainWindow === null || mainWindow.isDestroyed()) return null;
           const result = await dialog.showSaveDialog(mainWindow, {
             title: '导出研究表格',
@@ -1030,7 +1040,9 @@ function createBrowserWindow(): void {
               browser: controller,
               sourceService,
               searchProvider: new SmokeSearchFixture(null),
-              providerScript: makeSmokeGateScript(),
+              // C8（8.19-B）：懒解析——场景设置 smokeResearchScript.current 驱动
+              // 四阶段完成；缺省回退 makeSmokeGateScript（确定性空候选研究）
+              providerScript: () => smokeResearchScript.current ?? makeSmokeGateScript(),
               model: 'smoke-model',
             })
         : (db) => {
@@ -1218,6 +1230,14 @@ function createMainWindow(): BrowserWindow {
     logWarn('main', '已拦截 window.open 新窗口请求');
     return { action: 'deny' };
   });
+  // C8（8.19-B）：SMOKE_MODE 下允许 UI 窗口 navigator.clipboard.writeText
+  // （clipboard-sanitized-write 权限——生产 permission-policy 默认拒绝；
+  // 冒烟「复制当前视图」断言需要；仅测试设施，生产行为不变）
+  if (SMOKE_MODE) {
+    win.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+      callback(permission === 'clipboard-sanitized-write');
+    });
+  }
 
   // UI 窗口自身导航保护（§9，安全红线，preload bridge 扩展硬前提）：
   // UI 窗口 preload 随该窗口任何导航加载——若主框架被导航到远程页面，远程页面将获得

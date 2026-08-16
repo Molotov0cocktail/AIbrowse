@@ -77,6 +77,7 @@ import type {
   SourceView,
 } from '../shared/types/sources';
 import { SEARCH_ENGINE_URL } from '../shared/url';
+import { IPC } from '../shared/types/ipc';
 import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 import { listTools } from './ai/tools/tool-registry';
 import type { ToolExecutor } from './ai/tools/tool-executor';
@@ -10848,6 +10849,23 @@ export async function runSmokeScenario(
     // Provider 调用。
     await runResearchProductionFactoryScenario(controller);
 
+    // 8.19-B C8 Research UI DOM 场景（决议 #156–#163；默认矩阵自动包含；
+    // LIVE 模式跳过同 8.4–8.6 条件）：真实 React DOM 驱动全链路——侧栏
+    // 创建/启动/planning→reading→verifying→synthesizing 渐进进度/stop→
+    // cancelled/FakeProvider 完成 completed/大结果画布（viewMode 切换
+    // WebContentsView 不可见机器证据）/Table 排序·筛选·复制/Cards·Ranking·
+    // Conflict·Uncertain 渲染/Evidence 下钻/safe URL 新建 Tab 后返回
+    // browser/敌对 Markdown 零 DOM 注入/viewMode 往返用户 Tab 恒等/CSV
+    // 注入 dialog 桩写系统 TEMP 字节断言后 finally 精确清理。零真实 Provider
+    // 调用（FakeProvider 确定性脚本，8.19-B 不冒充真实证据）。
+    if (
+      options.liveSmoke === undefined &&
+      options.uiWindow !== null &&
+      options.uiWindow !== undefined
+    ) {
+      await runResearchUiScenario({ controller, uiWindow: options.uiWindow });
+    }
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -14880,9 +14898,21 @@ interface SmokeResearchRuntimeDeps {
   browser: BrowserController;
   sourceService: SourceService | null;
   searchProvider: SearchProvider;
-  providerScript: FakeProviderScript;
+  // C8（8.19-B）：懒解析（调用时解引用模块级 holder——场景按阶段切换确定性脚本；
+  // 缺省回退 makeSmokeGateScript 语义由 index.ts 装配闭包承担）
+  providerScript: () => FakeProviderScript;
   model: string;
+  // C8（8.19-B）：确定性 ID（candidateId/claimId/conflictId/resultId 序列）——
+  // 8.19-B 脚本需预知 candidateId 引用受控页；缺省 randomUUID
+  createId?: () => string;
+  // C8（8.19-B）：确定性 captureId（脚本 evidence proposal 引用；缺省 randomUUID——
+  // 不匹配导致 rejected → 轮次耗尽 → synthesizing 解析失败 research-internal）
+  createCaptureId?: () => string;
 }
+
+// C8 8.19-B：SMOKE Research Provider 脚本 holder（index.ts 装配闭包解引用；
+// 场景设置 current 驱动四阶段完成；null = 装配默认（makeSmokeGateScript））
+export const smokeResearchScript: { current: FakeProviderScript | null } = { current: null };
 
 // 零候选研究的空 Sources 端口（set 门控用：Sources 检索恒空——合法空候选）
 function makeEmptySmokeSourceService(): SourceService {
@@ -14934,7 +14964,7 @@ export function createSmokeResearchRuntimeFactory(
           if (consumed) throw new Error('程序缺陷：prepared 已被消费');
           consumed = true;
           const stopController = new AbortController();
-          const provider = new FakeProvider(deps.providerScript);
+          const provider = new FakeProvider(deps.providerScript());
           const runtime = new ResearchRuntime({
             taskId: input.taskId,
             goal: input.goal,
@@ -14946,11 +14976,13 @@ export function createSmokeResearchRuntimeFactory(
             captureService: new CaptureService({
               workspace: new ResearchWorkspace(input.taskId, deps.browser),
               browser: deps.browser,
+              createCaptureId: deps.createCaptureId,
             }),
             persistence: createRepositoryPersistence(deps.db, input.taskId),
             prompts: RESEARCH_PROMPTS_PORT,
             synthesis: RESEARCH_SYNTHESIS_PORT,
             resultValidation: RESEARCH_RESULT_VALIDATION_PORT,
+            createId: deps.createId,
             onProgress: input.onProgress,
             onSettle: input.onSettle,
             stopSignal: stopController.signal,
@@ -15891,7 +15923,7 @@ export async function runResearchSmokeGate(mode: 'set' | 'check'): Promise<void>
           browser: smokeBrowserForGate(),
           sourceService: null,
           searchProvider: searchFixture,
-          providerScript: gateScript,
+          providerScript: () => gateScript,
           model: 'smoke-model',
         }),
     });
@@ -15965,4 +15997,590 @@ function smokeBrowserForGate(): BrowserController {
     getActiveTab: async () => null,
     getPageSnapshot: async () => null,
   } as unknown as BrowserController;
+}
+
+// ---------- C8 8.19-B：Research UI DOM 场景（决议 #156–#163） ----------
+
+// 8.19-B 专属 holder：SMOKE 装配闭包解引用（index.ts）——场景设置后经真实
+// IPC/preload/bridge 链路驱动 UI；场景收尾复位。
+export const smokeResearchServiceOverride: { current: ResearchService | null } = {
+  current: null,
+};
+export const smokeCsvExportPath: { current: string | null } = { current: null };
+
+// stop 场景脚本：planning 后读取阶段挂起（长 delay）——用户点击停止 →
+// Service.stopTask → runtime.abort → 流中断 → cancelled
+function makeUiStopScript(): FakeProviderScript {
+  return {
+    rounds: [
+      [
+        {
+          text: JSON.stringify({
+            sourceMode: 'search',
+            sourceQuery: '停止场景',
+            groupId: null,
+            webQueries: [],
+          }),
+        },
+      ],
+      [{ text: JSON.stringify({ selectedCandidateIds: [] }) }],
+      [{ text: '挂起等待停止', delayMs: 300000 }],
+    ],
+  };
+}
+
+// 完成场景脚本：完整四阶段（planning → 选择 → 读取/证据 → 核验 → 综合）。
+// Result 含 markdown（safe 链接 + 敌对 HTML 文本）/table（公式注入单元格 +
+// 可排序行）/cards/ranking/conflict/uncertain——8.19-B 画布断言数据源。
+// 双候选（两个不同 canonicalKey——conflict 装配要求整个 Conflict 覆盖 ≥2 个
+// canonicalKey（决议 #144(2)））；脚本引用确定性 ID（createId 注入序列）
+const UI_CAND_ID_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const UI_CAND_ID_B = 'bbbbbbbb-aaaa-4aaa-8aaa-bbbbbbbbbbbb';
+const UI_EV_ID_A = 'cccccccc-bbbb-4bbb-8bbb-cccccccccccc';
+const UI_EV_ID_B = 'dddddddd-bbbb-4bbb-8bbb-dddddddddddd';
+const UI_CLAIM_1 = 'eeeeeeee-cccc-4ccc-8ccc-eeeeeeeeeeee';
+const UI_CLAIM_2 = 'ffffffff-cccc-4ccc-8ccc-ffffffffffff';
+const UI_CONFLICT = '11111111-dddd-4ddd-8ddd-111111111111';
+const UI_RESULT_ID = '22222222-eeee-4eee-8eee-222222222222';
+
+// createId 注入序列（Runtime 调用顺序：候选A/候选B → evidenceA/evidenceB →
+// claim1/claim2 → conflict1 → resultId）
+const UI_ID_SEQ = [
+  UI_CAND_ID_A,
+  UI_CAND_ID_B,
+  UI_EV_ID_A,
+  UI_EV_ID_B,
+  UI_CLAIM_1,
+  UI_CLAIM_2,
+  UI_CONFLICT,
+  UI_RESULT_ID,
+];
+
+// createCaptureId 注入序列（reading 逐候选读取：A → B）
+const UI_CAPTURE_SEQ = ['ui-capture-a', 'ui-capture-b'];
+
+// 运行时消费序列（场景按阶段重置——createId 消费不跨场景污染；stop 场景零
+// 候选零消费，完成场景完整消费）
+let uiIdSeqRuntime: string[] = [];
+let uiCaptureSeqRuntime: string[] = [];
+
+function makeUiCompletionScript(): FakeProviderScript {
+  return {
+    rounds: [
+      [
+        {
+          // 每轮 delayMs：阶段渐进可见（FakeProvider 同步快进会让 React 批处理
+          // 合并中间状态——'规划来源' 等中间阶段从未渲染）
+          delayMs: 500,
+          text: JSON.stringify({
+            sourceMode: 'search',
+            sourceQuery: '完成场景',
+            groupId: null,
+            // webQueries 触发 search 夹具 → 受控页候选（source-search 恒空——
+            // 零 web 查询则候选 0、选择轮引用不存在非法重提、轮次耗尽）
+            webQueries: ['冒烟'],
+          }),
+        },
+      ],
+      [
+        {
+          delayMs: 500,
+          text: JSON.stringify({ selectedCandidateIds: [UI_CAND_ID_A, UI_CAND_ID_B] }),
+        },
+      ],
+      [
+        {
+          delayMs: 500,
+          kind: 'toolCalls',
+          toolCalls: [{ id: 'ui-tc-1', name: 'browser_read', arguments: '{}' }],
+        },
+      ],
+      [
+        {
+          delayMs: 500,
+          text: JSON.stringify([
+            {
+              captureId: 'ui-capture-a',
+              candidateId: UI_CAND_ID_A,
+              type: 'quote',
+              locator: { kind: 'text', excerpt: '这是研究采集页的第一段正文' },
+              excerpt: '这是研究采集页的第一段正文',
+              value: null,
+            },
+          ]),
+        },
+      ],
+      [
+        {
+          delayMs: 500,
+          text: JSON.stringify([
+            {
+              captureId: 'ui-capture-b',
+              candidateId: UI_CAND_ID_B,
+              type: 'quote',
+              locator: {
+                kind: 'text',
+                excerpt: '这是研究采集页B的第一段正文，主张结果应为 B 版本',
+              },
+              excerpt: '这是研究采集页B的第一段正文，主张结果应为 B 版本',
+              value: null,
+            },
+          ]),
+        },
+      ],
+      [
+        {
+          delayMs: 500,
+          text: JSON.stringify({
+            vendorCandidateIds: [],
+            claims: [
+              {
+                claimKey: 'c1',
+                text: '受控页声明第一段正文为采集事实',
+                severity: 'medium',
+                evidenceIds: [UI_EV_ID_A],
+              },
+              {
+                claimKey: 'c2',
+                text: 'B 页主张结果应为 B 版本',
+                severity: 'medium',
+                evidenceIds: [UI_EV_ID_B],
+              },
+            ],
+            conflicts: [
+              {
+                topic: '来源表述差异',
+                positions: [
+                  {
+                    positionText: '受控页 A 表述为第一段',
+                    sourceRefs: [UI_CAND_ID_A],
+                  },
+                  {
+                    positionText: 'B 页主张结果应为 B 版本',
+                    sourceRefs: [UI_CAND_ID_B],
+                  },
+                ],
+                claimKeys: ['c1', 'c2'],
+              },
+            ],
+          }),
+        },
+      ],
+      [
+        {
+          delayMs: 500,
+          text: JSON.stringify({
+            result: {
+              title: 'UI 冒烟研究结果',
+              summary: 'UI 场景确定性结果摘要',
+              blocks: [
+                {
+                  kind: 'markdown',
+                  text: '结论正文 [官方文档](https://example.com/docs) 与 <script>alert(1)</script> 敌对文本',
+                },
+                {
+                  kind: 'table',
+                  columns: ['名称', '数值'],
+                  rows: [
+                    ['乙', '=cmd|/C calc'],
+                    ['甲', '10'],
+                    ['甲', '1'],
+                    ['丙', '3'],
+                  ],
+                  sourceRefs: [UI_CAND_ID_A],
+                },
+                {
+                  kind: 'cards',
+                  items: [
+                    {
+                      title: '卡片甲',
+                      subtitle: '副标题',
+                      body: '卡片正文',
+                      sourceRefs: [UI_CAND_ID_A],
+                    },
+                  ],
+                },
+                {
+                  kind: 'ranking',
+                  items: [
+                    { rank: 1, title: '第一名', detail: '细节一', sourceRefs: [UI_CAND_ID_A] },
+                    { rank: 2, title: '第二名', detail: '细节二', sourceRefs: [UI_CAND_ID_A] },
+                  ],
+                },
+                { kind: 'uncertain', text: '部分结论证据不足', reason: '单一来源披露' },
+              ],
+            },
+          }),
+        },
+      ],
+    ],
+  };
+}
+
+// 8.19-B（C8，决议 #156–#163；默认矩阵自动包含；dev+生产双场景）：真实 React
+// DOM 驱动 Research 全链路（侧栏 → IPC → adapter → service → Runtime →
+// progress/task-done 事件 → UI）——stop→cancelled；FakeProvider + SMOKE
+// service 完成 completed；结果画布（viewMode 切换 WebContentsView 不可见机器
+// 证据 = 全部 Tab webContents 零聚焦）；Table 排序/筛选/复制；Cards/Ranking/
+// Conflict/Uncertain 渲染；Evidence 下钻；safe URL 新建 Tab 后返回 browser；
+// 敌对 Markdown 零 DOM 注入；viewMode 往返前后用户 Tab id/url/title/active
+// 恒等；CSV 注入 dialog 桩写系统 TEMP 受控文件——字节断言（BOM/CRLF/公式
+// 防护/当前视图一致性/Evidence 摘录零出现）后 finally 精确清理。
+async function runResearchUiScenario(options: {
+  controller: BrowserController;
+  uiWindow: BrowserWindow;
+}): Promise<void> {
+  const { controller, uiWindow } = options;
+  const uiWc = uiWindow.webContents;
+  const csvDir = mkdtempSync(join(tmpdir(), 'aibrowse-research-ui-csv-'));
+  const csvPath = join(csvDir, 'research-export.csv');
+  let service: ResearchService | null = null;
+  let tmpDir: string | null = null;
+  const pages = await startControlledPages();
+
+  const tabSnapshot = async (): Promise<string> =>
+    JSON.stringify(
+      (await controller.getTabs()).map((t) => ({
+        id: t.id,
+        url: t.url,
+        title: t.title,
+        active: t.active,
+      })),
+    );
+
+  const assertNoTabFocused = async (failure: string): Promise<void> => {
+    // WebContentsView 不可见机器证据：结果画布模式（contentVisible=false）下
+    // 全部 Tab webContents 不得获得焦点（setVisible(false) + 不 focus 契约）
+    for (const wc of webContents.getAllWebContents()) {
+      if (wc === uiWc) continue; // UI 窗口自身（React 画布）
+      assert(!wc.isFocused(), failure);
+    }
+  };
+
+  try {
+    // createId/createCaptureId 序列在 buildRuntimeFactory 闭包内消费（UI_ID_SEQ/
+    // UI_CAPTURE_SEQ 每次运行新建——场景内单一 service 单次消费，无跨 run 污染）
+    tmpDir = mkdtempSync(join(tmpdir(), 'aibrowse-research-ui-smoke-'));
+    const outcome = openResearchStore({
+      dbPath: join(tmpDir, 'research.db'),
+      getSourcesState: () => 'normal',
+      getProviderState: () => ({ configured: true, supportsToolCalling: true }),
+      buildRuntimeFactory: (db) =>
+        createSmokeResearchRuntimeFactory({
+          db,
+          browser: controller,
+          sourceService: makeEmptySmokeSourceService(),
+          // 双受控页（两个 canonicalKey——conflict 装配要求 ≥2，决议 #144(2)）
+          searchProvider: new SmokeSearchFixture([
+            pages.researchCaptureUrl,
+            pages.researchCaptureUrlB,
+          ]),
+          providerScript: () => smokeResearchScript.current ?? makeSmokeGateScript(),
+          model: 'smoke-model',
+          createId: () => uiIdSeqRuntime.shift() ?? 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          createCaptureId: () => uiCaptureSeqRuntime.shift() ?? 'ui-capture-x',
+        }),
+    });
+    assert(outcome.mode === 'normal', '8.19-B：store 正常装配');
+    if (outcome.mode !== 'normal') return;
+    service = outcome.service;
+    smokeResearchServiceOverride.current = service;
+    // 场景自建 service 的事件转发（index.ts 的转发订阅挂在原 SMOKE service 上；
+    // override 后必须由场景转发 progress/task-done 到 UI 窗口——事件只发主窗口）
+    service.onProgress((event) => {
+      if (!uiWindow.isDestroyed() && !uiWc.isDestroyed()) {
+        uiWc.send(IPC.ResearchProgress, event);
+      }
+    });
+    service.onTaskDone((event) => {
+      if (!uiWindow.isDestroyed() && !uiWc.isDestroyed()) {
+        uiWc.send(IPC.ResearchTaskDone, event);
+      }
+    });
+
+    // —— 打开研究面板（侧栏三态互斥：点击「研究」） ——
+    await uiJs(
+      uiWc,
+      "(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent === '研究'); if (b) b.click(); return b !== undefined; })()",
+    );
+    await waitForUiText(uiWc, '.research-panel', '研究', 5000, '8.19-B：研究面板未打开');
+
+    // —— 场景 A：创建 → 启动 → planning 渐进 → stop → cancelled ——
+    uiIdSeqRuntime = [...UI_ID_SEQ];
+    uiCaptureSeqRuntime = [...UI_CAPTURE_SEQ];
+    smokeResearchScript.current = makeUiStopScript();
+    await uiJs(
+      uiWc,
+      "(() => {\n        const el = document.querySelector('.research-panel-goal');\n        if (!el) throw new Error('goal textarea 不存在');\n        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;\n        setter.call(el, '停止场景研究目标');\n        el.dispatchEvent(new Event('input', { bubbles: true }));\n      })()",
+    );
+    await delay(100);
+    await clickUi(uiWc, '.research-panel-start');
+    await waitForUiText(
+      uiWc,
+      '.research-panel-status',
+      '运行中',
+      10000,
+      '8.19-B：任务未进入运行中',
+    );
+    // stop 场景脚本选择空数组 → 零选定 → 阶段快速推进（reading 跳过）——不
+    // 依赖特定阶段，运行中即停止（决议 #163：停止任意运行阶段）
+    await clickUi(uiWc, '.research-panel-stop');
+    await waitForUiText(
+      uiWc,
+      '.research-panel-status',
+      '已取消',
+      20000,
+      '8.19-B：停止后未显示已取消',
+    );
+
+    // —— 场景 B：完整四阶段完成（planning→reading→verifying→synthesizing 渐进） ——
+    uiIdSeqRuntime = [...UI_ID_SEQ];
+    uiCaptureSeqRuntime = [...UI_CAPTURE_SEQ];
+    smokeResearchScript.current = makeUiCompletionScript();
+    await uiJs(
+      uiWc,
+      "(() => {\n        const el = document.querySelector('.research-panel-goal');\n        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;\n        setter.call(el, '完成场景研究目标');\n        el.dispatchEvent(new Event('input', { bubbles: true }));\n      })()",
+    );
+    await delay(100);
+    await clickUi(uiWc, '.research-panel-start');
+    await waitForUiText(
+      uiWc,
+      '.research-panel-status',
+      '规划来源',
+      10000,
+      '8.19-B：B 未进入规划来源',
+    );
+    await waitForUiText(
+      uiWc,
+      '.research-panel-status',
+      '读取来源',
+      30000,
+      '8.19-B：B 未进入读取来源',
+    );
+    await waitForUiText(
+      uiWc,
+      '.research-panel-status',
+      '交叉核验',
+      30000,
+      '8.19-B：B 未进入交叉核验',
+    );
+    await waitForUiText(
+      uiWc,
+      '.research-panel-status',
+      '综合生成',
+      30000,
+      '8.19-B：B 未进入综合生成',
+    );
+    await waitForUiText(uiWc, '.research-panel-status', '已完成', 60000, '8.19-B：B 未完成');
+
+    // —— 打开结果 → viewMode='research-result' → WebContentsView 实际不可见 ——
+    await clickUi(uiWc, '.research-panel-open-result');
+    await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：结果画布未打开');
+    await assertNoTabFocused('8.19-B：结果画布模式下 Tab 不应获得焦点（WebContentsView 不可见）');
+    // 隐藏期间 activate 不重新显示不 focus：点击 TabBar 另一 Tab
+    await clickUiTab(uiWc, 0);
+    await delay(200);
+    await assertNoTabFocused('8.19-B：隐藏期间 activate 不应重新显示/focus');
+    // 画布仍在（viewMode 未因 activate 改变）
+    await waitForUiText(
+      uiWc,
+      '.research-canvas',
+      '返回浏览',
+      3000,
+      '8.19-B：activate 不应离开结果画布',
+    );
+
+    // —— Table 排序/筛选/复制 ——
+    const firstCellText = (row: number): Promise<string> =>
+      uiJs(
+        uiWc,
+        `(() => {
+          const rows = document.querySelectorAll('.research-table-view tbody tr');
+          const r = rows[${row}];
+          return r ? r.cells[0].textContent : '';
+        })()`,
+      ) as Promise<string>;
+    const rowsCount = (): Promise<number> =>
+      uiJs(
+        uiWc,
+        `document.querySelectorAll('.research-table-view tbody tr').length`,
+      ) as Promise<number>;
+    // 排序：点第 0 列表头 → asc（丙<乙<甲 二元序）→ 再点 → desc → 再点 → 原序
+    await clickUi(uiWc, '.research-table-th');
+    await delay(150);
+    const ascFirst = await firstCellText(0);
+    assert(ascFirst === '丙', `8.19-B：排序 asc 首行应为丙（实际 ${ascFirst}）`);
+    await clickUi(uiWc, '.research-table-th');
+    await delay(150);
+    const descFirst = await firstCellText(0);
+    assert(descFirst === '甲', `8.19-B：排序 desc 首行应为甲（实际 ${descFirst}）`);
+    // 筛选：输入「甲」→ 2 行；清除 → 恢复 4 行
+    await uiJs(
+      uiWc,
+      "(() => {\n        const el = document.querySelector('.research-table-filter');\n        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;\n        setter.call(el, '甲');\n        el.dispatchEvent(new Event('input', { bubbles: true }));\n      })()",
+    );
+    await delay(150);
+    assert((await rowsCount()) === 2, '8.19-B：筛选「甲」应剩 2 行');
+    await clickUi(uiWc, '.research-table-clear');
+    await delay(150);
+    assert((await rowsCount()) === 4, '8.19-B：清除筛选应恢复 4 行');
+    // 复制当前视图（明确用户点击；navigator.clipboard.writeText 已调用）——
+    // Electron 后台冒烟运行时窗口可能无 OS 焦点（clipboard 被拒为合法产品行为：
+    // 失败显示固定中文诊断，不记录单元格内容——决议 #160(6)/FT-16）——断言
+    // 固定中文诊断出现（成功或失败均不泄露单元格内容）；成功路径（窗口有焦点）
+    // 由既有 S4 UI 冒烟矩阵场景 1–12 的 clipboard 相关链路与环境共同保证
+    uiWc.focus();
+    await delay(150);
+    await clickUi(uiWc, '.research-table-copy');
+    await waitFor(
+      async () => {
+        const t = (await uiJs(
+          uiWc,
+          `document.querySelector('.research-table-notice')?.textContent ?? ''`,
+        )) as string;
+        return t.includes('已复制当前视图') || t.includes('复制失败，请重试');
+      },
+      5000,
+      '8.19-B：复制未产生固定中文诊断',
+    );
+
+    // —— Cards/Ranking/Conflict/Uncertain 渲染 ——
+    await waitForUiText(uiWc, '.research-cards', '卡片甲', 5000, '8.19-B：Cards 未渲染');
+    await waitForUiText(uiWc, '.research-ranking', '第一名', 5000, '8.19-B：Ranking 未渲染');
+    await waitForUiText(
+      uiWc,
+      '.research-conflicts',
+      '来源表述差异',
+      5000,
+      '8.19-B：Conflict 未渲染',
+    );
+    await waitForUiText(
+      uiWc,
+      '.research-uncertain',
+      '部分结论证据不足',
+      5000,
+      '8.19-B：Uncertain 未渲染',
+    );
+
+    // —— Evidence 下钻（点击结论/表格来源 → drawer） ——
+    await clickUi(uiWc, '.research-canvas-body .research-source-entry');
+    await waitForUiText(
+      uiWc,
+      '.research-evidence-drawer',
+      '来源证据',
+      5000,
+      '8.19-B：Evidence drawer 未打开',
+    );
+    await waitForUiText(
+      uiWc,
+      '.research-evidence-drawer',
+      '这是研究采集页的第一段正文',
+      5000,
+      '8.19-B：Evidence 摘录未显示',
+    );
+    await clickUi(uiWc, '.research-evidence-close');
+    await delay(150);
+
+    // —— 敌对 Markdown 零 DOM 注入（script 形态只出现为转义文本） ——
+    const hostileInjected = (await uiJs(
+      uiWc,
+      "(() => document.querySelectorAll('.research-canvas script, .research-canvas img, .research-canvas iframe').length)()",
+    )) as number;
+    assert(hostileInjected === 0, '8.19-B：敌对 Markdown 零可执行元素注入');
+
+    // —— safe URL 新建 Tab 后返回 browser 模式 ——
+    const tabsBefore = await tabSnapshot();
+    await clickUi(uiWc, '.research-link');
+    await delay(400);
+    await waitFor(
+      async () => {
+        const t = await controller.getTabs();
+        return t.length === JSON.parse(tabsBefore).length + 1;
+      },
+      10000,
+      '8.19-B：safe URL 未创建新 Tab',
+    );
+    // 画布已关闭（viewMode 回 browser）
+    await delay(300);
+    const canvasGone = (await uiJs(
+      uiWc,
+      `document.querySelector('.research-canvas') === null`,
+    )) as boolean;
+    assert(canvasGone, '8.19-B：打开来源后应返回 browser 模式');
+
+    // —— viewMode 往返：再打开结果 → 断言用户 Tab id/url/title/active 恒等 ——
+    await clickUi(uiWc, '.research-panel-open-result');
+    await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：画布往返失败');
+    const beforeRoundTrip = await tabSnapshot();
+    await clickUi(uiWc, '.research-canvas-back');
+    await delay(300);
+    await clickUi(uiWc, '.research-panel-open-result');
+    await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：画布二次往返失败');
+    const afterRoundTrip = await tabSnapshot();
+    assert(
+      JSON.stringify(afterRoundTrip) === JSON.stringify(beforeRoundTrip),
+      '8.19-B：viewMode 往返前后用户 Tab id/url/title/active 恒等',
+    );
+
+    // —— CSV：注入 dialog 桩（系统 TEMP 受控路径）→ 主进程真实写入 → 字节断言 ——
+    smokeCsvExportPath.current = csvPath;
+    // 先恢复原序 + 清筛选（当前视图 = 无排序无筛选）——「当前视图一致性」断言
+    await clickUi(uiWc, '.research-table-clear').catch(() => undefined);
+    await delay(150);
+    await clickUi(uiWc, '.research-table-export');
+    await waitFor(async () => existsSync(csvPath), 10000, '8.19-B：CSV 文件未写入');
+    const csvBytes = readFileSync(csvPath);
+    const csvText = csvBytes.toString('utf8');
+    // BOM
+    assert(
+      csvBytes[0] === 0xef && csvBytes[1] === 0xbb && csvBytes[2] === 0xbf,
+      '8.19-B：CSV 缺 UTF-8 BOM',
+    );
+    // CRLF + header
+    assert(csvText.includes('名称,数值\r\n'), '8.19-B：CSV header 行缺失');
+    // 公式防护字节级（=cmd 前缀加单引号）
+    assert(csvText.includes("'=cmd|/C calc"), '8.19-B：CSV 公式防护缺失');
+    // 当前视图一致性：4 数据行（无筛选）且行序 = UI 原序（乙/甲/甲/丙）
+    const csvRows = csvText
+      .split('\r\n')
+      .filter((l) => l !== '' && !l.replace('﻿', '').startsWith('名称')); // BOM header 行剔除
+    assert(csvRows.length === 4, `8.19-B：CSV 行数应为 4（实际 ${csvRows.length}）`);
+    assert(csvRows[0]!.startsWith('乙,'), '8.19-B：CSV 首行应为乙（当前视图一致）');
+    // Evidence 摘录/候选标题/URL 元数据零出现
+    assert(!csvText.includes('这是研究采集页'), '8.19-B：CSV 不得含 Evidence 摘录');
+    assert(!csvText.includes('https://'), '8.19-B：CSV 不得含 URL 元数据');
+    assert(!csvText.includes('卡片甲'), '8.19-B：CSV 不得含其他块内容');
+    assert(!csvText.includes('UI 冒烟研究结果'), '8.19-B：CSV 不得含 Result 标题');
+
+    logInfo('smoke', '8.19-B C8 Research UI 场景全部通过');
+    // 恢复初始 UI 状态：8.19-B 结束时画布/研究侧栏残留会影响后续 AI/Sources
+    // UI 场景的 DOM 断言（矩阵 4 徽标假定 AI 面板挂载）——切回 browser 模式 +
+    // 收起研究面板 + 恢复 AI 面板打开状态（三态互斥：research → null → ai）
+    await clickUi(uiWc, '.research-canvas-back').catch(() => undefined);
+    await clickUi(uiWc, '.research-panel-collapse').catch(() => undefined);
+    await uiJs(
+      uiWc,
+      "(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent === 'AI'); if (b) b.click(); })()",
+    );
+    await delay(150);
+  } finally {
+    smokeResearchScript.current = null;
+    smokeCsvExportPath.current = null;
+    if (smokeResearchServiceOverride.current !== null) {
+      smokeResearchServiceOverride.current = null;
+    }
+    try {
+      if (service !== null) await service.shutdown();
+    } catch (err) {
+      logWarn('smoke', '8.19-B：Research store 关闭异常（不掩盖原始错误）', err);
+    }
+    try {
+      await pages.close();
+    } catch (err) {
+      logWarn('smoke', '8.19-B：受控页面服务器关闭异常', err);
+    }
+    // 精确清理：导出文件 + 临时目录（Windows 句柄已关闭——removeSmokeDirWithRetry）
+    if (tmpDir !== null) await removeSmokeDirWithRetry(tmpDir);
+    await removeSmokeDirWithRetry(csvDir);
+  }
 }
