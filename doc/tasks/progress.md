@@ -137,8 +137,8 @@
   一致/诚实边界保留）/C5→C6→C7 数据交接（内存不可变快照 +
   verificationState + C7 context 新字段）/Prompt 与上下文构建所有权
   （四编译期常量 + 冻结端口对象，块组装仍归 C5 Runtime）/parseResultDraft
-  结构解析与 Uncertainty 分工）；红→绿 聚焦 **61/61**（claim-model 42 +
-  prompts 10 + runtime-c6 9）+ 全量 **1865/1865**（基线 1804 + 61，
+  结构解析与 Uncertainty 分工）；红→绿 聚焦 **61/61**（claim-model 43 +
+  prompts 9 + runtime-c6 9）+ 全量 **1865/1865**（基线 1804 + 61，
   既有用例零删除零削弱）；冒烟 8.18 dev+生产双场景退出码 0/0
   （Claim/Conflict 确定性装配断言 + synthesis 上下文快照 + Result
   coverage 计数零百分比 + ≥1 uncertain 块 + 正文/reasoning 零落盘 +

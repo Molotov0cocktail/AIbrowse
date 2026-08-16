@@ -170,7 +170,7 @@ C7/C8 代码；不夹带 index.ts 生产装配改动。
   synthesis/claim-model.ts（VerificationDraft 严格解析 + Claim/Conflict
   确定性装配 + parseResultDraft）、synthesis/research-prompts.ts（四编译期
   常量 + 冻结端口对象）+ Runtime 窄修改（输出预算/数据交接/终态清空）后——
-  C6 聚焦 **61/61**（claim-model 42 + prompts 10 + runtime-c6 9）；
+  C6 聚焦 **61/61**（claim-model 43 + prompts 9 + runtime-c6 9）；
   全量 **1865/1865**（基线 1804 + 61 新增；既有用例零删除零削弱）。
   实现期修正均为契约落地（fail 返回类型收窄/测试夹具数据库隔离——候选
   表 candidate_id 为全局主键/边界测试脚本与 idQueue 消费序对齐），无迁就
