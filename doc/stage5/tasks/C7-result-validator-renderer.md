@@ -2,10 +2,15 @@
 
 > 第五阶段任务文档。契约 `doc/stage5/detailed-design.md` §8；安全契约
 > `doc/stage5/threat-model.md` §3.5（FT-11/FT-12）；决策 D9（proposal §10）。
+> **C5 端口契约校准（2026-08-16，决议 #134，本轮登记、C7 实施时落地）**：
+> result-validator 实现 `ResearchResultValidationPort.validate`（端口精确
+> 形状见 detailed-design §15 决议 #134——C5 已冻结，C7 按此实现，§8.1
+> 校验规则不变）。
 
 ## 目标
 
-落地 ResultValidator 纯函数（闭合判别联合 + 字段白名单逐块校验）与安全
+落地 ResultValidator 纯函数（闭合判别联合 + 字段白名单逐块校验，
+实现 ResearchResultValidationPort.validate 端口——决议 #134）与安全
 Renderer（自实现受控 Markdown 子集 + Table/Cards/Ranking 组件）——
 **零新依赖**；Renderer 只消费已验证 Result Schema，不接触
 BrowserController/SQLite/Electron/Provider。
@@ -36,7 +41,9 @@ BrowserController/SQLite/Electron/Provider。
   `result-validator.test.ts`、`src/renderer/src/research/markdown/
 parse-markdown.ts` + `parse-markdown.test.ts`、
   `src/renderer/src/research/ResultView.tsx`（组件，C8 接线）。
-- 既有文件零改动（renderer 目录为新增子目录）。
+- 修改：`src/main/index.ts`（生产装配注入 ResearchResultValidationPort——
+  决议 #134(3) fail-closed 解除；与 C6 端口装配同批或本任务单独注入，
+  两者齐备后 RuntimeFactory 才可建立）。
 
 ## 依赖
 
@@ -49,7 +56,8 @@ C1（Result Schema 类型）。
    javascript: URL/HTML 形态字段/失败语义回注）；markdown 解析矩阵
    （子集各语法/raw HTML 关闭：`<script>`/`<img onerror>` 形态纯文本/
    URL 白名单拒绝/转义与 bidi 剔除/超预算安全降级纯文本/敌手闭合）。
-2. **绿**：实现两模块 + 组件；逐用例转绿。
+2. **绿**：实现两模块 + 组件（validator 实现
+   ResearchResultValidationPort.validate 端口形状——决议 #134）；逐用例转绿。
 3. 全量回归 + 红线扫描（renderer 零 dangerouslySetInnerHTML 实际使用
    断言；零新依赖——package.json/lockfile 零 diff）。
 

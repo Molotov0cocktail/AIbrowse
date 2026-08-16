@@ -63,26 +63,38 @@
   `UNTRUSTED_TOOL_RESULT` 受控块（闭合转义 + 确定性截断）；Research 的候选
   元数据/capture 摘录/Evidence 回注**复用同一块序列化**（不新增特权块）。
 - system 恒为编译期常量：`AGENT_RESEARCH_PLANNING_PROMPT` /
-  `AGENT_RESEARCH_READING_PROMPT` / `AGENT_RESEARCH_SYNTHESIS_PROMPT`
-  与共读 SYSTEM_PROMPT、AGENT_SYSTEM_PROMPT 互不混用（恒等断言）——
+  `AGENT_RESEARCH_READING_PROMPT` / `AGENT_RESEARCH_VERIFYING_PROMPT` /
+  `AGENT_RESEARCH_SYNTHESIS_PROMPT`（决议 #134(4) 四常量）与共读
+  SYSTEM_PROMPT、AGENT_SYSTEM_PROMPT 互不混用（恒等断言）——
   FT-01/FT-02 的结构性阻断：被读内容不能改写规划/综合指令。
 - 角色仅程序字面量；Research 轮次消息沿用 ProviderMessage 角色契约。
 
 ### 3.2 能力层（数据访问边界 + 禁具）
 
-- **Research 工具子集**（详细设计 §15 决议 #96）：Research 模型轮 tools 仅
-  `browser_open/browser_read/search_web/source_search/source_list/
-source_get` 六工具（编译期常量子集）；无 click/fill/scroll/find/navigate/
+- **Research 工具子集**（详细设计 §15 决议 #96 + 决议 #132 执行模型）：
+  Research 模型轮 tools 仅 `browser_open/browser_read/search_web/
+source_search/source_list/source_get` 六工具（编译期常量子集
+  `RESEARCH_TOOL_NAMES`）；无 click/fill/scroll/find/navigate/
   source_apply_changes；不新增任何注册工具（注册表保持 17）；
   ResearchRuntime 直调能力仅浏览器只读/检索（决议 #94）。
+- **Research 专属执行模型（决议 #132）**：Research 工具**不经
+  ToolRegistry/ToolExecutor/权限链/ConfirmManager/审计管线**——名称/
+  wire/参数形状与注册表同名工具交叉断言一致，description 与执行器为
+  Research 专属；`browser_open` 只能读取已进入当前任务候选集合的 URL
+  （经 CaptureService.read + capture 记录）；`browser_read` 只能返回
+  本 run 内存 CaptureContent（跨任务/未知/过期 tabId 安全拒绝，零
+  BrowserController 调用）；`source_*` audience 恒 'agent'；未知工具/
+  子集外工具/非法参数安全工具结果（不执行、不 throw）。
 - **禁具（不存在，grep 断言）**：research_sql/research_export/research_file/
   任意文件系统工具/任意网络工具/shell/eval/任意 JS 保持零命中；CSV 导出仅
   主进程 dialog 安全通道（非 Agent 工具，renderer 零路径参数）。
 - **SQL 封闭**：research.db 业务 SQL 仅 ResearchRepository 编译期常量 +
   参数绑定；driver 仅连接级运维 SQL（复用决议 #47 模式）；renderer/preload/
-  Runtime/Tool 零 SQL。
+  Runtime/Tool 零 SQL（**Runtime 经窄 persistence port 持久化，零 SQL——
+  决议 #137**）。
 - **参数校验**：所有 research:* 载荷白名单校验（未知字段拒绝）；goal 截断；
-  taskId UUID 形状。
+  taskId UUID 形状；**ResearchPlan 全部模型字段视为不可信输入**（白名单/
+  类型/长度/数量；groupId/candidateId 只能引用程序提供的集合——决议 #133）。
 
 ### 3.3 决策层（确定性程序判定，模型只是提议者）
 
@@ -119,9 +131,15 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
 
 - **确定性预算**（详细设计 §6.8 全表）：候选 ≤24/选定 ≤8/并发 Tab ≤3/
   单页 ≤60k 字符/Evidence ≤60/轮次 ≤24/步数 ≤64/时长 ≤30 分钟/请求上下文
-  ≤200k 字符/Result ≤200k 字符/单任务持久化 ≤500k 字符/保留任务 ≤30——
-  全部编译期常量 + 运行时裁剪 + 单测断言 + 冒烟预算注入场景；预算用尽 =
-  正式终态（failed + 已收集 Evidence 保留，不自动扩预算）。
+  ≤200k 字符/Result ≤200k 字符/单任务持久化 ≤500k 字符/保留任务 ≤30/
+  规划 webQueries ≤1——全部编译期常量 + 运行时裁剪 + 单测断言 + 冒烟预算
+  注入场景；预算用尽 = 正式终态（failed + 已收集 Evidence 保留，不自动
+  扩预算）；**步数/轮次超限的那次调用不得执行（决议 #136）**；Capture
+  ≤16、Evidence ≤60 超限 → research-budget-exhausted（已提交 Evidence
+  保留，决议 #137(4)）。
+- **终态预留（FT-10 补强，决议 #137(2)）**：非终态写入额外断言「当前 +
+  新增 + 最坏终态任务行 ≤ 500k」——非终态写吃满预算导致任务永久 running
+  的缺口关闭（failed/cancelled 终态始终可落库）。
 - **持久化最小化（FT-14/FT-16）**：capture 正文/完整快照/模型思维/无限
   transcript **零落盘**（仅内容哈希 + 摘要元数据）；research.db 仅
   goal/evidence（验证后）/claims/result/心跳；Evidence 摘录 ≤500 字符
@@ -132,7 +150,11 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
   只从既有 PageSnapshot 构造，不进 Capture/Repository/日志/会话文件；
   所有可被 EvidenceValidator 引用的值都在 60k 预算与哈希覆盖范围内
   （「未进入哈希」的内容不得保留）。失败读取的 capture 行仅存 sentinel
-  元数据（决议 #126），同样零正文。
+  元数据（决议 #126），同样零正文。**reasoning 零记录/显示/持久化**（如
+  Provider 协议需要仅在当前运行内不透明回放——决议 #136(3)）。
+- **未验证模型输出零入库（决议 #134(3)）**：C6/C7 端口缺失时产品不建立
+  Runtime（research-runtime-unavailable fail-closed）；C5 stub 仅测试
+  设施；不得把未验证模型输出写入 ResearchResult。
 - 数据库/备份/capture 正文**不进入模型上下文**（除经块按预算回注的受控
   摘录）。
 
@@ -155,15 +177,23 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
 
 - **task Tab 所有权**（详细设计 §10）：精确 tabId 集合（createTab 返回值）；
   清理只关本任务创建的确切 id；用户 Tab 永不关闭；用户关闭 task Tab →
-  读取失败继续；跨任务 tabId/captureId 引用在 Workspace/Validator 层拒绝。
-- **事件与写入时序**：research:progress/task-done 携带 taskId（renderer 按
+  读取失败继续；跨任务 tabId/captureId 引用在 Workspace/Validator 层拒绝；
+  **cleanupAll 至少在所有终态执行**（失败只记录有界脱敏诊断并保留所有权
+  供 shutdown 精确重试——决议 #138(4)）。
+- **事件与写入时序**：ResearchProgressEvent 携带 taskId（renderer 按
   taskId 键控 reducer，跨任务串线忽略）；终态单一所有权守卫（finish()
-  后迟到事件/写入零生效——A5 决议 #33 模式）；stop 后 cancelAll 语义
-  （Research v1 无确认面，abort 流 + 清理）。
+  后迟到事件/写入零生效——A5 决议 #33 模式）；终态优先级 stop > deadline
+  > 预算（决议 #138(3)）；**单一 active run + runToken 守卫 + restart
+  > 屏障**（schema 无 runId：旧 run 完全 settle 前禁止重启，旧 run 迟到
+  > 写入被终态守卫/runToken/CAS 三重拦截——决议 #135）；shutdown 契约
+  > （abort → await settle → cleanupAll → closeDb，零 database-closed
+  > race）；Progress 事件零 goal/URL/模型文本/网页正文/Evidence 内容
+  > （FT-16）。
 - **校验器健壮性（FT-17）**：校验器为纯函数 + 敌手矩阵单测（长度边界 ±1、
   规范化等价绕过、JSON 深度/形状、重复键、超长嵌套）；任何校验异常
-  fail-closed（不抛穿、不静默放行）；「恶意模型输出绕过确定性校验」的
-  语义层残余如实登记（§5）。
+  fail-closed（不抛穿、不静默放行）；ResearchPlan/工具参数/端口输出
+  全部按不可信输入处理（决议 #133/#134）；「恶意模型输出绕过确定性校验」
+  的语义层残余如实登记（§5）。
 
 ### 3.7 审计层（继承 + 扩展）
 

@@ -2,21 +2,28 @@
 
 > 第五阶段任务文档。契约 `doc/stage5/detailed-design.md` §7；安全契约
 > `doc/stage5/threat-model.md` §3.3/§3.5（FT-02/FT-07/FT-08）。
+> **C5 端口契约校准（2026-08-16，决议 #134，本轮登记、C6 实施时落地）**：
+> 本任务实现 `ResearchPromptsPort`（四槽）与
+> `ResearchSynthesisPort.processVerification`/`parseResultDraft`——
+> 端口精确形状见 detailed-design §15 决议 #134（C5 已冻结，C6 按此实现，
+> 不得另设形状）。
 
 ## 目标
 
 落地 Cross-check 数据模型与综合层：Claim/Coverage/sourceTypes 确定性装配、
 Conflict 显式保留（不静默抹平）、Uncertainty 正式输出、合成提示词编译期
-常量与 UNTRUSTED 块组装——替换 C5 的综合层桩接口。
+常量与 UNTRUSTED 块组装——替换 C5 的综合层桩接口（端口形状由决议 #134
+冻结）。
 
 ## 范围与非目标
 
 - **做**：claim-model（coverage 程序计算/severity=high 多源强制/
   sourceTypes 程序判定（厂商自述 vs 第三方，§7.1 判定规则）/
   singleSourceFields 显式标注）；conflict 装配（positions ≥2/refs ∈ 候选集/
-  resolved 恒 unresolved）；uncertainty 块；research-prompts（三个编译期
-  常量 + 恒等断言 + 块组装与预算裁剪 + 与共读/Agent prompt 互不混用）；
-  冒烟 8.18。
+  resolved 恒 unresolved）；uncertainty 块；research-prompts（**四个**
+  编译期常量——决议 #134(4)：新增 `AGENT_RESEARCH_VERIFYING_PROMPT`
+  （verifying 轮独立槽位，C5 端口引入）+ 恒等断言 + 块组装与预算裁剪 +
+  与共读/Agent prompt 互不混用）；冒烟 8.18。
 - **不做**：Result 渲染（C7）；UI 冲突视图（C8 消费数据模型）；修改
   EvidenceValidator/ResultValidator 契约；虚构百分比/分数字段（红线——
   schema 白名单不含）。
@@ -25,15 +32,16 @@ Conflict 显式保留（不静默抹平）、Uncertainty 正式输出、合成�
 
 - 新增 `src/main/research/synthesis/claim-model.ts`、
   `src/main/research/synthesis/research-prompts.ts` + 测试。
-- 输入：detailed-design §7/§15（决议 #98）；threat-model §3.3/§3.5；
-  C1 类型（Claim/Conflict/Uncertainty 块）。
+- 输入：detailed-design §7/§15（决议 #98/#134）；threat-model §3.3/§3.5；
+  C1 类型（Claim/Conflict/Uncertainty 块）；C5 端口形状（决议 #134）。
 
 ## 预计修改文件
 
 - 新增：`src/main/research/synthesis/claim-model.ts`、
   `src/main/research/synthesis/research-prompts.ts` + 同名 `*.test.ts`。
 - 修改：`src/main/research/research-runtime.ts`（桩接口替换为真实综合层
-  调用，其余零改动）、`src/main/smoke.ts`（新增 8.18 场景入口）。
+  调用，其余零改动）、`src/main/index.ts`（生产装配注入真实端口——
+  决议 #134(3) fail-closed 解除）、`src/main/smoke.ts`（新增 8.18 场景入口）。
 
 ## 依赖
 
@@ -45,8 +53,10 @@ C1（类型）、C4（EvidenceValidator 复用）。
    数 ≥2；单源标注）；severity=high 多源强制（单源 → 降级标注不自动补源）；
    sourceTypes 判定矩阵（vendor/third-party/community/保守默认）；
    conflict 装配（positions<2 拒绝/refs 不在候选集拒绝/resolved 恒
-   unresolved）；uncertainty 块形状；prompts 恒等断言（三常量与共读/
-   Agent prompt 互异）+ 块闭合转义 + 预算裁剪 + 敌手闭合尝试。
+   unresolved）；uncertainty 块形状；prompts 恒等断言（**四常量**与共读/
+   Agent prompt 互异）+ 块闭合转义 + 预算裁剪 + 敌手闭合尝试；
+   ResearchSynthesisPort.processVerification/parseResultDraft 端口实现
+   与 C5 契约形状恒等。
 2. **绿**：实现两模块 + Runtime 接线；逐用例转绿。
 3. **冒烟 8.18**（dev+生产双场景）：两冲突夹具来源 → claims 装配/冲突
    显式保留/uncertainty 产出/Result coverage 计数（无百分比字段断言）。
