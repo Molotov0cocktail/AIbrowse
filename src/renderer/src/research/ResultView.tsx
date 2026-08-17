@@ -3,7 +3,9 @@
 // evidenceMap/conflicts/coverage 展示 + sourceRefs 来源入口（C8 决议 #159：
 // table block 级/cards·ranking item 级/conflict position 级——不伪造逐列
 // 来源）+ Evidence drawer（纯文本展示 URL/标题/获取时间/类型/locator/
-// excerpt/value/verified 标识）。安全不变量：零 dangerouslySetInnerHTML、
+// excerpt/value + provenance 标签与准确验证标签——决议 #165：
+// 「摘录与定位已验证」+ 可信度声明三态 + 诚实警告）。安全不变量：零
+// dangerouslySetInnerHTML、
 // 零 `<a href>`（链接用无副作用展示元素 + 可选 onOpenUrl 回调——C8 接安全
 // 导航）；危险 URL 纵深防御降级纯文本；所有模型文本经 React 纯文本节点转义；
 // 控制字符/bidi 防御性剔除（shared 同源规范化）。C7 既有 props 零改动
@@ -21,6 +23,11 @@ import {
   type MarkdownInlineNode,
 } from '../../../shared/markdown/parse-markdown';
 import { normalizePlainText } from '../../../shared/markdown/markdown-text';
+import {
+  describeEvidenceProvenance,
+  EVIDENCE_HONEST_NOTE,
+  EVIDENCE_VERIFICATION_LABEL,
+} from './research-display';
 
 export interface ResultViewProps {
   result: ResearchResult;
@@ -301,12 +308,16 @@ function EvidenceDrawer({
           <div className="research-evidence-meta">
             获取时间：{safeText(ev.accessTime)} · 类型：{safeText(ev.type)}
           </div>
+          <div className="research-evidence-provenance">
+            来源可信度声明：{safeText(describeEvidenceProvenance(ev.provenance))}
+          </div>
           <div className="research-evidence-locator">{safeText(JSON.stringify(ev.locator))}</div>
           <div className="research-evidence-excerpt">{safeText(ev.excerpt)}</div>
           {ev.value !== null && (
             <div className="research-evidence-value">值：{safeText(ev.value)}</div>
           )}
-          <div className="research-evidence-verified">已验证</div>
+          <div className="research-evidence-verified">{EVIDENCE_VERIFICATION_LABEL}</div>
+          <div className="research-evidence-honest-note">{EVIDENCE_HONEST_NOTE}</div>
         </div>
       ))}
     </div>

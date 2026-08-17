@@ -422,7 +422,8 @@ describe('八通道行为（真实 service；决议 #156/#157/#162）', () => {
     expect(ev.url).toBe('https://example.com/one');
     expect(ev.excerpt).toBe('摘录一');
     expect(ev.verification).toBe('verified');
-    // DTO 不暴露无 UI 需要的内部字段（决议 #157(9)：documentId/contentHash/captureId/sourceId 零出现）
+    // DTO 不暴露无 UI 需要的内部字段（决议 #157(9)：documentId/contentHash/captureId/sourceId 零出现；
+    // 决议 #165：provenance 为 UI 必需展示字段——候选发现路径 + trust 三元组）
     const keys = Object.keys(ev).sort();
     expect(keys).toEqual(
       [
@@ -431,6 +432,7 @@ describe('八通道行为（真实 service；决议 #156/#157/#162）', () => {
         'evidenceId',
         'excerpt',
         'locator',
+        'provenance',
         'title',
         'type',
         'url',

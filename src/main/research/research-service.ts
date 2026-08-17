@@ -540,18 +540,30 @@ export class ResearchServiceImpl implements ResearchService {
       if (!this.checkSourceRefs(result, candidateIds, evidenceByCandidate)) {
         return { ok: false, errorCode: 'research-internal' };
       }
-      const dto: ResearchEvidenceDto[] = evidence.map((ev) => ({
-        evidenceId: ev.evidenceId,
-        candidateId: ev.candidateId,
-        url: ev.url,
-        title: ev.title,
-        accessTime: ev.accessTime,
-        type: ev.type,
-        locator: ev.locator,
-        excerpt: ev.excerpt,
-        value: ev.value,
-        verification: 'verified',
-      }));
+      // 决议 #165：按 candidateId 从本任务候选投影最小 provenance（discoveredVia
+      // + trust 三元组）——只暴露 UI 必需字段；captureId/documentId/contentHash/
+      // sourceId 零暴露（#157(9) 保持）；候选缺失为引用复核已排除的形态，
+      // 防御性兜底 {discoveredVia:[], trust:null}
+      const candidateById = new Map(candidates.map((c) => [c.id, c]));
+      const dto: ResearchEvidenceDto[] = evidence.map((ev) => {
+        const cand = candidateById.get(ev.candidateId);
+        return {
+          evidenceId: ev.evidenceId,
+          candidateId: ev.candidateId,
+          url: ev.url,
+          title: ev.title,
+          accessTime: ev.accessTime,
+          type: ev.type,
+          locator: ev.locator,
+          excerpt: ev.excerpt,
+          value: ev.value,
+          verification: 'verified',
+          provenance:
+            cand === undefined
+              ? { discoveredVia: [], trust: null }
+              : { discoveredVia: [...cand.discoveredVia], trust: cand.trust },
+        };
+      });
       return { ok: true, view: { task, result, evidence: dto } };
     } catch (err) {
       return this.unexpected(err);

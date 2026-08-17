@@ -590,6 +590,18 @@ export interface ResearchPreparedLaunch {
 
 // ---------- C8 结果详情视图与事件出口（决议 #157） ----------
 
+// 决议 #165：Evidence provenance 最小投影——按 candidateId 从本任务候选投影
+// （发现路径 + trust 三元组）；只暴露 UI 必需字段，防「Evidence 程序验证洗白
+// 成来源整体可信」（FT-07）。trust 不参与排序（#120 保持），仅展示元数据
+export interface EvidenceProvenance {
+  discoveredVia: CandidateOrigin[]; // 候选发现路径（sources/search 双路径保留）
+  trust: {
+    value: SourceTrustValue;
+    assertedBy: SourceTrustAssertedBy;
+    verification: SourceTrustVerification;
+  } | null; // search 命中恒 null（无可信度声明——#120）
+}
+
 // 决议 #157(9)：Evidence 展示 DTO 只暴露下钻必需字段——不暴露无 UI 需要的
 // 数据库或运行时内部字段（documentId/contentHash/captureId/sourceId 零出现）
 export interface ResearchEvidenceDto {
@@ -603,6 +615,7 @@ export interface ResearchEvidenceDto {
   excerpt: string;
   value: string | null;
   verification: 'verified';
+  provenance: EvidenceProvenance; // 决议 #165：候选 provenance 最小投影
 }
 
 // 决议 #157(8)：最小 ResearchResultView = task + 已验证 ResearchResult +

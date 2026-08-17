@@ -10,7 +10,11 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDb, closeDb, type DbHandle } from '../sources/db/sqlite-driver';
 import { runResearchMigrations } from './db/research-migrations';
-import { ResearchRepository, type ResearchEvidenceRow } from './repository/research-repository';
+import {
+  ResearchRepository,
+  type ResearchCandidateRow,
+  type ResearchEvidenceRow,
+} from './repository/research-repository';
 import { ResearchServiceImpl, type ResearchServiceOptions } from './research-service';
 import type {
   ResearchPreparedLaunch,
@@ -106,7 +110,11 @@ function withTx(fn: () => void): void {
   }
 }
 
-function insertCompletedWithResult(blocks: unknown[], evidence: ResearchEvidenceRow[]): void {
+function insertCompletedWithResult(
+  blocks: unknown[],
+  evidence: ResearchEvidenceRow[],
+  candidateOver: Partial<ResearchCandidateRow> = {},
+): void {
   const now = '2026-08-16T00:00:00.000Z';
   withTx(() => {
     repo().insertTask({
@@ -140,6 +148,7 @@ function insertCompletedWithResult(blocks: unknown[], evidence: ResearchEvidence
       last_used_at: null,
       note: null,
       sort_key: '01|00000|9|~~~~~~~~~~~~~~~~~~~~~~~~|1|https://example.com/one|' + CAND_ID,
+      ...candidateOver,
     });
     for (const ev of evidence) repo().insertEvidence(ev);
     repo().insertResult({
@@ -570,5 +579,88 @@ describe('getResearchResultView 读取复核（决议 #157(7)–(10)）', () => 
     const missing = await svc.getResearchResultView('ffffffff-1111-4111-8111-111111111111');
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.errorCode).toBe('research-not-found');
+  });
+});
+
+// 决议 #165：Evidence DTO provenance 投影——按 candidateId 从本任务候选投影
+// 最小 provenance（discoveredVia + trust 三元组）；内部字段零暴露；trust 不
+// 参与排序（#120 保持），仅展示元数据
+describe('Evidence DTO provenance 投影（决议 #165）', () => {
+  const tableBlock = { kind: 'table', columns: ['名称'], rows: [['甲']], sourceRefs: [CAND_ID] };
+
+  it('ai+unverified 候选 → provenance 投影完整 trust 三元组 + discoveredVia', async () => {
+    insertCompletedWithResult([tableBlock], [validEvidence()], {
+      discovered_via_json: JSON.stringify(['sources', 'search']),
+      trust_value: 'official',
+      trust_asserted_by: 'ai',
+      trust_verification: 'unverified',
+    });
+    const res = await svc.getResearchResultView(TASK_ID);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const ev = res.view.evidence[0]!;
+    expect(ev.provenance).toEqual({
+      discoveredVia: ['sources', 'search'],
+      trust: { value: 'official', assertedBy: 'ai', verification: 'unverified' },
+    });
+  });
+
+  it('user+asserted 候选 → provenance 投影 user/asserted（不洗白为已核验事实）', async () => {
+    insertCompletedWithResult([tableBlock], [validEvidence()], {
+      trust_value: 'primary',
+      trust_asserted_by: 'user',
+      trust_verification: 'asserted',
+    });
+    const res = await svc.getResearchResultView(TASK_ID);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.view.evidence[0]!.provenance).toEqual({
+      discoveredVia: ['sources'],
+      trust: { value: 'primary', assertedBy: 'user', verification: 'asserted' },
+    });
+  });
+
+  it('search-only 候选（trust=null）→ provenance.trust=null（无可信度声明）', async () => {
+    insertCompletedWithResult([tableBlock], [validEvidence()], {
+      discovered_via_json: JSON.stringify(['search']),
+      trust_value: null,
+      trust_asserted_by: null,
+      trust_verification: null,
+    });
+    const res = await svc.getResearchResultView(TASK_ID);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.view.evidence[0]!.provenance).toEqual({
+      discoveredVia: ['search'],
+      trust: null,
+    });
+  });
+
+  it('DTO 只暴露 UI 必需字段——provenance 进白名单，captureId/documentId/contentHash/sourceId 零出现', async () => {
+    insertCompletedWithResult([tableBlock], [validEvidence()], {
+      source_id: '11111111-2222-4333-8444-555555555555',
+      trust_value: 'community',
+      trust_asserted_by: 'ai',
+      trust_verification: 'unverified',
+    });
+    const res = await svc.getResearchResultView(TASK_ID);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const keys = Object.keys(res.view.evidence[0]!).sort();
+    expect(keys).toEqual(
+      [
+        'accessTime',
+        'candidateId',
+        'evidenceId',
+        'excerpt',
+        'locator',
+        'provenance',
+        'title',
+        'type',
+        'url',
+        'value',
+        'verification',
+      ].sort(),
+    );
   });
 });
