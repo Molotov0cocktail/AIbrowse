@@ -68,26 +68,18 @@ export function validateResearchTaskIdPayload(
 }
 
 // 决议 #156(3)：list 分页冻结 1-based——page ≥1、pageSize 1..20；IPC 层严格
-// 拒绝非法值（不依赖 Service clamp 洗白）；status 可选项 ∈ 枚举
-const RESEARCH_STATUS_NAMES = [
-  'created',
-  'running',
-  'completed',
-  'failed',
-  'cancelled',
-  'interrupted',
-] as const;
-
+// 拒绝非法值（不依赖 Service clamp 洗白）。决议 #164：payload 冻结为
+// {page, pageSize}——status 不属 IPC 暴露面，作为未知字段 fail-closed 拒绝
+// （主进程内部 ResearchService.listTasks 的 status 筛选能力保留）
 export interface ValidatedResearchList {
   page: number;
   pageSize: number;
-  status?: string;
 }
 
 export function validateResearchListPayload(
   raw: unknown,
 ): { ok: true; value: ValidatedResearchList } | { ok: false; errorCode: 'research-invalid-goal' } {
-  if (!isRecord(raw) || !checkKeys(raw, ['page', 'pageSize', 'status'])) return invalid();
+  if (!isRecord(raw) || !checkKeys(raw, ['page', 'pageSize'])) return invalid();
   const page = raw['page'];
   if (typeof page !== 'number' || !Number.isInteger(page) || page < 1) return invalid();
   const pageSize = raw['pageSize'];
@@ -101,21 +93,11 @@ export function validateResearchListPayload(
       return invalid();
     }
   }
-  const status = raw['status'];
-  if (status !== undefined) {
-    if (
-      typeof status !== 'string' ||
-      !(RESEARCH_STATUS_NAMES as readonly string[]).includes(status)
-    ) {
-      return invalid();
-    }
-  }
   return {
     ok: true,
     value: {
       page,
       pageSize: pageSize === undefined ? 20 : pageSize,
-      ...(status === undefined ? {} : { status: status as string }),
     },
   };
 }
@@ -357,10 +339,10 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
       if (!v.ok) return { ok: false, errorCode: v.errorCode };
       const svc = currentService();
       if (svc === null) return unavailable();
+      // 决议 #164：IPC 层只透传 page/pageSize（status 不属暴露面）
       const res = await svc.listTasks({
         page: v.value.page,
         pageSize: v.value.pageSize,
-        status: v.value.status as never,
       });
       if (!res.ok) return { ok: false, errorCode: res.errorCode };
       return {

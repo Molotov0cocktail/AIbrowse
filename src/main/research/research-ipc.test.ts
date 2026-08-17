@@ -257,6 +257,7 @@ describe('payload 严格白名单（决议 #156(2)/(3)/(4)）', () => {
   it('list：page 1-based ≥1、pageSize 1..20 严格拒绝（不依赖 Service clamp 洗白）', () => {
     expect(validateResearchListPayload({ page: 1 }).ok).toBe(true);
     expect(validateResearchListPayload({ page: 1, pageSize: 20 }).ok).toBe(true);
+    expect(validateResearchListPayload({ page: 2, pageSize: 1 }).ok).toBe(true);
     for (const bad of [
       { page: 0 },
       { page: -1 },
@@ -271,6 +272,11 @@ describe('payload 严格白名单（决议 #156(2)/(3)/(4)）', () => {
       { page: 1, pageSize: '20' },
       { page: 1, pageSize: 20, extra: 1 },
       { page: 1, status: 'bogus' },
+      // 决议 #164：status 不属 IPC 暴露面——即使合法枚举值也作为未知字段
+      // fail-closed 拒绝（Service 内部 status 筛选能力保留，不经 IPC 暴露）
+      { page: 1, status: 'completed' },
+      { page: 1, pageSize: 10, status: 'running' },
+      { page: 1, status: null },
       {},
       null,
     ]) {
@@ -355,6 +361,19 @@ describe('八通道行为（真实 service；决议 #156/#157/#162）', () => {
     const gone = await ipc.get({ taskId });
     expect(gone.ok).toBe(false);
     if (!gone.ok) expect(gone.errorCode).toBe('research-not-found');
+  });
+
+  it('list：renderer payload 携带 status → 未知字段 fail-closed 拒绝（决议 #164）', async () => {
+    // status 不属 IPC 暴露面（§11 冻结 {page, pageSize≤20}）——即使合法枚举值
+    // 也拒绝；正常分页不回归
+    const withStatus = { page: 1, pageSize: 20, status: 'completed' } as unknown as Parameters<
+      ResearchIpcAdapter['list']
+    >[0];
+    const rejected = await ipc.list(withStatus);
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.errorCode).toBe('research-invalid-goal');
+    const normal = await ipc.list({ page: 1, pageSize: 20 });
+    expect(normal.ok).toBe(true);
   });
 
   it('start：未装配 Runtime → 前置拒绝 research-runtime-unavailable + 审计恰好一条 + 任务保持 created', async () => {

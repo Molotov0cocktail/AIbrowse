@@ -1,7 +1,6 @@
 // IPC channel constants + payload types: shared single source of truth (main/preload/renderer).
 // Contract source: doc/detailed-design.md §3.1（定稿，T1）.
 // preload bridge 白名单（AibrowseBridge）T3 接入；main 侧 handler 已于 T2 落地。
-import type { ResearchTaskStatus } from './research';
 
 export const IPC = {
   // renderer → main（invoke）
@@ -71,7 +70,8 @@ export const IPC = {
   ResearchStop: 'research:stop', // payload: { taskId }
   ResearchGet: 'research:get', // payload: { taskId }
   ResearchResult: 'research:result', // payload: { taskId } → 安全结果详情视图（决议 #157）
-  ResearchList: 'research:list', // payload: { page ≥1, pageSize 1..20, status? }（严格拒绝非法值）
+  ResearchList: 'research:list', // payload: { page ≥1, pageSize 1..20 }（严格拒绝非法值；
+  // status 不属 IPC 暴露面——未知字段 fail-closed，决议 #164）
   ResearchDelete: 'research:delete', // payload: { taskId }（仅终态/created；running·预占拒绝）
   ResearchExportCsv: 'research:export-csv', // payload: { taskId, tableBlockIndex, view:{sort,filter} }
   // （决议 #161：view 为受限排序/筛选状态——renderer 零 rows/路径/内容通道；
@@ -246,10 +246,12 @@ export interface ResearchTaskIdPayload {
   taskId: string; // 小写 RFC 4122 UUID 形状
 }
 
+// 决议 #164：payload 冻结为 {page, pageSize≤20}（§11）——status 不属 IPC 暴露面，
+// 携带 status（含合法枚举值）作为未知字段 fail-closed 拒绝；主进程内部
+// ResearchService.listTasks 的 status 筛选能力保留（非 IPC 调用方纵深能力）
 export interface ResearchListPayload {
   page: number; // 1-based（≥1 整数；0/负数/非整数/NaN/Infinity 拒绝）
   pageSize?: number; // 1–20（缺省 20；越界拒绝）
-  status?: ResearchTaskStatus;
 }
 
 // 决议 #161(1)：export-csv payload 冻结——view 为受限排序/筛选状态；
