@@ -3262,6 +3262,139 @@ view:{sort,filter}}`。
        （6）**Research 库 unavailable 时所有入口禁用**并显示固定中文
        诊断，其余浏览器/Sources/Chat 正常（决议 #109 store 契约）。
 
+> 以下 #164–#169 为 C9 实施前契约裁决（2026-08-18，C9 闭环；先改本文与
+> 测试、再改实现——§15 流程）。A/B/C 三项前置缺口（research:list IPC
+> 漂移、Evidence provenance 展示缺口、红队矩阵过度承诺）由 Fifth_stage.md
+> §5/§7/§9 上位需求、threat-model FT-06/FT-07 与 §4/§5 诚实边界、§11 冻结
+> payload 与 fail-closed 纪律唯一裁决，无需用户拍板；不改写 #94–#163 既有
+> 结论。threat-model §4/§4.1/§5 与 C9 任务文档已按 #166 校准。
+
+164. **research:list IPC payload 收窄（2026-08-18，C9 前置修复 A）**：
+     §11 冻结 `research:list {page, pageSize≤20}`，但 C8 实现的 IPC 校验器
+     与 shared payload 类型额外暴露 `status?`（实现漂移，renderer 无该需求）。
+     裁决：**反向扩张文档迁就实现禁止**——
+     （1）从 `ResearchListPayload`（shared/types/ipc.ts）、IPC payload 校验器
+     （validateResearchListPayload 允许键集合）删除 status；renderer payload
+     携带 status（含合法枚举值）必须作为**未知字段 fail-closed 拒绝**。
+     （2）主进程内部 `ResearchService.listTasks` / `ResearchListOptions` 的
+     status 筛选能力**保留**（非 IPC 调用方的纵深能力，如冒烟门控）；
+     Repository `listTasks` 过滤语义零改动。
+     （3）preload bridge 暴露面随类型收窄（`research.list(payload)` 的
+     payload 类型即 ResearchListPayload，无独立 status 通道）。
+     （4）红测先行：status 字段（任意值）被拒绝 + 正常分页（page/pageSize
+     边界）零回归。
+
+165. **Evidence provenance 投影与准确验证标签（2026-08-18，C9 前置修复 B）**：
+     当前 ResearchEvidenceDto 不含候选 provenance，EvidenceDrawer 只显示笼统
+     「已验证」——存在把 Evidence 程序验证洗白成来源整体可信的风险（FT-07
+     trust laundering 的 UI 面）。裁决：
+     （1）**Service DTO provenance 投影**：ResearchService.
+     getResearchResultView 读取已验证 Evidence 时，按 candidateId 从**本任务
+     候选**投影最小 provenance 进 DTO：`provenance: { discoveredVia:
+CandidateOrigin[]; trust: { value, assertedBy, verification } | null }`；
+     候选缺失（引用完整性已在读取复核中保证，防御性兜底）→ provenance =
+     `{ discoveredVia: [], trust: null }`。**只暴露 UI 必需字段**——captureId/
+     documentId/contentHash/sourceId 等内部字段仍零暴露（#157(9) 保持）。
+     （2）**显示语义（至少覆盖）**：trust.assertedBy='ai' 且
+     verification='unverified' → 「AI 推断·未核验」；assertedBy='user' 且
+     verification='asserted' → 「用户声明·未独立核验」；trust=null →
+     「无可信度声明」（search 命中恒无 trust 断言——#120 语义）；其余组合
+     按三元组如实组合展示，不得洗白。
+     （3）**验证标签校准**：笼统「已验证」改为「摘录与定位已验证」或同等
+     准确中文；UI 必须明示：**程序验证不代表来源整体可信，也不保证摘录不
+     存在断章取义**（FT-06 诚实边界，threat-model §5 第 8 类）。
+     （4）**trust 不参与 C3 基础排序**（#120 零改动）；provenance 仅为展示
+     元数据，不进 sortKey、不进模型上下文。
+     （5）**测试**：Service DTO 测试覆盖 ai/user/null 三种 provenance 投影
+     与内部字段零暴露；React 静态渲染测试覆盖三标签文案、敌对文本纯文本
+     转义、Result 无 score/percent/confidence 字段。
+
+166. **红队矩阵诚实边界校准（2026-08-18，C9 前置修复 C）**：threat-model
+     §4/§4.1/§5 与 C9 任务文档已校准，不得保留过度承诺：
+     （1）**FRT-01**：机器证明候选 feed 与基础顺序确定、trust 不改变基础
+     排序、模型只能返回程序提供的 candidateId、system prompt 与六工具子集
+     恒等、敌对文本仅 UNTRUSTED 块；**明确模型对候选子集的语义选择仍可能
+     受诱导，不宣称完全免疫**（§5 第 7 类）。
+     （2）**FRT-06**：机器证明断章取义字符串**可能通过**存在性校验，并
+     证明 UI 提供来源、原文下钻与诚实警告——**边界演示，不得写成「攻击
+     已被阻断」**（§5 第 8 类）。
+     （3）**FRT-08**：机器证明 malformed Conflict 被拒绝；一旦程序已有
+     verified Conflict，Result 不能删除或替换它，UI 必须展示；**模型在
+     verification 阶段没有识别语义冲突仍属残余风险，只能作为真实 Provider
+     观察项**（§5 第 9 类）。
+     （4）**证据纪律**：每个 FRT 仍必须有独立机器断言；机器断言可以证明
+     安全边界或诚实限制，不得把观察性语义行为冒充确定性防御。
+
+167. **8.20 FRT manifest 与独立断言纪律（2026-08-18，C9 实施契约）**：
+     （1）**单一 FRT manifest**：新增纯函数模块（smoke-research-manifest.ts，
+     零 Electron 依赖）作为 FRT-01～FRT-12 编号、名称、断言类别（结构边界/
+     诚实限制/观察）、机器证据落点的**唯一事实源**；manifest 完整性（12 项
+     编号连续、名称/类别/落点非空、编号不重复）由单测断言。
+     （2）**8.20 独立结果纪律**：FRT-01～FRT-12 必须生成 **12 个独立结果**
+     ——单项失败不遮蔽其他项（逐项 try/catch 收集）；最后聚合失败（任一
+     失败 → 冒烟失败）；不靠日志字符串冒充结构断言（结果为结构化数据）；
+     不重复完整运行 8.16–8.19 或第三/四阶段矩阵（决议 #93 纪律保持——
+     结构化证据核验或最小必要重放）。
+     （3）**Fifth §7 七条离线映射**：端到端离线场景覆盖 ① 分组限定比较
+     （group-list tier 2）② 收藏优先 + 搜索补充（source-search tier 1 +
+     web-search tier 3 合并）③ 冲突定位（C6 Conflict 装配）④ 表格整理
+     （table 块 + TableView）⑤ 卡片/排行榜（cards/ranking 块）⑥ 结论下钻
+     来源（sourceRefs → Evidence drawer）⑦ 读取失败继续（failed capture
+     sentinel + failedReadCount）；映射表记录于 C9 任务文档。
+     （4）**FRT 特别要求**：FRT-03～05 伪造/错绑/陈旧 Evidence 全部按确定
+     性验证断言；FRT-07 断言 provenance 标签、无 trust laundering、Result
+     无可信度分数、coverage 只有计数；FRT-09 用户 Tab id/url/title/active
+     逐字段恒等、只关闭任务自有 Tab；FRT-10 注入计数器/工厂证明边界处零
+     执行（不真实跑满 25 轮/65 步）；FRT-11 ResultValidator + 实际 DOM 零
+     script/img/onerror/javascript 执行面；FRT-12 必须走 C8 真实 export
+     adapter/dialog 桩读取真实 CSV 字节（不只复用 serializer 单测）。
+
+168. **隐私扫描 canary 分类与允许/禁止位置清单（2026-08-18，C9 实施契约）**：
+     使用**运行时随机 canary**，建立「预期存在位置 + 禁止存在位置」清单，
+     **禁止简单地把所有标记要求为全局零命中**：
+     （1）**API Key/Authorization canary**（sk- 形态随机串）：所有持久化、
+     日志、审计、DOM、导出、工具输出**零命中**。
+     （2）**capture-only 页面正文 / 模型 reasoning / transcript canary**：
+     所有持久化与导出**零命中**；标记独立选取且**不作为 Evidence excerpt**。
+     （3）**Evidence excerpt canary**：**允许**出现在 research.db 与
+     Evidence drawer（UI DOM）；**禁止**进入日志、审计、conversation 文件、
+     sources.db、CSV 与无关文件。
+     （4）**URL query token canary**：如契约要求，**允许**存在于 Evidence
+     URL/research.db/当前详情 DOM；**禁止**进入日志、审计、conversation、
+     CSV、sources.db。
+     （5）**CSV 公式 canary**：**只能**进入 CSV，且必须已经加 `'` 防护。
+     （6）**扫描目标至少**：research.db/-wal/-shm、sources.db/备份/journal、
+     conversation 文件、日志切片、审计收集器、UI DOM、CSV、临时 userData
+     与会话产物；测试结束断言环境变量、Electron 进程、临时目录与根目录
+     日志零残留。
+     （7）**扫描 helper 输出纪律**：只返回目标标签、命中数与布尔结果，
+     不打印 canary、Key、URL token 或敌对正文（FT-16）。
+
+169. **LIVE_RESEARCH 门控与真实验收基础设施（2026-08-18，C9 实施契约）**：
+     （1）**门控从属**：`AIBROWSE_LIVE_RESEARCH=1` 必须从属于
+     `AIBROWSE_SMOKE=1 + AIBROWSE_LIVE_PROVIDER=1`（缺前置 → 明确失败）。
+     （2）**确定性互斥**：与 LIVE_SITES、LIVE_AGENT、LIVE_AGENT_PRE、
+     LIVE_AGENT_SUPPLEMENT、LIVE_AGENT_SOURCES、SESSION/SOURCES/SOURCES_UI/
+     RESEARCH set|check 专属路由互斥；冲突时明确失败，不静默选路。
+     （3）**无 Key 路由**：中文登记「凭据不可用」；真实网络请求计数为 0；
+     FakeProvider 不得标为真实证据；离线 8.20 仍可通过并退出码 0。
+     （4）**环境变量即时清除**：应用读取 Key/base URL/model 后立即删除
+     相应 process.env（既有 LIVE_PROVIDER 装配路径保持）。
+     （5）**产品路径强制**：真实执行必须经产品 ResearchService/
+     ResearchRuntime/C6/C7/C8 路径；直接调 Provider 冒充产品验收禁止。
+     （6）**场景映射**：映射 Fifth §7 七项真实主题体验，并包含
+     FRT-01/02/08/11 的真实观察子集；结构断言与模型语义观察分开记录。
+     （7）**稳定性预检与复验纪律**：公开网页执行前做稳定性预检；站点变化
+     时更换夹具或站点，不放宽断言；一次完整运行后先诊断再决定是否复验，
+     不允许盲目循环付费请求。
+     （8）**台账与失败分类**：报告只记录 HTTP 调用次数、每组调用用途和
+     结果分类；不得记录 Key、认证头、base URL、完整 prompt、完整模型输出
+     或敌对正文；失败分类区分余额、权限、网络、服务端、模型兼容、产品
+     缺陷和夹具缺陷。
+     （9）**harness**：仓库外 `%LOCALAPPDATA%\AIbrowse\S5\run-live-smoke.ps1`
+     增加互斥 `-Research` 开关（仓库外文件不提交 Git；Key/base URL 不进
+     命令行、仓库文件、日志或报告）。
+
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4/C5 端口）/C7（依赖 C1/C5 端口，可与
   C6 并行）→ C8（依赖 C5–C7）→ C9（依赖 C1–C8）→ C10（依赖全部且独立复验）。

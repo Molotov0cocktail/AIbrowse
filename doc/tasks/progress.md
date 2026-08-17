@@ -616,7 +616,7 @@
 | C5 | 独立有界 ResearchRuntime：进度、停止、失败继续、预算与终态 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #132–#139（六工具专属执行模型/ResearchPlan 判别联合/C6/C7 稳定端口 fail-closed/Service 异步装配/预算与 Provider 失败映射/原子持久化与 500k 终态预留/Progress·heartbeat·终态优先级/index.ts 最小装配）；红→绿聚焦 113/113、全量 test 1804/1804；冒烟 8.17 dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider 0 次；任务文档 doc/stage5/tasks/C5-research-runtime.md |
 | C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #140–#147（C6/C7 分阶段装配边界/Provider 响应侧有界性/VerificationDraft 严格协议/Claim 确定性装配与厂商分类/Conflict 引用完整性/数据交接/Prompt 所有权/parseResultDraft 边界）；红→绿聚焦 61/61、全量 test 1865/1865；冒烟 8.18 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 Research 仍 fail-closed（缺 C7）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
 | C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #148–#155（Markdown 单一事实源/ResultDraft 三字段白名单/Validator 严格验证/Conflict·Coverage·不确定/Markdown AST 与 Renderer/logger 未初始化落盘修复/启动预占与 prepared Provider 交接/真实生产装配）；红→绿聚焦 172/172、全量 test 1964/1964；冒烟 8.18 真实 C7 端口 + 8.19-A 生产 factory 闭环 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 startTask 解除 fail-closed（决议 #140/#155）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
-| C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ⏳ | 2026-08-16 设计定稿，待实施；契约 §11 + 决策 D10/D11；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
+| C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ✅ | 2026-08-17 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #156–#163（八 invoke + 两事件/payload 严格白名单 fail-closed/list 1-based/task-done 三值/Service 查询视图与事件出口/大结果画布 WebContentsView 可见性/Evidence 下钻与安全导航/TableView 纯函数/CSV 导出当前 UI 视图/Dialog 窄端口/UI 状态收敛）；红→绿聚焦 99/99、全量 test 2054/2054；冒烟 8.19-B dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider 0 次；**实际对应 10 个提交**（50c5651/a61261a/ff7d9a5/3410d16/b63fa9f/63d2869/4e1c690/**76070d3**/7edd96f/f9b005a——公开历史中 76070d3 为独立提交，不 amend 不重写）；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
 | C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ⏳ | 2026-08-16 设计定稿，待实施；threat-model §4；任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md；**决议 #117 长期授权**：基础设施落地后凭据可用即真实执行（凭据不可用如实记录「凭据不可用」） |
 | C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ⏳ | 2026-08-16 设计定稿，待实施；任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；完成后停止不实现 Sixth Stage |
 
@@ -2998,34 +2998,25 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **C8（唯一）**：C7 已完成（2026-08-16，ResultValidator + 安全
-  Markdown/Table/Cards/Ranking Renderer + 真实 C6+C7 生产装配，
-  实施前契约裁决 #148–#155——Markdown 单一事实源（解析器进 shared）/
-  ResultDraft 三字段白名单/Validator 严格验证与程序组装可信字段/
-  强制 uncertainty 矩阵/Markdown AST 有界降级与 Renderer 双防线/
-  logger 未初始化落盘修复（红态机器证据）/ResearchService 启动预占与
-  prepared Provider 交接（Factory 接口窄幅修改 + 等价竞态证明）/真实
-  生产 factory + index.ts 装配顺序调整（生产 startTask 解除
-  fail-closed——决议 #140/#155），红→绿证据见 C7 任务文档「红→绿
-  证据」小节；全量 test 1964/1964，冒烟 8.18 真实 C7 端口 + 8.19-A
-  生产 factory 闭环 dev+生产双场景退出码 0/0，
-  AIBROWSE_RESEARCH_SMOKE 双进程退出码 0/0）。
-  下一唯一任务 = **C8（Research UI/IPC/bridge：侧栏控制/进度 +
-  大结果画布 + 证据下钻 + 表格排序/筛选/复制 + CSV 导出，契约 §11 +
-  决策 D10/D11，任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-
-  export.md）**——C8 按 §11 实现：research:create/start/stop/get/
-  result/list/delete/export-csv 通道 + progress/task-done 事件 +
-  preload bridge 白名单 + ResearchPanel（380px 同模式）+ 大结果画布
-  （viewMode 切换）+ 8.19-B UI DOM 场景（表格排序/筛选/复制/Evidence
-  下钻/敌对 Markdown 纯文本零 DOM 注入）；CSV 仅主进程 dialog 安全
-  通道 + 公式注入防护；ResultView 的 onOpenUrl 回调在 C8 接安全导航
-  （经主进程 BrowserController/UI 导航白名单）。
-  C8 完成后按依赖链推进（C9 → C10），每个任务一个可验证开发
-  闭环；本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider 按
-  决议 #117 长期授权（2026-08-16 起长期生效）：后续任务按需使用、无需
-  逐次申请授权；每次调用仍须服务于明确开发/验收/定位/复验目的；无真实
-  Provider 产品链路的任务不强制调用；凭据不可用如实记录「凭据不可用」，
-  不得写「未获授权」。
+- **C9（唯一）**：C8 已完成（2026-08-17，Research UI/IPC/bridge：
+  侧栏控制/进度 + 大结果画布 + Evidence 下钻 + 表格交互 + CSV 安全导出，
+  实施前契约裁决 #156–#163；红→绿聚焦 99/99、全量 test 2054/2054；
+  冒烟 8.19-B dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE 双进程
+  退出码 0/0；实际对应 10 个提交，含独立提交 76070d3）。
+  下一唯一任务 = **C9（Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 +
+  隐私扫描 + 真实 Provider/真实主题验收基础设施，threat-model §4，
+  任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md）**——C9 实施
+  8.20 红队矩阵（每项独立机器断言，断言可证明安全边界或诚实限制，不把
+  观察性语义行为冒充确定性防御）+ 端到端离线场景（Fifth §7 七条映射）+
+  隐私扫描（运行时随机 canary + 允许/禁止位置清单）+ AIBROWSE_LIVE_RESEARCH
+  门控（从属于 SMOKE+LIVE_PROVIDER，与既有专属路由确定性互斥，无 Key 路由
+  退出码 0 + 请求 0）+ 仓库外 harness -Research 开关。真实 Provider 按
+  决议 #117 长期授权（2026-08-16 起长期生效）：基础设施落地后凭据可用即
+  真实执行（属 C9 范围，无需逐次申请授权）；每次调用仍须服务于明确
+  开发/验收/定位/复验目的；凭据不可用如实记录「凭据不可用」，不得写
+  「未获授权」；FakeProvider 不得冒充真实证据。
+  C9 完成后按依赖链推进（C10），每个任务一个可验证开发闭环；本阶段
+  禁止安装依赖、禁止实现 Sixth Stage。
 
 ## 第一阶段验收未完成项
 
