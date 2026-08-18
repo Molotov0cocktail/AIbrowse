@@ -281,7 +281,7 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
 
 ### 4.1 机器证据回填
 
-> （C9 完成后回填：每项 FRT 的机器证据落点、dev+生产双场景实测记录、
+> （C9 实施后回填：每项 FRT 的机器证据落点、dev+生产双场景实测记录、
 > 观察性结果登记——不把真实观察写成机器证明。）
 >
 > **证据纪律（C9 校准）**：每项 FRT 必须有独立机器断言，但机器断言可以
@@ -289,6 +289,30 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
 > 被登记不能被阻断——如 FRT-06 断章取义、FRT-08 语义冲突未识别）；
 > 不得把观察性语义行为（真实 Provider 下模型的自由选择）冒充确定性防御，
 > 也不得把「边界演示」写成「攻击已被阻断」。
+
+**C9 机器证据回填（2026-08-18）**：8.20 冒烟场景（dev + 生产双场景退出码
+0，证据见 log/aibrowse-2026-08-18.log 8.20 段）——每项独立断言（12 项独立
+结果，单项失败不遮蔽其他项，聚合失败即冒烟失败）；manifest 单一事实源
+（smoke-research-manifest.ts + 8 用例）。
+
+| # | 证据落点（8.20 断言函数 + 单测） | 断言类别 | 实测记录 |
+| --- | --- | --- | --- |
+| FRT-01 | frt01HostilePlanning：合并确定性/trust 不变序/sortKey 恒等/candidateId 集合约束/四轮 system 恒等/六工具子集恒等/敌对文本仅 UNTRUSTED 块（含工具结果回放——决议 #172）/reasoning canary 零回放零持久化/capture 正文零持久化；单测：smoke-research-manifest（类别）+ research-runtime.test（#170/#172 顺序与包裹） | 结构边界 | dev+生产双场景通过；语义选择残余登记（§5 第 7 类） |
+| FRT-02 | frt02HostileSynthesis：无 Evidence sourceRefs 整份拒绝/敌对页引用来源分类如实（third-party 非 vendor）/coverage 单源如实/uncertainty 允许/候选元数据 displayUrl 携带 URL token（provider-request-memory 允许面） | 结构边界 | 双场景通过 |
+| FRT-03 | frt03ForgedEvidence：伪造摘录/未知字段 url 通道/跨任务 captureId 全部 rejected + 安全 reason ≤200 不回显正文 + 零入库 | 结构边界 | 双场景通过 |
+| FRT-04 | frt04MisboundEvidence：A 页内容挂 B 候选 rejected；url/title/documentId 恒取主进程捕获记录 | 结构边界 | 双场景通过 |
+| FRT-05 | frt05StaleEvidence：旧 captureId+新文本 rejected；旧捕获引用当时内容 verified + accessTime/documentId 捕获时刻盖章 | 结构边界 | 双场景通过 |
+| FRT-06 | frt06OutOfContext + runFrt06UiDrilldown：断章取义字符串通过存在性校验（诚实边界演示）+ 真实 DOM drawer 展示摘录/URL（含 token 允许面）/获取时间/「无可信度声明」/「摘录与定位已验证」/诚实警告；ui-dom 面扫描 | 诚实限制 | 双场景通过；不写成「攻击已阻断」 |
+| FRT-07 | frt07TrustLaundering：trust 不参与排序 + Service DTO provenance 投影（ai+unverified，内部字段零暴露）+ Result 无 score/percent/confidence（schema 拒绝）+ coverage 仅六计数字段；research-display.test（三标签文案） | 结构边界 | 双场景通过 |
+| FRT-08 | frt08ConflictFlattening：malformed Conflict（positions<2/悬空 claimKey）整份拒绝/程序 verified Conflict 不可删除替换（Result 投影恒等）/模型草案 conflicts 字段整份拒绝/**真实 DOM 冲突块展示**（.research-conflict ≥1 + 「未解决」标记）；诚实边界：语义冲突未识别为残余风险（真实 Provider 观察项） | 诚实限制 | 双场景通过 |
+| FRT-09 | frt09TabOwnership：用户 Tab id/url/title/active 逐字段恒等（含完整 Runtime 运行）/只关任务自有 Tab/跨任务 release not-owned 拒绝；FRT 独立性安全网（每项后关闭非基线 Tab） | 结构边界 | 双场景通过 |
+| FRT-10 | frt10BudgetBypass：预算常量冻结/候选 25→24 截断/摘录 501 拒绝/超块拒绝/持久化 500k 拒绝/**注入 Provider 计数器证明第 25 轮执行前被拒绝（stream 恰 24 次）**；第 65 步边界证据落点 research-runtime.test.ts「步数边界」用例（全量测试执行，不真实跑满） | 结构边界 | 双场景通过 |
+| FRT-11 | frt11SchemaInjection：未知 kind/伪造 sourceRef/危险链接（javascript:/data:/userinfo）整份拒绝 + 解析器零 HTML 标签节点 + **真实 DOM 断言**（.research-canvas 内零 script/img/onerror/javascript URL/iframe/embed/object——画布打开期间 DOM 查询） | 结构边界 | 双场景通过 |
+| FRT-12 | frt12CsvExport：C8 真实 export adapter/dialog 桩真实 CSV 字节——BOM/CRLF/公式 `'` 防护（含 canary 公式）/仅 Table 块（摘录/URL/其他块零出现）/审计恰好一条脱敏/非 .csv 拒绝零写入；证据摘录与 URL token 的 research.db 允许面 | 结构边界 | 双场景通过 |
+| 隐私扫描 | runResearchRedTeamScenarios 扫描段：6 类 canary × 10 扫描面（含 provider-request-memory）60 条期望全部符合；Buffer 字节级搜索 + 读取失败 fail-closed；smoke-research-scan.test（15 用例） | 结构边界 | 双场景通过；Key 脱敏探针日志面零命中 |
+| Fifth §7 | runFifth7OfflineE2E（①group/②merge/④table/⑤cards/⑦fail）+ runFifth7CohesiveE2E（完整链路）+ FRT-06/08 承担 ③⑥；manifest 映射表 7 条 | 结构边界 | 双场景通过 |
+| LIVE_RESEARCH 门控 | resolveResearchGate 纯函数（smoke-research-gate.test 8 用例）+ 实测矩阵（缺 SMOKE/缺 LIVE_PROVIDER/与 LIVE_SITES・RESEARCH_GATE 冲突/非法值 → 退出码 1 零残留；无 Key 路由退出码 0 + 凭据不可用 + HTTP 0） | 结构边界 | 生产实测通过 |
+| 真 Key 零暴露（真实运行） | runLiveResearchScenarios 扫描段：全部 aibrowse-smoke-*/frt* 临时目录（research/sources DB+WAL/SHM/备份/会话产物）+ conversation + 日志区间 + audit + UI DOM + 环境变量清除断言；读取失败 fail-closed | 结构边界 | 随真实 Provider 运行执行（凭据可用时） |
 
 ## 5. 诚实边界声明（不承诺语义免疫）
 

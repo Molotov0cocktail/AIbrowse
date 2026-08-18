@@ -107,3 +107,77 @@ progress.md 更新 + 逻辑提交（feat: C9 …）+ 双远程推送 + 真实 Pr
 ## 提交边界
 
 逻辑提交；harness 为仓库外文件不提交；不夹带 C10 验收报告。
+
+## 实施记录（2026-08-18，中断恢复后完成）
+
+> 中断现场：HEAD b4cb315 + 未提交 WIP（smoke.ts 2839 行 + 6 个未跟踪
+> smoke-research-* 模块 + browser 模块 URL 脱敏半成品 + index.ts 门控半成品）。
+> 恢复纪律：保护现场（零 reset/checkout/clean/stash/restore），先验证机器状态
+> （聚焦测试/typecheck），再按「先测后修」完成产品修复，最后完成 C9 结构缺口。
+
+### 红态证据
+
+- research-runtime.test.ts 新增 #170 顺序契约测试在旧实现下失败（system 被
+  unshift 排到末位）；#172 工具结果包裹测试在旧实现下失败（裸 JSON 回放）。
+- FRT-01/08/11 与 Fifth §7 在 WIP 初跑时失败：canary 服务器精确路由把
+  `?tok=` 请求打成 404（FRT-06 证据拒绝根因）；跨运行 createId/captureId
+  回退碰撞触发 UNIQUE 约束 → research-internal（分组/cohesive 失败根因）；
+  UI 面板状态在 FRT-06 失败路径遗留污染后续项。
+
+### 转绿证据（机器）
+
+- 全量 test **2128/2128**（93 文件，单 worker；基线 2054 + 74 新增——
+  manifest 8 + scan 15 + live 12 + gate 8 + runtime 顺序/包裹 7 + logger URL 1
+  + FRT 相关冒烟断言等）；typecheck（node+web）/lint/format:check/build/
+  git diff --check 全绿。
+- dev + 生产默认冒烟（含 8.20 全矩阵）退出码 0；8.20 = FRT-01～FRT-12 十二项
+  独立断言 + Fifth §7 离线映射（含 cohesive 端到端）+ 隐私扫描（60 条期望）。
+- LIVE_RESEARCH 门控矩阵（生产实测）：缺 SMOKE / 缺 LIVE_PROVIDER / 与
+  LIVE_SITES・RESEARCH_GATE 冲突 / 非法值 → 退出码 1 + 零残留；合法单一组合
+  无 Key → 退出码 0 + 「凭据不可用」 + 真实请求 0。
+- B-02 / B-05 / SESSION / RESEARCH_GATE 双进程门控全部退出码 0/0；
+  package.json/lockfile 零 diff；AgentLoop 12/420s 与 17 工具注册表零变化；
+  结束后 TEMP/Electron 进程零残留。
+
+### 红队发现的产品修复（独立提交，均先测后修）
+
+1. #170 请求消息顺序（system 恒居首位/当前 user 恒保留/相对顺序/预算）——
+   4209dd4；
+2. #171 URL query/fragment 日志脱敏（全调用点 + 真实 logger 输出测试）——
+   8e77854；
+3. #172 Research 工具结果回放 UNTRUSTED 块包裹（browser_read 携带正文零特权
+   通道）——c723b09。
+
+### 结构缺口修复（本闭环）
+
+- 模块边界：8.20 编排迁至 smoke-research-redteam.ts（FRT/扫描/Fifth §7），
+  真实 Provider 编排迁至 smoke-research-live-runner.ts；smoke.ts 仅保留入口
+  调用与 options；manifest/scan/live 保留纯函数职责（循环依赖为运行时延迟
+  绑定，无模块求值期顶层执行）。
+- Manifest 与执行同源：LIVE_RESEARCH_SCENARIO_MANIFEST 3 个有界场景包
+  （lr1 覆盖 §7.1/7.3/7.4/7.7，lr2 覆盖 §7.2/7.4/7.5/7.6，lr3 观察
+  FRT-01/02/08/11）；validateLiveResearchExecution fail-closed（未执行/
+  重复/未知 id）；purpose 进入台账摘要；runner 以 manifest 为唯一驱动。
+- FRT 独立性：每项结束后关闭非基线 Tab（安全网）+ 独立临时库/任务 id；
+  manifest 单测固化 12 项独立结果聚合。
+- FRT-08 UI DOM 冲突块证据（.research-conflict ≥1 + 「未解决」）；FRT-11
+  真实 DOM 零可执行元素（画布作用域）；FRT-10 注入 Provider 计数器证明
+  第 25 轮执行前被拒绝（stream 恰 24 次）。
+- Fifth §7 cohesive 端到端：SourceService+SearchProvider 真实命中 → merge
+  （同身份双 discoveredVia）→ 真实 Workspace/CaptureService 读取（失败来源
+  继续）→ EvidenceValidator → C6 claims → C7 ResultValidator → ResearchService
+  结果视图（provenance/URL/时间/摘录）。
+- 隐私扫描：Buffer 字节级搜索（不拼 UTF-8 字符串）+ 读取失败 fail-closed +
+  provider-request-memory/tool-output 面分离（6 类 × 10 面 = 60 条期望）。
+- LIVE_RESEARCH 门控：resolveResearchGate 纯函数（请求标志独立读取——缺
+  SMOKE 明确失败不静默忽略）+ 装配前退出（失败路径零残留）。
+- 夹具时序加固：8.19-B 画布打开等待按钮可用后点击（task-done 与重读竞态下
+  disabled 按钮点击 no-op 的既有瞬态根因——断言未放宽，仅点击前置条件补全）。
+- harness：仓库外 run-live-smoke.ps1 已有 -Research 实现（互斥/注入/清理），
+  逐项核验完整后保留，未覆盖重写。
+
+### 真实 Provider 台账
+
+- 离线验证全绿后按决议 #117 执行一次真实运行；结果（HTTP 次数/用途/分类）
+  如实登记于 progress.md「最近验证结果」最新条目；凭据不可用时如实登记
+  「凭据不可用」不发起任何请求。

@@ -17,7 +17,7 @@
   D1–D13/里程碑）、high-level-design（依赖方向/模块/数据流/安全模型）、
   detailed-design（唯一契约源 §2–§16：类型/状态机/候选合并排序/capture·
   evidence/ResearchRuntime/预算全表/cross-check/Result Schema·Renderer/
-  storage/IPC/决议——范围以 §15 当前记录为准，现已至 #163）、threat-model
+  storage/IPC/决议——范围以 §15 当前记录为准，现已至 #172）、threat-model
   （FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类，先于任何 Research 实现
   定稿）、任务 C1–C10。
   Entry Gate（Fifth_stage.md §2 五项）逐项核验**全部通过**（证据表见
@@ -233,7 +233,8 @@
   根目录日志/Electron 进程零残留）；真实 Provider 调用 **0 次**（8.19-B
   无真实 Provider 产品链路——FakeProvider 确定性脚本不冒充真实证据）。
   证据见 C8 任务文档「红→绿证据」小节。
-  **下一唯一任务 = C9。** 本阶段红线：禁止安装依赖、禁止实现
+   **下一唯一任务 = C9（2026-08-18 中断恢复后实施中：8.20 全矩阵/隐私扫描/
+   门控/真实运行器已完成，真实 Provider 一次运行待凭据可用时执行）。** 本阶段红线：禁止安装依赖、禁止实现
   Sixth Stage。**真实 Provider 长期授权（2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
   每次调用仍须服务于明确开发/验收/定位/复验目的，禁止无界循环、无诊断
@@ -617,7 +618,7 @@
 | C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #140–#147（C6/C7 分阶段装配边界/Provider 响应侧有界性/VerificationDraft 严格协议/Claim 确定性装配与厂商分类/Conflict 引用完整性/数据交接/Prompt 所有权/parseResultDraft 边界）；红→绿聚焦 61/61、全量 test 1865/1865；冒烟 8.18 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 Research 仍 fail-closed（缺 C7）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
 | C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #148–#155（Markdown 单一事实源/ResultDraft 三字段白名单/Validator 严格验证/Conflict·Coverage·不确定/Markdown AST 与 Renderer/logger 未初始化落盘修复/启动预占与 prepared Provider 交接/真实生产装配）；红→绿聚焦 172/172、全量 test 1964/1964；冒烟 8.18 真实 C7 端口 + 8.19-A 生产 factory 闭环 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 startTask 解除 fail-closed（决议 #140/#155）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
 | C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ✅ | 2026-08-17 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #156–#163（八 invoke + 两事件/payload 严格白名单 fail-closed/list 1-based/task-done 三值/Service 查询视图与事件出口/大结果画布 WebContentsView 可见性/Evidence 下钻与安全导航/TableView 纯函数/CSV 导出当前 UI 视图/Dialog 窄端口/UI 状态收敛）；红→绿聚焦 99/99、全量 test 2054/2054；冒烟 8.19-B dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider 0 次；**实际对应 10 个提交**（50c5651/a61261a/ff7d9a5/3410d16/b63fa9f/63d2869/4e1c690/**76070d3**/7edd96f/f9b005a——公开历史中 76070d3 为独立提交，不 amend 不重写）；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
-| C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ⏳ | 2026-08-16 设计定稿，待实施；threat-model §4；任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md；**决议 #117 长期授权**：基础设施落地后凭据可用即真实执行（凭据不可用如实记录「凭据不可用」） |
+| C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | 🔨 | 2026-08-16 设计定稿；**2026-08-18 中断恢复后实施：8.20 全矩阵/隐私扫描/门控/真实运行器已完成（dev+生产冒烟退出码 0，全量 test 2128/2128）**；真实 Provider 一次运行待凭据可用时执行（决议 #117 长期授权）；threat-model §4；任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md（实施记录已回填） |
 | C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ⏳ | 2026-08-16 设计定稿，待实施；任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；完成后停止不实现 Sixth Stage |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
@@ -628,6 +629,39 @@
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3、C4、C5、C6、C7）
+
+- **C9 中断恢复与实施（2026-08-18，第二十三个闭环；fix/feat/docs 逻辑提交
+  见 git log：4209dd4/8e77854/c723b09/ce9cd75/f952319）**：
+  ① **恢复审计**——中断现场完整保留（HEAD b4cb315 + 11 修改 + 6 未跟踪
+  smoke-research-* 模块 + 仓库外 harness 已有 -Research 半成品但逐项核验
+  完整；TEMP/Electron 进程零残留）；三个既有提交 09b258b/d678c27/b4cb315
+  未重写。② **产品修复（先测后修，独立提交）**——#170 请求消息顺序
+  （system 恒居首位且唯一/当前 user 恒保留/相对顺序/预算/context-too-long
+  重试同序）+ #171 URL query/fragment 日志脱敏（全调用点 + 真实 logger 输出
+  证明）+ #172 Research 工具结果回放 UNTRUSTED 块包裹（browser_read 携带
+  正文零特权通道——FRT-01 红队发现）。③ **C9 结构缺口**——8.20 编排迁至
+  smoke-research-redteam.ts（FRT/扫描/Fifth §7）与 smoke-research-live-runner.ts
+  （真实 Provider 编排），smoke.ts 仅入口；manifest 3 个有界场景包 + 执行
+  同源 fail-closed（validateLiveResearchExecution）+ purpose 进台账摘要；
+  FRT 独立性安全网（每项后关闭非基线 Tab）；FRT-08 真实 DOM 冲突块证据、
+  FRT-11 画布作用域零可执行元素、FRT-10 注入 Provider 计数器（第 25 轮
+  执行前被拒绝，stream 恰 24 次）；Fifth §7 cohesive 端到端（Sources+Search
+  真实命中 → merge 双 discoveredVia → 真实读取 → Evidence → C6 → C7 → 结果
+  视图）；隐私扫描 Buffer 字节级 + fail-closed + provider-request-memory 面
+  （6×10=60 条期望）；LIVE_RESEARCH 门控纯函数（请求标志独立读取——缺 SMOKE
+  明确失败）+ 装配前退出；8.19-B 画布点击时序加固（按钮可用后再点——既有
+  瞬态根因）。④ **红→绿证据**——调试期确认并修复三处夹具缺陷（canary 服务器
+  精确路由 404 打飞 `?tok=` 捕获、跨运行 createId/captureId 回退碰撞 UNIQUE
+  约束 → research-internal、cohesive 信源 id 非 UUID 被 merge 单条丢弃）；
+  全量 test **2128/2128**（93 文件，单 worker）+ typecheck/lint/format:check/
+  build/git diff --check 全绿；dev + 生产冒烟（含 8.20 全矩阵 FRT-01～FRT-12
+  + Fifth §7 + 隐私扫描）退出码 0/0；LIVE_RESEARCH 门控矩阵（缺 SMOKE/缺
+  LIVE_PROVIDER/冲突/非法值 → 退出码 1 零残留）+ 无 Key 路由（退出码 0 +
+  「凭据不可用」+ 请求 0）；B-02/B-05/SESSION/RESEARCH_GATE 双进程全部 0/0；
+  package/lock 零 diff；AgentLoop 12/420s 与 17 工具注册表零变化；TEMP/
+  Electron 进程零残留。⑤ **真实 Provider 台账**：离线验证全绿后按决议 #117
+  执行一次真实运行（凭据可用时）；凭据不可用则如实登记「凭据不可用」。
+  **不开始 C10。下一唯一任务 = 真实 Provider 一次运行 + C9 收尾报告。**
 
 - **C7 ResultValidator + 安全 Markdown 子集 + Renderer + 真实生产装配
   （2026-08-16，第二十二个闭环；docs/fix/feat 逻辑提交见 git log）**：
