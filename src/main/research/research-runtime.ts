@@ -559,7 +559,14 @@ export class ResearchRuntime {
         for (const call of toolCalls) {
           this.guard();
           const result = await this.executeResearchTool(call);
-          transcript.push({ role: 'tool', content: result, toolCallId: call.id });
+          // C9 FRT-01 修复（决议 #172，2026-08-18）：工具结果回放消息必须以
+          // UNTRUSTED 块包裹（browser_read 携带捕获正文——网页正文零特权通道；
+          // threat-model §3.1「工具结果只进 UNTRUSTED 块」；闭合转义同块纪律）
+          transcript.push({
+            role: 'tool',
+            content: buildUntrustedBlock('tool-result', result),
+            toolCallId: call.id,
+          });
         }
         continue; // 回放后下一段 stream
       }

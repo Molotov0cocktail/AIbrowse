@@ -3449,6 +3449,22 @@ CandidateOrigin[]; trust: { value, assertedBy, verification } | null }`；
      （6）**隐私扫描联动**：#168 url-token canary 的「日志面零命中」
      由本修复闭环保证。
 
+172. **Research 工具结果回放 UNTRUSTED 块包裹（2026-08-18，C9 FRT-01 红队
+     发现）**：browser_read 工具结果携带捕获正文，原实现以裸 JSON 字符串
+     回放进下一轮请求消息——网页正文经工具结果通道**零包裹**进入模型上下文，
+     违反 threat-model §3.1「网页内容/搜索结果/工具结果/Source 检索结果只进
+     UNTRUSTED 块」（结构性隔离缺口；模型仍只提议、权限与验证不变，但
+     敌对正文可经该通道以未标注特权形态出现）。裁决（先写红测、再改实现）：
+     （1）工具回放消息（transcript 内 role='tool'）以既有
+     `buildUntrustedBlock('tool-result', result)` 包裹（同一
+     `<UNTRUSTED_WEB_CONTENT>` 标记族 + `</` 闭合转义 + 控制字符剔除——
+     不新增标记类型、不改变工具结果序列化格式本身）；
+     （2）语义零变化：工具结果仍为有界 JSON（RESEARCH_TOOL_RESULT_CONTENT_MAX
+     截断），仅回放形态加包裹；模型提议/验证/预算/持久化路径零改动；
+     （3）测试：红测（裸回放时工具消息无块标记 → 失败）→ 修复 → 运行时
+     测试断言工具消息含块标记 + 捕获正文在块内 + 闭合转义；FRT-01 冒烟
+     敌对页浏览器读链路由 FRT-01 断言「敌对文本仅 UNTRUSTED 块内」覆盖。
+
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4/C5 端口）/C7（依赖 C1/C5 端口，可与
   C6 并行）→ C8（依赖 C5–C7）→ C9（依赖 C1–C8）→ C10（依赖全部且独立复验）。

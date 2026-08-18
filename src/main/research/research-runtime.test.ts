@@ -945,6 +945,63 @@ describe('六工具执行模型（决议 #132）', () => {
     expect(repo.getTaskById(taskId)!.status).toBe('completed');
   });
 
+  it('FRT-01：工具结果回放消息必须带 UNTRUSTED 块（网页正文零特权通道）', async () => {
+    // C9 FRT-01 红队发现（2026-08-18）：browser_read 工具结果携带捕获正文，
+    // 原以裸 JSON 字符串回放进下一轮请求——网页正文经工具结果通道零包裹进入
+    // 模型上下文（违反 threat-model §3.1「工具结果只进 UNTRUSTED 块」）。
+    // 修复：工具回放消息以 buildUntrustedBlock('tool-result', …) 包裹。
+    const script: FakeProviderScript = {
+      rounds: [
+        [
+          {
+            text: JSON.stringify({
+              sourceMode: 'search',
+              sourceQuery: 'q',
+              groupId: null,
+              webQueries: [],
+            }),
+          },
+        ],
+        [
+          {
+            text: JSON.stringify({
+              selectedCandidateIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+            }),
+          },
+        ],
+        [
+          {
+            kind: 'toolCalls',
+            toolCalls: [
+              {
+                id: 'tc-1',
+                name: 'browser_read',
+                arguments: JSON.stringify({ tabId: 'tab-1' }),
+              },
+            ],
+          },
+        ],
+        [{ text: JSON.stringify([]) }],
+        [{ text: JSON.stringify({ claims: [], conflicts: [] }) }],
+        [{ text: JSON.stringify({ result: { ...makeResult(), __stub: true } }) }],
+      ],
+    };
+    const provider = new FakeProvider(script);
+    const h = buildHarness({ provider });
+    await h.done;
+    expect(repo.getTaskById(taskId)!.status).toBe('completed');
+    const requests = provider.getRequests();
+    const toolMsg = requests
+      .flatMap((r) => r.messages)
+      .find((m) => m.role === 'tool' && m.toolCallId === 'tc-1');
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg!.content).toContain('<UNTRUSTED_WEB_CONTENT>');
+    expect(toolMsg!.content).toContain('</UNTRUSTED_WEB_CONTENT>');
+    expect(toolMsg!.content).toContain('tool-result');
+    // 捕获正文（受控摘录）在块内可见；`</` 闭合转义（敌手无法提前闭合块）
+    expect(toolMsg!.content).toContain('受控正文摘录');
+  });
+
   it('browser_open 非候选 URL → 安全失败 + 零 CaptureService.read 调用', async () => {
     const capture = new FakeCapture([
       successCapture('33333333-3333-4333-8333-333333333333', 'tab-1'),
