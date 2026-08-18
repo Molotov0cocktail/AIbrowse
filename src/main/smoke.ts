@@ -108,6 +108,11 @@ import {
 // 目标 Tab 不激活（第四轮真实验收「敌对页未就绪」超时根因）。最小可单测辅助
 // （零 Electron 依赖，单测 smoke-activate-navigate.test.ts；不修改 BrowserController）。
 import { activateThenNavigate } from './smoke-activate-navigate';
+// C9（8.20 红队矩阵 + LIVE_RESEARCH 真实验收，2026-08-18）：编排已迁移至专属
+// 模块（smoke.ts 仅保留入口调用与 options 字段；纯函数职责保留在
+// smoke-research-manifest/scan/live.ts）——决议 #167/#169
+import { runResearchRedTeamScenarios } from './smoke-research-redteam';
+import { runLiveResearchScenarios } from './smoke-research-live-runner';
 import type { AgentLoopLimits } from './ai/agent/agent-loop';
 import type { AgentConfirmRequest, AgentRunDoneEvent, AgentStepEvent } from '../shared/types/agent';
 import {
@@ -155,9 +160,10 @@ export const smokeAgentLimits: Partial<AgentLoopLimits> = {};
 // 决议 #32 注入 seam 同 A4/A5 冒烟模式）。index.ts 冒烟模式读取；场景结束置 null。
 export const smokeAgentSearchProvider: { current: SearchProvider | null } = { current: null };
 
-const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+export const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
-async function waitFor(
+export async function waitFor(
   cond: () => Promise<boolean>,
   timeoutMs: number,
   failure: string,
@@ -180,7 +186,7 @@ async function waitForOptional(cond: () => Promise<boolean>, timeoutMs: number):
   return true;
 }
 
-function assert(condition: boolean, message: string): asserts condition {
+export function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(`冒烟断言失败：${message}`);
 }
 
@@ -195,6 +201,11 @@ export interface SmokeOptions {
   liveAgentSupplement?: boolean; // A7 补验补证：定向补验（AIBROWSE_LIVE_AGENT_SUPPLEMENT=1，仅修订场景 2/3 + 零泄漏终检）
   liveAgentSources?: boolean; // B6：真实 Provider AI 自然语言管理验证（AIBROWSE_LIVE_AGENT_SOURCES=1；
   // 与 LIVE_AGENT/PRE/SUPPLEMENT 互斥；未提供 Key 回退离线矩阵，不发起付费请求）
+  liveResearch?: boolean; // C9：真实 Provider/真实主题 Research 验证（AIBROWSE_LIVE_RESEARCH=1，
+  // 从属于 SMOKE+LIVE_PROVIDER；与其余 LIVE/专属门控互斥；未提供 Key 回退离线矩阵，
+  // 不发起付费请求——决议 #169）
+  researchService?: ResearchService | null; // C9：index.ts 装配的 ResearchService
+  // （LIVE_RESEARCH 模式为生产 factory 装配——真实执行经产品 Service/Runtime 路径）
   toolExecutor?: ToolExecutor; // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
   confirmManager?: ConfirmManager; // A3：L2 确认程序化驱动（approve/deny，A6 起接 UI）
   sourcesService?: SourceService; // B5：冒烟模式共享生产 SourceService 实例（8.11 B-05 UI
@@ -1741,7 +1752,7 @@ function visibleTabView(win: BrowserWindow | null | undefined): WebContentsView 
 // React 事件系统监听根容器：原生 click / input / keydown 事件冒泡即触发对应 handler。
 // 受控输入（地址栏）用原型 value setter 写入——绕过 React 实例 tracker 后 dispatch
 // input 事件，ChangeEventPlugin 检测到值变化即触发 onChange（标准 React 驱动手法）。
-async function uiJs(uiWc: WebContents, script: string): Promise<unknown> {
+export async function uiJs(uiWc: WebContents, script: string): Promise<unknown> {
   return uiWc.executeJavaScript(script);
 }
 
@@ -1766,7 +1777,7 @@ async function typeIntoAddressBar(uiWc: WebContents, text: string): Promise<void
   );
 }
 
-async function clickUi(uiWc: WebContents, selector: string): Promise<void> {
+export async function clickUi(uiWc: WebContents, selector: string): Promise<void> {
   await uiJs(
     uiWc,
     `(() => {
@@ -1815,7 +1826,7 @@ async function uiTabTitle(uiWc: WebContents, index: number): Promise<string> {
 
 // ---------- S4：AI 面板 UI 驱动辅助（沿用 T5 原生事件手法） ----------
 
-async function uiText(uiWc: WebContents, selector: string): Promise<string> {
+export async function uiText(uiWc: WebContents, selector: string): Promise<string> {
   return (await uiJs(
     uiWc,
     `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ''`,
@@ -1908,7 +1919,7 @@ async function uiInputValue(uiWc: WebContents, selector: string): Promise<string
   )) as string;
 }
 
-async function waitForUiText(
+export async function waitForUiText(
   uiWc: WebContents,
   selector: string,
   includes: string,
@@ -10489,6 +10500,21 @@ export async function runSmokeScenario(
           '真实 Provider Sources 验证跳过：未提供 AIBROWSE_TEST_API_KEY（回退离线矩阵）',
         );
       }
+      if (options.liveResearch === true) {
+        // C9（决议 #169(3) + 恢复校准）：AIBROWSE_LIVE_RESEARCH=1 但凭据不可用 →
+        // 中文登记「凭据不可用」+ 真实网络请求计数 0（机器断言：本分支不进入
+        // runLiveResearchScenarios——Provider stream/HTTP 调用计数恒为 0）+ 回退
+        // 离线矩阵（8.20 离线仍执行）；FakeProvider 仅作为离线 8.20 证据，不计为
+        // 真实证据；环境变量已由 index.ts 装配路径移除（断言）
+        logWarn(
+          'smoke',
+          '真实 Provider Research 验证跳过：凭据不可用（真实网络请求 0 次；回退离线矩阵，FakeProvider 不冒充真实证据）',
+        );
+        assert(
+          process.env['AIBROWSE_TEST_API_KEY'] === undefined,
+          '凭据不可用路由：AIBROWSE_TEST_API_KEY 不得残留于环境变量',
+        );
+      }
       aiSmoke = await runAiConversationScenarios(controller, options.uiWindow);
       aiUiSmoke =
         options.uiWindow !== null &&
@@ -10503,7 +10529,22 @@ export async function runSmokeScenario(
           options.aiSmokeDir !== undefined,
         '真实 Provider 冒烟需要 UI 窗口与数据目录选项',
       );
-      if (options.liveAgentSources === true) {
+      if (options.liveResearch === true) {
+        // C9（决议 #169）：真实 Provider/真实主题 Research 验证（AIBROWSE_LIVE_RESEARCH=1，
+        // 从属于 SMOKE+LIVE_PROVIDER；与其余 LIVE/专属门控互斥由 index.ts 保证）。
+        // 真实执行经产品 ResearchService/ResearchRuntime/C6/C7/C8 路径（index.ts
+        // LIVE_RESEARCH 模式装配生产 RuntimeFactory）；Fifth §7 真实主题体验 +
+        // FRT-01/02/08 观察子集 + 真 Key 零暴露扫描 + 调用台账。
+        await runLiveResearchScenarios(controller, {
+          uiWindow: options.uiWindow,
+          aiSmokeDir: options.aiSmokeDir,
+          liveSmoke: options.liveSmoke,
+          researchService: options.researchService ?? null,
+          sourcesService: options.sourcesService ?? null,
+          sourcesDbPath: options.sourcesDbPath ?? null,
+          auditEntries: options.auditEntries,
+        });
+      } else if (options.liveAgentSources === true) {
         // B6：真实 Provider AI 自然语言管理验证（AIBROWSE_LIVE_AGENT_SOURCES=1，
         // 需用户授权——询问边界；场景见 runLiveAgentSourcesScenarios；与
         // LIVE_AGENT/PRE/SUPPLEMENT 互斥由 index.ts 门控保证）
@@ -10866,6 +10907,21 @@ export async function runSmokeScenario(
       await runResearchUiScenario({ controller, uiWindow: options.uiWindow });
     }
 
+    // 8.20 C9 红队矩阵 FRT-01～FRT-12（决议 #167；默认矩阵自动包含）：
+    //     12 项独立机器断言（单项失败不遮蔽其他项，最后聚合失败）+ Fifth §7
+    //     离线映射补全 + 隐私扫描（canary 允许/禁止位置清单，决议 #168）。
+    //     不重复完整运行 8.16–8.19 或第三/四阶段矩阵（决议 #93 纪律）。
+    //     ⚠️ 真实 Provider 模式跳过（理由同 8.4–8.6；真实研究验证在
+    //     runLiveResearchScenarios 内执行）
+    if (options.liveSmoke === undefined) {
+      await runResearchRedTeamScenarios(controller, {
+        uiWindow: options.uiWindow,
+        aiSmokeDir: options.aiSmokeDir,
+        sourcesDbPath: options.sourcesDbPath,
+        auditEntries: options.auditEntries,
+      });
+    }
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -10916,7 +10972,7 @@ export async function runSmokeScenario(
 // EvidenceValidator verified/rejected 全链路；Capture 元数据 + 少量 VerifiedEvidence
 // 写入临时 research.db（未验证引用零落库）；正文零持久化探针（拆分标记零命中）；
 // finally 精确释放 task Tab + 关闭库 + 清理隔离目录 + 用户 Tab 集合不变。
-function makeSmokeCandidate(id: string, url: string): SourceCandidate {
+export function makeSmokeCandidate(id: string, url: string): SourceCandidate {
   return {
     id,
     url,
@@ -10952,7 +11008,7 @@ function captureToRow(capture: Capture): ResearchCaptureRow {
 }
 
 // 目录/文件字节扫描：needle 出现即 true（正文零持久化探针）
-function fileContainsText(file: string, needle: string): boolean {
+export function fileContainsText(file: string, needle: string): boolean {
   try {
     return readFileSync(file).includes(Buffer.from(needle, 'utf8'));
   } catch {
@@ -14811,7 +14867,7 @@ async function openDetailByNameIn(uiWc: WebContents, name: string): Promise<void
 // claim-model/result-validator 冻结端口对象）——C5/C6 冒烟的确定性 stub
 // 不再使用；8.18 的严格 C7 stub 同步移除（真实端口直接校验）。
 
-function makeSmokeResultDraftJson(): string {
+export function makeSmokeResultDraftJson(): string {
   // 决议 #149(1)：模型草案仅三字段（title/summary/blocks——可信字段由程序
   // 组装）；含 uncertain 块（零候选/空 claims 强制矩阵）
   return JSON.stringify({
@@ -14915,7 +14971,7 @@ interface SmokeResearchRuntimeDeps {
 export const smokeResearchScript: { current: FakeProviderScript | null } = { current: null };
 
 // 零候选研究的空 Sources 端口（set 门控用：Sources 检索恒空——合法空候选）
-function makeEmptySmokeSourceService(): SourceService {
+export function makeEmptySmokeSourceService(): SourceService {
   return {
     search: async () => ({ ok: true, query: '', results: [] }),
     list: async () => ({ ok: true, page: 0, pageSize: 20, total: 0, items: [] }),
@@ -16374,6 +16430,18 @@ async function runResearchUiScenario(options: {
     await waitForUiText(uiWc, '.research-panel-status', '已完成', 60000, '8.19-B：B 未完成');
 
     // —— 打开结果 → viewMode='research-result' → WebContentsView 实际不可见 ——
+    // C9 恢复校准：等待「打开结果」按钮真实可用后再点击（task-done 事件与
+    // 重读竞态下按钮可能瞬时 disabled——点击 disabled 按钮为 no-op 导致画布
+    // 不打开；此为夹具时序加固，非放宽断言）
+    await waitFor(
+      async () =>
+        (await uiJs(
+          uiWc,
+          `(() => { const b = document.querySelector('.research-panel-open-result'); return b !== null && !b.disabled; })()`,
+        )) as boolean,
+      10000,
+      '8.19-B：打开结果按钮未就绪',
+    );
     await clickUi(uiWc, '.research-panel-open-result');
     await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：结果画布未打开');
     await assertNoTabFocused('8.19-B：结果画布模式下 Tab 不应获得焦点（WebContentsView 不可见）');
@@ -16509,11 +16577,30 @@ async function runResearchUiScenario(options: {
     assert(canvasGone, '8.19-B：打开来源后应返回 browser 模式');
 
     // —— viewMode 往返：再打开结果 → 断言用户 Tab id/url/title/active 恒等 ——
+    // （C9 恢复校准：等待按钮可用再点击——同 8.19-B 画布打开时序加固）
+    await waitFor(
+      async () =>
+        (await uiJs(
+          uiWc,
+          `(() => { const b = document.querySelector('.research-panel-open-result'); return b !== null && !b.disabled; })()`,
+        )) as boolean,
+      10000,
+      '8.19-B：往返前打开结果按钮未就绪',
+    );
     await clickUi(uiWc, '.research-panel-open-result');
     await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：画布往返失败');
     const beforeRoundTrip = await tabSnapshot();
     await clickUi(uiWc, '.research-canvas-back');
     await delay(300);
+    await waitFor(
+      async () =>
+        (await uiJs(
+          uiWc,
+          `(() => { const b = document.querySelector('.research-panel-open-result'); return b !== null && !b.disabled; })()`,
+        )) as boolean,
+      10000,
+      '8.19-B：二次往返前打开结果按钮未就绪',
+    );
     await clickUi(uiWc, '.research-panel-open-result');
     await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：画布二次往返失败');
     const afterRoundTrip = await tabSnapshot();
