@@ -1443,15 +1443,16 @@ usage-tracker.ts`——`MAX_HINTS_PER_RUN`=120 / `SourceSearchHintStore`
   结果」（describeLastUsage：可达/不可达/其余「暂无可靠信号」+ 时间；严禁
   「健康/长期可用」）。
 
-### Fifth Stage Research 契约速查（定稿 2026-08-16；C1–C8 已实现，其余任务实施后按 `grep -n "^export"` 回填核对）
+### Fifth Stage Research 契约速查（定稿 2026-08-16；C1–C9 已实现，其余任务实施后按 `grep -n "^export"` 回填核对）
 
 > 唯一契约源 `doc/stage5/detailed-design.md`（§2 类型 / §3 状态机 / §4 候选合并
 > 排序 / §5 capture·evidence / §6 ResearchRuntime 与预算 / §7 cross-check /
 > §8 Result Schema·Renderer / §9 存储 / §10 Tab 所有权 / §11 IPC / §12 边界 /
-> §13 测试 / §14 验收 / §15 决议——编号范围以 §15 当前记录为准）；安全契约源
+> §13 测试 / §14 验收 / §15 决议——编号范围以 §15 当前记录为准，现已至 #172）；
+> 安全契约源
 > `doc/stage5/threat-model.md`（FT-01～FT-17 / FRT-01～FRT-12 / 诚实边界十一类）；
-> 任务 C1–C10 见 `doc/stage5/tasks/`。**C1–C8 已实现**（C1 契约基座 + 存储基座/C2 ResearchWorkspace/C3 SourceSelector/C4 CaptureService + EvidenceValidator/C5 ResearchRuntime/C6 Cross-check + 冲突模型 + 带证据综合/C7 ResultValidator + 安全 Markdown 子集 + ResultView + 真实生产装配/C8 Research IPC 八通道 + 侧栏/结果画布/Evidence 下钻/表格交互/CSV 安全导出 + 冒烟 8.19-B——完成状态以 progress.md 为准）；
-> C9–C10 为「规划/待实现」——在对应任务完成前不得宣称已实现（完成状态以
+> 任务 C1–C10 见 `doc/stage5/tasks/`。**C1–C9 已实现**（C1 契约基座 + 存储基座/C2 ResearchWorkspace/C3 SourceSelector/C4 CaptureService + EvidenceValidator/C5 ResearchRuntime/C6 Cross-check + 冲突模型 + 带证据综合/C7 ResultValidator + 安全 Markdown 子集 + ResultView + 真实生产装配/C8 Research IPC 八通道 + 侧栏/结果画布/Evidence 下钻/表格交互/CSV 安全导出 + 冒烟 8.19-B/C9 8.20 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + Fifth §7 端到端 + LIVE_RESEARCH 门控与真实 Provider 验收基础设施（真实运行两次全过，2026-08-18）——完成状态以 progress.md 为准）；
+> C10 为「规划/待实现」——在对应任务完成前不得宣称已实现（完成状态以
 > progress.md 为准）。
 
 - **依赖方向（不可反向）**：`Research UI → ResearchService → ResearchRuntime →
