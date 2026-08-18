@@ -312,7 +312,10 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
 | 隐私扫描 | runResearchRedTeamScenarios 扫描段：6 类 canary × 10 扫描面（含 provider-request-memory）60 条期望全部符合；Buffer 字节级搜索 + 读取失败 fail-closed；smoke-research-scan.test（15 用例） | 结构边界 | 双场景通过；Key 脱敏探针日志面零命中 |
 | Fifth §7 | runFifth7OfflineE2E（①group/②merge/④table/⑤cards/⑦fail）+ runFifth7CohesiveE2E（完整链路）+ FRT-06/08 承担 ③⑥；manifest 映射表 7 条 | 结构边界 | 双场景通过 |
 | LIVE_RESEARCH 门控 | resolveResearchGate 纯函数（smoke-research-gate.test 8 用例）+ 实测矩阵（缺 SMOKE/缺 LIVE_PROVIDER/与 LIVE_SITES・RESEARCH_GATE 冲突/非法值 → 退出码 1 零残留；无 Key 路由退出码 0 + 凭据不可用 + HTTP 0） | 结构边界 | 生产实测通过 |
-| 真 Key 零暴露（真实运行） | runLiveResearchScenarios 扫描段：全部 aibrowse-smoke-*/frt* 临时目录（research/sources DB+WAL/SHM/备份/会话产物）+ conversation + 日志区间 + audit + UI DOM + 环境变量清除断言；读取失败 fail-closed | 结构边界 | 随真实 Provider 运行执行（凭据可用时） |
+| 真 Key 零暴露（真实运行） | runLiveResearchScenarios 扫描段：全部 aibrowse-smoke-*/frt* 临时目录（research/sources DB+WAL/SHM/备份/会话产物）+ conversation + 日志区间 + audit + UI DOM + 环境变量清除断言；读取失败 fail-closed | 结构边界 | **两次完整真实运行通过（2026-08-18，deepseek-v4-pro）：7 表面零命中 + 环境变量已清除** |
+| C8 事件通道（真实运行发现） | 渲染层 task-done 到达计数断言（≥3）+ IPC list 链路断言 | 结构边界 | **修复前 0 → 修复后 6（447bf0a：事件转发注册时序缺陷）** |
+| 历史选择守卫（真实运行发现） | isSelectionStale 纯函数 + 单测（use-research.test +2） | 结构边界 | **修复前首次历史点击选择恒被丢弃 → 修复后生效（447bf0a）** |
+| 真实主题体验（lr1/lr2/lr3） | 3 个 manifest 场景包：Fifth §7.1/7.3/7.4/7.7 + §7.2/7.4/7.5/7.6 结构断言 + FRT-01/02/08/11 观察 | 结构边界 + 观察 | 两次完整运行全部 completed（HTTP 19/21）；lr3 语义观察（conflicts/claims）如实登记 |
 
 ## 5. 诚实边界声明（不承诺语义免疫）
 

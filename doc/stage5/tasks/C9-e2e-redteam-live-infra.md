@@ -181,3 +181,24 @@ progress.md 更新 + 逻辑提交（feat: C9 …）+ 双远程推送 + 真实 Pr
 - 离线验证全绿后按决议 #117 执行一次真实运行；结果（HTTP 次数/用途/分类）
   如实登记于 progress.md「最近验证结果」最新条目；凭据不可用时如实登记
   「凭据不可用」不发起任何请求。
+
+**真实执行记录（2026-08-18，deepseek-v4-pro，harness `-Research`）**：
+最终两次完整运行**全部通过**——HTTP 19 次（lr1=6/lr2=8/lr3=5）与 21 次
+（lr1=7/lr2=7/lr3=7）全部 completed；用途 = 三个 manifest 场景包；
+C8 事件通道结构断言（渲染层 task-done 到达 6 次）；真 Key 零暴露扫描
+7 表面零命中 + 环境变量清除 + 零进程/临时目录残留；观察性结果如实登记
+（lr3 conflicts/claims 为模型自由行为，不冒充防御）。**真实验收发现并修复
+两处 C8 生产缺陷（先测后修，独立提交 447bf0a）**：
+1. **research:progress/task-done 事件转发注册时序缺陷**——index.ts 注册位于
+   Research 装配之前，`researchService?.` 在 null 时静默 no-op，生产/真实链路
+   事件从未到达渲染层（面板不随任务完成自动刷新；8.19-B 因自建 service 直发
+   事件而掩盖）。修复：装配完成后 forwardResearchEvents 注册；实测渲染层
+   task-done 到达 0 → 6。
+2. **历史条目选择竞态守卫缺陷**——loadTaskAndResult 的守卫 `selectedTaskId
+   !== taskId` 在无选中（null）时把首次历史点击选择也丢弃（历史选择从未
+   生效）。修复：isSelectionStale 纯函数（仅当存在其他选中时才过期）+ 单测。
+真实运行期间还定位并修复了 7 处夹具/断言缺陷（canary 服务器精确路由 404
+打飞 `?tok=` 捕获/跨运行 createId/captureId 回退碰撞 UNIQUE 约束/UI 选择器
+指向 header/历史条目晚于表头到达的等待/真实模型引用敌对页标记的观察校准/
+cohesive 信源 id 非 UUID 被 merge 丢弃/8.19-B 画布点击时序）；诊断过程累计
+~190 次 HTTP（每轮诊断驱动，非盲目重试）。
