@@ -132,6 +132,16 @@ function sameStats(a: ResearchTask['stats'] | null, b: ResearchTask['stats'] | n
   );
 }
 
+/**
+ * 决议 #163(4) 竞态守卫（C9 真实运行校准，2026-08-18）：
+ * 仅当存在**其他**选中任务时才视为过期（丢弃迟到结果）；无选中
+ * （selectedTaskId=null）时首次历史条目选择必须放行——否则历史点击
+ * 选择从未生效（生产缺陷，先测后修）。
+ */
+export function isSelectionStale(selectedTaskId: string | null, requestedTaskId: string): boolean {
+  return selectedTaskId !== null && selectedTaskId !== requestedTaskId;
+}
+
 export function reduceResearchUi(state: ResearchUiState, event: ResearchUiEvent): ResearchUiState {
   switch (event.kind) {
     case 'create-ok':
@@ -358,15 +368,18 @@ export function useResearch(): UseResearchApi {
     if (!mounted.current) return;
     const got = await window.aibrowse.research.get(taskId);
     if (!mounted.current) return;
-    // 竞态守卫：请求期间选中任务已变化（新任务被创建/选中）→ 丢弃旧结果
-    // （旧任务的 reload 重读不得覆盖新建任务——决议 #163(4) 键控语义）
-    if (stateRef.current.selectedTaskId !== taskId) return;
+    // 竞态守卫：请求期间选中任务已**变化为其他任务**（新任务被创建/选中）→
+    // 丢弃旧结果（旧任务的 reload 重读不得覆盖新建任务——决议 #163(4) 键控
+    // 语义）。C9 真实运行发现（2026-08-18，先测后修）：原 `!== taskId` 在
+    // 无选中（selectedTaskId=null）时把**首次历史条目选择**也丢弃——历史
+    // 点击选择从未生效（生产缺陷）；修复 = 仅当存在其他选中时才视为过期。
+    if (isSelectionStale(stateRef.current.selectedTaskId, taskId)) return;
     if (got.ok) {
       dispatch({ kind: 'get-ok', task: got.value.task });
       if (got.value.task.status === 'completed') {
         const res = await window.aibrowse.research.result(taskId);
         if (!mounted.current) return;
-        if (stateRef.current.selectedTaskId !== taskId) return;
+        if (isSelectionStale(stateRef.current.selectedTaskId, taskId)) return;
         if (res.ok) dispatch({ kind: 'result-ok', view: res.value.view });
         else dispatch({ kind: 'result-error', errorCode: res.errorCode });
       }

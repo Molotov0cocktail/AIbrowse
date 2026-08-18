@@ -659,25 +659,9 @@ if (!gotLock) {
     handle(IPC.ResearchDelete, (payload) => researchIpcAdapter.delete(payload));
     handle(IPC.ResearchExportCsv, (payload) => researchIpcAdapter.exportCsv(payload));
     // research:progress / research:task-done 事件出口（决议 #157：Service 转发 +
-    // 终态时序；只发主窗口；事件零敏感内容——payload 形状已由 Service 保证）
-    researchService?.onProgress((event) => {
-      if (
-        mainWindow !== null &&
-        !mainWindow.isDestroyed() &&
-        !mainWindow.webContents.isDestroyed()
-      ) {
-        mainWindow.webContents.send(IPC.ResearchProgress, event);
-      }
-    });
-    researchService?.onTaskDone((event) => {
-      if (
-        mainWindow !== null &&
-        !mainWindow.isDestroyed() &&
-        !mainWindow.webContents.isDestroyed()
-      ) {
-        mainWindow.webContents.send(IPC.ResearchTaskDone, event);
-      }
-    });
+    // 终态时序；只发主窗口；事件零敏感内容——payload 形状已由 Service 保证）。
+    // ⚠️ 注册必须位于 Research 装配之后（见 forwardResearchEvents——装配前
+    // researchService 为 null，`?.` 会静默 no-op——C9 真实运行发现并修复）。
 
     handle(
       IPC.ConfigProvidersList,
@@ -1126,6 +1110,34 @@ function createBrowserWindow(): void {
     if (researchOutcome.mode === 'normal') {
       logInfo('main', `Research 子系统就绪（${join(researchDir, 'research.db')}）`);
     }
+    // C9 真实运行发现（2026-08-18，先测后修）：原 research:progress/task-done
+    // 转发注册位于 Research 装配**之前**——`researchService?.` 在 null 时静默
+    // no-op，生产/真实链路的事件从未到达渲染层（面板不随任务完成自动刷新）。
+    // 修复：装配完成后注册（service 实例已就绪；LIVE_RESEARCH 实测渲染层
+    // task-done 计数 0 → 修复后 = 场景数）。
+    const forwardResearchEvents = (): void => {
+      const svc = researchService;
+      if (svc === null) return;
+      svc.onProgress((event) => {
+        if (
+          mainWindow !== null &&
+          !mainWindow.isDestroyed() &&
+          !mainWindow.webContents.isDestroyed()
+        ) {
+          mainWindow.webContents.send(IPC.ResearchProgress, event);
+        }
+      });
+      svc.onTaskDone((event) => {
+        if (
+          mainWindow !== null &&
+          !mainWindow.isDestroyed() &&
+          !mainWindow.webContents.isDestroyed()
+        ) {
+          mainWindow.webContents.send(IPC.ResearchTaskDone, event);
+        }
+      });
+    };
+    forwardResearchEvents();
   } catch (err) {
     researchService = null;
     logError('main', 'Research 子系统初始化失败（研究功能全拒，其余能力不受影响）', err);

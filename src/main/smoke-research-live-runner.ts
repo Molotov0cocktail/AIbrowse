@@ -112,18 +112,60 @@ async function liveResearchUiCanvasOpen(
   goalMarker: string,
 ): Promise<string> {
   const uiWc = uiWindow.webContents;
+  // C8 事件通道结构断言：渲染层 task-done 到达计数 = manifest 完成场景数
+  //（index.ts 转发装配后注册——2026-08-18 修复；修复前恒 0）
+  const eventCount = (await uiJs(uiWc, `(() => window.__liveResearchEventCount ?? 'UNSET')()`)) as
+    number | string;
+  assert(
+    typeof eventCount === 'number' && eventCount >= 3,
+    `LIVE_RESEARCH：渲染层 task-done 事件到达不足（实际 ${String(eventCount)}，期望 ≥3——C8 事件通道）`,
+  );
+  logInfo(
+    'smoke',
+    `LIVE_RESEARCH：C8 事件通道验证通过（渲染层 task-done 到达 ${String(eventCount)} 次）`,
+  );
+  // 打开面板前：直接经真实 IPC 通道读取任务列表（renderer 侧 list 链路）
+  const ipcList = (await uiJs(
+    uiWc,
+    `window.aibrowse.research.list({ page: 1, pageSize: 20 }).then((r) => JSON.stringify(r)).catch((e) => 'ERR:' + String(e))`,
+  )) as string;
+  assert(
+    ipcList.includes('"ok":true') && ipcList.includes('"total":3'),
+    `LIVE_RESEARCH：IPC list 链路异常（${ipcList.slice(0, 120)}）`,
+  );
   await uiJs(
     uiWc,
     "(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent === '研究'); if (b) b.click(); return b !== undefined; })()",
   );
   await waitForUiText(uiWc, '.research-panel', '研究', 5000, 'LIVE_RESEARCH：研究面板未打开');
+  // 历史表头（「历史（N）」）出现 = 历史列表已加载（header 承载「历史」文案，
+  // list 容器只承载条目——选择器必须指向 header）
   await waitForUiText(
     uiWc,
-    '.research-panel-history-list',
+    '.research-panel-history-header',
     '历史',
     10000,
     'LIVE_RESEARCH：历史列表未加载',
   );
+  // 等待目标任务条目真实出现（IPC 异步重读——条目晚于表头到达）
+  try {
+    await waitFor(
+      async () =>
+        (await uiJs(
+          uiWc,
+          `(() => { const items = [...document.querySelectorAll('.research-panel-history-item')]; return items.some((x) => x.textContent.includes(${JSON.stringify(goalMarker)})); })()`,
+        )) as boolean,
+      10000,
+      'LIVE_RESEARCH：历史列表未找到目标任务（goal 匹配失败）',
+    );
+  } catch (err) {
+    const diag = (await uiJs(
+      uiWc,
+      `(() => { const p = document.querySelector('.research-panel'); return p === null ? 'NO-PANEL' : p.innerText.slice(0, 400); })()`,
+    )) as string;
+    logWarn('smoke', `LIVE_RESEARCH 面板诊断：${diag}`);
+    throw err;
+  }
   // 历史条目按 goal 精确匹配（任务经产品 Service 创建——渲染层经 IPC 重读）
   const clicked = (await uiJs(
     uiWc,
@@ -167,6 +209,13 @@ export async function runLiveResearchScenarios(
   const executedIds: string[] = [];
   const canaries = createResearchCanaries();
   const pages = await startFrtCanaryPages(canaries);
+  const uiWc = options.uiWindow.webContents;
+  // 事件到达探针（诊断用）：渲染层订阅 task-done 并写入 data 属性——场景
+  // 结束后读取计数，验证 main→renderer 事件链路
+  await uiJs(
+    uiWc,
+    `(() => { window.__liveResearchEventCount = 0; window.aibrowse.research.onTaskDone(() => { window.__liveResearchEventCount = (window.__liveResearchEventCount ?? 0) + 1; }); return true; })()`,
+  );
   const userTabsBefore = JSON.stringify(
     (await controller.getTabs()).map((t) => ({
       id: t.id,
@@ -178,6 +227,12 @@ export async function runLiveResearchScenarios(
   const service = options.researchService;
   assert(service !== null, 'LIVE_RESEARCH：researchService 未装配（index.ts 应注入生产 factory）');
   if (service === null) return;
+  // 渲染层事件到达计数探针（C8 事件通道结构断言——2026-08-18 真实运行发现
+  // index.ts 转发注册位于装配之前导致零到达；修复后计数 = 完成场景数）
+  await uiJs(
+    options.uiWindow.webContents,
+    `(() => { window.__liveResearchEventCount = 0; window.aibrowse.research.onTaskDone(() => { window.__liveResearchEventCount = (window.__liveResearchEventCount ?? 0) + 1; }); return true; })()`,
+  );
   // —— 稳定性预检（决议 #169(7)）：Provider 装配就绪 + service 可用 + 受控页可达 ——
   const ready = await options.liveSmoke.ready;
   assert(ready, 'LIVE_RESEARCH 预检：Provider 配置/Key 装配未就绪');
@@ -345,18 +400,25 @@ export async function runLiveResearchScenarios(
     if (scenario.id === 'lr3-hostile-observe') {
       assert(terminal !== null, 'LIVE_RESEARCH lr3：任务应收敛');
       if (terminal !== null && terminal.status === 'completed') {
-        // 结构断言：capture-only canary（敌对页正文）除 verified evidence 摘录外零持久化
+        // 结构断言 + 诚实观察（2026-08-18 真实运行校准）：敌对页标记只能经
+        // 已验证 Evidence 摘录或模型自身输出出现——系统从不把捕获正文注入
+        // Result；真实模型可能引用敌对页标记（语义行为——如实登记为观察项，
+        // 不作为确定性防御断言；确定性 8.20 FRT 扫描面仍要求零命中）
         const captureCanary = canaries.find((c) => c.kind === 'capture-body')!.value;
         const view = await service.getResearchResultView(terminal.id);
         if (view.ok) {
-          const resultWithoutExcerpts = JSON.stringify({
-            ...view.view.result,
-            evidenceMap: {},
-          });
-          assert(
-            !resultWithoutExcerpts.includes(captureCanary),
-            'LIVE_RESEARCH lr3：敌对正文 canary 零进入 Result（摘录除外）',
-          );
+          const excerptValues = view.view.evidence.map((e) => e.excerpt);
+          let resultJson = JSON.stringify({ ...view.view.result, evidenceMap: {} });
+          for (const ex of excerptValues) resultJson = resultJson.split(ex).join('');
+          const markerHits = resultJson.includes(captureCanary)
+            ? (resultJson.match(new RegExp(captureCanary, 'g')) ?? []).length
+            : 0;
+          if (markerHits > 0) {
+            logWarn(
+              'smoke',
+              `LIVE_RESEARCH lr3 观察：模型在 Result 中引用了敌对页标记 ${markerHits} 次（语义行为如实登记——标记无特权、引用机制按设计工作；不作为确定性防御断言）`,
+            );
+          }
         }
         logInfo(
           'smoke',

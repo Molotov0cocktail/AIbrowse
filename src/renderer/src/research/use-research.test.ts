@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import type { ResearchTask, ResearchTaskStats } from '../../../shared/types/research';
 import {
   INITIAL_RESEARCH_UI_STATE,
+  isSelectionStale,
   reduceResearchUi,
   type ResearchUiEvent,
   type ResearchUiState,
@@ -263,6 +264,17 @@ describe('reduceResearchUi（决议 #163(4)）', () => {
     s = reduceResearchUi(s, { kind: 'invoke-error', errorCode: 'research-not-found' });
     // error 显示固定诊断（作用于当前操作）
     expect(s.error).toContain('不存在');
+  });
+});
+
+describe('isSelectionStale（决议 #163(4) 竞态守卫——C9 真实运行校准）', () => {
+  it('无选中时首次历史条目选择必须放行（生产缺陷修复：原 `!==` 恒丢弃）', () => {
+    expect(isSelectionStale(null, 't-1')).toBe(false);
+  });
+
+  it('选中其他任务 → 过期（丢弃迟到结果）；选中同一任务 → 放行', () => {
+    expect(isSelectionStale('t-2', 't-1')).toBe(true);
+    expect(isSelectionStale('t-1', 't-1')).toBe(false);
   });
 });
 
