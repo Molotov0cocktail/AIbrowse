@@ -10,9 +10,11 @@ import {
   getCurrentLogFilePath,
   initLogger,
   logInfo,
+  logWarn,
   normalizeLogMessage,
   sanitize,
 } from './logger';
+import { redactUrlForLog } from '../shared/url';
 
 describe('sanitize — sk- 形态 API Key 脱敏（S1 专项）', () => {
   it('典型 sk- Key（OpenAI/Anthropic 形态）被整体替换为 sk-***', () => {
@@ -147,6 +149,30 @@ describe('normalizeLogMessage — 日志行伪造防御（A7 红队，红→绿�
       // 每条真实条目都以时间戳前缀开头（[20xx-…] [LEVEL] [category] 程序生成）——
       // 不存在以 [INFO]/[WARN] 等直接开头的伪造行（含 hostileUrl 折叠后的残余）
       expect(lines.every((l) => l.startsWith('[20'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- C9 决议 #171：URL query/fragment 零进日志（真实 logger 输出证明） ----------
+describe('URL 日志脱敏（决议 #171：query/fragment 零进日志）', () => {
+  it('真实 logger 落盘：redactUrlForLog 输出经 logger 写入后不含 query/fragment', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-url-'));
+    try {
+      initLogger(dir);
+      const full = 'https://example.com/a/b?tok=URLTOK-SECRET-CANARY&k=2#frag';
+      // 浏览器/会话两条既有调用点形态（决议 #171(2) 覆盖面）
+      logWarn('browser', `已创建标签页（tabId=t1，url=${redactUrlForLog(full)}）`);
+      logInfo('conversation', `开始生成（requestId=r1，url=${redactUrlForLog(full)}）`);
+      const text = readFileSync(getCurrentLogFilePath(), 'utf8');
+      // query 与 fragment 零进入日志；host/path 保留（诊断需求）
+      expect(text).not.toContain('tok=');
+      expect(text).not.toContain('URLTOK-SECRET-CANARY');
+      expect(text).not.toContain('#frag');
+      expect(text).toContain('https://example.com/a/b');
+      // 未经脱敏的完整 URL 仍会被记录（对照：调用点必须显式脱敏——见 8.20
+      // url-token 扫描面，本处仅证明 logger 管道本身不额外改写）
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

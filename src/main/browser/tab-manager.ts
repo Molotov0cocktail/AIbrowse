@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { WebContentsView, type BaseWindow, type Session, type WebContents } from 'electron';
 import type { TabInfo } from '../../shared/types/browser';
-import { ALLOWED_SCHEME_PATTERN } from '../../shared/url';
+import { ALLOWED_SCHEME_PATTERN, redactUrlForLog } from '../../shared/url';
 import { logError, logWarn } from '../logger';
 import { transition } from './tab-state';
 
@@ -50,7 +50,10 @@ export class TabManager {
     const wc = view.webContents;
 
     wc.setWindowOpenHandler(({ url: targetUrl }) => {
-      logWarn('browser', `已拦截 window.open 新窗口请求（tabId=${info.id}）：${targetUrl}`);
+      logWarn(
+        'browser',
+        `已拦截 window.open 新窗口请求（tabId=${info.id}）：${redactUrlForLog(targetUrl)}`,
+      );
       return { action: 'deny' };
     });
 
@@ -174,7 +177,10 @@ export class TabManager {
     ): void => {
       if (!ALLOWED_SCHEME_PATTERN.test(details.url)) {
         details.preventDefault();
-        logWarn('browser', `已拦截非白名单导航（tabId=${info.id}）：${details.url}`);
+        logWarn(
+          'browser',
+          `已拦截非白名单导航（tabId=${info.id}）：${redactUrlForLog(details.url)}`,
+        );
       }
     };
     wc.on('will-navigate', onWillNavigate);
@@ -185,7 +191,10 @@ export class TabManager {
     ): void => {
       if (!ALLOWED_SCHEME_PATTERN.test(details.url)) {
         details.preventDefault();
-        logWarn('browser', `已拦截非白名单重定向（tabId=${info.id}）：${details.url}`);
+        logWarn(
+          'browser',
+          `已拦截非白名单重定向（tabId=${info.id}）：${redactUrlForLog(details.url)}`,
+        );
       }
     };
     wc.on('will-redirect', onWillRedirect);

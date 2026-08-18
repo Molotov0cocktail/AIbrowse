@@ -4,6 +4,7 @@
 
 import { session, type Session } from 'electron';
 import { logWarn } from '../logger';
+import { redactUrlForLog } from '../../shared/url';
 import { resolvePermissionCheck, resolvePermissionRequest } from './permission-policy';
 
 export const PERSIST_PARTITION = 'persist:aibrowse';
@@ -35,7 +36,10 @@ export class AppSessionManager implements SessionManager {
       const requestingUrl = details.requestingUrl !== '' ? details.requestingUrl : wc.getURL();
       const allowed = resolvePermissionRequest(permission, requestingUrl);
       if (!allowed) {
-        logWarn('browser', `已拒绝网页权限请求（permission=${permission}，来源=${requestingUrl}）`);
+        logWarn(
+          'browser',
+          `已拒绝网页权限请求（permission=${permission}，来源=${redactUrlForLog(requestingUrl)}）`,
+        );
       }
       callback(allowed);
     });

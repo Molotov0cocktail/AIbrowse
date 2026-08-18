@@ -14,6 +14,7 @@ import type {
 import type { ClickAllowedKind } from '../../shared/types/agent';
 import type { ContentBounds } from '../../shared/types/ipc';
 import { logInfo, logWarn } from '../logger';
+import { redactUrlForLog } from '../../shared/url';
 import { PageReader } from './page-reader';
 import type { SessionManager } from './session-manager';
 import { TabManager, type TabEntry } from './tab-manager';
@@ -100,9 +101,9 @@ export class BrowserControllerImpl implements BrowserController {
     this.applyActiveVisual();
     // 状态机（§5）：idle --loadURL--> loading --> ready，事件驱动；此处仅记录加载异常
     entry.view.webContents.loadURL(target).catch((err: unknown) => {
-      logWarn('browser', `加载失败（tabId=${entry.info.id}，url=${target}）`, err);
+      logWarn('browser', `加载失败（tabId=${entry.info.id}，url=${redactUrlForLog(target)}）`, err);
     });
-    logInfo('browser', `已创建标签页（tabId=${entry.info.id}，url=${target}）`);
+    logInfo('browser', `已创建标签页（tabId=${entry.info.id}，url=${redactUrlForLog(target)}）`);
     this.pushState();
     return this.toTabInfo(entry, true);
   }
@@ -165,7 +166,7 @@ export class BrowserControllerImpl implements BrowserController {
       await entry.view.webContents.loadURL(url);
       return true;
     } catch (err) {
-      logWarn('browser', `navigate 失败（tabId=${tabId}，url=${url}）`, err);
+      logWarn('browser', `navigate 失败（tabId=${tabId}，url=${redactUrlForLog(url)}）`, err);
       return false;
     }
   }

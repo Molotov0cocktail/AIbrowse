@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PageSnapshot, TabInfo } from '../../shared/types/browser';
 import type { BrowserController } from '../browser/browser-controller';
+import { redactUrlForLog } from '../../shared/url';
 import type {
   AgentConfirmRequest,
   AgentRunDoneEvent,
@@ -486,9 +487,10 @@ export class ConversationServiceImpl implements ConversationService {
       }
 
       // 6. provider.stream：delta 逐块转发（不聚合）；error/done → 终态（§8.1）
+      //    C9 决议 #171：日志只记脱敏 URL（query/fragment 零进入日志）
       logInfo(
         'conversation',
-        `开始生成（requestId=${requestId}，sessionId=${sessionId}，providerId=${provider.metadata.id}，model=${request?.model ?? ''}，mode=${contextSource.mode}，url=${contextSource.url ?? '无'}）`,
+        `开始生成（requestId=${requestId}，sessionId=${sessionId}，providerId=${provider.metadata.id}，model=${request?.model ?? ''}，mode=${contextSource.mode}，url=${contextSource.url === null ? '无' : redactUrlForLog(contextSource.url)}）`,
       );
       const stream = await this.runStream(
         provider,

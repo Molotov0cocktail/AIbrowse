@@ -47,3 +47,20 @@ function canonicalize(url: string): string {
 function toSearchUrl(query: string): string {
   return `${SEARCH_ENGINE_URL}?${new URLSearchParams({ q: query }).toString()}`;
 }
+
+// C9（隐私扫描，决议 #168）：日志用 URL 脱敏——剥离 query 与 fragment，仅保留
+// scheme/host/path。URL query token（会话/敏感参数）绝不进日志（FT-16）。
+// 纯函数、零环境依赖；无法解析时原样返回（不抛异常，调用方按日志字符串用）。
+export function redactUrlForLog(raw: string): string {
+  try {
+    const u = new URL(raw);
+    // 保留 scheme//host/path；清空 search/hash
+    u.search = '';
+    u.hash = '';
+    return u.toString();
+  } catch {
+    // 非合法 URL（如 about:blank 之外的畸形串）：尽力截断到 ? 或 # 之前
+    const cut = raw.search(/[?#]/);
+    return cut === -1 ? raw : raw.slice(0, cut);
+  }
+}

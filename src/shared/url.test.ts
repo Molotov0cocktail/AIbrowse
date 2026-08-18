@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveAddressBarInput } from './url';
+import { redactUrlForLog, resolveAddressBarInput } from './url';
 
 // 契约源：First_stage.md §十（URL / 搜索框行为）+ AGENTS.md §5（URL 判断逻辑）
 describe('resolveAddressBarInput（地址栏输入 → URL/搜索判断）', () => {
@@ -68,5 +68,31 @@ describe('resolveAddressBarInput（地址栏输入 → URL/搜索判断）', () 
 
   it('无法解析的 URL 安全返回空字符串（不抛异常）', () => {
     expect(resolveAddressBarInput('https://')).toBe('');
+  });
+});
+
+// C9（决议 #168）：日志用 URL 脱敏——URL query token 绝不进日志（FT-16）
+describe('redactUrlForLog（日志 URL 脱敏）', () => {
+  it('剥离 query 与 fragment，仅保留 scheme/host/path', () => {
+    expect(redactUrlForLog('https://example.com/a?tok=SECRET#frag')).toBe('https://example.com/a');
+  });
+
+  it('无 query/fragment 的 URL 恒等', () => {
+    expect(redactUrlForLog('https://example.com/a')).toBe('https://example.com/a');
+  });
+
+  it('about:blank 等内部页恒等', () => {
+    expect(redactUrlForLog('about:blank')).toBe('about:blank');
+  });
+
+  it('畸形串尽力截断到 ? 或 # 之前（不抛异常）', () => {
+    expect(redactUrlForLog('not-a-url?x=1')).toBe('not-a-url');
+    expect(redactUrlForLog('not-a-url')).toBe('not-a-url');
+  });
+
+  it('多个敏感 query 参数全部剥离', () => {
+    expect(redactUrlForLog('http://127.0.0.1:9/x?session=abc&key=def')).toBe(
+      'http://127.0.0.1:9/x',
+    );
   });
 });

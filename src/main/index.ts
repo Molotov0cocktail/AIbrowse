@@ -30,7 +30,7 @@ import {
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
-import { resolveAddressBarInput } from '../shared/url';
+import { redactUrlForLog, resolveAddressBarInput } from '../shared/url';
 import { IPC } from '../shared/types/ipc';
 import type { AppInfo } from '../shared/types/app';
 import type {
@@ -149,6 +149,14 @@ const LIVE_AGENT_SOURCES_MODE =
   !LIVE_AGENT_MODE &&
   !LIVE_AGENT_PRE_MODE &&
   !LIVE_AGENT_SUPPLEMENT_MODE;
+// C9（决议 #169）：真实 Provider/真实主题 Research 验证门控——AIBROWSE_LIVE_RESEARCH=1
+// 必须从属于 AIBROWSE_SMOKE=1 + AIBROWSE_LIVE_PROVIDER=1（缺前置明确失败）；与
+// LIVE_SITES/LIVE_AGENT/LIVE_AGENT_PRE/LIVE_AGENT_SUPPLEMENT/LIVE_AGENT_SOURCES 及
+// SESSION/SOURCES/SOURCES_UI/RESEARCH set|check 专属路由确定性互斥（冲突明确失败，
+// 不静默选路——冒烟路由段检查）。LIVE_RESEARCH 模式下 Research 子系统装配生产
+// RuntimeFactory（真实执行经产品 Service/Runtime/C6/C7/C8 路径）。
+const LIVE_RESEARCH_REQUESTED = SMOKE_MODE && process.env['AIBROWSE_LIVE_RESEARCH'] === '1';
+const LIVE_RESEARCH_MODE = LIVE_RESEARCH_REQUESTED && LIVE_PROVIDER_MODE;
 let liveSmoke: LiveProviderSmoke | undefined = undefined;
 let liveStreamChunkCount = 0; // 真实 Provider 场景 delta 计数（流式证据，index.ts 装配侧统计）
 
@@ -814,6 +822,55 @@ if (!gotLock) {
           app.exit(1);
           return;
         }
+        // C9（决议 #169(1)/(2)）：AIBROWSE_LIVE_RESEARCH 从属性与确定性互斥——
+        // 缺前置（LIVE_PROVIDER）或与其他 LIVE/专属门控同设 → 明确失败，不静默选路
+        if (LIVE_RESEARCH_REQUESTED && !LIVE_PROVIDER_MODE) {
+          logError(
+            'main',
+            'AIBROWSE_LIVE_RESEARCH 必须从属于 AIBROWSE_SMOKE=1 + AIBROWSE_LIVE_PROVIDER=1',
+          );
+          sourceService?.dispose();
+          if (smokeSourcesDir !== null) {
+            rmSync(smokeSourcesDir, { recursive: true, force: true });
+            smokeSourcesDir = null;
+          }
+          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+          app.exit(1);
+          return;
+        }
+        if (
+          LIVE_RESEARCH_MODE &&
+          (LIVE_SITES_MODE ||
+            LIVE_AGENT_MODE ||
+            LIVE_AGENT_PRE_MODE ||
+            LIVE_AGENT_SUPPLEMENT_MODE ||
+            LIVE_AGENT_SOURCES_MODE ||
+            sessionMode !== undefined ||
+            sourcesMode !== undefined ||
+            sourcesUiMode !== undefined ||
+            RESEARCH_GATE_MODE)
+        ) {
+          logError(
+            'main',
+            'AIBROWSE_LIVE_RESEARCH 与 LIVE_SITES / LIVE_AGENT / LIVE_AGENT_PRE / LIVE_AGENT_SUPPLEMENT / LIVE_AGENT_SOURCES / SESSION / SOURCES / SOURCES_UI / RESEARCH set|check 互斥，请只选其一',
+          );
+          sourceService?.dispose();
+          if (smokeSourcesDir !== null) {
+            rmSync(smokeSourcesDir, { recursive: true, force: true });
+            smokeSourcesDir = null;
+          }
+          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+          if (smokeResearchDir !== null) {
+            try {
+              rmSync(smokeResearchDir, { recursive: true, force: true });
+            } catch {
+              // research db 句柄可能未关（EPERM）——不阻塞退出
+            }
+            smokeResearchDir = null;
+          }
+          app.exit(1);
+          return;
+        }
         let run: Promise<void>;
         if (RESEARCH_GATE_MODE) {
           run = runResearchSmokeGate(researchMode as 'set' | 'check');
@@ -848,6 +905,8 @@ if (!gotLock) {
             liveAgentPre: LIVE_AGENT_PRE_MODE, // A7 补验：AIBROWSE_LIVE_AGENT_PRE=1 时启用最小 tools 兼容性预检
             liveAgentSupplement: LIVE_AGENT_SUPPLEMENT_MODE, // A7 补验补证：AIBROWSE_LIVE_AGENT_SUPPLEMENT=1 时启用定向补验（仅修订场景 2/3 + 零泄漏终检）
             liveAgentSources: LIVE_AGENT_SOURCES_MODE, // B6：AIBROWSE_LIVE_AGENT_SOURCES=1 时启用真实 Provider 自然语言管理验证（未提供 Key 回退离线矩阵）
+            liveResearch: LIVE_RESEARCH_MODE, // C9：AIBROWSE_LIVE_RESEARCH=1 时启用真实 Provider/真实主题 Research 验证（决议 #169）
+            researchService: LIVE_RESEARCH_MODE ? researchService : undefined, // C9：LIVE_RESEARCH 生产 factory 装配的 Service（真实执行经产品路径）
             toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
             confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
             sourcesService: sourceService ?? undefined, // B5：8.11 UI 矩阵后台写/冲突/清理断言
@@ -1058,32 +1117,36 @@ function createBrowserWindow(): void {
         configured: listProviderKinds().length > 0, // 同步可证明的粗粒度状态
         supportsToolCalling: true, // 乐观粗粒度——真实 capability 由异步 resolve 权威判定
       }),
-      buildRuntimeFactory: SMOKE_MODE
-        ? (db) =>
-            createSmokeResearchRuntimeFactory({
-              db,
-              browser: controller,
-              sourceService,
-              searchProvider: new SmokeSearchFixture(null),
-              // C8（8.19-B）：懒解析——场景设置 smokeResearchScript.current 驱动
-              // 四阶段完成；缺省回退 makeSmokeGateScript（确定性空候选研究）
-              providerScript: () => smokeResearchScript.current ?? makeSmokeGateScript(),
-              model: 'smoke-model',
-            })
-        : (db) => {
-            // 本块位于装配之后：configStore/credentials 非空（TS 局部解引用收窄）
-            if (configStore === null || credentials === null) {
-              throw new Error('程序缺陷：Research 装配先于 Provider 配置');
-            }
-            return createProductionResearchRuntimeFactory({
-              db,
-              browser: controller,
-              sourceService,
-              searchProvider,
-              configStore,
-              credentials,
-            });
-          },
+      // C9（决议 #169(5)）：LIVE_RESEARCH 模式装配生产 RuntimeFactory——真实执行
+      // 经产品 ResearchService/ResearchRuntime/C6/C7/C8 路径（真实 SearchProvider/
+      // SourceService/config+credential 解析）；其余 SMOKE 模式仍注入确定性 stub
+      buildRuntimeFactory:
+        SMOKE_MODE && !LIVE_RESEARCH_MODE
+          ? (db) =>
+              createSmokeResearchRuntimeFactory({
+                db,
+                browser: controller,
+                sourceService,
+                searchProvider: new SmokeSearchFixture(null),
+                // C8（8.19-B）：懒解析——场景设置 smokeResearchScript.current 驱动
+                // 四阶段完成；缺省回退 makeSmokeGateScript（确定性空候选研究）
+                providerScript: () => smokeResearchScript.current ?? makeSmokeGateScript(),
+                model: 'smoke-model',
+              })
+          : (db) => {
+              // 本块位于装配之后：configStore/credentials 非空（TS 局部解引用收窄）
+              if (configStore === null || credentials === null) {
+                throw new Error('程序缺陷：Research 装配先于 Provider 配置');
+              }
+              return createProductionResearchRuntimeFactory({
+                db,
+                browser: controller,
+                sourceService,
+                searchProvider,
+                configStore,
+                credentials,
+              });
+            },
     });
     researchService = researchOutcome.service;
     if (researchOutcome.mode === 'normal') {
@@ -1275,7 +1338,7 @@ function createMainWindow(): BrowserWindow {
   ): void => {
     if (!resolveUiNavigationAllowed(details.url, navPolicy)) {
       details.preventDefault();
-      logWarn('main', `已拦截 UI 窗口导航（自身来源判定失败）：${details.url}`);
+      logWarn('main', `已拦截 UI 窗口导航（自身来源判定失败）：${redactUrlForLog(details.url)}`);
     }
   };
   const onUiWillRedirect = (
@@ -1283,7 +1346,7 @@ function createMainWindow(): BrowserWindow {
   ): void => {
     if (!resolveUiNavigationAllowed(details.url, navPolicy)) {
       details.preventDefault();
-      logWarn('main', `已拦截 UI 窗口重定向（自身来源判定失败）：${details.url}`);
+      logWarn('main', `已拦截 UI 窗口重定向（自身来源判定失败）：${redactUrlForLog(details.url)}`);
     }
   };
   win.webContents.on('will-navigate', onUiWillNavigate);

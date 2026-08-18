@@ -11,6 +11,7 @@ import type { WebContents } from 'electron';
 import type { ClickAllowedKind } from '../../shared/types/agent';
 import type { PageSnapshot } from '../../shared/types/browser';
 import { logDebug, logWarn } from '../logger';
+import { redactUrlForLog } from '../../shared/url';
 import { SNAPSHOT_SCRIPT_SOURCE } from './snapshot-script';
 import { normalizeSnapshot } from './snapshot-normalize';
 import { buildInteractionSource } from './interaction-script';
@@ -48,17 +49,17 @@ export class PageReader {
     const snapshot = normalizeSnapshot(raw, fallback);
     if (snapshot.meta.degraded === 'main-process-only') {
       // 执行成功但结果不可用（脚本返回 ok:false/垃圾）——补充上下文说明
-      logWarn('page-reader', `快照降级 L2（脚本结果不可用，url=${fallback.url}）`);
+      logWarn('page-reader', `快照降级 L2（脚本结果不可用，url=${redactUrlForLog(fallback.url)}）`);
       return snapshot;
     }
     if (snapshot.meta.degraded === 'partial') {
       logWarn(
         'page-reader',
-        `快照降级 L1（url=${fallback.url}，warnings=${snapshot.meta.warnings.join('；')}）`,
+        `快照降级 L1（url=${redactUrlForLog(fallback.url)}，warnings=${snapshot.meta.warnings.join('；')}）`,
       );
       return snapshot;
     }
-    logDebug('page-reader', `快照采集完成 L0（url=${fallback.url}）`);
+    logDebug('page-reader', `快照采集完成 L0（url=${redactUrlForLog(fallback.url)}）`);
     return snapshot;
   }
 
@@ -69,7 +70,7 @@ export class PageReader {
   ): PageSnapshot {
     const snapshot = normalizeSnapshot(null, fallback);
     snapshot.meta.warnings.unshift(reason);
-    logWarn('page-reader', `快照降级 L2：${reason}（url=${fallback.url}）`);
+    logWarn('page-reader', `快照降级 L2：${reason}（url=${redactUrlForLog(fallback.url)}）`);
     return snapshot;
   }
 
