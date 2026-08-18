@@ -29,6 +29,7 @@ import {
 } from './smoke';
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
+import { resolveResearchGate } from './smoke-research-gate';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
 import { redactUrlForLog, resolveAddressBarInput } from '../shared/url';
 import { IPC } from '../shared/types/ipc';
@@ -149,14 +150,28 @@ const LIVE_AGENT_SOURCES_MODE =
   !LIVE_AGENT_MODE &&
   !LIVE_AGENT_PRE_MODE &&
   !LIVE_AGENT_SUPPLEMENT_MODE;
-// C9（决议 #169）：真实 Provider/真实主题 Research 验证门控——AIBROWSE_LIVE_RESEARCH=1
-// 必须从属于 AIBROWSE_SMOKE=1 + AIBROWSE_LIVE_PROVIDER=1（缺前置明确失败）；与
-// LIVE_SITES/LIVE_AGENT/LIVE_AGENT_PRE/LIVE_AGENT_SUPPLEMENT/LIVE_AGENT_SOURCES 及
-// SESSION/SOURCES/SOURCES_UI/RESEARCH set|check 专属路由确定性互斥（冲突明确失败，
-// 不静默选路——冒烟路由段检查）。LIVE_RESEARCH 模式下 Research 子系统装配生产
-// RuntimeFactory（真实执行经产品 Service/Runtime/C6/C7/C8 路径）。
-const LIVE_RESEARCH_REQUESTED = SMOKE_MODE && process.env['AIBROWSE_LIVE_RESEARCH'] === '1';
-const LIVE_RESEARCH_MODE = LIVE_RESEARCH_REQUESTED && LIVE_PROVIDER_MODE;
+// C9（决议 #169 + 恢复校准）：真实 Provider/真实主题 Research 验证门控——
+// AIBROWSE_LIVE_RESEARCH=1 请求标志**独立读取**（不得因缺 SMOKE 被静默忽略）；
+// 从属校验（SMOKE+LIVE_PROVIDER）与全部既有 LIVE/SESSION/SOURCES/SOURCES_UI/
+// RESEARCH 门控确定性互斥由纯函数 resolveResearchGate 判定（单测覆盖；失败
+// 在 whenReady 装配前明确退出，失败路径零临时目录/零 DB/零进程残留）。
+// LIVE_RESEARCH 模式下 Research 子系统装配生产 RuntimeFactory（真实执行经
+// 产品 Service/Runtime/C6/C7/C8 路径）。
+const researchGate = resolveResearchGate({
+  smoke: process.env.AIBROWSE_SMOKE,
+  liveProvider: process.env['AIBROWSE_LIVE_PROVIDER'],
+  liveResearch: process.env['AIBROWSE_LIVE_RESEARCH'],
+  liveSites: process.env['AIBROWSE_LIVE_SITES'],
+  liveAgent: process.env['AIBROWSE_LIVE_AGENT'],
+  liveAgentPre: process.env['AIBROWSE_LIVE_AGENT_PRE'],
+  liveAgentSupplement: process.env['AIBROWSE_LIVE_AGENT_SUPPLEMENT'],
+  liveAgentSources: process.env['AIBROWSE_LIVE_AGENT_SOURCES'],
+  sessionSmoke: process.env['AIBROWSE_SESSION_SMOKE'],
+  sourcesSmoke: process.env['AIBROWSE_SOURCES_SMOKE'],
+  sourcesUiSmoke: process.env['AIBROWSE_SOURCES_UI_SMOKE'],
+  researchSmoke: process.env['AIBROWSE_RESEARCH_SMOKE'],
+});
+const LIVE_RESEARCH_MODE = researchGate.ok && researchGate.mode === 'live-research';
 let liveSmoke: LiveProviderSmoke | undefined = undefined;
 let liveStreamChunkCount = 0; // 真实 Provider 场景 delta 计数（流式证据，index.ts 装配侧统计）
 
@@ -246,6 +261,14 @@ if (!gotLock) {
   }
 
   app.whenReady().then(() => {
+    // C9（决议 #169 + 恢复校准）：LIVE_RESEARCH 门控失败 → 在装配前明确退出
+    // （请求标志独立读取——缺 SMOKE/LIVE_PROVIDER/非法值/与既有门控冲突一律
+    // 明确失败，不静默选路；此时尚无临时目录/DB/子进程，失败路径零残留）
+    if (!researchGate.ok) {
+      logError('main', researchGate.reason);
+      app.exit(1);
+      return;
+    }
     registerIpcHandlers();
     logDebug(
       'main',
@@ -819,55 +842,6 @@ if (!gotLock) {
         }
         if (researchMode !== undefined && !RESEARCH_GATE_MODE) {
           logError('main', `AIBROWSE_RESEARCH_SMOKE 值非法：${researchMode}（仅支持 set|check）`);
-          app.exit(1);
-          return;
-        }
-        // C9（决议 #169(1)/(2)）：AIBROWSE_LIVE_RESEARCH 从属性与确定性互斥——
-        // 缺前置（LIVE_PROVIDER）或与其他 LIVE/专属门控同设 → 明确失败，不静默选路
-        if (LIVE_RESEARCH_REQUESTED && !LIVE_PROVIDER_MODE) {
-          logError(
-            'main',
-            'AIBROWSE_LIVE_RESEARCH 必须从属于 AIBROWSE_SMOKE=1 + AIBROWSE_LIVE_PROVIDER=1',
-          );
-          sourceService?.dispose();
-          if (smokeSourcesDir !== null) {
-            rmSync(smokeSourcesDir, { recursive: true, force: true });
-            smokeSourcesDir = null;
-          }
-          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
-          app.exit(1);
-          return;
-        }
-        if (
-          LIVE_RESEARCH_MODE &&
-          (LIVE_SITES_MODE ||
-            LIVE_AGENT_MODE ||
-            LIVE_AGENT_PRE_MODE ||
-            LIVE_AGENT_SUPPLEMENT_MODE ||
-            LIVE_AGENT_SOURCES_MODE ||
-            sessionMode !== undefined ||
-            sourcesMode !== undefined ||
-            sourcesUiMode !== undefined ||
-            RESEARCH_GATE_MODE)
-        ) {
-          logError(
-            'main',
-            'AIBROWSE_LIVE_RESEARCH 与 LIVE_SITES / LIVE_AGENT / LIVE_AGENT_PRE / LIVE_AGENT_SUPPLEMENT / LIVE_AGENT_SOURCES / SESSION / SOURCES / SOURCES_UI / RESEARCH set|check 互斥，请只选其一',
-          );
-          sourceService?.dispose();
-          if (smokeSourcesDir !== null) {
-            rmSync(smokeSourcesDir, { recursive: true, force: true });
-            smokeSourcesDir = null;
-          }
-          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
-          if (smokeResearchDir !== null) {
-            try {
-              rmSync(smokeResearchDir, { recursive: true, force: true });
-            } catch {
-              // research db 句柄可能未关（EPERM）——不阻塞退出
-            }
-            smokeResearchDir = null;
-          }
           app.exit(1);
           return;
         }
