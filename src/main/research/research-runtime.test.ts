@@ -17,7 +17,7 @@ import { closeDb, openDb, type DbHandle } from '../sources/db/sqlite-driver';
 import { runResearchMigrations } from './db/research-migrations';
 import { ResearchRepository } from './repository/research-repository';
 import { createRepositoryPersistence } from './research-runtime-persistence';
-import { ResearchRuntime } from './research-runtime';
+import { ResearchRuntime, trimRequestMessages } from './research-runtime';
 import { FakeProvider, type FakeProviderScript } from '../ai/provider/fake-provider';
 import type { SearchProvider, SearchProviderResult } from '../ai/search/search-provider';
 import type {
@@ -48,7 +48,9 @@ import {
   MAX_SOURCE_CANDIDATES,
   MAX_CAPTURES_PER_TASK,
   MAX_EVIDENCE_PER_TASK,
+  MAX_REQUEST_CONTEXT_CHARS,
 } from '../../shared/types/research';
+import type { ProviderMessage } from '../../shared/types/conversation';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-research-rt-'));
 const T0 = '2026-08-16T00:00:00.000Z';
@@ -1826,5 +1828,174 @@ describe('选择意图（决议 #133(6)）', () => {
     const task = repo.getTaskById(taskId)!;
     expect(task.status).toBe('completed');
     expect(task.stats.selectedCount).toBe(1); // 程序默认（候选仅 1 条）
+  });
+});
+
+// —— C9 红队发现（FRT-01，2026-08-18）：system 消息位置缺陷 ——
+// 原 buildRequest 的上下文裁剪循环以 unshift 组装 trimmed，把 system 排到
+// messages 末位（真实 Provider 要求 system 位于首位；wire 契约角色顺序错乱），
+// 且极限输入下旧 replay 可能耗尽预算导致当前 user 指令被丢弃。修复（决议
+// #170）：trimRequestMessages 纯函数——system 恒居 messages[0] 且唯一、当前
+// user 指令紧随其后恒保留（预算不足截断而非丢弃）、replay 只保留最近有界段
+// 且相对顺序不变、总字符恒 ≤ MAX_REQUEST_CONTEXT_CHARS。
+describe('trimRequestMessages（决议 #170：请求消息确定性裁剪纯函数）', () => {
+  const system = { role: 'system' as const, content: '系统提示' };
+  const mkMsg = (role: 'user' | 'assistant' | 'tool', tag: string, n = 10): ProviderMessage =>
+    role === 'tool'
+      ? { role, content: tag.repeat(n), toolCallId: `t-${tag}` }
+      : { role, content: tag.repeat(n) };
+
+  it('system 恒居首位且唯一；user 紧随其后；replay 相对顺序不变', () => {
+    const messages: ProviderMessage[] = [
+      system,
+      mkMsg('user', '当轮指令', 5),
+      mkMsg('assistant', '回放A', 5),
+      mkMsg('tool', '回放B', 5),
+      mkMsg('assistant', '回放C', 5),
+    ];
+    const trimmed = trimRequestMessages(messages, MAX_REQUEST_CONTEXT_CHARS);
+    expect(trimmed[0]).toBe(system);
+    expect(trimmed.filter((m) => m.role === 'system')).toHaveLength(1);
+    expect(trimmed[1]!.role).toBe('user');
+    expect(trimmed.map((m) => m.content)).toEqual([
+      '系统提示',
+      '当轮指令'.repeat(5),
+      '回放A'.repeat(5),
+      '回放B'.repeat(5),
+      '回放C'.repeat(5),
+    ]);
+  });
+
+  it('极限输入：replay 耗尽预算时当前 user 指令仍保留（截断而非丢弃）', () => {
+    // replay 段足够大（30 段 × 15k），足以耗尽 200k 预算
+    const messages: ProviderMessage[] = [
+      system,
+      mkMsg('user', '当前指令', 3),
+      ...Array.from({ length: 30 }, (_, i) =>
+        mkMsg(i % 2 === 0 ? 'assistant' : 'tool', `旧回放${i}`, 15000),
+      ),
+    ];
+    const trimmed = trimRequestMessages(messages, MAX_REQUEST_CONTEXT_CHARS);
+    expect(trimmed[0]!.role).toBe('system');
+    expect(trimmed[1]!.role).toBe('user');
+    expect(trimmed[1]!.content.startsWith('当前指令')).toBe(true);
+    const total = trimmed.reduce((a, m) => a + m.content.length, 0);
+    expect(total).toBeLessThanOrEqual(MAX_REQUEST_CONTEXT_CHARS);
+    // 预算不足：必然丢弃部分相对最旧的 replay；最新段保留（恒等或截断加标记）
+    expect(trimmed.length).toBeLessThan(messages.length);
+    // 相对顺序不变：kept 序列与原文某个连续后缀逐项对应
+    // （预算耗尽点落在最旧保留段上——keptContents[0] 允许截断加标记）
+    const keptContents = trimmed.slice(2).map((m) => m.content);
+    const origContents = messages.slice(2).map((m) => m.content);
+    const offset = origContents.length - keptContents.length;
+    for (let j = 0; j < keptContents.length; j++) {
+      const kept = keptContents[j]!;
+      const orig = origContents[offset + j]!;
+      if (j === 0 && kept.endsWith('…[已截断]')) {
+        expect(orig.startsWith(kept.slice(0, -'…[已截断]'.length))).toBe(true);
+      } else {
+        expect(kept).toBe(orig);
+      }
+    }
+  });
+
+  it('单消息超预算 → 确定性截断加标记（不丢消息）；总字符恒 ≤ 预算', () => {
+    const messages: ProviderMessage[] = [
+      system,
+      mkMsg('user', '指令', 2),
+      { role: 'assistant', content: '长'.repeat(MAX_REQUEST_CONTEXT_CHARS + 500) },
+    ];
+    const trimmed = trimRequestMessages(messages, MAX_REQUEST_CONTEXT_CHARS);
+    expect(trimmed).toHaveLength(3); // 消息不丢
+    const total = trimmed.reduce((a, m) => a + m.content.length, 0);
+    expect(total).toBeLessThanOrEqual(MAX_REQUEST_CONTEXT_CHARS);
+    expect(trimmed[2]!.content.endsWith('…[已截断]')).toBe(true);
+  });
+
+  it('空/单消息安全返回；system 超预算时仍完整保留', () => {
+    expect(trimRequestMessages([], 100)).toEqual([]);
+    expect(trimRequestMessages([system], 10)).toEqual([system]);
+    const big = { role: 'system' as const, content: '长'.repeat(50) };
+    const trimmed = trimRequestMessages([big, mkMsg('user', 'u', 1)], 20);
+    expect(trimmed[0]!.content).toBe(big.content); // system 不裁剪
+    expect(trimmed).toHaveLength(2); // user 保留（截断）
+  });
+});
+
+describe('模型请求消息顺序（C9 FRT-01 发现：system 必须恒居首位）', () => {
+  it('每轮请求 messages[0] 恒为 system 且与 request.system 恒等，user 块紧随其后', async () => {
+    const provider = new FakeProvider(happyScript());
+    const h = buildHarness({ provider });
+    await h.done;
+    const requests = provider.getRequests();
+    expect(requests.length).toBeGreaterThanOrEqual(4);
+    for (const req of requests) {
+      const first = req.messages[0];
+      expect(first).toBeDefined();
+      expect(first!.role).toBe('system');
+      expect(first!.content).toBe(req.system);
+      // system 恰好一条且位于首位（不得出现在其余位置）
+      expect(req.messages.filter((m) => m.role === 'system')).toHaveLength(1);
+      // 紧随其后的首条业务消息为 user（阶段上下文块）
+      expect(req.messages[1]!.role).toBe('user');
+      // 总字符数不突破请求上下文预算
+      const total = req.messages.reduce((a, m) => a + m.content.length, 0);
+      expect(total).toBeLessThanOrEqual(MAX_REQUEST_CONTEXT_CHARS);
+    }
+  });
+
+  it('四阶段 system 分别为 planning/reading/verifying/synthesizing 常量（顺序恒等）', async () => {
+    const provider = new FakeProvider(happyScript());
+    const h = buildHarness({ provider });
+    await h.done;
+    const requests = provider.getRequests();
+    // happy 路径：plan、selection、reading 工具轮、reading 证据轮、verifying、synthesizing
+    const systems = requests.map((r) => r.messages[0]!.content);
+    expect(systems[0]).toBe(STUB_PROMPTS.planning);
+    expect(systems[1]).toBe(STUB_PROMPTS.planning);
+    expect(systems[2]).toBe(STUB_PROMPTS.reading);
+    expect(systems[3]).toBe(STUB_PROMPTS.reading);
+    expect(systems[4]).toBe(STUB_PROMPTS.verifying);
+    expect(systems[5]).toBe(STUB_PROMPTS.synthesizing);
+  });
+
+  it('context-too-long 重试的每次请求同样满足顺序契约（system 首位 + user 紧随）', async () => {
+    const inner = new FakeProvider(happyScript());
+    const recorded: Array<{ messages: readonly ProviderMessage[] }> = [];
+    const contextTooLongOnce: import('../ai/provider/llm-provider').LLMProvider = {
+      metadata: inner.metadata,
+      async *stream(request, signal) {
+        recorded.push({ messages: request.messages });
+        if (recorded.length === 1) {
+          yield {
+            type: 'error',
+            error: {
+              code: 'context-too-long',
+              message: '注入上下文超限',
+              retryable: true,
+              providerId: 'fake',
+              model: 'test-model',
+              requestId: 'r-ctl',
+            },
+          };
+          return;
+        }
+        yield* inner.stream(request, signal);
+      },
+    };
+    const h = buildHarness({ provider: contextTooLongOnce });
+    await h.done;
+    expect(repo.getTaskById(taskId)!.status).toBe('completed'); // 裁剪重试成功
+    expect(recorded.length).toBeGreaterThanOrEqual(2);
+    // 首轮注入 context-too-long → 同轮裁剪重试：两次请求 system/user 恒等
+    // （顺序契约在重试路径同样成立——system 首位 + user 紧随）
+    expect(recorded[0]!.messages[0]!.content).toBe(STUB_PROMPTS.planning);
+    expect(recorded[1]!.messages[0]!.content).toBe(STUB_PROMPTS.planning);
+    expect(recorded[1]!.messages[1]!.content).toBe(recorded[0]!.messages[1]!.content);
+    for (const { messages } of recorded) {
+      expect(messages[0]!.role).toBe('system');
+      expect(messages.filter((m) => m.role === 'system')).toHaveLength(1);
+      expect(messages[1]!.role).toBe('user');
+    }
   });
 });

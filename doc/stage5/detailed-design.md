@@ -3362,7 +3362,10 @@ CandidateOrigin[]; trust: { value, assertedBy, verification } | null }`；
      （4）**URL query token canary**：如契约要求，**允许**存在于 Evidence
      URL/research.db/当前详情 DOM；**禁止**进入日志、审计、conversation、
      CSV、sources.db。
-     （5）**CSV 公式 canary**：**只能**进入 CSV，且必须已经加 `'` 防护。
+     （5）**CSV 公式 canary**：只允许进入 CSV（且必须已经加 `'` 防护）与
+     Result 持久化面（research.db——table 单元格是合法 Result 内容）；禁止
+     进入日志、审计、会话、sources.db、UI drawer DOM、临时目录其余文件与
+     工具输出。
      （6）**扫描目标至少**：research.db/-wal/-shm、sources.db/备份/journal、
      conversation 文件、日志切片、审计收集器、UI DOM、CSV、临时 userData
      与会话产物；测试结束断言环境变量、Electron 进程、临时目录与根目录
@@ -3394,6 +3397,57 @@ CandidateOrigin[]; trust: { value, assertedBy, verification } | null }`；
      （9）**harness**：仓库外 `%LOCALAPPDATA%\AIbrowse\S5\run-live-smoke.ps1`
      增加互斥 `-Research` 开关（仓库外文件不提交 Git；Key/base URL 不进
      命令行、仓库文件、日志或报告）。
+
+170. **Research 请求消息顺序修复（2026-08-18，C9 红队发现 FRT-01）**：
+     buildRequest 的上下文裁剪循环以 `unshift` 组装 trimmed，把 system 消息
+     排到 messages 末位（真实 Provider wire 契约要求 system 位于首位；
+     角色顺序错乱可致 Provider 400）——同时极限输入下旧 replay 可能耗尽
+     预算导致当前阶段 user 指令被丢弃。裁决（先写红测、再改实现——§15
+     流程；不改写 #136(2) 预算语义）：
+     （1）**纯函数抽离**：`trimRequestMessages(messages, maxChars)` 导出纯
+     函数（零 Electron 依赖，直接单测）——顺序契约：
+     a) `messages[0]` 恒为唯一 system 且与 `request.system` 恒等（编译期
+     常量，完整保留，绝不裁剪/移位）；
+     b) 当前阶段 user 指令紧随 system（index 1）且**恒保留**——预算不足时
+     确定性截断加标记，**不得丢弃**（不得为保留旧 replay 丢掉当前指令）；
+     c) replay 只保留最近 `MAX_TRANSCRIPT_REPLAY_ROUNDS` 段（#136(2)
+     语义不变），裁剪后**相对顺序不变**（从相对最旧段开始丢弃，预算耗尽
+     点落在最旧保留段上——截断而非丢消息）；
+     d) `maxChars ≥ system.length` 时总字符数（含 system）恒 ≤
+     `MAX_REQUEST_CONTEXT_CHARS`（生产恒成立：system 为编译期常量且远
+     小于预算）。
+     （2）**context-too-long 重试**（#136(5)）复用同一路径——重试请求与
+     原请求 system/user 恒等，顺序契约在重试路径同样成立（单测断言）。
+     （3）**reasoning/transcript 零持久化**维持（#141(4) 已有 c6 红测 +
+     FRT-01 冒烟 canary 探针）；本修复不改变预算常量与 #136(2) 裁剪范围。
+     （4）**测试**：纯函数矩阵（system 首位唯一/user 恒保留/相对顺序/
+     单消息超预算截断/极限输入不丢 user/病态 system 超预算）+ 运行时每轮
+     请求断言（四阶段 system 常量顺序恒等 + 总字符 ≤ 预算）+ context-too-
+     long 重试顺序契约。
+
+171. **URL query/fragment 日志脱敏（2026-08-18，C9 红队发现 FRT-16 面）**：
+     日志中完整 URL（含 query token/会话参数）可能泄露敏感标记（FT-16）。
+     裁决（先写红测、再改实现）：
+     （1）**纯函数**：`redactUrlForLog(raw)`（shared/url.ts，零 Electron
+     依赖）——剥离 query 与 fragment，保留 scheme/host/path；合法 URL 经
+     `URL` 解析清零 search/hash；畸形串尽力截断到 `?`/`#` 之前；任何输入
+     不抛异常（越界安全返回）。
+     （2）**覆盖面**：BrowserController（createTab/navigate 日志）、
+     PageReader（L0/L1/L2 降级日志）、TabManager（window.open/导航/重定向
+     拦截日志）、SessionManager（权限请求拒绝日志）、index.ts（UI 窗口
+     导航/重定向拦截日志）、ConversationService（contextSource.url 记录
+     链路）——全部经 `redactUrlForLog` 后再进 logger。
+     （3）**语义边界**：host/path 保留（既有诊断需求）；query 值/fragment
+     不进日志；**不改变**工具结果、Evidence URL、用户可见 URL 的业务
+     语义（脱敏仅限日志字符串面）。
+     （4）**Error.message/stack 面**：传给 logger 的 Error 对象不得携带
+     未脱敏完整 URL（调用点先脱敏或传已脱敏字符串；错误堆栈含 URL 的
+     由 logger sanitize 统一处理——零新增堆栈明文）。
+     （5）**测试**：真实 logger 输出/受控日志收集证明（不只测纯函数）——
+     冒烟运行时注入 URL query canary 断言日志零命中；单测覆盖纯函数
+     边界（合法/畸形/内部页/多参数）。
+     （6）**隐私扫描联动**：#168 url-token canary 的「日志面零命中」
+     由本修复闭环保证。
 
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4/C5 端口）/C7（依赖 C1/C5 端口，可与

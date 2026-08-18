@@ -200,6 +200,45 @@ function truncateBlock(content: string, max: number): string {
   return `${content.slice(0, Math.max(0, max - 8))}…[已截断]`;
 }
 
+/**
+ * C9 FRT-01 修复（决议 #170，2026-08-18）：请求消息确定性裁剪纯函数。
+ * 顺序契约（真实 Provider wire 要求 system 位于首位）：
+ * 1. messages[0] 恒为唯一 system（编译期常量，完整保留，绝不裁剪/移位）；
+ * 2. 当前阶段 user 指令（messages[1]）紧随 system 且**恒保留**——预算不足时
+ *    截断而非丢弃（极限输入下不得为保留旧 replay 丢掉当前指令）；
+ * 3. 其余消息（replay）只保留能装进预算的最近段，裁剪后**相对顺序不变**
+ *    （从最旧可裁剪消息开始丢弃，同一消息超预算则确定性截断加标记）；
+ * 4. maxChars ≥ system.length 时总字符数（含 system）恒 ≤ maxChars
+ *    （生产恒成立：system 为编译期常量且远小于预算；system 超预算的病态输入
+ *    仍保证 system 完整保留 + user 恒在 index 1）。
+ */
+export function trimRequestMessages(
+  messages: readonly ProviderMessage[],
+  maxChars: number,
+): ProviderMessage[] {
+  const system = messages[0];
+  if (system === undefined) return [];
+  const out: ProviderMessage[] = [system];
+  let budget = Math.max(0, maxChars - system.content.length);
+  // 当前 user 指令优先级高于旧 replay：先分配预算（预算不足截断，恒保留在 index 1）
+  const user = messages[1];
+  if (user !== undefined) {
+    const size = Math.min(user.content.length, budget);
+    out.push({ ...user, content: truncateBlock(user.content, size) });
+    budget -= size;
+  }
+  // 其余消息自最旧开始（从尾部迭代 + unshift 保持相对顺序）；预算用尽即停止
+  const kept: ProviderMessage[] = [];
+  for (let i = messages.length - 1; i >= 2 && budget > 0; i--) {
+    const msg = messages[i]!;
+    const size = Math.min(msg.content.length, budget);
+    kept.unshift({ ...msg, content: truncateBlock(msg.content, size) });
+    budget -= size;
+  }
+  out.push(...kept);
+  return out;
+}
+
 // 候选元数据白名单序列化（决议 #133(2) 轮 2 上下文；零 note——决议 #121）
 function serializeCandidateMetadata(candidate: SourceCandidate): string {
   return JSON.stringify({
@@ -540,16 +579,10 @@ export class ResearchRuntime {
     // 回放：最近 MAX_TRANSCRIPT_REPLAY_ROUNDS 段（决议 #136(2)）
     const replay = transcript.slice(-MAX_TRANSCRIPT_REPLAY_ROUNDS * 2);
     messages.push(...replay);
-    // 请求上下文预算：≤ MAX_REQUEST_CONTEXT_CHARS（从最旧消息开始确定性裁剪；
-    // system 为编译期常量保留完整）
-    let budget = MAX_REQUEST_CONTEXT_CHARS - system.length;
-    const trimmed: ProviderMessage[] = [messages[0]!];
-    for (let i = messages.length - 1; i >= 1 && budget > 0; i--) {
-      const msg = messages[i]!;
-      const size = Math.min(msg.content.length, budget);
-      trimmed.unshift({ ...msg, content: truncateBlock(msg.content, size) });
-      budget -= size;
-    }
+    // 请求上下文预算：≤ MAX_REQUEST_CONTEXT_CHARS（C9 FRT-01 修复，决议 #170）——
+    // system 恒居 messages[0] 且唯一、当前 user 指令紧随其后恒保留、replay 只保留
+    // 最近有界段且相对顺序不变（见 trimRequestMessages 纯函数，单测直接覆盖）
+    const trimmed = trimRequestMessages(messages, MAX_REQUEST_CONTEXT_CHARS);
     return {
       requestId: `research-request-${this.requestCounter++}`,
       model: this.options.model,
