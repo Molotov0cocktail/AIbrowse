@@ -128,8 +128,8 @@ progress.md 更新 + 逻辑提交（feat: C9 …）+ 双远程推送 + 真实 Pr
 
 - 全量 test **2128/2128**（93 文件，单 worker；基线 2054 + 74 新增——
   manifest 8 + scan 15 + live 12 + gate 8 + runtime 顺序/包裹 7 + logger URL 1
-  + FRT 相关冒烟断言等）；typecheck（node+web）/lint/format:check/build/
-  git diff --check 全绿。
+  - FRT 相关冒烟断言等）；typecheck（node+web）/lint/format:check/build/
+    git diff --check 全绿。
 - dev + 生产默认冒烟（含 8.20 全矩阵）退出码 0；8.20 = FRT-01～FRT-12 十二项
   独立断言 + Fifth §7 离线映射（含 cohesive 端到端）+ 隐私扫描（60 条期望）。
 - LIVE_RESEARCH 门控矩阵（生产实测）：缺 SMOKE / 缺 LIVE_PROVIDER / 与
@@ -189,16 +189,17 @@ C8 事件通道结构断言（渲染层 task-done 到达 6 次）；真 Key 零�
 7 表面零命中 + 环境变量清除 + 零进程/临时目录残留；观察性结果如实登记
 （lr3 conflicts/claims 为模型自由行为，不冒充防御）。**真实验收发现并修复
 两处 C8 生产缺陷（先测后修，独立提交 447bf0a）**：
+
 1. **research:progress/task-done 事件转发注册时序缺陷**——index.ts 注册位于
    Research 装配之前，`researchService?.` 在 null 时静默 no-op，生产/真实链路
    事件从未到达渲染层（面板不随任务完成自动刷新；8.19-B 因自建 service 直发
    事件而掩盖）。修复：装配完成后 forwardResearchEvents 注册；实测渲染层
    task-done 到达 0 → 6。
 2. **历史条目选择竞态守卫缺陷**——loadTaskAndResult 的守卫 `selectedTaskId
-   !== taskId` 在无选中（null）时把首次历史点击选择也丢弃（历史选择从未
+!== taskId` 在无选中（null）时把首次历史点击选择也丢弃（历史选择从未
    生效）。修复：isSelectionStale 纯函数（仅当存在其他选中时才过期）+ 单测。
-真实运行期间还定位并修复了 7 处夹具/断言缺陷（canary 服务器精确路由 404
-打飞 `?tok=` 捕获/跨运行 createId/captureId 回退碰撞 UNIQUE 约束/UI 选择器
-指向 header/历史条目晚于表头到达的等待/真实模型引用敌对页标记的观察校准/
-cohesive 信源 id 非 UUID 被 merge 丢弃/8.19-B 画布点击时序）；诊断过程累计
-~190 次 HTTP（每轮诊断驱动，非盲目重试）。
+   真实运行期间还定位并修复了 7 处夹具/断言缺陷（canary 服务器精确路由 404
+   打飞 `?tok=` 捕获/跨运行 createId/captureId 回退碰撞 UNIQUE 约束/UI 选择器
+   指向 header/历史条目晚于表头到达的等待/真实模型引用敌对页标记的观察校准/
+   cohesive 信源 id 非 UUID 被 merge 丢弃/8.19-B 画布点击时序）；诊断过程累计
+   ~190 次 HTTP（每轮诊断驱动，非盲目重试）。
