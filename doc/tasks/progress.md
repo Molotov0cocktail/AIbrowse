@@ -236,8 +236,10 @@
   **C9 已完成（2026-08-18）**：8.20 全矩阵、隐私扫描、门控、真实运行器、
   两次完整真实 Provider 运行及两处真实运行发现的 C8 产品缺陷修复均已落地；
   机器证据见 C9 任务文档、threat-model §4.1、本文件最近验证条目与 Git。
-  **开发工作流重构已完成（2026-08-19，Reviewer=`PASS`，候选提交 860822f）；
-  C10 尚未开始，下一唯一任务仍为 C10。**
+  **开发工作流重构已完成（2026-08-19，Reviewer=`PASS`，候选提交 860822f）。
+  C9-R1 格式漂移修复已完成（2026-08-19，Reviewer=`PASS`，候选提交
+  `8733313f0321e1c8f80d64e5ebbc0fed707ef30d`）**：C9 证据回填遗留的两份
+  文档 Prettier 漂移已关闭，C9 保持完成；C10 尚未开始，下一唯一任务仍为 C10。
   本阶段红线：禁止安装依赖、禁止实现 Sixth Stage。**真实 Provider 长期授权
   （2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
@@ -633,6 +635,18 @@
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3、C4、C5、C6、C7）
+
+- **C9-R1 格式漂移修复（2026-08-19，C9 的确定性文档收尾）**：① 根因 = C9
+  证据回填后的任务文档与 threat-model 两处内容偏离仓库 Prettier 输出；后续开发
+  工作流重构 Reviewer 已把它们识别为 baseline 既有且不在当轮 candidate 范围内，
+  因此仅登记、未关闭，导致 C9 格式门控缺口延续。② candidate
+  `8733313f0321e1c8f80d64e5ebbc0fed707ef30d` 只对
+  `doc/stage5/tasks/C9-e2e-redteam-live-infra.md` 与
+  `doc/stage5/threat-model.md` 执行确定性 Prettier 格式修复；Reviewer 独立审核
+  后结论 `PASS`。③ Closer 接管时确认 HEAD 精确等于 candidate、工作区干净；
+  独立复跑全仓 `npm run format:check` 全绿，`0f2cecd..8733313` diff-check
+  零问题，candidate scope 精确为上述两份文档。④ 格式漂移缺口已关闭，C9 已完成；
+  下一唯一任务恢复为 C10，本闭环不开始 C10、Fifth Stage Exit Audit 或 Sixth Stage。
 
 - **独立开发工作流重构（2026-08-19，C9 与 C10 之间的纯文档闭环）**：
   ① Step 0 独立核验 baseline `0d4d185`：工作区干净、本地双远程跟踪同 SHA；
