@@ -233,9 +233,12 @@
   根目录日志/Electron 进程零残留）；真实 Provider 调用 **0 次**（8.19-B
   无真实 Provider 产品链路——FakeProvider 确定性脚本不冒充真实证据）。
   证据见 C8 任务文档「红→绿证据」小节。
-   **下一唯一任务 = C9（2026-08-18 中断恢复后实施中：8.20 全矩阵/隐私扫描/
-   门控/真实运行器已完成，真实 Provider 两次完整运行全部通过）。** 本阶段红线：禁止安装依赖、禁止实现
-  Sixth Stage。**真实 Provider 长期授权（2026-08-16，用户明确要求，
+  **C9 已完成（2026-08-18）**：8.20 全矩阵、隐私扫描、门控、真实运行器、
+  两次完整真实 Provider 运行及两处真实运行发现的 C8 产品缺陷修复均已落地；
+  机器证据见 C9 任务文档、threat-model §4.1、本文件最近验证条目与 Git。
+  **C10 尚未开始；当前插入的独立任务仅重构开发工作流，完成后下一唯一任务仍为 C10。**
+  本阶段红线：禁止安装依赖、禁止实现 Sixth Stage。**真实 Provider 长期授权
+  （2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
   每次调用仍须服务于明确开发/验收/定位/复验目的，禁止无界循环、无诊断
   依据重复请求与无关测试；凭据只走仓库外本地说明/DPAPI 密文/受控
@@ -618,7 +621,7 @@
 | C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #140–#147（C6/C7 分阶段装配边界/Provider 响应侧有界性/VerificationDraft 严格协议/Claim 确定性装配与厂商分类/Conflict 引用完整性/数据交接/Prompt 所有权/parseResultDraft 边界）；红→绿聚焦 61/61、全量 test 1865/1865；冒烟 8.18 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 Research 仍 fail-closed（缺 C7）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
 | C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #148–#155（Markdown 单一事实源/ResultDraft 三字段白名单/Validator 严格验证/Conflict·Coverage·不确定/Markdown AST 与 Renderer/logger 未初始化落盘修复/启动预占与 prepared Provider 交接/真实生产装配）；红→绿聚焦 172/172、全量 test 1964/1964；冒烟 8.18 真实 C7 端口 + 8.19-A 生产 factory 闭环 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 startTask 解除 fail-closed（决议 #140/#155）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
 | C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ✅ | 2026-08-17 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #156–#163（八 invoke + 两事件/payload 严格白名单 fail-closed/list 1-based/task-done 三值/Service 查询视图与事件出口/大结果画布 WebContentsView 可见性/Evidence 下钻与安全导航/TableView 纯函数/CSV 导出当前 UI 视图/Dialog 窄端口/UI 状态收敛）；红→绿聚焦 99/99、全量 test 2054/2054；冒烟 8.19-B dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider 0 次；**实际对应 10 个提交**（50c5651/a61261a/ff7d9a5/3410d16/b63fa9f/63d2869/4e1c690/**76070d3**/7edd96f/f9b005a——公开历史中 76070d3 为独立提交，不 amend 不重写）；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
-| C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | 🔨 | 2026-08-16 设计定稿；**2026-08-18 中断恢复后实施：8.20 全矩阵/隐私扫描/门控/真实运行器已完成（dev+生产冒烟退出码 0，全量 test 2130/2130）+ 真实 Provider 两次完整运行全部通过**（含发现并修复两处 C8 生产缺陷）；剩余：C9 收尾报告（含真实台账登记）；threat-model §4；任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md（实施记录已回填） |
+| C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ✅ | 2026-08-18 完成：8.20 全矩阵/隐私扫描/门控/真实运行器 dev+生产通过，真实 Provider 两次完整运行通过；真实运行发现并修复两处 C8 产品缺陷；证据见 threat-model §4.1、C9 任务文档实施记录与 Git |
 | C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ⏳ | 2026-08-16 设计定稿，待实施；任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；完成后停止不实现 Sixth Stage |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
@@ -655,25 +658,25 @@
   约束 → research-internal、cohesive 信源 id 非 UUID 被 merge 单条丢弃）；
   全量 test **2128/2128**（93 文件，单 worker）+ typecheck/lint/format:check/
   build/git diff --check 全绿；dev + 生产冒烟（含 8.20 全矩阵 FRT-01～FRT-12
-  + Fifth §7 + 隐私扫描）退出码 0/0；LIVE_RESEARCH 门控矩阵（缺 SMOKE/缺
-  LIVE_PROVIDER/冲突/非法值 → 退出码 1 零残留）+ 无 Key 路由（退出码 0 +
-  「凭据不可用」+ 请求 0）；   B-02/B-05/SESSION/RESEARCH_GATE 双进程全部 0/0；
-  package/lock 零 diff；AgentLoop 12/420s 与 17 工具注册表零变化；TEMP/
-  Electron 进程零残留。⑤ **真实 Provider 台账**：决议 #117 长期授权下执行
-  **两次完整运行全部通过**（deepseek-v4-pro，harness `-Research`）——最终
-  两次：HTTP 19 次（lr1=6/lr2=8/lr3=5）与 21 次（lr1=7/lr2=7/lr3=7）全部
-  completed，用途 = 三个 manifest 场景包（Fifth §7.1/7.3/7.4/7.7、§7.2/7.4/
-  7.5/7.6、FRT-01/02/08/11 观察）；C8 事件通道结构断言（渲染层 task-done
-  到达 6 次——修复前 0）；真 Key 零暴露扫描 7 表面零命中 + 环境变量已清除 +
-  零进程/临时目录残留；观察性结果如实登记（lr3 conflicts=0~2、claims=0~2
-  ——模型是否识别语义冲突为自由行为，不冒充防御）。**真实验收还发现并修复
-  两处 C8 生产缺陷**（先测后修，447bf0a）：research:progress/task-done 事件
-  转发注册位于装配之前（`?.` 静默 no-op——生产面板不随任务完成自动刷新）+
-  历史条目选择竞态守卫在无选中时恒丢弃首次选择（历史点击选择从未生效）；
-  全量 test 2128 → **2130/2130**。诊断过程另消耗 ~190 次 HTTP（夹具/断言
-  缺陷逐项定位修复：canary 服务器路由 404/跨运行 id 回退碰撞/UI 选择器/
-  历史时序/真实模型引用标记的观察校准——每轮均为诊断驱动，非盲目重试）。
-  **不开始 C10。下一唯一任务 = C9 收尾报告（含本台账登记）。**
+  - Fifth §7 + 隐私扫描）退出码 0/0；LIVE_RESEARCH 门控矩阵（缺 SMOKE/缺
+    LIVE_PROVIDER/冲突/非法值 → 退出码 1 零残留）+ 无 Key 路由（退出码 0 +
+    「凭据不可用」+ 请求 0）； B-02/B-05/SESSION/RESEARCH_GATE 双进程全部 0/0；
+    package/lock 零 diff；AgentLoop 12/420s 与 17 工具注册表零变化；TEMP/
+    Electron 进程零残留。⑤ **真实 Provider 台账**：决议 #117 长期授权下执行
+    **两次完整运行全部通过**（deepseek-v4-pro，harness `-Research`）——最终
+    两次：HTTP 19 次（lr1=6/lr2=8/lr3=5）与 21 次（lr1=7/lr2=7/lr3=7）全部
+    completed，用途 = 三个 manifest 场景包（Fifth §7.1/7.3/7.4/7.7、§7.2/7.4/
+    7.5/7.6、FRT-01/02/08/11 观察）；C8 事件通道结构断言（渲染层 task-done
+    到达 6 次——修复前 0）；真 Key 零暴露扫描 7 表面零命中 + 环境变量已清除 +
+    零进程/临时目录残留；观察性结果如实登记（lr3 conflicts=0–2、claims=0–2
+    ——模型是否识别语义冲突为自由行为，不冒充防御）。**真实验收还发现并修复
+    两处 C8 生产缺陷**（先测后修，447bf0a）：research:progress/task-done 事件
+    转发注册位于装配之前（`?.` 静默 no-op——生产面板不随任务完成自动刷新）+
+    历史条目选择竞态守卫在无选中时恒丢弃首次选择（历史点击选择从未生效）；
+    全量 test 2128 → **2130/2130**。诊断过程另消耗 ~190 次 HTTP（夹具/断言
+    缺陷逐项定位修复：canary 服务器路由 404/跨运行 id 回退碰撞/UI 选择器/
+    历史时序/真实模型引用标记的观察校准——每轮均为诊断驱动，非盲目重试）。
+    **本条验证记录形成时不开始 C10；C9 后续收尾现已完成，当前下一唯一任务以文件末尾为准。**
 
 - **C7 ResultValidator + 安全 Markdown 子集 + Renderer + 真实生产装配
   （2026-08-16，第二十二个闭环；docs/fix/feat 逻辑提交见 git log）**：
@@ -3044,25 +3047,10 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **C9（唯一）**：C8 已完成（2026-08-17，Research UI/IPC/bridge：
-  侧栏控制/进度 + 大结果画布 + Evidence 下钻 + 表格交互 + CSV 安全导出，
-  实施前契约裁决 #156–#163；红→绿聚焦 99/99、全量 test 2054/2054；
-  冒烟 8.19-B dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE 双进程
-  退出码 0/0；实际对应 10 个提交，含独立提交 76070d3）。
-  下一唯一任务 = **C9（Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 +
-  隐私扫描 + 真实 Provider/真实主题验收基础设施，threat-model §4，
-  任务文档 doc/stage5/tasks/C9-e2e-redteam-live-infra.md）**——C9 实施
-  8.20 红队矩阵（每项独立机器断言，断言可证明安全边界或诚实限制，不把
-  观察性语义行为冒充确定性防御）+ 端到端离线场景（Fifth §7 七条映射）+
-  隐私扫描（运行时随机 canary + 允许/禁止位置清单）+ AIBROWSE_LIVE_RESEARCH
-  门控（从属于 SMOKE+LIVE_PROVIDER，与既有专属路由确定性互斥，无 Key 路由
-  退出码 0 + 请求 0）+ 仓库外 harness -Research 开关。真实 Provider 按
-  决议 #117 长期授权（2026-08-16 起长期生效）：基础设施落地后凭据可用即
-  真实执行（属 C9 范围，无需逐次申请授权）；每次调用仍须服务于明确
-  开发/验收/定位/复验目的；凭据不可用如实记录「凭据不可用」，不得写
-  「未获授权」；FakeProvider 不得冒充真实证据。
-  C9 完成后按依赖链推进（C10），每个任务一个可验证开发闭环；本阶段
-  禁止安装依赖、禁止实现 Sixth Stage。
+- **C10（唯一）**：Fifth Stage 独立最终验收、Exit Gate 判定与文档同步，任务契约
+  `doc/stage5/tasks/C10-finalize-acceptance.md`。C10 必须使用新的独立 Codex GPT-5.6 Sol
+  上下文作为 Stage Auditor，不采信 C1–C9 完成报告，按当前 HEAD 独立复验。
+  C10 完成后停止；不得直接设计或实现 Sixth Stage，等待用户阶段切换指令。
 
 ## 第一阶段验收未完成项
 
