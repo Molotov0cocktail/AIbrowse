@@ -236,7 +236,8 @@
   **C9 已完成（2026-08-18）**：8.20 全矩阵、隐私扫描、门控、真实运行器、
   两次完整真实 Provider 运行及两处真实运行发现的 C8 产品缺陷修复均已落地；
   机器证据见 C9 任务文档、threat-model §4.1、本文件最近验证条目与 Git。
-  **C10 尚未开始；当前插入的独立任务仅重构开发工作流，完成后下一唯一任务仍为 C10。**
+  **开发工作流重构已完成（2026-08-19，Reviewer=`PASS`，候选提交 860822f）；
+  C10 尚未开始，下一唯一任务仍为 C10。**
   本阶段红线：禁止安装依赖、禁止实现 Sixth Stage。**真实 Provider 长期授权
   （2026-08-16，用户明确要求，
   决议 #117）**：后续任务按需使用、无需逐次申请授权、不设固定调用次数；
@@ -632,6 +633,27 @@
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3、C4、C5、C6、C7）
+
+- **独立开发工作流重构（2026-08-19，C9 与 C10 之间的纯文档闭环）**：
+  ① Step 0 独立核验 baseline `0d4d185`：工作区干净、本地双远程跟踪同 SHA；
+  C9 的提交、实际代码、C9 任务记录与 threat-model §4.1 在位，C9 聚焦测试
+  107/107；确认 C9 已完成，而本文件任务表/下一任务仍停留 C9，属于状态漂移。
+  ② 长期流程改为 Sol Planner/Reviewer/Stage Auditor + OpenCode/DeepSeek bounded
+  Executor/Repair Worker + PASS 后 Closer；Execution Contract 固定 14 字段；Executor
+  只做本地候选提交不 push，Reviewer 独立审查 `baseline..HEAD`，Closer 才同步
+  progress/docs、最终验证与双远程 push。模板落于既有 vibe-coding-workflow
+  `references/prompt-templates.md`，零新增状态文件。
+  ③ AGENTS.md 从 2037 行缩至 482 行：移除任务完成轮次、历史测试数字和可由 Stage/
+  progress/Git 查询的执行史，保留稳定架构、永久安全红线、技术基线、当前 Stage
+  契约速查；明确产品“禁止多 Agent/Planner-Worker”不限制外部开发协作。
+  ④ Reviewer 独立审查 `0d4d185..860822f`：仅 4 个文档文件，src/package/
+  Fifth Stage 冻结设计/C10 零 diff；全量 test **2130/2130**、typecheck、lint、
+  C9 聚焦 **107/107**、本次 4 文件 Prettier、diff-check、旧流程/状态漂移/永久
+  护栏/敏感凭据形态扫描全部通过，结论 `PASS`。全仓 `npm run format:check`
+  仍只报告 baseline 已存在且本次未改的 C9 任务文档与 threat-model 两处格式偏差；
+  本闭环不为格式化改写冻结产品设计。纯文档任务未运行 build/Electron 冒烟/真实
+  Provider（N/A：产品代码零变化）。⑤ Closer 收尾后下一唯一任务 = C10；不得开始
+  Sixth Stage。
 
 - **C9 中断恢复与实施（2026-08-18，第二十三个闭环；fix/feat/docs 逻辑提交
   见 git log：4209dd4/8e77854/c723b09/ce9cd75/f952319）**：
