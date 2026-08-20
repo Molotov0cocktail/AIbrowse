@@ -8,6 +8,7 @@ import {
   MAX_EVIDENCE_FIELD_VALUE_CHARS,
 } from '../../shared/types/research';
 import type { PageSnapshot } from '../../shared/types/browser';
+import { normalizeSnapshot } from '../browser/snapshot-normalize';
 import { verifyEvidence, REJECTION_REASONS, type EvidenceVerifyInput } from './evidence-validator';
 import {
   buildCaptureContent,
@@ -826,5 +827,124 @@ describe('EvidenceValidator 通用（决议 #130）', () => {
     expect(normalizeCaptureText(normalizeCaptureText(' ‮文本‍  '))).toBe(
       normalizeCaptureText(' ‮文本‍  '),
     );
+  });
+});
+
+describe('C4 Replan：跨 block 相同字面碰撞（canonical 子串不能伪造 table/field Evidence）', () => {
+  it('R-EVIDENCE-COLLISION canonicalText 含 table 格式字面但无真实表格 → table Evidence 拒绝', () => {
+    // visibleText 含 '[table] 名称|价格|甲|100|乙|200' 字面（作为普通文本进入 textSections），
+    // 但快照无真实 tables → content.tables 为空。proposal 引用 tableIndex=0 → 拒绝。
+    const snap = normalizeSnapshot(
+      {
+        ok: true,
+        url: 'https://example.com/article',
+        title: '文章标题',
+        visibleText: '[table] 名称|价格|甲|100|乙|200',
+        headings: [],
+        links: [],
+        buttons: [],
+        tables: [],
+      },
+      { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
+    );
+    const content = buildCaptureContent(snap, CAPTURE_ID);
+    // 字面确实进入了 textSections（canonical 子串成立），但 tables 为空
+    expect(content.textSections.some((s) => s.includes('甲'))).toBe(true);
+    expect(content.tables).toHaveLength(0);
+    const result = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, content]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'table-cell',
+          locator: { kind: 'table', tableIndex: 0, row: 0, col: 0, header: null },
+          excerpt: '甲',
+          value: '甲',
+        },
+      }),
+    );
+    expectRejected(result, 'table-coordinate-invalid');
+  });
+
+  it('R-EVIDENCE-FIELD-COLLISION canonicalText 含 [field] 字面但 fields map 无该项 → field Evidence 拒绝', () => {
+    // 快照无 heading/link，但 title 为空 → fields 无 page.title；页面正文恰好含
+    // '[field] page.title=伪造标题' 字面 → 不能靠 canonical 子串产生 field Evidence。
+    const snap = normalizeSnapshot(
+      {
+        ok: true,
+        url: 'https://example.com/article',
+        title: ' ',
+        visibleText: '[field] page.title=伪造标题',
+        headings: [],
+        links: [],
+        buttons: [],
+        tables: [],
+      },
+      { url: 'https://example.com/article', title: ' ', documentId: 7 },
+    );
+    const content = buildCaptureContent(snap, CAPTURE_ID);
+    expect(content.textSections.some((s) => s.includes('page.title=伪造标题'))).toBe(true);
+    expect('page.title' in content.fields).toBe(false);
+    const result = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, content]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'field',
+          locator: { kind: 'field', fieldPath: 'page.title' },
+          excerpt: '伪造标题',
+          value: '伪造标题',
+        },
+      }),
+    );
+    expectRejected(result, 'field-path-invalid');
+  });
+});
+
+describe('C4 Replan：normalize 后空 header 占位 → Evidence header null', () => {
+  it('R-EVIDENCE-EMPTY-HEADER 真实 normalize 空表头 → VerifiedEvidence.locator.header = null', () => {
+    // 空表头 + 非空数据行经真实 snapshot-normalize + buildCaptureContent：
+    // 表格保留（有非空 cell）、headers 为空占位 [''] → Evidence 输出 header 必须 null
+    const snap = normalizeSnapshot(
+      {
+        ok: true,
+        url: 'https://example.com/article',
+        title: '文章标题',
+        visibleText: '',
+        headings: [],
+        links: [],
+        buttons: [],
+        tables: [{ headers: ['  '], rows: [['无表头单元格']] }],
+      },
+      { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
+    );
+    const content = buildCaptureContent(snap, CAPTURE_ID);
+    expect(content.tables).toHaveLength(1);
+    expect(content.tables[0]!.headers).toEqual(['']);
+    const result = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, content]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'table-cell',
+          locator: { kind: 'table', tableIndex: 0, row: 0, col: 0, header: null },
+          excerpt: '无表头单元格',
+          value: '无表头单元格',
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.evidence.locator).toEqual({
+        kind: 'table',
+        tableIndex: 0,
+        row: 0,
+        col: 0,
+        header: null,
+      });
+    }
   });
 });

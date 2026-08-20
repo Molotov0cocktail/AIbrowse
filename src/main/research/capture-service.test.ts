@@ -6,9 +6,9 @@ import { describe, expect, it } from 'vitest';
 import type { PageSnapshot, TabInfo } from '../../shared/types/browser';
 import type { SourceCandidate } from '../../shared/types/research';
 import { MAX_PAGE_CAPTURE_CHARS } from '../../shared/types/research';
+import { normalizeSnapshot } from '../browser/snapshot-normalize';
 import {
   buildCaptureContent,
-  buildCaptureSummary,
   CAPTURE_EMPTY_CONTENT_HASH,
   CAPTURE_SENTINEL_DOCUMENT_ID,
   CAPTURE_SENTINEL_TAB_ID,
@@ -934,9 +934,10 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     expect(content.canonicalText.length).toBeLessThanOrEqual(MAX_PAGE_CAPTURE_CHARS);
   });
 
-  it('heading 预算边界：预算在 heading 行内耗尽时该 heading 不进入 textSections，且不产生空 section', () => {
+  it('heading 预算边界：预算在 heading 行内耗尽时该 heading 不进入 textSections、零 fragment、canonical 可小于 60k', () => {
     // 预算 = 60000；[text] 标签长 7；正文填至 59994，余 6 字节
-    // [heading] 完整\n = 13 字节 > 6 → 部分写入 `[head`（6 字节），无完整 payload
+    // [heading] 完整\n = 13 字节 > 6 → 原子拒绝：零 fragment（不再写 `[head` 残缺行）、
+    // 不登记 section、不计数；canonical 停在 [text] 完整写入处 59994
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 6); // 59986
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -949,10 +950,12 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     expect(content.textSections.some((s) => s.includes('完整'))).toBe(false);
     // 不存在空 section
     expect(content.textSections.some((s) => s === '')).toBe(false);
-    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+    // 原子拒绝零写入残缺 fragment：canonical 停在 [text] 完整行（59986+8=59994）
+    expect(content.canonicalText).not.toContain('[heading]');
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS - 6);
   });
 
-  it('link 预算边界：预算在 link 行内耗尽时该 link 不进入 textSections', () => {
+  it('link 预算边界：预算在 link 行内耗尽时该 link 不进入 textSections、零 fragment', () => {
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 6); // 59986
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -962,12 +965,15 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     });
     const content = buildCaptureContent(snapshot, 'cap-1');
     expect(content.textSections.some((s) => s.includes('链接文本'))).toBe(false);
-    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+    // 原子拒绝零写入残缺 fragment
+    expect(content.canonicalText).not.toContain('[link]');
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS - 6);
   });
 
-  it('link 标签子串碰撞防御：text="link" 且预算仅够标签前缀时，textSections 不得登记', () => {
+  it('link 标签子串碰撞防御：text="link" 且预算仅够标签前缀时，textSections 不得登记、零 fragment', () => {
     // 预算 = 60000；[text] 标签长 7；正文填至 59995，余 5 字节
-    // [link] link url\n 被截断为 `[link`（5 字节），added.includes('link') 会误匹配标签前缀
+    // [link] link url\n = 34 字节 > 5 → 原子拒绝：不写残缺 `[link`（旧 added.includes('link')
+    // 会误匹配标签前缀）、零 fragment、零登记
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 5); // 59987
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -979,13 +985,17 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     // link 文本 "link" 只是标签前缀的一部分，不是来源 payload，不得进入 textSections
     expect(content.textSections.some((s) => s === 'link')).toBe(false);
     expect(content.textSections.some((s) => s.includes('link'))).toBe(false);
-    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+    // 原子拒绝零写入残缺 fragment
+    expect(content.canonicalText).not.toContain('[link]');
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS - 5);
   });
 
-  it('field 部分写入原子性：field 行截断时该 field 不登记', () => {
+  it('field 部分写入原子性：field 行截断时该 field 不登记、零 fragment', () => {
     // 预算 = 60000；[text] 标签 7 字节；正文填至 59988，余 12 字节
     // 无 heading/table/link 干扰，field 行是下一个条目
-    // [field] page.url=https://example.com/article\n = 45 字节 > 12 → 部分写入 `[field] page.`
+    // [field] page.url=https://example.com/article\n = 45 字节 > 12 → 原子拒绝：
+    // 零 fragment（不再写 `[field] page.` 残缺行）、零 fields entry；
+    // canonical 停在 [text] 完整写入处（59980+8=59988）
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 12); // 59980
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -994,12 +1004,12 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
       links: [],
     });
     const content = buildCaptureContent(snapshot, 'cap-1');
-    // 部分写入的 field 行不完整 → fields 不登记
+    // 原子拒绝 → 零写入残缺 fragment → fields 不登记
     expect('page.url' in content.fields).toBe(false);
     expect('page.title' in content.fields).toBe(false);
-    // 部分写入的 field 标签应出现在 canonicalText 中，但完整字段值不登记
-    expect(content.canonicalText).toContain('[field]');
-    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+    // 原子拒绝零写入残缺 fragment：canonical 不含 [field] 标签
+    expect(content.canonicalText).not.toContain('[field]');
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS - 12);
   });
 
   it('field 恰好装满：field 行完整写入时该 field 正确登记', () => {
@@ -1066,8 +1076,8 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     const tableSection = normalizeCaptureText(
       `${table.headers.join('|')} | ${table.rows.map((r) => r.join('|')).join(' | ')}`,
     );
-    const tableLine = `[table] ${tableSection}\n`; // 24 字节
-    const prefixTooBig = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - (tableLine.length - 1)); // 59969
+    const tableLine = `[table] ${tableSection}\n`; // 长度动态计算（真实 serialized，禁止硬编码漂移）
+    const prefixTooBig = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - (tableLine.length - 1)); // 差 1 字节装不下
     const snapA = makeSnapshot({
       visibleText: prefixTooBig,
       tables: [table],
@@ -1172,12 +1182,11 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     expect(content.textSections.length).toBe(1 + 2 + 1 + 2);
     expect(content.tables.length).toBe(1); // 1 个表格，不是 6 个单元格
     expect(content.canonicalText.length).toBeGreaterThan(0);
-    // summary 从真实接纳记录产生（不手工传入 headingCount 数字）
-    const summary = buildCaptureSummary(content, content.headingCount);
-    expect(summary.sectionCount).toBe(content.textSections.length);
-    expect(summary.tableCount).toBe(content.tables.length);
-    expect(summary.headingCount).toBe(content.headingCount);
-    expect(summary.charCount).toBe(content.canonicalText.length);
+    // summary 由内部 build result 一次性构造（不手工传入 headingCount 数字、
+    // 不调用独立 summary helper）——见 C4 Replan「summary 来源真实 service build facts」
+    // describe 中的真实 CaptureService.read() 断言。buildCaptureContent 返回精确五字段，
+    // 不携带 headingCount。
+    expect('headingCount' in content).toBe(false);
   });
 });
 
@@ -1424,5 +1433,244 @@ describe('统一 admission 不变量：headingCount 从真实接纳记录产生�
     expect(result.capture.summary.headingCount).toBe(1);
     expect(result.content.textSections).toContain('Foo');
     expect(result.content.textSections.some((s) => s === 'Bar')).toBe(false);
+  });
+});
+
+// ---------- C4 Replan 红态 oracle（统一 admission 模型） ----------
+//
+// 这些测试在 baseline 56ea5c 上必须真实失败：区分旧「通用 append + slice/includes
+// 分散判断」结构与新「闭合 AdmissionResult 驱动 canonical 写入/projection/stats」模型。
+// 全部走真实 CaptureService.read()（summary/public shape 不许直接调用 helper、不传期望数）。
+
+describe('C4 Replan：运行时 public shape 精确五字段', () => {
+  it('R-PUBLIC Object.keys/spread/JSON 均精确五字段，无 headingCount/stats 泄漏', async () => {
+    const h = makeHarness();
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const content = result.content;
+    const five = ['captureId', 'canonicalText', 'textSections', 'tables', 'fields'];
+    expect(Object.keys(content)).toEqual(five);
+    expect(Object.keys({ ...content })).toEqual(five);
+    expect(Object.keys(JSON.parse(JSON.stringify(content)))).toEqual(five);
+    expect('headingCount' in content).toBe(false);
+    expect('stats' in content).toBe(false);
+    const json = JSON.stringify(content);
+    expect(json).not.toContain('headingCount');
+    expect(json).not.toContain('stats');
+  });
+});
+
+describe('C4 Replan：空/纯空白结构 eligibility（真实 normalize 路径）', () => {
+  function normalizedWithTables(
+    tables: unknown[],
+    extra: Record<string, unknown> = {},
+  ): PageSnapshot {
+    return normalizeSnapshot(
+      {
+        ok: true,
+        url: 'https://example.com/article',
+        title: '文章标题',
+        visibleText: '',
+        headings: [],
+        links: [],
+        buttons: [],
+        tables,
+        ...extra,
+      },
+      { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
+    );
+  }
+
+  it("R-EMPTY-TABLE 空白单表头 headers:['  '], rows:[] → 全零投影、无空 section", async () => {
+    const h = makeHarness({
+      browser: { snapshotFor: () => normalizedWithTables([{ headers: ['  '], rows: [] }]) },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.textSections).toEqual([]);
+    expect(result.content.tables).toEqual([]);
+    expect(result.capture.summary.sectionCount).toBe(0);
+    expect(result.capture.summary.tableCount).toBe(0);
+    expect(result.content.canonicalText).not.toContain('[table]');
+    expect(result.content.textSections.some((s) => s === '')).toBe(false);
+    for (const key of Object.keys(result.content.fields)) {
+      expect(key.startsWith('tables[')).toBe(false);
+    }
+  });
+
+  it('R-TABLE-INDEX 空表被跳过 → 有效表为 tables[0]，字段路径紧凑无空洞', async () => {
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          normalizedWithTables([
+            { headers: ['  '], rows: [] },
+            { headers: ['A', 'B'], rows: [['1', '2']] },
+          ]),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.tables).toHaveLength(1);
+    expect(result.content.tables[0]!.headers).toEqual(['A', 'B']);
+    expect(result.content.fields['tables[0].cell[0][0]']).toBe('1');
+    expect('tables[1]' in result.content.fields).toBe(false);
+  });
+
+  it('R-EMPTY-CELL 有意义表格中空 row/cell：几何保留、空 cell 不上 fields', async () => {
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          normalizedWithTables([
+            {
+              headers: ['A', 'B'],
+              rows: [
+                ['x', ''],
+                ['', 'y'],
+              ],
+            },
+          ]),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.tables).toHaveLength(1);
+    expect(result.content.tables[0]!.rows).toEqual([
+      ['x', ''],
+      ['', 'y'],
+    ]);
+    expect(result.content.fields['tables[0].cell[0][0]']).toBe('x');
+    expect('tables[0].cell[0][1]' in result.content.fields).toBe(false);
+    expect('tables[0].cell[1][0]' in result.content.fields).toBe(false);
+    expect(result.content.fields['tables[0].cell[1][1]']).toBe('y');
+  });
+});
+
+describe('C4 Replan：原子拒绝零 canonical fragment（不足则零写入并停止后续）', () => {
+  it('R-ATOMIC-HEADING heading one-short → 零 fragment、canonical 可小于 60k、停止后续', async () => {
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 6); // remaining=6
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: prefix,
+            headings: [{ level: 1, text: '完整' }],
+            tables: [],
+            links: [],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.canonicalText).toContain('[text]');
+    expect(result.content.canonicalText).not.toContain('[heading]');
+    expect(result.content.canonicalText.length).toBeLessThan(MAX_PAGE_CAPTURE_CHARS);
+    expect(result.content.textSections.some((s) => s.includes('完整'))).toBe(false);
+    expect(result.capture.summary.headingCount).toBe(0);
+    expect(result.content.canonicalText).not.toContain('[field]'); // 后续 unit 全停
+  });
+
+  it('R-ATOMIC-LINK link 行 one-short → 零 fragment、零 projection', async () => {
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 30); // remaining=30, link line=34
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: prefix,
+            headings: [],
+            tables: [],
+            links: [{ id: 'el-1', text: 'link', href: 'https://example.com/x' }],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.canonicalText).not.toContain('[link]');
+    expect(result.content.canonicalText.length).toBeLessThan(MAX_PAGE_CAPTURE_CHARS);
+    expect(result.content.textSections.some((s) => s === 'link')).toBe(false);
+  });
+
+  it('R-ATOMIC-FIELD field 行 one-short → 零 fragment、零 fields entry', async () => {
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 44); // remaining=44, field line=45
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: prefix,
+            headings: [],
+            tables: [],
+            links: [],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.canonicalText).not.toContain('[field]');
+    expect(result.content.canonicalText.length).toBeLessThan(MAX_PAGE_CAPTURE_CHARS);
+    expect('page.url' in result.content.fields).toBe(false);
+    expect('page.title' in result.content.fields).toBe(false);
+  });
+});
+
+describe('C4 Replan：summary 来源真实 service build facts', () => {
+  it('R-SUMMARY 正常路径 section/table/heading/char 全部来自真实 content', async () => {
+    const h = makeHarness();
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.summary.sectionCount).toBe(result.content.textSections.length);
+    expect(result.capture.summary.tableCount).toBe(result.content.tables.length);
+    expect(result.capture.summary.charCount).toBe(result.content.canonicalText.length);
+    // headingCount 只能来自内部接纳记录（makeSnapshot 2 个 heading 完整接纳）
+    expect(result.capture.summary.headingCount).toBe(2);
+  });
+
+  it('R-SUMMARY-EMPTY 全空快照 → summary 全零、零空 section', async () => {
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: '',
+            headings: [],
+            links: [],
+            tables: [],
+            title: '',
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.textSections).toEqual([]);
+    expect(result.content.tables).toEqual([]);
+    expect(result.capture.summary.sectionCount).toBe(0);
+    expect(result.capture.summary.tableCount).toBe(0);
+    expect(result.capture.summary.headingCount).toBe(0);
+  });
+});
+
+describe('C4 Replan：contentHash 只对最终 canonicalText 计算', () => {
+  it('R-HASH 混合结构 contentHash === sha256hex(canonicalText)', async () => {
+    const h = makeHarness();
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.contentHash).toBe(sha256hex(result.content.canonicalText));
   });
 });

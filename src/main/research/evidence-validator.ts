@@ -299,9 +299,11 @@ function verifyContent(proposal: EvidenceProposal, content: CaptureContent): Con
       if (excerpt.length > MAX_EVIDENCE_EXCERPT_CHARS) return bad('value-invalid', locator);
       if (normalizeCaptureText(excerpt) !== real) return bad('table-value-mismatch', locator);
     }
-    // header 由程序根据真实表头生成；proposal 提供非空 header 须与真实表头一致
-    const realHeader =
+    // header 由程序根据真实表头生成；proposal 提供非空 header 须与真实表头一致。
+    // normalize 后的空表头占位 ''（空/纯空白 header）在 Evidence 输出中映射为 null。
+    const rawHeader =
       locator.col < table.headers.length ? (table.headers[locator.col] ?? null) : null;
+    const realHeader = rawHeader === '' ? null : rawHeader;
     const proposalHeader = locator.header;
     if (proposalHeader !== null && proposalHeader !== '') {
       if (proposalHeader !== realHeader) return bad('table-header-mismatch', locator);

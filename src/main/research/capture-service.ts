@@ -44,12 +44,7 @@
 // （never in Capture, Repository, logs or session files — FT-14/16）.
 import { createHash, randomUUID } from 'node:crypto';
 import type { PageSnapshot, TabInfo } from '../../shared/types/browser';
-import type {
-  Capture,
-  CaptureFailureReason,
-  CaptureSummary,
-  SourceCandidate,
-} from '../../shared/types/research';
+import type { Capture, CaptureFailureReason, SourceCandidate } from '../../shared/types/research';
 import { MAX_PAGE_CAPTURE_CHARS, MAX_PAGE_READ_RETRIES } from '../../shared/types/research';
 import { logWarn } from '../logger';
 import { stripControlChars } from '../sources/domain/source-change-set';
@@ -102,13 +97,29 @@ export interface CaptureContent {
   fields: Record<string, string>; // 闭合字段路径 → 规范值
 }
 
-// 构造结果：扩展 CaptureContent 携带 headingCount。CaptureContent 接口形状不变
-// （正式契约 5 字段）；headingCount 是构造期跟踪的真实接纳计数，仅供
-// buildCaptureSummary 从真实接纳记录传入——不进接口形状、不落盘、
-// 不经 canonicalText.includes 子串扫描推断。
-export interface CaptureContentBuild extends CaptureContent {
-  headingCount: number;
+// 内部构建结果（C4 Replan）：content + internal stats。不导出、不入 CaptureContent
+// 形状、不落盘、不经 spread/JSON/日志/Runtime map 泄漏。summary 由本结果一次性
+// 构造——调用方不能传入期望计数。
+interface CaptureBuildResult {
+  content: CaptureContent;
+  stats: {
+    headingCount: number; // 只在非空 heading 的完整 unit admission 分支递增
+  };
 }
+
+// 闭合 admission 结果（C4 Replan）：canonical 写入、projection 和 stats 只能由
+// 同一次结果驱动，禁止事后用 includes/substring/slice 反推结构是否成立。
+// - skipped-empty：值不合法/空/纯空白 → 零写入、零登记，不阻塞后续 unit。
+// - rejected-budget：eligible 但预算不足 → 零写入、零登记，并停止后续 unit
+//   （atomic unit 不允许残缺 fragment；canonicalText 可小于 60k，不用残缺标签填满）。
+// - full：整 unit 完整写入。
+// - partial-visible：仅 visibleText 允许；写完整 prefix + surrogate-safe payload，
+//   不写 newline；登记精确 admittedPayload。
+type AdmissionResult =
+  | { kind: 'skipped-empty' }
+  | { kind: 'rejected-budget' }
+  | { kind: 'full'; serialized: string }
+  | { kind: 'partial-visible'; serialized: string; admittedPayload: string };
 
 // ---------- 读取结果（决议 #125：冻结判别联合，禁 throw 作预期失败控制流） ----------
 
@@ -173,6 +184,7 @@ function serializeTable(table: CaptureTable): string {
 // 有类型标签、顺序固定的 canonicalText 串行格式。按条目追加；超预算的条目
 // 截断（surrogate-safe）后停止——之后的一切（表格/字段/章节）零保留
 // （决议 #128：预算耗尽后不得保留「未进入哈希」的内容）。
+// 语义保留：边界落在 high surrogate 上时整 pair 回退（不拆有效 surrogate pair）。
 function truncateSurrogateSafe(text: string, max: number): string {
   if (text.length <= max) return text;
   let end = max;
@@ -181,74 +193,90 @@ function truncateSurrogateSafe(text: string, max: number): string {
   return text.slice(0, end);
 }
 
-export function buildCaptureContent(
-  snapshot: PageSnapshot,
-  captureId: string,
-): CaptureContentBuild {
+// 统一 admission：budget 状态（canonical 已写入长度 + 是否已耗尽）。
+interface BudgetState {
+  canonical: string;
+  exhausted: boolean;
+}
+
+// visibleText 专用 partial admission（Contract：唯一允许 partial payload 的 unit）。
+// - prefix 未完整进入或没有一个 surrogate-safe payload 字符可进入 → 零写入、零登记。
+// - payload 部分进入 → 写完整 prefix + 安全 payload，不写 newline，登记精确 admittedPayload。
+// - exact/full → 整 unit 写入（含 newline）并登记完整 payload。
+function admitVisible(state: BudgetState, visible: string, budget: number): AdmissionResult {
+  if (state.exhausted) return { kind: 'rejected-budget' };
+  const prefix = '[text] ';
+  const remaining = budget - state.canonical.length;
+  if (remaining < prefix.length) return { kind: 'skipped-empty' }; // prefix 未完整进入
+  const line = prefix + visible + '\n';
+  if (line.length <= remaining) {
+    state.canonical += line;
+    return { kind: 'full', serialized: line };
+  }
+  const admittedPayload = truncateSurrogateSafe(visible, remaining - prefix.length);
+  if (admittedPayload === '') return { kind: 'skipped-empty' }; // 无 payload 字符可进入
+  const serialized = prefix + admittedPayload;
+  state.canonical += serialized;
+  return { kind: 'partial-visible', serialized, admittedPayload };
+}
+
+// 原子 unit admission（heading/link/table/field）：eligible 且整 unit 可容纳才写入；
+// 否则零写入、零登记，并停止后续预算 admission。禁止残缺 fragment。
+function admitAtomic(state: BudgetState, line: string, budget: number): AdmissionResult {
+  if (state.exhausted) return { kind: 'rejected-budget' };
+  const remaining = budget - state.canonical.length;
+  if (line.length > remaining) return { kind: 'rejected-budget' };
+  state.canonical += line;
+  return { kind: 'full', serialized: line };
+}
+
+// 内部构建（含 internal stats）。导出的 buildCaptureContent 只取 .content（五字段）；
+// summary 由 CaptureService 从本结果一次性构造。
+function buildCaptureInternal(snapshot: PageSnapshot, captureId: string): CaptureBuildResult {
   const budget = MAX_PAGE_CAPTURE_CHARS;
+  const state: BudgetState = { canonical: '', exhausted: false };
   const textSections: string[] = [];
   const tables: CaptureTable[] = [];
   const fields: Record<string, string> = {};
-  let canonical = '';
-  let exhausted = false;
   let headingCount = 0;
-  // 追加一个条目行；返回实际追加的文本（null=已耗尽，string=实际追加内容，可能截断）
-  const append = (line: string): string | null => {
-    if (exhausted) return null;
-    if (line.length > budget - canonical.length) {
-      const remaining = budget - canonical.length;
-      if (remaining <= 0) {
-        exhausted = true;
-        return null;
-      }
-      const truncated = truncateSurrogateSafe(line, remaining);
-      canonical += truncated;
-      exhausted = true;
-      return truncated;
-    }
-    canonical += line;
-    return line;
-  };
 
-  // 1. visibleText（第一个 text section）
-  // 契约允许部分截断：暴露值必须与实际已经进入 canonicalText 的 payload 精确一致。
-  // 截断时 \n 不会进入 canonicalText（truncateSurrogateSafe 在 \n 之前截断）；
-  // 完整写入时 \n 进入。因此根据 added 是否以 \n 结尾决定切片终点：
-  // - endsWith('\n') → slice(7, -1) 移除前缀和 \n
-  // - 否则 → slice(7) 移除前缀，保留全部已进入 hash 的 payload（不删真实字符）
-  // surrogate-safe：truncateSurrogateSafe 已保证 added 不以 unpaired high surrogate 结尾；
-  // slice(7) 不会拆分 pair（只在 prefix 之后取连续子串）。
+  // 1. visibleText（第一个 text section；唯一允许 partial payload）
   const visible = normalizeCaptureText(snapshot.visibleText ?? '');
   if (visible !== '') {
-    const added = append(`[text] ${visible}\n`);
-    if (added !== null) {
-      const exposed = added.endsWith('\n') ? added.slice(7, -1) : added.slice(7);
-      if (exposed !== '') {
-        textSections.push(exposed);
-      }
+    const r = admitVisible(state, visible, budget);
+    if (r.kind === 'full') {
+      textSections.push(visible);
+    } else if (r.kind === 'partial-visible') {
+      textSections.push(r.admittedPayload);
+    } else if (r.kind === 'rejected-budget') {
+      state.exhausted = true;
     }
+    // skipped-empty：零登记、不阻塞
   }
 
-  // 2. headings（快照顺序）
-  // 原子接纳：仅当完整 heading 行写入后才登记 textSection 并计数 headingCount。
-  // 部分写入（标签/部分 payload/缺换行）不登记、不计数——不用 includes 子串匹配。
+  // 2. headings（快照顺序；空/纯空白跳过且不阻塞后续）
   const headings = Array.isArray(snapshot.headings) ? snapshot.headings : [];
   for (const heading of headings) {
     const text = normalizeCaptureText(heading.text);
     if (text === '') continue;
     const line = `[heading] ${text}\n`;
-    const added = append(line);
-    if (added === null) break;
-    if (added === line) {
+    const r = admitAtomic(state, line, budget);
+    if (r.kind === 'full') {
       textSections.push(text);
       headingCount += 1;
+    } else if (r.kind === 'rejected-budget') {
+      state.exhausted = true;
+      break; // 停止后续 unit
     }
   }
 
-  // 3. tables（表头 + row-major 单元格；预算内整表保留，否则整表丢弃）
+  // 3. tables（表头 + row-major 单元格；整表原子保留，否则整表零写入）
+  // eligibility：至少一个非空规范化 header/cell 才 eligible；全空表整表跳过
+  // （canonicalText/tables/textSections/fields/tableCount 全零、不阻塞后续）。
+  // 空 header 可在有意义表格中作列位置占位保留；空 row/cell 保留几何但不复制到 fields。
+  // 表格索引以「已登记 tables 数组」生成（被跳过空表不造成 tables[1] 空洞）。
   const rawTables = Array.isArray(snapshot.tables) ? snapshot.tables : [];
-  for (let i = 0; i < rawTables.length; i++) {
-    const raw = rawTables[i];
+  for (const raw of rawTables) {
     if (raw === undefined || raw === null) continue;
     const headers = (Array.isArray(raw.headers) ? raw.headers : []).map((h) =>
       normalizeCaptureText(String(h)),
@@ -256,42 +284,48 @@ export function buildCaptureContent(
     const rows = (Array.isArray(raw.rows) ? raw.rows : []).map((row) =>
       (Array.isArray(row) ? row : []).map((c) => normalizeCaptureText(String(c))),
     );
+    const hasNonEmpty =
+      headers.some((h) => h !== '') || rows.some((row) => row.some((c) => c !== ''));
+    if (!hasNonEmpty) continue; // 全空表：整表跳过
     const table: CaptureTable = { headers, rows };
     const tableSection = normalizeCaptureText(serializeTable(table));
     const line = `[table] ${tableSection}\n`;
-    // 整表追加或整表丢弃：预算内先试追加，成功后登记
-    if (canonical.length + line.length > budget) {
-      exhausted = true;
+    const r = admitAtomic(state, line, budget);
+    if (r.kind === 'full') {
+      const admittedIndex = tables.length; // 已登记索引（紧凑）
+      tables.push(table);
+      textSections.push(tableSection);
+      rows.forEach((row, rIdx) => {
+        row.forEach((cell, cIdx) => {
+          if (cell === '') return; // 空 cell 不复制到 fields（几何仍保留在 tables）
+          fields[`tables[${admittedIndex}].cell[${rIdx}][${cIdx}]`] = cell;
+        });
+      });
+    } else if (r.kind === 'rejected-budget') {
+      state.exhausted = true;
       break; // 后续表格/章节/字段零保留
     }
-    canonical += line;
-    tables.push(table);
-    textSections.push(tableSection);
-    // 固定索引表格字段路径（仅预算内保留的表格）
-    rows.forEach((row, r) => {
-      row.forEach((cell, c) => {
-        fields[`tables[${i}].cell[${r}][${c}]`] = cell;
-      });
-    });
   }
 
-  // 4. links（快照顺序）
-  // 原子接纳：仅当完整 link 行写入后才登记 text。不用 includes 子串匹配——
-  // added === line 保证 text 和 url 都完整进入 canonicalText。
+  // 4. links（快照顺序；原子接纳。text 空/纯空白或 URL 空 → 跳过整个 link unit）
   const links = Array.isArray(snapshot.links) ? snapshot.links : [];
   for (const link of links) {
     const text = normalizeCaptureText(link.text);
     if (text === '') continue;
     const url = normalizeUrlText(link.href);
+    if (url === '') continue; // 防御：空 URL → 不可登记 link
     const line = `[link] ${text} ${url}\n`;
-    const added = append(line);
-    if (added === null) break;
-    if (added === line) {
+    const r = admitAtomic(state, line, budget);
+    if (r.kind === 'full') {
       textSections.push(text);
+    } else if (r.kind === 'rejected-budget') {
+      state.exhausted = true;
+      break;
     }
   }
 
-  // 5. 闭合字段（固定键序；所有字段值必须实际进入 canonicalText）
+  // 5. 闭合字段（固定键序；key 必须来自闭合编译期集合，value 规范化后非空；
+  //    整 unit 可容纳才写入并登记 fields）
   const link0 = links[0];
   const pageUrl = normalizeUrlText(snapshot.url);
   const pageTitle = normalizeCaptureText(snapshot.title);
@@ -310,32 +344,30 @@ export function buildCaptureContent(
     if (h !== '') fieldEntries.push(['links[0].href', h]);
   }
   for (const [key, value] of fieldEntries) {
+    if (value === '') continue; // 空/纯空白 value → 不产生 field unit
     const line = `[field] ${key}=${value}\n`;
-    const added = append(line);
-    if (added === null) break;
-    // 仅当完整行写入后才登记 field（部分写入时 value 未完全进入哈希）
-    if (added === line) {
+    const r = admitAtomic(state, line, budget);
+    if (r.kind === 'full') {
       fields[key] = value;
+    } else if (r.kind === 'rejected-budget') {
+      state.exhausted = true;
+      break;
     }
   }
 
-  return {
+  const content: CaptureContent = {
     captureId,
-    canonicalText: canonical,
+    canonicalText: state.canonical,
     textSections,
     tables,
     fields,
-    headingCount,
   };
+  return { content, stats: { headingCount } };
 }
 
-export function buildCaptureSummary(content: CaptureContent, headingCount: number): CaptureSummary {
-  return {
-    sectionCount: content.textSections.length,
-    tableCount: content.tables.length,
-    headingCount,
-    charCount: content.canonicalText.length,
-  };
+// 导出纯函数（供单测）：只返回精确五字段 CaptureContent（stats 不进入运行时对象）。
+export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): CaptureContent {
+  return buildCaptureInternal(snapshot, captureId).content;
 }
 
 // ---------- CaptureService ----------
@@ -671,9 +703,10 @@ export class CaptureService {
       }
 
       // 7. 成功 Capture 组装（主进程盖章）
-      const built = buildCaptureContent(snapshot, captureId);
-      // headingCount 从真实接纳记录产生（buildCaptureContent 构造期跟踪），
-      // 不经 canonicalText.includes 子串扫描推断——避免跨块字面碰撞误判
+      // C4 Replan：canonical 写入、projection、stats 来自同一次闭合 admission 结果。
+      // summary 由内部 build result（content + stats）一次性构造——禁止扫描
+      // canonicalText、禁止按原始 snapshot 数量计数、禁止调用方传入期望数字。
+      const built = buildCaptureInternal(snapshot, captureId);
       const capture: Capture = {
         captureId,
         taskId: this.workspace.taskId,
@@ -683,15 +716,20 @@ export class CaptureService {
         title: normalizeCaptureText(snapshot.title),
         accessTime: new Date(snapshot.meta.capturedAt).toISOString(),
         documentId: String(snapshot.meta.documentId),
-        contentHash: sha256hex(built.canonicalText),
-        summary: buildCaptureSummary(built, built.headingCount),
+        contentHash: sha256hex(built.content.canonicalText),
+        summary: {
+          sectionCount: built.content.textSections.length,
+          tableCount: built.content.tables.length,
+          headingCount: built.stats.headingCount,
+          charCount: built.content.canonicalText.length,
+        },
         failed: false,
         failureReason: null,
       };
       if (degraded === 'partial') {
         warnings.push('页面快照为部分采集（L1 降级），引用验证仅覆盖已采集内容');
       }
-      outcome = { capture, content: built, retryable: false, warnings };
+      outcome = { capture, content: built.content, retryable: false, warnings };
       return outcome;
     } finally {
       // 8. finally release（每次尝试恰好一次；失败不误报清理）。release 报
