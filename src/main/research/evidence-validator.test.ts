@@ -216,7 +216,7 @@ describe('EvidenceValidator.verify（决议 #130 校验顺序）', () => {
   });
 
   it('超预算正文尾部不可作为证据（未进入 contentHash 覆盖）', () => {
-    // visibleText 前 60k 为"长"、后 10k 为"尾"——"尾"序列在原始输入中但超出 60k 预算
+    // visibleText: the first 60k are "长", the last 10k are "尾" — the "尾" run exists in the raw input but is beyond the 60k budget
     const visibleText = '长'.repeat(60_000) + '尾'.repeat(10_000);
     const snapshot: PageSnapshot = {
       url: 'https://example.com/article',
@@ -235,7 +235,7 @@ describe('EvidenceValidator.verify（决议 #130 校验顺序）', () => {
       },
     };
     const content = buildCaptureContent(snapshot, CAPTURE_ID);
-    // tailExcerpt 是原始快照中"尾"字符序列（位于预算外），旧实现会错误接受
+    // tailExcerpt is the "尾" character run from the raw snapshot (outside the budget); the old implementation wrongly accepted it
     const tailExcerpt = '尾'.repeat(100);
     const result = verifyEvidence(
       makeInput({
@@ -832,8 +832,9 @@ describe('EvidenceValidator 通用（决议 #130）', () => {
 
 describe('C4 Replan：跨 block 相同字面碰撞（canonical 子串不能伪造 table/field Evidence）', () => {
   it('R-EVIDENCE-COLLISION canonicalText 含 table 格式字面但无真实表格 → table Evidence 拒绝', () => {
-    // visibleText 含 '[table] 名称|价格|甲|100|乙|200' 字面（作为普通文本进入 textSections），
-    // 但快照无真实 tables → content.tables 为空。proposal 引用 tableIndex=0 → 拒绝。
+    // visibleText literally contains '[table] 名称|价格|甲|100|乙|200' (entering
+    // textSections as plain text), but the snapshot has no real tables →
+    // content.tables is empty. A proposal referencing tableIndex=0 is rejected.
     const snap = normalizeSnapshot(
       {
         ok: true,
@@ -848,7 +849,7 @@ describe('C4 Replan：跨 block 相同字面碰撞（canonical 子串不能伪�
       { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
     );
     const content = buildCaptureContent(snap, CAPTURE_ID);
-    // 字面确实进入了 textSections（canonical 子串成立），但 tables 为空
+    // the literal did enter textSections (the canonical substring holds), but tables is empty
     expect(content.textSections.some((s) => s.includes('甲'))).toBe(true);
     expect(content.tables).toHaveLength(0);
     const result = verifyEvidence(
@@ -868,8 +869,10 @@ describe('C4 Replan：跨 block 相同字面碰撞（canonical 子串不能伪�
   });
 
   it('R-EVIDENCE-FIELD-COLLISION canonicalText 含 [field] 字面但 fields map 无该项 → field Evidence 拒绝', () => {
-    // 快照无 heading/link，但 title 为空 → fields 无 page.title；页面正文恰好含
-    // '[field] page.title=伪造标题' 字面 → 不能靠 canonical 子串产生 field Evidence。
+    // the snapshot has no heading/link and an empty title → fields has no
+    // page.title; the page body happens to contain the literal
+    // '[field] page.title=伪造标题' → field Evidence cannot be forged from a
+    // canonical substring.
     const snap = normalizeSnapshot(
       {
         ok: true,
@@ -903,10 +906,277 @@ describe('C4 Replan：跨 block 相同字面碰撞（canonical 子串不能伪�
   });
 });
 
+describe("C4 Repair B: empty table-cell fail-closed（决议 #173，realCell === '' → value-invalid）", () => {
+  // Red-state oracle (baseline f38fb4d is fail-open): when the trusted real
+  // cell normalizes to '' at valid coordinates, every excerpt/value combination
+  // (including both null) must be value-invalid and no VerifiedEvidence may be
+  // assembled. The empty-cell check happens before proposal matching.
+
+  // A meaningful table with an explicitly empty cell (geometry kept, no field,
+  // geometry covered by canonical).
+  function emptyCellContent(): CaptureContent {
+    return {
+      captureId: CAPTURE_ID,
+      canonicalText: '[table] A|B|x|\n',
+      textSections: [],
+      tables: [makeTable(['A', 'B'], [['x', '']])],
+      fields: { 'tables[0].cell[0][0]': 'x' }, // empty cell: no field entry
+    };
+  }
+
+  // Real normalize path: a short row is padded with '' by normalize
+  function paddingCellContent(): CaptureContent {
+    const snap = normalizeSnapshot(
+      {
+        ok: true,
+        url: 'https://example.com/article',
+        title: '文章标题',
+        visibleText: '',
+        headings: [],
+        links: [],
+        buttons: [],
+        tables: [{ headers: ['A', 'B'], rows: [['x']] }], // short row → col1 padded with ''
+      },
+      { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
+    );
+    return buildCaptureContent(snap, CAPTURE_ID);
+  }
+
+  // whitespace/control/bidi normalizes to empty (explicitly blank on the page)
+  function normalizedEmptyCellContent(): CaptureContent {
+    const snap = normalizeSnapshot(
+      {
+        ok: true,
+        url: 'https://example.com/article',
+        title: '文章标题',
+        visibleText: '',
+        headings: [],
+        links: [],
+        buttons: [],
+        tables: [{ headers: ['A', 'B'], rows: [['x', ' \t ​‮ ']] }],
+      },
+      { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
+    );
+    return buildCaptureContent(snap, CAPTURE_ID);
+  }
+
+  const EMPTY = { kind: 'table', tableIndex: 0, row: 0, col: 1, header: null };
+  const PADDING = { kind: 'table', tableIndex: 0, row: 0, col: 1, header: null };
+
+  function cellInput(content: CaptureContent, locator: unknown): EvidenceVerifyInput {
+    return makeInput({
+      contents: new Map([[CAPTURE_ID, content]]),
+      proposal: {
+        captureId: CAPTURE_ID,
+        candidateId: CANDIDATE_ID,
+        type: 'table-cell',
+        locator,
+        excerpt: '',
+        value: '',
+      },
+    });
+  }
+
+  it("E1 explicit empty cell：excerpt:'' + value:'' → value-invalid", () => {
+    const r = verifyEvidence(cellInput(emptyCellContent(), EMPTY));
+    expectRejected(r, 'value-invalid');
+  });
+
+  it("E2 explicit empty cell：excerpt:'' + value:null → value-invalid", () => {
+    const r = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, emptyCellContent()]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'table-cell',
+          locator: EMPTY,
+          excerpt: '',
+          value: null,
+        },
+      }),
+    );
+    expectRejected(r, 'value-invalid');
+  });
+
+  it("E3 explicit empty cell：excerpt:null + value:'' → value-invalid", () => {
+    const r = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, emptyCellContent()]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'table-cell',
+          locator: EMPTY,
+          excerpt: null,
+          value: '',
+        },
+      }),
+    );
+    expectRejected(r, 'value-invalid');
+  });
+
+  it('E4 explicit empty cell：excerpt:null + value:null → value-invalid', () => {
+    const r = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, emptyCellContent()]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'table-cell',
+          locator: EMPTY,
+          excerpt: null,
+          value: null,
+        },
+      }),
+    );
+    expectRejected(r, 'value-invalid');
+  });
+
+  it("E5 real normalize 短行 padding cell（col1 补齐 ''）→ value-invalid", () => {
+    const content = paddingCellContent();
+    // fixture check: normalize pads the short row with ''
+    expect(content.tables[0]!.rows[0]).toEqual(['x', '']);
+    const r = verifyEvidence(cellInput(content, PADDING));
+    expectRejected(r, 'value-invalid');
+  });
+
+  it('E6 whitespace/control/bidi 规范化为空 cell → value-invalid', () => {
+    const content = normalizedEmptyCellContent();
+    // fixture check: the cell normalizes to empty
+    expect(content.tables[0]!.rows[0]![1]).toBe('');
+    const r = verifyEvidence(cellInput(content, PADDING));
+    expectRejected(r, 'value-invalid');
+  });
+
+  it('E7 value-invalid 使用安全中性中文 reason（table/field 均适用，不回显正文）', () => {
+    const reason = REJECTION_REASONS['value-invalid'];
+    expect(reason.length).toBeGreaterThan(0);
+    expect(reason.length).toBeLessThanOrEqual(200);
+    // safely neutral: applies to both table/field, no empty-value body echo
+    expect(reason).toMatch(/值/);
+    expect(reason).not.toMatch(/字段|单元格/); // not specific to a single channel
+    const r = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, emptyCellContent()]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'table-cell',
+          locator: { kind: 'table', tableIndex: 0, row: 0, col: 0, header: null },
+          excerpt: 'x',
+          value: 'x',
+        },
+      }),
+    );
+    expect(r.ok).toBe(true); // non-empty cell still verified (control group, no over-reach)
+    const rejected = verifyEvidence(cellInput(emptyCellContent(), EMPTY));
+    if (!rejected.ok) {
+      expect(rejected.reason).not.toContain('example.com');
+      expect(rejected.reason).not.toContain('x');
+    }
+  });
+
+  it('E8 empty cell field path 恒 field-path-invalid（空 cell 不上 fields）', () => {
+    const r = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, emptyCellContent()]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'field',
+          locator: { kind: 'field', fieldPath: 'tables[0].cell[0][1]' }, // empty-cell path
+          excerpt: '',
+          value: '',
+        },
+      }),
+    );
+    expectRejected(r, 'field-path-invalid');
+  });
+
+  it('E9 empty header + nonempty cell → verified 且 header:null（几何占位保留，不受空 cell 收紧影响）', () => {
+    const snap = normalizeSnapshot(
+      {
+        ok: true,
+        url: 'https://example.com/article',
+        title: '文章标题',
+        visibleText: '',
+        headings: [],
+        links: [],
+        buttons: [],
+        tables: [{ headers: ['  '], rows: [['非空单元格']] }],
+      },
+      { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
+    );
+    const content = buildCaptureContent(snap, CAPTURE_ID);
+    const r = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, content]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'table-cell',
+          locator: { kind: 'table', tableIndex: 0, row: 0, col: 0, header: null },
+          excerpt: '非空单元格',
+          value: '非空单元格',
+        },
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.evidence.locator).toEqual({
+        kind: 'table',
+        tableIndex: 0,
+        row: 0,
+        col: 0,
+        header: null,
+      });
+    }
+  });
+
+  it('E10 nonempty table-cell 保持 verified（正常路径不回归）', () => {
+    const r = verifyEvidence(
+      makeInput({
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'table-cell',
+          locator: { kind: 'table', tableIndex: 0, row: 0, col: 0, header: null },
+          excerpt: '甲',
+          value: '甲',
+        },
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.evidence.excerpt).toBe('甲');
+      expect(r.evidence.value).toBe('甲');
+    }
+  });
+
+  it('E11 nonempty field 保持 verified（field 通道不受影响）', () => {
+    const r = verifyEvidence(
+      makeInput({
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'field',
+          locator: { kind: 'field', fieldPath: 'page.title' },
+          excerpt: '文章标题',
+          value: '文章标题',
+        },
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+});
+
 describe('C4 Replan：normalize 后空 header 占位 → Evidence header null', () => {
   it('R-EVIDENCE-EMPTY-HEADER 真实 normalize 空表头 → VerifiedEvidence.locator.header = null', () => {
-    // 空表头 + 非空数据行经真实 snapshot-normalize + buildCaptureContent：
-    // 表格保留（有非空 cell）、headers 为空占位 [''] → Evidence 输出 header 必须 null
+    // An empty header + non-empty data row through the real
+    // snapshot-normalize + buildCaptureContent: the table is kept (it has a
+    // non-empty cell) with headers as the [''] placeholder → the Evidence
+    // output header must be null
     const snap = normalizeSnapshot(
       {
         ok: true,

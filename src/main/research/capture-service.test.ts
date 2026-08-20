@@ -922,22 +922,22 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
       ],
     });
     const content = buildCaptureContent(snapshot, 'cap-1');
-    // 每个 textSection 必须是 canonicalText 的连续子串
+    // every textSection must be a contiguous substring of canonicalText
     for (const section of content.textSections) {
       expect(content.canonicalText.includes(section)).toBe(true);
     }
-    // 预算外 heading 不应出现在 textSections 中
+    // an out-of-budget heading must not appear in textSections
     expect(content.textSections.some((s) => s.includes('预算外标题'))).toBe(false);
-    // 预算外链接文本不应出现在 textSections 中
+    // out-of-budget link text must not appear in textSections
     expect(content.textSections.some((s) => s.includes('预算外链接'))).toBe(false);
-    // canonicalText 长度 ≤ 预算
+    // canonicalText length ≤ budget
     expect(content.canonicalText.length).toBeLessThanOrEqual(MAX_PAGE_CAPTURE_CHARS);
   });
 
   it('heading 预算边界：预算在 heading 行内耗尽时该 heading 不进入 textSections、零 fragment、canonical 可小于 60k', () => {
-    // 预算 = 60000；[text] 标签长 7；正文填至 59994，余 6 字节
-    // [heading] 完整\n = 13 字节 > 6 → 原子拒绝：零 fragment（不再写 `[head` 残缺行）、
-    // 不登记 section、不计数；canonical 停在 [text] 完整写入处 59994
+    // budget = 60000; [text] tag is 7 chars; body fills to 59994, leaving 6
+    // [heading] 完整\n = 13 chars > 6 → atomic reject: zero fragment (no broken `[head` line),
+    // no section, no count; canonical stops after the complete [text] line at 59994
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 6); // 59986
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -946,11 +946,11 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
       links: [],
     });
     const content = buildCaptureContent(snapshot, 'cap-1');
-    // 完整 heading 文本不应出现在 textSections 中
+    // the full heading text must not appear in textSections
     expect(content.textSections.some((s) => s.includes('完整'))).toBe(false);
-    // 不存在空 section
+    // no empty section exists
     expect(content.textSections.some((s) => s === '')).toBe(false);
-    // 原子拒绝零写入残缺 fragment：canonical 停在 [text] 完整行（59986+8=59994）
+    // atomic reject writes no broken fragment: canonical stops at the complete [text] line (59986+8=59994)
     expect(content.canonicalText).not.toContain('[heading]');
     expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS - 6);
   });
@@ -965,15 +965,15 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     });
     const content = buildCaptureContent(snapshot, 'cap-1');
     expect(content.textSections.some((s) => s.includes('链接文本'))).toBe(false);
-    // 原子拒绝零写入残缺 fragment
+    // atomic reject writes no broken fragment
     expect(content.canonicalText).not.toContain('[link]');
     expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS - 6);
   });
 
   it('link 标签子串碰撞防御：text="link" 且预算仅够标签前缀时，textSections 不得登记、零 fragment', () => {
-    // 预算 = 60000；[text] 标签长 7；正文填至 59995，余 5 字节
-    // [link] link url\n = 34 字节 > 5 → 原子拒绝：不写残缺 `[link`（旧 added.includes('link')
-    // 会误匹配标签前缀）、零 fragment、零登记
+    // budget = 60000; [text] tag is 7 chars; body fills to 59995, leaving 5
+    // [link] link url\n = 34 chars > 5 → atomic reject: no broken `[link` (the old added.includes('link')
+    // would falsely match the tag prefix), zero fragment, zero registration
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 5); // 59987
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -982,20 +982,20 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
       links: [{ id: 'el-1', text: 'link', href: 'https://example.com/x' }],
     });
     const content = buildCaptureContent(snapshot, 'cap-1');
-    // link 文本 "link" 只是标签前缀的一部分，不是来源 payload，不得进入 textSections
+    // link text "link" is only part of the tag prefix, not source payload, and must not enter textSections
     expect(content.textSections.some((s) => s === 'link')).toBe(false);
     expect(content.textSections.some((s) => s.includes('link'))).toBe(false);
-    // 原子拒绝零写入残缺 fragment
+    // atomic reject writes no broken fragment
     expect(content.canonicalText).not.toContain('[link]');
     expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS - 5);
   });
 
   it('field 部分写入原子性：field 行截断时该 field 不登记、零 fragment', () => {
-    // 预算 = 60000；[text] 标签 7 字节；正文填至 59988，余 12 字节
-    // 无 heading/table/link 干扰，field 行是下一个条目
-    // [field] page.url=https://example.com/article\n = 45 字节 > 12 → 原子拒绝：
-    // 零 fragment（不再写 `[field] page.` 残缺行）、零 fields entry；
-    // canonical 停在 [text] 完整写入处（59980+8=59988）
+    // budget = 60000; [text] tag is 7 chars; body fills to 59988, leaving 12
+    // no heading/table/link interference; the field line is the next entry
+    // [field] page.url=https://example.com/article\n = 45 chars > 12 → atomic reject:
+    // zero fragment (no broken `[field] page.` line), zero fields entry;
+    // canonical stops after the complete [text] line (59980+8=59988)
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 12); // 59980
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -1004,18 +1004,18 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
       links: [],
     });
     const content = buildCaptureContent(snapshot, 'cap-1');
-    // 原子拒绝 → 零写入残缺 fragment → fields 不登记
+    // atomic reject → no broken fragment written → fields not registered
     expect('page.url' in content.fields).toBe(false);
     expect('page.title' in content.fields).toBe(false);
-    // 原子拒绝零写入残缺 fragment：canonical 不含 [field] 标签
+    // atomic reject writes no broken fragment: canonical has no [field] tag
     expect(content.canonicalText).not.toContain('[field]');
     expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS - 12);
   });
 
   it('field 恰好装满：field 行完整写入时该 field 正确登记', () => {
-    // 预算 = 60000；[text] 标签 7 字节；正文填至 59953，余 47 字节
-    // [field] page.url=https://example.com/article\n = 47 字节 → 刚好放下
-    // [field] page.title=文章标题\n = 23 字节 → 总和 70 > 47，放不下
+    // budget = 60000; [text] tag is 7 chars; body fills to 59953, leaving 47
+    // [field] page.url=https://example.com/article\n = 47 chars → exact fit
+    // [field] page.title=文章标题\n = 23 chars → total 70 > 47, does not fit
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 47); // 59945
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -1026,13 +1026,13 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     const content = buildCaptureContent(snapshot, 'cap-1');
     expect('page.url' in content.fields).toBe(true);
     expect(content.fields['page.url']).toBe('https://example.com/article');
-    // page.title 行写不下，不登记
+    // the page.title line does not fit; not registered
     expect('page.title' in content.fields).toBe(false);
     expect(content.canonicalText.length).toBeLessThanOrEqual(MAX_PAGE_CAPTURE_CHARS);
   });
 
   it('heading 仅标签、部分 payload、完整 payload 缺换行的边界均不产生空或部分 section', () => {
-    // 场景 A：仅标签（[heading] 开头 10 字节，无 payload）
+    // Case A: tag only ([heading] start is 10 chars, no payload)
     const prefix10 = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 0); // 59992
     const snapA = makeSnapshot({
       visibleText: prefix10,
@@ -1044,7 +1044,7 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     expect(contentA.textSections.some((s) => s === '')).toBe(false);
     expect(contentA.textSections.some((s) => s.includes('仅标签'))).toBe(false);
 
-    // 场景 B：部分 payload ([heading] 标题\n = 13 字节，剩余 12 字节刚够标签+1 字符)
+    // Case B: partial payload ([heading] 标题\n = 13 chars, the 12 remaining fit the tag + 1 char)
     const prefix11 = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 12); // 59980
     const snapB = makeSnapshot({
       visibleText: prefix11,
@@ -1053,11 +1053,11 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
       links: [],
     });
     const contentB = buildCaptureContent(snapB, 'cap-b');
-    // 截断为 `[heading] 标`（12 字节），非完整行 → 不进入 textSections
+    // truncated to `[heading] 标` (12 chars), not a complete line → not in textSections
     expect(contentB.textSections.some((s) => s.includes('标题'))).toBe(false);
     expect(contentB.textSections.some((s) => s === '')).toBe(false);
 
-    // 场景 C：完整 payload 恰写满 ([heading] 标题\n = 13 字节)
+    // Case C: complete payload exactly fills ([heading] 标题\n = 13 chars)
     const prefix12 = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 13); // 59979
     const snapC = makeSnapshot({
       visibleText: prefix12,
@@ -1071,7 +1071,7 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
   });
 
   it('table 原子保留：装不下整表时整个丢弃，不多不少一字符时整表保留', () => {
-    // 场景 A：装不下（差 1 字节）
+    // Case A: does not fit (1 char short)
     const table = makeSnapshot().tables![0]!;
     const tableSection = normalizeCaptureText(
       `${table.headers.join('|')} | ${table.rows.map((r) => r.join('|')).join(' | ')}`,
@@ -1087,7 +1087,7 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     const contentA = buildCaptureContent(snapA, 'cap-a');
     expect(contentA.tables).toHaveLength(0);
 
-    // 场景 B：恰好装满
+    // Case B: exact fit
     const prefixJust = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - tableLine.length); // 59968
     const snapB = makeSnapshot({
       visibleText: prefixJust,
@@ -1101,9 +1101,9 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
   });
 
   it('field 在标签/key/=/value/换行各位置截断的精确矩阵（基于真实 serialized 长度 45）', () => {
-    // [field] page.url=https://example.com/article\n = 45 字节
-    // 截断位置：5（标签中）、8（标签完无 key）、12（key 中）、16（key 完无 =）、
-    // 17（= 完无 value）、18（value 中）、44（value 完无 newline）→ 全不登记
+    // [field] page.url=https://example.com/article\n = 45 chars
+    // truncation positions: 5 (inside tag), 8 (tag done, no key), 12 (inside key), 16 (key done, no =),
+    // 17 (= done, no value), 18 (inside value), 44 (value done, no newline) → none registered
     for (const remaining of [5, 8, 12, 16, 17, 18, 44]) {
       const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - remaining);
       const snap = makeSnapshot({
@@ -1116,7 +1116,7 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
       expect('page.url' in content.fields).toBe(false);
       expect('page.title' in content.fields).toBe(false);
     }
-    // 精确容纳（remaining = 45）→ 登记 page.url；page.title 行（24 字节）放不下
+    // exact fit (remaining = 45) → page.url registered; the page.title line (24 chars) does not fit
     const prefix45 = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 45);
     const snap45 = makeSnapshot({
       visibleText: prefix45,
@@ -1131,7 +1131,7 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
   });
 
   it('所有条目类型在预算边界上的综合验证：textSections/tables/fields 全部在 canonicalText 哈希内', () => {
-    // 预算 = 60000；[text] 7 字节；正文填至 59990，余 10 字节
+    // budget = 60000; [text] is 7 chars; body fills to 59990, leaving 10
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 10); // 59982
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -1142,11 +1142,11 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
       links: [],
     });
     const content = buildCaptureContent(snapshot, 'cap-1');
-    // 所有 textSections 都是 canonicalText 连续子串
+    // every textSection is a contiguous substring of canonicalText
     for (const section of content.textSections) {
       expect(content.canonicalText.includes(section)).toBe(true);
     }
-    // 所有 tables 的值都在 canonicalText 中
+    // every table value is inside canonicalText
     for (const table of content.tables) {
       for (const h of table.headers) {
         expect(content.canonicalText.includes(h)).toBe(true);
@@ -1157,7 +1157,7 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
         }
       }
     }
-    // 所有 fields 的值都在 canonicalText 中
+    // every field value is inside canonicalText
     for (const value of Object.values(content.fields)) {
       expect(content.canonicalText.includes(value)).toBe(true);
     }
@@ -1182,34 +1182,34 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     expect(content.textSections.length).toBe(1 + 2 + 1 + 2);
     expect(content.tables.length).toBe(1); // 1 个表格，不是 6 个单元格
     expect(content.canonicalText.length).toBeGreaterThan(0);
-    // summary 由内部 build result 一次性构造（不手工传入 headingCount 数字、
-    // 不调用独立 summary helper）——见 C4 Replan「summary 来源真实 service build facts」
-    // describe 中的真实 CaptureService.read() 断言。buildCaptureContent 返回精确五字段，
-    // 不携带 headingCount。
+    // the summary is built once from the internal build result (no hand-supplied headingCount,
+    // no separate summary helper) — see the C4 Replan "summary comes from real service build facts"
+    // describe block asserting through real CaptureService.read(). buildCaptureContent returns the exact five fields,
+    // without carrying headingCount.
     expect('headingCount' in content).toBe(false);
   });
 });
 
-// ---------- 统一 admission 不变量（第三轮修复红态 oracle） ----------
+// ---------- unified admission invariant (third-round repair red-state oracle) ----------
 //
-// 不变量：任何暴露给 EvidenceValidator 或 summary 的结构化值，只有在代表它的
-// 完整 serialization unit 已经被预算完整接纳时，才能登记。
-// visibleText 例外：契约允许部分截断，但暴露值必须与实际已经进入 canonicalText
-// 的 payload 精确一致（不因缺换行而删除真实 payload 字符、surrogate-safe）。
+// Invariant: a structured value exposed to EvidenceValidator or summary may be registered only when the
+// complete serialization unit representing it has been fully admitted into the budget.
+// visibleText exception: the contract allows partial truncation, but the exposed value must exactly equal the payload that actually entered canonicalText
+// (no real payload character is dropped because the newline is missing; surrogate-safe).
 
 describe('统一 admission 不变量：visibleText 截断暴露值与 canonicalText 精确一致', () => {
   it('V1 截断缺换行时暴露值保留全部已进入 hash 的 payload（不删真实字符）', () => {
     // visible = 'x'*59992 + 'Z' (59993 chars)；line = '[text] ' + visible + '\n' = 60001 > 60000
-    // 截断为 '[text] ' + visible (60000, 无 \n)；旧 slice(7,-1) 删除 'Z' → 暴露值缺末字符
+    // truncated to '[text] ' + visible (60000, no \n); the old slice(7,-1) dropped 'Z' → the exposed value lost its last char
     const visible = 'x'.repeat(59992) + 'Z';
     const snapshot = makeSnapshot({ visibleText: visible, headings: [], tables: [], links: [] });
     const content = buildCaptureContent(snapshot, 'cap-v1');
     expect(content.canonicalText).toBe('[text] ' + visible);
     expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
     expect(content.textSections).toHaveLength(1);
-    // 暴露值 = 实际进入 canonicalText 的 payload（含末尾 'Z'）
+    // the exposed value = the payload that actually entered canonicalText (including the trailing 'Z')
     expect(content.textSections[0]).toBe(visible);
-    // 暴露值必须是 canonicalText 的连续子串
+    // the exposed value must be a contiguous substring of canonicalText
     expect(content.canonicalText.includes(content.textSections[0]!)).toBe(true);
   });
 
@@ -1226,8 +1226,8 @@ describe('统一 admission 不变量：visibleText 截断暴露值与 canonicalT
 
   it('V3 截断落在完整 surrogate pair 之后时暴露值不拆 pair（不以 unpaired high 结尾）', () => {
     // visible = 'x'*59991 + '𝄞' (59991 + 2 = 59993 chars)；line = 60001 > 60000
-    // 截断为 '[text] ' + visible (60000, 末尾是完整 surrogate pair d834/dd1e, 无 \n)
-    // 旧 slice(7,-1) 删除 low surrogate dd1e → 暴露值以 unpaired high d834 结尾
+    // truncated to '[text] ' + visible (60000, ending with the complete surrogate pair d834/dd1e, no \n)
+    // the old slice(7,-1) dropped the low surrogate dd1e → the exposed value ended with an unpaired high d834
     const visible = 'x'.repeat(59991) + '𝄞';
     const snapshot = makeSnapshot({ visibleText: visible, headings: [], tables: [], links: [] });
     const content = buildCaptureContent(snapshot, 'cap-v3');
@@ -1235,7 +1235,7 @@ describe('统一 admission 不变量：visibleText 截断暴露值与 canonicalT
     expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
     expect(content.textSections).toHaveLength(1);
     expect(content.textSections[0]).toBe(visible);
-    // 暴露值末尾不是 unpaired high surrogate
+    // the exposed value does not end with an unpaired high surrogate
     const last = content.textSections[0]!.charCodeAt(content.textSections[0]!.length - 1);
     const isHighSurrogate = last >= 0xd800 && last <= 0xdbff;
     expect(isHighSurrogate).toBe(false);
@@ -1243,14 +1243,14 @@ describe('统一 admission 不变量：visibleText 截断暴露值与 canonicalT
 
   it('V4 截断落在 surrogate pair 中间时回退，暴露值 = 实际保留的 payload', () => {
     // visible = 'x'*59992 + '𝄞' (59994 chars)；line = 60002 > 60000
-    // charAt(59999) = high surrogate d834 → 回退 1 → 截断为 '[text] ' + 'x'*59992 (59999 chars)
-    // surrogate pair 整体排除（不拆分）；暴露值 = 'x'*59992
+    // charAt(59999) = high surrogate d834 → back off 1 → truncated to '[text] ' + 'x'*59992 (59999 chars)
+    // the surrogate pair is excluded whole (not split); the exposed value = 'x'*59992
     const visible = 'x'.repeat(59992) + '𝄞';
     const snapshot = makeSnapshot({ visibleText: visible, headings: [], tables: [], links: [] });
     const content = buildCaptureContent(snapshot, 'cap-v4');
     expect(content.canonicalText).toBe('[text] ' + 'x'.repeat(59992));
     expect(content.canonicalText.length).toBe(59999);
-    // canonicalText 不含 surrogate pair
+    // canonicalText contains no surrogate pair
     expect(content.canonicalText.includes('𝄞')).toBe(false);
     expect(content.textSections).toHaveLength(1);
     expect(content.textSections[0]).toBe('x'.repeat(59992));
@@ -1258,8 +1258,8 @@ describe('统一 admission 不变量：visibleText 截断暴露值与 canonicalT
 });
 
 describe('统一 admission 不变量：heading 精确预算矩阵', () => {
-  // [heading] Foo\n = 14 字节；[text] 前缀 7 字节 + \n 后缀 1 字节
-  // 各 remaining 值对应截断位置
+  // [heading] Foo\n = 14 chars; [text] prefix is 7 chars + \n suffix is 1 char
+  // each remaining value maps to a truncation position
   it('H2 仅标签（remaining=9）：不登记、无空 section', () => {
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 9); // 59983
     const snapshot = makeSnapshot({
@@ -1336,11 +1336,11 @@ describe('统一 admission 不变量：heading 精确预算矩阵', () => {
 });
 
 describe('统一 admission 不变量：link 原子接纳', () => {
-  // [link] link https://example.com/x\n = 7 + 4 + 1 + 21 + 1 = 34 字节
+  // [link] link https://example.com/x\n = 7 + 4 + 1 + 21 + 1 = 34 chars
   it('L1 link 行 URL 截断时不登记 text（原子接纳，不用 includes 子串匹配）', () => {
-    // remaining = 30 < 34 → 截断为 '[link] link https://example.'
-    // 旧 added.includes('[link] link') = true → 误登记
-    // 修复 added === line = false → 不登记
+    // remaining = 30 < 34 → truncated to '[link] link https://example.'
+    // the old added.includes('[link] link') = true → false registration
+    // fixed to added === line = false → not registered
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 30); // 59962
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -1353,7 +1353,7 @@ describe('统一 admission 不变量：link 原子接纳', () => {
   });
 
   it('L2 link 行精确容纳时登记 text', () => {
-    // remaining = 34 = exact fit（[link] link https://example.com/x\n = 34 字节）
+    // remaining = 34 = exact fit ([link] link https://example.com/x\n = 34 chars)
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 34); // 59958
     const snapshot = makeSnapshot({
       visibleText: prefix,
@@ -1369,10 +1369,10 @@ describe('统一 admission 不变量：link 原子接纳', () => {
 describe('统一 admission 不变量：headingCount 从真实接纳记录产生（不经子串扫描）', () => {
   it('S1 visibleText 含 [heading] Foo 字面但 heading 行未进入预算 → headingCount=0（经 CaptureService 真实路径）', async () => {
     // visible = 'x'*59980 + '[heading] Foo' (59993 chars)
-    // line = '[text] ' + visible + '\n' = 60001 > 60000 → 截断为 '[text] ' + visible (60000, 无 \n)
-    // heading 行 [heading] Foo\n (14) 因 exhausted 不进入 canonicalText
-    // 但 canonicalText 中 visible 部分含 '[heading] Foo' 字面 → 旧 includes 误判 headingCount=1
-    // 修复后 headingCount=0（从真实接纳记录产生）
+    // line = '[text] ' + visible + '\n' = 60001 > 60000 → truncated to '[text] ' + visible (60000, no \n)
+    // the heading line [heading] Foo\n (14) does not enter canonicalText because it is exhausted
+    // but the visible part of canonicalText literally contains '[heading] Foo' → the old includes falsely counted headingCount=1
+    // after the fix headingCount=0 (from the real admission record)
     const visible = 'x'.repeat(59980) + '[heading] Foo';
     const h = makeHarness({
       browser: {
@@ -1389,11 +1389,11 @@ describe('统一 admission 不变量：headingCount 从真实接纳记录产生�
     const result = await h.read();
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // heading 行未进入 canonicalText
+    // the heading line did not enter canonicalText
     expect(result.content.canonicalText).not.toContain('[heading] Foo\n');
-    // headingCount 从真实接纳记录产生 = 0
+    // headingCount comes from the real admission record = 0
     expect(result.capture.summary.headingCount).toBe(0);
-    // textSections 也不含 'Foo'
+    // textSections also excludes 'Foo'
     expect(result.content.textSections.some((s) => s === 'Foo')).toBe(false);
   });
 
@@ -1403,14 +1403,14 @@ describe('统一 admission 不变量：headingCount 从真实接纳记录产生�
     const result = await h.read();
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // makeSnapshot 有 2 个 heading（主标题、小节），均进入预算
+    // makeSnapshot has 2 headings (主标题, 小节), both admitted
     expect(result.capture.summary.headingCount).toBe(2);
     expect(result.content.textSections).toContain('主标题');
     expect(result.content.textSections).toContain('小节');
   });
 
   it('S3 部分 heading 进入预算时 headingCount 只反映完整接纳的 heading 数（经 CaptureService 真实路径）', async () => {
-    // 预算只够第一个 heading（[heading] Foo\n = 14），第二个 heading 行因 exhausted 不进入
+    // the budget only fits the first heading ([heading] Foo\n = 14); the second heading line is excluded as exhausted
     const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 14); // 59978
     const h = makeHarness({
       browser: {
@@ -1436,11 +1436,11 @@ describe('统一 admission 不变量：headingCount 从真实接纳记录产生�
   });
 });
 
-// ---------- C4 Replan 红态 oracle（统一 admission 模型） ----------
+// ---------- C4 Replan red-state oracle (unified admission model) ----------
 //
-// 这些测试在 baseline 56ea5c 上必须真实失败：区分旧「通用 append + slice/includes
-// 分散判断」结构与新「闭合 AdmissionResult 驱动 canonical 写入/projection/stats」模型。
-// 全部走真实 CaptureService.read()（summary/public shape 不许直接调用 helper、不传期望数）。
+// These tests must really fail on baseline 56ea5c: they distinguish the old "generic append + slice/includes
+// scattered judgement" structure from the new "closed AdmissionResult-driven canonical write/projection/stats" model.
+// They all go through the real CaptureService.read() (summary/public shape must not call a helper or pass expected counts).
 
 describe('C4 Replan：运行时 public shape 精确五字段', () => {
   it('R-PUBLIC Object.keys/spread/JSON 均精确五字段，无 headingCount/stats 泄漏', async () => {
@@ -1635,7 +1635,7 @@ describe('C4 Replan：summary 来源真实 service build facts', () => {
     expect(result.capture.summary.sectionCount).toBe(result.content.textSections.length);
     expect(result.capture.summary.tableCount).toBe(result.content.tables.length);
     expect(result.capture.summary.charCount).toBe(result.content.canonicalText.length);
-    // headingCount 只能来自内部接纳记录（makeSnapshot 2 个 heading 完整接纳）
+    // headingCount can only come from the internal admission record (makeSnapshot admits both headings fully)
     expect(result.capture.summary.headingCount).toBe(2);
   });
 
@@ -1671,6 +1671,277 @@ describe('C4 Replan：contentHash 只对最终 canonicalText 计算', () => {
     const result = await h.read();
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.capture.contentHash).toBe(sha256hex(result.content.canonicalText));
+  });
+});
+
+// ---------- C4 Repair B: typed-unit compiler single-owner terminal oracle ----------
+//
+// Goal: the terminal state (global stop after budget reject / partial-visible)
+// must be held structurally by a single compiler/control loop, not propagated
+// by hand-written exhausted/break across multiple category loops. Most of these
+// tests are already green on baseline f38fb4d (e2404d0 already has the
+// semantics) — honestly reported as regression oracles, not faked as red; the
+// real red state is the six empty-cell cases (evidence-validator.test.ts
+// E1–E6). The added assertions fixate: after a reject, zero fragment/zero
+// projection/zero stats, all later units stopped, and the summary is in sync
+// with the canonical text.
+
+describe('C4 Repair B：atomic reject 后全局 stop（单一 owner 终态）', () => {
+  it('T-STOP-ATOMIC table 拒绝后：后续 link/field 全部零保留、零 stats', async () => {
+    // The budget only fits the [text] + [heading] complete lines and the table
+    // line is 1 char short → table rejected-budget → global stop. Afterwards
+    // (although the snapshot has link/field) zero link textSection, zero
+    // fields — the terminal state must be held structurally by the compiler
+    // (headings enter the budget before tables and are already admitted).
+    const table = makeSnapshot().tables![0]!;
+    const tableSection = normalizeCaptureText(
+      `${table.headers.join('|')} | ${table.rows.map((r) => r.join('|')).join(' | ')}`,
+    );
+    const tableLine = `[table] ${tableSection}\n`;
+    const headingLine = '[heading] 标题\n';
+    // prefix makes the text line + heading line fit exactly, leaving the table line 1 char short
+    const prefix = 'x'.repeat(
+      MAX_PAGE_CAPTURE_CHARS - 7 - 1 - headingLine.length - (tableLine.length - 1),
+    );
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: prefix,
+            headings: [{ level: 1, text: '标题' }],
+            tables: [table],
+            links: [{ id: 'el-1', text: '链接', href: 'https://example.com/l' }],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.tables).toHaveLength(0);
+    expect(result.content.canonicalText).toContain('[text]');
+    expect(result.content.canonicalText).toContain('[heading] 标题\n'); // admitted (before the table)
+    expect(result.content.canonicalText).not.toContain('[table]');
+    expect(result.content.canonicalText).not.toContain('[link]');
+    expect(result.content.canonicalText).not.toContain('[field]');
+    expect(result.content.textSections).toContain('标题');
+    expect(result.content.textSections.some((s) => s === '链接')).toBe(false);
+    expect('page.url' in result.content.fields).toBe(false);
+    expect(result.capture.summary.headingCount).toBe(1);
+    // canonical stops at the table rejection point (no broken tag padding)
+    expect(result.content.canonicalText.length).toBeLessThan(MAX_PAGE_CAPTURE_CHARS);
+    expect(result.capture.summary.charCount).toBe(result.content.canonicalText.length);
+  });
+
+  it('T-STOP-FIELD field 拒绝后：后续 field 全停（部分写入不暴露）', async () => {
+    // [field] page.url=https://example.com/article\n = 45 chars; the budget only
+    // fits 44 → reject → all later fields (page.title/headings[0].text/links) zero-kept
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 44);
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: prefix,
+            headings: [],
+            tables: [],
+            links: [],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.canonicalText).not.toContain('[field]');
+    expect('page.url' in result.content.fields).toBe(false);
+    expect('page.title' in result.content.fields).toBe(false);
+    expect('headings[0].text' in result.content.fields).toBe(false);
+    expect('links[0].text' in result.content.fields).toBe(false);
+    expect('links[0].href' in result.content.fields).toBe(false);
+    expect(result.capture.summary.headingCount).toBe(0);
+  });
+
+  it('T-SKIP-EMPTY skipped-empty 不阻塞后续 eligible unit', async () => {
+    // empty/whitespace heading and link (empty text or empty URL) are
+    // skipped-empty → later non-empty units proceed normally
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: '可见正文',
+            headings: [
+              { level: 1, text: '   ' },
+              { level: 2, text: '有效标题' },
+            ],
+            tables: [],
+            links: [
+              { id: 'el-1', text: '', href: 'https://example.com/x' },
+              { id: 'el-2', text: '有效链接', href: 'https://example.com/y' },
+            ],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.textSections).toContain('有效标题');
+    expect(result.content.textSections).toContain('有效链接');
+    expect(result.content.textSections).not.toContain('  ');
+    expect(result.capture.summary.headingCount).toBe(1); // only valid headings counted
+    // an empty link (empty text) produces no link section; the scalar field
+    // links[0].* references snapshot order: links[0] (empty text → links[0].text
+    // skipped; non-empty href → links[0].href kept)
+    expect(result.content.fields['links[0].text']).toBeUndefined();
+    expect(result.content.fields['links[0].href']).toBe('https://example.com/x');
+  });
+
+  it('T-LINK-EMPTY-URL link 仅 text 非空但 URL 空 → 整个 link unit skipped', async () => {
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: '',
+            headings: [],
+            tables: [],
+            links: [{ id: 'el-1', text: '有文本无URL', href: '' }],
+            title: '',
+            url: 'https://example.com/article',
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.textSections.some((s) => s === '有文本无URL')).toBe(false);
+    expect(result.content.canonicalText).not.toContain('[link]');
+  });
+
+  it("T-EMPTY-TABLE-NO-SECTION all-empty table 不形成 textSections:[''] 且不登记", async () => {
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          normalizeSnapshot(
+            {
+              ok: true,
+              url: 'https://example.com/article',
+              title: '文章标题',
+              visibleText: '',
+              headings: [],
+              links: [],
+              buttons: [],
+              tables: [{ headers: ['  '], rows: [] }],
+            },
+            { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
+          ),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.textSections).toEqual([]);
+    expect(result.content.textSections.some((s) => s === '')).toBe(false);
+    expect(result.content.tables).toHaveLength(0);
+    expect(result.capture.summary.sectionCount).toBe(0);
+    expect(result.capture.summary.tableCount).toBe(0);
+    expect(result.capture.summary.headingCount).toBe(0);
+  });
+
+  it('T-EMPTY-CELL-GEOMETRY meaningful table 空 cell：几何保留、不上 fields、canonical 覆盖几何', async () => {
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          normalizeSnapshot(
+            {
+              ok: true,
+              url: 'https://example.com/article',
+              title: '文章标题',
+              visibleText: '',
+              headings: [],
+              links: [],
+              buttons: [],
+              tables: [{ headers: ['A', 'B'], rows: [['x', '']] }],
+            },
+            { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
+          ),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.tables).toHaveLength(1);
+    expect(result.content.tables[0]!.rows).toEqual([['x', '']]);
+    expect('tables[0].cell[0][1]' in result.content.fields).toBe(false); // empty cell: no field entry
+    expect(result.content.fields['tables[0].cell[0][0]']).toBe('x');
+    // the empty cell geometry is still covered by canonicalText/contentHash (the table line is kept)
+    expect(result.content.canonicalText).toContain('[table]');
+  });
+
+  it('T-COMPACT-INDEX skipped all-empty table 后下一有效表为 tables[0]（紧凑索引无空洞）', async () => {
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          normalizeSnapshot(
+            {
+              ok: true,
+              url: 'https://example.com/article',
+              title: '文章标题',
+              visibleText: '',
+              headings: [],
+              links: [],
+              buttons: [],
+              tables: [
+                { headers: ['  '], rows: [] },
+                { headers: ['A'], rows: [['1']] },
+              ],
+            },
+            { url: 'https://example.com/article', title: '文章标题', documentId: 7 },
+          ),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.tables).toHaveLength(1);
+    expect(result.content.tables[0]!.headers).toEqual(['A']);
+    expect(result.content.fields['tables[0].cell[0][0]']).toBe('1');
+    expect('tables[1]' in result.content.fields).toBe(false);
+  });
+
+  it('T-SUMMARY-HASH summary 与 canonical 同源：headingCount 只来自真实 full admission', async () => {
+    // the budget only fits the [text] line + one [heading] line (exact fit) →
+    // headingCount=1; the second heading rejected-budget → global stop
+    // (field/link zero-kept)
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 14); // [heading] Foo\n = 14
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: prefix,
+            headings: [
+              { level: 1, text: 'Foo' },
+              { level: 2, text: 'Bar' },
+            ],
+            tables: [],
+            links: [{ id: 'el-1', text: '链接', href: 'https://example.com/l' }],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.summary.headingCount).toBe(1);
+    expect(result.content.textSections).toContain('Foo');
+    expect(result.content.textSections.some((s) => s === 'Bar')).toBe(false);
+    expect(result.content.canonicalText).not.toContain('[link]');
+    expect(result.capture.summary.sectionCount).toBe(result.content.textSections.length);
+    expect(result.capture.summary.charCount).toBe(result.content.canonicalText.length);
     expect(result.capture.contentHash).toBe(sha256hex(result.content.canonicalText));
   });
 });

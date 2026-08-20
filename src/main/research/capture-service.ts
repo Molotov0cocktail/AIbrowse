@@ -91,35 +91,46 @@ export interface CaptureTable {
 
 export interface CaptureContent {
   captureId: string;
-  canonicalText: string; // ≤ MAX_PAGE_CAPTURE_CHARS（条目级确定性截断）
-  textSections: string[]; // 非空、独立规范化的章节；每项都是 canonicalText 的连续子串
-  tables: CaptureTable[]; // 实际保留的表格（预算内整表保留）
-  fields: Record<string, string>; // 闭合字段路径 → 规范值
+  canonicalText: string; // ≤ MAX_PAGE_CAPTURE_CHARS (deterministic per-entry truncation)
+  textSections: string[]; // non-empty, independently normalized sections; each is a contiguous substring of canonicalText
+  tables: CaptureTable[]; // retained tables (whole-table within budget)
+  fields: Record<string, string>; // closed field paths → normalized values
 }
 
-// 内部构建结果（C4 Replan）：content + internal stats。不导出、不入 CaptureContent
-// 形状、不落盘、不经 spread/JSON/日志/Runtime map 泄漏。summary 由本结果一次性
-// 构造——调用方不能传入期望计数。
+// Internal build result (C4 Replan): content + internal stats. Never exported,
+// never enters the CaptureContent shape, never persisted, never leaked through
+// spread/JSON/logs/Runtime map. The summary is built once from this result —
+// the caller cannot pass expected counts.
 interface CaptureBuildResult {
   content: CaptureContent;
   stats: {
-    headingCount: number; // 只在非空 heading 的完整 unit admission 分支递增
+    headingCount: number; // incremented only on the full-admission branch of a non-empty heading unit
   };
 }
 
-// 闭合 admission 结果（C4 Replan）：canonical 写入、projection 和 stats 只能由
-// 同一次结果驱动，禁止事后用 includes/substring/slice 反推结构是否成立。
-// - skipped-empty：值不合法/空/纯空白 → 零写入、零登记，不阻塞后续 unit。
-// - rejected-budget：eligible 但预算不足 → 零写入、零登记，并停止后续 unit
-//   （atomic unit 不允许残缺 fragment；canonicalText 可小于 60k，不用残缺标签填满）。
-// - full：整 unit 完整写入。
-// - partial-visible：仅 visibleText 允许；写完整 prefix + surrogate-safe payload，
-//   不写 newline；登记精确 admittedPayload。
-type AdmissionResult =
-  | { kind: 'skipped-empty' }
-  | { kind: 'rejected-budget' }
-  | { kind: 'full'; serialized: string }
-  | { kind: 'partial-visible'; serialized: string; admittedPayload: string };
+// Compiler state owned by the single control loop. The terminal flag is the only
+// source of "no further units"; no category loop propagates a hand-written
+// exhausted flag between loops.
+interface CompilerState {
+  canonical: string;
+  sections: string[];
+  tables: CaptureTable[];
+  fields: Record<string, string>;
+  headingCount: number;
+}
+
+// Typed capture unit (adjudication #173). Eligibility, serialized representation
+// and projection metadata are bound to the same object; the source order is
+// fixed: visibleText → headings → tables → links → fields (scalar fields in a
+// fixed key order). A rejected-budget or partial-visible decision terminates the
+// whole compile loop — canonical/projection/stats are driven by the same closed
+// admission decision, never re-derived with includes/substring/slice afterwards.
+type CaptureUnit =
+  | { kind: 'visible'; payload: string; line: string }
+  | { kind: 'heading'; text: string; line: string }
+  | { kind: 'table'; headers: string[]; rows: string[][]; section: string; line: string }
+  | { kind: 'link'; text: string; url: string; line: string }
+  | { kind: 'field'; key: string; value: string; line: string };
 
 // ---------- 读取结果（决议 #125：冻结判别联合，禁 throw 作预期失败控制流） ----------
 
@@ -181,100 +192,51 @@ function serializeTable(table: CaptureTable): string {
   return parts.join(' | ');
 }
 
-// 有类型标签、顺序固定的 canonicalText 串行格式。按条目追加；超预算的条目
-// 截断（surrogate-safe）后停止——之后的一切（表格/字段/章节）零保留
-// （决议 #128：预算耗尽后不得保留「未进入哈希」的内容）。
-// 语义保留：边界落在 high surrogate 上时整 pair 回退（不拆有效 surrogate pair）。
+// Typed-tag, fixed-order canonicalText serialization format. Appended
+// per-entry; an over-budget entry is truncated (surrogate-safe) then stops —
+// everything after it (tables/fields/sections) is retained as zero
+// (adjudication #128: nothing outside the hash coverage may be retained).
+// Semantics preserved: when the boundary lands on a high surrogate, the whole
+// pair backs off (a valid surrogate pair is never split).
 function truncateSurrogateSafe(text: string, max: number): string {
   if (text.length <= max) return text;
   let end = max;
   const code = text.charCodeAt(end - 1);
-  if (code >= 0xd800 && code <= 0xdbff) end -= 1; // 边界落在 high surrogate → 回退
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1; // boundary on high surrogate → back off
   return text.slice(0, end);
 }
 
-// 统一 admission：budget 状态（canonical 已写入长度 + 是否已耗尽）。
-interface BudgetState {
-  canonical: string;
-  exhausted: boolean;
-}
+// Materialize eligible typed units in the fixed source order
+// (visibleText → headings → tables → links → fields). Eligibility is decided
+// here: empty/whitespace/malformed values become skipped-empty (zero write,
+// zero projection, zero stats, never blocking later units). Each unit carries
+// its full serialized line so the same serialization is used for budget
+// admission and canonical commit.
+function materializeCaptureUnits(snapshot: PageSnapshot): CaptureUnit[] {
+  const units: CaptureUnit[] = [];
 
-// visibleText 专用 partial admission（Contract：唯一允许 partial payload 的 unit）。
-// - prefix 未完整进入或没有一个 surrogate-safe payload 字符可进入 → 零写入、零登记。
-// - payload 部分进入 → 写完整 prefix + 安全 payload，不写 newline，登记精确 admittedPayload。
-// - exact/full → 整 unit 写入（含 newline）并登记完整 payload。
-function admitVisible(state: BudgetState, visible: string, budget: number): AdmissionResult {
-  if (state.exhausted) return { kind: 'rejected-budget' };
-  const prefix = '[text] ';
-  const remaining = budget - state.canonical.length;
-  if (remaining < prefix.length) return { kind: 'skipped-empty' }; // prefix 未完整进入
-  const line = prefix + visible + '\n';
-  if (line.length <= remaining) {
-    state.canonical += line;
-    return { kind: 'full', serialized: line };
-  }
-  const admittedPayload = truncateSurrogateSafe(visible, remaining - prefix.length);
-  if (admittedPayload === '') return { kind: 'skipped-empty' }; // 无 payload 字符可进入
-  const serialized = prefix + admittedPayload;
-  state.canonical += serialized;
-  return { kind: 'partial-visible', serialized, admittedPayload };
-}
-
-// 原子 unit admission（heading/link/table/field）：eligible 且整 unit 可容纳才写入；
-// 否则零写入、零登记，并停止后续预算 admission。禁止残缺 fragment。
-function admitAtomic(state: BudgetState, line: string, budget: number): AdmissionResult {
-  if (state.exhausted) return { kind: 'rejected-budget' };
-  const remaining = budget - state.canonical.length;
-  if (line.length > remaining) return { kind: 'rejected-budget' };
-  state.canonical += line;
-  return { kind: 'full', serialized: line };
-}
-
-// 内部构建（含 internal stats）。导出的 buildCaptureContent 只取 .content（五字段）；
-// summary 由 CaptureService 从本结果一次性构造。
-function buildCaptureInternal(snapshot: PageSnapshot, captureId: string): CaptureBuildResult {
-  const budget = MAX_PAGE_CAPTURE_CHARS;
-  const state: BudgetState = { canonical: '', exhausted: false };
-  const textSections: string[] = [];
-  const tables: CaptureTable[] = [];
-  const fields: Record<string, string> = {};
-  let headingCount = 0;
-
-  // 1. visibleText（第一个 text section；唯一允许 partial payload）
+  // 1. visibleText (first text section; the only unit allowed a partial payload)
   const visible = normalizeCaptureText(snapshot.visibleText ?? '');
   if (visible !== '') {
-    const r = admitVisible(state, visible, budget);
-    if (r.kind === 'full') {
-      textSections.push(visible);
-    } else if (r.kind === 'partial-visible') {
-      textSections.push(r.admittedPayload);
-    } else if (r.kind === 'rejected-budget') {
-      state.exhausted = true;
-    }
-    // skipped-empty：零登记、不阻塞
+    units.push({ kind: 'visible', payload: visible, line: `[text] ${visible}\n` });
   }
 
-  // 2. headings（快照顺序；空/纯空白跳过且不阻塞后续）
+  // 2. headings (snapshot order; empty/whitespace skipped and never blocking)
   const headings = Array.isArray(snapshot.headings) ? snapshot.headings : [];
   for (const heading of headings) {
     const text = normalizeCaptureText(heading.text);
     if (text === '') continue;
-    const line = `[heading] ${text}\n`;
-    const r = admitAtomic(state, line, budget);
-    if (r.kind === 'full') {
-      textSections.push(text);
-      headingCount += 1;
-    } else if (r.kind === 'rejected-budget') {
-      state.exhausted = true;
-      break; // 停止后续 unit
-    }
+    units.push({ kind: 'heading', text, line: `[heading] ${text}\n` });
   }
 
-  // 3. tables（表头 + row-major 单元格；整表原子保留，否则整表零写入）
-  // eligibility：至少一个非空规范化 header/cell 才 eligible；全空表整表跳过
-  // （canonicalText/tables/textSections/fields/tableCount 全零、不阻塞后续）。
-  // 空 header 可在有意义表格中作列位置占位保留；空 row/cell 保留几何但不复制到 fields。
-  // 表格索引以「已登记 tables 数组」生成（被跳过空表不造成 tables[1] 空洞）。
+  // 3. tables (headers + row-major cells; whole table admitted atomically or
+  //    written not at all). Eligibility: at least one non-empty normalized
+  //    header/cell makes the table eligible; an all-empty table is skipped
+  //    whole (zero canonical/table/section/field, never blocking). Empty
+  //    headers may remain as column placeholders in a meaningful table; empty
+  //    rows/cells keep their geometry but are not copied into fields. The
+  //    table index is generated from the retained tables array (a skipped
+  //    empty table never leaves a tables[1] hole).
   const rawTables = Array.isArray(snapshot.tables) ? snapshot.tables : [];
   for (const raw of rawTables) {
     if (raw === undefined || raw === null) continue;
@@ -286,46 +248,24 @@ function buildCaptureInternal(snapshot: PageSnapshot, captureId: string): Captur
     );
     const hasNonEmpty =
       headers.some((h) => h !== '') || rows.some((row) => row.some((c) => c !== ''));
-    if (!hasNonEmpty) continue; // 全空表：整表跳过
-    const table: CaptureTable = { headers, rows };
-    const tableSection = normalizeCaptureText(serializeTable(table));
-    const line = `[table] ${tableSection}\n`;
-    const r = admitAtomic(state, line, budget);
-    if (r.kind === 'full') {
-      const admittedIndex = tables.length; // 已登记索引（紧凑）
-      tables.push(table);
-      textSections.push(tableSection);
-      rows.forEach((row, rIdx) => {
-        row.forEach((cell, cIdx) => {
-          if (cell === '') return; // 空 cell 不复制到 fields（几何仍保留在 tables）
-          fields[`tables[${admittedIndex}].cell[${rIdx}][${cIdx}]`] = cell;
-        });
-      });
-    } else if (r.kind === 'rejected-budget') {
-      state.exhausted = true;
-      break; // 后续表格/章节/字段零保留
-    }
+    if (!hasNonEmpty) continue; // all-empty table: skip the whole table
+    const section = normalizeCaptureText(serializeTable({ headers, rows }));
+    units.push({ kind: 'table', headers, rows, section, line: `[table] ${section}\n` });
   }
 
-  // 4. links（快照顺序；原子接纳。text 空/纯空白或 URL 空 → 跳过整个 link unit）
+  // 4. links (snapshot order; atomic admission. A link with empty/whitespace
+  //    text or an empty URL is skipped as a whole unit)
   const links = Array.isArray(snapshot.links) ? snapshot.links : [];
   for (const link of links) {
     const text = normalizeCaptureText(link.text);
-    if (text === '') continue;
     const url = normalizeUrlText(link.href);
-    if (url === '') continue; // 防御：空 URL → 不可登记 link
-    const line = `[link] ${text} ${url}\n`;
-    const r = admitAtomic(state, line, budget);
-    if (r.kind === 'full') {
-      textSections.push(text);
-    } else if (r.kind === 'rejected-budget') {
-      state.exhausted = true;
-      break;
-    }
+    if (text === '' || url === '') continue;
+    units.push({ kind: 'link', text, url, line: `[link] ${text} ${url}\n` });
   }
 
-  // 5. 闭合字段（固定键序；key 必须来自闭合编译期集合，value 规范化后非空；
-  //    整 unit 可容纳才写入并登记 fields）
+  // 5. Closed scalar fields (fixed key order: page.url → page.title →
+  //    headings[0].text → links[0].text → links[0].href). A field unit only
+  //    forms for a closed key with a non-empty normalized value.
   const link0 = links[0];
   const pageUrl = normalizeUrlText(snapshot.url);
   const pageTitle = normalizeCaptureText(snapshot.title);
@@ -344,28 +284,102 @@ function buildCaptureInternal(snapshot: PageSnapshot, captureId: string): Captur
     if (h !== '') fieldEntries.push(['links[0].href', h]);
   }
   for (const [key, value] of fieldEntries) {
-    if (value === '') continue; // 空/纯空白 value → 不产生 field unit
-    const line = `[field] ${key}=${value}\n`;
-    const r = admitAtomic(state, line, budget);
-    if (r.kind === 'full') {
-      fields[key] = value;
-    } else if (r.kind === 'rejected-budget') {
-      state.exhausted = true;
-      break;
-    }
+    if (value === '') continue; // empty/whitespace value: no field unit
+    units.push({ kind: 'field', key, value, line: `[field] ${key}=${value}\n` });
   }
 
+  return units;
+}
+
+// Commit one typed unit. Returns true when the compile loop must stop
+// (rejected-budget or partial-visible). The decision and the canonical/
+// projection/stats commit are handled in this single owner: a terminal return
+// makes the loop break structurally — no later unit can ever be admitted.
+function admitUnit(state: CompilerState, unit: CaptureUnit): boolean {
+  if (unit.kind === 'visible') return admitVisibleUnit(state, unit);
+
+  const remaining = MAX_PAGE_CAPTURE_CHARS - state.canonical.length;
+  if (unit.line.length > remaining) return true; // rejected-budget → global stop
+  state.canonical += unit.line;
+  switch (unit.kind) {
+    case 'heading':
+      state.sections.push(unit.text);
+      state.headingCount += 1;
+      break;
+    case 'table': {
+      const admittedIndex = state.tables.length; // compact retained index
+      state.tables.push({ headers: unit.headers, rows: unit.rows });
+      state.sections.push(unit.section);
+      unit.rows.forEach((row, rIdx) => {
+        row.forEach((cell, cIdx) => {
+          if (cell === '') return; // empty cell: geometry kept, no field entry
+          state.fields[`tables[${admittedIndex}].cell[${rIdx}][${cIdx}]`] = cell;
+        });
+      });
+      break;
+    }
+    case 'link':
+      state.sections.push(unit.text);
+      break;
+    case 'field':
+      state.fields[unit.key] = unit.value;
+      break;
+  }
+  return false; // continue to the next unit
+}
+
+// visibleText is the only unit allowed a partial payload. A prefix that cannot
+// fully enter, or a payload with no surrogate-safe character that can enter,
+// is a zero-write terminal stop; a partial payload commits the full prefix +
+// admittedPayload (no newline) and is also terminal; full/exact commits the
+// whole unit (with newline) and lets the loop continue.
+function admitVisibleUnit(
+  state: CompilerState,
+  unit: Extract<CaptureUnit, { kind: 'visible' }>,
+): boolean {
+  const remaining = MAX_PAGE_CAPTURE_CHARS - state.canonical.length;
+  const prefix = '[text] ';
+  if (remaining < prefix.length) return true; // prefix cannot fully enter → terminal
+  if (unit.line.length <= remaining) {
+    state.canonical += unit.line;
+    state.sections.push(unit.payload);
+    return false; // full/exact → continue
+  }
+  const admittedPayload = truncateSurrogateSafe(unit.payload, remaining - prefix.length);
+  if (admittedPayload === '') return true; // no surrogate-safe payload char → terminal
+  state.canonical += prefix + admittedPayload;
+  state.sections.push(admittedPayload);
+  return true; // partial-visible → terminal
+}
+
+// Internal build (with internal stats). The exported buildCaptureContent only
+// takes .content (five fields); the summary is built once by CaptureService
+// from this result. A single owner loop owns unit order, budget remaining,
+// terminal stop, canonical commit and projection/stats commit.
+function buildCaptureInternal(snapshot: PageSnapshot, captureId: string): CaptureBuildResult {
+  const state: CompilerState = {
+    canonical: '',
+    sections: [],
+    tables: [],
+    fields: {},
+    headingCount: 0,
+  };
+  const units = materializeCaptureUnits(snapshot);
+  for (const unit of units) {
+    if (admitUnit(state, unit)) break; // terminal: rejected-budget / partial-visible
+  }
   const content: CaptureContent = {
     captureId,
     canonicalText: state.canonical,
-    textSections,
-    tables,
-    fields,
+    textSections: state.sections,
+    tables: state.tables,
+    fields: state.fields,
   };
-  return { content, stats: { headingCount } };
+  return { content, stats: { headingCount: state.headingCount } };
 }
 
-// 导出纯函数（供单测）：只返回精确五字段 CaptureContent（stats 不进入运行时对象）。
+// Exported pure function (for unit tests): returns the exact five-field
+// CaptureContent only (stats never enter the runtime object).
 export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): CaptureContent {
   return buildCaptureInternal(snapshot, captureId).content;
 }
@@ -702,10 +716,11 @@ export class CaptureService {
         return outcome;
       }
 
-      // 7. 成功 Capture 组装（主进程盖章）
-      // C4 Replan：canonical 写入、projection、stats 来自同一次闭合 admission 结果。
-      // summary 由内部 build result（content + stats）一次性构造——禁止扫描
-      // canonicalText、禁止按原始 snapshot 数量计数、禁止调用方传入期望数字。
+      // 7. Successful Capture assembly (main-process stamped).
+      // C4 Replan: canonical write, projection and stats come from the same
+      // closed admission result. The summary is built once from the internal
+      // build result (content + stats) — never by scanning canonicalText, never
+      // by counting raw snapshot entries, never from caller-supplied numbers.
       const built = buildCaptureInternal(snapshot, captureId);
       const capture: Capture = {
         captureId,

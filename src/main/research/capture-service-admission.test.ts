@@ -1,10 +1,14 @@
-// C4 Replan 红态 oracle（隔离小预算 mock）——仅验证 visibleText prefix 边界
-// （Contract：visibleText 是唯一允许 partial payload 的 unit；prefix 未完整进入
-// 或没有一个 surrogate-safe payload 字符可进入时必须零写入、零登记）。
+// C4 Replan red-state oracle (isolated small-budget mock) — verifies the
+// visibleText prefix boundary only (Contract: visibleText is the only unit
+// allowed a partial payload; a prefix that cannot fully enter, or no
+// surrogate-safe payload character that can enter, must be zero-write,
+// zero-registration).
 //
-// 本文件通过 vi.mock 把 MAX_PAGE_CAPTURE_CHARS 缩小到 6（< '[text] ' 前缀 7 字符），
-// 隔离验证「prefix 未完整进入 → 零 canonical、零 textSection」这一统一 admission
-// 不变量。不新增生产 budget 参数、不导出 stats/helper、不为测试扩张生产公共接口。
+// This file shrinks MAX_PAGE_CAPTURE_CHARS to 6 (< the '[text] ' prefix of
+// 7 chars) via vi.mock, isolating the unified admission invariant
+// "prefix cannot fully enter → zero canonical, zero textSection". No
+// production budget parameter is added, no stats/helper is exported, and no
+// production public API is expanded for the tests.
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../shared/types/research', async (importOriginal) => {
