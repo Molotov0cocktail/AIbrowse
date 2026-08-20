@@ -1090,11 +1090,11 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     expect(contentB.tables[0]!.headers).toEqual(table.headers);
   });
 
-  it('field 在标签/key/=/value/换行各位置截断的全矩阵', () => {
-    // 构造一个 fieldEntries 只包含 page.url 的场景
-    // 连续测试各截断位置：5（标签中）、6（标签右括号）、7（空格）、8（k）、9（e）、10（y）、11（=）、12（v）
-    // 只要 line 未完整写入，fields 不登记
-    for (const remaining of [5, 6, 7, 8, 9, 10, 11, 12]) {
+  it('field 在标签/key/=/value/换行各位置截断的精确矩阵（基于真实 serialized 长度 45）', () => {
+    // [field] page.url=https://example.com/article\n = 45 字节
+    // 截断位置：5（标签中）、8（标签完无 key）、12（key 中）、16（key 完无 =）、
+    // 17（= 完无 value）、18（value 中）、44（value 完无 newline）→ 全不登记
+    for (const remaining of [5, 8, 12, 16, 17, 18, 44]) {
       const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - remaining);
       const snap = makeSnapshot({
         visibleText: prefix,
@@ -1106,6 +1106,18 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
       expect('page.url' in content.fields).toBe(false);
       expect('page.title' in content.fields).toBe(false);
     }
+    // 精确容纳（remaining = 45）→ 登记 page.url；page.title 行（24 字节）放不下
+    const prefix45 = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 45);
+    const snap45 = makeSnapshot({
+      visibleText: prefix45,
+      headings: [],
+      tables: [],
+      links: [],
+    });
+    const content45 = buildCaptureContent(snap45, 'cap-r45');
+    expect('page.url' in content45.fields).toBe(true);
+    expect(content45.fields['page.url']).toBe('https://example.com/article');
+    expect('page.title' in content45.fields).toBe(false);
   });
 
   it('所有条目类型在预算边界上的综合验证：textSections/tables/fields 全部在 canonicalText 哈希内', () => {
@@ -1155,16 +1167,262 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     expect(CAPTURE_EMPTY_CONTENT_HASH).toMatch(/^[0-9a-f]{32}$/);
   });
 
-  it('summary 语义（决议 #128）：tableCount = 表格数量（非单元格）；headingCount = 保留 heading 数；charCount = canonicalText.length', () => {
+  it('summary 语义（决议 #128）：tableCount = 表格数量（非单元格）；headingCount 从真实接纳记录产生；charCount = canonicalText.length', () => {
     const content = buildCaptureContent(makeSnapshot(), 'cap-1');
     expect(content.textSections.length).toBe(1 + 2 + 1 + 2);
     expect(content.tables.length).toBe(1); // 1 个表格，不是 6 个单元格
     expect(content.canonicalText.length).toBeGreaterThan(0);
-    // summary 反映实际内容
-    const summary = buildCaptureSummary(content, 2);
+    // summary 从真实接纳记录产生（不手工传入 headingCount 数字）
+    const summary = buildCaptureSummary(content, content.headingCount);
     expect(summary.sectionCount).toBe(content.textSections.length);
     expect(summary.tableCount).toBe(content.tables.length);
-    expect(summary.headingCount).toBe(2);
+    expect(summary.headingCount).toBe(content.headingCount);
     expect(summary.charCount).toBe(content.canonicalText.length);
+  });
+});
+
+// ---------- 统一 admission 不变量（第三轮修复红态 oracle） ----------
+//
+// 不变量：任何暴露给 EvidenceValidator 或 summary 的结构化值，只有在代表它的
+// 完整 serialization unit 已经被预算完整接纳时，才能登记。
+// visibleText 例外：契约允许部分截断，但暴露值必须与实际已经进入 canonicalText
+// 的 payload 精确一致（不因缺换行而删除真实 payload 字符、surrogate-safe）。
+
+describe('统一 admission 不变量：visibleText 截断暴露值与 canonicalText 精确一致', () => {
+  it('V1 截断缺换行时暴露值保留全部已进入 hash 的 payload（不删真实字符）', () => {
+    // visible = 'x'*59992 + 'Z' (59993 chars)；line = '[text] ' + visible + '\n' = 60001 > 60000
+    // 截断为 '[text] ' + visible (60000, 无 \n)；旧 slice(7,-1) 删除 'Z' → 暴露值缺末字符
+    const visible = 'x'.repeat(59992) + 'Z';
+    const snapshot = makeSnapshot({ visibleText: visible, headings: [], tables: [], links: [] });
+    const content = buildCaptureContent(snapshot, 'cap-v1');
+    expect(content.canonicalText).toBe('[text] ' + visible);
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+    expect(content.textSections).toHaveLength(1);
+    // 暴露值 = 实际进入 canonicalText 的 payload（含末尾 'Z'）
+    expect(content.textSections[0]).toBe(visible);
+    // 暴露值必须是 canonicalText 的连续子串
+    expect(content.canonicalText.includes(content.textSections[0]!)).toBe(true);
+  });
+
+  it('V2 精确容纳（含换行）时暴露值 = 完整 visible payload', () => {
+    // visible = 'x'*59992 (59992 chars)；line = 7 + 59992 + 1 = 60000 = exact fit
+    const visible = 'x'.repeat(59992);
+    const snapshot = makeSnapshot({ visibleText: visible, headings: [], tables: [], links: [] });
+    const content = buildCaptureContent(snapshot, 'cap-v2');
+    expect(content.canonicalText).toBe('[text] ' + visible + '\n');
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+    expect(content.textSections).toHaveLength(1);
+    expect(content.textSections[0]).toBe(visible);
+  });
+
+  it('V3 截断落在完整 surrogate pair 之后时暴露值不拆 pair（不以 unpaired high 结尾）', () => {
+    // visible = 'x'*59991 + '𝄞' (59991 + 2 = 59993 chars)；line = 60001 > 60000
+    // 截断为 '[text] ' + visible (60000, 末尾是完整 surrogate pair d834/dd1e, 无 \n)
+    // 旧 slice(7,-1) 删除 low surrogate dd1e → 暴露值以 unpaired high d834 结尾
+    const visible = 'x'.repeat(59991) + '𝄞';
+    const snapshot = makeSnapshot({ visibleText: visible, headings: [], tables: [], links: [] });
+    const content = buildCaptureContent(snapshot, 'cap-v3');
+    expect(content.canonicalText).toBe('[text] ' + visible);
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+    expect(content.textSections).toHaveLength(1);
+    expect(content.textSections[0]).toBe(visible);
+    // 暴露值末尾不是 unpaired high surrogate
+    const last = content.textSections[0]!.charCodeAt(content.textSections[0]!.length - 1);
+    const isHighSurrogate = last >= 0xd800 && last <= 0xdbff;
+    expect(isHighSurrogate).toBe(false);
+  });
+
+  it('V4 截断落在 surrogate pair 中间时回退，暴露值 = 实际保留的 payload', () => {
+    // visible = 'x'*59992 + '𝄞' (59994 chars)；line = 60002 > 60000
+    // charAt(59999) = high surrogate d834 → 回退 1 → 截断为 '[text] ' + 'x'*59992 (59999 chars)
+    // surrogate pair 整体排除（不拆分）；暴露值 = 'x'*59992
+    const visible = 'x'.repeat(59992) + '𝄞';
+    const snapshot = makeSnapshot({ visibleText: visible, headings: [], tables: [], links: [] });
+    const content = buildCaptureContent(snapshot, 'cap-v4');
+    expect(content.canonicalText).toBe('[text] ' + 'x'.repeat(59992));
+    expect(content.canonicalText.length).toBe(59999);
+    // canonicalText 不含 surrogate pair
+    expect(content.canonicalText.includes('𝄞')).toBe(false);
+    expect(content.textSections).toHaveLength(1);
+    expect(content.textSections[0]).toBe('x'.repeat(59992));
+  });
+});
+
+describe('统一 admission 不变量：heading 精确预算矩阵', () => {
+  // [heading] Foo\n = 14 字节；[text] 前缀 7 字节 + \n 后缀 1 字节
+  // 各 remaining 值对应截断位置
+  it('H2 仅标签（remaining=9）：不登记、无空 section', () => {
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 9); // 59983
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [{ level: 1, text: 'Foo' }],
+      tables: [],
+      links: [],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-h2');
+    expect(content.textSections.some((s) => s.includes('Foo'))).toBe(false);
+    expect(content.textSections.some((s) => s === '')).toBe(false);
+  });
+
+  it('H3 标签 + 部分 payload（remaining=12）：不登记', () => {
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 12); // 59980
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [{ level: 1, text: 'Foo' }],
+      tables: [],
+      links: [],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-h3');
+    expect(content.textSections.some((s) => s.includes('Foo'))).toBe(false);
+    expect(content.textSections.some((s) => s === '')).toBe(false);
+  });
+
+  it('H4 标签 + 完整 payload 缺换行（remaining=13）：不登记', () => {
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 13); // 59979
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [{ level: 1, text: 'Foo' }],
+      tables: [],
+      links: [],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-h4');
+    expect(content.textSections.some((s) => s === 'Foo')).toBe(false);
+    expect(content.textSections.some((s) => s === '')).toBe(false);
+  });
+
+  it('H5 精确容纳（remaining=14, 含换行）：登记 text', () => {
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 14); // 59978
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [{ level: 1, text: 'Foo' }],
+      tables: [],
+      links: [],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-h5');
+    expect(content.textSections).toContain('Foo');
+  });
+
+  it('H6 重复 heading：两个相同 text 均完整接纳 → headingCount=2（经 CaptureService 真实路径）', async () => {
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: '',
+            headings: [
+              { level: 1, text: 'Foo' },
+              { level: 1, text: 'Foo' },
+            ],
+            tables: [],
+            links: [],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.content.textSections).toEqual(['Foo', 'Foo']);
+    expect(result.capture.summary.headingCount).toBe(2);
+  });
+});
+
+describe('统一 admission 不变量：link 原子接纳', () => {
+  // [link] link https://example.com/x\n = 7 + 4 + 1 + 21 + 1 = 34 字节
+  it('L1 link 行 URL 截断时不登记 text（原子接纳，不用 includes 子串匹配）', () => {
+    // remaining = 30 < 34 → 截断为 '[link] link https://example.'
+    // 旧 added.includes('[link] link') = true → 误登记
+    // 修复 added === line = false → 不登记
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 30); // 59962
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [],
+      tables: [],
+      links: [{ id: 'el-1', text: 'link', href: 'https://example.com/x' }],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-l1');
+    expect(content.textSections.some((s) => s === 'link')).toBe(false);
+  });
+
+  it('L2 link 行精确容纳时登记 text', () => {
+    // remaining = 34 = exact fit（[link] link https://example.com/x\n = 34 字节）
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 34); // 59958
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [],
+      tables: [],
+      links: [{ id: 'el-1', text: 'link', href: 'https://example.com/x' }],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-l2');
+    expect(content.textSections).toContain('link');
+  });
+});
+
+describe('统一 admission 不变量：headingCount 从真实接纳记录产生（不经子串扫描）', () => {
+  it('S1 visibleText 含 [heading] Foo 字面但 heading 行未进入预算 → headingCount=0（经 CaptureService 真实路径）', async () => {
+    // visible = 'x'*59980 + '[heading] Foo' (59993 chars)
+    // line = '[text] ' + visible + '\n' = 60001 > 60000 → 截断为 '[text] ' + visible (60000, 无 \n)
+    // heading 行 [heading] Foo\n (14) 因 exhausted 不进入 canonicalText
+    // 但 canonicalText 中 visible 部分含 '[heading] Foo' 字面 → 旧 includes 误判 headingCount=1
+    // 修复后 headingCount=0（从真实接纳记录产生）
+    const visible = 'x'.repeat(59980) + '[heading] Foo';
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: visible,
+            headings: [{ level: 1, text: 'Foo' }],
+            tables: [],
+            links: [],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // heading 行未进入 canonicalText
+    expect(result.content.canonicalText).not.toContain('[heading] Foo\n');
+    // headingCount 从真实接纳记录产生 = 0
+    expect(result.capture.summary.headingCount).toBe(0);
+    // textSections 也不含 'Foo'
+    expect(result.content.textSections.some((s) => s === 'Foo')).toBe(false);
+  });
+
+  it('S2 正常场景 headingCount 从真实接纳记录产生（经 CaptureService 真实路径，不手工传入数字）', async () => {
+    const h = makeHarness();
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // makeSnapshot 有 2 个 heading（主标题、小节），均进入预算
+    expect(result.capture.summary.headingCount).toBe(2);
+    expect(result.content.textSections).toContain('主标题');
+    expect(result.content.textSections).toContain('小节');
+  });
+
+  it('S3 部分 heading 进入预算时 headingCount 只反映完整接纳的 heading 数（经 CaptureService 真实路径）', async () => {
+    // 预算只够第一个 heading（[heading] Foo\n = 14），第二个 heading 行因 exhausted 不进入
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 14); // 59978
+    const h = makeHarness({
+      browser: {
+        snapshotFor: () =>
+          makeSnapshot({
+            visibleText: prefix,
+            headings: [
+              { level: 1, text: 'Foo' }, // [heading] Foo\n = 14, exact fit → 接纳
+              { level: 2, text: 'Bar' }, // exhausted → 不接纳
+            ],
+            tables: [],
+            links: [],
+          }),
+      },
+    });
+    withReadyTab(h);
+    const result = await h.read();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capture.summary.headingCount).toBe(1);
+    expect(result.content.textSections).toContain('Foo');
+    expect(result.content.textSections.some((s) => s === 'Bar')).toBe(false);
   });
 });

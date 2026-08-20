@@ -102,6 +102,14 @@ export interface CaptureContent {
   fields: Record<string, string>; // 闭合字段路径 → 规范值
 }
 
+// 构造结果：扩展 CaptureContent 携带 headingCount。CaptureContent 接口形状不变
+// （正式契约 5 字段）；headingCount 是构造期跟踪的真实接纳计数，仅供
+// buildCaptureSummary 从真实接纳记录传入——不进接口形状、不落盘、
+// 不经 canonicalText.includes 子串扫描推断。
+export interface CaptureContentBuild extends CaptureContent {
+  headingCount: number;
+}
+
 // ---------- 读取结果（决议 #125：冻结判别联合，禁 throw 作预期失败控制流） ----------
 
 export type CaptureReadResult =
@@ -173,13 +181,17 @@ function truncateSurrogateSafe(text: string, max: number): string {
   return text.slice(0, end);
 }
 
-export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): CaptureContent {
+export function buildCaptureContent(
+  snapshot: PageSnapshot,
+  captureId: string,
+): CaptureContentBuild {
   const budget = MAX_PAGE_CAPTURE_CHARS;
   const textSections: string[] = [];
   const tables: CaptureTable[] = [];
   const fields: Record<string, string> = {};
   let canonical = '';
   let exhausted = false;
+  let headingCount = 0;
   // 追加一个条目行；返回实际追加的文本（null=已耗尽，string=实际追加内容，可能截断）
   const append = (line: string): string | null => {
     if (exhausted) return null;
@@ -199,15 +211,27 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
   };
 
   // 1. visibleText（第一个 text section）
+  // 契约允许部分截断：暴露值必须与实际已经进入 canonicalText 的 payload 精确一致。
+  // 截断时 \n 不会进入 canonicalText（truncateSurrogateSafe 在 \n 之前截断）；
+  // 完整写入时 \n 进入。因此根据 added 是否以 \n 结尾决定切片终点：
+  // - endsWith('\n') → slice(7, -1) 移除前缀和 \n
+  // - 否则 → slice(7) 移除前缀，保留全部已进入 hash 的 payload（不删真实字符）
+  // surrogate-safe：truncateSurrogateSafe 已保证 added 不以 unpaired high surrogate 结尾；
+  // slice(7) 不会拆分 pair（只在 prefix 之后取连续子串）。
   const visible = normalizeCaptureText(snapshot.visibleText ?? '');
   if (visible !== '') {
     const added = append(`[text] ${visible}\n`);
     if (added !== null) {
-      textSections.push(added.slice(7, -1)); // 移除 '[text] ' 前缀和 '\n' 后缀
+      const exposed = added.endsWith('\n') ? added.slice(7, -1) : added.slice(7);
+      if (exposed !== '') {
+        textSections.push(exposed);
+      }
     }
   }
 
   // 2. headings（快照顺序）
+  // 原子接纳：仅当完整 heading 行写入后才登记 textSection 并计数 headingCount。
+  // 部分写入（标签/部分 payload/缺换行）不登记、不计数——不用 includes 子串匹配。
   const headings = Array.isArray(snapshot.headings) ? snapshot.headings : [];
   for (const heading of headings) {
     const text = normalizeCaptureText(heading.text);
@@ -215,9 +239,9 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
     const line = `[heading] ${text}\n`;
     const added = append(line);
     if (added === null) break;
-    // 仅当完整 heading 行写入后才登记（防止部分 payload/缺换行/空 section）
     if (added === line) {
       textSections.push(text);
+      headingCount += 1;
     }
   }
 
@@ -252,6 +276,8 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
   }
 
   // 4. links（快照顺序）
+  // 原子接纳：仅当完整 link 行写入后才登记 text。不用 includes 子串匹配——
+  // added === line 保证 text 和 url 都完整进入 canonicalText。
   const links = Array.isArray(snapshot.links) ? snapshot.links : [];
   for (const link of links) {
     const text = normalizeCaptureText(link.text);
@@ -260,8 +286,7 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
     const line = `[link] ${text} ${url}\n`;
     const added = append(line);
     if (added === null) break;
-    // 检查 link text 是否完整出现在标签之后（防止标签前缀子串碰撞）
-    if (added.includes(`[link] ${text}`)) {
+    if (added === line) {
       textSections.push(text);
     }
   }
@@ -300,6 +325,7 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
     textSections,
     tables,
     fields,
+    headingCount,
   };
 }
 
@@ -646,14 +672,8 @@ export class CaptureService {
 
       // 7. 成功 Capture 组装（主进程盖章）
       const built = buildCaptureContent(snapshot, captureId);
-      // 计算实际进入预算的 heading 数（通过 canonicalText 中 [heading] 标签出现次数验证）
-      let headingCount = 0;
-      const snapshotHeadings = Array.isArray(snapshot.headings) ? snapshot.headings : [];
-      for (const heading of snapshotHeadings) {
-        const t = normalizeCaptureText(heading.text);
-        if (t === '') continue;
-        if (built.canonicalText.includes(`[heading] ${t}`)) headingCount++;
-      }
+      // headingCount 从真实接纳记录产生（buildCaptureContent 构造期跟踪），
+      // 不经 canonicalText.includes 子串扫描推断——避免跨块字面碰撞误判
       const capture: Capture = {
         captureId,
         taskId: this.workspace.taskId,
@@ -664,7 +684,7 @@ export class CaptureService {
         accessTime: new Date(snapshot.meta.capturedAt).toISOString(),
         documentId: String(snapshot.meta.documentId),
         contentHash: sha256hex(built.canonicalText),
-        summary: buildCaptureSummary(built, headingCount),
+        summary: buildCaptureSummary(built, built.headingCount),
         failed: false,
         failureReason: null,
       };
