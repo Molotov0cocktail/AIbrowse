@@ -757,7 +757,7 @@ release 失败不得误报已清理：所有权保留供 C5 终态 cleanupAll �
 sentinel 只能出现在 failed Capture；EvidenceValidator 必须先拒绝 failed
 Capture，绝不把 sentinel 组装进 VerifiedEvidence。
 
-**结构化提取与 CaptureContent（决议 #128，纯内存、零落盘）**：
+**结构化提取与 CaptureContent（决议 #128/#173，纯内存、零落盘）**：
 
 ```ts
 export interface CaptureContent {
@@ -765,7 +765,7 @@ export interface CaptureContent {
   canonicalText: string; // ≤ MAX_PAGE_CAPTURE_CHARS，确定性截断
   textSections: string[]; // 非空章节（每节独立规范化）
   tables: CaptureTable[]; // { headers: string[]; rows: string[][] }（规范化）
-  fields: Record<string, string>; // 闭合字段路径 → 规范值
+  fields: Record<string, string>; // 闭合字段路径 → 非空规范值
 }
 ```
 
@@ -773,8 +773,40 @@ export interface CaptureContent {
   构造；禁止修改采集管线、禁止新建采集通道。
 - 规范化：NFC、trim、控制字符/bidi 清除、连续空白折叠；无模糊/语义/
   大小写猜测匹配。
+- **typed-unit 三阶段模型（决议 #173 冻结）**：每个结构化值
+  （text/heading/table/link/field）作为一个 **unit**，按固定来源顺序经历
+  三个阶段；canonical 写入、projection（textSections/tables/fields）与
+  stats 必须由同一次闭合 admission 结果驱动，禁止事后用 includes/
+  substring/slice 反推结构是否成立：
+  1. **eligibility**：值合法且规范化后非空才 eligible；空/纯空白 →
+     `skipped-empty`（零写入、零登记，不阻塞后续 unit）；
+  2. **budget admission**：eligible 的 unit 检查剩余预算——visibleText 是
+     **唯一允许 partial payload** 的 unit（完整 prefix + surrogate-safe
+     payload，不写 newline；prefix 未完整进入或没有可进入的 payload 字符
+     → 零写入零登记）；heading/link/table/field 为**原子 unit**（整 unit
+     可容纳才写入，否则 `rejected-budget` 零写入零登记并**停止后续全部
+     unit**——global stop；canonicalText 可小于 60k，不用残缺标签填满）；
+  3. **projection + stats**：仅当 admission 为 `full`/`partial-visible` 时
+     登记 textSections/tables/fields 与 headingCount（headingCount 只在非空
+     heading 的完整 unit 接纳分支递增）。
 - canonicalText 为有类型标签、顺序固定的串行格式，来源顺序：
-  `visibleText → headings → tables（表头 + row-major 单元格）→ links`。
+  `visibleText → headings → tables（表头 + row-major 单元格）→ links →
+fields`。精确 serialization grammar（标签前缀与行尾换行是 unit 结构
+  的一部分，参与原子容纳判定）：
+  - `[text] <visible>\n`（visibleText；partial 时写完整 prefix + payload、
+    不写 `\n`，登记精确 admittedPayload）；
+  - `[heading] <text>\n`；
+  - `[table] <headers 以 | 连接> | <row-major 单元格（行内 | 连接、行间
+' | ' 连接）>\n`（serializeTable：`headers.join('|')` + 每行
+    `row.join('|')`，再 `' | '` 连接）；
+  - `[link] <text> <url>\n`（text 与 href 均规范化非空才产生 link unit）；
+  - `[field] <key>=<value>\n`。
+- **UTF-16 预算与 surrogate 规则（决议 #173 冻结）**：
+  MAX_PAGE_CAPTURE_CHARS（60000）按 JavaScript 字符数（String.length，
+  UTF-16 code unit）计量（决议 #103 单位约定）；确定性截断必须**不拆分
+  有效 surrogate pair**——边界落在 high surrogate 上时整 pair 回退，落在
+  完整 pair 之后不拆分；暴露值（textSections/admittedPayload）与实际进入
+  canonicalText 的 payload 精确一致，不以 unpaired high surrogate 结尾。
 - 所有可被 EvidenceValidator 引用的 section/table/field 值都必须实际进入
   canonicalText 的 60k 预算和哈希覆盖范围；预算耗尽后不得保留「未进入
   哈希」的表格/字段/章节。
@@ -782,9 +814,25 @@ export interface CaptureContent {
   `page.title`/`headings[0].text`/`links[0].text`/`links[0].href` +
   固定数组索引表格路径（如 `tables[0].cell[1][2]`）；不解析任意对象路径、
   原型链或表达式。
-- summary：sectionCount/tableCount（表格数量，非单元格）/headingCount/
-  charCount = canonicalText.length；contentHash = SHA-256(UTF-8
-  canonicalText) 前 32 小写 hex。
+- **表格几何与 Evidence-addressable 值分离（决议 #173）**：保留的
+  `tables` 数组承载**表格几何**（表头 + 行列结构）；空 header / 空 cell
+  只作几何占位保留（retained table unit 仍受 canonicalText/contentHash
+  覆盖），但**不是 Evidence-addressable 值**：
+  - 空 header：保留列位置占位；验证非空 cell 时输出 `locator.header =
+null`（空 header 本身不是 Evidence value）；
+  - 空 cell：规范化后为 `''` 的 cell 保留行列几何，但**不复制进 fields**
+    （不产生 `tables[0].cell[...]` 键）、不进入任何引用路径；table-cell
+    提案对空 cell 一律 fail-closed（决议 #173，§5.2）；
+  - all-empty table：整体跳过，不产生 canonical/table/textSection/field/
+    Evidence（表格索引以已登记 tables 数组生成，无 `tables[1]` 空洞）。
+- scalar fields 固定顺序：`page.url → page.title → headings[0].text →
+links[0].text → links[0].href`（各自值规范化非空才产生 field unit）。
+- summary 来源（决议 #173 冻结）：sectionCount = 实际登记的非空
+  textSections 数；tableCount = 实际保留的表格数量（不是单元格数量）；
+  headingCount = 真实接纳记录（非空 heading 完整 unit 接纳数，**不经
+  canonicalText 子串扫描**）；charCount = 最终 canonicalText.length；
+  contentHash = SHA-256(UTF-8 canonicalText) 前 32 小写 hex。summary 由
+  内部 build 结果（content + stats）一次性构造，调用方不能传入期望计数。
 - 正文/完整快照只在内存 CaptureContent，不进 Capture、Repository、日志或
   会话文件（FT-14/16）；任务终态丢弃。
 
@@ -816,15 +864,22 @@ verifyEvidence(input: {
    （从候选取）/url/title/accessTime/documentId/contentHash 全部从成功
    Capture 取——模型不可伪造。
 
-| 类型                        | 校验                                                                                                                                                                                                                       | 失败码                                                                  |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| text（quote/summary-point） | locator.excerpt 与 proposal.excerpt 规范化后一致；非空且 ≤500；必须是某一个独立 textSection 的连续规范化子串（禁跨 section 拼接/模糊/语义/大小写猜测）                                                                     | excerpt-invalid / excerpt-not-in-content                                |
-| table-cell                  | tableIndex/row/col 全部在界内（row=数据行不含 header）；程序取真实单元格值，proposal.value/excerpt 规范化后必须与受控真实值完全一致；输出 locator.header 由程序按真实表头生成（proposal 提供非空 header 须与真实表头一致） | table-coordinate-invalid / table-value-mismatch / table-header-mismatch |
-| field                       | fieldPath 精确存在于闭合 fields map（禁前缀/通配符/动态路径/`__proto__`/constructor/prototype）；proposal.value/excerpt 与字段规范值完全一致                                                                               | field-path-invalid / field-value-mismatch                               |
+| 类型                        | 校验                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 失败码                                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| text（quote/summary-point） | locator.excerpt 与 proposal.excerpt 规范化后一致；非空且 ≤500；必须是某一个独立 textSection 的连续规范化子串（禁跨 section 拼接/模糊/语义/大小写猜测）                                                                                                                                                                                                                                                                                                                                                                                           | excerpt-invalid / excerpt-not-in-content                                                |
+| table-cell                  | tableIndex/row/col 全部在界内（row=数据行不含 header）；程序取真实单元格值 realCell（可信坐标取值）；**realCell 规范化后必须非空**——`realCell === ''`（页面显式空/纯空白·控制·bidi 清理后变空/normalize 短行补齐的 `''`）一律 fail-closed `value-invalid`，发生在 proposal 匹配之前，任何 excerpt/value 组合（含二者均 null）都不得组装 VerifiedEvidence（决议 #173）；realCell 非空后 proposal.value/excerpt 规范化须与受控真实值完全一致；输出 locator.header 由程序按真实表头生成（空表头 → null；proposal 提供非空 header 须与真实表头一致） | table-coordinate-invalid / table-value-mismatch / table-header-mismatch / value-invalid |
+| field                       | fieldPath 精确存在于闭合 fields map（禁前缀/通配符/动态路径/`__proto__`/constructor/prototype）；空 cell 不进入 fields，对应 `tables[0].cell[...]` fieldPath 恒 `field-path-invalid`（决议 #173）；proposal.value/excerpt 与字段规范值完全一致                                                                                                                                                                                                                                                                                                   | field-path-invalid / field-value-mismatch                                               |
 
 - 模型只能**提出**引用（EvidenceProposal 作为结构化请求消息内容）；模型
   绝不能直接构造 Evidence（evidenceId/provenance 全部主进程侧，未知字段
   fail-closed）。
+- **空 cell fail-closed 的检查顺序（决议 #173）**：table-cell 校验先取可信
+  坐标处的真实单元格值 realCell，**在 proposal.value/excerpt 匹配之前**先
+  判 `realCell === ''`（含 normalize 补齐的 `''`）→ 一律 `value-invalid`
+  拒绝；不得把空单元格值与空 proposal 匹配组装为 verified Evidence。该
+  判定不区分页面显式空值、规范化空值与 synthetic padding——现有
+  CaptureTable 无法区分，坐标/provenance/contentHash 只能证明规范化结构，
+  不能证明「页面声明该值为空」。
 - 验证纯函数幂等、同输入同输出（无随机、无时钟副作用）；rejected 回注
   模型修正（闭合错误码 + 安全中文 reason ≤200 字符，不回显正文/URL query/
   敌对字段）。
@@ -3464,6 +3519,73 @@ CandidateOrigin[]; trust: { value, assertedBy, verification } | null }`；
      （3）测试：红测（裸回放时工具消息无块标记 → 失败）→ 修复 → 运行时
      测试断言工具消息含块标记 + 捕获正文在块内 + 闭合转义；FRT-01 冒烟
      敌对页浏览器读链路由 FRT-01 断言「敌对文本仅 UNTRUSTED 块内」覆盖。
+
+> 以下 #173 为 C4 Post-Acceptance Repair A 正式契约冻结（2026-08-20；
+> docs-only gate，Repair A 不实现代码）。C4 实现经 8.20 独立复核后进入
+> Repair chain（65fe15d→f681451→56ea5c4→e2404d0）；本决议把 Repair A
+> 冻结的 typed-unit Capture 编译语义与空单元格 Evidence 正式契约写入
+> 正式文档，作为 C4 task 文档「Post-Acceptance Repair」章节的唯一契约源
+> （Repair B baseline = Repair A candidate 经独立 Reviewer A PASS 的精确
+> SHA）。裁决依据 C4 既有 §5.1/§5.2、决议 #128/#130、threat-model
+> FT-03/04/06/14/16 与 fail-closed 纪律唯一导出，无需用户拍板；
+> 不改写 #94–#172 既有结论。
+
+173. **C4 Capture 单元编译与空单元格 Evidence 契约冻结（2026-08-20，
+     C4 Repair A 正式契约）**：把 C4 现有实现（e2404d0）背后的 typed-unit
+     admission 模型与空单元格 Evidence fail-closed 语义冻结为正式契约。
+     **typed-unit 三阶段模型**：每个结构化值（text/heading/link/table/
+     field）为一个 unit，按固定来源顺序经历 eligibility → budget
+     admission → projection+stats 三阶段；canonical 写入、projection 与
+     stats 由同一次闭合 admission 结果驱动，禁止事后用 includes/substring/
+     slice 反推结构成立（具体规则见 §5.1）。**serialization grammar**：
+     `[text] `、`[heading] `、`[table] `、`[link] `、`[field] ` 标签前缀 +
+     行尾 `\n` 为 unit 结构一部分；来源顺序 `visibleText → headings →
+tables（表头 + row-major 单元格）→ links → fields`（§5.1 冻结）。
+     **eligibility**：值合法且规范化后非空才 eligible；空/纯空白 →
+     skipped-empty（零写入、零登记、不阻塞后续）。**budget rejection**：
+     eligible 但预算不足 → rejected-budget；visibleText 是唯一允许
+     partial payload 的 unit（完整 prefix + surrogate-safe payload、不写
+     newline）；heading/link/table/field 为原子 unit（整 unit 可容纳才
+     写入，否则零写入零登记并**全局终止后续全部 unit**——canonicalText
+     可小于 60k，不用残缺标签填满）。**retained-prefix / global stop**：
+     预算耗尽即全局 stop，后续表格/字段/章节零保留；visibleText 的
+     admittedPayload 精确登记为暴露值。**visible-only partial**：只有
+     visibleText 允许 partial payload。**atomic heading/table/link/field**：
+     任一原子 unit 预算不足 → 整 unit 零写入、零登记、停止后续。
+     **UTF-16 budget**：MAX_PAGE_CAPTURE_CHARS（60000）按 JavaScript
+     字符数（String.length）计量（决议 #103 单位约定）。**surrogate
+     规则**：确定性截断不拆分有效 surrogate pair——边界落在 high
+     surrogate 上整 pair 回退，落在完整 pair 之后不拆分；暴露值不以
+     unpaired high surrogate 结尾。**empty / whitespace**：规范化后空值
+     （页面显式空、纯空白、控制/bidi 清理后变空）→ skipped-empty，
+     不进入 projection。**table geometry**：保留的 tables 数组承载表格
+     几何（表头 + 行列结构）；空 header / 空 cell 只作几何占位保留
+     （retained table unit 仍受 canonicalText/contentHash 覆盖），但不是
+     Evidence-addressable 值。**empty cell Evidence fail-closed**：table-
+     cell 校验在可信坐标取值后、proposal 匹配前判定 `realCell === ''`
+     （含 normalize 补齐的 `''`）→ 一律 `value-invalid`（既有错误码，
+     不新增）；任何 excerpt/value 组合（含二者均 null）都不得组装
+     VerifiedEvidence；field 通道因空 cell 不进入 fields 而恒
+     `field-path-invalid`。**empty header → null**：有意义表格保留空
+     header 几何占位；验证非空 cell 时输出 `locator.header = null`；空
+     header 本身不是 Evidence value。**scalar fields 顺序**：
+     `page.url → page.title → headings[0].text → links[0].text →
+links[0].href`。**summary 来源**：sectionCount/tableCount/
+     headingCount/charCount 与 contentHash 由内部 build 结果一次性构造，
+     headingCount 不经 canonicalText 子串扫描（§5.1 冻结）。**public
+     CaptureContent 五字段保持不变**：captureId/canonicalText/
+     textSections/tables/fields——运行时精确五字段，无 headingCount/stats
+     泄漏。**hash / 60k / Evidence 三通道保持不变**：contentHash =
+     SHA-256(UTF-8 canonicalText) 前 32 小写 hex；60k 预算即
+     MAX_PAGE_CAPTURE_CHARS；Evidence 校验顺序/错误码/窄类型
+     VerifiedEvidence 全部保持（决议 #130 不变）。**实现缺口登记（不得
+     写成已实现）**：e2404d0 的 table-cell 空值通道仍为 fail-open
+     （`realCell === ''` 可与空 proposal 匹配返回 verified）；本决议冻结
+     的目标契约与当前实现不同，需在 Repair B 以 `value-invalid` 收紧，
+     本 docs-only Repair A 不修改代码或测试。**absence 语义禁止**：不得以
+     空字符串或 sentinel 实现「页面缺失/absence」Evidence；如未来需要
+     absence/missing Evidence，必须单独 REPLAN 新的 typed evidence/
+     provenance 模型。
 
 - C1（契约+存储基座）→ C2/C3（并行，均仅依赖 C1）→ C4（依赖 C1–C3）→
   C5（依赖 C1–C4）→ C6（依赖 C1/C4/C5 端口）/C7（依赖 C1/C5 端口，可与

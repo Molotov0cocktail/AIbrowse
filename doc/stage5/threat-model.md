@@ -111,6 +111,20 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
   rejected（闭合错误码 + 安全中文 reason ≤200 字符，不回显正文/URL query/
   敌对字段）+ 原因回注；**未验证引用不渲染、不进集合、不落库**（Repository
   仅接受 VerifiedEvidence 窄类型 + schema CHECK 兜底）。
+- **空单元格 Evidence fail-closed（FT-03/04/06/17 补强，决议 #173）**：
+  snapshot normalize 会用 `''` 补齐短行，现有 CaptureTable **无法区分页面
+  显式空值、规范化空值与 synthetic padding**；坐标、provenance 与
+  contentHash 覆盖只能证明规范化结构，**不能证明页面声明该值为空**。
+  因此：所有规范化后可信值为 `''` 的 table cell 一律**不得形成 verified
+  table-cell Evidence**——table-cell 校验在可信坐标取值后、proposal 匹配
+  前判定 `realCell === ''`（含 normalize 补齐的 `''`）→ `value-invalid`
+  fail-closed；空 cell 不进入 fields，对应 fieldPath 恒 `field-path-invalid`。
+  空值引用不渲染、不进集合、不持久化。**不承诺 / absence 边界**：本规则
+  不区分空值来源（显式空/规范化空/padding），也不实现「页面缺失/absence」
+  语义——空单元格绝不成为可引用的空值 Evidence；如未来需要 absence/
+  missing Evidence，必须单独 REPLAN 新的 typed evidence/provenance 模型。
+  empty header 只作几何占位保留（输出 locator.header = null），本身不是
+  Evidence value。
 - **陈旧防御（FT-05）**：Evidence 绑定「本次捕获」（captureId + documentId
   主进程盖章 + accessTime）；捕获后页面变化不使已验证 Evidence 失效
   （记录捕获时刻），但旧捕获不可冒充新证据（captureId 唯一绑定）；跨重启
@@ -185,9 +199,15 @@ documentId/contentHash` 全部取自主进程捕获记录（模型不可伪造�
   （canonicalText/textSections/tables/fields）为纯内存结构——决议 #128：
   只从既有 PageSnapshot 构造，不进 Capture/Repository/日志/会话文件；
   所有可被 EvidenceValidator 引用的值都在 60k 预算与哈希覆盖范围内
-  （「未进入哈希」的内容不得保留）。失败读取的 capture 行仅存 sentinel
-  元数据（决议 #126），同样零正文。**reasoning 零记录/显示/持久化**（如
-  Provider 协议需要仅在当前运行内不透明回放——决议 #136(3)）。
+  （「未进入哈希」的内容不得保留）。**表格几何与地址性分离（决议
+  #173）**：保留的 tables 数组承载表格几何（空 header / 空 cell 只作
+  几何占位保留，retained table unit 仍受 canonicalText/contentHash
+  覆盖），但空 cell **不是 Evidence-addressable 值**——hash coverage
+  不证明页面显式声明了空值，也不区分显式空值与 normalize padding；
+  空 cell 的 table-cell 引用 fail-closed（`value-invalid`）、field 引用
+  恒 `field-path-invalid`（§3.3 决议 #173）。失败读取的 capture 行仅存
+  sentinel 元数据（决议 #126），同样零正文。**reasoning 零记录/显示/
+  持久化**（如 Provider 协议需要仅在当前运行内不透明回放——决议 #136(3)）。
 - **未验证模型输出零入库（决议 #134(3)）**：C6/C7 端口缺失时产品不建立
   Runtime（research-runtime-unavailable fail-closed）；C5 stub 仅测试
   设施；不得把未验证模型输出写入 ResearchResult。

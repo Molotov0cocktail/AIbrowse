@@ -152,3 +152,92 @@ feat: 完成 C4 多源捕获与 Evidence 确定性验证）+ 双远程推送。
 - 验证命令：`npm test -- --maxWorkers=1` **1691/1691** 绿；typecheck/
   lint/format:check/build/diff-check 绿；dev + 生产默认冒烟（含 8.16）
   退出码 0。
+
+---
+
+## Post-Acceptance Repair（2026-08-20，C4 修复链）
+
+> C4 完成验收后，8.20 独立复核把 Capture 编译语义收严为正式契约。
+> 本节是 Repair A/B 的唯一执行契约源；完整契约冻结见 detailed-design §15
+> 决议 #173 与 §5.1/§5.2、threat-model §3.3/§3.4。
+
+### Repair 链基线（已核实，不可改写）
+
+- 当前 C4 chain：`65fe15d → f681451 → 56ea5c4 → e2404d0`
+  （均为 fix: 候选提交，未 push）。
+- Repair A baseline = `e2404d07c18c1d9acbe92b080f89f0cbec5cffa1`（HEAD，
+  parent `56ea5c48...`）。
+- 原 Repair baseline = `383658705a9bedcd0f95c0a8e2d448a849cb852e`；
+  gitee/github `main` 均仍为该 SHA。
+- 隔离分支 `codex/workflow-handoff-prompts@a7d1f5a` 不属于 C4：不 merge、
+  不 cherry-pick、不 push。
+- 禁止 reset / revert / rebase / amend / rewrite history / push。
+
+### Repair A（docs-only 正式契约冻结）——**已完成候选**
+
+- **范围**：仅允许修改 `doc/stage5/detailed-design.md`、
+  `doc/stage5/threat-model.md`、本文件（出现第四个 tracked 文件修改即停）。
+- **内容**：冻结决议 #173——typed-unit 三阶段模型、serialization grammar、
+  eligibility、budget rejection、retained-prefix / global stop、
+  visible-only partial、atomic heading/table/link/field、UTF-16 budget、
+  surrogate 规则、empty / whitespace、table geometry、empty cell Evidence
+  fail-closed、empty header → null、scalar fields 顺序、summary 来源、
+  public CaptureContent 五字段不变、hash / 60k / Evidence 三通道不变。
+- **Repair A candidate ≠ PASS**：只有新的独立 Reviewer A 给出 PASS 后，
+  才允许进入 Repair B。
+
+### Repair B（typed-unit compiler 收紧实现）——**未开始，禁止提前执行**
+
+- 目标：按决议 #173 收紧实现，使代码与正式契约一致。
+- **empty table-cell 红态 oracle**：`realCell === ''`（页面显式空/纯空白·
+  控制/bidi 清理后变空/normalize 短行补齐的 `''`）的 table-cell 提案
+  （excerpt:'' / value:'' / 仅其一为空 / 二者均 null）必须 red-fail →
+  修复后 `value-invalid`（既有 EvidenceRejectionCode，不新增公共错误码），
+  不得组装 VerifiedEvidence。
+- **field 通道**：empty cell 不进入 fields，对应 fieldPath 恒
+  `field-path-invalid`（e2404d0 已具备，仅需保持 + 测试固化）。
+- **empty header**：保留几何占位；验证非空 cell 时输出 `locator.header =
+null`。
+- **table geometry / hash**：retained table unit 仍受 canonicalText/
+  contentHash 覆盖；hash coverage 不证明页面显式声明空值，也不区分显式
+  空值与 normalize padding。
+- **all-empty table**：整体跳过，不产生 canonical/table/textSection/field/
+  Evidence（e2404d0 已具备，保持）。
+- **禁止**：新增 Evidence kind / locator 字段 / 公共 error code / 公共
+  类型；不得以空字符串或 sentinel 实现 absence/missing Evidence（如需
+  absence 语义必须单独 REPLAN 新的 typed evidence/provenance 模型）；
+  不得修改 snapshot pipeline / Result Schema / Renderer / Repository /
+  持久化。
+- **Repair B baseline**：仅当 Reviewer A 对 Repair A candidate 输出 PASS
+  后，该精确 candidate SHA 才成为 Repair B baseline。
+
+### Reviewer gate（独立 Reviewer A）
+
+- 对 Repair A candidate 独立审查 `baseline..HEAD`，结论只可为
+  PASS / REPAIR / REPLAN / BLOCKED。
+- **DOC_GATE_SHA 规则**：Repair A candidate 的精确 SHA 记作
+  `DOC_GATE_SHA`；Reviewer A PASS 前不得 push、不得开始 Repair B。
+  Reviewer A PASS 后，`DOC_GATE_SHA` 即 Repair B 的唯一 baseline；
+  若后续 repair 提交发生（B/C…），每个新 gate 都须记录其精确 SHA。
+- Review 输出必须含实际命令与退出码；不采信 Executor 自述「全绿」。
+
+### 实现事实与目标契约的区分（Repair B 前必须如实登记）
+
+- **当前实现事实（e2404d0）**：table-cell 空值通道为 **fail-open**
+  ——`realCell === ''` 可与空 proposal 匹配并返回 verified；field 通道因
+  empty cell 不进入 fields 而 fail-closed。
+- **目标契约（决议 #173）**：empty table-cell 一律 fail-closed
+  （`value-invalid`），任何空值组合不组装 VerifiedEvidence。
+- 以上差异是 Repair B 的已知实现缺口，**不得写成已实现**；Repair A
+  docs-only 不修改代码或测试。
+
+### Repair 链验证
+
+- Repair A：文档一致性搜索、`npm run format:check`、`git diff --check
+e2404d07c18c1d9acbe92b080f89f0cbec5cffa1..HEAD`、
+  `git diff --name-status`、`git status --short --branch`、敏感/临时文件
+  扫描。build / Electron smoke / 真实 Provider：docs-only gate N/A。
+- Repair B：聚焦 red→green（empty cell oracle）+ 全量 test + typecheck +
+  lint + format:check + diff-check + 既有 C4 8.16 冒烟回归；不得把现有
+  测试全绿冒充 empty-cell 目标语义已实现。
+- 不执行 C10、8.19-B 修复、Closer 或 Sixth Stage。
