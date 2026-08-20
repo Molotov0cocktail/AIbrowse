@@ -348,6 +348,7 @@ function successCapture(captureId: string, tabId: string): CaptureReadResult {
       textSections: ['受控正文摘录'],
       tables: [],
       fields: { 'page.url': 'https://c.example/page', 'page.title': '页面' },
+      headingCount: 0,
     },
     warnings: [],
   };

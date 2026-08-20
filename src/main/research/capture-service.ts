@@ -97,9 +97,10 @@ export interface CaptureTable {
 export interface CaptureContent {
   captureId: string;
   canonicalText: string; // ≤ MAX_PAGE_CAPTURE_CHARS（条目级确定性截断）
-  textSections: string[]; // 非空、独立规范化的章节
+  textSections: string[]; // 非空、独立规范化的章节；每项都是 canonicalText 的连续子串
   tables: CaptureTable[]; // 实际保留的表格（预算内整表保留）
   fields: Record<string, string>; // 闭合字段路径 → 规范值
+  headingCount: number; // 实际进入预算的 heading 数
 }
 
 // ---------- 读取结果（决议 #125：冻结判别联合，禁 throw 作预期失败控制流） ----------
@@ -180,29 +181,33 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
   const fields: Record<string, string> = {};
   let canonical = '';
   let exhausted = false;
+  let headingCount = 0;
 
-  // 追加一个条目行；返回是否仍有预算（false = 已耗尽，后续零保留）
-  const append = (line: string): boolean => {
-    if (exhausted) return false;
+  // 追加一个条目行；返回实际追加的文本（null=已耗尽，string=实际追加内容，可能截断）
+  const append = (line: string): string | null => {
+    if (exhausted) return null;
     if (line.length > budget - canonical.length) {
       const remaining = budget - canonical.length;
       if (remaining <= 0) {
         exhausted = true;
-        return false;
+        return null;
       }
-      canonical += truncateSurrogateSafe(line, remaining);
+      const truncated = truncateSurrogateSafe(line, remaining);
+      canonical += truncated;
       exhausted = true;
-      return false;
+      return truncated;
     }
     canonical += line;
-    return true;
+    return line;
   };
 
   // 1. visibleText（第一个 text section）
   const visible = normalizeCaptureText(snapshot.visibleText ?? '');
   if (visible !== '') {
-    textSections.push(visible);
-    append(`[text] ${visible}\n`);
+    const added = append(`[text] ${visible}\n`);
+    if (added !== null) {
+      textSections.push(added.slice(7, -1)); // 移除 '[text] ' 前缀和 '\n' 后缀
+    }
   }
 
   // 2. headings（快照顺序）
@@ -210,8 +215,11 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
   for (const heading of headings) {
     const text = normalizeCaptureText(heading.text);
     if (text === '') continue;
-    textSections.push(text);
-    if (!append(`[heading] ${text}\n`)) break;
+    const line = `[heading] ${text}\n`;
+    const added = append(line);
+    if (added === null) break;
+    textSections.push(added.slice(10, -1)); // 移除 '[heading] ' 前缀（10 字节）和 '\n' 后缀
+    if (added === line) headingCount++;
   }
 
   // 3. tables（表头 + row-major 单元格；预算内整表保留，否则整表丢弃）
@@ -249,8 +257,13 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
   for (const link of links) {
     const text = normalizeCaptureText(link.text);
     if (text === '') continue;
-    textSections.push(text);
-    if (!append(`[link] ${text} ${normalizeUrlText(link.href)}\n`)) break;
+    const url = normalizeUrlText(link.href);
+    const added = append(`[link] ${text} ${url}\n`);
+    if (added === null) break;
+    // 检查 link text 是否完整进入 canonicalText
+    if (added.includes(text)) {
+      textSections.push(text);
+    }
   }
 
   // 5. 闭合字段（固定键序；所有字段值必须实际进入 canonicalText）
@@ -272,8 +285,13 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
     if (h !== '') fieldEntries.push(['links[0].href', h]);
   }
   for (const [key, value] of fieldEntries) {
-    if (!append(`[field] ${key}=${value}\n`)) break;
-    fields[key] = value;
+    const line = `[field] ${key}=${value}\n`;
+    const added = append(line);
+    if (added === null) break;
+    // 仅当完整行写入后才登记 field（部分写入时 value 未完全进入哈希）
+    if (added === line) {
+      fields[key] = value;
+    }
   }
 
   return {
@@ -282,14 +300,15 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
     textSections,
     tables,
     fields,
+    headingCount,
   };
 }
 
-export function buildCaptureSummary(content: CaptureContent, headingCount: number): CaptureSummary {
+export function buildCaptureSummary(content: CaptureContent): CaptureSummary {
   return {
     sectionCount: content.textSections.length,
     tableCount: content.tables.length,
-    headingCount,
+    headingCount: content.headingCount,
     charCount: content.canonicalText.length,
   };
 }
@@ -628,11 +647,6 @@ export class CaptureService {
 
       // 7. 成功 Capture 组装（主进程盖章）
       const built = buildCaptureContent(snapshot, captureId);
-      let headingCount = 0;
-      const headings = Array.isArray(snapshot.headings) ? snapshot.headings : [];
-      for (const heading of headings) {
-        if (normalizeCaptureText(heading.text) !== '') headingCount += 1;
-      }
       const capture: Capture = {
         captureId,
         taskId: this.workspace.taskId,
@@ -643,7 +657,7 @@ export class CaptureService {
         accessTime: new Date(snapshot.meta.capturedAt).toISOString(),
         documentId: String(snapshot.meta.documentId),
         contentHash: sha256hex(built.canonicalText),
-        summary: buildCaptureSummary(built, headingCount),
+        summary: buildCaptureSummary(built),
         failed: false,
         failureReason: null,
       };

@@ -8,6 +8,7 @@ import type { SourceCandidate } from '../../shared/types/research';
 import { MAX_PAGE_CAPTURE_CHARS } from '../../shared/types/research';
 import {
   buildCaptureContent,
+  buildCaptureSummary,
   CAPTURE_EMPTY_CONTENT_HASH,
   CAPTURE_SENTINEL_DOCUMENT_ID,
   CAPTURE_SENTINEL_TAB_ID,
@@ -907,6 +908,121 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
     expect(isHighSurrogate).toBe(false);
   });
 
+  it('预算耗尽后 textSections 每项都是 canonicalText 的连续子串（未哈希内容不进入 textSections）', () => {
+    const bigText = '长'.repeat(70_000);
+    const snapshot = makeSnapshot({
+      visibleText: bigText,
+      headings: [
+        { level: 1, text: '预算内标题' },
+        { level: 2, text: '预算外标题' },
+      ],
+      links: [
+        { id: 'el-1', text: '预算内链接', href: 'https://example.com/in' },
+        { id: 'el-2', text: '预算外链接', href: 'https://example.com/out' },
+      ],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-1');
+    // 每个 textSection 必须是 canonicalText 的连续子串
+    for (const section of content.textSections) {
+      expect(content.canonicalText.includes(section)).toBe(true);
+    }
+    // 预算外 heading 不应出现在 textSections 中
+    expect(content.textSections.some((s) => s.includes('预算外标题'))).toBe(false);
+    // 预算外链接文本不应出现在 textSections 中
+    expect(content.textSections.some((s) => s.includes('预算外链接'))).toBe(false);
+    // headingCount 只反映实际进入预算的 heading（visibleText 70k 已耗尽预算，heading 零进入）
+    expect(content.headingCount).toBe(0);
+    // canonicalText 长度 ≤ 预算
+    expect(content.canonicalText.length).toBeLessThanOrEqual(MAX_PAGE_CAPTURE_CHARS);
+  });
+
+  it('heading 预算边界：预算在 heading 行内耗尽时该 heading 不进入 textSections，headingCount 不计数', () => {
+    // 预算 = 60000；[text] 标签长 7；正文填至 59994，余 6 字节
+    // [heading] 完整\n = 13 字节 > 6 → 部分写入 `[head`（6 字节），不计数
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 6); // 59986
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [{ level: 1, text: '完整' }],
+      tables: [],
+      links: [],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-1');
+    expect(content.textSections.some((s) => s.includes('完整'))).toBe(false);
+    expect(content.headingCount).toBe(0);
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+  });
+
+  it('link 预算边界：预算在 link 行内耗尽时该 link 不进入 textSections', () => {
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 6); // 59986
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [],
+      tables: [],
+      links: [{ id: 'el-1', text: '链接文本', href: 'https://example.com/link' }],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-1');
+    expect(content.textSections.some((s) => s.includes('链接文本'))).toBe(false);
+    // canonicalText 应包含部分写入的 link 标签（填充至预算）
+    expect(content.canonicalText).toContain('[link]');
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+  });
+
+  it('field 部分写入原子性：field 行未完整写入时该 field 不登记', () => {
+    // 预算 = 60000；[text] 标签 7 字节；正文填至 59988，余 12 字节
+    // 无 heading/table/link 干扰，field 行是下一个条目
+    // [field] page.url=https://example.com/article\n = 45 字节 → 放不下，部分写入 `[field] page.`
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 12); // 59980
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [],
+      tables: [],
+      links: [],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-1');
+    // page.url 字段行因预算不足未完整写入 → fields 中不应出现
+    expect('page.url' in content.fields).toBe(false);
+    expect('page.title' in content.fields).toBe(false);
+    // 部分写入的 field 标签应出现在 canonicalText 中，但完整字段值不登记
+    expect(content.canonicalText).toContain('[field]');
+    expect(content.canonicalText.length).toBe(MAX_PAGE_CAPTURE_CHARS);
+  });
+
+  it('所有条目类型在预算边界上的综合验证：textSections/tables/fields 全部在 canonicalText 哈希内', () => {
+    // 预算 = 60000；[text] 7 字节；正文填至 59990，余 10 字节
+    const prefix = 'x'.repeat(MAX_PAGE_CAPTURE_CHARS - 7 - 1 - 10); // 59982
+    const snapshot = makeSnapshot({
+      visibleText: prefix,
+      headings: [
+        { level: 1, text: '标题' }, // [heading] 标题\n = 13 > 10 → 部分写入，不计数
+      ],
+      tables: [],
+      links: [],
+    });
+    const content = buildCaptureContent(snapshot, 'cap-1');
+    // 所有 textSections 都是 canonicalText 连续子串
+    for (const section of content.textSections) {
+      expect(content.canonicalText.includes(section)).toBe(true);
+    }
+    // 所有 tables 的值都在 canonicalText 中
+    for (const table of content.tables) {
+      for (const h of table.headers) {
+        expect(content.canonicalText.includes(h)).toBe(true);
+      }
+      for (const row of table.rows) {
+        for (const cell of row) {
+          expect(content.canonicalText.includes(cell)).toBe(true);
+        }
+      }
+    }
+    // 所有 fields 的值都在 canonicalText 中
+    for (const value of Object.values(content.fields)) {
+      expect(content.canonicalText.includes(value)).toBe(true);
+    }
+    // headingCount 只反映实际进入预算的 heading
+    expect(content.headingCount).toBe(0);
+    expect(content.canonicalText.length).toBeLessThanOrEqual(MAX_PAGE_CAPTURE_CHARS);
+  });
+
   it('contentHash 确定性：同输入同输出；输入不同哈希不同', () => {
     const a = buildCaptureContent(makeSnapshot(), 'cap-a');
     const b = buildCaptureContent(makeSnapshot(), 'cap-b');
@@ -922,17 +1038,15 @@ describe('buildCaptureContent 规范化/预算/哈希覆盖', () => {
 
   it('summary 语义（决议 #128）：tableCount = 表格数量（非单元格）；headingCount = 保留 heading 数；charCount = canonicalText.length', () => {
     const content = buildCaptureContent(makeSnapshot(), 'cap-1');
-    const headings = makeSnapshot().headings.length;
-    expect(content.textSections.length).toBe(1 + headings + 1 + 2);
-    const { sectionCount, tableCount, headingCount, charCount } = {
-      sectionCount: content.textSections.length,
-      tableCount: content.tables.length,
-      headingCount: headings,
-      charCount: content.canonicalText.length,
-    };
-    expect(sectionCount).toBe(6);
-    expect(tableCount).toBe(1); // 1 个表格，不是 6 个单元格
-    expect(headingCount).toBe(2);
-    expect(charCount).toBe(content.canonicalText.length);
+    expect(content.textSections.length).toBe(1 + 2 + 1 + 2);
+    expect(content.headingCount).toBe(2);
+    expect(content.tables.length).toBe(1); // 1 个表格，不是 6 个单元格
+    expect(content.canonicalText.length).toBeGreaterThan(0);
+    // buildCaptureSummary 使用 content.headingCount
+    const summary = buildCaptureSummary(content);
+    expect(summary.sectionCount).toBe(content.textSections.length);
+    expect(summary.tableCount).toBe(content.tables.length);
+    expect(summary.headingCount).toBe(content.headingCount);
+    expect(summary.charCount).toBe(content.canonicalText.length);
   });
 });

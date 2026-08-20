@@ -161,6 +161,7 @@ function successCapture(
       textSections: [excerpt],
       tables: [],
       fields: { 'page.url': url, 'page.title': '页面' },
+      headingCount: 0,
     },
     warnings: [],
   };

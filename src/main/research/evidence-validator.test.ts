@@ -7,8 +7,14 @@ import {
   MAX_EVIDENCE_EXCERPT_CHARS,
   MAX_EVIDENCE_FIELD_VALUE_CHARS,
 } from '../../shared/types/research';
+import type { PageSnapshot } from '../../shared/types/browser';
 import { verifyEvidence, REJECTION_REASONS, type EvidenceVerifyInput } from './evidence-validator';
-import { normalizeCaptureText, type CaptureContent, type CaptureTable } from './capture-service';
+import {
+  buildCaptureContent,
+  normalizeCaptureText,
+  type CaptureContent,
+  type CaptureTable,
+} from './capture-service';
 
 const TASK_ID = 'task-00000000-0000-4000-8000-000000000001';
 const EVIDENCE_ID = 'evid-00000000-0000-4000-8000-000000000001';
@@ -92,6 +98,7 @@ function makeContent(over: Partial<CaptureContent> = {}): CaptureContent {
       'tables[1].cell[0][0]': '丙',
       'tables[1].cell[0][1]': '300',
     },
+    headingCount: 1,
     ...over,
   };
 }
@@ -202,6 +209,43 @@ describe('EvidenceValidator.verify（决议 #130 校验顺序）', () => {
           type: 'quote',
           locator: { kind: 'text', excerpt: '不存在的文本' },
           excerpt: '不存在的文本',
+        },
+      }),
+    );
+    expectRejected(result, 'excerpt-not-in-content');
+  });
+
+  it('超预算正文尾部不可作为证据（未进入 contentHash 覆盖）', () => {
+    // visibleText 前 60k 为"长"、后 10k 为"尾"——"尾"序列在原始输入中但超出 60k 预算
+    const visibleText = '长'.repeat(60_000) + '尾'.repeat(10_000);
+    const snapshot: PageSnapshot = {
+      url: 'https://example.com/article',
+      title: '标题',
+      visibleText,
+      headings: [],
+      links: [],
+      tables: [],
+      buttons: [],
+      meta: {
+        capturedAt: Date.parse('2026-08-16T08:30:00.000Z'),
+        documentId: 7,
+        readyState: 'complete',
+        degraded: 'none',
+        warnings: [],
+      },
+    };
+    const content = buildCaptureContent(snapshot, CAPTURE_ID);
+    // tailExcerpt 是原始快照中"尾"字符序列（位于预算外），旧实现会错误接受
+    const tailExcerpt = '尾'.repeat(100);
+    const result = verifyEvidence(
+      makeInput({
+        contents: new Map([[CAPTURE_ID, content]]),
+        proposal: {
+          captureId: CAPTURE_ID,
+          candidateId: CANDIDATE_ID,
+          type: 'quote',
+          locator: { kind: 'text', excerpt: tailExcerpt },
+          excerpt: tailExcerpt,
         },
       }),
     );
