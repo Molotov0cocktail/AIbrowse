@@ -98,7 +98,6 @@ function makeContent(over: Partial<CaptureContent> = {}): CaptureContent {
       'tables[1].cell[0][0]': '丙',
       'tables[1].cell[0][1]': '300',
     },
-    headingCount: 1,
     ...over,
   };
 }

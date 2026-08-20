@@ -100,7 +100,6 @@ export interface CaptureContent {
   textSections: string[]; // 非空、独立规范化的章节；每项都是 canonicalText 的连续子串
   tables: CaptureTable[]; // 实际保留的表格（预算内整表保留）
   fields: Record<string, string>; // 闭合字段路径 → 规范值
-  headingCount: number; // 实际进入预算的 heading 数
 }
 
 // ---------- 读取结果（决议 #125：冻结判别联合，禁 throw 作预期失败控制流） ----------
@@ -181,8 +180,6 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
   const fields: Record<string, string> = {};
   let canonical = '';
   let exhausted = false;
-  let headingCount = 0;
-
   // 追加一个条目行；返回实际追加的文本（null=已耗尽，string=实际追加内容，可能截断）
   const append = (line: string): string | null => {
     if (exhausted) return null;
@@ -218,8 +215,10 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
     const line = `[heading] ${text}\n`;
     const added = append(line);
     if (added === null) break;
-    textSections.push(added.slice(10, -1)); // 移除 '[heading] ' 前缀（10 字节）和 '\n' 后缀
-    if (added === line) headingCount++;
+    // 仅当完整 heading 行写入后才登记（防止部分 payload/缺换行/空 section）
+    if (added === line) {
+      textSections.push(text);
+    }
   }
 
   // 3. tables（表头 + row-major 单元格；预算内整表保留，否则整表丢弃）
@@ -258,10 +257,11 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
     const text = normalizeCaptureText(link.text);
     if (text === '') continue;
     const url = normalizeUrlText(link.href);
-    const added = append(`[link] ${text} ${url}\n`);
+    const line = `[link] ${text} ${url}\n`;
+    const added = append(line);
     if (added === null) break;
-    // 检查 link text 是否完整进入 canonicalText
-    if (added.includes(text)) {
+    // 检查 link text 是否完整出现在标签之后（防止标签前缀子串碰撞）
+    if (added.includes(`[link] ${text}`)) {
       textSections.push(text);
     }
   }
@@ -300,15 +300,14 @@ export function buildCaptureContent(snapshot: PageSnapshot, captureId: string): 
     textSections,
     tables,
     fields,
-    headingCount,
   };
 }
 
-export function buildCaptureSummary(content: CaptureContent): CaptureSummary {
+export function buildCaptureSummary(content: CaptureContent, headingCount: number): CaptureSummary {
   return {
     sectionCount: content.textSections.length,
     tableCount: content.tables.length,
-    headingCount: content.headingCount,
+    headingCount,
     charCount: content.canonicalText.length,
   };
 }
@@ -647,6 +646,14 @@ export class CaptureService {
 
       // 7. 成功 Capture 组装（主进程盖章）
       const built = buildCaptureContent(snapshot, captureId);
+      // 计算实际进入预算的 heading 数（通过 canonicalText 中 [heading] 标签出现次数验证）
+      let headingCount = 0;
+      const snapshotHeadings = Array.isArray(snapshot.headings) ? snapshot.headings : [];
+      for (const heading of snapshotHeadings) {
+        const t = normalizeCaptureText(heading.text);
+        if (t === '') continue;
+        if (built.canonicalText.includes(`[heading] ${t}`)) headingCount++;
+      }
       const capture: Capture = {
         captureId,
         taskId: this.workspace.taskId,
@@ -657,7 +664,7 @@ export class CaptureService {
         accessTime: new Date(snapshot.meta.capturedAt).toISOString(),
         documentId: String(snapshot.meta.documentId),
         contentHash: sha256hex(built.canonicalText),
-        summary: buildCaptureSummary(built),
+        summary: buildCaptureSummary(built, headingCount),
         failed: false,
         failureReason: null,
       };
