@@ -347,3 +347,105 @@ format、build、dev+production 冒烟、跨进程门控、红线/隐私扫描�
 
 未满足 PASS、HEAD 已变化、验证失败或需要新决策时立即停止，返回 Reviewer/Planner。
 ```
+
+## 15. 统一 Handoff / Next Prompt 协议
+
+> 本节是角色移交详细协议的唯一权威源，适用于第 7～14 节及临时定义的 Planner、Executor、
+> Repair Worker、Reviewer、Closer、Stage Auditor 等角色。`HANDOFF` 是当前报告中的临时交接物，
+> 不新增 `handoff.md`、state、checklist、summary 或其他长期事实源，也不替代 FINAL EVIDENCE、
+> Reviewer Report、正式 Contract、`progress.md` 或 Git。
+
+### 15.1 触发条件与统一格式
+
+任何 Agent 完成一项需要另一 Agent/角色接续的工作，或到达只能由用户采取动作的终点时，必须在
+最终报告末尾输出一个 `HANDOFF` 区块。区块必须由当前 Agent 根据刚刚实际核验的仓库状态和本轮
+结果生成，使用户只需原样复制粘贴，不必概括报告、挑选重点、补技术参数或改写 Contract。
+
+````markdown
+HANDOFF
+
+NEXT ROLE: <Planner | Executor | Repair Worker | Reviewer | Closer | Stage Auditor | USER>
+
+CONVERSATION ROUTE: <SAME_CONVERSATION | NEW_CONVERSATION>
+
+ROUTE REASON: <唯一推荐的简短具体原因；SAME 时指出应返回哪个已有对话>
+
+COPY-PASTE PROMPT
+
+```text
+<下一 Agent 可原样执行的完整 prompt；实际输出不得保留待用户填写的占位符>
+```
+
+RESULT ATTACHMENT: <NONE | 将本轮完整 FINAL EVIDENCE / Reviewer Report 原样附在上述 prompt 后>
+````
+
+- `SAME_CONVERSATION` 指继续**明确可识别的目标角色既有对话**，可能是返回先前的 Planner、
+  Executor 或 Repair 对话，并不机械等于继续当前 Agent 所在对话；`ROUTE REASON` 必须说清目标。
+- `NEW_CONVERSATION` 指为下一角色创建全新上下文。每次只能给出一个路由，不得同时给两个选项或
+  把判断留给用户。
+- `NEXT ROLE: USER` 时仍保留唯一 conversation route，用它指明用户应在哪个对话完成裁决或提供
+  外部条件；`COPY-PASTE PROMPT` 写明 `NOT GENERATED` 及原因，不得伪造一个可执行的 Agent prompt。
+- `RESULT ATTACHMENT` 是必填项。prompt 已可靠包含全部必要事实时写 `NONE`；上游报告较长且压缩会
+  增加失真风险时，精确要求用户把本轮完整 FINAL EVIDENCE 或 Reviewer Report 原样附后，不得要求
+  用户自行摘录。即使使用附件，主 prompt 仍须写明报告身份、准确 baseline/HEAD、verdict 和范围。
+
+### 15.2 Conversation Route 判定
+
+路由必须继承 `AGENTS.md` 的现有独立性与角色规则，按当前任务、现有对话所有权和上下文污染风险
+逐次判断，不能只按角色名称机械映射：
+
+1. 有强制独立性要求时一律 `NEW_CONVERSATION`。Stage Auditor 永远使用新的独立 Sol 上下文；
+   安全/隐私关键、数据迁移或持久化高风险、大规模架构变化、Stage Exit Gate 及用户明确要求独立
+   验收的 Reviewer，继续强制新上下文。
+2. 没有独立性要求，且存在一个已知的目标角色对话，该对话仍拥有当前 Contract/裁决、连续性有益
+   且旧假设不会污染下一动作时，推荐 `SAME_CONVERSATION`。
+3. 不存在可继续的目标对话、开始新的独立可验证闭环，或旧上下文的假设/失败历史可能污染结构性
+   重做时，推荐 `NEW_CONVERSATION`。REPLAN 尤其要显式评估这一风险。
+4. 等待产品裁决、Stage 完成等待用户明确切换、外部账号/凭据/权限阻塞或没有合法下一 Agent 时，
+   `NEXT ROLE` 为 `USER`，不得用 Agent prompt 绕过等待条件。
+
+常见路径只提供判断基线，不覆盖上述规则：
+
+| 当前结果                        | 下一角色与通常路由判断                                                           |
+| ------------------------------- | -------------------------------------------------------------------------------- |
+| Planner 批准 Execution Contract | 交给 Executor；首次启动通常 NEW，向原 Executor 下发 Amendment 通常 SAME。        |
+| Executor 完成候选               | 交给 Reviewer；普通任务可返回原 Sol 对话 SAME，命中强制独立规则则 NEW。          |
+| Reviewer `REPAIR`               | 交给 Repair Worker；原 Worker 可继续有界修复且上下文有效时 SAME，否则 NEW。      |
+| Reviewer `REPLAN`               | 交给 Planner；原 Planner 能无污染重开规划时可 SAME，结构性旧假设可能污染时 NEW。 |
+| Executor `STOP/ESCALATE`        | 返回拥有 Contract 的 Planner 通常 SAME；只传证据，不替 Planner 裁决。            |
+| Reviewer `PASS`                 | 交给 Closer；可返回已有且获批准的确定性收尾角色 SAME，否则 NEW。                 |
+| Closer 完成                     | 依据下一唯一任务判断；新独立闭环通常 NEW，不能自动进入下一 Stage。               |
+| Stage Auditor `HOLD`            | 交给有权处理结论的 Planner/Repair 流程；修复后的重新审计仍必须 NEW。             |
+| Stage Auditor `PASS`            | `NEXT ROLE: USER`，等待用户明确阶段切换，不生成下一 Stage Agent prompt。         |
+
+### 15.3 Copy-Paste Prompt 内容
+
+当前 Agent 必须把已经存在且经本轮核验的事实直接写进 prompt；至少覆盖与下一动作相关的项目：
+
+- 下一角色、任务目标与本轮结论；
+- repository/workspace、branch、baseline SHA、candidate/HEAD SHA 和工作区状态；
+- Reviewer verdict、批准范围、Execution/Repair Contract、STOP/ESCALATE finding 或 PASS 后获批的
+  closure scope；
+- 权威文档/报告、明确非目标、红线、验证要求、停止/升级条件和所需最终证据；
+- 要求下一角色先按自己的职责复核机器事实，不把上游自述直接当证据；
+- 要求下一角色完成后继续按本节生成自己的 `HANDOFF`。
+
+只写本路径实际需要的字段，不复制大量无关模板。prompt 中不得留下要求用户填写的 `<SHA>`、
+`<报告摘要>`、`<在此粘贴 Contract>` 等占位符。若 `DOC_GATE_SHA`、candidate SHA、正式 verdict、
+Contract 或其他启动前提尚不存在，不得编造或宣称下一步可开始；应把 prompt 交给有权建立该事实的
+角色，或将 `NEXT ROLE` 设为 `USER`，并在真正取得前提后再生成后续执行 prompt。
+
+### 15.4 Prompt Authority
+
+Handoff prompt 只能包装已经批准的正式 Contract、传递当前机器事实、指定下一角色与动作，并重申
+既有边界和停止条件。生成者不得借移交之机：
+
+- 新增设计决定、扩大 scope、覆盖 Stage/design/threat/task 等正式契约；
+- 把 Executor/Repair Worker 自述、绿灯或 candidate commit 提升为 Reviewer `PASS`；
+- 绕过 Reviewer gate、独立审计要求、Closer 的 PASS 前置条件或必须由用户裁决的事项；
+- 在 `REPLAN` 时替 Planner 设计新方案；prompt 只能要求 Planner 独立调查并形成新 Contract；
+- 在 `STOP/ESCALATE` 时替有权角色裁决；prompt 只能传递准确 finding、证据、影响与待决问题。
+
+Reviewer `PASS` 生成的 Closer prompt 必须绑定被审核的准确 HEAD 和明确获批的 closure scope；
+Reviewer `REPAIR` 生成的 Repair prompt 必须原样保持有界 Repair Contract；Stage Auditor 的 HOLD/PASS
+不得被包装成产品完成或下一 Stage 启动授权。
