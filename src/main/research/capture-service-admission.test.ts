@@ -45,7 +45,7 @@ describe('隔离小预算：visible prefix 边界（统一 admission 零写入�
     expect(c.canonicalText.length).toBe(0);
   });
 
-  it('P2 预算不足且 payload 为 surrogate（无 surrogate-safe 字符可进入）→ 零写入、零登记', () => {
+  it('P2 surrogate payload 仍先命中 prefix 未完整（预算 6 < prefix 7）→ 零写入、零登记', () => {
     const c = buildCaptureContent(makeSnap('𝄞'), 'cap-p2');
     expect(c.canonicalText).toBe('');
     expect(c.textSections).toEqual([]);
