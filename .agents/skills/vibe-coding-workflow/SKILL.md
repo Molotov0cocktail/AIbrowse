@@ -14,6 +14,10 @@ single prompt would create too much ambiguity, context pressure, or unreviewable
 - Do not start implementation until the goal, scope, and success criteria are clear enough to test.
 - Keep project knowledge in files, not only in chat. Use `doc/` for planning artifacts and update existing project state files when present.
 - Make every phase produce an artifact that the next phase consumes.
+- Separate handoff ownership from execution: Planner, Reviewer, Auditor, triage, and other
+  decision/coordination roles must generate the next role's complete copy-paste prompt and choose
+  the conversation route; bounded Executor, Repair Worker, Closer, and other execution-only roles
+  return their completion evidence and stop. Follow `references/prompt-templates.md` section 15.
 - Keep tasks small, but make each task a complete, machine-verifiable loop with an explicit goal, scope, non-goals, modules involved, acceptance criteria, verification, and definition of done — not mechanically one file or one module.
 - Treat AI output as a draft until verified with diffs, tests, lint, type checks, and runtime checks.
 - Pause and ask the user when a requirement, product decision, data contract, destructive action, or external dependency is unclear.

@@ -217,11 +217,13 @@ FINAL EVIDENCE
 模板位置：`.agents/skills/vibe-coding-workflow/references/prompt-templates.md`。模板不写动态 HEAD、
 当前任务状态、临时测试数字或凭据。
 
-任何 Agent 完成需要另一 Agent/角色接续的工作时，最终报告必须依据本轮实际核验结果生成
-`HANDOFF`：明确下一角色、唯一的 `SAME_CONVERSATION` / `NEW_CONVERSATION` 建议及原因，并给出
-下一 Agent 可原样执行、已填入当前机器事实的完整 prompt；用户不得被要求重新总结或补写技术参数。
-独立性继续以本文件为准；缺失事实不得编造，无合法下一 Agent 时必须转交 `USER` 而非生成越权
-prompt。详细格式、路由判断、权限边界与报告附件规则的唯一权威源为
+Planner、Reviewer、Stage Auditor、Bug Triage 等决策/编排/裁决角色完成任务时，必须依据本轮实际
+核验结果生成 `HANDOFF`：明确下一任务和角色、唯一的 `SAME_CONVERSATION` /
+`NEW_CONVERSATION` 路由及原因，并在任何 Executor/Repair Worker/Closer 开工前给出可原样执行、
+已填入当前机器事实的完整 prompt；用户不得被要求重新总结或补写技术参数。纯执行角色是明确例外：
+Executor、Repair Worker、Closer 及其他仅应用已批准 Contract 的 Worker 只返回完成报告/证据并
+停止，不替下一裁决角色选择任务、路由或生成 prompt。独立性继续以本文件为准；缺失事实不得编造，
+无合法下一 Agent 时必须转交 `USER`。详细角色归属、格式、路由、权限边界与附件规则的唯一权威源为
 `.agents/skills/vibe-coding-workflow/references/prompt-templates.md` §15。
 
 ### 2.5 执行、审核与修复循环

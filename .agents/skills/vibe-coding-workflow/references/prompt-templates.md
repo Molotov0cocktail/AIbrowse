@@ -183,6 +183,9 @@ STOP / ESCALATE CONDITIONS
 FINAL EVIDENCE
 
 - Executor 必须返回的 candidate commits、命令与结果、diff 自审、剩余风险和工作区状态。
+
+完成规划时，按第 15 节生成交给 Executor 的 `HANDOFF`。完整执行 prompt 必须在 Executor 开工前
+由 Planner 写好，不能只输出 Contract 后让用户或 Executor 自行补齐任务边界。
 ```
 
 ## 8. Executor 模板
@@ -201,6 +204,8 @@ FINAL EVIDENCE
 5. 审阅 baseline..HEAD 与工作区 diff，清理垃圾文件和敏感信息。
 6. 创建有界 local logical candidate commit(s)，不要 push；完成后 STOP。
 7. FINAL EVIDENCE 按 Contract 结构返回，不把自述当作 PASS。
+8. 你是纯执行角色：只返回完成报告/FINAL EVIDENCE 并停止，不选择下一任务、对话路由或生成
+   Reviewer/Planner/Closer prompt。
 
 必须停止并返回 Planner：Contract/正式文档/代码实质冲突；需要改架构/公共接口/安全边界；
 显著扩范围；测试疑似违背契约；同一根因连续两轮失败；存在两个长期方案；需要用户裁决、
@@ -240,6 +245,10 @@ FINAL EVIDENCE
 若 REPAIR，附一个有界 Repair Contract；若 REPLAN，指出必须由 Planner 重做的决策；
 Reviewer 未 PASS 前不得 push 候选完成状态。
 
+完成裁决时，按第 15 节生成唯一 `HANDOFF`：PASS 交给 Closer，REPAIR 交给 Repair Worker，
+REPLAN 交给 Planner，BLOCKED 交给有权解除阻塞的角色或 USER。若下一角色是执行者，必须在其
+开工前写好可原样执行的完整 prompt。
+
 <在此附 Execution Contract 与 Executor FINAL EVIDENCE>
 ```
 
@@ -276,7 +285,8 @@ STOP CONDITIONS
 
 - 发现根因不同、范围扩大、契约冲突或同根因第二轮仍失败时停止返回 Planner/Reviewer。
 
-完成后：运行要求验证、审阅 diff、创建本地修复候选提交、不要 push，返回结构化证据并等待重审。
+完成后：运行要求验证、审阅 diff、创建本地修复候选提交、不要 push，只返回结构化证据并等待
+重审；你是纯执行角色，不选择下一任务、对话路由或生成后续 prompt。
 ```
 
 ## 11. Stage Auditor 模板
@@ -300,6 +310,9 @@ format、build、dev+production 冒烟、跨进程门控、红线/隐私扫描�
 
 结论只能为 GO/PASS 或 HOLD/PENDING。发现产品缺陷时停止验收，返回 REPAIR/REPLAN，
 修复后必须重新独立复验。PASS 后只做批准的文档收尾，不进入下一 Stage；等待用户切换指令。
+
+完成审计时，按第 15 节生成唯一 `HANDOFF`。需要修复或收尾时，在执行者开工前写好完整 prompt；
+Stage PASS 且必须等待用户切换时明确转交 USER，不得生成下一 Stage 的越权 prompt。
 ```
 
 ## 12. Bug Triage 模板
@@ -314,6 +327,9 @@ format、build、dev+production 冒烟、跨进程门控、红线/隐私扫描�
 5. 输出根因证据、影响范围、风险级别和一个有界 Repair Execution Contract。
 
 若无法稳定复现，明确已验证事实、尚缺证据与下一最小诊断动作；不得凭猜测改代码。
+
+完成诊断时，按第 15 节生成唯一 `HANDOFF`；若批准 Executor/Repair Worker 开工，必须同时给出
+可原样执行的完整 prompt。
 ```
 
 ## 13. Feature Change 模板
@@ -331,6 +347,9 @@ format、build、dev+production 冒烟、跨进程门控、红线/隐私扫描�
 
 输出必要的正式文档变更建议和一个 Execution Contract。Planner 阶段不顺手实现产品代码，
 不把后续 Stage 内容夹带进当前闭环。
+
+完成规划时，按第 15 节生成唯一 `HANDOFF`；若下一步是 Executor，必须在其开工前给出可原样执行
+的完整 prompt。
 ```
 
 ## 14. Closer 模板
@@ -343,28 +362,46 @@ format、build、dev+production 冒烟、跨进程门控、红线/隐私扫描�
 3. 运行批准的最终状态检查：diff/status、格式、敏感信息、垃圾文件和必要验证。
 4. 创建确定性的收尾提交；不得改产品行为、重写候选历史或扩大范围。
 5. 按项目代理规则推送 Gitee 与 GitHub；任一失败如实报告并保留可恢复本地状态。
-6. 报告最终 HEAD、远程状态、工作区、验证结果、剩余风险和下一唯一任务。
+6. 报告最终 HEAD、远程状态、工作区、验证结果、剩余风险和正式事实源中的下一唯一任务。
 
 未满足 PASS、HEAD 已变化、验证失败或需要新决策时立即停止，返回 Reviewer/Planner。
+Closer 是纯执行角色：只返回收尾完成报告或阻塞证据，不选择下一 Agent、对话路由或生成 prompt。
 ```
 
 ## 15. 统一 Handoff / Next Prompt 协议
 
-> 本节是角色移交详细协议的唯一权威源，适用于第 7～14 节及临时定义的 Planner、Executor、
-> Repair Worker、Reviewer、Closer、Stage Auditor 等角色。`HANDOFF` 是当前报告中的临时交接物，
-> 不新增 `handoff.md`、state、checklist、summary 或其他长期事实源，也不替代 FINAL EVIDENCE、
-> Reviewer Report、正式 Contract、`progress.md` 或 Git。
+> 本节是角色移交详细协议的唯一权威源，适用于第 7～14 节及临时定义的相同职责角色。
+> `HANDOFF` 是当前报告中的临时交接物，不新增 `handoff.md`、state、checklist、summary 或其他
+> 长期事实源，也不替代 FINAL EVIDENCE、Reviewer Report、正式 Contract、`progress.md` 或 Git。
 
-### 15.1 触发条件与统一格式
+### 15.1 Handoff 所有权与执行角色例外
 
-任何 Agent 完成一项需要另一 Agent/角色接续的工作，或到达只能由用户采取动作的终点时，必须在
-最终报告末尾输出一个 `HANDOFF` 区块。区块必须由当前 Agent 根据刚刚实际核验的仓库状态和本轮
-结果生成，使用户只需原样复制粘贴，不必概括报告、挑选重点、补技术参数或改写 Contract。
+下列角色是 handoff owner：Planner、Reviewer、Stage Auditor、Bug Triage Planner、Feature Change
+Planner，以及任何获授权选择下一任务、scope、gate 或角色的临时决策/编排/裁决角色。它们完成一项
+工作且存在合法下一动作时，必须在最终报告末尾输出 `HANDOFF`。到达只能由用户裁决的终点时也必须
+输出 `HANDOFF`，但下一角色设为 `USER`。
+
+下列纯执行角色是明确例外：bounded Executor、Repair Worker、Closer，以及任何职责仅为应用已批准
+Contract 的确定性 Worker。它们只返回 Contract 要求的完成报告、FINAL EVIDENCE 或阻塞证据并
+停止，不得选择下一任务/角色、判断 conversation route 或生成下游 prompt。它们可以说明“等待独立
+Reviewer”或“返回 Contract owner”，但不能替 Reviewer/Planner/Auditor 做裁决。接收执行报告并拥有
+下一 gate 的决策/编排/裁决角色，在完成自己的核验或裁决后负责生成后续 `HANDOFF`。
+
+任何 handoff owner 让执行角色开工前，必须先写好可原样执行的完整 prompt。单独给出报告、finding、
+Contract 链接或“请交给 Executor”均不算完成移交；不得把任务边界、baseline、验证或停止条件留给
+用户或执行角色补写。
+
+### 15.2 统一格式
+
+`HANDOFF` 必须由当前 handoff owner 根据刚刚实际核验的仓库状态和本轮结果生成，使用户只需原样
+复制粘贴，不必概括报告、挑选重点、补技术参数或改写 Contract。
 
 ````markdown
 HANDOFF
 
 NEXT ROLE: <Planner | Executor | Repair Worker | Reviewer | Closer | Stage Auditor | USER>
+
+NEXT TASK: <下一角色应完成的唯一任务和边界>
 
 CONVERSATION ROUTE: <SAME_CONVERSATION | NEW_CONVERSATION>
 
@@ -389,7 +426,7 @@ RESULT ATTACHMENT: <NONE | 将本轮完整 FINAL EVIDENCE / Reviewer Report 原�
   增加失真风险时，精确要求用户把本轮完整 FINAL EVIDENCE 或 Reviewer Report 原样附后，不得要求
   用户自行摘录。即使使用附件，主 prompt 仍须写明报告身份、准确 baseline/HEAD、verdict 和范围。
 
-### 15.2 Conversation Route 判定
+### 15.3 Conversation Route 判定
 
 路由必须继承 `AGENTS.md` 的现有独立性与角色规则，按当前任务、现有对话所有权和上下文污染风险
 逐次判断，不能只按角色名称机械映射：
@@ -404,21 +441,23 @@ RESULT ATTACHMENT: <NONE | 将本轮完整 FINAL EVIDENCE / Reviewer Report 原�
 4. 等待产品裁决、Stage 完成等待用户明确切换、外部账号/凭据/权限阻塞或没有合法下一 Agent 时，
    `NEXT ROLE` 为 `USER`，不得用 Agent prompt 绕过等待条件。
 
-常见路径只提供判断基线，不覆盖上述规则：
+常见的 handoff-owner 路径只提供判断基线，不覆盖上述规则：
 
-| 当前结果                        | 下一角色与通常路由判断                                                           |
+| 当前 handoff owner 的结果       | 下一角色与通常路由判断                                                           |
 | ------------------------------- | -------------------------------------------------------------------------------- |
 | Planner 批准 Execution Contract | 交给 Executor；首次启动通常 NEW，向原 Executor 下发 Amendment 通常 SAME。        |
-| Executor 完成候选               | 交给 Reviewer；普通任务可返回原 Sol 对话 SAME，命中强制独立规则则 NEW。          |
 | Reviewer `REPAIR`               | 交给 Repair Worker；原 Worker 可继续有界修复且上下文有效时 SAME，否则 NEW。      |
 | Reviewer `REPLAN`               | 交给 Planner；原 Planner 能无污染重开规划时可 SAME，结构性旧假设可能污染时 NEW。 |
-| Executor `STOP/ESCALATE`        | 返回拥有 Contract 的 Planner 通常 SAME；只传证据，不替 Planner 裁决。            |
 | Reviewer `PASS`                 | 交给 Closer；可返回已有且获批准的确定性收尾角色 SAME，否则 NEW。                 |
-| Closer 完成                     | 依据下一唯一任务判断；新独立闭环通常 NEW，不能自动进入下一 Stage。               |
+| Reviewer `BLOCKED`              | 交给有权解除阻塞的角色；只能由用户解除时设为 USER。                              |
 | Stage Auditor `HOLD`            | 交给有权处理结论的 Planner/Repair 流程；修复后的重新审计仍必须 NEW。             |
 | Stage Auditor `PASS`            | `NEXT ROLE: USER`，等待用户明确阶段切换，不生成下一 Stage Agent prompt。         |
 
-### 15.3 Copy-Paste Prompt 内容
+Executor、Repair Worker 或 Closer 的完成/停止不属于上表的 `HANDOFF` 触发点：它们只交报告。下一
+个拥有 gate 的 Planner、Reviewer、Auditor 或其他编排角色取得该报告后，先完成自己的核验/裁决，再按
+本节生成 prompt；不得要求纯执行角色预判 verdict 或替独立 Reviewer 编写结论。
+
+### 15.4 Copy-Paste Prompt 内容
 
 当前 Agent 必须把已经存在且经本轮核验的事实直接写进 prompt；至少覆盖与下一动作相关的项目：
 
@@ -428,14 +467,15 @@ RESULT ATTACHMENT: <NONE | 将本轮完整 FINAL EVIDENCE / Reviewer Report 原�
   closure scope；
 - 权威文档/报告、明确非目标、红线、验证要求、停止/升级条件和所需最终证据；
 - 要求下一角色先按自己的职责复核机器事实，不把上游自述直接当证据；
-- 要求下一角色完成后继续按本节生成自己的 `HANDOFF`。
+- 若下一角色是 handoff owner，要求其完成后继续按本节生成 `HANDOFF`；若下一角色是纯执行角色，
+  明确要求其只返回完成报告/FINAL EVIDENCE 并停止，不生成下游 prompt。
 
 只写本路径实际需要的字段，不复制大量无关模板。prompt 中不得留下要求用户填写的 `<SHA>`、
 `<报告摘要>`、`<在此粘贴 Contract>` 等占位符。若 `DOC_GATE_SHA`、candidate SHA、正式 verdict、
 Contract 或其他启动前提尚不存在，不得编造或宣称下一步可开始；应把 prompt 交给有权建立该事实的
 角色，或将 `NEXT ROLE` 设为 `USER`，并在真正取得前提后再生成后续执行 prompt。
 
-### 15.4 Prompt Authority
+### 15.5 Prompt Authority
 
 Handoff prompt 只能包装已经批准的正式 Contract、传递当前机器事实、指定下一角色与动作，并重申
 既有边界和停止条件。生成者不得借移交之机：
