@@ -5,6 +5,7 @@ import { existsSync, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { BrowserControllerImpl } from './browser/browser-controller';
+import { handleUiBrowserContentVisible } from './browser/content-visible-ipc';
 import { AppSessionManager } from './browser/session-manager';
 import {
   getCurrentLogFilePath,
@@ -706,18 +707,15 @@ if (!gotLock) {
       browserController?.setContentBounds(payload as ContentBounds); // 非法值在 controller 内忽略 + warn
     });
     // C8 决议 #158(4)：受控 UI send 通道——payload 白名单只允许 {visible:boolean}；
-    // 其余形态拒绝 + warn（fail-closed）；仅供受信 UI 切换 WebContentsView 可见性
+    // 其余形态拒绝 + warn（fail-closed）；仅供受信 UI 切换 WebContentsView 可见性。
+    // 校验边界为纯逻辑（content-visible-ipc.ts——零 Electron import 单测全矩阵）；
+    // 此处只做事件解包与依赖委托（isTrustedSender/browserController），语义恒等
     ipcMain.on(IPC.UiBrowserContentVisible, (event, payload: unknown) => {
-      if (mainWindow === null || !isTrustedSender(event, mainWindow)) {
-        logWarn('main', `拒绝非主窗口的 IPC 消息：${IPC.UiBrowserContentVisible}`);
-        return;
-      }
-      const p = payload as { visible?: unknown } | null;
-      if (p === null || typeof p !== 'object' || typeof p.visible !== 'boolean') {
-        logWarn('main', `忽略非法 content-visible 载荷：${String(payload)}`);
-        return;
-      }
-      browserController?.setContentVisible(p.visible);
+      handleUiBrowserContentVisible(payload, {
+        isTrusted: mainWindow !== null && isTrustedSender(event, mainWindow),
+        warn: (message) => logWarn('main', message),
+        setContentVisible: (visible) => browserController?.setContentVisible(visible),
+      });
     });
     ipcMain.on(IPC.AppRendererReady, (event) => {
       if (mainWindow === null || !isTrustedSender(event, mainWindow)) {
