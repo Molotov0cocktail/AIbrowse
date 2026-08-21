@@ -239,7 +239,13 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
   8.19-A finally 修复 + index.ts 失败路径/互斥分支清理补齐——终检 TEMP/
   根目录日志/Electron 进程零残留）；真实 Provider 调用 **0 次**（8.19-B
   无真实 Provider 产品链路——FakeProvider 确定性脚本不冒充真实证据）。
-  证据见 C8 任务文档「红→绿证据」小节。
+  **C10 启动前补修已通过独立 Review（2026-08-21）**：候选 `71b5642`
+  补齐 service=null 时 create/start/stop/delete/export 五个写入口各恰好一条
+  脱敏审计（export 保持闭合错误联合映射 `internal`；get/result/list 零写
+  审计）；独立 Reviewer verdict=`PASS`，聚焦 **15/15**、全量
+  **95 files / 2192 tests**、typecheck/lint/format:check/build/diff-check
+  全部退出码 0，依赖/构建配置零变化，工作区干净。证据见 C8 任务文档
+  「红→绿证据」与「C10 启动前补修」小节。
   **C9 已完成（2026-08-18）**：8.20 全矩阵、隐私扫描、门控、真实运行器、
   两次完整真实 Provider 运行及两处真实运行发现的 C8 产品缺陷修复均已落地；
   机器证据见 C9 任务文档、threat-model §4.1、本文件最近验证条目与 Git。

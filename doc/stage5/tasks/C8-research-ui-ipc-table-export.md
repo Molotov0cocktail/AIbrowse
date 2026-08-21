@@ -175,3 +175,18 @@ C5（Service/事件）、C6（数据模型）、C7（Renderer 组件）。
   lint/format:check/build/diff-check 绿；dev + 生产默认冒烟（含 8.19-B）
   退出码 0；set/check 双进程退出码 0/0；终检 TEMP/根目录日志/Electron
   进程零残留。
+
+## C10 启动前补修（2026-08-21）
+
+- **根因与修复**：C10 启动门核验发现本地存在尚未完成 Review/推送闭环的
+  C8 候选提交 `71b5642`。该提交补齐 `service=null`（Research 服务未装配）
+  时五个写入口的审计：create/start/stop/delete 各返回
+  `research-unavailable`，export 保持闭合错误联合映射为 `internal`；五个
+  入口均在 fail-closed 返回前产生恰好一条脱敏审计，get/result/list 保持
+  零写审计。审计只接受 taskId、goal 长度、块索引、行列计数与固定结果码，
+  goal 正文、URL、Evidence、路径、文件名和单元格零数据流。
+- **独立 Reviewer**：以 `c1bca53` 为 baseline、`71b5642` 为 candidate，
+  verdict=`PASS`；candidate 为单父提交且只修改 `research-ipc.ts` 与对应测试，
+  依赖和构建配置零变化。聚焦 **15/15**、全量 **95 files / 2192 tests**、
+  typecheck、lint、format:check、build、diff-check 全部退出码 0；工作区干净，
+  未发现未跟踪垃圾或常见凭据形态。
