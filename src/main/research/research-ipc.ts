@@ -218,6 +218,26 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
     errorCode: 'research-unavailable',
   });
 
+  // 决议 #162(8)：service=null 时每次写尝试同样恰好一条脱敏审计（缺装配也
+  // 是写尝试——只记 op/taskId/goalLen/block/result=research-unavailable，零
+  // 敏感内容）；get/result/list 保持非写操作零审计。export 走既有安全映射
+  // internal（ExportCsvErrorCode 闭合联合无 research-unavailable，决议 #162(7)）。
+  const auditUnavailable = (
+    op: ResearchAuditEntry['op'],
+    entry: Partial<ResearchAuditEntry>,
+  ): void => {
+    auditEntry({
+      op,
+      taskId: null,
+      goalLen: null,
+      tableBlockIndex: null,
+      rows: null,
+      columns: null,
+      result: 'research-unavailable',
+      ...entry,
+    });
+  };
+
   const adapter: ResearchIpcAdapter = {
     async create(payload) {
       const v = validateResearchCreatePayload(payload);
@@ -234,7 +254,10 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         return { ok: false, errorCode: v.errorCode };
       }
       const svc = currentService();
-      if (svc === null) return unavailable();
+      if (svc === null) {
+        auditUnavailable('create', { goalLen: v.goal.length });
+        return unavailable();
+      }
       const res = await svc.createTask(v.goal);
       auditEntry({
         op: 'create',
@@ -265,7 +288,10 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         return { ok: false, errorCode: v.errorCode };
       }
       const svc = currentService();
-      if (svc === null) return unavailable();
+      if (svc === null) {
+        auditUnavailable('start', { taskId: v.taskId });
+        return unavailable();
+      }
       const res = await svc.startTask(v.taskId);
       auditEntry({
         op: 'start',
@@ -296,7 +322,10 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         return { ok: false, errorCode: v.errorCode };
       }
       const svc = currentService();
-      if (svc === null) return unavailable();
+      if (svc === null) {
+        auditUnavailable('stop', { taskId: v.taskId });
+        return unavailable();
+      }
       const res = await svc.stopTask(v.taskId);
       auditEntry({
         op: 'stop',
@@ -366,7 +395,10 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         return { ok: false, errorCode: v.errorCode };
       }
       const svc = currentService();
-      if (svc === null) return unavailable();
+      if (svc === null) {
+        auditUnavailable('delete', { taskId: v.taskId });
+        return unavailable();
+      }
       const res = await svc.deleteTask(v.taskId);
       auditEntry({
         op: 'delete',
@@ -400,7 +432,18 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         return { ok: false, errorCode: 'invalid-payload' };
       }
       const svc = currentService();
-      if (svc === null) return { ok: false, errorCode: 'internal' };
+      if (svc === null) {
+        auditEntry({
+          op: 'export',
+          taskId: v.value.taskId,
+          goalLen: null,
+          tableBlockIndex: v.value.tableBlockIndex,
+          rows: null,
+          columns: null,
+          result: 'internal', // 决议 #162(7)：导出面闭合错误联合的安全映射
+        });
+        return { ok: false, errorCode: 'internal' };
+      }
       const viewResult = await svc.getResearchResultView(v.value.taskId);
       if (!viewResult.ok) {
         const mapped =

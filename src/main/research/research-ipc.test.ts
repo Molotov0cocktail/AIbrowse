@@ -390,20 +390,74 @@ describe('八通道行为（真实 service；决议 #156/#157/#162）', () => {
     expect(got.value.task.status).toBe('created');
   });
 
-  it('service=null → 全部通道 research-unavailable 且零审计', async () => {
+  it('service=null → 五个写操作各自恰好一条脱敏审计；get/result/list 零写审计（决议 #162(8)）', async () => {
     const nullIpc = createResearchIpcAdapter({
       service: null,
       audit: (m) => audits.push(m),
       exportPort: { showSaveDialog: async () => null, writeCsv: async () => undefined },
     });
-    expect((await nullIpc.create({ goal: 'x' })).ok).toBe(false);
-    expect((await nullIpc.start({ taskId: TASK_ID })).ok).toBe(false);
-    expect((await nullIpc.stop({ taskId: TASK_ID })).ok).toBe(false);
+    const auditByOp = (op: string): string[] => audits.filter((a) => a.includes(`op=${op}`));
+
+    // 只读操作：fail-closed 返回但零写审计（保持非写操作）
     expect((await nullIpc.get({ taskId: TASK_ID })).ok).toBe(false);
     expect((await nullIpc.result({ taskId: TASK_ID })).ok).toBe(false);
     expect((await nullIpc.list({ page: 1 })).ok).toBe(false);
-    expect((await nullIpc.delete({ taskId: TASK_ID })).ok).toBe(false);
-    expect(audits.length).toBe(0);
+
+    // 写操作全部 fail-closed：普通 Research 操作 → research-unavailable；export
+    // 保持既有安全映射 internal（ExportCsvErrorCode 闭合联合无 research-unavailable）
+    const created = await nullIpc.create({ goal: '敏感目标内容-abc123' });
+    expect(created.ok).toBe(false);
+    if (!created.ok) expect(created.errorCode).toBe('research-unavailable');
+    const started = await nullIpc.start({ taskId: TASK_ID });
+    expect(started.ok).toBe(false);
+    if (!started.ok) expect(started.errorCode).toBe('research-unavailable');
+    const stopped = await nullIpc.stop({ taskId: TASK_ID });
+    expect(stopped.ok).toBe(false);
+    if (!stopped.ok) expect(stopped.errorCode).toBe('research-unavailable');
+    const deleted = await nullIpc.delete({ taskId: TASK_ID });
+    expect(deleted.ok).toBe(false);
+    if (!deleted.ok) expect(deleted.errorCode).toBe('research-unavailable');
+    const exported = await nullIpc.exportCsv({
+      taskId: TASK_ID,
+      tableBlockIndex: 0,
+      view: { sort: null, filter: '' },
+    });
+    expect(exported.ok).toBe(false);
+    if (!exported.ok) expect(exported.errorCode).toBe('internal');
+
+    // 五个写操作各自恰好一条；只读不新增 → 总审计恰 5
+    for (const op of ['create', 'start', 'stop', 'delete', 'export']) {
+      expect(auditByOp(op).length).toBe(1);
+    }
+    expect(audits.length).toBe(5);
+
+    // create：goalLen 仅记长度 + result=research-unavailable（goal 正文零出现）
+    const createAudit = auditByOp('create')[0]!;
+    expect(createAudit).toContain('goalLen=');
+    expect(createAudit).toContain('result=research-unavailable');
+    expect(createAudit).not.toContain('敏感目标内容');
+    expect(createAudit).not.toContain('abc123');
+
+    // start/stop/delete：taskId 记录 + result=research-unavailable
+    for (const op of ['start', 'stop', 'delete']) {
+      const audit = auditByOp(op)[0]!;
+      expect(audit).toContain(TASK_ID);
+      expect(audit).toContain('result=research-unavailable');
+    }
+
+    // export：taskId + block 索引记录 + result=internal（导出面安全映射）
+    const exportAudit = auditByOp('export')[0]!;
+    expect(exportAudit).toContain(TASK_ID);
+    expect(exportAudit).toContain('block=0');
+    expect(exportAudit).toContain('result=internal');
+
+    // 全量脱敏：URL/Evidence/Result/路径/文件名/单元格零出现
+    for (const audit of audits) {
+      expect(audit).not.toContain('https://');
+      expect(audit).not.toContain('摘录');
+      expect(audit).not.toContain('C:');
+      expect(audit).not.toContain('.csv');
+    }
   });
 
   it('result：completed + Result 存在 → 安全视图（Evidence DTO 仅下钻必需字段）', async () => {
