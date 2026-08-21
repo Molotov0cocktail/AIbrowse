@@ -241,3 +241,32 @@ e2404d07c18c1d9acbe92b080f89f0cbec5cffa1..HEAD`、
   lint + format:check + diff-check + 既有 C4 8.16 冒烟回归；不得把现有
   测试全绿冒充 empty-cell 目标语义已实现。
 - 不执行 C10、8.19-B 修复、Closer 或 Sixth Stage。
+
+### Post-Acceptance Repair 状态 —— **已审核 PASS / 已收尾（2026-08-21）**
+
+> 本小节由独立 Reviewer B 对 Repair 链 `3836587..4c75a86` 出具最终 **PASS**
+> 后，由 Closer 完成确定性收尾登记与双远程推送。候选阶段状态已关闭。
+
+- **Repair 链最终 HEAD = `4c75a86b7b9d9fd3020a5af7be5fc4e29021efdf`**
+  （parent `abe7351972b5881fc4357aacf0e0f2be822b887e`）；链
+  `65fe15d → f681451 → 56ea5c4 → e2404d0 → f38fb4d → abe7351 → 4c75a86`
+  连续单父历史，悬挂于原 Repair baseline `3836587`。
+- **候选状态 → 已推送**：C4 Repair 链 `65fe15d…4c75a86` + closure docs
+  提交经双远程 push，Gitee/GitHub `main` 均已前进至新 HEAD；隔离分支
+  `codex/workflow-handoff-prompts`（`2525d8d`）未被动过。
+- **四项验收（独立 Reviewer B 最终 PASS，2026-08-21）**：
+  ① Repair A 文档 gate（契约冻结 #173 落 detailed-design/threat-model/
+  本文件）PASS；② Repair B implementation（empty table-cell 一律
+  fail-closed → `value-invalid`，不组装 VerifiedEvidence；field 通道
+  `field-path-invalid`；empty header 保留几何占位、`locator.header =
+null`；all-empty table 整体跳过；retained unit 仍受 canonicalText/
+  contentHash 覆盖）PASS；③ surrogate coverage Repair（4c75a86 补全
+  surrogate admission 边界）PASS；④ filesystem cleanup（工作区已核验
+  空目录清理，无残留）PASS。
+- **NOT RUN（已获 Reviewer 豁免，不得视为已运行）**：focused/full tests、
+  typecheck、lint、build、dev/production smoke、Research smoke、真实
+  Provider。理由：本次 Repair 仅删除工作区已核验空目录，产品 HEAD 与
+  tracked tree 与已完成独立产品验证的 `4c75a86` 完全相同。
+- **下一唯一任务**：C10（Fifth Stage 独立最终验收 / Exit Gate / Stage
+  Auditor，见 `doc/stage5/tasks/C10-finalize-acceptance.md`），须由新的
+  独立 Codex GPT-5.6 Sol 上下文执行。

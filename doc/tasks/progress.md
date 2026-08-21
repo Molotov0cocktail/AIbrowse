@@ -112,6 +112,13 @@
   链路，不为展示授权发起无关调用）。C4 不修改 ResearchTask.stats
   （captureCount/failedReadCount 递增归 C5 Runtime）。证据见 C4 任务
   文档「红→绿证据」小节。
+  **C4 Post-Acceptance Repair 已收尾（2026-08-21，独立 Reviewer B =
+  `PASS`，已推送）**——修复链 `65fe15d → f681451 → 56ea5c4 → e2404d0 →
+f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`；
+  四项验收（Repair A 文档 gate / Repair B implementation / surrogate
+  coverage Repair / filesystem cleanup）均 PASS；产品 HEAD 与 tracked
+  tree 与独立产品验证的 `4c75a86` 完全相同（Repair 仅删除工作区已核验
+  空目录）。证据见 C4 任务文档「Post-Acceptance Repair 状态」小节。
   **C5 已完成（2026-08-16）**——独立有界 ResearchRuntime（实施前契约
   裁决 #132–#139：六工具专属执行模型/ResearchPlan 判别联合/C6/C7 稳定
   端口 + research-runtime-unavailable 第 12 码 fail-closed/Service 异步
@@ -619,7 +626,7 @@
 | C1 | ResearchTask/Evidence/Result 核心契约 + 状态机纯函数 + research.db 存储与服务基座（migration v1/Repository/store 装配） | ✅ | 2026-08-16 完成（见「最近验证结果」第十四个闭环）：实施前契约裁决 #101–#111 + 红→绿 9/9 失败→131/131 + 全量 test 1386/1386 + dev/生产冒烟 17 工具/SRT-12 零回归 + smoke.ts SRT-12 白名单契约同步（+5 行，唯一既有改动）；**2026-08-16 定向修复与契约边界复核完成（第十五个闭环）**：决议 #112–#116 先红后修（红态 34 failed → 聚焦 174/174、全量 test 1429/1429；migration v1 零改写、sources/ai/browser/renderer/preload 零 diff）；**2026-08-16 第二次定向补修完成（第十六个闭环）**：ISO 8601 偏移日期回滚校验（红态 6 failed → 聚焦 215/215、全量 test 1470/1470；仅 task-state 纯函数改动）；任务文档 doc/stage5/tasks/C1-research-contract-foundation.md（红→绿证据、定向修复与第二次定向补修记录已回填） |
 | C2 | ResearchWorkspace 与 task-owned Tab 隔离、数量上限、取消/异常清理 | ✅ | 2026-08-16 完成（见「最近验证结果」第十八个闭环）：实施前契约裁决 #118（八项：形态与接口/最小端口/URL 边界/精确所有权/并发上限/焦点恢复/用户关闭感知/释放取消竞态）+ 精确接口 §10.1；红→绿 39/39（模块缺失红 → Fake BrowserController 全离线矩阵）；全量 test 1509/1509；BrowserController/TabManager/SearchProvider 产品契约零改动；任务文档 doc/stage5/tasks/C2-research-workspace-tab-isolation.md（红→绿证据已回填） |
 | C3 | Source Selection：Sources + Search 候选合并、provenance 与确定性排序 | ✅ | 2026-08-16 完成（见「最近验证结果」第二十个闭环）：实施前契约裁决 #120–#123（三档发现路径排序/note 映射/candidate_id 输入契约/sortKey 编码——详见任务文档「实施前复核项」小节，均已裁决）+ 详细设计 §4 重写；红→绿 80/80（模块缺失红态）→ 全量 test 1598/1598；真实 node:sqlite 排序一致性 probe；C1/C2/Source/Search 产品代码零改动；任务文档 doc/stage5/tasks/C3-source-selection-candidate-merge.md（红→绿证据已回填） |
-| C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #124–#131（Tab 生命周期零双导航/冻结判别联合与重试矩阵/failed Capture sentinel/ready・L0–L3 映射/CaptureContent 60k 预算与哈希覆盖/多表 tableIndex/不可信 proposal 六字段/Chromium 错误页判定）+ CaptureService + EvidenceValidator + repository tableIndex 严格解析 + 冒烟 8.16（dev+生产双场景退出码 0、正文零持久化探针、用户 Tab 集合不变、真实 Provider 0 次）；红→绿聚焦 136/136、全量 test 1691/1691；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
+| C4 | 多源读取、结构化提取、capture 记录与 Evidence 确定性验证 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #124–#131（Tab 生命周期零双导航/冻结判别联合与重试矩阵/failed Capture sentinel/ready・L0–L3 映射/CaptureContent 60k 预算与哈希覆盖/多表 tableIndex/不可信 proposal 六字段/Chromium 错误页判定）+ CaptureService + EvidenceValidator + repository tableIndex 严格解析 + 冒烟 8.16（dev+生产双场景退出码 0、正文零持久化探针、用户 Tab 集合不变、真实 Provider 0 次）；红→绿聚焦 136/136、全量 test 1691/1691；**2026-08-21 Post-Acceptance Repair 已收尾（独立 Reviewer B=`PASS`，已推送）**：修复链 65fe15d→f681451→56ea5c4→e2404d0→f38fb4d→abe7351→4c75a86 四项验收 PASS（Repair A 文档 gate / Repair B implementation / surrogate coverage Repair / filesystem cleanup），详见任务文档「Post-Acceptance Repair 状态」；任务文档 doc/stage5/tasks/C4-multi-source-capture-evidence-validation.md |
 | C5 | 独立有界 ResearchRuntime：进度、停止、失败继续、预算与终态 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #132–#139（六工具专属执行模型/ResearchPlan 判别联合/C6/C7 稳定端口 fail-closed/Service 异步装配/预算与 Provider 失败映射/原子持久化与 500k 终态预留/Progress·heartbeat·终态优先级/index.ts 最小装配）；红→绿聚焦 113/113、全量 test 1804/1804；冒烟 8.17 dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider 0 次；任务文档 doc/stage5/tasks/C5-research-runtime.md |
 | C6 | Cross-check、冲突模型、带证据综合与「不确定」输出 | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #140–#147（C6/C7 分阶段装配边界/Provider 响应侧有界性/VerificationDraft 严格协议/Claim 确定性装配与厂商分类/Conflict 引用完整性/数据交接/Prompt 所有权/parseResultDraft 边界）；红→绿聚焦 61/61、全量 test 1865/1865；冒烟 8.18 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 Research 仍 fail-closed（缺 C7）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C6-crosscheck-conflict-synthesis.md |
 | C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #148–#155（Markdown 单一事实源/ResultDraft 三字段白名单/Validator 严格验证/Conflict·Coverage·不确定/Markdown AST 与 Renderer/logger 未初始化落盘修复/启动预占与 prepared Provider 交接/真实生产装配）；红→绿聚焦 172/172、全量 test 1964/1964；冒烟 8.18 真实 C7 端口 + 8.19-A 生产 factory 闭环 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 startTask 解除 fail-closed（决议 #140/#155）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
@@ -635,6 +642,30 @@
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3、C4、C5、C6、C7）
+
+- **C4 Post-Acceptance Repair 收尾（2026-08-21，独立 Reviewer B=`PASS`
+  后的确定性 Closer 闭环）**：① 步骤 0 独立核验——HEAD
+  `4c75a86b7b9d9fd3020a5af7be5fc4e29021efdf`、HEAD^ `abe7351…`、分支
+  main、工作区干净；修复链 `65fe15d → f681451 → 56ea5c4 → e2404d0 →
+f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 Repair baseline
+  `3836587`；双远程 `main` 均为 `3836587`（push 目标）；隔离分支
+  `codex/workflow-handoff-prompts`（`2525d8d`）未被动过。② **四项验收
+  （独立 Reviewer B 最终 PASS，2026-08-21）**：Repair A 文档 gate（决议
+  #173 契约冻结落 detailed-design/threat-model/C4 任务文档）PASS；Repair
+  B implementation（empty table-cell 一律 fail-closed → `value-invalid`、
+  field 通道 `field-path-invalid`、empty header → `locator.header =
+null`、all-empty table 整体跳过、retained unit 仍受 canonicalText/
+  contentHash 覆盖）PASS；surrogate coverage Repair（4c75a86 补全
+  surrogate admission 边界）PASS；filesystem cleanup（工作区已核验空目录
+  清理，无残留）PASS。③ **NOT RUN（已获 Reviewer 豁免，不得视为已运行）**：
+  focused/full tests、typecheck、lint、build、dev/production smoke、
+  Research smoke、真实 Provider——理由：本次 Repair 仅删除工作区已核验
+  空目录，产品 HEAD 与 tracked tree 与已完成独立产品验证的 `4c75a86`
+  完全相同。④ 收尾验证：`git diff --check` 与 `npm run format:check`
+  全绿、closure 提交 diff 仅两个允许文件、无敏感信息/垃圾。⑤ 双远程
+  push 后 `main` 前进至新 HEAD，`codex/workflow-handoff-prompts` 未动。
+  下一唯一任务 = C10（须由新的独立 Codex GPT-5.6 Sol 上下文作为 Stage
+  Auditor 执行）；本闭环不开始 C10、Fifth Stage Exit Audit 或 Sixth Stage。
 
 - **C9-R1 格式漂移修复（2026-08-19，C9 的确定性文档收尾）**：① 根因 = C9
   证据回填后的任务文档与 threat-model 两处内容偏离仓库 Prettier 输出；后续开发
