@@ -23,7 +23,7 @@
 
 - 应用进程退出后的后台调度、Windows Task Scheduler、独立服务或云端 24/7 crawler；
 - 秒级监控、大规模商业爬取、分布式调度、绕 captcha/challenge/反爬；
-- 自动复用登录 Session、自动从 feed 失败回退浏览器或自动迁移变化基线；
+- 未经逐规则授权自动复用登录 Session、从 feed 失败自动回退浏览器或自动迁移变化基线；
 - 动态 Group Watch：分组变化不能静默扩大后台网络访问范围；
 - AI-evaluated rule、自然语言规则、正则表达式、脚本或任意表达式树；
 - 由模型决定字符串是否相等、事件是否存在、证据真实性或通知事实；
@@ -44,7 +44,9 @@
 
 ### 3.3 登录态页面
 
-用户逐规则明确授权共享 Chromium Session 读取受保护页面。授权仅用于该页面 Watch；Cookie、表单值和凭据不会进入 Watch 数据、日志、通知或模型。
+用户逐规则明确授权共享 Chromium Session 读取受保护页面。周期运行不依赖原授权 Tab：每次在主机限速 gate
+后新建本 run 精确拥有的任务 Tab，实时读取并 finally 关闭；应用重启后凭无凭据 consent + pageUrl 重建，绝不
+持久化或复用旧 tabId。授权仅用于该页面 Watch；Cookie、表单值和凭据不会进入 Watch 数据、日志、通知或模型。
 
 ### 3.4 条件变化
 
@@ -72,7 +74,9 @@
 1. **XML 候选依赖**：暂定精确版本 `@federicocarboni/saxe@0.8.0`，本设计任务不安装。D3 必须先完成许可证、供应链、Node 24/Electron 构建、真实 feed 兼容和敌手语料资格门；失败即 REPLAN，禁止静默换库。
 2. **HTML 候选依赖**：公开页面暂定精确版本 `parse5-sax-parser@8.0.0` + `parse5@8.0.1`，同样先经 D3 资格门。只使用流式解析事件生成有界 DocumentChannels，不执行 JavaScript、不加载子资源、不构建持久 DOM；失败即 REPLAN。
 3. **网络**：使用 Node 核心 `http`/`https`/`dns` 实现项目自有 `PublicWatchHttpClient`。对外是有界 fetch 语义；不用厂商 SDK。采用连接时受控 `lookup`，以满足 DNS/重定向逐跳校验，不能只做 fetch 前预解析。
-4. **登录页面**：继续通过 BrowserController 及 `persist:aibrowse` Chromium Session，不增加 Cookie 读取 IPC。需要 JavaScript 渲染的公开页面必须由用户显式切换到 Session 模式，不自动回退。
+4. **登录页面**：继续通过 BrowserController 及 `persist:aibrowse` Chromium Session，不增加 Cookie 读取 IPC。
+   每次运行用既有 create/close/activate/getTabs/getActiveTab/getPageSnapshot 组成内部 task-tab 窄端口；不改变
+   BrowserController 公共接口。需要 JavaScript 渲染的公开页面必须由用户显式切换到 Session 模式，不自动回退。
 5. **SQLite**：继续使用 `node:sqlite`，新增独立 `watch.db`。
 6. **Windows 通知**：只有打包环境证明 AppUserModelID/Start Menu 身份有效时启用；否则应用内通知是完整降级。
 7. **模型**：复用现有 LLMProvider；无 Key、分享受限、预算超限或失败时保留确定性 Digest。

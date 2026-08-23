@@ -29,7 +29,8 @@ Watch UI
        → WatchAcquisitionService
             → PublicWatchHttpClient（公网 feed/公开页面；Node 核心网络）
             → PublicHtmlSaxReader（公开 HTML；零脚本/子资源）
-            → BrowserWatchReader（逐规则授权的登录态页面；BrowserController 窄端口）
+            → WatchTaskTabWorkspace → BrowserWatchReader
+              （逐规则授权登录页；精确 task-tab 所有权；BrowserController 既有窄端口）
        → FeedParser / DocumentChannelBuilder / PageProjector
        → DiffEngine / ConditionEngine / EventValidator
        → WatchRepository（watch.db 唯一业务 SQL 点）
@@ -76,7 +77,7 @@ renderer/preload 的唯一 Watch 业务入口。验证 DTO、权限和生命周�
 
 ### 3.4 WatchRunCoordinator
 
-单一运行所有权、全局/主机并发、同规则互斥、补跑合并、5 秒同主机请求起点间隔、退避、abort 与 shutdown drain。计划 slot 的 Run reservation、消费记录和 next due 推进由 Repository 单事务完成。每次运行前经 SourceService 复核 Source locator fingerprint 与状态，防跨库孤儿规则联网。
+单一运行所有权、全局/主机并发、同规则互斥、补跑合并、5 秒同主机请求起点间隔、退避、abort 与 shutdown drain。计划 slot 的 Run reservation、消费记录和 next due 推进由 Repository 单事务完成。每次运行前经 SourceService 复核 Source locator fingerprint 与状态；Session 顶层 `createTab(pageUrl)` 也必须先过 host gate，防跨库孤儿规则联网。
 
 ### 3.5 WatchAcquisitionService
 
@@ -84,7 +85,7 @@ renderer/preload 的唯一 Watch 业务入口。验证 DTO、权限和生命周�
 
 - 公开 Feed：`PublicWatchHttpClient` → `FeedParser`；
 - 公开页面：`PublicWatchHttpClient` → `PublicHtmlSaxReader`，零 JavaScript/子资源；
-- 登录态页面：用户明确授权后通过 `BrowserWatchReader`；
+- 登录态页面：用户明确授权后经 `WatchTaskTabWorkspace` 新建本 run 专属 Tab，再由 `BrowserWatchReader` 读取；
 - feed 失败不自动浏览器回退；登录 feed v1 不支持。
 
 ### 3.6 PublicWatchHttpClient
@@ -97,7 +98,13 @@ Discovery 与公开页面投影共用已资格化的 parse5 SAX 事件流；前�
 
 ### 3.8 BrowserWatchReader / DocumentChannelBuilder / PageProjector
 
-公开页面从 HTML SAX 流得到 `DocumentChannels`；Session 页面复用 BrowserController 安全设置，把 PageSnapshot 映射到同一结构。RegionDescriptor 是闭合语义定位，不含任意 JS/CSS 执行；投影由主进程 acquisition 记录盖章 final URL、capturedAt、documentId（公开模式为 null）。定位歧义/失效变为 health，不猜测替代区域。需要 JavaScript 的公开页面只能由用户显式切换并重新授权为 Session 模式，不能自动回退。
+公开页面从 HTML SAX 流得到 `DocumentChannels`；Session 页面复用 BrowserController 安全设置和共享持久
+Chromium Session，但每 attempt 都创建、验证、读取并 finally 关闭精确 task-owned Tab。Workspace 复用第五阶段
+已验证的 provisional ownership/焦点恢复/cleanup drain 模式：绝不复用、导航或关闭用户 Tab；不持久化 tabId，
+重启后凭 consent + pageUrl 新建。BrowserWatchReader 把实时 PageSnapshot 映射到同一结构。RegionDescriptor 是
+闭合语义定位，不含任意 JS/CSS 执行；投影由主进程 acquisition 记录盖章 final URL、capturedAt、documentId
+（公开模式为 null）。定位歧义/失效变为 health，不猜测替代区域。需要 JavaScript 的公开页面只能由用户显式
+切换并重新授权为 Session 模式，不能自动回退。
 
 ### 3.9 DiffEngine / ConditionEngine / EventValidator
 
@@ -141,7 +148,8 @@ NotificationPolicy 生成隐私安全 DTO、做幂等去重和 muted 过滤。Wi
 ```text
 用户点击“监控此页”
 → 选择 public 或 session 模式
-→ public：受限 HTTP + HTML SAX；session：BrowserController 实时 PageSnapshot + grant
+→ public：受限 HTTP + HTML SAX
+→ session：grant/locator 复验 → host gate → task-owned Tab → 实时 PageSnapshot → finally 精确关闭
 → 两路映射为同一 DocumentChannels
 → 用户选择/命名 Region
 → PageProjector 生成预览

@@ -56,7 +56,9 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 3. PublicWatchHttpClient、BrowserWatchReader、FeedParser、Repository、DigestProvider、NotificationSink 六类
    能力互不合并；不存在通用“任意 URL/方法/脚本/SQL/IPC”端口。
 4. WatchRepository/migration 是唯一业务 SQL 点；Watch 不进入 SourceRepository/ResearchRepository。
-5. BrowserWatchReader 只使用既有 BrowserController 安全 PageSnapshot，不暴露 webContents/executeJavaScript。
+5. WatchTaskTabWorkspace 只使用既有 BrowserController create/close/activate/getTabs/getActiveTab；
+   BrowserWatchReader 只使用 getTabs/getPageSnapshot。两者不暴露 webContents/executeJavaScript/Cookie，task tabId
+   只在 main 内存所有权集合流转，不进 renderer/模型/DB/日志。
 6. 模型无 Watch 工具、无 AgentLoop、无网络、无 SQL；只收到程序投影。
 
 **结构性证明**：静态 import/grep、工具注册表恒等、preload 白名单、SQL 执行点分类、依赖图循环检查。
@@ -96,6 +98,12 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
   handle，不见 Cookie/session credential；handle 零 DB/日志。
 - grant 绑定 sourceId/tabId/final origin/target 摘要，5 分钟单次使用；消费后只持久化 consent
   origin/time/version；URL/Source 变化使授权失效。
+- preview tabId、grant handle 和周期 task tabId 均零持久化。每个 attempt 在 host gate 后新建全新 task-owned
+  Tab，ready/snapshot/final origin/locator 复验后 finally 精确关闭；原授权 Tab 可以关闭，不作为运行依赖。
+- task Tab 所有权只凭 create 前后集合和返回的全新精确 id 证明；provisional 登记先于 abort/清理。敌手返回
+  用户 id 时零关闭；cleanup false/throw 保留 ownership、Watch unavailable、shutdown 重试。
+- create 自动激活后的焦点按三态立即恢复；用户已切换则零 activate，原 Tab 已关闭则不重建。attempt 前用户
+  Tab 不被 Watch navigate/close，final origin 跨授权边界或 locator 改变均零 Projection/Baseline 推进。
 - Session Rule Evidence 30 天/100 事件，Windows 通知默认“受保护来源发生变化”。
 - inputs/form values 不进入 PageProjection；query/fragment/headers/token 不进日志/通知/DB/prompt。
 - sharing full/metadata/blocked 在 Digest 前程序投影；blocked 零 Watch 内容进模型。
@@ -123,6 +131,8 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 - 0..500ms 确定性附加 jitter（永不提前于 due）+ 指数退避；429 零立即重试；login/captcha/security 立即暂停。
 - Baseline 只在完整验证事务中 CAS 推进；失败/abort/陈旧 result 零覆盖。
 - before-quit stop-admission → abort → drain → store close；启动 queued/running→interrupted。
+- Session abort/timeout/shutdown 先阻止新 task Tab，等待 in-flight create 落定并证明 ownership，再 closeOwned/
+  cleanupAll；进程崩溃由 Electron 销毁未持久化 Tab，下次不引用旧 id。
 - muted 只过滤即时通知，不改变网络；paused 才停止调度，UI 明确区分。
 
 ### 3.7 输出与通知层
@@ -160,44 +170,46 @@ blocked 引用或额外字段，整份 explanation 丢弃，确定性 Digest 仍
 
 ## 5. 跨重启与跨库安全
 
-| 崩溃点                       | 恢复动作                                    | 网络安全性质               |
-| ---------------------------- | ------------------------------------------- | -------------------------- |
-| hard-delete prepare 前       | Source 未删，Watch 原状态                   | 无变化                     |
-| intent 写入后、Source 删除前 | Rule 已暂停；reconcile 可 abort             | 零新请求                   |
-| Source 删除后、Watch 清理前  | Source revalidation 失败；reconcile 级联    | 零孤儿请求                 |
-| Event 事务中                 | SQLite 原子回滚或完整提交                   | 不出现半 Event/半 Baseline |
-| reservation 提交前           | Run/消费记录/nextDue 三者全无               | 下次只补未消费 due         |
-| reservation 提交后/HTTP 前   | queued→interrupted；slot 不重放             | 不重复相同 requestKey      |
-| HTTP 后、结果事务前          | result 仅内存；run→interrupted；slot 不重放 | 不落半数据、不重复该 slot  |
-| Provider explanation 中      | Digest facts 可重建；解释丢弃               | Event 不受影响             |
-| Notification 发送后、ack 前  | dedupe outbox 可能保守不重发或标 uncertain  | 不重复创建 Event           |
+| 崩溃点                       | 恢复动作                                     | 网络安全性质               |
+| ---------------------------- | -------------------------------------------- | -------------------------- |
+| hard-delete prepare 前       | Source 未删，Watch 原状态                    | 无变化                     |
+| intent 写入后、Source 删除前 | Rule 已暂停；reconcile 可 abort              | 零新请求                   |
+| Source 删除后、Watch 清理前  | Source revalidation 失败；reconcile 级联     | 零孤儿请求                 |
+| Event 事务中                 | SQLite 原子回滚或完整提交                    | 不出现半 Event/半 Baseline |
+| reservation 提交前           | Run/消费记录/nextDue 三者全无                | 下次只补未消费 due         |
+| reservation 提交后/HTTP 前   | queued→interrupted；slot 不重放              | 不重复相同 requestKey      |
+| HTTP 后、结果事务前          | result 仅内存；run→interrupted；slot 不重放  | 不落半数据、不重复该 slot  |
+| Session task Tab create 中   | 启动 drain 等落定后精确清理；崩溃由进程销毁  | 用户 Tab 零 close/navigate |
+| Session snapshot 后/close 前 | 结果未提交；finally/cleanupAll 只关 owned id | 旧 tabId 零持久化/重用     |
+| Provider explanation 中      | Digest facts 可重建；解释丢弃                | Event 不受影响             |
+| Notification 发送后、ack 前  | dedupe outbox 可能保守不重发或标 uncertain   | 不重复创建 Event           |
 
 不把“最终一定只通知一次”作为分布式 exactly-once 承诺；结构保证 Event exactly-once，通知采用幂等键和
 at-most-once 优先的本地策略，崩溃窗口 UI 如实显示 delivery unknown。
 
 ## 6. 红队矩阵（WRT-01～WRT-19）
 
-| ID     | 敌手场景                                                                    | 必须机器证明的 oracle                                                    | 任务      |
-| ------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------- |
-| WRT-01 | localhost/127/::1/私网/link-local/组播/保留 URL                             | 零 socket、security_rejected、零正文日志                                 | D3/D10    |
-| WRT-02 | DNS 公私混合/连接时换绑                                                     | 整次拒绝；连接 lookup 只返回已批地址                                     | D3/D10    |
-| WRT-03 | 非80/443、redirect 到私网/file/javascript/HTTPS→HTTP                        | 每跳拒绝、零后续请求                                                     | D3/D10    |
-| WRT-04 | 慢流/巨型/压缩炸弹/redirect loop                                            | deadline/字节/跳数内受控失败，进程存活                                   | D3/D10    |
-| WRT-05 | robots disallow/429/captcha/同 host 突发请求                                | 暂停或退避；所有请求起点≥5秒；零 override/绕过/重试风暴                  | D3/D5/D10 |
-| WRT-06 | XXE/外部 DTD/XInclude/Billion Laughs                                        | 零文件/网络，预算内失败，后续正常 feed 可解析                            | D3/D10    |
-| WRT-07 | XML depth/name/attr/text/node/total/projection 各边界与畸形编码/CDATA       | 每项 `==` 接受、`+1` fail-closed，零未捕获异常/正文日志                  | D3/D10    |
-| WRT-08 | 重复/冲突 GUID、字段超长、feed 重排                                         | 去重稳定、顺序噪声零事件、预算有效                                       | D3/D7     |
-| WRT-09 | 未授权 Session Rule/grant 重放/跨 origin                                    | 创建拒绝；Cookie/session credential 零 renderer/DB/log；handle 零 DB/log | D6/D10    |
-| WRT-10 | 登录跳转/captcha 页面伪装                                                   | 不建 Event、不覆盖 Baseline、暂停                                        | D6/D7/D10 |
-| WRT-11 | DOM 噪声/table 歧义/跨域 iframe                                             | 零假 Event；parse_changed/诚实限制                                       | D6/D7     |
-| WRT-12 | Hash 变但 Diff 无 Evidence                                                  | unexplainable_change、零 Event/推进                                      | D7        |
-| WRT-13 | feed/page 注入模型指令/未知 eventId                                         | 零工具；ExplanationDraft 拒绝；facts 保留                                | D8/D10    |
-| WRT-14 | metadata/blocked Source 混入 prompt                                         | 字节扫描零 Evidence/零 blocked 内容                                      | D8/D10    |
-| WRT-15 | 通知标题伪造 URL/query/锁屏敏感摘录                                         | 安全 DTO、内部 UUID 路由、默认隐藏                                       | D9/D10    |
-| WRT-16 | 时钟回拨/DST/离线一万次 missed/reservation 各崩溃与终态                     | 三写原子；每规则最多一次 catch-up；已消费 slot 零重放                    | D5/D10    |
-| WRT-17 | Source disable→restore 版本递增、metadata/locator 变化、hard-delete 崩溃点  | 意图/identity 正确；orphan 零网络；最终级联；不可 Undo                   | D4/D10    |
-| WRT-18 | DB/log/event/digest 预算压力与 corrupt/future schema                        | 有界清理或 unavailable，Scheduler 不启动                                 | D1/D4/D10 |
-| WRT-19 | 公开 HTML 含 script/iframe/私网子资源、畸形/巨深/巨节点或共享 Cookie canary | 零执行/子请求/Cookie，预算内 DocumentChannels 或受控失败                 | D3/D6/D10 |
+| ID     | 敌手场景                                                                    | 必须机器证明的 oracle                                                     | 任务      |
+| ------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------- |
+| WRT-01 | localhost/127/::1/私网/link-local/组播/保留 URL                             | 零 socket、security_rejected、零正文日志                                  | D3/D10    |
+| WRT-02 | DNS 公私混合/连接时换绑                                                     | 整次拒绝；连接 lookup 只返回已批地址                                      | D3/D10    |
+| WRT-03 | 非80/443、redirect 到私网/file/javascript/HTTPS→HTTP                        | 每跳拒绝、零后续请求                                                      | D3/D10    |
+| WRT-04 | 慢流/巨型/压缩炸弹/redirect loop                                            | deadline/字节/跳数内受控失败，进程存活                                    | D3/D10    |
+| WRT-05 | robots disallow/429/captcha/同 host 突发请求                                | 暂停或退避；所有请求起点≥5秒；零 override/绕过/重试风暴                   | D3/D5/D10 |
+| WRT-06 | XXE/外部 DTD/XInclude/Billion Laughs                                        | 零文件/网络，预算内失败，后续正常 feed 可解析                             | D3/D10    |
+| WRT-07 | XML depth/name/attr/text/node/total/projection 各边界与畸形编码/CDATA       | 每项 `==` 接受、`+1` fail-closed，零未捕获异常/正文日志                   | D3/D10    |
+| WRT-08 | 重复/冲突 GUID、字段超长、feed 重排                                         | 去重稳定、顺序噪声零事件、预算有效                                        | D3/D7     |
+| WRT-09 | 未授权 Session/grant 重放/跨 origin/敌手 create 返回用户 tabId              | 零导航/创建或零关闭用户 Tab；Cookie/handle/task tabId 零持久化            | D6/D10    |
+| WRT-10 | 原授权 Tab 已关/重启 catch-up/用户关 task Tab/登录跳转/captcha/cleanup 失败 | 新建 owned Tab 或受控失败；不建 Event/覆盖 Baseline；用户 Tab/焦点 oracle | D6/D7/D10 |
+| WRT-11 | DOM 噪声/table 歧义/跨域 iframe                                             | 零假 Event；parse_changed/诚实限制                                        | D6/D7     |
+| WRT-12 | Hash 变但 Diff 无 Evidence                                                  | unexplainable_change、零 Event/推进                                       | D7        |
+| WRT-13 | feed/page 注入模型指令/未知 eventId                                         | 零工具；ExplanationDraft 拒绝；facts 保留                                 | D8/D10    |
+| WRT-14 | metadata/blocked Source 混入 prompt                                         | 字节扫描零 Evidence/零 blocked 内容                                       | D8/D10    |
+| WRT-15 | 通知标题伪造 URL/query/锁屏敏感摘录                                         | 安全 DTO、内部 UUID 路由、默认隐藏                                        | D9/D10    |
+| WRT-16 | 时钟回拨/DST/离线一万次 missed/reservation 各崩溃与终态                     | 三写原子；每规则最多一次 catch-up；已消费 slot 零重放                     | D5/D10    |
+| WRT-17 | Source disable→restore 版本递增、metadata/locator 变化、hard-delete 崩溃点  | 意图/identity 正确；orphan 零网络；最终级联；不可 Undo                    | D4/D10    |
+| WRT-18 | DB/log/event/digest 预算压力与 corrupt/future schema                        | 有界清理或 unavailable，Scheduler 不启动                                  | D1/D4/D10 |
+| WRT-19 | 公开 HTML 含 script/iframe/私网子资源、畸形/巨深/巨节点或共享 Cookie canary | 零执行/子请求/Cookie，预算内 DocumentChannels 或受控失败                  | D3/D6/D10 |
 
 每项必须独立结果，不能用一条泛化日志字符串冒充。敌手正文随机 canary 逐字节扫描：日志、audit、
 ConversationStore、sources.db、research.db、watch.db 非 Evidence 列、renderer DOM、通知 DTO、导出、Provider

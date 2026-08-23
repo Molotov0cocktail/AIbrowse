@@ -33,6 +33,7 @@ src/main/watch/
   watch-query-service.ts                     # 有界查询投影
   watch-run-coordinator.ts                   # 运行所有权/并发/abort/drain
   watch-scheduler.ts                         # Clock/timer/到期 ruleId
+  host-request-gate.ts                       # public/session 共用 host start 间隔
   watch-lifecycle-coordinator.ts             # Source 生命周期内部观察端口
   watch-acquisition-service.ts               # 路由公开/Session 读取
   public-watch-http-client.ts                # Node 核心公网 GET/HEAD
@@ -41,7 +42,8 @@ src/main/watch/
   feed-discovery.ts                          # parse5 SAX feed link 投影
   feed-parser.ts                             # XML Adapter → FeedProjection
   public-html-sax-reader.ts                  # 公开 HTML → DocumentChannels，零执行/子资源
-  browser-watch-reader.ts                    # BrowserController 窄端口
+  watch-task-tab-workspace.ts                # Session run 精确 task-tab 所有权/焦点/清理
+  browser-watch-reader.ts                    # task-tab → 实时 PageSnapshot 窄读取
   page-projector.ts                          # DocumentChannels → PageProjection
   digest-service.ts                          # facts + 可选 Provider 解释
   notification-service.ts                    # 应用内/Windows sink
@@ -55,9 +57,10 @@ src/renderer/src/watch/                      # 顶层 Watch 工作区
 src/main/smoke-watch-*.ts                    # 独立门控、红队、隐私扫描
 ```
 
-既有 BrowserController 公共方法和 SourceService renderer/Agent 公共方法不变。`BrowserWatchReader`
-只适配 `getTabs/getPageSnapshot`；`WatchLifecycleCoordinator` 作为 SourceService 构造时内部观察者，
-不向 renderer 或模型暴露新能力。
+既有 BrowserController 公共方法和 SourceService renderer/Agent 公共方法不变。`WatchTaskTabWorkspace` 只适配
+既有 `createTab/closeTab/activateTab/getTabs/getActiveTab`，`BrowserWatchReader` 只适配
+`getTabs/getPageSnapshot`；二者均为 main 内部结构端口，不向 renderer、模型或 WatchScheduler 暴露 tabId/
+Cookie/任意导航。`WatchLifecycleCoordinator` 作为 SourceService 构造时内部观察者。
 
 ## 2. 预算常量（`src/shared/types/watch.ts` 单一事实源）
 
@@ -310,7 +313,10 @@ Rule/Source、等待 backoff 和 host gate，不能绕过安全/频率策略。�
 - 连续失败退避基线：15 分钟、1 小时、6 小时、24 小时封顶。
 - 每个实际 HTTP socket 请求（含 robots、redirect、retry）按 canonical `host:effectivePort` 排队；相邻请求
   start time 至少相隔 `MIN_HOST_REQUEST_GAP_MS`。redirect 到新 host 重新进入对应 gate；Session 模式无法控制
-  Chromium 子资源，但其顶层导航同样受该 host gate。全局/host 并发释放不缩短间隔。
+  Chromium 内部 redirect/子资源，但每次 task-tab `createTab(pageUrl)` 顶层导航调用前必须取得同一 host gate。
+  `HostRequestGate` 是 main 进程单例，PublicWatchHttpClient 与 WatchTaskTabWorkspace 共用同一
+  `host:effectivePort → lastStartedAt` 注册表，不能各自计时。全局/host 并发释放不缩短间隔；同 Rule retry 新建
+  新 task-tab 并重新过 gate。
 - 每次顶层 acquisition 加入由 `SHA-256(ruleId|host|scheduledFor)` 导出的 0..500ms 确定性附加 jitter
   （`MIN_HOST_REQUEST_GAP_MS` 的 0..10%）；实际 start 为 due/backoff/host-gap 全部满足后再延迟该值，
   永不提前于 due。手动运行以 requestId 代替 scheduledFor，同样适用。
@@ -477,12 +483,60 @@ script/style/noscript/template/svg/math/iframe/object/embed/form/input/button �
 
 - **public**：PublicWatchHttpClient → PublicHtmlSaxReader；零 Cookie、零 JavaScript、零子资源，
   `documentId=null`，capturedAt/final URL 由主进程 HTTP acquisition 记录。
-- **session**：BrowserWatchReader 每次实时调用 BrowserController，不缓存 PageSnapshot；把已有
-  `visibleText/headings/tables/links` 映射为 DocumentChannels，忽略 inputs/form values/buttons 的可变值；
-  capturedAt/documentId/final URL 取主进程快照。
+- **session**：WatchTaskTabWorkspace 每次运行创建精确 task-owned Tab，BrowserWatchReader 从该 Tab 实时调用
+  BrowserController，不复用用户 Tab、不缓存 PageSnapshot；把已有 `visibleText/headings/tables/links` 映射为
+  DocumentChannels，忽略 inputs/form values/buttons 的可变值；capturedAt/documentId/final URL 取主进程快照。
 
 public 不自动回退 session；session 只能来自逐规则用户授权。创建/编辑 Rule 的预览必须使用最终选定模式，
 不能用共享浏览器预览替公开 HTTP 建基线。
+
+### 8.1 Session task-tab acquisition
+
+```ts
+interface WatchTaskTabBrowser {
+  createTab(url: string): Promise<TabInfo>;
+  closeTab(tabId: string): Promise<boolean>;
+  activateTab(tabId: string): Promise<boolean>;
+  getTabs(): Promise<TabInfo[]>;
+  getActiveTab(): Promise<TabInfo | null>;
+}
+
+interface BrowserWatchReadPort {
+  getTabs(): Promise<TabInfo[]>;
+  getPageSnapshot(tabId: string): Promise<PageSnapshot | null>;
+}
+```
+
+每次 Session attempt 的固定时序如下；`WatchRunCoordinator` 持有 AbortSignal 和 deadline，Workspace/Reader
+零 timer 所有权，等待使用注入 Clock：
+
+1. 复验 Rule enabled、Source locator fingerprint、`sessionConsent.version===1`、consent origin 与
+   `PageTarget.pageUrl` origin 精确一致；撤销/恢复失效/不一致直接 `login_required`，零 Tab、零网络。
+2. 对 `pageUrl` 的 canonical `host:effectivePort` 取得 §4.3 host gate；只有 gate 成功且 signal 未 abort 才可调用
+   `createTab(pageUrl)`。该调用是 Session attempt 唯一的应用发起顶层导航；禁止先建 URL Tab 再二次 navigate。
+3. create 前记录 `tabsBefore` 与 `activeBefore`。返回后先证明 tabId 非空且不在 `tabsBefore`；若敌手/异常实现
+   返回既有 id，零关闭、零登记、`unavailable`。确认全新 id 后立即 provisional owned，再检查 abort/后置快照。
+4. BrowserController create 会激活新 Tab；Workspace 按第五阶段已验证的三态恢复焦点：若当前仍是 task Tab 且
+   `activeBefore` 仍存在，则立即 activate 原 Tab；若用户已切到其他用户 Tab，零 activate；原 Tab 已关闭则不重建、
+   不猜替代。恢复失败先清理 task Tab，本 attempt 失败；在焦点处理完成前不读取页面。
+5. 最多用 `NETWORK_ATTEMPT_TIMEOUT_MS` 等待精确 tabId 到 ready；error/missing/用户关闭/timeout/abort 都失败。
+   ready 后 `getPageSnapshot(tabId)`，随后再次检查 signal、tabId 仍存在、快照非 degraded 且 documentId/readyState
+   合规；任何迟到结果丢弃。
+6. 先用受控 URL/导航状态判定 login/captcha/challenge。再要求 final URL 为 http/https、final origin 精确等于
+   consent origin，且去 fragment 后 canonical final URL 等于 `PageTarget.pageUrl`；跨 origin 安全拒绝，登录/
+   challenge 暂停为相应 health，同 origin locator redirect 视为 `source-changed` 并要求 rebaseline，绝不自动改 Rule。
+7. 仅验证后的 Snapshot 进入 DocumentChannels/PageProjection。`finally` 只对 provisional/owned 的精确 tabId
+   close；`false`/抛错不冒充已清理，保留内存所有权供 `cleanupAll()` 在终态与 shutdown 重试，并使 Watch
+   unavailable、零结果提交。用户关闭 task Tab 视为已清理，但当前 attempt 仍失败。
+
+并发由 `MAX_GLOBAL_WATCH_RUNS=4` 和同 Rule 单运行共同约束，因此 Watch task Tab 同时最多4个。Workspace 对
+in-flight create 设置 closing/drain 屏障：stop/timeout/shutdown 期间不接新建；已开始 create 落定后先做所有权证明，
+再精确清理。进程崩溃由 Electron 销毁未持久化 WebContentsView；Watch 从不保存 tabId，也不恢复旧 task Tab。
+下次启动只凭已持久化 `sessionConsent` 与 `persist:aibrowse` Cookie 分区重新走上述完整流程；Cookie 仍无读取通道。
+
+用户 Tab 保护 oracle：attempt 前存在的每个用户 tabId/url/title 在 attempt 后不被 close/navigate；若用户未在
+create 窗口主动切换，active Tab 恢复并保持 `activeBefore`；若用户切换，Workspace 不抢回焦点。日志/DB/IPC 只记
+runId、数量与闭合错误码，不记录 task tabId、Cookie、PageSnapshot 或 URL query。
 
 规范化顺序：
 
@@ -503,8 +557,9 @@ Region 重新定位：
 
 公开 HTML 与 Session PageSnapshot 均不采集跨域 iframe，UI 显示主文档限制。创建/编辑时，主进程签发
 单 Rule 绑定的一次性 opaque grant handle；renderer 只能短暂持有该无凭据 handle，主进程消费后只持久化
-`sessionConsent` 的 origin/time/version，不持久化 handle、Cookie 或 session credential。Source URL/origin
-变化、用户撤销或 watch.db 恢复会使 consent 失效并进入 login_required。
+`sessionConsent` 的 origin/time/version；`PageTarget.pageUrl` 是 locator 而非凭据。不持久化 preview tabId、运行
+task tabId、handle、Cookie 或 session credential。Source URL/origin 变化、用户撤销或 watch.db 恢复会使 consent
+失效并进入 login_required。
 
 ## 9. Baseline、Diff、Event 与 Evidence
 
@@ -767,7 +822,8 @@ lastChanged、nextDue、health/backoff、保留期限、主文档限制和应用
 创建入口：Source 详情“创建监控”；浏览器“监控此页”。流程固定为选择类型/Region → 公开或 Session 授权 →
 Schedule → Condition → 通知隐私 → Baseline 预览 → 最终确认。Session grant record 存在主进程内存，5 分钟
 失效并绑定 tabId/sourceId/final origin/目标摘要；renderer 只拿一次性 opaque handle，handle 零 DB/日志，
-最终仅持久化无凭据 consent 元数据。
+最终仅持久化无凭据 consent 元数据和 `PageTarget.pageUrl`。preview tabId 与后续每次 run 的 task tabId 都不持久化，
+也不要求原授权 Tab 在运行时仍存在。
 
 ### 12.3 IPC/bridge 白名单
 
@@ -811,6 +867,9 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 | Source 仅 metadata/enable/version 变化       | locator fingerprint 相同；更新 rowVersion，按用户意图处理   |
 | Source/Rule locator 在运行中变化             | fingerprint CAS 失败，丢弃结果，pause source-changed        |
 | 两次运行争用 Baseline                        | 同 Rule 互斥 + expectedVersion CAS，陈旧结果零写入          |
+| Session 原授权 Tab 已关闭/应用重启           | 不依赖旧 tabId；gate 后新建 task Tab，共享 Session 重读     |
+| task Tab 被用户关闭/redirect/login           | attempt 失败；零重建/零 Baseline 覆盖；按 health 暂停       |
+| task Tab cleanup 失败                        | 保留精确 ownership；Watch unavailable；shutdown 重试        |
 | App 退出时 HTTP/XML/Browser/Provider pending | abort + 受控 drain；已 reservation 的 slot 只记 interrupted |
 | 304 但无 Baseline                            | 协议异常，重新无条件 GET 一次；仍异常 unavailable           |
 | feed identity 改变                           | 作为 remove+add，Evidence 双侧 absent/present               |
@@ -837,6 +896,8 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 - XML：RSS/Atom/namespaces/CDATA/encoding、DTD/entity/XXE/bomb、depth/name/attribute/text-node/node/
   total-text/FeedProjection 每个 `==` 接受与 `+1` 拒绝；
 - HTML：parse5 SAX 资格、2 MiB/node/depth/attribute、畸形 HTML、script/iframe/subresource 零执行/零请求；
+- Session task Tab：敌手 create 返回用户 id、精确 provisional ownership、焦点恢复三态、用户关闭、ready/error/
+  timeout/abort、final origin/locator、close false/throw、cleanupAll drain、重启无旧 tabId；
 - PageProjection：四 Region、NFC/bidi/control、table fingerprint、歧义、iframe 诚实边界；
 - Diff：新增/删除/修改/反转/排序噪声、table/link/text、hash-only 异常；
 - Condition：全 operator、all/any、absent/numeric/field whitelist、零 regex/AI；
@@ -856,7 +917,8 @@ dispose 幂等；Sources 用户数据和 Research 数据恒等。
 
 - dev + production Watch 工作区创建 Feed/Page Rule、Baseline、真实变化、失败 health、手动 run、muted；
 - Session 页面 grant、撤销、login_required，Cookie/token/表单值零 renderer/日志/DB；
-- 关窗停止，重启一次 catch-up，用户 Tab 零误关；
+- 关窗停止，重启一次 catch-up；Session catch-up 新建/关闭 task Tab，Cookie Session 可用但旧 tabId/handle 不存在；
+  用户 Tab id/url/title/active 按 §8.1 oracle 恒等；
 - 应用内通知与点击内部路由；Windows sink 身份失败安全降级；
 - CSV/Markdown dialog 导出与公式/HTML/URL 防线；
 - `AIBROWSE_WATCH_SMOKE=set|check` 临时 userData 跨进程 Baseline/Event/清理；精确清理进程和临时目录。
@@ -880,8 +942,8 @@ D1 logger/Clock
   → D2 domain/condition
        ├─→ D3 network/XML/HTML/feed
        └─→ D4 storage/lifecycle
-D3 → D6 public/session page projection
-D2 + D4 → D5 scheduler/coordinator
+D2 + D4 → D5 scheduler/coordinator/host gate
+D3 + D5 → D6 public/session page projection/task-tab acquisition
 D3 + D4 + D5 + D6 → D7 diff/event/evidence/health
 D7 → D8 digest
 D4..D8 → D9 UI/IPC/notification/export

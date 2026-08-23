@@ -14,12 +14,14 @@
 
 ## 涉及模块和输入文档
 
-- `src/main/watch/watch-scheduler.ts`、`watch-run-coordinator.ts`、service 生命周期最小装配及测试。
+- `src/main/watch/watch-scheduler.ts`、`watch-run-coordinator.ts`、`host-request-gate.ts`、service 生命周期最小
+  装配及测试。
 - 输入：detailed §4/§7/§14；threat-model WT-18/WT-22、WRT-05/WRT-16。
 
 ## 预计修改文件
 
-- 新增 scheduler/coordinator 模块与测试；`src/main/index.ts` 只允许生命周期装配，默认无 Rule 零行为。
+- 新增 scheduler/coordinator/共享 HostRequestGate 模块与测试；`src/main/index.ts` 只允许生命周期装配，
+  默认无 Rule 零行为。
 - D3/D6 acquisition 通过窄接口注入；本任务不改其实现。
 
 ## 实施步骤（红→绿）
@@ -36,8 +38,10 @@
   要么全有要么全无；提交后的失败/pause/abort/interrupted 不回拨或重放。
 - 手动 run 复用 current run，不改变 nextDueAt/daily logical date，不绕 backoff/Source/host gate。
 - missed 任意数量最多一次 catch-up；backoff 延迟只产生一次消费；429/失败矩阵、jitter 与三次 degraded 精确。
-- public 的 robots/目标/redirect/retry 及 session 顶层导航在同 canonical host:port 的相邻 start 均
-  `>=5000ms`；global/host slot 释放、手动运行都不缩短。
+- public 的 robots/目标/redirect/retry 及 session 每个 attempt 的 `createTab(pageUrl)` 顶层导航在同 canonical
+  host:port 的相邻 app-initiated start 均 `>=5000ms`；gate 必须在 createTab 前取得，global/host slot 释放、
+  retry/手动运行都不缩短。Public client 与 Session workspace 必须注入同一个 main-process HostRequestGate，
+  不能分模式维护时钟；Chromium 内部 redirect/子资源不冒充可逐请求控制。
 - stop-admission→abort→drain→close 顺序可重复；运行前 Source 失效零 acquisition。
 - 全量 test/typecheck/lint/format/build/diff-check + 对应 Electron 冒烟全绿。
 

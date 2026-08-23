@@ -38,6 +38,9 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 - Watch 跨进程恢复、退出停止、reservation 三写原子与已消费 slot 零重放、一次 catch-up、5秒同 host
   间隔、仅80/443、XML各独立预算边界、Source version/fingerprint/用户意图及 hard-delete、Evidence双侧、
   Digest降级均可重复。
+- Session 专项证明：原授权 Tab 关闭/新进程 catch-up 仍只凭 consent+pageUrl 新建 task Tab；host gate 在 create
+  前；用户 Tab id/url/title/active 恒等；task tabId/handle/Cookie 零持久化；abort/timeout/redirect/login/
+  cleanup failure 全部 fail-closed 且用户 Tab 零 close/navigate。
 - dev+production、全量 test/type/lint/format/build/diff、历史 Session/Sources/Research 门控零回归。
 
 ## 完成定义
