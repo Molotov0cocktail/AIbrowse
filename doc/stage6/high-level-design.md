@@ -76,7 +76,7 @@ renderer/preload 的唯一 Watch 业务入口。验证 DTO、权限和生命周�
 
 ### 3.4 WatchRunCoordinator
 
-单一运行所有权、全局/主机并发、同规则互斥、补跑合并、退避、abort 与 shutdown drain。每次运行前经 SourceService 复核 Source 状态和最终权限，防跨库孤儿规则联网。
+单一运行所有权、全局/主机并发、同规则互斥、补跑合并、5 秒同主机请求起点间隔、退避、abort 与 shutdown drain。计划 slot 的 Run reservation、消费记录和 next due 推进由 Repository 单事务完成。每次运行前经 SourceService 复核 Source locator fingerprint 与状态，防跨库孤儿规则联网。
 
 ### 3.5 WatchAcquisitionService
 
@@ -89,11 +89,11 @@ renderer/preload 的唯一 Watch 业务入口。验证 DTO、权限和生命周�
 
 ### 3.6 PublicWatchHttpClient
 
-项目自有 Fetch-like 窄接口。只 GET/HEAD；禁止任意 method/body/header。连接时 DNS 地址由确定性 NetworkPolicy 校验；重定向逐跳、scheme/host/DNS 全复验；应用 robots、条件请求、响应/时间预算和脱敏。
+项目自有 Fetch-like 窄接口。只 GET/HEAD，只接受 HTTP 80/HTTPS 443；禁止任意 method/body/header。连接时 DNS 地址由确定性 NetworkPolicy 校验；重定向逐跳、scheme/host/port/DNS 全复验；应用 robots、条件请求、响应/时间/频率预算和脱敏。
 
 ### 3.7 FeedDiscovery / FeedParser / PublicHtmlSaxReader
 
-Discovery 与公开页面投影共用已资格化的 parse5 SAX 事件流；前者只读取 `<link rel=alternate>`，后者只构造有界 `DocumentChannels`（mainText/headings/tables/links），不执行脚本、不请求子资源、不持久化 HTML。FeedParser 使用已资格化的流式 XML 依赖，只构造闭合 FeedProjection，不构造通用 XML DOM；遇 DTD/ENTITY/XInclude/预算超限 fail-closed。
+Discovery 与公开页面投影共用已资格化的 parse5 SAX 事件流；前者只读取 `<link rel=alternate>`，后者只构造有界 `DocumentChannels`（mainText/headings/tables/links），不执行脚本、不请求子资源、不持久化 HTML。FeedParser 使用已资格化的流式 XML 依赖，只构造闭合 FeedProjection，不构造通用 XML DOM；DTD/ENTITY/XInclude，或 depth/name/attribute/text/node/total-text/Projection 任一预算超限均 fail-closed。
 
 ### 3.8 BrowserWatchReader / DocumentChannelBuilder / PageProjector
 
@@ -105,11 +105,11 @@ Discovery 与公开页面投影共用已资格化的 parse5 SAX 事件流；前�
 
 ### 3.10 WatchRepository / Store
 
-`watch.db` 的唯一 SQL 执行点；prepared statement 参数绑定。Store 负责 probe、migration、integrity、启动恢复、遗留 running→interrupted、清理和幂等 dispose。捕获正文零落盘。
+`watch.db` 的唯一 SQL 执行点；prepared statement 参数绑定。Store 负责 probe、migration、integrity、启动恢复、遗留 queued/running→interrupted、清理和幂等 dispose。捕获正文零落盘。
 
 ### 3.11 WatchLifecycleCoordinator
 
-作为 SourceService 内部装配端口接收 disable/restore/url-change/hard-delete 事件，不改变 SourceService 对 renderer/Agent 的公共语义。每次运行仍做 SourceService revalidation，作为跨库崩溃纵深防线。
+作为 SourceService 内部 prepare/commit/abort 装配端口接收全部写路径的窄 before/after projection，不改变 SourceService 对 renderer/Agent 的公共语义。`Source.version` 仅是行版本；Watch 用 scope/canonicalKey/目标 URL 的独立 locator fingerprint 判断恢复或重建。每次运行仍做 SourceService revalidation，作为跨库崩溃纵深防线。
 
 ### 3.12 DigestService
 
@@ -154,7 +154,8 @@ NotificationPolicy 生成隐私安全 DTO、做幂等去重和 muted 过滤。Wi
 ```text
 Clock 到期/启动 catch-up/手动检查
 → Scheduler 提交 ruleId
-→ Coordinator 做单例、并发、主机、退避与 Source revalidation
+→ scheduled/catch-up：Repository 单事务建 Run + 消费 scheduledFor + 推进 nextDueAt
+→ Coordinator 做单例、并发、5秒主机间隔、退避与 Source locator revalidation
 → Acquisition 得到 fetched | unchanged-http | health-failure
 → Projector/Parser 生成 Projection
 → DiffEngine 比较 last-known-good Baseline
@@ -184,10 +185,10 @@ DigestSchedule 到期
 
 ### 4.5 Source 生命周期
 
-- disable/soft-delete：内部通知 Watch 暂停；运行前复核确保无新请求。
-- restore：URL/version 未变化且仅因 Source 状态暂停的原启用规则恢复。
-- URL 更新：`source_changed`，旧基线冻结，用户确认后重建。
-- hard-delete：先在 watch.db 写 durable cleanup intent 并暂停，再删除 Source，最后级联 Watch 数据；崩溃后启动 reconciliation 完成。任何中间态均因运行前 Source revalidation 而不能联网。
+- disable/soft-delete：observer prepare 先暂停；`desiredEnabled` 保留用户原意；运行前复核确保无新请求。
+- restore：行 version 必然递增但不等于 locator 改变；fingerprint 相同、原意 enabled 且仅因 Source 状态暂停才恢复，用户 pause 不恢复。
+- locator 更新：`source_changed`，旧基线冻结，用户确认后重建；metadata-only/行版本变化不误判。
+- hard-delete：先在 watch.db 写 durable intent 并暂停，再删除 Source，最后级联 Watch 数据；prepare 失败阻止删除，Source 已提交后的 commit 失败留 intent 且 Watch unavailable。崩溃后启动 reconciliation 完成。任何中间态均因运行前 Source revalidation 而不能联网。
 
 ## 5. 存储与保留
 

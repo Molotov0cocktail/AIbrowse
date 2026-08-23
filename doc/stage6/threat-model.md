@@ -64,11 +64,14 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 ### 3.2 能力层：网络与 XML
 
 - 公网客户端只 GET/HEAD，固定 header；调用者不能给 method/body/auth/proxy。
-- URL 初始、连接时 DNS 地址、每跳 redirect 均验证；混合公网/私网整次拒绝；禁止 downgrade/userinfo。
+- URL 初始、连接时 DNS 地址、每跳 redirect 均验证；混合公网/私网整次拒绝；禁止 downgrade/userinfo，
+  端口只允许 HTTP 80/HTTPS 443。
 - 自定义 connection lookup 只返回已批准 IP；避免只做 DNS 预解析的 TOCTOU。
-- 响应/解压/时间/redirect/host concurrency 全硬上限；socket 超限立即销毁。
+- 响应/解压/时间/redirect/host concurrency 全硬上限；同 canonical host:port 每次 socket start 至少间隔
+  5秒（含 robots/redirect/retry），socket 超限立即销毁。
 - 公开 page/feed 严格 robots；429 遵守 Retry-After；captcha/challenge/login 停止。
-- XML candidate 先资格门；DTD prohibit、零 resolver、零 external entity/XInclude，深度/文本/属性/节点/输出受限。
+- XML candidate 先资格门；DTD prohibit、零 resolver、零 external entity/XInclude，depth/name/attribute-count/
+  attribute-bytes/text-node/nodes/total-text/FeedProjection 都有 `==` 可用、`+1` 拒绝的编译期上限。
 - HTML candidate 同样先资格门；公开 HTML 只经 Node 核心 HTTP + parse5 SAX 事件流，零 WebContents、
   JavaScript、Cookie 和 script/image/iframe 子资源；2 MiB/node/depth/attribute/Projection 全预算。
 - feed 解析失败不浏览器 fallback；登录 feed v1 不支持。
@@ -106,17 +109,20 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 - 每个 Event 必须持久化 typed before/after Evidence；新增/删除用 absent 显式表示。
 - UTF-8 单字段/单投影/单事件/单 Digest/全库预算；公开与 Session 分级保留。
 - Event 删除级联 Evidence；Digest ref 标 expired/user-deleted 并隐藏失证解释。
-- Source hard-delete durable intent + run 前 revalidation + startup reconciliation；不冒充跨库单事务。
+- Source 行 version 与 locator fingerprint 分离；disable→restore 的版本递增不误判 URL 改变，用户 pause 意图
+  单独保存。hard-delete durable intent + prepare/commit/abort + run 前 revalidation + startup reconciliation；
+  不冒充跨库单事务。
 - future/corrupt/非法 JSON/超限数据使 Watch Store unavailable，Scheduler 不启动。
 - SQL 编译期常量、参数绑定、foreign key、CAS 和事务；不可信文本不得成为表/列/ORDER BY。
 
 ### 3.6 运行时层
 
-- 同 Rule 单运行、全局4、同 host1、单 tick20、总90秒、网络30秒、redirect5。
-- missed runs 只合并一次；DST logical date 幂等；手动 run 不改变计划、无安全旁路。
-- 确定性 jitter + 指数退避；429 零立即重试；login/captcha/security 立即暂停。
+- 同 Rule 单运行、全局4、同 host1且请求起点间隔5秒、单 tick20、总90秒、网络30秒、redirect5。
+- scheduled reservation 在同事务创建 Run、消费 scheduledFor、推进 nextDue；提交后失败/pause/abort/crash 都不
+  回拨或重放。未消费的 missed runs 只合并一次；DST logical date 幂等；手动 run 不改变计划、无安全旁路。
+- 0..500ms 确定性附加 jitter（永不提前于 due）+ 指数退避；429 零立即重试；login/captcha/security 立即暂停。
 - Baseline 只在完整验证事务中 CAS 推进；失败/abort/陈旧 result 零覆盖。
-- before-quit stop-admission → abort → drain → store close；启动 running→interrupted。
+- before-quit stop-admission → abort → drain → store close；启动 queued/running→interrupted。
 - muted 只过滤即时通知，不改变网络；paused 才停止调度，UI 明确区分。
 
 ### 3.7 输出与通知层
@@ -154,15 +160,17 @@ blocked 引用或额外字段，整份 explanation 丢弃，确定性 Digest 仍
 
 ## 5. 跨重启与跨库安全
 
-| 崩溃点                       | 恢复动作                                   | 网络安全性质               |
-| ---------------------------- | ------------------------------------------ | -------------------------- |
-| hard-delete prepare 前       | Source 未删，Watch 原状态                  | 无变化                     |
-| intent 写入后、Source 删除前 | Rule 已暂停；reconcile 可 abort            | 零新请求                   |
-| Source 删除后、Watch 清理前  | Source revalidation 失败；reconcile 级联   | 零孤儿请求                 |
-| Event 事务中                 | SQLite 原子回滚或完整提交                  | 不出现半 Event/半 Baseline |
-| HTTP 后、事务前              | result 仅内存；重启补跑                    | 不落半数据                 |
-| Provider explanation 中      | Digest facts 可重建；解释丢弃              | Event 不受影响             |
-| Notification 发送后、ack 前  | dedupe outbox 可能保守不重发或标 uncertain | 不重复创建 Event           |
+| 崩溃点                       | 恢复动作                                    | 网络安全性质               |
+| ---------------------------- | ------------------------------------------- | -------------------------- |
+| hard-delete prepare 前       | Source 未删，Watch 原状态                   | 无变化                     |
+| intent 写入后、Source 删除前 | Rule 已暂停；reconcile 可 abort             | 零新请求                   |
+| Source 删除后、Watch 清理前  | Source revalidation 失败；reconcile 级联    | 零孤儿请求                 |
+| Event 事务中                 | SQLite 原子回滚或完整提交                   | 不出现半 Event/半 Baseline |
+| reservation 提交前           | Run/消费记录/nextDue 三者全无               | 下次只补未消费 due         |
+| reservation 提交后/HTTP 前   | queued→interrupted；slot 不重放             | 不重复相同 requestKey      |
+| HTTP 后、结果事务前          | result 仅内存；run→interrupted；slot 不重放 | 不落半数据、不重复该 slot  |
+| Provider explanation 中      | Digest facts 可重建；解释丢弃               | Event 不受影响             |
+| Notification 发送后、ack 前  | dedupe outbox 可能保守不重发或标 uncertain  | 不重复创建 Event           |
 
 不把“最终一定只通知一次”作为分布式 exactly-once 承诺；结构保证 Event exactly-once，通知采用幂等键和
 at-most-once 优先的本地策略，崩溃窗口 UI 如实显示 delivery unknown。
@@ -173,11 +181,11 @@ at-most-once 优先的本地策略，崩溃窗口 UI 如实显示 delivery unkno
 | ------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ | --------- |
 | WRT-01 | localhost/127/::1/私网/link-local/组播/保留 URL                             | 零 socket、security_rejected、零正文日志                                 | D3/D10    |
 | WRT-02 | DNS 公私混合/连接时换绑                                                     | 整次拒绝；连接 lookup 只返回已批地址                                     | D3/D10    |
-| WRT-03 | redirect 到私网/file/javascript/HTTPS→HTTP                                  | 每跳拒绝、零后续请求                                                     | D3/D10    |
+| WRT-03 | 非80/443、redirect 到私网/file/javascript/HTTPS→HTTP                        | 每跳拒绝、零后续请求                                                     | D3/D10    |
 | WRT-04 | 慢流/巨型/压缩炸弹/redirect loop                                            | deadline/字节/跳数内受控失败，进程存活                                   | D3/D10    |
-| WRT-05 | robots disallow/429/captcha                                                 | 暂停或退避；零 override/绕过/重试风暴                                    | D3/D5/D10 |
+| WRT-05 | robots disallow/429/captcha/同 host 突发请求                                | 暂停或退避；所有请求起点≥5秒；零 override/绕过/重试风暴                  | D3/D5/D10 |
 | WRT-06 | XXE/外部 DTD/XInclude/Billion Laughs                                        | 零文件/网络，预算内失败，后续正常 feed 可解析                            | D3/D10    |
-| WRT-07 | 深层/巨型属性/畸形编码/CDATA                                                | fail-closed，零未捕获异常/正文日志                                       | D3/D10    |
+| WRT-07 | XML depth/name/attr/text/node/total/projection 各边界与畸形编码/CDATA       | 每项 `==` 接受、`+1` fail-closed，零未捕获异常/正文日志                  | D3/D10    |
 | WRT-08 | 重复/冲突 GUID、字段超长、feed 重排                                         | 去重稳定、顺序噪声零事件、预算有效                                       | D3/D7     |
 | WRT-09 | 未授权 Session Rule/grant 重放/跨 origin                                    | 创建拒绝；Cookie/session credential 零 renderer/DB/log；handle 零 DB/log | D6/D10    |
 | WRT-10 | 登录跳转/captcha 页面伪装                                                   | 不建 Event、不覆盖 Baseline、暂停                                        | D6/D7/D10 |
@@ -186,8 +194,8 @@ at-most-once 优先的本地策略，崩溃窗口 UI 如实显示 delivery unkno
 | WRT-13 | feed/page 注入模型指令/未知 eventId                                         | 零工具；ExplanationDraft 拒绝；facts 保留                                | D8/D10    |
 | WRT-14 | metadata/blocked Source 混入 prompt                                         | 字节扫描零 Evidence/零 blocked 内容                                      | D8/D10    |
 | WRT-15 | 通知标题伪造 URL/query/锁屏敏感摘录                                         | 安全 DTO、内部 UUID 路由、默认隐藏                                       | D9/D10    |
-| WRT-16 | 时钟回拨/DST/离线一万次 missed                                              | 每规则最多一次 catch-up、零并发重复                                      | D5/D10    |
-| WRT-17 | Source hard-delete 各崩溃切点                                               | orphan 零网络、最终级联、不可 Undo                                       | D4/D10    |
+| WRT-16 | 时钟回拨/DST/离线一万次 missed/reservation 各崩溃与终态                     | 三写原子；每规则最多一次 catch-up；已消费 slot 零重放                    | D5/D10    |
+| WRT-17 | Source disable→restore 版本递增、metadata/locator 变化、hard-delete 崩溃点  | 意图/identity 正确；orphan 零网络；最终级联；不可 Undo                   | D4/D10    |
 | WRT-18 | DB/log/event/digest 预算压力与 corrupt/future schema                        | 有界清理或 unavailable，Scheduler 不启动                                 | D1/D4/D10 |
 | WRT-19 | 公开 HTML 含 script/iframe/私网子资源、畸形/巨深/巨节点或共享 Cookie canary | 零执行/子请求/Cookie，预算内 DocumentChannels 或受控失败                 | D3/D6/D10 |
 

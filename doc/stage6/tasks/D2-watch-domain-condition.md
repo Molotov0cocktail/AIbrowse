@@ -7,8 +7,9 @@
 
 ## 范围与非目标
 
-- **做**：detailed §2/§3 全类型/常量；enabled/paused/muted/source 状态迁移；Condition all/any 与闭合 operator；
-  exact object validators、UTF-8 budget helpers。
+- **做**：detailed §2/§3 全类型/常量（含 XML/Feed 整体预算与5秒主机间隔）；
+  enabled/paused/muted/source 状态迁移、`desiredEnabled` 与 Source rowVersion/locator fingerprint 分离；
+  Condition all/any 与闭合 operator；exact object validators、UTF-8 budget helpers。
 - **不做**：SQL、网络、XML、实际 Scheduler、Diff、Provider、Electron/UI；零 AI-evaluated rule/regex/script。
 
 ## 涉及模块和输入文档
@@ -31,8 +32,10 @@
 
 ## 验收标准与测试
 
-- detailed §2/§3/§5 所有闭合值与常量逐项测试；魔法预算数字零散落。
-- `muted` 不改变调度状态；paused 不等于 deleted；所有非法迁移安全返回。
+- detailed §2/§3/§5 所有闭合值与常量逐项测试；XML depth/name/attribute/text/node/total/output 与
+  host gap 常量可由后续模块唯一引用，魔法预算数字零散落。
+- `muted` 不改变调度状态；paused 不等于 deleted；Source pause 不覆盖 `desiredEnabled`，用户 pause 永不被
+  restore 自动恢复；所有非法迁移安全返回。
 - Condition 只能读取验证字段；不匹配结果纯确定性、输入深冻结不修改。
 - 聚焦测试 + 全量 test/typecheck/lint/format/build/diff-check 全绿。
 

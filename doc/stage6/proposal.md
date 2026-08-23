@@ -91,7 +91,7 @@
 
 - v1 仅在 AIbrowse 应用进程运行时调度；关闭最后窗口即停止。
 - 调度支持固定间隔预设和每日本地时间，不开放 cron；错过执行最多合并补跑一次。
-- 公开网络只允许 http/https 公网地址；拒绝 userinfo、localhost、私网、link-local、保留/组播地址，并对连接地址和每跳重定向复验。
+- 公开网络只允许 http/https 公网地址且端口闭合为 HTTP 80/HTTPS 443；拒绝 userinfo、localhost、私网、link-local、保留/组播地址，并对连接地址和每跳重定向复验。
 - 公开页面严格遵守 robots，不提供覆盖；登录态页面不以 robots 代替用户授权，但仍限速。
 - captcha/challenge/login_required 停止或暂停，不做绕过。
 - Diff equality、条件、事件键、Evidence、Digest 事件集合、通知事实均由程序决定。
@@ -122,8 +122,8 @@
 - 日志无大小/保留/单行预算；由 D1 首先修复。
 - SSRF、DNS rebinding、重定向和危险 scheme；由 D3 定稿并红队。
 - XML 依赖资格与 DTD/entity 资源耗尽；由 D3 通过前零 feed 产品接线。
-- `watch.db`、Evidence 保留预算和 Source 生命周期一致性；由 D4 落地。
-- 应用退出行为、错过执行、并发/主机限速；契约已冻结，由 D5 实现。
+- `watch.db`、Evidence 保留预算和 Source 生命周期一致性；Source 行 version 与 locator fingerprint 分离，跨库 prepare/commit/abort 由 D4 落地。
+- 应用退出行为、错过执行、Run reservation 与计划推进原子性、5秒同主机请求间隔；契约已冻结，由 D5 实现。
 
 ### 8.2 第六阶段必须吸收
 

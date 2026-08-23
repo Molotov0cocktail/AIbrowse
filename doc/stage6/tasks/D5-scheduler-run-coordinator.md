@@ -3,12 +3,13 @@
 ## 目标
 
 实现应用进程内 WatchScheduler/WatchRunCoordinator：interval/daily、DST、missed run 合并一次、同 Rule
-互斥、全局/主机并发、退避/jitter/Retry-After、手动 run 和幂等 shutdown。
+互斥、全局/主机并发与5秒请求起点间隔、退避/jitter/Retry-After、手动 run 和幂等 shutdown。
 
 ## 范围与非目标
 
-- **做**：到期队列、单 tick20、global4/host1、90秒总超时、一次内重试、状态/进度；启动/恢复/catch-up；
-  Source revalidation；before-quit drain。
+- **做**：到期队列、单 tick20、global4/host1、同 host start-to-start 至少5秒、90秒总超时、一次内重试、
+  状态/进度；Run+scheduledFor消费+nextDue推进单事务 reservation；启动/恢复/catch-up；Source locator
+  revalidation；before-quit drain。
 - **不做**：后台服务/托盘/Windows Task Scheduler；不实现 Feed/Page 业务（用窄 fake port）；Scheduler 不持有能力。
 
 ## 涉及模块和输入文档
@@ -23,15 +24,20 @@
 
 ## 实施步骤（红→绿）
 
-1. 红：FakeClock 下 interval/daily/DST/回拨/离线万次 missed/手动并发/host 队列/退出测试。
+1. 红：FakeClock 下 interval/daily/DST/回拨/离线万次 missed；reservation 前/事务中/提交后、acquisition
+   成功/失败/pause/abort/crash；手动并发/host robots+redirect+retry 队列/退出测试。
 2. 绿：纯 schedule calculator → due queue → coordinator slot → retry/backoff → lifecycle drain。
 3. 检查 Scheduler 对象图不含 Browser/DB/HTTP/Provider/Notification；只提交 ruleId。
 4. dev/production 生命周期冒烟：关窗停止、重启一次 catch-up、零 timer/request 残留。
 
 ## 验收标准与测试
 
-- 同 Rule 永不并发；手动 run 复用 current run，不改变 nextDueAt。
-- missed 任意数量最多一次 catch-up；429/失败矩阵、jitter 与三次 degraded 精确。
+- 同 Rule 永不并发；scheduled reservation 的 Run/requestKey、lastConsumedScheduledFor、nextDueAt 三写
+  要么全有要么全无；提交后的失败/pause/abort/interrupted 不回拨或重放。
+- 手动 run 复用 current run，不改变 nextDueAt/daily logical date，不绕 backoff/Source/host gate。
+- missed 任意数量最多一次 catch-up；backoff 延迟只产生一次消费；429/失败矩阵、jitter 与三次 degraded 精确。
+- public 的 robots/目标/redirect/retry 及 session 顶层导航在同 canonical host:port 的相邻 start 均
+  `>=5000ms`；global/host slot 释放、手动运行都不缩短。
 - stop-admission→abort→drain→close 顺序可重复；运行前 Source 失效零 acquisition。
 - 全量 test/typecheck/lint/format/build/diff-check + 对应 Electron 冒烟全绿。
 

@@ -35,7 +35,9 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 
 - WRT-01～19 每项有独立机器结果，结构性证明/真实观察/诚实限制分栏。
 - Sixth §7 七项体验、§9 全项、§10 五项均映射到当前 HEAD 证据或明确未满足，不能选择性跳过。
-- Watch 跨进程恢复、退出停止、一次 catch-up、Source hard-delete、Evidence 双侧、Digest 降级可重复。
+- Watch 跨进程恢复、退出停止、reservation 三写原子与已消费 slot 零重放、一次 catch-up、5秒同 host
+  间隔、仅80/443、XML各独立预算边界、Source version/fingerprint/用户意图及 hard-delete、Evidence双侧、
+  Digest降级均可重复。
 - dev+production、全量 test/type/lint/format/build/diff、历史 Session/Sources/Research 门控零回归。
 
 ## 完成定义

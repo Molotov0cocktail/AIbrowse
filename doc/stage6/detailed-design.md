@@ -67,18 +67,27 @@ src/main/smoke-watch-*.ts                    # 独立门控、红队、隐私扫
 | `MAX_WATCH_RULES_ENABLED`      |         100 | 实际可调度上限                 |
 | `MAX_GLOBAL_WATCH_RUNS`        |           4 | 全局 acquisition 并发          |
 | `MAX_HOST_WATCH_RUNS`          |           1 | canonical host 并发            |
+| `MIN_HOST_REQUEST_GAP_MS`      |       5,000 | 同 canonical host 请求起点间隔 |
 | `MAX_DUE_STARTS_PER_TICK`      |          20 | 单次唤醒启动数                 |
 | `WATCH_RUN_TIMEOUT_MS`         |      90,000 | 单规则总时间                   |
 | `NETWORK_ATTEMPT_TIMEOUT_MS`   |      30,000 | 单网络尝试                     |
 | `MAX_REDIRECTS`                |           5 | 每跳复验                       |
 | `MAX_FEED_RESPONSE_BYTES`      |   2,097,152 | 解析前硬拒绝                   |
+| `MAX_XML_DEPTH`                |          64 | XML 元素深度硬上限             |
+| `MAX_XML_NODES`                |      20,000 | XML start/text 事件总数        |
+| `MAX_XML_NAME_BYTES`           |         256 | 单 QName/localName/namespace   |
+| `MAX_XML_ATTRIBUTES_PER_TAG`   |          64 | 单元素属性数量                 |
+| `MAX_XML_ATTRIBUTE_BYTES`      |       4,096 | 单属性名和值合计               |
+| `MAX_XML_TEXT_NODE_BYTES`      |       8,192 | 单次累计文本节点               |
+| `MAX_XML_TOTAL_TEXT_BYTES`     |     131,072 | 单文档规范化文本累计           |
 | `MAX_DISCOVERY_HTML_BYTES`     |     262,144 | 仅内存扫描                     |
 | `MAX_PAGE_HTML_RESPONSE_BYTES` |   2,097,152 | 公开页面 HTML 流硬上限         |
 | `MAX_HTML_NODES`               |      20,000 | SAX 事件节点上限               |
 | `MAX_HTML_DEPTH`               |          64 | 元素栈深度上限                 |
 | `MAX_HTML_ATTRIBUTES_PER_TAG`  |          64 | 单标签属性上限                 |
-| `MAX_FEED_ITEMS`               |         200 | 单 Projection 最新条目         |
+| `MAX_FEED_ITEMS`               |         200 | 按 feed 顺序前 200 条          |
 | `MAX_FEED_FIELD_BYTES`         |       4,096 | 单标题/摘要/标识等             |
+| `MAX_FEED_PROJECTION_BYTES`    |     262,144 | FeedProjection 整体硬上限      |
 | `MAX_REGIONS_PER_RULE`         |          10 | 页面区域数                     |
 | `MAX_PAGE_PROJECTION_BYTES`    |      65,536 | 单 Baseline 投影               |
 | `MAX_PROJECTION_FIELDS`        |          50 | 类型化字段数                   |
@@ -137,14 +146,17 @@ interface WatchRule {
   kind: WatchRuleKind;
   state: WatchRuleState;
   pauseReason: PauseReason | null;
+  desiredEnabled: boolean;
   muted: boolean;
   accessMode: WatchAccessMode;
   schedule: WatchSchedule;
   target: FeedTarget | PageTarget;
   condition: StructuredCondition | null;
   notificationLevel: 'normal' | 'important';
-  sourceVersion: number;
+  sourceRowVersion: number;
+  sourceLocatorFingerprint: string;
   nextDueAt: string | null;
+  lastConsumedScheduledFor: string | null;
   lastDailyLocalDate: string | null;
   consecutiveFailures: number;
   backoffUntil: string | null;
@@ -155,8 +167,9 @@ interface WatchRule {
 ```
 
 约束：feed 仅允许 `public`；session 仅允许 page。`muted` 不改变 state/nextDueAt；paused
-不进入到期队列。Rule URL 只通过当前 SourceService 解析，Watch 持久化最终规范化 URL 快照仅用于
-审计/检测 Source 变化，不能在 Source hard-delete 后继续联网。
+不进入到期队列。`desiredEnabled` 只表达用户意图：用户 pause 置 false，用户 enable 置 true；Source
+生命周期造成的有效 pause 不覆盖它。Rule URL 只通过当前 SourceService 解析，Watch 持久化最终规范化
+locator 快照仅用于审计/检测 Source 变化，不能在 Source hard-delete 后继续联网。
 
 ### 3.2 目标与投影
 
@@ -175,6 +188,7 @@ type RegionDescriptor =
 
 interface PageTarget {
   type: 'page';
+  pageUrl: string;
   regions: RegionDescriptor[];
   sessionConsent: { version: 1; origin: string; grantedAt: string } | null;
 }
@@ -267,18 +281,39 @@ interface TimeZoneResolver {
 
 ### 4.2 到期和补跑
 
-启动/恢复时：若 `nextDueAt <= now`，为每条规则只创建一个 `catch-up` request；成功提交后立即把
-计划推进到第一个 `> now` 的时点。不得枚举或重放中间 missed runs。单次 tick 只启动 20 条，其余
-保持有界排序队列 `(effectiveDueAt, ruleId)`。
+`effectiveDueAt = max(nextDueAt, backoffUntil)`；paused/deleted 无 effective due。Scheduler 只提交
+`ruleId`，Coordinator 必须在 `watch.db` 单事务执行 `reserveScheduledRun(expectedNextDueAt, now)`：
 
-手动运行使用唯一 requestId，不改变计划锚点。已有同规则运行时返回当前 runId，不排第二次。
+1. 复验 Rule enabled、无同 Rule queued/running 且 expected due 未变化；
+2. 以消费前 `nextDueAt` 写 `scheduledFor` 和唯一 `requestKey=ruleId|scheduledFor` 的 queued Run；
+3. 写 `lastConsumedScheduledFor=scheduledFor`，并按原 schedule 锚点用 O(1) 算法推进 `nextDueAt` 到第一个
+   `> now` 的时点；daily 同时写本次 logical local date；
+4. 三项同事务提交才允许入内存队列；事务失败时三项均不改变，Store 进入 unavailable、Scheduler 停止。
+
+启动/恢复时若 `nextDueAt <= now`，该 reservation 的 trigger 标 `catch-up`；无论错过多少时点，每 Rule
+只消费最旧 due 并直接推进到第一个 `> now`，不枚举中间 missed runs。普通 tick/backoff 到期使用
+`scheduled`。单次 tick 只启动20条，其余保持有界排序队列 `(effectiveDueAt, ruleId)`。
+
+reservation 已提交即代表该 schedule slot 被消费；后续 acquisition 成功、失败、pause、abort 或进程崩溃
+都不回拨 `nextDueAt`。终态事务只写 Run outcome/health/backoff；崩溃恢复把 queued/running 原子标
+`interrupted`，同一 `requestKey` 不重放。若进程在 reservation 提交前崩溃，due 仍在，下次启动只补跑一次。
+这把“应用关闭时错过一次”与“已开始但中断”明确区分，避免崩溃重放风暴。
+
+手动运行使用唯一 requestId，不写 `lastConsumedScheduledFor`、不改变 `nextDueAt`/daily logical date；仍复验
+Rule/Source、等待 backoff 和 host gate，不能绕过安全/频率策略。已有同规则运行时返回当前 runId，不排第二次。
+手动运行成功可重置 failure/backoff，失败可延长 backoff，但计划锚点保持不变。
 
 ### 4.3 退避
 
 - timeout/load/临时 5xx：单次 run 内最多重试一次；仍失败则连续失败数 +1。
 - 429：零立即重试，解析有效 `Retry-After`，取其与本地退避较晚者。
 - 连续失败退避基线：15 分钟、1 小时、6 小时、24 小时封顶。
-- 每次网络开始加入由 `SHA-256(ruleId|host)` 导出的 ±10% 确定性 jitter。
+- 每个实际 HTTP socket 请求（含 robots、redirect、retry）按 canonical `host:effectivePort` 排队；相邻请求
+  start time 至少相隔 `MIN_HOST_REQUEST_GAP_MS`。redirect 到新 host 重新进入对应 gate；Session 模式无法控制
+  Chromium 子资源，但其顶层导航同样受该 host gate。全局/host 并发释放不缩短间隔。
+- 每次顶层 acquisition 加入由 `SHA-256(ruleId|host|scheduledFor)` 导出的 0..500ms 确定性附加 jitter
+  （`MIN_HOST_REQUEST_GAP_MS` 的 0..10%）；实际 start 为 due/backoff/host-gap 全部满足后再延迟该值，
+  永不提前于 due。手动运行以 requestId 代替 scheduledFor，同样适用。
 - 成功的 fetched/unchanged 重置连续失败与 backoff。
 - 三次连续 `unavailable` 标 degraded 但不覆盖 Baseline。
 - `login_required/captcha/robots_disallowed/security_rejected` 立即暂停，零自动重试。
@@ -288,7 +323,8 @@ interface TimeZoneResolver {
 
 `before-quit` 顺序：停止接收新 run → 清 timer/队列 → abort acquisition/provider → 等待有界 drain →
 关闭 WatchStore → 延续既有 Research/Sources/Browser dispose。关窗退出后没有调度。所有 stop/dispose
-可重复调用，未完成 running 行在下次启动原子标 `interrupted`，然后按补跑规则处理。
+可重复调用，未完成 queued/running 行在下次启动原子标 `interrupted`；其已消费 slot 不重放，只有仍未消费的
+过期 `nextDueAt` 才按补跑规则处理。
 
 ## 5. 确定性结构化条件
 
@@ -346,7 +382,8 @@ interface PublicWatchHttpClient {
 
 NetworkPolicy：
 
-1. URL 仅 `http:`/`https:`，拒绝 userinfo、空 host、控制字符、非默认/显式端口越界；
+1. URL 仅 `http:`/`https:`，拒绝 userinfo、空 host、控制字符；端口白名单闭合为 HTTP 80、HTTPS 443，
+   省略端口或显式写对应默认端口均接受并规范化为省略形式，所有非默认端口一律 `security_rejected`；
 2. 规范化 host 后拒绝 localhost 与保留后缀；
 3. 连接 `lookup` 返回的每个候选 IP 都必须是允许的公网 unicast；混合公网+私网整次拒绝；
 4. 自定义 lookup 只把已验证地址交给 socket，避免预解析与连接重解析分离；
@@ -365,6 +402,7 @@ ETag/Last-Modified；304 映射 unchanged-http，不解析空 body。
 - robots 获取同样经过 NetworkPolicy，最大 256 KiB、30 秒；不可解析/安全拒绝时 fail-closed 为 unavailable/security。
 - disallow 立即 `robots_disallowed` 并暂停；用户无 override。
 - 登录态 page 不查询 robots，但仍全局/主机并发、最小间隔、退避；这不是绕公开反爬授权。
+- §4.3 的 5 秒间隔是请求 start-to-start 硬下限，不是平均值；robots、目标、redirect 和 retry 都不能绕过。
 - robots 只表达 crawler preference，不替代 ToS/法律判断；UI 在创建公开规则时显示诚实提示。
 
 ### 6.3 HTML 依赖资格与 Feed Discovery
@@ -392,7 +430,12 @@ Parser 配置/外层防线：
 - 接受 RSS 2.0 channel/item 和 Atom feed/entry；namespace 按 URI+localName，不信任前缀；
 - entry 身份：Atom id / RSS guid 首选，其次 canonical link，最后
   SHA-256(title|published|canonicalLink) 受控复合键；身份缺失且复合键字段不足则丢弃该 item；
-- Projection 最多 200 items，按 feed 顺序；字段逐项限长，超限单项安全截断并标记；结构/总预算超限整次失败；
+- XML depth/name/attributes/text-node/node-count 任一达到“下一事件将使计数 `> MAX_*`”时整次
+  `budget_exceeded`；等于上限允许。累计文本超过 `MAX_XML_TOTAL_TEXT_BYTES` 或编码后的完整
+  FeedProjection 超过 `MAX_FEED_PROJECTION_BYTES` 也整次失败，旧 Baseline 保留。
+- Projection 最多保留 feed 顺序前 200 items；遇到第 201 项停止收集并标 `itemsTruncated=true`。字段逐项按
+  UTF-8 字节安全截断到4,096并标记，不把截断值冒充完整值；结构/累计文本/整体 Projection 预算则不截断，
+  整次失败。DTD/custom entity 已禁止，因此不存在可配置的递归实体预算，任何声明直接 security_rejected。
 - HTML 内容字段转纯文本安全子集，零 HTML 落盘/渲染。
 
 ### 6.5 公开页面 HTML SAX
@@ -413,17 +456,17 @@ script/style/noscript/template/svg/math/iframe/object/embed/form/input/button �
 
 ## 7. Acquisition 失败闭环
 
-| 分类                     | 典型来源                             | 重试             | Baseline | 状态/用户动作            |
-| ------------------------ | ------------------------------------ | ---------------- | -------- | ------------------------ |
-| `unavailable`            | DNS/连接/临时 5xx                    | 1 次 + 退避      | 保留     | 3 次 degraded            |
-| `budget_exceeded`        | 响应/投影/运行超限                   | 否               | 保留     | 显示限制；需调整目标     |
-| `robots_disallowed`      | robots deny                          | 否               | 保留     | 立即暂停                 |
-| `security_rejected`      | scheme/IP/redirect/downgrade/XML DTD | 否               | 保留     | 立即暂停；安全文案       |
-| `login_required`         | 登录跳转/受保护页                    | 否               | 保留     | 立即暂停；重新授权       |
-| `captcha`                | challenge/captcha                    | 否               | 保留     | 立即暂停；不绕过         |
-| `parse_changed`          | Region/feed 结构失效                 | 首次下次计划重试 | 保留     | 连续 2 次暂停，修复/重建 |
-| `dependency_unavailable` | XML 资格/运行装配失败                | 否               | 保留     | feed 全局 fail-closed    |
-| `interrupted`            | 退出/崩溃                            | 下次合并补跑     | 保留     | 审计可见                 |
+| 分类                     | 典型来源                             | 重试               | Baseline | 状态/用户动作            |
+| ------------------------ | ------------------------------------ | ------------------ | -------- | ------------------------ |
+| `unavailable`            | DNS/连接/临时 5xx                    | 1 次 + 退避        | 保留     | 3 次 degraded            |
+| `budget_exceeded`        | 响应/投影/运行超限                   | 否                 | 保留     | 显示限制；需调整目标     |
+| `robots_disallowed`      | robots deny                          | 否                 | 保留     | 立即暂停                 |
+| `security_rejected`      | scheme/IP/redirect/downgrade/XML DTD | 否                 | 保留     | 立即暂停；安全文案       |
+| `login_required`         | 登录跳转/受保护页                    | 否                 | 保留     | 立即暂停；重新授权       |
+| `captcha`                | challenge/captcha                    | 否                 | 保留     | 立即暂停；不绕过         |
+| `parse_changed`          | Region/feed 结构失效                 | 首次下次计划重试   | 保留     | 连续 2 次暂停，修复/重建 |
+| `dependency_unavailable` | XML 资格/运行装配失败                | 否                 | 保留     | feed 全局 fail-closed    |
+| `interrupted`            | 退出/崩溃                            | 已消费 slot 不重放 | 保留     | 审计可见                 |
 
 错误检测不得用单一敌手正文字符串直接决定登录/captcha。使用主进程 URL/HTTP 状态、导航结果、
 已知 Chromium error URL、受控 DOM 元数据和保守判定；不确定时 unavailable，不回显页面挑战正文。
@@ -558,19 +601,19 @@ Digest 引用变为 `user-deleted` tombstone，AI 解释不再显示。
 
 ### 10.1 Schema v1
 
-| 表                       | 核心列/约束                                                                                                                                                                |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `watch_rules`            | id PK、source_id、kind/state/pause_reason/muted/access_mode、schedule_json/target_json/condition_json 严格版本、source_version、due/backoff/failure/baseline_version、时间 |
-| `watch_baselines`        | rule_id PK/FK、version、projection_type/json/hash/bytes、final_url/captured_at/document_id；bytes CHECK                                                                    |
-| `watch_runs`             | id PK、rule_id FK、request_key UNIQUE、trigger/scheduled_for/start/finish/outcome/health、响应元数据有界                                                                   |
-| `watch_audits`           | id PK、rule_id、kind、reason code、created_at；零敌手正文                                                                                                                  |
-| `watch_events`           | id PK、rule/source、kind/importance、idempotency_key UNIQUE、fingerprint、观察时间、read_at、item_count                                                                    |
-| `watch_event_items`      | id PK、event_id FK、sequence、field_key/label、before/after typed value JSON、双侧元数据；UNIQUE(event_id, sequence)                                                       |
-| `digest_schedules`       | id PK、固定 source_ids_json、schedule_json、ai_enabled、cursor、state/time                                                                                                 |
-| `watch_digests`          | id PK、schedule_id、facts_json、explanation_json nullable、bytes、created_at                                                                                               |
-| `digest_event_refs`      | digest_id/event_id、status active/expired/user-deleted；复合 PK                                                                                                            |
-| `notification_outbox`    | id PK、subject_type/id、channel、dedupe_key UNIQUE、privacy_json、state/attempt/time                                                                                       |
-| `source_cleanup_intents` | source_id PK、source_version、state prepared/source-deleted/complete/aborted、time                                                                                         |
+| 表                       | 核心列/约束                                                                                                                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `watch_rules`            | id PK、source_id、kind/state/pause_reason/desired_enabled/muted/access_mode、schedule/target/condition 严格版本、source_row_version/source_locator_fingerprint、next_due/last_consumed_scheduled_for/backoff/failure/baseline_version、时间 |
+| `watch_baselines`        | rule_id PK/FK、version、projection_type/json/hash/bytes、final_url/captured_at/document_id；bytes CHECK                                                                                                                                     |
+| `watch_runs`             | id PK、rule_id FK、request_key UNIQUE、trigger/scheduled_for/start/finish/outcome/health、响应元数据有界                                                                                                                                    |
+| `watch_audits`           | id PK、rule_id、kind、reason code、created_at；零敌手正文                                                                                                                                                                                   |
+| `watch_events`           | id PK、rule/source、kind/importance、idempotency_key UNIQUE、fingerprint、观察时间、read_at、item_count                                                                                                                                     |
+| `watch_event_items`      | id PK、event_id FK、sequence、field_key/label、before/after typed value JSON、双侧元数据；UNIQUE(event_id, sequence)                                                                                                                        |
+| `digest_schedules`       | id PK、固定 source_ids_json、schedule_json、ai_enabled、cursor、state/time                                                                                                                                                                  |
+| `watch_digests`          | id PK、schedule_id、facts_json、explanation_json nullable、bytes、created_at                                                                                                                                                                |
+| `digest_event_refs`      | digest_id/event_id、status active/expired/user-deleted；复合 PK                                                                                                                                                                             |
+| `notification_outbox`    | id PK、subject_type/id、channel、dedupe_key UNIQUE、privacy_json、state/attempt/time                                                                                                                                                        |
+| `source_cleanup_intents` | mutation_id PK、source_id、operation、before/after_projection_json、affected_rule_state_json、state prepared/source-committed/complete/aborted、time；source_id 索引                                                                        |
 
 外键打开；删除 Rule CASCADE baseline/runs/audits/events/outbox；Event CASCADE items；Digest 对 Event 使用
 tombstone 状态而非丢失引用真实性。所有 JSON 读取后再次用共享 validator，非法/未来版本使 Store
@@ -582,7 +625,7 @@ tombstone 状态而非丢失引用真实性。所有 JSON 读取后再次用共�
 2. read-only probe 与 user_version；未来版本 fail-closed；
 3. migration（仅已批准编译期 SQL）；
 4. quick/integrity check、JSON shape/预算扫描；
-5. 单事务 running→interrupted；
+5. 单事务 queued/running→interrupted；
 6. reconcile `source_cleanup_intents` 和 SourceService 当前事实；
 7. 清理超期/超数/超库预算；
 8. 只有全部成功才返回 `normal` 并启动 Scheduler，否则 `unavailable`，UI 只读错误态。
@@ -592,14 +635,78 @@ v1 复用 Sources 严格 backup 模式但使用独立 Watch 目录/文件名；�
 
 ### 10.3 Source 生命周期跨库协议
 
-- prepare hard-delete：Watch 在自身事务暂停规则、写 intent；失败则 Source hard-delete 不继续。
-- SourceService 执行既有 hard-delete。
-- complete：Watch 事务级联数据并把 intent 完成后删除。
-- 若 Source 删除失败：intent→aborted；恢复此前状态仅限 Source 仍存在且版本相同。
-- 崩溃：每次 run 仍经 SourceService revalidate；启动 reconciliation 根据 Source 是否存在完成或取消 intent。
-- soft-delete/disable 不删除 Watch 数据；restore 只恢复 `pauseReason=source-disabled/source-deleted` 且 URL/version
-  未变、Rule 原 enabled 意图为真者。
-- URL/version 变化：pause source-changed；旧 Baseline 只用于用户预览，不再比较；确认 rebaseline 后更新 sourceVersion。
+Stage4 的 `Source.version` 是行级乐观并发版本：disable、restore 和每次成功写都会递增。因此它只进入
+`sourceRowVersion` 作为“最后观察到的行版本”，**绝不**用来判断 locator 是否变化或是否自动恢复。
+
+```ts
+interface SourceWatchProjection {
+  sourceId: string;
+  rowVersion: number;
+  enabled: boolean;
+  deletedAt: string | null;
+  scope: 'origin' | 'page';
+  canonicalKey: string;
+}
+
+interface SourceWatchMutation {
+  mutationId: string;
+  operation: 'create' | 'update' | 'disable' | 'restore' | 'undo' | 'hard-delete';
+  before: SourceWatchProjection | null;
+  after: SourceWatchProjection | null;
+}
+
+interface SourceLifecycleObserver {
+  prepare(
+    changes: SourceWatchMutation[],
+  ): { ok: true } | { ok: false; reason: 'watch-unavailable' };
+  commit(mutationIds: string[]): { ok: true } | { ok: false; reason: 'watch-unavailable' };
+  abort(mutationIds: string[]): void;
+}
+```
+
+`SourceWatchProjection` 是 SourceService 的本地 user-audience 窄投影；不含 note、正文、usage 或 DB 句柄。
+Rule 的 locator 身份为
+`SHA-256(utf8("watch-locator-v1\0" + sourceId + "\0" + scope + "\0" + canonicalKey + "\0" + kind + "\0" + canonicalTargetUrl))`。
+`canonicalTargetUrl` 是 FeedTarget.feedUrl 或 Page Rule 建立时的规范化目标 URL，均经当前 SourceService/
+NetworkPolicy 重新求值；fragment/display-only 变化不改变身份，scheme/host/port/path/query 中任何有效定位变化、
+Rule target 编辑或 Source scope/canonicalKey 变化都改变身份并要求 rebaseline。原始/规范化 URL 不拼接为日志。
+
+SourceService 构造时接收内部 observer；不新增 renderer/Agent/IPC API，原有 SourceService 公共返回类型和
+`expectedVersion` 语义不变。manual write、AI change set、Undo、disable/restore/update 和 hard-delete 全走同一顺序：
+
+1. SourceService 完成原有输入/权限/expectedVersion/confirm 校验，在 Source 写事务前生成不可变 before/after
+   窄投影和 UUID `mutationId`；批量 change set 作为一个 observer batch。
+2. `observer.prepare` 先在 watch.db 单事务写 prepared intent 与受影响 Rule 的 prepare 前状态，并按 after 预先
+   fail-closed：disable/delete 暂停
+   关联 Rule，locator 改变暂停为 `source-changed`。prepare 绝不把 Rule 从 paused 改为 enabled；restore 只能在
+   Source 事务已提交后的 commit 恢复。它只改有效 state/pauseReason/sourceRowVersion；不覆盖
+   `desiredEnabled`、Baseline 或 Evidence。
+3. SourceService 再执行原有单一 sources.db 事务。若 Source 事务回滚，调用 `abort`：Watch 仅在当前 Source
+   仍等于 before locator/state 时恢复 prepare 前有效 state，并把 intent aborted；否则交启动 reconciliation。
+4. Source 事务提交后调用 `commit`。Watch 根据实际 SourceService 窄投影而非传入 after 猜测：同 locator
+   的普通元数据/version 变化只更新 `sourceRowVersion`；restore 在 locator 相同、`desiredEnabled=true` 且
+   pauseReason 是 source-disabled/source-deleted 时自动 enabled；用户 pause (`desiredEnabled=false`) 永不自动恢复；
+   locator 改变保持 `source-changed`，必须预览确认 rebaseline；hard-delete 级联 Rule/Baseline/Event/Evidence/
+   Digest ref/outbox，并完成 intent。commit 幂等。
+5. 每次 run 在 acquisition 前、结果事务前各调用一次 SourceService 取窄投影并重算 fingerprint。Source
+   不存在/disabled 则零新网络并暂停；fingerprint 不同则 abort/丢弃结果并 `source-changed`；仅 rowVersion
+   变化且 fingerprint 相同则事务更新 `sourceRowVersion`，不丢弃已经形成的有效结果。结果提交 CAS 的身份条件
+   是 fingerprint + baselineVersion，而不是 Source rowVersion。
+
+失败传播冻结如下：正常 WatchStore 下 prepare/commit/abort 都是同步有界 DB 操作。prepare 失败时 Watch 全局
+Scheduler 立即 stop/abort 并进入 unavailable；hard-delete 返回现有 `source-unavailable` 且 sources.db 零写，避免
+承诺级联却留下本地 Watch 私有数据。update/disable/restore/Undo 仍允许原 Source 操作提交，保持 Sources 的既有
+可用性，但不得报告 Watch 已协调；只写脱敏错误码，Watch 恢复前零调度。Source 已提交后的 commit 失败不能跨库
+回滚：Source API 如实返回原操作成功，Watch 保持 unavailable，prepared intent 留待启动 reconciliation。Source
+事务失败后的 abort 失败同样使 Watch unavailable，但 Source API 返回原 Source 失败。
+
+只有 D4 尚未接入产品的旧构建中 observer 才是显式 no-op；D4 接线后的应用版本无论 watch.db 是否存在都必须
+active。缺失数据库由 Store 正常创建，corrupt/future/unavailable 必须返回失败并停止 Scheduler，不能因文件缺失或
+打开失败静默改回 no-op。
+启动 reconciliation 在 Scheduler 前扫描全部 Rule + intent，对照 SourceService 当前窄投影重放 commit/abort；
+hard-delete 只以 Source 当前不存在为完成依据。全部成功才删 completed/aborted intent 并启动 Scheduler。此协议
+保证 Source.version 因 disable→restore 递增时 locator 未变仍可按用户原意恢复，也保证任一崩溃切点后 orphan
+Rule 零网络。
 
 ### 10.4 保留与全库预算
 
@@ -698,34 +805,37 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 
 ## 14. 边界情况
 
-| 情况                                         | 处理                                                      |
-| -------------------------------------------- | --------------------------------------------------------- |
-| Source 在排队后被禁用/删除                   | run 前 revalidate，零网络，pause/cleanup                  |
-| Source URL 在运行中变化                      | CAS sourceVersion 失败，丢弃结果，pause source-changed    |
-| 两次运行争用 Baseline                        | 同 Rule 互斥 + expectedVersion CAS，陈旧结果零写入        |
-| App 退出时 HTTP/XML/Browser/Provider pending | abort + 受控 drain；下次 interrupted/catch-up             |
-| 304 但无 Baseline                            | 协议异常，重新无条件 GET 一次；仍异常 unavailable         |
-| feed identity 改变                           | 作为 remove+add，Evidence 双侧 absent/present             |
-| PageSnapshot degraded                        | 不生成 Projection/Event，health unavailable/parse_changed |
-| Region 多重匹配                              | parse_changed，禁止猜测                                   |
-| Hash 变但无 Evidence                         | unexplainable_change，旧 Baseline 保留                    |
-| Condition 字段消失                           | ChangeSet 可表示 absent；不支持的操作 no-match + warning  |
-| Evidence 超限                                | 整 Event 拒绝 budget_exceeded，不截成无变化               |
-| Digest 引用随后删除                          | ref tombstone；隐藏对应 AI 解释                           |
-| Windows identity 不可用                      | 应用内通知正常，系统 sink unavailable                     |
-| watch.db future/corrupt                      | Store unavailable，Scheduler 不启动                       |
-| 网络离线                                     | unavailable + 退避；恢复时一次 catch-up                   |
-| Clock 回拨/DST                               | scheduledFor/lastLocalDate 幂等，零重复                   |
+| 情况                                         | 处理                                                        |
+| -------------------------------------------- | ----------------------------------------------------------- |
+| Source 在排队后被禁用/删除                   | run 前 revalidate，零网络，pause/cleanup                    |
+| Source 仅 metadata/enable/version 变化       | locator fingerprint 相同；更新 rowVersion，按用户意图处理   |
+| Source/Rule locator 在运行中变化             | fingerprint CAS 失败，丢弃结果，pause source-changed        |
+| 两次运行争用 Baseline                        | 同 Rule 互斥 + expectedVersion CAS，陈旧结果零写入          |
+| App 退出时 HTTP/XML/Browser/Provider pending | abort + 受控 drain；已 reservation 的 slot 只记 interrupted |
+| 304 但无 Baseline                            | 协议异常，重新无条件 GET 一次；仍异常 unavailable           |
+| feed identity 改变                           | 作为 remove+add，Evidence 双侧 absent/present               |
+| PageSnapshot degraded                        | 不生成 Projection/Event，health unavailable/parse_changed   |
+| Region 多重匹配                              | parse_changed，禁止猜测                                     |
+| Hash 变但无 Evidence                         | unexplainable_change，旧 Baseline 保留                      |
+| Condition 字段消失                           | ChangeSet 可表示 absent；不支持的操作 no-match + warning    |
+| Evidence 超限                                | 整 Event 拒绝 budget_exceeded，不截成无变化                 |
+| Digest 引用随后删除                          | ref tombstone；隐藏对应 AI 解释                             |
+| Windows identity 不可用                      | 应用内通知正常，系统 sink unavailable                       |
+| watch.db future/corrupt                      | Store unavailable，Scheduler 不启动                         |
+| 网络离线                                     | unavailable + 退避；恢复时一次 catch-up                     |
+| Clock 回拨/DST                               | scheduledFor/lastLocalDate 幂等，零重复                     |
 
 ## 15. 测试规格
 
 ### 15.1 纯逻辑/单元
 
 - Budget：UTF-8、surrogate、每个等于/超过边界；
-- Schedule：interval/daily、DST gap/fold、回拨/跳跃、missed coalescing、jitter；
-- NetworkPolicy：IPv4/IPv6/混合 DNS/重绑定夹具、每跳 redirect、downgrade/userinfo/scheme；
+- Schedule：interval/daily、DST gap/fold、回拨/跳跃、reservation 三写原子性、各崩溃点、失败/pause/abort
+  不回拨、missed coalescing、手动不移锚点、jitter；
+- NetworkPolicy：IPv4/IPv6/混合 DNS/重绑定夹具、每跳 redirect、downgrade/userinfo/scheme、仅80/443；
 - Robots：allow/disallow、UA 优先、空/畸形/超长、缓存失效；
-- XML：RSS/Atom/namespaces/CDATA/encoding、DTD/entity/XXE/bomb/depth/attr/text/node budgets；
+- XML：RSS/Atom/namespaces/CDATA/encoding、DTD/entity/XXE/bomb、depth/name/attribute/text-node/node/
+  total-text/FeedProjection 每个 `==` 接受与 `+1` 拒绝；
 - HTML：parse5 SAX 资格、2 MiB/node/depth/attribute、畸形 HTML、script/iframe/subresource 零执行/零请求；
 - PageProjection：四 Region、NFC/bidi/control、table fingerprint、歧义、iframe 诚实边界；
 - Diff：新增/删除/修改/反转/排序噪声、table/link/text、hash-only 异常；
@@ -737,7 +847,9 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 ### 15.2 Repository/恢复
 
 真实 node:sqlite：migration v1 表/索引/外键；所有注入串只作数据；CAS；Event+Evidence+Baseline+outbox 原子；
-running→interrupted；cleanup intent 的每个崩溃切点；保留时间/数量/100 MiB；恢复/未来版本/corrupt fail-closed；
+running→interrupted 且已消费 slot 不重放；Source rowVersion 与 locator fingerprint 分离；disable→restore 版本递增仍
+按 desiredEnabled 恢复；metadata-only、locator-change、用户 pause、prepare/source/commit/abort 每个崩溃/失败切点；
+保留时间/数量/100 MiB；恢复/未来版本/corrupt fail-closed；
 dispose 幂等；Sources 用户数据和 Research 数据恒等。
 
 ### 15.3 Electron 冒烟
