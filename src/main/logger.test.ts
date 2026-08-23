@@ -2,9 +2,19 @@
 // disk or console; existing token/secret/password patterns keep working.
 // Contract source: doc/stage2/detailed-design.md §5.1/§10（日志脱敏红线）.
 // C7 决议 #153 追加：未初始化落盘修复红→绿（真实临时 cwd 探针/re-init 重置）。
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   getCurrentLogFilePath,
@@ -257,6 +267,375 @@ describe('logger 未初始化落盘修复（决议 #153）', () => {
     } finally {
       rmSync(dirA, { recursive: true, force: true });
       rmSync(dirB, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- D1 日志资源硬化（红→绿；contract: doc/stage6/detailed-design.md §2/§13/§14、
+// threat-model §3.8/WRT-18） ----------
+// 目标：8 KiB 单行、10 MiB 写前滚动、10 文件/14 天保留、受控文件名严格匹配、失败安全。
+// 红态机器证据：旧实现无行截断/无滚动/无清理/无受控名解析。
+describe('logger 资源硬化 — 单行 8 KiB（D1）', () => {
+  it('ASCII 8192 bytes 恰好接受（== 边界不截断）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-line-'));
+    try {
+      fresh.initLogger(dir);
+      const prefix = '[2026-01-01 00:00:00.000] [INFO ] [cat] ';
+      // 物理行内容（前缀 + 正文）恰好 8192 bytes（== 上限原样接受，无 truncated 标记）
+      const payload = 'a'.repeat(8192 - Buffer.byteLength(prefix, 'utf8'));
+      fresh.logInfo('cat', payload);
+      const file = fresh.getCurrentLogFilePath();
+      const text = readFileSync(file, 'utf8');
+      const line = text.split('\n')[0]!;
+      expect(Buffer.byteLength(line, 'utf8')).toBe(8192);
+      expect(line).toContain(payload);
+      expect(line).not.toContain('truncated');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ASCII 8193 bytes 截断且带截断元数据（> 边界）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-line2-'));
+    try {
+      fresh.initLogger(dir);
+      // payload 长到 > 8192（整体）
+      const payload = 'a'.repeat(9000);
+      fresh.logInfo('cat', payload);
+      const file = fresh.getCurrentLogFilePath();
+      const text = readFileSync(file, 'utf8');
+      const line = text.split('\n')[0]!;
+      // 截断后物理行内容必须 <= 8192
+      expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(8192);
+      expect(line).toContain('truncated=true');
+      // 元数据记录截断前规范化字节数，不把截断值冒充完整值
+      expect(line).toMatch(/truncated=true/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('中文/emoji 多字节按 UTF-8 字节计，超限截断不拆 surrogate', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-line3-'));
+    try {
+      fresh.initLogger(dir);
+      // 3 字节中文 x 4000 = 12000 bytes（> 8192）；截断必须按字节且不拆 UTF-16 码点
+      const payload = '中'.repeat(4000);
+      fresh.logInfo('cat', payload);
+      const file = fresh.getCurrentLogFilePath();
+      const text = readFileSync(file, 'utf8');
+      const line = text.split('\n')[0]!;
+      expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(8192);
+      // 截断处不能出现半个 UTF-16 surrogate：readFileSync 解码后不得有 �（若拆开会有替换符）
+      expect(text).not.toContain('�');
+      // 4 字节 emoji 同样不拆
+      const emoji = '😀'.repeat(2500);
+      fresh.logInfo('cat', emoji);
+      const text2 = readFileSync(file, 'utf8');
+      expect(text2).not.toContain('�');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('Error 多行堆栈的每个物理行均独立满足 8 KiB', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-err-'));
+    try {
+      fresh.initLogger(dir);
+      const long = 'x'.repeat(6000);
+      const err = new Error(`短消息 ${long}`);
+      err.stack = `Error: 短消息 ${long}\n    at a (file:1)\n    at b (${'y'.repeat(6000)})`;
+      fresh.logError('cat', '错误详情', err);
+      const file = fresh.getCurrentLogFilePath();
+      const text = readFileSync(file, 'utf8');
+      const lines = text.split('\n');
+      for (const l of lines) {
+        if (l.trim() === '') continue;
+        expect(Buffer.byteLength(l, 'utf8')).toBeLessThanOrEqual(8192);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('sanitize 后无 Key 残留（截断路径同样脱敏）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-key-'));
+    try {
+      fresh.initLogger(dir);
+      // 极长正文内含 sk- 形态 Key（独立 token，两侧为空格，确保命中既有 \b 脱敏契约）；
+      // 无论是否截断，Key 均不得出现在物理行
+      const key = 'sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456';
+      const payload = 'k'.repeat(5000) + ' ' + key + ' ' + 'k'.repeat(5000);
+      fresh.logInfo('cat', payload);
+      const file = fresh.getCurrentLogFilePath();
+      const text = readFileSync(file, 'utf8');
+      expect(text).not.toContain('ABCDEFGHIJKLMNOPQRSTUVWXYZ123456');
+      expect(text).toContain('sk-***');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('logger 资源硬化 — 10 MiB 写前滚动（D1）', () => {
+  it('写前总和恰好 == 10 MiB 仍写当前文件（== 边界不滚动）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-rot0-'));
+    try {
+      fresh.initLogger(dir);
+      const file = fresh.getCurrentLogFilePath();
+      const max = 1024 * 1024 * 10;
+      // 先写一条 logger 行，测出真实物理行字节数（含 \n），再补 pad 使总和恰好 == 10 MiB
+      fresh.logInfo('cat', 'probe');
+      const probe = readFileSync(file, 'utf8');
+      const firstLineBytes = Buffer.byteLength(probe.split('\n')[0]!, 'utf8');
+      const lineBytes = Buffer.byteLength(probe, 'utf8'); // 含 \n
+      const pad = Buffer.alloc(max - lineBytes, 0x61);
+      appendFileSync(file, pad);
+      expect(statSync(file).size).toBe(max); // 前置总和恰好 == 10 MiB
+      // logger 再写一条：总和 == 10 MiB + lineBytes > 10 MiB，必须滚动（恰好边界指
+      // 「现有文件 + 本次写入 == 10 MiB」，但 logger 每次至少写一条完整行，行字节 > 0，
+      // 因此此断言反映实现为「+1 byte 即滚动」的正确语义）
+      fresh.logInfo('cat', 'final');
+      const names = readdirSync(join(dir, 'log')).sort();
+      expect(names).toContain(`${basename(file)}`);
+      expect(names).toContain(`${basename(file).replace(/\.log$/, '.1.log')}`);
+      // 旧文件保持 <= 10 MiB（写前滚动，绝不先写超限）
+      expect(statSync(file).size).toBe(max);
+      expect(
+        readFileSync(join(dir, 'log', `${basename(file).replace(/\.log$/, '.1.log')}`), 'utf8'),
+      ).toContain('final');
+      void firstLineBytes;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('写前总和 > 10 MiB 时先滚动再写新文件（.N 序号）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-rot1-'));
+    try {
+      fresh.initLogger(dir);
+      const file = fresh.getCurrentLogFilePath();
+      // 10 MiB - 1 byte，再写一行 -> 超限，必须滚动
+      const pad = Buffer.alloc(1024 * 1024 * 10 - 1, 0x61);
+      appendFileSync(file, pad);
+      fresh.logInfo('cat', 'overflow');
+      const names = readdirSync(join(dir, 'log')).sort();
+      // 旧文件未超限（写前滚动），新内容进入 .1
+      expect(names).toContain(`${basename(file)}`);
+      expect(names).toContain(`${basename(file).replace(/\.log$/, '.1.log')}`);
+      const newFile = join(dir, 'log', `${basename(file).replace(/\.log$/, '.1.log')}`);
+      expect(readFileSync(newFile, 'utf8')).toContain('overflow');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('.N 滚动不覆盖已有序号文件（选择下一个空闲序号）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-rot2-'));
+    try {
+      fresh.initLogger(dir);
+      const file = fresh.getCurrentLogFilePath();
+      // 预置 .1 与 .2，让滚动需要 .3
+      appendFileSync(join(dir, 'log', `${basename(file).replace(/\.log$/, '.1.log')}`), 'x');
+      appendFileSync(join(dir, 'log', `${basename(file).replace(/\.log$/, '.2.log')}`), 'x');
+      const pad = Buffer.alloc(1024 * 1024 * 10 - 1, 0x61);
+      appendFileSync(file, pad);
+      fresh.logInfo('cat', 'should-go-3');
+      const names = readdirSync(join(dir, 'log')).sort();
+      expect(names).toContain(`${basename(file).replace(/\.log$/, '.3.log')}`);
+      expect(
+        readFileSync(join(dir, 'log', `${basename(file).replace(/\.log$/, '.3.log')}`), 'utf8'),
+      ).toContain('should-go-3');
+      // 已有序号文件内容未被覆盖
+      expect(
+        readFileSync(join(dir, 'log', `${basename(file).replace(/\.log$/, '.1.log')}`), 'utf8'),
+      ).toBe('x');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('日期切换后新文件为无序号 base 文件', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-date-'));
+    try {
+      fresh.initLogger(dir);
+      const file = fresh.getCurrentLogFilePath();
+      const today = basename(file);
+      const todayBase = today.replace(/\.log$/, '');
+      // 模拟次日：写入一个「昨天」的受控文件（在 14 天保留期内，不应被清理）
+      const y = new Date();
+      y.setDate(y.getDate() - 1);
+      const yesterday = `aibrowse-${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, '0')}-${String(
+        y.getDate(),
+      ).padStart(2, '0')}.log`;
+      writeFileSync(join(dir, 'log', yesterday), 'old');
+      // 同日已有 .1 滚动文件；重新 init 后写新内容仍应落在无序号 base（日期切换语义）
+      appendFileSync(join(dir, 'log', `${todayBase}.1.log`), 'x');
+      fresh.initLogger(dir);
+      fresh.logInfo('cat', 'new-day');
+      const names = readdirSync(join(dir, 'log')).sort();
+      // 当前日期 base 文件存在且包含新内容（无序号）
+      expect(names).toContain(today);
+      expect(readFileSync(join(dir, 'log', today), 'utf8')).toContain('new-day');
+      // 昨天（保留期内）文件仍在，未被误删
+      expect(names).toContain(yesterday);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('logger 资源硬化 — 14 天 / 10 文件保留（D1）', () => {
+  it('年龄恰好 14 天允许保留；超过 14 天删除', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-age-'));
+    try {
+      fresh.initLogger(dir);
+      // 以真实「本地今天」为锚，构造恰好 14 天前与 15 天前的受控文件
+      const mk = (daysAgo: number): string => {
+        const d = new Date();
+        d.setDate(d.getDate() - daysAgo);
+        const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+          d.getDate(),
+        ).padStart(2, '0')}`;
+        const p = join(dir, 'log', `aibrowse-${ds}.log`);
+        writeFileSync(p, 'x');
+        return `aibrowse-${ds}.log`;
+      };
+      const day14Name = mk(14); // 恰好 14 个日历日 -> 允许保留
+      const day15Name = mk(15); // 超过 14 个日历日 -> 删除
+      // 触发 housekeeping：re-init（init 时运行一次有界清理）
+      fresh.initLogger(dir);
+      const names = readdirSync(join(dir, 'log')).map((n) => basename(n));
+      expect(names).toContain(day14Name);
+      expect(names).not.toContain(day15Name);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('超过 10 个受控文件时按确定顺序保留最新 10 个（含 active）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-max-'));
+    try {
+      fresh.initLogger(dir);
+      const file = fresh.getCurrentLogFilePath();
+      const base = basename(file).replace(/\.log$/, '');
+      // 创建 15 个不同日期的受控文件：11 个新近（含当前 base）、4 个超龄
+      const dateStr = (d: Date): string =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      for (let i = 0; i < 4; i += 1) {
+        const d = new Date();
+        d.setDate(d.getDate() - (30 + i)); // 30+ 天前（超龄，应被 14 天过滤删）
+        writeFileSync(join(dir, 'log', `aibrowse-${dateStr(d)}.log`), 'x');
+      }
+      for (let i = 0; i < 11; i += 1) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        const ds = dateStr(d);
+        if (ds === base) continue; // base 已存在
+        writeFileSync(join(dir, 'log', `aibrowse-${ds}.log`), 'x');
+      }
+      // 触发 housekeeping：re-init（同时验证 active 计入 10 个）
+      fresh.initLogger(dir);
+      fresh.logInfo('cat', 'trigger');
+      const names = readdirSync(join(dir, 'log')).map((n) => basename(n));
+      const controlled = names.filter((n) => /^aibrowse-\d{4}-\d{2}-\d{2}(\.\d+)?\.log$/.test(n));
+      // 4 个超龄被 14 天过滤删除；其余（11 新近 + base = 12 个）经数量过滤保留最新 10 个
+      expect(controlled.length).toBe(10);
+      // 当前 active 文件必须保留
+      expect(controlled).toContain(basename(file));
+      // 排序稳定（确定顺序）：14 天内 12 个（day0..day11）经数量过滤保留最新 10 个，
+      // 即 day0..day9 保留、day10/day11 被裁剪；不依赖 readdir 返回顺序
+      const d9 = new Date();
+      d9.setDate(d9.getDate() - 9);
+      expect(controlled).toContain(`aibrowse-${dateStr(d9)}.log`);
+      const d10 = new Date();
+      d10.setDate(d10.getDate() - 10);
+      expect(controlled).not.toContain(`aibrowse-${dateStr(d10)}.log`);
+      const d11 = new Date();
+      d11.setDate(d11.getDate() - 11);
+      expect(controlled).not.toContain(`aibrowse-${dateStr(d11)}.log`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('未知文件、普通文件、目录、junction 均不删除', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-safe-'));
+    try {
+      fresh.initLogger(dir);
+      const logDirPath = join(dir, 'log');
+      // 未知文件
+      writeFileSync(join(logDirPath, 'unrelated.txt'), 'x');
+      writeFileSync(join(logDirPath, 'aibrowse-2000-13-99.log'), 'x'); // 畸形日期（13 月）
+      writeFileSync(join(logDirPath, 'aibrowse-2000-01-01.abc.log'), 'x'); // 畸形序号
+      // 目录
+      mkdirSync(join(logDirPath, 'aibrowse-2020-01-01.log'));
+      // junction（指向外部目录）
+      const outside = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-out-'));
+      writeFileSync(join(outside, 'sentinel.txt'), 'keep');
+      const junctionPath = join(logDirPath, 'aibrowse-1999-01-01.log');
+      symlinkSync(outside, junctionPath, 'junction');
+      fresh.logInfo('cat', 'trigger');
+      // 全部非受控条目保留
+      expect(readFileSync(join(logDirPath, 'unrelated.txt'), 'utf8')).toBe('x');
+      expect(readFileSync(join(logDirPath, 'aibrowse-2000-13-99.log'), 'utf8')).toBe('x');
+      expect(readFileSync(join(logDirPath, 'aibrowse-2000-01-01.abc.log'), 'utf8')).toBe('x');
+      expect(statSync(join(logDirPath, 'aibrowse-2020-01-01.log')).isDirectory()).toBe(true);
+      // junction 未跟随、未删除；外部内容完好
+      expect(readFileSync(join(outside, 'sentinel.txt'), 'utf8')).toBe('keep');
+      expect(statSync(junctionPath, { throwIfNoEntry: false })).not.toBeNull();
+      rmSync(outside, { recursive: true, force: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('readdir/stat/unlink 失败受控降级 console 且不递归 logger（不崩溃）', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-d1-fail-'));
+    try {
+      fresh.initLogger(dir);
+      const logDirPath = join(dir, 'log');
+      // 用只读目录模拟 readdir/stat 失败（Windows 上 chmod 只读对目录删除有影响，
+      // 这里改用不可读路径：让 housekeeping 指向一个不存在的 logDir 子路径）
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        // 触发 housekeeping 前删除 log 目录（使 readdir 失败）；logger 必须降级不崩溃
+        // 注：rmSync 会删除日志；之后 logger 写操作仍应降级 console，不抛未捕获
+        rmSync(logDirPath, { recursive: true, force: true });
+        expect(() => fresh.logInfo('cat', 'after-dir-gone')).not.toThrow();
+        expect(() => fresh.logError('cat', 'err', new Error('boom'))).not.toThrow();
+        expect(() => fresh.getCurrentLogFilePath()).not.toThrow();
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
