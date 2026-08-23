@@ -9,13 +9,13 @@
 > Result Schema（闭合判别联合 + 字段白名单）+ 安全 Renderer（Markdown 安全
 > 子集/Table/Cards/Ranking，raw HTML 关闭、零新依赖）+ 大结果画布与表格
 > （排序/筛选/来源详情/复制/CSV 导出带公式注入防护）。
-> **阶段状态（2026-08-16）：Fifth Stage 已正式进入（用户切换指令）；
-> 设计已定稿（`doc/stage5/`：proposal（决策表 D1–D13 + Entry Gate 证据表）/
+> **阶段状态：Fifth Stage Exit Gate 已 `GO/PASS`，第五阶段已完成并停止；
+> 当前等待用户明确下一步指令，未进入 Sixth Stage。**设计与验收文档已定稿
+> （`doc/stage5/`：proposal（决策表 D1–D13 + Entry Gate 证据表）/
 > high-level-design / detailed-design（唯一契约源，决议以 §15 当前记录为准）/
 > threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
-> 任务 C1–C10）——**第五阶段已进入实施阶段：具体完成项、当前 HEAD 与下一
-> 唯一任务以 `doc/tasks/progress.md` 为准；已实现能力不再标为「全部待实现」。
-> 本阶段禁止安装依赖。**真实 Provider 已于 2026-08-16 获用户长期授权
+> 任务 C1–C10）；具体完成项、当前 HEAD 与下一唯一动作以
+> `doc/tasks/progress.md` 为准。**真实 Provider 已于 2026-08-16 获用户长期授权
 > （决议 #117）**：C9/C10 真实验收无需逐次申请授权，凭据可用即执行
 > （凭据只走仓库外 DPAPI/harness 受控流程）；凭据不可用如实记录「凭据
 > 不可用」。**

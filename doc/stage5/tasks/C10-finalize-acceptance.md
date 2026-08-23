@@ -87,6 +87,62 @@ C1–C9 全部完成；真实 Provider 验收状态按 C9 台账如实计入判�
 Exit 决策 + 证据回填 + 文档同步 + 双远程推送 + 最终报告；C10 后无后续
 任务（等待用户指令）。
 
+## 独立验收与完成记录（2026-08-23）
+
+### 基线与范围
+
+- Remote baseline：`bf65507d1001025b3ac857875e15f5683f764ced`。
+- 独立 Stage Auditor 批准产品 HEAD：
+  `c1aafd963f4952c81933ab2d873d154fe1b2741b`；审核结束时工作区 clean，
+  本地 `main` 相对 Gitee/GitHub 各领先 3 个候选提交。
+- Auditor 结论：Reviewer / Stage Auditor = `PASS`；Fifth Stage Exit Gate =
+  `GO/PASS`。
+- C10 Closer 仅同步本文、`Fifth_stage.md`、`doc/tasks/progress.md`、
+  `doc/stage5/threat-model.md`、`AGENTS.md` 和 `README.md`；`src/`、
+  `package*.json`、依赖与产品行为零修改。C1–C9 任务文档均已有完成定义，
+  未发现需要修复的状态漂移。
+
+### Auditor 实际命令与结果
+
+| 验证               | 命令或门控                                                                                                                                                | 结果                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 聚焦测试           | `npx vitest run src/main/browser/content-visible-ipc.test.ts src/main/smoke-ui-atomic.test.ts --maxWorkers=1`                                             | 2 files / 34 tests PASS，退出码 0                            |
+| 全量测试           | `npm test -- --maxWorkers=1`                                                                                                                              | 97 files / 2226 tests PASS，退出码 0                         |
+| 静态与构建         | `npm run typecheck` · `npm run lint` · `npm run format:check` · `npm run build`                                                                           | 全部退出码 0                                                 |
+| 默认 Electron 冒烟 | `AIBROWSE_SMOKE=1` 的 dev 与 production 两种运行形态                                                                                                      | 退出码 0/0                                                   |
+| 跨进程门控         | `AIBROWSE_SESSION_SMOKE=set\|check` · `AIBROWSE_SOURCES_SMOKE=set\|check` · `AIBROWSE_SOURCES_UI_SMOKE=set\|check` · `AIBROWSE_RESEARCH_SMOKE=set\|check` | 四组全部 0/0                                                 |
+| Fifth Stage 场景   | 8.13、B-05、8.19-B、8.20 FRT-01～FRT-12                                                                                                                   | 全部通过                                                     |
+| 隐私扫描           | 6 类 canary × 10 扫描面                                                                                                                                   | 60 条期望全部符合                                            |
+| 真实 Provider      | 3 个真实主题完整 Research                                                                                                                                 | 全部 `completed`，共 28 次 HTTP；真 Key 九个检查表面零命中   |
+| 红线复核           | Tool/Research 子集、AgentLoop、Electron 隔离、SQL、Renderer 边界                                                                                          | 17 工具、Research 六工具、12 步/420 秒及全部安全边界均无回退 |
+
+Auditor 结束时无遗留进程或本轮临时目录。C10 是纯文档闭环，因此 Closer 复用上述
+批准 HEAD 的全量测试、构建、冒烟和真实 Provider 证据，不重复高成本验证，也未再次
+调用真实 Provider。
+
+### Closer 纯文档验证
+
+- `npm run format:check`：首次只发现本文 Prettier 漂移，精确格式化本文后全仓复跑
+  退出码 0。
+- `git diff --check`：退出码 0。
+- 文档一致性脚本：§9 恰好 14 项全部勾选；C1–C9 九份任务文档均存在「完成定义」；
+  progress 下一唯一动作与停止边界一致，退出码 0。
+- 范围与敏感信息终检：仅 6 个批准文档；`src/`、`package*.json`、依赖、日志、
+  临时目录、凭据、用户数据和机器专属配置零新增，退出码 0。
+
+### §9 与 §10 判定
+
+- `Fifth_stage.md` §9 五组 14 项全部 `PASS` 并已勾选。
+- §10 五项 Exit Gate 全部 `PASS`：真实主题稳定完成；Evidence 已进入正式数据模型；
+  Sources + Search 选择逻辑经过实际反馈；Renderer Schema 稳定；ResearchRuntime
+  具有确定性有限预算，不依赖无限上下文或无限步骤。
+- 真实主题 `conflicts=0` 只登记为语义观察：程序能保证已提交 Conflict 的结构和引用
+  完整性，但不能保证模型识别出所有语义冲突，不宣称完全免疫。
+- 总 Exit 决策：`GO/PASS`。C10 完成定义已满足；收尾提交
+  `docs: 完成第五阶段最终验收闭环` 后双远程推送，并停止在 Fifth Stage。
+
+**最终状态**：Fifth Stage 已完成并停止；等待用户明确下一步指令，未进入 Sixth Stage。
+
 ## 风险与停止条件
 
 - 复验发现未记录的真实缺陷 → 停止验收流程，回缺陷对应任务修复（或新

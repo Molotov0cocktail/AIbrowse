@@ -9,9 +9,12 @@
 
 ## 当前状态
 
-- 阶段：**第五阶段（多源 Research、证据链与结构化展示）**，已于 2026-08-16 正式
-  切换（用户指令；第四阶段总 Exit = `GO/PASS` 在前，证据见 Fourth_stage.md
-  §10 与本文件历史条目）。**设计闭环已完成（2026-08-16，纯文档任务，零产品
+- 阶段：**第五阶段（多源 Research、证据链与结构化展示）已完成**。独立
+  Stage Auditor 于 2026-08-23 在批准产品 HEAD
+  `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
+  `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码
+  HEAD 不变。当前停止并等待用户明确指令，未进入 Sixth Stage。
+  **设计闭环已完成（2026-08-16，纯文档任务，零产品
   代码、零新依赖、零真实 Provider 调用）**——`doc/stage5/` 定稿：
   proposal（目标/非目标/场景/Entry Gate 证据表/遗留风险分级/决策表
   D1–D13/里程碑）、high-level-design（依赖方向/模块/数据流/安全模型）、
@@ -249,6 +252,11 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
   **C9 已完成（2026-08-18）**：8.20 全矩阵、隐私扫描、门控、真实运行器、
   两次完整真实 Provider 运行及两处真实运行发现的 C8 产品缺陷修复均已落地；
   机器证据见 C9 任务文档、threat-model §4.1、本文件最近验证条目与 Git。
+  **C10 已完成（2026-08-23）**：独立 Stage Auditor 在批准产品 HEAD
+  `c1aafd963f4952c81933ab2d873d154fe1b2741b` 上完成 §9 五组 14 项、§10 五项
+  Exit Gate、全量质量门、全冒烟/跨进程门控、FRT/隐私/红线及真实 Provider
+  复验，结论 `PASS` / `GO/PASS`；Fifth Stage 已完成并停止。C10 收尾提交后
+  当前文档 HEAD 以 Git `main` 为准；产品代码批准 HEAD 保持上述 SHA。
   **开发工作流重构已完成（2026-08-19，Reviewer=`PASS`，候选提交 860822f）。
   C9-R1 格式漂移修复已完成（2026-08-19，Reviewer=`PASS`，候选提交
   `8733313f0321e1c8f80d64e5ebbc0fed707ef30d`）**：C9 证据回填遗留的两份
@@ -638,7 +646,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #148–#155（Markdown 单一事实源/ResultDraft 三字段白名单/Validator 严格验证/Conflict·Coverage·不确定/Markdown AST 与 Renderer/logger 未初始化落盘修复/启动预占与 prepared Provider 交接/真实生产装配）；红→绿聚焦 172/172、全量 test 1964/1964；冒烟 8.18 真实 C7 端口 + 8.19-A 生产 factory 闭环 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 startTask 解除 fail-closed（决议 #140/#155）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
 | C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ✅ | 2026-08-17 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #156–#163（八 invoke + 两事件/payload 严格白名单 fail-closed/list 1-based/task-done 三值/Service 查询视图与事件出口/大结果画布 WebContentsView 可见性/Evidence 下钻与安全导航/TableView 纯函数/CSV 导出当前 UI 视图/Dialog 窄端口/UI 状态收敛）；红→绿聚焦 99/99、全量 test 2054/2054；冒烟 8.19-B dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider 0 次；**实际对应 10 个提交**（50c5651/a61261a/ff7d9a5/3410d16/b63fa9f/63d2869/4e1c690/**76070d3**/7edd96f/f9b005a——公开历史中 76070d3 为独立提交，不 amend 不重写）；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
 | C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ✅ | 2026-08-18 完成：8.20 全矩阵/隐私扫描/门控/真实运行器 dev+生产通过，真实 Provider 两次完整运行通过；真实运行发现并修复两处 C8 产品缺陷；证据见 threat-model §4.1、C9 任务文档实施记录与 Git |
-| C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ⏳ | 2026-08-16 设计定稿，待实施；任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；完成后停止不实现 Sixth Stage |
+| C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ✅ | 2026-08-23 完成：独立 Stage Auditor=`PASS`，Fifth Stage Exit Gate=`GO/PASS`；§9 五组 14 项与 §10 五项全部通过，批准产品 HEAD `c1aafd963f4952c81933ab2d873d154fe1b2741b`；证据与命令见任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；完成后停止，未进入 Sixth Stage |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
 > 上表第一阶段历史任务 T0–T5（已关闭，编号不可改）重名；第一、第二阶段历史任务
@@ -647,7 +655,22 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
 
-## 最近验证结果（2026-08-14，2026-08-15 追加第四阶段设计闭环与 B1–B9 条目，2026-08-16 追加第五阶段设计闭环与 C1、C1 定向修复、C1 第二次定向补修、真实 Provider 长期规则、C2、C2 定向修复、C3、C4、C5、C6、C7）
+## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 C10 独立 Stage Audit 与收尾）
+
+- **C10 独立 Stage Audit（2026-08-23，最终 `PASS` / `GO/PASS`）**：
+  ① 基线：remote baseline `bf65507d1001025b3ac857875e15f5683f764ced`，
+  批准产品 HEAD `c1aafd963f4952c81933ab2d873d154fe1b2741b`；审核结束时工作区 clean，
+  本地 `main` 比 Gitee/GitHub 各领先 3 个候选提交。② 聚焦测试 2 files / 34 tests
+  PASS；全量 `npm test -- --maxWorkers=1` 为 97 files / 2226 tests PASS；
+  `npm run typecheck`、`npm run lint`、`npm run format:check`、`npm run build`
+  全部退出码 0。③ 默认 dev/production 冒烟 0/0；Session、Sources、Sources UI、
+  Research 四组跨进程 set/check 全部 0/0；8.13、B-05、8.19-B、8.20
+  FRT-01～FRT-12 全部通过；离线隐私扫描 60 条期望全部符合。④ 3 个真实主题
+  全部 `completed`，共 28 次 HTTP；真 Key 九个检查表面零命中；未再次调用真实
+  Provider。⑤ 红线无回退：ToolRegistry 17、Research 六工具、AgentLoop
+  12 步/420 秒、Electron 隔离、SQL Repository 边界、Renderer 零任意 HTML/JS。
+  ⑥ `conflicts=0` 只记为语义观察，不宣称完全免疫。⑦ Closer 仅修改 6 个批准文档，
+  复用 Auditor 对产品 HEAD 的高成本验证证据；纯文档终检见 C10 任务文档与收尾提交。
 
 - **C4 Post-Acceptance Repair 收尾（2026-08-21，独立 Reviewer B=`PASS`
   后的确定性 Closer 闭环）**：① 步骤 0 独立核验——HEAD
@@ -3120,10 +3143,8 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **C10（唯一）**：Fifth Stage 独立最终验收、Exit Gate 判定与文档同步，任务契约
-  `doc/stage5/tasks/C10-finalize-acceptance.md`。C10 必须使用新的独立 Codex GPT-5.6 Sol
-  上下文作为 Stage Auditor，不采信 C1–C9 完成报告，按当前 HEAD 独立复验。
-  C10 完成后停止；不得直接设计或实现 Sixth Stage，等待用户阶段切换指令。
+- **等待用户明确指令；如启动 Sixth Stage，先进行需求澄清与正式设计。**
+  当前不创建 Sixth Stage 实现任务，不设计或实现 RSS、Watch、持续监控等内容。
 
 ## 第一阶段验收未完成项
 

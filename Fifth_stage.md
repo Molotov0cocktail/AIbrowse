@@ -2,13 +2,12 @@
 
 > 前置阶段：`Fourth_stage.md`（第四阶段总 Exit 判定 = `GO/PASS`，2026-08-16）。
 > 核心目标：把 Browser Agent + Sources 组合成可靠的多源信息研究系统，并以可验证、可交互的形式展示结果。
-> **阶段状态（2026-08-16）**：Fifth Stage 已正式进入（用户切换指令）——
-> Entry Gate 五项逐项核验**全部通过**（证据表见 `doc/stage5/proposal.md` §7）；
-> 设计闭环已完成（proposal / high-level-design / detailed-design /
-> threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
-> 任务 C1–C10）。**本阶段已进入实施阶段**：具体完成项、当前 HEAD 与下一
-> 唯一任务以 `doc/tasks/progress.md` 为准；已实现能力不再标为「全部待实现」。
-> 本阶段内不实现 Sixth Stage 任何代码。**真实 Provider 已于 2026-08-16 获
+> **阶段状态（2026-08-23）**：Fifth Stage 已完成，独立 Stage Auditor 已在
+> 批准产品 HEAD 上逐项复验 §9 与 §10，结论为 `GO/PASS`。Entry Gate 证据表见
+> `doc/stage5/proposal.md` §7；最终验收证据与判定见本文 §10、
+> `doc/stage5/tasks/C10-finalize-acceptance.md` 和 `doc/tasks/progress.md`。
+> 当前停止在 Fifth Stage，等待用户明确指令；不直接设计或实现 Sixth Stage。
+> **真实 Provider 已于 2026-08-16 获
 > 用户长期授权（决议 #117）**：C9/C10 真实验收无需逐次申请授权——凭据可用
 > 即执行（仍须严格保护凭据，走仓库外 DPAPI/harness 受控流程）；凭据不可用
 > 如实记录「凭据不可用」，不得写「未获授权」。
@@ -238,28 +237,28 @@ Research：
 ## 9. 验收标准
 
 ### Research
-- [ ] 可组合 Sources + Web Search
-- [ ] 可读取多个来源
-- [ ] 可处理来源失败
-- [ ] 可显示 Research 进度和停止
+- [x] 可组合 Sources + Web Search
+- [x] 可读取多个来源
+- [x] 可处理来源失败
+- [x] 可显示 Research 进度和停止
 
 ### Evidence
-- [ ] 重要结论可追踪来源
-- [ ] 来源冲突不会被静默抹平
-- [ ] 能查看 URL/时间/证据
+- [x] 重要结论可追踪来源
+- [x] 来源冲突不会被静默抹平
+- [x] 能查看 URL/时间/证据
 
 ### Rendering
-- [ ] 至少支持 Markdown/Table/Cards
-- [ ] 数据通过结构化 schema 渲染
-- [ ] 不执行模型提供的任意 HTML/JS
+- [x] 至少支持 Markdown/Table/Cards
+- [x] 数据通过结构化 schema 渲染
+- [x] 不执行模型提供的任意 HTML/JS
 
 ### UX
-- [ ] 快速 Chat 与 Research 模式区分清楚
-- [ ] Research Tabs 不严重干扰用户手动浏览
+- [x] 快速 Chat 与 Research 模式区分清楚
+- [x] Research Tabs 不严重干扰用户手动浏览
 
 ### Engineering
-- [ ] 全量测试/构建/冒烟通过
-- [ ] 真实多源任务验收通过
+- [x] 全量测试/构建/冒烟通过
+- [x] 真实多源任务验收通过
 
 ---
 
@@ -274,3 +273,23 @@ Research：
 - Research 不依赖无限上下文或无限 Agent steps。
 
 完成后停止，不直接实现持续监控。
+
+**Exit Gate 判定（2026-08-23，独立 Stage Auditor）**：`GO/PASS`。
+
+- Research 在 3 个真实主题上均稳定完成；真实 Provider 共 28 次 HTTP 调用，
+  真 Key 九个检查表面零命中。
+- Evidence 是 research.db、Result Schema、下钻视图和确定性校验链中的正式数据，
+  不是 UI 装饰。
+- Sources + Search 选择逻辑已由真实主题、聚焦测试和端到端场景共同复验。
+- Renderer Schema、Markdown 安全子集、Table/Cards/Ranking 与 Evidence 下钻已稳定，
+  任意 HTML/JS 仍被结构性拒绝。
+- ResearchRuntime 保持有限预算；ToolRegistry 仍为 17 个工具、Research 仍为
+  六工具只读子集，AgentLoop 仍为 12 步/420 秒。
+- 独立复验结果：聚焦 2 files / 34 tests、全量 97 files / 2226 tests、
+  typecheck/lint/format:check/build、默认 dev/production 冒烟、Session/Sources/
+  Sources UI/Research 四组跨进程 set/check、8.13/B-05/8.19-B/8.20
+  FRT-01～FRT-12 与离线隐私扫描全部通过。
+
+真实主题 `conflicts=0` 仅是本次模型语义行为的观察，不证明系统能识别所有语义冲突，
+也不构成 Prompt Injection 或综合正确性的完全免疫声明。Fifth Stage 至此完成并停止；
+等待用户下一步指令，未进入 Sixth Stage。

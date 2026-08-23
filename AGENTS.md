@@ -10,12 +10,13 @@
 - **定位**：Windows 桌面「AI 信息浏览器 / AI Information Browser」。应用内置 Chromium
   多标签页浏览器，用户与 AI 共享同一浏览器会话和登录状态；AI 只能经受限、可审计的
   BrowserController / Tool Layer 操作浏览器，不拥有任意系统权限。
-- **当前 Stage**：Fifth Stage——多源 Research、证据链与结构化展示。需求与 Exit Gate 见
-  `Fifth_stage.md`；唯一产品契约源为 `doc/stage5/detailed-design.md`，安全契约源为
-  `doc/stage5/threat-model.md`，任务契约为 `doc/stage5/tasks/C1–C10`。具体完成项、当前 HEAD
-  与下一唯一任务只看 `doc/tasks/progress.md`。
-- **阶段纪律**：当前 Stage Exit Gate 通过并经用户明确切换前，不设计或实现下一 Stage；
-  Fifth Stage 完成后必须停下，不直接实现 RSS、Watch、持续监控或其他 Sixth Stage 内容。
+- **当前 Stage**：Fifth Stage——多源 Research、证据链与结构化展示，Exit Gate 已
+  `GO/PASS`，当前等待用户明确指令。需求与 Exit Gate 见 `Fifth_stage.md`；唯一产品契约源为
+  `doc/stage5/detailed-design.md`，安全契约源为 `doc/stage5/threat-model.md`，任务契约为
+  `doc/stage5/tasks/C1–C10`。具体完成项、当前 HEAD 与下一唯一动作只看
+  `doc/tasks/progress.md`。
+- **阶段纪律**：Fifth Stage 已完成并停止；用户明确切换前，不设计或实现 RSS、Watch、
+  持续监控或其他 Sixth Stage 内容。
 - **已完成阶段**：第一阶段浏览器核心、第二阶段 AI 共读、第三阶段 Browser Agent、第四阶段
   Sources 均已通过各自 Exit Gate。历史需求、契约与验收证据分别留在对应 Stage 文件、
   `doc/stage2/`～`doc/stage4/`、任务文档和 Git 中，不在本文件复述执行轮次。
@@ -393,6 +394,7 @@ D:\AIbrowse\
 
 ### 5.5 Research
 
+- Fifth Stage Exit Gate 已 `GO/PASS`；当前仍停在 Fifth Stage，等待用户明确指令。
 - 唯一契约源：`doc/stage5/detailed-design.md`；安全契约：`doc/stage5/threat-model.md`。
 - ResearchTask 状态、候选合并排序、Capture/Evidence、Cross-check/Conflict、Result Schema、
   存储、Tab 所有权、IPC、预算和决议以详细设计当前章节为准，不在本文件复制任务完成状态。
