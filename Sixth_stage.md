@@ -75,7 +75,8 @@ Fetch/Browser Read
 → Normalized Snapshot
 → Compare Previous
 → Structural / Text Diff
-→ AI Importance Classification（必要时）
+→ Deterministic Condition / Event
+→ AI Explanation（可选，不参与相等性、触发或 Evidence 判定）
 → Event
 
 要求：
@@ -96,7 +97,9 @@ Fetch/Browser Read
 
 条件应尽可能转成结构化规则。
 
-如果无法可靠结构化，应标记为 AI-evaluated rule，并有更严格的执行限制。
+第六阶段 v1 只接受闭合白名单内的确定性结构化规则；无法可靠结构化时必须明确提示
+“当前不支持”，不得静默创建 AI-evaluated rule。AI-evaluated rule 延后重新评估，不能影响
+v1 的相等性、触发、Evidence 或通知事实。
 
 ### 3.5 Digest
 
@@ -139,6 +142,10 @@ Watch 必须考虑：
 - 登录网站的 session；
 - captcha / challenge 时停止自动化；
 - 不主动研究绕过反爬。
+
+第六阶段 v1 的公开页面使用隔离的 Node 核心 HTTP + 经资格门批准的流式 HTML parser，
+不携带 Chromium Cookie、不执行 JavaScript、不加载页面子资源。需要登录或 JavaScript 渲染的
+页面只能由用户逐规则明确切换到 Chromium Session 模式，不允许自动回退或静默复用登录状态。
 
 Source health 应记录：
 
