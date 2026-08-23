@@ -9,11 +9,15 @@
 
 ## 当前状态
 
-- 阶段：**第五阶段（多源 Research、证据链与结构化展示）已完成**。独立
-  Stage Auditor 于 2026-08-23 在批准产品 HEAD
+- 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换并完成纯文档
+  设计闭环；产品实现未开始。**用户通过 U01–U31 完成全部需求裁决；正式设计候选在
+  `f1a062fe5c0b3ae9f7cfaf8bf634bc78e16c602b` 经新的独立 Reviewer `PASS`。本轮设计范围
+  为 `Sixth_stage.md`、`doc/stage6/` 四份设计与 D1–D11 任务契约，零产品代码、零新依赖、
+  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；用户再次明确授权前停止，
+  下一唯一实施任务为 D1，D3 候选解析依赖尚未安装。
+- 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
-  `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码
-  HEAD 不变。当前停止并等待用户明确指令，未进入 Sixth Stage。
+  `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
   **设计闭环已完成（2026-08-16，纯文档任务，零产品
   代码、零新依赖、零真实 Provider 调用）**——`doc/stage5/` 定稿：
   proposal（目标/非目标/场景/Entry Gate 证据表/遗留风险分级/决策表
@@ -646,7 +650,19 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | C7 | ResultValidator + 安全 Markdown/Table/Cards/Ranking Renderer（零新依赖） | ✅ | 2026-08-16 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #148–#155（Markdown 单一事实源/ResultDraft 三字段白名单/Validator 严格验证/Conflict·Coverage·不确定/Markdown AST 与 Renderer/logger 未初始化落盘修复/启动预占与 prepared Provider 交接/真实生产装配）；红→绿聚焦 172/172、全量 test 1964/1964；冒烟 8.18 真实 C7 端口 + 8.19-A 生产 factory 闭环 dev+生产双场景退出码 0/0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；生产 startTask 解除 fail-closed（决议 #140/#155）；真实 Provider 0 次；任务文档 doc/stage5/tasks/C7-result-validator-renderer.md |
 | C8 | Research UI/IPC/bridge：侧栏控制/进度 + 大结果画布 + 证据下钻 + 表格交互 + CSV 导出 | ✅ | 2026-08-17 完成（见顶部状态与任务文档「红→绿证据」）：实施前契约裁决 #156–#163（八 invoke + 两事件/payload 严格白名单 fail-closed/list 1-based/task-done 三值/Service 查询视图与事件出口/大结果画布 WebContentsView 可见性/Evidence 下钻与安全导航/TableView 纯函数/CSV 导出当前 UI 视图/Dialog 窄端口/UI 状态收敛）；红→绿聚焦 99/99、全量 test 2054/2054；冒烟 8.19-B dev+生产双场景退出码 0；AIBROWSE_RESEARCH_SMOKE=set|check 双进程退出码 0/0；真实 Provider 0 次；**实际对应 10 个提交**（50c5651/a61261a/ff7d9a5/3410d16/b63fa9f/63d2869/4e1c690/**76070d3**/7edd96f/f9b005a——公开历史中 76070d3 为独立提交，不 amend 不重写）；任务文档 doc/stage5/tasks/C8-research-ui-ipc-table-export.md |
 | C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ✅ | 2026-08-18 完成：8.20 全矩阵/隐私扫描/门控/真实运行器 dev+生产通过，真实 Provider 两次完整运行通过；真实运行发现并修复两处 C8 产品缺陷；证据见 threat-model §4.1、C9 任务文档实施记录与 Git |
-| C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ✅ | 2026-08-23 完成：独立 Stage Auditor=`PASS`，Fifth Stage Exit Gate=`GO/PASS`；§9 五组 14 项与 §10 五项全部通过，批准产品 HEAD `c1aafd963f4952c81933ab2d873d154fe1b2741b`；证据与命令见任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；完成后停止，未进入 Sixth Stage |
+| C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ✅ | 2026-08-23 完成：独立 Stage Auditor=`PASS`，Fifth Stage Exit Gate=`GO/PASS`；§9 五组 14 项与 §10 五项全部通过，批准产品 HEAD `c1aafd963f4952c81933ab2d873d154fe1b2741b`；证据与命令见任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；C10 完成当时停止，尚未进入 Sixth Stage |
+
+| D1 | logger/Clock 基座与确定性时间边界 | ⏳ | 下一唯一实施任务；当前未获实现授权；任务文档 doc/stage6/tasks/D1-logger-clock-foundation.md |
+| D2 | Watch 域模型、条件 DSL 与状态机 | ⏳ | 依赖 D1；任务文档 doc/stage6/tasks/D2-watch-domain-condition.md |
+| D3 | 安全 Feed/Public 网络与解析器资格门 | ⏳ | 依赖 D1–D2；候选依赖尚未安装；任务文档 doc/stage6/tasks/D3-safe-feed-network-parser.md |
+| D4 | watch.db、Source 生命周期观察协议与恢复 | ⏳ | 依赖 D1–D3；任务文档 doc/stage6/tasks/D4-watch-store-source-lifecycle.md |
+| D5 | Scheduler、RunCoordinator、预约事务与共享 HostRequestGate | ⏳ | 依赖 D1–D4；任务文档 doc/stage6/tasks/D5-scheduler-run-coordinator.md |
+| D6 | Page region/Session task-owned Tab 投影 | ⏳ | 依赖 D5；old/new Evidence 必须可解释，不能只有哈希；任务文档 doc/stage6/tasks/D6-page-region-session-projection.md |
+| D7 | 确定性 Diff/Event/Evidence 与健康状态 | ⏳ | 依赖 D3–D6；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
+| D8 | Digest 分享投影与可选 AI 解释 | ⏳ | 依赖 D7；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
+| D9 | Watch UI/IPC/通知/导出 | ⏳ | 依赖 D4–D8；任务文档 doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md |
+| D10 | 端到端、红队、隐私与真实门控 | ⏳ | 依赖 D1–D9；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
+| D11 | 第六阶段独立 Exit Audit | ⏳ | 依赖 D10；必须使用新的独立 Reviewer；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
 > 上表第一阶段历史任务 T0–T5（已关闭，编号不可改）重名；第一、第二阶段历史任务
@@ -654,8 +670,21 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > SRT-01～SRT-12——同样避免与 T/S/A/RT/R 历史编号重名；历史编号一律不复用。
 > （2026-08-16）第五阶段任务编号 C1–C10、威胁 FT-01～FT-17、红队
 > FRT-01～FRT-12、决议承接 #94 起、冒烟场景承接 8.16 起——历史编号一律不复用。
+> （2026-08-23）第六阶段任务编号 D1–D11、威胁 WT-01 起、红队 WRT-01 起；
+> 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
-## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 C10 独立 Stage Audit 与收尾）
+## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 Sixth Stage 正式设计审核）
+
+- **Sixth Stage 正式设计与独立审核（2026-08-23，最终 `PASS`）**：① remote/local
+  baseline `a5361ecacd917c33db4a4b043fdbfbf270292134`；最终设计候选 HEAD
+  `f1a062fe5c0b3ae9f7cfaf8bf634bc78e16c602b`，候选提交为 `4211e67`、`40b5952`、
+  `f1a062f`。② 独立 Reviewer 两轮 `REPAIR` 分别闭合 Source version/identity、XML 预算、
+  host 间隔、schedule 事务、端口，以及 Session page task-owned Tab 获取路径；最终无 P1/P2。
+  ③ `npm test -- --maxWorkers=1` 为 97 files / 2226 tests PASS；typecheck、lint、
+  format:check、build、diff-check 全部通过；build 仅保留既有 confirm-manager 动态/静态 import
+  警告。④ diff 仅 16 个正式文档，无产品代码、依赖、凭据、数据、日志、数据库、构建产物或
+  机器路径；Electron/Provider smoke 因纯设计任务不适用且未运行。⑤ Entry Design Gate=`GO`，
+  不等同于第六阶段 Exit Gate；D1–D11 全部待实施，下一唯一动作是等待用户明确授权 D1。
 
 - **C10 独立 Stage Audit（2026-08-23，最终 `PASS` / `GO/PASS`）**：
   ① 基线：remote baseline `bf65507d1001025b3ac857875e15f5683f764ced`，
@@ -3143,8 +3172,8 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **等待用户明确指令；如启动 Sixth Stage，先进行需求澄清与正式设计。**
-  当前不创建 Sixth Stage 实现任务，不设计或实现 RSS、Watch、持续监控等内容。
+- **等待用户明确授权 D1 logger/Clock 基座。**第六阶段需求澄清与正式设计已经完成；
+  当前不开始产品实现、不安装 D3 候选依赖、不调用 Provider，也不设计 Seventh Stage。
 
 ## 第一阶段验收未完成项
 

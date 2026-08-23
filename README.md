@@ -1,27 +1,18 @@
 # AIbrowse — AI 信息浏览器
 
-> 当前阶段（第五阶段）：**多源 Research、证据链与结构化展示**——把 Browser Agent +
-> Sources 组合成可靠的多源信息研究系统：ResearchTask（独立有界 ResearchRuntime，
-> 不复用/不改 AgentLoop 12 步/420s 契约）、Sources + Web Search 候选合并
-> （同 URL 合并身份 + 保留双发现路径，收藏 ≠ 可信）、task-owned Tab 隔离
-> （用户 Tab 永不关闭）、Evidence 锚点（模型只提引用、确定性程序验证）、
-> Cross-check（冲突显式保留 + 「不确定」正式输出，禁止虚构百分比）、统一
-> Result Schema（闭合判别联合 + 字段白名单）+ 安全 Renderer（Markdown 安全
-> 子集/Table/Cards/Ranking，raw HTML 关闭、零新依赖）+ 大结果画布与表格
-> （排序/筛选/来源详情/复制/CSV 导出带公式注入防护）。
-> **阶段状态：Fifth Stage Exit Gate 已 `GO/PASS`，第五阶段已完成并停止；
-> 当前等待用户明确下一步指令，未进入 Sixth Stage。**设计与验收文档已定稿
-> （`doc/stage5/`：proposal（决策表 D1–D13 + Entry Gate 证据表）/
-> high-level-design / detailed-design（唯一契约源，决议以 §15 当前记录为准）/
-> threat-model（FT-01～FT-17 / FRT-01～FRT-12，先于任何 Research 实现定稿）/
-> 任务 C1–C10）；具体完成项、当前 HEAD 与下一唯一动作以
-> `doc/tasks/progress.md` 为准。**真实 Provider 已于 2026-08-16 获用户长期授权
-> （决议 #117）**：C9/C10 真实验收无需逐次申请授权，凭据可用即执行
-> （凭据只走仓库外 DPAPI/harness 受控流程）；凭据不可用如实记录「凭据
-> 不可用」。**
-> 契约源 `doc/stage5/detailed-design.md`；安全契约源
-> `doc/stage5/threat-model.md`；需求源 `Fifth_stage.md`；
-> 任务 `doc/stage5/tasks/C1–C10`。
+> 当前阶段（第六阶段）：**RSS/Page Watch、确定性变更事件与摘要**。需求澄清 U01–U31、
+> proposal、高层设计、详细设计、威胁模型及 D1–D11 任务拆分已经定稿，并经新的独立
+> Reviewer 审核 `PASS`；**产品实现尚未开始**。采集、Diff、Condition 与 Event 均由
+> 确定性程序生成；每个 Event 必须保留类型化、可解释的 old/new Evidence，不能只有哈希；
+> AI 只对已经验证的事件生成可选摘要解释。
+> 契约源 `doc/stage6/detailed-design.md`；安全契约源
+> `doc/stage6/threat-model.md`；需求源 `Sixth_stage.md`；
+> 任务 `doc/stage6/tasks/D1–D11`。当前不安装候选依赖、不调用 Provider、不修改产品代码；
+> 下一唯一动作是等待用户明确授权后从 D1 logger/Clock 基座开始。
+>
+> 已完成（第五阶段，历史）：**多源 Research、证据链与结构化展示**，Exit Gate 已
+> `GO/PASS`。正式契约、威胁模型与任务证据保留在 `doc/stage5/`；真实 Provider 的长期授权
+> 与受控凭据边界继续按 `AGENTS.md` 执行。
 >
 > 已完成（第四阶段，历史）：**Sources 长期信源系统**——SQLite 持久化与
 > migration/recovery、Source（origin/page 双作用域）/Group/Tag/备注/优先级/
@@ -141,27 +132,17 @@
 >     T1–T5 重名、红队编号改 RT-01～RT-11、权限契约收紧为 click 确定性允许列表，
 >     见 `doc/stage3/proposal.md` §11）。
 >     核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
->     需求源：`Fourth_stage.md`（当前）；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
+>     需求源：`Fourth_stage.md`（历史）；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
-## 当前状态（2026-08-16）
+## 当前状态（2026-08-23）
 
-- 🔨 **第五阶段（Research & Rendering）设计已定稿、实施进行中（2026-08-16，
-  用户切换指令）**——Entry Gate 五项逐项核验全部通过（证据表
-  `doc/stage5/proposal.md` §7）；设计闭环完成：proposal（目标/非目标/场景/
-  Entry Gate 证据/遗留风险分级/决策表 D1–D13/里程碑）+ high-level-design
-  （依赖方向 UI → Service → Runtime → … → ResearchRepository）+ detailed-design（唯一契约源：类型/状态机/预算全表/
-  capture·evidence/Result Schema/IPC/存储）+ threat-model（FT-01～FT-17 /
-  FRT-01～FRT-12）+ 任务 C1–C10（每任务 = 一个可验证开发闭环）。
-  **C1–C7 已完成（契约基座/C2–C7 见 `doc/tasks/progress.md`：候选合并/
-  Tab 所有权/多源捕获与 Evidence 验证/ResearchRuntime/Cross-check 综合/
-  ResultValidator + 安全 Markdown 子集 + 真实生产装配）；
-  具体完成项、当前 HEAD 与下一唯一任务以 `doc/tasks/progress.md` 为准。**
-  **本阶段禁止安装依赖、禁止实现 Sixth Stage。真实 Provider 已于 2026-08-16
-  获用户长期授权（决议 #117）：后续任务无需逐次申请授权，凭据可用即执行
-  （凭据只走仓库外 DPAPI/harness 受控流程，凭据不可用如实记录「凭据不可用」）。**
-  遗留风险分级：无阻塞项；P2-3（会话字节上限）与第四阶段六类注入残余风险等
-  **必须吸收**进本阶段设计（独立 research.db 字节预算 + FT 威胁模型）；
-  P2-2/P2-4/P3 延期 Seventh Stage（判定见 proposal §8）。
+- ⏳ **第六阶段正式设计已通过，产品实现未开始**——U01–U31 用户裁决、
+  `Sixth_stage.md`、`doc/stage6/` 四份正式设计和 D1–D11 任务契约已经闭合；独立 Reviewer
+  对设计候选给出 `PASS`。本轮只有文档变更，未安装依赖、未调用 Provider、未修改产品代码。
+  下一唯一动作是等待用户明确授权 D1；D3 的解析器候选只有通过资格门后才允许安装。
+- ✅ **第五阶段（Research & Rendering）已完成并通过验收（GO/PASS，2026-08-23；历史证据
+  保留不改写）**——C1–C10、独立 Stage Audit 与正式契约见 `doc/stage5/` 和
+  `doc/tasks/progress.md`。
 - ✅ **第四阶段（Sources）已完成并通过验收（GO/PASS，2026-08-16；历史台账
   保留不改写）**——设计闭环（proposal/高层设计/详细设计/
   威胁模型/B1–B9 任务拆分）后，**B1 node:sqlite 决策门已实测通过并冻结**：

@@ -10,16 +10,16 @@
 - **定位**：Windows 桌面「AI 信息浏览器 / AI Information Browser」。应用内置 Chromium
   多标签页浏览器，用户与 AI 共享同一浏览器会话和登录状态；AI 只能经受限、可审计的
   BrowserController / Tool Layer 操作浏览器，不拥有任意系统权限。
-- **当前 Stage**：Fifth Stage——多源 Research、证据链与结构化展示，Exit Gate 已
-  `GO/PASS`，当前等待用户明确指令。需求与 Exit Gate 见 `Fifth_stage.md`；唯一产品契约源为
-  `doc/stage5/detailed-design.md`，安全契约源为 `doc/stage5/threat-model.md`，任务契约为
-  `doc/stage5/tasks/C1–C10`。具体完成项、当前 HEAD 与下一唯一动作只看
+- **当前 Stage**：Sixth Stage——RSS/Page Watch、确定性变更事件与摘要。正式设计已经独立
+  Reviewer `PASS`，产品实现尚未开始。需求见 `Sixth_stage.md`；唯一产品契约源为
+  `doc/stage6/detailed-design.md`，安全契约源为 `doc/stage6/threat-model.md`，任务契约为
+  `doc/stage6/tasks/D1–D11`。具体完成项、当前 HEAD 与下一唯一动作只看
   `doc/tasks/progress.md`。
-- **阶段纪律**：Fifth Stage 已完成并停止；用户明确切换前，不设计或实现 RSS、Watch、
-  持续监控或其他 Sixth Stage 内容。
+- **阶段纪律**：本轮纯设计授权已经闭环；用户再次明确授权前，不开始 D1 或任何 Sixth Stage
+  产品实现。D1 是下一唯一实施任务；D3 的候选解析依赖只有通过资格门后才可安装。
 - **已完成阶段**：第一阶段浏览器核心、第二阶段 AI 共读、第三阶段 Browser Agent、第四阶段
-  Sources 均已通过各自 Exit Gate。历史需求、契约与验收证据分别留在对应 Stage 文件、
-  `doc/stage2/`～`doc/stage4/`、任务文档和 Git 中，不在本文件复述执行轮次。
+  Sources、第五阶段 Research 均已通过各自 Exit Gate。历史需求、契约与验收证据分别留在
+  对应 Stage 文件、`doc/stage2/`～`doc/stage5/`、任务文档和 Git 中，不在本文件复述执行轮次。
 
 ### 1.1 稳定架构
 
@@ -54,11 +54,21 @@ Research UI
   → SourceSelector / ResearchWorkspace / EvidenceValidator / ResultValidator
   → SourceService / BrowserController / SearchProvider / LLMProvider
   → ResearchRepository（独立 research.db）
+
+Watch UI
+  → WatchService
+  → WatchScheduler / WatchRunCoordinator
+  → HostRequestGate / WatchTaskTabWorkspace / Acquisition / Diff / Condition / Event
+  → SourceService / BrowserController / PublicWatchHttpClient / LLMProvider
+  → WatchRepository（独立 watch.db）
 ```
 
 Research Renderer 只消费已经验证的 Result Schema，不接触 BrowserController、SQLite、
 Electron 或 Provider。模型只提出引用与结论；Evidence、Conflict、Coverage 和 Result 的
 归属、形状、预算与真实性由确定性程序校验。
+
+Watch 的采集、Diff、Condition 与 Event 事实全部由确定性程序产生；模型只能对已经验证的有界
+Event 投影生成可选摘要解释，不能决定是否变化、是否命中或改写 Evidence。
 
 ### 1.2 技术基线
 
@@ -71,8 +81,9 @@ Electron 或 Provider。模型只提出引用与结论；Evidence、Conflict、C
   main/preload 输出 CJS，preload 必须兼容 `sandbox=true`。
 - 核心工具链不得擅自升级。升级必须先说明理由，验证 typecheck/lint/test/build/Electron
   冒烟，更新长期文档后再提交。
-- Fifth Stage 不安装新依赖；Provider 适配继续使用原生 fetch + SSE，不引入厂商 SDK；
-  Markdown 使用自实现安全子集，不引入 Markdown/富文本渲染库。
+- Sixth Stage 当前未安装新依赖。D3 只有在资格门全部通过后，才允许精确固定候选
+  `saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1`；任一候选失败必须 REPLAN，
+  不得擅自替换。Provider 适配继续使用原生 fetch + SSE，不引入厂商 SDK。
 
 ### 1.3 交付、语言与远程
 
@@ -300,9 +311,10 @@ Planner 调查并批准 Execution Contract
 - 网页、Source note、Tool Result、模型输出都视为不可信；分别放入固定 UNTRUSTED 块，system
   指令保持编译期常量。模型思维、完整 transcript 和 capture 正文不得持久化。
 
-### 3.4 SQLite、Sources 与 Research 数据边界
+### 3.4 SQLite、Sources、Research 与 Watch 数据边界
 
-- SQLite driver 固定为 `node:sqlite`；Sources 使用 sources.db，Research 使用独立 research.db。
+- SQLite driver 固定为 `node:sqlite`；Sources 使用 sources.db，Research 使用独立 research.db，
+  Watch 使用独立 watch.db。
 - 业务 SQL 只能位于 Repository 的编译期常量或 migration，用户/网页/模型文本只能作为 prepared
   statement 参数。禁止动态 `exec(sql)`、动态表/列/排序表达式和 SQLite 扩展加载。
 - renderer、preload、AgentLoop 和 Tool 实现不得执行 SQL；模型没有 SQL 通道。
@@ -311,19 +323,33 @@ Planner 调查并批准 Execution Contract
   永远是 unverified。
 - Sources 数据库、备份和 change journal 不进模型上下文；Research capture 正文零落盘。
 - Research Evidence/Result 只持久化经过确定性验证的有界投影；数据库 v1 本地明文边界必须如实说明。
+- Watch 原始 HTTP body 与 PageSnapshot 正文零落盘；只持久化经过确定性验证的有界投影、
+  Diff、Condition、Event 与 typed old/new Evidence，哈希不得作为唯一 Evidence。
 
-### 3.5 Fifth Stage 产品边界
+### 3.5 Research 稳定边界
 
 - Research 使用独立有界 ResearchRuntime，不修改 AgentLoop 的 12 步/420s 契约。
 - ToolRegistry 仍保持 17 个工具；Research 模型轮只使用六工具编译期子集，不新增 Research 工具。
 - 任务 Tab 采用精确 tabId 所有权；只关闭本任务创建的 Tab，用户 Tab 永不关闭。
 - Result Schema 闭合白名单；Markdown raw HTML 关闭、URL 仅 http/https、失败纯文本降级；
   CSV 只经主进程 dialog 安全通道并防公式注入。
-- 产品运行时不做多 Agent/Planner-Worker、无限上下文/无限步骤、RSS/Watch/Diff/后台定时、
-  Timeline/Chart、跨重启续跑、云同步、多用户、向量数据库、任意渲染库或 Sixth Stage 代码。
+- Research 产品运行时不做多 Agent/Planner-Worker、无限上下文/无限步骤、Timeline/Chart、
+  跨重启续跑、云同步、多用户、向量数据库或任意渲染库。
 - threat-model 的“结构性防御/诚实限制/观察项”必须分开报告，不宣称语义层完全免疫。
 
-### 3.6 GitHub 代理与双远程
+### 3.6 Sixth Stage 产品边界
+
+- Watch 只在应用进程存活期间运行；仅支持固定间隔与每日时刻，不做 cron、系统服务或退出后后台运行。
+- Public 采集使用 Node 核心 HTTP/HTTPS，仅允许 80/443，逐跳执行 DNS/重定向/robots 校验，
+  不发送 Cookie、不执行 JavaScript、不加载子资源。Session 采集必须使用明确的 task-owned Tab
+  获取路径，与 Public 共用主进程 HostRequestGate；不持久化 tabId/Cookie，不导航或关闭用户 Tab。
+- Diff、Condition 与 Event 必须确定性产生；每个 Event 保留可解释的 typed old/new Evidence，
+  不能只有哈希。AI 只能生成可选的 digest 解释，不能成为事实判定器。
+- Source locator fingerprint 与 Source row version 分离；采集正文零落盘，watch.db 只保存有界投影，
+  并执行正式设计规定的预算、保留期与清理策略。
+- 不提供任意 HTTP、任意 JavaScript、正则条件、AI 条件规则、退出后 RSS 后台服务或云同步。
+
+### 3.7 GitHub 代理与双远程
 
 - Gitee 直连。GitHub 任何 fetch/pull/push/Release 前必须先确认代理可用；本机 Git 只认
   `http.proxy`，使用 `-c http.proxy=http://127.0.0.1:7890`，不要依赖无效的 `https.proxy`。
@@ -339,7 +365,7 @@ D:\AIbrowse\
 │   ├── project-rules/PROJECT_RULES.md
 │   └── vibe-coding-workflow/references/prompt-templates.md
 ├── doc/
-│   ├── stage2/ … stage5/                  # 各 Stage 冻结设计、威胁模型、任务
+│   ├── stage2/ … stage6/                  # 各 Stage 冻结设计、威胁模型、任务
 │   └── tasks/progress.md                  # 唯一当前进度源
 ├── src/
 │   ├── main/
@@ -356,7 +382,7 @@ D:\AIbrowse\
 └── electron.vite.config.ts / vitest.config.ts / tsconfig*.json / eslint.config.mjs
 ```
 
-目录职责或接口变化先看对应 detailed-design；本节不记录某个 C/B/A 任务当前是否完成。
+目录职责或接口变化先看对应 detailed-design；本节不记录某个 D/C/B/A 任务当前是否完成。
 
 ## 5. 稳定契约速查
 
@@ -394,7 +420,7 @@ D:\AIbrowse\
 
 ### 5.5 Research
 
-- Fifth Stage Exit Gate 已 `GO/PASS`；当前仍停在 Fifth Stage，等待用户明确指令。
+- Fifth Stage Exit Gate 已 `GO/PASS`，现作为已完成历史阶段维护。
 - 唯一契约源：`doc/stage5/detailed-design.md`；安全契约：`doc/stage5/threat-model.md`。
 - ResearchTask 状态、候选合并排序、Capture/Evidence、Cross-check/Conflict、Result Schema、
   存储、Tab 所有权、IPC、预算和决议以详细设计当前章节为准，不在本文件复制任务完成状态。
@@ -407,6 +433,16 @@ D:\AIbrowse\
 - Renderer 不使用 `dangerouslySetInnerHTML`，Evidence 下钻显示来源与诚实边界；导出只包含当前
   Table 视图，不包含 Evidence 摘录或任意文件路径。
 
+### 5.6 Watch（正式设计；实现未开始）
+
+- 唯一契约源：`doc/stage6/detailed-design.md`；安全契约：`doc/stage6/threat-model.md`；
+  任务契约：`doc/stage6/tasks/D1–D11`。
+- D1–D11 均未实施；用户再次明确授权后只能从 D1 logger/Clock 基座开始。
+- Schedule、采集、Diff、Condition、Event、Evidence、网络边界、Session task-owned Tab、
+  Source 观察协议、watch.db 和保留策略均以正式设计为准。
+- old/new Evidence 必须可解释且类型化，不能只保存哈希；AI digest 只解释确定性事件事实。
+- D3 候选解析依赖尚未安装；只有资格门通过后才允许按技术基线精确固定版本。
+
 ## 6. 常用命令
 
 ### 6.1 本地环境
@@ -415,7 +451,7 @@ D:\AIbrowse\
 - 本机可能存在全局 `ELECTRON_RUN_AS_NODE=1`，不要改全局值。启动 Electron 前在当前进程清除：
   PowerShell `$env:ELECTRON_RUN_AS_NODE=$null`。
 - Electron 依赖下载需要代理时使用 `NODE_USE_ENV_PROXY=1`、`HTTP_PROXY`、`HTTPS_PROXY`；
-  Fifth Stage 禁止安装依赖，除非用户另行批准并先修改契约。
+  Sixth Stage 实现当前未获授权；即使进入 D3，也必须先满足正式资格门，不能提前安装候选依赖。
 
 ### 6.2 质量与运行
 
