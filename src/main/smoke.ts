@@ -79,6 +79,10 @@ import type {
 import { SEARCH_ENGINE_URL } from '../shared/url';
 import { IPC } from '../shared/types/ipc';
 import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
+// 8.13 B-06 UI 时序修复（2026-08-23）：原子「存在即点击」脚本纯逻辑
+// （零 Electron，node 环境单测）——检查与条件点击同一次脚本执行内完成，
+// 消除 Undo 后 React 重渲染在两次 executeJavaScript 之间移除元素的 TOCTOU。
+import { clickIfPresentScript } from './smoke-ui-atomic';
 import { listTools } from './ai/tools/tool-registry';
 import type { ToolExecutor } from './ai/tools/tool-executor';
 import type { ToolExecutionContext } from './ai/tools/tool-types';
@@ -1786,6 +1790,14 @@ export async function clickUi(uiWc: WebContents, selector: string): Promise<void
       el.click();
     })()`,
   );
+}
+
+// 原子「存在即点击」（8.13 B-06 UI 时序修复，2026-08-23）：检查与条件点击
+// 在同一次 renderer 脚本执行内完成，返回是否点击。旧「uiHas → clickUi」分
+// 两次脚本执行：Undo 引发的 React 重渲染可在两步之间移除目标元素（如详情
+// 自动关闭后 .sources-back 消失），第二次执行即抛通用 renderer 错误。
+async function clickIfPresent(uiWc: WebContents, selector: string): Promise<boolean> {
+  return (await uiJs(uiWc, clickIfPresentScript(selector))) as boolean;
 }
 
 async function clickUiTab(uiWc: WebContents, index: number): Promise<void> {
@@ -14076,6 +14088,11 @@ async function runSourcesUiMatrix(
       8000,
       'B-05：恢复未生效',
     );
+    // 8.13 修复提速后暴露的既有时序缺陷（2026-08-23 诊断确认）：restore 触发
+    // 的异步 loadDetail 可能晚于主进程 svcGet 轮询落地——若在途响应在退出详情
+    // 后才到达，会重新打开详情（旧 panelGoBack 多一次 uiHas 往返恰好掩护了它）。
+    // 先等详情重挂载为恢复后数据（toggle 变「禁用」= enabled 态已渲染），再退出。
+    await waitForUiText(uiWc, '.sources-toggle-enabled', '禁用', 8000, 'B-05：恢复后详情未刷新');
 
     // 9. AI 推断 provenance + aiNote 只读展示 + 敌手 note 纯文本渲染（决议 #75/#78）
     await service.applyChangeSet(
@@ -14319,10 +14336,14 @@ async function runSourcesUiMatrix(
   }
 }
 
-// 详情 → 返回列表（无 detail 时安全 no-op）
+// 详情 → 返回列表（无 detail 时安全 no-op）。8.13 B-06 UI 时序修复
+// （2026-08-23）：改为原子「存在即点击」——检查与条件点击同一次脚本执行
+// 内完成。旧实现 uiHas → clickUi 分两次脚本执行：U1 Undo 删除详情中的源
+// 后，useSourcesPanel 的 loadDetail 异步返回 not-found → setDetail(null)
+// → 详情自动关闭，.sources-back 恰在两步之间被 React 重渲染移除 → clickUi
+// 抛「UI 元素不存在」→ executeJavaScript 以通用 renderer 错误拒绝。
 async function panelGoBack(uiWc: WebContents): Promise<void> {
-  if (await uiHas(uiWc, '.sources-back')) {
-    await clickUi(uiWc, '.sources-back');
+  if (await clickIfPresent(uiWc, '.sources-back')) {
     await delay(200);
   }
 }
@@ -14665,9 +14686,9 @@ async function runSourcesAgentUiScenarios(
     if (activeNow !== activeBefore) {
       assert(await controller.activateTab(activeBefore), 'B-06 UI：活动 Tab 应恢复进入前');
     }
-    if (await uiHas(uiWc, '.sources-panel')) {
-      await clickUi(uiWc, '.sources-collapse');
-    }
+    // 原子「存在即点击」（8.13 修复同款）：面板在收起前不会被异步重渲染
+    // 移除——避免检查与点击之间元素消失（TOCTOU）
+    await clickIfPresent(uiWc, '.sources-collapse');
 
     logInfo(
       'smoke',
@@ -14795,6 +14816,15 @@ export async function runSourcesUiSmokeScenario(
           'B-05 check：重启后 Undo 未生效',
         );
         assert(undone.name !== 'B05双进程页', 'B-05 check：Undo 未回退名称');
+        // 8.13 修复提速后暴露的既有时序缺陷（同 B-05 步 8，2026-08-23 诊断确认）：
+        // Undo 触发的异步 loadDetail 可能晚于主进程 listUndoable 轮询落地——若在途
+        // 响应在退出详情后才到达，会重新打开详情。先等详情重挂载为撤销后数据
+        // （编辑名称回退），再退出（否则 openDetailByNameIn 找不到列表条目）。
+        await waitFor(
+          async () => (await uiInputValue(uiWc, '.sources-edit-name')) === undone.name,
+          8000,
+          'B-05 check：撤销后详情未刷新（退出前需最新版本）',
+        );
         // 两阶段永久删除（真实 DOM）：prepare → 确认 → 消失 + 无 Undo 入口
         await panelGoBack(uiWc); // 从详情（Undo 视图）返回列表后再开目标详情
         await openDetailByNameIn(uiWc, undone.name);
