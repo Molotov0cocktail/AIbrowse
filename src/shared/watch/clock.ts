@@ -34,7 +34,9 @@ export function isValidLocalTime(localTime: string): boolean {
 
 /**
  * interval 下一时点 O(1) 计算：严格大于 after 的第一个
- * `anchor + k * intervalMs`（k 为正整数）。纯算术，禁止枚举 missed intervals。
+ * `anchor + k * intervalMs`（k 为正整数，最小 k=1，即最小合法候选为 anchor+interval）。
+ * 纯算术，禁止枚举 missed intervals。after 早于 anchor 时不产生锚点之前的伪 slot：
+ * 此时 k 钳制到 1，返回 anchor+interval（anchor 本身 k=0 不在候选集合）。
  * 结果恒为有限 number，绝不返回 Infinity/NaN（防御性钳制）。
  */
 export function nextIntervalInstant(anchor: number, intervalMs: number, after: number): number {
@@ -42,7 +44,8 @@ export function nextIntervalInstant(anchor: number, intervalMs: number, after: n
     return Number.MAX_SAFE_INTEGER;
   }
   if (intervalMs <= 0) return Number.MAX_SAFE_INTEGER;
-  const k = Math.floor((after - anchor) / intervalMs) + 1;
+  // after < anchor 时 floor 为负 → k 钳制到 1，避免锚点之前的伪 slot。
+  const k = Math.max(1, Math.floor((after - anchor) / intervalMs) + 1);
   const candidate = anchor + k * intervalMs;
   if (!Number.isFinite(candidate) || candidate <= after) {
     // 溢出或边界异常：回退到不会枚举的超大有限哨兵（调用方/Clock 不得等待该值）
@@ -250,9 +253,23 @@ function tzLocalParts(instantMs: number, timeZone: string): TzParts | null {
 }
 
 // 目标时区下逻辑日期 +N 天（用 UTC 日历算术逼近，再以 tzLocalParts 修正到真实逻辑日）。
+// 探测时刻必须落在目标逻辑日期当天：用 UTC 正午（12:00Z）探测在 UTC+13/+14 极东偏移
+// 下会跨到次日本地 00:00 之后（12:00Z = Kiritimati 次日 02:00），导致跳过 after 所在逻辑日。
+// 修正：以「base 逻辑日 + days」的 UTC 日历为基准日期，探测 12:00Z 的本地日期；
+// 若漂移一天，沿相反方向 ±24h 重探一次（至多一次，O(1)），保证返回目标时区真实逻辑日。
 function tzAddDays(base: TzParts, days: number, timeZone: string): TzParts {
   const naive = Date.UTC(base.year, base.month - 1, base.day + days, 12, 0, 0);
-  const w = tzLocalParts(naive, timeZone);
+  const target = formatDate(base.year, base.month, base.day + days);
+  const probe = (ms: number): TzParts | null => {
+    const w = tzLocalParts(ms, timeZone);
+    if (w === null) return null;
+    const wd = formatDate(w.year, w.month, w.day);
+    if (wd === target) return w;
+    // 极端偏移下漂移一天：沿相反方向移动 24h 重探（至多一次）
+    if (wd < target) return tzLocalParts(ms + 24 * MS_PER_HOUR, timeZone);
+    return tzLocalParts(ms - 24 * MS_PER_HOUR, timeZone);
+  };
+  const w = probe(naive);
   if (w !== null) return w;
   return { year: base.year, month: base.month, day: base.day + days, hour: 12, minute: 0 };
 }

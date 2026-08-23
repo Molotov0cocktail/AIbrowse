@@ -27,11 +27,23 @@ const CONTROLLED_LOG_NAME = /^aibrowse-(\d{4})-(\d{2})-(\d{2})(?:\.(\d+))?\.log$
 export function initLogger(baseDir: string): void {
   // 决议 #153(4)：重入重置——currentDate/currentLogFile 清空后按新 baseDir
   // 重新轮转（不得继续写旧目录）
-  logDir = join(baseDir, 'log');
+  const nextDir = join(baseDir, 'log');
+  try {
+    mkdirSync(nextDir, { recursive: true });
+  } catch {
+    // mkdir 失败（EEXIST 路径被文件占用/ENOTDIR/权限等）：受控降级——不落盘，
+    // 后续仅脱敏 console（finding 3）；固定、脱敏、非递归诊断（不输出任意文件路径）。
+    console.error('[logger] 日志目录不可用');
+    logDir = '';
+    currentDate = '';
+    currentLogFile = '';
+    currentDayIndex = 0;
+    return;
+  }
+  logDir = nextDir;
   currentDate = '';
   currentLogFile = '';
   currentDayIndex = 0;
-  mkdirSync(logDir, { recursive: true });
   // D1：init 时执行一次有界 housekeeping（清理超龄/超数受控文件；失败受控降级）
   housekeeping();
 }
@@ -49,6 +61,9 @@ function timeStamp(d: Date): string {
 }
 
 // D1：受控文件基础名（无序号）与同日滚动序号解析。只接受真实合法日历日期。
+// 受控滚动序号必须是规范正整数：无前导零（0、00、01 等一律拒绝）、数值为安全整数
+// （超大/超长数字串拒绝）、非有限（NaN/Infinity 形态）拒绝。`.0`/前导零/非规范序号
+// 不得进入受控删除集合（finding 5：fail-closed 默认不删）。
 // 用 String.match 而非 RegExp.exec：与既有 snapshot-script/parse-markdown 同族（正则非 SQL），
 // 且避免被 SRT-12 静态 SQL 扫描器误判为 SQL 执行点。
 function parseControlledLogName(name: string): { date: string; day: number; seq: number } | null {
@@ -62,55 +77,87 @@ function parseControlledLogName(name: string): { date: string; day: number; seq:
   if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) {
     return null;
   }
+  if (m[4] !== undefined) {
+    // 规范正整数序号：无前导零、数值为安全整数
+    if (m[4].length === 0 || m[4][0] === '0') return null;
+    const seq = Number(m[4]);
+    if (!Number.isSafeInteger(seq) || seq < 1) return null;
+    return {
+      date: `${m[1]}-${m[2]}-${m[3]}`,
+      day: Date.UTC(y, mo - 1, d),
+      seq,
+    };
+  }
   return {
     date: `${m[1]}-${m[2]}-${m[3]}`,
     day: Date.UTC(y, mo - 1, d),
-    seq: m[4] === undefined ? 0 : Number(m[4]),
+    seq: 0,
   };
 }
 
 // D1：有界 housekeeping。只删除「严格匹配受控名、真实合法日期、文件类型（非常规文件/目录/
-// junction/symlink 一律跳过）」且满足 14 天/10 文件超限的条目。任何 readdir/stat/unlink 失败
-// 都只走受控 console 降级，绝不递归调用 logger，绝不删除未证明属于本 logger 的条目。
+// junction/symlink 一律跳过）」且满足 14 天/10 文件超限的条目。当前活动日志文件（本次
+// 会话正在写入的文件）永不被 housekeeping 删除（finding 1：同日滚动到 .10 时不得把刚写入
+// 的最高序号活动文件当超数裁剪）。任何 readdir/stat/unlink 失败都只走固定、脱敏、非递归的
+// console 降级（finding 3/4），绝不递归调用 logger，绝不删除未证明属于本 logger 的条目。
 function housekeeping(): void {
   if (logDir === '') return;
   const now = new Date();
+  // 活动文件 basename（currentLogFile 是 join 出的绝对/相对路径，取最后一段）。
+  const active = currentLogFile === '' ? null : currentLogFile.split(/[\\/]/).pop()!;
+  let entries;
   try {
-    const entries = readdirSync(logDir, { withFileTypes: true });
-    const controlled: Array<{ name: string; seq: number; day: number }> = [];
-    for (const e of entries) {
-      if (!e.isFile()) continue; // 目录/junction/symlink/其他一律跳过
-      const p = parseControlledLogName(e.name);
-      if (p === null) continue;
-      controlled.push({ name: e.name, seq: p.seq, day: p.day });
-    }
-    // 年龄过滤：按「本地日历日差」计算，age == 14 个日历日恰好允许保留、> 14 删除。
-    // （detailed-design §2：最多保留 14 个本地日历日；非原始毫秒差。）
-    const byAge = controlled.filter((c) => {
-      // c.day 为该受控文件日期 UTC 午夜；先转换回本地日历日（同一时区同一日期基准），
-      // 再与「本地今天」做整日差，避免 UTC 午夜与本地午夜混算引入 ±1 天误差。
-      const logLocal = new Date(c.day + now.getTimezoneOffset() * 60_000);
-      const d0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-      const msPerDay = 86_400_000;
-      const dayDiff = Math.round((d0.getTime() - logLocal.getTime()) / msPerDay);
-      return dayDiff <= MAX_LOG_AGE_DAYS;
-    });
-    // 数量过滤：按（day 降序、seq 升序）确定排序保留最新 10 个；active 文件计入。
-    byAge.sort((a, b) => (a.day === b.day ? a.seq - b.seq : b.day - a.day));
-    const keep = new Set(byAge.slice(0, MAX_LOG_FILES).map((c) => c.name));
-    // 删除：受控名 + 超龄或超数 + 普通文件。unlink 前用 stat 复验非常规（防 TOCTOU）。
-    for (const c of controlled) {
-      if (keep.has(c.name)) continue;
-      try {
-        const st = statSync(join(logDir, c.name), { throwIfNoEntry: false });
-        if (st === undefined || !st.isFile()) continue;
-        unlinkSync(join(logDir, c.name));
-      } catch {
-        // 受控降级，不递归 logger
-      }
-    }
+    entries = readdirSync(logDir, { withFileTypes: true });
   } catch {
-    // readdir 失败：受控降级
+    // readdir 失败（如 logDir 被不可读入口占用）：固定、脱敏、非递归诊断
+    console.error('[logger] 日志清理失败: 目录不可读');
+    return;
+  }
+  const controlled: Array<{ name: string; seq: number; day: number }> = [];
+  for (const e of entries) {
+    if (!e.isFile()) continue; // 目录/junction/symlink/其他一律跳过
+    const p = parseControlledLogName(e.name);
+    if (p === null) continue;
+    controlled.push({ name: e.name, seq: p.seq, day: p.day });
+  }
+  // 年龄过滤：按「本地日历日差」计算，age == 14 个日历日恰好允许保留、> 14 删除。
+  // （detailed-design §2：最多保留 14 个本地日历日；非原始毫秒差。）
+  const byAge = controlled.filter((c) => {
+    // c.day 为该受控文件日期 UTC 午夜；先转换回本地日历日（同一时区同一日期基准），
+    // 再与「本地今天」做整日差，避免 UTC 午夜与本地午夜混算引入 ±1 天误差。
+    const logLocal = new Date(c.day + now.getTimezoneOffset() * 60_000);
+    const d0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const msPerDay = 86_400_000;
+    const dayDiff = Math.round((d0.getTime() - logLocal.getTime()) / msPerDay);
+    return dayDiff <= MAX_LOG_AGE_DAYS;
+  });
+  // 数量过滤：按（day 降序、同日 seq 降序）确定排序——最新日优先、同日最新滚动优先
+  // （base seq=0 排最后），保留最新 10 个。活动文件（本次会话正在写入的 currentLogFile）
+  // 无条件保留且**计入 10 文件上限**：先剔除 active，非活动只保留 MAX_LOG_FILES - activeCount
+  // 个名额，再把 active 加回，保证总数 <= MAX_LOG_FILES 且刚滚动出的活动文件不被删除。
+  const activeSet = active === null ? new Set<string>() : new Set([active]);
+  byAge.sort((a, b) => (a.day === b.day ? b.seq - a.seq : b.day - a.day));
+  const budget = MAX_LOG_FILES - activeSet.size;
+  const keep = new Set(
+    byAge
+      .filter((c) => !activeSet.has(c.name))
+      .slice(0, budget)
+      .map((c) => c.name),
+  );
+  for (const c of byAge) {
+    if (activeSet.has(c.name)) keep.add(c.name);
+  }
+  // 删除：受控名 + 超龄或超数 + 普通文件。unlink 前用 stat 复验非常规（防 TOCTOU）。
+  for (const c of controlled) {
+    if (keep.has(c.name)) continue;
+    try {
+      const st = statSync(join(logDir, c.name), { throwIfNoEntry: false });
+      if (st === undefined || !st.isFile()) continue;
+      unlinkSync(join(logDir, c.name));
+    } catch {
+      // stat/unlink 失败：受控降级，固定脱敏诊断（不输出路径）
+      console.error('[logger] 日志清理失败: 删除受限条目');
+    }
   }
 }
 
@@ -131,12 +178,16 @@ function nextRotationSeq(baseDate: string): number {
 }
 
 // Rotate：日期切换 → 无序号 base 文件；同日滚动 → 单调递增 .N（不覆盖）。
+// 真实日期切换（today !== currentDate 且 currentDate 非空，即已有上一日活动文件）后
+// 执行一次有界 housekeeping（finding 3：超龄/超数受控文件在日期切换时被清理）。
 function ensureLogFile(): void {
   const today = dateStamp(new Date());
   if (today !== currentDate) {
+    const switched = currentDate !== ''; // 非首次：存在上一日的活动文件
     currentDate = today;
     currentDayIndex = 0;
     currentLogFile = join(logDir, `aibrowse-${today}.log`);
+    if (switched) housekeeping();
   }
 }
 
@@ -297,11 +348,14 @@ function write(level: LogLevel, category: string, message: string, error?: unkno
       // 写前滚动：现有文件 + 本次写入 > 10 MiB 先滚动
       rotateIfNeeded(Buffer.byteLength(payload, 'utf8'));
       appendFileSync(currentLogFile, payload);
-      // D1：新滚动文件产生后执行有界 housekeeping
+      // D1：新滚动文件产生后执行有界 housekeeping（活动文件受保护，不会被误删）
       if (currentDayIndex > 0) housekeeping();
     } catch (e) {
       // Logging must never crash the app; fall back to console only.
-      console.error('[logger] 写入日志文件失败:', e);
+      // 固定、脱敏、非递归诊断：不输出 e 的完整路径/正文（敌手信息、凭据不得回显）。
+      const maybeCode = (e as { code?: unknown } | null)?.code;
+      const code = typeof maybeCode === 'string' ? maybeCode : '';
+      console.error(`[logger] 写入日志文件失败${code === '' ? '' : `: ${code}`}`);
     }
   }
   if (level === 'ERROR') console.error(bounded);

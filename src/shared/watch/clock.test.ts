@@ -506,6 +506,133 @@ describe('TimeZoneResolver — 其他稳定 IANA 区域', () => {
   });
 });
 
+describe('TimeZoneResolver — UTC+13/+14 极东偏移不跳过 after 所在本地逻辑日（F2 红→绿）', () => {
+  // Pacific/Kiritimati = UTC+14（东半球最东合法 IANA 偏移）。tzAddDays 若用正午 UTC
+  // 探测逻辑日，12:00 UTC = 本地次日 02:00，会跨天导致跳过 after 所在本地日期。
+  const KIR = 'Pacific/Kiritimati';
+  const KIR_OFFSET_HOURS = 14;
+
+  it('当天目标尚未来临时返回当天（不跳过 after 所在逻辑日）', () => {
+    // after = KIR 本地 2026-08-20 08:00 = UTC 2026-08-19 18:00；目标 09:00 尚未来临。
+    // KIR_OFFSET_HOURS 仅用于语义注释（KIR 08-20 08:00 = UTC 08-19 18:00，UTC+14）。
+    void KIR_OFFSET_HOURS;
+    const after = new Date(Date.UTC(2026, 7, 19, 18, 0, 0));
+    // 验证 after 确实落在 KIR 08-20（fixture 自检）
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: KIR,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const p = fmt.formatToParts(after);
+    const g = (t: string): string => (p.find((x) => x.type === t) ?? { value: '' }).value;
+    expect(`${g('year')}-${g('month')}-${g('day')}`).toBe('2026-08-20');
+    const r = RESOLVER.nextDailyInstant({
+      after,
+      localTime: '09:00',
+      timeZone: KIR,
+      lastLocalDate: null,
+    });
+    expect(r).not.toBeNull();
+    // 修复前返回 08-21（跳过当天）；正确应为当天 09:00 = UTC 08-19 19:00
+    expect(r!.localDate).toBe('2026-08-20');
+    expect(r!.instant.getTime()).toBe(Date.UTC(2026, 7, 19, 19, 0, 0));
+  });
+
+  it('当天目标已过才返回次日', () => {
+    // after = KIR 本地 2026-08-20 10:00 = UTC 2026-08-19 20:00；目标 09:00 已过 → 次日
+    const after = new Date(Date.UTC(2026, 7, 19, 20, 0, 0));
+    const r = RESOLVER.nextDailyInstant({
+      after,
+      localTime: '09:00',
+      timeZone: KIR,
+      lastLocalDate: null,
+    });
+    expect(r).not.toBeNull();
+    expect(r!.localDate).toBe('2026-08-21');
+    expect(r!.instant.getTime()).toBe(Date.UTC(2026, 7, 20, 19, 0, 0)); // KIR 08-21 09:00 = UTC 08-20 19:00
+  });
+
+  it('UTC+14 下 lastLocalDate 仍防同逻辑日重复', () => {
+    // 已消费 08-20，lastLocalDate='2026-08-20'，after 在 08-20 早期 → 必须跳到 08-21
+    const after = new Date(Date.UTC(2026, 7, 19, 18, 0, 0)); // KIR 08-20 08:00
+    const r = RESOLVER.nextDailyInstant({
+      after,
+      localTime: '09:00',
+      timeZone: KIR,
+      lastLocalDate: '2026-08-20',
+    });
+    expect(r).not.toBeNull();
+    expect(r!.localDate).toBe('2026-08-21');
+  });
+
+  it('UTC+13 极东偏移同样不跳过当天（Pacific/Apia 历史偏移足够新）', () => {
+    // Pacific/Apia 自 2011-12-30 起为 UTC+13（跳过整个 12-30）。2026 年恒定 +13。
+    const APIA = 'Pacific/Apia';
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: APIA,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const p = fmt.formatToParts(new Date(Date.UTC(2026, 7, 19, 18, 0, 0)));
+    const g = (t: string): string => (p.find((x) => x.type === t) ?? { value: '' }).value;
+    expect(`${g('year')}-${g('month')}-${g('day')}`).toBe('2026-08-20'); // UTC 08-19 18:00 = Apia 08-20 07:00
+    const r = RESOLVER.nextDailyInstant({
+      after: new Date(Date.UTC(2026, 7, 19, 18, 0, 0)),
+      localTime: '09:00',
+      timeZone: APIA,
+      lastLocalDate: null,
+    });
+    expect(r).not.toBeNull();
+    expect(r!.localDate).toBe('2026-08-20'); // 修复前跳过当天
+  });
+});
+
+describe('nextIntervalInstant — after 早于 anchor 不产生锚点之前伪 slot（F9 红→绿）', () => {
+  it('after < anchor：返回 anchor 之后的第一个合法 slot（k 为正整数，最小 k=1）', () => {
+    const anchor = 100_000;
+    // after 比 anchor 早超过一个 interval：现有实现 k=floor((after-anchor)/interval)+1 会算负 k，
+    // 产生 anchor 之前的伪 slot；修复后最小 k=1 → anchor+interval。
+    const after = anchor - 3 * 5_000;
+    const r = nextIntervalInstant(anchor, 5_000, after);
+    expect(r).toBe(anchor + 5_000);
+    // after 恰在 anchor 前一个 interval 整倍数处
+    const after2 = anchor - 1 * 5_000;
+    expect(nextIntervalInstant(anchor, 5_000, after2)).toBe(anchor + 5_000);
+  });
+
+  it('after == anchor：严格大于，返回 anchor+interval（既有语义保持）', () => {
+    expect(nextIntervalInstant(100_000, 5_000, 100_000)).toBe(105_000);
+  });
+
+  it('after 在 anchor 与 anchor+interval 之间：返回 anchor+interval', () => {
+    expect(nextIntervalInstant(100_000, 5_000, 100_001)).toBe(105_000);
+    expect(nextIntervalInstant(100_000, 5_000, 104_999)).toBe(105_000);
+  });
+
+  it('返回值绝不早于 anchor（无锚点之前伪 slot）', () => {
+    const vals = [
+      100_000 - 5_000,
+      100_000 - 4_999,
+      100_000 - 500_000,
+      0,
+      1,
+      -1,
+      -100_000,
+      100_000,
+      100_001,
+      100_004_999,
+      200_000,
+      1_000_000,
+    ];
+    for (const after of vals) {
+      const r = nextIntervalInstant(100_000, 5_000, after);
+      expect(r).toBeGreaterThanOrEqual(100_000);
+    }
+  });
+});
+
 describe('FakeClock 与 TimeZoneResolver 组合（日常时钟推进）', () => {
   it('FakeClock 驱动 daily 下一 instant 的完整流程', () => {
     const fc = new FakeClock(localToUtc(2026, 7, 20, 1, 0, 0));
