@@ -17,7 +17,11 @@ type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 let logDir = '';
 let currentDate = '';
 let currentLogFile = '';
-let currentDayIndex = 0;
+// D1：有界 housekeeping 待办标记。日期切换（含首次写入创建 base）或滚动产生新 .N 时置位，
+// 成功落盘后由 housekeeping 闭合并清除。普通同日追加不置位、不扫描整个目录——每次成功
+// 写入后受控普通文件数必 <=10，且不每条日志 readdir 整个目录。未知/畸形条目、目录、
+// junction/symlink 一律不进入删除集合（fail-closed）。
+let needsHousekeeping = false;
 
 // 受控日志文件名（detailed-design §13：只允许 aibrowse-YYYY-MM-DD.log 与
 // aibrowse-YYYY-MM-DD.N.log，日期必须真实合法、N 必须正整数）。
@@ -37,13 +41,12 @@ export function initLogger(baseDir: string): void {
     logDir = '';
     currentDate = '';
     currentLogFile = '';
-    currentDayIndex = 0;
     return;
   }
   logDir = nextDir;
   currentDate = '';
   currentLogFile = '';
-  currentDayIndex = 0;
+  needsHousekeeping = false;
   // D1：init 时执行一次有界 housekeeping（清理超龄/超数受控文件；失败受控降级）
   housekeeping();
 }
@@ -102,6 +105,7 @@ function parseControlledLogName(name: string): { date: string; day: number; seq:
 // console 降级（finding 3/4），绝不递归调用 logger，绝不删除未证明属于本 logger 的条目。
 function housekeeping(): void {
   if (logDir === '') return;
+  needsHousekeeping = false; // 消费待办标记：本轮有界清理即为成功写入后的闭合
   const now = new Date();
   // 活动文件 basename（currentLogFile 是 join 出的绝对/相对路径，取最后一段）。
   const active = currentLogFile === '' ? null : currentLogFile.split(/[\\/]/).pop()!;
@@ -171,7 +175,11 @@ function nextRotationSeq(baseDate: string): number {
       const st = statSync(candidate, { throwIfNoEntry: false });
       if (st === undefined || !st.isFile()) return seq;
     } catch {
-      return seq;
+      // stat 失败（finding 3）：固定、脱敏、非递归诊断——不输出候选路径/正文；
+      // 保守占用该序号（seq+1），绝不以未证明的候选覆盖已存在文件。
+      console.error('[logger] 日志清理失败: 删除受限条目');
+      seq += 1;
+      continue;
     }
     seq += 1;
   }
@@ -180,14 +188,16 @@ function nextRotationSeq(baseDate: string): number {
 // Rotate：日期切换 → 无序号 base 文件；同日滚动 → 单调递增 .N（不覆盖）。
 // 真实日期切换（today !== currentDate 且 currentDate 非空，即已有上一日活动文件）后
 // 执行一次有界 housekeeping（finding 3：超龄/超数受控文件在日期切换时被清理）。
+// 首次写入（currentDate 为空 → 创建当日 base）与日期切换同样置位待办：新 base 落盘后
+// 由 write 闭合一次 housekeeping（finding 1：init 时 10 个 .N + 新 base = 11 时收敛到 10）。
 function ensureLogFile(): void {
   const today = dateStamp(new Date());
   if (today !== currentDate) {
     const switched = currentDate !== ''; // 非首次：存在上一日的活动文件
     currentDate = today;
-    currentDayIndex = 0;
     currentLogFile = join(logDir, `aibrowse-${today}.log`);
     if (switched) housekeeping();
+    else needsHousekeeping = true; // 首次（新 base 将创建）：置待办，落盘后闭合
   }
 }
 
@@ -200,10 +210,12 @@ function rotateIfNeeded(writeBytes: number): void {
     const currentSize = st === undefined ? 0 : st.size;
     if (currentSize + writeBytes > MAX_LOG_FILE_BYTES) {
       currentLogFile = join(logDir, `aibrowse-${currentDate}.${nextRotationSeq(currentDate)}.log`);
-      currentDayIndex += 1;
+      needsHousekeeping = true; // 滚动产生新 .N：受控文件数 +1，落盘后闭合一次 housekeeping
     }
   } catch {
-    // stat 失败：保守按当前文件写（受控降级，不崩溃）
+    // stat 失败（finding 3）：固定、脱敏、非递归诊断——不输出当前文件路径/正文；
+    // 保守按当前文件写（受控降级，不崩溃）。
+    console.error('[logger] 日志清理失败: 删除受限条目');
   }
 }
 
@@ -348,8 +360,10 @@ function write(level: LogLevel, category: string, message: string, error?: unkno
       // 写前滚动：现有文件 + 本次写入 > 10 MiB 先滚动
       rotateIfNeeded(Buffer.byteLength(payload, 'utf8'));
       appendFileSync(currentLogFile, payload);
-      // D1：新滚动文件产生后执行有界 housekeeping（活动文件受保护，不会被误删）
-      if (currentDayIndex > 0) housekeeping();
+      // D1：成功落盘后闭合 housekeeping 待办（首次写入、日期切换与滚动产生的计数变化）。
+      // 普通同日追加不置位，因此不每条日志扫描整个目录；每次成功写入后受控文件数必 <=10。
+      // 活动文件受保护、计入 10 文件上限，不会被误删（finding 1）。
+      if (needsHousekeeping) housekeeping();
     } catch (e) {
       // Logging must never crash the app; fall back to console only.
       // 固定、脱敏、非递归诊断：不输出 e 的完整路径/正文（敌手信息、凭据不得回显）。
