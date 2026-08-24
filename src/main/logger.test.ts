@@ -2,6 +2,8 @@
 // disk or console; existing token/secret/password patterns keep working.
 // Contract source: doc/stage2/detailed-design.md §5.1/§10（日志脱敏红线）.
 // C7 决议 #153 追加：未初始化落盘修复红→绿（真实临时 cwd 探针/re-init 重置）。
+// D1 R3 追加：滚动序号候选失败有界性 + stat 失败 fail-closed + 非普通文件不作空闲候选
+// （findings 1–4；红→绿）。
 import {
   appendFileSync,
   mkdirSync,
@@ -1175,63 +1177,8 @@ describe('logger 硬化 — 受控序号规范性与删除目标白名单（F5 �
 //   F3-diag：nextRotationSeq 与 rotateIfNeeded 的 stat catch 仍静默（无固定、脱敏诊断）。
 // 本批测试与既有测试不同：对 node:fs 做模块级确定性子集 mock（backup.test.ts 同族模式），
 // 在精确调用点注入 statSync/unlinkSync 失败；并断言目标 mock 确实被调用（甄别能力）。
-const r2Probe = vi.hoisted(() => ({
-  statFaults: new Map<string, string>(),
-  statCalls: [] as string[],
-  unlinkFaults: new Map<string, string>(),
-  unlinkCalls: [] as string[],
-}));
-vi.mock('node:fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs')>();
-  const faultFor = (p: string, faults: Map<string, string>): { code: string } | null => {
-    const code = faults.get(p.toLowerCase());
-    return code === undefined ? null : { code };
-  };
-  return {
-    ...actual,
-    statSync: vi.fn((...args: Parameters<typeof actual.statSync>) => {
-      const p = String(args[0]);
-      r2Probe.statCalls.push(p);
-      const f = faultFor(p, r2Probe.statFaults);
-      if (f !== null) {
-        const e = new Error('injected statSync failure') as NodeJS.ErrnoException;
-        e.code = f.code;
-        throw e;
-      }
-      return (actual.statSync as (...a: unknown[]) => unknown)(...args);
-    }),
-    unlinkSync: vi.fn((...args: Parameters<typeof actual.unlinkSync>) => {
-      const p = String(args[0]);
-      r2Probe.unlinkCalls.push(p);
-      const f = faultFor(p, r2Probe.unlinkFaults);
-      if (f !== null) {
-        const e = new Error('injected unlinkSync failure') as NodeJS.ErrnoException;
-        e.code = f.code;
-        throw e;
-      }
-      return (actual.unlinkSync as (...a: unknown[]) => unknown)(...args);
-    }),
-  };
-});
-// 目标 mock 调用证明：path 列表包含某个受控目标（区分大小写无关）
-function r2CallsInclude(calls: string[], path: string): boolean {
-  const low = path.toLowerCase();
-  return calls.some((c) => c.toLowerCase() === low);
-}
-// 固定、脱敏、非递归诊断断言：至少一条以固定标签开头的 console.error，
-// 不含路径、敌手正文或凭据形态。
-function r2AssertDiagnosticFor(captured: string[], fixedLabel: string): void {
-  const msgs = captured.join('\n');
-  expect(msgs).toContain(fixedLabel);
-  expect(msgs).not.toMatch(/[A-Za-z]:\\/); // 不输出任意 Windows 路径
-  expect(msgs).not.toMatch(/sk-proj-[A-Za-z0-9_-]{8,}/i); // 不输出凭据形态
-}
-function r2ClearProbes(): void {
-  r2Probe.statFaults.clear();
-  r2Probe.statCalls.length = 0;
-  r2Probe.unlinkFaults.clear();
-  r2Probe.unlinkCalls.length = 0;
-}
+// 注：node:fs 模块级 mock 由下方 R3 统一声明（本文件唯一 mock；R2 与 R3 共享同一
+// probe/注入机制——r2Probe 与 r3Probe 合并为 fsProbe），避免两个 vi.mock 声明冲突。
 
 describe('logger R2 — re-init 上限：10 个合法同日 .N、base 不存在（F1 红→绿）', () => {
   it('init 后首次写入：受控普通文件总数必须恰好 10；按确定顺序淘汰非活动旧文件；再写两次仍 10 且内容不丢', async () => {
@@ -1338,7 +1285,7 @@ describe('logger R2 — housekeeping 逐调用点 stat 失败注入（F2/F3 红�
       const overAgePath = join(logDirPath, overAge);
       writeFileSync(overAgePath, 'old');
       writeFileSync(join(logDirPath, 'unrelated.txt'), 'keep-unknown'); // 未知条目
-      r2Probe.statFaults.set(overAgePath.toLowerCase(), 'EACCES');
+      fsProbe.statFaults.set(overAgePath.toLowerCase(), 'EACCES');
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       let captured: string[] = [];
       try {
@@ -1350,8 +1297,8 @@ describe('logger R2 — housekeeping 逐调用点 stat 失败注入（F2/F3 红�
         errSpy.mockRestore();
       }
       // 目标 statSync 确实被调用（mock 命中证明，非「目录不存在/被占用」替代）
-      expect(r2CallsInclude(r2Probe.statCalls, overAgePath)).toBe(true);
-      r2AssertDiagnosticFor(captured, '[logger] 日志清理失败');
+      expect(fsCallsInclude(fsProbe.statCalls, overAgePath)).toBe(true);
+      fsAssertDiagnosticFor(captured, '[logger] 日志清理失败');
       // 该条目仍存在（未删除）；未知条目零删除；后续调用仍受控
       expect(readdirSync(logDirPath)).toContain(overAge);
       expect(readFileSync(overAgePath, 'utf8')).toBe('old');
@@ -1359,7 +1306,7 @@ describe('logger R2 — housekeeping 逐调用点 stat 失败注入（F2/F3 红�
       expect(() => fresh.logInfo('cat', 'still-ok')).not.toThrow();
       expect(() => fresh.getCurrentLogFilePath()).not.toThrow();
     } finally {
-      r2ClearProbes();
+      fsClearProbes();
       clearFrozenClock();
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1384,7 +1331,7 @@ describe('logger R2 — housekeeping 逐调用点 stat 失败注入（F2/F3 红�
       const outside = mkdtempSync(join(tmpdir(), 'aibrowse-logger-r2-out-'));
       writeFileSync(join(outside, 'sentinel.txt'), 'keep-junction');
       symlinkSync(outside, join(logDirPath, 'aibrowse-2026-05-01.log'), 'junction');
-      r2Probe.unlinkFaults.set(overAgePath.toLowerCase(), 'EACCES');
+      fsProbe.unlinkFaults.set(overAgePath.toLowerCase(), 'EACCES');
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       let captured: string[] = [];
       try {
@@ -1395,8 +1342,8 @@ describe('logger R2 — housekeeping 逐调用点 stat 失败注入（F2/F3 红�
         errSpy.mockRestore();
       }
       // unlink 目标确实被调用（mock 命中证明）
-      expect(r2CallsInclude(r2Probe.unlinkCalls, overAgePath)).toBe(true);
-      r2AssertDiagnosticFor(captured, '[logger] 日志清理失败');
+      expect(fsCallsInclude(fsProbe.unlinkCalls, overAgePath)).toBe(true);
+      fsAssertDiagnosticFor(captured, '[logger] 日志清理失败');
       // 失败目标仍存在
       expect(readdirSync(logDirPath)).toContain(overAge);
       expect(readFileSync(overAgePath, 'utf8')).toBe('old');
@@ -1412,7 +1359,7 @@ describe('logger R2 — housekeeping 逐调用点 stat 失败注入（F2/F3 红�
       expect(() => fresh.getCurrentLogFilePath()).not.toThrow();
       rmSync(outside, { recursive: true, force: true });
     } finally {
-      r2ClearProbes();
+      fsClearProbes();
       clearFrozenClock();
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1437,7 +1384,7 @@ describe('logger R2 — nextRotationSeq / rotateIfNeeded 的 statSync 异常（F
       // 预置 .1（nextRotationSeq 需跳过 .1 探测 .2）；对 .1 的探测 statSync 抛错
       const rot1 = join(logDirPath, 'aibrowse-2026-08-20.1.log');
       writeFileSync(rot1, 'existing-1');
-      r2Probe.statFaults.set(rot1.toLowerCase(), 'EACCES');
+      fsProbe.statFaults.set(rot1.toLowerCase(), 'EACCES');
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       let captured: string[] = [];
       try {
@@ -1447,13 +1394,13 @@ describe('logger R2 — nextRotationSeq / rotateIfNeeded 的 statSync 异常（F
         errSpy.mockRestore();
       }
       // 探测确实命中 nextRotationSeq 对 .1 的 stat（不是「整个目录不存在」替代）
-      expect(r2CallsInclude(r2Probe.statCalls, rot1)).toBe(true);
-      r2AssertDiagnosticFor(captured, '[logger] 日志清理失败');
+      expect(fsCallsInclude(fsProbe.statCalls, rot1)).toBe(true);
+      fsAssertDiagnosticFor(captured, '[logger] 日志清理失败');
       // 不崩溃、不覆盖已存在 .1：内容原样
       expect(readFileSync(rot1, 'utf8')).toBe('existing-1');
       expect(() => fresh.getCurrentLogFilePath()).not.toThrow();
     } finally {
-      r2ClearProbes();
+      fsClearProbes();
       clearFrozenClock();
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1468,8 +1415,11 @@ describe('logger R2 — nextRotationSeq / rotateIfNeeded 的 statSync 异常（F
       fresh.initLogger(dir);
       fresh.logInfo('cat', 'establish');
       const cur = fresh.getCurrentLogFilePath();
-      // 对「当前活动文件」的 rotateIfNeeded statSync 抛错：write 必须受控降级（写当前文件）
-      r2Probe.statFaults.set(cur.toLowerCase(), 'EACCES');
+      const sizeBefore = statSync(cur).size;
+      // 对「当前活动文件」的 rotateIfNeeded statSync 抛错：当前大小未知 → fail-closed，
+      // 拒绝本次磁盘写入（R3 F2 契约；R2 轮测试原「保守按当前文件写」语义已被替换）。
+      fsProbe.statFaults.set(cur.toLowerCase(), 'EACCES');
+      fsProbe.appendCalls.length = 0; // 清零测试自身 append 记录
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       let captured: string[] = [];
       try {
@@ -1477,15 +1427,401 @@ describe('logger R2 — nextRotationSeq / rotateIfNeeded 的 statSync 异常（F
         captured = errSpy.mock.calls.map((c) => String(c[0]));
       } finally {
         errSpy.mockRestore();
+        fsProbe.statFaults.clear(); // 断言阶段自身 statSync 不再被注入失败
       }
       // rotateIfNeeded 对活动文件的 stat 确实被调用（mock 命中证明）
-      expect(r2CallsInclude(r2Probe.statCalls, cur)).toBe(true);
-      r2AssertDiagnosticFor(captured, '[logger] 日志清理失败');
-      // 不崩溃：当前活动文件仍被写入（stat 失败保守按当前文件写）
-      expect(readFileSync(cur, 'utf8')).toContain('after-rot-stat-fail');
+      expect(fsCallsInclude(fsProbe.statCalls, cur)).toBe(true);
+      fsAssertDiagnosticFor(captured, '[logger] 日志清理失败');
+      // fail-closed：本次正文不落盘、大小不变、appendFileSync 未被调用
+      expect(readFileSync(cur, 'utf8')).not.toContain('after-rot-stat-fail');
+      expect(statSync(cur).size).toBe(sizeBefore);
+      expect(fsProbe.appendCalls).toHaveLength(0);
       expect(() => fresh.getCurrentLogFilePath()).not.toThrow();
     } finally {
-      r2ClearProbes();
+      fsClearProbes();
+      clearFrozenClock();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- D1 Repair Contract R3：候选失败有界 + stat 失败 fail-closed + 非普通文件不作空闲候选 ----------
+// 根因（Reviewer R3 findings）：
+//   F1 nextRotationSeq 对每个 statSync 异常执行 seq+=1; continue → 持续错误下同步无限循环并
+//      递归式刷 console（有界性缺失）。
+//   F2 rotateIfNeeded 无法读取当前文件大小时仍允许 append → 可能突破 10 MiB 硬上限（乐观追加）。
+//   F3 既有测试只覆盖单候选失败后成功与小文件继续写，没有甄别上述危险路径（甄别能力缺失）。
+//   F4 已存在的目录/junction/symlink 等非普通文件被当作「空闲序号路径」尝试写入。
+// node:fs 模块级确定性子集 mock（本文件唯一声明；R2 与 R3 共享——两个 vi.mock('node:fs')
+// 声明会冲突，前一个被后一个覆盖）。对 statSync/unlinkSync/appendFileSync 的每次调用
+// 记录路径并支持按路径注入失败；appendCalls 证明 appendFileSync 调用次数（甄别「拒绝落盘」）。
+const fsProbe = vi.hoisted(() => ({
+  statFaults: new Map<string, string>(),
+  statCalls: [] as string[],
+  unlinkFaults: new Map<string, string>(),
+  unlinkCalls: [] as string[],
+  appendFaults: new Map<string, string>(),
+  appendCalls: [] as string[],
+}));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const faultFor = (p: string, faults: Map<string, string>): { code: string } | null => {
+    const code = faults.get(p.toLowerCase());
+    return code === undefined ? null : { code };
+  };
+  return {
+    ...actual,
+    statSync: vi.fn((...args: Parameters<typeof actual.statSync>) => {
+      const p = String(args[0]);
+      fsProbe.statCalls.push(p);
+      const f = faultFor(p, fsProbe.statFaults);
+      if (f !== null) {
+        const e = new Error('injected statSync failure') as NodeJS.ErrnoException;
+        e.code = f.code;
+        throw e;
+      }
+      return (actual.statSync as (...a: unknown[]) => unknown)(...args);
+    }),
+    unlinkSync: vi.fn((...args: Parameters<typeof actual.unlinkSync>) => {
+      const p = String(args[0]);
+      fsProbe.unlinkCalls.push(p);
+      const f = faultFor(p, fsProbe.unlinkFaults);
+      if (f !== null) {
+        const e = new Error('injected unlinkSync failure') as NodeJS.ErrnoException;
+        e.code = f.code;
+        throw e;
+      }
+      return (actual.unlinkSync as (...a: unknown[]) => unknown)(...args);
+    }),
+    appendFileSync: vi.fn((...args: Parameters<typeof actual.appendFileSync>) => {
+      fsProbe.appendCalls.push(String(args[0]));
+      const f = faultFor(String(args[0]), fsProbe.appendFaults);
+      if (f !== null) {
+        const e = new Error('injected appendFileSync failure') as NodeJS.ErrnoException;
+        e.code = f.code;
+        throw e;
+      }
+      return (actual.appendFileSync as (...a: unknown[]) => unknown)(...args);
+    }),
+  };
+});
+function fsClearProbes(): void {
+  fsProbe.statFaults.clear();
+  fsProbe.statCalls.length = 0;
+  fsProbe.unlinkFaults.clear();
+  fsProbe.unlinkCalls.length = 0;
+  fsProbe.appendFaults.clear();
+  fsProbe.appendCalls.length = 0;
+}
+// 目标 mock 调用证明：path 列表包含某个受控目标（区分大小写无关）
+function fsCallsInclude(calls: string[], path: string): boolean {
+  const low = path.toLowerCase();
+  return calls.some((c) => c.toLowerCase() === low);
+}
+// 固定、脱敏、非递归诊断断言：至少一条以固定标签开头的 console.error，
+// 不含路径、敌手正文或凭据形态。
+function fsAssertDiagnosticFor(captured: string[], fixedLabel: string): void {
+  const msgs = captured.join('\n');
+  expect(msgs).toContain(fixedLabel);
+  expect(msgs).not.toMatch(/[A-Za-z]:\\/); // 不输出任意 Windows 路径
+  expect(msgs).not.toMatch(/sk-proj-[A-Za-z0-9_-]{8,}/i); // 不输出凭据形态
+}
+// 有限候选故障集：对 base 的 .from～.to 序号候选注入 statSync 失败（EACCES）
+function r3FaultRotSeqCandidates(
+  baseDate: string,
+  logDirPath: string,
+  from: number,
+  to: number,
+): void {
+  for (let s = from; s <= to; s += 1) {
+    fsProbe.statFaults.set(
+      join(logDirPath, `aibrowse-${baseDate}.${s}.log`).toLowerCase(),
+      'EACCES',
+    );
+  }
+}
+
+describe('logger R3 — 滚动候选 stat 持续失败有界且不落盘（F1 红→绿）', () => {
+  it('当前文件恰好 10 MiB；.1～.20 候选 stat 连续失败：有界返回、零新 .N、旧文件 10 MiB 不变、正文不落盘、固定脱敏诊断', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-r3-bounded-'));
+    try {
+      setFrozenClock('2026-08-20T04:00:00Z');
+      fresh.initLogger(dir);
+      fresh.logInfo('cat', 'establish');
+      const logDirPath = join(dir, 'log');
+      const cur = fresh.getCurrentLogFilePath();
+      // 当前文件填到恰好 10 MiB，使下一次写入必然触发写前滚动 → nextRotationSeq
+      const max = 1024 * 1024 * 10;
+      const curSize = statSync(cur).size;
+      appendFileSync(cur, Buffer.alloc(max - curSize, 0x61));
+      expect(statSync(cur).size).toBe(max);
+      // 对 .1～.20 全部候选注入持续 statSync 失败：旧实现 catch 对每个异常执行
+      // seq+=1; continue → 有界性靠「调用数上限 + 有限候选故障集」快速红灯。
+      r3FaultRotSeqCandidates('2026-08-20', logDirPath, 1, 20);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let captured: string[] = [];
+      // 清零测试自身的 append 记录：此后只统计被测 logInfo 引发的落盘
+      fsProbe.appendCalls.length = 0;
+      try {
+        // 调用次数上限（有界性甄别）：总 statSync 调用（含注入失败的候选探测）必须
+        // 远小于无界 loop 的调用量——无界时对 .1..20 全失败后会继续探测 .21、.22、…
+        // 直至超过有界上限（BOUND=60），最终抛 stack overflow / 超时。
+        const callsBefore = fsProbe.statCalls.length;
+        expect(() => fresh.logInfo('cat', 'must-not-append')).not.toThrow();
+        const callsAfter = fsProbe.statCalls.length;
+        expect(callsAfter - callsBefore).toBeLessThanOrEqual(25);
+        captured = errSpy.mock.calls.map((c) => String(c[0]));
+      } finally {
+        errSpy.mockRestore();
+        // 断言阶段自身 statSync 不再被注入失败（故障集只作用于被测的 logInfo 调用）
+        fsProbe.statFaults.clear();
+      }
+      // 目标候选探测确实被 mock 命中（甄别能力：非「整个目录不存在」替代）
+      const rot1 = join(logDirPath, 'aibrowse-2026-08-20.1.log');
+      expect(fsProbe.statCalls.some((c) => c.toLowerCase() === rot1.toLowerCase())).toBe(true);
+      // 固定、脱敏、非递归诊断存在
+      fsAssertDiagnosticFor(captured, '[logger] 日志清理失败');
+      // 不得创建任何新 .N；旧文件仍恰好 10 MiB（未被写入 → 大小不变）
+      // （无界旧实现对 .1..20 全失败后会探测 .21 成功并创建 .21.log → 强红灯）
+      const names = readdirSync(logDirPath).map((n) => basename(n));
+      for (let s = 1; s <= 20; s += 1) {
+        expect(names).not.toContain(`aibrowse-2026-08-20.${s}.log`);
+      }
+      expect(statSync(cur).size).toBe(max);
+      // 当前活动文件不得被替换为任何新 .N（拒绝写入时路径不变）
+      expect(basename(fresh.getCurrentLogFilePath())).toBe('aibrowse-2026-08-20.log');
+      // 本次正文不落盘（拒绝磁盘写入；console 仍可用）
+      expect(readFileSync(cur, 'utf8')).not.toContain('must-not-append');
+      // appendFileSync 未被调用（含 currentLogFile 的 append）
+      expect(fsProbe.appendCalls).toHaveLength(0);
+      // 后续调用仍受控（不崩溃）
+      expect(() => fresh.getCurrentLogFilePath()).not.toThrow();
+    } finally {
+      fsClearProbes();
+      clearFrozenClock();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('logger R3 — rotateIfNeeded 当前文件 stat 失败：fail-closed 拒绝落盘（F2 红→绿）', () => {
+  it('当前文件恰好 10 MiB；当前文件 statSync 抛错：不抛、不落盘、大小不变、appendFileSync 零调用、固定脱敏诊断', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-r3-curstat-'));
+    try {
+      setFrozenClock('2026-08-20T04:00:00Z');
+      fresh.initLogger(dir);
+      fresh.logInfo('cat', 'establish');
+      const cur = fresh.getCurrentLogFilePath();
+      // 当前文件填到恰好 10 MiB（写前滚动前置：此处注入的失败发生在 rotateIfNeeded
+      // 对当前文件 stat 时，绝不乐观追加）
+      const max = 1024 * 1024 * 10;
+      const curSize = statSync(cur).size;
+      appendFileSync(cur, Buffer.alloc(max - curSize, 0x61));
+      expect(statSync(cur).size).toBe(max);
+      // 精确注入当前文件 statSync 失败
+      fsProbe.statFaults.set(cur.toLowerCase(), 'EACCES');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let captured: string[] = [];
+      // 清零测试自身的 append 记录：此后只统计被测 logInfo 引发的落盘
+      fsProbe.appendCalls.length = 0;
+      try {
+        expect(() => fresh.logInfo('cat', 'no-append-when-size-unknown')).not.toThrow();
+        captured = errSpy.mock.calls.map((c) => String(c[0]));
+      } finally {
+        errSpy.mockRestore();
+        // 断言阶段自身 statSync 不再被注入失败（故障只作用于被测的 logInfo 调用）
+        fsProbe.statFaults.clear();
+      }
+      // rotateIfNeeded 对当前文件的 stat 确实被调用（mock 命中证明）
+      expect(fsProbe.statCalls.some((c) => c.toLowerCase() === cur.toLowerCase())).toBe(true);
+      // 固定、脱敏、非递归诊断
+      fsAssertDiagnosticFor(captured, '[logger] 日志清理失败');
+      // 文件仍恰好 10 MiB（无写入）
+      expect(statSync(cur).size).toBe(max);
+      // 本次正文不落盘
+      expect(readFileSync(cur, 'utf8')).not.toContain('no-append-when-size-unknown');
+      // appendFileSync 未被调用（拒绝磁盘写入）
+      expect(fsProbe.appendCalls).toHaveLength(0);
+      // 后续调用仍受控
+      expect(() => fresh.getCurrentLogFilePath()).not.toThrow();
+    } finally {
+      fsClearProbes();
+      clearFrozenClock();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('小文件当前 stat 失败同样 fail-closed：不得以“小文件当前安全”继续写（大小未经证明）；正文不落盘、console 仍可用', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-r3-small-'));
+    try {
+      setFrozenClock('2026-08-20T04:00:00Z');
+      fresh.initLogger(dir);
+      fresh.logInfo('cat', 'establish');
+      const cur = fresh.getCurrentLogFilePath();
+      const sizeBefore = statSync(cur).size;
+      expect(sizeBefore).toBeLessThan(1024 * 1024 * 10); // 小文件（远未到 10 MiB）
+      // 当前文件 stat 失败：旧实现 catch 后仍 append（乐观追加）→ 红；
+      // 修复：大小未知 → fail-closed 拒绝本次磁盘写入。
+      fsProbe.statFaults.set(cur.toLowerCase(), 'EACCES');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let captured: string[] = [];
+      // 清零测试自身的 append 记录：此后只统计被测 logInfo 引发的落盘
+      fsProbe.appendCalls.length = 0;
+      try {
+        expect(() => fresh.logInfo('cat', 'still-no-append')).not.toThrow();
+        captured = errSpy.mock.calls.map((c) => String(c[0]));
+      } finally {
+        errSpy.mockRestore();
+        // 断言阶段自身 statSync 不再被注入失败
+        fsProbe.statFaults.clear();
+      }
+      // 本次磁盘正文不存在（大小未经证明，拒绝写当前文件）
+      expect(readFileSync(cur, 'utf8')).not.toContain('still-no-append');
+      // 文件大小不变
+      expect(statSync(cur).size).toBe(sizeBefore);
+      // 脱敏 console 输出仍可用（失败正文未进诊断，但日志能力不削弱）
+      expect(captured.join('\n')).toContain('[logger] 日志清理失败');
+      // appendFileSync 未被调用
+      expect(fsProbe.appendCalls).toHaveLength(0);
+      // 后续调用仍受控（不崩溃）
+      expect(() => fresh.getCurrentLogFilePath()).not.toThrow();
+    } finally {
+      fsClearProbes();
+      clearFrozenClock();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('logger R3 — 已存在非普通文件不作空闲候选（F4 红→绿）', () => {
+  // 候选占用形态矩阵：普通文件、目录、junction（指向外部目录）。普通文件会被旧实现
+  // 视为占用（跳过）、目录/junction 会被旧实现视为空闲（!isFile → 返回该序号）→ 红。
+  // （文件 symlink 在本 CI 上因权限不可创建，退回 junction；二者对旧实现同样暴露。）
+  const spyConsoleError = (): ReturnType<typeof vi.spyOn> =>
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  it('.1 为普通文件、.2 为目录、.3 为 junction：全部视为占用；.4 被证明不存在则安全选择 .4；已存在路径零覆盖零删除', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-r3-occ-'));
+    try {
+      setFrozenClock('2026-08-20T04:00:00Z');
+      fresh.initLogger(dir);
+      const logDirPath = join(dir, 'log');
+      // .1 = 普通文件、.2 = 目录、.3 = junction（.3 的 sentinel 位于外部目录）
+      writeFileSync(join(logDirPath, 'aibrowse-2026-08-20.1.log'), 'file-1');
+      mkdirSync(join(logDirPath, 'aibrowse-2026-08-20.2.log'), { recursive: true });
+      const outside = mkdtempSync(join(tmpdir(), 'aibrowse-logger-r3-occ-out-'));
+      writeFileSync(join(outside, 'sentinel.txt'), 'keep-junction');
+      symlinkSync(outside, join(logDirPath, 'aibrowse-2026-08-20.3.log'), 'junction');
+      const consoleError = spyConsoleError();
+      try {
+        // 先写一条建立当前活动 base（当前文件必须存在才能填满到 10 MiB）
+        fresh.logInfo('cat', 'establish');
+        // 当前文件填满到 10 MiB → 写前滚动 → 候选探测 .1（文件占用）→ .2（目录占用）
+        // → .3（junction 占用）→ .4（被证明不存在 → 选择 .4）
+        const cur = fresh.getCurrentLogFilePath();
+        const max = 1024 * 1024 * 10;
+        const curSize = statSync(cur).size;
+        appendFileSync(cur, Buffer.alloc(max - curSize, 0x61));
+        expect(statSync(cur).size).toBe(max);
+        fresh.logInfo('cat', 'payload-goes-4');
+        // 新内容进入 .4（安全候选被证明不存在）
+        const rot4 = join(logDirPath, 'aibrowse-2026-08-20.4.log');
+        expect(readFileSync(rot4, 'utf8')).toContain('payload-goes-4');
+        // 已存在路径零覆盖零删除（普通文件原样、目录仍是目录、junction 外部内容完好）
+        expect(readFileSync(join(logDirPath, 'aibrowse-2026-08-20.1.log'), 'utf8')).toBe('file-1');
+        expect(statSync(join(logDirPath, 'aibrowse-2026-08-20.2.log')).isDirectory()).toBe(true);
+        expect(readFileSync(join(outside, 'sentinel.txt'), 'utf8')).toBe('keep-junction');
+        expect(
+          statSync(join(logDirPath, 'aibrowse-2026-08-20.3.log'), { throwIfNoEntry: false }),
+        ).not.toBeNull();
+      } finally {
+        consoleError.mockRestore();
+        rmSync(outside, { recursive: true, force: true });
+      }
+    } finally {
+      fsClearProbes();
+      clearFrozenClock();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('候选 .1 为目录：绝不对目录 append（无 EISDIR 崩溃、无覆盖删除）；.2 被证明不存在则安全选择 .2', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-r3-dir-'));
+    try {
+      setFrozenClock('2026-08-20T04:00:00Z');
+      fresh.initLogger(dir);
+      const logDirPath = join(dir, 'log');
+      const dirAt1 = join(logDirPath, 'aibrowse-2026-08-20.1.log');
+      mkdirSync(dirAt1, { recursive: true });
+      // 记录「.1 目录」内的条目（sentinel 应恒存）
+      writeFileSync(join(dirAt1, 'inside.txt'), 'keep-dir');
+      const consoleError = spyConsoleError();
+      try {
+        fresh.logInfo('cat', 'establish'); // 建立当前活动 base（当前文件必须存在）
+        const cur = fresh.getCurrentLogFilePath();
+        const max = 1024 * 1024 * 10;
+        const curSize = statSync(cur).size;
+        appendFileSync(cur, Buffer.alloc(max - curSize, 0x61));
+        fresh.logInfo('cat', 'payload-goes-2');
+        // .2 被证明不存在 → 安全选择 .2
+        const rot2 = join(logDirPath, 'aibrowse-2026-08-20.2.log');
+        expect(readFileSync(rot2, 'utf8')).toContain('payload-goes-2');
+        // .1 仍是目录（零覆盖零删除）；其内容完好
+        expect(statSync(dirAt1).isDirectory()).toBe(true);
+        expect(readFileSync(join(dirAt1, 'inside.txt'), 'utf8')).toBe('keep-dir');
+      } finally {
+        consoleError.mockRestore();
+      }
+    } finally {
+      fsClearProbes();
+      clearFrozenClock();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('候选 .1 为 junction（指向外部目录）：不跟随、不覆盖、不删除；外部 sentinel 恒等；安全选择被证明不存在的 .2', async () => {
+    vi.resetModules();
+    const fresh = await import('./logger');
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-logger-r3-junc-'));
+    try {
+      setFrozenClock('2026-08-20T04:00:00Z');
+      fresh.initLogger(dir);
+      const logDirPath = join(dir, 'log');
+      const outside = mkdtempSync(join(tmpdir(), 'aibrowse-logger-r3-junc-out-'));
+      writeFileSync(join(outside, 'sentinel.txt'), 'keep-junction');
+      const junctionAt1 = join(logDirPath, 'aibrowse-2026-08-20.1.log');
+      symlinkSync(outside, junctionAt1, 'junction');
+      const consoleError = spyConsoleError();
+      try {
+        fresh.logInfo('cat', 'establish'); // 建立当前活动 base（当前文件必须存在）
+        const cur = fresh.getCurrentLogFilePath();
+        const max = 1024 * 1024 * 10;
+        const curSize = statSync(cur).size;
+        appendFileSync(cur, Buffer.alloc(max - curSize, 0x61));
+        fresh.logInfo('cat', 'payload-goes-2-junc');
+        // .2 被证明不存在 → 安全选择 .2（.1 为 junction 占用，绝不 append 到 .1）
+        const rot2 = join(logDirPath, 'aibrowse-2026-08-20.2.log');
+        expect(readFileSync(rot2, 'utf8')).toContain('payload-goes-2-junc');
+        // junction 未跟随、未覆盖、未删除；外部 sentinel 恒等
+        expect(readFileSync(join(outside, 'sentinel.txt'), 'utf8')).toBe('keep-junction');
+        expect(statSync(junctionAt1, { throwIfNoEntry: false })).not.toBeNull();
+        expect(readdirSync(outside)).toEqual(['sentinel.txt']);
+      } finally {
+        consoleError.mockRestore();
+        rmSync(outside, { recursive: true, force: true });
+      }
+    } finally {
+      fsClearProbes();
       clearFrozenClock();
       rmSync(dir, { recursive: true, force: true });
     }

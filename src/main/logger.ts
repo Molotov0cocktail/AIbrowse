@@ -165,23 +165,26 @@ function housekeeping(): void {
   }
 }
 
-// 选择下一个同日滚动序号：不覆盖已有序号文件（跳过已存在 .N）。
-function nextRotationSeq(baseDate: string): number {
+// 选择下一个同日滚动序号：有界且 fail-closed。候选必须「已证明不存在」才算空闲——
+// 任意已存在路径（普通文件、目录、junction/symlink 或任何其他条目）一律视为占用，
+// 绝不覆盖/删除/append（finding 4）。首次 stat 异常即停止安全候选选择并返回 null
+// （finding 1：持续 stat 失败下旧实现 catch 执行 seq+=1; continue → 同步无限循环并
+// 递归式刷 console）。null 由调用方拒绝本次磁盘写入。
+function nextRotationSeq(baseDate: string): number | null {
   const base = `aibrowse-${baseDate}`;
   let seq = 1;
   for (;;) {
     const candidate = join(logDir, `${base}.${seq}.log`);
     try {
       const st = statSync(candidate, { throwIfNoEntry: false });
-      if (st === undefined || !st.isFile()) return seq;
+      if (st === undefined) return seq; // 已证明不存在（throwIfNoEntry:false 确定语义）
+      seq += 1; // 任意已存在条目（文件/目录/junction/symlink）视为占用
     } catch {
-      // stat 失败（finding 3）：固定、脱敏、非递归诊断——不输出候选路径/正文；
-      // 保守占用该序号（seq+1），绝不以未证明的候选覆盖已存在文件。
-      console.error('[logger] 日志清理失败: 删除受限条目');
-      seq += 1;
-      continue;
+      // stat 失败（finding 3）：固定、脱敏、非递归诊断——不输出候选路径/正文。
+      // 候选安全性未知 → 停止选择，返回 null（fail-closed，绝不继续猜测更高序号）。
+      console.error('[logger] 日志清理失败: 滚动序号不可判定');
+      return null;
     }
-    seq += 1;
   }
 }
 
@@ -202,21 +205,32 @@ function ensureLogFile(): void {
 }
 
 // 写前滚动：现有文件大小 + 本次完整 UTF-8 写入（含换行）> 10 MiB 时滚动到 .N。
-// 总和 <= 10 MiB 仍写当前文件。绝不先写超限再滚动。
-function rotateIfNeeded(writeBytes: number): void {
-  if (currentLogFile === '') return;
+// 总和 <= 10 MiB 仍写当前文件。绝不先写超限再滚动。返回明确的「允许磁盘写入」判定
+// （finding 2/3）：
+//   - 当前大小已证明且无需滚动 → true（允许 append）；
+//   - 已证明需要滚动且安全候选已证明不存在 → true（允许 append 新文件）；
+//   - 当前大小未知（stat 失败）或候选安全性未知（nextRotationSeq 返回 null）→ false
+//     （拒绝本次磁盘写入——大小未经证明绝不乐观追加，10 MiB 是硬上限）。
+function rotateIfNeeded(writeBytes: number): boolean {
+  if (currentLogFile === '') return false;
+  let st: ReturnType<typeof statSync> | undefined;
   try {
-    const st = statSync(currentLogFile, { throwIfNoEntry: false });
-    const currentSize = st === undefined ? 0 : st.size;
-    if (currentSize + writeBytes > MAX_LOG_FILE_BYTES) {
-      currentLogFile = join(logDir, `aibrowse-${currentDate}.${nextRotationSeq(currentDate)}.log`);
-      needsHousekeeping = true; // 滚动产生新 .N：受控文件数 +1，落盘后闭合一次 housekeeping
-    }
+    st = statSync(currentLogFile, { throwIfNoEntry: false });
   } catch {
-    // stat 失败（finding 3）：固定、脱敏、非递归诊断——不输出当前文件路径/正文；
-    // 保守按当前文件写（受控降级，不崩溃）。
-    console.error('[logger] 日志清理失败: 删除受限条目');
+    // stat 失败（finding 3）：当前大小未知 → fail-closed，拒绝本次磁盘写入。
+    // 固定、脱敏、非递归诊断——不输出当前文件路径/正文。
+    console.error('[logger] 日志清理失败: 当前日志文件大小不可判定');
+    return false;
   }
+  // throwIfNoEntry:false 下 st === undefined 表示条目「已证明不存在」：大小为 0，
+  // 属已证明状态（首写 base 创建即此路径），区别于 stat 抛错——抛错时大小未知 → 拒绝写入。
+  const currentSize = st === undefined ? 0 : st.size;
+  if (currentSize + writeBytes <= MAX_LOG_FILE_BYTES) return true; // 无需滚动，允许 append
+  const seq = nextRotationSeq(currentDate);
+  if (seq === null) return false; // 候选安全性未知 → 拒绝本次磁盘写入
+  currentLogFile = join(logDir, `aibrowse-${currentDate}.${seq}.log`);
+  needsHousekeeping = true; // 滚动产生新 .N：受控文件数 +1，落盘后闭合一次 housekeeping
+  return true;
 }
 
 // D1：UTF-8 字节安全截断。物理行整体不超过 MAX_LOG_LINE_BYTES；绝不拆 UTF-16 surrogate；
@@ -357,13 +371,16 @@ function write(level: LogLevel, category: string, message: string, error?: unkno
     ensureLogFile();
     try {
       const payload = `${bounded}\n`;
-      // 写前滚动：现有文件 + 本次写入 > 10 MiB 先滚动
-      rotateIfNeeded(Buffer.byteLength(payload, 'utf8'));
-      appendFileSync(currentLogFile, payload);
-      // D1：成功落盘后闭合 housekeeping 待办（首次写入、日期切换与滚动产生的计数变化）。
-      // 普通同日追加不置位，因此不每条日志扫描整个目录；每次成功写入后受控文件数必 <=10。
-      // 活动文件受保护、计入 10 文件上限，不会被误删（finding 1）。
-      if (needsHousekeeping) housekeeping();
+      // 写前滚动：现有文件 + 本次写入 > 10 MiB 先滚动。返回「是否允许本次磁盘写入」
+      // （finding 2/3）：当前大小未知或候选安全性未知 → false，拒绝落盘（fail-closed）。
+      // 拒绝不抛异常、不递归调用 logger（诊断已在 rotateIfNeeded/nextRotationSeq 内输出）。
+      if (rotateIfNeeded(Buffer.byteLength(payload, 'utf8'))) {
+        appendFileSync(currentLogFile, payload);
+        // D1：成功落盘后闭合 housekeeping 待办（首次写入、日期切换与滚动产生的计数变化）。
+        // 普通同日追加不置位，因此不每条日志扫描整个目录；每次成功写入后受控文件数必 <=10。
+        // 活动文件受保护、计入 10 文件上限，不会被误删（finding 1）。
+        if (needsHousekeeping) housekeeping();
+      }
     } catch (e) {
       // Logging must never crash the app; fall back to console only.
       // 固定、脱敏、非递归诊断：不输出 e 的完整路径/正文（敌手信息、凭据不得回显）。
