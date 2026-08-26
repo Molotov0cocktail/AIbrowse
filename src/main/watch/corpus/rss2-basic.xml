@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>AIbrowse Test Feed</title>
+    <link>https://example.com/</link>
+    <description>RSS 2.0 corpus fixture</description>
+    <item>
+      <guid isPermaLink="false">rss-item-001</guid>
+      <title>First item</title>
+      <link>https://example.com/items/001</link>
+      <description><![CDATA[<p>CDATA <b>content</b> preserved</p>]]></description>
+      <pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate>
+      <author>me@example.com</author>
+    </item>
+    <item>
+      <guid>rss-item-002</guid>
+      <title>Second item 中文 😀</title>
+      <link>https://example.com/items/002</link>
+      <description>plain description</description>
+      <pubDate>Tue, 02 Jan 2024 00:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

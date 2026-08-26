@@ -53,6 +53,8 @@ describe('detailed §2 预算常量（单一事实源精确值）', () => {
 
   it('存储/保留/网络/缓存常量', () => {
     expect(watch.MAX_WATCH_DB_BYTES).toBe(104_857_600);
+    expect(watch.MAX_ROBOTS_RULES).toBe(1024);
+    expect(watch.MAX_DISCOVERY_CANDIDATES).toBe(10);
     expect(watch.PUBLIC_EVENT_RETENTION_DAYS).toBe(90);
     expect(watch.PUBLIC_EVENTS_PER_RULE).toBe(200);
     expect(watch.SESSION_EVENT_RETENTION_DAYS).toBe(30);

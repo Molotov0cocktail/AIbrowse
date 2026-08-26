@@ -89,6 +89,8 @@ export const MAX_DIGEST_PROVIDER_CALLS = 1; // 单 Digest
 
 // 存储 / 保留 / 网络 / 缓存
 export const MAX_WATCH_DB_BYTES = 104_857_600; // 100 MiB 逻辑预算；每次写前估算
+export const MAX_ROBOTS_RULES = 1024; // robots.txt 规则条数上限（D3 防御纵深；文件本身 256 KiB 有界）
+export const MAX_DISCOVERY_CANDIDATES = 10; // feed discovery 候选上限（detailed-design §6.3）
 export const PUBLIC_EVENT_RETENTION_DAYS = 90; // 与数量上限同时生效
 export const PUBLIC_EVENTS_PER_RULE = 200; // 公开规则
 export const SESSION_EVENT_RETENTION_DAYS = 30; // 登录规则
@@ -443,4 +445,49 @@ export interface ExplanationDraft {
 export interface ExplanationDraftSection {
   eventIds: string[]; // 必须存在且对当前模型投影可见；未知/重复/blocked 整份拒绝
   explanation: string;
+}
+
+// ---------------------------------------------------------------------------
+// D3：§6.4 Feed 投影最小稳定类型（D3 追加；不改 D2 常量/union 语义）
+// ---------------------------------------------------------------------------
+
+/** 单个 Feed 文本字段：UTF-8 字节安全截断并标记（§6.4：不把截断值冒充完整值）。 */
+export interface FeedField {
+  text: string;
+  truncated: boolean;
+  originalBytes: number; // 截断前规范化 UTF-8 字节数
+}
+
+/** Feed item 稳定 identity（§6.4：Atom id / RSS guid 首选，其次 canonical link，最后受控复合键）。 */
+export type FeedIdentityKind = 'id' | 'guid' | 'link' | 'composite';
+
+/** 有界 Feed item（§6.4：字段逐项 ≤ MAX_FEED_FIELD_BYTES 且标记截断；整体随 FeedProjection 预算）。 */
+export interface FeedItem {
+  identity: string; // 稳定 identity（去重键；§6.4）
+  identityKind: FeedIdentityKind;
+  title: FeedField;
+  link: FeedField; // RSS item link / Atom entry alternate link（规范化文本，仅作数据）
+  summary: FeedField; // RSS description / Atom summary 或 content（纯文本安全子集）
+  publishedAt: FeedField | null; // RSS pubDate / Atom published（缺省用 updated）
+  updatedAt: FeedField | null; // Atom updated；RSS 无则 null
+  author: FeedField; // Atom author/name；RSS item author
+}
+
+/** 有界 Feed 投影（§6.4：≤ 前 MAX_FEED_ITEMS 项；整体 ≤ MAX_FEED_PROJECTION_BYTES；超限整次失败）。 */
+export interface FeedProjection {
+  format: FeedFormat; // 'rss2' | 'atom'
+  title: FeedField; // channel title / feed title
+  description: FeedField; // channel description / feed subtitle
+  siteUrl: FeedField; // channel link / feed alternate link
+  feedUrl: FeedField; // Atom feed link rel=self；RSS 无则空
+  items: FeedItem[];
+  itemsTruncated: boolean; // 遇到第 MAX_FEED_ITEMS+1 项停止收集并标记（§6.4）
+  byteLength: number; // 编码后的完整投影 UTF-8 字节（≤ MAX_FEED_PROJECTION_BYTES；超限整次失败）
+}
+
+/** Feed discovery 候选（detailed-design §6.3：最多 MAX_DISCOVERY_CANDIDATES，文档序，canonical URL 去重）。 */
+export interface FeedDiscoveryCandidate {
+  url: string; // 规范化且经 NetworkPolicy 纯 URL 校验的 http/https 地址
+  rel: string; // 规范化 rel（小写 token 拼接）
+  type: string; // 规范化 type（小写）
 }

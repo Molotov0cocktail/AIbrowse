@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>AIbrowse Atom Feed</title>
+  <subtitle>Atom corpus fixture</subtitle>
+  <link rel="alternate" href="https://example.com/"/>
+  <link rel="self" href="https://example.com/atom.xml"/>
+  <updated>2024-01-02T00:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:11111111-1111-1111-1111-111111111111</id>
+    <title>Atom entry one</title>
+    <link rel="alternate" href="https://example.com/entries/1"/>
+    <summary>summary one</summary>
+    <published>2024-01-01T00:00:00Z</published>
+    <updated>2024-01-01T12:00:00Z</updated>
+    <author><name>Author One</name></author>
+  </entry>
+  <entry>
+    <id>urn:uuid:22222222-2222-2222-2222-222222222222</id>
+    <title>Atom entry two</title>
+    <link rel="alternate" href="https://example.com/entries/2"/>
+    <content type="html">&lt;p&gt;escaped html&lt;/p&gt;</content>
+    <published>2024-01-02T00:00:00Z</published>
+  </entry>
+</feed>

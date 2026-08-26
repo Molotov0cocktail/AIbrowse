@@ -19,6 +19,9 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "@federicocarboni/saxe": "0.8.0",
+    "parse5": "8.0.1",
+    "parse5-sax-parser": "8.0.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
