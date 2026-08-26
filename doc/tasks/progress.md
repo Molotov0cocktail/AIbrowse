@@ -10,11 +10,12 @@
 ## 当前状态
 
 - 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
-  D1 logger/Clock 基座均已完成。**用户通过 U01–U31 完成全部需求裁决；正式设计候选在
+  D1 logger/Clock 基座、D2 Watch 域契约/状态机/条件引擎均已完成。**用户通过 U01–U31
+  完成全部需求裁决；正式设计候选在
   `f1a062fe5c0b3ae9f7cfaf8bf634bc78e16c602b` 经新的独立 Reviewer `PASS`。本轮设计范围
   为 `Sixth_stage.md`、`doc/stage6/` 四份设计与 D1–D11 任务契约，零产品代码、零新依赖、
-  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1 经独立 Reviewer `PASS` 并已
-  关闭，下一唯一实施任务为 D2，D3 候选解析依赖尚未安装。
+  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1、D2 均经 Reviewer `PASS`
+  并已关闭，下一唯一实施任务为 D3；D3 候选解析依赖尚未安装，必须先通过资格门。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -653,8 +654,8 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ✅ | 2026-08-23 完成：独立 Stage Auditor=`PASS`，Fifth Stage Exit Gate=`GO/PASS`；§9 五组 14 项与 §10 五项全部通过，批准产品 HEAD `c1aafd963f4952c81933ab2d873d154fe1b2741b`；证据与命令见任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；C10 完成当时停止，尚未进入 Sixth Stage |
 
 | D1 | logger/Clock 基座与确定性时间边界 | ✅ | 2026-08-26 完成：产品候选 `94cc433`，四轮有界修复 `0c7182b`/`c286b31`/`e3ab456`/`3a750e1`；独立 Reviewer=`PASS`，聚焦 104/104、全量 2312/2312、typecheck/lint/format/build、dev/start 冒烟全部通过；任务遗留 stash 已精确清理；任务文档 doc/stage6/tasks/D1-logger-clock-foundation.md |
-| D2 | Watch 域模型、条件 DSL 与状态机 | ⏳ | 下一唯一实施任务；依赖 D1 已满足；任务文档 doc/stage6/tasks/D2-watch-domain-condition.md |
-| D3 | 安全 Feed/Public 网络与解析器资格门 | ⏳ | 依赖 D1–D2；候选依赖尚未安装；任务文档 doc/stage6/tasks/D3-safe-feed-network-parser.md |
+| D2 | Watch 域模型、条件 DSL 与状态机 | ✅ | 2026-08-26 完成：产品候选 `237eafb` + 有界修复 `438a11f`；Reviewer=`PASS`，聚焦 173/173、全量 2440/2440、typecheck/lint/format/build 全部通过；任务文档 doc/stage6/tasks/D2-watch-domain-condition.md |
+| D3 | 安全 Feed/Public 网络与解析器资格门 | ⏳ | 下一唯一实施任务；依赖 D1–D2 已满足；候选依赖尚未安装，任一资格门失败必须 REPLAN；任务文档 doc/stage6/tasks/D3-safe-feed-network-parser.md |
 | D4 | watch.db、Source 生命周期观察协议与恢复 | ⏳ | 依赖 D1–D3；任务文档 doc/stage6/tasks/D4-watch-store-source-lifecycle.md |
 | D5 | Scheduler、RunCoordinator、预约事务与共享 HostRequestGate | ⏳ | 依赖 D1–D4；任务文档 doc/stage6/tasks/D5-scheduler-run-coordinator.md |
 | D6 | Page region/Session task-owned Tab 投影 | ⏳ | 依赖 D5；old/new Evidence 必须可解释，不能只有哈希；任务文档 doc/stage6/tasks/D6-page-region-session-projection.md |
@@ -674,6 +675,18 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 Sixth Stage 正式设计审核）
+
+- **D2 Watch 域模型、条件 DSL 与状态机验收与关闭（2026-08-26，Reviewer=`PASS`）**：
+  ① baseline `8e10249f062295e1dec8306432dcf460ba8943f3`；产品候选 `237eafb`，有界修复
+  `438a11f`。② 独立审查确认实现范围仅 `src/shared/types/watch.ts` 与
+  `src/shared/watch/` 的纯域契约、预算、状态机、条件引擎及测试；package/lock、main、preload、
+  renderer、网络、SQL、Provider 均未改。③ 聚焦 6 files / 173 tests、全量 103 files /
+  2440 tests 全部 PASS；typecheck、lint、format:check、build、diff-check 全部退出码 0；纯 shared
+  逻辑未接线产品行为，Electron 冒烟 N/A。④ §2 常量与闭合 union、Schedule/Rule 状态迁移、
+  Source rowVersion/fingerprint 分离、Condition 闭合字段/operator 与 UTF-8 预算均有确定性测试；
+  修复后非法预算 fail-closed，accessor getter 零执行且 Proxy 反射异常闭合，Source 缺失原因稳定为
+  `source-deleted`。⑤ 无新依赖、网络、Provider、SQL、UI/IPC 或 D3 内容；下一唯一任务为 D3，
+  三个候选解析依赖仍未安装，必须先执行各自资格门。
 
 - **D1 logger/Clock 基座验收与关闭（2026-08-26，Reviewer=`PASS`）**：① 设计基线
   `c53eb742897be406a25092333ed5d609f7495af2`；产品候选 `94cc433`，四轮有界修复
@@ -3179,9 +3192,11 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **执行 D2 Watch 域模型、条件 DSL 与状态机。**以 D1 关闭后的 main 为 baseline；本任务
-  仅做共享类型、纯函数状态机、条件引擎与预算工具，不安装 D3 候选依赖、不调用 Provider，
-  不开始网络、数据库、Scheduler、Electron/UI 或 Seventh Stage。
+- **执行 D3 安全 Feed/Public 网络与解析器资格门。**以 D2 关闭后的 main 为 baseline；先在
+  临时隔离环境完成 `@federicocarboni/saxe@0.8.0` 与
+  `parse5-sax-parser@8.0.0` + `parse5@8.0.1` 双资格门，分别 PASS 后才允许精确安装；任一失败
+  立即 REPLAN。任务只实现 D3 公开 GET/HEAD、DNS/redirect/robots、Feed/Discovery 与公开 HTML
+  流式通道，不开始 Session、Scheduler、watch.db、Event/Digest/UI，不调用 Provider。
 
 ## 第一阶段验收未完成项
 
