@@ -1,0 +1,472 @@
+// D2 condition-engine: v1 确定性结构化条件校验与求值（detailed-design §5、
+// threat-model §3.3；决策 13–19）。纯函数、零 IO、零依赖、零 AI/正则条件。
+//
+// 契约要点：
+// - 仅一层 all/any、1..MAX_CONDITIONS_PER_RULE(10) 条、闭合 operator（决策 13）。
+// - fieldKey 必须来自调用方闭合字段目录；拒绝 __proto__/prototype/constructor、
+//   通配符、任意数组索引、嵌套路径和未知字段（决策 14）。
+// - 数值只接受规范 ASCII 十进制（可有负号/小数），拒绝 NaN/Infinity/指数/单位/
+//   locale 猜测及不存在值冒充 0（决策 15）。
+// - 文本比较执行 NFC、控制/bidi 清除、空白折叠；contains 是线性字面匹配，零正则
+//   （决策 16）。
+// - 无 Condition 等价于有效 ChangeSet 全部匹配（决策 17）。
+// - 输入/字段目录/ChangeSet 不得被修改（决策 18）。
+// - exact own-key 形状验证；额外键、原型链字段及未来版本 fail-closed（决策 19）。
+import {
+  CONDITION_OPERATORS,
+  WATCH_EVENT_KINDS,
+  type CombineMode,
+  type ConditionOperator,
+  type ConditionPredicate,
+  type WatchEventKind,
+} from '../types/watch';
+import { MAX_CONDITIONS_PER_RULE } from '../types/watch';
+import { normalizeWatchText } from './watch-budget';
+
+// ---------------------------------------------------------------------------
+// 闭合错误码 → 安全中文短句（≤200；零敌手正文回显）
+// ---------------------------------------------------------------------------
+
+export type ConditionErrorCode =
+  | 'condition-shape-invalid'
+  | 'condition-version-future'
+  | 'condition-combine-invalid'
+  | 'condition-predicates-range'
+  | 'predicate-shape-invalid'
+  | 'predicate-field-key-invalid'
+  | 'predicate-operator-invalid'
+  | 'predicate-operand-invalid'
+  | 'predicate-case-invalid'
+  | 'change-set-shape-invalid'
+  | 'change-set-event-kind-invalid'
+  | 'change-field-shape-invalid'
+  | 'change-field-key-invalid'
+  | 'change-value-invalid';
+
+export const CONDITION_ERROR_REASONS: Record<ConditionErrorCode, string> = {
+  'condition-shape-invalid': '条件格式非法（字段白名单或形状不合法）',
+  'condition-version-future': '条件版本不受支持',
+  'condition-combine-invalid': '组合方式必须是全部匹配或任一匹配',
+  'condition-predicates-range': '条件数量必须在 1 到上限之间且禁止嵌套',
+  'predicate-shape-invalid': '条件谓词格式非法',
+  'predicate-field-key-invalid': '字段不在受支持目录内或含非法路径',
+  'predicate-operator-invalid': '不支持的条件运算符',
+  'predicate-operand-invalid': '条件比较值格式非法',
+  'predicate-case-invalid': '大小写敏感标记必须为布尔值',
+  'change-set-shape-invalid': '变更集格式非法',
+  'change-set-event-kind-invalid': '变更事件种类不受支持',
+  'change-field-shape-invalid': '变更字段格式非法',
+  'change-field-key-invalid': '变更字段不在受支持目录内或含非法路径',
+  'change-value-invalid': '变更值形状非法',
+};
+
+// ---------------------------------------------------------------------------
+// 基础工具（fail-closed：任何反射/属性检查异常均转失败，绝不抛穿）
+// ---------------------------------------------------------------------------
+
+function isPlainRecord(raw: unknown): raw is Record<string, unknown> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false;
+  try {
+    return Object.getPrototypeOf(raw) === Object.prototype;
+  } catch {
+    return false;
+  }
+}
+
+// exact own-key 集合比较（Reflect.ownKeys 含非枚举/Symbol；不按原型链读取）。
+function exactOwnKeys(raw: Record<string, unknown>, expected: readonly string[]): boolean {
+  let keys: (string | symbol)[];
+  try {
+    keys = Reflect.ownKeys(raw);
+  } catch {
+    return false;
+  }
+  if (keys.length !== expected.length) return false;
+  const set = new Set<string>(expected);
+  for (const k of keys) {
+    if (typeof k !== 'string' || !set.has(k)) return false;
+  }
+  return true;
+}
+
+// 规范 ASCII 十进制（可有负号/小数）；拒绝指数/单位/locale 分隔/空。
+const NUMERIC_DECIMAL_PATTERN = /^-?\d+(\.\d+)?$/;
+
+const DANGEROUS_FIELD_KEYS: ReadonlySet<string> = new Set([
+  '__proto__',
+  'prototype',
+  'constructor',
+]);
+const ARRAY_INDEX_PATTERN = /^\d+$/;
+
+/** 字段 key 合法：非空字符串、非危险键、无通配符/数组索引/嵌套路径、且 ∈ 闭合目录。 */
+export function isValidFieldKey(key: unknown, fieldCatalog: ReadonlySet<string>): boolean {
+  if (typeof key !== 'string' || key === '') return false;
+  if (DANGEROUS_FIELD_KEYS.has(key)) return false;
+  if (key.includes('*') || key.includes('?')) return false; // 通配符
+  if (ARRAY_INDEX_PATTERN.test(key)) return false; // 任意数组索引
+  if (key.includes('.') || key.includes('[') || key.includes(']')) return false; // 嵌套路径
+  return fieldCatalog.has(key);
+}
+
+/** 把 string|number 解析为有限数值；非规范形态返回 null（不存在值不冒充 0）。 */
+function parseFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    if (!NUMERIC_DECIMAL_PATTERN.test(value)) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function isValidNumericOperand(operand: unknown): boolean {
+  return parseFiniteNumber(operand) !== null;
+}
+
+// ---------------------------------------------------------------------------
+// ChangeSet 契约（D2 定义；D7 生成有效 ChangeSet）
+// ---------------------------------------------------------------------------
+
+export type ChangeFieldValue = { kind: 'present'; value: string | number } | { kind: 'absent' };
+
+export interface ChangeField {
+  fieldKey: string; // 闭合目录内字段
+  before: ChangeFieldValue;
+  after: ChangeFieldValue;
+}
+
+export interface StructuredChangeSet {
+  eventKind: WatchEventKind; // 整体事件种类（event-kind-is 求值）
+  fields: ChangeField[];
+}
+
+function parseChangeValue(raw: unknown): ChangeFieldValue | null {
+  if (!isPlainRecord(raw)) return null;
+  const kind = raw['kind'];
+  if (kind === 'absent') {
+    if (!exactOwnKeys(raw, ['kind'])) return null;
+    return { kind: 'absent' };
+  }
+  if (kind === 'present') {
+    if (!exactOwnKeys(raw, ['kind', 'value'])) return null;
+    const value = raw['value'];
+    if (typeof value === 'string') return { kind: 'present', value };
+    if (typeof value === 'number' && Number.isFinite(value)) return { kind: 'present', value };
+    return null;
+  }
+  return null;
+}
+
+function validateChangeField(
+  raw: unknown,
+  fieldCatalog: ReadonlySet<string>,
+): { ok: true; field: ChangeField } | { ok: false; reason: ConditionErrorCode } {
+  if (!isPlainRecord(raw)) return { ok: false, reason: 'change-field-shape-invalid' };
+  if (!exactOwnKeys(raw, ['fieldKey', 'before', 'after'])) {
+    return { ok: false, reason: 'change-field-shape-invalid' };
+  }
+  if (!isValidFieldKey(raw['fieldKey'], fieldCatalog)) {
+    return { ok: false, reason: 'change-field-key-invalid' };
+  }
+  const before = parseChangeValue(raw['before']);
+  if (before === null) return { ok: false, reason: 'change-value-invalid' };
+  const after = parseChangeValue(raw['after']);
+  if (after === null) return { ok: false, reason: 'change-value-invalid' };
+  return {
+    ok: true,
+    field: { fieldKey: raw['fieldKey'] as string, before, after },
+  };
+}
+
+export type ChangeSetValidationResult =
+  { ok: true; changeSet: StructuredChangeSet } | { ok: false; reason: ConditionErrorCode };
+
+export function validateChangeSet(
+  raw: unknown,
+  fieldCatalog: ReadonlySet<string>,
+): ChangeSetValidationResult {
+  if (!isPlainRecord(raw)) return { ok: false, reason: 'change-set-shape-invalid' };
+  if (!exactOwnKeys(raw, ['eventKind', 'fields'])) {
+    return { ok: false, reason: 'change-set-shape-invalid' };
+  }
+  const eventKind = raw['eventKind'];
+  if (
+    typeof eventKind !== 'string' ||
+    !(WATCH_EVENT_KINDS as readonly string[]).includes(eventKind)
+  ) {
+    return { ok: false, reason: 'change-set-event-kind-invalid' };
+  }
+  const fields = raw['fields'];
+  if (!Array.isArray(fields)) return { ok: false, reason: 'change-set-shape-invalid' };
+  const parsed: ChangeField[] = [];
+  for (const f of fields) {
+    const r = validateChangeField(f, fieldCatalog);
+    if (!r.ok) return r;
+    parsed.push(r.field);
+  }
+  return { ok: true, changeSet: { eventKind: eventKind as WatchEventKind, fields: parsed } };
+}
+
+// ---------------------------------------------------------------------------
+// Condition 校验（exact own-key；未来版本 fail-closed）
+// ---------------------------------------------------------------------------
+
+function isValidOperand(operand: unknown, operator: ConditionOperator): boolean {
+  switch (operator) {
+    case 'changed':
+      return operand === null; // changed 不使用 operand
+    case 'event-kind-is':
+      return (
+        typeof operand === 'string' && (WATCH_EVENT_KINDS as readonly string[]).includes(operand)
+      );
+    case 'increased':
+    case 'decreased':
+    case 'crosses-above':
+    case 'crosses-below':
+      return isValidNumericOperand(operand);
+    case 'contains':
+    case 'not-contains':
+      return typeof operand === 'string' && operand.length > 0; // 线性字面匹配需非空
+    case 'equals':
+    case 'not-equals':
+      return (
+        typeof operand === 'string' || (typeof operand === 'number' && Number.isFinite(operand))
+      );
+    default:
+      return false;
+  }
+}
+
+function validatePredicate(
+  raw: unknown,
+  fieldCatalog: ReadonlySet<string>,
+): { ok: true; predicate: ConditionPredicate } | { ok: false; reason: ConditionErrorCode } {
+  if (!isPlainRecord(raw)) return { ok: false, reason: 'predicate-shape-invalid' };
+  if (!exactOwnKeys(raw, ['fieldKey', 'operator', 'operand', 'caseSensitive'])) {
+    return { ok: false, reason: 'predicate-shape-invalid' };
+  }
+  const fieldKey = raw['fieldKey'];
+  if (!isValidFieldKey(fieldKey, fieldCatalog)) {
+    return { ok: false, reason: 'predicate-field-key-invalid' };
+  }
+  const operator = raw['operator'];
+  if (
+    typeof operator !== 'string' ||
+    !(CONDITION_OPERATORS as readonly string[]).includes(operator)
+  ) {
+    return { ok: false, reason: 'predicate-operator-invalid' };
+  }
+  const caseSensitive = raw['caseSensitive'];
+  if (typeof caseSensitive !== 'boolean') return { ok: false, reason: 'predicate-case-invalid' };
+  const operand = raw['operand'];
+  if (!isValidOperand(operand, operator as ConditionOperator)) {
+    return { ok: false, reason: 'predicate-operand-invalid' };
+  }
+  return {
+    ok: true,
+    predicate: {
+      fieldKey: fieldKey as string,
+      operator: operator as ConditionOperator,
+      operand: operand as string | number | null,
+      caseSensitive,
+    },
+  };
+}
+
+export type ConditionValidationResult =
+  | { ok: true; condition: { version: 1; combine: CombineMode; predicates: ConditionPredicate[] } }
+  | { ok: false; reason: ConditionErrorCode };
+
+export function validateStructuredCondition(
+  raw: unknown,
+  fieldCatalog: ReadonlySet<string>,
+): ConditionValidationResult {
+  if (!isPlainRecord(raw)) return { ok: false, reason: 'condition-shape-invalid' };
+  if (!exactOwnKeys(raw, ['version', 'combine', 'predicates'])) {
+    return { ok: false, reason: 'condition-shape-invalid' };
+  }
+  if (raw['version'] !== 1) return { ok: false, reason: 'condition-version-future' };
+  const combine = raw['combine'];
+  if (combine !== 'all' && combine !== 'any') {
+    return { ok: false, reason: 'condition-combine-invalid' };
+  }
+  const predicates = raw['predicates'];
+  if (!Array.isArray(predicates)) return { ok: false, reason: 'condition-predicates-range' };
+  if (predicates.length < 1 || predicates.length > MAX_CONDITIONS_PER_RULE) {
+    return { ok: false, reason: 'condition-predicates-range' };
+  }
+  const parsed: ConditionPredicate[] = [];
+  for (const p of predicates) {
+    const r = validatePredicate(p, fieldCatalog);
+    if (!r.ok) return r;
+    parsed.push(r.predicate);
+  }
+  return {
+    ok: true,
+    condition: { version: 1, combine: combine as CombineMode, predicates: parsed },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 求值（纯函数；文本线性字面比较，零正则条件）
+// ---------------------------------------------------------------------------
+
+function numericOf(value: ChangeFieldValue): number | null {
+  if (value.kind !== 'present') return null; // 不存在值不能冒充 0
+  return parseFiniteNumber(value.value);
+}
+
+function numericOperand(operand: string | number | null): number | null {
+  if (operand === null) return null;
+  return parseFiniteNumber(operand);
+}
+
+function foldCase(text: string, caseSensitive: boolean): string {
+  return caseSensitive ? text : text.toLowerCase();
+}
+
+function textOf(value: ChangeFieldValue): string {
+  return value.kind === 'present' ? String(value.value) : '';
+}
+
+function equalsValue(
+  value: ChangeFieldValue,
+  operand: string | number,
+  caseSensitive: boolean,
+): boolean {
+  if (typeof operand === 'number') {
+    const n = numericOf(value);
+    return n !== null && n === operand;
+  }
+  const a = foldCase(normalizeWatchText(textOf(value)), caseSensitive);
+  const b = foldCase(normalizeWatchText(operand), caseSensitive);
+  return a === b;
+}
+
+function containsText(value: ChangeFieldValue, operand: string, caseSensitive: boolean): boolean {
+  const a = foldCase(normalizeWatchText(textOf(value)), caseSensitive);
+  const b = foldCase(normalizeWatchText(operand), caseSensitive);
+  return a.includes(b); // 线性字面匹配，零正则
+}
+
+function changedDiffers(before: ChangeFieldValue, after: ChangeFieldValue): boolean {
+  if (before.kind !== after.kind) return true;
+  if (before.kind === 'absent') return false; // 双 absent 无变化
+  return normalizeWatchText(textOf(before)) !== normalizeWatchText(textOf(after));
+}
+
+function matchEntry(field: ChangeField, predicate: ConditionPredicate): boolean {
+  const afterPresent = field.after.kind === 'present';
+  switch (predicate.operator) {
+    case 'changed':
+      return changedDiffers(field.before, field.after);
+    case 'equals':
+      return (
+        afterPresent &&
+        equalsValue(field.after, predicate.operand as string | number, predicate.caseSensitive)
+      );
+    case 'not-equals':
+      return (
+        afterPresent &&
+        !equalsValue(field.after, predicate.operand as string | number, predicate.caseSensitive)
+      );
+    case 'contains':
+      return (
+        afterPresent &&
+        containsText(field.after, predicate.operand as string, predicate.caseSensitive)
+      );
+    case 'not-contains':
+      return (
+        afterPresent &&
+        !containsText(field.after, predicate.operand as string, predicate.caseSensitive)
+      );
+    case 'increased': {
+      const before = numericOf(field.before);
+      const after = numericOf(field.after);
+      return before !== null && after !== null && after > before;
+    }
+    case 'decreased': {
+      const before = numericOf(field.before);
+      const after = numericOf(field.after);
+      return before !== null && after !== null && after < before;
+    }
+    case 'crosses-above': {
+      const threshold = numericOperand(predicate.operand);
+      const before = numericOf(field.before);
+      const after = numericOf(field.after);
+      return (
+        threshold !== null &&
+        before !== null &&
+        after !== null &&
+        before <= threshold &&
+        after > threshold
+      );
+    }
+    case 'crosses-below': {
+      const threshold = numericOperand(predicate.operand);
+      const before = numericOf(field.before);
+      const after = numericOf(field.after);
+      return (
+        threshold !== null &&
+        before !== null &&
+        after !== null &&
+        before >= threshold &&
+        after < threshold
+      );
+    }
+    default:
+      return false;
+  }
+}
+
+function matchPredicate(predicate: ConditionPredicate, cs: StructuredChangeSet): boolean {
+  if (predicate.operator === 'event-kind-is') {
+    // 整体事件种类匹配，不要求字段在场
+    return cs.eventKind === predicate.operand;
+  }
+  let matched = false;
+  for (const field of cs.fields) {
+    if (field.fieldKey !== predicate.fieldKey) continue;
+    if (matchEntry(field, predicate)) {
+      matched = true;
+      break;
+    }
+  }
+  return matched;
+}
+
+export type ConditionEvaluationResult =
+  { ok: true; matched: boolean } | { ok: false; reason: ConditionErrorCode };
+
+export interface ConditionEvaluationInput {
+  condition: unknown; // null/undefined = 无 Condition（全部匹配）
+  changeSet: unknown;
+  fieldCatalog: ReadonlySet<string>;
+}
+
+export function evaluateStructuredCondition(
+  input: ConditionEvaluationInput,
+): ConditionEvaluationResult {
+  const cs = validateChangeSet(input.changeSet, input.fieldCatalog);
+  if (!cs.ok) return cs;
+  if (input.condition === null || input.condition === undefined) {
+    // 决策 17：无 Condition 等价于有效 ChangeSet 全部匹配
+    return { ok: true, matched: true };
+  }
+  const cond = validateStructuredCondition(input.condition, input.fieldCatalog);
+  if (!cond.ok) return cond;
+  if (cond.condition.predicates.length === 0) {
+    return { ok: false, reason: 'condition-predicates-range' };
+  }
+  if (cond.condition.combine === 'all') {
+    for (const p of cond.condition.predicates) {
+      if (!matchPredicate(p, cs.changeSet)) return { ok: true, matched: false };
+    }
+    return { ok: true, matched: true };
+  }
+  for (const p of cond.condition.predicates) {
+    if (matchPredicate(p, cs.changeSet)) return { ok: true, matched: true };
+  }
+  return { ok: true, matched: false };
+}
