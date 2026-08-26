@@ -9,12 +9,12 @@
 
 ## 当前状态
 
-- 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换并完成纯文档
-  设计闭环；产品实现未开始。**用户通过 U01–U31 完成全部需求裁决；正式设计候选在
+- 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
+  D1 logger/Clock 基座均已完成。**用户通过 U01–U31 完成全部需求裁决；正式设计候选在
   `f1a062fe5c0b3ae9f7cfaf8bf634bc78e16c602b` 经新的独立 Reviewer `PASS`。本轮设计范围
   为 `Sixth_stage.md`、`doc/stage6/` 四份设计与 D1–D11 任务契约，零产品代码、零新依赖、
-  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；用户再次明确授权前停止，
-  下一唯一实施任务为 D1，D3 候选解析依赖尚未安装。
+  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1 经独立 Reviewer `PASS` 并已
+  关闭，下一唯一实施任务为 D2，D3 候选解析依赖尚未安装。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -652,8 +652,8 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | C9 | Sources+Search 端到端 + 红队矩阵 FRT-01～FRT-12 + 隐私扫描 + 真实 Provider 验收基础设施 | ✅ | 2026-08-18 完成：8.20 全矩阵/隐私扫描/门控/真实运行器 dev+生产通过，真实 Provider 两次完整运行通过；真实运行发现并修复两处 C8 产品缺陷；证据见 threat-model §4.1、C9 任务文档实施记录与 Git |
 | C10 | Fifth Stage 独立最终验收（不采信 C1–C9 报告）+ §9/§10 判定 + 文档同步 | ✅ | 2026-08-23 完成：独立 Stage Auditor=`PASS`，Fifth Stage Exit Gate=`GO/PASS`；§9 五组 14 项与 §10 五项全部通过，批准产品 HEAD `c1aafd963f4952c81933ab2d873d154fe1b2741b`；证据与命令见任务文档 doc/stage5/tasks/C10-finalize-acceptance.md；C10 完成当时停止，尚未进入 Sixth Stage |
 
-| D1 | logger/Clock 基座与确定性时间边界 | ⏳ | 下一唯一实施任务；当前未获实现授权；任务文档 doc/stage6/tasks/D1-logger-clock-foundation.md |
-| D2 | Watch 域模型、条件 DSL 与状态机 | ⏳ | 依赖 D1；任务文档 doc/stage6/tasks/D2-watch-domain-condition.md |
+| D1 | logger/Clock 基座与确定性时间边界 | ✅ | 2026-08-26 完成：产品候选 `94cc433`，四轮有界修复 `0c7182b`/`c286b31`/`e3ab456`/`3a750e1`；独立 Reviewer=`PASS`，聚焦 104/104、全量 2312/2312、typecheck/lint/format/build、dev/start 冒烟全部通过；任务遗留 stash 已精确清理；任务文档 doc/stage6/tasks/D1-logger-clock-foundation.md |
+| D2 | Watch 域模型、条件 DSL 与状态机 | ⏳ | 下一唯一实施任务；依赖 D1 已满足；任务文档 doc/stage6/tasks/D2-watch-domain-condition.md |
 | D3 | 安全 Feed/Public 网络与解析器资格门 | ⏳ | 依赖 D1–D2；候选依赖尚未安装；任务文档 doc/stage6/tasks/D3-safe-feed-network-parser.md |
 | D4 | watch.db、Source 生命周期观察协议与恢复 | ⏳ | 依赖 D1–D3；任务文档 doc/stage6/tasks/D4-watch-store-source-lifecycle.md |
 | D5 | Scheduler、RunCoordinator、预约事务与共享 HostRequestGate | ⏳ | 依赖 D1–D4；任务文档 doc/stage6/tasks/D5-scheduler-run-coordinator.md |
@@ -674,6 +674,20 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 Sixth Stage 正式设计审核）
+
+- **D1 logger/Clock 基座验收与关闭（2026-08-26，Reviewer=`PASS`）**：① 设计基线
+  `c53eb742897be406a25092333ed5d609f7495af2`；产品候选 `94cc433`，四轮有界修复
+  `0c7182b`/`c286b31`/`e3ab456`/`3a750e1`，最终产品 HEAD
+  `3a750e1183cb617bf3a27fc074c479663a87c5a7`。② 独立审查确认 diff 仅 logger/Clock、
+  对应测试与最小 Watch 类型五个契约文件；无依赖、Provider、网络、SQL、UI/IPC 改动。
+  ③ 聚焦测试 2 files / 104 tests、全量 98 files / 2312 tests 全部 PASS；typecheck、lint、
+  format:check、build、diff-check 全部退出码 0；dev 与 production Electron 冒烟均完整运行并
+  退出码 0。④ 8 KiB 行预算、10 MiB 写前硬上限、10 files/14 days、受控文件名与
+  lstat fail-closed、有界滚动候选，以及 Clock 的 DST gap/fold、极东时区、O(1) interval、
+  幂等 timer 清理均由红→绿测试覆盖。⑤ R4 前对既有 8.19-B 偶发时序失败做过基线/候选
+  交叉分类，本次 Reviewer dev/start 均一次通过；保留为既有冒烟观察，不归因于 D1。
+  ⑥ Closer 精确删除任务遗留 `stash@{0}`（对象 `96a02319`，父提交 `94cc433`）；下一唯一
+  任务为 D2，D3 候选依赖仍未安装。
 
 - **Sixth Stage 正式设计与独立审核（2026-08-23，最终 `PASS`）**：① remote/local
   baseline `a5361ecacd917c33db4a4b043fdbfbf270292134`；最终设计候选 HEAD
@@ -3012,21 +3026,14 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   `createConsistentBackupAt` 任意路径公共导出移除；红→绿 5 failed/32 passed →
   37/37，全量 1226/1226。结论 **Resolved**；证据详见 B7 任务文档「独立审计后
   定向修复」小节与 detailed-design §10/§15 决议 #92。
+- **审计 P2-2 日志队列/保留**（B9 独立处置 2026-08-15，D1 于 2026-08-26 关闭）：
+  原 logger 无大小、文件数与保留期上限，存在长期磁盘无界增长。D1 已落地每物理行
+  8 KiB、单文件 10 MiB 写前硬上限、最多 10 个受控文件与 14 个本地日历日保留，并对
+  非普通文件、悬空链接、IO/stat 失败执行固定脱敏诊断与 fail-closed；聚焦、全量及
+  dev/production 冒烟均通过。结论 **Resolved**。
 
 ### 开放风险登记
 
-- **审计 P2-2 日志队列/保留（B9 独立处置，2026-08-15；未修复，后续硬化）**：
-  logger 按日轮转 + appendFileSync 同步追加，**无大小上限、无保留天数/文件数
-  上限**——触发条件 = 长期使用（每日一文件无界追加）；影响 = 磁盘占用缓慢
-  无界增长；现有缓解 = .gitignore 防入库（与磁盘占用无关）。**B9 独立判定：
-  不命中 Fourth Stage §10 阻塞条件**（§10 八项无日志保留要求；§9「数据库
-  失败有可诊断日志」已满足且本轮冒烟实证）；但为**真实的无界增长项**，不得
-  以「非阻塞」掩盖——登记于 Seventh Stage Product Hardening（性能/稳定性/
-  发布闭环）或其后专项闭环：补日志大小上限与保留天数上限。
-  **2026-08-16 Fifth Stage 切换重新分级**：维持**可延期至 Seventh Stage**
-  （通用基础设施硬化，不阻塞 Research）；但 Research 侧日志纪律
-  （不记正文/Evidence 摘录/URL query 值/结果全文，仅元数据）作为
-  threat-model FT-16 防线在本阶段落地（判定见 proposal §8.3）。
 - **审计 P2-3 会话字节上限（B9 独立处置，2026-08-15；未修复，后续硬化）**：
   会话持久化有会话数（50）与消息条数（200）上限，**无字节上限**——触发
   条件 = 单会话 200 条内持续追问或超大单条消息；影响 = 会话 JSON 文件可达
@@ -3172,8 +3179,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **等待用户明确授权 D1 logger/Clock 基座。**第六阶段需求澄清与正式设计已经完成；
-  当前不开始产品实现、不安装 D3 候选依赖、不调用 Provider，也不设计 Seventh Stage。
+- **执行 D2 Watch 域模型、条件 DSL 与状态机。**以 D1 关闭后的 main 为 baseline；本任务
+  仅做共享类型、纯函数状态机、条件引擎与预算工具，不安装 D3 候选依赖、不调用 Provider，
+  不开始网络、数据库、Scheduler、Electron/UI 或 Seventh Stage。
 
 ## 第一阶段验收未完成项
 

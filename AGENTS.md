@@ -11,12 +11,12 @@
   多标签页浏览器，用户与 AI 共享同一浏览器会话和登录状态；AI 只能经受限、可审计的
   BrowserController / Tool Layer 操作浏览器，不拥有任意系统权限。
 - **当前 Stage**：Sixth Stage——RSS/Page Watch、确定性变更事件与摘要。正式设计已经独立
-  Reviewer `PASS`，产品实现尚未开始。需求见 `Sixth_stage.md`；唯一产品契约源为
+  Reviewer `PASS`，产品实现已从 D1 基座开始。需求见 `Sixth_stage.md`；唯一产品契约源为
   `doc/stage6/detailed-design.md`，安全契约源为 `doc/stage6/threat-model.md`，任务契约为
   `doc/stage6/tasks/D1–D11`。具体完成项、当前 HEAD 与下一唯一动作只看
   `doc/tasks/progress.md`。
-- **阶段纪律**：本轮纯设计授权已经闭环；用户再次明确授权前，不开始 D1 或任何 Sixth Stage
-  产品实现。D1 是下一唯一实施任务；D3 的候选解析依赖只有通过资格门后才可安装。
+- **阶段纪律**：本轮纯设计授权与 D1 logger/Clock 基座已经闭环；下一唯一实施任务看
+  `doc/tasks/progress.md`。D3 的候选解析依赖只有通过资格门后才可安装。
 - **已完成阶段**：第一阶段浏览器核心、第二阶段 AI 共读、第三阶段 Browser Agent、第四阶段
   Sources、第五阶段 Research 均已通过各自 Exit Gate。历史需求、契约与验收证据分别留在
   对应 Stage 文件、`doc/stage2/`～`doc/stage5/`、任务文档和 Git 中，不在本文件复述执行轮次。
@@ -433,11 +433,11 @@ D:\AIbrowse\
 - Renderer 不使用 `dangerouslySetInnerHTML`，Evidence 下钻显示来源与诚实边界；导出只包含当前
   Table 视图，不包含 Evidence 摘录或任意文件路径。
 
-### 5.6 Watch（正式设计；实现未开始）
+### 5.6 Watch（正式设计；D1 基座已实现）
 
 - 唯一契约源：`doc/stage6/detailed-design.md`；安全契约：`doc/stage6/threat-model.md`；
   任务契约：`doc/stage6/tasks/D1–D11`。
-- D1–D11 均未实施；用户再次明确授权后只能从 D1 logger/Clock 基座开始。
+- D1 logger/Clock 基座已实现；其余任务状态与下一唯一动作只看 `doc/tasks/progress.md`。
 - Schedule、采集、Diff、Condition、Event、Evidence、网络边界、Session task-owned Tab、
   Source 观察协议、watch.db 和保留策略均以正式设计为准。
 - old/new Evidence 必须可解释且类型化，不能只保存哈希；AI digest 只解释确定性事件事实。
