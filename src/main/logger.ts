@@ -3,7 +3,7 @@
 // D1 hardening: 单行 8 KiB、写前 10 MiB 滚动、10 文件/14 天保留、受控文件名严格匹配、
 // 清理/写失败受控降级 console（绝不递归 logger）。Contract: doc/stage6/detailed-design.md
 // §2/§13/§14、threat-model §3.8/WRT-18。
-import { appendFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { appendFileSync, lstatSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   MAX_LOG_AGE_DAYS,
@@ -165,27 +165,36 @@ function housekeeping(): void {
   }
 }
 
-// 选择下一个同日滚动序号：有界且 fail-closed。候选必须「已证明不存在」才算空闲——
-// 任意已存在路径（普通文件、目录、junction/symlink 或任何其他条目）一律视为占用，
-// 绝不覆盖/删除/append（finding 4）。首次 stat 异常即停止安全候选选择并返回 null
-// （finding 1：持续 stat 失败下旧实现 catch 执行 seq+=1; continue → 同步无限循环并
-// 递归式刷 console）。null 由调用方拒绝本次磁盘写入。
+// Select the next same-day rotation sequence number: bounded and fail-closed.
+// "Candidate free" must be proven WITHOUT following links: a directory entry
+// that is a dangling junction/symlink still exists, yet statSync (which follows
+// links) returns undefined for it — statSync(undefined) therefore never proves
+// absence (findings 1/3). Only lstatSync(..., { throwIfNoEntry: false }) ===
+// undefined proves the entry does not exist. Any lstat-existing entry — regular
+// file, directory, symlink, junction, device or other — counts as occupied and
+// is never appended/overwritten/deleted.
+// Probe count is compile-time fixed at MAX_LOG_FILES + 1: when every slot is
+// occupied we return null instead of probing arbitrarily higher sequences
+// (finding 2). An lstat exception stops selection and returns null (fail-closed,
+// never guess a higher sequence).
 function nextRotationSeq(baseDate: string): number | null {
   const base = `aibrowse-${baseDate}`;
-  let seq = 1;
-  for (;;) {
+  const limit = MAX_LOG_FILES + 1;
+  for (let seq = 1; seq <= limit; seq += 1) {
     const candidate = join(logDir, `${base}.${seq}.log`);
     try {
-      const st = statSync(candidate, { throwIfNoEntry: false });
-      if (st === undefined) return seq; // 已证明不存在（throwIfNoEntry:false 确定语义）
-      seq += 1; // 任意已存在条目（文件/目录/junction/symlink）视为占用
+      const st = lstatSync(candidate, { throwIfNoEntry: false });
+      if (st === undefined) return seq; // entry proven absent (non-following lstat)
     } catch {
-      // stat 失败（finding 3）：固定、脱敏、非递归诊断——不输出候选路径/正文。
+      // lstat 失败（finding 3）：固定、脱敏、非递归诊断——不输出候选路径/正文。
       // 候选安全性未知 → 停止选择，返回 null（fail-closed，绝不继续猜测更高序号）。
       console.error('[logger] 日志清理失败: 滚动序号不可判定');
       return null;
     }
   }
+  // all slots occupied: bounded probe, refuse disk write with fixed diagnostic
+  console.error('[logger] 日志清理失败: 滚动序号已达上限');
+  return null;
 }
 
 // Rotate：日期切换 → 无序号 base 文件；同日滚动 → 单调递增 .N（不覆盖）。
@@ -209,28 +218,38 @@ function ensureLogFile(): void {
 // （finding 2/3）：
 //   - 当前大小已证明且无需滚动 → true（允许 append）；
 //   - 已证明需要滚动且安全候选已证明不存在 → true（允许 append 新文件）；
-//   - 当前大小未知（stat 失败）或候选安全性未知（nextRotationSeq 返回 null）→ false
-//     （拒绝本次磁盘写入——大小未经证明绝不乐观追加，10 MiB 是硬上限）。
+//   - 当前大小未知、当前文件非普通文件（symlink/junction/目录/其他）或候选安全性未知
+//     → false（拒绝本次磁盘写入——大小未经证明绝不乐观追加，10 MiB 是硬上限）。
+// currentLogFile 的存在性与类型必须由不跟随链接的 lstatSync 判定（finding 3）：
+//   - lstat 证明不存在 → 大小 0，允许创建；
+//   - lstat 证明为普通文件 → 才允许读取 size 并判断 append/rotate；
+//   - 其他类型或 lstat/stat 异常 → fail-closed，拒绝落盘（防写穿链接外部目标）。
 function rotateIfNeeded(writeBytes: number): boolean {
   if (currentLogFile === '') return false;
-  let st: ReturnType<typeof statSync> | undefined;
+  let st: ReturnType<typeof lstatSync> | undefined;
   try {
-    st = statSync(currentLogFile, { throwIfNoEntry: false });
+    st = lstatSync(currentLogFile, { throwIfNoEntry: false });
   } catch {
-    // stat 失败（finding 3）：当前大小未知 → fail-closed，拒绝本次磁盘写入。
+    // lstat 失败（finding 3）：当前大小未知 → fail-closed，拒绝本次磁盘写入。
     // 固定、脱敏、非递归诊断——不输出当前文件路径/正文。
     console.error('[logger] 日志清理失败: 当前日志文件大小不可判定');
     return false;
   }
-  // throwIfNoEntry:false 下 st === undefined 表示条目「已证明不存在」：大小为 0，
-  // 属已证明状态（首写 base 创建即此路径），区别于 stat 抛错——抛错时大小未知 → 拒绝写入。
-  const currentSize = st === undefined ? 0 : st.size;
-  if (currentSize + writeBytes <= MAX_LOG_FILE_BYTES) return true; // 无需滚动，允许 append
-  const seq = nextRotationSeq(currentDate);
-  if (seq === null) return false; // 候选安全性未知 → 拒绝本次磁盘写入
-  currentLogFile = join(logDir, `aibrowse-${currentDate}.${seq}.log`);
-  needsHousekeeping = true; // 滚动产生新 .N：受控文件数 +1，落盘后闭合一次 housekeeping
-  return true;
+  if (st === undefined || st.isFile()) {
+    // throwIfNoEntry:false 下 st === undefined 表示条目「经 lstat 证明不存在」：大小 0，
+    // 属已证明状态（首写 base 创建即此路径），区别于抛错——抛错时大小未知 → 拒绝写入。
+    const currentSize = st === undefined ? 0 : st.size;
+    if (currentSize + writeBytes <= MAX_LOG_FILE_BYTES) return true; // 无需滚动，允许 append
+    const seq = nextRotationSeq(currentDate);
+    if (seq === null) return false; // 候选安全性未知 → 拒绝本次磁盘写入
+    currentLogFile = join(logDir, `aibrowse-${currentDate}.${seq}.log`);
+    needsHousekeeping = true; // 滚动产生新 .N：受控文件数 +1，落盘后闭合一次 housekeeping
+    return true;
+  }
+  // 目录项存在但不是普通文件（symlink/junction/目录/设备等）：fail-closed，拒绝落盘
+  // （不写穿链接外部目标）。固定、脱敏、非递归诊断。
+  console.error('[logger] 日志清理失败: 当前日志文件非普通文件');
+  return false;
 }
 
 // D1：UTF-8 字节安全截断。物理行整体不超过 MAX_LOG_LINE_BYTES；绝不拆 UTF-16 surrogate；
