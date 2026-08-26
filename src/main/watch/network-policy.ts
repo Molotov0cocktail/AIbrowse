@@ -164,7 +164,38 @@ function classifyIpv4(address: string): IpCategory {
   return 'public';
 }
 
-/** IPv6 分类：只放行 global unicast；其余（含 Teredo/6to4/NAT64/ULA/链路本地/组播/文档段）拒绝。 */
+/** IPv6 解析为 8 个 16-bit 组（isIP 已验证格式，此处防御性返回 null）。 */
+function parseIpv6Groups(address: string): number[] | null {
+  const lower = address.toLowerCase();
+  const doubleColon = lower.indexOf('::');
+  let head = lower;
+  let tailParts: string[] = [];
+  if (doubleColon !== -1) {
+    head = lower.slice(0, doubleColon);
+    const tail = lower.slice(doubleColon + 2);
+    tailParts = tail === '' ? [] : tail.split(':');
+  }
+  const headParts = head === '' ? [] : head.split(':');
+  const groups: number[] = [];
+  for (const part of [...headParts, ...tailParts]) {
+    if (part === '') return null;
+    const value = parseInt(part, 16);
+    if (!Number.isFinite(value)) return null;
+    groups.push(value);
+  }
+  const missing = 8 - groups.length;
+  if (missing < 0) return null;
+  for (let i = 0; i < missing; i += 1) groups.push(0);
+  if (groups.length !== 8) return null;
+  return groups;
+}
+
+/**
+ * IPv6 分类：显式 allowlist，只放行属于公网 global-unicast（2000::/3）且不属于
+ * IANA 特殊用途子块的地址；其余（含 site-local fec0::/10、文档段、benchmarking、
+ * IETF 2001::/23、6to4、NAT64、ULA、链路本地、组播、discard、IPv4-compatible）一律拒绝。
+ * 禁止「未在 denylist 即 public」的默认放行。
+ */
 function classifyIpv6(address: string): IpCategory {
   const lower = address.toLowerCase();
   if (lower.includes('%')) return 'link-local'; // 带 zone id 的地址必为链路本地形态
@@ -176,36 +207,32 @@ function classifyIpv6(address: string): IpCategory {
     if (isIP(embedded) === 4) return classifyIpv4(embedded);
     return 'reserved';
   }
-  // IPv4-compatible ::a.b.c.d（已废弃）按内嵌 IPv4 分类但整体视为保留
-  if (lower.includes('.') && lower.startsWith('::')) {
-    return 'reserved';
+  // IPv4-compatible ::a.b.c.d（已废弃）整体视为保留
+  if (lower.includes('.')) return 'reserved';
+
+  const groups = parseIpv6Groups(lower);
+  if (groups === null) return 'invalid';
+  const [g0, g1] = groups as [number, number, ...number[]];
+
+  if (g0 === 0) return 'reserved'; // 0::/96 其余（::、::1、::ffff 已在上方处理）
+  if (g0 >= 0xff00) return 'multicast'; // ff00::/8
+  if ((g0 & 0xffc0) === 0xfe80) return 'link-local'; // fe80::/10
+  if ((g0 & 0xffc0) === 0xfec0) return 'reserved'; // fec0::/10 site-local（废弃）
+  if ((g0 & 0xfe00) === 0xfc00) return 'private'; // fc00::/7 ULA
+  if (g0 === 0x2002) return 'reserved'; // 6to4
+  if (g0 === 0x0064 && g1 === 0xff9b) return 'reserved'; // 64:ff9b::/96 NAT64
+  if (g0 === 0x0100) return 'reserved'; // 100::/64 discard-only
+
+  // 显式 global-unicast：2000::/3（RFC 4291）
+  if (g0 >= 0x2000 && g0 <= 0x3fff) {
+    // 2001::/23 = IETF Protocol Assignments（RFC 2928）：Teredo/PCP/BMWG/AMT/AS112/
+    // ORCHID/Drone Remote ID 均在其中；整个 /23 不视为公网普通地址
+    if (g0 === 0x2001 && g1 <= 0x01ff) return 'reserved';
+    // 2001:db8::/32 文档段（RFC 3849；位于 2001::/23 之外，需单独拒绝）
+    if (g0 === 0x2001 && g1 === 0x0db8) return 'reserved';
+    return 'public';
   }
-  const parts = lower.split(':');
-  const first = parts[0] ?? '';
-  if (first.startsWith('ff')) return 'multicast'; // ff00::/8
-  if (
-    first.startsWith('fe8') ||
-    first.startsWith('fe9') ||
-    first.startsWith('fea') ||
-    first.startsWith('feb')
-  ) {
-    return 'link-local'; // fe80::/10
-  }
-  if (first.startsWith('fc') || first.startsWith('fd')) return 'private'; // fc00::/7 ULA
-  if (first === '2002') return 'reserved'; // 6to4
-  if (lower.startsWith('64:ff9b:')) return 'reserved'; // NAT64
-  if (lower.startsWith('100:')) return 'reserved'; // discard-only 100::/64
-  if (first === '2001') {
-    // Teredo 2001:0000::/32、文档段 2001:db8::/32、ORCHID 2001:10::/28；其余 2001:xxxx 为公网
-    const secondRaw = parts[1] ?? '0';
-    if (secondRaw.toLowerCase().startsWith('db8')) return 'reserved'; // 文档段
-    const second = parseInt(secondRaw, 16);
-    const secondSafe = Number.isFinite(second) ? second : 0;
-    if (secondSafe === 0) return 'reserved'; // Teredo
-    if (secondSafe >= 0x10 && secondSafe <= 0x1f) return 'reserved'; // ORCHID
-    return 'public'; // 2001:4860:... (Google) 等
-  }
-  return 'public';
+  return 'reserved';
 }
 
 /** 地址分类（§6.1 第 3 条；非合法 IP 返回 invalid）。 */

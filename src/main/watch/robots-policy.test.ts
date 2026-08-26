@@ -109,6 +109,45 @@ describe('evaluateRobotsPath — 最长匹配与 UA 选择', () => {
     expect(evaluateRobotsPath(rules, 'aibrowse', '/feed?private=1')).toBe(false);
     expect(evaluateRobotsPath(rules, 'aibrowse', '/feed?other=1')).toBe(true);
   });
+
+  it('`*` 通配符：匹配 0 或多字符（RFC 9309 §2.2.3）', () => {
+    const rules = parse('User-agent: aibrowse\nDisallow: /private/*/secret\n');
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/private/a/secret')).toBe(false);
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/private//secret')).toBe(false); // 空匹配
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/private/x')).toBe(true);
+  });
+
+  it('`$` 结尾锚点：只匹配精确到路径尾', () => {
+    const rules = parse('User-agent: aibrowse\nDisallow: /fish$\n');
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/fish')).toBe(false);
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/fish.html')).toBe(true);
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/fish/')).toBe(true);
+  });
+
+  it('`*.gif$` 后缀匹配（RFC 9309 §5.1）', () => {
+    const rules = parse('User-agent: aibrowse\nDisallow: *.gif$\n');
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/a/b.gif')).toBe(false);
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/a/b.gifx')).toBe(true);
+  });
+
+  it('最长匹配（RFC 9309 §5.2）：更长 disallow 优先', () => {
+    const rules = parse(
+      'User-agent: aibrowse\nAllow: /example/page/\nDisallow: /example/page/disallowed.gif\n',
+    );
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/example/page/disallowed.gif')).toBe(false);
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/example/page/allowed.gif')).toBe(true);
+  });
+
+  it('allow 与 disallow 等价/同长度 → allow 优先', () => {
+    const rules = parse('User-agent: aibrowse\nDisallow: /page\nAllow: /page\n');
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/page/x')).toBe(true);
+  });
+
+  it('`*` 与字面量：具体字面量前缀仍按最长匹配参与比较', () => {
+    const rules = parse('User-agent: aibrowse\nAllow: /a*\nDisallow: /ab\n');
+    // /ab 同长度（2 字面 vs /a* 匹配 2）→ allow 优先 → allowed
+    expect(evaluateRobotsPath(rules, 'aibrowse', '/ab')).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -132,11 +171,15 @@ class FakeRobotsClient {
   }
 }
 
-function okBody(status: number, body: string): PublicFetchResult {
+function okBody(
+  status: number,
+  body: string,
+  finalUrl = 'https://example.com/robots.txt',
+): PublicFetchResult {
   return {
     kind: 'ok',
     meta: {
-      finalUrl: 'https://example.com/robots.txt',
+      finalUrl,
       statusCode: status,
       statusMessage: '',
       contentType: 'text/plain',
@@ -149,6 +192,25 @@ function okBody(status: number, body: string): PublicFetchResult {
       compressedByteLength: 0,
     },
     body: Buffer.from(body, 'utf8'),
+  };
+}
+
+function unchangedHttp(): PublicFetchResult {
+  return {
+    kind: 'unchanged-http',
+    meta: {
+      finalUrl: 'https://example.com/robots.txt',
+      statusCode: 304,
+      statusMessage: 'Not Modified',
+      contentType: null,
+      contentEncoding: null,
+      etag: '"x"',
+      lastModified: null,
+      retryAfter: null,
+      fetchedAt: '2024-01-01T00:00:00.000Z',
+      byteLength: 0,
+      compressedByteLength: 0,
+    },
   };
 }
 
@@ -218,6 +280,29 @@ describe('RobotsPolicy.checkAllowed', () => {
     const policy = new RobotsPolicy({ client, clock: new FakeClock(0) });
     const d = await policy.checkAllowed({ url: 'https://example.com/feed' });
     expect(d.kind).toBe('allowed');
+  });
+
+  it('robots 304（无缓存，不应发生）→ unavailable（fail-closed，不退化 allow-all）', async () => {
+    const client = new FakeRobotsClient([unchangedHttp()]);
+    const policy = new RobotsPolicy({ client, clock: new FakeClock(0) });
+    const d = await policy.checkAllowed({ url: 'https://example.com/feed' });
+    expect(d.kind).toBe('unavailable');
+  });
+
+  it('robots 跨 host redirect 最终 URL → unavailable（fail-closed，不退化 allow-all）', async () => {
+    const client = new FakeRobotsClient([
+      okBody(200, 'User-agent: aibrowse\nAllow: /\n', 'https://cdn.example.com/robots.txt'),
+    ]);
+    const policy = new RobotsPolicy({ client, clock: new FakeClock(0) });
+    const d = await policy.checkAllowed({ url: 'https://example.com/feed' });
+    expect(d.kind).toBe('unavailable');
+  });
+
+  it('robots 解析异常（binary）→ unavailable（不退化 allow-all）', async () => {
+    const client = new FakeRobotsClient([okBody(200, '\u0000binary')]);
+    const policy = new RobotsPolicy({ client, clock: new FakeClock(0) });
+    const d = await policy.checkAllowed({ url: 'https://example.com/feed' });
+    expect(d.kind).toBe('unavailable');
   });
 
   it('robots 请求经 NetworkPolicy（URL 为 robots.txt，purpose=robots）', async () => {

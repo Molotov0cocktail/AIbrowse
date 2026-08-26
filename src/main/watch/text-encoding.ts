@@ -74,9 +74,22 @@ function textDecoderLabel(enc: SupportedEncoding): string {
   }
 }
 
+/**
+ * 严格解码：fatal=true，非法字节序列（如孤立 continuation、截断多字节、UTF-16 奇数
+ * 字节）立即抛错——不得用 U+FFFD replacement character 掩盖（RED LINE）。
+ */
 function decodeWith(enc: SupportedEncoding, buf: Buffer, offset: number): string {
-  const decoder = new TextDecoder(textDecoderLabel(enc), { fatal: false });
+  const decoder = new TextDecoder(textDecoderLabel(enc), { fatal: true });
   return decoder.decode(buf.subarray(offset));
+}
+
+/** 解码并捕获 strict 失败；失败返回 null。 */
+function tryDecode(enc: SupportedEncoding, buf: Buffer, offset: number): string | null {
+  try {
+    return decodeWith(enc, buf, offset);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -108,17 +121,23 @@ export function decodeXmlBytes(buf: Buffer): DecodeResult {
     } else if (declaredRaw !== null) {
       return { ok: false, health: 'parse_changed', reason: 'unknown-encoding' };
     }
-    return { ok: true, text: decodeWith(bom, buf, bomOffset(bom)), encoding: bom };
+    const text = tryDecode(bom, buf, bomOffset(bom));
+    if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
+    return { ok: true, text, encoding: bom };
   }
 
   if (declaredRaw === null) {
     // 无 BOM 无声明：默认 UTF-8
-    return { ok: true, text: decodeWith('utf-8', buf, 0), encoding: 'utf-8' };
+    const text = tryDecode('utf-8', buf, 0);
+    if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
+    return { ok: true, text, encoding: 'utf-8' };
   }
   if (declaredEnc === null) {
     return { ok: false, health: 'parse_changed', reason: 'unknown-encoding' };
   }
-  return { ok: true, text: decodeWith(declaredEnc, buf, 0), encoding: declaredEnc };
+  const text = tryDecode(declaredEnc, buf, 0);
+  if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
+  return { ok: true, text, encoding: declaredEnc };
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +206,9 @@ export function decodeHtmlBytes(
         return { ok: false, health: 'parse_changed', reason: 'encoding-conflict' };
       }
     }
-    return { ok: true, text: decodeWith(bom, buf, bomOffset(bom)), encoding: bom };
+    const text = tryDecode(bom, buf, bomOffset(bom));
+    if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
+    return { ok: true, text, encoding: bom };
   }
 
   // 无 BOM：Content-Type 优先，其次 <meta charset>
@@ -195,13 +216,19 @@ export function decodeHtmlBytes(
     if (ctEnc === null) {
       return { ok: false, health: 'parse_changed', reason: 'unknown-encoding' };
     }
-    return { ok: true, text: decodeWith(ctEnc, buf, 0), encoding: ctEnc };
+    const text = tryDecode(ctEnc, buf, 0);
+    if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
+    return { ok: true, text, encoding: ctEnc };
   }
   if (metaRaw !== null) {
     if (metaEnc === null) {
       return { ok: false, health: 'parse_changed', reason: 'unknown-encoding' };
     }
-    return { ok: true, text: decodeWith(metaEnc, buf, 0), encoding: metaEnc };
+    const text = tryDecode(metaEnc, buf, 0);
+    if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
+    return { ok: true, text, encoding: metaEnc };
   }
-  return { ok: true, text: decodeWith('utf-8', buf, 0), encoding: 'utf-8' };
+  const text = tryDecode('utf-8', buf, 0);
+  if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
+  return { ok: true, text, encoding: 'utf-8' };
 }

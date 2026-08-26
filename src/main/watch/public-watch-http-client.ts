@@ -66,7 +66,11 @@ export type PublicFetchResult =
       kind: 'failed';
       health: Extract<
         WatchFailureCode,
-        'security_rejected' | 'budget_exceeded' | 'unavailable' | 'parse_changed'
+        | 'security_rejected'
+        | 'budget_exceeded'
+        | 'unavailable'
+        | 'parse_changed'
+        | 'robots_disallowed'
       >;
       reason: string;
     };
@@ -74,6 +78,22 @@ export type PublicFetchResult =
 export interface ResolvedAddress {
   address: string;
   family: 4 | 6;
+}
+
+/** 每跳 robots 决策（窄端口：PublicWatchHttpClient 在发起 socket 前咨询）。 */
+export type RobotsGateDecision =
+  | { kind: 'allowed' }
+  | { kind: 'disallowed' }
+  | { kind: 'unavailable' }
+  | { kind: 'security-rejected' }
+  | { kind: 'aborted' };
+
+export interface RobotsGatePort {
+  checkAllowed(input: {
+    url: string;
+    signal?: AbortSignal;
+    deadline?: Date;
+  }): Promise<RobotsGateDecision>;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +150,7 @@ export interface PublicWatchHttpSeams {
   clock?: Clock; // 默认系统时钟；deadline 判定
   timeoutMs?: number; // 默认 NETWORK_ATTEMPT_TIMEOUT_MS
   userAgent?: string; // 默认产品版本化 UA（不含账号/机器 ID）
+  robots?: RobotsGatePort; // 每跳 robots 决策（§6.2）；默认缺省时跳过（D5 装配必须注入）
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +228,7 @@ function createSystemClock(): Clock {
 
 type ClientHealth = Extract<
   WatchFailureCode,
-  'security_rejected' | 'budget_exceeded' | 'unavailable' | 'parse_changed'
+  'security_rejected' | 'budget_exceeded' | 'unavailable' | 'parse_changed' | 'robots_disallowed'
 >;
 
 type InternalAttempt =
@@ -217,12 +238,18 @@ type InternalAttempt =
   | { kind: 'failed'; health: ClientHealth; reason: string }
   | { kind: 'aborted' };
 
+/** DNS 竞争哨兵：区分 abort / timeout / lookup 自身失败。 */
+const DNS_ABORTED = Symbol('dns-aborted');
+const DNS_TIMEOUT = Symbol('dns-timeout');
+const DNS_ERROR = Symbol('dns-error');
+
 export class PublicWatchHttpClient {
   private readonly lookup: (hostname: string) => Promise<ResolvedAddress[]>;
   private readonly requestFactory: WatchRequestFactory;
   private readonly clock: Clock;
   private readonly timeoutMs: number;
   private readonly userAgent: string;
+  private readonly robots: RobotsGatePort | null;
 
   constructor(seams: PublicWatchHttpSeams = {}) {
     this.lookup =
@@ -235,6 +262,7 @@ export class PublicWatchHttpClient {
     this.clock = seams.clock ?? createSystemClock();
     this.timeoutMs = seams.timeoutMs ?? NETWORK_ATTEMPT_TIMEOUT_MS;
     this.userAgent = seams.userAgent ?? WATCH_DEFAULT_USER_AGENT;
+    this.robots = seams.robots ?? null;
   }
 
   private defaultRequestFactory: WatchRequestFactory = (options) => {
@@ -291,10 +319,38 @@ export class PublicWatchHttpClient {
     }
     const target = base.target;
 
+    // 每跳 robots 决策（§6.2：每个实际 host 在发起 socket 前完成）；robots 请求自身跳过
+    if (this.robots !== null && req.purpose !== 'robots') {
+      let decision: RobotsGateDecision;
+      try {
+        decision = await this.robots.checkAllowed({
+          url: target.url,
+          signal: req.signal,
+          deadline: req.deadline,
+        });
+      } catch {
+        return this.failed('unavailable', 'robots-error');
+      }
+      switch (decision.kind) {
+        case 'allowed':
+          break;
+        case 'aborted':
+          return { kind: 'aborted' };
+        case 'disallowed':
+          return this.failed('robots_disallowed', 'robots-disallowed');
+        case 'unavailable':
+          return this.failed('unavailable', 'robots-unavailable');
+        case 'security-rejected':
+          return this.failed('security_rejected', 'robots-security');
+      }
+    }
+
     let addresses: ResolvedAddress[];
     try {
-      addresses = await this.lookup(target.host);
-    } catch {
+      addresses = await this.lookupWithTimeout(target.host, deadlineMs, req.signal);
+    } catch (err) {
+      if (err === DNS_ABORTED) return { kind: 'aborted' };
+      if (err === DNS_TIMEOUT) return this.failed('unavailable', 'dns-timeout');
       return this.failed('unavailable', 'dns-failed');
     }
     if (addresses.length === 0) {
@@ -326,6 +382,76 @@ export class PublicWatchHttpClient {
       return result;
     }
     return this.failed('unavailable', lastConnError ?? 'connect-failed');
+  }
+
+  /**
+   * DNS lookup 与 deadline、timeout、abort 竞争：永不返回的 DNS 也必须按时结束。
+   * lookup 同步 throw 同样转为受控失败（不会泄漏未处理 rejection）。
+   */
+  private lookupWithTimeout(
+    hostname: string,
+    deadlineMs: number,
+    signal: AbortSignal | undefined,
+  ): Promise<ResolvedAddress[]> {
+    return new Promise<ResolvedAddress[]>((resolve, reject) => {
+      let settled = false;
+      const timers: ReturnType<Clock['setTimeout']>[] = [];
+      const cleanup = (): void => {
+        for (const t of timers) this.clock.clearTimeout(t);
+        if (signal) signal.removeEventListener('abort', onAbort);
+      };
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(DNS_ABORTED);
+      };
+      const fail = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(DNS_TIMEOUT);
+      };
+      const succeed = (records: ResolvedAddress[]): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(records);
+      };
+      const failError = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(DNS_ERROR);
+      };
+
+      if (signal) {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      if (Number.isFinite(deadlineMs)) {
+        const now = this.clock.now().getTime();
+        if (now >= deadlineMs) {
+          cleanup();
+          reject(DNS_TIMEOUT);
+          return;
+        }
+        timers.push(this.clock.setTimeout(fail, deadlineMs - now));
+      }
+      timers.push(this.clock.setTimeout(fail, this.timeoutMs));
+
+      let lookupPromise: Promise<ResolvedAddress[]>;
+      try {
+        lookupPromise = Promise.resolve(this.lookup(hostname));
+      } catch {
+        failError();
+        return;
+      }
+      lookupPromise.then(succeed, failError);
+    });
   }
 
   private failed(health: ClientHealth, reason: string): InternalAttempt {
@@ -367,6 +493,9 @@ export class PublicWatchHttpClient {
     return new Promise<InternalAttempt | 'retry-next' | 'aborted' | 'failed'>((resolve) => {
       let settled = false;
       let aborted = false;
+      let request: WatchRequestLike | null = null;
+      let timeoutHandle: ReturnType<Clock['setTimeout']> | null = null;
+
       const finish = (value: InternalAttempt | 'retry-next' | 'aborted' | 'failed'): void => {
         if (settled) return;
         settled = true;
@@ -374,39 +503,46 @@ export class PublicWatchHttpClient {
         resolve(value);
       };
 
+      const cleanup = (): void => {
+        if (timeoutHandle !== null) this.clock.clearTimeout(timeoutHandle);
+        if (req.signal) req.signal.removeEventListener('abort', onAbort);
+      };
+
       const onAbort = (): void => {
         aborted = true;
         try {
-          request.destroy();
+          request?.destroy();
         } catch {
           // 幂等
         }
         finish('aborted');
       };
 
-      const request = this.requestFactory({
-        method,
-        protocol: target.scheme === 'https' ? 'https:' : 'http:',
-        hostname: target.host,
-        port: target.port,
-        path,
-        headers,
-        lookup: sealedLookup,
-      });
+      try {
+        request = this.requestFactory({
+          method,
+          protocol: target.scheme === 'https' ? 'https:' : 'http:',
+          hostname: target.host,
+          port: target.port,
+          path,
+          headers,
+          lookup: sealedLookup,
+        });
+      } catch {
+        // requestFactory 同步 throw：受控失败，不泄漏 rejection
+        finish(this.failed('unavailable', 'request-factory'));
+        return;
+      }
+      const activeRequest = request;
 
-      const timeoutHandle = this.clock.setTimeout(() => {
+      timeoutHandle = this.clock.setTimeout(() => {
         try {
-          request.destroy();
+          activeRequest.destroy();
         } catch {
           // 幂等
         }
         finish('failed');
       }, this.timeoutMs);
-
-      const cleanup = (): void => {
-        this.clock.clearTimeout(timeoutHandle);
-        if (req.signal) req.signal.removeEventListener('abort', onAbort);
-      };
 
       if (req.signal) {
         if (req.signal.aborted) {
@@ -416,7 +552,7 @@ export class PublicWatchHttpClient {
         req.signal.addEventListener('abort', onAbort, { once: true });
       }
 
-      request.on('response', (res: WatchIncomingLike) => {
+      activeRequest.on('response', (res: WatchIncomingLike) => {
         if (aborted || settled) return;
         const statusCode = res.statusCode;
         const nowMs = this.clock.now().getTime();
@@ -434,8 +570,18 @@ export class PublicWatchHttpClient {
           compressedByteLength: 0,
         };
 
+        // 不消费的响应（redirect/HEAD/3xx 无 Location）：立即安全销毁或按预算排空，
+        // 防止无限 body 持续占用。销毁失败降级为 resume 排空。
         const ignoreResBody = (): void => {
           res.on('error', () => undefined);
+          if (typeof res.destroy === 'function') {
+            try {
+              res.destroy();
+              return;
+            } catch {
+              // 降级排空
+            }
+          }
           res.resume?.();
         };
 
@@ -489,7 +635,7 @@ export class PublicWatchHttpClient {
           });
       });
 
-      request.on('error', (err: NodeJS.ErrnoException) => {
+      activeRequest.on('error', (err: NodeJS.ErrnoException) => {
         if (settled || aborted) return;
         const code = err.code ?? 'ERR';
         if (CONNECT_RETRYABLE.has(code)) {
@@ -499,7 +645,7 @@ export class PublicWatchHttpClient {
         finish(this.failed('unavailable', code));
       });
 
-      request.end();
+      activeRequest.end();
     });
   }
 

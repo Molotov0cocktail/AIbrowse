@@ -109,6 +109,40 @@ describe('decodeXmlBytes — 声明', () => {
     expect(r.encoding).toBe('utf-8');
   });
 
+  it('非法 UTF-8 序列 → parse_changed（不得以 replacement 掩盖）', () => {
+    // 孤立 continuation byte 0x80 位于开头：fatal 解码必须失败
+    const bad = Buffer.concat([
+      Buffer.from('<rss><channel>x', 'latin1'),
+      Buffer.from([0x80]),
+      Buffer.from('</channel></rss>', 'latin1'),
+    ]);
+    const r = decodeXmlBytes(bad);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('parse_changed');
+  });
+
+  it('UTF-16LE BOM 但字节数为奇数 → parse_changed（不静默丢尾字节）', () => {
+    const odd = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from('<t>中文</t>', 'utf16le').subarray(0, 9),
+    ]);
+    const r = decodeXmlBytes(odd);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('parse_changed');
+  });
+
+  it('截断的 UTF-8 多字节序列 → parse_changed', () => {
+    // 末尾 0xE4 是不完整 3 字节序列
+    const bad = Buffer.concat([
+      Buffer.from('<rss><channel><title>', 'latin1'),
+      Buffer.from([0xe4]),
+      Buffer.from('</title></channel></rss>', 'latin1'),
+    ]);
+    const r = decodeXmlBytes(bad);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('parse_changed');
+  });
+
   it('空输入 fail-closed', () => {
     expect(decodeXmlBytes(Buffer.alloc(0)).ok).toBe(false);
     expect(decodeXmlBytes('x' as unknown as Buffer).ok).toBe(false);
@@ -181,6 +215,17 @@ describe('decodeHtmlBytes — 优先级与冲突', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.encoding).toBe('utf-8');
+  });
+
+  it('HTML 非法 UTF-8 → parse_changed（不 mask）', () => {
+    const bad = Buffer.concat([
+      Buffer.from('<html><body>x', 'latin1'),
+      Buffer.from([0x80]),
+      Buffer.from('</body></html>', 'latin1'),
+    ]);
+    const r = decodeHtmlBytes(bad, null);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('parse_changed');
   });
 
   it('空输入 fail-closed', () => {

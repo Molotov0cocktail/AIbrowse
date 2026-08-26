@@ -3,15 +3,23 @@
 // （detailed-design §6.4、threat-model WRT-06～WRT-08）。
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_FEED_FIELD_BYTES,
   MAX_FEED_ITEMS,
+  MAX_FEED_PROJECTION_BYTES,
   MAX_XML_ATTRIBUTES_PER_TAG,
   MAX_XML_DEPTH,
   MAX_XML_NAME_BYTES,
   MAX_XML_NODES,
   MAX_XML_TEXT_NODE_BYTES,
+  MAX_XML_TOTAL_TEXT_BYTES,
 } from '../../shared/types/watch';
 import { utf8ByteLength } from '../../shared/watch/watch-budget';
-import { parseFeedXml } from './feed-parser';
+import {
+  encodeFeedProjectionCanonical,
+  parseFeedXml,
+  parseFeedXmlWithLoader,
+  type FeedProjectionCanonicalPayload,
+} from './feed-parser';
 
 const RSS = (items: string, extra = ''): string =>
   `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Feed</title><link>https://example.com</link><description>d</description>${items}${extra}</channel></rss>`;
@@ -133,6 +141,28 @@ describe('CDATA / 编码', () => {
       '<?xml version="1.0" encoding="windows-1252"?><rss><channel><title>x</title></channel></rss>';
     const buf = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(xml, 'utf8')]);
     const r = await parseFeedXml(buf);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('parse_changed');
+  });
+
+  it('非法 UTF-8 → parse_changed（不 mask 为 U+FFFD）', async () => {
+    const bad = Buffer.concat([
+      Buffer.from('<rss><channel><title>x', 'latin1'),
+      Buffer.from([0x80]),
+      Buffer.from('</title></channel></rss>', 'latin1'),
+    ]);
+    const r = await parseFeedXml(bad);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('parse_changed');
+  });
+
+  it('UTF-16LE BOM 奇数长度 → parse_changed', async () => {
+    const xml = RSS(RSS_ITEM('g', 't', 'https://example.com/x'));
+    const odd = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from(xml, 'utf16le').subarray(0, 7),
+    ]);
+    const r = await parseFeedXml(odd);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.health).toBe('parse_changed');
   });
@@ -290,12 +320,20 @@ describe('DTD/XXE/Bomb/XInclude（WRT-06）→ security_rejected', () => {
     if (!r.ok) expect(r.health).toBe('security_rejected');
   });
 
-  it('XInclude 仅作惰性元素，零解析/零文件', async () => {
+  it('XInclude namespace 一经出现 → security_rejected（零文件/网络）', async () => {
     const doc =
       '<rss xmlns:xi="http://www.w3.org/2001/XInclude"><channel><xi:include href="file:///etc/passwd"/></channel></rss>';
     const r = await parseFeedXml(Buffer.from(doc, 'utf8'));
-    // xi:include 作为元素出现（无 DOCTYPE/实体），解析不触发任何文件/网络
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('security_rejected');
+  });
+
+  it('XInclude 仅声明命名空间也 security_rejected（不惰性放行）', async () => {
+    const doc =
+      '<rss xmlns:xi="http://www.w3.org/2001/XInclude"><channel><title>x</title></channel></rss>';
+    const r = await parseFeedXml(Buffer.from(doc, 'utf8'));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('security_rejected');
   });
 
   it('敌手失败后正常 feed 仍可解析（状态未污染）', async () => {
@@ -308,6 +346,80 @@ describe('DTD/XXE/Bomb/XInclude（WRT-06）→ security_rejected', () => {
     expect(bad.ok).toBe(false);
     const good = await parseRss(RSS_ITEM('ok', 'fine', 'https://example.com/x'));
     expect(good.ok).toBe(true);
+  });
+});
+
+describe('namespace 校验：扩展 namespace 不得覆盖核心字段', () => {
+  it('Atom：foreign namespace 的 title/link/id 不覆盖核心字段', async () => {
+    const xml =
+      '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="http://evil.test/x"><title>F</title><x:title>FAKE TITLE</x:title><entry><id>real-id</id><x:id>fake-id</x:id><title>Real T</title><x:title>FAKE</x:title><link rel="alternate" href="https://real.example.com/1"/><x:link rel="alternate" href="https://evil.example.com/"/></entry></feed>';
+    const r = await parseFeedXml(Buffer.from(xml, 'utf8'));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.projection.title.text).toBe('F');
+    const item = r.projection.items[0]!;
+    expect(item.title.text).toBe('Real T');
+    expect(item.identity).toBe('real-id');
+    expect(item.identityKind).toBe('id');
+    expect(item.link.text).toBe('https://real.example.com/1');
+  });
+
+  it('RSS：extension namespace 的 title/guid 不覆盖核心字段', async () => {
+    const xml =
+      '<?xml version="1.0"?><rss version="2.0" xmlns:evil="http://evil.test/x"><channel><title>F</title><item><guid>g1</guid><evil:guid>evil</evil:guid><title>Real</title><evil:title>FAKE</evil:title><link>https://real.example.com/1</link></item></channel></rss>';
+    const r = await parseFeedXml(Buffer.from(xml, 'utf8'));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.projection.title.text).toBe('F');
+    const item = r.projection.items[0]!;
+    expect(item.title.text).toBe('Real');
+    expect(item.identity).toBe('g1');
+    expect(item.identityKind).toBe('guid');
+  });
+
+  it('RSS 根带默认 namespace → parse_changed（RSS 核心字段必须无 namespace）', async () => {
+    const xml =
+      '<rss xmlns="http://evil.test/rss" version="2.0"><channel><title>x</title></channel></rss>';
+    const r = await parseFeedXml(Buffer.from(xml, 'utf8'));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('parse_changed');
+  });
+});
+
+describe('Feed HTML/CDATA 字段 → 安全纯文本', () => {
+  const itemWith = (description: string): string =>
+    `<item><guid>g</guid><title>T</title><link>https://example.com/x</link><description>${description}</description></item>`;
+
+  it('RSS description CDATA 含 HTML → 纯文本（标签剥离 + 实体解码）', async () => {
+    const r = await parseRss(itemWith('<![CDATA[<p>Hello <b>world</b> &amp; more</p>]]>'));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.projection.items[0]!.summary.text).toBe('Hello world & more');
+  });
+
+  it('RSS description 转义 HTML → 纯文本', async () => {
+    const r = await parseRss(itemWith('&lt;p&gt;a &lt;b&gt;b&lt;/b&gt;&lt;/p&gt;'));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.projection.items[0]!.summary.text).toBe('a b');
+  });
+
+  it('Atom content type=html → 纯文本', async () => {
+    const entry =
+      '<entry><id>id1</id><title>T</title><link rel="alternate" href="https://example.com/1"/><content type="html">&lt;p&gt;a &lt;b&gt;b&lt;/b&gt;&lt;/p&gt;</content></entry>';
+    const r = await parseFeedXml(Buffer.from(ATOM(entry), 'utf8'));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.projection.items[0]!.summary.text).toBe('a b');
+  });
+
+  it('script/style 块从 description 整体移除', async () => {
+    const r = await parseRss(
+      itemWith('<![CDATA[<script>alert("x")</script>keep <b>bold</b><style>.c{}</style>]]>'),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.projection.items[0]!.summary.text).toBe('keep bold');
   });
 });
 
@@ -325,13 +437,25 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
     if (!bad.ok) expect(bad.health).toBe('budget_exceeded');
   });
 
-  it('node count 20k 接受、20k+1 拒绝', async () => {
-    // wrap 已含 rss+channel 2 节点；20k-3 个 <i/> + 1 个 <title> = 20k
-    const atMax = wrap('<i/>'.repeat(MAX_XML_NODES - 3) + '<title>t</title>');
+  it('node count 20k 接受、20k+1 拒绝（start element 与 text 事件都计数）', async () => {
+    // wrap 贡献 rss+channel 2 个 startTag；<title>t</title> 贡献 startTag + text 2 个
+    const atMax = wrap('<i/>'.repeat(MAX_XML_NODES - 4) + '<title>t</title>'); // 2 + (MAX-4) + 2 = MAX
     const ok = await parseFeedXml(Buffer.from(atMax, 'utf8'));
     expect(ok.ok).toBe(true);
 
-    const over = wrap('<i/>'.repeat(MAX_XML_NODES - 2) + '<title>t</title>');
+    const over = wrap('<i/>'.repeat(MAX_XML_NODES - 3) + '<title>t</title>'); // 2 + (MAX-3) + 2 = MAX+1
+    const bad = await parseFeedXml(Buffer.from(over, 'utf8'));
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.health).toBe('budget_exceeded');
+  });
+
+  it('text 事件计入节点预算：大量文本事件触发 budget_exceeded', async () => {
+    // 8000 个 <i>x</i>（startTag+text=2 节点）× 2 = 16000 + wrap 2 = 16002 < 20000
+    const atMax = wrap('<i>x</i>'.repeat(MAX_XML_NODES / 2 - 1)); // (MAX/2-1)*2 + 2 = MAX
+    const ok = await parseFeedXml(Buffer.from(atMax, 'utf8'));
+    expect(ok.ok).toBe(true);
+
+    const over = wrap('<i>x</i>'.repeat(MAX_XML_NODES / 2)); // (MAX/2)*2 + 2 = MAX+2
     const bad = await parseFeedXml(Buffer.from(over, 'utf8'));
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.health).toBe('budget_exceeded');
@@ -407,7 +531,7 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
   });
 
   it('FeedProjection 整体预算：超 262144 整次失败（不产残缺投影）', async () => {
-    // 每个 item 的 title 2000 + summary 2000 ≈ 4000+；200 项远超预算 → 中途 budget_exceeded
+    // 每个 item 的 title 2000 + summary 2000 ≈ 4000+；120 项远超预算 → 中途 budget_exceeded
     const items = Array.from(
       { length: 120 },
       (_, i) =>
@@ -416,6 +540,108 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
     const r = await parseRss(items);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.health).toBe('budget_exceeded');
+  });
+
+  it('FeedProjection canonical 编码字节精确（byteLength == 完整 JSON 编码，不含自身字段）', async () => {
+    const itemXml = (i: number, title: string): string =>
+      `<item><guid>g${i}</guid><title>${title}</title><link>https://e.com/${i}</link></item>`;
+    const items = Array.from({ length: 10 }, (_, i) => itemXml(i, `t${i}`)).join('');
+    const r = await parseRss(items);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const p = r.projection;
+    const canonicalPayload = {
+      format: p.format,
+      title: p.title,
+      description: p.description,
+      siteUrl: p.siteUrl,
+      feedUrl: p.feedUrl,
+      items: p.items,
+      itemsTruncated: p.itemsTruncated,
+    };
+    expect(p.byteLength).toBe(Buffer.byteLength(JSON.stringify(canonicalPayload), 'utf8'));
+    expect(p.byteLength).toBeLessThanOrEqual(MAX_FEED_PROJECTION_BYTES);
+  });
+
+  it('total-text 上限内最大 feed 的 canonical 编码仍接受（投影守卫不误拒）', async () => {
+    const itemXml = (i: number, title: string): string =>
+      `<item><guid>g${i}</guid><title>${title}</title><link>https://e.com/${i}</link></item>`;
+    // 31 个 4096 字节 title（唯一 identity）≈ total-text 126976 < 131072 → 接受
+    const items = Array.from({ length: 31 }, (_, i) =>
+      itemXml(i, 'a'.repeat(MAX_FEED_FIELD_BYTES)),
+    ).join('');
+    const r = await parseRss(items);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.projection.byteLength).toBeLessThanOrEqual(MAX_FEED_PROJECTION_BYTES);
+    expect(r.projection.byteLength).toBeGreaterThan(MAX_XML_TOTAL_TEXT_BYTES);
+  });
+
+  it('canonical 编码器边界：== MAX 接受、MAX+1 拒绝依据（helper 级）', () => {
+    // 诚实限制：受 MAX_XML_TOTAL_TEXT_BYTES(131072) 约束，真实 feed 的完整编码无法达到
+    // MAX_FEED_PROJECTION_BYTES(262144)——总文本预算先绑定；此处直接机器验证 canonical
+    // 编码器的 ==MAX/+1 边界语义（完整编码超限即 budget_exceeded 的判定依据）。
+    const payload = (titleText: string): FeedProjectionCanonicalPayload => ({
+      format: 'rss2',
+      title: { text: 'F', truncated: false, originalBytes: 1 },
+      description: { text: '', truncated: false, originalBytes: 0 },
+      siteUrl: { text: '', truncated: false, originalBytes: 0 },
+      feedUrl: { text: '', truncated: false, originalBytes: 0 },
+      items: [
+        {
+          identity: 'i',
+          identityKind: 'id',
+          title: {
+            text: titleText,
+            truncated: false,
+            originalBytes: Buffer.byteLength(titleText, 'utf8'),
+          },
+          link: { text: '', truncated: false, originalBytes: 0 },
+          summary: { text: '', truncated: false, originalBytes: 0 },
+          publishedAt: null,
+          updatedAt: null,
+          author: { text: '', truncated: false, originalBytes: 0 },
+        },
+      ],
+      itemsTruncated: false,
+    });
+    const baseBytes = Buffer.byteLength(encodeFeedProjectionCanonical(payload('')), 'utf8');
+    let titleLen = MAX_FEED_PROJECTION_BYTES - baseBytes;
+    let encoded = encodeFeedProjectionCanonical(payload('a'.repeat(titleLen)));
+    for (
+      let i = 0;
+      i < 5 && Buffer.byteLength(encoded, 'utf8') !== MAX_FEED_PROJECTION_BYTES;
+      i += 1
+    ) {
+      titleLen += MAX_FEED_PROJECTION_BYTES - Buffer.byteLength(encoded, 'utf8');
+      encoded = encodeFeedProjectionCanonical(payload('a'.repeat(titleLen)));
+    }
+    expect(Buffer.byteLength(encoded, 'utf8')).toBe(MAX_FEED_PROJECTION_BYTES); // == MAX 接受
+    const over = encodeFeedProjectionCanonical(payload('a'.repeat(titleLen + 1)));
+    expect(Buffer.byteLength(over, 'utf8')).toBeGreaterThan(MAX_FEED_PROJECTION_BYTES); // MAX+1 拒绝
+  });
+});
+
+describe('dependency_unavailable（动态 import 失败受控）', () => {
+  it('saxe 动态 import 失败 → dependency_unavailable，不拒绝 promise', async () => {
+    const r = await parseFeedXmlWithLoader(
+      Buffer.from('<rss><channel><title>x</title></channel></rss>', 'utf8'),
+      async () => {
+        throw new Error('import-boom');
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('dependency_unavailable');
+  });
+
+  it('loader 注入正常后 feed 仍可解析', async () => {
+    const r = await parseFeedXmlWithLoader(
+      Buffer.from(RSS(RSS_ITEM('g', 'T', 'https://example.com/x')), 'utf8'),
+      async () => import('@federicocarboni/saxe'),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.projection.items.length).toBe(1);
   });
 });
 

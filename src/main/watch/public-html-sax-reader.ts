@@ -329,14 +329,10 @@ export function readPublicHtml(
     links,
   };
 
-  // 最终 Projection 预算（精确边界）：== MAX 接受、MAX+1 fail-closed
-  let byteLength = utf8ByteLength(channels.mainText);
-  for (const h of channels.headings) byteLength += utf8ByteLength(h.text);
-  for (const l of channels.links) byteLength += utf8ByteLength(l.text) + utf8ByteLength(l.url);
-  for (const t of channels.tables) {
-    for (const h of t.headers) byteLength += utf8ByteLength(h);
-    for (const row of t.rows) for (const cell of row) byteLength += utf8ByteLength(cell);
-  }
+  // 最终 Projection 预算以完整、确定性的 canonical encoded projection 为准：
+  // DocumentChannels 的 JSON 编码（固定键序）；== MAX 接受、MAX+1 fail-closed。
+  const encoded = JSON.stringify(channels);
+  const byteLength = utf8ByteLength(encoded);
   if (byteLength > MAX_PAGE_PROJECTION_BYTES) {
     return { ok: false, health: 'budget_exceeded', reason: 'projection-too-large' };
   }

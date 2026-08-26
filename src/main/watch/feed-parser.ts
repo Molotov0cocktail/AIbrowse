@@ -1,13 +1,19 @@
 // D3 feed-parser: 流式 RSS 2.0 / Atom 解析 → 有界 FeedProjection（detailed-design §6.4）。
 // - 使用已资格化 @federicocarboni/saxe（SaxNamespaceParser，URI+localName 不信任前缀）；
 //   dtd: 'prohibit'、零 resolver/实体、零文件/网络（WT-06、WRT-06）。
-// - depth/name/attribute-count/attribute-bytes/text-node/node-count/total-text/Projection
-//   每项 == MAX 接受、MAX+1 fail-closed（WT-07、WRT-07）；超预算整次失败不产残缺投影。
+// - XInclude namespace（元素或 xmlns 声明）一经出现立即 security_rejected，绝不惰性放行。
+// - 核心字段（identity/title/link 等）必须校验允许的 namespace：Atom 为 ATOM_NS、RSS 为无
+//   namespace；扩展 namespace 的同名元素不得覆盖核心字段。
+// - depth/name/attribute-count/attribute-bytes/text-node/node-count（start element + text
+//   事件）/total-text 每项 == MAX 接受、MAX+1 fail-closed（WT-07、WRT-07）；超预算整次失败。
+// - FeedProjection 字节预算以完整、确定性的 canonical encoded projection（JSON，不含
+//   byteLength 字段本身）为准：== MAX 接受、MAX+1 失败。
 // - 身份：Atom id / RSS guid 首选，其次 canonical link，最后受控 SHA-256 复合键；重复去重稳定
 //   （WT-08、WRT-08）；前 MAX_FEED_ITEMS 项，第 201 项标 itemsTruncated。
+// - HTML/CDATA 内容字段（description/summary/content）输出安全纯文本，零 HTML 落盘。
 // - 字段 UTF-8 字节安全截断（MAX_FEED_FIELD_BYTES）并标 truncated/originalBytes，不拆 surrogate。
 import { createHash } from 'node:crypto';
-import type { FeedFormat, FeedItem, FeedProjection } from '../../shared/types/watch';
+import type { FeedField, FeedFormat, FeedItem, FeedProjection } from '../../shared/types/watch';
 import {
   MAX_FEED_FIELD_BYTES,
   MAX_FEED_ITEMS,
@@ -25,12 +31,19 @@ import { normalizeWatchText, utf8ByteLength } from '../../shared/watch/watch-bud
 import { decodeXmlBytes } from './text-encoding';
 
 const ATOM_NS = 'http://www.w3.org/2005/Atom';
+const XINCLUDE_NS = 'http://www.w3.org/2001/XInclude';
+const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
 
 export type FeedParseResult =
   | { ok: true; projection: FeedProjection; format: FeedFormat }
   | {
       ok: false;
-      health: 'security_rejected' | 'budget_exceeded' | 'parse_changed' | 'unavailable';
+      health:
+        | 'security_rejected'
+        | 'budget_exceeded'
+        | 'parse_changed'
+        | 'unavailable'
+        | 'dependency_unavailable';
       reason: string;
     };
 
@@ -61,12 +74,15 @@ const SECURITY_ERROR_NAMES = new Set([
 ]);
 
 let saxeModulePromise: Promise<typeof import('@federicocarboni/saxe')> | null = null;
-function loadSaxe(): Promise<typeof import('@federicocarboni/saxe')> {
+const defaultSaxeLoader = (): Promise<typeof import('@federicocarboni/saxe')> => {
   if (saxeModulePromise === null) {
     saxeModulePromise = import('@federicocarboni/saxe');
   }
   return saxeModulePromise;
-}
+};
+
+/** 受控加载器 seam（测试注入 import 失败/成功；产品路径使用默认 loader）。 */
+export type SaxeLoader = () => Promise<typeof import('@federicocarboni/saxe')>;
 
 // ---------------------------------------------------------------------------
 // 收集状态
@@ -110,7 +126,6 @@ interface FeedCollector {
   items: FeedItem[];
   itemsTruncated: boolean;
   seen: Set<string>;
-  projectionBytes: number;
 }
 
 interface CollectorState {
@@ -137,9 +152,18 @@ function newPendingItem(): PendingItem {
   };
 }
 
-/** item/entry 内元素的 fieldKey（无则 null）。 */
-function itemFieldFor(format: FeedFormat, localName: string): FieldKey | null {
+/**
+ * item/entry 内元素的 fieldKey（无则 null）。核心字段必须校验允许的 namespace：
+ * Atom 字段须为 ATOM_NS、RSS 核心字段须无 namespace；扩展 namespace 同名元素返回 null，
+ * 不得覆盖 identity/title/link 等核心字段。
+ */
+function itemFieldFor(
+  format: FeedFormat,
+  localName: string,
+  ns: string | undefined,
+): FieldKey | null {
   if (format === 'atom') {
+    if (ns !== ATOM_NS) return null;
     switch (localName) {
       case 'title':
         return 'item-title';
@@ -158,6 +182,7 @@ function itemFieldFor(format: FeedFormat, localName: string): FieldKey | null {
         return null;
     }
   }
+  if (ns !== undefined) return null;
   switch (localName) {
     case 'title':
       return 'item-title';
@@ -176,13 +201,19 @@ function itemFieldFor(format: FeedFormat, localName: string): FieldKey | null {
   }
 }
 
-/** channel / feed 层元素的 fieldKey（无则 null）。 */
-function channelFieldFor(format: FeedFormat, localName: string): FieldKey | null {
+/** channel / feed 层元素的 fieldKey（无则 null）。核心字段同样校验 namespace。 */
+function channelFieldFor(
+  format: FeedFormat,
+  localName: string,
+  ns: string | undefined,
+): FieldKey | null {
   if (format === 'atom') {
+    if (ns !== ATOM_NS) return null;
     if (localName === 'title') return 'channel-title';
     if (localName === 'subtitle') return 'channel-description';
     return null;
   }
+  if (ns !== undefined) return null;
   if (localName === 'title') return 'channel-title';
   if (localName === 'description') return 'channel-description';
   if (localName === 'link') return 'channel-link';
@@ -270,6 +301,99 @@ function normalizeUrlText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+const HTML_ENTITY_MAP: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+
+/**
+ * HTML/CDATA 内容字段 → 安全纯文本：剥离标签、移除 script/style 块（含内容）、
+ * 解码常见实体。线性扫描，无正则（不引入 ReDoS）。在完整累加的字段文本上调用
+ * （saxe 会在 `<` 处分段文本事件，故逐事件处理无法还原完整标签）。
+ */
+function htmlToPlainText(value: string): string {
+  let out = '';
+  let i = 0;
+  let skipUntil: string | null = null; // 小写 closing tag 前缀，如 '</script'
+  const len = value.length;
+  while (i < len) {
+    const ch = value[i]!;
+    if (skipUntil !== null) {
+      const idx = value.toLowerCase().indexOf(skipUntil, i);
+      if (idx === -1) {
+        // 本段内未闭合：丢弃余下文本（安全失败）
+        i = len;
+        continue;
+      }
+      const gt = value.indexOf('>', idx);
+      i = gt === -1 ? len : gt + 1;
+      skipUntil = null;
+      continue;
+    }
+    if (ch === '<') {
+      const close = value.indexOf('>', i);
+      if (close === -1) {
+        // 无闭合的 '<' 视为字面文本（如 "5 < 10"）
+        out += ch;
+        i += 1;
+        continue;
+      }
+      const inner = value
+        .slice(i + 1, close)
+        .trim()
+        .toLowerCase();
+      const tagName = inner.split(/[\s/]/)[0] ?? '';
+      if (tagName === 'script' || tagName === 'style') {
+        skipUntil = `</${tagName}`;
+        i = close + 1;
+        continue;
+      }
+      out += ' ';
+      i = close + 1;
+      continue;
+    }
+    if (ch === '&') {
+      const semi = value.indexOf(';', i);
+      if (semi !== -1 && semi - i <= 12) {
+        const entity = value.slice(i + 1, semi);
+        const decoded = HTML_ENTITY_MAP[entity.toLowerCase()];
+        if (decoded !== undefined) {
+          out += decoded;
+          i = semi + 1;
+          continue;
+        }
+        if (/^#x[0-9a-f]+$/i.test(entity)) {
+          try {
+            out += String.fromCodePoint(parseInt(entity.slice(2), 16));
+            i = semi + 1;
+            continue;
+          } catch {
+            // 非法码点：按字面保留
+          }
+        } else if (/^#[0-9]+$/.test(entity)) {
+          try {
+            out += String.fromCodePoint(parseInt(entity.slice(1), 10));
+            i = semi + 1;
+            continue;
+          } catch {
+            // 非法码点：按字面保留
+          }
+        }
+      }
+      out += ch;
+      i += 1;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
 /** 最终化一个 item：身份、去重、字段截断、投影字节预算。 */
 function finalizeItem(st: CollectorState): void {
   const item = st.pendingItem;
@@ -280,7 +404,8 @@ function finalizeItem(st: CollectorState): void {
   const linkRaw = item.canonicalLink ?? item.link;
   const publishedRaw = item.pubDate;
   const updatedRaw = item.updated;
-  const descriptionRaw = item.description;
+  // description/summary/content 为 HTML/CDATA 内容字段：整体转安全纯文本（零 HTML 落盘）
+  const descriptionRaw = htmlToPlainText(item.description);
   const authorRaw = item.author;
 
   const titleField = normalizeFeedField(titleRaw);
@@ -331,25 +456,79 @@ function finalizeItem(st: CollectorState): void {
     author: authorField,
   };
 
-  const itemBytes =
-    utf8ByteLength(identityField.text) +
-    utf8ByteLength(titleField.text) +
-    utf8ByteLength(linkField.text) +
-    utf8ByteLength(summaryField.text) +
-    utf8ByteLength(authorField.text) +
-    (publishedField === null ? 0 : utf8ByteLength(publishedField.text)) +
-    (updatedField === null ? 0 : utf8ByteLength(updatedField.text));
-  if (st.collector.projectionBytes + itemBytes > MAX_FEED_PROJECTION_BYTES) {
-    throw new BudgetExceededError();
-  }
-  st.collector.projectionBytes += itemBytes;
   st.collector.items.push(feedItem);
 }
 
+/** FeedProjection 的完整 canonical 编码载荷（不含 byteLength 字段本身）。 */
+export interface FeedProjectionCanonicalPayload {
+  format: FeedFormat;
+  title: FeedField;
+  description: FeedField;
+  siteUrl: FeedField;
+  feedUrl: FeedField;
+  items: FeedItem[];
+  itemsTruncated: boolean;
+}
+
+/**
+ * FeedProjection 完整、确定性的 canonical 编码（固定键序 JSON）。
+ * 字节预算以该编码为准：== MAX 接受、MAX+1 整次失败（RED LINE）。
+ * 注意：受 MAX_XML_TOTAL_TEXT_BYTES(131072) 约束，真实 feed 的完整编码无法达到
+ * MAX_FEED_PROJECTION_BYTES(262144)（总文本预算先绑定）；本守卫为防御性正确实现，
+ * 其 ==MAX/+1 边界语义由本函数在 helper 级机器验证。
+ */
+export function encodeFeedProjectionCanonical(payload: FeedProjectionCanonicalPayload): string {
+  return JSON.stringify(payload);
+}
+
+function finalizeProjection(collector: FeedCollector): FeedParseResult {
+  const channelTitle = normalizeFeedField(collector.channel.title);
+  // channel description 同属 HTML/CDATA 内容字段：转安全纯文本
+  const channelDescription = normalizeFeedField(htmlToPlainText(collector.channel.description));
+  const siteUrlField = normalizeFeedField(collector.channel.siteUrl);
+  const feedUrlField = normalizeFeedField(collector.channel.feedUrl);
+
+  const canonicalPayload: FeedProjectionCanonicalPayload = {
+    format: collector.format,
+    title: channelTitle,
+    description: channelDescription,
+    siteUrl: siteUrlField,
+    feedUrl: feedUrlField,
+    items: collector.items,
+    itemsTruncated: collector.itemsTruncated,
+  };
+  const encoded = encodeFeedProjectionCanonical(canonicalPayload);
+  const encodedBytes = utf8ByteLength(encoded);
+  if (encodedBytes > MAX_FEED_PROJECTION_BYTES) {
+    return { ok: false, health: 'budget_exceeded', reason: 'projection' };
+  }
+
+  const projection: FeedProjection = {
+    ...canonicalPayload,
+    byteLength: encodedBytes,
+  };
+  return { ok: true, projection, format: collector.format };
+}
+
 export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
+  return parseFeedXmlWithLoader(body, defaultSaxeLoader);
+}
+
+export async function parseFeedXmlWithLoader(
+  body: Buffer,
+  loader: SaxeLoader,
+): Promise<FeedParseResult> {
   const decoded = decodeXmlBytes(body);
   if (!decoded.ok) {
     return { ok: false, health: 'parse_changed', reason: decoded.reason };
+  }
+
+  let saxe: typeof import('@federicocarboni/saxe');
+  try {
+    saxe = await loader();
+  } catch {
+    // 依赖（ESM-only 包）加载失败 → 受控 dependency_unavailable，不泄漏 rejection
+    return { ok: false, health: 'dependency_unavailable', reason: 'dependency-unavailable' };
   }
 
   const collector: FeedCollector = {
@@ -358,7 +537,6 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
     items: [],
     itemsTruncated: false,
     seen: new Set(),
-    projectionBytes: 0,
   };
   const st: CollectorState = {
     collector,
@@ -379,8 +557,8 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
     endCDataSection(): void {},
   };
 
-  const saxe = await loadSaxe();
-  const parser = new saxe.SaxNamespaceParser(
+  const saxeModule = saxe;
+  const parser = new saxeModule.SaxNamespaceParser(
     {
       ...baseHandler,
       startTag(name, attrs) {
@@ -399,8 +577,18 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
         });
         if (attrBytes > MAX_XML_ATTRIBUTE_BYTES) throw new BudgetExceededError();
 
+        // XInclude：元素或 xmlns 声明一经出现立即 security_rejected（零文件/网络，WT-06）
+        if (name.namespace === XINCLUDE_NS) {
+          throw new ParseFailedError('security_rejected', 'xinclude');
+        }
+        attrs.forEach((value, qname) => {
+          if (qname.namespace === XMLNS_NS && value === XINCLUDE_NS) {
+            throw new ParseFailedError('security_rejected', 'xinclude');
+          }
+        });
+
         if (!formatSet) {
-          if (name.localName === 'rss') {
+          if (name.localName === 'rss' && name.namespace === undefined) {
             collector.format = 'rss2';
           } else if (name.localName === 'feed' && name.namespace === ATOM_NS) {
             collector.format = 'atom';
@@ -410,10 +598,12 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
           formatSet = true;
         }
 
-        // item/entry 边界
+        // item/entry 边界（RSS 核心无 namespace；Atom 须 ATOM_NS）
         if (
           !st.inItem &&
-          ((collector.format === 'rss2' && name.localName === 'item') ||
+          ((collector.format === 'rss2' &&
+            name.localName === 'item' &&
+            name.namespace === undefined) ||
             (collector.format === 'atom' &&
               name.localName === 'entry' &&
               name.namespace === ATOM_NS))
@@ -428,8 +618,12 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
         let field: FieldKey | null = null;
         if (st.inItem) {
           if (st.pendingItem !== null && collector.items.length < MAX_FEED_ITEMS) {
-            // Atom/RSS link 特殊处理（canonical link 用属性 href）
-            if (collector.format === 'atom' && name.localName === 'link') {
+            // Atom/RSS link 特殊处理（canonical link 用属性 href）；核心 link 须 ATOM_NS
+            if (
+              collector.format === 'atom' &&
+              name.localName === 'link' &&
+              name.namespace === ATOM_NS
+            ) {
               let rel = '';
               let href = '';
               attrs.forEach((value, qname) => {
@@ -447,17 +641,29 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
               }
               field = null;
             } else {
-              if (collector.format === 'atom' && name.localName === 'id') {
+              if (
+                collector.format === 'atom' &&
+                name.namespace === ATOM_NS &&
+                name.localName === 'id'
+              ) {
                 st.pendingItem.hasId = true;
               }
-              if (collector.format === 'rss2' && name.localName === 'guid') {
+              if (
+                collector.format === 'rss2' &&
+                name.namespace === undefined &&
+                name.localName === 'guid'
+              ) {
                 st.pendingItem.hasId = true;
               }
-              field = itemFieldFor(collector.format, name.localName);
+              field = itemFieldFor(collector.format, name.localName, name.namespace);
             }
           }
         } else {
-          if (collector.format === 'atom' && name.localName === 'link') {
+          if (
+            collector.format === 'atom' &&
+            name.localName === 'link' &&
+            name.namespace === ATOM_NS
+          ) {
             let rel = '';
             let href = '';
             attrs.forEach((value, qname) => {
@@ -476,7 +682,7 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
             }
             field = null;
           } else {
-            field = channelFieldFor(collector.format, name.localName);
+            field = channelFieldFor(collector.format, name.localName, name.namespace);
           }
         }
 
@@ -485,7 +691,9 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
       endTag(name) {
         st.stack.pop();
         const closingItem =
-          (collector.format === 'rss2' && name.localName === 'item') ||
+          (collector.format === 'rss2' &&
+            name.localName === 'item' &&
+            name.namespace === undefined) ||
           (collector.format === 'atom' && name.localName === 'entry' && name.namespace === ATOM_NS);
         if (closingItem && st.inItem) {
           finalizeItem(st);
@@ -493,6 +701,9 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
         }
       },
       text(content) {
+        // MAX_XML_NODES 覆盖 start element 与 text 事件（RED LINE）
+        st.nodes += 1;
+        if (st.nodes > MAX_XML_NODES) throw new BudgetExceededError();
         collectText(st, content);
       },
     },
@@ -531,29 +742,5 @@ export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
     return { ok: false, health: 'parse_changed', reason: 'empty-document' };
   }
 
-  const channelTitle = normalizeFeedField(collector.channel.title);
-  const channelDescription = normalizeFeedField(collector.channel.description);
-  const siteUrlField = normalizeFeedField(collector.channel.siteUrl);
-  const feedUrlField = normalizeFeedField(collector.channel.feedUrl);
-  const channelBytes =
-    utf8ByteLength(channelTitle.text) +
-    utf8ByteLength(channelDescription.text) +
-    utf8ByteLength(siteUrlField.text) +
-    utf8ByteLength(feedUrlField.text);
-  if (collector.projectionBytes + channelBytes > MAX_FEED_PROJECTION_BYTES) {
-    return { ok: false, health: 'budget_exceeded', reason: 'projection' };
-  }
-  collector.projectionBytes += channelBytes;
-
-  const projection: FeedProjection = {
-    format: collector.format,
-    title: channelTitle,
-    description: channelDescription,
-    siteUrl: siteUrlField,
-    feedUrl: feedUrlField,
-    items: collector.items,
-    itemsTruncated: collector.itemsTruncated,
-    byteLength: collector.projectionBytes,
-  };
-  return { ok: true, projection, format: collector.format };
+  return finalizeProjection(collector);
 }

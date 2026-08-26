@@ -77,9 +77,10 @@
   动态导入 + 敌手 DOCTYPE fail-closed 均通过。实现采用 `await import('@federicocarboni/saxe')`。
 - **兼容/敌手**（node 直跑 gate 脚本，28 项）：RSS2/Atom/namespace URI+localName（不信任前缀）/
   CDATA/UTF-8/UTF-16LE-BE BOM/windows-1252/ISO-8859-1/流式分块全过；DOCTYPE/ENTITY/外部 DTD/XXE/
-  Billion Laughs/未知实体 → 抛错；XInclude 惰性零解析；depth 64==接受/65 拒绝、maxNameLength、
-  maxAttributesLength、maxTextLength 均按配置生效；零 `require`/`node:fs`/`node:http`/`fetch` 引用
-  （注释剔除后字节扫描）。
+  Billion Laughs/未知实体 → 抛错；**XInclude 惰性零解析（仅验证零文件/网络，未验证正式契约的
+  security_rejected 语义——该缺口由 D3-R1 修复，见下文「D3-R1 修复记录」）**；depth 64==接受/65
+  拒绝、maxNameLength、maxAttributesLength、maxTextLength 均按配置生效；零
+  `require`/`node:fs`/`node:http`/`fetch` 引用（注释剔除后字节扫描）。
 - 运行时语义发现：saxe 对 handler 方法**无条件调用**（类型标可选但运行时必需全提供）；
   `maxAttributesLength` 按 code unit 且 `== max` 即拒绝（与项目 UTF-8「== 接受」语义冲突，
   故作为 2× 粗防线回退，权威 oracle 为本项目 handler 的字节检查）；属性名也受 `maxNameLength` 约束。
@@ -133,3 +134,55 @@
 | WRT-07 | depth/name/attr-count/attr-bytes/text-node/nodes/total-text/Projection 每项 == MAX 接受、+1 fail-closed          | feed-parser.test 边界套件                                       |
 | WRT-08 | 重复/冲突 identity 去重稳定、字段超长截断标记、feed 重排确定性、200/201 截断                                     | feed-parser.test identity/truncation 套件                       |
 | WRT-19 | HTML script/iframe/子资源/Cookie canary 零执行/请求、2 MiB/20k node/64 depth/64 attrs/64 KiB Projection 精确边界 | public-html-sax-reader.test + corpus（canary 逐字节零出现）     |
+
+## D3-R1 修复记录（2026-08-26，Reviewer 待复验）
+
+D3-R1 独立安全修复候选闭合正式契约在 D3 首次实现中遗留的公开网络与 Feed/HTML parser 缺口；
+全部先红后绿，未删除/放宽既有有效断言（全量 2602 → **2646**，+44 新增）。候选未 push。
+
+### 修复项与证据
+
+1. **IPv6 显式 allowlist（WRT-01/02）**：`network-policy.ts` 由「未在 denylist 即 public」改为
+   显式放行公网 global-unicast（2000::/3）且排除 site-local fec0::/10、文档段 2001:db8::/32、
+   BMWG benchmarking 2001:2::/48、AMT/AS112/ORCHID/Drone、整个 2001::/23 IETF 保留块等；
+   红态 fec0/2001:db8/2001:2 误判 public → 绿态 reserved；连接层 `[fec0::1]` 等字面量与混合
+   DNS 均零 socket security_rejected。
+2. **每跳 robots 先于 socket（WRT-05 每跳部分）**：`public-watch-http-client.ts` 新增窄
+   `RobotsGatePort` seam；初始与每个 redirect host 在发起 socket 前完成 robots 决策，
+   `purpose='robots'` 自身跳过（零递归）；gate 异常 fail-closed unavailable；disallowed →
+   `robots_disallowed`。测试断言初始 host allowed 后 redirect 下一 host robots 拒绝时下一 host
+   **零 socket**。
+3. **robots 匹配 RFC 9309（WRT-05）**：`robots-policy.ts` 实现 `*` 通配、结尾 `$` 锚点、最长匹配
+   （按匹配消耗 octet 数，§5.2）与等长 allow 优先；线性贪心无正则（无 ReDoS 面）。**无缓存 304、
+   跨 host robots redirect、解析异常一律 fail-closed 为 unavailable，不再退化为 allow-all**。
+4. **timeout/deadline/abort 覆盖 DNS**：DNS lookup 与剩余 deadline、`timeoutMs`、abort 竞争；
+   永不返回的 DNS 按时受控失败；`requestFactory` 同步 throw 转受控 unavailable；redirect/HEAD
+   等不消费响应立即 `destroy()`（降级 resume 排空）。
+5. **XML 安全（WRT-06）**：XInclude namespace（元素或 xmlns 声明）一经出现立即
+   `security_rejected`（不再惰性接受）；Atom/RSS 核心字段（identity/title/link 等）同时校验允许
+   namespace（Atom=ATOM_NS、RSS=无 namespace），扩展 namespace 同名元素不得覆盖核心字段；
+   RSS 根带默认 namespace → parse_changed。
+6. **编码 fail-closed（WRT-07）**：TextDecoder 改 `fatal:true`，非法 UTF-8/截断多字节/UTF-16
+   奇数长度一律 parse_changed，不再以 U+FFFD replacement 掩盖。
+7. **MAX_XML_NODES 覆盖 start element 与 text 事件（WRT-07）**：text 事件计入节点预算。
+8. **完整编码投影预算（WRT-07/WRT-19）**：FeedProjection 与 PageProjection 字节预算改为以
+   完整、确定性的 canonical encoded projection（JSON 固定键序）为准，==MAX 接受、MAX+1 失败；
+   新增 `encodeFeedProjectionCanonical` 纯函数在 helper 级验证边界语义。
+9. **依赖加载受控（WRT-06 相关）**：动态 import saxe 失败 → 受控 `dependency_unavailable`，
+   不泄漏 promise rejection（`parseFeedXmlWithLoader` seam）。
+
+### 诚实限制（如实记录，不冒充免疫）
+
+- **FeedProjection MAX（262144）实际不可达**：受 `MAX_XML_TOTAL_TEXT_BYTES`（131072）约束，
+  完整 canonical 编码的 feed 投影最大约 137KB（31×4096 字段 + 结构开销），故投影守卫为防御性
+  正确实现；其 ==MAX/+1 边界语义由 `encodeFeedProjectionCanonical` 在 helper 级机器验证，
+  端到端验证覆盖精确记账与最大文本 feed 接受。
+- **每跳 robots 的 D5 装配**：`PublicWatchHttpClient` 默认不注入 robots gate（D3 无
+  Coordinator）；D5 装配必须把 `RobotsPolicy` 接入客户端，否则每跳 robots 不生效——这是当前
+  D3 范围的显式留白，非绕过。
+
+### D3-R1 验证门（候选本地全绿）
+
+- D3 聚焦（watch 全部）**379/379**；全量 `npm test -- --maxWorkers=1` **2646/2646**（+44）；
+  typecheck ✓、lint ✓、format:check ✓、build ✓、npm audit 0、`git diff --check` 退出码 0。
+- 工作区仅含上述 12 个范围内文件；临时探针已清理；候选提交未 push，交由新独立 Reviewer 复验。

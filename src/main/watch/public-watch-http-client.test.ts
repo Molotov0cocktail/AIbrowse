@@ -24,8 +24,11 @@ class FakeIncoming extends EventEmitter implements WatchIncomingLike {
   statusCode = 200;
   statusMessage = 'OK';
   headers: Record<string, string | string[] | undefined> = {};
+  destroyed = false;
   resume(): void {}
-  destroy(): void {}
+  destroy(): void {
+    this.destroyed = true;
+  }
 }
 
 class FakeRequest extends EventEmitter implements WatchRequestLike {
@@ -178,6 +181,36 @@ describe('WRT-01/WRT-02/WRT-03 — 零 socket 与地址校验', () => {
     expect(t.captured.length).toBe(0);
   });
 
+  it('IPv6 非公网字面量（fec0/文档段/benchmark）→ security_rejected，零 socket', async () => {
+    for (const host of ['[fec0::1]', '[2001:db8::1]', '[2001:2::1]']) {
+      const t = createTransport();
+      const client = makeClient(t);
+      const r = await client.get({ url: `http://${host}/feed`, purpose: 'feed' });
+      expect(r.kind, host).toBe('failed');
+      if (r.kind === 'failed') expect(r.health, host).toBe('security_rejected');
+      expect(t.captured.length, host).toBe(0);
+    }
+  });
+
+  it('lookup 返回 IPv6 非公网（含混合）→ security_rejected，零 socket', async () => {
+    for (const addresses of [
+      [{ address: 'fec0::1', family: 6 as const }],
+      [{ address: '2001:db8::1', family: 6 as const }],
+      [{ address: '2001:2::1', family: 6 as const }],
+      [
+        { address: '2606:4700:4700::1111', family: 6 as const },
+        { address: 'fec0::1', family: 6 as const },
+      ],
+    ]) {
+      const t = createTransport();
+      const client = makeClient(t, { lookup: async () => addresses });
+      const r = await client.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('security_rejected');
+      expect(t.captured.length).toBe(0);
+    }
+  });
+
   it('连接时 sealed lookup 只返回已批准地址（DNS trap/rebinding 无法注入）', async () => {
     const t = createTransport();
     const client = makeClient(t);
@@ -229,7 +262,7 @@ describe('固定 header / 条件请求 / 304', () => {
     const t = createTransport();
     const client = makeClient(t);
     const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     const headers = t.captured[0]!.options.headers;
     expect(headers['User-Agent']).toBe(WATCH_DEFAULT_USER_AGENT);
     expect(headers['Accept']).toContain('application/rss+xml');
@@ -253,7 +286,7 @@ describe('固定 header / 条件请求 / 304', () => {
       etag: '"abc"',
       lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
     });
-    await Promise.resolve();
+    await flush();
     expect(t.captured[0]!.options.headers['If-None-Match']).toBe('"abc"');
     expect(t.captured[0]!.options.headers['If-Modified-Since']).toBe(
       'Mon, 01 Jan 2024 00:00:00 GMT',
@@ -267,7 +300,7 @@ describe('固定 header / 条件请求 / 304', () => {
     const t = createTransport();
     const client = makeClient(t);
     const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed', etag: '"e1"' });
-    await Promise.resolve();
+    await flush();
     t.captured[0]!.respond(
       304,
       { etag: '"e1"', 'last-modified': 'Mon, 01 Jan 2024 00:00:00 GMT' },
@@ -285,7 +318,7 @@ describe('固定 header / 条件请求 / 304', () => {
     const t = createTransport();
     const client = makeClient(t);
     const promise = client.head({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     expect(t.captured[0]!.options.method).toBe('HEAD');
     t.captured[0]!.respond(200, { 'content-type': 'application/rss+xml' }, 'ignored-body');
     const r = await promise;
@@ -325,7 +358,7 @@ describe('redirect — 每跳复验（WRT-03）', () => {
       const t = createTransport();
       const client = makeClient(t);
       const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
-      await Promise.resolve();
+      await flush();
       t.captured[0]!.respond(302, { location }, null);
       const r = await promise;
       expect(r.kind, location).toBe('failed');
@@ -338,7 +371,7 @@ describe('redirect — 每跳复验（WRT-03）', () => {
     const t = createTransport();
     const client = makeClient(t);
     const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t.captured[0]!.respond(302, { location: 'http://example.com/feed' }, null);
     const r = await promise;
     expect(r.kind).toBe('failed');
@@ -368,7 +401,7 @@ describe('redirect — 每跳复验（WRT-03）', () => {
     const t = createTransport();
     const client = makeClient(t);
     const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t.captured[0]!.respond(302, {}, null);
     const r = await promise;
     expect(r.kind).toBe('ok');
@@ -382,7 +415,7 @@ describe('预算/超时/慢流（WRT-04）', () => {
     const t = createTransport();
     const client = makeClient(t);
     const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t.captured[0]!.respond(200, { 'content-length': String(MAX_FEED_RESPONSE_BYTES + 1) }, '');
     const r = await promise;
     expect(r.kind).toBe('failed');
@@ -394,7 +427,7 @@ describe('预算/超时/慢流（WRT-04）', () => {
     const t1 = createTransport();
     const c1 = makeClient(t1);
     const p1 = c1.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t1.captured[0]!.respond(200, {}, atMax);
     const r1 = await p1;
     expect(r1.kind).toBe('ok');
@@ -403,7 +436,7 @@ describe('预算/超时/慢流（WRT-04）', () => {
     const t2 = createTransport();
     const c2 = makeClient(t2);
     const p2 = c2.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t2.captured[0]!.respond(200, {}, 'x'.repeat(MAX_FEED_RESPONSE_BYTES + 1));
     const r2 = await p2;
     expect(r2.kind).toBe('failed');
@@ -416,7 +449,7 @@ describe('预算/超时/慢流（WRT-04）', () => {
     const t1 = createTransport();
     const c1 = makeClient(t1);
     const p1 = c1.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t1.captured[0]!.respond(200, { 'content-encoding': 'gzip' }, gzMax);
     const r1 = await p1;
     expect(r1.kind).toBe('ok');
@@ -428,7 +461,7 @@ describe('预算/超时/慢流（WRT-04）', () => {
     const t2 = createTransport();
     const c2 = makeClient(t2);
     const p2 = c2.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t2.captured[0]!.respond(
       200,
       { 'content-encoding': 'gzip' },
@@ -443,7 +476,7 @@ describe('预算/超时/慢流（WRT-04）', () => {
     const t = createTransport();
     const client = makeClient(t);
     const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t.captured[0]!.respond(200, { 'content-encoding': 'xz' }, 'x'.repeat(100));
     const r = await promise;
     expect(r.kind).toBe('failed');
@@ -459,10 +492,10 @@ describe('预算/超时/慢流（WRT-04）', () => {
       purpose: 'feed',
       deadline: new Date(5000),
     });
-    await Promise.resolve();
+    await flush();
     const res = t.captured[0]!.openResponse(200, {});
     res.emit('data', Buffer.from('part1', 'utf8')); // t=0 < deadline
-    await Promise.resolve();
+    await flush();
     clock.pushNow(6000); // 超过 deadline
     res.emit('data', Buffer.from('part2', 'utf8')); // 触发 failDeadline
     res.emit('end');
@@ -474,7 +507,7 @@ describe('预算/超时/慢流（WRT-04）', () => {
     const t2 = createTransport();
     const c2 = makeClient(t2);
     const p2 = c2.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t2.captured[0]!.respond(200, {}, '<rss/>');
     const r2 = await p2;
     expect(r2.kind).toBe('ok');
@@ -484,7 +517,7 @@ describe('预算/超时/慢流（WRT-04）', () => {
     const t = createTransport();
     const client = makeClient(t, { timeoutMs: 10 });
     const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     await new Promise((r) => setTimeout(r, 30)); // 等待真实 timer 触发
     const r = await promise;
     expect(r.kind).toBe('failed');
@@ -495,11 +528,189 @@ describe('预算/超时/慢流（WRT-04）', () => {
     const t = createTransport();
     const client = makeClient(t);
     const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
-    await Promise.resolve();
+    await flush();
     t.captured[0]!.error('ECONNREFUSED');
     const r = await promise;
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+  });
+});
+
+describe('DNS lookup 竞争 deadline/timeout/abort（WRT-04 覆盖 DNS 生命周期）', () => {
+  it('永不返回的 DNS → timeoutMs 内受控失败', async () => {
+    const t = createTransport();
+    const client = new PublicWatchHttpClient({
+      lookup: async () => new Promise(() => {}), // 永不 resolve
+      request: t.factory,
+      timeoutMs: 30,
+    });
+    const start = Date.now();
+    const r = await client.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    const elapsed = Date.now() - start;
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    expect(elapsed).toBeLessThan(3000);
+    expect(t.captured.length).toBe(0);
+  });
+
+  it('已过期 deadline → 立即失败（不等 DNS）', async () => {
+    const t = createTransport();
+    const client = new PublicWatchHttpClient({
+      lookup: async () => new Promise(() => {}),
+      request: t.factory,
+    });
+    const r = await client.get({
+      url: 'https://example.com/feed',
+      purpose: 'feed',
+      deadline: new Date(Date.now() - 1),
+    });
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    expect(t.captured.length).toBe(0);
+  });
+
+  it('abort 在 DNS 期间 → aborted', async () => {
+    const controller = new AbortController();
+    const t = createTransport();
+    const client = new PublicWatchHttpClient({
+      lookup: async () => new Promise(() => {}),
+      request: t.factory,
+    });
+    const promise = client.get({
+      url: 'https://example.com/feed',
+      purpose: 'feed',
+      signal: controller.signal,
+    });
+    controller.abort();
+    const r = await promise;
+    expect(r.kind).toBe('aborted');
+    expect(t.captured.length).toBe(0);
+  });
+
+  it('requestFactory 同步 throw → 受控 unavailable（不拒绝 promise）', async () => {
+    const factory: WatchRequestFactory = () => {
+      throw new Error('boom');
+    };
+    const client = new PublicWatchHttpClient({ lookup: PUBLIC_LOOKUP, request: factory });
+    const r = await client.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+  });
+});
+
+describe('每跳 robots gate（WRT-05 每跳部分）', () => {
+  it('初始 host allowed → 发起 socket；redirect 下一 host robots disallowed → 下一 host 零 socket', async () => {
+    const t = createTransport();
+    let gateCalls = 0;
+    const client = new PublicWatchHttpClient({
+      lookup: PUBLIC_LOOKUP,
+      request: t.factory,
+      robots: {
+        checkAllowed: async (input) => {
+          gateCalls += 1;
+          const host = new URL(input.url).hostname;
+          if (host === 'example.com') return { kind: 'allowed' };
+          if (host === 'cdn.example.com') return { kind: 'disallowed' };
+          return { kind: 'allowed' };
+        },
+      },
+    });
+    const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    expect(t.captured.length).toBe(1);
+    expect(gateCalls).toBe(1);
+    t.captured[0]!.respond(302, { location: 'https://cdn.example.com/feed.xml' }, null);
+    await flush();
+    expect(t.captured.length).toBe(1); // 下一 host 零 socket
+    expect(gateCalls).toBe(2);
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('robots_disallowed');
+  });
+
+  it('robots gate 异常 → fail-closed unavailable（不假定允许）', async () => {
+    const t = createTransport();
+    const client = new PublicWatchHttpClient({
+      lookup: PUBLIC_LOOKUP,
+      request: t.factory,
+      robots: {
+        checkAllowed: async () => {
+          throw new Error('gate-boom');
+        },
+      },
+    });
+    const r = await client.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    expect(t.captured.length).toBe(0);
+  });
+
+  it('purpose=robots 跳过 robots gate（零递归）', async () => {
+    const t = createTransport();
+    let gateCalls = 0;
+    const client = new PublicWatchHttpClient({
+      lookup: PUBLIC_LOOKUP,
+      request: t.factory,
+      robots: {
+        checkAllowed: async () => {
+          gateCalls += 1;
+          return { kind: 'disallowed' };
+        },
+      },
+    });
+    const promise = client.get({ url: 'https://example.com/robots.txt', purpose: 'robots' });
+    await flush();
+    expect(gateCalls).toBe(0);
+    t.captured[0]!.respond(200, {}, 'User-agent: *');
+    const r = await promise;
+    expect(r.kind).toBe('ok');
+  });
+});
+
+describe('不消费响应的安全销毁（WRT-04 生命周期）', () => {
+  it('redirect 无限 body：立即销毁前一个响应并继续', async () => {
+    const t = createTransport();
+    const client = makeClient(t);
+    const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = t.captured[0]!.openResponse(302, { location: 'https://cdn.example.com/feed.xml' });
+    res.emit('data', Buffer.from('x', 'utf8')); // 不 emit end → 无限 body
+    await flush();
+    expect(t.captured.length).toBe(2);
+    expect(res.destroyed).toBe(true);
+    t.captured[1]!.respond(200, {}, '<rss/>');
+    const r = await promise;
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') expect(r.meta.finalUrl).toBe('https://cdn.example.com/feed.xml');
+  });
+
+  it('HEAD 无限 body：立即销毁响应并返回零 body', async () => {
+    const t = createTransport();
+    const client = makeClient(t);
+    const promise = client.head({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = t.captured[0]!.openResponse(200, {});
+    res.emit('data', Buffer.from('x', 'utf8')); // 不 emit end
+    await flush();
+    const r = await promise;
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') expect(r.body.length).toBe(0);
+    expect(res.destroyed).toBe(true);
+  });
+
+  it('3xx 无 Location 无限 body：销毁并返回 3xx 结果', async () => {
+    const t = createTransport();
+    const client = makeClient(t);
+    const promise = client.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = t.captured[0]!.openResponse(302, {});
+    res.emit('data', Buffer.from('x', 'utf8'));
+    await flush();
+    const r = await promise;
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') expect(r.meta.statusCode).toBe(302);
+    expect(res.destroyed).toBe(true);
+    expect(t.captured.length).toBe(1);
   });
 });
 

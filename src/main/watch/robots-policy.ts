@@ -144,8 +144,86 @@ function collectMatchingRules(rules: RobotsRules, uaProduct: string): RobotsRule
 }
 
 /**
- * 最长匹配（RFC 9309 §2.2.2）：pattern 为 target 路径（含 query）前缀，最长者胜；
- * 长度相等时 allow 优先；无匹配 → 允许。空 target 路径按 '/' 处理。
+ * RFC 9309 §2.2.2/§2.2.3 路径匹配：返回 pattern 在 path 上匹配所消耗的 octet 数
+ * （matched），不匹配返回 -1。
+ * - `*` 匹配 0 或多任意字符；结尾 `$` 把 pattern 锚定到路径尾（必须匹配完整 path）。
+ * - 非锚定为前缀匹配（§2.2.2：pattern 结束即可，path 可续）。
+ * - 线性贪心 + 回溯，无正则（不引入 ReDoS 面）。
+ */
+function matchPatternLength(pattern: string, path: string): number {
+  let anchored = false;
+  let pat = pattern;
+  if (pat.endsWith('$')) {
+    anchored = true;
+    pat = pat.slice(0, -1);
+  }
+  const p = pat;
+  const t = path;
+  const pl = p.length;
+  const tl = t.length;
+  let pi = 0; // pattern 索引
+  let ti = 0; // path 索引
+  let starPi = -1; // 最近一次 '*' 的 pattern 位置
+  let starTi = 0; // 该 '*' 当前匹配起点（回溯用）
+
+  const consumeTrailingStars = (): number => {
+    let idx = pi;
+    while (idx < pl && p[idx] === '*') idx += 1;
+    return idx;
+  };
+
+  if (anchored) {
+    // 锚定：pattern 必须匹配完整 path（贪心到 path 尾）
+    while (ti < tl) {
+      if (pi < pl && p[pi] === '*') {
+        starPi = pi;
+        starTi = ti;
+        pi += 1;
+      } else if (pi < pl && p[pi] === t[ti]) {
+        pi += 1;
+        ti += 1;
+      } else if (starPi !== -1) {
+        pi = starPi + 1;
+        starTi += 1;
+        ti = starTi;
+      } else {
+        return -1;
+      }
+    }
+    if (consumeTrailingStars() < pl) return -1;
+    return tl;
+  }
+
+  // 非锚定前缀匹配
+  while (ti < tl && pi < pl) {
+    if (p[pi] === '*') {
+      starPi = pi;
+      starTi = ti;
+      pi += 1;
+    } else if (p[pi] === t[ti]) {
+      pi += 1;
+      ti += 1;
+    } else if (starPi !== -1) {
+      pi = starPi + 1;
+      starTi += 1;
+      ti = starTi;
+    } else {
+      return -1;
+    }
+  }
+  if (pi >= pl) {
+    // pattern 已耗尽：尾部为 '*' 则吸收到 path 尾，否则停在字面量匹配处
+    if (pl > 0 && p[pl - 1] === '*') return tl;
+    return ti;
+  }
+  // path 已耗尽（ti === tl），pattern 剩余若全为 '*' 则可空匹配
+  if (consumeTrailingStars() === pl) return tl;
+  return -1;
+}
+
+/**
+ * 最长匹配（RFC 9309 §2.2.2）：path 与各 rule 比较，匹配消耗 octet 数最多者胜；
+ * 等长时 allow 优先；无匹配 → 允许。空 target 路径按 '/' 处理。
  */
 export function evaluateRobotsPath(rules: RobotsRules, uaProduct: string, path: string): boolean {
   const target = path === '' ? '/' : path;
@@ -153,12 +231,13 @@ export function evaluateRobotsPath(rules: RobotsRules, uaProduct: string, path: 
   let bestLength = -1;
   let bestAllow = true;
   for (const rule of matching) {
-    if (target.startsWith(rule.pattern) && rule.pattern.length > bestLength) {
-      bestLength = rule.pattern.length;
+    const m = matchPatternLength(rule.pattern, target);
+    if (m < 0) continue;
+    if (m > bestLength) {
+      bestLength = m;
       bestAllow = rule.allow;
-    } else if (target.startsWith(rule.pattern) && rule.pattern.length === bestLength) {
-      // 等长：allow 优先
-      bestAllow = rule.allow || bestAllow;
+    } else if (m === bestLength) {
+      bestAllow = bestAllow || rule.allow; // 等长：allow 优先
     }
   }
   return bestAllow;
@@ -226,14 +305,15 @@ export class RobotsPolicy {
         : { kind: 'unavailable' };
     }
     if (fetchResult.kind === 'unchanged-http') {
-      // 304：沿用缓存（不应发生——无缓存时不应发条件请求；防御性沿用 allow-all）
-      const entry: CacheEntry = { decision: 'allow-all', expiresAt };
+      // 304 但无缓存（robots 请求从不带条件头，正常不应发生）：fail-closed，不退化 allow-all
+      const entry: CacheEntry = { decision: 'unavailable', expiresAt };
       this.cache.set(cacheKey, entry);
-      return { kind: 'allowed' };
+      return { kind: 'unavailable' };
     }
 
     const meta = fetchResult.meta;
-    // 跨 host 最终 URL：按 RFC 9309 视为无 robots 文件（allow-all）
+    // 跨 host 最终 URL：robots 规则只属于初始 authority；无法确定 robots → fail-closed
+    //（不按 RFC 9309 视作无文件 allow-all，见 D3-R1 RED LINE）
     let finalHost: string | null;
     try {
       finalHost = new URL(meta.finalUrl).hostname;
@@ -243,9 +323,9 @@ export class RobotsPolicy {
 
     if (meta.statusCode >= 200 && meta.statusCode < 300) {
       if (finalHost !== null && finalHost !== target.host) {
-        const entry: CacheEntry = { decision: 'allow-all', expiresAt };
+        const entry: CacheEntry = { decision: 'unavailable', expiresAt };
         this.cache.set(cacheKey, entry);
-        return { kind: 'allowed' };
+        return { kind: 'unavailable' };
       }
       const text = fetchResult.body.toString('utf8').replace(/^\uFEFF/, '');
       const parsed = parseRobotsText(text);

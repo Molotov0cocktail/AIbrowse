@@ -185,18 +185,32 @@ describe('预算精确边界', () => {
     if (!bad.ok) expect(bad.health).toBe('budget_exceeded');
   });
 
-  it('Projection 预算：== MAX 接受、MAX+1 拒绝', () => {
-    // mainText 恰好 65536 字节（用中文字符精确对齐：3 字节 × 精确数量）
-    const n = Math.floor(MAX_PAGE_PROJECTION_BYTES / 3); // 21845 个中文字 = 65535 字节
-    const exact = '中'.repeat(n);
-    const ok = readPublicHtml(htmlOf(`<p>${exact}</p>`), BASE);
+  it('Projection 预算：canonical 编码 == 65536 接受、+1 拒绝', () => {
+    // 完整 DocumentChannels JSON 编码（固定键序）字节预算；ASCII 每字符 1 字节 → 精确命中
+    const baseBytes = Buffer.byteLength(
+      JSON.stringify({ mainText: '', headings: [], tables: [], links: [] }),
+      'utf8',
+    );
+    const n = MAX_PAGE_PROJECTION_BYTES - baseBytes;
+    const exact = htmlOf(`<p>${'a'.repeat(n)}</p>`);
+    const ok = readPublicHtml(exact, BASE);
     expect(ok.ok).toBe(true);
-    if (ok.ok) expect(ok.byteLength).toBe(n * 3);
+    if (ok.ok) expect(ok.byteLength).toBe(MAX_PAGE_PROJECTION_BYTES);
 
-    const over = htmlOf(`<p>${exact}中</p>`); // 65538 > 65536
+    const over = htmlOf(`<p>${'a'.repeat(n + 1)}</p>`);
     const bad = readPublicHtml(over, BASE);
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.health).toBe('budget_exceeded');
+  });
+
+  it('Projection 预算包含 headings/tables/links 完整结构编码（不只 mainText）', () => {
+    // 大量 heading 文本使完整 JSON 编码超预算，但 mainText 很小 → 仍 budget_exceeded
+    const headings = Array.from({ length: 900 }, (_, i) => `<h1>${'h'.repeat(60)}${i}</h1>`).join(
+      '',
+    );
+    const r = readPublicHtml(htmlOf(headings), BASE);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.health).toBe('budget_exceeded');
   });
 });
 

@@ -186,13 +186,36 @@ describe('classifyIpAddress — IPv6', () => {
     expect(classifyIpAddress('100::1')).toBe('reserved');
   });
 
+  it('site-local（fec0::/10 废弃）与 IETF/benchmarking 段保留（显式 allowlist）', () => {
+    expect(classifyIpAddress('fec0::1')).toBe('reserved'); // site-local
+    expect(classifyIpAddress('fec0:1234::1')).toBe('reserved'); // site-local 余部
+    expect(classifyIpAddress('fedf::1')).toBe('reserved'); // site-local 边界内
+    expect(classifyIpAddress('2001:1::1')).toBe('reserved'); // IETF anycast/PCP
+    expect(classifyIpAddress('2001:2::1')).toBe('reserved'); // BMWG benchmarking
+    expect(classifyIpAddress('2001:3::1')).toBe('reserved'); // AMT
+    expect(classifyIpAddress('2001:4::1')).toBe('reserved'); // AS112-v6
+    expect(classifyIpAddress('2001:20::1')).toBe('reserved'); // ORCHID
+    expect(classifyIpAddress('2001:30::1')).toBe('reserved'); // Drone Remote ID
+    expect(classifyIpAddress('2001:100::1')).toBe('reserved'); // 2001::/23 IETF 保留块
+    expect(classifyIpAddress('2001:1ff::1')).toBe('reserved'); // 2001::/23 上界内
+  });
+
+  it('2000::/3 内非特殊保留的 global-unicast 放行；/23 块外 2001:xxxx 放行', () => {
+    expect(classifyIpAddress('2001:4860:4860::8888')).toBe('public');
+    expect(classifyIpAddress('2606:4700:4700::1111')).toBe('public');
+    expect(classifyIpAddress('3fff::1')).toBe('public'); // global unicast 空间
+    expect(classifyIpAddress('2001:200::1')).toBe('public'); // 2001::/23 之外
+    expect(classifyIpAddress('2400:cb00::1')).toBe('public'); // Cloudflare
+    expect(classifyIpAddress('2a00:1450::1')).toBe('public'); // Google
+  });
+
   it('IPv4-mapped 按内嵌 IPv4 分类', () => {
     expect(classifyIpAddress('::ffff:127.0.0.1')).toBe('loopback');
     expect(classifyIpAddress('::ffff:192.168.1.1')).toBe('private');
     expect(classifyIpAddress('::ffff:8.8.8.8')).toBe('public');
   });
 
-  it('公网 IPv6', () => {
+  it('公网 IPv6（保持既有断言）', () => {
     expect(classifyIpAddress('2001:4860:4860::8888')).toBe('public');
     expect(classifyIpAddress('2606:4700:4700::1111')).toBe('public');
   });
@@ -202,10 +225,15 @@ describe('isAllowedPublicAddress', () => {
   it('只放行公网 unicast；其余 fail-closed', () => {
     expect(isAllowedPublicAddress('8.8.8.8')).toBe(true);
     expect(isAllowedPublicAddress('2001:4860:4860::8888')).toBe(true);
+    expect(isAllowedPublicAddress('2606:4700:4700::1111')).toBe(true);
     expect(isAllowedPublicAddress('10.0.0.1')).toBe(false);
     expect(isAllowedPublicAddress('127.0.0.1')).toBe(false);
     expect(isAllowedPublicAddress('::1')).toBe(false);
     expect(isAllowedPublicAddress('fe80::1')).toBe(false);
+    expect(isAllowedPublicAddress('fec0::1')).toBe(false); // site-local
+    expect(isAllowedPublicAddress('2001:db8::1')).toBe(false); // 文档段
+    expect(isAllowedPublicAddress('2001:2::1')).toBe(false); // benchmarking
+    expect(isAllowedPublicAddress('2002::1')).toBe(false); // 6to4
     expect(isAllowedPublicAddress('not-an-ip')).toBe(false);
   });
 });
