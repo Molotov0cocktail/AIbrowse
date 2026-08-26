@@ -9,24 +9,30 @@ export function utf8ByteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8');
 }
 
-/** 值是否在 maxBytes 字节预算内（≤ 允许）。 */
+/** 预算是否合法：非负整数（有限）。 */
+function isValidBudget(maxBytes: number): boolean {
+  return Number.isFinite(maxBytes) && Number.isInteger(maxBytes) && maxBytes >= 0;
+}
+
+/** 值是否在 maxBytes 字节预算内（≤ 允许）；非法预算 fail-closed 恒 false。 */
 export function utf8InBudget(value: string, maxBytes: number): boolean {
+  if (!isValidBudget(maxBytes)) return false;
   return utf8ByteLength(value) <= maxBytes;
 }
 
 /**
  * 安全截断：返回不超过 maxBytes 的最大整 code point 前缀（不拆 surrogate/多字节），
  * 并记录 truncated 与截断前 UTF-8 字节数。预算内返回原值。非法预算（非负整数以外）
- * 受控：不截断安全返回原值。
+ * fail-closed：不得返回未受限正文，统一视同零预算（空文本 + truncated=true），不抛出。
  */
 export function truncateUtf8(
   value: string,
   maxBytes: number,
 ): { text: string; truncated: boolean; originalBytes: number } {
   const originalBytes = utf8ByteLength(value);
-  if (!Number.isFinite(maxBytes) || !Number.isInteger(maxBytes) || maxBytes < 0) {
-    // 非法预算：无法安全截断，返回原值（fail-closed，不抛出）
-    return { text: value, truncated: false, originalBytes };
+  if (!isValidBudget(maxBytes)) {
+    // 非法预算：fail-closed，绝不返回完整未受限正文（不抛异常）
+    return { text: '', truncated: true, originalBytes };
   }
   if (originalBytes <= maxBytes) {
     return { text: value, truncated: false, originalBytes };

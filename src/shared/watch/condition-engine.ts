@@ -89,6 +89,32 @@ function exactOwnKeys(raw: Record<string, unknown>, expected: readonly string[])
   return true;
 }
 
+/** own-data-property 读取哨兵：字段缺失、accessor 或反射异常（fail-closed）。 */
+const NOT_OWN_DATA: unique symbol = Symbol('not-own-data');
+
+/**
+ * 集中 own-data-property 读取（F2）：只接受普通对象上的自有数据属性；accessor、
+ * 非自有、descriptor/Reflect/Proxy 异常一律返回 NOT_OWN_DATA（调用方按形状 fail-closed）。
+ * 绝不触发 getter；不调用 getter 来"验证"getter。
+ */
+function ownDataValue(raw: Record<string, unknown>, key: string): unknown {
+  let desc: PropertyDescriptor | undefined;
+  try {
+    desc = Object.getOwnPropertyDescriptor(raw, key);
+  } catch {
+    return NOT_OWN_DATA;
+  }
+  if (desc === undefined) return NOT_OWN_DATA;
+  try {
+    if (!Object.prototype.hasOwnProperty.call(desc, 'value')) return NOT_OWN_DATA;
+    if (Object.prototype.hasOwnProperty.call(desc, 'get')) return NOT_OWN_DATA;
+    if (Object.prototype.hasOwnProperty.call(desc, 'set')) return NOT_OWN_DATA;
+    return desc.value;
+  } catch {
+    return NOT_OWN_DATA;
+  }
+}
+
 // 规范 ASCII 十进制（可有负号/小数）；拒绝指数/单位/locale 分隔/空。
 const NUMERIC_DECIMAL_PATTERN = /^-?\d+(\.\d+)?$/;
 
@@ -143,14 +169,16 @@ export interface StructuredChangeSet {
 
 function parseChangeValue(raw: unknown): ChangeFieldValue | null {
   if (!isPlainRecord(raw)) return null;
-  const kind = raw['kind'];
+  const kind = ownDataValue(raw, 'kind');
+  if (kind === NOT_OWN_DATA) return null;
   if (kind === 'absent') {
     if (!exactOwnKeys(raw, ['kind'])) return null;
     return { kind: 'absent' };
   }
   if (kind === 'present') {
     if (!exactOwnKeys(raw, ['kind', 'value'])) return null;
-    const value = raw['value'];
+    const value = ownDataValue(raw, 'value');
+    if (value === NOT_OWN_DATA) return null;
     if (typeof value === 'string') return { kind: 'present', value };
     if (typeof value === 'number' && Number.isFinite(value)) return { kind: 'present', value };
     return null;
@@ -166,16 +194,22 @@ function validateChangeField(
   if (!exactOwnKeys(raw, ['fieldKey', 'before', 'after'])) {
     return { ok: false, reason: 'change-field-shape-invalid' };
   }
-  if (!isValidFieldKey(raw['fieldKey'], fieldCatalog)) {
+  const fieldKey = ownDataValue(raw, 'fieldKey');
+  const beforeRaw = ownDataValue(raw, 'before');
+  const afterRaw = ownDataValue(raw, 'after');
+  if (fieldKey === NOT_OWN_DATA || beforeRaw === NOT_OWN_DATA || afterRaw === NOT_OWN_DATA) {
+    return { ok: false, reason: 'change-field-shape-invalid' };
+  }
+  if (!isValidFieldKey(fieldKey, fieldCatalog)) {
     return { ok: false, reason: 'change-field-key-invalid' };
   }
-  const before = parseChangeValue(raw['before']);
+  const before = parseChangeValue(beforeRaw);
   if (before === null) return { ok: false, reason: 'change-value-invalid' };
-  const after = parseChangeValue(raw['after']);
+  const after = parseChangeValue(afterRaw);
   if (after === null) return { ok: false, reason: 'change-value-invalid' };
   return {
     ok: true,
-    field: { fieldKey: raw['fieldKey'] as string, before, after },
+    field: { fieldKey: fieldKey as string, before, after },
   };
 }
 
@@ -190,20 +224,27 @@ export function validateChangeSet(
   if (!exactOwnKeys(raw, ['eventKind', 'fields'])) {
     return { ok: false, reason: 'change-set-shape-invalid' };
   }
-  const eventKind = raw['eventKind'];
+  const eventKind = ownDataValue(raw, 'eventKind');
+  const fields = ownDataValue(raw, 'fields');
+  if (eventKind === NOT_OWN_DATA || fields === NOT_OWN_DATA) {
+    return { ok: false, reason: 'change-set-shape-invalid' };
+  }
   if (
     typeof eventKind !== 'string' ||
     !(WATCH_EVENT_KINDS as readonly string[]).includes(eventKind)
   ) {
     return { ok: false, reason: 'change-set-event-kind-invalid' };
   }
-  const fields = raw['fields'];
   if (!Array.isArray(fields)) return { ok: false, reason: 'change-set-shape-invalid' };
   const parsed: ChangeField[] = [];
-  for (const f of fields) {
-    const r = validateChangeField(f, fieldCatalog);
-    if (!r.ok) return r;
-    parsed.push(r.field);
+  try {
+    for (const f of fields) {
+      const r = validateChangeField(f, fieldCatalog);
+      if (!r.ok) return r;
+      parsed.push(r.field);
+    }
+  } catch {
+    return { ok: false, reason: 'change-set-shape-invalid' };
   }
   return { ok: true, changeSet: { eventKind: eventKind as WatchEventKind, fields: parsed } };
 }
@@ -246,20 +287,28 @@ function validatePredicate(
   if (!exactOwnKeys(raw, ['fieldKey', 'operator', 'operand', 'caseSensitive'])) {
     return { ok: false, reason: 'predicate-shape-invalid' };
   }
-  const fieldKey = raw['fieldKey'];
+  const fieldKey = ownDataValue(raw, 'fieldKey');
+  const operator = ownDataValue(raw, 'operator');
+  const caseSensitive = ownDataValue(raw, 'caseSensitive');
+  const operand = ownDataValue(raw, 'operand');
+  if (
+    fieldKey === NOT_OWN_DATA ||
+    operator === NOT_OWN_DATA ||
+    caseSensitive === NOT_OWN_DATA ||
+    operand === NOT_OWN_DATA
+  ) {
+    return { ok: false, reason: 'predicate-shape-invalid' };
+  }
   if (!isValidFieldKey(fieldKey, fieldCatalog)) {
     return { ok: false, reason: 'predicate-field-key-invalid' };
   }
-  const operator = raw['operator'];
   if (
     typeof operator !== 'string' ||
     !(CONDITION_OPERATORS as readonly string[]).includes(operator)
   ) {
     return { ok: false, reason: 'predicate-operator-invalid' };
   }
-  const caseSensitive = raw['caseSensitive'];
   if (typeof caseSensitive !== 'boolean') return { ok: false, reason: 'predicate-case-invalid' };
-  const operand = raw['operand'];
   if (!isValidOperand(operand, operator as ConditionOperator)) {
     return { ok: false, reason: 'predicate-operand-invalid' };
   }
@@ -286,21 +335,29 @@ export function validateStructuredCondition(
   if (!exactOwnKeys(raw, ['version', 'combine', 'predicates'])) {
     return { ok: false, reason: 'condition-shape-invalid' };
   }
-  if (raw['version'] !== 1) return { ok: false, reason: 'condition-version-future' };
-  const combine = raw['combine'];
+  const version = ownDataValue(raw, 'version');
+  const combine = ownDataValue(raw, 'combine');
+  const predicates = ownDataValue(raw, 'predicates');
+  if (version === NOT_OWN_DATA || combine === NOT_OWN_DATA || predicates === NOT_OWN_DATA) {
+    return { ok: false, reason: 'condition-shape-invalid' };
+  }
+  if (version !== 1) return { ok: false, reason: 'condition-version-future' };
   if (combine !== 'all' && combine !== 'any') {
     return { ok: false, reason: 'condition-combine-invalid' };
   }
-  const predicates = raw['predicates'];
   if (!Array.isArray(predicates)) return { ok: false, reason: 'condition-predicates-range' };
   if (predicates.length < 1 || predicates.length > MAX_CONDITIONS_PER_RULE) {
     return { ok: false, reason: 'condition-predicates-range' };
   }
   const parsed: ConditionPredicate[] = [];
-  for (const p of predicates) {
-    const r = validatePredicate(p, fieldCatalog);
-    if (!r.ok) return r;
-    parsed.push(r.predicate);
+  try {
+    for (const p of predicates) {
+      const r = validatePredicate(p, fieldCatalog);
+      if (!r.ok) return r;
+      parsed.push(r.predicate);
+    }
+  } catch {
+    return { ok: false, reason: 'condition-predicates-range' };
   }
   return {
     ok: true,

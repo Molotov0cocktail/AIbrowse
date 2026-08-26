@@ -75,14 +75,42 @@ function exactOwnKeys(raw: Record<string, unknown>, expected: readonly string[])
   return true;
 }
 
+/** own-data-property 读取哨兵：字段缺失、accessor 或反射异常（fail-closed）。 */
+const NOT_OWN_DATA: unique symbol = Symbol('not-own-data');
+
+/**
+ * 集中 own-data-property 读取（F2）：只接受普通对象上的自有数据属性；accessor、
+ * 非自有、descriptor/Reflect/Proxy 异常一律返回 NOT_OWN_DATA（调用方按形状 fail-closed）。
+ * 绝不触发 getter；不调用 getter 来"验证"getter。
+ */
+function ownDataValue(raw: Record<string, unknown>, key: string): unknown {
+  let desc: PropertyDescriptor | undefined;
+  try {
+    desc = Object.getOwnPropertyDescriptor(raw, key);
+  } catch {
+    return NOT_OWN_DATA;
+  }
+  if (desc === undefined) return NOT_OWN_DATA;
+  try {
+    if (!Object.prototype.hasOwnProperty.call(desc, 'value')) return NOT_OWN_DATA;
+    if (Object.prototype.hasOwnProperty.call(desc, 'get')) return NOT_OWN_DATA;
+    if (Object.prototype.hasOwnProperty.call(desc, 'set')) return NOT_OWN_DATA;
+    return desc.value;
+  } catch {
+    return NOT_OWN_DATA;
+  }
+}
+
 export function validateWatchSchedule(raw: unknown): ScheduleValidationResult {
   if (!isPlainRecord(raw)) return { ok: false, reason: 'schedule-shape-invalid' };
-  const kind = raw['kind'];
+  const kind = ownDataValue(raw, 'kind');
+  if (kind === NOT_OWN_DATA) return { ok: false, reason: 'schedule-shape-invalid' };
   if (kind === 'interval') {
     if (!exactOwnKeys(raw, ['kind', 'intervalMinutes'])) {
       return { ok: false, reason: 'schedule-shape-invalid' };
     }
-    const m = raw['intervalMinutes'];
+    const m = ownDataValue(raw, 'intervalMinutes');
+    if (m === NOT_OWN_DATA) return { ok: false, reason: 'schedule-shape-invalid' };
     if (typeof m !== 'number' || !Number.isFinite(m)) {
       return { ok: false, reason: 'schedule-interval-invalid' };
     }
@@ -95,8 +123,11 @@ export function validateWatchSchedule(raw: unknown): ScheduleValidationResult {
     if (!exactOwnKeys(raw, ['kind', 'localTime', 'timeZone'])) {
       return { ok: false, reason: 'schedule-shape-invalid' };
     }
-    const localTime = raw['localTime'];
-    const timeZone = raw['timeZone'];
+    const localTime = ownDataValue(raw, 'localTime');
+    const timeZone = ownDataValue(raw, 'timeZone');
+    if (localTime === NOT_OWN_DATA || timeZone === NOT_OWN_DATA) {
+      return { ok: false, reason: 'schedule-shape-invalid' };
+    }
     if (typeof localTime !== 'string' || !isValidLocalTime(localTime)) {
       return { ok: false, reason: 'schedule-time-invalid' };
     }
@@ -203,8 +234,13 @@ export function transitionRuleState(
         return { state: 'enabled', pauseReason: null, desiredEnabled: true };
       }
       if (!depsOk(deps)) {
-        // 依赖不满足：不得进入 enabled；记录用户意图并标出实际阻断原因
-        const reason: PauseReason = deps.locatorUnchanged ? 'source-disabled' : 'source-changed';
+        // 依赖不满足：不得进入 enabled；记录用户意图并标出实际阻断原因（F3 优先级：
+        // 1. !sourceExists → source-deleted；2. !locatorUnchanged → source-changed；
+        // 3. !sourceEnabled → source-disabled）
+        let reason: PauseReason;
+        if (!deps.sourceExists) reason = 'source-deleted';
+        else if (!deps.locatorUnchanged) reason = 'source-changed';
+        else reason = 'source-disabled';
         return { state: 'paused', pauseReason: reason, desiredEnabled: true };
       }
       // deps 满足但当前是健康/依赖原因：只记录用户意图，保持阻断原因

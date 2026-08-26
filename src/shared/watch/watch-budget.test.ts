@@ -72,14 +72,8 @@ describe('truncateUtf8 — 安全截断（不拆 surrogate/多字节）', () => 
     expect(truncateUtf8('😀', 1)).toEqual({ text: '', truncated: true, originalBytes: 4 });
   });
 
-  it('零预算与非法预算受控', () => {
+  it('零预算受控', () => {
     expect(truncateUtf8('abc', 0)).toEqual({ text: '', truncated: true, originalBytes: 3 });
-    // 非法预算（负数）→ 不截断安全返回原值
-    expect(truncateUtf8('abc', -1)).toEqual({
-      text: 'abc',
-      truncated: false,
-      originalBytes: 3,
-    });
   });
 
   it('混合内容截断结果字节数不超预算', () => {
@@ -88,6 +82,38 @@ describe('truncateUtf8 — 安全截断（不拆 surrogate/多字节）', () => 
     expect(r.truncated).toBe(true);
     expect(r.originalBytes).toBe(utf8ByteLength('A中B😀C'));
     expect(r.text).toBe('A中B'); // 1+3+1=5 ≤7；'😀'=4 → 9>7
+  });
+});
+
+describe('utf8InBudget — 非法预算 fail-closed', () => {
+  it('负数 / NaN / Infinity / 非整数 一律返回 false（不因比较语义意外放行）', () => {
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2.9]) {
+      expect(utf8InBudget('abc', bad), `maxBytes=${String(bad)} 应拒绝`).toBe(false);
+      expect(utf8InBudget('', bad), `空串 maxBytes=${String(bad)} 应拒绝`).toBe(false);
+    }
+  });
+});
+
+describe('truncateUtf8 — 非法预算 fail-closed（绝不返回未受限正文）', () => {
+  it('负数 / NaN / Infinity / 非整数 不得返回完整正文，且不得表现为 truncated=false 成功', () => {
+    const sample = '中文正文😀';
+    const expectedBytes = utf8ByteLength(sample);
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 1.5]) {
+      const r = truncateUtf8(sample, bad);
+      expect(r.truncated, `maxBytes=${String(bad)} 必须 truncated=true`).toBe(true);
+      expect(r.text, `maxBytes=${String(bad)} 不得返回完整正文`).toBe('');
+      expect(utf8ByteLength(r.text)).toBe(0);
+      expect(r.originalBytes).toBe(expectedBytes);
+    }
+  });
+
+  it('合法整数边界（含 0）行为保持', () => {
+    expect(truncateUtf8('中文正文😀', 0)).toEqual({
+      text: '',
+      truncated: true,
+      originalBytes: utf8ByteLength('中文正文😀'),
+    });
+    expect(truncateUtf8('abc', 3)).toEqual({ text: 'abc', truncated: false, originalBytes: 3 });
   });
 });
 

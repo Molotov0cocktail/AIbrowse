@@ -788,3 +788,121 @@ describe('evaluateStructuredCondition 返回类型闭合', () => {
     expect(code).toBe('predicate-field-key-invalid');
   });
 });
+
+describe('敌手安全 — accessor/Proxy 探针（own-data-property；getter 零执行）', () => {
+  // 把 base 的某个键改写为 getter accessor，返回探针对象与执行计数读取器。
+  function withAccessor(
+    base: Record<string, unknown>,
+    key: string,
+  ): { obj: Record<string, unknown>; executed: () => number } {
+    let count = 0;
+    const obj = { ...base };
+    Object.defineProperty(obj, key, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        count += 1;
+        return undefined;
+      },
+    });
+    return { obj, executed: () => count };
+  }
+
+  it('condition：version/combine/predicates accessor getter 零执行 → condition-shape-invalid', () => {
+    for (const key of ['version', 'combine', 'predicates']) {
+      const { obj, executed } = withAccessor(cond({}), key);
+      const r = evalInput(obj, changeSet({}));
+      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'condition-shape-invalid' });
+      expect(executed()).toBe(0);
+    }
+  });
+
+  it('predicate：fieldKey/operator/caseSensitive/operand accessor getter 零执行 → predicate-shape-invalid', () => {
+    for (const key of ['fieldKey', 'operator', 'caseSensitive', 'operand']) {
+      const { obj, executed } = withAccessor(pred({}), key);
+      const r = evalInput(cond({ predicates: [obj] }), changeSet({}));
+      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'predicate-shape-invalid' });
+      expect(executed()).toBe(0);
+    }
+  });
+
+  it('changeSet：eventKind/fields accessor getter 零执行 → change-set-shape-invalid', () => {
+    for (const key of ['eventKind', 'fields']) {
+      const { obj, executed } = withAccessor(changeSet({}), key);
+      const r = evalInput(cond({}), obj);
+      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'change-set-shape-invalid' });
+      expect(executed()).toBe(0);
+    }
+  });
+
+  it('changeField：fieldKey/before/after accessor getter 零执行 → change-field-shape-invalid', () => {
+    const fieldBase = {
+      fieldKey: 'price',
+      before: { kind: 'present', value: 80 },
+      after: { kind: 'present', value: 120 },
+    };
+    for (const key of ['fieldKey', 'before', 'after']) {
+      const { obj, executed } = withAccessor(fieldBase, key);
+      const r = evalInput(cond({}), changeSet({ fields: [obj] }));
+      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'change-field-shape-invalid' });
+      expect(executed()).toBe(0);
+    }
+  });
+
+  it('present value：kind/value accessor getter 零执行 → change-value-invalid', () => {
+    const presentBase = { kind: 'present', value: 100 };
+    for (const key of ['kind', 'value']) {
+      const { obj, executed } = withAccessor(presentBase, key);
+      const field = {
+        fieldKey: 'price',
+        before: obj,
+        after: { kind: 'present', value: 120 },
+      };
+      const r = evalInput(cond({}), changeSet({ fields: [field] }));
+      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'change-value-invalid' });
+      expect(executed()).toBe(0);
+    }
+  });
+
+  it('Proxy ownKeys/getOwnPropertyDescriptor/get trap 抛错：不抛穿，返回闭合错误', () => {
+    // condition 侧：ownKeys / getOwnPropertyDescriptor / get trap 抛错均不抛穿
+    const ownKeysEvil = new Proxy(cond({}), {
+      ownKeys() {
+        throw new Error('boom');
+      },
+    });
+    expect(() => evalInput(ownKeysEvil, changeSet({}))).not.toThrow();
+    const gopdEvil = new Proxy(cond({}), {
+      getOwnPropertyDescriptor() {
+        throw new Error('boom');
+      },
+    });
+    expect(() => evalInput(gopdEvil, changeSet({}))).not.toThrow();
+    const getEvil = new Proxy(cond({}), {
+      get() {
+        throw new Error('boom');
+      },
+    });
+    expect(() => evalInput(getEvil, changeSet({}))).not.toThrow();
+    expect(evalInput(getEvil, changeSet({})).ok).toBe(true);
+    // changeSet 侧：ownKeys / getOwnPropertyDescriptor trap 抛错均不抛穿
+    const csOwnKeys = new Proxy(changeSet({}), {
+      ownKeys() {
+        throw new Error('boom');
+      },
+    });
+    expect(() => evalInput(cond({}), csOwnKeys)).not.toThrow();
+    const csGopd = new Proxy(changeSet({}), {
+      getOwnPropertyDescriptor() {
+        throw new Error('boom');
+      },
+    });
+    expect(() => evalInput(cond({}), csGopd)).not.toThrow();
+  });
+
+  it('普通 JSON.parse 对象继续通过', () => {
+    const c = JSON.parse(JSON.stringify(cond({}))) as Record<string, unknown>;
+    const cs = JSON.parse(JSON.stringify(changeSet({}))) as Record<string, unknown>;
+    expect(evalInput(c, cs)).toEqual({ ok: true, matched: true });
+  });
+});

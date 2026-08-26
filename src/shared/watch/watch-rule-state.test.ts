@@ -136,6 +136,78 @@ describe('validateWatchSchedule — exact own-key 形状', () => {
   });
 });
 
+describe('validateWatchSchedule — accessor/Proxy 敌手安全（own-data-property 读取）', () => {
+  // 把 base 的某个键改写为 getter accessor，返回探针对象与执行计数读取器。
+  function withAccessor(
+    base: Record<string, unknown>,
+    key: string,
+  ): { obj: Record<string, unknown>; executed: () => number } {
+    let count = 0;
+    const obj = { ...base };
+    Object.defineProperty(obj, key, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        count += 1;
+        return undefined;
+      },
+    });
+    return { obj, executed: () => count };
+  }
+
+  it('kind/intervalMinutes/localTime/timeZone 为 accessor：getter 零执行，返回 schedule-shape-invalid', () => {
+    for (const key of ['kind', 'intervalMinutes']) {
+      const { obj, executed } = withAccessor({ kind: 'interval', intervalMinutes: 60 }, key);
+      const r = validateWatchSchedule(obj);
+      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'schedule-shape-invalid' });
+      expect(executed()).toBe(0);
+    }
+    for (const key of ['localTime', 'timeZone']) {
+      const { obj, executed } = withAccessor(
+        { kind: 'daily', localTime: '09:00', timeZone: 'UTC' },
+        key,
+      );
+      const r = validateWatchSchedule(obj);
+      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'schedule-shape-invalid' });
+      expect(executed()).toBe(0);
+    }
+  });
+
+  it('Proxy ownKeys/getOwnPropertyDescriptor/get trap 抛错：不抛穿，返回闭合错误', () => {
+    // ownKeys trap 抛错 → 形状校验 fail-closed
+    const ownKeysEvil = new Proxy(
+      { kind: 'interval', intervalMinutes: 60 },
+      {
+        ownKeys() {
+          throw new Error('boom');
+        },
+      },
+    );
+    expect(() => validateWatchSchedule(ownKeysEvil)).not.toThrow();
+    // getOwnPropertyDescriptor trap 抛错 → own-data-property 读取 fail-closed
+    const gopdEvil = new Proxy(
+      { kind: 'interval', intervalMinutes: 60 },
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error('boom');
+        },
+      },
+    );
+    expect(() => validateWatchSchedule(gopdEvil)).not.toThrow();
+    // get trap 抛错：引擎只读 own data property，get 零调用 → 合法输入照常通过（不抛穿）
+    const getEvil = new Proxy(
+      { kind: 'interval', intervalMinutes: 60 },
+      {
+        get() {
+          throw new Error('boom');
+        },
+      },
+    );
+    expect(() => validateWatchSchedule(getEvil)).not.toThrow();
+    expect(validateWatchSchedule(getEvil).ok).toBe(true);
+  });
+});
+
 describe('validateRuleAccessMode — feed 仅 public；session 仅 page', () => {
   it('合法组合', () => {
     expect(validateRuleAccessMode('feed', 'public').ok).toBe(true);
@@ -202,7 +274,7 @@ describe('WatchRule 状态迁移 — 用户动作', () => {
         { kind: 'user-enable' },
         DEPS_SOURCE_MISSING,
       ),
-    ).toEqual({ state: 'paused', pauseReason: 'source-disabled', desiredEnabled: true });
+    ).toEqual({ state: 'paused', pauseReason: 'source-deleted', desiredEnabled: true });
   });
 
   it('user-enable：依赖阻断原因暂停不被 enable 复活（desiredEnabled=true 记录意图）', () => {
