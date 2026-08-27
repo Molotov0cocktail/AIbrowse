@@ -527,8 +527,20 @@ class PublicWatchHttpClient {
       let settled = false;
       const timers: ReturnType<Clock['setTimeout']>[] = [];
       const cleanup = (): void => {
-        for (const t of timers) this.clock.clearTimeout(t);
-        if (signal) signal.removeEventListener('abort', onAbort);
+        for (const t of timers) {
+          try {
+            this.clock.clearTimeout(t);
+          } catch {
+            // 单项失败继续剩余清理
+          }
+        }
+        if (signal) {
+          try {
+            signal.removeEventListener('abort', onAbort);
+          } catch {
+            // 单项失败继续剩余清理
+          }
+        }
       };
       const onAbort = (): void => {
         if (settled) return;
@@ -620,15 +632,13 @@ class PublicWatchHttpClient {
     return new Promise<InternalAttempt | 'retry-next' | 'aborted' | 'failed'>((resolve) => {
       let settled = false;
       let aborted = false;
-      let sawResponse = false;
-      let requestFailed = false;
       let request: WatchRequestLike | null = null;
       let response: WatchIncomingLike | null = null;
       let inflater: WatchInflaterLike | null = null;
       let timeoutHandle: ReturnType<Clock['setTimeout']> | null = null;
       // 正文 reader 的幂等 release handle：deadline/abort 直接调用，不等迟到事件。
       let releaseBody: (() => void) | null = null;
-      // 迟到 response 守卫自移除用：request 构造完成后指向同一 request 对象。
+      // onResponse 自移除用：request 构造完成后指向同一 request 对象；cleanup 返回前置 null。
       let guardRequest: WatchRequestLike | null = null;
 
       // 外层 settlement 信号：readBoundedBody 据此拒绝迟到 chunk/end/error 的一切副作用。
@@ -643,15 +653,31 @@ class PublicWatchHttpClient {
 
       // 统一、幂等的首终态 cleanup：无论 success/deadline/abort/budget/stream-error/request-error，
       // 立即清除全部 timer/AbortSignal listener、释放正文 reader、销毁 request/response/inflater，
-      // 并按需移除本实现注册的 request listener。单项失败不得阻止其它资源清理。
+      // 并无条件移除 request 的 response/error/timeout listener。每一步单独异常隔离：
+      // 任一 remove/destroy/clear 抛错不得阻止剩余清理，cleanup 返回时 request 的
+      // response/error/timeout listenerCount 必须全为 0。
       const cleanup = (): void => {
         if (timeoutHandle !== null) {
-          this.clock.clearTimeout(timeoutHandle);
+          try {
+            this.clock.clearTimeout(timeoutHandle);
+          } catch {
+            // 单项失败继续剩余清理
+          }
           timeoutHandle = null;
         }
-        if (req.signal) req.signal.removeEventListener('abort', onAbort);
+        if (req.signal) {
+          try {
+            req.signal.removeEventListener('abort', onAbort);
+          } catch {
+            // 单项失败继续剩余清理
+          }
+        }
         if (releaseBody !== null) {
-          releaseBody();
+          try {
+            releaseBody();
+          } catch {
+            // 单项失败继续剩余清理
+          }
           releaseBody = null;
         }
         if (inflater !== null) {
@@ -686,25 +712,23 @@ class PublicWatchHttpClient {
           } catch {
             // 幂等
           }
-          // response listener：已消费（onResponse 自移除）或 request-error 终态（不会再出现
-          // response）时确定移除；deadline/abort 先于 response 时保留为迟到 response 守卫，
-          // 由 onResponse 在到达时立即安全销毁并自移除。
-          if (sawResponse || requestFailed) {
+          // 覆盖 request.destroy() 内同步发出 response 的竞态：destroy 调用期间暂时保留
+          // onResponse（若同步发出 response 则由 onResponse 立即安全丢弃并自移除），
+          // 通过 finally 在 cleanup 返回前移除；cleanup 返回时 listenerCount 必须全为 0。
+          try {
+            request.destroy();
+          } catch {
+            // 幂等
+          } finally {
             try {
               request.removeListener('response', onResponse);
             } catch {
               // 幂等
             }
           }
-          try {
-            request.destroy();
-          } catch {
-            // 幂等
-          }
-          // 注意：guardRequest 保持指向 request（不置 null），使保留的迟到 response 守卫
-          // 在到达时可自移除；已移除 response listener 的路径中它是无害的闭包引用。
           request = null;
         }
+        guardRequest = null;
       };
 
       const onAbort = (): void => {
@@ -720,7 +744,6 @@ class PublicWatchHttpClient {
 
       const onRequestError = (err: NodeJS.ErrnoException): void => {
         if (settled || aborted) return;
-        requestFailed = true;
         const code = err.code ?? 'ERR';
         if (CONNECT_RETRYABLE.has(code)) {
           finish('retry-next');
@@ -731,6 +754,7 @@ class PublicWatchHttpClient {
 
       // 不消费的响应（redirect/HEAD/3xx 无 Location/迟到 response）：立即安全销毁；
       // destroy 不可用或抛错时安装安全 error sink 后 resume 排空，防无限 body 占用。
+      // destroy、error sink 安装与 resume 分别异常隔离：单项抛错继续下一步。
       const safeDiscardResponse = (res: WatchIncomingLike): void => {
         if (typeof res.destroy === 'function') {
           try {
@@ -742,6 +766,10 @@ class PublicWatchHttpClient {
         }
         try {
           res.on('error', () => undefined);
+        } catch {
+          // 幂等
+        }
+        try {
           res.resume?.();
         } catch {
           // 幂等
@@ -763,7 +791,6 @@ class PublicWatchHttpClient {
           safeDiscardResponse(res);
           return;
         }
-        sawResponse = true;
         response = res;
         const statusCode = res.statusCode;
         const nowMs = this.clock.now().getTime();
@@ -940,19 +967,52 @@ class PublicWatchHttpClient {
 
     // 幂等释放：清除本实现注册的 res/inflater listener 并销毁 inflater。
     // attempt 首终态 cleanup 直接调用；迟到事件到达（外层已 settle 或本地已 settle）时也调用，
-    // 保证首终态立即 listener=0，不等迟到事件。
+    // 保证首终态立即 listener=0，不等迟到事件。每个 removeListener 与 inflater.destroy
+    // 分别异常隔离：单项抛错继续剩余清理，不泄漏未处理异常。
     function release(): void {
       if (released) return;
       released = true;
-      res.removeListener('data', onSourceData);
-      res.removeListener('data', onCompressedData);
-      res.removeListener('end', onSourceEnd);
-      res.removeListener('error', onSourceError);
-      res.removeListener('aborted', onSourceAborted);
+      try {
+        res.removeListener('data', onSourceData);
+      } catch {
+        // 幂等
+      }
+      try {
+        res.removeListener('data', onCompressedData);
+      } catch {
+        // 幂等
+      }
+      try {
+        res.removeListener('end', onSourceEnd);
+      } catch {
+        // 幂等
+      }
+      try {
+        res.removeListener('error', onSourceError);
+      } catch {
+        // 幂等
+      }
+      try {
+        res.removeListener('aborted', onSourceAborted);
+      } catch {
+        // 幂等
+      }
       if (inflater !== null) {
-        inflater.removeListener('data', onInflaterData);
-        inflater.removeListener('end', onInflaterEnd);
-        inflater.removeListener('error', onInflaterError);
+        try {
+          inflater.removeListener('data', onInflaterData);
+        } catch {
+          // 幂等
+        }
+        try {
+          inflater.removeListener('end', onInflaterEnd);
+        } catch {
+          // 幂等
+        }
+        try {
+          inflater.removeListener('error', onInflaterError);
+        } catch {
+          // 幂等
+        }
         try {
           inflater.destroy();
         } catch {

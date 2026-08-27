@@ -478,7 +478,12 @@ D3-R3 有界修复候选处理独立安全 Reviewer 对 D3-R2 HEAD `2325077` 的
 
 D3-R4 有界修复候选处理独立安全 Reviewer 对 D3-R3 HEAD `be33291` 的首终态资源闭合四项发现。
 全部先红后绿，未删除/放宽既有有效断言，未改动 R2/R3 冻结契约。候选未 push；baseline `be33291`，
-repair HEAD `a93715b`（只含本任务范围内两个文件）。
+最终候选为 `0df9bae`。实际范围是两个代码/测试文件（`public-watch-http-client.ts`、
+`public-watch-http-client.test.ts`）加本 D3 任务文档，共三个文件。
+
+> **R4 事实修正（R5 记录）**：R4 曾把自己的未公开候选 `a93715b` 经 `git commit --amend` 改写为
+> `0df9bae`（reflog 见 a93715b→0df9bae，两提交均未 push，远程 `main` 未受影响）。该操作偏离本仓库
+> 「不 amend/reset/rebase 候选历史」的 Git 契约；R5 起严格只追加新提交，不再改写历史。
 
 ### 修复项与证据
 
@@ -491,14 +496,18 @@ repair HEAD `a93715b`（只含本任务范围内两个文件）。
    deadline/abort/budget/stream-error/request-error）直接调用，不再等待下一次迟到事件触发清理。
    新增 oracle：identity/gzip 静默 body deadline 与 abort 后，不发送任何迟到事件即断言
    response 的 data/end/error/aborted 与 inflater 的 data/end/error listener 全 0。
-3. **request-error/已消费终态移除 request listener**：`cleanup()` 在已见 response
+3. **response 已交付/request-error 终态移除 request listener**：`cleanup()` 在已见 response
    （`onResponse` 自移除）或 request-error（`requestFailed`）时移除 response listener，
-   并始终移除 error/timeout；首终态后 request 的 response/error/timeout listenerCount 全 0
-   （success/body-deadline/abort/request-error 四场景 oracle）。
-4. **deadline/abort 先于 response 的迟到守卫**：response 尚未到达时保留 `onResponse` 为迟到
-   response 守卫；守卫发现 settled/aborted 立即 `safeDiscardResponse`（destroy 优先，
-   destroy 不可用/抛错时安装安全 error sink 后 resume），零正文 listener、零新 socket，
-   处理后再自移除。deadline 与 abort 先于 response 两个迟到 response oracle 均证明已销毁。
+   并始终移除 error/timeout。success/body-deadline/abort（response 已交付）/request-error
+   四场景后 request 的 response/error/timeout listenerCount 全 0。
+4. **deadline/abort 先于 response 的迟到守卫（R4 行为，已被 R5 取代）**：response 尚未到达时，
+   R4 保留 `onResponse` 为迟到 response 守卫；守卫发现 settled/aborted 立即
+   `safeDiscardResponse`（destroy 优先，destroy 不可用/抛错时安装安全 error sink 后 resume），
+   零正文 listener、零新 socket，处理后再自移除。deadline 与 abort 先于 response 两个迟到
+   response oracle 均证明已销毁。**矛盾说明**：该路径下 cleanup 返回时 request 的 response
+   listener 仍为 1，并非全 0——与第 3 点「首终态后 listenerCount 全 0」表述冲突；R4 记录中
+   「所有首终态 listener=0」与「pre-response 保留 listener」是自相矛盾的陈述，由 D3-R5 修正为
+   「首终态无条件移除 request 全部 listener，不保留迟到守卫」。
 5. **测试 harness 忠实化**：`FakeIncoming` destroy 后不再投递任何事件（模拟真实流，
    保证终态后发送 error 零未处理异常）；`FakeRequest.destroy()` 无 error 参数不再投递
    'error'（模拟真实 ClientRequest）。`CapturedRequest` 暴露底层 `request` 供
@@ -514,8 +523,54 @@ repair HEAD `a93715b`（只含本任务范围内两个文件）。
   deadline 先于 response 迟到销毁、abort 先于 response 迟到销毁、request listener 四场景全 0、
   终态后事件风暴）。旧根因：cleanup 不释放正文 reader 与 request listener，迟到 response 仅
   handler return 未 destroy。
-- 绿（repair HEAD `a93715b`）：聚焦 63/63；Watch 全量 247/247；全量 `npm test -- --maxWorkers=1`
+- 绿（最终候选 `0df9bae`）：聚焦 63/63；Watch 全量 247/247；全量 `npm test -- --maxWorkers=1`
   2693/2693（baseline 2686 + 7 新增）；typecheck/lint/format:check/build/npm audit 0/
   `git diff --check` 全过；dev 与 production Electron 冒烟 exit 0。
-- 依赖版本不变、D4/D5 零接线；敏感信息/临时残留/工作区扫描干净（仅两个范围内文件被修改）。
+- 依赖版本不变、D4/D5 零接线；敏感信息/临时残留/工作区扫描干净（两个代码/测试文件被修改，
+  本任务文档在 R4 记录时一并更新）。
+- 交接新的独立安全 Reviewer；不更新 progress、不生成 D4、不 push。
+
+## D3-R5 修复记录（2026-08-27，Repair Worker，Reviewer 待复验）
+
+D3-R5 有界修复候选处理独立安全 Reviewer 对 D3-R4 HEAD `0df9bae` 的三类发现：首终态后 request 的
+response/error/timeout listener 必须无条件立即为 0；timer/AbortSignal/request/response/inflater
+listener 与资源清理必须逐项异常隔离（任一 remove/destroy/clear 抛错不阻塞剩余清理）；并修正 R4
+记录中的 HEAD/范围/amend/listener 事实。全部先红后绿，未删除/放宽既有有效断言，未改动 R2/R3/R4
+冻结契约。候选未 push；baseline `0df9bae`，最终 repair HEAD 以 Git 为准（本记录不硬编码自报 SHA）。
+
+### 修复项与证据
+
+1. **首终态无条件移除 request 全部 listener**：`cleanup()` 无条件移除 request 的
+   response/error/timeout listener，不再以「保留 response listener 作为迟到守卫」实现迟到安全
+   （R4 守卫已被取代）。仅覆盖 `request.destroy()` 内同步发出 response 的竞态：destroy 调用期间
+   暂时保留 `onResponse`（若同步发出则由其立即 `safeDiscardResponse` 并自移除），通过 `finally`
+   在 cleanup 返回前移除；cleanup 返回时 request 的 response/error/timeout listenerCount 必须
+   全为 0。`sawResponse`/`requestFailed` 不再需要，已删除。
+2. **逐项异常隔离**：`cleanup()` 的 timer clear、AbortSignal removeEventListener、releaseBody、
+   inflater.removeAllListeners/destroy、response.destroy、request 的每个 removeListener 与
+   request.destroy 分别 try/catch；`readBoundedBody.release()` 的每个 res/inflater
+   removeListener 与 inflater.destroy 分别 try/catch；`lookupWithTimeout.cleanup()` 的每个
+   clearTimeout 与 removeEventListener 分别 try/catch；`safeDiscardResponse` 的 destroy、error
+   sink 安装与 resume 分别保护。任一单项抛错继续剩余清理，零未处理异常。
+3. **终态后 synthetic 事件零副作用**：终态后的 synthetic response/data/end/error 不改变结果、
+   零新 socket、零 buffer/inflater 驱动、零未处理异常；不再把迟到 response 的销毁依赖在一个
+   终态后仍存活的 listener 上（request 已 destroy，真实 transport 不会在 destroy 后投递
+   response）。
+
+### 红→绿证据（baseline 0df9bae 上先红）
+
+- 红（0df9bae 产品代码 + 新/强化测试，仅 stash 产品文件验证）：7 项失败——R4「deadline 先于
+  response」「abort 先于 response」强化为「不发送任何迟到事件立即断言 request 的
+  response/error/timeout listener 全 0」（旧守卫保留 response listener → 红）；R5 新增 cleanup
+  后 synthetic response/data/end 零副作用（含同一立即全 0 断言）；单项抛错隔离中
+  response.removeListener、inflater.removeListener、timer clear、AbortSignal removeEventListener
+  四组在旧实现未隔离（异常逃逸/挂起/未捕获 → 红）。
+- 其余单项抛错（inflater.destroy、response.destroy、request.removeListener、request.destroy）在
+  0df9bae 已隔离，基线即绿，保留为回归守卫；`request.destroy()` 内同步发出 response oracle 在
+  0df9bae 亦绿（旧守卫经 onResponse 自移除恰好满足），保留为新实现不变式守卫。
+- 绿（repair HEAD）：聚焦 73/73；Watch 全量 257/257；全量 `npm test -- --maxWorkers=1`
+  2703/2703（baseline 2693 + 10 新增）；typecheck/lint/format:check/build/npm audit 0/
+  `git diff --check` 全过；dev 与 production Electron 冒烟 exit 0。
+- 依赖版本不变、D4/D5 零接线；敏感信息/临时残留/工作区扫描干净；仅改动 EXPECTED SCOPE
+  两个代码/测试文件 + 本节任务文档，共三个文件。
 - 交接新的独立安全 Reviewer；不更新 progress、不生成 D4、不 push。
