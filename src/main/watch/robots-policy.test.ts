@@ -570,6 +570,26 @@ describe('RobotsPolicy 缓存（24h）与 host 变化', () => {
   });
 });
 
+describe('R3 IPv6 robots authority', () => {
+  it('IPv6 字面量目标：robots URL 保留 bracketed authority，无 query/fragment', async () => {
+    const client = new FakeRobotsClient([okBody(404, '')]);
+    const policy = new RobotsPolicy({ client, clock: new FakeClock(0) });
+    const d = await policy.checkAllowed({ url: 'https://[2606:4700:4700::1111]/feed?x=1#f' });
+    expect(d.kind).toBe('allowed');
+    expect(client.requests.length).toBe(1);
+    expect(client.requests[0]!.url).toBe('https://[2606:4700:4700::1111]/robots.txt');
+  });
+
+  it('IPv6 目标 200 robots 最终 URL 同一 authority → 使用规则（不误判跨 host）', async () => {
+    const client = new FakeRobotsClient([
+      okBody(200, 'User-agent: aibrowse\nAllow: /\n', 'https://[2606:4700:4700::1111]/robots.txt'),
+    ]);
+    const policy = new RobotsPolicy({ client, clock: new FakeClock(0) });
+    const d = await policy.checkAllowed({ url: 'https://[2606:4700:4700::1111]/feed' });
+    expect(d.kind).toBe('allowed');
+  });
+});
+
 describe('robotsDecisionToHealth', () => {
   it('决策到 health 映射（闭合）', () => {
     expect(robotsDecisionToHealth({ kind: 'allowed' })).toBeNull();

@@ -12,14 +12,7 @@
 import { promises as dns } from 'node:dns';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import {
-  createBrotliDecompress,
-  createGunzip,
-  createInflate,
-  type BrotliDecompress,
-  type Gunzip,
-  type Inflate,
-} from 'node:zlib';
+import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 import {
   MAX_DISCOVERY_HTML_BYTES,
   MAX_FEED_RESPONSE_BYTES,
@@ -100,15 +93,16 @@ export interface ResolvedAddress {
   family: 4 | 6;
 }
 
-/** 每跳 robots 决策（窄端口：raw 客户端在发起 socket 前咨询）。 */
-export type RobotsGateDecision =
+/** 每跳 robots 决策（窄端口：raw 客户端在发起 socket 前咨询；模块内私有，不导出）。 */
+type RobotsGateDecision =
   | { kind: 'allowed' }
   | { kind: 'disallowed' }
   | { kind: 'unavailable' }
   | { kind: 'security-rejected' }
   | { kind: 'aborted' };
 
-export interface RobotsGatePort {
+/** raw 客户端咨询 robots 的窄端口（模块内私有：安全工厂内部装配真实 RobotsPolicy 后注入）。 */
+interface RobotsGatePort {
   checkAllowed(input: {
     url: string;
     signal?: AbortSignal;
@@ -120,6 +114,21 @@ export interface RobotsGatePort {
 // 受控 seam 类型（测试注入；默认接真实 node:http/https + node:dns）
 // ---------------------------------------------------------------------------
 
+/** 压缩解压器窄 seam 返回对象（真实 zlib Gunzip/Inflate/BrotliDecompress 天然满足）。 */
+export interface WatchInflaterLike {
+  write(chunk: Buffer): boolean;
+  end(): void;
+  destroy(): void;
+  destroyed: boolean;
+  on(event: 'data', cb: (chunk: Buffer) => void): unknown;
+  on(event: 'end', cb: () => void): unknown;
+  on(event: 'error', cb: (err: Error) => void): unknown;
+  removeListener(event: 'data', cb: (chunk: Buffer) => void): unknown;
+  removeListener(event: 'end', cb: () => void): unknown;
+  removeListener(event: 'error', cb: (err: Error) => void): unknown;
+  removeAllListeners(): unknown;
+}
+
 export interface WatchIncomingLike {
   statusCode: number;
   statusMessage: string;
@@ -128,6 +137,10 @@ export interface WatchIncomingLike {
   on(event: 'end', cb: () => void): unknown;
   on(event: 'aborted', cb: () => void): unknown;
   on(event: 'error', cb: (err: Error) => void): unknown;
+  removeListener(event: 'data', cb: (chunk: Buffer) => void): unknown;
+  removeListener(event: 'end', cb: () => void): unknown;
+  removeListener(event: 'aborted', cb: () => void): unknown;
+  removeListener(event: 'error', cb: (err: Error) => void): unknown;
   resume?(): unknown;
   destroy?(error?: Error): void;
 }
@@ -164,7 +177,7 @@ export interface WatchRequestOptions {
 
 export type WatchRequestFactory = (options: WatchRequestOptions) => WatchRequestLike;
 
-/** 安全工厂受控 seam（只注入依赖，不能取得任意网络客户端）。 */
+/** 安全工厂受控 seam（只注入依赖，不能取得任意网络客户端或替换/关闭 RobotsPolicy）。 */
 export interface PublicWatchStackSeams {
   lookup?: (hostname: string) => Promise<ResolvedAddress[]>; // 默认真实 dns.lookup(all)
   request?: WatchRequestFactory; // 默认 node:http/https
@@ -173,7 +186,10 @@ export interface PublicWatchStackSeams {
   userAgent?: string; // 默认产品版本化 UA（不含账号/机器 ID）
   robotsCacheMs?: number; // RobotsPolicy 缓存时长（默认 24h）
   uaProduct?: string; // robots UA product token（默认 aibrowse）
-  robots?: RobotsGatePort | null; // 缺省(undefined) → 工厂内部装配真实 RobotsPolicy；null → 缺 gate（fail-closed）
+  createInflater?: (
+    encoding: 'gzip' | 'deflate' | 'br',
+    maxOutputLength: number,
+  ) => WatchInflaterLike; // 压缩解压器工厂（默认 node:zlib；只影响 body 解压，不改变安全装配）
 }
 
 /** target-gated client：只允许 page/feed/discovery。 */
@@ -288,6 +304,10 @@ class PublicWatchHttpClient {
   private readonly clock: Clock;
   private readonly timeoutMs: number;
   private readonly userAgent: string;
+  private readonly createInflater: (
+    encoding: 'gzip' | 'deflate' | 'br',
+    maxOutputLength: number,
+  ) => WatchInflaterLike;
   private readonly robots: RobotsGatePort | null;
 
   constructor(
@@ -297,6 +317,10 @@ class PublicWatchHttpClient {
       clock?: Clock;
       timeoutMs?: number;
       userAgent?: string;
+      createInflater?: (
+        encoding: 'gzip' | 'deflate' | 'br',
+        maxOutputLength: number,
+      ) => WatchInflaterLike;
       robots?: RobotsGatePort | null;
     } = {},
   ) {
@@ -310,6 +334,13 @@ class PublicWatchHttpClient {
     this.clock = seams.clock ?? createSystemClock();
     this.timeoutMs = seams.timeoutMs ?? NETWORK_ATTEMPT_TIMEOUT_MS;
     this.userAgent = seams.userAgent ?? WATCH_DEFAULT_USER_AGENT;
+    this.createInflater =
+      seams.createInflater ??
+      ((encoding, maxOutputLength): WatchInflaterLike => {
+        if (encoding === 'gzip') return createGunzip({ maxOutputLength });
+        if (encoding === 'deflate') return createInflate({ maxOutputLength });
+        return createBrotliDecompress({ maxOutputLength });
+      });
     this.robots = seams.robots ?? null;
   }
 
@@ -587,7 +618,12 @@ class PublicWatchHttpClient {
       let settled = false;
       let aborted = false;
       let request: WatchRequestLike | null = null;
+      let response: WatchIncomingLike | null = null;
+      let inflater: WatchInflaterLike | null = null;
       let timeoutHandle: ReturnType<Clock['setTimeout']> | null = null;
+
+      // 外层 settlement 信号：readBoundedBody 据此拒绝迟到 chunk/end/error 的一切副作用。
+      const isOuterSettled = (): boolean => settled;
 
       const finish = (value: InternalAttempt | 'retry-next' | 'aborted' | 'failed'): void => {
         if (settled) return;
@@ -596,18 +632,47 @@ class PublicWatchHttpClient {
         resolve(value);
       };
 
+      // 统一、幂等的终态 cleanup：销毁当前 request/response/inflater 并清除 timer/listener。
+      // deadline/abort/budget/stream-error/成功结算后都只能经过这一条路径释放活动资源。
       const cleanup = (): void => {
-        if (timeoutHandle !== null) this.clock.clearTimeout(timeoutHandle);
+        if (timeoutHandle !== null) {
+          this.clock.clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
         if (req.signal) req.signal.removeEventListener('abort', onAbort);
+        if (inflater !== null) {
+          try {
+            inflater.removeAllListeners();
+          } catch {
+            // 幂等
+          }
+          try {
+            inflater.destroy();
+          } catch {
+            // 幂等
+          }
+          inflater = null;
+        }
+        if (response !== null) {
+          try {
+            response.destroy?.();
+          } catch {
+            // 幂等
+          }
+          response = null;
+        }
+        if (request !== null) {
+          try {
+            request.destroy?.();
+          } catch {
+            // 幂等
+          }
+          request = null;
+        }
       };
 
       const onAbort = (): void => {
         aborted = true;
-        try {
-          request?.destroy();
-        } catch {
-          // 幂等
-        }
         finish('aborted');
       };
 
@@ -631,20 +696,10 @@ class PublicWatchHttpClient {
       // socket 超时只能设为 remaining（同一 absolute effectiveDeadline，不续杯）
       const remaining = deadlineMs - this.clock.now().getTime();
       if (remaining <= 0) {
-        try {
-          activeRequest.destroy();
-        } catch {
-          // 幂等
-        }
         finish(this.failed('unavailable', 'deadline'));
         return;
       }
       timeoutHandle = this.clock.setTimeout(() => {
-        try {
-          activeRequest.destroy();
-        } catch {
-          // 幂等
-        }
         finish(this.failed('unavailable', 'deadline'));
       }, remaining);
 
@@ -658,6 +713,7 @@ class PublicWatchHttpClient {
 
       activeRequest.on('response', (res: WatchIncomingLike) => {
         if (aborted || settled) return;
+        response = res;
         const statusCode = res.statusCode;
         const nowMs = this.clock.now().getTime();
         const meta: PublicResponseMeta = {
@@ -726,7 +782,36 @@ class PublicWatchHttpClient {
           return;
         }
 
-        this.readBoundedBody(res, req, meta, deadlineMs)
+        // 正文读取：identity → inflater=null；压缩 → 经窄 seam 创建；未知编码 fail-closed。
+        const contentEncoding = (meta.contentEncoding ?? '').trim().toLowerCase();
+        const enc = contentEncoding === '' ? 'identity' : contentEncoding;
+        if (enc === 'identity') {
+          inflater = null;
+        } else {
+          const norm =
+            enc === 'gzip' || enc === 'x-gzip'
+              ? 'gzip'
+              : enc === 'deflate'
+                ? 'deflate'
+                : enc === 'br'
+                  ? 'br'
+                  : null;
+          if (norm === null) {
+            ignoreResBody();
+            finish(this.failed('security_rejected', 'unknown-content-encoding'));
+            return;
+          }
+          try {
+            inflater = this.createInflater(norm, PURPOSE_MAX_BYTES[req.purpose]);
+          } catch {
+            // inflater 工厂同步 throw：受控失败
+            ignoreResBody();
+            finish(this.failed('unavailable', 'inflater-factory'));
+            return;
+          }
+        }
+
+        this.readBoundedBody(res, req, meta, deadlineMs, inflater, isOuterSettled)
           .then((bodyResult) => {
             if (bodyResult.kind === 'failed') {
               finish(this.failed(bodyResult.health, bodyResult.reason));
@@ -758,6 +843,8 @@ class PublicWatchHttpClient {
     req: PublicRequest,
     meta: PublicResponseMeta,
     deadlineMs: number,
+    inflater: WatchInflaterLike | null,
+    isOuterSettled: () => boolean,
   ): Promise<
     | { kind: 'ok'; meta: PublicResponseMeta; body: Buffer }
     | { kind: 'failed'; health: ClientHealth; reason: string }
@@ -767,32 +854,47 @@ class PublicWatchHttpClient {
       let compressedBytes = 0;
       let decompressedBytes = 0;
       let finished = false;
+      let released = false;
       const buffer: Buffer[] = [];
 
       const deadlineExpired = (): boolean =>
         Number.isFinite(deadlineMs) && this.clock.now().getTime() >= deadlineMs;
 
-      const failBudget = (): void => {
-        if (finished) return;
-        finished = true;
-        try {
-          res.destroy?.();
-        } catch {
-          // 幂等
+      // 幂等释放：清除本实现注册的 res/inflater listener 并销毁 inflater。
+      // 迟到事件到达（外层已 settle 或本地已 settle）时也调用，保证 listener 不再残留。
+      function release(): void {
+        if (released) return;
+        released = true;
+        res.removeListener('data', onSourceData);
+        res.removeListener('data', onCompressedData);
+        res.removeListener('end', onSourceEnd);
+        res.removeListener('error', onSourceError);
+        res.removeListener('aborted', onSourceAborted);
+        if (inflater !== null) {
+          inflater.removeListener('data', onInflaterData);
+          inflater.removeListener('end', onInflaterEnd);
+          inflater.removeListener('error', onInflaterError);
+          try {
+            inflater.destroy();
+          } catch {
+            // 幂等
+          }
         }
-        resolve({ kind: 'failed', health: 'budget_exceeded', reason: 'response-too-large' });
-      };
+      }
 
-      const failDeadline = (): void => {
-        if (finished) return;
+      function failBudget(): void {
+        if (finished || isOuterSettled()) return;
         finished = true;
-        try {
-          res.destroy?.();
-        } catch {
-          // 幂等
-        }
+        release();
+        resolve({ kind: 'failed', health: 'budget_exceeded', reason: 'response-too-large' });
+      }
+
+      function failDeadline(): void {
+        if (finished || isOuterSettled()) return;
+        finished = true;
+        release();
         resolve({ kind: 'failed', health: 'unavailable', reason: 'deadline' });
-      };
+      }
 
       const declaredLength = headerValue(res.headers, 'content-length');
       if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
@@ -803,113 +905,40 @@ class PublicWatchHttpClient {
         }
       }
 
-      const contentEncoding = (meta.contentEncoding ?? '').trim().toLowerCase();
-      const encoding = contentEncoding === '' ? 'identity' : contentEncoding;
-
-      const commitBody = (): void => {
-        if (finished) return;
+      function commitBody(): void {
+        if (finished || isOuterSettled()) return;
         finished = true;
+        release();
         meta.byteLength = decompressedBytes;
         meta.compressedByteLength = compressedBytes;
         resolve({ kind: 'ok', meta, body: Buffer.concat(buffer) });
-      };
-
-      const onSourceEnd = (): void => {
-        if (!finished) commitBody();
-      };
-
-      const onSourceError = (): void => {
-        if (!finished) {
-          finished = true;
-          resolve({ kind: 'failed', health: 'unavailable', reason: 'stream-error' });
-        }
-      };
-
-      const onSourceAborted = (): void => {
-        if (!finished) {
-          finished = true;
-          resolve({ kind: 'failed', health: 'unavailable', reason: 'aborted' });
-        }
-      };
-
-      if (encoding === 'identity') {
-        res.on('data', (chunk: Buffer) => {
-          if (finished) return;
-          if (deadlineExpired()) {
-            failDeadline();
-            return;
-          }
-          compressedBytes += chunk.length;
-          decompressedBytes += chunk.length;
-          if (decompressedBytes > maxBytes) {
-            failBudget();
-            return;
-          }
-          buffer.push(chunk);
-        });
-        res.on('end', onSourceEnd);
-        res.on('error', onSourceError);
-        res.on('aborted', onSourceAborted);
-        return;
       }
 
-      // 压缩路径：压缩字节与解压后字节双上限
-      let inflater: Gunzip | Inflate | BrotliDecompress;
-      if (encoding === 'gzip' || encoding === 'x-gzip') {
-        inflater = createGunzip({ maxOutputLength: maxBytes });
-      } else if (encoding === 'deflate') {
-        inflater = createInflate({ maxOutputLength: maxBytes });
-      } else if (encoding === 'br') {
-        inflater = createBrotliDecompress({ maxOutputLength: maxBytes });
-      } else {
-        finished = true;
-        try {
-          res.destroy?.();
-        } catch {
-          // 幂等
-        }
-        resolve({
-          kind: 'failed',
-          health: 'security_rejected',
-          reason: 'unknown-content-encoding',
-        });
-        return;
-      }
-
-      let inflaterEnded = false;
-      inflater.on('data', (chunk: Buffer) => {
+      function onSourceData(chunk: Buffer): void {
         if (finished) return;
+        if (isOuterSettled()) {
+          release();
+          return;
+        }
+        if (deadlineExpired()) {
+          failDeadline();
+          return;
+        }
+        compressedBytes += chunk.length;
         decompressedBytes += chunk.length;
         if (decompressedBytes > maxBytes) {
           failBudget();
           return;
         }
         buffer.push(chunk);
-      });
-      inflater.on('end', () => {
-        if (!finished && !inflaterEnded) {
-          inflaterEnded = true;
-          commitBody();
-        }
-      });
-      inflater.on('error', () => {
-        if (!finished) {
-          finished = true;
-          try {
-            res.destroy?.();
-          } catch {
-            // 幂等
-          }
-          resolve({
-            kind: 'failed',
-            health: 'budget_exceeded',
-            reason: 'decompress-failed-or-too-large',
-          });
-        }
-      });
+      }
 
-      res.on('data', (chunk: Buffer) => {
+      function onCompressedData(chunk: Buffer): void {
         if (finished) return;
+        if (isOuterSettled()) {
+          release();
+          return;
+        }
         compressedBytes += chunk.length;
         if (compressedBytes > maxBytes) {
           failBudget();
@@ -919,11 +948,97 @@ class PublicWatchHttpClient {
           failDeadline();
           return;
         }
-        inflater.write(chunk);
-      });
-      res.on('end', () => {
-        if (!finished) inflater.end();
-      });
+        inflater?.write(chunk);
+      }
+
+      function onSourceEnd(): void {
+        if (finished) return;
+        if (isOuterSettled()) {
+          release();
+          return;
+        }
+        if (inflater === null) commitBody();
+        else inflater.end();
+      }
+
+      function onSourceError(): void {
+        if (finished) return;
+        if (isOuterSettled()) {
+          release();
+          return;
+        }
+        finished = true;
+        release();
+        resolve({ kind: 'failed', health: 'unavailable', reason: 'stream-error' });
+      }
+
+      function onSourceAborted(): void {
+        if (finished) return;
+        if (isOuterSettled()) {
+          release();
+          return;
+        }
+        finished = true;
+        release();
+        resolve({ kind: 'failed', health: 'unavailable', reason: 'aborted' });
+      }
+
+      function onInflaterData(chunk: Buffer): void {
+        if (finished) return;
+        if (isOuterSettled()) {
+          release();
+          return;
+        }
+        decompressedBytes += chunk.length;
+        if (decompressedBytes > maxBytes) {
+          failBudget();
+          return;
+        }
+        buffer.push(chunk);
+      }
+
+      let inflaterEnded = false;
+      function onInflaterEnd(): void {
+        if (finished) return;
+        if (isOuterSettled()) {
+          release();
+          return;
+        }
+        if (!inflaterEnded) {
+          inflaterEnded = true;
+          commitBody();
+        }
+      }
+
+      function onInflaterError(): void {
+        if (finished) return;
+        if (isOuterSettled()) {
+          release();
+          return;
+        }
+        finished = true;
+        release();
+        resolve({
+          kind: 'failed',
+          health: 'budget_exceeded',
+          reason: 'decompress-failed-or-too-large',
+        });
+      }
+
+      if (inflater === null) {
+        res.on('data', onSourceData);
+        res.on('end', onSourceEnd);
+        res.on('error', onSourceError);
+        res.on('aborted', onSourceAborted);
+        return;
+      }
+
+      // 压缩路径：压缩字节与解压后字节双上限
+      inflater.on('data', onInflaterData);
+      inflater.on('end', onInflaterEnd);
+      inflater.on('error', onInflaterError);
+      res.on('data', onCompressedData);
+      res.on('end', onSourceEnd);
       res.on('error', onSourceError);
       res.on('aborted', onSourceAborted);
     });
@@ -982,7 +1097,8 @@ function targetFetch(
 /**
  * 唯一产品构造入口：在模块内部创建未导出的 raw robots transport → RobotsPolicy →
  * target-gated client。raw、constructor 与任意 URL test seam 均不导出。
- * 测试只能经此工厂注入 DNS/request factory/Clock 等受控依赖并观察窄能力。
+ * 工厂无条件装配真实 RobotsPolicy：调用方不能提供、关闭或伪造 robots gate（无绕过路径）；
+ * 测试只能经此工厂注入 DNS/request factory/Clock/inflater 等不改变安全装配的窄 seam。
  */
 export function createPublicWatchHttpStack(seams: PublicWatchStackSeams = {}): PublicWatchStack {
   let policy: RobotsPolicy | null = null;
@@ -992,24 +1108,20 @@ export function createPublicWatchHttpStack(seams: PublicWatchStackSeams = {}): P
     clock: seams.clock,
     timeoutMs: seams.timeoutMs,
     userAgent: seams.userAgent,
-    robots:
-      seams.robots === undefined
-        ? {
-            checkAllowed: async (input): Promise<RobotsGateDecision> => {
-              if (policy === null) return { kind: 'unavailable' };
-              return policy.checkAllowed(input);
-            },
-          }
-        : seams.robots, // null → 缺 gate（fail-closed）；或注入的 RobotsGatePort（测试窄端口）
+    createInflater: seams.createInflater,
+    robots: {
+      checkAllowed: async (input): Promise<RobotsGateDecision> => {
+        if (policy === null) return { kind: 'unavailable' };
+        return policy.checkAllowed(input);
+      },
+    },
   });
-  if (seams.robots === undefined) {
-    policy = new RobotsPolicy({
-      client: raw,
-      clock: seams.clock,
-      uaProduct: seams.uaProduct,
-      robotsCacheMs: seams.robotsCacheMs,
-    });
-  }
+  policy = new RobotsPolicy({
+    client: raw,
+    clock: seams.clock,
+    uaProduct: seams.uaProduct,
+    robotsCacheMs: seams.robotsCacheMs,
+  });
 
   const target: TargetGatedClient = {
     get: (req) => targetFetch('GET', req, raw),

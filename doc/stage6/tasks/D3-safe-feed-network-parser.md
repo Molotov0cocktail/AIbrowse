@@ -436,3 +436,40 @@ Executor 最终只提交结构化证据并停止：
 5. 五项安全 oracle 的结果摘要、资源销毁/零 DNS/零 socket/迟到事件证据、敏感信息与临时文件扫描、
    剩余风险（无则写无）。
 6. 明确交接“新的独立安全 Reviewer”；不更新 progress、不生成 D4 任务、不 push。
+
+## D3-R3 修复记录（2026-08-27，Repair Worker，Reviewer 待复验）
+
+D3-R3 有界修复候选处理独立安全 Reviewer 对 D3-R2 HEAD `2325077` 的四项发现；全部先红后绿，
+未删除/放宽既有有效断言，未改动 R2 冻结契约。候选未 push；baseline `2325077`，repair HEAD 见 Git。
+
+### 修复项与证据
+
+1. **A：移除 RobotsGate 绕过能力**。`PublicWatchStackSeams` 删除 `robots` 键；
+   `createPublicWatchHttpStack` 无条件在模块内创建真实 `RobotsPolicy` 并注入私有 gate；
+   `RobotsGatePort`/`RobotsGateDecision` 降为模块内私有，不导出；无 allow-all/disableRobots/
+   policyFactory/raw-client seam。新增结构 oracle（`AssertNoRobots<PublicWatchStackSeams>` 在
+   baseline typecheck 报 `never` 赋值错误，修复后 typecheck 干净）与运行时 oracle（调用方强塞
+   robots gate 被忽略，仍产生真实 robots.txt 请求并到达受控 socket）。
+2. **B：闭合 deadline/abort 生命周期**。`attemptAddress` 显式跟踪 request/response/inflater；
+   单一 `finish → cleanup` 幂等销毁三者并清除 socket timer 与 abort listener；`readBoundedBody`
+   以 `isOuterSettled` 拒绝外层结算后的迟到 chunk/end/error（不累计字节、不写 buffer、不驱动
+   inflater），并在所有终态 `release()` 移除 res/inflater listener 与销毁 inflater。新增
+   `createInflater` 窄 seam（只影响解压、不改变安全装配）用于观察 inflater 生命周期。红→绿覆盖：
+   identity 静默 body 到期 response 已销毁、gzip 到期 response+inflater 销毁且 listener 清除、
+   abort 关闭全部活动资源、迟到事件零副作用零新 socket、timer/listener 清除且无未处理 rejection。
+3. **C：修复 IPv6 robots authority**。`robots-policy.ts` 改为从已验证 canonical URL 经
+   `new URL(...)` 派生绝对 `/robots.txt`（IPv6 保留方括号、无 query/fragment、scheme/authority
+   不变、默认端口规范化一致），不再用去括号 host 拼接；跨 host 判定对 IPv6 方括号做规范化比较。
+   真实工厂链 oracle：`https://[2606:4700:4700::1111]/feed` → 首次请求精确到该 IPv6 authority 的
+   `/robots.txt`（GET/https/port 443）→ robots 允许后目标请求到达受控 socket；特殊/保留 IPv6
+   零 socket oracle 保留。
+4. **D：格式**。按仓库 Prettier 修复 `public-watch-http-client.test.ts`（`format:check` 全绿，
+   未用忽略配置）。
+
+### 验证门（Repair HEAD，候选本地全绿）
+
+- 聚焦 `public-watch-http-client.test.ts` + `robots-policy.test.ts` 108/108；Watch 全量 240/240；
+  全量 `npm test -- --maxWorkers=1` 2686/2686；typecheck/lint/format:check/build/npm audit 0/
+  `git diff --check` 全过；dev 与 production Electron 冒烟 exit 0。
+- 敏感信息/机器路径/临时残留扫描干净；仅改动 EXPECTED SCOPE 四个代码/测试文件 + 本节任务文档。
+- 交接新的独立安全 Reviewer；不更新 progress、不生成 D4、不 push。

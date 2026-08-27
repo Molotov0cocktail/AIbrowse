@@ -61,6 +61,22 @@ type CacheEntry =
 
 const DEFAULT_UA_PRODUCT = 'aibrowse';
 
+/** host 比较用规范化：去 IPv6 方括号并小写（Node URL.hostname 对 IPv6 保留方括号）。 */
+function normalizeHostForCompare(host: string): string {
+  let h = host;
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
+  return h.toLowerCase();
+}
+
+/** 从已验证 canonical URL 安全派生绝对 /robots.txt URL（IPv6 保留方括号，无 query/fragment）。 */
+function deriveRobotsUrl(canonicalUrl: string): string {
+  const parsed = new URL(canonicalUrl);
+  parsed.pathname = '/robots.txt';
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString();
+}
+
 function createSystemClock(): Clock {
   return {
     now: () => new Date(),
@@ -504,9 +520,14 @@ export class RobotsPolicy {
       return this.decideFromCache(cached, target.url);
     }
 
-    // 初始 robots URL 只由目标 canonical authority 派生：scheme://canonical-host/robots.txt，
-    // 无 query/fragment（端口仅 80/443，URL 规范化已省略默认端口）
-    const robotsUrl = `${target.scheme}://${target.host}/robots.txt`;
+    // 初始 robots URL 只由目标 canonical authority 派生：无 query/fragment，IPv6 保留方括号。
+    // 不使用去括号 host 直接拼接（那会破坏 IPv6 字面量 authority）。
+    let robotsUrl: string;
+    try {
+      robotsUrl = deriveRobotsUrl(target.url);
+    } catch {
+      return { kind: 'security-rejected' };
+    }
     const fetchResult: PublicFetchResult = await this.client.get({
       url: robotsUrl,
       purpose: 'robots',
@@ -539,13 +560,13 @@ export class RobotsPolicy {
     // 跨 host 最终 URL：robots 规则只属于初始 authority；无法确定 robots → fail-closed
     let finalHost: string | null;
     try {
-      finalHost = new URL(meta.finalUrl).hostname;
+      finalHost = normalizeHostForCompare(new URL(meta.finalUrl).hostname);
     } catch {
       finalHost = null;
     }
 
     if (meta.statusCode >= 200 && meta.statusCode < 300) {
-      if (finalHost !== null && finalHost !== target.host) {
+      if (finalHost !== null && finalHost !== normalizeHostForCompare(target.host)) {
         const entry: CacheEntry = { decision: 'unavailable', expiresAt };
         this.cache.set(cacheKey, entry);
         return { kind: 'unavailable' };

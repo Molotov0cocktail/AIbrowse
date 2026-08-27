@@ -5,7 +5,13 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { isIP } from 'node:net';
-import { gzipSync } from 'node:zlib';
+import {
+  createGunzip,
+  gzipSync,
+  type BrotliDecompress,
+  type Gunzip,
+  type Inflate,
+} from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { FakeClock } from '../../shared/watch/clock';
 import {
@@ -18,7 +24,7 @@ import {
   classifyPublicHttpStatus,
   createPublicWatchHttpStack,
   WATCH_DEFAULT_USER_AGENT,
-  type RobotsGatePort,
+  type PublicWatchStackSeams,
   type WatchIncomingLike,
   type WatchRequestFactory,
   type WatchRequestLike,
@@ -124,6 +130,8 @@ function flush(): Promise<void> {
 /**
  * 安全工厂测试 harness：注入受控 lookup/request/Clock；robots 请求默认自动 404（allow-all），
  * 测试只关心目标请求时可设 autoRobots:false 手动驱动 robots 响应。
+ * createInflater 是只影响压缩解压、不改变安全装配的窄 seam（用于观察 inflater 生命周期）。
+ * 构造经 as unknown as 双断言：证明即使调用方强塞 seams 类型之外的键也只会被忽略/按窄 seam 处理。
  */
 function createHarness(
   opts: {
@@ -131,7 +139,10 @@ function createHarness(
     clock?: FakeClock;
     timeoutMs?: number;
     autoRobots?: boolean;
-    robots?: RobotsGatePort | null;
+    createInflater?: (
+      encoding: 'gzip' | 'deflate' | 'br',
+      maxOutputLength: number,
+    ) => Gunzip | Inflate | BrotliDecompress;
   } = {},
 ) {
   const captured: CapturedRequest[] = [];
@@ -151,8 +162,8 @@ function createHarness(
     request: factory,
     clock: opts.clock,
     timeoutMs: opts.timeoutMs ?? 30_000,
-    robots: opts.robots,
-  });
+    createInflater: opts.createInflater,
+  } as unknown as PublicWatchStackSeams);
   return {
     stack,
     captured,
@@ -656,18 +667,16 @@ describe('每跳 robots gate（WRT-05 每跳部分；真实 RobotsPolicy 装配�
     expect(h.targets().length).toBe(1); // cdn 零目标 socket
   });
 
-  it('robots gate 异常 → fail-closed unavailable（不假定允许）', async () => {
-    const h = createHarness({
-      robots: {
-        checkAllowed: async () => {
-          throw new Error('gate-boom');
-        },
+  it('robots 获取失败（requestFactory throw）→ fail-closed unavailable，不假定允许', async () => {
+    const stack = createPublicWatchHttpStack({
+      lookup: PUBLIC_LOOKUP,
+      request: () => {
+        throw new Error('boom');
       },
     });
-    const r = await h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    const r = await stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
-    expect(h.captured.length).toBe(0);
   });
 
   it('真实 RobotsPolicy 装配：robots 子请求自身不递归咨询 gate（零递归）', async () => {
@@ -731,12 +740,22 @@ describe('不消费响应的安全销毁（WRT-04 生命周期）', () => {
 // ---------------------------------------------------------------------------
 
 describe('R2 工厂与能力边界', () => {
-  it('模块公开 surface 不包含 raw client、constructor 或任意 URL fetch seam', () => {
+  it('模块公开 surface 不包含 raw client、constructor、RobotsGatePort 或任意 URL fetch seam', () => {
     const surface = watchClientModule as unknown as Record<string, unknown>;
     expect(typeof surface.createPublicWatchHttpStack).toBe('function');
     expect(surface.PublicWatchHttpClient).toBeUndefined();
     expect(surface.PublicWatchHttpSeams).toBeUndefined();
     expect(surface.RobotsPolicy).toBeUndefined();
+    expect(surface.RobotsGatePort).toBeUndefined();
+  });
+
+  it('结构 oracle：PublicWatchStackSeams 不含 robots 注入点；公开工厂调用方无法提供 robots gate', () => {
+    // 若 'robots' 出现在 seam 键集，则 AssertNoRobots 求值为 never，const check 赋值在
+    // typecheck 层失败——这是只靠类型系统即可证明的公开工厂结构契约。
+    type AssertNoRobots<T> = 'robots' extends keyof T ? never : true;
+    const check: AssertNoRobots<PublicWatchStackSeams> = true;
+    expect(check).toBe(true);
+    // 运行时层面：即使调用方用强类型断言塞入 robots 键，安全工厂也只能忽略它（见 R3 套件）。
   });
 
   it('目标 https://EXAMPLE.com:443/a?x=1#f 的第一次 robots 请求只能是 https://example.com/robots.txt', async () => {
@@ -782,16 +801,6 @@ describe('R2 工厂与能力边界', () => {
       const r = (await run()) as { kind: string; health?: string };
       expect(r.kind).toBe('failed');
       expect((r as { health?: string }).health).toBe('security_rejected');
-    }
-    expect(h.captured.length).toBe(0);
-  });
-
-  it('缺 RobotsGate 的 page/feed/discovery 零 DNS、零 request、零 socket（fail-closed）', async () => {
-    const h = createHarness({ robots: null });
-    for (const purpose of ['feed', 'page', 'discovery'] as const) {
-      const r = await h.stack.target.get({ url: 'https://example.com/x', purpose });
-      expect(r.kind).toBe('failed');
-      if (r.kind === 'failed') expect(r.health).toBe('unavailable');
     }
     expect(h.captured.length).toBe(0);
   });
@@ -983,6 +992,193 @@ describe('R2 单资源总 deadline（零 DNS/零 socket / 不续杯 / 迟到事�
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
     expect(h.targets().length).toBe(1); // 不产生新 socket
+  });
+});
+
+describe('R3 安全工厂无条件装配真实 RobotsPolicy（无 robots 绕过）', () => {
+  it('调用方强塞 robots gate 被忽略：工厂只装配真实 RobotsPolicy（产生真实 robots.txt 请求）', async () => {
+    const captured: CapturedRequest[] = [];
+    const factory: WatchRequestFactory = (options) => {
+      const req = new FakeRequest();
+      const cap = makeCap(req, options);
+      captured.push(cap);
+      if (isRobotsRequest(options)) {
+        queueMicrotask(() => {
+          if (!cap.responded) cap.respond(404, {}, '');
+        });
+      }
+      return req;
+    };
+    const stack = createPublicWatchHttpStack({
+      lookup: PUBLIC_LOOKUP,
+      request: factory,
+      robots: {
+        checkAllowed: async () => {
+          throw new Error('bypass-gate-should-be-ignored');
+        },
+      },
+    } as unknown as PublicWatchStackSeams);
+    const promise = stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    expect(captured.length).toBe(2);
+    expect(isRobotsRequest(captured[0]!.options)).toBe(true);
+    expect(captured[1]!.options.path).toBe('/feed');
+    captured[1]!.respond(200, {}, '<rss/>');
+    const r = await promise;
+    expect(r.kind).toBe('ok');
+  });
+});
+
+describe('R3 deadline/abort 生命周期（统一幂等 cleanup；迟到事件零副作用）', () => {
+  it('identity 静默 body：总 deadline 到期后 response 已销毁，timer 已清除', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = h.targets()[0]!.openResponse(200, {});
+    clock.advanceTo(30_000);
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    expect(res.destroyed).toBe(true);
+    expect(clock.pendingTimerCount()).toBe(0);
+  });
+
+  it('gzip 静默 body：总 deadline 到期后 response 与 inflater 均已销毁，listener 清除', async () => {
+    const clock = new FakeClock(0);
+    const inflaters: Gunzip[] = [];
+    const h = createHarness({
+      clock,
+      createInflater: (_encoding, max) => {
+        const s = createGunzip({ maxOutputLength: max });
+        inflaters.push(s);
+        return s;
+      },
+    });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
+    clock.advanceTo(30_000);
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    expect(res.destroyed).toBe(true);
+    expect(inflaters.length).toBe(1);
+    expect(inflaters[0]!.destroyed).toBe(true);
+    expect(inflaters[0]!.listenerCount('data')).toBe(0);
+  });
+
+  it('abort 关闭全部活动资源（request/response/inflater）', async () => {
+    const controller = new AbortController();
+    const inflaters: Gunzip[] = [];
+    const h = createHarness({
+      createInflater: (_encoding, max) => {
+        const s = createGunzip({ maxOutputLength: max });
+        inflaters.push(s);
+        return s;
+      },
+    });
+    const promise = h.stack.target.get({
+      url: 'https://example.com/feed',
+      purpose: 'feed',
+      signal: controller.signal,
+    });
+    await flush();
+    const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
+    controller.abort();
+    const r = await promise;
+    expect(r.kind).toBe('aborted');
+    expect(res.destroyed).toBe(true);
+    expect(inflaters.length).toBe(1);
+    expect(inflaters[0]!.destroyed).toBe(true);
+  });
+
+  it('deadline 到期后迟到 data/end/error 不写入、不改变终态、不创建新 socket（压缩路径）', async () => {
+    const clock = new FakeClock(0);
+    const inflaters: Gunzip[] = [];
+    const h = createHarness({
+      clock,
+      createInflater: (_encoding, max) => {
+        const s = createGunzip({ maxOutputLength: max });
+        inflaters.push(s);
+        return s;
+      },
+    });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
+    clock.advanceTo(30_000);
+    await flush();
+    // 迟到 error 先到（listener 仍在）：外层已 settle → 触发 release 清理 listener
+    res.emit('error', new Error('late'));
+    // 迟到 data/end：listener 已清除 → 纯 no-op，不写入 inflater、不创建新 socket
+    res.emit('data', Buffer.from('late', 'utf8'));
+    res.emit('end');
+    await flush();
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    expect(h.targets().length).toBe(1);
+    expect(inflaters[0]!.destroyed).toBe(true);
+    expect(res.listenerCount('data')).toBe(0);
+    expect(res.listenerCount('error')).toBe(0);
+  });
+
+  it('settlement 后 timer 与 listener 被清除，迟到事件无副作用且无未处理 rejection', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const res = h.targets()[0]!.openResponse(200, {});
+      res.emit('data', Buffer.from('x', 'utf8'));
+      await flush();
+      res.emit('end');
+      const r = await promise;
+      expect(r.kind).toBe('ok');
+      expect(clock.pendingTimerCount()).toBe(0);
+      expect(res.listenerCount('data')).toBe(0);
+      expect(res.listenerCount('end')).toBe(0);
+      expect(res.listenerCount('error')).toBe(0);
+      res.emit('data', Buffer.from('late', 'utf8'));
+      res.emit('end');
+      await flush();
+      expect(unhandled.length).toBe(0);
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled);
+    }
+  });
+});
+
+describe('R3 IPv6 robots authority（真实工厂链）', () => {
+  it('https://[2606:4700:4700::1111]/feed → 首次请求精确到该 IPv6 authority 的 /robots.txt → 目标到达受控 socket', async () => {
+    const h = createHarness({ autoRobots: false });
+    const promise = h.stack.target.get({
+      url: 'https://[2606:4700:4700::1111]/feed',
+      purpose: 'feed',
+    });
+    await flush();
+    expect(h.captured.length).toBe(1);
+    const robots = h.captured[0]!;
+    expect(robots.options.method).toBe('GET');
+    expect(robots.options.protocol).toBe('https:');
+    expect(robots.options.hostname).toBe('2606:4700:4700::1111');
+    expect(robots.options.port).toBe(443);
+    expect(robots.options.path).toBe('/robots.txt');
+    robots.respond(404, {}, '');
+    await flush();
+    expect(h.targets().length).toBe(1);
+    const target = h.targets()[0]!;
+    expect(target.options.hostname).toBe('2606:4700:4700::1111');
+    expect(target.options.path).toBe('/feed');
+    target.respond(200, {}, '<rss/>');
+    const r = await promise;
+    expect(r.kind).toBe('ok');
   });
 });
 
