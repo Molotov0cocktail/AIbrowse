@@ -4,16 +4,19 @@
 
 完成 `@federicocarboni/saxe@0.8.0` 和 `parse5-sax-parser@8.0.0` + `parse5@8.0.1` 双资格门；
 只有分别通过后才精确安装并实现公网 GET/HEAD、DNS/redirect/robots、Feed Discovery/RSS2/Atom，
-以及公开 HTML→DocumentChannels 的零执行流式通道。
+以及公开 HTML→DocumentChannels 的零执行流式通道。D3-R2 在不更换 parser/依赖的前提下修正
+robots 响应预算、IPv6 普通公网 allowlist、robots 强制安全装配、单资源网络总 deadline 与 RFC 9309
+octet 匹配；R2 未经新的独立安全 Reviewer `PASS` 前 D3 不完成、D4 不开始。
 
 ## 范围与非目标
 
 - **做**：两组候选 tarball/许可证/维护/供应链/Node24/Electron 构建核验；XML/HTML 敌手与兼容语料；
   Node 核心 http/https 连接时 lookup；仅 HTTP 80/HTTPS 443 的 NetworkPolicy/RobotsPolicy；
   SAX Feed Discovery；FeedProjection；
-  公开 HTML SAX→有界 DocumentChannels，零脚本/子资源/Cookie。
+  公开 HTML SAX→有界 DocumentChannels，零脚本/子资源/Cookie；D3-R2 五项正式安全修订。
 - **不做**：页面 Session、Scheduler、watch.db、Event/Digest/UI；不实现通用 HTTP；不支持登录 feed；
-  解析失败不浏览器 fallback。
+  解析失败不浏览器 fallback；D3-R2 不改 Feed/HTML parser，除非能证明与五项根因不可分割并先停止
+  返回 Planner；不新增网络/解析依赖。
 
 ## 涉及模块和输入文档
 
@@ -38,6 +41,9 @@
 3. 绿：纯 Policy → 连接时 lookup 客户端 → robots → XML parser/Feed → HTML SAX discovery/DocumentChannels。
 4. 证明超限 destroy、零外部 entity/file/network、后续正常请求仍可用、日志零正文。
 5. 全量、build、`npm audit`、license、package diff、自审和安全 Reviewer。
+6. **D3-R2**：先在 repair HEAD `dd3deeb` 上建立五组能甄别旧实现的红态 oracle；再按
+   robots 512,000 bytes → IPv6 IANA allowlist → 安全工厂/强制 gate → 单资源总 deadline → RFC 9309
+   octet 匹配的顺序最小修复。不得删除/放宽既有有效测试，不得触碰 D4/D5。
 
 ## 验收标准与测试
 
@@ -47,15 +53,34 @@
 - DTD/entity/XInclude 零文件/网络；2 MiB 与 XML depth/name/attribute-count/attribute-bytes/text-node/nodes/
   total-text/FeedProjection 每项 `== MAX` 接受、`MAX+1` fail-closed，零假 Projection。
 - HTML 零 JavaScript/WebContents/子资源/Cookie；2 MiB/20k node/64 depth/64 attrs fail-closed。
+- Robots 独立 `MAX_ROBOTS_RESPONSE_BYTES=512_000`，identity/压缩与解压后 `==MAX` 接受、
+  `MAX+1` destroy + `budget_exceeded`；不得引用 `MAX_DISCOVERY_HTML_BYTES`；规则数 1,024 边界保持。
+- IPv6 只允许 detailed §6.1 冻结的 IANA 已分配普通 GUA；`3fff::/20`、`2001:db8::/32`、
+  `2001:2::/48`、`fec0::/10`、未列的 `2000::1` 与 IANA `RESERVED` 的 `2d00::1` 均
+  security_rejected 且零 socket；已分配普通公网正例仍可达测试 socket。
+- `target-gated` 缺 RobotsGate 的 page/feed/discovery 零 DNS、零 socket 并 unavailable；安全工厂是唯一
+  产品构造入口，raw、constructor 与任意 URL 测试 seam 均不导出。初始 robots URL 只由目标 authority
+  派生为无 query/fragment 的 `/robots.txt`；伪造 `purpose=robots` + 任意 host/path/query 零 DNS、零
+  socket；raw 内部 redirect 逐跳复验、继承同一 deadline；每跳 robots deny 时目标零 socket。
+- 30 秒从单次 `get/head` 入口覆盖 DNS、robots、全部候选地址、redirect 和响应体，并与外部 deadline 取
+  更早者；Invalid Date/已过期 deadline 零 DNS、零 socket，外部 deadline 晚于内部 30 秒仍以内部截止；
+  无响应 socket、静默 body、多地址连续失败与 redirect 链不得获得新 30 秒，迟到事件不得改变终态。
+- RFC 9309：fatal UTF-8 是文件级 unavailable；CR/LF/CRLF 与 RFC 结构位置的 SP/HTAB 合法。其它原始
+  control、ABNF 错误与 malformed/truncated percent triplet 只隔离所在行并继续使用其它 parseable rules；
+  percent-encoded unreserved ASCII 解码，reserved、非 unreserved ASCII（含 `%00`）与非 ASCII octet
+  保持规范化 percent 编码身份；相同 UA 组合并、空 specific 组不回退 `*`，并保持 `*`、末尾 `$`、
+  最长 octet 与等长 allow。
 - package 仅批准的三个精确直接依赖；Node24、dev/production build 全绿；全量验证全绿。
 
 ## 完成定义
 
-资格报告回填本任务；红→绿；安全 Reviewer PASS；一个依赖资格+Feed安全逻辑提交；不得接线 Scheduler。
+资格报告回填本任务；D3 与 D3-R1 历史证据保留；D3-R2 先红后绿并创建新的 local repair commit；
+新的独立安全 Reviewer PASS 后才允许 Closer 更新 progress/关闭 D3；不得 amend/reset/重写候选历史、
+不得 push、不得接线 Scheduler。
 
 ## 依赖与停止条件
 
-- 依赖 D2 类型/预算。D7/D10 依赖本任务。
+- 依赖 D2 类型/预算。D4/D7/D10 依赖本任务；D3-R2 Reviewer PASS 前 D4 不得开始。
 - 任一候选资格失败、需要换包/自研 parser、需要代理/认证/POST、无法连接时约束 DNS、robots/真实规范冲突时停止 REPLAN。
 
 ## 资格门报告（2026-08-26，发生在仓库安装之前）
@@ -142,8 +167,8 @@ D3-R1 独立安全修复候选闭合正式契约在 D3 首次实现中遗留的�
 
 ### 修复项与证据
 
-1. **IPv6 显式 allowlist（WRT-01/02）**：`network-policy.ts` 由「未在 denylist 即 public」改为
-   显式放行公网 global-unicast（2000::/3）且排除 site-local fec0::/10、文档段 2001:db8::/32、
+1. **IPv6 R1 历史实现（WRT-01/02，已被 R2 否决）**：`network-policy.ts` 由「未在 denylist 即 public」
+   改为放行整个 global-unicast `2000::/3` 再排除 site-local fec0::/10、文档段 2001:db8::/32、
    BMWG benchmarking 2001:2::/48、AMT/AS112/ORCHID/Drone、整个 2001::/23 IETF 保留块等；
    红态 fec0/2001:db8/2001:2 误判 public → 绿态 reserved；连接层 `[fec0::1]` 等字面量与混合
    DNS 均零 socket security_rejected。
@@ -151,10 +176,13 @@ D3-R1 独立安全修复候选闭合正式契约在 D3 首次实现中遗留的�
    `RobotsGatePort` seam；初始与每个 redirect host 在发起 socket 前完成 robots 决策，
    `purpose='robots'` 自身跳过（零递归）；gate 异常 fail-closed unavailable；disallowed →
    `robots_disallowed`。测试断言初始 host allowed 后 redirect 下一 host robots 拒绝时下一 host
-   **零 socket**。
+   **零 socket**。这是 R1 历史行为，不是现行授权：R2 禁止公开调用方仅靠伪造 purpose 跳过 gate，
+   并把 raw 初始请求收口到安全工厂内部派生的目标 authority `/robots.txt`。
 3. **robots 匹配 RFC 9309（WRT-05）**：`robots-policy.ts` 实现 `*` 通配、结尾 `$` 锚点、最长匹配
    （按匹配消耗 octet 数，§5.2）与等长 allow 优先；线性贪心无正则（无 ReDoS 面）。**无缓存 304、
    跨 host robots redirect、解析异常一律 fail-closed 为 unavailable，不再退化为 allow-all**。
+   这是 R1 历史策略；R2 已把“解析异常”拆为 fatal UTF-8 文件级失败与其它逐行错误隔离，禁止继续按
+   该宽泛表述实现。
 4. **timeout/deadline/abort 覆盖 DNS**：DNS lookup 与剩余 deadline、`timeoutMs`、abort 竞争；
    永不返回的 DNS 按时受控失败；`requestFactory` 同步 throw 转受控 unavailable；redirect/HEAD
    等不消费响应立即 `destroy()`（降级 resume 排空）。
@@ -178,11 +206,233 @@ D3-R1 独立安全修复候选闭合正式契约在 D3 首次实现中遗留的�
   正确实现；其 ==MAX/+1 边界语义由 `encodeFeedProjectionCanonical` 在 helper 级机器验证，
   端到端验证覆盖精确记账与最大文本 feed 接受。
 - **每跳 robots 的 D5 装配**：`PublicWatchHttpClient` 默认不注入 robots gate（D3 无
-  Coordinator）；D5 装配必须把 `RobotsPolicy` 接入客户端，否则每跳 robots 不生效——这是当前
-  D3 范围的显式留白，非绕过。
+  Coordinator）；D5 装配必须把 `RobotsPolicy` 接入客户端，否则每跳 robots 不生效——**该描述已被
+  D3-R2 正式契约否决并取代**：缺 gate 必须 fail-closed，D3 自己交付安全工厂；D5 只装配 HostRequestGate/
+  并发/5 秒间隔。
 
 ### D3-R1 验证门（候选本地全绿）
 
 - D3 聚焦（watch 全部）**379/379**；全量 `npm test -- --maxWorkers=1` **2646/2646**（+44）；
   typecheck ✓、lint ✓、format:check ✓、build ✓、npm audit 0、`git diff --check` 退出码 0。
 - 工作区仅含上述 12 个范围内文件；临时探针已清理；候选提交未 push，交由新独立 Reviewer 复验。
+
+## D3-R2 Replacement Execution Contract（2026-08-27）
+
+本节与 detailed-design #S6-038～#S6-042 是待独立安全 Reviewer 审批的完整替代契约；上方资格报告、
+原始候选和 D3-R1 记录只作为不可改写的审计历史。Reviewer `PASS` 前不得生成或交付 Executor 实施
+prompt，不得开始产品实现或 D4。
+
+### TASK
+
+在保持 D3 原始候选与 D3-R1 审计链不变的前提下，修复 `dd3deeb` 中五类安全根因：robots 独立响应
+预算、IPv6 普通公网 GUA 判定、安全 robots 装配、单资源网络总 deadline、RFC 9309 逐行 parser/octet
+matcher；先建立可甄别 `dd3deeb` 的红态测试，再做最小实现并交给新的独立安全 Reviewer。
+
+### BASELINE
+
+- 分支：`main`。
+- D3-R2 实现 baseline：`dd3deebce8a23cd68e7afac0f7c6dd21f2ca382b`。
+- D3 实施前 baseline：`9f33de2824a5b6a701228bbfad6f4fcbbdeb15b3`。
+- 原始候选：`662ef0b42a1078c270ad18904038eb1e96e7d29b`。
+- `662ef0b` 与 `dd3deeb` 均是不可改写的本地审计历史；禁止 reset/amend/rebase，Reviewer 以
+  `dd3deeb..新 repair HEAD` 审查 R2，以 `9f33de2..新 repair HEAD` 复核 D3 总范围。
+
+### GOAL
+
+交付一个默认 fail-closed、网络能力不可伪造、时间/响应/规则/内存均有界的 D3 Public Watch 栈：
+page/feed/discovery 必经 RobotsPolicy；robots 获取只可从目标 authority 的 `/robots.txt` 起步；IPv6 仅
+放行冻结的 IANA 普通 GUA；一次目标资源获取的所有 DNS/robots/地址/redirect/body 共用 30 秒更早截止；
+robots 文件按 RFC 9309 使用 fatal UTF-8 文件门与逐行容错、规范化 octet 匹配。
+
+### NON-GOALS
+
+- 不开始 D4/D5/D6，不实现 Scheduler、HostRequestGate 装配、watch.db、Session、Diff/Event/Digest/UI。
+- 不更换 XML/HTML parser，不新增网络或解析依赖，不修改 package/lockfile/corpus。
+- 不修改 Feed/HTML parser；若实现者证明与本契约根因不可分割，先停止并返回 Planner，不得自行扩围。
+- 不修改 `progress.md`、AGENTS.md 或其它正式文档，不调用 Provider，不 push。
+
+### AUTHORITATIVE SOURCES
+
+- `AGENTS.md` §2.1～§2.7、§3.1、§3.6、§7。
+- `Sixth_stage.md`。
+- `doc/stage6/detailed-design.md` §0、§2、§6、§7、§15、§16、§17（尤其 #S6-038～#S6-042）。
+- `doc/stage6/threat-model.md` §3、WRT-01～WRT-08、WRT-19。
+- 本任务文档本 Replacement Execution Contract；若上方 D3/D3-R1 历史描述与本节冲突，以本节和现行
+  detailed/threat 契约为准。
+- RFC 9309 §2.2、§2.2.2、§2.3.1.5、§2.5；IANA IPv6 Special-Purpose Address Registry 与 IPv6
+  Global Unicast Address Assignments 当前冻结快照。
+
+### CURRENT VERIFIED STATE
+
+- Planner 接管时 `main` HEAD 为 `dd3deebce8a23cd68e7afac0f7c6dd21f2ca382b`；两个远程 `main` 均为
+  `9f33de2824a5b6a701228bbfad6f4fcbbdeb15b3`，本轮禁止网络写入。
+- Planner 工作区只允许本文件、`detailed-design.md`、`threat-model.md` 三份已批准契约修改；产品代码、
+  测试、依赖和 progress 均未获 Planner 修改授权。
+- `dd3deeb` 现状已由代码/测试独立检查：robots 仍复用 262,144-byte discovery 预算；IPv6 仍把大量
+  `2000::/3` 未分配空间放行；RobotsGate 可缺省；地址/redirect 可重获 30 秒；robots 使用 JS string
+  匹配并会让坏行或空 specific 语义偏离 RFC。既有聚焦测试全绿不构成 R2 验收，因为缺少下述红态 oracle。
+- 三个 parser 直接依赖的精确版本保持既有状态，本轮不重新资格化或升级。
+
+### FIXED DECISIONS
+
+1. **Robots 响应预算**：`MAX_ROBOTS_RESPONSE_BYTES=512_000`；identity/on-wire compressed 与解压后
+   任一累计 `512,000` 可接受，读到第 `512,001` byte 立即 destroy 并 `budget_exceeded`。不得复用
+   `MAX_DISCOVERY_HTML_BYTES`；1,024 parseable rules、总 deadline 与仅内存约束同时生效。
+2. **IPv6**：先按 IANA Special-Purpose 精确拒绝，再且仅再放行 detailed §6.1 冻结的当前 IANA
+   `ALLOCATED` 普通 GUA 编译期表；文档、benchmark、transition/site-local、special、RESERVED 与未列
+   `2000::/3` 空间拒绝。registry 更新不自动扩权。
+3. **Robots 装配**：`createPublicWatchHttpStack(...)` 是唯一产品构造入口；raw transport/client、其
+   constructor 和任意 URL test seam 不导出。工厂内部装配 raw → RobotsPolicy → target-gated，调用方只
+   获得窄 gated 能力。raw 初始 GET 只能是从目标 canonical authority 派生的 `/robots.txt`，无
+   query/fragment；伪造 `purpose=robots` 不能赋予网络能力。raw 内部 redirect 逐跳复验 NetworkPolicy
+   并继承原 `effectiveDeadline`。缺 gate 的 page/feed/discovery fail-closed；D5 只加 host gate/并发/间隔。
+4. **总 deadline**：入口一次性冻结
+   `effectiveDeadline=min(start+30_000, externalDeadline)`；缺省外部值只用内部截止，Invalid Date 或
+   已过期值零 DNS/零 socket，外部晚值不能延长 30 秒。DNS、robots、所有地址、redirect、响应与 body
+   每个等待点只使用剩余时间；任何路径不续杯；第一个终态胜出，迟到事件不得改变终态或发起网络。
+5. **RFC 9309**：文件 body fatal UTF-8，非法/截断 UTF-8 整份 unavailable；合法 UTF-8 后逐行尝试。
+   CR、LF、CRLF 和 RFC 结构位置的 SP/HTAB 合法；其它原始 control 或 ABNF 错误只使所在行不可解析。
+   malformed/truncated percent triplet 也只忽略该条规则；其它 parseable rules 必须继续使用。
+   Percent-encoded unreserved ASCII 解码；reserved、非 unreserved ASCII（含 `%00`）与非 ASCII octet
+   保持大写 percent 编码身份。保留相同 UA 组合并、空 specific 不回退、`*`、末尾 `$`、最长 octet 与
+   等长 allow 优先。
+
+### INVARIANTS / RED LINES
+
+- page/feed/discovery 缺 RobotsGate 时始终零 DNS、零 request factory、零 socket；没有兼容性 allow-all。
+- raw robots 网络能力在模块外不可获得；`purpose` 是校验字段，不是权限令牌。
+- 初始 robots authority 必须等于目标 canonical authority，path 只能 `/robots.txt` 且无 query/fragment；
+  只有已经开始的 raw 内部 redirect 状态机可改变后续 URL，且每跳复验、共享预算。
+- IP 字面量、DNS 全结果、连接时 sealed lookup、每跳 redirect 都执行同一 NetworkPolicy；特殊用途优先拒绝。
+- 30 秒是一次目标资源获取总预算，不是单 DNS、单地址、单 socket、单 robots 或单 redirect 的预算。
+- 一条合法 UTF-8坏规则不能废弃整份 robots；一个 fatal UTF-8 body 不能降级使用任何部分规则。
+- `%00` 是 well-formed 编码 octet 身份，不等于原始 NUL，也不触发 unavailable；只有坏/截断 triplet
+  使该规则不可解析。
+- 不删、不跳过、不弱化既有有效测试；不引入 `any`、ts-ignore、宽泛 eslint disable、正则 matcher 或
+  新网络能力；正文、query、凭据、Cookie 零日志/零落盘。
+- D4 禁止开始；不得 amend/reset/rebase/push；最终只追加一个新的 local D3-R2 repair commit。
+
+### EXPECTED SCOPE
+
+- `src/shared/types/watch.ts`
+- `src/main/watch/network-policy.ts`
+- `src/main/watch/network-policy.test.ts`
+- `src/main/watch/public-watch-http-client.ts`
+- `src/main/watch/public-watch-http-client.test.ts`
+- `src/main/watch/robots-policy.ts`
+- `src/main/watch/robots-policy.test.ts`
+- `doc/stage6/detailed-design.md`
+- `doc/stage6/threat-model.md`
+- `doc/stage6/tasks/D3-safe-feed-network-parser.md`
+
+任何其它文件均视为越界并必须停止说明。三份文档由本 Planner 修订；后续实现者只能在实现事实要求的
+最小同步范围内保持其一致，不能重开已冻结决策。
+
+### IMPLEMENTATION PLAN
+
+1. 只有本 Replacement Contract 经新的独立安全 Reviewer `PASS`，且用户随后生成/批准 bounded Executor
+   prompt 后，Executor 才从精确 `dd3deeb` 审计链继续；先复核状态和范围，不修改历史。
+2. **测试先行**：只新增本 Contract 的甄别性测试，产品代码保持 `dd3deeb` 行为；逐组运行并记录预期
+   failure、断言位置和旧结构根因。红态必须覆盖五项，不能用模块缺失或错误 fixture 冒充。
+3. 最小实现共享常量与 IPv6 分类；特殊用途拒绝优先，allowlist 精确匹配，不顺手重构 parser。
+4. 把 Public HTTP 构造收口到安全工厂，隐藏 raw 能力；内部派生初始 robots URL，复用 raw redirect 状态机；
+   gate 缺失与伪造 purpose 在任何网络副作用前返回。
+5. 在公开入口建立唯一 effectiveDeadline 与 settlement latch，把同一 absolute deadline 传入 robots、DNS、
+   地址尝试、redirect 和 body；每个等待点用剩余时间并在终态清理资源/忽略迟到事件。
+6. 把 robots parser 拆为 fatal UTF-8 文件门、RFC 换行扫描、逐行 record 解析、octet normalization、group
+   selection/matcher；坏行隔离，保持线性/有界，不用正则。
+7. 聚焦转绿后运行全量门控、自审 `dd3deeb..HEAD` 与 `9f33de2..HEAD`，清理残留，创建一个新的 local
+   repair commit 后停止，不 push，交给新的独立安全 Reviewer。
+
+### TEST PLAN
+
+**红态与聚焦命令**
+
+- 先只改三份既有测试文件，运行：
+  `npm test -- --maxWorkers=1 src/main/watch/network-policy.test.ts src/main/watch/public-watch-http-client.test.ts src/main/watch/robots-policy.test.ts`。
+- 在 `dd3deeb` 产品实现上，新增 R2 oracle 必须至少一项/组明确失败；记录红态测试名、实际结果与为何
+  只有 R2 实现可转绿。随后最小修复并用同一命令全绿。
+
+**精确 oracle**
+
+1. Robots bytes：构造语法合法且规则数未超限的精确 512,000-byte identity body，accept；512,001-byte
+   body 在第 512,001 byte destroy + `budget_exceeded`。压缩响应分别证明 on-wire 与解压后任一 `MAX+1`
+   都 destroy；超限后后续正常请求仍可用。
+2. IPv6：`3fff::1`、`2001:db8::1`、`2001:2::1`、`fec0::1`、未分配 `2000::1`、IANA RESERVED
+   `2d00::1` 均分类拒绝；URL 字面量和 DNS 返回路径都零 socket。至少保留 detailed §6.1 中已分配普通
+   GUA 的正例并到达受控 test socket；special 子前缀优先于父 allowlist。
+3. 工厂/能力：模块公开 surface 不包含 raw client/constructor/任意 fetch seam；只有安全工厂能创建产品
+   target client。对目标 `https://EXAMPLE.com:443/a?x=1#f`，第一次 raw 请求只能是规范化
+   `https://example.com/robots.txt`。公开入口伪造 `purpose=robots` 并分别改变 host、path、query/fragment
+   或使用 HEAD，全部零 DNS、零 request factory、零 socket。raw 内部跨 authority redirect 每跳复验；
+   私网/downgrade 拒绝，合法公网跳继承同一 absolute deadline。缺 gate 的 page/feed/discovery 同样零网络。
+4. Deadline：FakeClock 下 Invalid Date 与 `deadline<=startedAt` 均零 DNS/零 socket；外部 `start+10s`
+   在 10 秒内销毁，外部 `start+60s` 仍在内部 30 秒内销毁。DNS+两地址失败+redirect+静默 body 的累计
+   时钟不得超过同一截止；每一步观察到递减 remaining。截止/abort/error/body end 竞态只 settle 一次，
+   到期后触发 DNS callback、socket connect/error、redirect、chunk/end 均不能改变结果或产生新 socket。
+5. Parser/matcher：
+   - fatal 非法/截断 UTF-8 body → 整份 unavailable，先前看似合法规则不得生效；
+   - CR、LF、CRLF 三种换行分别可解析，CRLF 不产生错误的额外 record；`User-agent`/冒号/value/行尾
+     comment 的 RFC 结构位置 SP/HTAB 正例可用；
+   - 含 raw NUL、其它 C0、DEL、C1 或坏 ABNF 的行被忽略，同行不改变 group，后续合法 disallow/allow
+     仍生效；`/bad%G1` 与 `/bad%2` 规则各自忽略，前后 parseable rules 继续使用；
+   - `/foo/%62%61%7A` 与 `/foo/baz` 等价；raw 非 ASCII 与其 UTF-8 percent octets 等价；`%2F` 不等于
+     字面 `/`；`%2A`/`%24` 是字面编码身份；`/x%00y` 是 parseable rule 并只匹配规范化 `%00` 身份；
+     `%7F`、孤立 `%80`/`%E3` 等 well-formed 非 unreserved octet 保持编码身份且不使文件 unavailable；
+   - 相同 UA 分组合并；存在空 specific group 时允许且不回退 `*`；`*`、仅末尾 raw `$`、最长 normalized
+     octet 与等长 allow 优先保持正确；1,024 parseable rules 接受，第 1,025 条触发 unavailable，坏行不计数。
+6. 保留并复跑 WRT-01～WRT-08、WRT-19 既有回归，尤其 HTML 零脚本/子资源/Cookie、XML XXE/DTD/
+   entity/各预算边界，证明 R2 未改 Feed/HTML parser 行为。
+
+**全量门控**
+
+- `npm test -- --maxWorkers=1 src/main/watch`
+- `npm test -- --maxWorkers=1`
+- `npm run typecheck`
+- `npm run lint`
+- `npm run format:check`
+- `npm run build`
+- `npm audit`
+- `git diff --check`
+- dev 与 production Electron 冒烟按 AGENTS.md 安全任务矩阵执行；真实 Provider 为 N/A，因为 D3 无
+  Provider 路径。任何 NOT RUN 必须给出契约依据，不能静默省略。
+
+### ACCEPTANCE
+
+- 五组新增测试已在未改产品代码的 `dd3deeb` 行为上真实红，并在最小实现后用同一断言转绿。
+- detailed §6.1 allowlist、512,000/512,001 robots 边界、唯一安全工厂、初始 `/robots.txt` 能力边界、
+  absolute effectiveDeadline、RFC 逐行/octet 语义均由机器 oracle 直接证明。
+- Invalid Date、已过期、晚于内部截止、所有不续杯与迟到事件路径均有确定性测试，不依赖长墙钟。
+- `%00` 与其它 well-formed 非 unreserved octet 不触发 unavailable；坏 percent/control/ABNF 行不污染
+  其它规则；fatal UTF-8 整份 fail-closed。
+- 所有聚焦/全量/typecheck/lint/format/build/audit/diff/smoke 门控通过；零测试弱化、零新依赖、零敏感
+  信息/正文日志/临时残留。
+- `dd3deeb..HEAD` 只包含 EXPECTED SCOPE 且没有 D4/D5 产品接线；创建恰好一个新的有界 local repair
+  commit，工作区 clean，不 amend/reset/rebase/push。
+- 新的独立安全 Reviewer 复核 baseline、diff、关键测试与机器输出并给出 `PASS`；此前 D3/D4 均不关闭/开始。
+
+### STOP / ESCALATE CONDITIONS
+
+- Contract、RFC/IANA、现有公共接口或测试之间仍有实质冲突；需要改变冻结 allowlist、错误映射、预算、
+  deadline 起点、工厂能力或 RFC 行级语义。
+- 安全工厂无法在 Expected Scope 内隐藏 raw 能力，或必须导出任意 URL transport/test seam。
+- 为实现共享 deadline 必须修改 Scheduler/HostRequestGate/D4+，或会把单资源预算错误扩大为 run 预算。
+- 需要改 Feed/HTML parser、换包、增加依赖、代理/认证/POST、修改 progress 或任何范围外文件。
+- 红态测试不能甄别 `dd3deeb`、测试疑似与正式契约冲突、同一根因连续两轮修复仍失败。
+- 出现需用户裁决、不可逆动作、凭据/外部权限；或工作区出现未知修改。遇到任一项立即停止，不自行
+  放宽契约、删除测试、重写历史或 push。
+
+### FINAL EVIDENCE
+
+Executor 最终只提交结构化证据并停止：
+
+1. baseline、repair HEAD/commit、`git log --oneline --decorate -5`、`git status --short --branch`；声明未
+   amend/reset/rebase/push。
+2. 每个新增红态测试名、`dd3deeb` 行为下的失败输出摘要、对应旧根因；同测试转绿结果。
+3. 聚焦、Watch、全量 test、typecheck、lint、format、build、audit、diff-check、dev/production smoke 的
+   精确命令、退出码和范围；NOT RUN 项及依据。
+4. `git diff --stat dd3deeb..HEAD`、`git diff --name-only dd3deeb..HEAD` 与
+   `git diff --check dd3deeb..HEAD`；逐文件说明为何在 Expected Scope，确认依赖版本不变、D4/D5 零接线。
+5. 五项安全 oracle 的结果摘要、资源销毁/零 DNS/零 socket/迟到事件证据、敏感信息与临时文件扫描、
+   剩余风险（无则写无）。
+6. 明确交接“新的独立安全 Reviewer”；不更新 progress、不生成 D4 任务、不 push。

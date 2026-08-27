@@ -16,6 +16,8 @@
 8. Watch 不修改 AgentLoop 12 步/420 秒、17 工具注册表、ResearchRuntime 或 Research Result Schema。
 9. 时间来自可注入 Clock；预算和频率是编译期常量；清理与 dispose 幂等。
 10. v1 仅应用进程运行时调度；关窗退出后不运行。
+11. 公开 page/feed/discovery 的网络能力必须经 RobotsPolicy 装配；缺失 RobotsGate 时零 DNS、零
+    socket 并 fail-closed。`purpose=robots` 只属于内部 raw robots client，不能成为通用公开客户端。
 
 ## 1. 规划文件布局
 
@@ -73,7 +75,7 @@ Cookie/任意导航。`WatchLifecycleCoordinator` 作为 SourceService 构造时
 | `MIN_HOST_REQUEST_GAP_MS`      |       5,000 | 同 canonical host 请求起点间隔 |
 | `MAX_DUE_STARTS_PER_TICK`      |          20 | 单次唤醒启动数                 |
 | `WATCH_RUN_TIMEOUT_MS`         |      90,000 | 单规则总时间                   |
-| `NETWORK_ATTEMPT_TIMEOUT_MS`   |      30,000 | 单网络尝试                     |
+| `NETWORK_ATTEMPT_TIMEOUT_MS`   |      30,000 | 单次公开资源获取总周期         |
 | `MAX_REDIRECTS`                |           5 | 每跳复验                       |
 | `MAX_FEED_RESPONSE_BYTES`      |   2,097,152 | 解析前硬拒绝                   |
 | `MAX_XML_DEPTH`                |          64 | XML 元素深度硬上限             |
@@ -84,6 +86,7 @@ Cookie/任意导航。`WatchLifecycleCoordinator` 作为 SourceService 构造时
 | `MAX_XML_TEXT_NODE_BYTES`      |       8,192 | 单次累计文本节点               |
 | `MAX_XML_TOTAL_TEXT_BYTES`     |     131,072 | 单文档规范化文本累计           |
 | `MAX_DISCOVERY_HTML_BYTES`     |     262,144 | 仅内存扫描                     |
+| `MAX_ROBOTS_RESPONSE_BYTES`    |     512,000 | robots 独立响应/解析上限       |
 | `MAX_PAGE_HTML_RESPONSE_BYTES` |   2,097,152 | 公开页面 HTML 流硬上限         |
 | `MAX_HTML_NODES`               |      20,000 | SAX 事件节点上限               |
 | `MAX_HTML_DEPTH`               |          64 | 元素栈深度上限                 |
@@ -114,6 +117,10 @@ Cookie/任意导航。`WatchLifecycleCoordinator` 作为 SourceService 构造时
 
 字符串预算全部用 `Buffer.byteLength(value, 'utf8')`，截断不得拆 surrogate；截断后记录
 `truncated=true` 与截断前规范化字节数。超出整体预算时 fail-closed，不把残缺 Projection 当无变化。
+`MAX_ROBOTS_RESPONSE_BYTES=512_000` 精确等于 RFC 9309 §2.5 的最低 500 KiB，不得复用
+`MAX_DISCOVERY_HTML_BYTES`。robots 仍同时受 `MAX_ROBOTS_RULES=1_024`、严格 UTF-8、单次公开资源
+获取 30 秒总周期和仅内存解析约束；响应压缩字节、解压后字节任一达到 `MAX+1` 都立即销毁并
+`budget_exceeded`，`==MAX` 可用。
 
 ## 3. 域类型
 
@@ -399,17 +406,106 @@ NetworkPolicy：
 8. 只读取最多对应字节预算，超出立即 destroy socket；压缩数据同时限制压缩字节和解压后字节；
 9. URL 日志去 query/fragment/token，响应正文零日志。
 
+IPv6 不以“落在 `2000::/3` 且未命中少量 denylist”冒充公网。D3 冻结以下基于 IANA
+`IPv6 Global Unicast Address Space`（registry last updated 2025-10-10）和
+`IPv6 Special-Purpose Address Space`（last updated 2025-10-09）的编译期策略；运行时不联网更新：
+
+1. 先拒绝 IPv4-mapped/compatible、NAT64、discard、6to4、ULA、link-local、site-local、multicast、
+   IETF special-purpose、文档、benchmark/transition 及其它非普通公网用途；
+2. 再且仅再放行下列 IANA 当前 `ALLOCATED` 的普通 GUA 前缀：
+   `2001:200::/23`、`2001:400::/23`、`2001:600::/23`、`2001:800::/22`、
+   `2001:c00::/23`、`2001:e00::/23`、`2001:1200::/23`、`2001:1400::/22`、
+   `2001:1800::/23`、`2001:1a00::/23`、`2001:1c00::/22`、`2001:2000::/19`、
+   `2001:4000::/23`、`2001:4200::/23`、`2001:4400::/23`、`2001:4600::/23`、
+   `2001:4800::/23`、`2001:4a00::/23`、`2001:4c00::/23`、`2001:5000::/20`、
+   `2001:8000::/19`、`2001:a000::/20`、`2001:b000::/20`、`2003::/18`、
+   `2400::/12`、`2410::/12`、`2600::/12`、`2610::/23`、`2620::/23`、
+   `2630::/12`、`2800::/12`、`2a00::/12`、`2a10::/12`、`2c00::/12`；
+3. 上述父前缀中的 `2001:db8::/32` 与 `2620:4f:8000::/48` 仍由第一步特殊用途拒绝；
+   `2001::/23`、`2002::/16`、`3fff::/20` 和 IANA 标为 `RESERVED` 或未列出的 `2000::/3`
+   空间均不放行；
+4. IANA 登记变化不是运行时自动扩权理由；更新表必须另走正式设计、测试和安全 Reviewer。
+
+一次 `get/head` 在公开入口读取一次 Clock，冻结 `startedAt` 与
+`internalDeadline=startedAt+NETWORK_ATTEMPT_TIMEOUT_MS`，再计算
+`effectiveDeadline=min(internalDeadline, externalDeadline)`。外部 deadline 缺省时只用内部截止；传入
+`Invalid Date`（`getTime()` 非有限数）或 `externalDeadline<=startedAt` 时，必须在 URL 派生之后、DNS/
+request factory/socket 之前受控 `unavailable`。外部 deadline 晚于 `internalDeadline` 不得延长 30 秒。
+
+DNS、robots、全部候选地址、连接、响应头、redirect 链、压缩/解压和 body 读取共用这个不可变的
+`effectiveDeadline`；每个等待点只读取 `remaining=effectiveDeadline-now`，`remaining<=0` 立即销毁并
+返回，否则 timer 只能设为该 remaining，不得用地址、robots 子请求、retry 或 redirect 重新计算
+`startedAt`/获得完整 30 秒。无响应 socket、静默 body、多地址连续失败和 redirect 链均须在同一截止内
+销毁当前 request/response/inflater 并受控返回。请求级终态采用单一 settlement latch；deadline/abort/
+error/body end 中第一个终态胜出，清除全部 timer/listener，任何 deadline 后到达的 DNS callback、socket
+event、redirect response、body chunk/end 或解压事件都只能丢弃，不能创建新请求、写 body 或改变终态。
+
 公开 page/feed 请求 User-Agent 固定为产品版本化标识，不包含用户账号/机器 ID。条件请求优先发送
 ETag/Last-Modified；304 映射 unchanged-http，不解析空 body。
 
 ### 6.2 Robots 与频率
 
-- 公开 page/feed 在首次目标 host 及每次 host 变化前获取并缓存 robots；使用固定 Watch user-agent。
-- robots 获取同样经过 NetworkPolicy，最大 256 KiB、30 秒；不可解析/安全拒绝时 fail-closed 为 unavailable/security。
+- 公开 page/feed/discovery 在首次目标 host 及每次 host 变化前获取并缓存 robots；使用固定 Watch user-agent。
+- robots 获取同样经过 NetworkPolicy，独立最大 `MAX_ROBOTS_RESPONSE_BYTES=512_000` bytes；其 DNS、
+  地址、redirect、响应体必须受调用方同一次公开资源获取的更早总 deadline 约束。文件级 fatal UTF-8、
+  网络不可达或超时 fail-closed 为 unavailable；地址/scheme/redirect 安全拒绝为 security。
 - disallow 立即 `robots_disallowed` 并暂停；用户无 override。
 - 登录态 page 不查询 robots，但仍全局/主机并发、最小间隔、退避；这不是绕公开反爬授权。
 - §4.3 的 5 秒间隔是请求 start-to-start 硬下限，不是平均值；robots、目标、redirect 和 retry 都不能绕过。
 - robots 只表达 crawler preference，不替代 ToS/法律判断；UI 在创建公开规则时显示诚实提示。
+
+D3 内部装配冻结为唯一产品构造入口 `createPublicWatchHttpStack(...)`：它在模块内部创建未导出的
+raw robots transport → `RobotsPolicy` → target-gated client。产品代码不得导出 raw transport、其
+constructor、`robots-only` client、任意 URL fetch seam 或能自行构造未装 gate 客户端的 constructor；
+工厂只返回 target-gated client 与生命周期所需的 `RobotsPolicy` 窄端口。测试只能向该安全工厂注入
+DNS/request factory/Clock 等受控依赖并经工厂返回的窄能力观察行为，不能取得或导出任意网络客户端。
+
+每次 page/feed/discovery 调用先由工厂从已经通过 NetworkPolicy URL 层 canonical 校验的目标 URL 内部
+派生 robots 初始 URL：保持目标的 scheme、canonical host 与有效 port，path 精确为小写
+`/robots.txt`，query/fragment 必须为空；调用方不能提交 robots URL。任何公开入口或伪造请求试图用
+`purpose=robots` 指定其它 host、path、query、fragment、method 或 body，必须在 URL 解析、DNS、
+request factory 和 socket 前 `security_rejected`。raw 初始请求只允许 `GET` 该派生 URL；robots
+redirect 只能由 raw transport 内部
+消费响应 `Location` 后产生，每跳仍完整执行 NetworkPolicy、地址封印、redirect/downgrade 检查和 robots
+响应预算，并继承外层资源获取已建立的同一个 `effectiveDeadline`。redirect 不把新 URL 重新暴露为调用
+能力，也不获得新的 30 秒。
+
+target-gated client 只允许 page/feed/discovery。运行时收到伪造/缺失能力配置，或任何路径未持有
+RobotsGate 时，必须在 URL/DNS/request factory/socket 前返回受控
+`unavailable/robots-gate-missing`，绝不能默认跳过。D5 只把 HostRequestGate、并发和 5 秒
+start-to-start 间隔注入该安全工厂，不负责补救 D3 的缺省开放能力。
+
+Robots 解析/匹配按 RFC 9309 §2.2.2、§2.3.1.5 的 octet 语义实现，并严格区分文件级与逐行错误：
+
+1. **文件级解码**：先对整个 body 做 fatal UTF-8 解码，允许且只移除正文开头的一个 UTF-8 BOM。
+   任何非法/截断 UTF-8 都使本次 robots `unavailable`，不得使用部分规则；合法 UTF-8 解码完成后，
+   后续 ABNF、控制字符或 percent 语法错误都只是逐行问题，不得反向升级为文件级 UTF-8 失败。
+2. **行与结构空白**：按 RFC 的 `NL = CR / LF / CRLF` 切分，CRLF 必须作为一个换行处理；`SP`
+   (`0x20`) 与 `HTAB` (`0x09`) 只允许出现在 ABNF 的 `WS`/`empty-pattern`/行尾 comment 结构位置。
+   其它原始 C0（`U+0000..U+001F`，不含结构位置的 HTAB/CR/LF）、DEL (`U+007F`) 与 C1
+   (`U+0080..U+009F`) 使其所在逻辑行不可解析；该行不得创建/终止 UA group 或加入规则，解析器必须
+   继续尝试后续行。未知 record 与其它单行语法错误同样忽略且不得干扰已定义 record 的解析。
+3. **逐行 percent 错误隔离**：每个 allow/disallow 行独立解析；在 percent 编码处理中，只有 `%` 后
+   不足两个十六进制位，或两位中任一不是十六进制的 malformed/truncated percent triplet，才使
+   **该条规则**不可解析并忽略。
+   解析器继续使用同组及后续组的其它 parseable rules；坏规则不计入 `MAX_ROBOTS_RULES`，也不使整份
+   文件 unavailable。fatal UTF-8 与这一行级容错不得共用同一错误分支。
+4. **octet 规范化**：规则和已通过 NetworkPolicy 的目标 `path+query` 规范化为可比较 token。原始
+   非 ASCII 字符先按 UTF-8 展开为 octet，再以大写十六进制 percent 编码身份表示；percent-encoded
+   unreserved ASCII（`ALPHA / DIGIT / "-" / "." / "_" / "~"`）解码为对应单 octet；percent-encoded
+   reserved、其它非 unreserved ASCII（包括 `%00`、其它控制 octet、`%7F`）及非 ASCII octet均保留
+   percent 编码身份并统一十六进制为大写。故 `%2F` 不等于字面 `/`，`%00` 是可解析、可比较的
+   `%00` token，`%2A`/`%24` 也不成为通配/锚点；不得要求 percent-encoded 非 ASCII octet 单独组成
+   UTF-8 序列。目标 URL 若含 malformed/truncated percent triplet，须在 NetworkPolicy URL 校验阶段
+   零网络拒绝，不能把它解释为 robots 文件级失败。
+5. **匹配与 group**：`*` 只在规则中匹配零个或多个规范化 token，只有规则末尾未编码 `$` 是结尾
+   锚点；匹配从目标第一 octet 开始。specificity 是规范化规则中除 `*` 和末尾 `$` 外的 octet 数，
+   不是 wildcard 吞掉的目标长度；最长者胜，等长 allow 优先。所有大小写不敏感的相同 product-token
+   UA 组规则合并；只要 specific 组存在就绝不回退 `*`，合并后规则为空即允许全部；只有 specific 组
+   完全不存在时才合并并使用所有 `*` 组。
+6. **有界性**：`MAX_ROBOTS_RULES=1_024` 对合并前的 parseable allow/disallow records 计数，
+   `==MAX` 接受、遇到第 `MAX+1` 条 parseable rule 时整次 `unavailable`；匹配不得构造正则，响应
+   512,000-byte 上限、逐行扫描、规则数和同一总 deadline 共同限定时间与内存。
 
 ### 6.3 HTML 依赖资格与 Feed Discovery
 
@@ -473,6 +569,11 @@ script/style/noscript/template/svg/math/iframe/object/embed/form/input/button �
 | `parse_changed`          | Region/feed 结构失效                 | 首次下次计划重试   | 保留     | 连续 2 次暂停，修复/重建 |
 | `dependency_unavailable` | XML 资格/运行装配失败                | 否                 | 保留     | feed 全局 fail-closed    |
 | `interrupted`            | 退出/崩溃                            | 已消费 slot 不重放 | 保留     | 审计可见                 |
+
+缺失 RobotsGate、robots 文件级非法 UTF-8、网络总 deadline 用尽均映射为 `unavailable`；robots 中
+单条 ABNF/控制字符/percent 语法错误只忽略该行并继续使用其它 parseable rules。robots
+地址/scheme/redirect/伪造 raw 请求安全拒绝仍为 `security_rejected`，robots 响应字节超限仍为
+`budget_exceeded`。所有失败均零目标 socket 或立即销毁当前 socket，旧 Baseline 不变。
 
 错误检测不得用单一敌手正文字符串直接决定登录/captcha。使用主进程 URL/HTTP 状态、导航结果、
 已知 Chromium error URL、受控 DOM 元数据和保守判定；不确定时 unavailable，不回显页面挑战正文。
@@ -892,7 +993,20 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 - Schedule：interval/daily、DST gap/fold、回拨/跳跃、reservation 三写原子性、各崩溃点、失败/pause/abort
   不回拨、missed coalescing、手动不移锚点、jitter；
 - NetworkPolicy：IPv4/IPv6/混合 DNS/重绑定夹具、每跳 redirect、downgrade/userinfo/scheme、仅80/443；
-- Robots：allow/disallow、UA 优先、空/畸形/超长、缓存失效；
+  IPv6 至少覆盖 `3fff::/20`、`2001:db8::/32`、`2001:2::/48`、`fec0::/10`、未分配
+  `2000::1` 与 IANA `RESERVED` 的 `2d00::1` 纯分类与零 socket 负例，并保留 IANA 已分配
+  普通公网 GUA 正例；
+- Public HTTP：缺 RobotsGate 的 page/feed/discovery 零 DNS/零 socket；安全工厂是唯一产品构造入口，
+  raw/constructor/任意 URL 测试 seam 均不导出；初始 robots URL 只能由目标 authority 派生为规范化
+  `/robots.txt` 且无 query/fragment，伪造 `purpose=robots` + 任意 host/path/query 为零 DNS/零 socket；
+  raw 内部 redirect 逐跳复验并继承同一 deadline；30 秒统一覆盖 DNS、robots、所有地址、redirect 和
+  body。Invalid Date、已过期外部 deadline 均零 DNS/零 socket；外部 deadline 晚于内部 30 秒仍由内部
+  截止，所有路径不得续杯，迟到事件不得改变终态；
+- Robots：512,000 bytes `==` 接受、512,001 bytes destroy + `budget_exceeded`，1,024 parseable rules
+  边界、文件级 fatal UTF-8；CR/LF/CRLF 与结构位置 SP/HTAB 正例；其它原始 control、坏 ABNF 与
+  malformed/truncated percent triplet 仅隔离所在行并继续使用其它 parseable rules；非 ASCII、reserved、
+  `%00` 与 percent-encoded unreserved 的 octet 身份，`*`/末尾 `$`、最长 octet、等长 allow、相同 UA
+  组合并和空 specific 组不回退 `*`；
 - XML：RSS/Atom/namespaces/CDATA/encoding、DTD/entity/XXE/bomb、depth/name/attribute/text-node/node/
   total-text/FeedProjection 每个 `==` 接受与 `+1` 拒绝；
 - HTML：parse5 SAX 资格、2 MiB/node/depth/attribute、畸形 HTML、script/iframe/subresource 零执行/零请求；
@@ -954,6 +1068,11 @@ D1..D10 → D11 independent Stage Auditor
 D11 只能在 `Sixth_stage.md` §9 全项、§10 五项、全量/冒烟/跨进程/红队/真实条件均有当前 HEAD 证据后
 判 GO/PASS；否则 HOLD/PENDING。PASS 后停止，等待用户进入 Seventh Stage，不夹带产品化代码。
 
+D3 必须交付安全 PublicWatchHttpClient 工厂、raw robots purpose 限制、强制 RobotsGate、IPv6 当前 IANA
+普通公网 allowlist、robots 512,000-byte 预算、单资源 30 秒总 deadline 与 RFC 9309 octet 匹配。D5 只能
+在其上装配共享 HostRequestGate/并发/5 秒间隔，不能把 D3 的缺省开放能力列为后续留白；D3-R2 未经新的
+独立安全 Reviewer `PASS` 前，D4 及后续任务不得开始。
+
 ## 17. 决议记录
 
 - **#S6-U01～#S6-U31**：逐项对应 proposal §9 U01–U31，2026-08-23 用户明确批准。
@@ -969,6 +1088,20 @@ D11 只能在 `Sixth_stage.md` §9 全项、§10 五项、全量/冒烟/跨进�
   保持诚实限制。
 - **#S6-037**：U31 冻结公开页面为 Node 核心 HTTP + 资格化 `parse5-sax-parser@8.0.0`/
   `parse5@8.0.1`；零脚本、零子资源、零共享 Session。资格失败 REPLAN，禁止自动回退。
+- **#S6-038**：RFC 9309 §2.5 要求 parser limit 至少 500 KiB；robots 独立冻结
+  `MAX_ROBOTS_RESPONSE_BYTES=512_000`，不复用 256 KiB discovery 预算。
+- **#S6-039**：IPv6 只放行 2025-10-10 IANA Global Unicast registry 已分配的普通 GUA 编译期表，
+  并先排除 Special-Purpose registry；`2000::/3` 不再作为整体 allowlist，登记更新必须重新评审。
+- **#S6-040**：D3 安全工厂是唯一产品构造入口并在模块内封装 raw robots transport → RobotsPolicy →
+  gated target client；raw、constructor 和任意 URL 测试 seam 均不导出。初始 robots 请求只可由目标
+  authority 派生为无 query/fragment 的 `/robots.txt`，内部 redirect 逐跳复验且共享 deadline；缺 gate
+  的公开 target 请求 fail-closed，D5 只追加 HostRequestGate/并发/间隔，不补救 robots 能力。
+- **#S6-041**：`NETWORK_ATTEMPT_TIMEOUT_MS=30_000` 对单次 PublicWatch `get/head` 是从入口开始、
+  覆盖 DNS/robots/全部地址/redirect/body 的总预算，并与外部 deadline 取更早者，任何子步骤不续杯。
+- **#S6-042**：Robots 使用 RFC 9309 octet 规范化、相同 UA 组合并、空 specific 组不回退、最长
+  octet 与等长 allow。非法 UTF-8 是文件级 unavailable；合法 UTF-8 中其它原始控制字符、ABNF 错误或
+  malformed/truncated percent triplet 只使所在行不可解析，必须继续使用其它 parseable rules；`%00` 等
+  well-formed 非 unreserved octet 保持规范化 percent 编码身份。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。

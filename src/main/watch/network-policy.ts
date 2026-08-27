@@ -123,6 +123,23 @@ export function validatePublicUrl(raw: string): ValidateUrlResult {
     else return { ok: false, health: 'security_rejected', reason: 'port' };
   }
 
+  // RFC 9309 octet 匹配前提：path/query 中 malformed/truncated percent triplet 必须零网络拒绝
+  //（不得把目标 URL 的 percent 语法错误解释为 robots 文件级失败；fail-closed）。
+  for (const part of [url.pathname, url.search]) {
+    for (let i = 0; i < part.length; i += 1) {
+      if (part[i] !== '%') continue;
+      if (i + 2 >= part.length) {
+        return { ok: false, health: 'security_rejected', reason: 'malformed-percent' };
+      }
+      const h1 = parseInt(part[i + 1]!, 16);
+      const h2 = parseInt(part[i + 2]!, 16);
+      if (!Number.isFinite(h1) || !Number.isFinite(h2)) {
+        return { ok: false, health: 'security_rejected', reason: 'malformed-percent' };
+      }
+      i += 2;
+    }
+  }
+
   url.hash = '';
   const normalizedUrl = url.toString();
   return {
@@ -191,10 +208,12 @@ function parseIpv6Groups(address: string): number[] | null {
 }
 
 /**
- * IPv6 分类：显式 allowlist，只放行属于公网 global-unicast（2000::/3）且不属于
- * IANA 特殊用途子块的地址；其余（含 site-local fec0::/10、文档段、benchmarking、
- * IETF 2001::/23、6to4、NAT64、ULA、链路本地、组播、discard、IPv4-compatible）一律拒绝。
- * 禁止「未在 denylist 即 public」的默认放行。
+ * IPv6 分类（detailed-design §6.1 冻结策略，R2）：
+ * 1. 先按 IANA Special-Purpose 精确拒绝：IPv4-mapped/compatible、NAT64、discard、6to4、
+ *    ULA、link-local、site-local、multicast、IETF 2001::/23、文档 2001:db8::/32、
+ *    AS112 直连 2620:4f:8000::/48、3fff::/20 及其它特殊用途；
+ * 2. 再且仅再放行冻结的 IANA `ALLOCATED` 普通 GUA 编译期表（registry last updated 2025-10-10）。
+ * 禁止「未在 denylist 即 public」或整个 2000::/3 默认放行；registry 更新不自动扩权。
  */
 function classifyIpv6(address: string): IpCategory {
   const lower = address.toLowerCase();
@@ -212,26 +231,60 @@ function classifyIpv6(address: string): IpCategory {
 
   const groups = parseIpv6Groups(lower);
   if (groups === null) return 'invalid';
-  const [g0, g1] = groups as [number, number, ...number[]];
+  const [g0, g1, g2] = groups as [number, number, number, ...number[]];
 
+  // ---- 第 1 步：IANA Special-Purpose 精确拒绝（特殊用途优先于普通 GUA 父前缀） ----
   if (g0 === 0) return 'reserved'; // 0::/96 其余（::、::1、::ffff 已在上方处理）
   if (g0 >= 0xff00) return 'multicast'; // ff00::/8
   if ((g0 & 0xffc0) === 0xfe80) return 'link-local'; // fe80::/10
   if ((g0 & 0xffc0) === 0xfec0) return 'reserved'; // fec0::/10 site-local（废弃）
   if ((g0 & 0xfe00) === 0xfc00) return 'private'; // fc00::/7 ULA
   if (g0 === 0x2002) return 'reserved'; // 6to4
-  if (g0 === 0x0064 && g1 === 0xff9b) return 'reserved'; // 64:ff9b::/96 NAT64
+  if (g0 === 0x0064 && g1 === 0xff9b) return 'reserved'; // 64:ff9b::/96 NAT64（含 64:ff9b:1::/48 local-use）
   if (g0 === 0x0100) return 'reserved'; // 100::/64 discard-only
+  if (g0 === 0x2001 && g1 <= 0x01ff) return 'reserved'; // 2001::/23 IETF Protocol Assignments
+  if (g0 === 0x2001 && g1 === 0x0db8) return 'reserved'; // 2001:db8::/32 文档段
+  if (g0 === 0x2620 && g1 === 0x004f && g2 === 0x8000) return 'reserved'; // 2620:4f:8000::/48 AS112 直连
+  if (g0 === 0x3fff && g1 <= 0x0fff) return 'reserved'; // 3fff::/20 RESERVED
 
-  // 显式 global-unicast：2000::/3（RFC 4291）
-  if (g0 >= 0x2000 && g0 <= 0x3fff) {
-    // 2001::/23 = IETF Protocol Assignments（RFC 2928）：Teredo/PCP/BMWG/AMT/AS112/
-    // ORCHID/Drone Remote ID 均在其中；整个 /23 不视为公网普通地址
-    if (g0 === 0x2001 && g1 <= 0x01ff) return 'reserved';
-    // 2001:db8::/32 文档段（RFC 3849；位于 2001::/23 之外，需单独拒绝）
-    if (g0 === 0x2001 && g1 === 0x0db8) return 'reserved';
-    return 'public';
+  // ---- 第 2 步：仅放行冻结 IANA ALLOCATED 普通 GUA 前缀（detailed §6.1 表） ----
+  if (g0 === 0x2001) {
+    if ((g1 & 0xfe00) === 0x0200) return 'public'; // 2001:200::/23
+    if ((g1 & 0xfe00) === 0x0400) return 'public'; // 2001:400::/23
+    if ((g1 & 0xfe00) === 0x0600) return 'public'; // 2001:600::/23
+    if ((g1 & 0xfc00) === 0x0800) return 'public'; // 2001:800::/22
+    if ((g1 & 0xfe00) === 0x0c00) return 'public'; // 2001:c00::/23
+    if ((g1 & 0xfe00) === 0x0e00) return 'public'; // 2001:e00::/23
+    if ((g1 & 0xfe00) === 0x1200) return 'public'; // 2001:1200::/23
+    if ((g1 & 0xfc00) === 0x1400) return 'public'; // 2001:1400::/22
+    if ((g1 & 0xfe00) === 0x1800) return 'public'; // 2001:1800::/23
+    if ((g1 & 0xfe00) === 0x1a00) return 'public'; // 2001:1a00::/23
+    if ((g1 & 0xfc00) === 0x1c00) return 'public'; // 2001:1c00::/22
+    if ((g1 & 0xe000) === 0x2000) return 'public'; // 2001:2000::/19
+    if ((g1 & 0xfe00) === 0x4000) return 'public'; // 2001:4000::/23
+    if ((g1 & 0xfe00) === 0x4200) return 'public'; // 2001:4200::/23
+    if ((g1 & 0xfe00) === 0x4400) return 'public'; // 2001:4400::/23
+    if ((g1 & 0xfe00) === 0x4600) return 'public'; // 2001:4600::/23
+    if ((g1 & 0xfe00) === 0x4800) return 'public'; // 2001:4800::/23
+    if ((g1 & 0xfe00) === 0x4a00) return 'public'; // 2001:4a00::/23
+    if ((g1 & 0xfe00) === 0x4c00) return 'public'; // 2001:4c00::/23
+    if ((g1 & 0xf000) === 0x5000) return 'public'; // 2001:5000::/20
+    if ((g1 & 0xe000) === 0x8000) return 'public'; // 2001:8000::/19
+    if ((g1 & 0xf000) === 0xa000) return 'public'; // 2001:a000::/20
+    if ((g1 & 0xf000) === 0xb000) return 'public'; // 2001:b000::/20
+    return 'reserved';
   }
+  if (g0 === 0x2003 && (g1 & 0xc000) === 0) return 'public'; // 2003::/18
+  if ((g0 & 0xfff0) === 0x2400) return 'public'; // 2400::/12
+  if ((g0 & 0xfff0) === 0x2410) return 'public'; // 2410::/12
+  if ((g0 & 0xfff0) === 0x2600) return 'public'; // 2600::/12
+  if (g0 === 0x2610 && (g1 & 0xfe00) === 0) return 'public'; // 2610::/23
+  if (g0 === 0x2620 && (g1 & 0xfe00) === 0) return 'public'; // 2620::/23（AS112 子块已在第 1 步拒绝）
+  if ((g0 & 0xfff0) === 0x2630) return 'public'; // 2630::/12
+  if ((g0 & 0xfff0) === 0x2800) return 'public'; // 2800::/12
+  if ((g0 & 0xfff0) === 0x2a00) return 'public'; // 2a00::/12
+  if ((g0 & 0xfff0) === 0x2a10) return 'public'; // 2a10::/12
+  if ((g0 & 0xfff0) === 0x2c00) return 'public'; // 2c00::/12
   return 'reserved';
 }
 

@@ -1,10 +1,14 @@
-// D3 public-watch-http-client: 仅公网 GET/HEAD 的有界 HTTP 客户端（detailed-design §6.1）。
-// - URL/IP/DNS/redirect/downgrade 每跳复验；连接时自定义 lookup 只把已批准地址交给
-//   socket（WT-01～WT-03、WRT-01～WRT-03）；HTTP 80 / HTTPS 443 端口闭合。
-// - 固定最小 header（UA/Accept/Accept-Encoding + 条件请求 ETag/Last-Modified）；
-//   零 Cookie/Authorization/任意调用者 header；零代理隧道。
-// - 压缩字节与解压后字节双硬上限，超限立即 destroy；304 映射 unchanged-http。
-// - 测试经受控 lookup/transport seam 注入，产品公开接口不暴露绕过能力。
+// D3 public-watch-http-client: 仅公网 GET/HEAD 的有界 HTTP 客户端（detailed-design §6.1/§6.2 R2）。
+// - 唯一产品构造入口 createPublicWatchHttpStack(...)：模块内部装配 raw transport → RobotsPolicy →
+//   target-gated client。raw transport/client、其 constructor 与任意 URL test seam 均不导出；
+//   调用方只能获得 target-gated 能力与 RobotsPolicy 生命周期窄端口。
+// - page/feed/discovery 必经 RobotsPolicy；robots 初始 URL 只由目标 canonical authority 派生为
+//   无 query/fragment 的 /robots.txt；伪造 purpose=robots + 任意 host/path/query/method 在
+//   URL 解析/DNS/request factory/socket 前 security_rejected。缺 gate fail-closed。
+// - 单资源总 deadline：入口一次性冻结 min(start+30s, externalDeadline)，DNS/robots/全部候选地址/
+//   redirect/body 共用；每个等待点只用剩余时间，任何路径不续杯；第一个终态胜出，迟到事件零改终态。
+// - URL/IP/DNS/redirect/downgrade 每跳复验；连接时自定义 lookup 只把已批准地址交给 socket。
+// - 压缩字节与解压后字节双硬上限，超限立即 destroy；304 映射 unchanged-http；零 Cookie/Proxy。
 import { promises as dns } from 'node:dns';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -21,14 +25,20 @@ import {
   MAX_FEED_RESPONSE_BYTES,
   MAX_PAGE_HTML_RESPONSE_BYTES,
   MAX_REDIRECTS,
+  MAX_ROBOTS_RESPONSE_BYTES,
   NETWORK_ATTEMPT_TIMEOUT_MS,
   type Clock,
   type WatchFailureCode,
 } from '../../shared/types/watch';
 import { isAllowedPublicAddress, validatePublicUrl, type ApprovedTarget } from './network-policy';
+import { RobotsPolicy } from './robots-policy';
 
 export type PublicRequestPurpose = 'feed' | 'page' | 'robots' | 'discovery';
 
+/** target-gated 公开入口只允许 page/feed/discovery；robots 由工厂内部派生，purpose 不是权限令牌。 */
+export type TargetPurpose = 'feed' | 'page' | 'discovery';
+
+/** raw（内部）请求；purpose='robots' 只能由 RobotsPolicy 内部发起。 */
 export interface PublicRequest {
   url: string; // 调用者已校验/预校验的输入 URL
   purpose: PublicRequestPurpose;
@@ -36,6 +46,16 @@ export interface PublicRequest {
   lastModified?: string | null; // 条件请求 If-Modified-Since
   signal?: AbortSignal;
   deadline?: Date; // 绝对截止；超时受控失败
+}
+
+/** target-gated 公开请求：purpose 闭合为 feed/page/discovery。 */
+export interface TargetRequest {
+  url: string;
+  purpose: TargetPurpose;
+  etag?: string | null;
+  lastModified?: string | null;
+  signal?: AbortSignal;
+  deadline?: Date;
 }
 
 export interface PublicResponseMeta {
@@ -80,7 +100,7 @@ export interface ResolvedAddress {
   family: 4 | 6;
 }
 
-/** 每跳 robots 决策（窄端口：PublicWatchHttpClient 在发起 socket 前咨询）。 */
+/** 每跳 robots 决策（窄端口：raw 客户端在发起 socket 前咨询）。 */
 export type RobotsGateDecision =
   | { kind: 'allowed' }
   | { kind: 'disallowed' }
@@ -97,7 +117,7 @@ export interface RobotsGatePort {
 }
 
 // ---------------------------------------------------------------------------
-// 受控 seam（测试注入；默认接真实 node:http/https + node:dns）
+// 受控 seam 类型（测试注入；默认接真实 node:http/https + node:dns）
 // ---------------------------------------------------------------------------
 
 export interface WatchIncomingLike {
@@ -144,18 +164,32 @@ export interface WatchRequestOptions {
 
 export type WatchRequestFactory = (options: WatchRequestOptions) => WatchRequestLike;
 
-export interface PublicWatchHttpSeams {
+/** 安全工厂受控 seam（只注入依赖，不能取得任意网络客户端）。 */
+export interface PublicWatchStackSeams {
   lookup?: (hostname: string) => Promise<ResolvedAddress[]>; // 默认真实 dns.lookup(all)
   request?: WatchRequestFactory; // 默认 node:http/https
   clock?: Clock; // 默认系统时钟；deadline 判定
-  timeoutMs?: number; // 默认 NETWORK_ATTEMPT_TIMEOUT_MS
+  timeoutMs?: number; // 默认 NETWORK_ATTEMPT_TIMEOUT_MS（内部总预算）
   userAgent?: string; // 默认产品版本化 UA（不含账号/机器 ID）
-  robots?: RobotsGatePort; // 每跳 robots 决策（§6.2）；默认缺省时跳过（D5 装配必须注入）
+  robotsCacheMs?: number; // RobotsPolicy 缓存时长（默认 24h）
+  uaProduct?: string; // robots UA product token（默认 aibrowse）
+  robots?: RobotsGatePort | null; // 缺省(undefined) → 工厂内部装配真实 RobotsPolicy；null → 缺 gate（fail-closed）
+}
+
+/** target-gated client：只允许 page/feed/discovery。 */
+export interface TargetGatedClient {
+  get(req: TargetRequest): Promise<PublicFetchResult>;
+  head(req: TargetRequest): Promise<PublicFetchResult>;
+}
+
+/** 工厂返回：target-gated 能力 + RobotsPolicy 生命周期窄端口。 */
+export interface PublicWatchStack {
+  target: TargetGatedClient;
+  robots: { clearCache(): void };
 }
 
 // ---------------------------------------------------------------------------
-// 常量与预算表（单一事实源：src/shared/types/watch.ts；robots 256 KiB 复用
-// MAX_DISCOVERY_HTML_BYTES，见 detailed-design §6.2）
+// 常量与预算表（单一事实源：src/shared/types/watch.ts；robots 独立 512,000-byte 预算）
 // ---------------------------------------------------------------------------
 
 export const WATCH_DEFAULT_USER_AGENT =
@@ -165,7 +199,7 @@ const PURPOSE_MAX_BYTES: Record<PublicRequestPurpose, number> = {
   feed: MAX_FEED_RESPONSE_BYTES,
   page: MAX_PAGE_HTML_RESPONSE_BYTES,
   discovery: MAX_DISCOVERY_HTML_BYTES,
-  robots: MAX_DISCOVERY_HTML_BYTES,
+  robots: MAX_ROBOTS_RESPONSE_BYTES,
 };
 
 const PURPOSE_ACCEPT: Record<PublicRequestPurpose, string> = {
@@ -243,7 +277,12 @@ const DNS_ABORTED = Symbol('dns-aborted');
 const DNS_TIMEOUT = Symbol('dns-timeout');
 const DNS_ERROR = Symbol('dns-error');
 
-export class PublicWatchHttpClient {
+/**
+ * raw transport（模块私有，不导出）：任意目的 GET/HEAD，每跳 NetworkPolicy + robots gate。
+ * 单资源总 deadline 在 run() 入口冻结；purpose='robots' 携带的 Date deadline 视为继承的绝对截止
+ * （不重新冻结内部 30 秒），因此 robots 子请求共享外层同一 effectiveDeadline。
+ */
+class PublicWatchHttpClient {
   private readonly lookup: (hostname: string) => Promise<ResolvedAddress[]>;
   private readonly requestFactory: WatchRequestFactory;
   private readonly clock: Clock;
@@ -251,7 +290,16 @@ export class PublicWatchHttpClient {
   private readonly userAgent: string;
   private readonly robots: RobotsGatePort | null;
 
-  constructor(seams: PublicWatchHttpSeams = {}) {
+  constructor(
+    seams: {
+      lookup?: (hostname: string) => Promise<ResolvedAddress[]>;
+      request?: WatchRequestFactory;
+      clock?: Clock;
+      timeoutMs?: number;
+      userAgent?: string;
+      robots?: RobotsGatePort | null;
+    } = {},
+  ) {
     this.lookup =
       seams.lookup ??
       (async (hostname: string): Promise<ResolvedAddress[]> => {
@@ -278,23 +326,56 @@ export class PublicWatchHttpClient {
     return this.run('GET', req);
   }
 
+  private failedResult(health: ClientHealth, reason: string): PublicFetchResult {
+    return { kind: 'failed', health, reason };
+  }
+
   private async run(method: 'GET' | 'HEAD', req: PublicRequest): Promise<PublicFetchResult> {
-    const deadlineMs =
-      req.deadline instanceof Date ? req.deadline.getTime() : Number.POSITIVE_INFINITY;
+    // 缺 gate 的 page/feed/discovery 在 URL/DNS/request factory/socket 前 fail-closed
+    if (this.robots === null && req.purpose !== 'robots') {
+      return this.failedResult('unavailable', 'robots-gate-missing');
+    }
+    const startedAt = this.clock.now().getTime();
+    let effectiveDeadline: number;
+    if (
+      req.purpose === 'robots' &&
+      req.deadline instanceof Date &&
+      Number.isFinite(req.deadline.getTime())
+    ) {
+      // 嵌套 robots 子请求：继承外层绝对截止，不重新冻结内部 30 秒
+      effectiveDeadline = req.deadline.getTime();
+    } else if (req.deadline instanceof Date) {
+      const ext = req.deadline.getTime();
+      if (!Number.isFinite(ext)) {
+        // Invalid Date：零 DNS、零 socket
+        return this.failedResult('unavailable', 'invalid-deadline');
+      }
+      if (ext <= startedAt) {
+        // 已过期：零 DNS、零 socket
+        return this.failedResult('unavailable', 'deadline-expired');
+      }
+      effectiveDeadline = Math.min(startedAt + this.timeoutMs, ext);
+    } else {
+      effectiveDeadline = startedAt + this.timeoutMs;
+    }
+
     let url = req.url;
     let hops = 0;
     for (;;) {
-      const attempt = await this.attemptOnce(method, req, url, deadlineMs);
+      if (this.clock.now().getTime() >= effectiveDeadline) {
+        return this.failedResult('unavailable', 'deadline');
+      }
+      const attempt = await this.attemptOnce(method, req, url, effectiveDeadline);
       if (attempt.kind === 'aborted') return { kind: 'aborted' };
       if (attempt.kind === 'conn-error') {
-        return { kind: 'failed', health: 'unavailable', reason: attempt.code };
+        return this.failedResult('unavailable', attempt.code);
       }
       if (attempt.kind === 'failed') {
         return { kind: 'failed', health: attempt.health, reason: attempt.reason };
       }
       if (attempt.kind === 'redirect') {
         if (hops >= MAX_REDIRECTS) {
-          return { kind: 'failed', health: 'security_rejected', reason: 'redirect-limit' };
+          return this.failedResult('security_rejected', 'redirect-limit');
         }
         hops += 1;
         url = attempt.location;
@@ -319,14 +400,22 @@ export class PublicWatchHttpClient {
     }
     const target = base.target;
 
-    // 每跳 robots 决策（§6.2：每个实际 host 在发起 socket 前完成）；robots 请求自身跳过
+    if (this.clock.now().getTime() >= deadlineMs) {
+      return this.failed('unavailable', 'deadline');
+    }
+    if (req.signal?.aborted) {
+      return { kind: 'aborted' };
+    }
+
+    // 每跳 robots 决策（§6.2：每个实际 host 在发起 socket 前完成）；robots 请求自身跳过。
+    // 传入同一 absolute effectiveDeadline，robots 子请求共享且不续杯。
     if (this.robots !== null && req.purpose !== 'robots') {
       let decision: RobotsGateDecision;
       try {
         decision = await this.robots.checkAllowed({
           url: target.url,
           signal: req.signal,
-          deadline: req.deadline,
+          deadline: new Date(deadlineMs),
         });
       } catch {
         return this.failed('unavailable', 'robots-error');
@@ -343,6 +432,13 @@ export class PublicWatchHttpClient {
         case 'security-rejected':
           return this.failed('security_rejected', 'robots-security');
       }
+    }
+
+    if (this.clock.now().getTime() >= deadlineMs) {
+      return this.failed('unavailable', 'deadline');
+    }
+    if (req.signal?.aborted) {
+      return { kind: 'aborted' };
     }
 
     let addresses: ResolvedAddress[];
@@ -363,7 +459,7 @@ export class PublicWatchHttpClient {
       }
     }
 
-    if (Number.isFinite(deadlineMs) && this.clock.now().getTime() >= deadlineMs) {
+    if (this.clock.now().getTime() >= deadlineMs) {
       return this.failed('unavailable', 'deadline');
     }
     if (req.signal?.aborted) {
@@ -385,8 +481,8 @@ export class PublicWatchHttpClient {
   }
 
   /**
-   * DNS lookup 与 deadline、timeout、abort 竞争：永不返回的 DNS 也必须按时结束。
-   * lookup 同步 throw 同样转为受控失败（不会泄漏未处理 rejection）。
+   * DNS lookup 与 remaining deadline、abort 竞争：永不返回的 DNS 也必须按时结束；
+   * timer 只能设为 remaining（不续杯）。lookup 同步 throw 同样转为受控失败。
    */
   private lookupWithTimeout(
     hostname: string,
@@ -432,16 +528,13 @@ export class PublicWatchHttpClient {
         }
         signal.addEventListener('abort', onAbort, { once: true });
       }
-      if (Number.isFinite(deadlineMs)) {
-        const now = this.clock.now().getTime();
-        if (now >= deadlineMs) {
-          cleanup();
-          reject(DNS_TIMEOUT);
-          return;
-        }
-        timers.push(this.clock.setTimeout(fail, deadlineMs - now));
+      const remaining = deadlineMs - this.clock.now().getTime();
+      if (remaining <= 0) {
+        cleanup();
+        reject(DNS_TIMEOUT);
+        return;
       }
-      timers.push(this.clock.setTimeout(fail, this.timeoutMs));
+      timers.push(this.clock.setTimeout(fail, remaining));
 
       let lookupPromise: Promise<ResolvedAddress[]>;
       try {
@@ -535,14 +628,25 @@ export class PublicWatchHttpClient {
       }
       const activeRequest = request;
 
+      // socket 超时只能设为 remaining（同一 absolute effectiveDeadline，不续杯）
+      const remaining = deadlineMs - this.clock.now().getTime();
+      if (remaining <= 0) {
+        try {
+          activeRequest.destroy();
+        } catch {
+          // 幂等
+        }
+        finish(this.failed('unavailable', 'deadline'));
+        return;
+      }
       timeoutHandle = this.clock.setTimeout(() => {
         try {
           activeRequest.destroy();
         } catch {
           // 幂等
         }
-        finish('failed');
-      }, this.timeoutMs);
+        finish(this.failed('unavailable', 'deadline'));
+      }, remaining);
 
       if (req.signal) {
         if (req.signal.aborted) {
@@ -824,6 +928,102 @@ export class PublicWatchHttpClient {
       res.on('aborted', onSourceAborted);
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// 安全工厂：唯一产品构造入口（raw transport → RobotsPolicy → target-gated）
+// ---------------------------------------------------------------------------
+
+function guardTargetRequest(
+  req: TargetRequest,
+): { ok: true } | { ok: false; result: PublicFetchResult } {
+  if (req === null || typeof req !== 'object' || typeof req.url !== 'string') {
+    return {
+      ok: false,
+      result: { kind: 'failed', health: 'security_rejected', reason: 'invalid-request' },
+    };
+  }
+  const purpose = req.purpose;
+  // purpose 是校验字段，不是权限令牌：伪造 purpose='robots' 或任何非 target 目的零网络拒绝
+  if (purpose !== 'feed' && purpose !== 'page' && purpose !== 'discovery') {
+    return {
+      ok: false,
+      result: { kind: 'failed', health: 'security_rejected', reason: 'purpose-rejected' },
+    };
+  }
+  const v = validatePublicUrl(req.url);
+  if (!v.ok) {
+    return {
+      ok: false,
+      result: { kind: 'failed', health: 'security_rejected', reason: v.reason },
+    };
+  }
+  return { ok: true };
+}
+
+function targetFetch(
+  method: 'GET' | 'HEAD',
+  req: TargetRequest,
+  raw: PublicWatchHttpClient,
+): Promise<PublicFetchResult> {
+  const guard = guardTargetRequest(req);
+  if (!guard.ok) return Promise.resolve(guard.result);
+  const rawCall = method === 'GET' ? raw.get.bind(raw) : raw.head.bind(raw);
+  return rawCall({
+    url: req.url,
+    purpose: req.purpose,
+    etag: req.etag,
+    lastModified: req.lastModified,
+    signal: req.signal,
+    deadline: req.deadline,
+  });
+}
+
+/**
+ * 唯一产品构造入口：在模块内部创建未导出的 raw robots transport → RobotsPolicy →
+ * target-gated client。raw、constructor 与任意 URL test seam 均不导出。
+ * 测试只能经此工厂注入 DNS/request factory/Clock 等受控依赖并观察窄能力。
+ */
+export function createPublicWatchHttpStack(seams: PublicWatchStackSeams = {}): PublicWatchStack {
+  let policy: RobotsPolicy | null = null;
+  const raw = new PublicWatchHttpClient({
+    lookup: seams.lookup,
+    request: seams.request,
+    clock: seams.clock,
+    timeoutMs: seams.timeoutMs,
+    userAgent: seams.userAgent,
+    robots:
+      seams.robots === undefined
+        ? {
+            checkAllowed: async (input): Promise<RobotsGateDecision> => {
+              if (policy === null) return { kind: 'unavailable' };
+              return policy.checkAllowed(input);
+            },
+          }
+        : seams.robots, // null → 缺 gate（fail-closed）；或注入的 RobotsGatePort（测试窄端口）
+  });
+  if (seams.robots === undefined) {
+    policy = new RobotsPolicy({
+      client: raw,
+      clock: seams.clock,
+      uaProduct: seams.uaProduct,
+      robotsCacheMs: seams.robotsCacheMs,
+    });
+  }
+
+  const target: TargetGatedClient = {
+    get: (req) => targetFetch('GET', req, raw),
+    head: (req) => targetFetch('HEAD', req, raw),
+  };
+
+  return {
+    target,
+    robots: {
+      clearCache: () => {
+        policy?.clearCache();
+      },
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

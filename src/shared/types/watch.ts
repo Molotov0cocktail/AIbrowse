@@ -89,7 +89,8 @@ export const MAX_DIGEST_PROVIDER_CALLS = 1; // 单 Digest
 
 // 存储 / 保留 / 网络 / 缓存
 export const MAX_WATCH_DB_BYTES = 104_857_600; // 100 MiB 逻辑预算；每次写前估算
-export const MAX_ROBOTS_RULES = 1024; // robots.txt 规则条数上限（D3 防御纵深；文件本身 256 KiB 有界）
+export const MAX_ROBOTS_RESPONSE_BYTES = 512_000; // robots 独立响应/解析上限（RFC 9309 §2.5 最低 500 KiB，不复用 discovery 预算）
+export const MAX_ROBOTS_RULES = 1024; // robots.txt 规则条数上限（D3 防御纵深；文件本身 512,000-byte 有界）
 export const MAX_DISCOVERY_CANDIDATES = 10; // feed discovery 候选上限（detailed-design §6.3）
 export const PUBLIC_EVENT_RETENTION_DAYS = 90; // 与数量上限同时生效
 export const PUBLIC_EVENTS_PER_RULE = 200; // 公开规则

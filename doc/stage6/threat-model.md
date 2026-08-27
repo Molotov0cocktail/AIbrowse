@@ -9,6 +9,7 @@
 Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage 增加长期重复执行，因此放大：
 
 - 网络目标重复访问、DNS/redirect/SSRF 与站点资源压力；
+- IPv6 把未分配或特殊用途的 `2000::/3` 地址误判为公网，以及公开目标缺失 robots 装配；
 - XML parser 的 DTD/entity/深度/编码/内存攻击；
 - 公开 HTML parser 的畸形树、巨型节点、脚本/子资源执行和共享 Cookie 污染；
 - 登录态页面被周期读取的隐私与认证挑战风险；
@@ -68,10 +69,27 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 - 公网客户端只 GET/HEAD，固定 header；调用者不能给 method/body/auth/proxy。
 - URL 初始、连接时 DNS 地址、每跳 redirect 均验证；混合公网/私网整次拒绝；禁止 downgrade/userinfo，
   端口只允许 HTTP 80/HTTPS 443。
+- IPv6 先排除 IANA Special-Purpose，再只允许 IANA Global Unicast registry 当前标为 `ALLOCATED`
+  的普通 GUA 编译期前缀；`2000::/3` 未列空间、文档、benchmark、transition 和其它特殊用途一律拒绝。
+  registry 更新不自动扩权，必须另走设计与安全审核。
 - 自定义 connection lookup 只返回已批准 IP；避免只做 DNS 预解析的 TOCTOU。
-- 响应/解压/时间/redirect/host concurrency 全硬上限；同 canonical host:port 每次 socket start 至少间隔
-  5秒（含 robots/redirect/retry），socket 超限立即销毁。
-- 公开 page/feed 严格 robots；429 遵守 Retry-After；captcha/challenge/login 停止。
+- 响应/解压/时间/redirect/host concurrency 全硬上限；单次公开资源获取 30 秒从 `get/head` 入口
+  覆盖 DNS、robots、所有候选地址、全部 redirect 和 body，总预算与外部 deadline 取更早者；无响应
+  socket、静默 body 和每个失败分支必须销毁且不得按地址/跳续杯。同 canonical host:port 每次 socket
+  start 至少间隔 5秒（含 robots/redirect/retry）。
+- 公开 page/feed/discovery 严格 robots；D3 安全工厂是唯一产品构造入口，在模块内隐藏 raw robots
+  transport 并把 RobotsPolicy 强制装入 target client。raw、constructor 与任意 URL 测试 seam 均不导出；
+  raw 初始 URL 只能从目标 authority 派生为无 query/fragment 的小写 `/robots.txt`。伪造
+  `purpose=robots` + 任意 host/path/query 必须零 DNS、零 request factory、零 socket；raw 内部 redirect
+  仍逐跳执行 NetworkPolicy 并共享原 effectiveDeadline。缺 gate 的目标请求在 DNS/socket 前
+  fail-closed；D5 只追加 HostRequestGate/并发/5秒间隔。429 遵守 Retry-After；captcha/challenge/login 停止。
+- robots 独立响应/解析上限 512,000 bytes（RFC 9309 §2.5 的 500 KiB），不复用 256 KiB discovery；
+  同时受 1,024 规则、严格 UTF-8、octet 规范化、30 秒总 deadline 和仅内存解析约束。
+- robots 合并所有相同 UA 组；空 specific 组允许且不回退 `*`。非 ASCII、reserved、非 unreserved
+  ASCII（含 `%00`）与 percent-encoded unreserved 按 RFC 9309 octet 匹配，保留 `*`/末尾 `$`/最长
+  octet/等长 allow。非法/截断 UTF-8 是文件级 unavailable；合法 UTF-8 中，SP/HTAB/CR/LF/CRLF 仅在
+  RFC 结构位置接受，其它原始 control、ABNF 错误与 malformed/truncated percent triplet 只使所在行
+  不可解析，必须继续使用其它 parseable rules，不能因单条坏规则废弃整份文件。
 - XML candidate 先资格门；DTD prohibit、零 resolver、零 external entity/XInclude，depth/name/attribute-count/
   attribute-bytes/text-node/nodes/total-text/FeedProjection 都有 `==` 可用、`+1` 拒绝的编译期上限。
 - HTML candidate 同样先资格门；公开 HTML 只经 Node 核心 HTTP + parse5 SAX 事件流，零 WebContents、
@@ -125,7 +143,8 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 
 ### 3.6 运行时层
 
-- 同 Rule 单运行、全局4、同 host1且请求起点间隔5秒、单 tick20、总90秒、网络30秒、redirect5。
+- 同 Rule 单运行、全局4、同 host1且请求起点间隔5秒、单 tick20、总90秒、单次公开资源获取总计
+  30秒、redirect5；DNS/robots/候选地址/redirect/body 共享同一更早截止。
 - scheduled reservation 在同事务创建 Run、消费 scheduledFor、推进 nextDue；提交后失败/pause/abort/crash 都不
   回拨或重放。未消费的 missed runs 只合并一次；DST logical date 幂等；手动 run 不改变计划、无安全旁路。
 - 0..500ms 确定性附加 jitter（永不提前于 due）+ 指数退避；429 零立即重试；login/captcha/security 立即暂停。
@@ -189,27 +208,27 @@ at-most-once 优先的本地策略，崩溃窗口 UI 如实显示 delivery unkno
 
 ## 6. 红队矩阵（WRT-01～WRT-19）
 
-| ID     | 敌手场景                                                                    | 必须机器证明的 oracle                                                     | 任务      |
-| ------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------- |
-| WRT-01 | localhost/127/::1/私网/link-local/组播/保留 URL                             | 零 socket、security_rejected、零正文日志                                  | D3/D10    |
-| WRT-02 | DNS 公私混合/连接时换绑                                                     | 整次拒绝；连接 lookup 只返回已批地址                                      | D3/D10    |
-| WRT-03 | 非80/443、redirect 到私网/file/javascript/HTTPS→HTTP                        | 每跳拒绝、零后续请求                                                      | D3/D10    |
-| WRT-04 | 慢流/巨型/压缩炸弹/redirect loop                                            | deadline/字节/跳数内受控失败，进程存活                                    | D3/D10    |
-| WRT-05 | robots disallow/429/captcha/同 host 突发请求                                | 暂停或退避；所有请求起点≥5秒；零 override/绕过/重试风暴                   | D3/D5/D10 |
-| WRT-06 | XXE/外部 DTD/XInclude/Billion Laughs                                        | 零文件/网络，预算内失败，后续正常 feed 可解析                             | D3/D10    |
-| WRT-07 | XML depth/name/attr/text/node/total/projection 各边界与畸形编码/CDATA       | 每项 `==` 接受、`+1` fail-closed，零未捕获异常/正文日志                   | D3/D10    |
-| WRT-08 | 重复/冲突 GUID、字段超长、feed 重排                                         | 去重稳定、顺序噪声零事件、预算有效                                        | D3/D7     |
-| WRT-09 | 未授权 Session/grant 重放/跨 origin/敌手 create 返回用户 tabId              | 零导航/创建或零关闭用户 Tab；Cookie/handle/task tabId 零持久化            | D6/D10    |
-| WRT-10 | 原授权 Tab 已关/重启 catch-up/用户关 task Tab/登录跳转/captcha/cleanup 失败 | 新建 owned Tab 或受控失败；不建 Event/覆盖 Baseline；用户 Tab/焦点 oracle | D6/D7/D10 |
-| WRT-11 | DOM 噪声/table 歧义/跨域 iframe                                             | 零假 Event；parse_changed/诚实限制                                        | D6/D7     |
-| WRT-12 | Hash 变但 Diff 无 Evidence                                                  | unexplainable_change、零 Event/推进                                       | D7        |
-| WRT-13 | feed/page 注入模型指令/未知 eventId                                         | 零工具；ExplanationDraft 拒绝；facts 保留                                 | D8/D10    |
-| WRT-14 | metadata/blocked Source 混入 prompt                                         | 字节扫描零 Evidence/零 blocked 内容                                       | D8/D10    |
-| WRT-15 | 通知标题伪造 URL/query/锁屏敏感摘录                                         | 安全 DTO、内部 UUID 路由、默认隐藏                                        | D9/D10    |
-| WRT-16 | 时钟回拨/DST/离线一万次 missed/reservation 各崩溃与终态                     | 三写原子；每规则最多一次 catch-up；已消费 slot 零重放                     | D5/D10    |
-| WRT-17 | Source disable→restore 版本递增、metadata/locator 变化、hard-delete 崩溃点  | 意图/identity 正确；orphan 零网络；最终级联；不可 Undo                    | D4/D10    |
-| WRT-18 | DB/log/event/digest 预算压力与 corrupt/future schema                        | 有界清理或 unavailable，Scheduler 不启动                                  | D1/D4/D10 |
-| WRT-19 | 公开 HTML 含 script/iframe/私网子资源、畸形/巨深/巨节点或共享 Cookie canary | 零执行/子请求/Cookie，预算内 DocumentChannels 或受控失败                  | D3/D6/D10 |
+| ID     | 敌手场景                                                                                          | 必须机器证明的 oracle                                                                                                    | 任务      |
+| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------- |
+| WRT-01 | localhost/127/::1/私网/link-local/组播/保留/未分配 IPv6 URL                                       | IANA 普通 GUA allowlist；特殊/未分配零 socket、security_rejected、零正文日志                                             | D3/D10    |
+| WRT-02 | DNS 公私混合/连接时换绑                                                                           | 整次拒绝；连接 lookup 只返回已批地址                                                                                     | D3/D10    |
+| WRT-03 | 非80/443、redirect 到私网/file/javascript/HTTPS→HTTP                                              | 每跳拒绝、零后续请求                                                                                                     | D3/D10    |
+| WRT-04 | Invalid Date/过期 deadline、无响应 DNS/socket、静默 body、多地址失败、慢流/压缩炸弹/redirect loop | 零网络前置拒绝或一次资源获取共享更早 deadline；外部晚截止不越过内部30秒；全路径不续杯、销毁且迟到事件零改终态            | D3/D10    |
+| WRT-05 | robots 缺 gate、响应边界、UA/octet/逐行语法、伪造 robots URL、429/captcha/同 host 突发请求        | `512,000 == accept`；`512,001 == destroy + budget_exceeded`；唯一工厂/零任意 raw 能力/RFC逐行匹配/暂停退避；请求起点≥5秒 | D3/D5/D10 |
+| WRT-06 | XXE/外部 DTD/XInclude/Billion Laughs                                                              | 零文件/网络，预算内失败，后续正常 feed 可解析                                                                            | D3/D10    |
+| WRT-07 | XML depth/name/attr/text/node/total/projection 各边界与畸形编码/CDATA                             | 每项 `==` 接受、`+1` fail-closed，零未捕获异常/正文日志                                                                  | D3/D10    |
+| WRT-08 | 重复/冲突 GUID、字段超长、feed 重排                                                               | 去重稳定、顺序噪声零事件、预算有效                                                                                       | D3/D7     |
+| WRT-09 | 未授权 Session/grant 重放/跨 origin/敌手 create 返回用户 tabId                                    | 零导航/创建或零关闭用户 Tab；Cookie/handle/task tabId 零持久化                                                           | D6/D10    |
+| WRT-10 | 原授权 Tab 已关/重启 catch-up/用户关 task Tab/登录跳转/captcha/cleanup 失败                       | 新建 owned Tab 或受控失败；不建 Event/覆盖 Baseline；用户 Tab/焦点 oracle                                                | D6/D7/D10 |
+| WRT-11 | DOM 噪声/table 歧义/跨域 iframe                                                                   | 零假 Event；parse_changed/诚实限制                                                                                       | D6/D7     |
+| WRT-12 | Hash 变但 Diff 无 Evidence                                                                        | unexplainable_change、零 Event/推进                                                                                      | D7        |
+| WRT-13 | feed/page 注入模型指令/未知 eventId                                                               | 零工具；ExplanationDraft 拒绝；facts 保留                                                                                | D8/D10    |
+| WRT-14 | metadata/blocked Source 混入 prompt                                                               | 字节扫描零 Evidence/零 blocked 内容                                                                                      | D8/D10    |
+| WRT-15 | 通知标题伪造 URL/query/锁屏敏感摘录                                                               | 安全 DTO、内部 UUID 路由、默认隐藏                                                                                       | D9/D10    |
+| WRT-16 | 时钟回拨/DST/离线一万次 missed/reservation 各崩溃与终态                                           | 三写原子；每规则最多一次 catch-up；已消费 slot 零重放                                                                    | D5/D10    |
+| WRT-17 | Source disable→restore 版本递增、metadata/locator 变化、hard-delete 崩溃点                        | 意图/identity 正确；orphan 零网络；最终级联；不可 Undo                                                                   | D4/D10    |
+| WRT-18 | DB/log/event/digest 预算压力与 corrupt/future schema                                              | 有界清理或 unavailable，Scheduler 不启动                                                                                 | D1/D4/D10 |
+| WRT-19 | 公开 HTML 含 script/iframe/私网子资源、畸形/巨深/巨节点或共享 Cookie canary                       | 零执行/子请求/Cookie，预算内 DocumentChannels 或受控失败                                                                 | D3/D6/D10 |
 
 每项必须独立结果，不能用一条泛化日志字符串冒充。敌手正文随机 canary 逐字节扫描：日志、audit、
 ConversationStore、sources.db、research.db、watch.db 非 Evidence 列、renderer DOM、通知 DTO、导出、Provider
@@ -238,6 +257,7 @@ request。Evidence 允许面只包含已验证且在分享/保留边界内的有
 ### 7.3 诚实限制
 
 - robots 不是法律/ToS 授权；严格遵守也不保证网站允许自动访问；
+- IPv6 allowlist 是 2025-10-10 IANA 登记的编译期快照；新分配在显式更新和复审前会被安全拒绝；
 - 主文档 PageSnapshot 不覆盖跨域 iframe；区域定位不能保证网站长期稳定；
 - challenge/login 分类可能保守误判；安全拒绝优先于覆盖率；
 - 模型解释可能语义遗漏或偏差；Evidence/事实层不因此变真；
@@ -263,6 +283,10 @@ request。Evidence 允许面只包含已验证且在分享/保留边界内的有
 - IPv4 private：<https://www.rfc-editor.org/rfc/rfc1918/>
 - IPv6 local：<https://www.rfc-editor.org/rfc/rfc4193/>
 - Robots：<https://www.rfc-editor.org/rfc/rfc9309.html>
+- IANA IPv6 Special-Purpose Address Space：
+  <https://www.iana.org/assignments/iana-ipv6-special-registry/>
+- IANA IPv6 Global Unicast Address Space：
+  <https://www.iana.org/assignments/ipv6-unicast-address-assignments/>
 - Electron Session：<https://www.electronjs.org/docs/latest/api/session>
 - Electron Notification：<https://www.electronjs.org/docs/latest/tutorial/notifications>
 - 候选 XML parser：<https://github.com/federicocarboni/saxe>

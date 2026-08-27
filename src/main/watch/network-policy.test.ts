@@ -122,6 +122,22 @@ describe('validatePublicUrl — 拒绝面（security_rejected）', () => {
     expect(validatePublicUrl('https://exa mple.com/').ok).toBe(false);
     expect(validatePublicUrl('https://exa\nmple.com/').ok).toBe(false);
   });
+
+  it('path/query 含 malformed/truncated percent triplet 零网络拒绝（R2 octet 前提）', () => {
+    for (const u of [
+      'https://example.com/%GG',
+      'https://example.com/a%2',
+      'https://example.com/a%',
+      'https://example.com/a?b=%ZZ',
+      'https://example.com/%2x/y',
+    ]) {
+      const r = validatePublicUrl(u);
+      expect(r.ok, u).toBe(false);
+      if (!r.ok) expect(r.health, u).toBe('security_rejected');
+    }
+    // 合法 triplet 保持接受
+    expect(validatePublicUrl('https://example.com/a%2Fb?c=%E3%83%84').ok).toBe(true);
+  });
 });
 
 describe('classifyIpAddress — IPv4', () => {
@@ -200,13 +216,25 @@ describe('classifyIpAddress — IPv6', () => {
     expect(classifyIpAddress('2001:1ff::1')).toBe('reserved'); // 2001::/23 上界内
   });
 
-  it('2000::/3 内非特殊保留的 global-unicast 放行；/23 块外 2001:xxxx 放行', () => {
-    expect(classifyIpAddress('2001:4860:4860::8888')).toBe('public');
-    expect(classifyIpAddress('2606:4700:4700::1111')).toBe('public');
-    expect(classifyIpAddress('3fff::1')).toBe('public'); // global unicast 空间
-    expect(classifyIpAddress('2001:200::1')).toBe('public'); // 2001::/23 之外
-    expect(classifyIpAddress('2400:cb00::1')).toBe('public'); // Cloudflare
-    expect(classifyIpAddress('2a00:1450::1')).toBe('public'); // Google
+  it('仅放行 IANA 冻结表内 ALLOCATED 普通 GUA；未列/未分配/RESERVED 一律拒绝（R2）', () => {
+    // detailed §6.1 冻结表内已分配普通 GUA 正例（到达受控 test socket）
+    expect(classifyIpAddress('2001:4860:4860::8888')).toBe('public'); // 2001:4800::/23
+    expect(classifyIpAddress('2606:4700:4700::1111')).toBe('public'); // 2600::/12
+    expect(classifyIpAddress('2001:200::1')).toBe('public'); // 2001:200::/23
+    expect(classifyIpAddress('2400:cb00::1')).toBe('public'); // 2400::/12
+    expect(classifyIpAddress('2a00:1450::1')).toBe('public'); // 2a00::/12
+    expect(classifyIpAddress('2001:1c00::1')).toBe('public'); // 2001:1c00::/22
+    expect(classifyIpAddress('2003::1')).toBe('public'); // 2003::/18
+    expect(classifyIpAddress('2630::1')).toBe('public'); // 2630::/12
+    expect(classifyIpAddress('2c00::1')).toBe('public'); // 2c00::/12
+    // 未分配/RESERVED/文档/benchmark/特殊用途全部拒绝（R2 oracle）
+    expect(classifyIpAddress('3fff::1')).toBe('reserved'); // 3fff::/20 RESERVED（原误判 public）
+    expect(classifyIpAddress('2000::1')).toBe('reserved'); // 未列 2000::/3 空间
+    expect(classifyIpAddress('2d00::1')).toBe('reserved'); // IANA RESERVED
+    expect(classifyIpAddress('2001:db8::1')).toBe('reserved'); // 文档段（父前缀内特殊拒绝优先）
+    expect(classifyIpAddress('2001:2::1')).toBe('reserved'); // benchmark（2001::/23 内）
+    expect(classifyIpAddress('fec0::1')).toBe('reserved'); // site-local
+    expect(classifyIpAddress('2620:4f:8000::1')).toBe('reserved'); // AS112 直连（2620::/23 父前缀内）
   });
 
   it('IPv4-mapped 按内嵌 IPv4 分类', () => {
