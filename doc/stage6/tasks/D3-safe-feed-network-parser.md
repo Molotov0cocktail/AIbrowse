@@ -473,3 +473,49 @@ D3-R3 有界修复候选处理独立安全 Reviewer 对 D3-R2 HEAD `2325077` 的
   `git diff --check` 全过；dev 与 production Electron 冒烟 exit 0。
 - 敏感信息/机器路径/临时残留扫描干净；仅改动 EXPECTED SCOPE 四个代码/测试文件 + 本节任务文档。
 - 交接新的独立安全 Reviewer；不更新 progress、不生成 D4、不 push。
+
+## D3-R4 修复记录（2026-08-27，Repair Worker，Reviewer 待复验）
+
+D3-R4 有界修复候选处理独立安全 Reviewer 对 D3-R3 HEAD `be33291` 的首终态资源闭合四项发现。
+全部先红后绿，未删除/放宽既有有效断言，未改动 R2/R3 冻结契约。候选未 push；baseline `be33291`，
+repair HEAD `a93715b`（只含本任务范围内两个文件）。
+
+### 修复项与证据
+
+1. **request 具名回调与窄 removeListener 能力**：`WatchRequestLike` 增加
+   `removeListener(response/error/timeout)` 窄能力；`attemptAddress` 的 request
+   response/error/timeout 全部改为具名回调 `onResponse/onRequestError/onRequestTimeout`，
+   `cleanup()` 确定移除 error/timeout（response 见第 4 点）。
+2. **首终态立即 release 正文 reader**：`readBoundedBody` 改为返回 `{ promise, release }`；
+   `attemptAddress` 外层持有幂等 `releaseBody` 句柄，`cleanup()` 在任何首终态（success/
+   deadline/abort/budget/stream-error/request-error）直接调用，不再等待下一次迟到事件触发清理。
+   新增 oracle：identity/gzip 静默 body deadline 与 abort 后，不发送任何迟到事件即断言
+   response 的 data/end/error/aborted 与 inflater 的 data/end/error listener 全 0。
+3. **request-error/已消费终态移除 request listener**：`cleanup()` 在已见 response
+   （`onResponse` 自移除）或 request-error（`requestFailed`）时移除 response listener，
+   并始终移除 error/timeout；首终态后 request 的 response/error/timeout listenerCount 全 0
+   （success/body-deadline/abort/request-error 四场景 oracle）。
+4. **deadline/abort 先于 response 的迟到守卫**：response 尚未到达时保留 `onResponse` 为迟到
+   response 守卫；守卫发现 settled/aborted 立即 `safeDiscardResponse`（destroy 优先，
+   destroy 不可用/抛错时安装安全 error sink 后 resume），零正文 listener、零新 socket，
+   处理后再自移除。deadline 与 abort 先于 response 两个迟到 response oracle 均证明已销毁。
+5. **测试 harness 忠实化**：`FakeIncoming` destroy 后不再投递任何事件（模拟真实流，
+   保证终态后发送 error 零未处理异常）；`FakeRequest.destroy()` 无 error 参数不再投递
+   'error'（模拟真实 ClientRequest）。`CapturedRequest` 暴露底层 `request` 供
+   listenerCount 断言。
+6. **保持既有修复**：真实 RobotsPolicy 强制装配、`createInflater` 窄 seam、absolute
+   effectiveDeadline 与 IPv6 robots authority 修复均未改动；未用 any/ts-ignore/
+   eslint-disable，未降低既有断言。
+
+### 红→绿证据（baseline be33291 上新增/强化测试先红）
+
+- 红（be33291 产品代码 + 新测试，仅 stash 产品文件验证）：8 项失败——R3 压缩迟到事件测试
+  （强化后）1 项，R4 新增 7 项（identity 静默 deadline、gzip 静默 deadline、abort 立即断言、
+  deadline 先于 response 迟到销毁、abort 先于 response 迟到销毁、request listener 四场景全 0、
+  终态后事件风暴）。旧根因：cleanup 不释放正文 reader 与 request listener，迟到 response 仅
+  handler return 未 destroy。
+- 绿（repair HEAD `a93715b`）：聚焦 63/63；Watch 全量 247/247；全量 `npm test -- --maxWorkers=1`
+  2693/2693（baseline 2686 + 7 新增）；typecheck/lint/format:check/build/npm audit 0/
+  `git diff --check` 全过；dev 与 production Electron 冒烟 exit 0。
+- 依赖版本不变、D4/D5 零接线；敏感信息/临时残留/工作区扫描干净（仅两个范围内文件被修改）。
+- 交接新的独立安全 Reviewer；不更新 progress、不生成 D4、不 push。

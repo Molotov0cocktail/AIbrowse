@@ -44,6 +44,11 @@ class FakeIncoming extends EventEmitter implements WatchIncomingLike {
   destroy(): void {
     this.destroyed = true;
   }
+  // 模拟真实流：destroy 后不再投递任何事件（含 error），保证无 listener 的 error 不抛未处理异常。
+  emit(event: string | symbol, ...args: unknown[]): boolean {
+    if (this.destroyed) return false;
+    return super.emit(event, ...args);
+  }
 }
 
 class FakeRequest extends EventEmitter implements WatchRequestLike {
@@ -55,13 +60,15 @@ class FakeRequest extends EventEmitter implements WatchRequestLike {
   abort(): void {
     this.emit('error', Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
   }
+  // 模拟真实 ClientRequest.destroy()：无 error 参数不投递 'error'（终态 cleanup 移除 listener 后安全）。
   destroy(error?: Error): void {
-    this.emit('error', error ?? new Error('destroyed'));
+    if (error !== undefined) this.emit('error', error);
   }
 }
 
 interface CapturedRequest {
   options: WatchRequestOptions;
+  request: FakeRequest; // 底层 transport（listenerCount/资源断言用）
   responded: boolean;
   respond(status: number, headers: Record<string, string>, body?: Buffer | string | null): void;
   respondChunked(
@@ -81,6 +88,7 @@ function isRobotsRequest(options: WatchRequestOptions): boolean {
 function makeCap(req: FakeRequest, options: WatchRequestOptions): CapturedRequest {
   const cap: CapturedRequest = {
     options,
+    request: req,
     responded: false,
     respond(status, headers, body = null) {
       cap.responded = true;
@@ -1108,18 +1116,25 @@ describe('R3 deadline/abort 生命周期（统一幂等 cleanup；迟到事件�
     await flush();
     const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
     clock.advanceTo(30_000);
-    await flush();
-    // 迟到 error 先到（listener 仍在）：外层已 settle → 触发 release 清理 listener
-    res.emit('error', new Error('late'));
-    // 迟到 data/end：listener 已清除 → 纯 no-op，不写入 inflater、不创建新 socket
-    res.emit('data', Buffer.from('late', 'utf8'));
-    res.emit('end');
-    await flush();
     const r = await promise;
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
-    expect(h.targets().length).toBe(1);
+    // 首终态立即清理：未发送任何迟到事件时 res/inflater listener 已全部移除
+    expect(res.destroyed).toBe(true);
     expect(inflaters[0]!.destroyed).toBe(true);
+    expect(res.listenerCount('data')).toBe(0);
+    expect(res.listenerCount('end')).toBe(0);
+    expect(res.listenerCount('error')).toBe(0);
+    expect(res.listenerCount('aborted')).toBe(0);
+    expect(inflaters[0]!.listenerCount('data')).toBe(0);
+    expect(inflaters[0]!.listenerCount('end')).toBe(0);
+    expect(inflaters[0]!.listenerCount('error')).toBe(0);
+    // 迟到的 error/data/end：response 已销毁 → 纯 no-op，零未处理异常、不写入 inflater
+    res.emit('error', new Error('late'));
+    res.emit('data', Buffer.from('late', 'utf8'));
+    res.emit('end');
+    await flush();
+    expect(h.targets().length).toBe(1);
     expect(res.listenerCount('data')).toBe(0);
     expect(res.listenerCount('error')).toBe(0);
   });
@@ -1147,6 +1162,236 @@ describe('R3 deadline/abort 生命周期（统一幂等 cleanup；迟到事件�
       expect(res.listenerCount('error')).toBe(0);
       res.emit('data', Buffer.from('late', 'utf8'));
       res.emit('end');
+      await flush();
+      expect(unhandled.length).toBe(0);
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled);
+    }
+  });
+});
+
+describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触发清理）', () => {
+  it('identity 静默 body 总 deadline 后：不发送任何迟到事件，response 的 data/end/error/aborted listener 立即全 0', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = h.targets()[0]!.openResponse(200, {});
+    clock.advanceTo(30_000);
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    expect(res.destroyed).toBe(true);
+    expect(clock.pendingTimerCount()).toBe(0);
+    for (const ev of ['data', 'end', 'error', 'aborted'] as const) {
+      expect(res.listenerCount(ev)).toBe(0);
+    }
+  });
+
+  it('gzip 静默 body 总 deadline 后：response 与 inflater listener 立即全 0', async () => {
+    const clock = new FakeClock(0);
+    const inflaters: Gunzip[] = [];
+    const h = createHarness({
+      clock,
+      createInflater: (_encoding, max) => {
+        const s = createGunzip({ maxOutputLength: max });
+        inflaters.push(s);
+        return s;
+      },
+    });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
+    clock.advanceTo(30_000);
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    expect(res.destroyed).toBe(true);
+    expect(inflaters.length).toBe(1);
+    expect(inflaters[0]!.destroyed).toBe(true);
+    for (const ev of ['data', 'end', 'error', 'aborted'] as const) {
+      expect(res.listenerCount(ev)).toBe(0);
+    }
+    for (const ev of ['data', 'end', 'error'] as const) {
+      expect(inflaters[0]!.listenerCount(ev)).toBe(0);
+    }
+  });
+
+  it('abort 后立即断言 response 与 inflater listener 全 0（不等待迟到事件）', async () => {
+    const controller = new AbortController();
+    const inflaters: Gunzip[] = [];
+    const h = createHarness({
+      createInflater: (_encoding, max) => {
+        const s = createGunzip({ maxOutputLength: max });
+        inflaters.push(s);
+        return s;
+      },
+    });
+    const promise = h.stack.target.get({
+      url: 'https://example.com/feed',
+      purpose: 'feed',
+      signal: controller.signal,
+    });
+    await flush();
+    const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
+    controller.abort();
+    const r = await promise;
+    expect(r.kind).toBe('aborted');
+    expect(res.destroyed).toBe(true);
+    expect(inflaters.length).toBe(1);
+    expect(inflaters[0]!.destroyed).toBe(true);
+    for (const ev of ['data', 'end', 'error', 'aborted'] as const) {
+      expect(res.listenerCount(ev)).toBe(0);
+    }
+    for (const ev of ['data', 'end', 'error'] as const) {
+      expect(inflaters[0]!.listenerCount(ev)).toBe(0);
+    }
+  });
+
+  it('deadline 先于 response：迟到 response 被立即安全销毁，零正文 listener、零新 socket', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    clock.advanceTo(30_000);
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    expect(h.targets().length).toBe(1);
+    const late = h.targets()[0]!.openResponse(200, {});
+    expect(late.destroyed).toBe(true);
+    for (const ev of ['data', 'end', 'error', 'aborted'] as const) {
+      expect(late.listenerCount(ev)).toBe(0);
+    }
+    await flush();
+    expect(h.targets().length).toBe(1); // 零新 socket
+  });
+
+  it('abort 先于 response：迟到 response 被立即安全销毁，零正文 listener、零新 socket', async () => {
+    const controller = new AbortController();
+    const h = createHarness();
+    const promise = h.stack.target.get({
+      url: 'https://example.com/feed',
+      purpose: 'feed',
+      signal: controller.signal,
+    });
+    await flush();
+    controller.abort();
+    const r = await promise;
+    expect(r.kind).toBe('aborted');
+    expect(h.targets().length).toBe(1);
+    const late = h.targets()[0]!.openResponse(200, {});
+    expect(late.destroyed).toBe(true);
+    for (const ev of ['data', 'end', 'error', 'aborted'] as const) {
+      expect(late.listenerCount(ev)).toBe(0);
+    }
+    await flush();
+    expect(h.targets().length).toBe(1); // 零新 socket
+  });
+
+  it('success/body-deadline/abort/request-error 后 request 的 response/error/timeout listener 全 0', async () => {
+    // success
+    {
+      const h = createHarness();
+      const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      h.targets()[0]!.respond(200, {}, '<rss/>');
+      expect((await p).kind).toBe('ok');
+      const req = h.targets()[0]!.request;
+      expect(req.listenerCount('response')).toBe(0);
+      expect(req.listenerCount('error')).toBe(0);
+      expect(req.listenerCount('timeout')).toBe(0);
+    }
+    // body-deadline（response 已交付，静默 body）
+    {
+      const clock = new FakeClock(0);
+      const h = createHarness({ clock });
+      const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      h.targets()[0]!.openResponse(200, {});
+      clock.advanceTo(30_000);
+      const r = await p;
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+      const req = h.targets()[0]!.request;
+      expect(req.listenerCount('response')).toBe(0);
+      expect(req.listenerCount('error')).toBe(0);
+      expect(req.listenerCount('timeout')).toBe(0);
+    }
+    // abort（response 已交付）
+    {
+      const controller = new AbortController();
+      const h = createHarness();
+      const p = h.stack.target.get({
+        url: 'https://example.com/feed',
+        purpose: 'feed',
+        signal: controller.signal,
+      });
+      await flush();
+      h.targets()[0]!.openResponse(200, {});
+      controller.abort();
+      const r = await p;
+      expect(r.kind).toBe('aborted');
+      const req = h.targets()[0]!.request;
+      expect(req.listenerCount('response')).toBe(0);
+      expect(req.listenerCount('error')).toBe(0);
+      expect(req.listenerCount('timeout')).toBe(0);
+    }
+    // request-error（response 未交付）
+    {
+      const h = createHarness();
+      const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      h.targets()[0]!.error('ECONNREFUSED');
+      const r = await p;
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+      const req = h.targets()[0]!.request;
+      expect(req.listenerCount('response')).toBe(0);
+      expect(req.listenerCount('error')).toBe(0);
+      expect(req.listenerCount('timeout')).toBe(0);
+    }
+  });
+
+  it('终态后再发送 data/end/error/response：结果不变、零未处理异常、零 buffer/inflater 副作用', async () => {
+    const clock = new FakeClock(0);
+    const inflaters: Gunzip[] = [];
+    const h = createHarness({
+      clock,
+      createInflater: (_encoding, max) => {
+        const s = createGunzip({ maxOutputLength: max });
+        inflaters.push(s);
+        return s;
+      },
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
+      res.emit('data', gzipSync(Buffer.from('<rss/>', 'utf8')));
+      res.emit('end');
+      const r = await promise;
+      expect(r.kind).toBe('ok');
+      // 首终态：request listener 已全 0
+      const req = h.targets()[0]!.request;
+      expect(req.listenerCount('response')).toBe(0);
+      expect(req.listenerCount('error')).toBe(0);
+      expect(req.listenerCount('timeout')).toBe(0);
+      // response 已销毁：后续事件纯 no-op
+      res.emit('data', Buffer.from('late', 'utf8'));
+      res.emit('end');
+      res.emit('error', new Error('late'));
+      // 迟到的 request response：已无 listener，纯 no-op（不创建新 socket）
+      h.targets()[0]!.openResponse(200, {});
+      expect(h.targets().length).toBe(1);
+      expect(inflaters.length).toBe(1);
+      expect(inflaters[0]!.destroyed).toBe(true);
+      expect(res.listenerCount('data')).toBe(0);
       await flush();
       expect(unhandled.length).toBe(0);
     } finally {

@@ -149,6 +149,9 @@ export interface WatchRequestLike {
   on(event: 'response', cb: (res: WatchIncomingLike) => void): unknown;
   on(event: 'error', cb: (err: Error) => void): unknown;
   on(event: 'timeout', cb: () => void): unknown;
+  removeListener(event: 'response', cb: (res: WatchIncomingLike) => void): unknown;
+  removeListener(event: 'error', cb: (err: Error) => void): unknown;
+  removeListener(event: 'timeout', cb: () => void): unknown;
   setTimeout(ms: number): unknown;
   end(): void;
   abort(): void;
@@ -617,10 +620,16 @@ class PublicWatchHttpClient {
     return new Promise<InternalAttempt | 'retry-next' | 'aborted' | 'failed'>((resolve) => {
       let settled = false;
       let aborted = false;
+      let sawResponse = false;
+      let requestFailed = false;
       let request: WatchRequestLike | null = null;
       let response: WatchIncomingLike | null = null;
       let inflater: WatchInflaterLike | null = null;
       let timeoutHandle: ReturnType<Clock['setTimeout']> | null = null;
+      // 正文 reader 的幂等 release handle：deadline/abort 直接调用，不等迟到事件。
+      let releaseBody: (() => void) | null = null;
+      // 迟到 response 守卫自移除用：request 构造完成后指向同一 request 对象。
+      let guardRequest: WatchRequestLike | null = null;
 
       // 外层 settlement 信号：readBoundedBody 据此拒绝迟到 chunk/end/error 的一切副作用。
       const isOuterSettled = (): boolean => settled;
@@ -632,14 +641,19 @@ class PublicWatchHttpClient {
         resolve(value);
       };
 
-      // 统一、幂等的终态 cleanup：销毁当前 request/response/inflater 并清除 timer/listener。
-      // deadline/abort/budget/stream-error/成功结算后都只能经过这一条路径释放活动资源。
+      // 统一、幂等的首终态 cleanup：无论 success/deadline/abort/budget/stream-error/request-error，
+      // 立即清除全部 timer/AbortSignal listener、释放正文 reader、销毁 request/response/inflater，
+      // 并按需移除本实现注册的 request listener。单项失败不得阻止其它资源清理。
       const cleanup = (): void => {
         if (timeoutHandle !== null) {
           this.clock.clearTimeout(timeoutHandle);
           timeoutHandle = null;
         }
         if (req.signal) req.signal.removeEventListener('abort', onAbort);
+        if (releaseBody !== null) {
+          releaseBody();
+          releaseBody = null;
+        }
         if (inflater !== null) {
           try {
             inflater.removeAllListeners();
@@ -663,10 +677,32 @@ class PublicWatchHttpClient {
         }
         if (request !== null) {
           try {
-            request.destroy?.();
+            request.removeListener('error', onRequestError);
           } catch {
             // 幂等
           }
+          try {
+            request.removeListener('timeout', onRequestTimeout);
+          } catch {
+            // 幂等
+          }
+          // response listener：已消费（onResponse 自移除）或 request-error 终态（不会再出现
+          // response）时确定移除；deadline/abort 先于 response 时保留为迟到 response 守卫，
+          // 由 onResponse 在到达时立即安全销毁并自移除。
+          if (sawResponse || requestFailed) {
+            try {
+              request.removeListener('response', onResponse);
+            } catch {
+              // 幂等
+            }
+          }
+          try {
+            request.destroy();
+          } catch {
+            // 幂等
+          }
+          // 注意：guardRequest 保持指向 request（不置 null），使保留的迟到 response 守卫
+          // 在到达时可自移除；已移除 response listener 的路径中它是无害的闭包引用。
           request = null;
         }
       };
@@ -676,43 +712,58 @@ class PublicWatchHttpClient {
         finish('aborted');
       };
 
-      try {
-        request = this.requestFactory({
-          method,
-          protocol: target.scheme === 'https' ? 'https:' : 'http:',
-          hostname: target.host,
-          port: target.port,
-          path,
-          headers,
-          lookup: sealedLookup,
-        });
-      } catch {
-        // requestFactory 同步 throw：受控失败，不泄漏 rejection
-        finish(this.failed('unavailable', 'request-factory'));
-        return;
-      }
-      const activeRequest = request;
-
-      // socket 超时只能设为 remaining（同一 absolute effectiveDeadline，不续杯）
-      const remaining = deadlineMs - this.clock.now().getTime();
-      if (remaining <= 0) {
+      // request 级 timeout（transport 若在绝对截止前自行报超时，同样受控 deadline 失败）。
+      const onRequestTimeout = (): void => {
+        if (settled || aborted) return;
         finish(this.failed('unavailable', 'deadline'));
-        return;
-      }
-      timeoutHandle = this.clock.setTimeout(() => {
-        finish(this.failed('unavailable', 'deadline'));
-      }, remaining);
+      };
 
-      if (req.signal) {
-        if (req.signal.aborted) {
-          finish('aborted');
+      const onRequestError = (err: NodeJS.ErrnoException): void => {
+        if (settled || aborted) return;
+        requestFailed = true;
+        const code = err.code ?? 'ERR';
+        if (CONNECT_RETRYABLE.has(code)) {
+          finish('retry-next');
           return;
         }
-        req.signal.addEventListener('abort', onAbort, { once: true });
-      }
+        finish(this.failed('unavailable', code));
+      };
 
-      activeRequest.on('response', (res: WatchIncomingLike) => {
-        if (aborted || settled) return;
+      // 不消费的响应（redirect/HEAD/3xx 无 Location/迟到 response）：立即安全销毁；
+      // destroy 不可用或抛错时安装安全 error sink 后 resume 排空，防无限 body 占用。
+      const safeDiscardResponse = (res: WatchIncomingLike): void => {
+        if (typeof res.destroy === 'function') {
+          try {
+            res.destroy();
+            return;
+          } catch {
+            // 降级排空
+          }
+        }
+        try {
+          res.on('error', () => undefined);
+          res.resume?.();
+        } catch {
+          // 幂等
+        }
+      };
+
+      const onResponse = (res: WatchIncomingLike): void => {
+        // 每个 request 至多一个 response；正常或迟到路径都在处理前自移除本守卫。
+        if (guardRequest !== null) {
+          try {
+            guardRequest.removeListener('response', onResponse);
+          } catch {
+            // 幂等
+          }
+        }
+        if (aborted || settled) {
+          // deadline/abort 先于 response：迟到 response 立即安全销毁或受控 resume，
+          // 零正文 listener、零新 socket。
+          safeDiscardResponse(res);
+          return;
+        }
+        sawResponse = true;
         response = res;
         const statusCode = res.statusCode;
         const nowMs = this.clock.now().getTime();
@@ -730,25 +781,10 @@ class PublicWatchHttpClient {
           compressedByteLength: 0,
         };
 
-        // 不消费的响应（redirect/HEAD/3xx 无 Location）：立即安全销毁或按预算排空，
-        // 防止无限 body 持续占用。销毁失败降级为 resume 排空。
-        const ignoreResBody = (): void => {
-          res.on('error', () => undefined);
-          if (typeof res.destroy === 'function') {
-            try {
-              res.destroy();
-              return;
-            } catch {
-              // 降级排空
-            }
-          }
-          res.resume?.();
-        };
-
         if (REDIRECT_STATUS.has(statusCode)) {
           const location = headerValue(res.headers, 'location');
           if (location === null) {
-            ignoreResBody();
+            safeDiscardResponse(res);
             finish({ kind: 'ok', meta, body: Buffer.alloc(0) });
             return;
           }
@@ -756,28 +792,28 @@ class PublicWatchHttpClient {
           try {
             nextUrl = new URL(location, target.url);
           } catch {
-            ignoreResBody();
+            safeDiscardResponse(res);
             finish(this.failed('security_rejected', 'redirect-location'));
             return;
           }
           const validated = validatePublicUrl(nextUrl.toString());
           if (!validated.ok) {
-            ignoreResBody();
+            safeDiscardResponse(res);
             finish(this.failed('security_rejected', 'redirect-invalid'));
             return;
           }
           if (target.scheme === 'https' && validated.target.scheme === 'http') {
-            ignoreResBody();
+            safeDiscardResponse(res);
             finish(this.failed('security_rejected', 'redirect-downgrade'));
             return;
           }
-          ignoreResBody();
+          safeDiscardResponse(res);
           finish({ kind: 'redirect', location: validated.target.url });
           return;
         }
 
         if (method === 'HEAD') {
-          ignoreResBody();
+          safeDiscardResponse(res);
           finish({ kind: 'ok', meta, body: Buffer.alloc(0) });
           return;
         }
@@ -797,7 +833,7 @@ class PublicWatchHttpClient {
                   ? 'br'
                   : null;
           if (norm === null) {
-            ignoreResBody();
+            safeDiscardResponse(res);
             finish(this.failed('security_rejected', 'unknown-content-encoding'));
             return;
           }
@@ -805,13 +841,22 @@ class PublicWatchHttpClient {
             inflater = this.createInflater(norm, PURPOSE_MAX_BYTES[req.purpose]);
           } catch {
             // inflater 工厂同步 throw：受控失败
-            ignoreResBody();
+            safeDiscardResponse(res);
             finish(this.failed('unavailable', 'inflater-factory'));
             return;
           }
         }
 
-        this.readBoundedBody(res, req, meta, deadlineMs, inflater, isOuterSettled)
+        const bodyReader = this.readBoundedBody(
+          res,
+          req,
+          meta,
+          deadlineMs,
+          inflater,
+          isOuterSettled,
+        );
+        releaseBody = bodyReader.release;
+        bodyReader.promise
           .then((bodyResult) => {
             if (bodyResult.kind === 'failed') {
               finish(this.failed(bodyResult.health, bodyResult.reason));
@@ -822,17 +867,47 @@ class PublicWatchHttpClient {
           .catch(() => {
             finish(this.failed('unavailable', 'read-failed'));
           });
-      });
+      };
 
-      activeRequest.on('error', (err: NodeJS.ErrnoException) => {
-        if (settled || aborted) return;
-        const code = err.code ?? 'ERR';
-        if (CONNECT_RETRYABLE.has(code)) {
-          finish('retry-next');
+      try {
+        request = this.requestFactory({
+          method,
+          protocol: target.scheme === 'https' ? 'https:' : 'http:',
+          hostname: target.host,
+          port: target.port,
+          path,
+          headers,
+          lookup: sealedLookup,
+        });
+      } catch {
+        // requestFactory 同步 throw：受控失败，不泄漏 rejection
+        finish(this.failed('unavailable', 'request-factory'));
+        return;
+      }
+      const activeRequest = request;
+      guardRequest = activeRequest;
+
+      // socket 超时只能设为 remaining（同一 absolute effectiveDeadline，不续杯）
+      const remaining = deadlineMs - this.clock.now().getTime();
+      if (remaining <= 0) {
+        finish(this.failed('unavailable', 'deadline'));
+        return;
+      }
+      timeoutHandle = this.clock.setTimeout(() => {
+        finish(this.failed('unavailable', 'deadline'));
+      }, remaining);
+
+      if (req.signal) {
+        if (req.signal.aborted) {
+          finish('aborted');
           return;
         }
-        finish(this.failed('unavailable', code));
-      });
+        req.signal.addEventListener('abort', onAbort, { once: true });
+      }
+
+      activeRequest.on('response', onResponse);
+      activeRequest.on('error', onRequestError);
+      activeRequest.on('timeout', onRequestTimeout);
 
       activeRequest.end();
     });
@@ -845,57 +920,193 @@ class PublicWatchHttpClient {
     deadlineMs: number,
     inflater: WatchInflaterLike | null,
     isOuterSettled: () => boolean,
-  ): Promise<
-    | { kind: 'ok'; meta: PublicResponseMeta; body: Buffer }
-    | { kind: 'failed'; health: ClientHealth; reason: string }
-  > {
+  ): {
+    promise: Promise<
+      | { kind: 'ok'; meta: PublicResponseMeta; body: Buffer }
+      | { kind: 'failed'; health: ClientHealth; reason: string }
+    >;
+    release: () => void;
+  } {
     const maxBytes = PURPOSE_MAX_BYTES[req.purpose];
-    return new Promise((resolve) => {
-      let compressedBytes = 0;
-      let decompressedBytes = 0;
-      let finished = false;
-      let released = false;
-      const buffer: Buffer[] = [];
+    let compressedBytes = 0;
+    let decompressedBytes = 0;
+    let finished = false;
+    let released = false;
+    let inflaterEnded = false;
+    const buffer: Buffer[] = [];
 
-      const deadlineExpired = (): boolean =>
-        Number.isFinite(deadlineMs) && this.clock.now().getTime() >= deadlineMs;
+    const deadlineExpired = (): boolean =>
+      Number.isFinite(deadlineMs) && this.clock.now().getTime() >= deadlineMs;
 
-      // 幂等释放：清除本实现注册的 res/inflater listener 并销毁 inflater。
-      // 迟到事件到达（外层已 settle 或本地已 settle）时也调用，保证 listener 不再残留。
-      function release(): void {
-        if (released) return;
-        released = true;
-        res.removeListener('data', onSourceData);
-        res.removeListener('data', onCompressedData);
-        res.removeListener('end', onSourceEnd);
-        res.removeListener('error', onSourceError);
-        res.removeListener('aborted', onSourceAborted);
-        if (inflater !== null) {
-          inflater.removeListener('data', onInflaterData);
-          inflater.removeListener('end', onInflaterEnd);
-          inflater.removeListener('error', onInflaterError);
-          try {
-            inflater.destroy();
-          } catch {
-            // 幂等
-          }
+    // 幂等释放：清除本实现注册的 res/inflater listener 并销毁 inflater。
+    // attempt 首终态 cleanup 直接调用；迟到事件到达（外层已 settle 或本地已 settle）时也调用，
+    // 保证首终态立即 listener=0，不等迟到事件。
+    function release(): void {
+      if (released) return;
+      released = true;
+      res.removeListener('data', onSourceData);
+      res.removeListener('data', onCompressedData);
+      res.removeListener('end', onSourceEnd);
+      res.removeListener('error', onSourceError);
+      res.removeListener('aborted', onSourceAborted);
+      if (inflater !== null) {
+        inflater.removeListener('data', onInflaterData);
+        inflater.removeListener('end', onInflaterEnd);
+        inflater.removeListener('error', onInflaterError);
+        try {
+          inflater.destroy();
+        } catch {
+          // 幂等
         }
       }
+    }
 
-      function failBudget(): void {
-        if (finished || isOuterSettled()) return;
-        finished = true;
+    function failBudget(): void {
+      if (finished || isOuterSettled()) return;
+      finished = true;
+      release();
+      resolveFn({ kind: 'failed', health: 'budget_exceeded', reason: 'response-too-large' });
+    }
+
+    function failDeadline(): void {
+      if (finished || isOuterSettled()) return;
+      finished = true;
+      release();
+      resolveFn({ kind: 'failed', health: 'unavailable', reason: 'deadline' });
+    }
+
+    function commitBody(): void {
+      if (finished || isOuterSettled()) return;
+      finished = true;
+      release();
+      meta.byteLength = decompressedBytes;
+      meta.compressedByteLength = compressedBytes;
+      resolveFn({ kind: 'ok', meta, body: Buffer.concat(buffer) });
+    }
+
+    function onSourceData(chunk: Buffer): void {
+      if (finished) return;
+      if (isOuterSettled()) {
         release();
-        resolve({ kind: 'failed', health: 'budget_exceeded', reason: 'response-too-large' });
+        return;
       }
+      if (deadlineExpired()) {
+        failDeadline();
+        return;
+      }
+      compressedBytes += chunk.length;
+      decompressedBytes += chunk.length;
+      if (decompressedBytes > maxBytes) {
+        failBudget();
+        return;
+      }
+      buffer.push(chunk);
+    }
 
-      function failDeadline(): void {
-        if (finished || isOuterSettled()) return;
-        finished = true;
+    function onCompressedData(chunk: Buffer): void {
+      if (finished) return;
+      if (isOuterSettled()) {
         release();
-        resolve({ kind: 'failed', health: 'unavailable', reason: 'deadline' });
+        return;
       }
+      compressedBytes += chunk.length;
+      if (compressedBytes > maxBytes) {
+        failBudget();
+        return;
+      }
+      if (deadlineExpired()) {
+        failDeadline();
+        return;
+      }
+      inflater?.write(chunk);
+    }
 
+    function onSourceEnd(): void {
+      if (finished) return;
+      if (isOuterSettled()) {
+        release();
+        return;
+      }
+      if (inflater === null) commitBody();
+      else inflater.end();
+    }
+
+    function onSourceError(): void {
+      if (finished) return;
+      if (isOuterSettled()) {
+        release();
+        return;
+      }
+      finished = true;
+      release();
+      resolveFn({ kind: 'failed', health: 'unavailable', reason: 'stream-error' });
+    }
+
+    function onSourceAborted(): void {
+      if (finished) return;
+      if (isOuterSettled()) {
+        release();
+        return;
+      }
+      finished = true;
+      release();
+      resolveFn({ kind: 'failed', health: 'unavailable', reason: 'aborted' });
+    }
+
+    function onInflaterData(chunk: Buffer): void {
+      if (finished) return;
+      if (isOuterSettled()) {
+        release();
+        return;
+      }
+      decompressedBytes += chunk.length;
+      if (decompressedBytes > maxBytes) {
+        failBudget();
+        return;
+      }
+      buffer.push(chunk);
+    }
+
+    function onInflaterEnd(): void {
+      if (finished) return;
+      if (isOuterSettled()) {
+        release();
+        return;
+      }
+      if (!inflaterEnded) {
+        inflaterEnded = true;
+        commitBody();
+      }
+    }
+
+    function onInflaterError(): void {
+      if (finished) return;
+      if (isOuterSettled()) {
+        release();
+        return;
+      }
+      finished = true;
+      release();
+      resolveFn({
+        kind: 'failed',
+        health: 'budget_exceeded',
+        reason: 'decompress-failed-or-too-large',
+      });
+    }
+
+    let resolveFn: (
+      value:
+        | { kind: 'ok'; meta: PublicResponseMeta; body: Buffer }
+        | { kind: 'failed'; health: ClientHealth; reason: string },
+    ) => void = () => {
+      // 幂等占位：executor 同步赋值为真正 resolve
+    };
+
+    const promise = new Promise<
+      | { kind: 'ok'; meta: PublicResponseMeta; body: Buffer }
+      | { kind: 'failed'; health: ClientHealth; reason: string }
+    >((resolve) => {
+      resolveFn = resolve;
       const declaredLength = headerValue(res.headers, 'content-length');
       if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
         const length = Number(declaredLength);
@@ -903,126 +1114,6 @@ class PublicWatchHttpClient {
           failBudget();
           return;
         }
-      }
-
-      function commitBody(): void {
-        if (finished || isOuterSettled()) return;
-        finished = true;
-        release();
-        meta.byteLength = decompressedBytes;
-        meta.compressedByteLength = compressedBytes;
-        resolve({ kind: 'ok', meta, body: Buffer.concat(buffer) });
-      }
-
-      function onSourceData(chunk: Buffer): void {
-        if (finished) return;
-        if (isOuterSettled()) {
-          release();
-          return;
-        }
-        if (deadlineExpired()) {
-          failDeadline();
-          return;
-        }
-        compressedBytes += chunk.length;
-        decompressedBytes += chunk.length;
-        if (decompressedBytes > maxBytes) {
-          failBudget();
-          return;
-        }
-        buffer.push(chunk);
-      }
-
-      function onCompressedData(chunk: Buffer): void {
-        if (finished) return;
-        if (isOuterSettled()) {
-          release();
-          return;
-        }
-        compressedBytes += chunk.length;
-        if (compressedBytes > maxBytes) {
-          failBudget();
-          return;
-        }
-        if (deadlineExpired()) {
-          failDeadline();
-          return;
-        }
-        inflater?.write(chunk);
-      }
-
-      function onSourceEnd(): void {
-        if (finished) return;
-        if (isOuterSettled()) {
-          release();
-          return;
-        }
-        if (inflater === null) commitBody();
-        else inflater.end();
-      }
-
-      function onSourceError(): void {
-        if (finished) return;
-        if (isOuterSettled()) {
-          release();
-          return;
-        }
-        finished = true;
-        release();
-        resolve({ kind: 'failed', health: 'unavailable', reason: 'stream-error' });
-      }
-
-      function onSourceAborted(): void {
-        if (finished) return;
-        if (isOuterSettled()) {
-          release();
-          return;
-        }
-        finished = true;
-        release();
-        resolve({ kind: 'failed', health: 'unavailable', reason: 'aborted' });
-      }
-
-      function onInflaterData(chunk: Buffer): void {
-        if (finished) return;
-        if (isOuterSettled()) {
-          release();
-          return;
-        }
-        decompressedBytes += chunk.length;
-        if (decompressedBytes > maxBytes) {
-          failBudget();
-          return;
-        }
-        buffer.push(chunk);
-      }
-
-      let inflaterEnded = false;
-      function onInflaterEnd(): void {
-        if (finished) return;
-        if (isOuterSettled()) {
-          release();
-          return;
-        }
-        if (!inflaterEnded) {
-          inflaterEnded = true;
-          commitBody();
-        }
-      }
-
-      function onInflaterError(): void {
-        if (finished) return;
-        if (isOuterSettled()) {
-          release();
-          return;
-        }
-        finished = true;
-        release();
-        resolve({
-          kind: 'failed',
-          health: 'budget_exceeded',
-          reason: 'decompress-failed-or-too-large',
-        });
       }
 
       if (inflater === null) {
@@ -1042,6 +1133,8 @@ class PublicWatchHttpClient {
       res.on('error', onSourceError);
       res.on('aborted', onSourceAborted);
     });
+
+    return { promise, release };
   }
 }
 
