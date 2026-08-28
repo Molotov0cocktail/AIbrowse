@@ -141,9 +141,17 @@ export interface SourceServiceOptions {
   observer?: SourceLifecycleObserver;
 }
 
-// D4：Watch 窄投影读取端口（内部/装配层使用，不进 SourceService 公共接口/IPC）
+// D4-R：Watch 窄投影读取端口三态协议（内部/装配层使用，不进 SourceService
+// 公共接口/IPC）——found/missing/unavailable 严格区分：SourceRepository 抛错、
+// 数据库不可用或读回非法行只返回 unavailable，绝不冒充 missing（missing 才会
+// 触发 hard-delete/reconciliation 的缺失逻辑）。
+export type SourceWatchProjectionReadResult =
+  | { status: 'found'; projection: SourceWatchProjection }
+  | { status: 'missing' }
+  | { status: 'unavailable' };
+
 export interface SourceWatchProjectionProvider {
-  getSourceWatchProjection(sourceId: string): SourceWatchProjection | null;
+  getSourceWatchProjection(sourceId: string): SourceWatchProjectionReadResult;
 }
 
 // D4：observer 缺省显式 no-op（votes 恒 true——未经 D4 接线的旧装配/单测语义不变）
@@ -221,19 +229,43 @@ export class SourceServiceImpl implements SourceService {
     };
   }
 
-  // 内部端口（不进 SourceService 公共接口/IPC）：按 sourceId 返回宽投影
-  // 或 null（不存在/非法 id/不可用）。coordinator 经延迟端口读取。
-  getSourceWatchProjection(sourceId: string): SourceWatchProjection | null {
-    if (this.disposed) return null;
-    if (!isUuidShape(sourceId)) return null;
+  // 内部端口（不进 SourceService 公共接口/IPC）：按 sourceId 返回三态结果——
+  // found/missing/unavailable。coordinator 经延迟端口读取；unavailable 绝不
+  // 降级为 missing。
+  getSourceWatchProjection(sourceId: string): SourceWatchProjectionReadResult {
+    if (this.disposed) return { status: 'unavailable' };
+    if (!isUuidShape(sourceId)) return { status: 'missing' }; // 非法 id 确定性不存在
+    let row: SourceRow | null;
     try {
-      const row = this.repo.getSourceById(sourceId);
-      if (row === null) return null;
-      return this.toWatchProjection(row);
+      row = this.repo.getSourceById(sourceId);
     } catch (err) {
-      logWarn('sources', 'getSourceWatchProjection 读取失败（fail-closed 返回 null）', err);
+      logWarn('sources', 'getSourceWatchProjection 读取失败（unavailable）', err);
+      return { status: 'unavailable' };
+    }
+    if (row === null) return { status: 'missing' };
+    const projection = this.toWatchProjectionChecked(row);
+    return projection === null
+      ? { status: 'unavailable' } // 读回非法行：不得冒充 missing
+      : { status: 'found', projection };
+  }
+
+  // 读回行形状防御校验（读取通道）：非法行 → null（调用方映射 unavailable）。
+  private toWatchProjectionChecked(row: SourceRow): SourceWatchProjection | null {
+    if (
+      typeof row.id !== 'string' ||
+      row.id === '' ||
+      !Number.isInteger(row.version) ||
+      row.version < 1 ||
+      (row.enabled !== 0 && row.enabled !== 1) ||
+      (row.scope !== 'origin' && row.scope !== 'page') ||
+      typeof row.canonical_key !== 'string' ||
+      row.canonical_key === '' ||
+      !(row.deleted_at === null || typeof row.deleted_at === 'string')
+    ) {
+      logWarn('sources', 'Source 行投影形状非法（unavailable，不视同缺失）');
       return null;
     }
+    return this.toWatchProjection(row);
   }
 
   // prepare：返回 observer 是否确认（失败时 Watch 进入 unavailable；除 hard-delete

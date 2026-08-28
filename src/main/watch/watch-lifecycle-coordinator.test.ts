@@ -51,9 +51,7 @@ function projection(overrides: Partial<SourceWatchProjection> = {}): SourceWatch
   };
 }
 
-function toReadResult(
-  projection: SourceWatchProjection | undefined,
-): SourceProjectionReadResult {
+function toReadResult(projection: SourceWatchProjection | undefined): SourceProjectionReadResult {
   return projection === undefined
     ? { status: 'missing' as const }
     : { status: 'found' as const, projection };
@@ -262,9 +260,7 @@ describe('prepare（fail-closed 预暂停 + durable intent）', () => {
   it('D4-R prepare 读回非法规则行 → unavailable 零写入', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    handle
-      .prepare("UPDATE watch_rules SET schedule_json = 'not-json' WHERE id = ?")
-      .run(rule.id);
+    handle.prepare("UPDATE watch_rules SET schedule_json = 'not-json' WHERE id = ?").run(rule.id);
     const m = mutation({
       operation: 'disable',
       after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),

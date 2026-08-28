@@ -32,7 +32,23 @@ import type { AffectedRulePrepareState } from './watch-row-validation';
 import { withTransaction } from './db/watch-driver';
 import { WatchRepository, type SourceCleanupIntentRow } from './repository/watch-repository';
 
-export type SourceProjectionReader = (sourceId: string) => SourceWatchProjection | null;
+// D4-R：Source 投影读取三态协议——found/missing/unavailable 严格区分：
+// unavailable（SourceRepository 抛错/数据库不可用/非法行）绝不降级为 missing，
+// 调用方（hard-delete/reconciliation/revalidation）遇 unavailable 必须回滚并使
+// Watch unavailable，绝不删除或级联 Watch 数据。
+export type SourceProjectionReadResult =
+  | { status: 'found'; projection: SourceWatchProjection }
+  | { status: 'missing' }
+  | { status: 'unavailable' };
+
+export type SourceProjectionReader = (sourceId: string) => SourceProjectionReadResult;
+
+// 仅当确定性 missing 返回 null；unavailable 抛错交由调用方 fail-closed。
+function projectionOrNull(result: SourceProjectionReadResult): SourceWatchProjection | null {
+  if (result.status === 'found') return result.projection;
+  if (result.status === 'missing') return null;
+  throw new Error('Source 投影读取不可用（unavailable，不得视同缺失）');
+}
 
 export type WatchRevalidationResult =
   | { status: 'ok'; rowVersion: number }
@@ -220,7 +236,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
               }
               // 生命周期驱动的暂停审计（仅当本次确实从非 paused 迁入）
               if (rule.state !== 'paused' && next.state === 'paused' && next.pauseReason !== null) {
-                repo.insertAudit({
+                this.writeAudit(repo, {
                   id: randomUUID(),
                   ruleId: rule.id,
                   kind: 'lifecycle-pause',
@@ -338,7 +354,8 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
           const intent = repo.getSourceCleanupIntent(mutationId);
           if (intent === null) continue;
           if (intent.state === 'complete' || intent.state === 'aborted') continue;
-          const current = reader(intent.sourceId);
+          // unavailable 抛错 → 本事务回滚 + Watch unavailable（intent 保持 prepared）
+          const current = projectionOrNull(reader(intent.sourceId));
           if (!sourceEqualsBefore(current, intent.beforeProjection)) {
             // Source 已不等于 before → 交启动 reconciliation，intent 保持 prepared
             continue;
@@ -396,11 +413,12 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
     reader: SourceProjectionReader,
     intent: SourceCleanupIntentRow,
   ): void {
-    const current = reader(intent.sourceId);
+    // unavailable 抛错 → 调用方事务回滚；仅确定性 missing 才允许缺失逻辑（级联）
+    const current = projectionOrNull(reader(intent.sourceId));
     if (intent.operation === 'hard-delete') {
       if (current === null) {
-        // 只以 Source 当前不存在为完成依据（§10.3）。审计先于级联写入
-        //（audit.rule_id 对 rule 是 SET NULL——级联删除后审计存活可追溯）
+        // 只以 Source 当前不存在为完成依据（§10.3）。级联审计先写且 rule_id=null
+        //（§10.1：audits 对 rule 删除行为 CASCADE——null 审计随级联存活可追溯）
         this.insertCascadeAudits(repo, intent, 'hard-delete');
         const cascaded = repo.cascadeDeleteRulesBySource(intent.sourceId);
         if (!cascaded.ok) {
@@ -440,6 +458,23 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
     this.finishIntent(repo, intent, 'complete');
   }
 
+  // 契约要求的审计写入必须检查结果；失败 → 抛错使同一事务整体失败（R1）
+  private writeAudit(
+    repo: WatchRepository,
+    input: {
+      id: string;
+      ruleId: string | null;
+      kind: Parameters<WatchRepository['insertAudit']>[0]['kind'];
+      reasonCode: Parameters<WatchRepository['insertAudit']>[0]['reasonCode'];
+      createdAt: string;
+    },
+  ): void {
+    const result = repo.insertAudit(input);
+    if (!result.ok) {
+      throw new Error(`审计写入失败（${result.code}）`);
+    }
+  }
+
   private insertCascadeAudits(
     repo: WatchRepository,
     intent: SourceCleanupIntentRow,
@@ -447,13 +482,16 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
   ): void {
     const nowIso = this.iso();
     for (const ruleId of Object.keys(intent.affectedRuleState)) {
-      repo.insertAudit({
+      // §10.1：audits 对 rule 删除行为 CASCADE——级联删除审计必须以 rule_id=null
+      // 写入才能随级联存活（删除审计可追溯）；先写审计再级联。
+      this.writeAudit(repo, {
         id: randomUUID(),
-        ruleId: ruleId.length > 0 ? ruleId : null,
+        ruleId: null,
         kind: 'lifecycle-cascade',
         reasonCode,
         createdAt: nowIso,
       });
+      void ruleId;
     }
   }
 
@@ -519,7 +557,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
         throw new Error(`规则协调失败（rule=${rule.id}，${updated.code}）`);
       }
       if (rule.state !== 'paused' && next.state === 'paused' && next.pauseReason !== null) {
-        repo.insertAudit({
+        this.writeAudit(repo, {
           id: randomUUID(),
           ruleId: rule.id,
           kind: 'lifecycle-pause',
@@ -560,7 +598,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
         throw new Error(`规则暂停失败（rule=${rule.id}，${updated.code}）`);
       }
       if (rule.state !== 'paused') {
-        repo.insertAudit({
+        this.writeAudit(repo, {
           id: randomUUID(),
           ruleId: rule.id,
           kind: 'lifecycle-pause',
@@ -590,7 +628,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
         // 直接改动等路径）：任一孤儿一律暂停，零联网保证。
         for (const rule of repo.listRules()) {
           if (rule.state === 'deleted') continue;
-          const current = reader(rule.sourceId);
+          const current = projectionOrNull(reader(rule.sourceId));
           if (current === null) {
             this.pauseSingleRuleSourceDeleted(repo, rule, nowIso);
             continue;
@@ -632,7 +670,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
             throw new Error(`reconciliation 规则协调失败（rule=${rule.id}，${updated.code}）`);
           }
           if (rule.state !== 'paused' && next.state === 'paused' && next.pauseReason !== null) {
-            repo.insertAudit({
+            this.writeAudit(repo, {
               id: randomUUID(),
               ruleId: rule.id,
               kind: 'lifecycle-pause',
@@ -643,7 +681,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
         }
         // 全部成功才删除已解决 intent（schedulerReady 由 Store 置位）
         repo.deleteResolvedIntents();
-        repo.insertAudit({
+        this.writeAudit(repo, {
           id: randomUUID(),
           ruleId: null,
           kind: 'reconciliation',
@@ -653,16 +691,17 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
       });
       return { ok: true, reason: null };
     } catch (err) {
-      // 事务已回滚；写一条独立事务的失败审计（最佳努力）
+      // 事务已回滚；写一条独立事务的失败审计（最佳努力——审计失败不掩盖原始失败）
       try {
         withTransaction(repo.dbHandle, () => {
-          repo.insertAudit({
+          const auditResult = repo.insertAudit({
             id: randomUUID(),
             ruleId: null,
             kind: 'reconciliation',
             reasonCode: 'aborted',
             createdAt: this.iso(),
           });
+          if (!auditResult.ok) throw new Error(`失败审计写入失败（${auditResult.code}）`);
         });
       } catch {
         // 审计失败不掩盖原始失败
@@ -703,7 +742,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
       throw new Error(`规则暂停失败（rule=${rule.id}，${updated.code}）`);
     }
     if (rule.state !== 'paused') {
-      repo.insertAudit({
+      this.writeAudit(repo, {
         id: randomUUID(),
         ruleId: rule.id,
         kind: 'lifecycle-pause',
@@ -726,7 +765,8 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
         const rule = repo.getRule(ruleId);
         if (rule === null) return { status: 'rule-missing' as const };
         if (rule.state === 'deleted') return { status: 'rule-deleted' as const };
-        const current = reader(rule.sourceId);
+        // unavailable 抛错 → 本事务回滚 + Watch unavailable
+        const current = projectionOrNull(reader(rule.sourceId));
         if (current === null) {
           this.pauseSingleRuleSourceDeleted(repo, rule, this.iso());
           return { status: 'source-missing' as const };
@@ -822,7 +862,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
       throw new Error(`规则暂停失败（rule=${rule.id}，${updated.code}）`);
     }
     if (rule.state !== 'paused') {
-      repo.insertAudit({
+      this.writeAudit(repo, {
         id: randomUUID(),
         ruleId: rule.id,
         kind: 'lifecycle-pause',
@@ -863,7 +903,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
       throw new Error(`规则暂停失败（rule=${rule.id}，${updated.code}）`);
     }
     if (rule.state !== 'paused') {
-      repo.insertAudit({
+      this.writeAudit(repo, {
         id: randomUUID(),
         ruleId: rule.id,
         kind: 'lifecycle-pause',
