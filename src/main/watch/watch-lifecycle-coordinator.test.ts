@@ -14,6 +14,7 @@ import { WatchRepository } from './repository/watch-repository';
 import {
   WatchLifecycleCoordinator,
   type SourceProjectionReader,
+  type SourceProjectionReadResult,
 } from './watch-lifecycle-coordinator';
 import { computeSourceLocatorFingerprint } from '../../shared/watch/watch-rule-state';
 import type {
@@ -50,7 +51,15 @@ function projection(overrides: Partial<SourceWatchProjection> = {}): SourceWatch
   };
 }
 
-const reader: SourceProjectionReader = (sourceId) => sources.get(sourceId) ?? null;
+function toReadResult(
+  projection: SourceWatchProjection | undefined,
+): SourceProjectionReadResult {
+  return projection === undefined
+    ? { status: 'missing' as const }
+    : { status: 'found' as const, projection };
+}
+
+const reader: SourceProjectionReader = (sourceId) => toReadResult(sources.get(sourceId));
 
 function bind(): void {
   coordinator.bind(repo, reader);
@@ -235,6 +244,34 @@ describe('prepare（fail-closed 预暂停 + durable intent）', () => {
     expect(coordinator.getState().mode).toBe('unavailable');
     expect(coordinator.prepare([mutation()])).toEqual({ ok: false, reason: 'watch-unavailable' });
   });
+
+  it('D4-R audit 写入失败 → prepare 整体回滚 + unavailable（零部分提交）', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    handle.prepare('DROP TABLE watch_audits').run(); // 规则暂停会触发 audit 写入
+    const m = mutation({
+      operation: 'disable',
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
+    expect(coordinator.prepare([m])).toEqual({ ok: false, reason: 'watch-unavailable' });
+    expect(coordinator.getState().mode).toBe('unavailable');
+    expect(repo.getRule(rule.id)!.state).toBe('enabled'); // 规则零部分修改
+    expect(repo.listSourceCleanupIntents().length).toBe(0); // intent 零写入
+  });
+
+  it('D4-R prepare 读回非法规则行 → unavailable 零写入', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    handle
+      .prepare("UPDATE watch_rules SET schedule_json = 'not-json' WHERE id = ?")
+      .run(rule.id);
+    const m = mutation({
+      operation: 'disable',
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
+    expect(coordinator.prepare([m])).toEqual({ ok: false, reason: 'watch-unavailable' });
+    expect(repo.listSourceCleanupIntents().length).toBe(0);
+  });
 });
 
 describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
@@ -332,6 +369,32 @@ describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
     const before = repo.listAudits().length;
     expect(coordinator.commit([m.mutationId])).toEqual({ ok: true });
     expect(repo.listAudits().length).toBe(before);
+  });
+
+  it('D4-R commit hard-delete + reader unavailable → 绝不级联 + unavailable + intent 保留', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    const m = mutation({ operation: 'hard-delete', before: projection(), after: null });
+    coordinator.prepare([m]);
+    coordinator.bind(repo, () => ({ status: 'unavailable' }));
+    expect(coordinator.commit([m.mutationId])).toEqual({ ok: false, reason: 'watch-unavailable' });
+    expect(coordinator.getState().mode).toBe('unavailable');
+    expect(repo.getRule(rule.id)).not.toBeNull(); // 数据零级联零删除
+    expect(repo.getSourceCleanupIntent(m.mutationId)!.state).toBe('prepared'); // intent 保留
+  });
+
+  it('D4-R abort + reader unavailable → 不恢复 + unavailable + intent 保留', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    const m = mutation({
+      operation: 'disable',
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
+    coordinator.prepare([m]);
+    coordinator.bind(repo, () => ({ status: 'unavailable' }));
+    expect(() => coordinator.abort([m.mutationId])).not.toThrow();
+    expect(coordinator.getState().mode).toBe('unavailable');
+    expect(repo.getSourceCleanupIntent(m.mutationId)!.state).toBe('prepared');
   });
 
   it('abort：Source 仍等于 before → 恢复 prepare 前状态 + intent aborted', () => {
@@ -506,6 +569,22 @@ describe('启动 reconciliation（§10.2 步骤 6 + 崩溃点恢复表）', () =
     ).toBe(true);
   });
 
+  it('D4-R reconciliation + reader unavailable → ok:false 整体回滚 + intent 保留', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    const c1 = freshCoordinator();
+    const m = mutation({
+      operation: 'disable',
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
+    c1.prepare([m]);
+    const c2 = freshCoordinator();
+    const result = c2.reconcileOnStartup(repo, () => ({ status: 'unavailable' }));
+    expect(result.ok).toBe(false);
+    expect(repo.getSourceCleanupIntent(m.mutationId)!.state).toBe('prepared');
+    expect(repo.getRule(rule.id)!.state).toBe('paused'); // prepare 的暂停保留（回滚）
+  });
+
   it('reconciliation 幂等（重跑零变化）', () => {
     const rule = makeRule();
     repo.insertRule(rule);
@@ -550,6 +629,15 @@ describe('run revalidation 端口（§10.3 步骤 5 判定矩阵）', () => {
     expect(coordinator.revalidateRuleSource(rule.id)).toEqual({ status: 'ok', rowVersion: 9 });
     expect(repo.getRule(rule.id)!.sourceRowVersion).toBe(9);
     expect(repo.getRule(rule.id)!.state).toBe('enabled');
+  });
+
+  it('D4-R revalidate + reader unavailable → status unavailable + Watch unavailable 零修改', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    coordinator.bind(repo, () => ({ status: 'unavailable' }));
+    expect(coordinator.revalidateRuleSource(rule.id)).toEqual({ status: 'unavailable' });
+    expect(coordinator.getState().mode).toBe('unavailable');
+    expect(repo.getRule(rule.id)!.state).toBe('enabled'); // 零暂停零写入
   });
 });
 

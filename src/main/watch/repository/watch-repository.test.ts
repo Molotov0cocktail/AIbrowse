@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDb, type DbHandle } from '../../sources/db/sqlite-driver';
 import { runWatchMigrations } from '../db/watch-migrations';
-import { WatchRepository } from './watch-repository';
+import { WatchRepository, WatchRepositoryError } from './watch-repository';
 import type { ChangeEvidencePair, WatchEvent, WatchRule } from '../../../shared/types/watch';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-watch-repo-'));
@@ -109,6 +109,15 @@ function makeItem(overrides: Partial<ChangeEvidencePair> = {}): ChangeEvidencePa
 function count(table: string): number {
   const row = handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number | bigint };
   return Number(row.n);
+}
+
+// D4-R：Event/结果提交的单事务完整身份 CAS 期望值（rule 的当前身份投影）
+function identity(ruleId: string, baselineVersion: number | null = null) {
+  return {
+    sourceId: 'src-1',
+    expectedSourceLocatorFingerprint: FINGERPRINT,
+    expectedBaselineVersion: baselineVersion,
+  };
 }
 
 describe('Rule CRUD + CAS', () => {
@@ -254,14 +263,18 @@ describe('Rule CRUD + CAS', () => {
 });
 
 describe('Baseline CAS（§9.1）', () => {
-  function baselineInput(ruleId: string, expected: number | null, byteLength = 100) {
+  function baselineInput(
+    ruleId: string,
+    expected: number | null,
+    projectionJson = '{"format":"rss2"}',
+  ) {
     return {
       ruleId,
       expectedBaselineVersion: expected,
       projectionType: 'feed' as const,
-      projectionJson: '{"format":"rss2"}',
+      projectionJson,
       contentHash: 'h1',
-      byteLength,
+      byteLength: Buffer.byteLength(projectionJson, 'utf8'),
       finalUrl: 'https://example.com',
       capturedAt: NOW,
       documentId: null,
@@ -297,11 +310,13 @@ describe('Baseline CAS（§9.1）', () => {
   it('单 Baseline 预算：==65536 接受、+1 拒绝（baseline-budget-exceeded）', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    expect(repo.writeBaseline(baselineInput(rule.id, null, 65536))).toEqual({ ok: true });
-    expect(repo.writeBaseline(baselineInput(rule.id, 1, 65537))).toEqual({
-      ok: false,
-      code: 'baseline-budget-exceeded',
-    });
+    // 真实 UTF-8 字节 == 65536（多字节字符参与，字节数与声明一致）
+    const exact = JSON.stringify({ x: '汉'.repeat(2) + 'a'.repeat(65536 - 14) });
+    expect(Buffer.byteLength(exact, 'utf8')).toBe(65536);
+    expect(repo.writeBaseline(baselineInput(rule.id, null, exact))).toEqual({ ok: true });
+    const forged = baselineInput(rule.id, 1, '{}');
+    forged.byteLength = 65537; // 伪造声明 > 单对象上限
+    expect(repo.writeBaseline(forged)).toEqual({ ok: false, code: 'baseline-budget-exceeded' });
   });
 
   it('规则不存在 → rule-not-found', () => {
@@ -410,12 +425,13 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     const result = repo.writeEventTransaction({
       event: makeEvent(rule.id, { itemCount: 2 }),
       items: [makeItem(), makeItem({ itemId: 'it-2', fieldKey: 'link' })],
+      identity: identity(rule.id),
       baseline: {
         expectedBaselineVersion: null,
         projectionType: 'feed',
         projectionJson: '{"format":"rss2"}',
         contentHash: 'h',
-        byteLength: 50,
+        byteLength: 17,
         finalUrl: 'https://example.com',
         capturedAt: NOW,
         documentId: null,
@@ -454,12 +470,13 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     const result = repo.writeEventTransaction({
       event: makeEvent(rule.id),
       items: [makeItem()],
+      identity: identity(rule.id),
       baseline: {
         expectedBaselineVersion: null,
         projectionType: 'feed',
         projectionJson: '{}',
         contentHash: 'h',
-        byteLength: 50,
+        byteLength: 2,
         finalUrl: 'https://example.com',
         capturedAt: NOW,
         documentId: null,
@@ -485,12 +502,13 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
       repo.writeEventTransaction({
         event,
         items: [makeItem()],
+        identity: identity(rule.id),
         baseline: {
           expectedBaselineVersion: null,
           projectionType: 'feed',
           projectionJson: '{}',
           contentHash: 'h',
-          byteLength: 50,
+          byteLength: 2,
           finalUrl: 'https://example.com',
           capturedAt: NOW,
           documentId: null,
@@ -500,12 +518,13 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     const second = repo.writeEventTransaction({
       event: { ...makeEvent(rule.id), idempotencyKey: event.idempotencyKey },
       items: [makeItem()],
+      identity: identity(rule.id, 1),
       baseline: {
         expectedBaselineVersion: 1,
         projectionType: 'feed',
         projectionJson: '{}',
         contentHash: 'h',
-        byteLength: 50,
+        byteLength: 2,
         finalUrl: 'https://example.com',
         capturedAt: NOW,
         documentId: null,
@@ -529,10 +548,10 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     };
     const bytes = Buffer.byteLength(JSON.stringify(item), 'utf8');
     const tight = new WatchRepository(handle, { maxEventEvidenceBytes: bytes });
-    const ok = tight.writeEventTransaction({ event: makeEvent(rule.id), items: [item] });
+    const ok = tight.writeEventTransaction({ event: makeEvent(rule.id), items: [item], identity: identity(rule.id) });
     expect(ok).toEqual({ ok: true });
     const tight2 = new WatchRepository(handle, { maxEventEvidenceBytes: bytes - 1 });
-    const fail = tight2.writeEventTransaction({ event: makeEvent(rule.id), items: [item] });
+    const fail = tight2.writeEventTransaction({ event: makeEvent(rule.id), items: [item], identity: identity(rule.id) });
     expect(fail).toEqual({ ok: false, code: 'event-budget-exceeded' });
   });
 
@@ -540,7 +559,7 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     const rule = makeRule();
     repo.insertRule(rule);
     const tiny = new WatchRepository(handle, { maxDbBytes: 10 });
-    const result = tiny.writeEventTransaction({ event: makeEvent(rule.id), items: [makeItem()] });
+    const result = tiny.writeEventTransaction({ event: makeEvent(rule.id), items: [makeItem()], identity: identity(rule.id) });
     expect(result).toEqual({ ok: false, code: 'db-budget-exceeded' });
   });
 
@@ -551,10 +570,17 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
       repo.writeEventTransaction({
         event: makeEvent(rule.id, { itemCount: 2 }),
         items: [makeItem()],
+        identity: identity(rule.id),
       }),
     ).toEqual({ ok: false, code: 'validation-failed' });
     const hostile = { ...makeItem(), fieldKey: '' };
-    expect(repo.writeEventTransaction({ event: makeEvent(rule.id), items: [hostile] })).toEqual({
+    expect(
+      repo.writeEventTransaction({
+        event: makeEvent(rule.id),
+        items: [hostile],
+        identity: identity(rule.id),
+      }),
+    ).toEqual({
       ok: false,
       code: 'validation-failed',
     });
@@ -564,7 +590,7 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     const rule = makeRule();
     repo.insertRule(rule);
     const event = makeEvent(rule.id);
-    expect(repo.writeEventTransaction({ event, items: [makeItem()] })).toEqual({ ok: true });
+    expect(repo.writeEventTransaction({ event, items: [makeItem()], identity: identity(event.ruleId) })).toEqual({ ok: true });
     handle
       .prepare('UPDATE watch_events SET first_observed_at = ? WHERE id = ?')
       .run('not-a-time', event.id);
@@ -655,7 +681,7 @@ describe('intent 状态机（§10.3）', () => {
 });
 
 describe('级联删除 + Digest tombstone + outbox 清理', () => {
-  it('cascadeDeleteRulesBySource：规则/事件级联、ref → expired、outbox 移除、audit SET NULL 存活', () => {
+  it('cascadeDeleteRulesBySource：规则/事件级联、ref → expired、outbox 移除、audit CASCADE 随规则删除', () => {
     const rule = makeRule();
     repo.insertRule(rule);
     const event = makeEvent(rule.id);
@@ -663,6 +689,7 @@ describe('级联删除 + Digest tombstone + outbox 清理', () => {
       repo.writeEventTransaction({
         event,
         items: [makeItem()],
+        identity: identity(rule.id),
         outbox: [
           {
             id: 'o1',
@@ -706,7 +733,7 @@ describe('级联删除 + Digest tombstone + outbox 清理', () => {
     expect(repo.listDigestEventRefs()).toEqual([
       { digestId: 'd1', eventId: event.id, status: 'expired' },
     ]);
-    expect(count('watch_audits')).toBe(1); // SET NULL 存活
+    expect(count('watch_audits')).toBe(0); // §10.1：删除 Rule CASCADE audits
   });
 });
 
@@ -758,7 +785,7 @@ describe('保留预算（§10.4）', () => {
         firstObservedAt: new Date(base - i * 1000).toISOString(),
         lastObservedAt: new Date(base - i * 1000).toISOString(),
       });
-      expect(repo.writeEventTransaction({ event, items: [makeItem()] })).toEqual({ ok: true });
+      expect(repo.writeEventTransaction({ event, items: [makeItem()], identity: identity(event.ruleId) })).toEqual({ ok: true });
     }
     expect(repo.pruneEventsByRuleLimits(new Date(base).toISOString())).toEqual({
       deleted: 0,
@@ -771,7 +798,7 @@ describe('保留预算（§10.4）', () => {
     expect(count('watch_events')).toBe(200);
     // 91 天前事件 → 时间截止删除
     const ancient = makeEvent(rule.id, { firstObservedAt: oldTime, lastObservedAt: oldTime });
-    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()] })).toEqual({
+    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()], identity: identity(ancient.ruleId) })).toEqual({
       ok: true,
     });
     const pruned = repo.pruneEventsByRuleLimits(new Date(base).toISOString());
@@ -822,7 +849,7 @@ describe('保留预算（§10.4）', () => {
       firstObservedAt: '2026-01-01T00:00:00.000Z',
       lastObservedAt: '2026-01-01T00:00:00.000Z',
     });
-    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()] })).toEqual({
+    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()], identity: identity(ancient.ruleId) })).toEqual({
       ok: true,
     });
     handle
@@ -864,7 +891,7 @@ describe('保留预算（§10.4）', () => {
     const old = makeEvent(rule.id, { firstObservedAt: day31, lastObservedAt: day31 });
     const edge = makeEvent(rule.id, { firstObservedAt: day30, lastObservedAt: day30 });
     for (const event of [old, edge]) {
-      expect(repo.writeEventTransaction({ event, items: [makeItem()] })).toEqual({ ok: true });
+      expect(repo.writeEventTransaction({ event, items: [makeItem()], identity: identity(event.ruleId) })).toEqual({ ok: true });
     }
     repo.pruneEventsByRuleLimits(new Date(base).toISOString());
     expect(repo.getEvent(old.id)).toBeNull();
@@ -885,6 +912,305 @@ describe('审计与诊断', () => {
     expect(audits).toEqual([
       { id: 'a1', ruleId: null, kind: 'reconciliation', reasonCode: 'complete', createdAt: NOW },
     ]);
+  });
+});
+
+describe('D4-R 回归：fail-closed 查询 / 身份 CAS / 字节预算 / audit 白名单', () => {
+  describe('R1 查询与行校验必须严格 fail-closed（不得降级空结果）', () => {
+    it('listRulesBySource SQL 异常必须抛出', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      handle.prepare('DROP TABLE watch_rules').run();
+      expect(() => repo.listRulesBySource('src-1')).toThrow(WatchRepositoryError);
+    });
+
+    it('listRules 读回非法行必须抛出（不得静默跳过）', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      handle.prepare("UPDATE watch_rules SET schedule_json = 'not-json'").run();
+      expect(() => repo.listRules()).toThrow(WatchRepositoryError);
+    });
+
+    it('getRule 读回非法行必须抛出（不得降级 null）', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      handle.prepare("UPDATE watch_rules SET schedule_json = 'not-json' WHERE id = ?").run(rule.id);
+      expect(() => repo.getRule(rule.id)).toThrow(WatchRepositoryError);
+    });
+
+    it('intent 读回非法行必须抛出（get/list/pending 同根因）', () => {
+      repo.insertSourceCleanupIntent({
+        mutationId: 'm1',
+        sourceId: 's1',
+        operation: 'update',
+        beforeProjection: null,
+        afterProjection: null,
+        affectedRuleState: {},
+        state: 'prepared',
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+      handle
+        .prepare("UPDATE source_cleanup_intents SET affected_rule_state_json = 'not-json'")
+        .run();
+      expect(() => repo.getSourceCleanupIntent('m1')).toThrow(WatchRepositoryError);
+      expect(() => repo.listSourceCleanupIntents()).toThrow(WatchRepositoryError);
+      expect(() => repo.listPendingSourceCleanupIntents()).toThrow(WatchRepositoryError);
+    });
+
+    it('合法空结果与 not-found 保持空/ null（不误报）', () => {
+      expect(repo.listRulesBySource('none')).toEqual([]);
+      expect(repo.getRule('ghost')).toBeNull();
+      expect(repo.getSourceCleanupIntent('ghost')).toBeNull();
+      expect(repo.listPendingSourceCleanupIntents()).toEqual([]);
+    });
+  });
+
+  describe('R5 Event 单事务完整身份 CAS', () => {
+    function eventTx(rule: WatchRule, overrides: Record<string, unknown> = {}) {
+      return {
+        event: makeEvent(rule.id),
+        items: [makeItem()],
+        identity: identity(rule.id),
+        baseline: {
+          expectedBaselineVersion: null,
+          projectionType: 'feed' as const,
+          projectionJson: '{}',
+          contentHash: 'h',
+          byteLength: 2,
+          finalUrl: 'https://example.com',
+          capturedAt: NOW,
+          documentId: null,
+        },
+        ...overrides,
+      };
+    }
+
+    it('三者匹配 → 全部落库', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      const result = repo.writeEventTransaction(eventTx(rule));
+      expect(result).toEqual({ ok: true });
+      expect(count('watch_events')).toBe(1);
+      expect(repo.getBaseline(rule.id)!.version).toBe(1);
+    });
+
+    it('sourceId 不匹配 → 零写入（event/items/baseline/outbox/audit 全无）', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      const input = eventTx(rule, {
+        identity: {
+          sourceId: 'other-source',
+          expectedSourceLocatorFingerprint: FINGERPRINT,
+          expectedBaselineVersion: null,
+        },
+      });
+      const result = repo.writeEventTransaction(input);
+      expect(result.ok).toBe(false);
+      expect(count('watch_events')).toBe(0);
+      expect(count('watch_event_items')).toBe(0);
+      expect(repo.getBaseline(rule.id)).toBeNull();
+      expect(count('watch_audits')).toBe(0);
+    });
+
+    it('fingerprint 陈旧 → 零写入', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      const stale = identity(rule.id);
+      stale.expectedSourceLocatorFingerprint = 'f'.repeat(64);
+      expect(repo.writeEventTransaction(eventTx(rule, { identity: stale })).ok).toBe(false);
+      expect(count('watch_events')).toBe(0);
+      expect(repo.getBaseline(rule.id)).toBeNull();
+    });
+
+    it('baselineVersion 陈旧 → 零写入', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      repo.writeBaseline({
+        ruleId: rule.id,
+        expectedBaselineVersion: null,
+        projectionType: 'feed',
+        projectionJson: '{}',
+        contentHash: 'h',
+        byteLength: 2,
+        finalUrl: 'https://example.com',
+        capturedAt: NOW,
+        documentId: null,
+      });
+      const stale = identity(rule.id, 0); // 实际已是 1
+      const result = repo.writeEventTransaction(eventTx(rule, { identity: stale }));
+      expect(result).toEqual({ ok: false, code: 'baseline-conflict' });
+      expect(count('watch_events')).toBe(0);
+      expect(repo.getBaseline(rule.id)!.version).toBe(1);
+    });
+
+    it('规则已删除 → 拒绝零写入', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      handle.prepare("UPDATE watch_rules SET state = 'deleted', pause_reason = 'user'").run();
+      const result = repo.writeEventTransaction(eventTx(rule));
+      expect(result.ok).toBe(false);
+      expect(count('watch_events')).toBe(0);
+    });
+
+    it('事务内 audits 写入失败 → 整体回滚零半数据', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      handle.prepare('DROP TABLE watch_audits').run();
+      const input = eventTx(rule, {
+        audits: [
+          {
+            id: 'a1',
+            ruleId: rule.id,
+            kind: 'baseline-established',
+            reasonCode: 'baseline-established',
+            createdAt: NOW,
+          },
+        ],
+      });
+      const result = repo.writeEventTransaction(input);
+      expect(result.ok).toBe(false);
+      expect(count('watch_events')).toBe(0);
+      expect(count('watch_event_items')).toBe(0);
+      expect(repo.getBaseline(rule.id)).toBeNull();
+    });
+  });
+
+  describe('R6 Baseline 投影真实字节预算', () => {
+    it('多字节 UTF-8：实际字节与声明一致才接受', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      const json = '{"x":"' + '汉'.repeat(10) + '"}';
+      const actual = Buffer.byteLength(json, 'utf8');
+      const ok = repo.writeBaseline({
+        ruleId: rule.id,
+        expectedBaselineVersion: null,
+        projectionType: 'feed',
+        projectionJson: json,
+        contentHash: 'h',
+        byteLength: actual,
+        finalUrl: 'https://example.com',
+        capturedAt: NOW,
+        documentId: null,
+      });
+      expect(ok).toEqual({ ok: true });
+      expect(repo.getBaseline(rule.id)!.byteLength).toBe(actual);
+    });
+
+    it('伪造较小 byteLength → 写入前拒绝（validation-failed）', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      const json = '{"x":"' + '汉'.repeat(10) + '"}';
+      const actual = Buffer.byteLength(json, 'utf8');
+      const forged = repo.writeBaseline({
+        ruleId: rule.id,
+        expectedBaselineVersion: null,
+        projectionType: 'feed',
+        projectionJson: json,
+        contentHash: 'h',
+        byteLength: actual - 1,
+        finalUrl: 'https://example.com',
+        capturedAt: NOW,
+        documentId: null,
+      });
+      expect(forged).toEqual({ ok: false, code: 'validation-failed' });
+      expect(repo.getBaseline(rule.id)).toBeNull();
+    });
+
+    it('实际字节超单对象上限 → baseline-budget-exceeded', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      const over = '{"x":"' + 'a'.repeat(65540) + '"}';
+      const result = repo.writeBaseline({
+        ruleId: rule.id,
+        expectedBaselineVersion: null,
+        projectionType: 'feed',
+        projectionJson: over,
+        contentHash: 'h',
+        byteLength: Buffer.byteLength(over, 'utf8'),
+        finalUrl: 'https://example.com',
+        capturedAt: NOW,
+        documentId: null,
+      });
+      expect(result).toEqual({ ok: false, code: 'baseline-budget-exceeded' });
+    });
+
+    it('writeBaseline 规则级 CAS：deleted 规则拒绝、fingerprint 参数匹配才接受', () => {
+      const rule = makeRule();
+      repo.insertRule(rule);
+      expect(
+        repo.writeBaseline({
+          ruleId: rule.id,
+          expectedBaselineVersion: null,
+          expectedSourceLocatorFingerprint: 'f'.repeat(64),
+          projectionType: 'feed',
+          projectionJson: '{}',
+          contentHash: 'h',
+          byteLength: 2,
+          finalUrl: 'https://example.com',
+          capturedAt: NOW,
+          documentId: null,
+        }),
+      ).toEqual({ ok: false, code: 'identity-conflict' });
+      handle.prepare("UPDATE watch_rules SET state = 'deleted', pause_reason = 'user'").run();
+      expect(
+        repo.writeBaseline({
+          ruleId: rule.id,
+          expectedBaselineVersion: null,
+          projectionType: 'feed',
+          projectionJson: '{}',
+          contentHash: 'h',
+          byteLength: 2,
+          finalUrl: 'https://example.com',
+          capturedAt: NOW,
+          documentId: null,
+        }),
+      ).toEqual({ ok: false, code: 'identity-conflict' });
+    });
+  });
+
+  describe('R7 audit kind/reason 白名单', () => {
+    it('baseline-established 与 rebaseline 可写', () => {
+      expect(
+        repo.insertAudit({
+          id: 'a1',
+          ruleId: null,
+          kind: 'baseline-established',
+          reasonCode: 'baseline-established',
+          createdAt: NOW,
+        }),
+      ).toEqual({ ok: true });
+      expect(
+        repo.insertAudit({
+          id: 'a2',
+          ruleId: null,
+          kind: 'rebaseline',
+          reasonCode: 'rebaseline',
+          createdAt: NOW,
+        }),
+      ).toEqual({ ok: true });
+    });
+
+    it('非白名单 kind/reason 被拒绝', () => {
+      expect(
+        repo.insertAudit({
+          id: 'a3',
+          ruleId: null,
+          kind: 'other' as never,
+          reasonCode: 'complete',
+          createdAt: NOW,
+        }),
+      ).toEqual({ ok: false, code: 'validation-failed' });
+      expect(
+        repo.insertAudit({
+          id: 'a4',
+          ruleId: null,
+          kind: 'reconciliation',
+          reasonCode: 'other' as never,
+          createdAt: NOW,
+        }),
+      ).toEqual({ ok: false, code: 'validation-failed' });
+    });
   });
 });
 

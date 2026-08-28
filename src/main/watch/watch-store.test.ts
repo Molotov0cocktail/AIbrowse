@@ -5,16 +5,31 @@
 // fail-closed（无 hook + 未决 intent → unavailable）、保留/预算清理、
 // invalidateSessionConsentsOnStart、restore 恢复矩阵（严格命名/坏备份/替换/
 // grant 失效）。真实 node:sqlite + 临时目录精确清理。
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { MigrationStep } from '../sources/db/migrations';
 import { openDb, closeDb } from '../sources/db/sqlite-driver';
 import { createConsistentBackup } from '../sources/db/backup';
 import { runWatchMigrations } from './db/watch-migrations';
-import { openWatchStore, restoreWatchStore, WATCH_BACKUP_NAME_PATTERN } from './watch-store';
+import {
+  openWatchStore,
+  pruneWatchBackups,
+  restoreWatchStore,
+  WATCH_BACKUP_NAME_PATTERN,
+} from './watch-store';
 import { WatchRepository } from './repository/watch-repository';
 import type { WatchRule } from '../../shared/types/watch';
 
@@ -401,3 +416,189 @@ function createWatchBackup(dbPath: string, backupsDir: string): { ok: boolean; f
 function buildFakeWatchBackupName(): string {
   return 'watch-backup-2026-01-01T00-00-00-000Z-v1-ffff0001.db';
 }
+
+describe('D4-R：restore post-swap 回滚 + 启动扫描字节一致性', () => {
+  function seedHealthy(): void {
+    const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    if (outcome.mode !== 'normal') throw new Error('seed 装配失败');
+    outcome.repo.insertRule(makeRule({ id: 'keep-rule' }));
+    outcome.repo.dispose();
+  }
+
+  function backupWith(randomHex: string): string {
+    const result = createConsistentBackup(
+      dbPath,
+      backupsDir,
+      1,
+      () => Date.UTC(2026, 7, 28, 0, 0, 0),
+      () => randomHex,
+      { namePrefix: 'watch-backup-', parentLabel: '监控' },
+    );
+    if (!result.ok || result.backupPath === null) throw new Error('备份生成失败');
+    return result.backupPath.slice(result.backupPath.lastIndexOf('\\') + 1);
+  }
+
+  function expectNoSwapResidue(): void {
+    expect(existsSync(`${dbPath}.pre-restore`)).toBe(false);
+    expect(existsSync(`${dbPath}.restore-stage`)).toBe(false);
+    expect(existsSync(`${dbPath}-wal`)).toBe(false);
+    expect(existsSync(`${dbPath}-shm`)).toBe(false);
+  }
+
+  it('备份含非法 JSON 行 → restore 失败 + 原 live 库恢复且字节/数据恒等、可重开', () => {
+    seedHealthy();
+    const good = backupWith('beef0001');
+    void good;
+    // live 库加入增量数据
+    const live = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    if (live.mode !== 'normal') throw new Error('live 装配失败');
+    live.repo.insertRule(makeRule({ id: 'live-only' }));
+    live.repo.dispose();
+    const beforeBytes = readFileSync(dbPath);
+    // 制作污染备份（合法 SQLite 含非法 JSON），再修复 live 库
+    {
+      const h = openDb(dbPath);
+      h.prepare("UPDATE watch_rules SET schedule_json = 'not-json' WHERE id = 'keep-rule'").run();
+      closeDb(h);
+    }
+    const poisoned = backupWith('beef0002');
+    {
+      const h = openDb(dbPath);
+      h.prepare("UPDATE watch_rules SET schedule_json = ? WHERE id = 'keep-rule'").run(
+        '{"kind":"interval","intervalMinutes":60}',
+      );
+      closeDb(h);
+    }
+    expect(readFileSync(dbPath).equals(beforeBytes)).toBe(true); // 修复后 live 库恒等
+    const restored = restoreWatchStore({
+      dbPath,
+      backupsDir,
+      backupFileName: poisoned,
+      reconcile: OK_RECONCILE,
+    });
+    expect(restored.mode).toBe('unavailable');
+    // post-swap 回滚：原 live 库字节恒等、可重开、增量数据保留、零残留
+    expect(readFileSync(dbPath).equals(beforeBytes)).toBe(true);
+    expectNoSwapResidue();
+    const reopened = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(reopened.mode).toBe('normal');
+    if (reopened.mode === 'normal') {
+      expect(reopened.repo.getRule('keep-rule')).not.toBeNull();
+      expect(reopened.repo.getRule('live-only')).not.toBeNull();
+      reopened.repo.dispose();
+    }
+  });
+
+  it('备份超预算（Baseline 声明/实际字节不一致）→ restore 失败 + 原 live 库恢复', () => {
+    seedHealthy();
+    const live = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    if (live.mode !== 'normal') throw new Error('live 装配失败');
+    // 直插一条声明字节与实际字节不一致的 Baseline（合法 SQLite、非法预算行）
+    live.repo.insertRule(makeRule({ id: 'baseline-rule' }));
+    live.repo.dispose();
+    {
+      const h = openDb(dbPath);
+      h.prepare(
+        `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at)
+   VALUES ('baseline-rule', 1, 'feed', '{"a":1}', 'h', 3, 'https://example.com', ?)`,
+      ).run(NOW);
+      closeDb(h);
+    }
+    const poisoned = backupWith('beef0003');
+    {
+      const h = openDb(dbPath);
+      h.prepare('DELETE FROM watch_baselines WHERE rule_id = ?').run('baseline-rule');
+      closeDb(h);
+    }
+    const beforeBytes = readFileSync(dbPath);
+    const restored = restoreWatchStore({
+      dbPath,
+      backupsDir,
+      backupFileName: poisoned,
+      reconcile: OK_RECONCILE,
+    });
+    expect(restored.mode).toBe('unavailable');
+    expect(readFileSync(dbPath).equals(beforeBytes)).toBe(true);
+    expectNoSwapResidue();
+    const reopened = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(reopened.mode).toBe('normal');
+    if (reopened.mode === 'normal') reopened.repo.dispose();
+  });
+
+  it('reconciliation 失败 → restore 失败 + 原 live 库恢复', () => {
+    seedHealthy();
+    const beforeBytes = readFileSync(dbPath);
+    const good = backupWith('beef0004');
+    const restored = restoreWatchStore({
+      dbPath,
+      backupsDir,
+      backupFileName: good,
+      reconcile: () => ({ ok: false, reason: '模拟 reconciliation 失败' }),
+    });
+    expect(restored.mode).toBe('unavailable');
+    expect(readFileSync(dbPath).equals(beforeBytes)).toBe(true);
+    expectNoSwapResidue();
+    const reopened = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(reopened.mode).toBe('normal');
+    if (reopened.mode === 'normal') {
+      expect(reopened.repo.getRule('keep-rule')).not.toBeNull();
+      reopened.repo.dispose();
+    }
+  });
+
+  it('restore 成功路径：pre-restore/stage/WAL-SHM 精确清理', () => {
+    const repo = (() => {
+      const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+      if (outcome.mode !== 'normal') throw new Error('seed 装配失败');
+      outcome.repo.insertRule(makeRule({ id: 'keep-rule' }));
+      return outcome.repo;
+    })();
+    const backup = backupWith('beef0005');
+    repo.dispose();
+    const restored = restoreWatchStore({
+      dbPath,
+      backupsDir,
+      backupFileName: backup,
+      reconcile: OK_RECONCILE,
+    });
+    expect(restored.mode).toBe('normal');
+    if (restored.mode === 'normal') restored.repo.dispose();
+    expectNoSwapResidue();
+  });
+
+  it('启动扫描：Baseline 声明字节与实际字节不一致 → unavailable（原库保留）', () => {
+    const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('normal');
+    if (outcome.mode !== 'normal') return;
+    outcome.repo.insertRule(makeRule({ id: 'r1' }));
+    outcome.repo.dispose();
+    {
+      const h = openDb(dbPath);
+      h.prepare(
+        `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at)
+   VALUES ('r1', 1, 'feed', '{"a":1}', 'h', 3, 'https://example.com', ?)`,
+      ).run(NOW);
+      closeDb(h);
+    }
+    const reopened = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(reopened.mode).toBe('unavailable');
+  });
+
+  it('pruneWatchBackups：集合超 100 MiB → 删最旧至预算内', () => {
+    mkdirSync(backupsDir, { recursive: true });
+    const older = 'watch-backup-2026-08-27T00-00-00-000Z-v1-000000a1.db';
+    const newer = 'watch-backup-2026-08-28T00-00-00-000Z-v1-000000b1.db';
+    const make = (name: string, size: number): void => {
+      const fd = openSync(join(backupsDir, name), 'w');
+      closeSync(fd);
+      truncateSync(join(backupsDir, name), size);
+    };
+    make(older, 60 * 1024 * 1024);
+    make(newer, 60 * 1024 * 1024);
+    expect(pruneWatchBackups(backupsDir, dirname(dbPath), Date.parse(NOW))).toBe(1);
+    expect(existsSync(join(backupsDir, older))).toBe(false);
+    expect(existsSync(join(backupsDir, newer))).toBe(true);
+  });
+});

@@ -16,7 +16,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { app } from 'electron';
-import { logInfo } from './logger';
+import { getCurrentLogFilePath, logInfo } from './logger';
 import { openWatchStore, restoreWatchStore, WATCH_BACKUP_NAME_PATTERN } from './watch/watch-store';
 import { WatchRepository } from './watch/repository/watch-repository';
 import {
@@ -127,6 +127,18 @@ function projection(overrides: Partial<SourceWatchProjection> = {}): SourceWatch
 
 const OK_RECONCILE = (): { ok: boolean; reason: string | null } => ({ ok: true, reason: null });
 
+// D4-R：日志隐私扫描——生产/dev 输出不得包含 Watch 数据库/userData 绝对路径。
+// 只在已初始化日志文件时断言（未落盘 → 跳过并如实记录；console 通道由单测覆盖）。
+function assertLogFreeOf(needle: string, label: string): void {
+  const logPath = getCurrentLogFilePath();
+  if (logPath === '') return;
+  const data = readFileSync(logPath);
+  assert(
+    !data.includes(Buffer.from(needle, 'utf8')),
+    `日志隐私扫描：${label} 不得出现在日志文件（绝对路径泄露）`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // 8.21 Watch store 冒烟（默认矩阵；dev+生产双场景）
 // ---------------------------------------------------------------------------
@@ -145,14 +157,15 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
     repo = outcome.repo;
     const rule = makeRule();
     assert(repo.insertRule(rule).ok, '8.21：规则写入失败');
+    const projectionJson = '{"format":"rss2"}';
     assert(
       repo.writeBaseline({
         ruleId: rule.id,
         expectedBaselineVersion: null,
         projectionType: 'feed',
-        projectionJson: '{"format":"rss2"}',
+        projectionJson,
         contentHash: 'h',
-        byteLength: 40,
+        byteLength: Buffer.byteLength(projectionJson, 'utf8'),
         finalUrl: 'https://example.com',
         capturedAt: NOW,
         documentId: null,
@@ -160,7 +173,18 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
       '8.21：Baseline 写入失败',
     );
     const event = makeEvent(rule.id);
-    assert(repo.writeEventTransaction({ event, items: ONE_ITEM }).ok, '8.21：Event 原子写入失败');
+    assert(
+      repo.writeEventTransaction({
+        event,
+        items: ONE_ITEM,
+        identity: {
+          sourceId: rule.sourceId,
+          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          expectedBaselineVersion: null,
+        },
+      }).ok,
+      '8.21：Event 原子写入失败',
+    );
     repo.dispose();
     repo = null;
 
@@ -184,7 +208,15 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
     ancient.firstObservedAt = '2026-01-01T00:00:00.000Z';
     ancient.lastObservedAt = '2026-01-01T00:00:00.000Z';
     assert(
-      repo.writeEventTransaction({ event: ancient, items: ONE_ITEM }).ok,
+      repo.writeEventTransaction({
+        event: ancient,
+        items: ONE_ITEM,
+        identity: {
+          sourceId: rule.sourceId,
+          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          expectedBaselineVersion: 1,
+        },
+      }).ok,
       '8.21：过期事件写入失败',
     );
     repo.dispose();
@@ -277,6 +309,9 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
     repo = null;
 
     // 5. dispose 幂等已由各 outcome 覆盖（restore 路径 repo.dispose 幂等调用）
+    // D4-R：日志隐私扫描——dev + production 各自执行（本场景临时目录/用户数据路径零出现）
+    assertLogFreeOf(dir, 'Watch 冒烟场景临时目录');
+    assertLogFreeOf(join(app.getPath('temp'), 'aibrowse-smoke-watch-'), 'Watch 冒烟 watch 目录');
     logInfo('smoke', '8.21 D4 Watch store 冒烟全部通过');
   } finally {
     try {
@@ -314,7 +349,10 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
       ['src-1', projection({ sourceId: 'src-1' })],
       ['src-2', projection({ sourceId: 'src-2' })],
     ]);
-    const reader: SourceProjectionReader = (id) => sourcesMap.get(id) ?? null;
+    const reader: SourceProjectionReader = (id) => {
+      const p = sourcesMap.get(id);
+      return p === undefined ? { status: 'missing' as const } : { status: 'found' as const, projection: p };
+    };
     const coordinator = new WatchLifecycleCoordinator({});
     const outcome = openWatchStore({
       dbPath,
@@ -326,14 +364,15 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
     coordinator.bind(outcome.repo, reader);
     const rule = makeRule({ sourceId: 'src-1' });
     assert(outcome.repo.insertRule(rule).ok, 'WATCH set：规则写入失败');
+    const gateProjectionJson = '{"format":"rss2"}';
     assert(
       outcome.repo.writeBaseline({
         ruleId: rule.id,
         expectedBaselineVersion: null,
         projectionType: 'feed',
-        projectionJson: '{"format":"rss2"}',
+        projectionJson: gateProjectionJson,
         contentHash: 'h',
-        byteLength: 40,
+        byteLength: Buffer.byteLength(gateProjectionJson, 'utf8'),
         finalUrl: 'https://example.com',
         capturedAt: NOW,
         documentId: null,
@@ -342,7 +381,15 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
     );
     const event = makeEvent(rule.id);
     assert(
-      outcome.repo.writeEventTransaction({ event, items: ONE_ITEM }).ok,
+      outcome.repo.writeEventTransaction({
+        event,
+        items: ONE_ITEM,
+        identity: {
+          sourceId: rule.sourceId,
+          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          expectedBaselineVersion: null,
+        },
+      }).ok,
       'WATCH set：Event 写入失败',
     );
     // 遗留 queued Run（模拟退出前未终态——check 进程验证 interrupted）
@@ -367,6 +414,9 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
       after: null,
     };
     assert(coordinator.prepare([mutation]).ok, 'WATCH set：hard-delete intent prepare 失败');
+    // D4-R：日志隐私扫描（dev + production 各自执行）
+    assertLogFreeOf(watchDir, 'WATCH 门控 watch 目录');
+    assertLogFreeOf(dbPath, 'WATCH 门控 watch.db 路径');
     logInfo('smoke', 'WATCH set：Rule/Baseline/Event/遗留 Run/未决 intent 已就绪，直接退出');
     return; // app.exit 路径：句柄随进程退出由 OS 释放（不写终态）
   }
@@ -375,7 +425,10 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
   const sourcesMap = new Map<string, SourceWatchProjection>([
     ['src-1', projection({ sourceId: 'src-1', rowVersion: 2 })],
   ]);
-  const reader: SourceProjectionReader = (id) => sourcesMap.get(id) ?? null;
+  const reader: SourceProjectionReader = (id) => {
+    const p = sourcesMap.get(id);
+    return p === undefined ? { status: 'missing' as const } : { status: 'found' as const, projection: p };
+  };
   const coordinator = new WatchLifecycleCoordinator({});
   const outcome = openWatchStore({
     dbPath,
@@ -402,5 +455,8 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
   assert(repo.getBaseline(r1!.id) !== null, 'WATCH check：Baseline 读回');
   assert(repo.listEventsByRule(r1!.id).length === 1, 'WATCH check：Event 读回');
   repo.dispose();
+  // D4-R：日志隐私扫描（dev + production 各自执行）
+  assertLogFreeOf(watchDir, 'WATCH 门控 watch 目录');
+  assertLogFreeOf(dbPath, 'WATCH 门控 watch.db 路径');
   logInfo('smoke', 'WATCH check：读回/interrupted/reconciliation 级联验证通过');
 }

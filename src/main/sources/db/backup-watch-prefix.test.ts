@@ -4,7 +4,16 @@
 // - createConsistentBackup 以 watch 前缀 + 独立目录产出严格命名备份；
 // - 非法前缀 fail-closed 抛错；Sources 缺省调用零变化（既有 backup.test.ts
 //   37 用例零改动全绿）。
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -109,5 +118,145 @@ describe('备份命名前缀参数化（D4；Sources 恒等）', () => {
     const issuedName = result.backupPath!.slice(result.backupPath!.lastIndexOf('\\') + 1);
     expect(issuedName.startsWith('watch-backup-')).toBe(true);
     expect(WATCH_PATTERN.test(issuedName)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D4-R：Watch 备份 100 MiB 集合预算（detailed-design §10.2：备份也受 100 MiB
+// 与最多 5 份/30 天边界）——数量/期限/字节三边界组合，删除顺序确定性。
+// Sources 缺省调用不传 maxTotalBytes → 行为恒等（既有 backup.test.ts 37 用例零改动）。
+// ---------------------------------------------------------------------------
+
+const MAX_BACKUP_BUDGET = 104_857_600; // 100 MiB（与 MAX_WATCH_DB_BYTES 同值）
+
+describe('Watch 备份 100 MiB 集合预算（§10.2）', () => {
+  function makeSparse(dir: string, name: string, size: number): void {
+    const path = join(dir, name);
+    const fd = openSync(path, 'w');
+    closeSync(fd);
+    truncateSync(path, size); // 稀疏文件：lstat.size 精确、创建极快
+  }
+
+  const nameAt = (ts: string, hex: string) => `watch-backup-${ts}-v1-${hex}.db`;
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = Date.UTC(2026, 7, 28, 0, 0, 0);
+
+  it('==100 MiB 恰好全部保留；+1 byte 删最旧（确定性顺序）', () => {
+    const dir = mkdtempSync(join(root, 'budget-eq-'));
+    const older = nameAt('2026-08-27T00-00-00-000Z', '000000a1');
+    const newer = nameAt('2026-08-28T00-00-00-000Z', '000000b1');
+    makeSparse(dir, older, MAX_BACKUP_BUDGET / 2);
+    makeSparse(dir, newer, MAX_BACKUP_BUDGET / 2);
+    let result = pruneBackups(dir, {
+      keepCount: 5,
+      maxAgeMs: 30 * DAY,
+      nowMs: NOW,
+      namePattern: WATCH_PATTERN,
+      maxTotalBytes: MAX_BACKUP_BUDGET,
+    });
+    expect(result.removed).toEqual([]);
+    expect(result.kept.length).toBe(2);
+    // +1 byte：集合超预算 → 删最旧（older），新文件保留
+    const extra = nameAt('2026-08-28T01-00-00-000Z', '000000c1');
+    makeSparse(dir, extra, 1);
+    result = pruneBackups(dir, {
+      keepCount: 5,
+      maxAgeMs: 30 * DAY,
+      nowMs: NOW,
+      namePattern: WATCH_PATTERN,
+      maxTotalBytes: MAX_BACKUP_BUDGET,
+    });
+    expect(result.removed).toEqual([older]);
+    expect(existsSync(join(dir, newer))).toBe(true);
+    expect(existsSync(join(dir, extra))).toBe(true);
+  });
+
+  it('与 max 5/30 天组合：先数量后预算、删除顺序确定性（最旧优先）', () => {
+    const dir = mkdtempSync(join(root, 'budget-combo-'));
+    const names = [1, 2, 3, 4, 5, 6].map((i) =>
+      nameAt(`2026-08-2${i}T00-00-00-000Z`, `000000${i}1`),
+    );
+    // 6 份 × 30 MiB = 180 MiB；max 5 → 数量规则删最旧 t1；预算再删 t2/t3 → 保留 3 份 90 MiB
+    for (const n of names) makeSparse(dir, n, 30 * 1024 * 1024);
+    const result = pruneBackups(dir, {
+      keepCount: 5,
+      maxAgeMs: 30 * DAY,
+      nowMs: NOW,
+      namePattern: WATCH_PATTERN,
+      maxTotalBytes: MAX_BACKUP_BUDGET,
+    });
+    expect(result.removed).toEqual([names[0], names[1], names[2]]);
+    expect(result.kept).toEqual([names[3], names[4], names[5]]);
+    for (const n of result.kept) expect(existsSync(join(dir, n))).toBe(true);
+    for (const n of result.removed) expect(existsSync(join(dir, n))).toBe(false);
+  });
+
+  it('30 天期限与预算组合：超龄先删，再按预算删最旧', () => {
+    const dir = mkdtempSync(join(root, 'budget-age-'));
+    // 40 天前的两份（各 60 MiB，超龄）+ 今天一份 60 MiB → 超龄先删；预算 100 MiB 内保留今天
+    const expiredA = nameAt('2026-07-18T00-00-00-000Z', '000000e1');
+    const expiredB = nameAt('2026-07-19T00-00-00-000Z', '000000e2');
+    const fresh = nameAt('2026-08-28T00-00-00-000Z', '000000f1');
+    makeSparse(dir, expiredA, 60 * 1024 * 1024);
+    makeSparse(dir, expiredB, 60 * 1024 * 1024);
+    makeSparse(dir, fresh, 60 * 1024 * 1024);
+    const result = pruneBackups(dir, {
+      keepCount: 5,
+      maxAgeMs: 30 * DAY,
+      nowMs: NOW,
+      namePattern: WATCH_PATTERN,
+      maxTotalBytes: MAX_BACKUP_BUDGET,
+    });
+    expect(result.removed).toEqual([expiredA, expiredB]);
+    expect(existsSync(join(dir, fresh))).toBe(true);
+  });
+
+  it('无关文件/非链接语义：不匹配命名与目录条目零删除零计数', () => {
+    const dir = mkdtempSync(join(root, 'budget-unrelated-'));
+    const target = nameAt('2026-08-27T00-00-00-000Z', '000000a1');
+    makeSparse(dir, target, MAX_BACKUP_BUDGET);
+    makeSparse(dir, 'unrelated.bin', 200 * 1024 * 1024); // 无关文件不参与预算
+    const result = pruneBackups(dir, {
+      keepCount: 5,
+      maxAgeMs: 30 * DAY,
+      nowMs: NOW,
+      namePattern: WATCH_PATTERN,
+      maxTotalBytes: MAX_BACKUP_BUDGET,
+    });
+    expect(result.removed).toEqual([]); // 100 MiB == 预算：匹配文件保留
+    expect(existsSync(join(dir, 'unrelated.bin'))).toBe(true);
+  });
+
+  it('非法 maxTotalBytes（NaN/负数/非整数）→ 安全空结果零删除', () => {
+    const dir = mkdtempSync(join(root, 'budget-invalid-'));
+    const target = nameAt('2026-08-27T00-00-00-000Z', '000000a1');
+    makeSparse(dir, target, 1);
+    for (const bad of [Number.NaN, -1, 1.5]) {
+      const result = pruneBackups(dir, {
+        keepCount: 5,
+        maxAgeMs: 30 * DAY,
+        nowMs: NOW,
+        namePattern: WATCH_PATTERN,
+        maxTotalBytes: bad,
+      });
+      expect(result.removed).toEqual([]);
+      expect(existsSync(join(dir, target))).toBe(true);
+    }
+  });
+
+  it('Sources 缺省（不传 maxTotalBytes）行为恒等：仅数量/期限生效', () => {
+    const dir = mkdtempSync(join(root, 'budget-sources-'));
+    const names = [1, 2, 3, 4, 5, 6].map((i) =>
+      buildBackupFileName(0, Date.UTC(2026, 7, 28 - (i - 1), 0, 0, 0), () => 'abcd1234'),
+    );
+    for (const n of names) makeSparse(dir, n, 1);
+    const result = pruneBackups(dir, {
+      keepCount: 5,
+      maxAgeMs: 30 * DAY,
+      nowMs: NOW,
+    });
+    // 无字节预算：仅数量规则删最旧 1 份（其余 5 份保留，无论大小）
+    expect(result.removed).toEqual([names[5]]);
+    expect(result.kept.length).toBe(5);
   });
 });

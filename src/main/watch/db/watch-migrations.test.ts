@@ -193,7 +193,7 @@ describe('CHECK 约束数据库层强制（§10.1 枚举列）', () => {
     insertRun('run3', 'k3', 'finished', 'manual');
   });
 
-  it('watch_audits kind/reason_code 非法值被 CHECK 拒绝', () => {
+  it('watch_audits kind/reason_code 非法值被 CHECK 拒绝；baseline 审计类型放行', () => {
     const insertAudit = (kind: string, reasonCode: string) =>
       handle
         .prepare(
@@ -204,6 +204,9 @@ describe('CHECK 约束数据库层强制（§10.1 枚举列）', () => {
     expect(() => insertAudit('other', 'complete')).toThrow();
     expect(() => insertAudit('reconciliation', 'other')).toThrow();
     insertAudit('reconciliation', 'complete');
+    // §9.1：首次成功只写 Baseline + baseline-established audit；手动 rebaseline 记录原因
+    insertAudit('baseline-established', 'baseline-established');
+    insertAudit('rebaseline', 'rebaseline');
   });
 
   it('watch_events event_kind/importance 非法值被 CHECK 拒绝', () => {
@@ -334,27 +337,27 @@ describe('外键与 UNIQUE（§10.1：外键打开）', () => {
     expect(() => insertRun('run2', 'k1')).toThrow();
   });
 
-  it('删除 Rule CASCADE baselines/runs/events/outbox；audits SET NULL 存活', () => {
+it('删除 Rule CASCADE baselines/runs/events/outbox/audits（§10.1）', () => {
     insertRule(handle, 'r1');
     handle
       .prepare(
         `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
    content_hash, byte_length, final_url, captured_at)
-  VALUES ('r1',1,'feed','{}','h',2,'https://example.com','2026-08-28T00:00:00.000Z')`,
+   VALUES ('r1',1,'feed','{}','h',2,'https://example.com','2026-08-28T00:00:00.000Z')`,
       )
       .run();
     handle
       .prepare(
         `INSERT INTO watch_runs (id, rule_id, request_key, status, trigger)
-  VALUES ('run1','r1','k1','queued','scheduled')`,
+   VALUES ('run1','r1','k1','queued','scheduled')`,
       )
       .run();
     handle
       .prepare(
         `INSERT INTO watch_events (id, rule_id, source_id, event_kind, importance,
    idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count)
-  VALUES ('e1','r1','s1','added','normal','ik1','fp1','2026-08-28T00:00:00.000Z',
-   '2026-08-28T00:00:00.000Z',1)`,
+   VALUES ('e1','r1','s1','added','normal','ik1','fp1','2026-08-28T00:00:00.000Z',
+    '2026-08-28T00:00:00.000Z',1)`,
       )
       .run();
     handle
@@ -362,24 +365,24 @@ describe('外键与 UNIQUE（§10.1：外键打开）', () => {
         `INSERT INTO watch_event_items (id, event_id, sequence, item_id, field_key, label,
    before_value_json, after_value_json, before_captured_at, after_captured_at,
    before_final_url, after_final_url)
-  VALUES ('i1','e1',0,'it1','title','标题','{"kind":"absent"}',
-   '{"kind":"present","excerpt":"新","valueHash":"h","normalizedBytes":3,"truncated":false}',
-   '2026-08-28T00:00:00.000Z','2026-08-28T00:00:00.000Z',
-   'https://example.com','https://example.com')`,
+   VALUES ('i1','e1',0,'it1','title','标题','{"kind":"absent"}',
+    '{"kind":"present","excerpt":"新","valueHash":"h","normalizedBytes":3,"truncated":false}',
+    '2026-08-28T00:00:00.000Z','2026-08-28T00:00:00.000Z',
+    'https://example.com','https://example.com')`,
       )
       .run();
     handle
       .prepare(
         `INSERT INTO notification_outbox (id, rule_id, subject_type, subject_id, channel,
    dedupe_key, privacy_json, state, attempts, created_at, updated_at)
-  VALUES ('o1','r1','event','e1','in-app','dk1','{}','pending',0,
-   '2026-08-28T00:00:00.000Z','2026-08-28T00:00:00.000Z')`,
+   VALUES ('o1','r1','event','e1','in-app','dk1','{}','pending',0,
+    '2026-08-28T00:00:00.000Z','2026-08-28T00:00:00.000Z')`,
       )
       .run();
     handle
       .prepare(
         `INSERT INTO watch_audits (id, rule_id, kind, reason_code, created_at)
-  VALUES ('a1','r1','lifecycle-pause','source-disabled','2026-08-28T00:00:00.000Z')`,
+   VALUES ('a1','r1','lifecycle-pause','source-disabled','2026-08-28T00:00:00.000Z')`,
       )
       .run();
     handle.prepare('DELETE FROM watch_rules WHERE id = ?').run('r1');
@@ -390,11 +393,22 @@ describe('外键与 UNIQUE（§10.1：外键打开）', () => {
     expect(count('watch_events')).toEqual({ n: 0 });
     expect(count('watch_event_items')).toEqual({ n: 0 });
     expect(count('notification_outbox')).toEqual({ n: 0 });
-    // audits 用 SET NULL 存活（级联删除审计在 Rule 消失后可追溯）
-    expect(count('watch_audits')).toEqual({ n: 1 });
-    expect(handle.prepare('SELECT rule_id FROM watch_audits WHERE id = ?').get('a1')).toEqual({
-      rule_id: null,
-    });
+    // audits CASCADE：与规则绑定生命周期审计随规则删除；级联删除审计以 rule_id=null 存活
+    expect(count('watch_audits')).toEqual({ n: 0 });
+  });
+
+  it('watch_audits rule_id 为 NULL 的审计在规则删除后存活（级联审计可追溯载体）', () => {
+    insertRule(handle, 'r1');
+    handle
+      .prepare(
+        `INSERT INTO watch_audits (id, rule_id, kind, reason_code, created_at)
+   VALUES ('a-null', NULL, 'lifecycle-cascade','hard-delete','2026-08-28T00:00:00.000Z')`,
+      )
+      .run();
+    handle.prepare('DELETE FROM watch_rules WHERE id = ?').run('r1');
+    expect(
+      handle.prepare('SELECT COUNT(*) AS n FROM watch_audits').get(),
+    ).toEqual({ n: 1 });
   });
 
   it('Event CASCADE items；digest_event_refs.event_id 无外键（tombstone 存活）', () => {

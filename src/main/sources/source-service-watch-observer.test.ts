@@ -202,7 +202,7 @@ describe('prepare/commit/abort 接线矩阵（§10.3）', () => {
     expect(um!.after).toBeNull(); // 逆 add → 级联
     expect(observer.commits).toHaveLength(1);
     const proj = service.getSourceWatchProjection(add.source.id);
-    expect(proj).toBeNull(); // Source 已物理删除
+    expect(proj).toEqual({ status: 'missing' }); // Source 已物理删除（确定性 missing）
   });
 
   it('applyChangeSet：批量作为一个 observer batch（一次 prepare + 一次 commit）', async () => {
@@ -276,7 +276,7 @@ describe('prepare/commit/abort 接线矩阵（§10.3）', () => {
     expect(observer.prepares[0]![0]!.after).toBeNull();
     expect(observer.commits).toHaveLength(1);
     expect(observer.aborts).toHaveLength(0);
-    expect(service.getSourceWatchProjection(add.source.id)).toBeNull();
+    expect(service.getSourceWatchProjection(add.source.id)).toEqual({ status: 'missing' });
   });
 
   it('hard-delete 事务失败（FTS 表被并发破坏）→ abort 恰一次 + 原失败返回', async () => {
@@ -384,8 +384,8 @@ describe('prepare/commit/abort 接线矩阵（§10.3）', () => {
   });
 });
 
-describe('内部窄投影读取端口', () => {
-  it('blocked 亦可见（user-audience）；不存在/非法 id → null', async () => {
+describe('内部窄投影读取端口（三态协议：found/missing/unavailable）', () => {
+  it('blocked 亦可见（user-audience）；不存在/非法 id → missing（确定性）', async () => {
     const add = await service.addManual({
       scope: 'page',
       url: 'https://example.com/blocked',
@@ -394,15 +394,24 @@ describe('内部窄投影读取端口', () => {
     expect(add.ok).toBe(true);
     if (!add.ok) return;
     const proj = service.getSourceWatchProjection(add.source.id);
-    expect(proj).not.toBeNull();
-    expect(proj).toMatchObject({
+    expect(proj.status).toBe('found');
+    if (proj.status !== 'found') return;
+    expect(proj.projection).toMatchObject({
       sourceId: add.source.id,
       rowVersion: 1,
       enabled: true,
       scope: 'page',
       canonicalKey: 'https://example.com/blocked',
     });
-    expect(service.getSourceWatchProjection(randomUUID())).toBeNull();
-    expect(service.getSourceWatchProjection('not-a-uuid')).toBeNull();
+    expect(service.getSourceWatchProjection(randomUUID())).toEqual({ status: 'missing' });
+    expect(service.getSourceWatchProjection('not-a-uuid')).toEqual({ status: 'missing' });
+  });
+
+  it('db 不可用/读取异常 → unavailable（绝不冒充 missing）', async () => {
+    const add = await service.addManual({ scope: 'page', url: 'https://example.com/u' });
+    expect(add.ok).toBe(true);
+    if (!add.ok) return;
+    service.dispose(); // 关闭句柄：读取通道整体不可用
+    expect(service.getSourceWatchProjection(add.source.id)).toEqual({ status: 'unavailable' });
   });
 });
