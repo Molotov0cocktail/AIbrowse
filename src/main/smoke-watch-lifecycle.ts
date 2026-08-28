@@ -12,7 +12,7 @@
 // → 恰一次 catch-up 真实执行 → 显式排水；check 同库重开 → 遗留非终态标 interrupted、
 // 同 requestKey 零重放、新过期 due 恰一次补跑、lastConsumedScheduledFor/nextDueAt
 // 精确断言 → 排水。零真实网络、零真实 Provider。
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { app } from 'electron';
@@ -128,11 +128,11 @@ function buildCoordinator(
   repo: WatchRepository,
   clock: Clock,
   acquisition: WatchAcquisitionPort,
-): WatchRunCoordinator {
+): { coordinator: WatchRunCoordinator; scheduler: WatchScheduler; gate: HostRequestGate } {
   const lifecycle = new WatchLifecycleCoordinator({});
   const reader = makeReader([projection('src-1'), projection('src-2')]);
   lifecycle.bind(repo, reader);
-  const hostGate = new HostRequestGate({ clock });
+  const gate = new HostRequestGate({ clock });
   let coordinator: WatchRunCoordinator | null = null;
   const scheduler = new WatchScheduler({
     clock,
@@ -142,16 +142,38 @@ function buildCoordinator(
     repo,
     revalidator: lifecycle,
     acquisition,
-    hostGate,
+    hostGate: gate,
     scheduler,
     clock,
   });
-  return coordinator;
+  return { coordinator, scheduler, gate };
 }
 
+// 完整关窗排水：coordinator.stop()（stop-admission→abort→drain）+ scheduler.stop()
+//（清 timer/队列）+ gate.clear()（幂等可重复）
+async function shutdownAll(
+  c: WatchRunCoordinator,
+  s: WatchScheduler,
+  g: HostRequestGate,
+): Promise<void> {
+  await c.stop();
+  s.stop();
+  g.clear();
+}
+
+// 真实时钟下 catch-up 含 jitter（≤500ms）+ acquisition/终态处理 → 需等待 ≥1s
 async function settleRealClock(): Promise<void> {
-  for (let i = 0; i < 10; i += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  for (let i = 0; i < 200; i += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+// FakeClock 下逐轮推进 + 冲刷微任务：覆盖 delay-0 到期 timer 与 jitter（≤500ms）
+async function settleFake(clock: FakeClock, steps = 3): Promise<void> {
+  for (let i = 0; i < steps; i += 1) {
+    for (let j = 0; j < 3; j += 1) await Promise.resolve();
+    clock.advanceBy(1000);
+    for (let j = 0; j < 3; j += 1) await Promise.resolve();
   }
 }
 
@@ -166,6 +188,7 @@ export async function runWatchLifecycleSmokeScenario(): Promise<void> {
     // Phase 1：无 Rule 装配零行为
     {
       const dir = join(root, 'no-rule');
+      mkdirSync(dir, { recursive: true });
       const clock = new FakeClock(NOW_MS);
       const outcome = openWatchStore({
         dbPath: join(dir, 'watch.db'),
@@ -174,16 +197,17 @@ export async function runWatchLifecycleSmokeScenario(): Promise<void> {
       });
       assert(outcome.mode === 'normal', '8.22：无 Rule store 应 normal');
       if (outcome.mode !== 'normal') return;
-      const coordinator = buildCoordinator(outcome.repo, clock, new SmokeAcquisition());
+      const { coordinator, scheduler, gate } = buildCoordinator(outcome.repo, clock, new SmokeAcquisition());
       coordinator.start();
       assert(clock.pendingTimerCount() === 0, '8.22：无 Rule 应零 timer');
-      await coordinator.stop();
-      await coordinator.stop(); // 重复 stop 幂等
+      await shutdownAll(coordinator, scheduler, gate);
+      await shutdownAll(coordinator, scheduler, gate); // 重复 stop 幂等
       outcome.repo.dispose();
     }
     // Phase 2：过期 due 恰一次 catch-up + 手动 run 语义 + 关窗停止
     {
       const dir = join(root, 'with-rule');
+      mkdirSync(dir, { recursive: true });
       const dbPath = join(dir, 'watch.db');
       const clock = new FakeClock(NOW_MS);
       const outcome = openWatchStore({
@@ -195,13 +219,11 @@ export async function runWatchLifecycleSmokeScenario(): Promise<void> {
       if (outcome.mode !== 'normal') return;
       const rule = makeRule();
       assert(outcome.repo.insertRule(rule).ok, '8.22：规则写入失败');
-      const coordinator = buildCoordinator(outcome.repo, clock, new SmokeAcquisition());
+      const { coordinator, scheduler, gate } = buildCoordinator(outcome.repo, clock, new SmokeAcquisition());
       coordinator.start();
       assert(clock.pendingTimerCount() === 1, '8.22：过期规则应装载到到期队列（timer 重臂）');
-      // 触发 catch-up（delay-0 timer + jitter ≤500ms）
-      for (let i = 0; i < 3; i += 1) await Promise.resolve();
-      clock.advanceBy(1000);
-      for (let i = 0; i < 3; i += 1) await Promise.resolve();
+      // 触发 catch-up（delay-0 timer + jitter ≤500ms；多轮推进）
+      await settleFake(clock, 4);
       // 恰一次 catch-up：run 已消费且终态写回
       const runs = outcome.repo.dbHandle
         .prepare('SELECT id, request_key, trigger, scheduled_for, status FROM watch_runs WHERE rule_id = ?')
@@ -219,9 +241,7 @@ export async function runWatchLifecycleSmokeScenario(): Promise<void> {
       const manual = coordinator.manualRun(rule.id, 'smoke-manual-1');
       assert(manual.ok === true, '8.22：手动 run 应受理');
       if (manual.ok) {
-        for (let i = 0; i < 3; i += 1) await Promise.resolve();
-        clock.advanceBy(1000);
-        for (let i = 0; i < 3; i += 1) await Promise.resolve();
+        await settleFake(clock, 4);
         const afterManual = outcome.repo.getRule(rule.id)!;
         assert(
           afterManual.nextDueAt === readRule.nextDueAt &&
@@ -230,10 +250,10 @@ export async function runWatchLifecycleSmokeScenario(): Promise<void> {
         );
       }
       // 关窗路径 stop：零新接收、在途 abort、drain、timer 归零、句柄释放
-      await coordinator.stop();
+      await shutdownAll(coordinator, scheduler, gate);
       assert(coordinator.getState().mode === 'stopped', '8.22：stop 后应 stopped');
       assert(clock.pendingTimerCount() === 0, '8.22：stop 后应零 timer');
-      await coordinator.stop(); // 幂等
+      await shutdownAll(coordinator, scheduler, gate); // 幂等
       outcome.repo.dispose();
     }
     // 日志隐私扫描
@@ -280,7 +300,7 @@ export async function runWatchLifecycleGateSet(dbPath: string, backupsDir: strin
   );
   // 生产装配启动调度（确定性 fake acquisition port；真实时钟）
   const acquisition = new SmokeAcquisition();
-  const coordinator = buildCoordinator(repo, createSystemClock(), acquisition);
+  const { coordinator, scheduler, gate } = buildCoordinator(repo, createSystemClock(), acquisition);
   coordinator.start();
   await settleRealClock();
   // 过期 R1 catch-up 恰一次
@@ -296,7 +316,7 @@ export async function runWatchLifecycleGateSet(dbPath: string, backupsDir: strin
   assert(Date.parse(readR1.nextDueAt!) > Date.now(), 'WATCH set（D5）：nextDueAt 已推进');
   assert(acquisition.calls.length === 1, 'WATCH set（D5）：fake port 恰一次调用');
   // 显式排水（stop-admission → abort → drain；未完成行留待 check 标 interrupted）
-  await coordinator.stop();
+  await shutdownAll(coordinator, scheduler, gate);
   repo.dispose();
   logInfo('smoke', 'WATCH set（D5）：过期 catch-up 恰一次已执行并排水，直接退出');
 }
@@ -342,7 +362,7 @@ export async function runWatchLifecycleGateCheck(dbPath: string, backupsDir: str
   const r3 = makeRule({ id: randomUUID(), nextDueAt: new Date(Date.now() - 30 * 60_000).toISOString() });
   assert(repo.insertRule(r3).ok, 'WATCH check（D5）：R3 写入失败');
   const acquisition = new SmokeAcquisition();
-  const coordinator = buildCoordinator(repo, createSystemClock(), acquisition);
+  const { coordinator, scheduler, gate } = buildCoordinator(repo, createSystemClock(), acquisition);
   coordinator.start();
   await settleRealClock();
   const r3Runs = repo.dbHandle
@@ -353,7 +373,7 @@ export async function runWatchLifecycleGateCheck(dbPath: string, backupsDir: str
     r3Runs[0]!.trigger === 'catch-up' && r3Runs[0]!.status === 'finished',
     'WATCH check（D5）：R3 补跑终态',
   );
-  await coordinator.stop();
+  await shutdownAll(coordinator, scheduler, gate);
   repo.dispose();
   logInfo('smoke', 'WATCH check（D5）：interrupted/零重放/新补跑全部通过');
 }

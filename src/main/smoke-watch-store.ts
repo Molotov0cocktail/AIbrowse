@@ -46,6 +46,16 @@ function isPathInside(child: string, parent: string): boolean {
 
 const NOW = '2026-08-28T00:00:00.000Z';
 
+// D5 #S6-044 FIXED 17 机械校准辅助：DB 实际 user_version（schema v2 后为 2）
+function currentDbVersion(path: string): number {
+  const h = openDb(path);
+  try {
+    return (h.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+  } finally {
+    closeDb(h);
+  }
+}
+
 function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
   const sourceId = overrides.sourceId ?? 'src-1';
   return {
@@ -268,10 +278,12 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
 
     // 4. backup/restore：独立 watch-backup 命名 → 修改数据 → 恢复 → 数据回卷
     //    + 全部 Session grant 失效 + 重走 reconciliation
+    // D5 #S6-044 FIXED 17 机械校准：备份版本参数必须等于 DB 实际 user_version
+    //（schema v2 后为 2，不再是硬编码 1）
     const backup = createConsistentBackup(
       dbPath,
       backupsDir,
-      1,
+      currentDbVersion(dbPath),
       () => Date.UTC(2026, 7, 28, 0, 0, 0),
       () => 'beef0001',
       { namePrefix: 'watch-backup-', parentLabel: '监控' },

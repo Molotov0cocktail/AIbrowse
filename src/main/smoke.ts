@@ -13742,6 +13742,7 @@ async function runSrtScenarios(
           // 不放宽 SQL 封闭语义（renderer/preload 零 SQL 断言不变）。
           'watch-repository.ts': '业务 SQL 允许点（编译期常量 + 参数绑定，D4）',
           'smoke-watch-store.ts': 'SMOKE 门控测试设施（D4 8.21/门控；决议 #47 同精神）',
+          'smoke-watch-lifecycle.ts': 'SMOKE 门控测试设施（D5 8.22/门控生命周期；决议 #47 同精神）',
           'source-service.ts': 'Source 生命周期 observer.prepare 调用（§10.3 观察者协议，非 SQL）',
         };
         const sqlHits: string[] = [];
