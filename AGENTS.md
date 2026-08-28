@@ -11,12 +11,12 @@
   多标签页浏览器，用户与 AI 共享同一浏览器会话和登录状态；AI 只能经受限、可审计的
   BrowserController / Tool Layer 操作浏览器，不拥有任意系统权限。
 - **当前 Stage**：Sixth Stage——RSS/Page Watch、确定性变更事件与摘要。正式设计已经独立
-  Reviewer `PASS`，产品实现已从 D1 基座开始。需求见 `Sixth_stage.md`；唯一产品契约源为
+  Reviewer `PASS`，D1–D3 已实现并闭环。需求见 `Sixth_stage.md`；唯一产品契约源为
   `doc/stage6/detailed-design.md`，安全契约源为 `doc/stage6/threat-model.md`，任务契约为
   `doc/stage6/tasks/D1–D11`。具体完成项、当前 HEAD 与下一唯一动作只看
   `doc/tasks/progress.md`。
-- **阶段纪律**：本轮纯设计授权与 D1 logger/Clock 基座已经闭环；下一唯一实施任务看
-  `doc/tasks/progress.md`。D3 的候选解析依赖只有通过资格门后才可安装。
+- **阶段纪律**：本轮纯设计授权与 D1–D3 已闭环；下一唯一实施任务只看
+  `doc/tasks/progress.md`。D3 已经新的独立安全 Reviewer `PASS`。
 - **已完成阶段**：第一阶段浏览器核心、第二阶段 AI 共读、第三阶段 Browser Agent、第四阶段
   Sources、第五阶段 Research 均已通过各自 Exit Gate。历史需求、契约与验收证据分别留在
   对应 Stage 文件、`doc/stage2/`～`doc/stage5/`、任务文档和 Git 中，不在本文件复述执行轮次。
@@ -81,9 +81,9 @@ Event 投影生成可选摘要解释，不能决定是否变化、是否命中�
   main/preload 输出 CJS，preload 必须兼容 `sandbox=true`。
 - 核心工具链不得擅自升级。升级必须先说明理由，验证 typecheck/lint/test/build/Electron
   冒烟，更新长期文档后再提交。
-- Sixth Stage 当前未安装新依赖。D3 只有在资格门全部通过后，才允许精确固定候选
-  `saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1`；任一候选失败必须 REPLAN，
-  不得擅自替换。Provider 适配继续使用原生 fetch + SSE，不引入厂商 SDK。
+- D3 的三个解析依赖已通过资格门并精确安装：`@federicocarboni/saxe@0.8.0`、
+  `parse5-sax-parser@8.0.0`、`parse5@8.0.1`；不得擅自替换或升级。Provider 适配继续使用
+  原生 fetch + SSE，不引入厂商 SDK。
 
 ### 1.3 交付、语言与远程
 
@@ -433,15 +433,16 @@ D:\AIbrowse\
 - Renderer 不使用 `dangerouslySetInnerHTML`，Evidence 下钻显示来源与诚实边界；导出只包含当前
   Table 视图，不包含 Evidence 摘录或任意文件路径。
 
-### 5.6 Watch（正式设计；D1 基座已实现）
+### 5.6 Watch（正式设计；D1–D3 已实现）
 
 - 唯一契约源：`doc/stage6/detailed-design.md`；安全契约：`doc/stage6/threat-model.md`；
   任务契约：`doc/stage6/tasks/D1–D11`。
-- D1 logger/Clock 基座已实现；其余任务状态与下一唯一动作只看 `doc/tasks/progress.md`。
+- D1 logger/Clock、D2 域契约/状态机/条件引擎与 D3 安全 Feed/Public 网络/解析器已实现，
+  并经独立安全 Reviewer `PASS`；其余任务状态与下一唯一动作只看 `doc/tasks/progress.md`。
 - Schedule、采集、Diff、Condition、Event、Evidence、网络边界、Session task-owned Tab、
   Source 观察协议、watch.db 和保留策略均以正式设计为准。
 - old/new Evidence 必须可解释且类型化，不能只保存哈希；AI digest 只解释确定性事件事实。
-- D3 候选解析依赖尚未安装；只有资格门通过后才允许按技术基线精确固定版本。
+- D3 的三个解析依赖已通过资格门并按技术基线精确固定版本。
 
 ## 6. 常用命令
 
@@ -451,7 +452,7 @@ D:\AIbrowse\
 - 本机可能存在全局 `ELECTRON_RUN_AS_NODE=1`，不要改全局值。启动 Electron 前在当前进程清除：
   PowerShell `$env:ELECTRON_RUN_AS_NODE=$null`。
 - Electron 依赖下载需要代理时使用 `NODE_USE_ENV_PROXY=1`、`HTTP_PROXY`、`HTTPS_PROXY`；
-  Sixth Stage 实现当前未获授权；即使进入 D3，也必须先满足正式资格门，不能提前安装候选依赖。
+  D3 的三个解析依赖已通过正式资格门并精确安装；后续依赖变更仍须先获任务授权并通过对应门禁。
 
 ### 6.2 质量与运行
 

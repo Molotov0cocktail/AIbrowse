@@ -10,12 +10,14 @@
 ## 当前状态
 
 - 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
-  D1 logger/Clock 基座、D2 Watch 域契约/状态机/条件引擎均已完成。**用户通过 U01–U31
+  D1–D3 均已完成并关闭。**用户通过 U01–U31
   完成全部需求裁决；正式设计候选在
   `f1a062fe5c0b3ae9f7cfaf8bf634bc78e16c602b` 经新的独立 Reviewer `PASS`。本轮设计范围
   为 `Sixth_stage.md`、`doc/stage6/` 四份设计与 D1–D11 任务契约，零产品代码、零新依赖、
-  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1、D2 均经 Reviewer `PASS`
-  并已关闭，下一唯一实施任务为 D3；D3 候选解析依赖尚未安装，必须先通过资格门。
+  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D3 均经 Reviewer `PASS`
+  并已关闭。D3 的三个解析依赖已通过资格门并精确固定：
+  `@federicocarboni/saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1`；下一唯一
+  实施任务为 D4。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -655,7 +657,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 
 | D1 | logger/Clock 基座与确定性时间边界 | ✅ | 2026-08-26 完成：产品候选 `94cc433`，四轮有界修复 `0c7182b`/`c286b31`/`e3ab456`/`3a750e1`；独立 Reviewer=`PASS`，聚焦 104/104、全量 2312/2312、typecheck/lint/format/build、dev/start 冒烟全部通过；任务遗留 stash 已精确清理；任务文档 doc/stage6/tasks/D1-logger-clock-foundation.md |
 | D2 | Watch 域模型、条件 DSL 与状态机 | ✅ | 2026-08-26 完成：产品候选 `237eafb` + 有界修复 `438a11f`；Reviewer=`PASS`，聚焦 173/173、全量 2440/2440、typecheck/lint/format/build 全部通过；任务文档 doc/stage6/tasks/D2-watch-domain-condition.md |
-| D3 | 安全 Feed/Public 网络与解析器资格门 | ⏳ | 下一唯一实施任务；依赖 D1–D2 已满足；候选依赖尚未安装，任一资格门失败必须 REPLAN；任务文档 doc/stage6/tasks/D3-safe-feed-network-parser.md |
+| D3 | 安全 Feed/Public 网络与解析器资格门 | ✅ | 2026-08-28 完成：实施链 `662ef0b` → `dd3deeb` → `2325077` → `be33291` → `0df9bae` → `e412c12` → `e689484` → `ac579e4`；三个解析依赖资格门通过并精确固定；最终独立安全 Reviewer=`PASS`；聚焦 95/95、Watch 279/279、全量 2725/2725，typecheck/lint/format/build/audit/dev+production smoke 全绿；任务文档 doc/stage6/tasks/D3-safe-feed-network-parser.md |
 | D4 | watch.db、Source 生命周期观察协议与恢复 | ⏳ | 依赖 D1–D3；任务文档 doc/stage6/tasks/D4-watch-store-source-lifecycle.md |
 | D5 | Scheduler、RunCoordinator、预约事务与共享 HostRequestGate | ⏳ | 依赖 D1–D4；任务文档 doc/stage6/tasks/D5-scheduler-run-coordinator.md |
 | D6 | Page region/Session task-owned Tab 投影 | ⏳ | 依赖 D5；old/new Evidence 必须可解释，不能只有哈希；任务文档 doc/stage6/tasks/D6-page-region-session-projection.md |
@@ -675,6 +677,15 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 Sixth Stage 正式设计审核）
+
+- **D3 安全 Feed/Public 网络与解析器资格门验收与关闭（2026-08-28，独立安全
+  Reviewer=`PASS`）**：① 实施链 `662ef0b` → `dd3deeb` → `2325077` → `be33291` →
+  `0df9bae` → `e412c12` → `e689484` → `ac579e4`；最终独立 Reviewer 在精确 HEAD
+  `ac579e41b3b9cef3e4ed535b74674bbdb4beb0ef` 上给出 `PASS`，无 P0–P3 发现。②
+  `@federicocarboni/saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1` 均已通过
+  资格门并精确固定。③ 最终门禁：聚焦 95/95、Watch 279/279、全量 2725/2725；
+  typecheck、lint、format、build、audit、dev 与 production smoke 全绿。④ D3 已关闭；
+  未开始 D4，下一唯一任务为 `doc/stage6/tasks/D4-watch-store-source-lifecycle.md`。
 
 - **D2 Watch 域模型、条件 DSL 与状态机验收与关闭（2026-08-26，Reviewer=`PASS`）**：
   ① baseline `8e10249f062295e1dec8306432dcf460ba8943f3`；产品候选 `237eafb`，有界修复
@@ -3192,11 +3203,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **执行 D3 安全 Feed/Public 网络与解析器资格门。**以 D2 关闭后的 main 为 baseline；先在
-  临时隔离环境完成 `@federicocarboni/saxe@0.8.0` 与
-  `parse5-sax-parser@8.0.0` + `parse5@8.0.1` 双资格门，分别 PASS 后才允许精确安装；任一失败
-  立即 REPLAN。任务只实现 D3 公开 GET/HEAD、DNS/redirect/robots、Feed/Discovery 与公开 HTML
-  流式通道，不开始 Session、Scheduler、watch.db、Event/Digest/UI，不调用 Provider。
+- **规划 D4 watch.db、Source 生命周期观察协议与恢复。**唯一任务文档：
+  `doc/stage6/tasks/D4-watch-store-source-lifecycle.md`。D4 属持久化/跨库高风险任务，先由新的
+  Codex GPT-5.6 Sol Planner 按 Step 0 独立调查并输出 Execution Contract；本轮尚未开始 D4 实现。
 
 ## 第一阶段验收未完成项
 
