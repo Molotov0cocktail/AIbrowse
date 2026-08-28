@@ -70,11 +70,25 @@ import { DatabaseSync } from 'node:sqlite';
 
 // 严格命名模式（决议 #89）：主进程生成的时间戳 + 迁移前版本 + 随机后缀。
 // 例：sources-backup-2026-08-15T09-12-33-456Z-v0-a1b2c3d4.db
-export const BACKUP_NAME_PATTERN =
-  /^sources-backup-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d{3})?Z)-v(\d+)-[0-9a-f]{8}\.db$/;
+// D4 最小泛化：前缀参数化（Watch 独立命名 watch-backup-…；Sources 前缀与行为
+// 恒等——既有测试零改动通过）。
+const BACKUP_PREFIX_PATTERN = /^[a-z0-9]+-backup-$/i;
+
+export const BACKUP_NAME_PATTERN = buildBackupNamePattern('sources-backup-');
 export const BACKUP_KEEP_COUNT = 5; // 最多保留最新 5 个（决议 #89）
 export const BACKUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 超过 30 天即清理（决议 #89）
 const BACKUP_NAME_RETRY = 5; // 目标名碰撞时重新生成新名的最大次数（fail-closed 上界）
+
+// 从受控前缀生成严格命名模式（前缀经正则转义——非受控字符不可能成为匹配语义）
+export function buildBackupNamePattern(prefix: string): RegExp {
+  if (typeof prefix !== 'string' || !BACKUP_PREFIX_PATTERN.test(prefix)) {
+    throw new Error(`备份命名前缀非法（必须为 <标识>-backup- 形态）：${String(prefix)}`);
+  }
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `^${escaped}(\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}(?:-\\d{3})?Z)-v(\\d+)-[0-9a-f]{8}\\.db$`,
+  );
+}
 
 const SQLITE_MAGIC = Buffer.from('SQLite format 3\0', 'latin1');
 const SQL_VACUUM_INTO = 'VACUUM INTO ?'; // 路径参数绑定（实测支持；决议 #86）
@@ -85,14 +99,21 @@ export function buildBackupFileName(
   version: number,
   nowMs: number,
   randomHex: () => string = () => randomBytes(4).toString('hex'),
+  prefix: string = 'sources-backup-',
 ): string {
+  if (typeof prefix !== 'string' || !BACKUP_PREFIX_PATTERN.test(prefix)) {
+    throw new Error(`备份命名前缀非法（必须为 <标识>-backup- 形态）：${String(prefix)}`);
+  }
   const ts = new Date(nowMs).toISOString().replace(/[:.]/g, '-');
-  return `sources-backup-${ts}-v${version}-${randomHex()}.db`;
+  return `${prefix}${ts}-v${version}-${randomHex()}.db`;
 }
 
 // 从严格命名解析时间戳（决议 #89 清理排序/年龄判定；解析失败 → null 不处理）
-export function parseBackupTimestamp(fileName: string): number | null {
-  const match = BACKUP_NAME_PATTERN.exec(fileName);
+export function parseBackupTimestamp(
+  fileName: string,
+  pattern: RegExp = BACKUP_NAME_PATTERN,
+): number | null {
+  const match = pattern.exec(fileName);
   if (match === null) return null;
   const parts = match[1]!.split(/[TZ-]/).map((p) => Number(p));
   // 形如 [y, m, d, h, mm, s(, ms)]
@@ -113,8 +134,9 @@ export function parseBackupTimestamp(fileName: string): number | null {
 export function validateBackupTarget(
   backupsDir: string,
   fileName: string,
+  pattern: RegExp = BACKUP_NAME_PATTERN,
 ): { ok: true; path: string } | { ok: false; reason: string } {
-  if (typeof fileName !== 'string' || !BACKUP_NAME_PATTERN.test(fileName)) {
+  if (typeof fileName !== 'string' || !pattern.test(fileName)) {
     return { ok: false, reason: '备份文件名不符合严格命名规范' };
   }
   if (typeof backupsDir !== 'string' || !isAbsolute(backupsDir)) {
@@ -376,14 +398,22 @@ export function createConsistentBackup(
   version: number,
   nowMs: () => number,
   randomHex?: () => string,
+  options: { namePrefix?: string; parentLabel?: string } = {},
 ): BackupResult {
-  const basic = validateBackupTarget(backupsDir, buildBackupFileName(version, nowMs(), randomHex));
+  const namePrefix = options.namePrefix ?? 'sources-backup-';
+  const parentLabel = options.parentLabel ?? '信源';
+  const pattern = buildBackupNamePattern(namePrefix);
+  const basic = validateBackupTarget(
+    backupsDir,
+    buildBackupFileName(version, nowMs(), randomHex, namePrefix),
+    pattern,
+  );
   if (!basic.ok) return { ok: false, backupPath: null, reason: basic.reason };
-  // 目录真实路径校验：backups 解析后必须仍位于源库目录（Sources 目录）内
+  // 目录真实路径校验：backups 解析后必须仍位于源库目录内
   const sourcesReal = resolveRealPathBest(dirname(dbPath));
   const backupsReal = resolveRealPathBest(backupsDir);
   if (!isPathInside(backupsReal, sourcesReal)) {
-    return { ok: false, backupPath: null, reason: '备份目录必须位于信源数据目录内' };
+    return { ok: false, backupPath: null, reason: `备份目录必须位于${parentLabel}数据目录内` };
   }
   try {
     mkdirSync(backupsReal, { recursive: true });
@@ -422,7 +452,8 @@ export function createConsistentBackup(
   for (let attempt = 0; attempt < BACKUP_NAME_RETRY; attempt += 1) {
     const candidate = validateBackupTarget(
       backupsReal,
-      buildBackupFileName(version, nowMs(), randomHex),
+      buildBackupFileName(version, nowMs(), randomHex, namePrefix),
+      pattern,
     );
     if (!candidate.ok) {
       cleanupStaging();
@@ -457,11 +488,18 @@ export interface PruneBackupsResult {
 // symlink/junction 时安全空结果）。
 export function pruneBackups(
   backupsDir: string,
-  options: { keepCount?: number; maxAgeMs?: number; nowMs?: number; sourcesDir?: string } = {},
+  options: {
+    keepCount?: number;
+    maxAgeMs?: number;
+    nowMs?: number;
+    sourcesDir?: string;
+    namePattern?: RegExp; // D4 最小泛化：Watch 独立命名模式（缺省 Sources 恒等）
+  } = {},
 ): PruneBackupsResult {
   const keepCount = options.keepCount ?? BACKUP_KEEP_COUNT;
   const maxAgeMs = options.maxAgeMs ?? BACKUP_MAX_AGE_MS;
   const nowMs = options.nowMs ?? Date.now();
+  const pattern = options.namePattern ?? BACKUP_NAME_PATTERN;
   // 参数边界验证（fail-closed）：非有限/负数/非整数参数拒绝处理——安全空结果，
   // 绝不因异常参数触发批量误删
   if (
@@ -496,7 +534,7 @@ export function pruneBackups(
     return { removed: [], kept: [] }; // 枚举失败 → 安全空结果
   }
   const candidates = entries
-    .filter((name) => BACKUP_NAME_PATTERN.test(name))
+    .filter((name) => pattern.test(name))
     .filter((name) => {
       try {
         const st = lstatSync(join(realBackups, name));
@@ -505,7 +543,7 @@ export function pruneBackups(
         return false; // 已消失/不可达 → 不处理
       }
     })
-    .map((name) => ({ name, ts: parseBackupTimestamp(name) ?? 0 }))
+    .map((name) => ({ name, ts: parseBackupTimestamp(name, pattern) ?? 0 }))
     .sort((a, b) => (a.ts !== b.ts ? a.ts - b.ts : a.name.localeCompare(b.name)));
   const removed: string[] = [];
   const kept: string[] = [];
