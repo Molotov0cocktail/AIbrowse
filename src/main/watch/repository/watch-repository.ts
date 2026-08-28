@@ -30,7 +30,11 @@ import {
   type WatchRunOutcome,
 } from '../../../shared/types/watch';
 import { validateFeedTarget, validatePageTarget } from '../../../shared/watch/watch-targets';
-import { validateWatchSchedule } from '../../../shared/watch/watch-rule-state';
+import {
+  transitionRuleState,
+  validateWatchSchedule,
+  type HealthPauseReason,
+} from '../../../shared/watch/watch-rule-state';
 import { utf8ByteLength } from '../../../shared/watch/watch-budget';
 import {
   WATCH_AUDIT_KINDS,
@@ -59,6 +63,7 @@ import {
 export type WatchErrorCode =
   | 'rule-not-found'
   | 'rule-state-conflict'
+  | 'rule-already-running'
   | 'baseline-conflict'
   | 'baseline-budget-exceeded'
   | 'duplicate-request-key'
@@ -107,6 +112,11 @@ export interface WatchRepositoryOptions {
 
 type OkResult = { ok: true };
 export type WatchResult = OkResult | { ok: false; code: WatchErrorCode };
+
+/** reservation 结果（§4.2）：ok 时携带 runId；手动复用当前 run 时 reused=true。 */
+export type ReserveRunResult =
+  | { ok: true; runId: string; reused?: boolean }
+  | { ok: false; code: WatchErrorCode };
 
 // ---------------------------------------------------------------------------
 // 编译期 SQL 常量（全部参数绑定；无动态拼接）
@@ -171,6 +181,18 @@ const SQL_TRANSITION_RUN = `UPDATE watch_runs
   SET status = ?, started_at = ?, finished_at = ?, outcome_json = ?, health_json = ?,
       response_metadata_json = ?
   WHERE id = ? AND status = ?`;
+
+// D5 reservation（§4.2/FIXED DECISIONS 1）：同 Rule 无 queued|running、规则 enabled
+// 且 next_due_at 与 expected 未变的 CAS 下，单事务 INSERT queued Run + 消费
+// scheduledFor + 推进 nextDueAt（三写全有或全无）。
+const SQL_SELECT_ACTIVE_RUN_BY_RULE = `SELECT id FROM watch_runs
+  WHERE rule_id = ? AND status IN ('queued','running') ORDER BY id ASC LIMIT 1`;
+const SQL_UPDATE_RULE_RESERVATION = `UPDATE watch_rules
+  SET last_consumed_scheduled_for = ?, next_due_at = ?, last_daily_local_date = ?, updated_at = ?
+  WHERE id = ? AND state = 'enabled' AND next_due_at = ?`;
+const SQL_UPDATE_RULE_FAILURE_STATE = `UPDATE watch_rules
+  SET consecutive_failures = ?, backoff_until = ?, updated_at = ? WHERE id = ?`;
+const SQL_SELECT_RULE_STATE_ONLY = 'SELECT state FROM watch_rules WHERE id = ?';
 
 const SQL_INSERT_AUDIT = `INSERT INTO watch_audits (id, rule_id, kind, reason_code, created_at)
   VALUES (?, ?, ?, ?, ?)`;
@@ -956,6 +978,229 @@ export class WatchRepository {
       return JSON.parse(value);
     } catch {
       return null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // D5 reservation/终态（§4.2、FIXED DECISIONS 1/7）：三写单事务原子 + 运行终态+
+  // 审计同事务。reservation 提交后任何失败/pause/abort/崩溃不回拨 nextDueAt、
+  // 不重放同 requestKey；提交前崩溃三者全无，下次启动只补跑一次。
+  // -------------------------------------------------------------------------
+
+  /**
+   * 计划 reservation（§4.2 步骤 1–4）：单事务——
+   * 1. 复验 Rule enabled、无同 Rule queued|running、next_due_at=expected 未变（CAS）；
+   * 2. INSERT queued Run（requestKey、trigger、scheduledFor=消费前 nextDueAt）；
+   * 3. 写 last_consumed_scheduled_for=scheduledFor、推进 next_due_at=advanced、
+   *    daily 同写 last_daily_local_date=advancedLastDailyLocalDate、updated_at。
+   * 三写要么全有要么全无；事务失败时三者均不改变（调用方据此使 Watch unavailable
+   * 或按 conflict 跳过——已消费 slot 不重放）。
+   */
+  reserveScheduledRun(input: {
+    ruleId: string;
+    runId: string;
+    requestKey: string;
+    trigger: 'scheduled' | 'catch-up';
+    scheduledFor: string;
+    expectedNextDueAt: string;
+    advancedNextDueAt: string;
+    advancedLastDailyLocalDate: string | null;
+    nowIso: string;
+  }): ReserveRunResult {
+    this.ensureOpen();
+    try {
+      return withTransaction(this.handle, () => {
+        const active = this.handle.prepare(SQL_SELECT_ACTIVE_RUN_BY_RULE).get(input.ruleId);
+        if (active !== undefined) {
+          return { ok: false, code: 'rule-already-running' as const };
+        }
+        const updated = this.handle
+          .prepare(SQL_UPDATE_RULE_RESERVATION)
+          .run(
+            input.scheduledFor,
+            input.advancedNextDueAt,
+            input.advancedLastDailyLocalDate,
+            input.nowIso,
+            input.ruleId,
+            input.expectedNextDueAt,
+          );
+        if (Number(updated.changes) === 0) {
+          const exists = this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(input.ruleId);
+          if (exists === undefined) return { ok: false, code: 'rule-not-found' as const };
+          return { ok: false, code: 'rule-state-conflict' as const };
+        }
+        this.handle
+          .prepare(SQL_INSERT_RUN)
+          .run(input.runId, input.ruleId, input.requestKey, input.trigger, input.scheduledFor);
+        return { ok: true, runId: input.runId };
+      });
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  /**
+   * 手动 reservation（§4.2 末段/FIXED DECISIONS 6）：单事务——
+   * 1. 复验 Rule 非 deleted 且 state=enabled（paused/deleted 受控拒绝，不绕安全暂停）；
+   * 2. 已有同 Rule queued|running → 返回当前 runId（复用当前 run，零二次排队）；
+   * 3. 否则 INSERT queued Run（requestKey=唯一 requestId、trigger='manual'、
+   *    scheduledFor=null）。零调度字段写入（不移锚点、不改 lastConsumed/lastDailyLocalDate）。
+   */
+  reserveManualRun(input: {
+    ruleId: string;
+    runId: string;
+    requestKey: string;
+    nowIso: string;
+  }): ReserveRunResult {
+    this.ensureOpen();
+    try {
+      return withTransaction(this.handle, () => {
+        const ruleRow = this.handle.prepare(SQL_SELECT_RULE_STATE_ONLY).get(input.ruleId) as
+          | { state: string }
+          | undefined;
+        if (ruleRow === undefined) return { ok: false, code: 'rule-not-found' as const };
+        if (ruleRow.state !== 'enabled') {
+          return { ok: false, code: 'rule-state-conflict' as const };
+        }
+        const active = this.handle.prepare(SQL_SELECT_ACTIVE_RUN_BY_RULE).get(input.ruleId) as
+          | { id: string }
+          | undefined;
+        if (active !== undefined) {
+          return { ok: true, runId: active.id, reused: true };
+        }
+        this.handle
+          .prepare(SQL_INSERT_RUN)
+          .run(input.runId, input.ruleId, input.requestKey, 'manual', null);
+        return { ok: true, runId: input.runId, reused: false };
+      });
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  /**
+   * 运行终态事务（§10.3 步骤 5 结果提交/FIXED DECISIONS 1/7）：单事务——
+   * 1. transitionRun(running → finished, outcome/health/finishedAt)；
+   * 2. 写规则 consecutive_failures/backoff_until/updated_at；
+   * 3. 写 runAudit（kind='run'，reason=调用方映射的闭合码）——每运行终态恰好一条；
+   * 4. healthPause 且规则当前 enabled → 经 transitionRuleState 健康暂停 CAS
+   *    （state→paused、pauseReason→reason）+ 恰一条 lifecycle-pause 审计；已暂停
+   *    重复零审计。
+   * 任一失败整体回滚（D4-R 审计事务化纪律）；提交后不回拨/不重放。
+   */
+  finalizeRun(input: {
+    runId: string;
+    ruleId: string;
+    outcome: WatchRunOutcome;
+    health: WatchHealthSnapshot | null;
+    consecutiveFailures: number;
+    backoffUntil: string | null;
+    runAudit: {
+      id: string;
+      reasonCode: WatchAuditReasonCode;
+      createdAt: string;
+    };
+    healthPause?: {
+      reason: HealthPauseReason;
+      audit: { id: string; createdAt: string };
+    };
+  }): WatchResult {
+    this.ensureOpen();
+    if (
+      !Number.isInteger(input.consecutiveFailures) ||
+      input.consecutiveFailures < 0 ||
+      input.consecutiveFailures > 100_000
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
+    if (input.backoffUntil !== null && !Number.isFinite(Date.parse(input.backoffUntil))) {
+      return { ok: false, code: 'validation-failed' };
+    }
+    try {
+      withTransaction(this.handle, () => {
+        const nowIso = this.nowIso();
+        const transition = this.transitionRun(input.runId, 'running', {
+          status: 'finished',
+          finishedAt: nowIso,
+          outcome: input.outcome,
+          health: input.health,
+        });
+        if (!transition.ok) throw new TxnAbortError(transition.code);
+        const ruleUpdate = this.handle
+          .prepare(SQL_UPDATE_RULE_FAILURE_STATE)
+          .run(input.consecutiveFailures, input.backoffUntil, nowIso, input.ruleId);
+        if (Number(ruleUpdate.changes) === 0) {
+          const exists = this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(input.ruleId);
+          if (exists === undefined) throw new TxnAbortError('rule-not-found');
+          // 规则已删除（级联删除本运行行已发生）：零写入仍为合法终态
+        }
+        // run 审计（每运行终态恰一条；kind='run'）
+        if (!isIn('run', AUDIT_KINDS) || !isIn(input.runAudit.reasonCode, AUDIT_REASON_CODES)) {
+          throw new TxnAbortError('validation-failed');
+        }
+        this.handle
+          .prepare(SQL_INSERT_AUDIT)
+          .run(
+            input.runAudit.id,
+            input.ruleId,
+            'run',
+            input.runAudit.reasonCode,
+            input.runAudit.createdAt,
+          );
+        if (input.healthPause !== undefined) {
+          const ruleRow = this.handle.prepare(SQL_SELECT_RULE_STATE_ONLY).get(input.ruleId) as
+            | { state: string }
+            | undefined;
+          // 仅 enabled→paused 迁移写一条健康暂停审计；已暂停/已删除重复零审计。
+          // enabled 规则必 desiredEnabled=true（状态机不变量），健康暂停保留用户意图。
+          if (ruleRow !== undefined && ruleRow.state === 'enabled') {
+            const next = transitionRuleState(
+              { state: 'enabled', pauseReason: null, desiredEnabled: true },
+              { kind: 'health-pause', reason: input.healthPause.reason },
+              { sourceExists: true, sourceEnabled: true, locatorUnchanged: true },
+            );
+            const current = this.getRuleStateFields(input.ruleId);
+            if (current === null) throw new TxnAbortError('rule-not-found');
+            const cas = this.updateRuleCoordination(
+              input.ruleId,
+              {
+                state: current.state,
+                pauseReason: current.pauseReason,
+                sourceRowVersion: current.sourceRowVersion,
+                sourceLocatorFingerprint: current.sourceLocatorFingerprint,
+              },
+              {
+                state: next.state,
+                pauseReason: next.pauseReason,
+                sourceRowVersion: current.sourceRowVersion,
+                sourceLocatorFingerprint: current.sourceLocatorFingerprint,
+              },
+              nowIso,
+            );
+            if (!cas.ok) throw new TxnAbortError(cas.code);
+            if (
+              !isIn('lifecycle-pause', AUDIT_KINDS) ||
+              !isIn(input.healthPause.reason, AUDIT_REASON_CODES)
+            ) {
+              throw new TxnAbortError('validation-failed');
+            }
+            this.handle
+              .prepare(SQL_INSERT_AUDIT)
+              .run(
+                input.healthPause.audit.id,
+                input.ruleId,
+                'lifecycle-pause',
+                input.healthPause.reason,
+                input.healthPause.audit.createdAt,
+              );
+          }
+        }
+      });
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof TxnAbortError) return { ok: false, code: err.code };
+      logWarn('watch', '运行终态事务异常（已整体回滚）', err);
+      return { ok: false, code: this.translate(err).code };
     }
   }
 
