@@ -71,6 +71,7 @@ class FakeAcquisition implements WatchAcquisitionPort {
   hang = false;
   registerGate = false;
   hostGate: HostRequestGate | null = null;
+  abortObserved = false;
   private hostConcurrent = new Map<string, number>();
   readonly maxHostConcurrent = new Map<string, number>();
   private globalConcurrent = 0;
@@ -95,8 +96,17 @@ class FakeAcquisition implements WatchAcquisitionPort {
       Math.max(this.maxHostConcurrent.get(input.hostKey) ?? 0, hc),
     );
     if (this.hang) {
-      // 永不自行结算：仅依赖 Coordinator 的 raceWithAbort（abort 时受控失败）
-      return new Promise<WatchAcquisitionResult>(() => {});
+      // 永不自行结算：仅依赖 Coordinator 的 raceWithAbort（abort 时受控失败）；
+      // 观察 abort 信号确实到达在途 port
+      return new Promise<WatchAcquisitionResult>(() => {
+        input.signal.addEventListener(
+          'abort',
+          () => {
+            this.abortObserved = true;
+          },
+          { once: true },
+        );
+      });
     }
     await Promise.resolve();
     this.hostConcurrent.set(input.hostKey, hc - 1);
@@ -669,6 +679,114 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       h.repo.dispose();
       closeDb(h.repo.dbHandle);
       rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('M5 生命周期（§4.4/FIXED 12：stop-admission→abort→drain→close 幂等）', () => {
+  it('M5① stop 后新提交全受控拒绝（tick/manual）', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      await h.coordinator.stop();
+      expect(h.coordinator.getState().mode).toBe('stopped');
+      const fired: string[] = [];
+      h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
+      expect(fired.length).toBe(0);
+      expect(h.repo.dbHandle.prepare('SELECT COUNT(*) AS n FROM watch_runs').get()).toEqual({ n: 0 });
+      expect(h.coordinator.manualRun(rule.id, 'm1')).toEqual({ ok: false, reason: 'stopped' });
+    } finally {
+      h.repo.dispose();
+      closeDb(h.repo.dbHandle);
+      rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('M5②③④ abort 信号到达每个在途；drain 后 active/pending 归零、timer 归零、stop 幂等', async () => {
+    const h = setup();
+    try {
+      const rules = [
+        makeRule(),
+        makeRule({ id: randomUUID(), feedUrl: 'https://other.example.com/rss.xml' }),
+      ];
+      for (const r of rules) expect(h.repo.insertRule(r).ok).toBe(true);
+      h.acquisition.hang = true; // 两个在途均挂起
+      h.coordinator.handleDue(rules.map((r) => ({ ruleId: r.id, trigger: 'scheduled' })));
+      await Promise.resolve();
+      h.clock.advanceBy(1_000); // 越过 jitter，让 acquisition 实际开始（hang）
+      for (let j = 0; j < 3; j += 1) await Promise.resolve();
+      expect(h.acquisition.calls.length).toBe(2); // 两个 acquisition 均已开始
+      expect(h.coordinator.activeRunCount()).toBe(2);
+      await h.coordinator.stop(); // stop-admission → abort → drain
+      expect(h.acquisition.abortObserved).toBe(true); // abort 信号到达在途 port
+      expect(h.coordinator.activeRunCount()).toBe(0); // drain 完成
+      expect(h.coordinator.pendingRunCount()).toBe(0);
+      expect(h.coordinator.getState().mode).toBe('stopped');
+      // 在途未写终态（退出路径留待 interrupted）
+      for (const r of rules) {
+        const run = h.repo.dbHandle
+          .prepare('SELECT status FROM watch_runs WHERE rule_id = ?')
+          .get(r.id) as { status: string };
+        expect(run.status).toBe('running');
+      }
+      expect(h.clock.pendingTimerCount()).toBe(0); // 全部 timer 清除
+      await h.coordinator.stop(); // 二次 stop 幂等
+      await h.coordinator.stop();
+      expect(h.coordinator.getState().mode).toBe('stopped');
+    } finally {
+      h.repo.dispose();
+      closeDb(h.repo.dbHandle);
+      rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('M5⑤ 排水后重启：遗留 running 恰标 interrupted 一次、已消费 slot 零重放', async () => {
+    const dir = mkdtempSync(join(root, 'm5-restart-'));
+    const dbPath = join(dir, 'watch.db');
+    try {
+      const handle = openDb(dbPath);
+      runWatchMigrations(handle);
+      const repo = new WatchRepository(handle);
+      const clock = new FakeClock(NOW_MS);
+      const hostGate = new HostRequestGate({ clock });
+      const acquisition = new FakeAcquisition();
+      const scheduler = new FakeScheduler();
+      const coordinator = new WatchRunCoordinator({
+        repo,
+        revalidator: new FakeRevalidator(),
+        acquisition,
+        hostGate,
+        scheduler,
+        clock,
+      });
+      coordinator.start();
+      const rule = makeRule();
+      expect(repo.insertRule(rule).ok).toBe(true);
+      acquisition.hang = true;
+      coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
+      await Promise.resolve();
+      clock.advanceBy(1_000); // 越过 jitter，acquisition 开始（hang）
+      for (let j = 0; j < 3; j += 1) await Promise.resolve();
+      const runId = acquisition.calls[0]!.runId;
+      await coordinator.stop(); // 排水：run 保持 running（不写终态）
+      repo.dispose();
+      closeDb(repo.dbHandle);
+      // 重启：openWatchStore 把遗留 running 恰标 interrupted 一次
+      const { openWatchStore } = await import('./watch-store');
+      const reopened = openWatchStore({ dbPath, backupsDir: join(dir, 'backups'), reconcile: () => ({ ok: true, reason: null }) });
+      expect(reopened.mode).toBe('normal');
+      if (reopened.mode !== 'normal') return;
+      const run = reopened.repo.getRun(runId)!;
+      expect(run.status).toBe('interrupted');
+      expect(run.outcome).toBeNull();
+      // 已消费 slot 不重放：rule.nextDueAt 已推进（reservation 已消费）
+      expect(reopened.repo.getRule(rule.id)!.nextDueAt).not.toBe(NOW);
+      reopened.repo.dispose();
+      rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      rmSync(dir, { recursive: true, force: true });
+      throw err;
     }
   });
 });
