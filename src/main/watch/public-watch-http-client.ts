@@ -24,6 +24,7 @@ import {
   type WatchFailureCode,
 } from '../../shared/types/watch';
 import { isAllowedPublicAddress, validatePublicUrl, type ApprovedTarget } from './network-policy';
+import { deriveHostKey } from './host-request-gate';
 import { RobotsPolicy } from './robots-policy';
 
 export type PublicRequestPurpose = 'feed' | 'page' | 'robots' | 'discovery';
@@ -184,6 +185,14 @@ export interface WatchRequestOptions {
 
 export type WatchRequestFactory = (options: WatchRequestOptions) => WatchRequestLike;
 
+/** D5 host gate 窄端口（FIXED DECISIONS 2/5）：实际 socket start 前登记式 acquire。 */
+export interface WatchHostGatePort {
+  acquire(
+    hostKey: string,
+    options?: { signal?: AbortSignal; deadlineMs?: number },
+  ): Promise<{ ok: true } | { ok: false; reason: 'aborted' | 'deadline' | 'clock-invalid' }>;
+}
+
 /** 安全工厂受控 seam（只注入依赖，不能取得任意网络客户端或替换/关闭 RobotsPolicy）。 */
 export interface PublicWatchStackSeams {
   lookup?: (hostname: string) => Promise<ResolvedAddress[]>; // 默认真实 dns.lookup(all)
@@ -197,6 +206,9 @@ export interface PublicWatchStackSeams {
     encoding: 'gzip' | 'deflate' | 'br',
     maxOutputLength: number,
   ) => WatchInflaterLike; // 压缩解压器工厂（默认 node:zlib；只影响 body 解压，不改变安全装配）
+  // D5：host gate（main 单例 HostRequestGate 的窄端口）。缺省未注入 → D3 独立行为
+  // 保持不变（测试 seam 设施；产品装配必须注入，否则 5 秒 start-to-start 间隔不生效）。
+  hostGate?: WatchHostGatePort;
 }
 
 /** target-gated client：只允许 page/feed/discovery。 */
@@ -369,6 +381,7 @@ class PublicWatchHttpClient {
     maxOutputLength: number,
   ) => WatchInflaterLike;
   private readonly robots: RobotsGatePort | null;
+  private readonly hostGate: WatchHostGatePort | null;
 
   constructor(
     seams: {
@@ -382,6 +395,7 @@ class PublicWatchHttpClient {
         maxOutputLength: number,
       ) => WatchInflaterLike;
       robots?: RobotsGatePort | null;
+      hostGate?: WatchHostGatePort | null;
     } = {},
   ) {
     this.lookup =
@@ -402,6 +416,7 @@ class PublicWatchHttpClient {
         return createBrotliDecompress({ maxOutputLength });
       });
     this.robots = seams.robots ?? null;
+    this.hostGate = seams.hostGate ?? null;
   }
 
   private defaultRequestFactory: WatchRequestFactory = (options) => {
@@ -661,6 +676,26 @@ class PublicWatchHttpClient {
     addr: ResolvedAddress,
     deadlineMs: number,
   ): Promise<InternalAttempt | 'retry-next' | 'aborted' | 'failed'> {
+    // D5（FIXED DECISIONS 2/5）：每个实际 socket start（robots 初始、每跳 redirect、
+    // 每地址重试）前登记式取得 host gate；同 canonical host:effectivePort 相邻
+    // start ≥ MIN_HOST_REQUEST_GAP_MS。redirect 到新 host 由下一次 attemptOnce 派生
+    // 新 hostKey 重入对应 gate。缺省（未注入 hostGate）→ D3 独立行为不变。
+    if (this.hostGate !== null) {
+      const hostKey = deriveHostKey({
+        scheme: target.scheme,
+        host: target.host,
+        port: target.port,
+      });
+      const gate = await this.hostGate.acquire(hostKey, {
+        signal: req.signal,
+        deadlineMs,
+      });
+      if (!gate.ok) {
+        if (gate.reason === 'aborted') return { kind: 'aborted' };
+        // deadline / clock-invalid：受控 unavailable（零 socket）
+        return this.failed('unavailable', 'host-gate');
+      }
+    }
     const parsed = new URL(target.url);
     const path = `${parsed.pathname}${parsed.search}`;
     const headers: Record<string, string> = {
@@ -1364,6 +1399,7 @@ export function createPublicWatchHttpStack(seams: PublicWatchStackSeams = {}): P
     timeoutMs: seams.timeoutMs,
     userAgent: seams.userAgent,
     createInflater: seams.createInflater,
+    hostGate: seams.hostGate,
     robots: {
       checkAllowed: async (input): Promise<RobotsGateDecision> => {
         if (policy === null) return { kind: 'unavailable' };

@@ -19,12 +19,14 @@ import {
   createPublicWatchHttpStack,
   WATCH_DEFAULT_USER_AGENT,
   type PublicWatchStackSeams,
+  type WatchHostGatePort,
   type WatchIncomingLike,
   type WatchInflaterLike,
   type WatchRequestFactory,
   type WatchRequestLike,
   type WatchRequestOptions,
 } from './public-watch-http-client';
+import { HostRequestGate } from './host-request-gate';
 
 // ---------------------------------------------------------------------------
 // 测试 transport seam：捕获请求选项，由测试控制响应
@@ -206,6 +208,7 @@ function createHarness(
       encoding: 'gzip' | 'deflate' | 'br',
       maxOutputLength: number,
     ) => WatchInflaterLike;
+    hostGate?: WatchHostGatePort;
   } = {},
 ) {
   const captured: CapturedRequest[] = [];
@@ -226,6 +229,7 @@ function createHarness(
     clock: opts.clock,
     timeoutMs: opts.timeoutMs ?? 30_000,
     createInflater: opts.createInflater,
+    hostGate: opts.hostGate,
   } as unknown as PublicWatchStackSeams);
   return {
     stack,
@@ -2411,5 +2415,134 @@ describe('classifyPublicHttpStatus', () => {
     expect(classifyPublicHttpStatus(503)).toBe('unavailable');
     expect(classifyPublicHttpStatus(400)).toBe('parse-changed');
     expect(classifyPublicHttpStatus(451)).toBe('parse-changed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D5 E：hostGate 注入（FIXED 2/5）——每个实际 socket start（robots/目标/redirect/
+// 地址重试）前登记式取得 gate 许可；同 canonical host:effectivePort 相邻 start ≥5s；
+// redirect 到新 host 重入对应 gate。缺省（未注入）→ D3 独立行为不变（既有测试全绿）。
+// ---------------------------------------------------------------------------
+describe('D5 E：PublicWatchStackSeams.hostGate 注入（FIXED 2/5）', () => {
+  function gateHarness(
+    clock: FakeClock,
+    gate: HostRequestGate,
+    opts: { lookup?: (hostname: string) => Promise<{ address: string; family: 4 | 6 }[]> } = {},
+  ) {
+    const captured: CapturedRequest[] = [];
+    const startTimes: number[] = [];
+    const factory: WatchRequestFactory = (options) => {
+      startTimes.push(clock.now().getTime());
+      const req = new FakeRequest();
+      const cap = makeCap(req, options);
+      captured.push(cap);
+      if (isRobotsRequest(options)) {
+        queueMicrotask(() => {
+          if (!cap.responded) cap.respond(404, {}, '');
+        });
+      }
+      return req;
+    };
+    const stack = createPublicWatchHttpStack({
+      lookup: opts.lookup ?? PUBLIC_LOOKUP,
+      request: factory,
+      clock,
+      timeoutMs: 30_000,
+      hostGate: gate,
+    } as unknown as PublicWatchStackSeams);
+    return {
+      stack,
+      captured,
+      startTimes,
+      targets: (): CapturedRequest[] => captured.filter((c) => !isRobotsRequest(c.options)),
+    };
+  }
+
+  it('robots 与目标 socket 起点两两 ≥5000ms（同 host 登记制）', async () => {
+    const clock = new FakeClock(0);
+    const gate = new HostRequestGate({ clock });
+    const h = gateHarness(clock, gate);
+    const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush(); // robots 404 microtask + robots socket（T0）
+    expect(h.captured.length).toBe(1);
+    expect(h.startTimes[0]).toBe(0);
+    expect(gate.lastStartedAt('example.com:443')).toBe(0);
+    clock.advanceBy(5_000); // gate 允许目标 socket
+    await flush();
+    expect(h.captured.length).toBe(2);
+    h.targets()[0]!.respond(200, {}, 'ok'); // 响应目标请求
+    const r = await p;
+    expect(r.kind).toBe('ok');
+    expect(h.captured.length).toBe(2);
+    expect(h.startTimes[1]! - h.startTimes[0]!).toBe(5_000);
+    expect(gate.lastStartedAt('example.com:443')).toBe(5_000);
+  });
+
+  it('redirect 到新 host 重入对应 gate：各 host 内相邻 socket ≥5000ms，跨 host 不阻塞', async () => {
+    const clock = new FakeClock(0);
+    const gate = new HostRequestGate({ clock });
+    const h = gateHarness(clock, gate);
+    const p = h.stack.target.get({ url: 'https://old.example.com/feed', purpose: 'feed' });
+    await flush(); // robots(old) T0
+    expect(h.captured.length).toBe(1);
+    clock.advanceBy(5_000); // target(old)
+    await flush();
+    expect(h.captured.length).toBe(2);
+    h.targets()[0]!.respond(302, { location: 'https://new.example.com/page' }, '');
+    await flush(); // redirect → robots(new)（新 host key 首次 → 立即，T5000）
+    expect(h.captured.length).toBe(3);
+    clock.advanceBy(5_000); // target(new)（新 host gate 间隔）
+    await flush();
+    expect(h.captured.length).toBe(4);
+    h.targets()[1]!.respond(200, {}, 'ok');
+    const r = await p;
+    expect(r.kind).toBe('ok');
+    // 顺序：robots(old) T0、target(old) T5000、robots(new) T5000、target(new) T10000
+    expect(h.startTimes).toEqual([0, 5_000, 5_000, 10_000]);
+    // old host 内 robots→target 间隔 5000；new host 内 robots→target 间隔 5000
+    expect(h.startTimes[1]! - h.startTimes[0]!).toBe(5_000);
+    expect(h.startTimes[3]! - h.startTimes[2]!).toBe(5_000);
+    // 跨 host（old target T5000 → new robots T5000）零阻塞
+    expect(h.startTimes[2]!).toBe(5_000);
+  });
+
+  it('地址重试（conn-error → retry-next）同 host 相邻地址 socket ≥5000ms', async () => {
+    const clock = new FakeClock(0);
+    const gate = new HostRequestGate({ clock });
+    const lookup = async (): Promise<{ address: string; family: 4 | 6 }[]> => [
+      { address: '93.184.216.34', family: 4 },
+      { address: '93.184.216.35', family: 4 },
+    ];
+    const h = gateHarness(clock, gate, { lookup });
+    const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush(); // robots T0
+    expect(h.captured.length).toBe(1);
+    clock.advanceBy(5_000); // target addr1 T5000
+    await flush();
+    expect(h.captured.length).toBe(2);
+    h.targets()[0]!.error('ECONNREFUSED'); // → retry-next → addr2
+    await flush();
+    clock.advanceBy(5_000); // addr2 gate 间隔
+    await flush();
+    expect(h.captured.length).toBe(3);
+    h.targets()[1]!.respond(200, {}, 'ok');
+    const r = await p;
+    expect(r.kind).toBe('ok');
+    expect(h.startTimes).toEqual([0, 5_000, 10_000]);
+    expect(h.startTimes[2]! - h.startTimes[1]!).toBe(5_000);
+  });
+
+  it('未注入 hostGate → D3 独立行为（socket 起点零 5s 约束，零 gate 调用）', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush(); // robots socket 立即（无 gate 等待）
+    clock.advanceBy(1);
+    await flush(); // target socket 立即（无 5s 等待）
+    expect(h.captured.length).toBe(2);
+    h.targets()[0]!.respond(200, {}, 'ok');
+    const r = await p;
+    expect(r.kind).toBe('ok');
+    // 未注入 gate 时行为与既有 D3 完全一致（robots+target 无需 5s 时钟推进即可完成）
   });
 });
