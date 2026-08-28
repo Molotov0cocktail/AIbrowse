@@ -31,6 +31,15 @@ import {
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
+// Sixth Stage D4：Watch 存储/生命周期装配（observer 恒 active + 延迟端口绑定 +
+// AIBROWSE_WATCH_SMOKE 跨进程门控 + 8.21 store 冒烟）。
+import { openWatchStore, type WatchStoreOutcome } from './watch/watch-store';
+import {
+  WatchLifecycleCoordinator,
+  type SourceProjectionReader,
+} from './watch/watch-lifecycle-coordinator';
+import type { WatchRepository } from './watch/repository/watch-repository';
+import { runWatchSmokeGate } from './smoke-watch-store';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
 import { redactUrlForLog, resolveAddressBarInput } from '../shared/url';
 import { IPC } from '../shared/types/ipc';
@@ -90,6 +99,7 @@ import { registerTool } from './ai/tools/tool-registry';
 // 原库与已有备份进入只读恢复态，浏览器其余能力不受影响）。
 import { mkdirSync, rmSync } from 'node:fs';
 import { openSourcesStore } from './sources/sources-store';
+import type { SourceWatchProjectionProvider } from './sources/source-service';
 import type { SourceService, SourcesState } from '../shared/types/sources';
 import { createSourceTools } from './sources/tools/source-tools';
 // B6：usage 接线（决议 #79/#81）——SourceSearchHintStore 每 run 独立 + browser_open
@@ -192,6 +202,15 @@ const RESEARCH_GATE_MODE =
   (process.env['AIBROWSE_RESEARCH_SMOKE'] === 'set' ||
     process.env['AIBROWSE_RESEARCH_SMOKE'] === 'check');
 
+// D4 跨进程门控（HLD §7/§15.3）：AIBROWSE_WATCH_SMOKE=set|check——两独立生产
+// 进程共用受控共享临时 userData；set 经 Store/Coordinator 路径写入 Rule/
+// Baseline/Event + 遗留非终态 Run + 未决 intent；check 读回 + interrupted
+// 标记 + 启动 reconciliation 判定。D4 阶段断言限于 store 级。
+const WATCH_GATE_MODE =
+  SMOKE_MODE &&
+  (process.env['AIBROWSE_WATCH_SMOKE'] === 'set' ||
+    process.env['AIBROWSE_WATCH_SMOKE'] === 'check');
+
 // Session 冒烟/测试隔离（§十四 Session 验收）：指定临时 userData 目录，避免触碰用户真实数据。
 // 必须在 app ready 前设置（Electron 官方 API）；仅测试/验证环境使用（AIBROWSE_SESSION_SMOKE）。
 const userDataOverride = process.env['AIBROWSE_USER_DATA_DIR'];
@@ -234,6 +253,12 @@ let smokeSourcesDir: string | null = null;
 let researchService: ResearchService | null = null;
 let smokeResearchDir: string | null = null;
 let researchShutdownDone = false;
+// D4：Watch 生命周期协调器（构造先于 Sources 装配——observer 恒注入 active
+// coordinator，无论 watch.db 是否存在；缺失库由 Store 正常创建，corrupt/
+// future/unavailable 必须返回失败，绝不因文件缺失静默退化为 no-op）
+let watchCoordinator: WatchLifecycleCoordinator | null = null;
+let watchRepo: WatchRepository | null = null;
+let smokeWatchDir: string | null = null;
 // B5 冒烟注入点（仅 SMOKE_MODE 消费，生产行为不变）：恢复态/不可用态 UI 断言——
 // sources:state 与全部读写入口经适配器 stateOverride 门控（决议 #74 测试落点）
 let smokeSourcesStateOverride: { current: SourcesState | null } | null = null;
@@ -321,9 +346,16 @@ if (!gotLock) {
     // 退出路径兜底清理（幂等）；主路径为窗口 closed → dispose（§5）
     conversationService?.dispose(); // S3：中止全部在途生成
     sourceService?.dispose(); // B4：Sources 句柄幂等释放（driver closeDb 幂等）
+    // D4：Watch dispose 幂等接线（coordinator 解绑 → repo 句柄释放）
+    watchCoordinator?.dispose();
+    watchRepo?.dispose();
     if (smokeSourcesDir !== null) {
       rmSync(smokeSourcesDir, { recursive: true, force: true }); // 冒烟临时 Sources 目录
       smokeSourcesDir = null;
+    }
+    if (smokeWatchDir !== null) {
+      rmSync(smokeWatchDir, { recursive: true, force: true }); // 冒烟临时 Watch 目录
+      smokeWatchDir = null;
     }
     if (SMOKE_MODE) {
       // 冒烟 AI 数据目录兜底清理（默认矩阵由 aiSmoke.cleanup 主路径清理；
@@ -733,16 +765,17 @@ if (!gotLock) {
         const sessionMode = process.env['AIBROWSE_SESSION_SMOKE'];
         const sourcesMode = process.env['AIBROWSE_SOURCES_SMOKE'];
         const sourcesUiMode = process.env['AIBROWSE_SOURCES_UI_SMOKE'];
+        const watchMode = process.env['AIBROWSE_WATCH_SMOKE'];
         // Session 跨进程持久化冒烟（T5）：set/check 两进程共用临时 userData（§十四 Session 验收）
         // B-02 Sources 跨进程冒烟（B2，决议 #57）与 B-05 Sources UI 跨进程冒烟（B5 专属
-        // 门控）：三者互斥（同时设置报错退出）
-        const exclusiveModes = [sessionMode, sourcesMode, sourcesUiMode].filter(
+        // 门控）与 D4 WATCH 门控：四者互斥（同时设置报错退出）
+        const exclusiveModes = [sessionMode, sourcesMode, sourcesUiMode, watchMode].filter(
           (m) => m !== undefined,
         );
         if (exclusiveModes.length > 1) {
           logError(
             'main',
-            'AIBROWSE_SESSION_SMOKE / AIBROWSE_SOURCES_SMOKE / AIBROWSE_SOURCES_UI_SMOKE 互斥，请只选其一',
+            'AIBROWSE_SESSION_SMOKE / AIBROWSE_SOURCES_SMOKE / AIBROWSE_SOURCES_UI_SMOKE / AIBROWSE_WATCH_SMOKE 互斥，请只选其一',
           );
           // 失败路径清理（app.exit 不触发 before-quit；B6 会话实测同类 LIVE 互斥
           // 路径残留 pid 专属目录——此处为同缺陷预防性补齐）
@@ -827,9 +860,53 @@ if (!gotLock) {
           app.exit(1);
           return;
         }
+        // D4：AIBROWSE_WATCH_SMOKE 与其余四组门控确定性互斥（互斥先于一切，
+        // 不静默择一——与 RESEARCH 门控同纪律）
+        if (
+          WATCH_GATE_MODE &&
+          (sessionMode !== undefined ||
+            sourcesMode !== undefined ||
+            sourcesUiMode !== undefined ||
+            researchMode !== undefined)
+        ) {
+          logError(
+            'main',
+            'AIBROWSE_WATCH_SMOKE 与 AIBROWSE_SESSION_SMOKE / AIBROWSE_SOURCES_SMOKE / AIBROWSE_SOURCES_UI_SMOKE / AIBROWSE_RESEARCH_SMOKE 互斥，请只选其一',
+          );
+          // 失败路径清理（app.exit 不触发 before-quit；与既有互斥路径同纪律）
+          sourceService?.dispose();
+          watchCoordinator?.dispose();
+          watchRepo?.dispose();
+          if (smokeSourcesDir !== null) {
+            rmSync(smokeSourcesDir, { recursive: true, force: true });
+            smokeSourcesDir = null;
+          }
+          if (smokeWatchDir !== null) {
+            rmSync(smokeWatchDir, { recursive: true, force: true });
+            smokeWatchDir = null;
+          }
+          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+          if (smokeResearchDir !== null) {
+            try {
+              rmSync(smokeResearchDir, { recursive: true, force: true });
+            } catch {
+              // research db 句柄可能未关（EPERM）——不阻塞退出
+            }
+            smokeResearchDir = null;
+          }
+          app.exit(1);
+          return;
+        }
+        if (watchMode !== undefined && !WATCH_GATE_MODE) {
+          logError('main', `AIBROWSE_WATCH_SMOKE 值非法：${watchMode}（仅支持 set|check）`);
+          app.exit(1);
+          return;
+        }
         let run: Promise<void>;
         if (RESEARCH_GATE_MODE) {
           run = runResearchSmokeGate(researchMode as 'set' | 'check');
+        } else if (WATCH_GATE_MODE) {
+          run = runWatchSmokeGate(watchMode as 'set' | 'check');
         } else if (sourcesUiMode === 'set' || sourcesUiMode === 'check') {
           run = runSourcesUiSmokeScenario(sourcesUiMode, {
             uiWindow: mainWindow,
@@ -980,6 +1057,10 @@ function createBrowserWindow(): void {
   // 适配器三态（normal/readonly-recovery/unavailable）经 getState/惰性解引用正确
   // 呈现；初始化失败 → sourceService 保持 null，Source 工具安全返回 source-unavailable
   // （不拖垮浏览器其余能力；中文诊断入日志）。
+  // D4（§10.3）：coordinator 先于 Sources 装配构造并作为内部 observer 恒注入
+  //（无论 watch.db 是否存在——缺失库由 Store 正常创建；corrupt/future/unavailable
+  // 由 coordinator 的 unavailable 状态 fail-closed，绝不静默退化 no-op）。
+  watchCoordinator = new WatchLifecycleCoordinator({});
   try {
     const sourcesDir =
       SMOKE_MODE && !SOURCES_UI_GATE_MODE
@@ -991,6 +1072,7 @@ function createBrowserWindow(): void {
     const outcome = openSourcesStore({
       dbPath: join(sourcesDir, 'sources.db'),
       backupsDir: join(sourcesDir, 'backups'),
+      observer: watchCoordinator, // D4：恒注入 active coordinator
     });
     if (outcome.mode === 'normal') {
       sourceService = outcome.service;
@@ -1139,6 +1221,48 @@ function createBrowserWindow(): void {
   } catch (err) {
     researchService = null;
     logError('main', 'Research 子系统初始化失败（研究功能全拒，其余能力不受影响）', err);
+  }
+
+  // D4：Watch 存储/生命周期生产装配（FIXED DECISION 12 装配顺序：coordinator
+  // 已先构造 → openSourcesStore 已注入 observer → openWatchStore 注入 Source
+  // 窄投影读取端口 → bind coordinator↔store）。Sources 为 null 或非 normal →
+  // Watch unavailable（fail-closed：coordinator 保持未绑定，后续 prepare 恒
+  // watch-unavailable）。缺失 watch.db 由 Store 正常创建；corrupt/future/
+  // unavailable 绝不静默退化。D5 只消费 schedulerReady 状态位，本任务不启动调度。
+  try {
+    if (SMOKE_MODE && WATCH_GATE_MODE) {
+      // WATCH 门控：本进程不装配 Watch 存储——门控 runner 以注入的 Source 窄
+      // 投影 reader 独占驱动 openWatchStore/coordinator（生产装配函数本身），
+      // 避免装配期 reconciliation 使用真实 Sources 事实破坏门控夹具状态
+      //（coordinator 保持未绑定 → 任何 Source 写 prepare 恒 fail-closed）。
+      logInfo('main', 'AIBROWSE_WATCH_SMOKE 门控：跳过常驻 Watch 装配（门控 runner 独占）');
+    } else if (sourceService === null || sourceService.getState().mode !== 'normal') {
+      logWarn('main', 'Watch 子系统不可用：Sources 子系统非 normal（Scheduler 不启动）');
+    } else {
+      const watchDir =
+        SMOKE_MODE && !WATCH_GATE_MODE
+          ? join(app.getPath('temp'), `aibrowse-smoke-watch-${process.pid}`)
+          : join(app.getPath('userData'), 'watch');
+      if (SMOKE_MODE && !WATCH_GATE_MODE) smokeWatchDir = watchDir;
+      mkdirSync(watchDir, { recursive: true });
+      const sourceProjectionReader: SourceProjectionReader = (sourceId) =>
+        (
+          sourceService as (SourceService & SourceWatchProjectionProvider) | null
+        )?.getSourceWatchProjection(sourceId) ?? null;
+      const watchOutcome: WatchStoreOutcome = openWatchStore({
+        dbPath: join(watchDir, 'watch.db'),
+        backupsDir: join(watchDir, 'backups'),
+        reconcile: (repo) => watchCoordinator!.reconcileOnStartup(repo, sourceProjectionReader),
+      });
+      if (watchOutcome.mode === 'normal') {
+        watchRepo = watchOutcome.repo;
+        watchCoordinator!.bind(watchOutcome.repo, sourceProjectionReader);
+        logInfo('main', `Watch 子系统就绪（${join(watchDir, 'watch.db')}）`);
+      }
+      // unavailable 分支：coordinator 保持未绑定 → prepare 恒 fail-closed
+    }
+  } catch (err) {
+    logError('main', 'Watch 子系统初始化失败（Watch 功能全拒、Scheduler 不启动）', err);
   }
 
   // S5 真实 Provider 装配（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY，§6）：

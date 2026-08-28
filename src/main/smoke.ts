@@ -29,6 +29,8 @@ import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sq
 // C8 定向修复（2026-08-17）：冒烟临时目录清理 helper（句柄关闭后删除 +
 // Windows EPERM 有限重试——工厂冒烟场景 2026-08-16 23:30 遗留根因）
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
+// D4：8.21 Watch store 冒烟（默认矩阵；dev+生产双场景）
+import { runWatchStoreSmokeScenario } from './smoke-watch-store';
 // 8.16 C4：真实 Workspace + CaptureService + EvidenceValidator + Repository（临时 research.db）
 import { ResearchWorkspace } from './research/research-workspace';
 import { CaptureService, sha256hex, type CaptureContent } from './research/capture-service';
@@ -10932,6 +10934,15 @@ export async function runSmokeScenario(
         sourcesDbPath: options.sourcesDbPath,
         auditEntries: options.auditEntries,
       });
+    }
+
+    // 8.21 D4 Watch store 冒烟（默认矩阵自动包含；dev+生产双场景）：装配矩阵
+    //（corrupt/future/截断 → unavailable 且原库保留）+ Baseline/Event 原子写入
+    // 读回 + 保留分级清理 + backup/restore（watch-backup 独立命名、恢复后重走
+    // reconciliation + Session grant 失效）+ dispose 幂等。零网络、零真实
+    // Provider（D4 模块零网络能力的静态断言由单测红线扫描承担）。
+    if (options.liveSmoke === undefined) {
+      await runWatchStoreSmokeScenario();
     }
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
