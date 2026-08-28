@@ -67,6 +67,7 @@ export type WatchErrorCode =
   | 'duplicate-ref'
   | 'event-budget-exceeded'
   | 'db-budget-exceeded'
+  | 'identity-conflict'
   | 'validation-failed'
   | 'sqlite-error';
 
@@ -122,6 +123,8 @@ const SQL_RULE_COLUMNS = `SELECT id, source_id, kind, state, pause_reason, desir
 const SQL_SELECT_RULE_BY_ID = `${SQL_RULE_COLUMNS} WHERE id = ?`;
 const SQL_SELECT_ALL_RULES = `${SQL_RULE_COLUMNS} ORDER BY created_at ASC, id ASC`;
 const SQL_SELECT_RULES_BY_SOURCE = `${SQL_RULE_COLUMNS} WHERE source_id = ? ORDER BY created_at ASC, id ASC`;
+const SQL_SELECT_RULE_IDENTITY = `SELECT state, source_id, source_locator_fingerprint, baseline_version
+  FROM watch_rules WHERE id = ?`;
 const SQL_SELECT_RULE_STATE_FIELDS =
   'SELECT state, pause_reason, source_row_version, source_locator_fingerprint FROM watch_rules WHERE id = ?';
 const SQL_SELECT_RULE_EXISTS = 'SELECT 1 AS x FROM watch_rules WHERE id = ?';
@@ -258,6 +261,42 @@ const SQL_DELETE_RESOLVED_INTENTS = `DELETE FROM source_cleanup_intents
 const SQL_UPDATE_SESSION_CONSENTS = `UPDATE watch_rules SET target_json = ?, updated_at = ?
   WHERE id = ?`;
 
+// 审计闭合白名单（§3.3/§9.1/§10.1）：kind/reason 均为编译期枚举，非白名单拒绝。
+export type WatchAuditKind =
+  | 'lifecycle-pause'
+  | 'lifecycle-cascade'
+  | 'reconciliation'
+  | 'baseline-established'
+  | 'rebaseline';
+export type WatchAuditReasonCode =
+  | 'source-disabled'
+  | 'source-deleted'
+  | 'source-changed'
+  | 'hard-delete'
+  | 'undo-source-removed'
+  | 'complete'
+  | 'aborted'
+  | 'baseline-established'
+  | 'rebaseline';
+const AUDIT_KINDS: readonly WatchAuditKind[] = [
+  'lifecycle-pause',
+  'lifecycle-cascade',
+  'reconciliation',
+  'baseline-established',
+  'rebaseline',
+];
+const AUDIT_REASON_CODES: readonly WatchAuditReasonCode[] = [
+  'source-disabled',
+  'source-deleted',
+  'source-changed',
+  'hard-delete',
+  'undo-source-removed',
+  'complete',
+  'aborted',
+  'baseline-established',
+  'rebaseline',
+];
+
 // 全库逻辑字节估算（编译期常量；§10.4 100 MiB 写前估算）：
 // 对全部 TEXT 列按 UTF-8 字节求和 + 每行固定整数列近似（8 字节/整数列）。
 // 诚实限制：不含 SQLite 页/索引/空闲页开销——实际文件字节 ≥ 该估算（保守方向
@@ -385,6 +424,11 @@ export class WatchRepository {
     if (this.disposed) throw new WatchRepositoryError('sqlite-error', '数据库连接已关闭');
   }
 
+  private sqlErrorText(err: unknown): string {
+    const message = err instanceof Error ? err.message : String(err);
+    return `数据库错误：${message}`;
+  }
+
   private translate(err: unknown): WatchRepositoryError {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('UNIQUE constraint failed: watch_runs.request_key')) {
@@ -487,55 +531,52 @@ export class WatchRepository {
     }
   }
 
+  // coordinator-facing 读路径（§10.3 fail-closed 契约）：SQL 异常、数据库不可用
+  // 或行读回校验失败一律抛 WatchRepositoryError，绝不降级为 null/[]（合法空结果
+  // 与 not-found 才返回 null/[]）。调用方（coordinator/store）捕获后回滚并使
+  // Watch unavailable。
   getRule(id: string): WatchRule | null {
     this.ensureOpen();
+    let row: unknown;
     try {
-      const row = this.handle.prepare(SQL_SELECT_RULE_BY_ID).get(id);
-      return this.ruleFromRow(row);
+      row = this.handle.prepare(SQL_SELECT_RULE_BY_ID).get(id);
     } catch (err) {
-      logWarn('watch', '读取规则失败（fail-closed 返回 null）', err);
-      return null;
+      throw new WatchRepositoryError('sqlite-error', this.sqlErrorText(err));
     }
+    return this.ruleFromRow(row);
   }
 
   listRules(): WatchRule[] {
     this.ensureOpen();
+    let rows: unknown[];
     try {
-      const rows = this.handle.prepare(SQL_SELECT_ALL_RULES).all() as unknown[];
-      const out: WatchRule[] = [];
-      for (const row of rows) {
-        const rule = this.ruleFromRow(row);
-        if (rule !== null) out.push(rule);
-      }
-      return out;
+      rows = this.handle.prepare(SQL_SELECT_ALL_RULES).all() as unknown[];
     } catch (err) {
-      logWarn('watch', '列出规则失败（fail-closed 返回空列表）', err);
-      return [];
+      throw new WatchRepositoryError('sqlite-error', this.sqlErrorText(err));
     }
+    return rows.map((row) => this.ruleFromRow(row)).filter((r): r is WatchRule => r !== null);
   }
 
   listRulesBySource(sourceId: string): WatchRule[] {
     this.ensureOpen();
+    let rows: unknown[];
     try {
-      const rows = this.handle.prepare(SQL_SELECT_RULES_BY_SOURCE).all(sourceId) as unknown[];
-      const out: WatchRule[] = [];
-      for (const row of rows) {
-        const rule = this.ruleFromRow(row);
-        if (rule !== null) out.push(rule);
-      }
-      return out;
+      rows = this.handle.prepare(SQL_SELECT_RULES_BY_SOURCE).all(sourceId) as unknown[];
     } catch (err) {
-      logWarn('watch', '按 Source 列出规则失败（fail-closed 返回空列表）', err);
-      return [];
+      throw new WatchRepositoryError('sqlite-error', this.sqlErrorText(err));
     }
+    return rows.map((row) => this.ruleFromRow(row)).filter((r): r is WatchRule => r !== null);
   }
 
   private ruleFromRow(row: unknown): WatchRule | null {
-    if (!isPlainRecord(row)) return null;
+    if (row === undefined) return null; // not-found（合法空结果）
     const validated = validateRuleRow(row);
     if (!validated.ok || validated.value === null) {
-      logWarn('watch', '规则行读回校验失败（fail-closed 视为不存在）');
-      return null;
+      logWarn('watch', '规则行读回校验失败（fail-closed 抛错）');
+      throw new WatchRepositoryError(
+        'sqlite-error',
+        `规则行读回校验失败：${validated.reason ?? '未知'}`,
+      );
     }
     return validated.value;
   }
@@ -690,6 +731,7 @@ export class WatchRepository {
   writeBaseline(input: {
     ruleId: string;
     expectedBaselineVersion: number | null; // null = 首个（INSERT）
+    expectedSourceLocatorFingerprint?: string; // 提供时必须与规则当前 fingerprint 一致
     projectionType: 'feed' | 'page';
     projectionJson: string;
     contentHash: string;
@@ -699,6 +741,9 @@ export class WatchRepository {
     documentId: string | null;
   }): WatchResult {
     this.ensureOpen();
+    // R6：真实 UTF-8 字节预算——声明字节必须与投影实际字节一致且在上限内，
+    // 不信任调用方声明（伪造/不符在写入前拒绝）。
+    const actualBytes = utf8ByteLength(input.projectionJson);
     if (
       !Number.isInteger(input.byteLength) ||
       input.byteLength < 0 ||
@@ -706,11 +751,37 @@ export class WatchRepository {
     ) {
       return { ok: false, code: 'baseline-budget-exceeded' };
     }
+    if (actualBytes > this.maxBaselineBytes) {
+      return { ok: false, code: 'baseline-budget-exceeded' };
+    }
+    if (input.byteLength !== actualBytes) {
+      return { ok: false, code: 'validation-failed' };
+    }
     try {
       return withTransaction(this.handle, () => {
-        const exists = this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(input.ruleId);
-        if (exists === undefined) return { ok: false, code: 'rule-not-found' as const };
-        if (this.estimateLogicalBytesInternal() + input.byteLength + 200 > this.maxDbBytes) {
+        // R5：同一事务内规则级身份 CAS——规则存在、未删除、fingerprint（若提供）
+        // 与 baselineVersion 均匹配才允许写入。
+        const ruleRow = this.handle.prepare(SQL_SELECT_RULE_IDENTITY).get(input.ruleId) as
+          | {
+              state: string;
+              source_id: string;
+              source_locator_fingerprint: string;
+              baseline_version: number;
+            }
+          | undefined;
+        if (ruleRow === undefined) return { ok: false, code: 'rule-not-found' as const };
+        if (ruleRow.state === 'deleted') return { ok: false, code: 'identity-conflict' as const };
+        if (
+          input.expectedSourceLocatorFingerprint !== undefined &&
+          ruleRow.source_locator_fingerprint !== input.expectedSourceLocatorFingerprint
+        ) {
+          return { ok: false, code: 'identity-conflict' as const };
+        }
+        // 列值恒为整数 0..N；expected null 表示首个写入（要求当前为 0）
+        if (ruleRow.baseline_version !== (input.expectedBaselineVersion ?? 0)) {
+          return { ok: false, code: 'baseline-conflict' as const };
+        }
+        if (this.estimateLogicalBytesInternal() + actualBytes + 200 > this.maxDbBytes) {
           return { ok: false, code: 'db-budget-exceeded' as const };
         }
         return this.applyBaselineInternal(input);
@@ -917,18 +988,14 @@ export class WatchRepository {
   insertAudit(input: {
     id: string;
     ruleId: string | null;
-    kind: 'lifecycle-pause' | 'lifecycle-cascade' | 'reconciliation';
-    reasonCode:
-      | 'source-disabled'
-      | 'source-deleted'
-      | 'source-changed'
-      | 'hard-delete'
-      | 'undo-source-removed'
-      | 'complete'
-      | 'aborted';
+    kind: WatchAuditKind;
+    reasonCode: WatchAuditReasonCode;
     createdAt: string;
   }): WatchResult {
     this.ensureOpen();
+    if (!isIn(input.kind, AUDIT_KINDS) || !isIn(input.reasonCode, AUDIT_REASON_CODES)) {
+      return { ok: false, code: 'validation-failed' };
+    }
     try {
       this.handle
         .prepare(SQL_INSERT_AUDIT)
@@ -975,6 +1042,13 @@ export class WatchRepository {
   writeEventTransaction(input: {
     event: WatchEvent;
     items: ChangeEvidencePair[];
+    // R5：单事务完整身份 CAS（必需）——规则存在且未删除、event.sourceId 与规则
+    // source_id 一致、当前 fingerprint 与 expected 一致、baselineVersion 一致。
+    identity: {
+      sourceId: string;
+      expectedSourceLocatorFingerprint: string;
+      expectedBaselineVersion: number | null;
+    };
     baseline?: {
       expectedBaselineVersion: number | null;
       projectionType: 'feed' | 'page';
@@ -1001,6 +1075,13 @@ export class WatchRepository {
       privacyJson: string;
       createdAt: string;
     }>;
+    audits?: Array<{
+      id: string;
+      ruleId: string | null;
+      kind: WatchAuditKind;
+      reasonCode: WatchAuditReasonCode;
+      createdAt: string;
+    }>;
   }): WatchResult {
     this.ensureOpen();
     if (input.event.itemCount !== input.items.length || input.items.length < 1) {
@@ -1023,22 +1104,63 @@ export class WatchRepository {
       return { ok: false, code: 'event-budget-exceeded' };
     }
     if (input.baseline !== undefined) {
+      // R6：投影真实字节预算（声明必须等于实际且在上限内）
+      const actualBaselineBytes = utf8ByteLength(input.baseline.projectionJson);
       if (
         !Number.isInteger(input.baseline.byteLength) ||
         input.baseline.byteLength < 0 ||
-        input.baseline.byteLength > this.maxBaselineBytes
+        input.baseline.byteLength > this.maxBaselineBytes ||
+        actualBaselineBytes > this.maxBaselineBytes
       ) {
         return { ok: false, code: 'baseline-budget-exceeded' };
       }
-      incomingBytes += input.baseline.byteLength + 200;
+      if (input.baseline.byteLength !== actualBaselineBytes) {
+        return { ok: false, code: 'validation-failed' };
+      }
+      incomingBytes += actualBaselineBytes + 200;
     }
     for (const item of input.outbox ?? []) {
       incomingBytes += utf8ByteLength(item.privacyJson) + utf8ByteLength(item.dedupeKey) + 100;
     }
+    for (const audit of input.audits ?? []) {
+      if (!isIn(audit.kind, AUDIT_KINDS) || !isIn(audit.reasonCode, AUDIT_REASON_CODES)) {
+        return { ok: false, code: 'validation-failed' };
+      }
+    }
     try {
       withTransaction(this.handle, () => {
-        const ruleExists = this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(input.event.ruleId);
-        if (ruleExists === undefined) throw new TxnAbortError('rule-not-found');
+        // 身份 CAS 在同一事务内验证（不得以事务外两步拼接冒充原子 CAS）
+        const ruleRow = this.handle.prepare(SQL_SELECT_RULE_IDENTITY).get(input.event.ruleId) as
+          | {
+              state: string;
+              source_id: string;
+              source_locator_fingerprint: string;
+              baseline_version: number;
+            }
+          | undefined;
+        if (ruleRow === undefined) throw new TxnAbortError('rule-not-found');
+        if (ruleRow.state === 'deleted') throw new TxnAbortError('identity-conflict');
+        if (
+          ruleRow.source_id !== input.event.sourceId ||
+          ruleRow.source_id !== input.identity.sourceId
+        ) {
+          throw new TxnAbortError('identity-conflict');
+        }
+        if (
+          ruleRow.source_locator_fingerprint !== input.identity.expectedSourceLocatorFingerprint
+        ) {
+          throw new TxnAbortError('identity-conflict');
+        }
+        // 列值恒为整数 0..N；identity 的 null 表示首个写入（要求当前为 0）
+        if (ruleRow.baseline_version !== (input.identity.expectedBaselineVersion ?? 0)) {
+          throw new TxnAbortError('baseline-conflict');
+        }
+        if (
+          input.baseline !== undefined &&
+          input.baseline.expectedBaselineVersion !== input.identity.expectedBaselineVersion
+        ) {
+          throw new TxnAbortError('validation-failed');
+        }
         if (this.estimateLogicalBytesInternal() + incomingBytes > this.maxDbBytes) {
           throw new TxnAbortError('db-budget-exceeded');
         }
@@ -1108,6 +1230,12 @@ export class WatchRepository {
               item.createdAt,
               item.createdAt,
             );
+        }
+        // 契约要求的审计写入与其余写入同事务；任一失败整体回滚
+        for (const audit of input.audits ?? []) {
+          this.handle
+            .prepare(SQL_INSERT_AUDIT)
+            .run(audit.id, audit.ruleId, audit.kind, audit.reasonCode, audit.createdAt);
         }
       });
       return { ok: true };
@@ -1276,52 +1404,50 @@ export class WatchRepository {
     }
   }
 
+  // intent 读路径同为 coordinator-facing fail-closed 契约（异常/非法行抛错，
+  // 仅 not-found 返回 null、合法空返回 []）。
   getSourceCleanupIntent(mutationId: string): SourceCleanupIntentRow | null {
     this.ensureOpen();
+    let raw: unknown;
     try {
-      const raw = this.handle.prepare(SQL_SELECT_INTENT).get(mutationId) as unknown;
-      return this.intentFromRaw(raw);
+      raw = this.handle.prepare(SQL_SELECT_INTENT).get(mutationId) as unknown;
     } catch (err) {
-      logWarn('watch', '读取 intent 失败（fail-closed 返回 null）', err);
-      return null;
+      throw new WatchRepositoryError('sqlite-error', this.sqlErrorText(err));
     }
+    return this.intentFromRaw(raw);
   }
 
   listSourceCleanupIntents(): SourceCleanupIntentRow[] {
     this.ensureOpen();
+    let rows: unknown[];
     try {
-      const rows = this.handle.prepare(SQL_SELECT_INTENTS).all() as unknown[];
-      const out: SourceCleanupIntentRow[] = [];
-      for (const raw of rows) {
-        const intent = this.intentFromRaw(raw);
-        if (intent !== null) out.push(intent);
-        else logWarn('watch', 'intent 行读回校验失败（fail-closed 跳过）');
-      }
-      return out;
+      rows = this.handle.prepare(SQL_SELECT_INTENTS).all() as unknown[];
     } catch (err) {
-      logWarn('watch', '列出 intent 失败（fail-closed 返回空列表）', err);
-      return [];
+      throw new WatchRepositoryError('sqlite-error', this.sqlErrorText(err));
     }
+    return rows
+      .map((raw) => this.intentFromRaw(raw))
+      .filter((i): i is SourceCleanupIntentRow => i !== null);
   }
 
   listPendingSourceCleanupIntents(): SourceCleanupIntentRow[] {
     this.ensureOpen();
+    let rows: unknown[];
     try {
-      const rows = this.handle.prepare(SQL_SELECT_PENDING_INTENTS).all() as unknown[];
-      const out: SourceCleanupIntentRow[] = [];
-      for (const raw of rows) {
-        const intent = this.intentFromRaw(raw);
-        if (intent !== null) out.push(intent);
-      }
-      return out;
+      rows = this.handle.prepare(SQL_SELECT_PENDING_INTENTS).all() as unknown[];
     } catch (err) {
-      logWarn('watch', '列出未决 intent 失败（fail-closed 返回空列表）', err);
-      return [];
+      throw new WatchRepositoryError('sqlite-error', this.sqlErrorText(err));
     }
+    return rows
+      .map((raw) => this.intentFromRaw(raw))
+      .filter((i): i is SourceCleanupIntentRow => i !== null);
   }
 
   private intentFromRaw(raw: unknown): SourceCleanupIntentRow | null {
-    if (!isPlainRecord(raw)) return null;
+    if (raw === undefined) return null; // not-found（合法空结果）
+    if (!isPlainRecord(raw)) {
+      throw new WatchRepositoryError('sqlite-error', 'intent 行形状非法');
+    }
     const beforeRaw =
       raw['before_projection_json'] === null ? null : this.parseJson(raw['before_projection_json']);
     const afterRaw =
@@ -1339,7 +1465,9 @@ export class WatchRepository {
       updatedAt: raw['updated_at'] as string,
     };
     const validated = validateIntentRow(normalized);
-    if (!validated.ok || validated.value === null) return null;
+    if (!validated.ok || validated.value === null) {
+      throw new WatchRepositoryError('sqlite-error', 'intent 行读回校验失败');
+    }
     return validated.value;
   }
 
@@ -1415,6 +1543,14 @@ export class WatchRepository {
         };
         if (!validateBaselineRow(normalized).ok)
           return { ok: false, reason: 'Baseline 行读回校验失败' };
+        // R6：启动读回扫描必须检测「实际字节 / 声明字节 / 上限」三者不一致并 fail-closed
+        if (typeof normalized.projectionJson !== 'string') {
+          return { ok: false, reason: 'Baseline projection_json 非法' };
+        }
+        const actualBytes = utf8ByteLength(normalized.projectionJson);
+        if (normalized.byteLength !== actualBytes || actualBytes > this.maxBaselineBytes) {
+          return { ok: false, reason: 'Baseline 声明字节与实际字节不一致或超上限' };
+        }
       }
       for (const row of this.handle.prepare(SQL_SELECT_ALL_RUNS).all() as unknown[]) {
         if (!isPlainRecord(row)) return { ok: false, reason: 'Run 行形状非法' };

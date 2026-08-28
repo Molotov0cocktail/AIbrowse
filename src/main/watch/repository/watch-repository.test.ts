@@ -113,6 +113,7 @@ function count(table: string): number {
 
 // D4-R：Event/结果提交的单事务完整身份 CAS 期望值（rule 的当前身份投影）
 function identity(ruleId: string, baselineVersion: number | null = null) {
+  void ruleId; // 本夹具全部规则共享 src-1/FINGERPRINT 身份
   return {
     sourceId: 'src-1',
     expectedSourceLocatorFingerprint: FINGERPRINT,
@@ -548,10 +549,18 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     };
     const bytes = Buffer.byteLength(JSON.stringify(item), 'utf8');
     const tight = new WatchRepository(handle, { maxEventEvidenceBytes: bytes });
-    const ok = tight.writeEventTransaction({ event: makeEvent(rule.id), items: [item], identity: identity(rule.id) });
+    const ok = tight.writeEventTransaction({
+      event: makeEvent(rule.id),
+      items: [item],
+      identity: identity(rule.id),
+    });
     expect(ok).toEqual({ ok: true });
     const tight2 = new WatchRepository(handle, { maxEventEvidenceBytes: bytes - 1 });
-    const fail = tight2.writeEventTransaction({ event: makeEvent(rule.id), items: [item], identity: identity(rule.id) });
+    const fail = tight2.writeEventTransaction({
+      event: makeEvent(rule.id),
+      items: [item],
+      identity: identity(rule.id),
+    });
     expect(fail).toEqual({ ok: false, code: 'event-budget-exceeded' });
   });
 
@@ -559,7 +568,11 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     const rule = makeRule();
     repo.insertRule(rule);
     const tiny = new WatchRepository(handle, { maxDbBytes: 10 });
-    const result = tiny.writeEventTransaction({ event: makeEvent(rule.id), items: [makeItem()], identity: identity(rule.id) });
+    const result = tiny.writeEventTransaction({
+      event: makeEvent(rule.id),
+      items: [makeItem()],
+      identity: identity(rule.id),
+    });
     expect(result).toEqual({ ok: false, code: 'db-budget-exceeded' });
   });
 
@@ -590,7 +603,9 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     const rule = makeRule();
     repo.insertRule(rule);
     const event = makeEvent(rule.id);
-    expect(repo.writeEventTransaction({ event, items: [makeItem()], identity: identity(event.ruleId) })).toEqual({ ok: true });
+    expect(
+      repo.writeEventTransaction({ event, items: [makeItem()], identity: identity(event.ruleId) }),
+    ).toEqual({ ok: true });
     handle
       .prepare('UPDATE watch_events SET first_observed_at = ? WHERE id = ?')
       .run('not-a-time', event.id);
@@ -785,7 +800,13 @@ describe('保留预算（§10.4）', () => {
         firstObservedAt: new Date(base - i * 1000).toISOString(),
         lastObservedAt: new Date(base - i * 1000).toISOString(),
       });
-      expect(repo.writeEventTransaction({ event, items: [makeItem()], identity: identity(event.ruleId) })).toEqual({ ok: true });
+      expect(
+        repo.writeEventTransaction({
+          event,
+          items: [makeItem()],
+          identity: identity(event.ruleId),
+        }),
+      ).toEqual({ ok: true });
     }
     expect(repo.pruneEventsByRuleLimits(new Date(base).toISOString())).toEqual({
       deleted: 0,
@@ -793,12 +814,24 @@ describe('保留预算（§10.4）', () => {
     });
     // +1 → 删 1（最旧）
     const extra = makeEvent(rule.id, { firstObservedAt: freshTime, lastObservedAt: freshTime });
-    expect(repo.writeEventTransaction({ event: extra, items: [makeItem()] })).toEqual({ ok: true });
+    expect(
+      repo.writeEventTransaction({
+        event: extra,
+        items: [makeItem()],
+        identity: identity(extra.ruleId),
+      }),
+    ).toEqual({ ok: true });
     expect(repo.pruneEventsByRuleLimits(new Date(base).toISOString()).deleted).toBe(1);
     expect(count('watch_events')).toBe(200);
     // 91 天前事件 → 时间截止删除
     const ancient = makeEvent(rule.id, { firstObservedAt: oldTime, lastObservedAt: oldTime });
-    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()], identity: identity(ancient.ruleId) })).toEqual({
+    expect(
+      repo.writeEventTransaction({
+        event: ancient,
+        items: [makeItem()],
+        identity: identity(ancient.ruleId),
+      }),
+    ).toEqual({
       ok: true,
     });
     const pruned = repo.pruneEventsByRuleLimits(new Date(base).toISOString());
@@ -823,11 +856,29 @@ describe('保留预算（§10.4）', () => {
       firstObservedAt: new Date(base - 1000).toISOString(),
       lastObservedAt: new Date(base - 1000).toISOString(),
     });
-    expect(repo.writeEventTransaction({ event: evA, items: [makeItem()] })).toEqual({ ok: true });
+    expect(
+      repo.writeEventTransaction({
+        event: evA,
+        items: [makeItem()],
+        identity: identity(evA.ruleId),
+      }),
+    ).toEqual({ ok: true });
     const afterA = repo.estimateLogicalBytes();
-    expect(repo.writeEventTransaction({ event: evB, items: [makeItem()] })).toEqual({ ok: true });
+    expect(
+      repo.writeEventTransaction({
+        event: evB,
+        items: [makeItem()],
+        identity: identity(evB.ruleId),
+      }),
+    ).toEqual({ ok: true });
     const afterB = repo.estimateLogicalBytes();
-    expect(repo.writeEventTransaction({ event: evC, items: [makeItem()] })).toEqual({ ok: true });
+    expect(
+      repo.writeEventTransaction({
+        event: evC,
+        items: [makeItem()],
+        identity: identity(evC.ruleId),
+      }),
+    ).toEqual({ ok: true });
     const afterC = repo.estimateLogicalBytes();
     // evA 已读；evB/evC 未读。预算设为「只差 evA 边际」→ 只允许删 evA
     // （读优先 + 最旧），证明清理顺序而不是任意删除。
@@ -849,7 +900,13 @@ describe('保留预算（§10.4）', () => {
       firstObservedAt: '2026-01-01T00:00:00.000Z',
       lastObservedAt: '2026-01-01T00:00:00.000Z',
     });
-    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()], identity: identity(ancient.ruleId) })).toEqual({
+    expect(
+      repo.writeEventTransaction({
+        event: ancient,
+        items: [makeItem()],
+        identity: identity(ancient.ruleId),
+      }),
+    ).toEqual({
       ok: true,
     });
     handle
@@ -891,7 +948,13 @@ describe('保留预算（§10.4）', () => {
     const old = makeEvent(rule.id, { firstObservedAt: day31, lastObservedAt: day31 });
     const edge = makeEvent(rule.id, { firstObservedAt: day30, lastObservedAt: day30 });
     for (const event of [old, edge]) {
-      expect(repo.writeEventTransaction({ event, items: [makeItem()], identity: identity(event.ruleId) })).toEqual({ ok: true });
+      expect(
+        repo.writeEventTransaction({
+          event,
+          items: [makeItem()],
+          identity: identity(event.ruleId),
+        }),
+      ).toEqual({ ok: true });
     }
     repo.pruneEventsByRuleLimits(new Date(base).toISOString());
     expect(repo.getEvent(old.id)).toBeNull();
