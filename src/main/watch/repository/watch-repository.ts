@@ -16,7 +16,6 @@
 import { closeDb, withTransaction, type DbHandle } from '../db/watch-driver';
 import { logWarn } from '../../logger';
 import {
-  MAX_DIGEST_BYTES,
   MAX_EVENT_EVIDENCE_BYTES,
   MAX_PAGE_PROJECTION_BYTES,
   MAX_WATCH_DB_BYTES,
@@ -97,12 +96,10 @@ export interface WatchRepositoryOptions {
   maxDbBytes?: number;
   maxEventEvidenceBytes?: number;
   maxBaselineBytes?: number;
-  maxDigestBytes?: number;
 }
 
 type OkResult = { ok: true };
-type ErrResult<E extends WatchErrorCode> = { ok: false; code: E };
-export type WatchResult<E extends WatchErrorCode = WatchErrorCode> = OkResult | ErrResult<E>;
+export type WatchResult = OkResult | { ok: false; code: WatchErrorCode };
 
 // ---------------------------------------------------------------------------
 // 编译期 SQL 常量（全部参数绑定；无动态拼接）
@@ -133,8 +130,6 @@ const SQL_SELECT_INTENT_EXISTS = 'SELECT 1 AS x FROM source_cleanup_intents WHER
 const SQL_SELECT_RULES_ACCESS = 'SELECT id, access_mode FROM watch_rules';
 const SQL_DELETE_RULE = 'DELETE FROM watch_rules WHERE id = ?';
 const SQL_DELETE_RULES_BY_SOURCE = 'DELETE FROM watch_rules WHERE source_id = ?';
-const SQL_UPDATE_RULE_TARGET = 'UPDATE watch_rules SET target_json = ?, updated_at = ? WHERE id = ?';
-
 const SQL_UPDATE_RULE_COORDINATION = `UPDATE watch_rules
   SET state = ?, pause_reason = ?, source_row_version = ?, source_locator_fingerprint = ?, updated_at = ?
   WHERE id = ? AND state IS ? AND pause_reason IS ? AND source_row_version = ?
@@ -362,7 +357,6 @@ export class WatchRepository {
   private readonly maxDbBytes: number;
   private readonly maxEventEvidenceBytes: number;
   private readonly maxBaselineBytes: number;
-  private readonly maxDigestBytes: number;
   private disposed = false;
 
   constructor(handle: DbHandle, options: WatchRepositoryOptions = {}) {
@@ -370,7 +364,6 @@ export class WatchRepository {
     this.maxDbBytes = options.maxDbBytes ?? MAX_WATCH_DB_BYTES;
     this.maxEventEvidenceBytes = options.maxEventEvidenceBytes ?? MAX_EVENT_EVIDENCE_BYTES;
     this.maxBaselineBytes = options.maxBaselineBytes ?? MAX_PAGE_PROJECTION_BYTES;
-    this.maxDigestBytes = options.maxDigestBytes ?? MAX_DIGEST_BYTES;
   }
 
   get dbHandle(): DbHandle {
@@ -579,7 +572,7 @@ export class WatchRepository {
       sourceLocatorFingerprint: string;
     },
     nowIso?: string,
-  ): WatchResult<'rule-not-found' | 'rule-state-conflict'> {
+  ): WatchResult {
     this.ensureOpen();
     try {
       const result = this.handle.prepare(SQL_UPDATE_RULE_COORDINATION).run(
@@ -606,7 +599,7 @@ export class WatchRepository {
     }
   }
 
-  deleteRule(ruleId: string): WatchResult<'rule-not-found'> {
+  deleteRule(ruleId: string): WatchResult {
     this.ensureOpen();
     try {
       const result = this.handle.prepare(SQL_DELETE_RULE).run(ruleId);
@@ -693,7 +686,7 @@ export class WatchRepository {
     finalUrl: string;
     capturedAt: string;
     documentId: string | null;
-  }): WatchResult<'rule-not-found' | 'baseline-conflict' | 'baseline-budget-exceeded' | 'db-budget-exceeded'> {
+  }): WatchResult {
     this.ensureOpen();
     if (!Number.isInteger(input.byteLength) || input.byteLength < 0 || input.byteLength > this.maxBaselineBytes) {
       return { ok: false, code: 'baseline-budget-exceeded' };
@@ -722,7 +715,7 @@ export class WatchRepository {
     finalUrl: string;
     capturedAt: string;
     documentId: string | null;
-  }): WatchResult<'baseline-conflict'> {
+  }): WatchResult {
     if (input.expectedBaselineVersion === null) {
       const result = this.handle.prepare(SQL_INSERT_BASELINE).run(
         input.ruleId,
@@ -795,7 +788,7 @@ export class WatchRepository {
     requestKey: string;
     trigger: 'scheduled' | 'catch-up' | 'manual';
     scheduledFor: string | null;
-  }): WatchResult<'duplicate-request-key' | 'rule-not-found'> {
+  }): WatchResult {
     this.ensureOpen();
     try {
       const exists = this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(input.ruleId);
@@ -824,7 +817,7 @@ export class WatchRepository {
       health?: WatchHealthSnapshot | null;
       responseMetadataJson?: string | null;
     },
-  ): WatchResult<'run-not-found' | 'run-state-conflict'> {
+  ): WatchResult {
     this.ensureOpen();
     try {
       const result = this.handle.prepare(SQL_TRANSITION_RUN).run(
@@ -986,19 +979,7 @@ export class WatchRepository {
       privacyJson: string;
       createdAt: string;
     }>;
-  }): WatchResult<
-    | 'rule-not-found'
-    | 'validation-failed'
-    | 'event-budget-exceeded'
-    | 'baseline-budget-exceeded'
-    | 'db-budget-exceeded'
-    | 'baseline-conflict'
-    | 'duplicate-idempotency'
-    | 'duplicate-item-sequence'
-    | 'run-not-found'
-    | 'run-state-conflict'
-    | 'duplicate-dedupe'
-  > {
+  }): WatchResult {
     this.ensureOpen();
     if (input.event.itemCount !== input.items.length || input.items.length < 1) {
       return { ok: false, code: 'validation-failed' };
@@ -1202,7 +1183,7 @@ export class WatchRepository {
     digestId: string;
     eventId: string;
     status: 'active' | 'expired' | 'user-deleted';
-  }): WatchResult<'duplicate-ref'> {
+  }): WatchResult {
     this.ensureOpen();
     try {
       this.handle.prepare(SQL_INSERT_DIGEST_REF).run(input.digestId, input.eventId, input.status);
@@ -1231,7 +1212,7 @@ export class WatchRepository {
   // source_cleanup_intents（§10.3 状态机）
   // -------------------------------------------------------------------------
 
-  insertSourceCleanupIntent(input: SourceCleanupIntentRow): WatchResult<'duplicate-mutation' | 'validation-failed'> {
+  insertSourceCleanupIntent(input: SourceCleanupIntentRow): WatchResult {
     this.ensureOpen();
     if (input.beforeProjection !== null && validateSourceWatchProjection(input.beforeProjection) === null) {
       return { ok: false, code: 'validation-failed' };
@@ -1330,7 +1311,7 @@ export class WatchRepository {
     expectedState: SourceCleanupIntentState,
     nextState: SourceCleanupIntentState,
     nowIso: string,
-  ): WatchResult<'intent-not-found' | 'intent-state-conflict'> {
+  ): WatchResult {
     this.ensureOpen();
     // 状态机（§10.3）：prepared → {source-committed, complete, aborted}；
     // source-committed → {complete, aborted}；终态（complete/aborted）不可离开

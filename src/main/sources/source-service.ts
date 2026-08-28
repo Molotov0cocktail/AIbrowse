@@ -77,6 +77,11 @@ import type {
   UndoableChange,
 } from '../../shared/types/sources';
 import { QUICK_ADD_RELATED_MAX } from '../../shared/types/sources';
+import type {
+  SourceLifecycleObserver,
+  SourceWatchMutation,
+  SourceWatchProjection,
+} from '../../shared/types/watch';
 
 export const CONFIRM_TOKEN_TTL_MS = 300_000; // 决议 #56：TTL 300s
 const SEARCH_LIMIT_DEFAULT = 10;
@@ -131,7 +136,22 @@ export interface SourceServiceOptions {
   db: DbHandle | null;
   now?: () => number; // 时间可注入（journal 清理/令牌过期测试）
   state?: { mode: 'normal' | 'readonly-recovery'; reason: string | null }; // B7 恢复态装配（缺省 normal）
+  // D4（detailed-design §10.3）：Source 生命周期内部观察者（WatchLifecycleCoordinator）。
+  // 缺省显式 no-op（仅单测/既有调用点向后兼容；生产 D4 起恒注入 active coordinator）。
+  observer?: SourceLifecycleObserver;
 }
+
+// D4：Watch 窄投影读取端口（内部/装配层使用，不进 SourceService 公共接口/IPC）
+export interface SourceWatchProjectionProvider {
+  getSourceWatchProjection(sourceId: string): SourceWatchProjection | null;
+}
+
+// D4：observer 缺省显式 no-op（votes 恒 true——未经 D4 接线的旧装配/单测语义不变）
+const NOOP_SOURCE_WATCH_OBSERVER: SourceLifecycleObserver = {
+  prepare: () => ({ ok: true }),
+  commit: () => ({ ok: true }),
+  abort: () => {},
+};
 
 interface OpTarget {
   expectedVersion: number;
@@ -147,12 +167,14 @@ export class SourceServiceImpl implements SourceService {
   private readonly tokenIssuer: InMemoryConfirmTokenIssuer;
   private readonly dbHandle: DbHandle | null;
   private readonly state: { mode: 'normal' | 'readonly-recovery'; reason: string | null };
+  private readonly watchObserver: SourceLifecycleObserver;
   private disposed = false;
 
   constructor(options: SourceServiceOptions) {
     this.dbHandle = options.db;
     this.nowMs = options.now ?? (() => Date.now());
     this.state = options.state ?? { mode: 'normal', reason: null };
+    this.watchObserver = options.observer ?? NOOP_SOURCE_WATCH_OBSERVER;
     // B7 恢复态（db=null）：不构造任何数据库访问器；disposed=true 复用全部既有
     // 门控（读写/Undo/usage/rebuild 均结构化 source-unavailable，零磁盘写入）
     if (options.db === null) {
@@ -183,6 +205,71 @@ export class SourceServiceImpl implements SourceService {
   private get index(): SourceSearchIndex {
     if (this.indexImpl === null) throw new Error('程序缺陷：恢复态下访问 SourceSearchIndex');
     return this.indexImpl;
+  }
+
+  // --- D4（§10.3）：Watch 生命周期协调（内部 observer + 窄投影读取端口） ---
+
+  // 只读窄投影（user-audience；blocked 亦可见；零 note/usage/DB 句柄）
+  private toWatchProjection(row: SourceRow): SourceWatchProjection {
+    return {
+      sourceId: row.id,
+      rowVersion: row.version,
+      enabled: row.enabled === 1,
+      deletedAt: row.deleted_at,
+      scope: row.scope,
+      canonicalKey: row.canonical_key,
+    };
+  }
+
+  // 内部端口（不进 SourceService 公共接口/IPC）：按 sourceId 返回宽投影
+  // 或 null（不存在/非法 id/不可用）。coordinator 经延迟端口读取。
+  getSourceWatchProjection(sourceId: string): SourceWatchProjection | null {
+    if (this.disposed) return null;
+    if (!isUuidShape(sourceId)) return null;
+    try {
+      const row = this.repo.getSourceById(sourceId);
+      if (row === null) return null;
+      return this.toWatchProjection(row);
+    } catch (err) {
+      logWarn('sources', 'getSourceWatchProjection 读取失败（fail-closed 返回 null）', err);
+      return null;
+    }
+  }
+
+  // prepare：返回 observer 是否确认（失败时 Watch 进入 unavailable；除 hard-delete
+  // 外 Source 操作仍允许提交——「不得报告 Watch 已协调」，§10.3）
+  private watchPrepare(changes: SourceWatchMutation[]): boolean {
+    try {
+      const result = this.watchObserver.prepare(changes);
+      if (!result.ok) {
+        logWarn('sources', 'Watch prepare 未确认（Watch unavailable；Source 操作继续但未协调）');
+      }
+      return result.ok;
+    } catch (err) {
+      logWarn('sources', 'Watch prepare 异常（按未确认处理）', err);
+      return false;
+    }
+  }
+
+  private watchCommit(mutationIds: string[]): void {
+    try {
+      const result = this.watchObserver.commit(mutationIds);
+      if (!result.ok) {
+        // Source 已提交不能跨库回滚：API 如实返回成功；Watch unavailable、
+        // prepared intent 留待启动 reconciliation（§10.3）
+        logWarn('sources', 'Watch commit 未确认（Source 操作已提交；intent 留待启动 reconciliation）');
+      }
+    } catch (err) {
+      logWarn('sources', 'Watch commit 异常（Source 操作已提交；Watch unavailable）', err);
+    }
+  }
+
+  private watchAbort(mutationIds: string[]): void {
+    try {
+      this.watchObserver.abort(mutationIds);
+    } catch (err) {
+      logWarn('sources', 'Watch abort 异常（Watch unavailable；Source 操作事务已回滚）', err);
+    }
   }
 
   // --- 检索/列表/get（B3 完整实现：audience 必填（决议 #58）+ FTS/LIKE 分流（决议 #60）
@@ -441,12 +528,85 @@ export class SourceServiceImpl implements SourceService {
     const sourceIds: string[] = [];
     const results: SourceChangeResult['results'] = [];
     const now = this.iso(this.nowMs());
+    // D4（§10.3）：批量 change set 作为一个 observer batch——写事务前生成
+    // 不可变 before/after 窄投影与 UUID mutationIds（add 的 id 预生成）
+    const addIds = new Map<number, string>();
+    const mutations: SourceWatchMutation[] = [];
+    for (let i = 0; i < ops.length; i += 1) {
+      const op = ops[i]!;
+      if (op.kind === 'add') {
+        const newId = randomUUID();
+        addIds.set(i, newId);
+        mutations.push({
+          mutationId: randomUUID(),
+          operation: 'create',
+          before: null,
+          after: {
+            sourceId: newId,
+            rowVersion: 1,
+            enabled: true,
+            deletedAt: null,
+            scope: op.scope,
+            canonicalKey: op.canonicalKey,
+          },
+        });
+      } else if (op.kind === 'update') {
+        const row = targets.get(op.sourceId)!;
+        const canonicalKey = this.afterCanonicalKey(op.patch, row) ?? row.canonical_key;
+        mutations.push({
+          mutationId: randomUUID(),
+          operation: 'update',
+          before: this.toWatchProjection(row),
+          after: {
+            sourceId: row.id,
+            rowVersion: row.version + 1,
+            enabled: row.enabled === 1,
+            deletedAt: row.deleted_at,
+            scope: row.scope,
+            canonicalKey,
+          },
+        });
+      } else if (op.kind === 'disable') {
+        const row = targets.get(op.sourceId)!;
+        mutations.push({
+          mutationId: randomUUID(),
+          operation: 'disable',
+          before: this.toWatchProjection(row),
+          after: {
+            sourceId: row.id,
+            rowVersion: row.version + 1,
+            enabled: false,
+            deletedAt: now,
+            scope: row.scope,
+            canonicalKey: row.canonical_key,
+          },
+        });
+      } else {
+        // restore
+        const row = targets.get(op.sourceId)!;
+        mutations.push({
+          mutationId: randomUUID(),
+          operation: 'restore',
+          before: this.toWatchProjection(row),
+          after: {
+            sourceId: row.id,
+            rowVersion: row.version + 1,
+            enabled: true,
+            deletedAt: null,
+            scope: row.scope,
+            canonicalKey: row.canonical_key,
+          },
+        });
+      }
+    }
+    const mutationIds = mutations.map((m) => m.mutationId);
+    const watched = mutations.length > 0 ? this.watchPrepare(mutations) : true;
     try {
       withTransaction(this.handle, () => {
         for (let i = 0; i < ops.length; i += 1) {
           const op = ops[i];
           if (op.kind === 'add') {
-            this.executeAdd(op, 'ai', now, beforeMap, afterMap, sourceIds, results, i);
+            this.executeAdd(op, 'ai', now, beforeMap, afterMap, sourceIds, results, i, addIds.get(i)!);
           } else if (op.kind === 'update') {
             this.executeUpdate(
               op,
@@ -496,6 +656,7 @@ export class SourceServiceImpl implements SourceService {
         });
       });
     } catch (err) {
+      if (watched) this.watchAbort(mutationIds);
       if (err instanceof RepositoryError && err.code === 'duplicate-source') {
         // 唯一约束兜底（并发/同 set 内重复）：回滚后定位冲突 add 并回注既有 id
         // （决议 #66：撞 blocked 条目不回注——零泄漏）
@@ -539,7 +700,17 @@ export class SourceServiceImpl implements SourceService {
       }
       return this.unavailableChange('applyChangeSet 事务失败', err);
     }
+    if (watched) this.watchCommit(mutationIds);
     return { ok: true, idempotencyKey, results };
+  }
+
+  // D4：update 后 canonicalKey（patch.url 变更时重新规范化；验证层已保证成功，
+  // 防御性失败返回 null 由调用方回退当前键）
+  private afterCanonicalKey(patch: NormalizedPatch, current: SourceRow): string | null {
+    if (patch.url === undefined) return current.canonical_key;
+    const normalized = normalizeSourceUrl(patch.url, current.scope);
+    if (!normalized.ok) return null;
+    return normalized.canonicalKey;
   }
 
   // 只读预览（B4 决议 #66）：与 applyChangeSet 同一校验语义（validateChangeSet +
@@ -619,9 +790,26 @@ export class SourceServiceImpl implements SourceService {
     const sourceIds: string[] = [];
     const results: SourceChangeResult['results'] = [];
     const now = this.iso(this.nowMs());
+    // D4（§10.3）：写事务前生成不可变 before/after 窄投影 + UUID mutationId
+    //（add 的 id 预生成供 after 投影使用）
+    const newId = randomUUID();
+    const mutation: SourceWatchMutation = {
+      mutationId: randomUUID(),
+      operation: 'create',
+      before: null,
+      after: {
+        sourceId: newId,
+        rowVersion: 1,
+        enabled: true,
+        deletedAt: null,
+        scope: op.scope,
+        canonicalKey: op.canonicalKey,
+      },
+    };
+    const watched = this.watchPrepare([mutation]);
     try {
       withTransaction(this.handle, () => {
-        this.executeAdd(op, 'user', now, beforeMap, afterMap, sourceIds, results, 0);
+        this.executeAdd(op, 'user', now, beforeMap, afterMap, sourceIds, results, 0, newId);
         this.journal.record({
           idempotencyKey,
           runId: null,
@@ -636,11 +824,13 @@ export class SourceServiceImpl implements SourceService {
         });
       });
     } catch (err) {
+      if (watched) this.watchAbort([mutation.mutationId]);
       if (err instanceof RepositoryError && err.code === 'duplicate-source') {
         return { ok: false, errorCode: 'source-duplicate' };
       }
       return this.unavailableManual('addManual 事务失败', err);
     }
+    if (watched) this.watchCommit([mutation.mutationId]);
     const row = this.repo.getSourceById(sourceIds[0] ?? '');
     if (row === null) return this.unavailableManual('addManual 读回失败', new Error('读回失败'));
     return { ok: true, source: this.buildView(row), idempotencyKey, undoable: true };
@@ -663,6 +853,8 @@ export class SourceServiceImpl implements SourceService {
     const validation = validateManualPatch(patch);
     if (!validation.ok || validation.patch === null)
       return { ok: false, errorCode: 'source-invalid-change' };
+    let watched = false;
+    let mutation: SourceWatchMutation | null = null;
     try {
       const row = this.repo.getSourceById(id);
       if (row === null) return { ok: false, errorCode: 'source-not-found' };
@@ -674,6 +866,22 @@ export class SourceServiceImpl implements SourceService {
       const sourceIds: string[] = [];
       const results: SourceChangeResult['results'] = [];
       const now = this.iso(this.nowMs());
+      // D4（§10.3）：写事务前生成不可变 before/after 窄投影 + UUID mutationId
+      const canonicalKey = this.afterCanonicalKey(validation.patch!, row) ?? row.canonical_key;
+      mutation = {
+        mutationId: randomUUID(),
+        operation: 'update',
+        before: this.toWatchProjection(row),
+        after: {
+          sourceId: row.id,
+          rowVersion: row.version + 1,
+          enabled: row.enabled === 1,
+          deletedAt: row.deleted_at,
+          scope: row.scope,
+          canonicalKey,
+        },
+      };
+      watched = this.watchPrepare([mutation]);
       withTransaction(this.handle, () => {
         this.executeUpdate(
           { kind: 'update', sourceId: id, expectedVersion, patch: validation.patch! },
@@ -698,11 +906,13 @@ export class SourceServiceImpl implements SourceService {
           appliedAt: now,
         });
       });
+      if (watched && mutation !== null) this.watchCommit([mutation.mutationId]);
       const updated = this.repo.getSourceById(id);
       if (updated === null)
         return this.unavailableManual('updateManual 读回失败', new Error('读回失败'));
       return { ok: true, source: this.buildView(updated), idempotencyKey, undoable: true };
     } catch (err) {
+      if (watched && mutation !== null) this.watchAbort([mutation.mutationId]);
       if (err instanceof RepositoryError && err.code === 'duplicate-source') {
         return { ok: false, errorCode: 'source-duplicate' };
       }
@@ -727,10 +937,24 @@ export class SourceServiceImpl implements SourceService {
     if (!this.tokenIssuer.consume(id, confirmToken)) {
       return { ok: false, errorCode: 'source-conflict' }; // 未签发/错绑定/过期/重用（决议 #56）
     }
+    let watched = false;
+    let mutation: SourceWatchMutation | null = null;
     try {
       const row = this.repo.getSourceById(id);
       if (row === null) return { ok: false, errorCode: 'source-not-found' };
       const view = this.buildView(row); // 删除前最终视图（回注用）
+      // D4（§10.3）：hard-delete 必须先 prepare——失败 → 返回既有
+      // source-unavailable 且 sources.db 零写（绝不承诺级联却留下 Watch 私有数据）
+      mutation = {
+        mutationId: randomUUID(),
+        operation: 'hard-delete',
+        before: this.toWatchProjection(row),
+        after: null,
+      };
+      watched = this.watchPrepare([mutation]);
+      if (!watched) {
+        return { ok: false, errorCode: 'source-unavailable' };
+      }
       withTransaction(this.handle, () => {
         const rowid = this.repo.getSourceRowid(id);
         if (rowid !== null)
@@ -744,8 +968,10 @@ export class SourceServiceImpl implements SourceService {
         }
         this.repo.deleteSource(id); // CASCADE 清 tag_links 与 usage_events
       });
+      this.watchCommit([mutation.mutationId]);
       return { ok: true, source: view, idempotencyKey: '', undoable: false }; // 不可 Undo
     } catch (err) {
+      if (watched && mutation !== null) this.watchAbort([mutation.mutationId]);
       return this.unavailableManual('hardDeleteManual 事务失败', err);
     }
   }
@@ -772,6 +998,7 @@ export class SourceServiceImpl implements SourceService {
         return { ok: false, errorCode: 'source-unavailable' };
       }
       // 前置版本校验：当前 version 必须与 after 快照一致（不覆盖后续修改，ST-10）
+      const currentRows = new Map<string, SourceRow>();
       for (const [sourceId, snapshot] of Object.entries(before)) {
         const current = this.repo.getSourceById(sourceId);
         if (current === null) {
@@ -784,16 +1011,58 @@ export class SourceServiceImpl implements SourceService {
         if (current.version !== afterSnapshot.row.version) {
           return { ok: false, errorCode: 'source-undo-conflict' };
         }
+        currentRows.set(sourceId, current);
         void snapshot;
       }
+      // D4（§10.3）：Undo 写事务前生成批量 before/after 窄投影（逆 add 的
+      // after=null 走级联；改 URL 的 Undo 由 coordinator 按 fingerprint 判定）
+      const undoMutations: SourceWatchMutation[] = [];
+      for (const sourceId of Object.keys(before).sort()) {
+        const current = currentRows.get(sourceId)!;
+        const snapshot = before[sourceId]!;
+        undoMutations.push({
+          mutationId: randomUUID(),
+          operation: 'undo',
+          before: this.toWatchProjection(current),
+          after:
+            snapshot.row === null
+              ? null
+              : {
+                  sourceId: sourceId,
+                  rowVersion: snapshot.row.version,
+                  enabled: snapshot.row.enabled === 1,
+                  deletedAt: snapshot.row.deleted_at,
+                  scope: snapshot.row.scope,
+                  canonicalKey: snapshot.row.canonical_key,
+                },
+        });
+      }
+      const undoMutationIds = undoMutations.map((m) => m.mutationId);
+      const watchedUndo =
+        undoMutations.length > 0 ? this.watchPrepare(undoMutations) : true;
       const now = this.iso(this.nowMs());
-      withTransaction(this.handle, () => {
-        for (const [sourceId, snapshot] of Object.entries(before)) {
-          if (snapshot.row === null) {
-            // add 反向：物理删除（FTS + links/usage CASCADE）
-            const current = this.repo.getSourceById(sourceId);
-            const rowid = current === null ? null : this.repo.getSourceRowid(sourceId);
-            if (current !== null && rowid !== null) {
+      try {
+        withTransaction(this.handle, () => {
+          for (const [sourceId, snapshot] of Object.entries(before)) {
+            if (snapshot.row === null) {
+              // add 反向：物理删除（FTS + links/usage CASCADE）
+              const current = this.repo.getSourceById(sourceId);
+              const rowid = current === null ? null : this.repo.getSourceRowid(sourceId);
+              if (current !== null && rowid !== null) {
+                this.repo.ftsDelete(
+                  rowid,
+                  current.name,
+                  current.url,
+                  current.user_note,
+                  current.ai_note,
+                );
+              }
+              this.repo.deleteSource(sourceId);
+              continue;
+            }
+            const current = this.repo.getSourceById(sourceId)!;
+            const rowid = this.repo.getSourceRowid(sourceId);
+            if (rowid !== null) {
               this.repo.ftsDelete(
                 rowid,
                 current.name,
@@ -802,38 +1071,30 @@ export class SourceServiceImpl implements SourceService {
                 current.ai_note,
               );
             }
-            this.repo.deleteSource(sourceId);
-            continue;
-          }
-          const current = this.repo.getSourceById(sourceId)!;
-          const rowid = this.repo.getSourceRowid(sourceId);
-          if (rowid !== null) {
-            this.repo.ftsDelete(
-              rowid,
-              current.name,
-              current.url,
-              current.user_note,
-              current.ai_note,
+            this.repo.restoreSourceSnapshot(snapshot.row);
+            const restoredRowid = this.repo.getSourceRowid(sourceId)!;
+            this.repo.ftsInsert(
+              restoredRowid,
+              snapshot.row.name,
+              snapshot.row.url,
+              snapshot.row.user_note,
+              snapshot.row.ai_note,
             );
+            const tagIds = snapshot.tags.map((name) => this.repo.upsertTag(name, now).id);
+            this.repo.setSourceTags(sourceId, tagIds);
+            // group_id 直接恢复（B2 无组删除；组名 upsert 语义在快照之外不需要重建）
           }
-          this.repo.restoreSourceSnapshot(snapshot.row);
-          const restoredRowid = this.repo.getSourceRowid(sourceId)!;
-          this.repo.ftsInsert(
-            restoredRowid,
-            snapshot.row.name,
-            snapshot.row.url,
-            snapshot.row.user_note,
-            snapshot.row.ai_note,
-          );
-          const tagIds = snapshot.tags.map((name) => this.repo.upsertTag(name, now).id);
-          this.repo.setSourceTags(sourceId, tagIds);
-          // group_id 直接恢复（B2 无组删除；组名 upsert 语义在快照之外不需要重建）
-        }
-        this.journal.deleteByKey(idempotencyKey); // 消费即失效（决议 #52）
-      });
+          this.journal.deleteByKey(idempotencyKey); // 消费即失效（决议 #52）
+        });
+      } catch (err) {
+        if (watchedUndo) this.watchAbort(undoMutationIds);
+        logWarn('sources', 'undoChange 回放失败（已整体回滚）', err);
+        return { ok: false, errorCode: 'source-unavailable' };
+      }
+      if (watchedUndo) this.watchCommit(undoMutationIds);
       return { ok: true };
     } catch (err) {
-      logWarn('sources', 'undoChange 回放失败（已整体回滚）', err);
+      logWarn('sources', 'undoChange 前置校验异常（安全拒绝）', err);
       return { ok: false, errorCode: 'source-unavailable' };
     }
   }
@@ -1168,6 +1429,7 @@ export class SourceServiceImpl implements SourceService {
     sourceIds: string[],
     results: SourceChangeResult['results'],
     opIndex: number,
+    rowId: string, // D4：观察者 after 投影所需的预生成 id（原逻辑为事务内 randomUUID）
   ): void {
     let groupId: string | null = null;
     if (op.groupName !== null) {
@@ -1175,7 +1437,7 @@ export class SourceServiceImpl implements SourceService {
     }
     const tagIds = op.tags.map((name) => this.repo.upsertTag(name, now).id);
     const row: SourceRow = {
-      id: randomUUID(),
+      id: rowId,
       scope: op.scope,
       canonical_key: op.canonicalKey,
       url: op.url,
@@ -1338,6 +1600,8 @@ export class SourceServiceImpl implements SourceService {
     ) {
       return Promise.resolve({ ok: false, errorCode: 'source-invalid-change' });
     }
+    let watched = false;
+    let mutation: SourceWatchMutation | null = null;
     try {
       const row = this.repo.getSourceById(id);
       if (row === null) return Promise.resolve({ ok: false, errorCode: 'source-not-found' });
@@ -1350,6 +1614,21 @@ export class SourceServiceImpl implements SourceService {
       const sourceIds: string[] = [];
       const results: SourceChangeResult['results'] = [];
       const now = this.iso(this.nowMs());
+      // D4（§10.3）：disable/restore 写事务前窄投影 + mutationId
+      mutation = {
+        mutationId: randomUUID(),
+        operation: kind,
+        before: this.toWatchProjection(row),
+        after: {
+          sourceId: row.id,
+          rowVersion: row.version + 1,
+          enabled: kind === 'restore',
+          deletedAt: kind === 'disable' ? now : null,
+          scope: row.scope,
+          canonicalKey: row.canonical_key,
+        },
+      };
+      watched = this.watchPrepare([mutation]);
       withTransaction(this.handle, () => {
         if (kind === 'disable') {
           this.executeDisable(
@@ -1387,6 +1666,7 @@ export class SourceServiceImpl implements SourceService {
           appliedAt: now,
         });
       });
+      if (watched && mutation !== null) this.watchCommit([mutation.mutationId]);
       const updated = this.repo.getSourceById(id);
       if (updated === null)
         return Promise.resolve(this.unavailableManual('状态迁移读回失败', new Error('读回失败')));
@@ -1397,6 +1677,7 @@ export class SourceServiceImpl implements SourceService {
         undoable: true,
       });
     } catch (err) {
+      if (watched && mutation !== null) this.watchAbort([mutation.mutationId]);
       if (err instanceof RepositoryError && err.code === 'version-mismatch') {
         return Promise.resolve({ ok: false, errorCode: 'source-version-conflict' });
       }

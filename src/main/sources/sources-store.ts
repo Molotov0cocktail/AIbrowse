@@ -33,12 +33,16 @@ import { MIGRATIONS, runMigrations, type MigrationStep } from './db/migrations';
 import { openDb, closeDb, type DbHandle } from './db/sqlite-driver';
 import { SourceServiceImpl } from './source-service';
 import type { SourceService } from '../../shared/types/sources';
+import type { SourceLifecycleObserver } from '../../shared/types/watch';
 
 export interface SourcesStoreOptions {
   dbPath: string; // 主进程生成的绝对路径（<userData>/sources/sources.db 或冒烟临时目录）
   backupsDir: string; // 主进程生成的绝对路径（<userData>/sources/backups）
   migrations?: readonly MigrationStep[]; // SMOKE_MODE 注入（迁移失败矩阵）；生产缺省 MIGRATIONS
   nowMs?: () => number;
+  // D4（§10.3）：Source 生命周期内部观察者透传（生产恒注入 active
+  // WatchLifecycleCoordinator；缺省 SourceServiceImpl 内部显式 no-op）
+  observer?: SourceLifecycleObserver;
 }
 
 export type SourcesStoreOutcome =
@@ -55,7 +59,7 @@ export function openSourcesStore(options: SourcesStoreOptions): SourcesStoreOutc
     logError('sources', `Sources 进入只读恢复态：${reason}（浏览器其余能力不受影响）`);
     // 恢复态不打开磁盘库（磁盘文件不被写、读入口按决议 #39 一并拒绝）——
     // service 以 db=null 装配，全部读写/Undo/usage/rebuild 结构化拒绝且零写入
-    const service = new SourceServiceImpl({
+    const service = new SourceServiceImpl({ observer: options.observer,
       db: null,
       now: nowMs,
       state: { mode: 'readonly-recovery', reason },
@@ -85,7 +89,7 @@ export function openSourcesStore(options: SourcesStoreOptions): SourcesStoreOutc
         logError('sources', 'Sources 新库初始化迁移失败', err);
         return { mode: 'unavailable', service: null, reason: '信源数据库初始化失败（详见日志）' };
       }
-      const service = new SourceServiceImpl({ db: handle, now: nowMs });
+      const service = new SourceServiceImpl({ observer: options.observer, db: handle, now: nowMs });
       logInfo('sources', `Sources 子系统就绪（新库，schema v${latestVersion}）`);
       return { mode: 'normal', service, reason: null };
     } catch (err) {
@@ -118,7 +122,7 @@ export function openSourcesStore(options: SourcesStoreOptions): SourcesStoreOutc
     }
     try {
       const handle = openDb(options.dbPath);
-      const service = new SourceServiceImpl({ db: handle, now: nowMs });
+      const service = new SourceServiceImpl({ observer: options.observer, db: handle, now: nowMs });
       tryPrune(options.backupsDir, dirname(options.dbPath), nowMs);
       logInfo('sources', `Sources 子系统就绪（schema v${latestVersion}）`);
       return { mode: 'normal', service, reason: null };
@@ -161,7 +165,7 @@ export function openSourcesStore(options: SourcesStoreOptions): SourcesStoreOutc
     closeDb(handle);
     handle = openDb(options.dbPath);
     tryPrune(options.backupsDir, dirname(options.dbPath), nowMs);
-    const service = new SourceServiceImpl({ db: handle, now: nowMs });
+    const service = new SourceServiceImpl({ observer: options.observer, db: handle, now: nowMs });
     logInfo(
       'sources',
       `Sources 子系统就绪（v${currentVersion} → v${latestVersion} 迁移完成，迁移前备份已生成）`,
