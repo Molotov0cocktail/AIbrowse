@@ -52,6 +52,17 @@ export type WatchStoreOutcome =
 // Watch 独立严格命名（FIXED DECISION 10）：与 Sources 备份命名互不匹配
 export const WATCH_BACKUP_NAME_PATTERN = buildBackupNamePattern('watch-backup-');
 
+// D4-R 日志隐私（detailed-design §13）：错误细节不得携带绝对路径（watch.db、
+// userData、备份路径）。只保留错误分类码 + 已脱敏 message（盘符路径替换为占位符，
+// 无堆栈——机器专属源码路径也不落日志）。
+export function sanitizeWatchError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const code = (err as { code?: unknown }).code;
+  const base = typeof code === 'string' && code !== '' ? code : err.name;
+  const message = err.message.replace(/[A-Za-z]:[\\/][^\s]*/g, '<路径已脱敏>');
+  return message === '' ? base : `${base}: ${message}`;
+}
+
 export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
   const steps = options.migrations ?? WATCH_MIGRATIONS;
   const nowMs = options.nowMs ?? (() => Date.now());
@@ -75,7 +86,7 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
         runMigrations(handle, steps);
       } catch (err) {
         closeDb(handle);
-        logError('watch', 'Watch 新库初始化迁移失败', err);
+        logError('watch', 'Watch 新库初始化迁移失败', sanitizeWatchError(err));
         return unavailable('监控数据库初始化失败（详见日志）');
       }
       const outcome = assembleNormal(handle, nowMs, latestVersion, '新库', options);
@@ -84,7 +95,7 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
       }
       return outcome;
     } catch (err) {
-      logError('watch', 'Watch 新库创建失败（无法创建数据库）', err);
+      logError('watch', 'Watch 新库创建失败（无法创建数据库）', sanitizeWatchError(err));
       return unavailable('监控数据库初始化失败（详见日志）');
     }
   }
@@ -112,7 +123,7 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
       const outcome = assembleNormal(handle, nowMs, latestVersion, '已就绪', options);
       return outcome;
     } catch (err) {
-      logError('watch', 'Watch 数据库打开失败（不可用）', err);
+      logError('watch', 'Watch 数据库打开失败（不可用）', sanitizeWatchError(err));
       return unavailable('监控数据库初始化失败（详见日志）');
     }
   }
@@ -154,7 +165,7 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
     return outcome;
   } catch (err) {
     if (handle !== null) closeDb(handle);
-    logError('watch', 'Watch 迁移失败（原文件已保留、事务已回滚）', err);
+    logError('watch', 'Watch 迁移失败（原文件已保留、事务已回滚）', sanitizeWatchError(err));
     return unavailable('迁移失败（原文件已保留、变更已回滚）');
   }
 }
@@ -196,7 +207,7 @@ function assembleNormal(
         marked = repo.markAllNonTerminalInterrupted(nowIso);
       });
     } catch (err) {
-      logError('watch', '遗留运行标记 interrupted 失败', err);
+      logError('watch', '遗留运行标记 interrupted 失败', sanitizeWatchError(err));
       return fail('遗留运行标记失败');
     }
     if (marked > 0) {
@@ -249,7 +260,7 @@ function assembleNormal(
     logInfo('watch', `Watch 子系统就绪（${label}，schema v${latestVersion}）`);
     return { mode: 'normal', repo, schedulerReady: true, reason: null };
   } catch (err) {
-    logError('watch', 'Watch 正常装配失败（句柄已关闭）', err);
+    logError('watch', 'Watch 正常装配失败（句柄已关闭）', sanitizeWatchError(err));
     return fail('正常装配失败（详见日志）');
   }
 }
@@ -292,28 +303,67 @@ export function restoreWatchStore(options: {
   if ((probe.userVersion ?? 0) > latestVersion) {
     return fail(`备份版本（v${probe.userVersion}）高于当前程序版本（v${latestVersion}）`);
   }
-  // 3. 两阶段替换：copy 到同目录 staging → 校验 staging → 原库保留为
-  //    pre-restore → staging 原子改名接管。任一步失败回滚并保留原库。
   const stagePath = `${options.dbPath}.restore-stage`;
   const preRestorePath = `${options.dbPath}.pre-restore`;
+  // 只移动普通文件；ENOENT 视为缺失（幂等）。WAL/SHM 随主文件一起移动，
+  // 保证原库恢复后可重开且数据完整。
+  const moveIfExists = (src: string, dst: string): void => {
+    try {
+      if (existsSync(src)) renameSync(src, dst);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  };
+
+  // 3. 两阶段替换：copy 到同目录 staging → 校验 staging → 原库（含 WAL/SHM）
+  //    改名 pre-restore → staging 原子改名接管。任一步失败回滚并保留原库。
+  //    失败即返回——到达后续步骤即证明本次调用已成功接管 dbPath 所有权。
+  let swapFailureReason: string | null = null;
   try {
     copyFileSync(target.path, stagePath);
     const stageProbe = probeDbFile(stagePath);
     if (stageProbe.state !== 'ok') throw new Error('staging 校验失败');
-    if (existsSync(options.dbPath)) renameSync(options.dbPath, preRestorePath);
+    if (existsSync(options.dbPath)) {
+      moveIfExists(options.dbPath, preRestorePath);
+      moveIfExists(`${options.dbPath}-wal`, `${preRestorePath}-wal`);
+      moveIfExists(`${options.dbPath}-shm`, `${preRestorePath}-shm`);
+    }
     renameSync(stagePath, options.dbPath);
   } catch (err) {
     try {
-      if (existsSync(stagePath)) rmSync(stagePath, { force: true });
+      rmSync(stagePath, { force: true });
       if (!existsSync(options.dbPath) && existsSync(preRestorePath)) {
-        renameSync(preRestorePath, options.dbPath);
+        moveIfExists(preRestorePath, options.dbPath);
+        moveIfExists(`${preRestorePath}-wal`, `${options.dbPath}-wal`);
+        moveIfExists(`${preRestorePath}-shm`, `${options.dbPath}-shm`);
       }
     } catch {
       // 回滚失败保留现场文件，绝不静默
     }
-    logError('watch', 'Watch 恢复替换失败（原文件与备份已保留）', err);
-    return fail('恢复替换失败（原文件与备份已保留）');
+    logError('watch', 'Watch 恢复替换失败（原文件与备份已保留）', sanitizeWatchError(err));
+    swapFailureReason = '恢复替换失败（原文件与备份已保留）';
   }
+  if (swapFailureReason !== null) return fail(swapFailureReason);
+
+  // post-swap 失败回滚（R3）：openWatchStore 任一步骤失败（非法 JSON/预算扫描/
+  // reconciliation/组装），必须关闭已打开资源（Store 失败路径已尽力关闭句柄），
+  // 删除本次接管上去的备份数据（含其 WAL/SHM），把原 live 库（含 WAL/SHM）
+  // 恢复到原位置；回滚失败保留明确可恢复证据，不掩盖原始失败。
+  const rollbackSwap = (): string | null => {
+    try {
+      rmSync(options.dbPath, { force: true }); // 仅在 swapped 后进入；所有权=本次接管文件
+      rmSync(`${options.dbPath}-wal`, { force: true });
+      rmSync(`${options.dbPath}-shm`, { force: true });
+      moveIfExists(preRestorePath, options.dbPath);
+      moveIfExists(`${preRestorePath}-wal`, `${options.dbPath}-wal`);
+      moveIfExists(`${preRestorePath}-shm`, `${options.dbPath}-shm`);
+      rmSync(stagePath, { force: true });
+      return null;
+    } catch {
+      return '回滚失败：原库已保留在 pre-restore 残留文件（可恢复，请勿删除）';
+    }
+  };
+
   // 4. 重走装配 + 强制 reconcile + Session grant 失效
   const outcome = openWatchStore({
     dbPath: options.dbPath,
@@ -325,26 +375,42 @@ export function restoreWatchStore(options: {
   });
   if (outcome.mode === 'normal') {
     try {
-      rmSync(preRestorePath, { force: true }); // 成功接管后清理 pre-restore（最佳努力）
+      // 成功接管后清理 pre-restore 残留（主文件 + WAL/SHM；最佳努力）
+      rmSync(preRestorePath, { force: true });
+      rmSync(`${preRestorePath}-wal`, { force: true });
+      rmSync(`${preRestorePath}-shm`, { force: true });
     } catch {
       // 保留现场（不阻塞恢复结果）
     }
     logInfo('watch', 'Watch 恢复完成（重走装配 + reconciliation + Session grant 失效）');
+    return outcome;
   }
-  return outcome;
+  const rollbackFailure = rollbackSwap();
+  if (rollbackFailure === null) {
+    return {
+      ...outcome,
+      reason: `${outcome.reason}（已回滚，原库已恢复到原位置）`,
+    };
+  }
+  return {
+    ...outcome,
+    reason: `${outcome.reason}；${rollbackFailure}`,
+  };
 }
 
-// 有界保留清理（Watch 独立命名；最佳努力——失败仅记录不阻塞启动）
+// 有界保留清理（Watch 独立命名 + 100 MiB 集合预算 §10.2；最佳努力——失败仅记录
+// 不阻塞启动）。Sources 缺省调用不传 maxTotalBytes → 行为恒等。
 export function pruneWatchBackups(backupsDir: string, watchDir: string, nowMs: number): number {
   try {
     const result = pruneBackups(backupsDir, {
       nowMs,
       sourcesDir: watchDir,
       namePattern: WATCH_BACKUP_NAME_PATTERN,
+      maxTotalBytes: MAX_WATCH_DB_BYTES,
     });
     return result.removed.length;
   } catch (err) {
-    logWarn('watch', 'Watch 备份保留清理失败（不阻塞启动）', err);
+    logWarn('watch', 'Watch 备份保留清理失败（不阻塞启动）', sanitizeWatchError(err));
     return 0;
   }
 }

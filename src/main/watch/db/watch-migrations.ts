@@ -10,8 +10,9 @@
 // - 11 表：watch_rules / watch_baselines / watch_runs / watch_audits /
 //   watch_events / watch_event_items / digest_schedules / watch_digests /
 //   digest_event_refs / notification_outbox / source_cleanup_intents；
-// - 外键打开；删除 Rule CASCADE baseline/runs/events/outbox，audits 用
-//   SET NULL（级联删除审计需在 Rule 消失后存活）；Event CASCADE items；
+// - 外键打开；删除 Rule CASCADE baseline/runs/audits/events/outbox（audits
+//   按 §10.1 同族 CASCADE——级联删除审计由 coordinator 以 rule_id=null 写入
+//   才能随级联存活）；Event CASCADE items；
 // - digest_event_refs.event_id 无外键：§10.1「Digest 对 Event 使用 tombstone
 //   状态而非丢失引用真实性」——Event 行删除后 ref 必须保留并置 expired，
 //   外键 CASCADE/RESTRICT 都无法承载该语义（注释记录，非遗漏）；
@@ -80,9 +81,9 @@ export const WATCH_MIGRATION_V1: MigrationStep = {
     'CREATE INDEX idx_watch_runs_status ON watch_runs(status)',
     `CREATE TABLE watch_audits (
   id TEXT PRIMARY KEY,
-  rule_id TEXT REFERENCES watch_rules(id) ON DELETE SET NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('lifecycle-pause','lifecycle-cascade','reconciliation')),
-  reason_code TEXT NOT NULL CHECK (reason_code IN ('source-disabled','source-deleted','source-changed','hard-delete','undo-source-removed','complete','aborted')),
+  rule_id TEXT REFERENCES watch_rules(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('lifecycle-pause','lifecycle-cascade','reconciliation','baseline-established','rebaseline')),
+  reason_code TEXT NOT NULL CHECK (reason_code IN ('source-disabled','source-deleted','source-changed','hard-delete','undo-source-removed','complete','aborted','baseline-established','rebaseline')),
   created_at TEXT NOT NULL
 )`,
     'CREATE INDEX idx_watch_audits_rule ON watch_audits(rule_id)',

@@ -194,13 +194,14 @@ describe('CHECK 约束数据库层强制（§10.1 枚举列）', () => {
   });
 
   it('watch_audits kind/reason_code 非法值被 CHECK 拒绝；baseline 审计类型放行', () => {
+    let seq = 0;
     const insertAudit = (kind: string, reasonCode: string) =>
       handle
         .prepare(
           `INSERT INTO watch_audits (id, rule_id, kind, reason_code, created_at)
-  VALUES ('a1', NULL, ?, ?, '2026-08-28T00:00:00.000Z')`,
+  VALUES (?, NULL, ?, ?, '2026-08-28T00:00:00.000Z')`,
         )
-        .run(kind, reasonCode);
+        .run(`a-${seq++}`, kind, reasonCode);
     expect(() => insertAudit('other', 'complete')).toThrow();
     expect(() => insertAudit('reconciliation', 'other')).toThrow();
     insertAudit('reconciliation', 'complete');
@@ -337,7 +338,7 @@ describe('外键与 UNIQUE（§10.1：外键打开）', () => {
     expect(() => insertRun('run2', 'k1')).toThrow();
   });
 
-it('删除 Rule CASCADE baselines/runs/events/outbox/audits（§10.1）', () => {
+  it('删除 Rule CASCADE baselines/runs/events/outbox/audits（§10.1）', () => {
     insertRule(handle, 'r1');
     handle
       .prepare(
@@ -406,9 +407,7 @@ it('删除 Rule CASCADE baselines/runs/events/outbox/audits（§10.1）', () => 
       )
       .run();
     handle.prepare('DELETE FROM watch_rules WHERE id = ?').run('r1');
-    expect(
-      handle.prepare('SELECT COUNT(*) AS n FROM watch_audits').get(),
-    ).toEqual({ n: 1 });
+    expect(handle.prepare('SELECT COUNT(*) AS n FROM watch_audits').get()).toEqual({ n: 1 });
   });
 
   it('Event CASCADE items；digest_event_refs.event_id 无外键（tombstone 存活）', () => {

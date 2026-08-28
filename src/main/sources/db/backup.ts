@@ -494,12 +494,17 @@ export function pruneBackups(
     nowMs?: number;
     sourcesDir?: string;
     namePattern?: RegExp; // D4 最小泛化：Watch 独立命名模式（缺省 Sources 恒等）
+    // D4-R：集合字节预算（Watch 100 MiB；缺省 undefined = 无字节预算，Sources
+    // 调用语义恒等）。== 预算恰好保留、+1 删最旧（与数量/期限组合时先数量/期限、
+    // 再按最旧优先删除直到 ≤ 预算）。
+    maxTotalBytes?: number;
   } = {},
 ): PruneBackupsResult {
   const keepCount = options.keepCount ?? BACKUP_KEEP_COUNT;
   const maxAgeMs = options.maxAgeMs ?? BACKUP_MAX_AGE_MS;
   const nowMs = options.nowMs ?? Date.now();
   const pattern = options.namePattern ?? BACKUP_NAME_PATTERN;
+  const maxTotalBytes = options.maxTotalBytes;
   // 参数边界验证（fail-closed）：非有限/负数/非整数参数拒绝处理——安全空结果，
   // 绝不因异常参数触发批量误删
   if (
@@ -507,7 +512,8 @@ export function pruneBackups(
     keepCount < 0 ||
     !Number.isSafeInteger(maxAgeMs) ||
     maxAgeMs < 0 ||
-    !Number.isFinite(nowMs)
+    !Number.isFinite(nowMs) ||
+    (maxTotalBytes !== undefined && (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes < 0))
   ) {
     return { removed: [], kept: [] };
   }
@@ -533,12 +539,15 @@ export function pruneBackups(
   } catch {
     return { removed: [], kept: [] }; // 枚举失败 → 安全空结果
   }
+  const sizes = new Map<string, number>();
   const candidates = entries
     .filter((name) => pattern.test(name))
     .filter((name) => {
       try {
         const st = lstatSync(join(realBackups, name));
-        return st.isFile() && !st.isSymbolicLink();
+        if (!st.isFile() || st.isSymbolicLink()) return false;
+        sizes.set(name, st.size);
+        return true;
       } catch {
         return false; // 已消失/不可达 → 不处理
       }
@@ -548,23 +557,40 @@ export function pruneBackups(
   const removed: string[] = [];
   const kept: string[] = [];
   const keepFrom = Math.max(0, candidates.length - keepCount); // 最新 keepCount 个
+  const keepSet = new Set<string>();
   candidates.forEach((entry, index) => {
     const expired = nowMs - entry.ts > maxAgeMs;
-    if (index >= keepFrom && !expired) {
+    if (index >= keepFrom && !expired) keepSet.add(entry.name);
+  });
+  // D4-R：集合字节预算（先数量/期限，再按最旧优先删除直到 ≤ 预算）
+  if (maxTotalBytes !== undefined) {
+    let total = 0;
+    for (const entry of candidates) {
+      if (keepSet.has(entry.name)) total += sizes.get(entry.name) ?? 0;
+    }
+    for (const entry of candidates) {
+      if (total <= maxTotalBytes) break;
+      if (!keepSet.has(entry.name)) continue;
+      keepSet.delete(entry.name);
+      total -= sizes.get(entry.name) ?? 0;
+    }
+  }
+  for (const entry of candidates) {
+    if (keepSet.has(entry.name)) {
       kept.push(entry.name);
-      return;
+      continue;
     }
     const fullPath = join(realBackups, entry.name);
     try {
       // 删除前复核（TOCTOU 防御）：仍为目录内普通文件（非链接）且真实路径未越界
       const st = lstatSync(fullPath);
-      if (!st.isFile() || st.isSymbolicLink()) return;
-      if (!isPathInside(realpathSync(fullPath), realBackups)) return;
+      if (!st.isFile() || st.isSymbolicLink()) continue;
+      if (!isPathInside(realpathSync(fullPath), realBackups)) continue;
       rmSync(fullPath, { force: true });
       removed.push(entry.name);
     } catch {
       // 删除失败（锁占用等）：保留现场，不抛异常（清理为最佳努力）
     }
-  });
+  }
   return { removed, kept };
 }

@@ -33,7 +33,7 @@ import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
 // Sixth Stage D4：Watch 存储/生命周期装配（observer 恒 active + 延迟端口绑定 +
 // AIBROWSE_WATCH_SMOKE 跨进程门控 + 8.21 store 冒烟）。
-import { openWatchStore, type WatchStoreOutcome } from './watch/watch-store';
+import { openWatchStore, sanitizeWatchError, type WatchStoreOutcome } from './watch/watch-store';
 import {
   WatchLifecycleCoordinator,
   type SourceProjectionReader,
@@ -1256,10 +1256,13 @@ function createBrowserWindow(): void {
           : join(app.getPath('userData'), 'watch');
       if (SMOKE_MODE && !WATCH_GATE_MODE) smokeWatchDir = watchDir;
       mkdirSync(watchDir, { recursive: true });
-      const sourceProjectionReader: SourceProjectionReader = (sourceId) =>
-        (
-          sourceService as (SourceService & SourceWatchProjectionProvider) | null
-        )?.getSourceWatchProjection(sourceId) ?? null;
+      // D4-R：Source 投影三态协议——服务缺失/不可用映射 unavailable，绝不冒充 missing
+      const sourceProjectionReader: SourceProjectionReader = (sourceId) => {
+        const provider = sourceService as (SourceService & SourceWatchProjectionProvider) | null;
+        return provider === null
+          ? { status: 'unavailable' as const }
+          : provider.getSourceWatchProjection(sourceId);
+      };
       const watchOutcome: WatchStoreOutcome = openWatchStore({
         dbPath: join(watchDir, 'watch.db'),
         backupsDir: join(watchDir, 'backups'),
@@ -1268,12 +1271,17 @@ function createBrowserWindow(): void {
       if (watchOutcome.mode === 'normal') {
         watchRepo = watchOutcome.repo;
         watchCoordinator!.bind(watchOutcome.repo, sourceProjectionReader);
-        logInfo('main', `Watch 子系统就绪（${join(watchDir, 'watch.db')}）`);
+        // 日志隐私（§13）：不记录 watch.db/userData 绝对路径
+        logInfo('main', 'Watch 子系统就绪（协调器已绑定，Scheduler 状态位就绪）');
       }
       // unavailable 分支：coordinator 保持未绑定 → prepare 恒 fail-closed
     }
   } catch (err) {
-    logError('main', 'Watch 子系统初始化失败（Watch 功能全拒、Scheduler 不启动）', err);
+    logError(
+      'main',
+      'Watch 子系统初始化失败（Watch 功能全拒、Scheduler 不启动）',
+      sanitizeWatchError(err),
+    );
   }
 
   // S5 真实 Provider 装配（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY，§6）：

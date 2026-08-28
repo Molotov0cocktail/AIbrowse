@@ -304,7 +304,17 @@ describe('装配矩阵（§10.2 八步）', () => {
         feedItemKey: null,
       },
     ];
-    expect(repo.writeEventTransaction({ event: old, items })).toEqual({ ok: true });
+    expect(
+      repo.writeEventTransaction({
+        event: old,
+        items,
+        identity: {
+          sourceId: rule.sourceId,
+          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          expectedBaselineVersion: null,
+        },
+      }),
+    ).toEqual({ ok: true });
     repo.dispose();
     outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
     expect(outcome.mode).toBe('normal');
@@ -438,11 +448,13 @@ describe('D4-R：restore post-swap 回滚 + 启动扫描字节一致性', () => 
     return result.backupPath.slice(result.backupPath.lastIndexOf('\\') + 1);
   }
 
+  // 回滚路径：pre-restore/stage（含其 WAL/SHM）必须精确清理；原库随其 WAL/SHM
+  // 恢复到原位置（原库自身 WAL/SHM 是恢复内容而非残留）。
   function expectNoSwapResidue(): void {
     expect(existsSync(`${dbPath}.pre-restore`)).toBe(false);
+    expect(existsSync(`${dbPath}.pre-restore-wal`)).toBe(false);
+    expect(existsSync(`${dbPath}.pre-restore-shm`)).toBe(false);
     expect(existsSync(`${dbPath}.restore-stage`)).toBe(false);
-    expect(existsSync(`${dbPath}-wal`)).toBe(false);
-    expect(existsSync(`${dbPath}-shm`)).toBe(false);
   }
 
   it('备份含非法 JSON 行 → restore 失败 + 原 live 库恢复且字节/数据恒等、可重开', () => {
@@ -565,6 +577,9 @@ describe('D4-R：restore post-swap 回滚 + 启动扫描字节一致性', () => 
     expect(restored.mode).toBe('normal');
     if (restored.mode === 'normal') restored.repo.dispose();
     expectNoSwapResidue();
+    // 成功路径：接管库的 WAL/SHM 随干净关闭一并清理
+    expect(existsSync(`${dbPath}-wal`)).toBe(false);
+    expect(existsSync(`${dbPath}-shm`)).toBe(false);
   });
 
   it('启动扫描：Baseline 声明字节与实际字节不一致 → unavailable（原库保留）', () => {
