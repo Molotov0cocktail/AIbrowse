@@ -40,6 +40,17 @@ import {
 } from './watch/watch-lifecycle-coordinator';
 import type { WatchRepository } from './watch/repository/watch-repository';
 import { runWatchSmokeGate } from './smoke-watch-store';
+// Sixth Stage D5：Scheduler/Coordinator/共享 HostRequestGate 生产装配（FIXED
+// DECISIONS 10/12）：acquisition port 以确定性 fail-closed stub 为生产缺省，
+// D6 以真实路由替换该注入点（装配形态一次到位）；before-quit 走 Research 同款
+// preventDefault→await watchShutdown→app.quit() 重入排水。
+import { HostRequestGate } from './watch/host-request-gate';
+import {
+  WatchRunCoordinator,
+  type WatchAcquisitionPort,
+} from './watch/watch-run-coordinator';
+import { WatchScheduler } from './watch/watch-scheduler';
+import { createSystemClock } from '../shared/watch/clock';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
 import { redactUrlForLog, resolveAddressBarInput } from '../shared/url';
 import { IPC } from '../shared/types/ipc';
@@ -253,18 +264,37 @@ let smokeSourcesDir: string | null = null;
 let researchService: ResearchService | null = null;
 let smokeResearchDir: string | null = null;
 let researchShutdownDone = false;
+let researchShutdownStarted = false;
 // D4：Watch 生命周期协调器（构造先于 Sources 装配——observer 恒注入 active
 // coordinator，无论 watch.db 是否存在；缺失库由 Store 正常创建，corrupt/
 // future/unavailable 必须返回失败，绝不因文件缺失静默退化为 no-op）
 let watchCoordinator: WatchLifecycleCoordinator | null = null;
 let watchRepo: WatchRepository | null = null;
 let smokeWatchDir: string | null = null;
+// D5：生产调度运行时（FIXED DECISIONS 10/12）——单例 HostRequestGate + Coordinator +
+// Scheduler；before-quit 先排水（stop-admission→abort→drain）再 dispose repo。
+let watchHostGate: HostRequestGate | null = null;
+let watchRunCoordinator: WatchRunCoordinator | null = null;
+let watchScheduler: WatchScheduler | null = null;
+let watchShutdownDone = false;
+let watchShutdownStarted = false;
 // B5 冒烟注入点（仅 SMOKE_MODE 消费，生产行为不变）：恢复态/不可用态 UI 断言——
 // sources:state 与全部读写入口经适配器 stateOverride 门控（决议 #74 测试落点）
 let smokeSourcesStateOverride: { current: SourcesState | null } | null = null;
 // B6/B8 补验（2026-08-15）：SMOKE_MODE 审计收集探针——真实 SRT-02 观察场景
 // 「审计工具名全部为注册表工具」机器断言用；生产不收集（决议 #84 同精神测试设施）
 const smokeAuditCollector: AuditEntry[] = [];
+
+// D5（FIXED DECISIONS 12）：Watch 退出排水——stop-admission → abort 全部在途 →
+// 有界 drain → 交回既有 watchCoordinator.dispose()/watchRepo.dispose()（兜底清理在
+// before-quit 重入时执行）。幂等可重复调用；未完成行留待下次启动标 interrupted。
+async function watchShutdown(): Promise<void> {
+  if (watchRunCoordinator !== null) {
+    await watchRunCoordinator.stop();
+  }
+  watchScheduler?.stop();
+  watchHostGate?.clear();
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -312,38 +342,57 @@ if (!gotLock) {
   });
   app.on('before-quit', (event) => {
     // C5（决议 #139(5)）：Research 走安全 shutdown（abort → await settle →
-    // closeDb；幂等）。shutdown 完成前阻止退出（Windows 下 db 句柄未关时
-    // 删除目录会 EPERM——先关库再删临时目录，再放行退出）
+    // closeDb；幂等）。D5（FIXED DECISIONS 12）：Watch 走 Research 同款
+    // preventDefault→await watchShutdown→app.quit() 重入排水——stop-admission →
+    // abort 全部在途 → 有界 drain → 交回既有 watchCoordinator.dispose()/
+    // watchRepo.dispose()（兜底清理延后到两个 shutdown 都完成后）。
+    let shutdownPending = false;
     if (!researchShutdownDone) {
       event.preventDefault();
-      void (researchService?.shutdown() ?? Promise.resolve()).finally(() => {
-        researchShutdownDone = true;
-        // 冒烟临时 Research 目录：closeDb 后 Windows 句柄释放有微小窗口——
-        // 有限重试（EPERM 不阻塞退出；最终失败保留所有权由下次冒烟自清）
-        if (smokeResearchDir !== null) {
-          let removed = false;
-          for (let attempt = 0; attempt < 3 && !removed; attempt++) {
-            try {
-              rmSync(smokeResearchDir, { recursive: true, force: true });
-              removed = true;
-            } catch {
-              // 重试间隔由退出路径自然等待（同步循环 10ms 让步）
-              const waitUntil = Date.now() + 10;
-              while (Date.now() < waitUntil) {
-                // 忙等待让步（退出路径无计时器依赖）
+      shutdownPending = true;
+      if (!researchShutdownStarted) {
+        researchShutdownStarted = true;
+        void (researchService?.shutdown() ?? Promise.resolve()).finally(() => {
+          researchShutdownDone = true;
+          // 冒烟临时 Research 目录：closeDb 后 Windows 句柄释放有微小窗口——
+          // 有限重试（EPERM 不阻塞退出；最终失败保留所有权由下次冒烟自清）
+          if (smokeResearchDir !== null) {
+            let removed = false;
+            for (let attempt = 0; attempt < 3 && !removed; attempt++) {
+              try {
+                rmSync(smokeResearchDir, { recursive: true, force: true });
+                removed = true;
+              } catch {
+                // 重试间隔由退出路径自然等待（同步循环 10ms 让步）
+                const waitUntil = Date.now() + 10;
+                while (Date.now() < waitUntil) {
+                  // 忙等待让步（退出路径无计时器依赖）
+                }
               }
             }
+            if (removed) {
+              smokeResearchDir = null;
+            } else {
+              logWarn('main', '冒烟临时 Research 目录清理失败（将保留，请勿手动删除用户数据）');
+            }
           }
-          if (removed) {
-            smokeResearchDir = null;
-          } else {
-            logWarn('main', '冒烟临时 Research 目录清理失败（将保留，请勿手动删除用户数据）');
-          }
-        }
-        app.quit(); // 再次触发 before-quit（researchShutdownDone=true → 放行）
-      });
+          app.quit(); // 再次触发 before-quit（researchShutdownDone=true）
+        });
+      }
     }
-    // 退出路径兜底清理（幂等）；主路径为窗口 closed → dispose（§5）
+    if (!watchShutdownDone) {
+      event.preventDefault();
+      shutdownPending = true;
+      if (!watchShutdownStarted) {
+        watchShutdownStarted = true;
+        void watchShutdown().finally(() => {
+          watchShutdownDone = true;
+          app.quit(); // 再次触发 before-quit（watchShutdownDone=true）
+        });
+      }
+    }
+    if (shutdownPending) return; // 任一在排水：兜底清理延后到重入
+    // 退出路径兜底清理（幂等；research + watch 均已排水）；主路径为窗口 closed → dispose（§5）
     conversationService?.dispose(); // S3：中止全部在途生成
     sourceService?.dispose(); // B4：Sources 句柄幂等释放（driver closeDb 幂等）
     // D4：Watch dispose 幂等接线（coordinator 解绑 → repo 句柄释放）
@@ -1239,7 +1288,8 @@ function createBrowserWindow(): void {
   // 窄投影读取端口 → bind coordinator↔store）。Sources 为 null 或非 normal →
   // Watch unavailable（fail-closed：coordinator 保持未绑定，后续 prepare 恒
   // watch-unavailable）。缺失 watch.db 由 Store 正常创建；corrupt/future/
-  // unavailable 绝不静默退化。D5 只消费 schedulerReady 状态位，本任务不启动调度。
+  // unavailable 绝不静默退化。D5（FIXED DECISIONS 10）：normal + schedulerReady
+  // 时构造并启动 Scheduler/Coordinator（见下方装配块）。
   try {
     if (SMOKE_MODE && WATCH_GATE_MODE) {
       // WATCH 门控：本进程不装配 Watch 存储——门控 runner 以注入的 Source 窄
@@ -1271,10 +1321,44 @@ function createBrowserWindow(): void {
       if (watchOutcome.mode === 'normal') {
         watchRepo = watchOutcome.repo;
         watchCoordinator!.bind(watchOutcome.repo, sourceProjectionReader);
+        // D5（FIXED DECISIONS 10）：watchOutcome normal + schedulerReady + Sources
+        // normal + 协调器已 bind → 构造单例 HostRequestGate + Coordinator +
+        // Scheduler 并 start。acquisition port 以确定性 fail-closed stub
+        //（dependency_unavailable，零网络零能力）为生产缺省，D6 以真实路由替换
+        // 该注入点（装配形态一次到位）。默认无 Rule → 零 timer 新增行为。
+        const watchClock = createSystemClock();
+        const hostGate = new HostRequestGate({ clock: watchClock });
+        watchHostGate = hostGate;
+        const acquisitionPort: WatchAcquisitionPort = {
+          run: async () => ({
+            ok: false,
+            health: 'dependency_unavailable',
+            retryable: false,
+            retryAfterSeconds: null,
+          }),
+        };
+        const scheduler = new WatchScheduler({
+          clock: watchClock,
+          onDue: (entries) => {
+            watchRunCoordinator?.handleDue(entries);
+          },
+        });
+        watchScheduler = scheduler;
+        const coordinator = new WatchRunCoordinator({
+          repo: watchOutcome.repo,
+          revalidator: watchCoordinator!,
+          acquisition: acquisitionPort,
+          hostGate,
+          scheduler,
+          clock: watchClock,
+        });
+        watchRunCoordinator = coordinator;
+        coordinator.start();
         // 日志隐私（§13）：不记录 watch.db/userData 绝对路径
-        logInfo('main', 'Watch 子系统就绪（协调器已绑定，Scheduler 状态位就绪）');
+        logInfo('main', 'Watch 子系统就绪（协调器已绑定，调度已启动，acquisition 端口 fail-closed）');
       }
       // unavailable 分支：coordinator 保持未绑定 → prepare 恒 fail-closed
+      //（调度也不启动——schedulerReady=false）
     }
   } catch (err) {
     logError(

@@ -704,7 +704,7 @@ export class WatchRunCoordinator {
   private terminalSuperseded(task: RunTask): void {
     const outcome: WatchRunOutcome = { kind: 'aborted', reason: 'superseded' };
     const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
-    let rule: WatchRule | null = null;
+    let rule: WatchRule | null;
     try {
       rule = this.repo.getRule(task.ruleId);
     } catch {

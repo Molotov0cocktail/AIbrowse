@@ -28,6 +28,7 @@ import { openDb, closeDb, type DbHandle } from './sources/db/sqlite-driver';
 import { runWatchMigrations } from './watch/db/watch-migrations';
 import { computeSourceLocatorFingerprint } from '../shared/watch/watch-rule-state';
 import type { SourceWatchProjection, WatchEvent, WatchRule } from '../shared/types/watch';
+import { runWatchLifecycleGateSet, runWatchLifecycleGateCheck } from './smoke-watch-lifecycle';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -437,6 +438,9 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
     // D4-R：日志隐私扫描（dev + production 各自执行）
     assertLogFreeOf(logFrom, watchDir, 'WATCH 门控 watch 目录');
     assertLogFreeOf(logFrom, dbPath, 'WATCH 门控 watch.db 路径');
+    // D5（FIXED DECISIONS 10/12）：串行追加 D5 生命周期阶段——写「已过期」规则 +
+    // 一条在途模拟 → 生产装配启动调度 → 恰一次 catch-up 真实执行 → 显式排水
+    await runWatchLifecycleGateSet(dbPath, backupsDir);
     logInfo('smoke', 'WATCH set：Rule/Baseline/Event/遗留 Run/未决 intent 已就绪，直接退出');
     return; // app.exit 路径：句柄随进程退出由 OS 释放（不写终态）
   }
@@ -480,5 +484,8 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
   // D4-R：日志隐私扫描（dev + production 各自执行）
   assertLogFreeOf(logFrom, watchDir, 'WATCH 门控 watch 目录');
   assertLogFreeOf(logFrom, dbPath, 'WATCH 门控 watch.db 路径');
+  // D5（FIXED DECISIONS 10/12）：串行追加 D5 生命周期阶段——遗留非终态标
+  // interrupted、同 requestKey 零重放、新过期 due 恰一次补跑、锚点精确断言
+  await runWatchLifecycleGateCheck(dbPath, backupsDir);
   logInfo('smoke', 'WATCH check：读回/interrupted/reconciliation 级联验证通过');
 }

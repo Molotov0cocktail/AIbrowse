@@ -31,6 +31,8 @@ import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sq
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
 // D4：8.21 Watch store 冒烟（默认矩阵；dev+生产双场景）
 import { runWatchStoreSmokeScenario } from './smoke-watch-store';
+// D5：8.22 Watch 生命周期冒烟（默认矩阵；dev+生产双场景）
+import { runWatchLifecycleSmokeScenario } from './smoke-watch-lifecycle';
 // 8.16 C4：真实 Workspace + CaptureService + EvidenceValidator + Repository（临时 research.db）
 import { ResearchWorkspace } from './research/research-workspace';
 import { CaptureService, sha256hex, type CaptureContent } from './research/capture-service';
@@ -10943,6 +10945,15 @@ export async function runSmokeScenario(
     // Provider（D4 模块零网络能力的静态断言由单测红线扫描承担）。
     if (options.liveSmoke === undefined) {
       await runWatchStoreSmokeScenario();
+    }
+
+    // 8.22 D5 Watch 生命周期冒烟（默认矩阵自动包含；dev+生产双场景）：FakeClock +
+    // 确定性 fake port + 真实 Scheduler 装配——过期 due 恰一次 catch-up（终态写回/
+    // requestKey/nextDueAt 断言）、手动 run 零锚点、关窗 stop（零新接收/在途 abort/
+    // drain/timer 归零/句柄释放）、重复 stop 幂等、无 Rule 装配零行为、日志隐私
+    // 扫描。零网络、零真实 Provider。
+    if (options.liveSmoke === undefined) {
+      await runWatchLifecycleSmokeScenario();
     }
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
