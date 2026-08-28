@@ -10,14 +10,14 @@
 ## 当前状态
 
 - 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
-  D1–D3 均已完成并关闭。**用户通过 U01–U31
+  D1–D4 均已完成并关闭。**用户通过 U01–U31
   完成全部需求裁决；正式设计候选在
   `f1a062fe5c0b3ae9f7cfaf8bf634bc78e16c602b` 经新的独立 Reviewer `PASS`。本轮设计范围
   为 `Sixth_stage.md`、`doc/stage6/` 四份设计与 D1–D11 任务契约，零产品代码、零新依赖、
-  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D3 均经 Reviewer `PASS`
+  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D4 均经 Reviewer `PASS`
   并已关闭。D3 的三个解析依赖已通过资格门并精确固定：
   `@federicocarboni/saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1`；下一唯一
-  实施任务为 D4。
+  实施任务为 D5。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -658,7 +658,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D1 | logger/Clock 基座与确定性时间边界 | ✅ | 2026-08-26 完成：产品候选 `94cc433`，四轮有界修复 `0c7182b`/`c286b31`/`e3ab456`/`3a750e1`；独立 Reviewer=`PASS`，聚焦 104/104、全量 2312/2312、typecheck/lint/format/build、dev/start 冒烟全部通过；任务遗留 stash 已精确清理；任务文档 doc/stage6/tasks/D1-logger-clock-foundation.md |
 | D2 | Watch 域模型、条件 DSL 与状态机 | ✅ | 2026-08-26 完成：产品候选 `237eafb` + 有界修复 `438a11f`；Reviewer=`PASS`，聚焦 173/173、全量 2440/2440、typecheck/lint/format/build 全部通过；任务文档 doc/stage6/tasks/D2-watch-domain-condition.md |
 | D3 | 安全 Feed/Public 网络与解析器资格门 | ✅ | 2026-08-28 完成：实施链 `662ef0b` → `dd3deeb` → `2325077` → `be33291` → `0df9bae` → `e412c12` → `e689484` → `ac579e4`；三个解析依赖资格门通过并精确固定；最终独立安全 Reviewer=`PASS`；聚焦 95/95、Watch 279/279、全量 2725/2725，typecheck/lint/format/build/audit/dev+production smoke 全绿；任务文档 doc/stage6/tasks/D3-safe-feed-network-parser.md |
-| D4 | watch.db、Source 生命周期观察协议与恢复 | ⏳ | 依赖 D1–D3；任务文档 doc/stage6/tasks/D4-watch-store-source-lifecycle.md |
+| D4 | watch.db、Source 生命周期观察协议与恢复 | ✅ | 2026-08-28 完成：实施链 `04adce4` → `0acc794`（九个候选提交）+ D4-R 有界修复 `90cadd8` → `40f5c1e` → `743149e` → `bf1a2ff`；独立安全/持久化 Reviewer=`PASS`，全量 2908/2908、typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟与 AIBROWSE_WATCH_SMOKE set/check dev+生产 0/0；任务文档 doc/stage6/tasks/D4-watch-store-source-lifecycle.md |
 | D5 | Scheduler、RunCoordinator、预约事务与共享 HostRequestGate | ⏳ | 依赖 D1–D4；任务文档 doc/stage6/tasks/D5-scheduler-run-coordinator.md |
 | D6 | Page region/Session task-owned Tab 投影 | ⏳ | 依赖 D5；old/new Evidence 必须可解释，不能只有哈希；任务文档 doc/stage6/tasks/D6-page-region-session-projection.md |
 | D7 | 确定性 Diff/Event/Evidence 与健康状态 | ⏳ | 依赖 D3–D6；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
@@ -677,6 +677,33 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 Sixth Stage 正式设计审核）
+
+- **D4 watch.db、Source 生命周期观察协议与恢复验收与关闭（2026-08-28，独立安全/持久化
+  Reviewer=`PASS`）**：① 实施链 `04adce4` → `da5958a` → `a493039` → `ad859f9` →
+  `2babe3a` → `70fd651` → `d23b365` → `0d1b876` → `0acc794`（九个候选提交）；独立
+  Reviewer 在 `0acc794` 上发现八类缺陷，D4-R Repair Contract 产出有界修复
+  `90cadd8`（红态回归测试先行）→ `40f5c1e` → `743149e` → `bf1a2ff`（未 amend 未重写，
+  双远程保持 `40087b1` 直至本次收尾）。② 八类修复闭环：Repository 查询/行校验严格
+  fail-closed（仅 not-found/合法空返回 null/[]）、协调器审计写入结果检查事务化、Source
+  投影 found/missing/unavailable 三态协议（unavailable 回滚并使 Watch unavailable，
+  hard-delete/reconcile 绝不级联）、restore post-swap 失败回滚（WAL/SHM 随迁、残留精确
+  清理、回滚失败保留可恢复证据）、Watch 备份 100 MiB 集合预算（先数量/期限再最旧优先；
+  Sources 缺省恒等）、Event/Baseline 单事务完整身份 CAS（存在/未删除/sourceId/
+  fingerprint/baselineVersion 全匹配，审计同事务零半写）、投影真实 UTF-8 字节预算
+  （声明=实际、伪造拒绝、启动扫描不一致 unavailable）、schema v1 watch_audits CASCADE
+  与 kind/reason 白名单扩展（`baseline-established`/`rebaseline`，锚点 detailed
+  §10.1/§3）、日志隐私（sanitizeWatchError 盘符路径占位符、成功日志零路径）。③ 最终
+  门禁：全量 **121 files / 2908 tests** 全部 PASS（既有用例零删除零削弱，仅契约驱动机械
+  校准），typecheck、lint、format:check、build、diff-check 全部退出码 0；dev+生产默认
+  冒烟矩阵退出码 0（8.21 含日志隐私扫描全过；production 首轮既有 8.13 族以后瞬态失败
+  一次，复跑全绿，如实登记）；AIBROWSE_WATCH_SMOKE=set|check dev+生产两对独立全新临时
+  userData 全部 0/0 并精确清理（Test-Path=False）。④ 红线复核：业务 SQL 仅 Repository
+  编译期常量/migration/driver·backup 运维白名单；14 文件全部在允许清单内；
+  renderer/preload、公开 Source IPC、Sources schema/journal/Undo、package.json/lock
+  零改动；diff 零新增网络能力；零 any/ts-ignore；diff 日志调用零路径拼接。⑤ 剩余风险：
+  8.13/8.19-B 瞬态失败保持既有观察项；100 MiB 备份预算取「备份集合」语义（§10.2
+  「备份也受 100 MiB 与最多 5 份/30 天边界」锚点）。⑥ D4 已关闭；下一唯一任务为
+  `doc/stage6/tasks/D5-scheduler-run-coordinator.md`。
 
 - **D3 安全 Feed/Public 网络与解析器资格门验收与关闭（2026-08-28，独立安全
   Reviewer=`PASS`）**：① 实施链 `662ef0b` → `dd3deeb` → `2325077` → `be33291` →
@@ -3203,9 +3230,10 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **规划 D4 watch.db、Source 生命周期观察协议与恢复。**唯一任务文档：
-  `doc/stage6/tasks/D4-watch-store-source-lifecycle.md`。D4 属持久化/跨库高风险任务，先由新的
-  Codex GPT-5.6 Sol Planner 按 Step 0 独立调查并输出 Execution Contract；本轮尚未开始 D4 实现。
+- **规划 D5 Scheduler、RunCoordinator、预约事务与共享 HostRequestGate。**唯一任务文档：
+  `doc/stage6/tasks/D5-scheduler-run-coordinator.md`。D5 依赖 D1/D2/D4（均已关闭），涉及
+  调度/预约事务/共享限速与资源生命周期，先由新的
+  Codex GPT-5.6 Sol Planner 按 Step 0 独立调查并输出 Execution Contract；本轮尚未开始 D5 实现。
 
 ## 第一阶段验收未完成项
 
