@@ -1,0 +1,423 @@
+// D4 watch-row-validation tests: DB 读回二次校验矩阵（detailed-design §10.1）
+// —— 规则行（schedule/target/condition/枚举/一致性）、EvidenceValue/Pair、
+// RunOutcome/Health、SourceWatchProjection、affected_rule_state、intent 行。
+// 非法/未来版本/原型链/getter 全部 fail-closed；零 IO。
+import { describe, expect, it } from 'vitest';
+import {
+  computeEventItemsBytes,
+  parseJsonSafe,
+  validateAffectedRuleStateMap,
+  validateChangeEvidencePair,
+  validateEventRow,
+  validateEvidenceValue,
+  validateIntentRow,
+  validateRuleRow,
+  validateRunRow,
+  validateSourceWatchProjection,
+  validateStoredCondition,
+  validateWatchHealthSnapshot,
+  validateWatchRunOutcome,
+  type WatchRuleRowColumns,
+} from './watch-row-validation';
+
+const FINGERPRINT = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
+function ruleRow(overrides: Partial<WatchRuleRowColumns> = {}): WatchRuleRowColumns {
+  return {
+    id: 'r1',
+    source_id: 's1',
+    kind: 'feed',
+    state: 'enabled',
+    pause_reason: null,
+    desired_enabled: 1,
+    muted: 0,
+    access_mode: 'public',
+    schedule_json: '{"kind":"interval","intervalMinutes":60}',
+    target_json: '{"type":"feed","feedUrl":"https://example.com/rss.xml","format":"rss2"}',
+    condition_json: null,
+    notification_level: 'normal',
+    source_row_version: 3,
+    source_locator_fingerprint: FINGERPRINT,
+    next_due_at: null,
+    last_consumed_scheduled_for: null,
+    last_daily_local_date: null,
+    consecutive_failures: 0,
+    backoff_until: null,
+    baseline_version: 0,
+    created_at: '2026-08-28T00:00:00.000Z',
+    updated_at: '2026-08-28T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('validateRuleRow', () => {
+  it('合法 feed/page/session 行通过并还原 DTO', () => {
+    expect(validateRuleRow(ruleRow()).ok).toBe(true);
+    const page = validateRuleRow(
+      ruleRow({
+        kind: 'page',
+        access_mode: 'session',
+        target_json: JSON.stringify({
+          type: 'page',
+          pageUrl: 'https://example.com/doc',
+          regions: [{ kind: 'main-text', label: '正文' }],
+          sessionConsent: {
+            version: 1,
+            origin: 'https://example.com',
+            grantedAt: '2026-08-28T00:00:00.000Z',
+          },
+        }),
+      }),
+    );
+    expect(page.ok).toBe(true);
+    if (page.ok && page.value !== null) {
+      expect(page.value.target.type).toBe('page');
+    }
+  });
+
+  it('kind/access 组合违反（feed+session、page+session 之外）拒绝', () => {
+    expect(validateRuleRow(ruleRow({ access_mode: 'session' })).ok).toBe(false);
+    expect(
+      validateRuleRow(
+        ruleRow({
+          kind: 'page',
+          access_mode: 'public',
+          target_json: JSON.stringify({
+            type: 'page',
+            pageUrl: 'https://example.com/doc',
+            regions: [{ kind: 'main-text', label: 'x' }],
+            sessionConsent: null,
+          }),
+        }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('kind 与 target 类型不一致拒绝', () => {
+    expect(
+      validateRuleRow(
+        ruleRow({
+          kind: 'page',
+          target_json: '{"type":"feed","feedUrl":"https://x.com/f","format":"rss2"}',
+        }),
+      ).ok,
+    ).toBe(false);
+  });
+
+  it('非法 JSON / 未来 schedule / 未来 condition 版本拒绝', () => {
+    expect(validateRuleRow(ruleRow({ schedule_json: 'not-json' })).ok).toBe(false);
+    expect(validateRuleRow(ruleRow({ schedule_json: '{"kind":"cron"}' })).ok).toBe(false);
+    expect(
+      validateRuleRow(ruleRow({ condition_json: '{"version":2,"combine":"all","predicates":[]}' })).ok,
+    ).toBe(false);
+  });
+
+  it('condition 结构非法（未知操作符/原型链键/非布尔 caseSensitive）拒绝', () => {
+    expect(
+      validateRuleRow(
+        ruleRow({
+          condition_json: JSON.stringify({
+            version: 1,
+            combine: 'all',
+            predicates: [{ fieldKey: 'title', operator: 'regex', operand: null, caseSensitive: true }],
+          }),
+        }),
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateRuleRow(
+        ruleRow({
+          condition_json: JSON.stringify({
+            version: 1,
+            combine: 'all',
+            predicates: [{ fieldKey: '__proto__', operator: 'equals', operand: null, caseSensitive: true }],
+          }),
+        }),
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateRuleRow(
+        ruleRow({
+          condition_json: JSON.stringify({
+            version: 1,
+            combine: 'all',
+            predicates: [{ fieldKey: 'title', operator: 'equals', operand: null, caseSensitive: 'yes' }],
+          }),
+        }),
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateRuleRow(
+        ruleRow({
+          condition_json: JSON.stringify({
+            version: 1,
+            combine: 'all',
+            predicates: [{ fieldKey: 'title', operator: 'equals', operand: 'x', caseSensitive: true }],
+          }),
+        }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('paused 必须有 pause_reason；enabled 不得带 reason；未知 pause_reason 拒绝', () => {
+    expect(validateRuleRow(ruleRow({ state: 'paused', pause_reason: null })).ok).toBe(false);
+    expect(validateRuleRow(ruleRow({ state: 'paused', pause_reason: 'user' })).ok).toBe(true);
+    expect(validateRuleRow(ruleRow({ state: 'enabled', pause_reason: 'user' })).ok).toBe(false);
+    expect(
+      validateRuleRow(ruleRow({ state: 'paused', pause_reason: 'weird-reason' as never })).ok,
+    ).toBe(false);
+  });
+
+  it('fingerprint 必须 64 hex；数字列非法拒绝；时间不可解析拒绝', () => {
+    expect(validateRuleRow(ruleRow({ source_locator_fingerprint: 'short' })).ok).toBe(false);
+    expect(validateRuleRow(ruleRow({ source_row_version: 0 })).ok).toBe(false);
+    expect(validateRuleRow(ruleRow({ baseline_version: -1 })).ok).toBe(false);
+    expect(validateRuleRow(ruleRow({ created_at: 'not-a-time' })).ok).toBe(false);
+    expect(validateRuleRow(ruleRow({ next_due_at: 'x' })).ok).toBe(false);
+  });
+});
+
+describe('validateStoredCondition', () => {
+  it('结构合法通过；未来版本/超谓词数/非法 operand 拒绝', () => {
+    expect(
+      validateStoredCondition({
+        version: 1,
+        combine: 'any',
+        predicates: [{ fieldKey: 'title', operator: 'contains', operand: 'x', caseSensitive: false }],
+      }).ok,
+    ).toBe(true);
+    expect(validateStoredCondition({ version: 2, combine: 'all', predicates: [] }).ok).toBe(false);
+    expect(validateStoredCondition({ version: 1, combine: 'all', predicates: [] }).ok).toBe(false);
+    expect(
+      validateStoredCondition({
+        version: 1,
+        combine: 'all',
+        predicates: Array.from({ length: 11 }, () => ({
+          fieldKey: 'f',
+          operator: 'equals',
+          operand: null,
+          caseSensitive: true,
+        })),
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateStoredCondition({
+        version: 1,
+        combine: 'all',
+        predicates: [{ fieldKey: 'f', operator: 'equals', operand: NaN, caseSensitive: true }],
+      }).ok,
+    ).toBe(false);
+  });
+});
+
+describe('validateEvidenceValue / validateChangeEvidencePair', () => {
+  it('present/absent 双形态；预算（>4096 字节摘录）拒绝', () => {
+    expect(validateEvidenceValue({ kind: 'absent' })).toEqual({ kind: 'absent' });
+    const present = {
+      kind: 'present',
+      excerpt: '摘录',
+      valueHash: 'h',
+      normalizedBytes: 6,
+      truncated: false,
+    };
+    expect(validateEvidenceValue(present)).toEqual(present);
+    expect(
+      validateEvidenceValue({
+        ...present,
+        excerpt: 'x'.repeat(4097),
+      }),
+    ).toBeNull();
+    expect(validateEvidenceValue({ kind: 'future' })).toBeNull();
+    expect(validateEvidenceValue({ ...present, truncated: 'yes' })).toBeNull();
+  });
+
+  it('pair 形状/双侧/时间/URL 校验', () => {
+    const pair = {
+      itemId: 'it1',
+      fieldKey: 'title',
+      label: '标题',
+      before: { kind: 'absent' as const },
+      after: {
+        kind: 'present' as const,
+        excerpt: '新标题',
+        valueHash: 'h',
+        normalizedBytes: 9,
+        truncated: false,
+      },
+      beforeCapturedAt: '2026-08-28T00:00:00.000Z',
+      afterCapturedAt: '2026-08-28T00:00:00.000Z',
+      beforeFinalUrl: 'https://example.com',
+      afterFinalUrl: 'https://example.com',
+      beforeDocumentId: null,
+      afterDocumentId: 'doc1',
+      feedItemKey: null,
+    };
+    expect(validateChangeEvidencePair(pair)).toEqual(pair);
+    expect(validateChangeEvidencePair({ ...pair, extra: 1 })).toBeNull();
+    expect(validateChangeEvidencePair({ ...pair, afterCapturedAt: 'x' })).toBeNull();
+    expect(validateChangeEvidencePair({ ...pair, fieldKey: '' })).toBeNull();
+  });
+});
+
+describe('validateWatchRunOutcome / validateWatchHealthSnapshot', () => {
+  it('全部 outcome 变体形状；未知 kind/缺键拒绝', () => {
+    expect(validateWatchRunOutcome({ kind: 'unchanged' })).toEqual({ kind: 'unchanged' });
+    expect(validateWatchRunOutcome({ kind: 'baseline-established', auditId: 'a1' })).toEqual({
+      kind: 'baseline-established',
+      auditId: 'a1',
+    });
+    expect(validateWatchRunOutcome({ kind: 'event-created', eventId: 'e1' })).toEqual({
+      kind: 'event-created',
+      eventId: 'e1',
+    });
+    expect(validateWatchRunOutcome({ kind: 'failed', health: 'unavailable', retryable: true })).toEqual({
+      kind: 'failed',
+      health: 'unavailable',
+      retryable: true,
+    });
+    expect(validateWatchRunOutcome({ kind: 'aborted', reason: 'shutdown' })).toEqual({
+      kind: 'aborted',
+      reason: 'shutdown',
+    });
+    expect(validateWatchRunOutcome({ kind: 'future' })).toBeNull();
+    expect(validateWatchRunOutcome({ kind: 'unchanged', extra: 1 })).toBeNull();
+    expect(validateWatchRunOutcome({ kind: 'failed', health: 'weird', retryable: true })).toBeNull();
+  });
+
+  it('health 三态与 code 一致性', () => {
+    expect(
+      validateWatchHealthSnapshot({ state: 'healthy', acquisition: 'rss', code: null }),
+    ).toEqual({ state: 'healthy', acquisition: 'rss', code: null });
+    expect(
+      validateWatchHealthSnapshot({ state: 'paused', acquisition: 'browser', code: 'captcha' }),
+    ).toEqual({ state: 'paused', acquisition: 'browser', code: 'captcha' });
+    expect(
+      validateWatchHealthSnapshot({ state: 'healthy', acquisition: 'rss', code: 'captcha' }),
+    ).toBeNull();
+    expect(
+      validateWatchHealthSnapshot({ state: 'paused', acquisition: 'rss', code: null }),
+    ).toBeNull();
+  });
+});
+
+describe('validateSourceWatchProjection / affected map', () => {
+  it('投影形状与边界', () => {
+    const proj = {
+      sourceId: 's1',
+      rowVersion: 2,
+      enabled: true,
+      deletedAt: null,
+      scope: 'page',
+      canonicalKey: 'https://example.com/doc',
+    };
+    expect(validateSourceWatchProjection(proj)).toEqual(proj);
+    expect(validateSourceWatchProjection({ ...proj, scope: 'weird' })).toBeNull();
+    expect(validateSourceWatchProjection({ ...proj, rowVersion: 0 })).toBeNull();
+    expect(validateSourceWatchProjection({ ...proj, enabled: 1 })).toBeNull();
+    expect(validateSourceWatchProjection({ ...proj, extra: 1 })).toBeNull();
+  });
+
+  it('affected map 形状；非法值拒绝', () => {
+    const map = {
+      r1: {
+        state: 'enabled',
+        pauseReason: null,
+        desiredEnabled: true,
+        sourceRowVersion: 2,
+        sourceLocatorFingerprint: FINGERPRINT,
+      },
+    };
+    expect(validateAffectedRuleStateMap(map)).toEqual(map);
+    expect(
+      validateAffectedRuleStateMap({
+        r1: { ...map['r1'], sourceLocatorFingerprint: 'short' },
+      }),
+    ).toBeNull();
+    expect(validateAffectedRuleStateMap([])).toBeNull();
+    expect(validateAffectedRuleStateMap({ r1: { state: 'weird' } })).toBeNull();
+  });
+});
+
+describe('validateRunRow / validateEventRow / validateIntentRow', () => {
+  it('run 行 outcome/health 经共享 validator 二次校验', () => {
+    const base = {
+      id: 'run1',
+      ruleId: 'r1',
+      requestKey: 'k1',
+      status: 'finished',
+      trigger: 'scheduled',
+      scheduledFor: null,
+      startedAt: null,
+      finishedAt: null,
+      outcome: { kind: 'unchanged' },
+      health: { state: 'healthy', acquisition: 'rss', code: null },
+      responseMetadataJson: null,
+    };
+    expect(validateRunRow(base).ok).toBe(true);
+    expect(validateRunRow({ ...base, status: 'weird' }).ok).toBe(false);
+    expect(validateRunRow({ ...base, outcome: { kind: 'future' } }).ok).toBe(false);
+    expect(validateRunRow({ ...base, responseMetadataJson: 'not-json' }).ok).toBe(false);
+  });
+
+  it('event 行枚举/整数/时间校验', () => {
+    const base = {
+      id: 'e1',
+      rule_id: 'r1',
+      source_id: 's1',
+      event_kind: 'added',
+      importance: 'normal',
+      idempotency_key: 'ik1',
+      change_fingerprint: 'fp1',
+      first_observed_at: '2026-08-28T00:00:00.000Z',
+      last_observed_at: '2026-08-28T00:00:00.000Z',
+      item_count: 1,
+      read_at: null,
+    };
+    expect(validateEventRow(base).ok).toBe(true);
+    expect(validateEventRow({ ...base, event_kind: 'weird' }).ok).toBe(false);
+    expect(validateEventRow({ ...base, item_count: 0 }).ok).toBe(false);
+    expect(validateEventRow({ ...base, read_at: 'x' }).ok).toBe(false);
+  });
+
+  it('intent 行投影/affected 经共享 validator 二次校验', () => {
+    const proj = {
+      sourceId: 's1',
+      rowVersion: 1,
+      enabled: true,
+      deletedAt: null,
+      scope: 'page',
+      canonicalKey: 'https://example.com/doc',
+    };
+    const base = {
+      mutationId: 'm1',
+      sourceId: 's1',
+      operation: 'hard-delete',
+      beforeProjection: proj,
+      afterProjection: null,
+      affectedRuleState: {},
+      state: 'prepared',
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+    };
+    expect(validateIntentRow(base).ok).toBe(true);
+    expect(validateIntentRow({ ...base, operation: 'purge' }).ok).toBe(false);
+    expect(validateIntentRow({ ...base, beforeProjection: { ...proj, scope: 'x' } }).ok).toBe(false);
+    expect(validateIntentRow({ ...base, affectedRuleState: 'not-a-map' }).ok).toBe(false);
+  });
+});
+
+describe('parseJsonSafe / 预算工具', () => {
+  it('parseJsonSafe 非法输入安全 null', () => {
+    expect(parseJsonSafe('{"a":1}')).toEqual({ a: 1 });
+    expect(parseJsonSafe('not-json')).toBeNull();
+    expect(parseJsonSafe(null)).toBeNull();
+    expect(parseJsonSafe(undefined)).toBeNull();
+  });
+
+  it('computeEventItemsBytes 按 UTF-8 字节累计', () => {
+    expect(computeEventItemsBytes(['{"a":"你好"}'])).toBe(
+      Buffer.byteLength('{"a":"你好"}', 'utf8'),
+    );
+    expect(computeEventItemsBytes([])).toBe(0);
+  });
+});
