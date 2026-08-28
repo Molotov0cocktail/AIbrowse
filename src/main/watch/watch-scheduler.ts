@@ -5,10 +5,7 @@
 // Contract source: doc/stage6/detailed-design.md §4.1–§4.3、FIXED DECISIONS 4–6/8。
 // 分层纪律：本模块不 import Electron、logger、repository、任何 IO、任何 db/ 模块。
 import { createHash } from 'node:crypto';
-import {
-  createTimeZoneResolver,
-  nextIntervalInstant,
-} from '../../shared/watch/clock';
+import { createTimeZoneResolver, nextIntervalInstant } from '../../shared/watch/clock';
 import {
   MAX_DUE_STARTS_PER_TICK,
   type Clock,
@@ -194,7 +191,11 @@ export class WatchScheduler {
       });
     } else {
       const prior = this.heap[existing]!;
-      this.heap[existing] = { ...prior, effectiveDueAt: entry.effectiveDueAt, trigger: 'scheduled' };
+      this.heap[existing] = {
+        ...prior,
+        effectiveDueAt: entry.effectiveDueAt,
+        trigger: 'scheduled',
+      };
       this.siftDown(existing);
       this.siftUp(existing);
     }

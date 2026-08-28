@@ -16,9 +16,7 @@ describe('deriveHostKey（canonical host:effectivePort，80/443 显式单一事�
     expect(deriveHostKey({ scheme: 'https', host: 'example.com', port: 443 })).toBe(
       'example.com:443',
     );
-    expect(deriveHostKey({ scheme: 'http', host: 'example.com', port: 80 })).toBe(
-      'example.com:80',
-    );
+    expect(deriveHostKey({ scheme: 'http', host: 'example.com', port: 80 })).toBe('example.com:80');
     expect(deriveHostKey({ scheme: 'http', host: 'example.com', port: 443 })).toBe(
       'example.com:443',
     );

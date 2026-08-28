@@ -205,7 +205,10 @@ export interface WatchRunCoordinatorOptions {
 
 export type ManualRunResult =
   | { ok: true; runId: string; reused: boolean }
-  | { ok: false; reason: 'stopped' | 'unavailable' | 'rule-not-found' | 'rule-disabled' | 'invalid-request' };
+  | {
+      ok: false;
+      reason: 'stopped' | 'unavailable' | 'rule-not-found' | 'rule-disabled' | 'invalid-request';
+    };
 
 interface RunTask {
   ruleId: string;
@@ -252,7 +255,11 @@ export class WatchRunCoordinator {
   // 状态查询（有界；测试/装配诊断）
   // -------------------------------------------------------------------------
 
-  getState(): { mode: 'running' | 'stopped' | 'unavailable'; pendingCount: number; activeCount: number } {
+  getState(): {
+    mode: 'running' | 'stopped' | 'unavailable';
+    pendingCount: number;
+    activeCount: number;
+  } {
     const mode = this.unavailable ? 'unavailable' : this.stopped ? 'stopped' : 'running';
     return { mode, pendingCount: this.pending.length, activeCount: this.active.size };
   }
@@ -446,7 +453,9 @@ export class WatchRunCoordinator {
       return { ok: false, reason: 'unavailable' };
     }
     const backoffUntilMs =
-      rule !== null && rule.backoffUntil !== null ? Date.parse(rule.backoffUntil) : Number.NEGATIVE_INFINITY;
+      rule !== null && rule.backoffUntil !== null
+        ? Date.parse(rule.backoffUntil)
+        : Number.NEGATIVE_INFINITY;
     const earliest = Number.isFinite(backoffUntilMs)
       ? Math.max(this.nowMs(), backoffUntilMs)
       : this.nowMs();
@@ -472,7 +481,8 @@ export class WatchRunCoordinator {
     while (this.activeGlobal < MAX_GLOBAL_WATCH_RUNS) {
       const now = this.nowMs();
       const idx = this.pending.findIndex(
-        (t) => t.earliestStartMs <= now && (this.hostActive.get(t.hostKey) ?? 0) < MAX_HOST_WATCH_RUNS,
+        (t) =>
+          t.earliestStartMs <= now && (this.hostActive.get(t.hostKey) ?? 0) < MAX_HOST_WATCH_RUNS,
       );
       if (idx === -1) break;
       const [task] = this.pending.splice(idx, 1);
@@ -554,8 +564,11 @@ export class WatchRunCoordinator {
         hostKey,
         seed: task.scheduledFor ?? task.requestKey,
       });
-      let failure: { health: WatchFailureCode; retryable: boolean; retryAfterSeconds: number | null } | null =
-        null;
+      let failure: {
+        health: WatchFailureCode;
+        retryable: boolean;
+        retryAfterSeconds: number | null;
+      } | null = null;
       let succeeded = false;
       let attempt = 0;
       while (!this.stopped) {
@@ -631,11 +644,16 @@ export class WatchRunCoordinator {
         return;
       }
       if (succeeded) {
-        this.writeTerminal(task, { kind: 'unchanged' }, { state: 'healthy', acquisition: 'rss', code: null }, {
-          consecutiveFailures: 0,
-          backoffUntil: null,
-          healthPauseReason: null,
-        });
+        this.writeTerminal(
+          task,
+          { kind: 'unchanged' },
+          { state: 'healthy', acquisition: 'rss', code: null },
+          {
+            consecutiveFailures: 0,
+            backoffUntil: null,
+            healthPauseReason: null,
+          },
+        );
       } else {
         const mapped = this.failureTerminal(task.ruleId, failure!);
         this.writeTerminal(task, mapped.outcome, mapped.health, {
@@ -673,7 +691,13 @@ export class WatchRunCoordinator {
   private failureTerminal(
     ruleId: string,
     failure: { health: WatchFailureCode; retryable: boolean; retryAfterSeconds: number | null },
-  ): { outcome: WatchRunOutcome; health: WatchHealthSnapshot; consecutiveFailures: number; backoffUntil: string | null; healthPauseReason: HealthPauseAuditReason | null } {
+  ): {
+    outcome: WatchRunOutcome;
+    health: WatchHealthSnapshot;
+    consecutiveFailures: number;
+    backoffUntil: string | null;
+    healthPauseReason: HealthPauseAuditReason | null;
+  } {
     const rule = this.repo.getRule(ruleId)!;
     const cf = rule.consecutiveFailures + 1;
     const nowMs = this.nowMs();
@@ -693,7 +717,8 @@ export class WatchRunCoordinator {
       if (cf >= 2) healthPauseReason = healthPauseAuditReason(failure.health);
     } else if (failure.health === 'unavailable') {
       const ladder = backoffDelayFor(cf);
-      const retryAfterMs = failure.retryAfterSeconds !== null ? failure.retryAfterSeconds * 1000 : 0;
+      const retryAfterMs =
+        failure.retryAfterSeconds !== null ? failure.retryAfterSeconds * 1000 : 0;
       const effectiveWait = Number.isFinite(retryAfterMs) ? Math.max(ladder, retryAfterMs) : ladder;
       backoffUntil = new Date(nowMs + effectiveWait).toISOString();
     }
@@ -712,16 +737,11 @@ export class WatchRunCoordinator {
       return;
     }
     // superseded：不计数失败、不设 backoff（Source 变化不是网络失败）
-    this.writeTerminal(
-      task,
-      outcome,
-      health,
-      {
-        consecutiveFailures: rule?.consecutiveFailures ?? 0,
-        backoffUntil: rule?.backoffUntil ?? null,
-        healthPauseReason: null,
-      },
-    );
+    this.writeTerminal(task, outcome, health, {
+      consecutiveFailures: rule?.consecutiveFailures ?? 0,
+      backoffUntil: rule?.backoffUntil ?? null,
+      healthPauseReason: null,
+    });
   }
 
   private writeTerminal(

@@ -77,7 +77,13 @@ const ONE_ITEM = [
     fieldKey: 'title',
     label: '标题',
     before: { kind: 'absent' as const },
-    after: { kind: 'present' as const, excerpt: '新', valueHash: 'h', normalizedBytes: 3, truncated: false },
+    after: {
+      kind: 'present' as const,
+      excerpt: '新',
+      valueHash: 'h',
+      normalizedBytes: 3,
+      truncated: false,
+    },
     beforeCapturedAt: NOW,
     afterCapturedAt: NOW,
     beforeFinalUrl: 'https://example.com',
@@ -110,7 +116,8 @@ function seedV1Db(dbPath: string): { rule: WatchRule; event: WatchEvent; mutatio
     const repo = new WatchRepository(handle);
     const rule = makeRule();
     if (!repo.insertRule(rule).ok) throw new Error('seed insertRule 失败');
-    const projectionJson = '{"format":"rss2","title":{"text":"t","truncated":false,"originalBytes":1}}';
+    const projectionJson =
+      '{"format":"rss2","title":{"text":"t","truncated":false,"originalBytes":1}}';
     const baseline = repo.writeBaseline({
       ruleId: rule.id,
       expectedBaselineVersion: null,
@@ -123,7 +130,15 @@ function seedV1Db(dbPath: string): { rule: WatchRule; event: WatchEvent; mutatio
       documentId: null,
     });
     if (!baseline.ok) throw new Error(`seed writeBaseline 失败：${baseline.code}`);
-    if (!repo.insertRun({ id: 'run-finished', ruleId: rule.id, requestKey: 'rk-finished', trigger: 'scheduled', scheduledFor: NOW }).ok) {
+    if (
+      !repo.insertRun({
+        id: 'run-finished',
+        ruleId: rule.id,
+        requestKey: 'rk-finished',
+        trigger: 'scheduled',
+        scheduledFor: NOW,
+      }).ok
+    ) {
       throw new Error('seed insertRun 失败');
     }
     const trans = repo.transitionRun('run-finished', 'queued', {
@@ -296,13 +311,19 @@ describe('D5 #S6-044 M0：v1→v2 store 升级（FIXED 16）', () => {
           i === idx ? 'THIS IS NOT VALID SQL;' : s,
         ),
       };
-      const bad = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE, migrations: [WATCH_MIGRATION_V1, broken] });
+      const bad = openWatchStore({
+        dbPath,
+        backupsDir,
+        reconcile: OK_RECONCILE,
+        migrations: [WATCH_MIGRATION_V1, broken],
+      });
       expect(bad.mode).toBe('unavailable');
       // user_version 仍为 1、规则行完整、备份保留
       const probeHandle = openDb(dbPath);
       try {
         expect(
-          (probeHandle.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+          (probeHandle.prepare('PRAGMA user_version').get() as { user_version: number })
+            .user_version,
         ).toBe(1);
         const row = probeHandle
           .prepare('SELECT COUNT(*) AS n FROM watch_rules WHERE id = ?')

@@ -9,7 +9,13 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { openDb, closeDb } from '../sources/db/sqlite-driver';
 import { runWatchMigrations } from './db/watch-migrations';
 import { WatchRepository } from './repository/watch-repository';
-import { WatchRunCoordinator, type SchedulerPort, type WatchAcquisitionPort, type WatchAcquisitionResult, type WatchRevalidatorPort } from './watch-run-coordinator';
+import {
+  WatchRunCoordinator,
+  type SchedulerPort,
+  type WatchAcquisitionPort,
+  type WatchAcquisitionResult,
+  type WatchRevalidatorPort,
+} from './watch-run-coordinator';
 import { HostRequestGate } from './host-request-gate';
 import { FakeClock } from '../../shared/watch/clock';
 import { computeSourceLocatorFingerprint } from '../../shared/watch/watch-rule-state';
@@ -28,7 +34,9 @@ function makeRule(overrides: Partial<WatchRule> & { feedUrl?: string } = {}): Wa
   const sourceId = overrides.sourceId ?? 'src-1';
   const feedUrl =
     overrides.feedUrl ??
-    (overrides.kind === 'page' ? 'https://page.example.com/doc' : 'https://feed.example.com/rss.xml');
+    (overrides.kind === 'page'
+      ? 'https://page.example.com/doc'
+      : 'https://feed.example.com/rss.xml');
   return {
     id: randomUUID(),
     sourceId,
@@ -85,7 +93,10 @@ class FakeAcquisition implements WatchAcquisitionPort {
       hostKey: input.hostKey,
     });
     if (this.registerGate && this.hostGate !== null) {
-      await this.hostGate.acquire(input.hostKey, { signal: input.signal, deadlineMs: input.deadline.getTime() });
+      await this.hostGate.acquire(input.hostKey, {
+        signal: input.signal,
+        deadlineMs: input.deadline.getTime(),
+      });
     }
     this.globalConcurrent += 1;
     this.maxGlobalConcurrent = Math.max(this.maxGlobalConcurrent, this.globalConcurrent);
@@ -249,7 +260,9 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       expect(h.coordinator.activeRunCount()).toBe(0);
       expect(h.coordinator.pendingRunCount()).toBe(0);
       for (const r of rules) {
-        expect(h.repo.listAudits(100).some((a) => a.reasonCode === 'unchanged' && a.ruleId === r.id)).toBe(true);
+        expect(
+          h.repo.listAudits(100).some((a) => a.reasonCode === 'unchanged' && a.ruleId === r.id),
+        ).toBe(true);
       }
       expect(h.acquisition.maxGlobalConcurrent).toBeLessThanOrEqual(4);
       // host=1：同 host 串行
@@ -259,7 +272,9 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
         for (const r of same) expect(h2.repo.insertRule(r).ok).toBe(true);
         h2.acquisition.registerGate = true;
         h2.acquisition.hostGate = h2.hostGate;
-        h2.coordinator.handleDue(same.map((r) => ({ ruleId: r.id, trigger: 'scheduled' as const })));
+        h2.coordinator.handleDue(
+          same.map((r) => ({ ruleId: r.id, trigger: 'scheduled' as const })),
+        );
         // 第一 run 执行并登记 gate start；第二 run 等 host=1 释放 + gate ≥5s
         await settle(h2.clock, 6);
         h2.clock.advanceBy(5_000); // 补足同 host 相邻 start ≥5s
@@ -269,7 +284,9 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
         // 相邻起点 ≥5s（gate 登记制）：第二 run 的首个 acquisition 在首个注册后 ≥5s
         expect(h2.acquisition.calls[1]!.runId).not.toBe(h2.acquisition.calls[0]!.runId);
         for (const r of same) {
-          expect(h2.repo.getRun(h2.acquisition.calls.find((c) => c.ruleId === r.id)!.runId)!.status).toBe('finished');
+          expect(
+            h2.repo.getRun(h2.acquisition.calls.find((c) => c.ruleId === r.id)!.runId)!.status,
+          ).toBe('finished');
         }
       } finally {
         h2.repo.dispose();
@@ -353,7 +370,13 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
   });
 
   it('M4④ 退避阶梯逐档：1→15m、2→1h、3→6h、4→24h 封顶（连续失败）', async () => {
-    const expected = [15 * 60_000, 60 * 60_000, 6 * 60 * 60_000, 24 * 60 * 60_000, 24 * 60 * 60_000];
+    const expected = [
+      15 * 60_000,
+      60 * 60_000,
+      6 * 60 * 60_000,
+      24 * 60 * 60_000,
+      24 * 60 * 60_000,
+    ];
     for (let i = 0; i < 5; i += 1) {
       const h = setup();
       try {
@@ -413,15 +436,25 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
     const codes: Array<{ code: WatchFailureCode; auditReason: string; pauseReason: string }> = [
       { code: 'login_required', auditReason: 'login-required', pauseReason: 'login-required' },
       { code: 'captcha', auditReason: 'captcha', pauseReason: 'captcha' },
-      { code: 'robots_disallowed', auditReason: 'robots-disallowed', pauseReason: 'robots-disallowed' },
-      { code: 'security_rejected', auditReason: 'security-rejected', pauseReason: 'security-rejected' },
+      {
+        code: 'robots_disallowed',
+        auditReason: 'robots-disallowed',
+        pauseReason: 'robots-disallowed',
+      },
+      {
+        code: 'security_rejected',
+        auditReason: 'security-rejected',
+        pauseReason: 'security-rejected',
+      },
     ];
     for (const spec of codes) {
       const h = setup();
       try {
         const rule = makeRule();
         expect(h.repo.insertRule(rule).ok).toBe(true);
-        h.acquisition.results = [{ ok: false, health: spec.code, retryable: true, retryAfterSeconds: null }];
+        h.acquisition.results = [
+          { ok: false, health: spec.code, retryable: true, retryAfterSeconds: null },
+        ];
         h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
         await settle(h.clock);
         expect(h.acquisition.calls.length).toBe(1); // 零重试
@@ -430,8 +463,13 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
         expect(readRule.pauseReason).toBe(spec.pauseReason);
         expect(readRule.backoffUntil).toBeNull(); // 暂停零退避
         const audits = h.repo.listAudits(100).filter((a) => a.ruleId === rule.id);
-        expect(audits.filter((a) => a.kind === 'run' && a.reasonCode === spec.auditReason).length).toBe(1);
-        expect(audits.filter((a) => a.kind === 'lifecycle-pause' && a.reasonCode === spec.pauseReason).length).toBe(1);
+        expect(
+          audits.filter((a) => a.kind === 'run' && a.reasonCode === spec.auditReason).length,
+        ).toBe(1);
+        expect(
+          audits.filter((a) => a.kind === 'lifecycle-pause' && a.reasonCode === spec.pauseReason)
+            .length,
+        ).toBe(1);
       } finally {
         h.repo.dispose();
         closeDb(h.repo.dbHandle);
@@ -445,7 +483,9 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
     try {
       const rule = makeRule();
       expect(h.repo.insertRule(rule).ok).toBe(true);
-      h.acquisition.results = [{ ok: false, health: 'parse_changed', retryable: false, retryAfterSeconds: null }];
+      h.acquisition.results = [
+        { ok: false, health: 'parse_changed', retryable: false, retryAfterSeconds: null },
+      ];
       h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
       await settle(h.clock);
       const first = h.repo.getRule(rule.id)!;
@@ -460,15 +500,22 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       ) as { state: string };
       expect(firstHealth.state).toBe('degraded');
       // 第 2 次连续 → 暂停
-      h.acquisition.results = [{ ok: false, health: 'parse_changed', retryable: false, retryAfterSeconds: null }];
+      h.acquisition.results = [
+        { ok: false, health: 'parse_changed', retryable: false, retryAfterSeconds: null },
+      ];
       h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
       await settle(h.clock);
       const second = h.repo.getRule(rule.id)!;
       expect(second.state).toBe('paused');
       expect(second.pauseReason).toBe('parse-changed');
       const audits = h.repo.listAudits(100).filter((a) => a.ruleId === rule.id);
-      expect(audits.filter((a) => a.kind === 'run' && a.reasonCode === 'parse-changed').length).toBe(2);
-      expect(audits.filter((a) => a.kind === 'lifecycle-pause' && a.reasonCode === 'parse-changed').length).toBe(1);
+      expect(
+        audits.filter((a) => a.kind === 'run' && a.reasonCode === 'parse-changed').length,
+      ).toBe(2);
+      expect(
+        audits.filter((a) => a.kind === 'lifecycle-pause' && a.reasonCode === 'parse-changed')
+          .length,
+      ).toBe(1);
     } finally {
       h.repo.dispose();
       closeDb(h.repo.dbHandle);
@@ -488,7 +535,11 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       expect(readRule.consecutiveFailures).toBe(0);
       expect(readRule.backoffUntil).toBeNull();
       expect(readRule.state).toBe('enabled');
-      expect(h.repo.listAudits(100).some((a) => a.kind === 'run' && a.reasonCode === 'unchanged' && a.ruleId === rule.id)).toBe(true);
+      expect(
+        h.repo
+          .listAudits(100)
+          .some((a) => a.kind === 'run' && a.reasonCode === 'unchanged' && a.ruleId === rule.id),
+      ).toBe(true);
       // 成功已 re-queue（enabled 规则被 upsert 到调度队列）
       expect(h.scheduler.upserts.some((u) => u.ruleId === rule.id)).toBe(true);
     } finally {
@@ -537,7 +588,10 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
         expect(h.repo.insertRule(rule).ok).toBe(true);
         h.coordinator = new WatchRunCoordinator({
           repo: h.repo,
-          revalidator: pausingRevalidator(h.repo, new Map([[rule.id, { status: status as 'source-missing' }]])),
+          revalidator: pausingRevalidator(
+            h.repo,
+            new Map([[rule.id, { status: status as 'source-missing' }]]),
+          ),
           acquisition: h.acquisition,
           hostGate: h.hostGate,
           scheduler: h.scheduler,
@@ -694,7 +748,9 @@ describe('M5 生命周期（§4.4/FIXED 12：stop-admission→abort→drain→cl
       const fired: string[] = [];
       h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
       expect(fired.length).toBe(0);
-      expect(h.repo.dbHandle.prepare('SELECT COUNT(*) AS n FROM watch_runs').get()).toEqual({ n: 0 });
+      expect(h.repo.dbHandle.prepare('SELECT COUNT(*) AS n FROM watch_runs').get()).toEqual({
+        n: 0,
+      });
       expect(h.coordinator.manualRun(rule.id, 'm1')).toEqual({ ok: false, reason: 'stopped' });
     } finally {
       h.repo.dispose();
@@ -774,7 +830,11 @@ describe('M5 生命周期（§4.4/FIXED 12：stop-admission→abort→drain→cl
       closeDb(repo.dbHandle);
       // 重启：openWatchStore 把遗留 running 恰标 interrupted 一次
       const { openWatchStore } = await import('./watch-store');
-      const reopened = openWatchStore({ dbPath, backupsDir: join(dir, 'backups'), reconcile: () => ({ ok: true, reason: null }) });
+      const reopened = openWatchStore({
+        dbPath,
+        backupsDir: join(dir, 'backups'),
+        reconcile: () => ({ ok: true, reason: null }),
+      });
       expect(reopened.mode).toBe('normal');
       if (reopened.mode !== 'normal') return;
       const run = reopened.repo.getRun(runId)!;

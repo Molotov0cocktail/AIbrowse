@@ -66,9 +66,9 @@ describe('backoffDelayFor（退避阶梯 FIXED 6：15m/1h/6h/24h 封顶）', () 
 
 describe('effectiveDueAtMs（§4.2：max(nextDueAt, backoffUntil)）', () => {
   it('nextDueAt/backoffUntil 取较晚者；backoff 覆盖 next；全空 → null', () => {
-    expect(
-      effectiveDueAtMs({ nextDueAt: '2026-08-28T10:00:00.000Z', backoffUntil: null }),
-    ).toBe(Date.parse('2026-08-28T10:00:00.000Z'));
+    expect(effectiveDueAtMs({ nextDueAt: '2026-08-28T10:00:00.000Z', backoffUntil: null })).toBe(
+      Date.parse('2026-08-28T10:00:00.000Z'),
+    );
     expect(
       effectiveDueAtMs({
         nextDueAt: '2026-08-28T10:00:00.000Z',
@@ -171,7 +171,9 @@ describe('computeNextDueAt（FIXED 4：O(1) 推进，不枚举 missed）', () =>
 describe('localDateOf（目标时区逻辑日）', () => {
   it('Asia/Shanghai 与 America/New_York 正确映射', () => {
     expect(localDateOf(Date.parse('2026-08-28T17:00:00.000Z'), 'Asia/Shanghai')).toBe('2026-08-29');
-    expect(localDateOf(Date.parse('2026-08-28T23:00:00.000Z'), 'America/New_York')).toBe('2026-08-28');
+    expect(localDateOf(Date.parse('2026-08-28T23:00:00.000Z'), 'America/New_York')).toBe(
+      '2026-08-28',
+    );
     expect(localDateOf(Number.NaN, 'Asia/Shanghai')).toBeNull();
   });
 });
@@ -266,9 +268,7 @@ describe('WatchScheduler 到期队列（§4.2/§14）', () => {
   it('向前跳：合并补跑（每条目一次提交，不枚举中间时点）', () => {
     const clock = new FakeClock(Date.parse('2026-08-28T10:00:00.000Z'));
     const { scheduler, submitted } = makeScheduler(clock);
-    scheduler.initialize([
-      { ruleId: 'x', effectiveDueAt: Date.parse('2026-08-28T10:30:00.000Z') },
-    ]);
+    scheduler.initialize([{ ruleId: 'x', effectiveDueAt: Date.parse('2026-08-28T10:30:00.000Z') }]);
     // 墙钟直接前跳 3 天（离线场景）→ 单次合并补跑
     clock.advanceTo(Date.parse('2026-08-31T09:00:00.000Z'));
     expect(submitted).toEqual([{ ruleId: 'x', trigger: 'scheduled' }]);

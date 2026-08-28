@@ -70,7 +70,11 @@ function openRepo(): { dir: string; dbPath: string; handle: DbHandle; repo: Watc
   return { dir, dbPath, handle, repo };
 }
 
-function reserveInput(rule: WatchRule, runId: string, trigger: 'scheduled' | 'catch-up' = 'scheduled') {
+function reserveInput(
+  rule: WatchRule,
+  runId: string,
+  trigger: 'scheduled' | 'catch-up' = 'scheduled',
+) {
   const consumed = rule.nextDueAt!;
   const advanced = computeNextDueAt({ rule, consumedScheduledFor: consumed, nowMs: NOW_MS })!;
   return {
@@ -105,7 +109,9 @@ describe('M2 reservation 三写原子性（§4.2/FIXED 1）', () => {
       expect(readRule.nextDueAt).toBe(input.advancedNextDueAt);
       expect(Date.parse(readRule.nextDueAt!)).toBeGreaterThan(NOW_MS);
       // 结算首颗运行后，以旧 expected 再 reserve → 陈旧 CAS 冲突（已消费 slot 不重放）
-      expect(repo.transitionRun('run-1', 'queued', { status: 'running', startedAt: NOW }).ok).toBe(true);
+      expect(repo.transitionRun('run-1', 'queued', { status: 'running', startedAt: NOW }).ok).toBe(
+        true,
+      );
       expect(
         repo.finalizeRun({
           runId: 'run-1',
@@ -247,11 +253,7 @@ describe('M2 reservation 三写原子性（§4.2/FIXED 1）', () => {
       const replay = repo.reserveScheduledRun(reserveInput(rule, 'run-replay'));
       expect(replay).toEqual({ ok: false, code: 'rule-state-conflict' });
       // 新到期（nextDueAt 已在未来）→ 以新 expected 可正常 reservation
-      const next = reserveInput(
-        { ...rule, nextDueAt: readRule.nextDueAt },
-        'run-next',
-        'catch-up',
-      );
+      const next = reserveInput({ ...rule, nextDueAt: readRule.nextDueAt }, 'run-next', 'catch-up');
       // 未来 due 不触发 catch-up；此处仅验证新 expected 可接受
       const nextResult = repo.reserveScheduledRun({ ...next, trigger: 'scheduled' });
       expect(nextResult.ok).toBe(true);
@@ -287,7 +289,9 @@ describe('M2 reservation 三写原子性（§4.2/FIXED 1）', () => {
       expect(run.status).toBe('interrupted');
       expect(run.outcome).toBeNull(); // 零半数据
       expect(run.health).toBeNull();
-      expect(reopened.repo.getRule(rule.id)!.nextDueAt).toBe(reserveInput(rule, 'x').advancedNextDueAt);
+      expect(reopened.repo.getRule(rule.id)!.nextDueAt).toBe(
+        reserveInput(rule, 'x').advancedNextDueAt,
+      );
       reopened.repo.dispose();
     } finally {
       if (repo !== null && !repo.isDisposed) repo.dispose();
@@ -300,7 +304,10 @@ describe('M2 手动 reservation（§4.2 末段/FIXED 6：零锚点、复用、�
   it('成功：requestKey=requestId、trigger=manual、scheduledFor=null、零调度字段写入', () => {
     const { dir, handle, repo } = openRepo();
     try {
-      const rule = makeRule({ nextDueAt: '2026-08-28T10:00:00.000Z', lastConsumedScheduledFor: '2026-08-28T09:00:00.000Z' });
+      const rule = makeRule({
+        nextDueAt: '2026-08-28T10:00:00.000Z',
+        lastConsumedScheduledFor: '2026-08-28T09:00:00.000Z',
+      });
       expect(repo.insertRule(rule).ok).toBe(true);
       const result = repo.reserveManualRun({
         ruleId: rule.id,
@@ -349,9 +356,18 @@ describe('M2 手动 reservation（§4.2 末段/FIXED 6：零锚点、复用、�
   it('paused/deleted 规则手动受控拒绝', () => {
     const { dir, handle, repo } = openRepo();
     try {
-      const paused = makeRule({ state: 'paused', pauseReason: 'login-required', desiredEnabled: true });
+      const paused = makeRule({
+        state: 'paused',
+        pauseReason: 'login-required',
+        desiredEnabled: true,
+      });
       expect(repo.insertRule(paused).ok).toBe(true);
-      const r1 = repo.reserveManualRun({ ruleId: paused.id, runId: 'm1', requestKey: 'k1', nowIso: NOW });
+      const r1 = repo.reserveManualRun({
+        ruleId: paused.id,
+        runId: 'm1',
+        requestKey: 'k1',
+        nowIso: NOW,
+      });
       expect(r1).toEqual({ ok: false, code: 'rule-state-conflict' });
       expect(repo.getRun('m1')).toBeNull();
     } finally {
@@ -366,9 +382,16 @@ describe('M2 手动 reservation（§4.2 末段/FIXED 6：零锚点、复用、�
     try {
       const rule = makeRule();
       expect(repo.insertRule(rule).ok).toBe(true);
-      const first = repo.reserveManualRun({ ruleId: rule.id, runId: 'm1', requestKey: 'same-key', nowIso: NOW });
+      const first = repo.reserveManualRun({
+        ruleId: rule.id,
+        runId: 'm1',
+        requestKey: 'same-key',
+        nowIso: NOW,
+      });
       expect(first.ok).toBe(true);
-      expect(repo.transitionRun('m1', 'queued', { status: 'running', startedAt: NOW }).ok).toBe(true);
+      expect(repo.transitionRun('m1', 'queued', { status: 'running', startedAt: NOW }).ok).toBe(
+        true,
+      );
       expect(
         repo.finalizeRun({
           runId: 'm1',
@@ -380,7 +403,12 @@ describe('M2 手动 reservation（§4.2 末段/FIXED 6：零锚点、复用、�
           runAudit: { id: randomUUID(), reasonCode: 'unchanged', createdAt: NOW },
         }).ok,
       ).toBe(true);
-      const replay = repo.reserveManualRun({ ruleId: rule.id, runId: 'm2', requestKey: 'same-key', nowIso: NOW });
+      const replay = repo.reserveManualRun({
+        ruleId: rule.id,
+        runId: 'm2',
+        requestKey: 'same-key',
+        nowIso: NOW,
+      });
       expect(replay).toEqual({ ok: false, code: 'duplicate-request-key' });
       expect(repo.getRun('m2')).toBeNull();
     } finally {
@@ -394,7 +422,9 @@ describe('M2 手动 reservation（§4.2 末段/FIXED 6：零锚点、复用、�
 describe('M2 终态事务（FIXED 1/7：Run 终态 + 审计同事务、健康暂停、重复终态零第二条审计）', () => {
   function runningRun(repo: WatchRepository, rule: WatchRule, runId: string): void {
     expect(repo.reserveScheduledRun(reserveInput(rule, runId)).ok).toBe(true);
-    expect(repo.transitionRun(runId, 'queued', { status: 'running', startedAt: NOW }).ok).toBe(true);
+    expect(repo.transitionRun(runId, 'queued', { status: 'running', startedAt: NOW }).ok).toBe(
+      true,
+    );
   }
 
   it('成功：run finished + rule failure 状态 + 恰一条 run 审计同事务；健康暂停恰一条 lifecycle-pause', () => {
@@ -441,9 +471,17 @@ describe('M2 终态事务（FIXED 1/7：Run 终态 + 审计同事务、健康暂
       expect(repo.insertRule(rule).ok).toBe(true);
       // 直接插 running run（暂停规则不会调度；模拟运行中刚被暂停）
       expect(
-        repo.insertRun({ id: 'run-p', ruleId: rule.id, requestKey: 'kp', trigger: 'scheduled', scheduledFor: NOW }).ok,
+        repo.insertRun({
+          id: 'run-p',
+          ruleId: rule.id,
+          requestKey: 'kp',
+          trigger: 'scheduled',
+          scheduledFor: NOW,
+        }).ok,
       ).toBe(true);
-      expect(repo.transitionRun('run-p', 'queued', { status: 'running', startedAt: NOW }).ok).toBe(true);
+      expect(repo.transitionRun('run-p', 'queued', { status: 'running', startedAt: NOW }).ok).toBe(
+        true,
+      );
       const r = repo.finalizeRun({
         runId: 'run-p',
         ruleId: rule.id,
@@ -474,7 +512,15 @@ describe('M2 终态事务（FIXED 1/7：Run 终态 + 审计同事务、健康暂
       expect(repo.insertRule(rule).ok).toBe(true);
       runningRun(repo, rule, 'run-t');
       // 预置同 id 审计（触发审计 INSERT PK 冲突）
-      expect(repo.insertAudit({ id: 'dup-audit', ruleId: null, kind: 'reconciliation', reasonCode: 'complete', createdAt: NOW }).ok).toBe(true);
+      expect(
+        repo.insertAudit({
+          id: 'dup-audit',
+          ruleId: null,
+          kind: 'reconciliation',
+          reasonCode: 'complete',
+          createdAt: NOW,
+        }).ok,
+      ).toBe(true);
       const r = repo.finalizeRun({
         runId: 'run-t',
         ruleId: rule.id,

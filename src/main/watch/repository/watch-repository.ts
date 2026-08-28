@@ -115,8 +115,7 @@ export type WatchResult = OkResult | { ok: false; code: WatchErrorCode };
 
 /** reservation 结果（§4.2）：ok 时携带 runId；手动复用当前 run 时 reused=true。 */
 export type ReserveRunResult =
-  | { ok: true; runId: string; reused?: boolean }
-  | { ok: false; code: WatchErrorCode };
+  { ok: true; runId: string; reused?: boolean } | { ok: false; code: WatchErrorCode };
 
 // ---------------------------------------------------------------------------
 // 编译期 SQL 常量（全部参数绑定；无动态拼接）
@@ -1056,15 +1055,13 @@ export class WatchRepository {
     try {
       return withTransaction(this.handle, () => {
         const ruleRow = this.handle.prepare(SQL_SELECT_RULE_STATE_ONLY).get(input.ruleId) as
-          | { state: string }
-          | undefined;
+          { state: string } | undefined;
         if (ruleRow === undefined) return { ok: false, code: 'rule-not-found' as const };
         if (ruleRow.state !== 'enabled') {
           return { ok: false, code: 'rule-state-conflict' as const };
         }
         const active = this.handle.prepare(SQL_SELECT_ACTIVE_RUN_BY_RULE).get(input.ruleId) as
-          | { id: string }
-          | undefined;
+          { id: string } | undefined;
         if (active !== undefined) {
           return { ok: true, runId: active.id, reused: true };
         }
@@ -1149,8 +1146,7 @@ export class WatchRepository {
           );
         if (input.healthPause !== undefined) {
           const ruleRow = this.handle.prepare(SQL_SELECT_RULE_STATE_ONLY).get(input.ruleId) as
-            | { state: string }
-            | undefined;
+            { state: string } | undefined;
           // 仅 enabled→paused 迁移写一条健康暂停审计；已暂停/已删除重复零审计。
           // enabled 规则必 desiredEnabled=true（状态机不变量），健康暂停保留用户意图。
           if (ruleRow !== undefined && ruleRow.state === 'enabled') {

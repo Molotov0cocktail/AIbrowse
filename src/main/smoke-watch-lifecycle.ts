@@ -18,9 +18,16 @@ import { randomUUID } from 'node:crypto';
 import { app } from 'electron';
 import { getCurrentLogFilePath, logInfo } from './logger';
 import { openWatchStore } from './watch/watch-store';
-import { WatchLifecycleCoordinator, type SourceProjectionReader } from './watch/watch-lifecycle-coordinator';
+import {
+  WatchLifecycleCoordinator,
+  type SourceProjectionReader,
+} from './watch/watch-lifecycle-coordinator';
 import { WatchRepository } from './watch/repository/watch-repository';
-import { WatchRunCoordinator, type WatchAcquisitionPort, type WatchAcquisitionResult } from './watch/watch-run-coordinator';
+import {
+  WatchRunCoordinator,
+  type WatchAcquisitionPort,
+  type WatchAcquisitionResult,
+} from './watch/watch-run-coordinator';
 import { WatchScheduler } from './watch/watch-scheduler';
 import { HostRequestGate } from './watch/host-request-gate';
 import { createSystemClock, FakeClock } from '../shared/watch/clock';
@@ -71,7 +78,10 @@ function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
   };
 }
 
-function projection(sourceId = 'src-1'): SourceWatchProjection {
+function projection(
+  sourceId = 'src-1',
+  overrides: Partial<SourceWatchProjection> = {},
+): SourceWatchProjection {
   return {
     sourceId,
     rowVersion: 1,
@@ -79,6 +89,7 @@ function projection(sourceId = 'src-1'): SourceWatchProjection {
     deletedAt: null,
     scope: 'page',
     canonicalKey: 'https://example.com/doc',
+    ...overrides,
   };
 }
 
@@ -96,7 +107,24 @@ function makeReader(sources: SourceWatchProjection[]): SourceProjectionReader {
   const map = new Map(sources.map((s) => [s.sourceId, s]));
   return (id) => {
     const p = map.get(id);
-    return p === undefined ? { status: 'missing' as const } : { status: 'found' as const, projection: p };
+    return p === undefined
+      ? { status: 'missing' as const }
+      : { status: 'found' as const, projection: p };
+  };
+}
+
+// 门控 openWatchStore 的 reconcile reader：与 D4 check 同语义（src-1 found
+// rowVersion 2、src-2 已删）——D5 set/check 打开共享库时不得把 src-2 视为存在
+//（否则会 abort D4 set 遗留的 hard-delete intent，破坏 D4 check 的级联断言）。
+function gateReconcileReader(): SourceProjectionReader {
+  const map = new Map<string, SourceWatchProjection>([
+    ['src-1', projection('src-1', { rowVersion: 2 })],
+  ]);
+  return (id) => {
+    const p = map.get(id);
+    return p === undefined
+      ? { status: 'missing' as const }
+      : { status: 'found' as const, projection: p };
   };
 }
 
@@ -197,7 +225,11 @@ export async function runWatchLifecycleSmokeScenario(): Promise<void> {
       });
       assert(outcome.mode === 'normal', '8.22：无 Rule store 应 normal');
       if (outcome.mode !== 'normal') return;
-      const { coordinator, scheduler, gate } = buildCoordinator(outcome.repo, clock, new SmokeAcquisition());
+      const { coordinator, scheduler, gate } = buildCoordinator(
+        outcome.repo,
+        clock,
+        new SmokeAcquisition(),
+      );
       coordinator.start();
       assert(clock.pendingTimerCount() === 0, '8.22：无 Rule 应零 timer');
       await shutdownAll(coordinator, scheduler, gate);
@@ -219,24 +251,42 @@ export async function runWatchLifecycleSmokeScenario(): Promise<void> {
       if (outcome.mode !== 'normal') return;
       const rule = makeRule();
       assert(outcome.repo.insertRule(rule).ok, '8.22：规则写入失败');
-      const { coordinator, scheduler, gate } = buildCoordinator(outcome.repo, clock, new SmokeAcquisition());
+      const { coordinator, scheduler, gate } = buildCoordinator(
+        outcome.repo,
+        clock,
+        new SmokeAcquisition(),
+      );
       coordinator.start();
       assert(clock.pendingTimerCount() === 1, '8.22：过期规则应装载到到期队列（timer 重臂）');
       // 触发 catch-up（delay-0 timer + jitter ≤500ms；多轮推进）
       await settleFake(clock, 4);
       // 恰一次 catch-up：run 已消费且终态写回
       const runs = outcome.repo.dbHandle
-        .prepare('SELECT id, request_key, trigger, scheduled_for, status FROM watch_runs WHERE rule_id = ?')
-        .all(rule.id) as Array<{ id: string; request_key: string; trigger: string; scheduled_for: string | null; status: string }>;
+        .prepare(
+          'SELECT id, request_key, trigger, scheduled_for, status FROM watch_runs WHERE rule_id = ?',
+        )
+        .all(rule.id) as Array<{
+        id: string;
+        request_key: string;
+        trigger: string;
+        scheduled_for: string | null;
+        status: string;
+      }>;
       assert(runs.length === 1, '8.22：过期 due 应恰一次 catch-up');
       const run = runs[0]!;
       assert(run.trigger === 'catch-up', '8.22：启动补跑 trigger 应为 catch-up');
       assert(run.status === 'finished', '8.22：catch-up 应已终态');
-      assert(run.request_key === `${rule.id}|${rule.nextDueAt}`, '8.22：requestKey 应为 ruleId|scheduledFor');
+      assert(
+        run.request_key === `${rule.id}|${rule.nextDueAt}`,
+        '8.22：requestKey 应为 ruleId|scheduledFor',
+      );
       const readRule = outcome.repo.getRule(rule.id)!;
       assert(readRule.nextDueAt !== rule.nextDueAt, '8.22：reservation 应推进 nextDueAt');
       assert(Date.parse(readRule.nextDueAt!) > NOW_MS, '8.22：nextDueAt 应推进到未来');
-      assert(readRule.lastConsumedScheduledFor === rule.nextDueAt, '8.22：lastConsumedScheduledFor 应等于消费前 due');
+      assert(
+        readRule.lastConsumedScheduledFor === rule.nextDueAt,
+        '8.22：lastConsumedScheduledFor 应等于消费前 due',
+      );
       // 手动 run 语义抽查：零锚点
       const manual = coordinator.manualRun(rule.id, 'smoke-manual-1');
       assert(manual.ok === true, '8.22：手动 run 应受理');
@@ -274,7 +324,7 @@ export async function runWatchLifecycleSmokeScenario(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function runWatchLifecycleGateSet(dbPath: string, backupsDir: string): Promise<void> {
-  const reader = makeReader([projection('src-1'), projection('src-2')]);
+  const reader = gateReconcileReader();
   const outcome = openWatchStore({
     dbPath,
     backupsDir,
@@ -285,7 +335,10 @@ export async function runWatchLifecycleGateSet(dbPath: string, backupsDir: strin
   const repo = outcome.repo;
   // R1=已过期（catch-up）、R2=未来 + 一条在途模拟 queued run（check 验证 interrupted）
   const r1 = makeRule({ nextDueAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString() });
-  const r2 = makeRule({ id: randomUUID(), nextDueAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString() });
+  const r2 = makeRule({
+    id: randomUUID(),
+    nextDueAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+  });
   assert(repo.insertRule(r1).ok, 'WATCH set（D5）：R1 写入失败');
   assert(repo.insertRule(r2).ok, 'WATCH set（D5）：R2 写入失败');
   assert(
@@ -312,7 +365,10 @@ export async function runWatchLifecycleGateSet(dbPath: string, backupsDir: strin
   assert(runs[0]!.status === 'finished', 'WATCH set（D5）：catch-up 应终态');
   assert(runs[0]!.request_key === `${r1.id}|${r1.nextDueAt}`, 'WATCH set（D5）：requestKey 断言');
   const readR1 = repo.getRule(r1.id)!;
-  assert(readR1.lastConsumedScheduledFor === r1.nextDueAt, 'WATCH set（D5）：lastConsumedScheduledFor 精确');
+  assert(
+    readR1.lastConsumedScheduledFor === r1.nextDueAt,
+    'WATCH set（D5）：lastConsumedScheduledFor 精确',
+  );
   assert(Date.parse(readR1.nextDueAt!) > Date.now(), 'WATCH set（D5）：nextDueAt 已推进');
   assert(acquisition.calls.length === 1, 'WATCH set（D5）：fake port 恰一次调用');
   // 显式排水（stop-admission → abort → drain；未完成行留待 check 标 interrupted）
@@ -321,8 +377,11 @@ export async function runWatchLifecycleGateSet(dbPath: string, backupsDir: strin
   logInfo('smoke', 'WATCH set（D5）：过期 catch-up 恰一次已执行并排水，直接退出');
 }
 
-export async function runWatchLifecycleGateCheck(dbPath: string, backupsDir: string): Promise<void> {
-  const reader = makeReader([projection('src-1'), projection('src-2')]);
+export async function runWatchLifecycleGateCheck(
+  dbPath: string,
+  backupsDir: string,
+): Promise<void> {
+  const reader = gateReconcileReader();
   const outcome = openWatchStore({
     dbPath,
     backupsDir,
@@ -348,18 +407,31 @@ export async function runWatchLifecycleGateCheck(dbPath: string, backupsDir: str
   assert(r1 !== undefined, 'WATCH check（D5）：R1（已消费）应读回');
   // 同 requestKey 零重放：R1 仅一颗已消费 run
   const r1Count = (
-    repo.dbHandle
-      .prepare('SELECT COUNT(*) AS n FROM watch_runs WHERE rule_id = ?')
-      .get(r1!.id) as { n: number }
+    repo.dbHandle.prepare('SELECT COUNT(*) AS n FROM watch_runs WHERE rule_id = ?').get(r1!.id) as {
+      n: number;
+    }
   ).n;
   assert(r1Count === 1, 'WATCH check（D5）：R1 应仅一颗已消费 run（零重放）');
-  // lastConsumedScheduledFor/nextDueAt 精确断言
+  // lastConsumedScheduledFor/nextDueAt 精确断言：lastConsumed = 消费时点 scheduledFor；
+  // nextDueAt 已推进到消费点之后（set 已消费，check 不重放）
+  const r1Run = repo.dbHandle
+    .prepare('SELECT scheduled_for FROM watch_runs WHERE rule_id = ?')
+    .get(r1!.id) as { scheduled_for: string | null };
   assert(
-    repo.getRule(r1!.id)!.lastConsumedScheduledFor === r1!.nextDueAt,
-    'WATCH check（D5）：lastConsumedScheduledFor 精确',
+    r1Run.scheduled_for === repo.getRule(r1!.id)!.lastConsumedScheduledFor,
+    'WATCH check（D5）：lastConsumedScheduledFor = 消费时点 scheduledFor',
+  );
+  assert(
+    repo.getRule(r1!.id)!.lastConsumedScheduledFor !== null &&
+      Date.parse(repo.getRule(r1!.id)!.nextDueAt!) >
+        Date.parse(repo.getRule(r1!.id)!.lastConsumedScheduledFor!),
+    'WATCH check（D5）：nextDueAt 已推进到消费点之后',
   );
   // 新过期 due 恰一次补跑：插入 R3 后启动调度
-  const r3 = makeRule({ id: randomUUID(), nextDueAt: new Date(Date.now() - 30 * 60_000).toISOString() });
+  const r3 = makeRule({
+    id: randomUUID(),
+    nextDueAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+  });
   assert(repo.insertRule(r3).ok, 'WATCH check（D5）：R3 写入失败');
   const acquisition = new SmokeAcquisition();
   const { coordinator, scheduler, gate } = buildCoordinator(repo, createSystemClock(), acquisition);

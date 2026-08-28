@@ -10,11 +10,7 @@
 // - deriveHostKey 是 host:effectivePort（80/443 显式）单一事实源，供 coordinator/
 //   工厂/（D6）workspace 复用；
 // - 零 Electron、零 IO；可注入 Clock；clear() 幂等清理。
-import {
-  MIN_HOST_REQUEST_GAP_MS,
-  type Clock,
-  type TimerHandle,
-} from '../../shared/types/watch';
+import { MIN_HOST_REQUEST_GAP_MS, type Clock, type TimerHandle } from '../../shared/types/watch';
 import type { PublicScheme } from './network-policy';
 
 /**
@@ -23,13 +19,16 @@ import type { PublicScheme } from './network-policy';
  * `https://example.com:443` 映射同一 hostKey；仅 http 80 / https 443 合法
  *（ApprovedTarget 已由 NetworkPolicy 闭合为 80|443）。
  */
-export function deriveHostKey(input: { scheme: PublicScheme; host: string; port: 80 | 443 }): string {
+export function deriveHostKey(input: {
+  scheme: PublicScheme;
+  host: string;
+  port: 80 | 443;
+}): string {
   return `${input.host}:${input.port}`;
 }
 
 export type HostGateResult =
-  | { ok: true }
-  | { ok: false; reason: 'aborted' | 'deadline' | 'clock-invalid' };
+  { ok: true } | { ok: false; reason: 'aborted' | 'deadline' | 'clock-invalid' };
 
 export interface HostGateAcquireOptions {
   signal?: AbortSignal;
@@ -161,7 +160,10 @@ export class HostRequestGate {
       }, waitMs);
       if (deadline !== undefined && Number.isFinite(deadline)) {
         const dWait = Math.max(0, deadline - now);
-        deadlineTimer = this.clock.setTimeout(() => settle({ ok: false, reason: 'deadline' }), dWait);
+        deadlineTimer = this.clock.setTimeout(
+          () => settle({ ok: false, reason: 'deadline' }),
+          dWait,
+        );
       }
     });
   }

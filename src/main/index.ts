@@ -45,10 +45,7 @@ import { runWatchSmokeGate } from './smoke-watch-store';
 // D6 以真实路由替换该注入点（装配形态一次到位）；before-quit 走 Research 同款
 // preventDefault→await watchShutdown→app.quit() 重入排水。
 import { HostRequestGate } from './watch/host-request-gate';
-import {
-  WatchRunCoordinator,
-  type WatchAcquisitionPort,
-} from './watch/watch-run-coordinator';
+import { WatchRunCoordinator, type WatchAcquisitionPort } from './watch/watch-run-coordinator';
 import { WatchScheduler } from './watch/watch-scheduler';
 import { createSystemClock } from '../shared/watch/clock';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
@@ -1355,7 +1352,10 @@ function createBrowserWindow(): void {
         watchRunCoordinator = coordinator;
         coordinator.start();
         // 日志隐私（§13）：不记录 watch.db/userData 绝对路径
-        logInfo('main', 'Watch 子系统就绪（协调器已绑定，调度已启动，acquisition 端口 fail-closed）');
+        logInfo(
+          'main',
+          'Watch 子系统就绪（协调器已绑定，调度已启动，acquisition 端口 fail-closed）',
+        );
       }
       // unavailable 分支：coordinator 保持未绑定 → prepare 恒 fail-closed
       //（调度也不启动——schedulerReady=false）

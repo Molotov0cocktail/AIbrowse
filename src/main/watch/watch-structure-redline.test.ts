@@ -82,7 +82,11 @@ describe('M6 结构红线（Scheduler 零能力 / 零 Electron / 日志脱敏 / 
     // 为类型导入（type-only，运行时不持有实现），否则属直接能力依赖。
     const implImports = coord
       .split('\n')
-      .filter((l) => /^\s*import\b/.test(l) && /repository\/watch-repository|watch-lifecycle-coordinator/.test(l));
+      .filter(
+        (l) =>
+          /^\s*import\b/.test(l) &&
+          /repository\/watch-repository|watch-lifecycle-coordinator/.test(l),
+      );
     expect(implImports.length).toBeGreaterThan(0);
     for (const line of implImports) {
       expect(line.trim().startsWith('import type')).toBe(true);
@@ -90,7 +94,13 @@ describe('M6 结构红线（Scheduler 零能力 / 零 Electron / 日志脱敏 / 
   });
 
   it('M6④ 日志脱敏：watch 模块 logger 调用零 URL/path/query/正文拼接', () => {
-    const badPatterns = [/\$\{[^}]*\.feedUrl/, /\$\{[^}]*\.pageUrl/, /queryString/, /searchParams/, /pathname/];
+    const badPatterns = [
+      /\$\{[^}]*\.feedUrl/,
+      /\$\{[^}]*\.pageUrl/,
+      /queryString/,
+      /searchParams/,
+      /pathname/,
+    ];
     for (const rel of [
       'main/watch/watch-scheduler.ts',
       'main/watch/watch-run-coordinator.ts',

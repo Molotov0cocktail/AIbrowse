@@ -649,11 +649,9 @@ describe('migration v2 契约断言（#S6-044 FIXED 14/15：watch_audits CHECK �
       )
       .run();
     handle.prepare('DELETE FROM watch_rules WHERE id = ?').run('r1');
-    expect(
-      handle.prepare('SELECT COUNT(*) AS n FROM watch_audits').get(),
-    ).toEqual({ n: 1 });
-    expect(
-      handle.prepare("SELECT id FROM watch_audits WHERE id = 'a-null'").get(),
-    ).toEqual({ id: 'a-null' });
+    expect(handle.prepare('SELECT COUNT(*) AS n FROM watch_audits').get()).toEqual({ n: 1 });
+    expect(handle.prepare("SELECT id FROM watch_audits WHERE id = 'a-null'").get()).toEqual({
+      id: 'a-null',
+    });
   });
 });
