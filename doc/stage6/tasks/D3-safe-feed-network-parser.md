@@ -876,3 +876,54 @@ settlement、timer/AbortSignal/body/response/inflater/业务闭包/global regist
 resume、removeListener 抛错隔离与 never-close 证据；聚焦/Watch/全量/typecheck/lint/format/build/audit/冒烟
 结果；`baseline..HEAD` + 工作区范围、diff-check、敏感信息/临时残留扫描；剩余诚实限制。完成后 STOP，交给
 新的独立安全 Reviewer，禁止自行 close/push。
+
+## D3-R7 修复记录（2026-08-28，Repair Worker，Reviewer 待复验）
+
+D3-R7 有界修复候选处理独立安全 Reviewer 对 D3-R6 HEAD `e689484` 的 transport integration oracle
+真实性/自然退出/observer 身份/测试依赖可复现性四项发现。未删除/放宽既有有效断言，未改动 #S6-043
+两阶段协议与 R2–R6 冻结契约；产品源码仅做注释校正（无行为变化），除非新 oracle 暴露缺陷否则不改行为。
+候选未 push；baseline `e6894844993e163f5cb1f22e6ebf6226b60bd441`，最终 repair HEAD 见 Git。
+
+### 修复项与证据
+
+1. **true pre-socket oracle（此前两个「pre-socket」用例实为 socket-after/pre-response）**：
+   `public-watch-http-lifecycle.integration.test.ts` 改为监听真实 request 的 `socket` 事件记录
+   `socketSeen`，不再用固定 40/150ms 延迟推断 socket 状态。
+   - **true pre-socket deadline**：受控 Clock 在 feed requestFactory 创建真实 ClientRequest 后、返回产品前
+     把 `now()` 推进到剩余 deadline 之后 → 产品在 request `end()` 前 destroy；业务终态断言 `socketSeen=false`。
+   - **true pre-socket abort**：requestFactory 返回产品前同步触发 AbortController → 产品安装 request drain
+     后发现 signal 已 aborted，在 end/socket 前 destroy；断言 `socketSeen=false`。
+   - **socket-after/pre-response deadline 与 abort**：仅在 `socketSeen=true` 后（socket 事件微任务）触发
+     deadline（确定性 fireFeedTimers）或 abort；server 不发 response；断言 `socketSeen=true`。
+2. **R5 红态复现（机器证据）**：临时提取 `e412c12` 的 R5 产品源码（字节精确）+ 当前未变的
+   network-policy/robots-policy/shared types，Vite 构建 CJS bundle 后跑同一批子进程场景：
+   presocket-deadline/presocket-abort/socketafter-deadline/socketafter-abort 四路均
+   `exit=1` + stderr `Unhandled 'error' event`（未处理 request ECONNRESET）；response-after 三路 R5 不崩溃
+   （条件发射，符合 REPLAN 调查）。同一场景在当前修复（HEAD）上全部 `exit=0`、stderr 干净、monitor/
+   rejection 为零 → 两类路径旧 R5 红、当前修复绿。
+3. **子进程自然退出**：成功路径删除 `process.exit(0)`；`await server.close`（子进程 request 使用
+   `agent:false`，保证测试创建的连接精确关闭）；main 完成后自然退出，父进程以 10s timeout 检测活动句柄
+   泄漏（超时 kill → code=-1 使测试失败）。`main().catch` 只输出受控诊断（PROBE_ERROR + PROBE_RESULT）并
+   设置非零 `process.exitCode`，不再伪装成功；JSON 缺失/解析失败/harness 异常均使断言失败。
+   `uncaughtExceptionMonitor` 仅观察、不恢复异常。
+4. **observer 按 callback identity 隔离**：response-after 对照场景使用显式具名函数 `responseErrorObserver`，
+   保存其身份并断言 `observerIdentityMatches`（同一函数对象确已安装）；listener 统计按精确 callback 过滤
+   （`filter(f => f !== observer)`），不再只减常量 1；分别断言 `responseErrorDrain`、`onSourceError`、
+   `responseCloseCleanup`；observer 与无 observer 场景分开，无匿名 error observer。
+5. **删除未声明传递依赖 esbuild 的直接 import**：测试改用 package.json 直接声明的 devDependency
+   `vite`（`import { build } from 'vite'`）构建临时子进程产物，`minify:false` 保留产品具名 drain/业务
+   listener 的函数名；不修改 package.json/package-lock.json。
+6. **注释/标题校正（#S6-043 语义）**：`public-watch-http-client.ts` 两处旧注释改为「业务终态立即移除
+   request 的业务 response/error/timeout listener；requestErrorDrain/requestCloseCleanup 保留至 request
+   close；全部 request listener 只有 close 后才能断言为零」。测试标题与断言区分「首终态同步状态
+   （drain 保留）」与「await 后已 close（全部归零）」，不再把 post-close 观察描述为首终态同步状态。
+
+### 验证门（repair HEAD，候选本地全绿）
+
+- 聚焦 integration 7/7 + `public-watch-http-client.test.ts` 88/88；Watch 全量 279/279；
+- `npm test -- --maxWorkers=1` 全量（见 FINAL EVIDENCE）；typecheck/lint/format:check/build/npm audit 0/
+  `git diff --check` 全过；dev 与 production Electron 冒烟 exit 0。
+- R5 红态与 HEAD 绿态逐路退出码、stderr、socketSeen、monitor/rejection 见 Git 记录的机器输出。
+- 依赖版本不变、package/lockfile 不变、D4/D5 零接线；敏感信息/临时残留/工作区扫描干净；
+  仅改动 EXPECTED SCOPE 三个代码/测试文件 + 本节任务文档，共四个文件。
+- 交接新的独立安全 Reviewer；不更新 progress、不生成 D4、不 push。

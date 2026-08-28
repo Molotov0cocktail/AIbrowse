@@ -710,9 +710,11 @@ class PublicWatchHttpClient {
 
       // 统一、幂等的首终态 cleanup：无论 success/deadline/abort/budget/stream-error/request-error，
       // 立即清除全部 timer/AbortSignal listener、释放正文 reader、销毁 request/response/inflater，
-      // 并无条件移除 request 的 response/error/timeout listener。每一步单独异常隔离：
-      // 任一 remove/destroy/clear 抛错不得阻止剩余清理，cleanup 返回时 request 的
-      // response/error/timeout listenerCount 必须全为 0。
+      // 并无条件移除 request 的业务 response/error/timeout listener；requestErrorDrain 与
+      // requestCloseCleanup 按 #S6-043 两阶段协议保留至 request close，不在此移除。
+      // 每一步单独异常隔离：任一 remove/destroy/clear 抛错不得阻止剩余清理。cleanup 返回时
+      // request 的业务 response/error/timeout listener 必为 0；全部 request listener（含 drain）
+      // 只有在 request close 之后才能断言为零（由 requestCloseCleanup 自清理）。
       const cleanup = (): void => {
         if (timeoutHandle !== null) {
           try {
@@ -1066,8 +1068,9 @@ class PublicWatchHttpClient {
 
     // 幂等释放：清除本实现注册的 res/inflater listener 并销毁 inflater。
     // attempt 首终态 cleanup 直接调用；迟到事件到达（外层已 settle 或本地已 settle）时也调用，
-    // 保证首终态立即 listener=0，不等迟到事件。每个 removeListener 与 inflater.destroy
-    // 分别异常隔离：单项抛错继续剩余清理，不泄漏未处理异常。
+    // 保证首终态立即移除本实现注册的 res/inflater 业务 listener，不等迟到事件；response 的
+    // product-owned drain（responseErrorDrain/responseCloseCleanup）由 response close 自清理。
+    // 每个 removeListener 与 inflater.destroy 分别异常隔离：单项抛错继续剩余清理，不泄漏未处理异常。
     function release(): void {
       if (released) return;
       released = true;

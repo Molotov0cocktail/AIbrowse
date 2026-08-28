@@ -1179,7 +1179,8 @@ describe('R3 deadline/abort 生命周期（统一幂等 cleanup；迟到事件�
     const r = await promise;
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
-    // 首终态立即清理：未发送任何迟到事件时 res/inflater listener 已全部移除
+    // 业务终态已 settle：迟到的 error 由 product-owned response drain 吸收（零未处理异常）；
+    // await 后 res 已 close → drain 自清理，res/inflater 业务 listener 与 drain 全部归零
     expect(res.destroyed).toBe(true);
     expect(inflaters[0]!.destroyed).toBe(true);
     expect(res.listenerCount('data')).toBe(0);
@@ -1228,25 +1229,32 @@ describe('R3 deadline/abort 生命周期（统一幂等 cleanup；迟到事件�
   });
 });
 
-describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触发清理）', () => {
-  it('identity 静默 body 总 deadline 后：不发送任何迟到事件，response 的 data/end/error/aborted listener 立即全 0', async () => {
+describe('首终态立即闭合业务 listener/resource；drain 保留至各自 close（不依赖迟到事件触发清理）', () => {
+  it('identity 静默 body 总 deadline 后：首终态业务 listener 归零 + drain 保留；close 后全部 listener 归零', async () => {
     const clock = new FakeClock(0);
     const h = createHarness({ clock });
     const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
     await flush();
     const res = h.targets()[0]!.openResponse(200, {});
     clock.advanceTo(30_000);
+    // 首终态同步状态（response close 前）：业务 listener 已移除，drain 保留
+    expect(res.listenerCount('data')).toBe(0);
+    expect(res.listenerCount('end')).toBe(0);
+    expect(res.listenerCount('aborted')).toBe(0);
+    expect(res.listenerCount('error')).toBe(1); // 仅 responseErrorDrain
+    expect(res.listenerCount('close')).toBe(1); // 仅 responseCloseCleanup
     const r = await promise;
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
     expect(res.destroyed).toBe(true);
     expect(clock.pendingTimerCount()).toBe(0);
-    for (const ev of ['data', 'end', 'error', 'aborted'] as const) {
+    // await 后 response 已 close：drain 自清理，全部 listener 归零
+    for (const ev of ['data', 'end', 'error', 'aborted', 'close'] as const) {
       expect(res.listenerCount(ev)).toBe(0);
     }
   });
 
-  it('gzip 静默 body 总 deadline 后：response 与 inflater listener 立即全 0', async () => {
+  it('gzip 静默 body 总 deadline 后：首终态业务 listener 归零 + drain 保留；close 后 response/inflater listener 归零', async () => {
     const clock = new FakeClock(0);
     const inflaters: Gunzip[] = [];
     const h = createHarness({
@@ -1261,13 +1269,20 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
     await flush();
     const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
     clock.advanceTo(30_000);
+    // 首终态同步状态（response close 前）：业务 listener 已移除，drain 保留
+    expect(res.listenerCount('data')).toBe(0);
+    expect(res.listenerCount('end')).toBe(0);
+    expect(res.listenerCount('aborted')).toBe(0);
+    expect(res.listenerCount('error')).toBe(1); // 仅 responseErrorDrain
+    expect(res.listenerCount('close')).toBe(1); // 仅 responseCloseCleanup
     const r = await promise;
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
     expect(res.destroyed).toBe(true);
     expect(inflaters.length).toBe(1);
     expect(inflaters[0]!.destroyed).toBe(true);
-    for (const ev of ['data', 'end', 'error', 'aborted'] as const) {
+    // await 后 response 已 close：drain 自清理；inflater 业务 listener 已移除
+    for (const ev of ['data', 'end', 'error', 'aborted', 'close'] as const) {
       expect(res.listenerCount(ev)).toBe(0);
     }
     for (const ev of ['data', 'end', 'error'] as const) {
@@ -1275,7 +1290,7 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
     }
   });
 
-  it('abort 后立即断言 response 与 inflater listener 全 0（不等待迟到事件）', async () => {
+  it('abort 后：首终态业务 listener 归零 + drain 保留；close 后 response/inflater listener 归零（不等待迟到事件）', async () => {
     const controller = new AbortController();
     const inflaters: Gunzip[] = [];
     const h = createHarness({
@@ -1293,12 +1308,19 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
     await flush();
     const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
     controller.abort();
+    // 首终态同步状态（response close 前）：业务 listener 已移除，drain 保留
+    expect(res.listenerCount('data')).toBe(0);
+    expect(res.listenerCount('end')).toBe(0);
+    expect(res.listenerCount('aborted')).toBe(0);
+    expect(res.listenerCount('error')).toBe(1); // 仅 responseErrorDrain
+    expect(res.listenerCount('close')).toBe(1); // 仅 responseCloseCleanup
     const r = await promise;
     expect(r.kind).toBe('aborted');
     expect(res.destroyed).toBe(true);
     expect(inflaters.length).toBe(1);
     expect(inflaters[0]!.destroyed).toBe(true);
-    for (const ev of ['data', 'end', 'error', 'aborted'] as const) {
+    // await 后 response 已 close：drain 自清理
+    for (const ev of ['data', 'end', 'error', 'aborted', 'close'] as const) {
       expect(res.listenerCount(ev)).toBe(0);
     }
     for (const ev of ['data', 'end', 'error'] as const) {
@@ -1306,20 +1328,27 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
     }
   });
 
-  it('deadline 先于 response：首终态立即移除 request 的 response/error/timeout listener（零迟到事件）', async () => {
+  it('deadline 先于 response：首终态移除业务 response/error/timeout listener 且 requestErrorDrain 保留至 close（close 后全 0）', async () => {
     const clock = new FakeClock(0);
     const h = createHarness({ clock });
     const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
     await flush();
+    const req = h.targets()[0]!.request;
     clock.advanceTo(30_000);
+    // 首终态同步状态（request close 前）：业务 listener 已移除，drain 保留
+    expect(req.listenerCount('response')).toBe(0);
+    expect(req.listenerCount('timeout')).toBe(0);
+    expect(req.listenerCount('error')).toBe(1); // 仅 requestErrorDrain
+    expect(req.listenerCount('close')).toBe(1); // 仅 requestCloseCleanup
     const r = await promise;
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
-    const req = h.targets()[0]!.request;
     expect(req.destroyed).toBe(true);
+    // await 后 request 已 close：drain 自清理，全部 request listener 归零
     expect(req.listenerCount('response')).toBe(0);
     expect(req.listenerCount('error')).toBe(0);
     expect(req.listenerCount('timeout')).toBe(0);
+    expect(req.listenerCount('close')).toBe(0);
     expect(clock.pendingTimerCount()).toBe(0);
     // 终态后的 synthetic response 被忽略（不依赖存活 listener 销毁）：零新 socket、结果不变
     const late = h.targets()[0]!.openResponse(200, {});
@@ -1330,7 +1359,7 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
     expect(h.targets().length).toBe(1); // 零新 socket
   });
 
-  it('abort 先于 response：首终态立即移除 request 的 response/error/timeout listener（零迟到事件）', async () => {
+  it('abort 先于 response：首终态移除业务 response/error/timeout listener 且 requestErrorDrain 保留至 close（close 后全 0）', async () => {
     const clock = new FakeClock(0);
     const controller = new AbortController();
     const h = createHarness({ clock });
@@ -1340,14 +1369,21 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
       signal: controller.signal,
     });
     await flush();
+    const req = h.targets()[0]!.request;
     controller.abort();
+    // 首终态同步状态（request close 前）：业务 listener 已移除，drain 保留
+    expect(req.listenerCount('response')).toBe(0);
+    expect(req.listenerCount('timeout')).toBe(0);
+    expect(req.listenerCount('error')).toBe(1); // 仅 requestErrorDrain
+    expect(req.listenerCount('close')).toBe(1); // 仅 requestCloseCleanup
     const r = await promise;
     expect(r.kind).toBe('aborted');
-    const req = h.targets()[0]!.request;
     expect(req.destroyed).toBe(true);
+    // await 后 request 已 close：drain 自清理，全部 request listener 归零
     expect(req.listenerCount('response')).toBe(0);
     expect(req.listenerCount('error')).toBe(0);
     expect(req.listenerCount('timeout')).toBe(0);
+    expect(req.listenerCount('close')).toBe(0);
     expect(clock.pendingTimerCount()).toBe(0);
     // 终态后的 synthetic response 被忽略：零新 socket
     h.targets()[0]!.openResponse(200, {});
@@ -1355,8 +1391,8 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
     expect(h.targets().length).toBe(1); // 零新 socket
   });
 
-  it('success/body-deadline/abort/request-error 后 request 的 response/error/timeout listener 全 0', async () => {
-    // success
+  it('success/body-deadline/abort/request-error 后：首终态保留 drain，request close 后全部 request listener 归零', async () => {
+    // success（终态在 body end 微任务；await 后 request 已 close → drain 自清理）
     {
       const h = createHarness();
       const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
@@ -1368,23 +1404,30 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
       expect(req.listenerCount('error')).toBe(0);
       expect(req.listenerCount('timeout')).toBe(0);
     }
-    // body-deadline（response 已交付，静默 body）
+    // body-deadline（response 已交付，静默 body；终态同步发生于 advanceTo）
     {
       const clock = new FakeClock(0);
       const h = createHarness({ clock });
       const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
       await flush();
       h.targets()[0]!.openResponse(200, {});
+      const req = h.targets()[0]!.request;
       clock.advanceTo(30_000);
+      // 首终态同步状态（request close 前）：业务 listener 已移除，drain 保留
+      expect(req.listenerCount('response')).toBe(0);
+      expect(req.listenerCount('timeout')).toBe(0);
+      expect(req.listenerCount('error')).toBe(1); // 仅 requestErrorDrain
+      expect(req.listenerCount('close')).toBe(1); // 仅 requestCloseCleanup
       const r = await p;
       expect(r.kind).toBe('failed');
       if (r.kind === 'failed') expect(r.health).toBe('unavailable');
-      const req = h.targets()[0]!.request;
+      // await 后 request 已 close：drain 自清理
       expect(req.listenerCount('response')).toBe(0);
       expect(req.listenerCount('error')).toBe(0);
       expect(req.listenerCount('timeout')).toBe(0);
+      expect(req.listenerCount('close')).toBe(0);
     }
-    // abort（response 已交付）
+    // abort（response 已交付；终态同步发生于 abort()）
     {
       const controller = new AbortController();
       const h = createHarness();
@@ -1395,27 +1438,41 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
       });
       await flush();
       h.targets()[0]!.openResponse(200, {});
+      const req = h.targets()[0]!.request;
       controller.abort();
+      // 首终态同步状态（request close 前）：业务 listener 已移除，drain 保留
+      expect(req.listenerCount('response')).toBe(0);
+      expect(req.listenerCount('timeout')).toBe(0);
+      expect(req.listenerCount('error')).toBe(1); // 仅 requestErrorDrain
+      expect(req.listenerCount('close')).toBe(1); // 仅 requestCloseCleanup
       const r = await p;
       expect(r.kind).toBe('aborted');
-      const req = h.targets()[0]!.request;
+      // await 后 request 已 close：drain 自清理
       expect(req.listenerCount('response')).toBe(0);
       expect(req.listenerCount('error')).toBe(0);
       expect(req.listenerCount('timeout')).toBe(0);
+      expect(req.listenerCount('close')).toBe(0);
     }
-    // request-error（response 未交付）
+    // request-error（response 未交付；终态同步发生于 error()）
     {
       const h = createHarness();
       const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
       await flush();
       h.targets()[0]!.error('ECONNREFUSED');
+      const req = h.targets()[0]!.request;
+      // 首终态同步状态（request close 前）：业务 listener 已移除，drain 保留
+      expect(req.listenerCount('response')).toBe(0);
+      expect(req.listenerCount('timeout')).toBe(0);
+      expect(req.listenerCount('error')).toBe(1); // 仅 requestErrorDrain
+      expect(req.listenerCount('close')).toBe(1); // 仅 requestCloseCleanup
       const r = await p;
       expect(r.kind).toBe('failed');
       if (r.kind === 'failed') expect(r.health).toBe('unavailable');
-      const req = h.targets()[0]!.request;
+      // await 后 request 已 close：drain 自清理
       expect(req.listenerCount('response')).toBe(0);
       expect(req.listenerCount('error')).toBe(0);
       expect(req.listenerCount('timeout')).toBe(0);
+      expect(req.listenerCount('close')).toBe(0);
     }
   });
 
@@ -1443,7 +1500,7 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
       res.emit('end');
       const r = await promise;
       expect(r.kind).toBe('ok');
-      // 首终态：request listener 已全 0
+      // await 后 request 已 close：业务 listener 与 request drain 全部归零
       const req = h.targets()[0]!.request;
       expect(req.listenerCount('response')).toBe(0);
       expect(req.listenerCount('error')).toBe(0);
@@ -1469,7 +1526,7 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
   });
 });
 
-describe('R5 首终态立即移除全部 request listener + 逐项异常隔离', () => {
+describe('首终态移除业务 request listener（drain 保留至 close）+ 逐项异常隔离', () => {
   function trackUnhandled(): { unhandled: unknown[]; detach: () => void } {
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown): void => {
@@ -1523,7 +1580,7 @@ describe('R5 首终态立即移除全部 request listener + 逐项异常隔离',
     }
   });
 
-  it('request.destroy() 内同步发出 response：response 被安全丢弃，cleanup 返回后 listenerCount 仍全 0', async () => {
+  it('request.destroy() 内同步发出 response：response 被安全丢弃；首终态 drain 保留，close 后全部 listener 归零', async () => {
     const clock = new FakeClock(0);
     const h = createHarness({ clock });
     const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
@@ -1534,13 +1591,25 @@ describe('R5 首终态立即移除全部 request listener + 逐项异常隔离',
     syncRes.headers = {};
     req.emitResponseOnDestroy = syncRes; // destroy() 内同步发出 response
     clock.advanceTo(30_000);
+    // 首终态同步状态（request close 前）：业务 listener 已移除，request drain 保留；
+    // 同步 response 已被 call-stack guard 先装 drain 再 destroy
+    expect(syncRes.destroyed).toBe(true);
+    expect(req.listenerCount('response')).toBe(0);
+    expect(req.listenerCount('timeout')).toBe(0);
+    expect(req.listenerCount('error')).toBe(1); // 仅 requestErrorDrain
+    expect(req.listenerCount('close')).toBe(1); // 仅 requestCloseCleanup
+    expect(syncRes.listenerCount('error')).toBe(1); // 仅 responseErrorDrain
+    expect(syncRes.listenerCount('close')).toBe(1); // 仅 responseCloseCleanup
     const r = await promise;
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
-    expect(syncRes.destroyed).toBe(true); // 同步 response 被安全丢弃
+    // await 后 request 与同步 response 均已 close：drain 自清理，全部 listener 归零
     expect(req.listenerCount('response')).toBe(0);
     expect(req.listenerCount('error')).toBe(0);
     expect(req.listenerCount('timeout')).toBe(0);
+    expect(req.listenerCount('close')).toBe(0);
+    expect(syncRes.listenerCount('error')).toBe(0);
+    expect(syncRes.listenerCount('close')).toBe(0);
     expect(clock.pendingTimerCount()).toBe(0);
   });
 
