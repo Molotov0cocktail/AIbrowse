@@ -257,7 +257,10 @@ export class SourceServiceImpl implements SourceService {
       if (!result.ok) {
         // Source 已提交不能跨库回滚：API 如实返回成功；Watch unavailable、
         // prepared intent 留待启动 reconciliation（§10.3）
-        logWarn('sources', 'Watch commit 未确认（Source 操作已提交；intent 留待启动 reconciliation）');
+        logWarn(
+          'sources',
+          'Watch commit 未确认（Source 操作已提交；intent 留待启动 reconciliation）',
+        );
       }
     } catch (err) {
       logWarn('sources', 'Watch commit 异常（Source 操作已提交；Watch unavailable）', err);
@@ -606,7 +609,17 @@ export class SourceServiceImpl implements SourceService {
         for (let i = 0; i < ops.length; i += 1) {
           const op = ops[i];
           if (op.kind === 'add') {
-            this.executeAdd(op, 'ai', now, beforeMap, afterMap, sourceIds, results, i, addIds.get(i)!);
+            this.executeAdd(
+              op,
+              'ai',
+              now,
+              beforeMap,
+              afterMap,
+              sourceIds,
+              results,
+              i,
+              addIds.get(i)!,
+            );
           } else if (op.kind === 'update') {
             this.executeUpdate(
               op,
@@ -1038,8 +1051,7 @@ export class SourceServiceImpl implements SourceService {
         });
       }
       const undoMutationIds = undoMutations.map((m) => m.mutationId);
-      const watchedUndo =
-        undoMutations.length > 0 ? this.watchPrepare(undoMutations) : true;
+      const watchedUndo = undoMutations.length > 0 ? this.watchPrepare(undoMutations) : true;
       const now = this.iso(this.nowMs());
       try {
         withTransaction(this.handle, () => {

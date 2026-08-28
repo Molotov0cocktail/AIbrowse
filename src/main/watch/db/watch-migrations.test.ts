@@ -6,11 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDb, closeDb, type DbHandle } from '../../sources/db/sqlite-driver';
-import {
-  WATCH_MIGRATIONS,
-  WATCH_MIGRATION_V1,
-  runWatchMigrations,
-} from './watch-migrations';
+import { WATCH_MIGRATIONS, WATCH_MIGRATION_V1, runWatchMigrations } from './watch-migrations';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-watch-mig-'));
 
@@ -278,10 +274,18 @@ describe('CHECK 约束数据库层强制（§10.1 枚举列）', () => {
         )
         .run(),
     ).toThrow();
-    handle.prepare(`INSERT INTO digest_event_refs (digest_id, event_id, status)
-  VALUES ('d1','e1','active')`).run();
-    handle.prepare(`INSERT INTO digest_event_refs (digest_id, event_id, status)
-  VALUES ('d1','e2','expired')`).run();
+    handle
+      .prepare(
+        `INSERT INTO digest_event_refs (digest_id, event_id, status)
+  VALUES ('d1','e1','active')`,
+      )
+      .run();
+    handle
+      .prepare(
+        `INSERT INTO digest_event_refs (digest_id, event_id, status)
+  VALUES ('d1','e2','expired')`,
+      )
+      .run();
   });
 
   it('notification_outbox subject_type/channel/state 非法值被 CHECK 拒绝', () => {
@@ -433,8 +437,10 @@ describe('外键与 UNIQUE（§10.1：外键打开）', () => {
       )
       .run();
     handle
-      .prepare(`INSERT INTO digest_event_refs (digest_id, event_id, status)
-  VALUES ('d1','e1','active')`)
+      .prepare(
+        `INSERT INTO digest_event_refs (digest_id, event_id, status)
+  VALUES ('d1','e1','active')`,
+      )
       .run();
     handle.prepare('DELETE FROM watch_events WHERE id = ?').run('e1');
     expect(

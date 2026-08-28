@@ -145,7 +145,9 @@ describe('prepare（fail-closed 预暂停 + durable intent）', () => {
       sourceLocatorFingerprint: FINGERPRINT,
     });
     const audits = repo.listAudits();
-    expect(audits.some((a) => a.ruleId === rule.id && a.reasonCode === 'source-disabled')).toBe(true);
+    expect(audits.some((a) => a.ruleId === rule.id && a.reasonCode === 'source-disabled')).toBe(
+      true,
+    );
   });
 
   it('hard-delete mutation：暂停 source-deleted', () => {
@@ -177,7 +179,11 @@ describe('prepare（fail-closed 预暂停 + durable intent）', () => {
   it('metadata-only update：不暂停、不覆盖', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    const m = mutation({ operation: 'update', before: projection(), after: projection({ rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'update',
+      before: projection(),
+      after: projection({ rowVersion: 2 }),
+    });
     expect(coordinator.prepare([m])).toEqual({ ok: true });
     const after = repo.getRule(rule.id)!;
     expect(after.state).toBe('enabled');
@@ -200,9 +206,17 @@ describe('prepare（fail-closed 预暂停 + durable intent）', () => {
   });
 
   it('prepare 绝不 paused→enabled（restore mutation 不恢复）', () => {
-    const rule = makeRule({ state: 'paused', pauseReason: 'source-disabled', desiredEnabled: true });
+    const rule = makeRule({
+      state: 'paused',
+      pauseReason: 'source-disabled',
+      desiredEnabled: true,
+    });
     repo.insertRule(rule);
-    const m = mutation({ operation: 'restore', before: projection({ enabled: false }), after: projection({ rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'restore',
+      before: projection({ enabled: false }),
+      after: projection({ rowVersion: 2 }),
+    });
     expect(coordinator.prepare([m])).toEqual({ ok: true });
     expect(repo.getRule(rule.id)!.state).toBe('paused');
   });
@@ -210,7 +224,10 @@ describe('prepare（fail-closed 预暂停 + durable intent）', () => {
   it('事务失败（重复 mutationId）→ 整体回滚 + unavailable', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    const m = mutation({ operation: 'disable', after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'disable',
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
     expect(coordinator.prepare([m])).toEqual({ ok: true });
     // 重复 mutationId → duplicate-mutation → prepare 失败
     const again = coordinator.prepare([m]);
@@ -224,7 +241,11 @@ describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
   it('commit disable：Source 事实 disabled → 保持暂停；restore 且 desiredEnabled=true → 自动 enabled', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    const m = mutation({ operation: 'disable', before: projection(), after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'disable',
+      before: projection(),
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
     coordinator.prepare([m]);
     sources.set('src-1', projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }));
     expect(coordinator.commit([m.mutationId])).toEqual({ ok: true });
@@ -233,7 +254,11 @@ describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
     expect(repo.getRule(rule.id)!.pauseReason).toBe('source-disabled');
 
     // restore：desiredEnabled=true 且 source 原因 → 自动 enabled（版本递增但身份不变）
-    const r2 = mutation({ operation: 'restore', before: projection({ enabled: false }), after: projection({ rowVersion: 3 }) });
+    const r2 = mutation({
+      operation: 'restore',
+      before: projection({ enabled: false }),
+      after: projection({ rowVersion: 3 }),
+    });
     coordinator.prepare([r2]);
     sources.set('src-1', projection({ rowVersion: 3 }));
     expect(coordinator.commit([r2.mutationId])).toEqual({ ok: true });
@@ -243,9 +268,17 @@ describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
   });
 
   it('用户 pause（desiredEnabled=false）restore 后永不自动恢复', () => {
-    const rule = makeRule({ state: 'paused', pauseReason: 'source-disabled', desiredEnabled: false });
+    const rule = makeRule({
+      state: 'paused',
+      pauseReason: 'source-disabled',
+      desiredEnabled: false,
+    });
     repo.insertRule(rule);
-    const m = mutation({ operation: 'restore', before: projection({ enabled: false }), after: projection({ rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'restore',
+      before: projection({ enabled: false }),
+      after: projection({ rowVersion: 2 }),
+    });
     coordinator.prepare([m]);
     sources.set('src-1', projection({ rowVersion: 2 }));
     coordinator.commit([m.mutationId]);
@@ -257,7 +290,11 @@ describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
   it('commit locator 变化：保持 source-changed 等待 rebaseline', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    const m = mutation({ operation: 'update', before: projection(), after: projection({ canonicalKey: 'https://example.com/other', rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'update',
+      before: projection(),
+      after: projection({ canonicalKey: 'https://example.com/other', rowVersion: 2 }),
+    });
     coordinator.prepare([m]);
     sources.set('src-1', projection({ canonicalKey: 'https://example.com/other', rowVersion: 2 }));
     coordinator.commit([m.mutationId]);
@@ -275,13 +312,20 @@ describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
     expect(coordinator.commit([m.mutationId])).toEqual({ ok: true });
     expect(repo.getRule(rule.id)).toBeNull(); // 级联删除
     expect(repo.getSourceCleanupIntent(m.mutationId)!.state).toBe('complete');
-    expect(repo.listAudits().some((a) => a.kind === 'lifecycle-cascade' && a.reasonCode === 'hard-delete')).toBe(true);
+    expect(
+      repo
+        .listAudits()
+        .some((a) => a.kind === 'lifecycle-cascade' && a.reasonCode === 'hard-delete'),
+    ).toBe(true);
   });
 
   it('commit 幂等重放（intent 已解决 → 再次 commit ok 且零变化）', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    const m = mutation({ operation: 'disable', after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'disable',
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
     coordinator.prepare([m]);
     sources.set('src-1', projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }));
     coordinator.commit([m.mutationId]);
@@ -293,7 +337,11 @@ describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
   it('abort：Source 仍等于 before → 恢复 prepare 前状态 + intent aborted', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    const m = mutation({ operation: 'disable', before: projection(), after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'disable',
+      before: projection(),
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
     coordinator.prepare([m]);
     coordinator.abort([m.mutationId]); // 无异常（void 契约）
     const after = repo.getRule(rule.id)!;
@@ -305,9 +353,16 @@ describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
   it('abort：Source 已不等于 before → 不恢复、intent 保持 prepared（交 reconciliation）', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    const m = mutation({ operation: 'disable', before: projection(), after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'disable',
+      before: projection(),
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
     coordinator.prepare([m]);
-    sources.set('src-1', projection({ canonicalKey: 'https://example.com/changed-concurrent', rowVersion: 3 }));
+    sources.set(
+      'src-1',
+      projection({ canonicalKey: 'https://example.com/changed-concurrent', rowVersion: 3 }),
+    );
     coordinator.abort([m.mutationId]);
     expect(repo.getSourceCleanupIntent(m.mutationId)!.state).toBe('prepared');
     expect(repo.getRule(rule.id)!.state).toBe('paused'); // prepare 的暂停保留
@@ -316,7 +371,10 @@ describe('commit / abort（§10.3 步骤 3–4 失败传播）', () => {
   it('abort 失败（事务异常）→ unavailable 且 Source 侧可继续返回原失败（void 契约零抛）', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    const m = mutation({ operation: 'disable', after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'disable',
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
     coordinator.prepare([m]);
     // 让事务失败：破坏 db 连接
     repo.dbHandle.close();
@@ -337,7 +395,11 @@ describe('启动 reconciliation（§10.2 步骤 6 + 崩溃点恢复表）', () =
     const rule = makeRule();
     repo.insertRule(rule);
     const c1 = freshCoordinator();
-    const m = mutation({ operation: 'disable', before: projection(), after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'disable',
+      before: projection(),
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
     c1.prepare([m]); // 崩溃点：intent 写入后进程退出
     sources.set('src-1', projection({ rowVersion: 2 })); // Source 事务实际已提交（enabled 回滚？用 enabled 状态说明）
     const c2 = freshCoordinator();
@@ -346,7 +408,9 @@ describe('启动 reconciliation（§10.2 步骤 6 + 崩溃点恢复表）', () =
     const after = repo.getRule(rule.id)!;
     expect(after.state).toBe('enabled'); // 当前事实 enabled + 身份不变 → 恢复
     expect(repo.getSourceCleanupIntent(m.mutationId)).toBeNull(); // 已解决删除
-    expect(repo.listAudits().some((a) => a.kind === 'reconciliation' && a.reasonCode === 'complete')).toBe(true);
+    expect(
+      repo.listAudits().some((a) => a.kind === 'reconciliation' && a.reasonCode === 'complete'),
+    ).toBe(true);
   });
 
   it('prepared hard-delete + Source 不存在：reconcile 级联完成', () => {
@@ -390,7 +454,11 @@ describe('启动 reconciliation（§10.2 步骤 6 + 崩溃点恢复表）', () =
     const c2 = freshCoordinator();
     expect(c2.reconcileOnStartup(repo, reader)).toEqual({ ok: true, reason: null });
     expect(repo.getRule(rule.id)).toBeNull();
-    expect(repo.listAudits().some((a) => a.kind === 'lifecycle-cascade' && a.reasonCode === 'undo-source-removed')).toBe(true);
+    expect(
+      repo
+        .listAudits()
+        .some((a) => a.kind === 'lifecycle-cascade' && a.reasonCode === 'undo-source-removed'),
+    ).toBe(true);
   });
 
   it('孤儿规则（无 intent、Source 缺失）：暂停 source-deleted 零继续', () => {
@@ -405,7 +473,10 @@ describe('启动 reconciliation（§10.2 步骤 6 + 崩溃点恢复表）', () =
 
   it('孤儿规则 locator 变化：暂停 source-changed', () => {
     const rule = makeRule({ sourceId: 'src-3' });
-    sources.set('src-3', projection({ sourceId: 'src-3', canonicalKey: 'https://example.com/new' }));
+    sources.set(
+      'src-3',
+      projection({ sourceId: 'src-3', canonicalKey: 'https://example.com/new' }),
+    );
     repo.insertRule(rule);
     const c = freshCoordinator();
     expect(c.reconcileOnStartup(repo, reader)).toEqual({ ok: true, reason: null });
@@ -418,7 +489,10 @@ describe('启动 reconciliation（§10.2 步骤 6 + 崩溃点恢复表）', () =
     const rule = makeRule();
     repo.insertRule(rule);
     const c1 = freshCoordinator();
-    const m = mutation({ operation: 'disable', after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }) });
+    const m = mutation({
+      operation: 'disable',
+      after: projection({ enabled: false, deletedAt: NOW, rowVersion: 2 }),
+    });
     c1.prepare([m]);
     const throwingReader: SourceProjectionReader = () => {
       throw new Error('SourceService 读取失败');
@@ -427,7 +501,9 @@ describe('启动 reconciliation（§10.2 步骤 6 + 崩溃点恢复表）', () =
     const result = c2.reconcileOnStartup(repo, throwingReader);
     expect(result.ok).toBe(false);
     expect(repo.getSourceCleanupIntent(m.mutationId)!.state).toBe('prepared'); // 回滚保留
-    expect(repo.listAudits().some((a) => a.kind === 'reconciliation' && a.reasonCode === 'aborted')).toBe(true);
+    expect(
+      repo.listAudits().some((a) => a.kind === 'reconciliation' && a.reasonCode === 'aborted'),
+    ).toBe(true);
   });
 
   it('reconciliation 幂等（重跑零变化）', () => {

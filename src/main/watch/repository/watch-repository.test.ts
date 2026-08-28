@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDb, type DbHandle } from '../../sources/db/sqlite-driver';
 import { runWatchMigrations } from '../db/watch-migrations';
-import { WatchRepository, WatchRepositoryError } from './watch-repository';
+import { WatchRepository } from './watch-repository';
 import type { ChangeEvidencePair, WatchEvent, WatchRule } from '../../../shared/types/watch';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-watch-repo-'));
@@ -113,7 +113,16 @@ function count(table: string): number {
 
 describe('Rule CRUD + CAS', () => {
   it('insert/get/list/listBySource 恒等读回（经共享 validator）', () => {
-    const rule = makeRule({ muted: true, condition: { version: 1, combine: 'all', predicates: [{ fieldKey: 'title', operator: 'contains', operand: 'x', caseSensitive: true }] } });
+    const rule = makeRule({
+      muted: true,
+      condition: {
+        version: 1,
+        combine: 'all',
+        predicates: [
+          { fieldKey: 'title', operator: 'contains', operand: 'x', caseSensitive: true },
+        ],
+      },
+    });
     expect(repo.insertRule(rule)).toEqual({ ok: true });
     const got = repo.getRule(rule.id);
     expect(got).not.toBeNull();
@@ -132,7 +141,9 @@ describe('Rule CRUD + CAS', () => {
       ok: false,
       code: 'validation-failed',
     });
-    expect(repo.insertRule(makeRule({ state: 'paused', pauseReason: 'user' }))).toEqual({ ok: true });
+    expect(repo.insertRule(makeRule({ state: 'paused', pauseReason: 'user' }))).toEqual({
+      ok: true,
+    });
   });
 
   it('feed+session / page+session 之外组合拒绝；kind 与 target 不一致拒绝', () => {
@@ -176,10 +187,32 @@ describe('Rule CRUD + CAS', () => {
     expect(after.pauseReason).toBe('source-disabled');
     expect(after.sourceRowVersion).toBe(2);
     // 陈旧 expected → 零写入
-    const stale = repo.updateRuleCoordination(rule.id, expected, { state: 'enabled', pauseReason: null, sourceRowVersion: 3, sourceLocatorFingerprint: FINGERPRINT }, NOW);
+    const stale = repo.updateRuleCoordination(
+      rule.id,
+      expected,
+      {
+        state: 'enabled',
+        pauseReason: null,
+        sourceRowVersion: 3,
+        sourceLocatorFingerprint: FINGERPRINT,
+      },
+      NOW,
+    );
     expect(stale).toEqual({ ok: false, code: 'rule-state-conflict' });
     expect(repo.getRule(rule.id)!.sourceRowVersion).toBe(2);
-    expect(repo.updateRuleCoordination('ghost', expected, { state: 'enabled', pauseReason: null, sourceRowVersion: 1, sourceLocatorFingerprint: FINGERPRINT }, NOW)).toEqual({
+    expect(
+      repo.updateRuleCoordination(
+        'ghost',
+        expected,
+        {
+          state: 'enabled',
+          pauseReason: null,
+          sourceRowVersion: 1,
+          sourceLocatorFingerprint: FINGERPRINT,
+        },
+        NOW,
+      ),
+    ).toEqual({
       ok: false,
       code: 'rule-not-found',
     });
@@ -188,7 +221,13 @@ describe('Rule CRUD + CAS', () => {
   it('deleteRule 级联清空子行', () => {
     const rule = makeRule();
     expect(repo.insertRule(rule)).toEqual({ ok: true });
-    repo.insertRun({ id: 'run1', ruleId: rule.id, requestKey: 'k1', trigger: 'scheduled', scheduledFor: null });
+    repo.insertRun({
+      id: 'run1',
+      ruleId: rule.id,
+      requestKey: 'k1',
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
     expect(repo.deleteRule(rule.id)).toEqual({ ok: true });
     expect(count('watch_runs')).toBe(0);
     expect(repo.deleteRule(rule.id)).toEqual({ ok: false, code: 'rule-not-found' });
@@ -198,7 +237,13 @@ describe('Rule CRUD + CAS', () => {
     const injection = "'; DROP TABLE watch_rules;--";
     const rule = makeRule({
       sourceId: injection,
-      condition: { version: 1, combine: 'all', predicates: [{ fieldKey: 'title', operator: 'contains', operand: injection, caseSensitive: true }] },
+      condition: {
+        version: 1,
+        combine: 'all',
+        predicates: [
+          { fieldKey: 'title', operator: 'contains', operand: injection, caseSensitive: true },
+        ],
+      },
     });
     expect(repo.insertRule(rule)).toEqual({ ok: true });
     const got = repo.getRule(rule.id)!;
@@ -243,7 +288,10 @@ describe('Baseline CAS（§9.1）', () => {
     expect(stale).toEqual({ ok: false, code: 'baseline-conflict' });
     expect(repo.getBaseline(rule.id)!.version).toBe(2);
     // 双重首写（expected null 但已存在）→ conflict（UNIQUE 主键兜底）
-    expect(repo.writeBaseline(baselineInput(rule.id, null))).toEqual({ ok: false, code: 'baseline-conflict' });
+    expect(repo.writeBaseline(baselineInput(rule.id, null))).toEqual({
+      ok: false,
+      code: 'baseline-conflict',
+    });
   });
 
   it('单 Baseline 预算：==65536 接受、+1 拒绝（baseline-budget-exceeded）', () => {
@@ -257,7 +305,10 @@ describe('Baseline CAS（§9.1）', () => {
   });
 
   it('规则不存在 → rule-not-found', () => {
-    expect(repo.writeBaseline(baselineInput('ghost', null))).toEqual({ ok: false, code: 'rule-not-found' });
+    expect(repo.writeBaseline(baselineInput('ghost', null))).toEqual({
+      ok: false,
+      code: 'rule-not-found',
+    });
   });
 });
 
@@ -265,16 +316,37 @@ describe('Run 状态机（status 列 D5 reservation 前向兼容）', () => {
   it('insertRun + 状态迁移 CAS + 终态不可离开', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    expect(repo.insertRun({ id: 'r1', ruleId: rule.id, requestKey: 'k1', trigger: 'scheduled', scheduledFor: null })).toEqual({ ok: true });
-    expect(repo.insertRun({ id: 'r2', ruleId: rule.id, requestKey: 'k1', trigger: 'manual', scheduledFor: null })).toEqual({
+    expect(
+      repo.insertRun({
+        id: 'r1',
+        ruleId: rule.id,
+        requestKey: 'k1',
+        trigger: 'scheduled',
+        scheduledFor: null,
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      repo.insertRun({
+        id: 'r2',
+        ruleId: rule.id,
+        requestKey: 'k1',
+        trigger: 'manual',
+        scheduledFor: null,
+      }),
+    ).toEqual({
       ok: false,
       code: 'duplicate-request-key',
     });
-    expect(repo.transitionRun('r1', 'queued', { status: 'running', startedAt: NOW })).toEqual({ ok: true });
+    expect(repo.transitionRun('r1', 'queued', { status: 'running', startedAt: NOW })).toEqual({
+      ok: true,
+    });
     const running = repo.getRun('r1')!;
     expect(running.status).toBe('running');
     expect(running.startedAt).toBe(NOW);
-    expect(repo.transitionRun('r1', 'queued', { status: 'finished' })).toEqual({ ok: false, code: 'run-state-conflict' });
+    expect(repo.transitionRun('r1', 'queued', { status: 'finished' })).toEqual({
+      ok: false,
+      code: 'run-state-conflict',
+    });
     expect(
       repo.transitionRun('r1', 'running', {
         status: 'finished',
@@ -284,15 +356,36 @@ describe('Run 状态机（status 列 D5 reservation 前向兼容）', () => {
       }),
     ).toEqual({ ok: true });
     expect(repo.getRun('r1')!.outcome).toEqual({ kind: 'unchanged' });
-    expect(repo.transitionRun('ghost', 'queued', { status: 'running' })).toEqual({ ok: false, code: 'run-not-found' });
+    expect(repo.transitionRun('ghost', 'queued', { status: 'running' })).toEqual({
+      ok: false,
+      code: 'run-not-found',
+    });
   });
 
   it('markAllNonTerminalInterrupted 只影响 queued/running', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    repo.insertRun({ id: 'r1', ruleId: rule.id, requestKey: 'k1', trigger: 'scheduled', scheduledFor: null });
-    repo.insertRun({ id: 'r2', ruleId: rule.id, requestKey: 'k2', trigger: 'manual', scheduledFor: null });
-    repo.insertRun({ id: 'r3', ruleId: rule.id, requestKey: 'k3', trigger: 'manual', scheduledFor: null });
+    repo.insertRun({
+      id: 'r1',
+      ruleId: rule.id,
+      requestKey: 'k1',
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
+    repo.insertRun({
+      id: 'r2',
+      ruleId: rule.id,
+      requestKey: 'k2',
+      trigger: 'manual',
+      scheduledFor: null,
+    });
+    repo.insertRun({
+      id: 'r3',
+      ruleId: rule.id,
+      requestKey: 'k3',
+      trigger: 'manual',
+      scheduledFor: null,
+    });
     repo.transitionRun('r2', 'queued', { status: 'running' });
     repo.transitionRun('r3', 'queued', { status: 'finished', finishedAt: NOW });
     expect(repo.markAllNonTerminalInterrupted(NOW)).toBe(2);
@@ -306,7 +399,13 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
   it('全量成功：event/items/baseline/run/outbox 全部落库', () => {
     const rule = makeRule();
     repo.insertRule(rule);
-    repo.insertRun({ id: 'run1', ruleId: rule.id, requestKey: 'k1', trigger: 'scheduled', scheduledFor: null });
+    repo.insertRun({
+      id: 'run1',
+      ruleId: rule.id,
+      requestKey: 'k1',
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
     repo.transitionRun('run1', 'queued', { status: 'running' });
     const result = repo.writeEventTransaction({
       event: makeEvent(rule.id, { itemCount: 2 }),
@@ -365,7 +464,12 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
         capturedAt: NOW,
         documentId: null,
       },
-      run: { runId: 'ghost', expectedStatus: 'running', outcome: { kind: 'unchanged' }, health: null },
+      run: {
+        runId: 'ghost',
+        expectedStatus: 'running',
+        outcome: { kind: 'unchanged' },
+        health: null,
+      },
     });
     expect(result).toEqual({ ok: false, code: 'run-not-found' });
     expect(count('watch_events')).toBe(0);
@@ -416,7 +520,13 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     const rule = makeRule();
     repo.insertRule(rule);
     const item = makeItem();
-    item.after = { kind: 'present', excerpt: 'x'.repeat(100), valueHash: 'h', normalizedBytes: 100, truncated: false };
+    item.after = {
+      kind: 'present',
+      excerpt: 'x'.repeat(100),
+      valueHash: 'h',
+      normalizedBytes: 100,
+      truncated: false,
+    };
     const bytes = Buffer.byteLength(JSON.stringify(item), 'utf8');
     const tight = new WatchRepository(handle, { maxEventEvidenceBytes: bytes });
     const ok = tight.writeEventTransaction({ event: makeEvent(rule.id), items: [item] });
@@ -438,12 +548,16 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
     const rule = makeRule();
     repo.insertRule(rule);
     expect(
-      repo.writeEventTransaction({ event: makeEvent(rule.id, { itemCount: 2 }), items: [makeItem()] }),
+      repo.writeEventTransaction({
+        event: makeEvent(rule.id, { itemCount: 2 }),
+        items: [makeItem()],
+      }),
     ).toEqual({ ok: false, code: 'validation-failed' });
     const hostile = { ...makeItem(), fieldKey: '' };
-    expect(
-      repo.writeEventTransaction({ event: makeEvent(rule.id), items: [hostile] }),
-    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.writeEventTransaction({ event: makeEvent(rule.id), items: [hostile] })).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
   });
 
   it('读回经共享 validator：手工污染行 → getEvent 返回 null（fail-closed）', () => {
@@ -503,7 +617,9 @@ describe('intent 状态机（§10.3）', () => {
   it('transition CAS：prepared→complete；终态不可离开；缺行 intent-not-found', () => {
     const row = intentRow();
     repo.insertSourceCleanupIntent(row);
-    expect(repo.transitionSourceCleanupIntent(row.mutationId, 'prepared', 'complete', NOW)).toEqual({ ok: true });
+    expect(repo.transitionSourceCleanupIntent(row.mutationId, 'prepared', 'complete', NOW)).toEqual(
+      { ok: true },
+    );
     expect(repo.transitionSourceCleanupIntent(row.mutationId, 'complete', 'aborted', NOW)).toEqual({
       ok: false,
       code: 'intent-state-conflict',
@@ -568,16 +684,28 @@ describe('级联删除 + Digest tombstone + outbox 清理', () => {
       )
       .run(NOW, NOW);
     handle
-      .prepare(`INSERT INTO watch_digests (id, schedule_id, facts_json, byte_length, created_at)
-  VALUES ('d1','ds1','{}',2,?)`)
+      .prepare(
+        `INSERT INTO watch_digests (id, schedule_id, facts_json, byte_length, created_at)
+  VALUES ('d1','ds1','{}',2,?)`,
+      )
       .run(NOW);
-    expect(repo.insertDigestEventRef({ digestId: 'd1', eventId: event.id, status: 'active' })).toEqual({ ok: true });
-    repo.insertAudit({ id: 'a1', ruleId: rule.id, kind: 'lifecycle-pause', reasonCode: 'source-disabled', createdAt: NOW });
+    expect(
+      repo.insertDigestEventRef({ digestId: 'd1', eventId: event.id, status: 'active' }),
+    ).toEqual({ ok: true });
+    repo.insertAudit({
+      id: 'a1',
+      ruleId: rule.id,
+      kind: 'lifecycle-pause',
+      reasonCode: 'source-disabled',
+      createdAt: NOW,
+    });
     expect(repo.cascadeDeleteRulesBySource('src-1')).toEqual({ ok: true, deletedEvents: 1 });
     expect(count('watch_rules')).toBe(0);
     expect(count('watch_events')).toBe(0);
     expect(count('notification_outbox')).toBe(0);
-    expect(repo.listDigestEventRefs()).toEqual([{ digestId: 'd1', eventId: event.id, status: 'expired' }]);
+    expect(repo.listDigestEventRefs()).toEqual([
+      { digestId: 'd1', eventId: event.id, status: 'expired' },
+    ]);
     expect(count('watch_audits')).toBe(1); // SET NULL 存活
   });
 });
@@ -630,11 +758,12 @@ describe('保留预算（§10.4）', () => {
         firstObservedAt: new Date(base - i * 1000).toISOString(),
         lastObservedAt: new Date(base - i * 1000).toISOString(),
       });
-      expect(
-        repo.writeEventTransaction({ event, items: [makeItem()] }),
-      ).toEqual({ ok: true });
+      expect(repo.writeEventTransaction({ event, items: [makeItem()] })).toEqual({ ok: true });
     }
-    expect(repo.pruneEventsByRuleLimits(new Date(base).toISOString())).toEqual({ deleted: 0, expiredRefs: 0 });
+    expect(repo.pruneEventsByRuleLimits(new Date(base).toISOString())).toEqual({
+      deleted: 0,
+      expiredRefs: 0,
+    });
     // +1 → 删 1（最旧）
     const extra = makeEvent(rule.id, { firstObservedAt: freshTime, lastObservedAt: freshTime });
     expect(repo.writeEventTransaction({ event: extra, items: [makeItem()] })).toEqual({ ok: true });
@@ -642,7 +771,9 @@ describe('保留预算（§10.4）', () => {
     expect(count('watch_events')).toBe(200);
     // 91 天前事件 → 时间截止删除
     const ancient = makeEvent(rule.id, { firstObservedAt: oldTime, lastObservedAt: oldTime });
-    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()] })).toEqual({ ok: true });
+    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()] })).toEqual({
+      ok: true,
+    });
     const pruned = repo.pruneEventsByRuleLimits(new Date(base).toISOString());
     expect(pruned.deleted).toBe(1);
     expect(repo.getEvent(ancient.id)).toBeNull();
@@ -653,9 +784,18 @@ describe('保留预算（§10.4）', () => {
     const rule = makeRule();
     repo.insertRule(rule);
     const base = Date.parse('2026-08-28T00:00:00.000Z');
-    const evA = makeEvent(rule.id, { firstObservedAt: new Date(base - 3000).toISOString(), lastObservedAt: new Date(base - 3000).toISOString() });
-    const evB = makeEvent(rule.id, { firstObservedAt: new Date(base - 2000).toISOString(), lastObservedAt: new Date(base - 2000).toISOString() });
-    const evC = makeEvent(rule.id, { firstObservedAt: new Date(base - 1000).toISOString(), lastObservedAt: new Date(base - 1000).toISOString() });
+    const evA = makeEvent(rule.id, {
+      firstObservedAt: new Date(base - 3000).toISOString(),
+      lastObservedAt: new Date(base - 3000).toISOString(),
+    });
+    const evB = makeEvent(rule.id, {
+      firstObservedAt: new Date(base - 2000).toISOString(),
+      lastObservedAt: new Date(base - 2000).toISOString(),
+    });
+    const evC = makeEvent(rule.id, {
+      firstObservedAt: new Date(base - 1000).toISOString(),
+      lastObservedAt: new Date(base - 1000).toISOString(),
+    });
     expect(repo.writeEventTransaction({ event: evA, items: [makeItem()] })).toEqual({ ok: true });
     const afterA = repo.estimateLogicalBytes();
     expect(repo.writeEventTransaction({ event: evB, items: [makeItem()] })).toEqual({ ok: true });
@@ -682,7 +822,9 @@ describe('保留预算（§10.4）', () => {
       firstObservedAt: '2026-01-01T00:00:00.000Z',
       lastObservedAt: '2026-01-01T00:00:00.000Z',
     });
-    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()] })).toEqual({ ok: true });
+    expect(repo.writeEventTransaction({ event: ancient, items: [makeItem()] })).toEqual({
+      ok: true,
+    });
     handle
       .prepare(
         `INSERT INTO digest_schedules (id, source_ids_json, schedule_json, ai_enabled, state, created_at, updated_at)
@@ -690,12 +832,18 @@ describe('保留预算（§10.4）', () => {
       )
       .run(NOW, NOW);
     handle
-      .prepare(`INSERT INTO watch_digests (id, schedule_id, facts_json, byte_length, created_at)
-  VALUES ('d1','ds1','{}',2,?)`)
+      .prepare(
+        `INSERT INTO watch_digests (id, schedule_id, facts_json, byte_length, created_at)
+  VALUES ('d1','ds1','{}',2,?)`,
+      )
       .run(NOW);
-    expect(repo.insertDigestEventRef({ digestId: 'd1', eventId: ancient.id, status: 'active' })).toEqual({ ok: true });
+    expect(
+      repo.insertDigestEventRef({ digestId: 'd1', eventId: ancient.id, status: 'active' }),
+    ).toEqual({ ok: true });
     repo.pruneEventsByRuleLimits(NOW);
-    expect(repo.listDigestEventRefs()).toEqual([{ digestId: 'd1', eventId: ancient.id, status: 'expired' }]);
+    expect(repo.listDigestEventRefs()).toEqual([
+      { digestId: 'd1', eventId: ancient.id, status: 'expired' },
+    ]);
   });
 
   it('session 规则 30天/100 边界', () => {
@@ -726,9 +874,17 @@ describe('保留预算（§10.4）', () => {
 
 describe('审计与诊断', () => {
   it('insertAudit/listAudits 闭合码恒等', () => {
-    repo.insertAudit({ id: 'a1', ruleId: null, kind: 'reconciliation', reasonCode: 'complete', createdAt: NOW });
+    repo.insertAudit({
+      id: 'a1',
+      ruleId: null,
+      kind: 'reconciliation',
+      reasonCode: 'complete',
+      createdAt: NOW,
+    });
     const audits = repo.listAudits();
-    expect(audits).toEqual([{ id: 'a1', ruleId: null, kind: 'reconciliation', reasonCode: 'complete', createdAt: NOW }]);
+    expect(audits).toEqual([
+      { id: 'a1', ruleId: null, kind: 'reconciliation', reasonCode: 'complete', createdAt: NOW },
+    ]);
   });
 });
 

@@ -59,7 +59,8 @@ export function openSourcesStore(options: SourcesStoreOptions): SourcesStoreOutc
     logError('sources', `Sources 进入只读恢复态：${reason}（浏览器其余能力不受影响）`);
     // 恢复态不打开磁盘库（磁盘文件不被写、读入口按决议 #39 一并拒绝）——
     // service 以 db=null 装配，全部读写/Undo/usage/rebuild 结构化拒绝且零写入
-    const service = new SourceServiceImpl({ observer: options.observer,
+    const service = new SourceServiceImpl({
+      observer: options.observer,
       db: null,
       now: nowMs,
       state: { mode: 'readonly-recovery', reason },

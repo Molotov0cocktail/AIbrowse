@@ -9,11 +9,7 @@
 //   200 个 UTF-16 code unit 为 fail-closed 安全上界——§2 无独立 label 预算，
 //   此边界与 Sources name 同族，防无限 label 膨胀）；
 // - pageUrl/feedUrl 仅 http/https 且无 userinfo（纯 URL 形状校验，零网络）。
-import type {
-  FeedTarget,
-  PageTarget,
-  RegionDescriptor,
-} from '../types/watch';
+import type { FeedTarget, PageTarget, RegionDescriptor } from '../types/watch';
 import { MAX_REGIONS_PER_RULE } from '../types/watch';
 
 const URL_MAX_LENGTH = 2048;
@@ -29,12 +25,10 @@ type TargetErrorCode =
   | 'target-consent-invalid';
 
 export type FeedTargetValidationResult =
-  | { ok: true; target: FeedTarget }
-  | { ok: false; reason: TargetErrorCode };
+  { ok: true; target: FeedTarget } | { ok: false; reason: TargetErrorCode };
 
 export type PageTargetValidationResult =
-  | { ok: true; target: PageTarget }
-  | { ok: false; reason: TargetErrorCode };
+  { ok: true; target: PageTarget } | { ok: false; reason: TargetErrorCode };
 
 function isPlainRecord(raw: unknown): raw is Record<string, unknown> {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false;

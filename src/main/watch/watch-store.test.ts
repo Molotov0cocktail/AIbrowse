@@ -9,14 +9,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { MigrationStep } from '../sources/db/migrations';
-import { openDb, closeDb, type DbHandle } from '../sources/db/sqlite-driver';
+import { openDb, closeDb } from '../sources/db/sqlite-driver';
 import { createConsistentBackup } from '../sources/db/backup';
 import { runWatchMigrations } from './db/watch-migrations';
 import { openWatchStore, restoreWatchStore, WATCH_BACKUP_NAME_PATTERN } from './watch-store';
 import { WatchRepository } from './repository/watch-repository';
-import type { WatchRule } from '../../../shared/types/watch';
+import type { WatchRule } from '../../shared/types/watch';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-watch-store-'));
 
@@ -34,6 +34,10 @@ beforeEach(() => {
 
 afterEach(() => {
   void 0;
+});
+
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true });
 });
 
 function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
@@ -114,7 +118,12 @@ describe('装配矩阵（§10.2 八步）', () => {
       { version: 1, statements: [] },
       { version: 2, statements: ['CREATE TABLE watch_rules (id TEXT PRIMARY KEY); '] },
     ];
-    const outcome = openWatchStore({ dbPath, backupsDir, migrations: bad, reconcile: OK_RECONCILE });
+    const outcome = openWatchStore({
+      dbPath,
+      backupsDir,
+      migrations: bad,
+      reconcile: OK_RECONCILE,
+    });
     expect(outcome.mode).toBe('unavailable');
   });
 
@@ -132,10 +141,22 @@ describe('装配矩阵（§10.2 八步）', () => {
   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
-        'r1', 's1', 'feed', 'enabled', 1, 0, 'public',
+        'r1',
+        's1',
+        'feed',
+        'enabled',
+        1,
+        0,
+        'public',
         '{"kind":"interval","intervalMinutes":60}',
         '{"type":"feed","feedUrl":"https://example.com/rss.xml","format":"rss2"}',
-        'normal', 1, FINGERPRINT, 0, 0, NOW, NOW,
+        'normal',
+        1,
+        FINGERPRINT,
+        0,
+        0,
+        NOW,
+        NOW,
       );
     closeDb(handle);
     const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
@@ -153,10 +174,28 @@ describe('装配矩阵（§10.2 八步）', () => {
     const repo = outcome.repo;
     const rule = makeRule();
     repo.insertRule(rule);
-    repo.insertRun({ id: 'run1', ruleId: rule.id, requestKey: 'k1', trigger: 'scheduled', scheduledFor: NOW });
-    repo.insertRun({ id: 'run2', ruleId: rule.id, requestKey: 'k2', trigger: 'manual', scheduledFor: null });
+    repo.insertRun({
+      id: 'run1',
+      ruleId: rule.id,
+      requestKey: 'k1',
+      trigger: 'scheduled',
+      scheduledFor: NOW,
+    });
+    repo.insertRun({
+      id: 'run2',
+      ruleId: rule.id,
+      requestKey: 'k2',
+      trigger: 'manual',
+      scheduledFor: null,
+    });
     repo.transitionRun('run2', 'queued', { status: 'running', startedAt: NOW });
-    repo.insertRun({ id: 'run3', ruleId: rule.id, requestKey: 'k3', trigger: 'manual', scheduledFor: null });
+    repo.insertRun({
+      id: 'run3',
+      ruleId: rule.id,
+      requestKey: 'k3',
+      trigger: 'manual',
+      scheduledFor: null,
+    });
     repo.transitionRun('run3', 'queued', { status: 'finished', finishedAt: NOW });
     repo.dispose();
     outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
@@ -182,7 +221,10 @@ describe('装配矩阵（§10.2 八步）', () => {
   });
 
   it('reconciliation hook 失败 → unavailable；成功 → normal', () => {
-    const failing = (): { ok: boolean; reason: string | null } => ({ ok: false, reason: '模拟失败' });
+    const failing = (): { ok: boolean; reason: string | null } => ({
+      ok: false,
+      reason: '模拟失败',
+    });
     const outcome = openWatchStore({ dbPath, backupsDir, reconcile: failing });
     expect(outcome.mode).toBe('unavailable');
     const ok = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
@@ -312,7 +354,12 @@ describe('恢复矩阵（§10.2 末段：restore + grant 失效）', () => {
     const repo = seedWithSessionRule();
     repo.dispose();
     const before = readFileSync(dbPath);
-    const bad = restoreWatchStore({ dbPath, backupsDir, backupFileName: '../../evil.db', reconcile: OK_RECONCILE });
+    const bad = restoreWatchStore({
+      dbPath,
+      backupsDir,
+      backupFileName: '../../evil.db',
+      reconcile: OK_RECONCILE,
+    });
     expect(bad.mode).toBe('unavailable');
     expect(readFileSync(dbPath).equals(before)).toBe(true);
   });
@@ -324,7 +371,12 @@ describe('恢复矩阵（§10.2 末段：restore + grant 失效）', () => {
     const name = buildFakeWatchBackupName();
     writeFileSync(join(backupsDir, name), 'garbage-not-sqlite');
     const before = readFileSync(dbPath);
-    const result = restoreWatchStore({ dbPath, backupsDir, backupFileName: name, reconcile: OK_RECONCILE });
+    const result = restoreWatchStore({
+      dbPath,
+      backupsDir,
+      backupFileName: name,
+      reconcile: OK_RECONCILE,
+    });
     expect(result.mode).toBe('unavailable');
     expect(readFileSync(dbPath).equals(before)).toBe(true);
   });

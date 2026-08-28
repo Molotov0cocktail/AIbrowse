@@ -108,7 +108,8 @@ describe('validateRuleRow', () => {
     expect(validateRuleRow(ruleRow({ schedule_json: 'not-json' })).ok).toBe(false);
     expect(validateRuleRow(ruleRow({ schedule_json: '{"kind":"cron"}' })).ok).toBe(false);
     expect(
-      validateRuleRow(ruleRow({ condition_json: '{"version":2,"combine":"all","predicates":[]}' })).ok,
+      validateRuleRow(ruleRow({ condition_json: '{"version":2,"combine":"all","predicates":[]}' }))
+        .ok,
     ).toBe(false);
   });
 
@@ -119,7 +120,9 @@ describe('validateRuleRow', () => {
           condition_json: JSON.stringify({
             version: 1,
             combine: 'all',
-            predicates: [{ fieldKey: 'title', operator: 'regex', operand: null, caseSensitive: true }],
+            predicates: [
+              { fieldKey: 'title', operator: 'regex', operand: null, caseSensitive: true },
+            ],
           }),
         }),
       ).ok,
@@ -130,7 +133,9 @@ describe('validateRuleRow', () => {
           condition_json: JSON.stringify({
             version: 1,
             combine: 'all',
-            predicates: [{ fieldKey: '__proto__', operator: 'equals', operand: null, caseSensitive: true }],
+            predicates: [
+              { fieldKey: '__proto__', operator: 'equals', operand: null, caseSensitive: true },
+            ],
           }),
         }),
       ).ok,
@@ -141,7 +146,9 @@ describe('validateRuleRow', () => {
           condition_json: JSON.stringify({
             version: 1,
             combine: 'all',
-            predicates: [{ fieldKey: 'title', operator: 'equals', operand: null, caseSensitive: 'yes' }],
+            predicates: [
+              { fieldKey: 'title', operator: 'equals', operand: null, caseSensitive: 'yes' },
+            ],
           }),
         }),
       ).ok,
@@ -152,7 +159,9 @@ describe('validateRuleRow', () => {
           condition_json: JSON.stringify({
             version: 1,
             combine: 'all',
-            predicates: [{ fieldKey: 'title', operator: 'equals', operand: 'x', caseSensitive: true }],
+            predicates: [
+              { fieldKey: 'title', operator: 'equals', operand: 'x', caseSensitive: true },
+            ],
           }),
         }),
       ).ok,
@@ -183,7 +192,9 @@ describe('validateStoredCondition', () => {
       validateStoredCondition({
         version: 1,
         combine: 'any',
-        predicates: [{ fieldKey: 'title', operator: 'contains', operand: 'x', caseSensitive: false }],
+        predicates: [
+          { fieldKey: 'title', operator: 'contains', operand: 'x', caseSensitive: false },
+        ],
       }).ok,
     ).toBe(true);
     expect(validateStoredCondition({ version: 2, combine: 'all', predicates: [] }).ok).toBe(false);
@@ -270,7 +281,9 @@ describe('validateWatchRunOutcome / validateWatchHealthSnapshot', () => {
       kind: 'event-created',
       eventId: 'e1',
     });
-    expect(validateWatchRunOutcome({ kind: 'failed', health: 'unavailable', retryable: true })).toEqual({
+    expect(
+      validateWatchRunOutcome({ kind: 'failed', health: 'unavailable', retryable: true }),
+    ).toEqual({
       kind: 'failed',
       health: 'unavailable',
       retryable: true,
@@ -281,7 +294,9 @@ describe('validateWatchRunOutcome / validateWatchHealthSnapshot', () => {
     });
     expect(validateWatchRunOutcome({ kind: 'future' })).toBeNull();
     expect(validateWatchRunOutcome({ kind: 'unchanged', extra: 1 })).toBeNull();
-    expect(validateWatchRunOutcome({ kind: 'failed', health: 'weird', retryable: true })).toBeNull();
+    expect(
+      validateWatchRunOutcome({ kind: 'failed', health: 'weird', retryable: true }),
+    ).toBeNull();
   });
 
   it('health 三态与 code 一致性', () => {
@@ -401,7 +416,9 @@ describe('validateRunRow / validateEventRow / validateIntentRow', () => {
     };
     expect(validateIntentRow(base).ok).toBe(true);
     expect(validateIntentRow({ ...base, operation: 'purge' }).ok).toBe(false);
-    expect(validateIntentRow({ ...base, beforeProjection: { ...proj, scope: 'x' } }).ok).toBe(false);
+    expect(validateIntentRow({ ...base, beforeProjection: { ...proj, scope: 'x' } }).ok).toBe(
+      false,
+    );
     expect(validateIntentRow({ ...base, affectedRuleState: 'not-a-map' }).ok).toBe(false);
   });
 });

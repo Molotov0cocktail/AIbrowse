@@ -12,10 +12,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDb, type DbHandle } from './db/sqlite-driver';
 import { runMigrations } from './db/migrations';
 import { SourceServiceImpl } from './source-service';
-import type {
-  SourceLifecycleObserver,
-  SourceWatchMutation,
-} from '../../shared/types/watch';
+import type { SourceLifecycleObserver, SourceWatchMutation } from '../../shared/types/watch';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-source-watch-'));
 
@@ -45,7 +42,9 @@ class RecordingObserver implements SourceLifecycleObserver {
     this.onPrepare = null;
   }
 
-  prepare(changes: SourceWatchMutation[]): { ok: true } | { ok: false; reason: 'watch-unavailable' } {
+  prepare(
+    changes: SourceWatchMutation[],
+  ): { ok: true } | { ok: false; reason: 'watch-unavailable' } {
     this.prepares.push(JSON.parse(JSON.stringify(changes)) as SourceWatchMutation[]);
     if (this.onPrepare !== null) this.onPrepare(changes);
     return this.prepareResult;
@@ -133,13 +132,25 @@ describe('prepare/commit/abort 接线矩阵（§10.3）', () => {
     expect(observer.prepares).toHaveLength(1);
     const [m] = observer.prepares[0]!;
     expect(m!.operation).toBe('update');
-    expect(m!.before).toMatchObject({ sourceId: add.source.id, rowVersion: 1, canonicalKey: 'https://example.com/doc' });
-    expect(m!.after).toMatchObject({ rowVersion: 2, canonicalKey: 'https://example.com/doc', enabled: true });
+    expect(m!.before).toMatchObject({
+      sourceId: add.source.id,
+      rowVersion: 1,
+      canonicalKey: 'https://example.com/doc',
+    });
+    expect(m!.after).toMatchObject({
+      rowVersion: 2,
+      canonicalKey: 'https://example.com/doc',
+      enabled: true,
+    });
     expect(observer.commits).toHaveLength(1);
 
     observer.prepares = [];
     observer.commits = [];
-    const urlUpd = await service.updateManual(add.source.id, { url: 'https://example.com/other' }, 2);
+    const urlUpd = await service.updateManual(
+      add.source.id,
+      { url: 'https://example.com/other' },
+      2,
+    );
     expect(urlUpd.ok).toBe(true);
     expect(observer.prepares[0]![0]!.after!.canonicalKey).toBe('https://example.com/other');
     expect(observer.commits).toHaveLength(1);
@@ -215,11 +226,7 @@ describe('prepare/commit/abort 接线矩阵（§10.3）', () => {
     expect(cs.ok).toBe(true);
     expect(observer.prepares).toHaveLength(1);
     expect(observer.prepares[0]!.length).toBe(3);
-    expect(observer.prepares[0]!.map((m) => m.operation)).toEqual([
-      'create',
-      'update',
-      'disable',
-    ]);
+    expect(observer.prepares[0]!.map((m) => m.operation)).toEqual(['create', 'update', 'disable']);
     expect(observer.commits).toHaveLength(1);
     expect(observer.commits[0]!.length).toBe(3);
     expect(observer.aborts).toHaveLength(0);
@@ -356,7 +363,15 @@ describe('prepare/commit/abort 接线矩阵（§10.3）', () => {
   VALUES (?, ?, ?, ?, ?, 3, 1, 'metadata', 'unknown', 'user', 'unverified', '',
    '', 'user', 1, ?, ?, NULL, NULL, NULL)`,
         )
-        .run(randomUUID(), m.after.scope, m.after.canonicalKey, m.after.canonicalKey, '抢占', NOW, NOW);
+        .run(
+          randomUUID(),
+          m.after.scope,
+          m.after.canonicalKey,
+          m.after.canonicalKey,
+          '抢占',
+          NOW,
+          NOW,
+        );
     };
     observer.prepares = [];
     observer.commits = [];

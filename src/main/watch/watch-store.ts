@@ -131,7 +131,9 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
       { namePrefix: 'watch-backup-', parentLabel: '监控' },
     );
     if (!backup.ok) {
-      return unavailable(`迁移前一致性备份失败：${backup.reason ?? '未知原因'}。原文件未做任何修改，请保留原库文件`);
+      return unavailable(
+        `迁移前一致性备份失败：${backup.reason ?? '未知原因'}。原文件未做任何修改，请保留原库文件`,
+      );
     }
     handle = openWatchDb(options.dbPath, { wal: false });
     runMigrations(handle, steps);
@@ -180,7 +182,10 @@ function assembleNormal(
     // 4. 完整性/JSON 形状/预算扫描（非法/未来版本 fail-closed，零部分启动）
     const scan = repo.scanIntegrity();
     if (!scan.ok) {
-      logError('watch', `Watch 完整性/JSON 形状扫描失败：${scan.reason ?? '未知原因'}（原文件已保留）`);
+      logError(
+        'watch',
+        `Watch 完整性/JSON 形状扫描失败：${scan.reason ?? '未知原因'}（原文件已保留）`,
+      );
       return fail(`${scan.reason ?? '完整性扫描失败'}。原文件已保留`);
     }
     const nowIso = new Date(nowMs()).toISOString();
@@ -233,7 +238,10 @@ function assembleNormal(
         return fail('恢复后 Session grant 失效写入失败');
       }
       if (invalidated.count > 0) {
-        logWarn('watch', `恢复路径：${invalidated.count} 个 Session Rule 的授权已失效（需重新授权）`);
+        logWarn(
+          'watch',
+          `恢复路径：${invalidated.count} 个 Session Rule 的授权已失效（需重新授权）`,
+        );
       }
     }
     // 备份保留清理（最佳努力——失败不阻塞启动，同 Sources tryPrune 纪律）
@@ -264,7 +272,11 @@ export function restoreWatchStore(options: {
     return { mode: 'unavailable', repo: null, schedulerReady: false, reason };
   };
   // 1. 严格命名 + 目录内 + 非链接普通文件
-  const target = validateBackupTarget(options.backupsDir, options.backupFileName, WATCH_BACKUP_NAME_PATTERN);
+  const target = validateBackupTarget(
+    options.backupsDir,
+    options.backupFileName,
+    WATCH_BACKUP_NAME_PATTERN,
+  );
   if (!target.ok) return fail(target.reason);
   try {
     const stat = lstatSync(target.path);

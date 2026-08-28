@@ -996,6 +996,17 @@ if (!gotLock) {
               rmSync(smokeSourcesDir, { recursive: true, force: true });
               smokeSourcesDir = null;
             }
+            // D4：失败路径清理冒烟 Watch 临时目录（先关句柄再删目录——同 Sources 纪律）
+            watchCoordinator?.dispose();
+            watchRepo?.dispose();
+            if (smokeWatchDir !== null) {
+              try {
+                await removeSmokeDirWithRetry(smokeWatchDir);
+                smokeWatchDir = null;
+              } catch {
+                smokeWatchDir = null; // 最终保留不阻塞退出（极少数持久占用）
+              }
+            }
             if (smokeResearchDir !== null) {
               // C8 定向修复（2026-08-17，与 factory-smoke 残留同根因）：失败路径
               // 单次 rmSync 遇 db 句柄未关（Windows EPERM）静默放弃 → 每次失败

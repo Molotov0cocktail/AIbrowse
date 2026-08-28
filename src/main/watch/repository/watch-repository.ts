@@ -174,7 +174,8 @@ const SQL_INSERT_EVENT = `INSERT INTO watch_events
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`;
 const SQL_SELECT_EVENT = `SELECT id, rule_id, source_id, event_kind, importance,
   idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count,
-  read_at FROM watch_events WHERE id = ?`;const SQL_SELECT_EVENTS_BY_RULE = `SELECT id, rule_id, source_id, event_kind, importance,
+  read_at FROM watch_events WHERE id = ?`;
+const SQL_SELECT_EVENTS_BY_RULE = `SELECT id, rule_id, source_id, event_kind, importance,
   idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count,
   read_at FROM watch_events WHERE rule_id = ? ORDER BY first_observed_at ASC, id ASC`;
 const SQL_INSERT_EVENT_ITEM = `INSERT INTO watch_event_items
@@ -399,14 +400,20 @@ export class WatchRepository {
       return new WatchRepositoryError('duplicate-dedupe', 'dedupe_key 已存在');
     }
     if (
-      message.includes('UNIQUE constraint failed: watch_event_items.event_id, watch_event_items.sequence')
+      message.includes(
+        'UNIQUE constraint failed: watch_event_items.event_id, watch_event_items.sequence',
+      )
     ) {
       return new WatchRepositoryError('duplicate-item-sequence', 'event item sequence 冲突');
     }
     if (message.includes('UNIQUE constraint failed: watch_baselines.rule_id')) {
       return new WatchRepositoryError('baseline-conflict', '规则已有 Baseline（期望首个写入）');
     }
-    if (message.includes('UNIQUE constraint failed: digest_event_refs.digest_id, digest_event_refs.event_id')) {
+    if (
+      message.includes(
+        'UNIQUE constraint failed: digest_event_refs.digest_id, digest_event_refs.event_id',
+      )
+    ) {
       return new WatchRepositoryError('duplicate-ref', 'digest_event_refs 复合主键冲突');
     }
     return new WatchRepositoryError('sqlite-error', `数据库错误：${message}`);
@@ -448,30 +455,32 @@ export class WatchRepository {
       if (!condition.ok) return { ok: false, code: 'validation-failed' };
     }
     try {
-      this.handle.prepare(SQL_INSERT_RULE).run(
-        rule.id,
-        rule.sourceId,
-        rule.kind,
-        rule.state,
-        rule.pauseReason,
-        rule.desiredEnabled ? 1 : 0,
-        rule.muted ? 1 : 0,
-        rule.accessMode,
-        JSON.stringify(rule.schedule),
-        JSON.stringify(rule.target),
-        rule.condition === null ? null : JSON.stringify(rule.condition),
-        rule.notificationLevel,
-        rule.sourceRowVersion,
-        rule.sourceLocatorFingerprint,
-        rule.nextDueAt,
-        rule.lastConsumedScheduledFor,
-        rule.lastDailyLocalDate,
-        rule.consecutiveFailures,
-        rule.backoffUntil,
-        rule.baselineVersion,
-        rule.createdAt,
-        rule.updatedAt,
-      );
+      this.handle
+        .prepare(SQL_INSERT_RULE)
+        .run(
+          rule.id,
+          rule.sourceId,
+          rule.kind,
+          rule.state,
+          rule.pauseReason,
+          rule.desiredEnabled ? 1 : 0,
+          rule.muted ? 1 : 0,
+          rule.accessMode,
+          JSON.stringify(rule.schedule),
+          JSON.stringify(rule.target),
+          rule.condition === null ? null : JSON.stringify(rule.condition),
+          rule.notificationLevel,
+          rule.sourceRowVersion,
+          rule.sourceLocatorFingerprint,
+          rule.nextDueAt,
+          rule.lastConsumedScheduledFor,
+          rule.lastDailyLocalDate,
+          rule.consecutiveFailures,
+          rule.backoffUntil,
+          rule.baselineVersion,
+          rule.createdAt,
+          rule.updatedAt,
+        );
       return { ok: true };
     } catch (err) {
       return { ok: false, code: this.translate(err).code };
@@ -575,18 +584,20 @@ export class WatchRepository {
   ): WatchResult {
     this.ensureOpen();
     try {
-      const result = this.handle.prepare(SQL_UPDATE_RULE_COORDINATION).run(
-        patch.state,
-        patch.pauseReason,
-        patch.sourceRowVersion,
-        patch.sourceLocatorFingerprint,
-        nowIso ?? this.nowIso(),
-        ruleId,
-        expected.state,
-        expected.pauseReason,
-        expected.sourceRowVersion,
-        expected.sourceLocatorFingerprint,
-      );
+      const result = this.handle
+        .prepare(SQL_UPDATE_RULE_COORDINATION)
+        .run(
+          patch.state,
+          patch.pauseReason,
+          patch.sourceRowVersion,
+          patch.sourceLocatorFingerprint,
+          nowIso ?? this.nowIso(),
+          ruleId,
+          expected.state,
+          expected.pauseReason,
+          expected.sourceRowVersion,
+          expected.sourceLocatorFingerprint,
+        );
       if (Number(result.changes) === 0) {
         const exists = this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(ruleId);
         return exists === undefined
@@ -603,9 +614,7 @@ export class WatchRepository {
     this.ensureOpen();
     try {
       const result = this.handle.prepare(SQL_DELETE_RULE).run(ruleId);
-      return Number(result.changes) === 0
-        ? { ok: false, code: 'rule-not-found' }
-        : { ok: true };
+      return Number(result.changes) === 0 ? { ok: false, code: 'rule-not-found' } : { ok: true };
     } catch (err) {
       return { ok: false, code: this.translate(err).code };
     }
@@ -661,7 +670,9 @@ export class WatchRepository {
             ...validated.target,
             sessionConsent: null,
           });
-          this.handle.prepare(SQL_UPDATE_SESSION_CONSENTS).run(rewritten, nowIso, row['id'] as string);
+          this.handle
+            .prepare(SQL_UPDATE_SESSION_CONSENTS)
+            .run(rewritten, nowIso, row['id'] as string);
           count += 1;
         }
         return { ok: true, count };
@@ -688,7 +699,11 @@ export class WatchRepository {
     documentId: string | null;
   }): WatchResult {
     this.ensureOpen();
-    if (!Number.isInteger(input.byteLength) || input.byteLength < 0 || input.byteLength > this.maxBaselineBytes) {
+    if (
+      !Number.isInteger(input.byteLength) ||
+      input.byteLength < 0 ||
+      input.byteLength > this.maxBaselineBytes
+    ) {
       return { ok: false, code: 'baseline-budget-exceeded' };
     }
     try {
@@ -717,9 +732,28 @@ export class WatchRepository {
     documentId: string | null;
   }): WatchResult {
     if (input.expectedBaselineVersion === null) {
-      const result = this.handle.prepare(SQL_INSERT_BASELINE).run(
-        input.ruleId,
-        1,
+      const result = this.handle
+        .prepare(SQL_INSERT_BASELINE)
+        .run(
+          input.ruleId,
+          1,
+          input.projectionType,
+          input.projectionJson,
+          input.contentHash,
+          input.byteLength,
+          input.finalUrl,
+          input.capturedAt,
+          input.documentId,
+        );
+      this.handle.prepare(SQL_UPDATE_RULE_BASELINE_VERSION).run(1, this.nowIso(), input.ruleId);
+      if (Number(result.changes) === 0) return { ok: false, code: 'baseline-conflict' };
+      return { ok: true };
+    }
+    const nextVersion = input.expectedBaselineVersion + 1;
+    const result = this.handle
+      .prepare(SQL_UPDATE_BASELINE_CAS)
+      .run(
+        nextVersion,
         input.projectionType,
         input.projectionJson,
         input.contentHash,
@@ -727,26 +761,13 @@ export class WatchRepository {
         input.finalUrl,
         input.capturedAt,
         input.documentId,
+        input.ruleId,
+        input.expectedBaselineVersion,
       );
-      this.handle.prepare(SQL_UPDATE_RULE_BASELINE_VERSION).run(1, this.nowIso(), input.ruleId);
-      if (Number(result.changes) === 0) return { ok: false, code: 'baseline-conflict' };
-      return { ok: true };
-    }
-    const nextVersion = input.expectedBaselineVersion + 1;
-    const result = this.handle.prepare(SQL_UPDATE_BASELINE_CAS).run(
-      nextVersion,
-      input.projectionType,
-      input.projectionJson,
-      input.contentHash,
-      input.byteLength,
-      input.finalUrl,
-      input.capturedAt,
-      input.documentId,
-      input.ruleId,
-      input.expectedBaselineVersion,
-    );
     if (Number(result.changes) === 0) return { ok: false, code: 'baseline-conflict' };
-    this.handle.prepare(SQL_UPDATE_RULE_BASELINE_VERSION).run(nextVersion, this.nowIso(), input.ruleId);
+    this.handle
+      .prepare(SQL_UPDATE_RULE_BASELINE_VERSION)
+      .run(nextVersion, this.nowIso(), input.ruleId);
     return { ok: true };
   }
 
@@ -793,13 +814,9 @@ export class WatchRepository {
     try {
       const exists = this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(input.ruleId);
       if (exists === undefined) return { ok: false, code: 'rule-not-found' };
-      this.handle.prepare(SQL_INSERT_RUN).run(
-        input.id,
-        input.ruleId,
-        input.requestKey,
-        input.trigger,
-        input.scheduledFor,
-      );
+      this.handle
+        .prepare(SQL_INSERT_RUN)
+        .run(input.id, input.ruleId, input.requestKey, input.trigger, input.scheduledFor);
       return { ok: true };
     } catch (err) {
       return { ok: false, code: this.translate(err).code };
@@ -820,16 +837,18 @@ export class WatchRepository {
   ): WatchResult {
     this.ensureOpen();
     try {
-      const result = this.handle.prepare(SQL_TRANSITION_RUN).run(
-        next.status,
-        next.startedAt ?? null,
-        next.finishedAt ?? null,
-        next.outcome === undefined || next.outcome === null ? null : JSON.stringify(next.outcome),
-        next.health === undefined || next.health === null ? null : JSON.stringify(next.health),
-        next.responseMetadataJson ?? null,
-        runId,
-        expectedStatus,
-      );
+      const result = this.handle
+        .prepare(SQL_TRANSITION_RUN)
+        .run(
+          next.status,
+          next.startedAt ?? null,
+          next.finishedAt ?? null,
+          next.outcome === undefined || next.outcome === null ? null : JSON.stringify(next.outcome),
+          next.health === undefined || next.health === null ? null : JSON.stringify(next.health),
+          next.responseMetadataJson ?? null,
+          runId,
+          expectedStatus,
+        );
       if (Number(result.changes) === 0) {
         const exists = this.handle.prepare(SQL_SELECT_RUN_EXISTS).get(runId);
         return exists === undefined
@@ -899,18 +918,21 @@ export class WatchRepository {
     id: string;
     ruleId: string | null;
     kind: 'lifecycle-pause' | 'lifecycle-cascade' | 'reconciliation';
-    reasonCode: 'source-disabled' | 'source-deleted' | 'source-changed' | 'hard-delete' | 'undo-source-removed' | 'complete' | 'aborted';
+    reasonCode:
+      | 'source-disabled'
+      | 'source-deleted'
+      | 'source-changed'
+      | 'hard-delete'
+      | 'undo-source-removed'
+      | 'complete'
+      | 'aborted';
     createdAt: string;
   }): WatchResult {
     this.ensureOpen();
     try {
-      this.handle.prepare(SQL_INSERT_AUDIT).run(
-        input.id,
-        input.ruleId,
-        input.kind,
-        input.reasonCode,
-        input.createdAt,
-      );
+      this.handle
+        .prepare(SQL_INSERT_AUDIT)
+        .run(input.id, input.ruleId, input.kind, input.reasonCode, input.createdAt);
       return { ok: true };
     } catch (err) {
       return { ok: false, code: this.translate(err).code };
@@ -986,7 +1008,8 @@ export class WatchRepository {
     }
     const serializedItems: string[] = [];
     let itemsBytes = 0;
-    let incomingBytes = utf8ByteLength(input.event.id) + utf8ByteLength(input.event.idempotencyKey) + 200;
+    let incomingBytes =
+      utf8ByteLength(input.event.id) + utf8ByteLength(input.event.idempotencyKey) + 200;
     for (const item of input.items) {
       if (validateChangeEvidencePair(item) === null) {
         return { ok: false, code: 'validation-failed' };
@@ -1014,9 +1037,7 @@ export class WatchRepository {
     }
     try {
       withTransaction(this.handle, () => {
-        const ruleExists = this.handle
-          .prepare(SQL_SELECT_RULE_EXISTS)
-          .get(input.event.ruleId);
+        const ruleExists = this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(input.event.ruleId);
         if (ruleExists === undefined) throw new TxnAbortError('rule-not-found');
         if (this.estimateLogicalBytesInternal() + incomingBytes > this.maxDbBytes) {
           throw new TxnAbortError('db-budget-exceeded');
@@ -1028,37 +1049,41 @@ export class WatchRepository {
           });
           if (!baselineResult.ok) throw new TxnAbortError(baselineResult.code);
         }
-        this.handle.prepare(SQL_INSERT_EVENT).run(
-          input.event.id,
-          input.event.ruleId,
-          input.event.sourceId,
-          input.event.eventKind,
-          input.event.importance,
-          input.event.idempotencyKey,
-          input.event.changeFingerprint,
-          input.event.firstObservedAt,
-          input.event.lastObservedAt,
-          input.event.itemCount,
-        );
+        this.handle
+          .prepare(SQL_INSERT_EVENT)
+          .run(
+            input.event.id,
+            input.event.ruleId,
+            input.event.sourceId,
+            input.event.eventKind,
+            input.event.importance,
+            input.event.idempotencyKey,
+            input.event.changeFingerprint,
+            input.event.firstObservedAt,
+            input.event.lastObservedAt,
+            input.event.itemCount,
+          );
         for (let i = 0; i < input.items.length; i += 1) {
           const item = input.items[i]!;
-          this.handle.prepare(SQL_INSERT_EVENT_ITEM).run(
-            `${input.event.id}-${i}`,
-            input.event.id,
-            i,
-            item.itemId,
-            item.fieldKey,
-            item.label,
-            JSON.stringify(item.before),
-            JSON.stringify(item.after),
-            item.beforeCapturedAt,
-            item.afterCapturedAt,
-            item.beforeFinalUrl,
-            item.afterFinalUrl,
-            item.beforeDocumentId,
-            item.afterDocumentId,
-            item.feedItemKey,
-          );
+          this.handle
+            .prepare(SQL_INSERT_EVENT_ITEM)
+            .run(
+              `${input.event.id}-${i}`,
+              input.event.id,
+              i,
+              item.itemId,
+              item.fieldKey,
+              item.label,
+              JSON.stringify(item.before),
+              JSON.stringify(item.after),
+              item.beforeCapturedAt,
+              item.afterCapturedAt,
+              item.beforeFinalUrl,
+              item.afterFinalUrl,
+              item.beforeDocumentId,
+              item.afterDocumentId,
+              item.feedItemKey,
+            );
         }
         if (input.run !== undefined) {
           const runResult = this.transitionRun(input.run.runId, input.run.expectedStatus, {
@@ -1070,17 +1095,19 @@ export class WatchRepository {
           if (!runResult.ok) throw new TxnAbortError(runResult.code);
         }
         for (const item of input.outbox ?? []) {
-          this.handle.prepare(SQL_INSERT_OUTBOX).run(
-            item.id,
-            item.ruleId,
-            item.subjectType,
-            item.subjectId,
-            item.channel,
-            item.dedupeKey,
-            item.privacyJson,
-            item.createdAt,
-            item.createdAt,
-          );
+          this.handle
+            .prepare(SQL_INSERT_OUTBOX)
+            .run(
+              item.id,
+              item.ruleId,
+              item.subjectType,
+              item.subjectId,
+              item.channel,
+              item.dedupeKey,
+              item.privacyJson,
+              item.createdAt,
+              item.createdAt,
+            );
         }
       });
       return { ok: true };
@@ -1214,27 +1241,35 @@ export class WatchRepository {
 
   insertSourceCleanupIntent(input: SourceCleanupIntentRow): WatchResult {
     this.ensureOpen();
-    if (input.beforeProjection !== null && validateSourceWatchProjection(input.beforeProjection) === null) {
+    if (
+      input.beforeProjection !== null &&
+      validateSourceWatchProjection(input.beforeProjection) === null
+    ) {
       return { ok: false, code: 'validation-failed' };
     }
-    if (input.afterProjection !== null && validateSourceWatchProjection(input.afterProjection) === null) {
+    if (
+      input.afterProjection !== null &&
+      validateSourceWatchProjection(input.afterProjection) === null
+    ) {
       return { ok: false, code: 'validation-failed' };
     }
     if (validateAffectedRuleStateMap(input.affectedRuleState) === null) {
       return { ok: false, code: 'validation-failed' };
     }
     try {
-      this.handle.prepare(SQL_INSERT_INTENT).run(
-        input.mutationId,
-        input.sourceId,
-        input.operation,
-        input.beforeProjection === null ? null : JSON.stringify(input.beforeProjection),
-        input.afterProjection === null ? null : JSON.stringify(input.afterProjection),
-        JSON.stringify(input.affectedRuleState),
-        input.state,
-        input.createdAt,
-        input.updatedAt,
-      );
+      this.handle
+        .prepare(SQL_INSERT_INTENT)
+        .run(
+          input.mutationId,
+          input.sourceId,
+          input.operation,
+          input.beforeProjection === null ? null : JSON.stringify(input.beforeProjection),
+          input.afterProjection === null ? null : JSON.stringify(input.afterProjection),
+          JSON.stringify(input.affectedRuleState),
+          input.state,
+          input.createdAt,
+          input.updatedAt,
+        );
       return { ok: true };
     } catch (err) {
       return { ok: false, code: this.translate(err).code };
@@ -1287,8 +1322,10 @@ export class WatchRepository {
 
   private intentFromRaw(raw: unknown): SourceCleanupIntentRow | null {
     if (!isPlainRecord(raw)) return null;
-    const beforeRaw = raw['before_projection_json'] === null ? null : this.parseJson(raw['before_projection_json']);
-    const afterRaw = raw['after_projection_json'] === null ? null : this.parseJson(raw['after_projection_json']);
+    const beforeRaw =
+      raw['before_projection_json'] === null ? null : this.parseJson(raw['before_projection_json']);
+    const afterRaw =
+      raw['after_projection_json'] === null ? null : this.parseJson(raw['after_projection_json']);
     const affectedRaw = this.parseJson(raw['affected_rule_state_json']);
     const normalized = {
       mutationId: raw['mutation_id'] as string,
@@ -1316,17 +1353,20 @@ export class WatchRepository {
     // 状态机（§10.3）：prepared → {source-committed, complete, aborted}；
     // source-committed → {complete, aborted}；终态（complete/aborted）不可离开
     //（幂等重放：重放已解决 intent 得到确定性 conflict，绝不二次级联）。
-    const ALLOWED: Readonly<Record<SourceCleanupIntentState, readonly SourceCleanupIntentState[]>> = {
-      prepared: ['source-committed', 'complete', 'aborted'],
-      'source-committed': ['complete', 'aborted'],
-      complete: [],
-      aborted: [],
-    };
+    const ALLOWED: Readonly<Record<SourceCleanupIntentState, readonly SourceCleanupIntentState[]>> =
+      {
+        prepared: ['source-committed', 'complete', 'aborted'],
+        'source-committed': ['complete', 'aborted'],
+        complete: [],
+        aborted: [],
+      };
     if (!ALLOWED[expectedState].includes(nextState)) {
       return { ok: false, code: 'intent-state-conflict' };
     }
     try {
-      const result = this.handle.prepare(SQL_TRANSITION_INTENT).run(nextState, nowIso, mutationId, expectedState);
+      const result = this.handle
+        .prepare(SQL_TRANSITION_INTENT)
+        .run(nextState, nowIso, mutationId, expectedState);
       if (Number(result.changes) === 0) {
         const exists = this.handle.prepare(SQL_SELECT_INTENT_EXISTS).get(mutationId);
         return exists === undefined
@@ -1373,7 +1413,8 @@ export class WatchRepository {
           capturedAt: row['captured_at'],
           documentId: row['document_id'],
         };
-        if (!validateBaselineRow(normalized).ok) return { ok: false, reason: 'Baseline 行读回校验失败' };
+        if (!validateBaselineRow(normalized).ok)
+          return { ok: false, reason: 'Baseline 行读回校验失败' };
       }
       for (const row of this.handle.prepare(SQL_SELECT_ALL_RUNS).all() as unknown[]) {
         if (!isPlainRecord(row)) return { ok: false, reason: 'Run 行形状非法' };
@@ -1438,15 +1479,20 @@ export class WatchRepository {
           sourceId: row['source_id'],
           operation: row['operation'],
           beforeProjection:
-            row['before_projection_json'] === null ? null : this.parseJson(row['before_projection_json']),
+            row['before_projection_json'] === null
+              ? null
+              : this.parseJson(row['before_projection_json']),
           afterProjection:
-            row['after_projection_json'] === null ? null : this.parseJson(row['after_projection_json']),
+            row['after_projection_json'] === null
+              ? null
+              : this.parseJson(row['after_projection_json']),
           affectedRuleState: this.parseJson(row['affected_rule_state_json']),
           state: row['state'],
           createdAt: row['created_at'],
           updatedAt: row['updated_at'],
         };
-        if (!validateIntentRow(normalized).ok) return { ok: false, reason: 'intent 行读回校验失败' };
+        if (!validateIntentRow(normalized).ok)
+          return { ok: false, reason: 'intent 行读回校验失败' };
       }
       for (const row of this.handle.prepare(SQL_SELECT_ALL_SCHEDULES).all() as unknown[]) {
         if (!isPlainRecord(row)) return { ok: false, reason: 'DigestSchedule 行形状非法' };
@@ -1464,7 +1510,8 @@ export class WatchRepository {
       }
       for (const row of this.handle.prepare(SQL_SELECT_ALL_DIGESTS).all() as unknown[]) {
         if (!isPlainRecord(row)) return { ok: false, reason: 'Digest 行形状非法' };
-        if (this.parseJson(row['facts_json']) === null) return { ok: false, reason: 'Digest facts 非法' };
+        if (this.parseJson(row['facts_json']) === null)
+          return { ok: false, reason: 'Digest facts 非法' };
         if (row['explanation_json'] !== null && this.parseJson(row['explanation_json']) === null) {
           return { ok: false, reason: 'Digest explanation 非法' };
         }
@@ -1495,7 +1542,9 @@ export class WatchRepository {
 
   private estimateLogicalBytesInternal(): number {
     try {
-      const row = this.handle.prepare(SQL_ESTIMATE_LOGICAL_BYTES).get() as { total: number | bigint };
+      const row = this.handle.prepare(SQL_ESTIMATE_LOGICAL_BYTES).get() as {
+        total: number | bigint;
+      };
       const total = Number(row.total);
       return Number.isFinite(total) && total >= 0 ? total : Number.MAX_SAFE_INTEGER;
     } catch (err) {
@@ -1513,20 +1562,27 @@ export class WatchRepository {
     if (!Number.isFinite(nowMs)) return { deleted: 0, expiredRefs: 0 };
     try {
       return withTransaction(this.handle, () => {
-        const rules = this.handle
-          .prepare(SQL_SELECT_RULES_ACCESS)
-          .all() as Array<{ id: string; access_mode: string }>;
+        const rules = this.handle.prepare(SQL_SELECT_RULES_ACCESS).all() as Array<{
+          id: string;
+          access_mode: string;
+        }>;
         let deleted = 0;
         let expiredRefs = 0;
         for (const rule of rules) {
           const days =
-            rule.access_mode === 'session' ? SESSION_EVENT_RETENTION_DAYS : PUBLIC_EVENT_RETENTION_DAYS;
+            rule.access_mode === 'session'
+              ? SESSION_EVENT_RETENTION_DAYS
+              : PUBLIC_EVENT_RETENTION_DAYS;
           const cap =
             rule.access_mode === 'session' ? SESSION_EVENTS_PER_RULE : PUBLIC_EVENTS_PER_RULE;
           const cutoff = new Date(nowMs - days * 24 * 60 * 60 * 1000).toISOString();
           const rows = this.handle
             .prepare(SQL_SELECT_EVENTS_FOR_RULE_ORDERED)
-            .all(rule.id) as Array<{ id: string; first_observed_at: string; read_at: string | null }>;
+            .all(rule.id) as Array<{
+            id: string;
+            first_observed_at: string;
+            read_at: string | null;
+          }>;
           const expired = rows.filter((r) => r.first_observed_at < cutoff);
           const withinAge = rows.filter((r) => r.first_observed_at >= cutoff);
           const overflow = withinAge.length > cap ? withinAge.length - cap : 0;
@@ -1564,8 +1620,7 @@ export class WatchRepository {
           return { deleted, remainingBytes: current };
         }
         const row = this.handle.prepare(SQL_SELECT_OLDEST_EVENT_GLOBAL).get() as
-          | { id: string }
-          | undefined;
+          { id: string } | undefined;
         if (row === undefined) {
           return { deleted, remainingBytes: current };
         }
@@ -1583,5 +1638,10 @@ export class WatchRepository {
   }
 }
 
-export type { AffectedRulePrepareState, SourceCleanupIntentRow, SourceCleanupIntentState, WatchRunRow };
+export type {
+  AffectedRulePrepareState,
+  SourceCleanupIntentRow,
+  SourceCleanupIntentState,
+  WatchRunRow,
+};
 export type { WatchRuleRowColumns };

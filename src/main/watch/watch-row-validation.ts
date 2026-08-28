@@ -280,7 +280,8 @@ export function validateStoredCondition(raw: unknown): WatchRowValidation<Struct
     const operand = pr['operand'];
     if (operand !== null) {
       if (typeof operand === 'number') {
-        if (!Number.isFinite(operand)) return { ok: false, value: null, reason: 'condition-invalid' };
+        if (!Number.isFinite(operand))
+          return { ok: false, value: null, reason: 'condition-invalid' };
       } else if (typeof operand === 'string') {
         if (operand.length === 0 || operand.length > 500) {
           return { ok: false, value: null, reason: 'condition-invalid' };
@@ -576,7 +577,10 @@ export function validateRuleRow(row: unknown): WatchRowValidation<WatchRule> {
     return { ok: false, value: null, reason: 'target-invalid' };
   }
   // feed 仅 public；session 仅 page（决策 4）
-  if ((r.kind === 'feed' && r.access_mode !== 'public') || (r.access_mode === 'session' && r.kind !== 'page')) {
+  if (
+    (r.kind === 'feed' && r.access_mode !== 'public') ||
+    (r.access_mode === 'session' && r.kind !== 'page')
+  ) {
     return { ok: false, value: null, reason: 'kind-access-mismatch' };
   }
   let condition: StructuredCondition | null = null;
@@ -667,7 +671,8 @@ export function validateEventRow(row: unknown): WatchRowValidation<WatchEvent> {
   ) {
     return { ok: false, value: null, reason: 'row-shape-invalid' };
   }
-  if (!isIn(r.event_kind, WATCH_EVENT_KINDS)) return { ok: false, value: null, reason: 'enum-invalid' };
+  if (!isIn(r.event_kind, WATCH_EVENT_KINDS))
+    return { ok: false, value: null, reason: 'enum-invalid' };
   if (!isIn(r.importance, WATCH_NOTIFICATION_LEVELS)) {
     return { ok: false, value: null, reason: 'enum-invalid' };
   }
@@ -773,7 +778,8 @@ export function validateRunRow(row: unknown): WatchRowValidation<WatchRunRow> {
   if (!isIn(r.status, ['queued', 'running', 'interrupted', 'finished'] as const)) {
     return { ok: false, value: null, reason: 'enum-invalid' };
   }
-  if (!isIn(r.trigger, WATCH_RUN_TRIGGERS)) return { ok: false, value: null, reason: 'enum-invalid' };
+  if (!isIn(r.trigger, WATCH_RUN_TRIGGERS))
+    return { ok: false, value: null, reason: 'enum-invalid' };
   if (
     !isNullableIsoString(r.scheduledFor) ||
     !isNullableIsoString(r.startedAt) ||
@@ -828,7 +834,9 @@ export function validateIntentRow(row: unknown): WatchRowValidation<SourceCleanu
   ) {
     return { ok: false, value: null, reason: 'row-shape-invalid' };
   }
-  if (!isIn(r.operation, ['create', 'update', 'disable', 'restore', 'undo', 'hard-delete'] as const)) {
+  if (
+    !isIn(r.operation, ['create', 'update', 'disable', 'restore', 'undo', 'hard-delete'] as const)
+  ) {
     return { ok: false, value: null, reason: 'enum-invalid' };
   }
   if (!isIn(r.state, ['prepared', 'source-committed', 'complete', 'aborted'] as const)) {

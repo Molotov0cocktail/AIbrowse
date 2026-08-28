@@ -37,7 +37,9 @@ describe('validateFeedTarget', () => {
   it('额外键/缺键拒绝（exact own-key）', () => {
     expect(validateFeedTarget({ ...okFeed, extra: 1 }).ok).toBe(false);
     expect(validateFeedTarget({ type: 'feed', feedUrl: okFeed.feedUrl }).ok).toBe(false);
-    expect(validateFeedTarget({ type: 'feed', feedUrl: okFeed.feedUrl, format: 'rss2', x: 1 }).ok).toBe(false);
+    expect(
+      validateFeedTarget({ type: 'feed', feedUrl: okFeed.feedUrl, format: 'rss2', x: 1 }).ok,
+    ).toBe(false);
   });
 
   it('URL 仅 http/https、无 userinfo、有界', () => {
@@ -45,8 +47,12 @@ describe('validateFeedTarget', () => {
     expect(validateFeedTarget({ ...okFeed, feedUrl: 'file:///etc/passwd' }).ok).toBe(false);
     expect(validateFeedTarget({ ...okFeed, feedUrl: 'javascript:alert(1)' }).ok).toBe(false);
     expect(validateFeedTarget({ ...okFeed, feedUrl: 'https://u:p@x.com/f' }).ok).toBe(false);
-    expect(validateFeedTarget({ ...okFeed, feedUrl: 'https://x.com/' + 'a'.repeat(2100) }).ok).toBe(false);
-    expect(validateFeedTarget({ ...okFeed, feedUrl: 'https://x.com/' + 'a'.repeat(2000) }).ok).toBe(true);
+    expect(validateFeedTarget({ ...okFeed, feedUrl: 'https://x.com/' + 'a'.repeat(2100) }).ok).toBe(
+      false,
+    );
+    expect(validateFeedTarget({ ...okFeed, feedUrl: 'https://x.com/' + 'a'.repeat(2000) }).ok).toBe(
+      true,
+    );
   });
 
   it('format 仅 rss2/atom', () => {
@@ -88,13 +94,17 @@ describe('validatePageTarget', () => {
 
   it('未来 type/kind/consent version fail-closed', () => {
     expect(validatePageTarget({ ...okPage, type: 'iframe' }).ok).toBe(false);
-    expect(
-      validatePageTarget({ ...okPage, regions: [{ kind: 'xpath', label: 'x' }] }).ok,
-    ).toBe(false);
+    expect(validatePageTarget({ ...okPage, regions: [{ kind: 'xpath', label: 'x' }] }).ok).toBe(
+      false,
+    );
     expect(
       validatePageTarget({
         ...okPage,
-        sessionConsent: { version: 2, origin: 'https://example.com', grantedAt: '2026-01-01T00:00:00.000Z' },
+        sessionConsent: {
+          version: 2,
+          origin: 'https://example.com',
+          grantedAt: '2026-01-01T00:00:00.000Z',
+        },
       }).ok,
     ).toBe(false);
   });
@@ -141,10 +151,16 @@ describe('validatePageTarget', () => {
 
   it('links sameOriginOnly 必须 boolean', () => {
     expect(
-      validatePageTarget({ ...okPage, regions: [{ kind: 'links', label: 'l', sameOriginOnly: false }] }).ok,
+      validatePageTarget({
+        ...okPage,
+        regions: [{ kind: 'links', label: 'l', sameOriginOnly: false }],
+      }).ok,
     ).toBe(true);
     expect(
-      validatePageTarget({ ...okPage, regions: [{ kind: 'links', label: 'l', sameOriginOnly: 'yes' }] }).ok,
+      validatePageTarget({
+        ...okPage,
+        regions: [{ kind: 'links', label: 'l', sameOriginOnly: 'yes' }],
+      }).ok,
     ).toBe(false);
   });
 
@@ -165,7 +181,12 @@ describe('validatePageTarget', () => {
     expect(
       validatePageTarget({
         ...okPage,
-        sessionConsent: { version: 1, origin: 'https://example.com', grantedAt: '2026-01-01T00:00:00.000Z', extra: 1 },
+        sessionConsent: {
+          version: 1,
+          origin: 'https://example.com',
+          grantedAt: '2026-01-01T00:00:00.000Z',
+          extra: 1,
+        },
       }).ok,
     ).toBe(false);
     expect(validatePageTarget({ ...okPage, sessionConsent: 'yes' }).ok).toBe(false);

@@ -13725,6 +13725,13 @@ async function runSrtScenarios(
           // （/^#{1,3}(?= |$)/.exec 等——RegExp.exec 非 SQL，与
           // snapshot-script 同族先例）；白名单为契约同步，不放宽 SQL 封闭
           'parse-markdown.ts': 'RegExp.exec 正则匹配（非 SQL，已审查分类——C7 shared Markdown）',
+          // D4（2026-08-28）：第六阶段契约新增合法执行点——Watch 业务 SQL 仅为
+          // WatchRepository 编译期常量 + 参数绑定、watch-migrations 冻结列表
+          //（detailed-design §7/§10.1，决议 #S6-034）；本白名单为契约同步，
+          // 不放宽 SQL 封闭语义（renderer/preload 零 SQL 断言不变）。
+          'watch-repository.ts': '业务 SQL 允许点（编译期常量 + 参数绑定，D4）',
+          'smoke-watch-store.ts': 'SMOKE 门控测试设施（D4 8.21/门控；决议 #47 同精神）',
+          'source-service.ts': 'Source 生命周期 observer.prepare 调用（§10.3 观察者协议，非 SQL）',
         };
         const sqlHits: string[] = [];
         const rendererPreloadSql: string[] = [];

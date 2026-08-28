@@ -30,10 +30,7 @@ import type {
 } from '../../shared/types/watch';
 import type { AffectedRulePrepareState } from './watch-row-validation';
 import { withTransaction } from './db/watch-driver';
-import {
-  WatchRepository,
-  type SourceCleanupIntentRow,
-} from './repository/watch-repository';
+import { WatchRepository, type SourceCleanupIntentRow } from './repository/watch-repository';
 
 export type SourceProjectionReader = (sourceId: string) => SourceWatchProjection | null;
 
@@ -196,15 +193,11 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
             };
             const action = this.prepareActionFor(change, rule, after);
             if (action !== null) {
-              const next = transitionRuleState(
-                ruleFields(rule),
-                action,
-                {
-                  sourceExists: after !== null,
-                  sourceEnabled: after !== null && after.enabled,
-                  locatorUnchanged: after !== null,
-                },
-              );
+              const next = transitionRuleState(ruleFields(rule), action, {
+                sourceExists: after !== null,
+                sourceEnabled: after !== null && after.enabled,
+                locatorUnchanged: after !== null,
+              });
               const nextRowVersion = after === null ? rule.sourceRowVersion : after.rowVersion;
               const updated = repo.updateRuleCoordination(
                 rule.id,
@@ -306,10 +299,9 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
     return null;
   }
 
-  private pauseAuditReason(reason: string):
-    | 'source-disabled'
-    | 'source-deleted'
-    | 'source-changed' {
+  private pauseAuditReason(
+    reason: string,
+  ): 'source-disabled' | 'source-deleted' | 'source-changed' {
     if (reason === 'source-disabled') return 'source-disabled';
     if (reason === 'source-deleted') return 'source-deleted';
     return 'source-changed';
@@ -371,10 +363,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
 
   // 恢复 prepare 前状态（abort/reconcile 共用）：仅对非 deleted 规则恢复
   // state/pauseReason/sourceRowVersion/fingerprint（desiredEnabled 从未被改）
-  private restoreAffectedRules(
-    repo: WatchRepository,
-    intent: SourceCleanupIntentRow,
-  ): void {
+  private restoreAffectedRules(repo: WatchRepository, intent: SourceCleanupIntentRow): void {
     const nowIso = this.iso();
     for (const [ruleId, affected] of Object.entries(intent.affectedRuleState)) {
       const rule = repo.getRule(ruleId);
@@ -407,7 +396,6 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
     reader: SourceProjectionReader,
     intent: SourceCleanupIntentRow,
   ): void {
-    const nowIso = this.iso();
     const current = reader(intent.sourceId);
     if (intent.operation === 'hard-delete') {
       if (current === null) {
@@ -474,7 +462,12 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
     intent: SourceCleanupIntentRow,
     next: 'complete' | 'aborted',
   ): void {
-    const transition = repo.transitionSourceCleanupIntent(intent.mutationId, intent.state, next, this.iso());
+    const transition = repo.transitionSourceCleanupIntent(
+      intent.mutationId,
+      intent.state,
+      next,
+      this.iso(),
+    );
     if (!transition.ok) {
       throw new Error(`intent 状态迁移失败（${intent.mutationId}，${transition.code}）`);
     }
@@ -805,7 +798,7 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
     if (
       next.state === rule.state &&
       next.pauseReason === rule.pauseReason &&
-      next.sourceRowVersion === current.rowVersion
+      rule.sourceRowVersion === current.rowVersion
     ) {
       return;
     }
