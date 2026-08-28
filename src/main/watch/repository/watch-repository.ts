@@ -618,26 +618,27 @@ export class WatchRepository {
     }
   }
 
-  // hard-delete/undo-of-add 级联（§10.3 步骤 4；自带事务）：先标记受影响 Event 的
-  // Digest ref=expired 与移除其 outbox，再删除规则（FK CASCADE baseline/runs/events/
-  // audits SET NULL）。返回受影响的 Event 数（诊断）。
+  // hard-delete/undo-of-add 级联（§10.3 步骤 4）：先标记受影响 Event 的
+  // Digest ref=expired 与移除其 outbox，再删除规则（FK CASCADE baseline/runs/
+  // events/audits SET NULL）。事务由调用方所有（coordinator 的 commit/
+  // reconciliation 均自带事务——嵌套 BEGIN 为安全失败，组合语义必须同事务）。
+  // 返回受影响的 Event 数（诊断）。
   cascadeDeleteRulesBySource(sourceId: string): { ok: boolean; deletedEvents: number } {
     this.ensureOpen();
     try {
-      return withTransaction(this.handle, () => {
-        const eventRows = this.handle.prepare(SQL_SELECT_EVENTS_BY_SOURCE).all(sourceId) as Array<{
-          id: string;
-        }>;
-        for (const row of eventRows) {
-          this.handle.prepare(SQL_MARK_REFS_EXPIRED_FOR_EVENT).run(row.id);
-          this.handle.prepare(SQL_DELETE_EVENT_OUTBOX).run(row.id);
-        }
-        const result = this.handle.prepare(SQL_DELETE_RULES_BY_SOURCE).run(sourceId);
-        return { ok: Number(result.changes) >= 0, deletedEvents: eventRows.length };
-      });
+      const eventRows = this.handle.prepare(SQL_SELECT_EVENTS_BY_SOURCE).all(sourceId) as Array<{
+        id: string;
+      }>;
+      for (const row of eventRows) {
+        this.handle.prepare(SQL_MARK_REFS_EXPIRED_FOR_EVENT).run(row.id);
+        this.handle.prepare(SQL_DELETE_EVENT_OUTBOX).run(row.id);
+      }
+      const result = this.handle.prepare(SQL_DELETE_RULES_BY_SOURCE).run(sourceId);
+      void result.changes; // 零行亦合法（规则已在 prepare 后被用户删除/级联）
+      return { ok: true, deletedEvents: eventRows.length };
     } catch (err) {
-      logWarn('watch', '按 Source 级联删除失败（已整体回滚）', err);
-      return { ok: false, deletedEvents: 0 };
+      logWarn('watch', '按 Source 级联删除失败（调用方事务回滚）', err);
+      throw err; // 原子语义：让调用方事务回滚（失败不得静默半删）
     }
   }
 
