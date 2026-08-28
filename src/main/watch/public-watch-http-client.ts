@@ -137,10 +137,12 @@ export interface WatchIncomingLike {
   on(event: 'end', cb: () => void): unknown;
   on(event: 'aborted', cb: () => void): unknown;
   on(event: 'error', cb: (err: Error) => void): unknown;
+  on(event: 'close', cb: () => void): unknown;
   removeListener(event: 'data', cb: (chunk: Buffer) => void): unknown;
   removeListener(event: 'end', cb: () => void): unknown;
   removeListener(event: 'aborted', cb: () => void): unknown;
   removeListener(event: 'error', cb: (err: Error) => void): unknown;
+  removeListener(event: 'close', cb: () => void): unknown;
   resume?(): unknown;
   destroy?(error?: Error): void;
 }
@@ -149,9 +151,11 @@ export interface WatchRequestLike {
   on(event: 'response', cb: (res: WatchIncomingLike) => void): unknown;
   on(event: 'error', cb: (err: Error) => void): unknown;
   on(event: 'timeout', cb: () => void): unknown;
+  on(event: 'close', cb: () => void): unknown;
   removeListener(event: 'response', cb: (res: WatchIncomingLike) => void): unknown;
   removeListener(event: 'error', cb: (err: Error) => void): unknown;
   removeListener(event: 'timeout', cb: () => void): unknown;
+  removeListener(event: 'close', cb: () => void): unknown;
   setTimeout(ms: number): unknown;
   end(): void;
   abort(): void;
@@ -295,6 +299,59 @@ type InternalAttempt =
 const DNS_ABORTED = Symbol('dns-aborted');
 const DNS_TIMEOUT = Symbol('dns-timeout');
 const DNS_ERROR = Symbol('dns-error');
+
+// ---------------------------------------------------------------------------
+// emitter-local transport drain（#S6-043 两阶段协议；模块私有，不导出）
+// ---------------------------------------------------------------------------
+// 两类 drain 都不是业务 listener，也不参与 Promise settlement：
+// - error sink 从安装起对所属 emitter 的所有 error 都无条件 no-op，不读取 settlement；
+// - close cleanup 幂等移除本 emitter 的 error sink + close listener，每次 removeListener
+//   单独 try/catch（一个 remove 抛错不形成 uncaught exception、不阻止另一个清理）；
+// - 两个 callback 只闭包所属 emitter 与彼此，不捕获 settlement/业务结果/timer/AbortSignal/
+//   body buffer/inflater/另一 emitter/process 或全局 registry/listener；
+// - close 永不到达时仅该 emitter 自包含 drain pair 可随不可达 transport 对象 GC。
+
+/** ClientRequest 创建成功后立即安装的 request drain pair。 */
+function installRequestDrain(req: WatchRequestLike): void {
+  const requestErrorDrain = (err: NodeJS.ErrnoException): void => {
+    void err; // 无条件 no-op
+  };
+  const requestCloseCleanup = (): void => {
+    try {
+      req.removeListener('error', requestErrorDrain);
+    } catch {
+      // 单项异常隔离
+    }
+    try {
+      req.removeListener('close', requestCloseCleanup);
+    } catch {
+      // 单项异常隔离
+    }
+  };
+  req.on('error', requestErrorDrain);
+  req.on('close', requestCloseCleanup);
+}
+
+/** 每个 IncomingMessage 一经交付、接入任何 body reader/discard/destroy/resume 前安装的 response drain pair。 */
+function installResponseDrain(res: WatchIncomingLike): void {
+  const responseErrorDrain = (err: Error): void => {
+    void err; // 无条件 no-op
+  };
+  const responseCloseCleanup = (): void => {
+    try {
+      res.removeListener('error', responseErrorDrain);
+    } catch {
+      // 单项异常隔离
+    }
+    try {
+      res.removeListener('close', responseCloseCleanup);
+    } catch {
+      // 单项异常隔离
+    }
+  };
+  res.on('error', responseErrorDrain);
+  res.on('close', responseCloseCleanup);
+}
 
 /**
  * raw transport（模块私有，不导出）：任意目的 GET/HEAD，每跳 NetworkPolicy + robots gate。
@@ -702,6 +759,8 @@ class PublicWatchHttpClient {
           response = null;
         }
         if (request !== null) {
+          // #S6-043：先移除全部 request 业务 listener（response/error/timeout）；
+          // request drain（error sink + close cleanup）保留至 request close，不在此移除。
           try {
             request.removeListener('error', onRequestError);
           } catch {
@@ -712,16 +771,30 @@ class PublicWatchHttpClient {
           } catch {
             // 幂等
           }
-          // 覆盖 request.destroy() 内同步发出 response 的竞态：destroy 调用期间暂时保留
-          // onResponse（若同步发出 response 则由 onResponse 立即安全丢弃并自移除），
-          // 通过 finally 在 cleanup 返回前移除；cleanup 返回时 listenerCount 必须全为 0。
+          try {
+            request.removeListener('response', onResponse);
+          } catch {
+            // 幂等
+          }
+          // 调用栈 discard guard：先安装再 destroy/abort fallback，finally 必移除，
+          // 且必须在业务 Promise 结算前归零。request.destroy() 同步抛错至多一次受控
+          // abort fallback，fallback 返回或抛错后立即结算；二者都不等待 close。
+          try {
+            request.on('response', onGuardResponse);
+          } catch {
+            // 幂等
+          }
           try {
             request.destroy();
           } catch {
-            // 幂等
+            try {
+              request.abort();
+            } catch {
+              // 幂等
+            }
           } finally {
             try {
-              request.removeListener('response', onResponse);
+              request.removeListener('response', onGuardResponse);
             } catch {
               // 幂等
             }
@@ -752,10 +825,16 @@ class PublicWatchHttpClient {
         finish(this.failed('unavailable', code));
       };
 
-      // 不消费的响应（redirect/HEAD/3xx 无 Location/迟到 response）：立即安全销毁；
-      // destroy 不可用或抛错时安装安全 error sink 后 resume 排空，防无限 body 占用。
-      // destroy、error sink 安装与 resume 分别异常隔离：单项抛错继续下一步。
-      const safeDiscardResponse = (res: WatchIncomingLike): void => {
+      // 调用栈 discard guard（#S6-043）：只覆盖 request.destroy()/abort fallback 调用栈内
+      // 同步发出的 response；finally 必移除，跨事件轮不保留。收到 response 先安装其自身
+      // response drain，再 destroy；仅 destroy 缺失或同步抛错时 resume。零 body reader/inflater。
+      const onGuardResponse = (res: WatchIncomingLike): void => {
+        try {
+          activeRequest.removeListener('response', onGuardResponse);
+        } catch {
+          // 幂等
+        }
+        installResponseDrain(res);
         if (typeof res.destroy === 'function') {
           try {
             res.destroy();
@@ -765,9 +844,23 @@ class PublicWatchHttpClient {
           }
         }
         try {
-          res.on('error', () => undefined);
+          res.resume?.();
         } catch {
           // 幂等
+        }
+      };
+
+      // 不消费的响应（redirect/HEAD/3xx 无 Location/迟到 response）：立即安全销毁；
+      // response drain 必须已由调用方（onResponse/call-stack guard）先安装；此处只负责
+      // destroy，或 destroy 缺失/同步抛错时的受控 resume 排空。各项分别异常隔离。
+      const safeDiscardResponse = (res: WatchIncomingLike): void => {
+        if (typeof res.destroy === 'function') {
+          try {
+            res.destroy();
+            return;
+          } catch {
+            // 降级排空
+          }
         }
         try {
           res.resume?.();
@@ -785,6 +878,9 @@ class PublicWatchHttpClient {
             // 幂等
           }
         }
+        // #S6-043：response 一经交付，必须先安装 product-owned named response drain，
+        // 再进入 body reader、discard、destroy 或 resume；drain 保留至 response close 自清理。
+        installResponseDrain(res);
         if (aborted || settled) {
           // deadline/abort 先于 response：迟到 response 立即安全销毁或受控 resume，
           // 零正文 listener、零新 socket。
@@ -913,6 +1009,9 @@ class PublicWatchHttpClient {
       }
       const activeRequest = request;
       guardRequest = activeRequest;
+      // #S6-043：request 创建成功后立即安装 emitter-local request drain（error sink +
+      // close cleanup），在业务 listener/timer/AbortSignal 装配之前；drain 保留至 request close。
+      installRequestDrain(activeRequest);
 
       // socket 超时只能设为 remaining（同一 absolute effectiveDeadline，不续杯）
       const remaining = deadlineMs - this.clock.now().getTime();

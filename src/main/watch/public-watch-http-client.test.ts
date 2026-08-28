@@ -38,17 +38,37 @@ class FakeIncoming extends EventEmitter implements WatchIncomingLike {
   // R5 失败注入：单项清理抛错时验证其余清理继续。
   failDestroy = false;
   failResume = false;
+  // 确定性敌手 seam：destroy 后强制异步投递 aborted → error → close。该强制顺序不代表
+  // 真实 Node 在零 error listener 时必然发出 error（Node 24.18.0 为条件发射）。
+  adversaryError: Error | null = null;
+  // never-close seam：destroy 后不投递 close（仅对应 emitter 自包含 drain pair 保留）。
+  neverClose = false;
+  private closed = false;
   resume(): void {
     if (this.failResume) throw new Error('injected resume failure');
+    // 忠实 Node：resume() 排空被丢弃的响应流后最终 close；用于 destroy 缺失/抛错 → resume 排空路径。
+    if (this.destroyed || this.closed || this.neverClose) return;
+    queueMicrotask(() => {
+      if (this.closed) return;
+      this.closed = true;
+      this.emit('close');
+    });
   }
-  destroy(): void {
+  // 忠实 Node 24 IncomingMessage.destroy()：异步投递 aborted → (可选敌手 error) → close。
+  // 不再用“destroy 后零投递”掩盖缺 listener 的缺陷；业务终态后迟到 error 必须由 drain 承载。
+  destroy(error?: Error): void {
     if (this.failDestroy) throw new Error('injected response.destroy failure');
+    if (this.destroyed) return;
     this.destroyed = true;
-  }
-  // 模拟真实流：destroy 后不再投递任何事件（含 error），保证无 listener 的 error 不抛未处理异常。
-  emit(event: string | symbol, ...args: unknown[]): boolean {
-    if (this.destroyed) return false;
-    return super.emit(event, ...args);
+    const err = error ?? this.adversaryError;
+    queueMicrotask(() => {
+      if (this.closed) return;
+      this.emit('aborted');
+      if (this.neverClose) return;
+      this.closed = true;
+      if (err !== null) this.emit('error', err);
+      this.emit('close');
+    });
   }
 }
 
@@ -58,24 +78,46 @@ class FakeRequest extends EventEmitter implements WatchRequestLike {
   failDestroy = false;
   // 若设置，request.destroy() 会同步发出一次 'response'（覆盖 destroy 内同步竞态）。
   emitResponseOnDestroy: FakeIncoming | null = null;
+  // never-close seam：destroy 后不投递 close（request drain 保留至不可达对象 GC）。
+  neverClose = false;
+  private closed = false;
   setTimeout(ms: number): unknown {
     void ms;
     return this;
   }
   end(): void {}
+  // 忠实 Node 24 request.abort()：异步投递 close（probe 实测 abort 不发 request error）。
   abort(): void {
-    this.emit('error', Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
+    if (this.destroyed) return;
+    this.destroyed = true;
+    queueMicrotask(() => {
+      if (this.closed) return;
+      this.closed = true;
+      this.emit('close');
+    });
   }
-  // 模拟真实 ClientRequest.destroy()：无 error 参数不投递 'error'（终态 cleanup 移除 listener 后安全）。
+  // 忠实 Node 24 ClientRequest.destroy()：无 error 参数也会异步投递 error ECONNRESET + close
+  // （pre-socket/pre-response 实测顺序）；close 自清理 drain pair。
   destroy(error?: Error): void {
     if (this.failDestroy) throw new Error('injected request.destroy failure');
+    if (this.destroyed) return;
     if (this.emitResponseOnDestroy !== null) {
       const res = this.emitResponseOnDestroy;
       this.emitResponseOnDestroy = null;
       this.emit('response', res);
     }
     this.destroyed = true;
-    if (error !== undefined) this.emit('error', error);
+    const err = error ?? Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    queueMicrotask(() => {
+      if (this.closed) return;
+      if (this.neverClose) {
+        this.emit('error', err);
+        return;
+      }
+      this.closed = true;
+      this.emit('error', err);
+      this.emit('close');
+    });
   }
 }
 
@@ -1129,6 +1171,11 @@ describe('R3 deadline/abort 生命周期（统一幂等 cleanup；迟到事件�
     await flush();
     const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
     clock.advanceTo(30_000);
+    // 同步终态后、response close 前的 drain 窗口：迟到的 error 由 product-owned response
+    // drain 吸收（零未处理异常），data/end 无业务 listener 纯 no-op、不写入 inflater。
+    res.emit('error', new Error('late'));
+    res.emit('data', Buffer.from('late', 'utf8'));
+    res.emit('end');
     const r = await promise;
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('unavailable');
@@ -1138,18 +1185,16 @@ describe('R3 deadline/abort 生命周期（统一幂等 cleanup；迟到事件�
     expect(res.listenerCount('data')).toBe(0);
     expect(res.listenerCount('end')).toBe(0);
     expect(res.listenerCount('error')).toBe(0);
+    expect(res.listenerCount('close')).toBe(0);
     expect(res.listenerCount('aborted')).toBe(0);
     expect(inflaters[0]!.listenerCount('data')).toBe(0);
     expect(inflaters[0]!.listenerCount('end')).toBe(0);
     expect(inflaters[0]!.listenerCount('error')).toBe(0);
-    // 迟到的 error/data/end：response 已销毁 → 纯 no-op，零未处理异常、不写入 inflater
-    res.emit('error', new Error('late'));
-    res.emit('data', Buffer.from('late', 'utf8'));
-    res.emit('end');
     await flush();
     expect(h.targets().length).toBe(1);
     expect(res.listenerCount('data')).toBe(0);
     expect(res.listenerCount('error')).toBe(0);
+    expect(res.listenerCount('close')).toBe(0);
   });
 
   it('settlement 后 timer 与 listener 被清除，迟到事件无副作用且无未处理 rejection', async () => {
@@ -1403,10 +1448,13 @@ describe('R4 首终态立即闭合 listener/resource（不依赖迟到事件触�
       expect(req.listenerCount('response')).toBe(0);
       expect(req.listenerCount('error')).toBe(0);
       expect(req.listenerCount('timeout')).toBe(0);
-      // response 已销毁：后续事件纯 no-op
+      // response 已销毁且 drain 已自清理（close 后 error/close listener 为 0）：
+      // 后续 data/end 纯 no-op；真实 Node 在 close 后不再发出 error，产品也未遗留
+      // 任何 error listener 掩盖缺陷。
       res.emit('data', Buffer.from('late', 'utf8'));
       res.emit('end');
-      res.emit('error', new Error('late'));
+      expect(res.listenerCount('error')).toBe(0);
+      expect(res.listenerCount('close')).toBe(0);
       // 迟到的 request response：已无 listener，纯 no-op（不创建新 socket）
       h.targets()[0]!.openResponse(200, {});
       expect(h.targets().length).toBe(1);
@@ -1615,9 +1663,14 @@ describe('R5 首终态立即移除全部 request listener + 逐项异常隔离',
       expect(req.listenerCount('response')).toBe(0);
       expect(req.listenerCount('error')).toBe(0);
       expect(req.listenerCount('timeout')).toBe(0);
-      for (const ev of ['data', 'end', 'error', 'aborted'] as const) {
-        expect(res.listenerCount(ev)).toBe(0); // releaseBody 已移除 res listener
+      // releaseBody 已移除 res 业务 listener（data/end/aborted）；response.destroy 抛错后
+      // response 未销毁也未 close，product-owned response drain（error/close）按契约保留至
+      // response close——此处断言 drain 存在且不泄漏未处理异常。
+      for (const ev of ['data', 'end', 'aborted'] as const) {
+        expect(res.listenerCount(ev)).toBe(0); // releaseBody 已移除 res 业务 listener
       }
+      expect(res.listenerCount('error')).toBe(1); // product-owned response drain
+      expect(res.listenerCount('close')).toBe(1); // drain close cleanup
       expect(req.destroyed).toBe(true);
       expect(clock.pendingTimerCount()).toBe(0);
       expect(t.unhandled.length).toBe(0);
@@ -1747,6 +1800,501 @@ describe('R5 首终态立即移除全部 request listener + 逐项异常隔离',
       expect(t.unhandled.length).toBe(0);
     } finally {
       t.detach();
+    }
+  });
+});
+
+describe('D3-R6 两阶段终态：business terminal 与 emitter-local request/response drain', () => {
+  function trackUnhandled(): { unhandled: unknown[]; detach: () => void } {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    return {
+      unhandled,
+      detach: () => process.removeListener('unhandledRejection', onUnhandled),
+    };
+  }
+
+  function namesOf(emitter: EventEmitter, ev: string): string[] {
+    return emitter.listeners(ev).map((f) => (f as { name?: string }).name ?? '');
+  }
+
+  // 只让「移除指定 callback」抛错：精确命中 drain 的 error sink / close cleanup，不影响业务 listener 清理。
+  function makeRemoveThrowOnCallback(emitter: EventEmitter, cb: unknown): void {
+    const origRemove = emitter.removeListener.bind(emitter) as (...args: unknown[]) => unknown;
+    emitter.removeListener = ((ev: unknown, c: unknown): unknown => {
+      if (c === cb) throw new Error(`injected removeListener(${String(ev)}) failure`);
+      return origRemove(ev, c);
+    }) as unknown as typeof emitter.removeListener;
+  }
+
+  it('request 创建后立即安装 named request drain；业务终态后 drain 保留至 close，close 后归零', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const req = h.targets()[0]!.request;
+    // 创建后立即安装：error sink + close cleanup，业务 listener 随后
+    expect(namesOf(req, 'error')).toEqual(['requestErrorDrain', 'onRequestError']);
+    expect(namesOf(req, 'close')).toEqual(['requestCloseCleanup']);
+    expect(req.listenerCount('response')).toBe(1); // 业务 onResponse
+    expect(req.listenerCount('timeout')).toBe(1); // 业务 onRequestTimeout
+    clock.advanceTo(30_000); // 同步终态：cleanup 同步执行，request.destroy 调度异步 error+close
+    // 终态同步后、request close 前：业务 listener 已归零，drain 仍保留
+    expect(req.listenerCount('response')).toBe(0);
+    expect(req.listenerCount('timeout')).toBe(0);
+    expect(req.listenerCount('error')).toBe(1); // 仅 requestErrorDrain
+    expect(req.listenerCount('close')).toBe(1); // 仅 requestCloseCleanup
+    expect(namesOf(req, 'error')).toEqual(['requestErrorDrain']);
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    // close 后 drain 归零；异步 destroy error 由 drain 吸收
+    expect(req.listenerCount('error')).toBe(0);
+    expect(req.listenerCount('close')).toBe(0);
+    expect(req.listenerCount('response')).toBe(0);
+    expect(req.listenerCount('timeout')).toBe(0);
+  });
+
+  it('response 一经交付先装 named response drain，再进 body reader；close 后 drain 归零', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = h.targets()[0]!.openResponse(200, {});
+    // 交付同步：drain 先装（error/close），body reader 业务 listener 随后
+    expect(namesOf(res, 'error')).toEqual(['responseErrorDrain', 'onSourceError']);
+    expect(namesOf(res, 'close')).toEqual(['responseCloseCleanup']);
+    expect(res.listenerCount('data')).toBe(1);
+    expect(res.listenerCount('end')).toBe(1);
+    expect(res.listenerCount('aborted')).toBe(1);
+    clock.advanceTo(30_000);
+    // 终态同步后、close 前：业务 listener 归零，drain 仍保留
+    expect(res.listenerCount('data')).toBe(0);
+    expect(res.listenerCount('end')).toBe(0);
+    expect(res.listenerCount('aborted')).toBe(0);
+    expect(res.listenerCount('error')).toBe(1); // 仅 responseErrorDrain
+    expect(res.listenerCount('close')).toBe(1); // 仅 responseCloseCleanup
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    // close 后 drain 归零
+    expect(res.listenerCount('error')).toBe(0);
+    expect(res.listenerCount('close')).toBe(0);
+  });
+
+  it('HEAD/redirect discard 路径同样先装 response drain；close 后归零', async () => {
+    const h = createHarness();
+    const p = h.stack.target.head({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = h.targets()[0]!.openResponse(200, {});
+    expect(namesOf(res, 'error')[0]).toBe('responseErrorDrain');
+    expect(res.listenerCount('data')).toBe(0); // HEAD 不接 body reader
+    const r = await p;
+    expect(r.kind).toBe('ok');
+    expect(res.listenerCount('error')).toBe(0);
+    expect(res.listenerCount('close')).toBe(0);
+  });
+
+  it('确定性敌手 seam：强制异步 aborted → error → close；error 由 product-owned drain 吸收并 close 归零（非真实 Node 必然顺序）', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const t = trackUnhandled();
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const res = h.targets()[0]!.openResponse(200, {});
+      res.adversaryError = new Error('adversary ECONNRESET');
+      clock.advanceTo(30_000);
+      // 终态同步后：业务 listener 已归零，drain 保留；强制 error 即将被 drain 接收
+      expect(res.listenerCount('error')).toBe(1); // 仅 responseErrorDrain
+      const r = await promise;
+      expect(r.kind).toBe('failed');
+      // forced aborted → error → close：error 由 drain 吸收，close 后归零，零未处理异常
+      expect(res.listenerCount('error')).toBe(0);
+      expect(res.listenerCount('close')).toBe(0);
+      expect(res.destroyed).toBe(true);
+      expect(t.unhandled.length).toBe(0);
+    } finally {
+      t.detach();
+    }
+  });
+
+  it('never-close seam：业务 Promise 已结算，零 timer/AbortSignal/正文/解压器/业务闭包；仅 emitter-local drain pair 保留', async () => {
+    const clock = new FakeClock(0);
+    const controller = new AbortController();
+    const inflaters: Gunzip[] = [];
+    const h = createHarness({
+      clock,
+      createInflater: (_e, max) => {
+        const s = createGunzip({ maxOutputLength: max });
+        inflaters.push(s);
+        return s;
+      },
+    });
+    const promise = h.stack.target.get({
+      url: 'https://example.com/feed',
+      purpose: 'feed',
+      signal: controller.signal,
+    });
+    await flush();
+    const req = h.targets()[0]!.request;
+    const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
+    req.neverClose = true; // request destroy 不投递 close
+    res.neverClose = true; // response destroy 不投递 close
+    clock.advanceTo(30_000);
+    const r = await promise;
+    expect(r.kind).toBe('failed');
+    // 业务终态：timer 0、inflater 已销毁、业务 listener 0
+    expect(clock.pendingTimerCount()).toBe(0);
+    expect(inflaters.length).toBe(1);
+    expect(inflaters[0]!.destroyed).toBe(true);
+    expect(req.listenerCount('response')).toBe(0);
+    expect(req.listenerCount('timeout')).toBe(0);
+    for (const ev of ['data', 'end', 'aborted'] as const) {
+      expect(res.listenerCount(ev)).toBe(0);
+    }
+    // 仅保留 emitter-local drain pair（close 永不到达 → 随不可达 transport GC）
+    expect(req.listenerCount('error')).toBe(1);
+    expect(req.listenerCount('close')).toBe(1);
+    expect(res.listenerCount('error')).toBe(1);
+    expect(res.listenerCount('close')).toBe(1);
+    expect(namesOf(req, 'error')).toEqual(['requestErrorDrain']);
+    expect(namesOf(res, 'error')).toEqual(['responseErrorDrain']);
+    // AbortSignal listener 已移除：终态后 abort 不再触发任何业务副作用
+    controller.abort();
+    await flush();
+    expect(r.kind).toBe('failed');
+    expect(clock.pendingTimerCount()).toBe(0);
+    expect(req.listenerCount('error')).toBe(1); // 仍只 drain，无新业务 listener
+  });
+
+  it('close 自清理后重复调用保存的 drain callback 幂等、零业务副作用', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const t = trackUnhandled();
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const req = h.targets()[0]!.request;
+      const res = h.targets()[0]!.openResponse(200, {});
+      const reqCloseCb = req.listeners('close')[0] as () => void;
+      const reqErrorSink = req.listeners('error')[0] as (err: Error) => void;
+      const resCloseCb = res.listeners('close')[0] as () => void;
+      const resErrorSink = res.listeners('error')[0] as (err: Error) => void;
+      expect((reqErrorSink as { name?: string }).name).toBe('requestErrorDrain');
+      expect((resErrorSink as { name?: string }).name).toBe('responseErrorDrain');
+      clock.advanceTo(30_000);
+      const r = await promise;
+      expect(r.kind).toBe('failed');
+      // close 后 drain 已自清理
+      expect(req.listenerCount('error')).toBe(0);
+      expect(req.listenerCount('close')).toBe(0);
+      expect(res.listenerCount('error')).toBe(0);
+      expect(res.listenerCount('close')).toBe(0);
+      // 保存的 callback 重复调用幂等：纯 no-op，零业务副作用、零未处理异常
+      reqCloseCb();
+      reqCloseCb();
+      resCloseCb();
+      resCloseCb();
+      reqErrorSink(new Error('late'));
+      resErrorSink(new Error('late'));
+      await flush();
+      expect(r.kind).toBe('failed');
+      expect(t.unhandled.length).toBe(0);
+    } finally {
+      t.detach();
+    }
+  });
+
+  it('request close cleanup：removeListener(error sink) 抛错不阻止 removeListener(close)，零未处理异常', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const t = trackUnhandled();
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const req = h.targets()[0]!.request;
+      const drainSink = req.listeners('error')[0]; // requestErrorDrain（先装）
+      makeRemoveThrowOnCallback(req, drainSink);
+      clock.advanceTo(30_000);
+      const r = await promise;
+      expect(r.kind).toBe('failed');
+      // error sink 移除抛错（隔离捕获）；close cleanup 仍成功移除自身 close listener
+      expect(req.listenerCount('error')).toBe(1); // 泄漏的 requestErrorDrain（remove 抛错）
+      expect(req.listenerCount('close')).toBe(0);
+      expect(t.unhandled.length).toBe(0);
+    } finally {
+      t.detach();
+    }
+  });
+
+  it('request close cleanup：removeListener(close cleanup) 抛错不阻止 removeListener(error)，零未处理异常', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const t = trackUnhandled();
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const req = h.targets()[0]!.request;
+      const drainCloseCb = req.listeners('close')[0]; // requestCloseCleanup
+      makeRemoveThrowOnCallback(req, drainCloseCb);
+      clock.advanceTo(30_000);
+      const r = await promise;
+      expect(r.kind).toBe('failed');
+      // close cleanup 自身移除抛错（隔离捕获）；error sink 仍成功移除
+      expect(req.listenerCount('error')).toBe(0);
+      expect(req.listenerCount('close')).toBe(1); // 泄漏的 requestCloseCleanup（remove 抛错）
+      expect(t.unhandled.length).toBe(0);
+    } finally {
+      t.detach();
+    }
+  });
+
+  it('response close cleanup：removeListener(error sink) 抛错不阻止 removeListener(close)，零未处理异常', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const t = trackUnhandled();
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const res = h.targets()[0]!.openResponse(200, {});
+      const drainSink = res.listeners('error')[0]; // responseErrorDrain（先装）
+      makeRemoveThrowOnCallback(res, drainSink);
+      clock.advanceTo(30_000);
+      const r = await promise;
+      expect(r.kind).toBe('failed');
+      expect(res.listenerCount('error')).toBe(1); // 泄漏的 responseErrorDrain（remove 抛错）
+      expect(res.listenerCount('close')).toBe(0);
+      expect(t.unhandled.length).toBe(0);
+    } finally {
+      t.detach();
+    }
+  });
+
+  it('response close cleanup：removeListener(close cleanup) 抛错不阻止 removeListener(error)，零未处理异常', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const t = trackUnhandled();
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const res = h.targets()[0]!.openResponse(200, {});
+      const drainCloseCb = res.listeners('close')[0]; // responseCloseCleanup
+      makeRemoveThrowOnCallback(res, drainCloseCb);
+      clock.advanceTo(30_000);
+      const r = await promise;
+      expect(r.kind).toBe('failed');
+      expect(res.listenerCount('error')).toBe(0);
+      expect(res.listenerCount('close')).toBe(1); // 泄漏的 responseCloseCleanup（remove 抛错）
+      expect(t.unhandled.length).toBe(0);
+    } finally {
+      t.detach();
+    }
+  });
+
+  it('request.destroy 同步抛错：至多一次受控 abort fallback；终态一次、drain close 后归零', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const t = trackUnhandled();
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const req = h.targets()[0]!.request;
+      const res = h.targets()[0]!.openResponse(200, {});
+      req.failDestroy = true;
+      const origAbort = req.abort.bind(req);
+      let abortCalls = 0;
+      req.abort = (): void => {
+        abortCalls += 1;
+        origAbort();
+      };
+      clock.advanceTo(30_000);
+      const r = await promise;
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+      expect(abortCalls).toBe(1); // 至多一次 abort fallback
+      expect(req.listenerCount('error')).toBe(0); // abort → close → drain 归零
+      expect(req.listenerCount('close')).toBe(0);
+      expect(res.listenerCount('error')).toBe(0); // response destroy + close 正常
+      expect(res.listenerCount('close')).toBe(0);
+      expect(clock.pendingTimerCount()).toBe(0);
+      expect(t.unhandled.length).toBe(0);
+    } finally {
+      t.detach();
+    }
+  });
+
+  it('response.destroy 缺失 → drain 先装后 resume 排空；close 后 drain 归零', async () => {
+    const h = createHarness();
+    const p = h.stack.target.head({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = new FakeIncoming();
+    res.statusCode = 200;
+    res.headers = {};
+    res.destroy = undefined as unknown as FakeIncoming['destroy'];
+    const origResume = res.resume.bind(res);
+    let resumed = 0;
+    res.resume = ((): void => {
+      resumed += 1;
+      origResume();
+    }) as unknown as FakeIncoming['resume'];
+    h.targets()[0]!.request.emit('response', res);
+    // drain 先装，destroy 缺失 → resume 排空
+    expect(namesOf(res, 'error')[0]).toBe('responseErrorDrain');
+    expect(resumed).toBe(1);
+    const r = await p;
+    expect(r.kind).toBe('ok');
+    expect(res.listenerCount('error')).toBe(0);
+    expect(res.listenerCount('close')).toBe(0);
+  });
+
+  it('response.destroy 同步抛错 → drain 先装后 resume 排空；close 后 drain 归零', async () => {
+    const h = createHarness();
+    const p = h.stack.target.head({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    const res = new FakeIncoming();
+    res.statusCode = 200;
+    res.headers = {};
+    res.failDestroy = true;
+    const origResume = res.resume.bind(res);
+    let resumed = 0;
+    res.resume = ((): void => {
+      resumed += 1;
+      origResume();
+    }) as unknown as FakeIncoming['resume'];
+    h.targets()[0]!.request.emit('response', res);
+    expect(namesOf(res, 'error')[0]).toBe('responseErrorDrain');
+    expect(resumed).toBe(1);
+    const r = await p;
+    expect(r.kind).toBe('ok');
+    expect(res.listenerCount('error')).toBe(0);
+    expect(res.listenerCount('close')).toBe(0);
+  });
+
+  it('call-stack guard：request.destroy 内同步 late response 先装 drain 再 destroy，close 后归零', async () => {
+    const clock = new FakeClock(0);
+    const h = createHarness({ clock });
+    const t = trackUnhandled();
+    try {
+      const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const req = h.targets()[0]!.request;
+      const syncRes = new FakeIncoming();
+      syncRes.statusCode = 200;
+      syncRes.headers = {};
+      req.emitResponseOnDestroy = syncRes; // destroy() 内同步发出 response
+      clock.advanceTo(30_000);
+      // guard 先为 sync response 安装 drain，再 destroy
+      expect(syncRes.destroyed).toBe(true);
+      expect(namesOf(syncRes, 'error')[0]).toBe('responseErrorDrain');
+      expect(req.listenerCount('response')).toBe(0); // guard 已移除
+      const r = await promise;
+      expect(r.kind).toBe('failed');
+      // sync response close 后 drain 归零；request drain 也随 close 归零
+      expect(syncRes.listenerCount('error')).toBe(0);
+      expect(syncRes.listenerCount('close')).toBe(0);
+      expect(req.listenerCount('error')).toBe(0);
+      expect(req.listenerCount('close')).toBe(0);
+      expect(clock.pendingTimerCount()).toBe(0);
+      expect(t.unhandled.length).toBe(0);
+    } finally {
+      t.detach();
+    }
+  });
+
+  it('success/deadline/abort/request-error/body-error/budget-error 每类终态恰好结算一次且迟到事件零改态', async () => {
+    // success
+    {
+      const h = createHarness();
+      const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      h.targets()[0]!.respond(200, {}, '<rss/>');
+      const r = await p;
+      expect(r.kind).toBe('ok');
+      // 迟到事件零改态（request 已 close：error 不再被真实 Node 发出，只验证其它迟到事件不触发二次结算）
+      h.targets()[0]!.timeout();
+      h.targets()[0]!.openResponse(200, {});
+      await flush();
+      expect(r.kind).toBe('ok');
+    }
+    // deadline
+    {
+      const clock = new FakeClock(0);
+      const h = createHarness({ clock });
+      const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      clock.advanceTo(30_000);
+      const r = await p;
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+      h.targets()[0]!.timeout();
+      h.targets()[0]!.openResponse(200, {});
+      await flush();
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    }
+    // abort
+    {
+      const controller = new AbortController();
+      const h = createHarness();
+      const p = h.stack.target.get({
+        url: 'https://example.com/feed',
+        purpose: 'feed',
+        signal: controller.signal,
+      });
+      await flush();
+      controller.abort();
+      const r = await p;
+      expect(r.kind).toBe('aborted');
+      h.targets()[0]!.timeout();
+      h.targets()[0]!.openResponse(200, {});
+      await flush();
+      expect(r.kind).toBe('aborted');
+    }
+    // request-error
+    {
+      const h = createHarness();
+      const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      h.targets()[0]!.error('ECONNREFUSED');
+      const r = await p;
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+      h.targets()[0]!.timeout();
+      h.targets()[0]!.openResponse(200, {});
+      await flush();
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+    }
+    // body-error（压缩流中途 error → stream-error 终态一次；response close 后迟到 data 零改态）
+    {
+      const h = createHarness();
+      const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const res = h.targets()[0]!.openResponse(200, { 'content-encoding': 'gzip' });
+      res.emit('error', new Error('mid-stream'));
+      const r = await p;
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('unavailable');
+      res.emit('data', Buffer.from('late', 'utf8'));
+      await flush();
+      expect(r.kind).toBe('failed');
+    }
+    // budget-error
+    {
+      const h = createHarness();
+      const p = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+      await flush();
+      const res = h.targets()[0]!.openResponse(200, {});
+      res.emit('data', Buffer.alloc(MAX_FEED_RESPONSE_BYTES + 1, 0x61));
+      const r = await p;
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('budget_exceeded');
+      res.emit('data', Buffer.alloc(10, 0x61));
+      await flush();
+      expect(r.kind).toBe('failed');
+      if (r.kind === 'failed') expect(r.health).toBe('budget_exceeded');
     }
   });
 });

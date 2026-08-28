@@ -506,11 +506,12 @@ D3-R4 有界修复候选处理独立安全 Reviewer 对 D3-R3 HEAD `be33291` 的
    零正文 listener、零新 socket，处理后再自移除。deadline 与 abort 先于 response 两个迟到
    response oracle 均证明已销毁。**矛盾说明**：该路径下 cleanup 返回时 request 的 response
    listener 仍为 1，并非全 0——与第 3 点「首终态后 listenerCount 全 0」表述冲突；R4 记录中
-   「所有首终态 listener=0」与「pre-response 保留 listener」是自相矛盾的陈述，由 D3-R5 修正为
-   「首终态无条件移除 request 全部 listener，不保留迟到守卫」。
-5. **测试 harness 忠实化**：`FakeIncoming` destroy 后不再投递任何事件（模拟真实流，
-   保证终态后发送 error 零未处理异常）；`FakeRequest.destroy()` 无 error 参数不再投递
-   'error'（模拟真实 ClientRequest）。`CapturedRequest` 暴露底层 `request` 供
+   「所有首终态 listener=0」与「pre-response 保留 listener」是自相矛盾的陈述；D3-R5 当时改成
+   「首终态无条件移除 request 全部 listener，不保留迟到守卫」，但该 R5 要求又被 2026-08-28 真实
+   Node 24 transport 证伪，当前以本文 REPLAN 两阶段终态为准。
+5. **历史 harness 假设（已失效）**：R4/R5 曾让 `FakeIncoming` destroy 后不再投递任何事件，并让
+   `FakeRequest.destroy()` 无 error 参数时不投递 `error`；这两项并不忠实于 Node 24，已由下方 REPLAN
+   明确废止。`CapturedRequest` 暴露底层 `request` 供
    listenerCount 断言。
 6. **保持既有修复**：真实 RobotsPolicy 强制装配、`createInflater` 窄 seam、absolute
    effectiveDeadline 与 IPv6 robots authority 修复均未改动；未用 any/ts-ignore/
@@ -532,15 +533,23 @@ D3-R4 有界修复候选处理独立安全 Reviewer 对 D3-R3 HEAD `be33291` 的
 
 ## D3-R5 修复记录（2026-08-27，Repair Worker，Reviewer 待复验）
 
-D3-R5 有界修复候选处理独立安全 Reviewer 对 D3-R4 HEAD `0df9bae` 的三类发现：首终态后 request 的
-response/error/timeout listener 必须无条件立即为 0；timer/AbortSignal/request/response/inflater
+D3-R5 有界修复候选处理独立安全 Reviewer 对 D3-R4 HEAD `0df9bae` 的三类发现：R5 **当时要求**首终态后
+request 的 response/error/timeout listener 无条件立即为 0；timer/AbortSignal/request/response/inflater
 listener 与资源清理必须逐项异常隔离（任一 remove/destroy/clear 抛错不阻塞剩余清理）；并修正 R4
 记录中的 HEAD/范围/amend/listener 事实。全部先红后绿，未删除/放宽既有有效断言，未改动 R2/R3/R4
 冻结契约。候选未 push；baseline `0df9bae`，最终 repair HEAD 以 Git 为准（本记录不硬编码自报 SHA）。
 
+> **R5 事实修正（2026-08-28 生命周期 REPLAN）**：上述“首终态后 request 的 response/error/timeout
+> listener 必须无条件立即为 0”已被 Node 24.18.0 官方事件顺序与 localhost 子进程实测证伪。无参数
+> `ClientRequest.destroy()` 在 pre-socket/pre-response 路径会异步发出 `error ECONNRESET → close`；先移除
+> error listener 会形成未监听 EventEmitter error、触发 `uncaughtException` 并使子进程 exit 1。R5 的
+> FakeRequest“不带参数 destroy 不发 error”和只监听 unhandledRejection 的 oracle 产生假绿。R5 以下内容
+> 保留为历史实现记录，不再是当前生命周期契约；当前契约以 detailed-design §6.1/#S6-043、
+> threat-model §3.6/WRT-04/§7.1 和本文下方 Replacement Execution Contract 为准。
+
 ### 修复项与证据
 
-1. **首终态无条件移除 request 全部 listener**：`cleanup()` 无条件移除 request 的
+1. **历史实现（已失效）：首终态无条件移除 request 全部 listener**：`cleanup()` 无条件移除 request 的
    response/error/timeout listener，不再以「保留 response listener 作为迟到守卫」实现迟到安全
    （R4 守卫已被取代）。仅覆盖 `request.destroy()` 内同步发出 response 的竞态：destroy 调用期间
    暂时保留 `onResponse`（若同步发出则由其立即 `safeDiscardResponse` 并自移除），通过 `finally`
@@ -554,8 +563,8 @@ listener 与资源清理必须逐项异常隔离（任一 remove/destroy/clear �
    sink 安装与 resume 分别保护。任一单项抛错继续剩余清理，零未处理异常。
 3. **终态后 synthetic 事件零副作用**：终态后的 synthetic response/data/end/error 不改变结果、
    零新 socket、零 buffer/inflater 驱动、零未处理异常；不再把迟到 response 的销毁依赖在一个
-   终态后仍存活的 listener 上（request 已 destroy，真实 transport 不会在 destroy 后投递
-   response）。
+   终态后仍存活的 listener 上；R5 同时错误假定 request destroy 后不会再投递任何 transport error，
+   该假定已由本 REPLAN 的真实 Node `ECONNRESET → close` 证伪。
 
 ### 红→绿证据（baseline 0df9bae 上先红）
 
@@ -574,3 +583,296 @@ listener 与资源清理必须逐项异常隔离（任一 remove/destroy/clear �
 - 依赖版本不变、D4/D5 零接线；敏感信息/临时残留/工作区扫描干净；仅改动 EXPECTED SCOPE
   两个代码/测试文件 + 本节任务文档，共三个文件。
 - 交接新的独立安全 Reviewer；不更新 progress、不生成 D4、不 push。
+
+## D3 Public HTTP 生命周期 REPLAN（2026-08-28，Contract Reviewer 待审）
+
+本轮是 D3-R3/R4/R5 同一 request/response/listener 生命周期根因连续失败后的正式 REPLAN。Planner
+baseline 为 `e412c12228b127ecaa73619b0c9edd6eced3a34c`；只修订三份正式文档，零产品代码/测试、零
+progress、零 commit/push。Contract Reviewer `PASS` 前禁止继续实现。
+
+### Node 24.18.0 调查与事实边界
+
+官方依据：
+
+- `request.destroy([error])` 会销毁 request，可选择发 error，并会发 close；ClientRequest 事件顺序表进一步
+  明确：socket 分配前/连接成功前 destroy 为 `error ECONNRESET → close`，response 后 destroy 的
+  aborted/error/close 位于 IncomingMessage：
+  <https://nodejs.org/download/release/v24.18.0/docs/api/http.html#requestdestroyerror>、
+  <https://nodejs.org/download/release/v24.18.0/docs/api/http.html#http_client_request>；
+- 未监听 EventEmitter `error` 会抛出并使进程退出：
+  <https://nodejs.org/download/release/v24.18.0/docs/api/events.html#error-events>；
+- `uncaughtExceptionMonitor` 只观察、不改变默认崩溃行为，不能用它恢复进程：
+  <https://nodejs.org/download/release/v24.18.0/docs/api/process.html#event-uncaughtexceptionmonitor>。
+
+Planner 使用真实 Node `v24.18.0` + localhost `node:http`、`agent:false` 的最小探针观察到：
+
+| 路径                                 | response error listener 条件          | 实际事件序列（调用事件省略参数）                                                                                                    |
+| ------------------------------------ | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| destroy，socket 分配前               | N/A                                   | destroy → request error `ECONNRESET` → request close                                                                                |
+| destroy，socket 已分配/response 前   | N/A                                   | request socket → destroy → request error `ECONNRESET` → request close                                                               |
+| destroy，response 已交付（原探针）   | 已安装具名 response error observer    | request socket → response → destroy → response aborted → request close → response error `ECONNRESET` → response close               |
+| destroy，response 已交付（对照探针） | destroy 前移除最后一个 error listener | request socket → response → destroy → response aborted → request close → response close                                             |
+| abort，socket 分配前                 | N/A                                   | abort → request close → request abort（本次实测次序；官方表列 abort → close）                                                       |
+| abort，socket 已分配/response 前     | N/A                                   | request socket → abort → request abort → request error `ECONNRESET` → request close                                                 |
+| abort，response 已交付（原探针）     | 已安装具名 response error observer    | request socket → response → abort → request abort → response aborted → request close → response error `ECONNRESET` → response close |
+| abort，response 已交付（对照探针）   | abort 前移除最后一个 error listener   | request socket → response → abort → request abort → response aborted → request close → response close                               |
+
+另一个不安装 request error sink、但安装 `uncaughtExceptionMonitor` 与 `unhandledRejection` 观察器的受控
+子进程，在 pre-response destroy 后输出 `MONITOR origin=uncaughtException code=ECONNRESET` 并 exit 1；同一
+路径保留最小 request error sink、在 close 移除 error/close drain listener 后输出 listener count `0/0` 并
+exit 0。前者没有 `UNHANDLED_REJECTION`：未监听 EventEmitter error 是异步抛出的 uncaught exception，
+不是 Promise unhandledRejection。现有 73 项 FakeRequest 聚焦测试仍全绿，证明旧夹具不能甄别真实缺陷。
+
+response-after 对照探针两路均 exit 0，且 `uncaughtExceptionMonitor`/unhandledRejection 均未命中。原
+destroy/abort 探针安装的 response error observer 会使 Node 24.18.0 当前实现发出并交付 response
+`ECONNRESET`；移除最后一个 response error listener 后，当前实现可能直接从 aborted 到 close。因此测试
+observer 不是透明观察者，旧 R5 在真实 response-after 子进程中不保证 crash、monitor 命中或非零退出。
+这不意味着 IncomingMessage drain 可删除：产品必须拥有自己的 named response drain，用于接收实际发出的
+error、通过确定性敌手 seam、覆盖未来 Node/transport 差异，并与 request drain 形成统一可清理生命周期。
+
+### 方案评估与冻结选择
+
+| 方案 | 行为                                                                                                           | 结论                                                                                                                                              |
+| ---- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A    | 业务首终态在同步 cleanup/destroy/fallback 后立即结算；request 与每个已交付 response 各保留 emitter-local drain | **选择**。不等待 transport、不增加 drain timer、不破坏 absolute deadline；两个 emitter 实际发出的 error 都有安全接收点。                          |
+| B    | 两阶段内部状态机等待 error/close 或另一个有界 drain timeout 后才结算业务 Promise                               | **拒绝**。close 可永不到达；直接等待会无界挂住调用方，另设 drain timer 会在业务终态后重新持有 timer，并可能把结算推过 #S6-041 absolute deadline。 |
+
+冻结协议：业务终态与 transport drain 状态完全分离。ClientRequest 创建成功后立即安装 named request error
+sink + close cleanup；每个 IncomingMessage 一经交付，必须在 body reader、discard、destroy 或 resume 前
+安装自己的 named response error sink + close cleanup。两类 sink 从安装起对各自 emitter 的所有 error 都
+无条件 no-op，业务终态前由独立 business error handler 决定业务结果。业务首终态立即清除全部**业务**
+listener/timer/AbortSignal/body/inflater 状态并销毁资源，在同步 cleanup/destroy/fallback 后立即结算 Promise，
+不等待 drain、不增加 drain timer。request/response close 各自幂等、逐项异常隔离地移除本 emitter 的 drain
+pair；若 transport 在 request close 后发出 response `ECONNRESET`，必须由 response drain 接收。request drain
+只闭包 request 及其两个 callback；response drain 只闭包对应 response 及其两个 callback；均不闭包 Promise、业务结果、
+timer、AbortSignal、正文/body buffer、inflater、另一 emitter、process/global listener 或 registry。close
+永不到达时仅相应 emitter-local drain pair 可随不可达 transport 对象 GC。destroy 同步抛错只允许一次受控
+abort fallback；destroy 调用栈内同步 response 由 finally 必移除的 call-stack discard guard 捕获，guard 必须
+先装 response drain 再 destroy，只有 destroy 缺失/抛错才 resume，且在 Promise 结算前归零。
+
+### D3-R6 Replacement Execution Contract
+
+#### TASK
+
+按已冻结的 #S6-043 两阶段协议修复 D3 PublicWatchHttpClient 终态生命周期与测试盲区。只处理 request/
+response/inflater 的 business terminal，以及 request/IncomingMessage 两类 emitter-local transport drain；
+不得重开网络策略、parser、D4/D5 或其它 Stage 设计。
+
+#### BASELINE
+
+- 精确 SHA：`e412c12228b127ecaa73619b0c9edd6eced3a34c`，分支 `main`。
+- Planner 接管时工作区干净；REPLAN 后工作区只允许本次三份正式文档的未提交修改。新的独立 Contract
+  Reviewer 必须先审核该 diff 并给出 `PASS`；Executor 开工时 HEAD 仍须等于本 SHA，并保留已批准文档 diff。
+
+#### GOAL
+
+实现可由真实 Node 24.18.0 transport、产品结构断言和确定性敌手 seam 共同证明的两阶段终态：首个业务结果
+单次所有权、立即零新业务副作用/重型业务资源，Promise 在同步 cleanup/destroy/fallback 后立即结算且不等待
+close；request/response 实际发出的迟到 error 分别由所属 emitter 的最小 drain 安全吸收，各自 close 后 drain
+listener 归零；零 uncaughtException、零 unhandledRejection、零多次 settlement。
+
+#### NON-GOALS
+
+- 不修改 Public HTTP URL/DNS/IPv6/robots/redirect/deadline/parser 的既定语义或预算；
+- 不安装/升级依赖，不改 package/lockfile；
+- 不进入 D4/D5，不改 Scheduler/HostRequestGate/DB/UI/IPC/Provider；
+- 不更新 `doc/tasks/progress.md`，不 close D3，不 push；
+- 不增加 process 级 `uncaughtException` 兜底，不用等待 close 或新增 drain timer 伪装修复。
+
+#### AUTHORITATIVE SOURCES
+
+- `AGENTS.md` §2.3、§2.5、§3.1；
+- `doc/stage6/detailed-design.md` §6.1、§15.1、#S6-041、#S6-043；
+- `doc/stage6/threat-model.md` WRT-04、§3.6、§7.1；
+- 本任务文档的本 REPLAN/Replacement Contract；
+- Node 24.18.0 官方 HTTP ClientRequest、Events error、process uncaughtExceptionMonitor 文档。
+
+#### CURRENT VERIFIED STATE
+
+- R5 `cleanup()` 在 `request.destroy()` 前移除业务也是唯一的 request error listener；真实 Node 随后异步
+  发 `ECONNRESET` 时无接收点。
+- R5 FakeRequest 明确把无参数 destroy 建模成“不发 error”，FakeIncoming destroy 后抑制所有事件；测试只
+  收集 unhandledRejection。当前聚焦 73/73 绿是已证实假绿，不构成 transport 生命周期证据。
+- Node 24.18.0 localhost 与子进程结果见上表。pre-socket/pre-response 的 request destroy 在旧 R5 上会因
+  未处理 request `ECONNRESET` 造成 monitor 命中或非零退出，这是必须保留的真实 crash 红态。
+- response-after 的原 destroy/abort 探针安装了 response error listener，因而观察到 aborted → request close →
+  response `ECONNRESET` → response close；移除最后一个 response error listener 的对照探针只观察到 aborted →
+  request close → response close，两路均 exit 0 且 monitor/rejection 为零。测试 observer 会改变当前 Node 的
+  条件发射，不能用于要求旧 R5 在真实 response-after 必然崩溃。
+- R5 产品没有 product-owned named IncomingMessage drain、response business/drain listener 分层或 close
+  自清理；该 response-after 缺陷必须由产品结构红态和强制 asynchronous error 的确定性敌手 seam 甄别。
+  request drain 在 request close 已自清理，仍不能替 response emitter 接收实际发出的 error。
+- R2–R5 的安全工厂、IPv6、robots、absolute deadline、逐项异常隔离中与本冲突无关的部分仍为回归基线。
+
+#### FIXED DECISIONS
+
+1. **两阶段状态**：business settlement latch 与 emitter-local transport drain 状态分离；模型、网页和调用者
+   不可改写。request drain 与每个已交付 IncomingMessage 的 response drain 都不是业务 listener。
+2. **立即结算**：业务首终态设置 latch、完成同步 cleanup/destroy/fallback 后立即 resolve；永不等待
+   transport error/close，永不建立 drain timer。
+3. **Request drain**：ClientRequest 创建成功后立即安装独立 named error sink + close cleanup listener；
+   业务终态前另有独立 request business error handler。drain sink 从安装起对所有 request error 都无条件
+   no-op，不读取 settlement；业务 handler 在业务终态移除后 drain 保留至 request close。drain 只闭包
+   request 和两个 callback，不得引用 finish/resolve/reject、业务结果、timer/AbortSignal、body buffer、
+   response/inflater 或全局 registry/process listener。
+4. **IncomingMessage drain**：每个 response 一经交付，必须先安装独立 named error sink + close cleanup
+   listener，再接入 body reader、discard、destroy 或 resume；业务终态前另有独立 response business error
+   handler。drain sink 从安装起对所有 response error 都无条件 no-op，不读取 settlement；移除业务 listener
+   后保留至 response close；若 transport 在 aborted、request close 之后发出异步 `ECONNRESET`，必须由该
+   drain 接收。drain 只闭包该 response 和两个 callback，不得闭包 settlement、业务结果、timer、AbortSignal、
+   body buffer、inflater、
+   request、全局 registry 或 process listener。
+5. **close 自清理**：request/response close cleanup 都必须幂等移除本 emitter 的 error sink + close listener；
+   每次 `removeListener` 单独 try/catch，一个 remove 抛错不能形成 uncaught exception 或阻止另一个清理。
+   已保存 callback 在清理后重复调用必须幂等。任一 emitter 永不 close 都不阻塞 Promise或保留 timer、正文、
+   inflater、业务闭包；仅对应 emitter 自包含 drain pair 可随不可达 transport 对象 GC。
+6. **同步异常/response discard**：request destroy 同步抛错不改结果，最多一次受控 abort fallback；fallback
+   返回/抛错后立即结算。destroy 内同步 response 仅经 call-stack discard guard 捕获；收到 response 后先
+   安装 response drain，再调用 response destroy，仅在 destroy 缺失或抛错时 resume。禁止匿名、无法由 close
+   清理的 response error listener；guard 在 request.destroy()/abort fallback 调用栈 finally 和 Promise 结算
+   前归零，不得创建 body reader/inflater。
+7. **所有权/顺序**：先 latch → 禁止新业务 → 清 timer/AbortSignal → detach/release body、response、inflater
+   和 request 业务 listener → 确认对应 request/response drain 已安装 → destroy inflater/response/request 或
+   受控 fallback → 清空业务闭包内重型引用 → resolve。每个清理动作独立 try/catch；任何一步失败不跳过后续
+   动作。
+8. **测试权威**：真实 Node 24 pre-response transport + 子进程退出码/uncaughtExceptionMonitor 是 request
+   crash 红态 oracle；response-after 由真实绿态、product-owned drain 结构断言和确定性敌手 seam 共同证明。
+   FakeRequest/FakeIncoming 必须提供强制异步 response error/close 的敌手路径，不得用 destroy 后零投递制造
+   假绿，也不得把该 seam 冒充真实 Node 必然顺序。测试 observer 必须与 product-owned named drain 区分；
+   listenerCount、callback 身份和闭包可达性断言必须排除 observer，observer 不得吞掉产品缺陷。
+
+#### INVARIANTS / RED LINES
+
+- 首个 success/deadline/abort/request-error/body-error/budget-error 恰好结算一次；迟到事件零 retry、零新
+  DNS/socket/redirect、零正文/解压/结果变化。
+- 业务终态后业务 listener、timer、AbortSignal、body buffer、inflater 和业务闭包中的 response/request 重型
+  引用立即归零；允许跨事件轮保留 request drain，以及每个已交付、迟到或需要 discard 的 IncomingMessage
+  自身 response drain。
+- 两类 drain 均零业务副作用、零敌手正文日志、零 process/global listener/registry；分别在所属 emitter close
+  后自身归零。close 永不到达也不阻塞 Promise、不持有 timer/正文/inflater/业务闭包或另一 emitter。
+- 禁止 `any`、ts-ignore/nocheck、eslint-disable、删除/跳过/放宽有效断言、process 级异常吞噬或把
+  uncaughtException 混称 unhandledRejection。
+- 保留 #S6-041 absolute deadline、robots gate、SSRF/IPv6/redirect/预算/解析器全部既有红线。
+
+#### EXPECTED SCOPE
+
+- `src/main/watch/public-watch-http-client.ts`；
+- `src/main/watch/public-watch-http-client.test.ts`；
+- 允许新增一个专用的 `src/main/watch/public-watch-http-lifecycle.integration.test.ts`，只用于真实 localhost/
+  子进程生命周期 oracle；若不新增，必须在现有测试文件内提供等价且可独立运行的真实 transport oracle；
+- 保留并在必要时仅机械同步本次已批准的三份正式文档：
+  `doc/stage6/detailed-design.md`、`doc/stage6/threat-model.md`、本任务文档。
+
+出现其它文件、需要改变导出安全工厂/公共产品接口、修改 package/progress/D4+ 时立即停止；不得自行扩面。
+
+#### IMPLEMENTATION PLAN
+
+1. 先新增真实 Node 24 localhost pre-socket/pre-response + 受控子进程红态 oracle；在 `e412c12` 产品代码上
+   证明旧 R5 因未处理 request `ECONNRESET` 导致 `uncaughtExceptionMonitor` 命中或非零退出，并保留输出证据。
+2. 为 response-after 建立独立结构红态：断言业务终态后必须存在 product-owned named IncomingMessage drain、
+   business/drain listener 正确分层且 close 自清理；listenerCount、callback 身份和闭包可达性排除测试 observer。
+   旧 R5 必须因缺少该产品结构转红，不要求真实 Node 子进程崩溃。
+3. 把 FakeRequest/FakeIncoming 生命周期改成与 Node 24 文档相符，并增加明确标注的确定性敌手 response seam，
+   强制投递 aborted → asynchronous error → close；旧 R5 因无 response drain 转红。删除“不带参数 destroy
+   不发 error”“destroy 后不投递任何事件”的错误声称，但不得把强制 seam 记录为真实 Node 必然顺序。
+4. 在 request 创建后立即装配 request drain pair；将 response 交付入口统一为先装 product-owned response
+   drain、再分派 body reader/discard/destroy/resume；把两个 drain closure 与业务 cleanup 分离。保留 call-stack
+   response discard guard，固定 destroy 缺失/抛错才 resume，并补 request destroy throw→一次 abort fallback。
+5. 逐场景转绿：real pre-socket/pre-response crash；real response-after 发或不发 error 的条件路径；正常
+   success/end、redirect/HEAD discard、request/body/budget error、sync late response、response destroy 缺失/
+   抛错、各 close cleanup 的每项 removeListener 抛错、重复 callback、never-close；逐项检查 settlement/资源/
+   业务 listener/product-owned drain，并证明测试 observer 未参与产品安全结果。
+6. 复跑 R2–R5 仍有效全部回归、Watch 聚焦/全量与项目全量门控；自审 baseline diff、清理残留，创建有界
+   local candidate commit(s)，不 push，STOP 交给新的独立安全 Reviewer。
+
+#### TEST PLAN
+
+**必须先红后绿的 oracle：**
+
+1. **真实 pre-response crash 红态**：真实 Node 24 `node:http`（不是仅 FakeRequest）经产品 request factory
+   seam 连接 localhost；pre-socket/pre-response deadline 与 AbortSignal destroy 在旧 R5 上必须因未处理 request
+   `ECONNRESET` 触发 `uncaughtExceptionMonitor`、非零退出或等价未处理 error 红态。专用子进程只安装 process
+   monitor（只观察、不恢复）并独立记录 unhandledRejection，不得添加 request error observer 掩盖缺陷；绿态
+   product-owned request drain 后 exit 0、monitor/rejection 均为零并可继续 sentinel/后续正常请求。
+2. **response-after 结构红态 + 真实条件绿态**：旧 R5 必须因业务终态后缺少 product-owned named
+   IncomingMessage drain、business/drain listener 分层错误或 close 无自清理而转红，不要求真实 Node 子进程
+   必然崩溃。真实 Node response 已交付后触发 deadline 与 AbortSignal；绿态证明业务 Promise 在同步 cleanup/
+   destroy/fallback 后立即结算、request close 清 request drain、product-owned response drain 在 destroy 前已
+   安装。若 Node 发出 response error，则由该 drain 安全吸收；无论是否发出 error，response close 后 drain
+   均为 0、子进程 exit 0、monitor/rejection 均为零。测试不得额外安装匿名 response error listener；具名测试
+   observer 仅可用于单独对照事实，且必须从 listenerCount、callback 身份和闭包可达性断言中排除，不能成为
+   产品通过的 error sink。
+3. **确定性 response 敌手 seam 红态**：FakeIncoming/transport seam 强制异步投递 aborted → error → close；
+   旧 R5 因没有 product-owned response drain 明确转红，绿态 error 由 product-owned drain 接收并在 close 后
+   归零。测试记录必须把该路径标为确定性敌手 seam，不得声称真实 Node 在无 error listener 时必然发出 error。
+4. **业务/drain 分层归零**：正常 success/end、redirect/HEAD discard、budget/body error、response 后 deadline/
+   abort 分别证明 request/response/inflater 的业务 listener 在业务终态立即归零；request drain 与每个已交付
+   response 的 product-owned drain 可跨事件轮保留，但必须分别在所属 emitter close 后归零；测试 observer
+   不计入这些 listener 数量。
+5. **destroy 内同步 late response**：request call-stack discard guard 捕获同步 response 后，先安装 response
+   drain，再 destroy；guard 在 Promise 结算前归零。response drain 可按正式例外保留至 response close；零 body
+   reader、inflater、新 DNS/socket/redirect、正文累计或业务结果变化。request destroy 同步 throw 的一次 abort
+   fallback 同样不改变结果或产生多次 settlement。
+6. **response destroy fallback**：response `destroy` 缺失与同步抛错两条 seam 都证明 response drain 已先安装，
+   之后才 `resume()` 排空；resume 后异步 error/close 安全，零匿名或无法 close-cleanup 的 listener，response
+   close 后 drain listener 为 0。destroy 成功时不得额外 resume。
+7. **close cleanup 异常隔离**：request 与 response 的 close cleanup 分别对 error sink 的 removeListener 抛错、
+   close listener 的 removeListener 抛错建立 oracle；每次 remove 都单独 try/catch，一个失败不形成 uncaught
+   exception、不阻止另一个清理，保存的 close/error callback 在清理后重复调用幂等且零业务副作用。
+8. **never-close seam**：业务 Promise 已结算；零 timer、AbortSignal、body buffer、inflater、业务闭包与 global
+   registry/process listener。仅允许对应 request 或 response emitter 自包含的 drain pair；drain 不可到达另一
+   emitter 或 settlement/业务结果。
+9. **忠实 fake 与单次终态**：FakeRequest/FakeIncoming 忠实覆盖 Node 24 已观察的异步 request/response
+   error/close，并用单独敌手模式强制 response error；禁止 destroy 后零投递，也禁止把强制模式冒充真实必然
+   顺序。success/deadline/abort/request-error/body-error/budget-error 每类 settlement counter 精确为 1；迟到
+   response/data/end/error/aborted/close 零 retry、零新网络、零正文/解压和结果变化。
+10. **既有回归**：保留全部 R2–R5 仍有效的安全工厂/零 raw 出口、IPv6、robots 512,000/512,001、RFC 9309、
+    single absolute deadline、redirect/压缩/预算与业务资源逐项异常隔离 oracle。
+
+**验证命令：**
+
+- 聚焦新增 integration/subprocess test + `public-watch-http-client.test.ts`；
+- `npm test -- --maxWorkers=1`；
+- `npm run typecheck`；`npm run lint`；`npm run format:check`；`npm run build`；
+- 与主进程生命周期风险相称的 dev + production Electron 冒烟；
+- `npm audit`、`git diff --check`、敏感信息/临时残留/范围扫描。
+
+#### ACCEPTANCE
+
+- 真实 Node 24.18.0 pre-socket/pre-response 子进程保留旧 R5 未处理 request `ECONNRESET` 的 crash/monitor/
+  非零退出红态；修复后 product-owned request drain 使其 exit 0、monitor/rejection 为零。
+- response-after 旧 R5 由 product-owned named drain 缺失、listener 分层/close 自清理结构断言和强制 error 的
+  确定性敌手 seam 明确转红，不要求真实 Node 子进程非零退出或 monitor 命中。
+- 真实 Node response-after 绿态证明业务立即结算、request close 后 request drain 为 0、response drain 在
+  destroy 前已安装；若 Node 发出 response error 则由该 drain 接收，无论是否发出 error，response close 后
+  drain 为 0，且 exit 0、uncaughtExceptionMonitor/unhandledRejection 为零。测试 observer 与 product-owned
+  drain 的身份、数量和闭包断言严格分离，不掩盖产品缺陷。
+- 业务 Promise 不等待 drain 且无 drain timer；business listener/资源立即清理；request/response drain 分别在
+  各自 close 后归零；never-close 仅保留 emitter-local pair，不保留重型/业务/全局资源。
+- 正常、discard、body/budget failure、同步 late response、destroy→resume fallback、close cleanup remove 抛错、
+  重复/迟到事件均满足既定安装/清理顺序、单次 settlement、逐项异常隔离与零业务副作用。
+- R2–R5 有效安全回归、聚焦/全量/typecheck/lint/format/build/冒烟全部通过，无弱化测试。
+- 修改范围受控；三份正式文档保持一致；不更新 progress、不进入 D4/D5、不 push。
+
+#### STOP / ESCALATE CONDITIONS
+
+- 真实 Node 24 观察到无法由当前 emitter-local request/response drain 安全承载的 error/close 顺序；
+- 需要等待 transport、增加 drain timer/process 级异常兜底、全局 request registry，或 drain 必须捕获业务/
+  重型状态、另一 emitter；
+- 需要改变 #S6-041、robots/SSRF/IPv6/工厂公共边界、D4+/package/progress 或其它正式架构；
+- 测试 oracle 与 Node 官方行为冲突、Fake seam 无法忠实模拟、同一根因本轮仍失败；
+- 发现两个长期影响显著的方案或需要用户/独立安全裁决。
+
+任一命中立即停止返回 Planner；不得继续 Repair 堆叠。
+
+#### FINAL EVIDENCE
+
+Executor 必须报告：baseline/最终 HEAD/local candidate commit(s)；红态与绿态命令/退出码；真实 localhost
+pre-socket/pre-response request crash 红态与修复后结果；response-after 有/无具名对照 observer 的条件事件序列
+及两路 exit code、uncaughtExceptionMonitor/unhandledRejection 计数；product-owned named request/response drain
+的 callback 身份、listener 分层、close 自清理、闭包可达性断言，并明确排除测试 observer；确定性敌手 seam
+强制 aborted → asynchronous error → close 的旧 R5 红态/修复绿态，且标注它不代表真实 Node 必然发射；各终态
+settlement、timer/AbortSignal/body/response/inflater/业务闭包/global registry 断言；sync late response、destroy→
+resume、removeListener 抛错隔离与 never-close 证据；聚焦/Watch/全量/typecheck/lint/format/build/audit/冒烟
+结果；`baseline..HEAD` + 工作区范围、diff-check、敏感信息/临时残留扫描；剩余诚实限制。完成后 STOP，交给
+新的独立安全 Reviewer，禁止自行 close/push。

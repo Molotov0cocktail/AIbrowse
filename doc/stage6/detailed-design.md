@@ -436,9 +436,82 @@ DNS、robots、全部候选地址、连接、响应头、redirect 链、压缩/�
 `effectiveDeadline`；每个等待点只读取 `remaining=effectiveDeadline-now`，`remaining<=0` 立即销毁并
 返回，否则 timer 只能设为该 remaining，不得用地址、robots 子请求、retry 或 redirect 重新计算
 `startedAt`/获得完整 30 秒。无响应 socket、静默 body、多地址连续失败和 redirect 链均须在同一截止内
-销毁当前 request/response/inflater 并受控返回。请求级终态采用单一 settlement latch；deadline/abort/
-error/body end 中第一个终态胜出，清除全部 timer/listener，任何 deadline 后到达的 DNS callback、socket
-event、redirect response、body chunk/end 或解压事件都只能丢弃，不能创建新请求、写 body 或改变终态。
+销毁当前 request/response/inflater 并受控返回。
+
+请求生命周期分成两个相互隔离的终态阶段：
+
+1. **业务终态（business terminal）**：deadline、AbortSignal、request error、body end/error/aborted 或预算
+   失败中第一个结果通过单一 settlement latch 取得所有权。取得所有权后，在同一同步清理栈内立即禁止新
+   DNS/request/redirect、正文累计和 inflater 驱动；清除 deadline/socket timer 与 AbortSignal listener；
+   移除 request 的 response/error/timeout **业务 listener**、response 的 data/end/error/aborted 业务
+   listener 和 inflater 的 data/end/error 业务 listener；随后逐项异常隔离地销毁 inflater、response、
+   request。Promise 在同步 cleanup/destroy 完成，且任何同步抛错的受控 fallback 返回或抛错后，立即按已取得
+   的业务结果结算；不等待 transport 的 error/close，也不为 drain 新建 timer。因此 transport 永不 close
+   不能越过 absolute deadline 或挂住调用方。
+2. **Transport drain 终态**分成两个 emitter-local 类型；它们都不是业务 listener，也都不参与 Promise
+   settlement：
+   - **Request drain**：`ClientRequest` 创建成功后立即安装独立 named `error` sink + named `close`
+     cleanup listener；业务终态前另有独立 request business error handler 决定业务结果。drain error sink
+     从安装起对所有 request error 都无条件 no-op，不读取 settlement，不区分业务终态前后；business error
+     handler 可在业务终态移除，drain 必须保留至 request close。两个 drain callback 只闭包 request 和彼此，
+     不捕获 Promise resolve/reject、业务结果、timer、AbortSignal、body buffer、response、inflater 或 process/
+     全局 registry/listener。request close cleanup 幂等移除 drain error/close 两个 listener；两次
+     `removeListener` 必须各自单独 try/catch，一个 remove 抛错不能形成 uncaught exception 或阻止另一个
+     listener 的清理，清理后重复调用保存的 callback 仍为 no-op。request close 永不到达时，该自包含 drain
+     pair 可随不可达 request 被 GC，业务 Promise 已经结算且它不保有任何上述业务/重型/全局资源。
+   - **IncomingMessage drain**：每个 response 一经交付，无论将进入正常 body reader、redirect/HEAD
+     discard、业务终态后的迟到 discard，还是 destroy/resume fallback，都必须先安装独立 named `error`
+     sink + named `close` cleanup listener。业务终态前另有独立 response business error handler 决定业务
+     结果；drain error sink 从安装起对所有 response error 都无条件 no-op，不读取 settlement。业务终态移除
+     response 的 data/end/error/aborted 等业务 listener 后，drain 保留至 response close；若 transport 在
+     aborted、request close 之后发出 response `ECONNRESET`，必须由该 drain 接收。response close cleanup
+     幂等移除 drain error/
+     close 两个 listener；两次 `removeListener` 各自单独 try/catch，保存 callback 重复调用幂等。该 drain
+     只闭包对应 response emitter 和两个 drain callback，不捕获 Promise settlement、业务结果、timer、
+     AbortSignal、body buffer、inflater、request、全局 registry 或 process listener。response 永不 close
+     时不得阻塞业务 Promise或保留正文、解压器、timer 或业务闭包；只允许 emitter-local drain pair 随
+     不可达 transport 对象 GC。
+
+固定清理/事件语义如下：
+
+- 先把 settlement latch 置为终态，再按「清 timer/AbortSignal → release body/inflater/response/request
+  业务 listener → 确认对应 request/response drain 已安装 → destroy inflater/response/request」执行；所有
+  remove/destroy/abort/resume 单项独立 try/catch，后一步不得因前一步抛错而跳过。局部业务闭包持有的
+  response/inflater/body 等重型引用在调用 destroy/fallback 后立即置空；response drain 只保留 emitter-local
+  自引用。
+- `request.destroy()` 同步抛错不改变业务结果；在 drain 已安装的前提下至多再调用一次受控 `request.abort()`
+  fallback，fallback 返回或抛错后立即结算，不重试、不等待 close。真实 Node 24 的 destroy 不应抛错；该
+  分支是 transport seam/防御纵深 oracle。
+- 为覆盖敌手 seam 在 `request.destroy()` 调用栈内同步发出 response，可在该次调用前安装一个仅调用栈存活的
+  response discard guard。guard 收到 response 后必须先安装该 IncomingMessage 自己的 drain，再尝试
+  `response.destroy()`；只有 destroy 缺失或同步抛错时才调用 `response.resume()` 排空，绝不接入 body
+  reader/inflater，也禁止安装匿名、无法由 response close cleanup 移除的 error listener。guard 在 request
+  destroy/abort fallback 调用栈的 finally 中必定移除，且必须在业务 Promise 结算前归零；它不是允许跨事件
+  轮暂存的 listener。跨事件轮允许的只有 request drain，以及每个已交付、迟到或需要 discard 的
+  IncomingMessage 自身 response drain。
+- 异步 request error（包括无参数 destroy 后的 `ECONNRESET`）由 drain sink 吸收；error→close 在 close
+  清零 drain，对同一 close/已保存 callback 的重复调用幂等；only-close 直接清零 drain。Node 24 文档不定义
+  request close 后再次发 request error，忠实 seam 不得伪造该顺序；未来 Node 若改变顺序，真实 transport
+  子进程 oracle 必须失败并触发 REPLAN，而不是增加 process 级兜底。
+- 已交付 response 的 destroy/abort 可在 IncomingMessage 上产生 aborted/error/close；业务 listener 已归零，
+  response drain 仍接收异步 error 直至 response close 并在 close 自清理，response 不再累计或解压。任何
+  业务终态后到达的 DNS callback、socket event、redirect response、body chunk/end 或解压事件都只能丢弃，
+  不能创建新请求、写 body 或改变终态。
+
+Node 24.18.0 官方依据：`request.destroy()` 可异步发出 error 并发出 close；其事件顺序表明确 destroy 在
+socket 分配前/连接成功前为 `error ECONNRESET → close`，response 后 destroy 的 aborted/error/close 位于
+IncomingMessage。localhost 对照实测同时证明 response error 是当前实现的**条件发射**：原 response-after
+destroy/abort 探针安装了 response error listener，观察到 response aborted → request close → response error
+`ECONNRESET` → response close；在 destroy/abort 前移除 response 最后一个 error listener，则观察到 response
+aborted → request close → response close，exit 0 且 `uncaughtExceptionMonitor` 未命中。测试 observer 会改变
+该观察路径，不能作为透明探针或掩盖产品结构缺陷。此事实不取消 IncomingMessage drain：request drain 已在
+request close 自清理，不能替 response emitter 接收实际发出的 error；产品仍必须用自己的 named response
+drain 覆盖实际发出的 error、确定性敌手 seam、未来 Node/实现差异及统一生命周期。未监听且实际发出的
+EventEmitter `error` 会抛出并使进程退出。因此本契约要求立即清除全部**业务** listener，同时在各自 emitter
+close 前保留上述有界 request/response transport drain；二者均不是业务 listener。
+依据：<https://nodejs.org/download/release/v24.18.0/docs/api/http.html#requestdestroyerror>、
+<https://nodejs.org/download/release/v24.18.0/docs/api/http.html#http_client_request>、
+<https://nodejs.org/download/release/v24.18.0/docs/api/events.html#error-events>。
 
 公开 page/feed 请求 User-Agent 固定为产品版本化标识，不包含用户账号/机器 ID。条件请求优先发送
 ETag/Last-Modified；304 映射 unchanged-http，不解析空 body。
@@ -1001,7 +1074,33 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
   `/robots.txt` 且无 query/fragment，伪造 `purpose=robots` + 任意 host/path/query 为零 DNS/零 socket；
   raw 内部 redirect 逐跳复验并继承同一 deadline；30 秒统一覆盖 DNS、robots、所有地址、redirect 和
   body。Invalid Date、已过期外部 deadline 均零 DNS/零 socket；外部 deadline 晚于内部 30 秒仍由内部
-  截止，所有路径不得续杯，迟到事件不得改变终态；
+  截止，所有路径不得续杯，迟到事件不得改变终态。生命周期红态必须分层：真实 Node 24.18.0 `node:http`
+  localhost 的 pre-socket/pre-response deadline/AbortSignal destroy 证明旧 R5 因未处理 request `ECONNRESET`、
+  `uncaughtExceptionMonitor` 命中或子进程非零退出而转红；response-after 不能要求旧 R5 必然崩溃，必须由
+  产品结构断言证明业务终态后缺少 product-owned named IncomingMessage drain、listener 分层错误或 close 无
+  自清理而转红；另由 FakeIncoming/transport 敌手 seam 强制投递 aborted → asynchronous error → close，
+  证明旧 R5 缺少 response drain 时明确转红，但不得声称真实 Node 在零 error listener 时必然发出该 error。
+  业务 Promise 在同步 cleanup/destroy/fallback 完成后立即结算，不等待 drain、不增加 drain timer。
+  ClientRequest 创建后立即安装 named request error sink + close cleanup，response 一经交付则在接入 body
+  reader、discard、destroy 或 resume 前安装其 product-owned named response error sink + close cleanup；
+  两类 drain sink 均从安装起无条件 no-op，业务终态前由各自独立 business error handler 处理业务结果。正常
+  success/end、redirect/HEAD discard、budget/body error、response 后 deadline/abort 均须证明业务 listener
+  立即归零，request/response drain 分别在各自 close 后归零；真实 Node 24 localhost 的 response-after 绿态
+  须证明业务 Promise 立即结算、request close 清除 request drain、product-owned response drain 在 destroy 前
+  已安装；若 Node 发出 response error 则由该 drain 安全吸收，无论是否发出 error，response close 后 drain
+  均为 0、子进程 exit 0 且 `uncaughtExceptionMonitor`/unhandledRejection 均为零。测试不得额外安装匿名
+  response error listener；listenerCount、具名 callback 身份和闭包可达性断言必须识别 product-owned drain，
+  并排除测试自身 observer，observer 不得吞掉原本应暴露的产品缺陷。
+  destroy 调用栈内同步 response 先安装 response drain 再 destroy，destroy 缺失或抛错才 resume；call-stack
+  guard 在 Promise 结算前归零，且零 body reader/inflater/新 socket/结果变化。禁止匿名 response error
+  listener。request/response close cleanup 的每次 `removeListener` 抛错均有独立异常隔离 oracle，一个 remove
+  失败不阻止另一个清理；保存 callback 重复调用幂等。never-close seam 证明 Promise 已结算且零 timer、
+  AbortSignal、body buffer、inflater、业务闭包和 global registry，仅允许相应 emitter 自包含 drain pair。
+  FakeRequest/FakeIncoming 必须忠实模拟 Node 24 request 路径，并以明确标注的确定性敌手 response seam 强制
+  异步 error/close，不得以 destroy 后零投递制造假绿，也不得把敌手 seam 冒充 Node 必然事件序列。另用受控
+  子进程退出码证明 pre-response 零未监听 EventEmitter error，并独立监控 unhandledRejection；
+  success/deadline/abort/request-error/body-error/budget-error 全部单次结算；保留 R2–R5 仍有效的工厂、IPv6、
+  deadline、robots 与资源清理回归；
 - Robots：512,000 bytes `==` 接受、512,001 bytes destroy + `budget_exceeded`，1,024 parseable rules
   边界、文件级 fatal UTF-8；CR/LF/CRLF 与结构位置 SP/HTAB 正例；其它原始 control、坏 ABNF 与
   malformed/truncated percent triplet 仅隔离所在行并继续使用其它 parseable rules；非 ASCII、reserved、
@@ -1102,6 +1201,23 @@ D3 必须交付安全 PublicWatchHttpClient 工厂、raw robots purpose 限制�
   octet 与等长 allow。非法 UTF-8 是文件级 unavailable；合法 UTF-8 中其它原始控制字符、ABNF 错误或
   malformed/truncated percent triplet 只使所在行不可解析，必须继续使用其它 parseable rules；`%00` 等
   well-formed 非 unreserved octet 保持规范化 percent 编码身份。
+- **#S6-043**：D3 Public HTTP 请求采用“业务终态 + emitter-local transport drain”两阶段协议。业务首终态
+  立即禁止所有新副作用、清除全部业务 listener/计时器/重型业务引用，并在同步 cleanup/destroy/fallback
+  完成后立即结算 Promise；不等待 close/error、不增加 drain timer。ClientRequest 创建成功后立即安装
+  named request error sink + close cleanup；每个 IncomingMessage 一经交付，在 body reader/discard/destroy/
+  resume 前安装自己的 named response error sink + close cleanup。两类 sink 从安装起都无条件 no-op，业务
+  结果由独立 business error handler 决定；各 close cleanup 幂等且每次 removeListener 独立 try/catch。
+  request drain 只闭包 request/两个 callback；response drain 只闭包对应 response/两个 callback，均不持有
+  settlement、业务结果、timer、AbortSignal、正文、buffer、inflater、另一 emitter 或全局 registry/listener。
+  response drain 必须覆盖 request close 后实际发出的异步 response `ECONNRESET`，并在 response close 自清理；
+  Node 24.18.0 当前可能在移除最后一个 response error listener 后只发 aborted/close，这一条件发射不削弱产品
+  drain 决策。真实测试必须识别 product-owned named drain，并从 listenerCount/callback/闭包断言中排除测试
+  observer；不得用额外匿名 response error listener 改变事件路径或掩盖缺陷。
+  destroy 同步 late response 仍由 finally 必移除的 call-stack guard 捕获，但 guard 必须先安装 response drain，
+  再 destroy，且仅在 destroy 缺失/抛错时 resume。真实 Node 24 transport + 子进程退出码/
+  `uncaughtExceptionMonitor` 是权威 oracle，FakeRequest/FakeIncoming 不得通过 destroy 后零投递制造假绿。
+  等待 transport terminal 的方案被否决：close 可永不到达，而另设 drain timer 会重新引入终态资源并可能
+  破坏 #S6-041 absolute deadline；never-close 时仅 emitter-local drain pair 可随 transport 对象 GC。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。
