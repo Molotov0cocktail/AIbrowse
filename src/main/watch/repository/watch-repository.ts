@@ -179,8 +179,7 @@ const SQL_INSERT_EVENT = `INSERT INTO watch_events
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`;
 const SQL_SELECT_EVENT = `SELECT id, rule_id, source_id, event_kind, importance,
   idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count,
-  read_at FROM watch_events WHERE id = ?`;
-const SQL_SELECT_EVENTS_BY_RULE = `SELECT id, rule_id, source_id, event_kind, importance,
+  read_at FROM watch_events WHERE id = ?`;const SQL_SELECT_EVENTS_BY_RULE = `SELECT id, rule_id, source_id, event_kind, importance,
   idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count,
   read_at FROM watch_events WHERE rule_id = ? ORDER BY first_observed_at ASC, id ASC`;
 const SQL_INSERT_EVENT_ITEM = `INSERT INTO watch_event_items
@@ -209,6 +208,31 @@ const SQL_SELECT_OLDEST_EVENT_GLOBAL = `SELECT id FROM watch_events
   ORDER BY (read_at IS NULL) ASC, first_observed_at ASC, id ASC LIMIT 1`;
 const SQL_SELECT_EVENTS_BY_SOURCE = `SELECT e.id FROM watch_events e
   JOIN watch_rules r ON e.rule_id = r.id WHERE r.source_id = ?`;
+
+// 启动完整性/JSON 形状/预算扫描（§10.2 步骤 4；store 编排、SQL 仍在本模块）
+const SQL_SELECT_ALL_BASELINES = `SELECT rule_id, version, projection_type, projection_json,
+  content_hash, byte_length, final_url, captured_at, document_id FROM watch_baselines`;
+const SQL_SELECT_ALL_RUNS = `SELECT id, rule_id, request_key, status, trigger, scheduled_for,
+  started_at, finished_at, outcome_json, health_json, response_metadata_json
+  FROM watch_runs`;
+const SQL_SELECT_ALL_EVENTS = `SELECT id, rule_id, source_id, event_kind, importance,
+  idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count,
+  read_at FROM watch_events`;
+const SQL_SELECT_ALL_EVENT_ITEMS = `SELECT event_id, sequence, item_id, field_key, label,
+  before_value_json, after_value_json, before_captured_at, after_captured_at,
+  before_final_url, after_final_url, before_document_id, after_document_id, feed_item_key
+  FROM watch_event_items`;
+const SQL_SELECT_ALL_INTENTS = `SELECT mutation_id, source_id, operation,
+  before_projection_json, after_projection_json, affected_rule_state_json, state,
+  created_at, updated_at FROM source_cleanup_intents`;
+const SQL_SELECT_ALL_SCHEDULES = `SELECT id, source_ids_json, schedule_json, ai_enabled,
+  cursor_json, state, created_at, updated_at, last_checked_at FROM digest_schedules`;
+const SQL_SELECT_ALL_DIGESTS = `SELECT id, schedule_id, facts_json, explanation_json,
+  byte_length, created_at FROM watch_digests`;
+const SQL_SELECT_ALL_DIGEST_REFS = `SELECT digest_id, event_id, status FROM digest_event_refs`;
+const SQL_SELECT_ALL_OUTBOX = `SELECT id, rule_id, subject_type, subject_id, channel,
+  dedupe_key, privacy_json, state, attempts, created_at, updated_at
+  FROM notification_outbox`;
 
 const SQL_INSERT_DIGEST_REF = `INSERT INTO digest_event_refs (digest_id, event_id, status)
   VALUES (?, ?, ?)`;
@@ -327,6 +351,10 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isIn<T extends string>(value: unknown, list: readonly T[]): value is T {
+  return typeof value === 'string' && (list as readonly string[]).includes(value);
 }
 
 export class WatchRepository {
@@ -1339,6 +1367,144 @@ export class WatchRepository {
   // -------------------------------------------------------------------------
   // Retention（§10.4）
   // -------------------------------------------------------------------------
+
+  // 启动完整性/JSON 形状/预算扫描（§10.2 步骤 4）：全部行经共享 validator
+  // 二次校验（含 EvidenceValue/Pair、outcome/health、intent 投影与 affected
+  // map）；单 Event 双侧 Evidence 合计预算复核；digest/schedule/outbox JSON
+  // 可解析性。任一非法 → fail-closed（Store unavailable，原库保留）。
+  scanIntegrity(): { ok: boolean; reason: string | null } {
+    this.ensureOpen();
+    try {
+      for (const row of this.handle.prepare(SQL_SELECT_ALL_RULES).all() as unknown[]) {
+        if (!validateRuleRow(row).ok) return { ok: false, reason: '规则行读回校验失败' };
+      }
+      for (const row of this.handle.prepare(SQL_SELECT_ALL_BASELINES).all() as unknown[]) {
+        if (!isPlainRecord(row)) return { ok: false, reason: 'Baseline 行形状非法' };
+        const normalized = {
+          ruleId: row['rule_id'],
+          version: row['version'],
+          projectionType: row['projection_type'],
+          projectionJson: row['projection_json'],
+          contentHash: row['content_hash'],
+          byteLength: row['byte_length'],
+          finalUrl: row['final_url'],
+          capturedAt: row['captured_at'],
+          documentId: row['document_id'],
+        };
+        if (!validateBaselineRow(normalized).ok) return { ok: false, reason: 'Baseline 行读回校验失败' };
+      }
+      for (const row of this.handle.prepare(SQL_SELECT_ALL_RUNS).all() as unknown[]) {
+        if (!isPlainRecord(row)) return { ok: false, reason: 'Run 行形状非法' };
+        const normalized = {
+          id: row['id'],
+          ruleId: row['rule_id'],
+          requestKey: row['request_key'],
+          status: row['status'],
+          trigger: row['trigger'],
+          scheduledFor: row['scheduled_for'],
+          startedAt: row['started_at'],
+          finishedAt: row['finished_at'],
+          outcome: row['outcome_json'] === null ? null : this.parseJson(row['outcome_json']),
+          health: row['health_json'] === null ? null : this.parseJson(row['health_json']),
+          responseMetadataJson: row['response_metadata_json'],
+        };
+        if (!validateRunRow(normalized).ok) return { ok: false, reason: 'Run 行读回校验失败' };
+      }
+      const eventRows = this.handle.prepare(SQL_SELECT_ALL_EVENTS).all() as unknown[];
+      const itemRows = this.handle.prepare(SQL_SELECT_ALL_EVENT_ITEMS).all() as unknown[];
+      const itemBytesByEvent = new Map<string, number>();
+      for (const row of eventRows) {
+        if (!validateEventRow(row).ok) return { ok: false, reason: 'Event 行读回校验失败' };
+      }
+      for (const row of itemRows) {
+        if (!isPlainRecord(row)) return { ok: false, reason: 'Event item 行形状非法' };
+        const eventId = row['event_id'];
+        if (typeof eventId !== 'string') return { ok: false, reason: 'Event item 行形状非法' };
+        const before = this.parseJson(row['before_value_json']);
+        const after = this.parseJson(row['after_value_json']);
+        const pair = {
+          itemId: row['item_id'],
+          fieldKey: row['field_key'],
+          label: row['label'],
+          before,
+          after,
+          beforeCapturedAt: row['before_captured_at'],
+          afterCapturedAt: row['after_captured_at'],
+          beforeFinalUrl: row['before_final_url'],
+          afterFinalUrl: row['after_final_url'],
+          beforeDocumentId: row['before_document_id'],
+          afterDocumentId: row['after_document_id'],
+          feedItemKey: row['feed_item_key'],
+        };
+        if (validateChangeEvidencePair(pair) === null) {
+          return { ok: false, reason: 'Event item 读回校验失败' };
+        }
+        const bytes =
+          utf8ByteLength(String(row['before_value_json'])) +
+          utf8ByteLength(String(row['after_value_json']));
+        itemBytesByEvent.set(eventId, (itemBytesByEvent.get(eventId) ?? 0) + bytes);
+      }
+      for (const [eventId, bytes] of itemBytesByEvent) {
+        if (bytes > this.maxEventEvidenceBytes) {
+          return { ok: false, reason: `Event ${eventId} 双侧 Evidence 超过预算` };
+        }
+      }
+      for (const row of this.handle.prepare(SQL_SELECT_ALL_INTENTS).all() as unknown[]) {
+        if (!isPlainRecord(row)) return { ok: false, reason: 'intent 行形状非法' };
+        const normalized = {
+          mutationId: row['mutation_id'],
+          sourceId: row['source_id'],
+          operation: row['operation'],
+          beforeProjection:
+            row['before_projection_json'] === null ? null : this.parseJson(row['before_projection_json']),
+          afterProjection:
+            row['after_projection_json'] === null ? null : this.parseJson(row['after_projection_json']),
+          affectedRuleState: this.parseJson(row['affected_rule_state_json']),
+          state: row['state'],
+          createdAt: row['created_at'],
+          updatedAt: row['updated_at'],
+        };
+        if (!validateIntentRow(normalized).ok) return { ok: false, reason: 'intent 行读回校验失败' };
+      }
+      for (const row of this.handle.prepare(SQL_SELECT_ALL_SCHEDULES).all() as unknown[]) {
+        if (!isPlainRecord(row)) return { ok: false, reason: 'DigestSchedule 行形状非法' };
+        const sourceIds = this.parseJson(row['source_ids_json']);
+        if (!Array.isArray(sourceIds) || !sourceIds.every((x) => typeof x === 'string')) {
+          return { ok: false, reason: 'DigestSchedule source_ids 非法' };
+        }
+        const schedule = this.parseJson(row['schedule_json']);
+        if (schedule === null || !validateWatchSchedule(schedule).ok) {
+          return { ok: false, reason: 'DigestSchedule schedule 非法' };
+        }
+        if (row['cursor_json'] !== null && this.parseJson(row['cursor_json']) === null) {
+          return { ok: false, reason: 'DigestSchedule cursor 非法' };
+        }
+      }
+      for (const row of this.handle.prepare(SQL_SELECT_ALL_DIGESTS).all() as unknown[]) {
+        if (!isPlainRecord(row)) return { ok: false, reason: 'Digest 行形状非法' };
+        if (this.parseJson(row['facts_json']) === null) return { ok: false, reason: 'Digest facts 非法' };
+        if (row['explanation_json'] !== null && this.parseJson(row['explanation_json']) === null) {
+          return { ok: false, reason: 'Digest explanation 非法' };
+        }
+      }
+      for (const row of this.handle.prepare(SQL_SELECT_ALL_DIGEST_REFS).all() as unknown[]) {
+        if (!isPlainRecord(row)) return { ok: false, reason: 'DigestRef 行形状非法' };
+        if (!isIn(row['status'], ['active', 'expired', 'user-deleted'] as const)) {
+          return { ok: false, reason: 'DigestRef 状态非法' };
+        }
+      }
+      for (const row of this.handle.prepare(SQL_SELECT_ALL_OUTBOX).all() as unknown[]) {
+        if (!isPlainRecord(row)) return { ok: false, reason: 'Outbox 行形状非法' };
+        if (this.parseJson(row['privacy_json']) === null) {
+          return { ok: false, reason: 'Outbox privacy_json 非法' };
+        }
+      }
+      return { ok: true, reason: null };
+    } catch (err) {
+      logWarn('watch', '完整性/JSON 形状扫描执行失败（fail-closed）', err);
+      return { ok: false, reason: '完整性/JSON 形状扫描执行失败' };
+    }
+  }
 
   estimateLogicalBytes(): number {
     this.ensureOpen();
