@@ -408,11 +408,22 @@ describe('恢复矩阵（§10.2 末段：restore + grant 失效）', () => {
 });
 
 // 测试设施：生成真实 watch-backup 备份（createConsistentBackup + 严格命名）
+// D5 #S6-044 FIXED 17 机械校准：备份版本参数必须等于 DB 实际 user_version
+//（schema v2 后为 2，不再是硬编码 1）——同一版本字面量类别的机械校准，零删除零削弱。
+function currentDbVersion(path: string): number {
+  const h = openDb(path);
+  try {
+    return (h.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+  } finally {
+    closeDb(h);
+  }
+}
+
 function createWatchBackup(dbPath: string, backupsDir: string): { ok: boolean; fileName: string } {
   const result = createConsistentBackup(
     dbPath,
     backupsDir,
-    1,
+    currentDbVersion(dbPath),
     () => Date.UTC(2026, 7, 28, 0, 0, 0),
     () => 'beef0001',
     { namePrefix: 'watch-backup-', parentLabel: '监控' },
@@ -439,7 +450,7 @@ describe('D4-R：restore post-swap 回滚 + 启动扫描字节一致性', () => 
     const result = createConsistentBackup(
       dbPath,
       backupsDir,
-      1,
+      currentDbVersion(dbPath),
       () => Date.UTC(2026, 7, 28, 0, 0, 0),
       () => randomHex,
       { namePrefix: 'watch-backup-', parentLabel: '监控' },

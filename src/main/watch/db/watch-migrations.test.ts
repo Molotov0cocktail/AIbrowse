@@ -1,12 +1,22 @@
 // D4 watch-migrations tests: schema v1 契约断言（detailed-design §10.1）——
 // 11 表全表集、索引、外键、CHECK、UNIQUE、user_version=1、注入串仅作数据、
 // CASCADE/SET NULL 布线、未知更高版本零写入、重复运行幂等。真实 node:sqlite。
+// D5 #S6-044：追加 v2 契约断言（watch_audits CHECK 扩展，FIXED 14/15/17）——
+// 恰 3 处机械校准：列表长度 1→2、新库 toVersion 1→2、future-probe 常量 2→3。
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDb, closeDb, type DbHandle } from '../../sources/db/sqlite-driver';
-import { WATCH_MIGRATIONS, WATCH_MIGRATION_V1, runWatchMigrations } from './watch-migrations';
+import { runMigrations } from '../../sources/db/migrations';
+import {
+  WATCH_AUDIT_KINDS,
+  WATCH_AUDIT_REASON_CODES,
+  WATCH_MIGRATIONS,
+  WATCH_MIGRATION_V1,
+  WATCH_MIGRATION_V2,
+  runWatchMigrations,
+} from './watch-migrations';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-watch-mig-'));
 
@@ -66,16 +76,21 @@ function insertRule(db: DbHandle, id: string, kind = 'feed'): void {
 }
 
 describe('migration v1 契约断言（§10.1：11 张表）', () => {
-  it('单步 v1、版本连续、语句全部编译期常量', () => {
+  it('v1+v2 两级、版本连续、语句全部编译期常量', () => {
     expect(WATCH_MIGRATION_V1.version).toBe(1);
-    expect(WATCH_MIGRATIONS).toHaveLength(1);
-    expect(WATCH_MIGRATION_V1.statements.every((s) => typeof s === 'string')).toBe(true);
+    expect(WATCH_MIGRATION_V2.version).toBe(2);
+    expect(WATCH_MIGRATIONS).toHaveLength(2);
+    expect(WATCH_MIGRATIONS.map((s) => s.version)).toEqual([1, 2]);
+    expect(
+      WATCH_MIGRATION_V1.statements.every((s) => typeof s === 'string') &&
+        WATCH_MIGRATION_V2.statements.every((s) => typeof s === 'string'),
+    ).toBe(true);
   });
 
-  it('运行后 user_version=1 且 11 张表全部存在', () => {
+  it('运行后 user_version=2 且 11 张表全部存在', () => {
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(true);
-    expect(outcome.toVersion).toBe(1);
+    expect(outcome.toVersion).toBe(2);
     expect(tableNames(handle)).toEqual([
       'digest_event_refs',
       'digest_schedules',
@@ -117,7 +132,7 @@ describe('migration v1 契约断言（§10.1：11 张表）', () => {
   });
 
   it('未知更高版本零写入（newer-than-program）', () => {
-    handle.exec('PRAGMA user_version = 2');
+    handle.exec('PRAGMA user_version = 3');
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(false);
     expect(outcome.state).toBe('newer-than-program');
@@ -483,5 +498,162 @@ describe('SQL 注入串仅作数据（§10.1 参数绑定）', () => {
     expect(row.source_id).toBe(injection);
     expect(row.target_json).toBe(injection);
     expect(tableNames(handle).length).toBe(11);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D5 #S6-044 M0：schema v2（watch_audits CHECK 扩展；FIXED 14/15）——
+// 重建结构、单一事实源白名单、CHECK 放行/拒绝矩阵、索引/级联重建陷阱。
+// ---------------------------------------------------------------------------
+
+// 从 sqlite_master.sql 中解析表定义的 CHECK IN (...) 值集合（纯测试工具）。
+function checkValuesFromTableSql(sql: string, column: string): string[] {
+  const columnStart = sql.indexOf(`${column} TEXT NOT NULL CHECK`);
+  const check = sql.slice(columnStart);
+  const inIdx = check.indexOf('IN (');
+  if (inIdx === -1) throw new Error('CHECK IN 解析失败');
+  const open = inIdx + 'IN ('.length - 1;
+  const close = check.indexOf(')', open);
+  if (open === -1 || close === -1 || close <= open) throw new Error('CHECK IN 解析失败');
+  return check
+    .slice(open + 1, close)
+    .split(',')
+    .map((s) => s.trim().replace(/^'|'$/g, ''));
+}
+
+describe('migration v2 契约断言（#S6-044 FIXED 14/15：watch_audits CHECK 扩展）', () => {
+  it('v2 以表重建扩展 CHECK：新建 _v2 → 复制 → DROP → RENAME → 重建索引', () => {
+    const stmts = WATCH_MIGRATION_V2.statements;
+    expect(stmts.length).toBe(5);
+    expect(stmts[0]).toMatch(/CREATE TABLE watch_audits_v2/);
+    expect(stmts[1]).toMatch(/INSERT INTO watch_audits_v2/);
+    expect(stmts[2]).toMatch(/DROP TABLE watch_audits/);
+    expect(stmts[3]).toMatch(/ALTER TABLE watch_audits_v2 RENAME TO watch_audits/);
+    expect(stmts[4]).toMatch(/CREATE INDEX idx_watch_audits_rule/);
+    // 重建仅触碰 watch_audits：不得包含其它表的 CREATE/DROP（防越界）
+    for (const s of stmts) {
+      expect(s).not.toMatch(/CREATE TABLE (?!watch_audits_v2)/);
+      expect(s).not.toMatch(/DROP TABLE (?!watch_audits)/);
+    }
+  });
+
+  it('审计编码单一事实源：kind=6、reason=19，与 v2 生成的 CHECK 逐值一致', () => {
+    expect(WATCH_AUDIT_KINDS).toEqual([
+      'lifecycle-pause',
+      'lifecycle-cascade',
+      'reconciliation',
+      'baseline-established',
+      'rebaseline',
+      'run',
+    ]);
+    expect(WATCH_AUDIT_REASON_CODES).toEqual([
+      'source-disabled',
+      'source-deleted',
+      'source-changed',
+      'hard-delete',
+      'undo-source-removed',
+      'complete',
+      'aborted',
+      'baseline-established',
+      'rebaseline',
+      'login-required',
+      'captcha',
+      'parse-changed',
+      'robots-disallowed',
+      'security-rejected',
+      'dependency-unavailable',
+      'unchanged',
+      'unavailable',
+      'budget-exceeded',
+      'interrupted',
+    ]);
+    runWatchMigrations(handle);
+    const sql = handle
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='watch_audits'")
+      .get() as { sql: string };
+    const kindCheck = checkValuesFromTableSql(sql.sql, 'kind');
+    const reasonCheck = checkValuesFromTableSql(sql.sql, 'reason_code');
+    // 单一事实源：DB CHECK 顺序与顺序必须与 TS 常量数组一致（防双写漂移）
+    expect(kindCheck).toEqual([...WATCH_AUDIT_KINDS]);
+    expect(reasonCheck).toEqual([...WATCH_AUDIT_REASON_CODES]);
+  });
+
+  it('v1 库插入新码 → CHECK 拒绝（冲突红态锚点）；v2 库白名单全放行、集合外拒绝', () => {
+    // v1 锚点：只跑 v1，新码（run/unchanged）被 v1 冻结 CHECK 拒绝
+    runMigrations(handle, [WATCH_MIGRATION_V1]);
+    const insertV1 = (kind: string, reason: string): void => {
+      handle
+        .prepare(
+          `INSERT INTO watch_audits (id, rule_id, kind, reason_code, created_at)
+           VALUES ('a-x', NULL, ?, ?, '2026-08-28T00:00:00.000Z')`,
+        )
+        .run(kind, reason);
+    };
+    expect(() => insertV1('run', 'unchanged')).toThrow();
+    expect(() => insertV1('lifecycle-pause', 'login-required')).toThrow();
+    // 升级到 v2
+    closeDb(handle);
+    handle = openDb(handle.path);
+    runWatchMigrations(handle);
+    let seq = 0;
+    const insertAudit = (kind: string, reason: string): void => {
+      handle
+        .prepare(
+          `INSERT INTO watch_audits (id, rule_id, kind, reason_code, created_at)
+           VALUES (?, NULL, ?, ?, '2026-08-28T00:00:00.000Z')`,
+        )
+        .run(`a-${seq++}`, kind, reason);
+    };
+    // 全部 6 kind × 19 reason 白名单值放行（CHECK 逐列独立验证）
+    for (const kind of WATCH_AUDIT_KINDS) {
+      for (const reason of WATCH_AUDIT_REASON_CODES) {
+        insertAudit(kind, reason);
+      }
+    }
+    // 集合外值（含 'other'/空串/大小写变体）拒绝
+    expect(() => insertAudit('other', 'complete')).toThrow();
+    expect(() => insertAudit('reconciliation', 'other')).toThrow();
+    expect(() => insertAudit('', 'complete')).toThrow();
+    expect(() => insertAudit('run', '')).toThrow();
+    expect(() => insertAudit('RUN', 'unchanged')).toThrow();
+    expect(() => insertAudit('run', 'Unavailable')).toThrow();
+  });
+
+  it('v2 后 12 索引恒等；重建后删除 Rule → 审计级联删除、rule_id=NULL 孤儿审计存活', () => {
+    runWatchMigrations(handle);
+    expect(indexNames(handle)).toEqual([
+      'idx_notification_outbox_rule',
+      'idx_notification_outbox_subject',
+      'idx_source_cleanup_intents_source',
+      'idx_watch_audits_rule',
+      'idx_watch_digests_schedule',
+      'idx_watch_event_items_event',
+      'idx_watch_events_rule',
+      'idx_watch_events_source',
+      'idx_watch_rules_source',
+      'idx_watch_rules_state_due',
+      'idx_watch_runs_rule',
+      'idx_watch_runs_status',
+    ]);
+    insertRule(handle, 'r1');
+    handle
+      .prepare(
+        `INSERT INTO watch_audits (id, rule_id, kind, reason_code, created_at)
+         VALUES ('a-rule','r1','lifecycle-pause','source-disabled','2026-08-28T00:00:00.000Z')`,
+      )
+      .run();
+    handle
+      .prepare(
+        `INSERT INTO watch_audits (id, rule_id, kind, reason_code, created_at)
+         VALUES ('a-null', NULL, 'lifecycle-cascade','hard-delete','2026-08-28T00:00:00.000Z')`,
+      )
+      .run();
+    handle.prepare('DELETE FROM watch_rules WHERE id = ?').run('r1');
+    expect(
+      handle.prepare('SELECT COUNT(*) AS n FROM watch_audits').get(),
+    ).toEqual({ n: 1 });
+    expect(
+      handle.prepare("SELECT id FROM watch_audits WHERE id = 'a-null'").get(),
+    ).toEqual({ id: 'a-null' });
   });
 });

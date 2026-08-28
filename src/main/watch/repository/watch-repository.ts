@@ -33,6 +33,12 @@ import { validateFeedTarget, validatePageTarget } from '../../../shared/watch/wa
 import { validateWatchSchedule } from '../../../shared/watch/watch-rule-state';
 import { utf8ByteLength } from '../../../shared/watch/watch-budget';
 import {
+  WATCH_AUDIT_KINDS,
+  WATCH_AUDIT_REASON_CODES,
+  type WatchAuditKind,
+  type WatchAuditReasonCode,
+} from '../db/watch-migrations';
+import {
   validateAffectedRuleStateMap,
   validateBaselineRow,
   validateChangeEvidencePair,
@@ -261,41 +267,13 @@ const SQL_DELETE_RESOLVED_INTENTS = `DELETE FROM source_cleanup_intents
 const SQL_UPDATE_SESSION_CONSENTS = `UPDATE watch_rules SET target_json = ?, updated_at = ?
   WHERE id = ?`;
 
-// 审计闭合白名单（§3.3/§9.1/§10.1）：kind/reason 均为编译期枚举，非白名单拒绝。
-export type WatchAuditKind =
-  | 'lifecycle-pause'
-  | 'lifecycle-cascade'
-  | 'reconciliation'
-  | 'baseline-established'
-  | 'rebaseline';
-export type WatchAuditReasonCode =
-  | 'source-disabled'
-  | 'source-deleted'
-  | 'source-changed'
-  | 'hard-delete'
-  | 'undo-source-removed'
-  | 'complete'
-  | 'aborted'
-  | 'baseline-established'
-  | 'rebaseline';
-const AUDIT_KINDS: readonly WatchAuditKind[] = [
-  'lifecycle-pause',
-  'lifecycle-cascade',
-  'reconciliation',
-  'baseline-established',
-  'rebaseline',
-];
-const AUDIT_REASON_CODES: readonly WatchAuditReasonCode[] = [
-  'source-disabled',
-  'source-deleted',
-  'source-changed',
-  'hard-delete',
-  'undo-source-removed',
-  'complete',
-  'aborted',
-  'baseline-established',
-  'rebaseline',
-];
+// 审计闭合白名单（§3.3/§9.1/§10.1；#S6-044 FIXED 7）：kind/reason 均为编译期枚举，
+// 与 schema v2 CHECK 1:1 同源（单一权威常量数组，见 db/watch-migrations.ts），
+// 非白名单拒绝。既有 5 kind/9 reason 语义零改动，追加 run kind 与健康/运行终态
+// reason 码。
+export type { WatchAuditKind, WatchAuditReasonCode } from '../db/watch-migrations';
+const AUDIT_KINDS: readonly WatchAuditKind[] = WATCH_AUDIT_KINDS;
+const AUDIT_REASON_CODES: readonly WatchAuditReasonCode[] = WATCH_AUDIT_REASON_CODES;
 
 // 全库逻辑字节估算（编译期常量；§10.4 100 MiB 写前估算）：
 // 对全部 TEXT 列按 UTF-8 字节求和 + 每行固定整数列近似（8 字节/整数列）。

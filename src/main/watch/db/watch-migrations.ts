@@ -24,6 +24,59 @@ import type { DbHandle } from '../../sources/db/sqlite-driver';
 
 export type { MigrationStep } from '../../sources/db/migrations';
 
+// ---------------------------------------------------------------------------
+// 审计编码单一事实源（#S6-044 FIXED 7/15）：TS 白名单与 v2 CHECK 必须 1:1 同源，
+// 禁止双写漂移。watch-repository.ts 从本文件导入同一数组；v2 迁移步骤也由本数组
+// 生成 CHECK 子句。D7–D9 的 Event/Digest/Notification 审计码由各自任务按同一迁移
+// 模式追加（v3+），不在本文件预先冻结未设计语义。
+// ---------------------------------------------------------------------------
+
+export const WATCH_AUDIT_KINDS = [
+  'lifecycle-pause',
+  'lifecycle-cascade',
+  'reconciliation',
+  'baseline-established',
+  'rebaseline',
+  'run',
+] as const;
+
+export const WATCH_AUDIT_REASON_CODES = [
+  'source-disabled',
+  'source-deleted',
+  'source-changed',
+  'hard-delete',
+  'undo-source-removed',
+  'complete',
+  'aborted',
+  'baseline-established',
+  'rebaseline',
+  'login-required',
+  'captcha',
+  'parse-changed',
+  'robots-disallowed',
+  'security-rejected',
+  'dependency-unavailable',
+  'unchanged',
+  'unavailable',
+  'budget-exceeded',
+  'interrupted',
+] as const;
+
+export type WatchAuditKind = (typeof WATCH_AUDIT_KINDS)[number];
+export type WatchAuditReasonCode = (typeof WATCH_AUDIT_REASON_CODES)[number];
+
+// 由单一事实源生成 CHECK 子句（数组为 const，模块加载一次，结果确定；值均为
+// 小写 ASCII + 连字符，无单引号转义需求）。
+function auditKindCheckClause(): string {
+  return `kind TEXT NOT NULL CHECK (kind IN (${WATCH_AUDIT_KINDS.map((k) => `'${k}'`).join(',')}))`;
+}
+
+function auditReasonCheckClause(): string {
+  return `reason_code TEXT NOT NULL CHECK (reason_code IN (${WATCH_AUDIT_REASON_CODES.map(
+    (r) => `'${r}'`,
+  ).join(',')}))`;
+}
+
 export const WATCH_MIGRATION_V1: MigrationStep = {
   version: 1,
   statements: [
@@ -177,7 +230,31 @@ export const WATCH_MIGRATION_V1: MigrationStep = {
   ],
 };
 
-export const WATCH_MIGRATIONS: readonly MigrationStep[] = [WATCH_MIGRATION_V1];
+// #S6-044 FIXED 14/15：schema v2——watch_audits CHECK 扩展（kind 6 / reason 19）。
+// v1 语句字节冻结；v2 在引擎单事务内以 SQLite 表重建完成：新建 watch_audits_v2
+//（列/类型/可空性/rule_id REFERENCES watch_rules(id) ON DELETE CASCADE 完全保持，
+// 仅两 CHECK 换新集）→ 显式列清单复制全部行 → DROP 旧表 → RENAME → 重建同名同定义
+// 索引。任一步失败由引擎单事务整体回滚（user_version 仍 1、原行完整）。审计码
+// 与 Repository TS 白名单 1:1 同源（WATCH_AUDIT_KINDS/WATCH_AUDIT_REASON_CODES）。
+export const WATCH_MIGRATION_V2: MigrationStep = {
+  version: 2,
+  statements: [
+    `CREATE TABLE watch_audits_v2 (
+  id TEXT PRIMARY KEY,
+  rule_id TEXT REFERENCES watch_rules(id) ON DELETE CASCADE,
+  ${auditKindCheckClause()},
+  ${auditReasonCheckClause()},
+  created_at TEXT NOT NULL
+)`,
+    `INSERT INTO watch_audits_v2 (id, rule_id, kind, reason_code, created_at)
+  SELECT id, rule_id, kind, reason_code, created_at FROM watch_audits`,
+    'DROP TABLE watch_audits',
+    'ALTER TABLE watch_audits_v2 RENAME TO watch_audits',
+    'CREATE INDEX idx_watch_audits_rule ON watch_audits(rule_id)',
+  ],
+};
+
+export const WATCH_MIGRATIONS: readonly MigrationStep[] = [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2];
 
 // 薄封装：固定使用 Watch 独立迁移列表（引擎复用 B1 冻结模式）
 export function runWatchMigrations(handle: DbHandle): ReturnType<typeof runMigrations> {
