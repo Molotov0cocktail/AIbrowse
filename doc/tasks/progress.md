@@ -10,14 +10,14 @@
 ## 当前状态
 
 - 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
-  D1–D5 均已完成并关闭。**用户通过 U01–U31
+  D1–D6 均已完成并关闭。**用户通过 U01–U31
   完成全部需求裁决；正式设计候选在
   `f1a062fe5c0b3ae9f7cfaf8bf634bc78e16c602b` 经新的独立 Reviewer `PASS`。本轮设计范围
   为 `Sixth_stage.md`、`doc/stage6/` 四份设计与 D1–D11 任务契约，零产品代码、零新依赖、
-  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D5 均经 Reviewer `PASS`
+  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D6 均经 Reviewer `PASS`
   并已关闭。D3 的三个解析依赖已通过资格门并精确固定：
   `@federicocarboni/saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1`；下一唯一
-  实施任务为 D6。
+  实施任务为 D7。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -660,7 +660,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D3 | 安全 Feed/Public 网络与解析器资格门 | ✅ | 2026-08-28 完成：实施链 `662ef0b` → `dd3deeb` → `2325077` → `be33291` → `0df9bae` → `e412c12` → `e689484` → `ac579e4`；三个解析依赖资格门通过并精确固定；最终独立安全 Reviewer=`PASS`；聚焦 95/95、Watch 279/279、全量 2725/2725，typecheck/lint/format/build/audit/dev+production smoke 全绿；任务文档 doc/stage6/tasks/D3-safe-feed-network-parser.md |
 | D4 | watch.db、Source 生命周期观察协议与恢复 | ✅ | 2026-08-28 完成：实施链 `04adce4` → `0acc794`（九个候选提交）+ D4-R 有界修复 `90cadd8` → `40f5c1e` → `743149e` → `bf1a2ff`；独立安全/持久化 Reviewer=`PASS`，全量 2908/2908、typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟与 AIBROWSE_WATCH_SMOKE set/check dev+生产 0/0；任务文档 doc/stage6/tasks/D4-watch-store-source-lifecycle.md |
 | D5 | Scheduler、RunCoordinator、预约事务与共享 HostRequestGate | ✅ | 2026-08-29 完成（见下）：baseline `1e88845`，实施链 `0a8ff98` → `3452724`（十一个候选提交）；独立 Reviewer=`PASS`，聚焦 34/34、Watch 190/190、全量 127 files/2990 tests，typecheck/lint/format/build/diff-check 全绿、WATCH set/check dev+生产 0/0；任务文档 doc/stage6/tasks/D5-scheduler-run-coordinator.md |
-| D6 | Page region/Session task-owned Tab 投影 | ⏳ | 依赖 D5；old/new Evidence 必须可解释，不能只有哈希；任务文档 doc/stage6/tasks/D6-page-region-session-projection.md |
+| D6 | Page region/Session task-owned Tab 投影 | ✅ | 2026-08-29 完成（见下）：baseline `d2226bb`，实施链 `3d62c02` → `d508d7c` → `25a93c9` → `19f04c2` → `321b5f3` → `f4f5cce` → `f4653e4` → `aa3d373`（八个候选提交，Repair baseline `f4653e4`）；独立 Reviewer=`PASS`，聚焦 8 files/178 tests、全量 133 files/3128 tests，typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟 8.23 与 WATCH set/check 0/0；任务文档 doc/stage6/tasks/D6-page-region-session-projection.md |
 | D7 | 确定性 Diff/Event/Evidence 与健康状态 | ⏳ | 依赖 D3–D6；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
 | D8 | Digest 分享投影与可选 AI 解释 | ⏳ | 依赖 D7；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
 | D9 | Watch UI/IPC/通知/导出 | ⏳ | 依赖 D4–D8；任务文档 doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md |
@@ -731,6 +731,32 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
   （host-request-gate.ts/.test.ts、smoke-watch-store.ts）内，D5/WATCH 专属门控连续稳定
   通过；按收尾边界不顺手修复 Stage 5，继续作为既有观察项登记。⑤ D5 已关闭；下一唯一任务为
   `doc/stage6/tasks/D6-page-region-session-projection.md`；本次未开始 D6。
+
+- **D6 Page region/Session task-owned Tab 投影验收与关闭（2026-08-29，独立
+  Reviewer=`PASS`）**：① baseline `d2226bb`（D5 远程关闭点）；实施链 `3d62c02`
+  （DocumentChannels validator + Region 投影 M1）→ `d508d7c`（一次性 Session grant M2）→
+  `25a93c9`（Watch Session 任务标签页隔离读取 M3）→ `19f04c2`（页面公开与 Session 采集
+  路由 M4）→ `321b5f3`（Session 生命周期与隐私冒烟 8.23 + 跨进程门控）→ `f4f5cce`
+  （prettier 格式化 smoke.ts）→ `f4653e4`（工作区日志去除任务 tabId，§13 隐私红线）→
+  `aa3d373`（D6 Repair R1–R5：grant 单次消费/日志 tabId 脱敏/焦点新鲜快照/iframe 不判
+  captcha/空表格单元格），共八个候选提交；Repair baseline `f4653e4`，候选 HEAD
+  `aa3d373a3cb57cb761f53f83b8ed645b49797b15`；baseline 后历史未重写、未 amend。② 验收
+  要点：只有用户显式选择的 Region 进入 Projection，main-text 明示高噪声、inputs/forms 零
+  进入；grant 绑定 source/tab/origin/target、5 分钟单次，renderer 仅得 opaque handle、
+  handle 零 DB/log、Cookie/session credential 零 renderer/DB/log，只持久化 consent +
+  pageUrl；每次 run 只读取本 run 新建并证明 owned 的 Tab，用户 Tab 零 navigate/close，
+  create 自动激活后焦点三态恢复；cleanup 失败保留 ownership、零结果提交并使 Watch
+  unavailable；app 重启/原授权 Tab 关闭不使 consent 自动失效；歧义/失效/degraded/captcha/
+  login 不建 Projection；64KiB/10 Region/50 fields 预算精确。③ 最终门禁：聚焦 8 files /
+  178 tests 全部 PASS；全量 **133 files / 3128 tests** 全部 PASS；typecheck、lint、
+  format:check、build、diff-check 全部退出码 0；dev 与 production 默认冒烟经一次有界重跑
+  完整通过（D6 8.23 通过）；dev/production AIBROWSE_WATCH_SMOKE=set|check 四次全绿
+  （两对独立全新受控 userData，精确清理）；task tabId 精确字节扫描零命中、临时 userData
+  与 Electron 进程零残留；真实 Provider：N/A（本任务不涉及 Provider 链路）。④ 非阻断
+  flaky 观察（如实登记，**无证据归因于 D6**）：默认冒烟首次分别观察到既有 reload 与 UI
+  Matrix 9 bounds 时序抖动各一次、复跑完整通过，如实登记不得改写为「首次全部通过」。
+  ⑤ D6 已关闭；下一唯一任务为 `doc/stage6/tasks/D7-diff-event-evidence-health.md`；
+  本次未开始 D7。
 
 - **D3 安全 Feed/Public 网络与解析器资格门验收与关闭（2026-08-28，独立安全
   Reviewer=`PASS`）**：① 实施链 `662ef0b` → `dd3deeb` → `2325077` → `be33291` →
@@ -3257,9 +3283,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **规划 D6 Page region/Session task-owned Tab 投影。**唯一任务文档：
-  `doc/stage6/tasks/D6-page-region-session-projection.md`。D6 依赖 D5（已关闭），
-  old/new Evidence 必须可解释，不能只有哈希；本轮已完成 D5 收尾，尚未开始 D6，先由新的
+- **规划 D7 确定性 Diff/Event/Evidence 与健康状态。**唯一任务文档：
+  `doc/stage6/tasks/D7-diff-event-evidence-health.md`。D7 依赖 D3–D6（均已关闭），
+  old/new Evidence 必须可解释，不能只有哈希；本轮已完成 D6 收尾，尚未开始 D7，先由新的
   Codex GPT-5.6 Sol Planner 按 Step 0 独立调查并输出 Execution Contract。
 
 ## 第一阶段验收未完成项
