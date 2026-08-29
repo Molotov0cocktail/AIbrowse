@@ -609,8 +609,10 @@ Parser 配置/外层防线：
   `budget_exceeded`；等于上限允许。累计文本超过 `MAX_XML_TOTAL_TEXT_BYTES` 或编码后的完整
   FeedProjection 超过 `MAX_FEED_PROJECTION_BYTES` 也整次失败，旧 Baseline 保留。
 - Projection 最多保留 feed 顺序前 200 items；遇到第 201 项停止收集并标 `itemsTruncated=true`。字段逐项按
-  UTF-8 字节安全截断到4,096并标记，不把截断值冒充完整值；结构/累计文本/整体 Projection 预算则不截断，
-  整次失败。DTD/custom entity 已禁止，因此不存在可配置的递归实体预算，任何声明直接 security_rejected。
+  UTF-8 字节安全截断到4,096并标记，不把截断值冒充完整值；截断前必须先计算完整规范化值的
+  `SHA-256` 并写入 `FeedField.valueHash`（#S6-046），截断后不得也无法重建该哈希；结构/累计文本/整体
+  Projection 预算则不截断，整次失败。DTD/custom entity 已禁止，因此不存在可配置的递归实体预算，任何声明直接
+  security_rejected。
 - HTML 内容字段转纯文本安全子集，零 HTML 落盘/渲染。
 
 ### 6.5 公开页面 HTML SAX
@@ -794,7 +796,27 @@ Evidence 必须绑定本 Rule 的旧 Baseline/新 Projection；URL、时间、do
 不能提供或覆盖。
 
 若 contentHash 不同但 Diff 无法生成至少一个合规 pair，结果为 `unexplainable_change`（映射
-parse_changed/degraded），零 Event、零 Baseline 推进。任何摘录截断都保留原规范化字节数与完整值哈希。
+parse_changed/degraded，run 终态 `failed/parse_changed` 不可重试），零 Event、零 Baseline 推进。任何摘录
+截断都保留原规范化字节数与完整值哈希。
+
+`EvidenceValue.present` 的取值口径冻结如下（#S6-046）：
+
+- Feed：`FeedField` 携带 `valueHash`（截断前完整规范化值的 SHA-256 小写 hex，§6.4）。Evidence 的
+  `valueHash` 只消费该字段；`excerpt=FeedField.text`、`truncated=FeedField.truncated`、
+  `normalizedBytes=FeedField.originalBytes`（`MAX_FEED_FIELD_BYTES == MAX_EVIDENCE_VALUE_BYTES`）。
+  对已截断 excerpt 重新计算哈希冒充完整值哈希一律禁止。
+- Page：`PageProjectionField.value` 完整持有（无字段级截断），`valueHash=SHA-256(utf8(field.value))`、
+  `normalizedBytes=utf8ByteLength(field.value)`，由 Diff/Evidence 确定性计算；`excerpt` 取完整规范化值
+  前 `MAX_EVIDENCE_VALUE_BYTES` UTF-8 字节（不拆 surrogate）并标 `truncated`。
+- URL 安全投影：`before/afterFinalUrl` 取对应 envelope `finalUrl` 去 fragment 与去 query 形态
+  （scheme://host[:port]/path）；Cookie、表单、认证数据不得进入 Evidence。
+- 身份派生：Feed `itemId=FeedItem.identity` 且 `feedItemKey` 取同值；Page `itemId` 对 link 字段取
+  canonical URL，其余字段取 fieldKey；Page `feedItemKey` 恒 null。
+- Feed 变化比较仅限 title/link/published/summary 四字段（§9.2）；updatedAt/author 在 v1 不产生变化对，
+  也不进入 Feed 条件字段目录。
+- Condition 求值字段目录：Page 取 Baseline 与新 Projection fieldKey 的并集；Feed 为闭合集
+  `{title, link, summary, published}`。Condition error 不是 unmatched：求值/校验失败保留旧 Baseline，
+  run 终态按失败记账。
 
 ### 9.4 Event 与幂等
 
@@ -815,13 +837,47 @@ interface WatchEvent {
 ```
 
 - `importance` 取 Rule 的用户选择，不由 AI 推断。
-- `idempotencyKey = SHA-256(ruleId|baselineVersion|newProjectionHash|conditionVersion)`；唯一约束。
-- `changeFingerprint` 对排序后的 `(eventKind,itemKey,fieldKey,beforeHash,afterHash)` 编码哈希。
-- 相同 fingerprint 再观察：返回 deduplicated，不新建通知/事件。
-- 30 分钟内同 Rule 的不同 fingerprint 可合并为同 Event，但每个 change item 保留独立 Evidence pair；
-  同字段再次变化也追加独立 pair，不用“首旧末新”吞掉中间变化。超过 32 KiB 时结束当前 Event并创建新 Event。
-- 内容恢复到历史旧值生成 reversal，不删除历史。
-- Event、Evidence items、新 Baseline、RunOutcome 和通知 outbox 在 watch.db 单事务提交。
+- **idempotencyKey（#S6-050）**：`SHA-256(utf8("watch-event-idem-v1\0" + ruleId + "\0" +
+baselineVersion 十进制串 + "\0" + newProjectionHash + "\0" + conditionVersion))`，观察级 UNIQUE
+  （schema v3）。`newProjectionHash` 取新 Projection envelope 的 `contentHash`（Feed 为 canonical 编码的
+  SHA-256）；`conditionVersion` 在 Rule.condition 为 null 时取 `"none"`，否则取经验证
+  StructuredCondition 的 canonical JSON（固定键序 `version/combine/predicates`，谓词键序
+  `fieldKey/operator/operand/caseSensitive`）的 SHA-256 小写 hex。
+- **changeFingerprint（#S6-050）**：pair 级 kind 先行——before=absent/after=present 为 `added`、
+  before=present/after=absent 为 `removed`、双侧 present 为 `changed`、命中 reversal oracle 记
+  `reversal`；fingerprint = `SHA-256(utf8("watch-change-fp-v1\0" + 各元组按 UTF-8 字节序排序后以 \0
+连接))`，元组 = `itemKey \x01 fieldKey \x01 pairKind \x01 beforeToken \x01 afterToken`，
+  token = `"absent"` 或 `"p:" + valueHash`。
+- **去重分层（#S6-049）**：① 观察级幂等——每次运行形成的观察拥有唯一
+  `idempotencyKey`（`watch_event_observations.idempotency_key` UNIQUE）；同进程/跨进程重放相同键返回
+  `event-deduplicated`，零写入、零 Baseline 推进。② 事件内指纹去重——向既有 Event 合并时，当前
+  changeFingerprint 与该 Event 已记录的任一观察指纹相同，同样返回 `deduplicated`。跨 Event 不按指纹
+  去重：reversal 循环（A→B→A→B）会合法复现相同指纹，其真实性由 idempotencyKey 保证。
+- **reversal oracle（#S6-048）**：对当前对 P=(itemId, fieldKey, before, after)，取同 Rule 同
+  `(itemId, fieldKey)` 最近一次已持久化变化对 Q（watch_event_items 按所属 Event
+  first_observed_at、sequence 排序的有界查找）；P 为 `reversal` 当且仅当 P 是 Q 的 typed 镜像——
+  P.before 与 Q.after、P.after 与 Q.before 逐侧一致（absent↔absent；present 按 valueHash 相等）。
+  禁止搜索更早历史或任意其它字段；无历史对必不是 reversal。add/remove 的反转同由镜像 oracle 判定。
+- **观察与 Event 种类（#S6-049）**：pair kind 按观察聚合——全 added→`added`、全 removed→`removed`、
+  全 changed→`changed`、全 reversal→`reversal`、其余→`mixed`；Event 合并多个观察时，
+  `watch_events.event_kind` 按其全部观察重新聚合同样规则更新，`change_fingerprint` 保持首个观察值，
+  `lastObservedAt`/`itemCount` 更新。部分 pair 为 reversal 的观察 kind 为 `mixed`。
+- **coalesce oracle（#S6-047）**：新观察仅当同时满足以下条件才合并——① 候选取该 Rule 最近一个
+  Event；② `nowMs - event.firstObservedAtMs < EVENT_COALESCE_WINDOW_MS`（达到或超过边界必新建）；
+  ③ 既有 items 序列化字节 + 新 items 序列化字节 ≤ `MAX_EVENT_EVIDENCE_BYTES`；④ 身份与 CAS 复验
+  通过。否则新建 Event。32 KiB 预算只计 Event 全部 ChangeEvidencePair 的序列化 JSON（不含
+  observation 元数据；后者按有界开销计入全库 100 MiB 预算）。合并绝不创建或修改 outbox 行；
+  outbox 已发送不阻止合并。每个变化项保留独立 Evidence pair，同字段再次变化追加独立 pair，禁止
+  “首旧末新”折叠。
+- **outbox（#S6-047）**：outbox 行只在新建 Event 时写入，且仅当 Rule 非 muted；D7 冻结
+  `channel='in-app'`、`subjectType='event'`、`dedupeKey="in-app|event|" + eventId + "|1"`、
+  `privacy_json` 为有界程序事实 `{eventKind, importance, itemCount}`（零远程文本、零摘录）。
+  muted Rule 的 Event 正常持久化但零 outbox。Windows/系统通知展示由 D9/D10 负责。
+- **原子性**：新建 = watch_events + watch_event_observations + watch_event_items + Baseline +
+  Run 终态 + outbox + audit 单事务提交；合并 = observation 与 items 插入 + Event 行更新 +
+  Baseline + Run 终态单事务提交。合并事务除 fingerprint + expectedBaselineVersion 身份 CAS 外，
+  必须同事务复验 Event 存在、`first_observed_at` 与 `item_count` 等于期望值。任一失败整体回滚，
+  旧 Baseline 与既有 Event 不变。
 
 Event 字段不可编辑。用户可 read/unread、批量标记和永久删除；删除级联 Evidence/notification outbox，
 Digest 引用变为 `user-deleted` tombstone，AI 解释不再显示。
@@ -830,23 +886,33 @@ Digest 引用变为 `user-deleted` tombstone，AI 解释不再显示。
 
 ### 10.1 Schema v1
 
-| 表                       | 核心列/约束                                                                                                                                                                                                                                 |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `watch_rules`            | id PK、source_id、kind/state/pause_reason/desired_enabled/muted/access_mode、schedule/target/condition 严格版本、source_row_version/source_locator_fingerprint、next_due/last_consumed_scheduled_for/backoff/failure/baseline_version、时间 |
-| `watch_baselines`        | rule_id PK/FK、version、projection_type/json/hash/bytes、final_url/captured_at/document_id；bytes CHECK                                                                                                                                     |
-| `watch_runs`             | id PK、rule_id FK、request_key UNIQUE、trigger/scheduled_for/start/finish/outcome/health、响应元数据有界                                                                                                                                    |
-| `watch_audits`           | id PK、rule_id、kind、reason code、created_at；零敌手正文                                                                                                                                                                                   |
-| `watch_events`           | id PK、rule/source、kind/importance、idempotency_key UNIQUE、fingerprint、观察时间、read_at、item_count                                                                                                                                     |
-| `watch_event_items`      | id PK、event_id FK、sequence、field_key/label、before/after typed value JSON、双侧元数据；UNIQUE(event_id, sequence)                                                                                                                        |
-| `digest_schedules`       | id PK、固定 source_ids_json、schedule_json、ai_enabled、cursor、state/time                                                                                                                                                                  |
-| `watch_digests`          | id PK、schedule_id、facts_json、explanation_json nullable、bytes、created_at                                                                                                                                                                |
-| `digest_event_refs`      | digest_id/event_id、status active/expired/user-deleted；复合 PK                                                                                                                                                                             |
-| `notification_outbox`    | id PK、subject_type/id、channel、dedupe_key UNIQUE、privacy_json、state/attempt/time                                                                                                                                                        |
-| `source_cleanup_intents` | mutation_id PK、source_id、operation、before/after_projection_json、affected_rule_state_json、state prepared/source-committed/complete/aborted、time；source_id 索引                                                                        |
+| 表                         | 核心列/约束                                                                                                                                                                                                                                 |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `watch_rules`              | id PK、source_id、kind/state/pause_reason/desired_enabled/muted/access_mode、schedule/target/condition 严格版本、source_row_version/source_locator_fingerprint、next_due/last_consumed_scheduled_for/backoff/failure/baseline_version、时间 |
+| `watch_baselines`          | rule_id PK/FK、version、projection_type/json/hash/bytes、final_url/captured_at/document_id；bytes CHECK                                                                                                                                     |
+| `watch_runs`               | id PK、rule_id FK、request_key UNIQUE、trigger/scheduled_for/start/finish/outcome/health、响应元数据有界                                                                                                                                    |
+| `watch_audits`             | id PK、rule_id、kind、reason code、created_at；零敌手正文                                                                                                                                                                                   |
+| `watch_events`             | id PK、rule/source、kind/importance、idempotency_key UNIQUE（首个观察键）、fingerprint（首个观察指纹）、观察时间、read_at、item_count                                                                                                       |
+| `watch_event_observations` | v3：id PK、event_id FK CASCADE、idempotency_key UNIQUE（观察级）、change_fingerprint 64 hex、event_kind 闭合、observed_at、first_item_sequence、item_count                                                                                  |
+| `watch_event_items`        | id PK、event_id FK、v3 observation_id FK CASCADE、sequence、field_key/label、before/after typed value JSON、双侧元数据；UNIQUE(event_id, sequence)                                                                                          |
+| `digest_schedules`         | id PK、固定 source_ids_json、schedule_json、ai_enabled、cursor、state/time                                                                                                                                                                  |
+| `watch_digests`            | id PK、schedule_id、facts_json、explanation_json nullable、bytes、created_at                                                                                                                                                                |
+| `digest_event_refs`        | digest_id/event_id、status active/expired/user-deleted；复合 PK                                                                                                                                                                             |
+| `notification_outbox`      | id PK、subject_type/id、channel、dedupe_key UNIQUE、privacy_json、state/attempt/time                                                                                                                                                        |
+| `source_cleanup_intents`   | mutation_id PK、source_id、operation、before/after_projection_json、affected_rule_state_json、state prepared/source-committed/complete/aborted、time；source_id 索引                                                                        |
 
-外键打开；删除 Rule CASCADE baseline/runs/audits/events/outbox；Event CASCADE items；Digest 对 Event 使用
-tombstone 状态而非丢失引用真实性。所有 JSON 读取后再次用共享 validator，非法/未来版本使 Store
-`unavailable`，不得部分启动 Scheduler。
+外键打开；删除 Rule CASCADE baseline/runs/audits/events/outbox；Event CASCADE observations 与 items；
+observation CASCADE 其 items；Digest 对 Event 使用 tombstone 状态而非丢失引用真实性。所有 JSON 读取后再次用
+共享 validator，非法/未来版本使 Store `unavailable`，不得部分启动 Scheduler。
+
+Schema v3（#S6-049，D7）：新增 `watch_event_observations` 并以表重建方式为 `watch_event_items` 追加
+`observation_id TEXT NOT NULL REFERENCES watch_event_observations(id) ON DELETE CASCADE`。v2 既有每个
+Event 回填恰好一个 observation（`idempotency_key/change_fingerprint/event_kind` 取 Event 行值、
+`observed_at=first_observed_at`、`first_item_sequence=0`、`item_count` 取 Event 行值、id 由
+eventId 确定性派生），既有 items 全部挂到该 observation；v2→v3 必须无损，全程在引擎单事务完成，
+v1/v2 语句字节冻结。`FeedField.valueHash` 自 v3 起为 Feed Baseline JSON 读回校验必需字段：旧形态
+（无 valueHash）feed projection JSON 读回校验失败 → 按 §10.2 Store `unavailable`（fail-closed，
+不静默改写；产品首个正式版本不携带任何既有 watch.db 用户数据，该路径仅为防御性契约）。
 
 ### 10.2 Store 启动
 
@@ -1050,6 +1116,10 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 | PageSnapshot degraded                        | 不生成 Projection/Event，health unavailable/parse_changed   |
 | Region 多重匹配                              | parse_changed，禁止猜测                                     |
 | Hash 变但无 Evidence                         | unexplainable_change，旧 Baseline 保留                      |
+| coalesce 窗口边界                            | 达到/超过 Event firstObservedAt+30 分钟必新建 Event         |
+| 观察重放（同进程/跨进程）                    | observation idempotency_key UNIQUE → deduplicated 零写入    |
+| 跨 Event 再现相同指纹（reversal 循环）       | 不按指纹去重；仅 idempotencyKey 阻止真重放                  |
+| Source 仅 rowVersion 变化                    | 不进结果事务 CAS；复验后同事务更新，不丢弃有效结果          |
 | Condition 字段消失                           | ChangeSet 可表示 absent；不支持的操作 no-match + warning    |
 | Evidence 超限                                | 整 Event 拒绝 budget_exceeded，不截成无变化                 |
 | Digest 引用随后删除                          | ref tombstone；隐藏对应 AI 解释                             |
@@ -1112,19 +1182,30 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 - Session task Tab：敌手 create 返回用户 id、精确 provisional ownership、焦点恢复三态、用户关闭、ready/error/
   timeout/abort、final origin/locator、close false/throw、cleanupAll drain、重启无旧 tabId；
 - PageProjection：四 Region、NFC/bidi/control、table fingerprint、歧义、iframe 诚实边界；
-- Diff：新增/删除/修改/反转/排序噪声、table/link/text、hash-only 异常；
-- Condition：全 operator、all/any、absent/numeric/field whitelist、零 regex/AI；
-- EventValidator：双侧 Evidence、引用/时间/URL/预算/幂等/coalesce；
+- Diff：新增/删除/修改/反转/排序噪声、table/link/text、hash-only 异常；Feed 仅
+  title/link/published/summary 产生变化对、identity 变化按 remove+add；Page link 按 canonical URL
+  配对（added/removed/label-changed），Region 外噪声零 pair；
+- Condition：全 operator、all/any、absent/numeric/field whitelist、零 regex/AI；error 不得冒充
+  unmatched，失败保留旧 Baseline；
+- EventValidator：双侧 Evidence、引用/时间/URL 去 query/预算/幂等/coalesce；idempotencyKey 与
+  changeFingerprint 固定向量（含 conditionVersion=none 与 canonical JSON 形态）；reversal 镜像
+  oracle 固定向量（A→B→A、add→remove→add、仅最近对、部分反转→mixed、无历史对必非反转）；
+  coalesce 29:59 合并/30:00 必新建/超 32 KiB 新建（预算不含 observation 元数据）；
 - Digest/Notification：sharing 三档、blocked 零 prompt、provider 降级、隐私 DTO/去重/muted；
 - IPC validators：额外键/超长/原型链/错误类型 fail-closed。
 
 ### 15.2 Repository/恢复
 
 真实 node:sqlite：migration v1 表/索引/外键；所有注入串只作数据；CAS；Event+Evidence+Baseline+outbox 原子；
-running→interrupted 且已消费 slot 不重放；Source rowVersion 与 locator fingerprint 分离；disable→restore 版本递增仍
-按 desiredEnabled 恢复；metadata-only、locator-change、用户 pause、prepare/source/commit/abort 每个崩溃/失败切点；
-保留时间/数量/100 MiB；恢复/未来版本/corrupt fail-closed；
-dispose 幂等；Sources 用户数据和 Research 数据恒等。
+running→interrupted 且已消费 slot 不重放；Source rowVersion 与 locator fingerprint 分离且 rowVersion 不进
+结果事务 CAS；disable→restore 版本递增仍按 desiredEnabled 恢复；metadata-only、locator-change、用户
+pause、prepare/source/commit/abort 每个崩溃/失败切点；保留时间/数量/100 MiB；恢复/未来版本/corrupt
+fail-closed；dispose 幂等；Sources 用户数据和 Research 数据恒等。
+D7 追加（#S6-047/#S6-048/#S6-049）：migration v2→v3 无损升级与观察回填、v3 表/索引/外键/UNIQUE、
+future schema fail-closed；observation idempotency 同进程与跨进程重放零重复；合并事务在
+observation/items/Event 行/Baseline/Run 每个写入点故障注入全部回滚；合并事务对陈旧
+`first_observed_at`/`item_count`/fingerprint/baselineVersion 零部分写入；muted Rule 零 outbox；
+outbox 行只随新建 Event 产生。
 
 ### 15.3 Electron 冒烟
 
@@ -1218,6 +1299,39 @@ D3 必须交付安全 PublicWatchHttpClient 工厂、raw robots purpose 限制�
   `uncaughtExceptionMonitor` 是权威 oracle，FakeRequest/FakeIncoming 不得通过 destroy 后零投递制造假绿。
   等待 transport terminal 的方案被否决：close 可永不到达，而另设 drain timer 会重新引入终态资源并可能
   破坏 #S6-041 absolute deadline；never-close 时仅 emitter-local drain pair 可随 transport 对象 GC。
+- **#S6-045**（D7 REPLAN，2026-08-29）：Source rowVersion 身份裁决采用方案 A——结果事务 CAS 的身份
+  条件保持 §10.3 步骤 5 冻结形态：规则存在且未删除、sourceId 一致、`sourceLocatorFingerprint` 一致、
+  `baselineVersion` 一致；Source `rowVersion` **永不**进入结果事务 CAS。理由：`Source.version` 是
+  Sources 行级乐观并发版本，任何 Source 写（含与 Watch 无关的备注/优先级元数据）都会递增；把它纳入
+  CAS 会使无关 Source 编辑丢弃有效 Watch 结果，直接违反 §10.3“仅 rowVersion 变化且 fingerprint 相同
+  不丢弃已经形成的有效结果”与 §14“Source 仅 metadata/version 变化按用户意图处理”。陈旧身份防线为
+  每运行两次 Source revalidation + fingerprint/baselineVersion CAS + rowVersion 同事务更新。方案 B
+  （rowVersion 入 CAS）否决；D4/D5 revalidation 端口与既有测试不需改动。
+- **#S6-046**（D7 REPLAN，2026-08-29）：Feed 截断前完整哈希——`FeedField` 增加 `valueHash`，由
+  规范化管线在截断前对完整规范化值计算 SHA-256（小写 hex；非字符串防御分支取空串哈希），D7 Evidence
+  只消费该值；禁止对已截断 excerpt 重新计算并冒充完整值哈希。Page 字段值在 Projection 中完整持有、
+  无字段级截断，`valueHash/normalizedBytes` 由 Diff/Evidence 对投影值确定性计算。旧形态（无
+  valueHash）feed projection JSON 读回校验失败按 §10.2 fail-closed。
+- **#S6-047**（D7 REPLAN，2026-08-29）：coalesce 与 outbox 语义冻结——合并窗口锚定 Event
+  `firstObservedAt`，`nowMs - firstObservedAtMs < EVENT_COALESCE_WINDOW_MS` 才可合并（达到/超过边界
+  必新建）；候选只取该 Rule 最近一个 Event，不做更早扫描；`MAX_EVENT_EVIDENCE_BYTES` 只计 Event 全部
+  Evidence item 序列化 JSON（既有 + 新增），不含 observation 元数据（后者按有界开销计入全库预算）。
+  合并绝不创建/修改 outbox，outbox 已发送不阻止合并；outbox 行只在新建 Event 且 Rule 非 muted 时
+  写入，D7 固定 `in-app` 通道、`dedupeKey="in-app|event|"+eventId+"|1"`、privacy_json 为程序事实
+  `{eventKind, importance, itemCount}`（零远程文本）。
+- **#S6-048**（D7 REPLAN，2026-08-29）：reversal 采用“最近对镜像”有界 oracle——当前对 P 为 reversal
+  当且仅当同 Rule 同 `(itemId, fieldKey)` 最近一次已持久化对 Q 满足 P.before≡Q.after 且
+  P.after≡Q.before（absent↔absent；present 按 valueHash 相等）。不搜索更早历史、不搜索任意旧值；
+  add/remove 反转同由镜像判定；观察内部分反转时观察与 Event kind 为 `mixed`。
+- **#S6-049**（D7 REPLAN，2026-08-29）：正式批准 schema v3 observation 身份——新增
+  `watch_event_observations`（观察级 `idempotency_key` UNIQUE），`watch_event_items` 重建追加
+  `observation_id`；v2 既有 Event 无损回填恰好一个观察。去重分层：观察级 idempotencyKey 全局 UNIQUE
+  （同进程/跨进程重放零重复）+ 事件内指纹去重；跨 Event 相同指纹不去重（reversal 循环合法复现指纹）。
+- **#S6-050**（D7 REPLAN，2026-08-29）：idempotencyKey/changeFingerprint 编译期算法定稿（§9.4）：
+  域分离前缀 `watch-event-idem-v1`/`watch-change-fp-v1`；conditionVersion=`none` 或条件 canonical
+  JSON 的 SHA-256；newProjectionHash 取 envelope contentHash；指纹元组
+  `(itemKey, fieldKey, pairKind, beforeToken, afterToken)` 排序连接，pairKind ∈ added/removed/
+  changed/reversal。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。
