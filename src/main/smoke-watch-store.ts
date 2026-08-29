@@ -16,7 +16,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { app } from 'electron';
-import { getCurrentLogFilePath, logInfo } from './logger';
+import { getCurrentLogFilePath, logInfo, logWarn } from './logger';
 import { openWatchStore, restoreWatchStore, WATCH_BACKUP_NAME_PATTERN } from './watch/watch-store';
 import { WatchRepository } from './watch/repository/watch-repository';
 import {
@@ -29,6 +29,8 @@ import { runWatchMigrations } from './watch/db/watch-migrations';
 import { computeSourceLocatorFingerprint } from '../shared/watch/watch-rule-state';
 import type { SourceWatchProjection, WatchEvent, WatchRule } from '../shared/types/watch';
 import { runWatchLifecycleGateSet, runWatchLifecycleGateCheck } from './smoke-watch-lifecycle';
+import type { BrowserController } from './browser/browser-controller';
+import { runWatchPageSmokeGateSet, runWatchPageSmokeGateCheck } from './smoke-watch-page-session';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -367,7 +369,10 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
 // AIBROWSE_WATCH_SMOKE=set|check 跨进程门控（生产装配函数 + 注入 reader）
 // ---------------------------------------------------------------------------
 
-export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
+export async function runWatchSmokeGate(
+  mode: 'set' | 'check',
+  deps: { browserController: BrowserController | null },
+): Promise<void> {
   const userData = app.getPath('userData');
   assert(
     isPathInside(userData, app.getPath('temp')),
@@ -459,6 +464,15 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
     // D5（FIXED DECISIONS 10/12）：串行追加 D5 生命周期阶段——写「已过期」规则 +
     // 一条在途模拟 → 生产装配启动调度 → 恰一次 catch-up 真实执行 → 显式排水
     await runWatchLifecycleGateSet(dbPath, backupsDir);
+    // D6（FIXED DECISIONS 12）：串行追加 D6 页面/Session 阶段——受控 loopback
+    // 登录 Cookie → 共享 watch.db 写 rule(consent) → grant 单次消费 → 真实
+    // task-tab acquisition（安全标记 Projection、用户 Tab 恒等、task Tab 已
+    // 关闭）→ 日志/watch.db canary 扫描。零公网。
+    if (deps.browserController !== null) {
+      await runWatchPageSmokeGateSet({ controller: deps.browserController });
+    } else {
+      logWarn('smoke', 'WATCH set(D6)：browserController 不可用，跳过 D6 阶段');
+    }
     logInfo('smoke', 'WATCH set：Rule/Baseline/Event/遗留 Run/未决 intent 已就绪，直接退出');
     return; // app.exit 路径：句柄随进程退出由 OS 释放（不写终态）
   }
@@ -505,5 +519,14 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
   // D5（FIXED DECISIONS 10/12）：串行追加 D5 生命周期阶段——遗留非终态标
   // interrupted、同 requestKey 零重放、新过期 due 恰一次补跑、锚点精确断言
   await runWatchLifecycleGateCheck(dbPath, backupsDir);
+  // D6（FIXED DECISIONS 12）：串行追加 D6 页面/Session 阶段——同一受控
+  // userData/同一 loopback origin：grant store 空、consent 保留、新 task Tab
+  // 重建采集成功（跨进程 Cookie）、真实 restoreWatchStore 后 consent 清空、
+  // router login_required 且 create=0。
+  if (deps.browserController !== null) {
+    await runWatchPageSmokeGateCheck({ controller: deps.browserController });
+  } else {
+    logWarn('smoke', 'WATCH check(D6)：browserController 不可用，跳过 D6 阶段');
+  }
   logInfo('smoke', 'WATCH check：读回/interrupted/reconciliation 级联验证通过');
 }

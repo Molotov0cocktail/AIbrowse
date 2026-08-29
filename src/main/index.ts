@@ -42,12 +42,25 @@ import type { WatchRepository } from './watch/repository/watch-repository';
 import { runWatchSmokeGate } from './smoke-watch-store';
 // Sixth Stage D5：Scheduler/Coordinator/共享 HostRequestGate 生产装配（FIXED
 // DECISIONS 10/12）：acquisition port 以确定性 fail-closed stub 为生产缺省，
-// D6 以真实路由替换该注入点（装配形态一次到位）；before-quit 走 Research 同款
+// D7 在 Run pipeline 接线时消费 D6 PageAcquisitionRouter 并替换该注入点
+//（D6 只装配路由、禁止把 D6 success 写入 {ok:true} 端口——否则会被
+// Coordinator 误判 unchanged）；before-quit 走 Research 同款
 // preventDefault→await watchShutdown→app.quit() 重入排水。
 import { HostRequestGate } from './watch/host-request-gate';
 import { WatchRunCoordinator, type WatchAcquisitionPort } from './watch/watch-run-coordinator';
 import { WatchScheduler } from './watch/watch-scheduler';
 import { createSystemClock } from '../shared/watch/clock';
+// Sixth Stage D6：页面 Region/Session 授权/有界 PageProjection 装配（FIXED
+// DECISIONS 12）：同一 HostRequestGate 下构造 D3 public stack + Session
+// Workspace/Reader + 主进程内存 grant store + PageAcquisitionRouter；失败
+// 全部 fail-closed，D6 零 DB 写入；smoke bundle 供 8.23 默认矩阵驱动。
+import { createPublicWatchHttpStack } from './watch/public-watch-http-client';
+import { WatchTaskTabWorkspace } from './watch/watch-task-tab-workspace';
+import { BrowserWatchReader } from './watch/browser-watch-reader';
+import { SessionGrantStore } from './watch/session-grant-store';
+import { PageAcquisitionRouter } from './watch/watch-acquisition-service';
+import type { WatchPageSmokeBundle } from './smoke-watch-page-session';
+import { createWatchPageSmokeBundle } from './smoke-watch-page-session';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
 import { redactUrlForLog, resolveAddressBarInput } from '../shared/url';
 import { IPC } from '../shared/types/ipc';
@@ -275,6 +288,15 @@ let watchRunCoordinator: WatchRunCoordinator | null = null;
 let watchScheduler: WatchScheduler | null = null;
 let watchShutdownDone = false;
 let watchShutdownStarted = false;
+// D6：Session 页面采集装配（workspace/grant/router）——before-quit 顺序：
+// Coordinator stop → workspace cleanupAll drain → grant clear → robots cache
+// clear → host gate clear。
+let watchWorkspace: WatchTaskTabWorkspace | null = null;
+let watchGrantStore: SessionGrantStore | null = null;
+let watchPageRouter: PageAcquisitionRouter | null = null;
+let watchPublicStackRobots: { clearCache(): void } | null = null;
+// 8.23 冒烟 holder：index.ts 装配后注入（SMOKE_MODE 消费；生产零行为）
+const smokeWatchPageSession: { current: WatchPageSmokeBundle | null } = { current: null };
 // B5 冒烟注入点（仅 SMOKE_MODE 消费，生产行为不变）：恢复态/不可用态 UI 断言——
 // sources:state 与全部读写入口经适配器 stateOverride 门控（决议 #74 测试落点）
 let smokeSourcesStateOverride: { current: SourcesState | null } | null = null;
@@ -283,13 +305,28 @@ let smokeSourcesStateOverride: { current: SourcesState | null } | null = null;
 const smokeAuditCollector: AuditEntry[] = [];
 
 // D5（FIXED DECISIONS 12）：Watch 退出排水——stop-admission → abort 全部在途 →
-// 有界 drain → 交回既有 watchCoordinator.dispose()/watchRepo.dispose()（兜底清理在
+// 有界 drain → D6 workspace cleanupAll/grant clear/robots cache clear →
+// 交回既有 watchCoordinator.dispose()/watchRepo.dispose()（兜底清理在
 // before-quit 重入时执行）。幂等可重复调用；未完成行留待下次启动标 interrupted。
 async function watchShutdown(): Promise<void> {
   if (watchRunCoordinator !== null) {
     await watchRunCoordinator.stop();
   }
   watchScheduler?.stop();
+  // D6：task Tab 精确清理（失败 ownership 保留，重启后本进程退出不持久化）→
+  // grant 内存清空 → robots 缓存清空 → host gate 注册表清空
+  if (watchWorkspace !== null) {
+    try {
+      await watchWorkspace.cleanupAll();
+    } catch {
+      // 清理异常不阻塞退出（所有权仅内存，进程退出即销毁）
+    }
+  }
+  watchGrantStore?.clear();
+  watchPublicStackRobots?.clearCache();
+  // D7 将在 Run pipeline 接线时消费 watchPageRouter（FIXED DECISIONS 12）：
+  // 保持引用存活至 shutdown，杜绝“已装配但不可达”的悬挂态。
+  void watchPageRouter;
   watchHostGate?.clear();
 }
 
@@ -952,7 +989,9 @@ if (!gotLock) {
         if (RESEARCH_GATE_MODE) {
           run = runResearchSmokeGate(researchMode as 'set' | 'check');
         } else if (WATCH_GATE_MODE) {
-          run = runWatchSmokeGate(watchMode as 'set' | 'check');
+          run = runWatchSmokeGate(watchMode as 'set' | 'check', {
+            browserController,
+          });
         } else if (sourcesUiMode === 'set' || sourcesUiMode === 'check') {
           run = runSourcesUiSmokeScenario(sourcesUiMode, {
             uiWindow: mainWindow,
@@ -995,6 +1034,8 @@ if (!gotLock) {
                 ? join(smokeSourcesDir, 'sources.db')
                 : undefined, // B6：8.13 UI 场景 usage_events 只读探针（决议 #84；仅 SMOKE_MODE 注入）
             auditEntries: SMOKE_MODE ? smokeAuditCollector : undefined, // B6/B8 补验：真实 SRT-02 观察场景审计探针
+            // D6：8.23 Page/Session 冒烟 bundle holder（index.ts Watch 装配注入）
+            watchPageSession: SMOKE_MODE ? smokeWatchPageSession : undefined,
           });
         }
         run
@@ -1321,8 +1362,10 @@ function createBrowserWindow(): void {
         // D5（FIXED DECISIONS 10）：watchOutcome normal + schedulerReady + Sources
         // normal + 协调器已 bind → 构造单例 HostRequestGate + Coordinator +
         // Scheduler 并 start。acquisition port 以确定性 fail-closed stub
-        //（dependency_unavailable，零网络零能力）为生产缺省，D6 以真实路由替换
-        // 该注入点（装配形态一次到位）。默认无 Rule → 零 timer 新增行为。
+        //（dependency_unavailable，零网络零能力）为生产缺省——D7 在 Run
+        // pipeline 接线时消费 D6 PageAcquisitionRouter 并替换该注入点；
+        // D6 禁止把 Projection 写入当前 {ok:true} 端口（会被 Coordinator
+        // 误判 unchanged 丢弃）。默认无 Rule → 零 timer 新增行为。
         const watchClock = createSystemClock();
         const hostGate = new HostRequestGate({ clock: watchClock });
         watchHostGate = hostGate;
@@ -1334,6 +1377,35 @@ function createBrowserWindow(): void {
             retryAfterSeconds: null,
           }),
         };
+        // D6（FIXED DECISIONS 12）：同一 HostRequestGate 下装配 D3 public stack
+        //（target-gated，robots 生命周期窄端口）与 Session task-tab 采集依赖。
+        // 失败全 fail-closed；D6 零 DB 写入、零 Diff/Event。
+        if (browserController !== null) {
+          const publicStack = createPublicWatchHttpStack({ hostGate });
+          watchPublicStackRobots = publicStack.robots;
+          watchWorkspace = new WatchTaskTabWorkspace({
+            browser: browserController,
+            onCleanupFailure: () => {
+              try {
+                watchCoordinator?.markUnavailable('Session 任务标签页清理失败（Watch 不可用）');
+              } catch {
+                // 幂等；不掩盖原始失败
+              }
+            },
+          });
+          watchGrantStore = new SessionGrantStore({});
+          const reader = new BrowserWatchReader({ browser: browserController, clock: watchClock });
+          watchPageRouter = new PageAcquisitionRouter({
+            publicTarget: publicStack.target,
+            workspace: watchWorkspace,
+            reader,
+            hostGate,
+            clock: watchClock,
+          });
+          if (SMOKE_MODE && !WATCH_GATE_MODE) {
+            smokeWatchPageSession.current = createWatchPageSmokeBundle(browserController);
+          }
+        }
         const scheduler = new WatchScheduler({
           clock: watchClock,
           onDue: (entries) => {
@@ -1354,7 +1426,7 @@ function createBrowserWindow(): void {
         // 日志隐私（§13）：不记录 watch.db/userData 绝对路径
         logInfo(
           'main',
-          'Watch 子系统就绪（协调器已绑定，调度已启动，acquisition 端口 fail-closed）',
+          'Watch 子系统就绪（协调器已绑定，调度已启动，acquisition 端口 fail-closed，D6 页面采集路由已装配）',
         );
       }
       // unavailable 分支：coordinator 保持未绑定 → prepare 恒 fail-closed

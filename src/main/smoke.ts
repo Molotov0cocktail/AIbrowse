@@ -31,6 +31,7 @@ import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sq
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
 // D4：8.21 Watch store 冒烟（默认矩阵；dev+生产双场景）
 import { runWatchStoreSmokeScenario } from './smoke-watch-store';
+import { runWatchPageSessionScenario, type WatchPageSmokeBundle } from './smoke-watch-page-session';
 // D5：8.22 Watch 生命周期冒烟（默认矩阵；dev+生产双场景）
 import { runWatchLifecycleSmokeScenario } from './smoke-watch-lifecycle';
 // 8.16 C4：真实 Workspace + CaptureService + EvidenceValidator + Repository（临时 research.db）
@@ -224,6 +225,8 @@ export interface SmokeOptions {
   // 只读探针断言用；仅 SMOKE_MODE 注入，生产行为不变——决议 #84 测试设施）
   auditEntries?: AuditEntry[]; // B6/B8 补验：SMOKE_MODE 审计收集探针（真实 SRT-02 观察
   // 场景「审计工具名全部为注册表工具」机器断言用；仅 SMOKE_MODE 注入，生产不传）
+  watchPageSession?: { current: WatchPageSmokeBundle | null } | null; // D6：8.23 场景
+  // 调用的 D6 冒烟 bundle holder（index.ts Watch 装配注入；仅 SMOKE_MODE，生产不传）
 }
 
 // ---------- S5：真实 Provider 可选冒烟（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY） ----------
@@ -10956,6 +10959,19 @@ export async function runSmokeScenario(
       await runWatchLifecycleSmokeScenario();
     }
 
+    // 8.23 D6 Watch Page/Session 冒烟（默认矩阵自动包含；dev+生产双场景）：受控
+    // loopback 服务 + 真实 BrowserController 驱动真实 PageAcquisitionRouter
+    // Session 路径——HttpOnly Cookie 授权标记进入 Projection、每 attempt 精确
+    // create/close、用户 Tab/焦点恒等、grant 单次消费、locator/login/captcha/
+    // abort 全 fail-closed、cleanupAll drain、日志隐私扫描。零公网、零真实
+    // Provider。
+    if (options.liveSmoke === undefined && options.watchPageSession !== undefined) {
+      await runWatchPageSessionScenario({
+        controller,
+        getBundle: () => options.watchPageSession!.current,
+      });
+    }
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -13743,6 +13759,12 @@ async function runSrtScenarios(
           'watch-repository.ts': '业务 SQL 允许点（编译期常量 + 参数绑定，D4）',
           'smoke-watch-store.ts': 'SMOKE 门控测试设施（D4 8.21/门控；决议 #47 同精神）',
           'smoke-watch-lifecycle.ts': 'SMOKE 门控测试设施（D5 8.22/门控生命周期；决议 #47 同精神）',
+          // D6（2026-08-29）：第六阶段契约同步——PageAcquisitionRouter 内容类型
+          // charset 提取为 RegExp.exec 正则匹配（非 SQL，与 snapshot-script 同族
+          // 先例）；smoke-watch-page-session 只读 PRAGMA user_version 探针为 SMOKE
+          // 门控测试设施。均不放宽 SQL 封闭语义（renderer/preload 零 SQL 断言不变）。
+          'watch-acquisition-service.ts': 'RegExp.exec 正则匹配（非 SQL，已审查分类——D6 charset 提取）',
+          'smoke-watch-page-session.ts': 'SMOKE 门控测试设施（D6 8.23/门控页面 Session；决议 #47 同精神）',
           'source-service.ts': 'Source 生命周期 observer.prepare 调用（§10.3 观察者协议，非 SQL）',
         };
         const sqlHits: string[] = [];
