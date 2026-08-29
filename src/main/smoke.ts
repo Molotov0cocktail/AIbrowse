@@ -13763,8 +13763,10 @@ async function runSrtScenarios(
           // charset 提取为 RegExp.exec 正则匹配（非 SQL，与 snapshot-script 同族
           // 先例）；smoke-watch-page-session 只读 PRAGMA user_version 探针为 SMOKE
           // 门控测试设施。均不放宽 SQL 封闭语义（renderer/preload 零 SQL 断言不变）。
-          'watch-acquisition-service.ts': 'RegExp.exec 正则匹配（非 SQL，已审查分类——D6 charset 提取）',
-          'smoke-watch-page-session.ts': 'SMOKE 门控测试设施（D6 8.23/门控页面 Session；决议 #47 同精神）',
+          'watch-acquisition-service.ts':
+            'RegExp.exec 正则匹配（非 SQL，已审查分类——D6 charset 提取）',
+          'smoke-watch-page-session.ts':
+            'SMOKE 门控测试设施（D6 8.23/门控页面 Session；决议 #47 同精神）',
           'source-service.ts': 'Source 生命周期 observer.prepare 调用（§10.3 观察者协议，非 SQL）',
         };
         const sqlHits: string[] = [];
