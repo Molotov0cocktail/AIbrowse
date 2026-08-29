@@ -197,7 +197,10 @@ export class WatchTaskTabWorkspace {
           }
           return { ok: false, errorCode: focus.errorCode, reason: focus.reason };
         }
-        logInfo('watch', `任务标签页已创建（tabId=${newTabId}，host=${urlHost(norm.displayUrl)}）`);
+        logInfo(
+          'watch',
+          `任务标签页已创建（host=${urlHost(norm.displayUrl)}）`, // §13：零 tabId 入日志
+        );
         const warnings = focus.warning === null ? undefined : [focus.warning];
         const lease: WatchTaskTabLease = { tabId: newTabId, url: norm.displayUrl };
         return warnings === undefined ? { ok: true, lease } : { ok: true, lease, warnings };
@@ -309,7 +312,8 @@ export class WatchTaskTabWorkspace {
       return { ok: true, userClosed: false };
     }
     // 清理事实失败：不冒充已清理；ownership 保留供 cleanupAll/shutdown 重试
-    logWarn('watch', `任务标签页关闭失败（tabId=${tabId}），所有权保留，Watch 不可用`);
+    //（§13：零 tabId 入日志）
+    logWarn('watch', '任务标签页关闭失败（ownership 保留，Watch 不可用）');
     try {
       this.onCleanupFailure();
     } catch {
