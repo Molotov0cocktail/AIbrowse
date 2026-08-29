@@ -46,7 +46,7 @@ export type WatchReaderFailureCode =
   | 'snapshot-invalid'
   | 'internal';
 
-export type SnapshotSuspicion = 'login' | 'captcha' | 'unknown';
+export type SnapshotSuspicion = 'login' | 'captcha' | 'unknown' | 'degraded';
 
 export type WatchReaderResult =
   | {
@@ -106,7 +106,7 @@ export function pageSnapshotToChannels(
       if (Array.isArray(t.headers)) {
         for (const h of t.headers) {
           const text = normalizeWatchText(typeof h === 'string' ? h : '');
-          if (text === '') continue;
+          // R5：显式空 header 保留（列位置不漂移）
           headers.push(text);
         }
       }
@@ -116,9 +116,10 @@ export function pageSnapshotToChannels(
           const cells: string[] = [];
           for (const cell of row) {
             const text = normalizeWatchText(typeof cell === 'string' ? cell : '');
-            if (text === '') continue;
+            // R5：显式空单元格保留列位置；不做占位正文
             cells.push(text);
           }
+          // 有单元格的行（即使全空）保留；零单元格的空行无列结构，跳过
           if (cells.length > 0) rows.push(cells);
         }
       }
@@ -205,22 +206,23 @@ function hasSubmitControl(snapshot: Readonly<PageSnapshot>): boolean {
   return false;
 }
 
-function iframeDegraded(snapshot: Readonly<PageSnapshot>): boolean {
+/** 任意降级（meta.degraded !== 'none'；未知降级值同样视为降级，fail-closed）。 */
+function isDegraded(snapshot: Readonly<PageSnapshot>): boolean {
   const meta = snapshot.meta;
   if (meta === null || typeof meta !== 'object') return false;
-  if (meta.degraded === 'none') return false;
-  if (Array.isArray(meta.warnings)) {
-    for (const w of meta.warnings) {
-      if (typeof w === 'string' && w.includes('iframe')) return true;
-    }
-  }
-  return false;
+  return (meta.degraded as SnapshotDegradation) !== 'none';
 }
 
 /**
- * 保守挑战分类（FIXED 10）：password/login 结构信号 → 'login'；captcha/challenge
- * URL + 结构信号，或 challenge iframe 导致的 degraded → 'captcha'；仅 URL 可疑
- * 而无法可靠分类 → 'unknown'（路由器映射 unavailable）。
+ * 保守挑战分类（FIXED 10 + R4 修复）：login/captcha/unknown/degraded 闭合、互斥，
+ * 同一快照恰好命中一个。优先级：
+ *   1. password 结构信号（或 login URL + password/submit 结构信号）→ 'login'；
+ *   2. challenge URL + 结构信号（password/submit）→ 'captcha'；
+ *   3. login/challenge URL 单独出现（无可靠结构信号）→ 'unknown'；
+ *   4. 任意 degraded（含 iframe 降级）→ 'degraded'；
+ *   5. 其余 → null。
+ * 通用 iframe warning 绝不单独触发 captcha（R4：challenge 必须由 URL/navigation
+ * 信号与结构信号的可区分组合证明）；零敌手正文、零 input/form 值、零 Cookie。
  */
 export function classifySnapshotSuspicion(
   snapshot: Readonly<PageSnapshot>,
@@ -231,11 +233,14 @@ export function classifySnapshotSuspicion(
   if (passwordOnly || (markers.login && (passwordOnly || submit))) {
     return 'login';
   }
-  if ((markers.challenge && (passwordOnly || submit)) || iframeDegraded(snapshot)) {
+  if (markers.challenge && (passwordOnly || submit)) {
     return 'captcha';
   }
   if (markers.login || markers.challenge) {
     return 'unknown';
+  }
+  if (isDegraded(snapshot)) {
+    return 'degraded';
   }
   return null;
 }

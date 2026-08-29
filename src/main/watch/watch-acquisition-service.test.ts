@@ -440,7 +440,9 @@ describe('PageAcquisitionRouter — session 授权与登录/挑战', () => {
     }
   });
 
-  it('degraded snapshot → 失败；challenge iframe 降级 → captcha', async () => {
+  // R4 修复：普通页面只因 iframe 降级 → 保守 unavailable（零 Projection/Baseline），
+  // 不再是 captcha
+  it('degraded snapshot（iframe 降级）→ unavailable snapshot-invalid，不再是 captcha', async () => {
     const { browser, router } = makeHarness();
     browser.setTaskSnapshot({
       meta: {
@@ -453,7 +455,10 @@ describe('PageAcquisitionRouter — session 授权与登录/挑战', () => {
     });
     const r = await router.run(makeInput());
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.health).toBe('captcha');
+    if (!r.ok) {
+      expect(r.health).toBe('unavailable'); // 保守 unavailable
+      expect(r.disposition).toBe('snapshot-invalid');
+    }
   });
 });
 

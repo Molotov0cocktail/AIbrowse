@@ -6,6 +6,10 @@
 //   anything else (including non-web schemes) → search engine URL
 // Invalid inputs safely return '' (越界安全返回); the caller treats it as a no-op.
 // The hardcoded search engine will be replaced by a SearchProvider later.
+// 本模块只被 main 进程消费（renderer/preload 不 import）；node:crypto 仅用于
+// 日志 tabId 脱敏的不可逆短标签（D6 隐私红线）。
+
+import { createHash } from 'node:crypto';
 
 export const SEARCH_ENGINE_URL = 'https://www.bing.com/search';
 
@@ -63,4 +67,13 @@ export function redactUrlForLog(raw: string): string {
     const cut = raw.search(/[?#]/);
     return cut === -1 ? raw : raw.slice(0, cut);
   }
+}
+
+// D6 隐私红线（§13/§3.8）：task tabId 字节零日志。BrowserController/TabManager
+// 的所有日志一律改用本函数产出的不可逆短标签：对同一 tabId 确定性相同、sha256
+// 前缀（非反向可解），绝不回显原始 tabId。非字符串/空值安全返回固定占位。
+export function redactTabIdForLog(tabId: string): string {
+  if (typeof tabId !== 'string' || tabId === '') return 'tab#<empty>';
+  const hash = createHash('sha256').update(tabId, 'utf8').digest('hex');
+  return `tab#${hash.slice(0, 12)}`;
 }

@@ -382,6 +382,9 @@ export class PageAcquisitionRouter {
     if (suspicion === 'unknown') {
       return failure('unavailable', true, null, 'suspicious');
     }
+    if (suspicion === 'degraded') {
+      return failure('unavailable', true, null, 'snapshot-invalid');
+    }
     // 同 origin 但 locator 改变：source-changed disposition（零自动改 Rule）
     const finalKey = pageLocatorKey(finalUrl);
     const pageKey = pageLocatorKey(target.pageUrl);

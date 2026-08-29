@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { redactUrlForLog, resolveAddressBarInput } from './url';
+import { redactTabIdForLog, redactUrlForLog, resolveAddressBarInput } from './url';
 
 // 契约源：First_stage.md §十（URL / 搜索框行为）+ AGENTS.md §5（URL 判断逻辑）
 describe('resolveAddressBarInput（地址栏输入 → URL/搜索判断）', () => {
@@ -94,5 +94,28 @@ describe('redactUrlForLog（日志 URL 脱敏）', () => {
     expect(redactUrlForLog('http://127.0.0.1:9/x?session=abc&key=def')).toBe(
       'http://127.0.0.1:9/x',
     );
+  });
+});
+
+// D6 隐私红线（R2）：日志 tabId 脱敏——真实 tabId 字节零日志
+describe('redactTabIdForLog（日志 tabId 脱敏）', () => {
+  it('对同一 tabId 确定性生成不可逆短标签，且不含原始 tabId 字节', () => {
+    const id = '12345678-1234-4abc-9def-123456789abc';
+    const a = redactTabIdForLog(id);
+    const b = redactTabIdForLog(id);
+    expect(a).toBe(b); // 确定性
+    expect(a).toMatch(/^tab#[0-9a-f]{12}$/); // sha256 前缀短标签
+    expect(a).not.toContain(id);
+    expect(a).not.toContain(id.slice(0, 8));
+  });
+
+  it('不同 tabId 产出不同标签', () => {
+    expect(redactTabIdForLog('aaaa-1')).not.toBe(redactTabIdForLog('aaaa-2'));
+  });
+
+  it('空/非字符串安全返回固定占位', () => {
+    expect(redactTabIdForLog('')).toBe('tab#<empty>');
+    // @ts-expect-error — 运行时可传入非字符串（敌手形状），须安全处理
+    expect(redactTabIdForLog(42)).toBe('tab#<empty>');
   });
 });

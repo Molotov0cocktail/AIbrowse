@@ -352,6 +352,21 @@ async function userTabs(controller: BrowserController): Promise<TabInfo[]> {
   return (await controller.getTabs()).filter((t) => !t.id.startsWith('task-'));
 }
 
+// R2 修复：包装 createTab 记录每次真实创建的 Tab 精确 ID（task-owned Tab 经同一
+// BrowserController.createTab 创建）。冒烟 harness 随后逐个字节扫描本次日志切片，
+// 断言真实 task tabId 零命中（不依赖文案/前缀扫描）。
+function recordCreatedTabIds(controller: BrowserController): string[] {
+  const created: string[] = [];
+  const original = controller.createTab.bind(controller);
+  const wrapped = async (url?: string): Promise<TabInfo> => {
+    const tab = await original(url);
+    created.push(tab.id);
+    return tab;
+  };
+  (controller as unknown as { createTab: typeof wrapped }).createTab = wrapped;
+  return created;
+}
+
 async function runAcquisition(router: PageAcquisitionRouter, rule: WatchRule) {
   return router.run({
     target: rule.target as PageTarget,
@@ -394,6 +409,9 @@ export async function runWatchPageSessionScenario(deps: {
   const bundle = deps.getBundle();
   assert(bundle !== null, '8.23：D6 冒烟 bundle 未装配（index.ts watch 装配缺失）');
   const server = await startD6PageServer(null);
+  // R2：真实 task-owned Tab 由 workspace 经 controller.createTab 创建——先包装
+  // 记录每次创建（含登录 Tab 与 task Tab）的精确 ID，扫描阶段逐个字节核对。
+  const createdTabIds = recordCreatedTabIds(deps.controller);
   try {
     const origin = server.base;
     const userTabsBefore = await userTabs(deps.controller);
@@ -521,15 +539,18 @@ export async function runWatchPageSessionScenario(deps: {
       '8.23：drain 后零 owned/in-flight',
     );
 
-    // 10. 隐私扫描：Cookie 值、grant handle、表单 canary 零命中；Watch 模块
-    //     日志零 task tabId（browser 模块对全部 Tab 的既有创建日志不在
-    //     D6 控制范围——Watch 自身日志语义由工作区红测断言）。
+    // 10. 隐私扫描（R2）：Cookie 值、grant handle、表单 canary、页面正文标记零
+    //     命中；每个真实创建 Tab（含每次 task-owned Tab）的精确 ID 逐个字节扫描
+    //     本次日志切片——真实 task tabId 在全部日志零出现（BrowserController/
+    //     TabManager 已做日志脱敏，不依赖文案或前缀扫描）。
     assertLogSliceFreeOf(logFrom, D6_COOKIE_VALUE, 'D6 Cookie 值');
     assertLogSliceFreeOf(logFrom, issued.handle, 'D6 grant handle');
     assertLogSliceFreeOf(logFrom, FORM_CANARY, 'D6 表单值 canary');
     assertLogSliceFreeOf(logFrom, SECURE_MARKER, 'D6 页面正文标记');
-    assertLogSliceFreeOf(logFrom, '任务标签页已创建（tabId=', 'D6 Watch 任务 tabId 日志');
-    assertLogSliceFreeOf(logFrom, '任务标签页关闭失败（tabId=', 'D6 Watch 任务 tabId 日志');
+    assert(createdTabIds.length > 0, '8.23：冒烟必须至少记录一个真实创建 Tab 的精确 ID');
+    for (const id of createdTabIds) {
+      assertLogSliceFreeOf(logFrom, id, `真实 task/创建 Tab 精确 ID（${id}）`);
+    }
 
     // 11. 关闭授权 Tab（场景自建自清理；用户原有 Tab 零触碰）
     assert(await deps.controller.closeTab(loginTab.id), '8.23：关闭登录 Tab 应成功');
@@ -564,6 +585,8 @@ export async function runWatchPageSmokeGateSet(deps: {
   const watchDir = join(app.getPath('userData'), 'watch');
   const server = await startD6PageServer(watchDir);
   const bundle = createWatchPageSmokeBundle(deps.controller);
+  // R2：记录每次真实创建 Tab（含 task-owned Tab）的精确 ID，扫描阶段逐个字节核对
+  const createdTabIds = recordCreatedTabIds(deps.controller);
   const origin = server.base;
   try {
     // 1. 建立共享登录 Session（HttpOnly Cookie 落 persist 分区，跨进程持久化）
@@ -636,11 +659,14 @@ export async function runWatchPageSmokeGateSet(deps: {
     );
     assert(bundle.workspace.getOwnedCount() === 0, 'WATCH set(D6)：task Tab 已关闭');
 
-    // 5. 隐私扫描：日志与 watch.db 字节（Cookie 值/handle/表单 canary/tabId）
+    // 5. 隐私扫描（R2）：日志与 watch.db 字节（Cookie 值/handle/表单 canary/每个
+    //    真实创建 Tab 的精确 ID——含每次 task-owned Tab）
     assertLogSliceFreeOf(logFrom, D6_COOKIE_VALUE, 'D6 Cookie 值');
     assertLogSliceFreeOf(logFrom, issued.handle, 'D6 grant handle');
     assertLogSliceFreeOf(logFrom, FORM_CANARY, 'D6 表单 canary');
-    assertLogSliceFreeOf(logFrom, '任务标签页已创建（tabId=', 'D6 Watch 任务 tabId 日志');
+    for (const id of createdTabIds) {
+      assertLogSliceFreeOf(logFrom, id, `WATCH set(D6) 真实 task/创建 Tab 精确 ID（${id}）`);
+    }
     for (const suffix of ['watch.db', 'watch.db-wal', 'watch.db-shm']) {
       try {
         assertFileBytesFreeOf(join(watchDir, suffix), D6_COOKIE_VALUE, 'D6 Cookie 值');
@@ -670,6 +696,8 @@ export async function runWatchPageSmokeGateCheck(deps: {
   const watchDir = join(app.getPath('userData'), 'watch');
   const server = await startD6PageServer(watchDir); // 同一端口 → 同一 origin
   const bundle = createWatchPageSmokeBundle(deps.controller);
+  // R2：记录每次真实创建 Tab（含 task-owned Tab）的精确 ID，扫描阶段逐个字节核对
+  const createdTabIds = recordCreatedTabIds(deps.controller);
   const origin = server.base;
   try {
     const dbPath = join(watchDir, 'watch.db');
@@ -748,9 +776,13 @@ export async function runWatchPageSmokeGateCheck(deps: {
     const tabsAfter = await userTabs(deps.controller);
     assert(tabsBefore.length === tabsAfter.length, 'WATCH check(D6)：create=0');
 
-    // 6. 日志隐私扫描
+    // 6. 日志隐私扫描（R2）：Cookie 值/表单 canary 零命中；每个真实创建 Tab
+    //    （含 task-owned Tab）的精确 ID 逐个字节扫描日志切片
     assertLogSliceFreeOf(logFrom, D6_COOKIE_VALUE, 'D6 Cookie 值');
     assertLogSliceFreeOf(logFrom, FORM_CANARY, 'D6 表单 canary');
+    for (const id of createdTabIds) {
+      assertLogSliceFreeOf(logFrom, id, `WATCH check(D6) 真实 task/创建 Tab 精确 ID（${id}）`);
+    }
     logInfo(
       'smoke',
       'WATCH check(D6)：consent 保留/新建 task Tab/restore 失效/login_required 通过',

@@ -20,6 +20,12 @@ export type DocumentChannelsValidationResult =
 
 const MAX_ARRAY_ITEMS = 4096; // 敌手数组长度硬上界（防 O(n²)/内存膨胀；实际通道远小于此）
 
+// R5：全部表（headers + 所有 row 单元格）的累计单元格硬上界。显式空单元格用
+// 空字符串表示（0 UTF-8 字节），单靠字节预算无法在构造阶段防御 4096×4096 空
+// 单元格巨表的数组/内存膨胀；本累计上限在验证阶段确定性拒绝（== 接受、+1 拒绝），
+// MAX_PROJECTION_FIELDS=50 / MAX_PAGE_PROJECTION_BYTES=64KiB 仍是最终硬拒绝。
+const MAX_TOTAL_TABLE_CELLS = 16_384;
+
 // 单字符串 char 上界：不允许单个字符串超过整个投影字节预算的码元数
 //（多字节文本由 UTF-8 总额预检兜底）
 const MAX_STRING_CHARS = MAX_PAGE_PROJECTION_BYTES;
@@ -97,6 +103,12 @@ function isBoundedString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_STRING_CHARS;
 }
 
+// R5：table header/cell 专用有界字符串——允许空字符串表达显式空单元格/空 header，
+// 但仍受单字符串码元上界约束（多字节由 UTF-8 总额预检兜底）。
+function isBoundedTableCellString(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_STRING_CHARS;
+}
+
 function validateHeading(raw: unknown): { level: 1 | 2 | 3; text: string } | null {
   if (!isPlainRecord(raw) || !exactOwnKeys(raw, ['level', 'text'])) return null;
   const level = ownDataValue(raw, 'level');
@@ -107,12 +119,14 @@ function validateHeading(raw: unknown): { level: 1 | 2 | 3; text: string } | nul
   return { level: level as 1 | 2 | 3, text };
 }
 
-function validateStringArray(raw: unknown): string[] | null {
+// R5：table header/cell 数组——空字符串合法（显式空单元格保留列位置），其余规则
+// 与稠密/有界/own-data 纪律一致。
+function validateTableStringArray(raw: unknown): string[] | null {
   if (!isDenseArray(raw, MAX_ARRAY_ITEMS)) return null;
   const out: string[] = [];
   for (let i = 0; i < raw.length; i += 1) {
     const item = raw[i] as unknown;
-    if (!isBoundedString(item)) return null;
+    if (!isBoundedTableCellString(item)) return null;
     out.push(item);
   }
   return out;
@@ -123,13 +137,13 @@ function validateTable(raw: unknown): { headers: string[]; rows: string[][] } | 
   const headers = ownDataValue(raw, 'headers');
   const rows = ownDataValue(raw, 'rows');
   if (headers === NOT_OWN_DATA || rows === NOT_OWN_DATA) return null;
-  const headersOk = validateStringArray(headers);
+  const headersOk = validateTableStringArray(headers);
   if (headersOk === null) return null;
   if (!isDenseArray(rows, MAX_ARRAY_ITEMS)) return null;
   const rowsOut: string[][] = [];
   for (let i = 0; i < rows.length; i += 1) {
     const row = rows[i] as unknown;
-    const rowOut = validateStringArray(row);
+    const rowOut = validateTableStringArray(row);
     if (rowOut === null) return null;
     rowsOut.push(rowOut);
   }
@@ -186,10 +200,17 @@ export function validateDocumentChannels(raw: unknown): DocumentChannelsValidati
     return { ok: false, reason: 'tables-invalid' };
   }
   const tables = [];
+  let tableCells = 0;
   for (let i = 0; i < tablesRaw.length; i += 1) {
     const t = validateTable(tablesRaw[i]);
     if (t === null) return { ok: false, reason: 'table-item-invalid' };
+    // R5：累计单元格（headers + 全部 row 单元格）确定性上限；== 接受、+1 拒绝
+    tableCells += t.headers.length;
+    for (const row of t.rows) tableCells += row.length;
     tables.push(t);
+  }
+  if (tableCells > MAX_TOTAL_TABLE_CELLS) {
+    return { ok: false, reason: 'table-cells-over-limit' };
   }
   if (!isDenseArray(linksRaw, MAX_ARRAY_ITEMS)) {
     return { ok: false, reason: 'links-invalid' };

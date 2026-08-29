@@ -202,3 +202,67 @@ describe('validateDocumentChannels — UTF-8 结构预算预检', () => {
     expect(validateDocumentChannels(raw).ok).toBe(false);
   });
 });
+
+// R5 修复：显式空 table cell/header 合法表达（保留列位置）；累计单元格上限防
+// 4096×4096 空单元格绕过字节预算；MAX_PROJECTION_FIELDS/MAX_PAGE_PROJECTION_BYTES
+// 仍是最终硬拒绝
+describe('validateDocumentChannels — 空 table cell/header 与累计单元格上限', () => {
+  it('空 header 与空单元格（含整行空单元格）通过验证并保持列位置', () => {
+    const raw = validChannels({
+      tables: [
+        {
+          headers: ['名称', '', '库存'],
+          rows: [
+            ['', '甲', '100'],
+            ['乙', '', ''],
+            ['', '', ''],
+          ],
+        },
+      ],
+    });
+    const r = validateDocumentChannels(raw);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.channels.tables).toEqual([
+      {
+        headers: ['名称', '', '库存'],
+        rows: [
+          ['', '甲', '100'],
+          ['乙', '', ''],
+          ['', '', ''],
+        ],
+      },
+    ]);
+  });
+
+  it('== MAX_TOTAL_TABLE_CELLS 累计单元格接受（空字符串零字节不绕过结构上限）', () => {
+    // 1 header + 4095 行 × 4 空单元格 = 16381；再加第二表 2 header + 1 空单元格 = 16384（== 接受）
+    const rows = Array.from({ length: 4095 }, () => ['', '', '', '']);
+    const a = validChannels({
+      tables: [{ headers: ['h'], rows }],
+    });
+    expect(validateDocumentChannels(a).ok).toBe(true);
+    const b = validChannels({
+      tables: [
+        { headers: ['h'], rows },
+        { headers: ['x', 'y'], rows: [['']] },
+      ],
+    });
+    // 1 + 4095*4 + 2 + 1 = 16384（== 接受）
+    expect(validateDocumentChannels(b).ok).toBe(true);
+  });
+
+  it('MAX_TOTAL_TABLE_CELLS+1 累计单元格整份拒绝（超量空单元格不能绕过预算）', () => {
+    // 1 header + 4095 行 × 4 空单元格 + 第二表 2 header + 2 空单元格 = 16385（+1 拒绝）
+    const rows = Array.from({ length: 4095 }, () => ['', '', '', '']);
+    const raw = validChannels({
+      tables: [
+        { headers: ['h'], rows },
+        { headers: ['x', 'y'], rows: [['', '']] },
+      ],
+    });
+    const r = validateDocumentChannels(raw);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('table-cells-over-limit');
+  });
+});

@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { WebContentsView, type BaseWindow, type Session, type WebContents } from 'electron';
 import type { TabInfo } from '../../shared/types/browser';
-import { ALLOWED_SCHEME_PATTERN, redactUrlForLog } from '../../shared/url';
+import { ALLOWED_SCHEME_PATTERN, redactTabIdForLog, redactUrlForLog } from '../../shared/url';
 import { logError, logWarn } from '../logger';
 import { transition } from './tab-state';
 
@@ -52,7 +52,7 @@ export class TabManager {
     wc.setWindowOpenHandler(({ url: targetUrl }) => {
       logWarn(
         'browser',
-        `已拦截 window.open 新窗口请求（tabId=${info.id}）：${redactUrlForLog(targetUrl)}`,
+        `已拦截 window.open 新窗口请求（tabId=${redactTabIdForLog(info.id)}）：${redactUrlForLog(targetUrl)}`,
       );
       return { action: 'deny' };
     });
@@ -66,7 +66,10 @@ export class TabManager {
     wc.once('destroyed', () => {
       if (this.entries.has(info.id)) {
         this.entries.delete(info.id);
-        logWarn('browser', `webContents 意外销毁（tabId=${info.id}），已从登记表移除`);
+        logWarn(
+          'browser',
+          `webContents 意外销毁（tabId=${redactTabIdForLog(info.id)}），已从登记表移除`,
+        );
         this.options.onChanged();
       }
     });
@@ -134,7 +137,10 @@ export class TabManager {
     ): void => {
       if (isMainFrame && errorCode !== -3) {
         // -3（ERR_ABORTED）为导航竞态，由 transition 统一忽略；这里只记录真实失败
-        logWarn('browser', `页面加载失败（tabId=${info.id}，errorCode=${errorCode}）`);
+        logWarn(
+          'browser',
+          `页面加载失败（tabId=${redactTabIdForLog(info.id)}，errorCode=${errorCode}）`,
+        );
       }
       info.state = transition(info.state, { type: 'fail-load', isMainFrame, errorCode });
       this.options.onChanged();
@@ -179,7 +185,7 @@ export class TabManager {
         details.preventDefault();
         logWarn(
           'browser',
-          `已拦截非白名单导航（tabId=${info.id}）：${redactUrlForLog(details.url)}`,
+          `已拦截非白名单导航（tabId=${redactTabIdForLog(info.id)}）：${redactUrlForLog(details.url)}`,
         );
       }
     };
@@ -193,7 +199,7 @@ export class TabManager {
         details.preventDefault();
         logWarn(
           'browser',
-          `已拦截非白名单重定向（tabId=${info.id}）：${redactUrlForLog(details.url)}`,
+          `已拦截非白名单重定向（tabId=${redactTabIdForLog(info.id)}）：${redactUrlForLog(details.url)}`,
         );
       }
     };
@@ -204,7 +210,7 @@ export class TabManager {
       // §4：渲染进程退出 → 该 Tab 立即降级为 error（快照走 L2/L3 路径）。
       // 不属于三事件状态机（transition 只覆盖加载事件），按契约直接置 error。
       info.state = 'error';
-      logError('browser', `渲染进程退出（tabId=${info.id}）`);
+      logError('browser', `渲染进程退出（tabId=${redactTabIdForLog(info.id)}）`);
       this.options.onChanged();
     };
     wc.on('render-process-gone', onRenderGone);

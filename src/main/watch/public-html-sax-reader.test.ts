@@ -63,6 +63,36 @@ describe('通道提取：mainText/headings/tables/links', () => {
     expect(r.channels.tables).toEqual([{ headers: ['H1', 'H2'], rows: [['a', 'b']] }]);
   });
 
+  // R5 修复：显式空单元格（含仅空白）与整行空单元格保留列位置，绝不左移漂移
+  it('空首列/空中间列/空末列/整行空单元格：列索引与 columnLabel 不漂移', () => {
+    const r = readPublicHtml(
+      htmlOf(
+        '<table><tr><th>名称</th><th>价格</th><th>库存</th></tr>' +
+          '<tr><td></td><td>甲</td><td>100</td></tr>' +
+          '<tr><td>乙</td><td> </td><td>200</td></tr>' +
+          '<tr><td>丙</td><td>300</td><td></td></tr>' +
+          '<tr><td></td><td></td><td></td></tr></table>',
+      ),
+      BASE,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.channels.tables).toEqual([
+      {
+        headers: ['名称', '价格', '库存'],
+        rows: [
+          ['', '甲', '100'],
+          ['乙', '', '200'],
+          ['丙', '300', ''],
+          ['', '', ''],
+        ],
+      },
+    ]);
+    // 空单元格用空字符串表达，不产生占位正文
+    const json = JSON.stringify(r.channels);
+    expect(json).not.toContain('占位');
+  });
+
   it('嵌套表格内容忽略（只处理最外层）', () => {
     const body =
       '<table><tr><th>H</th></tr><tr><td>outer<table><tr><td>inner</td></tr></table></td></tr></table>';

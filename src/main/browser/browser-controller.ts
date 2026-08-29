@@ -14,7 +14,7 @@ import type {
 import type { ClickAllowedKind } from '../../shared/types/agent';
 import type { ContentBounds } from '../../shared/types/ipc';
 import { logInfo, logWarn } from '../logger';
-import { redactUrlForLog } from '../../shared/url';
+import { redactTabIdForLog, redactUrlForLog } from '../../shared/url';
 import { PageReader } from './page-reader';
 import type { SessionManager } from './session-manager';
 import { TabManager, type TabEntry } from './tab-manager';
@@ -101,9 +101,16 @@ export class BrowserControllerImpl implements BrowserController {
     this.applyActiveVisual();
     // 状态机（§5）：idle --loadURL--> loading --> ready，事件驱动；此处仅记录加载异常
     entry.view.webContents.loadURL(target).catch((err: unknown) => {
-      logWarn('browser', `加载失败（tabId=${entry.info.id}，url=${redactUrlForLog(target)}）`, err);
+      logWarn(
+        'browser',
+        `加载失败（tabId=${redactTabIdForLog(entry.info.id)}，url=${redactUrlForLog(target)}）`,
+        err,
+      );
     });
-    logInfo('browser', `已创建标签页（tabId=${entry.info.id}，url=${redactUrlForLog(target)}）`);
+    logInfo(
+      'browser',
+      `已创建标签页（tabId=${redactTabIdForLog(entry.info.id)}，url=${redactUrlForLog(target)}）`,
+    );
     this.pushState();
     return this.toTabInfo(entry, true);
   }
@@ -112,14 +119,14 @@ export class BrowserControllerImpl implements BrowserController {
     if (this.disposed) return false;
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) {
-      logWarn('browser', `closeTab 未知 tabId=${tabId}`);
+      logWarn('browser', `closeTab 未知 tabId=${redactTabIdForLog(tabId)}`);
       return false;
     }
     // §5：selectNextActive 基于关闭前的完整列表计算右邻/左邻（含被关闭的 Tab 本身）
     const tabsBeforeClose = this.tabManager.list().map((e) => e.info);
     const closedActive = this.activeTabId === tabId;
     this.tabManager.closeTab(tabId); // 移除条目 + removeChildView + close + 逐一移除监听器（§6）
-    logInfo('browser', `已关闭标签页（tabId=${tabId}）`);
+    logInfo('browser', `已关闭标签页（tabId=${redactTabIdForLog(tabId)}）`);
     if (closedActive) {
       const nextId = selectNextActive(tabsBeforeClose, this.activeTabId, tabId);
       if (nextId !== null) {
@@ -140,7 +147,7 @@ export class BrowserControllerImpl implements BrowserController {
   async activateTab(tabId: string): Promise<boolean> {
     if (this.disposed) return false;
     if (this.tabManager.get(tabId) === undefined) {
-      logWarn('browser', `activateTab 未知 tabId=${tabId}`);
+      logWarn('browser', `activateTab 未知 tabId=${redactTabIdForLog(tabId)}`);
       return false;
     }
     if (this.activeTabId === tabId) return true; // 幂等
@@ -153,12 +160,12 @@ export class BrowserControllerImpl implements BrowserController {
   async navigate(tabId: string, url: string): Promise<boolean> {
     if (this.disposed) return false;
     if (url === '') {
-      logWarn('browser', `navigate 收到空 URL（tabId=${tabId}）`);
+      logWarn('browser', `navigate 收到空 URL（tabId=${redactTabIdForLog(tabId)}）`);
       return false;
     }
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) {
-      logWarn('browser', `navigate 未知 tabId=${tabId}`);
+      logWarn('browser', `navigate 未知 tabId=${redactTabIdForLog(tabId)}`);
       return false;
     }
     try {
@@ -166,7 +173,11 @@ export class BrowserControllerImpl implements BrowserController {
       await entry.view.webContents.loadURL(url);
       return true;
     } catch (err) {
-      logWarn('browser', `navigate 失败（tabId=${tabId}，url=${redactUrlForLog(url)}）`, err);
+      logWarn(
+        'browser',
+        `navigate 失败（tabId=${redactTabIdForLog(tabId)}，url=${redactUrlForLog(url)}）`,
+        err,
+      );
       return false;
     }
   }
@@ -176,7 +187,7 @@ export class BrowserControllerImpl implements BrowserController {
     if (entry === null) return false;
     const history = entry.view.webContents.navigationHistory;
     if (!history.canGoBack()) {
-      logWarn('browser', `goBack 无后退历史（tabId=${tabId}）`);
+      logWarn('browser', `goBack 无后退历史（tabId=${redactTabIdForLog(tabId)}）`);
       return false;
     }
     history.goBack();
@@ -188,7 +199,7 @@ export class BrowserControllerImpl implements BrowserController {
     if (entry === null) return false;
     const history = entry.view.webContents.navigationHistory;
     if (!history.canGoForward()) {
-      logWarn('browser', `goForward 无前进历史（tabId=${tabId}）`);
+      logWarn('browser', `goForward 无前进历史（tabId=${redactTabIdForLog(tabId)}）`);
       return false;
     }
     history.goForward();
@@ -232,7 +243,7 @@ export class BrowserControllerImpl implements BrowserController {
     }
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) {
-      logWarn('browser', `交互请求未知 tabId=${tabId}`);
+      logWarn('browser', `交互请求未知 tabId=${redactTabIdForLog(tabId)}`);
       return { ok: false, errorCode: 'execution-failed', reason: '标签页不存在' };
     }
     const wc = entry.view.webContents;
@@ -263,7 +274,7 @@ export class BrowserControllerImpl implements BrowserController {
     if (entry.generation !== expectedDocumentId) {
       logWarn(
         'browser',
-        `click 拒绝陈旧 elementId（tabId=${tabId}，elementId=${elementId}，` +
+        `click 拒绝陈旧 elementId（tabId=${redactTabIdForLog(tabId)}，elementId=${elementId}，` +
           `expectedDocumentId=${expectedDocumentId}，当前世代=${entry.generation}）`,
       );
       return {
@@ -296,7 +307,7 @@ export class BrowserControllerImpl implements BrowserController {
     if (entry.generation !== expectedDocumentId) {
       logWarn(
         'browser',
-        `fill 拒绝陈旧 elementId（tabId=${tabId}，elementId=${elementId}，` +
+        `fill 拒绝陈旧 elementId（tabId=${redactTabIdForLog(tabId)}，elementId=${elementId}，` +
           `expectedDocumentId=${expectedDocumentId}，当前世代=${entry.generation}）`,
       );
       return {
@@ -320,7 +331,7 @@ export class BrowserControllerImpl implements BrowserController {
     }
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) {
-      logWarn('browser', `scrollTab 未知 tabId=${tabId}`);
+      logWarn('browser', `scrollTab 未知 tabId=${redactTabIdForLog(tabId)}`);
       return { ok: false, reason: '标签页不存在' };
     }
     const wc = entry.view.webContents;
@@ -404,7 +415,7 @@ export class BrowserControllerImpl implements BrowserController {
   private guardNavigation(method: string, tabId: string): TabEntry | null {
     if (this.disposed) return null;
     const entry = this.tabManager.get(tabId);
-    if (entry === undefined) logWarn('browser', `${method} 未知 tabId=${tabId}`);
+    if (entry === undefined) logWarn('browser', `${method} 未知 tabId=${redactTabIdForLog(tabId)}`);
     return entry ?? null;
   }
 

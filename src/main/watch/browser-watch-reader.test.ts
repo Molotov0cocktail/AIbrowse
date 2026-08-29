@@ -152,6 +152,41 @@ describe('pageSnapshotToChannels — 纯映射', () => {
     expect(json).not.toContain('placeholder');
     expect(json).not.toContain('CANARY');
   });
+
+  // R5 修复：显式空单元格/空行保留列位置，绝不让后续列左移漂移
+  it('空首列/空中间列/空末列/整行空单元格：列索引与 columnLabel 不漂移', () => {
+    const r = pageSnapshotToChannels(
+      snapshot({
+        tables: [
+          {
+            headers: ['名称', '价格', '库存'],
+            rows: [
+              ['', '甲', '100'], // 空首列
+              ['乙', '', '200'], // 空中间列
+              ['丙', '300', ''], // 空末列
+              ['', '', ''], // 整行空单元格（保留列结构）
+            ],
+          },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.channels.tables).toEqual([
+      {
+        headers: ['名称', '价格', '库存'],
+        rows: [
+          ['', '甲', '100'],
+          ['乙', '', '200'],
+          ['丙', '300', ''],
+          ['', '', ''],
+        ],
+      },
+    ]);
+    // 空首列首单元格为空字符串且不产生占位正文
+    const json = JSON.stringify(r.channels);
+    expect(json).not.toContain('占位');
+  });
 });
 
 describe('BrowserWatchReader — ready 等待与失败分类', () => {
@@ -404,17 +439,56 @@ describe('classifySnapshotSuspicion — 组合信号,正文字符串免疫', () 
     expect(classifySnapshotSuspicion(s)).toBe('captcha');
   });
 
-  it('challenge iframe 导致 degraded → captcha；其余 degraded → null', () => {
+  // R4 修复：普通页面只因存在/跳过 iframe 而 degraded → 'degraded'，绝不是 captcha
+  it('普通 URL + iframe degraded → degraded（不是 captcha）；其余 degraded 同样 degraded', () => {
     const s = snapshot({
       url: 'https://example.com/doc',
       meta: { ...snapshot().meta!, degraded: 'main-process-only', warnings: ['iframe 跨域已跳过'] },
     });
-    expect(classifySnapshotSuspicion(s)).toBe('captcha');
+    expect(classifySnapshotSuspicion(s)).toBe('degraded');
     const s2 = snapshot({
       url: 'https://example.com/doc',
       meta: { ...snapshot().meta!, degraded: 'partial', warnings: ['部分内容截断'] },
     });
-    expect(classifySnapshotSuspicion(s2)).toBeNull();
+    expect(classifySnapshotSuspicion(s2)).toBe('degraded');
+  });
+
+  // R4 修复：challenge 必须由 URL 信号 + 结构信号组合证明；通用 iframe warning 不
+  // 能当 challenge 证明
+  it('challenge URL + degraded（无结构信号）不是 captcha；challenge URL + 结构信号才是', () => {
+    const degraded = snapshot({
+      url: 'https://example.com/challenge/verify',
+      meta: {
+        ...snapshot().meta!,
+        degraded: 'main-process-only',
+        warnings: ['iframe 跨域已跳过'],
+      },
+    });
+    expect(classifySnapshotSuspicion(degraded)).not.toBe('captcha');
+    const withSubmit = snapshot({
+      url: 'https://example.com/challenge/verify',
+      buttons: [{ id: 'b', text: '提交', isSubmit: true }],
+    });
+    expect(classifySnapshotSuspicion(withSubmit)).toBe('captcha');
+  });
+
+  it('login/captcha/unknown/degraded 映射闭合且互斥（同一快照恰好一个）', () => {
+    const noMarker = snapshot({ url: 'https://example.com/doc' });
+    expect(classifySnapshotSuspicion(noMarker)).toBeNull();
+    const loginForm = snapshot({
+      url: 'https://example.com/login',
+      inputs: [{ id: 'p', type: 'password' }],
+    });
+    expect(classifySnapshotSuspicion(loginForm)).toBe('login');
+    const loginOnly = snapshot({ url: 'https://example.com/login' });
+    expect(classifySnapshotSuspicion(loginOnly)).toBe('unknown');
+    const challengeOnly = snapshot({ url: 'https://example.com/captcha' });
+    expect(classifySnapshotSuspicion(challengeOnly)).toBe('unknown');
+    const challengeSubmit = snapshot({
+      url: 'https://example.com/captcha',
+      buttons: [{ id: 'b', text: '继续', isSubmit: true }],
+    });
+    expect(classifySnapshotSuspicion(challengeSubmit)).toBe('captcha');
   });
 
   it('敌手正文（″login″ 文本）不触发分类', () => {

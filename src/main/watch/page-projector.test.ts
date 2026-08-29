@@ -347,6 +347,47 @@ describe('PageProjection — table fingerprint / occurrence / 漂移', () => {
     });
     expect(a.ok).toBe(false);
   });
+
+  // R5 修复：空单元格（含整行空单元格）保留列索引与 columnLabel，不左移漂移
+  it('空单元格/整行空单元格 → 字段保留 column/columnLabel 与空 value（列位置不漂移）', () => {
+    const fp = computeTableHeaderFingerprint(['名称', '价格', '库存']) ?? '';
+    const r = project({
+      channels: channels({
+        headings: [],
+        tables: [
+          {
+            headers: ['名称', '价格', '库存'],
+            rows: [
+              ['', '甲', '100'], // 空首列
+              ['乙', '', '200'], // 空中间列
+              ['丙', '300', ''], // 空末列
+              ['', '', ''], // 整行空单元格
+            ],
+          },
+        ],
+      }),
+      regions: [{ kind: 'table', label: '表', headerFingerprint: fp, occurrence: 0 }],
+      finalUrl: 'https://example.com/',
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const cells = r.projection.value.fields.filter((f) => f.kind === 'table-cell');
+    expect(cells.length).toBe(12);
+    const cellOf = (row: number, column: number) =>
+      cells.find((f) => f.kind === 'table-cell' && f.row === row && f.column === column)!;
+    // 空首列：column=0 且 columnLabel='名称'，value=''
+    expect(cellOf(0, 0).kind === 'table-cell' && cellOf(0, 0).value).toBe('');
+    expect(cellOf(0, 0).kind === 'table-cell' && cellOf(0, 0).columnLabel).toBe('名称');
+    // 空中间列：column=1、columnLabel='价格'，value=''
+    expect(cellOf(1, 1).kind === 'table-cell' && cellOf(1, 1).value).toBe('');
+    expect(cellOf(1, 1).kind === 'table-cell' && cellOf(1, 1).columnLabel).toBe('价格');
+    // 空末列：column=2、columnLabel='库存'，value=''
+    expect(cellOf(2, 2).kind === 'table-cell' && cellOf(2, 2).value).toBe('');
+    // 整行空单元格行保留：row=3 三个空 value
+    for (let c = 0; c < 3; c += 1) {
+      expect(cellOf(3, c).kind === 'table-cell' && cellOf(3, c).value).toBe('');
+    }
+  });
 });
 
 describe('PageProjection — 预算 ==/+1 oracle', () => {

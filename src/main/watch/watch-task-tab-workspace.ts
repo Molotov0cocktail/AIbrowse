@@ -185,7 +185,7 @@ export class WatchTaskTabWorkspace {
           return { ok: false, errorCode: 'tab-closed-by-user', reason: '标签页创建后已被用户关闭' };
         }
         // 焦点恢复三态（处理后才能读取页面——Router 时序保证）
-        const focus = await this.restoreFocus(newTabId, activeBefore, tabsNow);
+        const focus = await this.restoreFocus(newTabId, activeBefore);
         if (focus.errorCode !== null) {
           const closed = await this.tryCloseOwned(newTabId);
           if (!closed.ok) {
@@ -228,21 +228,39 @@ export class WatchTaskTabWorkspace {
     }
   }
 
-  // 焦点恢复（三态；activeBefore 已关闭 → 不重建、不猜焦点、warning 登记）
-  private async restoreFocus(
-    newTabId: string,
-    activeBefore: string | null,
-    tabsNow: TabInfo[],
-  ): Promise<FocusOutcome> {
-    const activeNow = tabsNow.find((t) => t.active);
-    let activeTabIsTask = false;
-    if (activeNow !== undefined && activeNow.id === newTabId) activeTabIsTask = true;
+  // 焦点恢复（三态；R3：决策必须基于 fresh getActiveTab，绝不使用陈旧快照；
+  // activeBefore 已关闭 → 不重建、不猜焦点、warning 登记）。
+  private async restoreFocus(newTabId: string, activeBefore: string | null): Promise<FocusOutcome> {
+    // fresh getActiveTab：create 窗口内用户可能已切换焦点，必须以决策时刻的
+    // 实时活动 Tab 判定；读取失败 fail-closed（调用方精确清理 task Tab）。
+    let activeNow: TabInfo | null;
+    try {
+      activeNow = await this.browser.getActiveTab();
+    } catch {
+      return {
+        errorCode: 'tab-restore-focus-failed',
+        reason: '读取当前活动标签页失败（焦点未恢复）',
+        warning: null,
+      };
+    }
+    const activeTabIsTask = activeNow !== null && activeNow.id === newTabId;
     // 用户已在 create 窗口切换 → 零 activate（不抢焦点）
     if (!activeTabIsTask) {
       return { errorCode: null, reason: '', warning: null };
     }
     if (activeBefore === null) {
       return { errorCode: null, reason: '', warning: '焦点恢复：创建前无活动标签页（未恢复）' };
+    }
+    // activeBefore 必须仍存在（fresh 复验；读取失败 fail-closed）
+    let tabsNow: TabInfo[];
+    try {
+      tabsNow = await this.browser.getTabs();
+    } catch {
+      return {
+        errorCode: 'tab-restore-focus-failed',
+        reason: '读取标签页状态失败（焦点未恢复）',
+        warning: null,
+      };
     }
     if (!tabsNow.some((t) => t.id === activeBefore)) {
       // 原 active Tab 已关闭：不创建替代、不猜焦点

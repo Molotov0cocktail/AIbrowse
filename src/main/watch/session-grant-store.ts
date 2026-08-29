@@ -122,33 +122,36 @@ export class SessionGrantStore {
   }
 
   /**
-   * 单次消费：先原子移除 record，再验证过期与全部绑定。任何失败同样消耗
-   *（后续同一 handle → not-found），杜绝重放探测。
+   * 单次消费（R1 修复）：对形状合法且确实存在的 handle，**先原子移除 record，
+   * 再验证过期与全部绑定**。绑定值形状非法、值不匹配、过期等任何失败同样消耗
+   *（后续同一 handle → not-found），杜绝重放探测。只有形状非法、无法关联任何
+   * record 的 handle 才返回 invalid-request（零查找、零消耗、不影响其他记录）。
    */
   consume(input: SessionGrantConsumeInput, nowMs?: number): SessionGrantConsumeResult {
     const now = nowMs ?? this.nowMs();
     if (!Number.isFinite(now)) {
       return { ok: false, reason: 'invalid-request' };
     }
-    if (
-      !HANDLE_PATTERN.test(input.handle) ||
-      !isValidBindingString(input.sourceId, 128) ||
-      !isValidBindingString(input.previewTabId, 128) ||
-      !isValidOrigin(input.finalOrigin) ||
-      !isValidTargetDigest(input.targetDigest)
-    ) {
+    // handle 形状是「能否定位 record」的唯一钥匙：形状非法 → 零查找、invalid-request
+    if (!HANDLE_PATTERN.test(input.handle)) {
       return { ok: false, reason: 'invalid-request' };
     }
     const record = this.records.get(input.handle);
     if (record === undefined) {
       return { ok: false, reason: 'not-found' };
     }
-    // 原子移除：失败也消耗
+    // 原子移除：无论后续验证结果如何，本 handle 已消耗
     this.records.delete(input.handle);
     if (now >= record.expiresAtMs) {
       return { ok: false, reason: 'expired' };
     }
+    // 绑定验证（形状与逐字节值都在此处判定；record 已删除，一律消耗）：
+    // 只有全部绑定形状合法且逐字节匹配才算成功
     if (
+      !isValidBindingString(input.sourceId, 128) ||
+      !isValidBindingString(input.previewTabId, 128) ||
+      !isValidOrigin(input.finalOrigin) ||
+      !isValidTargetDigest(input.targetDigest) ||
       record.sourceId !== input.sourceId ||
       record.previewTabId !== input.previewTabId ||
       record.finalOrigin !== input.finalOrigin ||

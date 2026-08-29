@@ -278,7 +278,8 @@ export function readPublicHtml(
       if (currentCell !== null) {
         const text = currentCell.join(' ').trim();
         currentCell = null;
-        if (currentRow !== null && text !== '') {
+        // R5：显式空单元格（含仅空白）保留列位置；不做占位正文
+        if (currentRow !== null) {
           currentRow.cells.push(text);
         }
       }
@@ -286,6 +287,7 @@ export function readPublicHtml(
     }
     if (entry.kind === 'row') {
       if (currentRow !== null) {
+        // 有单元格的行（即使全空）保留列结构；零单元格空行跳过
         if (currentRow.cells.length > 0) tableRows.push(currentRow);
         currentRow = null;
       }

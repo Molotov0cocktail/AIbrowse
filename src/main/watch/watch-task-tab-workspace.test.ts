@@ -230,6 +230,47 @@ describe('WatchTaskTabWorkspace — 焦点恢复三态', () => {
       expect(ws.getOwnedCount()).toBe(0);
     }
   });
+
+  // R3 修复：getTabs 显示 task active 后，fresh getActiveTab 阶段用户已切到另一
+  // 用户 Tab → 零 activate（不得基于陈旧 getTabs 快照恢复焦点）
+  it('getTabs 显示 task active，但 fresh getActiveTab 显示用户已切换 → 零 activate', async () => {
+    const browser = new FakeBrowser();
+    let activeCalls = 0;
+    const originalGetActive = browser.getActiveTab.bind(browser);
+    browser.getActiveTab = async () => {
+      activeCalls += 1;
+      if (activeCalls === 1) return originalGetActive(); // create 前：user-1 active
+      return { ...tab('user-2', { active: true }) }; // fresh 决策时刻：用户已切到 user-2
+    };
+    const ws = makeWorkspace(browser);
+    const r = await ws.acquire('https://example.com/a', new AbortController().signal);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(browser.activateCalls).toEqual([]); // 零抢焦点
+    expect(ws.isOwned(r.lease.tabId)).toBe(true); // task Tab 保持 owned（等待 release）
+    await ws.release(r.lease.tabId);
+  });
+
+  // R3 修复：fresh getActiveTab 抛错 → fail-closed，attempt 失败且只关闭精确
+  // owned task Tab（用户 Tab 零关闭）
+  it('fresh getActiveTab 抛错 → attempt 失败且只关闭精确 owned task Tab', async () => {
+    const browser = new FakeBrowser();
+    let activeCalls = 0;
+    browser.getActiveTab = async () => {
+      activeCalls += 1;
+      if (activeCalls === 1) return { ...tab('user-1', { active: true }) };
+      throw new Error('fresh getActiveTab 失败');
+    };
+    const ws = makeWorkspace(browser);
+    const r = await ws.acquire('https://example.com/a', new AbortController().signal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errorCode).toBe('tab-restore-focus-failed');
+    expect(browser.closeCalls.length).toBe(1);
+    expect(browser.closeCalls[0]).toMatch(/^task-/); // 只关闭精确 owned task Tab
+    expect(ws.getOwnedCount()).toBe(0);
+    expect(browser.tabs.some((t) => t.id === 'user-1')).toBe(true); // 用户 Tab 零关闭
+    expect(browser.tabs.some((t) => t.id === 'user-2')).toBe(true);
+  });
 });
 
 describe('WatchTaskTabWorkspace — release 与 close false/throw', () => {

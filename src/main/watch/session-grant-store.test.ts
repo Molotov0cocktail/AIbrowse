@@ -124,6 +124,50 @@ describe('SessionGrantStore — 绑定矩阵', () => {
     expect(store.recordCount()).toBe(1); // 未消耗任何记录
   });
 
+  // R1 修复：形状合法且确实存在的 handle，必须先原子删除再验证绑定——绑定值
+  // 形状非法（空/超长 sourceId、非法 previewTabId/origin、空/超长 digest）同样消耗。
+  it.each([
+    ['空 sourceId', { sourceId: '' }],
+    ['超长 sourceId', { sourceId: 'x'.repeat(129) }],
+    ['非法 previewTabId（空）', { previewTabId: '' }],
+    ['非法 previewTabId（超长）', { previewTabId: 't'.repeat(129) }],
+    ['非法 origin（空）', { finalOrigin: '' }],
+    ['非法 origin（非 URL）', { finalOrigin: 'not-a-url' }],
+    ['空 digest', { targetDigest: '' }],
+    ['超长 digest', { targetDigest: 'd'.repeat(257) }],
+  ] as const)(
+    '%s：首次失败且 recordCount 归零，正确绑定再消费 → not-found',
+    (_label, overrides) => {
+      const store = makeStore();
+      const handle = issueOk(store);
+      const r = consume(store, { handle, ...overrides });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe('binding-mismatch');
+      expect(store.recordCount()).toBe(0); // record 已被原子消耗
+      const replay = consume(store, {
+        handle,
+        sourceId: 'src-1',
+        previewTabId: 'tab-preview-1',
+        finalOrigin: 'https://example.com',
+        targetDigest: 'd1',
+      });
+      expect(replay.ok).toBe(false);
+      if (!replay.ok) expect(replay.reason).toBe('not-found'); // 无法重放
+    },
+  );
+
+  it('非法 handle 形状不得消耗无关记录（多记录场景）', () => {
+    const store = makeStore();
+    const h1 = issueOk(store);
+    const h2 = issueOk(store);
+    const r = consume(store, { handle: 'garbage-not-43-char' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('invalid-request');
+    expect(store.recordCount()).toBe(2); // 两条记录均未受影响
+    expect(consume(store, { handle: h1 }).ok).toBe(true);
+    expect(consume(store, { handle: h2 }).ok).toBe(true);
+  });
+
   it('issue 非法输入 → invalid-request 零登记', () => {
     const store = makeStore();
     expect(
