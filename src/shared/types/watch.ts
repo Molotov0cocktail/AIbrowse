@@ -262,6 +262,69 @@ export interface DocumentChannels {
 }
 
 // ---------------------------------------------------------------------------
+// D6：有界 PageProjection 闭合类型（detailed-design §8；字段 key 固定目录直接
+// 成为 D2 Condition 的闭合 fieldKey 目录，禁止另存可漂移副本）
+// ---------------------------------------------------------------------------
+
+export type PageProjectionField =
+  | {
+      fieldKey: string;
+      regionIndex: number;
+      kind: 'main-text';
+      label: string;
+      value: string;
+    }
+  | {
+      fieldKey: string;
+      regionIndex: number;
+      kind: 'heading';
+      label: string;
+      level: 1 | 2 | 3;
+      ordinal: number;
+      value: string;
+    }
+  | {
+      fieldKey: string;
+      regionIndex: number;
+      kind: 'table-header';
+      label: string;
+      occurrence: number;
+      column: number;
+      value: string;
+    }
+  | {
+      fieldKey: string;
+      regionIndex: number;
+      kind: 'table-cell';
+      label: string;
+      occurrence: number;
+      row: number;
+      column: number;
+      columnLabel: string;
+      value: string;
+    }
+  | {
+      fieldKey: string;
+      regionIndex: number;
+      kind: 'link';
+      label: string;
+      ordinal: number;
+      text: string;
+      url: string;
+    };
+
+export interface PageProjectionValue {
+  type: 'page';
+  fields: PageProjectionField[];
+}
+
+export type PageProjection = ProjectionEnvelope<PageProjectionValue>;
+
+// D6 Session grant（§12.2）：主进程内存一次性授权记录 TTL（精确 300,000ms；
+// now == expiresAt 视为已过期）
+export const SESSION_GRANT_TTL_MS = 300_000;
+
+// ---------------------------------------------------------------------------
 // D2：§3.3 Run、Health 与 Audit
 // ---------------------------------------------------------------------------
 
