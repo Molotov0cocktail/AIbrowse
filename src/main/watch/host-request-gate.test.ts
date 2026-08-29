@@ -3,7 +3,7 @@
 // start ≥5000ms、abort 零登记、不同 host 独立、共享实例不分模式、deadline/非登记语义。
 import { describe, expect, it } from 'vitest';
 import { FakeClock } from '../../shared/watch/clock';
-import { HostRequestGate, deriveHostKey } from './host-request-gate';
+import { HostRequestGate, deriveHostKey, type HostGateResult } from './host-request-gate';
 
 function gateAt(nowMs: number, gapMs = 5_000) {
   const clock = new FakeClock(nowMs);
@@ -238,5 +238,99 @@ describe('HostRequestGate 时序（FIXED 3/5：同 host 相邻 start ≥5000ms�
     expect(gate.size).toBe(0);
     expect(gate.lastStartedAt(key)).toBeNull(); // 注册表已清空（pending 零登记）
     expect((await gate.acquire(key)).ok).toBe(true); // 清空后立即放行
+  });
+
+  it('M3⑫ R5 非队首 waiter 自身 deadline 即结算：零登记、不阻塞队首、零迟到 grant、timer 归零', async () => {
+    const { clock, gate } = gateAt(Date.parse('2026-08-28T10:00:00.000Z'));
+    const key = 'example.com:443';
+    await gate.acquire(key); // t0：登记一次 start，last=t0
+    clock.advanceBy(1_000); // t0+1000
+    const head = gate.acquire(key); // 队首：可用时刻 t0+5000
+    const tail = gate.acquire(key, {
+      deadlineMs: Date.parse('2026-08-28T10:00:03.000Z'),
+    }); // 队尾：deadline t0+3000
+    let headSettled = false;
+    void head.then(() => (headSettled = true));
+    let tailResult: HostGateResult | null = null;
+    void tail.then((r) => (tailResult = r));
+    await Promise.resolve();
+    expect(tailResult).toBeNull(); // 未到 deadline，队尾未结算
+    // 推进至 t0+3000：队尾自身 deadline 先到，必须立即、恰一次返回 deadline
+    clock.advanceTo(Date.parse('2026-08-28T10:00:03.000Z'));
+    await Promise.resolve();
+    expect(tailResult).toEqual({ ok: false, reason: 'deadline' });
+    expect(await tail).toEqual({ ok: false, reason: 'deadline' });
+    expect(gate.lastStartedAt(key)).toBe(Date.parse('2026-08-28T10:00:00.000Z')); // 零登记
+    expect(headSettled).toBe(false); // 队首仍未结算
+    // 推进至 t0+5000：队首正常获准；已 deadline 的队尾不得迟到 grant
+    clock.advanceTo(Date.parse('2026-08-28T10:00:05.000Z'));
+    await Promise.resolve();
+    expect(headSettled).toBe(true);
+    expect(await head).toEqual({ ok: true });
+    expect(gate.lastStartedAt(key)).toBe(Date.parse('2026-08-28T10:00:05.000Z'));
+    expect(tailResult).toEqual({ ok: false, reason: 'deadline' }); // 零迟到 grant
+    expect(clock.pendingTimerCount()).toBe(0); // 全部 timer 已清理归零
+  });
+
+  it('M3⑬ R5 多个非队首 waiter deadline 顺序结算 + abort 交错：互不阻塞、timer 逐减归零', async () => {
+    const { clock, gate } = gateAt(Date.parse('2026-08-28T10:00:00.000Z'));
+    const key = 'example.com:443';
+    await gate.acquire(key); // t0
+    clock.advanceBy(1_000); // t0+1000
+    const head = gate.acquire(key); // 队首：可用 t0+5000（无 deadline）
+    const t1 = gate.acquire(key, {
+      deadlineMs: Date.parse('2026-08-28T10:00:02.000Z'),
+    }); // deadline t0+2000
+    const t2 = gate.acquire(key, {
+      deadlineMs: Date.parse('2026-08-28T10:00:04.000Z'),
+    }); // deadline t0+4000
+    const c3 = new AbortController();
+    const t3 = gate.acquire(key, {
+      signal: c3.signal,
+      deadlineMs: Date.parse('2026-08-28T10:00:04.500Z'),
+    }); // 队尾：稍后被 abort
+    await Promise.resolve();
+    expect(clock.pendingTimerCount()).toBe(4); // head gap + 三个 deadline
+    // t0+2000：t1 自身 deadline 结算，队首未动
+    clock.advanceTo(Date.parse('2026-08-28T10:00:02.000Z'));
+    expect(await t1).toEqual({ ok: false, reason: 'deadline' });
+    expect(clock.pendingTimerCount()).toBe(3); // head gap + t2 + t3 deadline
+    // t0+3000：abort 仍在队中的 t3（deadline 未到）→ aborted，t3 deadline timer 清理
+    clock.advanceTo(Date.parse('2026-08-28T10:00:03.000Z'));
+    c3.abort();
+    expect(await t3).toEqual({ ok: false, reason: 'aborted' });
+    expect(clock.pendingTimerCount()).toBe(2); // head gap + t2 deadline
+    // t0+4000：t2 自身 deadline 结算
+    clock.advanceTo(Date.parse('2026-08-28T10:00:04.000Z'));
+    expect(await t2).toEqual({ ok: false, reason: 'deadline' });
+    expect(clock.pendingTimerCount()).toBe(1); // head gap
+    // t0+5000：队首正常获准，timer 全部归零
+    clock.advanceTo(Date.parse('2026-08-28T10:00:05.000Z'));
+    expect(await head).toEqual({ ok: true });
+    expect(gate.lastStartedAt(key)).toBe(Date.parse('2026-08-28T10:00:05.000Z'));
+    expect(clock.pendingTimerCount()).toBe(0);
+    expect(gate.size).toBe(1); // 仅一次登记 start
+  });
+
+  it('M3⑭ R5 非队首 deadline 后 clear：pending 全取消、零迟到 grant、timer 归零', async () => {
+    const { clock, gate } = gateAt(Date.parse('2026-08-28T10:00:00.000Z'));
+    const key = 'example.com:443';
+    await gate.acquire(key); // t0
+    clock.advanceBy(1_000); // t0+1000
+    const head = gate.acquire(key); // 队首：可用 t0+5000
+    const tail = gate.acquire(key, {
+      deadlineMs: Date.parse('2026-08-28T10:00:03.000Z'),
+    }); // 队尾：deadline t0+3000
+    await Promise.resolve();
+    expect(clock.pendingTimerCount()).toBe(2); // head gap + tail deadline
+    const results: Array<string> = [];
+    void head.then((r) => results.push(r.ok ? 'granted' : r.reason));
+    void tail.then((r) => results.push(r.ok ? 'granted' : r.reason));
+    gate.clear(); // 在 deadline 前 clear：全部 pending 受控取消
+    clock.advanceTo(Date.parse('2026-08-28T10:00:05.000Z')); // 若未取消会迟到 grant/timer
+    await Promise.resolve();
+    expect(results).toEqual(['aborted', 'aborted']); // 零迟到 grant
+    expect(clock.pendingTimerCount()).toBe(0); // timer 全部清理
+    expect(gate.size).toBe(0);
   });
 });

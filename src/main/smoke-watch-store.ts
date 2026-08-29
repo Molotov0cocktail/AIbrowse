@@ -46,6 +46,12 @@ function isPathInside(child: string, parent: string): boolean {
 
 const NOW = '2026-08-28T00:00:00.000Z';
 
+// D4 门控夹具专属固定 UUID：与 D5 门控规则（随机 UUID + D5_FEED_URL）区分。
+// check 进程禁止用 rules.find(r => r.sourceId === 'src-1') 识别 D4 规则——src-1 同时
+// 被 D4/D5 规则使用，listRules() 顺序受随机 UUID 影响可能选中无 Baseline/Event 的
+// D5 规则；固定 UUID 是稳定且唯一的夹具身份（不依赖顺序或 UUID 大小）。
+const D4_GATE_RULE_ID = 'd4-gate-0000-0000-0000-000000000001';
+
 // D5 #S6-044 FIXED 17 机械校准辅助：DB 实际 user_version（schema v2 后为 2）
 function currentDbVersion(path: string): number {
   const h = openDb(path);
@@ -395,7 +401,7 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
     assert(outcome.mode === 'normal', 'WATCH set：store 应 normal 装配');
     if (outcome.mode !== 'normal') return;
     coordinator.bind(outcome.repo, reader);
-    const rule = makeRule({ sourceId: 'src-1' });
+    const rule = makeRule({ id: D4_GATE_RULE_ID, sourceId: 'src-1' });
     assert(outcome.repo.insertRule(rule).ok, 'WATCH set：规则写入失败');
     const gateProjectionJson = '{"format":"rss2"}';
     assert(
@@ -478,8 +484,8 @@ export async function runWatchSmokeGate(mode: 'set' | 'check'): Promise<void> {
   assert(outcome.schedulerReady, 'WATCH check：reconciliation 成功后才允许 Scheduler 启动');
   const repo = outcome.repo;
   const rules = repo.listRules();
-  const r1 = rules.find((r) => r.sourceId === 'src-1');
-  assert(r1 !== undefined, 'WATCH check：src-1 规则应读回');
+  const r1 = rules.find((r) => r.id === D4_GATE_RULE_ID);
+  assert(r1 !== undefined, 'WATCH check：D4 src-1 规则应读回');
   assert(r1!.sourceRowVersion === 2, 'WATCH check：reconciliation 应协调更新 rowVersion');
   assert(
     rules.every((r) => r.sourceId !== 'src-2'),

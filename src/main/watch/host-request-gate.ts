@@ -7,8 +7,9 @@
 // - 每 hostKey 一个 FIFO 队列：同一时刻只有一个等待者持有 gap 槽（确定性串行排队），
 //   队列尾按前一等待者结算后的最新 lastStartedAt 重新计算等待，保证任意两个实际
 //   socket start（含并发/redirect/retry 汇聚到同一新 host）相邻间隔 ≥ gap；abort/
-//   deadline 结算即出队并推进下一个，不阻塞后续等待者；clear() 幂等清空注册表并
-//   取消全部 pending（零迟到 grant）；
+//   deadline 结算即出队并推进下一个，不阻塞后续等待者；deadline 是入队时刻的绝对
+//   截止（非队首 waiter 亦从入队即生效，不到队首也会在自身 deadline 恰一次结算）；
+//   clear() 幂等清空注册表并取消全部 pending（零迟到 grant）；
 // - acquire（登记式）：等待 gap 满足后登记 lastStartedAt=now，供实际 socket start；
 //   waitUntilAvailable（非登记）：Coordinator 在 jitter 之前确认 host-gap 已满足，
 //   不登记 start（避免与首个 socket 的登记式 acquire 重复计时导致间隔被压缩）；
@@ -159,6 +160,9 @@ export class HostRequestGate {
       } else {
         list.push(waiter);
       }
+      // 每个 waiter（含非队首）的绝对 deadline 从入队时刻生效：自装 deadline timer，
+      // 先于 gap 到达即受控失败；processHead 已同步结算时（settled）此处自动跳过。
+      this.armDeadlineTimer(hostKey, waiter);
     });
   }
 
@@ -216,8 +220,7 @@ export class HostRequestGate {
       Number.isFinite(waiter.deadline) &&
       now >= waiter.deadline
     ) {
-      this.finalizeWaiter(waiter, { ok: false, reason: 'deadline' });
-      this.removeAndAdvance(hostKey, waiter);
+      this.settleDeadline(hostKey, waiter);
       return;
     }
     const last = this.registry.get(hostKey);
@@ -229,12 +232,8 @@ export class HostRequestGate {
       return;
     }
     const waitMs = this.gapMs - elapsed;
-    // gap timer：补齐到间隔满；deadline timer：截止先到则受控失败（单调有界等待）。
-    // 二者谁先到谁定终态（settle 单次守卫）；deadline timer 保证不越过外部截止。
-    const settleDeadline = (): void => {
-      this.finalizeWaiter(waiter, { ok: false, reason: 'deadline' });
-      this.removeAndAdvance(hostKey, waiter);
-    };
+    // gap timer：补齐到间隔满（deadline timer 已在入队时安装，谁先到谁定终态，
+    // settle 单次守卫；绝不越过外部截止）。
     waiter.gapTimer = this.clock.setTimeout(() => {
       const grantedAt = this.clock.now().getTime();
       if (
@@ -242,18 +241,31 @@ export class HostRequestGate {
         Number.isFinite(waiter.deadline) &&
         grantedAt >= waiter.deadline
       ) {
-        settleDeadline();
+        this.settleDeadline(hostKey, waiter);
         return;
       }
       if (waiter.register) this.registry.set(hostKey, grantedAt);
       this.finalizeWaiter(waiter, { ok: true });
       this.removeAndAdvance(hostKey, waiter);
     }, waitMs);
-    if (waiter.deadline !== undefined && Number.isFinite(waiter.deadline)) {
-      const dWait = Math.max(0, waiter.deadline - now);
-      waiter.deadlineTimer = this.clock.setTimeout(() => {
-        settleDeadline();
-      }, dWait);
-    }
+  }
+
+  /** deadline 结算：清除 timer/listener、resolve deadline、立即出队并推进（不阻塞前后）。 */
+  private settleDeadline(hostKey: string, waiter: PendingWaiter): void {
+    if (waiter.settled) return;
+    this.finalizeWaiter(waiter, { ok: false, reason: 'deadline' });
+    this.removeAndAdvance(hostKey, waiter);
+  }
+
+  /** 入队即生效的绝对 deadline：任何 waiter（含非队首）从入队时刻起受自身截止约束。 */
+  private armDeadlineTimer(hostKey: string, waiter: PendingWaiter): void {
+    if (waiter.settled) return;
+    if (waiter.deadline === undefined || !Number.isFinite(waiter.deadline)) return;
+    const now = this.clock.now().getTime();
+    if (!Number.isFinite(now)) return; // 无效时钟：由 processHead（成为头时）统一结算
+    const dWait = Math.max(0, waiter.deadline - now);
+    waiter.deadlineTimer = this.clock.setTimeout(() => {
+      this.settleDeadline(hostKey, waiter);
+    }, dWait);
   }
 }
