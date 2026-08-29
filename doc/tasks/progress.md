@@ -10,14 +10,14 @@
 ## 当前状态
 
 - 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
-  D1–D4 均已完成并关闭。**用户通过 U01–U31
+  D1–D5 均已完成并关闭。**用户通过 U01–U31
   完成全部需求裁决；正式设计候选在
   `f1a062fe5c0b3ae9f7cfaf8bf634bc78e16c602b` 经新的独立 Reviewer `PASS`。本轮设计范围
   为 `Sixth_stage.md`、`doc/stage6/` 四份设计与 D1–D11 任务契约，零产品代码、零新依赖、
-  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D4 均经 Reviewer `PASS`
+  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D5 均经 Reviewer `PASS`
   并已关闭。D3 的三个解析依赖已通过资格门并精确固定：
   `@federicocarboni/saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1`；下一唯一
-  实施任务为 D5。
+  实施任务为 D6。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -659,7 +659,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D2 | Watch 域模型、条件 DSL 与状态机 | ✅ | 2026-08-26 完成：产品候选 `237eafb` + 有界修复 `438a11f`；Reviewer=`PASS`，聚焦 173/173、全量 2440/2440、typecheck/lint/format/build 全部通过；任务文档 doc/stage6/tasks/D2-watch-domain-condition.md |
 | D3 | 安全 Feed/Public 网络与解析器资格门 | ✅ | 2026-08-28 完成：实施链 `662ef0b` → `dd3deeb` → `2325077` → `be33291` → `0df9bae` → `e412c12` → `e689484` → `ac579e4`；三个解析依赖资格门通过并精确固定；最终独立安全 Reviewer=`PASS`；聚焦 95/95、Watch 279/279、全量 2725/2725，typecheck/lint/format/build/audit/dev+production smoke 全绿；任务文档 doc/stage6/tasks/D3-safe-feed-network-parser.md |
 | D4 | watch.db、Source 生命周期观察协议与恢复 | ✅ | 2026-08-28 完成：实施链 `04adce4` → `0acc794`（九个候选提交）+ D4-R 有界修复 `90cadd8` → `40f5c1e` → `743149e` → `bf1a2ff`；独立安全/持久化 Reviewer=`PASS`，全量 2908/2908、typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟与 AIBROWSE_WATCH_SMOKE set/check dev+生产 0/0；任务文档 doc/stage6/tasks/D4-watch-store-source-lifecycle.md |
-| D5 | Scheduler、RunCoordinator、预约事务与共享 HostRequestGate | ⏳ | 依赖 D1–D4；任务文档 doc/stage6/tasks/D5-scheduler-run-coordinator.md |
+| D5 | Scheduler、RunCoordinator、预约事务与共享 HostRequestGate | ✅ | 2026-08-29 完成（见下）：baseline `1e88845`，实施链 `0a8ff98` → `3452724`（十一个候选提交）；独立 Reviewer=`PASS`，聚焦 34/34、Watch 190/190、全量 127 files/2990 tests，typecheck/lint/format/build/diff-check 全绿、WATCH set/check dev+生产 0/0；任务文档 doc/stage6/tasks/D5-scheduler-run-coordinator.md |
 | D6 | Page region/Session task-owned Tab 投影 | ⏳ | 依赖 D5；old/new Evidence 必须可解释，不能只有哈希；任务文档 doc/stage6/tasks/D6-page-region-session-projection.md |
 | D7 | 确定性 Diff/Event/Evidence 与健康状态 | ⏳ | 依赖 D3–D6；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
 | D8 | Digest 分享投影与可选 AI 解释 | ⏳ | 依赖 D7；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
@@ -704,6 +704,33 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
   8.13/8.19-B 瞬态失败保持既有观察项；100 MiB 备份预算取「备份集合」语义（§10.2
   「备份也受 100 MiB 与最多 5 份/30 天边界」锚点）。⑥ D4 已关闭；下一唯一任务为
   `doc/stage6/tasks/D5-scheduler-run-coordinator.md`。
+
+- **D5 Scheduler、RunCoordinator、预约事务与共享 HostRequestGate 验收与关闭（2026-08-29，
+  独立 Reviewer=`PASS`）**：① baseline `1e88845b08e0b38ef957084415f816ae82f74fe9`（D4
+  收尾）；实施链 `0a8ff98`（schema v2 watch_audits 审计 CHECK 扩展）→ `bd18e9c`
+  （WatchScheduler/HostRequestGate 与 reservation/终态事务 M1–M3）→ `7035e4c`
+  （WatchRunCoordinator M4）→ `ac5ed24`（M5 生命周期 stop-admission→abort→drain→close
+  幂等）→ `09cc45f`（M6 结构红线静态扫描）→ `bb117ec`（D3 工厂追加式注入 hostGate）→
+  `1aee435`（index.ts 生命周期装配 + before-quit watchShutdown 排水 + 8.22/门控冒烟）→
+  `dd6ded7`（8.21/8.22 冒烟修复）→ `fc2ad75`（门控 D5 set reconcile 与 D4 夹具兼容 +
+  prettier）→ `4d63af1`（HostRequestGate 并发串行化、delay/unavailable 排水与
+  dependency_unavailable 健康暂停 R1–R4）→ `3452724`（非队首 waiter 越自身 deadline 与
+  WATCH 门控夹具随机选错规则），共十一个候选提交；候选 HEAD
+  `345272446277c5da5af4aef908e41014e19ffaed`；baseline 后历史未重写、未 amend。② 验收
+  要点：HostRequestGate 非队首 waiter 在自身绝对 deadline 到达时立即、恰一次返回 deadline
+  并即时出队；deadline/abort/clear 后零残留 timer/listener、零迟到 grant；同 host FIFO
+  与相邻登记至少 5000ms 保持；WATCH smoke 的 D4 固定规则 ID 与 D5 专属 feed URL 已消除
+  随机 UUID 顺序导致的夹具误选。③ 最终门禁：聚焦 gate+coordinator 34/34、Watch 8 文件
+  190/190、全量 **127 files / 2990 tests** 全部 PASS；typecheck、lint、format:check、
+  build、diff-check 全部退出码 0；两对独立全新受控 userData 的 AIBROWSE_WATCH_SMOKE=
+  set|check（dev+生产）全部 0/0 并精确清理；dev 最终复跑与 production 默认 smoke 退出码
+  0（8.21/8.22 通过）；敏感信息扫描零命中（git diff --check 1e88845..HEAD exit 0）。
+  ④ 非阻断 flaky 观察（如实登记，**无证据归因于 D5**）：Reviewer 的 dev 首跑出现一次既有
+  Stage 5 8.19-B Research UI 时序失败、复跑通过；Executor 的 production 首跑出现一次非
+  Watch UI bounds/Matrix 9 时序失败、复跑通过；二者均不在 `3452724` 三个 repair 文件
+  （host-request-gate.ts/.test.ts、smoke-watch-store.ts）内，D5/WATCH 专属门控连续稳定
+  通过；按收尾边界不顺手修复 Stage 5，继续作为既有观察项登记。⑤ D5 已关闭；下一唯一任务为
+  `doc/stage6/tasks/D6-page-region-session-projection.md`；本次未开始 D6。
 
 - **D3 安全 Feed/Public 网络与解析器资格门验收与关闭（2026-08-28，独立安全
   Reviewer=`PASS`）**：① 实施链 `662ef0b` → `dd3deeb` → `2325077` → `be33291` →
@@ -3230,10 +3257,10 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **规划 D5 Scheduler、RunCoordinator、预约事务与共享 HostRequestGate。**唯一任务文档：
-  `doc/stage6/tasks/D5-scheduler-run-coordinator.md`。D5 依赖 D1/D2/D4（均已关闭），涉及
-  调度/预约事务/共享限速与资源生命周期，先由新的
-  Codex GPT-5.6 Sol Planner 按 Step 0 独立调查并输出 Execution Contract；本轮尚未开始 D5 实现。
+- **规划 D6 Page region/Session task-owned Tab 投影。**唯一任务文档：
+  `doc/stage6/tasks/D6-page-region-session-projection.md`。D6 依赖 D5（已关闭），
+  old/new Evidence 必须可解释，不能只有哈希；本轮已完成 D5 收尾，尚未开始 D6，先由新的
+  Codex GPT-5.6 Sol Planner 按 Step 0 独立调查并输出 Execution Contract。
 
 ## 第一阶段验收未完成项
 
