@@ -95,7 +95,7 @@ Cookie/任意导航。`WatchLifecycleCoordinator` 作为 SourceService 构造时
 | `MAX_FEED_FIELD_BYTES`         |       4,096 | 单标题/摘要/标识等             |
 | `MAX_FEED_PROJECTION_BYTES`    |     262,144 | FeedProjection 整体硬上限      |
 | `MAX_CONDITIONAL_FIELD_BYTES`  |       1,024 | ETag/Last-Modified 单字段      |
-| `MAX_RUN_RESPONSE_META_BYTES`  |       4,096 | Run 条件响应元数据整体         |
+| `MAX_RUN_RESPONSE_META_BYTES`  |       4,096 | Run 响应/Condition 元数据整体  |
 | `MAX_REGIONS_PER_RULE`         |          10 | 页面区域数                     |
 | `MAX_PAGE_PROJECTION_BYTES`    |      65,536 | 单 Baseline 投影               |
 | `MAX_PROJECTION_FIELDS`        |          50 | 类型化字段数                   |
@@ -395,9 +395,22 @@ type ConditionEvaluationResult =
 ```
 
 `warnings` 去重后按上述编译期顺序排序，只进入有界 Run response metadata/UI 安全文案，不进入
-fingerprint、Event Evidence 或敌手正文审计。已知 operator 遇字段不存在、数值 operator 遇非规范数值，或
-该 typed old/new pair 不适用时，属于 **unsupported/no-match**：该 predicate 固定为 false 并追加 warning，
-随后仍按 all/any 组合其它 predicate；`any` 的其它 predicate 命中时整体可为 matched=true。整体
+fingerprint、Event Evidence 或敌手正文审计。求值器必须遍历全部 predicate（不因 all/any 短路）并按以下
+闭合矩阵求值；同一 predicate 对同 `fieldKey` 的全部 ChangeField 先合并判定，避免 Feed 多 item 同字段时由
+输入顺序改变 warning：
+
+| operator                                                | typed pair 要求                                                    | 不支持时的唯一 warning                                                                                                        |
+| ------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `event-kind-is`                                         | 只比较 ChangeSet.eventKind，不读取 field pair                      | 永不产生 warning                                                                                                              |
+| `changed`                                               | 至少一个同 fieldKey 的已验证 pair；按 typed before/after 判等      | 无该字段 → `field-absent`                                                                                                     |
+| `equals`/`not-equals`/`contains`/`not-contains`         | after=present；string/number 沿用规范文本比较，contains 为字面匹配 | 无该字段 → `field-absent`；after=absent → `operator-not-applicable`                                                           |
+| `increased`/`decreased`/`crosses-above`/`crosses-below` | before/after 均 present 且均可解析为规范 finite ASCII 十进制       | 无该字段 → `field-absent`；任一侧 absent → `operator-not-applicable`；两侧 present 但任一非数值 → `numeric-value-unavailable` |
+
+同一 fieldKey 有多个 pair 时：任一可适用 pair 命中则 predicate=true；否则只要存在可适用 pair，predicate=false
+且不因其它不适用 sibling 产生 warning；只有全部 pair 均不适用才 predicate=false 并产生恰一个 warning，优先级
+固定为 `numeric-value-unavailable` 后 `operator-not-applicable`。无同字段 pair 才是 `field-absent`。全部
+predicate 求值后再按 all/any 组合，warning 去重排序；因此 `any` 的其它 predicate 命中时整体仍可 matched=true
+并保留未命中 predicate 的 warning。上述不支持情形属于 **unsupported/no-match**，不是 error。整体
 matched=false 才写 Run=`changed-unmatched`、推进有效新 Baseline，健康恢复 `healthy`、
 `consecutiveFailures=0`、`backoffUntil=null`，审计 `run/changed-unmatched`；不得把不存在值猜成0，也不得
 仅因 warning 阻止其它确定性命中产生 Event。
@@ -702,6 +715,7 @@ interface ConditionalResponseMetadata {
   httpStatus: 200 | 304;
   etag: string | null;
   lastModified: string | null;
+  warnings: ('etag-oversize' | 'last-modified-oversize')[];
 }
 ```
 
@@ -749,13 +763,15 @@ type FeedAcquisitionResult =
     };
 ```
 
-`ConditionalResponseMetadata` 只含 `etag/lastModified/httpStatus`；两个字符串分别 UTF-8 ≤
-`MAX_CONDITIONAL_FIELD_BYTES`，整个固定键序 JSON ≤ `MAX_RUN_RESPONSE_META_BYTES`，超限字段置 null 并加闭合
-warning，不截成可回发的另一 validator；原始 header/body 不进入该 DTO。HTTP 304 且已有已验证 Feed
-Baseline → `not-modified`，零 Parser/Diff/Event/Baseline 写，Run=
-`unchanged`，健康与失败计数按成功重置，条件请求元数据只进入 Run 的有界 response metadata。首次运行或
-Baseline 缺失收到 304 时，在同一 acquisition、同一绝对 deadline、同一 host gate 内恰好再发一次不带条件
-header 的 GET；返回 200 才建立 Baseline，第二次仍 304 或没有完整 body →
+`ConditionalResponseMetadata` exact-key 只含 `httpStatus/etag/lastModified/warnings`；两个字符串分别 UTF-8
+≤ `MAX_CONDITIONAL_FIELD_BYTES`。超限字段置 null，并分别追加 `etag-oversize`/
+`last-modified-oversize`，不截成可回发的另一 validator；warnings 按该编译期顺序去重，原始 header/body 不进入
+DTO。整个 Run metadata 的固定键序 JSON 还受 `MAX_RUN_RESPONSE_META_BYTES` 限制，超限不是截断而是
+`validation-failed`。HTTP 304 且 acquisition 输入含已验证 Feed Baseline hint 才能返回 `not-modified`，零
+Parser/Diff/Event/Baseline version 写；Processing 仍须对 hint 做结果事务 CAS，成功才把 Run 终结为
+`unchanged` 并重置健康/失败计数。首次运行或 Baseline hint 缺失收到 304 时，在同一 acquisition、同一绝对
+deadline、同一 host gate 内恰好再发一次不带条件 header 的 GET；返回 200 才建立 Baseline，第二次仍304或没有
+完整 body →
 `failed(unavailable,retryable=false)`，零 Baseline。Feed parser 成功但 envelope validator 失败按
 `parse_changed`；任何路径都不能用 304 建空 Baseline。
 
@@ -826,6 +842,27 @@ D7 将 D5 的占位 `{ok:true}` 成功形态替换为闭合判别联合；Page/F
 ```ts
 type AcquiredProjection = FeedProjection | PageProjection;
 
+type WatchBaselineHint =
+  | { kind: 'none'; expectedBaselineVersion: 0 }
+  | {
+      kind: 'feed';
+      expectedBaselineVersion: number;
+      contentHash: string;
+      validators: { etag: string | null; lastModified: string | null };
+    }
+  | {
+      kind: 'page';
+      expectedBaselineVersion: number;
+      contentHash: string;
+    };
+
+interface WatchAcquisitionInput {
+  rule: WatchRule;
+  baselineHint: WatchBaselineHint;
+  signal: AbortSignal;
+  deadlineMs: number;
+}
+
 type WatchAcquisitionResult =
   | {
       ok: true;
@@ -851,9 +888,14 @@ type WatchAcquisitionResult =
     };
 
 interface WatchProcessingService {
+  prepareAcquisition(input: {
+    rule: WatchRule;
+  }): { ok: true; baselineHint: WatchBaselineHint } | { ok: false; code: 'store-unavailable' };
+
   process(input: {
     rule: WatchRule;
     runId: string;
+    baselineHint: WatchBaselineHint;
     acquisition: Extract<WatchAcquisitionResult, { ok: true }>;
     sourceAfterAcquisition: SourceWatchProjection;
   }): WatchProcessingResult;
@@ -876,16 +918,58 @@ type WatchProcessingResult =
 
 所有权和调用顺序冻结：`WatchAcquisitionService` 只按 Rule kind/accessMode 路由到 FeedAcquisitionService 或
 PageAcquisitionRouter 并返回上述 DTO；WatchRunCoordinator 保持 run/abort/retry/host gate 与两次 Source
-revalidation 所有权，第二次成功后把**不可变**窄投影作为 `sourceAfterAcquisition` 交给
-WatchProcessingService；ProcessingService 是 Baseline JSON validator、Feed/Page Diff、Condition、
+revalidation 所有权。第一次 Source revalidation 成功后、任何网络前，Coordinator 必须调用
+`prepareAcquisition`；ProcessingService 经 Repository 读取并严格验证 Rule 当前 Baseline，把**与该
+baselineVersion 绑定**的 contentHash/Feed validators 作为不可变 hint 返回，再传给 acquisition。Acquisition
+不得读 SQL，Feed 只能从该 hint 生成 `If-None-Match`/`If-Modified-Since`，不得从最新 Run metadata 猜测
+validator。Baseline 行缺失时只允许 Rule.baselineVersion=0 并返回 `none`；行存在时 Rule/Baseline version、
+projectionType、contentHash 与 JSON validator 必须全部恒等，否则 Store unavailable。第二次 Source
+revalidation 成功后，Coordinator 把同一 hint、不可变 acquisition 和
+`sourceAfterAcquisition` 交回 ProcessingService。ProcessingService 是 Baseline JSON validator、Feed/Page Diff、Condition、
 EventValidator、reversal 查询与 Repository 结果事务的唯一 main-process 编排者。Repository 仍是唯一 SQL
 点，ProcessingService 不自行执行 SQL；Diff/Condition/EventValidator 仍为 shared 纯函数。`not-modified`
-只能走 unchanged 终态，禁止进入 Diff。任何第二次 revalidation 非 ok 都在调用 Processing 前停止；
-locator prepare 若在此后发生，仍由结果事务内 fingerprint CAS 整体拒绝。
+只能在 hint.kind=feed 且结果事务内当前 Baseline version/contentHash 与 hint 精确相等时走 unchanged，禁止进入
+Diff；`none`/`page` hint 收到 not-modified 是 validation-failed。任何第二次 revalidation 非 ok 都在调用
+Processing 前停止；locator prepare 若在此后发生，仍由结果事务内 Rule 状态/fingerprint CAS 整体拒绝。
 `identity/baseline/event-conflict` 都是零写 conflict：Coordinator 不把它改写成 unchanged/failed，也不另写
 Run audit；Source/Rule 协调或下一启动恢复拥有后续状态。validation/budget 若尚能正常访问 Store，则
 ProcessingService 以 §5/§7 的闭合 failed outcome 在单事务终结并返回 ok=true；只有无法安全形成该事务才
 返回 store-unavailable 并停止 Scheduler。
+
+Feed validator 的持久化语义（#S6-056）冻结如下：validator 是 Baseline 身份的一部分，而非 Run 派生状态。
+HTTP 200 建立/推进 Baseline，或 contentHash 相同而只更新成功元数据时，提交值都精确等于该 200 响应经边界
+validator 后的 `etag/lastModified`；header 缺失或超限即存 null，不能沿用旧 validator。HTTP 304 成功时，
+响应中存在且合法的新值替换旧值，缺失/超限值保留 hint 中对应旧值；Baseline version/contentHash 不变。
+这两类 validator 更新都与 Run/health/audit、`sourceRowVersion=max(...)` 及适用的 Baseline/Event 写在同一结果
+事务。condition_error、unexplainable/budget/validation failure、identity/baseline/event conflict、事务回滚或
+进程崩溃均不保存本次响应 validator。Page Baseline 的两列固定为 null；rebaseline 的 Feed 只接受本次 200
+validator。Run `response_metadata_json` 只是有界诊断记录，任何后续 acquisition 都不得读取它作为条件请求输入。
+
+`projection` 的 contentHash 与 Feed/Page hint 相等时固定为 `Run=unchanged`，零 Diff/Event/observation/item/
+outbox、Baseline version/content JSON 不变；Feed 的 200 validator、Run/health/audit 与 rowVersion 仍按上段同
+事务提交。该路径及 304 都必须经过 #S6-057 完整身份 CAS，不能因为“内容没变”绕过暂停/locator 并发防线。
+
+Run 成功/失败终态统一使用以下 exact-key schema；Session Page 的 `http=null`，Public Page 可记录已存在的
+200 状态但不得生成/消费条件 validator。数组均去重并按各自 union 声明顺序排序，整体 canonical JSON UTF-8
+≤ `MAX_RUN_RESPONSE_META_BYTES`；D7+ Repository 写入端对额外键、未来 schemaVersion、非法类型/状态、超限
+或未排序数据一律拒绝：
+
+```ts
+interface WatchRunResponseMetadata {
+  schemaVersion: 1;
+  http: null | ConditionalResponseMetadata;
+  conditionWarnings: ConditionWarningCode[];
+}
+```
+
+acquisition 结束前尚未运行 Condition 时 `conditionWarnings=[]`；成功 Diff 后精确写入 §5 的 warning。原始
+header、正文、敌手错误串及未验证字段不得进入该 JSON。
+
+v2 对既有 `response_metadata_json` 只要求可解析 JSON，无法在不改列值的前提下追溯证明其为新 schema。
+因此 v2→v3 必须逐字节保留该列：读取时只有 exact-key `schemaVersion=1` 才提升为上述可信 DTO；其它既有
+parseable JSON 只作为 `legacy-opaque` 保留，永不作为 acquisition 输入、Condition warning、renderer/prompt/
+日志内容或新写模板。新写 API 不接受 `legacy-opaque`。这项兼容边界既满足 v2 数据逐列恒等，也不把旧宽松
+JSON 提升为程序事实。
 
 ### 8.2 Session task-tab acquisition
 
@@ -1077,7 +1161,8 @@ baselineVersion 十进制串 + "\0" + newProjectionHash + "\0" + conditionVersio
   权力**。同 Event 或跨 Event 再现相同 fingerprint 都必须作为新真实观察处理，除非
   idempotencyKey 也相同。因此窗口内 `A→B→A→B→A` 的四个变化观察全部持久化、Baseline 依次
   `B/A/B/A`，任何 coalesce 都不得吞掉中间 pair；跨窗口首个 pair 仍可按最近对镜像判为 reversal。
-- **真正重放的精确终态（#S6-051）**：结果事务先做 Rule/source/fingerprint 身份复验（此步不以
+- **真正重放的精确终态（#S6-051/#S6-057）**：结果事务先做 Rule enabled/desired/unpaused 与
+  source/fingerprint 身份复验（此步不以
   expectedBaselineVersion 提前挡住合法 replay），再查询 observation idempotencyKey。不存在时必须再要求
   当前 `baselineVersion===expectedBaselineVersion` 才走新建/合并；已存在时必须验证其
   Event/Rule/Source 与输入一致，且当前 Baseline version `>= expectedBaselineVersion+1`，否则 Store
@@ -1130,7 +1215,7 @@ future schema；迁移前 v2 仍是合法输入。
 | 表                         | 核心列/约束                                                                                                                                                                                                                                           |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `watch_rules`              | id PK、source_id、kind/state/pause_reason/desired_enabled/muted/access_mode、schedule/target/condition 严格版本、source_row_version/source_locator_fingerprint、next_due/last_consumed_scheduled_for/backoff/failure/baseline_version、时间           |
-| `watch_baselines`          | rule_id PK/FK、version、projection_type/json/hash/bytes、final_url/captured_at/document_id；bytes CHECK                                                                                                                                               |
+| `watch_baselines`          | rule_id PK/FK、version、projection_type/json/hash/bytes、final_url/captured_at/document_id、conditional_etag/conditional_last_modified；bytes/validator CHECK；Page validator 必为 null                                                               |
 | `watch_runs`               | id PK、rule_id FK、request_key UNIQUE、trigger/scheduled_for/start/finish/outcome/health、响应元数据有界                                                                                                                                              |
 | `watch_audits`             | id PK、rule_id、kind、reason code、created_at；零敌手正文                                                                                                                                                                                             |
 | `watch_events`             | id PK、rule/source、kind/importance、idempotency_key UNIQUE（首个观察键）、fingerprint（首个观察指纹）、观察时间、read_at、item_count                                                                                                                 |
@@ -1148,8 +1233,12 @@ future schema；迁移前 v2 仍是合法输入。
 错配；禁止退回两个互不相关的单列 FK。Digest 对 Event 使用 tombstone 状态而非丢失引用真实性。所有 JSON 读取后再次用
 共享 validator，非法/未来版本使 Store `unavailable`，不得部分启动 Scheduler。
 
-Schema v3（#S6-049/#S6-055，D7）：同一 migration 同时扩展 `watch_audits` CHECK、新增
-`watch_event_observations`，并表重建 `watch_event_items` 追加 observation 关系。v2 既有每个 Event 回填
+Schema v3（#S6-049/#S6-055/#S6-056，D7）：同一 migration 同时扩展 `watch_audits` CHECK、表重建
+`watch_baselines` 追加两个 nullable 条件 validator、新增 `watch_event_observations`，并表重建
+`watch_event_items` 追加 observation 关系。Baseline validator 每列 runtime 精确检查 UTF-8 ≤
+`MAX_CONDITIONAL_FIELD_BYTES`；SQL CHECK 只作 defense-in-depth，`projection_type='page'` 时两列必须均为 null。
+v2→v3 copy 时既有 Baseline 全部旧列逐列恒等、两新列固定 null，不能从 `watch_runs.response_metadata_json`
+回填或猜测。v2 既有每个 Event 回填
 恰好一个 observation：`idempotency_key/change_fingerprint/event_kind` 逐列取 Event 行值、
 `observed_at=last_observed_at`、`sequence=0`、`first_item_sequence=0`、`item_count` 取 Event 行值，id 为
 SQL 可直接且可逆生成的 `"v2:" || eventId`；新观察使用小写 v4 UUID，validator 对回填形态要求 suffix
@@ -1160,9 +1249,12 @@ Event `item_count>=1`、实际 item count 恰等于 Event.item_count、sequence 
 计数不一致或序列缺口使任一 guard INSERT 失败并整体回滚。确定性 observation id 若发生 UNIQUE 冲突，禁止
 随机 fallback/覆盖，migration 整体失败并保持 v2。
 
-v2→v3 全程在引擎单事务完成；任一 CREATE/guard/copy/drop/rename/index/CHECK/user_version 语句失败，
+v2→v3 全程在引擎单事务完成；任一 CREATE/guard/copy/drop/rename/index/CHECK/user_version 语句（包括
+Baseline 表重建的任一步）失败，
 `user_version` 仍为2、全部 v2 表/索引/行逐列恒等，临时 v3 表不可见；成功后除明确新增列/回填 observation 与
-audit CHECK 集合外，`watch_events`、`watch_event_items` 既有列、`watch_audits` 及其余所有表逐列恒等。
+Baseline validator null 列/audit CHECK 集合外，`watch_baselines` 与 `watch_events`、`watch_event_items` 既有列、
+`watch_audits` 及其余所有表逐列恒等。
+`watch_runs.response_metadata_json` 尤其不得为了升级为 v3 DTO 而重写；§8.1 的 legacy-opaque 读取边界适用。
 v1/v2 语句字节冻结。`FeedField.valueHash` 自 v3 起为 Feed Baseline JSON 读回校验必需字段：旧形态
 （无 valueHash）feed projection JSON 读回校验失败 → 按 §10.2 Store `unavailable`（fail-closed，
 不静默改写；产品首个正式版本不携带任何既有 watch.db 用户数据，该路径仅为防御性契约）。
@@ -1255,13 +1347,17 @@ SourceService 构造时接收内部 observer；不新增 renderer/Agent/IPC API�
    Digest ref/outbox，并完成 intent。commit 幂等。
 5. 每次 run 在 acquisition 前、结果事务前各调用一次 SourceService 取窄投影并重算 fingerprint。Source
    不存在/disabled 则零新网络并暂停；fingerprint 不同则 abort/丢弃结果并 `source-changed`；仅 rowVersion
-   变化且 fingerprint 相同则事务更新 `sourceRowVersion`，不丢弃已经形成的有效结果。结果提交 CAS 的身份条件
-   是 fingerprint + baselineVersion，而不是 Source rowVersion。写入必须是单调协议（#S6-052）：结果事务在
-   身份 CAS 通过后执行等价于
+   变化且 fingerprint 相同则事务更新 `sourceRowVersion`，不丢弃已经形成的有效结果。结果提交 CAS 的完整
+   身份条件（#S6-057）为：Rule 仍存在，`state='enabled'`、`desired_enabled=1`、`pause_reason IS NULL`，
+   sourceId/fingerprint 与 acquisition 前身份一致，baselineVersion 与 Baseline hint 一致；Source rowVersion
+   不参与 CAS。D4 locator prepare 按既有协议先暂停 Rule 为 `source-changed` 且故意保留旧 fingerprint，避免把
+   旧 Baseline 绑定新 locator；因此 state CAS 单独即可拒绝 prepare 与 commit 之间的窗口，绝不能要求 prepare
+   预写新 fingerprint。用户 pause、Source disable/delete、health pause 也由同一 state/desired/pause CAS 拒绝。
+   写入必须是单调协议（#S6-052）：结果事务在身份 CAS 通过后执行等价于
    `source_row_version = max(current watch_rules.source_row_version, revalidation.rowVersion)` 的条件更新，绝不
    直接 `SET source_row_version = revalidation.rowVersion`。因此第二次 revalidation 后、结果提交前完成的
    metadata-only Source commit 若已把 Watch 行推进到更高版本，有效结果照常提交且版本不回退；若此窗口完成
-   locator prepare/commit，Rule fingerprint/state 已改变，结果事务身份 CAS 必须整体失败，Baseline/Run/Event/
+   locator prepare/commit，即使 fingerprint 尚未改变，Rule state/pause 已改变，结果事务身份 CAS 必须整体失败，Baseline/Run/Event/
    observation/item/outbox/audit/sourceRowVersion 全不写。SQLite 写事务串行化使 metadata 写要么先发生并被
    `max` 保留，要么后发生并继续推进，任何交错下 `sourceRowVersion` 单调不减。
 
@@ -1410,13 +1506,14 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 | -------------------------------------------- | ---------------------------------------------------------------------- |
 | Source 在排队后被禁用/删除                   | run 前 revalidate，零网络，pause/cleanup                               |
 | Source 仅 metadata/enable/version 变化       | locator fingerprint 相同；更新 rowVersion，按用户意图处理              |
-| Source/Rule locator 在运行中变化             | fingerprint CAS 失败，丢弃结果，pause source-changed                   |
+| Source/Rule locator 在运行中变化             | enabled/pause 或 fingerprint CAS 失败，丢弃结果                        |
 | 两次运行争用 Baseline                        | 同 Rule 互斥 + expectedVersion CAS，陈旧结果零写入                     |
 | Session 原授权 Tab 已关闭/应用重启           | 不依赖旧 tabId；gate 后新建 task Tab，共享 Session 重读                |
 | task Tab 被用户关闭/redirect/login           | attempt 失败；零重建/零 Baseline 覆盖；按 health 暂停                  |
 | task Tab cleanup 失败                        | 保留精确 ownership；Watch unavailable；shutdown 重试                   |
 | App 退出时 HTTP/XML/Browser/Provider pending | abort + 受控 drain；已 reservation 的 slot 只记 interrupted            |
-| 304 但无 Baseline                            | 协议异常，重新无条件 GET 一次；仍异常 unavailable                      |
+| 304 但无 Feed Baseline hint                  | 同 deadline/gate 无条件 GET 恰一次；仍304则 unavailable                |
+| 200 成功但结果事务失败                       | Baseline 与条件 validator 都保留旧值，Run metadata 不作下次请求输入    |
 | feed identity 改变                           | 作为 remove+add，Evidence 双侧 absent/present                          |
 | PageSnapshot degraded                        | 不生成 Projection/Event，health unavailable/parse_changed              |
 | Region 多重匹配                              | parse_changed，禁止猜测                                                |
@@ -1426,7 +1523,7 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 | 观察重放（同进程/跨进程）                    | 仅 observation idempotency_key 去重；按 §9.4 终结 Run，Baseline 不回退 |
 | 窗口边界/重启后的 reversal                   | 最近 pair 全序跨 Event/重启可复现；新 idempotencyKey 即真实观察        |
 | Source 仅 rowVersion 变化                    | 不进身份 CAS；事务内 max 单调更新，不丢弃有效结果                      |
-| revalidation 后 locator prepare              | fingerprint CAS 整体失败，全部结果写零发生                             |
+| revalidation 后 locator prepare              | enabled/desired/pause CAS 失败；即使旧 fingerprint 保留也全部结果零写  |
 | Condition 字段消失/typed 不适用              | no-match + 闭合 warning；推进 Baseline、健康恢复                       |
 | Condition 验证/求值错误                      | condition_error 非重试失败；旧 Baseline、dependency-unavailable 暂停   |
 | Evidence 超限                                | 整 Event 拒绝 budget_exceeded，不截成无变化                            |
@@ -1489,7 +1586,9 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
 - Feed envelope/acquisition：FeedField 截断前 valueHash 固定向量；parser canonicalJson/bytes 与 envelope
   contentHash 精确恒等；finalUrl/capturedAt/documentId=null 由 HTTP 主进程记录；200→projection、已有
   Baseline 的304→unchanged 且零 parser/diff/baseline、首次304→同 deadline 无条件 GET 一次、再次304→
-  unavailable 零 Baseline；Feed/Page 持久化 JSON exact-key/hash/byteLength/预算/未来版本 validator；
+  unavailable 零 Baseline；条件 header 只来自 Baseline hint；200 成功推进/同 hash、304 header present/absent/
+  oversize、失败/conflict/rollback/崩溃逐项断言 validator 与 Baseline 同事务且绝不被未推进 Baseline 的 Run
+  metadata 污染；Feed/Page 持久化 JSON exact-key/hash/byteLength/预算/未来版本 validator；
 - HTML：parse5 SAX 资格、2 MiB/node/depth/attribute、畸形 HTML、script/iframe/subresource 零执行/零请求；
 - Session task Tab：敌手 create 返回用户 id、精确 provisional ownership、焦点恢复三态、用户关闭、ready/error/
   timeout/abort、final origin/locator、close false/throw、cleanupAll drain、重启无旧 tabId；
@@ -1498,7 +1597,9 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
   title/link/published/summary 产生变化对、identity 变化按 remove+add；Page link 按 canonical URL
   配对（added/removed/label-changed），Region 外噪声零 pair；
 - Condition：全 operator、all/any、absent/numeric/field whitelist、零 regex/AI；字段不存在/数值不可用/
-  typed 不适用为 no-match + 固定顺序 warning 并推进 Baseline；shape/version/catalog/value/throw 为
+  typed 不适用为 no-match + 固定顺序 warning 并推进 Baseline；同 fieldKey 多 pair 的 match/applicable/全部
+  unsupported 优先级与 all/any 非短路 warning 矩阵；统一 Run metadata exact-key/排序/预算/额外键拒绝；
+  shape/version/catalog/value/throw 为
   condition_error，断言 retryable=false、counter+1、无 backoff、立即 health=paused/condition_error 且 Rule
   pauseReason=dependency-unavailable、旧 Baseline、run+lifecycle 两类审计且幂等暂停不重复；
 - EventValidator：双侧 Evidence、引用/时间/URL 去 query/预算/幂等/coalesce；idempotencyKey 与
@@ -1529,8 +1630,10 @@ observation/items/Event 行/Baseline/Run 每个写入点故障注入全部回滚
 outbox；outbox 行只随新建 Event 产生。v2 fixture 对所有表逐列快照，成功迁移后既有列逐列恒等；每条 v3
 migration statement 独立失败注入均断言 user_version=2、v2 schema/索引/数据恒等、零临时表；确定性回填 id
 冲突整体回滚。Source 第二次 revalidation 后、结果事务前完成 metadata-only update：有效结果提交且
-sourceRowVersion=max 不回退；同一窗口 locator prepare：新建/合并/dedup 三路径均整体 identity CAS 失败，
-Run/Baseline/Event/observation/items/audit/outbox 全恒等。
+sourceRowVersion=max 不回退；同一窗口 locator prepare：新建/合并/dedup/unchanged/304 路径均整体 identity CAS 失败，
+Run/Baseline/Event/observation/items/audit/outbox 全恒等；locator prepare 仅暂停且保留旧 fingerprint 的实际 D4
+交错，以及用户 pause/Source disable/health pause，均由 enabled/desired/pause CAS 拒绝，不允许测试伪造
+prepare 已写新 fingerprint。
 
 ### 15.3 Electron 冒烟
 
@@ -1629,8 +1732,8 @@ D3 必须交付安全 PublicWatchHttpClient 工厂、raw robots purpose 限制�
   CHECK/TS 同源码集；它不授权未来成功终态映射为 unchanged。D7 schema v3 不新增 kind，追加
   changed-unmatched/event-created/event-coalesced/event-deduplicated/condition-error reason，精确映射见 §13.1。
 - **#S6-045**（D7 REPLAN，2026-08-29）：Source rowVersion 身份裁决采用方案 A——结果事务 CAS 的身份
-  条件保持 §10.3 步骤 5 冻结形态：规则存在且未删除、sourceId 一致、`sourceLocatorFingerprint` 一致、
-  `baselineVersion` 一致；Source `rowVersion` **永不**进入结果事务 CAS。理由：`Source.version` 是
+  中 sourceId/`sourceLocatorFingerprint`/`baselineVersion` 必须一致；Source `rowVersion` **永不**进入结果
+  事务 CAS。Rule 有效状态的独立 CAS 由 #S6-057 补齐。理由：`Source.version` 是
   Sources 行级乐观并发版本，任何 Source 写（含与 Watch 无关的备注/优先级元数据）都会递增；把它纳入
   CAS 会使无关 Source 编辑丢弃有效 Watch 结果，直接违反 §10.3“仅 rowVersion 变化且 fingerprint 相同
   不丢弃已经形成的有效结果”与 §14“Source 仅 metadata/version 变化按用户意图处理”。陈旧身份防线为
@@ -1666,8 +1769,8 @@ revalidated)` 单调更新。方案 B
   idempotencyKey 是 replay；合法 replay 不写 Event/observation/item/outbox/Baseline，但 running Run 必须
   精确终结并审计，已终态重入零写。相同 fingerprint 是合法事实再现，必须持久化并推进 Baseline。
 - **#S6-052**（D7 第二次 REPLAN，2026-08-29）：Source rowVersion 防回退采用事务内单调
-  `max(current,revalidated)`；metadata-only 并发不丢结果、不回退，locator prepare 仍由 fingerprint CAS
-  使整个结果事务失败。
+  `max(current,revalidated)`；metadata-only 并发不丢结果、不回退，locator prepare 由 #S6-057 的 Rule 状态
+  CAS（及 commit 后适用的 fingerprint CAS）使整个结果事务失败。
 - **#S6-053**（D7 第二次 REPLAN，2026-08-29）：Condition 非适用/字段缺失/数值不可用是
   no-match+闭合 warning，推进 Baseline；验证/求值错误是 `condition_error` 非重试失败，旧 Baseline、立即
   health=paused/condition_error（Rule pauseReason 复用 dependency-unavailable）、闭合 health/counter/audit
@@ -1678,6 +1781,17 @@ revalidated)` 单调更新。方案 B
 - **#S6-055**（D7 第二次 REPLAN，2026-08-29）：schema v3 items 以 `(observation_id,event_id)` 复合
   外键绑定 observation 所属 Event；两级 sequence、item_count、最近 Event/pair 全序、确定性回填冲突与
   逐语句失败整体回滚按 §10.1 冻结。v2 原列逐列恒等，不静默修补 corrupt 数据。
+- **#S6-056**（D7 第三次 REPLAN，2026-08-29）：Feed 条件 validator 与其 Feed Baseline version/contentHash
+  同身份、同事务持久化；acquisition 前只从已验证 Baseline 生成不可变 hint，绝不从最新 Run metadata 读取。
+  200 缺失/超限值清空，304 缺失/超限值保留 hint 旧值；失败/conflict/rollback 零 validator 写。schema v3
+  重建 Baseline 子表追加两列，v2 旧列恒等且新列 null。
+- **#S6-057**（D7 第三次 REPLAN，2026-08-29）：结果事务除 sourceId/fingerprint/baselineVersion 外还必须
+  CAS `state='enabled' AND desired_enabled=1 AND pause_reason IS NULL`。D4 locator prepare 合法地先暂停并保留
+  旧 fingerprint，state CAS 必须使新建/合并/dedup/304/unchanged 全部零写；不得把新 locator 提前写入旧
+  Baseline 身份。
+- **#S6-058**（D7 第三次 REPLAN，2026-08-29）：Condition warning 按 §5 的 operator/typed-pair 矩阵、
+  多 pair 适用性优先级与全 predicate 非短路求值冻结；统一 `WatchRunResponseMetadata` exact-key schema 同时
+  承载 HTTP 与 Condition warnings，但只作有界诊断，不作为条件请求事实源。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。

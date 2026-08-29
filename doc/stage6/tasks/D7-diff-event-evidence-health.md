@@ -7,14 +7,14 @@ EventValidator 转为可复现的不可变观察与 Event；确保每个变化�
 Baseline/Run/Event/observation/item/outbox/audit 单事务、Source 身份 CAS 和 schema v3 关系约束闭合并发、
 重放、合并、反转、迁移与健康语义。
 
-## 契约冲突裁决（2026-08-29 Planner 第二次 REPLAN，已写回正式设计）
+## 契约冲突裁决（2026-08-29 Planner 第三次 REPLAN，已写回正式设计）
 
-以下九项已冻结，Executor 不得重新选择：
+以下十二项已冻结，Executor 不得重新选择：
 
-1. **#S6-045/#S6-052 Source rowVersion**：身份 CAS = Rule 存在未删除 + sourceId + locator fingerprint +
-   baselineVersion；rowVersion 不入身份 CAS，但结果事务只可
+1. **#S6-045/#S6-052 Source rowVersion**：sourceId + locator fingerprint + baselineVersion 进入身份 CAS；
+   rowVersion 不入身份 CAS，但结果事务只可
    `sourceRowVersion=max(current,revalidation.rowVersion)` 单调更新。revalidation 后 metadata-only commit
-   不丢有效结果且不回退；locator prepare 已改变 fingerprint/state 时新建/合并/dedup 全部整体 CAS 失败。
+   不丢有效结果且不回退。
 2. **#S6-046 Feed 截断前完整哈希**：`FeedField.valueHash` 由 D3 normalization 在截断前生成；D7
    Evidence 只消费，不对 excerpt 重算冒充。Page 完整字段由 Diff/Evidence 计算 hash。
 3. **#S6-049/#S6-051 观察幂等**：`idempotencyKey` 是唯一 replay key；`changeFingerprint` 只做确定性签名，
@@ -39,9 +39,19 @@ Baseline/Run/Event/observation/item/outbox/audit 单事务、Source 身份 CAS �
 9. **#S6-055 schema v3**：observations 有 Event 内 sequence；items 以 `(observation_id,event_id)` 复合 FK
    拒绝跨 Event 错配，并有 Event/observation 两级连续 sequence。迁移 guard 拒绝零 item/计数不一致/缺口；
    最近 Event/pair 同时间戳全序、`v2:`+eventId 回填冲突失败、任一语句失败整体回滚，v2 原列逐列恒等。
+10. **#S6-056 Feed 条件请求状态**：ETag/Last-Modified 只与 Feed Baseline 一起持久化；网络前由
+    ProcessingService 读取并验证 Baseline，产出绑定 expectedBaselineVersion/contentHash 的不可变 hint。
+    acquisition 禁止读 Run metadata。200 缺失/超限清空 validator，304 缺失/超限保留旧值；成功结果同事务
+    更新，失败/conflict/rollback 零写。schema v3 重建 Baseline 子表追加 nullable 列，v2 原列恒等、新列 null。
+11. **#S6-057 Rule 状态 CAS**：所有结果路径还必须复验 `state=enabled`、`desiredEnabled=true`、
+    `pauseReason=null`。D4 locator prepare 只暂停并保留旧 fingerprint 是正式事实；仍须使新建/合并/dedup/
+    unchanged/304 整体 CAS 失败，不得把新 locator 预写到旧 Baseline 身份。
+12. **#S6-058 Condition warning/Run metadata**：详细设计 §5 冻结每个 operator 的 absent/numeric/
+    not-applicable 矩阵、同字段多 pair 优先级及全 predicate 非短路求值；exact-key
+    `WatchRunResponseMetadata` 统一承载 HTTP/Condition warning，只作有界诊断。
 
 公式、排序、事务和完整性 validator 的唯一细节源为 detailed §5/§6.4/§8.1/§9/§10/§13.1/§14/§15 与
-决议 #S6-044～#S6-055。
+决议 #S6-044～#S6-058。
 
 ## 范围与非目标
 
@@ -58,7 +68,7 @@ Baseline/Run/Event/observation/item/outbox/audit 单事务、Source 身份 CAS �
 - `src/shared/watch/diff/`、`src/shared/watch/event-validator.ts`、ConditionEngine/Watch types；
   `src/main/watch/feed-acquisition-service.ts`、`watch-acquisition-service.ts`、新的有界 processing service、
   `watch-run-coordinator.ts`；Watch Repository/migration/store/row validator。
-- 输入：detailed §5/§6.4/§7/§8.1/§9/§10/§13.1/§14/§15、#S6-044～#S6-055；threat-model
+- 输入：detailed §5/§6.4/§7/§8.1/§9/§10/§13.1/§14/§15、#S6-044～#S6-058；threat-model
   §3.3/§3.5/§3.6/§3.8、WRT-08/WRT-10～WRT-12/WRT-17/WRT-18。
 
 ## 预计修改文件
@@ -78,14 +88,14 @@ Baseline/Run/Event/observation/item/outbox/audit 单事务、Source 身份 CAS �
 ## 实施步骤（红→绿）
 
 1. 红：先建能甄别 schema v2/旧占位 pipeline 的行为测试；不得用类型错误/模块缺失作为唯一红态。
-2. 绿一：FeedField valueHash + ParsedFeedProjection → FeedAcquisition envelope/304 → Feed/Page 持久化
-   validator；接入统一 acquisition 判别联合。
+2. 绿一：FeedField valueHash + ParsedFeedProjection → Baseline hint/FeedAcquisition envelope/304 → Feed/Page
+   持久化 validator；条件 validator 与 Baseline 同事务，接入统一 acquisition 判别联合。
 3. 绿二：Feed/Page Diff → EvidencePair → Condition 三分支（matched/no-match-warning/error）→
    EventValidator 与最近 pair reversal。
 4. 绿三：schema v3 audit/observation/items 表重建、复合 FK、sequence/count validator、v2 回填与逐语句
    rollback；v1/v2 migration 字节不变。
-5. 绿四：ProcessingService → Repository 新建/合并/dedup 三事务；Baseline、rowVersion max、Run health/audit、
-   outbox 与所有故障交错原子。
+5. 绿四：ProcessingService → Repository 新建/合并/dedup/unchanged 事务；Baseline/条件 validator、Rule
+   enabled/desired/pause 身份 CAS、rowVersion max、Run health/audit、outbox 与所有故障交错原子。
 6. 绿五：Coordinator 第二次 revalidation 后接线、受控 Feed/Page 8.24 冒烟、WATCH set/check 跨重启。
 
 ## 验收标准与测试方式
@@ -95,16 +105,20 @@ Baseline/Run/Event/observation/item/outbox/audit 单事务、Source 身份 CAS �
 - **完整循环/重放**：窗口内 A→B→A→B→A 四观察/全部 pair/Baseline=A；29:59 合并、30:00 新建、
   32 KiB+1 新建；窗口边界和重启后 reversal 一致；相同 fingerprint 不去重，相同 idempotencyKey 才 dedup，
   且 Baseline/Run/observation 精确符合 detailed §9.4。
-- **并发 CAS**：第二次 revalidation 后 metadata update 完成 → 结果有效且 rowVersion 不回退；locator prepare
-  完成 → 新建/合并/dedup 整体失败。expectedBaseline/Event firstObservedAt/itemCount 陈旧零部分写。
+- **并发 CAS**：第二次 revalidation 后 metadata update 完成 → 结果有效且 rowVersion 不回退；D4 实际
+  locator prepare 只暂停并保留旧 fingerprint，仍须使新建/合并/dedup/unchanged/304 整体失败；用户 pause、
+  Source disable/delete、health pause 亦然。expectedBaseline/Event firstObservedAt/itemCount 陈旧零部分写。
 - **Condition/health/audit**：unsupported/no-match warning 与 condition error 全矩阵；每种 RunOutcome 的 reason
   精确，Event created/coalesced/deduplicated 零 unchanged 冒充；condition_error pause/counter/backoff/health/
-  Baseline/audit 全断言（Rule pauseReason=dependency-unavailable，不重建 watch_rules 父表）。
+  Baseline/audit 全断言（Rule pauseReason=dependency-unavailable，不重建 watch_rules 父表）；同 fieldKey 多 pair
+  优先级、all/any 非短路 warning、统一 Run metadata exact-key/顺序/预算全部有 oracle。
 - **Feed**：valueHash 截断固定向量、200 envelope hash、304 首次/已有 Baseline、持久化 JSON 未来/非法/
-  超限；Page/Feed 进入同一 processing service。
+  超限；Baseline hint 是唯一条件 header 来源，200 首建/推进/同 contentHash 与304的 present/missing/oversize
+  validator，以及失败/conflict/rollback/崩溃均验证同事务语义；同 hash 200=unchanged 且 Baseline version
+  不变，Run metadata 不能污染后续请求；Page/Feed 进入同一 processing service。
 - **schema v3**：数据库层拒绝跨 Event observation/item；拒绝零 item/计数不一致/sequence 缺口；相同
   时间戳排序全序；`v2:`+eventId 回填冲突失败；每条 migration 语句失败均完整回滚；成功后 v2 所有既有列
-  逐列恒等。
+  逐列恒等，Baseline 新 validator 列固定 null。
 - **原子/隐私**：Event+observation+items+Baseline+Run+audit+新建 outbox 单事务；muted 零 outbox；原始
   body/HTML/PageSnapshot/query/Cookie/token 零非 Evidence 持久化/日志。
 - 聚焦红→绿后运行 `npm test -- --maxWorkers=1`、typecheck、lint、format:check、build、`git diff --check`；
@@ -121,4 +135,4 @@ diff/范围/垃圾/敏感信息终检、local logical candidate commit(s)（不 
 - 依赖 D2–D6（均已关闭）；D8–D10 依赖本任务。
 - 无法给 equality/循环/迁移/并发精确 oracle、需要模型判定、需要保存正文/HTML、Event 无双侧 Evidence、
   需要放宽 Baseline/关系/审计原子性、要改变 BrowserController/SourceService 公共接口或偏离
-  #S6-044～#S6-055 任一裁决时停止并 REPLAN。
+  #S6-044～#S6-058 任一裁决时停止并 REPLAN。
