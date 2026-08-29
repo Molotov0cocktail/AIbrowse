@@ -19,6 +19,7 @@ import {
 import { HostRequestGate } from './host-request-gate';
 import { FakeClock } from '../../shared/watch/clock';
 import { computeSourceLocatorFingerprint } from '../../shared/watch/watch-rule-state';
+import { computeJitterMs } from './watch-scheduler';
 import type { WatchFailureCode, WatchRule } from '../../shared/types/watch';
 import type { WatchRevalidationResult } from './watch-lifecycle-coordinator';
 
@@ -737,6 +738,71 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
   });
 });
 
+describe('M4 dependency_unavailable 健康暂停（R4 / #S6-044）', () => {
+  it('M4⑬ dependency_unavailable → 健康暂停：paused/双审计恰一/零重试零退避；已暂停重复零暂停审计', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      h.acquisition.results = [
+        { ok: false, health: 'dependency_unavailable', retryable: false, retryAfterSeconds: null },
+      ];
+      h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
+      await settle(h.clock);
+      expect(h.acquisition.calls.length).toBe(1); // 零重试
+      const readRule = h.repo.getRule(rule.id)!;
+      expect(readRule.state).toBe('paused'); // 红：修复前保持 enabled
+      expect(readRule.pauseReason).toBe('dependency-unavailable');
+      expect(readRule.backoffUntil).toBeNull(); // 零退避
+      const audits = h.repo.listAudits(100).filter((a) => a.ruleId === rule.id);
+      expect(
+        audits.filter((a) => a.kind === 'run' && a.reasonCode === 'dependency-unavailable').length,
+      ).toBe(1);
+      expect(
+        audits.filter(
+          (a) => a.kind === 'lifecycle-pause' && a.reasonCode === 'dependency-unavailable',
+        ).length,
+      ).toBe(1); // 红：修复前零暂停审计
+      // 已暂停规则重复失败（reservation 后在途 run 的规则被并发暂停）不得重复写暂停审计
+      const rule2 = makeRule({ id: randomUUID(), feedUrl: 'https://dep2.example.com/rss.xml' });
+      expect(h.repo.insertRule(rule2).ok).toBe(true);
+      h.acquisition.results = [
+        { ok: false, health: 'dependency_unavailable', retryable: false, retryAfterSeconds: null },
+      ];
+      h.coordinator.handleDue([{ ruleId: rule2.id, trigger: 'scheduled' }]);
+      const before = h.repo.getRule(rule2.id)!;
+      const pauseRes = h.repo.updateRuleCoordination(
+        rule2.id,
+        {
+          state: before.state,
+          pauseReason: before.pauseReason,
+          sourceRowVersion: before.sourceRowVersion,
+          sourceLocatorFingerprint: before.sourceLocatorFingerprint,
+        },
+        {
+          state: 'paused',
+          pauseReason: 'source-changed',
+          sourceRowVersion: before.sourceRowVersion,
+          sourceLocatorFingerprint: before.sourceLocatorFingerprint,
+        },
+        new Date().toISOString(),
+      );
+      expect(pauseRes.ok).toBe(true);
+      await settle(h.clock);
+      const audits2 = h.repo.listAudits(100).filter((a) => a.ruleId === rule2.id);
+      expect(
+        audits2.filter((a) => a.kind === 'run' && a.reasonCode === 'dependency-unavailable').length,
+      ).toBe(1); // run 终态审计仍恰一条
+      expect(audits2.filter((a) => a.kind === 'lifecycle-pause').length).toBe(0); // 已暂停重复零审计
+      expect(h.repo.getRule(rule2.id)!.pauseReason).toBe('source-changed'); // 保持既有暂停原因
+    } finally {
+      h.repo.dispose();
+      closeDb(h.repo.dbHandle);
+      rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('M5 生命周期（§4.4/FIXED 12：stop-admission→abort→drain→close 幂等）', () => {
   it('M5① stop 后新提交全受控拒绝（tick/manual）', async () => {
     const h = setup();
@@ -847,6 +913,84 @@ describe('M5 生命周期（§4.4/FIXED 12：stop-admission→abort→drain→cl
     } catch (err) {
       rmSync(dir, { recursive: true, force: true });
       throw err;
+    }
+  });
+
+  it('M5⑥ jitter 等待期间 stop → delay timer 立即清除、零迟到 acquisition（R2）', async () => {
+    const h = setup();
+    try {
+      // 选择 jitter > 0 的规则，确保 run 进入 delay() 等待
+      let rule: WatchRule | null = null;
+      for (let i = 0; i < 100 && rule === null; i += 1) {
+        const cand = makeRule({ id: `r-jitter-${i}` });
+        if (computeJitterMs({ ruleId: cand.id, hostKey: 'feed.example.com:443', seed: NOW }) > 0) {
+          rule = cand;
+        }
+      }
+      expect(rule).not.toBeNull();
+      if (rule === null) return;
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
+      // 冲刷微任务让 run 进入 jitter delay（acquisition 尚未开始）
+      for (let j = 0; j < 12; j += 1) await Promise.resolve();
+      expect(h.acquisition.calls.length).toBe(0); // 在 jitter 等待中
+      expect(h.clock.pendingTimerCount()).toBeGreaterThan(0); // jitter + deadline timer 在位
+      await h.coordinator.stop(); // abort → delay 清除对应 timer
+      expect(h.coordinator.activeRunCount()).toBe(0);
+      expect(h.coordinator.pendingRunCount()).toBe(0);
+      expect(h.clock.pendingTimerCount()).toBe(0); // 全部 timer 立即清除（红：遗留 jitter timer）
+      // 后续推进时钟也不得触发 acquisition
+      h.clock.advanceBy(120_000);
+      await settle(h.clock, 1);
+      expect(h.acquisition.calls.length).toBe(0);
+    } finally {
+      h.repo.dispose();
+      closeDb(h.repo.dbHandle);
+      rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('M5⑦ unavailable 后 stop() 仍排水：drain 完成才返回、active/pending/timer 归零、并发 stop 共享（R3）', async () => {
+    const h = setup();
+    try {
+      const rules = [
+        makeRule(),
+        makeRule({ id: randomUUID(), feedUrl: 'https://other.example.com/rss.xml' }),
+      ];
+      for (const r of rules) expect(h.repo.insertRule(r).ok).toBe(true);
+      h.acquisition.hang = true; // 两个在途均挂起
+      h.coordinator.handleDue(rules.map((r) => ({ ruleId: r.id, trigger: 'scheduled' })));
+      await Promise.resolve();
+      h.clock.advanceBy(1_000); // 越过 jitter，acquisition 实际开始（hang）
+      for (let j = 0; j < 3; j += 1) await Promise.resolve();
+      expect(h.acquisition.calls.length).toBe(2);
+      expect(h.coordinator.activeRunCount()).toBe(2);
+      // 触发 unavailable（第 3 条规则 run 的 reval1 unavailable → markUnavailable 全局停止）
+      const rule3 = makeRule({ id: randomUUID(), feedUrl: 'https://third.example.com/rss.xml' });
+      expect(h.repo.insertRule(rule3).ok).toBe(true);
+      h.revalidator.results.set(rule3.id, { status: 'unavailable' });
+      h.coordinator.handleDue([{ ruleId: rule3.id, trigger: 'scheduled' }]);
+      await Promise.resolve(); // markUnavailable 已执行并 abort 在途
+      expect(h.coordinator.getState().mode).toBe('unavailable');
+      // stop() 不得因 stopped 早退跳过 drain：同步调用后不得立即 resolved（红：直接返回）
+      const p = h.coordinator.stop();
+      let resolved = false;
+      void p.then(() => (resolved = true));
+      await Promise.resolve();
+      expect(resolved).toBe(false); // 红：stopped 早退 → 立即 resolved
+      await p;
+      expect(h.acquisition.abortObserved).toBe(true); // stop 返回前 abort 已到达
+      expect(h.coordinator.activeRunCount()).toBe(0);
+      expect(h.coordinator.pendingRunCount()).toBe(0);
+      expect(h.clock.pendingTimerCount()).toBe(0);
+      // 重复/并发 stop 共享同一排水结果
+      await Promise.all([h.coordinator.stop(), h.coordinator.stop(), h.coordinator.stop()]);
+      expect(h.coordinator.activeRunCount()).toBe(0);
+      expect(h.coordinator.getState().mode).toBe('unavailable');
+    } finally {
+      h.repo.dispose();
+      closeDb(h.repo.dbHandle);
+      rmSync(h.dir, { recursive: true, force: true });
     }
   });
 });

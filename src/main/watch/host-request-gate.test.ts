@@ -149,4 +149,94 @@ describe('HostRequestGate 时序（FIXED 3/5：同 host 相邻 start ≥5000ms�
     expect(gate.size).toBe(0);
     expect(await gate.acquire('a.com:443')).toEqual({ ok: true }); // 清空后立即放行
   });
+
+  it('M3⑧ R1 并发同 host 等待者串行排队：相邻 start ≥5000ms（修复前同时获准）', async () => {
+    const { clock, gate } = gateAt(Date.parse('2026-08-28T10:00:00.000Z'));
+    const key = 'example.com:443';
+    await gate.acquire(key); // t0：已启动一次，last=t0
+    clock.advanceBy(1_000); // t0+1000：同时发起两个（及以上）同 host acquire
+    const grants: number[] = [];
+    const promises = [1, 2, 3].map(() =>
+      gate.acquire(key).then((r) => {
+        expect(r).toEqual({ ok: true });
+        grants.push(clock.currentTimeMs());
+      }),
+    );
+    await Promise.resolve(); // 三个等待者都进入队列
+    expect(grants.length).toBe(0); // 未到 gap，均未获准
+    clock.advanceBy(4_000); // → t0+5000：第一个获准并登记
+    await Promise.resolve();
+    expect(grants.length).toBe(1); // 修复前此刻三个同时获准 → 红
+    clock.advanceBy(5_000); // → t0+10000：第二个获准
+    await Promise.resolve();
+    expect(grants.length).toBe(2);
+    clock.advanceBy(5_000); // → t0+15000：第三个获准
+    await Promise.resolve();
+    expect(grants.length).toBe(3);
+    await Promise.all(promises);
+    // 记录所有 grant/socket-start 时间并逐对断言 >=5000ms
+    for (let i = 1; i < grants.length; i += 1) {
+      expect(grants[i]! - grants[i - 1]!).toBeGreaterThanOrEqual(5_000);
+    }
+    expect(gate.lastStartedAt(key)).toBe(Date.parse('2026-08-28T10:00:15.000Z'));
+  });
+
+  it('M3⑨ R1 队列中 abort：不阻塞后续等待者、零登记 start', async () => {
+    const { clock, gate } = gateAt(Date.parse('2026-08-28T10:00:00.000Z'));
+    const key = 'example.com:443';
+    await gate.acquire(key); // t0
+    clock.advanceBy(1_000); // t0+1000
+    const c1 = new AbortController();
+    const p1 = gate.acquire(key, { signal: c1.signal }); // 排第一
+    const p2 = gate.acquire(key); // 排第二
+    await Promise.resolve();
+    c1.abort(); // 队列中第一个被 abort
+    expect(await p1).toEqual({ ok: false, reason: 'aborted' });
+    expect(gate.lastStartedAt(key)).toBe(Date.parse('2026-08-28T10:00:00.000Z')); // 零登记
+    // p2 不受 p1 阻塞：p1 移除后 p2 成为头，最早 t0+5000 获准
+    let g2: number | null = null;
+    void p2.then(() => (g2 = clock.currentTimeMs()));
+    clock.advanceBy(4_000); // → t0+5000
+    await Promise.resolve();
+    expect(g2).toBe(Date.parse('2026-08-28T10:00:05.000Z'));
+  });
+
+  it('M3⑩ R1 队列中 deadline：不越过外部截止、零登记', async () => {
+    const { clock, gate } = gateAt(Date.parse('2026-08-28T10:00:00.000Z'));
+    const key = 'example.com:443';
+    await gate.acquire(key); // t0
+    clock.advanceBy(1_000); // t0+1000
+    const p1 = gate.acquire(key, { deadlineMs: Date.parse('2026-08-28T10:00:03.000Z') }); // 排第一
+    const p2 = gate.acquire(key); // 排第二
+    await Promise.resolve();
+    clock.advanceTo(Date.parse('2026-08-28T10:00:03.000Z')); // p1 截止先到
+    expect(await p1).toEqual({ ok: false, reason: 'deadline' });
+    expect(gate.lastStartedAt(key)).toBe(Date.parse('2026-08-28T10:00:00.000Z')); // 零登记
+    // p2 成为头：在 t0+3000 计算 gap（距 last=t0 已 3000）→ 等 2000 → t0+5000 获准
+    let g2: number | null = null;
+    void p2.then(() => (g2 = clock.currentTimeMs()));
+    clock.advanceBy(2_000); // → t0+5000
+    await Promise.resolve();
+    expect(g2).toBe(Date.parse('2026-08-28T10:00:05.000Z'));
+  });
+
+  it('M3⑪ R1 clear 后无迟到 grant：pending 全取消、清空后新 acquire 立即放行', async () => {
+    const { clock, gate } = gateAt(Date.parse('2026-08-28T10:00:00.000Z'));
+    const key = 'example.com:443';
+    await gate.acquire(key); // t0
+    clock.advanceBy(1_000); // t0+1000
+    const p1 = gate.acquire(key); // gap 等待中
+    const p2 = gate.acquire(key); // 排队
+    await Promise.resolve();
+    const results: Array<'granted' | string> = [];
+    void p1.then((r) => results.push(r.ok ? 'granted' : r.reason));
+    void p2.then((r) => results.push(r.ok ? 'granted' : r.reason));
+    gate.clear(); // 清空注册表并取消全部 pending
+    clock.advanceBy(10_000); // 若 pending 未取消会迟到 grant（红）
+    await Promise.all([p1, p2]);
+    expect(results).toEqual(['aborted', 'aborted']); // 零迟到 grant
+    expect(gate.size).toBe(0);
+    expect(gate.lastStartedAt(key)).toBeNull(); // 注册表已清空（pending 零登记）
+    expect((await gate.acquire(key)).ok).toBe(true); // 清空后立即放行
+  });
 });

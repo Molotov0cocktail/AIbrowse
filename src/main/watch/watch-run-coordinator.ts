@@ -41,12 +41,14 @@ import {
 // 确定性纯决策函数（供测试直接断言；零 IO）
 // ---------------------------------------------------------------------------
 
-// 立即健康暂停原因（§7：login_required/captcha/robots_disallowed/security_rejected）
+// 立即健康暂停原因（§7/#S6-044：login_required/captcha/robots_disallowed/
+// security_rejected/dependency_unavailable）
 const IMMEDIATE_PAUSE_CODES: ReadonlySet<WatchFailureCode> = new Set([
   'login_required',
   'captcha',
   'robots_disallowed',
   'security_rejected',
+  'dependency_unavailable',
 ]);
 
 export function isImmediatePauseCode(code: WatchFailureCode): boolean {
@@ -59,11 +61,11 @@ export function isRetryableFailure(code: WatchFailureCode): boolean {
 }
 
 /**
- * run 终态健康映射（FIXED 6/§7 表）：
- * - login/captcha/robots/security → paused（立即暂停）；
+ * run 终态健康映射（FIXED 6/§7 表，#S6-044）：
+ * - login/captcha/robots/security/dependency_unavailable → paused（立即健康暂停）；
  * - parse_changed：连续第 2 次暂停、第 1 次 degraded；
  * - unavailable：连续第 3 次起 degraded（第 1/2 次 healthy）；
- * - budget_exceeded/dependency_unavailable → healthy（仅失败不降级不暂停）。
+ * - budget_exceeded → healthy（仅失败不降级不暂停）。
  */
 export function mapRunHealth(
   code: WatchFailureCode,
@@ -241,6 +243,7 @@ export class WatchRunCoordinator {
   private stopped = false;
   private unavailable = false;
   private pendingWakeTimer: TimerHandle | null = null;
+  private drainPromise: Promise<void> | null = null;
 
   constructor(options: WatchRunCoordinatorOptions) {
     this.repo = options.repo;
@@ -299,7 +302,11 @@ export class WatchRunCoordinator {
   }
 
   async stop(): Promise<void> {
-    if (this.stopped) return;
+    // 共享同一排水结果：重复/并发调用返回同一个 drain promise（幂等且不重复 abort/清空）。
+    if (this.drainPromise !== null) {
+      await this.drainPromise;
+      return;
+    }
     this.stopped = true;
     // stop-admission：新 tick/manual 全受控拒绝（handleDue/manualRun 检查 stopped）
     this.pending = [];
@@ -312,7 +319,9 @@ export class WatchRunCoordinator {
         // 幂等
       }
     }
-    await this.waitForActiveDrain();
+    const drain = this.waitForActiveDrain();
+    this.drainPromise = drain;
+    await drain;
     // close：scheduler 由装配层调用 stop（本模块只负责自身排水）
   }
 
@@ -722,7 +731,8 @@ export class WatchRunCoordinator {
       const effectiveWait = Number.isFinite(retryAfterMs) ? Math.max(ladder, retryAfterMs) : ladder;
       backoffUntil = new Date(nowMs + effectiveWait).toISOString();
     }
-    // budget_exceeded / dependency_unavailable：不重试、不暂停、不设 backoff
+    // budget_exceeded：不重试、不暂停、不设 backoff（dependency_unavailable 已走
+    // 上方立即健康暂停分支，同样零重试零退避）
     return { outcome, health, consecutiveFailures: cf, backoffUntil, healthPauseReason };
   }
 
@@ -833,31 +843,36 @@ export class WatchRunCoordinator {
 
   private delay(ms: number, signal: AbortSignal, deadlineMs: number): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
+      let timer: TimerHandle | null = null;
+      let settled = false;
+      const settle = (value: boolean): void => {
+        if (settled) return;
+        settled = true;
+        // abort 分支也必须立即清除对应 timer，不得依赖未来推进时钟才清理
+        if (timer !== null) {
+          try {
+            this.clock.clearTimeout(timer);
+          } catch {
+            // 幂等
+          }
+          timer = null;
+        }
+        try {
+          signal.removeEventListener('abort', onAbort);
+        } catch {
+          // 幂等
+        }
+        resolve(value);
+      };
+      const onAbort = (): void => settle(false);
       const remaining = deadlineMs - this.nowMs();
       if (signal.aborted || remaining <= 0) {
         resolve(false);
         return;
       }
       const wait = Math.min(Math.max(0, ms), remaining);
-      const onAbort = (): void => {
-        try {
-          signal.removeEventListener('abort', onAbort);
-        } catch {
-          // 幂等
-        }
-        resolve(false);
-      };
       signal.addEventListener('abort', onAbort, { once: true });
-      const timer = this.clock.setTimeout(() => {
-        try {
-          signal.removeEventListener('abort', onAbort);
-        } catch {
-          // 幂等
-        }
-        resolve(true);
-      }, wait);
-      // timer 无需显式清除：已在回调内自移除；abort 时通过 onAbort 短路
-      void timer;
+      timer = this.clock.setTimeout(() => settle(true), wait);
     });
   }
 
