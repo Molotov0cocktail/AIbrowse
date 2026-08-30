@@ -235,6 +235,61 @@ describe('装配矩阵（§10.2 八步）', () => {
     expect(outcome.schedulerReady).toBe(false);
   });
 
+  it('启动扫描：observation 关系损坏（删 Event 的观察）→ unavailable 零部分启动', () => {
+    let outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('normal');
+    if (outcome.mode !== 'normal') return;
+    const repo = outcome.repo;
+    const rule = makeRule();
+    repo.insertRule(rule);
+    const event = {
+      id: randomUUID(),
+      ruleId: rule.id,
+      sourceId: 'src-1',
+      eventKind: 'added' as const,
+      importance: 'normal' as const,
+      idempotencyKey: randomUUID(),
+      changeFingerprint: 'fp',
+      firstObservedAt: NOW,
+      lastObservedAt: NOW,
+      itemCount: 1,
+      readAt: null,
+    };
+    const items = [
+      {
+        itemId: 'it1',
+        fieldKey: 'title',
+        label: '标题',
+        before: { kind: 'absent' as const },
+        after: { kind: 'absent' as const },
+        beforeCapturedAt: NOW,
+        afterCapturedAt: NOW,
+        beforeFinalUrl: 'https://example.com',
+        afterFinalUrl: 'https://example.com',
+        beforeDocumentId: null,
+        afterDocumentId: null,
+        feedItemKey: null,
+      },
+    ];
+    expect(
+      repo.writeEventTransaction({
+        event,
+        items,
+        identity: {
+          sourceId: rule.sourceId,
+          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          expectedBaselineVersion: null,
+        },
+      }),
+    ).toEqual({ ok: true });
+    // 破坏 v3 关系：删除该 Event 的 observation（Event 缺 observation → fail-closed）
+    repo.dbHandle.prepare('DELETE FROM watch_event_observations WHERE event_id = ?').run(event.id);
+    repo.dispose();
+    outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('unavailable');
+    expect(outcome.schedulerReady).toBe(false);
+  });
+
   it('reconciliation hook 失败 → unavailable；成功 → normal', () => {
     const failing = (): { ok: boolean; reason: string | null } => ({
       ok: false,

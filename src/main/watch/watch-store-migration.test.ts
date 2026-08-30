@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'vitest';
 import { openDb, closeDb } from '../sources/db/sqlite-driver';
 import { runMigrations, type MigrationStep } from '../sources/db/migrations';
-import { WATCH_MIGRATION_V1, WATCH_MIGRATION_V2 } from './db/watch-migrations';
+import { WATCH_MIGRATION_V1, WATCH_MIGRATION_V2, WATCH_MIGRATION_V3 } from './db/watch-migrations';
 import { openWatchStore, restoreWatchStore } from './watch-store';
 import { WatchRepository } from './repository/watch-repository';
 import { createConsistentBackup } from '../sources/db/backup';
@@ -387,4 +387,112 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     restored.repo.dispose();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it('D7-R M0-9 v3 步骤失败注入：每条语句切点 → unavailable、user_version 仍 2、v2 数据/索引恒等、零临时表', () => {
+    const dir = mkdtempSync(join(root, 'v3-fault-'));
+    const dbPath = join(dir, 'watch.db');
+    const backupsDir = join(dir, 'backups');
+    const seeded = seedV1Db(dbPath);
+    // 基线：以原始迁移引擎直接升到 v2（不经 openWatchStore——v2 无 v3 专属列，
+    // scanIntegrity 只在 v3 上运行，因此 v2 基线用 runMigrations 构造）
+    const up2 = openDb(dbPath);
+    runMigrations(up2, [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2]);
+    closeDb(up2);
+    expect(readUserVersion(dbPath)).toBe(2);
+    const v2TableNames = tableNamesSnapshot(dbPath);
+    const v2IndexNames = indexNamesSnapshot(dbPath);
+    const v2RuleCount = countRows(dbPath, 'watch_rules');
+    const v2EventCount = countRows(dbPath, 'watch_events');
+    // 每个 v3 语句位置注入非法 SQL；引擎单事务整体回滚 → v2 恒等
+    for (let idx = 0; idx < WATCH_MIGRATION_V3.statements.length; idx += 1) {
+      const broken: MigrationStep = {
+        version: 3,
+        statements: WATCH_MIGRATION_V3.statements.map((s, i) =>
+          i === idx ? 'THIS IS NOT VALID SQL;' : s,
+        ),
+      };
+      const bad = openWatchStore({
+        dbPath,
+        backupsDir,
+        reconcile: OK_RECONCILE,
+        migrations: [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2, broken],
+      });
+      expect(bad.mode).toBe('unavailable');
+      // user_version 仍为 2；v2 表/索引/行恒等；零临时表（watch_v3_guard / *_v3）
+      expect(readUserVersion(dbPath)).toBe(2);
+      expect(tableNamesSnapshot(dbPath)).toEqual(v2TableNames);
+      expect(indexNamesSnapshot(dbPath)).toEqual(v2IndexNames);
+      expect(countRows(dbPath, 'watch_rules')).toBe(v2RuleCount);
+      expect(countRows(dbPath, 'watch_events')).toBe(v2EventCount);
+      const probe = openDb(dbPath);
+      try {
+        const temp = probe
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%v3%' OR name = 'watch_v3_guard')",
+          )
+          .all() as Array<{ name: string }>;
+        expect(temp).toEqual([]);
+      } finally {
+        closeDb(probe);
+      }
+    }
+    // 修复（正确迁移列表）后 v2→v3 重开成功
+    const fixed = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(fixed.mode).toBe('normal');
+    if (fixed.mode === 'normal') fixed.repo.dispose();
+    rmSync(dir, { recursive: true, force: true });
+    void seeded;
+  });
 });
+
+// 测试设施：快照 v2 库的表/索引/行数（GOAL 5 v2 回滚 oracle）
+function tableNamesSnapshot(dbPath: string): string[] {
+  const h = openDb(dbPath);
+  try {
+    return (
+      h.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
+        name: string;
+      }>
+    )
+      .map((r) => r.name)
+      .filter((n) => !n.startsWith('sqlite_'))
+      .sort();
+  } finally {
+    closeDb(h);
+  }
+}
+
+function indexNamesSnapshot(dbPath: string): string[] {
+  const h = openDb(dbPath);
+  try {
+    return (
+      h.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as Array<{
+        name: string;
+      }>
+    )
+      .map((r) => r.name)
+      .filter((n) => !n.startsWith('sqlite_'))
+      .sort();
+  } finally {
+    closeDb(h);
+  }
+}
+
+function countRows(dbPath: string, table: string): number {
+  const h = openDb(dbPath);
+  try {
+    const row = h.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+    return Number(row.n);
+  } finally {
+    closeDb(h);
+  }
+}
+
+function readUserVersion(dbPath: string): number {
+  const h = openDb(dbPath);
+  try {
+    return (h.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+  } finally {
+    closeDb(h);
+  }
+}
