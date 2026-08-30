@@ -116,7 +116,7 @@ describe('闭合 union 数组（编译期常量，逐项精确）', () => {
     ]);
   });
 
-  it('WATCH_FAILURE_CODES 闭合九项（§3.3）', () => {
+  it('WATCH_FAILURE_CODES 闭合十项（§3.3/D7 #S6-053）', () => {
     expect(watch.WATCH_FAILURE_CODES).toEqual([
       'login_required',
       'captcha',
@@ -127,6 +127,7 @@ describe('闭合 union 数组（编译期常量，逐项精确）', () => {
       'budget_exceeded',
       'dependency_unavailable',
       'interrupted',
+      'condition_error',
     ]);
   });
 

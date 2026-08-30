@@ -83,6 +83,8 @@ export const MAX_PROJECTION_FIELDS = 50; // 类型化字段数
 export const MAX_CONDITIONS_PER_RULE = 10; // 一层 all/any
 export const MAX_EVIDENCE_VALUE_BYTES = 4_096; // 单侧单条摘录
 export const MAX_EVENT_EVIDENCE_BYTES = 32_768; // Event 所有双侧 Evidence 合计
+export const MAX_CONDITIONAL_FIELD_BYTES = 1_024; // ETag/Last-Modified 单字段（§2/#S6-056）
+export const MAX_RUN_RESPONSE_META_BYTES = 4_096; // Run 响应/Condition 元数据整体（§8.1/#S6-058）
 export const MAX_DIGEST_BYTES = 65_536; // 持久化 Digest 投影
 export const MAX_DIGEST_EVENTS = 50; // 单 Digest
 export const MAX_DIGEST_PROVIDER_CALLS = 1; // 单 Digest
@@ -144,6 +146,7 @@ export const WATCH_FAILURE_CODES = [
   'budget_exceeded',
   'dependency_unavailable',
   'interrupted',
+  'condition_error',
 ] as const;
 export const WATCH_EVENT_KINDS = ['added', 'removed', 'changed', 'reversal', 'mixed'] as const;
 export const WATCH_NOTIFICATION_LEVELS = ['normal', 'important'] as const;
@@ -341,6 +344,7 @@ export type WatchRunOutcome =
   | { kind: 'unchanged' }
   | { kind: 'changed-unmatched'; changeFingerprint: string }
   | { kind: 'event-created'; eventId: string }
+  | { kind: 'event-coalesced'; eventId: string }
   | { kind: 'event-deduplicated'; eventId: string }
   | { kind: 'failed'; health: WatchFailureCode; retryable: boolean }
   | { kind: 'aborted'; reason: 'shutdown' | 'user' | 'superseded' };
@@ -363,6 +367,124 @@ export interface WatchRun {
 }
 
 // ---------------------------------------------------------------------------
+// D7：#S6-054/#S6-056/#S6-058 Acquisition → Processing 窄接口（§8.1）——
+// 统一判别联合与不可变 Baseline hint；Feed/Page 共用同一 processing service。
+// ---------------------------------------------------------------------------
+
+/** §8.1：acquisition 前由 ProcessingService 经 Repository 验证 Baseline 产出的不可变 hint。 */
+export type WatchBaselineHint =
+  | { kind: 'none'; expectedBaselineVersion: 0 }
+  | {
+      kind: 'feed';
+      expectedBaselineVersion: number;
+      contentHash: string;
+      validators: { etag: string | null; lastModified: string | null };
+    }
+  | {
+      kind: 'page';
+      expectedBaselineVersion: number;
+      contentHash: string;
+    };
+
+export interface WatchAcquisitionInput {
+  rule: WatchRule;
+  baselineHint: WatchBaselineHint;
+  signal: AbortSignal;
+  deadlineMs: number;
+}
+
+/** §7/§8：页面采集闭合 disposition（D6 定义；D7 统一 acquisition 判别联合复用）。 */
+export type PageAcquisitionDisposition =
+  | 'ok'
+  | 'aborted'
+  | 'consent-missing'
+  | 'consent-mismatch'
+  | 'origin-mismatch'
+  | 'source-changed'
+  | 'login'
+  | 'captcha'
+  | 'suspicious'
+  | 'tab-error'
+  | 'tab-closed-by-user'
+  | 'tab-missing'
+  | 'timeout'
+  | 'snapshot-invalid'
+  | 'cleanup-failed'
+  | 'workspace-failed'
+  | 'network'
+  | 'robots'
+  | 'budget'
+  | 'parse'
+  | 'security'
+  | 'redirect-status'
+  | 'protocol'
+  | 'invalid-target'
+  | 'internal';
+
+export type AcquiredProjection = FeedProjection | PageProjection;
+
+/** §8.1：WatchAcquisitionResult 统一判别联合（D7 替换 D5 的 {ok:true} 占位）。 */
+export type WatchAcquisitionResult =
+  | {
+      ok: true;
+      kind: 'projection';
+      projection: AcquiredProjection;
+      expectedSourceLocatorFingerprint: string;
+      responseMetadata: ConditionalResponseMetadata | null;
+    }
+  | {
+      ok: true;
+      kind: 'not-modified'; // 仅 Feed + 已存在 Baseline
+      finalUrl: string;
+      fetchedAt: string;
+      expectedSourceLocatorFingerprint: string;
+      responseMetadata: ConditionalResponseMetadata;
+    }
+  | {
+      ok: false;
+      health: WatchFailureCode;
+      retryable: boolean;
+      retryAfterSeconds: number | null;
+      disposition: FeedAcquisitionDisposition | PageAcquisitionDisposition;
+    };
+
+/** §8.1：统一 processing service 端口（ProcessingService 是唯一 main-process 编排者）。 */
+export interface WatchProcessingService {
+  prepareAcquisition(input: {
+    rule: WatchRule;
+  }): { ok: true; baselineHint: WatchBaselineHint } | { ok: false; code: 'store-unavailable' };
+
+  process(input: {
+    rule: WatchRule;
+    runId: string;
+    baselineHint: WatchBaselineHint;
+    acquisition: Extract<WatchAcquisitionResult, { ok: true }>;
+    sourceAfterAcquisition: SourceWatchProjection;
+  }): WatchProcessingResult;
+}
+
+export type WatchProcessingResult =
+  | { ok: true; outcome: WatchRunOutcome }
+  | {
+      ok: false;
+      code:
+        | 'identity-conflict'
+        | 'baseline-conflict'
+        | 'event-conflict'
+        | 'validation-failed'
+        | 'budget-exceeded'
+        | 'store-unavailable';
+      terminalWritten: false;
+    };
+
+/** §8.1/#S6-058：Run 成功/失败终态统一 exact-key 元数据（只作有界诊断，不作条件请求输入）。 */
+export interface WatchRunResponseMetadata {
+  schemaVersion: 1;
+  http: null | ConditionalResponseMetadata;
+  conditionWarnings: ConditionWarningCode[];
+}
+
+// ---------------------------------------------------------------------------
 // D2：§5 确定性结构化条件
 // ---------------------------------------------------------------------------
 
@@ -378,6 +500,11 @@ export interface StructuredCondition {
   combine: CombineMode; // 一层 all/any
   predicates: ConditionPredicate[]; // 1..MAX_CONDITIONS_PER_RULE，禁止嵌套
 }
+
+// §5/#S6-058：Condition 不匹配的闭合 warning（unsupported/no-match，不是 error）。
+// warnings 去重后按编译期顺序排序，只进入有界 Run response metadata/UI 安全文案。
+export type ConditionWarningCode =
+  'field-absent' | 'numeric-value-unavailable' | 'operator-not-applicable';
 
 // ---------------------------------------------------------------------------
 // D2：§9.3 Evidence
@@ -520,6 +647,7 @@ export interface FeedField {
   text: string;
   truncated: boolean;
   originalBytes: number; // 截断前规范化 UTF-8 字节数
+  valueHash: string; // #S6-046：截断前完整规范化值 SHA-256（小写 64 hex），D7 Evidence 只消费该值
 }
 
 /** Feed item 稳定 identity（§6.4：Atom id / RSS guid 首选，其次 canonical link，最后受控复合键）。 */
@@ -537,8 +665,9 @@ export interface FeedItem {
   author: FeedField; // Atom author/name；RSS item author
 }
 
-/** 有界 Feed 投影（§6.4：≤ 前 MAX_FEED_ITEMS 项；整体 ≤ MAX_FEED_PROJECTION_BYTES；超限整次失败）。 */
-export interface FeedProjection {
+/** Feed 投影 value（§6.4/#S6-054：FeedParser 只拥有 XML→规范化 value 的 canonical JSON）。 */
+export interface FeedProjectionValue {
+  type: 'feed';
   format: FeedFormat; // 'rss2' | 'atom'
   title: FeedField; // channel title / feed title
   description: FeedField; // channel description / feed subtitle
@@ -546,8 +675,72 @@ export interface FeedProjection {
   feedUrl: FeedField; // Atom feed link rel=self；RSS 无则空
   items: FeedItem[];
   itemsTruncated: boolean; // 遇到第 MAX_FEED_ITEMS+1 项停止收集并标记（§6.4）
-  byteLength: number; // 编码后的完整投影 UTF-8 字节（≤ MAX_FEED_PROJECTION_BYTES；超限整次失败）
 }
+
+/**
+ * FeedParser 闭合结果（#S6-054：FeedParser 只产 value + canonical JSON，不伪造
+ * acquisition 元数据）。canonicalJson 必须逐字节等于固定键序 JSON.stringify(value)。
+ */
+export type ParsedFeedProjection =
+  | { ok: true; value: FeedProjectionValue; canonicalJson: string; byteLength: number }
+  | { ok: false; health: WatchFailureCode; reason: FeedParseReasonCode };
+
+export type FeedParseReasonCode =
+  | 'encoding-invalid'
+  | 'xml-security-rejected'
+  | 'xml-budget-exceeded'
+  | 'xml-shape-invalid'
+  | 'projection-invalid'
+  | 'dependency-unavailable';
+
+/** 完整 Feed envelope（§6.4：FeedAcquisitionService 盖章 ruleId/sourceId/capturedAt、contentHash）。 */
+export type FeedProjection = ProjectionEnvelope<FeedProjectionValue>;
+
+export type FeedAcquisitionDisposition =
+  | 'ok'
+  | 'not-modified'
+  | 'first-baseline-304'
+  | 'network'
+  | 'robots'
+  | 'security'
+  | 'budget'
+  | 'parse'
+  | 'dependency'
+  | 'aborted'
+  | 'internal';
+
+/** §6.4/#S6-056：条件请求响应元数据 exact-key；两个字符串 UTF-8 ≤ MAX_CONDITIONAL_FIELD_BYTES。 */
+export interface ConditionalResponseMetadata {
+  httpStatus: 200 | 304;
+  etag: string | null;
+  lastModified: string | null;
+  warnings: ('etag-oversize' | 'last-modified-oversize')[];
+}
+
+/** Feed acquisition 闭合结果（§6.4）。 */
+export type FeedAcquisitionResult =
+  | {
+      ok: true;
+      kind: 'projection';
+      projection: FeedProjection;
+      expectedSourceLocatorFingerprint: string;
+      responseMetadata: ConditionalResponseMetadata;
+    }
+  | {
+      ok: true;
+      kind: 'not-modified';
+      finalUrl: string;
+      fetchedAt: string;
+      expectedSourceLocatorFingerprint: string;
+      responseMetadata: ConditionalResponseMetadata;
+    }
+  | {
+      ok: false;
+      health: WatchFailureCode;
+      retryable: boolean;
+      retryAfterSeconds: number | null;
+      disposition: FeedAcquisitionDisposition;
+    };
 
 /** Feed discovery 候选（detailed-design §6.3：最多 MAX_DISCOVERY_CANDIDATES，文档序，canonical URL 去重）。 */
 export interface FeedDiscoveryCandidate {
