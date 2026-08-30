@@ -732,7 +732,9 @@ export class WatchRunCoordinator {
     const rule = this.repo.getRule(ruleId)!;
     const cf = rule.consecutiveFailures + 1;
     const nowMs = this.nowMs();
-    const health = mapRunHealth(failure.health, cf, 'rss');
+    // #S6-058 FIXED DECISION 9：acquisition 事实由 Rule 类型确定——Feed=rss，Page=browser。
+    const acquisition: WatchAcquisition = rule.kind === 'page' ? 'browser' : 'rss';
+    const health = mapRunHealth(failure.health, cf, acquisition);
     const outcome: WatchRunOutcome = {
       kind: 'failed',
       health: failure.health,
@@ -760,7 +762,6 @@ export class WatchRunCoordinator {
 
   private terminalSuperseded(task: RunTask): void {
     const outcome: WatchRunOutcome = { kind: 'aborted', reason: 'superseded' };
-    const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
     let rule: WatchRule | null;
     try {
       rule = this.repo.getRule(task.ruleId);
@@ -768,6 +769,9 @@ export class WatchRunCoordinator {
       this.markUnavailable();
       return;
     }
+    // #S6-058 FIXED DECISION 9：acquisition 事实由 Rule 类型确定——Feed=rss，Page=browser。
+    const acquisition: WatchAcquisition = rule?.kind === 'page' ? 'browser' : 'rss';
+    const health: WatchHealthSnapshot = { state: 'healthy', acquisition, code: null };
     // superseded：不计数失败、不设 backoff（Source 变化不是网络失败）
     this.writeTerminal(task, outcome, health, {
       consecutiveFailures: rule?.consecutiveFailures ?? 0,

@@ -36,6 +36,26 @@ export interface FeedAcquisitionServiceOptions {
   target: TargetGatedClient;
 }
 
+/**
+ * Feed 网络请求 URL（#S6-054 FIXED DECISION 8）：保留合法 path+query，只去掉
+ * fragment（fragment 不发送给服务器）；校验 http/https、无 userinfo、长度有界。
+ * 与 evidenceSafeUrl（去 query/fragment 的安全投影）不同——后者只用于持久化/
+ * Evidence/日志，禁止反向用作请求 URL。
+ */
+function requestFeedUrl(raw: string): string | null {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  if (parsed.username !== '' || parsed.password !== '') return null;
+  parsed.hash = '';
+  return parsed.href;
+}
+
 export class FeedAcquisitionService {
   private readonly target: TargetGatedClient;
 
@@ -61,7 +81,10 @@ export class FeedAcquisitionService {
     }
     const target = input.rule.target;
     if (target.type !== 'feed') return this.failure('parse_changed', false, 'parse');
-    const feedUrl = evidenceSafeUrl(target.feedUrl);
+    // #S6-054 FIXED DECISION 8：Rule locator 的 query 是网络目标身份的一部分，
+    // 实际网络请求必须保留合法 path+query；evidenceSafeUrl 是持久化/Evidence/日志
+    // 的 URL 安全投影，不能反向用作请求 URL。
+    const feedUrl = requestFeedUrl(target.feedUrl);
     if (feedUrl === null) return this.failure('security_rejected', false, 'security');
 
     const hint = input.baselineHint;
@@ -201,7 +224,12 @@ export class FeedAcquisitionService {
     };
   }
 
-  /** §6.4/#S6-056：条件响应元数据（exact-key；超限置 null + oversize warning）。 */
+  /**
+   * Feed 网络请求 URL（#S6-054 FIXED DECISION 8）：保留合法 path+query，只去掉
+   * fragment（fragment 不发送给服务器）；校验 http/https、无 userinfo、长度有界。
+   * 与 evidenceSafeUrl（去 query/fragment 的安全投影）不同——后者只用于持久化/
+   * Evidence/日志，禁止反向用作请求 URL。
+   */
   private conditionalMetadata(
     meta: { etag: string | null; lastModified: string | null },
     httpStatus: 200 | 304,

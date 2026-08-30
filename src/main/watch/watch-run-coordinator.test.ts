@@ -617,6 +617,63 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
     }
   });
 
+  it('M4⑧ Page 规则失败终态 health acquisition=browser；Feed 为 rss（#S6-058 FIXED DECISION 9）', async () => {
+    const feedH = setup();
+    try {
+      const feedRule = makeRule();
+      expect(feedH.repo.insertRule(feedRule).ok).toBe(true);
+      feedH.acquisition.results = [
+        failedResult('unavailable', true),
+        failedResult('unavailable', true),
+      ];
+      feedH.coordinator.handleDue([{ ruleId: feedRule.id, trigger: 'scheduled' }]);
+      await settle(feedH.clock);
+      const feedHealth = JSON.parse(
+        (
+          feedH.repo.dbHandle
+            .prepare('SELECT health_json FROM watch_runs WHERE rule_id = ?')
+            .get(feedRule.id) as { health_json: string | null }
+        ).health_json!,
+      ) as { acquisition: string };
+      expect(feedHealth.acquisition).toBe('rss');
+    } finally {
+      feedH.repo.dispose();
+      closeDb(feedH.repo.dbHandle);
+      rmSync(feedH.dir, { recursive: true, force: true });
+    }
+    const pageH = setup();
+    try {
+      const pageRule = makeRule({
+        kind: 'page',
+        target: {
+          type: 'page',
+          pageUrl: 'https://page.example.com/doc',
+          regions: [{ kind: 'main-text', label: '正文' }],
+          sessionConsent: null,
+        },
+      });
+      expect(pageH.repo.insertRule(pageRule).ok).toBe(true);
+      pageH.acquisition.results = [
+        failedResult('unavailable', true),
+        failedResult('unavailable', true),
+      ];
+      pageH.coordinator.handleDue([{ ruleId: pageRule.id, trigger: 'scheduled' }]);
+      await settle(pageH.clock);
+      const pageHealth = JSON.parse(
+        (
+          pageH.repo.dbHandle
+            .prepare('SELECT health_json FROM watch_runs WHERE rule_id = ?')
+            .get(pageRule.id) as { health_json: string | null }
+        ).health_json!,
+      ) as { acquisition: string };
+      expect(pageHealth.acquisition).toBe('browser');
+    } finally {
+      pageH.repo.dispose();
+      closeDb(pageH.repo.dbHandle);
+      rmSync(pageH.dir, { recursive: true, force: true });
+    }
+  });
+
   it('M4⑦ parse_changed：一次 degraded、连续两次暂停；各自恰一条审计', async () => {
     const h = setup();
     try {
