@@ -14,7 +14,7 @@
 // 精确断言 → 排水。零真实网络、零真实 Provider。
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { app } from 'electron';
 import { getCurrentLogFilePath, logInfo } from './logger';
 import { openWatchStore } from './watch/watch-store';
@@ -23,16 +23,18 @@ import {
   type SourceProjectionReader,
 } from './watch/watch-lifecycle-coordinator';
 import { WatchRepository } from './watch/repository/watch-repository';
-import {
-  WatchRunCoordinator,
-  type WatchAcquisitionPort,
-  type WatchAcquisitionResult,
-} from './watch/watch-run-coordinator';
+import { WatchRunCoordinator, type WatchAcquisitionPort } from './watch/watch-run-coordinator';
 import { WatchScheduler } from './watch/watch-scheduler';
 import { HostRequestGate } from './watch/host-request-gate';
 import { createSystemClock, FakeClock } from '../shared/watch/clock';
 import { computeSourceLocatorFingerprint } from '../shared/watch/watch-rule-state';
-import type { Clock, SourceWatchProjection, WatchRule } from '../shared/types/watch';
+import { WatchProcessingServiceImpl } from './watch/watch-processing-service';
+import type {
+  Clock,
+  SourceWatchProjection,
+  WatchAcquisitionResult,
+  WatchRule,
+} from '../shared/types/watch';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -99,8 +101,48 @@ class SmokeAcquisition implements WatchAcquisitionPort {
   calls: Array<{ ruleId: string; runId: string; requestKey: string }> = [];
   async run(input: Parameters<WatchAcquisitionPort['run']>[0]): Promise<WatchAcquisitionResult> {
     this.calls.push({ ruleId: input.rule.id, runId: input.runId, requestKey: input.requestKey });
-    return { ok: true };
+    // D7：统一 acquisition 判别联合——成功返回 projection（处理器负责 Baseline/Event）。
+    // FeedField 必须携带截断前完整规范化值的 valueHash（#S6-046），否则
+    // prepareAcquisition 读回校验失败。
+    const emptyField = {
+      text: '',
+      truncated: false,
+      originalBytes: 0,
+      valueHash: sha256Hex(''),
+    };
+    const value = {
+      type: 'feed' as const,
+      format: 'rss2' as const,
+      title: emptyField,
+      description: emptyField,
+      siteUrl: emptyField,
+      feedUrl: emptyField,
+      items: [],
+      itemsTruncated: false,
+    };
+    const json = JSON.stringify(value);
+    return {
+      ok: true,
+      kind: 'projection',
+      projection: {
+        schemaVersion: 1,
+        ruleId: input.rule.id,
+        sourceId: input.rule.sourceId,
+        finalUrl: 'https://example.com',
+        capturedAt: new Date(NOW_MS).toISOString(),
+        documentId: null,
+        contentHash: sha256Hex(json),
+        byteLength: json.length,
+        value,
+      },
+      expectedSourceLocatorFingerprint: input.rule.sourceLocatorFingerprint,
+      responseMetadata: null,
+    };
   }
+}
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
 function makeReader(sources: SourceWatchProjection[]): SourceProjectionReader {
@@ -170,6 +212,7 @@ function buildCoordinator(
     repo,
     revalidator: lifecycle,
     acquisition,
+    processing: new WatchProcessingServiceImpl({ repo, clock }),
     hostGate: gate,
     scheduler,
     clock,

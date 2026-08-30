@@ -31,9 +31,10 @@ import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sq
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
 // D4：8.21 Watch store 冒烟（默认矩阵；dev+生产双场景）
 import { runWatchStoreSmokeScenario } from './smoke-watch-store';
-import { runWatchPageSessionScenario, type WatchPageSmokeBundle } from './smoke-watch-page-session';
-// D5：8.22 Watch 生命周期冒烟（默认矩阵；dev+生产双场景）
+import { runWatchPageSessionScenario, type WatchPageSmokeBundle } from './smoke-watch-page-session'; // D5：8.22 Watch 生命周期冒烟（默认矩阵；dev+生产双场景）
 import { runWatchLifecycleSmokeScenario } from './smoke-watch-lifecycle';
+// D7：8.24 Watch Diff/Event/Evidence 冒烟（默认矩阵；dev+生产双场景）
+import { runWatchDiffEventSmokeScenario } from './smoke-watch-diff-event';
 // 8.16 C4：真实 Workspace + CaptureService + EvidenceValidator + Repository（临时 research.db）
 import { ResearchWorkspace } from './research/research-workspace';
 import { CaptureService, sha256hex, type CaptureContent } from './research/capture-service';
@@ -10972,6 +10973,14 @@ export async function runSmokeScenario(
       });
     }
 
+    // 8.24 D7 Watch Diff/Event/Evidence 冒烟（默认矩阵自动包含；dev+生产双场景）：
+    // 真实 node:sqlite watch.db + FakeClock + WatchProcessingServiceImpl——首建
+    // Baseline、change→create（typed 双侧 Evidence + outbox）、coalesce、dedup、
+    // unchanged、condition_error 全链路。零网络、零真实 Provider。
+    if (options.liveSmoke === undefined) {
+      await runWatchDiffEventSmokeScenario();
+    }
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -13759,6 +13768,10 @@ async function runSrtScenarios(
           'watch-repository.ts': '业务 SQL 允许点（编译期常量 + 参数绑定，D4）',
           'smoke-watch-store.ts': 'SMOKE 门控测试设施（D4 8.21/门控；决议 #47 同精神）',
           'smoke-watch-lifecycle.ts': 'SMOKE 门控测试设施（D5 8.22/门控生命周期；决议 #47 同精神）',
+          // D7（2026-08-30）：smoke-watch-diff-event 只读探针（outbox/observation
+          // 计数、revalidate 读回）为 SMOKE 门控测试设施（D7 8.24；决议 #47 同精神）
+          'smoke-watch-diff-event.ts':
+            'SMOKE 门控测试设施（D7 8.24 Diff/Event/Evidence；决议 #47 同精神）',
           // D6（2026-08-29）：第六阶段契约同步——PageAcquisitionRouter 内容类型
           // charset 提取为 RegExp.exec 正则匹配（非 SQL，与 snapshot-script 同族
           // 先例）；smoke-watch-page-session 只读 PRAGMA user_version 探针为 SMOKE
