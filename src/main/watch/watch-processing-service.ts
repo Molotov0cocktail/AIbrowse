@@ -53,6 +53,7 @@ import { diffPageProjections } from '../../shared/watch/diff/page-diff';
 import {
   isValidFeedProjectionValue,
   isValidPageProjectionValue,
+  sha256Hex,
 } from '../../shared/watch/diff/evidence';
 import type { WatchRepository } from './repository/watch-repository';
 import type { WatchErrorCode } from './repository/watch-repository';
@@ -65,6 +66,15 @@ import {
 import { logWarn } from '../logger';
 
 type WatchErrorCodeLike = WatchErrorCode;
+
+/** #S6-058 FIXED DECISION 9：acquisition 事实由 Rule 类型确定——Feed=rss，Page=browser。 */
+function acquisitionForRule(rule: WatchRule): 'rss' | 'browser' {
+  return rule.kind === 'page' ? 'browser' : 'rss';
+}
+
+function healthySnapshot(rule: WatchRule): WatchHealthSnapshot {
+  return { state: 'healthy', acquisition: acquisitionForRule(rule), code: null };
+}
 
 export interface WatchProcessingServiceOptions {
   repo: WatchRepository;
@@ -122,9 +132,15 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
       if (baseline.projectionType === 'page' && !isValidPageProjectionValue(parsed)) {
         return { ok: false, code: 'store-unavailable' };
       }
-      // contentHash 与 canonical 重新编码必须一致（防陈旧/篡改）
+      // contentHash 与 canonical 重新编码必须精确一致（防陈旧/篡改/键重排）：
+      // #S6-054/#S6-058——canonical JSON 逐字节等于固定键序重新编码，contentHash
+      // 必须是该字节串的 SHA-256；任一不符 → store-unavailable。
       const reencoded = JSON.stringify(parsed);
-      if (utf8ByteLength(reencoded) !== baseline.byteLength) {
+      if (
+        reencoded !== baseline.projectionJson ||
+        utf8ByteLength(reencoded) !== baseline.byteLength ||
+        sha256Hex(reencoded) !== baseline.contentHash
+      ) {
         return { ok: false, code: 'store-unavailable' };
       }
       if (baseline.projectionType === 'feed') {
@@ -205,7 +221,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
             }
           : input.baselineHint.validators;
       const outcome: WatchRunOutcome = { kind: 'unchanged' };
-      const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
+      const health: WatchHealthSnapshot = healthySnapshot(input.rule);
       const runMetadata = JSON.stringify({
         schemaVersion: 1,
         http: responseMetadata,
@@ -266,7 +282,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
           ? { etag: responseMetadata.etag, lastModified: responseMetadata.lastModified }
           : { etag: null, lastModified: null };
       const outcome: WatchRunOutcome = { kind: 'unchanged' };
-      const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
+      const health: WatchHealthSnapshot = healthySnapshot(input.rule);
       const runMetadata = JSON.stringify({
         schemaVersion: 1,
         http: responseMetadata,
@@ -285,8 +301,6 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
       if (!result.ok) return this.conflictResult(result.code);
       return { ok: true, outcome };
     }
-
-    // 观察级 idempotencyKey 需在 Diff 前计算（dedup 检测必须早于 unexplainable 分支：
     // 若 observation 已存在，说明该变化已提交、Baseline 已推进，diff 对新旧同内容为零对）
     const conditionVersion = computeConditionVersion(input.rule.condition);
     const idempotencyKey = computeIdempotencyKey({
@@ -299,7 +313,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
     const existing = this.repo.findObservationByIdempotencyKey(idempotencyKey);
     if (existing !== null) {
       const outcome: WatchRunOutcome = { kind: 'event-deduplicated', eventId: existing.eventId };
-      const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
+      const health: WatchHealthSnapshot = healthySnapshot(input.rule);
       const runMetadata = JSON.stringify({
         schemaVersion: 1,
         http: input.acquisition.responseMetadata,
@@ -403,7 +417,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
 
     // matched=false + warnings → changed-unmatched：推进 Baseline、健康恢复
     const outcome: WatchRunOutcome = { kind: 'changed-unmatched', changeFingerprint };
-    const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
+    const health: WatchHealthSnapshot = healthySnapshot(input.rule);
     const runMetadata = JSON.stringify({
       schemaVersion: 1,
       http: input.acquisition.responseMetadata,
@@ -440,7 +454,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
   ): WatchProcessingResult {
     const auditId = randomUUID();
     const outcome: WatchRunOutcome = { kind: 'baseline-established', auditId };
-    const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
+    const health: WatchHealthSnapshot = healthySnapshot(input.rule);
     const runMetadata = JSON.stringify({
       schemaVersion: 1,
       http: input.acquisition.responseMetadata,
@@ -511,7 +525,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
 
     if (canCoalesce && latest !== null) {
       const outcome: WatchRunOutcome = { kind: 'event-coalesced', eventId: latest.id };
-      const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
+      const health: WatchHealthSnapshot = healthySnapshot(input.rule);
       const result = this.repo.writeEventResult({
         path: 'coalesce',
         rule: input.rule,
@@ -553,21 +567,22 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
       readAt: null,
     };
     const outcome: WatchRunOutcome = { kind: 'event-created', eventId };
-    const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
-    const outbox =
-      input.rule.muted || input.rule.notificationLevel === 'normal'
-        ? []
-        : [
-            {
-              id: randomUUID(),
-              dedupeKey: `in-app|event|${eventId}|1`,
-              privacyJson: JSON.stringify({
-                eventKind,
-                importance: event.importance,
-                itemCount: pairs.length,
-              }),
-            },
-          ];
+    const health: WatchHealthSnapshot = healthySnapshot(input.rule);
+    // #S6-047 FIXED DECISION 3：outbox 抑制条件只有 rule.muted；notificationLevel
+    // 只是 Event importance（normal/important 非 muted 都恰一条 in-app outbox）。
+    const outbox = input.rule.muted
+      ? []
+      : [
+          {
+            id: randomUUID(),
+            dedupeKey: `in-app|event|${eventId}|1`,
+            privacyJson: JSON.stringify({
+              eventKind,
+              importance: event.importance,
+              itemCount: pairs.length,
+            }),
+          },
+        ];
     const result = this.repo.writeEventResult({
       path: 'create',
       rule: input.rule,
@@ -593,7 +608,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
   ): WatchProcessingResult {
     void extra;
     const cf = rule.consecutiveFailures + 1;
-    const health = mapRunHealth(failure.health, cf, 'rss');
+    const health = mapRunHealth(failure.health, cf, acquisitionForRule(rule));
     const outcome: WatchRunOutcome = {
       kind: 'failed',
       health: failure.health,
@@ -632,7 +647,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
     const cf = rule.consecutiveFailures + 1;
     const health: WatchHealthSnapshot = {
       state: 'paused',
-      acquisition: 'rss',
+      acquisition: acquisitionForRule(rule),
       code: 'condition_error',
     };
     const outcome: WatchRunOutcome = {

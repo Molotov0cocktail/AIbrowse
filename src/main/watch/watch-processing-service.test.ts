@@ -16,6 +16,8 @@ import { sha256Hex } from '../../shared/watch/diff/evidence';
 import type {
   FeedProjection,
   FeedProjectionValue,
+  PageProjection,
+  PageProjectionValue,
   SourceWatchProjection,
   WatchAcquisitionResult,
   WatchBaselineHint,
@@ -598,3 +600,379 @@ describe('WatchProcessingService 结果事务（#S6-047～#S6-052/#S6-057）', (
     }
   });
 });
+
+describe('D7 Repair：Run metadata / outbox / canonical / health 精确契约', () => {
+  it('R1 成功终态（event-created）精确持久化 Run response_metadata_json（同一 CAS UPDATE）', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      expect(
+        h.repo.writeBaseline({
+          ruleId: rule.id,
+          expectedBaselineVersion: null,
+          projectionType: 'feed',
+          projectionJson: JSON.stringify(p1.value),
+          contentHash: p1.contentHash,
+          byteLength: p1.byteLength,
+          finalUrl: p1.finalUrl,
+          capturedAt: p1.capturedAt,
+          documentId: null,
+        }).ok,
+      ).toBe(true);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      const runId = randomUUID();
+      expect(
+        h.repo.insertRun({
+          id: runId,
+          ruleId: rule.id,
+          requestKey: 'rm1',
+          trigger: 'scheduled',
+          scheduledFor: null,
+        }).ok,
+      ).toBe(true);
+      expect(
+        h.repo.transitionRun(runId, 'queued', {
+          status: 'running',
+          startedAt: new Date(NOW_MS).toISOString(),
+        }).ok,
+      ).toBe(true);
+      const p2 = makeProjection(rule, 'B', new Date(NOW_MS + 60_000).toISOString());
+      const result = await processProjection(h, freshRule, runId, prepared.baselineHint, p2);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const run = h.repo.getRun(runId)!;
+      expect(run.status).toBe('finished');
+      // exact-key WatchRunResponseMetadata：schemaVersion/http/conditionWarnings 完整持久化
+      const expectedMeta = JSON.stringify({
+        schemaVersion: 1,
+        http: {
+          httpStatus: 200,
+          etag: '"v1"',
+          lastModified: '2026-08-28T00:00:00.000Z',
+          warnings: [],
+        },
+        conditionWarnings: [],
+      });
+      expect(run.responseMetadataJson).toBe(expectedMeta);
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('R2 outbox 矩阵：normal 非 muted 新建 Event 恰一条；important 恰一条；muted 零；coalesce 零新增', async () => {
+    async function createAndCount(
+      notificationLevel: 'normal' | 'important',
+      muted: boolean,
+    ): Promise<number> {
+      const h = setup();
+      try {
+        const rule = makeRule({ notificationLevel, muted });
+        expect(h.repo.insertRule(rule).ok).toBe(true);
+        const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+        expect(
+          h.repo.writeBaseline({
+            ruleId: rule.id,
+            expectedBaselineVersion: null,
+            projectionType: 'feed',
+            projectionJson: JSON.stringify(p1.value),
+            contentHash: p1.contentHash,
+            byteLength: p1.byteLength,
+            finalUrl: p1.finalUrl,
+            capturedAt: p1.capturedAt,
+            documentId: null,
+          }).ok,
+        ).toBe(true);
+        const freshRule = h.repo.getRule(rule.id)!;
+        const prepared = h.service.prepareAcquisition({ rule: freshRule });
+        if (!prepared.ok) return 0;
+        const runId = randomUUID();
+        expect(
+          h.repo.insertRun({
+            id: runId,
+            ruleId: rule.id,
+            requestKey: `rm-${Math.random()}`,
+            trigger: 'scheduled',
+            scheduledFor: null,
+          }).ok,
+        ).toBe(true);
+        expect(
+          h.repo.transitionRun(runId, 'queued', {
+            status: 'running',
+            startedAt: new Date(NOW_MS).toISOString(),
+          }).ok,
+        ).toBe(true);
+        const p2 = makeProjection(rule, 'B', new Date(NOW_MS + 60_000).toISOString());
+        const result = await processProjection(h, freshRule, runId, prepared.baselineHint, p2);
+        expect(result.ok).toBe(true);
+        if (!result.ok) return 0;
+        const n = h.repo.dbHandle
+          .prepare("SELECT COUNT(*) AS n FROM notification_outbox WHERE subject_type='event'")
+          .get() as { n: number };
+        return Number(n.n);
+      } finally {
+        closeH(h);
+      }
+    }
+    // normal 非 muted 不得被抑制（FIXED DECISION 3：抑制条件只有 muted）
+    expect(await createAndCount('normal', false)).toBe(1);
+    expect(await createAndCount('important', false)).toBe(1);
+    expect(await createAndCount('important', true)).toBe(0);
+  });
+
+  it('R3 prepareAcquisition：Baseline canonical 同字节篡改 / 键重排 / 陈旧 64-hex hash → store-unavailable', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      const canonical = JSON.stringify(p1.value);
+      const byteLength = Buffer.byteLength(canonical, 'utf8');
+      expect(
+        h.repo.writeBaseline({
+          ruleId: rule.id,
+          expectedBaselineVersion: null,
+          projectionType: 'feed',
+          projectionJson: canonical,
+          contentHash: sha256Hex(canonical),
+          byteLength,
+          finalUrl: p1.finalUrl,
+          capturedAt: p1.capturedAt,
+          documentId: null,
+        }).ok,
+      ).toBe(true);
+      const freshRule = h.repo.getRule(rule.id)!;
+      // 正常读取 ok
+      const okPrepared = h.service.prepareAcquisition({ rule: freshRule });
+      expect(okPrepared.ok).toBe(true);
+
+      // 同字节篡改：替换一个相同字节数的字符，byteLength 不变
+      const tamperedSameBytes = canonical.replace('"text":"A"', '"text":"B"');
+      expect(tamperedSameBytes.length).toBe(canonical.length);
+      h.repo.dbHandle
+        .prepare('UPDATE watch_baselines SET projection_json = ? WHERE rule_id = ?')
+        .run(tamperedSameBytes, rule.id);
+      const tamperedPrepared = h.service.prepareAcquisition({ rule: freshRule });
+      expect(tamperedPrepared.ok).toBe(false);
+
+      // 键重排：把根对象的键顺序打乱（仍是合法 JSON、字节数可能不同）
+      h.repo.dbHandle
+        .prepare('UPDATE watch_baselines SET projection_json = ? WHERE rule_id = ?')
+        .run(canonical, rule.id);
+      const reordered = JSON.stringify(reorderFeedKeys(JSON.parse(canonical)));
+      expect(reordered).not.toBe(canonical);
+      h.repo.dbHandle
+        .prepare(
+          'UPDATE watch_baselines SET projection_json = ?, byte_length = ? WHERE rule_id = ?',
+        )
+        .run(reordered, Buffer.byteLength(reordered, 'utf8'), rule.id);
+      const reorderedPrepared = h.service.prepareAcquisition({ rule: freshRule });
+      expect(reorderedPrepared.ok).toBe(false);
+
+      // 陈旧 64-hex hash：contentHash 与 canonical 字节串的 SHA-256 不一致
+      h.repo.dbHandle
+        .prepare(
+          'UPDATE watch_baselines SET projection_json = ?, byte_length = ?, content_hash = ? WHERE rule_id = ?',
+        )
+        .run(canonical, byteLength, 'f'.repeat(64), rule.id);
+      const stalePrepared = h.service.prepareAcquisition({ rule: freshRule });
+      expect(stalePrepared.ok).toBe(false);
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('R4 Page 规则成功终态 health acquisition=browser；Feed 为 rss', async () => {
+    const h = setup();
+    try {
+      const pageRule = makeRule({
+        kind: 'page',
+        accessMode: 'public',
+        target: {
+          type: 'page',
+          pageUrl: 'https://example.com/doc',
+          regions: [{ kind: 'main-text', label: '正文' }],
+          sessionConsent: null,
+        },
+      });
+      expect(h.repo.insertRule(pageRule).ok).toBe(true);
+      const prepared = h.service.prepareAcquisition({ rule: pageRule });
+      expect(prepared.ok).toBe(true);
+      if (!prepared.ok) return;
+      const runId = randomUUID();
+      expect(
+        h.repo.insertRun({
+          id: runId,
+          ruleId: pageRule.id,
+          requestKey: 'pg1',
+          trigger: 'scheduled',
+          scheduledFor: null,
+        }).ok,
+      ).toBe(true);
+      expect(
+        h.repo.transitionRun(runId, 'queued', {
+          status: 'running',
+          startedAt: new Date(NOW_MS).toISOString(),
+        }).ok,
+      ).toBe(true);
+      const pageProjection: PageProjection = {
+        schemaVersion: 1,
+        ruleId: pageRule.id,
+        sourceId: pageRule.sourceId,
+        finalUrl: 'https://example.com/doc',
+        capturedAt: new Date(NOW_MS).toISOString(),
+        documentId: null,
+        contentHash: sha256Hex('{"type":"page","fields":[]}'),
+        byteLength: Buffer.byteLength('{"type":"page","fields":[]}', 'utf8'),
+        value: { type: 'page', fields: [] },
+      };
+      const result = await h.service.process({
+        rule: pageRule,
+        runId,
+        baselineHint: prepared.baselineHint,
+        acquisition: {
+          ok: true,
+          kind: 'projection',
+          projection: pageProjection,
+          expectedSourceLocatorFingerprint: pageRule.sourceLocatorFingerprint,
+          responseMetadata: null,
+        },
+        sourceAfterAcquisition: sourceProjection,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const run = h.repo.getRun(runId)!;
+      expect(run.health).toEqual({ state: 'healthy', acquisition: 'browser', code: null });
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('R5 Page 规则 condition_error 终态 health acquisition=browser', async () => {
+    const h = setup();
+    try {
+      const pageRule = makeRule({
+        kind: 'page',
+        accessMode: 'public',
+        target: {
+          type: 'page',
+          pageUrl: 'https://example.com/doc',
+          regions: [{ kind: 'main-text', label: '正文' }],
+          sessionConsent: null,
+        },
+        condition: {
+          version: 1,
+          combine: 'all',
+          predicates: [
+            { fieldKey: 'price', operator: 'increased', operand: 10, caseSensitive: false },
+          ],
+        },
+      });
+      expect(h.repo.insertRule(pageRule).ok).toBe(true);
+      // 页面投影必须携带真实字段，使 Diff 产生 pair 后 condition 求值失败 → condition_error。
+      // 字段键恰好五键（isValidPageProjectionValue exactOwnKeys）。
+      const mkValue = (value: string): PageProjectionValue => ({
+        type: 'page',
+        fields: [{ fieldKey: 'r0:main', regionIndex: 0, kind: 'main-text', label: '正文', value }],
+      });
+      const pageValue = mkValue('A');
+      const pageJson = JSON.stringify(pageValue);
+      const pageProjection: PageProjection = {
+        schemaVersion: 1,
+        ruleId: pageRule.id,
+        sourceId: pageRule.sourceId,
+        finalUrl: 'https://example.com/doc',
+        capturedAt: new Date(NOW_MS).toISOString(),
+        documentId: null,
+        contentHash: sha256Hex(pageJson),
+        byteLength: Buffer.byteLength(pageJson, 'utf8'),
+        value: pageValue,
+      };
+      expect(
+        h.repo.writeBaseline({
+          ruleId: pageRule.id,
+          expectedBaselineVersion: null,
+          projectionType: 'page',
+          projectionJson: pageJson,
+          contentHash: pageProjection.contentHash,
+          byteLength: pageProjection.byteLength,
+          finalUrl: pageProjection.finalUrl,
+          capturedAt: pageProjection.capturedAt,
+          documentId: null,
+        }).ok,
+      ).toBe(true);
+      const freshRule = h.repo.getRule(pageRule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      const runId = randomUUID();
+      expect(
+        h.repo.insertRun({
+          id: runId,
+          ruleId: pageRule.id,
+          requestKey: 'pg2',
+          trigger: 'scheduled',
+          scheduledFor: null,
+        }).ok,
+      ).toBe(true);
+      expect(
+        h.repo.transitionRun(runId, 'queued', {
+          status: 'running',
+          startedAt: new Date(NOW_MS).toISOString(),
+        }).ok,
+      ).toBe(true);
+      // 新投影 value='B'（与 Baseline 'A' 不同）→ Diff 产生 pair 后 condition 求值失败 → condition_error
+      const newValue = mkValue('B');
+      const newJson = JSON.stringify(newValue);
+      const newProjection: PageProjection = {
+        schemaVersion: 1,
+        ruleId: pageRule.id,
+        sourceId: pageRule.sourceId,
+        finalUrl: 'https://example.com/doc',
+        capturedAt: new Date(NOW_MS + 60_000).toISOString(),
+        documentId: null,
+        contentHash: sha256Hex(newJson),
+        byteLength: Buffer.byteLength(newJson, 'utf8'),
+        value: newValue,
+      };
+      const result = await h.service.process({
+        rule: freshRule,
+        runId,
+        baselineHint: prepared.baselineHint,
+        acquisition: {
+          ok: true,
+          kind: 'projection',
+          projection: newProjection,
+          expectedSourceLocatorFingerprint: freshRule.sourceLocatorFingerprint,
+          responseMetadata: null,
+        },
+        sourceAfterAcquisition: sourceProjection,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const run = h.repo.getRun(runId)!;
+      expect(run.health).toEqual({
+        state: 'paused',
+        acquisition: 'browser',
+        code: 'condition_error',
+      });
+    } finally {
+      closeH(h);
+    }
+  });
+});
+
+// 键重排辅助：把 feed 根对象与 FeedField 的键顺序打乱（合法 JSON）
+function reorderFeedKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(reorderFeedKeys);
+  if (typeof value !== 'object' || value === null) return value;
+  const keys = Object.keys(value as Record<string, unknown>);
+  if (keys.length < 2) return value;
+  const shuffled: Record<string, unknown> = {};
+  for (const k of keys.slice(1).concat(keys.slice(0, 1))) {
+    shuffled[k] = reorderFeedKeys((value as Record<string, unknown>)[k]);
+  }
+  return shuffled;
+}
