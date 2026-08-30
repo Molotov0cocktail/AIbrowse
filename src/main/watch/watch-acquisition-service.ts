@@ -19,8 +19,20 @@ import type {
   WatchAccessMode,
   WatchFailureCode,
   Clock,
+  ConditionalResponseMetadata,
+  FeedAcquisitionResult,
+  PageAcquisitionDisposition,
+  WatchAcquisitionResult,
+  WatchBaselineHint,
+  WatchRule,
 } from '../../shared/types/watch';
-import type { TargetGatedClient, PublicFetchResult } from './public-watch-http-client';
+import { MAX_CONDITIONAL_FIELD_BYTES } from '../../shared/types/watch';
+import type { FeedAcquisitionService } from './feed-acquisition-service';
+import type {
+  TargetGatedClient,
+  PublicFetchResult,
+  PublicResponseMeta,
+} from './public-watch-http-client';
 import { classifyPublicHttpStatus } from './public-watch-http-client';
 import { readPublicHtml } from './public-html-sax-reader';
 import { validateDocumentChannels } from '../../shared/watch/document-channels';
@@ -43,35 +55,105 @@ import { urlChallengeMarkers } from './browser-watch-reader';
 import { logInfo, logWarn } from '../logger';
 
 // ---------------------------------------------------------------------------
+// 统一 acquisition 端口（D7 §8.1）：按 Rule kind/accessMode 路由 Feed/Page。
+// ---------------------------------------------------------------------------
+
+export interface UnifiedWatchAcquisitionOptions {
+  feed: FeedAcquisitionService;
+  page: PageAcquisitionRouter;
+}
+
+/** 统一 acquisition：Feed/Page 都汇入同一 processing service（§8.1）。 */
+export class WatchAcquisitionService {
+  private readonly feed: FeedAcquisitionService;
+  private readonly page: PageAcquisitionRouter;
+
+  constructor(options: UnifiedWatchAcquisitionOptions) {
+    this.feed = options.feed;
+    this.page = options.page;
+  }
+
+  async run(input: {
+    rule: WatchRule;
+    baselineHint: WatchBaselineHint;
+    signal: AbortSignal;
+    deadline: Date;
+  }): Promise<WatchAcquisitionResult> {
+    if (input.rule.kind === 'feed') {
+      const feed = await this.feed.run({
+        rule: input.rule,
+        baselineHint: input.baselineHint,
+        signal: input.signal,
+        deadlineMs: input.deadline.getTime(),
+      });
+      return toUnified(feed);
+    }
+    const page = await this.page.run({
+      target: input.rule.target as PageTarget,
+      accessMode: input.rule.accessMode,
+      ruleId: input.rule.id,
+      sourceId: input.rule.sourceId,
+      sourceLocatorFingerprint: input.rule.sourceLocatorFingerprint,
+      signal: input.signal,
+      deadline: input.deadline,
+    });
+    return toUnifiedPage(page);
+  }
+}
+
+function toUnified(feed: FeedAcquisitionResult): WatchAcquisitionResult {
+  if (!feed.ok) {
+    return {
+      ok: false,
+      health: feed.health,
+      retryable: feed.retryable,
+      retryAfterSeconds: feed.retryAfterSeconds,
+      disposition: feed.disposition,
+    };
+  }
+  if (feed.kind === 'not-modified') {
+    return {
+      ok: true,
+      kind: 'not-modified',
+      finalUrl: feed.finalUrl,
+      fetchedAt: feed.fetchedAt,
+      expectedSourceLocatorFingerprint: feed.expectedSourceLocatorFingerprint,
+      responseMetadata: feed.responseMetadata,
+    };
+  }
+  return {
+    ok: true,
+    kind: 'projection',
+    projection: feed.projection,
+    expectedSourceLocatorFingerprint: feed.expectedSourceLocatorFingerprint,
+    responseMetadata: feed.responseMetadata,
+  };
+}
+
+function toUnifiedPage(page: PageAcquisitionResult): WatchAcquisitionResult {
+  if (!page.ok) {
+    return {
+      ok: false,
+      health: page.health,
+      retryable: page.retryable,
+      retryAfterSeconds: page.retryAfterSeconds,
+      disposition: page.disposition,
+    };
+  }
+  return {
+    ok: true,
+    kind: 'projection',
+    projection: page.projection,
+    expectedSourceLocatorFingerprint: page.expectedSourceLocatorFingerprint,
+    responseMetadata: page.responseMetadata,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 闭合结果类型
 // ---------------------------------------------------------------------------
 
-export type PageAcquisitionDisposition =
-  | 'ok'
-  | 'aborted'
-  | 'consent-missing'
-  | 'consent-mismatch'
-  | 'origin-mismatch'
-  | 'source-changed'
-  | 'login'
-  | 'captcha'
-  | 'suspicious'
-  | 'tab-error'
-  | 'tab-closed-by-user'
-  | 'tab-missing'
-  | 'timeout'
-  | 'snapshot-invalid'
-  | 'cleanup-failed'
-  | 'workspace-failed'
-  | 'network'
-  | 'robots'
-  | 'budget'
-  | 'parse'
-  | 'security'
-  | 'redirect-status'
-  | 'protocol'
-  | 'invalid-target'
-  | 'internal';
+export type { PageAcquisitionDisposition } from '../../shared/types/watch';
 
 export type PageAcquisitionResult =
   | {
@@ -79,6 +161,7 @@ export type PageAcquisitionResult =
       projection: PageProjection;
       accessMode: WatchAccessMode;
       expectedSourceLocatorFingerprint: string; // 输入 rule 的 locator fingerprint（D7 CAS 用）
+      responseMetadata: ConditionalResponseMetadata | null; // 页面无条件 validator；public 可记 200 状态
     }
   | {
       ok: false;
@@ -115,6 +198,25 @@ const FAILED_IMMEDIATE: ReadonlySet<WatchFailureCode> = new Set([
   'budget_exceeded',
   'dependency_unavailable',
 ]);
+
+// #S6-056：页面不生成/消费条件 validator；Public 页可记录既有 200 状态作为有界
+// 诊断（schema v3 的 Page Baseline validator 两列恒 null）。etag/lastModified 超
+// MAX_CONDITIONAL_FIELD_BYTES → null + 对应 oversize warning，不截成可回发值。
+function pageResponseMetadata(meta: PublicResponseMeta): ConditionalResponseMetadata {
+  const utf8 = (v: string | null): number => (v === null ? 0 : Buffer.byteLength(v, 'utf8'));
+  const etagOversize = meta.etag !== null && utf8(meta.etag) > MAX_CONDITIONAL_FIELD_BYTES;
+  const lmOversize =
+    meta.lastModified !== null && utf8(meta.lastModified) > MAX_CONDITIONAL_FIELD_BYTES;
+  const warnings: ConditionalResponseMetadata['warnings'] = [];
+  if (etagOversize) warnings.push('etag-oversize');
+  if (lmOversize) warnings.push('last-modified-oversize');
+  return {
+    httpStatus: 200,
+    etag: etagOversize ? null : meta.etag,
+    lastModified: lmOversize ? null : meta.lastModified,
+    warnings,
+  };
+}
 
 function failure(
   health: WatchFailureCode,
@@ -242,6 +344,7 @@ export class PageAcquisitionRouter {
       meta.finalUrl,
       meta.fetchedAt,
       null,
+      pageResponseMetadata(meta),
     );
   }
 
@@ -337,6 +440,7 @@ export class PageAcquisitionRouter {
         read.meta.url,
         read.meta.capturedAt,
         read.meta.documentId,
+        null,
       );
     } finally {
       // 失败路径（read/classification/project 前）尽力精确清理：仅当主路径尚未
@@ -434,6 +538,7 @@ export class PageAcquisitionRouter {
     finalUrl: string,
     capturedAt: string,
     documentId: string | null,
+    responseMetadata: ConditionalResponseMetadata | null,
   ): PageAcquisitionResult {
     const projected: PageProjectionResult = projectPageProjection({
       channels,
@@ -466,6 +571,7 @@ export class PageAcquisitionRouter {
       projection: projected.projection,
       accessMode,
       expectedSourceLocatorFingerprint: input.sourceLocatorFingerprint,
+      responseMetadata,
     };
   }
 }

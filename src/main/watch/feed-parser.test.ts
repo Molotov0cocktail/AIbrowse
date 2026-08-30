@@ -42,7 +42,7 @@ describe('RSS 2.0 / Atom 基本解析与格式识别', () => {
     const r = await parseRss(RSS_ITEM('g1', 'T1', 'https://example.com/a'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const p = r.projection;
+    const p = r.value;
     expect(p.format).toBe('rss2');
     expect(p.title.text).toBe('Feed');
     expect(p.siteUrl.text).toBe('https://example.com');
@@ -54,7 +54,7 @@ describe('RSS 2.0 / Atom 基本解析与格式识别', () => {
     expect(item.link.text).toBe('https://example.com/a');
     expect(item.summary.text).toBe('s');
     expect(p.itemsTruncated).toBe(false);
-    expect(p.byteLength).toBeGreaterThan(0);
+    expect(r.byteLength).toBeGreaterThan(0);
   });
 
   it('Atom 基本投影与 format=atom', async () => {
@@ -63,7 +63,7 @@ describe('RSS 2.0 / Atom 基本解析与格式识别', () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const p = r.projection;
+    const p = r.value;
     expect(p.format).toBe('atom');
     expect(p.feedUrl.text).toBe('https://example.com/atom.xml');
     expect(p.siteUrl.text).toBe('https://example.com/');
@@ -91,7 +91,7 @@ describe('namespace：URI+localName 不信任前缀', () => {
     const r = await parseFeedXml(Buffer.from(xml, 'utf8'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items.length).toBe(1); // 只认 ATOM_NS 的 entry
+    expect(r.value.items.length).toBe(1); // 只认 ATOM_NS 的 entry
   });
 
   it('带 dc/content 模块命名空间的 RSS 正常解析', async () => {
@@ -100,7 +100,7 @@ describe('namespace：URI+localName 不信任前缀', () => {
     const r = await parseFeedXml(Buffer.from(xml, 'utf8'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items[0]!.title.text).toBe('X');
+    expect(r.value.items[0]!.title.text).toBe('X');
   });
 });
 
@@ -109,7 +109,7 @@ describe('CDATA / 编码', () => {
     const r = await parseRss(RSS_ITEM('g', '<![CDATA[<b>& raw]]>', 'https://example.com/x'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items[0]!.title.text).toBe('<b>& raw');
+    expect(r.value.items[0]!.title.text).toBe('<b>& raw');
   });
 
   it('UTF-16LE BOM 解码', async () => {
@@ -118,7 +118,7 @@ describe('CDATA / 编码', () => {
     const r = await parseFeedXml(buf);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items[0]!.title.text).toBe('中文');
+    expect(r.value.items[0]!.title.text).toBe('中文');
   });
 
   it('windows-1252 声明解码（0xE9=é）', async () => {
@@ -133,7 +133,7 @@ describe('CDATA / 编码', () => {
     const r = await parseFeedXml(body);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.title.text).toBe('café');
+    expect(r.value.title.text).toBe('café');
   });
 
   it('BOM 与声明冲突 → parse_changed', async () => {
@@ -173,8 +173,8 @@ describe('identity：首选/fallback/复合键/去重', () => {
     const r = await parseRss('<item><title>T</title><link>https://example.com/a</link></item>');
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items[0]!.identity).toBe('https://example.com/a');
-    expect(r.projection.items[0]!.identityKind).toBe('link');
+    expect(r.value.items[0]!.identity).toBe('https://example.com/a');
+    expect(r.value.items[0]!.identityKind).toBe('link');
   });
 
   it('无 id/guid/link 但 title+published 齐全 → 受控复合键（SHA-256）', async () => {
@@ -183,7 +183,7 @@ describe('identity：首选/fallback/复合键/去重', () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const item = r.projection.items[0]!;
+    const item = r.value.items[0]!;
     expect(item.identityKind).toBe('composite');
     expect(item.identity).toMatch(/^[0-9a-f]{64}$/);
     expect(item.identity).toBe(item.identity);
@@ -193,7 +193,7 @@ describe('identity：首选/fallback/复合键/去重', () => {
     const r = await parseRss('<item></item>');
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items.length).toBe(0);
+    expect(r.value.items.length).toBe(0);
   });
 
   it('重复 identity 去重稳定（first-wins，文档序）', async () => {
@@ -203,8 +203,8 @@ describe('identity：首选/fallback/复合键/去重', () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items.length).toBe(1);
-    expect(r.projection.items[0]!.title.text).toBe('FIRST');
+    expect(r.value.items.length).toBe(1);
+    expect(r.value.items[0]!.title.text).toBe('FIRST');
   });
 
   it('确定性：同一输入两次解析投影一致', async () => {
@@ -225,10 +225,10 @@ describe('itemsTruncated：前 200 项，第 201 项标记', () => {
     const r = await parseRss(items);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items.length).toBe(MAX_FEED_ITEMS);
-    expect(r.projection.itemsTruncated).toBe(true);
-    expect(r.projection.items[0]!.identity).toBe('g0');
-    expect(r.projection.items[MAX_FEED_ITEMS - 1]!.identity).toBe(`g${MAX_FEED_ITEMS - 1}`);
+    expect(r.value.items.length).toBe(MAX_FEED_ITEMS);
+    expect(r.value.itemsTruncated).toBe(true);
+    expect(r.value.items[0]!.identity).toBe('g0');
+    expect(r.value.items[MAX_FEED_ITEMS - 1]!.identity).toBe(`g${MAX_FEED_ITEMS - 1}`);
   });
 
   it('恰好 200 项 → 不标记', async () => {
@@ -238,8 +238,8 @@ describe('itemsTruncated：前 200 项，第 201 项标记', () => {
     const r = await parseRss(items);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items.length).toBe(200);
-    expect(r.projection.itemsTruncated).toBe(false);
+    expect(r.value.items.length).toBe(200);
+    expect(r.value.itemsTruncated).toBe(false);
   });
 });
 
@@ -249,7 +249,7 @@ describe('字段 UTF-8 安全截断（4096）', () => {
     const r = await parseRss(RSS_ITEM('g', long, 'https://example.com/x'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const item = r.projection.items[0]!;
+    const item = r.value.items[0]!;
     expect(item.title.truncated).toBe(true);
     expect(item.title.originalBytes).toBe(6000);
     expect(utf8ByteLength(item.title.text)).toBeLessThanOrEqual(4096);
@@ -261,8 +261,8 @@ describe('字段 UTF-8 安全截断（4096）', () => {
     const r = await parseRss(RSS_ITEM('g', exact, 'https://example.com/x'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items[0]!.title.truncated).toBe(false);
-    expect(r.projection.items[0]!.title.text).toBe(exact);
+    expect(r.value.items[0]!.title.truncated).toBe(false);
+    expect(r.value.items[0]!.title.text).toBe(exact);
   });
 });
 
@@ -356,8 +356,8 @@ describe('namespace 校验：扩展 namespace 不得覆盖核心字段', () => {
     const r = await parseFeedXml(Buffer.from(xml, 'utf8'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.title.text).toBe('F');
-    const item = r.projection.items[0]!;
+    expect(r.value.title.text).toBe('F');
+    const item = r.value.items[0]!;
     expect(item.title.text).toBe('Real T');
     expect(item.identity).toBe('real-id');
     expect(item.identityKind).toBe('id');
@@ -370,8 +370,8 @@ describe('namespace 校验：扩展 namespace 不得覆盖核心字段', () => {
     const r = await parseFeedXml(Buffer.from(xml, 'utf8'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.title.text).toBe('F');
-    const item = r.projection.items[0]!;
+    expect(r.value.title.text).toBe('F');
+    const item = r.value.items[0]!;
     expect(item.title.text).toBe('Real');
     expect(item.identity).toBe('g1');
     expect(item.identityKind).toBe('guid');
@@ -394,14 +394,14 @@ describe('Feed HTML/CDATA 字段 → 安全纯文本', () => {
     const r = await parseRss(itemWith('<![CDATA[<p>Hello <b>world</b> &amp; more</p>]]>'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items[0]!.summary.text).toBe('Hello world & more');
+    expect(r.value.items[0]!.summary.text).toBe('Hello world & more');
   });
 
   it('RSS description 转义 HTML → 纯文本', async () => {
     const r = await parseRss(itemWith('&lt;p&gt;a &lt;b&gt;b&lt;/b&gt;&lt;/p&gt;'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items[0]!.summary.text).toBe('a b');
+    expect(r.value.items[0]!.summary.text).toBe('a b');
   });
 
   it('Atom content type=html → 纯文本', async () => {
@@ -410,7 +410,7 @@ describe('Feed HTML/CDATA 字段 → 安全纯文本', () => {
     const r = await parseFeedXml(Buffer.from(ATOM(entry), 'utf8'));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items[0]!.summary.text).toBe('a b');
+    expect(r.value.items[0]!.summary.text).toBe('a b');
   });
 
   it('script/style 块从 description 整体移除', async () => {
@@ -419,7 +419,7 @@ describe('Feed HTML/CDATA 字段 → 安全纯文本', () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items[0]!.summary.text).toBe('keep bold');
+    expect(r.value.items[0]!.summary.text).toBe('keep bold');
   });
 });
 
@@ -549,8 +549,9 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
     const r = await parseRss(items);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const p = r.projection;
+    const p = r.value;
     const canonicalPayload = {
+      type: 'feed',
       format: p.format,
       title: p.title,
       description: p.description,
@@ -559,8 +560,8 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
       items: p.items,
       itemsTruncated: p.itemsTruncated,
     };
-    expect(p.byteLength).toBe(Buffer.byteLength(JSON.stringify(canonicalPayload), 'utf8'));
-    expect(p.byteLength).toBeLessThanOrEqual(MAX_FEED_PROJECTION_BYTES);
+    expect(r.byteLength).toBe(Buffer.byteLength(JSON.stringify(canonicalPayload), 'utf8'));
+    expect(r.byteLength).toBeLessThanOrEqual(MAX_FEED_PROJECTION_BYTES);
   });
 
   it('total-text 上限内最大 feed 的 canonical 编码仍接受（投影守卫不误拒）', async () => {
@@ -573,8 +574,8 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
     const r = await parseRss(items);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.byteLength).toBeLessThanOrEqual(MAX_FEED_PROJECTION_BYTES);
-    expect(r.projection.byteLength).toBeGreaterThan(MAX_XML_TOTAL_TEXT_BYTES);
+    expect(r.byteLength).toBeLessThanOrEqual(MAX_FEED_PROJECTION_BYTES);
+    expect(r.byteLength).toBeGreaterThan(MAX_XML_TOTAL_TEXT_BYTES);
   });
 
   it('canonical 编码器边界：== MAX 接受、MAX+1 拒绝依据（helper 级）', () => {
@@ -582,11 +583,12 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
     // MAX_FEED_PROJECTION_BYTES(262144)——总文本预算先绑定；此处直接机器验证 canonical
     // 编码器的 ==MAX/+1 边界语义（完整编码超限即 budget_exceeded 的判定依据）。
     const payload = (titleText: string): FeedProjectionCanonicalPayload => ({
+      type: 'feed',
       format: 'rss2',
-      title: { text: 'F', truncated: false, originalBytes: 1 },
-      description: { text: '', truncated: false, originalBytes: 0 },
-      siteUrl: { text: '', truncated: false, originalBytes: 0 },
-      feedUrl: { text: '', truncated: false, originalBytes: 0 },
+      title: { text: 'F', truncated: false, originalBytes: 1, valueHash: 'h1' },
+      description: { text: '', truncated: false, originalBytes: 0, valueHash: 'h2' },
+      siteUrl: { text: '', truncated: false, originalBytes: 0, valueHash: 'h3' },
+      feedUrl: { text: '', truncated: false, originalBytes: 0, valueHash: 'h4' },
       items: [
         {
           identity: 'i',
@@ -595,12 +597,13 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
             text: titleText,
             truncated: false,
             originalBytes: Buffer.byteLength(titleText, 'utf8'),
+            valueHash: 'h5',
           },
-          link: { text: '', truncated: false, originalBytes: 0 },
-          summary: { text: '', truncated: false, originalBytes: 0 },
+          link: { text: '', truncated: false, originalBytes: 0, valueHash: 'h6' },
+          summary: { text: '', truncated: false, originalBytes: 0, valueHash: 'h7' },
           publishedAt: null,
           updatedAt: null,
-          author: { text: '', truncated: false, originalBytes: 0 },
+          author: { text: '', truncated: false, originalBytes: 0, valueHash: 'h8' },
         },
       ],
       itemsTruncated: false,
@@ -641,7 +644,7 @@ describe('dependency_unavailable（动态 import 失败受控）', () => {
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.projection.items.length).toBe(1);
+    expect(r.value.items.length).toBe(1);
   });
 });
 

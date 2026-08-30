@@ -1,4 +1,5 @@
-// D3 feed-parser: 流式 RSS 2.0 / Atom 解析 → 有界 FeedProjection（detailed-design §6.4）。
+// D3 feed-parser + D7 #S6-046/#S6-054: 流式 RSS 2.0 / Atom 解析 → 有界
+// FeedProjectionValue + canonical JSON（detailed-design §6.4）。
 // - 使用已资格化 @federicocarboni/saxe（SaxNamespaceParser，URI+localName 不信任前缀）；
 //   dtd: 'prohibit'、零 resolver/实体、零文件/网络（WT-06、WRT-06）。
 // - XInclude namespace（元素或 xmlns 声明）一经出现立即 security_rejected，绝不惰性放行。
@@ -6,14 +7,20 @@
 //   namespace；扩展 namespace 的同名元素不得覆盖核心字段。
 // - depth/name/attribute-count/attribute-bytes/text-node/node-count（start element + text
 //   事件）/total-text 每项 == MAX 接受、MAX+1 fail-closed（WT-07、WRT-07）；超预算整次失败。
-// - FeedProjection 字节预算以完整、确定性的 canonical encoded projection（JSON，不含
-//   byteLength 字段本身）为准：== MAX 接受、MAX+1 失败。
+// - canonical JSON 字节预算以完整、确定性的编码（固定键序，不含 byteLength 字段本身）为准：
+//   == MAX 接受、MAX+1 失败。
 // - 身份：Atom id / RSS guid 首选，其次 canonical link，最后受控 SHA-256 复合键；重复去重稳定
 //   （WT-08、WRT-08）；前 MAX_FEED_ITEMS 项，第 201 项标 itemsTruncated。
 // - HTML/CDATA 内容字段（description/summary/content）输出安全纯文本，零 HTML 落盘。
-// - 字段 UTF-8 字节安全截断（MAX_FEED_FIELD_BYTES）并标 truncated/originalBytes，不拆 surrogate。
+// - 字段 UTF-8 字节安全截断（MAX_FEED_FIELD_BYTES）并标 truncated/originalBytes/valueHash
+//   （valueHash 为截断前完整规范化值 SHA-256，#S6-046），不拆 surrogate。
 import { createHash } from 'node:crypto';
-import type { FeedField, FeedFormat, FeedItem, FeedProjection } from '../../shared/types/watch';
+import type {
+  FeedFormat,
+  FeedItem,
+  FeedParseReasonCode,
+  FeedProjectionValue,
+} from '../../shared/types/watch';
 import {
   MAX_FEED_FIELD_BYTES,
   MAX_FEED_ITEMS,
@@ -35,7 +42,7 @@ const XINCLUDE_NS = 'http://www.w3.org/2001/XInclude';
 const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
 
 export type FeedParseResult =
-  | { ok: true; projection: FeedProjection; format: FeedFormat }
+  | { ok: true; value: FeedProjectionValue; canonicalJson: string; byteLength: number }
   | {
       ok: false;
       health:
@@ -44,7 +51,7 @@ export type FeedParseResult =
         | 'parse_changed'
         | 'unavailable'
         | 'dependency_unavailable';
-      reason: string;
+      reason: FeedParseReasonCode | string;
     };
 
 class BudgetExceededError extends Error {
@@ -459,19 +466,11 @@ function finalizeItem(st: CollectorState): void {
   st.collector.items.push(feedItem);
 }
 
-/** FeedProjection 的完整 canonical 编码载荷（不含 byteLength 字段本身）。 */
-export interface FeedProjectionCanonicalPayload {
-  format: FeedFormat;
-  title: FeedField;
-  description: FeedField;
-  siteUrl: FeedField;
-  feedUrl: FeedField;
-  items: FeedItem[];
-  itemsTruncated: boolean;
-}
+/** FeedProjectionValue 的完整 canonical 编码（不含 envelope/byteLength 字段本身）。 */
+export type FeedProjectionCanonicalPayload = FeedProjectionValue;
 
 /**
- * FeedProjection 完整、确定性的 canonical 编码（固定键序 JSON）。
+ * FeedProjectionValue 完整、确定性的 canonical 编码（固定键序 JSON）。
  * 字节预算以该编码为准：== MAX 接受、MAX+1 整次失败（RED LINE）。
  * 注意：受 MAX_XML_TOTAL_TEXT_BYTES(131072) 约束，真实 feed 的完整编码无法达到
  * MAX_FEED_PROJECTION_BYTES(262144)（总文本预算先绑定）；本守卫为防御性正确实现，
@@ -488,7 +487,8 @@ function finalizeProjection(collector: FeedCollector): FeedParseResult {
   const siteUrlField = normalizeFeedField(collector.channel.siteUrl);
   const feedUrlField = normalizeFeedField(collector.channel.feedUrl);
 
-  const canonicalPayload: FeedProjectionCanonicalPayload = {
+  const value: FeedProjectionValue = {
+    type: 'feed',
     format: collector.format,
     title: channelTitle,
     description: channelDescription,
@@ -497,17 +497,12 @@ function finalizeProjection(collector: FeedCollector): FeedParseResult {
     items: collector.items,
     itemsTruncated: collector.itemsTruncated,
   };
-  const encoded = encodeFeedProjectionCanonical(canonicalPayload);
-  const encodedBytes = utf8ByteLength(encoded);
-  if (encodedBytes > MAX_FEED_PROJECTION_BYTES) {
+  const canonicalJson = encodeFeedProjectionCanonical(value);
+  const byteLength = utf8ByteLength(canonicalJson);
+  if (byteLength > MAX_FEED_PROJECTION_BYTES) {
     return { ok: false, health: 'budget_exceeded', reason: 'projection' };
   }
-
-  const projection: FeedProjection = {
-    ...canonicalPayload,
-    byteLength: encodedBytes,
-  };
-  return { ok: true, projection, format: collector.format };
+  return { ok: true, value, canonicalJson, byteLength };
 }
 
 export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {

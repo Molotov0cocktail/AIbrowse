@@ -21,9 +21,9 @@ describe('corpus manifest — 受控 XML/HTML 语料', () => {
         const r = await parseFeedXml(bytes);
         expect(r.ok).toBe(true);
         if (!r.ok) return;
-        expect(r.format).toBe(entry.expectation.format);
-        expect(r.projection.items.length).toBe(entry.expectation.itemCount);
-        expect(r.projection.title.text).toBe(entry.expectation.titleText);
+        expect(r.value.format).toBe(entry.expectation.format);
+        expect(r.value.items.length).toBe(entry.expectation.itemCount);
+        expect(r.value.title.text).toBe(entry.expectation.titleText);
         return;
       }
       const r = readPublicHtml(bytes, 'https://example.com/page');
