@@ -403,6 +403,10 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     const v2IndexNames = indexNamesSnapshot(dbPath);
     const v2RuleCount = countRows(dbPath, 'watch_rules');
     const v2EventCount = countRows(dbPath, 'watch_events');
+    // R2-3：完整回滚 oracle——sqlite_master name+sql 精确恒等 + 全部 v2 业务表
+    // 全部列/行按确定性顺序精确恒等 + 零临时残留（含 watch_event_observations）。
+    const v2Master = sqliteMasterSnapshot(dbPath);
+    const v2Data = v2BusinessDataSnapshot(dbPath);
     // 每个 v3 语句位置注入非法 SQL；引擎单事务整体回滚 → v2 恒等
     for (let idx = 0; idx < WATCH_MIGRATION_V3.statements.length; idx += 1) {
       const broken: MigrationStep = {
@@ -418,17 +422,21 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
         migrations: [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2, broken],
       });
       expect(bad.mode).toBe('unavailable');
-      // user_version 仍为 2；v2 表/索引/行恒等；零临时表（watch_v3_guard / *_v3）
+      // user_version 仍为 2；v2 表/索引/行恒等；零临时表（watch_v3_guard / *_v3 /
+      // watch_event_observations）
       expect(readUserVersion(dbPath)).toBe(2);
       expect(tableNamesSnapshot(dbPath)).toEqual(v2TableNames);
       expect(indexNamesSnapshot(dbPath)).toEqual(v2IndexNames);
       expect(countRows(dbPath, 'watch_rules')).toBe(v2RuleCount);
       expect(countRows(dbPath, 'watch_events')).toBe(v2EventCount);
+      // R2-3：schema 与数据完整快照恒等（name+sql / 全部列全部行）
+      expect(sqliteMasterSnapshot(dbPath)).toEqual(v2Master);
+      expect(v2BusinessDataSnapshot(dbPath)).toEqual(v2Data);
       const probe = openDb(dbPath);
       try {
         const temp = probe
           .prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%v3%' OR name = 'watch_v3_guard')",
+            "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%v3%' OR name = 'watch_v3_guard' OR name = 'watch_event_observations')",
           )
           .all() as Array<{ name: string }>;
         expect(temp).toEqual([]);
@@ -442,6 +450,68 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     if (fixed.mode === 'normal') fixed.repo.dispose();
     rmSync(dir, { recursive: true, force: true });
     void seeded;
+  });
+
+  it('D7-R M0-10 确定性 v2:<eventId> 回填冲突：observation 建表后回填前植入同 ID → 回填 UNIQUE 失败且整个 v2 库精确回滚', () => {
+    const dir = mkdtempSync(join(root, 'v2-conflict-'));
+    const dbPath = join(dir, 'watch.db');
+    const backupsDir = join(dir, 'backups');
+    const seeded = seedV1Db(dbPath);
+    const up2 = openDb(dbPath);
+    runMigrations(up2, [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2]);
+    closeDb(up2);
+    expect(readUserVersion(dbPath)).toBe(2);
+    const v2Master = sqliteMasterSnapshot(dbPath);
+    const v2Data = v2BusinessDataSnapshot(dbPath);
+    const eventId = seeded.event.id;
+    // 在 observation 建表后、回填 INSERT 前植入同 ID 冲突（id='v2:'||eventId）。
+    // 该 INSERT 引用已存在的 Event（FK 合法），但使随后的回填
+    // `SELECT 'v2:'||id ... FROM watch_events` 命中 UNIQUE(id) → 整笔迁移回滚。
+    const conflictSql =
+      `INSERT INTO watch_event_observations (id, event_id, sequence, idempotency_key, ` +
+      `change_fingerprint, event_kind, observed_at, first_item_sequence, item_count) ` +
+      `VALUES ('v2:${eventId}', '${eventId}', 0, 'ik-conflict', 'fp-conflict', 'added', '${NOW}', 0, 1)`;
+    // 回填语句（索引 14）之前注入冲突行；其余语句原样
+    const statements = [
+      ...WATCH_MIGRATION_V3.statements.slice(0, 14),
+      conflictSql,
+      ...WATCH_MIGRATION_V3.statements.slice(14),
+    ];
+    const broken: MigrationStep = { version: 3, statements };
+    const bad = openWatchStore({
+      dbPath,
+      backupsDir,
+      reconcile: OK_RECONCILE,
+      migrations: [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2, broken],
+    });
+    expect(bad.mode).toBe('unavailable');
+    // 整个 v2 库精确回滚：user_version=2、schema/index name+sql 恒等、全部数据恒等、
+    // 零临时残留
+    expect(readUserVersion(dbPath)).toBe(2);
+    expect(sqliteMasterSnapshot(dbPath)).toEqual(v2Master);
+    expect(v2BusinessDataSnapshot(dbPath)).toEqual(v2Data);
+    const probe = openDb(dbPath);
+    try {
+      const temp = probe
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE '%v3%' OR name = 'watch_v3_guard' OR name = 'watch_event_observations')",
+        )
+        .all() as Array<{ name: string }>;
+      expect(temp).toEqual([]);
+    } finally {
+      closeDb(probe);
+    }
+    // 修复（正确迁移列表）后正常升级 v3
+    const fixed = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(fixed.mode).toBe('normal');
+    if (fixed.mode === 'normal') {
+      expect(
+        (fixed.repo.dbHandle.prepare('PRAGMA user_version').get() as { user_version: number })
+          .user_version,
+      ).toBe(3);
+      fixed.repo.dispose();
+    }
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -483,6 +553,56 @@ function countRows(dbPath: string, table: string): number {
   try {
     const row = h.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
     return Number(row.n);
+  } finally {
+    closeDb(h);
+  }
+}
+
+// R2-3：sqlite_master 完整快照（type+name+sql，确定性排序）——回滚 oracle 比较
+// name+sql 精确恒等（表与索引一体）。
+function sqliteMasterSnapshot(dbPath: string): Array<{ type: string; name: string; sql: string }> {
+  const h = openDb(dbPath);
+  try {
+    const rows = h
+      .prepare(
+        "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+      )
+      .all() as Array<{ type: string; name: string; sql: string }>;
+    return rows.map((r) => ({ type: r.type, name: r.name, sql: r.sql ?? '' }));
+  } finally {
+    closeDb(h);
+  }
+}
+
+// R2-3：v2 业务表全部列/全部行按确定性顺序快照。动态 SQL 只允许使用编译期固定
+// 表名白名单（不从 sqlite_master 派生表名拼 SQL）。每行序列化后按字节序排序，
+// 全列包含（SELECT * 覆盖全部列）。
+const V2_BUSINESS_TABLES = [
+  'watch_rules',
+  'watch_baselines',
+  'watch_runs',
+  'watch_audits',
+  'watch_events',
+  'watch_event_items',
+  'digest_schedules',
+  'watch_digests',
+  'digest_event_refs',
+  'notification_outbox',
+  'source_cleanup_intents',
+] as const;
+
+function v2BusinessDataSnapshot(dbPath: string): Record<string, string> {
+  const h = openDb(dbPath);
+  try {
+    const out: Record<string, string> = {};
+    for (const table of V2_BUSINESS_TABLES) {
+      const rows = h.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
+      const serialized = rows
+        .map((r) => JSON.stringify(r))
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      out[table] = serialized.join('\u0001');
+    }
+    return out;
   } finally {
     closeDb(h);
   }

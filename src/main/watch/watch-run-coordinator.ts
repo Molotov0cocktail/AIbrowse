@@ -796,6 +796,13 @@ export class WatchRunCoordinator {
       this.markUnavailable('run 审计 reason 无法映射');
       return;
     }
+    // R2-1：acquisition failure / superseded 终态同样持久化 canonical metadata
+    //（无可信 HTTP 元数据 → http=null；Condition 未运行 → warnings=[]）。
+    const runMetadata = JSON.stringify({
+      schemaVersion: 1,
+      http: null,
+      conditionWarnings: [],
+    });
     const input: Parameters<WatchRepository['finalizeRun']>[0] = {
       runId: task.runId,
       ruleId: task.ruleId,
@@ -803,6 +810,7 @@ export class WatchRunCoordinator {
       health,
       consecutiveFailures: params.consecutiveFailures,
       backoffUntil: params.backoffUntil,
+      responseMetadataJson: runMetadata,
       runAudit: { id: randomUUID(), reasonCode: runAuditReason, createdAt: nowIso },
     };
     if (params.healthPauseReason !== null) {

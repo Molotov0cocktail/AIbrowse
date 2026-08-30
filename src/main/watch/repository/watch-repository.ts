@@ -51,6 +51,7 @@ import {
   validateEventRow,
   validateIntentRow,
   validateRuleRow,
+  validateRunResponseMetadataJson,
   validateRunRow,
   validateSourceWatchProjection,
   validateStoredCondition,
@@ -994,6 +995,17 @@ export class WatchRepository {
     },
   ): WatchResult {
     this.ensureOpen();
+    // R2-1：Repository 新写边界——metadata 一旦提供（非 null）必须是 canonical
+    // WatchRunResponseMetadata；v2 legacy-opaque JSON 与敌手形状一律拒绝
+    //（validateRunResponseMetadataJson 拒绝非 JSON/未来 schemaVersion/额外缺失
+    // key/非 canonical 顺序/非法类型/乱序重复 warning/超限）。
+    if (
+      next.responseMetadataJson !== undefined &&
+      next.responseMetadataJson !== null &&
+      !validateRunResponseMetadataJson(next.responseMetadataJson).ok
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
     try {
       const result = this.handle
         .prepare(SQL_TRANSITION_RUN)
@@ -1180,6 +1192,10 @@ export class WatchRepository {
     health: WatchHealthSnapshot | null;
     consecutiveFailures: number;
     backoffUntil: string | null;
+    // R2-1：D7 失败终态（parse_changed/condition_error/acquisition failure/
+    // superseded）必须随同一终态 CAS 写入 canonical metadata，不能写 null。
+    // 可选以兼容 D5-era 调用（缺省 null=legacy-opaque 边界）。
+    responseMetadataJson?: string | null;
     runAudit: {
       id: string;
       reasonCode: WatchAuditReasonCode;
@@ -1201,6 +1217,14 @@ export class WatchRepository {
     if (input.backoffUntil !== null && !Number.isFinite(Date.parse(input.backoffUntil))) {
       return { ok: false, code: 'validation-failed' };
     }
+    // R2-1：新写边界 canonical 校验（提供时必须合法）
+    if (
+      input.responseMetadataJson !== undefined &&
+      input.responseMetadataJson !== null &&
+      !validateRunResponseMetadataJson(input.responseMetadataJson).ok
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
     try {
       withTransaction(this.handle, () => {
         const nowIso = this.nowIso();
@@ -1209,6 +1233,7 @@ export class WatchRepository {
           finishedAt: nowIso,
           outcome: input.outcome,
           health: input.health,
+          responseMetadataJson: input.responseMetadataJson ?? null,
         });
         if (!transition.ok) throw new TxnAbortError(transition.code);
         const ruleUpdate = this.handle
@@ -2066,6 +2091,14 @@ export class WatchRepository {
     }>;
   }): WatchResult {
     this.ensureOpen();
+    // R2-1：D7 新写结果事务的 finished Run 必须随终态 CAS 持久化 canonical
+    // WatchRunResponseMetadata——不接受 null（legacy-opaque 只允许读回）。
+    if (
+      input.run.responseMetadataJson === null ||
+      !validateRunResponseMetadataJson(input.run.responseMetadataJson).ok
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
     if (
       input.rule.state !== 'enabled' ||
       !input.rule.desiredEnabled ||
@@ -2304,6 +2337,28 @@ export class WatchRepository {
           }
           if (itemsBytes > this.maxEventEvidenceBytes)
             throw new TxnAbortError('event-budget-exceeded');
+          // R2-2 FIXED DECISION 7：coalesce 必须在任何 Event/Baseline/observation/
+          // item/audit/Run mutation 前，于同一事务计算当前逻辑字节 + 完整新增写集
+          //（observation 元数据、items observation 关系列、Baseline/validators、
+          // Run metadata、audit、Event 行增长）。超限 → db-budget-exceeded 且全部恒等。
+          const coalesceWriteSet = this.estimateResultCoalesceWriteSet({
+            ruleId: input.rule.id,
+            eventId: input.coalesce.eventId,
+            observationId: input.coalesce.observationId,
+            idempotencyKey: input.coalesce.idempotencyKey,
+            changeFingerprint: input.coalesce.changeFingerprint,
+            eventKind: input.coalesce.eventKind,
+            lastObservedAt: input.coalesce.lastObservedAt,
+            newItemCount: input.coalesce.newItemCount,
+            itemsBytes,
+            itemCount: input.coalesce.items.length,
+            baseline: input.baseline,
+            responseMetadataJson: input.run.responseMetadataJson!,
+            audits: input.audits,
+          });
+          if (this.estimateLogicalBytesInternal() + coalesceWriteSet > this.maxDbBytes) {
+            throw new TxnAbortError('db-budget-exceeded');
+          }
           // CAS 复验 Event 存在、first_observed_at 与 item_count 等于期望值
           const updatedEvent = this.handle
             .prepare(SQL_UPDATE_EVENT_COALESCE)
@@ -2618,6 +2673,42 @@ export class WatchRepository {
           list.push(i);
           itemsByEvent.set(eid, list);
         }
+        // R2-4：#S6-055 启动扫描必须拒绝不属于任何 Event 的 observation/item；每个
+        // observation 与 item 都必须被恰好一个合法 Event/observation 消费。不依赖
+        // 正常写入时 FK 的约束——即使 FK 关闭写入的孤儿/跨 Event 行也必须在启动时
+        // fail-closed（显式关系矩阵；另以 PRAGMA foreign_key_check 纵深防御）。
+        const eventIdSet = new Set(
+          eventRows
+            .filter((e): e is Record<string, unknown> => isPlainRecord(e))
+            .map((e) => String(e['id'] ?? '')),
+        );
+        const obsIdEvent = new Map<string, string>(); // observation id -> event id
+        for (const o of obsRows) {
+          const oid = String(o['id'] ?? '');
+          const oeid = String(o['event_id'] ?? '');
+          if (!eventIdSet.has(oeid)) {
+            return { ok: false, reason: `observation ${oid} 不属于任何 Event` };
+          }
+          obsIdEvent.set(oid, oeid);
+        }
+        for (const i of obsItemsRows) {
+          const iid = String(i['id'] ?? '');
+          const ieid = String(i['event_id'] ?? '');
+          const oid = String(i['observation_id'] ?? '');
+          if (!eventIdSet.has(ieid)) {
+            return { ok: false, reason: `item ${iid} 不属于任何 Event` };
+          }
+          // item 必须被恰好一个合法 observation 消费：observation 存在且与 item
+          // 同属一个 Event（拒绝跨 Event 错配 / 悬空 observation_id）
+          if (!obsIdEvent.has(oid) || obsIdEvent.get(oid) !== ieid) {
+            return { ok: false, reason: `item ${iid} 的 observation 关系非法` };
+          }
+        }
+        // 纵深防御：FK 开启连接上的固定 PRAGMA foreign_key_check 拒绝残留违例
+        const fkViolations = this.handle.prepare('PRAGMA foreign_key_check').all();
+        if (fkViolations.length > 0) {
+          return { ok: false, reason: '外键检查发现违例（observation/item 关系损坏）' };
+        }
         for (const ev of eventRows) {
           if (!isPlainRecord(ev)) return { ok: false, reason: 'Event 行形状非法' };
           const eventId = String(ev['id'] ?? '');
@@ -2824,6 +2915,78 @@ export class WatchRepository {
         utf8ByteLength(a.reasonCode) +
         utf8ByteLength(input.event.ruleId) +
         8;
+    }
+    return bytes;
+  }
+
+  // R2-2 FIXED DECISION 7（#S6-055/#S6-058）：coalesce 完整新增写集估算——
+  // 新增 observation 元数据、items 序列化 JSON + observation 关系列
+  //（observation_id/observation_item_sequence/event_id/sequence ints）、
+  // Baseline/validators、Run metadata、audit、Event 行增长（event_kind/
+  // last_observed_at/item_count 更新）。低估不得绕过 maxDbBytes。
+  private estimateResultCoalesceWriteSet(input: {
+    ruleId: string;
+    eventId: string;
+    observationId: string;
+    idempotencyKey: string;
+    changeFingerprint: string;
+    eventKind: string;
+    lastObservedAt: string;
+    newItemCount: number;
+    itemsBytes: number;
+    itemCount: number;
+    baseline?:
+      | {
+          projectionType: 'feed' | 'page';
+          projectionJson: string;
+          contentHash: string;
+          byteLength: number;
+          finalUrl: string;
+          capturedAt: string;
+          documentId: string | null;
+          validators: { etag: string | null; lastModified: string | null };
+        }
+      | undefined;
+    responseMetadataJson: string;
+    audits: Array<{ id: string; reasonCode: string }>;
+  }): number {
+    let bytes = 0;
+    // Event 行增长（event_kind/last_observed_at/item_count 更新）
+    bytes += utf8ByteLength(input.eventKind) + utf8ByteLength(input.lastObservedAt) + 8 + 8;
+    // 新增 observation 元数据行
+    bytes +=
+      utf8ByteLength(input.observationId) +
+      utf8ByteLength(input.eventId) +
+      utf8ByteLength(input.idempotencyKey) +
+      utf8ByteLength(input.changeFingerprint) +
+      utf8ByteLength(input.eventKind) +
+      utf8ByteLength(input.lastObservedAt) +
+      24;
+    // items：序列化 JSON + observation 关系列（observation_id/event_id/
+    // observation_item_sequence/event sequence ints）
+    bytes += input.itemsBytes;
+    bytes +=
+      input.itemCount *
+      (utf8ByteLength(input.observationId) + utf8ByteLength(input.eventId) + 8 + 8);
+    // Baseline + validators
+    if (input.baseline !== undefined) {
+      bytes +=
+        utf8ByteLength(input.baseline.projectionJson) +
+        utf8ByteLength(input.baseline.contentHash) +
+        utf8ByteLength(input.baseline.finalUrl) +
+        utf8ByteLength(input.baseline.capturedAt) +
+        utf8ByteLength(input.baseline.documentId ?? '') +
+        utf8ByteLength(input.baseline.validators.etag ?? '') +
+        utf8ByteLength(input.baseline.validators.lastModified ?? '') +
+        utf8ByteLength(input.ruleId) +
+        16;
+    }
+    // Run metadata
+    bytes += utf8ByteLength(input.responseMetadataJson);
+    // audits
+    for (const a of input.audits) {
+      bytes +=
+        utf8ByteLength(a.id) + utf8ByteLength(a.reasonCode) + utf8ByteLength(input.ruleId) + 8;
     }
     return bytes;
   }

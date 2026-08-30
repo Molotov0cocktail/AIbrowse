@@ -1200,3 +1200,89 @@ describe('M5 生命周期（§4.4/FIXED 12：stop-admission→abort→drain→cl
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// R2-1 metadata 失败终态：acquisition failure / superseded 必须持久化 canonical
+// WatchRunResponseMetadata（http=null、warnings=[]），不能写 null。
+// ---------------------------------------------------------------------------
+
+const CANONICAL_NULL_META = JSON.stringify({
+  schemaVersion: 1,
+  http: null,
+  conditionWarnings: [],
+});
+
+describe('R2-1 Coordinator 失败终态 metadata', () => {
+  function readRunMeta(h: Harness, ruleId: string): string | null {
+    const row = h.repo.dbHandle
+      .prepare(
+        'SELECT response_metadata_json FROM watch_runs WHERE rule_id = ? ORDER BY started_at ASC',
+      )
+      .get(ruleId) as { response_metadata_json: string | null };
+    return row.response_metadata_json;
+  }
+
+  it('acquisition failure（unavailable）→ response_metadata_json=canonical(null,[]) 而非 null', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      h.acquisition.results = [
+        failedResult('unavailable', true),
+        failedResult('unavailable', true),
+      ];
+      h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
+      await settle(h.clock);
+      expect(h.repo.getRun(h.acquisition.calls[0]!.runId)!.status).toBe('finished');
+      expect(readRunMeta(h, rule.id)).toBe(CANONICAL_NULL_META);
+    } finally {
+      h.repo.dispose();
+      closeDb(h.repo.dbHandle);
+      rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('superseded（二次 revalidation 不一致）→ response_metadata_json=canonical(null,[]) 而非 null', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      h.acquisition.results = [
+        {
+          ok: true,
+          kind: 'projection',
+          projection: pageProjection(rule),
+          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          responseMetadata: null,
+        },
+      ];
+      let call = 0;
+      h.coordinator = new WatchRunCoordinator({
+        repo: h.repo,
+        revalidator: pausingRevalidator(h.repo, () => {
+          call += 1;
+          if (call === 1) return okRevalidation();
+          return { status: 'locator-changed' };
+        }),
+        acquisition: h.acquisition,
+        processing: h.processing,
+        hostGate: h.hostGate,
+        scheduler: h.scheduler,
+        clock: h.clock,
+      });
+      h.coordinator.start();
+      h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
+      await settle(h.clock);
+      const runId = h.acquisition.calls[0]!.runId;
+      expect(h.repo.getRun(runId)!.status).toBe('finished');
+      const row = h.repo.dbHandle
+        .prepare('SELECT response_metadata_json FROM watch_runs WHERE id = ?')
+        .get(runId) as { response_metadata_json: string | null };
+      expect(row.response_metadata_json).toBe(CANONICAL_NULL_META);
+    } finally {
+      h.repo.dispose();
+      closeDb(h.repo.dbHandle);
+      rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+});

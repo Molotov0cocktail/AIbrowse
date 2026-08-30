@@ -290,6 +290,111 @@ describe('装配矩阵（§10.2 八步）', () => {
     expect(outcome.schedulerReady).toBe(false);
   });
 
+  it('启动扫描：孤儿 observation/item/跨 Event 关系（FK 关闭写入）→ unavailable 零部分启动', () => {
+    // 1. 正常装配 v3 库并写入一个合法 Event + observation + item
+    let outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('normal');
+    if (outcome.mode !== 'normal') return;
+    const repo = outcome.repo;
+    const rule = makeRule();
+    repo.insertRule(rule);
+    const eventA = {
+      id: randomUUID(),
+      ruleId: rule.id,
+      sourceId: 'src-1',
+      eventKind: 'added' as const,
+      importance: 'normal' as const,
+      idempotencyKey: randomUUID(),
+      changeFingerprint: 'fp-a',
+      firstObservedAt: NOW,
+      lastObservedAt: NOW,
+      itemCount: 1,
+      readAt: null,
+    };
+    const eventB = {
+      id: randomUUID(),
+      ruleId: rule.id,
+      sourceId: 'src-1',
+      eventKind: 'added' as const,
+      importance: 'normal' as const,
+      idempotencyKey: randomUUID(),
+      changeFingerprint: 'fp-b',
+      firstObservedAt: NOW,
+      lastObservedAt: NOW,
+      itemCount: 1,
+      readAt: null,
+    };
+    const item = {
+      itemId: 'it1',
+      fieldKey: 'title',
+      label: '标题',
+      before: { kind: 'absent' as const },
+      after: { kind: 'absent' as const },
+      beforeCapturedAt: NOW,
+      afterCapturedAt: NOW,
+      beforeFinalUrl: 'https://example.com',
+      afterFinalUrl: 'https://example.com',
+      beforeDocumentId: null,
+      afterDocumentId: null,
+      feedItemKey: null,
+    };
+    for (const ev of [eventA, eventB]) {
+      expect(
+        repo.writeEventTransaction({
+          event: ev,
+          items: [item],
+          identity: {
+            sourceId: rule.sourceId,
+            expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+            expectedBaselineVersion: null,
+          },
+        }),
+      ).toEqual({ ok: true });
+    }
+    repo.dispose();
+    // 2. 以 FK=OFF 连接注入三种损坏：孤儿 observation（无 Event）、孤儿 item
+    //    （observation_id 悬空）、跨 Event 关系（item.event_id=E1 但 observation
+    //    属于 E2）。FK 关闭使写入不被数据库层拦截——启动扫描必须显式矩阵拒绝。
+    const corrupt = openDb(dbPath, { enableForeignKeys: false });
+    corrupt
+      .prepare(
+        `INSERT INTO watch_event_observations (id, event_id, sequence, idempotency_key,
+         change_fingerprint, event_kind, observed_at, first_item_sequence, item_count)
+         VALUES ('orphan-obs', 'no-such-event', 0, 'ik-orphan', 'fp-orphan', 'added', ?, 0, 1)`,
+      )
+      .run(NOW);
+    // 孤儿 item：observation_id 悬空（FK=OFF 允许）；sequence 用不与既有冲突的 5
+    corrupt
+      .prepare(
+        `INSERT INTO watch_event_items (id, event_id, sequence, observation_id,
+         observation_item_sequence, item_id, field_key, label,
+         before_value_json, after_value_json, before_captured_at, after_captured_at,
+         before_final_url, after_final_url)
+         VALUES ('orphan-item', ?, 5, 'no-such-obs', 0, 'itx', 'title', '标题',
+          '{"kind":"absent"}', '{"kind":"absent"}', ?, ?, 'https://example.com', 'https://example.com')`,
+      )
+      .run(eventA.id, NOW, NOW);
+    // 跨 Event 关系：item.event_id=eventA 但 observation_id=eventB 的 observation
+    const obsBId = corrupt
+      .prepare('SELECT id FROM watch_event_observations WHERE event_id = ? LIMIT 1')
+      .get(eventB.id) as { id: string };
+    corrupt
+      .prepare(
+        `INSERT INTO watch_event_items (id, event_id, sequence, observation_id,
+         observation_item_sequence, item_id, field_key, label,
+         before_value_json, after_value_json, before_captured_at, after_captured_at,
+         before_final_url, after_final_url)
+         VALUES ('cross-item', ?, 6, ?, 5, 'itx', 'title', '标题',
+          '{"kind":"absent"}', '{"kind":"absent"}', ?, ?, 'https://example.com', 'https://example.com')`,
+      )
+      .run(eventA.id, obsBId.id, NOW, NOW);
+    closeDb(corrupt);
+    // 3. 重新装配（FK 默认 ON）：启动扫描必须 fail-closed → unavailable
+    outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('unavailable');
+    expect(outcome.schedulerReady).toBe(false);
+  });
+
   it('reconciliation hook 失败 → unavailable；成功 → normal', () => {
     const failing = (): { ok: boolean; reason: string | null } => ({
       ok: false,

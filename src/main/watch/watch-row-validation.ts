@@ -19,7 +19,9 @@ import {
   WATCH_RULE_STATES,
   WATCH_RUN_TRIGGERS,
   MAX_EVIDENCE_VALUE_BYTES,
+  MAX_RUN_RESPONSE_META_BYTES,
   type ChangeEvidencePair,
+  type ConditionWarningCode,
   type EvidenceValue,
   type PauseReason,
   type SourceWatchProjection,
@@ -878,4 +880,113 @@ export function validateIntentRow(row: unknown): WatchRowValidation<SourceCleanu
 
 export function computeEventItemsBytes(itemsJson: readonly string[]): number {
   return itemsJson.reduce((sum, item) => sum + utf8ByteLength(item), 0);
+}
+
+// ---------------------------------------------------------------------------
+// D7 #S6-058：Run response metadata exact-key canonical validator（§8.1）。
+// 只接受 `{ schemaVersion:1, http: ConditionalResponseMetadata|null,
+// conditionWarnings: ConditionWarningCode[] }`：
+// - 非 JSON / 未来 schemaVersion / 额外或缺失 key / 非 canonical key order 拒绝；
+// - http 对象 exact-key `{httpStatus, etag, lastModified, warnings}`，httpStatus
+//   仅 200|304，etag/lastModified 为 string|null 且各自 UTF-8 ≤
+//   MAX_CONDITIONAL_FIELD_BYTES；warnings 数组去重并按 union 声明顺序排序；
+// - conditionWarnings 数组去重并按 union 声明顺序排序；
+// - 整体 canonical JSON UTF-8 ≤ MAX_RUN_RESPONSE_META_BYTES。
+// v2 legacy parseable JSON 只允许读回为 legacy-opaque，本函数一律拒绝
+// （新写 API 不接受 legacy-opaque；读取边界由 validateRunRow 保持可解析即可）。
+// ---------------------------------------------------------------------------
+
+const CONDITION_WARNING_ORDER: readonly ConditionWarningCode[] = [
+  'field-absent',
+  'numeric-value-unavailable',
+  'operator-not-applicable',
+];
+const HTTP_WARNING_ORDER: readonly ('etag-oversize' | 'last-modified-oversize')[] = [
+  'etag-oversize',
+  'last-modified-oversize',
+];
+
+/** 数组元素必须全部 ∈ order 且严格按 order 索引递增（天然去重且禁止乱序）。 */
+function isCanonicalOrderedStrings(value: unknown, order: readonly string[]): boolean {
+  if (!Array.isArray(value)) return false;
+  let prevIdx = -1;
+  for (const item of value) {
+    if (typeof item !== 'string') return false;
+    const idx = order.indexOf(item);
+    if (idx === -1) return false;
+    if (idx <= prevIdx) return false; // 乱序或重复
+    prevIdx = idx;
+  }
+  return true;
+}
+
+function isPlainRecord2(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  try {
+    return Object.getPrototypeOf(value) === Object.prototype;
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalConditionalResponseMetadata(raw: unknown): boolean {
+  if (!isPlainRecord2(raw)) return false;
+  const keys = Reflect.ownKeys(raw);
+  if (
+    keys.length !== 4 ||
+    keys[0] !== 'httpStatus' ||
+    keys[1] !== 'etag' ||
+    keys[2] !== 'lastModified' ||
+    keys[3] !== 'warnings'
+  ) {
+    return false;
+  }
+  const httpStatus = raw['httpStatus'];
+  if (httpStatus !== 200 && httpStatus !== 304) return false;
+  for (const field of ['etag', 'lastModified'] as const) {
+    const v = raw[field];
+    if (v !== null && typeof v !== 'string') return false;
+  }
+  return isCanonicalOrderedStrings(raw['warnings'], HTTP_WARNING_ORDER);
+}
+
+/**
+ * 新写边界 canonical 校验（§8.1/#S6-058）。返回 ok 表示该 JSON 可作为
+ * WatchRunResponseMetadata 持久化；reason 为中文诊断（零敌手正文回显）。
+ */
+export function validateRunResponseMetadataJson(json: string | null): {
+  ok: boolean;
+  reason: string | null;
+} {
+  if (json === null) return { ok: false, reason: 'Run response metadata 缺失' };
+  if (utf8ByteLength(json) > MAX_RUN_RESPONSE_META_BYTES) {
+    return { ok: false, reason: 'Run response metadata 超过字节上限' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return { ok: false, reason: 'Run response metadata 非 JSON' };
+  }
+  if (!isPlainRecord2(parsed)) return { ok: false, reason: 'Run response metadata 形状非法' };
+  const keys = Reflect.ownKeys(parsed);
+  if (
+    keys.length !== 3 ||
+    keys[0] !== 'schemaVersion' ||
+    keys[1] !== 'http' ||
+    keys[2] !== 'conditionWarnings'
+  ) {
+    return { ok: false, reason: 'Run response metadata 非 canonical key order' };
+  }
+  if (parsed['schemaVersion'] !== 1) {
+    return { ok: false, reason: 'Run response metadata schemaVersion 非法' };
+  }
+  const http = parsed['http'];
+  if (http !== null && !isCanonicalConditionalResponseMetadata(http)) {
+    return { ok: false, reason: 'Run response metadata http 非法' };
+  }
+  if (!isCanonicalOrderedStrings(parsed['conditionWarnings'], CONDITION_WARNING_ORDER)) {
+    return { ok: false, reason: 'Run response metadata conditionWarnings 非法' };
+  }
+  return { ok: true, reason: null };
 }

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { openDb, type DbHandle } from '../../sources/db/sqlite-driver';
+import { openDb, closeDb, type DbHandle } from '../../sources/db/sqlite-driver';
 import { runWatchMigrations } from '../db/watch-migrations';
 import { WatchRepository, WatchRepositoryError } from './watch-repository';
 import type { ChangeEvidencePair, WatchEvent, WatchRule } from '../../../shared/types/watch';
@@ -1524,6 +1524,77 @@ describe('D7 Repair：scanIntegrity observation 关系不变量', () => {
     void rule;
     expect(repo.scanIntegrity().ok).toBe(false);
   });
+
+  it('R2-4 孤儿 observation（不属于任何 Event）→ fail-closed', () => {
+    const { event } = seedEventWithObservation();
+    // FK=OFF 连接注入孤儿 observation（事件不存在）；注入后恢复 FK 再扫描
+    handle.exec('PRAGMA foreign_keys = OFF');
+    handle
+      .prepare(
+        `INSERT INTO watch_event_observations (id, event_id, sequence, idempotency_key,
+         change_fingerprint, event_kind, observed_at, first_item_sequence, item_count)
+         VALUES ('orphan-obs', 'no-such-event', 0, 'ik-orphan', 'fp-orphan', 'added', ?, 0, 1)`,
+      )
+      .run(NOW);
+    handle.exec('PRAGMA foreign_keys = ON');
+    void event;
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+
+  it('R2-4 孤儿 item（observation_id 悬空）→ fail-closed', () => {
+    const { event } = seedEventWithObservation();
+    handle.exec('PRAGMA foreign_keys = OFF');
+    handle
+      .prepare(
+        `INSERT INTO watch_event_items (id, event_id, sequence, observation_id,
+         observation_item_sequence, item_id, field_key, label,
+         before_value_json, after_value_json, before_captured_at, after_captured_at,
+         before_final_url, after_final_url)
+         VALUES ('orphan-item', ?, 5, 'no-such-obs', 0, 'itx', 'title', '标题',
+          '{"kind":"absent"}', '{"kind":"absent"}', ?, ?, 'https://example.com', 'https://example.com')`,
+      )
+      .run(event.id, NOW, NOW);
+    handle.exec('PRAGMA foreign_keys = ON');
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+
+  it('R2-4 跨 Event 关系（item.event_id 与 observation 所属 Event 不一致）→ fail-closed', () => {
+    const { rule, event: firstEvent } = seedEventWithObservation();
+    const secondEvent = makeEvent(rule.id, { itemCount: 1 });
+    handle.exec('PRAGMA foreign_keys = OFF');
+    handle
+      .prepare(
+        `INSERT INTO watch_events (id, rule_id, source_id, event_kind, importance,
+         idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count)
+         VALUES (?, ?, 'src-1', 'added', 'normal', ?, 'fp2', ?, ?, 1)`,
+      )
+      .run(secondEvent.id, rule.id, secondEvent.idempotencyKey, NOW, NOW);
+    handle
+      .prepare(
+        `INSERT INTO watch_event_observations (id, event_id, sequence, idempotency_key,
+         change_fingerprint, event_kind, observed_at, first_item_sequence, item_count)
+         VALUES ('obs-b', ?, 0, ?, 'fp2', 'added', ?, 0, 1)`,
+      )
+      .run(secondEvent.id, secondEvent.idempotencyKey, NOW);
+    // item.event_id=secondEvent，但 observation_id 指向第一个 Event 的 observation
+    //（跨 Event 错配；observation_item_sequence 取 5 避免与第一个 observation 的
+    // UNIQUE(observation_id, observation_item_sequence) 冲突）
+    const firstObs = handle
+      .prepare('SELECT id FROM watch_event_observations WHERE event_id = ? LIMIT 1')
+      .get(firstEvent.id) as { id: string };
+    handle
+      .prepare(
+        `INSERT INTO watch_event_items (id, event_id, sequence, observation_id,
+         observation_item_sequence, item_id, field_key, label,
+         before_value_json, after_value_json, before_captured_at, after_captured_at,
+         before_final_url, after_final_url)
+         VALUES ('cross-item', ?, 0, ?, 5, 'itx', 'title', '标题',
+          '{"kind":"absent"}', '{"kind":"absent"}', ?, ?, 'https://example.com', 'https://example.com')`,
+      )
+      .run(secondEvent.id, firstObs.id, NOW, NOW);
+    handle.exec('PRAGMA foreign_keys = ON');
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
 });
 
 describe('D7 Repair：100 MiB 预算包含 observations 与 v3 新列', () => {
@@ -1572,5 +1643,429 @@ describe('D7 Repair：100 MiB 预算包含 observations 与 v3 新列', () => {
     const result = tight.writeEventResult(input);
     // 完整写集超出预算 → 拒绝（低估不得绕过 maxDbBytes）
     expect(result.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R2-1 Repository 新写 metadata 敌手矩阵 + 4096 ==/+1 字节边界
+// ---------------------------------------------------------------------------
+
+describe('R2-1 Repository 新写 metadata 敌手矩阵（#S6-058）', () => {
+  function createWrite(rule: WatchRule, runId: string, metadata: string | null) {
+    const base = makeWriteResultCreateInput(rule, runId, metadata ?? '');
+    if (metadata === null) {
+      (base.run as { responseMetadataJson: string | null }).responseMetadataJson = null;
+    }
+    return base;
+  }
+
+  function seedRunning(rule: WatchRule, runId: string, key: string) {
+    repo.insertRule(rule);
+    repo.insertRun({
+      id: runId,
+      ruleId: rule.id,
+      requestKey: key,
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
+    repo.transitionRun(runId, 'queued', { status: 'running' });
+  }
+
+  it('null / 非 JSON → validation-failed 零写', () => {
+    const rule = makeRule();
+    const runId = 'rm-hostile';
+    seedRunning(rule, runId, 'k-hostile');
+    expect(repo.writeEventResult(createWrite(rule, runId, null))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(repo.writeEventResult(createWrite(rule, runId, 'not-json'))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(repo.getRun(runId)!.status).toBe('running'); // 零写
+    expect(count('watch_events')).toBe(0);
+  });
+
+  it('额外/缺失 key 拒绝', () => {
+    const rule = makeRule();
+    const runId = 'rm-keys';
+    seedRunning(rule, runId, 'k-keys');
+    const extra = '{"schemaVersion":1,"http":null,"conditionWarnings":[],"x":1}';
+    const missing = '{"schemaVersion":1,"http":null}';
+    expect(repo.writeEventResult(createWrite(rule, runId, extra))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(repo.writeEventResult(createWrite(rule, runId, missing))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(count('watch_events')).toBe(0);
+  });
+
+  it('未来 schemaVersion 拒绝', () => {
+    const rule = makeRule();
+    const runId = 'rm-future';
+    seedRunning(rule, runId, 'k-future');
+    const future = '{"schemaVersion":2,"http":null,"conditionWarnings":[]}';
+    expect(repo.writeEventResult(createWrite(rule, runId, future))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(count('watch_events')).toBe(0);
+  });
+
+  it('非 canonical key order 拒绝', () => {
+    const rule = makeRule();
+    const runId = 'rm-order';
+    seedRunning(rule, runId, 'k-order');
+    const reordered = '{"http":null,"schemaVersion":1,"conditionWarnings":[]}';
+    expect(repo.writeEventResult(createWrite(rule, runId, reordered))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(count('watch_events')).toBe(0);
+  });
+
+  it('非法 httpStatus/类型 拒绝', () => {
+    const rule = makeRule();
+    const runId = 'rm-http';
+    seedRunning(rule, runId, 'k-http');
+    const badStatus =
+      '{"schemaVersion":1,"http":{"httpStatus":201,"etag":null,"lastModified":null,"warnings":[]},"conditionWarnings":[]}';
+    const badType = '{"schemaVersion":1,"http":"oops","conditionWarnings":[]}';
+    expect(repo.writeEventResult(createWrite(rule, runId, badStatus))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(repo.writeEventResult(createWrite(rule, runId, badType))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(count('watch_events')).toBe(0);
+  });
+
+  it('非法/乱序/重复 warning 拒绝（http.warnings 与 conditionWarnings）', () => {
+    const rule = makeRule();
+    const runId = 'rm-warn';
+    seedRunning(rule, runId, 'k-warn');
+    const badHttpWarn =
+      '{"schemaVersion":1,"http":{"httpStatus":200,"etag":null,"lastModified":null,"warnings":["last-modified-oversize","etag-oversize"]},"conditionWarnings":[]}';
+    const dupHttpWarn =
+      '{"schemaVersion":1,"http":{"httpStatus":200,"etag":null,"lastModified":null,"warnings":["etag-oversize","etag-oversize"]},"conditionWarnings":[]}';
+    const unknownWarn =
+      '{"schemaVersion":1,"http":{"httpStatus":200,"etag":null,"lastModified":null,"warnings":["nope"]},"conditionWarnings":[]}';
+    const badCondWarn =
+      '{"schemaVersion":1,"http":null,"conditionWarnings":["operator-not-applicable","field-absent"]}';
+    for (const meta of [badHttpWarn, dupHttpWarn, unknownWarn, badCondWarn]) {
+      expect(repo.writeEventResult(createWrite(rule, runId, meta))).toEqual({
+        ok: false,
+        code: 'validation-failed',
+      });
+    }
+    expect(count('watch_events')).toBe(0);
+  });
+
+  it('4096 ==/+1 字节边界：==4096 接受、+1 拒绝', () => {
+    // 构造 canonical metadata，etag 填充使整体 UTF-8 恰为 4096 字节
+    const target = 4096;
+    const base = {
+      schemaVersion: 1,
+      http: { httpStatus: 200, etag: '', lastModified: null, warnings: [] },
+      conditionWarnings: [] as string[],
+    };
+    let meta = '';
+    let etag = '';
+    for (let n = 1; n <= target; n += 1) {
+      const candidate = JSON.stringify({ ...base, http: { ...base.http, etag: 'a'.repeat(n) } });
+      if (Buffer.byteLength(candidate, 'utf8') === target) {
+        meta = candidate;
+        etag = 'a'.repeat(n);
+        break;
+      }
+    }
+    expect(Buffer.byteLength(meta, 'utf8')).toBe(target);
+    expect(meta).not.toBe('');
+    const rule = makeRule();
+    const runIdOk = 'rm-4096ok';
+    seedRunning(rule, runIdOk, 'k-4096ok');
+    expect(repo.writeEventResult(createWrite(rule, runIdOk, meta))).toEqual({ ok: true });
+    const rule2 = makeRule();
+    const runIdOver = 'rm-4097';
+    seedRunning(rule2, runIdOver, 'k-4097');
+    const over = JSON.stringify({ ...base, http: { ...base.http, etag: etag + 'a' } });
+    expect(Buffer.byteLength(over, 'utf8')).toBe(target + 1);
+    expect(repo.writeEventResult(createWrite(rule2, runIdOver, over))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+  });
+
+  it('transitionRun 直接写非法 metadata → validation-failed（新写边界拒绝）', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    repo.insertRun({
+      id: 'run-tx',
+      ruleId: rule.id,
+      requestKey: 'k-tx',
+      trigger: 'manual',
+      scheduledFor: null,
+    });
+    expect(
+      repo.transitionRun('run-tx', 'queued', {
+        status: 'finished',
+        finishedAt: NOW,
+        outcome: { kind: 'unchanged' },
+        health: { state: 'healthy', acquisition: 'rss', code: null },
+        responseMetadataJson: '{"schemaVersion":2,"http":null,"conditionWarnings":[]}',
+      }),
+    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.getRun('run-tx')!.status).toBe('queued'); // 零写
+  });
+
+  it('finalizeRun 写非法 metadata → validation-failed', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    repo.insertRun({
+      id: 'run-fin',
+      ruleId: rule.id,
+      requestKey: 'k-fin',
+      trigger: 'manual',
+      scheduledFor: null,
+    });
+    repo.transitionRun('run-fin', 'queued', { status: 'running', startedAt: NOW });
+    expect(
+      repo.finalizeRun({
+        runId: 'run-fin',
+        ruleId: rule.id,
+        outcome: { kind: 'failed', health: 'parse_changed', retryable: false },
+        health: { state: 'degraded', acquisition: 'rss', code: 'parse_changed' },
+        consecutiveFailures: 1,
+        backoffUntil: null,
+        responseMetadataJson: 'not-json',
+        runAudit: { id: randomUUID(), reasonCode: 'parse-changed', createdAt: NOW },
+      }),
+    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.getRun('run-fin')!.status).toBe('running'); // 零写
+  });
+
+  it('finalizeRun 合法 canonical metadata 成功持久化', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    repo.insertRun({
+      id: 'run-fin2',
+      ruleId: rule.id,
+      requestKey: 'k-fin2',
+      trigger: 'manual',
+      scheduledFor: null,
+    });
+    repo.transitionRun('run-fin2', 'queued', { status: 'running', startedAt: NOW });
+    const meta = metaJson({ httpStatus: 200, etag: '"v1"', lastModified: null, warnings: [] });
+    expect(
+      repo.finalizeRun({
+        runId: 'run-fin2',
+        ruleId: rule.id,
+        outcome: { kind: 'failed', health: 'parse_changed', retryable: false },
+        health: { state: 'degraded', acquisition: 'rss', code: 'parse_changed' },
+        consecutiveFailures: 1,
+        backoffUntil: null,
+        responseMetadataJson: meta,
+        runAudit: { id: randomUUID(), reasonCode: 'parse-changed', createdAt: NOW },
+      }),
+    ).toEqual({ ok: true });
+    expect(repo.getRun('run-fin2')!.responseMetadataJson).toBe(meta);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R2-2 coalesce 全库预算：写前同事务估算 + ==/+1 边界 + 拒绝后逐行恒等
+// ---------------------------------------------------------------------------
+
+describe('R2-2 coalesce 全库预算（maxDbBytes ==/+1 边界）', () => {
+  // 返回一个 fresh 的「已建首个 Event + running Run」seed 的写入输入。
+  // 每次调用创建独立 DB（迁移完整），保证边界搜索确定性互不污染。
+  function seedCoalesceCandidate(): {
+    db: DbHandle;
+    repo: WatchRepository;
+    coalesceInput: () => Parameters<WatchRepository['writeEventResult']>[0];
+    snapshotKey: () => string;
+  } {
+    const db = openDb(join(root, `coalesce-${Math.random().toString(36).slice(2)}.db`));
+    runWatchMigrations(db);
+    const baseRepo = new WatchRepository(db);
+    const rule = makeRule();
+    expect(baseRepo.insertRule(rule).ok).toBe(true);
+    // 首建 Event（path=create）：Baseline v1 + Event + observation + items
+    const runId1 = 'coalesce-run1';
+    baseRepo.insertRun({
+      id: runId1,
+      ruleId: rule.id,
+      requestKey: 'k-c1',
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
+    baseRepo.transitionRun(runId1, 'queued', { status: 'running' });
+    const meta1 = metaJson({ httpStatus: 200, etag: '"v1"', lastModified: null, warnings: [] });
+    const event = makeEvent(rule.id, { itemCount: 1 });
+    const first = baseRepo.writeEventResult({
+      path: 'create',
+      rule,
+      runId: runId1,
+      sourceAfterRevalidationRowVersion: 1,
+      identity: {
+        sourceId: 'src-1',
+        sourceLocatorFingerprint: FINGERPRINT,
+        expectedBaselineVersion: null,
+      },
+      baseline: {
+        projectionType: 'feed',
+        projectionJson: '{}',
+        contentHash: 'h',
+        byteLength: 2,
+        finalUrl: 'https://example.com',
+        capturedAt: NOW,
+        documentId: null,
+        validators: { etag: null, lastModified: null },
+      },
+      event: { event, items: [makeItem()], outbox: [] },
+      run: {
+        expectedStatus: 'running',
+        outcome: { kind: 'event-created', eventId: event.id },
+        health: { state: 'healthy', acquisition: 'rss', code: null },
+        responseMetadataJson: meta1,
+      },
+      audits: [{ id: randomUUID(), reasonCode: 'event-created', createdAt: NOW }],
+    });
+    expect(first).toEqual({ ok: true });
+    // 第二个 running Run 用于 coalesce
+    const runId2 = 'coalesce-run2';
+    baseRepo.insertRun({
+      id: runId2,
+      ruleId: rule.id,
+      requestKey: 'k-c2',
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
+    baseRepo.transitionRun(runId2, 'queued', { status: 'running' });
+    const meta2 = metaJson({ httpStatus: 200, etag: '"v2"', lastModified: null, warnings: [] });
+    const newItem = makeItem({ itemId: 'it-2', fieldKey: 'link' });
+    // create 已把 Baseline 推进到 v1：coalesce 输入必须携带反映当前库身份的规则
+    //（baselineVersion=1），否则结果事务顶部 baseline-conflict。
+    const ruleAfterCreate: WatchRule = { ...rule, baselineVersion: 1 };
+    const coalesceInput: () => Parameters<WatchRepository['writeEventResult']>[0] = () => ({
+      path: 'coalesce',
+      rule: ruleAfterCreate,
+      runId: runId2,
+      sourceAfterRevalidationRowVersion: 1,
+      identity: {
+        sourceId: 'src-1',
+        sourceLocatorFingerprint: FINGERPRINT,
+        expectedBaselineVersion: 1,
+      },
+      baseline: {
+        projectionType: 'feed',
+        projectionJson: '{"v2":true}',
+        contentHash: 'h2',
+        byteLength: 12,
+        finalUrl: 'https://example.com',
+        capturedAt: NOW,
+        documentId: null,
+        validators: { etag: null, lastModified: null },
+      },
+      coalesce: {
+        eventId: event.id,
+        expectedFirstObservedAt: event.firstObservedAt,
+        expectedItemCount: 1,
+        eventKind: 'mixed',
+        lastObservedAt: NOW,
+        newItemCount: 2,
+        observationId: `c-${randomUUID()}`,
+        idempotencyKey: randomUUID(),
+        changeFingerprint: 'fp2',
+        items: [newItem],
+      },
+      run: {
+        expectedStatus: 'running',
+        outcome: { kind: 'event-coalesced', eventId: event.id },
+        health: { state: 'healthy', acquisition: 'rss', code: null },
+        responseMetadataJson: meta2,
+      },
+      audits: [{ id: randomUUID(), reasonCode: 'event-coalesced', createdAt: NOW }],
+    });
+    const snapshotKey = (): string => {
+      const h = openDb(db.path);
+      try {
+        const tables = [
+          'watch_events',
+          'watch_event_observations',
+          'watch_event_items',
+          'watch_baselines',
+          'watch_runs',
+          'watch_audits',
+          'watch_rules',
+        ];
+        return tables
+          .map((t) => {
+            const rows = h.prepare(`SELECT * FROM ${t}`).all() as Array<Record<string, unknown>>;
+            return `${t}:${rows
+              .map((r) => JSON.stringify(r))
+              .sort()
+              .join('|')}`;
+          })
+          .join('\n');
+      } finally {
+        closeDb(h);
+      }
+    };
+    return { db, repo: baseRepo, coalesceInput, snapshotKey };
+  }
+
+  function runCoalesce(
+    seed: ReturnType<typeof seedCoalesceCandidate>,
+    maxDbBytes: number,
+  ): { ok: boolean; code?: string } {
+    const db = seed.db;
+    const repoI = new WatchRepository(db, { maxDbBytes });
+    const result = repoI.writeEventResult(seed.coalesceInput());
+    repoI.dispose();
+    if (result.ok) return { ok: true };
+    return { ok: false, code: result.code };
+  }
+
+  it('coalesce 写前估算：maxDbBytes==边界成功、+1 拒绝；拒绝后相关表逐行恒等', () => {
+    // 找到一个可成功的宽松预算作为上界
+    const seedWide = seedCoalesceCandidate();
+    const wide = runCoalesce(seedWide, 100_000_000);
+    expect(wide.ok).toBe(true);
+    closeDb(seedWide.db);
+    // 用二分确定最小可成功预算 B（每次 fresh seed 保证确定性）
+    let lo = 0;
+    let hi = 100_000_000;
+    let boundary = hi;
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const s = seedCoalesceCandidate();
+      const r = runCoalesce(s, mid);
+      closeDb(s.db);
+      if (r.ok) {
+        boundary = mid;
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    // == 边界成功
+    const seedOk = seedCoalesceCandidate();
+    const okRes = runCoalesce(seedOk, boundary);
+    expect(okRes.ok).toBe(true);
+    closeDb(seedOk.db);
+    // +1 拒绝（budget-exceeded）且相关表逐行恒等
+    const seedFail = seedCoalesceCandidate();
+    const before = seedFail.snapshotKey();
+    const failRes = runCoalesce(seedFail, boundary - 1);
+    expect(failRes).toEqual({ ok: false, code: 'db-budget-exceeded' });
+    expect(seedFail.snapshotKey()).toBe(before);
+    closeDb(seedFail.db);
   });
 });

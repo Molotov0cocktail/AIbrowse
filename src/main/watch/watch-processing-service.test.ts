@@ -976,3 +976,400 @@ function reorderFeedKeys(value: unknown): unknown {
   }
   return shuffled;
 }
+
+// ---------------------------------------------------------------------------
+// R2-1 metadata 矩阵：每种 D7 新写 Run 终态必须持久化 canonical
+// WatchRunResponseMetadata（含失败终态 parse_changed / condition_error）。
+// ---------------------------------------------------------------------------
+
+function canonicalMeta(http: unknown, warnings: string[] = []): string {
+  return JSON.stringify({ schemaVersion: 1, http, conditionWarnings: warnings });
+}
+
+async function seedBaseline(
+  h: Harness,
+  rule: WatchRule,
+  projection: FeedProjection,
+): Promise<void> {
+  expect(
+    h.repo.writeBaseline({
+      ruleId: rule.id,
+      expectedBaselineVersion: null,
+      projectionType: 'feed',
+      projectionJson: JSON.stringify(projection.value),
+      contentHash: projection.contentHash,
+      byteLength: projection.byteLength,
+      finalUrl: projection.finalUrl,
+      capturedAt: projection.capturedAt,
+      documentId: null,
+      validators: { etag: '"old"', lastModified: null },
+    }).ok,
+  ).toBe(true);
+}
+
+async function makeRunningRun(h: Harness, rule: WatchRule, key: string): Promise<string> {
+  const runId = randomUUID();
+  expect(
+    h.repo.insertRun({
+      id: runId,
+      ruleId: rule.id,
+      requestKey: key,
+      trigger: 'scheduled',
+      scheduledFor: null,
+    }).ok,
+  ).toBe(true);
+  expect(
+    h.repo.transitionRun(runId, 'queued', {
+      status: 'running',
+      startedAt: new Date(NOW_MS).toISOString(),
+    }).ok,
+  ).toBe(true);
+  return runId;
+}
+
+function readMeta(h: Harness, runId: string): string | null {
+  return h.repo.getRun(runId)!.responseMetadataJson;
+}
+
+describe('R2-1 Run metadata 失败终态矩阵（#S6-058）', () => {
+  it('baseline-established：http=本次 acquisition 可信元数据、warnings=[]', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const prepared = h.service.prepareAcquisition({ rule });
+      expect(prepared.ok).toBe(true);
+      if (!prepared.ok) return;
+      const runId = await makeRunningRun(h, rule, 'rm-baseline');
+      const projection = makeProjection(rule, 'New', new Date(NOW_MS).toISOString());
+      const result = await processProjection(h, rule, runId, prepared.baselineHint, projection);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.outcome.kind).toBe('baseline-established');
+      expect(readMeta(h, runId)).toBe(
+        canonicalMeta({
+          httpStatus: 200,
+          etag: '"v1"',
+          lastModified: '2026-08-28T00:00:00.000Z',
+          warnings: [],
+        }),
+      );
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('unchanged 200：同 contentHash → http=200 元数据、warnings=[]', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      await seedBaseline(h, rule, p1);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      const runId = await makeRunningRun(h, freshRule, 'rm-200');
+      const result = await processProjection(h, freshRule, runId, prepared.baselineHint, p1);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.outcome).toEqual({ kind: 'unchanged' });
+      expect(readMeta(h, runId)).toBe(
+        canonicalMeta({
+          httpStatus: 200,
+          etag: '"v1"',
+          lastModified: '2026-08-28T00:00:00.000Z',
+          warnings: [],
+        }),
+      );
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('unchanged 304（not-modified）：http=304 元数据、warnings=[]', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      await seedBaseline(h, rule, p1);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      expect(prepared.ok).toBe(true);
+      if (!prepared.ok) return;
+      const runId = await makeRunningRun(h, freshRule, 'rm-304');
+      const result = await h.service.process({
+        rule: freshRule,
+        runId,
+        baselineHint: prepared.baselineHint,
+        acquisition: {
+          ok: true,
+          kind: 'not-modified',
+          finalUrl: 'https://example.com/feed',
+          fetchedAt: new Date(NOW_MS).toISOString(),
+          expectedSourceLocatorFingerprint: freshRule.sourceLocatorFingerprint,
+          responseMetadata: { httpStatus: 304, etag: '"v1"', lastModified: null, warnings: [] },
+        },
+        sourceAfterAcquisition: sourceProjection,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.outcome).toEqual({ kind: 'unchanged' });
+      expect(readMeta(h, runId)).toBe(
+        canonicalMeta({ httpStatus: 304, etag: '"v1"', lastModified: null, warnings: [] }),
+      );
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('changed-unmatched + warning：conditionWarnings 精确持久化', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule({
+        condition: {
+          version: 1,
+          combine: 'all',
+          predicates: [
+            { fieldKey: 'title', operator: 'increased', operand: 10, caseSensitive: false },
+          ],
+        },
+      });
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      await seedBaseline(h, rule, p1);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      const runId = await makeRunningRun(h, freshRule, 'rm-unmatched');
+      const p2 = makeProjection(rule, 'B', new Date(NOW_MS + 60_000).toISOString());
+      const result = await processProjection(h, freshRule, runId, prepared.baselineHint, p2);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.outcome.kind).toBe('changed-unmatched');
+      const meta = JSON.parse(readMeta(h, runId)!) as {
+        http: { httpStatus: number };
+        conditionWarnings: string[];
+      };
+      expect(meta.http.httpStatus).toBe(200);
+      // title 变化但非数值 → 唯一 warning numeric-value-unavailable（canonical 顺序）
+      expect(meta.conditionWarnings).toEqual(['numeric-value-unavailable']);
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('parse_changed（unexplainable change）：http=本次 acquisition 元数据、warnings=[]', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      await seedBaseline(h, rule, p1);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      const runId = await makeRunningRun(h, freshRule, 'rm-parse');
+      // 只改 description（非对比字段）→ contentHash 变化但 Diff 零合规 pair → parse_changed
+      const value: FeedProjectionValue = {
+        type: 'feed',
+        format: 'rss2',
+        title: field('A'),
+        description: field('DIFFERENT'),
+        siteUrl: field('https://example.com'),
+        feedUrl: field(''),
+        items: [
+          {
+            identity: 'i1',
+            identityKind: 'guid',
+            title: field('A'),
+            link: field('https://example.com/a'),
+            summary: field('s'),
+            publishedAt: null,
+            updatedAt: null,
+            author: field('a'),
+          },
+        ],
+        itemsTruncated: false,
+      };
+      const canonicalJson = JSON.stringify(value);
+      const p2: FeedProjection = {
+        schemaVersion: 1,
+        ruleId: rule.id,
+        sourceId: rule.sourceId,
+        finalUrl: 'https://example.com/feed',
+        capturedAt: new Date(NOW_MS + 60_000).toISOString(),
+        documentId: null,
+        contentHash: sha256Hex(canonicalJson),
+        byteLength: Buffer.byteLength(canonicalJson, 'utf8'),
+        value,
+      };
+      const result = await processProjection(h, freshRule, runId, prepared.baselineHint, p2);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.outcome).toEqual({
+        kind: 'failed',
+        health: 'parse_changed',
+        retryable: false,
+      });
+      // parse_changed 不得写 null metadata：http 保留 acquisition 可信元数据
+      expect(readMeta(h, runId)).toBe(
+        canonicalMeta({
+          httpStatus: 200,
+          etag: '"v1"',
+          lastModified: '2026-08-28T00:00:00.000Z',
+          warnings: [],
+        }),
+      );
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('condition_error：保留本次 acquisition 可信 http metadata、warnings=[]', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule({
+        condition: {
+          version: 1,
+          combine: 'all',
+          predicates: [
+            { fieldKey: 'price', operator: 'increased', operand: 10, caseSensitive: false },
+          ],
+        },
+      });
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      await seedBaseline(h, rule, p1);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      const runId = await makeRunningRun(h, freshRule, 'rm-conderr');
+      const p2 = makeProjection(rule, 'B', new Date(NOW_MS + 60_000).toISOString());
+      const result = await processProjection(h, freshRule, runId, prepared.baselineHint, p2);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.outcome).toEqual({
+        kind: 'failed',
+        health: 'condition_error',
+        retryable: false,
+      });
+      // condition_error 必须保留本次 acquisition 的 http metadata
+      expect(readMeta(h, runId)).toBe(
+        canonicalMeta({
+          httpStatus: 200,
+          etag: '"v1"',
+          lastModified: '2026-08-28T00:00:00.000Z',
+          warnings: [],
+        }),
+      );
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('event-created：canonical metadata 精确持久化（含 warnings）', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      await seedBaseline(h, rule, p1);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      const runId = await makeRunningRun(h, freshRule, 'rm-create');
+      const p2 = makeProjection(rule, 'B', new Date(NOW_MS + 60_000).toISOString());
+      const result = await processProjection(h, freshRule, runId, prepared.baselineHint, p2);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.outcome.kind).toBe('event-created');
+      expect(readMeta(h, runId)).toBe(
+        canonicalMeta({
+          httpStatus: 200,
+          etag: '"v1"',
+          lastModified: '2026-08-28T00:00:00.000Z',
+          warnings: [],
+        }),
+      );
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('event-coalesced：canonical metadata 精确持久化（含 warnings）', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      await seedBaseline(h, rule, p1);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      // 第一次 create
+      const runId1 = await makeRunningRun(h, freshRule, 'rm-coal-1');
+      const p2 = makeProjection(rule, 'B', new Date(NOW_MS + 60_000).toISOString());
+      const r1 = await processProjection(h, freshRule, runId1, prepared.baselineHint, p2);
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      expect(r1.outcome.kind).toBe('event-created');
+      // 第二次（仍在 30min 窗口内）→ coalesce
+      const readRule = h.repo.getRule(rule.id)!;
+      const prepared2 = h.service.prepareAcquisition({ rule: readRule });
+      if (!prepared2.ok) return;
+      const runId2 = await makeRunningRun(h, readRule, 'rm-coal-2');
+      const p3 = makeProjection(rule, 'C', new Date(NOW_MS + 600_000).toISOString());
+      const r2 = await processProjection(h, readRule, runId2, prepared2.baselineHint, p3);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.outcome.kind).toBe('event-coalesced');
+      expect(readMeta(h, runId2)).toBe(
+        canonicalMeta({
+          httpStatus: 200,
+          etag: '"v1"',
+          lastModified: '2026-08-28T00:00:00.000Z',
+          warnings: [],
+        }),
+      );
+    } finally {
+      closeH(h);
+    }
+  });
+
+  it('event-deduplicated：canonical metadata 精确持久化（重放终态）', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      await seedBaseline(h, rule, p1);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      const p2 = makeProjection(rule, 'B', new Date(NOW_MS + 60_000).toISOString());
+      const runId1 = await makeRunningRun(h, freshRule, 'rm-dedup-1');
+      const r1 = await processProjection(h, freshRule, runId1, prepared.baselineHint, p2);
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      expect(r1.outcome.kind).toBe('event-created');
+      // 同一 hint 重放 → dedup（Baseline 已推进到 ≥expected+1）
+      const runId2 = await makeRunningRun(h, freshRule, 'rm-dedup-2');
+      const r2 = await processProjection(h, freshRule, runId2, prepared.baselineHint, p2);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.outcome.kind).toBe('event-deduplicated');
+      expect(readMeta(h, runId2)).toBe(
+        canonicalMeta({
+          httpStatus: 200,
+          etag: '"v1"',
+          lastModified: '2026-08-28T00:00:00.000Z',
+          warnings: [],
+        }),
+      );
+    } finally {
+      closeH(h);
+    }
+  });
+});

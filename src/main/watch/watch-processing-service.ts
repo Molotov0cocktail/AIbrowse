@@ -358,6 +358,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
         { health: 'parse_changed', retryable: false },
         nowIso,
         { changeFingerprint: '' },
+        input.acquisition.responseMetadata,
       );
     }
 
@@ -605,6 +606,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
     failure: FailureDraft,
     nowIso: string,
     extra: { changeFingerprint?: string },
+    responseMetadata: import('../../shared/types/watch').ConditionalResponseMetadata | null,
   ): WatchProcessingResult {
     void extra;
     const cf = rule.consecutiveFailures + 1;
@@ -616,6 +618,14 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
     };
     const reasonCode: WatchAuditReasonCode =
       failure.health === 'parse_changed' ? 'parse-changed' : hyphenate(failure.health);
+    // R2-1：失败终态也持久化 canonical metadata——http 保留本次 acquisition 的
+    // 可信响应元数据（parse_changed 时 acquisition 已成功），warnings=[]（Condition
+    // 尚未成功求值）。
+    const runMetadata = JSON.stringify({
+      schemaVersion: 1,
+      http: responseMetadata,
+      conditionWarnings: [],
+    });
     const result = this.repo.finalizeRun({
       runId,
       ruleId: rule.id,
@@ -623,6 +633,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
       health,
       consecutiveFailures: cf,
       backoffUntil: null,
+      responseMetadataJson: runMetadata,
       runAudit: { id: randomUUID(), reasonCode, createdAt: nowIso },
       healthPause: isImmediatePauseCode(failure.health)
         ? {
@@ -655,6 +666,13 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
       health: 'condition_error',
       retryable: false,
     };
+    // R2-1：condition_error 必须保留本次 acquisition 的可信 http metadata；
+    // warnings=[]（Condition 求值失败，不是 no-match warning）。
+    const runMetadata = JSON.stringify({
+      schemaVersion: 1,
+      http: responseMetadata,
+      conditionWarnings: [],
+    });
     const result = this.repo.finalizeRun({
       runId,
       ruleId: rule.id,
@@ -662,13 +680,13 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
       health,
       consecutiveFailures: cf,
       backoffUntil: null,
+      responseMetadataJson: runMetadata,
       runAudit: { id: randomUUID(), reasonCode: 'condition-error', createdAt: nowIso },
       healthPause: {
         reason: 'dependency-unavailable',
         audit: { id: randomUUID(), createdAt: nowIso },
       },
     });
-    void responseMetadata;
     if (!result.ok) return this.conflictResult(result.code);
     return { ok: true, outcome };
   }

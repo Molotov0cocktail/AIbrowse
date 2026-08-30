@@ -11,6 +11,7 @@ import {
   validateEventRow,
   validateEvidenceValue,
   validateIntentRow,
+  validateRunResponseMetadataJson,
   validateRuleRow,
   validateRunRow,
   validateSourceWatchProjection,
@@ -436,5 +437,126 @@ describe('parseJsonSafe / 预算工具', () => {
       Buffer.byteLength('{"a":"你好"}', 'utf8'),
     );
     expect(computeEventItemsBytes([])).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R2-1 Run response metadata canonical validator（#S6-058 §8.1）
+// ---------------------------------------------------------------------------
+
+describe('validateRunResponseMetadataJson', () => {
+  const http200 = { httpStatus: 200, etag: '"v1"', lastModified: null, warnings: [] };
+  const canonical = (http: unknown = null, warnings: string[] = []): string =>
+    JSON.stringify({ schemaVersion: 1, http, conditionWarnings: warnings });
+
+  it('合法 canonical（http=null 与 http=200）接受', () => {
+    expect(validateRunResponseMetadataJson(canonical(null))).toEqual({ ok: true, reason: null });
+    expect(validateRunResponseMetadataJson(canonical(http200))).toEqual({
+      ok: true,
+      reason: null,
+    });
+    expect(
+      validateRunResponseMetadataJson(
+        canonical({ ...http200, warnings: ['etag-oversize', 'last-modified-oversize'] }, [
+          'field-absent',
+          'numeric-value-unavailable',
+          'operator-not-applicable',
+        ]),
+      ),
+    ).toEqual({ ok: true, reason: null });
+  });
+
+  it('null / 非 JSON 拒绝', () => {
+    expect(validateRunResponseMetadataJson(null).ok).toBe(false);
+    expect(validateRunResponseMetadataJson('not-json').ok).toBe(false);
+  });
+
+  it('额外/缺失 key、非 canonical key order 拒绝', () => {
+    expect(validateRunResponseMetadataJson('{"schemaVersion":1,"http":null}').ok).toBe(false);
+    expect(
+      validateRunResponseMetadataJson(
+        '{"schemaVersion":1,"http":null,"conditionWarnings":[],"x":1}',
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateRunResponseMetadataJson('{"http":null,"schemaVersion":1,"conditionWarnings":[]}').ok,
+    ).toBe(false);
+  });
+
+  it('未来 schemaVersion 拒绝', () => {
+    expect(
+      validateRunResponseMetadataJson('{"schemaVersion":2,"http":null,"conditionWarnings":[]}').ok,
+    ).toBe(false);
+  });
+
+  it('http 非法（httpStatus/类型/乱序重复 warning）拒绝', () => {
+    expect(
+      validateRunResponseMetadataJson(
+        '{"schemaVersion":1,"http":{"httpStatus":201,"etag":null,"lastModified":null,"warnings":[]},"conditionWarnings":[]}',
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateRunResponseMetadataJson('{"schemaVersion":1,"http":"oops","conditionWarnings":[]}')
+        .ok,
+    ).toBe(false);
+    expect(
+      validateRunResponseMetadataJson(
+        '{"schemaVersion":1,"http":{"httpStatus":200,"etag":null,"lastModified":null,"warnings":["last-modified-oversize","etag-oversize"]},"conditionWarnings":[]}',
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateRunResponseMetadataJson(
+        '{"schemaVersion":1,"http":{"httpStatus":200,"etag":null,"lastModified":null,"warnings":["etag-oversize","etag-oversize"]},"conditionWarnings":[]}',
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateRunResponseMetadataJson(
+        '{"schemaVersion":1,"http":{"httpStatus":200,"etag":null,"lastModified":null,"warnings":["nope"]},"conditionWarnings":[]}',
+      ).ok,
+    ).toBe(false);
+  });
+
+  it('conditionWarnings 乱序/重复/未知拒绝', () => {
+    expect(
+      validateRunResponseMetadataJson(
+        '{"schemaVersion":1,"http":null,"conditionWarnings":["operator-not-applicable","field-absent"]}',
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateRunResponseMetadataJson(
+        '{"schemaVersion":1,"http":null,"conditionWarnings":["field-absent","field-absent"]}',
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateRunResponseMetadataJson(
+        '{"schemaVersion":1,"http":null,"conditionWarnings":["nope"]}',
+      ).ok,
+    ).toBe(false);
+  });
+
+  it('4096 ==/+1 字节边界', () => {
+    const base = {
+      schemaVersion: 1,
+      http: { httpStatus: 200, etag: '', lastModified: null, warnings: [] },
+      conditionWarnings: [] as string[],
+    };
+    let at4096 = '';
+    let etagLen = 0;
+    for (let n = 1; n <= 4096; n += 1) {
+      const cand = JSON.stringify({ ...base, http: { ...base.http, etag: 'a'.repeat(n) } });
+      if (Buffer.byteLength(cand, 'utf8') === 4096) {
+        at4096 = cand;
+        etagLen = n;
+        break;
+      }
+    }
+    expect(at4096).not.toBe('');
+    expect(validateRunResponseMetadataJson(at4096).ok).toBe(true);
+    const over = JSON.stringify({
+      ...base,
+      http: { ...base.http, etag: 'a'.repeat(etagLen + 1) },
+    });
+    expect(Buffer.byteLength(over, 'utf8')).toBe(4097);
+    expect(validateRunResponseMetadataJson(over).ok).toBe(false);
   });
 });
