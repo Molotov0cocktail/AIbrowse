@@ -37,6 +37,7 @@ import {
   type HealthPauseReason,
 } from '../../../shared/watch/watch-rule-state';
 import { utf8ByteLength } from '../../../shared/watch/watch-budget';
+import { sha256Hex } from '../../../shared/watch/diff/evidence';
 import {
   WATCH_AUDIT_KINDS,
   WATCH_AUDIT_REASON_CODES,
@@ -188,9 +189,9 @@ const SQL_UPDATE_BASELINE_VALIDATORS = `UPDATE watch_baselines
   SET conditional_etag = ?, conditional_last_modified = ?
   WHERE rule_id = ? AND version = ?`;
 
-// §8.1：Run response_metadata_json 只作有界诊断记录（不参与条件请求输入）
-const SQL_UPDATE_RUN_RESPONSE_META = `UPDATE watch_runs
-  SET response_metadata_json = ? WHERE id = ?`;
+// §8.1：Run response_metadata_json 只作有界诊断记录（不参与条件请求输入）。
+// #S6-058 FIXED DECISION 1：metadata 必须随同 Run 终态在同一 CAS UPDATE 写入，
+// 不做独立预写 UPDATE（独立预写会在已终态 dedup 重入时产生写入）。
 
 const SQL_INSERT_RUN = `INSERT INTO watch_runs
   (id, rule_id, request_key, status, trigger, scheduled_for)
@@ -313,6 +314,12 @@ const SQL_SELECT_ALL_EVENT_ITEMS = `SELECT event_id, sequence, item_id, field_ke
   before_value_json, after_value_json, before_captured_at, after_captured_at,
   before_final_url, after_final_url, before_document_id, after_document_id, feed_item_key
   FROM watch_event_items`;
+const SQL_SELECT_ALL_OBSERVATIONS = `SELECT id, event_id, sequence, idempotency_key,
+  change_fingerprint, event_kind, observed_at, first_item_sequence, item_count
+  FROM watch_event_observations`;
+// D7 观察矩阵扫描：需 observation 关系列（observation_id/observation_item_sequence）
+const SQL_SELECT_ALL_ITEMS_WITH_OBS = `SELECT event_id, sequence, observation_id,
+  observation_item_sequence FROM watch_event_items`;
 const SQL_SELECT_ALL_INTENTS = `SELECT mutation_id, source_id, operation,
   before_projection_json, after_projection_json, affected_rule_state_json, state,
   created_at, updated_at FROM source_cleanup_intents`;
@@ -383,7 +390,9 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     + LENGTH(CAST(projection_type AS BLOB)) + LENGTH(CAST(projection_json AS BLOB))
     + LENGTH(CAST(content_hash AS BLOB)) + LENGTH(CAST(final_url AS BLOB))
     + LENGTH(CAST(captured_at AS BLOB))
-    + LENGTH(CAST(COALESCE(document_id,'') AS BLOB)) + 16)
+    + LENGTH(CAST(COALESCE(document_id,'') AS BLOB))
+    + LENGTH(CAST(COALESCE(conditional_etag,'') AS BLOB))
+    + LENGTH(CAST(COALESCE(conditional_last_modified,'') AS BLOB)) + 16)
     FROM watch_baselines), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(rule_id AS BLOB))
     + LENGTH(CAST(request_key AS BLOB)) + LENGTH(CAST(status AS BLOB))
@@ -407,6 +416,7 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     + LENGTH(CAST(COALESCE(read_at,'') AS BLOB)) + 8)
     FROM watch_events), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(event_id AS BLOB))
+    + LENGTH(CAST(observation_id AS BLOB))
     + LENGTH(CAST(item_id AS BLOB)) + LENGTH(CAST(field_key AS BLOB))
     + LENGTH(CAST(label AS BLOB)) + LENGTH(CAST(before_value_json AS BLOB))
     + LENGTH(CAST(after_value_json AS BLOB)) + LENGTH(CAST(before_captured_at AS BLOB))
@@ -414,8 +424,12 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     + LENGTH(CAST(after_final_url AS BLOB))
     + LENGTH(CAST(COALESCE(before_document_id,'') AS BLOB))
     + LENGTH(CAST(COALESCE(after_document_id,'') AS BLOB))
-    + LENGTH(CAST(COALESCE(feed_item_key,'') AS BLOB)) + 8)
+    + LENGTH(CAST(COALESCE(feed_item_key,'') AS BLOB)) + 16)
     FROM watch_event_items), 0)
+  + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(event_id AS BLOB))
+    + LENGTH(CAST(idempotency_key AS BLOB)) + LENGTH(CAST(change_fingerprint AS BLOB))
+    + LENGTH(CAST(event_kind AS BLOB)) + LENGTH(CAST(observed_at AS BLOB)) + 24)
+    FROM watch_event_observations), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB))
     + LENGTH(CAST(source_ids_json AS BLOB)) + LENGTH(CAST(schedule_json AS BLOB))
     + LENGTH(CAST(COALESCE(cursor_json,'') AS BLOB))
@@ -2111,10 +2125,8 @@ export class WatchRepository {
         }
 
         const nowIso = this.nowIso();
-        // 更新 Run 的 response_metadata（先不终态；最后统一终结）
-        this.handle
-          .prepare(SQL_UPDATE_RUN_RESPONSE_META)
-          .run(input.run.responseMetadataJson, input.runId);
+        // FIXED DECISION 1：#S6-058 metadata 随 Run 终态在同一 CAS UPDATE 写入，
+        // 不做独立预写 UPDATE（独立预写会在已终态 dedup 重入时产生写入）。
 
         // 2. dedup（#S6-051）：先做身份 CAS（不做 baselineVersion 提前挡住合法
         //    replay），再查询 observation idempotencyKey 并复验一致。
@@ -2138,6 +2150,7 @@ export class WatchRepository {
             finishedAt: nowIso,
             outcome: input.run.outcome,
             health: input.run.health,
+            responseMetadataJson: input.run.responseMetadataJson,
           });
           if (!runResult.ok) {
             if (runResult.code === 'run-state-conflict' || runResult.code === 'run-not-found') {
@@ -2183,7 +2196,19 @@ export class WatchRepository {
           }
           if (itemsBytes > this.maxEventEvidenceBytes)
             throw new TxnAbortError('event-budget-exceeded');
-          if (this.estimateLogicalBytesInternal() + itemsBytes + 400 > this.maxDbBytes) {
+          // FIXED DECISION 7：预算估算必须包含 observation 元数据、Baseline validators、
+          // item observation 关系列及结果事务完整新增写集（Baseline/Event/observation/
+          // items/outbox/audit/Run metadata）——低估不得绕过 maxDbBytes。
+          const writeSet = this.estimateResultCreateWriteSet({
+            event: input.event.event,
+            itemCount: input.event.items.length,
+            itemsBytes,
+            baseline: input.baseline,
+            responseMetadataJson: input.run.responseMetadataJson,
+            outbox: input.event.outbox,
+            audits: input.audits,
+          });
+          if (this.estimateLogicalBytesInternal() + writeSet > this.maxDbBytes) {
             throw new TxnAbortError('db-budget-exceeded');
           }
           if (input.baseline !== undefined) {
@@ -2385,12 +2410,13 @@ export class WatchRepository {
           }
         }
 
-        // 5. Run 终态 + audits + rowVersion 单调更新
+        // 5. Run 终态 + audits + rowVersion 单调更新（metadata 随同一 CAS UPDATE 写入）
         const runResult = this.transitionRun(input.runId, input.run.expectedStatus, {
           status: 'finished',
           finishedAt: nowIso,
           outcome: input.run.outcome,
           health: input.run.health,
+          responseMetadataJson: input.run.responseMetadataJson,
         });
         if (!runResult.ok) throw new TxnAbortError(runResult.code);
         this.writeAuditsInternal(input.audits, input.rule.id, nowIso);
@@ -2483,6 +2509,23 @@ export class WatchRepository {
         if (normalized.byteLength !== actualBytes || actualBytes > this.maxBaselineBytes) {
           return { ok: false, reason: 'Baseline 声明字节与实际字节不一致或超上限' };
         }
+        // D7 #S6-058：#S6-054 持久化 validator——canonical JSON 必须逐字节等于固定键序
+        // 重新编码，contentHash 必须是该字节串的 SHA-256。legacy（非 64-hex 假 hash）
+        // 数据保持字节/上限校验兼容；合法 64-hex 一律精确验证（防陈旧/篡改/键重排）。
+        if (
+          typeof normalized.contentHash === 'string' &&
+          /^[0-9a-f]{64}$/.test(normalized.contentHash)
+        ) {
+          const parsed = this.parseJson(normalized.projectionJson);
+          if (parsed === null) return { ok: false, reason: 'Baseline projection_json 非法' };
+          const reencoded = JSON.stringify(parsed);
+          if (reencoded !== normalized.projectionJson) {
+            return { ok: false, reason: 'Baseline canonical JSON 非固定键序编码' };
+          }
+          if (sha256Hex(reencoded) !== normalized.contentHash) {
+            return { ok: false, reason: 'Baseline contentHash 与 canonical 字节不一致' };
+          }
+        }
       }
       for (const row of this.handle.prepare(SQL_SELECT_ALL_RUNS).all() as unknown[]) {
         if (!isPlainRecord(row)) return { ok: false, reason: 'Run 行形状非法' };
@@ -2538,6 +2581,97 @@ export class WatchRepository {
       for (const [eventId, bytes] of itemBytesByEvent) {
         if (bytes > this.maxEventEvidenceBytes) {
           return { ok: false, reason: `Event ${eventId} 双侧 Evidence 超过预算` };
+        }
+      }
+      // D7 #S6-055：schema v3 观察关系矩阵（启动读回边界 fail-closed）——
+      // 每个 Event ≥1 observation；Event.item_count = Σ observation.item_count = 实际 item 数；
+      // observation.sequence / item.sequence / observation_item_sequence 均从 0 连续；
+      // 每个 observation 的 first_item_sequence/item_count 精确覆盖连续 item 范围；
+      // item 的 observation_id/event_id 归属一致；sequence=0 observation 与 Event
+      // 首 idempotency/fingerprint 兼容列一致。
+      // v3 前（v2 legacy）库没有 watch_event_observations 表：先探测表存在性，
+      // 不存在则跳过该 v3 专属矩阵（迁移后再装配的库必然存在）。
+      const obsTableExists =
+        this.handle
+          .prepare(
+            "SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name='watch_event_observations'",
+          )
+          .get() !== undefined;
+      if (obsTableExists) {
+        const obsRows = this.handle.prepare(SQL_SELECT_ALL_OBSERVATIONS).all() as Array<
+          Record<string, unknown>
+        >;
+        const obsItemsRows = this.handle.prepare(SQL_SELECT_ALL_ITEMS_WITH_OBS).all() as Array<
+          Record<string, unknown>
+        >;
+        const obsByEvent = new Map<string, Array<Record<string, unknown>>>();
+        for (const o of obsRows) {
+          const eid = String(o['event_id'] ?? '');
+          const list = obsByEvent.get(eid) ?? [];
+          list.push(o);
+          obsByEvent.set(eid, list);
+        }
+        const itemsByEvent = new Map<string, Array<Record<string, unknown>>>();
+        for (const i of obsItemsRows) {
+          const eid = String(i['event_id'] ?? '');
+          const list = itemsByEvent.get(eid) ?? [];
+          list.push(i);
+          itemsByEvent.set(eid, list);
+        }
+        for (const ev of eventRows) {
+          if (!isPlainRecord(ev)) return { ok: false, reason: 'Event 行形状非法' };
+          const eventId = String(ev['id'] ?? '');
+          const itemCount = Number(ev['item_count']);
+          const obs = obsByEvent.get(eventId) ?? [];
+          const items = itemsByEvent.get(eventId) ?? [];
+          if (obs.length < 1) return { ok: false, reason: `Event ${eventId} 缺 observation` };
+          const obsCountSum = obs.reduce((s, o) => s + Number(o['item_count'] ?? 0), 0);
+          if (obsCountSum !== itemCount || items.length !== itemCount) {
+            return { ok: false, reason: `Event ${eventId} observation/item 计数不一致` };
+          }
+          const obsSeqs = obs.map((o) => Number(o['sequence'] ?? -1)).sort((a, b) => a - b);
+          const itemSeqs = items.map((i) => Number(i['sequence'] ?? -1)).sort((a, b) => a - b);
+          for (let s = 0; s < obsSeqs.length; s += 1) {
+            if (obsSeqs[s] !== s)
+              return { ok: false, reason: `Event ${eventId} observation sequence 缺口` };
+          }
+          for (let s = 0; s < itemSeqs.length; s += 1) {
+            if (itemSeqs[s] !== s)
+              return { ok: false, reason: `Event ${eventId} item sequence 缺口` };
+          }
+          for (const o of obs) {
+            const oid = String(o['id'] ?? '');
+            const first = Number(o['first_item_sequence'] ?? -1);
+            const ocount = Number(o['item_count'] ?? 0);
+            const members = items.filter((i) => String(i['observation_id'] ?? '') === oid);
+            if (members.length !== ocount) {
+              return { ok: false, reason: `observation ${oid} item 范围计数不一致` };
+            }
+            const memberSeqs = members
+              .map((m) => Number(m['sequence'] ?? -1))
+              .sort((a, b) => a - b);
+            const memberObsSeqs = members
+              .map((m) => Number(m['observation_item_sequence'] ?? -1))
+              .sort((a, b) => a - b);
+            for (let k = 0; k < memberSeqs.length; k += 1) {
+              if (memberSeqs[k] !== first + k) {
+                return { ok: false, reason: `observation ${oid} 未精确覆盖连续 item 范围` };
+              }
+              if (memberObsSeqs[k] !== k) {
+                return { ok: false, reason: `observation ${oid} observation_item_sequence 缺口` };
+              }
+            }
+          }
+          // sequence=0 观察与 Event 首 idempotency/fingerprint 兼容列一致
+          const firstObs = obs.find((o) => Number(o['sequence']) === 0);
+          if (firstObs === undefined)
+            return { ok: false, reason: `Event ${eventId} 缺 sequence=0 observation` };
+          if (
+            String(firstObs['idempotency_key'] ?? '') !== String(ev['idempotency_key'] ?? '') ||
+            String(firstObs['change_fingerprint'] ?? '') !== String(ev['change_fingerprint'] ?? '')
+          ) {
+            return { ok: false, reason: `Event ${eventId} 首 observation 兼容列不一致` };
+          }
         }
       }
       for (const row of this.handle.prepare(SQL_SELECT_ALL_INTENTS).all() as unknown[]) {
@@ -2606,6 +2740,92 @@ export class WatchRepository {
   estimateLogicalBytes(): number {
     this.ensureOpen();
     return this.estimateLogicalBytesInternal();
+  }
+
+  // FIXED DECISION 7（#S6-055/#S6-058）：结果事务（create）写前逻辑字节估算——
+  // 必须包含 observation 元数据、Baseline validators、item observation 关系列及
+  // 新事务写入的 Baseline/Event/observation/items/outbox/audit/Run metadata 等
+  // 有界开销，低估不得绕过 maxDbBytes。
+  private estimateResultCreateWriteSet(input: {
+    event: WatchEvent;
+    itemCount: number;
+    itemsBytes: number;
+    baseline?:
+      | {
+          projectionType: 'feed' | 'page';
+          projectionJson: string;
+          contentHash: string;
+          byteLength: number;
+          finalUrl: string;
+          capturedAt: string;
+          documentId: string | null;
+          validators: { etag: string | null; lastModified: string | null };
+        }
+      | undefined;
+    responseMetadataJson: string | null;
+    outbox?: Array<{ id: string; dedupeKey: string; privacyJson: string }> | undefined;
+    audits: Array<{ id: string; reasonCode: string }>;
+  }): number {
+    let bytes = 0;
+    // Event 行
+    bytes +=
+      utf8ByteLength(input.event.id) +
+      utf8ByteLength(input.event.ruleId) +
+      utf8ByteLength(input.event.sourceId) +
+      utf8ByteLength(input.event.eventKind) +
+      utf8ByteLength(input.event.importance) +
+      utf8ByteLength(input.event.idempotencyKey) +
+      utf8ByteLength(input.event.changeFingerprint) +
+      utf8ByteLength(input.event.firstObservedAt) +
+      utf8ByteLength(input.event.lastObservedAt) +
+      8;
+    // observation 元数据行（id/event_id/sequence/int/idempotency/fingerprint/kind/time/ints）
+    bytes +=
+      utf8ByteLength(input.event.id) +
+      utf8ByteLength('-obs0') +
+      utf8ByteLength(input.event.id) +
+      utf8ByteLength(input.event.idempotencyKey) +
+      utf8ByteLength(input.event.changeFingerprint) +
+      utf8ByteLength(input.event.eventKind) +
+      utf8ByteLength(input.event.firstObservedAt) +
+      24;
+    // items：序列化 JSON + observation 关系列（observation_id / observation_item_sequence / ints）
+    bytes += input.itemsBytes;
+    bytes += input.itemCount * (utf8ByteLength(input.event.id) + utf8ByteLength('-obs0') + 8 + 8);
+    // Baseline + validators（#S6-056：etag/lastModified 同事务计入）
+    if (input.baseline !== undefined) {
+      bytes +=
+        utf8ByteLength(input.baseline.projectionJson) +
+        utf8ByteLength(input.baseline.contentHash) +
+        utf8ByteLength(input.baseline.finalUrl) +
+        utf8ByteLength(input.baseline.capturedAt) +
+        utf8ByteLength(input.baseline.documentId ?? '') +
+        utf8ByteLength(input.baseline.validators.etag ?? '') +
+        utf8ByteLength(input.baseline.validators.lastModified ?? '') +
+        utf8ByteLength(input.event.ruleId) +
+        16;
+    }
+    // Run metadata
+    bytes += utf8ByteLength(input.responseMetadataJson ?? '');
+    // outbox 行（privacy/dedupe/ids/int）
+    for (const ob of input.outbox ?? []) {
+      bytes +=
+        utf8ByteLength(ob.id) +
+        utf8ByteLength(ob.dedupeKey) +
+        utf8ByteLength(ob.privacyJson) +
+        utf8ByteLength(input.event.ruleId) +
+        utf8ByteLength(input.event.id) +
+        8;
+    }
+    // audits
+    for (const a of input.audits) {
+      bytes +=
+        utf8ByteLength(a.id) +
+        utf8ByteLength(a.reasonCode) +
+        utf8ByteLength(input.event.ruleId) +
+        8;
+    }
+    return bytes;
   }
 
   private estimateLogicalBytesInternal(): number {

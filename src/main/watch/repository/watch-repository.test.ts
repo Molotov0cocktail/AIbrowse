@@ -1281,3 +1281,296 @@ describe('D4-R 回归：fail-closed 查询 / 身份 CAS / 字节预算 / audit �
 afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// D7 Repair oracle：Run metadata 同 CAS 持久化 / 终态 dedup 重入零写 /
+// scanIntegrity observation 关系矩阵 / 预算包含 observations 与 v3 新列
+// ---------------------------------------------------------------------------
+
+function metaJson(http: unknown = null): string {
+  return JSON.stringify({ schemaVersion: 1, http, conditionWarnings: [] });
+}
+
+function makeWriteResultCreateInput(rule: WatchRule, runId: string, metadata: string) {
+  return {
+    path: 'create' as const,
+    rule,
+    runId,
+    sourceAfterRevalidationRowVersion: 1,
+    identity: {
+      sourceId: 'src-1',
+      sourceLocatorFingerprint: FINGERPRINT,
+      expectedBaselineVersion: null,
+    },
+    baseline: {
+      projectionType: 'feed' as const,
+      projectionJson: '{}',
+      contentHash: 'h',
+      byteLength: 2,
+      finalUrl: 'https://example.com',
+      capturedAt: NOW,
+      documentId: null,
+      validators: { etag: null, lastModified: null },
+    },
+    event: {
+      event: makeEvent(rule.id, { itemCount: 1 }),
+      items: [makeItem()],
+      outbox: [] as Array<{ id: string; dedupeKey: string; privacyJson: string }>,
+    },
+    run: {
+      expectedStatus: 'running' as const,
+      outcome: { kind: 'event-created', eventId: 'e1' } as const,
+      health: { state: 'healthy' as const, acquisition: 'rss' as const, code: null },
+      responseMetadataJson: metadata,
+    },
+    audits: [{ id: randomUUID(), reasonCode: 'event-created' as const, createdAt: NOW }],
+  };
+}
+
+describe('D7 Repair：Run metadata 同 CAS UPDATE + 终态 dedup 重入零写', () => {
+  it('create 成功终态：response_metadata_json 随终态 CAS UPDATE 精确持久化', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    repo.insertRun({
+      id: 'run-meta',
+      ruleId: rule.id,
+      requestKey: 'k-meta',
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
+    repo.transitionRun('run-meta', 'queued', { status: 'running' });
+    const meta = metaJson({ httpStatus: 200, etag: '"v1"', lastModified: null, warnings: [] });
+    const result = repo.writeEventResult(makeWriteResultCreateInput(rule, 'run-meta', meta));
+    expect(result).toEqual({ ok: true });
+    const run = repo.getRun('run-meta')!;
+    expect(run.status).toBe('finished');
+    // metadata 必须精确持久化（不得被终态 transitionRun 覆盖为 null）
+    expect(run.responseMetadataJson).toBe(meta);
+  });
+
+  it('终态 dedup 重入：返回 ok 前 Run/Rule/audit/metadata 全行零变化', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    repo.insertRun({
+      id: 'run-first',
+      ruleId: rule.id,
+      requestKey: 'k-first',
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
+    repo.transitionRun('run-first', 'queued', { status: 'running' });
+    const event = makeEvent(rule.id, { itemCount: 1 });
+    const meta = metaJson();
+    const first = repo.writeEventResult({
+      path: 'create',
+      rule,
+      runId: 'run-first',
+      sourceAfterRevalidationRowVersion: 1,
+      identity: {
+        sourceId: 'src-1',
+        sourceLocatorFingerprint: FINGERPRINT,
+        expectedBaselineVersion: null,
+      },
+      baseline: {
+        projectionType: 'feed',
+        projectionJson: '{}',
+        contentHash: 'h',
+        byteLength: 2,
+        finalUrl: 'https://example.com',
+        capturedAt: NOW,
+        documentId: null,
+        validators: { etag: null, lastModified: null },
+      },
+      event: { event, items: [makeItem()], outbox: [] },
+      run: {
+        expectedStatus: 'running',
+        outcome: { kind: 'event-created', eventId: event.id },
+        health: { state: 'healthy', acquisition: 'rss', code: null },
+        responseMetadataJson: meta,
+      },
+      audits: [{ id: randomUUID(), reasonCode: 'event-created', createdAt: NOW }],
+    });
+    expect(first).toEqual({ ok: true });
+    // 重入 run 已终态（finished）
+    repo.insertRun({
+      id: 'run-replay',
+      ruleId: rule.id,
+      requestKey: 'k-replay',
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
+    repo.transitionRun('run-replay', 'queued', { status: 'finished', finishedAt: NOW });
+    const beforeAudits = count('watch_audits');
+    const beforeRule = repo.getRule(rule.id)!;
+    const replay = repo.writeEventResult({
+      path: 'dedup',
+      rule,
+      runId: 'run-replay',
+      sourceAfterRevalidationRowVersion: 1,
+      identity: {
+        sourceId: 'src-1',
+        sourceLocatorFingerprint: FINGERPRINT,
+        expectedBaselineVersion: 0,
+      },
+      dedupIdempotencyKey: event.idempotencyKey,
+      run: {
+        expectedStatus: 'running',
+        outcome: { kind: 'event-deduplicated', eventId: event.id },
+        health: { state: 'healthy', acquisition: 'rss', code: null },
+        responseMetadataJson: meta,
+      },
+      audits: [{ id: randomUUID(), reasonCode: 'event-deduplicated', createdAt: NOW }],
+    });
+    expect(replay).toEqual({ ok: true });
+    // 已终态重入：零写 —— run 行、rule 行、audit 计数全部不变
+    const replayRun = repo.getRun('run-replay')!;
+    expect(replayRun.status).toBe('finished');
+    expect(replayRun.responseMetadataJson).toBeNull(); // 不得被 metadata UPDATE 改写
+    expect(count('watch_audits')).toBe(beforeAudits);
+    const afterRule = repo.getRule(rule.id)!;
+    expect(afterRule.updatedAt).toBe(beforeRule.updatedAt);
+    expect(afterRule.sourceRowVersion).toBe(beforeRule.sourceRowVersion);
+  });
+});
+
+describe('D7 Repair：scanIntegrity observation 关系不变量', () => {
+  function seedEventWithObservation(): { rule: WatchRule; event: WatchEvent } {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    const event = makeEvent(rule.id, { itemCount: 1 });
+    const result = repo.writeEventTransaction({
+      event,
+      items: [makeItem()],
+      identity: identity(rule.id),
+    });
+    expect(result).toEqual({ ok: true });
+    return { rule, event };
+  }
+
+  it('正常数据 scanIntegrity ok', () => {
+    seedEventWithObservation();
+    expect(repo.scanIntegrity()).toEqual({ ok: true, reason: null });
+  });
+
+  it('Event 缺 observation → fail-closed', () => {
+    const { event } = seedEventWithObservation();
+    handle.prepare('DELETE FROM watch_event_observations WHERE event_id = ?').run(event.id);
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+
+  it('observation.item_count 与 items 实际数不一致 → fail-closed', () => {
+    const { event } = seedEventWithObservation();
+    handle
+      .prepare('UPDATE watch_event_observations SET item_count = 2 WHERE event_id = ?')
+      .run(event.id);
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+
+  it('Event.item_count 与 Σ observation.item_count 不一致 → fail-closed', () => {
+    const { event } = seedEventWithObservation();
+    handle.prepare('UPDATE watch_events SET item_count = 2 WHERE id = ?').run(event.id);
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+
+  it('observation sequence 从 0 连续（缺口）→ fail-closed', () => {
+    const { rule, event } = seedEventWithObservation();
+    // 把唯一 observation 的 sequence 改成 2（0→2 缺口），不触发 UNIQUE 冲突
+    handle
+      .prepare('UPDATE watch_event_observations SET sequence = 2 WHERE event_id = ?')
+      .run(event.id);
+    void rule;
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+
+  it('observation first_item_sequence/item_count 未精确覆盖 item 范围 → fail-closed', () => {
+    const { event } = seedEventWithObservation();
+    handle
+      .prepare('UPDATE watch_event_observations SET first_item_sequence = 1 WHERE event_id = ?')
+      .run(event.id);
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+
+  it('item 的 observation_id 与 observation 不一致（跨观察）→ fail-closed', () => {
+    const { rule, event } = seedEventWithObservation();
+    handle
+      .prepare(
+        `INSERT INTO watch_event_observations (id, event_id, sequence, idempotency_key,
+         change_fingerprint, event_kind, observed_at, first_item_sequence, item_count)
+         VALUES ('obs-b', ?, 1, 'ik-b', 'fp', 'added', ?, 1, 1)`,
+      )
+      .run(event.id, NOW);
+    handle
+      .prepare('UPDATE watch_event_items SET observation_id = ? WHERE event_id = ?')
+      .run('obs-b', event.id);
+    void rule;
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+
+  it('observation_item_sequence 缺口 → fail-closed', () => {
+    const { event } = seedEventWithObservation();
+    handle
+      .prepare('UPDATE watch_event_items SET observation_item_sequence = 5 WHERE event_id = ?')
+      .run(event.id);
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+
+  it('sequence=0 observation 与 Event 首 idempotency/fingerprint 兼容列不一致 → fail-closed', () => {
+    const { rule, event } = seedEventWithObservation();
+    handle
+      .prepare(
+        'UPDATE watch_event_observations SET idempotency_key = ? WHERE event_id = ? AND sequence = 0',
+      )
+      .run('ik-tampered', event.id);
+    void rule;
+    expect(repo.scanIntegrity().ok).toBe(false);
+  });
+});
+
+describe('D7 Repair：100 MiB 预算包含 observations 与 v3 新列', () => {
+  it('estimateLogicalBytes 随 observation 行数增长', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    const event = makeEvent(rule.id, { itemCount: 1 });
+    expect(
+      repo.writeEventTransaction({ event, items: [makeItem()], identity: identity(rule.id) }),
+    ).toEqual({ ok: true });
+    const afterEvent = repo.estimateLogicalBytes();
+    // 追加第二条 observation（同一事件）——v3 观察表字节必须计入估算
+    handle
+      .prepare(
+        `INSERT INTO watch_event_observations (id, event_id, sequence, idempotency_key,
+         change_fingerprint, event_kind, observed_at, first_item_sequence, item_count)
+         VALUES ('obs-2', ?, 1, 'ik-2', 'fp', 'added', ?, 1, 1)`,
+      )
+      .run(event.id, NOW);
+    const afterSecondObs = repo.estimateLogicalBytes();
+    expect(afterSecondObs).toBeGreaterThan(afterEvent);
+  });
+
+  it('writeEventResult create：observation/run metadata/outbox/audit 写集计入预算', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    repo.insertRun({
+      id: 'run-budget',
+      ruleId: rule.id,
+      requestKey: 'k-budget',
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
+    repo.transitionRun('run-budget', 'queued', { status: 'running' });
+    const meta = metaJson({ httpStatus: 200, etag: '"v1"', lastModified: null, warnings: [] });
+    const input = makeWriteResultCreateInput(rule, 'run-budget', meta);
+    input.event.outbox = [
+      {
+        id: randomUUID(),
+        dedupeKey: 'dk-1',
+        privacyJson: '{"eventKind":"added","importance":"normal","itemCount":1}',
+      },
+    ];
+    // 预算设为「仅当前库 + items」不足以覆盖 observation/outbox/audit/metadata 写集
+    const tight = new WatchRepository(handle, { maxDbBytes: repo.estimateLogicalBytes() + 60 });
+    const result = tight.writeEventResult(input);
+    // 完整写集超出预算 → 拒绝（低估不得绕过 maxDbBytes）
+    expect(result.ok).toBe(false);
+  });
+});
