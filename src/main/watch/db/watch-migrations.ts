@@ -25,13 +25,18 @@ import type { DbHandle } from '../../sources/db/sqlite-driver';
 export type { MigrationStep } from '../../sources/db/migrations';
 
 // ---------------------------------------------------------------------------
-// 审计编码单一事实源（#S6-044 FIXED 7/15）：TS 白名单与 v2 CHECK 必须 1:1 同源，
-// 禁止双写漂移。watch-repository.ts 从本文件导入同一数组；v2 迁移步骤也由本数组
-// 生成 CHECK 子句。D7–D9 的 Event/Digest/Notification 审计码由各自任务按同一迁移
-// 模式追加（v3+），不在本文件预先冻结未设计语义。
+// 审计编码单一事实源（#S6-044 FIXED 7/15）：TS 白名单与 DB CHECK 必须 1:1 同源，
+// 禁止双写漂移。watch-repository.ts 从本文件导入同一数组；migration 步骤也由本数组
+// 生成 CHECK 子句。
+//
+// v1/v2 语句字节冻结：WATCH_AUDIT_KINDS_V2 / WATCH_AUDIT_REASON_CODES_V2 是 v2 当时
+// 的冻结集合（v2 的 watch_audits CHECK 由它们生成，永不因后续扩展变化）。
+// D7 #S6-044：schema v3 在同一 migration 事务重建 watch_audits 扩展 reason 集合
+// （kind 集合不新增），主数组 WATCH_AUDIT_KINDS / WATCH_AUDIT_REASON_CODES 即为
+// v3 完整集合（= V2 冻结集 + D7 追加），v3 CHECK 与 Repository TS 白名单由此派生。
 // ---------------------------------------------------------------------------
 
-export const WATCH_AUDIT_KINDS = [
+export const WATCH_AUDIT_KINDS_V2 = [
   'lifecycle-pause',
   'lifecycle-cascade',
   'reconciliation',
@@ -40,7 +45,7 @@ export const WATCH_AUDIT_KINDS = [
   'run',
 ] as const;
 
-export const WATCH_AUDIT_REASON_CODES = [
+export const WATCH_AUDIT_REASON_CODES_V2 = [
   'source-disabled',
   'source-deleted',
   'source-changed',
@@ -62,19 +67,33 @@ export const WATCH_AUDIT_REASON_CODES = [
   'interrupted',
 ] as const;
 
+export const WATCH_AUDIT_KINDS = [...WATCH_AUDIT_KINDS_V2] as const;
+
+// v3 完整集合：v2 冻结集 + D7 #S6-044 追加 reason（kind 集合不新增）。const 元组
+// 派生的 WatchAuditKind / WatchAuditReasonCode 保持闭合字面量类型（禁 any）。
+export const WATCH_AUDIT_REASON_CODES = [
+  ...WATCH_AUDIT_REASON_CODES_V2,
+  'changed-unmatched',
+  'event-created',
+  'event-coalesced',
+  'event-deduplicated',
+  'condition-error',
+] as const;
+
 export type WatchAuditKind = (typeof WATCH_AUDIT_KINDS)[number];
 export type WatchAuditReasonCode = (typeof WATCH_AUDIT_REASON_CODES)[number];
 
 // 由单一事实源生成 CHECK 子句（数组为 const，模块加载一次，结果确定；值均为
-// 小写 ASCII + 连字符，无单引号转义需求）。
-function auditKindCheckClause(): string {
-  return `kind TEXT NOT NULL CHECK (kind IN (${WATCH_AUDIT_KINDS.map((k) => `'${k}'`).join(',')}))`;
+// 小写 ASCII + 连字符，无单引号转义需求）。V2 冻结集合与 v3 完整集合分开生成，
+// 保证 v2 语句字节永久冻结、v3 重建后 CHECK 为完整集合。
+function auditKindCheckClause(list: readonly string[] = WATCH_AUDIT_KINDS_V2): string {
+  return `kind TEXT NOT NULL CHECK (kind IN (${list.map((k) => `'${k}'`).join(',')}))`;
 }
 
-function auditReasonCheckClause(): string {
-  return `reason_code TEXT NOT NULL CHECK (reason_code IN (${WATCH_AUDIT_REASON_CODES.map(
-    (r) => `'${r}'`,
-  ).join(',')}))`;
+function auditReasonCheckClause(list: readonly string[] = WATCH_AUDIT_REASON_CODES_V2): string {
+  return `reason_code TEXT NOT NULL CHECK (reason_code IN (${list
+    .map((r) => `'${r}'`)
+    .join(',')}))`;
 }
 
 export const WATCH_MIGRATION_V1: MigrationStep = {
@@ -254,7 +273,136 @@ export const WATCH_MIGRATION_V2: MigrationStep = {
   ],
 };
 
-export const WATCH_MIGRATIONS: readonly MigrationStep[] = [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2];
+// ---------------------------------------------------------------------------
+// D7 #S6-044/#S6-049/#S6-055/#S6-056 schema v3（引擎单事务，任一语句失败整体回滚）：
+// 1. watch_audits 表重建扩展 reason CHECK（kind 集合不新增；v2 全部行显式列复制）；
+// 2. watch_baselines 表重建追加两个 nullable 条件 validator 列（v2 原列逐列恒等、
+//    新列恒 null，绝不从 Run metadata 回填或猜测）；
+// 3. 新增 watch_event_observations（观察级 idempotency_key UNIQUE、UNIQUE(id,event_id)
+//    供 items 复合 FK 引用、Event 内 sequence 连续）；
+// 4. watch_event_items 表重建：追加 observation_id / observation_item_sequence，
+//    以 (observation_id,event_id) 复合 FK 绑定观察所属 Event（禁止退回两个单列 FK），
+//    保留 UNIQUE(event_id,sequence) 与新增 UNIQUE(observation_id,observation_item_sequence)；
+// 5. 回填前临时 CHECK guard：每个 Event item_count>=1、实际 item 数==item_count、
+//    sequence 为无缺口 0..item_count-1（零 item/计数不一致/缺口 → guard INSERT 失败
+//    → 整体回滚并保持 v2）；确定性 observation id="v2:"||eventId 冲突 → UNIQUE 失败
+//    → 整体回滚（禁止随机 fallback/覆盖）；
+// 6. 回填：v2 每个 Event 恰一条 observation（idempotency_key/change_fingerprint/
+//    event_kind 逐列取 Event、observed_at=last_observed_at、sequence=0、
+//    first_item_sequence=0、item_count 取 Event）；既有 items id 与全部 v2 列恒等，
+//    只追加 observation_id 与按原 sequence 相同值的 observation_item_sequence。
+// ---------------------------------------------------------------------------
+export const WATCH_MIGRATION_V3: MigrationStep = {
+  version: 3,
+  statements: [
+    // 1. watch_audits 重建（reason CHECK 扩展；kind 不新增）
+    `CREATE TABLE watch_audits_v3 (
+  id TEXT PRIMARY KEY,
+  rule_id TEXT REFERENCES watch_rules(id) ON DELETE CASCADE,
+  ${auditKindCheckClause(WATCH_AUDIT_KINDS)},
+  ${auditReasonCheckClause(WATCH_AUDIT_REASON_CODES)},
+  created_at TEXT NOT NULL
+)`,
+    `INSERT INTO watch_audits_v3 (id, rule_id, kind, reason_code, created_at)
+  SELECT id, rule_id, kind, reason_code, created_at FROM watch_audits`,
+    'DROP TABLE watch_audits',
+    'ALTER TABLE watch_audits_v3 RENAME TO watch_audits',
+    'CREATE INDEX idx_watch_audits_rule ON watch_audits(rule_id)',
+    // 2. watch_baselines 重建（追加两列 nullable 条件 validator；v2 原列恒等、新列 null）
+    `CREATE TABLE watch_baselines_v3 (
+  rule_id TEXT PRIMARY KEY REFERENCES watch_rules(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL CHECK (version >= 1),
+  projection_type TEXT NOT NULL CHECK (projection_type IN ('feed','page')),
+  projection_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  byte_length INTEGER NOT NULL CHECK (byte_length >= 0 AND byte_length <= 65536),
+  final_url TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  document_id TEXT,
+  conditional_etag TEXT,
+  conditional_last_modified TEXT
+)`,
+    `INSERT INTO watch_baselines_v3 (rule_id, version, projection_type, projection_json,
+  content_hash, byte_length, final_url, captured_at, document_id)
+  SELECT rule_id, version, projection_type, projection_json,
+  content_hash, byte_length, final_url, captured_at, document_id FROM watch_baselines`,
+    'DROP TABLE watch_baselines',
+    'ALTER TABLE watch_baselines_v3 RENAME TO watch_baselines',
+    // 3. watch_event_observations 新表
+    `CREATE TABLE watch_event_observations (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL REFERENCES watch_events(id) ON DELETE CASCADE,
+  sequence INTEGER NOT NULL CHECK (sequence >= 0),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  change_fingerprint TEXT NOT NULL,
+  event_kind TEXT NOT NULL CHECK (event_kind IN ('added','removed','changed','reversal','mixed')),
+  observed_at TEXT NOT NULL,
+  first_item_sequence INTEGER NOT NULL CHECK (first_item_sequence >= 0),
+  item_count INTEGER NOT NULL CHECK (item_count >= 1),
+  UNIQUE (event_id, sequence),
+  UNIQUE (id, event_id)
+)`,
+    'CREATE INDEX idx_watch_event_observations_event ON watch_event_observations(event_id)',
+    // 4. watch_event_items 重建（复合 FK 绑定观察所属 Event）
+    `CREATE TABLE watch_event_items_v3 (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL CHECK (sequence >= 0),
+  observation_id TEXT NOT NULL,
+  observation_item_sequence INTEGER NOT NULL CHECK (observation_item_sequence >= 0),
+  item_id TEXT NOT NULL,
+  field_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  before_value_json TEXT NOT NULL,
+  after_value_json TEXT NOT NULL,
+  before_captured_at TEXT NOT NULL,
+  after_captured_at TEXT NOT NULL,
+  before_final_url TEXT NOT NULL,
+  after_final_url TEXT NOT NULL,
+  before_document_id TEXT,
+  after_document_id TEXT,
+  feed_item_key TEXT,
+  UNIQUE (event_id, sequence),
+  UNIQUE (observation_id, observation_item_sequence),
+  FOREIGN KEY (observation_id, event_id) REFERENCES watch_event_observations(id, event_id) ON DELETE CASCADE
+)`,
+    // 5. 回填前临时 CHECK guard（任一违反 → INSERT 失败 → 整体回滚）
+    'CREATE TABLE watch_v3_guard (n INTEGER NOT NULL CHECK (n = 0))',
+    `INSERT INTO watch_v3_guard (n)
+  SELECT COUNT(*) FROM watch_events e
+  WHERE e.item_count < 1
+     OR (SELECT COUNT(*) FROM watch_event_items i WHERE i.event_id = e.id) <> e.item_count
+     OR (SELECT COUNT(DISTINCT sequence) FROM watch_event_items i WHERE i.event_id = e.id) <> e.item_count
+     OR (SELECT COALESCE(MAX(sequence), -1) FROM watch_event_items i WHERE i.event_id = e.id) <> e.item_count - 1`,
+    // 6a. 回填 observations（每个 Event 恰一条；确定性 id="v2:"||eventId）
+    `INSERT INTO watch_event_observations
+  (id, event_id, sequence, idempotency_key, change_fingerprint, event_kind,
+   observed_at, first_item_sequence, item_count)
+  SELECT 'v2:' || id, id, 0, idempotency_key, change_fingerprint, event_kind,
+   last_observed_at, 0, item_count FROM watch_events`,
+    // 6b. 回填 items（v2 列恒等 + observation_id + observation_item_sequence=原 sequence）
+    `INSERT INTO watch_event_items_v3
+  (id, event_id, sequence, observation_id, observation_item_sequence,
+   item_id, field_key, label, before_value_json, after_value_json,
+   before_captured_at, after_captured_at, before_final_url, after_final_url,
+   before_document_id, after_document_id, feed_item_key)
+  SELECT id, event_id, sequence, 'v2:' || event_id, sequence,
+   item_id, field_key, label, before_value_json, after_value_json,
+   before_captured_at, after_captured_at, before_final_url, after_final_url,
+   before_document_id, after_document_id, feed_item_key FROM watch_event_items`,
+    'DROP TABLE watch_v3_guard',
+    'DROP TABLE watch_event_items',
+    'ALTER TABLE watch_event_items_v3 RENAME TO watch_event_items',
+    'CREATE INDEX idx_watch_event_items_event ON watch_event_items(event_id)',
+    'CREATE INDEX idx_watch_event_items_item ON watch_event_items(item_id, field_key)',
+  ],
+};
+
+export const WATCH_MIGRATIONS: readonly MigrationStep[] = [
+  WATCH_MIGRATION_V1,
+  WATCH_MIGRATION_V2,
+  WATCH_MIGRATION_V3,
+];
 
 // 薄封装：固定使用 Watch 独立迁移列表（引擎复用 B1 冻结模式）
 export function runWatchMigrations(handle: DbHandle): ReturnType<typeof runMigrations> {

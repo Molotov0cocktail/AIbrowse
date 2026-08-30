@@ -15,6 +15,7 @@ import {
   WATCH_MIGRATIONS,
   WATCH_MIGRATION_V1,
   WATCH_MIGRATION_V2,
+  WATCH_MIGRATION_V3,
   runWatchMigrations,
 } from './watch-migrations';
 
@@ -75,22 +76,23 @@ function insertRule(db: DbHandle, id: string, kind = 'feed'): void {
   ).run(id, kind);
 }
 
-describe('migration v1 契约断言（§10.1：11 张表）', () => {
-  it('v1+v2 两级、版本连续、语句全部编译期常量', () => {
+describe('migration v1 契约断言（§10.1：11 张表；D7 v3 +1 = 12 张表）', () => {
+  it('v1+v2+v3 三级、版本连续、语句全部编译期常量', () => {
     expect(WATCH_MIGRATION_V1.version).toBe(1);
     expect(WATCH_MIGRATION_V2.version).toBe(2);
-    expect(WATCH_MIGRATIONS).toHaveLength(2);
-    expect(WATCH_MIGRATIONS.map((s) => s.version)).toEqual([1, 2]);
+    expect(WATCH_MIGRATIONS).toHaveLength(3);
+    expect(WATCH_MIGRATIONS.map((s) => s.version)).toEqual([1, 2, 3]);
     expect(
       WATCH_MIGRATION_V1.statements.every((s) => typeof s === 'string') &&
-        WATCH_MIGRATION_V2.statements.every((s) => typeof s === 'string'),
+        WATCH_MIGRATION_V2.statements.every((s) => typeof s === 'string') &&
+        WATCH_MIGRATION_V3.statements.every((s) => typeof s === 'string'),
     ).toBe(true);
   });
 
-  it('运行后 user_version=2 且 11 张表全部存在', () => {
+  it('运行后 user_version=3 且 12 张表全部存在（D7 新增 watch_event_observations）', () => {
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(true);
-    expect(outcome.toVersion).toBe(2);
+    expect(outcome.toVersion).toBe(3);
     expect(tableNames(handle)).toEqual([
       'digest_event_refs',
       'digest_schedules',
@@ -100,13 +102,14 @@ describe('migration v1 契约断言（§10.1：11 张表）', () => {
       'watch_baselines',
       'watch_digests',
       'watch_event_items',
+      'watch_event_observations',
       'watch_events',
       'watch_rules',
       'watch_runs',
     ]);
   });
 
-  it('全部契约索引存在', () => {
+  it('全部契约索引存在（D7 +2：observations_event / items_item）', () => {
     runWatchMigrations(handle);
     expect(indexNames(handle)).toEqual([
       'idx_notification_outbox_rule',
@@ -115,6 +118,8 @@ describe('migration v1 契约断言（§10.1：11 张表）', () => {
       'idx_watch_audits_rule',
       'idx_watch_digests_schedule',
       'idx_watch_event_items_event',
+      'idx_watch_event_items_item',
+      'idx_watch_event_observations_event',
       'idx_watch_events_rule',
       'idx_watch_events_source',
       'idx_watch_rules_source',
@@ -131,8 +136,8 @@ describe('migration v1 契约断言（§10.1：11 张表）', () => {
     expect(again.ok).toBe(true);
   });
 
-  it('未知更高版本零写入（newer-than-program）', () => {
-    handle.exec('PRAGMA user_version = 3');
+  it('未知更高版本零写入（newer-than-program；latest=3 → 4 为未来版本）', () => {
+    handle.exec('PRAGMA user_version = 4');
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(false);
     expect(outcome.state).toBe('newer-than-program');
@@ -378,10 +383,18 @@ describe('外键与 UNIQUE（§10.1：外键打开）', () => {
       .run();
     handle
       .prepare(
-        `INSERT INTO watch_event_items (id, event_id, sequence, item_id, field_key, label,
+        `INSERT INTO watch_event_observations (id, event_id, sequence, idempotency_key,
+   change_fingerprint, event_kind, observed_at, first_item_sequence, item_count)
+   VALUES ('obs1','e1',0,'ik1','fp1','added','2026-08-28T00:00:00.000Z',0,1)`,
+      )
+      .run();
+    handle
+      .prepare(
+        `INSERT INTO watch_event_items (id, event_id, sequence, observation_id,
+   observation_item_sequence, item_id, field_key, label,
    before_value_json, after_value_json, before_captured_at, after_captured_at,
    before_final_url, after_final_url)
-   VALUES ('i1','e1',0,'it1','title','标题','{"kind":"absent"}',
+   VALUES ('i1','e1',0,'obs1',0,'it1','title','标题','{"kind":"absent"}',
     '{"kind":"present","excerpt":"新","valueHash":"h","normalizedBytes":3,"truncated":false}',
     '2026-08-28T00:00:00.000Z','2026-08-28T00:00:00.000Z',
     'https://example.com','https://example.com')`,
@@ -437,16 +450,27 @@ describe('外键与 UNIQUE（§10.1：外键打开）', () => {
       .run();
     handle
       .prepare(
-        `INSERT INTO watch_event_items (id, event_id, sequence, item_id, field_key, label,
+        `INSERT INTO watch_event_observations (id, event_id, sequence, idempotency_key,
+   change_fingerprint, event_kind, observed_at, first_item_sequence, item_count)
+  VALUES ('obs1','e1',0,'ik1','fp1','added','2026-08-28T00:00:00.000Z',0,1)`,
+      )
+      .run();
+    handle
+      .prepare(
+        `INSERT INTO watch_event_items (id, event_id, sequence, observation_id,
+   observation_item_sequence, item_id, field_key, label,
    before_value_json, after_value_json, before_captured_at, after_captured_at,
    before_final_url, after_final_url)
-  VALUES ('i1','e1',0,'it1','title','标题','{"kind":"absent"}','{"kind":"absent"}',
+  VALUES ('i1','e1',0,'obs1',0,'it1','title','标题','{"kind":"absent"}','{"kind":"absent"}',
    '2026-08-28T00:00:00.000Z','2026-08-28T00:00:00.000Z',
    'https://example.com','https://example.com')`,
       )
       .run();
     handle.prepare('DELETE FROM watch_events WHERE id = ?').run('e1');
     expect(handle.prepare('SELECT COUNT(*) AS n FROM watch_event_items').get()).toEqual({
+      n: 0,
+    });
+    expect(handle.prepare('SELECT COUNT(*) AS n FROM watch_event_observations').get()).toEqual({
       n: 0,
     });
     // digest ref 无外键：Event 删除后 ref 行仍存在（由 Repository 置 expired）
@@ -497,7 +521,7 @@ describe('SQL 注入串仅作数据（§10.1 参数绑定）', () => {
       .get('inj-1') as { source_id: string; target_json: string };
     expect(row.source_id).toBe(injection);
     expect(row.target_json).toBe(injection);
-    expect(tableNames(handle).length).toBe(11);
+    expect(tableNames(handle).length).toBe(12);
   });
 });
 
@@ -537,7 +561,7 @@ describe('migration v2 契约断言（#S6-044 FIXED 14/15：watch_audits CHECK �
     }
   });
 
-  it('审计编码单一事实源：kind=6、reason=19，与 v2 生成的 CHECK 逐值一致', () => {
+  it('审计编码单一事实源：kind=6、reason=24（D7 v3 追加），与 v3 生成的 CHECK 逐值一致', () => {
     expect(WATCH_AUDIT_KINDS).toEqual([
       'lifecycle-pause',
       'lifecycle-cascade',
@@ -566,6 +590,11 @@ describe('migration v2 契约断言（#S6-044 FIXED 14/15：watch_audits CHECK �
       'unavailable',
       'budget-exceeded',
       'interrupted',
+      'changed-unmatched',
+      'event-created',
+      'event-coalesced',
+      'event-deduplicated',
+      'condition-error',
     ]);
     runWatchMigrations(handle);
     const sql = handle
@@ -619,7 +648,7 @@ describe('migration v2 契约断言（#S6-044 FIXED 14/15：watch_audits CHECK �
     expect(() => insertAudit('run', 'Unavailable')).toThrow();
   });
 
-  it('v2 后 12 索引恒等；重建后删除 Rule → 审计级联删除、rule_id=NULL 孤儿审计存活', () => {
+  it('v3 后 14 索引恒等；重建后删除 Rule → 审计级联删除、rule_id=NULL 孤儿审计存活', () => {
     runWatchMigrations(handle);
     expect(indexNames(handle)).toEqual([
       'idx_notification_outbox_rule',
@@ -628,6 +657,8 @@ describe('migration v2 契约断言（#S6-044 FIXED 14/15：watch_audits CHECK �
       'idx_watch_audits_rule',
       'idx_watch_digests_schedule',
       'idx_watch_event_items_event',
+      'idx_watch_event_items_item',
+      'idx_watch_event_observations_event',
       'idx_watch_events_rule',
       'idx_watch_events_source',
       'idx_watch_rules_source',

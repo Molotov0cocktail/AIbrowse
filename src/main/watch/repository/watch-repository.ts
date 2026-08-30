@@ -25,6 +25,7 @@ import {
   SESSION_EVENTS_PER_RULE,
   type ChangeEvidencePair,
   type WatchEvent,
+  type WatchEventKind,
   type WatchHealthSnapshot,
   type WatchRule,
   type WatchRunOutcome,
@@ -80,6 +81,8 @@ export type WatchErrorCode =
   | 'db-budget-exceeded'
   | 'identity-conflict'
   | 'validation-failed'
+  | 'event-conflict'
+  | 'store-unavailable'
   | 'sqlite-error';
 
 export class WatchRepositoryError extends Error {
@@ -155,17 +158,39 @@ const SQL_UPDATE_RULE_COORDINATION = `UPDATE watch_rules
 
 const SQL_INSERT_BASELINE = `INSERT INTO watch_baselines
   (rule_id, version, projection_type, projection_json, content_hash, byte_length,
-   final_url, captured_at, document_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+   final_url, captured_at, document_id, conditional_etag, conditional_last_modified)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 const SQL_UPDATE_BASELINE_CAS = `UPDATE watch_baselines
   SET version = ?, projection_type = ?, projection_json = ?, content_hash = ?, byte_length = ?,
-      final_url = ?, captured_at = ?, document_id = ?
+      final_url = ?, captured_at = ?, document_id = ?,
+      conditional_etag = ?, conditional_last_modified = ?
   WHERE rule_id = ? AND version = ?`;
 const SQL_SELECT_BASELINE = `SELECT rule_id, version, projection_type, projection_json,
-  content_hash, byte_length, final_url, captured_at, document_id
+  content_hash, byte_length, final_url, captured_at, document_id,
+  conditional_etag, conditional_last_modified
   FROM watch_baselines WHERE rule_id = ?`;
 const SQL_UPDATE_RULE_BASELINE_VERSION =
   'UPDATE watch_rules SET baseline_version = ?, updated_at = ? WHERE id = ?';
+
+// D7 #S6-057：结果事务 Rule 完整身份 CAS（enabled/desired/unpaused + sourceId/fingerprint/
+// baselineVersion）。sourceRowVersion 不参与 CAS；写入必须是单调 max(current, revalidated)
+//（#S6-052）。
+const SQL_SELECT_RULE_RESULT_IDENTITY = `SELECT state, desired_enabled, pause_reason,
+  source_id, source_locator_fingerprint, baseline_version, source_row_version
+  FROM watch_rules WHERE id = ?`;
+const SQL_UPDATE_RULE_RESULT_ROWVERSION = `UPDATE watch_rules
+  SET source_row_version = MAX(source_row_version, ?), updated_at = ?
+  WHERE id = ? AND state = 'enabled' AND desired_enabled = 1 AND pause_reason IS NULL
+    AND source_id = ? AND source_locator_fingerprint = ?`;
+
+// #S6-056：unchanged（同 hash 200/304）只更新条件 validator（Baseline version/content 不变）
+const SQL_UPDATE_BASELINE_VALIDATORS = `UPDATE watch_baselines
+  SET conditional_etag = ?, conditional_last_modified = ?
+  WHERE rule_id = ? AND version = ?`;
+
+// §8.1：Run response_metadata_json 只作有界诊断记录（不参与条件请求输入）
+const SQL_UPDATE_RUN_RESPONSE_META = `UPDATE watch_runs
+  SET response_metadata_json = ? WHERE id = ?`;
 
 const SQL_INSERT_RUN = `INSERT INTO watch_runs
   (id, rule_id, request_key, status, trigger, scheduled_for)
@@ -208,12 +233,19 @@ const SQL_SELECT_EVENT = `SELECT id, rule_id, source_id, event_kind, importance,
 const SQL_SELECT_EVENTS_BY_RULE = `SELECT id, rule_id, source_id, event_kind, importance,
   idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count,
   read_at FROM watch_events WHERE rule_id = ? ORDER BY first_observed_at ASC, id ASC`;
+// v3：items 绑定 observation（observation_id,event_id 复合 FK），并保留 event 内 sequence
+const SQL_INSERT_OBSERVATION = `INSERT INTO watch_event_observations
+  (id, event_id, sequence, idempotency_key, change_fingerprint, event_kind,
+   observed_at, first_item_sequence, item_count)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 const SQL_INSERT_EVENT_ITEM = `INSERT INTO watch_event_items
-  (id, event_id, sequence, item_id, field_key, label, before_value_json, after_value_json,
+  (id, event_id, sequence, observation_id, observation_item_sequence,
+   item_id, field_key, label, before_value_json, after_value_json,
    before_captured_at, after_captured_at, before_final_url, after_final_url,
    before_document_id, after_document_id, feed_item_key)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-const SQL_SELECT_EVENT_ITEMS = `SELECT id, event_id, sequence, item_id, field_key, label,
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+const SQL_SELECT_EVENT_ITEMS = `SELECT id, event_id, sequence, observation_id,
+  observation_item_sequence, item_id, field_key, label,
   before_value_json, after_value_json, before_captured_at, after_captured_at,
   before_final_url, after_final_url, before_document_id, after_document_id, feed_item_key
   FROM watch_event_items WHERE event_id = ? ORDER BY sequence ASC, id ASC`;
@@ -235,9 +267,42 @@ const SQL_SELECT_OLDEST_EVENT_GLOBAL = `SELECT id FROM watch_events
 const SQL_SELECT_EVENTS_BY_SOURCE = `SELECT e.id FROM watch_events e
   JOIN watch_rules r ON e.rule_id = r.id WHERE r.source_id = ?`;
 
+// D7 §9.4/#S6-047：coalesce 候选 = 该 Rule 最近一个 Event（first_observed_at DESC, id DESC LIMIT 1）
+const SQL_SELECT_LATEST_EVENT = `SELECT id, rule_id, source_id, event_kind, importance,
+  idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count,
+  read_at FROM watch_events WHERE rule_id = ?
+  ORDER BY first_observed_at DESC, id DESC LIMIT 1`;
+
+// D7 #S6-048：最近已持久化变化对（同 Rule 同 (item_id, field_key)）——
+// 按 §10.1 冻结全序：observation.observed_at DESC, event.first_observed_at DESC,
+// event.id DESC, observation.sequence DESC, item.sequence DESC, item.id DESC LIMIT 1。
+const SQL_SELECT_RECENT_PAIR = `SELECT
+  i.id, i.event_id, i.sequence, i.observation_id, i.observation_item_sequence,
+  i.item_id, i.field_key, i.label, i.before_value_json, i.after_value_json,
+  i.before_captured_at, i.after_captured_at, i.before_final_url, i.after_final_url,
+  i.before_document_id, i.after_document_id, i.feed_item_key
+  FROM watch_event_items i
+  JOIN watch_event_observations o ON o.id = i.observation_id AND o.event_id = i.event_id
+  JOIN watch_events e ON e.id = i.event_id
+  WHERE e.rule_id = ? AND i.item_id = ? AND i.field_key = ?
+  ORDER BY o.observed_at DESC, e.first_observed_at DESC, e.id DESC,
+           o.sequence DESC, i.sequence DESC, i.id DESC LIMIT 1`;
+
+// D7 §9.4/#S6-051：观察级 idempotency_key 查询（dedup 判定）
+const SQL_SELECT_OBSERVATION_BY_IDEM = `SELECT o.id, o.event_id, o.sequence,
+  o.idempotency_key, o.change_fingerprint, o.event_kind, o.observed_at,
+  o.first_item_sequence, o.item_count
+  FROM watch_event_observations o WHERE o.idempotency_key = ?`;
+
+// D7 coalesce：Event 行更新（CAS 复验 first_observed_at 与 item_count 等于期望值）
+const SQL_UPDATE_EVENT_COALESCE = `UPDATE watch_events
+  SET event_kind = ?, last_observed_at = ?, item_count = ?
+  WHERE id = ? AND first_observed_at = ? AND item_count = ?`;
+
 // 启动完整性/JSON 形状/预算扫描（§10.2 步骤 4；store 编排、SQL 仍在本模块）
 const SQL_SELECT_ALL_BASELINES = `SELECT rule_id, version, projection_type, projection_json,
-  content_hash, byte_length, final_url, captured_at, document_id FROM watch_baselines`;
+  content_hash, byte_length, final_url, captured_at, document_id,
+  conditional_etag, conditional_last_modified FROM watch_baselines`;
 const SQL_SELECT_ALL_RUNS = `SELECT id, rule_id, request_key, status, trigger, scheduled_for,
   started_at, finished_at, outcome_json, health_json, response_metadata_json
   FROM watch_runs`;
@@ -738,6 +803,7 @@ export class WatchRepository {
     finalUrl: string;
     capturedAt: string;
     documentId: string | null;
+    validators?: { etag: string | null; lastModified: string | null };
   }): WatchResult {
     this.ensureOpen();
     // R6：真实 UTF-8 字节预算——声明字节必须与投影实际字节一致且在上限内，
@@ -800,7 +866,9 @@ export class WatchRepository {
     finalUrl: string;
     capturedAt: string;
     documentId: string | null;
+    validators?: { etag: string | null; lastModified: string | null };
   }): WatchResult {
+    const validators = input.validators ?? { etag: null, lastModified: null };
     if (input.expectedBaselineVersion === null) {
       const result = this.handle
         .prepare(SQL_INSERT_BASELINE)
@@ -814,6 +882,8 @@ export class WatchRepository {
           input.finalUrl,
           input.capturedAt,
           input.documentId,
+          validators.etag,
+          validators.lastModified,
         );
       this.handle.prepare(SQL_UPDATE_RULE_BASELINE_VERSION).run(1, this.nowIso(), input.ruleId);
       if (Number(result.changes) === 0) return { ok: false, code: 'baseline-conflict' };
@@ -831,6 +901,8 @@ export class WatchRepository {
         input.finalUrl,
         input.capturedAt,
         input.documentId,
+        validators.etag,
+        validators.lastModified,
         input.ruleId,
         input.expectedBaselineVersion,
       );
@@ -856,6 +928,8 @@ export class WatchRepository {
         finalUrl: row['final_url'] as string,
         capturedAt: row['captured_at'] as string,
         documentId: row['document_id'] as string | null,
+        conditionalEtag: row['conditional_etag'] as string | null,
+        conditionalLastModified: row['conditional_last_modified'] as string | null,
       };
       const validated = validateBaselineRow(normalized);
       if (!validated.ok || validated.value === null) {
@@ -1404,6 +1478,22 @@ export class WatchRepository {
             input.event.lastObservedAt,
             input.event.itemCount,
           );
+        // v3：每个 Event 至少一条 observation（本方法固定 sequence=0 首观察）；
+        // observation.id 使用小写 v4 UUID（由调用方事件 id 派生可逆形态亦可）。
+        const observationId = `${input.event.id}-obs0`;
+        this.handle
+          .prepare(SQL_INSERT_OBSERVATION)
+          .run(
+            observationId,
+            input.event.id,
+            0,
+            input.event.idempotencyKey,
+            input.event.changeFingerprint,
+            input.event.eventKind,
+            input.event.firstObservedAt,
+            0,
+            input.event.itemCount,
+          );
         for (let i = 0; i < input.items.length; i += 1) {
           const item = input.items[i]!;
           this.handle
@@ -1411,6 +1501,8 @@ export class WatchRepository {
             .run(
               `${input.event.id}-${i}`,
               input.event.id,
+              i,
+              observationId,
               i,
               item.itemId,
               item.fieldKey,
@@ -1734,6 +1826,625 @@ export class WatchRepository {
   }
 
   // -------------------------------------------------------------------------
+  // D7 Processing 结果事务层（§8.1/§9.4/#S6-047～#S6-052/#S6-057）：Repository 是
+  // 唯一 SQL 点，ProcessingService 只编排。所有结果路径在同一单事务完成——
+  // identity/baseline/event conflict 全部零写。
+  // -------------------------------------------------------------------------
+
+  // D7 §8.1：Rule 结果身份（含完整状态 CAS 字段）
+  getRuleResultIdentity(ruleId: string): {
+    state: WatchRule['state'];
+    desiredEnabled: boolean;
+    pauseReason: WatchRule['pauseReason'];
+    sourceId: string;
+    sourceLocatorFingerprint: string;
+    baselineVersion: number;
+    sourceRowVersion: number;
+  } | null {
+    this.ensureOpen();
+    const row = this.handle.prepare(SQL_SELECT_RULE_RESULT_IDENTITY).get(ruleId) as
+      | {
+          state: string;
+          desired_enabled: number;
+          pause_reason: string | null;
+          source_id: string;
+          source_locator_fingerprint: string;
+          baseline_version: number;
+          source_row_version: number;
+        }
+      | undefined;
+    if (row === undefined) return null;
+    return {
+      state: row.state as WatchRule['state'],
+      desiredEnabled: row.desired_enabled === 1,
+      pauseReason: row.pause_reason as WatchRule['pauseReason'],
+      sourceId: row.source_id,
+      sourceLocatorFingerprint: row.source_locator_fingerprint,
+      baselineVersion: row.baseline_version,
+      sourceRowVersion: row.source_row_version,
+    };
+  }
+
+  // #S6-052：单调 rowVersion 更新（max(current, revalidated)）——必须连同完整
+  // 状态/身份 CAS 一起执行；locator prepare 只暂停保留旧 fingerprint 时该 CAS 失败
+  //（state=paused → 条件不满足 → 0 行 → 调用方整体失败）。
+  updateRuleResultRowVersion(input: {
+    ruleId: string;
+    sourceAfterRevalidationRowVersion: number;
+    expectedSourceId: string;
+    expectedSourceLocatorFingerprint: string;
+    nowIso: string;
+  }): WatchResult {
+    this.ensureOpen();
+    try {
+      const result = this.handle
+        .prepare(SQL_UPDATE_RULE_RESULT_ROWVERSION)
+        .run(
+          input.sourceAfterRevalidationRowVersion,
+          input.nowIso,
+          input.ruleId,
+          input.expectedSourceId,
+          input.expectedSourceLocatorFingerprint,
+        );
+      if (Number(result.changes) === 0) {
+        const exists = this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(input.ruleId);
+        if (exists === undefined) return { ok: false, code: 'rule-not-found' };
+        return { ok: false, code: 'identity-conflict' };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  // D7 #S6-048：最近持久化变化对（reversal oracle）
+  findRecentPersistedPair(
+    ruleId: string,
+    itemId: string,
+    fieldKey: string,
+  ): ChangeEvidencePair | null {
+    this.ensureOpen();
+    try {
+      const row = this.handle
+        .prepare(SQL_SELECT_RECENT_PAIR)
+        .get(ruleId, itemId, fieldKey) as unknown;
+      if (!isPlainRecord(row)) return null;
+      const before = this.parseJson(row['before_value_json']);
+      const after = this.parseJson(row['after_value_json']);
+      const pair: ChangeEvidencePair = {
+        itemId: row['item_id'] as string,
+        fieldKey: row['field_key'] as string,
+        label: row['label'] as string,
+        before: before as ChangeEvidencePair['before'],
+        after: after as ChangeEvidencePair['after'],
+        beforeCapturedAt: row['before_captured_at'] as string,
+        afterCapturedAt: row['after_captured_at'] as string,
+        beforeFinalUrl: row['before_final_url'] as string,
+        afterFinalUrl: row['after_final_url'] as string,
+        beforeDocumentId: row['before_document_id'] as string | null,
+        afterDocumentId: row['after_document_id'] as string | null,
+        feedItemKey: row['feed_item_key'] as string | null,
+      };
+      return validateChangeEvidencePair(pair);
+    } catch (err) {
+      logWarn('watch', '读取最近变化对失败（fail-closed 返回 null）', err);
+      return null;
+    }
+  }
+
+  // D7 §9.4/#S6-047：coalesce 候选 = 该 Rule 最近一个 Event
+  findLatestEventForCoalesce(ruleId: string): WatchEvent | null {
+    this.ensureOpen();
+    try {
+      const row = this.handle.prepare(SQL_SELECT_LATEST_EVENT).get(ruleId) as unknown;
+      if (!isPlainRecord(row)) return null;
+      const validated = validateEventRow(row);
+      if (!validated.ok || validated.value === null) return null;
+      return validated.value;
+    } catch (err) {
+      logWarn('watch', '读取 coalesce 候选失败（fail-closed 返回 null）', err);
+      return null;
+    }
+  }
+
+  // D7 #S6-051：观察级 idempotency_key 查询（dedup 判定）
+  findObservationByIdempotencyKey(idempotencyKey: string): {
+    observationId: string;
+    eventId: string;
+    ruleId: string;
+    sourceId: string;
+  } | null {
+    this.ensureOpen();
+    try {
+      const row = this.handle.prepare(SQL_SELECT_OBSERVATION_BY_IDEM).get(idempotencyKey) as
+        { id: string; event_id: string } | undefined;
+      if (row === undefined) return null;
+      const eventRow = this.handle.prepare(SQL_SELECT_EVENT).get(row.event_id) as
+        { rule_id: string; source_id: string } | undefined;
+      if (eventRow === undefined) return null;
+      return {
+        observationId: row.id,
+        eventId: row.event_id,
+        ruleId: eventRow.rule_id,
+        sourceId: eventRow.source_id,
+      };
+    } catch (err) {
+      logWarn('watch', '查询 observation idempotency_key 失败（fail-closed 返回 null）', err);
+      return null;
+    }
+  }
+
+  /**
+   * D7 结果事务（§8.1/#S6-047/#S6-049/#S6-051/#S6-057）：
+   * 处理 create / coalesce / dedup / unchanged / changed-unmatched 五类结果，
+   * 全程单事务。identity/baseline/event conflict 零结果写入并返回对应 code。
+   *
+   * - create：Event + observation + items + Baseline + Run 终态 + outbox + audit；
+   * - coalesce：observation + items 追加 + Event 行更新 + Baseline + Run 终态 + audit
+   *   （CAS 复验 Event first_observed_at/item_count；绝不动 outbox）；
+   * - dedup：合法重放 → running Run 终结为 event-deduplicated + 健康恢复 + audit，
+   *   零 Event/observation/item/outbox/Baseline 写；已终态重入零写；
+   * - unchanged：contentHash 相等 / 304 → 只更新 validator + Run/health/audit +
+   *   rowVersion（Baseline version/content 不变）；
+   * - changed-unmatched：推进有效新 Baseline + Run=changed-unmatched + 健康恢复 + audit。
+   */
+  writeEventResult(input: {
+    path: 'create' | 'coalesce' | 'dedup' | 'unchanged' | 'changed-unmatched';
+    rule: WatchRule;
+    runId: string;
+    sourceAfterRevalidationRowVersion: number;
+    // 结果事务完整身份 CAS（#S6-057：enabled/desired/unpaused + sourceId/fingerprint/
+    // baselineVersion；rowVersion 不参与 CAS）。expectedBaselineVersion=null 表示
+    // 首个 Baseline（要求当前 baseline_version=0 且无行），否则要求精确等于当前。
+    identity: {
+      sourceId: string;
+      sourceLocatorFingerprint: string;
+      expectedBaselineVersion: number | null;
+    };
+    // create/coalesce/changed-unmatched：新 Baseline（unchanged/dedup 不需要）
+    baseline?: {
+      projectionType: 'feed' | 'page';
+      projectionJson: string;
+      contentHash: string;
+      byteLength: number;
+      finalUrl: string;
+      capturedAt: string;
+      documentId: string | null;
+      validators: { etag: string | null; lastModified: string | null };
+    };
+    // create：新 Event（含 idempotencyKey/changeFingerprint 首观察值）
+    event?: {
+      event: WatchEvent;
+      items: ChangeEvidencePair[];
+      outbox?: Array<{
+        id: string;
+        dedupeKey: string;
+        privacyJson: string;
+      }>;
+    };
+    // coalesce：目标 Event + 追加的观察元数据（idempotencyKey 由 Processing 计算）
+    coalesce?: {
+      eventId: string;
+      expectedFirstObservedAt: string;
+      expectedItemCount: number;
+      eventKind: WatchEventKind;
+      lastObservedAt: string;
+      newItemCount: number;
+      observationId: string;
+      idempotencyKey: string;
+      changeFingerprint: string;
+      items: ChangeEvidencePair[];
+    };
+    // dedup：该观察的 idempotencyKey（结果事务内查询并复验 Event/Rule/Source 一致）
+    dedupIdempotencyKey?: string;
+    // unchanged：validator 提交值（#S6-056：200 缺失/超限清空，304 缺失/超限保留旧值）
+    validatorUpdate?: { etag: string | null; lastModified: string | null };
+    run: {
+      expectedStatus: 'queued' | 'running';
+      outcome: WatchRunOutcome;
+      health: WatchHealthSnapshot | null;
+      responseMetadataJson: string | null;
+    };
+    audits: Array<{
+      id: string;
+      reasonCode: WatchAuditReasonCode;
+      createdAt: string;
+    }>;
+  }): WatchResult {
+    this.ensureOpen();
+    if (
+      input.rule.state !== 'enabled' ||
+      !input.rule.desiredEnabled ||
+      input.rule.pauseReason !== null
+    ) {
+      return { ok: false, code: 'identity-conflict' };
+    }
+    if (
+      input.identity.sourceId !== input.rule.sourceId ||
+      input.identity.sourceLocatorFingerprint !== input.rule.sourceLocatorFingerprint
+    ) {
+      return { ok: false, code: 'identity-conflict' };
+    }
+    if (
+      (input.identity.expectedBaselineVersion === null && input.rule.baselineVersion !== 0) ||
+      (input.identity.expectedBaselineVersion !== null &&
+        input.identity.expectedBaselineVersion !== input.rule.baselineVersion)
+    ) {
+      return { ok: false, code: 'baseline-conflict' };
+    }
+    if (
+      input.baseline !== undefined &&
+      input.baseline.projectionType === 'page' &&
+      (input.baseline.validators.etag !== null || input.baseline.validators.lastModified !== null)
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
+    try {
+      return withTransaction(this.handle, () => {
+        // 1. 事务内完整身份 CAS（重新读库，不信任传入 rule 快照）
+        const identityRow = this.handle
+          .prepare(SQL_SELECT_RULE_RESULT_IDENTITY)
+          .get(input.rule.id) as
+          | {
+              state: string;
+              desired_enabled: number;
+              pause_reason: string | null;
+              source_id: string;
+              source_locator_fingerprint: string;
+              baseline_version: number;
+              source_row_version: number;
+            }
+          | undefined;
+        if (identityRow === undefined) throw new TxnAbortError('rule-not-found');
+        if (
+          identityRow.state !== 'enabled' ||
+          identityRow.desired_enabled !== 1 ||
+          identityRow.pause_reason !== null
+        ) {
+          throw new TxnAbortError('identity-conflict');
+        }
+        if (
+          identityRow.source_id !== input.identity.sourceId ||
+          identityRow.source_locator_fingerprint !== input.identity.sourceLocatorFingerprint
+        ) {
+          throw new TxnAbortError('identity-conflict');
+        }
+
+        const nowIso = this.nowIso();
+        // 更新 Run 的 response_metadata（先不终态；最后统一终结）
+        this.handle
+          .prepare(SQL_UPDATE_RUN_RESPONSE_META)
+          .run(input.run.responseMetadataJson, input.runId);
+
+        // 2. dedup（#S6-051）：先做身份 CAS（不做 baselineVersion 提前挡住合法
+        //    replay），再查询 observation idempotencyKey 并复验一致。
+        if (input.path === 'dedup') {
+          if (input.dedupIdempotencyKey === undefined) throw new TxnAbortError('validation-failed');
+          const found = this.findObservationByIdempotencyKey(input.dedupIdempotencyKey);
+          if (found === null) throw new TxnAbortError('event-conflict');
+          if (found.ruleId !== input.rule.id || found.sourceId !== input.rule.sourceId) {
+            throw new TxnAbortError('event-conflict');
+          }
+          // 当前 Baseline version >= expected+1 才合法（后续真实观察已推进则更高，
+          // 合法；落后则数据完整性失败 → store-unavailable）。首建（expected=null）
+          // 不存在已观察，dedup 不可达——防御分支。
+          const expected = input.identity.expectedBaselineVersion;
+          if (expected === null || identityRow.baseline_version < expected + 1) {
+            throw new TxnAbortError('store-unavailable');
+          }
+          // running Run 精确终结为 event-deduplicated（已终态重入由 transitionRun 拒绝 → 零写）
+          const runResult = this.transitionRun(input.runId, input.run.expectedStatus, {
+            status: 'finished',
+            finishedAt: nowIso,
+            outcome: input.run.outcome,
+            health: input.run.health,
+          });
+          if (!runResult.ok) {
+            if (runResult.code === 'run-state-conflict' || runResult.code === 'run-not-found') {
+              return { ok: true }; // 已终态重入：零审计/零写入
+            }
+            throw new TxnAbortError(runResult.code);
+          }
+          this.writeAuditsInternal(input.audits, input.rule.id, nowIso);
+          const rowRes = this.updateRuleResultRowVersion({
+            ruleId: input.rule.id,
+            sourceAfterRevalidationRowVersion: input.sourceAfterRevalidationRowVersion,
+            expectedSourceId: input.identity.sourceId,
+            expectedSourceLocatorFingerprint: input.identity.sourceLocatorFingerprint, // 保持当前推进值
+            nowIso,
+          });
+          if (!rowRes.ok) throw new TxnAbortError(rowRes.code);
+          return { ok: true };
+        }
+
+        // 3. 非 dedup：必须要求当前 baselineVersion 与 expected 一致（#S6-051）；
+        //    expected=null 表示首建（当前必须为 0）
+        if (
+          (input.identity.expectedBaselineVersion === null && identityRow.baseline_version !== 0) ||
+          (input.identity.expectedBaselineVersion !== null &&
+            identityRow.baseline_version !== input.identity.expectedBaselineVersion)
+        ) {
+          throw new TxnAbortError('baseline-conflict');
+        }
+
+        // 4. create/coalesce/changed-unmatched/unchanged 主体
+        if (input.path === 'create' && input.event !== undefined) {
+          if (
+            input.event.event.itemCount !== input.event.items.length ||
+            input.event.items.length < 1
+          ) {
+            throw new TxnAbortError('validation-failed');
+          }
+          let itemsBytes = 0;
+          for (const item of input.event.items) {
+            if (validateChangeEvidencePair(item) === null)
+              throw new TxnAbortError('validation-failed');
+            itemsBytes += utf8ByteLength(JSON.stringify(item));
+          }
+          if (itemsBytes > this.maxEventEvidenceBytes)
+            throw new TxnAbortError('event-budget-exceeded');
+          if (this.estimateLogicalBytesInternal() + itemsBytes + 400 > this.maxDbBytes) {
+            throw new TxnAbortError('db-budget-exceeded');
+          }
+          if (input.baseline !== undefined) {
+            const b = this.applyBaselineInternal({
+              ruleId: input.rule.id,
+              expectedBaselineVersion: input.identity.expectedBaselineVersion,
+              projectionType: input.baseline.projectionType,
+              projectionJson: input.baseline.projectionJson,
+              contentHash: input.baseline.contentHash,
+              byteLength: input.baseline.byteLength,
+              finalUrl: input.baseline.finalUrl,
+              capturedAt: input.baseline.capturedAt,
+              documentId: input.baseline.documentId,
+              validators: input.baseline.validators,
+            });
+            if (!b.ok) throw new TxnAbortError(b.code);
+          }
+          this.handle
+            .prepare(SQL_INSERT_EVENT)
+            .run(
+              input.event.event.id,
+              input.event.event.ruleId,
+              input.event.event.sourceId,
+              input.event.event.eventKind,
+              input.event.event.importance,
+              input.event.event.idempotencyKey,
+              input.event.event.changeFingerprint,
+              input.event.event.firstObservedAt,
+              input.event.event.lastObservedAt,
+              input.event.event.itemCount,
+            );
+          const observationId = `${input.event.event.id}-obs0`;
+          this.handle
+            .prepare(SQL_INSERT_OBSERVATION)
+            .run(
+              observationId,
+              input.event.event.id,
+              0,
+              input.event.event.idempotencyKey,
+              input.event.event.changeFingerprint,
+              input.event.event.eventKind,
+              input.event.event.firstObservedAt,
+              0,
+              input.event.event.itemCount,
+            );
+          for (let i = 0; i < input.event.items.length; i += 1) {
+            const item = input.event.items[i]!;
+            this.handle
+              .prepare(SQL_INSERT_EVENT_ITEM)
+              .run(
+                `${input.event.event.id}-${i}`,
+                input.event.event.id,
+                i,
+                observationId,
+                i,
+                item.itemId,
+                item.fieldKey,
+                item.label,
+                JSON.stringify(item.before),
+                JSON.stringify(item.after),
+                item.beforeCapturedAt,
+                item.afterCapturedAt,
+                item.beforeFinalUrl,
+                item.afterFinalUrl,
+                item.beforeDocumentId,
+                item.afterDocumentId,
+                item.feedItemKey,
+              );
+          }
+          for (const ob of input.event.outbox ?? []) {
+            this.handle
+              .prepare(SQL_INSERT_OUTBOX)
+              .run(
+                ob.id,
+                input.rule.id,
+                'event',
+                input.event.event.id,
+                'in-app',
+                ob.dedupeKey,
+                ob.privacyJson,
+                nowIso,
+                nowIso,
+              );
+          }
+        } else if (input.path === 'coalesce' && input.coalesce !== undefined) {
+          // 合并：observation + items 追加 + Event 行更新；绝不创建/修改 outbox
+          if (input.coalesce.items.length < 1) throw new TxnAbortError('validation-failed');
+          let itemsBytes = 0;
+          for (const item of input.coalesce.items) {
+            if (validateChangeEvidencePair(item) === null)
+              throw new TxnAbortError('validation-failed');
+            itemsBytes += utf8ByteLength(JSON.stringify(item));
+          }
+          if (itemsBytes > this.maxEventEvidenceBytes)
+            throw new TxnAbortError('event-budget-exceeded');
+          // CAS 复验 Event 存在、first_observed_at 与 item_count 等于期望值
+          const updatedEvent = this.handle
+            .prepare(SQL_UPDATE_EVENT_COALESCE)
+            .run(
+              input.coalesce.eventKind,
+              input.coalesce.lastObservedAt,
+              input.coalesce.newItemCount,
+              input.coalesce.eventId,
+              input.coalesce.expectedFirstObservedAt,
+              input.coalesce.expectedItemCount,
+            );
+          if (Number(updatedEvent.changes) === 0) {
+            const exists = this.handle.prepare(SQL_SELECT_EVENT).get(input.coalesce.eventId);
+            if (exists === undefined) throw new TxnAbortError('event-conflict');
+            throw new TxnAbortError('event-conflict');
+          }
+          if (input.baseline !== undefined) {
+            const b = this.applyBaselineInternal({
+              ruleId: input.rule.id,
+              expectedBaselineVersion: input.identity.expectedBaselineVersion,
+              projectionType: input.baseline.projectionType,
+              projectionJson: input.baseline.projectionJson,
+              contentHash: input.baseline.contentHash,
+              byteLength: input.baseline.byteLength,
+              finalUrl: input.baseline.finalUrl,
+              capturedAt: input.baseline.capturedAt,
+              documentId: input.baseline.documentId,
+              validators: input.baseline.validators,
+            });
+            if (!b.ok) throw new TxnAbortError(b.code);
+          }
+          // 新增 observation：sequence = MAX(existing)+1，first_item_sequence = 原 item_count
+          const obsSeq = this.nextObservationSequence(input.coalesce.eventId);
+          this.handle
+            .prepare(SQL_INSERT_OBSERVATION)
+            .run(
+              input.coalesce.observationId,
+              input.coalesce.eventId,
+              obsSeq,
+              input.coalesce.idempotencyKey,
+              input.coalesce.changeFingerprint,
+              input.coalesce.eventKind,
+              input.coalesce.lastObservedAt,
+              input.coalesce.expectedItemCount,
+              input.coalesce.items.length,
+            );
+          const eventSeqBase = input.coalesce.expectedItemCount;
+          for (let i = 0; i < input.coalesce.items.length; i += 1) {
+            const item = input.coalesce.items[i]!;
+            this.handle
+              .prepare(SQL_INSERT_EVENT_ITEM)
+              .run(
+                `${input.coalesce.eventId}-${eventSeqBase + i}`,
+                input.coalesce.eventId,
+                eventSeqBase + i,
+                input.coalesce.observationId,
+                i,
+                item.itemId,
+                item.fieldKey,
+                item.label,
+                JSON.stringify(item.before),
+                JSON.stringify(item.after),
+                item.beforeCapturedAt,
+                item.afterCapturedAt,
+                item.beforeFinalUrl,
+                item.afterFinalUrl,
+                item.beforeDocumentId,
+                item.afterDocumentId,
+                item.feedItemKey,
+              );
+          }
+        } else if (input.path === 'changed-unmatched') {
+          if (input.baseline !== undefined) {
+            const b = this.applyBaselineInternal({
+              ruleId: input.rule.id,
+              expectedBaselineVersion: input.identity.expectedBaselineVersion,
+              projectionType: input.baseline.projectionType,
+              projectionJson: input.baseline.projectionJson,
+              contentHash: input.baseline.contentHash,
+              byteLength: input.baseline.byteLength,
+              finalUrl: input.baseline.finalUrl,
+              capturedAt: input.baseline.capturedAt,
+              documentId: input.baseline.documentId,
+              validators: input.baseline.validators,
+            });
+            if (!b.ok) throw new TxnAbortError(b.code);
+          }
+        } else if (input.path === 'unchanged') {
+          // 同 hash 200/304：Baseline version/content 不变，只更新 validator（#S6-056）
+          if (input.validatorUpdate !== undefined) {
+            const v = this.handle
+              .prepare(SQL_UPDATE_BASELINE_VALIDATORS)
+              .run(
+                input.validatorUpdate.etag,
+                input.validatorUpdate.lastModified,
+                input.rule.id,
+                input.identity.expectedBaselineVersion,
+              );
+            if (Number(v.changes) === 0) {
+              const exists = this.handle.prepare(SQL_SELECT_BASELINE).get(input.rule.id);
+              if (exists === undefined) throw new TxnAbortError('baseline-conflict');
+              throw new TxnAbortError('baseline-conflict');
+            }
+          }
+        }
+
+        // 5. Run 终态 + audits + rowVersion 单调更新
+        const runResult = this.transitionRun(input.runId, input.run.expectedStatus, {
+          status: 'finished',
+          finishedAt: nowIso,
+          outcome: input.run.outcome,
+          health: input.run.health,
+        });
+        if (!runResult.ok) throw new TxnAbortError(runResult.code);
+        this.writeAuditsInternal(input.audits, input.rule.id, nowIso);
+        const rowRes = this.updateRuleResultRowVersion({
+          ruleId: input.rule.id,
+          sourceAfterRevalidationRowVersion: input.sourceAfterRevalidationRowVersion,
+          expectedSourceId: input.identity.sourceId,
+          expectedSourceLocatorFingerprint: input.identity.sourceLocatorFingerprint,
+          nowIso,
+        });
+        if (!rowRes.ok) throw new TxnAbortError(rowRes.code);
+        return { ok: true };
+      });
+    } catch (err) {
+      if (err instanceof TxnAbortError) return { ok: false, code: err.code };
+      logWarn('watch', 'D7 结果事务异常（已整体回滚）', err);
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  private nextObservationSequence(eventId: string): number {
+    const row = this.handle
+      .prepare(
+        'SELECT COALESCE(MAX(sequence), -1) AS m FROM watch_event_observations WHERE event_id = ?',
+      )
+      .get(eventId) as { m: number };
+    return Number(row.m) + 1;
+  }
+
+  private writeAuditsInternal(
+    audits: Array<{ id: string; reasonCode: WatchAuditReasonCode; createdAt: string }>,
+    ruleId: string,
+    nowIso: string,
+  ): void {
+    for (const audit of audits) {
+      if (!isIn('run', AUDIT_KINDS) || !isIn(audit.reasonCode, AUDIT_REASON_CODES)) {
+        throw new TxnAbortError('validation-failed');
+      }
+      this.handle
+        .prepare(SQL_INSERT_AUDIT)
+        .run(audit.id, ruleId, 'run', audit.reasonCode, audit.createdAt ?? nowIso);
+    }
+  }
+
+  // 条件 validator 提交值（#S6-056）：与 Baseline version/contentHash 同身份同事务
+  getBaselineValidators(
+    ruleId: string,
+  ): { etag: string | null; lastModified: string | null } | null {
+    const b = this.getBaseline(ruleId);
+    if (b === null) return null;
+    return { etag: b.conditionalEtag, lastModified: b.conditionalLastModified };
+  }
+
+  // -------------------------------------------------------------------------
   // Retention（§10.4）
   // -------------------------------------------------------------------------
 
@@ -1759,6 +2470,8 @@ export class WatchRepository {
           finalUrl: row['final_url'],
           capturedAt: row['captured_at'],
           documentId: row['document_id'],
+          conditionalEtag: row['conditional_etag'],
+          conditionalLastModified: row['conditional_last_modified'],
         };
         if (!validateBaselineRow(normalized).ok)
           return { ok: false, reason: 'Baseline 行读回校验失败' };

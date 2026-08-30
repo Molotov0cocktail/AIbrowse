@@ -71,29 +71,6 @@ function makeEvent(ruleId: string): WatchEvent {
   };
 }
 
-const ONE_ITEM = [
-  {
-    itemId: 'it1',
-    fieldKey: 'title',
-    label: '标题',
-    before: { kind: 'absent' as const },
-    after: {
-      kind: 'present' as const,
-      excerpt: '新',
-      valueHash: 'h',
-      normalizedBytes: 3,
-      truncated: false,
-    },
-    beforeCapturedAt: NOW,
-    afterCapturedAt: NOW,
-    beforeFinalUrl: 'https://example.com',
-    afterFinalUrl: 'https://example.com',
-    beforeDocumentId: null,
-    afterDocumentId: null,
-    feedItemKey: null,
-  },
-];
-
 function projection(overrides: Partial<SourceWatchProjection> = {}): SourceWatchProjection {
   return {
     sourceId: 'src-1',
@@ -108,7 +85,9 @@ function projection(overrides: Partial<SourceWatchProjection> = {}): SourceWatch
 
 const OK_RECONCILE = (): { ok: boolean; reason: string | null } => ({ ok: true, reason: null });
 
-// 在 v1 库上经真实 Repository 种子：rule/baseline/finished run/45 审计组合/event/intent/outbox。
+// 在 v1 库上以原始 v1 SQL 种子（不依赖 v3 Repository SQL）：rule/baseline/finished
+// run/45 审计组合/event+item/intent/outbox。D7：v1 列的 watch_event_items 无
+// observation_id（v3 迁移负责追加并回填 observation）。
 function seedV1Db(dbPath: string): { rule: WatchRule; event: WatchEvent; mutationId: string } {
   const handle = openDb(dbPath);
   try {
@@ -116,20 +95,17 @@ function seedV1Db(dbPath: string): { rule: WatchRule; event: WatchEvent; mutatio
     const repo = new WatchRepository(handle);
     const rule = makeRule();
     if (!repo.insertRule(rule).ok) throw new Error('seed insertRule 失败');
+    // Baseline：v1 表无 conditional validator 列 → 原列插入
     const projectionJson =
       '{"format":"rss2","title":{"text":"t","truncated":false,"originalBytes":1}}';
-    const baseline = repo.writeBaseline({
-      ruleId: rule.id,
-      expectedBaselineVersion: null,
-      projectionType: 'feed',
-      projectionJson,
-      contentHash: 'h',
-      byteLength: Buffer.byteLength(projectionJson, 'utf8'),
-      finalUrl: 'https://example.com',
-      capturedAt: NOW,
-      documentId: null,
-    });
-    if (!baseline.ok) throw new Error(`seed writeBaseline 失败：${baseline.code}`);
+    handle
+      .prepare(
+        `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at, document_id)
+   VALUES (?, 1, 'feed', ?, 'h', ?, 'https://example.com', ?, NULL)`,
+      )
+      .run(rule.id, projectionJson, Buffer.byteLength(projectionJson, 'utf8'), NOW);
+    handle.prepare('UPDATE watch_rules SET baseline_version = 1 WHERE id = ?').run(rule.id);
     if (
       !repo.insertRun({
         id: 'run-finished',
@@ -181,28 +157,31 @@ function seedV1Db(dbPath: string): { rule: WatchRule; event: WatchEvent; mutatio
       }
     }
     const event = makeEvent(rule.id);
-    const w = repo.writeEventTransaction({
-      event,
-      items: ONE_ITEM,
-      identity: {
-        sourceId: rule.sourceId,
-        expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
-        expectedBaselineVersion: 1,
-      },
-      outbox: [
-        {
-          id: 'ob-1',
-          ruleId: rule.id,
-          subjectType: 'event',
-          subjectId: event.id,
-          channel: 'in-app',
-          dedupeKey: 'dk-1',
-          privacyJson: '{}',
-          createdAt: NOW,
-        },
-      ],
-    });
-    if (!w.ok) throw new Error('seed writeEventTransaction 失败');
+    // Event + 一个 item（v1 原列）——v3 迁移回填 observation
+    handle
+      .prepare(
+        `INSERT INTO watch_events (id, rule_id, source_id, event_kind, importance,
+   idempotency_key, change_fingerprint, first_observed_at, last_observed_at, item_count)
+   VALUES (?, ?, 'src-1', 'added', 'normal', ?, 'fp', ?, ?, 1)`,
+      )
+      .run(event.id, rule.id, event.idempotencyKey, NOW, NOW);
+    handle
+      .prepare(
+        `INSERT INTO watch_event_items (id, event_id, sequence, item_id, field_key, label,
+   before_value_json, after_value_json, before_captured_at, after_captured_at,
+   before_final_url, after_final_url)
+   VALUES ('i1', ?, 0, 'it1', 'title', '标题', '{"kind":"absent"}',
+    '{"kind":"present","excerpt":"新","valueHash":"h","normalizedBytes":3,"truncated":false}',
+    ?, ?, 'https://example.com', 'https://example.com')`,
+      )
+      .run(event.id, NOW, NOW);
+    handle
+      .prepare(
+        `INSERT INTO notification_outbox (id, rule_id, subject_type, subject_id, channel,
+   dedupe_key, privacy_json, state, attempts, created_at, updated_at)
+   VALUES ('ob-1', ?, 'event', ?, 'in-app', 'dk-1', '{}', 'pending', 0, ?, ?)`,
+      )
+      .run(rule.id, event.id, NOW, NOW);
     const mutationId = randomUUID();
     const i = repo.insertSourceCleanupIntent({
       mutationId,
@@ -223,8 +202,8 @@ function seedV1Db(dbPath: string): { rule: WatchRule; event: WatchEvent; mutatio
   }
 }
 
-describe('D5 #S6-044 M0：v1→v2 store 升级（FIXED 16）', () => {
-  it('M0-3 数据恒等：v1 库经 openWatchStore 升至 v2，逐行读回恒等 + v1 备份 + user_version=2', () => {
+describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
+  it('M0-3 数据恒等：v1 库经 openWatchStore 升至 v3，逐行读回恒等 + v1 备份 + user_version=3', () => {
     const dir = mkdtempSync(join(root, 'identity-'));
     const dbPath = join(dir, 'watch.db');
     const backupsDir = join(dir, 'backups');
@@ -234,10 +213,10 @@ describe('D5 #S6-044 M0：v1→v2 store 升级（FIXED 16）', () => {
     if (outcome.mode !== 'normal') return;
     expect(outcome.schedulerReady).toBe(true);
     const repo = outcome.repo;
-    // user_version=2（经 repo.dbHandle 只读探测，测试设施）
+    // user_version=3（经 repo.dbHandle 只读探测，测试设施）
     expect(
       (repo.dbHandle.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
-    ).toBe(2);
+    ).toBe(3);
     // 规则/基线/运行/事件恒等
     const readRule = repo.getRule(rule.id);
     expect(readRule).not.toBeNull();
@@ -341,13 +320,13 @@ describe('D5 #S6-044 M0：v1→v2 store 升级（FIXED 16）', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('M0-6 未来版本 user_version=3 → 零写入 unavailable（阈值随 v2 自然升为 3）', () => {
+  it('M0-6 未来版本 user_version=4 → 零写入 unavailable（latest=3，4 为未来）', () => {
     const dir = mkdtempSync(join(root, 'future-'));
     const dbPath = join(dir, 'watch.db');
     const backupsDir = join(dir, 'backups');
     seedV1Db(dbPath);
     const h = openDb(dbPath);
-    h.exec('PRAGMA user_version = 3');
+    h.exec('PRAGMA user_version = 4');
     closeDb(h);
     const before = readFileSync(dbPath);
     const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
@@ -359,14 +338,14 @@ describe('D5 #S6-044 M0：v1→v2 store 升级（FIXED 16）', () => {
     try {
       expect(
         (probe.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
-      ).toBe(3);
+      ).toBe(4);
     } finally {
       closeDb(probe);
     }
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('M0-8 迁移+恢复交互：v1 备份经 restoreWatchStore 自动升至 v2、增量数据消失语义不变', () => {
+  it('M0-8 迁移+恢复交互：v1 备份经 restoreWatchStore 自动升至 v3、增量数据消失语义不变', () => {
     const dir = mkdtempSync(join(root, 'restore-'));
     const dbPath = join(dir, 'watch.db');
     const backupsDir = join(dir, 'backups');
@@ -382,14 +361,15 @@ describe('D5 #S6-044 M0：v1→v2 store 升级（FIXED 16）', () => {
     );
     expect(backup.ok && backup.backupPath !== null).toBe(true);
     const backupName = backup.backupPath!.slice(backup.backupPath!.lastIndexOf('\\') + 1);
-    // 备份后新增增量规则
+    // 备份后新增增量规则（以 v1 迁移跑 repository——只插入规则，不触碰 v3 列）
     const extra = makeRule('src-extra');
     const h = openDb(dbPath);
+    runMigrations(h, [WATCH_MIGRATION_V1]);
     const repo = new WatchRepository(h);
     expect(repo.insertRule(extra).ok).toBe(true);
     repo.dispose();
     closeDb(h);
-    // 恢复 v1 备份 → 重走装配自动迁移到 v2
+    // 恢复 v1 备份 → 重走装配自动迁移到 v3
     const restored = restoreWatchStore({
       dbPath,
       backupsDir,
@@ -401,7 +381,7 @@ describe('D5 #S6-044 M0：v1→v2 store 升级（FIXED 16）', () => {
     expect(
       (restored.repo.dbHandle.prepare('PRAGMA user_version').get() as { user_version: number })
         .user_version,
-    ).toBe(2);
+    ).toBe(3);
     expect(restored.repo.getRule(extra.id)).toBeNull(); // 增量数据消失
     expect(restored.repo.getRule(rule.id)).not.toBeNull(); // 备份内规则读回
     restored.repo.dispose();

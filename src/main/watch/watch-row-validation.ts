@@ -339,7 +339,7 @@ export function validateWatchRunOutcome(raw: unknown): WatchRunOutcome | null {
     }
     return { kind: 'changed-unmatched', changeFingerprint: record['changeFingerprint'] };
   }
-  if (kind === 'event-created' || kind === 'event-deduplicated') {
+  if (kind === 'event-created' || kind === 'event-coalesced' || kind === 'event-deduplicated') {
     const keys = Reflect.ownKeys(record);
     if (keys.length !== 2 || !keys.includes('eventId')) return null;
     if (typeof record['eventId'] !== 'string' || record['eventId'] === '') return null;
@@ -716,6 +716,8 @@ export interface WatchBaselineRow {
   finalUrl: string;
   capturedAt: string;
   documentId: string | null;
+  conditionalEtag: string | null; // D7 #S6-056：Feed Baseline 条件 validator（Page 恒 null）
+  conditionalLastModified: string | null;
 }
 
 export function validateBaselineRow(row: unknown): WatchRowValidation<WatchBaselineRow> {
@@ -742,6 +744,20 @@ export function validateBaselineRow(row: unknown): WatchRowValidation<WatchBasel
   }
   if (parseJsonSafe(r.projectionJson) === null) {
     return { ok: false, value: null, reason: 'json-parse-failed' };
+  }
+  // #S6-056：条件 validator 列可空；Page Baseline 两列必须均为 null（DB CHECK 纵深，
+  // 此处 TS 同样 enforce）；字符串必须 ≤ MAX_CONDITIONAL_FIELD_BYTES。
+  if (r.conditionalEtag !== null && typeof r.conditionalEtag !== 'string') {
+    return { ok: false, value: null, reason: 'row-shape-invalid' };
+  }
+  if (r.conditionalLastModified !== null && typeof r.conditionalLastModified !== 'string') {
+    return { ok: false, value: null, reason: 'row-shape-invalid' };
+  }
+  if (
+    r.projectionType === 'page' &&
+    (r.conditionalEtag !== null || r.conditionalLastModified !== null)
+  ) {
+    return { ok: false, value: null, reason: 'consistency-invalid' };
   }
   return { ok: true, value: r, reason: null };
 }
