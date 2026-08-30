@@ -249,7 +249,7 @@ describe('ChangeSet 形状校验（决策 17/18）', () => {
 describe('求值 — 无 Condition 等价全部匹配（决策 17）', () => {
   it('condition=null 且 ChangeSet 有效 → matched=true', () => {
     const r = evalInput(null, changeSet({}));
-    expect(r).toEqual({ ok: true, matched: true });
+    expect(r).toEqual({ ok: true, matched: true, warnings: [] });
   });
 
   it('condition=undefined 亦视为无 Condition', () => {
@@ -293,25 +293,25 @@ describe('求值 — all/any 与 operator 真/假', () => {
     });
     expect(
       evalInput(cond({ predicates: [pred({ fieldKey: 'stock', operator: 'decreased' })] }), cs),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     expect(
       evalInput(
         cond({ predicates: [pred({ fieldKey: 'stock', operator: 'equals', operand: 3 })] }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     expect(
       evalInput(
         cond({ predicates: [pred({ fieldKey: 'stock', operator: 'not-equals', operand: 3 })] }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: [] });
     expect(
       evalInput(
         cond({ predicates: [pred({ fieldKey: 'stock', operator: 'equals', operand: 5 })] }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: [] });
   });
 
   it('crosses-above / crosses-below：阈值边界与双侧缺失', () => {
@@ -326,18 +326,18 @@ describe('求值 — all/any 与 operator 真/假', () => {
     });
     expect(
       evalInput(cond({ predicates: [pred({ operator: 'crosses-above', operand: 100 })] }), cs),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     // before == 阈值 90（≤100）+ after 110 > 100 → true
     expect(
       evalInput(cond({ predicates: [pred({ operator: 'crosses-above', operand: 90 })] }), cs),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     expect(
       evalInput(cond({ predicates: [pred({ operator: 'crosses-above', operand: 95 })] }), cs),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     // after 不 > 阈值
     expect(
       evalInput(cond({ predicates: [pred({ operator: 'crosses-above', operand: 120 })] }), cs),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: [] });
     const down = changeSet({
       fields: [
         {
@@ -349,7 +349,7 @@ describe('求值 — all/any 与 operator 真/假', () => {
     });
     expect(
       evalInput(cond({ predicates: [pred({ operator: 'crosses-below', operand: 100 })] }), down),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     // 双侧缺失不能冒充 0：before 缺失 → no-match
     const missingBefore = changeSet({
       fields: [
@@ -365,7 +365,7 @@ describe('求值 — all/any 与 operator 真/假', () => {
         cond({ predicates: [pred({ operator: 'crosses-above', operand: 100 })] }),
         missingBefore,
       ),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: ['operator-not-applicable'] });
     const missingAfter = changeSet({
       fields: [
         {
@@ -380,7 +380,7 @@ describe('求值 — all/any 与 operator 真/假', () => {
         cond({ predicates: [pred({ operator: 'crosses-below', operand: 100 })] }),
         missingAfter,
       ),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: ['operator-not-applicable'] });
   });
 
   it('changed：值或存在性变化即匹配；等值不匹配', () => {
@@ -388,7 +388,7 @@ describe('求值 — all/any 与 operator 真/假', () => {
       cond({ predicates: [pred({ operator: 'changed', operand: null })] }),
       changeSet({}),
     );
-    expect(r).toEqual({ ok: true, matched: true });
+    expect(r).toEqual({ ok: true, matched: true, warnings: [] });
     const same = changeSet({
       fields: [
         {
@@ -400,7 +400,7 @@ describe('求值 — all/any 与 operator 真/假', () => {
     });
     expect(
       evalInput(cond({ predicates: [pred({ operator: 'changed', operand: null })] }), same),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: [] });
     const added = changeSet({
       fields: [
         {
@@ -415,7 +415,7 @@ describe('求值 — all/any 与 operator 真/假', () => {
         cond({ predicates: [pred({ fieldKey: 'release', operator: 'changed', operand: null })] }),
         added,
       ),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
   });
 
   it('event-kind-is：整体事件种类匹配（不要求字段在场）', () => {
@@ -427,7 +427,7 @@ describe('求值 — all/any 与 operator 真/假', () => {
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     expect(
       evalInput(
         cond({
@@ -435,13 +435,17 @@ describe('求值 — all/any 与 operator 真/假', () => {
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: [] });
   });
 
-  it('字段不在 ChangeSet → 谓词 no-match（all/any 均如此）', () => {
+  it('字段不在 ChangeSet → 谓词 no-match + field-absent（all/any 均如此）', () => {
     const cs = changeSet({});
     const p = pred({ fieldKey: 'title', operator: 'changed', operand: null });
-    expect(evalInput(cond({ predicates: [p] }), cs)).toEqual({ ok: true, matched: false });
+    expect(evalInput(cond({ predicates: [p] }), cs)).toEqual({
+      ok: true,
+      matched: false,
+      warnings: ['field-absent'],
+    });
     expect(
       evalInput(
         cond({
@@ -450,7 +454,7 @@ describe('求值 — all/any 与 operator 真/假', () => {
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: ['field-absent'] });
   });
 
   it('all 需全部匹配；any 至少一条', () => {
@@ -474,14 +478,14 @@ describe('求值 — all/any 与 operator 真/假', () => {
       }),
       cs,
     );
-    expect(r).toEqual({ ok: true, matched: true });
+    expect(r).toEqual({ ok: true, matched: true, warnings: [] });
     const r2 = evalInput(
       cond({
         predicates: [pred({}), pred({ fieldKey: 'title', operator: 'equals', operand: 'None' })],
       }),
       cs,
     );
-    expect(r2).toEqual({ ok: true, matched: false }); // all：第二谓词不匹配
+    expect(r2).toEqual({ ok: true, matched: false, warnings: [] }); // all：第二谓词不匹配
     const r3 = evalInput(
       cond({
         combine: 'any',
@@ -489,7 +493,7 @@ describe('求值 — all/any 与 operator 真/假', () => {
       }),
       cs,
     );
-    expect(r3).toEqual({ ok: true, matched: true }); // any：第一谓词匹配
+    expect(r3).toEqual({ ok: true, matched: true, warnings: [] }); // any：第一谓词匹配
   });
 });
 
@@ -513,7 +517,7 @@ describe('求值 — 文本比较（决策 16：NFC/控制-bidi/空白折叠/线
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     expect(
       evalInput(
         cond({
@@ -523,7 +527,7 @@ describe('求值 — 文本比较（决策 16：NFC/控制-bidi/空白折叠/线
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
   });
 
   it('caseSensitive=false 大小写不敏感；true 敏感', () => {
@@ -550,7 +554,7 @@ describe('求值 — 文本比较（决策 16：NFC/控制-bidi/空白折叠/线
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     expect(
       evalInput(
         cond({
@@ -565,7 +569,7 @@ describe('求值 — 文本比较（决策 16：NFC/控制-bidi/空白折叠/线
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: [] });
   });
 
   it('contains 线性字面匹配：regex-like 文本按字面', () => {
@@ -585,7 +589,7 @@ describe('求值 — 文本比较（决策 16：NFC/控制-bidi/空白折叠/线
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
     expect(
       evalInput(
         cond({
@@ -593,7 +597,7 @@ describe('求值 — 文本比较（决策 16：NFC/控制-bidi/空白折叠/线
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: false }); // 不是正则
+    ).toEqual({ ok: true, matched: false, warnings: [] }); // 不是正则
     expect(
       evalInput(
         cond({
@@ -601,10 +605,10 @@ describe('求值 — 文本比较（决策 16：NFC/控制-bidi/空白折叠/线
         }),
         cs,
       ),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
   });
 
-  it('contains/not-contains 空 operand 校验拒绝；after 缺失 no-match', () => {
+  it('contains/not-contains 空 operand 校验拒绝；after 缺失 no-match + operator-not-applicable', () => {
     expect(
       evalInput(
         cond({ predicates: [pred({ fieldKey: 'title', operator: 'contains', operand: '' })] }),
@@ -621,18 +625,18 @@ describe('求值 — 文本比较（决策 16：NFC/控制-bidi/空白折叠/线
         cond({ predicates: [pred({ fieldKey: 'title', operator: 'contains', operand: 'x' })] }),
         absent,
       ),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: ['operator-not-applicable'] });
     expect(
       evalInput(
         cond({ predicates: [pred({ fieldKey: 'title', operator: 'equals', operand: 'x' })] }),
         absent,
       ),
-    ).toEqual({ ok: true, matched: false });
+    ).toEqual({ ok: true, matched: false, warnings: ['operator-not-applicable'] });
   });
 });
 
 describe('求值 — 数值边界（决策 15）', () => {
-  it('locale 数值 / 单位 / 指数字符串在 ChangeSet 值中不冒充数值', () => {
+  it('locale 数值 / 单位 / 指数字符串在 ChangeSet 值中不冒充数值（numeric-value-unavailable warning）', () => {
     const cs = changeSet({
       fields: [
         {
@@ -643,7 +647,11 @@ describe('求值 — 数值边界（决策 15）', () => {
       ],
     });
     const r = evalInput(cond({}), cs);
-    expect(r).toEqual({ ok: true, matched: false }); // increased 无法解析 → no-match
+    expect(r).toEqual({
+      ok: true,
+      matched: false,
+      warnings: ['numeric-value-unavailable'],
+    }); // increased 无法解析 → no-match + warning
     const unit = changeSet({
       fields: [
         {
@@ -653,7 +661,11 @@ describe('求值 — 数值边界（决策 15）', () => {
         },
       ],
     });
-    expect(evalInput(cond({}), unit)).toEqual({ ok: true, matched: false });
+    expect(evalInput(cond({}), unit)).toEqual({
+      ok: true,
+      matched: false,
+      warnings: ['numeric-value-unavailable'],
+    });
     const exp = changeSet({
       fields: [
         {
@@ -663,7 +675,11 @@ describe('求值 — 数值边界（决策 15）', () => {
         },
       ],
     });
-    expect(evalInput(cond({}), exp)).toEqual({ ok: true, matched: false });
+    expect(evalInput(cond({}), exp)).toEqual({
+      ok: true,
+      matched: false,
+      warnings: ['numeric-value-unavailable'],
+    });
   });
 
   it('字符串规范 ASCII 十进制可解析为数值', () => {
@@ -676,7 +692,7 @@ describe('求值 — 数值边界（决策 15）', () => {
         },
       ],
     });
-    expect(evalInput(cond({}), cs)).toEqual({ ok: true, matched: true });
+    expect(evalInput(cond({}), cs)).toEqual({ ok: true, matched: true, warnings: [] });
   });
 
   it('数值 equals 支持字符串值与数字 operand 的规范比较', () => {
@@ -691,7 +707,7 @@ describe('求值 — 数值边界（决策 15）', () => {
     });
     expect(
       evalInput(cond({ predicates: [pred({ operator: 'equals', operand: 120 })] }), cs),
-    ).toEqual({ ok: true, matched: true });
+    ).toEqual({ ok: true, matched: true, warnings: [] });
   });
 });
 
@@ -753,11 +769,11 @@ describe('非修改性与深冻结输入', () => {
     expect(Object.keys(CONDITION_ERROR_REASONS).sort()).toEqual([...codes].sort());
   });
 
-  it('返回的 ok=false reason 是闭合 code', () => {
+  it('返回的 ok=false code 是闭合 code', () => {
     const r = evalInput(cond({ version: 9 }), changeSet({}));
     expect(r.ok).toBe(false);
     if (!r.ok) {
-      expect((CONDITION_ERROR_REASONS as Record<string, string>)[r.reason]).toBeDefined();
+      expect((CONDITION_ERROR_REASONS as Record<string, string>)[r.code]).toBeDefined();
     }
   });
 });
@@ -779,7 +795,7 @@ describe('evaluateStructuredCondition 返回类型闭合', () => {
       changeSet: cs,
       fieldCatalog: CATALOG,
     });
-    expect(r).toEqual({ ok: true, matched: true });
+    expect(r).toEqual({ ok: true, matched: true, warnings: [] });
     expect((cs.fields[0]?.before as { value: string }).value).toBe('v2');
   });
 
@@ -812,7 +828,7 @@ describe('敌手安全 — accessor/Proxy 探针（own-data-property；getter �
     for (const key of ['version', 'combine', 'predicates']) {
       const { obj, executed } = withAccessor(cond({}), key);
       const r = evalInput(obj, changeSet({}));
-      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'condition-shape-invalid' });
+      expect(r, `key=${key}`).toEqual({ ok: false, code: 'condition-shape-invalid' });
       expect(executed()).toBe(0);
     }
   });
@@ -821,7 +837,7 @@ describe('敌手安全 — accessor/Proxy 探针（own-data-property；getter �
     for (const key of ['fieldKey', 'operator', 'caseSensitive', 'operand']) {
       const { obj, executed } = withAccessor(pred({}), key);
       const r = evalInput(cond({ predicates: [obj] }), changeSet({}));
-      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'predicate-shape-invalid' });
+      expect(r, `key=${key}`).toEqual({ ok: false, code: 'predicate-shape-invalid' });
       expect(executed()).toBe(0);
     }
   });
@@ -830,7 +846,7 @@ describe('敌手安全 — accessor/Proxy 探针（own-data-property；getter �
     for (const key of ['eventKind', 'fields']) {
       const { obj, executed } = withAccessor(changeSet({}), key);
       const r = evalInput(cond({}), obj);
-      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'change-set-shape-invalid' });
+      expect(r, `key=${key}`).toEqual({ ok: false, code: 'change-set-shape-invalid' });
       expect(executed()).toBe(0);
     }
   });
@@ -844,7 +860,7 @@ describe('敌手安全 — accessor/Proxy 探针（own-data-property；getter �
     for (const key of ['fieldKey', 'before', 'after']) {
       const { obj, executed } = withAccessor(fieldBase, key);
       const r = evalInput(cond({}), changeSet({ fields: [obj] }));
-      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'change-field-shape-invalid' });
+      expect(r, `key=${key}`).toEqual({ ok: false, code: 'change-field-shape-invalid' });
       expect(executed()).toBe(0);
     }
   });
@@ -859,7 +875,7 @@ describe('敌手安全 — accessor/Proxy 探针（own-data-property；getter �
         after: { kind: 'present', value: 120 },
       };
       const r = evalInput(cond({}), changeSet({ fields: [field] }));
-      expect(r, `key=${key}`).toEqual({ ok: false, reason: 'change-value-invalid' });
+      expect(r, `key=${key}`).toEqual({ ok: false, code: 'change-value-invalid' });
       expect(executed()).toBe(0);
     }
   });
@@ -903,6 +919,6 @@ describe('敌手安全 — accessor/Proxy 探针（own-data-property；getter �
   it('普通 JSON.parse 对象继续通过', () => {
     const c = JSON.parse(JSON.stringify(cond({}))) as Record<string, unknown>;
     const cs = JSON.parse(JSON.stringify(changeSet({}))) as Record<string, unknown>;
-    expect(evalInput(c, cs)).toEqual({ ok: true, matched: true });
+    expect(evalInput(c, cs)).toEqual({ ok: true, matched: true, warnings: [] });
   });
 });

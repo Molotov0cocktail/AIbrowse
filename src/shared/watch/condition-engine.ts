@@ -18,6 +18,7 @@ import {
   type CombineMode,
   type ConditionOperator,
   type ConditionPredicate,
+  type ConditionWarningCode,
   type WatchEventKind,
 } from '../types/watch';
 import { MAX_CONDITIONS_PER_RULE } from '../types/watch';
@@ -368,6 +369,16 @@ export function validateStructuredCondition(
 // ---------------------------------------------------------------------------
 // 求值（纯函数；文本线性字面比较，零正则条件）
 // ---------------------------------------------------------------------------
+// D7 #S6-053/#S6-058：求值器必须遍历全部 predicate（不因 all/any 短路）并按 §5
+// 闭合矩阵求值；同一 predicate 对同 fieldKey 的全部 ChangeField 先合并判定。
+// - 不支持情形（字段缺失/数值不可用/typed operator 不适用）= no-match + 闭合
+//   warning（unsupported/no-match），不是 error；
+// - 任一可适用 pair 命中 → predicate=true；存在可适用 pair 但未命中 → false 且
+//   不因不适用 sibling 产生 warning；全部 pair 均不适用 → false + 恰一个 warning
+//   （优先级 numeric-value-unavailable 后 operator-not-applicable）；无同字段 pair
+//   才是 field-absent；
+// - Condition/ChangeSet 形状/版本/字段目录/值类型验证失败或求值器异常 → condition
+//   error（ok:false + ConditionErrorCode）。
 
 function numericOf(value: ChangeFieldValue): number | null {
   if (value.kind !== 'present') return null; // 不存在值不能冒充 0
@@ -413,88 +424,141 @@ function changedDiffers(before: ChangeFieldValue, after: ChangeFieldValue): bool
   return normalizeWatchText(textOf(before)) !== normalizeWatchText(textOf(after));
 }
 
-function matchEntry(field: ChangeField, predicate: ConditionPredicate): boolean {
-  const afterPresent = field.after.kind === 'present';
+// 每 operator 的可适用性判定（§5 矩阵）：返回 applicable=false 表示该 field 不适用
+//（不参与命中判定，但参与 warning 优先级判定）；否则返回匹配结果。
+function matchApplicable(
+  field: ChangeField,
+  predicate: ConditionPredicate,
+): { applicable: true; matched: boolean } | { applicable: false; numericUnavailable: boolean } {
   switch (predicate.operator) {
     case 'changed':
-      return changedDiffers(field.before, field.after);
-    case 'equals':
-      return (
-        afterPresent &&
-        equalsValue(field.after, predicate.operand as string | number, predicate.caseSensitive)
-      );
-    case 'not-equals':
-      return (
-        afterPresent &&
-        !equalsValue(field.after, predicate.operand as string | number, predicate.caseSensitive)
-      );
-    case 'contains':
-      return (
-        afterPresent &&
-        containsText(field.after, predicate.operand as string, predicate.caseSensitive)
-      );
-    case 'not-contains':
-      return (
-        afterPresent &&
-        !containsText(field.after, predicate.operand as string, predicate.caseSensitive)
-      );
-    case 'increased': {
-      const before = numericOf(field.before);
-      const after = numericOf(field.after);
-      return before !== null && after !== null && after > before;
+      // 任何同 fieldKey 已验证 pair 都适用；按 typed before/after 判等
+      return { applicable: true, matched: changedDiffers(field.before, field.after) };
+    case 'equals': {
+      if (field.after.kind !== 'present') return { applicable: false, numericUnavailable: false };
+      return {
+        applicable: true,
+        matched: equalsValue(
+          field.after,
+          predicate.operand as string | number,
+          predicate.caseSensitive,
+        ),
+      };
     }
-    case 'decreased': {
-      const before = numericOf(field.before);
-      const after = numericOf(field.after);
-      return before !== null && after !== null && after < before;
+    case 'not-equals': {
+      if (field.after.kind !== 'present') return { applicable: false, numericUnavailable: false };
+      return {
+        applicable: true,
+        matched: !equalsValue(
+          field.after,
+          predicate.operand as string | number,
+          predicate.caseSensitive,
+        ),
+      };
     }
-    case 'crosses-above': {
-      const threshold = numericOperand(predicate.operand);
-      const before = numericOf(field.before);
-      const after = numericOf(field.after);
-      return (
-        threshold !== null &&
-        before !== null &&
-        after !== null &&
-        before <= threshold &&
-        after > threshold
-      );
+    case 'contains': {
+      if (field.after.kind !== 'present') return { applicable: false, numericUnavailable: false };
+      return {
+        applicable: true,
+        matched: containsText(field.after, predicate.operand as string, predicate.caseSensitive),
+      };
     }
+    case 'not-contains': {
+      if (field.after.kind !== 'present') return { applicable: false, numericUnavailable: false };
+      return {
+        applicable: true,
+        matched: !containsText(field.after, predicate.operand as string, predicate.caseSensitive),
+      };
+    }
+    case 'increased':
+    case 'decreased':
+    case 'crosses-above':
     case 'crosses-below': {
-      const threshold = numericOperand(predicate.operand);
+      if (field.before.kind !== 'present' || field.after.kind !== 'present') {
+        return { applicable: false, numericUnavailable: false };
+      }
       const before = numericOf(field.before);
       const after = numericOf(field.after);
-      return (
-        threshold !== null &&
-        before !== null &&
-        after !== null &&
-        before >= threshold &&
-        after < threshold
-      );
+      if (before === null || after === null) {
+        return { applicable: false, numericUnavailable: true };
+      }
+      switch (predicate.operator) {
+        case 'increased':
+          return { applicable: true, matched: after > before };
+        case 'decreased':
+          return { applicable: true, matched: after < before };
+        case 'crosses-above': {
+          const threshold = numericOperand(predicate.operand);
+          return {
+            applicable: true,
+            matched: threshold !== null && before <= threshold && after > threshold,
+          };
+        }
+        case 'crosses-below': {
+          const threshold = numericOperand(predicate.operand);
+          return {
+            applicable: true,
+            matched: threshold !== null && before >= threshold && after < threshold,
+          };
+        }
+        default:
+          return { applicable: true, matched: false };
+      }
     }
     default:
-      return false;
+      return { applicable: false, numericUnavailable: false };
   }
 }
 
-function matchPredicate(predicate: ConditionPredicate, cs: StructuredChangeSet): boolean {
+/**
+ * 单 predicate 求值（§5 多 pair 合并语义）。
+ * event-kind-is：只比较 ChangeSet.eventKind，永不产生 warning。
+ * 返回 { matched, warning }；warning 为闭合码或 null。
+ */
+function matchPredicate(
+  predicate: ConditionPredicate,
+  cs: StructuredChangeSet,
+): {
+  matched: boolean;
+  warning: ConditionWarningCode | null;
+} {
   if (predicate.operator === 'event-kind-is') {
-    // 整体事件种类匹配，不要求字段在场
-    return cs.eventKind === predicate.operand;
+    return { matched: cs.eventKind === predicate.operand, warning: null };
   }
-  let matched = false;
+  let anyApplicable = false;
+  let anyNumericUnavailable = false;
   for (const field of cs.fields) {
     if (field.fieldKey !== predicate.fieldKey) continue;
-    if (matchEntry(field, predicate)) {
-      matched = true;
-      break;
+    const r = matchApplicable(field, predicate);
+    if (r.applicable) {
+      anyApplicable = true;
+      if (r.matched) return { matched: true, warning: null };
+    } else if (r.numericUnavailable) {
+      anyNumericUnavailable = true;
     }
   }
-  return matched;
+  if (anyApplicable) return { matched: false, warning: null };
+  // 全部 pair 均不适用（或无同字段 pair）：
+  // 无同字段 pair → field-absent；否则按优先级 numeric-value-unavailable 后
+  // operator-not-applicable 产生恰一个 warning。
+  const hasField = cs.fields.some((f) => f.fieldKey === predicate.fieldKey);
+  if (!hasField) return { matched: false, warning: 'field-absent' };
+  return {
+    matched: false,
+    warning: anyNumericUnavailable ? 'numeric-value-unavailable' : 'operator-not-applicable',
+  };
 }
 
+/** warning 编译期顺序（#S6-058：去重后按该顺序排序）。 */
+const WARNING_ORDER: readonly ConditionWarningCode[] = [
+  'field-absent',
+  'numeric-value-unavailable',
+  'operator-not-applicable',
+];
+
 export type ConditionEvaluationResult =
-  { ok: true; matched: boolean } | { ok: false; reason: ConditionErrorCode };
+  | { ok: true; matched: boolean; warnings: ConditionWarningCode[] }
+  | { ok: false; code: ConditionErrorCode };
 
 export interface ConditionEvaluationInput {
   condition: unknown; // null/undefined = 无 Condition（全部匹配）
@@ -506,24 +570,33 @@ export function evaluateStructuredCondition(
   input: ConditionEvaluationInput,
 ): ConditionEvaluationResult {
   const cs = validateChangeSet(input.changeSet, input.fieldCatalog);
-  if (!cs.ok) return cs;
+  if (!cs.ok) return { ok: false, code: cs.reason };
   if (input.condition === null || input.condition === undefined) {
     // 决策 17：无 Condition 等价于有效 ChangeSet 全部匹配
-    return { ok: true, matched: true };
+    return { ok: true, matched: true, warnings: [] };
   }
   const cond = validateStructuredCondition(input.condition, input.fieldCatalog);
-  if (!cond.ok) return cond;
+  if (!cond.ok) return { ok: false, code: cond.reason };
   if (cond.condition.predicates.length === 0) {
-    return { ok: false, reason: 'condition-predicates-range' };
+    return { ok: false, code: 'condition-predicates-range' };
   }
-  if (cond.condition.combine === 'all') {
-    for (const p of cond.condition.predicates) {
-      if (!matchPredicate(p, cs.changeSet)) return { ok: true, matched: false };
-    }
-    return { ok: true, matched: true };
-  }
+  // 全部 predicate 求值（非短路），再按 all/any 组合；warning 去重排序。
+  const results: Array<{ matched: boolean; warning: ConditionWarningCode | null }> = [];
   for (const p of cond.condition.predicates) {
-    if (matchPredicate(p, cs.changeSet)) return { ok: true, matched: true };
+    results.push(matchPredicate(p, cs.changeSet));
   }
-  return { ok: true, matched: false };
+  const warnings: ConditionWarningCode[] = [];
+  const seen = new Set<ConditionWarningCode>();
+  for (const code of WARNING_ORDER) {
+    if (results.some((r) => r.warning === code)) {
+      seen.add(code);
+      warnings.push(code);
+    }
+  }
+  void seen;
+  const matched =
+    cond.condition.combine === 'all'
+      ? results.every((r) => r.matched)
+      : results.some((r) => r.matched);
+  return { ok: true, matched, warnings };
 }
