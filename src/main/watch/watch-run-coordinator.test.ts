@@ -13,15 +13,21 @@ import {
   WatchRunCoordinator,
   type SchedulerPort,
   type WatchAcquisitionPort,
-  type WatchAcquisitionResult,
   type WatchRevalidatorPort,
 } from './watch-run-coordinator';
+import type {
+  WatchProcessingService,
+  WatchAcquisitionResult,
+  WatchRule,
+  WatchRunOutcome,
+  WatchHealthSnapshot,
+} from '../../shared/types/watch';
+import type { WatchFailureCode } from '../../shared/types/watch';
+import type { WatchRevalidationResult } from './watch-lifecycle-coordinator';
 import { HostRequestGate } from './host-request-gate';
 import { FakeClock } from '../../shared/watch/clock';
 import { computeSourceLocatorFingerprint } from '../../shared/watch/watch-rule-state';
 import { computeJitterMs } from './watch-scheduler';
-import type { WatchFailureCode, WatchRule } from '../../shared/types/watch';
-import type { WatchRevalidationResult } from './watch-lifecycle-coordinator';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-watch-coord-'));
 const NOW_MS = Date.parse('2026-08-28T00:00:00.000Z');
@@ -124,8 +130,41 @@ class FakeAcquisition implements WatchAcquisitionPort {
     this.hostConcurrent.set(input.hostKey, hc - 1);
     this.globalConcurrent -= 1;
     const result = this.results.shift();
-    return result ?? { ok: true };
+    return (
+      result ?? {
+        ok: true,
+        kind: 'projection',
+        projection: pageProjection(input.rule),
+        expectedSourceLocatorFingerprint: input.rule.sourceLocatorFingerprint,
+        responseMetadata: null,
+      }
+    );
   }
+}
+
+// 最小合法 PageProjection（Feed 规则也可复用：processor 只消费 envelope 字段）
+function pageProjection(rule: WatchRule): import('../../shared/types/watch').PageProjection {
+  const json = JSON.stringify({ type: 'page', fields: [] });
+  return {
+    schemaVersion: 1,
+    ruleId: rule.id,
+    sourceId: rule.sourceId,
+    finalUrl: 'https://example.com',
+    capturedAt: NOW,
+    documentId: null,
+    contentHash: 'h',
+    byteLength: json.length,
+    value: { type: 'page', fields: [] },
+  };
+}
+
+// 失败 acquisition（统一判别联合含 disposition）
+function failedResult(
+  health: WatchFailureCode,
+  retryable: boolean,
+  retryAfterSeconds: number | null = null,
+): WatchAcquisitionResult {
+  return { ok: false, health, retryable, retryAfterSeconds, disposition: 'network' };
 }
 
 class FakeRevalidator implements WatchRevalidatorPort {
@@ -133,7 +172,81 @@ class FakeRevalidator implements WatchRevalidatorPort {
   calls: string[] = [];
   revalidateRuleSource(ruleId: string): WatchRevalidationResult {
     this.calls.push(ruleId);
-    return this.results.get(ruleId) ?? { status: 'ok', rowVersion: 1 };
+    return (
+      this.results.get(ruleId) ?? {
+        status: 'ok',
+        rowVersion: 1,
+        sourceAfterAcquisition: {
+          sourceId: 'src-1',
+          rowVersion: 1,
+          enabled: true,
+          deletedAt: null,
+          scope: 'page',
+          canonicalKey: 'https://example.com/doc',
+        },
+      }
+    );
+  }
+}
+
+// D7：确定性 fake processing——成功 acquisition → unchanged 终态（写入 run+audit）。
+// 测试关注 Coordinator 编排（prepare→acquisition→revalidate→process），不测
+// Diff/Condition 语义（那属于 watch-processing-service 自身测试）。
+class FakeProcessing implements WatchProcessingService {
+  prepareResults = new Map<string, import('../../shared/types/watch').WatchBaselineHint>();
+  calls: Array<{ runId: string; ruleId: string }> = [];
+  repo: WatchRepository | null = null;
+
+  prepareAcquisition(input: {
+    rule: WatchRule;
+  }):
+    | { ok: true; baselineHint: import('../../shared/types/watch').WatchBaselineHint }
+    | { ok: false; code: 'store-unavailable' } {
+    const hint = this.prepareResults.get(input.rule.id);
+    if (hint !== undefined) return { ok: true, baselineHint: hint };
+    return { ok: true, baselineHint: { kind: 'none', expectedBaselineVersion: 0 } };
+  }
+
+  process(input: {
+    rule: WatchRule;
+    runId: string;
+    baselineHint: import('../../shared/types/watch').WatchBaselineHint;
+    acquisition: Extract<WatchAcquisitionResult, { ok: true }>;
+    sourceAfterAcquisition: import('../../shared/types/watch').SourceWatchProjection;
+  }): import('../../shared/types/watch').WatchProcessingResult {
+    this.calls.push({ runId: input.runId, ruleId: input.rule.id });
+    const nowIso = new Date(NOW_MS).toISOString();
+    if (this.repo === null) return { ok: false, code: 'store-unavailable', terminalWritten: false };
+    const outcome: WatchRunOutcome = { kind: 'unchanged' };
+    const health: WatchHealthSnapshot = { state: 'healthy', acquisition: 'rss', code: null };
+    const runMetadata = JSON.stringify({
+      schemaVersion: 1,
+      http: input.acquisition.responseMetadata,
+      conditionWarnings: [],
+    });
+    const result = this.repo.writeEventResult({
+      path: 'unchanged',
+      rule: input.rule,
+      runId: input.runId,
+      sourceAfterRevalidationRowVersion: input.sourceAfterAcquisition.rowVersion,
+      identity: {
+        sourceId: input.rule.sourceId,
+        sourceLocatorFingerprint: input.rule.sourceLocatorFingerprint,
+        expectedBaselineVersion: input.baselineHint.expectedBaselineVersion,
+      },
+      validatorUpdate:
+        input.baselineHint.kind === 'none' ? undefined : { etag: null, lastModified: null },
+      run: { expectedStatus: 'running', outcome, health, responseMetadataJson: runMetadata },
+      audits: [{ id: randomUUID(), reasonCode: 'unchanged', createdAt: nowIso }],
+    });
+    if (!result.ok) return { ok: false, code: 'event-conflict', terminalWritten: false };
+    // 成功终态重置连续失败/backoff（真实 Processing 同事务写规则失败状态）
+    this.repo.dbHandle
+      .prepare(
+        'UPDATE watch_rules SET consecutive_failures = 0, backoff_until = NULL, updated_at = ? WHERE id = ?',
+      )
+      .run(nowIso, input.rule.id);
+    return { ok: true, outcome };
   }
 }
 
@@ -158,13 +271,28 @@ class FakeScheduler implements SchedulerPort {
 
 // 模拟真实 revalidateRuleSource 的暂停副作用（D4 契约：source-missing/disabled/
 // locator-changed 会把规则暂停对应原因）。Coordinator 只消费状态；暂停由 revalidator 完成。
+function okRevalidation(rowVersion = 1): WatchRevalidationResult {
+  return {
+    status: 'ok',
+    rowVersion,
+    sourceAfterAcquisition: {
+      sourceId: 'src-1',
+      rowVersion,
+      enabled: true,
+      deletedAt: null,
+      scope: 'page',
+      canonicalKey: 'https://example.com/doc',
+    },
+  };
+}
+
 function pausingRevalidator(
   repo: WatchRepository,
   statusMap: Map<string, WatchRevalidationResult> | (() => WatchRevalidationResult),
 ): WatchRevalidatorPort {
   const resolve = (ruleId: string): WatchRevalidationResult => {
     if (typeof statusMap === 'function') return statusMap();
-    return statusMap.get(ruleId) ?? { status: 'ok', rowVersion: 1 };
+    return statusMap.get(ruleId) ?? okRevalidation();
   };
   return {
     revalidateRuleSource(ruleId: string): WatchRevalidationResult {
@@ -208,6 +336,7 @@ interface Harness {
   hostGate: HostRequestGate;
   acquisition: FakeAcquisition;
   revalidator: FakeRevalidator;
+  processing: FakeProcessing;
   scheduler: FakeScheduler;
   coordinator: WatchRunCoordinator;
 }
@@ -222,17 +351,30 @@ function setup(): Harness {
   const hostGate = new HostRequestGate({ clock });
   const acquisition = new FakeAcquisition();
   const revalidator = new FakeRevalidator();
+  const processing = new FakeProcessing();
+  processing.repo = repo;
   const scheduler = new FakeScheduler();
   const coordinator = new WatchRunCoordinator({
     repo,
     revalidator,
     acquisition,
+    processing,
     hostGate,
     scheduler,
     clock,
   });
   coordinator.start();
-  return { dir, repo, clock, hostGate, acquisition, revalidator, scheduler, coordinator };
+  return {
+    dir,
+    repo,
+    clock,
+    hostGate,
+    acquisition,
+    revalidator,
+    processing,
+    scheduler,
+    coordinator,
+  };
 }
 
 // 冲刷微任务 + 推进 FakeClock（覆盖 jitter ≤500ms 与 gate timer），让 run 编排落定。
@@ -307,8 +449,8 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       const rule = makeRule();
       expect(h.repo.insertRule(rule).ok).toBe(true);
       h.acquisition.results = [
-        { ok: false, health: 'unavailable', retryable: true, retryAfterSeconds: null },
-        { ok: false, health: 'unavailable', retryable: true, retryAfterSeconds: null },
+        failedResult('unavailable', true),
+        failedResult('unavailable', true),
       ];
       h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'catch-up' }]);
       await settle(h.clock);
@@ -334,7 +476,7 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       const rule = makeRule();
       expect(h.repo.insertRule(rule).ok).toBe(true);
       h.acquisition.results = [
-        { ok: false, health: 'unavailable', retryable: false, retryAfterSeconds: 120 }, // 429
+        failedResult('unavailable', false, 120), // 429
       ];
       h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
       await settle(h.clock);
@@ -350,9 +492,7 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       try {
         const rule2 = makeRule({ id: randomUUID() });
         expect(h2.repo.insertRule(rule2).ok).toBe(true);
-        h2.acquisition.results = [
-          { ok: false, health: 'unavailable', retryable: false, retryAfterSeconds: Number.NaN },
-        ];
+        h2.acquisition.results = [failedResult('unavailable', false, Number.NaN)];
         h2.coordinator.handleDue([{ ruleId: rule2.id, trigger: 'scheduled' }]);
         await settle(h2.clock);
         const offset2 = Date.parse(h2.repo.getRule(rule2.id)!.backoffUntil!) - NOW_MS;
@@ -384,8 +524,8 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
         const rule = makeRule({ consecutiveFailures: i });
         expect(h.repo.insertRule(rule).ok).toBe(true);
         h.acquisition.results = [
-          { ok: false, health: 'unavailable', retryable: true, retryAfterSeconds: null },
-          { ok: false, health: 'unavailable', retryable: true, retryAfterSeconds: null },
+          failedResult('unavailable', true),
+          failedResult('unavailable', true),
         ];
         h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
         await settle(h.clock);
@@ -410,8 +550,8 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       // 三次连续 unavailable（每次二次尝试）
       for (let i = 0; i < 3; i += 1) {
         h.acquisition.results = [
-          { ok: false, health: 'unavailable', retryable: true, retryAfterSeconds: null },
-          { ok: false, health: 'unavailable', retryable: true, retryAfterSeconds: null },
+          failedResult('unavailable', true),
+          failedResult('unavailable', true),
         ];
         h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
         await settle(h.clock);
@@ -453,9 +593,7 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       try {
         const rule = makeRule();
         expect(h.repo.insertRule(rule).ok).toBe(true);
-        h.acquisition.results = [
-          { ok: false, health: spec.code, retryable: true, retryAfterSeconds: null },
-        ];
+        h.acquisition.results = [failedResult(spec.code, true)];
         h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
         await settle(h.clock);
         expect(h.acquisition.calls.length).toBe(1); // 零重试
@@ -484,9 +622,7 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
     try {
       const rule = makeRule();
       expect(h.repo.insertRule(rule).ok).toBe(true);
-      h.acquisition.results = [
-        { ok: false, health: 'parse_changed', retryable: false, retryAfterSeconds: null },
-      ];
+      h.acquisition.results = [failedResult('parse_changed', false)];
       h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
       await settle(h.clock);
       const first = h.repo.getRule(rule.id)!;
@@ -501,9 +637,7 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
       ) as { state: string };
       expect(firstHealth.state).toBe('degraded');
       // 第 2 次连续 → 暂停
-      h.acquisition.results = [
-        { ok: false, health: 'parse_changed', retryable: false, retryAfterSeconds: null },
-      ];
+      h.acquisition.results = [failedResult('parse_changed', false)];
       h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
       await settle(h.clock);
       const second = h.repo.getRule(rule.id)!;
@@ -529,7 +663,15 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
     try {
       const rule = makeRule({ consecutiveFailures: 3, backoffUntil: '2026-08-28T06:00:00.000Z' });
       expect(h.repo.insertRule(rule).ok).toBe(true);
-      h.acquisition.results = [{ ok: true }];
+      h.acquisition.results = [
+        {
+          ok: true,
+          kind: 'projection',
+          projection: pageProjection(rule),
+          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          responseMetadata: null,
+        },
+      ];
       h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
       await settle(h.clock);
       const readRule = h.repo.getRule(rule.id)!;
@@ -594,6 +736,7 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
             new Map([[rule.id, { status: status as 'source-missing' }]]),
           ),
           acquisition: h.acquisition,
+          processing: h.processing,
           hostGate: h.hostGate,
           scheduler: h.scheduler,
           clock: h.clock,
@@ -641,17 +784,26 @@ describe('M4 运行编排（FIXED 1/4/6/7/8；§7 失败闭环）', () => {
     try {
       const rule = makeRule();
       expect(h.repo.insertRule(rule).ok).toBe(true);
-      h.acquisition.results = [{ ok: true }];
+      h.acquisition.results = [
+        {
+          ok: true,
+          kind: 'projection',
+          projection: pageProjection(rule),
+          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          responseMetadata: null,
+        },
+      ];
       // 第一次 revalidation ok；第二次 locator-changed 且暂停 source-changed（模拟真实 revalidator）
       let call = 0;
       h.coordinator = new WatchRunCoordinator({
         repo: h.repo,
         revalidator: pausingRevalidator(h.repo, () => {
           call += 1;
-          if (call === 1) return { status: 'ok', rowVersion: 1 };
+          if (call === 1) return okRevalidation();
           return { status: 'locator-changed' };
         }),
         acquisition: h.acquisition,
+        processing: h.processing,
         hostGate: h.hostGate,
         scheduler: h.scheduler,
         clock: h.clock,
@@ -744,9 +896,7 @@ describe('M4 dependency_unavailable 健康暂停（R4 / #S6-044）', () => {
     try {
       const rule = makeRule();
       expect(h.repo.insertRule(rule).ok).toBe(true);
-      h.acquisition.results = [
-        { ok: false, health: 'dependency_unavailable', retryable: false, retryAfterSeconds: null },
-      ];
+      h.acquisition.results = [failedResult('dependency_unavailable', false)];
       h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
       await settle(h.clock);
       expect(h.acquisition.calls.length).toBe(1); // 零重试
@@ -766,9 +916,7 @@ describe('M4 dependency_unavailable 健康暂停（R4 / #S6-044）', () => {
       // 已暂停规则重复失败（reservation 后在途 run 的规则被并发暂停）不得重复写暂停审计
       const rule2 = makeRule({ id: randomUUID(), feedUrl: 'https://dep2.example.com/rss.xml' });
       expect(h.repo.insertRule(rule2).ok).toBe(true);
-      h.acquisition.results = [
-        { ok: false, health: 'dependency_unavailable', retryable: false, retryAfterSeconds: null },
-      ];
+      h.acquisition.results = [failedResult('dependency_unavailable', false)];
       h.coordinator.handleDue([{ ruleId: rule2.id, trigger: 'scheduled' }]);
       const before = h.repo.getRule(rule2.id)!;
       const pauseRes = h.repo.updateRuleCoordination(
@@ -878,6 +1026,7 @@ describe('M5 生命周期（§4.4/FIXED 12：stop-admission→abort→drain→cl
         repo,
         revalidator: new FakeRevalidator(),
         acquisition,
+        processing: new FakeProcessing(),
         hostGate,
         scheduler,
         clock,

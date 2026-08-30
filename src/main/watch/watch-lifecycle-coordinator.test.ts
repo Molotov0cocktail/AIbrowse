@@ -599,7 +599,18 @@ describe('run revalidation 端口（§10.3 步骤 5 判定矩阵）', () => {
     repo.insertRule(rule);
     // 正常
     sources.set('src-1', projection({ rowVersion: 4 }));
-    expect(coordinator.revalidateRuleSource(rule.id)).toEqual({ status: 'ok', rowVersion: 4 });
+    expect(coordinator.revalidateRuleSource(rule.id)).toEqual({
+      status: 'ok',
+      rowVersion: 4,
+      sourceAfterAcquisition: {
+        sourceId: 'src-1',
+        rowVersion: 4,
+        enabled: true,
+        deletedAt: null,
+        scope: 'page',
+        canonicalKey: 'https://example.com/doc',
+      },
+    });
     expect(repo.getRule(rule.id)!.sourceRowVersion).toBe(4);
     // 禁用
     sources.set('src-1', projection({ rowVersion: 5, enabled: false, deletedAt: NOW }));
@@ -622,7 +633,18 @@ describe('run revalidation 端口（§10.3 步骤 5 判定矩阵）', () => {
     const rule = makeRule();
     repo.insertRule(rule);
     sources.set('src-1', projection({ rowVersion: 9 }));
-    expect(coordinator.revalidateRuleSource(rule.id)).toEqual({ status: 'ok', rowVersion: 9 });
+    expect(coordinator.revalidateRuleSource(rule.id)).toEqual({
+      status: 'ok',
+      rowVersion: 9,
+      sourceAfterAcquisition: {
+        sourceId: 'src-1',
+        rowVersion: 9,
+        enabled: true,
+        deletedAt: null,
+        scope: 'page',
+        canonicalKey: 'https://example.com/doc',
+      },
+    });
     expect(repo.getRule(rule.id)!.sourceRowVersion).toBe(9);
     expect(repo.getRule(rule.id)!.state).toBe('enabled');
   });

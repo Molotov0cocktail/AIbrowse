@@ -51,7 +51,7 @@ function projectionOrNull(result: SourceProjectionReadResult): SourceWatchProjec
 }
 
 export type WatchRevalidationResult =
-  | { status: 'ok'; rowVersion: number }
+  | { status: 'ok'; rowVersion: number; sourceAfterAcquisition: SourceWatchProjection }
   | { status: 'unavailable' }
   | { status: 'rule-missing' }
   | { status: 'rule-deleted' }
@@ -815,7 +815,11 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
             throw new Error(`revalidation 协调失败（rule=${rule.id}，${updated.code}）`);
           }
         }
-        return { status: 'ok' as const, rowVersion: current.rowVersion };
+        return {
+          status: 'ok' as const,
+          rowVersion: current.rowVersion,
+          sourceAfterAcquisition: current,
+        };
       });
     } catch (err) {
       this.markUnavailable('revalidation 事务失败');

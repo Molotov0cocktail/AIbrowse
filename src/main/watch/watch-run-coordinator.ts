@@ -20,8 +20,10 @@ import {
   type Clock,
   type TimerHandle,
   type WatchAcquisition,
+  type WatchAcquisitionResult,
   type WatchFailureCode,
   type WatchHealthSnapshot,
+  type WatchProcessingService,
   type WatchRule,
   type WatchRunOutcome,
   type WatchRunTrigger,
@@ -162,12 +164,9 @@ export function auditReasonForRunOutcome(outcome: WatchRunOutcome): WatchAuditRe
 }
 
 // ---------------------------------------------------------------------------
-// WatchAcquisitionPort（D6 接缝；D5 用确定性 fake port 注入）
+// WatchAcquisitionPort（D7：统一 acquisition DTO；Feed/Page 由
+// WatchAcquisitionService 路由，Coordinator 只传 hint 并消费结果）
 // ---------------------------------------------------------------------------
-
-export type WatchAcquisitionResult =
-  | { ok: true }
-  | { ok: false; health: WatchFailureCode; retryable: boolean; retryAfterSeconds: number | null };
 
 export interface WatchAcquisitionPort {
   run(input: {
@@ -176,6 +175,7 @@ export interface WatchAcquisitionPort {
     requestKey: string;
     scheduledFor: string | null;
     hostKey: string;
+    baselineHint: import('../../shared/types/watch').WatchBaselineHint;
     signal: AbortSignal;
     deadline: Date;
   }): Promise<WatchAcquisitionResult>;
@@ -200,6 +200,7 @@ export interface WatchRunCoordinatorOptions {
   repo: WatchRepository;
   revalidator: WatchRevalidatorPort;
   acquisition: WatchAcquisitionPort;
+  processing: WatchProcessingService;
   hostGate: HostRequestGate;
   scheduler: SchedulerPort;
   clock: Clock;
@@ -231,6 +232,7 @@ export class WatchRunCoordinator {
   private readonly repo: WatchRepository;
   private readonly revalidator: WatchRevalidatorPort;
   private readonly acquisition: WatchAcquisitionPort;
+  private readonly processing: WatchProcessingService;
   private readonly hostGate: HostRequestGate;
   private readonly scheduler: SchedulerPort;
   private readonly clock: Clock;
@@ -249,6 +251,7 @@ export class WatchRunCoordinator {
     this.repo = options.repo;
     this.revalidator = options.revalidator;
     this.acquisition = options.acquisition;
+    this.processing = options.processing;
     this.hostGate = options.hostGate;
     this.scheduler = options.scheduler;
     this.clock = options.clock;
@@ -567,6 +570,15 @@ export class WatchRunCoordinator {
         this.requeueIfEnabled(task.ruleId);
         return;
       }
+      // 第一次 revalidation 成功后、任何网络前：prepareAcquisition（§8.1）
+      const rulePrepared = this.repo.getRule(task.ruleId);
+      if (rulePrepared === null) return; // 规则已删除
+      const prepared = this.processing.prepareAcquisition({ rule: rulePrepared });
+      if (!prepared.ok) {
+        this.markUnavailable('prepareAcquisition 失败（store unavailable）');
+        return;
+      }
+      const baselineHint = prepared.baselineHint;
       // host gate（非登记）+ jitter + acquisition（≤1 次重试）
       const jitterMs = computeJitterMs({
         ruleId: task.ruleId,
@@ -578,7 +590,7 @@ export class WatchRunCoordinator {
         retryable: boolean;
         retryAfterSeconds: number | null;
       } | null = null;
-      let succeeded = false;
+      let acquired: WatchAcquisitionResult | null = null;
       let attempt = 0;
       while (!this.stopped) {
         attempt += 1;
@@ -610,6 +622,7 @@ export class WatchRunCoordinator {
             requestKey: task.requestKey,
             scheduledFor: task.scheduledFor,
             hostKey,
+            baselineHint,
             signal: controller.signal,
             deadline,
           }),
@@ -619,10 +632,11 @@ export class WatchRunCoordinator {
             health: 'unavailable',
             retryable: true,
             retryAfterSeconds: null,
+            disposition: 'network',
           }),
         );
         if (result.ok) {
-          succeeded = true;
+          acquired = result;
           break;
         }
         failure = {
@@ -652,17 +666,25 @@ export class WatchRunCoordinator {
         this.requeueIfEnabled(task.ruleId);
         return;
       }
-      if (succeeded) {
-        this.writeTerminal(
-          task,
-          { kind: 'unchanged' },
-          { state: 'healthy', acquisition: 'rss', code: null },
-          {
-            consecutiveFailures: 0,
-            backoffUntil: null,
-            healthPauseReason: null,
-          },
-        );
+      if (acquired !== null) {
+        // ProcessingService 统一编排结果事务（§8.1）：成功终态由 processing 单事务
+        // 写定；identity/baseline/event-conflict 为零写 conflict（不另写 Run audit）。
+        const ruleNow = this.repo.getRule(task.ruleId);
+        if (ruleNow === null) return;
+        const processed = this.processing.process({
+          rule: ruleNow,
+          runId: task.runId,
+          baselineHint,
+          acquisition: acquired,
+          sourceAfterAcquisition: reval2.sourceAfterAcquisition,
+        });
+        if (!processed.ok) {
+          logWarn(
+            'watch',
+            `结果处理 conflict（rule=${task.ruleId}，code=${processed.code}；零写，交协调/恢复）`,
+          );
+          // zero-write conflict：不写 Run 终态、不计数失败
+        }
       } else {
         const mapped = this.failureTerminal(task.ruleId, failure!);
         this.writeTerminal(task, mapped.outcome, mapped.health, {

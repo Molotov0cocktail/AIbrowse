@@ -54,11 +54,15 @@ import { createSystemClock } from '../shared/watch/clock';
 // DECISIONS 12）：同一 HostRequestGate 下构造 D3 public stack + Session
 // Workspace/Reader + 主进程内存 grant store + PageAcquisitionRouter；失败
 // 全部 fail-closed，D6 零 DB 写入；smoke bundle 供 8.23 默认矩阵驱动。
+// D7：统一 WatchAcquisitionService（Feed/Page 路由）与 WatchProcessingServiceImpl
+//（Diff/Condition/Event 结果事务编排）。
 import { createPublicWatchHttpStack } from './watch/public-watch-http-client';
 import { WatchTaskTabWorkspace } from './watch/watch-task-tab-workspace';
 import { BrowserWatchReader } from './watch/browser-watch-reader';
 import { SessionGrantStore } from './watch/session-grant-store';
-import { PageAcquisitionRouter } from './watch/watch-acquisition-service';
+import { FeedAcquisitionService } from './watch/feed-acquisition-service';
+import { PageAcquisitionRouter, WatchAcquisitionService } from './watch/watch-acquisition-service';
+import { WatchProcessingServiceImpl } from './watch/watch-processing-service';
 import type { WatchPageSmokeBundle } from './smoke-watch-page-session';
 import { createWatchPageSmokeBundle } from './smoke-watch-page-session';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from './ui-navigation-policy';
@@ -1369,18 +1373,18 @@ function createBrowserWindow(): void {
         const watchClock = createSystemClock();
         const hostGate = new HostRequestGate({ clock: watchClock });
         watchHostGate = hostGate;
-        const acquisitionPort: WatchAcquisitionPort = {
-          run: async () => ({
-            ok: false,
-            health: 'dependency_unavailable',
-            retryable: false,
-            retryAfterSeconds: null,
-          }),
-        };
-        // D6（FIXED DECISIONS 12）：同一 HostRequestGate 下装配 D3 public stack
-        //（target-gated，robots 生命周期窄端口）与 Session task-tab 采集依赖。
-        // 失败全 fail-closed；D6 零 DB 写入、零 Diff/Event。
+        // D7：统一 acquisition 端口（Feed/Page 路由）与 processing service。
+        // browserController 可用时装配真实网络/Session 能力；否则 fail-closed stub
+        //（dependency_unavailable，零网络零能力）。
+        const processingService = new WatchProcessingServiceImpl({
+          repo: watchOutcome.repo,
+          clock: watchClock,
+        });
+        let acquisitionPort: WatchAcquisitionPort;
         if (browserController !== null) {
+          // D6（FIXED DECISIONS 12）：同一 HostRequestGate 下装配 D3 public stack
+          //（target-gated，robots 生命周期窄端口）与 Session task-tab 采集依赖。
+          // 失败全 fail-closed；D6 零 DB 写入、零 Diff/Event。
           const publicStack = createPublicWatchHttpStack({ hostGate });
           watchPublicStackRobots = publicStack.robots;
           watchWorkspace = new WatchTaskTabWorkspace({
@@ -1395,16 +1399,40 @@ function createBrowserWindow(): void {
           });
           watchGrantStore = new SessionGrantStore({});
           const reader = new BrowserWatchReader({ browser: browserController, clock: watchClock });
-          watchPageRouter = new PageAcquisitionRouter({
+          const pageRouter = new PageAcquisitionRouter({
             publicTarget: publicStack.target,
             workspace: watchWorkspace,
             reader,
             hostGate,
             clock: watchClock,
           });
+          watchPageRouter = pageRouter;
+          const feedService = new FeedAcquisitionService({
+            target: publicStack.target,
+          });
+          const unified = new WatchAcquisitionService({ feed: feedService, page: pageRouter });
+          acquisitionPort = {
+            run: async (input) =>
+              unified.run({
+                rule: input.rule,
+                baselineHint: input.baselineHint,
+                signal: input.signal,
+                deadline: input.deadline,
+              }),
+          };
           if (SMOKE_MODE && !WATCH_GATE_MODE) {
             smokeWatchPageSession.current = createWatchPageSmokeBundle(browserController);
           }
+        } else {
+          acquisitionPort = {
+            run: async () => ({
+              ok: false,
+              health: 'dependency_unavailable',
+              retryable: false,
+              retryAfterSeconds: null,
+              disposition: 'dependency',
+            }),
+          };
         }
         const scheduler = new WatchScheduler({
           clock: watchClock,
@@ -1417,6 +1445,7 @@ function createBrowserWindow(): void {
           repo: watchOutcome.repo,
           revalidator: watchCoordinator!,
           acquisition: acquisitionPort,
+          processing: processingService,
           hostGate,
           scheduler,
           clock: watchClock,
