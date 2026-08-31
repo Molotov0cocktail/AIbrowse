@@ -170,6 +170,21 @@ describe('D9 WatchIpcAdapter fail-closed dispatch/audit', () => {
     expect(onStateChanged).toHaveBeenCalledOnce();
   });
 
+  it('状态推送回调抛错不反转已提交成功结果', async () => {
+    const setRuleMuted = vi.fn().mockReturnValue({ ok: true as const });
+    const repository = { setRuleMuted } as unknown as WatchRepository;
+    const ipc = adapter({
+      repository,
+      onStateChanged: () => {
+        throw new Error('renderer unavailable');
+      },
+    });
+    await expect(
+      ipc.invoke('watch:setMuted', { ruleId: RULE_ID, expectedVersion: 1, muted: true }),
+    ).resolves.toEqual({ ok: true, value: { updated: true } });
+    expect(setRuleMuted).toHaveBeenCalledOnce();
+  });
+
   it('输入和输出均 fail-closed，effectful read 只写结构化审计元数据', async () => {
     const audit = vi.fn();
     const ipc = adapter({ audit });

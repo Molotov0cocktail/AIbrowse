@@ -198,4 +198,55 @@ describe('D9 Session 预览 origin 竞态', () => {
       }),
     ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
   });
+
+  it('表格候选读取期间导航到其他 origin 时不消费敌手 channels', async () => {
+    const preview = new WatchPreviewService({
+      store: new WatchPreviewStore(),
+      source: () => source,
+      acquisition: () => null,
+      discoveryTarget: () => null,
+      browser: () =>
+        ({
+          getActiveTab: async () => ({ id: 'tab-1', url: source.projection.canonicalKey }),
+        }) as unknown as BrowserController,
+      reader: () =>
+        ({
+          read: async () => ({
+            ok: true as const,
+            channels: {
+              mainText: '_',
+              headings: [],
+              links: [],
+              tables: [
+                {
+                  caption: null,
+                  headers: ['名称', '价格'],
+                  rows: [['敌手商品', '1']],
+                },
+              ],
+            },
+            meta: {
+              url: 'https://evil.example/redirected',
+              capturedAt: '2026-08-31T00:00:00.000Z',
+              documentId: 'doc-evil-table',
+            },
+          }),
+        }) as unknown as BrowserWatchReader,
+      grants: () => null,
+    });
+    await expect(
+      preview.previewPage({
+        sourceId,
+        accessMode: 'session',
+        regions: [
+          {
+            kind: 'table',
+            label: '表格候选',
+            headerFingerprint: '0'.repeat(64),
+            occurrence: 0,
+          },
+        ],
+      }),
+    ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
+  });
 });

@@ -108,8 +108,13 @@ export class WatchIpcAdapter {
         `watch-ipc kind=${EFFECTFUL_READ_WATCH_CHANNELS.has(channel as WatchIpcChannel) ? 'effectful-read' : 'action'} channel=${channel} result=${result.ok ? 'ok' : result.errorCode} durationMs=${Math.max(0, Date.now() - started)}`,
       );
     }
-    if (result.ok && STATUS_CHANGING_WATCH_CHANNELS.has(channel as WatchIpcChannel))
-      this.options.onStateChanged?.();
+    if (result.ok && STATUS_CHANGING_WATCH_CHANNELS.has(channel as WatchIpcChannel)) {
+      try {
+        this.options.onStateChanged?.();
+      } catch {
+        // State push is a best-effort observer and must not reverse an already committed action.
+      }
+    }
     return result;
   }
 

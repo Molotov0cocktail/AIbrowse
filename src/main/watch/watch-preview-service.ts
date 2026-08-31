@@ -124,10 +124,9 @@ export class WatchPreviewService {
         errorCode: read.code === 'timeout' ? 'unavailable' : 'security-rejected',
       };
     const finalOrigin = urlOrigin(read.meta.url);
-    const sourceOrigin = urlOrigin(source.projection.canonicalKey);
     // Re-check after the asynchronous read: the active tab may have navigated while the
     // main process was collecting channels.
-    if (finalOrigin === null || sourceOrigin === null || finalOrigin !== sourceOrigin)
+    if (finalOrigin === null || !hasSameHttpOrigin(source.projection.canonicalKey, read.meta.url))
       return { ok: false, errorCode: 'security-rejected' };
     const regionPreview = previewPageRegions(read.channels, input.regions);
     if (!regionPreview.ok)
@@ -238,6 +237,8 @@ export class WatchPreviewService {
         deadline: new Date(Date.now() + 30_000),
       });
       if (!read.ok) return { ok: false, errorCode: 'security-rejected' };
+      if (!hasSameHttpOrigin(source.canonicalKey, read.meta.url))
+        return { ok: false, errorCode: 'security-rejected' };
       channels = read.channels;
     }
     // Table-only documents legitimately have no mainText because table cell text is kept in the
@@ -447,6 +448,11 @@ export class WatchPreviewService {
       },
     };
   }
+}
+
+function hasSameHttpOrigin(sourceUrl: string, finalUrl: string): boolean {
+  const sourceOrigin = urlOrigin(sourceUrl);
+  return sourceOrigin !== null && urlOrigin(finalUrl) === sourceOrigin;
 }
 
 function safeDisplay(raw: string): string {

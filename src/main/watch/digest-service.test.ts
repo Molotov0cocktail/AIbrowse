@@ -211,6 +211,7 @@ function service(
   provider: FakeProvider | null = null,
   repository = repo,
   scheduleControl?: DigestScheduleControlPort,
+  windowsNotificationsEnabled = false,
 ): DigestService {
   return new DigestService({
     repository,
@@ -227,6 +228,7 @@ function service(
     },
     provider: { resolve: async () => (provider === null ? null : { provider, model: 'fake' }) },
     scheduleControl: scheduleControl ?? noopScheduleControl,
+    windowsNotificationsEnabled,
   });
 }
 
@@ -1148,7 +1150,7 @@ describe('DigestService frozen cycle', () => {
     expect(repo.getDigestRun(runId)?.state).toBe('completed');
   });
 
-  it('完整 Digest+refs+cursor 写集 available==required 成功，少 1 byte 原子阻塞', () => {
+  it('完整 Digest 写集按通知资格精确执行预算 retry，少 1 byte 原子阻塞', async () => {
     const seed = (maxDbBytes?: number) => {
       const db = openDb(join(root, `${randomUUID()}.db`));
       runWatchMigrations(db);
@@ -1240,7 +1242,61 @@ describe('DigestService frozen cycle', () => {
     expect(
       windows.db.prepare('SELECT channel FROM notification_outbox ORDER BY channel ASC').all(),
     ).toEqual([{ channel: 'in-app' }, { channel: 'windows' }]);
+    const windowsRequired = windows.repo.estimateLogicalBytes() - windows.beforeBytes;
+    expect(windowsRequired).toBeGreaterThan(required);
     windows.db.close();
+
+    const measureRetryRequired = (windowsNotificationsEnabled: boolean): number => {
+      const probe = seed();
+      expect(probe.repo.markDigestRunBudgetExceeded(probe.run.id, 2, 1, due)).toEqual({
+        ok: true,
+      });
+      const blockedBytes = probe.repo.estimateLogicalBytes();
+      probe.repo = new WatchRepository(probe.db, { maxDbBytes: blockedBytes });
+      expect(
+        probe.repo.revalidateDigestRunBudget(probe.run.id, due, windowsNotificationsEnabled),
+      ).toEqual({ ok: true, state: 'budget_exceeded' });
+      const requiredBytes = probe.repo.getDigestRun(probe.run.id)?.blockedRequiredBytes;
+      expect(requiredBytes).not.toBeNull();
+      probe.db.close();
+      if (requiredBytes === null || requiredBytes === undefined)
+        throw new Error('retry budget measurement missing');
+      return requiredBytes;
+    };
+    const inAppRetryRequired = measureRetryRequired(false);
+    const windowsRetryRequired = measureRetryRequired(true);
+    expect(windowsRetryRequired).toBeGreaterThan(inAppRetryRequired);
+
+    const retryInApp = seed();
+    expect(retryInApp.repo.markDigestRunBudgetExceeded(retryInApp.run.id, 2, 1, due)).toEqual({
+      ok: true,
+    });
+    retryInApp.repo = new WatchRepository(retryInApp.db, {
+      maxDbBytes: retryInApp.repo.estimateLogicalBytes() + inAppRetryRequired,
+    });
+    await expect(
+      service(null, retryInApp.repo, undefined, false).retryBudget(retryInApp.run.id),
+    ).resolves.toEqual({ ok: true });
+    expect(
+      retryInApp.db.prepare('SELECT channel FROM notification_outbox ORDER BY channel ASC').all(),
+    ).toEqual([{ channel: 'in-app' }]);
+    retryInApp.db.close();
+
+    const retryWindows = seed();
+    expect(retryWindows.repo.markDigestRunBudgetExceeded(retryWindows.run.id, 2, 1, due)).toEqual({
+      ok: true,
+    });
+    retryWindows.repo = new WatchRepository(retryWindows.db, {
+      maxDbBytes: retryWindows.repo.estimateLogicalBytes() + inAppRetryRequired,
+    });
+    await expect(
+      service(null, retryWindows.repo, undefined, true).retryBudget(retryWindows.run.id),
+    ).resolves.toEqual({ ok: false, code: 'db-budget-exceeded' });
+    expect(retryWindows.repo.getDigestRun(retryWindows.run.id)?.state).toBe('budget_exceeded');
+    expect(retryWindows.db.prepare('SELECT COUNT(*) AS n FROM notification_outbox').get()).toEqual({
+      n: 0,
+    });
+    retryWindows.db.close();
 
     const rollback = seed();
     rollback.db.exec(
