@@ -60,18 +60,34 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
   const [previewHandle, setPreviewHandle] = useState<string | null>(null);
   const [sessionGrantHandle, setSessionGrantHandle] = useState<string | null>(null);
   const [intervalMinutes, setIntervalMinutes] = useState<15 | 60 | 360 | 1440>(60);
-  const [regionKind, setRegionKind] = useState<'main-text' | 'headings' | 'links'>('main-text');
+  const [scheduleKind, setScheduleKind] = useState<'interval' | 'daily'>('interval');
+  const [dailyTime, setDailyTime] = useState('09:00');
+  const [timeZone, setTimeZone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const [regionKind, setRegionKind] = useState<'main-text' | 'headings' | 'links' | 'table'>(
+    'main-text',
+  );
+  const [tableFingerprint, setTableFingerprint] = useState('');
+  const [tableOccurrence, setTableOccurrence] = useState(0);
   const [conditionEnabled, setConditionEnabled] = useState(false);
+  const [conditionField, setConditionField] = useState('');
+  const [previewFields, setPreviewFields] = useState<string[]>([]);
   const [conditionOperand, setConditionOperand] = useState('');
   const [notificationLevel, setNotificationLevel] = useState<'normal' | 'important'>('normal');
   const [feedCandidates, setFeedCandidates] = useState<
     Array<{ discoveryHandle: string; candidateId: string; targetDisplay: string }>
   >([]);
   const [rebaselineRule, setRebaselineRule] = useState<RuleSummaryDto | null>(null);
+  const [settingsRule, setSettingsRule] = useState<RuleSummaryDto | null>(null);
   const [selectedEventIds, setSelectedEventIds] = useState<string[]>([]);
   const [readState, setReadState] = useState<'all' | 'read' | 'unread'>('all');
+  const [eventKindFilter, setEventKindFilter] = useState<string | null>(null);
+  const [importanceFilter, setImportanceFilter] = useState<string | null>(null);
+  const [eventSourceFilter, setEventSourceFilter] = useState('');
   const [digestSchedules, setDigestSchedules] = useState<Array<Record<string, unknown>>>([]);
   const [digestDetail, setDigestDetail] = useState<Record<string, unknown> | null>(null);
+  const [digestPreview, setDigestPreview] = useState<Record<string, unknown> | null>(null);
+  const [digestPreviewHandle, setDigestPreviewHandle] = useState<string | null>(null);
+  const [digestAiEnabled, setDigestAiEnabled] = useState(false);
   const wizardLabels = [
     '类型 / Region',
     '访问方式',
@@ -96,9 +112,9 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
 
   const eventFilter = {
     ruleId: null,
-    sourceId: null,
-    eventKind: null,
-    importance: null,
+    sourceId: eventSourceFilter === '' ? null : eventSourceFilter,
+    eventKind: eventKindFilter,
+    importance: importanceFilter,
     readState,
     fromInclusive: null,
     toExclusive: null,
@@ -149,7 +165,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
   useEffect(() => {
     if (state.view === 'events') loadEvents();
     else if (state.view === 'digests') loadDigests();
-  }, [state.view, readState]);
+  }, [state.view, readState, eventKindFilter, importanceFilter, eventSourceFilter]);
   useEffect(() => {
     if (focusSubject === null) return;
     if (focusSubject.type === 'event') {
@@ -201,6 +217,11 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
       setSessionGrantHandle(handles.sessionGrantHandle);
     }
     setPreviewHandle(handles.previewHandle);
+    if (isObject(value) && Array.isArray(value['fields'])) {
+      const fields = value['fields'].filter((field): field is string => typeof field === 'string');
+      setPreviewFields(fields);
+      if (!fields.includes(conditionField)) setConditionField(fields[0] ?? '');
+    }
     setMessage('Baseline 预览已完成，可最终确认');
     setWizardStep(6);
   };
@@ -218,7 +239,16 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                 ? [{ kind: 'headings', label: '标题', levels: [1, 2, 3] }]
                 : regionKind === 'links'
                   ? [{ kind: 'links', label: '链接', sameOriginOnly: true }]
-                  : [{ kind: 'main-text', label: '正文' }],
+                  : regionKind === 'table'
+                    ? [
+                        {
+                          kind: 'table',
+                          label: '表格',
+                          headerFingerprint: tableFingerprint,
+                          occurrence: tableOccurrence,
+                        },
+                      ]
+                    : [{ kind: 'main-text', label: '正文' }],
           });
     if (!result.ok) {
       setMessage(`预览失败：${ERROR_TEXT[result.errorCode]}`);
@@ -258,14 +288,17 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
       return;
     }
     const settings = {
-      schedule: { kind: 'interval', intervalMinutes },
+      schedule:
+        scheduleKind === 'interval'
+          ? { kind: 'interval' as const, intervalMinutes }
+          : { kind: 'daily' as const, localTime: dailyTime, timeZone },
       condition: conditionEnabled
         ? {
             version: 1,
             combine: 'all',
             predicates: [
               {
-                fieldKey: 'content',
+                fieldKey: conditionField,
                 operator: 'contains',
                 operand: conditionOperand,
                 caseSensitive: false,
@@ -305,6 +338,30 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     setRebaselineRule(null);
     setWizardOpen(false);
     setWizardStep(0);
+    reload();
+  };
+
+  const saveSettings = async (): Promise<void> => {
+    if (settingsRule === null) return;
+    const result = await window.aibrowse.watch.updateRule({
+      mode: 'settings',
+      ruleId: settingsRule.id,
+      expectedVersion: settingsRule.version,
+      schedule:
+        scheduleKind === 'interval'
+          ? { kind: 'interval', intervalMinutes }
+          : { kind: 'daily', localTime: dailyTime, timeZone },
+      condition: settingsRule.condition,
+      notificationLevel,
+      showDetails,
+    });
+    if (!result.ok) {
+      setMessage(`保存失败：${ERROR_TEXT[result.errorCode]}`);
+      return;
+    }
+    setSettingsRule(null);
+    setWizardOpen(false);
+    setMessage('规则设置已保存');
     reload();
   };
 
@@ -410,20 +467,21 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  void window.aibrowse.watch
-                    .updateRule({
-                      mode: 'settings',
-                      ruleId: rule.id,
-                      expectedVersion: rule.version,
-                      schedule: rule.schedule,
-                      condition: rule.condition,
-                      notificationLevel:
-                        rule.notificationLevel === 'normal' ? 'important' : 'normal',
-                      showDetails: !rule.showDetails,
-                    })
-                    .then(reload)
-                }
+                onClick={() => {
+                  setSettingsRule(rule);
+                  setRebaselineRule(null);
+                  setNotificationLevel(rule.notificationLevel);
+                  setShowDetails(rule.showDetails);
+                  setScheduleKind(rule.schedule.kind);
+                  if (rule.schedule.kind === 'interval')
+                    setIntervalMinutes(rule.schedule.intervalMinutes);
+                  else {
+                    setDailyTime(rule.schedule.localTime);
+                    setTimeZone(rule.schedule.timeZone);
+                  }
+                  setWizardStep(2);
+                  setWizardOpen(true);
+                }}
               >
                 编辑通知设置
               </button>
@@ -434,9 +492,13 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                   setSourceId(rule.sourceId);
                   setRuleKind(rule.kind);
                   setAccessMode(rule.accessMode);
-                  setIntervalMinutes(
-                    rule.schedule.kind === 'interval' ? rule.schedule.intervalMinutes : 1440,
-                  );
+                  setScheduleKind(rule.schedule.kind);
+                  if (rule.schedule.kind === 'interval')
+                    setIntervalMinutes(rule.schedule.intervalMinutes);
+                  else {
+                    setDailyTime(rule.schedule.localTime);
+                    setTimeZone(rule.schedule.timeZone);
+                  }
                   setWizardStep(0);
                   setWizardOpen(true);
                 }}
@@ -465,6 +527,38 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
           <option value="read">已读</option>
         </select>
       </label>
+      <label>
+        信源 ID
+        <input
+          value={eventSourceFilter}
+          onChange={(event) => setEventSourceFilter(event.target.value)}
+        />
+      </label>
+      <label>
+        事件类型
+        <select
+          value={eventKindFilter ?? ''}
+          onChange={(event) => setEventKindFilter(event.target.value || null)}
+        >
+          <option value="">全部</option>
+          <option value="changed">changed</option>
+          <option value="added">added</option>
+          <option value="removed">removed</option>
+          <option value="reversal">reversal</option>
+          <option value="mixed">mixed</option>
+        </select>
+      </label>
+      <label>
+        重要性
+        <select
+          value={importanceFilter ?? ''}
+          onChange={(event) => setImportanceFilter(event.target.value || null)}
+        >
+          <option value="">全部</option>
+          <option value="normal">普通</option>
+          <option value="important">重要</option>
+        </select>
+      </label>
       <button
         type="button"
         disabled={selectedEventIds.length === 0}
@@ -476,6 +570,41 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
       >
         批量标为已读
       </button>
+      <button
+        type="button"
+        disabled={selectedEventIds.length === 0}
+        onClick={() =>
+          void window.aibrowse.watch
+            .setEventsRead({ eventIds: selectedEventIds, read: false })
+            .then(() => loadEvents())
+        }
+      >
+        批量标为未读
+      </button>
+      <label>
+        摘要信源 ID
+        <input value={sourceId} onChange={(event) => setSourceId(event.target.value)} />
+      </label>
+      <label>
+        每日时间
+        <input
+          type="time"
+          value={dailyTime}
+          onChange={(event) => setDailyTime(event.target.value)}
+        />
+      </label>
+      <label>
+        时区
+        <input value={timeZone} onChange={(event) => setTimeZone(event.target.value)} />
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={digestAiEnabled}
+          onChange={(event) => setDigestAiEnabled(event.target.checked)}
+        />
+        启用可选 AI 解释
+      </label>
       <button
         type="button"
         onClick={() => void window.aibrowse.watch.exportEventsCsv({ filter: eventFilter })}
@@ -569,27 +698,61 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                 setMessage(result.ok ? '摘要预览不可用' : ERROR_TEXT[result.errorCode]);
                 return;
               }
-              void window.aibrowse.watch
-                .saveDigestSchedule({
-                  action: 'create',
-                  previewHandle: result.value['previewHandle'],
-                  localTime: '09:00',
-                  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                  aiEnabled: false,
-                  confirmed: true,
-                })
-                .then(loadDigests);
+              setDigestPreviewHandle(result.value['previewHandle']);
+              setDigestPreview(isObject(result.value['facts']) ? result.value['facts'] : null);
+              setMessage('摘要事实预览已生成，请确认后保存计划');
             });
         }}
       >
-        创建每日摘要计划
+        生成摘要事实预览
       </button>
+      {digestPreview !== null && (
+        <section>
+          <h4>待确认摘要事实</h4>
+          <pre>{JSON.stringify(digestPreview, null, 2)}</pre>
+          <button
+            type="button"
+            disabled={digestPreviewHandle === null}
+            onClick={() =>
+              void window.aibrowse.watch
+                .saveDigestSchedule({
+                  action: 'create',
+                  previewHandle: digestPreviewHandle,
+                  localTime: dailyTime,
+                  timeZone,
+                  aiEnabled: digestAiEnabled,
+                  confirmed: true,
+                })
+                .then(() => {
+                  setDigestPreview(null);
+                  setDigestPreviewHandle(null);
+                  loadDigests();
+                })
+            }
+          >
+            确认创建每日摘要计划
+          </button>
+        </section>
+      )}
       {digestSchedules.map((schedule) => (
         <article key={String(schedule['id'])}>
           <span>
             计划 {String(schedule['localTime'])} · {String(schedule['state'])} · AI：
             {schedule['aiEnabled'] ? '开' : '关'}
           </span>
+          {schedule['runState'] === 'budget_exceeded' &&
+            typeof schedule['blockedRunId'] === 'string' && (
+              <button
+                type="button"
+                onClick={() =>
+                  void window.aibrowse.watch
+                    .saveDigestSchedule({ action: 'retry-budget', runId: schedule['blockedRunId'] })
+                    .then(loadDigests)
+                }
+              >
+                重试预算阻塞任务
+              </button>
+            )}
           <button
             type="button"
             onClick={() =>
@@ -768,8 +931,30 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                     <option value="main-text">正文</option>
                     <option value="headings">标题</option>
                     <option value="links">同源链接</option>
+                    <option value="table">表格（稳定表头指纹）</option>
                   </select>
                 </label>
+              )}
+              {ruleKind === 'page' && regionKind === 'table' && (
+                <>
+                  <label>
+                    表头 SHA-256 指纹
+                    <input
+                      value={tableFingerprint}
+                      onChange={(event) => setTableFingerprint(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    同指纹表格序号
+                    <input
+                      type="number"
+                      min={0}
+                      max={1000}
+                      value={tableOccurrence}
+                      onChange={(event) => setTableOccurrence(Number(event.target.value))}
+                    />
+                  </label>
+                </>
               )}
             </>
           )}
@@ -787,21 +972,50 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
           )}
           {wizardStep === 1 && <p>公开模式不携带 Cookie；Session 模式需要逐规则授权。</p>}
           {wizardStep === 2 && (
-            <label>
-              检查间隔
-              <select
-                value={intervalMinutes}
-                onChange={(event) =>
-                  setIntervalMinutes(Number(event.target.value) as typeof intervalMinutes)
-                }
-              >
-                <option value={15}>15 分钟</option>
-                <option value={60}>1 小时</option>
-                <option value={360}>6 小时</option>
-                <option value={1440}>24 小时</option>
-              </select>
+            <>
+              <label>
+                计划类型
+                <select
+                  value={scheduleKind}
+                  onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}
+                >
+                  <option value="interval">固定间隔</option>
+                  <option value="daily">每日时刻</option>
+                </select>
+              </label>
+              {scheduleKind === 'interval' ? (
+                <label>
+                  检查间隔
+                  <select
+                    value={intervalMinutes}
+                    onChange={(event) =>
+                      setIntervalMinutes(Number(event.target.value) as typeof intervalMinutes)
+                    }
+                  >
+                    <option value={15}>15 分钟</option>
+                    <option value={60}>1 小时</option>
+                    <option value={360}>6 小时</option>
+                    <option value={1440}>24 小时</option>
+                  </select>
+                </label>
+              ) : (
+                <>
+                  <label>
+                    每日时间
+                    <input
+                      type="time"
+                      value={dailyTime}
+                      onChange={(event) => setDailyTime(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    IANA 时区
+                    <input value={timeZone} onChange={(event) => setTimeZone(event.target.value)} />
+                  </label>
+                </>
+              )}
               <span>应用退出后停止，不支持 cron。</span>
-            </label>
+            </>
           )}
           {wizardStep === 3 && (
             <>
@@ -814,13 +1028,32 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                 仅在正文包含指定文本时命中
               </label>
               {conditionEnabled && (
-                <label>
-                  匹配文本
-                  <input
-                    value={conditionOperand}
-                    onChange={(event) => setConditionOperand(event.target.value)}
-                  />
-                </label>
+                <>
+                  <label>
+                    预览字段
+                    <select
+                      value={conditionField}
+                      onChange={(event) => setConditionField(event.target.value)}
+                      disabled={previewFields.length === 0}
+                    >
+                      {previewFields.map((field) => (
+                        <option key={field} value={field}>
+                          {field}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    匹配文本
+                    <input
+                      value={conditionOperand}
+                      onChange={(event) => setConditionOperand(event.target.value)}
+                    />
+                  </label>
+                  {previewFields.length === 0 && (
+                    <p>完成 Baseline 预览后才能从闭合字段目录选择条件字段。</p>
+                  )}
+                </>
               )}
               <p>Event 命中由确定性程序判断，不使用 AI 条件。</p>
             </>
@@ -898,7 +1131,11 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
             >
               上一步
             </button>
-            {wizardStep < 5 ? (
+            {settingsRule !== null && wizardStep >= 4 ? (
+              <button type="button" onClick={() => void saveSettings()}>
+                保存规则设置
+              </button>
+            ) : wizardStep < 5 ? (
               <button type="button" onClick={() => setWizardStep((step) => step + 1)}>
                 下一步
               </button>
@@ -914,7 +1151,11 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                 采集 Baseline 预览
               </button>
             ) : (
-              <button type="button" onClick={() => void confirmCreate()}>
+              <button
+                type="button"
+                disabled={conditionEnabled && conditionField === ''}
+                onClick={() => void confirmCreate()}
+              >
                 {rebaselineRule === null ? '确认创建' : '确认重建'}
               </button>
             )}

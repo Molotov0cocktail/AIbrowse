@@ -3693,6 +3693,9 @@ export class WatchRepository {
             artifactId: randomUUID(),
             createdAt: blockedAt,
             transitionFromBlocked: true,
+            // Retry validation is deliberately conservative because the repository does not
+            // own the runtime Windows notification capability flag.
+            windowsNotificationsEnabled: true,
             savepoint: 'digest_retry_budget_probe',
           });
           if (measured.requiredBytes <= measured.availableBytes) {
@@ -3777,6 +3780,7 @@ export class WatchRepository {
     artifactId: string;
     createdAt: string;
     transitionFromBlocked: boolean;
+    windowsNotificationsEnabled: boolean;
     savepoint: 'digest_retry_budget_probe' | 'digest_batch_budget_probe';
   }): { requiredBytes: number; availableBytes: number } {
     const canonical = canonicalizeDigestFacts(input.candidate.facts);
@@ -3818,6 +3822,12 @@ export class WatchRepository {
       for (const event of input.candidate.facts.events) {
         this.handle.prepare(SQL_INSERT_DIGEST_REF).run(input.artifactId, event.eventId, 'active');
       }
+      this.insertDigestOutbox(
+        input.artifactId,
+        input.candidate.facts.eventCount,
+        input.createdAt,
+        input.windowsNotificationsEnabled,
+      );
       const runChanged = this.handle
         .prepare(SQL_UPDATE_DIGEST_RUN_CURSOR)
         .run(
@@ -4098,6 +4108,7 @@ export class WatchRepository {
     facts: DigestFacts;
     createdAt: string;
     aiEnabled: boolean;
+    windowsNotificationsEnabled?: boolean;
   }): CommitDigestBatchResult {
     this.ensureOpen();
     const canonical = canonicalizeDigestFacts(input.facts);
@@ -4139,6 +4150,7 @@ export class WatchRepository {
             artifactId: input.artifactId,
             createdAt: auditNow,
             transitionFromBlocked: false,
+            windowsNotificationsEnabled: input.windowsNotificationsEnabled === true,
             savepoint: 'digest_batch_budget_probe',
           });
           if (measured.requiredBytes > measured.availableBytes) {
@@ -4188,6 +4200,12 @@ export class WatchRepository {
               .prepare(SQL_INSERT_DIGEST_REF)
               .run(input.artifactId, event.eventId, 'active');
           }
+          this.insertDigestOutbox(
+            input.artifactId,
+            candidate.facts.eventCount,
+            input.createdAt,
+            input.windowsNotificationsEnabled === true,
+          );
           const runChanged = this.handle
             .prepare(SQL_UPDATE_DIGEST_RUN_CURSOR)
             .run(
@@ -4215,6 +4233,36 @@ export class WatchRepository {
             : 'store-unavailable',
       };
     }
+  }
+
+  private insertDigestOutbox(
+    artifactId: string,
+    itemCount: number,
+    createdAt: string,
+    windowsNotificationsEnabled: boolean,
+  ): void {
+    const privacyJson = JSON.stringify({
+      eventKind: 'digest',
+      importance: 'normal',
+      itemCount,
+    });
+    const channels: readonly ('in-app' | 'windows')[] = windowsNotificationsEnabled
+      ? ['in-app', 'windows']
+      : ['in-app'];
+    for (const channel of channels)
+      this.handle
+        .prepare(SQL_INSERT_OUTBOX)
+        .run(
+          randomUUID(),
+          null,
+          'digest',
+          artifactId,
+          channel,
+          `${channel}|digest|${artifactId}|1`,
+          privacyJson,
+          createdAt,
+          createdAt,
+        );
   }
 
   completeDigestRun(run: StoredDigestRun, nowIso: string): WatchResult {

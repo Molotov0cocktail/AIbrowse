@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   WATCH_PREVIEW_TTL_MS,
+  MAX_WATCH_PREVIEWS,
   WatchPreviewStore,
   type WatchPreviewRecord,
 } from './watch-preview-store';
@@ -22,26 +23,42 @@ describe('D9 WatchPreviewStore', () => {
   it('签发 43 字符随机句柄，并且仅可消费一次', () => {
     const store = new WatchPreviewStore(() => 10);
     const handle = store.issue(record);
+    expect(handle).not.toBeNull();
     expect(handle).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(store.consume(handle)).toEqual(record);
-    expect(store.consume(handle)).toBeNull();
+    expect(store.consume(handle!)).toEqual(record);
+    expect(store.consume(handle!)).toBeNull();
   });
 
   it('在精确 TTL 边界过期且失败也消费句柄', () => {
     let now = 0;
     const store = new WatchPreviewStore(() => now);
     const handle = store.issue(record);
+    expect(handle).not.toBeNull();
     now = WATCH_PREVIEW_TTL_MS;
-    expect(store.consume(handle)).toBeNull();
+    expect(store.consume(handle!)).toBeNull();
     expect(store.size).toBe(0);
   });
 
   it('dispose 幂等清空内存态记录', () => {
     const store = new WatchPreviewStore();
     const handle = store.issue(record);
+    expect(handle).not.toBeNull();
     store.dispose();
     store.dispose();
-    expect(store.consume(handle)).toBeNull();
+    expect(store.consume(handle!)).toBeNull();
+  });
+
+  it('普通预览达到总容量后 fail-closed，并在签发时清理过期项', () => {
+    let now = 0;
+    const store = new WatchPreviewStore(() => now);
+    for (let index = 0; index < MAX_WATCH_PREVIEWS; index += 1)
+      expect(store.issue({ ...record, sourceRowVersion: index + 1 })).not.toBeNull();
+    expect(store.issue(record)).toBeNull();
+    now = WATCH_PREVIEW_TTL_MS;
+    expect(store.issue(record)).not.toBeNull();
+    expect(store.size).toBe(1);
+    store.dispose();
+    expect(store.size).toBe(0);
   });
 
   it('feed discovery 只返回 opaque candidate，按 source 绑定且一次性消费', () => {

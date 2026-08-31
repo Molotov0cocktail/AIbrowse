@@ -9,6 +9,7 @@ import type {
 } from '../../shared/types/watch';
 import type { SourceWatchProjectionReadResult } from '../sources/source-service';
 import { computeSourceLocatorFingerprint } from '../../shared/watch/watch-rule-state';
+import { validateStructuredCondition } from '../../shared/watch/condition-engine';
 import type { WatchRepository } from './repository/watch-repository';
 import type { SessionGrantStore } from './session-grant-store';
 import { WatchPreviewStore, type WatchPreviewRecord } from './watch-preview-store';
@@ -61,6 +62,8 @@ export class WatchCommandService {
     const projection = readProjection(preview.projection);
     const repo = this.repository();
     if (projection === null || repo === null) return { ok: false, errorCode: 'unavailable' };
+    if (!conditionMatchesPreview(input.condition, preview.fieldCatalog))
+      return { ok: false, errorCode: 'security-rejected' };
     const now = new Date().toISOString();
     const rule: WatchRule = {
       id: randomUUID(),
@@ -142,6 +145,8 @@ export class WatchCommandService {
     const projection = readProjection(preview.projection);
     const repo = this.repository();
     if (projection === null || repo === null) return { ok: false, errorCode: 'unavailable' };
+    if (!conditionMatchesPreview(input.condition, preview.fieldCatalog))
+      return { ok: false, errorCode: 'security-rejected' };
     const written = repo.rebaselineRule({
       ruleId: input.ruleId,
       expectedVersion: input.expectedVersion,
@@ -178,6 +183,13 @@ export class WatchCommandService {
       };
     return { ok: true, value: { ruleId: input.ruleId, version: input.expectedVersion + 1 } };
   }
+}
+
+function conditionMatchesPreview(
+  condition: StructuredCondition | null,
+  fieldCatalog: readonly string[],
+): boolean {
+  return condition === null || validateStructuredCondition(condition, new Set(fieldCatalog)).ok;
 }
 
 function readProjection(value: unknown): FeedProjection | PageProjection | null {

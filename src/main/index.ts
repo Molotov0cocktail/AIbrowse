@@ -1729,6 +1729,7 @@ async function createBrowserWindow(): Promise<void> {
             resolve: async (selector) => sourceDigestProvider.resolveDigestMembership(selector),
           },
           scheduleControl: digestDue,
+          windowsNotificationsEnabled: watchWindowsNotifications !== null,
           onArtifactReady: () => {
             if (watchSubscriptionSender !== null) void watchNotifications?.drain();
             void watchWindowsNotifications?.drain();

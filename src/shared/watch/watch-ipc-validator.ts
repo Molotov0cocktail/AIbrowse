@@ -1,5 +1,10 @@
 import { utf8ByteLength } from './watch-budget';
-import { CONDITION_OPERATORS, WATCH_EVENT_KINDS, WATCH_NOTIFICATION_LEVELS } from '../types/watch';
+import {
+  CONDITION_OPERATORS,
+  PAUSE_REASONS,
+  WATCH_EVENT_KINDS,
+  WATCH_NOTIFICATION_LEVELS,
+} from '../types/watch';
 import { parseDigestExplanation } from './digest-validator';
 
 export const MAX_WATCH_IPC_INPUT_BYTES = 65_536;
@@ -109,11 +114,17 @@ function condition(v: unknown): boolean {
     (p) =>
       record(p, ['fieldKey', 'operator', 'operand', 'caseSensitive']) &&
       typeof p['fieldKey'] === 'string' &&
-      p['fieldKey'].length <= 256 &&
+      p['fieldKey'].length >= 1 &&
+      p['fieldKey'].length <= 200 &&
+      !['__proto__', 'prototype', 'constructor'].includes(p['fieldKey']) &&
+      !/[.*?[\]]/u.test(p['fieldKey']) &&
+      !/^\d+$/u.test(p['fieldKey']) &&
       (CONDITION_OPERATORS as readonly unknown[]).includes(p['operator']) &&
       typeof p['caseSensitive'] === 'boolean' &&
       (p['operand'] === null ||
-        typeof p['operand'] === 'string' ||
+        (typeof p['operand'] === 'string' &&
+          p['operand'].length >= 1 &&
+          p['operand'].length <= 500) ||
         typeof p['operand'] === 'number'),
   );
 }
@@ -481,9 +492,14 @@ function successValue(channel: WatchIpcChannel, value: unknown): boolean {
     case 'watch:getRule':
       return ruleSummary(value);
     case 'watch:createRule':
+      return (
+        record(value, ['ruleId', 'version']) && uuid(value['ruleId']) && integer(value['version'])
+      );
     case 'watch:updateRule':
       return (
-        record(value, ['ruleId', 'version']) ||
+        (record(value, ['ruleId', 'version']) &&
+          uuid(value['ruleId']) &&
+          integer(value['version'])) ||
         (record(value, ['updated']) && value['updated'] === true)
       );
     case 'watch:setPaused':
@@ -535,9 +551,13 @@ function successValue(channel: WatchIpcChannel, value: unknown): boolean {
         (record(value, ['updated']) && value['updated'] === true)
       );
     case 'watch:exportEventsCsv':
-      return record(value, ['exportedRows', 'exportedBytes']);
+      return (
+        record(value, ['exportedRows', 'exportedBytes']) &&
+        integer(value['exportedRows'], 0) &&
+        integer(value['exportedBytes'], 0)
+      );
     case 'watch:exportDigestMarkdown':
-      return record(value, ['exportedBytes']);
+      return record(value, ['exportedBytes']) && integer(value['exportedBytes'], 0);
     case 'watch:subscribe':
       return false;
   }
@@ -596,7 +616,8 @@ function ruleSummary(value: unknown): boolean {
     boundedText(value['sourceName'], 512) &&
     (value['kind'] === 'feed' || value['kind'] === 'page') &&
     (value['state'] === 'enabled' || value['state'] === 'paused') &&
-    (value['pauseReason'] === null || boundedText(value['pauseReason'], 128)) &&
+    (value['pauseReason'] === null ||
+      (PAUSE_REASONS as readonly unknown[]).includes(value['pauseReason'])) &&
     typeof value['desiredEnabled'] === 'boolean' &&
     typeof value['muted'] === 'boolean' &&
     (value['accessMode'] === 'public' || value['accessMode'] === 'session') &&
@@ -754,6 +775,7 @@ function digestSchedule(value: unknown): boolean {
       'lastPeriod',
       'lastRunStats',
       'runState',
+      'blockedRunId',
       'blockedAt',
       'blockedRequiredBytes',
       'blockedAvailableBytes',
@@ -773,6 +795,8 @@ function digestSchedule(value: unknown): boolean {
     (value['runState'] === null ||
       value['runState'] === 'running' ||
       value['runState'] === 'budget_exceeded') &&
+    (value['blockedRunId'] === null || uuid(value['blockedRunId'])) &&
+    (value['runState'] === 'budget_exceeded') === (value['blockedRunId'] !== null) &&
     nullableIso(value['blockedAt']) &&
     (value['blockedRequiredBytes'] === null || integer(value['blockedRequiredBytes'], 0)) &&
     (value['blockedAvailableBytes'] === null || integer(value['blockedAvailableBytes'], 0))
@@ -808,8 +832,8 @@ function digestListItem(value: unknown): boolean {
     ]) &&
     uuid(value['id']) &&
     uuid(value['scheduleId']) &&
-    boundedText(value['providerState'], 64) &&
-    (value['providerResultCode'] === null || boundedText(value['providerResultCode'], 64)) &&
+    digestProviderState(value['providerState']) &&
+    digestProviderResultCode(value['providerResultCode']) &&
     iso(value['createdAt']) &&
     integer(value['eventCount'], 0)
   );
@@ -828,8 +852,8 @@ function digestDetail(value: unknown): boolean {
     !uuid(value['id']) ||
     !uuid(value['scheduleId']) ||
     !validateDigestFactsOutput(value['facts']) ||
-    !boundedText(value['providerState'], 64) ||
-    !(value['providerResultCode'] === null || boundedText(value['providerResultCode'], 64)) ||
+    !digestProviderState(value['providerState']) ||
+    !digestProviderResultCode(value['providerResultCode']) ||
     !iso(value['createdAt'])
   )
     return false;
@@ -843,6 +867,32 @@ function digestDetail(value: unknown): boolean {
     ) !== null
   );
 }
+
+const DIGEST_PROVIDER_STATES = [
+  'disabled',
+  'pending',
+  'claimed',
+  'succeeded',
+  'failed',
+  'uncertain',
+  'skipped',
+] as const;
+const DIGEST_PROVIDER_RESULT_CODES = [
+  'disabled',
+  'success',
+  'provider-error',
+  'timeout',
+  'aborted',
+  'invalid-output',
+  'uncertain-after-restart',
+  'no-visible-events',
+  'request-budget',
+  'key-unavailable',
+] as const;
+const digestProviderState = (value: unknown): boolean =>
+  (DIGEST_PROVIDER_STATES as readonly unknown[]).includes(value);
+const digestProviderResultCode = (value: unknown): boolean =>
+  value === null || (DIGEST_PROVIDER_RESULT_CODES as readonly unknown[]).includes(value);
 
 function validateEvidenceValue(value: unknown): boolean {
   if (record(value, ['kind'])) return value['kind'] === 'absent';
@@ -933,7 +983,9 @@ function validateDigestFactsOutput(value: unknown): boolean {
     !boundedText(value['scheduleId'], 128) ||
     !boundedText(value['digestRunId'], 128) ||
     !integer(value['batchIndex'], 0) ||
+    value['period'] === null ||
     !digestPeriod(value['period']) ||
+    value['runStats'] === null ||
     !digestStats(value['runStats']) ||
     !Array.isArray(value['events']) ||
     value['events'].length < 1 ||

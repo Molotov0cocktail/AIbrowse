@@ -192,6 +192,7 @@ export class WatchQueryService {
           lastPeriod: schedule.lastPeriod,
           lastRunStats: schedule.lastRunStats,
           runState: run?.state ?? null,
+          blockedRunId: run?.state === 'budget_exceeded' ? run.id : null,
           blockedAt: run?.blockedAt ?? null,
           blockedRequiredBytes: run?.blockedRequiredBytes ?? null,
           blockedAvailableBytes: run?.blockedAvailableBytes ?? null,

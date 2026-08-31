@@ -1204,8 +1204,57 @@ describe('DigestService frozen cycle', () => {
     const measured = seed();
     expect(write(measured)).toEqual({ ok: true });
     const required = measured.repo.estimateLogicalBytes() - measured.beforeBytes;
-    expect(required).toBe(1_418);
+    expect(required).toBe(1_675);
+    expect(
+      measured.db
+        .prepare(
+          `SELECT subject_type,subject_id,channel,dedupe_key,privacy_json
+           FROM notification_outbox`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        subject_type: 'digest',
+        subject_id: '00000000-0000-4000-8000-000000000002',
+        channel: 'in-app',
+        dedupe_key: 'in-app|digest|00000000-0000-4000-8000-000000000002|1',
+        privacy_json: '{"eventKind":"digest","importance":"normal","itemCount":1}',
+      },
+    ]);
     measured.db.close();
+
+    const windows = seed();
+    expect(
+      windows.repo.commitDigestBatch({
+        artifactId: '00000000-0000-4000-8000-000000000003',
+        run: windows.run,
+        expectedNextSequence: 0,
+        firstSequence: 1,
+        lastSequence: 1,
+        facts: windows.facts,
+        createdAt: due,
+        aiEnabled: false,
+        windowsNotificationsEnabled: true,
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      windows.db.prepare('SELECT channel FROM notification_outbox ORDER BY channel ASC').all(),
+    ).toEqual([{ channel: 'in-app' }, { channel: 'windows' }]);
+    windows.db.close();
+
+    const rollback = seed();
+    rollback.db.exec(
+      `CREATE TRIGGER reject_digest_outbox BEFORE INSERT ON notification_outbox
+       BEGIN SELECT RAISE(ABORT, 'forced-outbox-failure'); END`,
+    );
+    expect(write(rollback)).toEqual({ ok: false, code: 'store-unavailable' });
+    expect(rollback.db.prepare('SELECT COUNT(*) AS n FROM watch_digests').get()).toEqual({ n: 0 });
+    expect(rollback.db.prepare('SELECT COUNT(*) AS n FROM digest_event_refs').get()).toEqual({
+      n: 0,
+    });
+    expect(rollback.repo.getDigestRun(rollback.run.id)?.nextSequence).toBe(0);
+    expect(rollback.repo.getDigestSchedule('schedule-1')?.cursorSequence).toBe(0);
+    rollback.db.close();
 
     const exact = seed();
     const exactRepo = new WatchRepository(exact.db, {
@@ -1228,6 +1277,9 @@ describe('DigestService frozen cycle', () => {
       availableBytes: required - 1,
     });
     expect(short.db.prepare('SELECT COUNT(*) AS n FROM watch_digests').get()).toEqual({ n: 0 });
+    expect(short.db.prepare('SELECT COUNT(*) AS n FROM notification_outbox').get()).toEqual({
+      n: 0,
+    });
     expect(shortRepo.getDigestRun(short.run.id)).toMatchObject({
       state: 'budget_exceeded',
       nextSequence: 0,

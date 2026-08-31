@@ -152,10 +152,12 @@ export class WatchPreviewService {
       validator: { etag: null, lastModified: null, targetDigest: digest },
       previewTabId: active.id,
     };
+    const previewHandle = this.options.store.issue(record);
+    if (previewHandle === null) return { ok: false, errorCode: 'budget-exceeded' };
     return {
       ok: true,
       value: {
-        previewHandle: this.options.store.issue(record),
+        previewHandle,
         kind: 'page',
         accessMode: 'session',
         targetDisplay: safeDisplay(source.projection.canonicalKey),
@@ -184,9 +186,11 @@ export class WatchPreviewService {
       targetDigest,
     });
     if (!issued.ok) return { ok: false, errorCode: 'unavailable' };
+    const reissuedHandle = this.options.store.issue(record);
+    if (reissuedHandle === null) return { ok: false, errorCode: 'budget-exceeded' };
     return {
       ok: true,
-      value: { previewHandle: this.options.store.issue(record), sessionGrantHandle: issued.handle },
+      value: { previewHandle: reissuedHandle, sessionGrantHandle: issued.handle },
     };
   }
 
@@ -270,11 +274,17 @@ export class WatchPreviewService {
         result: { ok: false, errorCode: 'security-rejected' },
         discoveryEligible: false,
       };
+    const previewHandle = this.options.store.issue(record);
+    if (previewHandle === null)
+      return {
+        result: { ok: false, errorCode: 'budget-exceeded' },
+        discoveryEligible: false,
+      };
     return {
       result: {
         ok: true,
         value: {
-          previewHandle: this.options.store.issue(record),
+          previewHandle,
           kind: target.type,
           accessMode,
           targetDisplay: safeDisplay(acquired.projection.finalUrl),

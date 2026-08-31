@@ -47,6 +47,7 @@ export interface DigestServiceOptions {
   membership?: DigestMembershipPort;
   scheduleControl: DigestScheduleControlPort;
   onArtifactReady?: () => void;
+  windowsNotificationsEnabled?: boolean;
 }
 
 export interface DigestScheduleQueryDto {
@@ -410,6 +411,7 @@ export class DigestService {
         facts: built,
         createdAt: this.options.clock.now().toISOString(),
         aiEnabled: schedule.aiEnabled,
+        windowsNotificationsEnabled: this.options.windowsNotificationsEnabled === true,
       });
       if (!committed.ok) {
         return false;

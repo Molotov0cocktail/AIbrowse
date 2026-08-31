@@ -148,6 +148,7 @@ function parseFiniteNumber(value: unknown): number | null {
 }
 
 function isValidNumericOperand(operand: unknown): boolean {
+  if (typeof operand === 'string' && (operand.length < 1 || operand.length > 500)) return false;
   return parseFiniteNumber(operand) !== null;
 }
 
@@ -260,7 +261,9 @@ function isValidOperand(operand: unknown, operator: ConditionOperator): boolean 
       return operand === null; // changed 不使用 operand
     case 'event-kind-is':
       return (
-        typeof operand === 'string' && (WATCH_EVENT_KINDS as readonly string[]).includes(operand)
+        typeof operand === 'string' &&
+        operand.length <= 500 &&
+        (WATCH_EVENT_KINDS as readonly string[]).includes(operand)
       );
     case 'increased':
     case 'decreased':
@@ -269,11 +272,12 @@ function isValidOperand(operand: unknown, operator: ConditionOperator): boolean 
       return isValidNumericOperand(operand);
     case 'contains':
     case 'not-contains':
-      return typeof operand === 'string' && operand.length > 0; // 线性字面匹配需非空
+      return typeof operand === 'string' && operand.length > 0 && operand.length <= 500;
     case 'equals':
     case 'not-equals':
       return (
-        typeof operand === 'string' || (typeof operand === 'number' && Number.isFinite(operand))
+        (typeof operand === 'string' && operand.length > 0 && operand.length <= 500) ||
+        (typeof operand === 'number' && Number.isFinite(operand))
       );
     default:
       return false;

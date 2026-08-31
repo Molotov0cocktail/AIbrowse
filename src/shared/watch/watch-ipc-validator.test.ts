@@ -67,6 +67,17 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
         condition: { combine: 'all', predicates: condition.predicates },
       }).ok,
     ).toBe(false);
+    for (const fieldKey of ['', '__proto__', 'a.b', 'a[0]', '0', '*'])
+      expect(
+        validateWatchIpcPayload('watch:updateRule', {
+          ...base,
+          condition: {
+            version: 1,
+            combine: 'all',
+            predicates: [{ ...condition.predicates[0], fieldKey }],
+          },
+        }).ok,
+      ).toBe(false);
     expect(
       validateWatchIpcPayload('watch:updateRule', {
         ...base,
@@ -103,6 +114,18 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
     const accessor = { ok: true } as Record<string, unknown>;
     Object.defineProperty(accessor, 'value', { enumerable: true, get: () => ({}) });
     expect(validateWatchIpcOutput(accessor)).toBe(false);
+    expect(
+      validateWatchIpcOutput(
+        { ok: true, value: { ruleId: 'not-a-uuid', version: '1' } },
+        'watch:createRule',
+      ),
+    ).toBe(false);
+    expect(
+      validateWatchIpcOutput(
+        { ok: true, value: { exportedRows: -1, exportedBytes: 0 } },
+        'watch:exportEventsCsv',
+      ),
+    ).toBe(false);
   });
 
   it('输出对分页 item 与嵌套 DTO 做 deep exact 验证', () => {

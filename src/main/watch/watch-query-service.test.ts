@@ -113,4 +113,41 @@ describe('D9 renderer-safe Watch 查询投影', () => {
     expect(result?.selected?.id).toBe(older.id);
     expect(result?.selected?.evidence).toEqual([]);
   });
+
+  it('预算阻塞摘要计划只投影可重试的内部 run UUID', () => {
+    const blockedRunId = '00000000-0000-4000-8000-000000000005';
+    const repo = {
+      listDigestSchedules: () => [
+        {
+          id: '00000000-0000-4000-8000-000000000006',
+          version: 1,
+          sourceIds: [sourceId],
+          localTime: '09:00',
+          timeZone: 'Asia/Shanghai',
+          aiEnabled: false,
+          state: 'active',
+          nextDueAt: '2026-09-01T01:00:00.000Z',
+          lastCheckedAt: null,
+          lastPeriod: null,
+          lastRunStats: null,
+        },
+      ],
+      getNonterminalDigestRun: () => ({
+        id: blockedRunId,
+        state: 'budget_exceeded',
+        blockedAt: '2026-08-31T00:00:00.000Z',
+        blockedRequiredBytes: 2,
+        blockedAvailableBytes: 1,
+      }),
+    } as unknown as WatchRepository;
+    const query = new WatchQueryService(
+      () => repo,
+      () => ({ mode: 'running', activeCount: 0 }),
+      () => ({ windowsNotification: 'unavailable', windowsReason: 'not-packaged' }),
+    );
+    expect(query.listDigestSchedules(1, 10)?.items[0]).toMatchObject({
+      runState: 'budget_exceeded',
+      blockedRunId,
+    });
+  });
 });

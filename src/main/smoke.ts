@@ -11064,6 +11064,52 @@ export async function runSmokeScenario(
         (await uiCount(uiWc, '.watch-wizard ol > li')) === 7,
         '8.26：Watch 创建向导必须保持七步',
       );
+      await uiJs(
+        uiWc,
+        `(() => {
+          const region = [...document.querySelectorAll('.watch-wizard select')]
+            .find((select) => [...select.options].some((option) => option.value === 'table'));
+          if (!region) throw new Error('Watch 表格 Region 入口不存在');
+          region.value = 'table';
+          region.dispatchEvent(new Event('change', { bubbles: true }));
+        })()`,
+      );
+      await waitFor(
+        async () => (await uiText(uiWc, '.watch-wizard')).includes('表头 SHA-256 指纹'),
+        5000,
+        '8.26：Watch 表格 Region 编辑器不可交互',
+      );
+      for (let step = 0; step < 2; step += 1) {
+        await uiJs(
+          uiWc,
+          `(() => {
+            const button = [...document.querySelectorAll('.watch-wizard button')]
+              .find((candidate) => candidate.textContent?.trim() === '下一步');
+            if (!button) throw new Error('Watch 向导下一步不存在');
+            button.click();
+          })()`,
+        );
+      }
+      await waitFor(
+        async () => (await uiText(uiWc, '.watch-wizard')).includes('计划类型'),
+        5000,
+        '8.26：Watch 计划编辑步骤不可达',
+      );
+      await uiJs(
+        uiWc,
+        `(() => {
+          const schedule = [...document.querySelectorAll('.watch-wizard select')]
+            .find((select) => [...select.options].some((option) => option.value === 'daily'));
+          if (!schedule) throw new Error('Watch 每日计划入口不存在');
+          schedule.value = 'daily';
+          schedule.dispatchEvent(new Event('change', { bubbles: true }));
+        })()`,
+      );
+      await waitFor(
+        async () => (await uiText(uiWc, '.watch-wizard')).includes('IANA 时区'),
+        5000,
+        '8.26：Watch 每日计划编辑器不可交互',
+      );
       assert(
         !(await uiText(uiWc, '.watch-workspace')).match(
           /authorization|cookie|set-cookie|proxy-authorization|x-api-key|file:\/\//i,
