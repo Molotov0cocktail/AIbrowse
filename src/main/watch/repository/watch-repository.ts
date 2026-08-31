@@ -513,8 +513,12 @@ const SQL_COMPLETE_DIGEST_SCHEDULE = `UPDATE digest_schedules SET
   last_period_json = ?, last_run_stats_json = ?, updated_at = ?
   WHERE id = ? AND state = 'active' AND cursor_sequence = ?`;
 const SQL_CLAIM_DIGEST = `UPDATE watch_digests SET provider_state = 'claimed',
-  claimed_facts_revision = facts_revision, claimed_facts_hash = facts_hash, claimed_at = ?
-  WHERE id = ? AND provider_state = 'pending'`;
+  claimed_facts_revision = ?, claimed_facts_hash = ?, claimed_at = ?
+  WHERE id = ? AND schedule_id = ? AND provider_state = 'pending'
+    AND facts_revision = ? AND facts_hash = ?
+    AND EXISTS (SELECT 1 FROM digest_schedules AS schedule
+      WHERE schedule.id = watch_digests.schedule_id
+        AND schedule.state = 'active' AND schedule.ai_enabled = 1)`;
 const SQL_FINISH_DIGEST_CLAIM = `UPDATE watch_digests SET provider_state = ?,
   provider_result_code = ?, explanation_json = ?, byte_length = ?, provider_finished_at = ?
   WHERE id = ? AND provider_state = 'claimed' AND facts_revision = ? AND facts_hash = ?
@@ -3296,7 +3300,7 @@ export class WatchRepository {
     const blockedAt = monotonicIso(nowIso, run.createdAt, run.blockedAt);
     try {
       return withTransaction(this.handle, () => {
-        this.pruneEventsByRuleLimitsForDigestWriteInternal(blockedAt);
+        this.pruneEventsByRuleLimitsForDigestWriteInternal(nowIso);
         for (;;) {
           const currentRun = this.getDigestRun(run.id);
           if (currentRun === null || currentRun.state !== 'budget_exceeded') {
@@ -3743,7 +3747,7 @@ export class WatchRepository {
         if (schedule === null || schedule.state !== 'active')
           throw new TxnAbortError('store-unavailable');
         const auditNow = monotonicIso(input.createdAt, schedule.updatedAt);
-        this.pruneEventsByRuleLimitsForDigestWriteInternal(auditNow);
+        this.pruneEventsByRuleLimitsForDigestWriteInternal(input.createdAt);
         for (;;) {
           const currentRun = this.getDigestRun(input.run.id);
           if (
@@ -3924,17 +3928,31 @@ export class WatchRepository {
     return Number(row.n);
   }
 
-  claimDigestProvider(id: string, nowIso: string): StoredDigestArtifact | null {
+  claimDigestProvider(input: {
+    id: string;
+    scheduleId: string;
+    factsRevision: number;
+    factsHash: string;
+    nowIso: string;
+  }): StoredDigestArtifact | null {
     this.ensureOpen();
     try {
       return withTransaction(this.handle, () => {
-        const artifact = this.getDigestArtifact(id);
+        const artifact = this.getDigestArtifact(input.id);
         if (artifact === null) return null;
         const changed = this.handle
           .prepare(SQL_CLAIM_DIGEST)
-          .run(monotonicIso(nowIso, artifact.createdAt), id);
+          .run(
+            input.factsRevision,
+            input.factsHash,
+            monotonicIso(input.nowIso, artifact.createdAt),
+            input.id,
+            input.scheduleId,
+            input.factsRevision,
+            input.factsHash,
+          );
         if (Number(changed.changes) !== 1) return null;
-        return this.getDigestArtifact(id);
+        return this.getDigestArtifact(input.id);
       });
     } catch {
       return null;

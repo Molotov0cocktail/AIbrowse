@@ -429,10 +429,13 @@ export class DigestService {
 
   private async attemptProvider(id: string, schedule: StoredDigestSchedule): Promise<void> {
     if (!this.accepting) return;
-    const artifact = this.options.repository.getDigestArtifact(id);
-    if (artifact === null || artifact.providerState !== 'pending') return;
-    const currentSchedule = this.options.repository.getDigestSchedule(schedule.id);
-    if (currentSchedule === null || currentSchedule.state !== 'active') return;
+    const resolved = await this.options.provider.resolve();
+    if (!this.accepting) return;
+    let currentSchedule = this.options.repository.getDigestSchedule(schedule.id);
+    let artifact = this.options.repository.getDigestArtifact(id);
+    if (artifact === null || artifact.providerState !== 'pending' || currentSchedule === null)
+      return;
+    if (currentSchedule.state !== 'active') return;
     if (!currentSchedule.aiEnabled) {
       this.options.repository.finishPendingDigest(
         id,
@@ -442,25 +445,37 @@ export class DigestService {
       );
       return;
     }
+    if (resolved === null) {
+      this.options.repository.finishPendingDigest(
+        id,
+        'skipped',
+        'key-unavailable',
+        this.options.clock.now().toISOString(),
+      );
+      return;
+    }
     const sharing = await this.options.sharing.get(currentSchedule.sourceIds);
     if (!this.accepting) return;
+    currentSchedule = this.options.repository.getDigestSchedule(schedule.id);
+    artifact = this.options.repository.getDigestArtifact(id);
+    if (artifact === null || artifact.providerState !== 'pending' || currentSchedule === null)
+      return;
+    if (currentSchedule.state !== 'active') return;
+    if (!currentSchedule.aiEnabled) {
+      this.options.repository.finishPendingDigest(
+        id,
+        'disabled',
+        'disabled',
+        this.options.clock.now().toISOString(),
+      );
+      return;
+    }
     const projection = projectDigestForProvider(artifact.facts, sharing);
     if (projection.events.length === 0) {
       this.options.repository.finishPendingDigest(
         id,
         'skipped',
         'no-visible-events',
-        this.options.clock.now().toISOString(),
-      );
-      return;
-    }
-    const resolved = await this.options.provider.resolve();
-    if (!this.accepting) return;
-    if (resolved === null) {
-      this.options.repository.finishPendingDigest(
-        id,
-        'skipped',
-        'key-unavailable',
         this.options.clock.now().toISOString(),
       );
       return;
@@ -480,10 +495,13 @@ export class DigestService {
       return;
     }
     if (!this.accepting) return;
-    const claimed = this.options.repository.claimDigestProvider(
+    const claimed = this.options.repository.claimDigestProvider({
       id,
-      this.options.clock.now().toISOString(),
-    );
+      scheduleId: currentSchedule.id,
+      factsRevision: artifact.factsRevision,
+      factsHash: artifact.factsHash,
+      nowIso: this.options.clock.now().toISOString(),
+    });
     if (claimed === null) return;
     await this.consumeProvider(
       resolved.provider,

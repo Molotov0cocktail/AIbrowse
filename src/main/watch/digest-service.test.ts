@@ -127,6 +127,84 @@ function prepare(count: number, aiEnabled = false, targetRepo = repo): void {
   }
 }
 
+function seedClockRollbackCycle(): {
+  run: NonNullable<ReturnType<WatchRepository['getDigestRun']>>;
+  facts: NonNullable<ReturnType<typeof buildDigestFacts>>;
+  oldEventId: string;
+  realNow: string;
+  futureAudit: string;
+} {
+  const realNow = '2026-08-29T01:00:00.000Z';
+  const futureAudit = '2026-09-01T01:00:00.000Z';
+  const oldEventId = 'rollback-safe-event';
+  const watchRule = rule();
+  expect(repo.insertRule(watchRule)).toEqual({ ok: true });
+  const write = (eventId: string, observedAt: string) =>
+    repo.writeEventTransaction({
+      event: {
+        id: eventId,
+        ruleId: watchRule.id,
+        sourceId: watchRule.sourceId,
+        eventKind: 'added' as const,
+        importance: 'normal' as const,
+        idempotencyKey: `idem-${eventId}`,
+        changeFingerprint: hex,
+        firstObservedAt: observedAt,
+        lastObservedAt: observedAt,
+        itemCount: 1,
+        readAt: null,
+      },
+      items: [item(eventId)],
+      identity: {
+        sourceId: watchRule.sourceId,
+        expectedSourceLocatorFingerprint: hex,
+        expectedBaselineVersion: null,
+      },
+    });
+  expect(write(oldEventId, '2026-06-01T01:00:00.000Z')).toEqual({ ok: true });
+  expect(
+    repo.createDigestSchedule({
+      id: 'rollback-schedule',
+      sourceIds: ['source-1'],
+      localTime: '09:00',
+      timeZone: 'Asia/Shanghai',
+      nextDueAt: due,
+      nowIso: created,
+    }),
+  ).toEqual({ ok: true });
+  expect(write('rollback-current-event', created)).toEqual({ ok: true });
+  const schedule = repo.getDigestSchedule('rollback-schedule')!;
+  const reserved = repo.reserveDigestRun({
+    scheduleId: schedule.id,
+    expectedVersion: schedule.version,
+    expectedNextDueAt: schedule.nextDueAt,
+    expectedLastConsumedScheduledFor: null,
+    expectedLastDailyLocalDate: null,
+    runId: 'rollback-run',
+    requestKey: 'rollback-key',
+    logicalDate: '2026-08-29',
+    nextDueAt: '2026-08-30T01:00:00.000Z',
+    nowIso: futureAudit,
+  });
+  expect(reserved.ok).toBe(true);
+  if (!reserved.ok) throw new Error('reservation failed');
+  const observation = repo
+    .readDigestJournalSlice(reserved.run.id)!
+    .find((entry) => entry.observation !== null)?.observation;
+  if (observation === null || observation === undefined) throw new Error('observation missing');
+  const facts = buildDigestFacts({
+    scheduleId: schedule.id,
+    digestRunId: reserved.run.id,
+    batchIndex: 0,
+    period: reserved.run.period,
+    runStats: reserved.run.runStats,
+    observations: [observation],
+    fetchedAt: reserved.run.period.toInclusive,
+  });
+  if (facts === null) throw new Error('facts missing');
+  return { run: reserved.run, facts, oldEventId, realNow, futureAudit };
+}
+
 function service(
   provider: FakeProvider | null = null,
   repository = repo,
@@ -148,6 +226,26 @@ function service(
     provider: { resolve: async () => (provider === null ? null : { provider, model: 'fake' }) },
     scheduleControl: scheduleControl ?? noopScheduleControl,
   });
+}
+
+function deferredSignal(): {
+  entered: Promise<void>;
+  release: () => void;
+  wait: Promise<void>;
+  markEntered: () => void;
+} {
+  let markEntered!: () => void;
+  let release!: () => void;
+  return {
+    entered: new Promise<void>((resolve) => {
+      markEntered = resolve;
+    }),
+    wait: new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+    markEntered: () => markEntered(),
+    release: () => release(),
+  };
 }
 
 class RecordingScheduleControl implements DigestScheduleControlPort {
@@ -503,8 +601,231 @@ describe('DigestService frozen cycle', () => {
     },
   );
 
+  it.each(['sharing', 'provider'] as const)(
+    'deferred %s 准备期间 pause：零 claim/stream，resume 后恰好一次',
+    async (gap) => {
+      prepare(1, true);
+      const gate = deferredSignal();
+      const raw = '{"sections":[{"eventIds":["event-000"],"explanation":"恢复"}]}';
+      const fake = new FakeProvider({ chunks: [raw] });
+      const digest = new DigestService({
+        repository: repo,
+        clock: new FakeClock(Date.parse(due)),
+        sharing: {
+          get: async () => {
+            if (gap === 'sharing') {
+              gate.markEntered();
+              await gate.wait;
+            }
+            return [
+              {
+                sourceId: 'source-1',
+                shareMode: 'full',
+                displayName: '来源',
+                canonicalUrl: 'https://example.com',
+              },
+            ];
+          },
+        },
+        provider: {
+          resolve: async () => {
+            if (gap === 'provider') {
+              gate.markEntered();
+              await gate.wait;
+            }
+            return { provider: fake, model: 'fake' };
+          },
+        },
+        scheduleControl: noopScheduleControl,
+      });
+      const handling = digest.handleDue({
+        scheduleId: 'schedule-1',
+        expectedNextDueAt: due,
+        logicalDate: '2026-08-29',
+      });
+      await gate.entered;
+      const active = repo.getDigestSchedule('schedule-1')!;
+      expect(digest.pause(active.id, active.version)).toEqual({ ok: true });
+      gate.release();
+      await handling;
+      expect(fake.getRequests()).toHaveLength(0);
+      expect(handle.prepare('SELECT provider_state FROM watch_digests').get()).toEqual({
+        provider_state: 'pending',
+      });
+      const paused = repo.getDigestSchedule('schedule-1')!;
+      expect(await digest.resume(paused.id, paused.version)).toEqual({ ok: true });
+      expect(fake.getRequests()).toHaveLength(1);
+      expect(
+        handle.prepare('SELECT provider_state,provider_result_code FROM watch_digests').get(),
+      ).toEqual({ provider_state: 'succeeded', provider_result_code: 'success' });
+    },
+  );
+
+  it('provider.resolve 期间关闭 AI：零 claim/stream，并以当前状态合法终结 disabled', async () => {
+    prepare(1, true);
+    const gate = deferredSignal();
+    const fake = new FakeProvider({
+      chunks: ['{"sections":[{"eventIds":["event-000"],"explanation":"不得调用"}]}'],
+    });
+    const digest = new DigestService({
+      repository: repo,
+      clock: new FakeClock(Date.parse(due)),
+      sharing: {
+        get: async () => [
+          {
+            sourceId: 'source-1',
+            shareMode: 'full',
+            displayName: '来源',
+            canonicalUrl: 'https://example.com',
+          },
+        ],
+      },
+      provider: {
+        resolve: async () => {
+          gate.markEntered();
+          await gate.wait;
+          return { provider: fake, model: 'fake' };
+        },
+      },
+      scheduleControl: noopScheduleControl,
+    });
+    const handling = digest.handleDue({
+      scheduleId: 'schedule-1',
+      expectedNextDueAt: due,
+      logicalDate: '2026-08-29',
+    });
+    await gate.entered;
+    const schedule = repo.getDigestSchedule('schedule-1')!;
+    expect(digest.setAiEnabled(schedule.id, schedule.version, false)).toEqual({ ok: true });
+    gate.release();
+    await handling;
+    expect(fake.getRequests()).toHaveLength(0);
+    expect(
+      handle.prepare('SELECT provider_state,provider_result_code FROM watch_digests').get(),
+    ).toEqual({ provider_state: 'disabled', provider_result_code: 'disabled' });
+  });
+
+  it('provider.resolve 期间 shareMode 收紧为 blocked：最终投影零泄露且零调用', async () => {
+    prepare(1, true);
+    const gate = deferredSignal();
+    const fake = new FakeProvider({ chunks: ['SHOULD_NOT_RUN'] });
+    let shareMode: 'full' | 'blocked' = 'full';
+    const digest = new DigestService({
+      repository: repo,
+      clock: new FakeClock(Date.parse(due)),
+      sharing: {
+        get: async () => [
+          {
+            sourceId: 'source-1',
+            shareMode,
+            displayName: 'FULL_NAME_CANARY',
+            canonicalUrl: 'https://full-canary.invalid',
+          },
+        ],
+      },
+      provider: {
+        resolve: async () => {
+          gate.markEntered();
+          await gate.wait;
+          return { provider: fake, model: 'fake' };
+        },
+      },
+      scheduleControl: noopScheduleControl,
+    });
+    const handling = digest.handleDue({
+      scheduleId: 'schedule-1',
+      expectedNextDueAt: due,
+      logicalDate: '2026-08-29',
+    });
+    await gate.entered;
+    shareMode = 'blocked';
+    gate.release();
+    await handling;
+    expect(fake.getRequests()).toHaveLength(0);
+    expect(JSON.stringify(fake.getRequests())).not.toMatch(
+      /FULL_NAME_CANARY|full-canary|event-000/,
+    );
+    expect(
+      handle.prepare('SELECT provider_state,provider_result_code FROM watch_digests').get(),
+    ).toEqual({ provider_state: 'skipped', provider_result_code: 'no-visible-events' });
+  });
+
+  it.each([['provider', 1] as const, ['sharing', 2] as const])(
+    '%s 准备期间 scrub：请求只绑定剩余事实，claim revision/hash 与请求版本恒等',
+    async (gap, count) => {
+      prepare(count, true);
+      const gate = deferredSignal();
+      const remainingId = count === 1 ? null : 'event-001';
+      const fake = new FakeProvider({
+        chunks:
+          remainingId === null
+            ? ['SHOULD_NOT_RUN']
+            : [`{"sections":[{"eventIds":["${remainingId}"],"explanation":"仅剩余事实"}]}`],
+      });
+      const digest = new DigestService({
+        repository: repo,
+        clock: new FakeClock(Date.parse(due)),
+        sharing: {
+          get: async () => {
+            if (gap === 'sharing') {
+              gate.markEntered();
+              await gate.wait;
+            }
+            return [
+              {
+                sourceId: 'source-1',
+                shareMode: 'full',
+                displayName: '来源',
+                canonicalUrl: 'https://example.com',
+              },
+            ];
+          },
+        },
+        provider: {
+          resolve: async () => {
+            if (gap === 'provider') {
+              gate.markEntered();
+              await gate.wait;
+            }
+            return { provider: fake, model: 'fake' };
+          },
+        },
+        scheduleControl: noopScheduleControl,
+      });
+      const handling = digest.handleDue({
+        scheduleId: 'schedule-1',
+        expectedNextDueAt: due,
+        logicalDate: '2026-08-29',
+      });
+      await gate.entered;
+      expect(repo.deleteEventWithScrub('event-000', due)).toEqual({ ok: true });
+      gate.release();
+      await handling;
+      const requests = fake.getRequests();
+      expect(JSON.stringify(requests)).not.toMatch(/event-000|idem-event-000/);
+      if (remainingId === null) {
+        expect(requests).toHaveLength(0);
+        expect(
+          handle.prepare('SELECT provider_state,provider_result_code FROM watch_digests').get(),
+        ).toEqual({ provider_state: 'skipped', provider_result_code: 'no-visible-events' });
+      } else {
+        expect(requests).toHaveLength(1);
+        expect(JSON.stringify(requests[0])).toContain(remainingId);
+        const row = handle
+          .prepare(
+            `SELECT facts_revision,facts_hash,claimed_facts_revision,claimed_facts_hash,
+              explanation_json FROM watch_digests`,
+          )
+          .get() as Record<string, unknown>;
+        expect(row.claimed_facts_revision).toBe(row.facts_revision);
+        expect(row.claimed_facts_hash).toBe(row.facts_hash);
+        expect(String(row.explanation_json)).not.toContain('event-000');
+      }
+    },
+  );
+
   it('claimed artifact scrub 原子终结 aborted，迟到写回 CAS 被拒绝', async () => {
-    prepare(1);
+    prepare(1, true);
     expect(
       await service().handleDue({
         scheduleId: 'schedule-1',
@@ -519,7 +840,14 @@ describe('DigestService frozen cycle', () => {
       provider_finished_at=NULL WHERE id=?`,
       )
       .run(id);
-    const claimed = repo.claimDigestProvider(id, '2026-08-29T01:00:30.000Z')!;
+    const pending = repo.getDigestArtifact(id)!;
+    const claimed = repo.claimDigestProvider({
+      id,
+      scheduleId: pending.scheduleId,
+      factsRevision: pending.factsRevision,
+      factsHash: pending.factsHash,
+      nowIso: '2026-08-29T01:00:30.000Z',
+    })!;
     expect(repo.deleteEventWithScrub('event-000', '2026-08-29T01:01:00.000Z')).toEqual({
       ok: true,
     });
@@ -545,8 +873,80 @@ describe('DigestService frozen cycle', () => {
     ).toEqual({ ok: false, code: 'run-state-conflict' });
   });
 
+  it('Repository claim 事务拒绝 paused、AI 关闭及 expected facts/schedule 不匹配', async () => {
+    prepare(1, true);
+    const gate = deferredSignal();
+    const digest = new DigestService({
+      repository: repo,
+      clock: new FakeClock(Date.parse(due)),
+      sharing: { get: async () => [] },
+      provider: {
+        resolve: async () => {
+          gate.markEntered();
+          await gate.wait;
+          return { provider: new FakeProvider({ chunks: [] }), model: 'fake' };
+        },
+      },
+      scheduleControl: noopScheduleControl,
+    });
+    const handling = digest.handleDue({
+      scheduleId: 'schedule-1',
+      expectedNextDueAt: due,
+      logicalDate: '2026-08-29',
+    });
+    await gate.entered;
+    digest.stopAdmission();
+    gate.release();
+    await handling;
+    const artifact = repo.listDigestArtifactsBySchedule('schedule-1')[0]!;
+    const claim = (
+      overrides: Partial<Parameters<WatchRepository['claimDigestProvider']>[0]> = {},
+    ) =>
+      repo.claimDigestProvider({
+        id: artifact.id,
+        scheduleId: artifact.scheduleId,
+        factsRevision: artifact.factsRevision,
+        factsHash: artifact.factsHash,
+        nowIso: due,
+        ...overrides,
+      });
+    expect(claim({ scheduleId: 'wrong-schedule' })).toBeNull();
+    expect(claim({ factsRevision: artifact.factsRevision + 1 })).toBeNull();
+    expect(claim({ factsHash: 'b'.repeat(64) })).toBeNull();
+
+    let schedule = repo.getDigestSchedule('schedule-1')!;
+    expect(repo.pauseDigestSchedule(schedule.id, schedule.version, due)).toEqual({ ok: true });
+    expect(claim()).toBeNull();
+    schedule = repo.getDigestSchedule('schedule-1')!;
+    expect(repo.resumeDigestSchedule(schedule.id, schedule.version, due)).toEqual({ ok: true });
+    schedule = repo.getDigestSchedule('schedule-1')!;
+    expect(repo.setDigestScheduleAiEnabled(schedule.id, schedule.version, false, due)).toEqual({
+      ok: true,
+    });
+    handle
+      .prepare(
+        `UPDATE watch_digests SET provider_state='pending',provider_result_code=NULL,
+          provider_finished_at=NULL WHERE id=?`,
+      )
+      .run(artifact.id);
+    expect(claim()).toBeNull();
+    schedule = repo.getDigestSchedule('schedule-1')!;
+    expect(repo.setDigestScheduleAiEnabled(schedule.id, schedule.version, true, due)).toEqual({
+      ok: true,
+    });
+    expect(claim()).toMatchObject({ providerState: 'claimed' });
+    expect(
+      handle
+        .prepare('SELECT claimed_facts_revision,claimed_facts_hash FROM watch_digests WHERE id=?')
+        .get(artifact.id),
+    ).toEqual({
+      claimed_facts_revision: artifact.factsRevision,
+      claimed_facts_hash: artifact.factsHash,
+    });
+  });
+
   it('claimed 跨启动恢复为 uncertain 且不回 pending', async () => {
-    prepare(1);
+    prepare(1, true);
     await service().handleDue({
       scheduleId: 'schedule-1',
       expectedNextDueAt: due,
@@ -559,7 +959,16 @@ describe('DigestService frozen cycle', () => {
       provider_finished_at=NULL WHERE id=?`,
       )
       .run(id);
-    expect(repo.claimDigestProvider(id, '2026-08-29T01:00:30.000Z')).not.toBeNull();
+    const pending = repo.getDigestArtifact(id)!;
+    expect(
+      repo.claimDigestProvider({
+        id,
+        scheduleId: pending.scheduleId,
+        factsRevision: pending.factsRevision,
+        factsHash: pending.factsHash,
+        nowIso: '2026-08-29T01:00:30.000Z',
+      }),
+    ).not.toBeNull();
     const dbPath = handle.path;
     repo.dispose();
     const reopened = openWatchStore({
@@ -1008,6 +1417,38 @@ describe('DigestService frozen cycle', () => {
     expect(repo.getDigestSchedule(schedule.id)?.updatedAt).toBe(due);
   });
 
+  it('Clock 回拨时 batch 年龄保留使用真实 now，schedule 审计时间仍单调', () => {
+    const seeded = seedClockRollbackCycle();
+    expect(
+      repo.commitDigestBatch({
+        artifactId: 'rollback-artifact',
+        run: seeded.run,
+        expectedNextSequence: seeded.run.nextSequence,
+        firstSequence: seeded.run.nextSequence + 1,
+        lastSequence: seeded.run.upperSequence,
+        facts: seeded.facts,
+        createdAt: seeded.realNow,
+        aiEnabled: false,
+      }),
+    ).toEqual({ ok: true });
+    expect(repo.getEvent(seeded.oldEventId)).not.toBeNull();
+    expect(repo.getDigestSchedule('rollback-schedule')?.updatedAt).toBe(seeded.futureAudit);
+  });
+
+  it('Clock 回拨时 budget retry 年龄保留使用真实 now，blockedAt 仍单调', () => {
+    const seeded = seedClockRollbackCycle();
+    expect(repo.markDigestRunBudgetExceeded(seeded.run.id, 2, 1, seeded.futureAudit)).toEqual({
+      ok: true,
+    });
+    expect(repo.revalidateDigestRunBudget(seeded.run.id, seeded.realNow)).toEqual({
+      ok: true,
+      state: 'running',
+    });
+    expect(repo.getEvent(seeded.oldEventId)).not.toBeNull();
+    expect(repo.getDigestRun(seeded.run.id)?.blockedAt).toBeNull();
+    expect(repo.getDigestSchedule('rollback-schedule')?.updatedAt).toBe(seeded.futureAudit);
+  });
+
   it('Clock 回拨不回拨 provider.claimed/finished 审计时间', async () => {
     prepare(1, true);
     let release!: () => void;
@@ -1018,12 +1459,14 @@ describe('DigestService frozen cycle', () => {
       repository: repo,
       clock: new FakeClock(Date.parse(due)),
       sharing: {
-        get: async () => {
+        get: async () => [],
+      },
+      provider: {
+        resolve: async () => {
           await deferred;
-          return [];
+          return { provider: new FakeProvider({ chunks: [] }), model: 'fake' };
         },
       },
-      provider: { resolve: async () => null },
       scheduleControl: noopScheduleControl,
     });
     const handling = digest.handleDue({
@@ -1037,7 +1480,14 @@ describe('DigestService frozen cycle', () => {
     await handling;
     const artifactId = (handle.prepare('SELECT id FROM watch_digests').get() as { id: string }).id;
     const claimedAt = '2026-08-29T03:00:00.000Z';
-    const claimed = repo.claimDigestProvider(artifactId, claimedAt)!;
+    const pending = repo.getDigestArtifact(artifactId)!;
+    const claimed = repo.claimDigestProvider({
+      id: artifactId,
+      scheduleId: pending.scheduleId,
+      factsRevision: pending.factsRevision,
+      factsHash: pending.factsHash,
+      nowIso: claimedAt,
+    })!;
     expect(claimed.claimedAt).toBe(claimedAt);
     expect(
       repo.finishClaimedDigest({
