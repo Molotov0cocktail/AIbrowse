@@ -39,6 +39,46 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
     ).toBe(false);
   });
 
+  it('结构化条件与域模型保持同一 exact schema', () => {
+    const condition = {
+      version: 1,
+      combine: 'all',
+      predicates: [
+        {
+          fieldKey: 'title',
+          operator: 'contains',
+          operand: '更新',
+          caseSensitive: false,
+        },
+      ],
+    };
+    const base = {
+      mode: 'settings',
+      ruleId: crypto.randomUUID(),
+      expectedVersion: 1,
+      schedule: { kind: 'interval', intervalMinutes: 60 },
+      notificationLevel: 'normal',
+      showDetails: false,
+    };
+    expect(validateWatchIpcPayload('watch:updateRule', { ...base, condition }).ok).toBe(true);
+    expect(
+      validateWatchIpcPayload('watch:updateRule', {
+        ...base,
+        condition: { combine: 'all', predicates: condition.predicates },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateWatchIpcPayload('watch:updateRule', {
+        ...base,
+        condition: {
+          version: 1,
+          combine: 'all',
+          predicates: [{ fieldKey: 'title', operator: 'contains', operand: '更新' }],
+        },
+      }).ok,
+    ).toBe(false);
+  });
+
   it('输出拒绝未知顶层形状、敏感键、accessor 与字节预算 +1', () => {
     expect(
       validateWatchIpcOutput(
@@ -63,5 +103,50 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
     const accessor = { ok: true } as Record<string, unknown>;
     Object.defineProperty(accessor, 'value', { enumerable: true, get: () => ({}) });
     expect(validateWatchIpcOutput(accessor)).toBe(false);
+  });
+
+  it('输出对分页 item 与嵌套 DTO 做 deep exact 验证', () => {
+    const rule = {
+      id: crypto.randomUUID(),
+      version: 1,
+      sourceId: crypto.randomUUID(),
+      sourceName: '安全名称',
+      kind: 'page',
+      state: 'enabled',
+      pauseReason: null,
+      desiredEnabled: true,
+      muted: false,
+      accessMode: 'public',
+      schedule: { kind: 'interval', intervalMinutes: 60 },
+      condition: null,
+      notificationLevel: 'normal',
+      showDetails: false,
+      targetDisplay: 'example.com/news',
+      lastCheckedAt: null,
+      lastChangedAt: null,
+      nextDueAt: null,
+      health: 'healthy',
+      backoffUntil: null,
+    };
+    const output = { ok: true, value: { page: 1, pageSize: 50, total: 1, items: [rule] } };
+    expect(validateWatchIpcOutput(output, 'watch:listRules')).toBe(true);
+    expect(
+      validateWatchIpcOutput(
+        { ...output, value: { ...output.value, items: [{ ...rule, rawBody: 'secret' }] } },
+        'watch:listRules',
+      ),
+    ).toBe(false);
+    expect(
+      validateWatchIpcOutput(
+        {
+          ...output,
+          value: {
+            ...output.value,
+            items: [{ ...rule, schedule: { ...rule.schedule, cron: '*' } }],
+          },
+        },
+        'watch:listRules',
+      ),
+    ).toBe(false);
   });
 });

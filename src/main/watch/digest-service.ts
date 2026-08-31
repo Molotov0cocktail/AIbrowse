@@ -46,6 +46,7 @@ export interface DigestServiceOptions {
   provider: DigestProviderPort;
   membership?: DigestMembershipPort;
   scheduleControl: DigestScheduleControlPort;
+  onArtifactReady?: () => void;
 }
 
 export interface DigestScheduleQueryDto {
@@ -414,6 +415,7 @@ export class DigestService {
         return false;
       }
       if (schedule.aiEnabled) await this.attemptProvider(artifactId, schedule);
+      this.options.onArtifactReady?.();
       const refreshed = this.options.repository.getDigestRun(run.id);
       if (refreshed === null) return false;
       run = refreshed;

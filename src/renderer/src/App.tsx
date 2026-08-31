@@ -40,6 +40,9 @@ export default function App() {
   const [viewMode, setViewMode] = useState<'browser' | 'research-result' | 'watch'>('browser');
   const [watchSourceId, setWatchSourceId] = useState<string | null>(null);
   const [watchNotice, setWatchNotice] = useState<InAppNotificationDto | null>(null);
+  const [watchFocus, setWatchFocus] = useState<{ type: 'event' | 'digest'; id: string } | null>(
+    null,
+  );
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
   const agent = useAgent();
@@ -211,7 +214,11 @@ export default function App() {
           {viewMode === 'research-result' && research.state.resultView !== null ? (
             renderResultCanvas(research.state.resultView)
           ) : viewMode === 'watch' ? (
-            <WatchWorkspace initialSourceId={watchSourceId} onBack={() => setViewMode('browser')} />
+            <WatchWorkspace
+              initialSourceId={watchSourceId}
+              focusSubject={watchFocus}
+              onBack={() => setViewMode('browser')}
+            />
           ) : null}
         </main>
         {sidePanel === 'ai' && <AiPanel onCollapse={() => setSidePanel(null)} agent={agent} />}
@@ -245,6 +252,7 @@ export default function App() {
           type="button"
           className="watch-global-toast"
           onClick={() => {
+            setWatchFocus({ type: watchNotice.subjectType, id: watchNotice.subjectId });
             setViewMode('watch');
             setWatchNotice(null);
           }}

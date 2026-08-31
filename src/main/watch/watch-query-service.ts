@@ -31,6 +31,7 @@ export class WatchQueryService {
     private readonly repo: () => WatchRepository | null,
     private readonly runtime: () => WatchRuntimeState,
     private readonly windows: () => Pick<WatchStatusDto, 'windowsNotification' | 'windowsReason'>,
+    private readonly sourceName: (sourceId: string) => string | null = () => null,
   ) {}
 
   listRules(input: {
@@ -55,11 +56,15 @@ export class WatchQueryService {
   }
 
   private projectRule(rule: WatchRule): RuleSummaryDto {
+    const activity = this.repo()?.getRuleActivity(rule.id) ?? {
+      lastCheckedAt: null,
+      lastChangedAt: null,
+    };
     return {
       id: rule.id,
       version: rule.version,
       sourceId: rule.sourceId,
-      sourceName: `信源 ${rule.sourceId.slice(0, 8)}`,
+      sourceName: this.sourceName(rule.sourceId) ?? `信源 ${rule.sourceId.slice(0, 8)}`,
       kind: rule.kind,
       state: rule.state === 'deleted' ? 'paused' : rule.state,
       pauseReason: rule.pauseReason,
@@ -73,8 +78,8 @@ export class WatchQueryService {
       targetDisplay: displayTarget(
         rule.target.type === 'feed' ? rule.target.feedUrl : rule.target.pageUrl,
       ),
-      lastCheckedAt: null,
-      lastChangedAt: null,
+      lastCheckedAt: activity.lastCheckedAt,
+      lastChangedAt: activity.lastChangedAt,
       nextDueAt: rule.nextDueAt,
       health:
         rule.state === 'enabled'
@@ -121,7 +126,7 @@ export class WatchQueryService {
       id: event.id,
       ruleId: event.ruleId,
       sourceId: event.sourceId,
-      sourceName: `信源 ${event.sourceId.slice(0, 8)}`,
+      sourceName: this.sourceName(event.sourceId) ?? `信源 ${event.sourceId.slice(0, 8)}`,
       eventKind: event.eventKind,
       importance: event.importance,
       firstObservedAt: event.firstObservedAt,
@@ -129,10 +134,27 @@ export class WatchQueryService {
       itemCount: event.itemCount,
       read: event.readAt !== null,
     }));
-    const selected =
+    const selectedEvent =
       input.selectedEventId === null
         ? null
-        : items.find((item) => item.id === input.selectedEventId);
+        : events.find((item) => item.id === input.selectedEventId);
+    const selected =
+      selectedEvent === undefined || selectedEvent === null
+        ? null
+        : {
+            id: selectedEvent.id,
+            ruleId: selectedEvent.ruleId,
+            sourceId: selectedEvent.sourceId,
+            sourceName:
+              this.sourceName(selectedEvent.sourceId) ??
+              `信源 ${selectedEvent.sourceId.slice(0, 8)}`,
+            eventKind: selectedEvent.eventKind,
+            importance: selectedEvent.importance,
+            firstObservedAt: selectedEvent.firstObservedAt,
+            lastObservedAt: selectedEvent.lastObservedAt,
+            itemCount: selectedEvent.itemCount,
+            read: selectedEvent.readAt !== null,
+          };
     const detail =
       selected === undefined || selected === null
         ? null
@@ -151,7 +173,31 @@ export class WatchQueryService {
     if (repo === null) return null;
     const all = repo.listDigestSchedules();
     const start = (page - 1) * pageSize;
-    return { page, pageSize, total: all.length, items: all.slice(start, start + pageSize) };
+    return {
+      page,
+      pageSize,
+      total: all.length,
+      items: all.slice(start, start + pageSize).map((schedule) => {
+        const run = repo.getNonterminalDigestRun(schedule.id);
+        return {
+          id: schedule.id,
+          version: schedule.version,
+          sourceCount: schedule.sourceIds.length,
+          localTime: schedule.localTime,
+          timeZone: schedule.timeZone,
+          aiEnabled: schedule.aiEnabled,
+          state: schedule.state,
+          nextDueAt: schedule.nextDueAt,
+          lastCheckedAt: schedule.lastCheckedAt,
+          lastPeriod: schedule.lastPeriod,
+          lastRunStats: schedule.lastRunStats,
+          runState: run?.state ?? null,
+          blockedAt: run?.blockedAt ?? null,
+          blockedRequiredBytes: run?.blockedRequiredBytes ?? null,
+          blockedAvailableBytes: run?.blockedAvailableBytes ?? null,
+        };
+      }),
+    };
   }
 
   listDigests(page: number, pageSize: number, scheduleId: string | null) {

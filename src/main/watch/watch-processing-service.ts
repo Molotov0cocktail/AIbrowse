@@ -79,6 +79,8 @@ function healthySnapshot(rule: WatchRule): WatchHealthSnapshot {
 export interface WatchProcessingServiceOptions {
   repo: WatchRepository;
   clock: Clock;
+  onNotificationReady?: () => void;
+  windowsNotificationsEnabled?: boolean;
 }
 
 interface FailureDraft {
@@ -89,10 +91,14 @@ interface FailureDraft {
 export class WatchProcessingServiceImpl implements WatchProcessingService {
   private readonly repo: WatchRepository;
   private readonly clock: Clock;
+  private readonly onNotificationReady: () => void;
+  private readonly windowsNotificationsEnabled: boolean;
 
   constructor(options: WatchProcessingServiceOptions) {
     this.repo = options.repo;
     this.clock = options.clock;
+    this.onNotificationReady = options.onNotificationReady ?? (() => undefined);
+    this.windowsNotificationsEnabled = options.windowsNotificationsEnabled ?? false;
   }
 
   private iso(): string {
@@ -572,18 +578,30 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
     const health: WatchHealthSnapshot = healthySnapshot(input.rule);
     // #S6-047 FIXED DECISION 3：outbox 抑制条件只有 rule.muted；notificationLevel
     // 只是 Event importance（normal/important 非 muted 都恰一条 in-app outbox）。
+    const privacyJson = JSON.stringify({
+      eventKind,
+      importance: event.importance,
+      itemCount: pairs.length,
+    });
     const outbox = input.rule.muted
       ? []
       : [
           {
             id: randomUUID(),
             dedupeKey: `in-app|event|${eventId}|1`,
-            privacyJson: JSON.stringify({
-              eventKind,
-              importance: event.importance,
-              itemCount: pairs.length,
-            }),
+            privacyJson,
+            channel: 'in-app' as const,
           },
+          ...(this.windowsNotificationsEnabled
+            ? [
+                {
+                  id: randomUUID(),
+                  dedupeKey: `windows|event|${eventId}|1`,
+                  privacyJson,
+                  channel: 'windows' as const,
+                },
+              ]
+            : []),
         ];
     const result = this.repo.writeEventResult({
       path: 'create',
@@ -597,6 +615,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
       audits: [{ id: randomUUID(), reasonCode: 'event-created', createdAt: nowIso }],
     });
     if (!result.ok) return this.conflictResult(result.code);
+    if (outbox.length > 0) this.onNotificationReady();
     return { ok: true, outcome };
   }
 

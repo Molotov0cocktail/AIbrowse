@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { qualifyWindowsNotification } from './windows-notification-sink';
+import { qualifyWindowsNotification, WindowsNotificationSink } from './windows-notification-sink';
 
 describe('D9 Windows Notification identity gate', () => {
   const base = {
@@ -29,4 +29,62 @@ describe('D9 Windows Notification identity gate', () => {
         },
       }),
     ).toEqual({ available: false, reason: 'probe-failed' }));
+});
+
+describe('D9 Windows Notification sink', () => {
+  it('仅以内部 subject UUID 路由 click，并记录 show/click', () => {
+    const listeners = new Map<string, () => void>();
+    const routed: string[] = [];
+    const audits: string[] = [];
+    const sink = new WindowsNotificationSink(
+      {
+        create: () => ({
+          once: (event, listener) => listeners.set(event, listener),
+          show: () => undefined,
+        }),
+      },
+      (type, id) => routed.push(`${type}:${id}`),
+      (result) => audits.push(result),
+    );
+    expect(
+      sink.show({
+        subjectType: 'event',
+        subjectId: '00000000-0000-4000-8000-000000000001',
+        title: '固定标题',
+        body: '固定正文',
+        important: false,
+      }),
+    ).toBe(true);
+    listeners.get('click')?.();
+    expect(routed).toEqual(['event:00000000-0000-4000-8000-000000000001']);
+    expect(audits).toEqual(['shown', 'clicked']);
+  });
+
+  it('native show 异常闭合失败且不路由', () => {
+    const audits: string[] = [];
+    const sink = new WindowsNotificationSink(
+      {
+        create: () => ({
+          once: () => undefined,
+          show: () => {
+            throw new Error('不可回显');
+          },
+        }),
+      },
+      () => {
+        throw new Error('不应路由');
+      },
+      (result) => audits.push(result),
+    );
+    expect(
+      sink.show({
+        subjectType: 'digest',
+        subjectId: '00000000-0000-4000-8000-000000000002',
+        title: '标题',
+        body: '正文',
+        important: true,
+      }),
+    ).toBe(false);
+    expect(audits).toEqual(['failed']);
+  });
 });

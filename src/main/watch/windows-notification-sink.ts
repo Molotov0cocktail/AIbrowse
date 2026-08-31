@@ -28,3 +28,47 @@ export function qualifyWindowsNotification(
     return { available: false, reason: 'probe-failed' };
   }
 }
+
+export interface NativeNotificationLike {
+  once(event: 'click' | 'failed', listener: () => void): void;
+  show(): void;
+}
+
+export interface WindowsNotificationFactory {
+  create(options: { title: string; body: string; silent: boolean }): NativeNotificationLike;
+}
+
+export class WindowsNotificationSink {
+  constructor(
+    private readonly factory: WindowsNotificationFactory,
+    private readonly route: (subjectType: 'event' | 'digest', subjectId: string) => void,
+    private readonly audit: (result: 'shown' | 'failed' | 'clicked') => void,
+  ) {}
+
+  show(input: {
+    subjectType: 'event' | 'digest';
+    subjectId: string;
+    title: string;
+    body: string;
+    important: boolean;
+  }): boolean {
+    try {
+      const notification = this.factory.create({
+        title: input.title,
+        body: input.body,
+        silent: !input.important,
+      });
+      notification.once('failed', () => this.audit('failed'));
+      notification.once('click', () => {
+        this.route(input.subjectType, input.subjectId);
+        this.audit('clicked');
+      });
+      notification.show();
+      this.audit('shown');
+      return true;
+    } catch {
+      this.audit('failed');
+      return false;
+    }
+  }
+}

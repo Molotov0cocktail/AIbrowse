@@ -263,7 +263,7 @@ const SQL_SET_RULE_MUTED = `UPDATE watch_rules SET muted = ?, rule_version = rul
   updated_at = ? WHERE id = ? AND rule_version = ? AND state != 'deleted'`;
 const SQL_PAUSE_RULE_USER = `UPDATE watch_rules SET state = 'paused', pause_reason = 'user',
   desired_enabled = 0, rule_version = rule_version + 1, updated_at = ?
-  WHERE id = ? AND rule_version = ? AND state != 'deleted'`;
+  WHERE id = ? AND rule_version = ? AND state = 'enabled' AND pause_reason IS NULL`;
 const SQL_RESUME_RULE_USER = `UPDATE watch_rules SET state = 'enabled', pause_reason = NULL,
   desired_enabled = 1, rule_version = rule_version + 1, updated_at = ?
   WHERE id = ? AND rule_version = ? AND state = 'paused' AND pause_reason = 'user'`;
@@ -315,6 +315,9 @@ const SQL_INSERT_RUN = `INSERT INTO watch_runs
 const SQL_SELECT_RUN = `SELECT id, rule_id, request_key, status, trigger, scheduled_for,
   started_at, finished_at, outcome_json, health_json, response_metadata_json
   FROM watch_runs WHERE id = ?`;
+const SQL_SELECT_RULE_ACTIVITY = `SELECT
+  (SELECT MAX(finished_at) FROM watch_runs WHERE rule_id = ?) AS last_checked_at,
+  (SELECT MAX(last_observed_at) FROM watch_events WHERE rule_id = ?) AS last_changed_at`;
 const SQL_MARK_NON_TERMINAL_INTERRUPTED = `UPDATE watch_runs
   SET status = 'interrupted', finished_at = ?
   WHERE status IN ('queued','running')`;
@@ -484,7 +487,7 @@ const SQL_SELECT_ALL_OUTBOX = `SELECT id, rule_id, subject_type, subject_id, cha
   dedupe_key, privacy_json, state, attempts, created_at, updated_at
   FROM notification_outbox`;
 const SQL_SELECT_PENDING_OUTBOX = `${SQL_SELECT_ALL_OUTBOX}
-  WHERE state = 'pending' ORDER BY created_at ASC, id ASC LIMIT ?`;
+  WHERE state = 'pending' AND channel = ? ORDER BY created_at ASC, id ASC LIMIT ?`;
 const SQL_CLAIM_PENDING_OUTBOX = `UPDATE notification_outbox
   SET state = 'uncertain', attempts = attempts + 1, updated_at = ?
   WHERE id = ? AND state = 'pending'`;
@@ -2295,6 +2298,23 @@ export class WatchRepository {
     }
   }
 
+  getRuleActivity(ruleId: string): { lastCheckedAt: string | null; lastChangedAt: string | null } {
+    this.ensureOpen();
+    try {
+      const row = this.handle.prepare(SQL_SELECT_RULE_ACTIVITY).get(ruleId, ruleId) as
+        { last_checked_at: unknown; last_changed_at: unknown } | undefined;
+      if (row === undefined) return { lastCheckedAt: null, lastChangedAt: null };
+      if (
+        (row.last_checked_at !== null && typeof row.last_checked_at !== 'string') ||
+        (row.last_changed_at !== null && typeof row.last_changed_at !== 'string')
+      )
+        return { lastCheckedAt: null, lastChangedAt: null };
+      return { lastCheckedAt: row.last_checked_at, lastChangedAt: row.last_changed_at };
+    } catch {
+      return { lastCheckedAt: null, lastChangedAt: null };
+    }
+  }
+
   listEventItems(eventId: string): ChangeEvidencePair[] {
     this.ensureOpen();
     try {
@@ -2337,15 +2357,20 @@ export class WatchRepository {
 
   markEventsRead(eventIds: readonly string[], nowIso: string | null): number {
     this.ensureOpen();
-    let count = 0;
-    for (const id of eventIds) {
-      const result = this.handle.prepare(SQL_MARK_EVENTS_READ).run(nowIso, id);
-      count += Number(result.changes);
-    }
-    return count;
+    return withTransaction(this.handle, () => {
+      let count = 0;
+      for (const id of eventIds) {
+        const result = this.handle.prepare(SQL_MARK_EVENTS_READ).run(nowIso, id);
+        count += Number(result.changes);
+      }
+      return count;
+    });
   }
 
-  listPendingNotifications(limit: number): Array<{
+  listPendingNotifications(
+    channel: 'in-app' | 'windows',
+    limit: number,
+  ): Array<{
     id: string;
     ruleId: string | null;
     subjectType: 'event' | 'digest';
@@ -2358,7 +2383,7 @@ export class WatchRepository {
     this.ensureOpen();
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return [];
     try {
-      const rows = this.handle.prepare(SQL_SELECT_PENDING_OUTBOX).all(limit) as Array<
+      const rows = this.handle.prepare(SQL_SELECT_PENDING_OUTBOX).all(channel, limit) as Array<
         Record<string, unknown>
       >;
       return rows.flatMap((row) => {
@@ -2782,6 +2807,7 @@ export class WatchRepository {
         id: string;
         dedupeKey: string;
         privacyJson: string;
+        channel?: 'in-app' | 'windows';
       }>;
     };
     // coalesce：目标 Event + 追加的观察元数据（idempotencyKey 由 Processing 计算）
@@ -3066,7 +3092,7 @@ export class WatchRepository {
                 input.rule.id,
                 'event',
                 input.event.event.id,
-                'in-app',
+                ob.channel ?? 'in-app',
                 ob.dedupeKey,
                 ob.privacyJson,
                 nowIso,
@@ -4802,7 +4828,14 @@ export class WatchRepository {
         }
       | undefined;
     responseMetadataJson: string | null;
-    outbox?: Array<{ id: string; dedupeKey: string; privacyJson: string }> | undefined;
+    outbox?:
+      | Array<{
+          id: string;
+          dedupeKey: string;
+          privacyJson: string;
+          channel?: 'in-app' | 'windows';
+        }>
+      | undefined;
     audits: Array<{ id: string; reasonCode: string }>;
   }): number {
     let bytes = 0;
@@ -4851,6 +4884,7 @@ export class WatchRepository {
         utf8ByteLength(ob.id) +
         utf8ByteLength(ob.dedupeKey) +
         utf8ByteLength(ob.privacyJson) +
+        utf8ByteLength(ob.channel ?? 'in-app') +
         utf8ByteLength(input.event.ruleId) +
         utf8ByteLength(input.event.id) +
         8;

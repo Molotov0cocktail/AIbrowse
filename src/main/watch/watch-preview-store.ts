@@ -21,8 +21,17 @@ interface Entry {
   record: WatchPreviewRecord;
 }
 
+interface DiscoveryEntry {
+  expiresAt: number;
+  sourceId: string;
+  candidates: Map<string, string>;
+}
+
+export const MAX_WATCH_DISCOVERIES = 128;
+
 export class WatchPreviewStore {
   private readonly entries = new Map<string, Entry>();
+  private readonly discoveries = new Map<string, DiscoveryEntry>();
   constructor(private readonly now: () => number = Date.now) {}
 
   issue(record: WatchPreviewRecord): string {
@@ -42,10 +51,63 @@ export class WatchPreviewStore {
     return entry.record;
   }
 
+  issueDiscovery(
+    sourceId: string,
+    urls: readonly string[],
+  ): {
+    discoveryHandle: string;
+    candidates: Array<{ candidateId: string; feedUrl: string }>;
+  } | null {
+    this.pruneDiscoveries();
+    if (this.discoveries.size >= MAX_WATCH_DISCOVERIES) return null;
+    const discoveryHandle = this.newHandle(new Set(this.discoveries.keys()));
+    const candidateIds = new Set<string>();
+    const candidates = urls.map((feedUrl) => {
+      const candidateId = this.newHandle(candidateIds);
+      candidateIds.add(candidateId);
+      return { candidateId, feedUrl };
+    });
+    this.discoveries.set(discoveryHandle, {
+      expiresAt: this.now() + WATCH_PREVIEW_TTL_MS,
+      sourceId,
+      candidates: new Map(
+        candidates.map((candidate) => [candidate.candidateId, candidate.feedUrl]),
+      ),
+    });
+    return { discoveryHandle, candidates };
+  }
+
+  consumeDiscovery(
+    discoveryHandle: string,
+    candidateId: string,
+  ): { sourceId: string; feedUrl: string } | null {
+    if (!HANDLE_PATTERN.test(discoveryHandle) || !HANDLE_PATTERN.test(candidateId)) return null;
+    const entry = this.discoveries.get(discoveryHandle);
+    this.discoveries.delete(discoveryHandle);
+    if (entry === undefined || this.now() >= entry.expiresAt) return null;
+    const feedUrl = entry.candidates.get(candidateId);
+    return feedUrl === undefined ? null : { sourceId: entry.sourceId, feedUrl };
+  }
+
   dispose(): void {
     this.entries.clear();
+    this.discoveries.clear();
   }
   get size(): number {
-    return this.entries.size;
+    return this.entries.size + this.discoveries.size;
+  }
+
+  private newHandle(existing: ReadonlySet<string>): string {
+    let handle: string;
+    do {
+      handle = randomBytes(32).toString('base64url');
+    } while (existing.has(handle));
+    return handle;
+  }
+
+  private pruneDiscoveries(): void {
+    const now = this.now();
+    for (const [handle, entry] of this.discoveries)
+      if (now >= entry.expiresAt) this.discoveries.delete(handle);
   }
 }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { existsSync, statSync } from 'node:fs';
@@ -62,7 +62,10 @@ import { WatchNotificationService } from './watch/watch-notification-service';
 import { WatchPreviewStore } from './watch/watch-preview-store';
 import { WatchPreviewService } from './watch/watch-preview-service';
 import { WatchCommandService } from './watch/watch-command-service';
-import { qualifyWindowsNotification } from './watch/windows-notification-sink';
+import {
+  qualifyWindowsNotification,
+  WindowsNotificationSink,
+} from './watch/windows-notification-sink';
 import {
   WATCH_IPC_CHANNELS,
   validateWatchIpcOutput,
@@ -75,7 +78,10 @@ import type { WatchPushDto } from '../shared/types/watch-ipc';
 // 全部 fail-closed，D6 零 DB 写入；smoke bundle 供 8.23 默认矩阵驱动。
 // D7：统一 WatchAcquisitionService（Feed/Page 路由）与 WatchProcessingServiceImpl
 //（Diff/Condition/Event 结果事务编排）。
-import { createPublicWatchHttpStack } from './watch/public-watch-http-client';
+import {
+  createPublicWatchHttpStack,
+  type TargetGatedClient,
+} from './watch/public-watch-http-client';
 import { WatchTaskTabWorkspace } from './watch/watch-task-tab-workspace';
 import { BrowserWatchReader } from './watch/browser-watch-reader';
 import { SessionGrantStore } from './watch/session-grant-store';
@@ -310,6 +316,10 @@ let researchShutdownStarted = false;
 // future/unavailable 必须返回失败，绝不因文件缺失静默退化为 no-op）
 let watchCoordinator: WatchLifecycleCoordinator | null = null;
 let watchRepo: WatchRepository | null = null;
+let watchSubscriptionSender: Electron.WebContents | null = null;
+let watchRevision = 0;
+let watchNotifications: WatchNotificationService | null = null;
+let watchWindowsNotifications: WatchNotificationService | null = null;
 let smokeWatchDir: string | null = null;
 // D5：生产调度运行时（FIXED DECISIONS 10/12）——单例 HostRequestGate + Coordinator +
 // Scheduler；before-quit 先排水（stop-admission→abort→drain）再 dispose repo。
@@ -327,8 +337,10 @@ let watchWorkspace: WatchTaskTabWorkspace | null = null;
 let watchGrantStore: SessionGrantStore | null = null;
 let watchPageRouter: PageAcquisitionRouter | null = null;
 let watchAcquisitionService: WatchAcquisitionService | null = null;
+let watchPublicTarget: TargetGatedClient | null = null;
 let watchPreviewReader: BrowserWatchReader | null = null;
 let watchPreviewStore: WatchPreviewStore | null = null;
+let watchIpcAdapter: WatchIpcAdapter | null = null;
 let watchPublicStackRobots: { clearCache(): void } | null = null;
 // 8.23 冒烟 holder：index.ts 装配后注入（SMOKE_MODE 消费；生产零行为）
 const smokeWatchPageSession: { current: WatchPageSmokeBundle | null } = { current: null };
@@ -364,7 +376,9 @@ async function watchShutdown(): Promise<void> {
   }
   watchGrantStore?.clear();
   watchPreviewStore?.dispose();
+  watchIpcAdapter?.dispose();
   watchPublicStackRobots?.clearCache();
+  watchPublicTarget = null;
   // D7 将在 Run pipeline 接线时消费 watchPageRouter（FIXED DECISIONS 12）：
   // 保持引用存活至 shutdown，杜绝“已装配但不可达”的悬挂态。
   void watchPageRouter;
@@ -818,15 +832,21 @@ if (!gotLock) {
 
     // Sixth Stage D9：Watch 精确 invoke 白名单。renderer 只传闭合 payload；
     // 查询/导出均在主进程重投影，文件路径永不穿过 bridge。
+    const windowsQualificationResult = qualifyWindowsNotification({
+      platform: process.platform,
+      packaged: app.isPackaged,
+      // 当前产品尚无经打包验证的 AUMID/identity 配置；不得用开发态冒充生产资格。
+      identityConfigured: false,
+      supported: Notification.isSupported(),
+      probeIdentity: () => false,
+    });
     const windowsQualification = (): ReturnType<typeof qualifyWindowsNotification> =>
-      qualifyWindowsNotification({
-        platform: process.platform,
-        packaged: app.isPackaged,
-        // 当前产品尚无经打包验证的 AUMID/identity 配置；不得用开发态冒充生产资格。
-        identityConfigured: false,
-        supported: false,
-        probeIdentity: () => false,
-      });
+      windowsQualificationResult;
+    const resolveWatchSourceName = (sourceId: string): string | null => {
+      const provider = sourceService as (SourceService & DigestMembershipProjectionProvider) | null;
+      const resolved = provider?.resolveDigestMembership({ sourceIds: [sourceId] });
+      return resolved?.status === 'ok' ? (resolved.members[0]?.displayName ?? null) : null;
+    };
     const watchQuery = new WatchQueryService(
       () => watchRepo,
       () => watchRunCoordinator?.getState() ?? { mode: 'unavailable', activeCount: 0 },
@@ -836,6 +856,7 @@ if (!gotLock) {
           ? { windowsNotification: 'available', windowsReason: null }
           : { windowsNotification: 'unavailable', windowsReason: result.reason };
       },
+      resolveWatchSourceName,
     );
     const watchExporter = new WatchExportService(watchQuery, {
       showSaveDialog: async (kind, defaultFileName) => {
@@ -863,6 +884,7 @@ if (!gotLock) {
         return provider?.getSourceWatchProjection(sourceId) ?? { status: 'unavailable' };
       },
       acquisition: () => watchAcquisitionService,
+      discoveryTarget: () => watchPublicTarget,
       browser: () => browserController,
       reader: () => watchPreviewReader,
       grants: () => watchGrantStore,
@@ -876,9 +898,7 @@ if (!gotLock) {
       () => watchRepo,
       () => watchGrantStore,
     );
-    let watchSubscriptionSender: Electron.WebContents | null = null;
-    let watchRevision = 0;
-    const watchNotifications = new WatchNotificationService(
+    watchNotifications = new WatchNotificationService(
       () => watchRepo,
       (notification) => {
         const sender = watchSubscriptionSender;
@@ -893,7 +913,59 @@ if (!gotLock) {
         return true;
       },
       (result) => logInfo('audit', `watch-notification result=${result}`),
+      'in-app',
+      resolveWatchSourceName,
     );
+    const windowsSink = windowsQualificationResult.available
+      ? new WindowsNotificationSink(
+          {
+            create: (options) => new Notification(options),
+          },
+          (subjectType, subjectId) => {
+            if (mainWindow === null || mainWindow.isDestroyed()) return;
+            mainWindow.show();
+            mainWindow.focus();
+            const sender = watchSubscriptionSender;
+            if (sender === null || sender.isDestroyed()) return;
+            const createdAt = new Date().toISOString();
+            const notification = {
+              notificationId: subjectId,
+              dedupeKey: `in-app|${subjectType}|${subjectId}|1`,
+              subjectType,
+              subjectId,
+              privacyVersion: 1 as const,
+              importance: 'normal' as const,
+              title: 'AIbrowse 监控提醒',
+              body: subjectType === 'event' ? '监控来源发生变化' : '监控摘要已生成',
+              createdAt,
+            };
+            const push: WatchPushDto = {
+              type: 'notification',
+              revision: ++watchRevision,
+              notification,
+            };
+            if (validateWatchIpcOutput(push)) sender.send(IPC.WatchSubscribe, push);
+          },
+          (result) => logInfo('audit', `watch-windows-notification result=${result}`),
+        )
+      : null;
+    watchWindowsNotifications =
+      windowsSink === null
+        ? null
+        : new WatchNotificationService(
+            () => watchRepo,
+            (notification) =>
+              windowsSink.show({
+                subjectType: notification.subjectType,
+                subjectId: notification.subjectId,
+                title: notification.title,
+                body: notification.body,
+                important: notification.importance === 'important',
+              }),
+            (result) => logInfo('audit', `watch-windows-delivery result=${result}`),
+            'windows',
+            resolveWatchSourceName,
+          );
     const watchIpc = new WatchIpcAdapter({
       repository: () => watchRepo,
       coordinator: () => watchRunCoordinator,
@@ -910,6 +982,7 @@ if (!gotLock) {
       },
       audit: (message) => logInfo('audit', message),
     });
+    watchIpcAdapter = watchIpc;
     for (const channel of WATCH_IPC_CHANNELS) {
       if (channel !== IPC.WatchSubscribe)
         handle(channel, (payload) => watchIpc.invoke(channel, payload));
@@ -928,7 +1001,7 @@ if (!gotLock) {
         return;
       }
       if (watchSubscriptionSender === event.sender) {
-        void watchNotifications.drain();
+        void watchNotifications?.drain();
         return;
       }
       if (watchSubscriptionSender !== null) return;
@@ -940,7 +1013,7 @@ if (!gotLock) {
       };
       if (!event.sender.isDestroyed() && validateWatchIpcOutput(push))
         event.sender.send(IPC.WatchSubscribe, push);
-      void watchNotifications.drain();
+      void watchNotifications?.drain();
       event.sender.once('destroyed', () => {
         if (watchSubscriptionSender === event.sender) watchSubscriptionSender = null;
       });
@@ -1543,6 +1616,11 @@ async function createBrowserWindow(): Promise<void> {
         const processingService = new WatchProcessingServiceImpl({
           repo: watchOutcome.repo,
           clock: watchClock,
+          onNotificationReady: () => {
+            if (watchSubscriptionSender !== null) void watchNotifications?.drain();
+            void watchWindowsNotifications?.drain();
+          },
+          windowsNotificationsEnabled: watchWindowsNotifications !== null,
         });
         let acquisitionPort: WatchAcquisitionPort;
         if (browserController !== null) {
@@ -1550,6 +1628,7 @@ async function createBrowserWindow(): Promise<void> {
           //（target-gated，robots 生命周期窄端口）与 Session task-tab 采集依赖。
           // 失败全 fail-closed；D6 零 DB 写入、零 Diff/Event。
           const publicStack = createPublicWatchHttpStack({ hostGate });
+          watchPublicTarget = publicStack.target;
           watchPublicStackRobots = publicStack.robots;
           watchWorkspace = new WatchTaskTabWorkspace({
             browser: browserController,
@@ -1650,6 +1729,10 @@ async function createBrowserWindow(): Promise<void> {
             resolve: async (selector) => sourceDigestProvider.resolveDigestMembership(selector),
           },
           scheduleControl: digestDue,
+          onArtifactReady: () => {
+            if (watchSubscriptionSender !== null) void watchNotifications?.drain();
+            void watchWindowsNotifications?.drain();
+          },
         });
         digestHolder.current = digest;
         // 启动恢复期间只发布关闭控制句柄，不发布 repo/coordinator 正常入口；
@@ -1690,6 +1773,7 @@ async function createBrowserWindow(): Promise<void> {
           'main',
           'Watch 子系统就绪（协调器已绑定，调度已启动，acquisition 端口 fail-closed，D6 页面采集路由已装配）',
         );
+        void watchWindowsNotifications?.drain();
       }
       // unavailable 分支：coordinator 保持未绑定 → prepare 恒 fail-closed
       //（调度也不启动——schedulerReady=false）

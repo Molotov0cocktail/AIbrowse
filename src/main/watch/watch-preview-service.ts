@@ -13,6 +13,8 @@ import {
 } from './page-projector';
 import { WatchPreviewStore, type WatchPreviewRecord } from './watch-preview-store';
 import type { SessionGrantStore } from './session-grant-store';
+import type { TargetGatedClient } from './public-watch-http-client';
+import { parseDiscoveryCandidates } from './feed-discovery';
 
 type PreviewResult =
   | { ok: true; value: Record<string, unknown> }
@@ -26,6 +28,7 @@ export interface WatchPreviewServiceOptions {
   store: WatchPreviewStore;
   source: (sourceId: string) => SourceWatchProjectionReadResult;
   acquisition: () => WatchAcquisitionService | null;
+  discoveryTarget: () => TargetGatedClient | null;
   browser: () => BrowserController | null;
   reader: () => BrowserWatchReader | null;
   grants: () => SessionGrantStore | null;
@@ -38,18 +41,38 @@ export class WatchPreviewService {
     mode: 'source' | 'manual' | 'candidate';
     sourceId?: string;
     feedUrl?: string;
+    discoveryHandle?: string;
+    candidateId?: string;
   }): Promise<PreviewResult> {
-    if (input.mode === 'candidate' || input.sourceId === undefined)
-      return { ok: false, errorCode: 'unavailable' };
-    const source = this.options.source(input.sourceId);
+    const candidate =
+      input.mode === 'candidate' &&
+      input.discoveryHandle !== undefined &&
+      input.candidateId !== undefined
+        ? this.options.store.consumeDiscovery(input.discoveryHandle, input.candidateId)
+        : null;
+    const sourceId = input.mode === 'candidate' ? candidate?.sourceId : input.sourceId;
+    if (sourceId === undefined)
+      return {
+        ok: false,
+        errorCode: input.mode === 'candidate' ? 'preview-expired' : 'unavailable',
+      };
+    const source = this.options.source(sourceId);
     if (source.status !== 'found')
       return { ok: false, errorCode: source.status === 'missing' ? 'not-found' : 'unavailable' };
-    const feedUrl = input.mode === 'manual' ? input.feedUrl! : source.projection.canonicalKey;
-    return this.previewWithAcquisition(
+    const feedUrl =
+      input.mode === 'manual'
+        ? input.feedUrl!
+        : input.mode === 'candidate'
+          ? candidate!.feedUrl
+          : source.projection.canonicalKey;
+    const direct = await this.previewWithAcquisition(
       source.projection,
       { type: 'feed', feedUrl, format: 'rss2' },
       'public',
     );
+    if (direct.result.ok || input.mode !== 'source' || !direct.discoveryEligible)
+      return direct.result;
+    return this.discoverFeedCandidates(source.projection);
   }
 
   async previewPage(input: {
@@ -67,7 +90,7 @@ export class WatchPreviewService {
       sessionConsent: null,
     };
     if (input.accessMode === 'public')
-      return this.previewWithAcquisition(source.projection, target, 'public');
+      return (await this.previewWithAcquisition(source.projection, target, 'public')).result;
     const browser = this.options.browser();
     const reader = this.options.reader();
     const active = (await browser?.getActiveTab()) ?? null;
@@ -171,9 +194,10 @@ export class WatchPreviewService {
     source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
     target: WatchRule['target'],
     accessMode: 'public',
-  ): Promise<PreviewResult> {
+  ): Promise<{ result: PreviewResult; discoveryEligible: boolean }> {
     const acquisition = this.options.acquisition();
-    if (acquisition === null) return { ok: false, errorCode: 'unavailable' };
+    if (acquisition === null)
+      return { result: { ok: false, errorCode: 'unavailable' }, discoveryEligible: false };
     const fingerprint = locatorFingerprint(source, target);
     const rule: WatchRule = {
       id: randomUUID(),
@@ -210,14 +234,18 @@ export class WatchPreviewService {
     });
     if (!acquired.ok || acquired.kind !== 'projection')
       return {
-        ok: false,
-        errorCode: acquired.ok
-          ? 'unavailable'
-          : acquired.health === 'budget_exceeded'
-            ? 'budget-exceeded'
-            : acquired.health === 'security_rejected'
-              ? 'security-rejected'
-              : 'unavailable',
+        result: {
+          ok: false,
+          errorCode: acquired.ok
+            ? 'unavailable'
+            : acquired.health === 'budget_exceeded'
+              ? 'budget-exceeded'
+              : acquired.health === 'security_rejected'
+                ? 'security-rejected'
+                : 'unavailable',
+        },
+        discoveryEligible:
+          !acquired.ok && acquired.health === 'parse_changed' && acquired.disposition === 'parse',
       };
     const fields =
       acquired.projection.value.type === 'feed'
@@ -237,18 +265,81 @@ export class WatchPreviewService {
         lastModified: acquired.responseMetadata?.lastModified ?? null,
       },
     };
-    if (record.finalOrigin === '') return { ok: false, errorCode: 'security-rejected' };
+    if (record.finalOrigin === '')
+      return {
+        result: { ok: false, errorCode: 'security-rejected' },
+        discoveryEligible: false,
+      };
+    return {
+      result: {
+        ok: true,
+        value: {
+          previewHandle: this.options.store.issue(record),
+          kind: target.type,
+          accessMode,
+          targetDisplay: safeDisplay(acquired.projection.finalUrl),
+          fields,
+          ...(target.type === 'page' && acquired.projection.value.type === 'page'
+            ? {
+                regions: acquired.projection.value.fields.map((field) => ({
+                  kind: field.kind,
+                  label: field.label,
+                  fieldKey: field.fieldKey,
+                })),
+              }
+            : {}),
+        },
+      },
+      discoveryEligible: false,
+    };
+  }
+
+  private async discoverFeedCandidates(
+    source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
+  ): Promise<PreviewResult> {
+    const target = this.options.discoveryTarget();
+    if (target === null) return { ok: false, errorCode: 'unavailable' };
+    const response = await target.get({
+      url: source.canonicalKey,
+      purpose: 'discovery',
+      signal: new AbortController().signal,
+      deadline: new Date(Date.now() + 30_000),
+    });
+    if (response.kind !== 'ok')
+      return {
+        ok: false,
+        errorCode:
+          response.kind === 'failed' && response.health === 'security_rejected'
+            ? 'security-rejected'
+            : response.kind === 'failed' && response.health === 'budget_exceeded'
+              ? 'budget-exceeded'
+              : 'unavailable',
+      };
+    const parsed = parseDiscoveryCandidates(response.body.toString('utf8'), response.meta.finalUrl);
+    if (!parsed.ok)
+      return {
+        ok: false,
+        errorCode:
+          parsed.health === 'security_rejected'
+            ? 'security-rejected'
+            : parsed.health === 'budget_exceeded'
+              ? 'budget-exceeded'
+              : 'unavailable',
+      };
+    if (parsed.candidates.length === 0) return { ok: false, errorCode: 'not-found' };
+    const issued = this.options.store.issueDiscovery(
+      source.sourceId,
+      parsed.candidates.map((candidate) => candidate.url),
+    );
+    if (issued === null) return { ok: false, errorCode: 'budget-exceeded' };
     return {
       ok: true,
       value: {
-        previewHandle: this.options.store.issue(record),
-        kind: target.type,
-        accessMode,
-        targetDisplay: safeDisplay(acquired.projection.finalUrl),
-        fields,
-        ...(target.type === 'page' && acquired.projection.value.type === 'page'
-          ? { regions: acquired.projection.value.fields }
-          : {}),
+        discoveryHandle: issued.discoveryHandle,
+        candidates: issued.candidates.map((candidate) => ({
+          candidateId: candidate.candidateId,
+          targetDisplay: safeDisplay(candidate.feedUrl),
+        })),
       },
     };
   }

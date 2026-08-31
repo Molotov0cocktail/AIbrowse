@@ -79,4 +79,29 @@ describe('D9 notification outbox drain', () => {
     ).drain();
     expect(finished).toBe('failed');
   });
+
+  it('按 channel 查询，另一 channel 的大量 pending 不会造成饥饿', async () => {
+    let requested = '';
+    let delivered = 0;
+    const repo: NotificationRepository = {
+      listPendingNotifications: (channel) => {
+        requested = channel;
+        return [];
+      },
+      claimPendingNotification: () => false,
+      finishClaimedNotification: () => false,
+      getRule: () => null,
+    };
+    await new WatchNotificationService(
+      () => repo,
+      () => {
+        delivered += 1;
+        return true;
+      },
+      () => undefined,
+      'windows',
+    ).drain();
+    expect(requested).toBe('windows');
+    expect(delivered).toBe(0);
+  });
 });

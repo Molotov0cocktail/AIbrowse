@@ -1,5 +1,6 @@
 import { utf8ByteLength } from './watch-budget';
 import { CONDITION_OPERATORS, WATCH_EVENT_KINDS, WATCH_NOTIFICATION_LEVELS } from '../types/watch';
+import { parseDigestExplanation } from './digest-validator';
 
 export const MAX_WATCH_IPC_INPUT_BYTES = 65_536;
 export const MAX_WATCH_IPC_OUTPUT_BYTES = 262_144;
@@ -96,7 +97,8 @@ function schedule(v: unknown): boolean {
 function condition(v: unknown): boolean {
   if (v === null) return true;
   if (
-    !record(v, ['combine', 'predicates']) ||
+    !record(v, ['version', 'combine', 'predicates']) ||
+    v['version'] !== 1 ||
     (v['combine'] !== 'all' && v['combine'] !== 'any') ||
     !Array.isArray(v['predicates']) ||
     v['predicates'].length < 1 ||
@@ -105,10 +107,11 @@ function condition(v: unknown): boolean {
     return false;
   return v['predicates'].every(
     (p) =>
-      record(p, ['fieldKey', 'operator', 'operand']) &&
+      record(p, ['fieldKey', 'operator', 'operand', 'caseSensitive']) &&
       typeof p['fieldKey'] === 'string' &&
       p['fieldKey'].length <= 256 &&
       (CONDITION_OPERATORS as readonly unknown[]).includes(p['operator']) &&
+      typeof p['caseSensitive'] === 'boolean' &&
       (p['operand'] === null ||
         typeof p['operand'] === 'string' ||
         typeof p['operand'] === 'number'),
@@ -468,34 +471,15 @@ function successValue(channel: WatchIpcChannel, value: unknown): boolean {
     case 'watch:getStatus':
       return watchStatus(value);
     case 'watch:listRules':
+      return paged(value, false, ruleSummary);
     case 'watch:listDigestSchedules':
+      return paged(value, false, digestSchedule);
     case 'watch:listDigests':
-      return paged(value, false);
+      return paged(value, false, digestListItem);
     case 'watch:listEvents':
-      return paged(value, true);
+      return paged(value, true, eventListItem) && eventDetail((value as Plain)['selected']);
     case 'watch:getRule':
-      return record(value, [
-        'id',
-        'version',
-        'sourceId',
-        'sourceName',
-        'kind',
-        'state',
-        'pauseReason',
-        'desiredEnabled',
-        'muted',
-        'accessMode',
-        'schedule',
-        'condition',
-        'notificationLevel',
-        'showDetails',
-        'targetDisplay',
-        'lastCheckedAt',
-        'lastChangedAt',
-        'nextDueAt',
-        'health',
-        'backoffUntil',
-      ]);
+      return ruleSummary(value);
     case 'watch:createRule':
     case 'watch:updateRule':
       return (
@@ -512,34 +496,39 @@ function successValue(channel: WatchIpcChannel, value: unknown): boolean {
       return record(value, ['runId']) && uuid(value['runId']);
     case 'watch:previewFeed':
       return (
-        record(value, ['previewHandle', 'kind', 'accessMode', 'targetDisplay', 'fields']) ||
-        record(value, ['discoveryHandle', 'candidates'])
+        preview(value, false) ||
+        (record(value, ['discoveryHandle', 'candidates']) &&
+          handle(value['discoveryHandle']) &&
+          Array.isArray(value['candidates']) &&
+          value['candidates'].length >= 1 &&
+          value['candidates'].length <= 10 &&
+          value['candidates'].every(
+            (candidate) =>
+              record(candidate, ['candidateId', 'targetDisplay']) &&
+              handle(candidate['candidateId']) &&
+              boundedText(candidate['targetDisplay']),
+          ))
       );
     case 'watch:previewPageRegions':
-      return record(value, [
-        'previewHandle',
-        'kind',
-        'accessMode',
-        'targetDisplay',
-        'fields',
-        'regions',
-      ]);
+      return preview(value, true);
     case 'watch:issueSessionGrant':
-      return record(value, ['previewHandle', 'sessionGrantHandle']);
+      return (
+        record(value, ['previewHandle', 'sessionGrantHandle']) &&
+        handle(value['previewHandle']) &&
+        handle(value['sessionGrantHandle'])
+      );
     case 'watch:setEventsRead':
       return record(value, ['updated']) && integer(value['updated'], 0);
     case 'watch:getDigest':
-      return record(value, [
-        'id',
-        'scheduleId',
-        'facts',
-        'explanation',
-        'providerState',
-        'providerResultCode',
-        'createdAt',
-      ]);
+      return digestDetail(value);
     case 'watch:generateDigestPreview':
-      return record(value, ['previewHandle', 'facts', 'hasMore', 'nextPreviewSequence']);
+      return (
+        record(value, ['previewHandle', 'facts', 'hasMore', 'nextPreviewSequence']) &&
+        handle(value['previewHandle']) &&
+        validateDigestFactsOutput(value['facts']) &&
+        typeof value['hasMore'] === 'boolean' &&
+        integer(value['nextPreviewSequence'], 0)
+      );
     case 'watch:saveDigestSchedule':
       return (
         (record(value, ['created']) && value['created'] === true) ||
@@ -554,7 +543,11 @@ function successValue(channel: WatchIpcChannel, value: unknown): boolean {
   }
 }
 
-function paged(value: unknown, selected: boolean): boolean {
+function paged(
+  value: unknown,
+  selected: boolean,
+  validateItem: (item: unknown) => boolean,
+): boolean {
   const keys = selected
     ? ['page', 'pageSize', 'total', 'items', 'selected']
     : ['page', 'pageSize', 'total', 'items'];
@@ -564,8 +557,440 @@ function paged(value: unknown, selected: boolean): boolean {
     integer(value['pageSize'], 1, 50) &&
     integer(value['total'], 0) &&
     Array.isArray(value['items']) &&
-    value['items'].length <= 50
+    value['items'].length <= 50 &&
+    value['items'].every(validateItem)
   );
+}
+
+const boundedText = (value: unknown, max = 1024): value is string =>
+  typeof value === 'string' && utf8ByteLength(value) <= max;
+const nullableIso = (value: unknown): boolean => value === null || iso(value);
+
+function ruleSummary(value: unknown): boolean {
+  return (
+    record(value, [
+      'id',
+      'version',
+      'sourceId',
+      'sourceName',
+      'kind',
+      'state',
+      'pauseReason',
+      'desiredEnabled',
+      'muted',
+      'accessMode',
+      'schedule',
+      'condition',
+      'notificationLevel',
+      'showDetails',
+      'targetDisplay',
+      'lastCheckedAt',
+      'lastChangedAt',
+      'nextDueAt',
+      'health',
+      'backoffUntil',
+    ]) &&
+    uuid(value['id']) &&
+    integer(value['version']) &&
+    uuid(value['sourceId']) &&
+    boundedText(value['sourceName'], 512) &&
+    (value['kind'] === 'feed' || value['kind'] === 'page') &&
+    (value['state'] === 'enabled' || value['state'] === 'paused') &&
+    (value['pauseReason'] === null || boundedText(value['pauseReason'], 128)) &&
+    typeof value['desiredEnabled'] === 'boolean' &&
+    typeof value['muted'] === 'boolean' &&
+    (value['accessMode'] === 'public' || value['accessMode'] === 'session') &&
+    schedule(value['schedule']) &&
+    condition(value['condition']) &&
+    (WATCH_NOTIFICATION_LEVELS as readonly unknown[]).includes(value['notificationLevel']) &&
+    typeof value['showDetails'] === 'boolean' &&
+    boundedText(value['targetDisplay']) &&
+    nullableIso(value['lastCheckedAt']) &&
+    nullableIso(value['lastChangedAt']) &&
+    nullableIso(value['nextDueAt']) &&
+    (value['health'] === 'healthy' ||
+      value['health'] === 'degraded' ||
+      value['health'] === 'paused') &&
+    nullableIso(value['backoffUntil'])
+  );
+}
+
+function eventListItem(value: unknown): boolean {
+  return (
+    record(value, [
+      'id',
+      'ruleId',
+      'sourceId',
+      'sourceName',
+      'eventKind',
+      'importance',
+      'firstObservedAt',
+      'lastObservedAt',
+      'itemCount',
+      'read',
+    ]) &&
+    uuid(value['id']) &&
+    uuid(value['ruleId']) &&
+    uuid(value['sourceId']) &&
+    boundedText(value['sourceName'], 512) &&
+    (WATCH_EVENT_KINDS as readonly unknown[]).includes(value['eventKind']) &&
+    (WATCH_NOTIFICATION_LEVELS as readonly unknown[]).includes(value['importance']) &&
+    iso(value['firstObservedAt']) &&
+    iso(value['lastObservedAt']) &&
+    integer(value['itemCount'], 0) &&
+    typeof value['read'] === 'boolean'
+  );
+}
+
+function eventDetail(value: unknown): boolean {
+  return (
+    value === null ||
+    (record(value, [
+      'id',
+      'ruleId',
+      'sourceId',
+      'sourceName',
+      'eventKind',
+      'importance',
+      'firstObservedAt',
+      'lastObservedAt',
+      'itemCount',
+      'read',
+      'evidence',
+    ]) &&
+      eventListItem(
+        Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'evidence')),
+      ) &&
+      Array.isArray(value['evidence']) &&
+      value['evidence'].every(validateEvidencePair))
+  );
+}
+
+function preview(value: unknown, withRegions: boolean): boolean {
+  const keys = withRegions
+    ? ['previewHandle', 'kind', 'accessMode', 'targetDisplay', 'fields', 'regions']
+    : ['previewHandle', 'kind', 'accessMode', 'targetDisplay', 'fields'];
+  return (
+    record(value, keys) &&
+    handle(value['previewHandle']) &&
+    (value['kind'] === 'feed' || value['kind'] === 'page') &&
+    (value['accessMode'] === 'public' || value['accessMode'] === 'session') &&
+    boundedText(value['targetDisplay']) &&
+    Array.isArray(value['fields']) &&
+    value['fields'].length <= 100 &&
+    value['fields'].every((field) => boundedText(field, 256)) &&
+    (!withRegions ||
+      (Array.isArray(value['regions']) &&
+        value['regions'].length <= 100 &&
+        value['regions'].every(previewRegion)))
+  );
+}
+
+function previewRegion(value: unknown): boolean {
+  if (record(value, ['kind', 'label', 'fieldKey']))
+    return (
+      ['main-text', 'heading', 'table-header', 'table-cell', 'link'].includes(
+        String(value['kind']),
+      ) &&
+      boundedText(value['label'], 256) &&
+      boundedText(value['fieldKey'], 256)
+    );
+  if (record(value, ['kind', 'label', 'status', 'normalizedBytes']))
+    return (
+      value['kind'] === 'main-text' &&
+      boundedText(value['label'], 256) &&
+      (value['status'] === 'matched' || value['status'] === 'not-found') &&
+      integer(value['normalizedBytes'], 0)
+    );
+  if (record(value, ['kind', 'label', 'status', 'total', 'matching', 'levels']))
+    return (
+      value['kind'] === 'headings' &&
+      boundedText(value['label'], 256) &&
+      (value['status'] === 'matched' || value['status'] === 'not-found') &&
+      integer(value['total'], 0) &&
+      integer(value['matching'], 0) &&
+      Array.isArray(value['levels']) &&
+      value['levels'].every((level) => level === 1 || level === 2 || level === 3)
+    );
+  if (record(value, ['kind', 'label', 'status', 'total', 'sameOriginOnly']))
+    return (
+      value['kind'] === 'links' &&
+      boundedText(value['label'], 256) &&
+      (value['status'] === 'matched' || value['status'] === 'not-found') &&
+      integer(value['total'], 0) &&
+      typeof value['sameOriginOnly'] === 'boolean'
+    );
+  if (!record(value, ['kind', 'label', 'status', 'headerFingerprint', 'occurrence', 'groups']))
+    return false;
+  return (
+    value['kind'] === 'table' &&
+    boundedText(value['label'], 256) &&
+    (value['status'] === 'matched' || value['status'] === 'not-found') &&
+    boundedText(value['headerFingerprint'], 256) &&
+    integer(value['occurrence'], 0) &&
+    Array.isArray(value['groups']) &&
+    value['groups'].every(
+      (group) =>
+        record(group, ['fingerprint', 'occurrenceCount', 'columns']) &&
+        boundedText(group['fingerprint'], 256) &&
+        integer(group['occurrenceCount'], 0) &&
+        integer(group['columns'], 0),
+    )
+  );
+}
+
+function digestSchedule(value: unknown): boolean {
+  return (
+    record(value, [
+      'id',
+      'version',
+      'sourceCount',
+      'localTime',
+      'timeZone',
+      'aiEnabled',
+      'state',
+      'nextDueAt',
+      'lastCheckedAt',
+      'lastPeriod',
+      'lastRunStats',
+      'runState',
+      'blockedAt',
+      'blockedRequiredBytes',
+      'blockedAvailableBytes',
+    ]) &&
+    uuid(value['id']) &&
+    integer(value['version']) &&
+    integer(value['sourceCount'], 1, 100) &&
+    typeof value['localTime'] === 'string' &&
+    /^([01]\d|2[0-3]):[0-5]\d$/.test(value['localTime']) &&
+    boundedText(value['timeZone'], 128) &&
+    typeof value['aiEnabled'] === 'boolean' &&
+    (value['state'] === 'active' || value['state'] === 'paused') &&
+    iso(value['nextDueAt']) &&
+    nullableIso(value['lastCheckedAt']) &&
+    digestPeriod(value['lastPeriod']) &&
+    digestStats(value['lastRunStats']) &&
+    (value['runState'] === null ||
+      value['runState'] === 'running' ||
+      value['runState'] === 'budget_exceeded') &&
+    nullableIso(value['blockedAt']) &&
+    (value['blockedRequiredBytes'] === null || integer(value['blockedRequiredBytes'], 0)) &&
+    (value['blockedAvailableBytes'] === null || integer(value['blockedAvailableBytes'], 0))
+  );
+}
+
+function digestPeriod(value: unknown): boolean {
+  return (
+    value === null ||
+    (record(value, ['fromExclusive', 'toInclusive']) &&
+      iso(value['fromExclusive']) &&
+      iso(value['toInclusive']))
+  );
+}
+function digestStats(value: unknown): boolean {
+  return (
+    value === null ||
+    (record(value, ['changed', 'failed', 'unchanged']) &&
+      integer(value['changed'], 0) &&
+      integer(value['failed'], 0) &&
+      integer(value['unchanged'], 0))
+  );
+}
+function digestListItem(value: unknown): boolean {
+  return (
+    record(value, [
+      'id',
+      'scheduleId',
+      'providerState',
+      'providerResultCode',
+      'createdAt',
+      'eventCount',
+    ]) &&
+    uuid(value['id']) &&
+    uuid(value['scheduleId']) &&
+    boundedText(value['providerState'], 64) &&
+    (value['providerResultCode'] === null || boundedText(value['providerResultCode'], 64)) &&
+    iso(value['createdAt']) &&
+    integer(value['eventCount'], 0)
+  );
+}
+function digestDetail(value: unknown): boolean {
+  if (
+    !record(value, [
+      'id',
+      'scheduleId',
+      'facts',
+      'explanation',
+      'providerState',
+      'providerResultCode',
+      'createdAt',
+    ]) ||
+    !uuid(value['id']) ||
+    !uuid(value['scheduleId']) ||
+    !validateDigestFactsOutput(value['facts']) ||
+    !boundedText(value['providerState'], 64) ||
+    !(value['providerResultCode'] === null || boundedText(value['providerResultCode'], 64)) ||
+    !iso(value['createdAt'])
+  )
+    return false;
+  if (value['explanation'] === null) return true;
+  const facts = value['facts'] as Plain;
+  const events = facts['events'] as Plain[];
+  return (
+    parseDigestExplanation(
+      JSON.stringify(value['explanation']),
+      events.map((event) => String(event['eventId'])),
+    ) !== null
+  );
+}
+
+function validateEvidenceValue(value: unknown): boolean {
+  if (record(value, ['kind'])) return value['kind'] === 'absent';
+  return (
+    record(value, ['kind', 'excerpt', 'valueHash', 'normalizedBytes', 'truncated']) &&
+    value['kind'] === 'present' &&
+    boundedText(value['excerpt'], 32_768) &&
+    boundedText(value['valueHash'], 128) &&
+    String(value['valueHash']).length > 0 &&
+    integer(value['normalizedBytes'], 0) &&
+    typeof value['truncated'] === 'boolean'
+  );
+}
+
+function safeEvidenceUrl(value: unknown): boolean {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 2048) return false;
+  try {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      parsed.username === '' &&
+      parsed.password === ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validateEvidencePair(value: unknown): boolean {
+  return (
+    record(value, [
+      'itemId',
+      'fieldKey',
+      'label',
+      'before',
+      'after',
+      'beforeCapturedAt',
+      'afterCapturedAt',
+      'beforeFinalUrl',
+      'afterFinalUrl',
+      'beforeDocumentId',
+      'afterDocumentId',
+      'feedItemKey',
+    ]) &&
+    boundedText(value['itemId'], 500) &&
+    String(value['itemId']).length > 0 &&
+    boundedText(value['fieldKey'], 200) &&
+    String(value['fieldKey']).length > 0 &&
+    boundedText(value['label'], 200) &&
+    String(value['label']).length > 0 &&
+    validateEvidenceValue(value['before']) &&
+    validateEvidenceValue(value['after']) &&
+    iso(value['beforeCapturedAt']) &&
+    iso(value['afterCapturedAt']) &&
+    safeEvidenceUrl(value['beforeFinalUrl']) &&
+    safeEvidenceUrl(value['afterFinalUrl']) &&
+    (value['beforeDocumentId'] === null || boundedText(value['beforeDocumentId'], 512)) &&
+    (value['afterDocumentId'] === null || boundedText(value['afterDocumentId'], 512)) &&
+    (value['feedItemKey'] === null || boundedText(value['feedItemKey'], 512))
+  );
+}
+
+function recordOfUnknown(value: unknown): value is Plain {
+  return (
+    safeTree(value, new Set()) &&
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+function validateDigestFactsOutput(value: unknown): boolean {
+  if (
+    !record(value, [
+      'schemaVersion',
+      'scheduleId',
+      'digestRunId',
+      'batchIndex',
+      'period',
+      'eventCount',
+      'runStats',
+      'events',
+      'evidenceMap',
+      'referenceStates',
+      'fetchedAt',
+    ]) ||
+    value['schemaVersion'] !== 1 ||
+    !boundedText(value['scheduleId'], 128) ||
+    !boundedText(value['digestRunId'], 128) ||
+    !integer(value['batchIndex'], 0) ||
+    !digestPeriod(value['period']) ||
+    !digestStats(value['runStats']) ||
+    !Array.isArray(value['events']) ||
+    value['events'].length < 1 ||
+    value['events'].length > 50 ||
+    value['eventCount'] !== value['events'].length ||
+    !iso(value['fetchedAt']) ||
+    !recordOfUnknown(value['evidenceMap']) ||
+    !recordOfUnknown(value['referenceStates'])
+  )
+    return false;
+  const eventIds: string[] = [];
+  for (const event of value['events']) {
+    if (
+      !record(event, [
+        'eventId',
+        'ruleId',
+        'sourceId',
+        'eventKind',
+        'importance',
+        'firstIncludedAt',
+        'lastIncludedAt',
+        'observationCount',
+        'itemCount',
+      ]) ||
+      !uuid(event['eventId']) ||
+      eventIds.includes(event['eventId']) ||
+      !uuid(event['ruleId']) ||
+      !uuid(event['sourceId']) ||
+      !(WATCH_EVENT_KINDS as readonly unknown[]).includes(event['eventKind']) ||
+      !(WATCH_NOTIFICATION_LEVELS as readonly unknown[]).includes(event['importance']) ||
+      !iso(event['firstIncludedAt']) ||
+      !iso(event['lastIncludedAt']) ||
+      !integer(event['observationCount']) ||
+      !integer(event['itemCount'])
+    )
+      return false;
+    eventIds.push(event['eventId']);
+  }
+  if (Object.keys(value['referenceStates']).join('\0') !== eventIds.join('\0')) return false;
+  const activeIds: string[] = [];
+  for (const eventId of eventIds) {
+    const state = value['referenceStates'][eventId];
+    if (state !== 'active' && state !== 'expired' && state !== 'user-deleted') return false;
+    if (state === 'active') activeIds.push(eventId);
+  }
+  if (Object.keys(value['evidenceMap']).join('\0') !== activeIds.join('\0')) return false;
+  const evidenceMap = value['evidenceMap'] as Plain;
+  const events = value['events'] as Plain[];
+  return activeIds.every((eventId) => {
+    const evidence = evidenceMap[eventId];
+    const event = events.find((candidate) => candidate['eventId'] === eventId)!;
+    return (
+      Array.isArray(evidence) &&
+      evidence.length === event['itemCount'] &&
+      evidence.every(validateEvidencePair)
+    );
+  });
 }
 
 function notification(v: unknown): boolean {
@@ -645,18 +1070,23 @@ function hasForbiddenOutputKey(value: unknown): boolean {
   if (typeof value !== 'object' || value === null) return false;
   const forbidden = new Set([
     'path',
-    'filePath',
-    'databasePath',
+    'filepath',
+    'databasepath',
     'cookie',
     'cookies',
     'sql',
-    'rawBody',
-    'tabId',
-    'previewTabId',
-    'apiKey',
+    'rawbody',
+    'tabid',
+    'previewtabid',
+    'apikey',
     'authorization',
+    'factsjson',
+    'factshash',
+    'claimtoken',
+    'requestkey',
+    'explanationjson',
   ]);
   return Object.entries(value).some(
-    ([key, child]) => forbidden.has(key) || hasForbiddenOutputKey(child),
+    ([key, child]) => forbidden.has(key.toLowerCase()) || hasForbiddenOutputKey(child),
   );
 }

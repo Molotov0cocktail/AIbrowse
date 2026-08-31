@@ -36,10 +36,11 @@ const ERROR_TEXT: Record<WatchIpcErrorCode, string> = {
 
 interface WatchWorkspaceProps {
   initialSourceId: string | null;
+  focusSubject: { type: 'event' | 'digest'; id: string } | null;
   onBack(): void;
 }
 
-export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps) {
+export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchWorkspaceProps) {
   const [state, dispatch] = useReducer(reduceWatchState, INITIAL_WATCH_STATE);
   const [status, setStatus] = useState<WatchStatusDto | null>(null);
   const [rules, setRules] = useState<RuleSummaryDto[]>([]);
@@ -58,6 +59,19 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
   const [sessionAuthorized, setSessionAuthorized] = useState(false);
   const [previewHandle, setPreviewHandle] = useState<string | null>(null);
   const [sessionGrantHandle, setSessionGrantHandle] = useState<string | null>(null);
+  const [intervalMinutes, setIntervalMinutes] = useState<15 | 60 | 360 | 1440>(60);
+  const [regionKind, setRegionKind] = useState<'main-text' | 'headings' | 'links'>('main-text');
+  const [conditionEnabled, setConditionEnabled] = useState(false);
+  const [conditionOperand, setConditionOperand] = useState('');
+  const [notificationLevel, setNotificationLevel] = useState<'normal' | 'important'>('normal');
+  const [feedCandidates, setFeedCandidates] = useState<
+    Array<{ discoveryHandle: string; candidateId: string; targetDisplay: string }>
+  >([]);
+  const [rebaselineRule, setRebaselineRule] = useState<RuleSummaryDto | null>(null);
+  const [selectedEventIds, setSelectedEventIds] = useState<string[]>([]);
+  const [readState, setReadState] = useState<'all' | 'read' | 'unread'>('all');
+  const [digestSchedules, setDigestSchedules] = useState<Array<Record<string, unknown>>>([]);
+  const [digestDetail, setDigestDetail] = useState<Record<string, unknown> | null>(null);
   const wizardLabels = [
     '类型 / Region',
     '访问方式',
@@ -85,7 +99,7 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
     sourceId: null,
     eventKind: null,
     importance: null,
-    readState: 'all',
+    readState,
     fromInclusive: null,
     toExclusive: null,
   } as const;
@@ -103,6 +117,10 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
       });
   };
   const loadDigests = (): void => {
+    void window.aibrowse.watch.listDigestSchedules({ page: 1, pageSize: 50 }).then((result) => {
+      if (result.ok && isObject(result.value) && Array.isArray(result.value['items']))
+        setDigestSchedules(result.value['items'] as Array<Record<string, unknown>>);
+    });
     void window.aibrowse.watch
       .listDigests({ page: 1, pageSize: 50, scheduleId: null })
       .then((result) => {
@@ -131,7 +149,19 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
   useEffect(() => {
     if (state.view === 'events') loadEvents();
     else if (state.view === 'digests') loadDigests();
-  }, [state.view]);
+  }, [state.view, readState]);
+  useEffect(() => {
+    if (focusSubject === null) return;
+    if (focusSubject.type === 'event') {
+      dispatch({ type: 'select-view', view: 'events' });
+      loadEvents(focusSubject.id);
+    } else {
+      dispatch({ type: 'select-view', view: 'digests' });
+      void window.aibrowse.watch.getDigest({ digestId: focusSubject.id }).then((result) => {
+        if (result.ok && isObject(result.value)) setDigestDetail(result.value);
+      });
+    }
+  }, [focusSubject]);
 
   const readHandles = (
     value: unknown,
@@ -145,27 +175,13 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
     };
   };
 
-  const createPreview = async (): Promise<void> => {
-    setMessage('正在安全采集 Baseline 预览…');
-    const effectiveAccess = ruleKind === 'feed' ? 'public' : accessMode;
-    const result =
-      ruleKind === 'feed'
-        ? await window.aibrowse.watch.previewFeed({ mode: 'source', sourceId })
-        : await window.aibrowse.watch.previewPageRegions({
-            sourceId,
-            accessMode,
-            regions: [{ kind: 'main-text', label: '正文' }],
-          });
-    if (!result.ok) {
-      setMessage(`预览失败：${ERROR_TEXT[result.errorCode]}`);
-      return;
-    }
-    let handles = readHandles(result.value);
+  const acceptPreview = async (value: unknown): Promise<void> => {
+    let handles = readHandles(value);
     if (handles === null) {
       setMessage('预览结果不可用');
       return;
     }
-    if (effectiveAccess === 'session') {
+    if (ruleKind === 'page' && accessMode === 'session') {
       if (!sessionAuthorized) {
         setMessage('请先明确授权本次 Session 预览');
         return;
@@ -189,20 +205,95 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
     setWizardStep(6);
   };
 
+  const createPreview = async (): Promise<void> => {
+    setMessage('正在安全采集 Baseline 预览…');
+    const result =
+      ruleKind === 'feed'
+        ? await window.aibrowse.watch.previewFeed({ mode: 'source', sourceId })
+        : await window.aibrowse.watch.previewPageRegions({
+            sourceId,
+            accessMode,
+            regions:
+              regionKind === 'headings'
+                ? [{ kind: 'headings', label: '标题', levels: [1, 2, 3] }]
+                : regionKind === 'links'
+                  ? [{ kind: 'links', label: '链接', sameOriginOnly: true }]
+                  : [{ kind: 'main-text', label: '正文' }],
+          });
+    if (!result.ok) {
+      setMessage(`预览失败：${ERROR_TEXT[result.errorCode]}`);
+      return;
+    }
+    if (
+      ruleKind === 'feed' &&
+      isObject(result.value) &&
+      Array.isArray(result.value['candidates'])
+    ) {
+      const discoveryHandle = result.value['discoveryHandle'];
+      if (typeof discoveryHandle !== 'string') return;
+      setFeedCandidates(
+        result.value['candidates'].flatMap((candidate) =>
+          isObject(candidate) &&
+          typeof candidate['candidateId'] === 'string' &&
+          typeof candidate['targetDisplay'] === 'string'
+            ? [
+                {
+                  discoveryHandle,
+                  candidateId: candidate['candidateId'],
+                  targetDisplay: candidate['targetDisplay'],
+                },
+              ]
+            : [],
+        ),
+      );
+      setMessage('请选择发现的 Feed，再完成格式验证');
+      return;
+    }
+    await acceptPreview(result.value);
+  };
+
   const confirmCreate = async (): Promise<void> => {
     if (previewHandle === null) {
       setMessage('请先完成安全 Baseline 预览');
       return;
     }
-    const result = await window.aibrowse.watch.createRule({
-      previewHandle,
-      sessionGrantHandle,
-      schedule: { kind: 'interval', intervalMinutes: 60 },
-      condition: null,
-      notificationLevel: 'normal',
+    const settings = {
+      schedule: { kind: 'interval', intervalMinutes },
+      condition: conditionEnabled
+        ? {
+            version: 1,
+            combine: 'all',
+            predicates: [
+              {
+                fieldKey: 'content',
+                operator: 'contains',
+                operand: conditionOperand,
+                caseSensitive: false,
+              },
+            ],
+          }
+        : null,
+      notificationLevel,
       showDetails,
-      confirmed: true,
-    });
+    } as const;
+    const result =
+      rebaselineRule === null
+        ? await window.aibrowse.watch.createRule({
+            previewHandle,
+            sessionGrantHandle,
+            ...settings,
+            confirmed: true,
+          })
+        : await window.aibrowse.watch.updateRule({
+            mode: 'rebaseline',
+            ruleId: rebaselineRule.id,
+            expectedVersion: rebaselineRule.version,
+            previewHandle,
+            sessionGrantHandle,
+            ...settings,
+            resumeAfterConfirm: rebaselineRule.desiredEnabled,
+            confirmed: true,
+          });
     setPreviewHandle(null);
     setSessionGrantHandle(null);
     if (!result.ok) {
@@ -210,7 +301,8 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
       setWizardStep(5);
       return;
     }
-    setMessage('监控规则已创建');
+    setMessage(rebaselineRule === null ? '监控规则已创建' : 'Baseline 已重建');
+    setRebaselineRule(null);
     setWizardOpen(false);
     setWizardStep(0);
     reload();
@@ -258,7 +350,9 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
               状态：{rule.state} / {rule.pauseReason ?? '正常'} / {rule.muted ? '已静音' : '未静音'}
             </span>
             <span>
-              下次检查：{rule.nextDueAt ?? '未安排'}；退避：{rule.backoffUntil ?? '无'}
+              访问：{rule.accessMode}；健康：{rule.health}；上次检查：
+              {rule.lastCheckedAt ?? '尚无'}；上次变化：{rule.lastChangedAt ?? '尚无'}；下次检查：
+              {rule.nextDueAt ?? '未安排'}；退避：{rule.backoffUntil ?? '无'}
             </span>
             <div>
               <button
@@ -314,6 +408,41 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
               >
                 删除
               </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void window.aibrowse.watch
+                    .updateRule({
+                      mode: 'settings',
+                      ruleId: rule.id,
+                      expectedVersion: rule.version,
+                      schedule: rule.schedule,
+                      condition: rule.condition,
+                      notificationLevel:
+                        rule.notificationLevel === 'normal' ? 'important' : 'normal',
+                      showDetails: !rule.showDetails,
+                    })
+                    .then(reload)
+                }
+              >
+                编辑通知设置
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRebaselineRule(rule);
+                  setSourceId(rule.sourceId);
+                  setRuleKind(rule.kind);
+                  setAccessMode(rule.accessMode);
+                  setIntervalMinutes(
+                    rule.schedule.kind === 'interval' ? rule.schedule.intervalMinutes : 1440,
+                  );
+                  setWizardStep(0);
+                  setWizardOpen(true);
+                }}
+              >
+                重建 Baseline
+              </button>
             </div>
           </article>
         ))
@@ -325,6 +454,28 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
     <div data-watch-view="events">
       <h3>变化事件</h3>
       <p>old / new Evidence 只读；事件事实不能在此编辑。</p>
+      <label>
+        阅读状态
+        <select
+          value={readState}
+          onChange={(event) => setReadState(event.target.value as typeof readState)}
+        >
+          <option value="all">全部</option>
+          <option value="unread">未读</option>
+          <option value="read">已读</option>
+        </select>
+      </label>
+      <button
+        type="button"
+        disabled={selectedEventIds.length === 0}
+        onClick={() =>
+          void window.aibrowse.watch
+            .setEventsRead({ eventIds: selectedEventIds, read: true })
+            .then(() => loadEvents())
+        }
+      >
+        批量标为已读
+      </button>
       <button
         type="button"
         onClick={() => void window.aibrowse.watch.exportEventsCsv({ filter: eventFilter })}
@@ -336,6 +487,18 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
       ) : (
         events.map((event) => (
           <article key={event.id} className="watch-event-row">
+            <input
+              type="checkbox"
+              aria-label={`选择事件 ${event.id}`}
+              checked={selectedEventIds.includes(event.id)}
+              onChange={(change) =>
+                setSelectedEventIds((ids) =>
+                  change.target.checked
+                    ? [...new Set([...ids, event.id])]
+                    : ids.filter((id) => id !== event.id),
+                )
+              }
+            />
             <button type="button" onClick={() => loadEvents(event.id)}>
               {event.sourceName} · {event.eventKind} · {event.itemCount} 项
             </button>
@@ -384,6 +547,96 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
     <div data-watch-view="digests">
       <h3>更新摘要</h3>
       <p>摘要引用会明确显示 active、expired 或 user-deleted；已删除 Evidence 不可恢复。</p>
+      <button
+        type="button"
+        disabled={!/^[0-9a-f-]{36}$/.test(sourceId)}
+        onClick={() => {
+          const toInclusive = new Date().toISOString();
+          const fromExclusive = new Date(Date.now() - 7 * 86_400_000).toISOString();
+          void window.aibrowse.watch
+            .generateDigestPreview({
+              selector: { kind: 'sources', sourceIds: [sourceId] },
+              fromExclusive,
+              toInclusive,
+              afterSequence: 0,
+            })
+            .then((result) => {
+              if (
+                !result.ok ||
+                !isObject(result.value) ||
+                typeof result.value['previewHandle'] !== 'string'
+              ) {
+                setMessage(result.ok ? '摘要预览不可用' : ERROR_TEXT[result.errorCode]);
+                return;
+              }
+              void window.aibrowse.watch
+                .saveDigestSchedule({
+                  action: 'create',
+                  previewHandle: result.value['previewHandle'],
+                  localTime: '09:00',
+                  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                  aiEnabled: false,
+                  confirmed: true,
+                })
+                .then(loadDigests);
+            });
+        }}
+      >
+        创建每日摘要计划
+      </button>
+      {digestSchedules.map((schedule) => (
+        <article key={String(schedule['id'])}>
+          <span>
+            计划 {String(schedule['localTime'])} · {String(schedule['state'])} · AI：
+            {schedule['aiEnabled'] ? '开' : '关'}
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              void window.aibrowse.watch
+                .saveDigestSchedule({
+                  action: 'set-state',
+                  scheduleId: schedule['id'],
+                  expectedVersion: schedule['version'],
+                  state: schedule['state'] === 'active' ? 'paused' : 'active',
+                })
+                .then(loadDigests)
+            }
+          >
+            暂停 / 恢复
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              void window.aibrowse.watch
+                .saveDigestSchedule({
+                  action: 'set-ai',
+                  scheduleId: schedule['id'],
+                  expectedVersion: schedule['version'],
+                  aiEnabled: !schedule['aiEnabled'],
+                })
+                .then(loadDigests)
+            }
+          >
+            切换 AI 解释
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm('删除此摘要计划及其摘要？'))
+                void window.aibrowse.watch
+                  .deleteDigestSchedule({
+                    scheduleId: schedule['id'],
+                    expectedVersion: schedule['version'],
+                    confirmed: true,
+                  })
+                  .then(loadDigests);
+            }}
+          >
+            删除计划
+          </button>
+        </article>
+      ))}
       {digests.length === 0 ? (
         <p>暂无摘要。</p>
       ) : (
@@ -400,8 +653,30 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
             >
               导出 Markdown
             </button>
+            <button
+              type="button"
+              onClick={() =>
+                void window.aibrowse.watch.getDigest({ digestId: digest.id }).then((result) => {
+                  if (result.ok && isObject(result.value)) setDigestDetail(result.value);
+                })
+              }
+            >
+              查看事实与引用状态
+            </button>
           </article>
         ))
+      )}
+      {digestDetail !== null && (
+        <section>
+          <h4>摘要事实（只读）</h4>
+          <pre>{JSON.stringify(digestDetail['facts'], null, 2)}</pre>
+          <p>
+            AI 解释：
+            {digestDetail['explanation'] === null
+              ? '无'
+              : JSON.stringify(digestDetail['explanation'])}
+          </p>
+        </section>
       )}
     </div>
   );
@@ -472,16 +747,31 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
             <input value={sourceId} onChange={(event) => setSourceId(event.target.value)} />
           </label>
           {wizardStep === 0 && (
-            <label>
-              类型
-              <select
-                value={ruleKind}
-                onChange={(event) => setRuleKind(event.target.value as 'page' | 'feed')}
-              >
-                <option value="page">页面正文</option>
-                <option value="feed">RSS / Atom</option>
-              </select>
-            </label>
+            <>
+              <label>
+                类型
+                <select
+                  value={ruleKind}
+                  onChange={(event) => setRuleKind(event.target.value as 'page' | 'feed')}
+                >
+                  <option value="page">页面 Region</option>
+                  <option value="feed">RSS / Atom</option>
+                </select>
+              </label>
+              {ruleKind === 'page' && (
+                <label>
+                  Region
+                  <select
+                    value={regionKind}
+                    onChange={(event) => setRegionKind(event.target.value as typeof regionKind)}
+                  >
+                    <option value="main-text">正文</option>
+                    <option value="headings">标题</option>
+                    <option value="links">同源链接</option>
+                  </select>
+                </label>
+              )}
+            </>
           )}
           {wizardStep === 1 && ruleKind === 'page' && (
             <label>
@@ -496,10 +786,61 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
             </label>
           )}
           {wizardStep === 1 && <p>公开模式不携带 Cookie；Session 模式需要逐规则授权。</p>}
-          {wizardStep === 2 && <p>每 60 分钟检查一次；应用退出后停止，不支持 cron。</p>}
-          {wizardStep === 3 && <p>当前使用“任意确定性变化”；Event 命中由程序判断。</p>}
+          {wizardStep === 2 && (
+            <label>
+              检查间隔
+              <select
+                value={intervalMinutes}
+                onChange={(event) =>
+                  setIntervalMinutes(Number(event.target.value) as typeof intervalMinutes)
+                }
+              >
+                <option value={15}>15 分钟</option>
+                <option value={60}>1 小时</option>
+                <option value={360}>6 小时</option>
+                <option value={1440}>24 小时</option>
+              </select>
+              <span>应用退出后停止，不支持 cron。</span>
+            </label>
+          )}
+          {wizardStep === 3 && (
+            <>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={conditionEnabled}
+                  onChange={(event) => setConditionEnabled(event.target.checked)}
+                />
+                仅在正文包含指定文本时命中
+              </label>
+              {conditionEnabled && (
+                <label>
+                  匹配文本
+                  <input
+                    value={conditionOperand}
+                    onChange={(event) => setConditionOperand(event.target.value)}
+                  />
+                </label>
+              )}
+              <p>Event 命中由确定性程序判断，不使用 AI 条件。</p>
+            </>
+          )}
           {wizardStep === 4 && (
-            <p>登录态内容保留 30 天，锁屏通知默认隐藏详情，可逐规则选择显示安全字段标签。</p>
+            <>
+              <p>登录态内容保留 30 天，锁屏通知默认隐藏详情，可逐规则选择显示安全字段标签。</p>
+              <label>
+                重要性
+                <select
+                  value={notificationLevel}
+                  onChange={(event) =>
+                    setNotificationLevel(event.target.value as typeof notificationLevel)
+                  }
+                >
+                  <option value="normal">普通</option>
+                  <option value="important">重要</option>
+                </select>
+              </label>
+            </>
           )}
           {wizardStep === 4 && (
             <label>
@@ -524,6 +865,28 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
               我授权读取当前登录页进行一次性预览；授权 5 分钟后失效
             </label>
           )}
+          {wizardStep === 5 &&
+            feedCandidates.map((candidate) => (
+              <button
+                type="button"
+                key={candidate.candidateId}
+                onClick={() =>
+                  void window.aibrowse.watch
+                    .previewFeed({
+                      mode: 'candidate',
+                      discoveryHandle: candidate.discoveryHandle,
+                      candidateId: candidate.candidateId,
+                    })
+                    .then((result) =>
+                      result.ok
+                        ? acceptPreview(result.value)
+                        : setMessage(`Feed 验证失败：${ERROR_TEXT[result.errorCode]}`),
+                    )
+                }
+              >
+                验证 Feed：{candidate.targetDisplay}
+              </button>
+            ))}
           <div>
             <button type="button" onClick={() => setWizardOpen(false)}>
               取消
@@ -552,7 +915,7 @@ export function WatchWorkspace({ initialSourceId, onBack }: WatchWorkspaceProps)
               </button>
             ) : (
               <button type="button" onClick={() => void confirmCreate()}>
-                确认创建
+                {rebaselineRule === null ? '确认创建' : '确认重建'}
               </button>
             )}
           </div>

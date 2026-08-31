@@ -2499,10 +2499,10 @@ describe('D9 Rule 用户配置 CAS', () => {
         NOW,
         NOW,
       );
-    expect(repo.listPendingNotifications(20)).toHaveLength(1);
+    expect(repo.listPendingNotifications('in-app', 20)).toHaveLength(1);
     expect(repo.claimPendingNotification(id, NOW)).toBe(true);
     expect(repo.claimPendingNotification(id, NOW)).toBe(false);
-    expect(repo.listPendingNotifications(20)).toEqual([]);
+    expect(repo.listPendingNotifications('in-app', 20)).toEqual([]);
     expect(repo.finishClaimedNotification(id, 'sent', NOW)).toBe(true);
     expect(
       handle.prepare('SELECT state,attempts FROM notification_outbox WHERE id=?').get(id),
@@ -2643,10 +2643,46 @@ describe('D9 Rule 用户配置 CAS', () => {
       ok: false,
       code: 'rule-state-conflict',
     });
+    expect(repo.setRulePaused(rule.id, 1, true, NOW)).toEqual({
+      ok: false,
+      code: 'rule-state-conflict',
+    });
+    expect(repo.getRule(rule.id)).toMatchObject({
+      version: 1,
+      state: 'paused',
+      pauseReason: 'login-required',
+      desiredEnabled: true,
+    });
     expect(repo.deleteRuleExpectedVersion(rule.id, 2)).toEqual({
       ok: false,
       code: 'rule-version-conflict',
     });
     expect(repo.deleteRuleExpectedVersion(rule.id, 1)).toEqual({ ok: true });
+  });
+
+  it('批量 read/unread 任一 UPDATE 失败时整批回滚', () => {
+    const rule = makeRule();
+    expect(repo.insertRule(rule)).toEqual({ ok: true });
+    const first = makeEvent(rule.id);
+    const second = makeEvent(rule.id);
+    expect(
+      repo.writeEventTransaction({
+        event: first,
+        items: [makeItem()],
+        identity: identity(rule.id),
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      repo.writeEventTransaction({
+        event: second,
+        items: [makeItem()],
+        identity: identity(rule.id),
+      }),
+    ).toEqual({ ok: true });
+    handle.exec(`CREATE TRIGGER fail_second_read BEFORE UPDATE OF read_at ON watch_events
+      WHEN OLD.id = '${second.id}' BEGIN SELECT RAISE(ABORT, 'injected'); END`);
+    expect(() => repo.markEventsRead([first.id, second.id], NOW)).toThrow();
+    expect(repo.getEvent(first.id)?.readAt).toBeNull();
+    expect(repo.getEvent(second.id)?.readAt).toBeNull();
   });
 });

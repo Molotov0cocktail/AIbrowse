@@ -32,6 +32,7 @@ export const MUTATING_WATCH_CHANNELS = new Set<WatchIpcChannel>([
 const EFFECTFUL_READ_WATCH_CHANNELS = new Set<WatchIpcChannel>([
   'watch:previewFeed',
   'watch:previewPageRegions',
+  'watch:generateDigestPreview',
 ]);
 
 const fail = <T>(errorCode: WatchIpcErrorCode): WatchIpcResult<T> => ({ ok: false, errorCode });
@@ -63,7 +64,13 @@ export interface WatchIpcAdapterOptions {
 
 export class WatchIpcAdapter {
   private readonly digestPreviews = new Map<string, { sourceIds: string[]; expiresAt: number }>();
+  private static readonly MAX_DIGEST_PREVIEWS = 128;
+  private static readonly DIGEST_PREVIEW_TTL_MS = 300_000;
   constructor(private readonly options: WatchIpcAdapterOptions) {}
+
+  dispose(): void {
+    this.digestPreviews.clear();
+  }
 
   async invoke(channel: string, payload: unknown): Promise<WatchIpcResult<unknown>> {
     const started = Date.now();
@@ -145,8 +152,14 @@ export class WatchIpcAdapter {
           toInclusive: String(p['toInclusive']),
         });
         if (preview === null) return fail('unavailable');
+        this.pruneDigestPreviews();
+        if (this.digestPreviews.size >= WatchIpcAdapter.MAX_DIGEST_PREVIEWS)
+          return fail('budget-exceeded');
         const previewHandle = randomBytes(32).toString('base64url');
-        this.digestPreviews.set(previewHandle, { sourceIds, expiresAt: Date.now() + 300_000 });
+        this.digestPreviews.set(previewHandle, {
+          sourceIds,
+          expiresAt: Date.now() + WatchIpcAdapter.DIGEST_PREVIEW_TTL_MS,
+        });
         return { ok: true, value: { previewHandle, ...preview } };
       }
       case 'watch:previewFeed':
@@ -275,6 +288,12 @@ export class WatchIpcAdapter {
       default:
         return fail('feature-unavailable');
     }
+  }
+
+  private pruneDigestPreviews(): void {
+    const now = Date.now();
+    for (const [handle, preview] of this.digestPreviews)
+      if (now >= preview.expiresAt) this.digestPreviews.delete(handle);
   }
 }
 

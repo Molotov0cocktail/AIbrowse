@@ -43,4 +43,37 @@ describe('D9 WatchPreviewStore', () => {
     store.dispose();
     expect(store.consume(handle)).toBeNull();
   });
+
+  it('feed discovery 只返回 opaque candidate，按 source 绑定且一次性消费', () => {
+    const store = new WatchPreviewStore(() => 10);
+    const issued = store.issueDiscovery(record.sourceId, [
+      'https://example.com/feed.xml?private=1',
+    ]);
+    expect(issued?.discoveryHandle).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(issued?.candidates[0]?.candidateId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const consumed = store.consumeDiscovery(
+      issued!.discoveryHandle,
+      issued!.candidates[0]!.candidateId,
+    );
+    expect(consumed).toEqual({
+      sourceId: record.sourceId,
+      feedUrl: 'https://example.com/feed.xml?private=1',
+    });
+    expect(
+      store.consumeDiscovery(issued!.discoveryHandle, issued!.candidates[0]!.candidateId),
+    ).toBeNull();
+  });
+
+  it('feed discovery 在 TTL 边界过期，dispose 同时清空 discovery', () => {
+    let now = 0;
+    const store = new WatchPreviewStore(() => now);
+    const issued = store.issueDiscovery(record.sourceId, ['https://example.com/feed']);
+    now = WATCH_PREVIEW_TTL_MS;
+    expect(
+      store.consumeDiscovery(issued!.discoveryHandle, issued!.candidates[0]!.candidateId),
+    ).toBeNull();
+    store.issueDiscovery(record.sourceId, ['https://example.com/feed']);
+    store.dispose();
+    expect(store.size).toBe(0);
+  });
 });
