@@ -30,6 +30,8 @@ import {
   type WatchHealthSnapshot,
   type WatchRule,
   type WatchRunOutcome,
+  type DigestFacts,
+  type DigestProviderResultCode,
 } from '../../../shared/types/watch';
 import { validateFeedTarget, validatePageTarget } from '../../../shared/watch/watch-targets';
 import {
@@ -39,6 +41,11 @@ import {
 } from '../../../shared/watch/watch-rule-state';
 import { utf8ByteLength } from '../../../shared/watch/watch-budget';
 import { sha256Hex } from '../../../shared/watch/diff/evidence';
+import {
+  canonicalizeDigestFacts,
+  type DigestObservationSlice,
+} from '../../../shared/watch/digest-facts';
+import { parseDigestExplanation } from '../../../shared/watch/digest-validator';
 import {
   WATCH_AUDIT_KINDS,
   WATCH_AUDIT_REASON_CODES,
@@ -51,12 +58,16 @@ import {
   validateBaselineValidators,
   validateChangeEvidencePair,
   validateEventRow,
+  validateDigestArtifactRow,
+  validateDigestRunRow,
+  validateDigestScheduleRow,
   validateIntentRow,
   isValidNewObservationId,
   isValidObservationId,
   validateRuleRow,
   validateRunResponseMetadataJson,
   validateRunRow,
+  validateWatchRunOutcome,
   validateSourceWatchProjection,
   validateStoredCondition,
   type AffectedRulePrepareState,
@@ -125,6 +136,57 @@ export type WatchResult = OkResult | { ok: false; code: WatchErrorCode };
 /** reservation 结果（§4.2）：ok 时携带 runId；手动复用当前 run 时 reused=true。 */
 export type ReserveRunResult =
   { ok: true; runId: string; reused?: boolean } | { ok: false; code: WatchErrorCode };
+
+export interface StoredDigestSchedule {
+  id: string;
+  version: number;
+  sourceIds: string[];
+  localTime: string;
+  timeZone: string;
+  aiEnabled: boolean;
+  cursorSequence: number;
+  state: 'active' | 'paused';
+  nextDueAt: string;
+  lastConsumedScheduledFor: string | null;
+  lastDailyLocalDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastCheckedAt: string | null;
+  lastPeriod: { fromExclusive: string; toInclusive: string } | null;
+  lastRunStats: { changed: number; failed: number; unchanged: number } | null;
+}
+
+export interface StoredDigestRun {
+  id: string;
+  scheduleId: string;
+  requestKey: string;
+  logicalDate: string;
+  lowerSequence: number;
+  upperSequence: number;
+  nextSequence: number;
+  period: { fromExclusive: string; toInclusive: string };
+  runStats: { changed: number; failed: number; unchanged: number };
+  state: 'running' | 'budget_exceeded' | 'completed';
+}
+
+export interface StoredDigestArtifact {
+  id: string;
+  scheduleId: string;
+  runId: string;
+  batchIndex: number;
+  facts: DigestFacts;
+  factsJson: string;
+  factsHash: string;
+  factsRevision: number;
+  providerState: string;
+  providerResultCode: string | null;
+  explanationJson: string | null;
+}
+
+export type DigestJournalSlice =
+  | { sequence: number; status: 'skipped'; observation: null }
+  | { sequence: number; status: 'expired' | 'user-deleted'; observation: null }
+  | { sequence: number; status: 'active'; observation: DigestObservationSlice };
 
 // ---------------------------------------------------------------------------
 // 编译期 SQL 常量（全部参数绑定；无动态拼接）
@@ -244,6 +306,11 @@ const SQL_INSERT_OBSERVATION = `INSERT INTO watch_event_observations
   (id, event_id, sequence, idempotency_key, change_fingerprint, event_kind,
    observed_at, first_item_sequence, item_count)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+const SQL_NEXT_DIGEST_CHANGE_SEQUENCE = `UPDATE digest_change_state
+  SET last_sequence = last_sequence + 1 WHERE id = 1 RETURNING last_sequence`;
+const SQL_INSERT_DIGEST_CHANGE = `INSERT INTO digest_change_journal
+  (sequence, observation_id, event_id, source_id, observed_at, status)
+  VALUES (?, ?, ?, ?, ?, 'active')`;
 const SQL_INSERT_EVENT_ITEM = `INSERT INTO watch_event_items
   (id, event_id, sequence, observation_id, observation_item_sequence,
    item_id, field_key, label, before_value_json, after_value_json,
@@ -259,8 +326,18 @@ const SQL_MARK_EVENTS_READ = 'UPDATE watch_events SET read_at = ? WHERE id = ?';
 const SQL_DELETE_EVENT = 'DELETE FROM watch_events WHERE id = ?';
 const SQL_DELETE_EVENT_OUTBOX = `DELETE FROM notification_outbox
   WHERE subject_type = 'event' AND subject_id = ?`;
-const SQL_MARK_REFS_EXPIRED_FOR_EVENT = `UPDATE digest_event_refs
-  SET status = 'expired' WHERE event_id = ? AND status = 'active'`;
+const SQL_MARK_REFS_FOR_EVENT = `UPDATE digest_event_refs SET status = ?
+  WHERE event_id = ? AND status = 'active'`;
+const SQL_UPDATE_DIGEST_CHANGE_TOMBSTONE = `UPDATE digest_change_journal SET status = ?
+  WHERE event_id = ? AND status = 'active'`;
+const SQL_SELECT_DIGESTS_BY_EVENT = `SELECT id, facts_json, facts_hash, facts_revision,
+  explanation_json, provider_state, provider_result_code, claimed_at, provider_finished_at,
+  created_at FROM watch_digests WHERE id IN
+  (SELECT digest_id FROM digest_event_refs WHERE event_id = ?)`;
+const SQL_SCRUB_DIGEST = `UPDATE watch_digests SET facts_json = ?, facts_hash = ?,
+  facts_revision = facts_revision + 1, explanation_json = ?, byte_length = ?,
+  provider_state = ?, provider_result_code = ?, provider_finished_at = ?
+  WHERE id = ? AND facts_revision = ? AND facts_hash = ?`;
 const SQL_INSERT_OUTBOX = `INSERT INTO notification_outbox
   (id, rule_id, subject_type, subject_id, channel, dedupe_key, privacy_json,
    state, attempts, created_at, updated_at)
@@ -328,11 +405,24 @@ const SQL_SELECT_ALL_ITEMS_WITH_OBS = `SELECT event_id, sequence, observation_id
 const SQL_SELECT_ALL_INTENTS = `SELECT mutation_id, source_id, operation,
   before_projection_json, after_projection_json, affected_rule_state_json, state,
   created_at, updated_at FROM source_cleanup_intents`;
-const SQL_SELECT_ALL_SCHEDULES = `SELECT id, source_ids_json, schedule_json, ai_enabled,
-  cursor_json, state, created_at, updated_at, last_checked_at FROM digest_schedules`;
-const SQL_SELECT_ALL_DIGESTS = `SELECT id, schedule_id, facts_json, explanation_json,
-  byte_length, created_at FROM watch_digests`;
+const SQL_SELECT_ALL_SCHEDULES = `SELECT id, version, source_ids_json, schedule_json,
+  ai_enabled, cursor_sequence, state, next_due_at, last_consumed_scheduled_for,
+  last_daily_local_date, created_at, updated_at, last_checked_at, last_period_json,
+  last_run_stats_json FROM digest_schedules`;
+const SQL_SELECT_ALL_DIGEST_RUNS = `SELECT id, schedule_id, request_key, logical_date,
+  lower_sequence, upper_sequence, next_sequence, period_json, run_stats_json, state,
+  blocked_at, blocked_required_bytes, blocked_available_bytes, created_at, finished_at
+  FROM digest_runs`;
+const SQL_SELECT_DIGEST_RUN_BY_ID = `${SQL_SELECT_ALL_DIGEST_RUNS} WHERE id = ?`;
+const SQL_SELECT_ALL_DIGESTS = `SELECT id, schedule_id, run_id, batch_index,
+  first_sequence, last_sequence, facts_json, facts_hash, facts_revision,
+  explanation_json, byte_length, provider_state, provider_result_code,
+  claimed_facts_revision, claimed_facts_hash, claimed_at, provider_finished_at,
+  created_at FROM watch_digests`;
 const SQL_SELECT_ALL_DIGEST_REFS = `SELECT digest_id, event_id, status FROM digest_event_refs`;
+const SQL_SELECT_DIGEST_CHANGE_STATE = `SELECT id, last_sequence FROM digest_change_state`;
+const SQL_SELECT_ALL_DIGEST_CHANGES = `SELECT sequence, observation_id, event_id, source_id,
+  observed_at, status FROM digest_change_journal ORDER BY sequence ASC`;
 const SQL_SELECT_ALL_OUTBOX = `SELECT id, rule_id, subject_type, subject_id, channel,
   dedupe_key, privacy_json, state, attempts, created_at, updated_at
   FROM notification_outbox`;
@@ -341,6 +431,104 @@ const SQL_INSERT_DIGEST_REF = `INSERT INTO digest_event_refs (digest_id, event_i
   VALUES (?, ?, ?)`;
 const SQL_SELECT_DIGEST_REFS = `SELECT digest_id, event_id, status FROM digest_event_refs
   ORDER BY digest_id ASC, event_id ASC`;
+
+const SQL_INSERT_DIGEST_SCHEDULE = `INSERT INTO digest_schedules
+  (id, version, source_ids_json, schedule_json, ai_enabled, cursor_sequence, state,
+   next_due_at, created_at, updated_at)
+  VALUES (?, 1, ?, ?, ?, ?, 'active', ?, ?, ?)`;
+const SQL_SELECT_DIGEST_SCHEDULE = `${SQL_SELECT_ALL_SCHEDULES} WHERE id = ?`;
+const SQL_SELECT_ACTIVE_DIGEST_SCHEDULES = `${SQL_SELECT_ALL_SCHEDULES}
+  WHERE state = 'active' ORDER BY next_due_at ASC, id ASC`;
+const SQL_SELECT_NONTERMINAL_DIGEST_RUN = `${SQL_SELECT_ALL_DIGEST_RUNS}
+  WHERE schedule_id = ? AND state IN ('running','budget_exceeded') LIMIT 1`;
+const SQL_INSERT_DIGEST_RUN = `INSERT INTO digest_runs
+  (id, schedule_id, request_key, logical_date, lower_sequence, upper_sequence,
+   next_sequence, period_json, run_stats_json, state, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`;
+const SQL_RESERVE_DIGEST_SCHEDULE = `UPDATE digest_schedules SET
+  version = version + 1, next_due_at = ?, last_consumed_scheduled_for = ?,
+  last_daily_local_date = ?, updated_at = ?
+  WHERE id = ? AND version = ? AND state = 'active' AND next_due_at = ?
+    AND last_consumed_scheduled_for IS ? AND last_daily_local_date IS ?`;
+const SQL_SELECT_DIGEST_OBSERVATIONS = `SELECT j.sequence, j.observation_id, j.event_id,
+  j.source_id, j.observed_at, j.status, o.event_kind, e.rule_id, e.importance
+  FROM digest_change_journal j
+  LEFT JOIN watch_event_observations o ON o.id = j.observation_id AND o.event_id = j.event_id
+  LEFT JOIN watch_events e ON e.id = j.event_id
+  WHERE j.sequence > ? AND j.sequence <= ? ORDER BY j.sequence ASC`;
+const SQL_SELECT_ITEMS_BY_OBSERVATION = `SELECT item_id, field_key, label,
+  before_value_json, after_value_json, before_captured_at, after_captured_at,
+  before_final_url, after_final_url, before_document_id, after_document_id, feed_item_key
+  FROM watch_event_items WHERE observation_id = ? ORDER BY observation_item_sequence ASC, id ASC`;
+const SQL_INSERT_DIGEST = `INSERT INTO watch_digests
+  (id, schedule_id, run_id, batch_index, first_sequence, last_sequence, facts_json,
+   facts_hash, facts_revision, explanation_json, byte_length, provider_state,
+   provider_result_code, provider_finished_at, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?, ?, ?)`;
+const SQL_UPDATE_DIGEST_RUN_CURSOR = `UPDATE digest_runs SET next_sequence = ?
+  WHERE id = ? AND schedule_id = ? AND state = 'running' AND next_sequence = ?
+    AND upper_sequence >= ?`;
+const SQL_UPDATE_DIGEST_SCHEDULE_CURSOR = `UPDATE digest_schedules SET
+  cursor_sequence = ?, version = version + 1, updated_at = ?
+  WHERE id = ? AND state = 'active' AND cursor_sequence = ?`;
+const SQL_COMPLETE_DIGEST_RUN = `UPDATE digest_runs SET state = 'completed',
+  next_sequence = upper_sequence, finished_at = ? WHERE id = ? AND schedule_id = ?
+  AND state = 'running' AND next_sequence = ?`;
+const SQL_COMPLETE_DIGEST_SCHEDULE = `UPDATE digest_schedules SET
+  cursor_sequence = ?, version = version + 1, last_checked_at = ?,
+  last_period_json = ?, last_run_stats_json = ?, updated_at = ?
+  WHERE id = ? AND state = 'active' AND cursor_sequence = ?`;
+const SQL_CLAIM_DIGEST = `UPDATE watch_digests SET provider_state = 'claimed',
+  claimed_facts_revision = facts_revision, claimed_facts_hash = facts_hash, claimed_at = ?
+  WHERE id = ? AND provider_state = 'pending'`;
+const SQL_FINISH_DIGEST_CLAIM = `UPDATE watch_digests SET provider_state = ?,
+  provider_result_code = ?, explanation_json = ?, byte_length = ?, provider_finished_at = ?
+  WHERE id = ? AND provider_state = 'claimed' AND facts_revision = ? AND facts_hash = ?
+    AND claimed_facts_revision = ? AND claimed_facts_hash = ?`;
+const SQL_FINISH_DIGEST_PENDING = `UPDATE watch_digests SET provider_state = ?,
+  provider_result_code = ?, provider_finished_at = ?
+  WHERE id = ? AND provider_state = 'pending'`;
+const SQL_RECOVER_CLAIMED_DIGESTS = `UPDATE watch_digests SET provider_state = 'uncertain',
+  provider_result_code = 'uncertain-after-restart', explanation_json = NULL,
+  provider_finished_at = CASE WHEN claimed_at > ? THEN claimed_at ELSE ? END
+  WHERE provider_state = 'claimed'`;
+const SQL_SELECT_DIGEST = `${SQL_SELECT_ALL_DIGESTS} WHERE id = ?`;
+const SQL_SELECT_DIGEST_IDS_BY_SCHEDULE = `SELECT id FROM watch_digests
+  WHERE schedule_id = ? ORDER BY created_at ASC, id ASC`;
+const SQL_SELECT_PENDING_DIGEST_IDS_BY_RUN = `SELECT id FROM watch_digests
+  WHERE run_id = ? AND provider_state = 'pending' ORDER BY batch_index ASC`;
+const SQL_SELECT_NEXT_DIGEST_BATCH_INDEX = `SELECT COALESCE(MAX(batch_index), -1) + 1 AS n
+  FROM watch_digests WHERE run_id = ?`;
+const SQL_SELECT_FINISHED_RUNS_FOR_DIGEST_STATS = `SELECT w.source_id, r.status, r.finished_at, r.outcome_json
+  FROM watch_runs r JOIN watch_rules w ON w.id = r.rule_id
+  WHERE r.status IN ('finished','interrupted') AND r.finished_at > ? AND r.finished_at <= ?
+  ORDER BY r.finished_at ASC, r.id ASC`;
+const SQL_UPDATE_DIGEST_SCHEDULE_STATE = `UPDATE digest_schedules SET state = ?,
+  version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND state = ?`;
+const SQL_DELETE_DIGEST_SCHEDULE = `DELETE FROM digest_schedules WHERE id = ? AND version = ?`;
+const SQL_UPDATE_DIGEST_AI = `UPDATE digest_schedules SET ai_enabled = ?,
+  version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND ai_enabled = ?`;
+const SQL_DISABLE_PENDING_DIGESTS = `UPDATE watch_digests SET provider_state = 'disabled',
+  provider_result_code = 'disabled', provider_finished_at =
+    CASE WHEN created_at > ? THEN created_at ELSE ? END
+  WHERE schedule_id = ? AND provider_state = 'pending'`;
+const SQL_RESET_DIGEST_SCHEDULE = `UPDATE digest_schedules SET source_ids_json = ?,
+  schedule_json = ?, cursor_sequence = ?, next_due_at = ?, version = version + 1,
+  updated_at = ? WHERE id = ? AND version = ?`;
+const SQL_BLOCK_DIGEST_RUN = `UPDATE digest_runs SET state = 'budget_exceeded',
+  blocked_at = ?, blocked_required_bytes = ?, blocked_available_bytes = ?
+  WHERE id = ? AND state = 'running' AND next_sequence < upper_sequence`;
+const SQL_RETRY_DIGEST_RUN = `UPDATE digest_runs SET state = 'running', blocked_at = NULL,
+  blocked_required_bytes = NULL, blocked_available_bytes = NULL
+  WHERE id = ? AND state = 'budget_exceeded' AND blocked_required_bytes <= ?`;
+const SQL_DIGEST_SAFE_WATERMARK = `SELECT COALESCE(MIN(sequence),
+  (SELECT last_sequence FROM digest_change_state WHERE id = 1)) AS sequence FROM (
+    SELECT cursor_sequence AS sequence FROM digest_schedules
+    UNION ALL
+    SELECT next_sequence AS sequence FROM digest_runs WHERE state IN ('running','budget_exceeded')
+  )`;
+const SQL_PRUNE_DIGEST_TOMBSTONES = `DELETE FROM digest_change_journal
+  WHERE status IN ('expired','user-deleted') AND sequence <= ?`;
 
 const SQL_INSERT_INTENT = `INSERT INTO source_cleanup_intents
   (mutation_id, source_id, operation, before_projection_json, after_projection_json,
@@ -437,15 +625,33 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     FROM watch_event_observations), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB))
     + LENGTH(CAST(source_ids_json AS BLOB)) + LENGTH(CAST(schedule_json AS BLOB))
-    + LENGTH(CAST(COALESCE(cursor_json,'') AS BLOB))
+    + LENGTH(CAST(next_due_at AS BLOB))
     + LENGTH(CAST(state AS BLOB)) + LENGTH(CAST(created_at AS BLOB))
     + LENGTH(CAST(updated_at AS BLOB))
-    + LENGTH(CAST(COALESCE(last_checked_at,'') AS BLOB)) + 8)
+    + LENGTH(CAST(COALESCE(last_checked_at,'') AS BLOB))
+    + LENGTH(CAST(COALESCE(last_period_json,'') AS BLOB))
+    + LENGTH(CAST(COALESCE(last_run_stats_json,'') AS BLOB)) + 24)
     FROM digest_schedules), 0)
+  + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(schedule_id AS BLOB))
+    + LENGTH(CAST(request_key AS BLOB)) + LENGTH(CAST(logical_date AS BLOB))
+    + LENGTH(CAST(period_json AS BLOB)) + LENGTH(CAST(run_stats_json AS BLOB))
+    + LENGTH(CAST(state AS BLOB)) + LENGTH(CAST(COALESCE(blocked_at,'') AS BLOB))
+    + LENGTH(CAST(created_at AS BLOB)) + LENGTH(CAST(COALESCE(finished_at,'') AS BLOB)) + 48)
+    FROM digest_runs), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB))
-    + LENGTH(CAST(schedule_id AS BLOB)) + LENGTH(CAST(facts_json AS BLOB))
+    + LENGTH(CAST(schedule_id AS BLOB)) + LENGTH(CAST(run_id AS BLOB))
+    + LENGTH(CAST(facts_json AS BLOB)) + LENGTH(CAST(facts_hash AS BLOB))
     + LENGTH(CAST(COALESCE(explanation_json,'') AS BLOB))
-    + LENGTH(CAST(created_at AS BLOB)) + 8) FROM watch_digests), 0)
+    + LENGTH(CAST(provider_state AS BLOB))
+    + LENGTH(CAST(COALESCE(provider_result_code,'') AS BLOB))
+    + LENGTH(CAST(COALESCE(claimed_facts_hash,'') AS BLOB))
+    + LENGTH(CAST(COALESCE(claimed_at,'') AS BLOB))
+    + LENGTH(CAST(COALESCE(provider_finished_at,'') AS BLOB))
+    + LENGTH(CAST(created_at AS BLOB)) + 40) FROM watch_digests), 0)
+  + COALESCE((SELECT SUM(LENGTH(CAST(observation_id AS BLOB))
+    + LENGTH(CAST(event_id AS BLOB)) + LENGTH(CAST(source_id AS BLOB))
+    + LENGTH(CAST(observed_at AS BLOB)) + LENGTH(CAST(status AS BLOB)) + 8)
+    FROM digest_change_journal), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(digest_id AS BLOB))
     + LENGTH(CAST(event_id AS BLOB)) + LENGTH(CAST(status AS BLOB)))
     FROM digest_event_refs), 0)
@@ -610,7 +816,10 @@ export class WatchRepository {
         );
       return { ok: true };
     } catch (err) {
-      return { ok: false, code: this.translate(err).code };
+      return {
+        ok: false,
+        code: err instanceof TxnAbortError ? err.code : this.translate(err).code,
+      };
     }
   }
 
@@ -744,6 +953,85 @@ export class WatchRepository {
     }
   }
 
+  private scrubEventInternal(
+    eventId: string,
+    status: 'expired' | 'user-deleted',
+    nowIso = this.nowIso(),
+  ): number {
+    const artifacts = this.handle.prepare(SQL_SELECT_DIGESTS_BY_EVENT).all(eventId) as Array<
+      Record<string, unknown>
+    >;
+    for (const row of artifacts) {
+      const facts = this.parseJson(row['facts_json']) as DigestFacts | null;
+      if (facts === null || facts.referenceStates[eventId] === undefined)
+        throw new TxnAbortError('store-unavailable');
+      const nextFacts: DigestFacts = structuredClone(facts);
+      nextFacts.referenceStates[eventId] = status;
+      delete nextFacts.evidenceMap[eventId];
+      const canonical = canonicalizeDigestFacts(nextFacts);
+      if (!canonical.ok) throw new TxnAbortError('store-unavailable');
+      let explanationJson: string | null = null;
+      if (row['explanation_json'] !== null) {
+        const explanation = this.parseJson(row['explanation_json']) as {
+          sections?: Array<{ eventIds?: string[]; explanation?: string }>;
+        } | null;
+        if (explanation === null || !Array.isArray(explanation.sections))
+          throw new TxnAbortError('store-unavailable');
+        const sections = explanation.sections.filter(
+          (section) => Array.isArray(section.eventIds) && !section.eventIds.includes(eventId),
+        );
+        explanationJson = sections.length === 0 ? null : JSON.stringify({ sections });
+      }
+      const wasClaimed = row['provider_state'] === 'claimed';
+      const nextState = wasClaimed ? 'failed' : String(row['provider_state']);
+      const nextCode = wasClaimed ? 'aborted' : row['provider_result_code'];
+      const previousFinished = row['provider_finished_at'];
+      const finishedAt = wasClaimed
+        ? typeof row['claimed_at'] === 'string' && row['claimed_at'] > nowIso
+          ? row['claimed_at']
+          : nowIso
+        : previousFinished;
+      const byteLength =
+        canonical.byteLength + (explanationJson === null ? 0 : utf8ByteLength(explanationJson));
+      const updated = this.handle
+        .prepare(SQL_SCRUB_DIGEST)
+        .run(
+          canonical.json,
+          canonical.hash,
+          explanationJson,
+          byteLength,
+          nextState,
+          nextCode,
+          finishedAt,
+          row['id'],
+          row['facts_revision'],
+          row['facts_hash'],
+        );
+      if (Number(updated.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+    }
+    this.handle.prepare(SQL_UPDATE_DIGEST_CHANGE_TOMBSTONE).run(status, eventId);
+    const refs = this.handle.prepare(SQL_MARK_REFS_FOR_EVENT).run(status, eventId);
+    return Number(refs.changes);
+  }
+
+  deleteEventWithScrub(eventId: string, nowIso: string): WatchResult {
+    this.ensureOpen();
+    try {
+      return withTransaction(this.handle, () => {
+        if (this.handle.prepare(SQL_SELECT_EVENT).get(eventId) === undefined)
+          throw new TxnAbortError('event-conflict');
+        this.scrubEventInternal(eventId, 'user-deleted', nowIso);
+        this.handle.prepare(SQL_DELETE_EVENT_OUTBOX).run(eventId);
+        const deleted = this.handle.prepare(SQL_DELETE_EVENT).run(eventId);
+        if (Number(deleted.changes) !== 1) throw new TxnAbortError('event-conflict');
+        return { ok: true };
+      });
+    } catch (err) {
+      if (err instanceof TxnAbortError) return { ok: false, code: err.code };
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
   // hard-delete/undo-of-add 级联（§10.3 步骤 4）：先标记受影响 Event 的
   // Digest ref=expired 与移除其 outbox，再删除规则（FK CASCADE baseline/runs/
   // events/audits SET NULL）。事务由调用方所有（coordinator 的 commit/
@@ -756,7 +1044,7 @@ export class WatchRepository {
         id: string;
       }>;
       for (const row of eventRows) {
-        this.handle.prepare(SQL_MARK_REFS_EXPIRED_FOR_EVENT).run(row.id);
+        this.scrubEventInternal(row.id, 'expired');
         this.handle.prepare(SQL_DELETE_EVENT_OUTBOX).run(row.id);
       }
       const result = this.handle.prepare(SQL_DELETE_RULES_BY_SOURCE).run(sourceId);
@@ -1567,6 +1855,12 @@ export class WatchRepository {
             0,
             input.event.itemCount,
           );
+        this.appendDigestChangeJournal(
+          observationId,
+          input.event.id,
+          input.event.sourceId,
+          input.event.firstObservedAt,
+        );
         for (let i = 0; i < input.items.length; i += 1) {
           const item = input.items[i]!;
           this.handle
@@ -2340,6 +2634,12 @@ export class WatchRepository {
               0,
               input.event.event.itemCount,
             );
+          this.appendDigestChangeJournal(
+            observationId,
+            input.event.event.id,
+            input.event.event.sourceId,
+            input.event.event.firstObservedAt,
+          );
           for (let i = 0; i < input.event.items.length; i += 1) {
             const item = input.event.items[i]!;
             this.handle
@@ -2462,6 +2762,12 @@ export class WatchRepository {
               input.coalesce.expectedItemCount,
               input.coalesce.items.length,
             );
+          this.appendDigestChangeJournal(
+            input.coalesce.observationId,
+            input.coalesce.eventId,
+            input.rule.sourceId,
+            input.coalesce.lastObservedAt,
+          );
           const eventSeqBase = input.coalesce.expectedItemCount;
           for (let i = 0; i < input.coalesce.items.length; i += 1) {
             const item = input.coalesce.items[i]!;
@@ -2580,6 +2886,754 @@ export class WatchRepository {
     const b = this.getBaseline(ruleId);
     if (b === null) return null;
     return { etag: b.conditionalEtag, lastModified: b.conditionalLastModified };
+  }
+
+  // -------------------------------------------------------------------------
+  // D8 Digest schedules / frozen cycles / artifacts / provider claims
+  // -------------------------------------------------------------------------
+
+  createDigestSchedule(input: {
+    id: string;
+    sourceIds: readonly string[];
+    localTime: string;
+    timeZone: string;
+    aiEnabled?: boolean;
+    nextDueAt: string;
+    nowIso: string;
+  }): WatchResult {
+    this.ensureOpen();
+    const sourceIds = [...input.sourceIds].sort((a, b) =>
+      Buffer.compare(Buffer.from(a), Buffer.from(b)),
+    );
+    const schedule = {
+      kind: 'daily' as const,
+      localTime: input.localTime,
+      timeZone: input.timeZone,
+    };
+    if (
+      input.id === '' ||
+      sourceIds.length < 1 ||
+      sourceIds.length > 100 ||
+      sourceIds.some((id, index) => id === '' || (index > 0 && sourceIds[index - 1] === id)) ||
+      !validateWatchSchedule(schedule).ok ||
+      !Number.isFinite(Date.parse(input.nextDueAt)) ||
+      !Number.isFinite(Date.parse(input.nowIso))
+    )
+      return { ok: false, code: 'validation-failed' };
+    try {
+      return withTransaction(this.handle, () => {
+        const highWater = this.handle.prepare(SQL_SELECT_DIGEST_CHANGE_STATE).get() as
+          { id: number; last_sequence: number } | undefined;
+        if (highWater?.id !== 1 || !Number.isSafeInteger(highWater.last_sequence))
+          throw new TxnAbortError('store-unavailable');
+        this.handle
+          .prepare(SQL_INSERT_DIGEST_SCHEDULE)
+          .run(
+            input.id,
+            JSON.stringify(sourceIds),
+            JSON.stringify(schedule),
+            input.aiEnabled === true ? 1 : 0,
+            highWater.last_sequence,
+            input.nextDueAt,
+            input.nowIso,
+            input.nowIso,
+          );
+        return { ok: true };
+      });
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  getDigestSchedule(id: string): StoredDigestSchedule | null {
+    this.ensureOpen();
+    const row = this.handle.prepare(SQL_SELECT_DIGEST_SCHEDULE).get(id) as unknown;
+    if (!isPlainRecord(row) || !validateDigestScheduleRow(row)) return null;
+    const sourceIds = this.parseJson(row['source_ids_json']) as string[];
+    const schedule = this.parseJson(row['schedule_json']) as {
+      localTime: string;
+      timeZone: string;
+    };
+    return {
+      id: row['id'] as string,
+      version: row['version'] as number,
+      sourceIds: [...sourceIds],
+      localTime: schedule.localTime,
+      timeZone: schedule.timeZone,
+      aiEnabled: row['ai_enabled'] === 1,
+      cursorSequence: row['cursor_sequence'] as number,
+      state: row['state'] as 'active' | 'paused',
+      nextDueAt: row['next_due_at'] as string,
+      lastConsumedScheduledFor: row['last_consumed_scheduled_for'] as string | null,
+      lastDailyLocalDate: row['last_daily_local_date'] as string | null,
+      createdAt: row['created_at'] as string,
+      updatedAt: row['updated_at'] as string,
+      lastCheckedAt: row['last_checked_at'] as string | null,
+      lastPeriod:
+        row['last_period_json'] === null
+          ? null
+          : (this.parseJson(row['last_period_json']) as StoredDigestSchedule['lastPeriod']),
+      lastRunStats:
+        row['last_run_stats_json'] === null
+          ? null
+          : (this.parseJson(row['last_run_stats_json']) as StoredDigestSchedule['lastRunStats']),
+    };
+  }
+
+  listActiveDigestSchedules(): StoredDigestSchedule[] {
+    this.ensureOpen();
+    const rows = this.handle.prepare(SQL_SELECT_ACTIVE_DIGEST_SCHEDULES).all() as Array<{
+      id: string;
+    }>;
+    return rows
+      .map((row) => this.getDigestSchedule(row.id))
+      .filter((row): row is StoredDigestSchedule => row !== null);
+  }
+
+  pauseDigestSchedule(id: string, expectedVersion: number, nowIso: string): WatchResult {
+    this.ensureOpen();
+    const current = this.getDigestSchedule(id);
+    if (current === null || current.version !== expectedVersion)
+      return { ok: false, code: 'rule-state-conflict' };
+    if (current.state === 'paused') return { ok: true };
+    const changed = this.handle
+      .prepare(SQL_UPDATE_DIGEST_SCHEDULE_STATE)
+      .run('paused', nowIso, id, expectedVersion, 'active');
+    return Number(changed.changes) === 1
+      ? { ok: true }
+      : { ok: false, code: 'rule-state-conflict' };
+  }
+
+  resumeDigestSchedule(id: string, expectedVersion: number, nowIso: string): WatchResult {
+    this.ensureOpen();
+    const current = this.getDigestSchedule(id);
+    if (current === null || current.version !== expectedVersion)
+      return { ok: false, code: 'rule-state-conflict' };
+    if (current.state === 'active') return { ok: true };
+    const changed = this.handle
+      .prepare(SQL_UPDATE_DIGEST_SCHEDULE_STATE)
+      .run('active', nowIso, id, expectedVersion, 'paused');
+    return Number(changed.changes) === 1
+      ? { ok: true }
+      : { ok: false, code: 'rule-state-conflict' };
+  }
+
+  deleteDigestSchedule(id: string, expectedVersion: number): WatchResult {
+    this.ensureOpen();
+    const changed = this.handle.prepare(SQL_DELETE_DIGEST_SCHEDULE).run(id, expectedVersion);
+    return Number(changed.changes) === 1
+      ? { ok: true }
+      : { ok: false, code: 'rule-state-conflict' };
+  }
+
+  setDigestScheduleAiEnabled(
+    id: string,
+    expectedVersion: number,
+    enabled: boolean,
+    nowIso: string,
+  ): WatchResult {
+    this.ensureOpen();
+    const current = this.getDigestSchedule(id);
+    if (current === null || current.version !== expectedVersion)
+      return { ok: false, code: 'rule-state-conflict' };
+    if (current.aiEnabled === enabled) return { ok: true };
+    try {
+      return withTransaction(this.handle, () => {
+        const changed = this.handle
+          .prepare(SQL_UPDATE_DIGEST_AI)
+          .run(enabled ? 1 : 0, nowIso, id, expectedVersion, current.aiEnabled ? 1 : 0);
+        if (Number(changed.changes) !== 1) throw new TxnAbortError('rule-state-conflict');
+        if (!enabled) this.handle.prepare(SQL_DISABLE_PENDING_DIGESTS).run(nowIso, nowIso, id);
+        return { ok: true };
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        code: err instanceof TxnAbortError ? err.code : this.translate(err).code,
+      };
+    }
+  }
+
+  resetDigestSchedule(input: {
+    id: string;
+    expectedVersion: number;
+    sourceIds: readonly string[];
+    localTime: string;
+    timeZone: string;
+    nextDueAt: string;
+    nowIso: string;
+  }): WatchResult {
+    this.ensureOpen();
+    const sourceIds = [...input.sourceIds].sort((a, b) =>
+      Buffer.compare(Buffer.from(a), Buffer.from(b)),
+    );
+    const schedule = {
+      kind: 'daily' as const,
+      localTime: input.localTime,
+      timeZone: input.timeZone,
+    };
+    if (
+      sourceIds.length < 1 ||
+      sourceIds.length > 100 ||
+      sourceIds.some((id, index) => id === '' || (index > 0 && sourceIds[index - 1] === id)) ||
+      !validateWatchSchedule(schedule).ok ||
+      !Number.isFinite(Date.parse(input.nextDueAt))
+    )
+      return { ok: false, code: 'validation-failed' };
+    try {
+      return withTransaction(this.handle, () => {
+        if (this.handle.prepare(SQL_SELECT_NONTERMINAL_DIGEST_RUN).get(input.id) !== undefined)
+          throw new TxnAbortError('rule-already-running');
+        const highWater = this.handle.prepare(SQL_SELECT_DIGEST_CHANGE_STATE).get() as {
+          last_sequence: number;
+        };
+        const changed = this.handle
+          .prepare(SQL_RESET_DIGEST_SCHEDULE)
+          .run(
+            JSON.stringify(sourceIds),
+            JSON.stringify(schedule),
+            highWater.last_sequence,
+            input.nextDueAt,
+            input.nowIso,
+            input.id,
+            input.expectedVersion,
+          );
+        if (Number(changed.changes) !== 1) throw new TxnAbortError('rule-state-conflict');
+        return { ok: true };
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        code: err instanceof TxnAbortError ? err.code : this.translate(err).code,
+      };
+    }
+  }
+
+  getNonterminalDigestRun(scheduleId: string): StoredDigestRun | null {
+    this.ensureOpen();
+    const row = this.handle.prepare(SQL_SELECT_NONTERMINAL_DIGEST_RUN).get(scheduleId) as unknown;
+    if (!isPlainRecord(row) || !validateDigestRunRow(row)) return null;
+    return {
+      id: row['id'] as string,
+      scheduleId: row['schedule_id'] as string,
+      requestKey: row['request_key'] as string,
+      logicalDate: row['logical_date'] as string,
+      lowerSequence: row['lower_sequence'] as number,
+      upperSequence: row['upper_sequence'] as number,
+      nextSequence: row['next_sequence'] as number,
+      period: this.parseJson(row['period_json']) as StoredDigestRun['period'],
+      runStats: this.parseJson(row['run_stats_json']) as StoredDigestRun['runStats'],
+      state: row['state'] as StoredDigestRun['state'],
+    };
+  }
+
+  getDigestRun(id: string): StoredDigestRun | null {
+    this.ensureOpen();
+    const row = this.handle.prepare(SQL_SELECT_DIGEST_RUN_BY_ID).get(id) as unknown;
+    if (!isPlainRecord(row) || !validateDigestRunRow(row)) return null;
+    return {
+      id: row['id'] as string,
+      scheduleId: row['schedule_id'] as string,
+      requestKey: row['request_key'] as string,
+      logicalDate: row['logical_date'] as string,
+      lowerSequence: row['lower_sequence'] as number,
+      upperSequence: row['upper_sequence'] as number,
+      nextSequence: row['next_sequence'] as number,
+      period: this.parseJson(row['period_json']) as StoredDigestRun['period'],
+      runStats: this.parseJson(row['run_stats_json']) as StoredDigestRun['runStats'],
+      state: row['state'] as StoredDigestRun['state'],
+    };
+  }
+
+  remainingDbBudget(): number {
+    this.ensureOpen();
+    return Math.max(0, this.maxDbBytes - this.estimateLogicalBytesInternal());
+  }
+
+  markDigestRunBudgetExceeded(
+    runId: string,
+    requiredBytes: number,
+    availableBytes: number,
+    nowIso: string,
+  ): WatchResult {
+    this.ensureOpen();
+    if (
+      !Number.isSafeInteger(requiredBytes) ||
+      !Number.isSafeInteger(availableBytes) ||
+      requiredBytes <= availableBytes ||
+      availableBytes < 0
+    )
+      return { ok: false, code: 'validation-failed' };
+    const changed = this.handle
+      .prepare(SQL_BLOCK_DIGEST_RUN)
+      .run(nowIso, requiredBytes, availableBytes, runId);
+    return Number(changed.changes) === 1 ? { ok: true } : { ok: false, code: 'run-state-conflict' };
+  }
+
+  retryDigestRunBudget(runId: string): WatchResult {
+    this.ensureOpen();
+    const changed = this.handle.prepare(SQL_RETRY_DIGEST_RUN).run(runId, this.remainingDbBudget());
+    return Number(changed.changes) === 1 ? { ok: true } : { ok: false, code: 'run-state-conflict' };
+  }
+
+  reserveDigestRun(input: {
+    scheduleId: string;
+    expectedVersion: number;
+    expectedNextDueAt: string;
+    expectedLastConsumedScheduledFor: string | null;
+    expectedLastDailyLocalDate: string | null;
+    runId: string;
+    requestKey: string;
+    logicalDate: string;
+    nextDueAt: string;
+    nowIso: string;
+  }): { ok: true; run: StoredDigestRun } | { ok: false; code: WatchErrorCode } {
+    this.ensureOpen();
+    const schedule = this.getDigestSchedule(input.scheduleId);
+    if (
+      schedule === null ||
+      schedule.version !== input.expectedVersion ||
+      schedule.state !== 'active'
+    )
+      return { ok: false, code: 'run-state-conflict' };
+    const period = {
+      fromExclusive: schedule.lastCheckedAt ?? schedule.createdAt,
+      toInclusive: input.nowIso,
+    };
+    if (!Number.isFinite(Date.parse(input.nowIso)) || period.fromExclusive >= period.toInclusive)
+      return { ok: false, code: 'validation-failed' };
+    const sourceIds = new Set(schedule.sourceIds);
+    const runStats = { changed: 0, failed: 0, unchanged: 0 };
+    const rows = this.handle
+      .prepare(SQL_SELECT_FINISHED_RUNS_FOR_DIGEST_STATS)
+      .all(period.fromExclusive, period.toInclusive) as Array<{
+      source_id: string;
+      status: string;
+      outcome_json: string | null;
+    }>;
+    for (const row of rows) {
+      if (!sourceIds.has(row.source_id)) continue;
+      if (row.status === 'interrupted') {
+        runStats.failed += 1;
+        continue;
+      }
+      if (row.outcome_json === null) return { ok: false, code: 'store-unavailable' };
+      const outcome = validateWatchRunOutcome(this.parseJson(row.outcome_json));
+      if (outcome === null) return { ok: false, code: 'store-unavailable' };
+      if (
+        outcome.kind === 'changed-unmatched' ||
+        outcome.kind === 'event-created' ||
+        outcome.kind === 'event-coalesced'
+      )
+        runStats.changed += 1;
+      else if (
+        outcome.kind === 'unchanged' ||
+        outcome.kind === 'baseline-established' ||
+        outcome.kind === 'event-deduplicated'
+      )
+        runStats.unchanged += 1;
+      else runStats.failed += 1;
+    }
+    try {
+      return withTransaction(this.handle, () => {
+        if (
+          this.handle.prepare(SQL_SELECT_NONTERMINAL_DIGEST_RUN).get(input.scheduleId) !== undefined
+        )
+          throw new TxnAbortError('rule-already-running');
+        const highWater = this.handle.prepare(SQL_SELECT_DIGEST_CHANGE_STATE).get() as {
+          last_sequence: number;
+        };
+        const lower = schedule.cursorSequence;
+        const upper = Number(highWater.last_sequence);
+        const changed = this.handle
+          .prepare(SQL_RESERVE_DIGEST_SCHEDULE)
+          .run(
+            input.nextDueAt,
+            input.expectedNextDueAt,
+            input.logicalDate,
+            input.nowIso,
+            input.scheduleId,
+            input.expectedVersion,
+            input.expectedNextDueAt,
+            input.expectedLastConsumedScheduledFor,
+            input.expectedLastDailyLocalDate,
+          );
+        if (Number(changed.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+        this.handle
+          .prepare(SQL_INSERT_DIGEST_RUN)
+          .run(
+            input.runId,
+            input.scheduleId,
+            input.requestKey,
+            input.logicalDate,
+            lower,
+            upper,
+            lower,
+            JSON.stringify(period),
+            JSON.stringify(runStats),
+            input.nowIso,
+          );
+        return {
+          ok: true,
+          run: {
+            id: input.runId,
+            scheduleId: input.scheduleId,
+            requestKey: input.requestKey,
+            logicalDate: input.logicalDate,
+            lowerSequence: lower,
+            upperSequence: upper,
+            nextSequence: lower,
+            period,
+            runStats,
+            state: 'running',
+          },
+        };
+      });
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  readDigestJournalSlice(runId: string): DigestJournalSlice[] | null {
+    this.ensureOpen();
+    const runRow = this.handle.prepare(SQL_SELECT_DIGEST_RUN_BY_ID).get(runId) as unknown;
+    if (!isPlainRecord(runRow) || !validateDigestRunRow(runRow)) return null;
+    const schedule = this.getDigestSchedule(String(runRow['schedule_id']));
+    if (schedule === null) return null;
+    return this.readDigestJournalRange(
+      schedule.sourceIds,
+      Number(runRow['next_sequence']),
+      Number(runRow['upper_sequence']),
+    );
+  }
+
+  readDigestPreviewSlice(input: {
+    sourceIds: readonly string[];
+    afterSequence: number;
+    fromExclusive: string;
+    toInclusive: string;
+  }): { upperSequence: number; rows: DigestJournalSlice[] } | null {
+    this.ensureOpen();
+    if (
+      !Number.isSafeInteger(input.afterSequence) ||
+      input.afterSequence < 0 ||
+      !Number.isFinite(Date.parse(input.fromExclusive)) ||
+      !Number.isFinite(Date.parse(input.toInclusive)) ||
+      input.fromExclusive >= input.toInclusive
+    )
+      return null;
+    const state = this.handle.prepare(SQL_SELECT_DIGEST_CHANGE_STATE).get() as {
+      last_sequence: number;
+    };
+    const rows = this.readDigestJournalRange(
+      input.sourceIds,
+      input.afterSequence,
+      state.last_sequence,
+      input.fromExclusive,
+      input.toInclusive,
+    );
+    return rows === null ? null : { upperSequence: state.last_sequence, rows };
+  }
+
+  private readDigestJournalRange(
+    sourceIds: readonly string[],
+    afterSequence: number,
+    upperSequence: number,
+    fromExclusive?: string,
+    toInclusive?: string,
+  ): DigestJournalSlice[] | null {
+    const allowed = new Set(sourceIds);
+    const rows = this.handle
+      .prepare(SQL_SELECT_DIGEST_OBSERVATIONS)
+      .all(afterSequence, upperSequence) as Array<Record<string, unknown>>;
+    const output: DigestJournalSlice[] = [];
+    for (const row of rows) {
+      const sequence = Number(row['sequence']);
+      const inPeriod =
+        fromExclusive === undefined ||
+        toInclusive === undefined ||
+        (String(row['observed_at']) > fromExclusive && String(row['observed_at']) <= toInclusive);
+      if (!allowed.has(String(row['source_id'])) || !inPeriod) {
+        output.push({ sequence, status: 'skipped', observation: null });
+        continue;
+      }
+      if (row['status'] !== 'active') {
+        output.push({
+          sequence,
+          status: row['status'] === 'user-deleted' ? 'user-deleted' : 'expired',
+          observation: null,
+        });
+        continue;
+      }
+      if (typeof row['rule_id'] !== 'string' || typeof row['event_kind'] !== 'string') return null;
+      const itemRows = this.handle
+        .prepare(SQL_SELECT_ITEMS_BY_OBSERVATION)
+        .all(row['observation_id']) as Array<Record<string, unknown>>;
+      const items: ChangeEvidencePair[] = [];
+      for (const item of itemRows) {
+        const pair = validateChangeEvidencePair({
+          itemId: item['item_id'],
+          fieldKey: item['field_key'],
+          label: item['label'],
+          before: this.parseJson(item['before_value_json']),
+          after: this.parseJson(item['after_value_json']),
+          beforeCapturedAt: item['before_captured_at'],
+          afterCapturedAt: item['after_captured_at'],
+          beforeFinalUrl: item['before_final_url'],
+          afterFinalUrl: item['after_final_url'],
+          beforeDocumentId: item['before_document_id'],
+          afterDocumentId: item['after_document_id'],
+          feedItemKey: item['feed_item_key'],
+        });
+        if (pair === null) return null;
+        items.push(pair);
+      }
+      output.push({
+        sequence,
+        status: 'active',
+        observation: {
+          sequence,
+          eventId: String(row['event_id']),
+          ruleId: row['rule_id'],
+          sourceId: String(row['source_id']),
+          eventKind: row['event_kind'] as WatchEventKind,
+          importance: row['importance'] as DigestObservationSlice['importance'],
+          observedAt: String(row['observed_at']),
+          items,
+        },
+      });
+    }
+    return output;
+  }
+
+  commitDigestBatch(input: {
+    artifactId: string;
+    run: StoredDigestRun;
+    expectedNextSequence: number;
+    firstSequence: number;
+    lastSequence: number;
+    facts: DigestFacts;
+    createdAt: string;
+    aiEnabled: boolean;
+  }): WatchResult {
+    this.ensureOpen();
+    const canonical = canonicalizeDigestFacts(input.facts);
+    if (
+      !canonical.ok ||
+      input.firstSequence <= input.expectedNextSequence ||
+      input.lastSequence > input.run.upperSequence
+    )
+      return { ok: false, code: 'validation-failed' };
+    const providerState = input.aiEnabled ? 'pending' : 'disabled';
+    const providerCode = input.aiEnabled ? null : 'disabled';
+    const providerFinishedAt = input.aiEnabled ? null : input.createdAt;
+    try {
+      return withTransaction(this.handle, () => {
+        if (this.estimateLogicalBytesInternal() + canonical.byteLength > this.maxDbBytes)
+          throw new TxnAbortError('db-budget-exceeded');
+        const batch = this.handle.prepare(SQL_SELECT_NEXT_DIGEST_BATCH_INDEX).get(input.run.id) as {
+          n: number;
+        };
+        this.handle
+          .prepare(SQL_INSERT_DIGEST)
+          .run(
+            input.artifactId,
+            input.run.scheduleId,
+            input.run.id,
+            batch.n,
+            input.firstSequence,
+            input.lastSequence,
+            canonical.json,
+            canonical.hash,
+            canonical.byteLength,
+            providerState,
+            providerCode,
+            providerFinishedAt,
+            input.createdAt,
+          );
+        for (const event of input.facts.events)
+          this.handle.prepare(SQL_INSERT_DIGEST_REF).run(input.artifactId, event.eventId, 'active');
+        const runChanged = this.handle
+          .prepare(SQL_UPDATE_DIGEST_RUN_CURSOR)
+          .run(
+            input.lastSequence,
+            input.run.id,
+            input.run.scheduleId,
+            input.expectedNextSequence,
+            input.lastSequence,
+          );
+        const scheduleChanged = this.handle
+          .prepare(SQL_UPDATE_DIGEST_SCHEDULE_CURSOR)
+          .run(
+            input.lastSequence,
+            input.createdAt,
+            input.run.scheduleId,
+            input.expectedNextSequence,
+          );
+        if (Number(runChanged.changes) !== 1 || Number(scheduleChanged.changes) !== 1)
+          throw new TxnAbortError('run-state-conflict');
+        return { ok: true };
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        code: err instanceof TxnAbortError ? err.code : this.translate(err).code,
+      };
+    }
+  }
+
+  completeDigestRun(run: StoredDigestRun, nowIso: string): WatchResult {
+    this.ensureOpen();
+    try {
+      return withTransaction(this.handle, () => {
+        const changed = this.handle
+          .prepare(SQL_COMPLETE_DIGEST_RUN)
+          .run(nowIso, run.id, run.scheduleId, run.nextSequence);
+        const schedule = this.handle
+          .prepare(SQL_COMPLETE_DIGEST_SCHEDULE)
+          .run(
+            run.upperSequence,
+            run.period.toInclusive,
+            JSON.stringify(run.period),
+            JSON.stringify(run.runStats),
+            nowIso,
+            run.scheduleId,
+            run.nextSequence,
+          );
+        if (Number(changed.changes) !== 1 || Number(schedule.changes) !== 1)
+          throw new TxnAbortError('run-state-conflict');
+        return { ok: true };
+      });
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  getDigestArtifact(id: string): StoredDigestArtifact | null {
+    this.ensureOpen();
+    const row = this.handle.prepare(SQL_SELECT_DIGEST).get(id) as unknown;
+    if (!isPlainRecord(row) || !validateDigestArtifactRow(row)) return null;
+    return {
+      id: row['id'] as string,
+      scheduleId: row['schedule_id'] as string,
+      runId: row['run_id'] as string,
+      batchIndex: row['batch_index'] as number,
+      facts: this.parseJson(row['facts_json']) as DigestFacts,
+      factsJson: row['facts_json'] as string,
+      factsHash: row['facts_hash'] as string,
+      factsRevision: row['facts_revision'] as number,
+      providerState: row['provider_state'] as string,
+      providerResultCode: row['provider_result_code'] as string | null,
+      explanationJson: row['explanation_json'] as string | null,
+    };
+  }
+
+  listDigestArtifactsBySchedule(scheduleId: string): StoredDigestArtifact[] {
+    this.ensureOpen();
+    return (
+      this.handle.prepare(SQL_SELECT_DIGEST_IDS_BY_SCHEDULE).all(scheduleId) as Array<{
+        id: string;
+      }>
+    )
+      .map((row) => this.getDigestArtifact(row.id))
+      .filter((row): row is StoredDigestArtifact => row !== null);
+  }
+
+  listPendingDigestArtifacts(runId: string): StoredDigestArtifact[] {
+    this.ensureOpen();
+    return (
+      this.handle.prepare(SQL_SELECT_PENDING_DIGEST_IDS_BY_RUN).all(runId) as Array<{ id: string }>
+    )
+      .map((row) => this.getDigestArtifact(row.id))
+      .filter((row): row is StoredDigestArtifact => row !== null);
+  }
+
+  nextDigestBatchIndex(runId: string): number {
+    this.ensureOpen();
+    const row = this.handle.prepare(SQL_SELECT_NEXT_DIGEST_BATCH_INDEX).get(runId) as { n: number };
+    return Number(row.n);
+  }
+
+  claimDigestProvider(id: string, nowIso: string): StoredDigestArtifact | null {
+    this.ensureOpen();
+    try {
+      return withTransaction(this.handle, () => {
+        const changed = this.handle.prepare(SQL_CLAIM_DIGEST).run(nowIso, id);
+        if (Number(changed.changes) !== 1) return null;
+        return this.getDigestArtifact(id);
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  finishPendingDigest(
+    id: string,
+    state: 'disabled' | 'skipped',
+    code: 'disabled' | 'no-visible-events' | 'request-budget' | 'key-unavailable',
+    nowIso: string,
+  ): WatchResult {
+    this.ensureOpen();
+    const changed = this.handle.prepare(SQL_FINISH_DIGEST_PENDING).run(state, code, nowIso, id);
+    return Number(changed.changes) === 1 ? { ok: true } : { ok: false, code: 'run-state-conflict' };
+  }
+
+  finishClaimedDigest(input: {
+    id: string;
+    factsRevision: number;
+    factsHash: string;
+    state: 'succeeded' | 'failed';
+    code: DigestProviderResultCode;
+    explanationJson: string | null;
+    nowIso: string;
+  }): WatchResult {
+    this.ensureOpen();
+    if (input.state === 'succeeded') {
+      const artifact = this.getDigestArtifact(input.id);
+      const visible = artifact?.facts.events.map((event) => event.eventId) ?? [];
+      if (
+        input.code !== 'success' ||
+        input.explanationJson === null ||
+        parseDigestExplanation(input.explanationJson, visible) === null
+      )
+        return { ok: false, code: 'validation-failed' };
+    } else if (
+      !isIn(input.code, ['provider-error', 'timeout', 'aborted', 'invalid-output'] as const) ||
+      input.explanationJson !== null
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
+    const artifact = this.getDigestArtifact(input.id);
+    if (artifact === null) return { ok: false, code: 'run-not-found' };
+    const bytes =
+      utf8ByteLength(artifact.factsJson) +
+      (input.explanationJson === null ? 0 : utf8ByteLength(input.explanationJson));
+    const changed = this.handle
+      .prepare(SQL_FINISH_DIGEST_CLAIM)
+      .run(
+        input.state,
+        input.code,
+        input.explanationJson,
+        bytes,
+        input.nowIso,
+        input.id,
+        input.factsRevision,
+        input.factsHash,
+        input.factsRevision,
+        input.factsHash,
+      );
+    return Number(changed.changes) === 1 ? { ok: true } : { ok: false, code: 'run-state-conflict' };
+  }
+
+  recoverClaimedDigests(nowIso: string): number {
+    this.ensureOpen();
+    return Number(this.handle.prepare(SQL_RECOVER_CLAIMED_DIGESTS).run(nowIso, nowIso).changes);
+  }
+
+  pruneDigestJournalTombstones(): number {
+    this.ensureOpen();
+    const row = this.handle.prepare(SQL_DIGEST_SAFE_WATERMARK).get() as { sequence: number };
+    return Number(this.handle.prepare(SQL_PRUNE_DIGEST_TOMBSTONES).run(row.sequence).changes);
   }
 
   // -------------------------------------------------------------------------
@@ -2851,31 +3905,122 @@ export class WatchRepository {
       }
       for (const row of this.handle.prepare(SQL_SELECT_ALL_SCHEDULES).all() as unknown[]) {
         if (!isPlainRecord(row)) return { ok: false, reason: 'DigestSchedule 行形状非法' };
-        const sourceIds = this.parseJson(row['source_ids_json']);
-        if (!Array.isArray(sourceIds) || !sourceIds.every((x) => typeof x === 'string')) {
-          return { ok: false, reason: 'DigestSchedule source_ids 非法' };
-        }
-        const schedule = this.parseJson(row['schedule_json']);
-        if (schedule === null || !validateWatchSchedule(schedule).ok) {
-          return { ok: false, reason: 'DigestSchedule schedule 非法' };
-        }
-        if (row['cursor_json'] !== null && this.parseJson(row['cursor_json']) === null) {
-          return { ok: false, reason: 'DigestSchedule cursor 非法' };
-        }
+        if (!validateDigestScheduleRow(row))
+          return { ok: false, reason: 'DigestSchedule 行读回校验失败' };
       }
+      const digestRuns = this.handle.prepare(SQL_SELECT_ALL_DIGEST_RUNS).all() as unknown[];
+      const runById = new Map<string, Record<string, unknown>>();
+      for (const row of digestRuns) {
+        if (!isPlainRecord(row) || !validateDigestRunRow(row))
+          return { ok: false, reason: 'DigestRun 行读回校验失败' };
+        runById.set(String(row['id']), row);
+      }
+      const factsByDigest = new Map<string, DigestFacts>();
+      const artifactsByRun = new Map<string, Array<Record<string, unknown>>>();
       for (const row of this.handle.prepare(SQL_SELECT_ALL_DIGESTS).all() as unknown[]) {
-        if (!isPlainRecord(row)) return { ok: false, reason: 'Digest 行形状非法' };
-        if (this.parseJson(row['facts_json']) === null)
-          return { ok: false, reason: 'Digest facts 非法' };
-        if (row['explanation_json'] !== null && this.parseJson(row['explanation_json']) === null) {
-          return { ok: false, reason: 'Digest explanation 非法' };
-        }
+        if (!isPlainRecord(row) || !validateDigestArtifactRow(row))
+          return { ok: false, reason: 'Digest 行读回校验失败' };
+        const run = runById.get(String(row['run_id']));
+        if (
+          run === undefined ||
+          row['schedule_id'] !== run['schedule_id'] ||
+          Number(row['first_sequence']) <= Number(run['lower_sequence']) ||
+          Number(row['last_sequence']) > Number(run['upper_sequence']) ||
+          Number(row['byte_length']) !==
+            utf8ByteLength(String(row['facts_json'])) +
+              (row['explanation_json'] === null
+                ? 0
+                : utf8ByteLength(String(row['explanation_json'])))
+        )
+          return { ok: false, reason: 'Digest 与 Run/字节关系非法' };
+        factsByDigest.set(String(row['id']), this.parseJson(row['facts_json']) as DigestFacts);
+        const list = artifactsByRun.get(String(row['run_id'])) ?? [];
+        list.push(row);
+        artifactsByRun.set(String(row['run_id']), list);
       }
+      for (const [runId, artifacts] of artifactsByRun) {
+        const run = runById.get(runId)!;
+        artifacts.sort((a, b) => Number(a['batch_index']) - Number(b['batch_index']));
+        let previous = Number(run['lower_sequence']);
+        for (let index = 0; index < artifacts.length; index += 1) {
+          const artifact = artifacts[index]!;
+          if (artifact['batch_index'] !== index || artifact['first_sequence'] !== previous + 1)
+            return { ok: false, reason: 'Digest batch 序号/sequence 不连续' };
+          previous = Number(artifact['last_sequence']);
+        }
+        if (previous > Number(run['next_sequence']))
+          return { ok: false, reason: 'Digest artifact 越过 Run cursor' };
+      }
+      const refsByDigest = new Map<string, Map<string, string>>();
       for (const row of this.handle.prepare(SQL_SELECT_ALL_DIGEST_REFS).all() as unknown[]) {
         if (!isPlainRecord(row)) return { ok: false, reason: 'DigestRef 行形状非法' };
         if (!isIn(row['status'], ['active', 'expired', 'user-deleted'] as const)) {
           return { ok: false, reason: 'DigestRef 状态非法' };
         }
+        const refs = refsByDigest.get(String(row['digest_id'])) ?? new Map<string, string>();
+        refs.set(String(row['event_id']), String(row['status']));
+        refsByDigest.set(String(row['digest_id']), refs);
+      }
+      for (const [digestId, facts] of factsByDigest) {
+        const refs = refsByDigest.get(digestId);
+        if (refs === undefined || refs.size !== facts.events.length)
+          return { ok: false, reason: 'Digest facts/ref 数量不一致' };
+        for (const event of facts.events) {
+          if (refs.get(event.eventId) !== facts.referenceStates[event.eventId])
+            return { ok: false, reason: 'Digest facts/ref 状态不一致' };
+        }
+      }
+      const state = this.handle.prepare(SQL_SELECT_DIGEST_CHANGE_STATE).all() as unknown[];
+      if (
+        state.length !== 1 ||
+        !isPlainRecord(state[0]) ||
+        state[0]['id'] !== 1 ||
+        !Number.isSafeInteger(state[0]['last_sequence']) ||
+        Number(state[0]['last_sequence']) < 0
+      )
+        return { ok: false, reason: 'Digest journal high-water 非法' };
+      const changes = this.handle.prepare(SQL_SELECT_ALL_DIGEST_CHANGES).all() as unknown[];
+      let previousSequence = 0;
+      for (const row of changes) {
+        if (
+          !isPlainRecord(row) ||
+          !Number.isSafeInteger(row['sequence']) ||
+          Number(row['sequence']) <= previousSequence ||
+          Number(row['sequence']) > Number(state[0]['last_sequence']) ||
+          typeof row['observation_id'] !== 'string' ||
+          typeof row['event_id'] !== 'string' ||
+          typeof row['source_id'] !== 'string' ||
+          typeof row['observed_at'] !== 'string' ||
+          !Number.isFinite(Date.parse(row['observed_at'])) ||
+          !isIn(row['status'], ['active', 'expired', 'user-deleted'] as const)
+        )
+          return { ok: false, reason: 'Digest journal 行非法' };
+        previousSequence = Number(row['sequence']);
+      }
+      const activeObservationIds = new Set(
+        changes
+          .filter(
+            (row): row is Record<string, unknown> =>
+              isPlainRecord(row) && row['status'] === 'active',
+          )
+          .map((row) => String(row['observation_id'])),
+      );
+      const persistedObservationIds = new Set(
+        (
+          this.handle.prepare(SQL_SELECT_ALL_OBSERVATIONS).all() as Array<Record<string, unknown>>
+        ).map((row) => String(row['id'])),
+      );
+      if (
+        activeObservationIds.size !== persistedObservationIds.size ||
+        [...persistedObservationIds].some((id) => !activeObservationIds.has(id))
+      )
+        return { ok: false, reason: 'Digest active journal 与 observation 不一致' };
+      const highWater = Number(state[0]['last_sequence']);
+      for (const row of this.handle.prepare(SQL_SELECT_ALL_SCHEDULES).all() as Array<
+        Record<string, unknown>
+      >) {
+        if (Number(row['cursor_sequence']) > highWater)
+          return { ok: false, reason: 'Digest schedule cursor 越过 high-water' };
       }
       for (const row of this.handle.prepare(SQL_SELECT_ALL_OUTBOX).all() as unknown[]) {
         if (!isPlainRecord(row)) return { ok: false, reason: 'Outbox 行形状非法' };
@@ -3066,6 +4211,25 @@ export class WatchRepository {
     }
   }
 
+  private appendDigestChangeJournal(
+    observationId: string,
+    eventId: string,
+    sourceId: string,
+    observedAt: string,
+  ): number {
+    const row = this.handle.prepare(SQL_NEXT_DIGEST_CHANGE_SEQUENCE).get() as
+      { last_sequence: number | bigint } | undefined;
+    if (row === undefined) throw new TxnAbortError('store-unavailable');
+    const sequence = Number(row.last_sequence);
+    if (!Number.isSafeInteger(sequence) || sequence < 1) {
+      throw new TxnAbortError('store-unavailable');
+    }
+    this.handle
+      .prepare(SQL_INSERT_DIGEST_CHANGE)
+      .run(sequence, observationId, eventId, sourceId, observedAt);
+    return sequence;
+  }
+
   // 按规则分级保留：公开 90天/200、登录态 30天/100（== 保留、+1 清理）；
   // 清理顺序「已读最旧 → 未读最旧」；删除前 Digest ref → expired（tombstone），
   // 并移除对应 outbox。自带事务。
@@ -3104,8 +4268,7 @@ export class WatchRepository {
             ...withinAge.slice(0, overflow).map((r) => r.id),
           ];
           for (const id of deleteIds) {
-            const refs = this.handle.prepare(SQL_MARK_REFS_EXPIRED_FOR_EVENT).run(id);
-            expiredRefs += Number(refs.changes);
+            expiredRefs += this.scrubEventInternal(id, 'expired', nowIso);
             this.handle.prepare(SQL_DELETE_EVENT_OUTBOX).run(id);
             const del = this.handle.prepare(SQL_DELETE_EVENT).run(id);
             deleted += Number(del.changes);
@@ -3138,7 +4301,7 @@ export class WatchRepository {
           return { deleted, remainingBytes: current };
         }
         withTransaction(this.handle, () => {
-          this.handle.prepare(SQL_MARK_REFS_EXPIRED_FOR_EVENT).run(row.id);
+          this.scrubEventInternal(row.id, 'expired', nowIso);
           this.handle.prepare(SQL_DELETE_EVENT_OUTBOX).run(row.id);
           const del = this.handle.prepare(SQL_DELETE_EVENT).run(row.id);
           deleted += Number(del.changes);

@@ -86,6 +86,14 @@ export const MAX_EVENT_EVIDENCE_BYTES = 32_768; // Event 所有双侧 Evidence �
 export const MAX_CONDITIONAL_FIELD_BYTES = 1_024; // ETag/Last-Modified 单字段（§2/#S6-056）
 export const MAX_RUN_RESPONSE_META_BYTES = 4_096; // Run 响应/Condition 元数据整体（§8.1/#S6-058）
 export const MAX_DIGEST_BYTES = 65_536; // 持久化 Digest 投影
+export const MAX_DIGEST_FACTS_BYTES = 49_152;
+export const MAX_DIGEST_EXPLANATION_BYTES = 12_288;
+export const MAX_DIGEST_PROVIDER_REQUEST_BYTES = 65_536;
+export const MAX_DIGEST_PROVIDER_OUTPUT_BYTES = 16_384;
+export const MAX_DIGEST_EXPLANATION_SECTIONS = 50;
+export const MAX_DIGEST_EXPLANATION_SECTION_CHARS = 1_000;
+export const MAX_DIGEST_EXPLANATION_SECTION_BYTES = 2_048;
+export const MAX_DIGEST_EXPLANATION_TOTAL_CHARS = 6_000;
 export const MAX_DIGEST_EVENTS = 50; // 单 Digest
 export const MAX_DIGEST_PROVIDER_CALLS = 1; // 单 Digest
 
@@ -183,6 +191,31 @@ export type CombineMode = (typeof COMBINE_MODES)[number];
 export type SourceWatchOperation = (typeof SOURCE_WATCH_OPERATIONS)[number];
 export type WatchSharingMode = (typeof WATCH_SHARING_MODES)[number];
 export type DigestEventRefState = (typeof DIGEST_EVENT_REF_STATES)[number];
+
+export type DigestScheduleState = 'active' | 'paused';
+export type DigestRunState = 'running' | 'budget_exceeded' | 'completed';
+export type DigestProviderState =
+  'disabled' | 'pending' | 'claimed' | 'succeeded' | 'failed' | 'uncertain' | 'skipped';
+export type DigestProviderResultCode =
+  | 'disabled'
+  | 'success'
+  | 'provider-error'
+  | 'timeout'
+  | 'aborted'
+  | 'invalid-output'
+  | 'uncertain-after-restart'
+  | 'no-visible-events'
+  | 'request-budget'
+  | 'key-unavailable';
+
+export interface DigestExplanationSection {
+  eventIds: string[];
+  explanation: string;
+}
+
+export interface DigestExplanation {
+  sections: DigestExplanationSection[];
+}
 
 // ---------------------------------------------------------------------------
 // D2：§3.1 Rule 与调度
@@ -589,14 +622,21 @@ export interface SourceLifecycleObserver {
 // timeZone 使用 §4 时区语义）；独立 cursor=(createdAt,eventId)；ai_enabled 显式启用。
 export interface DigestSchedule {
   id: string;
+  version: number;
   sourceIds: string[]; // 1..MAX_DIGEST_SCHEDULE_SOURCES
   localTime: string; // HH:mm（每日计划）
   timeZone: string; // IANA（创建/编辑时冻结）
   aiEnabled: boolean;
-  cursor: { createdAt: string; eventId: string } | null;
+  cursor: { changeSequence: number };
+  state: DigestScheduleState;
+  nextDueAt: string;
+  lastConsumedScheduledFor: string | null;
+  lastDailyLocalDate: string | null;
   createdAt: string;
   updatedAt: string;
   lastCheckedAt: string | null;
+  lastPeriod: { fromExclusive: string; toInclusive: string } | null;
+  lastRunStats: DigestRunStats | null;
 }
 
 // §11.2：程序事实（确定性；D8 生成，模型不可控制）
@@ -612,15 +652,18 @@ export interface DigestEventProjection {
   sourceId: string;
   eventKind: WatchEventKind;
   importance: WatchNotificationLevel;
-  firstObservedAt: string;
-  lastObservedAt: string;
+  firstIncludedAt: string;
+  lastIncludedAt: string;
+  observationCount: number;
   itemCount: number;
-  readAt: string | null;
 }
 
 export interface DigestFacts {
+  schemaVersion: 1;
   scheduleId: string;
-  period: { from: string; to: string };
+  digestRunId: string;
+  batchIndex: number;
+  period: { fromExclusive: string; toInclusive: string };
   eventCount: number;
   runStats: DigestRunStats;
   events: DigestEventProjection[]; // 排序后 Event 投影，≤ MAX_DIGEST_EVENTS；超出分批

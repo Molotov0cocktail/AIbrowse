@@ -82,6 +82,8 @@ import type {
   SourceWatchMutation,
   SourceWatchProjection,
 } from '../../shared/types/watch';
+import type { DigestSourceSharingProjection } from '../../shared/watch/digest-sharing-projector';
+import { truncateUtf8 } from '../../shared/watch/watch-budget';
 
 export const CONFIRM_TOKEN_TTL_MS = 300_000; // 决议 #56：TTL 300s
 const SEARCH_LIMIT_DEFAULT = 10;
@@ -152,6 +154,13 @@ export type SourceWatchProjectionReadResult =
 
 export interface SourceWatchProjectionProvider {
   getSourceWatchProjection(sourceId: string): SourceWatchProjectionReadResult;
+}
+
+export type DigestSharingReadResult =
+  { status: 'ok'; projections: DigestSourceSharingProjection[] } | { status: 'unavailable' };
+
+export interface DigestSharingProjectionProvider {
+  getDigestSharingProjections(sourceIds: readonly string[]): DigestSharingReadResult;
 }
 
 // D4：observer 缺省显式 no-op（votes 恒 true——未经 D4 接线的旧装配/单测语义不变）
@@ -247,6 +256,32 @@ export class SourceServiceImpl implements SourceService {
     return projection === null
       ? { status: 'unavailable' } // 读回非法行：不得冒充 missing
       : { status: 'found', projection };
+  }
+
+  // D8 main-internal user-audience projection. It deliberately returns no note,
+  // body, usage, group or repository handle; missing Sources are omitted so the
+  // Provider projector treats them exactly like blocked rows.
+  getDigestSharingProjections(sourceIds: readonly string[]): DigestSharingReadResult {
+    if (this.disposed || sourceIds.length > 100) return { status: 'unavailable' };
+    const projections: DigestSourceSharingProjection[] = [];
+    try {
+      for (const sourceId of [...new Set(sourceIds)].sort()) {
+        if (!isUuidShape(sourceId)) continue;
+        const row = this.repo.getSourceById(sourceId);
+        if (row === null) continue;
+        const source = rowToSource(row);
+        projections.push({
+          sourceId: source.id,
+          shareMode: source.shareMode,
+          displayName: truncateUtf8(source.name, 256).text,
+          canonicalUrl: truncateUtf8(source.canonicalKey, 2_048).text,
+        });
+      }
+      return { status: 'ok', projections };
+    } catch (err) {
+      logWarn('sources', 'Digest sharing 窄投影读取失败（unavailable）', err);
+      return { status: 'unavailable' };
+    }
   }
 
   // 读回行形状防御校验（读取通道）：非法行 → null（调用方映射 unavailable）。

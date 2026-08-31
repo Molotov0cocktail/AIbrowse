@@ -259,19 +259,29 @@ describe('判别联合 DTO 形状（编译期/结构自检）', () => {
   it('Digest DTO（§11.1/§11.2/§11.4）', () => {
     const sched: watch.DigestSchedule = {
       id: 'd1',
+      version: 1,
       sourceIds: ['s1', 's2'],
       localTime: '08:00',
       timeZone: 'Asia/Shanghai',
       aiEnabled: false,
-      cursor: null,
+      cursor: { changeSequence: 0 },
+      state: 'active',
+      nextDueAt: 't1',
+      lastConsumedScheduledFor: null,
+      lastDailyLocalDate: null,
       createdAt: 't0',
       updatedAt: 't0',
       lastCheckedAt: null,
+      lastPeriod: null,
+      lastRunStats: null,
     };
     expect(sched.sourceIds.length).toBeLessThanOrEqual(watch.MAX_DIGEST_SCHEDULE_SOURCES);
     const facts: watch.DigestFacts = {
+      schemaVersion: 1,
       scheduleId: 'd1',
-      period: { from: 't0', to: 't1' },
+      digestRunId: 'run1',
+      batchIndex: 0,
+      period: { fromExclusive: 't0', toInclusive: 't1' },
       eventCount: 1,
       runStats: { changed: 1, failed: 0, unchanged: 0 },
       events: [],

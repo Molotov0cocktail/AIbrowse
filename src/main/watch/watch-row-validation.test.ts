@@ -3,6 +3,7 @@
 // RunOutcome/Health、SourceWatchProjection、affected_rule_state、intent 行。
 // 非法/未来版本/原型链/getter 全部 fail-closed；零 IO。
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   computeEventItemsBytes,
   isValidObservationId,
@@ -12,6 +13,9 @@ import {
   validateBaselineValidators,
   validateChangeEvidencePair,
   validateEventRow,
+  validateDigestArtifactRow,
+  validateDigestRunRow,
+  validateDigestScheduleRow,
   validateEvidenceValue,
   validateIntentRow,
   validateRunResponseMetadataJson,
@@ -790,5 +794,186 @@ describe('isValidObservationId', () => {
     expect(isValidObservationId('01234567-89ab-4def-6a9b-0c1d2e3f4a5b', EVENT)).toBe(false); // 非 v4 variant
     expect(isValidObservationId(`c-${UUID_V4}`, EVENT)).toBe(false);
     expect(isValidObservationId(`${EVENT}-obs0`, EVENT)).toBe(false);
+  });
+});
+
+describe('D8 Digest v4 runtime validators', () => {
+  const facts = JSON.stringify({
+    schemaVersion: 1,
+    scheduleId: 's1',
+    digestRunId: 'r1',
+    batchIndex: 0,
+    period: { fromExclusive: '2026-08-28T00:00:00.000Z', toInclusive: '2026-08-29T00:00:00.000Z' },
+    eventCount: 1,
+    runStats: { changed: 1, failed: 0, unchanged: 0 },
+    events: [
+      {
+        eventId: 'e1',
+        ruleId: 'wr1',
+        sourceId: 'src1',
+        eventKind: 'added',
+        importance: 'normal',
+        firstIncludedAt: '2026-08-28T01:00:00.000Z',
+        lastIncludedAt: '2026-08-28T01:00:00.000Z',
+        observationCount: 1,
+        itemCount: 1,
+      },
+    ],
+    evidenceMap: {
+      e1: [
+        {
+          itemId: 'i1',
+          fieldKey: 'title',
+          label: '标题',
+          before: { kind: 'absent' },
+          after: {
+            kind: 'present',
+            excerpt: 'x',
+            valueHash: 'h',
+            normalizedBytes: 1,
+            truncated: false,
+          },
+          beforeCapturedAt: '2026-08-28T01:00:00.000Z',
+          afterCapturedAt: '2026-08-28T01:00:00.000Z',
+          beforeFinalUrl: 'https://example.com',
+          afterFinalUrl: 'https://example.com',
+          beforeDocumentId: null,
+          afterDocumentId: null,
+          feedItemKey: null,
+        },
+      ],
+    },
+    referenceStates: { e1: 'active' },
+    fetchedAt: '2026-08-29T00:00:00.000Z',
+  });
+  const hash = createHash('sha256').update(facts).digest('hex');
+  const base = {
+    id: 'd1',
+    schedule_id: 's1',
+    run_id: 'r1',
+    batch_index: 0,
+    first_sequence: 1,
+    last_sequence: 1,
+    facts_json: facts,
+    facts_hash: hash,
+    facts_revision: 1,
+    explanation_json: null,
+    byte_length: Buffer.byteLength(facts),
+    provider_state: 'pending',
+    provider_result_code: null,
+    claimed_facts_revision: null,
+    claimed_facts_hash: null,
+    claimed_at: null,
+    provider_finished_at: null,
+    created_at: '2026-08-29T00:00:00.000Z',
+  };
+
+  it('Schedule/Run canonical JSON 与闭合状态矩阵', () => {
+    expect(
+      validateDigestScheduleRow({
+        id: 's1',
+        version: 1,
+        source_ids_json: '["a","b"]',
+        schedule_json: '{"kind":"daily","localTime":"09:00","timeZone":"UTC"}',
+        ai_enabled: 0,
+        cursor_sequence: 0,
+        state: 'active',
+        next_due_at: '2026-08-29T09:00:00.000Z',
+        last_consumed_scheduled_for: null,
+        last_daily_local_date: null,
+        created_at: '2026-08-28T00:00:00.000Z',
+        updated_at: '2026-08-28T00:00:00.000Z',
+        last_checked_at: null,
+        last_period_json: null,
+        last_run_stats_json: null,
+      }),
+    ).toBe(true);
+    expect(
+      validateDigestRunRow({
+        id: 'r1',
+        schedule_id: 's1',
+        request_key: 'k',
+        logical_date: '2026-08-29',
+        lower_sequence: 0,
+        upper_sequence: 1,
+        next_sequence: 0,
+        period_json:
+          '{"fromExclusive":"2026-08-28T00:00:00.000Z","toInclusive":"2026-08-29T00:00:00.000Z"}',
+        run_stats_json: '{"changed":1,"failed":0,"unchanged":0}',
+        state: 'running',
+        blocked_at: null,
+        blocked_required_bytes: null,
+        blocked_available_bytes: null,
+        created_at: '2026-08-29T00:00:00.000Z',
+        finished_at: null,
+      }),
+    ).toBe(true);
+  });
+
+  it('Provider §11.5 合法状态逐类接受、表外组合拒绝', () => {
+    const claimed = {
+      claimed_facts_revision: 1,
+      claimed_facts_hash: hash,
+      claimed_at: '2026-08-29T00:00:01.000Z',
+    };
+    const finished = { provider_finished_at: '2026-08-29T00:00:02.000Z' };
+    expect(validateDigestArtifactRow(base)).toBe(true);
+    expect(
+      validateDigestArtifactRow({
+        ...base,
+        provider_state: 'disabled',
+        provider_result_code: 'disabled',
+        ...finished,
+      }),
+    ).toBe(true);
+    expect(validateDigestArtifactRow({ ...base, provider_state: 'claimed', ...claimed })).toBe(
+      true,
+    );
+    expect(
+      validateDigestArtifactRow({
+        ...base,
+        provider_state: 'failed',
+        provider_result_code: 'timeout',
+        ...claimed,
+        ...finished,
+      }),
+    ).toBe(true);
+    expect(
+      validateDigestArtifactRow({
+        ...base,
+        provider_state: 'uncertain',
+        provider_result_code: 'uncertain-after-restart',
+        ...claimed,
+        ...finished,
+      }),
+    ).toBe(true);
+    expect(
+      validateDigestArtifactRow({
+        ...base,
+        provider_state: 'skipped',
+        provider_result_code: 'key-unavailable',
+        ...finished,
+      }),
+    ).toBe(true);
+    const explanation = '{"sections":[{"eventIds":["e1"],"explanation":"变化"}]}';
+    expect(
+      validateDigestArtifactRow({
+        ...base,
+        provider_state: 'succeeded',
+        provider_result_code: 'success',
+        explanation_json: explanation,
+        byte_length: Buffer.byteLength(facts) + Buffer.byteLength(explanation),
+        ...claimed,
+        ...finished,
+      }),
+    ).toBe(true);
+    expect(
+      validateDigestArtifactRow({
+        ...base,
+        provider_state: 'pending',
+        provider_result_code: 'provider-error',
+        ...finished,
+      }),
+    ).toBe(false);
   });
 });

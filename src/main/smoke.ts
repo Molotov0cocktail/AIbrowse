@@ -35,6 +35,7 @@ import { runWatchPageSessionScenario, type WatchPageSmokeBundle } from './smoke-
 import { runWatchLifecycleSmokeScenario } from './smoke-watch-lifecycle';
 // D7：8.24 Watch Diff/Event/Evidence 冒烟（默认矩阵；dev+生产双场景）
 import { runWatchDiffEventSmokeScenario } from './smoke-watch-diff-event';
+import { runWatchDigestSmokeScenario } from './smoke-watch-digest';
 // 8.16 C4：真实 Workspace + CaptureService + EvidenceValidator + Repository（临时 research.db）
 import { ResearchWorkspace } from './research/research-workspace';
 import { CaptureService, sha256hex, type CaptureContent } from './research/capture-service';
@@ -10979,6 +10980,12 @@ export async function runSmokeScenario(
     // unchanged、condition_error 全链路。零网络、零真实 Provider。
     if (options.liveSmoke === undefined) {
       await runWatchDiffEventSmokeScenario();
+    }
+
+    // 8.25 D8 Digest smoke: real v4 journal/frozen cycle/artifact plus
+    // FakeProvider claim/writeback, without network, notifications, or IPC.
+    if (options.liveSmoke === undefined) {
+      await runWatchDigestSmokeScenario();
     }
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）

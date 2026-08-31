@@ -16,6 +16,7 @@ import {
   WATCH_MIGRATION_V1,
   WATCH_MIGRATION_V2,
   WATCH_MIGRATION_V3,
+  WATCH_MIGRATION_V4,
   runWatchMigrations,
 } from './watch-migrations';
 
@@ -76,28 +77,205 @@ function insertRule(db: DbHandle, id: string, kind = 'feed'): void {
   ).run(id, kind);
 }
 
+function insertDigestFixture(db: DbHandle): void {
+  db.prepare(
+    `INSERT INTO digest_schedules
+  (id, version, source_ids_json, schedule_json, ai_enabled, cursor_sequence, state,
+   next_due_at, created_at, updated_at)
+  VALUES ('ds1',1,'["s1"]','{"kind":"daily","localTime":"09:00","timeZone":"Asia/Shanghai"}',
+   0,0,'active','2026-08-29T01:00:00.000Z','2026-08-28T00:00:00.000Z',
+   '2026-08-28T00:00:00.000Z')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO digest_runs
+  (id, schedule_id, request_key, logical_date, lower_sequence, upper_sequence,
+   next_sequence, period_json, run_stats_json, state, created_at)
+  VALUES ('dr1','ds1','request-1','2026-08-29',0,1,0,
+   '{"fromExclusive":"2026-08-28T00:00:00.000Z","toInclusive":"2026-08-29T00:00:00.000Z"}',
+   '{"changed":0,"failed":0,"unchanged":0}','running','2026-08-29T00:00:00.000Z')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO watch_digests
+  (id, schedule_id, run_id, batch_index, first_sequence, last_sequence, facts_json,
+   facts_hash, facts_revision, byte_length, provider_state, provider_result_code,
+   provider_finished_at, created_at)
+  VALUES ('d1','ds1','dr1',0,1,1,'{}',
+   '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',1,2,
+   'disabled','disabled','2026-08-29T00:00:00.000Z','2026-08-29T00:00:00.000Z')`,
+  ).run();
+}
+
 describe('migration v1 契约断言（§10.1：11 张表；D7 v3 +1 = 12 张表）', () => {
-  it('v1+v2+v3 三级、版本连续、语句全部编译期常量', () => {
+  it('v1..v4 四级、版本连续、语句全部编译期常量', () => {
     expect(WATCH_MIGRATION_V1.version).toBe(1);
     expect(WATCH_MIGRATION_V2.version).toBe(2);
-    expect(WATCH_MIGRATIONS).toHaveLength(3);
-    expect(WATCH_MIGRATIONS.map((s) => s.version)).toEqual([1, 2, 3]);
+    expect(WATCH_MIGRATIONS).toHaveLength(4);
+    expect(WATCH_MIGRATIONS.map((s) => s.version)).toEqual([1, 2, 3, 4]);
     expect(
       WATCH_MIGRATION_V1.statements.every((s) => typeof s === 'string') &&
         WATCH_MIGRATION_V2.statements.every((s) => typeof s === 'string') &&
-        WATCH_MIGRATION_V3.statements.every((s) => typeof s === 'string'),
+        WATCH_MIGRATION_V3.statements.every((s) => typeof s === 'string') &&
+        WATCH_MIGRATION_V4.statements.every((s) => typeof s === 'string'),
     ).toBe(true);
     // R3-3：v3 语句数 21（含 watch_baselines_v3 的条件 validator CHECK 内嵌）——
     // M0-9 逐语句失败注入按此固定语句数全部切点执行
     expect(WATCH_MIGRATION_V3.statements).toHaveLength(21);
   });
 
-  it('运行后 user_version=3 且 12 张表全部存在（D7 新增 watch_event_observations）', () => {
+  it('v4 重建严格 Digest 表并建立 observation journal/high-water', () => {
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(true);
-    expect(outcome.toVersion).toBe(3);
+    expect(outcome.toVersion).toBe(4);
+    expect(tableNames(handle)).toEqual(
+      expect.arrayContaining(['digest_change_state', 'digest_change_journal', 'digest_runs']),
+    );
+    expect(handle.prepare('SELECT id, last_sequence FROM digest_change_state').get()).toEqual({
+      id: 1,
+      last_sequence: 0,
+    });
+    const scheduleSql = (
+      handle
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='digest_schedules'")
+        .get() as { sql: string }
+    ).sql;
+    expect(scheduleSql).toContain("state IN ('active','paused')");
+    expect(scheduleSql).not.toContain("state IN ('active','deleted')");
+  });
+
+  it('v3 任一 Digest 占位表非空均 fail-closed 并保持 v3', () => {
+    for (const table of ['digest_schedules', 'watch_digests', 'digest_event_refs'] as const) {
+      const db = openDb(join(root, `v4-guard-${table}-${Math.random()}.db`));
+      try {
+        runMigrations(db, [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2, WATCH_MIGRATION_V3]);
+        if (table === 'digest_schedules') {
+          db.prepare(
+            `INSERT INTO digest_schedules
+            (id,source_ids_json,schedule_json,ai_enabled,state,created_at,updated_at)
+            VALUES ('s','[]','{}',0,'active','x','x')`,
+          ).run();
+        } else if (table === 'watch_digests') {
+          db.prepare(
+            `INSERT INTO digest_schedules
+            (id,source_ids_json,schedule_json,ai_enabled,state,created_at,updated_at)
+            VALUES ('s','[]','{}',0,'active','x','x')`,
+          ).run();
+          db.prepare(
+            `INSERT INTO watch_digests
+            (id,schedule_id,facts_json,byte_length,created_at) VALUES ('d','s','{}',2,'x')`,
+          ).run();
+        } else {
+          db.prepare(
+            `INSERT INTO digest_schedules
+            (id,source_ids_json,schedule_json,ai_enabled,state,created_at,updated_at)
+            VALUES ('s','[]','{}',0,'active','x','x')`,
+          ).run();
+          db.prepare(
+            `INSERT INTO watch_digests
+            (id,schedule_id,facts_json,byte_length,created_at) VALUES ('d','s','{}',2,'x')`,
+          ).run();
+          db.prepare(
+            `INSERT INTO digest_event_refs
+            (digest_id,event_id,status) VALUES ('d','e','active')`,
+          ).run();
+        }
+        expect(() => runMigrations(db, WATCH_MIGRATIONS)).toThrow();
+        expect(
+          (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        ).toBe(3);
+        const columns = db.prepare('PRAGMA table_info(digest_schedules)').all() as Array<{
+          name: string;
+        }>;
+        expect(columns.map((column) => column.name)).not.toContain('version');
+      } finally {
+        closeDb(db);
+      }
+    }
+  });
+
+  it('v4 journal 按冻结全序回填且 high-water 精确', () => {
+    runMigrations(handle, [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2, WATCH_MIGRATION_V3]);
+    insertRule(handle, 'r1');
+    for (const [eventId, first, observed, observationId] of [
+      ['e-b', '2026-08-28T00:00:01.000Z', '2026-08-28T00:00:02.000Z', 'v2:e-b'],
+      ['e-a', '2026-08-28T00:00:00.000Z', '2026-08-28T00:00:01.000Z', 'v2:e-a'],
+    ] as const) {
+      handle
+        .prepare(
+          `INSERT INTO watch_events
+        (id,rule_id,source_id,event_kind,importance,idempotency_key,change_fingerprint,
+         first_observed_at,last_observed_at,item_count)
+        VALUES (?,'r1','src-1','added','normal',?, ?, ?, ?,1)`,
+        )
+        .run(eventId, `idem-${eventId}`, 'a'.repeat(64), first, observed);
+      handle
+        .prepare(
+          `INSERT INTO watch_event_observations
+        (id,event_id,sequence,idempotency_key,change_fingerprint,event_kind,observed_at,
+         first_item_sequence,item_count) VALUES (?,?,0,?,?,'added',?,0,1)`,
+        )
+        .run(observationId, eventId, `idem-${eventId}`, 'a'.repeat(64), observed);
+    }
+    runMigrations(handle, WATCH_MIGRATIONS);
+    expect(
+      handle.prepare('SELECT sequence,event_id FROM digest_change_journal ORDER BY sequence').all(),
+    ).toEqual([
+      { sequence: 1, event_id: 'e-a' },
+      { sequence: 2, event_id: 'e-b' },
+    ]);
+    expect(handle.prepare('SELECT last_sequence FROM digest_change_state').get()).toEqual({
+      last_sequence: 2,
+    });
+  });
+
+  it('v4 每个 statement 注入失败均回滚为逐列恒等 v3 且零临时表', () => {
+    for (let index = 0; index < WATCH_MIGRATION_V4.statements.length; index += 1) {
+      const db = openDb(join(root, `v4-fault-${index}-${Math.random()}.db`));
+      try {
+        runMigrations(db, [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2, WATCH_MIGRATION_V3]);
+        insertRule(db, 'r1');
+        const before = db
+          .prepare(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+          )
+          .all();
+        const broken = {
+          ...WATCH_MIGRATION_V4,
+          statements: WATCH_MIGRATION_V4.statements.map((statement, current) =>
+            current === index ? 'SELECT * FROM definitely_missing_v4_table' : statement,
+          ),
+        };
+        expect(() =>
+          runMigrations(db, [WATCH_MIGRATION_V1, WATCH_MIGRATION_V2, WATCH_MIGRATION_V3, broken]),
+        ).toThrow();
+        expect(
+          (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        ).toBe(3);
+        expect(
+          db
+            .prepare(
+              "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+            )
+            .all(),
+        ).toEqual(before);
+        expect(db.prepare('SELECT id,source_id,state FROM watch_rules').all()).toEqual([
+          { id: 'r1', source_id: 'src-1', state: 'enabled' },
+        ]);
+        expect(tableNames(db).some((name) => name.includes('v4'))).toBe(false);
+      } finally {
+        closeDb(db);
+      }
+    }
+  });
+
+  it('运行后 user_version=4 且 15 张表全部存在', () => {
+    const outcome = runWatchMigrations(handle);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.toVersion).toBe(4);
     expect(tableNames(handle)).toEqual([
+      'digest_change_journal',
+      'digest_change_state',
       'digest_event_refs',
+      'digest_runs',
       'digest_schedules',
       'notification_outbox',
       'source_cleanup_intents',
@@ -115,6 +293,11 @@ describe('migration v1 契约断言（§10.1：11 张表；D7 v3 +1 = 12 张表�
   it('全部契约索引存在（D7 +2：observations_event / items_item）', () => {
     runWatchMigrations(handle);
     expect(indexNames(handle)).toEqual([
+      'idx_digest_change_journal_event',
+      'idx_digest_change_journal_source',
+      'idx_digest_event_refs_event',
+      'idx_digest_runs_nonterminal_schedule',
+      'idx_digest_schedules_state_due',
       'idx_notification_outbox_rule',
       'idx_notification_outbox_subject',
       'idx_source_cleanup_intents_source',
@@ -139,8 +322,8 @@ describe('migration v1 契约断言（§10.1：11 张表；D7 v3 +1 = 12 张表�
     expect(again.ok).toBe(true);
   });
 
-  it('未知更高版本零写入（newer-than-program；latest=3 → 4 为未来版本）', () => {
-    handle.exec('PRAGMA user_version = 4');
+  it('未知更高版本零写入（newer-than-program；latest=4 → 5 为未来版本）', () => {
+    handle.exec('PRAGMA user_version = 5');
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(false);
     expect(outcome.state).toBe('newer-than-program');
@@ -359,20 +542,7 @@ describe('CHECK 约束数据库层强制（§10.1 枚举列）', () => {
   });
 
   it('digest_event_refs status 非法值被 CHECK 拒绝', () => {
-    handle
-      .prepare(
-        `INSERT INTO digest_schedules (id, source_ids_json, schedule_json, ai_enabled, state,
-   created_at, updated_at)
-  VALUES ('ds1','[]','{"kind":"daily","localTime":"09:00","timeZone":"Asia/Shanghai"}',1,
-   'active','2026-08-28T00:00:00.000Z','2026-08-28T00:00:00.000Z')`,
-      )
-      .run();
-    handle
-      .prepare(
-        `INSERT INTO watch_digests (id, schedule_id, facts_json, byte_length, created_at)
-  VALUES ('d1','ds1','{}',2,'2026-08-28T00:00:00.000Z')`,
-      )
-      .run();
+    insertDigestFixture(handle);
     expect(() =>
       handle
         .prepare(
@@ -557,20 +727,7 @@ describe('外键与 UNIQUE（§10.1：外键打开）', () => {
       n: 0,
     });
     // digest ref 无外键：Event 删除后 ref 行仍存在（由 Repository 置 expired）
-    handle
-      .prepare(
-        `INSERT INTO digest_schedules (id, source_ids_json, schedule_json, ai_enabled, state,
-   created_at, updated_at)
-  VALUES ('ds1','[]','{"kind":"daily","localTime":"09:00","timeZone":"Asia/Shanghai"}',1,
-   'active','2026-08-28T00:00:00.000Z','2026-08-28T00:00:00.000Z')`,
-      )
-      .run();
-    handle
-      .prepare(
-        `INSERT INTO watch_digests (id, schedule_id, facts_json, byte_length, created_at)
-  VALUES ('d1','ds1','{}',2,'2026-08-28T00:00:00.000Z')`,
-      )
-      .run();
+    insertDigestFixture(handle);
     handle
       .prepare(
         `INSERT INTO digest_event_refs (digest_id, event_id, status)
@@ -604,7 +761,7 @@ describe('SQL 注入串仅作数据（§10.1 参数绑定）', () => {
       .get('inj-1') as { source_id: string; target_json: string };
     expect(row.source_id).toBe(injection);
     expect(row.target_json).toBe(injection);
-    expect(tableNames(handle).length).toBe(12);
+    expect(tableNames(handle).length).toBe(15);
   });
 });
 
@@ -731,9 +888,14 @@ describe('migration v2 契约断言（#S6-044 FIXED 14/15：watch_audits CHECK �
     expect(() => insertAudit('run', 'Unavailable')).toThrow();
   });
 
-  it('v3 后 14 索引恒等；重建后删除 Rule → 审计级联删除、rule_id=NULL 孤儿审计存活', () => {
+  it('v4 后 19 索引恒等；重建后删除 Rule → 审计级联删除、rule_id=NULL 孤儿审计存活', () => {
     runWatchMigrations(handle);
     expect(indexNames(handle)).toEqual([
+      'idx_digest_change_journal_event',
+      'idx_digest_change_journal_source',
+      'idx_digest_event_refs_event',
+      'idx_digest_runs_nonterminal_schedule',
+      'idx_digest_schedules_state_due',
       'idx_notification_outbox_rule',
       'idx_notification_outbox_subject',
       'idx_source_cleanup_intents_source',

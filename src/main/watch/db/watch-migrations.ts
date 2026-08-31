@@ -400,10 +400,167 @@ export const WATCH_MIGRATION_V3: MigrationStep = {
   ],
 };
 
+// D8 #S6-059..#S6-067 schema v4. V1-v3 statements above are byte-frozen.
+// The three legacy Digest placeholder tables never had a product write path, so
+// migration refuses any non-empty instance instead of guessing JSON shapes.
+export const WATCH_MIGRATION_V4: MigrationStep = {
+  version: 4,
+  statements: [
+    'CREATE TABLE watch_v4_digest_guard (n INTEGER NOT NULL CHECK (n = 0))',
+    `INSERT INTO watch_v4_digest_guard (n)
+  SELECT (SELECT COUNT(*) FROM digest_schedules)
+       + (SELECT COUNT(*) FROM watch_digests)
+       + (SELECT COUNT(*) FROM digest_event_refs)`,
+    'DROP TABLE digest_event_refs',
+    'DROP TABLE watch_digests',
+    'DROP TABLE digest_schedules',
+    `CREATE TABLE digest_change_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0)
+)`,
+    'INSERT INTO digest_change_state (id, last_sequence) VALUES (1, 0)',
+    `CREATE TABLE digest_change_journal (
+  sequence INTEGER PRIMARY KEY CHECK (sequence >= 1),
+  observation_id TEXT NOT NULL UNIQUE,
+  event_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active','expired','user-deleted'))
+)`,
+    `INSERT INTO digest_change_journal
+  (sequence, observation_id, event_id, source_id, observed_at, status)
+  SELECT ROW_NUMBER() OVER (
+    ORDER BY o.observed_at ASC, e.first_observed_at ASC, e.id ASC,
+      o.sequence ASC, o.id ASC
+  ), o.id, o.event_id, e.source_id, o.observed_at, 'active'
+  FROM watch_event_observations o
+  JOIN watch_events e ON e.id = o.event_id`,
+    `UPDATE digest_change_state
+  SET last_sequence = COALESCE((SELECT MAX(sequence) FROM digest_change_journal), 0)
+  WHERE id = 1`,
+    'CREATE INDEX idx_digest_change_journal_event ON digest_change_journal(event_id, sequence)',
+    'CREATE INDEX idx_digest_change_journal_source ON digest_change_journal(source_id, sequence)',
+    `CREATE TABLE digest_schedules (
+  id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL CHECK (version >= 1),
+  source_ids_json TEXT NOT NULL,
+  schedule_json TEXT NOT NULL,
+  ai_enabled INTEGER NOT NULL CHECK (ai_enabled IN (0,1)),
+  cursor_sequence INTEGER NOT NULL CHECK (cursor_sequence >= 0),
+  state TEXT NOT NULL CHECK (state IN ('active','paused')),
+  next_due_at TEXT NOT NULL,
+  last_consumed_scheduled_for TEXT,
+  last_daily_local_date TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_checked_at TEXT,
+  last_period_json TEXT,
+  last_run_stats_json TEXT,
+  CHECK (created_at <= updated_at),
+  CHECK ((last_consumed_scheduled_for IS NULL) = (last_daily_local_date IS NULL)),
+  CHECK ((last_checked_at IS NULL) = (last_period_json IS NULL)
+    AND (last_checked_at IS NULL) = (last_run_stats_json IS NULL))
+)`,
+    'CREATE INDEX idx_digest_schedules_state_due ON digest_schedules(state, next_due_at)',
+    `CREATE TABLE digest_runs (
+  id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL REFERENCES digest_schedules(id) ON DELETE CASCADE,
+  request_key TEXT NOT NULL UNIQUE,
+  logical_date TEXT NOT NULL,
+  lower_sequence INTEGER NOT NULL CHECK (lower_sequence >= 0),
+  upper_sequence INTEGER NOT NULL CHECK (upper_sequence >= lower_sequence),
+  next_sequence INTEGER NOT NULL CHECK (next_sequence >= lower_sequence AND next_sequence <= upper_sequence),
+  period_json TEXT NOT NULL,
+  run_stats_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('running','budget_exceeded','completed')),
+  blocked_at TEXT,
+  blocked_required_bytes INTEGER,
+  blocked_available_bytes INTEGER,
+  created_at TEXT NOT NULL,
+  finished_at TEXT,
+  UNIQUE (schedule_id, logical_date),
+  CHECK (
+    (state = 'running' AND blocked_at IS NULL AND blocked_required_bytes IS NULL
+      AND blocked_available_bytes IS NULL AND finished_at IS NULL)
+    OR (state = 'budget_exceeded' AND next_sequence < upper_sequence
+      AND blocked_at IS NOT NULL AND blocked_required_bytes IS NOT NULL
+      AND blocked_available_bytes IS NOT NULL AND blocked_required_bytes >= 0
+      AND blocked_available_bytes >= 0 AND blocked_required_bytes > blocked_available_bytes
+      AND finished_at IS NULL)
+    OR (state = 'completed' AND next_sequence = upper_sequence
+      AND blocked_at IS NULL AND blocked_required_bytes IS NULL
+      AND blocked_available_bytes IS NULL AND finished_at IS NOT NULL)
+  )
+)`,
+    `CREATE UNIQUE INDEX idx_digest_runs_nonterminal_schedule
+  ON digest_runs(schedule_id) WHERE state IN ('running','budget_exceeded')`,
+    `CREATE TABLE watch_digests (
+  id TEXT PRIMARY KEY,
+  schedule_id TEXT NOT NULL REFERENCES digest_schedules(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES digest_runs(id) ON DELETE CASCADE,
+  batch_index INTEGER NOT NULL CHECK (batch_index >= 0),
+  first_sequence INTEGER NOT NULL CHECK (first_sequence >= 1),
+  last_sequence INTEGER NOT NULL CHECK (last_sequence >= first_sequence),
+  facts_json TEXT NOT NULL,
+  facts_hash TEXT NOT NULL CHECK (length(facts_hash) = 64 AND facts_hash NOT GLOB '*[^0-9a-f]*'),
+  facts_revision INTEGER NOT NULL CHECK (facts_revision >= 1),
+  explanation_json TEXT,
+  byte_length INTEGER NOT NULL CHECK (byte_length >= 0 AND byte_length <= 65536),
+  provider_state TEXT NOT NULL CHECK (provider_state IN ('disabled','pending','claimed','succeeded','failed','uncertain','skipped')),
+  provider_result_code TEXT CHECK (provider_result_code IN ('disabled','success','provider-error','timeout','aborted','invalid-output','uncertain-after-restart','no-visible-events','request-budget','key-unavailable') OR provider_result_code IS NULL),
+  claimed_facts_revision INTEGER,
+  claimed_facts_hash TEXT CHECK (claimed_facts_hash IS NULL OR
+    (length(claimed_facts_hash) = 64 AND claimed_facts_hash NOT GLOB '*[^0-9a-f]*')),
+  claimed_at TEXT,
+  provider_finished_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (run_id, batch_index),
+  CHECK (
+    (provider_state = 'disabled' AND provider_result_code = 'disabled'
+      AND claimed_at IS NULL AND claimed_facts_revision IS NULL AND claimed_facts_hash IS NULL
+      AND provider_finished_at IS NOT NULL AND explanation_json IS NULL)
+    OR (provider_state = 'pending' AND provider_result_code IS NULL
+      AND claimed_at IS NULL AND claimed_facts_revision IS NULL AND claimed_facts_hash IS NULL
+      AND provider_finished_at IS NULL AND explanation_json IS NULL)
+    OR (provider_state = 'claimed' AND provider_result_code IS NULL
+      AND claimed_at IS NOT NULL AND claimed_facts_revision >= 1 AND length(claimed_facts_hash) = 64
+      AND provider_finished_at IS NULL AND explanation_json IS NULL)
+    OR (provider_state = 'succeeded' AND provider_result_code = 'success'
+      AND claimed_at IS NOT NULL AND claimed_facts_revision >= 1 AND length(claimed_facts_hash) = 64
+      AND provider_finished_at IS NOT NULL
+      AND (explanation_json IS NOT NULL OR facts_revision > claimed_facts_revision))
+    OR (provider_state = 'failed' AND provider_result_code IN ('provider-error','timeout','aborted','invalid-output')
+      AND claimed_at IS NOT NULL AND claimed_facts_revision >= 1 AND length(claimed_facts_hash) = 64
+      AND provider_finished_at IS NOT NULL AND explanation_json IS NULL)
+    OR (provider_state = 'uncertain' AND provider_result_code = 'uncertain-after-restart'
+      AND claimed_at IS NOT NULL AND claimed_facts_revision >= 1 AND length(claimed_facts_hash) = 64
+      AND provider_finished_at IS NOT NULL AND explanation_json IS NULL)
+    OR (provider_state = 'skipped' AND provider_result_code IN ('no-visible-events','request-budget','key-unavailable')
+      AND claimed_at IS NULL AND claimed_facts_revision IS NULL AND claimed_facts_hash IS NULL
+      AND provider_finished_at IS NOT NULL AND explanation_json IS NULL)
+  ),
+  CHECK (claimed_facts_revision IS NULL OR facts_revision >= claimed_facts_revision),
+  CHECK (claimed_at IS NULL OR created_at <= claimed_at),
+  CHECK (provider_finished_at IS NULL OR created_at <= provider_finished_at),
+  CHECK (claimed_at IS NULL OR provider_finished_at IS NULL OR claimed_at <= provider_finished_at)
+)`,
+    'CREATE INDEX idx_watch_digests_schedule ON watch_digests(schedule_id, created_at)',
+    `CREATE TABLE digest_event_refs (
+  digest_id TEXT NOT NULL REFERENCES watch_digests(id) ON DELETE CASCADE,
+  event_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active','expired','user-deleted')),
+  PRIMARY KEY (digest_id, event_id)
+) WITHOUT ROWID`,
+    'CREATE INDEX idx_digest_event_refs_event ON digest_event_refs(event_id, status)',
+    'DROP TABLE watch_v4_digest_guard',
+  ],
+};
+
 export const WATCH_MIGRATIONS: readonly MigrationStep[] = [
   WATCH_MIGRATION_V1,
   WATCH_MIGRATION_V2,
   WATCH_MIGRATION_V3,
+  WATCH_MIGRATION_V4,
 ];
 
 // 薄封装：固定使用 Watch 独立迁移列表（引擎复用 B1 冻结模式）

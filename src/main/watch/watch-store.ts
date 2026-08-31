@@ -202,9 +202,11 @@ function assembleNormal(
     const nowIso = new Date(nowMs()).toISOString();
     // 5. 单事务 queued/running → interrupted（已消费 slot 不重放）
     let marked = 0;
+    let uncertainDigests = 0;
     try {
       withTransaction(handle, () => {
         marked = repo.markAllNonTerminalInterrupted(nowIso);
+        uncertainDigests = repo.recoverClaimedDigests(nowIso);
       });
     } catch (err) {
       logError('watch', '遗留运行标记 interrupted 失败', sanitizeWatchError(err));
@@ -212,6 +214,12 @@ function assembleNormal(
     }
     if (marked > 0) {
       logWarn('watch', `检测到 ${marked} 个遗留非终态 Run，已标记 interrupted（不自动续跑）`);
+    }
+    if (uncertainDigests > 0) {
+      logWarn(
+        'watch',
+        `检测到 ${uncertainDigests} 个已 claim Digest，已标记 uncertain（不重试 Provider）`,
+      );
     }
     // 6. source_cleanup_intents reconciliation（全部成功才允许 Scheduler 启动）
     if (options.reconcile !== undefined) {
@@ -228,6 +236,7 @@ function assembleNormal(
       return fail('存在未决 source_cleanup_intents 且未提供 reconciliation 端口');
     }
     // 7. 保留/预算清理（分级 90/30 天与 200/100 + 全库 100 MiB）
+    repo.pruneDigestJournalTombstones();
     const pruned = repo.pruneEventsByRuleLimits(nowIso);
     const budget = repo.pruneEventsToDbBudget(nowIso);
     if (budget.remainingBytes > MAX_WATCH_DB_BYTES) {

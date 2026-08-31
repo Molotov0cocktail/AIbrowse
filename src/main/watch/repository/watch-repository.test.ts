@@ -6,7 +6,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDb, closeDb, type DbHandle } from '../../sources/db/sqlite-driver';
 import { runWatchMigrations } from '../db/watch-migrations';
@@ -109,6 +109,68 @@ function makeItem(overrides: Partial<ChangeEvidencePair> = {}): ChangeEvidencePa
 function count(table: string): number {
   const row = handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number | bigint };
   return Number(row.n);
+}
+
+function insertDigestRefFixture(eventId: string): void {
+  const event = repo.getEvent(eventId)!;
+  const facts = JSON.stringify({
+    schemaVersion: 1,
+    scheduleId: 'ds1',
+    digestRunId: 'dr1',
+    batchIndex: 0,
+    period: { fromExclusive: NOW, toInclusive: '2026-08-29T00:00:00.000Z' },
+    eventCount: 1,
+    runStats: { changed: 0, failed: 0, unchanged: 0 },
+    events: [
+      {
+        eventId,
+        ruleId: event.ruleId,
+        sourceId: event.sourceId,
+        eventKind: event.eventKind,
+        importance: event.importance,
+        firstIncludedAt: event.firstObservedAt,
+        lastIncludedAt: event.lastObservedAt,
+        observationCount: 1,
+        itemCount: 1,
+      },
+    ],
+    evidenceMap: { [eventId]: [makeItem()] },
+    referenceStates: { [eventId]: 'active' },
+    fetchedAt: '2026-08-29T00:00:00.000Z',
+  });
+  const hash = createHash('sha256').update(facts, 'utf8').digest('hex');
+  expect(
+    repo.createDigestSchedule({
+      id: 'ds1',
+      sourceIds: ['src-1'],
+      localTime: '09:00',
+      timeZone: 'Asia/Shanghai',
+      nextDueAt: '2026-08-29T01:00:00.000Z',
+      nowIso: NOW,
+    }),
+  ).toEqual({ ok: true });
+  handle
+    .prepare(
+      `INSERT INTO digest_runs
+  (id,schedule_id,request_key,logical_date,lower_sequence,upper_sequence,next_sequence,
+   period_json,run_stats_json,state,created_at)
+  VALUES ('dr1','ds1','req1','2026-08-29',0,1,0,
+   '{"fromExclusive":"2026-08-28T00:00:00.000Z","toInclusive":"2026-08-29T00:00:00.000Z"}',
+   '{"changed":0,"failed":0,"unchanged":0}','running',?)`,
+    )
+    .run(NOW);
+  handle
+    .prepare(
+      `INSERT INTO watch_digests
+  (id,schedule_id,run_id,batch_index,first_sequence,last_sequence,facts_json,facts_hash,
+   facts_revision,byte_length,provider_state,provider_result_code,provider_finished_at,created_at)
+  VALUES ('d1','ds1','dr1',0,1,1,?,?,1,?,
+   'disabled','disabled',?,?)`,
+    )
+    .run(facts, hash, Buffer.byteLength(facts), NOW, NOW);
+  expect(repo.insertDigestEventRef({ digestId: 'd1', eventId, status: 'active' })).toEqual({
+    ok: true,
+  });
 }
 
 // D4-R：Event/结果提交的单事务完整身份 CAS 期望值（rule 的当前身份投影）
@@ -734,21 +796,7 @@ describe('级联删除 + Digest tombstone + outbox 清理', () => {
         ],
       }),
     ).toEqual({ ok: true });
-    handle
-      .prepare(
-        `INSERT INTO digest_schedules (id, source_ids_json, schedule_json, ai_enabled, state, created_at, updated_at)
-  VALUES ('ds1','[]','{"kind":"daily","localTime":"09:00","timeZone":"Asia/Shanghai"}',1,'active',?,?)`,
-      )
-      .run(NOW, NOW);
-    handle
-      .prepare(
-        `INSERT INTO watch_digests (id, schedule_id, facts_json, byte_length, created_at)
-  VALUES ('d1','ds1','{}',2,?)`,
-      )
-      .run(NOW);
-    expect(
-      repo.insertDigestEventRef({ digestId: 'd1', eventId: event.id, status: 'active' }),
-    ).toEqual({ ok: true });
+    insertDigestRefFixture(event.id);
     repo.insertAudit({
       id: 'a1',
       ruleId: rule.id,
@@ -898,14 +946,16 @@ describe('保留预算（§10.4）', () => {
     // evA 已读；evB/evC 未读。预算设为「只差 evA 边际」→ 只允许删 evA
     // （读优先 + 最旧），证明清理顺序而不是任意删除。
     repo.markEventsRead([evA.id], new Date(base).toISOString());
-    const marginalA = afterC - afterB;
-    const tight = new WatchRepository(handle, { maxDbBytes: afterC - marginalA });
+    const afterMark = repo.estimateLogicalBytes();
+    const tight = new WatchRepository(handle, { maxDbBytes: afterMark - 1 });
     const pruned = tight.pruneEventsToDbBudget(new Date(base).toISOString());
     expect(pruned.deleted).toBe(1);
     expect(repo.getEvent(evA.id)).toBeNull();
     expect(repo.getEvent(evB.id)).not.toBeNull();
     expect(repo.getEvent(evC.id)).not.toBeNull();
     void afterA;
+    void afterB;
+    void afterC;
   });
 
   it('Digest ref 在 Event 清理后 → expired（tombstone）', () => {
@@ -924,21 +974,7 @@ describe('保留预算（§10.4）', () => {
     ).toEqual({
       ok: true,
     });
-    handle
-      .prepare(
-        `INSERT INTO digest_schedules (id, source_ids_json, schedule_json, ai_enabled, state, created_at, updated_at)
-  VALUES ('ds1','[]','{"kind":"daily","localTime":"09:00","timeZone":"Asia/Shanghai"}',1,'active',?,?)`,
-      )
-      .run(NOW, NOW);
-    handle
-      .prepare(
-        `INSERT INTO watch_digests (id, schedule_id, facts_json, byte_length, created_at)
-  VALUES ('d1','ds1','{}',2,?)`,
-      )
-      .run(NOW);
-    expect(
-      repo.insertDigestEventRef({ digestId: 'd1', eventId: ancient.id, status: 'active' }),
-    ).toEqual({ ok: true });
+    insertDigestRefFixture(ancient.id);
     repo.pruneEventsByRuleLimits(NOW);
     expect(repo.listDigestEventRefs()).toEqual([
       { digestId: 'd1', eventId: ancient.id, status: 'expired' },
@@ -2392,6 +2428,9 @@ describe('R3-4 scanIntegrity observation id 形状', () => {
       .run(`v2:${event.id}`, event.id);
     handle
       .prepare('UPDATE watch_event_items SET observation_id = ? WHERE event_id = ?')
+      .run(`v2:${event.id}`, event.id);
+    handle
+      .prepare('UPDATE digest_change_journal SET observation_id = ? WHERE event_id = ?')
       .run(`v2:${event.id}`, event.id);
     handle.exec('PRAGMA foreign_keys = ON');
     expect(repo.scanIntegrity()).toEqual({ ok: true, reason: null });

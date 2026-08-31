@@ -103,6 +103,7 @@ import {
   PROVIDER_KIND_OPENAI_COMPATIBLE,
   listProviderKinds,
   registerProviderFactory,
+  resolveProvider,
 } from './ai/provider/llm-provider';
 // Third Stage A2/A3：工具层装配（只读/导航 8 工具 + A3 交互 4 工具 + 确认状态机 +
 // 审计 + 执行管线）。A3 的 click/fill 语义来源（getElementSemantics/recordSnapshot）
@@ -124,7 +125,12 @@ import { registerTool } from './ai/tools/tool-registry';
 // 原库与已有备份进入只读恢复态，浏览器其余能力不受影响）。
 import { mkdirSync, rmSync } from 'node:fs';
 import { openSourcesStore } from './sources/sources-store';
-import type { SourceWatchProjectionProvider } from './sources/source-service';
+import type {
+  DigestSharingProjectionProvider,
+  SourceWatchProjectionProvider,
+} from './sources/source-service';
+import { DigestService } from './watch/digest-service';
+import { DigestScheduler } from './watch/digest-scheduler';
 import type { SourceService, SourcesState } from '../shared/types/sources';
 import { createSourceTools } from './sources/tools/source-tools';
 // B6：usage 接线（决议 #79/#81）——SourceSearchHintStore 每 run 独立 + browser_open
@@ -290,6 +296,8 @@ let smokeWatchDir: string | null = null;
 let watchHostGate: HostRequestGate | null = null;
 let watchRunCoordinator: WatchRunCoordinator | null = null;
 let watchScheduler: WatchScheduler | null = null;
+let digestService: DigestService | null = null;
+let digestScheduler: DigestScheduler | null = null;
 let watchShutdownDone = false;
 let watchShutdownStarted = false;
 // D6：Session 页面采集装配（workspace/grant/router）——before-quit 顺序：
@@ -313,6 +321,11 @@ const smokeAuditCollector: AuditEntry[] = [];
 // 交回既有 watchCoordinator.dispose()/watchRepo.dispose()（兜底清理在
 // before-quit 重入时执行）。幂等可重复调用；未完成行留待下次启动标 interrupted。
 async function watchShutdown(): Promise<void> {
+  digestScheduler?.stop();
+  digestService?.stopAdmission();
+  digestService?.abort();
+  await digestService?.drain();
+  digestService?.dispose();
   if (watchRunCoordinator !== null) {
     await watchRunCoordinator.stop();
   }
@@ -1452,6 +1465,59 @@ function createBrowserWindow(): void {
         });
         watchRunCoordinator = coordinator;
         coordinator.start();
+        // DigestScheduler owns only Clock/timer capabilities. Repository, Source,
+        // and Provider access stays in DigestService. Recover frozen cycles first.
+        const sourceDigestProvider = sourceService as SourceService &
+          DigestSharingProjectionProvider;
+        const digest = new DigestService({
+          repository: watchOutcome.repo,
+          clock: watchClock,
+          sharing: {
+            get: async (sourceIds) => {
+              const result = sourceDigestProvider.getDigestSharingProjections(sourceIds);
+              return result.status === 'ok' ? result.projections : [];
+            },
+          },
+          provider: {
+            resolve: async () => {
+              if (configStore === null || credentials === null) return null;
+              const config = configStore.get(PROVIDER_KIND_OPENAI_COMPATIBLE);
+              if (config === null) return null;
+              const provider = await resolveProvider(config, credentials);
+              return provider === null ? null : { provider, model: config.model };
+            },
+          },
+        });
+        digestService = digest;
+        const digestDue = new DigestScheduler(watchClock, (entry) => {
+          void digest
+            .handleDue(entry)
+            .then((result) => {
+              if (!result.ok || result.nextDueAt === null) return;
+              const current = watchOutcome.repo.getDigestSchedule(entry.scheduleId);
+              if (current !== null && current.state === 'active') {
+                digestDue.upsert({
+                  scheduleId: current.id,
+                  expectedNextDueAt: current.nextDueAt,
+                  timeZone: current.timeZone,
+                });
+              }
+            })
+            .catch(() => logWarn('watch', 'Digest due 执行失败（保留 frozen cycle）'));
+        });
+        digestScheduler = digestDue;
+        void digest
+          .resumeActiveCycles()
+          .then(() => {
+            digestDue.initialize(
+              watchOutcome.repo.listActiveDigestSchedules().map((schedule) => ({
+                scheduleId: schedule.id,
+                expectedNextDueAt: schedule.nextDueAt,
+                timeZone: schedule.timeZone,
+              })),
+            );
+          })
+          .catch(() => logWarn('watch', 'Digest cycle 恢复失败（Scheduler 不启动）'));
         // 日志隐私（§13）：不记录 watch.db/userData 绝对路径
         logInfo(
           'main',

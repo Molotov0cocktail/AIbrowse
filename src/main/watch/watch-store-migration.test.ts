@@ -209,7 +209,7 @@ function seedV1Db(dbPath: string): { rule: WatchRule; event: WatchEvent; mutatio
 }
 
 describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
-  it('M0-3 数据恒等：v1 库经 openWatchStore 升至 v3，逐行读回恒等 + v1 备份 + user_version=3', () => {
+  it('M0-3 数据恒等：v1 库经 openWatchStore 升至 v4，逐行读回恒等 + v1 备份 + user_version=4', () => {
     const dir = mkdtempSync(join(root, 'identity-'));
     const dbPath = join(dir, 'watch.db');
     const backupsDir = join(dir, 'backups');
@@ -219,10 +219,10 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     if (outcome.mode !== 'normal') return;
     expect(outcome.schedulerReady).toBe(true);
     const repo = outcome.repo;
-    // user_version=3（经 repo.dbHandle 只读探测，测试设施）
+    // Read user_version=4 through the repository handle in this test fixture.
     expect(
       (repo.dbHandle.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
-    ).toBe(3);
+    ).toBe(4);
     // 规则/基线/运行/事件恒等
     const readRule = repo.getRule(rule.id);
     expect(readRule).not.toBeNull();
@@ -359,7 +359,7 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('M0-8 迁移+恢复交互：v1 备份经 restoreWatchStore 自动升至 v3、增量数据消失语义不变', () => {
+  it('M0-8 迁移+恢复交互：v1 备份经 restoreWatchStore 自动升至 v4、增量数据消失语义不变', () => {
     const dir = mkdtempSync(join(root, 'restore-'));
     const dbPath = join(dir, 'watch.db');
     const backupsDir = join(dir, 'backups');
@@ -395,7 +395,7 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     expect(
       (restored.repo.dbHandle.prepare('PRAGMA user_version').get() as { user_version: number })
         .user_version,
-    ).toBe(3);
+    ).toBe(4);
     expect(restored.repo.getRule(extra.id)).toBeNull(); // 增量数据消失
     expect(restored.repo.getRule(rule.id)).not.toBeNull(); // 备份内规则读回
     restored.repo.dispose();
@@ -522,7 +522,7 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
       expect(
         (fixed.repo.dbHandle.prepare('PRAGMA user_version').get() as { user_version: number })
           .user_version,
-      ).toBe(3);
+      ).toBe(4);
       fixed.repo.dispose();
     }
     rmSync(dir, { recursive: true, force: true });

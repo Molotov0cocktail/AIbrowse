@@ -19,6 +19,8 @@ import {
   WATCH_RULE_STATES,
   WATCH_RUN_TRIGGERS,
   MAX_CONDITIONAL_FIELD_BYTES,
+  MAX_DIGEST_BYTES,
+  MAX_DIGEST_FACTS_BYTES,
   MAX_EVIDENCE_VALUE_BYTES,
   MAX_RUN_RESPONSE_META_BYTES,
   type ChangeEvidencePair,
@@ -33,10 +35,13 @@ import {
   type WatchRuleState,
   type WatchRunOutcome,
   type WatchSchedule,
+  type DigestFacts,
 } from '../../shared/types/watch';
 import { validateFeedTarget, validatePageTarget } from '../../shared/watch/watch-targets';
 import { validateWatchSchedule } from '../../shared/watch/watch-rule-state';
 import { utf8ByteLength } from '../../shared/watch/watch-budget';
+import { canonicalizeDigestFacts } from '../../shared/watch/digest-facts';
+import { parseDigestExplanation } from '../../shared/watch/digest-validator';
 
 export type WatchRowErrorCode =
   | 'row-shape-invalid'
@@ -822,6 +827,261 @@ export function isValidObservationId(id: string, eventId: string): boolean {
 /** R3-4：新写 observation id 只接受小写 UUID v4（v2:<eventId> 仅限迁移回填读取）。 */
 export function isValidNewObservationId(id: string): boolean {
   return UUID_V4_PATTERN.test(id);
+}
+
+// ---------------------------------------------------------------------------
+// D8 Digest v4 rows. SQL CHECK owns the scalar matrix; these validators add
+// canonical JSON/hash, temporal and cross-column invariants at the read edge.
+// ---------------------------------------------------------------------------
+
+function exactOwnKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key, index) => actual[index] === key);
+}
+
+function parseCanonicalJson(text: unknown, keys?: readonly string[]): unknown | null {
+  if (typeof text !== 'string') return null;
+  const parsed = parseJsonSafe(text);
+  if (parsed === null || JSON.stringify(parsed) !== text) return null;
+  if (keys !== undefined && (!isPlainRecord2(parsed) || !exactOwnKeys(parsed, keys))) return null;
+  return parsed;
+}
+
+function validPeriod(value: unknown): value is { fromExclusive: string; toInclusive: string } {
+  if (!isPlainRecord2(value) || !exactOwnKeys(value, ['fromExclusive', 'toInclusive']))
+    return false;
+  return (
+    isIsoString(value['fromExclusive']) &&
+    isIsoString(value['toInclusive']) &&
+    value['fromExclusive'] < value['toInclusive']
+  );
+}
+
+function validRunStats(value: unknown): boolean {
+  return (
+    isPlainRecord2(value) &&
+    exactOwnKeys(value, ['changed', 'failed', 'unchanged']) &&
+    isInt(value['changed']) &&
+    isInt(value['failed']) &&
+    isInt(value['unchanged'])
+  );
+}
+
+export function validateDigestScheduleRow(row: Record<string, unknown>): boolean {
+  const sourceIds = parseCanonicalJson(row['source_ids_json']);
+  const schedule = parseCanonicalJson(row['schedule_json']);
+  if (
+    typeof row['id'] !== 'string' ||
+    !isInt(row['version'], 1) ||
+    !Array.isArray(sourceIds) ||
+    sourceIds.length < 1 ||
+    sourceIds.length > 100 ||
+    !sourceIds.every((id) => typeof id === 'string' && id.length > 0) ||
+    sourceIds.some((id, index) => index > 0 && sourceIds[index - 1]! >= id) ||
+    !isPlainRecord2(schedule) ||
+    !exactOwnKeys(schedule, ['kind', 'localTime', 'timeZone']) ||
+    schedule['kind'] !== 'daily' ||
+    !validateWatchSchedule(schedule).ok ||
+    !isInt(row['ai_enabled']) ||
+    (row['ai_enabled'] !== 0 && row['ai_enabled'] !== 1) ||
+    !isInt(row['cursor_sequence']) ||
+    !isIn(row['state'], ['active', 'paused'] as const) ||
+    !isIsoString(row['next_due_at']) ||
+    !isIsoString(row['created_at']) ||
+    !isIsoString(row['updated_at']) ||
+    row['created_at'] > row['updated_at'] ||
+    !isNullableIsoString(row['last_consumed_scheduled_for']) ||
+    !isNullableIsoString(row['last_checked_at']) ||
+    (row['last_daily_local_date'] !== null &&
+      (typeof row['last_daily_local_date'] !== 'string' ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(row['last_daily_local_date'])))
+  )
+    return false;
+  const consumed = row['last_consumed_scheduled_for'] !== null;
+  if (consumed !== (row['last_daily_local_date'] !== null)) return false;
+  const checked = row['last_checked_at'] !== null;
+  if (
+    checked !== (row['last_period_json'] !== null) ||
+    checked !== (row['last_run_stats_json'] !== null)
+  )
+    return false;
+  if (checked) {
+    const period = parseCanonicalJson(row['last_period_json'], ['fromExclusive', 'toInclusive']);
+    const stats = parseCanonicalJson(row['last_run_stats_json'], [
+      'changed',
+      'failed',
+      'unchanged',
+    ]);
+    if (
+      !validPeriod(period) ||
+      period.toInclusive !== row['last_checked_at'] ||
+      !validRunStats(stats)
+    )
+      return false;
+  }
+  return true;
+}
+
+export function validateDigestRunRow(row: Record<string, unknown>): boolean {
+  const period = parseCanonicalJson(row['period_json'], ['fromExclusive', 'toInclusive']);
+  const stats = parseCanonicalJson(row['run_stats_json'], ['changed', 'failed', 'unchanged']);
+  if (
+    typeof row['id'] !== 'string' ||
+    typeof row['schedule_id'] !== 'string' ||
+    typeof row['request_key'] !== 'string' ||
+    typeof row['logical_date'] !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(row['logical_date']) ||
+    !isInt(row['lower_sequence']) ||
+    !isInt(row['upper_sequence']) ||
+    !isInt(row['next_sequence']) ||
+    row['lower_sequence'] > row['next_sequence'] ||
+    row['next_sequence'] > row['upper_sequence'] ||
+    !validPeriod(period) ||
+    !validRunStats(stats) ||
+    !isIn(row['state'], ['running', 'budget_exceeded', 'completed'] as const) ||
+    !isIsoString(row['created_at']) ||
+    !isNullableIsoString(row['blocked_at']) ||
+    !isNullableIsoString(row['finished_at'])
+  )
+    return false;
+  const state = row['state'];
+  if (state === 'running')
+    return (
+      row['blocked_at'] === null &&
+      row['blocked_required_bytes'] === null &&
+      row['blocked_available_bytes'] === null &&
+      row['finished_at'] === null
+    );
+  if (state === 'budget_exceeded')
+    return (
+      row['next_sequence'] < row['upper_sequence'] &&
+      isInt(row['blocked_required_bytes']) &&
+      isInt(row['blocked_available_bytes']) &&
+      row['blocked_required_bytes'] > row['blocked_available_bytes'] &&
+      row['blocked_at'] !== null &&
+      row['blocked_at'] >= row['created_at'] &&
+      row['finished_at'] === null
+    );
+  return (
+    row['next_sequence'] === row['upper_sequence'] &&
+    row['blocked_at'] === null &&
+    row['blocked_required_bytes'] === null &&
+    row['blocked_available_bytes'] === null &&
+    row['finished_at'] !== null &&
+    row['finished_at'] >= row['created_at']
+  );
+}
+
+export function validateDigestArtifactRow(row: Record<string, unknown>): boolean {
+  if (
+    typeof row['id'] !== 'string' ||
+    typeof row['schedule_id'] !== 'string' ||
+    typeof row['run_id'] !== 'string' ||
+    !isInt(row['batch_index']) ||
+    !isInt(row['first_sequence'], 1) ||
+    !isInt(row['last_sequence'], 1) ||
+    row['first_sequence'] > row['last_sequence'] ||
+    !isInt(row['facts_revision'], 1) ||
+    typeof row['facts_json'] !== 'string' ||
+    utf8ByteLength(row['facts_json']) > MAX_DIGEST_FACTS_BYTES ||
+    typeof row['facts_hash'] !== 'string' ||
+    !FINGERPRINT_HEX.test(row['facts_hash']) ||
+    !isInt(row['byte_length']) ||
+    row['byte_length'] > MAX_DIGEST_BYTES ||
+    !isIsoString(row['created_at']) ||
+    !isNullableIsoString(row['claimed_at']) ||
+    !isNullableIsoString(row['provider_finished_at'])
+  )
+    return false;
+  const factsValue = parseCanonicalJson(row['facts_json']) as DigestFacts | null;
+  if (factsValue === null) return false;
+  const canonical = canonicalizeDigestFacts(factsValue);
+  if (
+    !canonical.ok ||
+    canonical.hash !== row['facts_hash'] ||
+    factsValue.scheduleId !== row['schedule_id'] ||
+    factsValue.digestRunId !== row['run_id'] ||
+    factsValue.batchIndex !== row['batch_index']
+  )
+    return false;
+  for (const evidence of Object.values(factsValue.evidenceMap)) {
+    if (
+      !Array.isArray(evidence) ||
+      evidence.some((pair) => validateChangeEvidencePair(pair) === null)
+    )
+      return false;
+  }
+  const explanation = row['explanation_json'];
+  if (explanation !== null) {
+    const visibleIds = factsValue.events
+      .filter((event) => factsValue.referenceStates[event.eventId] === 'active')
+      .map((event) => event.eventId);
+    if (typeof explanation !== 'string' || parseDigestExplanation(explanation, visibleIds) === null)
+      return false;
+  }
+  if (
+    row['byte_length'] !==
+    canonical.byteLength + (explanation === null ? 0 : utf8ByteLength(explanation as string))
+  )
+    return false;
+  const state = row['provider_state'];
+  const result = row['provider_result_code'];
+  const claimed =
+    row['claimed_at'] !== null &&
+    isInt(row['claimed_facts_revision'], 1) &&
+    typeof row['claimed_facts_hash'] === 'string' &&
+    FINGERPRINT_HEX.test(row['claimed_facts_hash']);
+  const finished = row['provider_finished_at'] !== null;
+  const factsRevision = row['facts_revision'] as number;
+  const claimedRevision = row['claimed_facts_revision'] as number | null;
+  const claimedAt = row['claimed_at'] as string | null;
+  const providerFinishedAt = row['provider_finished_at'] as string | null;
+  if (
+    claimed &&
+    claimedRevision !== null &&
+    (factsRevision < claimedRevision ||
+      (factsRevision === claimedRevision && row['facts_hash'] !== row['claimed_facts_hash']))
+  )
+    return false;
+  if (row['claimed_at'] !== null && row['claimed_at'] < row['created_at']) return false;
+  if (finished && providerFinishedAt !== null && providerFinishedAt < row['created_at'])
+    return false;
+  if (
+    claimed &&
+    finished &&
+    providerFinishedAt !== null &&
+    claimedAt !== null &&
+    providerFinishedAt < claimedAt
+  )
+    return false;
+  if (state === 'pending') return result === null && !claimed && !finished && explanation === null;
+  if (state === 'disabled')
+    return result === 'disabled' && !claimed && finished && explanation === null;
+  if (state === 'claimed') return result === null && claimed && !finished && explanation === null;
+  if (state === 'succeeded')
+    return (
+      result === 'success' &&
+      claimed &&
+      finished &&
+      claimedRevision !== null &&
+      (explanation !== null || factsRevision > claimedRevision)
+    );
+  if (state === 'failed')
+    return (
+      isIn(result, ['provider-error', 'timeout', 'aborted', 'invalid-output'] as const) &&
+      claimed &&
+      finished &&
+      explanation === null
+    );
+  if (state === 'uncertain')
+    return result === 'uncertain-after-restart' && claimed && finished && explanation === null;
+  return (
+    state === 'skipped' &&
+    isIn(result, ['no-visible-events', 'request-budget', 'key-unavailable'] as const) &&
+    !claimed &&
+    finished &&
+    explanation === null
+  );
 }
 
 export interface WatchRunRow {

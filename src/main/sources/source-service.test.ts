@@ -58,6 +58,29 @@ const addOne = async (
   return okView(r);
 };
 
+describe('D8 Digest main-internal sharing projection', () => {
+  it('只返回有界 name/canonical URL/shareMode，Source note 零字节', async () => {
+    const source = await addOne('https://example.com/path#fragment', {
+      name: '名'.repeat(80),
+      shareMode: 'full',
+      userNote: 'SECRET_DIGEST_NOTE',
+      aiNote: 'SECRET_AI_DIGEST_NOTE',
+    });
+    const result = service.getDigestSharingProjections([source.id, UUID]);
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
+    expect(result.projections).toHaveLength(1);
+    expect(Buffer.byteLength(result.projections[0]!.displayName)).toBeLessThanOrEqual(256);
+    expect(result.projections[0]).toMatchObject({
+      sourceId: source.id,
+      shareMode: 'full',
+      canonicalUrl: 'https://example.com/path',
+    });
+    expect(JSON.stringify(result)).not.toContain('SECRET_DIGEST_NOTE');
+    expect(JSON.stringify(result)).not.toContain('SECRET_AI_DIGEST_NOTE');
+  });
+});
+
 describe('search / list / get — 非法输入安全返回', () => {
   it('search：query 非串/空/超 500 → source-invalid-change；limit 0/负/小数 → invalid；>10 → source-limit', async () => {
     const inv = await service.search('' as unknown as string, { audience: 'user' });

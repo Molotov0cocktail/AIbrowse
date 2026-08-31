@@ -520,6 +520,14 @@ describe('WatchProcessingService 结果事务（#S6-047～#S6-052/#S6-057）', (
       expect(event.itemCount).toBe(2); // 两次变化
       expect(h.repo.listEventItems(event.id).length).toBe(2);
       expect(
+        h.repo.dbHandle
+          .prepare('SELECT sequence,event_id,status FROM digest_change_journal ORDER BY sequence')
+          .all(),
+      ).toEqual([
+        { sequence: 1, event_id: event.id, status: 'active' },
+        { sequence: 2, event_id: event.id, status: 'active' },
+      ]);
+      expect(
         h.repo.listAudits(100).some((a) => a.kind === 'run' && a.reasonCode === 'event-coalesced'),
       ).toBe(true);
     } finally {
