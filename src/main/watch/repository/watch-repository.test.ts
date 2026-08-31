@@ -359,7 +359,15 @@ describe('Run 状态机（status 列 D5 reservation 前向兼容）', () => {
     const running = repo.getRun('r1')!;
     expect(running.status).toBe('running');
     expect(running.startedAt).toBe(NOW);
-    expect(repo.transitionRun('r1', 'queued', { status: 'finished' })).toEqual({
+    // R3-2：finished 必须携带 canonical metadata；此处提供合法 metadata，冲突判定
+    //（queued→finished 且当前 running）仍返回 run-state-conflict（CAS 先于写入）。
+    expect(
+      repo.transitionRun('r1', 'queued', {
+        status: 'finished',
+        finishedAt: NOW,
+        responseMetadataJson: metaJson(),
+      }),
+    ).toEqual({
       ok: false,
       code: 'run-state-conflict',
     });
@@ -369,6 +377,7 @@ describe('Run 状态机（status 列 D5 reservation 前向兼容）', () => {
         finishedAt: NOW,
         outcome: { kind: 'unchanged' },
         health: { state: 'healthy', acquisition: 'rss', code: null },
+        responseMetadataJson: metaJson(),
       }),
     ).toEqual({ ok: true });
     expect(repo.getRun('r1')!.outcome).toEqual({ kind: 'unchanged' });
@@ -403,7 +412,11 @@ describe('Run 状态机（status 列 D5 reservation 前向兼容）', () => {
       scheduledFor: null,
     });
     repo.transitionRun('r2', 'queued', { status: 'running' });
-    repo.transitionRun('r3', 'queued', { status: 'finished', finishedAt: NOW });
+    repo.transitionRun('r3', 'queued', {
+      status: 'finished',
+      finishedAt: NOW,
+      responseMetadataJson: metaJson(),
+    });
     expect(repo.markAllNonTerminalInterrupted(NOW)).toBe(2);
     expect(repo.getRun('r1')!.status).toBe('interrupted');
     expect(repo.getRun('r2')!.status).toBe('interrupted');
@@ -442,6 +455,7 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
         expectedStatus: 'running',
         outcome: { kind: 'event-created', eventId: 'e1' },
         health: null,
+        responseMetadataJson: metaJson(),
       },
       outbox: [
         {
@@ -487,6 +501,7 @@ describe('Event+items+Baseline+Run+outbox 单事务原子写（§9.4）', () => 
         expectedStatus: 'running',
         outcome: { kind: 'unchanged' },
         health: null,
+        responseMetadataJson: metaJson(),
       },
     });
     expect(result).toEqual({ ok: false, code: 'run-not-found' });
@@ -1391,7 +1406,9 @@ describe('D7 Repair：Run metadata 同 CAS UPDATE + 终态 dedup 重入零写', 
       audits: [{ id: randomUUID(), reasonCode: 'event-created', createdAt: NOW }],
     });
     expect(first).toEqual({ ok: true });
-    // 重入 run 已终态（finished）
+    // 重入 run 已终态（finished）。R3-2 后 transitionRun 新写 finished 必须携带
+    // canonical metadata；此处以直接 SQL 注入「既有 v2-era legacy 终态行」（null
+    // metadata 只读兼容形态），验证已终态 dedup 重入零写且不重写 metadata。
     repo.insertRun({
       id: 'run-replay',
       ruleId: rule.id,
@@ -1399,7 +1416,9 @@ describe('D7 Repair：Run metadata 同 CAS UPDATE + 终态 dedup 重入零写', 
       trigger: 'scheduled',
       scheduledFor: null,
     });
-    repo.transitionRun('run-replay', 'queued', { status: 'finished', finishedAt: NOW });
+    handle
+      .prepare("UPDATE watch_runs SET status = 'finished', finished_at = ? WHERE id = ?")
+      .run(NOW, 'run-replay');
     const beforeAudits = count('watch_audits');
     const beforeRule = repo.getRule(rule.id)!;
     const replay = repo.writeEventResult({
@@ -1767,39 +1786,86 @@ describe('R2-1 Repository 新写 metadata 敌手矩阵（#S6-058）', () => {
     expect(count('watch_events')).toBe(0);
   });
 
-  it('4096 ==/+1 字节边界：==4096 接受、+1 拒绝', () => {
-    // 构造 canonical metadata，etag 填充使整体 UTF-8 恰为 4096 字节
-    const target = 4096;
+  it('etag 单字段边界：1024 字节写入成功、1025 拒绝（不用大 etag 证明整体 4096）', () => {
     const base = {
       schemaVersion: 1,
       http: { httpStatus: 200, etag: '', lastModified: null, warnings: [] },
       conditionWarnings: [] as string[],
     };
-    let meta = '';
-    let etag = '';
-    for (let n = 1; n <= target; n += 1) {
-      const candidate = JSON.stringify({ ...base, http: { ...base.http, etag: 'a'.repeat(n) } });
-      if (Buffer.byteLength(candidate, 'utf8') === target) {
-        meta = candidate;
-        etag = 'a'.repeat(n);
-        break;
-      }
-    }
-    expect(Buffer.byteLength(meta, 'utf8')).toBe(target);
-    expect(meta).not.toBe('');
+    const at1024 = JSON.stringify({ ...base, http: { ...base.http, etag: 'a'.repeat(1024) } });
     const rule = makeRule();
-    const runIdOk = 'rm-4096ok';
-    seedRunning(rule, runIdOk, 'k-4096ok');
-    expect(repo.writeEventResult(createWrite(rule, runIdOk, meta))).toEqual({ ok: true });
+    const runIdOk = 'rm-field-ok';
+    seedRunning(rule, runIdOk, 'k-field-ok');
+    expect(repo.writeEventResult(createWrite(rule, runIdOk, at1024))).toEqual({ ok: true });
     const rule2 = makeRule();
-    const runIdOver = 'rm-4097';
-    seedRunning(rule2, runIdOver, 'k-4097');
-    const over = JSON.stringify({ ...base, http: { ...base.http, etag: etag + 'a' } });
-    expect(Buffer.byteLength(over, 'utf8')).toBe(target + 1);
-    expect(repo.writeEventResult(createWrite(rule2, runIdOver, over))).toEqual({
+    const runIdOver = 'rm-field-over';
+    seedRunning(rule2, runIdOver, 'k-field-over');
+    const at1025 = JSON.stringify({ ...base, http: { ...base.http, etag: 'a'.repeat(1025) } });
+    const eventsBeforeOver = count('watch_events');
+    expect(repo.writeEventResult(createWrite(rule2, runIdOver, at1025))).toEqual({
       ok: false,
       code: 'validation-failed',
     });
+    expect(repo.getRun(runIdOver)!.status).toBe('running'); // 零写
+    expect(count('watch_events')).toBe(eventsBeforeOver);
+  });
+
+  it('lastModified 单字段边界：1024 字节写入成功、1025 拒绝', () => {
+    const base = {
+      schemaVersion: 1,
+      http: { httpStatus: 200, etag: null, lastModified: '', warnings: [] },
+      conditionWarnings: [] as string[],
+    };
+    const at1024 = JSON.stringify({
+      ...base,
+      http: { ...base.http, lastModified: 'a'.repeat(1024) },
+    });
+    const rule = makeRule();
+    const runIdOk = 'rm-lm-ok';
+    seedRunning(rule, runIdOk, 'k-lm-ok');
+    expect(repo.writeEventResult(createWrite(rule, runIdOk, at1024))).toEqual({ ok: true });
+    const rule2 = makeRule();
+    const runIdOver = 'rm-lm-over';
+    seedRunning(rule2, runIdOver, 'k-lm-over');
+    const at1025 = JSON.stringify({
+      ...base,
+      http: { ...base.http, lastModified: 'a'.repeat(1025) },
+    });
+    const eventsBeforeOver = count('watch_events');
+    expect(repo.writeEventResult(createWrite(rule2, runIdOver, at1025))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(count('watch_events')).toBe(eventsBeforeOver);
+  });
+
+  it('总体 >4096 字节拒绝（整体预算）', () => {
+    const over = JSON.stringify({
+      schemaVersion: 1,
+      http: { httpStatus: 200, etag: 'a'.repeat(4096), lastModified: null, warnings: [] },
+      conditionWarnings: [],
+    });
+    expect(Buffer.byteLength(over, 'utf8')).toBeGreaterThan(4096);
+    const rule = makeRule();
+    const runIdOver = 'rm-total-over';
+    seedRunning(rule, runIdOver, 'k-total-over');
+    expect(repo.writeEventResult(createWrite(rule, runIdOver, over))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(count('watch_events')).toBe(0);
+  });
+
+  it('whitespace / 非 canonical 编码写入拒绝', () => {
+    const rule = makeRule();
+    const runId = 'rm-whitespace';
+    seedRunning(rule, runId, 'k-whitespace');
+    const withSpace = '{"schemaVersion":1, "http":null, "conditionWarnings":[]}';
+    expect(repo.writeEventResult(createWrite(rule, runId, withSpace))).toEqual({
+      ok: false,
+      code: 'validation-failed',
+    });
+    expect(repo.getRun(runId)!.status).toBe('running'); // 零写
   });
 
   it('transitionRun 直接写非法 metadata → validation-failed（新写边界拒绝）', () => {
@@ -1980,7 +2046,7 @@ describe('R2-2 coalesce 全库预算（maxDbBytes ==/+1 边界）', () => {
         eventKind: 'mixed',
         lastObservedAt: NOW,
         newItemCount: 2,
-        observationId: `c-${randomUUID()}`,
+        observationId: randomUUID(),
         idempotencyKey: randomUUID(),
         changeFingerprint: 'fp2',
         items: [newItem],
@@ -2067,5 +2133,304 @@ describe('R2-2 coalesce 全库预算（maxDbBytes ==/+1 边界）', () => {
     expect(failRes).toEqual({ ok: false, code: 'db-budget-exceeded' });
     expect(seedFail.snapshotKey()).toBe(before);
     closeDb(seedFail.db);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R3-2 finished Run metadata 必填：transitionRun/finalizeRun/writeEventTransaction
+// 缺失/null/非法 → validation-failed 零写；canonical 成功并精确持久化
+// ---------------------------------------------------------------------------
+
+describe('R3-2 finished Run metadata 必填（零写矩阵）', () => {
+  function seedQueued(rule: WatchRule, runId: string, key: string): void {
+    repo.insertRule(rule);
+    repo.insertRun({
+      id: runId,
+      ruleId: rule.id,
+      requestKey: key,
+      trigger: 'scheduled',
+      scheduledFor: null,
+    });
+  }
+
+  function seedRunning(rule: WatchRule, runId: string, key: string): void {
+    seedQueued(rule, runId, key);
+    expect(repo.transitionRun(runId, 'queued', { status: 'running' }).ok).toBe(true);
+  }
+
+  it('transitionRun finished 缺失 metadata → validation-failed 且 Run 保持 queued', () => {
+    const rule = makeRule();
+    const runId = 'r3-run-missing';
+    seedQueued(rule, runId, 'k-missing');
+    expect(
+      repo.transitionRun(runId, 'queued', {
+        status: 'finished',
+        finishedAt: NOW,
+        outcome: { kind: 'unchanged' },
+        health: { state: 'healthy', acquisition: 'rss', code: null },
+      }),
+    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.getRun(runId)!.status).toBe('queued');
+  });
+
+  it('transitionRun finished null metadata → validation-failed 零写', () => {
+    const rule = makeRule();
+    const runId = 'r3-run-null';
+    seedQueued(rule, runId, 'k-null');
+    expect(
+      repo.transitionRun(runId, 'queued', {
+        status: 'finished',
+        finishedAt: NOW,
+        responseMetadataJson: null,
+      }),
+    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.getRun(runId)!.status).toBe('queued');
+  });
+
+  it('transitionRun queued→running 保持 metadata=null；提供非 null metadata 拒绝', () => {
+    const rule = makeRule();
+    const runId = 'r3-run-running';
+    seedQueued(rule, runId, 'k-running');
+    expect(
+      repo.transitionRun(runId, 'queued', {
+        status: 'running',
+        startedAt: NOW,
+        responseMetadataJson: metaJson(),
+      }),
+    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.getRun(runId)!.status).toBe('queued');
+    expect(repo.transitionRun(runId, 'queued', { status: 'running', startedAt: NOW })).toEqual({
+      ok: true,
+    });
+    expect(repo.getRun(runId)!.responseMetadataJson).toBeNull();
+  });
+
+  it('transitionRun finished canonical metadata → 成功并精确持久化', () => {
+    const rule = makeRule();
+    const runId = 'r3-run-ok';
+    seedQueued(rule, runId, 'k-ok');
+    const meta = metaJson({ httpStatus: 200, etag: '"v1"', lastModified: null, warnings: [] });
+    expect(
+      repo.transitionRun(runId, 'queued', {
+        status: 'finished',
+        finishedAt: NOW,
+        outcome: { kind: 'unchanged' },
+        health: { state: 'healthy', acquisition: 'rss', code: null },
+        responseMetadataJson: meta,
+      }),
+    ).toEqual({ ok: true });
+    expect(repo.getRun(runId)!.status).toBe('finished');
+    expect(repo.getRun(runId)!.responseMetadataJson).toBe(meta);
+  });
+
+  it('finalizeRun null metadata（运行时敌手）→ validation-failed 且 Run 保持 running', () => {
+    const rule = makeRule();
+    const runId = 'r3-fin-null';
+    seedRunning(rule, runId, 'k-fin-null');
+    expect(
+      repo.finalizeRun({
+        runId,
+        ruleId: rule.id,
+        outcome: { kind: 'unchanged' },
+        health: { state: 'healthy', acquisition: 'rss', code: null },
+        consecutiveFailures: 0,
+        backoffUntil: null,
+        responseMetadataJson: null as unknown as string,
+        runAudit: { id: randomUUID(), reasonCode: 'unchanged', createdAt: NOW },
+      }),
+    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.getRun(runId)!.status).toBe('running');
+    expect(count('watch_audits')).toBe(0);
+  });
+
+  it('writeEventTransaction 提供 run 时缺失/null metadata → validation-failed 零写', () => {
+    const rule = makeRule();
+    const runId = 'r3-tx-null';
+    seedQueued(rule, runId, 'k-tx-null');
+    expect(repo.transitionRun(runId, 'queued', { status: 'running' }).ok).toBe(true);
+    const event = makeEvent(rule.id);
+    const result = repo.writeEventTransaction({
+      event,
+      items: [makeItem()],
+      identity: identity(rule.id),
+      run: {
+        runId,
+        expectedStatus: 'running',
+        outcome: { kind: 'event-created', eventId: event.id },
+        health: null,
+        responseMetadataJson: null as unknown as string,
+      },
+    });
+    expect(result).toEqual({ ok: false, code: 'validation-failed' });
+    expect(count('watch_events')).toBe(0);
+    expect(repo.getRun(runId)!.status).toBe('running');
+  });
+
+  it('writeEventTransaction 提供 run 且 canonical metadata → 成功并精确持久化', () => {
+    const rule = makeRule();
+    const runId = 'r3-tx-ok';
+    seedQueued(rule, runId, 'k-tx-ok');
+    expect(repo.transitionRun(runId, 'queued', { status: 'running' }).ok).toBe(true);
+    const event = makeEvent(rule.id);
+    const meta = metaJson({ httpStatus: 200, etag: '"v1"', lastModified: null, warnings: [] });
+    expect(
+      repo.writeEventTransaction({
+        event,
+        items: [makeItem()],
+        identity: identity(rule.id),
+        run: {
+          runId,
+          expectedStatus: 'running',
+          outcome: { kind: 'event-created', eventId: event.id },
+          health: null,
+          responseMetadataJson: meta,
+        },
+      }),
+    ).toEqual({ ok: true });
+    const run = repo.getRun(runId)!;
+    expect(run.status).toBe('finished');
+    expect(run.responseMetadataJson).toBe(meta);
+    expect(repo.getEvent(event.id)).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R3-3 Baseline validator runtime：writeBaseline/applyBaselineInternal 写前
+// 复用同一 runtime 规则（超限 / Page 非 null → validation-failed 零写）
+// ---------------------------------------------------------------------------
+
+describe('R3-3 Baseline validator runtime 写前边界', () => {
+  it('writeBaseline feed validator 1024 字节接受、1025 拒绝（零写）', () => {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    expect(
+      repo.writeBaseline({
+        ruleId: rule.id,
+        expectedBaselineVersion: null,
+        projectionType: 'feed',
+        projectionJson: '{}',
+        contentHash: 'h',
+        byteLength: 2,
+        finalUrl: 'https://example.com',
+        capturedAt: NOW,
+        documentId: null,
+        validators: { etag: 'a'.repeat(1024), lastModified: null },
+      }),
+    ).toEqual({ ok: true });
+    const rule2 = makeRule();
+    repo.insertRule(rule2);
+    expect(
+      repo.writeBaseline({
+        ruleId: rule2.id,
+        expectedBaselineVersion: null,
+        projectionType: 'feed',
+        projectionJson: '{}',
+        contentHash: 'h',
+        byteLength: 2,
+        finalUrl: 'https://example.com',
+        capturedAt: NOW,
+        documentId: null,
+        validators: { etag: 'a'.repeat(1025), lastModified: null },
+      }),
+    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.getBaseline(rule2.id)).toBeNull();
+    expect(repo.getRule(rule2.id)!.baselineVersion).toBe(0);
+  });
+
+  it('writeBaseline Page 非 null validator → validation-failed 零写', () => {
+    const rule = makeRule({ kind: 'page', accessMode: 'session' });
+    repo.insertRule(rule);
+    expect(
+      repo.writeBaseline({
+        ruleId: rule.id,
+        expectedBaselineVersion: null,
+        projectionType: 'page',
+        projectionJson: '{"type":"page","fields":[]}',
+        contentHash: 'h',
+        byteLength: 30,
+        finalUrl: 'https://example.com/doc',
+        capturedAt: NOW,
+        documentId: 'doc1',
+        validators: { etag: '"x"', lastModified: null },
+      }),
+    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.getBaseline(rule.id)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R3-4 observation id 闭合形状（启动扫描只接受小写 UUID v4 或 v2:<所属 eventId>）
+// ---------------------------------------------------------------------------
+
+describe('R3-4 scanIntegrity observation id 形状', () => {
+  function seedEventWithObservation(): { rule: WatchRule; event: WatchEvent } {
+    const rule = makeRule();
+    repo.insertRule(rule);
+    const event = makeEvent(rule.id);
+    expect(
+      repo.writeEventTransaction({ event, items: [makeItem()], identity: identity(rule.id) }),
+    ).toEqual({ ok: true });
+    return { rule, event };
+  }
+
+  it('正常 UUID v4 observation → scanIntegrity ok；新写 ID 为小写 UUID v4', () => {
+    const { event } = seedEventWithObservation();
+    const obs = handle
+      .prepare('SELECT id FROM watch_event_observations WHERE event_id = ?')
+      .get(event.id) as { id: string };
+    expect(obs.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(repo.scanIntegrity()).toEqual({ ok: true, reason: null });
+  });
+
+  it('v2:<eventId> 迁移回填形态 → scanIntegrity ok', () => {
+    const { event } = seedEventWithObservation();
+    // FK=OFF 下改写 observation id 与 item.observation_id（v2 回填形态）；
+    // 恢复 FK 后扫描须接受 `v2:<所属 eventId>`。
+    handle.exec('PRAGMA foreign_keys = OFF');
+    handle
+      .prepare('UPDATE watch_event_observations SET id = ? WHERE event_id = ?')
+      .run(`v2:${event.id}`, event.id);
+    handle
+      .prepare('UPDATE watch_event_items SET observation_id = ? WHERE event_id = ?')
+      .run(`v2:${event.id}`, event.id);
+    handle.exec('PRAGMA foreign_keys = ON');
+    expect(repo.scanIntegrity()).toEqual({ ok: true, reason: null });
+  });
+
+  it('敌手形状拒绝：c-<uuid> / <event>-obs0 / 大小写 UUID / 非 v4 / 任意 v2 suffix', () => {
+    const hostile = [
+      `c-${randomUUID()}`,
+      `${'e'}-obs0`,
+      randomUUID().toUpperCase(),
+      '01234567-89ab-5def-8a9b-0c1d2e3f4a5b', // 非 v4 version
+      '01234567-89ab-4def-6a9b-0c1d2e3f4a5b', // 非 v4 variant
+      'v2:whatever',
+    ];
+    for (const id of hostile) {
+      const { event } = seedEventWithObservation();
+      handle.exec('PRAGMA foreign_keys = OFF');
+      handle
+        .prepare('UPDATE watch_event_observations SET id = ? WHERE event_id = ?')
+        .run(id, event.id);
+      handle
+        .prepare('UPDATE watch_event_items SET observation_id = ? WHERE event_id = ?')
+        .run(id, event.id);
+      handle.exec('PRAGMA foreign_keys = ON');
+      expect(repo.scanIntegrity().ok).toBe(false);
+    }
+  });
+
+  it('v2: suffix 不等于所属 Event ID → 拒绝', () => {
+    const { event } = seedEventWithObservation();
+    const wrong = `v2:${randomUUID()}`;
+    handle.exec('PRAGMA foreign_keys = OFF');
+    handle
+      .prepare('UPDATE watch_event_observations SET id = ? WHERE event_id = ?')
+      .run(wrong, event.id);
+    handle
+      .prepare('UPDATE watch_event_items SET observation_id = ? WHERE event_id = ?')
+      .run(wrong, event.id);
+    handle.exec('PRAGMA foreign_keys = ON');
+    expect(repo.scanIntegrity().ok).toBe(false);
   });
 });

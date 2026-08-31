@@ -20,6 +20,11 @@ const root = mkdtempSync(join(tmpdir(), 'aibrowse-watch-reserve-'));
 const NOW = '2026-08-28T00:00:00.000Z';
 const NOW_MS = Date.parse(NOW);
 
+/** R3-2：canonical WatchRunResponseMetadata（finished Run / finalizeRun 必填）。 */
+function metaJson(): string {
+  return JSON.stringify({ schemaVersion: 1, http: null, conditionWarnings: [] });
+}
+
 afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
@@ -120,6 +125,7 @@ describe('M2 reservation 三写原子性（§4.2/FIXED 1）', () => {
           health: { state: 'healthy', acquisition: 'rss', code: null },
           consecutiveFailures: 0,
           backoffUntil: null,
+          responseMetadataJson: metaJson(),
           runAudit: { id: randomUUID(), reasonCode: 'unchanged', createdAt: NOW },
         }).ok,
       ).toBe(true);
@@ -176,6 +182,7 @@ describe('M2 reservation 三写原子性（§4.2/FIXED 1）', () => {
           finishedAt: NOW,
           outcome: { kind: 'unchanged' },
           health: { state: 'healthy', acquisition: 'rss', code: null },
+          responseMetadataJson: metaJson(),
         }).ok,
       ).toBe(true);
       const result = repo.reserveScheduledRun(reserveInput(rule, 'run-x'));
@@ -400,6 +407,7 @@ describe('M2 手动 reservation（§4.2 末段/FIXED 6：零锚点、复用、�
           health: { state: 'healthy', acquisition: 'rss', code: null },
           consecutiveFailures: 0,
           backoffUntil: null,
+          responseMetadataJson: metaJson(),
           runAudit: { id: randomUUID(), reasonCode: 'unchanged', createdAt: NOW },
         }).ok,
       ).toBe(true);
@@ -440,6 +448,7 @@ describe('M2 终态事务（FIXED 1/7：Run 终态 + 审计同事务、健康暂
         health: { state: 'degraded', acquisition: 'rss', code: 'unavailable' },
         consecutiveFailures: 3,
         backoffUntil: '2026-08-28T06:00:00.000Z',
+        responseMetadataJson: metaJson(),
         runAudit: { id: 'aud-run-f', reasonCode: 'unavailable', createdAt: NOW },
         healthPause: { reason: 'login-required', audit: { id: 'aud-pause-f', createdAt: NOW } },
       });
@@ -489,6 +498,7 @@ describe('M2 终态事务（FIXED 1/7：Run 终态 + 审计同事务、健康暂
         health: { state: 'paused', acquisition: 'rss', code: 'login_required' },
         consecutiveFailures: 1,
         backoffUntil: null,
+        responseMetadataJson: metaJson(),
         runAudit: { id: 'aud-run-p', reasonCode: 'login-required', createdAt: NOW },
         healthPause: { reason: 'login-required', audit: { id: 'aud-pause-p', createdAt: NOW } },
       });
@@ -528,6 +538,7 @@ describe('M2 终态事务（FIXED 1/7：Run 终态 + 审计同事务、健康暂
         health: { state: 'healthy', acquisition: 'rss', code: null },
         consecutiveFailures: 0,
         backoffUntil: null,
+        responseMetadataJson: metaJson(),
         runAudit: { id: 'dup-audit', reasonCode: 'unchanged', createdAt: NOW },
       });
       expect(r.ok).toBe(false);
@@ -554,6 +565,7 @@ describe('M2 终态事务（FIXED 1/7：Run 终态 + 审计同事务、健康暂
         health: { state: 'healthy', acquisition: 'rss', code: null },
         consecutiveFailures: 0,
         backoffUntil: null,
+        responseMetadataJson: metaJson(),
         runAudit: { id: 'aud-1', reasonCode: 'unchanged', createdAt: NOW },
       });
       expect(first.ok).toBe(true);
@@ -564,6 +576,7 @@ describe('M2 终态事务（FIXED 1/7：Run 终态 + 审计同事务、健康暂
         health: { state: 'healthy', acquisition: 'rss', code: null },
         consecutiveFailures: 0,
         backoffUntil: null,
+        responseMetadataJson: metaJson(),
         runAudit: { id: 'aud-2', reasonCode: 'unchanged', createdAt: NOW },
       });
       expect(second).toEqual({ ok: false, code: 'run-state-conflict' });

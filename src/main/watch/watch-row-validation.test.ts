@@ -5,8 +5,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeEventItemsBytes,
+  isValidObservationId,
   parseJsonSafe,
   validateAffectedRuleStateMap,
+  validateBaselineRow,
+  validateBaselineValidators,
   validateChangeEvidencePair,
   validateEventRow,
   validateEvidenceValue,
@@ -18,6 +21,7 @@ import {
   validateStoredCondition,
   validateWatchHealthSnapshot,
   validateWatchRunOutcome,
+  type WatchBaselineRow,
   type WatchRuleRowColumns,
 } from './watch-row-validation';
 
@@ -455,15 +459,24 @@ describe('validateRunResponseMetadataJson', () => {
       ok: true,
       reason: null,
     });
+    // R3-1：oversize warning 存在时对应字段必须为 null（oversize 头被清空并标记）
     expect(
       validateRunResponseMetadataJson(
-        canonical({ ...http200, warnings: ['etag-oversize', 'last-modified-oversize'] }, [
-          'field-absent',
-          'numeric-value-unavailable',
-          'operator-not-applicable',
-        ]),
+        canonical(
+          {
+            ...http200,
+            etag: null,
+            lastModified: null,
+            warnings: ['etag-oversize', 'last-modified-oversize'],
+          },
+          ['field-absent', 'numeric-value-unavailable', 'operator-not-applicable'],
+        ),
       ),
     ).toEqual({ ok: true, reason: null });
+    // 非 null 字段不得声明对应 oversize warning（矛盾拒绝）
+    expect(
+      validateRunResponseMetadataJson(canonical({ ...http200, warnings: ['etag-oversize'] })).ok,
+    ).toBe(false);
   });
 
   it('null / 非 JSON 拒绝', () => {
@@ -534,29 +547,248 @@ describe('validateRunResponseMetadataJson', () => {
     ).toBe(false);
   });
 
-  it('4096 ==/+1 字节边界', () => {
+  it('etag 单字段边界：1024 字节接受、1025 拒绝（不得用大 etag 证明整体 4096）', () => {
     const base = {
       schemaVersion: 1,
       http: { httpStatus: 200, etag: '', lastModified: null, warnings: [] },
       conditionWarnings: [] as string[],
     };
-    let at4096 = '';
-    let etagLen = 0;
-    for (let n = 1; n <= 4096; n += 1) {
-      const cand = JSON.stringify({ ...base, http: { ...base.http, etag: 'a'.repeat(n) } });
-      if (Buffer.byteLength(cand, 'utf8') === 4096) {
-        at4096 = cand;
-        etagLen = n;
-        break;
-      }
-    }
-    expect(at4096).not.toBe('');
-    expect(validateRunResponseMetadataJson(at4096).ok).toBe(true);
+    const at1024 = JSON.stringify({
+      ...base,
+      http: { ...base.http, etag: 'a'.repeat(1024) },
+    });
+    expect(Buffer.byteLength(at1024, 'utf8')).toBeGreaterThan(1024); // 整体 > 字段上限仍合法
+    expect(validateRunResponseMetadataJson(at1024)).toEqual({ ok: true, reason: null });
+    const at1025 = JSON.stringify({
+      ...base,
+      http: { ...base.http, etag: 'a'.repeat(1025) },
+    });
+    expect(validateRunResponseMetadataJson(at1025).ok).toBe(false);
+  });
+
+  it('lastModified 单字段边界：1024 字节接受、1025 拒绝', () => {
+    const base = {
+      schemaVersion: 1,
+      http: { httpStatus: 200, etag: null, lastModified: '', warnings: [] },
+      conditionWarnings: [] as string[],
+    };
+    const at1024 = JSON.stringify({
+      ...base,
+      http: { ...base.http, lastModified: 'a'.repeat(1024) },
+    });
+    expect(validateRunResponseMetadataJson(at1024)).toEqual({ ok: true, reason: null });
+    const at1025 = JSON.stringify({
+      ...base,
+      http: { ...base.http, lastModified: 'a'.repeat(1025) },
+    });
+    expect(validateRunResponseMetadataJson(at1025).ok).toBe(false);
+  });
+
+  it('多字节 UTF-8 以实际 bytes 判定字段预算（3 字节字符）', () => {
+    const base = {
+      schemaVersion: 1,
+      http: { httpStatus: 200, etag: '', lastModified: null, warnings: [] },
+      conditionWarnings: [] as string[],
+    };
+    // 341×3 字节 + 1 ASCII = 1024 字节 → 接受
+    const exact = JSON.stringify({
+      ...base,
+      http: { ...base.http, etag: '你'.repeat(341) + 'a' },
+    });
+    expect(Buffer.byteLength('你'.repeat(341) + 'a', 'utf8')).toBe(1024);
+    expect(validateRunResponseMetadataJson(exact)).toEqual({ ok: true, reason: null });
+    // 342×3 字节 = 1026 字节 → 拒绝（字符数接近但字节超限）
     const over = JSON.stringify({
       ...base,
-      http: { ...base.http, etag: 'a'.repeat(etagLen + 1) },
+      http: { ...base.http, etag: '你'.repeat(342) },
     });
-    expect(Buffer.byteLength(over, 'utf8')).toBe(4097);
+    expect(Buffer.byteLength('你'.repeat(342), 'utf8')).toBe(1026);
     expect(validateRunResponseMetadataJson(over).ok).toBe(false);
+  });
+
+  it('whitespace / 非 canonical 编码（重编码不逐字节相等）拒绝', () => {
+    expect(
+      validateRunResponseMetadataJson('{"schemaVersion":1,"http":null,"conditionWarnings":[]} ').ok,
+    ).toBe(false);
+    expect(
+      validateRunResponseMetadataJson('{"schemaVersion":1, "http":null, "conditionWarnings":[]}')
+        .ok,
+    ).toBe(false);
+    expect(
+      validateRunResponseMetadataJson('{"schemaVersion":1,"http":null,"conditionWarnings":[]}').ok,
+    ).toBe(true);
+  });
+
+  it('warning/字段矛盾拒绝：oversize 存在时字段必须为 null；非 null 不得同时声明 oversize', () => {
+    const base = {
+      schemaVersion: 1,
+      http: { httpStatus: 200, etag: 'x', lastModified: null, warnings: [] as string[] },
+      conditionWarnings: [] as string[],
+    };
+    // etag 非 null + etag-oversize → 拒绝
+    expect(
+      validateRunResponseMetadataJson(
+        JSON.stringify({
+          ...base,
+          http: { ...base.http, warnings: ['etag-oversize'] },
+        }),
+      ).ok,
+    ).toBe(false);
+    // lastModified 非 null + last-modified-oversize → 拒绝
+    expect(
+      validateRunResponseMetadataJson(
+        JSON.stringify({
+          ...base,
+          http: { ...base.http, lastModified: 'y', warnings: ['last-modified-oversize'] },
+        }),
+      ).ok,
+    ).toBe(false);
+    // 字段 null + 对应 oversize warning → 接受（oversize 头被清空并标记）
+    expect(
+      validateRunResponseMetadataJson(
+        JSON.stringify({
+          ...base,
+          http: { ...base.http, etag: null, warnings: ['etag-oversize'] },
+        }),
+      ),
+    ).toEqual({ ok: true, reason: null });
+    // 字段 null 且无 warning → 接受（服务器未发送该头）
+    expect(
+      validateRunResponseMetadataJson(
+        JSON.stringify({
+          ...base,
+          http: { ...base.http, etag: null, lastModified: null, warnings: [] },
+        }),
+      ),
+    ).toEqual({ ok: true, reason: null });
+  });
+
+  it('总体 >4096 字节拒绝（整体预算；闭合字段预算下超限必然同时命中单字段）', () => {
+    const over = JSON.stringify({
+      schemaVersion: 1,
+      http: { httpStatus: 200, etag: 'a'.repeat(4096), lastModified: null, warnings: [] },
+      conditionWarnings: [],
+    });
+    expect(Buffer.byteLength(over, 'utf8')).toBeGreaterThan(4096);
+    expect(validateRunResponseMetadataJson(over).ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R3-1/R3-3 Baseline conditional validator 运行时边界
+// ---------------------------------------------------------------------------
+
+describe('validateBaselineRow / validateBaselineValidators', () => {
+  const base: WatchBaselineRow = {
+    ruleId: 'r1',
+    version: 1,
+    projectionType: 'feed',
+    projectionJson: '{"format":"rss2"}',
+    contentHash: 'h',
+    byteLength: 17,
+    finalUrl: 'https://example.com',
+    capturedAt: '2026-08-28T00:00:00.000Z',
+    documentId: null,
+    conditionalEtag: null,
+    conditionalLastModified: null,
+  };
+
+  it('feed 条件列 string|null；Page 两列恒 null', () => {
+    expect(
+      validateBaselineRow({ ...base, conditionalEtag: '"v1"', conditionalLastModified: null }).ok,
+    ).toBe(true);
+    expect(validateBaselineRow({ ...base, conditionalEtag: 123 }).ok).toBe(false);
+    expect(validateBaselineRow({ ...base, conditionalLastModified: 123 }).ok).toBe(false);
+    const page = validateBaselineRow({
+      ...base,
+      projectionType: 'page',
+      conditionalEtag: null,
+      conditionalLastModified: null,
+    });
+    expect(page.ok).toBe(true);
+    expect(
+      validateBaselineRow({
+        ...base,
+        projectionType: 'page',
+        conditionalEtag: '"x"',
+        conditionalLastModified: null,
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateBaselineRow({
+        ...base,
+        projectionType: 'page',
+        conditionalEtag: null,
+        conditionalLastModified: 'x',
+      }).ok,
+    ).toBe(false);
+  });
+
+  it('非 null 条件列 UTF-8 ≤1024 字节；1025 拒绝（多字节按实际 bytes）', () => {
+    expect(validateBaselineRow({ ...base, conditionalEtag: 'a'.repeat(1024) }).ok).toBe(true);
+    expect(validateBaselineRow({ ...base, conditionalEtag: 'a'.repeat(1025) }).ok).toBe(false);
+    expect(validateBaselineRow({ ...base, conditionalLastModified: 'a'.repeat(1024) }).ok).toBe(
+      true,
+    );
+    expect(validateBaselineRow({ ...base, conditionalLastModified: '你'.repeat(342) }).ok).toBe(
+      false,
+    );
+  });
+
+  it('validateBaselineValidators 写前复用同一 runtime 规则', () => {
+    expect(
+      validateBaselineValidators({
+        projectionType: 'feed',
+        etag: 'a'.repeat(1024),
+        lastModified: null,
+      }),
+    ).toBe(true);
+    expect(
+      validateBaselineValidators({
+        projectionType: 'feed',
+        etag: 'a'.repeat(1025),
+        lastModified: null,
+      }),
+    ).toBe(false);
+    expect(
+      validateBaselineValidators({
+        projectionType: 'feed',
+        etag: null,
+        lastModified: '你'.repeat(342),
+      }),
+    ).toBe(false);
+    expect(
+      validateBaselineValidators({ projectionType: 'page', etag: null, lastModified: null }),
+    ).toBe(true);
+    expect(
+      validateBaselineValidators({ projectionType: 'page', etag: 'x', lastModified: null }),
+    ).toBe(false);
+    expect(
+      validateBaselineValidators({ projectionType: 'page', etag: null, lastModified: 'x' }),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R3-4 observation ID 闭合形状
+// ---------------------------------------------------------------------------
+
+describe('isValidObservationId', () => {
+  const UUID_V4 = '01234567-89ab-4def-8a9b-0c1d2e3f4a5b';
+  const EVENT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+  it('小写 UUID v4 与 v2:<eventId> 两种合法形态', () => {
+    expect(isValidObservationId(UUID_V4, EVENT)).toBe(true);
+    expect(isValidObservationId(`v2:${EVENT}`, EVENT)).toBe(true);
+  });
+
+  it('拒绝敌手形态：任意 v2: suffix、大小写 UUID、非 v4 UUID、c- 前缀、eventId-obs0', () => {
+    expect(isValidObservationId('v2:whatever', EVENT)).toBe(false);
+    expect(isValidObservationId(`v2:${UUID_V4}`, EVENT)).toBe(false); // suffix 不等于所属 Event
+    expect(isValidObservationId(UUID_V4.toUpperCase(), EVENT)).toBe(false);
+    expect(isValidObservationId('01234567-89ab-5def-8a9b-0c1d2e3f4a5b', EVENT)).toBe(false); // 非 v4
+    expect(isValidObservationId('01234567-89ab-4def-6a9b-0c1d2e3f4a5b', EVENT)).toBe(false); // 非 v4 variant
+    expect(isValidObservationId(`c-${UUID_V4}`, EVENT)).toBe(false);
+    expect(isValidObservationId(`${EVENT}-obs0`, EVENT)).toBe(false);
   });
 });

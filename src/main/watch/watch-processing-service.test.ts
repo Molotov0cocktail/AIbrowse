@@ -1372,4 +1372,48 @@ describe('R2-1 Run metadata 失败终态矩阵（#S6-058）', () => {
       closeH(h);
     }
   });
+
+  it('R3-4 create/coalesce 的 observation id 均为小写 UUID v4（无 c-/obs0 前后缀）', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const p1 = makeProjection(rule, 'A', new Date(NOW_MS).toISOString());
+      await seedBaseline(h, rule, p1);
+      const freshRule = h.repo.getRule(rule.id)!;
+      const prepared = h.service.prepareAcquisition({ rule: freshRule });
+      if (!prepared.ok) return;
+      // create：首 observation（sequence=0）
+      const runId1 = await makeRunningRun(h, freshRule, 'rm-obs-1');
+      const p2 = makeProjection(rule, 'B', new Date(NOW_MS + 60_000).toISOString());
+      const r1 = await processProjection(h, freshRule, runId1, prepared.baselineHint, p2);
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      expect(r1.outcome.kind).toBe('event-created');
+      // coalesce：追加 observation（sequence=1）
+      const readRule = h.repo.getRule(rule.id)!;
+      const prepared2 = h.service.prepareAcquisition({ rule: readRule });
+      if (!prepared2.ok) return;
+      const runId2 = await makeRunningRun(h, readRule, 'rm-obs-2');
+      const p3 = makeProjection(rule, 'C', new Date(NOW_MS + 600_000).toISOString());
+      const r2 = await processProjection(h, readRule, runId2, prepared2.baselineHint, p3);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.outcome.kind).toBe('event-coalesced');
+      const event = h.repo.listEventsByRule(rule.id)[0]!;
+      const obs = h.repo.dbHandle
+        .prepare('SELECT id FROM watch_event_observations WHERE event_id = ? ORDER BY sequence')
+        .all(event.id) as Array<{ id: string }>;
+      expect(obs.length).toBe(2);
+      for (const o of obs) {
+        expect(o.id).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+      }
+      expect(obs.some((o) => o.id.startsWith('c-') || o.id.includes('-obs0'))).toBe(false);
+      expect(h.repo.scanIntegrity()).toEqual({ ok: true, reason: null });
+    } finally {
+      closeH(h);
+    }
+  });
 });

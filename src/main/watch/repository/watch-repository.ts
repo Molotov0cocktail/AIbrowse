@@ -14,6 +14,7 @@
 //   不含页/索引开销——诚实限制如实披露）。预算参数为构造注入（测试注入小值验证
 //   ==/+1 边界；生产缺省 §2 常量）。
 import { closeDb, withTransaction, type DbHandle } from '../db/watch-driver';
+import { randomUUID } from 'node:crypto';
 import { logWarn } from '../../logger';
 import {
   MAX_EVENT_EVIDENCE_BYTES,
@@ -47,9 +48,12 @@ import {
 import {
   validateAffectedRuleStateMap,
   validateBaselineRow,
+  validateBaselineValidators,
   validateChangeEvidencePair,
   validateEventRow,
   validateIntentRow,
+  isValidNewObservationId,
+  isValidObservationId,
   validateRuleRow,
   validateRunResponseMetadataJson,
   validateRunRow,
@@ -837,6 +841,17 @@ export class WatchRepository {
     if (input.byteLength !== actualBytes) {
       return { ok: false, code: 'validation-failed' };
     }
+    // R3-3：条件 validator 写前 runtime 规则（string|null、≤1024 字节、Page 恒 null）——
+    // 超限或 Page 非 null 返回 validation-failed 且事务零写（DB CHECK 纵深在前）。
+    if (
+      !validateBaselineValidators({
+        projectionType: input.projectionType,
+        etag: input.validators?.etag ?? null,
+        lastModified: input.validators?.lastModified ?? null,
+      })
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
     try {
       return withTransaction(this.handle, () => {
         // R5：同一事务内规则级身份 CAS——规则存在、未删除、fingerprint（若提供）
@@ -884,6 +899,17 @@ export class WatchRepository {
     validators?: { etag: string | null; lastModified: string | null };
   }): WatchResult {
     const validators = input.validators ?? { etag: null, lastModified: null };
+    // R3-3：applyBaselineInternal 与 writeBaseline 复用同一 runtime 规则（纵深；
+    // 事务内任何写点前再次拒绝，超限/Page 非 null → validation-failed 零写）。
+    if (
+      !validateBaselineValidators({
+        projectionType: input.projectionType,
+        etag: validators.etag,
+        lastModified: validators.lastModified,
+      })
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
     if (input.expectedBaselineVersion === null) {
       const result = this.handle
         .prepare(SQL_INSERT_BASELINE)
@@ -995,15 +1021,18 @@ export class WatchRepository {
     },
   ): WatchResult {
     this.ensureOpen();
-    // R2-1：Repository 新写边界——metadata 一旦提供（非 null）必须是 canonical
-    // WatchRunResponseMetadata；v2 legacy-opaque JSON 与敌手形状一律拒绝
-    //（validateRunResponseMetadataJson 拒绝非 JSON/未来 schemaVersion/额外缺失
-    // key/非 canonical 顺序/非法类型/乱序重复 warning/超限）。
-    if (
-      next.responseMetadataJson !== undefined &&
-      next.responseMetadataJson !== null &&
-      !validateRunResponseMetadataJson(next.responseMetadataJson).ok
-    ) {
+    // R3-2：finished 终态必须携带 canonical WatchRunResponseMetadata——缺失/null/非法
+    // 一律 validation-failed 零写（D7 新增 finished Run 不可能写 null）；queued→running
+    // 路径保持 metadata=null（提供非 null 同样拒绝）。v2 legacy 读取边界不变。
+    if (next.status === 'finished') {
+      if (
+        next.responseMetadataJson === undefined ||
+        next.responseMetadataJson === null ||
+        !validateRunResponseMetadataJson(next.responseMetadataJson).ok
+      ) {
+        return { ok: false, code: 'validation-failed' };
+      }
+    } else if (next.responseMetadataJson !== undefined && next.responseMetadataJson !== null) {
       return { ok: false, code: 'validation-failed' };
     }
     try {
@@ -1192,10 +1221,10 @@ export class WatchRepository {
     health: WatchHealthSnapshot | null;
     consecutiveFailures: number;
     backoffUntil: string | null;
-    // R2-1：D7 失败终态（parse_changed/condition_error/acquisition failure/
-    // superseded）必须随同一终态 CAS 写入 canonical metadata，不能写 null。
-    // 可选以兼容 D5-era 调用（缺省 null=legacy-opaque 边界）。
-    responseMetadataJson?: string | null;
+    // R3-2：D7 失败终态（parse_changed/condition_error/acquisition failure/
+    // superseded）必须随同一终态 CAS 写入 canonical metadata——必填非 null，
+    // 在任何事务写前验证（缺失/null/非法 → validation-failed 零写）。
+    responseMetadataJson: string;
     runAudit: {
       id: string;
       reasonCode: WatchAuditReasonCode;
@@ -1217,12 +1246,8 @@ export class WatchRepository {
     if (input.backoffUntil !== null && !Number.isFinite(Date.parse(input.backoffUntil))) {
       return { ok: false, code: 'validation-failed' };
     }
-    // R2-1：新写边界 canonical 校验（提供时必须合法）
-    if (
-      input.responseMetadataJson !== undefined &&
-      input.responseMetadataJson !== null &&
-      !validateRunResponseMetadataJson(input.responseMetadataJson).ok
-    ) {
+    // R3-2：新写边界 canonical 校验（必填非 null，写前拒绝）
+    if (!validateRunResponseMetadataJson(input.responseMetadataJson).ok) {
       return { ok: false, code: 'validation-failed' };
     }
     try {
@@ -1233,7 +1258,7 @@ export class WatchRepository {
           finishedAt: nowIso,
           outcome: input.outcome,
           health: input.health,
-          responseMetadataJson: input.responseMetadataJson ?? null,
+          responseMetadataJson: input.responseMetadataJson,
         });
         if (!transition.ok) throw new TxnAbortError(transition.code);
         const ruleUpdate = this.handle
@@ -1396,6 +1421,7 @@ export class WatchRepository {
       expectedStatus: 'queued' | 'running';
       outcome: WatchRunOutcome;
       health: WatchHealthSnapshot | null;
+      responseMetadataJson: string;
     };
     outbox?: Array<{
       id: string;
@@ -1459,6 +1485,14 @@ export class WatchRepository {
         return { ok: false, code: 'validation-failed' };
       }
     }
+    // R3-2：writeEventTransaction 的可选 Run 终态接口不得绕过 canonical metadata
+    // 要求——提供 run 时 responseMetadataJson 必填非 null 且 canonical（写前拒绝）。
+    if (
+      input.run !== undefined &&
+      !validateRunResponseMetadataJson(input.run.responseMetadataJson).ok
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
     try {
       withTransaction(this.handle, () => {
         // 身份 CAS 在同一事务内验证（不得以事务外两步拼接冒充原子 CAS）
@@ -1518,8 +1552,8 @@ export class WatchRepository {
             input.event.itemCount,
           );
         // v3：每个 Event 至少一条 observation（本方法固定 sequence=0 首观察）；
-        // observation.id 使用小写 v4 UUID（由调用方事件 id 派生可逆形态亦可）。
-        const observationId = `${input.event.id}-obs0`;
+        // R3-4：observation.id 必须为 Node randomUUID() 小写 v4 UUID（无 obs0/c- 前后缀）。
+        const observationId = randomUUID();
         this.handle
           .prepare(SQL_INSERT_OBSERVATION)
           .run(
@@ -1563,6 +1597,7 @@ export class WatchRepository {
             finishedAt: this.nowIso(),
             outcome: input.run.outcome,
             health: input.run.health,
+            responseMetadataJson: input.run.responseMetadataJson,
           });
           if (!runResult.ok) throw new TxnAbortError(runResult.code);
         }
@@ -2121,8 +2156,23 @@ export class WatchRepository {
     }
     if (
       input.baseline !== undefined &&
-      input.baseline.projectionType === 'page' &&
-      (input.baseline.validators.etag !== null || input.baseline.validators.lastModified !== null)
+      !validateBaselineValidators({
+        projectionType: input.baseline.projectionType,
+        etag: input.baseline.validators.etag,
+        lastModified: input.baseline.validators.lastModified,
+      })
+    ) {
+      return { ok: false, code: 'validation-failed' };
+    }
+    // R3-3：unchanged validator 更新路径写前复用同一 runtime 规则（Page 恒 null、
+    // 非 null ≤1024 字节；超限/Page 非 null → validation-failed 零写）。
+    if (
+      input.validatorUpdate !== undefined &&
+      !validateBaselineValidators({
+        projectionType: input.rule.kind === 'page' ? 'page' : 'feed',
+        etag: input.validatorUpdate.etag,
+        lastModified: input.validatorUpdate.lastModified,
+      })
     ) {
       return { ok: false, code: 'validation-failed' };
     }
@@ -2232,8 +2282,12 @@ export class WatchRepository {
           // FIXED DECISION 7：预算估算必须包含 observation 元数据、Baseline validators、
           // item observation 关系列及结果事务完整新增写集（Baseline/Event/observation/
           // items/outbox/audit/Run metadata）——低估不得绕过 maxDbBytes。
+          // R3-4：新 Event 首 observation 使用 Node randomUUID() 小写 UUID v4；预算
+          // 必须使用实际 observationId 字节数，不得再假设 `eventId-obs0`。
+          const observationId = randomUUID();
           const writeSet = this.estimateResultCreateWriteSet({
             event: input.event.event,
+            observationId,
             itemCount: input.event.items.length,
             itemsBytes,
             baseline: input.baseline,
@@ -2273,7 +2327,6 @@ export class WatchRepository {
               input.event.event.lastObservedAt,
               input.event.event.itemCount,
             );
-          const observationId = `${input.event.event.id}-obs0`;
           this.handle
             .prepare(SQL_INSERT_OBSERVATION)
             .run(
@@ -2337,6 +2390,10 @@ export class WatchRepository {
           }
           if (itemsBytes > this.maxEventEvidenceBytes)
             throw new TxnAbortError('event-budget-exceeded');
+          // R3-4：coalesce 新 observation 必须为小写 UUID v4（拒绝 c-<uuid>/obs0/任意形态）
+          if (!isValidNewObservationId(input.coalesce.observationId)) {
+            throw new TxnAbortError('validation-failed');
+          }
           // R2-2 FIXED DECISION 7：coalesce 必须在任何 Event/Baseline/observation/
           // item/audit/Run mutation 前，于同一事务计算当前逻辑字节 + 完整新增写集
           //（observation 元数据、items observation 关系列、Baseline/validators、
@@ -2686,6 +2743,11 @@ export class WatchRepository {
         for (const o of obsRows) {
           const oid = String(o['id'] ?? '');
           const oeid = String(o['event_id'] ?? '');
+          // R3-4：observation id 闭合形状——小写 UUID v4 或 `v2:<所属 eventId>`；
+          // 任意 v2: suffix、大小写/非 v4 UUID、`c-<uuid>`、`<event>-obs0` 一律拒绝。
+          if (!isValidObservationId(oid, oeid)) {
+            return { ok: false, reason: `observation ${oid} id 形状非法` };
+          }
           if (!eventIdSet.has(oeid)) {
             return { ok: false, reason: `observation ${oid} 不属于任何 Event` };
           }
@@ -2839,6 +2901,7 @@ export class WatchRepository {
   // 有界开销，低估不得绕过 maxDbBytes。
   private estimateResultCreateWriteSet(input: {
     event: WatchEvent;
+    observationId: string;
     itemCount: number;
     itemsBytes: number;
     baseline?:
@@ -2872,8 +2935,7 @@ export class WatchRepository {
       8;
     // observation 元数据行（id/event_id/sequence/int/idempotency/fingerprint/kind/time/ints）
     bytes +=
-      utf8ByteLength(input.event.id) +
-      utf8ByteLength('-obs0') +
+      utf8ByteLength(input.observationId) +
       utf8ByteLength(input.event.id) +
       utf8ByteLength(input.event.idempotencyKey) +
       utf8ByteLength(input.event.changeFingerprint) +
@@ -2882,7 +2944,7 @@ export class WatchRepository {
       24;
     // items：序列化 JSON + observation 关系列（observation_id / observation_item_sequence / ints）
     bytes += input.itemsBytes;
-    bytes += input.itemCount * (utf8ByteLength(input.event.id) + utf8ByteLength('-obs0') + 8 + 8);
+    bytes += input.itemCount * (utf8ByteLength(input.observationId) + 8 + 8);
     // Baseline + validators（#S6-056：etag/lastModified 同事务计入）
     if (input.baseline !== undefined) {
       bytes +=

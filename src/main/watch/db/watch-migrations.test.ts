@@ -87,6 +87,9 @@ describe('migration v1 契约断言（§10.1：11 张表；D7 v3 +1 = 12 张表�
         WATCH_MIGRATION_V2.statements.every((s) => typeof s === 'string') &&
         WATCH_MIGRATION_V3.statements.every((s) => typeof s === 'string'),
     ).toBe(true);
+    // R3-3：v3 语句数 21（含 watch_baselines_v3 的条件 validator CHECK 内嵌）——
+    // M0-9 逐语句失败注入按此固定语句数全部切点执行
+    expect(WATCH_MIGRATION_V3.statements).toHaveLength(21);
   });
 
   it('运行后 user_version=3 且 12 张表全部存在（D7 新增 watch_event_observations）', () => {
@@ -257,6 +260,86 @@ describe('CHECK 约束数据库层强制（§10.1 枚举列）', () => {
         )
         .run(),
     ).toThrow();
+  });
+
+  // R3-3：schema v3 watch_baselines 条件 validator 纵深 CHECK——非 null 值 BLOB 字节
+  // ≤1024（多字节按 bytes 判定）、projection_type='page' 时两列恒 null。直接 SQL 敌手
+  // 测试证明数据库层拒绝超限字段与 Page 非 null。
+  it('R3-3 watch_baselines 条件 validator CHECK：超限字段（1024 接受/1025 拒绝）', () => {
+    insertRule(handle, 'r1');
+    const etag1024 = 'a'.repeat(1024);
+    handle
+      .prepare(
+        `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at, conditional_etag)
+  VALUES ('r1', 1, 'feed', '{}', 'h', 2, 'https://example.com', '2026-08-28T00:00:00.000Z', ?)`,
+      )
+      .run(etag1024);
+    insertRule(handle, 'r2');
+    expect(() =>
+      handle
+        .prepare(
+          `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at, conditional_etag)
+  VALUES ('r2', 1, 'feed', '{}', 'h', 2, 'https://example.com', '2026-08-28T00:00:00.000Z', ?)`,
+        )
+        .run('a'.repeat(1025)),
+    ).toThrow();
+    // 多字节：342×3=1026 字节超限被 CHECK 拒绝（LENGTH(CAST(... AS BLOB)) 按字节）
+    insertRule(handle, 'r3');
+    expect(() =>
+      handle
+        .prepare(
+          `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at, conditional_last_modified)
+  VALUES ('r3', 1, 'feed', '{}', 'h', 2, 'https://example.com', '2026-08-28T00:00:00.000Z', ?)`,
+        )
+        .run('你'.repeat(342)),
+    ).toThrow();
+    // 341×3+1=1024 字节接受
+    insertRule(handle, 'r4');
+    handle
+      .prepare(
+        `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at, conditional_last_modified)
+  VALUES ('r4', 1, 'feed', '{}', 'h', 2, 'https://example.com', '2026-08-28T00:00:00.000Z', ?)`,
+      )
+      .run('你'.repeat(341) + 'a');
+  });
+
+  it('R3-3 watch_baselines 条件 validator CHECK：page 两列恒 null（直接 SQL 拒绝非 null）', () => {
+    insertRule(handle, 'p1', 'page');
+    expect(() =>
+      handle
+        .prepare(
+          `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at, conditional_etag)
+  VALUES ('p1', 1, 'page', '{"type":"page","fields":[]}', 'h', 30, 'https://example.com',
+   '2026-08-28T00:00:00.000Z', '"x"')`,
+        )
+        .run(),
+    ).toThrow();
+    insertRule(handle, 'p2', 'page');
+    expect(() =>
+      handle
+        .prepare(
+          `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at, conditional_last_modified)
+  VALUES ('p2', 1, 'page', '{"type":"page","fields":[]}', 'h', 30, 'https://example.com',
+   '2026-08-28T00:00:00.000Z', 'x')`,
+        )
+        .run(),
+    ).toThrow();
+    // page 两列均 null 接受
+    insertRule(handle, 'p3', 'page');
+    handle
+      .prepare(
+        `INSERT INTO watch_baselines (rule_id, version, projection_type, projection_json,
+   content_hash, byte_length, final_url, captured_at)
+  VALUES ('p3', 1, 'page', '{"type":"page","fields":[]}', 'h', 30, 'https://example.com',
+   '2026-08-28T00:00:00.000Z')`,
+      )
+      .run();
   });
 
   it('source_cleanup_intents operation/state 非法值被 CHECK 拒绝', () => {

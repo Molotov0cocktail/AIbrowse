@@ -83,6 +83,11 @@ function projection(overrides: Partial<SourceWatchProjection> = {}): SourceWatch
   };
 }
 
+/** R3-2：canonical WatchRunResponseMetadata（finished Run 必填；seed 夹具同源）。 */
+function metaJson(): string {
+  return JSON.stringify({ schemaVersion: 1, http: null, conditionWarnings: [] });
+}
+
 const OK_RECONCILE = (): { ok: boolean; reason: string | null } => ({ ok: true, reason: null });
 
 // 在 v1 库上以原始 v1 SQL 种子（不依赖 v3 Repository SQL）：rule/baseline/finished
@@ -123,6 +128,7 @@ function seedV1Db(dbPath: string): { rule: WatchRule; event: WatchEvent; mutatio
       finishedAt: NOW,
       outcome: { kind: 'unchanged' },
       health: { state: 'healthy', acquisition: 'rss', code: null },
+      responseMetadataJson: metaJson(),
     });
     if (!trans.ok) throw new Error('seed transitionRun 失败');
     const kinds = [
@@ -224,6 +230,14 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     expect(readRule!.target).toEqual(rule.target);
     expect(readRule!.sourceLocatorFingerprint).toBe(rule.sourceLocatorFingerprint);
     expect(repo.getBaseline(rule.id)!.version).toBe(1);
+    // R3-3：v2→v3 复制逐列恒等且两个新 validator 列固定 null（绝不从 Run metadata 回填）
+    const migratedBaseline = repo.getBaseline(rule.id)!;
+    expect(migratedBaseline.projectionType).toBe('feed');
+    expect(migratedBaseline.projectionJson).toBe(
+      '{"format":"rss2","title":{"text":"t","truncated":false,"originalBytes":1}}',
+    );
+    expect(migratedBaseline.conditionalEtag).toBeNull();
+    expect(migratedBaseline.conditionalLastModified).toBeNull();
     const run = repo.getRun('run-finished');
     expect(run!.status).toBe('finished');
     expect(run!.requestKey).toBe('rk-finished');

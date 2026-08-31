@@ -18,6 +18,7 @@ import {
   WATCH_RULE_KINDS,
   WATCH_RULE_STATES,
   WATCH_RUN_TRIGGERS,
+  MAX_CONDITIONAL_FIELD_BYTES,
   MAX_EVIDENCE_VALUE_BYTES,
   MAX_RUN_RESPONSE_META_BYTES,
   type ChangeEvidencePair,
@@ -748,11 +749,23 @@ export function validateBaselineRow(row: unknown): WatchRowValidation<WatchBasel
     return { ok: false, value: null, reason: 'json-parse-failed' };
   }
   // #S6-056：条件 validator 列可空；Page Baseline 两列必须均为 null（DB CHECK 纵深，
-  // 此处 TS 同样 enforce）；字符串必须 ≤ MAX_CONDITIONAL_FIELD_BYTES。
+  // 此处 TS 同样 enforce）；字符串必须 ≤ MAX_CONDITIONAL_FIELD_BYTES（UTF-8 字节）。
   if (r.conditionalEtag !== null && typeof r.conditionalEtag !== 'string') {
     return { ok: false, value: null, reason: 'row-shape-invalid' };
   }
   if (r.conditionalLastModified !== null && typeof r.conditionalLastModified !== 'string') {
+    return { ok: false, value: null, reason: 'row-shape-invalid' };
+  }
+  if (
+    r.conditionalEtag !== null &&
+    utf8ByteLength(r.conditionalEtag) > MAX_CONDITIONAL_FIELD_BYTES
+  ) {
+    return { ok: false, value: null, reason: 'row-shape-invalid' };
+  }
+  if (
+    r.conditionalLastModified !== null &&
+    utf8ByteLength(r.conditionalLastModified) > MAX_CONDITIONAL_FIELD_BYTES
+  ) {
     return { ok: false, value: null, reason: 'row-shape-invalid' };
   }
   if (
@@ -762,6 +775,53 @@ export function validateBaselineRow(row: unknown): WatchRowValidation<WatchBasel
     return { ok: false, value: null, reason: 'consistency-invalid' };
   }
   return { ok: true, value: r, reason: null };
+}
+
+/** R3-3：Baseline 条件 validator 写前 runtime 规则（与 validateBaselineRow 同源）——
+ * etag/lastModified 为 string|null 且非 null 时 UTF-8 ≤ MAX_CONDITIONAL_FIELD_BYTES；
+ * projectionType='page' 时两列必须均为 null。所有写路径（writeBaseline、
+ * applyBaselineInternal、unchanged validator 更新）写前复用，超限 fail-closed。 */
+export function validateBaselineValidators(input: {
+  projectionType: 'feed' | 'page';
+  etag: string | null;
+  lastModified: string | null;
+}): boolean {
+  if (input.etag !== null && typeof input.etag !== 'string') return false;
+  if (input.lastModified !== null && typeof input.lastModified !== 'string') return false;
+  if (input.etag !== null && utf8ByteLength(input.etag) > MAX_CONDITIONAL_FIELD_BYTES) {
+    return false;
+  }
+  if (
+    input.lastModified !== null &&
+    utf8ByteLength(input.lastModified) > MAX_CONDITIONAL_FIELD_BYTES
+  ) {
+    return false;
+  }
+  if (input.projectionType === 'page' && (input.etag !== null || input.lastModified !== null)) {
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// R3-4：observation id 闭合形状（新写一律 Node randomUUID() 小写 UUID v4；迁移
+// 回填精确为 `v2:` + 所属 eventId）。启动扫描只接受：
+// - 小写 UUID v4；或
+// - `v2:<eventId>` 且 suffix 逐字等于该 observation 所属 Event ID。
+// 拒绝任意 v2: suffix、大小写 UUID、非 v4 UUID、`c-<uuid>`、`<event>-obs0`。
+// ---------------------------------------------------------------------------
+
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export function isValidObservationId(id: string, eventId: string): boolean {
+  if (UUID_V4_PATTERN.test(id)) return true;
+  if (id.startsWith('v2:')) return id === `v2:${eventId}`;
+  return false;
+}
+
+/** R3-4：新写 observation id 只接受小写 UUID v4（v2:<eventId> 仅限迁移回填读取）。 */
+export function isValidNewObservationId(id: string): boolean {
+  return UUID_V4_PATTERN.test(id);
 }
 
 export interface WatchRunRow {
@@ -943,11 +1003,22 @@ function isCanonicalConditionalResponseMetadata(raw: unknown): boolean {
   }
   const httpStatus = raw['httpStatus'];
   if (httpStatus !== 200 && httpStatus !== 304) return false;
-  for (const field of ['etag', 'lastModified'] as const) {
-    const v = raw[field];
-    if (v !== null && typeof v !== 'string') return false;
+  const etag = raw['etag'];
+  const lastModified = raw['lastModified'];
+  if (etag !== null && typeof etag !== 'string') return false;
+  if (lastModified !== null && typeof lastModified !== 'string') return false;
+  // R3-1：单字段 UTF-8 字节预算（多字节以实际 bytes 判定）
+  if (etag !== null && utf8ByteLength(etag) > MAX_CONDITIONAL_FIELD_BYTES) return false;
+  if (lastModified !== null && utf8ByteLength(lastModified) > MAX_CONDITIONAL_FIELD_BYTES) {
+    return false;
   }
-  return isCanonicalOrderedStrings(raw['warnings'], HTTP_WARNING_ORDER);
+  if (!isCanonicalOrderedStrings(raw['warnings'], HTTP_WARNING_ORDER)) return false;
+  // R3-1：warning/字段矛盾拒绝——声明 oversize 时对应字段必须为 null；
+  // 非 null 合法字段不得同时声明对应 oversize warning（服务器缺省头部 null+无 warning 合法）。
+  const warnings = raw['warnings'] as readonly string[];
+  if (warnings.includes('etag-oversize') && etag !== null) return false;
+  if (warnings.includes('last-modified-oversize') && lastModified !== null) return false;
+  return true;
 }
 
 /**
@@ -987,6 +1058,11 @@ export function validateRunResponseMetadataJson(json: string | null): {
   }
   if (!isCanonicalOrderedStrings(parsed['conditionWarnings'], CONDITION_WARNING_ORDER)) {
     return { ok: false, reason: 'Run response metadata conditionWarnings 非法' };
+  }
+  // R3-1：canonical 编码——重编码必须逐字节等于原始 JSON（拒绝空白/键重排/数字
+  // 表示变体等一切非 canonical 编码；键序已由 exact-key 顺序保证，此处兜底正文）。
+  if (JSON.stringify(parsed) !== json) {
+    return { ok: false, reason: 'Run response metadata 非 canonical 编码' };
   }
   return { ok: true, reason: null };
 }

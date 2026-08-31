@@ -541,7 +541,8 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
           eventKind,
           lastObservedAt: observedAt,
           newItemCount: latest.itemCount + pairs.length,
-          observationId: `c-${randomUUID()}`,
+          // R3-4：coalesce observation 使用 Node randomUUID() 小写 UUID v4（无 c- 前缀）
+          observationId: randomUUID(),
           idempotencyKey,
           changeFingerprint,
           items: pairs,

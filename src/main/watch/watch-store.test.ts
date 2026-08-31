@@ -85,6 +85,11 @@ function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
 
 const OK_RECONCILE = (): { ok: boolean; reason: string | null } => ({ ok: true, reason: null });
 
+/** R3-2：canonical WatchRunResponseMetadata（finished Run 必填）。 */
+function metaJson(): string {
+  return JSON.stringify({ schemaVersion: 1, http: null, conditionWarnings: [] });
+}
+
 describe('装配矩阵（§10.2 八步）', () => {
   it('新库正常创建：无备份文件、normal + schedulerReady', () => {
     const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
@@ -211,7 +216,11 @@ describe('装配矩阵（§10.2 八步）', () => {
       trigger: 'manual',
       scheduledFor: null,
     });
-    repo.transitionRun('run3', 'queued', { status: 'finished', finishedAt: NOW });
+    repo.transitionRun('run3', 'queued', {
+      status: 'finished',
+      finishedAt: NOW,
+      responseMetadataJson: metaJson(),
+    });
     repo.dispose();
     outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
     expect(outcome.mode).toBe('normal');

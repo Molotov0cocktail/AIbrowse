@@ -308,7 +308,8 @@ export const WATCH_MIGRATION_V3: MigrationStep = {
     'DROP TABLE watch_audits',
     'ALTER TABLE watch_audits_v3 RENAME TO watch_audits',
     'CREATE INDEX idx_watch_audits_rule ON watch_audits(rule_id)',
-    // 2. watch_baselines 重建（追加两列 nullable 条件 validator；v2 原列恒等、新列 null）
+    // 2. watch_baselines 重建（追加两列 nullable 条件 validator；v2 原列恒等、新列 null；
+    //    R3-3 纵深：非 null validator BLOB 字节 ≤1024、projection_type='page' 两列恒 null）
     `CREATE TABLE watch_baselines_v3 (
   rule_id TEXT PRIMARY KEY REFERENCES watch_rules(id) ON DELETE CASCADE,
   version INTEGER NOT NULL CHECK (version >= 1),
@@ -319,8 +320,9 @@ export const WATCH_MIGRATION_V3: MigrationStep = {
   final_url TEXT NOT NULL,
   captured_at TEXT NOT NULL,
   document_id TEXT,
-  conditional_etag TEXT,
-  conditional_last_modified TEXT
+  conditional_etag TEXT CHECK (conditional_etag IS NULL OR length(CAST(conditional_etag AS BLOB)) <= 1024),
+  conditional_last_modified TEXT CHECK (conditional_last_modified IS NULL OR length(CAST(conditional_last_modified AS BLOB)) <= 1024),
+  CHECK (projection_type != 'page' OR (conditional_etag IS NULL AND conditional_last_modified IS NULL))
 )`,
     `INSERT INTO watch_baselines_v3 (rule_id, version, projection_type, projection_json,
   content_hash, byte_length, final_url, captured_at, document_id)
