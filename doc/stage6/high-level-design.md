@@ -34,8 +34,9 @@ Watch UI
        → FeedParser / DocumentChannelBuilder / PageProjector
        → DiffEngine / ConditionEngine / EventValidator
        → WatchRepository（watch.db 唯一业务 SQL 点）
+  → DigestScheduler（只向 DigestService 提交 scheduleId/logicalDate，不持有 DB/Provider）
   → DigestService
-       → WatchQueryService / SourceService sharing projection / LLMProvider
+       → WatchRepository observation journal / SourceService sharing projection / LLMProvider
   → NotificationService
        → InAppNotificationSink / WindowsNotificationSink（feature-gated）
   → WatchExportService
@@ -46,20 +47,22 @@ Watch UI
 
 ## 2. 关键技术决策
 
-| 主题     | 选择                                                        | 被否决方案与理由                                                             |
-| -------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| 后台边界 | 仅应用进程运行时                                            | 托盘/系统任务/服务扩大安装、更新、凭据与单实例边界                           |
-| 存储     | 独立 `watch.db`                                             | `sources.db` 会污染 journal/backup；`research.db` 生命周期错误               |
-| 网络     | 公网 Node 核心客户端 + 明确 Session 页面读取                | 自动 Session/回退不可审计；普通 fetch 预解析无法充分约束连接时 DNS           |
-| XML      | `@federicocarboni/saxe@0.8.0` 候选 + D3 资格门              | `saxes` 已归档；`fast-xml-parser` 面更宽且近期实体安全修复频繁               |
-| HTML     | `parse5-sax-parser@8.0.0` + `parse5@8.0.1` 候选 + D3 资格门 | 隔离 Chromium 会执行脚本/子资源并扩大 SSRF；共享 Session 会泄露公开/登录边界 |
-| 页面范围 | 用户确认命名 Region                                         | 整页默认噪声高；AI 自动选区不确定                                            |
-| Diff     | 来源类型专属确定性算法                                      | 通用文本/AI equality 无法给出稳定 oracle                                     |
-| Evidence | 持久化有界 old/new 投影                                     | 哈希不可解释；正文/HTML 隐私与容量风险高                                     |
-| 条件     | 闭合确定性白名单                                            | AI/regex/script 触发不可复现且扩大攻击面                                     |
-| Digest   | 程序事实 + 可选 AI 解释                                     | AI 自选事件会改变事实层与成本                                                |
-| Group    | 创建/编辑时解析为明确成员                                   | 动态成员会静默扩大联网授权                                                   |
-| 通知     | 应用内必达，Windows 条件式                                  | 开发态通知不能证明打包身份可用                                               |
+| 主题          | 选择                                                         | 被否决方案与理由                                                             |
+| ------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| 后台边界      | 仅应用进程运行时                                             | 托盘/系统任务/服务扩大安装、更新、凭据与单实例边界                           |
+| 存储          | 独立 `watch.db`                                              | `sources.db` 会污染 journal/backup；`research.db` 生命周期错误               |
+| 网络          | 公网 Node 核心客户端 + 明确 Session 页面读取                 | 自动 Session/回退不可审计；普通 fetch 预解析无法充分约束连接时 DNS           |
+| XML           | `@federicocarboni/saxe@0.8.0` 候选 + D3 资格门               | `saxes` 已归档；`fast-xml-parser` 面更宽且近期实体安全修复频繁               |
+| HTML          | `parse5-sax-parser@8.0.0` + `parse5@8.0.1` 候选 + D3 资格门  | 隔离 Chromium 会执行脚本/子资源并扩大 SSRF；共享 Session 会泄露公开/登录边界 |
+| 页面范围      | 用户确认命名 Region                                          | 整页默认噪声高；AI 自动选区不确定                                            |
+| Diff          | 来源类型专属确定性算法                                       | 通用文本/AI equality 无法给出稳定 oracle                                     |
+| Evidence      | 持久化有界 old/new 投影                                      | 哈希不可解释；正文/HTML 隐私与容量风险高                                     |
+| 条件          | 闭合确定性白名单                                             | AI/regex/script 触发不可复现且扩大攻击面                                     |
+| Digest        | 程序事实 + 可选 AI 解释                                      | AI 自选事件会改变事实层与成本                                                |
+| Digest cursor | observation 事务内单调 journal sequence + frozen cycle upper | Event 时间字段可变，late coalesce 会被旧 cursor 吞掉                         |
+| Provider 重入 | artifact 先提交、持久化 claim 后 at-most-once 调用           | 崩溃后重试无法证明不重复调用/计费；调用后才记 attempt 有不可审计窗口         |
+| Group         | 创建/编辑时解析为明确成员                                    | 动态成员会静默扩大联网授权                                                   |
+| 通知          | 应用内必达，Windows 条件式                                   | 开发态通知不能证明打包身份可用                                               |
 
 ## 3. 模块职责
 
@@ -118,9 +121,13 @@ Chromium Session，但每 attempt 都创建、验证、读取并 finally 关闭�
 
 作为 SourceService 内部 prepare/commit/abort 装配端口接收全部写路径的窄 before/after projection，不改变 SourceService 对 renderer/Agent 的公共语义。`Source.version` 仅是行版本；Watch 用 scope/canonicalKey/目标 URL 的独立 locator fingerprint 判断恢复或重建。每次运行仍做 SourceService revalidation，作为跨库崩溃纵深防线。
 
-### 3.12 DigestService
+### 3.12 DigestScheduler / DigestService
 
-根据明确 DigestSchedule 游标选事件；程序生成来源、时间、状态、EvidenceMap 和确定性摘要。分享模式决定模型投影；模型只能返回引用事件 ID 的解释草案，验证失败即降级。
+DigestScheduler 只持有 Clock/TimeZoneResolver、due heap/timer，提交 scheduleId/logicalDate，不持有 DB、Source
+或 Provider。DigestService 以 observation 事务内单调 journal sequence 作正式 cursor，reservation 冻结 cycle
+上下界并按 artifact 原子推进；late coalesce 获得新 sequence，不能被已消费 Event 行吞掉。程序生成来源、时间、
+状态、EvidenceMap 和确定性摘要；分享模式在 prompt 前投影。Provider 必须先持久化 claim 再最多调用一次，模型
+只能返回引用当前可见 Event ID 的 canonical 解释草案，验证失败或崩溃即保留 facts、丢弃解释。
 
 ### 3.13 NotificationService / ExportService
 
@@ -181,14 +188,17 @@ Clock 到期/启动 catch-up/手动检查
 
 ```text
 DigestSchedule 到期
-→ 固定成员 + 独立游标查询新 Event/失败统计
+→ DigestScheduler 提交 scheduleId/logicalDate
+→ reservation 冻结 observation journal lower/upper sequence、期间与运行统计
+→ 固定成员按 sequence 查询新 observation，并在 artifact 内聚合 Event slice
 → 无 Event：更新 lastChecked，不建空 Digest、不调模型
 → 程序构造 DigestFacts/EvidenceMap
 → SourceService sharing projection
-→ 可选 LLMProvider（一次、有界）
+→ artifact/ref/cursor 原子提交
+→ 可选 LLMProvider（先 claim、每 artifact 最多一次、有界）
 → ResultValidator 校验 event refs/白名单/预算
-→ 持久化 deterministic result + 可选 explanation
-→ 通知
+→ CAS facts revision 后持久化可选 explanation
+→ D9 消费已提交结果并负责通知
 ```
 
 ### 4.5 Source 生命周期
@@ -210,6 +220,8 @@ watch.db     Rule / Baseline / Run / Event / Evidence / Digest / cleanup intent
 - 全库 100 MiB；Baseline 64 KiB；Event 双侧 Evidence 合计 32 KiB；Digest 64 KiB。
 - 原始 HTTP body、HTML、完整 PageSnapshot、Cookie、凭据、模型 transcript 零落盘。
 - 清理按事件时间/ID 确定性全序，Digest 对过期/删除证据诚实显示状态。
+- Digest 以无正文 observation journal sequence 处理 late coalesce；daily cycle 保存冻结上下界/恢复 cursor，
+  Event 过期/删除与 facts Evidence/相关解释 scrub 同事务。Provider claim 状态持久化，崩溃后不重试。
 - `watch.db` v1 本地明文，UI/文档必须披露；不宣称静态加密。
 
 ## 6. 安全模型摘要
