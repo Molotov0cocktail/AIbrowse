@@ -13,6 +13,7 @@ import { SourceServiceImpl } from './sources/source-service';
 import { runWatchMigrations } from './watch/db/watch-migrations';
 import { DigestService } from './watch/digest-service';
 import { WatchRepository } from './watch/repository/watch-repository';
+import { recoverAndStartWatchRuntime } from './watch/watch-store';
 
 function assertDigest(value: unknown, message: string): asserts value {
   if (!value) throw new Error(`D8 Digest 冒烟失败：${message}`);
@@ -54,6 +55,10 @@ export async function runWatchDigestSmokeScenario(): Promise<void> {
       provider: { resolve: async () => ({ provider: fake, model: 'fake' }) },
       membership: {
         resolve: async (selector) => sources.resolveDigestMembership(selector),
+      },
+      scheduleControl: {
+        upsert: () => undefined,
+        remove: () => undefined,
       },
     });
     assertDigest(
@@ -161,6 +166,56 @@ export async function runWatchDigestSmokeScenario(): Promise<void> {
     assertDigest(
       !JSON.stringify(fake.getLastRequest()).includes('DIGEST_SMOKE_NOTE_CANARY'),
       'ProviderRequest note canary 零字节',
+    );
+
+    // 产品 index.ts 使用的同一恢复闸门：受控失败必须在 bind/publish/start 前
+    // fail-closed，且关闭 repo。该场景随默认 dev/production smoke 实际执行。
+    const startupHandle = openDb(join(dir, 'watch-startup-failure.db'));
+    runWatchMigrations(startupHandle);
+    const startupRepo = new WatchRepository(startupHandle);
+    let watchStarts = 0;
+    let digestStarts = 0;
+    let published = false;
+    let unavailable = false;
+    const startup = await recoverAndStartWatchRuntime({
+      repo: startupRepo,
+      digest: {
+        resumeActiveCycles: async () => {
+          throw new Error('controlled startup recovery failure');
+        },
+        stopAdmission: () => undefined,
+        abort: () => undefined,
+        drain: async () => undefined,
+      },
+      digestScheduler: {
+        initialize: () => {
+          digestStarts += 1;
+        },
+        stop: () => undefined,
+      },
+      watchScheduler: { stop: () => undefined },
+      runCoordinator: {
+        start: () => {
+          watchStarts += 1;
+        },
+        stop: async () => undefined,
+      },
+      lifecycle: {
+        bind: () => undefined,
+        markUnavailable: () => {
+          unavailable = true;
+        },
+      },
+      publish: () => {
+        published = true;
+      },
+      unpublish: () => {
+        published = false;
+      },
+    });
+    assertDigest(
+      !startup.ok && watchStarts === 0 && digestStarts === 0 && !published && unavailable,
+      '启动恢复失败时整个 Store fail-closed',
     );
   } finally {
     repo.dispose();

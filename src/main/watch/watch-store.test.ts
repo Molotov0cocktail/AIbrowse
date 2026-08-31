@@ -27,6 +27,7 @@ import { runWatchMigrations } from './db/watch-migrations';
 import {
   openWatchStore,
   pruneWatchBackups,
+  recoverAndStartWatchRuntime,
   restoreWatchStore,
   WATCH_BACKUP_NAME_PATTERN,
 } from './watch-store';
@@ -84,6 +85,102 @@ function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
 }
 
 const OK_RECONCILE = (): { ok: boolean; reason: string | null } => ({ ok: true, reason: null });
+
+describe('D8 产品启动恢复闸门', () => {
+  it('恢复失败时不启动/不发布两类 Scheduler，Store 与 observer fail-closed', async () => {
+    const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('normal');
+    if (outcome.mode !== 'normal') return;
+    let watchStarts = 0;
+    let digestInitializes = 0;
+    let published = false;
+    let unavailable = false;
+    let admissionStopped = false;
+    const result = await recoverAndStartWatchRuntime({
+      repo: outcome.repo,
+      digest: {
+        resumeActiveCycles: async () => {
+          throw new Error('controlled recovery failure');
+        },
+        stopAdmission: () => {
+          admissionStopped = true;
+        },
+        abort: () => undefined,
+        drain: async () => undefined,
+      },
+      digestScheduler: {
+        initialize: () => {
+          digestInitializes += 1;
+        },
+        stop: () => undefined,
+      },
+      watchScheduler: { stop: () => undefined },
+      runCoordinator: {
+        start: () => {
+          watchStarts += 1;
+        },
+        stop: async () => undefined,
+      },
+      lifecycle: {
+        bind: () => undefined,
+        markUnavailable: () => {
+          unavailable = true;
+        },
+      },
+      publish: () => {
+        published = true;
+      },
+      unpublish: () => {
+        published = false;
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect({ watchStarts, digestInitializes, published, unavailable, admissionStopped }).toEqual({
+      watchStarts: 0,
+      digestInitializes: 0,
+      published: false,
+      unavailable: true,
+      admissionStopped: true,
+    });
+    expect(() => outcome.repo.listRules()).toThrow();
+  });
+
+  it('恢复完成后才 bind/publish，并且两类 Scheduler 各启动一次', async () => {
+    const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('normal');
+    if (outcome.mode !== 'normal') return;
+    const order: string[] = [];
+    const result = await recoverAndStartWatchRuntime({
+      repo: outcome.repo,
+      digest: {
+        resumeActiveCycles: async () => {
+          order.push('resume');
+        },
+        stopAdmission: () => undefined,
+        abort: () => undefined,
+        drain: async () => undefined,
+      },
+      digestScheduler: {
+        initialize: () => order.push('digest-start'),
+        stop: () => undefined,
+      },
+      watchScheduler: { stop: () => undefined },
+      runCoordinator: {
+        start: () => order.push('watch-start'),
+        stop: async () => undefined,
+      },
+      lifecycle: {
+        bind: () => order.push('bind'),
+        markUnavailable: () => undefined,
+      },
+      publish: () => order.push('publish'),
+      unpublish: () => undefined,
+    });
+    expect(result).toEqual({ ok: true });
+    expect(order).toEqual(['resume', 'bind', 'publish', 'watch-start', 'digest-start']);
+    outcome.repo.dispose();
+  });
+});
 
 /** R3-2：canonical WatchRunResponseMetadata（finished Run 必填）。 */
 function metaJson(): string {

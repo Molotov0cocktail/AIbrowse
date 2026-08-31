@@ -33,7 +33,12 @@ import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
 // Sixth Stage D4：Watch 存储/生命周期装配（observer 恒 active + 延迟端口绑定 +
 // AIBROWSE_WATCH_SMOKE 跨进程门控 + 8.21 store 冒烟）。
-import { openWatchStore, sanitizeWatchError, type WatchStoreOutcome } from './watch/watch-store';
+import {
+  openWatchStore,
+  recoverAndStartWatchRuntime,
+  sanitizeWatchError,
+  type WatchStoreOutcome,
+} from './watch/watch-store';
 import {
   WatchLifecycleCoordinator,
   type SourceProjectionReader,
@@ -368,7 +373,7 @@ if (!gotLock) {
     }, 30_000);
   }
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     // C9（决议 #169 + 恢复校准）：LIVE_RESEARCH 门控失败 → 在装配前明确退出
     // （请求标志独立读取——缺 SMOKE/LIVE_PROVIDER/非法值/与既有门控冲突一律
     // 明确失败，不静默选路；此时尚无临时目录/DB/子进程，失败路径零残留）
@@ -382,10 +387,10 @@ if (!gotLock) {
       'main',
       `日志文件目录：${app.isPackaged ? app.getPath('userData') : app.getAppPath()}/log`,
     );
-    createBrowserWindow();
+    await createBrowserWindow();
     app.on('activate', () => {
       // macOS 惯例：点击 Dock 图标且无窗口时重建窗口（当前目标平台为 Windows，保留兼容）
-      if (BrowserWindow.getAllWindows().length === 0) createBrowserWindow();
+      if (BrowserWindow.getAllWindows().length === 0) void createBrowserWindow();
     });
   });
 
@@ -1137,7 +1142,7 @@ if (!gotLock) {
   }
 }
 
-function createBrowserWindow(): void {
+async function createBrowserWindow(): Promise<void> {
   const win = createMainWindow();
   mainWindow = win;
   const controller = new BrowserControllerImpl({
@@ -1375,8 +1380,6 @@ function createBrowserWindow(): void {
         reconcile: (repo) => watchCoordinator!.reconcileOnStartup(repo, sourceProjectionReader),
       });
       if (watchOutcome.mode === 'normal') {
-        watchRepo = watchOutcome.repo;
-        watchCoordinator!.bind(watchOutcome.repo, sourceProjectionReader);
         // D5（FIXED DECISIONS 10）：watchOutcome normal + schedulerReady + Sources
         // normal + 协调器已 bind → 构造单例 HostRequestGate + Coordinator +
         // Scheduler 并 start。acquisition port 以确定性 fail-closed stub
@@ -1386,7 +1389,6 @@ function createBrowserWindow(): void {
         // 误判 unchanged 丢弃）。默认无 Rule → 零 timer 新增行为。
         const watchClock = createSystemClock();
         const hostGate = new HostRequestGate({ clock: watchClock });
-        watchHostGate = hostGate;
         // D7：统一 acquisition 端口（Feed/Page 路由）与 processing service。
         // browserController 可用时装配真实网络/Session 能力；否则 fail-closed stub
         //（dependency_unavailable，零网络零能力）。
@@ -1454,7 +1456,6 @@ function createBrowserWindow(): void {
             watchRunCoordinator?.handleDue(entries);
           },
         });
-        watchScheduler = scheduler;
         const coordinator = new WatchRunCoordinator({
           repo: watchOutcome.repo,
           revalidator: watchCoordinator!,
@@ -1464,13 +1465,19 @@ function createBrowserWindow(): void {
           scheduler,
           clock: watchClock,
         });
-        watchRunCoordinator = coordinator;
-        coordinator.start();
         // DigestScheduler owns only Clock/timer capabilities. Repository, Source,
         // and Provider access stays in DigestService. Recover frozen cycles first.
         const sourceDigestProvider = sourceService as SourceService &
           DigestSharingProjectionProvider &
           DigestMembershipProjectionProvider;
+        const digestHolder: { current: DigestService | null } = { current: null };
+        const digestDue = new DigestScheduler(watchClock, (entry) => {
+          const current = digestHolder.current;
+          if (current === null) return;
+          void current
+            .handleDue(entry)
+            .catch(() => logWarn('watch', 'Digest due 执行失败（保留 frozen cycle）'));
+        });
         const digest = new DigestService({
           repository: watchOutcome.repo,
           clock: watchClock,
@@ -1492,37 +1499,42 @@ function createBrowserWindow(): void {
           membership: {
             resolve: async (selector) => sourceDigestProvider.resolveDigestMembership(selector),
           },
+          scheduleControl: digestDue,
         });
+        digestHolder.current = digest;
+        // 启动恢复期间只发布关闭控制句柄，不发布 repo/coordinator 正常入口；
+        // before-quit 可据此 stop-admission/abort/drain，避免恢复竞态产生新 claim。
         digestService = digest;
-        const digestDue = new DigestScheduler(watchClock, (entry) => {
-          void digest
-            .handleDue(entry)
-            .then((result) => {
-              if (!result.ok || result.nextDueAt === null) return;
-              const current = watchOutcome.repo.getDigestSchedule(entry.scheduleId);
-              if (current !== null && current.state === 'active') {
-                digestDue.upsert({
-                  scheduleId: current.id,
-                  expectedNextDueAt: current.nextDueAt,
-                  timeZone: current.timeZone,
-                });
-              }
-            })
-            .catch(() => logWarn('watch', 'Digest due 执行失败（保留 frozen cycle）'));
-        });
         digestScheduler = digestDue;
-        void digest
-          .resumeActiveCycles()
-          .then(() => {
-            digestDue.initialize(
-              watchOutcome.repo.listActiveDigestSchedules().map((schedule) => ({
-                scheduleId: schedule.id,
-                expectedNextDueAt: schedule.nextDueAt,
-                timeZone: schedule.timeZone,
-              })),
-            );
-          })
-          .catch(() => logWarn('watch', 'Digest cycle 恢复失败（Scheduler 不启动）'));
+        const started = await recoverAndStartWatchRuntime({
+          repo: watchOutcome.repo,
+          digest,
+          digestScheduler: digestDue,
+          watchScheduler: scheduler,
+          runCoordinator: coordinator,
+          lifecycle: {
+            bind: (repo) => watchCoordinator!.bind(repo, sourceProjectionReader),
+            markUnavailable: (reason) => watchCoordinator!.markUnavailable(reason),
+          },
+          publish: () => {
+            watchRepo = watchOutcome.repo;
+            watchHostGate = hostGate;
+            watchScheduler = scheduler;
+            watchRunCoordinator = coordinator;
+          },
+          unpublish: () => {
+            watchRepo = null;
+            watchHostGate = null;
+            watchScheduler = null;
+            watchRunCoordinator = null;
+          },
+          shuttingDown: () => watchShutdownStarted,
+        });
+        if (!started.ok) {
+          digestService = null;
+          digestScheduler = null;
+          throw new Error(started.reason);
+        }
         // 日志隐私（§13）：不记录 watch.db/userData 绝对路径
         logInfo(
           'main',

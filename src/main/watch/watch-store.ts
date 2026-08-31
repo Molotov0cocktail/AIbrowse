@@ -49,6 +49,107 @@ export type WatchStoreOutcome =
   | { mode: 'normal'; repo: WatchRepository; schedulerReady: true; reason: null }
   | { mode: 'unavailable'; repo: null; schedulerReady: false; reason: string };
 
+export interface RecoveredWatchRuntimePorts {
+  repo: WatchRepository;
+  digest: {
+    resumeActiveCycles(): Promise<void>;
+    stopAdmission(): void;
+    abort(): void;
+    drain(): Promise<void>;
+  };
+  digestScheduler: {
+    initialize(
+      entries: readonly { scheduleId: string; expectedNextDueAt: string; timeZone: string }[],
+    ): void;
+    stop(): void;
+  };
+  watchScheduler: { stop(): void };
+  runCoordinator: { start(): void; stop(): Promise<void> };
+  lifecycle: {
+    bind(repo: WatchRepository): void;
+    markUnavailable(reason?: string): void;
+  };
+  publish(): void;
+  unpublish(): void;
+  shuttingDown?: () => boolean;
+}
+
+// 产品装配唯一的异步恢复闸门：正常 repo 在本函数返回 ok 前不得发布给产品入口。
+// 失败时两类 Scheduler 均未启动或已停止，Digest admission 已关闭并排水，
+// Source observer/Coordinator 进入 unavailable，repo 句柄关闭。
+export async function recoverAndStartWatchRuntime(
+  ports: RecoveredWatchRuntimePorts,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    await ports.digest.resumeActiveCycles();
+    if (ports.shuttingDown?.() === true) throw new Error('启动恢复期间收到关闭请求');
+    ports.lifecycle.bind(ports.repo);
+    ports.publish();
+    ports.runCoordinator.start();
+    ports.digestScheduler.initialize(
+      ports.repo
+        .listActiveDigestSchedules()
+        .filter(
+          (schedule) =>
+            ports.repo.getNonterminalDigestRun(schedule.id)?.state !== 'budget_exceeded',
+        )
+        .map((schedule) => ({
+          scheduleId: schedule.id,
+          expectedNextDueAt: schedule.nextDueAt,
+          timeZone: schedule.timeZone,
+        })),
+    );
+    return { ok: true };
+  } catch {
+    try {
+      ports.unpublish();
+    } catch {
+      // 继续执行 fail-closed 清理
+    }
+    try {
+      ports.digest.stopAdmission();
+    } catch {
+      // 继续执行 fail-closed 清理
+    }
+    try {
+      ports.digest.abort();
+    } catch {
+      // 继续执行 fail-closed 清理
+    }
+    try {
+      await ports.digest.drain();
+    } catch {
+      // 继续执行 fail-closed 清理
+    }
+    try {
+      ports.digestScheduler.stop();
+    } catch {
+      // 继续执行 fail-closed 清理
+    }
+    try {
+      ports.watchScheduler.stop();
+    } catch {
+      // 继续执行 fail-closed 清理
+    }
+    try {
+      await ports.runCoordinator.stop();
+    } catch {
+      // 继续执行 fail-closed 清理
+    }
+    try {
+      ports.lifecycle.markUnavailable('Digest cycle 启动恢复失败');
+    } catch {
+      // observer 入口仍未发布，保持 fail-closed
+    }
+    try {
+      ports.repo.dispose();
+    } catch {
+      // repo 已不再发布；关闭失败不恢复正常入口
+    }
+    return { ok: false, reason: 'Digest cycle 启动恢复失败' };
+  }
+}
+
 // Watch 独立严格命名（FIXED DECISION 10）：与 Sources 备份命名互不匹配
 export const WATCH_BACKUP_NAME_PATTERN = buildBackupNamePattern('watch-backup-');
 
@@ -90,9 +191,8 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
         return unavailable('监控数据库初始化失败（详见日志）');
       }
       const outcome = assembleNormal(handle, nowMs, latestVersion, '新库', options);
-      if (outcome.mode === 'normal') {
-        logInfo('watch', `Watch 子系统就绪（新库，schema v${latestVersion}）`);
-      }
+      if (outcome.mode === 'normal')
+        logInfo('watch', `Watch Store 已校验（新库，schema v${latestVersion}）`);
       return outcome;
     } catch (err) {
       logError('watch', 'Watch 新库创建失败（无法创建数据库）', sanitizeWatchError(err));
@@ -159,9 +259,8 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
     closeDb(handle);
     handle = openWatchDb(options.dbPath);
     const outcome = assembleNormal(handle, nowMs, latestVersion, '迁移完成', options);
-    if (outcome.mode === 'normal') {
-      logInfo('watch', `Watch 子系统就绪（v${currentVersion} → v${latestVersion} 迁移完成）`);
-    }
+    if (outcome.mode === 'normal')
+      logInfo('watch', `Watch Store 已校验（v${currentVersion} → v${latestVersion} 迁移完成）`);
     return outcome;
   } catch (err) {
     if (handle !== null) closeDb(handle);
@@ -273,7 +372,7 @@ function assembleNormal(
     }
     // 备份保留清理（最佳努力——失败不阻塞启动，同 Sources tryPrune 纪律）
     pruneWatchBackups(options.backupsDir, dirname(options.dbPath), nowMs());
-    logInfo('watch', `Watch 子系统就绪（${label}，schema v${latestVersion}）`);
+    logInfo('watch', `Watch Store 同步校验完成（${label}，schema v${latestVersion}）`);
     return { mode: 'normal', repo, schedulerReady: true, reason: null };
   } catch (err) {
     logError('watch', 'Watch 正常装配失败（句柄已关闭）', sanitizeWatchError(err));

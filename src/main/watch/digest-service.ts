@@ -34,12 +34,18 @@ export interface DigestProviderPort {
   resolve(): Promise<{ provider: LLMProvider; model: string } | null>;
 }
 
+export interface DigestScheduleControlPort {
+  upsert(entry: { scheduleId: string; expectedNextDueAt: string; timeZone: string }): void;
+  remove(scheduleId: string): void;
+}
+
 export interface DigestServiceOptions {
   repository: WatchRepository;
   clock: Clock;
   sharing: DigestSharingPort;
   provider: DigestProviderPort;
   membership?: DigestMembershipPort;
+  scheduleControl: DigestScheduleControlPort;
 }
 
 export interface DigestScheduleQueryDto {
@@ -80,17 +86,20 @@ export class DigestService {
         lastLocalDate: null,
       });
       if (next === null) return { ok: false };
-      return {
-        ok: this.options.repository.createDigestSchedule({
-          id: input.id,
-          sourceIds,
-          localTime: input.localTime,
-          timeZone: input.timeZone,
-          aiEnabled: input.aiEnabled === true,
-          nextDueAt: next.instant.toISOString(),
-          nowIso: now.toISOString(),
-        }).ok,
-      };
+      const created = this.options.repository.createDigestSchedule({
+        id: input.id,
+        sourceIds,
+        localTime: input.localTime,
+        timeZone: input.timeZone,
+        aiEnabled: input.aiEnabled === true,
+        nextDueAt: next.instant.toISOString(),
+        nowIso: now.toISOString(),
+      });
+      if (!created.ok) return { ok: false };
+      const schedule = this.options.repository.getDigestSchedule(input.id);
+      if (schedule === null) return { ok: false };
+      this.upsertSchedule(schedule);
+      return { ok: true };
     });
   }
 
@@ -144,7 +153,9 @@ export class DigestService {
     }
     if (run.state === 'budget_exceeded') return { ok: false, nextDueAt: schedule.nextDueAt };
     const ok = await this.processRun(schedule, run);
-    return { ok, nextDueAt: schedule.nextDueAt };
+    const current = this.options.repository.getDigestSchedule(schedule.id);
+    if (ok && current !== null && current.state === 'active') this.upsertSchedule(current);
+    return { ok, nextDueAt: current?.nextDueAt ?? schedule.nextDueAt };
   }
 
   resumeActiveCycles(): Promise<void> {
@@ -161,7 +172,13 @@ export class DigestService {
         }
         if (run?.state === 'running') {
           const ok = await this.processRun(schedule, run);
-          if (!ok) throw new Error('Digest cycle 恢复失败');
+          if (!ok) {
+            const refreshed = this.options.repository.getDigestRun(run.id);
+            if (refreshed?.state !== 'budget_exceeded') {
+              throw new Error('Digest cycle 恢复失败');
+            }
+            this.options.scheduleControl.remove(schedule.id);
+          }
         }
       }
     });
@@ -169,11 +186,13 @@ export class DigestService {
 
   pause(id: string, expectedVersion: number): WatchResult {
     if (!this.accepting) return { ok: false, code: 'store-unavailable' };
-    return this.options.repository.pauseDigestSchedule(
+    const result = this.options.repository.pauseDigestSchedule(
       id,
       expectedVersion,
       this.options.clock.now().toISOString(),
     );
+    if (result.ok) this.options.scheduleControl.remove(id);
+    return result;
   }
 
   resume(id: string, expectedVersion: number): Promise<WatchResult> {
@@ -195,6 +214,7 @@ export class DigestService {
         );
         if (!retried.ok) return retried;
         if (retried.state === 'budget_exceeded') {
+          this.options.scheduleControl.remove(id);
           return { ok: false, code: 'db-budget-exceeded' };
         }
         run = this.options.repository.getDigestRun(run.id);
@@ -202,13 +222,21 @@ export class DigestService {
       if (run?.state === 'running' && !(await this.processRun(schedule, run))) {
         return { ok: false, code: 'store-unavailable' };
       }
+      const current = this.options.repository.getDigestSchedule(id);
+      if (current !== null && current.state === 'active') this.upsertSchedule(current);
       return { ok: true };
     });
   }
 
   delete(id: string, expectedVersion: number): WatchResult {
     if (!this.accepting) return { ok: false, code: 'store-unavailable' };
-    return this.options.repository.deleteDigestSchedule(id, expectedVersion);
+    this.options.scheduleControl.remove(id);
+    const result = this.options.repository.deleteDigestSchedule(id, expectedVersion);
+    if (!result.ok) {
+      const current = this.options.repository.getDigestSchedule(id);
+      if (current !== null && current.state === 'active') this.upsertSchedule(current);
+    }
+    return result;
   }
 
   retryBudget(runId: string): Promise<WatchResult> {
@@ -220,14 +248,17 @@ export class DigestService {
       );
       if (!retried.ok) return retried;
       if (retried.state === 'budget_exceeded') {
+        const blocked = this.options.repository.getDigestRun(runId);
+        if (blocked !== null) this.options.scheduleControl.remove(blocked.scheduleId);
         return { ok: false, code: 'db-budget-exceeded' };
       }
       const run = this.options.repository.getDigestRun(runId);
       const schedule = run && this.options.repository.getDigestSchedule(run.scheduleId);
       if (run === null || schedule === null) return { ok: false, code: 'store-unavailable' };
-      return (await this.processRun(schedule, run))
-        ? { ok: true }
-        : { ok: false, code: 'store-unavailable' };
+      if (!(await this.processRun(schedule, run))) return { ok: false, code: 'store-unavailable' };
+      const current = this.options.repository.getDigestSchedule(schedule.id);
+      if (current !== null && current.state === 'active') this.upsertSchedule(current);
+      return { ok: true };
     });
   }
 
@@ -542,5 +573,14 @@ export class DigestService {
       () => this.attempts.delete(operation),
     );
     return operation;
+  }
+
+  private upsertSchedule(schedule: StoredDigestSchedule): void {
+    if (!this.accepting) return;
+    this.options.scheduleControl.upsert({
+      scheduleId: schedule.id,
+      expectedNextDueAt: schedule.nextDueAt,
+      timeZone: schedule.timeZone,
+    });
   }
 }

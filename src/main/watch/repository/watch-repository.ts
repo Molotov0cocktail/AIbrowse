@@ -369,6 +369,12 @@ const SQL_SELECT_EVENTS_FOR_RULE_ORDERED = `SELECT id, first_observed_at, read_a
   ORDER BY (read_at IS NULL) ASC, first_observed_at ASC, id ASC`;
 const SQL_SELECT_OLDEST_EVENT_GLOBAL = `SELECT id FROM watch_events
   ORDER BY (read_at IS NULL) ASC, first_observed_at ASC, id ASC LIMIT 1`;
+const SQL_SELECT_OLDEST_SAFE_EVENT_GLOBAL = `SELECT e.id FROM watch_events e
+  WHERE COALESCE((SELECT MAX(j.sequence) FROM digest_change_journal j
+    WHERE j.event_id = e.id), 0) <= ?
+  ORDER BY (e.read_at IS NULL) ASC, e.first_observed_at ASC, e.id ASC LIMIT 1`;
+const SQL_SELECT_EVENT_MAX_CHANGE_SEQUENCE = `SELECT COALESCE(MAX(sequence), 0) AS sequence
+  FROM digest_change_journal WHERE event_id = ?`;
 const SQL_SELECT_EVENTS_BY_SOURCE = `SELECT e.id FROM watch_events e
   JOIN watch_rules r ON e.rule_id = r.id WHERE r.source_id = ?`;
 
@@ -3287,95 +3293,50 @@ export class WatchRepository {
     const schedule = this.getDigestSchedule(run.scheduleId);
     if (schedule === null) return { ok: false, code: 'store-unavailable' };
     if (schedule.state === 'paused') return { ok: true, state: 'budget_exceeded' };
-    const candidate = this.buildNextDigestBatchCandidate(run);
-    if (candidate === 'invalid') return { ok: false, code: 'store-unavailable' };
     const blockedAt = monotonicIso(nowIso, run.createdAt, run.blockedAt);
-    if (candidate === null) {
-      const changed = this.handle
-        .prepare(SQL_RETRY_DIGEST_RUN)
-        .run(run.id, Number.MAX_SAFE_INTEGER);
-      return Number(changed.changes) === 1
-        ? { ok: true, state: 'running' }
-        : { ok: false, code: 'run-state-conflict' };
-    }
-    const canonical = canonicalizeDigestFacts(candidate.facts);
-    if (!canonical.ok) return { ok: false, code: 'store-unavailable' };
-    const envelope = serializeDigestArtifact(canonical.json, null);
-    if (!envelope.withinBudget) return { ok: false, code: 'store-unavailable' };
     try {
       return withTransaction(this.handle, () => {
-        const beforeBytes = this.estimateLogicalBytesInternal();
-        const artifactId = randomUUID();
-        this.handle.exec('SAVEPOINT digest_retry_budget_probe');
-        let afterBytes: number;
-        try {
-          const retried = this.handle
-            .prepare(SQL_RETRY_DIGEST_RUN)
-            .run(run.id, Number.MAX_SAFE_INTEGER);
-          if (Number(retried.changes) !== 1) throw new TxnAbortError('run-state-conflict');
-          const batch = this.nextDigestBatchIndex(run.id);
-          this.handle
-            .prepare(SQL_INSERT_DIGEST)
-            .run(
-              artifactId,
-              run.scheduleId,
-              run.id,
-              batch,
-              run.nextSequence + 1,
-              candidate.lastSequence,
-              canonical.json,
-              canonical.hash,
-              envelope.byteLength,
-              schedule.aiEnabled ? 'pending' : 'disabled',
-              schedule.aiEnabled ? null : 'disabled',
-              schedule.aiEnabled ? null : blockedAt,
-              blockedAt,
-            );
-          for (const event of candidate.facts.events) {
-            this.handle.prepare(SQL_INSERT_DIGEST_REF).run(artifactId, event.eventId, 'active');
-          }
-          const runChanged = this.handle
-            .prepare(SQL_UPDATE_DIGEST_RUN_CURSOR)
-            .run(
-              candidate.lastSequence,
-              run.id,
-              run.scheduleId,
-              run.nextSequence,
-              candidate.lastSequence,
-            );
-          const scheduleChanged = this.handle
-            .prepare(SQL_UPDATE_DIGEST_SCHEDULE_CURSOR)
-            .run(
-              candidate.lastSequence,
-              monotonicIso(blockedAt, schedule.updatedAt),
-              schedule.id,
-              run.nextSequence,
-            );
-          if (Number(runChanged.changes) !== 1 || Number(scheduleChanged.changes) !== 1) {
+        this.pruneEventsByRuleLimitsForDigestWriteInternal(blockedAt);
+        for (;;) {
+          const currentRun = this.getDigestRun(run.id);
+          if (currentRun === null || currentRun.state !== 'budget_exceeded') {
             throw new TxnAbortError('run-state-conflict');
           }
-          afterBytes = this.estimateLogicalBytesInternal();
-        } finally {
-          this.handle.exec('ROLLBACK TO digest_retry_budget_probe');
-          this.handle.exec('RELEASE digest_retry_budget_probe');
+          const candidate = this.buildNextDigestBatchCandidate(currentRun);
+          if (candidate === 'invalid') throw new TxnAbortError('store-unavailable');
+          if (candidate === null) {
+            const changed = this.handle
+              .prepare(SQL_RETRY_DIGEST_RUN)
+              .run(currentRun.id, Number.MAX_SAFE_INTEGER);
+            if (Number(changed.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+            return { ok: true, state: 'running' as const };
+          }
+          const measured = this.measureDigestCandidateWriteSet({
+            run: currentRun,
+            schedule,
+            candidate,
+            artifactId: randomUUID(),
+            createdAt: blockedAt,
+            transitionFromBlocked: true,
+            savepoint: 'digest_retry_budget_probe',
+          });
+          if (measured.requiredBytes <= measured.availableBytes) {
+            const changed = this.handle
+              .prepare(SQL_RETRY_DIGEST_RUN)
+              .run(currentRun.id, Number.MAX_SAFE_INTEGER);
+            if (Number(changed.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+            return { ok: true, state: 'running' as const };
+          }
+          if (this.deleteOldestDigestSafeEventInternal(blockedAt)) continue;
+          const refreshed = this.handle
+            .prepare(SQL_REFRESH_DIGEST_RUN_BUDGET)
+            .run(blockedAt, measured.requiredBytes, measured.availableBytes, currentRun.id);
+          if (Number(refreshed.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+          return { ok: true, state: 'budget_exceeded' as const };
         }
-        const requiredBytes = Math.max(0, afterBytes - beforeBytes);
-        const availableBytes = Math.max(0, this.maxDbBytes - beforeBytes);
-        if (requiredBytes <= availableBytes) {
-          const changed = this.handle
-            .prepare(SQL_RETRY_DIGEST_RUN)
-            .run(run.id, Number.MAX_SAFE_INTEGER);
-          if (Number(changed.changes) !== 1) throw new TxnAbortError('run-state-conflict');
-          return { ok: true, state: 'running' as const };
-        }
-        const refreshed = this.handle
-          .prepare(SQL_REFRESH_DIGEST_RUN_BUDGET)
-          .run(blockedAt, requiredBytes, availableBytes, run.id);
-        if (Number(refreshed.changes) !== 1) throw new TxnAbortError('run-state-conflict');
-        return { ok: true, state: 'budget_exceeded' as const };
       });
-    } catch (err) {
-      return { ok: false, code: this.translate(err).code };
+    } catch {
+      return { ok: false, code: 'store-unavailable' };
     }
   }
 
@@ -3432,6 +3393,90 @@ export class WatchRepository {
       lastSequence = item.sequence;
     }
     return built === null ? null : { facts: built, lastSequence };
+  }
+
+  private measureDigestCandidateWriteSet(input: {
+    run: StoredDigestRun;
+    schedule: StoredDigestSchedule;
+    candidate: { facts: DigestFacts; lastSequence: number };
+    artifactId: string;
+    createdAt: string;
+    transitionFromBlocked: boolean;
+    savepoint: 'digest_retry_budget_probe' | 'digest_batch_budget_probe';
+  }): { requiredBytes: number; availableBytes: number } {
+    const canonical = canonicalizeDigestFacts(input.candidate.facts);
+    if (!canonical.ok) throw new TxnAbortError('store-unavailable');
+    const envelope = serializeDigestArtifact(canonical.json, null);
+    if (!envelope.withinBudget) throw new TxnAbortError('store-unavailable');
+    const beforeBytes = this.estimateLogicalBytesInternal();
+    if (input.savepoint === 'digest_retry_budget_probe') {
+      this.handle.exec('SAVEPOINT digest_retry_budget_probe');
+    } else {
+      this.handle.exec('SAVEPOINT digest_batch_budget_probe');
+    }
+    let afterBytes: number;
+    try {
+      if (input.transitionFromBlocked) {
+        const retried = this.handle
+          .prepare(SQL_RETRY_DIGEST_RUN)
+          .run(input.run.id, Number.MAX_SAFE_INTEGER);
+        if (Number(retried.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+      }
+      const batch = this.nextDigestBatchIndex(input.run.id);
+      this.handle
+        .prepare(SQL_INSERT_DIGEST)
+        .run(
+          input.artifactId,
+          input.run.scheduleId,
+          input.run.id,
+          batch,
+          input.run.nextSequence + 1,
+          input.candidate.lastSequence,
+          canonical.json,
+          canonical.hash,
+          envelope.byteLength,
+          input.schedule.aiEnabled ? 'pending' : 'disabled',
+          input.schedule.aiEnabled ? null : 'disabled',
+          input.schedule.aiEnabled ? null : input.createdAt,
+          input.createdAt,
+        );
+      for (const event of input.candidate.facts.events) {
+        this.handle.prepare(SQL_INSERT_DIGEST_REF).run(input.artifactId, event.eventId, 'active');
+      }
+      const runChanged = this.handle
+        .prepare(SQL_UPDATE_DIGEST_RUN_CURSOR)
+        .run(
+          input.candidate.lastSequence,
+          input.run.id,
+          input.run.scheduleId,
+          input.run.nextSequence,
+          input.candidate.lastSequence,
+        );
+      const scheduleChanged = this.handle
+        .prepare(SQL_UPDATE_DIGEST_SCHEDULE_CURSOR)
+        .run(
+          input.candidate.lastSequence,
+          monotonicIso(input.createdAt, input.schedule.updatedAt),
+          input.schedule.id,
+          input.run.nextSequence,
+        );
+      if (Number(runChanged.changes) !== 1 || Number(scheduleChanged.changes) !== 1) {
+        throw new TxnAbortError('run-state-conflict');
+      }
+      afterBytes = this.estimateLogicalBytesInternal();
+    } finally {
+      if (input.savepoint === 'digest_retry_budget_probe') {
+        this.handle.exec('ROLLBACK TO digest_retry_budget_probe');
+        this.handle.exec('RELEASE digest_retry_budget_probe');
+      } else {
+        this.handle.exec('ROLLBACK TO digest_batch_budget_probe');
+        this.handle.exec('RELEASE digest_batch_budget_probe');
+      }
+    }
+    return {
+      requiredBytes: Math.max(0, afterBytes - beforeBytes),
+      availableBytes: Math.max(0, this.maxDbBytes - beforeBytes),
+    };
   }
 
   reserveDigestRun(input: {
@@ -3695,26 +3740,67 @@ export class WatchRepository {
     try {
       return withTransaction(this.handle, () => {
         const schedule = this.getDigestSchedule(input.run.scheduleId);
-        if (schedule === null) throw new TxnAbortError('store-unavailable');
+        if (schedule === null || schedule.state !== 'active')
+          throw new TxnAbortError('store-unavailable');
         const auditNow = monotonicIso(input.createdAt, schedule.updatedAt);
-        const writeBatch = (): void => {
+        this.pruneEventsByRuleLimitsForDigestWriteInternal(auditNow);
+        for (;;) {
+          const currentRun = this.getDigestRun(input.run.id);
+          if (
+            currentRun === null ||
+            currentRun.state !== 'running' ||
+            currentRun.nextSequence !== input.expectedNextSequence
+          ) {
+            throw new TxnAbortError('run-state-conflict');
+          }
+          const candidate = this.buildNextDigestBatchCandidate(currentRun);
+          if (candidate === 'invalid' || candidate === null) {
+            throw new TxnAbortError('store-unavailable');
+          }
+          const measured = this.measureDigestCandidateWriteSet({
+            run: currentRun,
+            schedule,
+            candidate,
+            artifactId: input.artifactId,
+            createdAt: auditNow,
+            transitionFromBlocked: false,
+            savepoint: 'digest_batch_budget_probe',
+          });
+          if (measured.requiredBytes > measured.availableBytes) {
+            if (this.deleteOldestDigestSafeEventInternal(auditNow)) continue;
+            const blockedAt = monotonicIso(auditNow, currentRun.createdAt, currentRun.blockedAt);
+            const blocked = this.handle
+              .prepare(SQL_BLOCK_DIGEST_RUN)
+              .run(blockedAt, measured.requiredBytes, measured.availableBytes, currentRun.id);
+            if (Number(blocked.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+            return {
+              ok: false as const,
+              code: 'db-budget-exceeded' as const,
+              requiredBytes: measured.requiredBytes,
+              availableBytes: measured.availableBytes,
+            };
+          }
+          const nextCanonical = canonicalizeDigestFacts(candidate.facts);
+          if (!nextCanonical.ok) throw new TxnAbortError('store-unavailable');
+          const nextEnvelope = serializeDigestArtifact(nextCanonical.json, null);
+          if (!nextEnvelope.withinBudget) throw new TxnAbortError('store-unavailable');
           const batch = this.handle
             .prepare(SQL_SELECT_NEXT_DIGEST_BATCH_INDEX)
-            .get(input.run.id) as {
+            .get(currentRun.id) as {
             n: number;
           };
           this.handle
             .prepare(SQL_INSERT_DIGEST)
             .run(
               input.artifactId,
-              input.run.scheduleId,
-              input.run.id,
+              currentRun.scheduleId,
+              currentRun.id,
               batch.n,
-              input.firstSequence,
-              input.lastSequence,
-              canonical.json,
-              canonical.hash,
-              artifactEnvelope.byteLength,
+              currentRun.nextSequence + 1,
+              candidate.lastSequence,
+              nextCanonical.json,
+              nextCanonical.hash,
+              nextEnvelope.byteLength,
               providerState,
               providerCode,
               providerFinishedAt === null
@@ -3722,7 +3808,7 @@ export class WatchRepository {
                 : monotonicIso(providerFinishedAt, input.createdAt),
               input.createdAt,
             );
-          for (const event of input.facts.events) {
+          for (const event of candidate.facts.events) {
             this.handle
               .prepare(SQL_INSERT_DIGEST_REF)
               .run(input.artifactId, event.eventId, 'active');
@@ -3730,52 +3816,28 @@ export class WatchRepository {
           const runChanged = this.handle
             .prepare(SQL_UPDATE_DIGEST_RUN_CURSOR)
             .run(
-              input.lastSequence,
-              input.run.id,
-              input.run.scheduleId,
-              input.expectedNextSequence,
-              input.lastSequence,
+              candidate.lastSequence,
+              currentRun.id,
+              currentRun.scheduleId,
+              currentRun.nextSequence,
+              candidate.lastSequence,
             );
           const scheduleChanged = this.handle
             .prepare(SQL_UPDATE_DIGEST_SCHEDULE_CURSOR)
-            .run(input.lastSequence, auditNow, input.run.scheduleId, input.expectedNextSequence);
+            .run(candidate.lastSequence, auditNow, currentRun.scheduleId, currentRun.nextSequence);
           if (Number(runChanged.changes) !== 1 || Number(scheduleChanged.changes) !== 1) {
             throw new TxnAbortError('run-state-conflict');
           }
-        };
-
-        const beforeBytes = this.estimateLogicalBytesInternal();
-        this.handle.exec('SAVEPOINT digest_batch_budget_probe');
-        let afterBytes: number;
-        try {
-          writeBatch();
-          afterBytes = this.estimateLogicalBytesInternal();
-        } finally {
-          this.handle.exec('ROLLBACK TO digest_batch_budget_probe');
-          this.handle.exec('RELEASE digest_batch_budget_probe');
+          return { ok: true as const };
         }
-        const requiredBytes = Math.max(0, afterBytes - beforeBytes);
-        const availableBytes = Math.max(0, this.maxDbBytes - beforeBytes);
-        if (requiredBytes > availableBytes) {
-          const blockedAt = monotonicIso(input.createdAt, input.run.createdAt, input.run.blockedAt);
-          const blocked = this.handle
-            .prepare(SQL_BLOCK_DIGEST_RUN)
-            .run(blockedAt, requiredBytes, availableBytes, input.run.id);
-          if (Number(blocked.changes) !== 1) throw new TxnAbortError('run-state-conflict');
-          return {
-            ok: false,
-            code: 'db-budget-exceeded',
-            requiredBytes,
-            availableBytes,
-          };
-        }
-        writeBatch();
-        return { ok: true };
       });
     } catch (err) {
       return {
         ok: false,
-        code: err instanceof TxnAbortError ? err.code : this.translate(err).code,
+        code:
+          err instanceof TxnAbortError && err.code === 'run-state-conflict'
+            ? err.code
+            : 'store-unavailable',
       };
     }
   }
@@ -4543,6 +4605,76 @@ export class WatchRepository {
       .prepare(SQL_INSERT_DIGEST_CHANGE)
       .run(sequence, observationId, eventId, sourceId, observedAt);
     return sequence;
+  }
+
+  private digestSafeWatermarkInternal(): number {
+    const row = this.handle.prepare(SQL_DIGEST_SAFE_WATERMARK).get() as
+      { sequence: number | bigint } | undefined;
+    const sequence = Number(row?.sequence);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new TxnAbortError('store-unavailable');
+    }
+    return sequence;
+  }
+
+  private isEventSafeForDigestCleanup(eventId: string, watermark: number): boolean {
+    const row = this.handle.prepare(SQL_SELECT_EVENT_MAX_CHANGE_SEQUENCE).get(eventId) as
+      { sequence: number | bigint } | undefined;
+    const sequence = Number(row?.sequence);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new TxnAbortError('store-unavailable');
+    }
+    return sequence <= watermark;
+  }
+
+  private deleteEventForCapacityInternal(eventId: string, nowIso: string): void {
+    this.scrubEventInternal(eventId, 'expired', nowIso);
+    this.handle.prepare(SQL_DELETE_EVENT_OUTBOX).run(eventId);
+    const deleted = this.handle.prepare(SQL_DELETE_EVENT).run(eventId);
+    if (Number(deleted.changes) !== 1) throw new TxnAbortError('store-unavailable');
+  }
+
+  // 调用方事务拥有：Digest artifact/retry 写事务内禁止嵌套 BEGIN。只删除已经
+  // 越过全部 active/paused schedule cursor 与非终态 frozen run 水位的 Event。
+  private pruneEventsByRuleLimitsForDigestWriteInternal(nowIso: string): number {
+    const nowMs = Date.parse(nowIso);
+    if (!Number.isFinite(nowMs)) throw new TxnAbortError('store-unavailable');
+    const watermark = this.digestSafeWatermarkInternal();
+    const rules = this.handle.prepare(SQL_SELECT_RULES_ACCESS).all() as Array<{
+      id: string;
+      access_mode: string;
+    }>;
+    let deleted = 0;
+    for (const rule of rules) {
+      const days =
+        rule.access_mode === 'session' ? SESSION_EVENT_RETENTION_DAYS : PUBLIC_EVENT_RETENTION_DAYS;
+      const cap = rule.access_mode === 'session' ? SESSION_EVENTS_PER_RULE : PUBLIC_EVENTS_PER_RULE;
+      const cutoff = new Date(nowMs - days * 24 * 60 * 60 * 1000).toISOString();
+      const rows = this.handle.prepare(SQL_SELECT_EVENTS_FOR_RULE_ORDERED).all(rule.id) as Array<{
+        id: string;
+        first_observed_at: string;
+        read_at: string | null;
+      }>;
+      const expired = rows.filter((row) => row.first_observed_at < cutoff);
+      const withinAge = rows.filter((row) => row.first_observed_at >= cutoff);
+      const overflow = withinAge.length > cap ? withinAge.length - cap : 0;
+      const candidates = [...expired, ...withinAge.slice(0, overflow)];
+      for (const event of candidates) {
+        if (!this.isEventSafeForDigestCleanup(event.id, watermark)) continue;
+        this.deleteEventForCapacityInternal(event.id, nowIso);
+        deleted += 1;
+      }
+    }
+    return deleted;
+  }
+
+  private deleteOldestDigestSafeEventInternal(nowIso: string): boolean {
+    const watermark = this.digestSafeWatermarkInternal();
+    const row = this.handle.prepare(SQL_SELECT_OLDEST_SAFE_EVENT_GLOBAL).get(watermark) as
+      { id: string } | undefined;
+    if (row === undefined) return false;
+    this.deleteEventForCapacityInternal(row.id, nowIso);
+    return true;
   }
 
   // 按规则分级保留：公开 90天/200、登录态 30天/100（== 保留、+1 清理）；
