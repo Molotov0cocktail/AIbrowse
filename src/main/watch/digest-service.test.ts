@@ -138,6 +138,99 @@ function service(provider: FakeProvider | null = null, repository = repo): Diges
 }
 
 describe('DigestService frozen cycle', () => {
+  it('runStats 精确映射全部终态并使用 (fromExclusive, toInclusive] 期间', () => {
+    prepare(1);
+    const insert = handle.prepare(
+      `INSERT INTO watch_runs(id,rule_id,request_key,status,trigger,scheduled_for,
+      started_at,finished_at,outcome_json,health_json,response_metadata_json)
+      VALUES(?,?,?,?,'manual',NULL,?,?,?,?,NULL)`,
+    );
+    const outcomes = [
+      { kind: 'changed-unmatched', changeFingerprint: hex },
+      { kind: 'event-created', eventId: 'event-created' },
+      { kind: 'event-coalesced', eventId: 'event-coalesced' },
+      { kind: 'unchanged' },
+      { kind: 'baseline-established', auditId: 'audit-1' },
+      { kind: 'event-deduplicated', eventId: 'event-deduplicated' },
+      { kind: 'failed', health: 'unavailable', retryable: true },
+      { kind: 'aborted', reason: 'shutdown' },
+    ] as const;
+    outcomes.forEach((outcome, index) => {
+      const finishedAt = index === outcomes.length - 1 ? due : `2026-08-28T12:00:0${index}.000Z`;
+      insert.run(
+        `stats-${index}`,
+        'rule-1',
+        `stats-key-${index}`,
+        'finished',
+        created,
+        finishedAt,
+        JSON.stringify(outcome),
+        null,
+      );
+    });
+    insert.run(
+      'stats-interrupted',
+      'rule-1',
+      'stats-key-interrupted',
+      'interrupted',
+      created,
+      '2026-08-28T13:00:00.000Z',
+      null,
+      null,
+    );
+    insert.run(
+      'stats-lower-excluded',
+      'rule-1',
+      'stats-key-lower-excluded',
+      'finished',
+      created,
+      created,
+      JSON.stringify({ kind: 'event-created', eventId: 'excluded-lower' }),
+      null,
+    );
+    insert.run(
+      'stats-after-upper-excluded',
+      'rule-1',
+      'stats-key-after-upper-excluded',
+      'finished',
+      created,
+      '2026-08-29T01:00:00.001Z',
+      JSON.stringify({ kind: 'failed', health: 'unavailable', retryable: true }),
+      null,
+    );
+    for (const status of ['queued', 'running'] as const) {
+      insert.run(
+        `stats-${status}`,
+        'rule-1',
+        `stats-key-${status}`,
+        status,
+        status === 'running' ? created : null,
+        null,
+        null,
+        null,
+      );
+    }
+
+    const schedule = repo.getDigestSchedule('schedule-1')!;
+    const reserved = repo.reserveDigestRun({
+      scheduleId: schedule.id,
+      expectedVersion: schedule.version,
+      expectedNextDueAt: due,
+      expectedLastConsumedScheduledFor: null,
+      expectedLastDailyLocalDate: null,
+      runId: 'run-stats',
+      requestKey: 'run-stats-key',
+      logicalDate: '2026-08-29',
+      nextDueAt: '2026-08-30T01:00:00.000Z',
+      nowIso: due,
+    });
+
+    expect(reserved).toMatchObject({
+      ok: true,
+      run: { runStats: { changed: 3, unchanged: 3, failed: 3 } },
+    });
+  });
+
   it.each([
     [49, [49]],
     [50, [50]],
