@@ -55,7 +55,7 @@ src/main/watch/
   notification-service.ts                    # 应用内/Windows sink
   watch-export-service.ts                    # CSV/Markdown + dialog
   repository/watch-repository.ts             # 唯一业务 SQL 点
-  db/watch-migrations.ts                     # schema v1→v4 追加迁移（既有语句字节冻结）
+  db/watch-migrations.ts                     # schema v1→v5 追加迁移（既有语句字节冻结）
   watch-store.ts                             # probe/migrate/check/recover/dispose
 
 src/preload/index.ts                         # watch 白名单 bridge（只加精确方法）
@@ -174,6 +174,7 @@ type WatchSchedule =
 
 interface WatchRule {
   id: string;
+  version: number; // D9 用户配置写操作 CAS；runtime bookkeeping 不递增
   sourceId: string;
   kind: WatchRuleKind;
   state: WatchRuleState;
@@ -185,6 +186,7 @@ interface WatchRule {
   target: FeedTarget | PageTarget;
   condition: StructuredCondition | null;
   notificationLevel: 'normal' | 'important';
+  showDetails: boolean; // 通知详情逐 Rule opt-in；默认 false
   sourceRowVersion: number;
   sourceLocatorFingerprint: string;
   nextDueAt: string | null;
@@ -1230,29 +1232,30 @@ Digest 引用变为 `user-deleted` tombstone，AI 解释不再显示。
 
 ## 10. `watch.db`、迁移、恢复与清理
 
-### 10.1 Schema v1→v4
+### 10.1 Schema v1→v5
 
 D6 关闭点的实际 Store 为 schema v2（v1 业务表 + v2 audit CHECK 表重建）；D7 只追加
-`WATCH_MIGRATION_V3`。D8 只追加 `WATCH_MIGRATION_V4`；v1–v3 statement bytes 全部冻结。D8 完成后
-latest=4、`user_version>4` 才是 future schema；迁移前 v3 仍是合法输入。
+`WATCH_MIGRATION_V3`，D8 只追加 `WATCH_MIGRATION_V4`，D9 只追加 `WATCH_MIGRATION_V5`；v1–v4
+statement bytes 全部冻结。D9 完成后 latest=5、`user_version>5` 才是 future schema；迁移前 v4 仍是
+合法输入。
 
-| 表                         | 核心列/约束                                                                                                                                                                                                                                           |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `watch_rules`              | id PK、source_id、kind/state/pause_reason/desired_enabled/muted/access_mode、schedule/target/condition 严格版本、source_row_version/source_locator_fingerprint、next_due/last_consumed_scheduled_for/backoff/failure/baseline_version、时间           |
-| `watch_baselines`          | rule_id PK/FK、version、projection_type/json/hash/bytes、final_url/captured_at/document_id、conditional_etag/conditional_last_modified；bytes/validator CHECK；Page validator 必为 null                                                               |
-| `watch_runs`               | id PK、rule_id FK、request_key UNIQUE、trigger/scheduled_for/start/finish/outcome/health、响应元数据有界                                                                                                                                              |
-| `watch_audits`             | id PK、rule_id、kind、reason code、created_at；零敌手正文                                                                                                                                                                                             |
-| `watch_events`             | id PK、rule/source、kind/importance、idempotency_key UNIQUE（首个观察键）、fingerprint（首个观察指纹）、观察时间、read_at、item_count                                                                                                                 |
-| `watch_event_observations` | v3：id PK、event_id FK CASCADE、sequence ≥0、idempotency_key UNIQUE（观察级）、change_fingerprint 64 hex、event_kind 闭合、observed_at、first_item_sequence、item_count ≥1；UNIQUE(event_id,sequence) 与 UNIQUE(id,event_id)                          |
-| `watch_event_items`        | id PK、event_id、observation_id、sequence ≥0、observation_item_sequence ≥0、field_key/label、before/after typed value JSON、双侧元数据；UNIQUE(event_id,sequence)、UNIQUE(observation_id,observation_item_sequence)、复合 FK(observation_id,event_id) |
-| `digest_change_state`      | v4：singleton id=1、last_sequence ≥0；journal 清理后仍保存单调 high-water                                                                                                                                                                             |
-| `digest_change_journal`    | v4：sequence PK、observation_id UNIQUE、event/source/observed_at、status active/expired/user-deleted；零 Evidence/正文                                                                                                                                |
-| `digest_schedules`         | v4：id/version、排序去重固定 source_ids_json、daily schedule_json、ai_enabled、cursor_sequence、state active/paused、next_due/last_consumed/last_daily_local_date、created/updated/last_checked、last_period_json/last_run_stats_json                 |
-| `digest_runs`              | v4：id/schedule_id、request_key UNIQUE、logical_date、lower/upper/next sequence、period、run_stats_json、state running/budget_exceeded/completed、blocked 时间/required/available bytes、created/finished；UNIQUE(schedule_id,logical_date)           |
-| `watch_digests`            | v4：id/schedule_id/run_id/batch_index/sequence range、canonical facts/hash/revision、canonical explanation nullable、bytes、provider state/result、claimed facts revision/hash、claimed/finished/created 时间；UNIQUE(run_id,batch_index)             |
-| `digest_event_refs`        | digest_id/event_id、status active/expired/user-deleted；复合 PK                                                                                                                                                                                       |
-| `notification_outbox`      | id PK、subject_type/id、channel、dedupe_key UNIQUE、privacy_json、state/attempt/time                                                                                                                                                                  |
-| `source_cleanup_intents`   | mutation_id PK、source_id、operation、before/after_projection_json、affected_rule_state_json、state prepared/source-committed/complete/aborted、time；source_id 索引                                                                                  |
+| 表                         | 核心列/约束                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `watch_rules`              | id PK、v5 `rule_version>=1`（默认1，用户配置写 CAS）、source_id、kind/state/pause_reason/desired_enabled/muted/access_mode、schedule/target/condition 严格版本、v5 `notification_show_details IN (0,1)`（默认0，逐 Rule 通知详情 opt-in）、source_row_version/source_locator_fingerprint、next_due/last_consumed_scheduled_for/backoff/failure/baseline_version、时间 |
+| `watch_baselines`          | rule_id PK/FK、version、projection_type/json/hash/bytes、final_url/captured_at/document_id、conditional_etag/conditional_last_modified；bytes/validator CHECK；Page validator 必为 null                                                                                                                                                                               |
+| `watch_runs`               | id PK、rule_id FK、request_key UNIQUE、trigger/scheduled_for/start/finish/outcome/health、响应元数据有界                                                                                                                                                                                                                                                              |
+| `watch_audits`             | id PK、rule_id、kind、reason code、created_at；零敌手正文                                                                                                                                                                                                                                                                                                             |
+| `watch_events`             | id PK、rule/source、kind/importance、idempotency_key UNIQUE（首个观察键）、fingerprint（首个观察指纹）、观察时间、read_at、item_count                                                                                                                                                                                                                                 |
+| `watch_event_observations` | v3：id PK、event_id FK CASCADE、sequence ≥0、idempotency_key UNIQUE（观察级）、change_fingerprint 64 hex、event_kind 闭合、observed_at、first_item_sequence、item_count ≥1；UNIQUE(event_id,sequence) 与 UNIQUE(id,event_id)                                                                                                                                          |
+| `watch_event_items`        | id PK、event_id、observation_id、sequence ≥0、observation_item_sequence ≥0、field_key/label、before/after typed value JSON、双侧元数据；UNIQUE(event_id,sequence)、UNIQUE(observation_id,observation_item_sequence)、复合 FK(observation_id,event_id)                                                                                                                 |
+| `digest_change_state`      | v4：singleton id=1、last_sequence ≥0；journal 清理后仍保存单调 high-water                                                                                                                                                                                                                                                                                             |
+| `digest_change_journal`    | v4：sequence PK、observation_id UNIQUE、event/source/observed_at、status active/expired/user-deleted；零 Evidence/正文                                                                                                                                                                                                                                                |
+| `digest_schedules`         | v4：id/version、排序去重固定 source_ids_json、daily schedule_json、ai_enabled、cursor_sequence、state active/paused、next_due/last_consumed/last_daily_local_date、created/updated/last_checked、last_period_json/last_run_stats_json                                                                                                                                 |
+| `digest_runs`              | v4：id/schedule_id、request_key UNIQUE、logical_date、lower/upper/next sequence、period、run_stats_json、state running/budget_exceeded/completed、blocked 时间/required/available bytes、created/finished；UNIQUE(schedule_id,logical_date)                                                                                                                           |
+| `watch_digests`            | v4：id/schedule_id/run_id/batch_index/sequence range、canonical facts/hash/revision、canonical explanation nullable、bytes、provider state/result、claimed facts revision/hash、claimed/finished/created 时间；UNIQUE(run_id,batch_index)                                                                                                                             |
+| `digest_event_refs`        | digest_id/event_id、status active/expired/user-deleted；复合 PK                                                                                                                                                                                                                                                                                                       |
+| `notification_outbox`      | id PK、subject_type/id、channel、dedupe_key UNIQUE、privacy_json、state/attempt/time                                                                                                                                                                                                                                                                                  |
+| `source_cleanup_intents`   | mutation_id PK、source_id、operation、before/after_projection_json、affected_rule_state_json、state prepared/source-committed/complete/aborted、time；source_id 索引                                                                                                                                                                                                  |
 
 外键打开；删除 Rule CASCADE baseline/runs/audits/events/outbox；Event CASCADE observations；items 通过
 `FOREIGN KEY(observation_id,event_id) REFERENCES watch_event_observations(id,event_id) ON DELETE CASCADE`
@@ -1344,10 +1347,28 @@ D8 的审计时间写入统一用 `max(clock.now().toISOString(), 该行已有�
 run.blocked/finished 与 provider.claimed/finished；这只对审计列防回拨，不改变 Scheduler 的真实 Clock、scheduledFor、
 period 或正式 journal cursor。由此即使 wall clock 回拨，上述 SQL 时间序关系仍可机械验证。
 
+Schema v5（D9，#S6-068）冻结如下：
+
+1. `WATCH_MIGRATION_V5` 只允许向 `watch_rules` 依次追加以下两列；SQL、顺序、默认值与 CHECK 均为正式
+   契约，v1–v4 migration statement bytes 不得改写：
+   - `rule_version INTEGER NOT NULL DEFAULT 1 CHECK(rule_version >= 1)`；
+   - `notification_show_details INTEGER NOT NULL DEFAULT 0 CHECK(notification_show_details IN (0,1))`。
+2. v4→v5 成功后，每个既有 v4 Rule 的全部旧列逐列恒等；只允许两列分别由 SQLite 默认回填为 `1` 与
+   `0`。其余表、索引、触发器、行和 `user_version` 以外的 schema 不得变化。重开后必须仍为 v5，既有行与
+   两个回填值保持恒等。
+3. 两条 `ALTER TABLE` 与 `PRAGMA user_version=5` 由迁移引擎包在同一事务。任一语句或版本写入失败，必须
+   完整回滚为 v4 schema/data/`user_version=4`，两个新列均不可见；禁止部分升级、随机修补或改写旧行。
+4. Store read-only probe 以 latest=5 判定版本：`user_version=6` 及任何 `>5` 值均是 future schema，必须
+   零写入 fail-closed，Watch unavailable 且 Scheduler 不启动。v5 runtime integrity scan 必须要求
+   `rule_version` 为整数且 `>=1`、`notification_show_details` 精确为 `0|1`；非法值或缺列均按 corrupt
+   fail-closed，不得以默认值在运行时修补。
+5. D10/WRT-18 必须独立覆盖 v4→v5 成功迁移的旧列恒等与默认回填、每条 v5 statement 失败的完整回滚、
+   v5 重开，以及 `future=6` 零写入 fail-closed；这些 oracle 不得由 v3/v4 用例代替。
+
 ### 10.2 Store 启动
 
 1. 打开独立 `watch.db`，PRAGMA/foreign key 固定；
-2. read-only probe 与 user_version；未来版本 fail-closed；
+2. read-only probe 与 user_version；latest=5，`user_version>5` 的未来版本零写入 fail-closed；
 3. migration（仅已批准编译期 SQL）；
 4. quick/integrity check、JSON shape/预算扫描；
 5. 单事务把网络 Watch queued/running→interrupted；把 Digest `provider_state=claimed`→`uncertain`，写
@@ -1737,7 +1758,9 @@ artifact/Provider attempt 的持久化审计；D8 不把 scheduleId/digestId 塞
 - muted Rule：零即时 notification outbox，但 Event/Digest 正常；解除后不补发。
 - 应用内：用户打开 Watch 工作区后可看完整有界 Evidence。
 - Windows 默认只含来源显示名、变化类型/数量；session Rule 固定“受保护来源发生变化”。
-- `showDetails=true` 逐 Rule 显式允许后，只可用安全截断字段；仍禁止 query、Cookie、表单、认证细节和 AI 文本。
+- `showDetails=true` 逐 Rule 显式允许后，只可用安全截断字段；该 opt-in 只由 schema v5
+  `watch_rules.notification_show_details` 持久化，既有 v4 Rule 升级后默认 false；仍禁止 query、Cookie、
+  表单、认证细节和 AI 文本。
 - `dedupeKey=channel|subjectType|subjectId|privacyVersion`；成功/失败写 outbox 状态，重复不得再次发。
 - Windows sink 仅在 production identity probe PASS 时注册；否则返回 unavailable，不影响应用内。
 - 点击通知只携带内部 event/digest UUID，经 WatchService 查询；通知不能注入外部 URL/路由。
@@ -1768,6 +1791,8 @@ watch:getStatus / watch:subscribe
 
 每个 payload exact object key、UUID/分页/字符串/数组/字节上限；unknown key 拒绝。写操作主进程统一脱敏审计；
 subscribe 只推送闭合状态 DTO，返回 unsubscribe，窗口销毁/dispose 幂等移除。无任意 URL fetch/SQL/file path/HTML。
+Rule 用户配置写操作必须携带 `expectedVersion` 并以 schema v5 `rule_version` 做 CAS；只有实际成功的用户配置
+变化才递增版本，陈旧版本返回闭合 conflict。调度、健康、Source 协调等 runtime bookkeeping 不得递增该版本。
 
 ### 12.4 导出
 
@@ -1821,7 +1846,7 @@ run audit”由同一行同时满足，不创建第二条含义重复的 `event`
 Provider error message 或 Key。每个 run 的 state/blocked/finished 组合只按 §10.1 迁移；budget_exceeded 是可恢复
 非终态，不得伪装成 completed 审计。
 
-watch.db v1 明文边界：规则目标、规范化 Baseline、old/new Evidence、事件和 Digest 本地明文；不保存凭据。
+watch.db 本地明文边界：规则目标、规范化 Baseline、old/new Evidence、事件和 Digest 本地明文；不保存凭据。
 UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。hard-delete/Rule 删除级联；用户 Event 删除不可 Undo。
 
 ## 14. 边界情况
@@ -1978,6 +2003,12 @@ explanation/journal/Event 删除逐点失败全部回滚；v4 启动扫描拒绝
 IANA/daily state、Schedule state/时间、run state/blocked/finished、cursor/run/batch 缺口、非 canonical
 facts/explanation、byte/hash/revision 及 §11.5 任一非法 Provider 矩阵组合。pause/resume/delete、budget block/retry 与
 provider 每个转换的事务前/中/后崩溃注入必须分别得到唯一旧态或新态，不能依赖进程内推断。
+
+D9/D10 追加（#S6-068）：migration v4→v5 只追加 `watch_rules.rule_version` 与
+`notification_show_details`，成功时既有 v4 行除默认新增列外逐列恒等；每条 v5 statement 独立失败注入均断言
+v4 schema/data/`user_version=4` 完整回滚且两列不可见。成功升级后重开仍为 v5；Store/runtime validator 拒绝
+非法 `rule_version`/详情标志；`user_version=6` 必须零写入 unavailable。D10/WRT-18 必须把这些场景作为独立
+oracle，不得只引用 D9 既有单测结果。
 
 ### 15.3 Electron 冒烟
 
@@ -2163,6 +2194,12 @@ revalidated)` 单调更新。方案 B
 - **#S6-067**（D8 REPAIR，2026-08-31）：DigestSchedule 只持久化 active/paused，删除为硬删除；Digest run 只允许
   running/budget_exceeded/completed 并持久化预算阻塞事实；Provider state/result/claim/time/explanation 采用 §11.5
   完整矩阵。pause/resume/delete、容量重试与启动恢复均由数据库状态判定，禁止依赖进程内猜测。
+- **#S6-068**（D10-P0 REPLAN，2026-09-01）：正式批准 D9 schema v5——只向 `watch_rules` 追加 Rule
+  用户配置 CAS `rule_version INTEGER NOT NULL DEFAULT 1 CHECK(rule_version >= 1)` 与通知详情逐 Rule opt-in
+  `notification_show_details INTEGER NOT NULL DEFAULT 0 CHECK(notification_show_details IN (0,1))`；v1–v4
+  migration statement bytes 冻结，latest=5，只有 `user_version>5` 是 future schema。v4→v5 任一语句失败
+  必须完整回滚至 v4 schema/data/user_version；成功升级后既有 v4 行除两个默认新增列外逐列恒等，并由
+  D10/WRT-18 覆盖逐语句失败、重开与 future=6 零写入 fail-closed。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。

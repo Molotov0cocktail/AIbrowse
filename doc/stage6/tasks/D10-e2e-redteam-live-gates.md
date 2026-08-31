@@ -5,6 +5,15 @@
 建立第六阶段完整机器验证闭环：Feed/Page→Baseline→Diff→Condition→Event/Evidence→Digest→Notification/UI，
 WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真实网络/Provider 和 Windows 打包通知资格。
 
+## 硬前置：D10-P0 正式契约复审
+
+- detailed-design 决议 #S6-068 的 schema v5 契约候选必须先经**新的独立持久化/安全 Reviewer**审查并得到
+  `PASS`；Reviewer 只能输出 `PASS / REPAIR / REPLAN / BLOCKED`。
+- Reviewer `PASS` 前 D10 产品实现仍为未开始：不得编写红队/live gate/smoke 8.27，不得调用真实网络或
+  Provider，也不得以 D9 产品 Reviewer 的历史 `PASS` 代替本次正式契约复审。
+- `PASS` 后由 Planner 从复审通过的精确新 HEAD 重新确认 baseline 并生成 D10 Executor Execution Contract；
+  未满足该前置时本任务保持待开始。
+
 ## 范围与非目标
 
 - **做**：`AIBROWSE_WATCH_SMOKE=set|check`；dev+production 受控场景；19项红队；Entry/Exit体验映射；
@@ -25,7 +34,8 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 ## 实施步骤（红→绿）
 
 1. 红：manifest 列出 WRT-01～19/§7/§9 场景，旧结构逐项“未实现”失败；隐私允许面/禁止面先冻结。
-2. 绿：逐项独立夹具/断言；端到端 cohesive 场景；跨进程 set/check；恢复/清理/资源矩阵。
+2. 绿：逐项独立夹具/断言；端到端 cohesive 场景；跨进程 set/check；恢复/清理/资源矩阵；WRT-18 独立覆盖
+   v4→v5 默认回填与旧列恒等、每条 v5 statement 失败完整回滚、v5 重开和 future=6 零写入 fail-closed。
 3. 无 Key/非法门控/互斥路径证明请求0、进程/临时目录零残留。
 4. 真实 Provider 按长期授权且凭据可用时运行最小 Digest 场景；记录次数/用途/结果分类；不可用写凭据不可用。
 5. 真实公开网络限量，记录 URL 类别/HTTP 结果，不持久化正文；Windows identity 条件不足记 NOT RUN。
@@ -34,6 +44,7 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 ## 验收标准与测试
 
 - WRT-01～19 每项有独立机器结果，结构性证明/真实观察/诚实限制分栏。
+- WRT-18 明确包含 schema v5 迁移、回滚、重开与 future=6，不能只引用 v3/v4 或 D9 历史测试结果。
 - Sixth §7 七项体验、§9 全项、§10 五项均映射到当前 HEAD 证据或明确未满足，不能选择性跳过。
 - Watch 跨进程恢复、退出停止、reservation 三写原子与已消费 slot 零重放、一次 catch-up、5秒同 host
   间隔、仅80/443、XML各独立预算边界、Source version/fingerprint/用户意图及 hard-delete、Evidence双侧、
@@ -49,5 +60,5 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 
 ## 依赖与停止条件
 
-- 依赖 D1–D9；D11 依赖本任务。
+- 依赖 D1–D9，且 #S6-068 必须先经新的独立持久化/安全 Reviewer `PASS`；D11 依赖本任务。
 - 红队发现产品缺陷即 REPAIR/REPLAN；真实站点变化不得放宽确定性断言；Key/打包身份/网络不可用如实 NOT RUN。

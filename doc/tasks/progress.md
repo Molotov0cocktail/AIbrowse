@@ -23,7 +23,9 @@
   `ff65aa63a8a5151b93ac22deeaf8227f85ce65c8`，并经新的独立 Sol Reviewer `PASS`。
   D9 产品候选链从 baseline `7b3fc607973caa8b92cea10ef84ef1cbbee106bd` 实施至最终候选
   `d277a985f1722bf1bd850ada2cd2a8b4a4f2fbb6`，并经新的独立安全/隐私 Reviewer `PASS`。
-  下一唯一任务为 D10 Planner；不得在 D9 Closer 中开始 D10 实施。
+  D10 Planner 接管时发现正式 detailed-design 仍停留在 latest=4，而 D9 已交付并审过 schema v5；当前进入
+  **D10-P0 正式契约 REPLAN**，D10 产品实现仍未开始。下一唯一动作是由新的独立持久化/安全 Reviewer 审查
+  #S6-068 候选；Reviewer `PASS` 前不得生成或执行 D10 Executor Contract。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -670,7 +672,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D7 | 确定性 Diff/Event/Evidence 与健康状态 | ✅ | 2026-08-31 完成（见下）：baseline `80a2174`，实施链 `623dee7` → `80a41ad` → `25a2549` → `7e17d38` → `3c7861f` → `bbaed6b` → `cd267ff` → `828daed` → `9d1a362` → `3f09378` → `0b5e5f3` → `4619318`（十二个候选提交）；独立 Reviewer=`PASS`，聚焦 8 files/239 tests、全量 137 files/3244 tests，typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟 8.21–8.24 与生产 WATCH set/check 0/0；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
 | D8 | Digest 分享投影与可选 AI 解释 | ✅ | 2026-08-31 完成：baseline `b55580a`，实施与有界修复链 `a05bb47` → `de855bb` → `64fc0f0` → `0e42857` → `ff65aa6`；最终候选 HEAD `ff65aa63a8a5151b93ac22deeaf8227f85ce65c8`，独立 Sol Reviewer=`PASS`；真实 Provider `NOT RUN`；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
 | D9 | Watch UI/IPC/通知/导出 | ✅ | 2026-09-01 完成：baseline `7b3fc60`，实施与有界修复链 `bdbee1e` → `6ca3e8b` → `c28a8cb` → `91ec0f2` → `5290859` → `83d3c7b` → `d277a98`；新的独立安全/隐私 Reviewer=`PASS`，全量 155 files/3379 tests、typecheck/lint/format/build/diff-check 与 production 全 Electron smoke 全绿；真实 Windows Notification 因无已验证 packaged identity `NOT RUN`，产品诚实降级 unavailable；任务文档 doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md |
-| D10 | 端到端、红队、隐私与真实门控 | ⏳ | 依赖 D1–D9；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
+| D10 | 端到端、红队、隐私与真实门控 | ⏳ | D10 产品实现未开始；前置 D10-P0 正式契约 REPLAN 候选待新的独立持久化/安全 Reviewer 审查，#S6-068 `PASS` 后才可生成 Executor Contract；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
 | D11 | 第六阶段独立 Exit Audit | ⏳ | 依赖 D10；必须使用新的独立 Reviewer；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
@@ -683,6 +685,14 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 Sixth Stage 正式设计审核）
+
+- **D10-P0 schema v5 正式契约漂移校准（2026-09-01，候选待独立复审）**：D10 Planner 在 baseline
+  `e40871efa83e460e4585e1655cb9f221c2773d65` 确认 HEAD/main/Gitee tracking/GitHub tracking 精确一致且
+  工作区初始干净；代码与 D9 测试事实为 watch.db latest=5，v5 只追加 Rule CAS 与通知详情 opt-in 两列，
+  但 detailed-design 仍写 latest=4/future>4，构成正式契约漂移。D10-P0 仅校准 detailed-design、
+  threat-model、D9/D10 task 与本进度源，登记 #S6-068、v5 回滚/重开/future=6 oracle；不修改产品/测试代码，
+  不开始 D10 红队/live/smoke 8.27。下一唯一动作是新的独立持久化/安全 Reviewer，`PASS` 前不得开始 D10
+  Executor。
 
 - **D9 Watch 工作区 / IPC bridge / 通知隐私 / 安全导出验收与关闭（2026-09-01，新的独立
   安全/隐私 Reviewer=`PASS`）**：① baseline
@@ -3360,9 +3370,10 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **D10 Planner：端到端、红队、隐私与真实门控。**唯一任务文档：
-  `doc/stage6/tasks/D10-e2e-redteam-live-gates.md`。D9 已经新的独立安全/隐私 Reviewer `PASS` 并关闭；
-  下一闭环只由 Planner 独立接管、核对正式契约并形成 D10 Execution Contract，不在 D9 Closer 中开始 D10 实施。
+- **D10-P0 独立持久化/安全 Reviewer：审查 #S6-068 schema v5 正式契约候选。**审查 baseline 为
+  `e40871efa83e460e4585e1655cb9f221c2773d65`，结论只能为 `PASS / REPAIR / REPLAN / BLOCKED`。D10 产品
+  实现仍未开始；只有 Reviewer=`PASS` 后，Planner 才能从复审通过的精确新 HEAD 生成 D10 Executor
+  Execution Contract。唯一任务文档：`doc/stage6/tasks/D10-e2e-redteam-live-gates.md`。
 
 ## 第一阶段验收未完成项
 

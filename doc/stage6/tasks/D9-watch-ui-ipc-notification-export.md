@@ -37,6 +37,18 @@ Notification Sink、未读/删除、健康/手动运行、CSV/Markdown 安全导
 - CSV 公式注入、Markdown raw HTML/URL/Evidence tombstone 防线全绿；renderer 无路径。
 - 应用内通知必达；Windows 不可用时诚实降级；全量和 dev/production UI 冒烟全绿。
 
+## 已交付事实补记（schema v5）
+
+- D9 为用户配置写操作的 `expectedVersion` CAS 与逐 Rule 通知详情 opt-in 交付 watch.db schema v5；v5
+  只向 `watch_rules` 追加 `rule_version INTEGER NOT NULL DEFAULT 1 CHECK(rule_version >= 1)` 与
+  `notification_show_details INTEGER NOT NULL DEFAULT 0 CHECK(notification_show_details IN (0,1))`，未改写
+  v1–v4 migration statement bytes。
+- 既有 v4 Rule 升级后两列分别默认回填 `1/0`；用户配置写 CAS 成功才递增 `rule_version`，runtime
+  bookkeeping 不递增；详情默认关闭，只有用户逐 Rule 明确 opt-in 才置为1。
+- D9 已有真实 `node:sqlite` oracle 覆盖 v4→v5 两条 statement 的逐点失败完整回滚、默认回填、重开与
+  `future=6` fail-closed；D9 产品候选已经新的独立安全/隐私 Reviewer `PASS`。本补记不改写 D9 历史目标，
+  也不等同于 D10-P0 的正式契约复审结论。
+
 ## 完成定义
 
 红→绿、UI/隐私/导出证据、Reviewer PASS、候选提交；系统通知 NOT RUN 理由如实记录。
