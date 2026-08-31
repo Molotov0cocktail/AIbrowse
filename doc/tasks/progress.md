@@ -10,18 +10,20 @@
 ## 当前状态
 
 - 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
-  D1–D8 均已完成并关闭。**用户通过 U01–U31
+  D1–D9 均已完成并关闭。**用户通过 U01–U31
   完成全部需求裁决；正式设计候选在
   `f1a062fe5c0b3ae9f7cfaf8bf634bc78e16c602b` 经新的独立 Reviewer `PASS`。本轮设计范围
   为 `Sixth_stage.md`、`doc/stage6/` 四份设计与 D1–D11 任务契约，零产品代码、零新依赖、
-  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D8 均经 Reviewer `PASS`
+  零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D9 均经 Reviewer `PASS`
   并已关闭。D3 的三个解析依赖已通过资格门并精确固定：
   `@federicocarboni/saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1`。D8 实施前
   REPLAN 已在正式设计决议 #S6-059～#S6-067 闭合，契约候选链 `f8df1a8` → `5c4a40a`
   经新的独立持久化/隐私 Reviewer `PASS`；D8 产品候选链随后从 baseline
   `b55580aa5d7c115474adca2ffe57b8a87e2f767d` 实施至最终候选 HEAD
   `ff65aa63a8a5151b93ac22deeaf8227f85ce65c8`，并经新的独立 Sol Reviewer `PASS`。
-  下一唯一任务为 D9 Planner；不得在 D8 Closer 中开始 D9 实施。
+  D9 产品候选链从 baseline `7b3fc607973caa8b92cea10ef84ef1cbbee106bd` 实施至最终候选
+  `d277a985f1722bf1bd850ada2cd2a8b4a4f2fbb6`，并经新的独立安全/隐私 Reviewer `PASS`。
+  下一唯一任务为 D10 Planner；不得在 D9 Closer 中开始 D10 实施。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -667,7 +669,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D6 | Page region/Session task-owned Tab 投影 | ✅ | 2026-08-29 完成（见下）：baseline `d2226bb`，实施链 `3d62c02` → `d508d7c` → `25a93c9` → `19f04c2` → `321b5f3` → `f4f5cce` → `f4653e4` → `aa3d373`（八个候选提交，Repair baseline `f4653e4`）；独立 Reviewer=`PASS`，聚焦 8 files/178 tests、全量 133 files/3128 tests，typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟 8.23 与 WATCH set/check 0/0；任务文档 doc/stage6/tasks/D6-page-region-session-projection.md |
 | D7 | 确定性 Diff/Event/Evidence 与健康状态 | ✅ | 2026-08-31 完成（见下）：baseline `80a2174`，实施链 `623dee7` → `80a41ad` → `25a2549` → `7e17d38` → `3c7861f` → `bbaed6b` → `cd267ff` → `828daed` → `9d1a362` → `3f09378` → `0b5e5f3` → `4619318`（十二个候选提交）；独立 Reviewer=`PASS`，聚焦 8 files/239 tests、全量 137 files/3244 tests，typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟 8.21–8.24 与生产 WATCH set/check 0/0；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
 | D8 | Digest 分享投影与可选 AI 解释 | ✅ | 2026-08-31 完成：baseline `b55580a`，实施与有界修复链 `a05bb47` → `de855bb` → `64fc0f0` → `0e42857` → `ff65aa6`；最终候选 HEAD `ff65aa63a8a5151b93ac22deeaf8227f85ce65c8`，独立 Sol Reviewer=`PASS`；真实 Provider `NOT RUN`；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
-| D9 | Watch UI/IPC/通知/导出 | ⏳ | 依赖 D4–D8；任务文档 doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md |
+| D9 | Watch UI/IPC/通知/导出 | ✅ | 2026-09-01 完成：baseline `7b3fc60`，实施与有界修复链 `bdbee1e` → `6ca3e8b` → `c28a8cb` → `91ec0f2` → `5290859` → `83d3c7b` → `d277a98`；新的独立安全/隐私 Reviewer=`PASS`，全量 155 files/3379 tests、typecheck/lint/format/build/diff-check 与 production 全 Electron smoke 全绿；真实 Windows Notification 因无已验证 packaged identity `NOT RUN`，产品诚实降级 unavailable；任务文档 doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md |
 | D10 | 端到端、红队、隐私与真实门控 | ⏳ | 依赖 D1–D9；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
 | D11 | 第六阶段独立 Exit Audit | ⏳ | 依赖 D10；必须使用新的独立 Reviewer；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
 
@@ -681,6 +683,20 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 Sixth Stage 正式设计审核）
+
+- **D9 Watch 工作区 / IPC bridge / 通知隐私 / 安全导出验收与关闭（2026-09-01，新的独立
+  安全/隐私 Reviewer=`PASS`）**：① baseline
+  `7b3fc607973caa8b92cea10ef84ef1cbbee106bd`；实施与有界修复链 `bdbee1e` → `6ca3e8b` →
+  `c28a8cb` → `91ec0f2` → `5290859` → `83d3c7b` → `d277a98`，最终候选 HEAD
+  `d277a985f1722bf1bd850ada2cd2a8b4a4f2fbb6`。② 独立 Reviewer 确认 Watch 五视图与七步创建、
+  Rule 编辑/rebaseline、Event Evidence/tombstone、Digest schedule/detail、严格 IPC/bridge、Session
+  grant 与异步读取后同源复验、应用内/Windows 资格通知预算、内部 UUID 路由、CSV/Markdown 安全
+  导出及状态推送异常隔离满足 D9 契约，结论 `PASS`。③ 独立门禁：聚焦 12 files / 96 tests、全量
+  **155 files / 3379 tests**、typecheck/lint/format/build/diff-check 全 PASS；production 全 Electron
+  smoke 退出码 0，D9 8.26 与全矩阵通过。当前终修未改 renderer/preload，既有 dev smoke 证据继续
+  适用。④ 真实 Windows 系统通知 `NOT RUN`：当前无已验证 packaged identity，产品诚实降级
+  unavailable；未冒充真实通知观察。⑤ D9 已关闭；下一唯一任务为
+  `doc/stage6/tasks/D10-e2e-redteam-live-gates.md` 的 D10 Planner，本闭环不开始 D10。
 
 - **D8 Digest / Sharing / 可选 AI Explanation 验收与关闭（2026-08-31，独立 Sol
   Reviewer=`PASS`）**：① 原始 baseline `b55580aa5d7c115474adca2ffe57b8a87e2f767d`；实施与
@@ -3344,9 +3360,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **D9 Planner：Watch UI / IPC / 通知 / 导出。**唯一任务文档：
-  `doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md`。D8 已经独立 Sol Reviewer `PASS` 并关闭；
-  下一闭环只由 Planner 独立接管、核对正式契约并形成 D9 Execution Contract，不在 D8 Closer 中开始 D9 实施。
+- **D10 Planner：端到端、红队、隐私与真实门控。**唯一任务文档：
+  `doc/stage6/tasks/D10-e2e-redteam-live-gates.md`。D9 已经新的独立安全/隐私 Reviewer `PASS` 并关闭；
+  下一闭环只由 Planner 独立接管、核对正式契约并形成 D10 Execution Contract，不在 D9 Closer 中开始 D10 实施。
 
 ## 第一阶段验收未完成项
 
