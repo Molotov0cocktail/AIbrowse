@@ -11075,7 +11075,7 @@ export async function runSmokeScenario(
         })()`,
       );
       await waitFor(
-        async () => (await uiText(uiWc, '.watch-wizard')).includes('表头 SHA-256 指纹'),
+        async () => (await uiText(uiWc, '.watch-wizard')).includes('无需手工填写指纹'),
         5000,
         '8.26：Watch 表格 Region 编辑器不可交互',
       );
@@ -11115,6 +11115,43 @@ export async function runSmokeScenario(
           /authorization|cookie|set-cookie|proxy-authorization|x-api-key|file:\/\//i,
         ),
         '8.26：Watch DOM 不得暴露凭据、Cookie 或本地路径',
+      );
+      const ipcProbe = (await uiJs(
+        uiWc,
+        `(async () => {
+          const watch = window.aibrowse.watch;
+          const missing = '99999999-9999-4999-8999-999999999999';
+          const handle = 'a'.repeat(43);
+          const now = new Date().toISOString();
+          const later = new Date(Date.now() + 1000).toISOString();
+          const results = await Promise.all([
+            watch.getStatus(),
+            watch.listRules({ page: 1, pageSize: 1, filter: { state: null, sourceId: null } }),
+            watch.listEvents({ page: 1, pageSize: 1, filter: { ruleId: null, sourceId: null, eventKind: null, importance: null, readState: 'all', fromInclusive: null, toExclusive: null }, selectedEventId: null }),
+            watch.listDigestSchedules({ page: 1, pageSize: 1 }),
+            watch.listDigests({ page: 1, pageSize: 1, scheduleId: null }),
+            watch.getRule({ ruleId: missing }),
+            watch.previewPageRegions({ mode: 'discover-tables', sourceId: missing, accessMode: 'public' }),
+            watch.createRule({ previewHandle: handle, sessionGrantHandle: null, schedule: { kind: 'interval', intervalMinutes: 60 }, condition: null, notificationLevel: 'normal', showDetails: false, confirmed: true }),
+            watch.updateRule({ mode: 'settings', ruleId: missing, expectedVersion: 1, schedule: { kind: 'interval', intervalMinutes: 60 }, condition: null, notificationLevel: 'normal', showDetails: false }),
+            watch.setPaused({ ruleId: missing, expectedVersion: 1, paused: true }),
+            watch.setMuted({ ruleId: missing, expectedVersion: 1, muted: true }),
+            watch.runNow({ ruleId: missing }),
+            watch.setEventsRead({ eventIds: [missing], read: true }),
+            watch.deleteEvent({ eventId: missing, confirmed: true }),
+            watch.generateDigestPreview({ selector: { kind: 'sources', sourceIds: [missing] }, fromExclusive: now, toInclusive: later, afterSequence: 0 }),
+            watch.saveDigestSchedule({ action: 'create', previewHandle: handle, localTime: '09:00', timeZone: 'Asia/Shanghai', aiEnabled: false, confirmed: true }),
+            watch.deleteDigestSchedule({ scheduleId: missing, expectedVersion: 1, confirmed: true }),
+          ]);
+          return results.map((result) => result.ok ? 'ok' : result.errorCode);
+        })()`,
+      )) as unknown;
+      assert(
+        Array.isArray(ipcProbe) &&
+          ipcProbe.length === 17 &&
+          ipcProbe.slice(0, 5).every((result) => result === 'ok') &&
+          ipcProbe.slice(5).every((result) => typeof result === 'string'),
+        '8.26：Watch preload/IPC 核心操作探针未返回闭合结果',
       );
       await clickUi(uiWc, '.watch-header button');
       await waitFor(

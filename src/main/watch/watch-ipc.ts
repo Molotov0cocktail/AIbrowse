@@ -58,7 +58,7 @@ export interface WatchIpcAdapterOptions {
   resolveDigestSources: (selector: {
     sourceIds?: readonly string[];
     groupId?: string;
-  }) => string[] | null;
+  }) => Array<{ sourceId: string; displayName: string }> | null;
   audit: (message: string) => void;
 }
 
@@ -138,12 +138,17 @@ export class WatchIpcAdapter {
           sourceIds?: string[];
           groupId?: string;
         };
-        const sourceIds = this.options.resolveDigestSources(
+        const members = this.options.resolveDigestSources(
           selector.kind === 'sources'
             ? { sourceIds: selector.sourceIds }
             : { groupId: selector.groupId },
         );
-        if (digest === null || sourceIds === null) return fail('unavailable');
+        if (digest === null || members === null) return fail('unavailable');
+        const frozenMembers = [...members]
+          .sort((a, b) => a.sourceId.localeCompare(b.sourceId))
+          .slice(0, 100)
+          .map((member) => ({ sourceId: member.sourceId, displayName: member.displayName }));
+        const sourceIds = frozenMembers.map((member) => member.sourceId);
         const preview = digest.preview({
           previewId: randomUUID(),
           sourceIds,
@@ -160,7 +165,7 @@ export class WatchIpcAdapter {
           sourceIds,
           expiresAt: Date.now() + WatchIpcAdapter.DIGEST_PREVIEW_TTL_MS,
         });
-        return { ok: true, value: { previewHandle, ...preview } };
+        return { ok: true, value: { previewHandle, frozenMembers, ...preview } };
       }
       case 'watch:previewFeed':
         return this.options.preview.previewFeed(p as never);
@@ -229,6 +234,10 @@ export class WatchIpcAdapter {
       case 'watch:updateRule': {
         if (p['mode'] === 'rebaseline') return this.options.commands.rebaseline(p as never);
         if (repo === null) return fail('unavailable');
+        const current = repo.getRule(String(p['ruleId']));
+        if (current === null) return fail('not-found');
+        if (JSON.stringify(current.condition) !== JSON.stringify(p['condition']))
+          return fail('security-rejected');
         return mapWrite(
           repo.updateRuleSettings({
             ruleId: String(p['ruleId']),

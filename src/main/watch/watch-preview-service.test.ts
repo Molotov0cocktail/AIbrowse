@@ -3,6 +3,8 @@ import type { WatchAcquisitionService } from './watch-acquisition-service';
 import type { TargetGatedClient } from './public-watch-http-client';
 import { WatchPreviewService } from './watch-preview-service';
 import { WatchPreviewStore } from './watch-preview-store';
+import { readPublicHtml } from './public-html-sax-reader';
+import { previewPageRegions } from './page-projector';
 
 const sourceId = '00000000-0000-4000-8000-000000000001';
 const source = {
@@ -16,6 +18,9 @@ const source = {
     canonicalKey: 'https://example.com/news',
   },
 };
+const tableHtml = Buffer.from(
+  '<html><body><table><tr><th>名称</th><th>价格</th></tr><tr><td>A</td><td>1</td></tr></table></body></html>',
+);
 
 function service(acquisitionResult: unknown, target: TargetGatedClient): WatchPreviewService {
   return new WatchPreviewService({
@@ -70,7 +75,7 @@ describe('D9 Feed discovery 安全预览', () => {
       target,
     ).previewFeed({ mode: 'source', sourceId });
     expect(purpose).toBe('discovery');
-    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ ok: true });
     expect(JSON.stringify(result)).not.toContain('token=secret');
     expect(JSON.stringify(result)).toContain('example.com/feed.xml');
   });
@@ -95,5 +100,44 @@ describe('D9 Feed discovery 安全预览', () => {
     ).previewFeed({ mode: 'source', sourceId });
     expect(result).toEqual({ ok: false, errorCode: 'security-rejected' });
     expect(called).toBe(false);
+  });
+});
+
+describe('D9 Table Region 候选发现', () => {
+  it('公开模式走 purpose=page，只返回有界表头指纹组且不签发 previewHandle', async () => {
+    let purpose = '';
+    const parsed = readPublicHtml(tableHtml, meta.finalUrl);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const regionResult = previewPageRegions({ ...parsed.channels, mainText: '_' }, [
+      { kind: 'table', label: '表格候选', headerFingerprint: '0'.repeat(64), occurrence: 0 },
+    ]);
+    expect(regionResult.ok ? 'ok' : `${regionResult.health}:${regionResult.reason}`).toBe('ok');
+    const target = {
+      get: async (request: { purpose: string }) => {
+        purpose = request.purpose;
+        return {
+          kind: 'ok' as const,
+          meta,
+          body: tableHtml,
+        };
+      },
+    } as unknown as TargetGatedClient;
+    const result = await service({}, target).previewPage({
+      mode: 'discover-tables',
+      sourceId,
+      accessMode: 'public',
+    });
+    expect(purpose).toBe('page');
+    expect(result).toMatchObject({ ok: true });
+    expect(result).toMatchObject({
+      value: {
+        tableCandidates: [
+          { fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/), occurrenceCount: 1, columns: 2 },
+        ],
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain('previewHandle');
+    expect(JSON.stringify(result)).not.toContain('<table>');
   });
 });

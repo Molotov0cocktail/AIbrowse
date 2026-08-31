@@ -90,6 +90,47 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
     ).toBe(false);
   });
 
+  it('Table Region 候选发现使用独立闭合模式，候选输出有界且指纹严格', () => {
+    const sourceId = crypto.randomUUID();
+    expect(
+      validateWatchIpcPayload('watch:previewPageRegions', {
+        mode: 'discover-tables',
+        sourceId,
+        accessMode: 'public',
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateWatchIpcPayload('watch:previewPageRegions', {
+        mode: 'discover-tables',
+        sourceId,
+        accessMode: 'public',
+        regions: [],
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateWatchIpcOutput(
+        {
+          ok: true,
+          value: {
+            tableCandidates: [{ fingerprint: 'a'.repeat(64), occurrenceCount: 2, columns: 3 }],
+          },
+        },
+        'watch:previewPageRegions',
+      ),
+    ).toBe(true);
+    expect(
+      validateWatchIpcOutput(
+        {
+          ok: true,
+          value: {
+            tableCandidates: [{ fingerprint: 'bad', occurrenceCount: 2, columns: 3 }],
+          },
+        },
+        'watch:previewPageRegions',
+      ),
+    ).toBe(false);
+  });
+
   it('输出拒绝未知顶层形状、敏感键、accessor 与字节预算 +1', () => {
     expect(
       validateWatchIpcOutput(
@@ -171,5 +212,247 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
         'watch:listRules',
       ),
     ).toBe(false);
+    expect(
+      validateWatchIpcOutput(
+        { ...output, value: { ...output.value, pageSize: 1, items: [rule, rule] } },
+        'watch:listRules',
+      ),
+    ).toBe(false);
+  });
+
+  it('Digest Provider state/result 严格执行闭合配对矩阵', () => {
+    const validPairs: Array<[string, string | null]> = [
+      ['disabled', 'disabled'],
+      ['pending', null],
+      ['claimed', null],
+      ['succeeded', 'success'],
+      ['failed', 'provider-error'],
+      ['failed', 'timeout'],
+      ['failed', 'aborted'],
+      ['failed', 'invalid-output'],
+      ['uncertain', 'uncertain-after-restart'],
+      ['skipped', 'no-visible-events'],
+      ['skipped', 'request-budget'],
+      ['skipped', 'key-unavailable'],
+    ];
+    const item = (providerState: string, providerResultCode: string | null) => ({
+      id: crypto.randomUUID(),
+      scheduleId: crypto.randomUUID(),
+      providerState,
+      providerResultCode,
+      createdAt: new Date().toISOString(),
+      eventCount: 0,
+    });
+    for (const [state, code] of validPairs)
+      expect(
+        validateWatchIpcOutput(
+          { ok: true, value: { page: 1, pageSize: 1, total: 1, items: [item(state, code)] } },
+          'watch:listDigests',
+        ),
+      ).toBe(true);
+    for (const [state, code] of [
+      ['pending', 'success'],
+      ['succeeded', null],
+      ['failed', 'success'],
+      ['skipped', 'provider-error'],
+      ['disabled', null],
+    ] as Array<[string, string | null]>)
+      expect(
+        validateWatchIpcOutput(
+          { ok: true, value: { page: 1, pageSize: 1, total: 1, items: [item(state, code)] } },
+          'watch:listDigests',
+        ),
+      ).toBe(false);
+  });
+
+  it('24 个固定 channel 的成功输出逐通道验证，且深层未知键统一拒绝', () => {
+    const id = crypto.randomUUID();
+    const id2 = crypto.randomUUID();
+    const id3 = crypto.randomUUID();
+    const iso = '2026-08-31T00:00:00.000Z';
+    const handle = 'a'.repeat(43);
+    const rule = {
+      id,
+      version: 1,
+      sourceId: id2,
+      sourceName: '来源',
+      kind: 'page',
+      state: 'enabled',
+      pauseReason: null,
+      desiredEnabled: true,
+      muted: false,
+      accessMode: 'public',
+      schedule: { kind: 'interval', intervalMinutes: 60 },
+      condition: null,
+      notificationLevel: 'normal',
+      showDetails: false,
+      targetDisplay: 'example.com',
+      lastCheckedAt: null,
+      lastChangedAt: null,
+      nextDueAt: null,
+      health: 'healthy',
+      backoffUntil: null,
+    };
+    const event = {
+      id,
+      ruleId: id2,
+      sourceId: id3,
+      sourceName: '来源',
+      eventKind: 'changed',
+      importance: 'normal',
+      firstObservedAt: iso,
+      lastObservedAt: iso,
+      itemCount: 0,
+      read: false,
+    };
+    const facts = {
+      schemaVersion: 1,
+      scheduleId: id,
+      digestRunId: id2,
+      batchIndex: 0,
+      period: { fromExclusive: iso, toInclusive: '2026-08-31T01:00:00.000Z' },
+      eventCount: 1,
+      runStats: { changed: 1, failed: 0, unchanged: 0 },
+      events: [
+        {
+          eventId: id3,
+          ruleId: id2,
+          sourceId: id,
+          eventKind: 'changed',
+          importance: 'normal',
+          firstIncludedAt: iso,
+          lastIncludedAt: iso,
+          observationCount: 1,
+          itemCount: 1,
+        },
+      ],
+      evidenceMap: {},
+      referenceStates: { [id3]: 'expired' },
+      fetchedAt: iso,
+    };
+    const schedule = {
+      id,
+      version: 1,
+      sourceCount: 1,
+      localTime: '09:00',
+      timeZone: 'Asia/Shanghai',
+      aiEnabled: false,
+      state: 'active',
+      nextDueAt: iso,
+      lastCheckedAt: null,
+      lastPeriod: null,
+      lastRunStats: null,
+      runState: null,
+      blockedRunId: null,
+      blockedAt: null,
+      blockedRequiredBytes: null,
+      blockedAvailableBytes: null,
+    };
+    const status = {
+      mode: 'available',
+      schedulerRunning: true,
+      activeRuns: 0,
+      ruleCount: 1,
+      eventCount: 1,
+      unreadCount: 1,
+      digestCount: 1,
+      inAppNotification: 'available',
+      windowsNotification: 'unavailable',
+      windowsReason: 'not-packaged',
+      appRunsOnlyWhileOpen: true,
+      mainDocumentOnly: true,
+      publicRetentionDays: 90,
+      sessionRetentionDays: 30,
+      publicEventsPerRule: 500,
+      sessionEventsPerRule: 200,
+    };
+    const fixtures: Array<[string, unknown]> = [
+      ['watch:listRules', { page: 1, pageSize: 1, total: 1, items: [rule] }],
+      ['watch:getRule', rule],
+      ['watch:createRule', { ruleId: id, version: 1 }],
+      ['watch:updateRule', { updated: true }],
+      ['watch:setPaused', { updated: true }],
+      ['watch:setMuted', { updated: true }],
+      ['watch:deleteRule', { updated: true }],
+      ['watch:runNow', { runId: id }],
+      [
+        'watch:previewFeed',
+        {
+          previewHandle: handle,
+          kind: 'feed',
+          accessMode: 'public',
+          targetDisplay: 'example.com/feed',
+          fields: ['title'],
+        },
+      ],
+      ['watch:previewPageRegions', { tableCandidates: [] }],
+      ['watch:issueSessionGrant', { previewHandle: handle, sessionGrantHandle: handle }],
+      ['watch:listEvents', { page: 1, pageSize: 1, total: 1, items: [event], selected: null }],
+      ['watch:setEventsRead', { updated: 1 }],
+      ['watch:deleteEvent', { updated: true }],
+      ['watch:listDigestSchedules', { page: 1, pageSize: 1, total: 1, items: [schedule] }],
+      ['watch:saveDigestSchedule', { created: true }],
+      ['watch:deleteDigestSchedule', { updated: true }],
+      [
+        'watch:listDigests',
+        {
+          page: 1,
+          pageSize: 1,
+          total: 1,
+          items: [
+            {
+              id,
+              scheduleId: id2,
+              providerState: 'disabled',
+              providerResultCode: 'disabled',
+              createdAt: iso,
+              eventCount: 1,
+            },
+          ],
+        },
+      ],
+      [
+        'watch:getDigest',
+        {
+          id,
+          scheduleId: id2,
+          facts,
+          explanation: null,
+          providerState: 'disabled',
+          providerResultCode: 'disabled',
+          createdAt: iso,
+        },
+      ],
+      [
+        'watch:generateDigestPreview',
+        {
+          previewHandle: handle,
+          frozenMembers: [{ sourceId: id, displayName: '来源' }],
+          facts,
+          hasMore: false,
+          nextPreviewSequence: 0,
+        },
+      ],
+      ['watch:exportEventsCsv', { exportedRows: 1, exportedBytes: 10 }],
+      ['watch:exportDigestMarkdown', { exportedBytes: 10 }],
+      ['watch:getStatus', status],
+    ];
+    expect(fixtures).toHaveLength(23);
+    for (const [channel, value] of fixtures) {
+      expect(
+        validateWatchIpcOutput({ ok: true, value }, channel as (typeof WATCH_IPC_CHANNELS)[number]),
+        channel,
+      ).toBe(true);
+      const poisoned = { ok: true, value: { ...(value as object), nestedUnknown: true } };
+      expect(
+        validateWatchIpcOutput(poisoned, channel as (typeof WATCH_IPC_CHANNELS)[number]),
+        channel,
+      ).toBe(false);
+    }
+    const push = { type: 'status', revision: 1, status };
+    expect(validateWatchIpcOutput(push)).toBe(true);
+    expect(validateWatchIpcOutput({ ...push, status: { ...status, nestedUnknown: true } })).toBe(
+      false,
+    );
   });
 });

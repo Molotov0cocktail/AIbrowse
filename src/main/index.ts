@@ -978,7 +978,12 @@ if (!gotLock) {
         const provider = sourceService as
           (SourceService & DigestMembershipProjectionProvider) | null;
         const resolved = provider?.resolveDigestMembership(selector);
-        return resolved?.status === 'ok' ? resolved.members.map((member) => member.sourceId) : null;
+        return resolved?.status === 'ok'
+          ? resolved.members.map((member) => ({
+              sourceId: member.sourceId,
+              displayName: member.displayName,
+            }))
+          : null;
       },
       audit: (message) => logInfo('audit', message),
     });

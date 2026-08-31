@@ -15,6 +15,8 @@ import { WatchPreviewStore, type WatchPreviewRecord } from './watch-preview-stor
 import type { SessionGrantStore } from './session-grant-store';
 import type { TargetGatedClient } from './public-watch-http-client';
 import { parseDiscoveryCandidates } from './feed-discovery';
+import { readPublicHtml } from './public-html-sax-reader';
+import { extractContentTypeCharset } from './text-encoding';
 
 type PreviewResult =
   | { ok: true; value: Record<string, unknown> }
@@ -76,13 +78,17 @@ export class WatchPreviewService {
   }
 
   async previewPage(input: {
+    mode?: 'preview' | 'discover-tables';
     sourceId: string;
     accessMode: 'public' | 'session';
-    regions: RegionDescriptor[];
+    regions?: RegionDescriptor[];
   }): Promise<PreviewResult> {
     const source = this.options.source(input.sourceId);
     if (source.status !== 'found')
       return { ok: false, errorCode: source.status === 'missing' ? 'not-found' : 'unavailable' };
+    if (input.mode === 'discover-tables')
+      return this.discoverPageTables(source.projection, input.accessMode);
+    if (input.regions === undefined) return { ok: false, errorCode: 'unavailable' };
     const target = {
       type: 'page' as const,
       pageUrl: source.projection.canonicalKey,
@@ -165,6 +171,76 @@ export class WatchPreviewService {
         regions: regionPreview.preview,
       },
     };
+  }
+
+  private async discoverPageTables(
+    source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
+    accessMode: 'public' | 'session',
+  ): Promise<PreviewResult> {
+    let channels: import('../../shared/types/watch').DocumentChannels;
+    if (accessMode === 'public') {
+      const target = this.options.discoveryTarget();
+      if (target === null) return { ok: false, errorCode: 'unavailable' };
+      const response = await target.get({
+        url: source.canonicalKey,
+        purpose: 'page',
+        signal: new AbortController().signal,
+        deadline: new Date(Date.now() + 30_000),
+      });
+      if (response.kind !== 'ok')
+        return {
+          ok: false,
+          errorCode:
+            response.kind === 'failed' && response.health === 'security_rejected'
+              ? 'security-rejected'
+              : response.kind === 'failed' && response.health === 'budget_exceeded'
+                ? 'budget-exceeded'
+                : 'unavailable',
+        };
+      const parsed = readPublicHtml(response.body, response.meta.finalUrl, {
+        contentTypeCharset: extractContentTypeCharset(response.meta.contentType),
+      });
+      if (!parsed.ok)
+        return {
+          ok: false,
+          errorCode:
+            parsed.health === 'security_rejected'
+              ? 'security-rejected'
+              : parsed.health === 'budget_exceeded'
+                ? 'budget-exceeded'
+                : 'unavailable',
+        };
+      channels = parsed.channels;
+    } else {
+      const browser = this.options.browser();
+      const reader = this.options.reader();
+      const active = (await browser?.getActiveTab()) ?? null;
+      if (
+        browser === null ||
+        reader === null ||
+        active === null ||
+        urlOrigin(active.url) !== urlOrigin(source.canonicalKey)
+      )
+        return { ok: false, errorCode: 'security-rejected' };
+      const read = await reader.read({
+        tabId: active.id,
+        signal: new AbortController().signal,
+        deadline: new Date(Date.now() + 30_000),
+      });
+      if (!read.ok) return { ok: false, errorCode: 'security-rejected' };
+      channels = read.channels;
+    }
+    // Table-only documents legitimately have no mainText because table cell text is kept in the
+    // dedicated table channel. Supply a non-persisted sentinel solely so the shared structural
+    // validator can validate every other channel before deterministic candidate extraction.
+    const discoveryChannels = channels.mainText === '' ? { ...channels, mainText: '_' } : channels;
+    const discovered = previewPageRegions(discoveryChannels, [
+      { kind: 'table', label: '表格候选', headerFingerprint: '0'.repeat(64), occurrence: 0 },
+    ]);
+    if (!discovered.ok) return { ok: false, errorCode: 'unavailable' };
+    const table = discovered.preview[0];
+    const candidates = table?.kind === 'table' ? table.groups.slice(0, 50) : [];
+    return { ok: true, value: { tableCandidates: candidates } };
   }
 
   issueSessionGrant(previewHandle: string): PreviewResult {

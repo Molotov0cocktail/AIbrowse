@@ -336,15 +336,17 @@ function validate(channel: WatchIpcChannel, v: unknown): boolean {
         manualFeedUrl(v['feedUrl'])
       );
     case 'watch:previewPageRegions':
-      return (
-        record(v, ['sourceId', 'accessMode', 'regions']) &&
-        uuid(v['sourceId']) &&
-        (v['accessMode'] === 'public' || v['accessMode'] === 'session') &&
-        Array.isArray(v['regions']) &&
-        v['regions'].length >= 1 &&
-        v['regions'].length <= 10 &&
-        v['regions'].every(region)
-      );
+      return record(v, ['mode', 'sourceId', 'accessMode'])
+        ? v['mode'] === 'discover-tables' &&
+            uuid(v['sourceId']) &&
+            (v['accessMode'] === 'public' || v['accessMode'] === 'session')
+        : record(v, ['sourceId', 'accessMode', 'regions']) &&
+            uuid(v['sourceId']) &&
+            (v['accessMode'] === 'public' || v['accessMode'] === 'session') &&
+            Array.isArray(v['regions']) &&
+            v['regions'].length >= 1 &&
+            v['regions'].length <= 10 &&
+            v['regions'].every(region);
     case 'watch:createRule':
       return (
         record(v, [
@@ -526,7 +528,20 @@ function successValue(channel: WatchIpcChannel, value: unknown): boolean {
           ))
       );
     case 'watch:previewPageRegions':
-      return preview(value, true);
+      return (
+        preview(value, true) ||
+        (record(value, ['tableCandidates']) &&
+          Array.isArray(value['tableCandidates']) &&
+          value['tableCandidates'].length <= 50 &&
+          value['tableCandidates'].every(
+            (candidate) =>
+              record(candidate, ['fingerprint', 'occurrenceCount', 'columns']) &&
+              typeof candidate['fingerprint'] === 'string' &&
+              /^[0-9a-f]{64}$/u.test(candidate['fingerprint']) &&
+              integer(candidate['occurrenceCount'], 1) &&
+              integer(candidate['columns'], 1),
+          ))
+      );
     case 'watch:issueSessionGrant':
       return (
         record(value, ['previewHandle', 'sessionGrantHandle']) &&
@@ -539,8 +554,27 @@ function successValue(channel: WatchIpcChannel, value: unknown): boolean {
       return digestDetail(value);
     case 'watch:generateDigestPreview':
       return (
-        record(value, ['previewHandle', 'facts', 'hasMore', 'nextPreviewSequence']) &&
+        record(value, [
+          'previewHandle',
+          'frozenMembers',
+          'facts',
+          'hasMore',
+          'nextPreviewSequence',
+        ]) &&
         handle(value['previewHandle']) &&
+        Array.isArray(value['frozenMembers']) &&
+        value['frozenMembers'].length >= 1 &&
+        value['frozenMembers'].length <= 100 &&
+        value['frozenMembers'].every(
+          (member) =>
+            record(member, ['sourceId', 'displayName']) &&
+            uuid(member['sourceId']) &&
+            boundedText(member['displayName'], 256),
+        ) &&
+        value['frozenMembers'].every(
+          (member, index, all) =>
+            index === 0 || String(all[index - 1]['sourceId']) < String(member['sourceId']),
+        ) &&
         validateDigestFactsOutput(value['facts']) &&
         typeof value['hasMore'] === 'boolean' &&
         integer(value['nextPreviewSequence'], 0)
@@ -577,7 +611,7 @@ function paged(
     integer(value['pageSize'], 1, 50) &&
     integer(value['total'], 0) &&
     Array.isArray(value['items']) &&
-    value['items'].length <= 50 &&
+    value['items'].length <= value['pageSize'] &&
     value['items'].every(validateItem)
   );
 }
@@ -832,8 +866,7 @@ function digestListItem(value: unknown): boolean {
     ]) &&
     uuid(value['id']) &&
     uuid(value['scheduleId']) &&
-    digestProviderState(value['providerState']) &&
-    digestProviderResultCode(value['providerResultCode']) &&
+    digestProviderPair(value['providerState'], value['providerResultCode']) &&
     iso(value['createdAt']) &&
     integer(value['eventCount'], 0)
   );
@@ -852,8 +885,7 @@ function digestDetail(value: unknown): boolean {
     !uuid(value['id']) ||
     !uuid(value['scheduleId']) ||
     !validateDigestFactsOutput(value['facts']) ||
-    !digestProviderState(value['providerState']) ||
-    !digestProviderResultCode(value['providerResultCode']) ||
+    !digestProviderPair(value['providerState'], value['providerResultCode']) ||
     !iso(value['createdAt'])
   )
     return false;
@@ -893,6 +925,26 @@ const digestProviderState = (value: unknown): boolean =>
   (DIGEST_PROVIDER_STATES as readonly unknown[]).includes(value);
 const digestProviderResultCode = (value: unknown): boolean =>
   value === null || (DIGEST_PROVIDER_RESULT_CODES as readonly unknown[]).includes(value);
+const digestProviderPair = (state: unknown, code: unknown): boolean => {
+  if (!digestProviderState(state) || !digestProviderResultCode(code)) return false;
+  switch (state) {
+    case 'disabled':
+      return code === 'disabled';
+    case 'pending':
+    case 'claimed':
+      return code === null;
+    case 'succeeded':
+      return code === 'success';
+    case 'failed':
+      return ['provider-error', 'timeout', 'aborted', 'invalid-output'].includes(String(code));
+    case 'uncertain':
+      return code === 'uncertain-after-restart';
+    case 'skipped':
+      return ['no-visible-events', 'request-budget', 'key-unavailable'].includes(String(code));
+    default:
+      return false;
+  }
+};
 
 function validateEvidenceValue(value: unknown): boolean {
   if (record(value, ['kind'])) return value['kind'] === 'absent';

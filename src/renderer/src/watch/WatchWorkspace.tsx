@@ -68,6 +68,9 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
   );
   const [tableFingerprint, setTableFingerprint] = useState('');
   const [tableOccurrence, setTableOccurrence] = useState(0);
+  const [tableCandidates, setTableCandidates] = useState<
+    Array<{ fingerprint: string; occurrenceCount: number; columns: number }>
+  >([]);
   const [conditionEnabled, setConditionEnabled] = useState(false);
   const [conditionField, setConditionField] = useState('');
   const [previewFields, setPreviewFields] = useState<string[]>([]);
@@ -83,10 +86,16 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
   const [eventKindFilter, setEventKindFilter] = useState<string | null>(null);
   const [importanceFilter, setImportanceFilter] = useState<string | null>(null);
   const [eventSourceFilter, setEventSourceFilter] = useState('');
+  const [eventRuleFilter, setEventRuleFilter] = useState('');
+  const [eventFromFilter, setEventFromFilter] = useState('');
+  const [eventToFilter, setEventToFilter] = useState('');
   const [digestSchedules, setDigestSchedules] = useState<Array<Record<string, unknown>>>([]);
   const [digestDetail, setDigestDetail] = useState<Record<string, unknown> | null>(null);
   const [digestPreview, setDigestPreview] = useState<Record<string, unknown> | null>(null);
   const [digestPreviewHandle, setDigestPreviewHandle] = useState<string | null>(null);
+  const [digestFrozenMembers, setDigestFrozenMembers] = useState<
+    Array<{ sourceId: string; displayName: string }>
+  >([]);
   const [digestAiEnabled, setDigestAiEnabled] = useState(false);
   const wizardLabels = [
     '类型 / Region',
@@ -111,13 +120,13 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
   };
 
   const eventFilter = {
-    ruleId: null,
+    ruleId: eventRuleFilter === '' ? null : eventRuleFilter,
     sourceId: eventSourceFilter === '' ? null : eventSourceFilter,
     eventKind: eventKindFilter,
     importance: importanceFilter,
     readState,
-    fromInclusive: null,
-    toExclusive: null,
+    fromInclusive: eventFromFilter === '' ? null : new Date(eventFromFilter).toISOString(),
+    toExclusive: eventToFilter === '' ? null : new Date(eventToFilter).toISOString(),
   } as const;
   const loadEvents = (selectedEventId: string | null = null): void => {
     void window.aibrowse.watch
@@ -165,7 +174,16 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
   useEffect(() => {
     if (state.view === 'events') loadEvents();
     else if (state.view === 'digests') loadDigests();
-  }, [state.view, readState, eventKindFilter, importanceFilter, eventSourceFilter]);
+  }, [
+    state.view,
+    readState,
+    eventKindFilter,
+    importanceFilter,
+    eventSourceFilter,
+    eventRuleFilter,
+    eventFromFilter,
+    eventToFilter,
+  ]);
   useEffect(() => {
     if (focusSubject === null) return;
     if (focusSubject.type === 'event') {
@@ -226,8 +244,45 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     setWizardStep(6);
   };
 
-  const createPreview = async (): Promise<void> => {
+  const createPreview = async (tableSelection?: {
+    fingerprint: string;
+    occurrence: number;
+  }): Promise<void> => {
     setMessage('正在安全采集 Baseline 预览…');
+    if (ruleKind === 'page' && regionKind === 'table' && tableSelection === undefined) {
+      const discovery = await window.aibrowse.watch.previewPageRegions({
+        mode: 'discover-tables',
+        sourceId,
+        accessMode,
+      });
+      if (!discovery.ok || !isObject(discovery.value)) {
+        setMessage(
+          `表格发现失败：${discovery.ok ? '结果不可用' : ERROR_TEXT[discovery.errorCode]}`,
+        );
+        return;
+      }
+      const candidates = Array.isArray(discovery.value['tableCandidates'])
+        ? discovery.value['tableCandidates'].flatMap((candidate) =>
+            isObject(candidate) &&
+            typeof candidate['fingerprint'] === 'string' &&
+            typeof candidate['occurrenceCount'] === 'number' &&
+            typeof candidate['columns'] === 'number'
+              ? [
+                  {
+                    fingerprint: candidate['fingerprint'],
+                    occurrenceCount: candidate['occurrenceCount'],
+                    columns: candidate['columns'],
+                  },
+                ]
+              : [],
+          )
+        : [];
+      setTableCandidates(candidates);
+      setMessage(candidates.length === 0 ? '页面未发现可用表格' : '请选择表格候选及序号');
+      return;
+    }
+    const selectedFingerprint = tableSelection?.fingerprint ?? tableFingerprint;
+    const selectedOccurrence = tableSelection?.occurrence ?? tableOccurrence;
     const result =
       ruleKind === 'feed'
         ? await window.aibrowse.watch.previewFeed({ mode: 'source', sourceId })
@@ -244,8 +299,8 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                         {
                           kind: 'table',
                           label: '表格',
-                          headerFingerprint: tableFingerprint,
-                          occurrence: tableOccurrence,
+                          headerFingerprint: selectedFingerprint,
+                          occurrence: selectedOccurrence,
                         },
                       ]
                     : [{ kind: 'main-text', label: '正文' }],
@@ -535,6 +590,29 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
         />
       </label>
       <label>
+        规则 ID
+        <input
+          value={eventRuleFilter}
+          onChange={(event) => setEventRuleFilter(event.target.value)}
+        />
+      </label>
+      <label>
+        起始时间（含）
+        <input
+          type="datetime-local"
+          value={eventFromFilter}
+          onChange={(event) => setEventFromFilter(event.target.value)}
+        />
+      </label>
+      <label>
+        结束时间（不含）
+        <input
+          type="datetime-local"
+          value={eventToFilter}
+          onChange={(event) => setEventToFilter(event.target.value)}
+        />
+      </label>
+      <label>
         事件类型
         <select
           value={eventKindFilter ?? ''}
@@ -581,30 +659,6 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
       >
         批量标为未读
       </button>
-      <label>
-        摘要信源 ID
-        <input value={sourceId} onChange={(event) => setSourceId(event.target.value)} />
-      </label>
-      <label>
-        每日时间
-        <input
-          type="time"
-          value={dailyTime}
-          onChange={(event) => setDailyTime(event.target.value)}
-        />
-      </label>
-      <label>
-        时区
-        <input value={timeZone} onChange={(event) => setTimeZone(event.target.value)} />
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={digestAiEnabled}
-          onChange={(event) => setDigestAiEnabled(event.target.checked)}
-        />
-        启用可选 AI 解释
-      </label>
       <button
         type="button"
         onClick={() => void window.aibrowse.watch.exportEventsCsv({ filter: eventFilter })}
@@ -676,6 +730,30 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     <div data-watch-view="digests">
       <h3>更新摘要</h3>
       <p>摘要引用会明确显示 active、expired 或 user-deleted；已删除 Evidence 不可恢复。</p>
+      <label>
+        摘要信源 ID
+        <input value={sourceId} onChange={(event) => setSourceId(event.target.value)} />
+      </label>
+      <label>
+        每日时间
+        <input
+          type="time"
+          value={dailyTime}
+          onChange={(event) => setDailyTime(event.target.value)}
+        />
+      </label>
+      <label>
+        时区
+        <input value={timeZone} onChange={(event) => setTimeZone(event.target.value)} />
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={digestAiEnabled}
+          onChange={(event) => setDigestAiEnabled(event.target.checked)}
+        />
+        启用可选 AI 解释
+      </label>
       <button
         type="button"
         disabled={!/^[0-9a-f-]{36}$/.test(sourceId)}
@@ -700,6 +778,17 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
               }
               setDigestPreviewHandle(result.value['previewHandle']);
               setDigestPreview(isObject(result.value['facts']) ? result.value['facts'] : null);
+              setDigestFrozenMembers(
+                Array.isArray(result.value['frozenMembers'])
+                  ? result.value['frozenMembers'].flatMap((member) =>
+                      isObject(member) &&
+                      typeof member['sourceId'] === 'string' &&
+                      typeof member['displayName'] === 'string'
+                        ? [{ sourceId: member['sourceId'], displayName: member['displayName'] }]
+                        : [],
+                    )
+                  : [],
+              );
               setMessage('摘要事实预览已生成，请确认后保存计划');
             });
         }}
@@ -709,6 +798,14 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
       {digestPreview !== null && (
         <section>
           <h4>待确认摘要事实</h4>
+          <p>冻结成员（创建后不随分组变化）：</p>
+          <ul>
+            {digestFrozenMembers.map((member) => (
+              <li key={member.sourceId}>
+                {member.displayName}（{member.sourceId}）
+              </li>
+            ))}
+          </ul>
           <pre>{JSON.stringify(digestPreview, null, 2)}</pre>
           <button
             type="button"
@@ -936,25 +1033,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                 </label>
               )}
               {ruleKind === 'page' && regionKind === 'table' && (
-                <>
-                  <label>
-                    表头 SHA-256 指纹
-                    <input
-                      value={tableFingerprint}
-                      onChange={(event) => setTableFingerprint(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    同指纹表格序号
-                    <input
-                      type="number"
-                      min={0}
-                      max={1000}
-                      value={tableOccurrence}
-                      onChange={(event) => setTableOccurrence(Number(event.target.value))}
-                    />
-                  </label>
-                </>
+                <p>Baseline 步骤会安全读取页面并列出有界表格候选，无需手工填写指纹。</p>
               )}
             </>
           )}
@@ -1098,6 +1177,22 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
               我授权读取当前登录页进行一次性预览；授权 5 分钟后失效
             </label>
           )}
+          {wizardStep === 5 &&
+            tableCandidates.flatMap((candidate) =>
+              Array.from({ length: candidate.occurrenceCount }, (_, occurrence) => (
+                <button
+                  type="button"
+                  key={`${candidate.fingerprint}-${occurrence}`}
+                  onClick={() => {
+                    setTableFingerprint(candidate.fingerprint);
+                    setTableOccurrence(occurrence);
+                    void createPreview({ fingerprint: candidate.fingerprint, occurrence });
+                  }}
+                >
+                  选择 {candidate.columns} 列表格 · 同表头第 {occurrence + 1} 个
+                </button>
+              )),
+            )}
           {wizardStep === 5 &&
             feedCandidates.map((candidate) => (
               <button

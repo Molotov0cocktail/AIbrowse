@@ -280,6 +280,96 @@ describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rul
     }
   });
 
+  it('v5 每个 statement 注入失败均完整回滚为 v4 schema/data/user_version', () => {
+    for (let index = 0; index < WATCH_MIGRATION_V5.statements.length; index += 1) {
+      const db = openDb(join(root, `v5-fault-${index}-${Math.random()}.db`));
+      try {
+        runMigrations(db, [
+          WATCH_MIGRATION_V1,
+          WATCH_MIGRATION_V2,
+          WATCH_MIGRATION_V3,
+          WATCH_MIGRATION_V4,
+        ]);
+        insertRule(db, 'r-v5');
+        const before = db
+          .prepare(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+          )
+          .all();
+        const broken = {
+          ...WATCH_MIGRATION_V5,
+          statements: WATCH_MIGRATION_V5.statements.map((statement, current) =>
+            current === index ? 'SELECT * FROM definitely_missing_v5_table' : statement,
+          ),
+        };
+        expect(() =>
+          runMigrations(db, [
+            WATCH_MIGRATION_V1,
+            WATCH_MIGRATION_V2,
+            WATCH_MIGRATION_V3,
+            WATCH_MIGRATION_V4,
+            broken,
+          ]),
+        ).toThrow();
+        expect(
+          (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
+        ).toBe(4);
+        expect(
+          db
+            .prepare(
+              "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+            )
+            .all(),
+        ).toEqual(before);
+        expect(db.prepare("SELECT id,state FROM watch_rules WHERE id='r-v5'").get()).toEqual({
+          id: 'r-v5',
+          state: 'enabled',
+        });
+        const columns = db.prepare('PRAGMA table_info(watch_rules)').all() as Array<{
+          name: string;
+        }>;
+        expect(columns.map((column) => column.name)).not.toContain('rule_version');
+        expect(columns.map((column) => column.name)).not.toContain('notification_show_details');
+      } finally {
+        closeDb(db);
+      }
+    }
+  });
+
+  it('v4→v5 回填默认值并在 reopen 后保持 schema/data/version', () => {
+    const path = join(root, `v5-reopen-${Math.random()}.db`);
+    let db = openDb(path);
+    try {
+      runMigrations(db, [
+        WATCH_MIGRATION_V1,
+        WATCH_MIGRATION_V2,
+        WATCH_MIGRATION_V3,
+        WATCH_MIGRATION_V4,
+      ]);
+      insertRule(db, 'r-reopen');
+      runMigrations(db, WATCH_MIGRATIONS);
+      expect(
+        db
+          .prepare(
+            "SELECT id,rule_version,notification_show_details FROM watch_rules WHERE id='r-reopen'",
+          )
+          .get(),
+      ).toEqual({ id: 'r-reopen', rule_version: 1, notification_show_details: 0 });
+      closeDb(db);
+      db = openDb(path);
+      expect(runWatchMigrations(db).toVersion).toBe(5);
+      expect(
+        db
+          .prepare(
+            "SELECT id,rule_version,notification_show_details FROM watch_rules WHERE id='r-reopen'",
+          )
+          .get(),
+      ).toEqual({ id: 'r-reopen', rule_version: 1, notification_show_details: 0 });
+    } finally {
+      closeDb(db);
+    }
+  });
+
   it('运行后 user_version=5 且 15 张表全部存在', () => {
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(true);
