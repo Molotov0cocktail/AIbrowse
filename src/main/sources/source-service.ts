@@ -163,6 +163,20 @@ export interface DigestSharingProjectionProvider {
   getDigestSharingProjections(sourceIds: readonly string[]): DigestSharingReadResult;
 }
 
+export type DigestMembershipReadResult =
+  | {
+      status: 'ok';
+      members: Array<{ sourceId: string; displayName: string; canonicalUrl: string }>;
+    }
+  | { status: 'unavailable'; members: [] };
+
+export interface DigestMembershipProjectionProvider {
+  resolveDigestMembership(selector: {
+    sourceIds?: readonly string[];
+    groupId?: string;
+  }): DigestMembershipReadResult;
+}
+
 // D4：observer 缺省显式 no-op（votes 恒 true——未经 D4 接线的旧装配/单测语义不变）
 const NOOP_SOURCE_WATCH_OBSERVER: SourceLifecycleObserver = {
   prepare: () => ({ ok: true }),
@@ -281,6 +295,49 @@ export class SourceServiceImpl implements SourceService {
     } catch (err) {
       logWarn('sources', 'Digest sharing 窄投影读取失败（unavailable）', err);
       return { status: 'unavailable' };
+    }
+  }
+
+  resolveDigestMembership(selector: {
+    sourceIds?: readonly string[];
+    groupId?: string;
+  }): DigestMembershipReadResult {
+    if (this.disposed) return { status: 'unavailable', members: [] };
+    const hasIds = Array.isArray(selector.sourceIds);
+    const hasGroup = typeof selector.groupId === 'string';
+    if (hasIds === hasGroup) return { status: 'unavailable', members: [] };
+    try {
+      const rows = hasIds
+        ? [...new Set(selector.sourceIds)]
+            .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
+            .slice(0, 101)
+            .flatMap((sourceId) => {
+              if (!isUuidShape(sourceId)) return [];
+              const row = this.repo.getSourceById(sourceId);
+              return row === null || row.share_mode === 'blocked' ? [] : [row];
+            })
+        : isUuidShape(selector.groupId!)
+          ? this.repo.listSources({
+              groupId: selector.groupId,
+              excludeBlocked: true,
+              limit: 101,
+              offset: 0,
+            })
+          : [];
+      if (rows.length < 1 || rows.length > 100) {
+        return { status: 'unavailable', members: [] };
+      }
+      return {
+        status: 'ok',
+        members: rows.map((row) => ({
+          sourceId: row.id,
+          displayName: truncateUtf8(row.name, 256).text,
+          canonicalUrl: truncateUtf8(row.canonical_key, 2_048).text,
+        })),
+      };
+    } catch (err) {
+      logWarn('sources', 'Digest 成员冻结读取失败（unavailable）', err);
+      return { status: 'unavailable', members: [] };
     }
   }
 

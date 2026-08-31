@@ -4,9 +4,26 @@ import {
   MAX_DIGEST_EXPLANATION_SECTION_BYTES,
   MAX_DIGEST_EXPLANATION_SECTION_CHARS,
   MAX_DIGEST_EXPLANATION_TOTAL_CHARS,
+  MAX_DIGEST_BYTES,
   type DigestExplanation,
 } from '../types/watch';
 import { utf8ByteLength } from './watch-budget';
+
+export interface CanonicalDigestArtifact {
+  json: string;
+  byteLength: number;
+  withinBudget: boolean;
+}
+
+/** The single canonical persisted Digest envelope and byte-budget oracle. */
+export function serializeDigestArtifact(
+  factsJson: string,
+  explanationJson: string | null,
+): CanonicalDigestArtifact {
+  const json = `{"facts":${factsJson},"explanation":${explanationJson ?? 'null'}}`;
+  const byteLength = utf8ByteLength(json);
+  return { json, byteLength, withinBudget: byteLength <= MAX_DIGEST_BYTES };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

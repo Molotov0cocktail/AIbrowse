@@ -3,11 +3,7 @@ import type { LLMProvider } from '../ai/provider/llm-provider';
 import type { Clock } from '../../shared/types/watch';
 import { MAX_DIGEST_PROVIDER_OUTPUT_BYTES } from '../../shared/types/watch';
 import { createTimeZoneResolver } from '../../shared/watch/clock';
-import {
-  buildDigestFacts,
-  canonicalizeDigestFacts,
-  type DigestObservationSlice,
-} from '../../shared/watch/digest-facts';
+import { buildDigestFacts, type DigestObservationSlice } from '../../shared/watch/digest-facts';
 import {
   projectDigestForProvider,
   type DigestSourceSharingProjection,
@@ -19,14 +15,15 @@ import type {
   StoredDigestArtifact,
   StoredDigestRun,
   StoredDigestSchedule,
+  WatchResult,
   WatchRepository,
 } from './repository/watch-repository';
 
 export interface DigestMembershipPort {
-  resolve(selector: {
-    sourceIds?: readonly string[];
-    groupId?: string;
-  }): Promise<readonly string[]>;
+  resolve(selector: { sourceIds?: readonly string[]; groupId?: string }): Promise<{
+    status: 'ok' | 'unavailable';
+    members: readonly { sourceId: string; displayName: string; canonicalUrl: string }[];
+  }>;
 }
 
 export interface DigestSharingPort {
@@ -45,47 +42,67 @@ export interface DigestServiceOptions {
   membership?: DigestMembershipPort;
 }
 
+export interface DigestScheduleQueryDto {
+  schedule: StoredDigestSchedule;
+  runs: StoredDigestRun[];
+  artifacts: StoredDigestArtifact[];
+}
+
 const resolver = createTimeZoneResolver();
 
 export class DigestService {
   private readonly controllers = new Set<AbortController>();
+  private readonly attempts = new Set<Promise<unknown>>();
   private accepting = true;
 
   constructor(private readonly options: DigestServiceOptions) {}
 
-  async createSchedule(input: {
+  createSchedule(input: {
     id: string;
     selector: { sourceIds?: readonly string[]; groupId?: string };
     localTime: string;
     timeZone: string;
     aiEnabled?: boolean;
   }): Promise<{ ok: boolean }> {
-    if (!this.accepting || this.options.membership === undefined) return { ok: false };
-    const sourceIds = [...new Set(await this.options.membership.resolve(input.selector))].sort(
-      (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)),
-    );
-    const now = this.options.clock.now();
-    const next = resolver.nextDailyInstant({
-      after: now,
-      localTime: input.localTime,
-      timeZone: input.timeZone,
-      lastLocalDate: null,
-    });
-    if (next === null) return { ok: false };
-    return {
-      ok: this.options.repository.createDigestSchedule({
-        id: input.id,
-        sourceIds,
+    return this.track(async () => {
+      if (!this.accepting || this.options.membership === undefined) return { ok: false };
+      const resolution = await this.options.membership.resolve(input.selector);
+      if (!this.accepting || resolution.status !== 'ok') return { ok: false };
+      const sourceIds = [...new Set(resolution.members.map((member) => member.sourceId))].sort(
+        (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)),
+      );
+      if (sourceIds.length < 1 || sourceIds.length > 100) return { ok: false };
+      const now = this.options.clock.now();
+      const next = resolver.nextDailyInstant({
+        after: now,
         localTime: input.localTime,
         timeZone: input.timeZone,
-        aiEnabled: input.aiEnabled === true,
-        nextDueAt: next.instant.toISOString(),
-        nowIso: now.toISOString(),
-      }).ok,
-    };
+        lastLocalDate: null,
+      });
+      if (next === null) return { ok: false };
+      return {
+        ok: this.options.repository.createDigestSchedule({
+          id: input.id,
+          sourceIds,
+          localTime: input.localTime,
+          timeZone: input.timeZone,
+          aiEnabled: input.aiEnabled === true,
+          nextDueAt: next.instant.toISOString(),
+          nowIso: now.toISOString(),
+        }).ok,
+      };
+    });
   }
 
-  async handleDue(input: {
+  handleDue(input: {
+    scheduleId: string;
+    expectedNextDueAt: string;
+    logicalDate: string;
+  }): Promise<{ ok: boolean; nextDueAt: string | null }> {
+    return this.track(() => this.handleDueInternal(input));
+  }
+
+  private async handleDueInternal(input: {
     scheduleId: string;
     expectedNextDueAt: string;
     logicalDate: string;
@@ -130,11 +147,116 @@ export class DigestService {
     return { ok, nextDueAt: schedule.nextDueAt };
   }
 
-  async resumeActiveCycles(): Promise<void> {
-    for (const schedule of this.options.repository.listActiveDigestSchedules()) {
-      const run = this.options.repository.getNonterminalDigestRun(schedule.id);
-      if (run?.state === 'running') await this.processRun(schedule, run);
-    }
+  resumeActiveCycles(): Promise<void> {
+    return this.track(async () => {
+      for (const schedule of this.options.repository.listActiveDigestSchedules()) {
+        let run = this.options.repository.getNonterminalDigestRun(schedule.id);
+        if (run?.state === 'budget_exceeded') {
+          const recovered = this.options.repository.revalidateDigestRunBudget(
+            run.id,
+            this.options.clock.now().toISOString(),
+          );
+          if (!recovered.ok) throw new Error('Digest cycle 容量恢复失败');
+          run = this.options.repository.getDigestRun(run.id);
+        }
+        if (run?.state === 'running') {
+          const ok = await this.processRun(schedule, run);
+          if (!ok) throw new Error('Digest cycle 恢复失败');
+        }
+      }
+    });
+  }
+
+  pause(id: string, expectedVersion: number): WatchResult {
+    if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+    return this.options.repository.pauseDigestSchedule(
+      id,
+      expectedVersion,
+      this.options.clock.now().toISOString(),
+    );
+  }
+
+  resume(id: string, expectedVersion: number): Promise<WatchResult> {
+    return this.track(async () => {
+      if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+      const resumed = this.options.repository.resumeDigestSchedule(
+        id,
+        expectedVersion,
+        this.options.clock.now().toISOString(),
+      );
+      if (!resumed.ok) return resumed;
+      const schedule = this.options.repository.getDigestSchedule(id);
+      let run = this.options.repository.getNonterminalDigestRun(id);
+      if (schedule === null) return { ok: false, code: 'store-unavailable' };
+      if (run?.state === 'budget_exceeded') {
+        const retried = this.options.repository.revalidateDigestRunBudget(
+          run.id,
+          this.options.clock.now().toISOString(),
+        );
+        if (!retried.ok) return retried;
+        if (retried.state === 'budget_exceeded') {
+          return { ok: false, code: 'db-budget-exceeded' };
+        }
+        run = this.options.repository.getDigestRun(run.id);
+      }
+      if (run?.state === 'running' && !(await this.processRun(schedule, run))) {
+        return { ok: false, code: 'store-unavailable' };
+      }
+      return { ok: true };
+    });
+  }
+
+  delete(id: string, expectedVersion: number): WatchResult {
+    if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+    return this.options.repository.deleteDigestSchedule(id, expectedVersion);
+  }
+
+  retryBudget(runId: string): Promise<WatchResult> {
+    return this.track(async () => {
+      if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+      const retried = this.options.repository.revalidateDigestRunBudget(
+        runId,
+        this.options.clock.now().toISOString(),
+      );
+      if (!retried.ok) return retried;
+      if (retried.state === 'budget_exceeded') {
+        return { ok: false, code: 'db-budget-exceeded' };
+      }
+      const run = this.options.repository.getDigestRun(runId);
+      const schedule = run && this.options.repository.getDigestSchedule(run.scheduleId);
+      if (run === null || schedule === null) return { ok: false, code: 'store-unavailable' };
+      return (await this.processRun(schedule, run))
+        ? { ok: true }
+        : { ok: false, code: 'store-unavailable' };
+    });
+  }
+
+  setAiEnabled(id: string, expectedVersion: number, enabled: boolean): WatchResult {
+    if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+    return this.options.repository.setDigestScheduleAiEnabled(
+      id,
+      expectedVersion,
+      enabled,
+      this.options.clock.now().toISOString(),
+    );
+  }
+
+  getSchedule(id: string): DigestScheduleQueryDto | null {
+    const schedule = this.options.repository.getDigestSchedule(id);
+    return schedule === null
+      ? null
+      : {
+          schedule,
+          runs: this.options.repository.listDigestRunsBySchedule(id),
+          artifacts: this.options.repository.listDigestArtifactsBySchedule(id),
+        };
+  }
+
+  listSchedules(): DigestScheduleQueryDto[] {
+    return this.options.repository
+      .listDigestSchedules()
+      .map((schedule) => this.getSchedule(schedule.id))
+      .filter((item): item is DigestScheduleQueryDto => item !== null);
   }
 
   preview(input: {
@@ -196,6 +318,9 @@ export class DigestService {
   }
 
   async drain(): Promise<void> {
+    while (this.attempts.size > 0) {
+      await Promise.allSettled([...this.attempts]);
+    }
     while (this.controllers.size > 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
 
@@ -255,18 +380,6 @@ export class DigestService {
         aiEnabled: schedule.aiEnabled,
       });
       if (!committed.ok) {
-        if (committed.code === 'db-budget-exceeded') {
-          const canonical = canonicalizeDigestFacts(built);
-          if (canonical.ok) {
-            const available = this.options.repository.remainingDbBudget();
-            this.options.repository.markDigestRunBudgetExceeded(
-              run.id,
-              Math.max(canonical.byteLength, available + 1),
-              available,
-              this.options.clock.now().toISOString(),
-            );
-          }
-        }
         return false;
       }
       if (schedule.aiEnabled) await this.attemptProvider(artifactId, schedule);
@@ -284,6 +397,7 @@ export class DigestService {
   }
 
   private async attemptProvider(id: string, schedule: StoredDigestSchedule): Promise<void> {
+    if (!this.accepting) return;
     const artifact = this.options.repository.getDigestArtifact(id);
     if (artifact === null || artifact.providerState !== 'pending') return;
     const currentSchedule = this.options.repository.getDigestSchedule(schedule.id);
@@ -298,6 +412,7 @@ export class DigestService {
       return;
     }
     const sharing = await this.options.sharing.get(currentSchedule.sourceIds);
+    if (!this.accepting) return;
     const projection = projectDigestForProvider(artifact.facts, sharing);
     if (projection.events.length === 0) {
       this.options.repository.finishPendingDigest(
@@ -309,6 +424,7 @@ export class DigestService {
       return;
     }
     const resolved = await this.options.provider.resolve();
+    if (!this.accepting) return;
     if (resolved === null) {
       this.options.repository.finishPendingDigest(
         id,
@@ -332,6 +448,7 @@ export class DigestService {
       );
       return;
     }
+    if (!this.accepting) return;
     const claimed = this.options.repository.claimDigestProvider(
       id,
       this.options.clock.now().toISOString(),
@@ -415,5 +532,15 @@ export class DigestService {
       explanationJson: explanation === null ? null : raw,
       nowIso,
     });
+  }
+
+  private track<T>(work: () => Promise<T>): Promise<T> {
+    const operation = work();
+    this.attempts.add(operation);
+    void operation.then(
+      () => this.attempts.delete(operation),
+      () => this.attempts.delete(operation),
+    );
+    return operation;
   }
 }

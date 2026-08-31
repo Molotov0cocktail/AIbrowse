@@ -28,6 +28,7 @@ import {
   type WatchBaselineRow,
   type WatchRuleRowColumns,
 } from './watch-row-validation';
+import { serializeDigestArtifact } from '../../shared/watch/digest-validator';
 
 const FINGERPRINT = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
@@ -858,7 +859,7 @@ describe('D8 Digest v4 runtime validators', () => {
     facts_hash: hash,
     facts_revision: 1,
     explanation_json: null,
-    byte_length: Buffer.byteLength(facts),
+    byte_length: serializeDigestArtifact(facts, null).byteLength,
     provider_state: 'pending',
     provider_result_code: null,
     claimed_facts_revision: null,
@@ -962,7 +963,7 @@ describe('D8 Digest v4 runtime validators', () => {
         provider_state: 'succeeded',
         provider_result_code: 'success',
         explanation_json: explanation,
-        byte_length: Buffer.byteLength(facts) + Buffer.byteLength(explanation),
+        byte_length: serializeDigestArtifact(facts, explanation).byteLength,
         ...claimed,
         ...finished,
       }),

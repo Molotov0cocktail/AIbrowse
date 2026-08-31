@@ -41,7 +41,10 @@ import { validateFeedTarget, validatePageTarget } from '../../shared/watch/watch
 import { validateWatchSchedule } from '../../shared/watch/watch-rule-state';
 import { utf8ByteLength } from '../../shared/watch/watch-budget';
 import { canonicalizeDigestFacts } from '../../shared/watch/digest-facts';
-import { parseDigestExplanation } from '../../shared/watch/digest-validator';
+import {
+  parseDigestExplanation,
+  serializeDigestArtifact,
+} from '../../shared/watch/digest-validator';
 
 export type WatchRowErrorCode =
   | 'row-shape-invalid'
@@ -1019,10 +1022,11 @@ export function validateDigestArtifactRow(row: Record<string, unknown>): boolean
     if (typeof explanation !== 'string' || parseDigestExplanation(explanation, visibleIds) === null)
       return false;
   }
-  if (
-    row['byte_length'] !==
-    canonical.byteLength + (explanation === null ? 0 : utf8ByteLength(explanation as string))
-  )
+  const artifactEnvelope = serializeDigestArtifact(
+    canonical.json,
+    explanation === null ? null : (explanation as string),
+  );
+  if (!artifactEnvelope.withinBudget || row['byte_length'] !== artifactEnvelope.byteLength)
     return false;
   const state = row['provider_state'];
   const result = row['provider_result_code'];

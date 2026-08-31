@@ -12,6 +12,7 @@ import { openDb, closeDb, type DbHandle } from '../../sources/db/sqlite-driver';
 import { runWatchMigrations } from '../db/watch-migrations';
 import { WatchRepository, WatchRepositoryError } from './watch-repository';
 import type { ChangeEvidencePair, WatchEvent, WatchRule } from '../../../shared/types/watch';
+import { serializeDigestArtifact } from '../../../shared/watch/digest-validator';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-watch-repo-'));
 
@@ -167,7 +168,7 @@ function insertDigestRefFixture(eventId: string): void {
   VALUES ('d1','ds1','dr1',0,1,1,?,?,1,?,
    'disabled','disabled',?,?)`,
     )
-    .run(facts, hash, Buffer.byteLength(facts), NOW, NOW);
+    .run(facts, hash, serializeDigestArtifact(facts, null).byteLength, NOW, NOW);
   expect(repo.insertDigestEventRef({ digestId: 'd1', eventId, status: 'active' })).toEqual({
     ok: true,
   });

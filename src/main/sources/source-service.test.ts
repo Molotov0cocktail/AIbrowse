@@ -79,6 +79,33 @@ describe('D8 Digest main-internal sharing projection', () => {
     expect(JSON.stringify(result)).not.toContain('SECRET_DIGEST_NOTE');
     expect(JSON.stringify(result)).not.toContain('SECRET_AI_DIGEST_NOTE');
   });
+
+  it('显式/group 成员冻结排序去重，blocked/missing 排除且 note 零字节', async () => {
+    const visible = await addOne('https://example.com/visible', {
+      name: '可见来源',
+      groupName: '冻结组',
+      shareMode: 'full',
+      userNote: 'MEMBERSHIP_NOTE_CANARY',
+    });
+    const blocked = await addOne('https://example.com/blocked', {
+      name: '阻止来源',
+      groupName: '冻结组',
+      shareMode: 'blocked',
+    });
+
+    const explicit = service.resolveDigestMembership({
+      sourceIds: [blocked.id, visible.id, visible.id, UUID],
+    });
+    expect(explicit).toMatchObject({
+      status: 'ok',
+      members: [{ sourceId: visible.id, displayName: '可见来源' }],
+    });
+    expect(JSON.stringify(explicit)).not.toContain('MEMBERSHIP_NOTE_CANARY');
+
+    const group = service.resolveDigestMembership({ groupId: visible.groupId! });
+    expect(group).toMatchObject({ status: 'ok', members: [{ sourceId: visible.id }] });
+    expect(JSON.stringify(group)).not.toContain(blocked.id);
+  });
 });
 
 describe('search / list / get — 非法输入安全返回', () => {

@@ -251,6 +251,13 @@ function assembleNormal(
     if (budget.deleted > 0) {
       logInfo('watch', `全库预算清理：移除 ${budget.deleted} 个最旧 Event`);
     }
+    // D8：全部非终态 cycle 必须在 Scheduler 启动前验证。active running
+    // 保留 frozen cursor 等待 DigestService 恢复；active budget_exceeded 复用
+    // 与显式 retry 相同的候选重建/容量复验；paused 原样休眠。
+    const digestRecovery = repo.validateRecoverableDigestCycles(nowIso);
+    if (!digestRecovery.ok) {
+      return fail('Digest 非终态 cycle 校验或容量恢复失败');
+    }
     // 8. 恢复路径：全部 session Rule 的 sessionConsent 置 null（grant 失效）
     if (options.invalidateSessionConsentsOnStart === true) {
       const invalidated = repo.invalidateAllSessionConsents();

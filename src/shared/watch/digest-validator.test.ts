@@ -1,5 +1,37 @@
 import { describe, expect, it } from 'vitest';
-import { parseDigestExplanation } from './digest-validator';
+import { MAX_DIGEST_BYTES } from '../types/watch';
+import { parseDigestExplanation, serializeDigestArtifact } from './digest-validator';
+
+describe('Digest artifact canonical envelope', () => {
+  it('null 与非 null explanation 均以完整 envelope 计量', () => {
+    const factsJson = '{"schemaVersion":1}';
+    const withoutExplanation = serializeDigestArtifact(factsJson, null);
+    const explanationJson = '{"sections":[{"eventIds":["e1"],"explanation":"x"}]}';
+    const withExplanation = serializeDigestArtifact(factsJson, explanationJson);
+
+    expect(withoutExplanation.json).toBe('{"facts":{"schemaVersion":1},"explanation":null}');
+    expect(withoutExplanation.byteLength).toBe(Buffer.byteLength(withoutExplanation.json));
+    expect(withExplanation.json).toBe(`{"facts":${factsJson},"explanation":${explanationJson}}`);
+    expect(withExplanation.byteLength).toBe(Buffer.byteLength(withExplanation.json));
+  });
+
+  it('完整 envelope 65536 bytes 接受，65537 bytes 拒绝', () => {
+    const fixedBytes = Buffer.byteLength('{"facts":"","explanation":null}');
+    const atLimit = serializeDigestArtifact(
+      JSON.stringify('a'.repeat(MAX_DIGEST_BYTES - fixedBytes)),
+      null,
+    );
+    const overLimit = serializeDigestArtifact(
+      JSON.stringify('a'.repeat(MAX_DIGEST_BYTES - fixedBytes + 1)),
+      null,
+    );
+
+    expect(atLimit.byteLength).toBe(MAX_DIGEST_BYTES);
+    expect(atLimit.withinBudget).toBe(true);
+    expect(overLimit.byteLength).toBe(MAX_DIGEST_BYTES + 1);
+    expect(overLimit.withinBudget).toBe(false);
+  });
+});
 
 describe('Digest explanation canonical validator', () => {
   const visible = ['e1', 'e2', 'e3'];

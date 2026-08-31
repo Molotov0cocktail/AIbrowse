@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FakeClock } from '../../shared/watch/clock';
+import { buildDigestFacts } from '../../shared/watch/digest-facts';
+import { serializeDigestArtifact } from '../../shared/watch/digest-validator';
 import type { ChangeEvidencePair, WatchRule } from '../../shared/types/watch';
 import { FakeProvider } from '../ai/provider/fake-provider';
 import { openDb, type DbHandle } from '../sources/db/sqlite-driver';
@@ -77,9 +79,9 @@ function item(label: string): ChangeEvidencePair {
   };
 }
 
-function prepare(count: number, aiEnabled = false): void {
+function prepare(count: number, aiEnabled = false, targetRepo = repo): void {
   expect(
-    repo.createDigestSchedule({
+    targetRepo.createDigestSchedule({
       id: 'schedule-1',
       sourceIds: ['source-1'],
       localTime: '09:00',
@@ -90,11 +92,11 @@ function prepare(count: number, aiEnabled = false): void {
     }),
   ).toEqual({ ok: true });
   const watchRule = rule();
-  expect(repo.insertRule(watchRule)).toEqual({ ok: true });
+  expect(targetRepo.insertRule(watchRule)).toEqual({ ok: true });
   for (let index = 0; index < count; index += 1) {
     const eventId = `event-${String(index).padStart(3, '0')}`;
     expect(
-      repo.writeEventTransaction({
+      targetRepo.writeEventTransaction({
         event: {
           id: eventId,
           ruleId: watchRule.id,
@@ -410,6 +412,64 @@ describe('DigestService frozen cycle', () => {
     });
   });
 
+  it.each(['sharing', 'provider'] as const)(
+    'shutdown 等待 deferred %s 准备，释放后零 claim/零 stream',
+    async (gap) => {
+      prepare(1, true);
+      const fake = new FakeProvider({ chunks: ['SHOULD_NOT_RUN'] });
+      let release!: () => void;
+      const deferred = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const digest = new DigestService({
+        repository: repo,
+        clock: new FakeClock(Date.parse(due)),
+        sharing: {
+          get: async () => {
+            if (gap === 'sharing') await deferred;
+            return [
+              {
+                sourceId: 'source-1',
+                shareMode: 'full',
+                displayName: '来源',
+                canonicalUrl: 'https://example.com',
+              },
+            ];
+          },
+        },
+        provider: {
+          resolve: async () => {
+            if (gap === 'provider') await deferred;
+            return { provider: fake, model: 'fake' };
+          },
+        },
+      });
+      const handling = digest.handleDue({
+        scheduleId: 'schedule-1',
+        expectedNextDueAt: due,
+        logicalDate: '2026-08-29',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      digest.stopAdmission();
+      digest.abort();
+      let drained = false;
+      const draining = digest.drain().then(() => {
+        drained = true;
+      });
+      await Promise.resolve();
+      expect(drained).toBe(false);
+      release();
+      await Promise.all([handling, draining]);
+      expect(fake.getRequests()).toHaveLength(0);
+      expect(
+        handle
+          .prepare("SELECT COUNT(*) AS n FROM watch_digests WHERE provider_state='claimed'")
+          .get(),
+      ).toEqual({ n: 0 });
+    },
+  );
+
   it('claimed artifact scrub 原子终结 aborted，迟到写回 CAS 被拒绝', async () => {
     prepare(1);
     expect(
@@ -486,6 +546,45 @@ describe('DigestService frozen cycle', () => {
     });
   });
 
+  it('active running 跨启动保留 frozen cursor，并在 Scheduler 前恢复完成', async () => {
+    prepare(1);
+    const schedule = repo.getDigestSchedule('schedule-1')!;
+    const reserved = repo.reserveDigestRun({
+      scheduleId: schedule.id,
+      expectedVersion: schedule.version,
+      expectedNextDueAt: due,
+      expectedLastConsumedScheduledFor: null,
+      expectedLastDailyLocalDate: null,
+      runId: 'run-restart-active',
+      requestKey: 'restart-active-key',
+      logicalDate: '2026-08-29',
+      nextDueAt: '2026-08-30T01:00:00.000Z',
+      nowIso: due,
+    });
+    expect(reserved.ok).toBe(true);
+    const dbPath = handle.path;
+    repo.dispose();
+    const reopened = openWatchStore({
+      dbPath,
+      backupsDir: join(root, 'restart-active-backups'),
+      nowMs: () => Date.parse('2026-08-29T01:01:00.000Z'),
+    });
+    expect(reopened.mode).toBe('normal');
+    if (reopened.mode !== 'normal') return;
+    repo = reopened.repo;
+    handle = repo.dbHandle;
+    expect(repo.getDigestRun('run-restart-active')).toMatchObject({
+      state: 'running',
+      nextSequence: 0,
+      upperSequence: 1,
+    });
+    await service().resumeActiveCycles();
+    expect(repo.getDigestRun('run-restart-active')).toMatchObject({
+      state: 'completed',
+      nextSequence: 1,
+    });
+  });
+
   it('budget_exceeded 持久化且显式容量复验后从原 frozen cycle 恢复', async () => {
     prepare(1);
     const tight = new WatchRepository(handle, { maxDbBytes: repo.estimateLogicalBytes() + 1 });
@@ -498,11 +597,264 @@ describe('DigestService frozen cycle', () => {
     ).toMatchObject({ ok: false });
     const blocked = repo.getNonterminalDigestRun('schedule-1')!;
     expect(blocked.state).toBe('budget_exceeded');
+    expect(blocked.blockedRequiredBytes).toBeGreaterThan(blocked.blockedAvailableBytes!);
+    expect(blocked.blockedAt).not.toBeNull();
+    expect(service(null, tight).getSchedule('schedule-1')?.runs[0]).toMatchObject({
+      state: 'budget_exceeded',
+      blockedAt: blocked.blockedAt,
+      blockedRequiredBytes: blocked.blockedRequiredBytes,
+      blockedAvailableBytes: blocked.blockedAvailableBytes,
+      createdAt: due,
+      finishedAt: null,
+    });
+    expect(await service(null, tight).retryBudget(blocked.id)).toEqual({
+      ok: false,
+      code: 'db-budget-exceeded',
+    });
+    const stillBlocked = repo.getDigestRun(blocked.id)!;
+    expect(stillBlocked).toMatchObject({ state: 'budget_exceeded', nextSequence: 0 });
+    expect(stillBlocked.blockedRequiredBytes).toBeGreaterThan(stillBlocked.blockedAvailableBytes!);
+    expect(repo.getDigestSchedule('schedule-1')?.cursorSequence).toBe(0);
     const roomy = new WatchRepository(handle);
-    expect(roomy.retryDigestRunBudget(blocked.id)).toEqual({ ok: true });
-    await service(null, roomy).resumeActiveCycles();
+    expect(await service(null, roomy).retryBudget(blocked.id)).toEqual({ ok: true });
     expect(repo.getNonterminalDigestRun('schedule-1')).toBeNull();
     expect(handle.prepare('SELECT COUNT(*) AS n FROM watch_digests').get()).toEqual({ n: 1 });
+  });
+
+  it('active budget_exceeded 启动重建同一候选并容量恢复', async () => {
+    prepare(1);
+    const tight = new WatchRepository(handle, { maxDbBytes: repo.estimateLogicalBytes() + 1 });
+    await service(null, tight).handleDue({
+      scheduleId: 'schedule-1',
+      expectedNextDueAt: due,
+      logicalDate: '2026-08-29',
+    });
+    const runId = repo.getNonterminalDigestRun('schedule-1')!.id;
+    const dbPath = handle.path;
+    repo.dispose();
+    const reopened = openWatchStore({
+      dbPath,
+      backupsDir: join(root, 'restart-budget-backups'),
+      nowMs: () => Date.parse('2026-08-29T01:02:00.000Z'),
+    });
+    expect(reopened.mode).toBe('normal');
+    if (reopened.mode !== 'normal') return;
+    repo = reopened.repo;
+    handle = repo.dbHandle;
+    expect(repo.getDigestRun(runId)?.state).toBe('running');
+    await service().resumeActiveCycles();
+    expect(repo.getDigestRun(runId)?.state).toBe('completed');
+  });
+
+  it('paused budget_exceeded 启动原样休眠，Service resume 才容量复验', async () => {
+    prepare(1);
+    const tight = new WatchRepository(handle, { maxDbBytes: repo.estimateLogicalBytes() + 1 });
+    await service(null, tight).handleDue({
+      scheduleId: 'schedule-1',
+      expectedNextDueAt: due,
+      logicalDate: '2026-08-29',
+    });
+    const runId = repo.getNonterminalDigestRun('schedule-1')!.id;
+    const schedule = repo.getDigestSchedule('schedule-1')!;
+    expect(repo.pauseDigestSchedule(schedule.id, schedule.version, due)).toEqual({ ok: true });
+    const dbPath = handle.path;
+    repo.dispose();
+    const reopened = openWatchStore({
+      dbPath,
+      backupsDir: join(root, 'restart-paused-budget-backups'),
+      nowMs: () => Date.parse('2026-08-29T01:02:00.000Z'),
+    });
+    expect(reopened.mode).toBe('normal');
+    if (reopened.mode !== 'normal') return;
+    repo = reopened.repo;
+    handle = repo.dbHandle;
+    expect(repo.getDigestRun(runId)?.state).toBe('budget_exceeded');
+    const paused = repo.getDigestSchedule('schedule-1')!;
+    expect(await service().resume(paused.id, paused.version)).toEqual({ ok: true });
+    expect(repo.getDigestRun(runId)?.state).toBe('completed');
+  });
+
+  it('完整 Digest+refs+cursor 写集 available==required 成功，少 1 byte 原子阻塞', () => {
+    const seed = (maxDbBytes?: number) => {
+      const db = openDb(join(root, `${randomUUID()}.db`));
+      runWatchMigrations(db);
+      const wide = new WatchRepository(db);
+      prepare(1, false, wide);
+      const schedule = wide.getDigestSchedule('schedule-1')!;
+      const reserved = wide.reserveDigestRun({
+        scheduleId: schedule.id,
+        expectedVersion: schedule.version,
+        expectedNextDueAt: due,
+        expectedLastConsumedScheduledFor: null,
+        expectedLastDailyLocalDate: null,
+        runId: '00000000-0000-4000-8000-000000000001',
+        requestKey: 'budget-boundary',
+        logicalDate: '2026-08-29',
+        nextDueAt: '2026-08-30T01:00:00.000Z',
+        nowIso: due,
+      });
+      expect(reserved.ok).toBe(true);
+      if (!reserved.ok) throw new Error('seed failed');
+      const journal = wide.readDigestJournalSlice(reserved.run.id)!;
+      const observation = journal.find((entry) => entry.observation !== null)?.observation;
+      if (observation === null || observation === undefined) throw new Error('observation missing');
+      const facts = buildDigestFacts({
+        scheduleId: schedule.id,
+        digestRunId: reserved.run.id,
+        batchIndex: 0,
+        period: reserved.run.period,
+        runStats: reserved.run.runStats,
+        observations: [observation],
+        fetchedAt: reserved.run.period.toInclusive,
+      })!;
+      return {
+        db,
+        repo: new WatchRepository(db, { maxDbBytes: maxDbBytes ?? Number.MAX_SAFE_INTEGER }),
+        run: reserved.run,
+        facts,
+        beforeBytes: wide.estimateLogicalBytes(),
+      };
+    };
+    const write = (s: ReturnType<typeof seed>) =>
+      s.repo.commitDigestBatch({
+        artifactId: '00000000-0000-4000-8000-000000000002',
+        run: s.run,
+        expectedNextSequence: 0,
+        firstSequence: 1,
+        lastSequence: 1,
+        facts: s.facts,
+        createdAt: due,
+        aiEnabled: false,
+      });
+
+    const measured = seed();
+    expect(write(measured)).toEqual({ ok: true });
+    const required = measured.repo.estimateLogicalBytes() - measured.beforeBytes;
+    measured.db.close();
+
+    const exact = seed();
+    const exactRepo = new WatchRepository(exact.db, {
+      maxDbBytes: exact.beforeBytes + required,
+    });
+    exact.repo = exactRepo;
+    expect(write(exact)).toEqual({ ok: true });
+    expect(exactRepo.estimateLogicalBytes()).toBeLessThanOrEqual(exact.beforeBytes + required);
+    exact.db.close();
+
+    const short = seed();
+    const shortRepo = new WatchRepository(short.db, {
+      maxDbBytes: short.beforeBytes + required - 1,
+    });
+    short.repo = shortRepo;
+    expect(write(short)).toEqual({
+      ok: false,
+      code: 'db-budget-exceeded',
+      requiredBytes: required,
+      availableBytes: required - 1,
+    });
+    expect(short.db.prepare('SELECT COUNT(*) AS n FROM watch_digests').get()).toEqual({ n: 0 });
+    expect(shortRepo.getDigestRun(short.run.id)).toMatchObject({
+      state: 'budget_exceeded',
+      nextSequence: 0,
+    });
+    expect(shortRepo.getDigestSchedule('schedule-1')?.cursorSequence).toBe(0);
+    short.db.close();
+  });
+
+  it('Clock 回拨不回拨 schedule.updated 与 run.blocked 审计时间', () => {
+    prepare(1);
+    const schedule = repo.getDigestSchedule('schedule-1')!;
+    const reserved = repo.reserveDigestRun({
+      scheduleId: schedule.id,
+      expectedVersion: schedule.version,
+      expectedNextDueAt: due,
+      expectedLastConsumedScheduledFor: null,
+      expectedLastDailyLocalDate: null,
+      runId: 'run-clock-rollback',
+      requestKey: 'clock-rollback',
+      logicalDate: '2026-08-29',
+      nextDueAt: '2026-08-30T01:00:00.000Z',
+      nowIso: due,
+    });
+    expect(reserved.ok).toBe(true);
+    if (!reserved.ok) return;
+    expect(repo.markDigestRunBudgetExceeded(reserved.run.id, 2, 1, created)).toEqual({ ok: true });
+    expect(repo.getDigestRun(reserved.run.id)).toMatchObject({ blockedAt: due, createdAt: due });
+    const afterReserve = repo.getDigestSchedule(schedule.id)!;
+    expect(repo.pauseDigestSchedule(schedule.id, afterReserve.version, created)).toEqual({
+      ok: true,
+    });
+    expect(repo.getDigestSchedule(schedule.id)?.updatedAt).toBe(due);
+  });
+
+  it('Clock 回拨不回拨 provider.claimed/finished 审计时间', async () => {
+    prepare(1, true);
+    let release!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const digest = new DigestService({
+      repository: repo,
+      clock: new FakeClock(Date.parse(due)),
+      sharing: {
+        get: async () => {
+          await deferred;
+          return [];
+        },
+      },
+      provider: { resolve: async () => null },
+    });
+    const handling = digest.handleDue({
+      scheduleId: 'schedule-1',
+      expectedNextDueAt: due,
+      logicalDate: '2026-08-29',
+    });
+    await Promise.resolve();
+    digest.stopAdmission();
+    release();
+    await handling;
+    const artifactId = (handle.prepare('SELECT id FROM watch_digests').get() as { id: string }).id;
+    const claimedAt = '2026-08-29T03:00:00.000Z';
+    const claimed = repo.claimDigestProvider(artifactId, claimedAt)!;
+    expect(claimed.claimedAt).toBe(claimedAt);
+    expect(
+      repo.finishClaimedDigest({
+        id: claimed.id,
+        factsRevision: claimed.factsRevision,
+        factsHash: claimed.factsHash,
+        state: 'failed',
+        code: 'aborted',
+        explanationJson: null,
+        nowIso: created,
+      }),
+    ).toEqual({ ok: true });
+    expect(repo.getDigestArtifact(artifactId)?.providerFinishedAt).toBe(claimedAt);
+  });
+
+  it('Clock 回拨不回拨 run.finished 审计时间', () => {
+    prepare(0);
+    const schedule = repo.getDigestSchedule('schedule-1')!;
+    const reserved = repo.reserveDigestRun({
+      scheduleId: schedule.id,
+      expectedVersion: schedule.version,
+      expectedNextDueAt: due,
+      expectedLastConsumedScheduledFor: null,
+      expectedLastDailyLocalDate: null,
+      runId: 'run-finish-rollback',
+      requestKey: 'finish-rollback',
+      logicalDate: '2026-08-29',
+      nextDueAt: '2026-08-30T01:00:00.000Z',
+      nowIso: due,
+    });
+    expect(reserved.ok).toBe(true);
+    if (!reserved.ok) return;
+    expect(repo.completeDigestRun(reserved.run, created)).toEqual({ ok: true });
+    expect(repo.getDigestRun(reserved.run.id)).toMatchObject({
+      state: 'completed',
+      createdAt: due,
+      finishedAt: due,
+    });
+    expect(repo.getDigestSchedule(schedule.id)?.updatedAt).toBe(due);
   });
 
   it('pause 保留非终态 cycle、resume 后恢复；delete 只级联 Digest 不删 Event/journal', async () => {
@@ -544,6 +896,29 @@ describe('DigestService frozen cycle', () => {
       n: 1,
     });
     expect(handle.prepare('SELECT COUNT(*) AS n FROM watch_digests').get()).toEqual({ n: 0 });
+  });
+
+  it('Service 独占动作执行 CAS，安全查询 DTO 完整暴露 run 阻塞与时间字段', async () => {
+    prepare(1);
+    const digest = service();
+    const initial = repo.getDigestSchedule('schedule-1')!;
+    expect(digest.pause(initial.id, initial.version)).toEqual({ ok: true });
+    const paused = repo.getDigestSchedule(initial.id)!;
+    expect(digest.pause(paused.id, initial.version)).toEqual({
+      ok: false,
+      code: 'rule-state-conflict',
+    });
+    expect(await digest.resume(paused.id, paused.version)).toEqual({ ok: true });
+    const active = repo.getDigestSchedule(initial.id)!;
+    expect(digest.setAiEnabled(active.id, active.version, true)).toEqual({ ok: true });
+    const dto = digest.getSchedule(initial.id)!;
+    expect(dto.schedule).toMatchObject({ id: initial.id, state: 'active', aiEnabled: true });
+    expect(dto.runs).toEqual([]);
+    expect(dto.artifacts).toEqual([]);
+    expect(digest.listSchedules()).toHaveLength(1);
+    const updated = repo.getDigestSchedule(initial.id)!;
+    expect(digest.delete(updated.id, updated.version)).toEqual({ ok: true });
+    expect(digest.getSchedule(initial.id)).toBeNull();
   });
 
   it('reset 使用 journal high-water，关闭 AI 会把 pending artifact 终结为 disabled', () => {
@@ -627,7 +1002,7 @@ describe('DigestService frozen cycle', () => {
         createHash('sha256').update(facts).digest('hex'),
         1,
         null,
-        Buffer.byteLength(facts, 'utf8'),
+        serializeDigestArtifact(facts, null).byteLength,
         'pending',
         null,
         null,

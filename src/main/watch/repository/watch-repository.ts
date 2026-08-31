@@ -42,10 +42,14 @@ import {
 import { utf8ByteLength } from '../../../shared/watch/watch-budget';
 import { sha256Hex } from '../../../shared/watch/diff/evidence';
 import {
+  buildDigestFacts,
   canonicalizeDigestFacts,
   type DigestObservationSlice,
 } from '../../../shared/watch/digest-facts';
-import { parseDigestExplanation } from '../../../shared/watch/digest-validator';
+import {
+  parseDigestExplanation,
+  serializeDigestArtifact,
+} from '../../../shared/watch/digest-validator';
 import {
   WATCH_AUDIT_KINDS,
   WATCH_AUDIT_REASON_CODES,
@@ -167,6 +171,11 @@ export interface StoredDigestRun {
   period: { fromExclusive: string; toInclusive: string };
   runStats: { changed: number; failed: number; unchanged: number };
   state: 'running' | 'budget_exceeded' | 'completed';
+  blockedAt: string | null;
+  blockedRequiredBytes: number | null;
+  blockedAvailableBytes: number | null;
+  createdAt: string;
+  finishedAt: string | null;
 }
 
 export interface StoredDigestArtifact {
@@ -181,7 +190,20 @@ export interface StoredDigestArtifact {
   providerState: string;
   providerResultCode: string | null;
   explanationJson: string | null;
+  byteLength: number;
+  claimedAt: string | null;
+  providerFinishedAt: string | null;
+  createdAt: string;
 }
+
+export type CommitDigestBatchResult =
+  | { ok: true }
+  | {
+      ok: false;
+      code: WatchErrorCode;
+      requiredBytes?: number;
+      availableBytes?: number;
+    };
 
 export type DigestJournalSlice =
   | { sequence: number; status: 'skipped'; observation: null }
@@ -414,6 +436,8 @@ const SQL_SELECT_ALL_DIGEST_RUNS = `SELECT id, schedule_id, request_key, logical
   blocked_at, blocked_required_bytes, blocked_available_bytes, created_at, finished_at
   FROM digest_runs`;
 const SQL_SELECT_DIGEST_RUN_BY_ID = `${SQL_SELECT_ALL_DIGEST_RUNS} WHERE id = ?`;
+const SQL_SELECT_DIGEST_RUN_IDS_BY_SCHEDULE = `SELECT id FROM digest_runs
+  WHERE schedule_id = ? ORDER BY created_at DESC, id DESC`;
 const SQL_SELECT_ALL_DIGESTS = `SELECT id, schedule_id, run_id, batch_index,
   first_sequence, last_sequence, facts_json, facts_hash, facts_revision,
   explanation_json, byte_length, provider_state, provider_result_code,
@@ -439,8 +463,12 @@ const SQL_INSERT_DIGEST_SCHEDULE = `INSERT INTO digest_schedules
 const SQL_SELECT_DIGEST_SCHEDULE = `${SQL_SELECT_ALL_SCHEDULES} WHERE id = ?`;
 const SQL_SELECT_ACTIVE_DIGEST_SCHEDULES = `${SQL_SELECT_ALL_SCHEDULES}
   WHERE state = 'active' ORDER BY next_due_at ASC, id ASC`;
+const SQL_SELECT_ALL_DIGEST_SCHEDULE_IDS = `SELECT id FROM digest_schedules
+  ORDER BY created_at ASC, id ASC`;
 const SQL_SELECT_NONTERMINAL_DIGEST_RUN = `${SQL_SELECT_ALL_DIGEST_RUNS}
   WHERE schedule_id = ? AND state IN ('running','budget_exceeded') LIMIT 1`;
+const SQL_SELECT_ALL_NONTERMINAL_DIGEST_RUNS = `${SQL_SELECT_ALL_DIGEST_RUNS}
+  WHERE state IN ('running','budget_exceeded') ORDER BY created_at ASC, id ASC`;
 const SQL_INSERT_DIGEST_RUN = `INSERT INTO digest_runs
   (id, schedule_id, request_key, logical_date, lower_sequence, upper_sequence,
    next_sequence, period_json, run_stats_json, state, created_at)
@@ -521,6 +549,9 @@ const SQL_BLOCK_DIGEST_RUN = `UPDATE digest_runs SET state = 'budget_exceeded',
 const SQL_RETRY_DIGEST_RUN = `UPDATE digest_runs SET state = 'running', blocked_at = NULL,
   blocked_required_bytes = NULL, blocked_available_bytes = NULL
   WHERE id = ? AND state = 'budget_exceeded' AND blocked_required_bytes <= ?`;
+const SQL_REFRESH_DIGEST_RUN_BUDGET = `UPDATE digest_runs SET blocked_at = ?,
+  blocked_required_bytes = ?, blocked_available_bytes = ?
+  WHERE id = ? AND state = 'budget_exceeded'`;
 const SQL_DIGEST_SAFE_WATERMARK = `SELECT COALESCE(MIN(sequence),
   (SELECT last_sequence FROM digest_change_state WHERE id = 1)) AS sequence FROM (
     SELECT cursor_sequence AS sequence FROM digest_schedules
@@ -679,6 +710,14 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function isIn<T extends string>(value: unknown, list: readonly T[]): value is T {
   return typeof value === 'string' && (list as readonly string[]).includes(value);
+}
+
+function monotonicIso(nowIso: string, ...previous: Array<string | null>): string {
+  let latest = nowIso;
+  for (const value of previous) {
+    if (value !== null && value > latest) latest = value;
+  }
+  return latest;
 }
 
 export class WatchRepository {
@@ -991,15 +1030,15 @@ export class WatchRepository {
           ? row['claimed_at']
           : nowIso
         : previousFinished;
-      const byteLength =
-        canonical.byteLength + (explanationJson === null ? 0 : utf8ByteLength(explanationJson));
+      const artifactEnvelope = serializeDigestArtifact(canonical.json, explanationJson);
+      if (!artifactEnvelope.withinBudget) throw new TxnAbortError('validation-failed');
       const updated = this.handle
         .prepare(SQL_SCRUB_DIGEST)
         .run(
           canonical.json,
           canonical.hash,
           explanationJson,
-          byteLength,
+          artifactEnvelope.byteLength,
           nextState,
           nextCode,
           finishedAt,
@@ -2990,6 +3029,16 @@ export class WatchRepository {
       .filter((row): row is StoredDigestSchedule => row !== null);
   }
 
+  listDigestSchedules(): StoredDigestSchedule[] {
+    this.ensureOpen();
+    const rows = this.handle.prepare(SQL_SELECT_ALL_DIGEST_SCHEDULE_IDS).all() as Array<{
+      id: string;
+    }>;
+    return rows
+      .map((row) => this.getDigestSchedule(row.id))
+      .filter((row): row is StoredDigestSchedule => row !== null);
+  }
+
   pauseDigestSchedule(id: string, expectedVersion: number, nowIso: string): WatchResult {
     this.ensureOpen();
     const current = this.getDigestSchedule(id);
@@ -2998,7 +3047,7 @@ export class WatchRepository {
     if (current.state === 'paused') return { ok: true };
     const changed = this.handle
       .prepare(SQL_UPDATE_DIGEST_SCHEDULE_STATE)
-      .run('paused', nowIso, id, expectedVersion, 'active');
+      .run('paused', monotonicIso(nowIso, current.updatedAt), id, expectedVersion, 'active');
     return Number(changed.changes) === 1
       ? { ok: true }
       : { ok: false, code: 'rule-state-conflict' };
@@ -3012,7 +3061,7 @@ export class WatchRepository {
     if (current.state === 'active') return { ok: true };
     const changed = this.handle
       .prepare(SQL_UPDATE_DIGEST_SCHEDULE_STATE)
-      .run('active', nowIso, id, expectedVersion, 'paused');
+      .run('active', monotonicIso(nowIso, current.updatedAt), id, expectedVersion, 'paused');
     return Number(changed.changes) === 1
       ? { ok: true }
       : { ok: false, code: 'rule-state-conflict' };
@@ -3041,7 +3090,13 @@ export class WatchRepository {
       return withTransaction(this.handle, () => {
         const changed = this.handle
           .prepare(SQL_UPDATE_DIGEST_AI)
-          .run(enabled ? 1 : 0, nowIso, id, expectedVersion, current.aiEnabled ? 1 : 0);
+          .run(
+            enabled ? 1 : 0,
+            monotonicIso(nowIso, current.updatedAt),
+            id,
+            expectedVersion,
+            current.aiEnabled ? 1 : 0,
+          );
         if (Number(changed.changes) !== 1) throw new TxnAbortError('rule-state-conflict');
         if (!enabled) this.handle.prepare(SQL_DISABLE_PENDING_DIGESTS).run(nowIso, nowIso, id);
         return { ok: true };
@@ -3064,6 +3119,7 @@ export class WatchRepository {
     nowIso: string;
   }): WatchResult {
     this.ensureOpen();
+    const currentSchedule = this.getDigestSchedule(input.id);
     const sourceIds = [...input.sourceIds].sort((a, b) =>
       Buffer.compare(Buffer.from(a), Buffer.from(b)),
     );
@@ -3094,7 +3150,7 @@ export class WatchRepository {
             JSON.stringify(schedule),
             highWater.last_sequence,
             input.nextDueAt,
-            input.nowIso,
+            monotonicIso(input.nowIso, currentSchedule?.updatedAt ?? null),
             input.id,
             input.expectedVersion,
           );
@@ -3124,6 +3180,11 @@ export class WatchRepository {
       period: this.parseJson(row['period_json']) as StoredDigestRun['period'],
       runStats: this.parseJson(row['run_stats_json']) as StoredDigestRun['runStats'],
       state: row['state'] as StoredDigestRun['state'],
+      blockedAt: row['blocked_at'] as string | null,
+      blockedRequiredBytes: row['blocked_required_bytes'] as number | null,
+      blockedAvailableBytes: row['blocked_available_bytes'] as number | null,
+      createdAt: row['created_at'] as string,
+      finishedAt: row['finished_at'] as string | null,
     };
   }
 
@@ -3142,7 +3203,38 @@ export class WatchRepository {
       period: this.parseJson(row['period_json']) as StoredDigestRun['period'],
       runStats: this.parseJson(row['run_stats_json']) as StoredDigestRun['runStats'],
       state: row['state'] as StoredDigestRun['state'],
+      blockedAt: row['blocked_at'] as string | null,
+      blockedRequiredBytes: row['blocked_required_bytes'] as number | null,
+      blockedAvailableBytes: row['blocked_available_bytes'] as number | null,
+      createdAt: row['created_at'] as string,
+      finishedAt: row['finished_at'] as string | null,
     };
+  }
+
+  listNonterminalDigestRuns(): StoredDigestRun[] {
+    this.ensureOpen();
+    const rows = this.handle.prepare(SQL_SELECT_ALL_NONTERMINAL_DIGEST_RUNS).all() as Array<{
+      id: string;
+    }>;
+    const result: StoredDigestRun[] = [];
+    for (const row of rows) {
+      const run = this.getDigestRun(row.id);
+      if (run === null) throw new WatchRepositoryError('store-unavailable', 'DigestRun 行非法');
+      result.push(run);
+    }
+    return result;
+  }
+
+  listDigestRunsBySchedule(scheduleId: string): StoredDigestRun[] {
+    this.ensureOpen();
+    const rows = this.handle
+      .prepare(SQL_SELECT_DIGEST_RUN_IDS_BY_SCHEDULE)
+      .all(scheduleId) as Array<{
+      id: string;
+    }>;
+    return rows
+      .map((row) => this.getDigestRun(row.id))
+      .filter((row): row is StoredDigestRun => row !== null);
   }
 
   remainingDbBudget(): number {
@@ -3164,9 +3256,16 @@ export class WatchRepository {
       availableBytes < 0
     )
       return { ok: false, code: 'validation-failed' };
+    const run = this.getDigestRun(runId);
+    if (run === null) return { ok: false, code: 'run-not-found' };
     const changed = this.handle
       .prepare(SQL_BLOCK_DIGEST_RUN)
-      .run(nowIso, requiredBytes, availableBytes, runId);
+      .run(
+        monotonicIso(nowIso, run.createdAt, run.blockedAt),
+        requiredBytes,
+        availableBytes,
+        runId,
+      );
     return Number(changed.changes) === 1 ? { ok: true } : { ok: false, code: 'run-state-conflict' };
   }
 
@@ -3174,6 +3273,165 @@ export class WatchRepository {
     this.ensureOpen();
     const changed = this.handle.prepare(SQL_RETRY_DIGEST_RUN).run(runId, this.remainingDbBudget());
     return Number(changed.changes) === 1 ? { ok: true } : { ok: false, code: 'run-state-conflict' };
+  }
+
+  revalidateDigestRunBudget(
+    runId: string,
+    nowIso: string,
+  ): { ok: true; state: 'running' | 'budget_exceeded' } | { ok: false; code: WatchErrorCode } {
+    this.ensureOpen();
+    const run = this.getDigestRun(runId);
+    if (run === null || run.state !== 'budget_exceeded') {
+      return { ok: false, code: 'run-state-conflict' };
+    }
+    const schedule = this.getDigestSchedule(run.scheduleId);
+    if (schedule === null) return { ok: false, code: 'store-unavailable' };
+    if (schedule.state === 'paused') return { ok: true, state: 'budget_exceeded' };
+    const candidate = this.buildNextDigestBatchCandidate(run);
+    if (candidate === 'invalid') return { ok: false, code: 'store-unavailable' };
+    const blockedAt = monotonicIso(nowIso, run.createdAt, run.blockedAt);
+    if (candidate === null) {
+      const changed = this.handle
+        .prepare(SQL_RETRY_DIGEST_RUN)
+        .run(run.id, Number.MAX_SAFE_INTEGER);
+      return Number(changed.changes) === 1
+        ? { ok: true, state: 'running' }
+        : { ok: false, code: 'run-state-conflict' };
+    }
+    const canonical = canonicalizeDigestFacts(candidate.facts);
+    if (!canonical.ok) return { ok: false, code: 'store-unavailable' };
+    const envelope = serializeDigestArtifact(canonical.json, null);
+    if (!envelope.withinBudget) return { ok: false, code: 'store-unavailable' };
+    try {
+      return withTransaction(this.handle, () => {
+        const beforeBytes = this.estimateLogicalBytesInternal();
+        const artifactId = randomUUID();
+        this.handle.exec('SAVEPOINT digest_retry_budget_probe');
+        let afterBytes: number;
+        try {
+          const retried = this.handle
+            .prepare(SQL_RETRY_DIGEST_RUN)
+            .run(run.id, Number.MAX_SAFE_INTEGER);
+          if (Number(retried.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+          const batch = this.nextDigestBatchIndex(run.id);
+          this.handle
+            .prepare(SQL_INSERT_DIGEST)
+            .run(
+              artifactId,
+              run.scheduleId,
+              run.id,
+              batch,
+              run.nextSequence + 1,
+              candidate.lastSequence,
+              canonical.json,
+              canonical.hash,
+              envelope.byteLength,
+              schedule.aiEnabled ? 'pending' : 'disabled',
+              schedule.aiEnabled ? null : 'disabled',
+              schedule.aiEnabled ? null : blockedAt,
+              blockedAt,
+            );
+          for (const event of candidate.facts.events) {
+            this.handle.prepare(SQL_INSERT_DIGEST_REF).run(artifactId, event.eventId, 'active');
+          }
+          const runChanged = this.handle
+            .prepare(SQL_UPDATE_DIGEST_RUN_CURSOR)
+            .run(
+              candidate.lastSequence,
+              run.id,
+              run.scheduleId,
+              run.nextSequence,
+              candidate.lastSequence,
+            );
+          const scheduleChanged = this.handle
+            .prepare(SQL_UPDATE_DIGEST_SCHEDULE_CURSOR)
+            .run(
+              candidate.lastSequence,
+              monotonicIso(blockedAt, schedule.updatedAt),
+              schedule.id,
+              run.nextSequence,
+            );
+          if (Number(runChanged.changes) !== 1 || Number(scheduleChanged.changes) !== 1) {
+            throw new TxnAbortError('run-state-conflict');
+          }
+          afterBytes = this.estimateLogicalBytesInternal();
+        } finally {
+          this.handle.exec('ROLLBACK TO digest_retry_budget_probe');
+          this.handle.exec('RELEASE digest_retry_budget_probe');
+        }
+        const requiredBytes = Math.max(0, afterBytes - beforeBytes);
+        const availableBytes = Math.max(0, this.maxDbBytes - beforeBytes);
+        if (requiredBytes <= availableBytes) {
+          const changed = this.handle
+            .prepare(SQL_RETRY_DIGEST_RUN)
+            .run(run.id, Number.MAX_SAFE_INTEGER);
+          if (Number(changed.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+          return { ok: true, state: 'running' as const };
+        }
+        const refreshed = this.handle
+          .prepare(SQL_REFRESH_DIGEST_RUN_BUDGET)
+          .run(blockedAt, requiredBytes, availableBytes, run.id);
+        if (Number(refreshed.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+        return { ok: true, state: 'budget_exceeded' as const };
+      });
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  validateRecoverableDigestCycles(nowIso: string): WatchResult {
+    this.ensureOpen();
+    try {
+      for (const run of this.listNonterminalDigestRuns()) {
+        const schedule = this.getDigestSchedule(run.scheduleId);
+        if (schedule === null) return { ok: false, code: 'store-unavailable' };
+        if (schedule.state === 'paused') continue;
+        if (run.state === 'running') {
+          if (this.buildNextDigestBatchCandidate(run) === 'invalid') {
+            return { ok: false, code: 'store-unavailable' };
+          }
+          continue;
+        }
+        const recovered = this.revalidateDigestRunBudget(run.id, nowIso);
+        if (!recovered.ok) return recovered;
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, code: 'store-unavailable' };
+    }
+  }
+
+  private buildNextDigestBatchCandidate(
+    run: StoredDigestRun,
+  ): { facts: DigestFacts; lastSequence: number } | null | 'invalid' {
+    if (run.nextSequence >= run.upperSequence) return null;
+    const journal = this.readDigestJournalSlice(run.id);
+    if (journal === null) return 'invalid';
+    const observations: DigestObservationSlice[] = [];
+    let built: DigestFacts | null = null;
+    let lastSequence = run.nextSequence;
+    const batchIndex = this.nextDigestBatchIndex(run.id);
+    for (const item of journal) {
+      if (item.observation === null) {
+        lastSequence = item.sequence;
+        continue;
+      }
+      const candidate = buildDigestFacts({
+        scheduleId: run.scheduleId,
+        digestRunId: run.id,
+        batchIndex,
+        period: run.period,
+        runStats: run.runStats,
+        observations: [...observations, item.observation],
+        fetchedAt: run.period.toInclusive,
+      });
+      if (candidate === null)
+        return observations.length === 0 ? 'invalid' : { facts: built!, lastSequence };
+      observations.push(item.observation);
+      built = candidate;
+      lastSequence = item.sequence;
+    }
+    return built === null ? null : { facts: built, lastSequence };
   }
 
   reserveDigestRun(input: {
@@ -3251,7 +3509,7 @@ export class WatchRepository {
             input.nextDueAt,
             input.expectedNextDueAt,
             input.logicalDate,
-            input.nowIso,
+            monotonicIso(input.nowIso, schedule.updatedAt),
             input.scheduleId,
             input.expectedVersion,
             input.expectedNextDueAt,
@@ -3286,6 +3544,11 @@ export class WatchRepository {
             period,
             runStats,
             state: 'running',
+            blockedAt: null,
+            blockedRequiredBytes: null,
+            blockedAvailableBytes: null,
+            createdAt: input.nowIso,
+            finishedAt: null,
           },
         };
       });
@@ -3415,7 +3678,7 @@ export class WatchRepository {
     facts: DigestFacts;
     createdAt: string;
     aiEnabled: boolean;
-  }): WatchResult {
+  }): CommitDigestBatchResult {
     this.ensureOpen();
     const canonical = canonicalizeDigestFacts(input.facts);
     if (
@@ -3424,54 +3687,89 @@ export class WatchRepository {
       input.lastSequence > input.run.upperSequence
     )
       return { ok: false, code: 'validation-failed' };
+    const artifactEnvelope = serializeDigestArtifact(canonical.json, null);
+    if (!artifactEnvelope.withinBudget) return { ok: false, code: 'validation-failed' };
     const providerState = input.aiEnabled ? 'pending' : 'disabled';
     const providerCode = input.aiEnabled ? null : 'disabled';
     const providerFinishedAt = input.aiEnabled ? null : input.createdAt;
     try {
       return withTransaction(this.handle, () => {
-        if (this.estimateLogicalBytesInternal() + canonical.byteLength > this.maxDbBytes)
-          throw new TxnAbortError('db-budget-exceeded');
-        const batch = this.handle.prepare(SQL_SELECT_NEXT_DIGEST_BATCH_INDEX).get(input.run.id) as {
-          n: number;
+        const schedule = this.getDigestSchedule(input.run.scheduleId);
+        if (schedule === null) throw new TxnAbortError('store-unavailable');
+        const auditNow = monotonicIso(input.createdAt, schedule.updatedAt);
+        const writeBatch = (): void => {
+          const batch = this.handle
+            .prepare(SQL_SELECT_NEXT_DIGEST_BATCH_INDEX)
+            .get(input.run.id) as {
+            n: number;
+          };
+          this.handle
+            .prepare(SQL_INSERT_DIGEST)
+            .run(
+              input.artifactId,
+              input.run.scheduleId,
+              input.run.id,
+              batch.n,
+              input.firstSequence,
+              input.lastSequence,
+              canonical.json,
+              canonical.hash,
+              artifactEnvelope.byteLength,
+              providerState,
+              providerCode,
+              providerFinishedAt === null
+                ? null
+                : monotonicIso(providerFinishedAt, input.createdAt),
+              input.createdAt,
+            );
+          for (const event of input.facts.events) {
+            this.handle
+              .prepare(SQL_INSERT_DIGEST_REF)
+              .run(input.artifactId, event.eventId, 'active');
+          }
+          const runChanged = this.handle
+            .prepare(SQL_UPDATE_DIGEST_RUN_CURSOR)
+            .run(
+              input.lastSequence,
+              input.run.id,
+              input.run.scheduleId,
+              input.expectedNextSequence,
+              input.lastSequence,
+            );
+          const scheduleChanged = this.handle
+            .prepare(SQL_UPDATE_DIGEST_SCHEDULE_CURSOR)
+            .run(input.lastSequence, auditNow, input.run.scheduleId, input.expectedNextSequence);
+          if (Number(runChanged.changes) !== 1 || Number(scheduleChanged.changes) !== 1) {
+            throw new TxnAbortError('run-state-conflict');
+          }
         };
-        this.handle
-          .prepare(SQL_INSERT_DIGEST)
-          .run(
-            input.artifactId,
-            input.run.scheduleId,
-            input.run.id,
-            batch.n,
-            input.firstSequence,
-            input.lastSequence,
-            canonical.json,
-            canonical.hash,
-            canonical.byteLength,
-            providerState,
-            providerCode,
-            providerFinishedAt,
-            input.createdAt,
-          );
-        for (const event of input.facts.events)
-          this.handle.prepare(SQL_INSERT_DIGEST_REF).run(input.artifactId, event.eventId, 'active');
-        const runChanged = this.handle
-          .prepare(SQL_UPDATE_DIGEST_RUN_CURSOR)
-          .run(
-            input.lastSequence,
-            input.run.id,
-            input.run.scheduleId,
-            input.expectedNextSequence,
-            input.lastSequence,
-          );
-        const scheduleChanged = this.handle
-          .prepare(SQL_UPDATE_DIGEST_SCHEDULE_CURSOR)
-          .run(
-            input.lastSequence,
-            input.createdAt,
-            input.run.scheduleId,
-            input.expectedNextSequence,
-          );
-        if (Number(runChanged.changes) !== 1 || Number(scheduleChanged.changes) !== 1)
-          throw new TxnAbortError('run-state-conflict');
+
+        const beforeBytes = this.estimateLogicalBytesInternal();
+        this.handle.exec('SAVEPOINT digest_batch_budget_probe');
+        let afterBytes: number;
+        try {
+          writeBatch();
+          afterBytes = this.estimateLogicalBytesInternal();
+        } finally {
+          this.handle.exec('ROLLBACK TO digest_batch_budget_probe');
+          this.handle.exec('RELEASE digest_batch_budget_probe');
+        }
+        const requiredBytes = Math.max(0, afterBytes - beforeBytes);
+        const availableBytes = Math.max(0, this.maxDbBytes - beforeBytes);
+        if (requiredBytes > availableBytes) {
+          const blockedAt = monotonicIso(input.createdAt, input.run.createdAt, input.run.blockedAt);
+          const blocked = this.handle
+            .prepare(SQL_BLOCK_DIGEST_RUN)
+            .run(blockedAt, requiredBytes, availableBytes, input.run.id);
+          if (Number(blocked.changes) !== 1) throw new TxnAbortError('run-state-conflict');
+          return {
+            ok: false,
+            code: 'db-budget-exceeded',
+            requiredBytes,
+            availableBytes,
+          };
+        }
+        writeBatch();
         return { ok: true };
       });
     } catch (err) {
@@ -3486,9 +3784,15 @@ export class WatchRepository {
     this.ensureOpen();
     try {
       return withTransaction(this.handle, () => {
+        const currentRun = this.getDigestRun(run.id);
+        const currentSchedule = this.getDigestSchedule(run.scheduleId);
+        if (currentRun === null || currentSchedule === null)
+          throw new TxnAbortError('store-unavailable');
+        const finishedAt = monotonicIso(nowIso, currentRun.createdAt, currentRun.blockedAt);
+        const updatedAt = monotonicIso(nowIso, currentSchedule.updatedAt);
         const changed = this.handle
           .prepare(SQL_COMPLETE_DIGEST_RUN)
-          .run(nowIso, run.id, run.scheduleId, run.nextSequence);
+          .run(finishedAt, run.id, run.scheduleId, run.nextSequence);
         const schedule = this.handle
           .prepare(SQL_COMPLETE_DIGEST_SCHEDULE)
           .run(
@@ -3496,7 +3800,7 @@ export class WatchRepository {
             run.period.toInclusive,
             JSON.stringify(run.period),
             JSON.stringify(run.runStats),
-            nowIso,
+            updatedAt,
             run.scheduleId,
             run.nextSequence,
           );
@@ -3525,6 +3829,10 @@ export class WatchRepository {
       providerState: row['provider_state'] as string,
       providerResultCode: row['provider_result_code'] as string | null,
       explanationJson: row['explanation_json'] as string | null,
+      byteLength: row['byte_length'] as number,
+      claimedAt: row['claimed_at'] as string | null,
+      providerFinishedAt: row['provider_finished_at'] as string | null,
+      createdAt: row['created_at'] as string,
     };
   }
 
@@ -3558,7 +3866,11 @@ export class WatchRepository {
     this.ensureOpen();
     try {
       return withTransaction(this.handle, () => {
-        const changed = this.handle.prepare(SQL_CLAIM_DIGEST).run(nowIso, id);
+        const artifact = this.getDigestArtifact(id);
+        if (artifact === null) return null;
+        const changed = this.handle
+          .prepare(SQL_CLAIM_DIGEST)
+          .run(monotonicIso(nowIso, artifact.createdAt), id);
         if (Number(changed.changes) !== 1) return null;
         return this.getDigestArtifact(id);
       });
@@ -3574,7 +3886,11 @@ export class WatchRepository {
     nowIso: string,
   ): WatchResult {
     this.ensureOpen();
-    const changed = this.handle.prepare(SQL_FINISH_DIGEST_PENDING).run(state, code, nowIso, id);
+    const artifact = this.getDigestArtifact(id);
+    if (artifact === null) return { ok: false, code: 'run-not-found' };
+    const changed = this.handle
+      .prepare(SQL_FINISH_DIGEST_PENDING)
+      .run(state, code, monotonicIso(nowIso, artifact.createdAt), id);
     return Number(changed.changes) === 1 ? { ok: true } : { ok: false, code: 'run-state-conflict' };
   }
 
@@ -3605,17 +3921,16 @@ export class WatchRepository {
     }
     const artifact = this.getDigestArtifact(input.id);
     if (artifact === null) return { ok: false, code: 'run-not-found' };
-    const bytes =
-      utf8ByteLength(artifact.factsJson) +
-      (input.explanationJson === null ? 0 : utf8ByteLength(input.explanationJson));
+    const artifactEnvelope = serializeDigestArtifact(artifact.factsJson, input.explanationJson);
+    if (!artifactEnvelope.withinBudget) return { ok: false, code: 'validation-failed' };
     const changed = this.handle
       .prepare(SQL_FINISH_DIGEST_CLAIM)
       .run(
         input.state,
         input.code,
         input.explanationJson,
-        bytes,
-        input.nowIso,
+        artifactEnvelope.byteLength,
+        monotonicIso(input.nowIso, artifact.createdAt, artifact.claimedAt),
         input.id,
         input.factsRevision,
         input.factsHash,
@@ -3927,10 +4242,10 @@ export class WatchRepository {
           Number(row['first_sequence']) <= Number(run['lower_sequence']) ||
           Number(row['last_sequence']) > Number(run['upper_sequence']) ||
           Number(row['byte_length']) !==
-            utf8ByteLength(String(row['facts_json'])) +
-              (row['explanation_json'] === null
-                ? 0
-                : utf8ByteLength(String(row['explanation_json'])))
+            serializeDigestArtifact(
+              String(row['facts_json']),
+              row['explanation_json'] === null ? null : String(row['explanation_json']),
+            ).byteLength
         )
           return { ok: false, reason: 'Digest 与 Run/字节关系非法' };
         factsByDigest.set(String(row['id']), this.parseJson(row['facts_json']) as DigestFacts);

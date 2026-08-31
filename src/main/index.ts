@@ -126,6 +126,7 @@ import { registerTool } from './ai/tools/tool-registry';
 import { mkdirSync, rmSync } from 'node:fs';
 import { openSourcesStore } from './sources/sources-store';
 import type {
+  DigestMembershipProjectionProvider,
   DigestSharingProjectionProvider,
   SourceWatchProjectionProvider,
 } from './sources/source-service';
@@ -1468,7 +1469,8 @@ function createBrowserWindow(): void {
         // DigestScheduler owns only Clock/timer capabilities. Repository, Source,
         // and Provider access stays in DigestService. Recover frozen cycles first.
         const sourceDigestProvider = sourceService as SourceService &
-          DigestSharingProjectionProvider;
+          DigestSharingProjectionProvider &
+          DigestMembershipProjectionProvider;
         const digest = new DigestService({
           repository: watchOutcome.repo,
           clock: watchClock,
@@ -1486,6 +1488,9 @@ function createBrowserWindow(): void {
               const provider = await resolveProvider(config, credentials);
               return provider === null ? null : { provider, model: config.model };
             },
+          },
+          membership: {
+            resolve: async (selector) => sourceDigestProvider.resolveDigestMembership(selector),
           },
         });
         digestService = digest;

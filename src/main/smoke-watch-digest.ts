@@ -8,6 +8,8 @@ import { FakeClock } from '../shared/watch/clock';
 import type { ChangeEvidencePair, WatchRule } from '../shared/types/watch';
 import { FakeProvider } from './ai/provider/fake-provider';
 import { openDb } from './sources/db/sqlite-driver';
+import { runMigrations as runSourceMigrations } from './sources/db/migrations';
+import { SourceServiceImpl } from './sources/source-service';
 import { runWatchMigrations } from './watch/db/watch-migrations';
 import { DigestService } from './watch/digest-service';
 import { WatchRepository } from './watch/repository/watch-repository';
@@ -19,26 +21,60 @@ function assertDigest(value: unknown, message: string): asserts value {
 export async function runWatchDigestSmokeScenario(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'aibrowse-smoke-watch-digest-'));
   const handle = openDb(join(dir, 'watch.db'));
+  const sourceHandle = openDb(join(dir, 'sources.db'));
   runWatchMigrations(handle);
+  runSourceMigrations(sourceHandle);
   const repo = new WatchRepository(handle);
+  const sources = new SourceServiceImpl({ db: sourceHandle });
   const now = '2026-08-31T01:00:00.000Z';
   const fingerprint = 'a'.repeat(64);
   try {
+    const added = await sources.addManual({
+      scope: 'page',
+      url: 'https://example.com',
+      name: 'Smoke',
+      shareMode: 'full',
+      userNote: 'DIGEST_SMOKE_NOTE_CANARY',
+    });
+    assertDigest(added.ok, 'Source 创建');
+    if (!added.ok) return;
+    const sourceId = added.source.id;
+    const raw = '{"sections":[{"eventIds":["event-smoke"],"explanation":"变化已确认"}]}';
+    const fake = new FakeProvider({ chunks: [raw] });
+    const digestClock = new FakeClock(Date.parse('2026-08-30T02:00:00.000Z'));
+    const service = new DigestService({
+      repository: repo,
+      clock: digestClock,
+      sharing: {
+        get: async (sourceIds) => {
+          const result = sources.getDigestSharingProjections(sourceIds);
+          return result.status === 'ok' ? result.projections : [];
+        },
+      },
+      provider: { resolve: async () => ({ provider: fake, model: 'fake' }) },
+      membership: {
+        resolve: async (selector) => sources.resolveDigestMembership(selector),
+      },
+    });
     assertDigest(
-      repo.createDigestSchedule({
-        id: 'digest-smoke',
-        sourceIds: ['source-smoke'],
-        localTime: '09:00',
-        timeZone: 'Asia/Shanghai',
-        aiEnabled: true,
-        nextDueAt: now,
-        nowIso: '2026-08-30T00:00:00.000Z',
-      }).ok,
+      (
+        await service.createSchedule({
+          id: 'digest-smoke',
+          selector: { sourceIds: [sourceId] },
+          localTime: '09:00',
+          timeZone: 'Asia/Shanghai',
+          aiEnabled: true,
+        })
+      ).ok,
       'schedule 创建',
     );
+    const createdSchedule = repo.getDigestSchedule('digest-smoke');
+    assertDigest(createdSchedule !== null, 'schedule 读回');
+    assertDigest(createdSchedule.nextDueAt === now, '生产成员装配后的 due 计算');
+    digestClock.advanceTo(Date.parse(now));
     const rule: WatchRule = {
       id: 'rule-smoke',
-      sourceId: 'source-smoke',
+      sourceId,
       kind: 'feed',
       state: 'enabled',
       pauseReason: null,
@@ -105,23 +141,6 @@ export async function runWatchDigestSmokeScenario(): Promise<void> {
       }).ok,
       'Event/journal 原子写',
     );
-    const raw = '{"sections":[{"eventIds":["event-smoke"],"explanation":"变化已确认"}]}';
-    const fake = new FakeProvider({ chunks: [raw] });
-    const service = new DigestService({
-      repository: repo,
-      clock: new FakeClock(Date.parse(now)),
-      sharing: {
-        get: async () => [
-          {
-            sourceId: rule.sourceId,
-            shareMode: 'full',
-            displayName: 'Smoke',
-            canonicalUrl: 'https://example.com',
-          },
-        ],
-      },
-      provider: { resolve: async () => ({ provider: fake, model: 'fake' }) },
-    });
     const result = await service.handleDue({
       scheduleId: 'digest-smoke',
       expectedNextDueAt: now,
@@ -139,8 +158,13 @@ export async function runWatchDigestSmokeScenario(): Promise<void> {
       fake.getRequests().length === 1 && fake.getLastRequest()?.tools === undefined,
       'Provider 恰一次且零 tools',
     );
+    assertDigest(
+      !JSON.stringify(fake.getLastRequest()).includes('DIGEST_SMOKE_NOTE_CANARY'),
+      'ProviderRequest note canary 零字节',
+    );
   } finally {
     repo.dispose();
+    sources.dispose();
     rmSync(dir, { recursive: true, force: true });
   }
 }
