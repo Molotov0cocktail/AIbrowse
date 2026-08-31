@@ -11263,6 +11263,8 @@ async function runWatchD9EndToEndSmoke(
   const tombstonePath = join(tempDir, 'digest-tombstone.md');
   let sourceId: string | null = null;
   let ruleId: string | null = null;
+  let wizardSourceId: string | null = null;
+  let wizardRuleId: string | null = null;
   let scheduleId: string | null = null;
   try {
     const added = await sources.addManual({
@@ -11275,6 +11277,24 @@ async function runWatchD9EndToEndSmoke(
     if (!added.ok) return;
     sourceId = added.source.id;
     const source = added.source;
+    const activeForWizard = await controller.getActiveTab();
+    assert(
+      activeForWizard !== null && /^https?:\/\//.test(activeForWizard.url),
+      '8.26-E2E：七步向导缺少可绑定的活动 http(s) Tab',
+    );
+    const wizardSourceUrl = new URL(activeForWizard!.url);
+    wizardSourceUrl.pathname = `/aibrowse-d9-wizard-${randomUUID()}`;
+    wizardSourceUrl.search = '';
+    wizardSourceUrl.hash = '';
+    const wizardSource = await sources.addManual({
+      scope: 'page',
+      url: wizardSourceUrl.toString(),
+      name: 'D9 七步向导信源',
+      shareMode: 'metadata',
+    });
+    assert(wizardSource.ok, '8.26-E2E：七步向导 Source 夹具创建失败');
+    if (!wizardSource.ok) return;
+    wizardSourceId = wizardSource.source.id;
     const target = {
       type: 'page' as const,
       pageUrl: source.canonicalKey,
@@ -11471,6 +11491,193 @@ async function runWatchD9EndToEndSmoke(
       '8.26-E2E：通知 UUID 路由未打开 Event Evidence',
     );
     assert(!(await uiHas(uiWc, '#d9-evidence-canary')), '8.26-E2E：Evidence 敌手 HTML 被执行');
+
+    // Drive the actual seven-step React wizard through preload/IPC. The successful Rule
+    // must come from the real Session preview, explicit condition-field selection and final
+    // confirmation—not a main-side seeded preview handle.
+    await uiJs(
+      uiWc,
+      `(() => {
+        const nav = [...document.querySelectorAll('.watch-workspace nav button')]
+          .find((candidate) => candidate.textContent?.trim() === '规则');
+        if (!nav) throw new Error('七步向导：规则导航不存在');
+        nav.click();
+      })()`,
+    );
+    await waitFor(() => uiHas(uiWc, '[data-watch-view="rules"]'), 5000, '8.26-E2E：规则视图未打开');
+    await uiJs(
+      uiWc,
+      `(() => {
+        const button = [...document.querySelectorAll('[data-watch-view="rules"] button')]
+          .find((candidate) => candidate.textContent?.trim() === '创建监控');
+        if (!button) throw new Error('七步向导：创建入口不存在');
+        button.click();
+      })()`,
+    );
+    await waitFor(() => uiHas(uiWc, '.watch-wizard'), 5000, '8.26-E2E：七步向导未打开');
+    await uiJs(
+      uiWc,
+      `(() => {
+        const setInput = (input, value) => {
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+          setter.call(input, value);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        const source = document.querySelector('.watch-wizard label:first-of-type input');
+        if (!source) throw new Error('七步向导：Source 输入不存在');
+        setInput(source, ${JSON.stringify(wizardSourceId)});
+      })()`,
+    );
+    const clickWizardNext = async (): Promise<void> => {
+      await uiJs(
+        uiWc,
+        `(() => {
+          const button = [...document.querySelectorAll('.watch-wizard button')]
+            .find((candidate) => candidate.textContent?.trim() === '下一步');
+          if (!button) throw new Error('七步向导：下一步不存在');
+          button.click();
+        })()`,
+      );
+    };
+    await clickWizardNext();
+    await waitForUiText(uiWc, '.watch-wizard h3', '访问方式', 5000, '8.26-E2E：访问步骤未到达');
+    await uiJs(
+      uiWc,
+      `(() => {
+        const select = [...document.querySelectorAll('.watch-wizard select')]
+          .find((candidate) => [...candidate.options].some((option) => option.value === 'session'));
+        if (!select) throw new Error('七步向导：Session 选择不存在');
+        select.value = 'session';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`,
+    );
+    await clickWizardNext();
+    await clickWizardNext();
+    await waitForUiText(uiWc, '.watch-wizard h3', '条件', 5000, '8.26-E2E：条件步骤未到达');
+    await uiJs(
+      uiWc,
+      `(() => {
+        const checkbox = document.querySelector('.watch-wizard input[type="checkbox"]');
+        if (!checkbox) throw new Error('七步向导：条件开关不存在');
+        checkbox.click();
+      })()`,
+    );
+    await waitFor(
+      () => uiHas(uiWc, '.watch-wizard input:not([type])'),
+      5000,
+      '8.26-E2E：条件文本输入未出现',
+    );
+    await uiJs(
+      uiWc,
+      `(() => {
+        const inputs = [...document.querySelectorAll('.watch-wizard input')]
+          .filter((input) => input.type === 'text');
+        const operand = inputs.at(-1);
+        if (!operand) throw new Error('七步向导：条件文本输入不存在');
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(operand, '变化');
+        operand.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`,
+    );
+    await clickWizardNext();
+    await clickWizardNext();
+    await waitForUiText(
+      uiWc,
+      '.watch-wizard h3',
+      'Baseline 预览',
+      5000,
+      '8.26-E2E：预览步骤未到达',
+    );
+    await uiJs(
+      uiWc,
+      `(() => {
+        const checkbox = document.querySelector('.watch-wizard input[type="checkbox"]');
+        if (!checkbox) throw new Error('七步向导：Session 授权不存在');
+        checkbox.click();
+      })()`,
+    );
+    await waitFor(
+      async () =>
+        (await uiJs(
+          uiWc,
+          `(() => [...document.querySelectorAll('.watch-wizard button')]
+            .some((candidate) => candidate.textContent?.trim() === '采集 Baseline 预览' && !candidate.disabled))()`,
+        )) === true,
+      5000,
+      '8.26-E2E：Session 授权未启用预览',
+    );
+    await uiJs(
+      uiWc,
+      `(() => {
+        const button = [...document.querySelectorAll('.watch-wizard button')]
+          .find((candidate) => candidate.textContent?.trim() === '采集 Baseline 预览');
+        if (!button) throw new Error('七步向导：预览按钮不存在');
+        button.click();
+      })()`,
+    );
+    await waitForUiText(
+      uiWc,
+      '.watch-wizard h3',
+      '最终确认',
+      10000,
+      '8.26-E2E：真实 Session 预览未成功',
+    );
+    const initialField = await uiJs(
+      uiWc,
+      `(() => {
+        const select = [...document.querySelectorAll('.watch-wizard select')]
+          .find((candidate) => [...candidate.options].some((option) => option.value === ''));
+        return select?.value ?? null;
+      })()`,
+    );
+    assert(initialField === '', '8.26-E2E：新预览复用了陈旧条件字段');
+    await uiJs(
+      uiWc,
+      `(() => {
+        const select = [...document.querySelectorAll('.watch-wizard select')]
+          .find((candidate) => [...candidate.options].some((option) => option.value === ''));
+        if (!select || select.options.length < 2) throw new Error('七步向导：闭合字段目录为空');
+        select.value = select.options[1].value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`,
+    );
+    await waitFor(
+      async () =>
+        (await uiJs(
+          uiWc,
+          `(() => [...document.querySelectorAll('.watch-wizard button')]
+            .some((candidate) => candidate.textContent?.trim() === '确认创建' && !candidate.disabled))()`,
+        )) === true,
+      5000,
+      '8.26-E2E：显式条件字段选择未启用最终确认',
+    );
+    await uiJs(
+      uiWc,
+      `(() => {
+        const confirm = [...document.querySelectorAll('.watch-wizard button')]
+          .find((candidate) => candidate.textContent?.trim() === '确认创建');
+        if (!confirm) throw new Error('七步向导：最终确认不存在');
+        confirm.click();
+      })()`,
+    );
+    await waitFor(
+      async () => !(await uiHas(uiWc, '.watch-wizard')),
+      10000,
+      '8.26-E2E：七步向导创建未完成',
+    );
+    wizardRuleId = repo.listRulesBySource(wizardSourceId)[0]?.id ?? null;
+    assert(wizardRuleId !== null, '8.26-E2E：七步 DOM 向导未持久化 Rule');
+
+    await uiJs(
+      uiWc,
+      `(() => {
+        const nav = [...document.querySelectorAll('.watch-workspace nav button')]
+          .find((candidate) => candidate.textContent?.trim() === '事件');
+        if (!nav) throw new Error('七步向导：事件导航不存在');
+        nav.click();
+      })()`,
+    );
+    await waitFor(() => uiHas(uiWc, '.watch-event-row'), 5000, '8.26-E2E：七步向导后 Event 未恢复');
 
     await uiJs(
       uiWc,
@@ -11783,9 +11990,17 @@ async function runWatchD9EndToEndSmoke(
       const rule = repo.getRule(ruleId);
       if (rule !== null) repo.deleteRuleExpectedVersion(ruleId, rule.version);
     }
+    if (wizardRuleId !== null) {
+      const rule = repo.getRule(wizardRuleId);
+      if (rule !== null) repo.deleteRuleExpectedVersion(wizardRuleId, rule.version);
+    }
     if (sourceId !== null) {
       const token = sources.issueDeleteConfirmToken(sourceId);
       await sources.hardDeleteManual(sourceId, token).catch(() => undefined);
+    }
+    if (wizardSourceId !== null) {
+      const token = sources.issueDeleteConfirmToken(wizardSourceId);
+      await sources.hardDeleteManual(wizardSourceId, token).catch(() => undefined);
     }
     rmSync(tempDir, { recursive: true, force: true });
   }

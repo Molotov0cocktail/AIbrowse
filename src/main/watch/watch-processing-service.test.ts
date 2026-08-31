@@ -80,13 +80,13 @@ interface Harness {
   service: WatchProcessingServiceImpl;
 }
 
-function setup(): Harness {
+function setup(options: { onStateChanged?: () => void } = {}): Harness {
   const dir = mkdtempSync(join(root, 'proc-'));
   const handle = openDb(join(dir, 'watch.db'));
   runWatchMigrations(handle);
   const repo = new WatchRepository(handle);
   const clock = new FakeClock(NOW_MS);
-  const service = new WatchProcessingServiceImpl({ repo, clock });
+  const service = new WatchProcessingServiceImpl({ repo, clock, ...options });
   return { dir, repo, clock, service };
 }
 
@@ -677,8 +677,9 @@ describe('D7 Repair：Run metadata / outbox / canonical / health 精确契约', 
     async function createAndCount(
       notificationLevel: 'normal' | 'important',
       muted: boolean,
-    ): Promise<number> {
-      const h = setup();
+    ): Promise<{ outbox: number; statePushes: number }> {
+      let statePushes = 0;
+      const h = setup({ onStateChanged: () => statePushes++ });
       try {
         const rule = makeRule({ notificationLevel, muted });
         expect(h.repo.insertRule(rule).ok).toBe(true);
@@ -698,7 +699,7 @@ describe('D7 Repair：Run metadata / outbox / canonical / health 精确契约', 
         ).toBe(true);
         const freshRule = h.repo.getRule(rule.id)!;
         const prepared = h.service.prepareAcquisition({ rule: freshRule });
-        if (!prepared.ok) return 0;
+        if (!prepared.ok) return { outbox: 0, statePushes };
         const runId = randomUUID();
         expect(
           h.repo.insertRun({
@@ -718,19 +719,20 @@ describe('D7 Repair：Run metadata / outbox / canonical / health 精确契约', 
         const p2 = makeProjection(rule, 'B', new Date(NOW_MS + 60_000).toISOString());
         const result = await processProjection(h, freshRule, runId, prepared.baselineHint, p2);
         expect(result.ok).toBe(true);
-        if (!result.ok) return 0;
+        if (!result.ok) return { outbox: 0, statePushes };
         const n = h.repo.dbHandle
           .prepare("SELECT COUNT(*) AS n FROM notification_outbox WHERE subject_type='event'")
           .get() as { n: number };
-        return Number(n.n);
+        return { outbox: Number(n.n), statePushes };
       } finally {
         closeH(h);
       }
     }
     // normal 非 muted 不得被抑制（FIXED DECISION 3：抑制条件只有 muted）
-    expect(await createAndCount('normal', false)).toBe(1);
-    expect(await createAndCount('important', false)).toBe(1);
-    expect(await createAndCount('important', true)).toBe(0);
+    expect(await createAndCount('normal', false)).toEqual({ outbox: 1, statePushes: 1 });
+    expect(await createAndCount('important', false)).toEqual({ outbox: 1, statePushes: 1 });
+    // mute suppresses delivery only; unread global state still changes and must be pushed.
+    expect(await createAndCount('important', true)).toEqual({ outbox: 0, statePushes: 1 });
   });
 
   it('R3 prepareAcquisition：Baseline canonical 同字节篡改 / 键重排 / 陈旧 64-hex hash → store-unavailable', async () => {

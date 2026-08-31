@@ -320,6 +320,8 @@ let watchCoordinator: WatchLifecycleCoordinator | null = null;
 let watchRepo: WatchRepository | null = null;
 let watchSubscriptionSender: Electron.WebContents | null = null;
 let watchRevision = 0;
+let pushWatchStatus: () => void = () => undefined;
+let watchWindowsNotificationsQualified = false;
 let watchNotifications: WatchNotificationService | null = null;
 let watchWindowsNotifications: WatchNotificationService | null = null;
 let smokeWatchDir: string | null = null;
@@ -842,6 +844,7 @@ if (!gotLock) {
       supported: Notification.isSupported(),
       probeIdentity: () => false,
     });
+    watchWindowsNotificationsQualified = windowsQualificationResult.available;
     const windowsQualification = (): ReturnType<typeof qualifyWindowsNotification> =>
       windowsQualificationResult;
     const resolveWatchSourceName = (sourceId: string): string | null => {
@@ -860,6 +863,16 @@ if (!gotLock) {
       },
       resolveWatchSourceName,
     );
+    pushWatchStatus = (): void => {
+      const sender = watchSubscriptionSender;
+      if (sender === null || sender.isDestroyed()) return;
+      const push: WatchPushDto = {
+        type: 'status',
+        revision: ++watchRevision,
+        status: watchQuery.status(),
+      };
+      if (validateWatchIpcOutput(push)) sender.send(IPC.WatchSubscribe, push);
+    };
     const watchExporter = new WatchExportService(watchQuery, {
       showSaveDialog: async (kind, defaultFileName) => {
         if (SMOKE_MODE) {
@@ -917,12 +930,7 @@ if (!gotLock) {
         };
         if (!validateWatchIpcOutput(push)) return false;
         sender.send(IPC.WatchSubscribe, push);
-        const statusPush: WatchPushDto = {
-          type: 'status',
-          revision: ++watchRevision,
-          status: watchQuery.status(),
-        };
-        if (validateWatchIpcOutput(statusPush)) sender.send(IPC.WatchSubscribe, statusPush);
+        pushWatchStatus();
         return true;
       },
       (result) => logInfo('audit', `watch-notification result=${result}`),
@@ -999,6 +1007,7 @@ if (!gotLock) {
           : null;
       },
       audit: (message) => logInfo('audit', message),
+      onStateChanged: pushWatchStatus,
     });
     watchIpcAdapter = watchIpc;
     for (const channel of WATCH_IPC_CHANNELS) {
@@ -1024,13 +1033,7 @@ if (!gotLock) {
       }
       if (watchSubscriptionSender !== null) return;
       watchSubscriptionSender = event.sender;
-      const push: WatchPushDto = {
-        type: 'status',
-        revision: ++watchRevision,
-        status: watchQuery.status(),
-      };
-      if (!event.sender.isDestroyed() && validateWatchIpcOutput(push))
-        event.sender.send(IPC.WatchSubscribe, push);
+      pushWatchStatus();
       void watchNotifications?.drain();
       event.sender.once('destroyed', () => {
         if (watchSubscriptionSender === event.sender) watchSubscriptionSender = null;
@@ -1625,6 +1628,7 @@ async function createBrowserWindow(): Promise<void> {
         dbPath: join(watchDir, 'watch.db'),
         backupsDir: join(watchDir, 'backups'),
         reconcile: (repo) => watchCoordinator!.reconcileOnStartup(repo, sourceProjectionReader),
+        windowsNotificationsEnabled: watchWindowsNotificationsQualified,
       });
       if (watchOutcome.mode === 'normal') {
         // D5（FIXED DECISIONS 10）：watchOutcome normal + schedulerReady + Sources
@@ -1646,6 +1650,7 @@ async function createBrowserWindow(): Promise<void> {
             if (watchSubscriptionSender !== null) void watchNotifications?.drain();
             void watchWindowsNotifications?.drain();
           },
+          onStateChanged: pushWatchStatus,
           windowsNotificationsEnabled: watchWindowsNotifications !== null,
         });
         let acquisitionPort: WatchAcquisitionPort;

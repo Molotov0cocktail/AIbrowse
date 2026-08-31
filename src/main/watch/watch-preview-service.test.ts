@@ -5,6 +5,8 @@ import { WatchPreviewService } from './watch-preview-service';
 import { WatchPreviewStore } from './watch-preview-store';
 import { readPublicHtml } from './public-html-sax-reader';
 import { previewPageRegions } from './page-projector';
+import type { BrowserController } from '../browser/browser-controller';
+import type { BrowserWatchReader } from './browser-watch-reader';
 
 const sourceId = '00000000-0000-4000-8000-000000000001';
 const source = {
@@ -155,5 +157,45 @@ describe('D9 Table Region 候选发现', () => {
       },
     });
     expect(JSON.stringify(result)).not.toContain('<table>');
+  });
+});
+
+describe('D9 Session 预览 origin 竞态', () => {
+  it('读取期间导航到其他 origin 时拒绝主进程盖章的最终投影', async () => {
+    const preview = new WatchPreviewService({
+      store: new WatchPreviewStore(),
+      source: () => source,
+      acquisition: () => null,
+      discoveryTarget: () => null,
+      browser: () =>
+        ({
+          getActiveTab: async () => ({ id: 'tab-1', url: source.projection.canonicalKey }),
+        }) as unknown as BrowserController,
+      reader: () =>
+        ({
+          read: async () => ({
+            ok: true as const,
+            channels: {
+              mainText: '第一段。\r\n第二段。\t第三段。',
+              headings: [],
+              tables: [],
+              links: [],
+            },
+            meta: {
+              url: 'https://evil.example/redirected',
+              capturedAt: '2026-08-31T00:00:00.000Z',
+              documentId: 'doc-evil',
+            },
+          }),
+        }) as unknown as BrowserWatchReader,
+      grants: () => null,
+    });
+    await expect(
+      preview.previewPage({
+        sourceId,
+        accessMode: 'session',
+        regions: [{ kind: 'main-text', label: '正文' }],
+      }),
+    ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
   });
 });

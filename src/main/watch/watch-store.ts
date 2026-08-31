@@ -43,6 +43,7 @@ export interface WatchStoreOptions {
   // 恢复路径：装配成功后强制重放 reconcile 并使全部 session Rule 的
   // sessionConsent 置 null（正常重启不失效 grant——§10.2/§14）。
   invalidateSessionConsentsOnStart?: boolean;
+  windowsNotificationsEnabled?: boolean;
 }
 
 export type WatchStoreOutcome =
@@ -353,7 +354,10 @@ function assembleNormal(
     // D8：全部非终态 cycle 必须在 Scheduler 启动前验证。active running
     // 保留 frozen cursor 等待 DigestService 恢复；active budget_exceeded 复用
     // 与显式 retry 相同的候选重建/容量复验；paused 原样休眠。
-    const digestRecovery = repo.validateRecoverableDigestCycles(nowIso);
+    const digestRecovery = repo.validateRecoverableDigestCycles(
+      nowIso,
+      options.windowsNotificationsEnabled ?? false,
+    );
     if (!digestRecovery.ok) {
       return fail('Digest 非终态 cycle 校验或容量恢复失败');
     }

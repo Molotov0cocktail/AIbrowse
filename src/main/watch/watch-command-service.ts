@@ -10,6 +10,7 @@ import type {
 import type { SourceWatchProjectionReadResult } from '../sources/source-service';
 import { computeSourceLocatorFingerprint } from '../../shared/watch/watch-rule-state';
 import { validateStructuredCondition } from '../../shared/watch/condition-engine';
+import { urlOrigin } from './page-projector';
 import type { WatchRepository } from './repository/watch-repository';
 import type { SessionGrantStore } from './session-grant-store';
 import { WatchPreviewStore, type WatchPreviewRecord } from './watch-preview-store';
@@ -145,6 +146,11 @@ export class WatchCommandService {
     const projection = readProjection(preview.projection);
     const repo = this.repository();
     if (projection === null || repo === null) return { ok: false, errorCode: 'unavailable' };
+    const existing = repo.getRule(input.ruleId);
+    if (existing === null) return { ok: false, errorCode: 'conflict' };
+    // A preview is Source-owned. Never allow a valid preview for Source B to replace the
+    // target/baseline of a Rule that remains owned by Source A.
+    if (existing.sourceId !== preview.sourceId) return { ok: false, errorCode: 'conflict' };
     if (!conditionMatchesPreview(input.condition, preview.fieldCatalog))
       return { ok: false, errorCode: 'security-rejected' };
     const written = repo.rebaselineRule({
@@ -245,7 +251,17 @@ function consentedTarget(
     finalOrigin: preview.finalOrigin,
     targetDigest: digest,
   });
-  return consumed.ok ? { ...target, sessionConsent: consumed.grant } : null;
+  if (!consumed.ok) return null;
+  const targetOrigin = urlOrigin(target.pageUrl);
+  const grantOrigin = consumed.grant.origin;
+  if (
+    targetOrigin === null ||
+    grantOrigin === null ||
+    targetOrigin !== preview.finalOrigin ||
+    grantOrigin !== preview.finalOrigin
+  )
+    return null;
+  return { ...target, sessionConsent: consumed.grant };
 }
 
 function locatorFingerprint(

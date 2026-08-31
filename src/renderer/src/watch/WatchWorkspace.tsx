@@ -107,6 +107,28 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     '最终确认',
   ];
 
+  const clearPreviewState = (): void => {
+    setPreviewHandle(null);
+    setSessionGrantHandle(null);
+    setPreviewFields([]);
+    setConditionField('');
+    setSessionAuthorized(false);
+    setTableCandidates([]);
+    setTableFingerprint('');
+    setTableOccurrence(0);
+    setFeedCandidates([]);
+  };
+
+  const openCreateWizard = (): void => {
+    clearPreviewState();
+    setSettingsRule(null);
+    setRebaselineRule(null);
+    setConditionEnabled(false);
+    setConditionOperand('');
+    setWizardStep(0);
+    setWizardOpen(true);
+  };
+
   const reload = (): void => {
     void window.aibrowse.watch.getStatus().then((result) => {
       if (result.ok) setStatus(result.value);
@@ -240,7 +262,8 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     if (isObject(value) && Array.isArray(value['fields'])) {
       const fields = value['fields'].filter((field): field is string => typeof field === 'string');
       setPreviewFields(fields);
-      if (!fields.includes(conditionField)) setConditionField('');
+      // A field choice is valid only for the preview in which the user explicitly made it.
+      setConditionField('');
     }
     setMessage('Baseline 预览已完成，可最终确认');
     setWizardStep(6);
@@ -418,7 +441,20 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
         scheduleKind === 'interval'
           ? { kind: 'interval', intervalMinutes }
           : { kind: 'daily', localTime: dailyTime, timeZone },
-      condition: settingsRule.condition,
+      condition: conditionEnabled
+        ? {
+            version: 1,
+            combine: 'all',
+            predicates: [
+              {
+                fieldKey: conditionField,
+                operator: 'contains',
+                operand: conditionOperand,
+                caseSensitive: false,
+              },
+            ],
+          }
+        : null,
       notificationLevel,
       showDetails,
     });
@@ -460,7 +496,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
 
   const renderRules = () => (
     <div data-watch-view="rules">
-      <button type="button" onClick={() => setWizardOpen(true)}>
+      <button type="button" onClick={openCreateWizard}>
         创建监控
       </button>
       {rules.length === 0 ? (
@@ -537,8 +573,12 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                 onClick={() => {
                   setSettingsRule(rule);
                   setRebaselineRule(null);
+                  clearPreviewState();
                   setNotificationLevel(rule.notificationLevel);
                   setShowDetails(rule.showDetails);
+                  setConditionEnabled(rule.condition !== null);
+                  setConditionField(rule.condition?.predicates[0]?.fieldKey ?? '');
+                  setConditionOperand(String(rule.condition?.predicates[0]?.operand ?? ''));
                   setScheduleKind(rule.schedule.kind);
                   if (rule.schedule.kind === 'interval')
                     setIntervalMinutes(rule.schedule.intervalMinutes);
@@ -555,10 +595,14 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
               <button
                 type="button"
                 onClick={() => {
+                  clearPreviewState();
+                  setSettingsRule(null);
                   setRebaselineRule(rule);
                   setSourceId(rule.sourceId);
                   setRuleKind(rule.kind);
                   setAccessMode(rule.accessMode);
+                  setConditionEnabled(rule.condition !== null);
+                  setConditionOperand(String(rule.condition?.predicates[0]?.operand ?? ''));
                   setScheduleKind(rule.schedule.kind);
                   if (rule.schedule.kind === 'interval')
                     setIntervalMinutes(rule.schedule.intervalMinutes);
@@ -1239,7 +1283,11 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
               上一步
             </button>
             {settingsRule !== null && wizardStep >= 4 ? (
-              <button type="button" onClick={() => void saveSettings()}>
+              <button
+                type="button"
+                disabled={conditionEnabled && conditionField === ''}
+                onClick={() => void saveSettings()}
+              >
                 保存规则设置
               </button>
             ) : wizardStep < 5 ? (

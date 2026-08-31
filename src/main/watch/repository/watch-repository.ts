@@ -3659,6 +3659,7 @@ export class WatchRepository {
   revalidateDigestRunBudget(
     runId: string,
     nowIso: string,
+    windowsNotificationsEnabled = false,
   ): { ok: true; state: 'running' | 'budget_exceeded' } | { ok: false; code: WatchErrorCode } {
     this.ensureOpen();
     const run = this.getDigestRun(runId);
@@ -3693,9 +3694,7 @@ export class WatchRepository {
             artifactId: randomUUID(),
             createdAt: blockedAt,
             transitionFromBlocked: true,
-            // Retry validation is deliberately conservative because the repository does not
-            // own the runtime Windows notification capability flag.
-            windowsNotificationsEnabled: true,
+            windowsNotificationsEnabled,
             savepoint: 'digest_retry_budget_probe',
           });
           if (measured.requiredBytes <= measured.availableBytes) {
@@ -3718,7 +3717,10 @@ export class WatchRepository {
     }
   }
 
-  validateRecoverableDigestCycles(nowIso: string): WatchResult {
+  validateRecoverableDigestCycles(
+    nowIso: string,
+    windowsNotificationsEnabled = false,
+  ): WatchResult {
     this.ensureOpen();
     try {
       for (const run of this.listNonterminalDigestRuns()) {
@@ -3731,7 +3733,11 @@ export class WatchRepository {
           }
           continue;
         }
-        const recovered = this.revalidateDigestRunBudget(run.id, nowIso);
+        const recovered = this.revalidateDigestRunBudget(
+          run.id,
+          nowIso,
+          windowsNotificationsEnabled,
+        );
         if (!recovered.ok) return recovered;
       }
       return { ok: true };

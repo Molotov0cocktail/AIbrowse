@@ -1,5 +1,8 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { WatchIpcErrorCode, WatchIpcResult } from '../../shared/types/watch-ipc';
+import type { PageProjectionValue, StructuredCondition, WatchRule } from '../../shared/types/watch';
+import { validateStructuredCondition } from '../../shared/watch/condition-engine';
+import { isValidPageProjectionValue } from '../../shared/watch/diff/evidence';
 import {
   WATCH_IPC_CHANNELS,
   validateWatchIpcOutput,
@@ -60,7 +63,20 @@ export interface WatchIpcAdapterOptions {
     groupId?: string;
   }) => Array<{ sourceId: string; displayName: string }> | null;
   audit: (message: string) => void;
+  onStateChanged?: () => void;
 }
+
+const STATUS_CHANGING_WATCH_CHANNELS = new Set<WatchIpcChannel>([
+  'watch:createRule',
+  'watch:updateRule',
+  'watch:setPaused',
+  'watch:setMuted',
+  'watch:deleteRule',
+  'watch:setEventsRead',
+  'watch:deleteEvent',
+  'watch:saveDigestSchedule',
+  'watch:deleteDigestSchedule',
+]);
 
 export class WatchIpcAdapter {
   private readonly digestPreviews = new Map<string, { sourceIds: string[]; expiresAt: number }>();
@@ -92,6 +108,8 @@ export class WatchIpcAdapter {
         `watch-ipc kind=${EFFECTFUL_READ_WATCH_CHANNELS.has(channel as WatchIpcChannel) ? 'effectful-read' : 'action'} channel=${channel} result=${result.ok ? 'ok' : result.errorCode} durationMs=${Math.max(0, Date.now() - started)}`,
       );
     }
+    if (result.ok && STATUS_CHANGING_WATCH_CHANNELS.has(channel as WatchIpcChannel))
+      this.options.onStateChanged?.();
     return result;
   }
 
@@ -241,7 +259,7 @@ export class WatchIpcAdapter {
         if (repo === null) return fail('unavailable');
         const current = repo.getRule(String(p['ruleId']));
         if (current === null) return fail('not-found');
-        if (JSON.stringify(current.condition) !== JSON.stringify(p['condition']))
+        if (!conditionAllowedByCurrentBaseline(repo, current, p['condition']))
           return fail('security-rejected');
         return mapWrite(
           repo.updateRuleSettings({
@@ -308,6 +326,33 @@ export class WatchIpcAdapter {
     const now = Date.now();
     for (const [handle, preview] of this.digestPreviews)
       if (now >= preview.expiresAt) this.digestPreviews.delete(handle);
+  }
+}
+
+function conditionAllowedByCurrentBaseline(
+  repo: WatchRepository,
+  rule: WatchRule,
+  value: unknown,
+): boolean {
+  if (value === null) return true;
+  const condition = value as StructuredCondition;
+  if (rule.kind === 'feed')
+    return validateStructuredCondition(
+      condition,
+      new Set(['title', 'link', 'summary', 'published']),
+    ).ok;
+  const baseline = repo.getBaseline(rule.id);
+  if (baseline === null || baseline.projectionType !== 'page') return false;
+  try {
+    const projection: unknown = JSON.parse(baseline.projectionJson);
+    if (!isValidPageProjectionValue(projection)) return false;
+    const page = projection as PageProjectionValue;
+    return validateStructuredCondition(
+      condition,
+      new Set(page.fields.map((field) => field.fieldKey)),
+    ).ok;
+  } catch {
+    return false;
   }
 }
 

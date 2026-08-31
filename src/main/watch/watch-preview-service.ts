@@ -123,6 +123,12 @@ export class WatchPreviewService {
         ok: false,
         errorCode: read.code === 'timeout' ? 'unavailable' : 'security-rejected',
       };
+    const finalOrigin = urlOrigin(read.meta.url);
+    const sourceOrigin = urlOrigin(source.projection.canonicalKey);
+    // Re-check after the asynchronous read: the active tab may have navigated while the
+    // main process was collecting channels.
+    if (finalOrigin === null || sourceOrigin === null || finalOrigin !== sourceOrigin)
+      return { ok: false, errorCode: 'security-rejected' };
     const regionPreview = previewPageRegions(read.channels, input.regions);
     if (!regionPreview.ok)
       return {
@@ -148,9 +154,7 @@ export class WatchPreviewService {
       pageUrl: source.projection.canonicalKey,
       regions: input.regions,
     });
-    const finalOrigin = urlOrigin(read.meta.url);
-    if (digest === null || finalOrigin === null)
-      return { ok: false, errorCode: 'security-rejected' };
+    if (digest === null) return { ok: false, errorCode: 'security-rejected' };
     const record: WatchPreviewRecord = {
       sourceId: source.projection.sourceId,
       sourceRowVersion: source.projection.rowVersion,

@@ -80,6 +80,7 @@ export interface WatchProcessingServiceOptions {
   repo: WatchRepository;
   clock: Clock;
   onNotificationReady?: () => void;
+  onStateChanged?: () => void;
   windowsNotificationsEnabled?: boolean;
 }
 
@@ -92,12 +93,14 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
   private readonly repo: WatchRepository;
   private readonly clock: Clock;
   private readonly onNotificationReady: () => void;
+  private readonly onStateChanged: () => void;
   private readonly windowsNotificationsEnabled: boolean;
 
   constructor(options: WatchProcessingServiceOptions) {
     this.repo = options.repo;
     this.clock = options.clock;
     this.onNotificationReady = options.onNotificationReady ?? (() => undefined);
+    this.onStateChanged = options.onStateChanged ?? (() => undefined);
     this.windowsNotificationsEnabled = options.windowsNotificationsEnabled ?? false;
   }
 
@@ -615,6 +618,8 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
       audits: [{ id: randomUUID(), reasonCode: 'event-created', createdAt: nowIso }],
     });
     if (!result.ok) return this.conflictResult(result.code);
+    // Event creation changes global unread state even when mute suppresses every outbox row.
+    this.onStateChanged();
     if (outbox.length > 0) this.onNotificationReady();
     return { ok: true, outcome };
   }

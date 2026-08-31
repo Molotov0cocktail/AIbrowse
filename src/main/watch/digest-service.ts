@@ -168,6 +168,7 @@ export class DigestService {
           const recovered = this.options.repository.revalidateDigestRunBudget(
             run.id,
             this.options.clock.now().toISOString(),
+            this.options.windowsNotificationsEnabled,
           );
           if (!recovered.ok) throw new Error('Digest cycle 容量恢复失败');
           run = this.options.repository.getDigestRun(run.id);
@@ -213,6 +214,7 @@ export class DigestService {
         const retried = this.options.repository.revalidateDigestRunBudget(
           run.id,
           this.options.clock.now().toISOString(),
+          this.options.windowsNotificationsEnabled,
         );
         if (!retried.ok) return retried;
         if (retried.state === 'budget_exceeded') {
@@ -247,6 +249,7 @@ export class DigestService {
       const retried = this.options.repository.revalidateDigestRunBudget(
         runId,
         this.options.clock.now().toISOString(),
+        this.options.windowsNotificationsEnabled,
       );
       if (!retried.ok) return retried;
       if (retried.state === 'budget_exceeded') {

@@ -59,6 +59,7 @@ function adapter(
     digest?: DigestService | null;
     resolveDigestSources?: () => Array<{ sourceId: string; displayName: string }> | null;
     audit?: (message: string) => void;
+    onStateChanged?: () => void;
   } = {},
 ): WatchIpcAdapter {
   return new WatchIpcAdapter({
@@ -96,6 +97,7 @@ function adapter(
     digest: () => overrides.digest ?? null,
     resolveDigestSources: overrides.resolveDigestSources ?? (() => null),
     audit: overrides.audit ?? (() => {}),
+    onStateChanged: overrides.onStateChanged,
   });
 }
 
@@ -104,6 +106,15 @@ describe('D9 WatchIpcAdapter fail-closed dispatch/audit', () => {
     const update = vi.fn(() => ({ ok: true as const }));
     const repository = {
       getRule: () => rule(),
+      getBaseline: () => ({
+        projectionType: 'page',
+        projectionJson: JSON.stringify({
+          type: 'page',
+          fields: [
+            { fieldKey: 'title', regionIndex: 0, kind: 'main-text', label: '正文', value: 'x' },
+          ],
+        }),
+      }),
       updateRuleSettings: update,
     } as unknown as WatchRepository;
     const ipc = adapter({ repository });
@@ -125,11 +136,38 @@ describe('D9 WatchIpcAdapter fail-closed dispatch/audit', () => {
       }),
     ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
     expect(update).not.toHaveBeenCalled();
-    await expect(ipc.invoke('watch:updateRule', { ...base, condition })).resolves.toEqual({
+    const editedCondition = {
+      ...condition,
+      predicates: [{ ...condition.predicates[0], operand: '新的条件文本' }],
+    };
+    await expect(
+      ipc.invoke('watch:updateRule', { ...base, condition: editedCondition }),
+    ).resolves.toEqual({
       ok: true,
       value: { updated: true },
     });
     expect(update).toHaveBeenCalledOnce();
+  });
+
+  it('成功状态变更统一触发 status 推送回调，失败不触发', async () => {
+    const onStateChanged = vi.fn();
+    const repository = {
+      setRuleMuted: vi
+        .fn()
+        .mockReturnValueOnce({ ok: true as const })
+        .mockReturnValueOnce({ ok: false as const, code: 'rule-version-conflict' as const }),
+    } as unknown as WatchRepository;
+    const ipc = adapter({ repository, onStateChanged });
+    const payload = { ruleId: RULE_ID, expectedVersion: 1, muted: true };
+    await expect(ipc.invoke('watch:setMuted', payload)).resolves.toEqual({
+      ok: true,
+      value: { updated: true },
+    });
+    await expect(ipc.invoke('watch:setMuted', payload)).resolves.toEqual({
+      ok: false,
+      errorCode: 'conflict',
+    });
+    expect(onStateChanged).toHaveBeenCalledOnce();
   });
 
   it('输入和输出均 fail-closed，effectful read 只写结构化审计元数据', async () => {
