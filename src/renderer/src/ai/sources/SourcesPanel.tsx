@@ -19,9 +19,10 @@ import {
 // 渲染（无 dangerouslySetInnerHTML/Markdown/富文本）。
 interface SourcesPanelProps {
   onCollapse: () => void;
+  onCreateWatch: (sourceId: string) => void;
 }
 
-export function SourcesPanel({ onCollapse }: SourcesPanelProps) {
+export function SourcesPanel({ onCollapse, onCreateWatch }: SourcesPanelProps) {
   const panel = useSourcesPanel();
   const [showAddForm, setShowAddForm] = useState(false);
   const [hardDeleteTarget, setHardDeleteTarget] = useState<{
@@ -168,6 +169,7 @@ export function SourcesPanel({ onCollapse }: SourcesPanelProps) {
               )
             }
             onDelete={() => openHardDelete(panel.detail!)}
+            onCreateWatch={() => onCreateWatch(panel.detail!.id)}
             onBack={() => panel.closeDetail()}
           />
           <UndoList panel={panel} />

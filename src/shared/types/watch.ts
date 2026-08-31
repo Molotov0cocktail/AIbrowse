@@ -232,6 +232,7 @@ export type WatchSchedule =
 
 export interface WatchRule {
   id: string; // UUID
+  version: number; // D9 用户配置 CAS；runtime bookkeeping 不递增
   sourceId: string;
   kind: WatchRuleKind;
   state: WatchRuleState;
@@ -243,6 +244,7 @@ export interface WatchRule {
   target: FeedTarget | PageTarget;
   condition: StructuredCondition | null;
   notificationLevel: WatchNotificationLevel; // 用户选择，不由 AI 推断
+  showDetails: boolean; // 通知详情逐 Rule opt-in；默认 false
   sourceRowVersion: number; // 最后观察到的 Source 行版本（乐观并发；不决定 locator 变化）
   sourceLocatorFingerprint: string; // locator 身份（决定 locator 是否变化）
   nextDueAt: string | null;

@@ -10988,6 +10988,115 @@ export async function runSmokeScenario(
       await runWatchDigestSmokeScenario();
     }
 
+    // 8.26 D9 Watch workspace/bridge smoke: drive the real React DOM through the
+    // preload allowlist, cover all five top-level views plus the seven-step
+    // wizard shell, and verify that leaving the workspace restores browser UI.
+    if (
+      options.liveSmoke === undefined &&
+      options.uiWindow !== null &&
+      options.uiWindow !== undefined
+    ) {
+      const uiWc = options.uiWindow.webContents;
+      await clickUi(uiWc, 'button[aria-label="监控工作区"]');
+      await waitFor(
+        () => uiHas(uiWc, '.watch-workspace [data-watch-view="overview"]'),
+        5000,
+        '8.26：Watch 概览未打开',
+      );
+      await waitFor(
+        () => Promise.resolve(visibleTabView(options.uiWindow) === null),
+        5000,
+        '8.26：Watch 工作区打开后 WebContentsView 仍可见',
+      );
+
+      for (const [label, view] of [
+        ['规则', 'rules'],
+        ['事件', 'events'],
+        ['摘要', 'digests'],
+        ['健康', 'health'],
+        ['概览', 'overview'],
+      ] as const) {
+        await uiJs(
+          uiWc,
+          `(() => {
+            const button = [...document.querySelectorAll('.watch-workspace nav button')]
+              .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)});
+            if (!button) throw new Error('Watch 导航不存在：' + ${JSON.stringify(label)});
+            button.click();
+          })()`,
+        );
+        await waitFor(
+          () => uiHas(uiWc, `.watch-workspace [data-watch-view="${view}"]`),
+          5000,
+          `8.26：Watch ${label}视图未打开`,
+        );
+      }
+
+      await uiJs(
+        uiWc,
+        `(() => {
+          const button = [...document.querySelectorAll('.watch-workspace nav button')]
+            .find((candidate) => candidate.textContent?.trim() === '规则');
+          if (!button) throw new Error('Watch 规则导航不存在');
+          button.click();
+        })()`,
+      );
+      await waitFor(
+        () => uiHas(uiWc, '.watch-workspace [data-watch-view="rules"]'),
+        5000,
+        '8.26：Watch 规则视图未恢复',
+      );
+      await uiJs(
+        uiWc,
+        `(() => {
+          const button = [...document.querySelectorAll('[data-watch-view="rules"] button')]
+            .find((candidate) => candidate.textContent?.trim() === '创建监控');
+          if (!button) throw new Error('Watch 创建入口不存在');
+          button.click();
+        })()`,
+      );
+      await waitFor(
+        () => uiHas(uiWc, '.watch-wizard[aria-label="创建监控"]'),
+        5000,
+        '8.26：Watch 七步向导未打开',
+      );
+      assert(
+        (await uiCount(uiWc, '.watch-wizard ol > li')) === 7,
+        '8.26：Watch 创建向导必须保持七步',
+      );
+      assert(
+        !(await uiText(uiWc, '.watch-workspace')).match(
+          /authorization|cookie|set-cookie|proxy-authorization|x-api-key|file:\/\//i,
+        ),
+        '8.26：Watch DOM 不得暴露凭据、Cookie 或本地路径',
+      );
+      await clickUi(uiWc, '.watch-header button');
+      await waitFor(
+        async () => !(await uiHas(uiWc, '.watch-workspace')),
+        5000,
+        '8.26：Watch 返回浏览未关闭工作区',
+      );
+      await waitFor(
+        () => Promise.resolve(visibleTabView(options.uiWindow) !== null),
+        5000,
+        '8.26：Watch 返回浏览后 WebContentsView 未恢复',
+      );
+      assert(await uiHas(uiWc, 'button[aria-label="监控此页"]'), '8.26：工具栏缺少“监控此页”入口');
+      // The default matrix enters D9 with the AI panel mounted. Opening a
+      // top-level workspace intentionally closes side panels, so restore that
+      // precondition before the independent L3 AI UI scenario continues.
+      if (!(await uiHas(uiWc, '.ai-panel-title')))
+        await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
+      await waitForUiText(
+        uiWc,
+        '.ai-panel-title',
+        'AI 共读助手',
+        5000,
+        '8.26：Watch 冒烟后未恢复既有 AI 面板前置状态',
+      );
+      logInfo('smoke', '8.26 D9 Watch 工作区、IPC bridge 与隐私 DOM 冒烟通过');
+    }
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）

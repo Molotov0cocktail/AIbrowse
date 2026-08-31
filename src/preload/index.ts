@@ -53,6 +53,9 @@ import type {
 } from '../shared/types/research';
 import type { ResearchExportCsvPayload, ResearchListPayload } from '../shared/types/ipc';
 import { IPC } from '../shared/types/ipc';
+import type { WatchIpcResult, WatchPushDto, WatchStatusDto } from '../shared/types/watch-ipc';
+import { validateWatchIpcOutput } from '../shared/watch/watch-ipc-validator';
+import type { WatchIpcChannel } from '../shared/watch/watch-ipc-validator';
 
 // Minimal-privilege bridge (design §3.2 + stage2 §4.2): only whitelisted methods are
 // exposed; the raw ipcRenderer is never handed to the renderer (安全红线：preload bridge
@@ -66,14 +69,19 @@ function eventRelay<T>(channel: string): {
   subscribe: (listener: (payload: T) => void) => () => void;
 } {
   const listeners = new Set<(payload: T) => void>();
-  ipcRenderer.on(channel, (_event, payload: T) => {
+  const receive = (_event: Electron.IpcRendererEvent, payload: T): void => {
     for (const listener of listeners) listener(payload);
-  });
+  };
   return {
     subscribe: (listener) => {
+      if (listeners.size === 0) ipcRenderer.on(channel, receive);
       listeners.add(listener);
+      let active = true;
       return () => {
+        if (!active) return;
+        active = false;
         listeners.delete(listener);
+        if (listeners.size === 0) ipcRenderer.removeListener(channel, receive);
       };
     },
   };
@@ -92,6 +100,39 @@ const sourcesChangedRelay = eventRelay<SourcesChangedEvent>(IPC.SourcesChanged);
 // C8：research:progress / research:task-done 事件（同一 eventRelay 模式）
 const researchProgressRelay = eventRelay<ResearchProgressEvent>(IPC.ResearchProgress);
 const researchTaskDoneRelay = eventRelay<ResearchTaskDoneEvent>(IPC.ResearchTaskDone);
+
+const watchListeners = new Set<(push: WatchPushDto) => void>();
+const receiveWatchPush = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+  if (!validateWatchIpcOutput(payload)) return;
+  for (const listener of watchListeners) listener(payload as WatchPushDto);
+};
+const subscribeWatch = (listener: (push: WatchPushDto) => void): (() => void) => {
+  if (watchListeners.size === 0) {
+    ipcRenderer.on(IPC.WatchSubscribe, receiveWatchPush);
+    ipcRenderer.send(IPC.WatchSubscribe, { action: 'start' });
+  }
+  watchListeners.add(listener);
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    watchListeners.delete(listener);
+    if (watchListeners.size === 0) {
+      ipcRenderer.removeListener(IPC.WatchSubscribe, receiveWatchPush);
+      ipcRenderer.send(IPC.WatchSubscribe, { action: 'stop' });
+    }
+  };
+};
+
+const invokeWatch = async <T>(
+  channel: WatchIpcChannel,
+  payload: unknown,
+): Promise<WatchIpcResult<T>> => {
+  const result = await invoke<unknown>(channel, payload);
+  return validateWatchIpcOutput(result, channel)
+    ? (result as WatchIpcResult<T>)
+    : { ok: false, errorCode: 'unavailable' };
+};
 
 const bridge: AibrowseBridge = {
   getAppInfo: () => invoke<AppInfo>(IPC.AppGetInfo),
@@ -201,6 +242,32 @@ const bridge: AibrowseBridge = {
       invoke<ExportCsvResult>(IPC.ResearchExportCsv, payload),
     onProgress: researchProgressRelay.subscribe,
     onTaskDone: researchTaskDoneRelay.subscribe,
+  },
+  watch: {
+    listRules: (p) => invokeWatch(IPC.WatchListRules, p),
+    getRule: (p) => invokeWatch(IPC.WatchGetRule, p),
+    createRule: (p) => invokeWatch(IPC.WatchCreateRule, p),
+    updateRule: (p) => invokeWatch(IPC.WatchUpdateRule, p),
+    setPaused: (p) => invokeWatch(IPC.WatchSetPaused, p),
+    setMuted: (p) => invokeWatch(IPC.WatchSetMuted, p),
+    deleteRule: (p) => invokeWatch(IPC.WatchDeleteRule, p),
+    runNow: (p) => invokeWatch(IPC.WatchRunNow, p),
+    previewFeed: (p) => invokeWatch(IPC.WatchPreviewFeed, p),
+    previewPageRegions: (p) => invokeWatch(IPC.WatchPreviewPageRegions, p),
+    issueSessionGrant: (p) => invokeWatch(IPC.WatchIssueSessionGrant, p),
+    listEvents: (p) => invokeWatch(IPC.WatchListEvents, p),
+    setEventsRead: (p) => invokeWatch(IPC.WatchSetEventsRead, p),
+    deleteEvent: (p) => invokeWatch(IPC.WatchDeleteEvent, p),
+    listDigestSchedules: (p) => invokeWatch(IPC.WatchListDigestSchedules, p),
+    saveDigestSchedule: (p) => invokeWatch(IPC.WatchSaveDigestSchedule, p),
+    deleteDigestSchedule: (p) => invokeWatch(IPC.WatchDeleteDigestSchedule, p),
+    listDigests: (p) => invokeWatch(IPC.WatchListDigests, p),
+    getDigest: (p) => invokeWatch(IPC.WatchGetDigest, p),
+    generateDigestPreview: (p) => invokeWatch(IPC.WatchGenerateDigestPreview, p),
+    exportEventsCsv: (p) => invokeWatch(IPC.WatchExportEventsCsv, p),
+    exportDigestMarkdown: (p) => invokeWatch(IPC.WatchExportDigestMarkdown, p),
+    getStatus: () => invokeWatch<WatchStatusDto>(IPC.WatchGetStatus, {}),
+    subscribe: subscribeWatch,
   },
 };
 

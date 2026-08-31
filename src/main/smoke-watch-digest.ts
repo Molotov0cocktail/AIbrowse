@@ -79,6 +79,7 @@ export async function runWatchDigestSmokeScenario(): Promise<void> {
     digestClock.advanceTo(Date.parse(now));
     const rule: WatchRule = {
       id: 'rule-smoke',
+      version: 1,
       sourceId,
       kind: 'feed',
       state: 'enabled',
@@ -90,6 +91,7 @@ export async function runWatchDigestSmokeScenario(): Promise<void> {
       target: { type: 'feed', feedUrl: 'https://example.com/feed', format: 'rss2' },
       condition: null,
       notificationLevel: 'normal',
+      showDetails: false,
       sourceRowVersion: 1,
       sourceLocatorFingerprint: fingerprint,
       nextDueAt: null,

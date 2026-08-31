@@ -307,6 +307,7 @@ function makeSessionRule(
   const now = new Date().toISOString();
   return {
     id: ruleId,
+    version: 1,
     sourceId,
     kind: 'page',
     state: 'enabled',
@@ -323,6 +324,7 @@ function makeSessionRule(
     },
     condition: null,
     notificationLevel: 'normal',
+    showDetails: false,
     sourceRowVersion: 1,
     sourceLocatorFingerprint: computeSourceLocatorFingerprint({
       sourceId,

@@ -84,6 +84,30 @@ export const IPC = {
   UiBrowserContentVisible: 'ui:browser-content-visible', // payload: { visible: boolean }
   // （sender+主帧校验 + payload 白名单；仅供受信 UI 切换 WebContentsView 可见性，
   // 不进入 AI BrowserController/Tool 能力接口）
+  WatchListRules: 'watch:listRules',
+  WatchGetRule: 'watch:getRule',
+  WatchCreateRule: 'watch:createRule',
+  WatchUpdateRule: 'watch:updateRule',
+  WatchSetPaused: 'watch:setPaused',
+  WatchSetMuted: 'watch:setMuted',
+  WatchDeleteRule: 'watch:deleteRule',
+  WatchRunNow: 'watch:runNow',
+  WatchPreviewFeed: 'watch:previewFeed',
+  WatchPreviewPageRegions: 'watch:previewPageRegions',
+  WatchIssueSessionGrant: 'watch:issueSessionGrant',
+  WatchListEvents: 'watch:listEvents',
+  WatchSetEventsRead: 'watch:setEventsRead',
+  WatchDeleteEvent: 'watch:deleteEvent',
+  WatchListDigestSchedules: 'watch:listDigestSchedules',
+  WatchSaveDigestSchedule: 'watch:saveDigestSchedule',
+  WatchDeleteDigestSchedule: 'watch:deleteDigestSchedule',
+  WatchListDigests: 'watch:listDigests',
+  WatchGetDigest: 'watch:getDigest',
+  WatchGenerateDigestPreview: 'watch:generateDigestPreview',
+  WatchExportEventsCsv: 'watch:exportEventsCsv',
+  WatchExportDigestMarkdown: 'watch:exportDigestMarkdown',
+  WatchGetStatus: 'watch:getStatus',
+  WatchSubscribe: 'watch:subscribe',
 } as const;
 
 export interface ContentBounds {

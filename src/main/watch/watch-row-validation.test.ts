@@ -35,6 +35,7 @@ const FINGERPRINT = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789a
 function ruleRow(overrides: Partial<WatchRuleRowColumns> = {}): WatchRuleRowColumns {
   return {
     id: 'r1',
+    rule_version: 1,
     source_id: 's1',
     kind: 'feed',
     state: 'enabled',
@@ -46,6 +47,7 @@ function ruleRow(overrides: Partial<WatchRuleRowColumns> = {}): WatchRuleRowColu
     target_json: '{"type":"feed","feedUrl":"https://example.com/rss.xml","format":"rss2"}',
     condition_json: null,
     notification_level: 'normal',
+    notification_show_details: 0,
     source_row_version: 3,
     source_locator_fingerprint: FINGERPRINT,
     next_due_at: null,

@@ -38,6 +38,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 function rule(): WatchRule {
   return {
     id: 'rule-1',
+    version: 1,
     sourceId: 'source-1',
     kind: 'feed',
     state: 'enabled',
@@ -49,6 +50,7 @@ function rule(): WatchRule {
     target: { type: 'feed', feedUrl: 'https://example.com/feed', format: 'rss2' },
     condition: null,
     notificationLevel: 'normal',
+    showDetails: false,
     sourceRowVersion: 1,
     sourceLocatorFingerprint: hex,
     nextDueAt: null,

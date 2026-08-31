@@ -85,6 +85,7 @@ afterAll(() => {
 function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
   return {
     id: randomUUID(),
+    version: 1,
     sourceId: 'src-1',
     kind: 'feed',
     state: 'enabled',
@@ -96,6 +97,7 @@ function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
     target: { type: 'feed', feedUrl: 'https://example.com/rss.xml', format: 'rss2' },
     condition: null,
     notificationLevel: 'normal',
+    showDetails: false,
     sourceRowVersion: 1,
     sourceLocatorFingerprint: FINGERPRINT,
     nextDueAt: null,

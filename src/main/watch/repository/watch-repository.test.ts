@@ -41,6 +41,7 @@ const NOW = '2026-08-28T00:00:00.000Z';
 function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
   return {
     id: randomUUID(),
+    version: 1,
     sourceId: 'src-1',
     kind: 'feed',
     state: 'enabled',
@@ -52,6 +53,7 @@ function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
     target: { type: 'feed', feedUrl: 'https://example.com/rss.xml', format: 'rss2' },
     condition: null,
     notificationLevel: 'normal',
+    showDetails: false,
     sourceRowVersion: 1,
     sourceLocatorFingerprint: FINGERPRINT,
     nextDueAt: null,
@@ -2472,5 +2474,179 @@ describe('R3-4 scanIntegrity observation id 形状', () => {
       .run(wrong, event.id);
     handle.exec('PRAGMA foreign_keys = ON');
     expect(repo.scanIntegrity().ok).toBe(false);
+  });
+});
+
+describe('D9 Rule 用户配置 CAS', () => {
+  it('notification outbox pending→uncertain→sent 单向 claim，uncertain 不会被重新列出', () => {
+    const rule = makeRule();
+    expect(repo.insertRule(rule)).toEqual({ ok: true });
+    const id = randomUUID();
+    handle
+      .prepare(
+        `INSERT INTO notification_outbox
+      (id,rule_id,subject_type,subject_id,channel,dedupe_key,privacy_json,state,attempts,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,'pending',0,?,?)`,
+      )
+      .run(
+        id,
+        rule.id,
+        'event',
+        randomUUID(),
+        'in-app',
+        `in-app|event|${id}|1`,
+        '{"eventKind":"changed","importance":"normal","itemCount":1}',
+        NOW,
+        NOW,
+      );
+    expect(repo.listPendingNotifications(20)).toHaveLength(1);
+    expect(repo.claimPendingNotification(id, NOW)).toBe(true);
+    expect(repo.claimPendingNotification(id, NOW)).toBe(false);
+    expect(repo.listPendingNotifications(20)).toEqual([]);
+    expect(repo.finishClaimedNotification(id, 'sent', NOW)).toBe(true);
+    expect(
+      handle.prepare('SELECT state,attempts FROM notification_outbox WHERE id=?').get(id),
+    ).toEqual({ state: 'sent', attempts: 1 });
+  });
+
+  it('createRuleWithBaseline 在单事务中同时创建 Rule/Baseline，任一步失败零半成品', () => {
+    const rule = makeRule();
+    const projectionJson = '{}';
+    expect(
+      repo.createRuleWithBaseline({
+        rule,
+        baseline: {
+          projectionType: 'feed',
+          projectionJson,
+          contentHash: createHash('sha256').update(projectionJson).digest('hex'),
+          byteLength: 2,
+          finalUrl: 'https://example.com/rss.xml',
+          capturedAt: NOW,
+          documentId: null,
+          validators: { etag: null, lastModified: null },
+        },
+      }),
+    ).toEqual({ ok: true });
+    expect(repo.getRule(rule.id)).toMatchObject({ baselineVersion: 1 });
+    expect(repo.getBaseline(rule.id)).toMatchObject({ version: 1, projectionJson });
+
+    const rejected = makeRule();
+    expect(
+      repo.createRuleWithBaseline({
+        rule: rejected,
+        baseline: {
+          projectionType: 'page',
+          projectionJson,
+          contentHash: 'x',
+          byteLength: 2,
+          finalUrl: 'https://example.com',
+          capturedAt: NOW,
+          documentId: null,
+          validators: { etag: 'forbidden-on-page', lastModified: null },
+        },
+      }),
+    ).toEqual({ ok: false, code: 'validation-failed' });
+    expect(repo.getRule(rejected.id)).toBeNull();
+    expect(repo.getBaseline(rejected.id)).toBeNull();
+  });
+
+  it('rebaselineRule 原子更新配置/CAS/Baseline/audit，陈旧 version 零写', () => {
+    const rule = makeRule();
+    const first = '{}';
+    expect(
+      repo.createRuleWithBaseline({
+        rule,
+        baseline: {
+          projectionType: 'feed',
+          projectionJson: first,
+          contentHash: createHash('sha256').update(first).digest('hex'),
+          byteLength: 2,
+          finalUrl: 'https://example.com/rss.xml',
+          capturedAt: NOW,
+          documentId: null,
+        },
+      }),
+    ).toEqual({ ok: true });
+    const second = '{"type":"feed","items":[]}';
+    const input = {
+      ruleId: rule.id,
+      expectedVersion: 1,
+      resumeAfterConfirm: true,
+      sourceRowVersion: 2,
+      sourceLocatorFingerprint: FINGERPRINT,
+      accessMode: 'public' as const,
+      target: rule.target,
+      schedule: rule.schedule,
+      condition: null,
+      notificationLevel: 'important' as const,
+      showDetails: true,
+      nowIso: '2026-08-28T00:01:00.000Z',
+      baseline: {
+        projectionType: 'feed' as const,
+        projectionJson: second,
+        contentHash: createHash('sha256').update(second).digest('hex'),
+        byteLength: Buffer.byteLength(second),
+        finalUrl: 'https://example.com/rss.xml',
+        capturedAt: NOW,
+        documentId: null,
+      },
+    };
+    expect(repo.rebaselineRule(input)).toEqual({ ok: true });
+    expect(repo.getRule(rule.id)).toMatchObject({
+      version: 2,
+      baselineVersion: 2,
+      showDetails: true,
+      sourceRowVersion: 2,
+    });
+    expect(repo.rebaselineRule({ ...input, showDetails: false })).toEqual({
+      ok: false,
+      code: 'rule-version-conflict',
+    });
+    expect(repo.getRule(rule.id)).toMatchObject({ version: 2, showDetails: true });
+    expect(
+      handle
+        .prepare("SELECT COUNT(*) AS n FROM watch_audits WHERE rule_id=? AND kind='rebaseline'")
+        .get(rule.id),
+    ).toEqual({ n: 1 });
+  });
+
+  it('settings/muted/paused 每次成功只递增一次 version，陈旧 version 冲突', () => {
+    const rule = makeRule();
+    expect(repo.insertRule(rule)).toEqual({ ok: true });
+    expect(repo.getRule(rule.id)).toMatchObject({ version: 1, showDetails: false });
+    expect(
+      repo.updateRuleSettings({
+        ruleId: rule.id,
+        expectedVersion: 1,
+        schedule: { kind: 'interval', intervalMinutes: 360 },
+        condition: null,
+        notificationLevel: 'important',
+        showDetails: true,
+        nowIso: '2026-08-28T00:00:01.000Z',
+      }),
+    ).toEqual({ ok: true });
+    expect(repo.getRule(rule.id)).toMatchObject({ version: 2, showDetails: true });
+    expect(repo.setRuleMuted(rule.id, 1, true, NOW)).toEqual({
+      ok: false,
+      code: 'rule-version-conflict',
+    });
+    expect(repo.setRuleMuted(rule.id, 2, true, '2026-08-28T00:00:02.000Z')).toEqual({ ok: true });
+    expect(repo.setRulePaused(rule.id, 3, true, '2026-08-28T00:00:03.000Z')).toEqual({ ok: true });
+    expect(repo.setRulePaused(rule.id, 4, false, '2026-08-28T00:00:04.000Z')).toEqual({ ok: true });
+    expect(repo.getRule(rule.id)).toMatchObject({ version: 5, state: 'enabled', muted: true });
+  });
+
+  it('health pause 不能被普通 resume 绕过；delete 使用 expectedVersion', () => {
+    const rule = makeRule({ state: 'paused', pauseReason: 'login-required' });
+    expect(repo.insertRule(rule)).toEqual({ ok: true });
+    expect(repo.setRulePaused(rule.id, 1, false, NOW)).toEqual({
+      ok: false,
+      code: 'rule-state-conflict',
+    });
+    expect(repo.deleteRuleExpectedVersion(rule.id, 2)).toEqual({
+      ok: false,
+      code: 'rule-version-conflict',
+    });
+    expect(repo.deleteRuleExpectedVersion(rule.id, 1)).toEqual({ ok: true });
   });
 });

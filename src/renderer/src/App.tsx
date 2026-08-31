@@ -16,6 +16,8 @@ import { useResearch } from './research/use-research';
 import { isSafeMarkdownUrl } from '../../shared/markdown/markdown-url';
 import type { ResearchResultView } from '../../shared/types/research';
 import type { TableViewState } from '../../shared/research/table-utils';
+import { WatchWorkspace } from './watch/WatchWorkspace';
+import type { InAppNotificationDto } from '../../shared/types/watch-ipc';
 
 // 浏览器 chrome（T3）+ AI 侧栏停靠（S4，design §11.1）+ Agent 确认对话框（A6 §11.2，
 // App 级全局挂载）：顶部工具栏 + 标签栏为渲染层 UI，主内容区由主进程 WebContentsView
@@ -35,7 +37,9 @@ export default function App() {
   useContentBounds(contentRef);
   const addressBarRef = useRef<HTMLInputElement>(null);
   const [sidePanel, setSidePanel] = useState<'ai' | 'sources' | 'research' | null>(null);
-  const [viewMode, setViewMode] = useState<'browser' | 'research-result'>('browser');
+  const [viewMode, setViewMode] = useState<'browser' | 'research-result' | 'watch'>('browser');
+  const [watchSourceId, setWatchSourceId] = useState<string | null>(null);
+  const [watchNotice, setWatchNotice] = useState<InAppNotificationDto | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
   const agent = useAgent();
@@ -47,6 +51,14 @@ export default function App() {
     // （useTabsState 的 effect 声明在前，先于本 effect 执行）
     window.aibrowse.notifyRendererReady();
   }, []);
+
+  useEffect(
+    () =>
+      window.aibrowse.watch.subscribe((push) => {
+        if (push.type === 'notification') setWatchNotice(push.notification);
+      }),
+    [],
+  );
 
   // C8 决议 #158(6)：viewMode → WebContentsView 可见性（受控 UI send 通道）
   useEffect(() => {
@@ -168,6 +180,19 @@ export default function App() {
           onToggleAiPanel={() => setSidePanel((p) => (p === 'ai' ? null : 'ai'))}
           onToggleSourcesPanel={() => setSidePanel((p) => (p === 'sources' ? null : 'sources'))}
           onToggleResearchPanel={() => setSidePanel((p) => (p === 'research' ? null : 'research'))}
+          onOpenWatch={() => {
+            setSidePanel(null);
+            setViewMode('watch');
+          }}
+          onWatchCurrentPage={() => {
+            void window.aibrowse.sources.quickAdd().then((result) => {
+              if (result.status === 'added') setWatchSourceId(result.source.id);
+              else if (result.status === 'duplicate') setWatchSourceId(result.existing.id);
+              else return;
+              setSidePanel(null);
+              setViewMode('watch');
+            });
+          }}
           addressBarRef={addressBarRef}
         />
         <TabBar
@@ -183,12 +208,23 @@ export default function App() {
         <main className="content-area" ref={contentRef}>
           {/* C8 决议 #158(6)：research-result 模式 → React 结果画布（独立滚动）；
               browser 模式 → 空容器（WebContentsView 覆盖） */}
-          {viewMode === 'research-result' && research.state.resultView !== null
-            ? renderResultCanvas(research.state.resultView)
-            : null}
+          {viewMode === 'research-result' && research.state.resultView !== null ? (
+            renderResultCanvas(research.state.resultView)
+          ) : viewMode === 'watch' ? (
+            <WatchWorkspace initialSourceId={watchSourceId} onBack={() => setViewMode('browser')} />
+          ) : null}
         </main>
         {sidePanel === 'ai' && <AiPanel onCollapse={() => setSidePanel(null)} agent={agent} />}
-        {sidePanel === 'sources' && <SourcesPanel onCollapse={() => setSidePanel(null)} />}
+        {sidePanel === 'sources' && (
+          <SourcesPanel
+            onCollapse={() => setSidePanel(null)}
+            onCreateWatch={(sourceId) => {
+              setWatchSourceId(sourceId);
+              setSidePanel(null);
+              setViewMode('watch');
+            }}
+          />
+        )}
         {sidePanel === 'research' && (
           <ResearchPanel
             research={research}
@@ -204,6 +240,18 @@ export default function App() {
       {/* L2 确认对话框（App 级全局，独立于面板挂载——切换/折叠面板不遮断确认）：
           deny 默认高亮/焦点；pending 作废自动关闭 */}
       <ConfirmDialog pending={pendingConfirm} onDecide={agent.confirmTool} />
+      {watchNotice !== null && viewMode !== 'watch' && (
+        <button
+          type="button"
+          className="watch-global-toast"
+          onClick={() => {
+            setViewMode('watch');
+            setWatchNotice(null);
+          }}
+        >
+          {watchNotice.body}
+        </button>
+      )}
     </div>
   );
 }

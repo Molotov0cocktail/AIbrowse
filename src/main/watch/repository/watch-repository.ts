@@ -85,6 +85,7 @@ import {
 export type WatchErrorCode =
   | 'rule-not-found'
   | 'rule-state-conflict'
+  | 'rule-version-conflict'
   | 'rule-already-running'
   | 'baseline-conflict'
   | 'baseline-budget-exceeded'
@@ -215,15 +216,24 @@ export type DigestJournalSlice =
 // ---------------------------------------------------------------------------
 
 const SQL_INSERT_RULE = `INSERT INTO watch_rules
-  (id, source_id, kind, state, pause_reason, desired_enabled, muted, access_mode,
+  (id, rule_version, source_id, kind, state, pause_reason, desired_enabled, muted, access_mode,
    schedule_json, target_json, condition_json, notification_level,
-   source_row_version, source_locator_fingerprint, next_due_at,
+   notification_show_details, source_row_version, source_locator_fingerprint, next_due_at,
    last_consumed_scheduled_for, last_daily_local_date, consecutive_failures,
    backoff_until, baseline_version, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+const SQL_INSERT_RULE_LEGACY = `INSERT INTO watch_rules
+  (id, source_id, kind, state, pause_reason, desired_enabled, muted, access_mode,
+   schedule_json, target_json, condition_json, notification_level, source_row_version,
+   source_locator_fingerprint, next_due_at, last_consumed_scheduled_for,
+   last_daily_local_date, consecutive_failures, backoff_until, baseline_version,
+   created_at, updated_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+const SQL_SCHEMA_VERSION = 'PRAGMA user_version';
 
-const SQL_RULE_COLUMNS = `SELECT id, source_id, kind, state, pause_reason, desired_enabled,
+const SQL_RULE_COLUMNS = `SELECT id, rule_version, source_id, kind, state, pause_reason, desired_enabled,
   muted, access_mode, schedule_json, target_json, condition_json, notification_level,
+  notification_show_details,
   source_row_version, source_locator_fingerprint, next_due_at,
   last_consumed_scheduled_for, last_daily_local_date, consecutive_failures,
   backoff_until, baseline_version, created_at, updated_at FROM watch_rules`;
@@ -240,6 +250,23 @@ const SQL_SELECT_RUN_EXISTS = 'SELECT 1 AS x FROM watch_runs WHERE id = ?';
 const SQL_SELECT_INTENT_EXISTS = 'SELECT 1 AS x FROM source_cleanup_intents WHERE mutation_id = ?';
 const SQL_SELECT_RULES_ACCESS = 'SELECT id, access_mode FROM watch_rules';
 const SQL_DELETE_RULE = 'DELETE FROM watch_rules WHERE id = ?';
+const SQL_DELETE_RULE_CAS = 'DELETE FROM watch_rules WHERE id = ? AND rule_version = ?';
+const SQL_UPDATE_RULE_SETTINGS = `UPDATE watch_rules SET schedule_json = ?, condition_json = ?,
+  notification_level = ?, notification_show_details = ?, rule_version = rule_version + 1,
+  updated_at = ? WHERE id = ? AND rule_version = ? AND state != 'deleted'`;
+const SQL_REBASELINE_RULE = `UPDATE watch_rules SET kind = ?, state = ?, pause_reason = ?,
+  desired_enabled = ?, access_mode = ?, schedule_json = ?, target_json = ?, condition_json = ?,
+  notification_level = ?, notification_show_details = ?, source_row_version = ?,
+  source_locator_fingerprint = ?, rule_version = rule_version + 1, updated_at = ?
+  WHERE id = ? AND rule_version = ? AND state != 'deleted'`;
+const SQL_SET_RULE_MUTED = `UPDATE watch_rules SET muted = ?, rule_version = rule_version + 1,
+  updated_at = ? WHERE id = ? AND rule_version = ? AND state != 'deleted'`;
+const SQL_PAUSE_RULE_USER = `UPDATE watch_rules SET state = 'paused', pause_reason = 'user',
+  desired_enabled = 0, rule_version = rule_version + 1, updated_at = ?
+  WHERE id = ? AND rule_version = ? AND state != 'deleted'`;
+const SQL_RESUME_RULE_USER = `UPDATE watch_rules SET state = 'enabled', pause_reason = NULL,
+  desired_enabled = 1, rule_version = rule_version + 1, updated_at = ?
+  WHERE id = ? AND rule_version = ? AND state = 'paused' AND pause_reason = 'user'`;
 const SQL_DELETE_RULES_BY_SOURCE = 'DELETE FROM watch_rules WHERE source_id = ?';
 const SQL_UPDATE_RULE_COORDINATION = `UPDATE watch_rules
   SET state = ?, pause_reason = ?, source_row_version = ?, source_locator_fingerprint = ?, updated_at = ?
@@ -456,6 +483,13 @@ const SQL_SELECT_ALL_DIGEST_CHANGES = `SELECT sequence, observation_id, event_id
 const SQL_SELECT_ALL_OUTBOX = `SELECT id, rule_id, subject_type, subject_id, channel,
   dedupe_key, privacy_json, state, attempts, created_at, updated_at
   FROM notification_outbox`;
+const SQL_SELECT_PENDING_OUTBOX = `${SQL_SELECT_ALL_OUTBOX}
+  WHERE state = 'pending' ORDER BY created_at ASC, id ASC LIMIT ?`;
+const SQL_CLAIM_PENDING_OUTBOX = `UPDATE notification_outbox
+  SET state = 'uncertain', attempts = attempts + 1, updated_at = ?
+  WHERE id = ? AND state = 'pending'`;
+const SQL_FINISH_UNCERTAIN_OUTBOX = `UPDATE notification_outbox SET state = ?, updated_at = ?
+  WHERE id = ? AND state = 'uncertain'`;
 
 const SQL_INSERT_DIGEST_REF = `INSERT INTO digest_event_refs (digest_id, event_id, status)
   VALUES (?, ?, ?)`;
@@ -837,33 +871,105 @@ export class WatchRepository {
       if (!condition.ok) return { ok: false, code: 'validation-failed' };
     }
     try {
-      this.handle
-        .prepare(SQL_INSERT_RULE)
-        .run(
-          rule.id,
-          rule.sourceId,
-          rule.kind,
-          rule.state,
-          rule.pauseReason,
-          rule.desiredEnabled ? 1 : 0,
-          rule.muted ? 1 : 0,
-          rule.accessMode,
-          JSON.stringify(rule.schedule),
-          JSON.stringify(rule.target),
-          rule.condition === null ? null : JSON.stringify(rule.condition),
-          rule.notificationLevel,
-          rule.sourceRowVersion,
-          rule.sourceLocatorFingerprint,
-          rule.nextDueAt,
-          rule.lastConsumedScheduledFor,
-          rule.lastDailyLocalDate,
-          rule.consecutiveFailures,
-          rule.backoffUntil,
-          rule.baselineVersion,
-          rule.createdAt,
-          rule.updatedAt,
-        );
+      const schemaRow = this.handle.prepare(SQL_SCHEMA_VERSION).get() as
+        { user_version?: unknown } | undefined;
+      const schemaVersion = Number(schemaRow?.user_version ?? 0);
+      const commonValues = [
+        rule.id,
+        rule.sourceId,
+        rule.kind,
+        rule.state,
+        rule.pauseReason,
+        rule.desiredEnabled ? 1 : 0,
+        rule.muted ? 1 : 0,
+        rule.accessMode,
+        JSON.stringify(rule.schedule),
+        JSON.stringify(rule.target),
+        rule.condition === null ? null : JSON.stringify(rule.condition),
+        rule.notificationLevel,
+        rule.sourceRowVersion,
+        rule.sourceLocatorFingerprint,
+        rule.nextDueAt,
+        rule.lastConsumedScheduledFor,
+        rule.lastDailyLocalDate,
+        rule.consecutiveFailures,
+        rule.backoffUntil,
+        rule.baselineVersion,
+        rule.createdAt,
+        rule.updatedAt,
+      ];
+      if (schemaVersion >= 5) {
+        this.handle
+          .prepare(SQL_INSERT_RULE)
+          .run(
+            commonValues[0],
+            rule.version,
+            ...commonValues.slice(1, 12),
+            rule.showDetails ? 1 : 0,
+            ...commonValues.slice(12),
+          );
+      } else {
+        if (rule.version !== 1 || rule.showDetails) return { ok: false, code: 'validation-failed' };
+        this.handle.prepare(SQL_INSERT_RULE_LEGACY).run(...commonValues);
+      }
       return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        code: err instanceof TxnAbortError ? err.code : this.translate(err).code,
+      };
+    }
+  }
+
+  createRuleWithBaseline(input: {
+    rule: WatchRule;
+    baseline: {
+      projectionType: 'feed' | 'page';
+      projectionJson: string;
+      contentHash: string;
+      byteLength: number;
+      finalUrl: string;
+      capturedAt: string;
+      documentId: string | null;
+      validators?: { etag: string | null; lastModified: string | null };
+    };
+  }): WatchResult {
+    this.ensureOpen();
+    const actualBytes = utf8ByteLength(input.baseline.projectionJson);
+    if (
+      input.rule.baselineVersion !== 0 ||
+      input.baseline.byteLength !== actualBytes ||
+      actualBytes > this.maxBaselineBytes ||
+      !validateBaselineValidators({
+        projectionType: input.baseline.projectionType,
+        etag: input.baseline.validators?.etag ?? null,
+        lastModified: input.baseline.validators?.lastModified ?? null,
+      })
+    )
+      return { ok: false, code: 'validation-failed' };
+    try {
+      return withTransaction(this.handle, () => {
+        if (this.estimateLogicalBytesInternal() + actualBytes + 500 > this.maxDbBytes)
+          throw new TxnAbortError('db-budget-exceeded');
+        const inserted = this.insertRule(input.rule);
+        if (!inserted.ok) throw new TxnAbortError(inserted.code);
+        const baseline = this.applyBaselineInternal({
+          ruleId: input.rule.id,
+          expectedBaselineVersion: null,
+          ...input.baseline,
+        });
+        if (!baseline.ok) throw new TxnAbortError(baseline.code);
+        this.handle
+          .prepare(SQL_INSERT_AUDIT)
+          .run(
+            randomUUID(),
+            input.rule.id,
+            'baseline-established',
+            'baseline-established',
+            input.rule.createdAt,
+          );
+        return { ok: true };
+      });
     } catch (err) {
       return {
         ok: false,
@@ -885,6 +991,187 @@ export class WatchRepository {
       throw new WatchRepositoryError('sqlite-error', this.sqlErrorText(err));
     }
     return this.ruleFromRow(row);
+  }
+
+  updateRuleSettings(input: {
+    ruleId: string;
+    expectedVersion: number;
+    schedule: WatchRule['schedule'];
+    condition: WatchRule['condition'];
+    notificationLevel: WatchRule['notificationLevel'];
+    showDetails: boolean;
+    nowIso: string;
+  }): WatchResult {
+    this.ensureOpen();
+    if (!validateWatchSchedule(input.schedule).ok) return { ok: false, code: 'validation-failed' };
+    if (input.condition !== null && !validateStoredCondition(input.condition).ok) {
+      return { ok: false, code: 'validation-failed' };
+    }
+    try {
+      const result = this.handle
+        .prepare(SQL_UPDATE_RULE_SETTINGS)
+        .run(
+          JSON.stringify(input.schedule),
+          input.condition === null ? null : JSON.stringify(input.condition),
+          input.notificationLevel,
+          input.showDetails ? 1 : 0,
+          input.nowIso,
+          input.ruleId,
+          input.expectedVersion,
+        );
+      if (result.changes === 1) return { ok: true };
+      return this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(input.ruleId) === undefined
+        ? { ok: false, code: 'rule-not-found' }
+        : { ok: false, code: 'rule-version-conflict' };
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  rebaselineRule(input: {
+    ruleId: string;
+    expectedVersion: number;
+    resumeAfterConfirm: boolean;
+    sourceRowVersion: number;
+    sourceLocatorFingerprint: string;
+    accessMode: WatchRule['accessMode'];
+    target: WatchRule['target'];
+    schedule: WatchRule['schedule'];
+    condition: WatchRule['condition'];
+    notificationLevel: WatchRule['notificationLevel'];
+    showDetails: boolean;
+    nowIso: string;
+    baseline: {
+      projectionType: 'feed' | 'page';
+      projectionJson: string;
+      contentHash: string;
+      byteLength: number;
+      finalUrl: string;
+      capturedAt: string;
+      documentId: string | null;
+      validators?: { etag: string | null; lastModified: string | null };
+    };
+  }): WatchResult {
+    this.ensureOpen();
+    if (
+      !validateWatchSchedule(input.schedule).ok ||
+      (input.condition !== null && !validateStoredCondition(input.condition).ok)
+    )
+      return { ok: false, code: 'validation-failed' };
+    const targetValid =
+      input.target.type === 'feed'
+        ? validateFeedTarget(input.target)
+        : validatePageTarget(input.target);
+    const actualBytes = utf8ByteLength(input.baseline.projectionJson);
+    if (
+      !targetValid.ok ||
+      (input.target.type === 'feed' && input.accessMode !== 'public') ||
+      input.baseline.byteLength !== actualBytes ||
+      actualBytes > this.maxBaselineBytes ||
+      !validateBaselineValidators({
+        projectionType: input.baseline.projectionType,
+        etag: input.baseline.validators?.etag ?? null,
+        lastModified: input.baseline.validators?.lastModified ?? null,
+      })
+    )
+      return { ok: false, code: 'validation-failed' };
+    try {
+      return withTransaction(this.handle, () => {
+        const current = this.getRule(input.ruleId);
+        if (current === null) throw new TxnAbortError('rule-not-found');
+        if (current.version !== input.expectedVersion)
+          throw new TxnAbortError('rule-version-conflict');
+        const changed = this.handle
+          .prepare(SQL_REBASELINE_RULE)
+          .run(
+            input.target.type,
+            input.resumeAfterConfirm ? 'enabled' : 'paused',
+            input.resumeAfterConfirm ? null : 'user',
+            input.resumeAfterConfirm ? 1 : 0,
+            input.accessMode,
+            JSON.stringify(input.schedule),
+            JSON.stringify(input.target),
+            input.condition === null ? null : JSON.stringify(input.condition),
+            input.notificationLevel,
+            input.showDetails ? 1 : 0,
+            input.sourceRowVersion,
+            input.sourceLocatorFingerprint,
+            input.nowIso,
+            input.ruleId,
+            input.expectedVersion,
+          );
+        if (Number(changed.changes) !== 1) throw new TxnAbortError('rule-version-conflict');
+        const baseline = this.applyBaselineInternal({
+          ruleId: input.ruleId,
+          expectedBaselineVersion: current.baselineVersion,
+          ...input.baseline,
+        });
+        if (!baseline.ok) throw new TxnAbortError(baseline.code);
+        this.handle
+          .prepare(SQL_INSERT_AUDIT)
+          .run(randomUUID(), input.ruleId, 'rebaseline', 'rebaseline', input.nowIso);
+        return { ok: true };
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        code: err instanceof TxnAbortError ? err.code : this.translate(err).code,
+      };
+    }
+  }
+
+  setRuleMuted(
+    ruleId: string,
+    expectedVersion: number,
+    muted: boolean,
+    nowIso: string,
+  ): WatchResult {
+    this.ensureOpen();
+    try {
+      const result = this.handle
+        .prepare(SQL_SET_RULE_MUTED)
+        .run(muted ? 1 : 0, nowIso, ruleId, expectedVersion);
+      if (result.changes === 1) return { ok: true };
+      return this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(ruleId) === undefined
+        ? { ok: false, code: 'rule-not-found' }
+        : { ok: false, code: 'rule-version-conflict' };
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  setRulePaused(
+    ruleId: string,
+    expectedVersion: number,
+    paused: boolean,
+    nowIso: string,
+  ): WatchResult {
+    this.ensureOpen();
+    try {
+      const sql = paused ? SQL_PAUSE_RULE_USER : SQL_RESUME_RULE_USER;
+      const result = this.handle.prepare(sql).run(nowIso, ruleId, expectedVersion);
+      if (result.changes === 1) return { ok: true };
+      const current = this.getRule(ruleId);
+      if (current === null) return { ok: false, code: 'rule-not-found' };
+      return current.version !== expectedVersion
+        ? { ok: false, code: 'rule-version-conflict' }
+        : { ok: false, code: 'rule-state-conflict' };
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
+  }
+
+  deleteRuleExpectedVersion(ruleId: string, expectedVersion: number): WatchResult {
+    this.ensureOpen();
+    try {
+      const result = this.handle.prepare(SQL_DELETE_RULE_CAS).run(ruleId, expectedVersion);
+      if (result.changes === 1) return { ok: true };
+      return this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(ruleId) === undefined
+        ? { ok: false, code: 'rule-not-found' }
+        : { ok: false, code: 'rule-version-conflict' };
+    } catch (err) {
+      return { ok: false, code: this.translate(err).code };
+    }
   }
 
   listRules(): WatchRule[] {
@@ -2048,7 +2335,7 @@ export class WatchRepository {
     }
   }
 
-  markEventsRead(eventIds: readonly string[], nowIso: string): number {
+  markEventsRead(eventIds: readonly string[], nowIso: string | null): number {
     this.ensureOpen();
     let count = 0;
     for (const id of eventIds) {
@@ -2056,6 +2343,64 @@ export class WatchRepository {
       count += Number(result.changes);
     }
     return count;
+  }
+
+  listPendingNotifications(limit: number): Array<{
+    id: string;
+    ruleId: string | null;
+    subjectType: 'event' | 'digest';
+    subjectId: string;
+    channel: 'in-app' | 'windows';
+    dedupeKey: string;
+    privacyJson: string;
+    createdAt: string;
+  }> {
+    this.ensureOpen();
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return [];
+    try {
+      const rows = this.handle.prepare(SQL_SELECT_PENDING_OUTBOX).all(limit) as Array<
+        Record<string, unknown>
+      >;
+      return rows.flatMap((row) => {
+        if (
+          typeof row['id'] !== 'string' ||
+          (row['rule_id'] !== null && typeof row['rule_id'] !== 'string') ||
+          (row['subject_type'] !== 'event' && row['subject_type'] !== 'digest') ||
+          typeof row['subject_id'] !== 'string' ||
+          (row['channel'] !== 'in-app' && row['channel'] !== 'windows') ||
+          typeof row['dedupe_key'] !== 'string' ||
+          typeof row['privacy_json'] !== 'string' ||
+          typeof row['created_at'] !== 'string'
+        )
+          return [];
+        return [
+          {
+            id: row['id'],
+            ruleId: row['rule_id'],
+            subjectType: row['subject_type'],
+            subjectId: row['subject_id'],
+            channel: row['channel'],
+            dedupeKey: row['dedupe_key'],
+            privacyJson: row['privacy_json'],
+            createdAt: row['created_at'],
+          },
+        ];
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  claimPendingNotification(id: string, nowIso: string): boolean {
+    this.ensureOpen();
+    return Number(this.handle.prepare(SQL_CLAIM_PENDING_OUTBOX).run(nowIso, id).changes) === 1;
+  }
+
+  finishClaimedNotification(id: string, state: 'sent' | 'failed', nowIso: string): boolean {
+    this.ensureOpen();
+    return (
+      Number(this.handle.prepare(SQL_FINISH_UNCERTAIN_OUTBOX).run(state, nowIso, id).changes) === 1
+    );
   }
 
   // -------------------------------------------------------------------------

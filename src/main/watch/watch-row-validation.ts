@@ -507,6 +507,7 @@ export function validateAffectedRuleStateMap(
 
 export interface WatchRuleRowColumns {
   id: string;
+  rule_version: number;
   source_id: string;
   kind: string;
   state: string;
@@ -518,6 +519,7 @@ export interface WatchRuleRowColumns {
   target_json: string;
   condition_json: string | null;
   notification_level: string;
+  notification_show_details: number;
   source_row_version: number;
   source_locator_fingerprint: string;
   next_due_at: string | null;
@@ -543,6 +545,7 @@ export function validateRuleRow(row: unknown): WatchRowValidation<WatchRule> {
   ) {
     return { ok: false, value: null, reason: 'row-shape-invalid' };
   }
+  if (!isInt(r.rule_version, 1)) return { ok: false, value: null, reason: 'integer-invalid' };
   if (!isIn(r.kind, WATCH_RULE_KINDS)) return { ok: false, value: null, reason: 'enum-invalid' };
   if (!isIn(r.state, WATCH_RULE_STATES)) return { ok: false, value: null, reason: 'enum-invalid' };
   if (r.pause_reason !== null && !isIn(r.pause_reason, PAUSE_REASONS)) {
@@ -556,6 +559,9 @@ export function validateRuleRow(row: unknown): WatchRowValidation<WatchRule> {
     return { ok: false, value: null, reason: 'enum-invalid' };
   }
   if (!isIn(r.notification_level, WATCH_NOTIFICATION_LEVELS)) {
+    return { ok: false, value: null, reason: 'enum-invalid' };
+  }
+  if (r.notification_show_details !== 0 && r.notification_show_details !== 1) {
     return { ok: false, value: null, reason: 'enum-invalid' };
   }
   if (!isInt(r.source_row_version, 1)) return { ok: false, value: null, reason: 'integer-invalid' };
@@ -620,6 +626,7 @@ export function validateRuleRow(row: unknown): WatchRowValidation<WatchRule> {
   if (target === null) return { ok: false, value: null, reason: 'target-invalid' };
   const rule: WatchRule = {
     id: r.id,
+    version: r.rule_version,
     sourceId: r.source_id,
     kind: r.kind as WatchRule['kind'],
     state: r.state as WatchRuleState,
@@ -631,6 +638,7 @@ export function validateRuleRow(row: unknown): WatchRowValidation<WatchRule> {
     target,
     condition,
     notificationLevel: r.notification_level as WatchRule['notificationLevel'],
+    showDetails: r.notification_show_details === 1,
     sourceRowVersion: r.source_row_version,
     sourceLocatorFingerprint: r.source_locator_fingerprint,
     nextDueAt: r.next_due_at,

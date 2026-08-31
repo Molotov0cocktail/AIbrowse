@@ -1664,3 +1664,88 @@ body {
   color: #2a7;
   font-size: 12px;
 }
+.watch-workspace {
+  height: 100%;
+  overflow: auto;
+  padding: 16px;
+  background: #f6f7fb;
+  color: #172033;
+}
+.watch-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.watch-header h2 {
+  margin: 0;
+}
+.watch-badge {
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #d23b3b;
+  color: white;
+  text-align: center;
+}
+.watch-workspace nav {
+  display: flex;
+  gap: 8px;
+  margin: 16px 0;
+}
+.watch-workspace nav button[aria-pressed='true'] {
+  background: #3157d5;
+  color: white;
+}
+.watch-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  gap: 12px;
+}
+.watch-grid article,
+.watch-rule-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #d7dbea;
+  border-radius: 8px;
+  background: white;
+}
+.watch-grid p {
+  grid-column: 1 / -1;
+}
+.watch-wizard {
+  position: fixed;
+  inset: 12% 18%;
+  z-index: 40;
+  padding: 20px;
+  overflow: auto;
+  border: 1px solid #aeb7d4;
+  border-radius: 10px;
+  background: white;
+  box-shadow: 0 12px 50px #0004;
+}
+.watch-wizard ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-left: 20px;
+}
+.watch-wizard li[aria-current='true'] {
+  color: #3157d5;
+  font-weight: 700;
+}
+.watch-toast,
+.watch-global-toast {
+  padding: 10px 12px;
+  border: 1px solid #8da2e6;
+  border-radius: 7px;
+  background: #edf1ff;
+}
+.watch-global-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 60;
+  max-width: 360px;
+}

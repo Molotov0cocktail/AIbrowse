@@ -46,6 +46,7 @@ function makeRule(overrides: Partial<WatchRule> & { feedUrl?: string } = {}): Wa
       : 'https://feed.example.com/rss.xml');
   return {
     id: randomUUID(),
+    version: 1,
     sourceId,
     kind: overrides.kind ?? 'feed',
     state: 'enabled',
@@ -60,6 +61,7 @@ function makeRule(overrides: Partial<WatchRule> & { feedUrl?: string } = {}): Wa
         : { type: 'feed', feedUrl, format: 'rss2' },
     condition: null,
     notificationLevel: 'normal',
+    showDetails: false,
     sourceRowVersion: 1,
     sourceLocatorFingerprint: computeSourceLocatorFingerprint({
       sourceId,

@@ -22,6 +22,7 @@ const FINGERPRINT = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789a
 function makeFeedRule(overrides: Partial<WatchRule> = {}): WatchRule {
   return {
     id: 'rule-1',
+    version: 1,
     sourceId: 'src-1',
     kind: 'feed',
     state: 'enabled',
@@ -33,6 +34,7 @@ function makeFeedRule(overrides: Partial<WatchRule> = {}): WatchRule {
     target: { type: 'feed', feedUrl: 'https://example.com/rss.xml', format: 'rss2' },
     condition: null,
     notificationLevel: 'normal',
+    showDetails: false,
     sourceRowVersion: 1,
     sourceLocatorFingerprint: FINGERPRINT,
     nextDueAt: null,

@@ -40,6 +40,7 @@ function makeRule(): WatchRule {
   });
   return {
     id: randomUUID(),
+    version: 1,
     sourceId,
     kind: 'feed',
     state: 'enabled',
@@ -51,6 +52,7 @@ function makeRule(): WatchRule {
     target: { type: 'feed', feedUrl: 'https://example.com/rss.xml', format: 'rss2' },
     condition: null,
     notificationLevel: 'important',
+    showDetails: false,
     sourceRowVersion: 1,
     sourceLocatorFingerprint: fingerprint,
     nextDueAt: null,

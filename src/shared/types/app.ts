@@ -56,6 +56,7 @@ import type {
   ResearchTaskDoneEvent,
 } from './research';
 import type { ResearchExportCsvPayload, ResearchListPayload } from './ipc';
+import type { WatchBridge } from './watch-ipc';
 
 export interface AppInfo {
   appVersion: string;
@@ -167,4 +168,5 @@ export interface AibrowseBridge {
     onProgress(listener: (e: ResearchProgressEvent) => void): () => void;
     onTaskDone(listener: (e: ResearchTaskDoneEvent) => void): () => void;
   };
+  watch: WatchBridge;
 }

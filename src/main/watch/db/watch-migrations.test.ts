@@ -17,6 +17,7 @@ import {
   WATCH_MIGRATION_V2,
   WATCH_MIGRATION_V3,
   WATCH_MIGRATION_V4,
+  WATCH_MIGRATION_V5,
   runWatchMigrations,
 } from './watch-migrations';
 
@@ -105,27 +106,29 @@ function insertDigestFixture(db: DbHandle): void {
   ).run();
 }
 
-describe('migration v1 契约断言（§10.1：11 张表；D7 v3 +1 = 12 张表）', () => {
-  it('v1..v4 四级、版本连续、语句全部编译期常量', () => {
+describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rule CAS）', () => {
+  it('v1..v5 五级、版本连续、语句全部编译期常量', () => {
     expect(WATCH_MIGRATION_V1.version).toBe(1);
     expect(WATCH_MIGRATION_V2.version).toBe(2);
-    expect(WATCH_MIGRATIONS).toHaveLength(4);
-    expect(WATCH_MIGRATIONS.map((s) => s.version)).toEqual([1, 2, 3, 4]);
+    expect(WATCH_MIGRATION_V5.version).toBe(5);
+    expect(WATCH_MIGRATIONS).toHaveLength(5);
+    expect(WATCH_MIGRATIONS.map((s) => s.version)).toEqual([1, 2, 3, 4, 5]);
     expect(
       WATCH_MIGRATION_V1.statements.every((s) => typeof s === 'string') &&
         WATCH_MIGRATION_V2.statements.every((s) => typeof s === 'string') &&
         WATCH_MIGRATION_V3.statements.every((s) => typeof s === 'string') &&
-        WATCH_MIGRATION_V4.statements.every((s) => typeof s === 'string'),
+        WATCH_MIGRATION_V4.statements.every((s) => typeof s === 'string') &&
+        WATCH_MIGRATION_V5.statements.every((s) => typeof s === 'string'),
     ).toBe(true);
     // R3-3：v3 语句数 21（含 watch_baselines_v3 的条件 validator CHECK 内嵌）——
     // M0-9 逐语句失败注入按此固定语句数全部切点执行
     expect(WATCH_MIGRATION_V3.statements).toHaveLength(21);
   });
 
-  it('v4 重建严格 Digest 表并建立 observation journal/high-water', () => {
+  it('v5 保留严格 Digest 表并追加 Rule CAS/showDetails 默认值', () => {
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(true);
-    expect(outcome.toVersion).toBe(4);
+    expect(outcome.toVersion).toBe(5);
     expect(tableNames(handle)).toEqual(
       expect.arrayContaining(['digest_change_state', 'digest_change_journal', 'digest_runs']),
     );
@@ -140,6 +143,16 @@ describe('migration v1 契约断言（§10.1：11 张表；D7 v3 +1 = 12 张表�
     ).sql;
     expect(scheduleSql).toContain("state IN ('active','paused')");
     expect(scheduleSql).not.toContain("state IN ('active','deleted')");
+    const rule = handle.prepare('PRAGMA table_info(watch_rules)').all() as Array<{
+      name: string;
+      dflt_value: string | null;
+    }>;
+    expect(rule).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'rule_version', dflt_value: '1' }),
+        expect.objectContaining({ name: 'notification_show_details', dflt_value: '0' }),
+      ]),
+    );
   });
 
   it('v3 任一 Digest 占位表非空均 fail-closed 并保持 v3', () => {
@@ -267,10 +280,10 @@ describe('migration v1 契约断言（§10.1：11 张表；D7 v3 +1 = 12 张表�
     }
   });
 
-  it('运行后 user_version=4 且 15 张表全部存在', () => {
+  it('运行后 user_version=5 且 15 张表全部存在', () => {
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(true);
-    expect(outcome.toVersion).toBe(4);
+    expect(outcome.toVersion).toBe(5);
     expect(tableNames(handle)).toEqual([
       'digest_change_journal',
       'digest_change_state',
@@ -322,8 +335,8 @@ describe('migration v1 契约断言（§10.1：11 张表；D7 v3 +1 = 12 张表�
     expect(again.ok).toBe(true);
   });
 
-  it('未知更高版本零写入（newer-than-program；latest=4 → 5 为未来版本）', () => {
-    handle.exec('PRAGMA user_version = 5');
+  it('未知更高版本零写入（newer-than-program；latest=5 → 6 为未来版本）', () => {
+    handle.exec('PRAGMA user_version = 6');
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(false);
     expect(outcome.state).toBe('newer-than-program');

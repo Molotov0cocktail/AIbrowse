@@ -49,6 +49,7 @@ function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
   const feedUrl = overrides.kind === 'page' ? 'https://page.example.com/doc' : D5_FEED_URL;
   return {
     id: randomUUID(),
+    version: 1,
     sourceId,
     kind: 'feed',
     state: 'enabled',
@@ -60,6 +61,7 @@ function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
     target: { type: 'feed', feedUrl, format: 'rss2' },
     condition: null,
     notificationLevel: 'normal',
+    showDetails: false,
     sourceRowVersion: 1,
     sourceLocatorFingerprint: computeSourceLocatorFingerprint({
       sourceId,

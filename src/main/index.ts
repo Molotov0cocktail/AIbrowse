@@ -55,6 +55,20 @@ import { HostRequestGate } from './watch/host-request-gate';
 import { WatchRunCoordinator, type WatchAcquisitionPort } from './watch/watch-run-coordinator';
 import { WatchScheduler } from './watch/watch-scheduler';
 import { createSystemClock } from '../shared/watch/clock';
+import { WatchQueryService } from './watch/watch-query-service';
+import { WatchIpcAdapter } from './watch/watch-ipc';
+import { WatchExportService } from './watch/watch-export-service';
+import { WatchNotificationService } from './watch/watch-notification-service';
+import { WatchPreviewStore } from './watch/watch-preview-store';
+import { WatchPreviewService } from './watch/watch-preview-service';
+import { WatchCommandService } from './watch/watch-command-service';
+import { qualifyWindowsNotification } from './watch/windows-notification-sink';
+import {
+  WATCH_IPC_CHANNELS,
+  validateWatchIpcOutput,
+  validateWatchIpcPayload,
+} from '../shared/watch/watch-ipc-validator';
+import type { WatchPushDto } from '../shared/types/watch-ipc';
 // Sixth Stage D6：页面 Region/Session 授权/有界 PageProjection 装配（FIXED
 // DECISIONS 12）：同一 HostRequestGate 下构造 D3 public stack + Session
 // Workspace/Reader + 主进程内存 grant store + PageAcquisitionRouter；失败
@@ -312,6 +326,9 @@ let watchShutdownStarted = false;
 let watchWorkspace: WatchTaskTabWorkspace | null = null;
 let watchGrantStore: SessionGrantStore | null = null;
 let watchPageRouter: PageAcquisitionRouter | null = null;
+let watchAcquisitionService: WatchAcquisitionService | null = null;
+let watchPreviewReader: BrowserWatchReader | null = null;
+let watchPreviewStore: WatchPreviewStore | null = null;
 let watchPublicStackRobots: { clearCache(): void } | null = null;
 // 8.23 冒烟 holder：index.ts 装配后注入（SMOKE_MODE 消费；生产零行为）
 const smokeWatchPageSession: { current: WatchPageSmokeBundle | null } = { current: null };
@@ -346,6 +363,7 @@ async function watchShutdown(): Promise<void> {
     }
   }
   watchGrantStore?.clear();
+  watchPreviewStore?.dispose();
   watchPublicStackRobots?.clearCache();
   // D7 将在 Run pipeline 接线时消费 watchPageRouter（FIXED DECISIONS 12）：
   // 保持引用存活至 shutdown，杜绝“已装配但不可达”的悬挂态。
@@ -797,6 +815,136 @@ if (!gotLock) {
     handle(IPC.ResearchList, (payload) => researchIpcAdapter.list(payload));
     handle(IPC.ResearchDelete, (payload) => researchIpcAdapter.delete(payload));
     handle(IPC.ResearchExportCsv, (payload) => researchIpcAdapter.exportCsv(payload));
+
+    // Sixth Stage D9：Watch 精确 invoke 白名单。renderer 只传闭合 payload；
+    // 查询/导出均在主进程重投影，文件路径永不穿过 bridge。
+    const windowsQualification = (): ReturnType<typeof qualifyWindowsNotification> =>
+      qualifyWindowsNotification({
+        platform: process.platform,
+        packaged: app.isPackaged,
+        // 当前产品尚无经打包验证的 AUMID/identity 配置；不得用开发态冒充生产资格。
+        identityConfigured: false,
+        supported: false,
+        probeIdentity: () => false,
+      });
+    const watchQuery = new WatchQueryService(
+      () => watchRepo,
+      () => watchRunCoordinator?.getState() ?? { mode: 'unavailable', activeCount: 0 },
+      () => {
+        const result = windowsQualification();
+        return result.available
+          ? { windowsNotification: 'available', windowsReason: null }
+          : { windowsNotification: 'unavailable', windowsReason: result.reason };
+      },
+    );
+    const watchExporter = new WatchExportService(watchQuery, {
+      showSaveDialog: async (kind, defaultFileName) => {
+        if (mainWindow === null || mainWindow.isDestroyed()) return null;
+        const extension = kind === 'csv' ? 'csv' : 'md';
+        const result = await dialog.showSaveDialog(mainWindow, {
+          title: kind === 'csv' ? '导出监控事件' : '导出监控摘要',
+          defaultPath: defaultFileName,
+          filters: [
+            { name: kind === 'csv' ? 'CSV 文件' : 'Markdown 文件', extensions: [extension] },
+          ],
+          properties: ['createDirectory'],
+        });
+        return result.canceled ? null : (result.filePath ?? null);
+      },
+      write: async (path, bytes) => {
+        await writeFile(path, bytes);
+      },
+    });
+    watchPreviewStore = new WatchPreviewStore();
+    const watchPreview = new WatchPreviewService({
+      store: watchPreviewStore,
+      source: (sourceId) => {
+        const provider = sourceService as (SourceService & SourceWatchProjectionProvider) | null;
+        return provider?.getSourceWatchProjection(sourceId) ?? { status: 'unavailable' };
+      },
+      acquisition: () => watchAcquisitionService,
+      browser: () => browserController,
+      reader: () => watchPreviewReader,
+      grants: () => watchGrantStore,
+    });
+    const watchCommands = new WatchCommandService(
+      watchPreviewStore,
+      (sourceId) => {
+        const provider = sourceService as (SourceService & SourceWatchProjectionProvider) | null;
+        return provider?.getSourceWatchProjection(sourceId) ?? { status: 'unavailable' };
+      },
+      () => watchRepo,
+      () => watchGrantStore,
+    );
+    let watchSubscriptionSender: Electron.WebContents | null = null;
+    let watchRevision = 0;
+    const watchNotifications = new WatchNotificationService(
+      () => watchRepo,
+      (notification) => {
+        const sender = watchSubscriptionSender;
+        if (sender === null || sender.isDestroyed()) return false;
+        const push: WatchPushDto = {
+          type: 'notification',
+          revision: ++watchRevision,
+          notification,
+        };
+        if (!validateWatchIpcOutput(push)) return false;
+        sender.send(IPC.WatchSubscribe, push);
+        return true;
+      },
+      (result) => logInfo('audit', `watch-notification result=${result}`),
+    );
+    const watchIpc = new WatchIpcAdapter({
+      repository: () => watchRepo,
+      coordinator: () => watchRunCoordinator,
+      query: watchQuery,
+      exporter: watchExporter,
+      preview: watchPreview,
+      commands: watchCommands,
+      digest: () => digestService,
+      resolveDigestSources: (selector) => {
+        const provider = sourceService as
+          (SourceService & DigestMembershipProjectionProvider) | null;
+        const resolved = provider?.resolveDigestMembership(selector);
+        return resolved?.status === 'ok' ? resolved.members.map((member) => member.sourceId) : null;
+      },
+      audit: (message) => logInfo('audit', message),
+    });
+    for (const channel of WATCH_IPC_CHANNELS) {
+      if (channel !== IPC.WatchSubscribe)
+        handle(channel, (payload) => watchIpc.invoke(channel, payload));
+    }
+
+    ipcMain.on(IPC.WatchSubscribe, (event, payload: unknown) => {
+      if (
+        mainWindow === null ||
+        !isTrustedSender(event, mainWindow) ||
+        !validateWatchIpcPayload(IPC.WatchSubscribe, payload).ok
+      )
+        return;
+      const action = (payload as { action: 'start' | 'stop' }).action;
+      if (action === 'stop') {
+        if (watchSubscriptionSender === event.sender) watchSubscriptionSender = null;
+        return;
+      }
+      if (watchSubscriptionSender === event.sender) {
+        void watchNotifications.drain();
+        return;
+      }
+      if (watchSubscriptionSender !== null) return;
+      watchSubscriptionSender = event.sender;
+      const push: WatchPushDto = {
+        type: 'status',
+        revision: ++watchRevision,
+        status: watchQuery.status(),
+      };
+      if (!event.sender.isDestroyed() && validateWatchIpcOutput(push))
+        event.sender.send(IPC.WatchSubscribe, push);
+      void watchNotifications.drain();
+      event.sender.once('destroyed', () => {
+        if (watchSubscriptionSender === event.sender) watchSubscriptionSender = null;
+      });
+    });
     // research:progress / research:task-done 事件出口（决议 #157：Service 转发 +
     // 终态时序；只发主窗口；事件零敏感内容——payload 形状已由 Service 保证）。
     // ⚠️ 注册必须位于 Research 装配之后（见 forwardResearchEvents——装配前
@@ -1415,6 +1563,7 @@ async function createBrowserWindow(): Promise<void> {
           });
           watchGrantStore = new SessionGrantStore({});
           const reader = new BrowserWatchReader({ browser: browserController, clock: watchClock });
+          watchPreviewReader = reader;
           const pageRouter = new PageAcquisitionRouter({
             publicTarget: publicStack.target,
             workspace: watchWorkspace,
@@ -1427,6 +1576,7 @@ async function createBrowserWindow(): Promise<void> {
             target: publicStack.target,
           });
           const unified = new WatchAcquisitionService({ feed: feedService, page: pageRouter });
+          watchAcquisitionService = unified;
           acquisitionPort = {
             run: async (input) =>
               unified.run({

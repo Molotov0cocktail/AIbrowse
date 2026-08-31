@@ -17,6 +17,7 @@ import type { WatchRule } from '../../shared/types/watch';
 function intervalRule(overrides: Partial<WatchRule> = {}): WatchRule {
   return {
     id: 'r1',
+    version: 1,
     sourceId: 's1',
     kind: 'feed',
     state: 'enabled',
@@ -28,6 +29,7 @@ function intervalRule(overrides: Partial<WatchRule> = {}): WatchRule {
     target: { type: 'feed', feedUrl: 'https://example.com/rss.xml', format: 'rss2' },
     condition: null,
     notificationLevel: 'normal',
+    showDetails: false,
     sourceRowVersion: 1,
     sourceLocatorFingerprint: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     nextDueAt: null,

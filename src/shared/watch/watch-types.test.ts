@@ -174,6 +174,7 @@ describe('判别联合 DTO 形状（编译期/结构自检）', () => {
   it('WatchRule 全字段存在（§3.1 契约）', () => {
     const rule: watch.WatchRule = {
       id: 'r1',
+      version: 1,
       sourceId: 's1',
       kind: 'feed',
       state: 'enabled',
@@ -185,6 +186,7 @@ describe('判别联合 DTO 形状（编译期/结构自检）', () => {
       target: { type: 'feed', feedUrl: 'https://example.com/feed.xml', format: 'rss2' },
       condition: null,
       notificationLevel: 'normal',
+      showDetails: false,
       sourceRowVersion: 3,
       sourceLocatorFingerprint: 'fp',
       nextDueAt: null,

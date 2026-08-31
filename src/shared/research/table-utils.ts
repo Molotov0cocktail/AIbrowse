@@ -23,7 +23,7 @@ export interface TableViewResult {
   rows: string[][];
 }
 
-// 决议 #160(7)：spreadsheet-cell 防护——以 =、+、-、@、TAB、CR 开头时加单引号
+// 决议 #160(7) + D9：spreadsheet-cell 防护——危险前缀加单引号。
 // （防复制/导出后直接粘贴进电子表格执行公式）
 export function protectSpreadsheetCell(value: string): string {
   if (value.length === 0) return value;
@@ -34,7 +34,8 @@ export function protectSpreadsheetCell(value: string): string {
     first === 0x2d || // -
     first === 0x40 || // @
     first === 0x09 || // TAB
-    first === 0x0d // CR
+    first === 0x0d || // CR
+    first === 0x0a // LF
   ) {
     return `'${value}`;
   }

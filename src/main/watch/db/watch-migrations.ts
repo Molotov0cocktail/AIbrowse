@@ -556,11 +556,21 @@ export const WATCH_MIGRATION_V4: MigrationStep = {
   ],
 };
 
+// D9 schema v5：只追加 Rule 用户配置 CAS 与通知详情 opt-in。V1-v4 字节冻结。
+export const WATCH_MIGRATION_V5: MigrationStep = {
+  version: 5,
+  statements: [
+    'ALTER TABLE watch_rules ADD COLUMN rule_version INTEGER NOT NULL DEFAULT 1 CHECK(rule_version >= 1)',
+    'ALTER TABLE watch_rules ADD COLUMN notification_show_details INTEGER NOT NULL DEFAULT 0 CHECK(notification_show_details IN (0,1))',
+  ],
+};
+
 export const WATCH_MIGRATIONS: readonly MigrationStep[] = [
   WATCH_MIGRATION_V1,
   WATCH_MIGRATION_V2,
   WATCH_MIGRATION_V3,
   WATCH_MIGRATION_V4,
+  WATCH_MIGRATION_V5,
 ];
 
 // 薄封装：固定使用 Watch 独立迁移列表（引擎复用 B1 冻结模式）

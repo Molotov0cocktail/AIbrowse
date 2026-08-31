@@ -102,13 +102,14 @@ describe('csvQuoteCell（RFC 4180 同族）', () => {
 });
 
 describe('protectSpreadsheetCell（与 table-utils 共用语义）', () => {
-  it('=,+,-,@、TAB、CR 前缀加单引号', () => {
+  it('=,+,-,@、TAB、CR、LF 前缀加单引号', () => {
     expect(protectSpreadsheetCell('=1')).toBe("'=1");
     expect(protectSpreadsheetCell('+1')).toBe("'+1");
     expect(protectSpreadsheetCell('-1')).toBe("'-1");
     expect(protectSpreadsheetCell('@1')).toBe("'@1");
     expect(protectSpreadsheetCell('\t1')).toBe("'\t1");
     expect(protectSpreadsheetCell('\r1')).toBe("'\r1");
+    expect(protectSpreadsheetCell('\n=1+1')).toBe("'\n=1+1");
   });
 
   it('非危险前缀原样返回', () => {

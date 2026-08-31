@@ -12,6 +12,8 @@ interface ToolbarProps {
   onToggleAiPanel: () => void;
   onToggleSourcesPanel: () => void; // B5：信源面板开关（与 AI 面板互斥，决议 #68）
   onToggleResearchPanel: () => void; // C8 决议 #163(1)：研究面板（三态互斥）
+  onOpenWatch: () => void;
+  onWatchCurrentPage: () => void;
   addressBarRef: Ref<HTMLInputElement>;
 }
 
@@ -27,12 +29,32 @@ export function Toolbar({
   onToggleAiPanel,
   onToggleSourcesPanel,
   onToggleResearchPanel,
+  onOpenWatch,
+  onWatchCurrentPage,
   addressBarRef,
 }: ToolbarProps) {
   return (
     <div className="toolbar">
       <button type="button" className="nav-button" aria-label="后退" title="后退" onClick={onBack}>
         ←
+      </button>
+      <button
+        type="button"
+        className="nav-button watch-current"
+        aria-label="监控此页"
+        title="监控此页"
+        onClick={onWatchCurrentPage}
+      >
+        监控此页
+      </button>
+      <button
+        type="button"
+        className="nav-button watch-open"
+        aria-label="监控工作区"
+        title="监控工作区"
+        onClick={onOpenWatch}
+      >
+        监控
       </button>
       <button
         type="button"

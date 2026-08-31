@@ -20,6 +20,7 @@ interface SourceDetailFormProps {
   onSave(payload: SourcesUpdatePayload): void;
   onToggleEnabled(): void;
   onDelete(): void;
+  onCreateWatch(): void;
   onBack(): void;
 }
 
@@ -38,6 +39,7 @@ export function SourceDetailForm({
   onSave,
   onToggleEnabled,
   onDelete,
+  onCreateWatch,
   onBack,
 }: SourceDetailFormProps) {
   const [name, setName] = useState(source.name);
@@ -199,6 +201,9 @@ export function SourceDetailForm({
         {describeLastUsage(source.lastUsedAt, source.lastUsageOutcome)}
       </div>
       <div className="sources-detail-actions">
+        <button type="button" className="sources-create-watch" onClick={onCreateWatch}>
+          创建监控
+        </button>
         <button type="button" className="sources-save" disabled={busy} onClick={save}>
           保存修改
         </button>
