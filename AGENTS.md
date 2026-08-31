@@ -15,8 +15,9 @@
   `doc/stage6/detailed-design.md`，安全契约源为 `doc/stage6/threat-model.md`，任务契约为
   `doc/stage6/tasks/D1–D11`。具体完成项、当前 HEAD 与下一唯一动作只看
   `doc/tasks/progress.md`。
-- **阶段纪律**：本轮纯设计授权与 D1–D7 已闭环；下一唯一实施任务只看
-  `doc/tasks/progress.md`。D3 已经新的独立安全 Reviewer `PASS`。
+- **阶段纪律**：本轮纯设计授权与 D1–D7 已闭环；D8 实施前 REPLAN 已经新的独立持久化/隐私
+  Reviewer `PASS`，但 D8 产品实现尚未开始；下一唯一实施任务只看 `doc/tasks/progress.md`。D3 已经新的
+  独立安全 Reviewer `PASS`。
 - **已完成阶段**：第一阶段浏览器核心、第二阶段 AI 共读、第三阶段 Browser Agent、第四阶段
   Sources、第五阶段 Research 均已通过各自 Exit Gate。历史需求、契约与验收证据分别留在
   对应 Stage 文件、`doc/stage2/`～`doc/stage5/`、任务文档和 Git 中，不在本文件复述执行轮次。
@@ -57,7 +58,7 @@ Research UI
 
 Watch UI
   → WatchService
-  → WatchScheduler / WatchRunCoordinator
+  → WatchScheduler / WatchRunCoordinator / DigestScheduler / DigestService
   → HostRequestGate / WatchTaskTabWorkspace / Acquisition / Diff / Condition / Event
   → SourceService / BrowserController / PublicWatchHttpClient / LLMProvider
   → WatchRepository（独立 watch.db）
@@ -442,6 +443,9 @@ D:\AIbrowse\
   D6 页面 Region/Session 授权/有界 PageProjection 与 D7 确定性 Diff/Baseline/Event·
   Evidence/health 均已实现并经独立 Reviewer `PASS`（D3 为独立安全审查）；其余任务状态
   与下一唯一动作只看 `doc/tasks/progress.md`。
+- D8 实施前正式契约已冻结 observation journal cursor、可恢复 cycle/batch、Schedule/run/Provider 闭合
+  状态机、原子 scrub 与 v4 fail-closed migration，并经独立持久化/隐私 Reviewer `PASS`；这不表示 D8 产品代码
+  已实现。
 - Schedule、采集、Diff、Condition、Event、Evidence、网络边界、Session task-owned Tab、
   Source 观察协议、watch.db 和保留策略均以正式设计为准。
 - old/new Evidence 必须可解释且类型化，不能只保存哈希；AI digest 只解释确定性事件事实。

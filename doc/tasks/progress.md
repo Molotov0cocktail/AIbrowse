@@ -16,8 +16,10 @@
   为 `Sixth_stage.md`、`doc/stage6/` 四份设计与 D1–D11 任务契约，零产品代码、零新依赖、
   零真实 Provider 调用。第六阶段 Entry Design Gate=`GO`；D1–D7 均经 Reviewer `PASS`
   并已关闭。D3 的三个解析依赖已通过资格门并精确固定：
-  `@federicocarboni/saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1`；下一唯一
-  实施任务为 D8。
+  `@federicocarboni/saxe@0.8.0`、`parse5-sax-parser@8.0.0`、`parse5@8.0.1`。D8 实施前
+  REPLAN 已在正式设计决议 #S6-059～#S6-067 闭合，契约候选链 `f8df1a8` → `5c4a40a`
+  经新的独立持久化/隐私 Reviewer `PASS`；这只批准 D8 Execution Contract，零产品代码。
+  下一唯一实施任务仍为 D8。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -662,7 +664,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D5 | Scheduler、RunCoordinator、预约事务与共享 HostRequestGate | ✅ | 2026-08-29 完成（见下）：baseline `1e88845`，实施链 `0a8ff98` → `3452724`（十一个候选提交）；独立 Reviewer=`PASS`，聚焦 34/34、Watch 190/190、全量 127 files/2990 tests，typecheck/lint/format/build/diff-check 全绿、WATCH set/check dev+生产 0/0；任务文档 doc/stage6/tasks/D5-scheduler-run-coordinator.md |
 | D6 | Page region/Session task-owned Tab 投影 | ✅ | 2026-08-29 完成（见下）：baseline `d2226bb`，实施链 `3d62c02` → `d508d7c` → `25a93c9` → `19f04c2` → `321b5f3` → `f4f5cce` → `f4653e4` → `aa3d373`（八个候选提交，Repair baseline `f4653e4`）；独立 Reviewer=`PASS`，聚焦 8 files/178 tests、全量 133 files/3128 tests，typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟 8.23 与 WATCH set/check 0/0；任务文档 doc/stage6/tasks/D6-page-region-session-projection.md |
 | D7 | 确定性 Diff/Event/Evidence 与健康状态 | ✅ | 2026-08-31 完成（见下）：baseline `80a2174`，实施链 `623dee7` → `80a41ad` → `25a2549` → `7e17d38` → `3c7861f` → `bbaed6b` → `cd267ff` → `828daed` → `9d1a362` → `3f09378` → `0b5e5f3` → `4619318`（十二个候选提交）；独立 Reviewer=`PASS`，聚焦 8 files/239 tests、全量 137 files/3244 tests，typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟 8.21–8.24 与生产 WATCH set/check 0/0；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
-| D8 | Digest 分享投影与可选 AI 解释 | ⏳ | 依赖 D7；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
+| D8 | Digest 分享投影与可选 AI 解释 | ⏳ | 依赖 D7（已满足）；2026-08-31 实施前 REPLAN 契约修复经独立 Reviewer=`PASS`，产品实现尚未开始；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
 | D9 | Watch UI/IPC/通知/导出 | ⏳ | 依赖 D4–D8；任务文档 doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md |
 | D10 | 端到端、红队、隐私与真实门控 | ⏳ | 依赖 D1–D9；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
 | D11 | 第六阶段独立 Exit Audit | ⏳ | 依赖 D10；必须使用新的独立 Reviewer；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
@@ -677,6 +679,22 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
 ## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 Sixth Stage 正式设计审核）
+
+- **D8 实施前 REPLAN 契约修复与独立复审（2026-08-31，独立持久化/隐私
+  Reviewer=`PASS`，零产品实现）**：① Step 0 baseline
+  `d44f11f28134ef185d360956476246a338069318`，工作区初始干净；独立读取 Stage 6 正式设计、
+  threat、D7–D11 任务与现有 v3 migration/Repository/Store/Provider 代码，复跑 D8 相关 7 files /
+  213 tests 与全量 137 files / 3244 tests 均 PASS。② 原 Planner `REPLAN` 的 cursor、cycle/batch
+  恢复、Provider at-most-once、canonical/预算、runStats、DigestScheduler 所有权、scrub/v4 migration、
+  Group 冻结等缺口在 `f8df1a8` 闭合；独立 Reviewer 首轮 `REPAIR` 后，`5c4a40a` 进一步冻结
+  Schedule active/paused+硬删除、run running/budget_exceeded/completed+容量复验、Provider
+  state×result×claim/time/explanation 完整矩阵，以及 SQL CHECK/runtime/migration/store fault oracle。
+  ③ 同轮消除 Provider raw canonical trim 歧义、跨 section event 全局顺序、metadata/unknown 引用、零剩余
+  section→null 和 active journal preview 保留歧义；正式决议现为 #S6-059～#S6-067。④ 独立 Reviewer 对
+  `d44f11f..5c4a40a` 复审 `PASS`：候选仅四份正式文档，`git diff --check` 与
+  `npm run format:check` 退出码 0；未运行 typecheck/lint/build/Electron smoke（纯契约文档，产品代码、依赖、
+  构建边界均未变化），真实 Provider 0 次。⑤ D8 仍为待实现；Executor 必须从本次 Closer 最终 Git HEAD 记录
+  精确 baseline，按 `doc/stage6/tasks/D8-digest-sharing-ai.md` 红→绿实施，不得重新选择已冻结状态机或提前实现 D9。
 
 - **D4 watch.db、Source 生命周期观察协议与恢复验收与关闭（2026-08-28，独立安全/持久化
   Reviewer=`PASS`）**：① 实施链 `04adce4` → `da5958a` → `a493039` → `ad859f9` →
@@ -3312,10 +3330,11 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **规划 D8 Digest / Sharing / 可选 AI Explanation。**唯一任务文档：
-  `doc/stage6/tasks/D8-digest-sharing-ai.md`。D8 依赖 D4/D7（均已关闭）：按分组冻结成员与
-  独立游标的 Digest、shareMode 投影、可选 AI 解释与确定性降级；本轮已完成 D7 收尾，尚未
-  开始 D8，先由新的 Codex GPT-5.6 Sol Planner 按 Step 0 独立调查并形成 Execution Contract。
+- **实施 D8 Digest / Sharing / 可选 AI Explanation。**唯一任务文档：
+  `doc/stage6/tasks/D8-digest-sharing-ai.md`。D8 依赖 D4/D7（均已关闭），实施前 REPLAN 与独立
+  Reviewer 已闭环；Executor 从 Closer 最终 Git HEAD 记录精确 baseline，严格执行任务文档 M0–M6、红→绿、
+  v4 migration/状态矩阵/崩溃恢复/隐私门禁与 local candidate commit(s)，不得 push。实现完成后必须由新的
+  独立 Sol Reviewer 审核；本闭环不开始产品实现或 D9。
 
 ## 第一阶段验收未完成项
 
