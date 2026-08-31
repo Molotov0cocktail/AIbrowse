@@ -1,6 +1,7 @@
 import { utf8ByteLength } from './watch-budget';
 import {
   CONDITION_OPERATORS,
+  MAX_EVENT_EVIDENCE_BYTES,
   PAUSE_REASONS,
   WATCH_EVENT_KINDS,
   WATCH_NOTIFICATION_LEVELS,
@@ -336,17 +337,15 @@ function validate(channel: WatchIpcChannel, v: unknown): boolean {
         manualFeedUrl(v['feedUrl'])
       );
     case 'watch:previewPageRegions':
-      return record(v, ['mode', 'sourceId', 'accessMode'])
-        ? v['mode'] === 'discover-tables' &&
-            uuid(v['sourceId']) &&
-            (v['accessMode'] === 'public' || v['accessMode'] === 'session')
-        : record(v, ['sourceId', 'accessMode', 'regions']) &&
-            uuid(v['sourceId']) &&
-            (v['accessMode'] === 'public' || v['accessMode'] === 'session') &&
-            Array.isArray(v['regions']) &&
-            v['regions'].length >= 1 &&
-            v['regions'].length <= 10 &&
-            v['regions'].every(region);
+      return (
+        record(v, ['sourceId', 'accessMode', 'regions']) &&
+        uuid(v['sourceId']) &&
+        (v['accessMode'] === 'public' || v['accessMode'] === 'session') &&
+        Array.isArray(v['regions']) &&
+        v['regions'].length >= 1 &&
+        v['regions'].length <= 10 &&
+        v['regions'].every(region)
+      );
     case 'watch:createRule':
       return (
         record(v, [
@@ -528,20 +527,7 @@ function successValue(channel: WatchIpcChannel, value: unknown): boolean {
           ))
       );
     case 'watch:previewPageRegions':
-      return (
-        preview(value, true) ||
-        (record(value, ['tableCandidates']) &&
-          Array.isArray(value['tableCandidates']) &&
-          value['tableCandidates'].length <= 50 &&
-          value['tableCandidates'].every(
-            (candidate) =>
-              record(candidate, ['fingerprint', 'occurrenceCount', 'columns']) &&
-              typeof candidate['fingerprint'] === 'string' &&
-              /^[0-9a-f]{64}$/u.test(candidate['fingerprint']) &&
-              integer(candidate['occurrenceCount'], 1) &&
-              integer(candidate['columns'], 1),
-          ))
-      );
+      return preview(value, true);
     case 'watch:issueSessionGrant':
       return (
         record(value, ['previewHandle', 'sessionGrantHandle']) &&
@@ -717,7 +703,9 @@ function eventDetail(value: unknown): boolean {
         Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'evidence')),
       ) &&
       Array.isArray(value['evidence']) &&
-      value['evidence'].every(validateEvidencePair))
+      value['evidence'].every(validateEvidencePair) &&
+      value['evidence'].reduce((bytes, pair) => bytes + utf8ByteLength(JSON.stringify(pair)), 0) <=
+        MAX_EVENT_EVIDENCE_BYTES)
   );
 }
 
@@ -781,15 +769,18 @@ function previewRegion(value: unknown): boolean {
     value['kind'] === 'table' &&
     boundedText(value['label'], 256) &&
     (value['status'] === 'matched' || value['status'] === 'not-found') &&
-    boundedText(value['headerFingerprint'], 256) &&
+    typeof value['headerFingerprint'] === 'string' &&
+    /^[0-9a-f]{64}$/u.test(value['headerFingerprint']) &&
     integer(value['occurrence'], 0) &&
     Array.isArray(value['groups']) &&
+    value['groups'].length <= 50 &&
     value['groups'].every(
       (group) =>
         record(group, ['fingerprint', 'occurrenceCount', 'columns']) &&
-        boundedText(group['fingerprint'], 256) &&
-        integer(group['occurrenceCount'], 0) &&
-        integer(group['columns'], 0),
+        typeof group['fingerprint'] === 'string' &&
+        /^[0-9a-f]{64}$/u.test(group['fingerprint']) &&
+        integer(group['occurrenceCount'], 1) &&
+        integer(group['columns'], 1),
     )
   );
 }

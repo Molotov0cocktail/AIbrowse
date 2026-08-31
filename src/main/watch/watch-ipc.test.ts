@@ -73,7 +73,23 @@ function adapter(
       ({
         previewPage: async () => ({
           ok: true,
-          value: { tableCandidates: [] },
+          value: {
+            previewHandle: 'a'.repeat(43),
+            kind: 'page',
+            accessMode: 'public',
+            targetDisplay: 'example.com',
+            fields: [],
+            regions: [
+              {
+                kind: 'table',
+                label: '表格候选',
+                status: 'not-found',
+                headerFingerprint: '0'.repeat(64),
+                occurrence: 0,
+                groups: [],
+              },
+            ],
+          },
         }),
       } as unknown as WatchPreviewService),
     commands: {} as WatchCommandService,
@@ -129,11 +145,21 @@ describe('D9 WatchIpcAdapter fail-closed dispatch/audit', () => {
     });
     await expect(
       ipc.invoke('watch:previewPageRegions', {
-        mode: 'discover-tables',
         sourceId: SOURCE_ID,
         accessMode: 'public',
+        regions: [
+          {
+            kind: 'table',
+            label: '表格候选',
+            headerFingerprint: '0'.repeat(64),
+            occurrence: 0,
+          },
+        ],
       }),
-    ).resolves.toEqual({ ok: true, value: { tableCandidates: [] } });
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { kind: 'page', regions: [{ kind: 'table', groups: [] }] },
+    });
     expect(audit).toHaveBeenCalledOnce();
     expect(audit.mock.calls[0]?.[0]).toMatch(
       /^watch-ipc kind=effectful-read channel=watch:previewPageRegions result=ok durationMs=\d+$/,
@@ -169,8 +195,10 @@ describe('D9 WatchIpcAdapter fail-closed dispatch/audit', () => {
               itemCount: 1,
             },
           ],
-          evidenceMap: {},
-          referenceStates: { [eventId]: 'expired' },
+          evidenceMap: Object.create(null) as Record<string, never>,
+          referenceStates: Object.assign(Object.create(null) as Record<string, string>, {
+            [eventId]: 'expired',
+          }),
           fetchedAt: '2026-08-31T00:00:00.000Z',
         },
         hasMore: false,

@@ -172,10 +172,13 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     [],
   );
   useEffect(() => {
-    if (state.view === 'events') loadEvents();
+    if (state.view === 'events')
+      loadEvents(focusSubject?.type === 'event' ? focusSubject.id : null);
     else if (state.view === 'digests') loadDigests();
   }, [
     state.view,
+    focusSubject?.type,
+    focusSubject?.id,
     readState,
     eventKindFilter,
     importanceFilter,
@@ -188,7 +191,6 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     if (focusSubject === null) return;
     if (focusSubject.type === 'event') {
       dispatch({ type: 'select-view', view: 'events' });
-      loadEvents(focusSubject.id);
     } else {
       dispatch({ type: 'select-view', view: 'digests' });
       void window.aibrowse.watch.getDigest({ digestId: focusSubject.id }).then((result) => {
@@ -238,7 +240,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     if (isObject(value) && Array.isArray(value['fields'])) {
       const fields = value['fields'].filter((field): field is string => typeof field === 'string');
       setPreviewFields(fields);
-      if (!fields.includes(conditionField)) setConditionField(fields[0] ?? '');
+      if (!fields.includes(conditionField)) setConditionField('');
     }
     setMessage('Baseline 预览已完成，可最终确认');
     setWizardStep(6);
@@ -251,9 +253,16 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     setMessage('正在安全采集 Baseline 预览…');
     if (ruleKind === 'page' && regionKind === 'table' && tableSelection === undefined) {
       const discovery = await window.aibrowse.watch.previewPageRegions({
-        mode: 'discover-tables',
         sourceId,
         accessMode,
+        regions: [
+          {
+            kind: 'table',
+            label: '表格候选',
+            headerFingerprint: '0'.repeat(64),
+            occurrence: 0,
+          },
+        ],
       });
       if (!discovery.ok || !isObject(discovery.value)) {
         setMessage(
@@ -261,22 +270,25 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
         );
         return;
       }
-      const candidates = Array.isArray(discovery.value['tableCandidates'])
-        ? discovery.value['tableCandidates'].flatMap((candidate) =>
-            isObject(candidate) &&
-            typeof candidate['fingerprint'] === 'string' &&
-            typeof candidate['occurrenceCount'] === 'number' &&
-            typeof candidate['columns'] === 'number'
-              ? [
-                  {
-                    fingerprint: candidate['fingerprint'],
-                    occurrenceCount: candidate['occurrenceCount'],
-                    columns: candidate['columns'],
-                  },
-                ]
-              : [],
-          )
-        : [];
+      const regions = Array.isArray(discovery.value['regions']) ? discovery.value['regions'] : [];
+      const table = regions.find((region) => isObject(region) && region['kind'] === 'table');
+      const candidates =
+        isObject(table) && Array.isArray(table['groups'])
+          ? table['groups'].flatMap((candidate) =>
+              isObject(candidate) &&
+              typeof candidate['fingerprint'] === 'string' &&
+              typeof candidate['occurrenceCount'] === 'number' &&
+              typeof candidate['columns'] === 'number'
+                ? [
+                    {
+                      fingerprint: candidate['fingerprint'],
+                      occurrenceCount: candidate['occurrenceCount'],
+                      columns: candidate['columns'],
+                    },
+                  ]
+                : [],
+            )
+          : [];
       setTableCandidates(candidates);
       setMessage(candidates.length === 0 ? '页面未发现可用表格' : '请选择表格候选及序号');
       return;
@@ -1109,29 +1121,13 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
               {conditionEnabled && (
                 <>
                   <label>
-                    预览字段
-                    <select
-                      value={conditionField}
-                      onChange={(event) => setConditionField(event.target.value)}
-                      disabled={previewFields.length === 0}
-                    >
-                      {previewFields.map((field) => (
-                        <option key={field} value={field}>
-                          {field}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
                     匹配文本
                     <input
                       value={conditionOperand}
                       onChange={(event) => setConditionOperand(event.target.value)}
                     />
                   </label>
-                  {previewFields.length === 0 && (
-                    <p>完成 Baseline 预览后才能从闭合字段目录选择条件字段。</p>
-                  )}
+                  <p>Baseline 预览完成后，需在最终确认页从闭合字段目录选择条件字段。</p>
                 </>
               )}
               <p>Event 命中由确定性程序判断，不使用 AI 条件。</p>
@@ -1175,6 +1171,22 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                 onChange={(event) => setSessionAuthorized(event.target.checked)}
               />
               我授权读取当前登录页进行一次性预览；授权 5 分钟后失效
+            </label>
+          )}
+          {wizardStep === 6 && conditionEnabled && (
+            <label>
+              条件字段（来自本次 Baseline 预览）
+              <select
+                value={conditionField}
+                onChange={(event) => setConditionField(event.target.value)}
+              >
+                <option value="">请选择字段</option>
+                {previewFields.map((field) => (
+                  <option key={field} value={field}>
+                    {field}
+                  </option>
+                ))}
+              </select>
             </label>
           )}
           {wizardStep === 5 &&

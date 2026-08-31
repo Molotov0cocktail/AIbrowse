@@ -40,11 +40,13 @@ export default function App() {
   const [viewMode, setViewMode] = useState<'browser' | 'research-result' | 'watch'>('browser');
   const [watchSourceId, setWatchSourceId] = useState<string | null>(null);
   const [watchNotice, setWatchNotice] = useState<InAppNotificationDto | null>(null);
+  const [watchUnreadCount, setWatchUnreadCount] = useState(0);
   const [watchFocus, setWatchFocus] = useState<{ type: 'event' | 'digest'; id: string } | null>(
     null,
   );
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
+  const viewModeRef = useRef(viewMode);
   const agent = useAgent();
   const research = useResearch();
   const pendingConfirm = globalPendingRequest(agent.agentState);
@@ -55,10 +57,16 @@ export default function App() {
     window.aibrowse.notifyRendererReady();
   }, []);
 
+  useEffect(() => {
+    viewModeRef.current = viewMode;
+    if (viewMode === 'watch') setWatchNotice(null);
+  }, [viewMode]);
+
   useEffect(
     () =>
       window.aibrowse.watch.subscribe((push) => {
-        if (push.type === 'notification') setWatchNotice(push.notification);
+        if (push.type === 'status') setWatchUnreadCount(push.status.unreadCount);
+        else if (viewModeRef.current !== 'watch') setWatchNotice(push.notification);
       }),
     [],
   );
@@ -185,6 +193,7 @@ export default function App() {
           onToggleResearchPanel={() => setSidePanel((p) => (p === 'research' ? null : 'research'))}
           onOpenWatch={() => {
             setSidePanel(null);
+            setWatchFocus(null);
             setViewMode('watch');
           }}
           onWatchCurrentPage={() => {
@@ -247,6 +256,19 @@ export default function App() {
       {/* L2 确认对话框（App 级全局，独立于面板挂载——切换/折叠面板不遮断确认）：
           deny 默认高亮/焦点；pending 作废自动关闭 */}
       <ConfirmDialog pending={pendingConfirm} onDecide={agent.confirmTool} />
+      {viewMode !== 'watch' && watchUnreadCount > 0 && (
+        <button
+          type="button"
+          className="watch-global-badge"
+          aria-label={`监控未读 ${watchUnreadCount}`}
+          onClick={() => {
+            setWatchFocus(null);
+            setViewMode('watch');
+          }}
+        >
+          监控未读 {watchUnreadCount}
+        </button>
+      )}
       {watchNotice !== null && viewMode !== 'watch' && (
         <button
           type="button"

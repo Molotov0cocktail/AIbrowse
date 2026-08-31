@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { BrowserController } from '../browser/browser-controller';
 import type { SourceWatchProjectionReadResult } from '../sources/source-service';
 import type { RegionDescriptor, WatchRule } from '../../shared/types/watch';
@@ -17,6 +17,8 @@ import type { TargetGatedClient } from './public-watch-http-client';
 import { parseDiscoveryCandidates } from './feed-discovery';
 import { readPublicHtml } from './public-html-sax-reader';
 import { extractContentTypeCharset } from './text-encoding';
+
+const TABLE_DISCOVERY_FINGERPRINT = '0'.repeat(64);
 
 type PreviewResult =
   | { ok: true; value: Record<string, unknown> }
@@ -78,17 +80,20 @@ export class WatchPreviewService {
   }
 
   async previewPage(input: {
-    mode?: 'preview' | 'discover-tables';
     sourceId: string;
     accessMode: 'public' | 'session';
-    regions?: RegionDescriptor[];
+    regions: RegionDescriptor[];
   }): Promise<PreviewResult> {
     const source = this.options.source(input.sourceId);
     if (source.status !== 'found')
       return { ok: false, errorCode: source.status === 'missing' ? 'not-found' : 'unavailable' };
-    if (input.mode === 'discover-tables')
-      return this.discoverPageTables(source.projection, input.accessMode);
-    if (input.regions === undefined) return { ok: false, errorCode: 'unavailable' };
+    if (
+      input.regions.length === 1 &&
+      input.regions[0]?.kind === 'table' &&
+      input.regions[0].headerFingerprint === TABLE_DISCOVERY_FINGERPRINT &&
+      input.regions[0].occurrence === 0
+    )
+      return this.discoverPageTables(source.projection, input.accessMode, input.regions);
     const target = {
       type: 'page' as const,
       pageUrl: source.projection.canonicalKey,
@@ -176,6 +181,7 @@ export class WatchPreviewService {
   private async discoverPageTables(
     source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
     accessMode: 'public' | 'session',
+    regions: RegionDescriptor[],
   ): Promise<PreviewResult> {
     let channels: import('../../shared/types/watch').DocumentChannels;
     if (accessMode === 'public') {
@@ -234,13 +240,21 @@ export class WatchPreviewService {
     // dedicated table channel. Supply a non-persisted sentinel solely so the shared structural
     // validator can validate every other channel before deterministic candidate extraction.
     const discoveryChannels = channels.mainText === '' ? { ...channels, mainText: '_' } : channels;
-    const discovered = previewPageRegions(discoveryChannels, [
-      { kind: 'table', label: '表格候选', headerFingerprint: '0'.repeat(64), occurrence: 0 },
-    ]);
+    const discovered = previewPageRegions(discoveryChannels, regions);
     if (!discovered.ok) return { ok: false, errorCode: 'unavailable' };
-    const table = discovered.preview[0];
-    const candidates = table?.kind === 'table' ? table.groups.slice(0, 50) : [];
-    return { ok: true, value: { tableCandidates: candidates } };
+    return {
+      ok: true,
+      value: {
+        // Discovery previews are deliberately not entered into WatchPreviewStore. If a hostile
+        // renderer tries to use this shape-only handle for create/rebaseline it fails closed.
+        previewHandle: randomBytes(32).toString('base64url'),
+        kind: 'page',
+        accessMode,
+        targetDisplay: safeDisplay(source.canonicalKey),
+        fields: [],
+        regions: discovered.preview,
+      },
+    };
   }
 
   issueSessionGrant(previewHandle: string): PreviewResult {

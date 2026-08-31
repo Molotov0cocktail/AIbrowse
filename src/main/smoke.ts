@@ -36,6 +36,13 @@ import { runWatchLifecycleSmokeScenario } from './smoke-watch-lifecycle';
 // D7：8.24 Watch Diff/Event/Evidence 冒烟（默认矩阵；dev+生产双场景）
 import { runWatchDiffEventSmokeScenario } from './smoke-watch-diff-event';
 import { runWatchDigestSmokeScenario } from './smoke-watch-digest';
+import type { WatchRepository } from './watch/repository/watch-repository';
+import type { WatchPreviewStore } from './watch/watch-preview-store';
+import type { WatchNotificationService } from './watch/watch-notification-service';
+import type { DigestService } from './watch/digest-service';
+import { computeSessionTargetDigest } from './watch/page-projector';
+import { computeSourceLocatorFingerprint } from '../shared/watch/watch-rule-state';
+import { validateWatchIpcOutput } from '../shared/watch/watch-ipc-validator';
 // 8.16 C4：真实 Workspace + CaptureService + EvidenceValidator + Repository（临时 research.db）
 import { ResearchWorkspace } from './research/research-workspace';
 import { CaptureService, sha256hex, type CaptureContent } from './research/capture-service';
@@ -69,6 +76,7 @@ import { RESEARCH_PROMPTS_PORT } from './research/synthesis/research-prompts';
 import { RESEARCH_SYNTHESIS_PORT } from './research/synthesis/claim-model';
 import { RESEARCH_RESULT_VALIDATION_PORT } from './research/result-validator';
 import { SourceServiceImpl } from './sources/source-service';
+import type { DigestMembershipProjectionProvider } from './sources/source-service';
 import { SourceSearchIndex } from './sources/repository/source-search-index';
 import { SourceUsageTracker } from './sources/usage/usage-tracker';
 // B7：存储装配（probe → 备份 → 迁移 → 检查）与保留清理——冒烟 B-06 真实启动
@@ -229,7 +237,16 @@ export interface SmokeOptions {
   // 场景「审计工具名全部为注册表工具」机器断言用；仅 SMOKE_MODE 注入，生产不传）
   watchPageSession?: { current: WatchPageSmokeBundle | null } | null; // D6：8.23 场景
   // 调用的 D6 冒烟 bundle holder（index.ts Watch 装配注入；仅 SMOKE_MODE，生产不传）
+  watchD9?: {
+    repository: () => WatchRepository | null;
+    previewStore: () => WatchPreviewStore | null;
+    notifications: () => WatchNotificationService | null;
+    digest: () => DigestService | null;
+  };
 }
+
+export const smokeWatchCsvExportPath: { current: string | null } = { current: null };
+export const smokeWatchMarkdownExportPath: { current: string | null } = { current: null };
 
 // ---------- S5：真实 Provider 可选冒烟（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY） ----------
 // 完整生产链路验证（§13.2）：UI → preload bridge → IPC（sender 校验）→ ConversationServiceImpl
@@ -10996,6 +11013,7 @@ export async function runSmokeScenario(
       options.uiWindow !== null &&
       options.uiWindow !== undefined
     ) {
+      await runWatchD9EndToEndSmoke(controller, options);
       const uiWc = options.uiWindow.webContents;
       await clickUi(uiWc, 'button[aria-label="监控工作区"]');
       await waitFor(
@@ -11131,7 +11149,7 @@ export async function runSmokeScenario(
             watch.listDigestSchedules({ page: 1, pageSize: 1 }),
             watch.listDigests({ page: 1, pageSize: 1, scheduleId: null }),
             watch.getRule({ ruleId: missing }),
-            watch.previewPageRegions({ mode: 'discover-tables', sourceId: missing, accessMode: 'public' }),
+            watch.previewPageRegions({ sourceId: missing, accessMode: 'public', regions: [{ kind: 'table', label: '表格候选', headerFingerprint: '0'.repeat(64), occurrence: 0 }] }),
             watch.createRule({ previewHandle: handle, sessionGrantHandle: null, schedule: { kind: 'interval', intervalMinutes: 60 }, condition: null, notificationLevel: 'normal', showDetails: false, confirmed: true }),
             watch.updateRule({ mode: 'settings', ruleId: missing, expectedVersion: 1, schedule: { kind: 'interval', intervalMinutes: 60 }, condition: null, notificationLevel: 'normal', showDetails: false }),
             watch.setPaused({ ruleId: missing, expectedVersion: 1, paused: true }),
@@ -11221,6 +11239,555 @@ export async function runSmokeScenario(
     }
     logError('smoke', '冒烟场景失败', err);
     throw err;
+  }
+}
+
+async function runWatchD9EndToEndSmoke(
+  controller: BrowserController,
+  options: SmokeOptions,
+): Promise<void> {
+  const uiWindow = options.uiWindow;
+  const d9 = options.watchD9;
+  const sources = options.sourcesService;
+  assert(uiWindow !== null && uiWindow !== undefined, '8.26-E2E：缺少 UI 窗口');
+  assert(d9 !== undefined && sources !== undefined, '8.26-E2E：缺少 Watch/Sources 生产装配');
+  const repo = d9.repository();
+  const store = d9.previewStore();
+  assert(repo !== null && store !== null, '8.26-E2E：Watch Store/PreviewStore 不可用');
+  const uiWc = uiWindow.webContents;
+  const beforeTabs = await controller.getTabs();
+  const beforeActive = (await controller.getActiveTab())?.id ?? null;
+  const tempDir = mkdtempSync(join(tmpdir(), 'aibrowse-watch-d9-ui-'));
+  const csvPath = join(tempDir, 'events.csv');
+  const markdownPath = join(tempDir, 'digest.md');
+  const tombstonePath = join(tempDir, 'digest-tombstone.md');
+  let sourceId: string | null = null;
+  let ruleId: string | null = null;
+  let scheduleId: string | null = null;
+  try {
+    const added = await sources.addManual({
+      scope: 'page',
+      url: 'http://127.0.0.1/watch-d9?private_query_canary=1',
+      name: '=D9 冒烟信源',
+      shareMode: 'metadata',
+    });
+    assert(added.ok, '8.26-E2E：Source 夹具创建失败');
+    if (!added.ok) return;
+    sourceId = added.source.id;
+    const source = added.source;
+    const target = {
+      type: 'page' as const,
+      pageUrl: source.canonicalKey,
+      regions: [{ kind: 'main-text' as const, label: '正文' }],
+      sessionConsent: null,
+    };
+    const locatorFingerprint = computeSourceLocatorFingerprint({
+      sourceId,
+      scope: 'page',
+      canonicalKey: source.canonicalKey,
+      kind: 'page',
+      canonicalTargetUrl: target.pageUrl,
+    });
+    const value = {
+      type: 'page' as const,
+      fields: [
+        {
+          fieldKey: 'r0:main',
+          regionIndex: 0,
+          kind: 'main-text' as const,
+          label: '正文',
+          value: '初始基线',
+        },
+      ],
+    };
+    const valueJson = JSON.stringify(value);
+    const projection = {
+      schemaVersion: 1 as const,
+      ruleId: randomUUID(),
+      sourceId,
+      finalUrl: source.canonicalKey,
+      capturedAt: new Date().toISOString(),
+      documentId: null,
+      contentHash: createHash('sha256').update(valueJson).digest('hex'),
+      byteLength: Buffer.byteLength(valueJson),
+      value,
+    };
+    const issuePreview = (accessMode: 'public' | 'session', previewTabId?: string): string => {
+      const handle = store.issue({
+        sourceId: source.id,
+        sourceRowVersion: source.version,
+        locatorFingerprint,
+        finalOrigin: 'http://127.0.0.1',
+        accessMode,
+        target,
+        projection,
+        fieldCatalog: ['r0:main'],
+        validator:
+          accessMode === 'session'
+            ? {
+                targetDigest: computeSessionTargetDigest({
+                  accessMode: 'session',
+                  pageUrl: target.pageUrl,
+                  regions: target.regions,
+                }),
+              }
+            : { etag: null, lastModified: null },
+        ...(previewTabId === undefined ? {} : { previewTabId }),
+      });
+      assert(handle !== null, '8.26-E2E：无法签发 Preview handle');
+      return handle;
+    };
+
+    const publicHandle = issuePreview('public');
+    const created = (await uiJs(
+      uiWc,
+      `(async () => window.aibrowse.watch.createRule({
+        previewHandle: ${JSON.stringify(publicHandle)},
+        sessionGrantHandle: null,
+        schedule: { kind: 'interval', intervalMinutes: 60 },
+        condition: { version: 1, combine: 'all', predicates: [{ fieldKey: 'r0:main', operator: 'contains', operand: '变化', caseSensitive: false }] },
+        notificationLevel: 'important',
+        showDetails: false,
+        confirmed: true
+      }))()`,
+    )) as { ok?: boolean; value?: { ruleId?: string } };
+    assert(
+      created.ok === true && typeof created.value?.ruleId === 'string',
+      '8.26-E2E：Rule 创建 IPC 未成功',
+    );
+    ruleId = created.value!.ruleId!;
+
+    const activeTab = await controller.getActiveTab();
+    assert(activeTab !== null, '8.26-E2E：Session 授权缺少活动 Tab');
+    const sessionHandle = issuePreview('session', activeTab!.id);
+    const sessionGrant = (await uiJs(
+      uiWc,
+      `(async () => window.aibrowse.watch.issueSessionGrant({ previewHandle: ${JSON.stringify(sessionHandle)} }))()`,
+    )) as { ok?: boolean; value?: { sessionGrantHandle?: string } };
+    assert(
+      sessionGrant.ok === true && typeof sessionGrant.value?.sessionGrantHandle === 'string',
+      '8.26-E2E：Session grant IPC 未成功',
+    );
+
+    const actionResults = (await uiJs(
+      uiWc,
+      `(async () => {
+        const watch = window.aibrowse.watch;
+        const id = ${JSON.stringify(ruleId)};
+        let detail = await watch.getRule({ ruleId: id });
+        const muted = await watch.setMuted({ ruleId: id, expectedVersion: detail.value.version, muted: true });
+        detail = await watch.getRule({ ruleId: id });
+        const paused = await watch.setPaused({ ruleId: id, expectedVersion: detail.value.version, paused: true });
+        detail = await watch.getRule({ ruleId: id });
+        const resumed = await watch.setPaused({ ruleId: id, expectedVersion: detail.value.version, paused: false });
+        const run = await watch.runNow({ ruleId: id });
+        return [muted.ok, paused.ok, resumed.ok, run.ok];
+      })()`,
+    )) as unknown;
+    assert(
+      Array.isArray(actionResults) && actionResults.every((result) => result === true),
+      '8.26-E2E：mute/pause/resume/manual-run 成功路径未闭合',
+    );
+
+    const eventId = randomUUID();
+    const observedAt = new Date().toISOString();
+    const evidenceCanary = '<script id="d9-evidence-canary">变化</script>';
+    const eventWrite = repo.writeEventTransaction({
+      event: {
+        id: eventId,
+        ruleId,
+        sourceId,
+        eventKind: 'changed',
+        importance: 'important',
+        idempotencyKey: randomUUID(),
+        changeFingerprint: createHash('sha256').update('d9-change').digest('hex'),
+        firstObservedAt: observedAt,
+        lastObservedAt: observedAt,
+        itemCount: 1,
+        readAt: null,
+      },
+      items: [
+        {
+          itemId: 'main',
+          fieldKey: 'r0:main',
+          label: '正文',
+          before: { kind: 'absent' },
+          after: {
+            kind: 'present',
+            excerpt: evidenceCanary,
+            valueHash: createHash('sha256').update(evidenceCanary).digest('hex'),
+            normalizedBytes: Buffer.byteLength(evidenceCanary),
+            truncated: false,
+          },
+          beforeCapturedAt: observedAt,
+          afterCapturedAt: observedAt,
+          beforeFinalUrl: 'http://127.0.0.1/watch-d9',
+          afterFinalUrl: 'http://127.0.0.1/watch-d9',
+          beforeDocumentId: null,
+          afterDocumentId: null,
+          feedItemKey: null,
+        },
+      ],
+      identity: {
+        sourceId,
+        expectedSourceLocatorFingerprint: locatorFingerprint,
+        expectedBaselineVersion: 1,
+      },
+      outbox: [
+        {
+          id: randomUUID(),
+          ruleId,
+          subjectType: 'event',
+          subjectId: eventId,
+          channel: 'in-app',
+          dedupeKey: `in-app|event|${eventId}|1`,
+          privacyJson: JSON.stringify({
+            eventKind: 'changed',
+            importance: 'important',
+            itemCount: 1,
+          }),
+          createdAt: observedAt,
+        },
+      ],
+    });
+    assert(eventWrite.ok, '8.26-E2E：Event/Evidence/outbox 夹具事务失败');
+    await d9.notifications()?.drain();
+    await waitFor(() => uiHas(uiWc, '.watch-global-toast'), 5000, '8.26-E2E：全局 toast 未出现');
+    await waitFor(
+      () => uiHas(uiWc, '.watch-global-badge'),
+      5000,
+      '8.26-E2E：全局未读 badge 未出现',
+    );
+    assert((await uiCount(uiWc, '.watch-global-toast')) === 1, '8.26-E2E：通知去重失败');
+    await d9.notifications()?.drain();
+    assert(
+      (await uiCount(uiWc, '.watch-global-toast')) === 1,
+      '8.26-E2E：重复 drain 产生重复 toast',
+    );
+    await clickUi(uiWc, '.watch-global-toast');
+    await waitFor(
+      async () => (await uiText(uiWc, '.watch-evidence')).includes('d9-evidence-canary'),
+      5000,
+      '8.26-E2E：通知 UUID 路由未打开 Event Evidence',
+    );
+    assert(!(await uiHas(uiWc, '#d9-evidence-canary')), '8.26-E2E：Evidence 敌手 HTML 被执行');
+
+    await uiJs(
+      uiWc,
+      `(() => {
+        const button = [...document.querySelectorAll('.watch-event-row button')]
+          .find((candidate) => candidate.textContent?.trim() === '标为已读');
+        if (!button) throw new Error('标为已读按钮不存在');
+        button.click();
+      })()`,
+    );
+    await waitFor(
+      async () => (await uiText(uiWc, '.watch-event-row')).includes('已读'),
+      5000,
+      '8.26-E2E：Event read 成功路径未反映到 DOM',
+    );
+    smokeWatchCsvExportPath.current = csvPath;
+    await uiJs(
+      uiWc,
+      `(() => {
+        const button = [...document.querySelectorAll('[data-watch-view="events"] button')]
+          .find((candidate) => candidate.textContent?.trim() === '导出当前事件 CSV');
+        if (!button) throw new Error('CSV 导出按钮不存在');
+        button.click();
+      })()`,
+    );
+    await waitFor(() => Promise.resolve(existsSync(csvPath)), 5000, '8.26-E2E：CSV 未写入');
+    const csv = readFileSync(csvPath, 'utf8');
+    assert(csv.startsWith('\ufeff'), '8.26-E2E：CSV 缺少 UTF-8 BOM');
+    assert(csv.includes("'=D9 冒烟信源"), '8.26-E2E：CSV 公式注入防护未生效');
+    assert(!csv.includes('d9-evidence-canary'), '8.26-E2E：CSV 泄露 Evidence');
+
+    const digestFrom = new Date(Date.parse(observedAt) - 60_000).toISOString();
+    const digestTo = new Date(Date.parse(observedAt) + 60_000).toISOString();
+    const membership = (
+      sources as SourceService & DigestMembershipProjectionProvider
+    ).resolveDigestMembership({
+      sourceIds: [sourceId],
+    });
+    assert(membership.status === 'ok', '8.26-E2E：Digest 成员冻结读取失败');
+    const directDigestPreview = d9.digest()?.preview({
+      previewId: randomUUID(),
+      sourceIds: [sourceId],
+      afterSequence: 0,
+      fromExclusive: digestFrom,
+      toInclusive: digestTo,
+    });
+    assert(
+      directDigestPreview !== null && directDigestPreview !== undefined,
+      '8.26-E2E：Digest 事实预览读取失败',
+    );
+    assert(
+      validateWatchIpcOutput(
+        {
+          ok: true,
+          value: {
+            previewHandle: 'a'.repeat(43),
+            frozenMembers:
+              membership.status === 'ok'
+                ? membership.members.map((member) => ({
+                    sourceId: member.sourceId,
+                    displayName: member.displayName,
+                  }))
+                : [],
+            ...structuredClone(directDigestPreview),
+          },
+        },
+        'watch:generateDigestPreview',
+      ),
+      '8.26-E2E：Digest preview DTO 未通过输出 validator',
+    );
+    const digestResult = (await uiJs(
+      uiWc,
+      `(async () => {
+        const watch = window.aibrowse.watch;
+        const preview = await watch.generateDigestPreview({
+          selector: { kind: 'sources', sourceIds: [${JSON.stringify(sourceId)}] },
+          fromExclusive: ${JSON.stringify(digestFrom)},
+          toInclusive: ${JSON.stringify(digestTo)},
+          afterSequence: 0
+        });
+        if (!preview.ok) return { preview, saved: null };
+        const saved = await watch.saveDigestSchedule({
+          action: 'create', previewHandle: preview.value.previewHandle,
+          localTime: '09:00', timeZone: 'Asia/Shanghai', aiEnabled: false, confirmed: true
+        });
+        return { preview, saved };
+      })()`,
+    )) as {
+      preview?: { ok?: boolean; value?: { frozenMembers?: unknown[] } };
+      saved?: { ok?: boolean };
+    };
+    assert(
+      digestResult.preview?.ok === true &&
+        digestResult.saved?.ok === true &&
+        digestResult.preview.value?.frozenMembers?.length === 1,
+      '8.26-E2E：Digest preview/frozen-members/create 未成功',
+    );
+    const schedule = repo.listDigestSchedules().at(-1);
+    assert(schedule !== undefined, '8.26-E2E：Digest schedule 未持久化');
+    scheduleId = schedule!.id;
+    const digestEventId = randomUUID();
+    const digestObservedAt = new Date().toISOString();
+    const digestEventWrite = repo.writeEventTransaction({
+      event: {
+        id: digestEventId,
+        ruleId,
+        sourceId,
+        eventKind: 'changed',
+        importance: 'important',
+        idempotencyKey: randomUUID(),
+        changeFingerprint: createHash('sha256').update('d9-digest-change').digest('hex'),
+        firstObservedAt: digestObservedAt,
+        lastObservedAt: digestObservedAt,
+        itemCount: 1,
+        readAt: null,
+      },
+      items: [
+        {
+          itemId: 'digest-main',
+          fieldKey: 'r0:main',
+          label: '正文',
+          before: { kind: 'absent' },
+          after: {
+            kind: 'present',
+            excerpt: evidenceCanary,
+            valueHash: createHash('sha256').update(evidenceCanary).digest('hex'),
+            normalizedBytes: Buffer.byteLength(evidenceCanary),
+            truncated: false,
+          },
+          beforeCapturedAt: digestObservedAt,
+          afterCapturedAt: digestObservedAt,
+          beforeFinalUrl: 'http://127.0.0.1/watch-d9',
+          afterFinalUrl: 'http://127.0.0.1/watch-d9',
+          beforeDocumentId: null,
+          afterDocumentId: null,
+          feedItemKey: null,
+        },
+      ],
+      identity: {
+        sourceId,
+        expectedSourceLocatorFingerprint: locatorFingerprint,
+        expectedBaselineVersion: 1,
+      },
+    });
+    assert(digestEventWrite.ok, '8.26-E2E：Digest 增量观察写入失败');
+    const digestService = d9.digest();
+    assert(digestService !== null, '8.26-E2E：DigestService 不可用');
+    const due = await digestService!.handleDue({
+      scheduleId,
+      expectedNextDueAt: schedule!.nextDueAt,
+      logicalDate: schedule!.nextDueAt.slice(0, 10),
+    });
+    assert(due.ok, '8.26-E2E：Digest artifact 生成失败');
+    const artifact = repo.listDigestArtifactsBySchedule(scheduleId)[0];
+    assert(artifact !== undefined, '8.26-E2E：Digest artifact 不存在');
+
+    await uiJs(
+      uiWc,
+      `(() => {
+        const button = [...document.querySelectorAll('.watch-workspace nav button')]
+          .find((candidate) => candidate.textContent?.trim() === '摘要');
+        if (!button) throw new Error('摘要导航不存在');
+        button.click();
+      })()`,
+    );
+    await waitFor(
+      async () =>
+        (await uiText(uiWc, '[data-watch-view="digests"]')).includes('查看事实与引用状态'),
+      5000,
+      '8.26-E2E：Digest artifact 未显示',
+    );
+    await uiJs(
+      uiWc,
+      `(() => {
+        const button = [...document.querySelectorAll('[data-watch-view="digests"] button')]
+          .find((candidate) => candidate.textContent?.trim() === '查看事实与引用状态');
+        if (!button) throw new Error('Digest 详情按钮不存在');
+        button.click();
+      })()`,
+    );
+    await waitFor(
+      async () =>
+        (await uiText(uiWc, '[data-watch-view="digests"]')).includes('d9-evidence-canary'),
+      5000,
+      '8.26-E2E：Digest active Evidence 未显示',
+    );
+    smokeWatchMarkdownExportPath.current = markdownPath;
+    await uiJs(
+      uiWc,
+      `(() => {
+        const button = [...document.querySelectorAll('[data-watch-view="digests"] button')]
+          .find((candidate) => candidate.textContent?.trim() === '导出 Markdown');
+        if (!button) throw new Error('Markdown 导出按钮不存在');
+        button.click();
+      })()`,
+    );
+    await waitFor(
+      () => Promise.resolve(existsSync(markdownPath)),
+      5000,
+      '8.26-E2E：Markdown 未写入',
+    );
+    assert(
+      readFileSync(markdownPath, 'utf8').includes('d9\\-evidence\\-canary'),
+      '8.26-E2E：active Evidence 未导出',
+    );
+
+    await uiJs(
+      uiWc,
+      `(() => {
+        const button = [...document.querySelectorAll('.watch-workspace nav button')]
+          .find((candidate) => candidate.textContent?.trim() === '事件');
+        if (!button) throw new Error('事件导航不存在');
+        button.click();
+      })()`,
+    );
+    await waitFor(() => uiHas(uiWc, '.watch-event-row'), 5000, '8.26-E2E：Event 行未恢复');
+    await uiJs(
+      uiWc,
+      `(() => {
+        window.confirm = () => true;
+        const marker = document.querySelector(
+          ${JSON.stringify(`[aria-label="选择事件 ${digestEventId}"]`)},
+        );
+        const row = marker?.closest('.watch-event-row');
+        const button = row && [...row.querySelectorAll('button')]
+          .find((candidate) => candidate.textContent?.trim() === '永久删除');
+        if (!button) throw new Error('Event 删除按钮不存在');
+        button.click();
+      })()`,
+    );
+    await waitFor(
+      async () => !(await uiHas(uiWc, `[aria-label="选择事件 ${digestEventId}"]`)),
+      5000,
+      '8.26-E2E：Event 删除未从 DOM 消失',
+    );
+    const tombstone = (await uiJs(
+      uiWc,
+      `(async () => window.aibrowse.watch.getDigest({ digestId: ${JSON.stringify(artifact!.id)} }))()`,
+    )) as unknown;
+    const tombstoneJson = JSON.stringify(tombstone);
+    assert(tombstoneJson.includes('user-deleted'), '8.26-E2E：Digest tombstone 未生成');
+    assert(
+      !tombstoneJson.includes('d9-evidence-canary'),
+      '8.26-E2E：tombstone 后 IPC 仍含 Evidence',
+    );
+    smokeWatchMarkdownExportPath.current = tombstonePath;
+    const tombstoneExport = (await uiJs(
+      uiWc,
+      `(async () => window.aibrowse.watch.exportDigestMarkdown({ digestId: ${JSON.stringify(artifact!.id)} }))()`,
+    )) as { ok?: boolean };
+    assert(tombstoneExport.ok === true, '8.26-E2E：tombstone Markdown 导出失败');
+    const tombstoneMarkdown = readFileSync(tombstonePath, 'utf8');
+    assert(tombstoneMarkdown.includes('该事件已由用户删除'), '8.26-E2E：Markdown 缺少 tombstone');
+    assert(
+      !tombstoneMarkdown.includes('d9-evidence-canary') &&
+        !tombstoneMarkdown.includes('d9\\-evidence\\-canary'),
+      '8.26-E2E：Markdown 泄露已删除 Evidence',
+    );
+
+    const latestRule = repo.getRule(ruleId);
+    assert(latestRule !== null, '8.26-E2E：清理前 Rule 不存在');
+    const cleanupResults = (await uiJs(
+      uiWc,
+      `(async () => {
+        const watch = window.aibrowse.watch;
+        return Promise.all([
+          watch.deleteDigestSchedule({ scheduleId: ${JSON.stringify(scheduleId)}, expectedVersion: ${repo.getDigestSchedule(scheduleId)!.version}, confirmed: true }),
+          watch.deleteRule({ ruleId: ${JSON.stringify(ruleId)}, expectedVersion: ${latestRule!.version}, confirmed: true })
+        ]);
+      })()`,
+    )) as Array<{ ok?: boolean }>;
+    assert(
+      cleanupResults.every((result) => result.ok === true),
+      '8.26-E2E：Rule/Digest 清理失败',
+    );
+    scheduleId = null;
+    ruleId = null;
+    const token = sources.issueDeleteConfirmToken(sourceId);
+    const sourceDeleted = await sources.hardDeleteManual(sourceId, token);
+    assert(sourceDeleted.ok, '8.26-E2E：Source 夹具清理失败');
+    sourceId = null;
+
+    const afterTabs = await controller.getTabs();
+    const afterActive = (await controller.getActiveTab())?.id ?? null;
+    assert(
+      JSON.stringify(afterTabs) === JSON.stringify(beforeTabs),
+      '8.26-E2E：用户 Tab 集合/URL/标题发生变化',
+    );
+    assert(afterActive === beforeActive, '8.26-E2E：用户活动 Tab 发生变化');
+    assert(
+      !(await uiText(uiWc, '.watch-workspace')).match(
+        /private_query_canary|authorization|cookie|set-cookie|file:\/\//i,
+      ),
+      '8.26-E2E：普通 DOM 泄露 query/凭据/路径 canary',
+    );
+    await clickUi(uiWc, '.watch-header button');
+    await waitFor(
+      () => Promise.resolve(visibleTabView(options.uiWindow!) !== null),
+      5000,
+      '8.26-E2E：离开 Watch 后浏览器视图未恢复',
+    );
+  } finally {
+    smokeWatchCsvExportPath.current = null;
+    smokeWatchMarkdownExportPath.current = null;
+    if (scheduleId !== null) {
+      const schedule = repo.getDigestSchedule(scheduleId);
+      if (schedule !== null) repo.deleteDigestSchedule(scheduleId, schedule.version);
+    }
+    if (ruleId !== null) {
+      const rule = repo.getRule(ruleId);
+      if (rule !== null) repo.deleteRuleExpectedVersion(ruleId, rule.version);
+    }
+    if (sourceId !== null) {
+      const token = sources.issueDeleteConfirmToken(sourceId);
+      await sources.hardDeleteManual(sourceId, token).catch(() => undefined);
+    }
+    rmSync(tempDir, { recursive: true, force: true });
   }
 }
 

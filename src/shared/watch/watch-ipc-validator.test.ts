@@ -90,13 +90,20 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
     ).toBe(false);
   });
 
-  it('Table Region 候选发现使用独立闭合模式，候选输出有界且指纹严格', () => {
+  it('Table Region 候选发现保持冻结的 Region payload/output', () => {
     const sourceId = crypto.randomUUID();
     expect(
       validateWatchIpcPayload('watch:previewPageRegions', {
-        mode: 'discover-tables',
         sourceId,
         accessMode: 'public',
+        regions: [
+          {
+            kind: 'table',
+            label: '表格候选',
+            headerFingerprint: '0'.repeat(64),
+            occurrence: 0,
+          },
+        ],
       }).ok,
     ).toBe(true);
     expect(
@@ -104,7 +111,6 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
         mode: 'discover-tables',
         sourceId,
         accessMode: 'public',
-        regions: [],
       }).ok,
     ).toBe(false);
     expect(
@@ -112,21 +118,84 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
         {
           ok: true,
           value: {
-            tableCandidates: [{ fingerprint: 'a'.repeat(64), occurrenceCount: 2, columns: 3 }],
+            previewHandle: 'a'.repeat(43),
+            kind: 'page',
+            accessMode: 'public',
+            targetDisplay: 'example.com',
+            fields: [],
+            regions: [
+              {
+                kind: 'table',
+                label: '表格候选',
+                status: 'not-found',
+                headerFingerprint: '0'.repeat(64),
+                occurrence: 0,
+                groups: [{ fingerprint: 'bad', occurrenceCount: 2, columns: 3 }],
+              },
+            ],
           },
         },
         'watch:previewPageRegions',
       ),
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it('EventDetail 拒绝双侧 Evidence 聚合超过 32 KiB', () => {
+    const id = crypto.randomUUID();
+    const ruleId = crypto.randomUUID();
+    const sourceId = crypto.randomUUID();
+    const iso = '2026-08-31T00:00:00.000Z';
+    const event = {
+      id,
+      ruleId,
+      sourceId,
+      sourceName: '来源',
+      eventKind: 'changed',
+      importance: 'normal',
+      firstObservedAt: iso,
+      lastObservedAt: iso,
+      itemCount: 1,
+      read: false,
+    };
+    const evidence = {
+      itemId: 'item',
+      fieldKey: 'mainText',
+      label: '正文',
+      before: {
+        kind: 'present',
+        excerpt: '前'.repeat(9_000),
+        valueHash: 'a'.repeat(64),
+        normalizedBytes: 27_000,
+        truncated: true,
+      },
+      after: {
+        kind: 'present',
+        excerpt: '后'.repeat(9_000),
+        valueHash: 'b'.repeat(64),
+        normalizedBytes: 27_000,
+        truncated: true,
+      },
+      beforeCapturedAt: iso,
+      afterCapturedAt: iso,
+      beforeFinalUrl: 'https://example.com/before',
+      afterFinalUrl: 'https://example.com/after',
+      beforeDocumentId: null,
+      afterDocumentId: null,
+      feedItemKey: null,
+    };
     expect(
       validateWatchIpcOutput(
         {
           ok: true,
           value: {
-            tableCandidates: [{ fingerprint: 'bad', occurrenceCount: 2, columns: 3 }],
+            page: 1,
+            pageSize: 1,
+            total: 1,
+            items: [event],
+            selected: { ...event, evidence: [evidence] },
           },
         },
-        'watch:previewPageRegions',
+        'watch:listEvents',
       ),
     ).toBe(false);
   });
@@ -385,7 +454,26 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
           fields: ['title'],
         },
       ],
-      ['watch:previewPageRegions', { tableCandidates: [] }],
+      [
+        'watch:previewPageRegions',
+        {
+          previewHandle: handle,
+          kind: 'page',
+          accessMode: 'public',
+          targetDisplay: 'example.com',
+          fields: [],
+          regions: [
+            {
+              kind: 'table',
+              label: '表格候选',
+              status: 'not-found',
+              headerFingerprint: '0'.repeat(64),
+              occurrence: 0,
+              groups: [],
+            },
+          ],
+        },
+      ],
       ['watch:issueSessionGrant', { previewHandle: handle, sessionGrantHandle: handle }],
       ['watch:listEvents', { page: 1, pageSize: 1, total: 1, items: [event], selected: null }],
       ['watch:setEventsRead', { updated: 1 }],

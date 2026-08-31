@@ -27,6 +27,8 @@ import {
   smokeResearchScript,
   smokeResearchServiceOverride,
   smokeUiFake,
+  smokeWatchCsvExportPath,
+  smokeWatchMarkdownExportPath,
 } from './smoke';
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
@@ -860,6 +862,11 @@ if (!gotLock) {
     );
     const watchExporter = new WatchExportService(watchQuery, {
       showSaveDialog: async (kind, defaultFileName) => {
+        if (SMOKE_MODE) {
+          const target =
+            kind === 'csv' ? smokeWatchCsvExportPath.current : smokeWatchMarkdownExportPath.current;
+          if (target !== null) return target;
+        }
         if (mainWindow === null || mainWindow.isDestroyed()) return null;
         const extension = kind === 'csv' ? 'csv' : 'md';
         const result = await dialog.showSaveDialog(mainWindow, {
@@ -910,6 +917,12 @@ if (!gotLock) {
         };
         if (!validateWatchIpcOutput(push)) return false;
         sender.send(IPC.WatchSubscribe, push);
+        const statusPush: WatchPushDto = {
+          type: 'status',
+          revision: ++watchRevision,
+          status: watchQuery.status(),
+        };
+        if (validateWatchIpcOutput(statusPush)) sender.send(IPC.WatchSubscribe, statusPush);
         return true;
       },
       (result) => logInfo('audit', `watch-notification result=${result}`),
@@ -1285,6 +1298,14 @@ if (!gotLock) {
             auditEntries: SMOKE_MODE ? smokeAuditCollector : undefined, // B6/B8 补验：真实 SRT-02 观察场景审计探针
             // D6：8.23 Page/Session 冒烟 bundle holder（index.ts Watch 装配注入）
             watchPageSession: SMOKE_MODE ? smokeWatchPageSession : undefined,
+            watchD9: SMOKE_MODE
+              ? {
+                  repository: () => watchRepo,
+                  previewStore: () => watchPreviewStore,
+                  notifications: () => watchNotifications,
+                  digest: () => digestService,
+                }
+              : undefined,
           });
         }
         run

@@ -104,7 +104,7 @@ describe('D9 Feed discovery 安全预览', () => {
 });
 
 describe('D9 Table Region 候选发现', () => {
-  it('公开模式走 purpose=page，只返回有界表头指纹组且不签发 previewHandle', async () => {
+  it('公开模式保持正式 Region payload/output，并返回有界表头指纹组', async () => {
     let purpose = '';
     const parsed = readPublicHtml(tableHtml, meta.finalUrl);
     expect(parsed.ok).toBe(true);
@@ -124,20 +124,36 @@ describe('D9 Table Region 候选发现', () => {
       },
     } as unknown as TargetGatedClient;
     const result = await service({}, target).previewPage({
-      mode: 'discover-tables',
       sourceId,
       accessMode: 'public',
+      regions: [
+        {
+          kind: 'table',
+          label: '表格候选',
+          headerFingerprint: '0'.repeat(64),
+          occurrence: 0,
+        },
+      ],
     });
     expect(purpose).toBe('page');
     expect(result).toMatchObject({ ok: true });
     expect(result).toMatchObject({
       value: {
-        tableCandidates: [
-          { fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/), occurrenceCount: 1, columns: 2 },
+        previewHandle: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+        regions: [
+          {
+            kind: 'table',
+            groups: [
+              {
+                fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+                occurrenceCount: 1,
+                columns: 2,
+              },
+            ],
+          },
         ],
       },
     });
-    expect(JSON.stringify(result)).not.toContain('previewHandle');
     expect(JSON.stringify(result)).not.toContain('<table>');
   });
 });

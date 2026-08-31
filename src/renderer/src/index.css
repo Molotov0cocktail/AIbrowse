@@ -1749,3 +1749,14 @@ body {
   z-index: 60;
   max-width: 360px;
 }
+.watch-global-badge {
+  position: fixed;
+  right: 18px;
+  bottom: 76px;
+  z-index: 60;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: #d23b3b;
+  color: white;
+}

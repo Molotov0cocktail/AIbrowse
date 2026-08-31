@@ -165,7 +165,12 @@ export class WatchIpcAdapter {
           sourceIds,
           expiresAt: Date.now() + WatchIpcAdapter.DIGEST_PREVIEW_TTL_MS,
         });
-        return { ok: true, value: { previewHandle, frozenMembers, ...preview } };
+        // Digest facts intentionally use null-prototype maps internally. Normalize the
+        // trusted projection before it reaches the strict plain-object IPC boundary.
+        return {
+          ok: true,
+          value: { previewHandle, frozenMembers, ...structuredClone(preview) },
+        };
       }
       case 'watch:previewFeed':
         return this.options.preview.previewFeed(p as never);
