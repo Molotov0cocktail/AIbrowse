@@ -8,7 +8,7 @@ DigestFacts/EvidenceMap、full/metadata/blocked prompt 前投影，以及持久�
 
 ## D8 REPLAN 已冻结决策（2026-08-31）
 
-以下八项是 detailed-design #S6-059～#S6-066 的任务级速查，Executor 不得重新选择：
+以下九项是 detailed-design #S6-059～#S6-067 的任务级速查，Executor 不得重新选择：
 
 1. **正式 cursor**：只用 observation 写事务内单调 `changeSequence`；Event 的 first/lastObservedAt、createdAt 或
    rowid 均无 cursor 权力。Event 新建/合并与 journal 同事务，replay 零 journal；late coalesce 必有更大 sequence。
@@ -28,6 +28,9 @@ DigestFacts/EvidenceMap、full/metadata/blocked prompt 前投影，以及持久�
 8. **原子 scrub/v4**：Event expire/user-delete/Source cascade 必须同事务 scrub facts Evidence、涉及 Event 的整段
    explanation、ref/journal 状态并重算 hash/revision/bytes；迟到 Provider 写回以 factsRevision/hash CAS 拒绝。
    v3 三个宽松 Digest 占位表必须全空才允许 v4 重建；非空 fail-closed。
+9. **闭合状态机**：Schedule 只允许 active/paused，删除为硬删除；run 只允许 running/budget_exceeded/completed，
+   budget block 持久化 required/available 且不推进 cursor；Provider state/result/claim/time/explanation 只允许
+   detailed §11.5 矩阵。pause/resume/delete、容量重试和启动恢复不得依赖进程内猜测。
 
 ## 范围与非目标
 
@@ -37,11 +40,13 @@ DigestFacts/EvidenceMap、full/metadata/blocked prompt 前投影，以及持久�
 - **不做**：renderer、preload、IPC、通知/outbox 展示、导出；不使用 ResearchRuntime/research.db；不改变
   BrowserController/AgentLoop/ToolRegistry/Provider Key 通道；不新增模型工具、网络能力、任意 HTTP、SDK 或依赖；
   不把 Source note、prompt、完整 response、思维过程、Key、正文/PageSnapshot 落盘。
+- D8 在 DigestService/Repository 实现 pause/resume/delete/budget retry 的冻结后端动作与安全 DTO；D9 后续只绑定
+  UI/IPC、查询/展示或调用这些动作，不直接写 SQL，也不重定义状态机。
 
 ## 涉及模块和输入文档
 
 - 输入：detailed §2/§4.1/§4.4/§9.4/§10.1/§10.2/§10.4/§11/§13.2/§14/§15、
-  #S6-059～#S6-066；threat-model WT-15/WT-16/WT-20/WT-22、WRT-13/WRT-14/WRT-18；既有
+  #S6-059～#S6-067；threat-model WT-15/WT-16/WT-20/WT-22、WRT-13/WRT-14/WRT-18；既有
   LLMProvider/FakeProvider 与 SourceService sharing 安全边界。
 - main：DigestScheduler/DigestService/DigestPrompt/SourceService 窄 adapter、Watch Repository/migration/store/
   row validation/index 生命周期。
@@ -74,14 +79,15 @@ DigestFacts/EvidenceMap、full/metadata/blocked prompt 前投影，以及持久�
    canonical schema 测试；不得用“文件不存在/类型不通过”作为唯一红态。
 2. **M1 纯函数**：facts builder/Event slice/canonical serializer → sharing projector → prompt → Explanation validator；
    完成固定向量、字符/UTF-8 字节边界和 forbidden canary。
-3. **M2 schema v4**：三空表 guard、journal 全序回填/high-water、严格 schedules/runs/digests/refs、所有索引/CHECK/
-   runtime validator；逐语句失败 v3 逐列恒等。
+3. **M2 schema v4**：三空表 guard、journal 全序回填/high-water、严格 schedules/runs/digests/refs、Schedule/run/
+   Provider 状态矩阵的全部索引/CHECK/runtime validator；逐语句失败 v3 逐列恒等。
 4. **M3 Event journal/scrub**：D7 新建/合并同事务 journal、dedup 零 journal；expire/user-delete/source cascade
    对 journal/ref/facts/explanation/Event 的逐写点故障注入与 factsRevision/hash CAS。
-5. **M4 schedule/cycle**：成员 resolver 一次冻结、daily/DST、创建 high-water cursor、reservation、无 Event、
-   frozen upper、deterministic greedy batch、artifact/ref/cursor 原子提交、running recovery、journal 水位清理。
-6. **M5 Provider**：AI default-off；pending claim 持久化后一次调用；Key/blocked/request budget/timeout/abort/error/
-   hostile output/facts race 全部 explanation=null；原始 prompt/response 零落盘。
+5. **M4 schedule/cycle**：成员 resolver 一次冻结、daily/DST、创建 high-water cursor、active/paused 与
+   pause/resume/delete、reservation、无 Event、frozen upper、deterministic greedy batch、artifact/ref/cursor 原子
+   提交、running/budget_exceeded recovery/retry、active/tombstone journal 水位清理。
+6. **M5 Provider**：AI default-off；实现 detailed §11.5 全矩阵，pending claim 持久化后一次调用；Key/blocked/
+   request budget/timeout/abort/error/hostile output/facts race 全部按唯一 result code 落态；原始 prompt/response 零落盘。
 7. **M6 装配**：DigestScheduler/index before-quit/startup resume、聚焦 dev+production smoke；D8 仍零通知/IPC。
 8. 全量门控、隐私扫描、`baseline..HEAD` 自审，创建有界 local candidate commit(s)，不得 push。
 
@@ -92,7 +98,8 @@ DigestFacts/EvidenceMap、full/metadata/blocked prompt 前投影，以及持久�
   observation 只进下 cycle；同 Event slice 不夹入 upper 后 Evidence。
 - **schedule/stats**：IANA 非法拒绝、DST gap/fold、系统时区变化、logicalDate 去重、Group 后续变化零扩员；
   新建 cursor=high-water；正式无 Event 只更新 lastChecked/period/stats/cursor，零 artifact/ref/provider/outbox；
-  全部 RunOutcome 映射与 finishedAt 半开闭期间精确。
+  全部 RunOutcome 映射与 finishedAt 半开闭期间精确。active/paused DTO 与 created/updated 字段完整；pause 后零新
+  batch/claim、resume 恢复原非终态 cycle、delete CASCADE 且 Event 恒等；每个操作/崩溃点仅合法旧态或新态。
 - **预算/canonical**：49/50/51/100/101/120 Event；facts 49,152、artifact 65,536、request 65,536、output
   16,384、section 字符/字节 `==` 接受/`+1` 拒绝；single observation 装不入时 fail-closed 零 cursor；同输入/
   Clock/Provider 失败条件下 deterministic artifact 逐字节相同。
@@ -100,12 +107,17 @@ DigestFacts/EvidenceMap、full/metadata/blocked prompt 前投影，以及持久�
   missing request 零名称/URL/Event/计数/时间/Evidence；Source note/Key/body canary 零命中。请求无 tools 字段。
   unknown/duplicate/invisible/blocked eventId、extra/duplicate keys、错序、code fence、非 canonical whitespace/
   escape、控制/bidi、超限草案整份 null。
-- **Provider 调用矩阵**：每 artifact pending→claimed 后最多一次；claim 前/后、发送前/流中/响应后每个崩溃点；
-  claimed 恢复 uncertain 零重试；missing Key/全 blocked/request 超限零调用；facts scrub 后迟到成功零 explanation。
-  preview 每个请求最多一次且零正式状态副作用。
+- **Provider 调用矩阵**：逐项生成 detailed §11.5 每个合法组合，任何 state/result/claimedAt/finishedAt/claimed facts/
+  explanation 表外组合由 SQL/runtime 双拒绝；每 artifact pending→claimed 后最多一次；claim 前/后、发送前/流中/
+  响应后每个崩溃点；claimed 恢复 uncertain 零重试；missing Key/全 blocked/request 超限零调用且分别落唯一
+  skipped code；facts scrub 把 claimed 终结 failed/aborted，迟到成功零 explanation。preview 每个请求最多一次且零
+  正式状态副作用。
+- **budget/journal**：容量不足原子落 budget_exceeded+required/available，artifact/ref/cursor 零变化；启动、resume、
+  显式 retry 只有容量复验通过才回 running，普通 timer 零自旋。active journal 随 Event 保留供 preview；只有
+  tombstone 且越过 active/paused schedule 与非终态 run 水位才可删。
 - **scrub/v4**：expire/user-delete/source cascade 后 facts_json/explanation_json/ref/journal/DTO/request/log 的 Evidence
   canary 零命中；涉及 Event 的混合 section 整段删除；每个失败点整体回滚。v3 非空占位表拒绝；空表迁移、journal
-  回填/连续 sequence、逐句失败回滚、future/corrupt/canonical/hash/bytes/provider 状态扫描全绿。
+  回填/连续 sequence、逐句失败回滚、future/corrupt/canonical/hash/bytes、Schedule/run/Provider 矩阵扫描全绿。
 - 聚焦红→绿后运行 `npm test -- --maxWorkers=1`、typecheck、lint、format:check、build、`git diff --check`；
   dev+production D8 smoke；DB/ProviderRequest/日志/DTO/ConversationStore/sources.db/research.db 隐私扫描；临时 DB/
   userData/Electron 进程精确清理。真实 Provider 只在仓库外凭据可用且 AI 显式开启时按长期授权最小调用，否则

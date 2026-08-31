@@ -1247,9 +1247,9 @@ latest=4、`user_version>4` 才是 future schema；迁移前 v3 仍是合法输�
 | `watch_event_items`        | id PK、event_id、observation_id、sequence ≥0、observation_item_sequence ≥0、field_key/label、before/after typed value JSON、双侧元数据；UNIQUE(event_id,sequence)、UNIQUE(observation_id,observation_item_sequence)、复合 FK(observation_id,event_id) |
 | `digest_change_state`      | v4：singleton id=1、last_sequence ≥0；journal 清理后仍保存单调 high-water                                                                                                                                                                             |
 | `digest_change_journal`    | v4：sequence PK、observation_id UNIQUE、event/source/observed_at、status active/expired/user-deleted；零 Evidence/正文                                                                                                                                |
-| `digest_schedules`         | v4：id/version、排序去重固定 source_ids_json、daily schedule_json、ai_enabled、cursor_sequence、state、next_due/last_consumed/last_daily_local_date、created/updated/last_checked、last_period_json/last_run_stats_json                               |
-| `digest_runs`              | v4：id/schedule_id、request_key UNIQUE、logical_date、lower/upper/next sequence、period、run_stats_json、running/completed、created/finished；UNIQUE(schedule_id,logical_date)                                                                        |
-| `watch_digests`            | v4：id/schedule_id/run_id/batch_index/sequence range、canonical facts/hash/revision、canonical explanation nullable、bytes、provider state/result/time、created；UNIQUE(run_id,batch_index)                                                           |
+| `digest_schedules`         | v4：id/version、排序去重固定 source_ids_json、daily schedule_json、ai_enabled、cursor_sequence、state active/paused、next_due/last_consumed/last_daily_local_date、created/updated/last_checked、last_period_json/last_run_stats_json                 |
+| `digest_runs`              | v4：id/schedule_id、request_key UNIQUE、logical_date、lower/upper/next sequence、period、run_stats_json、state running/budget_exceeded/completed、blocked 时间/required/available bytes、created/finished；UNIQUE(schedule_id,logical_date)           |
+| `watch_digests`            | v4：id/schedule_id/run_id/batch_index/sequence range、canonical facts/hash/revision、canonical explanation nullable、bytes、provider state/result、claimed facts revision/hash、claimed/finished/created 时间；UNIQUE(run_id,batch_index)             |
 | `digest_event_refs`        | digest_id/event_id、status active/expired/user-deleted；复合 PK                                                                                                                                                                                       |
 | `notification_outbox`      | id PK、subject_type/id、channel、dedupe_key UNIQUE、privacy_json、state/attempt/time                                                                                                                                                                  |
 | `source_cleanup_intents`   | mutation_id PK、source_id、operation、before/after_projection_json、affected_rule_state_json、state prepared/source-committed/complete/aborted、time；source_id 索引                                                                                  |
@@ -1303,7 +1303,7 @@ observation.sequence=0 的同名列；不一致视为 corrupt/unavailable，后�
 observation.sequence DESC, item.sequence DESC, item.id DESC LIMIT 1`。所有时间相同仍由 id/sequence 构成
 全序；SQL `ORDER BY` 必须写全，不依赖 rowid/插入偶然顺序。
 
-Schema v4（D8，#S6-059～#S6-066）冻结如下：
+Schema v4（D8，#S6-059～#S6-067）冻结如下：
 
 1. v3 已预建的三个 Digest 占位表从未有产品写路径，不具备可证明的 canonical shape。迁移先用临时 guard 要求
    `digest_schedules/watch_digests/digest_event_refs` **全部为空**；任一非空即整体回滚并使 Store
@@ -1317,16 +1317,32 @@ Schema v4（D8，#S6-059～#S6-066）冻结如下：
 3. journal 不以 wall clock 作 cursor，也不对 Event/observation 建删除级联 FK。它只保存 ID、sourceId、
    observedAt 与 tombstone 状态；Event 过期/用户删除/Source 级联前在同一事务分别改为
    `expired/user-deleted/expired`。这样删除 Evidence 后仍能让已冻结 cycle 跨过该 sequence，而不会保留正文。
-4. `digest_runs.lower_sequence <= next_sequence <= upper_sequence`；`next_sequence` 表示最后一个已经由 artifact
-   事务提交或被确定性跳过的 journal sequence。一个 schedule 同时最多一条 running run；同 logical date
-   唯一。`watch_digests` 的 sequence 区间必须严格递增且落在所属 run 上下界内；batch_index 从0连续。
+4. `digest_schedules.state` 只允许 `active/paused`；删除是硬删除而不是第三种行状态。`digest_runs` 只允许
+   `running/budget_exceeded/completed`，且 `lower_sequence <= next_sequence <= upper_sequence`；`next_sequence`
+   表示最后一个已经由 artifact 事务提交或被确定性跳过的 journal sequence。`running` 要求 blocked/finished
+   全 null；`budget_exceeded` 要求 `next_sequence<upper_sequence`、`blocked_at` 非 null、required/available 为安全
+   非负整数且 required>available、finished null；`completed` 要求 `next_sequence=upper_sequence`、blocked 三列
+   null、finished 非 null。部分 UNIQUE 索引保证每 schedule 最多一条 state 属于
+   `running/budget_exceeded` 的非终态 run；同 logical date 唯一。`watch_digests` 的 sequence 区间必须严格递增且
+   落在所属 run 上下界内；batch_index 从0连续。
+   Schedule 的 created/updated/nextDue 和非 null 可选时间全部是 canonical ISO，`created_at<=updated_at`；
+   lastConsumedScheduledFor/lastDailyLocalDate 必须同 null 或同非 null，lastChecked/lastPeriod/lastRunStats 也必须
+   三者同 null 或同非 null，非 null period 要求 from<to 且 to=lastChecked。source IDs、daily/IANA、cursor/high-water、
+   localDate 与 scheduledFor 的 zone 对应由同一 runtime validator 复验。Run 的 period 要求 from<to，created/blocked/
+   finished 时间按状态存在且不早于 created，period/runStats JSON 必须 canonical exact-key。
 5. `facts_hash=SHA-256(utf8(facts_json))`，`facts_revision>=1`。`provider_state` 只允许
-   `disabled/pending/claimed/succeeded/failed/uncertain/skipped`；`provider_result_code` 是闭合安全码，
-   `claimed_at/finished_at` 与状态组合有 SQL CHECK + runtime validator。`claimed` 是调用资格已持久化，不证明
+   `disabled/pending/claimed/succeeded/failed/uncertain/skipped`；`provider_result_code`、claim 列、时间与 explanation
+   的唯一合法组合按 §11.5 矩阵同时写入 table CHECK 和 runtime validator。table CHECK 覆盖闭合集合、scalar
+   null/non-null、数值与 canonical 时间字典序关系；runtime 再覆盖 JSON、hash、跨行/cursor/ref 关系。`claimed`
+   是调用资格已持久化，不证明
    外部服务已收到请求；启动恢复只能 `claimed→uncertain`，不能回到 pending。
 6. migration 的 CREATE/guard/backfill/copy/drop/rename/index/CHECK/user_version 任一句失败，都必须保持
    `user_version=3`、全部 v3 schema/index/行逐列恒等、零可见临时表；journal 回填 ID/计数/全序、Digest 空表
    guard 和 v4 runtime 完整性扫描均有逐语句失败注入 oracle。
+
+D8 的审计时间写入统一用 `max(clock.now().toISOString(), 该行已有的最晚前序时间)`，包括 schedule.updated、
+run.blocked/finished 与 provider.claimed/finished；这只对审计列防回拨，不改变 Scheduler 的真实 Clock、scheduledFor、
+period 或正式 journal cursor。由此即使 wall clock 回拨，上述 SQL 时间序关系仍可机械验证。
 
 ### 10.2 Store 启动
 
@@ -1334,13 +1350,15 @@ Schema v4（D8，#S6-059～#S6-066）冻结如下：
 2. read-only probe 与 user_version；未来版本 fail-closed；
 3. migration（仅已批准编译期 SQL）；
 4. quick/integrity check、JSON shape/预算扫描；
-5. 单事务把网络 Watch queued/running→interrupted；把 Digest `provider_state=claimed`→`uncertain`，
-   `explanation=null`，但保留 `digest_runs.state=running` 供恢复；
+5. 单事务把网络 Watch queued/running→interrupted；把 Digest `provider_state=claimed`→`uncertain`，写
+   `result_code='uncertain-after-restart'`、`finished_at=clock.now()`、`explanation=null`，保留 Digest run 原
+   `running/budget_exceeded` 状态；
 6. reconcile `source_cleanup_intents` 和 SourceService 当前事实；
-7. 以全部 active schedule cursor 与 running cycle lower/next cursor 的最小安全水位清理已消费 journal，
-   `digest_change_state.last_sequence` 永不回退；再清理超期/超数/超库预算；
-8. 先恢复 running Digest cycle，再注册 active DigestSchedule/WatchRule 并启动两类 Scheduler；任何恢复失败
-   都返回 `unavailable`，UI 只读错误态。
+7. 以全部 active/paused schedule cursor 与所有 running/budget_exceeded cycle next cursor 的最小安全水位清理
+   可删 tombstone journal，`digest_change_state.last_sequence` 永不回退；再清理超期/超数/超库预算；
+8. 校验全部非终态 Digest cycle；只恢复 active schedule 的 running cycle，并对 active 的 budget_exceeded cycle
+   执行 §10.4 容量复验；paused cycle 原样休眠。之后注册 active DigestSchedule/WatchRule 并启动两类 Scheduler；
+   任何恢复失败都返回 `unavailable`，UI 只读错误态。
 
 v1 复用 Sources 严格 backup 模式但使用独立 Watch 目录/文件名；备份也受 100 MiB 与最多 5 份/30 天
 边界。备份中仍是本地明文，文档如实披露。恢复后必须重新 reconcile Source 并使 Session grant 失效。
@@ -1442,14 +1460,25 @@ factsHash/byte_length，再删除 Event/Evidence/outbox。用户永久删除用�
 Rule 级联用 `expired`。任一 Digest 读回/重编码/预算/CAS 失败必须整体回滚并使 Store unavailable，不得半 scrub。
 
 scrub 后仍保留安全 Event 投影（eventId/ruleId/sourceId/kind/importance/所含 observation 时间与计数）和
-tombstone，确保历史引用诚实；不得保留 old/new Evidence 或依赖该 Event 的模型断言。若 Provider 正在
-`claimed`，scrub 的 factsRevision 变化会使迟到 explanation CAS 失败并整份丢弃。
+tombstone，确保历史引用诚实；不得保留 old/new Evidence 或依赖该 Event 的模型断言。若删除相关段后零 section，
+`explanation_json` 必须置 null，禁止写不满足 validator 的 `{"sections":[]}`。若 Provider 正在 `claimed`，scrub
+同一事务把它终结为 `failed/aborted` 并写 `finished_at`；factsRevision 变化与 state CAS 共同使迟到 explanation
+整份丢弃。
 
-journal 不按时间保留：只删除 `sequence <= min(active schedule cursorSequence, running run nextSequence)` 的
-已消费前缀；没有 active schedule/running run 时可删全部 journal 行。singleton high-water 保留，未来 schedule
-创建从 high-water 开始，不回读被清理历史。Digest artifact 受全库100 MiB 硬上限；v1 不另设时间保留，用户
-经 D9 显式删除 schedule 时才级联其 runs/artifacts/refs。全库预算不足以写下一 artifact 时 cycle 保持 running、
-cursor 不推进并进入 `budget_exceeded` 可见状态，不能删除未消费 Event 或截断 facts 冒充成功。
+journal 不按时间保留。status=active 且仍有 Event/observation 的行随 Event 保留，用于最近7天/今日 preview；不能因
+所有 schedule 已消费或不存在而提前删除。只有 tombstone 行才可在
+`sequence <= min(全部 active/paused schedule cursorSequence, 全部 running/budget_exceeded run nextSequence)` 时
+删除；集合为空时可删全部 tombstone。singleton high-water 保留，未来 schedule 创建从 high-water 开始，不回读
+已清理历史；active journal 指向缺失 Event/observation 一律 corrupt/unavailable。
+
+Digest artifact 受全库100 MiB 硬上限；v1 不另设时间保留，用户经 D9 显式删除 schedule 时才级联其
+runs/artifacts/refs。写下一 artifact 的同一事务必须先执行既定清理并计算 required/available；仍不足时不写
+artifact/ref/cursor，而把 run `running→budget_exceeded`，原子写 `blocked_at/required/available`，schedule cursor
+不推进。该态是可恢复的非终态且阻止同 schedule 新 reservation。启动、schedule resume 或 D9 显式“重试”只可
+调用 D8 的同一容量复验：重新构造同一 nextSequence 后的候选并执行清理；仅当 required<=available 时才以事务
+CAS `budget_exceeded→running`、清空 blocked 三列，提交后且 schedule=active 才重新入队；否则只刷新三项安全
+预算数并保持 blocked。普通 timer 不自旋重试，未消费 journal 不清理，也不能删除未消费 Event 或截断 facts 冒充
+成功。
 
 Baseline 不因普通清理删除。若单 Baseline 本身超限，Rule health=budget_exceeded 并保持旧 Baseline。
 
@@ -1462,6 +1491,8 @@ interface DigestCursor {
   changeSequence: number; // >=0，唯一正式 cursor；不是时间戳/Event row cursor
 }
 
+type DigestScheduleState = 'active' | 'paused';
+
 interface DigestSchedule {
   id: string;
   version: number;
@@ -1470,12 +1501,35 @@ interface DigestSchedule {
   timeZone: string; // Intl 支持的 IANA id，创建/编辑时冻结
   aiEnabled: boolean; // 默认 false
   cursor: DigestCursor;
+  state: DigestScheduleState;
   nextDueAt: string;
   lastConsumedScheduledFor: string | null;
   lastDailyLocalDate: string | null;
   lastCheckedAt: string | null;
   lastPeriod: { fromExclusive: string; toInclusive: string } | null;
   lastRunStats: DigestRunStats | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+type DigestRunState = 'running' | 'budget_exceeded' | 'completed';
+
+interface DigestRun {
+  id: string;
+  scheduleId: string;
+  requestKey: string;
+  logicalDate: string;
+  lowerSequence: number;
+  upperSequence: number;
+  nextSequence: number;
+  period: { fromExclusive: string; toInclusive: string };
+  runStats: DigestRunStats;
+  state: DigestRunState;
+  blockedAt: string | null;
+  blockedRequiredBytes: number | null;
+  blockedAvailableBytes: number | null;
+  createdAt: string;
+  finishedAt: string | null;
 }
 ```
 
@@ -1486,19 +1540,44 @@ DB 句柄或 IPC 形状；D9 只负责把 UI 选择转交，不能重新定义�
 
 新 Schedule 在创建事务中把 cursor 初始化为 `digest_change_state.last_sequence`，所以自动计划只处理创建后的
 新 observation；历史“今日/最近7天”只由 preview 提供。成员、localTime 或 timeZone 编辑必须显式确认 reset，
-在无 running cycle 时更新 version、把 cursor 重置为当时 high-water 并重算 nextDue；`aiEnabled` 可原位切换且不
+在无 running/budget_exceeded cycle 时更新 version、把 cursor 重置为当时 high-water 并重算 nextDue；
+`aiEnabled` 可原位切换且不
 重置 cursor。系统时区变化不改冻结 IANA zone；DST gap/fold/逻辑日期完全复用 §4.1。
+
+Schedule 状态机冻结如下；除 create 外所有写都要求 expectedVersion，并在状态/字段实际变化成功时
+`version+=1/updatedAt=clock.now()`：
+
+- create 只创建 `active`，`createdAt=updatedAt`，`nextDueAt` 是当前冻结 zone 的下一 daily occurrence；
+- pause 只允许 `active→paused`；提交成功后作废 due heap 项并请求当前 worker 在下个 Repository 边界休眠，保留
+  nextDue/cursor 与 running/budget_exceeded cycle。每个 batch、completion 与 Provider claim 事务都复验
+  schedule=active；因此 pause 提交后不能产生新 artifact/claim。pause 前已经提交的 claim 代表已开始的唯一
+  attempt，可完成或被 abort，但不能重试；
+- resume 只允许 `paused→active`，不改 nextDue/cursor/lastDailyLocalDate。先恢复原 running cycle 或对原
+  budget_exceeded cycle 做容量复验；无非终态 cycle 时，过期 nextDue 按 §4.1 只形成一次 catch-up reservation，
+  不为每个错过时点突发补跑；
+- 成员/localTime/timeZone 编辑只允许无 running/budget_exceeded cycle 时执行并按上段 reset；aiEnabled 切换不改
+  cursor。true→false 同事务把该 schedule 尚未 claim 的 pending artifact 终结为 disabled/disabled；false→true
+  不回放既有 disabled/skipped artifact，只影响未来 artifact；
+- delete 是显式、不可 Undo 的硬删除，允许从 active/paused 执行：先使 heap/worker token 失效，再单事务删除
+  schedule 并级联 run/artifact/ref；不删除 Event/observation。晚到 batch/Provider 写回因 schedule/digest CAS 不存在
+  而零写；journal tombstone 水位在提交后按 §10.4 重算。不存在持久化 `deleted` state。
+
+同态 pause/resume 作为幂等读取返回且零版本/时间变化；非法跨态、陈旧 version 或删除竞态返回闭合 conflict。
+paused schedule 仍参与 journal 安全水位，Store 启动校验其非终态 cycle 但不执行，直到 resume。
+D8 的 DigestService/Repository 独占上述状态写入与预算重试；D9 只能把已验证 UI/IPC 请求绑定到这些冻结方法并
+查询安全 DTO（包括 run state、blockedAt/required/available），不得直接写 SQL、补造状态或重定义转换。
 
 `DigestScheduler` 是 D8 新增的零能力调度器：只持有 Clock/TimeZoneResolver、内存 due heap/timer，并提交
 `scheduleId + expectedNextDueAt + logicalDate` 给 DigestService；不持有 SQLite/SourceService/Provider/通知。
-D8 在 WatchStore normal 且 running cycle 恢复完成后于 `src/main/index.ts` 注册/启动，在 before-quit 按 §4.4
+D8 在 WatchStore normal 且非终态 cycle 校验/恢复完成后于 `src/main/index.ts` 注册/启动，在 before-quit 按 §4.4
 停止。它不修改 WatchScheduler 的 ruleId 契约。D9 通知只消费已经提交的 artifact；D8 零 notification/outbox。
 
 ### 11.2 Cycle reservation、正式 cursor 与可恢复分批
 
 每个 due 先由 Repository 单事务 reservation：
 
-1. 复验 schedule active/version/expectedNextDueAt、同 schedule 无 running cycle、logicalDate 未消费；
+1. 复验 schedule state=active/expectedNextDueAt、同 schedule 无 running/budget_exceeded cycle、
+   logicalDate 未消费；
 2. `lowerSequence=schedule.cursor.changeSequence`，`upperSequence=digest_change_state.last_sequence`；该上界在
    cycle 全程冻结，之后产生的 late coalesce 必有更大 sequence，只能进入下一 cycle；
 3. `period=(schedule.lastCheckedAt ?? schedule.createdAt, clock.now()]`，以同一 `clock.now()` 冻结
@@ -1518,14 +1597,16 @@ facts overhead 必须能装入一个空 batch；若实际仍不能装入，视�
 fail-closed，不允许截 Evidence。51 个不同 Event 固定形成至少两个 artifact；同 Event 的多个 observation 只
 占一个 Event slot但字节全部计入。
 
-每个 batch 使用单一事务插入 canonical facts + active refs + `digest-created` 持久化状态，并把
+每个 batch 使用单一事务复验 schedule state=active 与预期 cursor，再插入 canonical facts + active refs +
+`digest-created` 持久化状态，并把
 `digest_run.next_sequence` 与 schedule cursor 推进到该 batch 已覆盖的最后 sequence。事务失败则 artifact/ref/
 cursor 全无；事务成功后崩溃，恢复从新 cursor 继续，UNIQUE(runId,batchIndex) 纵深拒绝重复。尾部只有被跳过的
-其它 Source/tombstone 时，完成事务把 cursor 推到 frozen upper、更新 lastChecked/lastPeriod/lastRunStats 和
+其它 Source/tombstone 时，完成事务同样复验 schedule state=active，再把 cursor 推到 frozen upper、更新
+lastChecked/lastPeriod/lastRunStats 和
 run=completed；无 active Event 的整个 cycle 只做该状态事务，零 Digest、零 Provider、零通知。
 
 正式 cycle 可产生任意必要数量的 artifact，但 provider 工作串行、每提交一个 artifact 后向事件循环 yield；
-停止/重启保留 running cycle。不能用每轮 cap 截断 frozen upper。手动 preview 查询固定
+停止/重启保留 running/budget_exceeded cycle。不能用每轮 cap 截断 frozen upper。手动 preview 查询固定
 `(now-7days,now]` 或“今日”窗口，每次只返回一个同预算 batch及 `hasMore/nextPreviewSequence`；继续预览由调用者
 显式传回 sequence。preview 不写 schedule/run/artifact/ref/lastChecked/cursor，每次 preview 最多一次 Provider。
 
@@ -1593,24 +1674,50 @@ ProviderRequest 超预算时零调用、explanation=null；不得为迁就模型
 
 ### 11.5 Provider at-most-once 与模型草案验证
 
-AI 默认关闭。artifact 创建时 `aiEnabled=false` 写 provider=disabled；开启时先写 pending。实际调用前重新做
-sharing/request/Key 检查：无需/不能调用时 pending→skipped/failed；可调用时必须先用独立事务 CAS
+AI 默认关闭。artifact 创建时若 schedule.aiEnabled=false，直接写 provider=disabled/result=disabled；否则写
+pending。pending claim 前在同一读取快照重新复验 schedule active+aiEnabled、sharing/request/Key：ai 已关闭时
+`pending→disabled/disabled`；零可见 Event、请求超预算或 Key 不可用分别
+`pending→skipped/no-visible-events|request-budget|key-unavailable`，全部零调用。只有检查通过才可用独立事务 CAS
 `pending→claimed`，保存 `claimedAt` 与当时 `factsRevision/factsHash`，**提交成功后才调用**。一次 claim 只允许
 一次 `LLMProvider.stream`；进程崩溃、shutdown abort、超时、adapter error、非法输出都不能 claimed→pending。
-恢复 claimed→uncertain。该协议承诺“每 artifact 最多一次尝试”，不承诺外部 Provider 恰好收到一次；claim
-提交后、网络发送前崩溃会保守失去解释，这是明确选择。
+该协议承诺“每 artifact 最多一次尝试”，不承诺外部 Provider 恰好收到一次；claim 提交后、网络发送前崩溃会
+保守失去解释，这是明确选择。
 
-Provider 成功文本去掉首尾 ASCII whitespace 后必须逐字节等于 canonical JSON：
+Provider 列的闭合矩阵如下；表外组合一律 corrupt/unavailable。`—` 表示 SQL NULL，`✓` 表示非 null；claim
+revision 必须为安全整数≥1、claim hash 必须为64位小写 hex。所有时间为 canonical ISO 且
+`createdAt <= claimedAt <= finishedAt`（缺失项跳过）；存在 claim 的行必须
+`factsRevision>=claimedFactsRevision`，相等时 `factsHash===claimedFactsHash`：
+
+| providerState | providerResultCode                                   | claimedAt + claimed facts | finishedAt | explanationJson                                                                                    |
+| ------------- | ---------------------------------------------------- | ------------------------- | ---------- | -------------------------------------------------------------------------------------------------- |
+| disabled      | disabled                                             | —                         | ✓          | —                                                                                                  |
+| pending       | —                                                    | —                         | —          | —                                                                                                  |
+| claimed       | —                                                    | ✓                         | —          | —                                                                                                  |
+| succeeded     | success                                              | ✓                         | ✓          | 合法 canonical 1..50 sections；仅 scrub 后 `factsRevision>claimedFactsRevision` 且零剩余段时可为 — |
+| failed        | provider-error / timeout / aborted / invalid-output  | ✓                         | ✓          | —                                                                                                  |
+| uncertain     | uncertain-after-restart                              | ✓                         | ✓          | —                                                                                                  |
+| skipped       | no-visible-events / request-budget / key-unavailable | —                         | ✓          | —                                                                                                  |
+
+初建 disabled 的 `finishedAt=createdAt`；pending→disabled/skipped 以转换时刻写 finishedAt。合法单向迁移仅为
+`pending→disabled|skipped|claimed`、`claimed→succeeded|failed` 以及启动恢复的 `claimed→uncertain`；终态不再迁移，
+唯一例外是 succeeded 后的证据 scrub 只改 facts/explanation 而保留 succeeded/success。Provider 正常完成映射
+succeeded/success；adapter/HTTP 错误映射 failed/provider-error；超时映射 failed/timeout；有序 shutdown abort、
+schedule/Event scrub 或 claim 后 facts CAS 失配映射 failed/aborted；原始输出超16,384 bytes 或任一草案验证失败
+映射 failed/invalid-output；启动发现 claimed 映射 uncertain/uncertain-after-restart。pending 永不写 failed，
+Key/sharing/请求预算不是 Provider attempt failure。
+
+Provider 原始成功文本必须**不经 trim 或其它改写**逐字节等于 canonical JSON：
 `{"sections":[{"eventIds":[...],"explanation":"..."}]}`。root exact-key 仅 `sections`，section exact-key 顺序
-仅 `eventIds/explanation`；因此 duplicate key、额外键、code fence、非 canonical whitespace/escape/键序全部
-整份拒绝。sections 1..50；每 section eventIds 非空、按当前 artifact events 次序严格递增，且 eventId 在整份
-draft 中最多出现一次；sections 按首个 eventId 的 artifact 次序严格递增。每个 ID 必须对当前 Provider 投影可见，
-unknown/duplicate/metadata-only 中允许（可解释元数据）但 blocked/缺失不可见引用拒绝。
+仅 `eventIds/explanation`；因此首尾/内部非 canonical whitespace、duplicate key、额外键、code fence、非 canonical
+escape/键序全部整份拒绝。sections 1..50；每 section eventIds 非空且按当前 artifact events 次序严格递增，全部
+sections 的 eventIds 展平后也必须严格递增（即前段最后一个必须早于后段第一个），每个 eventId 全文最多出现
+一次。每个 ID 必须对当前 Provider 投影可见；unknown/duplicate、blocked/缺失或其它不可见引用拒绝，metadata
+投影可见的 Event 允许被引用并只能解释其可见元数据。
 
 explanation 必须非空、已 trim/NFC、无 C0/C1/bidi 控制；单段 `String.length<=1,000` 且 UTF-8≤2,048，全部
 文本 `String.length<=6,000`，canonical explanation JSON≤12,288。任一 shape/顺序/可见性/字符/字节预算失败
 整份 explanation=null，不保留合法子段。写回事务要求 provider=claimed 且 factsRevision/factsHash 与 claim
-恒等；Event scrub 或其它变化使 CAS 失败时迟到输出整份丢弃。成功/失败只更新 explanation/provider 安全状态、
+恒等；Event scrub 或其它变化使 CAS 失败时迟到输出整份丢弃并按上表终结为 failed/aborted。成功/失败只更新 explanation/provider 安全状态、
 finishedAt/byte_length，不改 facts/ref/cursor/runStats；不持久化 prompt、模型原始响应、思维过程或 tool call。
 
 ### 11.6 删除/过期与审计
@@ -1709,10 +1816,10 @@ run audit”由同一行同时满足，不创建第二条含义重复的 `event`
 
 每个正式 logicalDate 恰一条 `digest_runs`；无 Event 也以 completed + frozen runStats/period 留下程序检查事实，
 但零 artifact/ref/provider。每个 artifact 恰一条 `watch_digests`，provider 状态只能按
-`disabled | pending→claimed→succeeded/failed | pending→skipped | claimed→uncertain` 单向迁移；任何状态都不能
-回到 pending，`MAX_DIGEST_PROVIDER_CALLS=1` 由持久化 CAS 而非进程内计数证明。provider result code 只允许
-disabled/no-visible-events/request-budget/key-unavailable/success/provider-error/timeout/aborted/invalid-output/
-uncertain-after-restart；不记录 prompt、输出、敌手解释、Provider error message 或 Key。
+§11.5 矩阵单向迁移；任何状态都不能回到 pending，`MAX_DIGEST_PROVIDER_CALLS=1` 由持久化 CAS 而非进程内计数
+证明。provider result code 的闭合集合与唯一 state 映射也是 §11.5 矩阵；不记录 prompt、原始输出、敌手解释、
+Provider error message 或 Key。每个 run 的 state/blocked/finished 组合只按 §10.1 迁移；budget_exceeded 是可恢复
+非终态，不得伪装成 completed 审计。
 
 watch.db v1 明文边界：规则目标、规范化 Baseline、old/new Evidence、事件和 Digest 本地明文；不保存凭据。
 UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。hard-delete/Rule 删除级联；用户 Event 删除不可 Undo。
@@ -1834,8 +1941,9 @@ UI 创建登录规则时必须披露 30 天保留和锁屏通知默认隐藏。h
   Run 再入零写；
 - Digest：journal sequence/lower-upper-next cursor、late coalesce、同 Event slice、49/50/51/100/101/120 Event、
   49,152/65,536 字节边界、full/metadata/blocked prompt 前投影、Source note/Key canary、runStats 全 outcome 映射、
-  canonical facts/explanation、provider claim at-most-once/降级、scrub facts/ref/explanation；Notification：隐私
-  DTO/去重/muted；
+  Schedule active/paused 与 run running/budget_exceeded/completed 全状态/转换、canonical facts/explanation、
+  provider state×result×claim/time/explanation 全矩阵、claim at-most-once/降级、scrub facts/ref/explanation；
+  Notification：隐私 DTO/去重/muted；
 - IPC validators：额外键/超长/原型链/错误类型 fail-closed。
 
 ### 15.2 Repository/恢复
@@ -1860,14 +1968,16 @@ Run/Baseline/Event/observation/items/audit/outbox 全恒等；locator prepare �
 交错，以及用户 pause/Source disable/health pause，均由 enabled/desired/pause CAS 拒绝，不允许测试伪造
 prepare 已写新 fingerprint。
 
-D8 追加（#S6-059～#S6-066）：migration v3→v4 的旧 Digest 三空表 guard、observation journal 全序回填/
+D8 追加（#S6-059～#S6-067）：migration v3→v4 的旧 Digest 三空表 guard、observation journal 全序回填/
 high-water、任一句失败 v3 schema/index/行逐列恒等；Event 新建/合并与 journal 同事务、dedup 零 journal；
 schedule 创建 high-water cursor、daily reservation 三写、running cycle 跨进程恢复；batch artifact+refs+cursor
 原子与 UNIQUE 幂等。51/120 Event、同 Event 多 observation、freeze 后新增 observation、每个事务边界崩溃注入
 不得漏/重 artifact 或越过未提交 sequence。Provider 在 pending→claimed 提交前零调用，claim 后所有崩溃点恢复
 均零重试；factsRevision/hash CAS 拒绝 scrub 后迟到输出。expire/user-delete/source cascade 对 refs/facts/
 explanation/journal/Event 删除逐点失败全部回滚；v4 启动扫描拒绝 interval/空、重复、未排序或>100成员、非法
-IANA/daily state、cursor/run/batch 缺口、非 canonical facts/explanation、byte/hash/revision/provider 状态组合。
+IANA/daily state、Schedule state/时间、run state/blocked/finished、cursor/run/batch 缺口、非 canonical
+facts/explanation、byte/hash/revision 及 §11.5 任一非法 Provider 矩阵组合。pause/resume/delete、budget block/retry 与
+provider 每个转换的事务前/中/后崩溃注入必须分别得到唯一旧态或新态，不能依赖进程内推断。
 
 ### 15.3 Electron 冒烟
 
@@ -2050,6 +2160,9 @@ revalidated)` 单调更新。方案 B
 - **#S6-066**（D8 REPLAN，2026-08-31）：v3 宽松 Digest 占位表从未有产品写路径，必须三表全空才可在
   WATCH_MIGRATION_V4 重建严格 schema；非空 fail-closed，不猜测旧 JSON。v4 同事务全序回填 observation journal，
   v1–v3 statement bytes 冻结且任一句失败保持 v3 逐列恒等。
+- **#S6-067**（D8 REPAIR，2026-08-31）：DigestSchedule 只持久化 active/paused，删除为硬删除；Digest run 只允许
+  running/budget_exceeded/completed 并持久化预算阻塞事实；Provider state/result/claim/time/explanation 采用 §11.5
+  完整矩阵。pause/resume/delete、容量重试与启动恢复均由数据库状态判定，禁止依赖进程内猜测。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。

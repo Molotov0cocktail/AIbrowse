@@ -151,8 +151,9 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 - Event 删除/过期/Source 级联在同一 Repository 事务中更新 journal/ref tombstone、删除 facts Evidence 与任何
   涉及该 Event 的完整 explanation section、重算 canonical hash/revision/bytes，再删除 Event/Evidence；任一
   校验/CAS 失败整体回滚并使 Store unavailable。
-- Digest journal 只保存单调 sequence、ID、source/time/tombstone，零 Evidence/正文；已消费前缀按所有 active
-  schedule/running cycle 最小水位清理，singleton high-water 永不回退。
+- Digest journal 只保存单调 sequence、ID、source/time/tombstone，零 Evidence/正文；active 行随 Event 保留供
+  preview，只有 tombstone 可按所有 active/paused schedule 与 running/budget_exceeded cycle 最小水位清理，
+  singleton high-water 永不回退。
 - Source 行 version 与 locator fingerprint 分离；disable→restore 的版本递增不误判 URL 改变，用户 pause 意图
   单独保存。hard-delete durable intent + prepare/commit/abort + run 前 revalidation + startup reconciliation；
   不冒充跨库单事务。
@@ -202,10 +203,14 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
   cleanupAll；进程崩溃由 Electron 销毁未持久化 Tab，下次不引用旧 id。
 - muted 只过滤即时通知，不改变网络；paused 才停止调度，UI 明确区分。
 - Digest reservation 原子冻结 lower/upper/period/runStats 并消费 daily slot；每个 artifact+refs+cursor 单事务，
-  running cycle 启动恢复时沿原 upper/next 继续。无 Event 只推进状态，零 artifact/provider/notification。
+  running cycle 启动恢复时沿原 upper/next 继续。全库不足持久化为 budget_exceeded 非终态，cursor/未消费 journal
+  不推进，只在容量复验成功后恢复 running。Schedule pause 保留 cycle 但阻止新 batch/claim，resume 沿原状态继续；
+  无 Event 只推进状态，零 artifact/provider/notification。
 - Provider 调用必须先 CAS `pending→claimed` 并提交；claimed 永不回 pending，启动恢复为 uncertain 且
   explanation=null。该协议只承诺每 artifact 最多一次 attempt；claim 后、发送前崩溃宁可失去解释也不重试。
-  explanation 写回还要 CAS factsRevision/hash，scrub 后迟到输出整份丢弃。
+  explanation 写回还要 CAS factsRevision/hash；scrub 同事务把 claimed 终结为 failed/aborted，迟到输出整份丢弃。
+  provider state/result/claim facts/claimedAt/finishedAt/explanation 的闭合矩阵由 SQL CHECK 与 runtime validator
+  同时执行，任何表外组合使 Store unavailable。
 
 ### 3.7 输出与通知层
 
@@ -246,22 +251,24 @@ fence、非 canonical JSON、新增事件、未知/重复/blocked 引用、错�
 
 ## 5. 跨重启与跨库安全
 
-| 崩溃点                       | 恢复动作                                              | 网络安全性质                 |
-| ---------------------------- | ----------------------------------------------------- | ---------------------------- |
-| hard-delete prepare 前       | Source 未删，Watch 原状态                             | 无变化                       |
-| intent 写入后、Source 删除前 | Rule 已暂停；reconcile 可 abort                       | 零新请求                     |
-| Source 删除后、Watch 清理前  | Source revalidation 失败；reconcile 级联              | 零孤儿请求                   |
-| Event 事务中                 | Event/observation/journal/Baseline 原子回滚或完整提交 | 不出现半事实/漏 journal      |
-| reservation 提交前           | Run/消费记录/nextDue 三者全无                         | 下次只补未消费 due           |
-| reservation 提交后/HTTP 前   | queued→interrupted；slot 不重放                       | 不重复相同 requestKey        |
-| HTTP 后、结果事务前          | result 仅内存；run→interrupted；slot 不重放           | 不落半数据、不重复该 slot    |
-| Session task Tab create 中   | 启动 drain 等落定后精确清理；崩溃由进程销毁           | 用户 Tab 零 close/navigate   |
-| Session snapshot 后/close 前 | 结果未提交；finally/cleanupAll 只关 owned id          | 旧 tabId 零持久化/重用       |
-| Digest reservation/batch 中  | 保留 frozen upper/next；仅未提交 batch 重做           | 不漏/不重复 artifact/cursor  |
-| Provider claim 提交前        | artifact/facts 已存在；恢复后可做首次 claim           | Event/cursor 不受影响        |
-| Provider claim 提交后        | claimed→uncertain；解释丢弃且永不重试                 | 每 artifact 最多一次 attempt |
-| Event scrub 事务中           | facts/ref/explanation/journal/Event 全回滚或全提交    | 零失证正文/断言残留          |
-| Notification 发送后、ack 前  | dedupe outbox 可能保守不重发或标 uncertain            | 不重复创建 Event             |
+| 崩溃点                       | 恢复动作                                              | 网络安全性质                   |
+| ---------------------------- | ----------------------------------------------------- | ------------------------------ |
+| hard-delete prepare 前       | Source 未删，Watch 原状态                             | 无变化                         |
+| intent 写入后、Source 删除前 | Rule 已暂停；reconcile 可 abort                       | 零新请求                       |
+| Source 删除后、Watch 清理前  | Source revalidation 失败；reconcile 级联              | 零孤儿请求                     |
+| Event 事务中                 | Event/observation/journal/Baseline 原子回滚或完整提交 | 不出现半事实/漏 journal        |
+| reservation 提交前           | Run/消费记录/nextDue 三者全无                         | 下次只补未消费 due             |
+| reservation 提交后/HTTP 前   | queued→interrupted；slot 不重放                       | 不重复相同 requestKey          |
+| HTTP 后、结果事务前          | result 仅内存；run→interrupted；slot 不重放           | 不落半数据、不重复该 slot      |
+| Session task Tab create 中   | 启动 drain 等落定后精确清理；崩溃由进程销毁           | 用户 Tab 零 close/navigate     |
+| Session snapshot 后/close 前 | 结果未提交；finally/cleanupAll 只关 owned id          | 旧 tabId 零持久化/重用         |
+| Digest reservation/batch 中  | 保留 frozen upper/next；仅未提交 batch 重做           | 不漏/不重复 artifact/cursor    |
+| Digest budget block 事务中   | 旧 running 或完整 budget_exceeded；cursor 均不推进    | 不截断/不删除未消费事实        |
+| Schedule pause/resume/delete | 行状态/CASCADE 与 worker CAS 只呈现事务前或事务后     | pause 后零新 claim；晚写零落盘 |
+| Provider claim 提交前        | artifact/facts 已存在；恢复后可做首次 claim           | Event/cursor 不受影响          |
+| Provider claim 提交后        | claimed→uncertain；解释丢弃且永不重试                 | 每 artifact 最多一次 attempt   |
+| Event scrub 事务中           | facts/ref/explanation/journal/Event 全回滚或全提交    | 零失证正文/断言残留            |
+| Notification 发送后、ack 前  | dedupe outbox 可能保守不重发或标 uncertain            | 不重复创建 Event               |
 
 不把“最终一定只通知一次”作为分布式 exactly-once 承诺；结构保证 Event exactly-once，通知采用幂等键和
 at-most-once 优先的本地策略，崩溃窗口 UI 如实显示 delivery unknown。

@@ -127,7 +127,9 @@ DigestScheduler 只持有 Clock/TimeZoneResolver、due heap/timer，提交 sched
 或 Provider。DigestService 以 observation 事务内单调 journal sequence 作正式 cursor，reservation 冻结 cycle
 上下界并按 artifact 原子推进；late coalesce 获得新 sequence，不能被已消费 Event 行吞掉。程序生成来源、时间、
 状态、EvidenceMap 和确定性摘要；分享模式在 prompt 前投影。Provider 必须先持久化 claim 再最多调用一次，模型
-只能返回引用当前可见 Event ID 的 canonical 解释草案，验证失败或崩溃即保留 facts、丢弃解释。
+只能返回引用当前可见 Event ID 的 canonical 解释草案，验证失败或崩溃即保留 facts、丢弃解释。Schedule 只允许
+active/paused，run 只允许 running/budget_exceeded/completed；Provider 的 state/result/claim/time/explanation
+组合由持久化矩阵唯一判定。
 
 ### 3.13 NotificationService / ExportService
 
@@ -221,7 +223,11 @@ watch.db     Rule / Baseline / Run / Event / Evidence / Digest / cleanup intent
 - 原始 HTTP body、HTML、完整 PageSnapshot、Cookie、凭据、模型 transcript 零落盘。
 - 清理按事件时间/ID 确定性全序，Digest 对过期/删除证据诚实显示状态。
 - Digest 以无正文 observation journal sequence 处理 late coalesce；daily cycle 保存冻结上下界/恢复 cursor，
-  Event 过期/删除与 facts Evidence/相关解释 scrub 同事务。Provider claim 状态持久化，崩溃后不重试。
+  Event 过期/删除与 facts Evidence/相关解释 scrub 同事务。active journal 随 Event 保留供 preview，只有已越过安全
+  水位的 tombstone 可删。Provider claim 状态持久化，崩溃后不重试。
+- Schedule pause 保留非终态 cycle 且停止新 batch/claim，resume 先恢复原 cycle；全库不足时 run 持久化为
+  budget_exceeded，cursor 不推进，仅在确定性容量复验成功后回到 running。删除 Schedule 才级联其
+  run/artifact/ref，不删除 Event。
 - `watch.db` v1 本地明文，UI/文档必须披露；不宣称静态加密。
 
 ## 6. 安全模型摘要
@@ -238,7 +244,8 @@ watch.db     Rule / Baseline / Run / Event / Evidence / Digest / cleanup intent
 ## 7. 测试策略
 
 - 纯函数：NetworkPolicy、Schedule、Backoff、Normalization、Diff、Condition、Evidence/Event/Digest/Notification Validator。
-- Repository：真实 `node:sqlite` migration、注入仅作参数、事务原子、崩溃恢复、预算清理。
+- Repository：真实 `node:sqlite` migration、注入仅作参数、事务原子、崩溃恢复、预算清理，以及
+  Schedule/run/Provider 全状态矩阵的 SQL CHECK + runtime corruption scan。
 - 网络/Parser：本地敌手服务器 + 受控 DNS/redirect 夹具 + RSS/Atom/畸形 XML 语料。
 - Electron：Region 选择、Session 授权、应用退出停止、通知降级、dialog 导出。
 - 跨进程：`AIBROWSE_WATCH_SMOKE=set|check` 临时 userData，验证 Baseline/Event/恢复/清理。
