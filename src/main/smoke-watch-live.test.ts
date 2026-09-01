@@ -161,6 +161,40 @@ describe('D10 bounded live Watch scenarios', () => {
     expect(report.entries[0]?.resultKind).toBe('failed-product');
   });
 
+  it('资源观察窗口过短时不得伪造 live PASS', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const metrics = {
+      rssBytes: 1,
+      heapUsedBytes: 1,
+      cpuUserMicros: 1,
+      cpuSystemMicros: 1,
+    };
+    const residuals = {
+      servers: 0,
+      timers: 0,
+      databases: 0,
+      taskTabs: 0,
+      children: 0,
+      tempDirs: 0,
+    };
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          httpClass: 'short observation fixture',
+          observedForMs: 1,
+          samples: 2,
+          residuals,
+          residualTrend: [residuals, residuals],
+          resourceMetrics: metrics,
+          resourceMetricTrend: [metrics, metrics],
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
   it('拒绝重复执行和超过请求上限', () => {
     const duplicate = validateWatchLiveExecution(WATCH_LIVE_SCENARIO_MANIFEST, [
       'wl-public-rss',
@@ -294,7 +328,7 @@ describe('D10 bounded live Watch scenarios', () => {
           count(scenario.id);
           return {
             httpClass: 'zero-residuals',
-            observedForMs: 1,
+            observedForMs: 100,
             samples: 2,
             residuals: {
               servers: 0,

@@ -12,6 +12,8 @@ import {
   type WatchLiveScenario,
 } from './smoke-watch-live';
 
+const MIN_LIVE_RESOURCE_OBSERVATION_MS = 100;
+
 export interface WatchLivePublicPort {
   run(
     scenario: WatchLiveScenario,
@@ -265,7 +267,7 @@ export async function runWatchLiveScenarios(
         const sampleCount = result.samples;
         const observed =
           Number.isSafeInteger(observedForMs) &&
-          (observedForMs ?? -1) > 0 &&
+          (observedForMs ?? -1) >= MIN_LIVE_RESOURCE_OBSERVATION_MS &&
           Number.isSafeInteger(sampleCount) &&
           (sampleCount ?? -1) >= 2 &&
           result.residuals !== undefined &&
