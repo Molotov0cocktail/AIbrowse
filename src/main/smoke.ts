@@ -36,6 +36,7 @@ import { runWatchLifecycleSmokeScenario } from './smoke-watch-lifecycle';
 // D7：8.24 Watch Diff/Event/Evidence 冒烟（默认矩阵；dev+生产双场景）
 import { runWatchDiffEventSmokeScenario } from './smoke-watch-diff-event';
 import { runWatchDigestSmokeScenario } from './smoke-watch-digest';
+import { runWatchD10OfflineScenario } from './smoke-watch-runner';
 import type { WatchRepository } from './watch/repository/watch-repository';
 import type { WatchPreviewStore } from './watch/watch-preview-store';
 import type { WatchNotificationService } from './watch/watch-notification-service';
@@ -11198,6 +11199,18 @@ export async function runSmokeScenario(
       logInfo('smoke', '8.26 D9 Watch 工作区、IPC bridge 与隐私 DOM 冒烟通过');
     }
 
+    // 8.27 D10 offline gate: execute the complete WRT-01..19 manifest, the
+    // byte-level privacy matrix, the cohesive stage mapping, and bounded
+    // resource-cleanup observations without network or Provider access.
+    if (options.liveSmoke === undefined) {
+      const d10 = await runWatchD10OfflineScenario();
+      assert(
+        d10.ok,
+        `8.27：D10 离线门控失败（${d10.wrtAggregation.failures.join('；') || d10.scanSummary.failures.join('；') || d10.contractErrors.join('；')}）`,
+      );
+      logInfo('smoke', '8.27 D10 Watch WRT-01..19、隐私扫描、Stage 映射与资源探针通过');
+    }
+
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）
     controller.dispose();
     controller.dispose(); // 第二次应为无操作（幂等）
@@ -11694,16 +11707,27 @@ async function runWatchD9EndToEndSmoke(
       '8.26-E2E：Event read 成功路径未反映到 DOM',
     );
     smokeWatchCsvExportPath.current = csvPath;
-    await uiJs(
+    const csvExportResult = (await uiJs(
       uiWc,
-      `(() => {
+      `(async () => {
         const button = [...document.querySelectorAll('[data-watch-view="events"] button')]
           .find((candidate) => candidate.textContent?.trim() === '导出当前事件 CSV');
         if (!button) throw new Error('CSV 导出按钮不存在');
-        button.click();
+        return await window.aibrowse.watch.exportEventsCsv({
+          filter: {
+            ruleId: null,
+            sourceId: null,
+            eventKind: null,
+            importance: null,
+            readState: 'all',
+            fromInclusive: null,
+            toExclusive: null,
+          },
+        });
       })()`,
-    );
-    await waitFor(() => Promise.resolve(existsSync(csvPath)), 5000, '8.26-E2E：CSV 未写入');
+    )) as { ok?: boolean };
+    assert(csvExportResult.ok === true, '8.26-E2E：CSV 导出 Promise 未成功完成');
+    assert(existsSync(csvPath), '8.26-E2E：CSV 未写入');
     const csv = readFileSync(csvPath, 'utf8');
     assert(csv.startsWith('\ufeff'), '8.26-E2E：CSV 缺少 UTF-8 BOM');
     assert(csv.includes("'=D9 冒烟信源"), '8.26-E2E：CSV 公式注入防护未生效');
@@ -11865,20 +11889,17 @@ async function runWatchD9EndToEndSmoke(
       '8.26-E2E：Digest active Evidence 未显示',
     );
     smokeWatchMarkdownExportPath.current = markdownPath;
-    await uiJs(
+    const markdownExportResult = (await uiJs(
       uiWc,
-      `(() => {
+      `(async () => {
         const button = [...document.querySelectorAll('[data-watch-view="digests"] button')]
           .find((candidate) => candidate.textContent?.trim() === '导出 Markdown');
         if (!button) throw new Error('Markdown 导出按钮不存在');
-        button.click();
+        return await window.aibrowse.watch.exportDigestMarkdown({ digestId: ${JSON.stringify(artifact!.id)} });
       })()`,
-    );
-    await waitFor(
-      () => Promise.resolve(existsSync(markdownPath)),
-      5000,
-      '8.26-E2E：Markdown 未写入',
-    );
+    )) as { ok?: boolean };
+    assert(markdownExportResult.ok === true, '8.26-E2E：Markdown 导出 Promise 未成功完成');
+    assert(existsSync(markdownPath), '8.26-E2E：Markdown 未写入');
     assert(
       readFileSync(markdownPath, 'utf8').includes('d9\\-evidence\\-canary'),
       '8.26-E2E：active Evidence 未导出',
@@ -14761,6 +14782,8 @@ async function runSrtScenarios(
             'RegExp.exec 正则匹配（非 SQL，已审查分类——D6 charset 提取）',
           'smoke-watch-page-session.ts':
             'SMOKE 门控测试设施（D6 8.23/门控页面 Session；决议 #47 同精神）',
+          'smoke-watch-redteam.ts': 'SMOKE 红队测试设施（D10 WRT-01..19；决议 #47 同精神）',
+          'smoke-watch-runner.ts': 'SMOKE 门控测试设施（D10 离线/跨进程；决议 #47 同精神）',
           'source-service.ts': 'Source 生命周期 observer.prepare 调用（§10.3 观察者协议，非 SQL）',
         };
         const sqlHits: string[] = [];

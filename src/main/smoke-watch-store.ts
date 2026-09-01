@@ -31,6 +31,7 @@ import type { SourceWatchProjection, WatchEvent, WatchRule } from '../shared/typ
 import { runWatchLifecycleGateSet, runWatchLifecycleGateCheck } from './smoke-watch-lifecycle';
 import type { BrowserController } from './browser/browser-controller';
 import { runWatchPageSmokeGateSet, runWatchPageSmokeGateCheck } from './smoke-watch-page-session';
+import { runWatchD10CrossProcessSet, runWatchD10CrossProcessCheck } from './smoke-watch-runner';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -475,6 +476,7 @@ export async function runWatchSmokeGate(
     } else {
       logWarn('smoke', 'WATCH set(D6)：browserController 不可用，跳过 D6 阶段');
     }
+    runWatchD10CrossProcessSet(dbPath);
     logInfo('smoke', 'WATCH set：Rule/Baseline/Event/遗留 Run/未决 intent 已就绪，直接退出');
     return; // app.exit 路径：句柄随进程退出由 OS 释放（不写终态）
   }
@@ -530,5 +532,6 @@ export async function runWatchSmokeGate(
   } else {
     logWarn('smoke', 'WATCH check(D6)：browserController 不可用，跳过 D6 阶段');
   }
+  runWatchD10CrossProcessCheck(dbPath);
   logInfo('smoke', 'WATCH check：读回/interrupted/reconciliation 级联验证通过');
 }

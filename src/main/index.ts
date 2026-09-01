@@ -33,6 +33,7 @@ import {
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
+import { resolveWatchD10Mode } from './smoke-watch-gate';
 // Sixth Stage D4：Watch 存储/生命周期装配（observer 恒 active + 延迟端口绑定 +
 // AIBROWSE_WATCH_SMOKE 跨进程门控 + 8.21 store 冒烟）。
 import {
@@ -269,6 +270,16 @@ const WATCH_GATE_MODE =
   SMOKE_MODE &&
   (process.env['AIBROWSE_WATCH_SMOKE'] === 'set' ||
     process.env['AIBROWSE_WATCH_SMOKE'] === 'check');
+const watchD10Gate = resolveWatchD10Mode({
+  smoke: process.env.AIBROWSE_SMOKE,
+  watchSmoke: process.env['AIBROWSE_WATCH_SMOKE'],
+  sessionSmoke: process.env['AIBROWSE_SESSION_SMOKE'],
+  sourcesSmoke: process.env['AIBROWSE_SOURCES_SMOKE'],
+  sourcesUiSmoke: process.env['AIBROWSE_SOURCES_UI_SMOKE'],
+  researchSmoke: process.env['AIBROWSE_RESEARCH_SMOKE'],
+  liveProvider: process.env['AIBROWSE_LIVE_PROVIDER'],
+  liveWatch: process.env['AIBROWSE_LIVE_WATCH'],
+});
 
 // Session 冒烟/测试隔离（§十四 Session 验收）：指定临时 userData 目录，避免触碰用户真实数据。
 // 必须在 app ready 前设置（Electron 官方 API）；仅测试/验证环境使用（AIBROWSE_SESSION_SMOKE）。
@@ -410,6 +421,11 @@ if (!gotLock) {
   }
 
   app.whenReady().then(async () => {
+    if (!watchD10Gate.ok) {
+      logError('main', watchD10Gate.reason);
+      app.exit(1);
+      return;
+    }
     // C9（决议 #169 + 恢复校准）：LIVE_RESEARCH 门控失败 → 在装配前明确退出
     // （请求标志独立读取——缺 SMOKE/LIVE_PROVIDER/非法值/与既有门控冲突一律
     // 明确失败，不静默选路；此时尚无临时目录/DB/子进程，失败路径零残留）
