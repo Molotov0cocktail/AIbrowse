@@ -11214,6 +11214,7 @@ export async function runSmokeScenario(
           ...liveWatch.manifestErrors,
           ...liveWatch.executionErrors,
           ...liveWatch.ledgerErrors,
+          describeWatchLiveLedger(liveWatch.entries),
         ].join('；')})`,
       );
       logInfo('smoke', `8.27 D10 live Watch 通过：${describeWatchLiveLedger(liveWatch.entries)}`);

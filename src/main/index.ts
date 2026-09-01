@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
@@ -109,9 +109,9 @@ import type {
   ConversationMessage,
   ConversationSession,
   ContextPreview,
-  ProviderRequest,
   ProviderInfo,
 } from '../shared/types/conversation';
+import type { ChangeEvidencePair, WatchEvent, WatchRule } from '../shared/types/watch';
 import type {
   AgentAskPayload,
   AgentConfirmPayload,
@@ -141,6 +141,7 @@ import {
   registerProviderFactory,
   resolveProvider,
 } from './ai/provider/llm-provider';
+import type { LLMProvider } from './ai/provider/llm-provider';
 // Third Stage A2/A3：工具层装配（只读/导航 8 工具 + A3 交互 4 工具 + 确认状态机 +
 // 审计 + 执行管线）。A3 的 click/fill 语义来源（getElementSemantics/recordSnapshot）
 // 为 A5 AgentLoop 历史提取接线点——本阶段由冒烟场景注入快照语义存储驱动验证。
@@ -175,7 +176,7 @@ import { createSourceTools } from './sources/tools/source-tools';
 import { SourceUsageTracker } from './sources/usage/usage-tracker';
 // B5：Sources IPC 适配器（参数严格白名单 + audience 硬编码 user + 状态门控 +
 // 独立 manual 审计 + sources:changed 仅成功后触发）
-import { createSourcesAdapter } from './sources/source-ipc';
+import { createSourcesAdapter, SourcesIpcAdmission } from './sources/source-ipc';
 // C5（决议 #139）：Research 子系统最小生产装配——store/service 生命周期；生产不建立
 // RuntimeFactory（C6/C7 端口缺失 fail-closed）；SMOKE 注入确定性 stub 工厂；
 // RESEARCH_SMOKE set/check 双进程门控；退出走安全 shutdown。
@@ -201,7 +202,9 @@ const SMOKE_MODE = process.env.AIBROWSE_SMOKE === '1';
 // 时冒烟装配走生产 Provider 链路（openai-compatible + 真实 resolveProvider）；baseUrl/model
 // 写入进程专属临时配置，Key 只经 AIBROWSE_TEST_API_KEY 环境变量进入并立即从 process.env
 // 移除（零暴露扫描由冒烟场景在进程内完成，Key 绝不写入日志/文件/DOM）。
+const LIVE_WATCH_REQUESTED = SMOKE_MODE && process.env['AIBROWSE_LIVE_WATCH'] === '1';
 const LIVE_PROVIDER_MODE = SMOKE_MODE && process.env['AIBROWSE_LIVE_PROVIDER'] === '1';
+const LIVE_PROVIDER_SETUP_MODE = LIVE_PROVIDER_MODE || LIVE_WATCH_REQUESTED;
 // S6 真实 Provider 多网站共读验证（§10 Exit Gate）：AIBROWSE_LIVE_SITES=1 时冒烟改跑
 // 多网站场景（多个真实站点各对应一个明确验收项，见 smoke.ts LIVE_SITES）
 const LIVE_SITES_MODE = LIVE_PROVIDER_MODE && process.env['AIBROWSE_LIVE_SITES'] === '1';
@@ -355,6 +358,9 @@ let digestScheduler: DigestScheduler | null = null;
 let watchShutdownDone = false;
 let watchShutdownStarted = false;
 let sourceIpcAdmissionOpen = true;
+let sourceIpcDrainDone = false;
+let sourceIpcDrainStarted = false;
+const sourceIpcAdmission = new SourcesIpcAdmission();
 // D6：Session 页面采集装配（workspace/grant/router）——before-quit 顺序：
 // Coordinator stop → workspace cleanupAll drain → grant clear → robots cache
 // clear → host gate clear。
@@ -369,6 +375,8 @@ let watchIpcAdapter: WatchIpcAdapter | null = null;
 const watchIpcAdmission = new WatchIpcAdmission();
 let watchPublicStackRobots: { clearCache(): void } | null = null;
 let watchLiveRequestCount = 0;
+let watchLiveProviderRequestCount = 0;
+let liveProviderActive = false;
 // 8.23 冒烟 holder：index.ts 装配后注入（SMOKE_MODE 消费；生产零行为）
 const smokeWatchPageSession: { current: WatchPageSmokeBundle | null } = { current: null };
 // B5 冒烟注入点（仅 SMOKE_MODE 消费，生产行为不变）：恢复态/不可用态 UI 断言——
@@ -387,6 +395,7 @@ function stopWatchIpcAdmission(): void {
 
 function stopRendererAdmissions(): void {
   sourceIpcAdmissionOpen = false;
+  sourceIpcAdmission.beginShutdown();
   stopWatchIpcAdmission();
 }
 
@@ -399,6 +408,7 @@ async function watchShutdown(): Promise<void> {
   // subscription events must not observe a repository that is about to close.
   watchShutdownStarted = true;
   stopWatchIpcAdmission();
+  await watchIpcAdmission.drain();
   const repository = watchRepo;
   watchRepo = null;
   try {
@@ -542,6 +552,22 @@ if (!gotLock) {
           .finally(() => {
             watchShutdownDone = true;
             app.quit(); // 再次触发 before-quit（watchShutdownDone=true）
+          });
+      }
+    }
+    if (!sourceIpcDrainDone) {
+      event.preventDefault();
+      shutdownPending = true;
+      if (!sourceIpcDrainStarted) {
+        sourceIpcDrainStarted = true;
+        void sourceIpcAdmission
+          .drain()
+          .catch((err: unknown) => {
+            logError('main', 'Sources IPC 退出排水异常', err);
+          })
+          .finally(() => {
+            sourceIpcDrainDone = true;
+            app.quit();
           });
       }
     }
@@ -824,6 +850,7 @@ if (!gotLock) {
         }
       },
       isAdmitted: () => sourceIpcAdmissionOpen,
+      admission: sourceIpcAdmission,
       stateOverride: SMOKE_MODE
         ? () => {
             const holder = smokeSourcesStateOverride; // 调用时解引用（装配时序）
@@ -1073,6 +1100,7 @@ if (!gotLock) {
       audit: (message) => logInfo('audit', message),
       onStateChanged: pushWatchStatus,
       isAdmitted: () => watchIpcAdmission.isOpen(),
+      admission: watchIpcAdmission,
     });
     watchIpcAdapter = watchIpc;
     for (const channel of WATCH_IPC_CHANNELS) {
@@ -1380,6 +1408,77 @@ if (!gotLock) {
                         };
                       }
                       const requestCountBefore = watchLiveRequestCount;
+                      if (scenario.id === 'wl-public-rss') {
+                        const baseRule = watchRepo
+                          ?.listRules()
+                          .find((rule) => rule.kind === 'feed');
+                        if (watchAcquisitionService === null) {
+                          return {
+                            requestCount: 0,
+                            httpClass: 'Watch Feed acquisition 运行时不可用',
+                            errorCode: 'product-defect',
+                          };
+                        }
+                        const now = new Date().toISOString();
+                        const feedRule: WatchRule = {
+                          ...(baseRule ?? {
+                            id: randomUUID(),
+                            version: 1,
+                            sourceId: randomUUID(),
+                            kind: 'feed' as const,
+                            state: 'enabled' as const,
+                            pauseReason: null,
+                            desiredEnabled: true,
+                            muted: true,
+                            accessMode: 'public' as const,
+                            schedule: { kind: 'interval' as const, intervalMinutes: 60 },
+                            target: {
+                              type: 'feed' as const,
+                              feedUrl: scenario.url,
+                              format: 'rss2' as const,
+                            },
+                            condition: null,
+                            notificationLevel: 'normal' as const,
+                            showDetails: false,
+                            sourceRowVersion: 1,
+                            sourceLocatorFingerprint: '0'.repeat(64),
+                            nextDueAt: now,
+                            lastConsumedScheduledFor: null,
+                            lastDailyLocalDate: null,
+                            consecutiveFailures: 0,
+                            backoffUntil: null,
+                            baselineVersion: 0,
+                            createdAt: now,
+                            updatedAt: now,
+                          }),
+                          id: randomUUID(),
+                          kind: 'feed',
+                          target: { type: 'feed', feedUrl: scenario.url, format: 'rss2' },
+                          baselineVersion: 0,
+                        };
+                        const acquired = await watchAcquisitionService.run({
+                          rule: feedRule,
+                          baselineHint: { kind: 'none', expectedBaselineVersion: 0 },
+                          signal,
+                          deadline: new Date(Date.now() + 30_000),
+                        });
+                        const requestCount = watchLiveRequestCount - requestCountBefore;
+                        if (acquired.ok) {
+                          return {
+                            requestCount,
+                            status: acquired.responseMetadata?.httpStatus ?? 200,
+                            httpClass: `Feed acquisition ${acquired.kind}`,
+                          };
+                        }
+                        return {
+                          requestCount,
+                          httpClass: `Feed acquisition ${acquired.health}`,
+                          errorCode:
+                            acquired.health === 'unavailable'
+                              ? 'environment-unavailable'
+                              : 'product-defect',
+                        };
+                      }
                       const result = await watchPublicTarget.get({
                         url: scenario.url,
                         purpose: scenario.id === 'wl-public-rss' ? 'feed' : 'page',
@@ -1406,12 +1505,16 @@ if (!gotLock) {
                   },
                   providerPort: {
                     credentialAvailable: async () => {
-                      if (configStore === null) return false;
+                      if (!liveProviderActive || configStore === null) return false;
                       const providers = await configStore.list();
-                      return providers.some((provider) => provider.hasKey);
+                      return providers.some(
+                        (provider) =>
+                          provider.providerId === PROVIDER_KIND_OPENAI_COMPATIBLE &&
+                          provider.hasKey,
+                      );
                     },
-                    runOnce: async (_scenario, signal) => {
-                      if (configStore === null || credentials === null) {
+                    runOnce: async () => {
+                      if (!liveProviderActive || configStore === null || credentials === null) {
                         return {
                           requestCount: 0,
                           httpClass: 'Provider 凭据不可用',
@@ -1419,7 +1522,9 @@ if (!gotLock) {
                         };
                       }
                       const providerInfo = (await configStore.list()).find(
-                        (provider) => provider.hasKey,
+                        (provider) =>
+                          provider.providerId === PROVIDER_KIND_OPENAI_COMPATIBLE &&
+                          provider.hasKey,
                       );
                       if (providerInfo === undefined) {
                         return {
@@ -1428,56 +1533,166 @@ if (!gotLock) {
                           errorCode: 'credential-unavailable',
                         };
                       }
-                      const config = configStore.get(providerInfo.providerId);
-                      const provider = await resolveProvider(config, credentials);
-                      if (provider === null || config === null) {
+                      if (digestService === null || watchRepo === null || sourceService === null) {
                         return {
                           requestCount: 0,
-                          httpClass: 'Provider 配置或凭据无法解析',
+                          httpClass: 'DigestService 运行时不可用',
                           errorCode: 'product-defect',
                         };
                       }
-                      const request: ProviderRequest = {
-                        requestId: randomUUID(),
-                        model: config.model,
-                        system:
-                          '你是 AIbrowse D10 Digest explanation 兼容性探针。只返回简短纯文本。',
-                        messages: [
-                          {
-                            role: 'user',
-                            content: '{"kind":"digest-explanation","events":[]}',
-                          },
-                        ],
-                      };
-                      let completed = false;
-                      for await (const event of provider.stream(request, signal)) {
-                        if (event.type === 'error') {
-                          return {
-                            requestCount: 1,
-                            status: event.error.httpStatus,
-                            httpClass: `Provider ${event.error.code}`,
-                            errorCode:
-                              event.error.code === 'timeout' || event.error.code === 'network'
-                                ? event.error.code
-                                : 'provider',
-                          };
-                        }
-                        if (event.type === 'done') completed = true;
+                      const rule = watchRepo
+                        .listRules()
+                        .find((candidate) => candidate.state === 'enabled');
+                      if (rule === undefined) {
+                        return {
+                          requestCount: 0,
+                          httpClass: 'DigestService 缺少可用 Watch Rule',
+                          errorCode: 'product-defect',
+                        };
                       }
-                      return completed
-                        ? {
-                            requestCount: 1,
-                            status: 200,
-                            httpClass: 'Provider stream complete',
-                          }
-                        : {
-                            requestCount: 1,
-                            httpClass: 'Provider stream 未完成',
-                            errorCode: 'provider',
-                          };
+                      const eventId = randomUUID();
+                      const observedAt = new Date().toISOString();
+                      const evidenceText = 'D10 live Digest observation';
+                      const evidenceHash = createHash('sha256')
+                        .update(evidenceText, 'utf8')
+                        .digest('hex');
+                      const item: ChangeEvidencePair = {
+                        itemId: `d10-live-${eventId}`,
+                        fieldKey: 'title',
+                        label: 'D10 live Digest observation',
+                        before: { kind: 'absent' },
+                        after: {
+                          kind: 'present',
+                          excerpt: evidenceText,
+                          valueHash: evidenceHash,
+                          normalizedBytes: Buffer.byteLength(evidenceText, 'utf8'),
+                          truncated: false,
+                        },
+                        beforeCapturedAt: observedAt,
+                        afterCapturedAt: observedAt,
+                        beforeFinalUrl: 'https://example.com/d10-live',
+                        afterFinalUrl: 'https://example.com/d10-live',
+                        beforeDocumentId: null,
+                        afterDocumentId: null,
+                        feedItemKey: null,
+                      };
+                      const event: WatchEvent = {
+                        id: eventId,
+                        ruleId: rule.id,
+                        sourceId: rule.sourceId,
+                        eventKind: 'added',
+                        importance: 'normal',
+                        idempotencyKey: randomUUID(),
+                        changeFingerprint: evidenceHash,
+                        firstObservedAt: observedAt,
+                        lastObservedAt: observedAt,
+                        itemCount: 1,
+                        readAt: null,
+                      };
+                      const scheduleId = randomUUID();
+                      const now = new Date();
+                      const hhmm = now.toISOString().slice(11, 16);
+                      const created = await digestService.createSchedule({
+                        id: scheduleId,
+                        selector: { sourceIds: [rule.sourceId] },
+                        localTime: hhmm,
+                        timeZone: 'UTC',
+                        aiEnabled: true,
+                      });
+                      if (!created.ok) {
+                        return {
+                          requestCount: 0,
+                          httpClass: 'DigestService schedule 创建失败',
+                          errorCode: 'product-defect',
+                        };
+                      }
+                      const schedule = digestService.getSchedule(scheduleId)?.schedule;
+                      if (schedule === undefined) {
+                        return {
+                          requestCount: 0,
+                          httpClass: 'DigestService schedule 读回失败',
+                          errorCode: 'product-defect',
+                        };
+                      }
+                      const written = watchRepo.writeEventTransaction({
+                        event,
+                        items: [item],
+                        identity: {
+                          sourceId: rule.sourceId,
+                          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+                          expectedBaselineVersion: rule.baselineVersion,
+                        },
+                      });
+                      if (!written.ok) {
+                        digestService.delete(scheduleId, schedule.version);
+                        return {
+                          requestCount: 0,
+                          httpClass: `DigestService 事件写入失败：${written.code}`,
+                          errorCode: 'product-defect',
+                        };
+                      }
+                      const requestCountBefore = watchLiveProviderRequestCount;
+                      let handled: { ok: boolean; nextDueAt: string | null };
+                      let providerState: string;
+                      try {
+                        handled = await digestService.handleDue({
+                          scheduleId,
+                          expectedNextDueAt: schedule.nextDueAt,
+                          logicalDate: schedule.nextDueAt.slice(0, 10),
+                        });
+                        providerState =
+                          digestService.getSchedule(scheduleId)?.artifacts[0]?.providerState ??
+                          'missing';
+                      } finally {
+                        const current = digestService.getSchedule(scheduleId)?.schedule;
+                        if (current !== undefined)
+                          digestService.delete(scheduleId, current.version);
+                      }
+                      const requestCount = watchLiveProviderRequestCount - requestCountBefore;
+                      if (handled.ok && requestCount === 1) {
+                        return {
+                          requestCount,
+                          status: 200,
+                          httpClass: 'DigestService -> Provider.stream complete',
+                        };
+                      }
+                      return {
+                        requestCount,
+                        httpClass: `DigestService provider outcome=${providerState}`,
+                        errorCode: requestCount === 1 ? 'provider' : 'product-defect',
+                      };
                     },
                   },
-                  resourcePort: createProductWatchResourcePort(watchWorkspace),
+                  windowsPort: {
+                    isWindows: process.platform === 'win32',
+                    isPackaged: app.isPackaged,
+                    probe: async () => {
+                      const qualification = windowsQualification();
+                      return qualification.available
+                        ? { httpClass: 'Windows identity notification qualified' }
+                        : { httpClass: qualification.reason, errorCode: 'product-defect' };
+                    },
+                  },
+                  resourcePort: createProductWatchResourcePort(watchWorkspace, {
+                    isAvailable: () =>
+                      watchRepo !== null && watchScheduler !== null && digestService !== null,
+                    shutdown: async () => {
+                      await watchShutdown();
+                      watchShutdownDone = true;
+                      if (smokeWatchDir !== null) {
+                        await removeSmokeDirWithRetry(smokeWatchDir);
+                        smokeWatchDir = null;
+                      }
+                    },
+                    residuals: () => ({
+                      servers: 0,
+                      timers: (watchScheduler?.size ?? 0) + (digestScheduler?.size ?? 0),
+                      databases: watchRepo === null ? 0 : 1,
+                      taskTabs: watchWorkspace?.getOwnedCount() ?? 0,
+                      children: 0,
+                      tempDirs: smokeWatchDir !== null && existsSync(smokeWatchDir) ? 1 : 0,
+                    }),
+                  }),
                 } satisfies WatchLiveRunnerOptions)
               : undefined,
             watchD10: LIVE_WATCH_MODE
@@ -1490,7 +1705,32 @@ if (!gotLock) {
                       ? async () =>
                           String(
                             await mainWindow!.webContents.executeJavaScript(
-                              'document.documentElement.outerHTML',
+                              `
+                                (async () => {
+                                  const watchButton = document.querySelector('button.watch-open');
+                                  if (watchButton instanceof HTMLElement) watchButton.click();
+                                  const deadline = Date.now() + 5000;
+                                  while (
+                                    Date.now() < deadline &&
+                                    document.querySelector('.watch-workspace') === null
+                                  ) {
+                                    await new Promise((resolve) => setTimeout(resolve, 25));
+                                  }
+                                  const html = document.documentElement.outerHTML;
+                                  const backButton = document.querySelector('.watch-header button');
+                                  if (backButton instanceof HTMLElement) backButton.click();
+                                  const aiButton = document.querySelector('button.ai-toggle');
+                                  if (aiButton instanceof HTMLElement) aiButton.click();
+                                  const restoreDeadline = Date.now() + 5000;
+                                  while (
+                                    Date.now() < restoreDeadline &&
+                                    document.querySelector('.ai-panel') === null
+                                  ) {
+                                    await new Promise((resolve) => setTimeout(resolve, 25));
+                                  }
+                                  return html;
+                                })()
+                              `,
                             ),
                           )
                       : undefined,
@@ -1517,7 +1757,7 @@ if (!gotLock) {
           });
         }
         run
-          .then(() => {
+          .then(async () => {
             logInfo('main', '冒烟自检通过，正常退出');
             if (RESEARCH_GATE_MODE && researchMode === 'set') {
               // 决议 #139：set 门控经 app.exit 直接退出（不触发 before-quit 的
@@ -1525,6 +1765,14 @@ if (!gotLock) {
               // interrupted 自动标记。app.exit 不触发 before-quit：冒烟临时
               // 目录与进程资源在此精确清理（保留共享 userData 的 research.db；
               // EPERM 容忍——db 句柄随进程退出由 OS 释放）
+              stopRendererAdmissions();
+              await sourceIpcAdmission.drain();
+              try {
+                await watchShutdown();
+                watchShutdownDone = true;
+              } catch (shutdownError) {
+                logError('main', 'Research set 路径 Watch 排水异常', shutdownError);
+              }
               sourceService?.dispose();
               try {
                 rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
@@ -1547,6 +1795,14 @@ if (!gotLock) {
                   smokeResearchDir = null;
                 }
               }
+              if (smokeWatchDir !== null) {
+                try {
+                  await removeSmokeDirWithRetry(smokeWatchDir);
+                  smokeWatchDir = null;
+                } catch {
+                  smokeWatchDir = null;
+                }
+              }
               app.exit(0);
               return;
             }
@@ -1562,6 +1818,7 @@ if (!gotLock) {
             } catch (shutdownError) {
               logError('main', '冒烟失败路径 Watch 排水异常', shutdownError);
             }
+            await sourceIpcAdmission.drain();
             sourceService?.dispose();
             // 失败路径同样清理冒烟 Sources 临时目录（否则每次失败运行残留
             // pid 专属目录——清理纪律）
@@ -1974,7 +2231,16 @@ async function createBrowserWindow(): Promise<void> {
               const config = configStore.get(PROVIDER_KIND_OPENAI_COMPATIBLE);
               if (config === null) return null;
               const provider = await resolveProvider(config, credentials);
-              return provider === null ? null : { provider, model: config.model };
+              if (provider === null) return null;
+              if (!LIVE_WATCH_MODE) return { provider, model: config.model };
+              const observedProvider: LLMProvider = {
+                ...provider,
+                async *stream(request, signal) {
+                  watchLiveProviderRequestCount += 1;
+                  yield* provider.stream(request, signal);
+                },
+              };
+              return { provider: observedProvider, model: config.model };
             },
           },
           membership: {
@@ -2043,17 +2309,18 @@ async function createBrowserWindow(): Promise<void> {
   // baseUrl/model 写入进程专属临时配置（非机密，供冒烟场景对照断言）；Key 经
   // credentials.set 以密文落入临时目录，随后立即从 process.env 移除——Key 只经环境
   // 变量进入一次，此后仅存在于内存引用（零暴露扫描用），绝不出进程。
-  const liveKey = LIVE_PROVIDER_MODE ? (process.env['AIBROWSE_TEST_API_KEY'] ?? '') : '';
-  const liveBaseUrl = LIVE_PROVIDER_MODE ? (process.env['AIBROWSE_TEST_BASE_URL'] ?? '') : '';
-  const liveModel = LIVE_PROVIDER_MODE ? (process.env['AIBROWSE_TEST_MODEL'] ?? '') : '';
+  const liveKey = LIVE_PROVIDER_SETUP_MODE ? (process.env['AIBROWSE_TEST_API_KEY'] ?? '') : '';
+  const liveBaseUrl = LIVE_PROVIDER_SETUP_MODE ? (process.env['AIBROWSE_TEST_BASE_URL'] ?? '') : '';
+  const liveModel = LIVE_PROVIDER_SETUP_MODE ? (process.env['AIBROWSE_TEST_MODEL'] ?? '') : '';
+  liveProviderActive = LIVE_PROVIDER_SETUP_MODE && liveKey !== '';
   const liveActive = LIVE_PROVIDER_MODE && liveKey !== '';
-  if (LIVE_PROVIDER_MODE && !liveActive) {
+  if (LIVE_PROVIDER_SETUP_MODE && !liveProviderActive) {
     logWarn('main', '真实 Provider 冒烟跳过：未提供 AIBROWSE_TEST_API_KEY（回退离线矩阵）');
   }
   if (LIVE_SITES_MODE && !liveActive) {
     logWarn('main', '多网站共读验证跳过：未提供 AIBROWSE_TEST_API_KEY（回退离线矩阵）');
   }
-  if (SMOKE_MODE && !liveActive) {
+  if (SMOKE_MODE && !liveProviderActive) {
     // 冒烟：注册 'fake' kind 并写入 fake 配置（决议 #20：选择依赖已注册 kind 集合，
     // 与生产 openai-compatible 同路径；注入 resolver 仅替换流式实现）
     registerProviderFactory({ kind: 'fake', create: () => new FakeProvider({}) });
@@ -2063,7 +2330,7 @@ async function createBrowserWindow(): Promise<void> {
       model: 'fake-model',
     });
   }
-  if (liveActive) {
+  if (liveProviderActive) {
     const valid = validateProviderConfig({
       providerId: PROVIDER_KIND_OPENAI_COMPATIBLE,
       baseUrl: liveBaseUrl,
@@ -2079,17 +2346,19 @@ async function createBrowserWindow(): Promise<void> {
     } else {
       // Key 密文落盘（进程专属临时目录）；场景等待 ready 后才允许提问
       const ready = credentials.set(valid.providerId, liveKey);
-      liveSmoke = {
-        key: liveKey,
-        baseUrl: valid.baseUrl,
-        model: valid.model,
-        ready,
-        logScan: startupLogScan, // 零暴露扫描起点：早于环境变量读取（见上方 startupLogScan）
-        getStreamChunkCount: () => liveStreamChunkCount,
-      };
+      if (LIVE_PROVIDER_MODE) {
+        liveSmoke = {
+          key: liveKey,
+          baseUrl: valid.baseUrl,
+          model: valid.model,
+          ready,
+          logScan: startupLogScan, // 零暴露扫描起点：早于环境变量读取（见上方 startupLogScan）
+          getStreamChunkCount: () => liveStreamChunkCount,
+        };
+      }
     }
   }
-  if (LIVE_PROVIDER_MODE) {
+  if (LIVE_PROVIDER_SETUP_MODE) {
     delete process.env['AIBROWSE_TEST_API_KEY'];
     delete process.env['AIBROWSE_TEST_BASE_URL'];
     delete process.env['AIBROWSE_TEST_MODEL'];

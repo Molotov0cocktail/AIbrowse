@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { WatchIpcAdmission } from './smoke-watch-admission';
+import { SourcesIpcAdmission } from './sources/source-ipc';
 
 describe('Watch IPC shutdown admission', () => {
   it('shutdown 后拒绝迟到订阅并清空旧 sender', () => {
@@ -19,5 +20,37 @@ describe('Watch IPC shutdown admission', () => {
     const disposeIndex = source.indexOf('watchRepo?.dispose()');
     expect(admissionIndex).toBeGreaterThanOrEqual(0);
     expect(disposeIndex).toBeGreaterThan(admissionIndex);
+  });
+
+  it('shutdown 必须等待已经获准的 Watch IPC 调用排水后再释放 repository', async () => {
+    const admission = new WatchIpcAdmission();
+    const release = admission.enter();
+    expect(release).not.toBeNull();
+    admission.beginShutdown();
+    let drained = false;
+    const pending = admission.drain().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    release?.();
+    await pending;
+    expect(drained).toBe(true);
+  });
+
+  it('Sources shutdown 必须等待已经获准的 IPC 调用排水后再释放 repository', async () => {
+    const admission = new SourcesIpcAdmission();
+    const release = admission.enter();
+    expect(release).not.toBeNull();
+    admission.beginShutdown();
+    let drained = false;
+    const pending = admission.drain().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    release?.();
+    await pending;
+    expect(drained).toBe(true);
   });
 });

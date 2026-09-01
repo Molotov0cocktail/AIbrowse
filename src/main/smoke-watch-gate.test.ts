@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   resolveWatchD10Mode,
@@ -24,9 +25,25 @@ describe('D10 Watch gate', () => {
     );
     expect(resolveWatchGate({ liveWatch: '1' }).ok).toBe(false);
     expect(resolveWatchGate({ smoke: '1', liveWatch: '1' })).toEqual({ ok: true, mode: 'live' });
+    expect(resolveWatchGate({ smoke: '1', liveWatch: '1', liveProvider: '1' })).toEqual({
+      ok: true,
+      mode: 'live',
+    });
     expect(resolveWatchD10Mode({ smoke: '1', watchSmoke: 'set' })).toEqual({
       ok: true,
       mode: 'set',
     });
+  });
+
+  it('Research set 直接退出前必须完成 Watch 与 Sources 排水和 Watch 目录清理', () => {
+    const source = readFileSync('src/main/index.ts', 'utf8');
+    const branchStart = source.indexOf("if (RESEARCH_GATE_MODE && researchMode === 'set')");
+    const branchEnd = source.indexOf('app.exit(0);', branchStart);
+    expect(branchStart).toBeGreaterThanOrEqual(0);
+    expect(branchEnd).toBeGreaterThan(branchStart);
+    const branch = source.slice(branchStart, branchEnd);
+    expect(branch).toContain('await watchShutdown()');
+    expect(branch).toContain('await sourceIpcAdmission.drain()');
+    expect(branch).toContain('smokeWatchDir');
   });
 });

@@ -13,7 +13,7 @@ describe('D10 product-path runner', () => {
       const report = await runWatchD10OfflineScenario({
         logFile: log,
         auditEntries: [],
-        rendererDom: async () => '<main data-route="watch"></main>',
+        rendererDom: async () => '<main class="watch-workspace" data-watch-view="digests"></main>',
         resourceDurationMs: 20,
         resourceSamples: 2,
       });

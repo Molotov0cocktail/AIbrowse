@@ -15,7 +15,7 @@ import { SecureCredentialStoreImpl } from './ai/credential-store';
 import { AgentLoop } from './ai/agent/agent-loop';
 import { ConfirmManager } from './ai/confirm-manager';
 import { FakeProvider } from './ai/provider/fake-provider';
-import { runResearchMigrations } from './research/db/research-migrations';
+import { openResearchStore } from './research/research-store';
 import { ConversationStore } from './ai/conversation-store';
 import { WatchProcessingServiceImpl } from './watch/watch-processing-service';
 import { WatchRepository } from './watch/repository/watch-repository';
@@ -41,6 +41,7 @@ import { projectDigestForProvider } from '../shared/watch/digest-sharing-project
 import { computeChangeFingerprint, computeIdempotencyKey } from '../shared/watch/event-validator';
 import { sha256Hex } from '../shared/watch/diff/evidence';
 import { FakeClock } from '../shared/watch/clock';
+import type { ConversationMessage, ConversationSession } from '../shared/types/conversation';
 import type { FeedProjection, WatchEvent, WatchRule } from '../shared/types/watch';
 import {
   aggregateWatchWrtOutcomes,
@@ -64,8 +65,6 @@ import {
   type WatchScanSurface,
 } from './smoke-watch-scan';
 import { runWatchRedTeamScenarios } from './smoke-watch-redteam';
-import { WATCH_LIVE_SCENARIO_MANIFEST } from './smoke-watch-live';
-import { createProductWatchResourcePort } from './smoke-watch-live-resource';
 
 const COHESIVE_STAGES = [
   'Feed',
@@ -357,24 +356,64 @@ async function buildProductSurfaces(
         scope: 'page',
         url: 'https://example.com/d10-source',
         name: 'D10 actual source',
+        userNote: 'D10 actual Sources IPC note path',
       });
       if (!added.ok) throw new Error('D10 SourceService product write failed');
+      const rejectedUnsafeNote = await sourceAdapter.add({
+        scope: 'page',
+        url: 'https://example.com/d10-unsafe-note',
+        name: 'D10 rejected unsafe note',
+        note: canaries.get('page-snapshot')?.value,
+      });
+      const unsafeNoteCanary = canaries.get('page-snapshot')?.value;
+      if (
+        rejectedUnsafeNote.ok ||
+        (unsafeNoteCanary !== undefined && productAuditEntries.at(-1)?.includes(unsafeNoteCanary))
+      ) {
+        throw new Error('D10 Sources unsafe note ingress was not fail-closed');
+      }
     } finally {
       sourceService.dispose();
       owned.databases.delete(sourceDb);
     }
 
     const researchPath = join(root, 'research.db');
+    const researchOutcome = openResearchStore({ dbPath: researchPath });
+    if (researchOutcome.mode !== 'normal')
+      throw new Error('D10 ResearchService product open failed');
     const researchDb = openDb(researchPath);
     owned.databases.add(researchDb);
-    runResearchMigrations(researchDb);
+    const researchTask = await researchOutcome.service.createTask('D10 Research product path');
+    if (!researchTask.ok) throw new Error('D10 ResearchService product write failed');
+    const researchReadback = await researchOutcome.service.getTask(researchTask.task.id);
+    if (!researchReadback.ok) throw new Error('D10 ResearchService product read failed');
+    researchOutcome.service.dispose();
     closeDb(researchDb);
     owned.databases.delete(researchDb);
 
     const conversationRoot = join(root, 'conversation');
     const conversationStore = new ConversationStore(conversationRoot);
-    conversationStore.saveSessions([]);
-    conversationStore.saveMessages('d10-session', []);
+    const conversationTime = Date.parse(D10_NOW);
+    const session: ConversationSession = {
+      id: 'd10-session',
+      title: 'D10 conversation product path',
+      createdAt: conversationTime,
+      updatedAt: conversationTime,
+      ephemeral: false,
+    };
+    const message: ConversationMessage = {
+      id: 'd10-message',
+      role: 'user',
+      content: 'D10 conversation product path',
+      createdAt: conversationTime,
+      status: 'complete',
+    };
+    if (
+      !conversationStore.saveSessions([session]) ||
+      !conversationStore.saveMessages(session.id, [message])
+    ) {
+      throw new Error('D10 ConversationStore product write failed');
+    }
 
     const apiKey = canaries.get('api-key')?.value;
     if (apiKey === undefined) throw new Error('D10 API key canary missing');
@@ -917,12 +956,16 @@ async function buildProductSurfaces(
           await notifications.drain();
           const cohesiveNotification = delivered.includes(event.id);
           const digestNotification = delivered.includes(artifact.id);
+          const renderedWatchUi = options.rendererDom
+            ? /watch-workspace|data-watch-view/.test(await options.rendererDom())
+            : false;
           const typedEvidence = cohesiveRepo
             .listEventItems(event.id)
             .every((item) => item.before !== undefined && item.after !== undefined);
           cohesive =
             cohesiveNotification &&
             digestNotification &&
+            renderedWatchUi &&
             typedEvidence &&
             cohesiveFacts.eventCount > 0 &&
             cohesiveFacts.events.some((factEvent) =>
@@ -1085,22 +1128,22 @@ function buildStageEvidence(input: {
       'S6-7-1',
       '§7',
       wrtOk('WRT-08'),
-      'real-observation',
-      'WRT-08 实际 FeedParser/Processing 五次观察产生稳定事件事实',
+      'honest-limit',
+      '受控 Feed acquisition/Source 写入与 Processing 五次观察有实际证据；真实公网发现与用户添加场景未在离线 gate 运行',
     ),
     result(
       'S6-7-2',
       '§7',
       wrtOk('WRT-08'),
-      'real-observation',
-      'WRT-08 从实际 watch.db 观察读取更新事件',
+      'honest-limit',
+      '受控 Watch DB 更新事件已从产品处理路径读回；真实公网 RSS 更新视图未在离线 gate 运行',
     ),
     result(
       'S6-7-3',
       '§7',
       wrtOk('WRT-11'),
-      'structural-proof',
-      'WRT-11 实际 PageProjector/PageDiff 区域路径证明；Electron 页面采集未在离线 gate 运行',
+      'honest-limit',
+      'WRT-11 通过产品 PageProjector/PageDiff 区域路径证明；Electron Session 页面 Snapshot/Diff 未在离线 gate 运行',
     ),
     result(
       'S6-7-4',
@@ -1120,8 +1163,8 @@ function buildStageEvidence(input: {
       'S6-7-6',
       '§7',
       input.cohesiveOk && input.scanOk,
-      'structural-proof',
-      'cohesive 实际完成 Digest facts、导出、Provider request 与通知 DTO',
+      'honest-limit',
+      'cohesive 实际完成 Digest facts、导出、DigestService→FakeProvider request 与通知 DTO；真实 Provider 需单独 live 条件，未在离线 gate 运行',
     ),
     result(
       'S6-7-7',
@@ -1134,8 +1177,8 @@ function buildStageEvidence(input: {
       'S6-9-1',
       '§9',
       wrtOk('WRT-08'),
-      'real-observation',
-      '真实 FeedParser/ProcessingService 观察覆盖 feed 去重与 health 结果',
+      'honest-limit',
+      '产品 FeedParser/ProcessingService 受控观察覆盖 feed 去重与 health 结果；真实公网 feed discovery/add 未在离线 gate 运行',
     ),
     result(
       'S6-9-2',
@@ -1155,8 +1198,8 @@ function buildStageEvidence(input: {
       'S6-9-4',
       '§9',
       input.cohesiveOk && input.scanOk,
-      'structural-proof',
-      'Digest changed/unchanged 事实、通知与导出均已读取',
+      'honest-limit',
+      '受控单 Source Digest changed 事实、通知与导出均已读取；多 Source 分组及真实 Provider 未在离线 gate 运行',
     ),
     result(
       'S6-9-5',
@@ -1170,7 +1213,7 @@ function buildStageEvidence(input: {
       '§9',
       input.scanOk && input.resourceOk && wrtOk('WRT-18'),
       'structural-proof',
-      'D10 机器 gate 覆盖隐私、资源、迁移和 WRT 独立结果',
+      'D10 离线机器 gate 覆盖实际产品表面隐私扫描、资源观察、迁移/预算和 WRT 独立结果；公网/Provider/打包条件另行记账',
     ),
     result(
       'S6-10-1',
@@ -1190,8 +1233,8 @@ function buildStageEvidence(input: {
       'S6-10-3',
       '§10',
       wrtOk('WRT-04', 'WRT-05', 'WRT-16') && input.resourceOk,
-      'real-observation',
-      'Node 24 transport、robots、reservation 与资源探针结果已执行',
+      'structural-proof',
+      'Node 24 transport 子进程观察、robots、reservation 与产品所有权资源探针均有边界证据；不将离线结果扩写为长时生产运行',
     ),
     result(
       'S6-10-4',
@@ -1204,8 +1247,8 @@ function buildStageEvidence(input: {
       'S6-10-5',
       '§10',
       wrtOk('WRT-18') && input.scanOk,
-      'structural-proof',
-      'Watch schema/retention surface 与隐私扫描均来自当前 gate',
+      'honest-limit',
+      'Watch schema、预算/损坏 fail-closed 与隐私扫描来自当前 gate；正式长期 retention 清理周期未在离线 gate 运行',
     ),
   ];
   const failures = results.filter((item) => !item.ok).map((item) => `${item.id}：${item.detail}`);
@@ -1303,31 +1346,11 @@ export async function runWatchD10OfflineScenario(
     // temporary-directory cleanup sequence.
     productScan.cleanup();
     if (options.resourceObserve === undefined) {
-      const scenario = WATCH_LIVE_SCENARIO_MANIFEST.find((item) => item.kind === 'resource');
-      if (scenario === undefined) throw new Error('D10 resource scenario missing');
-      const actual = await createProductWatchResourcePort(null).probe(
-        scenario,
-        new AbortController().signal,
-      );
-      const residuals = actual.residuals;
-      resourceProbe = {
-        durationMs: actual.observedForMs ?? 0,
-        samples: actual.samples ?? 0,
-        residualServers: residuals?.servers ?? Number.NaN,
-        residualTimers: residuals?.timers ?? Number.NaN,
-        residualDatabases: residuals?.databases ?? Number.NaN,
-        residualTaskTabs: residuals?.taskTabs ?? Number.NaN,
-        residualChildren: residuals?.children ?? Number.NaN,
-        residualTempDirs: residuals?.tempDirs ?? Number.NaN,
-        ok:
-          actual.errorCode === undefined &&
-          actual.observedForMs !== undefined &&
-          actual.observedForMs > 0 &&
-          actual.samples !== undefined &&
-          actual.samples >= 2 &&
-          residuals !== undefined &&
-          Object.values(residuals).every((value) => value === 0),
-      };
+      resourceProbe = await runWatchResourceProbe({
+        durationMs: options.resourceDurationMs,
+        samples: options.resourceSamples,
+        observe: productScan.resourceObserve,
+      });
     } else {
       resourceProbe = await runWatchResourceProbe({
         durationMs: options.resourceDurationMs,

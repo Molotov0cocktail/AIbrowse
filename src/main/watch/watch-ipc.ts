@@ -16,6 +16,7 @@ import type { WatchExportService } from './watch-export-service';
 import type { WatchPreviewService } from './watch-preview-service';
 import type { WatchCommandService } from './watch-command-service';
 import type { DigestService } from './digest-service';
+import type { WatchIpcAdmission } from '../smoke-watch-admission';
 
 export const MUTATING_WATCH_CHANNELS = new Set<WatchIpcChannel>([
   'watch:createRule',
@@ -65,6 +66,7 @@ export interface WatchIpcAdapterOptions {
   audit: (message: string) => void;
   onStateChanged?: () => void;
   isAdmitted?: () => boolean;
+  admission?: WatchIpcAdmission;
 }
 
 const STATUS_CHANGING_WATCH_CHANNELS = new Set<WatchIpcChannel>([
@@ -90,35 +92,45 @@ export class WatchIpcAdapter {
   }
 
   async invoke(channel: string, payload: unknown): Promise<WatchIpcResult<unknown>> {
-    if (this.options.isAdmitted !== undefined && !this.options.isAdmitted())
+    const release = this.options.admission?.enter() ?? null;
+    if (this.options.admission !== undefined && release === null) return fail('unavailable');
+    if (this.options.isAdmitted !== undefined && !this.options.isAdmitted()) {
+      release?.();
       return fail('unavailable');
+    }
     const started = Date.now();
-    const validated = validateWatchIpcPayload(channel, payload);
-    let result: WatchIpcResult<unknown>;
     try {
-      result = validated.ok
-        ? await this.dispatch(channel as WatchIpcChannel, payload as Record<string, unknown>)
-        : fail('invalid-payload');
-    } catch {
-      result = fail('unavailable');
-    }
-    if (!validateWatchIpcOutput(result, channel as WatchIpcChannel)) result = fail('unavailable');
-    if (
-      MUTATING_WATCH_CHANNELS.has(channel as WatchIpcChannel) ||
-      EFFECTFUL_READ_WATCH_CHANNELS.has(channel as WatchIpcChannel)
-    ) {
-      this.options.audit(
-        `watch-ipc kind=${EFFECTFUL_READ_WATCH_CHANNELS.has(channel as WatchIpcChannel) ? 'effectful-read' : 'action'} channel=${channel} result=${result.ok ? 'ok' : result.errorCode} durationMs=${Math.max(0, Date.now() - started)}`,
-      );
-    }
-    if (result.ok && STATUS_CHANGING_WATCH_CHANNELS.has(channel as WatchIpcChannel)) {
+      const validated = validateWatchIpcPayload(channel, payload);
+      let result: WatchIpcResult<unknown>;
       try {
-        this.options.onStateChanged?.();
+        result = validated.ok
+          ? await this.dispatch(channel as WatchIpcChannel, payload as Record<string, unknown>)
+          : fail('invalid-payload');
       } catch {
-        // State push is a best-effort observer and must not reverse an already committed action.
+        result = fail('unavailable');
       }
+      if (!validateWatchIpcOutput(result, channel as WatchIpcChannel)) result = fail('unavailable');
+      if (
+        MUTATING_WATCH_CHANNELS.has(channel as WatchIpcChannel) ||
+        EFFECTFUL_READ_WATCH_CHANNELS.has(channel as WatchIpcChannel)
+      ) {
+        this.options.audit(
+          `watch-ipc kind=${EFFECTFUL_READ_WATCH_CHANNELS.has(channel as WatchIpcChannel) ? 'effectful-read' : 'action'} channel=${channel} result=${result.ok ? 'ok' : result.errorCode} durationMs=${Math.max(0, Date.now() - started)}`,
+        );
+      }
+      if (result.ok && STATUS_CHANGING_WATCH_CHANNELS.has(channel as WatchIpcChannel)) {
+        try {
+          this.options.onStateChanged?.();
+        } catch {
+          // State push is a best-effort observer and must not reverse an already committed action.
+        }
+      }
+      return result;
+    } catch {
+      return fail('unavailable');
+    } finally {
+      release?.();
     }
-    return result;
   }
 
   private async dispatch(

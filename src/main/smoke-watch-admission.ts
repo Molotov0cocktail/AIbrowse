@@ -5,10 +5,32 @@
 export class WatchIpcAdmission {
   private open = true;
   private sender: object | null = null;
+  private inFlight = 0;
+  private drainWaiters: Array<() => void> = [];
 
   beginShutdown(): void {
     this.open = false;
     this.sender = null;
+  }
+
+  enter(): (() => void) | null {
+    if (!this.open) return null;
+    this.inFlight += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.inFlight -= 1;
+      if (this.inFlight === 0) {
+        const waiters = this.drainWaiters.splice(0);
+        for (const resolve of waiters) resolve();
+      }
+    };
+  }
+
+  drain(): Promise<void> {
+    if (this.inFlight === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => this.drainWaiters.push(resolve));
   }
 
   isOpen(): boolean {

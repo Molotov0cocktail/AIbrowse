@@ -4,7 +4,7 @@
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInAppNotification } from './watch/notification-policy';
@@ -70,6 +70,7 @@ import {
   MAX_XML_TOTAL_TEXT_BYTES,
   MAX_FEED_FIELD_BYTES,
   MAX_FEED_PROJECTION_BYTES,
+  MAX_PAGE_PROJECTION_BYTES,
   type ChangeEvidencePair,
   type DocumentChannels,
   type DigestFacts,
@@ -83,7 +84,12 @@ import { WatchProcessingServiceImpl } from './watch/watch-processing-service';
 import { WatchLifecycleCoordinator } from './watch/watch-lifecycle-coordinator';
 import { WatchRunCoordinator, type WatchAcquisitionPort } from './watch/watch-run-coordinator';
 import { computeSourceLocatorFingerprint } from '../shared/watch/watch-rule-state';
-import type { FeedProjection, SourceWatchProjection, WatchRule } from '../shared/types/watch';
+import type {
+  FeedProjection,
+  SourceWatchProjection,
+  WatchEvent,
+  WatchRule,
+} from '../shared/types/watch';
 
 const execFileAsync = promisify(execFile);
 
@@ -164,11 +170,13 @@ function scriptedRequestFactory(
   requestPaths: string[],
   destroyed: { count: number },
   socketLookupAddresses?: Array<string | string[]>,
+  requestHeaderKeys?: string[][],
 ): WatchRequestFactory {
   let responseIndex = 0;
   return (options): WatchRequestLike => {
     const request = new EventEmitter();
     requestPaths.push(options.path);
+    requestHeaderKeys?.push(Object.keys(options.headers ?? {}).map((key) => key.toLowerCase()));
     const response = new EventEmitter();
     const next = responses[responseIndex] ?? {
       statusCode: 500,
@@ -413,6 +421,137 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
       'future=6 unavailable 且 Scheduler 不启动',
     );
     check(beforeFuture.equals(afterFuture), 'future=6 零写入');
+
+    for (const prefix of [3, 4] as const) {
+      const prefixPath = join(dir, `prefix-v${String(prefix)}.db`);
+      const prefixDb = openDb(prefixPath);
+      try {
+        runMigrations(prefixDb, legacySteps.slice(0, prefix));
+        insertLegacyRule(prefixDb, `prefix-v${String(prefix)}`);
+        runWatchMigrations(prefixDb);
+        check(
+          (prefixDb.prepare('PRAGMA user_version').get() as { user_version: number })
+            .user_version === 5,
+          `v${String(prefix)}→v5 迁移完成`,
+        );
+        check(
+          prefixDb.prepare('SELECT 1 FROM watch_event_observations LIMIT 1').get() === undefined,
+          `v${String(prefix)} 观察表可读`,
+        );
+      } finally {
+        closeDb(prefixDb);
+      }
+    }
+
+    const behaviorDb = openDb(join(dir, 'behavior.db'));
+    const behaviorRepo = new WatchRepository(behaviorDb);
+    try {
+      runWatchMigrations(behaviorDb);
+      const behaviorRuleId = 'v5-behavior-rule';
+      insertLegacyRule(behaviorDb, behaviorRuleId);
+      const behaviorRule = behaviorRepo.getRule(behaviorRuleId);
+      check(behaviorRule !== null, 'v5 行可经 Repository 读回');
+      if (behaviorRule !== null) {
+        const pair = makePair('', 'v5-observation');
+        const eventId = 'v5-observation-event';
+        const event: WatchEvent = {
+          id: eventId,
+          ruleId: behaviorRule.id,
+          sourceId: behaviorRule.sourceId,
+          eventKind: 'added',
+          importance: 'normal',
+          idempotencyKey: 'v5-observation-idempotency',
+          changeFingerprint: sha256Hex('v5-observation'),
+          firstObservedAt: NOW,
+          lastObservedAt: NOW,
+          itemCount: 1,
+          readAt: null,
+        };
+        const tooSmall = new WatchRepository(behaviorDb, { maxEventEvidenceBytes: 1 });
+        const budget = tooSmall.writeEventTransaction({
+          event: { ...event, id: 'v5-budget-event' },
+          items: [pair],
+          identity: {
+            sourceId: behaviorRule.sourceId,
+            expectedSourceLocatorFingerprint: behaviorRule.sourceLocatorFingerprint,
+            expectedBaselineVersion: behaviorRule.baselineVersion,
+          },
+        });
+        check(budget.ok === false && budget.code === 'event-budget-exceeded', 'Evidence 预算拒绝');
+        const written = behaviorRepo.writeEventTransaction({
+          event,
+          items: [pair],
+          identity: {
+            sourceId: behaviorRule.sourceId,
+            expectedSourceLocatorFingerprint: behaviorRule.sourceLocatorFingerprint,
+            expectedBaselineVersion: behaviorRule.baselineVersion,
+          },
+        });
+        check(written.ok, 'v5 Event/Observation 原子写入');
+        const observationRow = behaviorDb
+          .prepare('SELECT COUNT(*) AS count FROM watch_event_observations WHERE event_id = ?')
+          .get(eventId) as { count: number };
+        check(observationRow.count === 1, 'Event 绑定恰一 Observation');
+        const scrubbed = behaviorRepo.deleteEventWithScrub(eventId, '2026-09-01T00:00:01.000Z');
+        check(scrubbed.ok && behaviorRepo.getEvent(eventId) === null, 'Event 删除执行 scrub');
+
+        const schedule = behaviorRepo.createDigestSchedule({
+          id: 'v5-cycle-schedule',
+          sourceIds: [behaviorRule.sourceId],
+          localTime: '09:00',
+          timeZone: 'UTC',
+          aiEnabled: true,
+          nextDueAt: '2026-09-01T01:00:00.000Z',
+          nowIso: NOW,
+        });
+        check(schedule.ok, 'Digest cycle schedule 持久化');
+        const currentSchedule = behaviorRepo.getDigestSchedule('v5-cycle-schedule');
+        if (currentSchedule !== null) {
+          const reserved = behaviorRepo.reserveDigestRun({
+            scheduleId: currentSchedule.id,
+            expectedVersion: currentSchedule.version,
+            expectedNextDueAt: currentSchedule.nextDueAt,
+            expectedLastConsumedScheduledFor: currentSchedule.lastConsumedScheduledFor,
+            expectedLastDailyLocalDate: currentSchedule.lastDailyLocalDate,
+            runId: 'v5-cycle-run',
+            requestKey: 'v5-cycle-request',
+            logicalDate: '2026-09-01',
+            nextDueAt: '2026-09-02T09:00:00.000Z',
+            nowIso: '2026-09-01T00:00:01.000Z',
+          });
+          const replay = behaviorRepo.reserveDigestRun({
+            scheduleId: currentSchedule.id,
+            expectedVersion: currentSchedule.version,
+            expectedNextDueAt: currentSchedule.nextDueAt,
+            expectedLastConsumedScheduledFor: currentSchedule.lastConsumedScheduledFor,
+            expectedLastDailyLocalDate: currentSchedule.lastDailyLocalDate,
+            runId: 'v5-cycle-replay',
+            requestKey: 'v5-cycle-request',
+            logicalDate: '2026-09-01',
+            nextDueAt: '2026-09-02T09:00:00.000Z',
+            nowIso: '2026-09-01T00:00:01.000Z',
+          });
+          check(reserved.ok, 'Digest cycle reservation 成功');
+          check(replay.ok === false, 'Digest cycle consumed 后零重放');
+        } else {
+          check(false, 'Digest cycle schedule 读回');
+        }
+      }
+    } finally {
+      behaviorRepo.dispose();
+      closeDb(behaviorDb);
+    }
+
+    const corruptPath = join(dir, 'corrupt.db');
+    const corruptBytes = Buffer.from('not-a-sqlite-watch-db', 'utf8');
+    writeFileSync(corruptPath, corruptBytes);
+    const corruptResult = openWatchStore({
+      dbPath: corruptPath,
+      backupsDir: join(dir, 'corrupt-backups'),
+      reconcile: () => ({ ok: true, reason: null }),
+    });
+    check(corruptResult.mode === 'unavailable', '坏 magic fail-closed');
+    check(readFileSync(corruptPath).equals(corruptBytes), '坏 magic 原文件零写入');
   } catch {
     failures.push('WRT-18 迁移夹具异常');
   } finally {
@@ -2234,6 +2373,7 @@ async function wrt18(): Promise<boolean> {
 async function wrt19(): Promise<boolean> {
   const paths: string[] = [];
   const destroyed = { count: 0 };
+  const requestHeaderKeys: string[][] = [];
   const stack = createPublicWatchHttpStack({
     lookup: async () => [{ address: '93.184.216.34', family: 4 as const }],
     request: scriptedRequestFactory(
@@ -2250,6 +2390,8 @@ async function wrt19(): Promise<boolean> {
       ],
       paths,
       destroyed,
+      undefined,
+      requestHeaderKeys,
     ),
   });
   const workspace = new WatchTaskTabWorkspace({ browser: fakeTabsBrowser() });
@@ -2282,6 +2424,19 @@ async function wrt19(): Promise<boolean> {
       );
     if (acquired.projection.value.type !== 'page') throw new Error('wrt19 projection type');
     const projection = JSON.stringify(acquired.projection.value);
+    let deepHtml = '<html>';
+    for (let index = 0; index < MAX_XML_DEPTH + 2; index += 1) deepHtml += '<div>';
+    deepHtml += 'deep';
+    for (let index = 0; index < MAX_XML_DEPTH + 2; index += 1) deepHtml += '</div>';
+    deepHtml += '</html>';
+    const deep = readPublicHtml(Buffer.from(deepHtml, 'utf8'), VALID_URL);
+    const malformed = readPublicHtml(
+      Buffer.from(
+        `<html><body><p>${'x'.repeat(MAX_PAGE_PROJECTION_BYTES + 1)}</p></body></html>`,
+        'utf8',
+      ),
+      VALID_URL,
+    );
     const checks = {
       heading: acquired.projection.value.fields.some(
         (field) => 'value' in field && field.value.includes('安全正文'),
@@ -2289,6 +2444,10 @@ async function wrt19(): Promise<boolean> {
       script: !projection.includes('private'),
       privateResource: !projection.includes('127.0.0.1'),
       paths: paths.join('|') === '/robots.txt|/watch',
+      noCredentials: requestHeaderKeys.every(
+        (keys) => !keys.includes('cookie') && !keys.includes('authorization'),
+      ),
+      noDeepOrMalformed: deep.ok === false && malformed.ok === false,
     };
     return Object.values(checks).every(Boolean);
   } finally {

@@ -29,11 +29,54 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+export interface ProductWatchRuntimeResourceProbe {
+  isAvailable: () => boolean;
+  shutdown: () => Promise<void>;
+  residuals: () => {
+    servers: number;
+    timers: number;
+    databases: number;
+    taskTabs: number;
+    children: number;
+    tempDirs: number;
+  };
+}
+
 export function createProductWatchResourcePort(
   workspace: WatchTaskTabWorkspace | null,
+  runtime?: ProductWatchRuntimeResourceProbe,
 ): WatchLiveResourcePort {
   return {
     async probe(_scenario, signal) {
+      if (runtime !== undefined) {
+        if (!runtime.isAvailable()) {
+          return {
+            httpClass: 'Watch 生产运行时不可用',
+            errorCode: 'product-defect',
+            residuals: runtime.residuals(),
+          };
+        }
+        const observedAt = Date.now();
+        try {
+          await runtime.shutdown();
+          const samples = 3;
+          for (let index = 0; index < samples; index += 1) {
+            if (index > 0) await wait(100, signal);
+          }
+          return {
+            httpClass: 'Watch 生产运行时排水后有界观察完成',
+            observedForMs: Date.now() - observedAt,
+            samples,
+            residuals: runtime.residuals(),
+          };
+        } catch {
+          return {
+            httpClass: 'Watch 生产运行时排水失败',
+            errorCode: 'product-defect',
+            residuals: runtime.residuals(),
+          };
+        }
+      }
       const owned = {
         servers: new Set<Server>(),
         timers: new Set<ReturnType<typeof setTimeout>>(),

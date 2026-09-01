@@ -170,19 +170,20 @@ export const WATCH_WRT_MANIFEST: readonly WatchWrtEntry[] = [
   {
     id: 'WRT-18',
     name: 'Watch 数据库迁移、预算与崩溃恢复',
-    oracle: 'v4→v5 逐语句失败完整回滚；新列默认 1/0；重开成功；future=6 零写入并停 Scheduler',
+    oracle:
+      'v3/v4→v5 迁移与损坏库均独立 fail-closed；Evidence/Projection 预算、scrub、reservation 消费和重开状态均可失败',
     evidenceKind: 'structural-proof',
     stageClauses: ['§9 Engineering', '§10'],
-    evidenceAnchor: 'D10 redteam wrt18：独立 node:sqlite v4→v5 迁移矩阵',
+    evidenceAnchor: 'D10 redteam wrt18：node:sqlite v3/v4/v5、损坏、预算、scrub、周期矩阵',
   },
   {
     id: 'WRT-19',
     name: '公开 HTML 执行面、子资源与 Cookie',
     oracle:
-      'script/iframe/私网子资源不执行不请求不带 Cookie；预算内产出 DocumentChannels 或受控失败',
+      '实际 public acquisition 请求不带 Cookie/Authorization；script/iframe/私网子资源不执行不请求；深树、巨节点和 Projection 超限受控失败',
     evidenceKind: 'structural-proof',
     stageClauses: ['§7.3', '§9 Watch', '§9 Engineering', '§10'],
-    evidenceAnchor: 'D10 redteam wrt19：PageAcquisitionRouter public 路径与 HTML SAX 结构证明',
+    evidenceAnchor: 'D10 redteam wrt19：public acquisition 请求头/路径与 HTML SAX 预算观察',
   },
 ];
 

@@ -61,7 +61,7 @@ describe('D10 bounded live Watch scenarios', () => {
 
   it('生产 live 装配必须提供真实资源端口并经过非零观察窗口', async () => {
     const source = readFileSync('src/main/index.ts', 'utf8');
-    expect(source).toContain('resourcePort: createProductWatchResourcePort(watchWorkspace)');
+    expect(source).toContain('resourcePort: createProductWatchResourcePort(watchWorkspace');
     const result = await createProductWatchResourcePort(null).probe(
       WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!,
       new AbortController().signal,
@@ -94,6 +94,59 @@ describe('D10 bounded live Watch scenarios', () => {
       },
     ]);
     expect(over.some((error) => error.includes('超过请求上限'))).toBe(true);
+  });
+
+  it('Provider 成功必须有且仅有一次真实请求，Windows 缺少端口不得静默通过', () => {
+    const errors = validateWatchLiveLedger([
+      {
+        scenario: 'wl-public-rss',
+        requestCount: 1,
+        resultKind: 'pass',
+        httpClass: '200',
+        purpose: 'rss',
+      },
+      {
+        scenario: 'wl-robots',
+        requestCount: 1,
+        resultKind: 'pass',
+        httpClass: '200',
+        purpose: 'robots',
+      },
+      {
+        scenario: 'wl-redirect',
+        requestCount: 1,
+        resultKind: 'pass',
+        httpClass: '200',
+        purpose: 'redirect',
+      },
+      {
+        scenario: 'wl-provider-digest',
+        requestCount: 0,
+        resultKind: 'pass',
+        httpClass: 'Provider stream complete',
+        purpose: 'provider',
+      },
+      {
+        scenario: 'wl-windows-notification',
+        requestCount: 0,
+        resultKind: 'not-run',
+        httpClass: '未提供 Windows 端口',
+        purpose: 'windows',
+      },
+      {
+        scenario: 'wl-resource-probe',
+        requestCount: 0,
+        resultKind: 'pass',
+        httpClass: 'zero-residuals',
+        purpose: 'resource',
+      },
+    ]);
+    expect(errors).toEqual(
+      expect.arrayContaining([
+        'wl-provider-digest：Provider PASS 必须恰好一次真实请求',
+        'wl-windows-notification：Windows 场景未获得可判定的条件分类',
+      ]),
+    );
   });
 
   it('注入端口时每个真实类别只执行一次并记录成功分类', async () => {

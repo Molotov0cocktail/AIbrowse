@@ -299,6 +299,51 @@ function fieldLens(raw: Record, allowed: readonly string[]): { fields: string[];
 
 // ---- 适配器 ----
 
+/**
+ * Sources IPC 的退出排水闸门。
+ *
+ * admission 关闭只阻止新的调用进入；已经进入 service 的调用必须在 repository
+ * dispose 前完成。这个小型计数器保持在 Sources IPC 边界，不改变 SourceService
+ * 或 repository 的公共协议。
+ */
+export class SourcesIpcAdmission {
+  private open = true;
+  private inFlight = 0;
+  private readonly drainWaiters: Array<() => void> = [];
+
+  isOpen(): boolean {
+    return this.open;
+  }
+
+  beginShutdown(): void {
+    this.open = false;
+    this.resolveDrainWaiters();
+  }
+
+  enter(): (() => void) | null {
+    if (!this.open) return null;
+    this.inFlight += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.inFlight -= 1;
+      this.resolveDrainWaiters();
+    };
+  }
+
+  async drain(): Promise<void> {
+    if (this.inFlight === 0) return;
+    await new Promise<void>((resolve) => this.drainWaiters.push(resolve));
+  }
+
+  private resolveDrainWaiters(): void {
+    if (this.inFlight !== 0) return;
+    const waiters = this.drainWaiters.splice(0);
+    for (const resolve of waiters) resolve();
+  }
+}
+
 export interface SourcesAdapterOptions {
   // 惰性解析：主进程 index.ts 的 handler 注册早于 SourceService 装配（createBrowserWindow
   // 内初始化），传入 getter 调用时解引用；单测可直接传实例（同一选项类型）。
@@ -307,6 +352,7 @@ export interface SourcesAdapterOptions {
   onChanged: () => void; // 仅成功变更后触发（index.ts 转发主窗口 sources:changed）
   stateOverride?: () => SourcesState | null; // SMOKE_MODE 专属（生产不传）
   isAdmitted?: () => boolean; // 退出开始后在 service/repository 释放前 fail-closed
+  admission?: SourcesIpcAdmission; // 退出排水：在途调用完成后才允许释放 repository
 }
 
 export interface SourcesAdapter {
@@ -336,6 +382,9 @@ export function createSourcesAdapter(options: SourcesAdapterOptions): SourcesAda
   // 状态门控（决议 #74 + 决议 #39）：normal 以外读写入口一并拒绝（结构化错误）；
   // override（冒烟注入）优先于 service 状态；service 为 null → unavailable。
   const effectiveState = (): SourcesState => {
+    if (options.admission !== undefined && !options.admission.isOpen()) {
+      return { mode: 'unavailable', reason: '应用正在退出，Sources IPC 已关闭' };
+    }
     if (options.isAdmitted !== undefined && !options.isAdmitted()) {
       return { mode: 'unavailable', reason: '应用正在退出，Sources IPC 已关闭' };
     }
@@ -622,5 +671,41 @@ export function createSourcesAdapter(options: SourcesAdapterOptions): SourcesAda
     },
   };
 
-  return adapter;
+  const withAdmission = <T>(work: () => Promise<T>): Promise<T> => {
+    const release = options.admission?.enter() ?? null;
+    try {
+      const result = work();
+      return release === null ? result : result.finally(release);
+    } catch (error) {
+      release?.();
+      return Promise.reject(error);
+    }
+  };
+
+  const admittedAdapter: SourcesAdapter = {
+    list: (payload) => withAdmission(() => adapter.list(payload)),
+    get: (payload) => withAdmission(() => adapter.get(payload)),
+    search: (payload) => withAdmission(() => adapter.search(payload)),
+    groups: (payload) => withAdmission(() => adapter.groups(payload)),
+    add: (payload) => withAdmission(() => adapter.add(payload)),
+    update: (payload) => withAdmission(() => adapter.update(payload)),
+    disable: (payload) => withAdmission(() => adapter.disable(payload)),
+    restore: (payload) => withAdmission(() => adapter.restore(payload)),
+    undo: (payload) => withAdmission(() => adapter.undo(payload)),
+    undoable: () => withAdmission(() => adapter.undoable()),
+    state: () => {
+      const release = options.admission?.enter() ?? null;
+      try {
+        return adapter.state();
+      } finally {
+        release?.();
+      }
+    },
+    prepareHardDelete: (payload) => withAdmission(() => adapter.prepareHardDelete(payload)),
+    hardDelete: (payload) => withAdmission(() => adapter.hardDelete(payload)),
+    quickAdd: (activeTab) => withAdmission(() => adapter.quickAdd(activeTab)),
+    rebuildIndex: () => withAdmission(() => adapter.rebuildIndex()),
+  };
+
+  return admittedAdapter;
 }

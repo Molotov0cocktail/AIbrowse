@@ -46,7 +46,6 @@ export function resolveWatchGate(env: WatchGateEnv): WatchGateVerdict {
     if (isSetCheck(env.sourcesSmoke)) conflicts.push('AIBROWSE_SOURCES_SMOKE');
     if (isSetCheck(env.sourcesUiSmoke)) conflicts.push('AIBROWSE_SOURCES_UI_SMOKE');
     if (isSetCheck(env.researchSmoke)) conflicts.push('AIBROWSE_RESEARCH_SMOKE');
-    if (env.liveProvider === '1') conflicts.push('AIBROWSE_LIVE_PROVIDER');
     if (conflicts.length > 0) {
       return {
         ok: false,

@@ -146,6 +146,8 @@ export function classifyWatchLiveFailure(input: {
   if (input.status !== undefined && input.status >= 200 && input.status < 300) return 'pass';
   if (input.errorCode === 'fixture-defect') return 'failed-fixture';
   if (input.errorCode === 'product-defect') return 'failed-product';
+  if (input.errorCode === 'provider' || input.errorCode === 'provider-error')
+    return 'failed-provider';
   if (input.errorCode === 'environment-unavailable') return 'blocked-environment';
   if (input.errorCode === 'timeout' || input.errorCode === 'network') return 'failed-network';
   return 'not-run';
@@ -196,6 +198,23 @@ export function validateWatchLiveLedger(
       entry.requestCount < 1
     ) {
       errors.push(`${entry.scenario}：产品请求台账为空`);
+    }
+    if (
+      scenario.kind === 'provider' &&
+      entry.resultKind === 'pass' &&
+      entry.requestCount !== scenario.maxRequests
+    ) {
+      errors.push(`${entry.scenario}：Provider PASS 必须恰好一次真实请求`);
+    }
+    if (
+      scenario.kind === 'provider' &&
+      entry.resultKind !== 'pass' &&
+      entry.resultKind !== 'skipped-credential-unavailable'
+    ) {
+      errors.push(`${entry.scenario}：凭据可用但 Provider 真实观察未成功`);
+    }
+    if (scenario.kind === 'windows' && entry.resultKind === 'not-run') {
+      errors.push(`${entry.scenario}：Windows 场景未获得可判定的条件分类`);
     }
   }
   return errors;
