@@ -180,9 +180,9 @@ export const WATCH_WRT_MANIFEST: readonly WatchWrtEntry[] = [
     name: '公开 HTML 执行面、子资源与 Cookie',
     oracle:
       'script/iframe/私网子资源不执行不请求不带 Cookie；预算内产出 DocumentChannels 或受控失败',
-    evidenceKind: 'honest-limit',
+    evidenceKind: 'structural-proof',
     stageClauses: ['§7.3', '§9 Watch', '§9 Engineering', '§10'],
-    evidenceAnchor: 'D10 redteam wrt19：HTML SAX 结构证明；真实 Electron acquisition 未运行',
+    evidenceAnchor: 'D10 redteam wrt19：PageAcquisitionRouter public 路径与 HTML SAX 结构证明',
   },
 ];
 
@@ -279,7 +279,11 @@ export function aggregateWatchWrtOutcomes(
       failures.push(`${id}：结果缺失或重复（${matches.length} 条）`);
       continue;
     }
-    if (!matches[0]!.ok) failures.push(`${id}：${matches[0]!.detail}`);
+    const outcome = matches[0]!;
+    if (!outcome.ok) failures.push(`${id}：${outcome.detail}`);
+    if (outcome.evidenceKind === 'honest-limit' || outcome.evidenceKind === 'not-run') {
+      failures.push(`${id}：${outcome.evidenceKind} 不满足总体 PASS 条件（${outcome.detail}）`);
+    }
   }
   for (const outcome of outcomes) {
     if (!ids.includes(outcome.id)) failures.push(`${outcome.id}：未知 WRT 编号`);

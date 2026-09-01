@@ -98,6 +98,7 @@ export interface ResolvedAddress {
 type RobotsGateDecision =
   | { kind: 'allowed' }
   | { kind: 'disallowed' }
+  | { kind: 'budget-exceeded' }
   | { kind: 'unavailable' }
   | { kind: 'security-rejected' }
   | { kind: 'aborted' };
@@ -533,6 +534,8 @@ class PublicWatchHttpClient {
           return { kind: 'aborted' };
         case 'disallowed':
           return this.failed('robots_disallowed', 'robots-disallowed');
+        case 'budget-exceeded':
+          return this.failed('budget_exceeded', 'robots-budget-exceeded');
         case 'unavailable':
           return this.failed('unavailable', 'robots-unavailable');
         case 'security-rejected':

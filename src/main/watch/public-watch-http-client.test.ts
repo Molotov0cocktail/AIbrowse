@@ -919,7 +919,7 @@ describe('R2 robots 独立预算（512,000，不复用 discovery 预算）', () 
     res.emit('data', Buffer.from(body, 'utf8'));
     const r = await promise;
     expect(r.kind).toBe('failed');
-    if (r.kind === 'failed') expect(r.health).toBe('unavailable'); // budget_exceeded → robots unavailable
+    if (r.kind === 'failed') expect(r.health).toBe('budget_exceeded');
     expect(res.destroyed).toBe(true);
     expect(h.targets().length).toBe(0);
   });

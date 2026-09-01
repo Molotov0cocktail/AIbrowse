@@ -22,6 +22,7 @@ export interface RobotsHttpPort {
 export type RobotsDecision =
   | { kind: 'allowed' }
   | { kind: 'disallowed' }
+  | { kind: 'budget-exceeded' }
   | { kind: 'unavailable' }
   | { kind: 'security-rejected' }
   | { kind: 'aborted' };
@@ -540,6 +541,11 @@ export class RobotsPolicy {
       return { kind: 'aborted' };
     }
     if (fetchResult.kind === 'failed') {
+      if (fetchResult.health === 'budget_exceeded') {
+        // Robots is an independently bounded response. Preserve the budget
+        // fact instead of collapsing it into a generic unavailable result.
+        return { kind: 'budget-exceeded' };
+      }
       const entry: CacheEntry =
         fetchResult.health === 'security_rejected'
           ? { decision: 'security-rejected', expiresAt }
@@ -640,13 +646,15 @@ export function robotsDecisionToHealth(
   decision: RobotsDecision,
 ): Extract<
   WatchFailureCode,
-  'robots_disallowed' | 'unavailable' | 'security_rejected' | 'interrupted'
+  'robots_disallowed' | 'budget_exceeded' | 'unavailable' | 'security_rejected' | 'interrupted'
 > | null {
   switch (decision.kind) {
     case 'allowed':
       return null;
     case 'disallowed':
       return 'robots_disallowed';
+    case 'budget-exceeded':
+      return 'budget_exceeded';
     case 'unavailable':
       return 'unavailable';
     case 'security-rejected':

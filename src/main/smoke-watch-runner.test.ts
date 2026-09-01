@@ -14,15 +14,7 @@ describe('D10 product-path runner', () => {
         logFile: log,
         auditEntries: [],
         rendererDom: async () => '<main data-route="watch"></main>',
-        resourceObserve: () => ({
-          residualServers: 0,
-          residualTimers: 0,
-          residualDatabases: 0,
-          residualTaskTabs: 0,
-          residualChildren: 0,
-          residualTempDirs: 0,
-        }),
-        resourceDurationMs: 1,
+        resourceDurationMs: 20,
         resourceSamples: 2,
       });
       expect(report.scanSource).toBe('product-pipeline');

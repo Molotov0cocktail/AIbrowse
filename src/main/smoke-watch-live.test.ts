@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   classifyWatchLiveFailure,
@@ -7,6 +8,7 @@ import {
   WATCH_LIVE_SCENARIO_MANIFEST,
 } from './smoke-watch-live';
 import { runWatchLiveScenarios } from './smoke-watch-live-runner';
+import { createProductWatchResourcePort } from './smoke-watch-live-resource';
 
 describe('D10 bounded live Watch scenarios', () => {
   it('manifest 与失败分类有界且可解释', () => {
@@ -56,6 +58,25 @@ describe('D10 bounded live Watch scenarios', () => {
       resultKind: 'failed-product',
     });
   });
+
+  it('生产 live 装配必须提供真实资源端口并经过非零观察窗口', async () => {
+    const source = readFileSync('src/main/index.ts', 'utf8');
+    expect(source).toContain('resourcePort: createProductWatchResourcePort(watchWorkspace)');
+    const result = await createProductWatchResourcePort(null).probe(
+      WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!,
+      new AbortController().signal,
+    );
+    expect(result.observedForMs).toBeGreaterThan(0);
+    expect(result.samples).toBeGreaterThanOrEqual(2);
+    expect(result.residuals).toEqual({
+      servers: 0,
+      timers: 0,
+      databases: 0,
+      taskTabs: 0,
+      children: 0,
+      tempDirs: 0,
+    });
+  }, 5_000);
 
   it('拒绝重复执行和超过请求上限', () => {
     const duplicate = validateWatchLiveExecution(WATCH_LIVE_SCENARIO_MANIFEST, [

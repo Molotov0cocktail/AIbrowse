@@ -468,6 +468,30 @@ describe('state gating', () => {
     });
   });
 
+  it('shutdown admission 关闭后迟到 Sources 调用不触达已关闭 service', async () => {
+    const late = createSourcesAdapter({
+      service,
+      isAdmitted: () => false,
+      audit: (message) => audits.push(message),
+      onChanged: () => {
+        changedCount += 1;
+      },
+    });
+    expect(late.state()).toEqual({
+      mode: 'unavailable',
+      reason: '应用正在退出，Sources IPC 已关闭',
+    });
+    expect(await late.list({ page: 0 })).toEqual({ ok: false, errorCode: 'source-unavailable' });
+    expect(await late.add({ scope: 'page', url: 'https://example.com/late' })).toEqual({
+      ok: false,
+      errorCode: 'source-unavailable',
+    });
+    expect(audits).toEqual([
+      'sources-manual（op=add，sourceId=-，fields=[]，lens=[]，result=source-unavailable）',
+    ]);
+    expect(changedCount).toBe(0);
+  });
+
   it('override readonly-recovery：读写拒绝 + 每次写尝试审计一条 + 零变化零 changed', async () => {
     const seeded = okView(await service.addManual({ scope: 'page', url: 'https://example.com/a' }));
     stateOverrideHolder.current = {

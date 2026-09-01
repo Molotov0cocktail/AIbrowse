@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
@@ -38,6 +39,7 @@ import { resolveResearchGate } from './smoke-research-gate';
 import { resolveWatchD10Mode } from './smoke-watch-gate';
 import { WatchIpcAdmission } from './smoke-watch-admission';
 import type { WatchLiveRunnerOptions } from './smoke-watch-live-runner';
+import { createProductWatchResourcePort } from './smoke-watch-live-resource';
 // Sixth Stage D4：Watch 存储/生命周期装配（observer 恒 active + 延迟端口绑定 +
 // AIBROWSE_WATCH_SMOKE 跨进程门控 + 8.21 store 冒烟）。
 import {
@@ -107,6 +109,7 @@ import type {
   ConversationMessage,
   ConversationSession,
   ContextPreview,
+  ProviderRequest,
   ProviderInfo,
 } from '../shared/types/conversation';
 import type {
@@ -351,6 +354,7 @@ let digestService: DigestService | null = null;
 let digestScheduler: DigestScheduler | null = null;
 let watchShutdownDone = false;
 let watchShutdownStarted = false;
+let sourceIpcAdmissionOpen = true;
 // D6：Session 页面采集装配（workspace/grant/router）——before-quit 顺序：
 // Coordinator stop → workspace cleanupAll drain → grant clear → robots cache
 // clear → host gate clear。
@@ -381,6 +385,11 @@ function stopWatchIpcAdmission(): void {
   pushWatchStatus = () => undefined;
 }
 
+function stopRendererAdmissions(): void {
+  sourceIpcAdmissionOpen = false;
+  stopWatchIpcAdmission();
+}
+
 // D5（FIXED DECISIONS 12）：Watch 退出排水——stop-admission → abort 全部在途 →
 // 有界 drain → D6 workspace cleanupAll/grant clear/robots cache clear →
 // 交回既有 watchCoordinator.dispose()/watchRepo.dispose()（兜底清理在
@@ -388,38 +397,44 @@ function stopWatchIpcAdmission(): void {
 async function watchShutdown(): Promise<void> {
   // Stop all Watch IPC admission before the first await. Late renderer-ready or
   // subscription events must not observe a repository that is about to close.
+  watchShutdownStarted = true;
   stopWatchIpcAdmission();
   const repository = watchRepo;
   watchRepo = null;
-  digestScheduler?.stop();
-  digestService?.stopAdmission();
-  digestService?.abort();
-  await digestService?.drain();
-  digestService?.dispose();
-  if (watchRunCoordinator !== null) {
-    await watchRunCoordinator.stop();
-  }
-  watchScheduler?.stop();
-  // D6：task Tab 精确清理（失败 ownership 保留，重启后本进程退出不持久化）→
-  // grant 内存清空 → robots 缓存清空 → host gate 注册表清空
-  if (watchWorkspace !== null) {
-    try {
-      await watchWorkspace.cleanupAll();
-    } catch {
-      // 清理异常不阻塞退出（所有权仅内存，进程退出即销毁）
+  try {
+    digestScheduler?.stop();
+    digestService?.stopAdmission();
+    digestService?.abort();
+    await digestService?.drain();
+    digestService?.dispose();
+    if (watchRunCoordinator !== null) {
+      await watchRunCoordinator.stop();
     }
+    watchScheduler?.stop();
+    // D6：task Tab 精确清理（失败 ownership 保留，重启后本进程退出不持久化）→
+    // grant 内存清空 → robots 缓存清空 → host gate 注册表清空
+    if (watchWorkspace !== null) {
+      try {
+        await watchWorkspace.cleanupAll();
+      } catch {
+        // 清理异常不阻塞退出（所有权仅内存，进程退出即销毁）
+      }
+    }
+    watchGrantStore?.clear();
+    watchPreviewStore?.dispose();
+    watchIpcAdapter?.dispose();
+    watchPublicStackRobots?.clearCache();
+    watchPublicTarget = null;
+    // D7 将在 Run pipeline 接线时消费 watchPageRouter（FIXED DECISIONS 12）：
+    // 保持引用存活至 shutdown，杜绝“已装配但不可达”的悬挂态。
+    void watchPageRouter;
+    watchHostGate?.clear();
+  } finally {
+    // Repository release is the final step even when a coordinator or workspace
+    // cleanup reports an error. Admission was closed before the first await.
+    watchCoordinator?.dispose();
+    repository?.dispose();
   }
-  watchGrantStore?.clear();
-  watchPreviewStore?.dispose();
-  watchIpcAdapter?.dispose();
-  watchPublicStackRobots?.clearCache();
-  watchPublicTarget = null;
-  // D7 将在 Run pipeline 接线时消费 watchPageRouter（FIXED DECISIONS 12）：
-  // 保持引用存活至 shutdown，杜绝“已装配但不可达”的悬挂态。
-  void watchPageRouter;
-  watchHostGate?.clear();
-  watchCoordinator?.dispose();
-  repository?.dispose();
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -477,6 +492,10 @@ if (!gotLock) {
     // preventDefault→await watchShutdown→app.quit() 重入排水——stop-admission →
     // abort 全部在途 → 有界 drain → 交回既有 watchCoordinator.dispose()/
     // watchRepo.dispose()（兜底清理延后到两个 shutdown 都完成后）。
+    // Close both renderer-facing admissions synchronously before either
+    // subsystem begins its asynchronous drain. Late Sources/Watch calls then
+    // fail closed while their repositories are still available for cleanup.
+    stopRendererAdmissions();
     let shutdownPending = false;
     if (!researchShutdownDone) {
       event.preventDefault();
@@ -516,18 +535,22 @@ if (!gotLock) {
       shutdownPending = true;
       if (!watchShutdownStarted) {
         watchShutdownStarted = true;
-        void watchShutdown().finally(() => {
-          watchShutdownDone = true;
-          app.quit(); // 再次触发 before-quit（watchShutdownDone=true）
-        });
+        void watchShutdown()
+          .catch((err: unknown) => {
+            logError('main', 'Watch 退出排水异常（已完成兜底释放）', err);
+          })
+          .finally(() => {
+            watchShutdownDone = true;
+            app.quit(); // 再次触发 before-quit（watchShutdownDone=true）
+          });
       }
     }
     if (shutdownPending) return; // 任一在排水：兜底清理延后到重入
     // 退出路径兜底清理（幂等；research + watch 均已排水）；主路径为窗口 closed → dispose（§5）
     conversationService?.dispose(); // S3：中止全部在途生成
+    stopRendererAdmissions();
     sourceService?.dispose(); // B4：Sources 句柄幂等释放（driver closeDb 幂等）
     // D4：Watch dispose 幂等接线（coordinator 解绑 → repo 句柄释放）
-    stopWatchIpcAdmission();
     watchCoordinator?.dispose();
     watchRepo?.dispose();
     if (smokeSourcesDir !== null) {
@@ -800,6 +823,7 @@ if (!gotLock) {
           mainWindow.webContents.send(IPC.SourcesChanged, { reason: 'sources-changed' });
         }
       },
+      isAdmitted: () => sourceIpcAdmissionOpen,
       stateOverride: SMOKE_MODE
         ? () => {
             const holder = smokeSourcesStateOverride; // 调用时解引用（装配时序）
@@ -1145,6 +1169,7 @@ if (!gotLock) {
       });
     });
     ipcMain.on(IPC.AppRendererReady, (event) => {
+      if (watchShutdownStarted || !sourceIpcAdmissionOpen) return;
       if (mainWindow === null || !isTrustedSender(event, mainWindow)) {
         logWarn('main', '拒绝非主窗口的 renderer-ready 消息');
         return;
@@ -1174,6 +1199,7 @@ if (!gotLock) {
           );
           // 失败路径清理（app.exit 不触发 before-quit；B6 会话实测同类 LIVE 互斥
           // 路径残留 pid 专属目录——此处为同缺陷预防性补齐）
+          stopRendererAdmissions();
           sourceService?.dispose();
           if (smokeSourcesDir !== null) {
             rmSync(smokeSourcesDir, { recursive: true, force: true });
@@ -1195,6 +1221,7 @@ if (!gotLock) {
           );
           // 失败路径清理（app.exit 不触发 before-quit；同 B5 532ea78 修复的
           // SESSION/SOURCES 互斥路径——否则每次失败运行残留 pid 专属冒烟目录）
+          stopRendererAdmissions();
           sourceService?.dispose();
           if (smokeSourcesDir !== null) {
             rmSync(smokeSourcesDir, { recursive: true, force: true });
@@ -1210,6 +1237,7 @@ if (!gotLock) {
         if (LIVE_AGENT_SOURCES_MODE && LIVE_SITES_MODE) {
           logError('main', 'AIBROWSE_LIVE_AGENT_SOURCES 与 AIBROWSE_LIVE_SITES 互斥，请只选其一');
           // 失败路径清理（app.exit 不触发 before-quit；同现有互斥路径纪律）
+          stopRendererAdmissions();
           sourceService?.dispose();
           if (smokeSourcesDir !== null) {
             rmSync(smokeSourcesDir, { recursive: true, force: true });
@@ -1233,6 +1261,7 @@ if (!gotLock) {
           // C8 定向修复（2026-08-17）：本互斥分支缺冒烟临时目录清理（与
           // SESSION/SOURCES 互斥分支 532ea78 同款缺陷）——失败路径残留
           // aibrowse-smoke-ai-<pid>/aibrowse-smoke-sources-<pid> 目录
+          stopRendererAdmissions();
           sourceService?.dispose();
           if (smokeSourcesDir !== null) {
             rmSync(smokeSourcesDir, { recursive: true, force: true });
@@ -1269,8 +1298,7 @@ if (!gotLock) {
             'AIBROWSE_WATCH_SMOKE 与 AIBROWSE_SESSION_SMOKE / AIBROWSE_SOURCES_SMOKE / AIBROWSE_SOURCES_UI_SMOKE / AIBROWSE_RESEARCH_SMOKE 互斥，请只选其一',
           );
           // 失败路径清理（app.exit 不触发 before-quit；与既有互斥路径同纪律）
-          sourceService?.dispose();
-          stopWatchIpcAdmission();
+          stopRendererAdmissions();
           watchCoordinator?.dispose();
           watchRepo?.dispose();
           if (smokeSourcesDir !== null) {
@@ -1376,6 +1404,80 @@ if (!gotLock) {
                       };
                     },
                   },
+                  providerPort: {
+                    credentialAvailable: async () => {
+                      if (configStore === null) return false;
+                      const providers = await configStore.list();
+                      return providers.some((provider) => provider.hasKey);
+                    },
+                    runOnce: async (_scenario, signal) => {
+                      if (configStore === null || credentials === null) {
+                        return {
+                          requestCount: 0,
+                          httpClass: 'Provider 凭据不可用',
+                          errorCode: 'credential-unavailable',
+                        };
+                      }
+                      const providerInfo = (await configStore.list()).find(
+                        (provider) => provider.hasKey,
+                      );
+                      if (providerInfo === undefined) {
+                        return {
+                          requestCount: 0,
+                          httpClass: 'Provider 凭据不可用',
+                          errorCode: 'credential-unavailable',
+                        };
+                      }
+                      const config = configStore.get(providerInfo.providerId);
+                      const provider = await resolveProvider(config, credentials);
+                      if (provider === null || config === null) {
+                        return {
+                          requestCount: 0,
+                          httpClass: 'Provider 配置或凭据无法解析',
+                          errorCode: 'product-defect',
+                        };
+                      }
+                      const request: ProviderRequest = {
+                        requestId: randomUUID(),
+                        model: config.model,
+                        system:
+                          '你是 AIbrowse D10 Digest explanation 兼容性探针。只返回简短纯文本。',
+                        messages: [
+                          {
+                            role: 'user',
+                            content: '{"kind":"digest-explanation","events":[]}',
+                          },
+                        ],
+                      };
+                      let completed = false;
+                      for await (const event of provider.stream(request, signal)) {
+                        if (event.type === 'error') {
+                          return {
+                            requestCount: 1,
+                            status: event.error.httpStatus,
+                            httpClass: `Provider ${event.error.code}`,
+                            errorCode:
+                              event.error.code === 'timeout' || event.error.code === 'network'
+                                ? event.error.code
+                                : 'provider',
+                          };
+                        }
+                        if (event.type === 'done') completed = true;
+                      }
+                      return completed
+                        ? {
+                            requestCount: 1,
+                            status: 200,
+                            httpClass: 'Provider stream complete',
+                          }
+                        : {
+                            requestCount: 1,
+                            httpClass: 'Provider stream 未完成',
+                            errorCode: 'provider',
+                          };
+                    },
+                  },
+                  resourcePort: createProductWatchResourcePort(watchWorkspace),
                 } satisfies WatchLiveRunnerOptions)
               : undefined,
             watchD10: LIVE_WATCH_MODE
@@ -1452,17 +1554,22 @@ if (!gotLock) {
           })
           .catch(async (err: unknown) => {
             logError('main', '冒烟场景失败（调度层）', err);
-            // 失败路径同样清理冒烟 Sources 临时目录（app.exit 不触发 before-quit，
-            // 否则每次失败运行残留 pid 专属目录——清理纪律）
+            // app.exit 不触发 before-quit：执行同一有序排水，避免在途
+            // Watch 任务访问已经关闭的数据库。
+            stopRendererAdmissions();
+            try {
+              await watchShutdown();
+            } catch (shutdownError) {
+              logError('main', '冒烟失败路径 Watch 排水异常', shutdownError);
+            }
             sourceService?.dispose();
+            // 失败路径同样清理冒烟 Sources 临时目录（否则每次失败运行残留
+            // pid 专属目录——清理纪律）
             if (smokeSourcesDir !== null) {
               rmSync(smokeSourcesDir, { recursive: true, force: true });
               smokeSourcesDir = null;
             }
-            // D4：失败路径清理冒烟 Watch 临时目录（先关句柄再删目录——同 Sources 纪律）
-            stopWatchIpcAdmission();
-            watchCoordinator?.dispose();
-            watchRepo?.dispose();
+            // D4：watchShutdown 已按 stop-admission → drain → dispose 关闭句柄。
             if (smokeWatchDir !== null) {
               try {
                 await removeSmokeDirWithRetry(smokeWatchDir);

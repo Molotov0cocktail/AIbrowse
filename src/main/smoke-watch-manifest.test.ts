@@ -34,4 +34,20 @@ describe('D10 Watch manifest', () => {
     expect(aggregate.failures.some((failure) => failure.includes('WRT-19'))).toBe(true);
     expect(aggregate.failures.some((failure) => failure.includes('WRT-99'))).toBe(true);
   });
+
+  it('honest-limit 与 not-run 不能被聚合为总体 PASS', () => {
+    const outcomes: WatchWrtOutcome[] = WATCH_WRT_MANIFEST.map((entry) => ({
+      id: entry.id,
+      ok: true,
+      evidenceKind: entry.evidenceKind,
+      detail: 'machine evidence',
+    }));
+    const wrt19 = outcomes.find((outcome) => outcome.id === 'WRT-19');
+    expect(wrt19).toBeDefined();
+    wrt19!.evidenceKind = 'honest-limit';
+    wrt19!.detail = 'real Electron acquisition not run';
+    expect(aggregateWatchWrtOutcomes(outcomes)).toMatchObject({
+      ok: false,
+    });
+  });
 });

@@ -25,7 +25,7 @@ export interface WatchLivePublicPort {
 }
 
 export interface WatchLiveProviderPort {
-  credentialAvailable(): boolean;
+  credentialAvailable(): boolean | Promise<boolean>;
   runOnce(
     scenario: WatchLiveScenario,
     signal: AbortSignal,
@@ -154,7 +154,10 @@ export async function runWatchLiveScenarios(
         continue;
       }
       if (scenario.kind === 'provider') {
-        if (options.providerPort === undefined || !options.providerPort.credentialAvailable()) {
+        if (
+          options.providerPort === undefined ||
+          !(await Promise.resolve(options.providerPort.credentialAvailable()))
+        ) {
           entries.push({
             scenario: scenario.id,
             requestCount: 0,

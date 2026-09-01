@@ -306,6 +306,7 @@ export interface SourcesAdapterOptions {
   audit: (message: string) => void; // 装配注入（index.ts → logInfo('audit', …)）
   onChanged: () => void; // 仅成功变更后触发（index.ts 转发主窗口 sources:changed）
   stateOverride?: () => SourcesState | null; // SMOKE_MODE 专属（生产不传）
+  isAdmitted?: () => boolean; // 退出开始后在 service/repository 释放前 fail-closed
 }
 
 export interface SourcesAdapter {
@@ -335,6 +336,9 @@ export function createSourcesAdapter(options: SourcesAdapterOptions): SourcesAda
   // 状态门控（决议 #74 + 决议 #39）：normal 以外读写入口一并拒绝（结构化错误）；
   // override（冒烟注入）优先于 service 状态；service 为 null → unavailable。
   const effectiveState = (): SourcesState => {
+    if (options.isAdmitted !== undefined && !options.isAdmitted()) {
+      return { mode: 'unavailable', reason: '应用正在退出，Sources IPC 已关闭' };
+    }
     const override = options.stateOverride?.() ?? null;
     if (override !== null) return override;
     const svc = currentService();
