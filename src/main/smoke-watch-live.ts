@@ -270,6 +270,7 @@ export function validateWatchLiveLedger(
       }
     }
     if (scenario.kind === 'resource' && entry.resultKind === 'pass') {
+      errors.push(`${entry.scenario}：当前未提供正式长时资格，不能报告 PASS`);
       const observation = entry.resourceObservation;
       if (observation === undefined) {
         errors.push(`${entry.scenario}：资源 PASS 缺少可审计观察证据`);

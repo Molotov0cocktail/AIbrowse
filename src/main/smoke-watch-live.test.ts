@@ -535,7 +535,9 @@ describe('D10 bounded live Watch scenarios', () => {
         batterySampleCount: 2,
       },
     };
-    expect(validateWatchLiveLedger([entry])).toEqual([]);
+    expect(validateWatchLiveLedger([entry])).toEqual(
+      expect.arrayContaining(['wl-resource-probe：当前未提供正式长时资格，不能报告 PASS']),
+    );
     const description = describeWatchLiveLedger([entry]);
     expect(description).toContain('测量 1000ms/2 样本');
     expect(description).toContain('排水 200ms');
