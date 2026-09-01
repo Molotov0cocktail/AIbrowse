@@ -36,7 +36,9 @@ import { runWatchLifecycleSmokeScenario } from './smoke-watch-lifecycle';
 // D7：8.24 Watch Diff/Event/Evidence 冒烟（默认矩阵；dev+生产双场景）
 import { runWatchDiffEventSmokeScenario } from './smoke-watch-diff-event';
 import { runWatchDigestSmokeScenario } from './smoke-watch-digest';
-import { runWatchD10OfflineScenario } from './smoke-watch-runner';
+import { runWatchD10OfflineScenario, type WatchD10OfflineOptions } from './smoke-watch-runner';
+import { runWatchLiveScenarios, type WatchLiveRunnerOptions } from './smoke-watch-live-runner';
+import { describeWatchLiveLedger } from './smoke-watch-live';
 import type { WatchRepository } from './watch/repository/watch-repository';
 import type { WatchPreviewStore } from './watch/watch-preview-store';
 import type { WatchNotificationService } from './watch/watch-notification-service';
@@ -215,6 +217,8 @@ export interface SmokeOptions {
   uiWindow?: BrowserWindow | null; // T3：UI 窗口导航保护拦截与 bounds 上报生效验证用
   aiSmokeDir?: string; // S4：冒烟模式 AI 子系统数据目录（UI 端到端矩阵断言/清理用）
   liveSmoke?: LiveProviderSmoke; // S5：真实 Provider 场景（AIBROWSE_LIVE_PROVIDER=1 时注入）
+  liveWatch?: WatchLiveRunnerOptions; // D10：AIBROWSE_LIVE_WATCH=1 有界真实 Watch runner
+  watchD10?: WatchD10OfflineOptions; // D10：真实产品表面/资源观察器
   liveSites?: boolean; // S6：真实 Provider 多网站共读验证（AIBROWSE_LIVE_SITES=1 时启用）
   liveAgent?: boolean; // A7：真实 Provider Agent 验证（AIBROWSE_LIVE_AGENT=1 时启用，需用户授权）
   liveAgentPre?: boolean; // A7 补验：最小 tools 兼容性预检（AIBROWSE_LIVE_AGENT_PRE=1，仅场景 1 + 零泄漏终检）
@@ -11202,13 +11206,27 @@ export async function runSmokeScenario(
     // 8.27 D10 offline gate: execute the complete WRT-01..19 manifest, the
     // byte-level privacy matrix, the cohesive stage mapping, and bounded
     // resource-cleanup observations without network or Provider access.
-    if (options.liveSmoke === undefined) {
-      const d10 = await runWatchD10OfflineScenario();
+    if (options.liveWatch !== undefined) {
+      const liveWatch = await runWatchLiveScenarios(options.liveWatch);
+      assert(
+        liveWatch.ok,
+        `8.27：D10 live 台账失败（${[
+          ...liveWatch.manifestErrors,
+          ...liveWatch.executionErrors,
+          ...liveWatch.ledgerErrors,
+        ].join('；')})`,
+      );
+      logInfo('smoke', `8.27 D10 live Watch 通过：${describeWatchLiveLedger(liveWatch.entries)}`);
+    } else if (options.liveSmoke === undefined) {
+      const d10 = await runWatchD10OfflineScenario(options.watchD10);
       assert(
         d10.ok,
-        `8.27：D10 离线门控失败（${d10.wrtAggregation.failures.join('；') || d10.scanSummary.failures.join('；') || d10.contractErrors.join('；')}）`,
+        `8.27：D10 离线门控失败（${d10.wrtAggregation.failures.join('；') || d10.scanSummary.failures.join('；') || d10.stageEvidenceFailures.join('；') || d10.contractErrors.join('；') || d10.scanReadFailures.join('；') || (d10.cohesiveOk ? '' : 'cohesive product path failed')}）`,
       );
-      logInfo('smoke', '8.27 D10 Watch WRT-01..19、隐私扫描、Stage 映射与资源探针通过');
+      logInfo(
+        'smoke',
+        `8.27 D10 Watch WRT-01..19、隐私扫描、Stage 映射与资源探针通过（扫描源=${d10.scanSource}）`,
+      );
     }
 
     // 9. dispose 幂等 + 无残留 webContents（退出路径无泄漏）

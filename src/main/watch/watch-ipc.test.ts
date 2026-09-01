@@ -60,6 +60,7 @@ function adapter(
     resolveDigestSources?: () => Array<{ sourceId: string; displayName: string }> | null;
     audit?: (message: string) => void;
     onStateChanged?: () => void;
+    isAdmitted?: () => boolean;
   } = {},
 ): WatchIpcAdapter {
   return new WatchIpcAdapter({
@@ -98,10 +99,21 @@ function adapter(
     resolveDigestSources: overrides.resolveDigestSources ?? (() => null),
     audit: overrides.audit ?? (() => {}),
     onStateChanged: overrides.onStateChanged,
+    isAdmitted: overrides.isAdmitted,
   });
 }
 
 describe('D9 WatchIpcAdapter fail-closed dispatch/audit', () => {
+  it('shutdown admission 关闭后在 dispatch 前 fail-closed，不读取已关闭 repository', async () => {
+    const repository = { getRule: vi.fn() } as unknown as WatchRepository;
+    const ipc = adapter({ repository, isAdmitted: () => false });
+    await expect(ipc.invoke('watch:getStatus', {})).resolves.toEqual({
+      ok: false,
+      errorCode: 'unavailable',
+    });
+    expect(repository.getRule).not.toHaveBeenCalled();
+  });
+
   it('settings 不允许借 condition 绕过 preview fieldCatalog', async () => {
     const update = vi.fn(() => ({ ok: true as const }));
     const repository = {

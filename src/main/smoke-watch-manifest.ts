@@ -89,15 +89,16 @@ export const WATCH_WRT_MANIFEST: readonly WatchWrtEntry[] = [
     id: 'WRT-08',
     name: 'Feed 身份、顺序噪声与 fingerprint 循环',
     oracle: '重复项稳定去重、重排零事件；A→B→A→B→A 保留观察和中间 pair',
-    evidenceKind: 'structural-proof',
+    evidenceKind: 'real-observation',
     stageClauses: ['§7.2', '§9 RSS', '§9 Watch'],
-    evidenceAnchor: 'D10 redteam wrt08：Feed parser 与事件身份夹具',
+    evidenceAnchor:
+      'D10 redteam wrt08：真实 node:sqlite ProcessingService 五次观察与 Evidence rows',
   },
   {
     id: 'WRT-09',
     name: '未授权 Session 与 task-tab 越权',
     oracle: '未授权/跨 origin/敌手返回用户 tabId 时零导航、创建或关闭用户 Tab',
-    evidenceKind: 'real-observation',
+    evidenceKind: 'structural-proof',
     stageClauses: ['§7.3', '§9 Watch', '§10'],
     evidenceAnchor: 'D10 redteam wrt09：Session consent 与 Workspace 夹具',
   },
@@ -105,7 +106,7 @@ export const WATCH_WRT_MANIFEST: readonly WatchWrtEntry[] = [
     id: 'WRT-10',
     name: 'Session 重启、登录跳转与清理失败',
     oracle: '重建 task-owned Tab 或受控失败；不建 Event/覆盖 Baseline；用户 Tab/焦点恒等',
-    evidenceKind: 'real-observation',
+    evidenceKind: 'structural-proof',
     stageClauses: ['§7.3', '§9 Watch', '§9 Resource', '§10'],
     evidenceAnchor: 'D10 redteam wrt10：跨进程 Session lifecycle 夹具',
   },
@@ -179,9 +180,9 @@ export const WATCH_WRT_MANIFEST: readonly WatchWrtEntry[] = [
     name: '公开 HTML 执行面、子资源与 Cookie',
     oracle:
       'script/iframe/私网子资源不执行不请求不带 Cookie；预算内产出 DocumentChannels 或受控失败',
-    evidenceKind: 'real-observation',
+    evidenceKind: 'honest-limit',
     stageClauses: ['§7.3', '§9 Watch', '§9 Engineering', '§10'],
-    evidenceAnchor: 'D10 redteam wrt19：HTML SAX + Session 网络边界夹具',
+    evidenceAnchor: 'D10 redteam wrt19：HTML SAX 结构证明；真实 Electron acquisition 未运行',
   },
 ];
 

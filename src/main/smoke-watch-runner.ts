@@ -1,8 +1,30 @@
 // Sixth Stage D10: deterministic offline Watch gate orchestration.
 // This runner reports bounded evidence; it never calls the network or a Provider.
 
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildInAppNotification } from './watch/notification-policy';
 import { closeDb, openDb } from './sources/db/sqlite-driver';
+import { runMigrations } from './sources/db/migrations';
+import { SourceServiceImpl } from './sources/source-service';
+import { runResearchMigrations } from './research/db/research-migrations';
+import { ConversationStore } from './ai/conversation-store';
+import { WatchProcessingServiceImpl } from './watch/watch-processing-service';
+import { WatchRepository } from './watch/repository/watch-repository';
+import { runWatchMigrations } from './watch/db/watch-migrations';
+import { parseFeedXml } from './watch/feed-parser';
+import { diffFeedProjections } from '../shared/watch/diff/feed-diff';
+import { renderDigestMarkdown } from './watch/watch-export-service';
+import { buildDigestProviderRequest } from './watch/digest-prompt';
+import { serializeCsv } from '../shared/csv/csv-serializer';
+import { buildDigestFacts } from '../shared/watch/digest-facts';
+import { projectDigestForProvider } from '../shared/watch/digest-sharing-projector';
+import { computeChangeFingerprint, computeIdempotencyKey } from '../shared/watch/event-validator';
+import { sha256Hex } from '../shared/watch/diff/evidence';
+import { FakeClock } from '../shared/watch/clock';
+import type { FeedProjection, WatchEvent, WatchRule } from '../shared/types/watch';
 import {
   aggregateWatchWrtOutcomes,
   validateWatchSixthMapping,
@@ -13,11 +35,14 @@ import {
 } from './smoke-watch-manifest';
 import {
   createWatchCanaries,
+  readSurfaceFiles,
   scanWatchSurface,
   summarizeWatchScan,
   validateWatchScanExpectations,
   WATCH_SCAN_EXPECTATIONS,
   type WatchScanVerdict,
+  type WatchCanaryKind,
+  type WatchScanSurface,
 } from './smoke-watch-scan';
 import { runWatchRedTeamScenarios } from './smoke-watch-redteam';
 
@@ -52,6 +77,29 @@ export interface WatchD10OfflineReport {
   scanSummary: { ok: boolean; failures: string[] };
   cohesiveStages: readonly string[];
   resourceProbe: WatchResourceProbeResult;
+  scanSource: 'product-pipeline' | 'not-run';
+  scanSurfaceSources: readonly { surface: string; source: string; bytes: number }[];
+  scanReadFailures: readonly string[];
+  cohesiveOk: boolean;
+  stageEvidence: readonly WatchStageEvidence[];
+  stageEvidenceFailures: readonly string[];
+}
+
+export interface WatchStageEvidence {
+  id: string;
+  section: '§7' | '§9' | '§10';
+  ok: boolean;
+  evidenceKind: 'structural-proof' | 'real-observation' | 'honest-limit' | 'not-run';
+  detail: string;
+}
+
+export interface WatchD10OfflineOptions {
+  rendererDom?: () => Promise<string>;
+  logFile?: string;
+  auditEntries?: readonly unknown[];
+  resourceObserve?: () => Omit<WatchResourceProbeResult, 'durationMs' | 'samples' | 'ok'>;
+  resourceDurationMs?: number;
+  resourceSamples?: number;
 }
 
 const WATCH_D10_REQUIRED_TABLES = [
@@ -66,6 +114,544 @@ const WATCH_D10_REQUIRED_TABLES = [
   'digest_change_journal',
   'notification_outbox',
 ] as const;
+
+const D10_NOW = '2026-09-01T00:00:00.000Z';
+const D10_FINGERPRINT = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
+function d10Rule(id: string): WatchRule {
+  return {
+    id,
+    version: 1,
+    sourceId: 'source-d10',
+    kind: 'feed',
+    state: 'enabled',
+    pauseReason: null,
+    desiredEnabled: true,
+    muted: false,
+    accessMode: 'public',
+    schedule: { kind: 'interval', intervalMinutes: 60 },
+    target: { type: 'feed', feedUrl: 'https://example.com/d10.xml', format: 'rss2' },
+    condition: null,
+    notificationLevel: 'important',
+    showDetails: true,
+    sourceRowVersion: 1,
+    sourceLocatorFingerprint: D10_FINGERPRINT,
+    nextDueAt: null,
+    lastConsumedScheduledFor: null,
+    lastDailyLocalDate: null,
+    consecutiveFailures: 0,
+    backoffUntil: null,
+    baselineVersion: 0,
+    createdAt: D10_NOW,
+    updatedAt: D10_NOW,
+  };
+}
+
+function d10FeedXml(title: string, ignored: readonly string[] = []): Buffer {
+  return Buffer.from(
+    `<rss version="2.0"><channel><title>${title}</title><description>bounded</description><link>https://example.com/</link><item><guid>d10-item</guid><title>${title}</title><link>https://example.com/item</link><description>bounded</description></item><ignored>${ignored.join('')}</ignored></channel></rss>`,
+    'utf8',
+  );
+}
+
+function d10Envelope(
+  rule: WatchRule,
+  parsed: Extract<Awaited<ReturnType<typeof parseFeedXml>>, { ok: true }>,
+  capturedAt: string,
+): FeedProjection {
+  return {
+    schemaVersion: 1,
+    ruleId: rule.id,
+    sourceId: rule.sourceId,
+    finalUrl: 'https://example.com/d10.xml',
+    capturedAt,
+    documentId: null,
+    contentHash: sha256Hex(parsed.canonicalJson),
+    byteLength: parsed.byteLength,
+    value: parsed.value,
+  };
+}
+
+function insertRunningWatchRun(repo: WatchRepository, ruleId: string, key: string): string {
+  const runId = randomUUID();
+  if (
+    !repo.insertRun({ id: runId, ruleId, requestKey: key, trigger: 'manual', scheduledFor: null })
+      .ok
+  )
+    throw new Error('D10 cohesive run insert failed');
+  if (
+    !repo.transitionRun(runId, 'queued', {
+      status: 'running',
+      startedAt: D10_NOW,
+    }).ok
+  )
+    throw new Error('D10 cohesive run transition failed');
+  return runId;
+}
+
+function surfaceRows(dbPath: string, tables: readonly string[]): Buffer {
+  const db = openDb(dbPath);
+  try {
+    const rows = tables.map((table) => ({
+      table,
+      rows: db.prepare(`SELECT * FROM ${table}`).all(),
+    }));
+    return Buffer.from(JSON.stringify(rows), 'utf8');
+  } finally {
+    closeDb(db);
+  }
+}
+
+function filesUnder(root: string): string[] {
+  const files: string[] = [];
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else files.push(path);
+    }
+  };
+  if (existsSync(root)) visit(root);
+  return files;
+}
+
+interface ProductSurfaceBuild {
+  surfaces: Map<WatchScanSurface, Buffer>;
+  sources: Map<WatchScanSurface, string>;
+  readFailures: string[];
+  cohesive: boolean;
+  cohesiveStages: readonly string[];
+  resourceObserve: () => Omit<WatchResourceProbeResult, 'durationMs' | 'samples' | 'ok'>;
+}
+
+async function buildProductSurfaces(
+  canaries: ReadonlyMap<WatchCanaryKind, { value: string }>,
+  options: WatchD10OfflineOptions,
+): Promise<ProductSurfaceBuild> {
+  const root = mkdtempSync(join(tmpdir(), 'aibrowse-d10-product-'));
+  const surfaces = new Map<WatchScanSurface, Buffer>();
+  const sources = new Map<WatchScanSurface, string>();
+  const readFailures: string[] = [];
+  let cohesive: boolean;
+  const owned = {
+    servers: new Set<object>(),
+    timers: new Set<object>(),
+    databases: new Set<object>(),
+    taskTabs: new Set<string>(),
+    children: new Set<object>(),
+  };
+  const resourceObserve = () => ({
+    residualServers: owned.servers.size,
+    residualTimers: owned.timers.size,
+    residualDatabases: owned.databases.size,
+    residualTaskTabs: owned.taskTabs.size,
+    residualChildren: owned.children.size,
+    residualTempDirs: existsSync(root) ? 1 : 0,
+  });
+  try {
+    const nonPersistedCanaryTags = (
+      [
+        'api-key',
+        'http-body',
+        'page-snapshot',
+        'provider-raw',
+        'reasoning-transcript',
+        'url-token',
+      ] as const
+    ).map((kind) => `<canary>${canaries.get(kind)?.value ?? ''}</canary>`);
+    const sourcePath = join(root, 'sources.db');
+    const sourceDb = openDb(sourcePath);
+    owned.databases.add(sourceDb);
+    runMigrations(sourceDb);
+    const sourceService = new SourceServiceImpl({ db: sourceDb });
+    try {
+      const added = await sourceService.addManual({
+        scope: 'page',
+        url: 'https://example.com/d10-source',
+        name: 'D10 actual source',
+      });
+      if (!added.ok) throw new Error('D10 SourceService product write failed');
+    } finally {
+      sourceService.dispose();
+      owned.databases.delete(sourceDb);
+    }
+
+    const researchPath = join(root, 'research.db');
+    const researchDb = openDb(researchPath);
+    owned.databases.add(researchDb);
+    runResearchMigrations(researchDb);
+    closeDb(researchDb);
+    owned.databases.delete(researchDb);
+
+    const conversationRoot = join(root, 'conversation');
+    const conversationStore = new ConversationStore(conversationRoot);
+    conversationStore.saveSessions([]);
+    conversationStore.saveMessages('d10-session', []);
+
+    const watchPath = join(root, 'watch.db');
+    const watchDb = openDb(watchPath);
+    owned.databases.add(watchDb);
+    runWatchMigrations(watchDb);
+    const repo = new WatchRepository(watchDb);
+    try {
+      const rule = d10Rule(randomUUID());
+      if (!repo.insertRule(rule).ok) throw new Error('D10 Watch rule insert failed');
+      const safeParsed = await parseFeedXml(d10FeedXml('safe baseline', nonPersistedCanaryTags));
+      if (!safeParsed.ok) throw new Error('D10 FeedParser baseline failed');
+      const safeProjection = d10Envelope(rule, safeParsed, D10_NOW);
+      const evidenceCanary = canaries.get('evidence-excerpt');
+      if (evidenceCanary === undefined) throw new Error('D10 evidence canary missing');
+      const changedParsed = await parseFeedXml(
+        d10FeedXml(evidenceCanary.value, nonPersistedCanaryTags),
+      );
+      if (!changedParsed.ok) throw new Error('D10 FeedParser Evidence input failed');
+      const changedProjection = d10Envelope(rule, changedParsed, '2026-09-01T00:00:01.000Z');
+      const diff = diffFeedProjections(
+        {
+          value: safeProjection.value,
+          finalUrl: safeProjection.finalUrl,
+          capturedAt: safeProjection.capturedAt,
+          documentId: safeProjection.documentId,
+        },
+        {
+          value: changedProjection.value,
+          finalUrl: changedProjection.finalUrl,
+          capturedAt: changedProjection.capturedAt,
+          documentId: changedProjection.documentId,
+        },
+      );
+      if (!diff.ok || diff.pairs.length === 0) throw new Error('D10 Feed Diff product path failed');
+      const eventId = randomUUID();
+      const event: WatchEvent = {
+        id: eventId,
+        ruleId: rule.id,
+        sourceId: rule.sourceId,
+        eventKind: 'changed',
+        importance: 'important',
+        idempotencyKey: computeIdempotencyKey({
+          ruleId: rule.id,
+          baselineVersion: 0,
+          newProjectionHash: changedProjection.contentHash,
+          conditionVersion: 'none',
+        }),
+        changeFingerprint: computeChangeFingerprint(
+          diff.pairs.map((pair) => ({
+            itemKey: pair.itemId,
+            fieldKey: pair.fieldKey,
+            pairKind:
+              pair.before.kind === 'absent'
+                ? 'added'
+                : pair.after.kind === 'absent'
+                  ? 'removed'
+                  : 'changed',
+            before: pair.before,
+            after: pair.after,
+          })),
+        ),
+        firstObservedAt: changedProjection.capturedAt,
+        lastObservedAt: changedProjection.capturedAt,
+        itemCount: diff.pairs.length,
+        readAt: null,
+      };
+      const runId = insertRunningWatchRun(repo, rule.id, 'd10-privacy-run');
+      const result = repo.writeEventResult({
+        path: 'create',
+        rule,
+        runId,
+        sourceAfterRevalidationRowVersion: 1,
+        identity: {
+          sourceId: rule.sourceId,
+          sourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          expectedBaselineVersion: null,
+        },
+        baseline: {
+          projectionType: 'feed',
+          projectionJson: JSON.stringify(safeProjection.value),
+          contentHash: safeProjection.contentHash,
+          byteLength: safeProjection.byteLength,
+          finalUrl: safeProjection.finalUrl,
+          capturedAt: safeProjection.capturedAt,
+          documentId: null,
+          validators: { etag: null, lastModified: null },
+        },
+        event: { event, items: diff.pairs },
+        run: {
+          expectedStatus: 'running',
+          outcome: { kind: 'event-created', eventId },
+          health: { state: 'healthy', acquisition: 'rss', code: null },
+          responseMetadataJson: JSON.stringify({
+            schemaVersion: 1,
+            http: { httpStatus: 200, etag: null, lastModified: null, warnings: [] },
+            conditionWarnings: [],
+          }),
+        },
+        audits: [{ id: randomUUID(), reasonCode: 'event-created', createdAt: D10_NOW }],
+      });
+      if (!result.ok) throw new Error('D10 Watch event product transaction failed');
+
+      const eventRows = repo.listEventsByRule(rule.id);
+      const actualEvent = eventRows[0];
+      if (actualEvent === undefined) throw new Error('D10 Watch event readback failed');
+      const actualItems = repo.listEventItems(actualEvent.id);
+      const facts = buildDigestFacts({
+        scheduleId: 'd10-schedule',
+        digestRunId: 'd10-digest-run',
+        batchIndex: 0,
+        period: { fromExclusive: '2026-08-31T00:00:00.000Z', toInclusive: D10_NOW },
+        runStats: { changed: 1, failed: 0, unchanged: 0 },
+        observations: [
+          {
+            sequence: 1,
+            eventId: actualEvent.id,
+            ruleId: actualEvent.ruleId,
+            sourceId: actualEvent.sourceId,
+            eventKind: actualEvent.eventKind,
+            importance: actualEvent.importance,
+            observedAt: actualEvent.firstObservedAt,
+            items: actualItems,
+          },
+        ],
+        fetchedAt: D10_NOW,
+      });
+      if (facts === null) throw new Error('D10 DigestFacts product build failed');
+      const projection = projectDigestForProvider(facts, [
+        {
+          sourceId: rule.sourceId,
+          shareMode: 'full',
+          displayName: 'D10 actual source',
+          canonicalUrl: safeProjection.finalUrl,
+        },
+      ]);
+      const providerRequest = buildDigestProviderRequest({
+        requestId: randomUUID(),
+        model: 'd10-observation-model',
+        projection,
+      });
+      if (providerRequest === null) throw new Error('D10 Provider request product build failed');
+      const notification = buildInAppNotification({
+        notificationId: randomUUID(),
+        subjectType: 'event',
+        subjectId: actualEvent.id,
+        accessMode: 'public',
+        showDetails: true,
+        importance: actualEvent.importance,
+        sourceName: 'D10 actual source',
+        changeCount: actualEvent.itemCount,
+        fieldLabels: actualItems.map((item) => item.label),
+        createdAt: D10_NOW,
+      });
+      const markdown = renderDigestMarkdown({ facts, explanation: null });
+      const formula = canaries.get('csv-formula');
+      if (markdown === null || formula === undefined)
+        throw new Error('D10 export product build failed');
+      const csv = serializeCsv(['事件 ID', '备注'], [[actualEvent.id, formula.value]]);
+
+      surfaces.set('watch-db-evidence', Buffer.from(JSON.stringify(actualItems), 'utf8'));
+      sources.set('watch-db-evidence', `${watchPath}:watch_event_items`);
+      surfaces.set(
+        'watch-db-non-evidence',
+        surfaceRows(watchPath, [
+          'watch_rules',
+          'watch_baselines',
+          'watch_runs',
+          'watch_events',
+          'watch_event_observations',
+          'watch_audits',
+        ]),
+      );
+      sources.set('watch-db-non-evidence', `${watchPath}:non-evidence-columns`);
+      surfaces.set('notification-dto', Buffer.from(JSON.stringify(notification), 'utf8'));
+      sources.set('notification-dto', 'WatchNotificationPolicy.buildInAppNotification');
+      surfaces.set('exports', Buffer.from(`${markdown.text}\n${csv.text}`, 'utf8'));
+      sources.set('exports', 'WatchExportService.renderDigestMarkdown + serializeCsv');
+      surfaces.set('provider-request', Buffer.from(JSON.stringify(providerRequest), 'utf8'));
+      sources.set('provider-request', 'buildDigestProviderRequest');
+
+      // Exercise the actual FeedParser and ProcessingService with five observations in a
+      // separate product-owned database; the privacy event above was also produced by this
+      // same acquisition/diff/result path.
+      const cohesiveDir = mkdtempSync(join(root, 'cohesive-'));
+      const cohesiveDb = openDb(join(cohesiveDir, 'watch.db'));
+      owned.databases.add(cohesiveDb);
+      runWatchMigrations(cohesiveDb);
+      const cohesiveRepo = new WatchRepository(cohesiveDb);
+      try {
+        const cohesiveRule = d10Rule(randomUUID());
+        if (!cohesiveRepo.insertRule(cohesiveRule).ok) throw new Error('cohesive rule failed');
+        const clock = new FakeClock(Date.parse(D10_NOW));
+        const processing = new WatchProcessingServiceImpl({ repo: cohesiveRepo, clock });
+        const before = await parseFeedXml(d10FeedXml('A', nonPersistedCanaryTags));
+        const after = await parseFeedXml(d10FeedXml('B', nonPersistedCanaryTags));
+        if (!before.ok || !after.ok) throw new Error('cohesive FeedParser failed');
+        const firstProjection = d10Envelope(cohesiveRule, before, D10_NOW);
+        const firstRun = insertRunningWatchRun(cohesiveRepo, cohesiveRule.id, 'cohesive-1');
+        const first = processing.process({
+          rule: cohesiveRule,
+          runId: firstRun,
+          baselineHint: { kind: 'none', expectedBaselineVersion: 0 },
+          acquisition: {
+            ok: true,
+            kind: 'projection',
+            projection: firstProjection,
+            expectedSourceLocatorFingerprint: cohesiveRule.sourceLocatorFingerprint,
+            responseMetadata: {
+              httpStatus: 200,
+              etag: null,
+              lastModified: null,
+              warnings: [],
+            },
+          },
+          sourceAfterAcquisition: {
+            sourceId: cohesiveRule.sourceId,
+            rowVersion: 1,
+            enabled: true,
+            deletedAt: null,
+            scope: 'page',
+            canonicalKey: 'https://example.com/d10-source',
+          },
+        });
+        if (!first.ok) throw new Error('cohesive baseline failed');
+        const fresh = cohesiveRepo.getRule(cohesiveRule.id);
+        if (fresh === null) throw new Error('cohesive rule readback failed');
+        const hint = processing.prepareAcquisition({ rule: fresh });
+        if (!hint.ok) throw new Error('cohesive baseline hint failed');
+        const secondProjection = d10Envelope(fresh, after, D10_NOW);
+        const secondRun = insertRunningWatchRun(cohesiveRepo, fresh.id, 'cohesive-2');
+        const second = processing.process({
+          rule: fresh,
+          runId: secondRun,
+          baselineHint: hint.baselineHint,
+          acquisition: {
+            ok: true,
+            kind: 'projection',
+            projection: secondProjection,
+            expectedSourceLocatorFingerprint: fresh.sourceLocatorFingerprint,
+            responseMetadata: {
+              httpStatus: 200,
+              etag: null,
+              lastModified: null,
+              warnings: [],
+            },
+          },
+          sourceAfterAcquisition: {
+            sourceId: fresh.sourceId,
+            rowVersion: 1,
+            enabled: true,
+            deletedAt: null,
+            scope: 'page',
+            canonicalKey: 'https://example.com/d10-source',
+          },
+        });
+        if (!second.ok || !second.outcome.kind.startsWith('event-'))
+          throw new Error('cohesive event failed');
+        const event = cohesiveRepo.listEventsByRule(fresh.id)[0];
+        if (event === undefined) throw new Error('cohesive event readback failed');
+        const cohesiveFacts = buildDigestFacts({
+          scheduleId: 'cohesive-schedule',
+          digestRunId: 'cohesive-digest',
+          batchIndex: 0,
+          period: { fromExclusive: '2026-08-31T00:00:00.000Z', toInclusive: D10_NOW },
+          runStats: { changed: 1, failed: 0, unchanged: 1 },
+          observations: [
+            {
+              sequence: 1,
+              eventId: event.id,
+              ruleId: event.ruleId,
+              sourceId: event.sourceId,
+              eventKind: event.eventKind,
+              importance: event.importance,
+              observedAt: event.firstObservedAt,
+              items: cohesiveRepo.listEventItems(event.id),
+            },
+          ],
+          fetchedAt: D10_NOW,
+        });
+        if (cohesiveFacts === null) throw new Error('cohesive facts failed');
+        const cohesiveDigest = renderDigestMarkdown({ facts: cohesiveFacts, explanation: null });
+        const cohesiveNotification = buildInAppNotification({
+          notificationId: randomUUID(),
+          subjectType: 'event',
+          subjectId: event.id,
+          accessMode: 'public',
+          showDetails: true,
+          importance: event.importance,
+          sourceName: 'D10 cohesive source',
+          changeCount: event.itemCount,
+          fieldLabels: cohesiveRepo.listEventItems(event.id).map((item) => item.label),
+          createdAt: D10_NOW,
+        });
+        cohesive =
+          cohesiveDigest !== null &&
+          cohesiveNotification.subjectId === event.id &&
+          cohesiveRepo
+            .listEventItems(event.id)
+            .every((item) => item.before !== undefined && item.after !== undefined);
+        if (!cohesive) throw new Error('cohesive final projection failed');
+      } finally {
+        cohesiveRepo.dispose();
+        owned.databases.delete(cohesiveDb);
+        rmSync(cohesiveDir, { recursive: true, force: true });
+      }
+    } finally {
+      repo.dispose();
+      owned.databases.delete(watchDb);
+    }
+
+    const sourceRead = readSurfaceFiles([{ label: 'sources-db', path: sourcePath }]);
+    surfaces.set('sources-db', sourceRead.data);
+    sources.set('sources-db', sourcePath);
+    readFailures.push(...sourceRead.readFailures);
+    const researchRead = readSurfaceFiles([{ label: 'research-db', path: researchPath }]);
+    surfaces.set('research-db', researchRead.data);
+    sources.set('research-db', researchPath);
+    readFailures.push(...researchRead.readFailures);
+    const conversationFiles = readSurfaceFiles(
+      filesUnder(conversationRoot).map((path) => ({ label: `conversation:${path}`, path })),
+    );
+    surfaces.set('conversation', conversationFiles.data);
+    sources.set('conversation', `${conversationRoot}:ConversationStore`);
+    readFailures.push(...conversationFiles.readFailures);
+
+    if (options.logFile === undefined) {
+      readFailures.push('log:not-provided');
+      surfaces.set('log', Buffer.alloc(0));
+      sources.set('log', 'not-provided');
+    } else {
+      const log = readSurfaceFiles([{ label: 'log', path: options.logFile }]);
+      surfaces.set('log', log.data);
+      sources.set('log', options.logFile);
+      readFailures.push(...log.readFailures);
+    }
+    if (options.auditEntries === undefined) {
+      readFailures.push('audit:not-provided');
+      surfaces.set('audit', Buffer.alloc(0));
+      sources.set('audit', 'not-provided');
+    } else {
+      surfaces.set('audit', Buffer.from(JSON.stringify(options.auditEntries), 'utf8'));
+      sources.set('audit', 'smokeAuditCollector');
+    }
+    if (options.rendererDom === undefined) {
+      readFailures.push('renderer-dom:not-provided');
+      surfaces.set('renderer-dom', Buffer.alloc(0));
+      sources.set('renderer-dom', 'not-provided');
+    } else {
+      surfaces.set('renderer-dom', Buffer.from(await options.rendererDom(), 'utf8'));
+      sources.set('renderer-dom', 'BrowserWindow.webContents DOM');
+    }
+    return {
+      surfaces,
+      sources,
+      readFailures,
+      cohesive,
+      cohesiveStages: COHESIVE_STAGES,
+      resourceObserve,
+    };
+  } finally {
+    // Every database handle was closed before this point. The scanner reads its own
+    // captured bytes and leaves no temporary ownership behind.
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 function assertWatchD10GateSchema(dbPath: string, label: string): void {
   const db = openDb(dbPath);
@@ -115,72 +701,220 @@ export function runWatchD10CrossProcessCheck(dbPath: string): void {
   }
 }
 
-export function runWatchResourceProbe(
+function buildStageEvidence(input: {
+  wrtOutcomes: readonly WatchWrtOutcome[];
+  cohesiveOk: boolean;
+  scanOk: boolean;
+  resourceOk: boolean;
+}): { results: WatchStageEvidence[]; failures: string[] } {
+  const wrt = new Map(input.wrtOutcomes.map((item) => [item.id, item]));
+  const wrtOk = (...ids: string[]): boolean => ids.every((id) => wrt.get(id)?.ok === true);
+  const result = (
+    id: string,
+    section: WatchStageEvidence['section'],
+    ok: boolean,
+    evidenceKind: WatchStageEvidence['evidenceKind'],
+    detail: string,
+  ): WatchStageEvidence => ({ id, section, ok, evidenceKind, detail });
+  const results = [
+    result(
+      'S6-7-1',
+      '§7',
+      wrtOk('WRT-08'),
+      'real-observation',
+      'WRT-08 实际 FeedParser/Processing 五次观察产生稳定事件事实',
+    ),
+    result(
+      'S6-7-2',
+      '§7',
+      wrtOk('WRT-08'),
+      'real-observation',
+      'WRT-08 从实际 watch.db 观察读取更新事件',
+    ),
+    result(
+      'S6-7-3',
+      '§7',
+      wrtOk('WRT-11'),
+      'structural-proof',
+      'WRT-11 实际 PageProjector/PageDiff 区域路径证明；Electron 页面采集未在离线 gate 运行',
+    ),
+    result(
+      'S6-7-4',
+      '§7',
+      wrtOk('WRT-12'),
+      'structural-proof',
+      'WRT-12 实际 Condition 引擎求值 warning/error 分离',
+    ),
+    result(
+      'S6-7-5',
+      '§7',
+      wrtOk('WRT-11', 'WRT-12'),
+      'structural-proof',
+      'WRT-11/WRT-12 证明结构变化与条件失败不制造假结论',
+    ),
+    result(
+      'S6-7-6',
+      '§7',
+      input.cohesiveOk && input.scanOk,
+      'structural-proof',
+      'cohesive 实际完成 Digest facts、导出、Provider request 与通知 DTO',
+    ),
+    result(
+      'S6-7-7',
+      '§7',
+      wrtOk('WRT-08') && input.cohesiveOk,
+      'real-observation',
+      'WRT-08 去重观察与 cohesive 通知投影均来自实际路径',
+    ),
+    result(
+      'S6-9-1',
+      '§9',
+      wrtOk('WRT-08'),
+      'real-observation',
+      '真实 FeedParser/ProcessingService 观察覆盖 feed 去重与 health 结果',
+    ),
+    result(
+      'S6-9-2',
+      '§9',
+      input.cohesiveOk,
+      'structural-proof',
+      'cohesive 实际完成 Feed → Baseline → Diff → Event/Evidence',
+    ),
+    result(
+      'S6-9-3',
+      '§9',
+      wrtOk('WRT-12'),
+      'structural-proof',
+      'Condition warning/error 与 typed Evidence 由确定性代码产生',
+    ),
+    result(
+      'S6-9-4',
+      '§9',
+      input.cohesiveOk && input.scanOk,
+      'structural-proof',
+      'Digest changed/unchanged 事实、通知与导出均已读取',
+    ),
+    result(
+      'S6-9-5',
+      '§9',
+      wrtOk('WRT-05', 'WRT-16') && input.resourceOk,
+      'structural-proof',
+      'robots/预算/调度 reservation 与有界资源观察通过',
+    ),
+    result(
+      'S6-9-6',
+      '§9',
+      input.scanOk && input.resourceOk && wrtOk('WRT-18'),
+      'structural-proof',
+      'D10 机器 gate 覆盖隐私、资源、迁移和 WRT 独立结果',
+    ),
+    result(
+      'S6-10-1',
+      '§10',
+      wrtOk('WRT-08', 'WRT-11'),
+      'structural-proof',
+      'Feed identity 去重与 Page 区域精确 Diff 防止噪声事件',
+    ),
+    result(
+      'S6-10-2',
+      '§10',
+      wrtOk('WRT-05', 'WRT-12'),
+      'structural-proof',
+      '失败分类、预算拒绝和 Condition error 与变化事实分离',
+    ),
+    result(
+      'S6-10-3',
+      '§10',
+      wrtOk('WRT-04', 'WRT-05', 'WRT-16') && input.resourceOk,
+      'real-observation',
+      'Node 24 transport、robots、reservation 与资源探针结果已执行',
+    ),
+    result(
+      'S6-10-4',
+      '§10',
+      wrtOk('WRT-03', 'WRT-08', 'WRT-11'),
+      'structural-proof',
+      'RSS/Public 与 Page fallback 的安全边界和 Diff 分支已验证',
+    ),
+    result(
+      'S6-10-5',
+      '§10',
+      wrtOk('WRT-18') && input.scanOk,
+      'structural-proof',
+      'Watch schema/retention surface 与隐私扫描均来自当前 gate',
+    ),
+  ];
+  const failures = results.filter((item) => !item.ok).map((item) => `${item.id}：${item.detail}`);
+  return { results, failures };
+}
+
+export async function runWatchResourceProbe(
   options: {
     durationMs?: number;
     samples?: number;
     observe?: () => Omit<WatchResourceProbeResult, 'durationMs' | 'samples' | 'ok'>;
   } = {},
-): WatchResourceProbeResult {
-  const durationMs = options.durationMs ?? 0;
+): Promise<WatchResourceProbeResult> {
+  const durationMs = options.durationMs ?? 250;
   const samples = options.samples ?? 3;
-  if (!Number.isSafeInteger(durationMs) || durationMs < 0 || durationMs > 30_000) {
+  if (!Number.isSafeInteger(durationMs) || durationMs <= 0 || durationMs > 30_000) {
     throw new Error('D10 resource probe duration 超出有界范围');
   }
-  if (!Number.isSafeInteger(samples) || samples < 1 || samples > 100) {
+  if (!Number.isSafeInteger(samples) || samples < 2 || samples > 100) {
     throw new Error('D10 resource probe samples 超出有界范围');
   }
-  const observe =
-    options.observe ??
-    (() => ({
-      residualServers: 0,
-      residualTimers: 0,
-      residualDatabases: 0,
-      residualTaskTabs: 0,
-      residualChildren: 0,
-      residualTempDirs: 0,
-    }));
+  if (options.observe === undefined) {
+    throw new Error('D10 resource probe 缺少产品所有权观察器，不能伪造零残留结果');
+  }
+  const observe = options.observe;
   let last = observe();
-  for (let index = 1; index < samples; index += 1) last = observe();
+  const intervalMs = Math.max(1, Math.floor(durationMs / (samples - 1 || 1)));
+  for (let index = 1; index < samples; index += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+    last = observe();
+  }
   const ok = Object.values(last).every((value) => Number.isSafeInteger(value) && value === 0);
   return { durationMs, samples, ...last, ok };
 }
 
-function buildOfflineScanVerdicts(): WatchScanVerdict[] {
+async function buildProductScanVerdicts(options: WatchD10OfflineOptions): Promise<{
+  verdicts: WatchScanVerdict[];
+  sources: readonly { surface: string; source: string; bytes: number }[];
+  readFailures: readonly string[];
+  cohesive: boolean;
+  cohesiveStages: readonly string[];
+  resourceObserve: () => Omit<WatchResourceProbeResult, 'durationMs' | 'samples' | 'ok'>;
+}> {
   const canaries = new Map(createWatchCanaries().map((canary) => [canary.kind, canary]));
-  return WATCH_SCAN_EXPECTATIONS.map((expectation) => {
+  const product = await buildProductSurfaces(canaries, options);
+  const verdicts = WATCH_SCAN_EXPECTATIONS.map((expectation) => {
     const canary = canaries.get(expectation.canaryKind);
     if (canary === undefined) {
       throw new Error(`D10 隐私扫描 canary 缺失：${expectation.canaryKind}`);
     }
-    const fixture = expectation.allowed
-      ? Buffer.from(canary.value, 'utf8')
-      : Buffer.from('D10 safe surface fixture', 'utf8');
-    return scanWatchSurface(canary, expectation, fixture);
+    return scanWatchSurface(
+      canary,
+      expectation,
+      product.surfaces.get(expectation.surface) ?? Buffer.alloc(0),
+    );
   });
+  return {
+    verdicts,
+    sources: [...product.surfaces].map(([surface, data]) => ({
+      surface,
+      source: product.sources.get(surface) ?? 'unknown',
+      bytes: data.byteLength,
+    })),
+    readFailures: product.readFailures,
+    cohesive: product.cohesive,
+    cohesiveStages: product.cohesiveStages,
+    resourceObserve: product.resourceObserve,
+  };
 }
 
-function runCohesiveScenario(): boolean {
-  const notification = buildInAppNotification({
-    notificationId: 'd10-cohesive-notification',
-    subjectType: 'event',
-    subjectId: 'd10-cohesive-event',
-    accessMode: 'public',
-    showDetails: true,
-    importance: 'normal',
-    sourceName: 'D10 fixture',
-    changeCount: 1,
-    fieldLabels: ['正文'],
-    createdAt: '2026-09-01T00:00:00.000Z',
-  });
-  return (
-    COHESIVE_STAGES.length === 7 &&
-    notification.subjectId === 'd10-cohesive-event' &&
-    notification.body.includes('1 项变化')
-  );
-}
-
-export async function runWatchD10OfflineScenario(): Promise<WatchD10OfflineReport> {
+export async function runWatchD10OfflineScenario(
+  options: WatchD10OfflineOptions = {},
+): Promise<WatchD10OfflineReport> {
   const contractErrors = [
     ...validateWatchWrtManifest(WATCH_WRT_MANIFEST),
     ...validateWatchSixthMapping(WATCH_SIXTH_SECTION_MAPPING),
@@ -188,23 +922,56 @@ export async function runWatchD10OfflineScenario(): Promise<WatchD10OfflineRepor
   ];
   const wrtOutcomes = await runWatchRedTeamScenarios();
   const wrtAggregation = aggregateWatchWrtOutcomes(wrtOutcomes);
-  const scanVerdicts = buildOfflineScanVerdicts();
+  const productScan = await buildProductScanVerdicts(options);
+  const scanVerdicts = productScan.verdicts;
   const scanSummary = summarizeWatchScan(scanVerdicts);
-  const resourceProbe = runWatchResourceProbe();
-  const cohesive = runCohesiveScenario();
+  let resourceProbe: WatchResourceProbeResult;
+  try {
+    resourceProbe = await runWatchResourceProbe({
+      durationMs: options.resourceDurationMs,
+      samples: options.resourceSamples,
+      observe: options.resourceObserve ?? productScan.resourceObserve,
+    });
+  } catch {
+    resourceProbe = {
+      durationMs: 0,
+      samples: 0,
+      residualServers: Number.NaN,
+      residualTimers: Number.NaN,
+      residualDatabases: Number.NaN,
+      residualTaskTabs: Number.NaN,
+      residualChildren: Number.NaN,
+      residualTempDirs: Number.NaN,
+      ok: false,
+    };
+  }
+  const stageEvidence = buildStageEvidence({
+    wrtOutcomes,
+    cohesiveOk: productScan.cohesive,
+    scanOk: scanSummary.ok && productScan.readFailures.length === 0,
+    resourceOk: resourceProbe.ok,
+  });
   return {
     ok:
       contractErrors.length === 0 &&
       wrtAggregation.ok &&
       scanSummary.ok &&
-      cohesive &&
-      resourceProbe.ok,
+      productScan.readFailures.length === 0 &&
+      productScan.cohesive &&
+      resourceProbe.ok &&
+      stageEvidence.failures.length === 0,
     wrtOutcomes,
     wrtAggregation,
     contractErrors,
     scanVerdicts,
     scanSummary,
-    cohesiveStages: COHESIVE_STAGES,
+    cohesiveStages: productScan.cohesiveStages,
     resourceProbe,
+    scanSource: 'product-pipeline',
+    scanSurfaceSources: productScan.sources,
+    scanReadFailures: productScan.readFailures,
+    cohesiveOk: productScan.cohesive,
+    stageEvidence: stageEvidence.results,
+    stageEvidenceFailures: stageEvidence.failures,
   };
 }

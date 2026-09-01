@@ -17,12 +17,13 @@ describe('D10 Watch gate', () => {
     expect(validateWatchD10Contract()).toEqual([]);
   });
 
-  it('拒绝非法值、并行门控和脱离 Watch gate 的 live 请求', () => {
+  it('拒绝非法值、并行门控，并让 live runner 进入独立门控', () => {
     expect(resolveWatchGate({ smoke: '1', watchSmoke: 'other' }).ok).toBe(false);
     expect(resolveWatchGate({ smoke: '1', watchSmoke: 'set', researchSmoke: 'set' }).ok).toBe(
       false,
     );
     expect(resolveWatchGate({ liveWatch: '1' }).ok).toBe(false);
+    expect(resolveWatchGate({ smoke: '1', liveWatch: '1' })).toEqual({ ok: true, mode: 'live' });
     expect(resolveWatchD10Mode({ smoke: '1', watchSmoke: 'set' })).toEqual({
       ok: true,
       mode: 'set',

@@ -1,4 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { existsSync, statSync } from 'node:fs';
@@ -34,6 +36,8 @@ import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
 import { resolveWatchD10Mode } from './smoke-watch-gate';
+import { WatchIpcAdmission } from './smoke-watch-admission';
+import type { WatchLiveRunnerOptions } from './smoke-watch-live-runner';
 // Sixth Stage D4：Watch 存储/生命周期装配（observer 恒 active + 延迟端口绑定 +
 // AIBROWSE_WATCH_SMOKE 跨进程门控 + 8.21 store 冒烟）。
 import {
@@ -84,6 +88,7 @@ import type { WatchPushDto } from '../shared/types/watch-ipc';
 import {
   createPublicWatchHttpStack,
   type TargetGatedClient,
+  type WatchRequestLike,
 } from './watch/public-watch-http-client';
 import { WatchTaskTabWorkspace } from './watch/watch-task-tab-workspace';
 import { BrowserWatchReader } from './watch/browser-watch-reader';
@@ -280,6 +285,7 @@ const watchD10Gate = resolveWatchD10Mode({
   liveProvider: process.env['AIBROWSE_LIVE_PROVIDER'],
   liveWatch: process.env['AIBROWSE_LIVE_WATCH'],
 });
+const LIVE_WATCH_MODE = SMOKE_MODE && watchD10Gate.ok && watchD10Gate.mode === 'live';
 
 // Session 冒烟/测试隔离（§十四 Session 验收）：指定临时 userData 目录，避免触碰用户真实数据。
 // 必须在 app ready 前设置（Electron 官方 API）；仅测试/验证环境使用（AIBROWSE_SESSION_SMOKE）。
@@ -356,7 +362,9 @@ let watchPublicTarget: TargetGatedClient | null = null;
 let watchPreviewReader: BrowserWatchReader | null = null;
 let watchPreviewStore: WatchPreviewStore | null = null;
 let watchIpcAdapter: WatchIpcAdapter | null = null;
+const watchIpcAdmission = new WatchIpcAdmission();
 let watchPublicStackRobots: { clearCache(): void } | null = null;
+let watchLiveRequestCount = 0;
 // 8.23 冒烟 holder：index.ts 装配后注入（SMOKE_MODE 消费；生产零行为）
 const smokeWatchPageSession: { current: WatchPageSmokeBundle | null } = { current: null };
 // B5 冒烟注入点（仅 SMOKE_MODE 消费，生产行为不变）：恢复态/不可用态 UI 断言——
@@ -366,11 +374,23 @@ let smokeSourcesStateOverride: { current: SourcesState | null } | null = null;
 // 「审计工具名全部为注册表工具」机器断言用；生产不收集（决议 #84 同精神测试设施）
 const smokeAuditCollector: AuditEntry[] = [];
 
+function stopWatchIpcAdmission(): void {
+  // Fail closed before any failure-path repository cleanup or asynchronous work.
+  watchIpcAdmission.beginShutdown();
+  watchSubscriptionSender = null;
+  pushWatchStatus = () => undefined;
+}
+
 // D5（FIXED DECISIONS 12）：Watch 退出排水——stop-admission → abort 全部在途 →
 // 有界 drain → D6 workspace cleanupAll/grant clear/robots cache clear →
 // 交回既有 watchCoordinator.dispose()/watchRepo.dispose()（兜底清理在
 // before-quit 重入时执行）。幂等可重复调用；未完成行留待下次启动标 interrupted。
 async function watchShutdown(): Promise<void> {
+  // Stop all Watch IPC admission before the first await. Late renderer-ready or
+  // subscription events must not observe a repository that is about to close.
+  stopWatchIpcAdmission();
+  const repository = watchRepo;
+  watchRepo = null;
   digestScheduler?.stop();
   digestService?.stopAdmission();
   digestService?.abort();
@@ -398,6 +418,8 @@ async function watchShutdown(): Promise<void> {
   // 保持引用存活至 shutdown，杜绝“已装配但不可达”的悬挂态。
   void watchPageRouter;
   watchHostGate?.clear();
+  watchCoordinator?.dispose();
+  repository?.dispose();
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -505,6 +527,7 @@ if (!gotLock) {
     conversationService?.dispose(); // S3：中止全部在途生成
     sourceService?.dispose(); // B4：Sources 句柄幂等释放（driver closeDb 幂等）
     // D4：Watch dispose 幂等接线（coordinator 解绑 → repo 句柄释放）
+    stopWatchIpcAdmission();
     watchCoordinator?.dispose();
     watchRepo?.dispose();
     if (smokeSourcesDir !== null) {
@@ -880,6 +903,7 @@ if (!gotLock) {
       resolveWatchSourceName,
     );
     pushWatchStatus = (): void => {
+      if (!watchIpcAdmission.isOpen()) return;
       const sender = watchSubscriptionSender;
       if (sender === null || sender.isDestroyed()) return;
       const push: WatchPushDto = {
@@ -1024,6 +1048,7 @@ if (!gotLock) {
       },
       audit: (message) => logInfo('audit', message),
       onStateChanged: pushWatchStatus,
+      isAdmitted: () => watchIpcAdmission.isOpen(),
     });
     watchIpcAdapter = watchIpc;
     for (const channel of WATCH_IPC_CHANNELS) {
@@ -1034,13 +1059,17 @@ if (!gotLock) {
     ipcMain.on(IPC.WatchSubscribe, (event, payload: unknown) => {
       if (
         mainWindow === null ||
+        !watchIpcAdmission.isOpen() ||
         !isTrustedSender(event, mainWindow) ||
         !validateWatchIpcPayload(IPC.WatchSubscribe, payload).ok
       )
         return;
       const action = (payload as { action: 'start' | 'stop' }).action;
       if (action === 'stop') {
-        if (watchSubscriptionSender === event.sender) watchSubscriptionSender = null;
+        if (watchSubscriptionSender === event.sender) {
+          watchSubscriptionSender = null;
+          watchIpcAdmission.unsubscribe(event.sender);
+        }
         return;
       }
       if (watchSubscriptionSender === event.sender) {
@@ -1048,10 +1077,12 @@ if (!gotLock) {
         return;
       }
       if (watchSubscriptionSender !== null) return;
+      if (!watchIpcAdmission.subscribe(event.sender)) return;
       watchSubscriptionSender = event.sender;
       pushWatchStatus();
       void watchNotifications?.drain();
       event.sender.once('destroyed', () => {
+        watchIpcAdmission.unsubscribe(event.sender);
         if (watchSubscriptionSender === event.sender) watchSubscriptionSender = null;
       });
     });
@@ -1239,6 +1270,7 @@ if (!gotLock) {
           );
           // 失败路径清理（app.exit 不触发 before-quit；与既有互斥路径同纪律）
           sourceService?.dispose();
+          stopWatchIpcAdmission();
           watchCoordinator?.dispose();
           watchRepo?.dispose();
           if (smokeSourcesDir !== null) {
@@ -1306,6 +1338,61 @@ if (!gotLock) {
             liveAgentSources: LIVE_AGENT_SOURCES_MODE, // B6：AIBROWSE_LIVE_AGENT_SOURCES=1 时启用真实 Provider 自然语言管理验证（未提供 Key 回退离线矩阵）
             liveResearch: LIVE_RESEARCH_MODE, // C9：AIBROWSE_LIVE_RESEARCH=1 时启用真实 Provider/真实主题 Research 验证（决议 #169）
             researchService: LIVE_RESEARCH_MODE ? researchService : undefined, // C9：LIVE_RESEARCH 生产 factory 装配的 Service（真实执行经产品路径）
+            liveWatch: LIVE_WATCH_MODE
+              ? ({
+                  // This is the production target-gated client assembled above. No
+                  // fake HTTP response or alternate request path is accepted here.
+                  publicPort: {
+                    run: async (scenario, signal) => {
+                      if (watchPublicTarget === null || scenario.url === undefined) {
+                        return {
+                          requestCount: 0,
+                          httpClass: 'Watch Public target unavailable',
+                          errorCode: 'product-defect',
+                        };
+                      }
+                      const requestCountBefore = watchLiveRequestCount;
+                      const result = await watchPublicTarget.get({
+                        url: scenario.url,
+                        purpose: scenario.id === 'wl-public-rss' ? 'feed' : 'page',
+                        signal,
+                      });
+                      if (result.kind === 'ok' || result.kind === 'unchanged-http') {
+                        return {
+                          requestCount: watchLiveRequestCount - requestCountBefore,
+                          status: result.meta.statusCode,
+                          httpClass: `${result.meta.statusCode} ${result.meta.statusMessage}`,
+                        };
+                      }
+                      return {
+                        requestCount: watchLiveRequestCount - requestCountBefore,
+                        httpClass: result.kind === 'failed' ? result.health : result.kind,
+                        errorCode:
+                          result.kind === 'failed' && result.health === 'unavailable'
+                            ? 'environment-unavailable'
+                            : result.kind === 'aborted'
+                              ? 'timeout'
+                              : 'product-defect',
+                      };
+                    },
+                  },
+                } satisfies WatchLiveRunnerOptions)
+              : undefined,
+            watchD10: LIVE_WATCH_MODE
+              ? undefined
+              : {
+                  logFile: getCurrentLogFilePath(),
+                  auditEntries: smokeAuditCollector,
+                  rendererDom:
+                    mainWindow !== null && !mainWindow.webContents.isDestroyed()
+                      ? async () =>
+                          String(
+                            await mainWindow!.webContents.executeJavaScript(
+                              'document.documentElement.outerHTML',
+                            ),
+                          )
+                      : undefined,
+                },
             toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
             confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
             sourcesService: sourceService ?? undefined, // B5：8.11 UI 矩阵后台写/冲突/清理断言
@@ -1373,6 +1460,7 @@ if (!gotLock) {
               smokeSourcesDir = null;
             }
             // D4：失败路径清理冒烟 Watch 临时目录（先关句柄再删目录——同 Sources 纪律）
+            stopWatchIpcAdmission();
             watchCoordinator?.dispose();
             watchRepo?.dispose();
             if (smokeWatchDir !== null) {
@@ -1674,7 +1762,17 @@ async function createBrowserWindow(): Promise<void> {
           // D6（FIXED DECISIONS 12）：同一 HostRequestGate 下装配 D3 public stack
           //（target-gated，robots 生命周期窄端口）与 Session task-tab 采集依赖。
           // 失败全 fail-closed；D6 零 DB 写入、零 Diff/Event。
-          const publicStack = createPublicWatchHttpStack({ hostGate });
+          const publicStack = createPublicWatchHttpStack({
+            hostGate,
+            request: LIVE_WATCH_MODE
+              ? (options) => {
+                  watchLiveRequestCount += 1;
+                  const request =
+                    options.protocol === 'https:' ? httpsRequest(options) : httpRequest(options);
+                  return request as unknown as WatchRequestLike;
+                }
+              : undefined,
+          });
           watchPublicTarget = publicStack.target;
           watchPublicStackRobots = publicStack.robots;
           watchWorkspace = new WatchTaskTabWorkspace({

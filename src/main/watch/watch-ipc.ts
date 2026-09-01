@@ -64,6 +64,7 @@ export interface WatchIpcAdapterOptions {
   }) => Array<{ sourceId: string; displayName: string }> | null;
   audit: (message: string) => void;
   onStateChanged?: () => void;
+  isAdmitted?: () => boolean;
 }
 
 const STATUS_CHANGING_WATCH_CHANNELS = new Set<WatchIpcChannel>([
@@ -89,6 +90,8 @@ export class WatchIpcAdapter {
   }
 
   async invoke(channel: string, payload: unknown): Promise<WatchIpcResult<unknown>> {
+    if (this.options.isAdmitted !== undefined && !this.options.isAdmitted())
+      return fail('unavailable');
     const started = Date.now();
     const validated = validateWatchIpcPayload(channel, payload);
     let result: WatchIpcResult<unknown>;

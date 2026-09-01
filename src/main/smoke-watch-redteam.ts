@@ -2,7 +2,9 @@
 // 每项只返回自己的结果；敌手正文与随机 canary 不进入结果、日志或异常消息。
 
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInAppNotification } from './watch/notification-policy';
@@ -18,10 +20,25 @@ import {
   isAllowedPublicAddress,
 } from './watch/network-policy';
 import { readPublicHtml } from './watch/public-html-sax-reader';
+import {
+  createPublicWatchHttpStack,
+  classifyPublicHttpStatus,
+  type WatchRequestFactory,
+  type WatchRequestLike,
+} from './watch/public-watch-http-client';
 import { parseRobotsText, evaluateRobotsPath } from './watch/robots-policy';
+import { HostRequestGate } from './watch/host-request-gate';
+import { classifySnapshotSuspicion } from './watch/browser-watch-reader';
 import { WatchTaskTabWorkspace, type WatchTaskTabBrowser } from './watch/watch-task-tab-workspace';
 import { WatchScheduler, computeNextDueAt } from './watch/watch-scheduler';
-import { sessionConsentTargetCheck } from './watch/page-projector';
+import {
+  computeTableHeaderFingerprint,
+  previewPageRegions,
+  projectPageProjection,
+  sessionConsentTargetCheck,
+} from './watch/page-projector';
+import { evaluateStructuredCondition } from '../shared/watch/condition-engine';
+import { diffPageProjections } from '../shared/watch/diff/page-diff';
 import { openDb, closeDb } from './sources/db/sqlite-driver';
 import { runMigrations } from './sources/db/migrations';
 import {
@@ -36,7 +53,7 @@ import { openWatchStore } from './watch/watch-store';
 import { SourceServiceImpl } from './sources/source-service';
 import { buildDigestFacts } from '../shared/watch/digest-facts';
 import { projectDigestForProvider } from '../shared/watch/digest-sharing-projector';
-import { makeEvidencePair, pageValueEvidence } from '../shared/watch/diff/evidence';
+import { makeEvidencePair, pageValueEvidence, sha256Hex } from '../shared/watch/diff/evidence';
 import { validateChangeEvidencePair } from '../shared/watch/event-validator';
 import { parseDigestExplanation } from '../shared/watch/digest-validator';
 import type { WatchWrtOutcome } from './smoke-watch-manifest';
@@ -52,12 +69,20 @@ import {
   MAX_FEED_FIELD_BYTES,
   MAX_FEED_PROJECTION_BYTES,
   type ChangeEvidencePair,
+  type DocumentChannels,
   type DigestFacts,
   type PageTarget,
+  type RegionDescriptor,
 } from '../shared/types/watch';
-import type { SourceLifecycleObserver, SourceWatchMutation } from '../shared/types/watch';
 import type { TabInfo } from '../shared/types/browser';
 import { FakeClock } from '../shared/watch/clock';
+import { WatchRepository } from './watch/repository/watch-repository';
+import { WatchProcessingServiceImpl } from './watch/watch-processing-service';
+import { WatchLifecycleCoordinator } from './watch/watch-lifecycle-coordinator';
+import { computeSourceLocatorFingerprint } from '../shared/watch/watch-rule-state';
+import type { FeedProjection, SourceWatchProjection, WatchRule } from '../shared/types/watch';
+
+const execFileAsync = promisify(execFile);
 
 const VALID_URL = 'https://www.openai.com/watch';
 const NOW = '2026-09-01T00:00:00.000Z';
@@ -66,7 +91,7 @@ function outcome(
   id: string,
   ok: boolean,
   detail: string,
-  evidenceKind: 'structural-proof' | 'real-observation' = 'structural-proof',
+  evidenceKind: 'structural-proof' | 'real-observation' | 'honest-limit' = 'structural-proof',
 ) {
   return { id, ok, evidenceKind, detail } as const;
 }
@@ -123,6 +148,96 @@ function makeFacts(): DigestFacts {
   });
   if (facts === null) throw new Error('D10 fixture facts construction failed');
   return facts;
+}
+
+interface ScriptedResponse {
+  statusCode: number;
+  headers?: Record<string, string>;
+  body?: Buffer;
+}
+
+function scriptedRequestFactory(
+  responses: readonly ScriptedResponse[],
+  requestPaths: string[],
+  destroyed: { count: number },
+): WatchRequestFactory {
+  let responseIndex = 0;
+  return (options): WatchRequestLike => {
+    const request = new EventEmitter();
+    requestPaths.push(options.path);
+    const response = new EventEmitter();
+    const next = responses[responseIndex] ?? {
+      statusCode: 500,
+      headers: {},
+      body: Buffer.alloc(0),
+    };
+    responseIndex += 1;
+    const destroy = (): void => {
+      destroyed.count += 1;
+      queueMicrotask(() => request.emit('close'));
+    };
+    const end = (): void => {
+      queueMicrotask(() => {
+        request.emit(
+          'response',
+          Object.assign(response, {
+            statusCode: next.statusCode,
+            statusMessage: String(next.statusCode),
+            headers: next.headers ?? {},
+            destroy,
+            resume: () => undefined,
+          }),
+        );
+        queueMicrotask(() => {
+          const body = next.body ?? Buffer.alloc(0);
+          if (body.length > 0) response.emit('data', body);
+          response.emit('end');
+          response.emit('close');
+          request.emit('close');
+        });
+      });
+    };
+    Object.assign(request, {
+      setTimeout: () => undefined,
+      end,
+      abort: destroy,
+      destroy,
+    });
+    return request as unknown as WatchRequestLike;
+  };
+}
+
+function robotsBody(size: number): Buffer {
+  const prefix = Buffer.from('User-agent: *\nAllow: /\n', 'utf8');
+  if (size < prefix.length) return Buffer.alloc(size, 32);
+  return Buffer.concat([prefix, Buffer.alloc(size - prefix.length, 32)]);
+}
+
+async function runPublicStackProbe(input: {
+  lookup: (call: number) => Promise<Array<{ address: string; family: 4 | 6 }>>;
+  responses?: readonly ScriptedResponse[];
+}): Promise<{
+  result: Awaited<ReturnType<ReturnType<typeof createPublicWatchHttpStack>['target']['get']>>;
+  paths: string[];
+  destroyed: number;
+  lookups: number;
+}> {
+  const paths: string[] = [];
+  const destroyed = { count: 0 };
+  let lookups = 0;
+  const stack = createPublicWatchHttpStack({
+    lookup: async () => {
+      lookups += 1;
+      return input.lookup(lookups);
+    },
+    request: scriptedRequestFactory(input.responses ?? [], paths, destroyed),
+  });
+  try {
+    const result = await stack.target.get({ url: VALID_URL, purpose: 'page' });
+    return { result, paths, destroyed: destroyed.count, lookups };
+  } finally {
+    stack.robots.clearCache();
+  }
 }
 
 function insertLegacyRule(db: ReturnType<typeof openDb>, id: string): void {
@@ -359,16 +474,59 @@ async function wrt01(): Promise<boolean> {
 }
 
 async function wrt02(): Promise<boolean> {
-  return (
-    classifyIpAddress('93.184.216.34') === 'public' &&
-    isAllowedPublicAddress('93.184.216.34') &&
-    !isAllowedPublicAddress('10.0.0.8') &&
-    !isAllowedPublicAddress('2001:db8::1')
-  );
+  const mixed = await runPublicStackProbe({
+    lookup: async () => [
+      { address: '93.184.216.34', family: 4 },
+      { address: '10.0.0.8', family: 4 },
+    ],
+  });
+  const reboundPaths: string[] = [];
+  const reboundDestroyed = { count: 0 };
+  let lookupCount = 0;
+  const reboundStack = createPublicWatchHttpStack({
+    lookup: async () => {
+      lookupCount += 1;
+      return lookupCount === 1
+        ? [{ address: '93.184.216.34', family: 4 }]
+        : [
+            { address: '93.184.216.34', family: 4 },
+            { address: '10.0.0.8', family: 4 },
+          ];
+    },
+    request: scriptedRequestFactory(
+      [
+        {
+          statusCode: 200,
+          headers: { 'content-type': 'text/plain' },
+          body: Buffer.from('User-agent: *\nAllow: /\n'),
+        },
+      ],
+      reboundPaths,
+      reboundDestroyed,
+    ),
+  });
+  try {
+    const rebound = await reboundStack.target.get({ url: VALID_URL, purpose: 'page' });
+    return (
+      classifyIpAddress('93.184.216.34') === 'public' &&
+      isAllowedPublicAddress('93.184.216.34') &&
+      !isAllowedPublicAddress('10.0.0.8') &&
+      !isAllowedPublicAddress('2001:db8::1') &&
+      mixed.result.kind === 'failed' &&
+      mixed.result.health === 'security_rejected' &&
+      mixed.paths.length === 0 &&
+      rebound.kind === 'failed' &&
+      rebound.health === 'security_rejected' &&
+      reboundPaths.length === 1 &&
+      lookupCount >= 2
+    );
+  } finally {
+    reboundStack.robots.clearCache();
+  }
 }
 
 async function wrt03(): Promise<boolean> {
-  return [
+  const rejected = [
     'http://www.openai.com:443/',
     'https://www.openai.com:80/',
     'https://www.openai.com:444/',
@@ -381,34 +539,221 @@ async function wrt03(): Promise<boolean> {
     const host = new URL(url).hostname.replace(/^\[|\]$/gu, '');
     return !isAllowedPublicAddress(host);
   });
+  const paths: string[] = [];
+  const stack = createPublicWatchHttpStack({
+    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    request: scriptedRequestFactory(
+      [
+        {
+          statusCode: 200,
+          headers: { 'content-type': 'text/plain' },
+          body: Buffer.from('User-agent: *\nAllow: /\n'),
+        },
+        {
+          statusCode: 302,
+          headers: { location: 'http://www.openai.com/private' },
+          body: Buffer.alloc(0),
+        },
+      ],
+      paths,
+      { count: 0 },
+    ),
+  });
+  try {
+    const downgrade = await stack.target.get({ url: VALID_URL, purpose: 'page' });
+    return (
+      rejected &&
+      downgrade.kind === 'failed' &&
+      downgrade.health === 'security_rejected' &&
+      paths.length === 2 &&
+      validatePublicUrl('https://www.openai.com:444/').ok === false
+    );
+  } finally {
+    stack.robots.clearCache();
+  }
 }
 
 async function wrt04(): Promise<boolean> {
-  const effective = Math.min(Date.parse(NOW) + 30_000, Date.parse(NOW) + 2_000);
-  const emitter = new EventEmitter();
-  let drained = false;
-  const onClose = (): void => {
-    drained = true;
-    emitter.removeListener('close', onClose);
-  };
-  emitter.on('close', onClose);
-  emitter.emit('close');
-  return (
-    Number.isFinite(effective) &&
-    effective === Date.parse(NOW) + 2_000 &&
-    drained &&
-    process.versions.node.startsWith('24.')
-  );
+  const script = [
+    "const http=require('node:http');",
+    'let uncaught=0,unhandled=0,done=0,responseSeen=0,requestClosed=0;',
+    "process.on('uncaughtException',()=>{uncaught++});",
+    "process.on('unhandledRejection',()=>{unhandled++});",
+    "const server=http.createServer((req,res)=>{ if(req.url==='/no-response'){return;} if(req.url==='/silent'){res.writeHead(200); res.write('first'); setTimeout(()=>res.end('last'),250);return;} res.end('ok'); });",
+    "server.listen(0,'127.0.0.1',()=>{ const port=server.address().port; for(const path of ['/no-response','/silent']){ const req=http.request({hostname:'127.0.0.1',port,path},res=>{responseSeen++;res.on('data',()=>{});res.on('end',()=>{done++});res.on('close',()=>{done++});}); req.setTimeout(60,()=>req.destroy()); req.on('error',()=>{}); req.on('close',()=>{requestClosed++}); req.end(); } setTimeout(()=>{server.closeAllConnections(); server.close(()=>process.stdout.write(JSON.stringify({done,responseSeen,requestClosed,uncaught,unhandled})));},180); });",
+  ].join('');
+  try {
+    const result = await execFileAsync(process.execPath, ['-e', script], {
+      timeout: 5_000,
+      windowsHide: true,
+      maxBuffer: 32_000,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+    const parsed = JSON.parse(result.stdout) as {
+      done?: number;
+      responseSeen?: number;
+      requestClosed?: number;
+      uncaught?: number;
+      unhandled?: number;
+    };
+    const checks = {
+      node24: process.versions.node.startsWith('24.'),
+      completion:
+        parsed.requestClosed === 2 && parsed.responseSeen !== undefined && parsed.responseSeen >= 1,
+      uncaught: parsed.uncaught === 0,
+      unhandled: parsed.unhandled === 0,
+    };
+    if (!Object.values(checks).every(Boolean)) {
+      throw new Error(
+        `wrt04 failed checks: ${Object.entries(checks)
+          .filter(([, ok]) => !ok)
+          .map(([label]) => label)
+          .join(',')} result=${JSON.stringify(parsed)}`,
+      );
+    }
+    return true;
+  } catch (error) {
+    throw new Error(`wrt04 child failed: ${error instanceof Error ? error.message : 'unknown'}`, {
+      cause: error,
+    });
+  }
 }
 
 async function wrt05(): Promise<boolean> {
   const rules = parseRobotsText('User-agent: *\nDisallow: /private\nAllow: /private/public\n');
-  return (
+  const atLimit = await runPublicStackProbe({
+    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    responses: [
+      {
+        statusCode: 200,
+        headers: { 'content-type': 'text/plain' },
+        body: robotsBody(MAX_ROBOTS_RESPONSE_BYTES),
+      },
+      {
+        statusCode: 200,
+        headers: { 'content-type': 'text/html' },
+        body: Buffer.from('<html></html>'),
+      },
+    ],
+  });
+  const overPaths: string[] = [];
+  const overDestroyed = { count: 0 };
+  const overStack = createPublicWatchHttpStack({
+    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    request: scriptedRequestFactory(
+      [
+        {
+          statusCode: 200,
+          headers: { 'content-type': 'text/plain' },
+          body: robotsBody(MAX_ROBOTS_RESPONSE_BYTES + 1),
+        },
+      ],
+      overPaths,
+      overDestroyed,
+    ),
+  });
+  let over: { kind: string; health?: string };
+  try {
+    over = await overStack.target.get({ url: VALID_URL, purpose: 'page' });
+  } finally {
+    overStack.robots.clearCache();
+  }
+  const verdict =
     rules.ok &&
     evaluateRobotsPath(rules.rules, 'aibrowse', '/private') === false &&
     evaluateRobotsPath(rules.rules, 'aibrowse', '/private/public') === true &&
     MAX_ROBOTS_RESPONSE_BYTES === 512_000 &&
-    Buffer.alloc(MAX_ROBOTS_RESPONSE_BYTES).length === 512_000
+    robotsBody(MAX_ROBOTS_RESPONSE_BYTES).length === 512_000 &&
+    atLimit.result.kind === 'ok' &&
+    atLimit.paths.length === 2 &&
+    over.kind === 'failed' &&
+    // RobotsPolicy intentionally maps the internal budget failure to the
+    // public target's fail-closed `unavailable` classification.
+    over.health === 'unavailable' &&
+    overDestroyed.count > 0 &&
+    overPaths.length === 1;
+  const missingRobots = await runPublicStackProbe({
+    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    responses: [
+      { statusCode: 404, headers: { 'content-type': 'text/plain' }, body: Buffer.alloc(0) },
+      {
+        statusCode: 200,
+        headers: { 'content-type': 'text/html' },
+        body: Buffer.from('<html></html>'),
+      },
+    ],
+  });
+  const unavailableTarget = await runPublicStackProbe({
+    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    responses: [
+      {
+        statusCode: 200,
+        headers: { 'content-type': 'text/plain' },
+        body: Buffer.from('User-agent: *\nAllow: /\n'),
+      },
+      {
+        statusCode: 429,
+        headers: { 'content-type': 'text/html' },
+        body: Buffer.from('<html>captcha</html>'),
+      },
+    ],
+  });
+  const clock = new FakeClock(0);
+  const gate = new HostRequestGate({ clock, gapMs: 5_000 });
+  const first = await gate.acquire('www.openai.com:443');
+  const secondPromise = gate.acquire('www.openai.com:443');
+  clock.advanceTo(4_999);
+  const beforeGap = gate.lastStartedAt('www.openai.com:443');
+  clock.advanceTo(5_000);
+  const second = await secondPromise;
+  const captcha = classifySnapshotSuspicion({
+    url: 'https://example.com/captcha',
+    title: '',
+    visibleText: '不可信页面正文',
+    headings: [],
+    links: [],
+    buttons: [{ id: 'submit', text: '提交', isSubmit: true }],
+    meta: {
+      capturedAt: 0,
+      documentId: 1,
+      readyState: 'complete',
+      degraded: 'none',
+      warnings: [],
+    },
+  });
+  const extraChecks = {
+    missingRobots: missingRobots.result.kind === 'ok' && missingRobots.paths.length === 2,
+    unavailableTarget:
+      unavailableTarget.result.kind === 'ok' &&
+      unavailableTarget.result.meta.statusCode === 429 &&
+      classifyPublicHttpStatus(unavailableTarget.result.meta.statusCode) === 'unavailable',
+    statusClass: classifyPublicHttpStatus(429) === 'unavailable',
+    firstGate: first.ok,
+    gapHeld: beforeGap === 0,
+    secondGate: second.ok,
+    secondTimestamp: gate.lastStartedAt('www.openai.com:443') === 5_000,
+    captcha: captcha === 'captcha',
+  };
+  if (!Object.values(extraChecks).every(Boolean)) {
+    throw new Error(
+      `wrt05 failed checks: ${Object.entries(extraChecks)
+        .filter(([, ok]) => !ok)
+        .map(([label]) => label)
+        .join(',')}`,
+    );
+  }
+  return (
+    verdict &&
+    missingRobots.result.kind === 'ok' &&
+    missingRobots.paths.length === 2 &&
+    unavailableTarget.result.kind === 'ok' &&
+    unavailableTarget.result.meta.statusCode === 429 &&
+    classifyPublicHttpStatus(429) === 'unavailable' &&
+    first.ok &&
+    beforeGap === 0 &&
+    second.ok &&
+    gate.lastStartedAt('www.openai.com:443') === 5_000 &&
+    captcha === 'captcha'
   );
 }
 
@@ -545,8 +890,124 @@ async function wrt08(): Promise<boolean> {
     'utf8',
   );
   const parsed = await parseFeedXml(duplicate);
-  const cycle = ['A', 'B', 'A', 'B', 'A'];
-  return parsed.ok && parsed.value.items.length === 1 && cycle.join('') === 'ABABA';
+  if (!parsed.ok || parsed.value.items.length !== 1) return false;
+  const dir = mkdtempSync(join(tmpdir(), 'aibrowse-d10-wrt08-'));
+  const db = openDb(join(dir, 'watch.db'));
+  runWatchMigrations(db);
+  const repo = new WatchRepository(db);
+  const rule: WatchRule = {
+    id: 'wrt08-rule',
+    version: 1,
+    sourceId: 'source-d10',
+    kind: 'feed',
+    state: 'enabled',
+    pauseReason: null,
+    desiredEnabled: true,
+    muted: false,
+    accessMode: 'public',
+    schedule: { kind: 'interval', intervalMinutes: 60 },
+    target: { type: 'feed', feedUrl: VALID_URL, format: 'rss2' },
+    condition: null,
+    notificationLevel: 'important',
+    showDetails: true,
+    sourceRowVersion: 1,
+    sourceLocatorFingerprint: 'b'.repeat(64),
+    nextDueAt: null,
+    lastConsumedScheduledFor: null,
+    lastDailyLocalDate: null,
+    consecutiveFailures: 0,
+    backoffUntil: null,
+    baselineVersion: 0,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const source: SourceWatchProjection = {
+    sourceId: rule.sourceId,
+    rowVersion: 1,
+    enabled: true,
+    deletedAt: null,
+    scope: 'page',
+    canonicalKey: VALID_URL,
+  };
+  const projection = async (value: string): Promise<FeedProjection | null> => {
+    const result = await parseFeedXml(validFeed('wrt08', value));
+    if (!result.ok) return null;
+    return {
+      schemaVersion: 1,
+      ruleId: rule.id,
+      sourceId: rule.sourceId,
+      finalUrl: VALID_URL,
+      capturedAt: NOW,
+      documentId: null,
+      contentHash: sha256Hex(result.canonicalJson),
+      byteLength: result.byteLength,
+      value: result.value,
+    };
+  };
+  const clock = new FakeClock(Date.parse(NOW));
+  const processing = new WatchProcessingServiceImpl({ repo, clock });
+  const values = ['A', 'B', 'A', 'B', 'A'];
+  try {
+    if (!repo.insertRule(rule).ok) return false;
+    for (let index = 0; index < values.length; index += 1) {
+      const currentRule = repo.getRule(rule.id);
+      if (currentRule === null) return false;
+      const hint = processing.prepareAcquisition({ rule: currentRule });
+      if (!hint.ok) return false;
+      const current = await projection(values[index]!);
+      if (current === null) return false;
+      const runId = `wrt08-run-${index}`;
+      if (
+        !repo.insertRun({
+          id: runId,
+          ruleId: rule.id,
+          requestKey: runId,
+          trigger: 'manual',
+          scheduledFor: null,
+        }).ok
+      )
+        return false;
+      if (!repo.transitionRun(runId, 'queued', { status: 'running', startedAt: NOW }).ok)
+        return false;
+      const processed = processing.process({
+        rule: currentRule,
+        runId,
+        baselineHint: hint.baselineHint,
+        acquisition: {
+          ok: true,
+          kind: 'projection',
+          projection: current,
+          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          responseMetadata: { httpStatus: 200, etag: null, lastModified: null, warnings: [] },
+        },
+        sourceAfterAcquisition: source,
+      });
+      if (!processed.ok) return false;
+    }
+    const events = repo.listEventsByRule(rule.id);
+    if (events.length !== 1) return false;
+    const observations = db
+      .prepare(
+        'SELECT idempotency_key,change_fingerprint FROM watch_event_observations WHERE event_id = ? ORDER BY sequence',
+      )
+      .all(events[0]!.id) as Array<{ idempotency_key: string; change_fingerprint: string }>;
+    const items = repo.listEventItems(events[0]!.id);
+    const afterValues = items
+      .map((item) => item.after)
+      .filter(
+        (value): value is Extract<typeof value, { kind: 'present' }> => value.kind === 'present',
+      )
+      .map((value) => value.excerpt);
+    const verdict =
+      observations.length >= 4 &&
+      new Set(observations.map((row) => row.idempotency_key)).size === observations.length &&
+      afterValues.join(',') === 'B,A,B,A' &&
+      items.every((item) => item.before !== undefined && item.after !== undefined);
+    return verdict;
+  } finally {
+    repo.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function wrt09(): Promise<boolean> {
@@ -581,12 +1042,66 @@ async function wrt11(): Promise<boolean> {
     '<html><body><h1>正文</h1><script>window.__d10=1</script><iframe src="http://127.0.0.1/"><p>私网</p></iframe><table><tr><th>A</th></tr><tr><td>B</td></tr></table></body></html>',
     'utf8',
   );
-  const result = readPublicHtml(hostile, VALID_URL);
-  return (
-    result.ok &&
-    !JSON.stringify(result.channels).includes('私网') &&
-    !JSON.stringify(result.channels).includes('__d10')
-  );
+  const parsed = readPublicHtml(hostile, VALID_URL);
+  if (
+    !parsed.ok ||
+    JSON.stringify(parsed.channels).includes('私网') ||
+    JSON.stringify(parsed.channels).includes('__d10')
+  )
+    return false;
+  const table = { headers: ['A'], rows: [['B']] };
+  const channels: DocumentChannels = {
+    mainText: '正文 A',
+    headings: [{ level: 1, text: '标题' }],
+    tables: [table],
+    links: [
+      { text: '同源', url: `${VALID_URL}?token=drop` },
+      { text: '跨源', url: 'https://other.example/link' },
+    ],
+  };
+  const tableFingerprint = computeTableHeaderFingerprint(table.headers);
+  if (tableFingerprint === null) return false;
+  const regions: RegionDescriptor[] = [
+    { kind: 'main-text', label: '正文' },
+    { kind: 'headings', label: '标题', levels: [1] },
+    { kind: 'table', label: '表格', headerFingerprint: tableFingerprint, occurrence: 0 },
+    { kind: 'links', label: '同源链接', sameOriginOnly: true },
+  ];
+  const preview = previewPageRegions(channels, regions);
+  const before = projectPageProjection({
+    channels,
+    regions,
+    ruleId: 'wrt11-rule',
+    sourceId: 'source-d10',
+    finalUrl: VALID_URL,
+    capturedAt: NOW,
+    documentId: '1',
+  });
+  const changedChannels = { ...channels, mainText: '正文 B' };
+  const after = projectPageProjection({
+    channels: changedChannels,
+    regions,
+    ruleId: 'wrt11-rule',
+    sourceId: 'source-d10',
+    finalUrl: VALID_URL,
+    capturedAt: '2026-09-01T00:00:01.000Z',
+    documentId: '2',
+  });
+  const ambiguous = projectPageProjection({
+    channels: { ...channels, tables: [table, table] },
+    regions: regions.map((region) =>
+      region.kind === 'table' ? { ...region, occurrence: 2 } : region,
+    ),
+    ruleId: 'wrt11-rule',
+    sourceId: 'source-d10',
+    finalUrl: VALID_URL,
+    capturedAt: NOW,
+    documentId: '1',
+  });
+  if (!preview.ok || preview.preview.some((item) => item.status !== 'matched')) return false;
+  if (!before.ok || !after.ok || ambiguous.ok) return false;
+  const diff = diffPageProjections(before.projection, after.projection);
+  return diff.pairs.length === 1 && diff.pairs[0]?.fieldKey === 'r0:main';
 }
 
 async function wrt12(): Promise<boolean> {
@@ -598,8 +1113,41 @@ async function wrt12(): Promise<boolean> {
       extra: 'unexpected',
     },
   };
+  const fieldCatalog = new Set(['r0:main']);
+  const changedSet = {
+    eventKind: 'changed',
+    fields: [
+      {
+        fieldKey: 'r0:main',
+        before: { kind: 'present', value: '旧' },
+        after: { kind: 'present', value: '新' },
+      },
+    ],
+  };
+  const warning = evaluateStructuredCondition({
+    condition: {
+      version: 1,
+      combine: 'all',
+      predicates: [
+        { fieldKey: 'r0:missing', operator: 'changed', operand: null, caseSensitive: false },
+      ],
+    },
+    changeSet: { eventKind: 'changed', fields: [] },
+    fieldCatalog: new Set(['r0:missing']),
+  });
+  const error = evaluateStructuredCondition({
+    condition: { version: 9, combine: 'all', predicates: [] },
+    changeSet: changedSet,
+    fieldCatalog,
+  });
   return (
-    validateChangeEvidencePair(pair) !== null && validateChangeEvidencePair(malformed) === null
+    validateChangeEvidencePair(pair) !== null &&
+    validateChangeEvidencePair(malformed) === null &&
+    warning.ok &&
+    warning.matched === false &&
+    warning.warnings.includes('field-absent') &&
+    !error.ok &&
+    error.code === 'condition-version-future'
   );
 }
 
@@ -648,11 +1196,214 @@ async function wrt14(): Promise<boolean> {
       canonicalUrl: VALID_URL,
     },
   ]);
-  return (
+  const sharingOk =
     metadataProjection.events.every((event) => event.evidence === undefined) &&
     blockedProjection.events.length === 0 &&
-    !JSON.stringify(metadataProjection).includes('Source note')
-  );
+    !JSON.stringify(metadataProjection).includes('Source note');
+  const dir = mkdtempSync(join(tmpdir(), 'aibrowse-d10-wrt14-'));
+  const db = openDb(join(dir, 'watch.db'));
+  runWatchMigrations(db);
+  const repo = new WatchRepository(db);
+  const rule: WatchRule = {
+    id: 'wrt14-rule',
+    version: 1,
+    sourceId: 'source-d10',
+    kind: 'feed',
+    state: 'enabled',
+    pauseReason: null,
+    desiredEnabled: true,
+    muted: false,
+    accessMode: 'public',
+    schedule: { kind: 'interval', intervalMinutes: 60 },
+    target: { type: 'feed', feedUrl: VALID_URL, format: 'rss2' },
+    condition: null,
+    notificationLevel: 'important',
+    showDetails: true,
+    sourceRowVersion: 1,
+    sourceLocatorFingerprint: 'c'.repeat(64),
+    nextDueAt: null,
+    lastConsumedScheduledFor: null,
+    lastDailyLocalDate: null,
+    consecutiveFailures: 0,
+    backoffUntil: null,
+    baselineVersion: 0,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const fail = (label: string): false => {
+    void label;
+    return false;
+  };
+  try {
+    if (!repo.insertRule(rule).ok) return fail('insert rule');
+    if (
+      !repo.createDigestSchedule({
+        id: 'wrt14-schedule',
+        sourceIds: [rule.sourceId],
+        localTime: '09:00',
+        timeZone: 'UTC',
+        aiEnabled: true,
+        nextDueAt: '2026-09-02T09:00:00.000Z',
+        nowIso: NOW,
+      }).ok
+    )
+      return fail('create schedule');
+    const eventId = 'wrt14-event';
+    const eventPair = makePair('旧', '新');
+    const parsed = await parseFeedXml(validFeed('wrt14', '新'));
+    if (!parsed.ok) return fail('parse feed');
+    const projection: FeedProjection = {
+      schemaVersion: 1,
+      ruleId: rule.id,
+      sourceId: rule.sourceId,
+      finalUrl: VALID_URL,
+      capturedAt: '2026-09-01T00:00:01.000Z',
+      documentId: null,
+      contentHash: sha256Hex(parsed.canonicalJson),
+      byteLength: parsed.byteLength,
+      value: parsed.value,
+    };
+    if (
+      !repo.insertRun({
+        id: 'wrt14-acquisition-run',
+        ruleId: rule.id,
+        requestKey: 'wrt14-run-key',
+        trigger: 'manual',
+        scheduledFor: null,
+      }).ok
+    )
+      return fail('insert run');
+    if (
+      !repo.transitionRun('wrt14-acquisition-run', 'queued', { status: 'running', startedAt: NOW })
+        .ok
+    )
+      return fail('start run');
+    if (
+      !repo.writeEventResult({
+        path: 'create',
+        rule,
+        runId: 'wrt14-acquisition-run',
+        sourceAfterRevalidationRowVersion: 1,
+        identity: {
+          sourceId: rule.sourceId,
+          sourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+          expectedBaselineVersion: null,
+        },
+        baseline: {
+          projectionType: 'feed',
+          projectionJson: JSON.stringify(projection.value),
+          contentHash: projection.contentHash,
+          byteLength: projection.byteLength,
+          finalUrl: projection.finalUrl,
+          capturedAt: projection.capturedAt,
+          documentId: null,
+          validators: { etag: null, lastModified: null },
+        },
+        event: {
+          event: {
+            id: eventId,
+            ruleId: rule.id,
+            sourceId: rule.sourceId,
+            eventKind: 'changed',
+            importance: 'important',
+            idempotencyKey: 'wrt14-event-idempotency',
+            changeFingerprint: 'd'.repeat(64),
+            firstObservedAt: '2026-09-01T00:00:01.000Z',
+            lastObservedAt: '2026-09-01T00:00:01.000Z',
+            itemCount: 1,
+            readAt: null,
+          },
+          items: [eventPair],
+        },
+        run: {
+          expectedStatus: 'running',
+          outcome: { kind: 'event-created', eventId },
+          health: { state: 'healthy', acquisition: 'rss', code: null },
+          responseMetadataJson: JSON.stringify({
+            schemaVersion: 1,
+            http: null,
+            conditionWarnings: [],
+          }),
+        },
+        audits: [{ id: 'wrt14-audit', reasonCode: 'event-created', createdAt: NOW }],
+      }).ok
+    )
+      return fail('write event');
+    const schedule = repo.getDigestSchedule('wrt14-schedule');
+    if (schedule === null) return fail('get schedule');
+    const reserved = repo.reserveDigestRun({
+      scheduleId: schedule.id,
+      expectedVersion: schedule.version,
+      expectedNextDueAt: schedule.nextDueAt,
+      expectedLastConsumedScheduledFor: schedule.lastConsumedScheduledFor,
+      expectedLastDailyLocalDate: schedule.lastDailyLocalDate,
+      runId: 'wrt14-digest-run',
+      requestKey: 'wrt14-request',
+      logicalDate: '2026-09-01',
+      nextDueAt: '2026-09-03T09:00:00.000Z',
+      nowIso: '2026-09-01T01:00:00.000Z',
+    });
+    if (!reserved.ok) return fail(`reserve ${reserved.code}`);
+    const observation = repo
+      .readDigestJournalSlice(reserved.run.id)
+      ?.find((entry) => entry.observation !== null)?.observation;
+    if (observation === undefined || observation === null) return fail('observation');
+    const digestFacts = buildDigestFacts({
+      scheduleId: schedule.id,
+      digestRunId: reserved.run.id,
+      batchIndex: 0,
+      period: reserved.run.period,
+      runStats: { changed: 1, failed: 0, unchanged: 0 },
+      observations: [observation],
+      fetchedAt: reserved.run.period.toInclusive,
+    });
+    if (digestFacts === null) return fail('facts');
+    if (
+      !repo.commitDigestBatch({
+        artifactId: 'wrt14-artifact',
+        run: reserved.run,
+        expectedNextSequence: reserved.run.nextSequence,
+        firstSequence: reserved.run.nextSequence + 1,
+        lastSequence: observation.sequence,
+        facts: digestFacts,
+        createdAt: '2026-09-01T01:00:00.000Z',
+        aiEnabled: true,
+      }).ok
+    )
+      return fail('commit digest');
+    const artifact = repo.getDigestArtifact('wrt14-artifact');
+    if (artifact === null) return fail('artifact');
+    const staleClaim = repo.claimDigestProvider({
+      id: artifact.id,
+      scheduleId: schedule.id,
+      factsRevision: artifact.factsRevision + 1,
+      factsHash: artifact.factsHash,
+      nowIso: '2026-09-01T01:00:00.500Z',
+    });
+    if (staleClaim !== null) return fail('facts revision CAS');
+    const claimed = repo.claimDigestProvider({
+      id: artifact.id,
+      scheduleId: schedule.id,
+      factsRevision: artifact.factsRevision,
+      factsHash: artifact.factsHash,
+      nowIso: '2026-09-01T01:00:01.000Z',
+    });
+    if (claimed === null) return fail('claim');
+    if (!repo.deleteEventWithScrub(eventId, '2026-09-01T01:00:02.000Z').ok) return fail('scrub');
+    const late = repo.finishClaimedDigest({
+      id: claimed.id,
+      factsRevision: claimed.factsRevision,
+      factsHash: claimed.factsHash,
+      state: 'succeeded',
+      code: 'success',
+      explanationJson: JSON.stringify({ sections: [{ eventIds: [eventId], explanation: '迟到' }] }),
+      nowIso: '2026-09-01T01:00:03.000Z',
+    });
+    return sharingOk && late.ok === false && late.code === 'run-state-conflict';
+  } finally {
+    repo.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function wrt15(): Promise<boolean> {
@@ -691,57 +1442,290 @@ async function wrt16(): Promise<boolean> {
   });
   scheduler.stop();
   const flattened = due.flat();
-  return (
-    due.length > 0 &&
-    due.every((batch) => batch.length === 1) &&
-    new Set(flattened).size === 2 &&
-    daily !== null
-  );
+  const dir = mkdtempSync(join(tmpdir(), 'aibrowse-d10-wrt16-'));
+  const dbPath = join(dir, 'watch.db');
+  let repo: WatchRepository | null = null;
+  try {
+    const db = openDb(dbPath);
+    runWatchMigrations(db);
+    repo = new WatchRepository(db);
+    const rule: WatchRule = {
+      id: 'wrt16-rule',
+      version: 1,
+      sourceId: 'source-d10',
+      kind: 'feed',
+      state: 'enabled',
+      pauseReason: null,
+      desiredEnabled: true,
+      muted: false,
+      accessMode: 'public',
+      schedule: { kind: 'interval', intervalMinutes: 15 },
+      target: { type: 'feed', feedUrl: VALID_URL, format: 'rss2' },
+      condition: null,
+      notificationLevel: 'normal',
+      showDetails: false,
+      sourceRowVersion: 1,
+      sourceLocatorFingerprint: 'e'.repeat(64),
+      nextDueAt: NOW,
+      lastConsumedScheduledFor: null,
+      lastDailyLocalDate: null,
+      consecutiveFailures: 0,
+      backoffUntil: null,
+      baselineVersion: 0,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    if (!repo.insertRule(rule).ok) return false;
+    const advanced = computeNextDueAt({
+      rule,
+      consumedScheduledFor: NOW,
+      nowMs: Date.parse(NOW),
+    });
+    if (advanced === null) return false;
+    const reservation = repo.reserveScheduledRun({
+      ruleId: rule.id,
+      runId: 'wrt16-run',
+      requestKey: `${rule.id}|${NOW}`,
+      trigger: 'catch-up',
+      scheduledFor: NOW,
+      expectedNextDueAt: NOW,
+      advancedNextDueAt: advanced.nextDueAt,
+      advancedLastDailyLocalDate: advanced.lastDailyLocalDate,
+      nowIso: NOW,
+    });
+    if (!reservation.ok) return false;
+    const reservedRule = repo.getRule(rule.id);
+    if (reservedRule === null) return false;
+    repo.dispose();
+    repo = null;
+    const reopened = openWatchStore({
+      dbPath,
+      backupsDir: join(dir, 'backups'),
+      reconcile: () => ({ ok: true, reason: null }),
+    });
+    if (reopened.mode !== 'normal') return false;
+    repo = reopened.repo;
+    const oldReplay = repo.reserveScheduledRun({
+      ruleId: rule.id,
+      runId: 'wrt16-replay',
+      requestKey: `${rule.id}|${NOW}`,
+      trigger: 'catch-up',
+      scheduledFor: NOW,
+      expectedNextDueAt: NOW,
+      advancedNextDueAt: advanced.nextDueAt,
+      advancedLastDailyLocalDate: advanced.lastDailyLocalDate,
+      nowIso: NOW,
+    });
+    const recovered = repo.getRun('wrt16-run');
+    const afterRestart = repo.getRule(rule.id);
+    const newAdvanced =
+      afterRestart === null || afterRestart.nextDueAt === null
+        ? null
+        : computeNextDueAt({
+            rule: afterRestart,
+            consumedScheduledFor: afterRestart.nextDueAt,
+            nowMs: Date.parse(NOW) + 60_000,
+          });
+    const next =
+      afterRestart && afterRestart.nextDueAt && newAdvanced
+        ? repo.reserveScheduledRun({
+            ruleId: rule.id,
+            runId: 'wrt16-next',
+            requestKey: `${rule.id}|${afterRestart.nextDueAt}`,
+            trigger: 'catch-up',
+            scheduledFor: afterRestart.nextDueAt,
+            expectedNextDueAt: afterRestart.nextDueAt,
+            advancedNextDueAt: newAdvanced.nextDueAt,
+            advancedLastDailyLocalDate: newAdvanced.lastDailyLocalDate,
+            nowIso: '2026-09-01T00:01:00.000Z',
+          })
+        : null;
+    return (
+      due.length > 0 &&
+      due.every((batch) => batch.length === 1) &&
+      new Set(flattened).size === 2 &&
+      daily !== null &&
+      reservedRule.nextDueAt === advanced.nextDueAt &&
+      oldReplay.ok === false &&
+      recovered?.status === 'interrupted' &&
+      next?.ok === true
+    );
+  } finally {
+    if (repo !== null && !repo.isDisposed) repo.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function wrt17(): Promise<boolean> {
   const dir = mkdtempSync(join(tmpdir(), 'aibrowse-d10-wrt17-'));
-  let db: ReturnType<typeof openDb> | null = null;
+  const sourceDbPath = join(dir, 'sources.db');
+  const watchDbPath = join(dir, 'watch.db');
+  const backupsDir = join(dir, 'backups');
+  mkdirSync(backupsDir, { recursive: true });
+  let sourceDb: ReturnType<typeof openDb> | null = null;
+  let repo: WatchRepository | null = null;
+  let recoveredRepo: WatchRepository | null = null;
   let service: SourceServiceImpl | null = null;
-  const prepared: SourceWatchMutation[][] = [];
-  const observer: SourceLifecycleObserver = {
-    prepare(changes) {
-      prepared.push(changes.map((change) => ({ ...change })));
-      return { ok: true };
-    },
-    commit() {
-      return { ok: true };
-    },
-    abort() {},
-  };
+  let coordinator: WatchLifecycleCoordinator | null = null;
+  const networkCalls = 0;
   try {
-    db = openDb(join(dir, 'sources.db'));
-    runMigrations(db);
-    service = new SourceServiceImpl({ db, now: () => Date.parse(NOW), observer });
+    sourceDb = openDb(sourceDbPath);
+    runMigrations(sourceDb);
+    coordinator = new WatchLifecycleCoordinator({ nowMs: () => Date.parse(NOW) });
+    service = new SourceServiceImpl({
+      db: sourceDb,
+      now: () => Date.parse(NOW),
+      observer: coordinator,
+    });
+    const initialWatchDb = openDb(watchDbPath);
+    runWatchMigrations(initialWatchDb);
+    repo = new WatchRepository(initialWatchDb);
+    const reader = (sourceId: string) => service!.getSourceWatchProjection(sourceId);
+    coordinator.bind(repo, reader);
+
     const added = await service.addManual({
       scope: 'page',
       url: 'https://www.openai.com/d10-source',
       name: 'D10 source',
     });
     if (!added.ok) return false;
-    const firstVersion = prepared[0]?.[0]?.after?.rowVersion;
-    prepared.length = 0;
+
+    const initialProjectionResult = service.getSourceWatchProjection(added.source.id);
+    if (initialProjectionResult.status !== 'found') return false;
+    const initialProjection = initialProjectionResult.projection;
+    const rule: WatchRule = {
+      id: 'wrt17-rule',
+      version: 1,
+      sourceId: added.source.id,
+      kind: 'feed',
+      state: 'enabled',
+      pauseReason: null,
+      desiredEnabled: true,
+      muted: false,
+      accessMode: 'public',
+      schedule: { kind: 'interval', intervalMinutes: 60 },
+      target: { type: 'feed', feedUrl: added.source.url, format: 'rss2' },
+      condition: null,
+      notificationLevel: 'normal',
+      showDetails: false,
+      sourceRowVersion: initialProjection.rowVersion,
+      sourceLocatorFingerprint: computeSourceLocatorFingerprint({
+        sourceId: initialProjection.sourceId,
+        scope: initialProjection.scope,
+        canonicalKey: initialProjection.canonicalKey,
+        kind: 'feed',
+        canonicalTargetUrl: added.source.url,
+      }),
+      nextDueAt: null,
+      lastConsumedScheduledFor: null,
+      lastDailyLocalDate: null,
+      consecutiveFailures: 0,
+      backoffUntil: null,
+      baselineVersion: 0,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    if (repo === null || !repo.insertRule(rule).ok) return false;
+
     const stale = await service.updateManual(added.source.id, { name: 'stale' }, 99);
-    if (stale.ok || prepared.length !== 0) return false;
+    if (stale.ok) return false;
     const updated = await service.updateManual(added.source.id, { name: 'updated' }, 1);
     if (!updated.ok) return false;
-    const secondVersion = prepared[0]?.[0]?.after?.rowVersion;
     const readable = await service.get(added.source.id, 'user');
     if (!readable.ok || readable.source.name !== 'updated') return false;
+    const afterUpdate = repo.getRule(rule.id);
+    if (afterUpdate === null || afterUpdate.sourceRowVersion !== 2) return false;
+
+    const disabled = await service.disableManual(added.source.id, 2);
+    if (!disabled.ok) return false;
+    const paused = repo.getRule(rule.id);
+    if (paused === null || paused.state !== 'paused' || paused.pauseReason !== 'source-disabled') {
+      return false;
+    }
+    const restored = await service.restoreManual(added.source.id, 3);
+    if (!restored.ok) return false;
+    const restoredRule = repo.getRule(rule.id);
+    if (
+      restoredRule === null ||
+      restoredRule.state !== 'enabled' ||
+      restoredRule.pauseReason !== null ||
+      restoredRule.sourceRowVersion !== 4
+    ) {
+      return false;
+    }
+
+    const currentProjectionResult = service.getSourceWatchProjection(added.source.id);
+    if (currentProjectionResult.status !== 'found') return false;
+    const currentProjection = currentProjectionResult.projection;
+    const abortMutation = {
+      mutationId: 'wrt17-abort',
+      operation: 'disable' as const,
+      before: currentProjection,
+      after: { ...currentProjection, rowVersion: currentProjection.rowVersion + 1, enabled: false },
+    };
+    if (coordinator.prepare([abortMutation]).ok !== true) return false;
+    const pausedForAbort = repo.getRule(rule.id);
+    if (pausedForAbort === null || pausedForAbort.pauseReason !== 'source-disabled') return false;
+    coordinator.abort([abortMutation.mutationId]);
+    const afterAbort = repo.getRule(rule.id);
+    const abortIntent = repo.getSourceCleanupIntent(abortMutation.mutationId);
+    if (
+      afterAbort === null ||
+      afterAbort.state !== 'enabled' ||
+      afterAbort.sourceRowVersion !== 4 ||
+      abortIntent?.state !== 'aborted'
+    ) {
+      return false;
+    }
+
+    const crashMutation = {
+      mutationId: 'wrt17-crash',
+      operation: 'update' as const,
+      before: currentProjection,
+      after: { ...currentProjection, rowVersion: currentProjection.rowVersion + 1 },
+    };
+    if (coordinator.prepare([crashMutation]).ok !== true) return false;
+    const pausedForCrash = repo.getRule(rule.id);
+    if (pausedForCrash === null || pausedForCrash.pauseReason !== null) return false;
+    coordinator.dispose();
+    repo.dispose();
+    repo = null;
+
+    const reopened = openWatchStore({
+      dbPath: watchDbPath,
+      backupsDir,
+      nowMs: () => Date.parse(NOW),
+      reconcile: (reopenedRepo) => {
+        coordinator!.bind(reopenedRepo, reader);
+        return coordinator!.reconcileOnStartup(reopenedRepo, reader);
+      },
+    });
+    if (reopened.mode !== 'normal') return false;
+    recoveredRepo = reopened.repo;
+    const recoveredRule = recoveredRepo.getRule(rule.id);
+    if (
+      recoveredRule === null ||
+      recoveredRule.state !== 'enabled' ||
+      recoveredRule.pauseReason !== null ||
+      recoveredRule.sourceRowVersion !== 4 ||
+      recoveredRepo.listSourceCleanupIntents().length !== 0
+    ) {
+      return false;
+    }
+
     const token = service.issueDeleteConfirmToken(added.source.id);
     const deleted = await service.hardDeleteManual(added.source.id, token);
     const projection = service.getSourceWatchProjection(added.source.id);
+    const deletedRule = recoveredRepo.getRule(rule.id);
     return (
-      firstVersion === 1 && secondVersion === 2 && deleted.ok && projection.status === 'missing'
+      deleted.ok && projection.status === 'missing' && deletedRule === null && networkCalls === 0
     );
   } finally {
     service?.dispose();
-    if (db?.isOpen === true) db.close();
+    coordinator?.dispose();
+    if (repo !== null && !repo.isDisposed) repo.dispose();
+    if (recoveredRepo !== null && !recoveredRepo.isDisposed) recoveredRepo.dispose();
+    if (sourceDb?.isOpen === true) sourceDb.close();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -769,7 +1753,7 @@ export async function runWatchRedTeamScenarios(): Promise<WatchWrtOutcome[]> {
   const probes: readonly [
     string,
     () => Promise<boolean>,
-    'structural-proof' | 'real-observation',
+    'structural-proof' | 'real-observation' | 'honest-limit',
   ][] = [
     ['WRT-01', wrt01, 'structural-proof'],
     ['WRT-02', wrt02, 'structural-proof'],
@@ -778,9 +1762,11 @@ export async function runWatchRedTeamScenarios(): Promise<WatchWrtOutcome[]> {
     ['WRT-05', wrt05, 'structural-proof'],
     ['WRT-06', wrt06, 'structural-proof'],
     ['WRT-07', wrt07, 'structural-proof'],
-    ['WRT-08', wrt08, 'structural-proof'],
-    ['WRT-09', wrt09, 'real-observation'],
-    ['WRT-10', wrt10, 'real-observation'],
+    ['WRT-08', wrt08, 'real-observation'],
+    // These two use deterministic BrowserController-shaped fakes; they are not
+    // Electron task-tab observations and must not be reported as real-observation.
+    ['WRT-09', wrt09, 'structural-proof'],
+    ['WRT-10', wrt10, 'structural-proof'],
     ['WRT-11', wrt11, 'structural-proof'],
     ['WRT-12', wrt12, 'structural-proof'],
     ['WRT-13', wrt13, 'structural-proof'],
@@ -789,7 +1775,7 @@ export async function runWatchRedTeamScenarios(): Promise<WatchWrtOutcome[]> {
     ['WRT-16', wrt16, 'structural-proof'],
     ['WRT-17', wrt17, 'structural-proof'],
     ['WRT-18', wrt18, 'structural-proof'],
-    ['WRT-19', wrt19, 'real-observation'],
+    ['WRT-19', wrt19, 'honest-limit'],
   ];
   const results: WatchWrtOutcome[] = [];
   for (const [id, probe, evidenceKind] of probes) {
@@ -798,12 +1784,23 @@ export async function runWatchRedTeamScenarios(): Promise<WatchWrtOutcome[]> {
         outcome(
           id,
           await probe(),
-          evidenceKind === 'real-observation' ? '真实/受控观察完成' : '结构性夹具通过',
+          evidenceKind === 'real-observation'
+            ? '真实/受控观察完成'
+            : evidenceKind === 'honest-limit'
+              ? '诚实限制：仅完成结构性证明，真实 Electron acquisition 未运行'
+              : '结构性夹具通过',
           evidenceKind,
         ),
       );
-    } catch {
-      results.push(outcome(id, false, '夹具受控失败', evidenceKind));
+    } catch (error) {
+      results.push(
+        outcome(
+          id,
+          false,
+          id === 'WRT-04' && error instanceof Error ? error.message : '夹具受控失败',
+          evidenceKind,
+        ),
+      );
     }
   }
   return results;

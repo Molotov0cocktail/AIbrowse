@@ -21,7 +21,7 @@ describe('D10 bounded live Watch scenarios', () => {
 
   it('默认不触网，仍为每个场景生成一次台账', async () => {
     const report = await runWatchLiveScenarios();
-    expect(report.ok).toBe(true);
+    expect(report.ok).toBe(false);
     expect(report.entries).toHaveLength(6);
     expect(
       report.entries.find((entry) => entry.scenario === 'wl-provider-digest')?.resultKind,
@@ -32,7 +32,29 @@ describe('D10 bounded live Watch scenarios', () => {
         report.entries.map((entry) => entry.scenario),
       ),
     ).toEqual([]);
-    expect(validateWatchLiveLedger(report.entries)).toEqual([]);
+    expect(validateWatchLiveLedger(report.entries)).toEqual(
+      expect.arrayContaining([
+        'wl-public-rss：真实场景未实际运行',
+        'wl-robots：真实场景未实际运行',
+        'wl-redirect：真实场景未实际运行',
+        'wl-resource-probe：真实场景未实际运行',
+      ]),
+    );
+  });
+
+  it('公网成功但请求台账为零时不得 PASS', async () => {
+    const report = await runWatchLiveScenarios({
+      publicPort: {
+        run: async () => ({ requestCount: 0, status: 200, httpClass: '2xx' }),
+      },
+      resourcePort: {
+        probe: async () => ({ httpClass: 'resource-probe' }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries.find((entry) => entry.scenario === 'wl-public-rss')).toMatchObject({
+      resultKind: 'failed-product',
+    });
   });
 
   it('拒绝重复执行和超过请求上限', () => {
@@ -83,7 +105,19 @@ describe('D10 bounded live Watch scenarios', () => {
       resourcePort: {
         probe: async (scenario) => {
           count(scenario.id);
-          return { httpClass: 'zero-residuals' };
+          return {
+            httpClass: 'zero-residuals',
+            observedForMs: 1,
+            samples: 2,
+            residuals: {
+              servers: 0,
+              timers: 0,
+              databases: 0,
+              taskTabs: 0,
+              children: 0,
+              tempDirs: 0,
+            },
+          };
         },
       },
     });

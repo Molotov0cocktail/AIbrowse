@@ -56,6 +56,16 @@ export interface WatchLiveResourcePort {
   ): Promise<{
     httpClass: string;
     errorCode?: string;
+    observedForMs?: number;
+    samples?: number;
+    residuals?: {
+      servers: number;
+      timers: number;
+      databases: number;
+      taskTabs: number;
+      children: number;
+      tempDirs: number;
+    };
   }>;
 }
 
@@ -116,11 +126,28 @@ export async function runWatchLiveScenarios(
           });
           continue;
         }
+        if (scenario.url === undefined) {
+          entries.push({
+            scenario: scenario.id,
+            requestCount: 0,
+            resultKind: 'failed-fixture',
+            httpClass: '公网目标缺失',
+            purpose: scenario.purpose,
+          });
+          continue;
+        }
         const result = await options.publicPort.run(scenario, controller.signal);
+        const resultKindValue: WatchLiveResultKind =
+          result.status !== undefined &&
+          result.status >= 200 &&
+          result.status < 300 &&
+          result.requestCount < 1
+            ? 'failed-product'
+            : resultKind(result);
         entries.push({
           scenario: scenario.id,
           requestCount: result.requestCount,
-          resultKind: resultKind(result),
+          resultKind: resultKindValue,
           httpClass: result.httpClass,
           purpose: scenario.purpose,
         });
@@ -197,13 +224,26 @@ export async function runWatchLiveScenarios(
         });
       } else {
         const result = await options.resourcePort.probe(scenario, controller.signal);
+        const observedForMs = result.observedForMs;
+        const sampleCount = result.samples;
+        const observed =
+          Number.isSafeInteger(observedForMs) &&
+          (observedForMs ?? -1) > 0 &&
+          Number.isSafeInteger(sampleCount) &&
+          (sampleCount ?? -1) >= 2 &&
+          result.residuals !== undefined &&
+          Object.values(result.residuals).every(
+            (value) => Number.isSafeInteger(value) && value === 0,
+          );
         entries.push({
           scenario: scenario.id,
           requestCount: 0,
-          resultKind: resultKind({
-            status: result.errorCode === undefined ? 200 : undefined,
-            errorCode: result.errorCode,
-          }),
+          resultKind: observed
+            ? resultKind({
+                status: result.errorCode === undefined ? 200 : undefined,
+                errorCode: result.errorCode,
+              })
+            : 'failed-product',
           httpClass: result.httpClass,
           purpose: scenario.purpose,
         });

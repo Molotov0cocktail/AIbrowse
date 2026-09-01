@@ -32,7 +32,7 @@ describe('D10 Watch privacy scan', () => {
       allowed
         .filter((expectation) => expectation.canaryKind === 'url-token')
         .map((item) => item.surface),
-    ).toEqual(['watch-db-evidence', 'renderer-dom', 'exports', 'provider-request']);
+    ).toEqual([]);
     expect(
       allowed
         .filter((expectation) => expectation.canaryKind === 'csv-formula')

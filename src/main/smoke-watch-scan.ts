@@ -37,6 +37,8 @@ export interface WatchScanExpectation {
   canaryKind: WatchCanaryKind;
   surface: WatchScanSurface;
   allowed: boolean;
+  /** Renderer may legitimately omit an event when the product UI is not on that route. */
+  presenceRequired?: boolean;
 }
 
 export interface WatchScanVerdict {
@@ -87,7 +89,9 @@ export function createWatchCanaries(): WatchCanary[] {
       label: 'reasoning/transcript canary',
       value: `REASON-${hex(12)}`,
     },
-    { kind: 'evidence-excerpt', label: 'Evidence 摘录 canary', value: `EVIDENCE-${hex(12)}` },
+    // Keep the random token Markdown-safe so the export oracle reads the
+    // product's escaped bytes without mistaking escaping for data loss.
+    { kind: 'evidence-excerpt', label: 'Evidence 摘录 canary', value: `EVIDENCE${hex(12)}` },
     { kind: 'url-token', label: 'URL query token canary', value: `URLTOKEN-${hex(12)}` },
     { kind: 'csv-formula', label: 'CSV 公式 canary', value: `=WATCHCSV(${hex(8)})` },
   ];
@@ -107,15 +111,14 @@ export const WATCH_SCAN_EXPECTATIONS: readonly WatchScanExpectation[] = [
       surface === 'renderer-dom' ||
       surface === 'exports' ||
       surface === 'provider-request',
+    presenceRequired: surface !== 'renderer-dom',
   })),
   ...zeroSurfaces.map((surface) => ({
     canaryKind: 'url-token' as const,
     surface,
-    allowed:
-      surface === 'watch-db-evidence' ||
-      surface === 'renderer-dom' ||
-      surface === 'exports' ||
-      surface === 'provider-request',
+    // Query/fragment/session tokens are forbidden on every surface, including
+    // otherwise permitted Evidence, exports and Provider projections.
+    allowed: false,
   })),
   ...zeroSurfaces.map((surface) => ({
     canaryKind: 'csv-formula' as const,
@@ -185,7 +188,11 @@ export function evaluateWatchScan(
   hits: number,
 ): WatchScanVerdict {
   const label = `${expectation.canaryKind}@${expectation.surface}`;
-  return { label, hits, ok: expectation.allowed ? hits >= 1 : hits === 0 };
+  return {
+    label,
+    hits,
+    ok: expectation.allowed ? expectation.presenceRequired === false || hits >= 1 : hits === 0,
+  };
 }
 
 export function summarizeWatchScan(verdicts: readonly WatchScanVerdict[]): {

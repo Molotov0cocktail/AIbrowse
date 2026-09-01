@@ -9,6 +9,8 @@ export interface WatchLiveScenario {
   purpose: string;
   targetClass: string;
   maxRequests: number;
+  /** Required for public-network scenarios so the runner cannot silently test a fixture. */
+  url?: string;
 }
 
 export const WATCH_LIVE_SCENARIO_MANIFEST: readonly WatchLiveScenario[] = [
@@ -18,6 +20,7 @@ export const WATCH_LIVE_SCENARIO_MANIFEST: readonly WatchLiveScenario[] = [
     purpose: '观察真实公开 RSS/Atom 兼容性与 Feed health',
     targetClass: 'public-rss-or-atom',
     maxRequests: 2,
+    url: 'https://feeds.bbci.co.uk/news/rss.xml',
   },
   {
     id: 'wl-robots',
@@ -25,6 +28,7 @@ export const WATCH_LIVE_SCENARIO_MANIFEST: readonly WatchLiveScenario[] = [
     purpose: '观察真实 robots 响应、边界与站点访问限制',
     targetClass: 'public-robots',
     maxRequests: 2,
+    url: 'https://www.rfc-editor.org/robots.txt',
   },
   {
     id: 'wl-redirect',
@@ -32,6 +36,7 @@ export const WATCH_LIVE_SCENARIO_MANIFEST: readonly WatchLiveScenario[] = [
     purpose: '观察真实公开重定向逐跳校验与 HTTP 分类',
     targetClass: 'public-redirect',
     maxRequests: 3,
+    url: 'https://httpbin.org/redirect/1',
   },
   {
     id: 'wl-provider-digest',
@@ -65,6 +70,7 @@ export type WatchLiveResultKind =
   | 'failed-provider'
   | 'failed-fixture'
   | 'failed-product'
+  | 'blocked-environment'
   | 'not-run';
 
 export interface WatchLiveLedgerEntry {
@@ -86,6 +92,11 @@ export function validateWatchLiveManifest(
     if (scenario.id.trim() === '') errors.push('场景 id 不得为空');
     if (scenario.purpose.trim() === '') errors.push(`${scenario.id}：用途不得为空`);
     if (scenario.targetClass.trim() === '') errors.push(`${scenario.id}：目标类别不得为空`);
+    if (scenario.kind === 'public-network') {
+      if (scenario.url === undefined || !/^https:\/\//.test(scenario.url)) {
+        errors.push(`${scenario.id}：公网场景必须提供 HTTPS 目标`);
+      }
+    }
     if (!Number.isSafeInteger(scenario.maxRequests) || scenario.maxRequests < 0) {
       errors.push(`${scenario.id}：请求上限非法`);
     }
@@ -135,6 +146,7 @@ export function classifyWatchLiveFailure(input: {
   if (input.status !== undefined && input.status >= 200 && input.status < 300) return 'pass';
   if (input.errorCode === 'fixture-defect') return 'failed-fixture';
   if (input.errorCode === 'product-defect') return 'failed-product';
+  if (input.errorCode === 'environment-unavailable') return 'blocked-environment';
   if (input.errorCode === 'timeout' || input.errorCode === 'network') return 'failed-network';
   return 'not-run';
 }
@@ -172,6 +184,18 @@ export function validateWatchLiveLedger(
     }
     if (entry.purpose.trim() === '' || entry.httpClass.trim() === '') {
       errors.push(`${entry.scenario}：台账字段不得为空`);
+    }
+    const requiredLiveObservation =
+      scenario.kind === 'public-network' || scenario.kind === 'resource';
+    if (requiredLiveObservation && entry.resultKind !== 'pass') {
+      errors.push(`${entry.scenario}：真实场景未实际运行`);
+    }
+    if (
+      scenario.kind === 'public-network' &&
+      entry.resultKind === 'pass' &&
+      entry.requestCount < 1
+    ) {
+      errors.push(`${entry.scenario}：产品请求台账为空`);
     }
   }
   return errors;

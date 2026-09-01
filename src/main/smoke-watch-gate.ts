@@ -20,7 +20,7 @@ export interface WatchGateEnv {
 }
 
 export type WatchGateVerdict =
-  { ok: true; mode: 'none' | 'set' | 'check' } | { ok: false; reason: string };
+  { ok: true; mode: 'none' | 'set' | 'check' | 'live' } | { ok: false; reason: string };
 
 function isSetCheck(value: string | undefined): boolean {
   return value === 'set' || value === 'check';
@@ -28,13 +28,34 @@ function isSetCheck(value: string | undefined): boolean {
 
 export function resolveWatchGate(env: WatchGateEnv): WatchGateVerdict {
   const requested = env.watchSmoke;
-  if (requested === undefined || requested === '') {
-    if (env.liveWatch !== undefined) {
+  if (env.liveWatch !== undefined && env.liveWatch !== '1') {
+    return { ok: false, reason: `AIBROWSE_LIVE_WATCH 值非法：${env.liveWatch}（仅支持 1）` };
+  }
+  if (env.liveWatch === '1') {
+    if (env.smoke !== '1') {
+      return { ok: false, reason: 'AIBROWSE_LIVE_WATCH 必须从属于 AIBROWSE_SMOKE=1' };
+    }
+    if (isSetCheck(requested)) {
       return {
         ok: false,
-        reason: 'AIBROWSE_LIVE_WATCH 必须从属于 AIBROWSE_WATCH_SMOKE=set|check（不静默忽略）',
+        reason: 'AIBROWSE_LIVE_WATCH 与 AIBROWSE_WATCH_SMOKE=set|check 互斥，请只选其一',
       };
     }
+    const conflicts: string[] = [];
+    if (isSetCheck(env.sessionSmoke)) conflicts.push('AIBROWSE_SESSION_SMOKE');
+    if (isSetCheck(env.sourcesSmoke)) conflicts.push('AIBROWSE_SOURCES_SMOKE');
+    if (isSetCheck(env.sourcesUiSmoke)) conflicts.push('AIBROWSE_SOURCES_UI_SMOKE');
+    if (isSetCheck(env.researchSmoke)) conflicts.push('AIBROWSE_RESEARCH_SMOKE');
+    if (env.liveProvider === '1') conflicts.push('AIBROWSE_LIVE_PROVIDER');
+    if (conflicts.length > 0) {
+      return {
+        ok: false,
+        reason: `AIBROWSE_LIVE_WATCH 与 ${conflicts.join('、')} 互斥，请只选其一`,
+      };
+    }
+    return { ok: true, mode: 'live' };
+  }
+  if (requested === undefined || requested === '') {
     return { ok: true, mode: 'none' };
   }
   if (!isSetCheck(requested)) {
@@ -54,9 +75,6 @@ export function resolveWatchGate(env: WatchGateEnv): WatchGateVerdict {
       ok: false,
       reason: `AIBROWSE_WATCH_SMOKE 与 ${conflicts.join('、')} 互斥，请只选其一`,
     };
-  }
-  if (env.liveWatch !== undefined && env.liveWatch !== '1') {
-    return { ok: false, reason: `AIBROWSE_LIVE_WATCH 值非法：${env.liveWatch}（仅支持 1）` };
   }
   return { ok: true, mode: requested as 'set' | 'check' };
 }
