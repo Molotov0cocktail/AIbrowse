@@ -2,12 +2,18 @@
 // 每项只返回自己的结果；敌手正文与随机 canary 不进入结果、日志或异常消息。
 
 import { EventEmitter } from 'node:events';
+import { createServer, request as nodeHttpRequest } from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildInAppNotification } from './watch/notification-policy';
+import {
+  qualifyWindowsNotification,
+  WindowsNotificationSink,
+  type NativeNotificationLike,
+} from './watch/windows-notification-sink';
 import { buildDigestProviderRequest, SYSTEM_DIGEST_PROMPT } from './watch/digest-prompt';
 import {
   encodeFeedProjectionCanonical,
@@ -28,7 +34,7 @@ import {
 } from './watch/public-watch-http-client';
 import { parseRobotsText, evaluateRobotsPath } from './watch/robots-policy';
 import { HostRequestGate } from './watch/host-request-gate';
-import { classifySnapshotSuspicion } from './watch/browser-watch-reader';
+import { BrowserWatchReader, classifySnapshotSuspicion } from './watch/browser-watch-reader';
 import { WatchTaskTabWorkspace, type WatchTaskTabBrowser } from './watch/watch-task-tab-workspace';
 import { PageAcquisitionRouter } from './watch/watch-acquisition-service';
 import { WatchScheduler, computeNextDueAt } from './watch/watch-scheduler';
@@ -77,7 +83,7 @@ import {
   type PageTarget,
   type RegionDescriptor,
 } from '../shared/types/watch';
-import type { TabInfo } from '../shared/types/browser';
+import type { PageSnapshot, TabInfo } from '../shared/types/browser';
 import { createSystemClock, FakeClock } from '../shared/watch/clock';
 import { WatchRepository } from './watch/repository/watch-repository';
 import { WatchProcessingServiceImpl } from './watch/watch-processing-service';
@@ -560,9 +566,10 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
   return { ok: failures.length === 0, checks, failures };
 }
 
-function fakeTabsBrowser(
-  options: { returnExisting?: boolean } = {},
-): WatchTaskTabBrowser & { tabs(): TabInfo[] } {
+function fakeTabsBrowser(options: { returnExisting?: boolean } = {}): WatchTaskTabBrowser & {
+  tabs(): TabInfo[];
+  getPageSnapshot(id: string): Promise<PageSnapshot | null>;
+} {
   const userTab: TabInfo = {
     id: 'user-tab',
     title: '用户页',
@@ -605,6 +612,26 @@ function fakeTabsBrowser(
     },
     async getActiveTab(): Promise<TabInfo | null> {
       return tabs.find((tab) => tab.active) ? { ...tabs.find((tab) => tab.active)! } : null;
+    },
+    async getPageSnapshot(id: string) {
+      const tab = tabs.find((candidate) => candidate.id === id);
+      if (tab === undefined) return null;
+      return {
+        url: tab.url,
+        title: tab.title,
+        visibleText: '任务页正文',
+        headings: [],
+        links: [],
+        buttons: [],
+        inputs: [],
+        meta: {
+          capturedAt: Date.now(),
+          documentId: 1,
+          readyState: 'complete' as const,
+          degraded: 'none' as const,
+          warnings: [],
+        },
+      };
     },
     tabs: () => tabs.map((tab) => ({ ...tab })),
   };
@@ -806,62 +833,78 @@ async function wrt04(): Promise<boolean> {
       );
     }
     const productPaths: string[] = [];
-    const productDestroyed = { count: 0 };
-    let productRequestIndex = 0;
+    const productRequestClosed: string[] = [];
+    const productResponseClosed: string[] = [];
+    const server = createServer((incoming, response) => {
+      if (incoming.url === '/robots.txt') {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.write('first');
+      // Deliberately never end: the product deadline must destroy and drain it.
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        server.removeListener('error', reject);
+        resolve();
+      });
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string')
+      throw new Error('wrt04 local server address');
     const productStack = createPublicWatchHttpStack({
-      timeoutMs: 50,
+      timeoutMs: 80,
       lookup: async () => [{ address: '93.184.216.34', family: 4 as const }],
       request: (options): WatchRequestLike => {
-        const request = new EventEmitter();
-        const response = new EventEmitter();
         productPaths.push(options.path);
-        const destroy = (): void => {
-          productDestroyed.count += 1;
-          queueMicrotask(() => request.emit('close'));
-        };
-        Object.assign(request, {
-          setTimeout: () => undefined,
-          abort: destroy,
-          destroy,
-          end: () => {
-            productRequestIndex += 1;
-            if (productRequestIndex !== 1) return;
-            queueMicrotask(() => {
-              request.emit(
-                'response',
-                Object.assign(response, {
-                  statusCode: 404,
-                  statusMessage: 'Not Found',
-                  headers: {},
-                  destroy,
-                  resume: () => undefined,
-                }),
-              );
-              response.emit('end');
-              response.emit('close');
-              request.emit('close');
-            });
-          },
+        const request = nodeHttpRequest({
+          method: options.method,
+          hostname: '127.0.0.1',
+          port: address.port,
+          path: options.path,
+          headers: options.headers,
+        });
+        request.on('close', () => productRequestClosed.push(options.path));
+        request.on('response', (response) => {
+          response.on('close', () => productResponseClosed.push(options.path));
         });
         return request as unknown as WatchRequestLike;
       },
     });
     try {
-      const productResult = await productStack.target.get({
-        url: VALID_URL,
+      const noResponse = await productStack.target.get({
+        url: 'https://no-response.example.com/no-response',
         purpose: 'page',
         deadline: new Date(Date.now() + 500),
       });
+      productStack.robots.clearCache();
+      const silent = await productStack.target.get({
+        url: 'https://silent.example.com/silent',
+        purpose: 'page',
+        deadline: new Date(Date.now() + 500),
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
       if (
-        productResult.kind !== 'failed' ||
-        productResult.health !== 'unavailable' ||
-        productPaths.join('|') !== '/robots.txt|/watch' ||
-        productDestroyed.count < 1
+        noResponse.kind !== 'failed' ||
+        noResponse.health !== 'unavailable' ||
+        silent.kind !== 'failed' ||
+        silent.health !== 'unavailable' ||
+        !productPaths.includes('/no-response') ||
+        !productPaths.includes('/silent') ||
+        productRequestClosed.length < 4 ||
+        productResponseClosed.length < 1
       ) {
-        throw new Error('product PublicWatchHttpClient timeout/drain observation failed');
+        throw new Error(
+          `product PublicWatchHttpClient timeout/drain observation failed: paths=${productPaths.join('|')},requestClose=${productRequestClosed.length},responseClose=${productResponseClosed.length},noResponse=${noResponse.kind},silent=${silent.kind}`,
+        );
       }
     } finally {
       productStack.robots.clearCache();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
     return true;
   } catch (error) {
@@ -1321,16 +1364,41 @@ async function wrt09(): Promise<boolean> {
     ...target,
     sessionConsent: { version: 1, origin: 'https://other.example', grantedAt: NOW },
   });
-  const browser = fakeTabsBrowser({ returnExisting: true });
+  const browser = fakeTabsBrowser();
   const workspace = new WatchTaskTabWorkspace({ browser });
-  const result = await workspace.acquire(VALID_URL, new AbortController().signal);
+  const clock = createSystemClock();
+  const router = new PageAcquisitionRouter({
+    publicTarget: null as never,
+    workspace,
+    reader: new BrowserWatchReader({ browser, clock, pollIntervalMs: 0 }),
+    hostGate: new HostRequestGate({ clock, gapMs: 0 }),
+    clock,
+  });
+  const input = {
+    target,
+    accessMode: 'session' as const,
+    ruleId: 'wrt09-rule',
+    sourceId: 'source-d10',
+    sourceLocatorFingerprint: 'a'.repeat(64),
+    signal: new AbortController().signal,
+    deadline: new Date(Date.now() + 5_000),
+  };
+  const unauthorizedRoute = await router.run(input);
+  const authorizedRoute = await router.run({
+    ...input,
+    target: {
+      ...target,
+      sessionConsent: { version: 1, origin: new URL(VALID_URL).origin, grantedAt: NOW },
+    },
+  });
   return (
     unauthorized.ok === false &&
     unauthorized.health === 'login_required' &&
     authorized.ok &&
     crossOrigin.ok === false &&
     crossOrigin.health === 'login_required' &&
-    result.ok === false &&
+    unauthorizedRoute.ok === false &&
+    authorizedRoute.ok &&
     browser.tabs().length === 1
   );
 }
@@ -1339,6 +1407,14 @@ async function wrt10(): Promise<boolean> {
   const browser = fakeTabsBrowser();
   const before = JSON.stringify(browser.tabs());
   const workspace = new WatchTaskTabWorkspace({ browser });
+  const clock = createSystemClock();
+  const router = new PageAcquisitionRouter({
+    publicTarget: null as never,
+    workspace,
+    reader: new BrowserWatchReader({ browser, clock, pollIntervalMs: 0 }),
+    hostGate: new HostRequestGate({ clock, gapMs: 0 }),
+    clock,
+  });
   const controller = new AbortController();
   const acquired = await workspace.acquire(VALID_URL, controller.signal);
   if (!acquired.ok) return false;
@@ -1384,6 +1460,20 @@ async function wrt10(): Promise<boolean> {
   const released = restartedAcquire.ok
     ? await restarted.release(restartedAcquire.lease.tabId)
     : { ok: false as const };
+  const routedLogin = await router.run({
+    target: {
+      type: 'page',
+      pageUrl: 'https://example.com/login',
+      regions: [{ kind: 'main-text', label: '正文' }],
+      sessionConsent: { version: 1, origin: 'https://example.com', grantedAt: NOW },
+    },
+    accessMode: 'session',
+    ruleId: 'wrt10-login',
+    sourceId: 'source-d10',
+    sourceLocatorFingerprint: 'b'.repeat(64),
+    signal: controller.signal,
+    deadline: new Date(Date.now() + 5_000),
+  });
   return (
     failedRelease.ok === false &&
     retainedAfterFailure === 1 &&
@@ -1392,6 +1482,7 @@ async function wrt10(): Promise<boolean> {
     recoveredDrain.ok &&
     workspace.getOwnedCount() === 0 &&
     released.ok &&
+    routedLogin.ok === false &&
     JSON.stringify(browser.tabs()) === before &&
     restarted.getOwnedCount() === 0 &&
     login === 'unknown' &&
@@ -1544,6 +1635,29 @@ async function wrt12(): Promise<boolean> {
     changeSet: changedSet,
     fieldCatalog,
   });
+  const allChanged = evaluateStructuredCondition({
+    condition: {
+      version: 1,
+      combine: 'all',
+      predicates: [
+        { fieldKey: 'r0:main', operator: 'changed', operand: null, caseSensitive: false },
+      ],
+    },
+    changeSet: changedSet,
+    fieldCatalog,
+  });
+  const anyChanged = evaluateStructuredCondition({
+    condition: {
+      version: 1,
+      combine: 'any',
+      predicates: [
+        { fieldKey: 'r0:missing', operator: 'changed', operand: null, caseSensitive: false },
+        { fieldKey: 'r0:main', operator: 'changed', operand: null, caseSensitive: false },
+      ],
+    },
+    changeSet: changedSet,
+    fieldCatalog: new Set(['r0:missing', 'r0:main']),
+  });
   const dir = mkdtempSync(join(tmpdir(), 'aibrowse-d10-wrt12-'));
   const db = openDb(join(dir, 'watch.db'));
   runWatchMigrations(db);
@@ -1666,10 +1780,17 @@ async function wrt12(): Promise<boolean> {
     return (
       conditionTerminal &&
       validateChangeEvidencePair(pair) !== null &&
+      pair.before.kind === 'present' &&
+      pair.after.kind === 'present' &&
+      pair.before.valueHash !== pair.after.valueHash &&
       validateChangeEvidencePair(malformed) === null &&
       warning.ok &&
       warning.matched === false &&
       warning.warnings.includes('field-absent') &&
+      allChanged.ok &&
+      allChanged.matched === true &&
+      anyChanged.ok &&
+      anyChanged.matched === true &&
       !error.ok &&
       error.code === 'condition-version-future'
     );
@@ -1972,14 +2093,57 @@ async function wrt15(): Promise<boolean> {
     fieldLabels: ['private query'],
     createdAt: NOW,
   });
-  return (
+  const native = new EventEmitter() as unknown as NativeNotificationLike & EventEmitter;
+  Object.assign(native, { show: () => undefined });
+  const created: Array<{ title: string; body: string; silent: boolean }> = [];
+  const routes: Array<{ subjectType: 'event' | 'digest'; subjectId: string }> = [];
+  const audits: string[] = [];
+  const sink = new WindowsNotificationSink(
+    {
+      create: (options) => {
+        created.push(options);
+        return native;
+      },
+    },
+    (subjectType, subjectId) => routes.push({ subjectType, subjectId }),
+    (result) => audits.push(result),
+  );
+  const shown = sink.show({
+    subjectType: 'event',
+    subjectId: 'event-d10',
+    title: 'ignored',
+    body: 'ignored',
+    important: true,
+  });
+  native.emit('click');
+  const qualification = qualifyWindowsNotification({
+    platform: 'win32',
+    packaged: true,
+    identityConfigured: true,
+    supported: true,
+    probeIdentity: () => true,
+  });
+  const verdict =
     notification.title === 'AIbrowse 监控提醒' &&
     notification.subjectId === 'event-d10' &&
     notification.body === '受保护来源发生变化' &&
     !notification.title.includes('enemy.invalid') &&
     !notification.title.includes('event-d10') &&
-    !notification.body.includes('query=private')
-  );
+    !notification.body.includes('query=private') &&
+    shown &&
+    created[0]?.title === 'ignored' &&
+    created[0]?.body === 'ignored' &&
+    routes.length === 1 &&
+    routes[0]?.subjectType === 'event' &&
+    routes[0]?.subjectId === 'event-d10' &&
+    audits.join(',') === 'shown,clicked' &&
+    qualification.available;
+  if (!verdict) {
+    throw new Error(
+      `WRT-15 sink boundary failed: notification=${notification.body},created=${JSON.stringify(created)},routes=${JSON.stringify(routes)},audits=${audits.join(',')},qualification=${qualification.available}`,
+    );
+  }
+  return verdict;
 }
 
 async function wrt16(): Promise<boolean> {
@@ -2504,7 +2668,9 @@ export async function runWatchRedTeamScenarios(): Promise<WatchWrtOutcome[]> {
         outcome(
           id,
           false,
-          id === 'WRT-04' && error instanceof Error ? error.message : '夹具受控失败',
+          (id === 'WRT-04' || id === 'WRT-07' || id === 'WRT-15') && error instanceof Error
+            ? error.message
+            : '夹具受控失败',
           evidenceKind,
         ),
       );

@@ -19,6 +19,12 @@ describe('D10 bounded live Watch scenarios', () => {
     );
     expect(classifyWatchLiveFailure({ status: 503 })).toBe('failed-network');
     expect(classifyWatchLiveFailure({ errorCode: 'product-defect' })).toBe('failed-product');
+    expect(classifyWatchLiveFailure({ scenarioKind: 'public-network', status: 403 })).toBe(
+      'failed-network',
+    );
+    expect(classifyWatchLiveFailure({ scenarioKind: 'provider', status: 403 })).toBe(
+      'failed-provider',
+    );
   });
 
   it('默认不触网，仍为每个场景生成一次台账', async () => {
@@ -191,6 +197,24 @@ describe('D10 bounded live Watch scenarios', () => {
               children: 0,
               tempDirs: 0,
             },
+            residualTrend: [
+              {
+                servers: 0,
+                timers: 0,
+                databases: 0,
+                taskTabs: 0,
+                children: 0,
+                tempDirs: 0,
+              },
+              {
+                servers: 0,
+                timers: 0,
+                databases: 0,
+                taskTabs: 0,
+                children: 0,
+                tempDirs: 0,
+              },
+            ],
           };
         },
       },

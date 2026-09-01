@@ -66,6 +66,14 @@ export interface WatchLiveResourcePort {
       children: number;
       tempDirs: number;
     };
+    residualTrend?: readonly {
+      servers: number;
+      timers: number;
+      databases: number;
+      taskTabs: number;
+      children: number;
+      tempDirs: number;
+    }[];
   }>;
 }
 
@@ -94,6 +102,7 @@ function makeController(parent: AbortSignal | undefined): AbortController {
 }
 
 function resultKind(input: {
+  scenarioKind?: WatchLiveScenario['kind'];
   status?: number;
   errorCode?: string;
   credentialAvailable?: boolean;
@@ -143,7 +152,7 @@ export async function runWatchLiveScenarios(
           result.status < 300 &&
           result.requestCount < 1
             ? 'failed-product'
-            : resultKind(result);
+            : resultKind({ ...result, scenarioKind: scenario.kind });
         entries.push({
           scenario: scenario.id,
           requestCount: result.requestCount,
@@ -171,7 +180,7 @@ export async function runWatchLiveScenarios(
         entries.push({
           scenario: scenario.id,
           requestCount: result.requestCount,
-          resultKind: resultKind(result),
+          resultKind: resultKind({ ...result, scenarioKind: scenario.kind }),
           httpClass: result.httpClass,
           purpose: scenario.purpose,
         });
@@ -207,10 +216,14 @@ export async function runWatchLiveScenarios(
           entries.push({
             scenario: scenario.id,
             requestCount: 0,
-            resultKind: resultKind({
-              status: result.errorCode === undefined ? 200 : undefined,
-              errorCode: result.errorCode,
-            }),
+            resultKind:
+              result.errorCode === 'product-defect'
+                ? 'skipped-windows-condition'
+                : resultKind({
+                    scenarioKind: scenario.kind,
+                    status: result.errorCode === undefined ? 200 : undefined,
+                    errorCode: result.errorCode,
+                  }),
             httpClass: result.httpClass,
             purpose: scenario.purpose,
           });
@@ -235,14 +248,17 @@ export async function runWatchLiveScenarios(
           Number.isSafeInteger(sampleCount) &&
           (sampleCount ?? -1) >= 2 &&
           result.residuals !== undefined &&
-          Object.values(result.residuals).every(
-            (value) => Number.isSafeInteger(value) && value === 0,
+          result.residualTrend !== undefined &&
+          result.residualTrend.length >= 2 &&
+          [result.residuals, ...result.residualTrend].every((residuals) =>
+            Object.values(residuals).every((value) => Number.isSafeInteger(value) && value === 0),
           );
         entries.push({
           scenario: scenario.id,
           requestCount: 0,
           resultKind: observed
             ? resultKind({
+                scenarioKind: scenario.kind,
                 status: result.errorCode === undefined ? 200 : undefined,
                 errorCode: result.errorCode,
               })
@@ -252,10 +268,16 @@ export async function runWatchLiveScenarios(
         });
       }
     } catch {
+      const failureKind =
+        scenario.kind === 'public-network'
+          ? 'failed-network'
+          : scenario.kind === 'provider'
+            ? 'failed-provider'
+            : 'failed-product';
       entries.push({
         scenario: scenario.id,
         requestCount: 0,
-        resultKind: 'failed-product',
+        resultKind: failureKind,
         httpClass: 'runner exception',
         purpose: scenario.purpose,
       });

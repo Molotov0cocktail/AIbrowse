@@ -2,6 +2,24 @@
 // subscription publishing. Shutdown closes the gate synchronously so a late
 // renderer event cannot reach a repository that is being disposed.
 
+export interface ShutdownAdmission {
+  beginShutdown(): void;
+  drain(): Promise<void>;
+}
+
+/**
+ * Close every renderer-facing gate before awaiting any drain. Resource owners
+ * must be released by dispose only after this promise settles.
+ */
+export async function closeAndDrainThenDispose(
+  admissions: readonly ShutdownAdmission[],
+  dispose: () => void | Promise<void>,
+): Promise<void> {
+  for (const admission of admissions) admission.beginShutdown();
+  await Promise.all(admissions.map((admission) => admission.drain()));
+  await dispose();
+}
+
 export class WatchIpcAdmission {
   private open = true;
   private sender: object | null = null;

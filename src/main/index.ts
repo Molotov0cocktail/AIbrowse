@@ -37,7 +37,7 @@ import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
 import { resolveWatchD10Mode } from './smoke-watch-gate';
-import { WatchIpcAdmission } from './smoke-watch-admission';
+import { closeAndDrainThenDispose, WatchIpcAdmission } from './smoke-watch-admission';
 import type { WatchLiveRunnerOptions } from './smoke-watch-live-runner';
 import { createProductWatchResourcePort } from './smoke-watch-live-resource';
 // Sixth Stage D4：Watch 存储/生命周期装配（observer 恒 active + 延迟端口绑定 +
@@ -80,7 +80,7 @@ import {
   validateWatchIpcOutput,
   validateWatchIpcPayload,
 } from '../shared/watch/watch-ipc-validator';
-import type { WatchPushDto } from '../shared/types/watch-ipc';
+import type { InAppNotificationDto, WatchPushDto } from '../shared/types/watch-ipc';
 // Sixth Stage D6：页面 Region/Session 授权/有界 PageProjection 装配（FIXED
 // DECISIONS 12）：同一 HostRequestGate 下构造 D3 public stack + Session
 // Workspace/Reader + 主进程内存 grant store + PageAcquisitionRouter；失败
@@ -171,6 +171,7 @@ import { DigestService } from './watch/digest-service';
 import { DigestScheduler } from './watch/digest-scheduler';
 import type { SourceService, SourcesState } from '../shared/types/sources';
 import { createSourceTools } from './sources/tools/source-tools';
+import { computeSourceLocatorFingerprint } from '../shared/watch/watch-rule-state';
 // B6：usage 接线（决议 #79/#81）——SourceSearchHintStore 每 run 独立 + browser_open
 // 打开后比对写 usage；写入失败安全 no-op，不影响工具结果与 Agent 终态。
 import { SourceUsageTracker } from './sources/usage/usage-tracker';
@@ -347,6 +348,7 @@ let pushWatchStatus: () => void = () => undefined;
 let watchWindowsNotificationsQualified = false;
 let watchNotifications: WatchNotificationService | null = null;
 let watchWindowsNotifications: WatchNotificationService | null = null;
+const watchD10NotificationCapture: InAppNotificationDto[] = [];
 let smokeWatchDir: string | null = null;
 // D5：生产调度运行时（FIXED DECISIONS 10/12）——单例 HostRequestGate + Coordinator +
 // Scheduler；before-quit 先排水（stop-admission→abort→drain）再 dispose repo。
@@ -361,6 +363,7 @@ let sourceIpcAdmissionOpen = true;
 let sourceIpcDrainDone = false;
 let sourceIpcDrainStarted = false;
 const sourceIpcAdmission = new SourcesIpcAdmission();
+let rendererAdmissionDrain: Promise<void> | null = null;
 // D6：Session 页面采集装配（workspace/grant/router）——before-quit 顺序：
 // Coordinator stop → workspace cleanupAll drain → grant clear → robots cache
 // clear → host gate clear。
@@ -374,9 +377,18 @@ let watchPreviewStore: WatchPreviewStore | null = null;
 let watchIpcAdapter: WatchIpcAdapter | null = null;
 const watchIpcAdmission = new WatchIpcAdmission();
 let watchPublicStackRobots: { clearCache(): void } | null = null;
+let watchWindowsSink: WindowsNotificationSink | null = null;
 let watchLiveRequestCount = 0;
 let watchLiveProviderRequestCount = 0;
 let liveProviderActive = false;
+// Product-owned resource registry consumed by the D10 live probe. Watch does
+// not create a server or child process in the desktop runtime, so the live
+// value is the registry size rather than a probe fixture or a hard-coded
+// residual result.
+const watchRuntimeOwnership = {
+  servers: new Set<object>(),
+  children: new Set<object>(),
+};
 // 8.23 冒烟 holder：index.ts 装配后注入（SMOKE_MODE 消费；生产零行为）
 const smokeWatchPageSession: { current: WatchPageSmokeBundle | null } = { current: null };
 // B5 冒烟注入点（仅 SMOKE_MODE 消费，生产行为不变）：恢复态/不可用态 UI 断言——
@@ -394,9 +406,40 @@ function stopWatchIpcAdmission(): void {
 }
 
 function stopRendererAdmissions(): void {
-  sourceIpcAdmissionOpen = false;
-  sourceIpcAdmission.beginShutdown();
-  stopWatchIpcAdmission();
+  void closeAndDrainRendererAdmissions();
+}
+
+function closeAndDrainRendererAdmissions(): Promise<void> {
+  if (rendererAdmissionDrain === null) {
+    sourceIpcAdmissionOpen = false;
+    rendererAdmissionDrain = closeAndDrainThenDispose(
+      [sourceIpcAdmission, watchIpcAdmission],
+      () => undefined,
+    );
+    // Keep the sender closed synchronously, before the helper reaches its
+    // first await. This also covers the explicit Watch publish path.
+    stopWatchIpcAdmission();
+  }
+  return rendererAdmissionDrain;
+}
+
+function exitAfterRendererAdmissionDrain(code: number, cleanup: () => void | Promise<void>): void {
+  void (async () => {
+    try {
+      await closeAndDrainRendererAdmissions();
+    } catch (error) {
+      logError('main', '退出前 renderer admission 排水异常', error);
+    }
+    try {
+      await cleanup();
+    } catch (error) {
+      logError('main', '退出前冒烟资源清理异常', error);
+    }
+    app.exit(code);
+  })().catch((error: unknown) => {
+    logError('main', '退出前清理调度异常', error);
+    app.exit(code);
+  });
 }
 
 // D5（FIXED DECISIONS 12）：Watch 退出排水——stop-admission → abort 全部在途 →
@@ -407,8 +450,7 @@ async function watchShutdown(): Promise<void> {
   // Stop all Watch IPC admission before the first await. Late renderer-ready or
   // subscription events must not observe a repository that is about to close.
   watchShutdownStarted = true;
-  stopWatchIpcAdmission();
-  await watchIpcAdmission.drain();
+  await closeAndDrainRendererAdmissions();
   const repository = watchRepo;
   watchRepo = null;
   try {
@@ -444,6 +486,20 @@ async function watchShutdown(): Promise<void> {
     // cleanup reports an error. Admission was closed before the first await.
     watchCoordinator?.dispose();
     repository?.dispose();
+  }
+}
+
+async function shutdownRendererSubsystems(): Promise<void> {
+  try {
+    await watchShutdown();
+    watchShutdownDone = true;
+  } catch (error) {
+    logError('main', '退出前 Watch 排水异常', error);
+  }
+  try {
+    sourceService?.dispose();
+  } catch (error) {
+    logError('main', '退出前 Sources 句柄释放异常', error);
   }
 }
 
@@ -560,8 +616,7 @@ if (!gotLock) {
       shutdownPending = true;
       if (!sourceIpcDrainStarted) {
         sourceIpcDrainStarted = true;
-        void sourceIpcAdmission
-          .drain()
+        void closeAndDrainRendererAdmissions()
           .catch((err: unknown) => {
             logError('main', 'Sources IPC 退出排水异常', err);
           })
@@ -1012,6 +1067,7 @@ if (!gotLock) {
     watchNotifications = new WatchNotificationService(
       () => watchRepo,
       (notification) => {
+        watchD10NotificationCapture.push(notification);
         const sender = watchSubscriptionSender;
         if (sender === null || sender.isDestroyed()) return false;
         const push: WatchPushDto = {
@@ -1061,6 +1117,7 @@ if (!gotLock) {
           (result) => logInfo('audit', `watch-windows-notification result=${result}`),
         )
       : null;
+    watchWindowsSink = windowsSink;
     watchWindowsNotifications =
       windowsSink === null
         ? null
@@ -1227,14 +1284,14 @@ if (!gotLock) {
           );
           // 失败路径清理（app.exit 不触发 before-quit；B6 会话实测同类 LIVE 互斥
           // 路径残留 pid 专属目录——此处为同缺陷预防性补齐）
-          stopRendererAdmissions();
-          sourceService?.dispose();
-          if (smokeSourcesDir !== null) {
-            rmSync(smokeSourcesDir, { recursive: true, force: true });
-            smokeSourcesDir = null;
-          }
-          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
-          app.exit(1);
+          exitAfterRendererAdmissionDrain(1, async () => {
+            await shutdownRendererSubsystems();
+            if (smokeSourcesDir !== null) {
+              rmSync(smokeSourcesDir, { recursive: true, force: true });
+              smokeSourcesDir = null;
+            }
+            rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+          });
           return;
         }
         // B6：AIBROWSE_LIVE_AGENT_SOURCES 与 LIVE_AGENT/PRE/SUPPLEMENT 互斥（决议 #85；
@@ -1249,14 +1306,14 @@ if (!gotLock) {
           );
           // 失败路径清理（app.exit 不触发 before-quit；同 B5 532ea78 修复的
           // SESSION/SOURCES 互斥路径——否则每次失败运行残留 pid 专属冒烟目录）
-          stopRendererAdmissions();
-          sourceService?.dispose();
-          if (smokeSourcesDir !== null) {
-            rmSync(smokeSourcesDir, { recursive: true, force: true });
-            smokeSourcesDir = null;
-          }
-          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
-          app.exit(1);
+          exitAfterRendererAdmissionDrain(1, async () => {
+            await shutdownRendererSubsystems();
+            if (smokeSourcesDir !== null) {
+              rmSync(smokeSourcesDir, { recursive: true, force: true });
+              smokeSourcesDir = null;
+            }
+            rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+          });
           return;
         }
         // B6/B8 补验（2026-08-15）：AIBROWSE_LIVE_AGENT_SOURCES 与 LIVE_SITES 互斥
@@ -1265,14 +1322,14 @@ if (!gotLock) {
         if (LIVE_AGENT_SOURCES_MODE && LIVE_SITES_MODE) {
           logError('main', 'AIBROWSE_LIVE_AGENT_SOURCES 与 AIBROWSE_LIVE_SITES 互斥，请只选其一');
           // 失败路径清理（app.exit 不触发 before-quit；同现有互斥路径纪律）
-          stopRendererAdmissions();
-          sourceService?.dispose();
-          if (smokeSourcesDir !== null) {
-            rmSync(smokeSourcesDir, { recursive: true, force: true });
-            smokeSourcesDir = null;
-          }
-          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
-          app.exit(1);
+          exitAfterRendererAdmissionDrain(1, async () => {
+            await shutdownRendererSubsystems();
+            if (smokeSourcesDir !== null) {
+              rmSync(smokeSourcesDir, { recursive: true, force: true });
+              smokeSourcesDir = null;
+            }
+            rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+          });
           return;
         }
         // C5（决议 #139）：AIBROWSE_RESEARCH_SMOKE 与 SESSION/SOURCES/SOURCES_UI
@@ -1289,27 +1346,27 @@ if (!gotLock) {
           // C8 定向修复（2026-08-17）：本互斥分支缺冒烟临时目录清理（与
           // SESSION/SOURCES 互斥分支 532ea78 同款缺陷）——失败路径残留
           // aibrowse-smoke-ai-<pid>/aibrowse-smoke-sources-<pid> 目录
-          stopRendererAdmissions();
-          sourceService?.dispose();
-          if (smokeSourcesDir !== null) {
-            rmSync(smokeSourcesDir, { recursive: true, force: true });
-            smokeSourcesDir = null;
-          }
-          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
-          if (smokeResearchDir !== null) {
-            try {
-              rmSync(smokeResearchDir, { recursive: true, force: true });
-            } catch {
-              // research db 句柄可能未关（EPERM）——不阻塞退出
+          exitAfterRendererAdmissionDrain(1, async () => {
+            await shutdownRendererSubsystems();
+            if (smokeSourcesDir !== null) {
+              rmSync(smokeSourcesDir, { recursive: true, force: true });
+              smokeSourcesDir = null;
             }
-            smokeResearchDir = null;
-          }
-          app.exit(1);
+            rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+            if (smokeResearchDir !== null) {
+              try {
+                rmSync(smokeResearchDir, { recursive: true, force: true });
+              } catch {
+                // research db 句柄可能未关（EPERM）——不阻塞退出
+              }
+              smokeResearchDir = null;
+            }
+          });
           return;
         }
         if (researchMode !== undefined && !RESEARCH_GATE_MODE) {
           logError('main', `AIBROWSE_RESEARCH_SMOKE 值非法：${researchMode}（仅支持 set|check）`);
-          app.exit(1);
+          exitAfterRendererAdmissionDrain(1, shutdownRendererSubsystems);
           return;
         }
         // D4：AIBROWSE_WATCH_SMOKE 与其余四组门控确定性互斥（互斥先于一切，
@@ -1326,32 +1383,31 @@ if (!gotLock) {
             'AIBROWSE_WATCH_SMOKE 与 AIBROWSE_SESSION_SMOKE / AIBROWSE_SOURCES_SMOKE / AIBROWSE_SOURCES_UI_SMOKE / AIBROWSE_RESEARCH_SMOKE 互斥，请只选其一',
           );
           // 失败路径清理（app.exit 不触发 before-quit；与既有互斥路径同纪律）
-          stopRendererAdmissions();
-          watchCoordinator?.dispose();
-          watchRepo?.dispose();
-          if (smokeSourcesDir !== null) {
-            rmSync(smokeSourcesDir, { recursive: true, force: true });
-            smokeSourcesDir = null;
-          }
-          if (smokeWatchDir !== null) {
-            rmSync(smokeWatchDir, { recursive: true, force: true });
-            smokeWatchDir = null;
-          }
-          rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
-          if (smokeResearchDir !== null) {
-            try {
-              rmSync(smokeResearchDir, { recursive: true, force: true });
-            } catch {
-              // research db 句柄可能未关（EPERM）——不阻塞退出
+          exitAfterRendererAdmissionDrain(1, async () => {
+            await shutdownRendererSubsystems();
+            if (smokeSourcesDir !== null) {
+              rmSync(smokeSourcesDir, { recursive: true, force: true });
+              smokeSourcesDir = null;
             }
-            smokeResearchDir = null;
-          }
-          app.exit(1);
+            if (smokeWatchDir !== null) {
+              rmSync(smokeWatchDir, { recursive: true, force: true });
+              smokeWatchDir = null;
+            }
+            rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
+            if (smokeResearchDir !== null) {
+              try {
+                rmSync(smokeResearchDir, { recursive: true, force: true });
+              } catch {
+                // research db 句柄可能未关（EPERM）——不阻塞退出
+              }
+              smokeResearchDir = null;
+            }
+          });
           return;
         }
         if (watchMode !== undefined && !WATCH_GATE_MODE) {
           logError('main', `AIBROWSE_WATCH_SMOKE 值非法：${watchMode}（仅支持 set|check）`);
-          app.exit(1);
+          exitAfterRendererAdmissionDrain(1, shutdownRendererSubsystems);
           return;
         }
         let run: Promise<void>;
@@ -1371,13 +1427,13 @@ if (!gotLock) {
             'main',
             `AIBROWSE_SOURCES_UI_SMOKE 值非法：${sourcesUiMode}（仅支持 set|check）`,
           );
-          app.exit(1);
+          exitAfterRendererAdmissionDrain(1, shutdownRendererSubsystems);
           return;
         } else if (sourcesMode === 'set' || sourcesMode === 'check') {
           run = runSourcesSmokeScenario(sourcesMode);
         } else if (sourcesMode !== undefined) {
           logError('main', `AIBROWSE_SOURCES_SMOKE 值非法：${sourcesMode}（仅支持 set|check）`);
-          app.exit(1);
+          exitAfterRendererAdmissionDrain(1, shutdownRendererSubsystems);
           return;
         } else if (sessionMode === 'set' || sessionMode === 'check') {
           run = runSessionSmokeScenario(browserController, sessionMode);
@@ -1540,127 +1596,206 @@ if (!gotLock) {
                           errorCode: 'product-defect',
                         };
                       }
-                      const rule = watchRepo
+                      let rule = watchRepo
                         .listRules()
                         .find((candidate) => candidate.state === 'enabled');
+                      let ownedSourceId: string | null = null;
+                      let ownedRuleId: string | null = null;
                       if (rule === undefined) {
-                        return {
-                          requestCount: 0,
-                          httpClass: 'DigestService 缺少可用 Watch Rule',
-                          errorCode: 'product-defect',
-                        };
-                      }
-                      const eventId = randomUUID();
-                      const observedAt = new Date().toISOString();
-                      const evidenceText = 'D10 live Digest observation';
-                      const evidenceHash = createHash('sha256')
-                        .update(evidenceText, 'utf8')
-                        .digest('hex');
-                      const item: ChangeEvidencePair = {
-                        itemId: `d10-live-${eventId}`,
-                        fieldKey: 'title',
-                        label: 'D10 live Digest observation',
-                        before: { kind: 'absent' },
-                        after: {
-                          kind: 'present',
-                          excerpt: evidenceText,
-                          valueHash: evidenceHash,
-                          normalizedBytes: Buffer.byteLength(evidenceText, 'utf8'),
-                          truncated: false,
-                        },
-                        beforeCapturedAt: observedAt,
-                        afterCapturedAt: observedAt,
-                        beforeFinalUrl: 'https://example.com/d10-live',
-                        afterFinalUrl: 'https://example.com/d10-live',
-                        beforeDocumentId: null,
-                        afterDocumentId: null,
-                        feedItemKey: null,
-                      };
-                      const event: WatchEvent = {
-                        id: eventId,
-                        ruleId: rule.id,
-                        sourceId: rule.sourceId,
-                        eventKind: 'added',
-                        importance: 'normal',
-                        idempotencyKey: randomUUID(),
-                        changeFingerprint: evidenceHash,
-                        firstObservedAt: observedAt,
-                        lastObservedAt: observedAt,
-                        itemCount: 1,
-                        readAt: null,
-                      };
-                      const scheduleId = randomUUID();
-                      const now = new Date();
-                      const hhmm = now.toISOString().slice(11, 16);
-                      const created = await digestService.createSchedule({
-                        id: scheduleId,
-                        selector: { sourceIds: [rule.sourceId] },
-                        localTime: hhmm,
-                        timeZone: 'UTC',
-                        aiEnabled: true,
-                      });
-                      if (!created.ok) {
-                        return {
-                          requestCount: 0,
-                          httpClass: 'DigestService schedule 创建失败',
-                          errorCode: 'product-defect',
-                        };
-                      }
-                      const schedule = digestService.getSchedule(scheduleId)?.schedule;
-                      if (schedule === undefined) {
-                        return {
-                          requestCount: 0,
-                          httpClass: 'DigestService schedule 读回失败',
-                          errorCode: 'product-defect',
-                        };
-                      }
-                      const written = watchRepo.writeEventTransaction({
-                        event,
-                        items: [item],
-                        identity: {
-                          sourceId: rule.sourceId,
-                          expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
-                          expectedBaselineVersion: rule.baselineVersion,
-                        },
-                      });
-                      if (!written.ok) {
-                        digestService.delete(scheduleId, schedule.version);
-                        return {
-                          requestCount: 0,
-                          httpClass: `DigestService 事件写入失败：${written.code}`,
-                          errorCode: 'product-defect',
-                        };
-                      }
-                      const requestCountBefore = watchLiveProviderRequestCount;
-                      let handled: { ok: boolean; nextDueAt: string | null };
-                      let providerState: string;
-                      try {
-                        handled = await digestService.handleDue({
-                          scheduleId,
-                          expectedNextDueAt: schedule.nextDueAt,
-                          logicalDate: schedule.nextDueAt.slice(0, 10),
+                        const source = await sourceService.addManual({
+                          scope: 'page',
+                          url: 'https://example.com/d10-live-source',
+                          name: 'D10 live provider source',
+                          shareMode: 'full',
                         });
-                        providerState =
-                          digestService.getSchedule(scheduleId)?.artifacts[0]?.providerState ??
-                          'missing';
-                      } finally {
-                        const current = digestService.getSchedule(scheduleId)?.schedule;
-                        if (current !== undefined)
-                          digestService.delete(scheduleId, current.version);
+                        if (!source.ok) {
+                          return {
+                            requestCount: 0,
+                            httpClass: `D10 live Source fixture 创建失败：${source.errorCode}`,
+                            errorCode: 'product-defect',
+                          };
+                        }
+                        const now = new Date().toISOString();
+                        ownedSourceId = source.source.id;
+                        rule = {
+                          id: randomUUID(),
+                          version: 1,
+                          sourceId: source.source.id,
+                          kind: 'feed' as const,
+                          state: 'enabled' as const,
+                          pauseReason: null,
+                          desiredEnabled: true,
+                          muted: true,
+                          accessMode: 'public' as const,
+                          schedule: { kind: 'interval' as const, intervalMinutes: 60 },
+                          target: {
+                            type: 'feed' as const,
+                            feedUrl: 'https://example.com/d10-live-feed.xml',
+                            format: 'rss2' as const,
+                          },
+                          condition: null,
+                          notificationLevel: 'normal' as const,
+                          showDetails: false,
+                          sourceRowVersion: source.source.version,
+                          sourceLocatorFingerprint: computeSourceLocatorFingerprint({
+                            sourceId: source.source.id,
+                            scope: source.source.scope,
+                            canonicalKey: source.source.canonicalKey,
+                            kind: 'feed',
+                            canonicalTargetUrl: 'https://example.com/d10-live-feed.xml',
+                          }),
+                          nextDueAt: null,
+                          lastConsumedScheduledFor: null,
+                          lastDailyLocalDate: null,
+                          consecutiveFailures: 0,
+                          backoffUntil: null,
+                          baselineVersion: 0,
+                          createdAt: now,
+                          updatedAt: now,
+                        };
+                        if (!watchRepo.insertRule(rule).ok) {
+                          const token = sourceService.issueDeleteConfirmToken(source.source.id);
+                          await sourceService.hardDeleteManual(source.source.id, token);
+                          return {
+                            requestCount: 0,
+                            httpClass: 'D10 live Watch fixture 写入失败',
+                            errorCode: 'product-defect',
+                          };
+                        }
+                        ownedRuleId = rule.id;
                       }
-                      const requestCount = watchLiveProviderRequestCount - requestCountBefore;
-                      if (handled.ok && requestCount === 1) {
+                      const cleanupFixture = async (): Promise<void> => {
+                        if (ownedRuleId !== null) {
+                          watchRepo?.deleteRule(ownedRuleId);
+                          ownedRuleId = null;
+                        }
+                        if (ownedSourceId !== null) {
+                          const token = sourceService?.issueDeleteConfirmToken(ownedSourceId);
+                          if (token !== undefined)
+                            await sourceService?.hardDeleteManual(ownedSourceId, token);
+                          ownedSourceId = null;
+                        }
+                      };
+                      try {
+                        const eventId = randomUUID();
+                        const observedAt = new Date().toISOString();
+                        const evidenceText = 'D10 live Digest observation';
+                        const evidenceHash = createHash('sha256')
+                          .update(evidenceText, 'utf8')
+                          .digest('hex');
+                        const item: ChangeEvidencePair = {
+                          itemId: `d10-live-${eventId}`,
+                          fieldKey: 'title',
+                          label: 'D10 live Digest observation',
+                          before: { kind: 'absent' },
+                          after: {
+                            kind: 'present',
+                            excerpt: evidenceText,
+                            valueHash: evidenceHash,
+                            normalizedBytes: Buffer.byteLength(evidenceText, 'utf8'),
+                            truncated: false,
+                          },
+                          beforeCapturedAt: observedAt,
+                          afterCapturedAt: observedAt,
+                          beforeFinalUrl: 'https://example.com/d10-live',
+                          afterFinalUrl: 'https://example.com/d10-live',
+                          beforeDocumentId: null,
+                          afterDocumentId: null,
+                          feedItemKey: null,
+                        };
+                        const event: WatchEvent = {
+                          id: eventId,
+                          ruleId: rule.id,
+                          sourceId: rule.sourceId,
+                          eventKind: 'added',
+                          importance: 'normal',
+                          idempotencyKey: randomUUID(),
+                          changeFingerprint: evidenceHash,
+                          firstObservedAt: observedAt,
+                          lastObservedAt: observedAt,
+                          itemCount: 1,
+                          readAt: null,
+                        };
+                        const scheduleId = randomUUID();
+                        const now = new Date();
+                        const hhmm = now.toISOString().slice(11, 16);
+                        const created = await digestService.createSchedule({
+                          id: scheduleId,
+                          selector: { sourceIds: [rule.sourceId] },
+                          localTime: hhmm,
+                          timeZone: 'UTC',
+                          aiEnabled: true,
+                        });
+                        if (!created.ok) {
+                          await cleanupFixture();
+                          return {
+                            requestCount: 0,
+                            httpClass: 'DigestService schedule 创建失败',
+                            errorCode: 'product-defect',
+                          };
+                        }
+                        const schedule = digestService.getSchedule(scheduleId)?.schedule;
+                        if (schedule === undefined) {
+                          await cleanupFixture();
+                          return {
+                            requestCount: 0,
+                            httpClass: 'DigestService schedule 读回失败',
+                            errorCode: 'product-defect',
+                          };
+                        }
+                        const written = watchRepo.writeEventTransaction({
+                          event,
+                          items: [item],
+                          identity: {
+                            sourceId: rule.sourceId,
+                            expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+                            expectedBaselineVersion: rule.baselineVersion,
+                          },
+                        });
+                        if (!written.ok) {
+                          digestService.delete(scheduleId, schedule.version);
+                          await cleanupFixture();
+                          return {
+                            requestCount: 0,
+                            httpClass: `DigestService 事件写入失败：${written.code}`,
+                            errorCode: 'product-defect',
+                          };
+                        }
+                        const requestCountBefore = watchLiveProviderRequestCount;
+                        let handled: { ok: boolean; nextDueAt: string | null };
+                        let providerState: string;
+                        try {
+                          handled = await digestService.handleDue({
+                            scheduleId,
+                            expectedNextDueAt: schedule.nextDueAt,
+                            logicalDate: schedule.nextDueAt.slice(0, 10),
+                          });
+                          providerState =
+                            digestService.getSchedule(scheduleId)?.artifacts[0]?.providerState ??
+                            'missing';
+                        } finally {
+                          const current = digestService.getSchedule(scheduleId)?.schedule;
+                          if (current !== undefined)
+                            digestService.delete(scheduleId, current.version);
+                        }
+                        const requestCount = watchLiveProviderRequestCount - requestCountBefore;
+                        if (handled.ok && requestCount === 1) {
+                          await cleanupFixture();
+                          return {
+                            requestCount,
+                            status: 200,
+                            httpClass: 'DigestService -> Provider.stream complete',
+                          };
+                        }
+                        await cleanupFixture();
                         return {
                           requestCount,
-                          status: 200,
-                          httpClass: 'DigestService -> Provider.stream complete',
+                          httpClass: `DigestService provider outcome=${providerState}`,
+                          errorCode: requestCount === 1 ? 'provider' : 'product-defect',
                         };
+                      } finally {
+                        await cleanupFixture();
                       }
-                      return {
-                        requestCount,
-                        httpClass: `DigestService provider outcome=${providerState}`,
-                        errorCode: requestCount === 1 ? 'provider' : 'product-defect',
-                      };
                     },
                   },
                   windowsPort: {
@@ -1668,9 +1803,26 @@ if (!gotLock) {
                     isPackaged: app.isPackaged,
                     probe: async () => {
                       const qualification = windowsQualification();
-                      return qualification.available
-                        ? { httpClass: 'Windows identity notification qualified' }
-                        : { httpClass: qualification.reason, errorCode: 'product-defect' };
+                      if (!qualification.available)
+                        return { httpClass: qualification.reason, errorCode: 'product-defect' };
+                      if (watchWindowsSink === null)
+                        return {
+                          httpClass: 'Windows identity qualified but notification sink unavailable',
+                          errorCode: 'product-defect',
+                        };
+                      const shown = watchWindowsSink.show({
+                        subjectType: 'event',
+                        subjectId: randomUUID(),
+                        title: 'AIbrowse Watch D10 qualification',
+                        body: 'Windows notification sink qualification probe',
+                        important: false,
+                      });
+                      return shown
+                        ? { httpClass: 'Windows identity notification sink shown' }
+                        : {
+                            httpClass: 'Windows notification sink rejected probe',
+                            errorCode: 'product-defect',
+                          };
                     },
                   },
                   resourcePort: createProductWatchResourcePort(watchWorkspace, {
@@ -1685,11 +1837,11 @@ if (!gotLock) {
                       }
                     },
                     residuals: () => ({
-                      servers: 0,
+                      servers: watchRuntimeOwnership.servers.size,
                       timers: (watchScheduler?.size ?? 0) + (digestScheduler?.size ?? 0),
                       databases: watchRepo === null ? 0 : 1,
                       taskTabs: watchWorkspace?.getOwnedCount() ?? 0,
-                      children: 0,
+                      children: watchRuntimeOwnership.children.size,
                       tempDirs: smokeWatchDir !== null && existsSync(smokeWatchDir) ? 1 : 0,
                     }),
                   }),
@@ -1702,38 +1854,172 @@ if (!gotLock) {
                   auditEntries: smokeAuditCollector,
                   rendererDom:
                     mainWindow !== null && !mainWindow.webContents.isDestroyed()
-                      ? async () =>
-                          String(
-                            await mainWindow!.webContents.executeJavaScript(
-                              `
-                                (async () => {
-                                  const watchButton = document.querySelector('button.watch-open');
-                                  if (watchButton instanceof HTMLElement) watchButton.click();
+                      ? async (identity) => {
+                          const eventId = JSON.stringify(identity?.eventId ?? '');
+                          const digestId = JSON.stringify(identity?.digestId ?? '');
+                          return (await mainWindow!.webContents.executeJavaScript(
+                            `
+                              (async () => {
+                                const expectedEventId = ${eventId};
+                                const expectedDigestId = ${digestId};
+                                const wait = async (predicate, label) => {
                                   const deadline = Date.now() + 5000;
-                                  while (
-                                    Date.now() < deadline &&
-                                    document.querySelector('.watch-workspace') === null
-                                  ) {
+                                  while (Date.now() < deadline) {
+                                    if (await predicate()) return;
                                     await new Promise((resolve) => setTimeout(resolve, 25));
                                   }
-                                  const html = document.documentElement.outerHTML;
-                                  const backButton = document.querySelector('.watch-header button');
-                                  if (backButton instanceof HTMLElement) backButton.click();
-                                  const aiButton = document.querySelector('button.ai-toggle');
-                                  if (aiButton instanceof HTMLElement) aiButton.click();
-                                  const restoreDeadline = Date.now() + 5000;
-                                  while (
-                                    Date.now() < restoreDeadline &&
-                                    document.querySelector('.ai-panel') === null
-                                  ) {
-                                    await new Promise((resolve) => setTimeout(resolve, 25));
-                                  }
-                                  return html;
-                                })()
-                              `,
-                            ),
-                          )
+                                  throw new Error(
+                                    'D10 renderer capture timeout: ' +
+                                      (typeof label === 'function' ? label() : label),
+                                  );
+                                };
+                                const watchButton = document.querySelector('button.watch-open');
+                                if (watchButton instanceof HTMLElement) watchButton.click();
+                                await wait(
+                                  () => document.querySelector('.watch-workspace') !== null,
+                                  'workspace',
+                                );
+                                const navButton = (label) =>
+                                  [...document.querySelectorAll('.watch-workspace nav button')]
+                                    .find((candidate) => candidate.textContent?.trim() === label);
+                                const eventsButton = navButton('事件');
+                                if (!(eventsButton instanceof HTMLElement))
+                                  throw new Error('D10 renderer capture missing events view');
+                                eventsButton.click();
+                                let eventResultSummary = 'not queried';
+                                await wait(
+                                  async () => {
+                                    const response = await window.aibrowse.watch.listEvents({
+                                      page: 1,
+                                      pageSize: 50,
+                                      filter: {
+                                        ruleId: null,
+                                        sourceId: null,
+                                        eventKind: null,
+                                        importance: null,
+                                        readState: 'all',
+                                        fromInclusive: null,
+                                        toExclusive: null,
+                                      },
+                                      selectedEventId: null,
+                                    });
+                                    if (!response.ok) {
+                                      eventResultSummary = 'error=' + response.errorCode;
+                                      return false;
+                                    }
+                                    const items =
+                                      response.value && Array.isArray(response.value.items)
+                                        ? response.value.items
+                                        : [];
+                                    eventResultSummary =
+                                      'ok total=' + String(response.value?.total ?? '?') +
+                                      ' has=' + String(items.some((item) => item?.id === expectedEventId));
+                                    return (
+                                      items.some((item) => item?.id === expectedEventId) &&
+                                      document.querySelector(
+                                        'input[aria-label="选择事件 ' + expectedEventId + '"]',
+                                      ) !== null
+                                    );
+                                  },
+                                  () => 'event ' + eventResultSummary,
+                                );
+                                const eventInput = document.querySelector(
+                                  'input[aria-label="选择事件 ' + expectedEventId + '"]',
+                                );
+                                const eventArticle = eventInput?.closest('article');
+                                const eventButton = eventArticle?.querySelector('button');
+                                if (!(eventButton instanceof HTMLElement))
+                                  throw new Error('D10 renderer capture missing event detail');
+                                eventButton.click();
+                                const digestsButton = navButton('摘要');
+                                if (!(digestsButton instanceof HTMLElement))
+                                  throw new Error('D10 renderer capture missing digest view');
+                                digestsButton.click();
+                                let digestIndex = -1;
+                                let digestResultSummary = 'not queried';
+                                await wait(
+                                  async () => {
+                                    const response = await window.aibrowse.watch.listDigests({
+                                      page: 1,
+                                      pageSize: 50,
+                                      scheduleId: null,
+                                    });
+                                    if (!response.ok) {
+                                      digestResultSummary = 'error=' + response.errorCode;
+                                      return false;
+                                    }
+                                    const items =
+                                      response.value && Array.isArray(response.value.items)
+                                        ? response.value.items
+                                        : [];
+                                    digestIndex = items.findIndex(
+                                      (item) => item && item.id === expectedDigestId,
+                                    );
+                                    const digestArticles = [
+                                      ...document.querySelectorAll('[data-watch-view="digests"] article'),
+                                    ].filter((article) =>
+                                      [...article.querySelectorAll('button')].some(
+                                        (candidate) =>
+                                          candidate.textContent?.trim() === '查看事实与引用状态',
+                                      ),
+                                    );
+                                    digestResultSummary =
+                                      'ok total=' + String(response.value.total) +
+                                      ' index=' + String(digestIndex) +
+                                      ' dom=' + String(digestArticles.length);
+                                    return digestIndex >= 0 && digestArticles.length > digestIndex;
+                                  },
+                                  () => 'digest ' + digestResultSummary,
+                                );
+                                const digestArticles = [
+                                  ...document.querySelectorAll('[data-watch-view="digests"] article'),
+                                ].filter((article) =>
+                                  [...article.querySelectorAll('button')].some(
+                                    (candidate) =>
+                                      candidate.textContent?.trim() === '查看事实与引用状态',
+                                  ),
+                                );
+                                const digestArticle = digestArticles[digestIndex];
+                                const digestButton = digestArticle
+                                  ? [...digestArticle.querySelectorAll('button')].find(
+                                      (candidate) =>
+                                        candidate.textContent?.trim() === '查看事实与引用状态',
+                                    )
+                                  : null;
+                                if (!(digestButton instanceof HTMLElement))
+                                  throw new Error('D10 renderer capture missing digest detail');
+                                digestButton.click();
+                                await wait(
+                                  () =>
+                                    [...document.querySelectorAll('[data-watch-view="digests"] pre')]
+                                      .some((pre) => pre.textContent?.includes(expectedEventId)),
+                                  'digest facts',
+                                );
+                                const html = document.documentElement.outerHTML;
+                                const backButton = document.querySelector('.watch-header button');
+                                if (backButton instanceof HTMLElement) backButton.click();
+                                const aiButton = document.querySelector('button.ai-toggle');
+                                if (aiButton instanceof HTMLElement) aiButton.click();
+                                const restoreDeadline = Date.now() + 5000;
+                                while (
+                                  Date.now() < restoreDeadline &&
+                                  document.querySelector('.ai-panel') === null
+                                ) {
+                                  await new Promise((resolve) => setTimeout(resolve, 25));
+                                }
+                                return { html, selectedDigestId: expectedDigestId };
+                              })()
+                            `,
+                          )) as { html: string; selectedDigestId: string };
+                        }
                       : undefined,
+                  watchRepository: () => watchRepo,
+                  watchNotification: {
+                    drain: async () => {
+                      await watchNotifications?.drain();
+                    },
+                    values: () => watchD10NotificationCapture,
+                  },
                 },
             toolExecutor: toolExecutor ?? undefined, // A2/A3：工具层探针（注册表/校验/权限/执行/审计全链路）
             confirmManager: confirmManager ?? undefined, // A3：L2 确认程序化驱动（approve/deny）
@@ -1766,6 +2052,10 @@ if (!gotLock) {
               // 目录与进程资源在此精确清理（保留共享 userData 的 research.db；
               // EPERM 容忍——db 句柄随进程退出由 OS 释放）
               stopRendererAdmissions();
+              await closeAndDrainRendererAdmissions();
+              // Keep the Sources gate explicit in this app.exit-only path: the
+              // shared helper has already closed and drained it, and this await
+              // documents the exact lifetime boundary for the gate.
               await sourceIpcAdmission.drain();
               try {
                 await watchShutdown();
@@ -1818,7 +2108,7 @@ if (!gotLock) {
             } catch (shutdownError) {
               logError('main', '冒烟失败路径 Watch 排水异常', shutdownError);
             }
-            await sourceIpcAdmission.drain();
+            await closeAndDrainRendererAdmissions();
             sourceService?.dispose();
             // 失败路径同样清理冒烟 Sources 临时目录（否则每次失败运行残留
             // pid 专属目录——清理纪律）

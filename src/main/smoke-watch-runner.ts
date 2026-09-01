@@ -15,6 +15,7 @@ import { SecureCredentialStoreImpl } from './ai/credential-store';
 import { AgentLoop } from './ai/agent/agent-loop';
 import { ConfirmManager } from './ai/confirm-manager';
 import { FakeProvider } from './ai/provider/fake-provider';
+import type { LLMProvider } from './ai/provider/llm-provider';
 import { openResearchStore } from './research/research-store';
 import { ConversationStore } from './ai/conversation-store';
 import { WatchProcessingServiceImpl } from './watch/watch-processing-service';
@@ -57,12 +58,14 @@ import {
   evaluateWatchScan,
   readSurfaceFiles,
   summarizeWatchScan,
+  validateWatchScanIngress,
   validateWatchScanExpectations,
   WATCH_SCAN_EXPECTATIONS,
   WATCH_SCAN_SURFACES,
   type WatchScanVerdict,
   type WatchCanaryKind,
   type WatchScanSurface,
+  type WatchScanIngressEvidence,
 } from './smoke-watch-scan';
 import { runWatchRedTeamScenarios } from './smoke-watch-redteam';
 
@@ -103,18 +106,43 @@ export interface WatchD10OfflineReport {
   cohesiveOk: boolean;
   stageEvidence: readonly WatchStageEvidence[];
   stageEvidenceFailures: readonly string[];
+  stageEvidenceConditionNotRun: readonly string[];
+  scanIngressEvidence: readonly WatchScanIngressEvidence[];
 }
 
 export interface WatchStageEvidence {
   id: string;
   section: '§7' | '§9' | '§10';
   ok: boolean;
+  status: 'satisfied' | 'unmet' | 'condition-not-run';
   evidenceKind: 'structural-proof' | 'real-observation' | 'honest-limit' | 'not-run';
   detail: string;
 }
 
+export interface WatchRendererCapture {
+  html: string;
+  selectedDigestId: string;
+}
+
+export interface WatchNotificationCapture {
+  drain(): Promise<void>;
+  values(): readonly unknown[];
+}
+
 export interface WatchD10OfflineOptions {
-  rendererDom?: () => Promise<string>;
+  /**
+   * Capture the actual Watch workspace after selecting the event and digest
+   * produced by the cohesive run. The optional identity is intentionally
+   * supplied by the runner so a generic workspace presence check cannot pass.
+   */
+  rendererDom?: (identity?: {
+    eventId: string;
+    digestId: string;
+  }) => Promise<string | WatchRendererCapture>;
+  /** Product Watch repository used by the Electron D9 UI, when available. */
+  watchRepository?: () => WatchRepository | null;
+  /** Product notification service/capture used by the Electron D9 UI, when available. */
+  watchNotification?: WatchNotificationCapture;
   logFile?: string;
   auditEntries?: readonly unknown[];
   resourceObserve?: () => Omit<WatchResourceProbeResult, 'durationMs' | 'samples' | 'ok'>;
@@ -142,7 +170,10 @@ function d10Rule(id: string): WatchRule {
   return {
     id,
     version: 1,
-    sourceId: 'source-d10',
+    // Keep the offline fixture on the same UUID contract as the product
+    // repository. The renderer IPC validator must be able to consume the
+    // event produced by this exact cohesive path.
+    sourceId: randomUUID(),
     kind: 'feed',
     state: 'enabled',
     pauseReason: null,
@@ -197,6 +228,7 @@ function d10ProductRequestFactory(
   paths: string[],
   kind: 'feed' | 'page' = 'feed',
   ingressCanary: string | null = null,
+  capturedBodies: Buffer[] = [],
 ): WatchRequestFactory {
   let feedIndex = 0;
   return (options) => {
@@ -240,6 +272,7 @@ function d10ProductRequestFactory(
       destroy: () => request.emit('close'),
       end: () => {
         queueMicrotask(() => {
+          capturedBodies.push(body);
           request.emit('response', response);
           if (body.length > 0) response.emit('data', body);
           response.emit('end');
@@ -282,6 +315,18 @@ function surfaceRows(dbPath: string, tables: readonly string[]): Buffer {
   }
 }
 
+function surfaceRepositoryRows(repository: WatchRepository, tables: readonly string[]): Buffer {
+  return Buffer.from(
+    JSON.stringify(
+      tables.map((table) => ({
+        table,
+        rows: repository.dbHandle.prepare(`SELECT * FROM ${table}`).all(),
+      })),
+    ),
+    'utf8',
+  );
+}
+
 function filesUnder(root: string): string[] {
   const files: string[] = [];
   const visit = (directory: string): void => {
@@ -303,6 +348,8 @@ interface ProductSurfaceBuild {
   cohesiveStages: readonly string[];
   resourceObserve: () => Omit<WatchResourceProbeResult, 'durationMs' | 'samples' | 'ok'>;
   cleanup: () => void;
+  ingressEvidence: readonly WatchScanIngressEvidence[];
+  rendererDomCapture: Buffer | null;
 }
 
 async function buildProductSurfaces(
@@ -313,8 +360,10 @@ async function buildProductSurfaces(
   const surfaces = new Map<WatchScanSurface, Buffer>();
   const sources = new Map<WatchScanSurface, string>();
   const readFailures: string[] = [];
+  const ingressEvidence: WatchScanIngressEvidence[] = [];
   const productAuditEntries: string[] = [];
   let cohesive: boolean;
+  let rendererDomCapture: Buffer | null = null;
   let completed = false;
   const owned = {
     servers: new Set<object>(),
@@ -326,6 +375,16 @@ async function buildProductSurfaces(
   };
   owned.tempDirs.add(root);
   let cleaned = false;
+  const recordIngress = (
+    canaryKind: WatchCanaryKind,
+    captureKind: WatchScanIngressEvidence['captureKind'],
+    source: string,
+    bytes: number,
+  ): void => {
+    if (!ingressEvidence.some((item) => item.canaryKind === canaryKind)) {
+      ingressEvidence.push({ canaryKind, captureKind, source, bytes });
+    }
+  };
   const cleanup = (): void => {
     if (cleaned) return;
     cleaned = true;
@@ -434,6 +493,12 @@ async function buildProductSurfaces(
     if (credentialRead.readFailures.length > 0 || credentialRead.data.includes(apiKey)) {
       throw new Error('D10 SecureCredentialStore plaintext exposure');
     }
+    recordIngress(
+      'api-key',
+      'bytes',
+      'SecureCredentialStore.set -> encrypted credentials file',
+      credentialRead.data.byteLength,
+    );
 
     const reasoningCanary = canaries.get('reasoning-transcript')?.value;
     if (reasoningCanary === undefined) throw new Error('D10 reasoning canary missing');
@@ -461,6 +526,13 @@ async function buildProductSurfaces(
     ) {
       throw new Error('D10 reasoning ingress exposure');
     }
+    recordIngress(
+      'reasoning-transcript',
+      'bytes',
+      'AgentLoop.run -> terminal result/provider stream lifecycle',
+      Buffer.byteLength(JSON.stringify(reasoningResult), 'utf8') +
+        Buffer.byteLength(JSON.stringify(reasoningProvider.getRequests()), 'utf8'),
+    );
 
     // Each non-persisted canary enters its own product parser/validator seam;
     // only the bounded, validated projections below are eligible for storage.
@@ -693,23 +765,37 @@ async function buildProductSurfaces(
       sources.set('watch-db-non-evidence', `${watchPath}:non-evidence-columns`);
       surfaces.set('exports', Buffer.from(`${markdown.text}\n${csv.text}`, 'utf8'));
       sources.set('exports', 'WatchExportService.renderDigestMarkdown + serializeCsv');
+      if (!csv.text.includes(formula.value)) throw new Error('D10 CSV ingress capture missing');
+      recordIngress(
+        'csv-formula',
+        'bytes',
+        'WatchExportService -> serializeCsv output',
+        Buffer.byteLength(csv.text, 'utf8'),
+      );
       // The final privacy surface is populated from the request captured by the
       // actual DigestService -> Provider path below. The direct builder result
       // remains a shape/serialization assertion, but it is not itself the
       // byte-level transport oracle.
 
-      // Exercise the actual FeedParser and ProcessingService with five observations in a
-      // separate product-owned database; the privacy event above was also produced by this
-      // same acquisition/diff/result path.
-      const cohesiveDir = mkdtempSync(join(root, 'cohesive-'));
-      const cohesiveDb = openDb(join(cohesiveDir, 'watch.db'));
-      owned.databases.add(cohesiveDb);
-      runWatchMigrations(cohesiveDb);
-      const cohesiveRepo = new WatchRepository(cohesiveDb);
+      // Exercise the actual FeedParser and ProcessingService with five observations. In the
+      // Electron gate use the same product repository that D9 renders; the isolated fallback
+      // remains for the Electron-free runner tests and still uses the real Watch repository.
+      const sharedCohesiveRepo = options.watchRepository?.() ?? null;
+      const cohesiveDir = sharedCohesiveRepo === null ? mkdtempSync(join(root, 'cohesive-')) : null;
+      const cohesiveDb = cohesiveDir === null ? null : openDb(join(cohesiveDir, 'watch.db'));
+      if (cohesiveDb !== null) {
+        owned.databases.add(cohesiveDb);
+        runWatchMigrations(cohesiveDb);
+      }
+      const cohesiveRepo = sharedCohesiveRepo ?? new WatchRepository(cohesiveDb!);
+      let cohesiveRuleId: string | null = null;
       let capturedProviderRequest: unknown = null;
       let capturedNotification: unknown = null;
+      let cohesiveEvidenceBytes: Buffer | null = null;
+      let digestScheduleForCleanup: { id: string; version: number } | null = null;
       try {
         const cohesiveRule = d10Rule(randomUUID());
+        cohesiveRuleId = cohesiveRule.id;
         cohesiveRule.condition = {
           version: 1,
           combine: 'all',
@@ -721,8 +807,9 @@ async function buildProductSurfaces(
         const clock = new FakeClock(Date.parse(D10_NOW));
         const processing = new WatchProcessingServiceImpl({ repo: cohesiveRepo, clock });
         const acquisitionPaths: string[] = [];
-        const httpBodyCanary = canaries.get('http-body')?.value ?? null;
-        const pageSnapshotCanary = canaries.get('page-snapshot')?.value ?? null;
+        const feedCapturedBodies: Buffer[] = [];
+        const httpBodyCanary = canaries.get('http-body')?.value ?? '';
+        const pageSnapshotCanary = canaries.get('page-snapshot')?.value ?? '';
         const evidenceCanaryValue =
           canaries.get('evidence-excerpt')?.value ?? 'D10-evidence-missing';
         const publicStack = createPublicWatchHttpStack({
@@ -733,14 +820,22 @@ async function buildProductSurfaces(
             acquisitionPaths,
             'feed',
             httpBodyCanary,
+            feedCapturedBodies,
           ),
         });
         const feedService = new FeedAcquisitionService({ target: publicStack.target });
         const pagePaths: string[] = [];
+        const pageCapturedBodies: Buffer[] = [];
         const pageStack = createPublicWatchHttpStack({
           clock,
           lookup: async () => [{ address: '93.184.216.34', family: 4 as const }],
-          request: d10ProductRequestFactory([], pagePaths, 'page', pageSnapshotCanary),
+          request: d10ProductRequestFactory(
+            [],
+            pagePaths,
+            'page',
+            pageSnapshotCanary,
+            pageCapturedBodies,
+          ),
         });
         const pageRouter = new PageAcquisitionRouter({
           publicTarget: pageStack.target,
@@ -751,7 +846,25 @@ async function buildProductSurfaces(
         });
         const unified = new WatchAcquisitionService({ feed: feedService, page: pageRouter });
         const providerRawCanary = canaries.get('provider-raw')?.value ?? 'D10-provider-raw-missing';
-        const digestProvider = new FakeProvider({ rounds: [[providerRawCanary]] });
+        const rawDigestProvider = new FakeProvider({ rounds: [[providerRawCanary]] });
+        let capturedProviderResponse = Buffer.alloc(0);
+        const digestProvider: LLMProvider & {
+          getRequests(): ReturnType<FakeProvider['getRequests']>;
+        } = {
+          metadata: rawDigestProvider.metadata,
+          async *stream(request, signal) {
+            for await (const event of rawDigestProvider.stream(request, signal)) {
+              if (event.type === 'delta' || event.type === 'reasoning') {
+                capturedProviderResponse = Buffer.concat([
+                  capturedProviderResponse,
+                  Buffer.from(event.text, 'utf8'),
+                ]);
+              }
+              yield event;
+            }
+          },
+          getRequests: () => rawDigestProvider.getRequests(),
+        };
         const pageRule: WatchRule = {
           ...cohesiveRule,
           id: randomUUID(),
@@ -783,6 +896,12 @@ async function buildProductSurfaces(
         ) {
           throw new Error('cohesive Page acquisition failed');
         }
+        recordIngress(
+          'page-snapshot',
+          'bytes',
+          'PageAcquisitionRouter public -> PublicWatchHttpClient response bytes',
+          pageCapturedBodies.reduce((total, body) => total + body.byteLength, 0),
+        );
         const firstAcquired = await unified.run({
           rule: cohesiveRule,
           baselineHint: { kind: 'none', expectedBaselineVersion: 0 },
@@ -791,6 +910,19 @@ async function buildProductSurfaces(
         });
         if (!firstAcquired.ok || firstAcquired.kind !== 'projection')
           throw new Error('cohesive Feed acquisition failed');
+        if (
+          feedCapturedBodies.length === 0 ||
+          !feedCapturedBodies.some((body) => body.includes(httpBodyCanary)) ||
+          !pageCapturedBodies.some((body) => body.includes(pageSnapshotCanary))
+        ) {
+          throw new Error('D10 acquisition ingress capture missing');
+        }
+        recordIngress(
+          'http-body',
+          'bytes',
+          'FeedAcquisitionService -> PublicWatchHttpClient response bytes',
+          feedCapturedBodies.reduce((total, body) => total + body.byteLength, 0),
+        );
         const firstRun = insertRunningWatchRun(cohesiveRepo, cohesiveRule.id, 'cohesive-1');
         const first = processing.process({
           rule: cohesiveRule,
@@ -868,7 +1000,7 @@ async function buildProductSurfaces(
           },
           scheduleControl: { upsert: () => undefined, remove: () => undefined },
         });
-        const scheduleId = 'cohesive-schedule';
+        const scheduleId = randomUUID();
         try {
           if (
             !(
@@ -932,58 +1064,124 @@ async function buildProductSurfaces(
           if (providerRequestCapture === undefined)
             throw new Error('cohesive Provider request capture missing');
           capturedProviderRequest = providerRequestCapture;
-          if (
-            surfaceRows(join(cohesiveDir, 'watch.db'), ['watch_digests']).includes(
-              providerRawCanary,
-            )
-          )
+          if (!capturedProviderResponse.includes(providerRawCanary))
+            throw new Error('cohesive Provider response capture missing');
+          recordIngress(
+            'provider-raw',
+            'bytes',
+            'DigestService -> Provider.stream response bytes',
+            capturedProviderResponse.byteLength,
+          );
+          if (surfaceRepositoryRows(cohesiveRepo, ['watch_digests']).includes(providerRawCanary))
             throw new Error('cohesive Digest persisted raw Provider response');
           const cohesiveFacts = artifact.facts;
           const cohesiveDigest = renderDigestMarkdown({ facts: cohesiveFacts, explanation: null });
           if (cohesiveDigest === null) throw new Error('cohesive Digest render failed');
           const delivered: string[] = [];
-          const notifications = new WatchNotificationService(
-            () => cohesiveRepo,
-            (notification) => {
-              delivered.push(notification.subjectId);
-              capturedNotification = notification;
-              return true;
-            },
-            () => undefined,
-            'in-app',
-            () => 'D10 cohesive source',
-          );
-          await notifications.drain();
+          if (options.watchNotification === undefined) {
+            const notifications = new WatchNotificationService(
+              () => cohesiveRepo,
+              (notification) => {
+                delivered.push(notification.subjectId);
+                capturedNotification = notification;
+                return true;
+              },
+              () => undefined,
+              'in-app',
+              () => 'D10 cohesive source',
+            );
+            await notifications.drain();
+          }
           const cohesiveNotification = delivered.includes(event.id);
           const digestNotification = delivered.includes(artifact.id);
+          if (options.watchNotification !== undefined) {
+            const notificationsBeforeDrain = [...options.watchNotification.values()];
+            await options.watchNotification.drain();
+            const observedNotifications = [
+              ...notificationsBeforeDrain,
+              ...options.watchNotification.values(),
+            ];
+            capturedNotification =
+              observedNotifications.find(
+                (notification) =>
+                  typeof notification === 'object' &&
+                  notification !== null &&
+                  ((notification as { subjectId?: unknown }).subjectId === event.id ||
+                    (notification as { subjectId?: unknown }).subjectId === artifact.id),
+              ) ?? null;
+          }
           const renderedWatchUi = options.rendererDom
-            ? /watch-workspace|data-watch-view/.test(await options.rendererDom())
-            : false;
+            ? await options.rendererDom({ eventId: event.id, digestId: artifact.id })
+            : null;
+          const renderedWatchHtml =
+            typeof renderedWatchUi === 'string' ? renderedWatchUi : (renderedWatchUi?.html ?? '');
+          if (renderedWatchUi !== null) rendererDomCapture = Buffer.from(renderedWatchHtml, 'utf8');
+          const renderedWatchFacts =
+            /watch-workspace|data-watch-view/.test(renderedWatchHtml) &&
+            renderedWatchHtml.includes(event.id) &&
+            typeof renderedWatchUi !== 'string' &&
+            renderedWatchUi?.selectedDigestId === artifact.id;
           const typedEvidence = cohesiveRepo
             .listEventItems(event.id)
             .every((item) => item.before !== undefined && item.after !== undefined);
           cohesive =
-            cohesiveNotification &&
-            digestNotification &&
-            renderedWatchUi &&
+            (options.watchNotification === undefined
+              ? cohesiveNotification && digestNotification
+              : capturedNotification !== null) &&
+            renderedWatchFacts &&
             typedEvidence &&
             cohesiveFacts.eventCount > 0 &&
             cohesiveFacts.events.some((factEvent) =>
               cohesiveDigest.text.includes(factEvent.eventId.replaceAll('-', '\\-')),
             );
+          if (!cohesive) throw new Error('cohesive final projection failed');
+          cohesiveEvidenceBytes = surfaceRepositoryRows(cohesiveRepo, [
+            'watch_event_items',
+            'watch_digests',
+          ]);
+          const scheduleForCleanup = digest.getSchedule(scheduleId)?.schedule;
+          if (scheduleForCleanup !== null && scheduleForCleanup !== undefined) {
+            digestScheduleForCleanup = {
+              id: scheduleForCleanup.id,
+              version: scheduleForCleanup.version,
+            };
+          }
         } finally {
+          if (digestScheduleForCleanup !== null) {
+            const deleted = digest.delete(
+              digestScheduleForCleanup.id,
+              digestScheduleForCleanup.version,
+            );
+            if (!deleted.ok) cohesive = false;
+            digestScheduleForCleanup = null;
+          }
           digest.dispose();
         }
-        if (!cohesive) throw new Error('cohesive final projection failed');
         if (acquisitionPaths.join('|') !== '/robots.txt|/d10.xml|/d10.xml|/d10.xml') {
           throw new Error('cohesive acquisition request ledger mismatch');
         }
       } finally {
-        cohesiveRepo.dispose();
-        owned.databases.delete(cohesiveDb);
-        rmSync(cohesiveDir, { recursive: true, force: true });
+        if (cohesiveRuleId !== null && !cohesiveRepo.isDisposed) {
+          cohesiveRepo.deleteRule(cohesiveRuleId);
+        }
+        if (sharedCohesiveRepo === null) {
+          cohesiveRepo.dispose();
+          if (cohesiveDb !== null) owned.databases.delete(cohesiveDb);
+          if (cohesiveDir !== null) rmSync(cohesiveDir, { recursive: true, force: true });
+        }
       }
       if (capturedProviderRequest === null) throw new Error('cohesive Provider request missing');
+      if (cohesiveEvidenceBytes === null)
+        throw new Error('cohesive Watch DB evidence capture missing');
+      const existingEvidence = surfaces.get('watch-db-evidence');
+      if (existingEvidence === undefined) throw new Error('D10 Watch DB evidence surface missing');
+      surfaces.set('watch-db-evidence', Buffer.concat([existingEvidence, cohesiveEvidenceBytes]));
+      sources.set(
+        'watch-db-evidence',
+        `${watchPath}:watch_event_items+watch_digests; ${
+          cohesiveDir ?? 'product watch.db'
+        }:same cohesive event rows`,
+      );
       surfaces.set(
         'provider-request',
         Buffer.from(JSON.stringify(capturedProviderRequest), 'utf8'),
@@ -993,6 +1191,36 @@ async function buildProductSurfaces(
         throw new Error('cohesive Notification DTO capture missing');
       surfaces.set('notification-dto', Buffer.from(JSON.stringify(capturedNotification), 'utf8'));
       sources.set('notification-dto', 'WatchNotificationService -> delivery callback capture');
+      const evidenceSurface = surfaces.get('watch-db-evidence');
+      if (evidenceSurface === undefined) throw new Error('D10 Evidence surface capture missing');
+      recordIngress(
+        'evidence-excerpt',
+        'bytes',
+        'WatchRepository event_items -> DigestFacts -> notification/export',
+        evidenceSurface.byteLength,
+      );
+      const urlPaths: string[] = [];
+      const urlStack = createPublicWatchHttpStack({
+        clock: new FakeClock(Date.parse(D10_NOW)),
+        lookup: async () => [{ address: '93.184.216.34', family: 4 as const }],
+        request: d10ProductRequestFactory([], urlPaths),
+      });
+      const urlCapture = await urlStack.target.get({
+        url: `https://example.com/d10-url?token=${encodeURIComponent(urlTokenCanary)}`,
+        purpose: 'page',
+      });
+      if (
+        (urlCapture.kind !== 'ok' && urlCapture.kind !== 'unchanged-http') ||
+        !urlPaths.some((path) => path.includes(urlTokenCanary))
+      ) {
+        throw new Error('D10 URL query canary product request ingress failed');
+      }
+      recordIngress(
+        'url-token',
+        'request',
+        'PublicWatchHttpClient request path capture',
+        Buffer.byteLength(urlTokenCanary, 'utf8'),
+      );
     } finally {
       repo.dispose();
       owned.databases.delete(watchDb);
@@ -1034,12 +1262,12 @@ async function buildProductSurfaces(
       );
       sources.set('audit', 'smokeAuditCollector');
     }
-    if (options.rendererDom === undefined) {
+    if (options.rendererDom === undefined || rendererDomCapture === null) {
       readFailures.push('renderer-dom:not-provided');
       surfaces.set('renderer-dom', Buffer.alloc(0));
       sources.set('renderer-dom', 'not-provided');
     } else {
-      surfaces.set('renderer-dom', Buffer.from(await options.rendererDom(), 'utf8'));
+      surfaces.set('renderer-dom', rendererDomCapture);
       sources.set('renderer-dom', 'BrowserWindow.webContents DOM');
     }
     const result: ProductSurfaceBuild = {
@@ -1050,6 +1278,8 @@ async function buildProductSurfaces(
       cohesiveStages: COHESIVE_STAGES,
       resourceObserve,
       cleanup,
+      ingressEvidence,
+      rendererDomCapture,
     };
     completed = true;
     return result;
@@ -1113,7 +1343,7 @@ function buildStageEvidence(input: {
   cohesiveOk: boolean;
   scanOk: boolean;
   resourceOk: boolean;
-}): { results: WatchStageEvidence[]; failures: string[] } {
+}): { results: WatchStageEvidence[]; failures: string[]; conditionNotRun: string[] } {
   const wrt = new Map(input.wrtOutcomes.map((item) => [item.id, item]));
   const wrtOk = (...ids: string[]): boolean => ids.every((id) => wrt.get(id)?.ok === true);
   const result = (
@@ -1122,7 +1352,18 @@ function buildStageEvidence(input: {
     ok: boolean,
     evidenceKind: WatchStageEvidence['evidenceKind'],
     detail: string,
-  ): WatchStageEvidence => ({ id, section, ok, evidenceKind, detail });
+  ): WatchStageEvidence => ({
+    id,
+    section,
+    ok,
+    status: !ok
+      ? 'unmet'
+      : evidenceKind === 'honest-limit' || evidenceKind === 'not-run'
+        ? 'condition-not-run'
+        : 'satisfied',
+    evidenceKind,
+    detail,
+  });
   const results = [
     result(
       'S6-7-1',
@@ -1252,7 +1493,10 @@ function buildStageEvidence(input: {
     ),
   ];
   const failures = results.filter((item) => !item.ok).map((item) => `${item.id}：${item.detail}`);
-  return { results, failures };
+  const conditionNotRun = results
+    .filter((item) => item.status === 'condition-not-run')
+    .map((item) => `${item.id}：${item.detail}`);
+  return { results, failures, conditionNotRun };
 }
 
 export async function runWatchResourceProbe(
@@ -1292,6 +1536,8 @@ async function buildProductScanVerdicts(options: WatchD10OfflineOptions): Promis
   cohesiveStages: readonly string[];
   resourceObserve: () => Omit<WatchResourceProbeResult, 'durationMs' | 'samples' | 'ok'>;
   cleanup: () => void;
+  ingressEvidence: readonly WatchScanIngressEvidence[];
+  ingressErrors: readonly string[];
 }> {
   const canaries = new Map(createWatchCanaries().map((canary) => [canary.kind, canary]));
   const product = await buildProductSurfaces(canaries, options);
@@ -1324,6 +1570,8 @@ async function buildProductScanVerdicts(options: WatchD10OfflineOptions): Promis
     cohesiveStages: product.cohesiveStages,
     resourceObserve: product.resourceObserve,
     cleanup: product.cleanup,
+    ingressEvidence: product.ingressEvidence,
+    ingressErrors: validateWatchScanIngress(product.ingressEvidence),
   };
 }
 
@@ -1340,6 +1588,7 @@ export async function runWatchD10OfflineScenario(
   const productScan = await buildProductScanVerdicts(options);
   const scanVerdicts = productScan.verdicts;
   const scanSummary = summarizeWatchScan(scanVerdicts);
+  contractErrors.push(...productScan.ingressErrors);
   let resourceProbe: WatchResourceProbeResult;
   try {
     // Observe only after the product has completed its own close/dispose and
@@ -1401,5 +1650,7 @@ export async function runWatchD10OfflineScenario(
     cohesiveOk: productScan.cohesive,
     stageEvidence: stageEvidence.results,
     stageEvidenceFailures: stageEvidence.failures,
+    stageEvidenceConditionNotRun: stageEvidence.conditionNotRun,
+    scanIngressEvidence: productScan.ingressEvidence,
   };
 }

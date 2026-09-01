@@ -52,6 +52,16 @@ export interface WatchSurfaceReadResult {
   readFailures: string[];
 }
 
+export type WatchScanCaptureKind = 'bytes' | 'dom' | 'request';
+
+/** 只记录真实产品入口的捕获元数据；正文仍只留在对应 surface 的 Buffer 中。 */
+export interface WatchScanIngressEvidence {
+  canaryKind: WatchCanaryKind;
+  captureKind: WatchScanCaptureKind;
+  source: string;
+  bytes: number;
+}
+
 export const WATCH_SCAN_SURFACES: readonly WatchScanSurface[] = [
   'log',
   'audit',
@@ -148,6 +158,29 @@ export function validateWatchScanExpectations(
     if (!WATCH_SCAN_SURFACES.includes(expectation.surface)) {
       errors.push(`${String(expectation.surface)}：扫描面非法`);
     }
+  }
+  return errors;
+}
+
+export function validateWatchScanIngress(evidence: readonly WatchScanIngressEvidence[]): string[] {
+  const errors: string[] = [];
+  const byKind = new Map<WatchCanaryKind, WatchScanIngressEvidence>();
+  for (const item of evidence) {
+    if (byKind.has(item.canaryKind)) {
+      errors.push(`${item.canaryKind}：产品入口捕获重复`);
+      continue;
+    }
+    byKind.set(item.canaryKind, item);
+    if (item.source.trim() === '') errors.push(`${item.canaryKind}：入口来源为空`);
+    if (!Number.isSafeInteger(item.bytes) || item.bytes <= 0) {
+      errors.push(`${item.canaryKind}：入口捕获字节数非法`);
+    }
+    if (!['bytes', 'dom', 'request'].includes(item.captureKind)) {
+      errors.push(`${item.canaryKind}：入口捕获类型非法`);
+    }
+  }
+  for (const kind of WATCH_CANARY_KINDS) {
+    if (!byKind.has(kind)) errors.push(`${kind}：缺少产品入口捕获`);
   }
   return errors;
 }

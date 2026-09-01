@@ -66,6 +66,7 @@ export type WatchLiveResultKind =
   | 'skipped-credential-unavailable'
   | 'skipped-not-packaged'
   | 'skipped-not-windows'
+  | 'skipped-windows-condition'
   | 'failed-network'
   | 'failed-provider'
   | 'failed-fixture'
@@ -129,6 +130,7 @@ export function validateWatchLiveExecution(
 }
 
 export function classifyWatchLiveFailure(input: {
+  scenarioKind?: WatchLiveScenarioKind;
   status?: number;
   errorCode?: string;
   credentialAvailable?: boolean;
@@ -138,7 +140,10 @@ export function classifyWatchLiveFailure(input: {
   if (input.credentialAvailable === false) return 'skipped-credential-unavailable';
   if (input.windows === false) return 'skipped-not-windows';
   if (input.packaged === false) return 'skipped-not-packaged';
-  if (input.status === 401 || input.status === 403 || input.status === 402)
+  if (
+    (input.status === 401 || input.status === 403 || input.status === 402) &&
+    input.scenarioKind !== 'public-network'
+  )
     return 'failed-provider';
   if (input.status !== undefined && input.status >= 400 && input.status < 500)
     return 'failed-network';

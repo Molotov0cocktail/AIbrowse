@@ -60,14 +60,17 @@ export function createProductWatchResourcePort(
         try {
           await runtime.shutdown();
           const samples = 3;
+          const residuals: ReturnType<ProductWatchRuntimeResourceProbe['residuals']>[] = [];
           for (let index = 0; index < samples; index += 1) {
             if (index > 0) await wait(100, signal);
+            residuals.push(runtime.residuals());
           }
           return {
             httpClass: 'Watch 生产运行时排水后有界观察完成',
             observedForMs: Date.now() - observedAt,
             samples,
-            residuals: runtime.residuals(),
+            residuals: residuals.at(-1),
+            residualTrend: residuals,
           };
         } catch {
           return {
@@ -156,22 +159,25 @@ export function createProductWatchResourcePort(
 
         const observedAt = Date.now();
         const samples = 3;
+        const residualTrend = [];
         for (let index = 0; index < samples; index += 1) {
           if (index > 0) await wait(100, signal);
-        }
-        const observedForMs = Date.now() - observedAt;
-        return {
-          httpClass: 'product-owned Watch 资源清理后有界观察完成',
-          observedForMs,
-          samples,
-          residuals: {
+          residualTrend.push({
             servers: owned.servers.size,
             timers: owned.timers.size,
             databases: owned.databases.size,
             taskTabs: owned.taskTabs.size + (workspace?.getOwnedCount() ?? 0),
             children: owned.children.size,
             tempDirs: existsSync(root) ? 1 : 0,
-          },
+          });
+        }
+        const observedForMs = Date.now() - observedAt;
+        return {
+          httpClass: 'product-owned Watch 资源清理后有界观察完成',
+          observedForMs,
+          samples,
+          residuals: residualTrend.at(-1),
+          residualTrend,
         };
       } finally {
         if (leaseId !== null && workspace !== null) {

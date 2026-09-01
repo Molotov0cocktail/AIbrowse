@@ -4596,7 +4596,14 @@ async function runAgentUiScenarios(
     timeoutMs: 15000,
     pollIntervalMs: 50,
   });
-  const logFile = getCurrentLogFilePath();
+  let logFile = getCurrentLogFilePath();
+  // The full UI matrix can cross a local midnight. Logger rotation may then
+  // replace the path selected during setup; refresh it after one product log
+  // write so the scan starts from the live product-owned file.
+  if (!existsSync(logFile)) {
+    logInfo('smoke', 'A6 UI 日志扫描路径已轮转，刷新当前产品日志文件');
+    logFile = getCurrentLogFilePath();
+  }
   const logOffsetBefore = statSync(logFile).size;
   const sessionsDir = join(aiSmokeDir, 'conversations');
 
@@ -11226,7 +11233,7 @@ export async function runSmokeScenario(
       );
       logInfo(
         'smoke',
-        `8.27 D10 Watch WRT-01..19、隐私扫描、Stage 映射与资源探针通过（扫描源=${d10.scanSource}）`,
+        `8.27 D10 Watch WRT-01..19、隐私扫描与资源探针完成（Stage 状态含条件未运行项=${d10.stageEvidenceConditionNotRun.length}；扫描源=${d10.scanSource}）`,
       );
     }
 
@@ -17423,6 +17430,16 @@ async function runResearchUiScenario(options: {
         active: t.active,
       })),
     );
+  const waitForStableTabs = async (failure: string): Promise<void> => {
+    let previous = await tabSnapshot();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await delay(100);
+      const current = await tabSnapshot();
+      if (current === previous) return;
+      previous = current;
+    }
+    throw new Error(failure);
+  };
 
   const assertNoTabFocused = async (failure: string): Promise<void> => {
     // WebContentsView 不可见机器证据：结果画布模式（contentVisible=false）下
@@ -17690,6 +17707,7 @@ async function runResearchUiScenario(options: {
     );
     // 画布已关闭（viewMode 回 browser）
     await delay(300);
+    await waitForStableTabs('8.19-B：打开来源后 Tab 状态未稳定');
     const canvasGone = (await uiJs(
       uiWc,
       `document.querySelector('.research-canvas') === null`,
@@ -17723,6 +17741,7 @@ async function runResearchUiScenario(options: {
     );
     await clickUi(uiWc, '.research-panel-open-result');
     await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：画布二次往返失败');
+    await waitForStableTabs('8.19-B：二次打开结果后 Tab 状态未稳定');
     const afterRoundTrip = await tabSnapshot();
     assert(
       JSON.stringify(afterRoundTrip) === JSON.stringify(beforeRoundTrip),
