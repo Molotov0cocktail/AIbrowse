@@ -5,10 +5,12 @@
 import type {
   WatchLiveResourcePort,
   WatchResourceBatteryObservation,
+  WatchResourceBatterySample,
   WatchResourceMetricSample,
 } from './smoke-watch-live-runner';
-import { MIN_LIVE_RESOURCE_OBSERVATION_MS } from './smoke-watch-live-runner';
 import type { WatchTaskTabWorkspace } from './watch/watch-task-tab-workspace';
+
+const RESOURCE_SAMPLE_INTERVAL_MS = 100;
 
 function wait(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -31,7 +33,9 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
 export interface ProductWatchRuntimeResourceProbe {
   isAvailable: () => boolean;
   metrics: () => Omit<WatchResourceMetricSample, 'observedAtMs'>;
-  battery?: () => WatchResourceBatteryObservation;
+  battery?: () =>
+    | { status: 'observed'; chargePercent?: number; onBatteryPower?: boolean }
+    | { status: 'condition-unavailable'; reason: string };
   shutdown: () => Promise<void>;
   residuals: () => {
     servers: number;
@@ -69,8 +73,27 @@ export function createProductWatchResourcePort(
         });
         const resourceMetricTrend: WatchResourceMetricSample[] = [sampleMetrics()];
         const measurementStartedAtMs = resourceMetricTrend[0].observedAtMs;
-        await wait(MIN_LIVE_RESOURCE_OBSERVATION_MS, signal);
+        const batterySamples: WatchResourceBatterySample[] = [];
+        let batteryStatus: WatchResourceBatteryObservation['status'] = 'condition-unavailable';
+        let batteryReason = '生产运行时未提供电池采样接口';
+        const sampleBattery = (observedAtMs: number): void => {
+          const reading = runtime.battery?.();
+          if (reading === undefined) return;
+          if (reading.status === 'condition-unavailable') {
+            batteryReason = reading.reason;
+            return;
+          }
+          batteryStatus = 'observed';
+          batterySamples.push({
+            observedAtMs,
+            chargePercent: reading.chargePercent,
+            onBatteryPower: reading.onBatteryPower,
+          });
+        };
+        sampleBattery(resourceMetricTrend[0].observedAtMs);
+        await wait(RESOURCE_SAMPLE_INTERVAL_MS, signal);
         resourceMetricTrend.push(sampleMetrics());
+        sampleBattery(resourceMetricTrend[1].observedAtMs);
         const measurementEndedAtMs = resourceMetricTrend.at(-1)!.observedAtMs;
         const drainStartedAtMs = Date.now();
         await runtime.shutdown();
@@ -82,19 +105,17 @@ export function createProductWatchResourcePort(
           residualTrend.push(runtime.residuals());
         }
         const drainEndedAtMs = residualObservedAtMs.at(-1)!;
-        const batteryObservation =
-          runtime.battery?.() ??
-          ({
-            status: 'condition-unavailable',
-            reason: '生产运行时未提供电池采样接口',
-            samples: [],
-          } satisfies WatchResourceBatteryObservation);
+        const batteryObservation: WatchResourceBatteryObservation = {
+          status: batteryStatus,
+          reason: batteryStatus === 'condition-unavailable' ? batteryReason : undefined,
+          samples: batterySamples,
+        };
         return {
           httpClass: 'Watch 生产运行时排水后资源指标与残留有界观察完成',
           errorCode:
             batteryObservation.status === 'condition-unavailable'
               ? 'condition-unavailable'
-              : undefined,
+              : 'observation-insufficient',
           observedForMs: measurementEndedAtMs - measurementStartedAtMs,
           drainStartedAtMs,
           drainEndedAtMs,

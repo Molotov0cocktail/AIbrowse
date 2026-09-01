@@ -80,6 +80,8 @@ export interface WatchLiveResourceObservation {
   measurementStartedAtMs: number;
   measurementEndedAtMs: number;
   measurementWindowMs: number;
+  batteryStartedAtMs?: number;
+  batteryEndedAtMs?: number;
   drainStartedAtMs: number;
   drainEndedAtMs: number;
   drainWindowMs: number;
@@ -88,6 +90,7 @@ export interface WatchLiveResourceObservation {
   residualSampleCount: number;
   batteryStatus: 'observed' | 'condition-unavailable';
   batterySampleCount: number;
+  batteryReason?: string;
 }
 
 export interface WatchLiveLedgerEntry {
@@ -186,7 +189,7 @@ export function describeWatchLiveLedger(entries: readonly WatchLiveLedgerEntry[]
         `${entry.scenario}：${entry.requestCount} 次（${entry.resultKind}；${entry.httpClass}${
           entry.resourceObservation === undefined
             ? ''
-            : `；测量 ${entry.resourceObservation.measurementWindowMs}ms/${entry.resourceObservation.metricSampleCount} 样本；排水 ${entry.resourceObservation.drainWindowMs}ms；指标${entry.resourceObservation.metricTrend}；电池${entry.resourceObservation.batteryStatus}/${entry.resourceObservation.batterySampleCount} 样本`
+            : `；测量 ${entry.resourceObservation.measurementWindowMs}ms/${entry.resourceObservation.metricSampleCount} 样本；排水 ${entry.resourceObservation.drainWindowMs}ms；指标${entry.resourceObservation.metricTrend}；电池${entry.resourceObservation.batteryStatus}/${entry.resourceObservation.batterySampleCount} 样本${entry.resourceObservation.batteryReason === undefined ? '' : `（${entry.resourceObservation.batteryReason}）`}`
         }）`,
     )
     .join('；');
@@ -281,15 +284,28 @@ export function validateWatchLiveLedger(
         !Number.isSafeInteger(observation.residualSampleCount) ||
         !Number.isSafeInteger(observation.batterySampleCount) ||
         observation.measurementEndedAtMs < observation.measurementStartedAtMs ||
+        observation.measurementEndedAtMs > observation.drainStartedAtMs ||
         observation.drainEndedAtMs < observation.drainStartedAtMs ||
         observation.measurementWindowMs !==
           observation.measurementEndedAtMs - observation.measurementStartedAtMs ||
         observation.drainWindowMs !== observation.drainEndedAtMs - observation.drainStartedAtMs ||
+        observation.measurementWindowMs <= 0 ||
+        observation.drainWindowMs < 0 ||
         observation.metricSampleCount < 2 ||
         observation.residualSampleCount < 2 ||
         observation.metricTrend !== 'changed' ||
-        observation.batteryStatus !== 'observed' ||
-        observation.batterySampleCount < 2
+        observation.batterySampleCount < 0 ||
+        (observation.batteryStatus === 'observed' &&
+          (observation.batteryStartedAtMs === undefined ||
+            observation.batteryEndedAtMs === undefined ||
+            !Number.isSafeInteger(observation.batteryStartedAtMs) ||
+            !Number.isSafeInteger(observation.batteryEndedAtMs) ||
+            observation.batteryStartedAtMs < observation.measurementStartedAtMs ||
+            observation.batteryEndedAtMs > observation.measurementEndedAtMs ||
+            observation.batteryEndedAtMs < observation.batteryStartedAtMs ||
+            observation.batterySampleCount < 2)) ||
+        (observation.batteryStatus === 'condition-unavailable' &&
+          (observation.batteryReason === undefined || observation.batteryReason.trim() === ''))
       ) {
         errors.push(`${entry.scenario}：资源 PASS 观察证据不完整或不可信`);
       }

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   classifyWatchLiveFailure,
+  describeWatchLiveLedger,
   validateWatchLiveExecution,
   validateWatchLiveLedger,
   validateWatchLiveManifest,
@@ -9,6 +10,39 @@ import {
 } from './smoke-watch-live';
 import { runWatchLiveScenarios } from './smoke-watch-live-runner';
 import { createProductWatchResourcePort } from './smoke-watch-live-resource';
+
+const COMPLETE_RESOURCE_RESULT = {
+  httpClass: 'complete resource evidence fixture',
+  observedForMs: 1_000,
+  drainStartedAtMs: 2_000,
+  drainEndedAtMs: 2_200,
+  drainObservedForMs: 200,
+  residualObservedAtMs: [2_000, 2_200],
+  samples: 2,
+  residuals: { servers: 0, timers: 0, databases: 0, taskTabs: 0, children: 0, tempDirs: 0 },
+  residualTrend: [
+    { servers: 0, timers: 0, databases: 0, taskTabs: 0, children: 0, tempDirs: 0 },
+    { servers: 0, timers: 0, databases: 0, taskTabs: 0, children: 0, tempDirs: 0 },
+  ],
+  resourceMetrics: {
+    observedAtMs: 2_000,
+    rssBytes: 2,
+    heapUsedBytes: 2,
+    cpuUserMicros: 2,
+    cpuSystemMicros: 2,
+  },
+  resourceMetricTrend: [
+    { observedAtMs: 1_000, rssBytes: 1, heapUsedBytes: 1, cpuUserMicros: 1, cpuSystemMicros: 1 },
+    { observedAtMs: 2_000, rssBytes: 2, heapUsedBytes: 2, cpuUserMicros: 2, cpuSystemMicros: 2 },
+  ],
+  batteryObservation: {
+    status: 'observed' as const,
+    samples: [
+      { observedAtMs: 1_000, chargePercent: 80, onBatteryPower: false },
+      { observedAtMs: 2_000, chargePercent: 79, onBatteryPower: true },
+    ],
+  },
+};
 
 describe('D10 bounded live Watch scenarios', () => {
   it('manifest 与失败分类有界且可解释', () => {
@@ -98,10 +132,8 @@ describe('D10 bounded live Watch scenarios', () => {
       },
       battery: () => ({
         status: 'observed' as const,
-        samples: [
-          { observedAtMs: 1_000, chargePercent: 80, onBatteryPower: false },
-          { observedAtMs: 2_000, chargePercent: 79, onBatteryPower: true },
-        ],
+        chargePercent: metricsCalls === 1 ? 80 : 79,
+        onBatteryPower: metricsCalls !== 1,
       }),
       shutdown: async () => {
         shutdownCalled = true;
@@ -112,8 +144,8 @@ describe('D10 bounded live Watch scenarios', () => {
       },
     }).probe(resource, new AbortController().signal);
 
-    expect(result.errorCode).toBeUndefined();
-    expect(result.observedForMs).toBeGreaterThanOrEqual(1_000);
+    expect(result.errorCode).toBe('observation-insufficient');
+    expect(result.observedForMs).toBeGreaterThanOrEqual(100);
     expect(result.drainObservedForMs).toBeGreaterThanOrEqual(0);
     expect(result.resourceMetricTrend).toHaveLength(2);
     expect(result.resourceMetricTrend![0]!.observedAtMs).toBeLessThan(
@@ -370,6 +402,147 @@ describe('D10 bounded live Watch scenarios', () => {
     expect(report.entries[0]?.resultKind).toBe('failed-product');
   });
 
+  it('测量与排水窗口重叠时不得 PASS', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          ...COMPLETE_RESOURCE_RESULT,
+          drainStartedAtMs: 1_500,
+          drainEndedAtMs: 1_700,
+          drainObservedForMs: 200,
+          residualObservedAtMs: [1_500, 1_700],
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
+  it('残留样本时间戳越出排水窗口时不得 PASS', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          ...COMPLETE_RESOURCE_RESULT,
+          residualObservedAtMs: [2_000, 2_300],
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
+  it('电池样本时间戳越出测量窗口时不得 PASS', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          ...COMPLETE_RESOURCE_RESULT,
+          batteryObservation: {
+            status: 'observed' as const,
+            samples: [
+              { observedAtMs: 900, chargePercent: 80 },
+              { observedAtMs: 2_100, chargePercent: 79 },
+            ],
+          },
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
+  it('条件不可用不得掩盖非零残留', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          ...COMPLETE_RESOURCE_RESULT,
+          errorCode: 'condition-unavailable',
+          residuals: { ...COMPLETE_RESOURCE_RESULT.residuals, servers: 1 },
+          residualTrend: [
+            { ...COMPLETE_RESOURCE_RESULT.residuals, servers: 1 },
+            { ...COMPLETE_RESOURCE_RESULT.residuals, servers: 1 },
+          ],
+          batteryObservation: {
+            status: 'condition-unavailable' as const,
+            reason: 'battery condition unavailable',
+            samples: [],
+          },
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
+  it('恰好一秒和两个变化样本没有正式长时资格时只能 not-run', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: { probe: async () => ({ ...COMPLETE_RESOURCE_RESULT }) },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
+  it('电池条件明确不可用且其余资源正常时记录 not-run', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          ...COMPLETE_RESOURCE_RESULT,
+          errorCode: 'condition-unavailable',
+          batteryObservation: {
+            status: 'condition-unavailable' as const,
+            reason: 'battery condition unavailable',
+            samples: [],
+          },
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('not-run');
+  });
+
+  it('资源 PASS 台账必须保留时长、样本数、趋势和电池状态', () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const entry = {
+      scenario: resource.id,
+      requestCount: 0,
+      resultKind: 'pass' as const,
+      httpClass: 'qualified resource observation',
+      purpose: resource.purpose,
+      resourceObservation: {
+        measurementStartedAtMs: 1_000,
+        measurementEndedAtMs: 2_000,
+        measurementWindowMs: 1_000,
+        batteryStartedAtMs: 1_000,
+        batteryEndedAtMs: 2_000,
+        drainStartedAtMs: 2_000,
+        drainEndedAtMs: 2_200,
+        drainWindowMs: 200,
+        metricSampleCount: 2,
+        metricTrend: 'changed' as const,
+        residualSampleCount: 2,
+        batteryStatus: 'observed' as const,
+        batterySampleCount: 2,
+      },
+    };
+    expect(validateWatchLiveLedger([entry])).toEqual([]);
+    const description = describeWatchLiveLedger([entry]);
+    expect(description).toContain('测量 1000ms/2 样本');
+    expect(description).toContain('排水 200ms');
+    expect(description).toContain('指标changed');
+    expect(description).toContain('电池observed/2 样本');
+  });
+
   it('拒绝重复执行和超过请求上限', () => {
     const duplicate = validateWatchLiveExecution(WATCH_LIVE_SCENARIO_MANIFEST, [
       'wl-public-rss',
@@ -503,6 +676,7 @@ describe('D10 bounded live Watch scenarios', () => {
           count(scenario.id);
           return {
             httpClass: 'zero-residuals',
+            errorCode: 'observation-insufficient',
             observedForMs: 1_000,
             drainStartedAtMs: 2_000,
             drainEndedAtMs: 2_200,
@@ -569,9 +743,18 @@ describe('D10 bounded live Watch scenarios', () => {
         },
       },
     });
-    expect(report.ok).toBe(true);
-    expect(report.entries.every((entry) => entry.resultKind === 'pass')).toBe(true);
+    expect(report.ok).toBe(false);
+    expect(
+      report.entries
+        .filter((entry) => entry.scenario !== 'wl-resource-probe')
+        .every((entry) => entry.resultKind === 'pass'),
+    ).toBe(true);
+    expect(report.entries.find((entry) => entry.scenario === 'wl-resource-probe')).toMatchObject({
+      resultKind: 'not-run',
+    });
     expect([...calls.values()].every((value) => value === 1)).toBe(true);
-    expect(validateWatchLiveLedger(report.entries)).toEqual([]);
+    expect(validateWatchLiveLedger(report.entries)).toEqual(
+      expect.arrayContaining(['wl-resource-probe：真实场景未实际运行']),
+    );
   });
 });

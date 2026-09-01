@@ -13,10 +13,6 @@ import {
   type WatchLiveScenario,
 } from './smoke-watch-live';
 
-// A 100ms drain probe is not evidence of the long-running resource trend
-// required by the D10 real-observation gate. Keep this bounded and explicit.
-export const MIN_LIVE_RESOURCE_OBSERVATION_MS = 1_000;
-
 export interface WatchLivePublicPort {
   run(
     scenario: WatchLiveScenario,
@@ -341,6 +337,24 @@ export async function runWatchLiveScenarios(
               Number.isSafeInteger(timestamp) &&
               (index === 0 || timestamp > result.residualObservedAtMs![index - 1]!),
           );
+        const residualsAreWellFormed =
+          result.residuals !== undefined &&
+          result.residualTrend !== undefined &&
+          result.residualTrend.length >= 2 &&
+          [result.residuals, ...result.residualTrend].every((residuals) =>
+            Object.values(residuals).every((value) => Number.isSafeInteger(value) && value >= 0),
+          );
+        const residualsAreValidAndZero =
+          result.residuals !== undefined &&
+          result.residualTrend !== undefined &&
+          residualsAreWellFormed &&
+          [result.residuals, ...result.residualTrend].every((residuals) =>
+            Object.values(residuals).every((value) => value === 0),
+          );
+        const measurementStartedAtMs = metricTrend?.[0]?.observedAtMs;
+        const measurementEndedAtMs = metricTrend?.at(-1)?.observedAtMs;
+        const batteryStartedAtMs = battery?.samples[0]?.observedAtMs;
+        const batteryEndedAtMs = battery?.samples.at(-1)?.observedAtMs;
         const resourceObservation: WatchLiveResourceObservation | undefined =
           Number.isSafeInteger(result.observedForMs) &&
           Number.isSafeInteger(result.drainStartedAtMs) &&
@@ -353,6 +367,9 @@ export async function runWatchLiveScenarios(
                 measurementStartedAtMs: result.resourceMetricTrend[0]?.observedAtMs ?? -1,
                 measurementEndedAtMs: result.resourceMetricTrend.at(-1)?.observedAtMs ?? -1,
                 measurementWindowMs: result.observedForMs!,
+                ...(batteryStartedAtMs === undefined
+                  ? {}
+                  : { batteryStartedAtMs, batteryEndedAtMs }),
                 drainStartedAtMs: result.drainStartedAtMs!,
                 drainEndedAtMs: result.drainEndedAtMs!,
                 drainWindowMs: result.drainObservedForMs!,
@@ -361,11 +378,12 @@ export async function runWatchLiveScenarios(
                 residualSampleCount: result.residualObservedAtMs.length,
                 batteryStatus: result.batteryObservation.status,
                 batterySampleCount: result.batteryObservation.samples.length,
+                batteryReason: result.batteryObservation.reason,
               }
             : undefined;
-        const observed =
+        const resourceCoreEvidenceIsWellFormed =
           Number.isSafeInteger(observedForMs) &&
-          (observedForMs ?? -1) >= MIN_LIVE_RESOURCE_OBSERVATION_MS &&
+          (observedForMs ?? -1) > 0 &&
           Number.isSafeInteger(sampleCount) &&
           (sampleCount ?? -1) >= 2 &&
           metricTrend !== undefined &&
@@ -373,6 +391,8 @@ export async function runWatchLiveScenarios(
           metricTrend.length >= 2 &&
           metricTimestampsAreMonotonic &&
           metricSpan === observedForMs &&
+          measurementStartedAtMs !== undefined &&
+          measurementEndedAtMs !== undefined &&
           result.resourceMetrics !== undefined &&
           validMetricSample(result.resourceMetrics) &&
           validMetricSample(metricTrend[0]!) &&
@@ -381,23 +401,22 @@ export async function runWatchLiveScenarios(
           Number.isSafeInteger(result.drainStartedAtMs) &&
           Number.isSafeInteger(result.drainEndedAtMs) &&
           Number.isSafeInteger(result.drainObservedForMs) &&
+          measurementEndedAtMs <= result.drainStartedAtMs! &&
           result.drainEndedAtMs! >= result.drainStartedAtMs! &&
           result.drainObservedForMs === result.drainEndedAtMs! - result.drainStartedAtMs! &&
+          result.drainObservedForMs! >= 0 &&
           result.residualObservedAtMs !== undefined &&
           result.residualObservedAtMs.length === result.residualTrend?.length &&
           result.residualObservedAtMs.length >= 2 &&
           residualTimestampsAreMonotonic &&
+          result.residualObservedAtMs.every(
+            (timestamp) =>
+              timestamp >= result.drainStartedAtMs! && timestamp <= result.drainEndedAtMs!,
+          ) &&
           result.residuals !== undefined &&
           result.residualTrend !== undefined &&
           result.residualTrend.length >= 2 &&
-          [result.residuals, ...result.residualTrend].every((residuals) =>
-            Object.values(residuals).every((value) => Number.isSafeInteger(value) && value === 0),
-          ) &&
-          battery?.status === 'observed' &&
-          battery.samples.length >= 2 &&
-          batteryTimestampsAreMonotonic &&
-          (batterySpan ?? -1) >= MIN_LIVE_RESOURCE_OBSERVATION_MS &&
-          batterySamplesHaveValue &&
+          residualsAreWellFormed &&
           [result.resourceMetrics, ...metricTrend].every((metrics) =>
             Object.values(metrics).every((value) => Number.isSafeInteger(value) && value >= 0),
           ) &&
@@ -405,19 +424,33 @@ export async function runWatchLiveScenarios(
             metricFields.some((field) => metrics[field] > 0),
           ) &&
           resourceObservation !== undefined;
+        const batteryEvidenceIsWellFormed =
+          battery?.status === 'condition-unavailable'
+            ? battery.reason !== undefined && battery.reason.trim() !== ''
+            : battery?.status === 'observed' &&
+              battery.samples.length >= 2 &&
+              batteryTimestampsAreMonotonic &&
+              batteryStartedAtMs !== undefined &&
+              batteryEndedAtMs !== undefined &&
+              batteryStartedAtMs >= measurementStartedAtMs! &&
+              batteryEndedAtMs <= measurementEndedAtMs! &&
+              batterySamplesHaveValue &&
+              (batterySpan ?? -1) === metricSpan;
+        const resourceEvidenceIsWellFormed =
+          resourceCoreEvidenceIsWellFormed && batteryEvidenceIsWellFormed;
+        const resourceConditionUnavailable =
+          result.errorCode === 'not-run' ||
+          result.errorCode === 'condition-unavailable' ||
+          result.errorCode === 'observation-insufficient' ||
+          battery?.status === 'condition-unavailable';
         entries.push({
           scenario: scenario.id,
           requestCount: 0,
-          resultKind:
-            result.errorCode === 'not-run' || result.errorCode === 'condition-unavailable'
+          resultKind: !residualsAreValidAndZero
+            ? 'failed-product'
+            : resourceConditionUnavailable && resourceEvidenceIsWellFormed
               ? 'not-run'
-              : observed
-                ? resultKind({
-                    scenarioKind: scenario.kind,
-                    status: result.errorCode === undefined ? 200 : undefined,
-                    errorCode: result.errorCode,
-                  })
-                : 'failed-product',
+              : 'failed-product',
           httpClass: result.httpClass,
           purpose: scenario.purpose,
           resourceObservation,
