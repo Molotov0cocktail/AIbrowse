@@ -45,8 +45,16 @@ export interface WatchLiveWindowsPort {
     signal: AbortSignal,
   ): Promise<{
     httpClass: string;
+    classification: 'pass' | 'condition-unavailable' | 'product-defect';
     errorCode?: string;
   }>;
+}
+
+export interface WatchResourceMetricSample {
+  rssBytes: number;
+  heapUsedBytes: number;
+  cpuUserMicros: number;
+  cpuSystemMicros: number;
 }
 
 export interface WatchLiveResourcePort {
@@ -74,6 +82,8 @@ export interface WatchLiveResourcePort {
       children: number;
       tempDirs: number;
     }[];
+    resourceMetrics?: WatchResourceMetricSample;
+    resourceMetricTrend?: readonly WatchResourceMetricSample[];
   }>;
 }
 
@@ -194,6 +204,7 @@ export async function runWatchLiveScenarios(
             resultKind: 'not-run',
             httpClass: '未提供 Windows 端口',
             purpose: scenario.purpose,
+            classification: 'condition-unavailable',
           });
         } else if (!options.windowsPort.isWindows) {
           entries.push({
@@ -202,6 +213,7 @@ export async function runWatchLiveScenarios(
             resultKind: 'skipped-not-windows',
             httpClass: '非 Windows',
             purpose: scenario.purpose,
+            classification: 'condition-unavailable',
           });
         } else if (!options.windowsPort.isPackaged) {
           entries.push({
@@ -210,6 +222,7 @@ export async function runWatchLiveScenarios(
             resultKind: 'skipped-not-packaged',
             httpClass: '未打包',
             purpose: scenario.purpose,
+            classification: 'condition-unavailable',
           });
         } else {
           const result = await options.windowsPort.probe(scenario, controller.signal);
@@ -217,15 +230,14 @@ export async function runWatchLiveScenarios(
             scenario: scenario.id,
             requestCount: 0,
             resultKind:
-              result.errorCode === 'product-defect'
+              result.classification === 'condition-unavailable'
                 ? 'skipped-windows-condition'
-                : resultKind({
-                    scenarioKind: scenario.kind,
-                    status: result.errorCode === undefined ? 200 : undefined,
-                    errorCode: result.errorCode,
-                  }),
+                : result.classification === 'pass'
+                  ? 'pass'
+                  : 'failed-product',
             httpClass: result.httpClass,
             purpose: scenario.purpose,
+            classification: result.classification,
           });
         }
         continue;
@@ -250,19 +262,28 @@ export async function runWatchLiveScenarios(
           result.residuals !== undefined &&
           result.residualTrend !== undefined &&
           result.residualTrend.length >= 2 &&
+          result.resourceMetrics !== undefined &&
+          result.resourceMetricTrend !== undefined &&
+          result.resourceMetricTrend.length >= 2 &&
+          [result.resourceMetrics, ...result.resourceMetricTrend].every((metrics) =>
+            Object.values(metrics).every((value) => Number.isSafeInteger(value) && value >= 0),
+          ) &&
           [result.residuals, ...result.residualTrend].every((residuals) =>
             Object.values(residuals).every((value) => Number.isSafeInteger(value) && value === 0),
           );
         entries.push({
           scenario: scenario.id,
           requestCount: 0,
-          resultKind: observed
-            ? resultKind({
-                scenarioKind: scenario.kind,
-                status: result.errorCode === undefined ? 200 : undefined,
-                errorCode: result.errorCode,
-              })
-            : 'failed-product',
+          resultKind:
+            result.errorCode === 'not-run'
+              ? 'not-run'
+              : observed
+                ? resultKind({
+                    scenarioKind: scenario.kind,
+                    status: result.errorCode === undefined ? 200 : undefined,
+                    errorCode: result.errorCode,
+                  })
+                : 'failed-product',
           httpClass: result.httpClass,
           purpose: scenario.purpose,
         });

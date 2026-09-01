@@ -19,5 +19,17 @@ describe('D10 Watch red-team matrix', () => {
     expect(outcomes.map((outcome) => outcome.id)).toEqual(
       WATCH_WRT_MANIFEST.map((entry) => entry.id),
     );
+    expect(outcomes.find((outcome) => outcome.id === 'WRT-07')?.detail).toContain(
+      'depth==limit,+1',
+    );
+    expect(outcomes.find((outcome) => outcome.id === 'WRT-09')?.detail).toContain(
+      'return-existing-tab-id',
+    );
+    expect(outcomes.find((outcome) => outcome.id === 'WRT-13')?.detail).toContain(
+      'out-of-order-event-id',
+    );
+    expect(outcomes.find((outcome) => outcome.id === 'WRT-18')?.detail).toContain(
+      'v3/v4-statement-failure,cycle/provider/scrub-crash,late-coalesce,cross-event',
+    );
   });
 });

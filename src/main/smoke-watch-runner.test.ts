@@ -37,6 +37,16 @@ describe('D10 product-path runner', () => {
           html: `<main class="watch-workspace" data-watch-view="digests">${identity?.eventId ?? ''}</main>`,
           selectedDigestId: identity?.digestId ?? '',
         }),
+        pageSnapshot: async (canary) => ({
+          snapshot: Buffer.from(
+            JSON.stringify({
+              visibleText: canary,
+              meta: { readyState: 'complete', degraded: 'none', documentId: 1 },
+            }),
+            'utf8',
+          ),
+          source: 'BrowserController.getPageSnapshot -> BrowserWatchReader test port',
+        }),
         watchRepository: () => sharedRepository,
         watchNotification: {
           drain: () => productNotifications.drain(),
@@ -98,4 +108,26 @@ describe('D10 product-path runner', () => {
       }),
     ).rejects.toThrow('duration');
   });
+
+  it('PageSnapshot 隐私入口缺失时不得用公开 HTML 代替', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'aibrowse-d10-page-snapshot-red-'));
+    const log = join(root, 'aibrowse.log');
+    writeFileSync(log, 'product log\n', 'utf8');
+    try {
+      const report = await runWatchD10OfflineScenario({
+        logFile: log,
+        auditEntries: [],
+        rendererDom: async (identity) => ({
+          html: `<main class="watch-workspace" data-watch-view="digests">${identity?.eventId ?? ''}</main>`,
+          selectedDigestId: identity?.digestId ?? '',
+        }),
+        resourceDurationMs: 20,
+        resourceSamples: 2,
+      });
+      expect(report.ok).toBe(false);
+      expect(report.scanReadFailures).toContain('page-snapshot:not-provided');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

@@ -139,6 +139,14 @@ export interface WatchD10OfflineOptions {
     eventId: string;
     digestId: string;
   }) => Promise<string | WatchRendererCapture>;
+  /**
+   * Capture a real PageSnapshot through the product BrowserController/reader
+   * path. Public HTML bytes are not an acceptable substitute for this surface.
+   */
+  pageSnapshot?: (
+    canary: string,
+    signal: AbortSignal,
+  ) => Promise<{ snapshot: Buffer; source: string }>;
   /** Product Watch repository used by the Electron D9 UI, when available. */
   watchRepository?: () => WatchRepository | null;
   /** Product notification service/capture used by the Electron D9 UI, when available. */
@@ -567,6 +575,26 @@ async function buildProductSurfaces(
     if (!pageProbe.ok || JSON.stringify(pageProbe.channels).includes(pageSnapshotCanary)) {
       throw new Error('D10 PageSnapshot ingress 未被 PageParser 丢弃');
     }
+    if (options.pageSnapshot === undefined) {
+      readFailures.push('page-snapshot:not-provided');
+    } else {
+      try {
+        const captured = await options.pageSnapshot(
+          pageSnapshotCanary,
+          new AbortController().signal,
+        );
+        if (
+          !Buffer.isBuffer(captured.snapshot) ||
+          captured.snapshot.byteLength === 0 ||
+          !captured.snapshot.includes(Buffer.from(pageSnapshotCanary, 'utf8'))
+        ) {
+          throw new Error('PageSnapshot capture did not contain the requested canary');
+        }
+        recordIngress('page-snapshot', 'dom', captured.source, captured.snapshot.byteLength);
+      } catch {
+        readFailures.push('page-snapshot:product-capture-failed');
+      }
+    }
     const explanationProbe = parseDigestExplanation(
       JSON.stringify({
         sections: [{ eventIds: ['d10-event'], explanation: providerRawCanary }],
@@ -896,12 +924,6 @@ async function buildProductSurfaces(
         ) {
           throw new Error('cohesive Page acquisition failed');
         }
-        recordIngress(
-          'page-snapshot',
-          'bytes',
-          'PageAcquisitionRouter public -> PublicWatchHttpClient response bytes',
-          pageCapturedBodies.reduce((total, body) => total + body.byteLength, 0),
-        );
         const firstAcquired = await unified.run({
           rule: cohesiveRule,
           baselineHint: { kind: 'none', expectedBaselineVersion: 0 },

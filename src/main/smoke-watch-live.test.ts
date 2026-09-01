@@ -35,6 +35,12 @@ describe('D10 bounded live Watch scenarios', () => {
       report.entries.find((entry) => entry.scenario === 'wl-provider-digest')?.resultKind,
     ).toBe('skipped-credential-unavailable');
     expect(
+      report.entries.find((entry) => entry.scenario === 'wl-windows-notification'),
+    ).toMatchObject({
+      resultKind: 'not-run',
+      classification: 'condition-unavailable',
+    });
+    expect(
       validateWatchLiveExecution(
         WATCH_LIVE_SCENARIO_MANIFEST,
         report.entries.map((entry) => entry.scenario),
@@ -72,17 +78,54 @@ describe('D10 bounded live Watch scenarios', () => {
       WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!,
       new AbortController().signal,
     );
-    expect(result.observedForMs).toBeGreaterThan(0);
-    expect(result.samples).toBeGreaterThanOrEqual(2);
-    expect(result.residuals).toEqual({
-      servers: 0,
-      timers: 0,
-      databases: 0,
-      taskTabs: 0,
-      children: 0,
-      tempDirs: 0,
-    });
+    expect(result.errorCode).toBe('not-run');
   }, 5_000);
+
+  it('已打包 Windows 的产品缺陷不得降级成条件跳过', async () => {
+    const windows = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'windows')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [windows],
+      windowsPort: {
+        isWindows: true,
+        isPackaged: true,
+        probe: async () =>
+          ({
+            httpClass: 'notification sink failed',
+            errorCode: 'product-defect',
+            classification: 'product-defect',
+          }) as never,
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
+  it('缺少真实资源指标时不得把零残留结构当作 live PASS', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          httpClass: 'zero residual fixture',
+          observedForMs: 100,
+          samples: 2,
+          residuals: {
+            servers: 0,
+            timers: 0,
+            databases: 0,
+            taskTabs: 0,
+            children: 0,
+            tempDirs: 0,
+          },
+          residualTrend: [
+            { servers: 0, timers: 0, databases: 0, taskTabs: 0, children: 0, tempDirs: 0 },
+            { servers: 0, timers: 0, databases: 0, taskTabs: 0, children: 0, tempDirs: 0 },
+          ],
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+  });
 
   it('拒绝重复执行和超过请求上限', () => {
     const duplicate = validateWatchLiveExecution(WATCH_LIVE_SCENARIO_MANIFEST, [
@@ -150,7 +193,7 @@ describe('D10 bounded live Watch scenarios', () => {
     expect(errors).toEqual(
       expect.arrayContaining([
         'wl-provider-digest：Provider PASS 必须恰好一次真实请求',
-        'wl-windows-notification：Windows 场景未获得可判定的条件分类',
+        'wl-windows-notification：Windows 未运行必须明确标记条件不可用',
       ]),
     );
   });
@@ -179,7 +222,7 @@ describe('D10 bounded live Watch scenarios', () => {
         isPackaged: true,
         probe: async (scenario) => {
           count(scenario.id);
-          return { httpClass: 'qualified' };
+          return { httpClass: 'qualified', classification: 'pass' };
         },
       },
       resourcePort: {
@@ -214,6 +257,16 @@ describe('D10 bounded live Watch scenarios', () => {
                 children: 0,
                 tempDirs: 0,
               },
+            ],
+            resourceMetrics: {
+              rssBytes: 1,
+              heapUsedBytes: 1,
+              cpuUserMicros: 1,
+              cpuSystemMicros: 1,
+            },
+            resourceMetricTrend: [
+              { rssBytes: 1, heapUsedBytes: 1, cpuUserMicros: 1, cpuSystemMicros: 1 },
+              { rssBytes: 1, heapUsedBytes: 1, cpuUserMicros: 1, cpuSystemMicros: 1 },
             ],
           };
         },

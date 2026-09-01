@@ -1,5 +1,10 @@
+import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
-import { closeAndDrainThenDispose, WatchIpcAdmission } from './smoke-watch-admission';
+import {
+  addWatchSubscriptionDestroyedListener,
+  closeAndDrainThenDispose,
+  WatchIpcAdmission,
+} from './smoke-watch-admission';
 import { SourcesIpcAdmission } from './sources/source-ipc';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,6 +15,23 @@ import { WatchLifecycleCoordinator } from './watch/watch-lifecycle-coordinator';
 import { WatchRepository } from './watch/repository/watch-repository';
 
 describe('Watch IPC shutdown admission', () => {
+  it('Watch subscription destroyed listener 必须可幂等解绑', () => {
+    const sender = new EventEmitter();
+    const cleanup = addWatchSubscriptionDestroyedListener(sender, () => undefined);
+    expect(sender.listenerCount('destroyed')).toBe(1);
+    cleanup();
+    expect(sender.listenerCount('destroyed')).toBe(0);
+    cleanup();
+    expect(sender.listenerCount('destroyed')).toBe(0);
+
+    const destroyedCleanup = addWatchSubscriptionDestroyedListener(sender, () => undefined);
+    expect(sender.listenerCount('destroyed')).toBe(1);
+    sender.emit('destroyed');
+    expect(sender.listenerCount('destroyed')).toBe(0);
+    destroyedCleanup();
+    expect(sender.listenerCount('destroyed')).toBe(0);
+  });
+
   it('shutdown 后拒绝迟到订阅并清空旧 sender', () => {
     const admission = new WatchIpcAdmission();
     const sender = {};

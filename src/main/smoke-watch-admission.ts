@@ -7,6 +7,29 @@ export interface ShutdownAdmission {
   drain(): Promise<void>;
 }
 
+export interface WatchSubscriptionDestroyedEmitter {
+  once(event: 'destroyed', listener: () => void): void;
+  removeListener(event: 'destroyed', listener: () => void): void;
+}
+
+/** Attach one named lifecycle listener and return an idempotent detach handle. */
+export function addWatchSubscriptionDestroyedListener(
+  sender: WatchSubscriptionDestroyedEmitter,
+  listener: () => void,
+): () => void {
+  sender.once('destroyed', listener);
+  let attached = true;
+  return () => {
+    if (!attached) return;
+    attached = false;
+    try {
+      sender.removeListener('destroyed', listener);
+    } catch {
+      // Sender destruction is already terminal; cleanup remains fail-closed.
+    }
+  };
+}
+
 /**
  * Close every renderer-facing gate before awaiting any drain. Resource owners
  * must be released by dispose only after this promise settles.

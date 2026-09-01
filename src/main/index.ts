@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
-import { request as httpRequest } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -37,7 +37,11 @@ import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
 import { resolveWatchD10Mode } from './smoke-watch-gate';
-import { closeAndDrainThenDispose, WatchIpcAdmission } from './smoke-watch-admission';
+import {
+  addWatchSubscriptionDestroyedListener,
+  closeAndDrainThenDispose,
+  WatchIpcAdmission,
+} from './smoke-watch-admission';
 import type { WatchLiveRunnerOptions } from './smoke-watch-live-runner';
 import { createProductWatchResourcePort } from './smoke-watch-live-resource';
 // Sixth Stage D4：Watch 存储/生命周期装配（observer 恒 active + 延迟端口绑定 +
@@ -343,6 +347,7 @@ let researchShutdownStarted = false;
 let watchCoordinator: WatchLifecycleCoordinator | null = null;
 let watchRepo: WatchRepository | null = null;
 let watchSubscriptionSender: Electron.WebContents | null = null;
+let watchSubscriptionDestroyedCleanup: (() => void) | null = null;
 let watchRevision = 0;
 let pushWatchStatus: () => void = () => undefined;
 let watchWindowsNotificationsQualified = false;
@@ -401,6 +406,8 @@ const smokeAuditCollector: AuditEntry[] = [];
 function stopWatchIpcAdmission(): void {
   // Fail closed before any failure-path repository cleanup or asynchronous work.
   watchIpcAdmission.beginShutdown();
+  watchSubscriptionDestroyedCleanup?.();
+  watchSubscriptionDestroyedCleanup = null;
   watchSubscriptionSender = null;
   pushWatchStatus = () => undefined;
 }
@@ -1176,6 +1183,8 @@ if (!gotLock) {
       const action = (payload as { action: 'start' | 'stop' }).action;
       if (action === 'stop') {
         if (watchSubscriptionSender === event.sender) {
+          watchSubscriptionDestroyedCleanup?.();
+          watchSubscriptionDestroyedCleanup = null;
           watchSubscriptionSender = null;
           watchIpcAdmission.unsubscribe(event.sender);
         }
@@ -1190,10 +1199,14 @@ if (!gotLock) {
       watchSubscriptionSender = event.sender;
       pushWatchStatus();
       void watchNotifications?.drain();
-      event.sender.once('destroyed', () => {
-        watchIpcAdmission.unsubscribe(event.sender);
-        if (watchSubscriptionSender === event.sender) watchSubscriptionSender = null;
-      });
+      watchSubscriptionDestroyedCleanup = addWatchSubscriptionDestroyedListener(
+        event.sender,
+        () => {
+          watchSubscriptionDestroyedCleanup = null;
+          watchIpcAdmission.unsubscribe(event.sender);
+          if (watchSubscriptionSender === event.sender) watchSubscriptionSender = null;
+        },
+      );
     });
     // research:progress / research:task-done 事件出口（决议 #157：Service 转发 +
     // 终态时序；只发主窗口；事件零敏感内容——payload 形状已由 Service 保证）。
@@ -1804,11 +1817,16 @@ if (!gotLock) {
                     probe: async () => {
                       const qualification = windowsQualification();
                       if (!qualification.available)
-                        return { httpClass: qualification.reason, errorCode: 'product-defect' };
+                        return {
+                          httpClass: qualification.reason,
+                          errorCode: 'condition-unavailable',
+                          classification: 'condition-unavailable' as const,
+                        };
                       if (watchWindowsSink === null)
                         return {
                           httpClass: 'Windows identity qualified but notification sink unavailable',
                           errorCode: 'product-defect',
+                          classification: 'product-defect' as const,
                         };
                       const shown = watchWindowsSink.show({
                         subjectType: 'event',
@@ -1818,16 +1836,30 @@ if (!gotLock) {
                         important: false,
                       });
                       return shown
-                        ? { httpClass: 'Windows identity notification sink shown' }
+                        ? {
+                            httpClass: 'Windows identity notification sink shown',
+                            classification: 'pass' as const,
+                          }
                         : {
                             httpClass: 'Windows notification sink rejected probe',
                             errorCode: 'product-defect',
+                            classification: 'product-defect' as const,
                           };
                     },
                   },
                   resourcePort: createProductWatchResourcePort(watchWorkspace, {
                     isAvailable: () =>
                       watchRepo !== null && watchScheduler !== null && digestService !== null,
+                    metrics: () => {
+                      const memory = process.memoryUsage();
+                      const cpu = process.cpuUsage();
+                      return {
+                        rssBytes: memory.rss,
+                        heapUsedBytes: memory.heapUsed,
+                        cpuUserMicros: cpu.user,
+                        cpuSystemMicros: cpu.system,
+                      };
+                    },
                     shutdown: async () => {
                       await watchShutdown();
                       watchShutdownDone = true;
@@ -1852,6 +1884,54 @@ if (!gotLock) {
               : {
                   logFile: getCurrentLogFilePath(),
                   auditEntries: smokeAuditCollector,
+                  pageSnapshot: async (canary, signal) => {
+                    const browser = browserController;
+                    const reader = watchPreviewReader;
+                    if (browser === null || reader === null)
+                      throw new Error('Watch BrowserWatchReader product path unavailable');
+                    const html = `<html><body><p>${canary}</p></body></html>`;
+                    const server = createServer((_request, response) => {
+                      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+                      response.end(html);
+                    });
+                    await new Promise<void>((resolve, reject) => {
+                      const onError = (error: Error): void => reject(error);
+                      server.once('error', onError);
+                      server.listen(0, '127.0.0.1', () => {
+                        server.removeListener('error', onError);
+                        resolve();
+                      });
+                    });
+                    const address = server.address();
+                    if (address === null || typeof address === 'string') {
+                      await new Promise<void>((resolve) => server.close(() => resolve()));
+                      throw new Error('Watch PageSnapshot product server address unavailable');
+                    }
+                    let tabId: string | null = null;
+                    try {
+                      const tab = await browser.createTab(
+                        `http://127.0.0.1:${address.port}/d10-page-snapshot`,
+                      );
+                      tabId = tab.id;
+                      const captured = await reader.read({
+                        tabId,
+                        signal,
+                        deadline: new Date(Date.now() + 5_000),
+                      });
+                      if (!captured.ok)
+                        throw new Error(`PageSnapshot read failed: ${captured.code}`);
+                      return {
+                        snapshot: Buffer.from(JSON.stringify(captured), 'utf8'),
+                        source: 'BrowserController.getPageSnapshot -> BrowserWatchReader',
+                      };
+                    } finally {
+                      try {
+                        if (tabId !== null) await browser.closeTab(tabId);
+                      } finally {
+                        await new Promise<void>((resolve) => server.close(() => resolve()));
+                      }
+                    }
+                  },
                   rendererDom:
                     mainWindow !== null && !mainWindow.webContents.isDestroyed()
                       ? async (identity) => {

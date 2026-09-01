@@ -80,6 +80,8 @@ export interface WatchLiveLedgerEntry {
   resultKind: WatchLiveResultKind;
   httpClass: string;
   purpose: string;
+  /** Only Windows probes carry the product/condition classification. */
+  classification?: 'pass' | 'condition-unavailable' | 'product-defect';
 }
 
 export function validateWatchLiveManifest(
@@ -192,6 +194,9 @@ export function validateWatchLiveLedger(
     if (entry.purpose.trim() === '' || entry.httpClass.trim() === '') {
       errors.push(`${entry.scenario}：台账字段不得为空`);
     }
+    if (entry.resultKind === 'failed-product') {
+      errors.push(`${entry.scenario}：产品路径失败，不得报告 live PASS`);
+    }
     const requiredLiveObservation =
       scenario.kind === 'public-network' || scenario.kind === 'resource';
     if (requiredLiveObservation && entry.resultKind !== 'pass') {
@@ -218,8 +223,26 @@ export function validateWatchLiveLedger(
     ) {
       errors.push(`${entry.scenario}：凭据可用但 Provider 真实观察未成功`);
     }
-    if (scenario.kind === 'windows' && entry.resultKind === 'not-run') {
-      errors.push(`${entry.scenario}：Windows 场景未获得可判定的条件分类`);
+    if (scenario.kind === 'windows') {
+      if (entry.resultKind === 'not-run') {
+        if (entry.classification !== 'condition-unavailable') {
+          errors.push(`${entry.scenario}：Windows 未运行必须明确标记条件不可用`);
+        }
+      } else if (entry.classification === undefined) {
+        errors.push(`${entry.scenario}：Windows 台账缺少产品/条件分类`);
+      } else if (
+        entry.resultKind === 'skipped-windows-condition' &&
+        entry.classification !== 'condition-unavailable'
+      ) {
+        errors.push(`${entry.scenario}：只有条件不可用才允许 Windows 跳过`);
+      } else if (
+        entry.resultKind === 'failed-product' &&
+        entry.classification !== 'product-defect'
+      ) {
+        errors.push(`${entry.scenario}：Windows 产品失败分类不一致`);
+      } else if (entry.resultKind === 'pass' && entry.classification !== 'pass') {
+        errors.push(`${entry.scenario}：Windows PASS 分类不一致`);
+      }
     }
   }
   return errors;

@@ -308,6 +308,95 @@ function legacyRowSnapshot(db: ReturnType<typeof openDb>, id: string): unknown {
     .get(id);
 }
 
+function insertLegacyV2Fixture(db: ReturnType<typeof openDb>, id: string): void {
+  insertLegacyRule(db, id);
+  db.prepare(
+    `INSERT INTO watch_baselines
+      (rule_id,version,projection_type,projection_json,content_hash,byte_length,final_url,captured_at,document_id)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+  ).run(id, 1, 'feed', '{}', 'a'.repeat(64), 2, VALID_URL, NOW, null);
+  db.prepare(
+    `INSERT INTO watch_runs
+      (id,rule_id,request_key,status,trigger,scheduled_for,started_at,finished_at,outcome_json,health_json,response_metadata_json)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(`${id}-run`, id, `${id}-request`, 'finished', 'manual', null, NOW, NOW, null, null, null);
+  db.prepare(
+    `INSERT INTO watch_audits (id,rule_id,kind,reason_code,created_at)
+     VALUES (?,?,?,?,?)`,
+  ).run(`${id}-audit`, id, 'run', 'complete', NOW);
+  db.prepare(
+    `INSERT INTO watch_events
+      (id,rule_id,source_id,event_kind,importance,idempotency_key,change_fingerprint,
+       first_observed_at,last_observed_at,item_count,read_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    `${id}-event`,
+    id,
+    'source-d10',
+    'changed',
+    'normal',
+    'b'.repeat(64),
+    'c'.repeat(64),
+    NOW,
+    NOW,
+    1,
+    null,
+  );
+  db.prepare(
+    `INSERT INTO watch_event_items
+      (id,event_id,sequence,item_id,field_key,label,before_value_json,after_value_json,
+       before_captured_at,after_captured_at,before_final_url,after_final_url,before_document_id,
+       after_document_id,feed_item_key)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    `${id}-item`,
+    `${id}-event`,
+    0,
+    'item-d10',
+    'r0:main',
+    '正文',
+    JSON.stringify({ kind: 'absent' }),
+    JSON.stringify({ kind: 'absent' }),
+    NOW,
+    NOW,
+    VALID_URL,
+    VALID_URL,
+    null,
+    null,
+    null,
+  );
+}
+
+function legacyV2DataSnapshot(db: ReturnType<typeof openDb>): unknown {
+  return {
+    rules: db.prepare('SELECT * FROM watch_rules ORDER BY id').all(),
+    baselines: db
+      .prepare(
+        `SELECT rule_id,version,projection_type,projection_json,content_hash,byte_length,
+                final_url,captured_at,document_id
+         FROM watch_baselines ORDER BY rule_id`,
+      )
+      .all(),
+    runs: db
+      .prepare(
+        `SELECT id,rule_id,request_key,status,trigger,scheduled_for,started_at,finished_at,
+                outcome_json,health_json,response_metadata_json
+         FROM watch_runs ORDER BY id`,
+      )
+      .all(),
+    audits: db.prepare('SELECT * FROM watch_audits ORDER BY id').all(),
+    events: db.prepare('SELECT * FROM watch_events ORDER BY id').all(),
+    items: db
+      .prepare(
+        `SELECT id,event_id,sequence,item_id,field_key,label,before_value_json,after_value_json,
+                before_captured_at,after_captured_at,before_final_url,after_final_url,
+                before_document_id,after_document_id,feed_item_key
+         FROM watch_event_items ORDER BY id`,
+      )
+      .all(),
+  };
+}
+
 export interface WatchMigrationMatrixResult {
   ok: boolean;
   checks: number;
@@ -410,6 +499,58 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
       closeDb(faulty);
     }
 
+    // D7/D8 contract: every v3/v4 migration statement is independently
+    // fault-injected. The previous version's schema and legacy row must remain
+    // byte-for-byte unchanged; this is separate from the v5 loop above.
+    for (const step of [WATCH_MIGRATION_V3, WATCH_MIGRATION_V4] as const) {
+      for (let index = 0; index < step.statements.length; index += 1) {
+        const path = join(dir, `fault-v${String(step.version)}-${index}.db`);
+        const faulty = openDb(path);
+        const ruleId = `v${String(step.version)}-fault-${index}`;
+        try {
+          runMigrations(faulty, legacySteps.slice(0, 2));
+          insertLegacyV2Fixture(faulty, ruleId);
+          if (step.version === 4) runMigrations(faulty, legacySteps.slice(0, 3));
+          const beforeSchema = schemaSnapshot(faulty);
+          const beforeRow = legacyRowSnapshot(faulty, ruleId);
+          const beforeData = legacyV2DataSnapshot(faulty);
+          const broken = {
+            ...step,
+            statements: step.statements.map((statement, current) =>
+              current === index ? 'SELECT * FROM d10_missing_migration_table' : statement,
+            ),
+          };
+          let threw = false;
+          try {
+            runMigrations(faulty, [...legacySteps.slice(0, step.version - 1), broken]);
+          } catch {
+            threw = true;
+          }
+          check(threw, `v${String(step.version)} statement ${index} 应失败`);
+          check(
+            (faulty.prepare('PRAGMA user_version').get() as { user_version: number })
+              .user_version ===
+              step.version - 1,
+            `v${String(step.version)} statement ${index} 回滚 user_version`,
+          );
+          check(
+            JSON.stringify(beforeSchema) === JSON.stringify(schemaSnapshot(faulty)),
+            `v${String(step.version)} statement ${index} schema 恒等`,
+          );
+          check(
+            JSON.stringify(beforeRow) === JSON.stringify(legacyRowSnapshot(faulty, ruleId)),
+            `v${String(step.version)} statement ${index} legacy row 恒等`,
+          );
+          check(
+            JSON.stringify(beforeData) === JSON.stringify(legacyV2DataSnapshot(faulty)),
+            `v${String(step.version)} statement ${index} legacy data 恒等`,
+          );
+        } finally {
+          closeDb(faulty);
+        }
+      }
+    }
+
     const futurePath = join(dir, 'future.db');
     const futureDb = openDb(futurePath);
     runWatchMigrations(futureDb);
@@ -498,8 +639,83 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
           .prepare('SELECT COUNT(*) AS count FROM watch_event_observations WHERE event_id = ?')
           .get(eventId) as { count: number };
         check(observationRow.count === 1, 'Event 绑定恰一 Observation');
-        const scrubbed = behaviorRepo.deleteEventWithScrub(eventId, '2026-09-01T00:00:01.000Z');
-        check(scrubbed.ok && behaviorRepo.getEvent(eventId) === null, 'Event 删除执行 scrub');
+        const observationId = (
+          behaviorDb
+            .prepare('SELECT id FROM watch_event_observations WHERE event_id = ?')
+            .get(eventId) as { id: string }
+        ).id;
+        const crossEventId = 'v5-cross-event';
+        behaviorDb
+          .prepare(
+            `INSERT INTO watch_events
+              (id,rule_id,source_id,event_kind,importance,idempotency_key,change_fingerprint,
+               first_observed_at,last_observed_at,item_count,read_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            crossEventId,
+            behaviorRule.id,
+            behaviorRule.sourceId,
+            'changed',
+            'normal',
+            'v5-cross-event-idempotency',
+            'e'.repeat(64),
+            NOW,
+            NOW,
+            1,
+            null,
+          );
+        behaviorDb
+          .prepare(
+            `INSERT INTO watch_event_observations
+              (id,event_id,sequence,idempotency_key,change_fingerprint,event_kind,observed_at,
+               first_item_sequence,item_count)
+             VALUES (?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            'v5-cross-event-observation',
+            crossEventId,
+            0,
+            'v5-cross-event-observation-key',
+            'f'.repeat(64),
+            'changed',
+            NOW,
+            0,
+            1,
+          );
+        let crossEventRejected = false;
+        try {
+          behaviorDb
+            .prepare(
+              `INSERT INTO watch_event_items
+                (id,event_id,sequence,observation_id,observation_item_sequence,item_id,field_key,
+                 label,before_value_json,after_value_json,before_captured_at,after_captured_at,
+                 before_final_url,after_final_url,before_document_id,after_document_id,feed_item_key)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            )
+            .run(
+              'v5-cross-event-item',
+              crossEventId,
+              0,
+              observationId,
+              0,
+              pair.itemId,
+              pair.fieldKey,
+              pair.label,
+              JSON.stringify(pair.before),
+              JSON.stringify(pair.after),
+              pair.beforeCapturedAt,
+              pair.afterCapturedAt,
+              pair.beforeFinalUrl,
+              pair.afterFinalUrl,
+              pair.beforeDocumentId,
+              pair.afterDocumentId,
+              pair.feedItemKey,
+            );
+        } catch {
+          crossEventRejected = true;
+        }
+        check(crossEventRejected, '跨 Event observation/item 错配由复合 FK 拒绝');
 
         const schedule = behaviorRepo.createDigestSchedule({
           id: 'v5-cycle-schedule',
@@ -513,6 +729,29 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
         check(schedule.ok, 'Digest cycle schedule 持久化');
         const currentSchedule = behaviorRepo.getDigestSchedule('v5-cycle-schedule');
         if (currentSchedule !== null) {
+          const cycleEvent: WatchEvent = {
+            id: 'v5-cycle-event',
+            ruleId: behaviorRule.id,
+            sourceId: behaviorRule.sourceId,
+            eventKind: 'changed',
+            importance: 'normal',
+            idempotencyKey: 'v5-cycle-event-idempotency',
+            changeFingerprint: sha256Hex('v5-cycle-observation'),
+            firstObservedAt: '2026-09-01T00:00:00.500Z',
+            lastObservedAt: '2026-09-01T00:00:00.500Z',
+            itemCount: 1,
+            readAt: null,
+          };
+          const cycleWritten = behaviorRepo.writeEventTransaction({
+            event: cycleEvent,
+            items: [makePair('', 'v5-cycle-observation')],
+            identity: {
+              sourceId: behaviorRule.sourceId,
+              expectedSourceLocatorFingerprint: behaviorRule.sourceLocatorFingerprint,
+              expectedBaselineVersion: behaviorRule.baselineVersion,
+            },
+          });
+          check(cycleWritten.ok, 'late coalesce 观察写入 journal');
           const reserved = behaviorRepo.reserveDigestRun({
             scheduleId: currentSchedule.id,
             expectedVersion: currentSchedule.version,
@@ -525,20 +764,108 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
             nextDueAt: '2026-09-02T09:00:00.000Z',
             nowIso: '2026-09-01T00:00:01.000Z',
           });
-          const replay = behaviorRepo.reserveDigestRun({
-            scheduleId: currentSchedule.id,
-            expectedVersion: currentSchedule.version,
-            expectedNextDueAt: currentSchedule.nextDueAt,
-            expectedLastConsumedScheduledFor: currentSchedule.lastConsumedScheduledFor,
-            expectedLastDailyLocalDate: currentSchedule.lastDailyLocalDate,
-            runId: 'v5-cycle-replay',
-            requestKey: 'v5-cycle-request',
-            logicalDate: '2026-09-01',
-            nextDueAt: '2026-09-02T09:00:00.000Z',
-            nowIso: '2026-09-01T00:00:01.000Z',
-          });
-          check(reserved.ok, 'Digest cycle reservation 成功');
-          check(replay.ok === false, 'Digest cycle consumed 后零重放');
+          if (reserved.ok) {
+            const cycleFailure = behaviorRepo.commitDigestBatch({
+              artifactId: 'v5-cycle-crash-artifact',
+              run: reserved.run,
+              expectedNextSequence: reserved.run.nextSequence + 1,
+              firstSequence: reserved.run.nextSequence + 2,
+              lastSequence: reserved.run.nextSequence + 2,
+              facts:
+                buildDigestFacts({
+                  scheduleId: currentSchedule.id,
+                  digestRunId: reserved.run.id,
+                  batchIndex: 0,
+                  period: reserved.run.period,
+                  runStats: { changed: 1, failed: 0, unchanged: 0 },
+                  observations: [],
+                  fetchedAt: reserved.run.period.toInclusive,
+                }) ?? makeFacts(),
+              createdAt: '2026-09-01T00:00:01.500Z',
+              aiEnabled: true,
+            });
+            const afterCycleFailure = behaviorRepo.getDigestRun(reserved.run.id);
+            check(
+              cycleFailure.ok === false &&
+                afterCycleFailure?.state === 'running' &&
+                afterCycleFailure.nextSequence === reserved.run.nextSequence &&
+                behaviorRepo.getDigestArtifact('v5-cycle-crash-artifact') === null,
+              'cycle 崩溃点零部分写入',
+            );
+          } else {
+            check(false, 'cycle 崩溃点预留失败');
+          }
+          if (reserved.ok) {
+            const committed = behaviorRepo.commitDigestBatch({
+              artifactId: 'v5-cycle-artifact',
+              run: reserved.run,
+              expectedNextSequence: reserved.run.nextSequence,
+              firstSequence: reserved.run.nextSequence + 1,
+              lastSequence: reserved.run.upperSequence,
+              facts: makeFacts(),
+              createdAt: '2026-09-01T00:00:01.750Z',
+              aiEnabled: true,
+            });
+            check(committed.ok, 'Digest cycle batch 提交');
+            const artifact = behaviorRepo.getDigestArtifact('v5-cycle-artifact');
+            if (artifact !== null) {
+              const claimed = behaviorRepo.claimDigestProvider({
+                id: artifact.id,
+                scheduleId: artifact.scheduleId,
+                factsRevision: artifact.factsRevision,
+                factsHash: artifact.factsHash,
+                nowIso: '2026-09-01T00:00:02.000Z',
+              });
+              if (claimed !== null) {
+                const providerFailure = behaviorRepo.finishClaimedDigest({
+                  id: claimed.id,
+                  factsRevision: claimed.factsRevision,
+                  factsHash: claimed.factsHash,
+                  state: 'succeeded',
+                  code: 'success',
+                  explanationJson: JSON.stringify({ sections: [] }),
+                  nowIso: '2026-09-01T00:00:02.500Z',
+                });
+                check(
+                  providerFailure.ok === false &&
+                    providerFailure.code === 'validation-failed' &&
+                    behaviorRepo.getDigestArtifact(claimed.id)?.providerState === 'claimed',
+                  'provider 崩溃/非法输出零部分写回',
+                );
+              } else {
+                check(false, 'provider claim');
+              }
+            } else {
+              check(false, 'provider artifact');
+            }
+            const scrubbed = behaviorRepo.deleteEventWithScrub(eventId, '2026-09-01T00:00:03.000Z');
+            check(scrubbed.ok && behaviorRepo.getEvent(eventId) === null, 'scrub 崩溃点原子终结');
+            const completedRun = behaviorRepo.getDigestRun(reserved.run.id);
+            const completed =
+              completedRun === null
+                ? { ok: false as const, code: 'run-not-found' as const }
+                : behaviorRepo.completeDigestRun(completedRun, '2026-09-01T00:00:04.000Z');
+            check(completed.ok, 'Digest cycle 终态提交');
+            const consumedSchedule = behaviorRepo.getDigestSchedule(currentSchedule.id);
+            const replay =
+              consumedSchedule === null
+                ? { ok: false as const, code: 'rule-state-conflict' as const }
+                : behaviorRepo.reserveDigestRun({
+                    scheduleId: consumedSchedule.id,
+                    expectedVersion: consumedSchedule.version,
+                    expectedNextDueAt: consumedSchedule.nextDueAt,
+                    expectedLastConsumedScheduledFor: consumedSchedule.lastConsumedScheduledFor,
+                    expectedLastDailyLocalDate: consumedSchedule.lastDailyLocalDate,
+                    runId: 'v5-cycle-replay',
+                    requestKey: 'v5-cycle-request',
+                    logicalDate: '2026-09-01',
+                    nextDueAt: '2026-09-02T09:00:00.000Z',
+                    nowIso: '2026-09-01T00:00:05.000Z',
+                  });
+            check(replay.ok === false, 'Digest cycle consumed 后零重放');
+          } else {
+            check(false, 'Digest cycle reservation 成功');
+          }
         } else {
           check(false, 'Digest cycle schedule 读回');
         }
@@ -569,6 +896,7 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
 function fakeTabsBrowser(options: { returnExisting?: boolean } = {}): WatchTaskTabBrowser & {
   tabs(): TabInfo[];
   getPageSnapshot(id: string): Promise<PageSnapshot | null>;
+  closeCalls: string[];
 } {
   const userTab: TabInfo = {
     id: 'user-tab',
@@ -578,6 +906,7 @@ function fakeTabsBrowser(options: { returnExisting?: boolean } = {}): WatchTaskT
     state: 'ready',
   };
   const tabs: TabInfo[] = [userTab];
+  const closeCalls: string[] = [];
   let sequence = 0;
   return {
     async createTab(url: string): Promise<TabInfo> {
@@ -595,6 +924,7 @@ function fakeTabsBrowser(options: { returnExisting?: boolean } = {}): WatchTaskT
       return { ...tab };
     },
     async closeTab(id: string): Promise<boolean> {
+      closeCalls.push(id);
       const index = tabs.findIndex((tab) => tab.id === id);
       if (index < 0) return false;
       tabs.splice(index, 1);
@@ -634,6 +964,7 @@ function fakeTabsBrowser(options: { returnExisting?: boolean } = {}): WatchTaskT
       };
     },
     tabs: () => tabs.map((tab) => ({ ...tab })),
+    closeCalls,
   };
 }
 
@@ -1391,6 +1722,9 @@ async function wrt09(): Promise<boolean> {
       sessionConsent: { version: 1, origin: new URL(VALID_URL).origin, grantedAt: NOW },
     },
   });
+  const existingBrowser = fakeTabsBrowser({ returnExisting: true });
+  const existingWorkspace = new WatchTaskTabWorkspace({ browser: existingBrowser });
+  const existingAcquire = await existingWorkspace.acquire(VALID_URL, new AbortController().signal);
   return (
     unauthorized.ok === false &&
     unauthorized.health === 'login_required' &&
@@ -1399,7 +1733,11 @@ async function wrt09(): Promise<boolean> {
     crossOrigin.health === 'login_required' &&
     unauthorizedRoute.ok === false &&
     authorizedRoute.ok &&
-    browser.tabs().length === 1
+    browser.tabs().length === 1 &&
+    existingAcquire.ok === false &&
+    existingAcquire.errorCode === 'tab-create-failed' &&
+    existingBrowser.closeCalls.length === 0 &&
+    existingBrowser.tabs().length === 1
   );
 }
 
@@ -1826,9 +2164,13 @@ async function wrt13(): Promise<boolean> {
     '{"sections":[{"eventIds":["event-unknown"],"explanation":"变化"}]}',
     ['event-d10'],
   );
+  const ordered = parseDigestExplanation(
+    '{"sections":[{"eventIds":["event-a"],"explanation":"甲"},{"eventIds":["event-b"],"explanation":"乙"}]}',
+    ['event-a', 'event-b'],
+  );
   const outOfOrder = parseDigestExplanation(
-    '{"sections":[{"eventIds":["event-d10"],"explanation":"变化"}],"schemaVersion":1}',
-    ['event-d10'],
+    '{"sections":[{"eventIds":["event-b"],"explanation":"乙"},{"eventIds":["event-a"],"explanation":"甲"}]}',
+    ['event-a', 'event-b'],
   );
   return (
     request !== null &&
@@ -1838,6 +2180,7 @@ async function wrt13(): Promise<boolean> {
     invalid === null &&
     duplicate === null &&
     unknown === null &&
+    ordered !== null &&
     outOfOrder === null
   );
 }
@@ -2619,6 +2962,32 @@ async function wrt19(): Promise<boolean> {
   }
 }
 
+// Each result carries the concrete sub-oracles that were exercised. This is
+// deliberately kept separate from the manifest so a green aggregate cannot
+// hide which independent machine checks actually ran.
+const WRT_ORACLE_DETAILS: Readonly<Record<string, string>> = {
+  'WRT-01': 'url-classification,private-range,loopback,link-local,valid-public',
+  'WRT-02': 'per-hop-dns,mixed-answer,rebind,redirect,zero-downstream',
+  'WRT-03': 'lookup-reject,redirect-reject,robots-gate,zero-downstream',
+  'WRT-04': 'ClientRequest/IncomingMessage,silent-body,multi-address,deadline,destroy-drain',
+  'WRT-05': 'robots-missing,429,captcha,512000/512001,host-gap',
+  'WRT-06': 'doctype,external-entity,xinclude,unknown-entity,security-reject',
+  'WRT-07': 'depth==limit,+1;nodes==limit,+1;name/attr/text/total/projection==limit,+1',
+  'WRT-08': 'A→B→A→B→A,baseline,event,typed-old/new,idempotency',
+  'WRT-09': 'grant-origin,unauthorized,expiry,return-existing-tab-id,zero-close',
+  'WRT-10': 'task-owned-create/release,restart-invalid,login,captcha,cleanup-failure',
+  'WRT-11': 'region-main-text,heading,table,link,exact-diff',
+  'WRT-12': 'typed-evidence,malformed-evidence,condition-warning/error',
+  'WRT-13': 'duplicate,extra,unknown,out-of-order-event-id,zero-tools',
+  'WRT-14': 'sharing-metadata/blocked/note,factsRevision-CAS,scrub-late-provider',
+  'WRT-15': 'privacy-policy,notification-dto,redacted-body',
+  'WRT-16': 'reservation-three-writes,missed,catch-up,consumed-no-replay',
+  'WRT-17': 'source-watch-prepare/commit/abort,version-CAS,orphan-zero-network',
+  'WRT-18':
+    'v3/v4-statement-failure,cycle/provider/scrub-crash,late-coalesce,cross-event,all-budget',
+  'WRT-19': 'actual-public-acquisition,zero-script,zero-subresource,zero-cookie,budget',
+};
+
 export async function runWatchRedTeamScenarios(): Promise<WatchWrtOutcome[]> {
   const probes: readonly [
     string,
@@ -2651,26 +3020,30 @@ export async function runWatchRedTeamScenarios(): Promise<WatchWrtOutcome[]> {
   for (const [id, probe, evidenceKind] of probes) {
     try {
       const ok = await probe();
+      const oracle = WRT_ORACLE_DETAILS[id] ?? 'independent-oracle';
       const detail = ok
         ? evidenceKind === 'real-observation'
-          ? '真实/受控观察完成'
+          ? `真实/受控观察完成；oracle=${oracle}`
           : evidenceKind === 'honest-limit'
-            ? '诚实限制：仅完成结构性证明，真实 Electron acquisition 未运行'
-            : '结构性夹具通过'
+            ? `诚实限制：仅完成结构性证明，真实 Electron acquisition 未运行；oracle=${oracle}`
+            : `结构性证明完成；oracle=${oracle}`
         : evidenceKind === 'real-observation'
-          ? '真实/受控观察未通过'
+          ? `真实/受控观察未通过；oracle=${oracle}`
           : evidenceKind === 'honest-limit'
-            ? '诚实限制条件未满足'
-            : '结构性夹具未通过';
+            ? `诚实限制条件未满足；oracle=${oracle}`
+            : `结构性证明未通过；oracle=${oracle}`;
       results.push(outcome(id, ok, detail, evidenceKind));
     } catch (error) {
+      const oracle = WRT_ORACLE_DETAILS[id] ?? 'independent-oracle';
       results.push(
         outcome(
           id,
           false,
-          (id === 'WRT-04' || id === 'WRT-07' || id === 'WRT-15') && error instanceof Error
-            ? error.message
-            : '夹具受控失败',
+          `${
+            (id === 'WRT-04' || id === 'WRT-07' || id === 'WRT-15') && error instanceof Error
+              ? error.message
+              : '夹具受控失败'
+          }；oracle=${oracle}`,
           evidenceKind,
         ),
       );
