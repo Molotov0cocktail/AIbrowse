@@ -50,4 +50,16 @@ describe('D10 Watch manifest', () => {
       ok: false,
     });
   });
+
+  it('实际 evidenceKind 与 manifest 不一致时必须 fail-closed', () => {
+    const outcomes: WatchWrtOutcome[] = WATCH_WRT_MANIFEST.map((entry) => ({
+      id: entry.id,
+      ok: true,
+      evidenceKind: entry.id === 'WRT-08' ? 'real-observation' : entry.evidenceKind,
+      detail: 'machine evidence',
+    }));
+    const aggregate = aggregateWatchWrtOutcomes(outcomes);
+    expect(aggregate.ok).toBe(false);
+    expect(aggregate.failures).toContain('WRT-08：实际 evidenceKind 与 manifest 不一致');
+  });
 });

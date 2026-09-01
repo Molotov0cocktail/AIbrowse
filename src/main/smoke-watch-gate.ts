@@ -35,6 +35,12 @@ export function resolveWatchGate(env: WatchGateEnv): WatchGateVerdict {
     if (env.smoke !== '1') {
       return { ok: false, reason: 'AIBROWSE_LIVE_WATCH 必须从属于 AIBROWSE_SMOKE=1' };
     }
+    if (env.liveProvider === '1') {
+      return {
+        ok: false,
+        reason: 'AIBROWSE_LIVE_WATCH 与 AIBROWSE_LIVE_PROVIDER 互斥，请只选其一',
+      };
+    }
     if (isSetCheck(requested)) {
       return {
         ok: false,

@@ -249,6 +249,14 @@ describe('D10 bounded live Watch scenarios', () => {
     expect(report.entries[0]?.resultKind).toBe('failed-product');
   });
 
+  it('D10 通知捕获仅可在 smoke 路径启用', () => {
+    const source = readFileSync('src/main/index.ts', 'utf8');
+    const capture = source.indexOf('watchD10NotificationCapture.push(notification)');
+    expect(capture).toBeGreaterThanOrEqual(0);
+    const callback = source.slice(source.lastIndexOf('watchNotifications =', capture), capture);
+    expect(callback).toContain('if (SMOKE_MODE)');
+  });
+
   it('注入端口时每个真实类别只执行一次并记录成功分类', async () => {
     const calls = new Map<string, number>();
     const count = (id: string): void => {

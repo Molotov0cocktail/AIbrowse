@@ -25,10 +25,7 @@ describe('D10 Watch gate', () => {
     );
     expect(resolveWatchGate({ liveWatch: '1' }).ok).toBe(false);
     expect(resolveWatchGate({ smoke: '1', liveWatch: '1' })).toEqual({ ok: true, mode: 'live' });
-    expect(resolveWatchGate({ smoke: '1', liveWatch: '1', liveProvider: '1' })).toEqual({
-      ok: true,
-      mode: 'live',
-    });
+    expect(resolveWatchGate({ smoke: '1', liveWatch: '1', liveProvider: '1' }).ok).toBe(false);
     expect(resolveWatchD10Mode({ smoke: '1', watchSmoke: 'set' })).toEqual({
       ok: true,
       mode: 'set',

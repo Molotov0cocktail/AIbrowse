@@ -89,7 +89,7 @@ export const WATCH_WRT_MANIFEST: readonly WatchWrtEntry[] = [
     id: 'WRT-08',
     name: 'Feed 身份、顺序噪声与 fingerprint 循环',
     oracle: '重复项稳定去重、重排零事件；A→B→A→B→A 保留观察和中间 pair',
-    evidenceKind: 'real-observation',
+    evidenceKind: 'structural-proof',
     stageClauses: ['§7.2', '§9 RSS', '§9 Watch'],
     evidenceAnchor:
       'D10 redteam wrt08：真实 node:sqlite ProcessingService 五次观察与 Evidence rows',
@@ -281,6 +281,10 @@ export function aggregateWatchWrtOutcomes(
       continue;
     }
     const outcome = matches[0]!;
+    const manifestEntry = manifest.find((entry) => entry.id === id);
+    if (manifestEntry !== undefined && outcome.evidenceKind !== manifestEntry.evidenceKind) {
+      failures.push(`${id}：实际 evidenceKind 与 manifest 不一致`);
+    }
     if (!outcome.ok) failures.push(`${id}：${outcome.detail}`);
     if (outcome.evidenceKind === 'honest-limit' || outcome.evidenceKind === 'not-run') {
       failures.push(`${id}：${outcome.evidenceKind} 不满足总体 PASS 条件（${outcome.detail}）`);

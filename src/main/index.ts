@@ -1074,7 +1074,7 @@ if (!gotLock) {
     watchNotifications = new WatchNotificationService(
       () => watchRepo,
       (notification) => {
-        watchD10NotificationCapture.push(notification);
+        if (SMOKE_MODE) watchD10NotificationCapture.push(notification);
         const sender = watchSubscriptionSender;
         if (sender === null || sender.isDestroyed()) return false;
         const push: WatchPushDto = {
