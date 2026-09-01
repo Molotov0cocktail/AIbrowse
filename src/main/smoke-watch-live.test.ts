@@ -488,7 +488,7 @@ describe('D10 bounded live Watch scenarios', () => {
       resourcePort: { probe: async () => ({ ...COMPLETE_RESOURCE_RESULT }) },
     });
     expect(report.ok).toBe(false);
-    expect(report.entries[0]?.resultKind).toBe('failed-product');
+    expect(report.entries[0]?.resultKind).toBe('not-run');
   });
 
   it('电池条件明确不可用且其余资源正常时记录 not-run', async () => {

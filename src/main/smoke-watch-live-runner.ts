@@ -438,19 +438,22 @@ export async function runWatchLiveScenarios(
               (batterySpan ?? -1) === metricSpan;
         const resourceEvidenceIsWellFormed =
           resourceCoreEvidenceIsWellFormed && batteryEvidenceIsWellFormed;
-        const resourceConditionUnavailable =
-          result.errorCode === 'not-run' ||
-          result.errorCode === 'condition-unavailable' ||
-          result.errorCode === 'observation-insufficient' ||
-          battery?.status === 'condition-unavailable';
+        const noResourceEvidence =
+          result.observedForMs === undefined &&
+          result.residuals === undefined &&
+          result.resourceMetricTrend === undefined &&
+          result.batteryObservation === undefined;
         entries.push({
           scenario: scenario.id,
           requestCount: 0,
-          resultKind: !residualsAreValidAndZero
-            ? 'failed-product'
-            : resourceConditionUnavailable && resourceEvidenceIsWellFormed
-              ? 'not-run'
-              : 'failed-product',
+          resultKind:
+            !residualsAreValidAndZero && !noResourceEvidence
+              ? 'failed-product'
+              : noResourceEvidence && result.errorCode === 'not-run'
+                ? 'not-run'
+                : resourceEvidenceIsWellFormed
+                  ? 'not-run'
+                  : 'failed-product',
           httpClass: result.httpClass,
           purpose: scenario.purpose,
           resourceObservation,
