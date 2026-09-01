@@ -318,14 +318,17 @@ export async function runWatchLiveScenarios(
           );
         const batterySamplesHaveValue =
           battery !== undefined &&
-          battery.samples.every(
-            (sample) =>
-              (sample.chargePercent !== undefined &&
-                Number.isSafeInteger(sample.chargePercent) &&
+          battery.samples.every((sample) => {
+            const hasCharge = sample.chargePercent !== undefined;
+            const hasPowerState = sample.onBatteryPower !== undefined;
+            const chargeIsValid =
+              sample.chargePercent === undefined ||
+              (Number.isSafeInteger(sample.chargePercent) &&
                 sample.chargePercent >= 0 &&
-                sample.chargePercent <= 100) ||
-              typeof sample.onBatteryPower === 'boolean',
-          );
+                sample.chargePercent <= 100);
+            const powerStateIsValid = !hasPowerState || typeof sample.onBatteryPower === 'boolean';
+            return (hasCharge || hasPowerState) && chargeIsValid && powerStateIsValid;
+          });
         const batterySpan =
           battery === undefined || battery.samples.length < 2
             ? undefined

@@ -511,6 +511,27 @@ describe('D10 bounded live Watch scenarios', () => {
     expect(report.entries[0]?.resultKind).toBe('not-run');
   });
 
+  it('电池样本存在非法字段时不得把另一合法字段当作完整证据', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          ...COMPLETE_RESOURCE_RESULT,
+          batteryObservation: {
+            status: 'observed' as const,
+            samples: [
+              { observedAtMs: 1_000, chargePercent: 101, onBatteryPower: false },
+              { observedAtMs: 2_000, chargePercent: 79, onBatteryPower: true },
+            ],
+          },
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
   it('资源 PASS 台账必须保留时长、样本数、趋势和电池状态', () => {
     const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
     const entry = {
