@@ -2,7 +2,12 @@
 // The probe owns each temporary resource, observes its actual registry state,
 // and reports only after the bounded cleanup window has elapsed.
 
-import type { WatchLiveResourcePort, WatchResourceMetricSample } from './smoke-watch-live-runner';
+import type {
+  WatchLiveResourcePort,
+  WatchResourceBatteryObservation,
+  WatchResourceMetricSample,
+} from './smoke-watch-live-runner';
+import { MIN_LIVE_RESOURCE_OBSERVATION_MS } from './smoke-watch-live-runner';
 import type { WatchTaskTabWorkspace } from './watch/watch-task-tab-workspace';
 
 function wait(ms: number, signal: AbortSignal): Promise<void> {
@@ -25,7 +30,8 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
 
 export interface ProductWatchRuntimeResourceProbe {
   isAvailable: () => boolean;
-  metrics: () => WatchResourceMetricSample;
+  metrics: () => Omit<WatchResourceMetricSample, 'observedAtMs'>;
+  battery?: () => WatchResourceBatteryObservation;
   shutdown: () => Promise<void>;
   residuals: () => {
     servers: number;
@@ -56,26 +62,50 @@ export function createProductWatchResourcePort(
           residuals: runtime.residuals(),
         };
       }
-      const observedAt = Date.now();
       try {
-        const resourceMetricTrend: WatchResourceMetricSample[] = [runtime.metrics()];
-        await wait(100, signal);
-        resourceMetricTrend.push(runtime.metrics());
+        const sampleMetrics = (): WatchResourceMetricSample => ({
+          observedAtMs: Date.now(),
+          ...runtime.metrics(),
+        });
+        const resourceMetricTrend: WatchResourceMetricSample[] = [sampleMetrics()];
+        const measurementStartedAtMs = resourceMetricTrend[0].observedAtMs;
+        await wait(MIN_LIVE_RESOURCE_OBSERVATION_MS, signal);
+        resourceMetricTrend.push(sampleMetrics());
+        const measurementEndedAtMs = resourceMetricTrend.at(-1)!.observedAtMs;
+        const drainStartedAtMs = Date.now();
         await runtime.shutdown();
-        const samples = 3;
+        const residualObservedAtMs: number[] = [];
         const residualTrend: ReturnType<ProductWatchRuntimeResourceProbe['residuals']>[] = [];
-        for (let index = 0; index < samples; index += 1) {
+        for (let index = 0; index < 3; index += 1) {
           if (index > 0) await wait(100, signal);
+          residualObservedAtMs.push(Date.now());
           residualTrend.push(runtime.residuals());
         }
+        const drainEndedAtMs = residualObservedAtMs.at(-1)!;
+        const batteryObservation =
+          runtime.battery?.() ??
+          ({
+            status: 'condition-unavailable',
+            reason: '生产运行时未提供电池采样接口',
+            samples: [],
+          } satisfies WatchResourceBatteryObservation);
         return {
           httpClass: 'Watch 生产运行时排水后资源指标与残留有界观察完成',
-          observedForMs: Date.now() - observedAt,
-          samples,
+          errorCode:
+            batteryObservation.status === 'condition-unavailable'
+              ? 'condition-unavailable'
+              : undefined,
+          observedForMs: measurementEndedAtMs - measurementStartedAtMs,
+          drainStartedAtMs,
+          drainEndedAtMs,
+          drainObservedForMs: drainEndedAtMs - drainStartedAtMs,
+          residualObservedAtMs,
+          samples: resourceMetricTrend.length,
           residuals: residualTrend.at(-1),
           residualTrend,
           resourceMetrics: resourceMetricTrend.at(-1),
           resourceMetricTrend,
+          batteryObservation,
         };
       } catch {
         return {

@@ -81,6 +81,49 @@ describe('D10 bounded live Watch scenarios', () => {
     expect(result.errorCode).toBe('not-run');
   }, 5_000);
 
+  it('生产资源端口把测量窗口与排水窗口分开并保留真实时间戳', async () => {
+    let metricsCalls = 0;
+    let shutdownCalled = false;
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const result = await createProductWatchResourcePort(null, {
+      isAvailable: () => true,
+      metrics: () => {
+        metricsCalls += 1;
+        return {
+          rssBytes: 10 + metricsCalls,
+          heapUsedBytes: 20 + metricsCalls,
+          cpuUserMicros: 30 + metricsCalls,
+          cpuSystemMicros: 40 + metricsCalls,
+        };
+      },
+      battery: () => ({
+        status: 'observed' as const,
+        samples: [
+          { observedAtMs: 1_000, chargePercent: 80, onBatteryPower: false },
+          { observedAtMs: 2_000, chargePercent: 79, onBatteryPower: true },
+        ],
+      }),
+      shutdown: async () => {
+        shutdownCalled = true;
+      },
+      residuals: () => {
+        expect(shutdownCalled).toBe(true);
+        return { servers: 0, timers: 0, databases: 0, taskTabs: 0, children: 0, tempDirs: 0 };
+      },
+    }).probe(resource, new AbortController().signal);
+
+    expect(result.errorCode).toBeUndefined();
+    expect(result.observedForMs).toBeGreaterThanOrEqual(1_000);
+    expect(result.drainObservedForMs).toBeGreaterThanOrEqual(0);
+    expect(result.resourceMetricTrend).toHaveLength(2);
+    expect(result.resourceMetricTrend![0]!.observedAtMs).toBeLessThan(
+      result.resourceMetricTrend![1]!.observedAtMs,
+    );
+    expect(result.residualObservedAtMs).toHaveLength(3);
+    expect(result.residualObservedAtMs![0]).toBeGreaterThanOrEqual(result.drainStartedAtMs!);
+    expect(result.batteryObservation?.status).toBe('observed');
+  }, 5_000);
+
   it('已打包 Windows 的产品缺陷不得降级成条件跳过', async () => {
     const windows = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'windows')!;
     const report = await runWatchLiveScenarios({
@@ -130,6 +173,7 @@ describe('D10 bounded live Watch scenarios', () => {
   it('资源指标全为零时不得伪造 live PASS', async () => {
     const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
     const zero = {
+      observedAtMs: 0,
       rssBytes: 0,
       heapUsedBytes: 0,
       cpuUserMicros: 0,
@@ -164,6 +208,7 @@ describe('D10 bounded live Watch scenarios', () => {
   it('资源观察窗口过短时不得伪造 live PASS', async () => {
     const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
     const metrics = {
+      observedAtMs: 0,
       rssBytes: 1,
       heapUsedBytes: 1,
       cpuUserMicros: 1,
@@ -188,6 +233,136 @@ describe('D10 bounded live Watch scenarios', () => {
           residualTrend: [residuals, residuals],
           resourceMetrics: metrics,
           resourceMetricTrend: [metrics, metrics],
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
+  it('短时重复指标即使正数也不得满足长时资源观察', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const metrics = {
+      observedAtMs: 0,
+      rssBytes: 1,
+      heapUsedBytes: 1,
+      cpuUserMicros: 1,
+      cpuSystemMicros: 1,
+    };
+    const residuals = {
+      servers: 0,
+      timers: 0,
+      databases: 0,
+      taskTabs: 0,
+      children: 0,
+      tempDirs: 0,
+    };
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          httpClass: 'short repeated metrics fixture',
+          observedForMs: 100,
+          samples: 2,
+          residuals,
+          residualTrend: [residuals, residuals],
+          resourceMetrics: metrics,
+          resourceMetricTrend: [metrics, metrics],
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
+  it('缺少电池趋势或明确条件证据时不得汇总为资源 PASS', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const metrics = {
+      observedAtMs: 0,
+      rssBytes: 1,
+      heapUsedBytes: 2,
+      cpuUserMicros: 3,
+      cpuSystemMicros: 4,
+    };
+    const residuals = {
+      servers: 0,
+      timers: 0,
+      databases: 0,
+      taskTabs: 0,
+      children: 0,
+      tempDirs: 0,
+    };
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          httpClass: 'missing battery evidence fixture',
+          observedForMs: 1_000,
+          samples: 2,
+          residuals,
+          residualTrend: [residuals, residuals],
+          resourceMetrics: metrics,
+          resourceMetricTrend: [metrics, { ...metrics, heapUsedBytes: 5 }],
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
+  it('shutdown 后的排水窗口不得虚增测量窗口', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const residuals = {
+      servers: 0,
+      timers: 0,
+      databases: 0,
+      taskTabs: 0,
+      children: 0,
+      tempDirs: 0,
+    };
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          httpClass: 'drain-inflated measurement fixture',
+          observedForMs: 10_000,
+          drainStartedAtMs: 1_000,
+          drainEndedAtMs: 10_000,
+          drainObservedForMs: 9_000,
+          residualObservedAtMs: [9_900, 10_000],
+          samples: 2,
+          residuals,
+          residualTrend: [residuals, residuals],
+          resourceMetrics: {
+            observedAtMs: 1_000,
+            rssBytes: 1,
+            heapUsedBytes: 1,
+            cpuUserMicros: 1,
+            cpuSystemMicros: 1,
+          },
+          resourceMetricTrend: [
+            {
+              observedAtMs: 0,
+              rssBytes: 1,
+              heapUsedBytes: 1,
+              cpuUserMicros: 1,
+              cpuSystemMicros: 1,
+            },
+            {
+              observedAtMs: 1_000,
+              rssBytes: 2,
+              heapUsedBytes: 2,
+              cpuUserMicros: 2,
+              cpuSystemMicros: 2,
+            },
+          ],
+          batteryObservation: {
+            status: 'observed' as const,
+            samples: [
+              { observedAtMs: 0, chargePercent: 80 },
+              { observedAtMs: 1_000, chargePercent: 79 },
+            ],
+          },
         }),
       },
     });
@@ -328,7 +503,11 @@ describe('D10 bounded live Watch scenarios', () => {
           count(scenario.id);
           return {
             httpClass: 'zero-residuals',
-            observedForMs: 100,
+            observedForMs: 1_000,
+            drainStartedAtMs: 2_000,
+            drainEndedAtMs: 2_200,
+            drainObservedForMs: 200,
+            residualObservedAtMs: [2_100, 2_200],
             samples: 2,
             residuals: {
               servers: 0,
@@ -357,15 +536,35 @@ describe('D10 bounded live Watch scenarios', () => {
               },
             ],
             resourceMetrics: {
+              observedAtMs: 1_000,
               rssBytes: 1,
               heapUsedBytes: 1,
               cpuUserMicros: 1,
               cpuSystemMicros: 1,
             },
             resourceMetricTrend: [
-              { rssBytes: 1, heapUsedBytes: 1, cpuUserMicros: 1, cpuSystemMicros: 1 },
-              { rssBytes: 1, heapUsedBytes: 1, cpuUserMicros: 1, cpuSystemMicros: 1 },
+              {
+                observedAtMs: 1_000,
+                rssBytes: 1,
+                heapUsedBytes: 1,
+                cpuUserMicros: 1,
+                cpuSystemMicros: 1,
+              },
+              {
+                observedAtMs: 2_000,
+                rssBytes: 2,
+                heapUsedBytes: 2,
+                cpuUserMicros: 2,
+                cpuSystemMicros: 2,
+              },
             ],
+            batteryObservation: {
+              status: 'observed',
+              samples: [
+                { observedAtMs: 1_000, chargePercent: 80, onBatteryPower: false },
+                { observedAtMs: 2_000, chargePercent: 79, onBatteryPower: true },
+              ],
+            },
           };
         },
       },

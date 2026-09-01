@@ -8,11 +8,14 @@ import {
   validateWatchLiveManifest,
   WATCH_LIVE_SCENARIO_MANIFEST,
   type WatchLiveLedgerEntry,
+  type WatchLiveResourceObservation,
   type WatchLiveResultKind,
   type WatchLiveScenario,
 } from './smoke-watch-live';
 
-const MIN_LIVE_RESOURCE_OBSERVATION_MS = 100;
+// A 100ms drain probe is not evidence of the long-running resource trend
+// required by the D10 real-observation gate. Keep this bounded and explicit.
+export const MIN_LIVE_RESOURCE_OBSERVATION_MS = 1_000;
 
 export interface WatchLivePublicPort {
   run(
@@ -54,10 +57,23 @@ export interface WatchLiveWindowsPort {
 }
 
 export interface WatchResourceMetricSample {
+  observedAtMs: number;
   rssBytes: number;
   heapUsedBytes: number;
   cpuUserMicros: number;
   cpuSystemMicros: number;
+}
+
+export interface WatchResourceBatterySample {
+  observedAtMs: number;
+  chargePercent?: number;
+  onBatteryPower?: boolean;
+}
+
+export interface WatchResourceBatteryObservation {
+  status: 'observed' | 'condition-unavailable';
+  reason?: string;
+  samples: readonly WatchResourceBatterySample[];
 }
 
 export interface WatchLiveResourcePort {
@@ -68,6 +84,10 @@ export interface WatchLiveResourcePort {
     httpClass: string;
     errorCode?: string;
     observedForMs?: number;
+    drainStartedAtMs?: number;
+    drainEndedAtMs?: number;
+    drainObservedForMs?: number;
+    residualObservedAtMs?: readonly number[];
     samples?: number;
     residuals?: {
       servers: number;
@@ -87,6 +107,7 @@ export interface WatchLiveResourcePort {
     }[];
     resourceMetrics?: WatchResourceMetricSample;
     resourceMetricTrend?: readonly WatchResourceMetricSample[];
+    batteryObservation?: WatchResourceBatteryObservation;
   }>;
 }
 
@@ -265,31 +286,130 @@ export async function runWatchLiveScenarios(
         const result = await options.resourcePort.probe(scenario, controller.signal);
         const observedForMs = result.observedForMs;
         const sampleCount = result.samples;
+        const metricTrend = result.resourceMetricTrend;
+        const metricFields = [
+          'rssBytes',
+          'heapUsedBytes',
+          'cpuUserMicros',
+          'cpuSystemMicros',
+        ] as const;
+        const validMetricSample = (sample: WatchResourceMetricSample): boolean =>
+          Number.isSafeInteger(sample.observedAtMs) &&
+          metricFields.every((field) => Number.isSafeInteger(sample[field]) && sample[field] >= 0);
+        const metricTimestampsAreMonotonic =
+          metricTrend !== undefined &&
+          metricTrend.every(
+            (sample, index) =>
+              index === 0 || sample.observedAtMs > metricTrend[index - 1]!.observedAtMs,
+          );
+        const metricSpan =
+          metricTrend === undefined || metricTrend.length < 2
+            ? undefined
+            : metricTrend.at(-1)!.observedAtMs - metricTrend[0]!.observedAtMs;
+        const metricTrendKind =
+          metricTrend !== undefined && metricTrend.length >= 2
+            ? metricFields.some((field) => metricTrend[0]![field] !== metricTrend.at(-1)![field])
+              ? 'changed'
+              : 'stable'
+            : 'stable';
+        const battery = result.batteryObservation;
+        const batteryTimestampsAreMonotonic =
+          battery !== undefined &&
+          battery.samples.every(
+            (sample, index) =>
+              Number.isSafeInteger(sample.observedAtMs) &&
+              (index === 0 || sample.observedAtMs > battery.samples[index - 1]!.observedAtMs),
+          );
+        const batterySamplesHaveValue =
+          battery !== undefined &&
+          battery.samples.every(
+            (sample) =>
+              (sample.chargePercent !== undefined &&
+                Number.isSafeInteger(sample.chargePercent) &&
+                sample.chargePercent >= 0 &&
+                sample.chargePercent <= 100) ||
+              typeof sample.onBatteryPower === 'boolean',
+          );
+        const batterySpan =
+          battery === undefined || battery.samples.length < 2
+            ? undefined
+            : battery.samples.at(-1)!.observedAtMs - battery.samples[0]!.observedAtMs;
+        const residualTimestampsAreMonotonic =
+          result.residualObservedAtMs !== undefined &&
+          result.residualObservedAtMs.every(
+            (timestamp, index) =>
+              Number.isSafeInteger(timestamp) &&
+              (index === 0 || timestamp > result.residualObservedAtMs![index - 1]!),
+          );
+        const resourceObservation: WatchLiveResourceObservation | undefined =
+          Number.isSafeInteger(result.observedForMs) &&
+          Number.isSafeInteger(result.drainStartedAtMs) &&
+          Number.isSafeInteger(result.drainEndedAtMs) &&
+          Number.isSafeInteger(result.drainObservedForMs) &&
+          result.residualObservedAtMs !== undefined &&
+          result.resourceMetricTrend !== undefined &&
+          result.batteryObservation !== undefined
+            ? {
+                measurementStartedAtMs: result.resourceMetricTrend[0]?.observedAtMs ?? -1,
+                measurementEndedAtMs: result.resourceMetricTrend.at(-1)?.observedAtMs ?? -1,
+                measurementWindowMs: result.observedForMs!,
+                drainStartedAtMs: result.drainStartedAtMs!,
+                drainEndedAtMs: result.drainEndedAtMs!,
+                drainWindowMs: result.drainObservedForMs!,
+                metricSampleCount: result.resourceMetricTrend.length,
+                metricTrend: metricTrendKind,
+                residualSampleCount: result.residualObservedAtMs.length,
+                batteryStatus: result.batteryObservation.status,
+                batterySampleCount: result.batteryObservation.samples.length,
+              }
+            : undefined;
         const observed =
           Number.isSafeInteger(observedForMs) &&
           (observedForMs ?? -1) >= MIN_LIVE_RESOURCE_OBSERVATION_MS &&
           Number.isSafeInteger(sampleCount) &&
           (sampleCount ?? -1) >= 2 &&
+          metricTrend !== undefined &&
+          metricTrend.length === sampleCount &&
+          metricTrend.length >= 2 &&
+          metricTimestampsAreMonotonic &&
+          metricSpan === observedForMs &&
+          result.resourceMetrics !== undefined &&
+          validMetricSample(result.resourceMetrics) &&
+          validMetricSample(metricTrend[0]!) &&
+          validMetricSample(metricTrend.at(-1)!) &&
+          metricTrendKind === 'changed' &&
+          Number.isSafeInteger(result.drainStartedAtMs) &&
+          Number.isSafeInteger(result.drainEndedAtMs) &&
+          Number.isSafeInteger(result.drainObservedForMs) &&
+          result.drainEndedAtMs! >= result.drainStartedAtMs! &&
+          result.drainObservedForMs === result.drainEndedAtMs! - result.drainStartedAtMs! &&
+          result.residualObservedAtMs !== undefined &&
+          result.residualObservedAtMs.length === result.residualTrend?.length &&
+          result.residualObservedAtMs.length >= 2 &&
+          residualTimestampsAreMonotonic &&
           result.residuals !== undefined &&
           result.residualTrend !== undefined &&
           result.residualTrend.length >= 2 &&
-          result.resourceMetrics !== undefined &&
-          result.resourceMetricTrend !== undefined &&
-          result.resourceMetricTrend.length >= 2 &&
-          [result.resourceMetrics, ...result.resourceMetricTrend].every((metrics) =>
-            Object.values(metrics).every((value) => Number.isSafeInteger(value) && value >= 0),
-          ) &&
-          [result.resourceMetrics, ...result.resourceMetricTrend].some((metrics) =>
-            Object.values(metrics).some((value) => value > 0),
-          ) &&
           [result.residuals, ...result.residualTrend].every((residuals) =>
             Object.values(residuals).every((value) => Number.isSafeInteger(value) && value === 0),
-          );
+          ) &&
+          battery?.status === 'observed' &&
+          battery.samples.length >= 2 &&
+          batteryTimestampsAreMonotonic &&
+          (batterySpan ?? -1) >= MIN_LIVE_RESOURCE_OBSERVATION_MS &&
+          batterySamplesHaveValue &&
+          [result.resourceMetrics, ...metricTrend].every((metrics) =>
+            Object.values(metrics).every((value) => Number.isSafeInteger(value) && value >= 0),
+          ) &&
+          [result.resourceMetrics, ...metricTrend].some((metrics) =>
+            metricFields.some((field) => metrics[field] > 0),
+          ) &&
+          resourceObservation !== undefined;
         entries.push({
           scenario: scenario.id,
           requestCount: 0,
           resultKind:
-            result.errorCode === 'not-run'
+            result.errorCode === 'not-run' || result.errorCode === 'condition-unavailable'
               ? 'not-run'
               : observed
                 ? resultKind({
@@ -300,6 +420,7 @@ export async function runWatchLiveScenarios(
                 : 'failed-product',
           httpClass: result.httpClass,
           purpose: scenario.purpose,
+          resourceObservation,
         });
       }
     } catch {

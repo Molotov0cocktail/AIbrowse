@@ -74,6 +74,22 @@ export type WatchLiveResultKind =
   | 'blocked-environment'
   | 'not-run';
 
+export type WatchLiveResourceMetricTrend = 'changed' | 'stable';
+
+export interface WatchLiveResourceObservation {
+  measurementStartedAtMs: number;
+  measurementEndedAtMs: number;
+  measurementWindowMs: number;
+  drainStartedAtMs: number;
+  drainEndedAtMs: number;
+  drainWindowMs: number;
+  metricSampleCount: number;
+  metricTrend: WatchLiveResourceMetricTrend;
+  residualSampleCount: number;
+  batteryStatus: 'observed' | 'condition-unavailable';
+  batterySampleCount: number;
+}
+
 export interface WatchLiveLedgerEntry {
   scenario: string;
   requestCount: number;
@@ -82,6 +98,8 @@ export interface WatchLiveLedgerEntry {
   purpose: string;
   /** Only Windows probes carry the product/condition classification. */
   classification?: 'pass' | 'condition-unavailable' | 'product-defect';
+  /** Resource PASS must carry the bounded pre-shutdown measurement evidence. */
+  resourceObservation?: WatchLiveResourceObservation;
 }
 
 export function validateWatchLiveManifest(
@@ -165,7 +183,11 @@ export function describeWatchLiveLedger(entries: readonly WatchLiveLedgerEntry[]
   const summary = entries
     .map(
       (entry) =>
-        `${entry.scenario}：${entry.requestCount} 次（${entry.resultKind}；${entry.httpClass}）`,
+        `${entry.scenario}：${entry.requestCount} 次（${entry.resultKind}；${entry.httpClass}${
+          entry.resourceObservation === undefined
+            ? ''
+            : `；测量 ${entry.resourceObservation.measurementWindowMs}ms/${entry.resourceObservation.metricSampleCount} 样本；排水 ${entry.resourceObservation.drainWindowMs}ms；指标${entry.resourceObservation.metricTrend}；电池${entry.resourceObservation.batteryStatus}/${entry.resourceObservation.batterySampleCount} 样本`
+        }）`,
     )
     .join('；');
   return `真实 Watch 场景 ${entries.length} 项；请求共 ${total} 次——${summary}`;
@@ -242,6 +264,34 @@ export function validateWatchLiveLedger(
         errors.push(`${entry.scenario}：Windows 产品失败分类不一致`);
       } else if (entry.resultKind === 'pass' && entry.classification !== 'pass') {
         errors.push(`${entry.scenario}：Windows PASS 分类不一致`);
+      }
+    }
+    if (scenario.kind === 'resource' && entry.resultKind === 'pass') {
+      const observation = entry.resourceObservation;
+      if (observation === undefined) {
+        errors.push(`${entry.scenario}：资源 PASS 缺少可审计观察证据`);
+      } else if (
+        !Number.isSafeInteger(observation.measurementStartedAtMs) ||
+        !Number.isSafeInteger(observation.measurementEndedAtMs) ||
+        !Number.isSafeInteger(observation.measurementWindowMs) ||
+        !Number.isSafeInteger(observation.drainStartedAtMs) ||
+        !Number.isSafeInteger(observation.drainEndedAtMs) ||
+        !Number.isSafeInteger(observation.drainWindowMs) ||
+        !Number.isSafeInteger(observation.metricSampleCount) ||
+        !Number.isSafeInteger(observation.residualSampleCount) ||
+        !Number.isSafeInteger(observation.batterySampleCount) ||
+        observation.measurementEndedAtMs < observation.measurementStartedAtMs ||
+        observation.drainEndedAtMs < observation.drainStartedAtMs ||
+        observation.measurementWindowMs !==
+          observation.measurementEndedAtMs - observation.measurementStartedAtMs ||
+        observation.drainWindowMs !== observation.drainEndedAtMs - observation.drainStartedAtMs ||
+        observation.metricSampleCount < 2 ||
+        observation.residualSampleCount < 2 ||
+        observation.metricTrend !== 'changed' ||
+        observation.batteryStatus !== 'observed' ||
+        observation.batterySampleCount < 2
+      ) {
+        errors.push(`${entry.scenario}：资源 PASS 观察证据不完整或不可信`);
       }
     }
   }
