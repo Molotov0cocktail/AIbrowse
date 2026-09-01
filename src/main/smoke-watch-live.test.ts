@@ -127,6 +127,40 @@ describe('D10 bounded live Watch scenarios', () => {
     expect(report.ok).toBe(false);
   });
 
+  it('资源指标全为零时不得伪造 live PASS', async () => {
+    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
+    const zero = {
+      rssBytes: 0,
+      heapUsedBytes: 0,
+      cpuUserMicros: 0,
+      cpuSystemMicros: 0,
+    };
+    const residuals = {
+      servers: 0,
+      timers: 0,
+      databases: 0,
+      taskTabs: 0,
+      children: 0,
+      tempDirs: 0,
+    };
+    const report = await runWatchLiveScenarios({
+      manifest: [resource],
+      resourcePort: {
+        probe: async () => ({
+          httpClass: 'zero metrics fixture',
+          observedForMs: 100,
+          samples: 2,
+          residuals,
+          residualTrend: [residuals, residuals],
+          resourceMetrics: zero,
+          resourceMetricTrend: [zero, zero],
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
   it('拒绝重复执行和超过请求上限', () => {
     const duplicate = validateWatchLiveExecution(WATCH_LIVE_SCENARIO_MANIFEST, [
       'wl-public-rss',
@@ -198,6 +232,23 @@ describe('D10 bounded live Watch scenarios', () => {
     );
   });
 
+  it('Provider 2xx 请求但缺少成功 artifact 状态时不得 PASS', async () => {
+    const provider = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'provider')!;
+    const report = await runWatchLiveScenarios({
+      manifest: [provider],
+      providerPort: {
+        credentialAvailable: () => true,
+        runOnce: async () => ({
+          requestCount: provider.maxRequests,
+          status: 200,
+          httpClass: 'provider request returned 2xx',
+        }),
+      },
+    });
+    expect(report.ok).toBe(false);
+    expect(report.entries[0]?.resultKind).toBe('failed-product');
+  });
+
   it('注入端口时每个真实类别只执行一次并记录成功分类', async () => {
     const calls = new Map<string, number>();
     const count = (id: string): void => {
@@ -214,7 +265,12 @@ describe('D10 bounded live Watch scenarios', () => {
         credentialAvailable: () => true,
         runOnce: async (scenario) => {
           count(scenario.id);
-          return { requestCount: scenario.maxRequests, status: 200, httpClass: '2xx' };
+          return {
+            requestCount: scenario.maxRequests,
+            status: 200,
+            httpClass: '2xx',
+            providerState: 'succeeded',
+          };
         },
       },
       windowsPort: {

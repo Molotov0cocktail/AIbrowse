@@ -1798,6 +1798,7 @@ if (!gotLock) {
                             requestCount,
                             status: 200,
                             httpClass: 'DigestService -> Provider.stream complete',
+                            providerState,
                           };
                         }
                         await cleanupFixture();
@@ -1805,6 +1806,7 @@ if (!gotLock) {
                           requestCount,
                           httpClass: `DigestService provider outcome=${providerState}`,
                           errorCode: requestCount === 1 ? 'provider' : 'product-defect',
+                          providerState,
                         };
                       } finally {
                         await cleanupFixture();

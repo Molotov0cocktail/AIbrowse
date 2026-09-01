@@ -34,6 +34,7 @@ export interface WatchLiveProviderPort {
     status?: number;
     httpClass: string;
     errorCode?: string;
+    providerState?: string;
   }>;
 }
 
@@ -187,10 +188,18 @@ export async function runWatchLiveScenarios(
           continue;
         }
         const result = await options.providerPort.runOnce(scenario, controller.signal);
+        const providerStateMissingOrFailed =
+          result.status !== undefined &&
+          result.status >= 200 &&
+          result.status < 300 &&
+          result.requestCount === scenario.maxRequests &&
+          result.providerState !== 'succeeded';
         entries.push({
           scenario: scenario.id,
           requestCount: result.requestCount,
-          resultKind: resultKind({ ...result, scenarioKind: scenario.kind }),
+          resultKind: providerStateMissingOrFailed
+            ? 'failed-product'
+            : resultKind({ ...result, scenarioKind: scenario.kind }),
           httpClass: result.httpClass,
           purpose: scenario.purpose,
         });
@@ -267,6 +276,9 @@ export async function runWatchLiveScenarios(
           result.resourceMetricTrend.length >= 2 &&
           [result.resourceMetrics, ...result.resourceMetricTrend].every((metrics) =>
             Object.values(metrics).every((value) => Number.isSafeInteger(value) && value >= 0),
+          ) &&
+          [result.resourceMetrics, ...result.resourceMetricTrend].some((metrics) =>
+            Object.values(metrics).some((value) => value > 0),
           ) &&
           [result.residuals, ...result.residualTrend].every((residuals) =>
             Object.values(residuals).every((value) => Number.isSafeInteger(value) && value === 0),

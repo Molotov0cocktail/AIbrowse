@@ -2969,11 +2969,12 @@ const WRT_ORACLE_DETAILS: Readonly<Record<string, string>> = {
   'WRT-01': 'url-classification,private-range,loopback,link-local,valid-public',
   'WRT-02': 'per-hop-dns,mixed-answer,rebind,redirect,zero-downstream',
   'WRT-03': 'lookup-reject,redirect-reject,robots-gate,zero-downstream',
-  'WRT-04': 'ClientRequest/IncomingMessage,silent-body,multi-address,deadline,destroy-drain',
+  'WRT-04':
+    'ClientRequest/IncomingMessage,no-response/silent-body,deadline,destroy-drain,request/response-close',
   'WRT-05': 'robots-missing,429,captcha,512000/512001,host-gap',
   'WRT-06': 'doctype,external-entity,xinclude,unknown-entity,security-reject',
   'WRT-07': 'depth==limit,+1;nodes==limit,+1;name/attr/text/total/projection==limit,+1',
-  'WRT-08': 'A→B→A→B→A,baseline,event,typed-old/new,idempotency',
+  'WRT-08': 'local-parser/SQLite,A→B→A→B→A,baseline,event,typed-old/new,idempotency',
   'WRT-09': 'grant-origin,unauthorized,expiry,return-existing-tab-id,zero-close',
   'WRT-10': 'task-owned-create/release,restart-invalid,login,captcha,cleanup-failure',
   'WRT-11': 'region-main-text,heading,table,link,exact-diff',
@@ -2984,7 +2985,7 @@ const WRT_ORACLE_DETAILS: Readonly<Record<string, string>> = {
   'WRT-16': 'reservation-three-writes,missed,catch-up,consumed-no-replay',
   'WRT-17': 'source-watch-prepare/commit/abort,version-CAS,orphan-zero-network',
   'WRT-18':
-    'v3/v4-statement-failure,cycle/provider/scrub-crash,late-coalesce,cross-event,all-budget',
+    'v3/v4-statement-failure,cycle/provider/scrub-crash,late-coalesce,cross-event,event-budget',
   'WRT-19': 'actual-public-acquisition,zero-script,zero-subresource,zero-cookie,budget',
 };
 
@@ -3001,7 +3002,7 @@ export async function runWatchRedTeamScenarios(): Promise<WatchWrtOutcome[]> {
     ['WRT-05', wrt05, 'structural-proof'],
     ['WRT-06', wrt06, 'structural-proof'],
     ['WRT-07', wrt07, 'structural-proof'],
-    ['WRT-08', wrt08, 'real-observation'],
+    ['WRT-08', wrt08, 'structural-proof'],
     // These two use deterministic BrowserController-shaped fakes; they are not
     // Electron task-tab observations and must not be reported as real-observation.
     ['WRT-09', wrt09, 'structural-proof'],
