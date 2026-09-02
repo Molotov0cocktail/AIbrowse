@@ -51,6 +51,22 @@ Closer 合同收尾后，才满足本任务前置。
   Windows Job 累计 CPU、PID+creation time 瞬时资源、main 单值 heap、逐 Node type+总量、Battery Class
   absolute mWh 与结构化可回放 registry/DB owner 排水；日志字符串、当前成员 CPU 求和、relative battery、
   文件存在性或顶层变量置 null 均不能替代。
+- Auditor 必须从 clean build 机器证据核对 H3b 根进程由 `CreateProcessW` 直接启动 exact repo Electron
+  43.4.0 exe，以 repo CWD 的 `.` 解析 `package.json.main=./out/main/index.js`；无 npm/cmd/electron-vite wrapper，
+  初始 PID 就是 browser/main。suspended Job assignment、kill-on-close、零 breakaway、Chromium child 捕获、
+  Toolhelp/Job 的 PID+creation FILETIME 双向全集、root 先退后的排水和 root process exit code 必须全部闭合；
+  环境/handle allowlist 或 build hash 缺证即 HOLD。
+- qualification trace 必须来自 harness first-instance/reject-remote/current-logon DACL server 与 main client；
+  bootstrap 在双向 PID+creation 验证后才交付高熵 pipe 名/nonce，argv/env/Chromium child/log/db/renderer 零秘密。
+  Auditor 必须复核 exact-key JCS、bounded incremental UTF-8/LF、deadline/backpressure、无重连、双向 sequence、
+  sample-open/close barrier 和每 sample 唯一 prefix replay；仅有 `{registry,identity}` 或可挑 prefix 的 snapshot
+  不合格。同账户伪装、half-frame/CRLF/重复/乱序/重放/断连敌手证据缺失即 HOLD。
+- Watch temp lease 必须以 nonce-HMAC opaque token 与无 reparse 专属 root 的 OS relative entries 在 barrier 内
+  逐项相等，trace 不含 absolute/relative path、正文、URL 或凭据；symlink/junction/rename/case collision/
+  cleanup 敌手矩阵必须闭合。Battery no-battery 只可来自成功完整 SetupAPI 枚举且所有 port 是 documented
+  absence，并与 SystemPowerStatus 一致；tag error、exact struct/output bytes、relative/unknown、热插拔、
+  PowerState/Rate 矛盾和 cleanup 任一未闭合都不得判 H3b PASS。observer 不进 Watch registry，但仍必须计入
+  Job/OS/main/Node totals，禁止扣除观察成本。
 - Provider 与 Windows packaged notification 不是 Exit Gate 硬门：确定性 Digest 在无 Provider 时仍成功且
   `explanation=null`；应用内通知必需，系统 sink identity 不可用时诚实 unavailable。不得用“恰好一次底层
   HTTP 请求”评判 Provider PASS。

@@ -342,9 +342,23 @@ oracle；FakeProvider 不得冒充真实观察。
 
 - 应用长时运行的 CPU/内存/handle/WebContents/活动资源/request/socket/timer/task Tab/DB/临时目录/进程树和
   电池/电源状态全部按 detailed-design §15.6 的唯一来源、统计和阈值观察。进程 CPU 必须来自包含已退出
-  成员的专属 Windows Job accounting；Battery Class absolute mWh 不可用时 fail-closed；产品 registry 必须
-  经结构化可回放资格通道与 Windows FileId/Restart Manager 交叉，日志字符串、当前 PID 求和和文件存在性
-  都不能单独成证。
+  成员的专属 Windows Job accounting；Job root 只能是 suspended 后先 assignment、再 resume 的 direct
+  Electron browser/main，Toolhelp parent-chain 与 Job active identity 必须按 PID+creation FILETIME 双向闭合，
+  wrapper、breakaway、映像名或 PID 猜测都不能成证。Battery Class absolute mWh 不可用时 fail-closed；tag
+  absence、returned bytes、所有 port 聚合、热插拔和 SystemPowerStatus/PowerState/Rate 交叉矛盾均须按正式
+  矩阵裁决，API 不确定不能伪装 no-battery。
+- 当前用户 DACL 不能单独阻止同账户进程伪装资格 client/server。qualification pipe 必须是 harness-only
+  first-instance/reject-remote server + main-only client，并在交付秘密前后双向校验 named-pipe peer PID 与
+  creation identity。高熵 telemetry 名和 nonce 只能经已认证、按 suspended main PID 定位的一次性 bootstrap
+  传递；不得进入 args/env/inherited handle/log/persistence/renderer。exact-key canonical frame、bounded
+  incremental UTF-8、deadline/backpressure、strict sequence、sample barrier、无重连和断连 fail-closed 共同
+  防止半帧、CRLF、重放、乱序、丢帧、队列耗尽与同账户注入；任一项不能靠“本机只有一个用户”豁免。
+- 产品 registry 必须在真实 acquire/release 线性化点经结构化 trace 重放，sample 只对应唯一冻结 prefix。
+  observer 自身不得进入 Watch registry 造成自指，但仍计入 Job/OS/main/Node totals，禁止人为扣除。temp
+  registry 的 opaque nonce-HMAC binding 必须与 sample barrier 内独立 OS relative-entry 枚举逐项相等；绝对/
+  相对 path、URL、正文和凭据不得过 pipe。temp root/ancestor/entry 任一 reparse point、case collision、escape、
+  unexpected entry 或 rename 中间态都 fail-closed。日志字符串、当前 PID 求和、文件存在性和 `{registry,
+identity}` 而无 temp binding 都不能单独成证。
 - Node 24.x ClientRequest/IncomingMessage destroy/abort 在 pre-socket、pre-response、response 后各 emitter 的
   error/close 实际顺序；若未来 Node 出现当前 emitter-local drain 无法安全承载的顺序，必须 REPLAN transport
   drain，不得用 process 级异常兜底。
@@ -418,7 +432,7 @@ D10 完整区间 Reviewer PASS → 新 D11 Stage Auditor`。H4 前不得启动 D
 - API Key 不进入 watch.db、feed、PageProjection、Event、Digest facts、通知、日志、DOM 或导出；
 - `node:sqlite`、prepared SQL、safeStorage/DPAPI 等既有永久红线保持。
 
-## 9. 外部安全依据（核验于 2026-08-23）
+## 9. 外部安全依据（网络项核验于 2026-08-23；Windows 资源项补充核验于 2026-09-02）
 
 - XML / DTD：<https://www.w3.org/TR/xml/>
 - OWASP XXE：<https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html>
@@ -432,6 +446,21 @@ D10 完整区间 Reviewer PASS → 新 D11 Stage Auditor`。H4 前不得启动 D
   <https://www.iana.org/assignments/ipv6-unicast-address-assignments/>
 - Electron Session：<https://www.electronjs.org/docs/latest/api/session>
 - Electron Notification：<https://www.electronjs.org/docs/latest/tutorial/notifications>
+- Windows CreateNamedPipe（first-instance/reject-remote/overlapped）：
+  <https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-createnamedpipew>
+- Windows Named Pipe security/access：
+  <https://learn.microsoft.com/windows/win32/ipc/named-pipe-security-and-access-rights>
+- Windows named-pipe client/server PID：
+  <https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-getnamedpipeclientprocessid>
+  与 <https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid>
+- Windows CreateProcess/handle inheritance/Job accounting：
+  <https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw>、
+  <https://learn.microsoft.com/windows/win32/procthread/inheritance>、
+  <https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject>
+- Windows Battery Class IOCTL/structures：
+  <https://learn.microsoft.com/windows/win32/power/battery-information>、
+  <https://learn.microsoft.com/windows/win32/power/battery-status>、
+  <https://learn.microsoft.com/windows/win32/api/winioctl/ni-winioctl-ioctl_battery_query_tag>
 - 候选 XML parser：<https://github.com/federicocarboni/saxe>
 - 候选 HTML SAX parser：<https://github.com/inikulin/parse5>
 - 被否决归档候选：<https://github.com/lddubeau/saxes>

@@ -23,12 +23,18 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 
 ## 涉及模块和输入文档
 
-- `src/main/smoke-watch-*.ts`、`smoke.ts/index.ts` 最小门控接线、仓库外 live harness 扩展（不提交）。
+- 已有 D10：`src/main/smoke-watch-*.ts`、`smoke.ts/index.ts` 最小门控接线、仓库外 live harness 扩展
+  （不提交）。
+- H3b 资格实现不能只改 smoke：允许新增 main-only `src/main/watch/qualification/**` 和最小 x64 native bridge/
+  build 接线，并在下面“H3b 实施范围”列出的真实产品所有权点增加 qualification-only instrumentation。
 - 输入：detailed §15；threat-model §6/§7；Sixth §7–§10；D1–D9 验收记录。
 
 ## 预计修改文件
 
-- 新增 Watch smoke manifest/redteam/scan/live/gate/runner 模块与测试；smoke/index 只追加门控入口。
+- 新增 Watch smoke manifest/redteam/scan/live/gate/runner 模块与测试；已有 smoke/index 门控保持最小。
+- H3b 可新增 qualification bootstrap/protocol/sequencer/registry/temp-binding/trace 模块、窄 native identity
+  bridge 及其测试，并在获准真实模块添加 acquire/release/terminal/admission 观测；不得借 instrumentation 改
+  业务语义、公开接口、安全边界或阈值。
 - 受控夹具进临时目录或源码小常量；不得提交真实用户数据、凭据、日志、截图、数据库或机器路径。
 
 ## 实施步骤（红→绿）
@@ -151,6 +157,53 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
   detailed-design §15.6 的 Job accounting、逐 Node type/总量、电池 Battery Class IOCTL、可回放产品 registry
   及 DB/FileId/Restart Manager 排水口径。当前隔离 userData 启动仍有
   `GPU process isn't usable. Goodbye.`，在同机最小 Electron 对照闭环前分类为 `BLOCKED`。
+
+## H3b 实施范围与红态合同（H1 冻结；当前未开始）
+
+H3b 是本任务的后续正式资格实现，不受“只改 smoke 模块”的旧范围限制，但只允许下列按所有权点收口的范围：
+
+- `src/main/index.ts`：在 logger/single-instance/BrowserWindow/Watch service 前接入非秘密 qualification app arg、
+  bootstrap 和关闭顺序；常规启动必须零行为。
+- 新的 `src/main/watch/qualification/**`：exact schema、incremental decoder、overlapped client adapter、sequencer、
+  registry、sample barrier、opaque temp binding、trace counter；以及 repo-owned 窄 x64 native identity bridge。
+  如 Electron ABI/build packaging 要求，可最小修改 `electron.vite.config.ts`、`package.json`、
+  `package-lock.json` 和新增 native
+  build 文件；只允许 exact-version build dependency，禁止通用 FFI/任意 Win32 bridge。任何新 runtime capability、
+  无法复现的预编译 binary 或需要扩大 renderer/preload 能力都必须停止 REPLAN。
+- `host-request-gate.ts`、`public-watch-http-client.ts`：grant/request/response/socket 的真实创建、交付、
+  close/drain 点；`watch-scheduler.ts`、`digest-scheduler.ts`：真实 timer set/clear；`digest-service.ts`：Provider
+  attempt 与 Digest Promise；`watch-task-tab-workspace.ts`：owned tab/WebContents claim/release。
+- `watch-store.ts`、`db/watch-driver.ts`、`repository/watch-repository.ts`：Store/DbHandle acquire/close、同源逻辑
+  bytes、DB/temp lifecycle；`watch-run-coordinator.ts`、`watch-acquisition-service.ts`、
+  `watch-processing-service.ts`、`watch-lifecycle-coordinator.ts`：run/acquisition/processing/cleanup Promise 和唯一
+  terminal latch；`watch-ipc.ts`、`watch-notification-service.ts`：renderer admission、notification Promise/
+  terminal。只在确有真实生命周期所有权的文件接线，不允许以集中轮询或测试 snapshot 冒充。
+- 上述文件的聚焦单元/集成测试、`smoke-watch-live-*` 的 qualification red-state/runner/gate，以及仓库外 x64
+  harness。harness 源/二进制/ledger 不提交，但其 hash、编译器/SDK 版本、签名分类、命令/result schema 和
+  一次性运行目录必须进入脱敏证据；不得放真实路径/pipe 名/nonce。
+
+实施前必须建立能在 legacy HEAD 稳定为红的 oracle，至少逐项证明：
+
+1. harness 是 `FILE_FLAG_FIRST_PIPE_INSTANCE|PIPE_REJECT_REMOTE_CLIENTS` current-logon DACL 的唯一 server；
+   同账户伪 server/client、错误 PID/creation、nonce/run 重放、第二连接、断连/重连全部被拒且无秘密出现在
+   argv/env/child/log/db。half-frame/multi-frame/invalid UTF-8/CRLF/duplicate key/oversize/unknown key/乱序/
+   duplicate slot/backpressure/deadline 均 fail-closed，main event loop 可继续推进独立 heartbeat。
+2. sample-open/close barrier 下，trace prefix replay 与 snapshot 逐 identity 恒等；真实固定负载使适用的
+   host/request/response/socket/timer/async/store/db/tab registries 分别出现非零峰值。对每一类强制 close error、
+   late settlement、terminal race，unregister 只能在真实 close/settlement 后，counter 只增且不得靠进程退出归零。
+3. `watch-temp-lease` 的 nonce-HMAC binding 与无 reparse 专属 root 的 OS relative entries 逐项相等；正文、路径、
+   URL、Cookie/Key 零 trace。symlink/junction/reparse、case collision、escape、rename、duplicate、cleanup failure
+   有独立敌手用例；DB FileId/RM owner 与 product Store/DB registry 交叉而非“文件存在即连接”。
+4. Battery port 零枚举、全 documented absence、query-tag `ERROR_FILE_NOT_FOUND`、invalid tag、short output、
+   relative/unknown、unsupported present battery、AC/charging/discharging/Rate 矛盾、热插拔/tag reuse、cleanup
+   failure 均命中 detailed-design §15.6.4 唯一分类；no-battery 只由完整成功枚举产生。
+5. `CreateProcessW` 机器测试证明 `lpApplicationName` 是 exact repo Electron 43.4.0 exe、`.` 从 repo CWD 解析
+   package main=`./out/main/index.js`、初始 PID 是 browser/main、无 wrapper；suspended assignment、嵌套 Job
+   failure、kill-on-close、Chromium child capture、root 先退/child 残留和 Toolhelp PID reuse/snapshot race 都按
+   §15.6/§15.7 唯一 oracle 裁决。observer 资源不进 Watch registry，但必须仍出现在 Job/handle/Node totals。
+
+上述红态、实现、聚焦绿态、全量/构建/production smoke、隐私/垃圾/进程终检和新的独立 H3b 安全/资源
+Reviewer `PASS` 缺一不可。当前 H1/H2/H3a 不得预跑或声称这些 H3b 结果。
 
 ## H2 计时修复合同（H1 后生效）
 
