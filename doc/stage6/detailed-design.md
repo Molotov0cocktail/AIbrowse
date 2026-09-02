@@ -1763,6 +1763,9 @@ artifact/Provider attempt 的持久化审计；D8 不把 scheduleId/digestId 塞
   表单、认证细节和 AI 文本。
 - `dedupeKey=channel|subjectType|subjectId|privacyVersion`；成功/失败写 outbox 状态，重复不得再次发。
 - Windows sink 仅在 production identity probe PASS 时注册；否则返回 unavailable，不影响应用内。
+- Sixth Stage 的通知硬门到应用内通知为止。Windows packaged notification 是 identity 可用时的条件性
+  资格观察；未打包、identity 不可用或系统策略阻止时必须记录 `unavailable/NOT RUN`，不得写成成功，
+  但也不得据此阻断 Sixth Stage Exit Gate。安装器、签名、Start Menu 注册和自动更新不属于本阶段。
 - 点击通知只携带内部 event/digest UUID，经 WatchService 查询；通知不能注入外部 URL/路由。
 
 ### 12.2 Watch 工作区
@@ -2023,15 +2026,154 @@ oracle，不得只引用 D9 既有单测结果。
 
 ### 15.4 红队/真实条件
 
-threat-model WRT-01～WRT-19 每项独立机器断言；少量公开 RSS/Atom/robots/redirect 场景；真实 Provider
-仅在现有长期授权、本地凭据可用且 Digest AI 明确开启时调用，台账只记次数/用途/结果分类。真实网络不承担
-确定性 parser/diff oracle；FakeProvider 不冒充真实语义证据。
+threat-model WRT-01～WRT-19 每项独立机器断言。Sixth Stage 必需真实网络资格固定为：至少一个真实公网
+RSS/Atom 的产品全链路成功；至少一个真实无 RSS 页面经 §6.5/§8 的 public Page Watch 路径完成产品全链路；
+真实网络下至少一个失败路径产生正确失败分类、退避与清理且零假 Event。上位文档所称 browser fallback 在
+此硬门中的正式落点是
+`PublicWatchHttpClient → PublicHtmlSaxReader → DocumentChannels → PageProjector → WatchProcessingService`；
+它是公开无 RSS 页面的 Page Watch fallback，不是 parser-only fixture，也不等于 Chromium Session。每个成功
+场景至少完成首次合法 Baseline 和第二次 acquisition 的 `unchanged` 或带双侧 Evidence 的合法变化终态；失败
+场景不得推进 Baseline 或创建 Event。H3a 执行前必须在 ledger 冻结 URL、预期类别、请求上限和替补顺序；
+运行后不得替换目标或只保留成功轮次。真实网络不承担确定性 parser/diff oracle，fixture 不能替代这三项。
+
+Session 路径的结构、隐私、task-owned Tab、重启和失败闭环仍是必需确定性/受控 Electron 门，但正式契约没有
+把“常见登录网站真实成功”列为 Exit Gate 硬门；它是无需自动登录、凭据和额外权限时才执行的条件性真实观察。
+需要账号、登录或额外权限时记录 `condition-unavailable/NOT RUN`，不得降级其受控门，也不阻断 Stage。
+
+真实 Provider 仅在长期授权、本地凭据可用且 Digest AI 明确开启时作非阻断观察；台账按产品级调用目的和
+最终结果分类，不以“恰好一次底层 HTTP 请求”作 PASS oracle。无 Key、请求失败、输出非法或验证失败时，
+确定性 Digest 必须成功且 `explanation=null`。FakeProvider 只能证明确定性协议，不能冒充真实 Provider 证据。
+Windows packaged notification 同为非阻断观察，边界见 §12.1。
 
 ### 15.5 全量门控
 
 每个行为任务至少：聚焦红→绿、`npm test -- --maxWorkers=1`、typecheck、lint、format:check、build、
 `git diff --check`。主进程/renderer/preload 增加 dev+production 对应冒烟；安全/存储任务增加红队、跨进程、
 隐私扫描与新的独立 Reviewer。
+
+### 15.6 正式资源资格 oracle
+
+本节是 Sixth Stage Exit Gate 的硬门，全部数值在任何 H3b 资格运行前冻结。短时 D10 probe、单次运行结果、
+FakeProvider、fixture-only 结果或主观“无明显问题”均不能替代。阈值由 100 条 enabled Rule 上限、15 分钟最短
+周期、全局并发 4、单 run 90 秒、单公开 acquisition 30 秒、最多 4 个 task Tab、100 MiB watch.db 上限和
+最低 8 GiB 标准机器预算推导，不得在读到资格结果后调整。
+
+#### 15.6.1 固定负载、窗口与采样
+
+- 在独立全新 userData 中创建恰好 100 条 enabled Rule，全部为 15 分钟 interval，并把 due time 在 900 秒内
+  等距交错：40 条 public Feed、40 条 public Page、20 条 Session Page。资源负载使用资格前冻结、仓库外受控
+  harness 的有界 acquisition 端口，不访问第三方站点；Scheduler、Coordinator、HostRequestGate、Session
+  task-owned Tab、Processing、Repository、Digest 与通知必须仍走正式产品路径，禁止用纯函数循环代替。该受控
+  负载只证明资源硬门，绝不计入 H3a 真实网络或真实 Session 观察证据。
+- 每条 Rule 首次建立 Baseline；随后 acquisition 结果按 Rule id UTF-8 排序固定为 50% unchanged、25%
+  changed-unmatched、25% event-created，下一轮反转同一有界值以覆盖 Baseline/Event/Evidence/retention 写路径。
+  失败注入不属于本负载，真实网络失败由 H3a 独立资格。
+- 创建两个 active daily DigestSchedule，各冻结 50 个 Source；在正式观察第 20 与第 40 分钟各到期一次。
+  `aiEnabled=false`，Provider 端口和凭据均不读取；Digest facts/artifact、cursor 和应用内通知正常执行。
+- 启动后预热精确 10 分钟，预热样本全部排除；随后正式观察精确 60 分钟；停止 admission 并正常退出后排水
+  精确 10 分钟。三段持续时间只由 Windows QueryPerformanceCounter 裁决；UTC 审计时间只由 wall clock 产生。
+- 三段均每 10 秒一个固定 slot。正式观察包含首尾共 361 个期望样本，排水包含首尾共 61 个。样本必须落在
+  对应 slot 的 `±2 秒` 内；同 slot 多个样本只保留单调时间最早者，其余记 duplicate，不可挑值。正式观察每个
+  指标最多缺 3 个 slot（有效样本至少 358，丢样率 <1%）；排水零丢样。超限是 harness/环境证据不足，结论
+  `BLOCKED`，不得计算 PASS/FAIL。
+- 每个样本同时记录单调 elapsed 与 UTC wall-clock 审计时间。duration、CPU delta、回归斜率、窗口归属和
+  deadline 只用单调时间；wall clock 只用于可审计时间戳，不参与持续时间裁决。wall clock 回拨必须登记但不
+  丢样。系统 suspend/resume 事件或相邻单调样本间隔大于 20 秒使整次资格 `BLOCKED` 并从头重跑；异常退出若
+  由 AIbrowse crash/unhandled error 导致则 `FAIL-product`，若无法区分 OS/harness 外因则 `BLOCKED`。
+
+#### 15.6.2 唯一采集来源与计算
+
+| 指标                          | 唯一来源与聚合                                                                                                                                  | 统计方法                                                                                                                 |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 进程树                        | 每个 slot 从 AIbrowse main PID 递归枚举仍存活的 Electron/Node 子进程；PID+creation time 为身份，退出进程不沿用 PID                              | 当前成员逐进程求和；成员数另记峰值                                                                                       |
+| CPU                           | Windows `GetProcessTimes` 的 user+kernel 累计值                                                                                                 | 相邻有效 slot 的进程树增量 ÷ 单调 elapsed ÷ 启动时冻结的 logical processor 数 ×100，故为全机归一化百分比，不是单核百分比 |
+| RSS/working set/private bytes | Windows `GetProcessMemoryInfo(PROCESS_MEMORY_COUNTERS_EX)`；Windows 上 RSS 的正式口径就是进程 working set，另取 private usage                   | 每 slot 对同一进程树分别求和；API 对任一成员失败则该 slot 对应指标无效                                                   |
+| heap                          | AIbrowse main 进程 `process.memoryUsage().heapUsed`                                                                                             | 单值；不把无法同口径获得的 renderer heap 猜成聚合值                                                                      |
+| handles                       | Windows `GetProcessHandleCount`                                                                                                                 | 进程树求和                                                                                                               |
+| WebContents/task Tab          | `webContents.getAllWebContents()` 与 WatchTaskTabWorkspace owned 集合                                                                           | 总数及 Watch-owned 数分别记录                                                                                            |
+| Node 活动资源                 | main `process.getActiveResourcesInfo()`                                                                                                         | 按资源类型计数；保留原始闭合类型计数，不持久化路径/正文                                                                  |
+| 请求/socket/timer             | HostRequestGate active grant、Public HTTP request/response/socket registry、WatchScheduler/DigestScheduler timer 和 in-flight Provider registry | 只读正式 smoke 观察端口计数；不得根据 OS socket 猜归属                                                                   |
+| DB/文件                       | WatchStore 连接 registry；受控 userData 中 `watch.db`、`-wal`、`-shm` 与 Watch 临时目录                                                         | handle 数、存在性和字节数；路径只留在仓库外 ledger                                                                       |
+| 电源                          | Windows `GetSystemPowerStatus` 加系统电池容量/能量计数器                                                                                        | 不新增产品电池接口；状态和读数由 OS/仓库外受控 harness 采集                                                              |
+
+对正式观察有效样本，数值升序排序。median：奇数取中值，偶数取中间两值算术平均；P95 使用 nearest-rank
+`sorted[ceil(0.95*n)-1]`；peak 取最大值。趋势使用全部有效样本对 `(elapsedHours,value)` 做带截距普通最小
+二乘，单位固定为 `MiB/hour` 或 `count/hour`；不得移除异常值、winsorize、平滑或只截取有利区间。CPU 使用
+interval 值，不计算斜率。负数、NaN、counter 回退、重复单调时间戳或来源不完整均把该指标该 slot 记 invalid，
+按丢样规则处理，不得替换为 0。
+
+#### 15.6.3 固定 PASS/FAIL 阈值
+
+所有行必须同时 PASS；任一有效指标越界即 `FAIL-product`。绝对内存峰值不超过标准 8 GiB 机器的 25%，
+steady-state 斜率用于拦截预热后泄漏，CPU 阈值用于保证 100 条最短周期规则仍不把桌面应用变成高频爬虫。
+
+| 指标                   | median     | P95        | peak       | 60 分钟 OLS slope |
+| ---------------------- | ---------- | ---------- | ---------- | ----------------- |
+| 全机归一化 CPU         | ≤5%        | ≤20%       | ≤60%       | N/A               |
+| 进程树 RSS/working set | ≤1,024 MiB | ≤1,536 MiB | ≤2,048 MiB | ≤24 MiB/hour      |
+| private bytes          | ≤1,280 MiB | ≤1,792 MiB | ≤2,048 MiB | ≤24 MiB/hour      |
+| 聚合 JS heap used      | ≤256 MiB   | ≤384 MiB   | ≤512 MiB   | ≤12 MiB/hour      |
+| Windows handle count   | ≤3,000     | ≤4,000     | ≤5,000     | ≤60/hour          |
+
+另有离散硬门：Watch-owned task Tab/WebContents 任意时刻 `≤4`；HostRequestGate active acquisition、HTTP
+request 和 socket 各 `≤4`，同 canonical host 各 `≤1`；WatchScheduler 与 DigestScheduler 正式 timer 各
+`≤1`；Provider 调用数恒为 0；watch.db 逻辑大小 `≤104,857,600` bytes。进程树、全部 WebContents 与 Node
+活动资源类型计数在最后 10 分钟相对最初 10 分钟的 median 增量分别不得超过 `+4`、`+2`、`+4`，且 OLS
+slope 分别不得超过 `+6/hour`、`+1/hour`、`+6/hour`。
+
+#### 15.6.4 排水与电池
+
+正常退出开始即冻结 drain start：零新 Watch/Digest admission。60 秒内必须首次达到以下全零集合，并以
+10 秒间隔连续 6 个样本保持全零；此后直至 10 分钟排水结束的全部样本仍须为零：新 Watch 请求/socket、
+HostRequestGate grant、scheduler/digest timer、Provider registry、task-owned Tab/WebContents、WatchStore/
+watch.db/WAL/SHM handle、WAL/SHM 文件、Watch 临时目录、AIbrowse 本次进程树、未结算 Promise、未处理异常、
+重复终态。
+本次 userData 由 harness 在确认进程树和 handle 归零后删除，排水结束必须不存在；删除失败或任何复活均为
+`FAIL-product`。排水测量窗口不得与正式观察重叠，wall clock 差不能替代单调 60 秒/10 分钟裁决。
+
+电池子门按 OS 事实唯一分类：
+
+- OS 明确 `NoSystemBattery`：记录 `N/A—无电池设备`，电池子门通过但不得声称观察到趋势；
+- 有电池且全程 AC：核心资源结果可保留，但 H3b 尚未完成，必须在同一标准环境或另一合格标准电池环境补做
+  连续 30 分钟 on-battery 子窗口；不得把 AC 写成 N/A/PASS；
+- 有电池且 on-battery：正式 60 分钟窗口中必须有连续 30 分钟、每 10 秒采样、零 AC/充电切换的子窗口。
+  该窗口系统平均放电功率（能量计数器差 ÷ 单调小时）必须 `≤15 W`，归一化电量下降必须
+  `≤20 percentage-points/hour`；能量计数器和电量百分比两项均为必需且均须通过；
+- 电池/能量 API 任一失败、任一指标缺失、读数回退或只有单点：`BLOCKED/condition-unavailable`，不是 PASS
+  也不是产品 FAIL。
+
+这些电池阈值是标准 8 GiB 日常 Windows 笔记本在无其它前台负载下的整机上限，用于拒绝明显持续耗电；
+它不宣称精确归因单个进程。运行前必须记录显示器常亮、系统电源模式和零其它前台负载，运行后不得据结果
+改阈值。
+
+### 15.7 标准 Windows/GPU 生命周期资格
+
+“受支持的标准 Windows 环境”固定为 Windows 11 24H2 build 26100 或 Windows 11 25H2 build 26200 的 x64
+版本，且资格日仍在 Microsoft servicing；其它/未来版本须另行 REPLAN 后才能加入，不因版本号更高自动放行。
+Electron 固定 `43.4.0`、项目工具 Node 固定 `24.18.0` 并记录 Electron 内置 Node 版本；至少 4 logical processors、
+8 GiB RAM，`%LOCALAPPDATA%` 与 `%TEMP%` 所在卷各至少 2 GiB 可用；普通用户对独立 userData/temp 具有
+create/read/write/delete 权限；本地交互式桌面、单一 AIbrowse 实例、无 `ELECTRON_RUN_AS_NODE` 污染；默认
+硬件加速且零合同外 Chromium 参数（尤其禁止 `--disable-gpu`）；GPU 为厂商仍支持且 WHQL 的驱动，不是
+Microsoft Basic Display Adapter、Remote Desktop/虚拟 GPU；`GetSystemMetrics(SM_REMOTESESSION)=0`。启动后枚举
+Electron 进程树已加载模块及签名者；Windows/Electron/项目文件/GPU 厂商之外的注入模块，或安全软件明确
+拦截事件，均使环境前置不合格并分类 `BLOCKED`，不得凭“看起来无影响”忽略。ledger 必须记录 OS build、
+arch、CPU/RAM/free disk、GPU/driver、远程会话状态、启动命令参数、userData、权限检查和模块签名分类的脱敏
+结果。
+
+正式启动使用 clean build 的 production 启动路径和独立 userData。必须进入 renderer ready，完成 Watch
+production smoke、一次创建/运行/退出生命周期，并以退出码 0 结束；GPU process 不得 fatal/unusable，renderer
+不得因 GPU 崩溃退出。故障分类只允许：
+
+| 分类                          | 机器判定                                                                                                                                                                                           |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 标准环境正常                  | 上述前置全部为真，AIbrowse renderer ready、生命周期门控与退出全部 PASS                                                                                                                             |
+| 当前机器/harness 环境专属故障 | 同机、同 Electron 43.4.0、同默认 GPU/无额外参数、同隔离 userData 的最小 BrowserWindow 对照也在同启动阶段失败，或等价机器证据证明产品业务模块尚未加载即失败；保留 AIbrowse 与对照全部 stderr/时间线 |
+| 产品兼容性缺陷                | 最小 Electron/GPU 对照正常而 AIbrowse 失败，或同一 AIbrowse 失败在另一合格标准环境复现                                                                                                             |
+| BLOCKED                       | 环境前置不合格、对照缺失，或证据不足以区分环境与产品责任                                                                                                                                           |
+
+其它合格 Windows 机器只能补充，不能删除、覆盖或降级当前机器证据。当前已知记录必须保留：隔离 userData
+启动仍出现 `GPU process isn't usable. Goodbye.`；在同机最小 Electron/GPU 对照或等价证据闭环前，其分类
+固定为 `BLOCKED`，不得用禁用 GPU、成功机器或重跑成功轮次洗掉。
 
 ## 16. 任务依赖与验收
 
@@ -2046,11 +2188,19 @@ D3 + D4 + D5 + D6 → D7 diff/event/evidence/health
 D7 → D8 digest
 D4..D8 → D9 UI/IPC/notification/export
 D1..D9 → D10 e2e/redteam/live/package gate
-D1..D10 → D11 independent Stage Auditor
+D10 后续关闭顺序：H1 → H2 → H3a → H3b → H4 → 新 D11
 ```
 
-D11 只能在 `Sixth_stage.md` §9 全项、§10 五项、全量/冒烟/跨进程/红队/真实条件均有当前 HEAD 证据后
-判 GO/PASS；否则 HOLD/PENDING。PASS 后停止，等待用户进入 Seventh Stage，不夹带产品化代码。
+H1 正式契约必须先经新的独立安全/资源 Reviewer `PASS`，Closer 更新 progress、提交并双远程 push 后才可
+开始 H2。H2 修复 D10 计时/oracle 与当前 46/47，Reviewer PASS 后才可 H3a；H3a 完成 §15.4 三个真实网络
+硬门后才可 H3b；H3b 完成 §15.6/§15.7 后才可 H4；H4 使用新的独立 Reviewer 审查
+`d85667c54a354d322b0180d4c17873860a86c611..候选HEAD` 完整 D10 区间。只有 H4 PASS 才能启动一个新的
+独立 D11 Stage Auditor。任何步骤不得越序；Provider/Windows packaged notification 观察不得混入 H3a/H3b
+制造额外硬门。
+
+新 D11 只能在 `Sixth_stage.md` §9 全项、§10 五项、全量/冒烟/跨进程/红队、§15.4 必需真实网络、§15.6
+资源和 §15.7 标准 Windows 生命周期均有当前 HEAD 证据后判 GO/PASS；否则 HOLD/PENDING。PASS 后停止，等待
+用户进入 Seventh Stage，不夹带产品化代码。
 
 D3 必须交付安全 PublicWatchHttpClient 工厂、raw robots purpose 限制、强制 RobotsGate、IPv6 当前 IANA
 普通公网 allowlist、robots 512,000-byte 预算、单资源 30 秒总 deadline 与 RFC 9309 octet 匹配。D5 只能
@@ -2066,7 +2216,9 @@ D3 必须交付安全 PublicWatchHttpClient 工厂、raw robots purpose 限制�
   后续配置变化时冒充新变化。
 - **#S6-033**：Event 添加/删除用 typed absent 构成完整 before/after Evidence；哈希永不单独成证。
 - **#S6-034**：跨库硬删除采用 durable intent + 每次运行 Source revalidation；不宣称两库单事务原子性。
-- **#S6-035**：XML/HTML 候选资格与 Windows notification identity 都是 fail-closed Gate；失败不授权替代或夸大。
+- **#S6-035**：XML/HTML 候选资格是产品依赖硬门；Windows notification identity 是该可选 sink 的
+  fail-closed 能力门，不是 Sixth Stage Exit Gate 硬门。任一失败不授权替代或夸大，identity 不可用时应用内
+  通知继续正常。
 - **#S6-036**：v1 页面 Region 只接受公共 HTML SAX 或既有安全 PageSnapshot 映射出的
   main-text/headings/table/links，不扩展任意 DOM selector 或 BrowserController 公共能力；跨域 iframe
   保持诚实限制。
@@ -2200,6 +2352,16 @@ revalidated)` 单调更新。方案 B
   migration statement bytes 冻结，latest=5，只有 `user_version>5` 是 future schema。v4→v5 任一语句失败
   必须完整回滚至 v4 schema/data/user_version；成功升级后既有 v4 行除两个默认新增列外逐列恒等，并由
   D10/WRT-18 覆盖逐语句失败、重开与 future=6 零写入 fail-closed。
+- **#S6-069**（H1 REPLAN，2026-09-02）：Sixth Stage 硬门闭合为确定性产品门、H3a 三个真实网络门、
+  H3b 正式资源与标准 Windows 生命周期门。真实 Provider、Windows packaged notification 和真实 Session
+  登录网站成功均为条件性观察；不可用必须诚实记录，但不阻断 Stage。
+- **#S6-070**（H1 REPLAN，2026-09-02）：正式资源 oracle 采用 10 分钟预热 + 60 分钟测量 + 10 分钟排水、
+  10 秒采样、最大 100 Rule 固定负载、单调时钟持续时间、固定统计/阈值和条件化 30 分钟电池子窗；所有数值
+  在运行前冻结，禁止按结果拟合。
+- **#S6-071**（H1 REPLAN，2026-09-02）：标准 Windows/GPU 环境、同机最小 Electron 对照与四类结果矩阵
+  按 §15.7 冻结；当前 `GPU process isn't usable. Goodbye.` 保持 BLOCKED，禁止 `--disable-gpu` 规避。
+- **#S6-072**（H1 REPLAN，2026-09-02）：后续顺序唯一为 H1 Reviewer/Closer → H2 → H3a → H3b → H4
+  完整区间 Reviewer → 新 D11；任何步骤不得越序。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。

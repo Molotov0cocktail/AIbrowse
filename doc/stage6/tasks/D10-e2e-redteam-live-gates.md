@@ -60,19 +60,43 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 
 ## 验收证据回填（2026-09-02）
 
+> **H1 校正（2026-09-02）**：本节旧 `47/47` 与 `b9d956d…` baseline 声明已过期。当前专项状态是
+> `46/47`；新的 D10 Reviewer 必须使用 `d85667c…` 为完整审查起点。历史成功数字只能作为历史记录，
+> 不能覆盖当前失败。
+
 ### 状态、范围与独立审查
 
-- D10 原始 baseline：`b9d956dc6b6eff626e3a668a2375de10380fc757`。
+- D10 首个大型实现提交：`b9d956dc6b6eff626e3a668a2375de10380fc757`；它不是可排除自身的审查 baseline。
+- `git rev-parse b9d956d^` 机器结果为 `d85667c54a354d322b0180d4c17873860a86c611`，且
+  `d85667c..b9d956d` 只有该大型实现提交（15 files，2,347 insertions/14 deletions）。新的完整 D10 审查起点
+  固定为 `d85667c54a354d322b0180d4c17873860a86c611`；H4 必须审查
+  `d85667c54a354d322b0180d4c17873860a86c611..新候选HEAD`。
 - Reviewer 批准的最终产品 HEAD：`5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`；其父提交为
   `cf57505af48b34b6e595b637ce40e4e2e77efca0`。当前证据只覆盖
   `baseline..5d6a3cb4`，没有把 Closer 文档收尾提交当作产品实现证据。
 - 新的独立 Reviewer 已对精确产品 HEAD 作出 `PASS`。Reviewer PASS 之后未增加产品代码、测试、依赖或
   其它候选提交。
-- D10 已完成；本回填不判 Sixth Stage Exit Gate，不开始 D11，也不进入 Seventh Stage。
+- 历史 D10 实现闭环完成，但当前重新资格状态为 HOLD；H2/H3a/H3b/H4 尚未完成，不开始 D11，也不进入
+  Seventh Stage。
 
 ### 结构性证明与受控机器证据
 
-- D10 专项门控：`47/47`；WRT-01～WRT-19 每项均有独立受控机器断言通过。
+- D10 专项集合固定为以下 8 个文件、47 项；当前结果 `46/47`：
+
+| 测试文件                                 |   项数 |
+| ---------------------------------------- | -----: |
+| `src/main/smoke-watch-admission.test.ts` |      6 |
+| `src/main/smoke-watch-gate.test.ts`      |      3 |
+| `src/main/smoke-watch-live.test.ts`      |     25 |
+| `src/main/smoke-watch-manifest.test.ts`  |      4 |
+| `src/main/smoke-watch-redteam.test.ts`   |      2 |
+| `src/main/smoke-watch-runner.test.ts`    |      3 |
+| `src/main/smoke-watch-scan.test.ts`      |      3 |
+| `src/main/smoke-watch-digest.test.ts`    |      1 |
+| **合计**                                 | **47** |
+
+- 唯一当前失败是 `smoke-watch-live.test.ts` 的“生产资源端口把测量窗口与排水窗口分开并保留真实时间戳”：
+  实际 `observedForMs=99`，断言要求 `>=100`。旧 `47/47` 仅是过期历史记录，不是当前完成证据。
 - 全量 Vitest：`3427/3427`；`typecheck`、`lint`、`format`、`build`、dev/production 冒烟均退出码 `0`。
 - `AIBROWSE_SESSION_SMOKE=set|check`、`AIBROWSE_SOURCES_SMOKE=set|check`、
   `AIBROWSE_SOURCES_UI_SMOKE=set|check`、`AIBROWSE_RESEARCH_SMOKE=set|check`、
@@ -113,14 +137,36 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 
 ### 真实条件与诚实限制
 
-- 公网 RSS/Atom：`blocked-environment`，必需真实场景未成功完成；受控网络/解析 oracle 仍已完成。
-- Provider：凭据不可用，零真实调用；未以 FakeProvider 冒充真实语义证据。
-- Windows 打包通知：未打包，`NOT RUN`；应用内通知及安全降级由受控证据覆盖。
-- 正式资源资格：`condition-unavailable/observation-insufficient`，未宣称长期资源 `PASS`。
-- 上述限制不否定 D10 验证基础设施和确定性红队闭环已完成；其对 Sixth §9/§10 及 Exit Gate 的影响由
-  D11 新独立 Stage Auditor 重新判定。
+- H3a 硬门尚未闭环：真实公网 RSS/Atom、真实无 RSS public Page Watch fallback、真实网络失败分类/退避/
+  清理均须按 detailed-design §15.4 完成；既有公网 RSS `blocked-environment` 不能作为 PASS。
+- Provider：凭据不可用、零真实调用；这是非阻断条件性观察，未以 FakeProvider 冒充真实证据。
+- Windows packaged notification：未打包、`NOT RUN`；这是非阻断条件性观察，应用内通知及 unavailable
+  降级仍为必需产品证据。
+- Session 真实登录网站是条件性观察；task-owned Tab、授权、重启、隐私和失败闭环受控门仍是硬门。
+- H3b 正式资源资格：`condition-unavailable/observation-insufficient`，未宣称 PASS；当前隔离 userData 启动仍
+  有 `GPU process isn't usable. Goodbye.`，在同机最小 Electron 对照闭环前分类为 `BLOCKED`。
+
+## H2 计时修复合同（H1 后生效）
+
+1. 先建立可稳定复现“timer 已到但墙钟差为 99ms”的红态 oracle；不得依赖概率性 sleep。
+2. 测量/排水持续时间、窗口归属和 deadline 只由单调时钟裁决；wall clock 只生成独立可审计 UTC 时间戳。
+3. 保留 `observedForMs >= 100`；不得降低/放宽断言、删除用例、skip、自动重复或选择成功轮次覆盖失败。
+4. H2 只修计时/oracle 与相应 D10 证据；不得提前执行真实网络、资源资格、Provider 或 Windows 通知。
+5. H2 Reviewer PASS 后，当前专项必须是同一固定 8 文件/47 项集合的稳定 `47/47`。
+
+## 后续严格顺序
+
+1. H1 契约候选经新的独立安全/资源 Reviewer `PASS`，Closer 更新 progress、提交并双远程 push；
+2. H2 计时/oracle 修复并经 Reviewer `PASS`；
+3. H3a 完成 detailed-design §15.4 三个必需真实网络门并经 Reviewer `PASS`；
+4. H3b 完成 detailed-design §15.6/§15.7 资源与标准 Windows 生命周期资格并经 Reviewer `PASS`；
+5. H4 由新的独立 Reviewer 审查 `d85667c…新候选HEAD` 完整区间并 `PASS`；
+6. 才可启动新的独立 D11 Stage Auditor。
+
+任何步骤不得越序。Provider 与 Windows packaged notification 若条件可用，可单独作非阻断观察，但不得混入
+H3a/H3b 制造额外硬门。
 
 ## 依赖与停止条件
 
-- 依赖 D1–D9，且 #S6-068 必须先经新的独立持久化/安全 Reviewer `PASS`；D11 依赖本任务。
+- 依赖 D1–D9，且 #S6-068 必须先经新的独立持久化/安全 Reviewer `PASS`；新的 D11 依赖 H4 PASS。
 - 红队发现产品缺陷即 REPAIR/REPLAN；真实站点变化不得放宽确定性断言；Key/打包身份/网络不可用如实 NOT RUN。
