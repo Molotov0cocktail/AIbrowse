@@ -26,9 +26,14 @@
   D10 Planner 接管时发现正式 detailed-design 仍停留在 latest=4，而 D9 已交付并审过 schema v5；
   **D10-P0 正式契约 REPLAN 已闭环**：#S6-068 候选 HEAD
   `7872f9ba1dcae8391a8798817278d07f5b889672` 已经新的独立持久化/安全 Reviewer `PASS`。
-  D10 随后已从批准 baseline 实施并完成端到端、WRT-01～WRT-19、跨进程与真实条件门控；当前产品
-  HEAD 为 `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`，Closer 文档收尾提交后最终 HEAD 为本次收尾提交
-  本身（以 Git 与最终报告为准）。D10 已经新的独立 Reviewer `PASS`；D11 保持未开始并成为下一唯一任务。
+  D10 随后已从批准 baseline 实施并完成端到端、WRT-01～WRT-19、跨进程与真实条件门控；产品
+  HEAD 为 `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`。D10 的历史 Reviewer `PASS` 不代表第六阶段
+  Exit Gate 已通过。H1 正式资源资格契约已完成收敛：文档 baseline
+  `f262b4ed63eafd4528a0da49fa05febda995f014`，候选链顶端
+  `61a2f0497853253050ffddbef81cc4fb5edb020a` 已经新的独立 Final Convergence Reviewer
+  `PASS`（blocker=0）。H2、H3a、H3b、H4 与新 D11 均未开始；唯一顺序为
+  **H2 → H3a → H3b → H4（完整区间 baseline
+  `d85667c54a354d322b0180d4c17873860a86c611`）→ 新 D11**，当前下一唯一任务为 H2。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -675,8 +680,13 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D7 | 确定性 Diff/Event/Evidence 与健康状态 | ✅ | 2026-08-31 完成（见下）：baseline `80a2174`，实施链 `623dee7` → `80a41ad` → `25a2549` → `7e17d38` → `3c7861f` → `bbaed6b` → `cd267ff` → `828daed` → `9d1a362` → `3f09378` → `0b5e5f3` → `4619318`（十二个候选提交）；独立 Reviewer=`PASS`，聚焦 8 files/239 tests、全量 137 files/3244 tests，typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟 8.21–8.24 与生产 WATCH set/check 0/0；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
 | D8 | Digest 分享投影与可选 AI 解释 | ✅ | 2026-08-31 完成：baseline `b55580a`，实施与有界修复链 `a05bb47` → `de855bb` → `64fc0f0` → `0e42857` → `ff65aa6`；最终候选 HEAD `ff65aa63a8a5151b93ac22deeaf8227f85ce65c8`，独立 Sol Reviewer=`PASS`；真实 Provider `NOT RUN`；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
 | D9 | Watch UI/IPC/通知/导出 | ✅ | 2026-09-01 完成：baseline `7b3fc60`，实施与有界修复链 `bdbee1e` → `6ca3e8b` → `c28a8cb` → `91ec0f2` → `5290859` → `83d3c7b` → `d277a98`；新的独立安全/隐私 Reviewer=`PASS`，全量 155 files/3379 tests、typecheck/lint/format/build/diff-check 与 production 全 Electron smoke 全绿；真实 Windows Notification 因无已验证 packaged identity `NOT RUN`，产品诚实降级 unavailable；任务文档 doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md |
-| D10 | 端到端、红队、隐私与真实门控 | ✅ | 2026-09-02 完成：D10 原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`；批准产品 HEAD `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`；新的独立 Reviewer=`PASS`；专项 47/47、全量 Vitest 3427/3427、全量静态/构建/冒烟/跨进程与 WRT-01～19、8×11 隐私矩阵通过；公网 RSS、Provider、Windows 打包通知、正式资源资格限制见最近验证结果；Closer 文档提交后最终 HEAD 为本次收尾提交本身（以 Git 与最终报告为准）；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
-| D11 | 第六阶段独立 Exit Audit | ⏳ | 依赖 D10；必须使用新的独立 Reviewer；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
+| D10 | 端到端、红队、隐私与真实门控 | ✅ | 2026-09-02 完成历史产品实现与基础设施验收：原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`，批准产品 HEAD `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`；后续 H1 已校正正式 H2/H3a/H3b/H4 与新 D11 契约，历史 PASS 不替代这些门；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
+| H1 | 正式资源资格契约冻结与收敛 | ✅ | 文档 baseline `f262b4ed63eafd4528a0da49fa05febda995f014`；候选链 `4053270` → `5dfe110` → `3a1f715` → `d06cb3d` → `fc5180b` → `61a2f04`；Final Convergence Reviewer 对精确 HEAD `61a2f0497853253050ffddbef81cc4fb5edb020a` 判定 `PASS`、blocker=0 |
+| H2 | 修复 D10 确定性 99ms 红态并完成合同前置 | ⏳ | H1 后下一唯一任务；尚未开始，不以 H1 Reviewer 的偶发 47/47 覆盖历史 `observedForMs=99` |
+| H3a | 真实公网 RSS/Atom、public Page Watch fallback 与失败分类/退避/清理 | ⏳ | 依赖 H2；尚未开始 |
+| H3b | 标准 Windows/GPU 环境正式 10m/60m/10m 资源资格 | ⏳ | 依赖 H3a；尚未开始；当前机器 `GPU process isn't usable. Goodbye.` 仍是进入本门后的 `BLOCKED` 环境事实 |
+| H4 | 完整 D10 区间独立审查 | ⏳ | 依赖 H3b；固定 baseline `d85667c54a354d322b0180d4c17873860a86c611`，尚未开始 |
+| D11 | 第六阶段新独立 Exit Audit | ⏳ | 依赖 H4；必须使用新的独立 Reviewer；尚未开始；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
 > 上表第一阶段历史任务 T0–T5（已关闭，编号不可改）重名；第一、第二阶段历史任务
@@ -687,7 +697,17 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > （2026-08-23）第六阶段任务编号 D1–D11、威胁 WT-01 起、红队 WRT-01 起；
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
-## 最近验证结果（2026-08-14 起持续回填；2026-09-02 追加 D10 验收证据）
+## 最近验证结果（2026-08-14 起持续回填；2026-09-03 追加 H1 收敛证据）
+
+- **H1 正式资源资格契约收敛（2026-09-03，Final Convergence Reviewer=`PASS`）**：文档
+  baseline `f262b4ed63eafd4528a0da49fa05febda995f014`，六个单父候选提交依次为
+  `4053270`、`5dfe110`、`3a1f715`、`d06cb3d`、`fc5180b`、`61a2f04`；最终 Reviewer 对
+  精确 HEAD `61a2f0497853253050ffddbef81cc4fb5edb020a` 审查完整 baseline..HEAD，确认 Closure
+  Matrix 全部关闭且 P0/P1/P2 blocker 均为 0。独立复算确认 timing、canonical artifacts、
+  legacy red、grant/concurrency owner 与实际 validator/生命周期一致；固定 8 个 D10 测试文件
+  `47/47`、聚焦代码语义复验 `291/291`、`format:check` 与两段 `diff --check` 均通过。该次
+  47/47 不覆盖历史 `observedForMs=99`，H2 仍须确定性修复。H1 只修改四份获准设计/任务文档，
+  未执行 H2、H3a、H3b、H4、D11、正式资源资格、真实公网或真实 Provider。下一唯一任务为 H2。
 
 - **D10 端到端/红队/跨进程/隐私与真实条件门控关闭（2026-09-02，新的独立 Reviewer=`PASS`）**：① D10
   原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`；Reviewer 批准的最终产品 HEAD
@@ -699,8 +719,9 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
   受控机器观察与真实环境观察分栏回填至 D10 任务文档和 threat-model §7.4。⑤ 诚实限制：公网 RSS 为
   `blocked-environment`，必需场景未成功完成；Provider 凭据不可用、零真实调用；Windows 打包通知未打包、
   `NOT RUN`；正式资源资格为 `condition-unavailable/observation-insufficient`，未宣称长期资源 `PASS`。
-  这些限制不否定 D10 验证基础设施完成，但由 D11 对 Sixth §9/§10 与 Exit Gate 的影响重新独立判定。D10
-  已关闭；未执行 D11，不判定 Sixth Stage Exit Gate，不进入 Seventh Stage。
+  这些限制不否定 D10 验证基础设施完成，但也不授权直接进入 D11。D10 历史实现闭环已关闭；后续须按
+  H1 → H2 → H3a → H3b → H4 → 新 D11 顺序完成正式门，不判定 Sixth Stage Exit Gate，不进入
+  Seventh Stage。
 
 - **D10-P0 schema v5 正式契约漂移校准与独立复审关闭（2026-09-01，新的独立持久化/安全
   Reviewer=`PASS`）**：D10 Planner 在 baseline
@@ -3280,10 +3301,13 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 （正常后续任务 / 已接受设计决议 / 明确延期，不虚构严重度与证据）
 
-- **D10 真实条件限制（2026-09-02，留待 D11 独立判定）**：公网 RSS/Atom 为
-  `blocked-environment`，必需场景未成功完成；Provider 凭据不可用，零真实调用；Windows 打包通知未打包，
-  `NOT RUN`；正式资源资格为 `condition-unavailable/observation-insufficient`，未宣称长期资源 `PASS`。
-  这些限制不否定 D10 验证基础设施完成，但必须由 D11 对 Sixth §9/§10 和 Exit Gate 的影响重新独立判定。
+- **D10 后续正式门（H1 于 2026-09-03 冻结）**：历史 D10 运行中的公网 RSS/Atom
+  `blocked-environment`、Provider 凭据不可用、Windows 打包通知 `NOT RUN` 与资源资格
+  `condition-unavailable/observation-insufficient` 均不冒充正式通过。H1 已冻结后续唯一顺序：
+  H2 → H3a → H3b → H4 → 新 D11；其中真实 Provider、Windows 系统通知和真实登录网站 Session
+  观察为条件性观察，H3a 的真实公网路径与 H3b 的正式资源资格仍是硬门。当前机器
+  `GPU process isn't usable. Goodbye.` 保持为后续 H3b 的 `BLOCKED` 环境事实，其他机器成功
+  不能覆盖；H2、H3a、H3b、H4 与 D11 当前均未开始。
 
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过——已接受设计决议
   （detailed-design §12 决议 #13，快照为点时刻尽力采样）。
@@ -3382,6 +3406,10 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 阻塞项
 
+- **后续 H3b 标准环境阻塞（尚未进入 H3b）**：当前机器仍出现
+  `GPU process isn't usable. Goodbye.`；按已冻结 H1 契约，只有本机标准 Windows/GPU 环境
+  通过后才能完成 H3b，其他机器成功不能覆盖。当前流程先执行 H2，不提前运行 H3b。
+
 - **第三阶段最终验收阻塞（已解除，2026-08-14 A7 补验最终执行）**：§9 Engineering
   「多个真实网站 Agent smoke test 通过」原 BLOCKED（首轮 tools 载荷 HTTP 400）——
   根因确诊为 wire 名称契约（13 工具名携带点号，非「模型不支持 tools」）→ 离线修复
@@ -3393,9 +3421,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **D11 新独立 Stage Auditor。**停止，不提前执行 D11；由新的独立上下文复验 Sixth §9/§10、Exit Gate、
-  WRT、隐私/Key、真实网络/Provider/通知/资源条件。不得宣称 Sixth Stage Exit Gate 已通过，不进入
-  Seventh Stage。唯一任务文档：`doc/stage6/tasks/D11-independent-exit-audit.md`。
+- **H2：确定性修复 D10 的 `observedForMs=99` 红态并完成 H2 合同。**H1 已关闭；不得跳过
+  H2 提前执行 H3a/H3b/H4/D11，不得宣称正式 H3b 资格或 Sixth Stage Exit Gate 已通过，
+  不进入 Seventh Stage。后续固定顺序为 H2 → H3a → H3b → H4 → 新 D11。
 
 ## 第一阶段验收未完成项
 
