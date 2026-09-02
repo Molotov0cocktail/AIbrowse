@@ -59,29 +59,42 @@ Closer 合同收尾后，才满足本任务前置。
 - qualification trace 必须来自 harness first-instance/reject-remote/current-logon DACL server 与 main client；
   bootstrap 在双向 PID+creation 验证后才交付高熵 pipe 名/nonce，argv/env/Chromium child/log/db/renderer 零秘密。
   Auditor 必须复核 exact-key JCS、bounded incremental UTF-8/LF、deadline/backpressure、无重连、双向 sequence、
-  sample-open/close barrier 和每 sample 唯一 prefix replay；仅有 `{registry,identity}` 或可挑 prefix 的 snapshot
+  sample-open/close barrier 和每 sample 唯一 prefix replay；仅有 `{registry,identity}`（缺 exact `detail`）或可挑 prefix 的 snapshot
   不合格。同账户伪装、half-frame/CRLF/重复/乱序/重放/断连敌手证据缺失即 HOLD。
-- Auditor 必须重建并核对 `watch-h3b-load-v1` 891-byte descriptor 及固定
-  `823c33af49f69a6734cae78aa692c0fae39d9408d221438f273217801e47f83f` SHA-256，并独立展开
-  34,260-byte 100-entry manifest、命中固定
-  `3b77612df1c7420231046e1c40c9dad4622d216809a2232e93e9726a65fbbb27` hash/首末 UUID 与
-  `scheduleOffsetMs=36,000/828,000` golden；逐项确认 100 Source/Rule、40 Feed/40 public Page/20 Session
-  Page、四 `.invalid` host、seed 前冻结且不得后移的 M0、28 秒 acquisition 压力、四 host 同波/33 秒波距/峰值四并发、
-  67 warmup（首波恰在 W0、末波最迟 M0-39.5 秒 settle）与四轮 400 measurement acquisition。scheduledFor
-  必须仍按 15 分钟推进，authenticated
-  qualification-only release 固定为 `D+[0,15,30.75,45]` 分钟；跨全部 M0/Rule/worst-case 时延必须得到
-  coalesce `≤904,000 ms`、new Event `≥1,841,000 ms` 与 measurement last commit
-  `≤M0+3,560,500`。两个 Digest 只能纳入完整两轮/三轮，oracle 分别为
+- Auditor 必须重建并核对 `watch-h3b-load-v1` 1,502-byte descriptor 及固定
+  `3f59d95d74d373ef57e80eb56d05c4c9620a6e2bc2db8637ce5ddee48b5b85c3` SHA-256，并独立展开
+  34,252-byte 100-entry manifest、命中固定
+  `5652b57e407b728e78a090b56aa84a73bc81f6b977e8a9e6211d3a48c15b6beb` hash、deterministic v4-shaped
+  Source首末`e93ee316-71ae-4fff-a374-c0ea3ab12fdc`/`3f00bf7e-b7f0-4117-bb66-90e6732c2bf1`与
+  `scheduleOffsetMs=5,000/797,000` golden；逐项确认100 Source/Rule、SourceService empty-DB bootstrap保持
+  sources100/FTS100/tag-links0、真实projection/fingerprint与双revalidation，以及40 Feed/40 public Page/20 Session
+  Page、四`.invalid`host、冻结且不得后移的M0、A=28秒包含Session verified close、四host同波、33秒business/
+  34.2秒release波距、25×4初始化31秒间隔、67 warmup（indices33..99，末波≤M0-18.8秒完成）与四轮400
+  measurement acquisition。scheduledFor必须仍按15分钟推进，qualification release固定为
+  `R=M0+5,000+34,200*w+[0,900,000,1,845,000,2,700,000]`；完整`Lslot≤34,000ms`，跨全部
+  M0/Rule/barrier phase/worst-case时延必须得到coalesce`≤905,500/860,500ms`、new Event`≥1,839,500ms`与
+  measurement last commit `≤M0+3,559,800`。两个 Digest 按index选成员、按unsigned UTF-8 bytes排序存储，
+  只能纳入完整两轮/三轮，oracle分别为
   `changed/unchanged/failed=48/52/0, observation/Event=24/12` 与
   `78/72/0, 39/26`。资格 acquisition 必须从
   Coordinator 既有 `WatchAcquisitionPort` DI 注入，只在 authenticated bootstrap 后可达；NetworkPolicy/
   production acquisition 无 fixture 分支。H3b 的 Watch http-request/response/socket/provider/temp registry 应
-  全程为 0；host-grant 应有 567 对并只在 initialization trace-prefix 达峰值 4、不能伪延长为 lease，task-tab/
-  timer/async/store/db 达冻结峰值。不得因上述五类为 0 判“没有压力”，也不得用 synthetic socket 补峰，真实
+  全程为0；host-grant应有567对、per-host141/142/142/142、gap/no-wait/final0，sample0合法且peak仅诊断，
+  不能伪延长为lease。全局peak4必须由与Coordinator activeGlobal同步的独立`coordinator-slot`证明；通用async
+  保持nested Promise语义，task-tab exact120/peak4/final0。不得因上述五类为0判“没有压力”，也不得用
+  synthetic socket补峰，真实
   网络生命周期归 H3a。
+- Auditor须用Node与独立PowerShell/.NET两套生成器逐byte命中detailed-design §15.6.1全部Rule/Digest/Document
+  golden、两个Digest canonical数组各1,951 bytes及SHA
+  `3b8b7861854044ac55240680dfcf76161261544cdd3ceb286e7e28f82353dd7d`/
+  `7225b4d9000aa989994f0784cb7245cccb46e0094b661067c2147f76c2ae44d3`。legacy-red固定旧`d06cb3d`
+  descriptor=788 bytes、日期2026-09-02 UTC；全日分布须为`13:84,14:363,15:545,16:352,17:96`，midnight
+  稳定证明`14!=17`，不得以未定义canonical day或挑96个绿态替代。
 - sample-open 必须先 pause admission/scheduler/digest/fixture owner、保存 absolute timer deadline，只等待 main
   sequencer writer quiesce，再在单一 JS turn 截 main snapshot；OS sample 后 close，按原 deadline resume。
-  `Clock` 同步 API 不得伪装 await，不能等 live resource=0 后采样；barrier 内 mutation 必须整轮失败而非排队。
+  `Clock`同步API不得伪装await，不能等live resource=0后采样；物理frame→linearize≤500ms、logical→sample≤250ms、
+  frame→sample≤750ms、sample→close≤1,250ms、frame→close≤2,000ms、close→resume≤250ms，所有外部deadline
+  从完整frame起算且不在dequeue重置；barrier内mutation必须整轮失败而非排队。
   CONNECT/READ/WRITE 每 operation 独占 OVERLAPPED/event/buffer；timeout 后 `CancelIoEx`（包括
   `ERROR_NOT_FOUND` race）必须等 final completion 才 release/reuse，single-completion 与 peer crash teardown
   缺任一机器证据即 HOLD。

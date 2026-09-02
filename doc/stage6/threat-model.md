@@ -180,9 +180,11 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 - 0..500ms 确定性附加 jitter（永不提前于 due）+ 指数退避；429 零立即重试；login/captcha/security 立即暂停。
 - H3b 固定负载不得把 nominal 30 分钟当作 coalesce oracle。Rule scheduledFor 与 15 分钟 nextDue 保持产品
   语义；authenticated qualification-only release gate 只把四轮最早 release 冻结为
-  `D+[0,15,30.75,45]` 分钟。结合 `jitter∈[0,500] ms`、task-tab `≤1,000 ms`、acquisition/barrier
-  `[28,000,30,000] ms`、进入 processing `≤500 ms`，预期 coalesce 的最大 Event 时间差是 904,000 ms，
-  预期新 Event 的最小差是 1,841,000 ms。任一时延越界是 timing-environment 证据不足，不能关 jitter、
+  `R=M0+5,000+34,200*w+[0,900,000,1,845,000,2,700,000]`。完整 qualification acquisition Promise
+  `A=28,000 ms` 覆盖 Session create/hold/getTabs/closeTab/verified cleanup；两类 barrier 与 jitter/
+  processing/writer 后完整 Coordinator slot `≤34,000 ms`。预期 coalesce 的最大 Event 时间差分别是
+  905,500/860,500 ms，预期新 Event 的最小差是 1,839,500 ms。只有运行环境越过已经全域证明自洽的固定
+  absolute deadline 才是 timing-environment；合同 overlap/等号或缺失 owner 上界不是环境问题。不能关 jitter、
   改 30 分钟 `<` 语义、重选 M0 或挑 Rule；正常 production 不构造该 release gate。
 - Baseline 只在完整验证事务中 CAS 推进；失败/abort/陈旧 result 零覆盖。Feed 条件 validator 与
   baselineVersion/contentHash 同身份、同事务存储；条件 header 只能来自 acquisition 前已验证的 Baseline hint，
@@ -191,6 +193,10 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
   revalidation 后 metadata-only commit 不使结果丢弃或版本回退。结果事务还必须 CAS Rule 仍 enabled/desired/
   unpaused；locator prepare 即使按 D4 只暂停并保留旧 fingerprint，也必须整体失败。Event 内相同 fingerprint 的
   新 observation 仍与 Baseline/Run 原子提交；真正 replay 只终结 running Run，不倒写 Baseline。
+- qualification Source identity 使用公开独立 SHA-256 domain 的 deterministic v4-shaped UUID，不是随机 UUIDv4
+  或 UUIDv5，也不复用 nonce/HMAC。SourceService-owned bootstrap 仅在 isolated fresh empty DB、Watch 引用出现
+  前以一个事务维护 100 Source/100 FTS/0 tag-links，并经真实 projection/fingerprint 读回；正常
+  observer/journal/cleanup 语义不变，Coordinator 两次 Source revalidation 均不得旁路。
 - Public HTTP request 使用两阶段终态：业务首终态立即取得单一所有权，清除 timer/AbortSignal 以及
   request/response/inflater 全部业务 listener，禁止新 DNS/request/redirect、正文累计和解压驱动，逐项销毁
   资源，并在同步 cleanup/destroy/fallback 完成后立即结算 Promise；不等待 transport close/error，不增加
@@ -366,12 +372,15 @@ oracle；FakeProvider 不得冒充真实观察。
   `watch-h3b-load-v1` port：真实 HostRequestGate grant 与 Session consent/task-tab ownership 在前，经过验证的
   bounded projection 在后，再进入真实 Diff/Condition/Event/Digest/Store。normal production、renderer/web/model、
   普通 env/argv 均不可达；manifest version/hash/rule/ordinal 不符即 fail-closed，不回退生产网络。该 seam 不
-  创建 HTTP/socket，所以 H3b 对相应 Watch registry 的唯一诚实 oracle 是始终 0；Host grant/tab/async/timer/
-  store/db 必须按固定峰值出现，H3a 另证真实公网生命周期。伪 socket/伪 request event 与直接伪 Event 都是证据
+  创建 HTTP/socket，所以 H3b 对相应 Watch registry 的唯一诚实 oracle 是始终 0；Host grant只证明真实
+  start capability 的567 pairs/per-host/gap/no-wait/final0，peak只作诊断；全局peak4由与Coordinator
+  activeGlobal真实临界点一致的`coordinator-slot`证明。通用async仍覆盖全部nested Promise，task-tab只证明
+  Session子集；H3a 另证真实公网生命周期。伪 socket/伪 request event、延长grant lease与直接伪 Event 都是证据
   污染。
-- fixed manifest 的四轮必须同时证明时间界与 Digest 边界：首波为 M0+36 秒、每四个连续 index 同波、33 秒
-  波距，round release 使用 `0/15/30.75/45` 分钟且所有 Event/Run 最迟在 M0+59:20.500 提交；仍有
-  39,500 ms 明确尾裕量后才开始 drain。Digest 只能在 frozen upper 前纳入已经提交的完整轮次，分别固定为前
+- fixed manifest 的四轮必须同时证明时间界与 Digest 边界：business首波为M0+5秒、33秒scheduled波距，
+  qualification release为34.2秒波距并使用 `0/15/30.75/45` 分钟 offsets；所有 Event/Run 最迟在
+  M0+59:19.800提交，仍有40,200 ms明确尾裕量后才开始 drain。Digest成员按manifest index选择，但sourceIds按
+  unsigned UTF-8 bytes严格升序唯一存储。Digest只能在 frozen upper 前纳入已经提交的完整轮次，分别固定为前
   50 Source 两轮
   `changed/unchanged/failed=48/52/0, observation/Event=24/12`，后 50 Source 三轮
   `78/72/0, 39/26`。把 queued/running 或尚未 release 的下一轮预记入 count、依赖某个 M0 的 jitter 碰巧过线，
@@ -381,12 +390,16 @@ oracle；FakeProvider 不得冒充真实观察。
   registry 的 opaque nonce-HMAC binding 必须与 sample barrier 内独立 OS relative-entry 枚举逐项相等；绝对/
   相对 path、URL、正文和凭据不得过 pipe。temp root/ancestor/entry 任一 reparse point、case collision、escape、
   unexpected entry 或 rename 中间态都 fail-closed。日志字符串、当前 PID 求和、文件存在性和 `{registry,
-identity}` 而无 temp binding 都不能单独成证。
+identity}` 而无 temp binding 都不能单独成证。trace root exact schema含`detail`；host-grant detail只允许
+  attempt/index/hostSlot/phase/round/elapsed/waited字段，不得传hostKey、URL、路径或秘密。
 - sample barrier 不能把同步 `Clock.setTimeout` 当 Promise，也不能等待全部业务资源归零后采样。资格 controller
   必须先暂停 admission/scheduler/digest/fixture deadline owner，保存 absolute deadline，等待的只是在 main
   sequencer 上已经开始的 writer 退出；随后在单一 JS turn 同步截 main counters/registry，再由 harness 于 barrier
   内取 OS 样本。barrier 中任一新 mutation 立即使整轮失败，禁止排队隐藏；close 后按原 absolute deadline 只
-  恢复一个 callback。否则 snapshot 可能把跨 sample 的 acquire/release 拼成从未存在的状态。
+  恢复一个 callback。物理完整request frame、sequencer linearization、sample、close、resume必须分别留痕；
+  frame→linearize≤500ms、logical→sample≤250ms、frame→sample≤750ms、sample→close≤1,250ms、
+  frame→close≤2,000ms、close→resume≤250ms，任何外部deadline不得在dequeue重置。否则 snapshot 可能把跨
+  sample 的 acquire/release 拼成从未存在的状态。
 - overlapped pipe 的 timeout 不等于 operation 已完成。每个 CONNECT/READ/WRITE 必须独占 OVERLAPPED/event/
   buffer；deadline 后 `CancelIoEx` 的成功或 `ERROR_NOT_FOUND` race 都必须继续等待 final completion，再释放或
   reuse。main/harness crash、peer close、cancel/DisconnectNamedPipe/CloseHandle 的次序和 single-completion 若

@@ -350,6 +350,10 @@ Rule/Source、等待 backoff 和 host gate，不能绕过安全/频率策略。�
   `HostRequestGate` 是 main 进程单例，PublicWatchHttpClient 与 WatchTaskTabWorkspace 共用同一
   `host:effectivePort → lastStartedAt` 注册表，不能各自计时。全局/host 并发释放不缩短间隔；同 Rule retry 新建
   新 task-tab 并重新过 gate。
+- `HostRequestGate.acquire()` 的 grant 只是成功更新 `lastStartedAt` 后交付的短生命周期 start capability，不是
+  acquisition lease，也不承担全局并发 gauge。全局 slot 的真实 owner 是 WatchRunCoordinator 从
+  `activeGlobal++` 到 finally `activeGlobal--` 的完整 run 生命周期；Session 子集另由 task-tab owner 覆盖。
+  qualification telemetry 必须据这些真实 owner 分别建证，禁止延长 grant 或用 synthetic event 制造 peak。
 - 每次顶层 acquisition 加入由 `SHA-256(ruleId|host|scheduledFor)` 导出的 0..500ms 确定性附加 jitter
   （`MIN_HOST_REQUEST_GAP_MS` 的 0..10%）；实际 start 为 due/backoff/host-gap 全部满足后再延迟该值，
   永不提前于 due。手动运行以 requestId 代替 scheduledFor，同样适用。
@@ -1455,6 +1459,14 @@ SourceService 构造时接收内部 observer；不新增 renderer/Agent/IPC API�
    observation/item/outbox/audit/sourceRowVersion 全不写。SQLite 写事务串行化使 metadata 写要么先发生并被
    `max` 保留，要么后发生并继续推进，任何交错下 `sourceRowVersion` 单调不减。
 
+H3b 资格有且只有 §15.6.1 的 SourceService/Store-owned bootstrap 窄入口：它只在 isolated fresh empty
+`sources.db` 且尚无任何 Watch 跨库引用时，以一个事务调用正式 normalizer 并建立 sources=100、FTS mirror=100、
+tag-links=0。因为入口发生在 Rule/Digest/admission 前，observer prepare/commit/abort、Source journal 与 Watch
+cleanup intent 均为 0；这不是 normal create/update/disable/restore/Undo 的旁路。写后必须经真实
+`getSourceWatchProjection()` 全量 found/readback，再由产品 locator 函数生成 Rule fingerprint；正常 run 的两次
+Source revalidation 仍完整执行。非空库、非法 v4-shaped id、canonical/FTS 不一致或 missing/unavailable 均
+fail-closed 并删除本轮 isolated roots。
+
 失败传播冻结如下：正常 WatchStore 下 prepare/commit/abort 都是同步有界 DB 操作。prepare 失败时 Watch 全局
 Scheduler 立即 stop/abort 并进入 unavailable；hard-delete 返回现有 `source-unavailable` 且 sources.db 零写，避免
 承诺级联却留下本地 Watch 私有数据。update/disable/restore/Undo 仍允许原 Source 操作提交，保持 Sources 的既有
@@ -1553,6 +1565,11 @@ interface DigestRun {
   finishedAt: string | null;
 }
 ```
+
+H3b 的 `digestPartitions=[0..49],[50..99]` 只定义 manifest index 成员集合；写入上述
+`DigestSchedule.sourceIds` 前必须按 unsigned UTF-8 bytes 严格升序并去重。Repository 写入/读回、shared type、
+row validator 与 corruption scan 必须接受且复核同一 canonical order；不得把 index order 直接持久化，也不得让
+Repository 静默改成员集合。§15.6.1 冻结两套 permutation、bytes/hash/first/last golden。
 
 创建/preview 的 selector 可是显式 Source IDs 或 groupId，但只能交给 main 内部 `DigestMembershipPort`；该端口
 通过 SourceService user-audience 窄投影解析一次，返回当前存在的 Source ID。Service 在确认页展示排序去重后的
@@ -2068,13 +2085,13 @@ watch.db 上限和
   HostRequestGate grant、Session consent、WatchTaskTabWorkspace task-owned Tab、Processing、Repository、
   Digest 与应用内通知，禁止纯函数循环、直接伪造 Event/registry 或绕过产品所有权点。
 - manifest identity 固定为 version=`watch-h3b-load-v1`。下面一行是无 BOM/无 LF、已经按 key 的 UTF-16
-  code-unit 顺序写成 RFC 8785 JCS 的 891-byte UTF-8 descriptor；不得重排、增删或在运行时选 seed。其
-  SHA-256 必须逐字节等于 `823c33af49f69a6734cae78aa692c0fae39d9408d221438f273217801e47f83f`；生成后的
+  code-unit 顺序写成 RFC 8785 JCS 的 1,502-byte UTF-8 descriptor；不得重排、增删或在运行时选 seed。其
+  SHA-256 必须逐字节等于 `3f59d95d74d373ef57e80eb56d05c4c9620a6e2bc2db8637ce5ddee48b5b85c3`；生成后的
   100-entry 展开 manifest 还必须在 product 与 harness 两端独立生成并逐字段恒等，version/hash 任一不符即
   fail-closed，不能回退别的负载。
 
   ```text
-  {"accessCounts":{"feedPublic":40,"pagePublic":40,"pageSession":20},"acquisitionLatencyMs":28000,"conditionClass":"index-mod-4","digestDueMinuteOffsets":[24,46],"digestPartitions":[[0,49],[50,99]],"digestSeedLeadMs":10000,"encoding":"UTF-8","feedFormats":{"atom":20,"rss2":20},"filler":"x","hostCount":4,"hostSuffix":"aibrowse.invalid","idNamespace":"6ba7b811-9dad-11d1-80b4-00c04fd430c8","idSeed":"urn:aibrowse:h3b:v1","measurementMinutes":60,"measurementReleaseOffsetsMs":[0,900000,1845000,2700000],"measurementRounds":4,"projectionBytes":{"feed":32768,"page":24576,"rawBody":0},"ruleCount":100,"scheduleIntervalMinutes":15,"scheduleOffsetMs":{"first":36000,"waveSize":4,"waveSpacing":33000},"setup":{"batchSize":4,"batchSpacingMs":30000,"m0LeadMinutes":24},"stateByPhase":{"initialization":"A","measurement":["B","A","B","A"],"warmup":"A"},"version":"watch-h3b-load-v1","warmupMinutes":10}
+  {"accessCounts":{"feedPublic":40,"pagePublic":40,"pageSession":20},"acquisitionLatencyMs":28000,"conditionClass":"index-mod-4","digestDueMinuteOffsets":[24,46],"digestPartitions":[[0,49],[50,99]],"digestSeedCompleteByOffsetMs":3000,"digestSourceIdOrder":"utf8-byte-ascending-unique","documentRunOrdinal":"per-entry-success-zero-based-three-digit","encoding":"UTF-8","feedFormats":{"atom":20,"rss2":20},"filler":"x","hostCount":4,"hostSuffix":"aibrowse.invalid","idNamespace":"6ba7b811-9dad-11d1-80b4-00c04fd430c8","idSeed":"urn:aibrowse:h3b:v1","latencyBoundsMs":{"acquisitionPortTotal":28000,"barrierOpenClose":2000,"barrierRecovery":250,"jitter":500,"processingEntry":500,"sessionTabPublishDeadline":1000,"sessionTabReleaseOffset":27000,"writer":500},"measurementMinutes":60,"measurementReleaseOffsetsMs":[0,900000,1845000,2700000],"measurementRounds":4,"projectionBytes":{"feed":32768,"page":24576,"rawBody":0},"ruleCount":100,"sampleDeadlinesMs":{"frameToClose":2000,"frameToLinearize":500,"frameToSample":750,"logicalToSample":250,"sampleToClose":1250},"scheduleIntervalMinutes":15,"scheduleOffsetMs":{"first":5000,"waveSize":4,"waveSpacing":33000},"setup":{"batchSize":4,"batchSpacingMs":31000,"m0LeadMinutes":24},"sourceIdAlgorithm":"sha256-truncated-v4-shaped-v1","sourceIdDomain":"watch-h3b-source-id-v1","stateByPhase":{"initialization":"A","measurement":["B","A","B","A"],"warmup":"A"},"version":"watch-h3b-load-v1","warmupIndexRange":[33,99],"warmupMinutes":10,"waveReleaseSpacingMs":34200}
   ```
 
   规范展开物的 root exact keys/order 是 `{descriptorSha256,digests,entries,version}`；每个 entry exact
@@ -2082,21 +2099,24 @@ watch.db 上限和
   `{accessMode,conditionClass,feedFormat,hostKey,index,kind,projectionBytes,ruleId,scheduleOffsetMs,sourceId,targetUrl}`，
   其中 conditionClass 按 index mod 4 为 `unchanged|unchanged|changed-unmatched|event`，非 Feed 的
   feedFormat=null；两个 digest exact keys/order 是 `{dueMinuteOffset,id,index,sourceEnd,sourceStart}`。这里的
-  scheduleOffsetMs 是 `36,000+33,000*floor(i/4)`，使每个 wave 的四个连续 index 在四个 host 同时到期；
+  scheduleOffsetMs 是 `5,000+33,000*floor(i/4)`，使每个 wave 的四个连续 index 在四个 host 同时到期；
   hostKey 是 host name 加 `:443`，URL/id/其余字段由下述唯一算法产生；不把运行时 M0/absolute time 写入
-  展开物。root 经同一 RFC 8785 JCS 后必须为 34,260 UTF-8 bytes，SHA-256 固定
-  `3b77612df1c7420231046e1c40c9dad4622d216809a2232e93e9726a65fbbb27`。首项
-  source/rule id 必须为 `31f9c296-26a5-532d-99a9-910bab6db291`/
+  展开物。root 经同一 RFC 8785 JCS 后必须为 34,252 UTF-8 bytes，SHA-256 固定
+  `5652b57e407b728e78a090b56aa84a73bc81f6b977e8a9e6211d3a48c15b6beb`。首项
+  source/rule id 必须为 `e93ee316-71ae-4fff-a374-c0ea3ab12fdc`/
   `8a0016c2-03c6-51bc-ba81-5587a37c5a30`，末项为
-  `1a310446-c6b5-51a9-9e3d-0c2a3cdef284`/`541c7c34-57d6-5d1e-bb0e-8da2f6eadf73`；首末
-  scheduleOffsetMs 必须为 `36,000`/`828,000`。两个 digest id 为
+  `3f00bf7e-b7f0-4117-bb66-90e6732c2bf1`/`541c7c34-57d6-5d1e-bb0e-8da2f6eadf73`；首末
+  scheduleOffsetMs 必须为 `5,000`/`797,000`。两个 digest id 为
   `dc6d5f93-23a3-5096-9897-5d8a3b2b960b`、`1a40aac3-9641-5804-925e-aad2afdb8acf`。product/harness 必须
   独立生成并同时命中 descriptor 与展开物 length/hash/golden，不能只互相比对同一个错误实现。
 
-- entry index 固定为十进制 `i=0..99`，不得按随机 UUID 或数据库返回顺序重排。Source/Rule/Digest id 分别是
-  RFC 4122 UUIDv5：namespace 固定为 descriptor 的 `idNamespace`，name 分别为
-  `urn:aibrowse:h3b:v1:source:<i 三位零填充>`、`...:rule:<i 三位>` 与
-  `...:digest:000|001`；UUID 使用 SHA-1 的标准 version/variant bit 与 lowercase 8-4-4-4-12 格式。host 固定为
+- entry index 固定为十进制 `i=0..99`，不得按随机 UUID 或数据库返回顺序重排。Source id 使用 qualification-only
+  deterministic v4-shaped 算法：令 `domain="watch-h3b-source-id-v1"`、`seed="urn:aibrowse:h3b:v1"`，取
+  `SHA256(UTF8(domain+"\0"+seed+"\0"+pad3(i)))` 前 16 bytes，把 byte 6 置 RFC 4122 version 4 bits、byte 8
+  置 variant bits，再编码为 lowercase 8-4-4-4-12。它不是随机 UUIDv4，也不是 UUIDv5；公开 SHA domain 与
+  qualification nonce/HMAC/JCS secret domain 完全分离。Rule/Digest id 继续使用 descriptor `idNamespace` 下
+  name=`urn:aibrowse:h3b:v1:rule:<i 三位>`、`...:digest:000|001` 的 UUIDv5；Digest UUID name **不含**成员数组，
+  故成员排序变化不改变上述两个 digest id。host 固定为
   `h<i mod 4>.aibrowse.invalid`，HostRequestGate key 固定为该 name 加 `:443`。`i=0..39` 是 public Feed，其中
   偶数 `rss2`、奇数 `atom`，URL 为
   `https://<host>/h3b/feed/<i 三位>.xml`；`i=40..79` 是 public Page，`i=80..99` 是 Session Page，URL 分别为
@@ -2119,17 +2139,30 @@ watch.db 上限和
   `grantedAt=M0-3600 秒`。其它 target/accessMode 组合一律拒绝。
 
 - setup 只允许一个 `QualificationManifestSeeder` 在已认证 capability、全新空 sources/watch DB 且服务 admission
-  尚关闭时使用三个窄 internal operation：Sources store 的 `seedWatchResourceQualificationSourcesV1()` 只接受
-  native-authenticated opaque capability 与 exact version/hash，并在自身 Repository transaction 中生成上述 100
-  固定 Source/id；Watch Repository 的 `seedWatchResourceQualificationRulesV1()` 同样只生成 100 条固定
+  尚关闭时使用三个窄 internal operation。SourceService/Store-owned
+  `seedWatchResourceQualificationSourcesV1()` 只接受 native-authenticated opaque capability 与 exact
+  version/hash；它只能在 isolated、fresh、empty `sources.db` 中、任何 Watch row/Rule/Digest/scheduler admission
+  前运行，逐条调用现有 `normalizeSourceUrl(raw,'page')`，不得信任 manifest 自报 canonicalKey，并在一个
+  Repository transaction 中写入上述固定 sources=100、`source_tags` links=0、group/tag rows=0 及
+  `sources_fts`=100 的逐行 mirror。该空库、尚无任何跨库引用的 bootstrap 窄入口不调用正常变更协议，故
+  `SourceLifecycleObserver.prepare/commit/abort=0`、Source change journal rows=0、Watch cleanup intents=0；它不
+  改变 manual/AI/Undo 的既有 lifecycle。写后必须由真实
+  `SourceService.getSourceWatchProjection()` 对全部 100 个 id 得到 `found`，并逐项核对
+  version/enabled/deleted/scope/canonicalKey，同时核对 Source/tag-link/FTS exact count 与内容。任一非空库、
+  duplicate、非法 v4-shaped/canonical、FTS 不一致、missing/unavailable 都 fail-closed 并删除本轮 isolated roots。
+  Watch Repository 的 `seedWatchResourceQualificationRulesV1()` 同样只生成 100 条固定
   baselineVersion=0 Rule（nextDue=null），不能接收任意 row/JSON。待下面 100 个 Baseline 全部 settle 后，后者再
-  以一个 qualification-only exact-100 transaction 写入初始 nextDue/bookkeeping；warmup 全部 settle 后、固定
-  `M0-10,000 ms` 时同 Repository 的 `seedWatchResourceQualificationDigestsV1()` 只在 high-water=0 时按本节
+  以一个 qualification-only exact-100 transaction 写入初始 nextDue/bookkeeping；warmup 全部 settle 且 M0
+  shared boundary sample close/recovery 完成后，同 Repository 的 `seedWatchResourceQualificationDigestsV1()`
+  只在 high-water=0 时按本节
   exact-two schema 创建 DigestSchedule。
   每步写前要求 DB/既有行状态符合本节且 id/version/baseline 全等；Source/Rule operation 写后分别重读 exact
   100 行与展开 entries 逐字段相等，Digest operation 写后重读 exact 2 行与 digests/schema 相等。任一 0/部分/
-  多余行、已有非 manifest row、事务失败都删除本轮隔离 roots 并终止，禁止合并用户数据。这些 operation 不进入 shared SourceService、renderer/
-  preload 或普通 production 构造，也不能更新任意 URL/condition/projection 内容。
+  多余行、已有非 manifest row、事务失败都删除本轮隔离 roots 并终止，禁止合并用户数据。这些 operation 仅是
+  SourceService-owned main-internal bootstrap，不进入 renderer/preload、公共 SourceService API 或普通
+  production 构造，也不能更新任意 URL/condition/projection 内容。Rule locator fingerprint 必须由上述真实
+  projection 调用既有 `watch-locator-v1` 产品函数生成；Coordinator acquisition 前、结果事务前的两次
+  SourceService revalidation 均不得旁路。
 - `i mod 4` 冻结 outcome class：0/1 为 unchanged 且 `condition=null`；2 为 changed-unmatched，condition
   固定 `{version:1,combine:"all",predicates:[{fieldKey,operator:"equals",operand:"H3B-NEVER",caseSensitive:true}]}`，
   Feed `fieldKey="title"`、Page `fieldKey="r0:main"`；3 为 event 且 `condition=null`。定义
@@ -2149,66 +2182,80 @@ watch.db 上限和
   body 固定为 0 bytes、从不构造/保存伪 HTTP body；Feed 成功 metadata 固定
   `{httpStatus:200,etag:null,lastModified:null,warnings:[]}`，Page metadata=null，finalUrl=target URL，
   documentId 对 Feed 为 null、对 Page 为同 namespace/name=`...:document:<i 三位>:<runOrdinal>` 的 UUIDv5。
+  `runOrdinal` 是每 entry 成功 acquisition 的 zero-based 三位序号：`i=0..32` 的 initialization=`000`、四轮
+  measurement=`001..004`；`i=33..99` 另有 warmup=`001`，四轮 measurement=`002..005`。代表 golden 为
+  `i40` initialization `e2840cd9-1aa9-542a-b940-589c34a80d99`、`i99` 最终 measurement
+  `aedaaf84-df8c-598c-9a39-f5abcdbcb947`。
 
 - authenticated bootstrap、manifest 双端校验与两个 DB 的 empty check 完成后、首次 seed 前，controller 在
   §15.6.2 的合成 UTC timeline 上把 `M0` 一次冻结为 `>=当前 monotonic now+24 分钟` 的第一个 UTC 整分钟；
   seed/source/rule/digest 的全部相对时间只能由该 M0 计算，之后不得重选。初始化期间 scheduled/digest/renderer
   admission 关闭，仅 authenticated qualification controller 可提交固定 initialization manual-run；它在同一
   Coordinator/Processing/Repository 路径中按 index 连续 25 批、每批恰 4 条建立 A Baseline；首批必须在 M0
-  freeze 后 30 秒内 admission，批 `j` 在首批起点后 `30,000*j` ms 同时 admission，前批四条全部 settle 后才开
+  freeze 后 30 秒内 admission，批 `j` 在首批起点后 `31,000*j` ms 同时 admission，前批四条全部 settle 后才开
   下一批，manual requestId 固定为 `watch-h3b-init-v1:<i 三位>`，所有 run 必须是 `baseline-established`。
   initialization 不开启 formal sample barrier，所以既有 0..500 ms jitter 后从 grant 到 settlement 精确 28,000
-  ms，单批最迟 28,500 ms settle，30,000 ms batch spacing 不允许 Executor 自选。setup 必须在
+  ms，单批最迟 29,500 ms settle，31,000 ms batch spacing 不允许 Executor 自选。setup 必须在
   `W0=M0-600,000ms` 前至少 30 秒 settle，否则
   `BLOCKED/timing-environment`，不得后移 M0 挑绿。以 freeze 时刻 T 计，M0 lead 至少 1,440,000 ms；即使首批到
   `T+30,000` 才 admission，第 25 批仍最迟在
-  `T+30,000+24*30,000+28,500=T+778,500` settle，而 `W0-30,000≥T+810,000`，至少留
-  31,500 ms。到 W0 创建 scheduler entries 并打开 admission。Rule `i` 的
-  正常周期 anchor 是 `D(i)=M0+36,000+33,000*floor(i/4)` ms；warmup 起点 `W0=M0-600,000` 时，
+  `T+30,000+24*31,000+29,500=T+803,500` settle，而 `W0-30,000≥T+810,000`，至少留
+  6,500 ms。到 W0 创建 scheduler entries 并打开 admission。Rule `i` 的
+  正常周期 anchor 是 `D(i)=M0+5,000+33,000*floor(i/4)` ms；warmup 起点 `W0=M0-600,000` 时，
   `i=0..32` 初始 nextDue=`D(i)`，`i=33..99` 初始 nextDue=`D(i)-900,000`。因此 warmup 精确产生 67 次
-  A/unchanged。正式四轮的真实 `scheduledFor` 仍严格是 `S(i,r)=D(i)+900,000*r,r=0..3`，15 分钟 Rule
+  A/unchanged。warmup 的唯一映射是 `k=0` 包含 `i=33..35`、`k=1..16` 各含连续四项
+  `i=36..99`，release 为 `Rw(k)=W0+34,200*k`；每条真实
+  `scheduledFor(i)=D(i)-900,000`，requestKey=`ruleId+"|"+canonical ISO(scheduledFor)`，并以
+  `computeJitterMs(ruleId,hostKey,scheduledFor)` 计算完整 seed。qualification gate 只在逐项复核
+  `(phase,ruleId,scheduledFor,index,wave)` 后把 `earliestStartMs` 提升至 Rw，不改 scheduledFor/nextDue，也不
+  开放 production 控制面。示例：`i33:S=M0-631,000,R=M0-600,000`；
+  `i36:S=M0-598,000,R=M0-565,800`；`i96:S=M0-103,000,R=M0-52,800`。正式四轮的真实
+  `scheduledFor` 仍严格是 `S(i,r)=D(i)+900,000*r,r=0..3`，15 分钟 Rule
   schedule、reservation 三写与 nextDue 推进都不改变；但 authenticated qualification 装配必须在 reservation
   后、Coordinator pump 前使用 main-only `QualificationRoundReleaseGate`，把这四轮 task 的
   `earliestStartMs` 只增大到
-  `R(i,r)=D(i)+Q[r]`，其中 `Q=[0,900,000,1,845,000,2,700,000]` ms。该 gate 只能从 fixed manifest
+  `R(i,r)=M0+5,000+34,200*floor(i/4)+Q[r]`，其中
+  `Q=[0,900,000,1,845,000,2,700,000]` ms。该 gate 只能从 fixed manifest
   ruleId、scheduledFor 与 expected ordinal 重建 R，不能接收 caller delay、回写 scheduledFor/nextDue、减少
-  15 分钟间隔或用于 warmup/normal production；仅零基 ordinal `r=2` 增加固定 45 秒 release guard，`r=3`
-  回到其真实 scheduledFor，故 r3-r2 仍有 855 秒。正式观察仍是
+  15 分钟间隔或用于 normal production。`R-S=1,200*floor(i/4)+[0,0,45,000,0]≥0`，故 release 永不早于
+  scheduledFor。正式观察仍是
   四轮、合计 400 次 acquisition，changed 两类值固定 B→A→B→A；event 类 outcome 必须固定
   `event-created→event-coalesced→event-created→event-coalesced`，后三轮 reversal oracle 必须命中。measurement
   窗口固定为 `[M0,M0+3,600,000]`，到上界先关闭 admission；最早第五个 schedule slot 是
-  `D(0)+3,600,000=M0+3,636,000`，已经晚于该上界。任何额外/缺失/
+  `D(0)+3,600,000=M0+3,605,000`，已经晚于该上界。任何额外/缺失/
   重复 run、失败或其它 outcome 均 `FAIL-product`。
 - 每次受控 acquisition 必须先成功调用真实 HostRequestGate 登记式 `acquire`；该现有 API 只登记 start/gap，
-  不是 28 秒 lease，不能扩成假的 concurrency owner。28,000 ms 是从 grant 已交付且必要 task Tab 成功发布到
-  port 开始 settlement 的 QPC 目标，禁止早退，sample barrier 延迟只可使实际 settle 落在
-  `[28,000,30,000]` ms，超出
-  为 `BLOCKED/timing-environment`。Coordinator 既有 jitter 不得旁路：scheduled run 的 delay exact 为
+  不是 28 秒 lease，不能扩成假的 concurrency owner。`A=28,000 ms` 是从 qualification port entry 到完整
+  Promise settlement 的 exact QPC 目标，覆盖 projection；Session 还覆盖真实 task-tab create/hold、
+  `getTabs/closeTab` 与 verified release/close，publish deadline=`1,000 ms`、release target offset=`27,000 ms`，
+  成功 Promise 必须在 `28,000 ms` 完成。跨该 absolute deadline 的一次 barrier 可增加 wall delay，但不得把
+  deadline 重置成新的 relative timeout。Coordinator 既有 jitter 不得旁路：scheduled run 的 delay exact 为
   `SHA256(UTF8(ruleId+"|"+hostKey+"|"+scheduledFor ISO))` 前四 byte big-endian `mod 501` ms；因此在无 barrier
   穿过 settlement deadline 时 grant 不得早于 `R(i,r)+jitter(i,r)`；jitter seed 仍用真实 S，不得改用 R。sample
   barrier 只能按 §15.6.2 暂停并保持原 absolute deadline。每个 warmup/measurement run 还冻结以下 QPC
   deadline：
-  release 后的 scheduler/HostGate 同步装配不得另加等待；Session `about:blank` task Tab 从 create admission 到
-  verified publish `≤1,000 ms`；qualification port 从 publish 到 acquisition settlement 位于上述
-  `[28,000,30,000] ms`；第二次 Source revalidation 至进入 `WatchProcessingService.process()`、取得
+  release 前、jitter 中或 grant 前的一次 barrier 最多增加 `H=2,250 ms`，跨 acquisition deadline 的另一次
+  barrier 最多增加一个 H；其它 barrier phase 也必须落入同一 absolute-deadline 状态机。第二次 Source
+  revalidation 至进入 `WatchProcessingService.process()`、取得
   `observedAt` `≤500 ms`；从 observedAt 到 Event/Baseline/Run 结果事务提交并释放 run `≤500 ms`。因此令
-  `j∈[0,500]`、`x∈[28,000,31,500]`，Event 时间严格满足
-  `O(i,r)=R(i,r)+j(i,r)+x(i,r)`，整个 run 又满足
-  `C(i,r)≤R(i,r)+32,500`。任何单项或总 deadline 越界均为
+  `j∈[0,500]`，Event 时间相对 release 满足 `O-R∈[28,000,33,500]`；完整 Coordinator slot 满足
+  `Lslot_min=28,000`、
+  `Lslot_max=H+500+A+H+500+500=34,000 ms`，即 `C-R≤34,000`。任何单项或总 deadline 越界均为
   `BLOCKED/timing-environment`，不能丢弃该 M0、重选 seed 或只保留满足时序的 Rule。
 
   由此 coalesce/new Event 不再落在边界：两组预期合并的最坏上界均为
-  `900,000+(500+31,500)-(0+28,000)=904,000 < 1,800,000 ms`，保留 `896,000 ms` 安全裕量；第三轮相对
+  `900,000+33,500-28,000=905,500 < 1,800,000 ms`；第三轮相对
   第一轮的新 Event 最坏下界为
-  `1,845,000+(0+28,000)-(500+31,500)=1,841,000 >= 1,800,000 ms`，保留 `41,000 ms` 安全裕量。
+  `1,845,000+28,000-33,500=1,839,500 >= 1,800,000 ms`；r3-r2 的合并上界为
+  `855,000+33,500-28,000=860,500 < 1,800,000 ms`。
   这两个不等式覆盖所有 M0、全部 25 条 event Rule、全部允许 jitter、task-tab、barrier/acquisition 与
   revalidation/processing 极值；不得以 nominal 等于边界、关闭 jitter 或改 coalesce 窗口替代。
 
   全局产品并发峰值必须为 4；wave 明确定义为连续 index `{4w,4w+1,4w+2,4w+3}`，四条同一
-  scheduleOffset、分别落在四个 host；相邻 wave release 相隔 33,000 ms，严格大于上一 wave 的 32,500 ms
-  settlement 上界，同 host grant 也远大于 5 秒，故零排队串扰、全局峰值 4、单 host 峰值 1。最后一轮最后
-  wave 的 commit 上界为
-  `M0+2,700,000+828,000+32,500=M0+3,560,500`，即 measurement 结束前 `39,500 ms`；不能把未完成 run
+  scheduleOffset、分别落在四个 host；相邻 release wave 相隔 `34,200>34,000 ms`，同 host 的最小真实 grant
+  gap 为 `34,200-2,250-500=31,450 ms`，故零 HostGate 排队串扰。跨 round 的相邻 gap 依次为
+  `79,200/124,200/34,200 ms`，均严格大于 Lslot。最后一轮最后 wave release 为
+  `M0+3,525,800`，commit `≤M0+3,559,800<U=M0+3,600,000`，tail margin=`40,200 ms`；不能把未完成 run
   带入 drain。Session Rule 在 consent exact-check 后，由 qualification adapter
   只把上述编译期 manifest target 映射到 `about:blank`，仍调用真实 BrowserController create 与
   WatchTaskTabWorkspace own/release；不得接受 caller URL、导航用户 Tab、调用 BrowserWatchReader 或输出
@@ -2224,28 +2271,47 @@ watch.db 上限和
 - 该 seam 不产生真实 `ClientRequest`/`IncomingMessage`/socket/Provider/temp entry。因此 H3b 逐 sample 的
   Watch registry oracle 固定：`http-request|http-response|socket|provider-attempt|watch-temp-lease` 始终为 0，
   且 trace/OS 排水零残留；不得制造 synthetic socket/伪 HTTP event 追求非零峰值。H3a 单独证明前三类真实
-  网络生命周期。`host-grant` 必须恰有 567 对 register/unregister：从 HostRequestGate 成功更新
-  `lastStartedAt` 到对应 acquire Promise 向 caller settlement 的短生命周期；25 个四并发初始化批使 trace-prefix
-  live peak=4，但正式 10 秒 sample 可为 0，绝不能把它伪延长 28 秒。`task-tab` trace/sample peak=4，
-  `watch-timer|digest-timer|watch-async-operation` 各至少 1，`watch-store|watch-db` 在服务存活期各恰 1；task
+  网络生命周期。`host-grant` 必须恰有 567 对 register/unregister（initialization100+warmup67+
+  measurement400），per-host=`141/142/142/142`；每个 expected attempt 必须 first-attempt success、恰一对、
+  无 retry/missing/duplicate、同 host gap≥5 秒、`waitedForGap=false`、complete/final live=0。它只覆盖
+  HostRequestGate 成功更新 `lastStartedAt` 到 acquire Promise 向 caller settlement 的短生命周期，正式 sample
+  为 0 合法，historical peak=`1..4` 只作诊断，绝不能伪延长成 28 秒 lease。全局并发硬证据由独立真实
+  `coordinator-slot` 承担：register 与 `activeGlobal++`/active identity 在首个 await 前的同一 sequencer 临界点；
+  unregister 在完整 Source revalidation、HostGate、task-tab cleanup、acquisition、processing、writer、requeue 后，
+  与 `activeGlobal--` 位于同一 finally 临界点且早于下一次 pump。它 exact pairs=567、historical peak=4、任意
+  prefix never>4、361 个 measurement sample 的 max=4、complete/final=0。通用
+  `watch-async-operation` 仍覆盖全部 nested unsettled Promise，只要求合法配对、既定阈值和 final0，禁止按 detail
+  过滤后冒充全局 exact4。`task-tab` exact total=`20+20+80=120`、trace/sample peak=4、final0，但不替代
+  100 Rule 的全局 owner。`watch-timer|digest-timer|watch-async-operation` 各至少 1，
+  `watch-store|watch-db` 在服务存活期各恰 1；task
   tab/WebContents binding 逐项真实。Node/Job/OS totals 仍包含 Electron 自身网络或 observer 资源，不能按上述
   registry 零值扣除。
 - initialization/warmup 只能产生 Baseline/unchanged，故 measurement 前 digest journal high-water 必须恰为 0；
-  非零立即 `FAIL-product`。`i=33` 的首个 warmup wave 正好在 W0 到期，之后保持 33 秒波距；67 个 warmup run
-  的最后一波在 `M0-72,000 ms` 到期并最迟于 `M0-39,500 ms` settle。只有逐 run 终态与 high-water=0 都已
-  重读确认后，才可在固定 `M0-10,000 ms` 以一个 qualification-only exact-two transaction 创建两个 active
-  daily DigestSchedule，最坏仍有 `29,500 ms` 的前置确认裕量；未按时
+  非零立即 `FAIL-product`。`i=33..99` 的 67 个 warmup run 首波在 W0 release，之后保持 34.2 秒 release
+  波距；末波 `M0-52,800` release 且 `≤M0-18,800` 完成，至第一轮 measurement release `M0+5,000`
+  的 release gap=`57,800 ms`、完成裕量=`23,800 ms`。逐 run 终态与 high-water=0 重读确认后，必须先完成 M0 shared boundary 的 matching
+  sample-close/recovery，再以一个 qualification-only exact-two transaction 创建两个 active daily
+  DigestSchedule，并在 `M0+3,000 ms` 前完成 exact readback/high-water=0；未按时
   完成即 `BLOCKED/timing-environment`，不得移动 M0。000 的 `id` 为上述首个 digest UUID、
-  `sourceIds=[sourceId(0)..sourceId(49)]` 且在 `M0+24 分钟` 到期；001 的 `id` 为第二 UUID、
-  `sourceIds=[sourceId(50)..sourceId(99)]` 且在 `M0+46 分钟` 到期，数组严格按 index。
+  成员集合按 manifest index `0..49` 选取并在 `M0+24 分钟` 到期；001 的 `id` 为第二 UUID、成员集合按
+  index `50..99` 选取并在 `M0+46 分钟` 到期。两者持久化、读回与 corruption scan 的 `sourceIds` 数组均按
+  unsigned UTF-8 bytes 严格升序且唯一，禁止把 index order 直接写入 validator 会拒绝的数组。
   两者 exact common fields 为 `version=1,timeZone="UTC",localTime=nextDueAt 的 HH:mm,aiEnabled=false,
-cursorSequence=0,state="active",lastConsumedScheduledFor=null,lastDailyLocalDate=null,createdAt=updatedAt=M0-10 秒,
+cursorSequence=0,state="active",lastConsumedScheduledFor=null,lastDailyLocalDate=null,createdAt=updatedAt=M0 boundary,
 lastCheckedAt=null,lastPeriod=null,lastRunStats=null`；`nextDueAt` 分别为上述两个 ISO 时刻。不得读取 Provider/凭据，
-  且两 schedule 在本负载均只到期一次。000 的前 50 个成员 round 0/1 最晚 commit 是
-  `M0+900,000+432,000+32,500=M0+1,364,500`，距 due 还有 `75,500 ms`；round 2 最早只在
-  `M0+1,881,000` release，所以其 frozen upper 只能覆盖完整两轮。001 的后 50 个成员 round 0/1/2 最晚 commit
-  是 `M0+1,845,000+828,000+32,500=M0+2,705,500`，距 due 还有 `54,500 ms`；其 round 3 最早到
-  `M0+3,132,000` 才 release，所以 frozen upper 只能覆盖完整三轮。任何边界上的 queued/running run 都依
+  且两 schedule 在本负载均只到期一次。独立生成器还必须逐 byte 命中以下 canonical 数组 artifact：
+
+  ```text
+  D0 index permutation=[32,5,34,40,15,12,30,49,25,37,27,19,41,1,8,47,21,46,11,16,7,13,17,42,20,2,43,36,9,22,31,14,35,3,38,45,26,18,33,28,48,39,4,24,10,44,29,0,6,23]
+  D0 JSON UTF-8 bytes=1951; SHA-256=3b8b7861854044ac55240680dfcf76161261544cdd3ceb286e7e28f82353dd7d; first=018fa3d4-d473-4879-a747-542b1df283e6; last=fc4a4312-2376-4bd5-af11-122267bf11be
+  D1 index permutation=[71,72,79,93,53,66,77,74,76,67,99,65,63,94,88,69,80,68,97,89,91,62,60,61,56,52,57,82,96,64,73,70,59,92,98,86,58,55,87,83,78,81,85,90,50,84,75,51,54,95]
+  D1 JSON UTF-8 bytes=1951; SHA-256=7225b4d9000aa989994f0784cb7245cccb46e0094b661067c2147f76c2ae44d3; first=06b58f31-696a-41ea-ad48-3b1adad687c6; last=ec82c36c-ada0-46dd-b556-d0234260365f
+  ```
+
+  000 的前 50 个成员 round 0/1 最晚 commit 是
+  `M0+1,349,400`，距 due 还有 `90,600 ms`；round 2 最早只在 `M0+1,850,000` release，所以其 frozen upper
+  只能覆盖完整两轮。001 的后 50 个成员 round 0/1/2 最晚 commit 是 `M0+2,704,800`，距 due 还有
+  `55,200 ms`；其 round 3 最早到 `M0+3,115,400` 才 release，所以 frozen upper 只能覆盖完整三轮。任何边界上的 queued/running run 都依
   §11.2 延后，绝不预记入 runStats/observation/Event；两个 Digest 各须在 due 后 30 秒内提交唯一
   facts/artifact，仍远早于 60 分钟 measurement end。
 
@@ -2257,6 +2323,15 @@ lastCheckedAt=null,lastPeriod=null,lastRunStats=null`；`nextDueAt` 分别为上
   facts JSON 仍须命中既有 49,152-byte 上限、cursor 原子推进并产生一条应用内通知；Rule
   `muted=true` 使即时通知为 0，Windows system notification 不作为本负载硬门。计数、到期或 batch 任一漂移
   都是 `FAIL-product`，不得换 seed/延后 due/拆 batch 挑绿。
+
+- legacy-red 只用于证明旧 `d06cb3d` 合同不能满足当前 oracle，并明确标为历史 superseded：旧 descriptor
+  788 bytes、SHA-256=`7af65b3943123cc0a0e415ac23599699ea1cb2c076928aad6b434324f6b933a1`，first
+  offset=`30,000`、step=`8,400`、nominal rounds=`[0,15,30,45]min`、Digest001 due=`+40min`。
+  冻结 `M0(m)=2026-09-02T00:00:00.000Z+m*60s,m=0..1439` 后，旧 Event count 全日分布必须为
+  `13:84,14:363,15:545,16:352,17:96`；“96/1440”仅对该明确日期成立，不得称 canonical UTC day。
+  稳定单点 red 固定 `M0=2026-09-02T00:00:00.000Z`、actual=`14`、required=`17`。相关 event index 的
+  `(j0,j2)` 为 `i51=(327,16),i55=(80,328),i59=(489,102),i63=(296,256)`，只有 i55 创建第二个 Event。
+  不得重跑挑选旧设计偶发得到 17 的 M0。
 
 - 启动后预热精确 10 分钟，预热样本全部排除；随后正式观察精确 60 分钟；停止 admission 并正常退出后排水
   精确 10 分钟。三段持续时间只由 Windows QueryPerformanceCounter 裁决；UTC 审计时间只由 wall clock 产生。
@@ -2424,11 +2499,18 @@ sample-open 前，前一 sample-close 必须已成功；complete 后剩余 drain
 继续生成，不再向已退出产品发 request。重复 request slot 是协议违约；§15.6.1“同 slot 最早样本”只处理
 harness collector 调度产生的重复 OS observation，不授权重复产品请求或挑选产品 frame。
 
-register/unregister payload exact keys 扩为 `{bindingToken,identity,registry}`；registry 只允许
-`host-grant|http-request|http-response|socket|watch-timer|digest-timer|provider-attempt|task-tab|watch-async-operation|watch-store|watch-db|watch-temp-lease`，
+register/unregister payload exact keys 扩为 `{bindingToken,detail,identity,registry}`；registry 只允许
+`host-grant|coordinator-slot|http-request|http-response|socket|watch-timer|digest-timer|provider-attempt|task-tab|watch-async-operation|watch-store|watch-db|watch-temp-lease`，
 identity 固定为 `<registry>:<本轮 type-local 严格递增且永不复用的十进制 uint64>`；除
 `watch-temp-lease` 外 bindingToken 必须为 null；temp unregister 必须复述对应 register 的同一 token，temp
 binding 见下表；同一 token 同时绑定多个 live identity、token 复用或 identity/token 任一未配对都属协议违约。
+没有 registry-specific detail 的既有 registry 必须 `detail=null`。`coordinator-slot` detail exact keys 为
+`{entryIndex,hostSlot,phase,round}`；`host-grant` detail exact keys 为
+`{attemptOrdinal,entryIndex,grantElapsedMs,hostSlot,phase,round,waitedForGap}`，其中 phase 只允许
+`initialization|warmup|measurement`，前两类 round=null、measurement round=0..3，hostSlot=index mod 4，
+attemptOrdinal=1，grantElapsedMs 是非负 safe integer，waitedForGap=false；不得含 hostKey、URL、路径或秘密，
+unregister 必须复述 register 的相同 detail/identity。host-grant frame 只能由真实 HostGate 成功更新
+`lastStartedAt` 的线性化 hook 产生，禁止从 manifest synthetic 生成。
 所有 registry acquire/release 和 sample 在 main 的同一 qualification sequencer 上串行：register 的线性化点是
 底层资源成功创建、完成必要安全校验，但尚未发布给任何 consumer 之前；unregister 是底层 close/settlement 已
 成功、资源仍在 registry entry 中时，随后才删除 entry。失败 acquire 不发 register；失败 close 不得
@@ -2446,7 +2528,13 @@ elapsed 驱动；M0 是该合成 UTC timeline 上满足 §15.6.1 的整分钟。
 由 harness QPC 裁决；product monotonic elapsed 与相邻 QPC slot 相差超过 2 秒或任一来源异常时，资格记
 `BLOCKED/timing-environment`，不得退回 `Date.now()` 拼持续时间。
 
-`sample-open` 的可实现顺序唯一为：① sequencer 同步关闭本 slot 的 run/digest/fixture admission（qualification
+`sample-open` 同时定义物理 frame 与逻辑线性化：`t_frame` 是已认证 sample-open request 完整 frame
+completion，`t_lin` 是 sequencer dequeue/linearization，`t_sample` 是 product sample frame completion/enqueue，
+`t_close` 是 matching sample-close request 完整 frame completion，`t_resume` 是 sample-closed enqueue 与 Clock
+resume 完成。必须满足 `t_frame≤t_lin≤t_sample≤t_close≤t_resume`、`t_lin-t_frame≤500 ms`、
+`t_sample-t_lin≤250 ms`、`t_sample-t_frame≤750 ms`、`t_close-t_sample≤1,250 ms`、
+`t_close-t_frame≤2,000 ms`、`t_resume-t_close≤250 ms`。所有外部 deadline 从 t_frame 起算，dequeue、partial
+progress 或 resume 均不得重置。`sample-open` 的可实现顺序唯一为：① sequencer 同步关闭本 slot 的 run/digest/fixture admission（qualification
 运行期间 renderer Watch mutation admission 始终关闭）；② 在同一 JS turn 调 decorator 的 pause hook，逐 owner
 以底层 Clock `clearTimeout` 当前 handle 并保存原 absolute business deadline，禁止延长/重建为“从 resume 再等
 完整 delay”；已经排入 event queue 但尚未调用的旧 generation callback 只能命中 decorator 的 stale-generation
@@ -2457,8 +2545,8 @@ barrier 后 register，禁止复用旧 timer identity；因此 sample 内 timer 
 ③ 等待的是 sequencer 前一 writer 已离开和 mutation-in-progress=0，不等待仍真实 live 的 acquisition/Promise/
 Tab/handle=0，否则会把峰值洗掉；④ 在同一 main 单线程 turn 设置 barrier flag，并同步取得 registry prefix、
 `process.memoryUsage().heapUsed`、`process.getActiveResourcesInfo()`、WebContents/binding、logical DB bytes 和
-counter；⑤ 最迟在收到完整 sample-open 后 250 ms 内 enqueue `sample`，保持 barrier 等 harness 取 OS/Job/
-File/Battery 样本；⑥ harness 必须在 sample frame completion 后 1,500 ms 内发送匹配 `sample-close`，且
+counter；⑤ 最迟在逻辑 linearization 后 250 ms、完整 sample-open frame 后 750 ms 内 enqueue `sample`，保持
+barrier 等 harness 取 OS/Job/File/Battery 样本；⑥ harness 必须在 sample frame completion 后 1,250 ms 内发送匹配 `sample-close`，且
 open→close 总计不得超过 2,000 ms；⑦ sequencer 在 barrier 内验证 token/prefix，先 enqueue 紧邻下一 sequence
 的 `sample-closed`，再清 barrier、恢复 admission/timer。
 
@@ -2467,14 +2555,16 @@ resume 先把全部暂停项按 `(absolute deadline,ownerKind,timerIdentity)` �
 递增整数。仍在未来者同步 `setTimeout(deadline-now)`；已到或已过者也按该顺序各只排入一个 0-delay callback，
 由既有 scheduler/coordinator 正常逻辑决定 catch-up/next due，绝不补发多个 callback、改变 `scheduledFor` 或
 重置 15 分钟 anchor。因而与 M0+24/+46 sample 同时到期的 Digest 必须按上述 frozen upper 先截断；尚未完成或
-release 尚未来到的 acquisition 只能进入后续 cycle，固定 period 计数不受 barrier close 时刻改变。pause 前已经
-live 的业务资源保持注册并进入 sample；它们的 completion
-source 也必须先被对应 owner pause。barrier flag 为 true 时，除匹配 sample-close 外任何 register/unregister、
+release 尚未来到的 acquisition 只能进入后续 cycle，固定 period 计数不受 barrier close 时刻改变。同一 slot 内
+sample 与 Digest/fixture 到期时先完成 sample barrier；resume 后 sequencer 固定先处理 DigestScheduler，再处理
+qualification fixture。writer 已进入同步临界段时先让 writer 完成，再 linearize sample；queued/running run 一律
+不进入 frozen upper。pause 前已经 live 的业务资源保持注册并进入 sample；它们的 completion source 也必须先被
+对应 owner pause。barrier flag 为 true 时，除匹配 sample-close 外任何 register/unregister、
 counter/terminal、timer set/clear、temp create/delete/rename 或 Store mutation 尝试都**不得排队等待**，而是
 立即使本 slot 与整次 run `FAIL-product/barrier-mutation`、关闭永久 admission 并进入失败 teardown；这保证
 sample 对应唯一真实 prefix，而不是靠延迟 mutation 伪造一致。sample/sample-closed 间不得有 event frame。
-若 open/pause/snapshot/sample 超过 250 ms、产品未按序 resume 或产品导致 close 无法处理是 `FAIL-product`；
-若 trace 证明产品按时 sample 而 harness 未在 1,500/2,000 ms deadline 发 close，则是
+若 frame→linearization、logical→sample、frame→sample 或 frame→close 任一超出上述预算、产品未按序 resume
+或产品导致 close 无法处理是 `FAIL-product`；若 trace 证明产品按时 sample 而 harness 未在 1,250/2,000 ms deadline 发 close，则是
 `BLOCKED/harness-timeout`。任一 timeout 都永久关闭 admission并终止，不得静默释放 barrier 后继续挑样。
 
 sample payload exact keys 为
@@ -2680,6 +2770,10 @@ pipe trace 未完整结束或任一全零 slot 缺失均为 `FAIL-product`；Res
 改阈值。
 
 ### 15.7 标准 Windows/GPU 生命周期资格
+
+`BLOCKED/timing-environment` 只允许用于运行环境未满足本节已经数学自洽、由全域枚举证明的固定 absolute
+deadline。合同内部 overlap、等号依赖、缺失 owner 上界或互相矛盾的派生数字一律是契约缺陷，不能写成环境
+阻塞，也不得通过后移 M0、换 seed、重跑或挑选 Rule 消除。
 
 “受支持的标准 Windows 环境”固定为 Windows 11 24H2 build 26100 或 Windows 11 25H2 build 26200 的 x64
 版本，且资格日仍在 Microsoft servicing；其它/未来版本须另行 REPLAN 后才能加入，不因版本号更高自动放行。
@@ -2951,6 +3045,8 @@ revalidated)` 单调更新。方案 B
 - **#S6-075**（H1 资源 REPLAN，2026-09-02）：DB/文件/异步排水的事实源冻结为非 renderer、非日志的
   qualification named-pipe trace + 可重放 product registry，以及 FileId/Restart Manager/目录枚举交叉证据；
   gauge 必须按真实 close/settlement 归零，未处理异常/拒绝与重复终态为从 0 开始只增的失败 counter。
+  通用 `watch-async-operation` 保持覆盖全部 nested Promise；全局 exact peak4 由独立真实
+  `coordinator-slot` 从 `activeGlobal++` 到 finally `activeGlobal--` 证明，二者不得混淆。
 - **#S6-076**（H1 证据校正，2026-09-02）：D10 计时根因是 `setTimeout(100)` 后以 `Date.now()` 差值
   判定，已观察过 99 ms 失败；H1 本轮固定 8 文件单次运行又得到 47/47，只证明概率抖动仍存在，不恢复
   完成资格。H2 必须以可控单调时钟建立确定性红态并修复，禁止重跑挑绿。
@@ -2959,10 +3055,14 @@ revalidated)` 单调更新。方案 B
   DACL 和双向 PID+creation 核验。高熵 telemetry 名与 nonce 只能由不含秘密、按 suspended main PID 定位的
   bootstrap 在核验后一次性交付，禁止 args/env/inherited handle/log/persistence 泄露；协议采用 exact-key JCS、
   bounded incremental UTF-8、overlapped deadline、单连接无重连、严格双向 sequence 与 sample barrier。
+  register/unregister root 扩为 exact `{bindingToken,detail,identity,registry}`；detail 只允许本节有界 ordinal，
+  禁止 hostKey、URL、路径与秘密。
 - **#S6-078**（H1 采样一致性 REPLAN，2026-09-02）：register/unregister/sample 的线性化点统一进入 main
   qualification sequencer；每个 sample 由 open/close barrier 固定唯一事件前缀。observer 不注册为 Watch 资源，
   但不得从 Job/OS/main/Node totals 扣除。Watch temp entry 只在独立无 reparse root 内创建，并用 nonce-HMAC
   opaque bindingToken 与 OS relative-entry 枚举逐项相等，pipe 永不传路径/正文/URL/凭据。
+  sample 同时冻结物理完整 frame 与逻辑 sequencer linearization；所有外部 deadline 从 frame completion 起算，
+  logical open 不得重置 2 秒总门。
 - **#S6-079**（H1 电池 REPLAN，2026-09-02）：Battery Class 枚举补齐 tag absence/error、exact input/output
   struct/returned-byte、relative/unknown、PowerState/Rate/SystemPowerStatus 全交叉矩阵和每 slot 热插拔重枚举。
   no-battery 只允许完整成功枚举且所有 port documented absence 与系统 flag 一致；任何 API/cleanup/集合不确定
@@ -2975,10 +3075,14 @@ revalidated)` 单调更新。方案 B
   `watch-h3b-load-v1` 100-entry manifest；唯一 acquisition seam 是 Coordinator 既有 `WatchAcquisitionPort` 的
   bootstrap-authenticated main-only 实现。它复用 HostRequestGate/Session task-tab/Diff/Condition/Event/Digest/
   Store 所有权点但不创建网络；HTTP registry 固定零且由 H3a 另证，禁止放宽 NetworkPolicy 或伪造 socket。
+  Source bootstrap 只在 isolated empty DB 由 SourceService-owned 窄入口维护 normalizer、Source/FTS/tag
+  不变量，并以 deterministic v4-shaped identity 和真实 Service readback/双 revalidation 关闭资格入口。
 - **#S6-082**（H1 sample REPLAN，2026-09-02）：sample-open 先关闭 admission，并以 qualification-only 同步
   Clock decorator 暂停 HostGate/Scheduler/Digest/Coordinator/fixture 全部 timer、保存 absolute deadline；只等
   sequencer writer quiesce，再于单一 JS turn 截 main snapshot，OS sample/close 后按原 deadline resume。Clock
   公共接口不变，barrier 中 mutation 立即使整轮失败，不能排队或等 live gauge=0 后采样。
+  当前收敛把 `t_frame/t_lin/t_sample/t_close/t_resume` 子预算统一纳入 frame→close≤2 秒、recovery≤250 ms；
+  pausable Clock 始终恢复原 absolute deadline。
 - **#S6-083**（H1 overlapped REPLAN，2026-09-02）：named-pipe 每个 CONNECT/READ/WRITE 独占
   OVERLAPPED/event/buffer owner；deadline 的 `CancelIoEx` 成功或 `ERROR_NOT_FOUND` race 后都必须等待唯一 final
   completion，之后才 release/reuse。cancel/close/disconnect 与 main/harness crash 均按该状态机收口。
@@ -2986,6 +3090,7 @@ revalidated)` 单调更新。方案 B
   HMAC-SHA-256 key，并只留 native locked owned memory；domain-separated message、无 padding output、collision
   fail 与 zeroize 时点固定。协议 canonicalization 是 RFC 8785：UTF-16 key order、不 normalization、先拒绝
   non-NFC/duplicate/lone surrogate/invalid UTF-8/非安全整数，product/harness 独立跑 frozen golden。
+  Source deterministic id 使用公开独立 SHA-256 domain，不复用 HMAC key、nonce 或协议 JCS secret domain。
 - **#S6-085**（H1 Battery tag REPLAN，2026-09-02）：query-tag success 必须 non-invalid tag；只有
   `ERROR_FILE_NOT_FOUND` failure+observed invalid tag 是 documented empty port。初始 `ERROR_NO_SUCH_DEVICE` 为
   invalid；合法 tag 后该错误只走 stale/change 并下 slot 重枚举，no-battery 仍须所有 port 完整 absence。
@@ -2996,10 +3101,22 @@ revalidated)` 单调更新。方案 B
 - **#S6-087**（H1 coalesce 时序 REPLAN，2026-09-02）：废止四轮 nominal 恰在 30 分钟边界的
   `D+0/15/30/45` 观察时序。Rule 的真实 scheduledFor/15 分钟 nextDue 仍不变，authenticated
   qualification-only release gate 把四轮固定为 `D+[0,15,30.75,45]` 分钟；100 Rule 改为每四条同波、
-  33 秒波距。按 jitter、task-tab、28–30 秒 acquisition/barrier、revalidation/processing/writer 全部 worst-case，
-  coalesce 上界 904,000 ms、新 Event 下界 1,841,000 ms；两个 Digest 只截完整两轮/三轮并固定为
+  33 秒 business 波距。当前 #S6-088 的 34.2 秒 release geometry supersede 本项旧数值；15 分钟真实
+  scheduledFor、`Q=[0,15,30.75,45]min`、strict 30 分钟 coalesce 与禁止挑绿保持。按全部 worst-case，
+  coalesce 上界改为 905,500/860,500 ms、新 Event 下界改为 1,839,500 ms；两个 Digest 只截完整两轮/三轮并固定为
   `48/52/0 + 24/12`、`78/72/0 + 39/26`。任何 M0、seed、Rule 或时延越界均 fail-closed，禁止关 jitter、
   改 30 分钟语义或挑绿。
+- **#S6-088**（H1 timing/sample 收敛，2026-09-03）：business `D=M0+5,000+33,000*w` 与真实
+  scheduledFor 分离于 qualification `R=M0+5,000+34,200*w+Q`；完整 `Lslot≤34,000 ms` 包含 Session
+  verified close。25×4 初始化使用31秒间隔，warmup固定33..99，Digest在M0 sample恢复后3秒内 seed；所有
+  相邻波、跨 round、tail 与 sample frame deadline 以严格不等式全域证明。
+- **#S6-089**（H1 Source/artifact 收敛，2026-09-03）：Source id 改为公开 domain 的 deterministic
+  v4-shaped SHA-256；Rule/Digest/Document 保持 UUIDv5。SourceService-owned empty-DB bootstrap 维护
+  Source/FTS/tag 与真实 projection/fingerprint不变量；Digest按index选成员、按unsigned UTF-8 bytes存储。
+  descriptor/expanded/array hashes与所有golden必须由Node和独立PowerShell/.NET逐byte一致生成。
+- **#S6-090**（H1 concurrency/grant 收敛，2026-09-03）：HostGate grant仅证明567 expected pairs、
+  per-host 141/142/142/142、gap/no-wait/final0，peak仅诊断；全局hard peak4由与Coordinator activeGlobal同
+  临界点的`coordinator-slot`证明。通用async registry、task-tab子集与Coordinator owner保持各自真实语义。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。

@@ -185,7 +185,9 @@ H3b 是本任务的后续正式资格实现，不受“只改 smoke 模块”的
   terminal latch；`watch-ipc.ts`、`watch-notification-service.ts`：renderer admission、notification Promise/
   terminal。只在确有真实生命周期所有权的文件接线，不允许以集中轮询或测试 snapshot 冒充。
 - `src/main/sources/sources-store.ts`、`src/main/sources/source-service.ts` 只允许新增 native-authenticated、
-  exact-version/hash、空 DB 才可调用且不进入 shared SourceService 的固定 100 Source seeder；对应 repository
+  exact-version/hash、isolated fresh empty DB 才可调用且不进入公共 SourceService API 的 SourceService-owned
+  固定 100 Source seeder；它必须复用 normalizer，在一个事务保持 sources100/FTS100/tag-links0，并经真实
+  `getSourceWatchProjection` 全量读回；对应 repository
   现有 insert/transaction 不改通用 SQL 形状。负载必须利用 `watch-run-coordinator.ts` 已有 constructor DI
   注入 qualification port；
   `watch-acquisition-service.ts`/`public-watch-http-client.ts`/NetworkPolicy 只允许真实生命周期 registry 接线，
@@ -197,12 +199,20 @@ H3b 是本任务的后续正式资格实现，不受“只改 smoke 模块”的
 
 实施前必须建立能在 legacy HEAD 稳定为红的 oracle，至少逐项证明：
 
+当前唯一 manifest/timing/artifact 合同是：descriptor 1,502 bytes、SHA-256
+`3f59d95d74d373ef57e80eb56d05c4c9620a6e2bc2db8637ce5ddee48b5b85c3`；expanded manifest 34,252 bytes、
+SHA-256 `5652b57e407b728e78a090b56aa84a73bc81f6b977e8a9e6211d3a48c15b6beb`；首末 Source 为
+`e93ee316-71ae-4fff-a374-c0ea3ab12fdc`/`3f00bf7e-b7f0-4117-bb66-90e6732c2bf1`，首末 offset
+`5,000/797,000`。Source 采用公开 domain SHA-256 deterministic v4-shaped id；Rule/Digest/Document 用
+UUIDv5。business `D=M0+5,000+33,000*w`，qualification release
+`R=M0+5,000+34,200*w+[0,900,000,1,845,000,2,700,000]`，完整 `Lslot≤34,000 ms`；初始化25×4、
+31秒间隔，warmup indices33..99共67次，Digest在M0 boundary sample恢复后且不晚于M0+3秒seed，due分别为
+M0+24/M0+46分钟。此段 supersede 下列legacy-red中所有旧manifest数值，但不删除其红态证据。
+
 1. legacy HEAD 没有 authenticated `watch-h3b-load-v1` controller/manifest/acquisition port；旧 smoke 的小型即时
-   fixture 无法产生 891-byte descriptor（SHA-256
-   `823c33af49f69a6734cae78aa692c0fae39d9408d221438f273217801e47f83f`）/34,260-byte expanded manifest
-   （SHA-256 `3b77612df1c7420231046e1c40c9dad4622d216809a2232e93e9726a65fbbb27`）的固定 hash/UUID
-   golden、精确 100 Source/Rule、首末 schedule offset `36,000/828,000`、四 host 同波/33 秒波距、短 state/不变
-   near-budget padding 投影、seed 前冻结的 24 分钟 M0 lead/setup deadline、67 warmup+400 measurement runs、
+   fixture 无法产生上段当前 descriptor/expanded manifest 的固定 hash/golden、精确 100 Source/Rule、首末
+   schedule offset、四 host 同波、33秒 business/34.2秒 release 波距、短 state/不变
+   near-budget padding 投影、冻结的 24 分钟 M0 lead/setup deadline、67 warmup+400 measurement runs、
    28 秒 acquisition 压力，以及 `24/12`、`39/26` observation/Event 的单 artifact Digest oracle，必须稳定红。
    新增
    port 仅在 bootstrap capability 后可达；env/argv value、
@@ -219,8 +229,11 @@ H3b 是本任务的后续正式资格实现，不受“只改 smoke 模块”的
    `await setTimeout` 或等 live operation=0 冒充 barrier。实现后按 detailed §15.6.2 的
    pause→writer quiesce→同步
    main snapshot→sample ack→OS sample→close→absolute-deadline resume 顺序，trace prefix 与 snapshot 逐
-   identity 恒等；barrier 中注入任一 mutation 必须整轮稳定红，而非排队。固定负载必须使 host-grant 恰好 567
-   对且 initialization trace-prefix peak=4（不得伪延长到 28 秒）、task-tab trace/sample peak=4，timer/async/
+   identity 恒等；barrier 中注入任一 mutation 必须整轮稳定红，而非排队。物理frame→linearize≤500ms、
+   logical→sample≤250ms、frame→sample≤750ms、sample→close≤1,250ms、frame→close≤2,000ms、
+   close→resume≤250ms，dequeue不重置deadline。固定负载必须使 host-grant 恰好567对、
+   per-host141/142/142/142、gap/no-wait/final0（peak仅诊断，不得伪延长到28秒）；独立真实
+   coordinator-slot必须567对、historical/sample peak4、never>4、final0；task-tab exact120/peak4/final0，timer/async/
    store/db 达到冻结峰值；`http-request|http-response|socket|provider-attempt|watch-temp-lease`
    必须全程为 0，H3a 另证真实网络，禁止 synthetic socket/event。
 4. `watch-temp-lease` 的 32-byte raw nonce HMAC binding 与无 reparse 专属 root 的 OS relative entries 逐项
@@ -239,18 +252,28 @@ H3b 是本任务的后续正式资格实现，不受“只改 smoke 模块”的
    §15.6/§15.7 唯一 oracle 裁决。`CreatePipe/SetHandleInformation/STARTF_USESTDHANDLES`、exact 三-handle list、
    parent endpoint close、满 capture 后继续异步 drain、fatal classifier、root exit+Job empty+双 EOF 都有机器
    red vector；observer 资源不进 Watch registry，但必须仍出现在 Job/handle/Node totals。
-7. coalesce legacy-red 必须独立调用现有 `computeJitterMs()` 相同算法并覆盖 event Rule 的全部轮次：旧
-   `D+[0,15,30,45]` nominal 设计在 canonical UTC day 的 1,440 个整分钟 M0 中，第二 Digest 固定 17 Events 只
-   有 96 个 M0 成立，测试必须稳定红；不得重跑挑其中 96 个。新 descriptor 的 scheduledFor 仍按 15 分钟，
-   release 固定 `D+[0,15,30.75,45]`，测试须枚举同一 1,440 M0×100 Rule，并另对
-   `jitter=0|500`、task-tab=`0|1,000`、acquisition/barrier=`28,000|30,000`、processing-entry=`0|500`、
-   writer=`0|500` 的全部边界向量作笛卡尔积；Event 时间只取 processing-entry，last commit 另加 writer。
-   每个预期 coalesce 必须证明实际 Event 时间差 `≤904,000 <1,800,000`
-   ms，每个预期 new Event 必须证明 `≥1,841,000 >=1,800,000` ms；last commit 必须
-   `≤M0+3,560,500`。Digest 000/001 只能读取已经完整提交的两轮/三轮，分别精确断言
+7. coalesce legacy-red 必须独立调用现有 `computeJitterMs()` 相同算法并覆盖 event Rule 的全部轮次。冻结旧
+   `d06cb3d` descriptor=788 bytes/SHA=`7af65b3943123cc0a0e415ac23599699ea1cb2c076928aad6b434324f6b933a1`、
+   first=30,000、step=8,400、rounds=0/15/30/45、Digest001 due=40min 与日期2026-09-02 UTC；全1440分钟分布
+   必须为`13:84,14:363,15:545,16:352,17:96`，midnight稳定red为`14!=17`，不得重跑挑96个绿态。
+   新 descriptor scheduledFor 仍按15分钟；release固定34.2秒波距与上述Q，测试须至少枚举4个UTC date的
+   `1,440×100×4`（至少2,304,000 jitter，覆盖0/500）和release前、jitter、grant前后、task-tab create、
+   acquisition/close、第二次revalidation、processing/writer全部barrier phase/边界笛卡尔积。
+   每个预期 coalesce 必须证明实际 Event 时间差`≤905,500/860,500<1,800,000`，每个预期new Event必须证明
+   `≥1,839,500>=1,800,000`；相邻/跨round全部release gap严格>`34,000`，last commit必须
+   `≤M0+3,559,800`。Digest 000/001 只能读取已经完整提交的两轮/三轮，分别精确断言
    `changed/unchanged/failed=48/52/0, observation/Event=24/12` 与
    `78/72/0, 39/26`；queued/running 或下一轮任一 row 被预记都稳定红。任何 M0/Rule/边界失败都整体红，
    不能关 jitter、改 coalesce `<30m`、按 M0 选 seed 或降低断言。
+8. 两套独立生成器必须命中 Source首末、Rule首末、Digest两个id及Document代表golden（以detailed-design
+   §15.6.1为唯一值），并命中Digest canonical数组各1,951 bytes及SHA
+   `3b8b7861854044ac55240680dfcf76161261544cdd3ceb286e7e28f82353dd7d`/
+   `7225b4d9000aa989994f0784cb7245cccb46e0094b661067c2147f76c2ae44d3`。register/unregister root exact keys为
+   `{bindingToken,detail,identity,registry}`；host-grant detail exact keys为
+   `{attemptOrdinal,entryIndex,grantElapsedMs,hostSlot,phase,round,waitedForGap}`，coordinator-slot detail为
+   `{entryIndex,hostSlot,phase,round}`，不得包含hostKey、URL、路径或秘密。Source seed必须拒绝非空库、重复/
+   非法v4-shaped id、canonical/FTS不一致及真实Service missing/unavailable，且不能绕过Coordinator两次
+   Source revalidation、NetworkPolicy或真实HostGate。
 
 上述红态、实现、聚焦绿态、全量/构建/production smoke、隐私/垃圾/进程终检和新的独立 H3b 安全/资源
 Reviewer `PASS` 缺一不可。当前 H1/H2/H3a 不得预跑或声称这些 H3b 结果。
