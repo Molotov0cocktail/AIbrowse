@@ -1,7 +1,7 @@
 # D11 — Sixth Stage 新独立 Stage Auditor、Exit Gate 判定与文档闭环
 
-> **当前状态：HOLD/PENDING。**H4 PASS 前禁止启动本任务；历史 D11 尚未执行，不能沿用旧上下文或旧
-> `47/47` 证据。
+> **当前状态：HOLD/PENDING。**H4 PASS 前禁止启动本任务；历史 D11 尚未执行，不能沿用旧上下文、
+> `observedForMs=99` 失败或任一次偶发 `47/47` 作为 H2 已修证据。
 
 ## 目标
 
@@ -47,7 +47,10 @@ Closer 合同收尾后，才满足本任务前置。
 - H3a 三项全部为真实产品路径证据：公网 RSS/Atom、无 RSS public Page Watch fallback、真实失败分类/退避/
   清理且零假 Event；fixture 不替代。
 - H3b 完整满足 detailed-design §15.6 固定资源 oracle 与 §15.7 标准 Windows/GPU 生命周期；当前机器
-  `GPU process isn't usable. Goodbye.` 记录不得被其它机器成功覆盖。
+  `GPU process isn't usable. Goodbye.` 记录不得被其它机器成功覆盖。资源证据必须来自 §15.6 冻结的专属
+  Windows Job 累计 CPU、PID+creation time 瞬时资源、main 单值 heap、逐 Node type+总量、Battery Class
+  absolute mWh 与结构化可回放 registry/DB owner 排水；日志字符串、当前成员 CPU 求和、relative battery、
+  文件存在性或顶层变量置 null 均不能替代。
 - Provider 与 Windows packaged notification 不是 Exit Gate 硬门：确定性 Digest 在无 Provider 时仍成功且
   `explanation=null`；应用内通知必需，系统 sink identity 不可用时诚实 unavailable。不得用“恰好一次底层
   HTTP 请求”评判 Provider PASS。

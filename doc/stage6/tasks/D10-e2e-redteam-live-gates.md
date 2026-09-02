@@ -60,9 +60,10 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 
 ## 验收证据回填（2026-09-02）
 
-> **H1 校正（2026-09-02）**：本节旧 `47/47` 与 `b9d956d…` baseline 声明已过期。当前专项状态是
-> `46/47`；新的 D10 Reviewer 必须使用 `d85667c…` 为完整审查起点。历史成功数字只能作为历史记录，
-> 不能覆盖当前失败。
+> **H1 校正（2026-09-02）**：本节旧 `47/47` 与 `b9d956d…` baseline 声明已过期。已有一轮
+> `observedForMs=99` 失败，H1 REPLAN 又在同一固定集合单次观察到 `47/47`；两者共同分类为
+> `unstable-timing-defect`，不能把概率性绿态写成修复。新的 D10 Reviewer 必须使用 `d85667c…` 为完整
+> 审查起点。
 
 ### 状态、范围与独立审查
 
@@ -81,7 +82,8 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 
 ### 结构性证明与受控机器证据
 
-- D10 专项集合固定为以下 8 个文件、47 项；当前结果 `46/47`：
+- D10 专项集合固定为以下 8 个文件、47 项；最新一次单次结果为 `47/47`，但当前资格仍因未稳定计时缺陷
+  HOLD：
 
 | 测试文件                                 |   项数 |
 | ---------------------------------------- | -----: |
@@ -95,8 +97,10 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 | `src/main/smoke-watch-digest.test.ts`    |      1 |
 | **合计**                                 | **47** |
 
-- 唯一当前失败是 `smoke-watch-live.test.ts` 的“生产资源端口把测量窗口与排水窗口分开并保留真实时间戳”：
-  实际 `observedForMs=99`，断言要求 `>=100`。旧 `47/47` 仅是过期历史记录，不是当前完成证据。
+- `smoke-watch-live.test.ts` 的“生产资源端口把测量窗口与排水窗口分开并保留真实时间戳”仍为概率性缺陷：
+  产品使用 `setTimeout(100)` 后的 `Date.now()` 相减；已有轮次实际 `observedForMs=99`、断言 `>=100` 失败。
+  H1 REPLAN 按上述固定 8 文件只运行一次，结果 `47/47`；未自动重跑，也不以这次偶发绿态覆盖 99ms 证据。
+  H2 仍必须建立确定性红态并修复单调计时 oracle。
 - 全量 Vitest：`3427/3427`；`typecheck`、`lint`、`format`、`build`、dev/production 冒烟均退出码 `0`。
 - `AIBROWSE_SESSION_SMOKE=set|check`、`AIBROWSE_SOURCES_SMOKE=set|check`、
   `AIBROWSE_SOURCES_UI_SMOKE=set|check`、`AIBROWSE_RESEARCH_SMOKE=set|check`、
@@ -113,27 +117,27 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 下表将结构性证明、受控机器观察和真实环境条件分栏；`PASS` 仅表示当前栏的证据已经满足对应 oracle，
 不把真实环境未具备写成通过。
 
-| 红队项 | 结构性证明 / 确定性 oracle                                        | 受控机器结果                                                          | 真实环境观察 / 限制                        |
-| ------ | ----------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------ |
-| WRT-01 | 地址分类与 IPv6 普通 GUA allowlist fail-closed                    | `PASS`，特殊/未分配地址零 socket                                      | 未依赖公网                                 |
-| WRT-02 | DNS 混合解析、连接时换绑与批准地址 lookup                         | `PASS`，整次拒绝                                                      | 未依赖公网                                 |
-| WRT-03 | 端口、scheme、redirect、downgrade 逐跳复验                        | `PASS`，危险目标零后续请求                                            | 未依赖公网                                 |
-| WRT-04 | 共享 deadline、abort/destroy、业务终态与 emitter-local drain      | `PASS`，超时/慢流/压缩/多地址/redirect 夹具通过                       | 未依赖公网                                 |
-| WRT-05 | RobotsGate、RFC 9309 octet/逐行解析、预算与 host 间隔             | `PASS`，robots 资格/边界/429/伪造入口断言通过                         | 公网 RSS/Atom 场景为 `blocked-environment` |
-| WRT-06 | DTD/entity/XInclude 零 resolver、零文件/网络副作用                | `PASS`，XXE/Billion Laughs 夹具 fail-closed                           | 未依赖公网                                 |
-| WRT-07 | XML 编码、深度、名称、属性、文本、节点和投影预算                  | `PASS`，各 `==` 接受、`+1` 拒绝                                       | 未依赖公网                                 |
-| WRT-08 | Feed identity/去重、排序噪声与 observation idempotency 分离       | `PASS`，A→B→A→B→A 四观察和中间 Evidence 保留                          | 未依赖公网                                 |
-| WRT-09 | Session grant 一次性、绑定与精确 task-tab 所有权                  | `PASS`，用户 Tab 返回 id 等敌手路径零 close/navigate                  | 未依赖公网                                 |
-| WRT-10 | 重启 catch-up、焦点恢复、login/captcha、abort/cleanup fail-closed | `PASS`，owned Tab/用户 Tab/基线与事件 oracle 通过                     | 未依赖公网                                 |
-| WRT-11 | Region、table fingerprint、iframe 与噪声边界                      | `PASS`，歧义/跨域 iframe 不制造假 Event                               | 未依赖公网                                 |
-| WRT-12 | Hash-only、Evidence、Condition warning/error 分支确定性分离       | `PASS`，unexplainable 与 condition_error 均按契约处理                 | 未依赖公网                                 |
-| WRT-13 | DigestFacts/ExplanationValidator 白名单、canonical 与零工具       | `PASS`，注入/duplicate/extra/non-canonical draft 整份拒绝             | Provider 凭据不可用，零真实调用            |
-| WRT-14 | sharing 三档、Source note 隔离、factsRevision/hash CAS            | `PASS`，blocked/metadata 不越界，scrub 后迟到写回拒绝                 | Provider 凭据不可用，零真实调用            |
-| WRT-15 | 通知隐私 DTO、dedupe 与内部 UUID 路由                             | `PASS`，query/敏感摘录默认隐藏，8×11 隐私矩阵通过                     | Windows 打包通知：未打包，`NOT RUN`        |
-| WRT-16 | schedule reservation、DST/回拨、missed 合并与退出语义             | `PASS`，三写原子、每 Rule 一次 catch-up、已消费 slot 不重放           | 未依赖公网                                 |
-| WRT-17 | Source rowVersion/fingerprint 分离、CAS、durable intent/reconcile | `PASS`，metadata 不丢结果，locator/删除竞态零孤儿网络                 | 未依赖公网                                 |
-| WRT-18 | watch.db 预算、journal/cursor、复合 FK、v3/v4/v5 migration 与恢复 | `PASS`，v5 默认回填/旧列恒等、逐语句回滚、重开、future=6 零写入均通过 | 正式长时资源资格另列限制                   |
-| WRT-19 | 公共 HTML SAX 零脚本/子资源/Cookie 与有界投影                     | `PASS`，script/iframe/私网子资源/巨树夹具通过                         | 未依赖公网                                 |
+| 红队项 | 结构性证明 / 确定性 oracle                                        | 受控机器结果                                                        | 真实环境观察 / 限制                        |
+| ------ | ----------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------ |
+| WRT-01 | 地址分类与 IPv6 普通 GUA allowlist fail-closed                    | `PASS`，特殊/未分配地址零 socket                                    | 未依赖公网                                 |
+| WRT-02 | DNS 混合解析、连接时换绑与批准地址 lookup                         | `PASS`，整次拒绝                                                    | 未依赖公网                                 |
+| WRT-03 | 端口、scheme、redirect、downgrade 逐跳复验                        | `PASS`，危险目标零后续请求                                          | 未依赖公网                                 |
+| WRT-04 | 共享 deadline、abort/destroy、业务终态与 emitter-local drain      | `PASS`，超时/慢流/压缩/多地址/redirect 夹具通过                     | 未依赖公网                                 |
+| WRT-05 | RobotsGate、RFC 9309 octet/逐行解析、预算与 host 间隔             | `PASS`，robots 资格/边界/429/伪造入口断言通过                       | 公网 RSS/Atom 场景为 `blocked-environment` |
+| WRT-06 | DTD/entity/XInclude 零 resolver、零文件/网络副作用                | `PASS`，XXE/Billion Laughs 夹具 fail-closed                         | 未依赖公网                                 |
+| WRT-07 | XML 编码、深度、名称、属性、文本、节点和投影预算                  | `PASS`，各 `==` 接受、`+1` 拒绝                                     | 未依赖公网                                 |
+| WRT-08 | Feed identity/去重、排序噪声与 observation idempotency 分离       | `PASS`，A→B→A→B→A 四观察和中间 Evidence 保留                        | 未依赖公网                                 |
+| WRT-09 | Session grant 一次性、绑定与精确 task-tab 所有权                  | `PASS`，用户 Tab 返回 id 等敌手路径零 close/navigate                | 未依赖公网                                 |
+| WRT-10 | 重启 catch-up、焦点恢复、login/captcha、abort/cleanup fail-closed | `PASS`，owned Tab/用户 Tab/基线与事件 oracle 通过                   | 未依赖公网                                 |
+| WRT-11 | Region、table fingerprint、iframe 与噪声边界                      | `PASS`，歧义/跨域 iframe 不制造假 Event                             | 未依赖公网                                 |
+| WRT-12 | Hash-only、Evidence、Condition warning/error 分支确定性分离       | `PASS`，unexplainable 与 condition_error 均按契约处理               | 未依赖公网                                 |
+| WRT-13 | DigestFacts/ExplanationValidator 白名单、canonical 与零工具       | `PASS`，注入/duplicate/extra/non-canonical draft 整份拒绝           | Provider 凭据不可用，零真实调用            |
+| WRT-14 | sharing 三档、Source note 隔离、factsRevision/hash CAS            | `PASS`，blocked/metadata 不越界，scrub 后迟到写回拒绝               | Provider 凭据不可用，零真实调用            |
+| WRT-15 | 通知隐私 DTO、dedupe 与内部 UUID 路由                             | `PASS`，query/敏感摘录默认隐藏，8×11 隐私矩阵通过                   | Windows 打包通知：未打包，`NOT RUN`        |
+| WRT-16 | schedule reservation、DST/回拨、missed 合并与退出语义             | `PASS`，三写原子、每 Rule 一次 catch-up、已消费 slot 不重放         | 未依赖公网                                 |
+| WRT-17 | Source rowVersion/fingerprint 分离、CAS、durable intent/reconcile | `PASS`，metadata 不丢结果，locator/删除竞态零孤儿网络               | 未依赖公网                                 |
+| WRT-18 | watch.db 预算、journal/cursor、复合 FK、v3/v4/v5 migration 与恢复 | DB 结构门 PASS；专项最新单次 47/47，但 99ms/100ms 未稳定计时仍待 H2 | 正式长时资源资格另列限制                   |
+| WRT-19 | 公共 HTML SAX 零脚本/子资源/Cookie 与有界投影                     | `PASS`，script/iframe/私网子资源/巨树夹具通过                       | 未依赖公网                                 |
 
 ### 真实条件与诚实限制
 
@@ -143,8 +147,10 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 - Windows packaged notification：未打包、`NOT RUN`；这是非阻断条件性观察，应用内通知及 unavailable
   降级仍为必需产品证据。
 - Session 真实登录网站是条件性观察；task-owned Tab、授权、重启、隐私和失败闭环受控门仍是硬门。
-- H3b 正式资源资格：`condition-unavailable/observation-insufficient`，未宣称 PASS；当前隔离 userData 启动仍
-  有 `GPU process isn't usable. Goodbye.`，在同机最小 Electron 对照闭环前分类为 `BLOCKED`。
+- H3b 正式资源资格：`condition-unavailable/observation-insufficient`，未宣称 PASS；资源实现必须严格采用
+  detailed-design §15.6 的 Job accounting、逐 Node type/总量、电池 Battery Class IOCTL、可回放产品 registry
+  及 DB/FileId/Restart Manager 排水口径。当前隔离 userData 启动仍有
+  `GPU process isn't usable. Goodbye.`，在同机最小 Electron 对照闭环前分类为 `BLOCKED`。
 
 ## H2 计时修复合同（H1 后生效）
 
@@ -152,7 +158,8 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 2. 测量/排水持续时间、窗口归属和 deadline 只由单调时钟裁决；wall clock 只生成独立可审计 UTC 时间戳。
 3. 保留 `observedForMs >= 100`；不得降低/放宽断言、删除用例、skip、自动重复或选择成功轮次覆盖失败。
 4. H2 只修计时/oracle 与相应 D10 证据；不得提前执行真实网络、资源资格、Provider 或 Windows 通知。
-5. H2 Reviewer PASS 后，当前专项必须是同一固定 8 文件/47 项集合的稳定 `47/47`。
+5. H2 Reviewer PASS 后，当前专项必须是同一固定 8 文件/47 项集合在确定性 clock seam 下的稳定 `47/47`；
+   H1 的单次 `47/47` 不满足本条。
 
 ## 后续严格顺序
 

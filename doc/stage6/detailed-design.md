@@ -2083,18 +2083,66 @@ FakeProvider、fixture-only 结果或主观“无明显问题”均不能替代�
 
 #### 15.6.2 唯一采集来源与计算
 
-| 指标                          | 唯一来源与聚合                                                                                                                                  | 统计方法                                                                                                                 |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 进程树                        | 每个 slot 从 AIbrowse main PID 递归枚举仍存活的 Electron/Node 子进程；PID+creation time 为身份，退出进程不沿用 PID                              | 当前成员逐进程求和；成员数另记峰值                                                                                       |
-| CPU                           | Windows `GetProcessTimes` 的 user+kernel 累计值                                                                                                 | 相邻有效 slot 的进程树增量 ÷ 单调 elapsed ÷ 启动时冻结的 logical processor 数 ×100，故为全机归一化百分比，不是单核百分比 |
-| RSS/working set/private bytes | Windows `GetProcessMemoryInfo(PROCESS_MEMORY_COUNTERS_EX)`；Windows 上 RSS 的正式口径就是进程 working set，另取 private usage                   | 每 slot 对同一进程树分别求和；API 对任一成员失败则该 slot 对应指标无效                                                   |
-| heap                          | AIbrowse main 进程 `process.memoryUsage().heapUsed`                                                                                             | 单值；不把无法同口径获得的 renderer heap 猜成聚合值                                                                      |
-| handles                       | Windows `GetProcessHandleCount`                                                                                                                 | 进程树求和                                                                                                               |
-| WebContents/task Tab          | `webContents.getAllWebContents()` 与 WatchTaskTabWorkspace owned 集合                                                                           | 总数及 Watch-owned 数分别记录                                                                                            |
-| Node 活动资源                 | main `process.getActiveResourcesInfo()`                                                                                                         | 按资源类型计数；保留原始闭合类型计数，不持久化路径/正文                                                                  |
-| 请求/socket/timer             | HostRequestGate active grant、Public HTTP request/response/socket registry、WatchScheduler/DigestScheduler timer 和 in-flight Provider registry | 只读正式 smoke 观察端口计数；不得根据 OS socket 猜归属                                                                   |
-| DB/文件                       | WatchStore 连接 registry；受控 userData 中 `watch.db`、`-wal`、`-shm` 与 Watch 临时目录                                                         | handle 数、存在性和字节数；路径只留在仓库外 ledger                                                                       |
-| 电源                          | Windows `GetSystemPowerStatus` 加系统电池容量/能量计数器                                                                                        | 不新增产品电池接口；状态和读数由 OS/仓库外受控 harness 采集                                                              |
+正式资格用一个仓库外 x64 原生 harness 启动 clean production build。harness 先创建不设置
+`JOB_OBJECT_LIMIT_BREAKAWAY_OK/JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK` 的专属 Windows Job Object，再以
+`CreateProcessW(..., CREATE_SUSPENDED, ...)` 启动 AIbrowse main、在首条指令前
+`AssignProcessToJobObject`，成功后才 `ResumeThread`。若当前宿主 job 无法形成合法嵌套、assign/查询失败或
+资格进程不是该 job 成员，环境前置为 `BLOCKED`；不得退回按 PID 前缀、映像名或采样时当前成员累计 CPU。
+`GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)` 在 resume 前冻结 logical processor 数。
+
+资格模式还必须在 main 最早装配处启用只读 `WatchResourceQualificationPort`。它只经 harness 创建的、当前
+用户 DACL 限制且名称/256-bit nonce 每轮随机的双向 Windows named pipe 接受 `sample(slotIndex)` 并返回
+exact-key canonical JSON；不进入 preload/renderer/常规 IPC/日志，非资格启动零行为。每帧含
+`qualificationRunId/sequence/slotIndex/kind/payload`；sequence 从 1 连续递增。所有 registry 同时发
+`register/unregister` 事件，sample gauge 必须等于 harness 从事件前缀重放得到的 live identity 集合；序列缺口、
+旧 run/nonce、重复 identity、未配对 unregister、硬编码 snapshot 或产品发出的 schema/canonical 错误均为
+`FAIL-product`；pipe 创建/连接或 collector 自身故障且尚无产品违约证据才是 `BLOCKED/evidence-insufficient`。
+固定负载必须实际观察 Store/timer/request/async-operation 等相应 registry 的非零峰值，不能用全零端口通过。
+该端口可复用已有 `WatchTaskTabWorkspace` owned set、Scheduler size、HostRequestGate/
+HTTP lifecycle 与 admission/drain 所有权点；H3b 只补缺失的只读 registry/计数，不增加产品依赖或公开能力。
+
+线上编码固定为 UTF-8 JSON Lines（无 BOM，每行一个 RFC 8785 canonical JSON）。common frame exact keys 为
+`{qualificationRunId,sequence,slotIndex,kind,payload}`；event/complete 的 `slotIndex=null`，sample 为非负整数。
+`kind` 只允许 `register|unregister|sample|complete`。register/unregister payload exact keys 为
+`{registry,identity}`；registry 只允许
+`host-grant|http-request|http-response|socket|watch-timer|digest-timer|provider-attempt|task-tab|watch-async-operation|watch-store|watch-db|watch-temp-lease`，
+identity 固定为 `<registry>:<本轮严格递增且永不复用的十进制 uint64>`。sample payload exact keys 为
+`{mainHeapUsedBytes,nodeActiveByType,webContentsIds,taskTabBindings,registryLive,watchLogicalDbBytes,counters}`；
+`nodeActiveByType` 是按 type UTF-8 字节序排列的 `{type,count}` 数组，`registryLive` 是固定 registry enum 顺序的
+`{registry,identities}` 数组；每个 identities 按十进制后缀数值升序。`webContentsIds` 是 Electron 整数 id
+升序数组；`taskTabBindings` 是按 registry identity 数值后缀排序的
+`{identity,tabId,webContentsId}` 数组，其中 tabId 保留 BrowserController 已有不透明 string identity。所有数组
+不得重复，所有 count/bytes/WebContents id 都是 JSON safe-integer 范围内非负整数，
+`counters` exact keys 为
+`{uncaughtExceptionTotal,unhandledRejectionTotal,duplicateTerminalAttemptTotal}`。complete payload exact keys 为
+`{registryLive,counters}`，必须在 admission closed、全部 live registry 为空且三个 counter 均为 0 后发送，随后
+main 才可关闭 pipe/退出。harness 收到 complete 与干净 EOF 后，以已重放的空集合和最后 counter 继续生成余下
+drain slot；此时产品内值不会因通道消失被猜成 0，OS/Job/File/RM 事实仍逐 slot 实采。EOF 前无 complete、
+complete 后仍有 event、非空 registry/counter、canonical/schema/sequence 不符均为 `FAIL-product`；pipe/RM/文件
+采集器自身故障且无产品违约证据才是 `BLOCKED/evidence-insufficient`。
+
+唯一来源冻结如下：
+
+| 指标                          | 唯一来源、身份与聚合                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 进程树与 CPU                  | `QueryInformationJobObject(JobObjectBasicProcessIdList)` 完整 active 列表；成员 identity 为 `PID + GetProcessTimes.lpCreationTime FILETIME`。另用 `CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS)` 交叉检查仍可沿 parent 链追到 main 的活进程均在 job；发现产品子进程逃逸为 `FAIL-product`。CPU 唯一累计量是 `JobObjectBasicAccountingInformation.TotalUserTime + TotalKernelTime`（100 ns ticks），它同时包含 active 与已经退出的 job 成员；相邻 job 累计差 ÷ QPC elapsed ÷ 冻结 logical processor 数 ×100，故采样间新建/退出进程不会漏算。job counter 回退/溢出或 active list 不完整使该 slot CPU 无效；不按 PID 做模运算。 |
+| RSS/working set/private bytes | 对该 slot 完整 job active list 中每个 identity 调用 `GetProcessMemoryInfo(PROCESS_MEMORY_COUNTERS_EX)`，working set 是 Windows RSS 正式口径，`PrivateUsage` 是 private bytes；分别求和。                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| handles                       | 对同一完整 active identity 集逐个 `GetProcessHandleCount` 后求和。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| AIbrowse main JS heap used    | 资格端口在 main 调用 `process.memoryUsage().heapUsed` 的单值；不聚合、不推测 renderer/utility JS heap。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| WebContents/task Tab          | main 的 `webContents.getAllWebContents()` 以 `webContents.id` 去重计总数；WatchTaskTabWorkspace 每个 owned entry 分配一个不复用的资格 registry identity，并在 `taskTabBindings` 绑定既有 task tabId 与恰一个 live WebContents id。只输出这些 identity/count/binding，不输出 URL/title。                                                                                                                                                                                                                                                                                                                                     |
+| Node 活动资源                 | main `process.getActiveResourcesInfo()`；每个返回字符串先 NFC，且须匹配 `^[A-Za-z][A-Za-z0-9_.:-]{0,127}$`，随后按 exact case key 计数并以 UTF-8 字节序输出。unknown/new type 不过滤、不重命名；API 抛错、非法 key 或非数组使该 slot 本指标无效。                                                                                                                                                                                                                                                                                                                                                                           |
+| Watch runtime registries      | HostRequestGate grant；Public HTTP `ClientRequest`、`IncomingMessage`、socket；Watch/Digest scheduler timer；Provider attempt；task-owned Tab；Watch async operation。identity 均为本轮从 1 递增的 type-local integer，不得用对象字符串或日志推断。request 在实际创建后 register、其 `close` 后 unregister；response 在交付后、安装 drain 前 register，其 `close` 后 unregister；socket 首次交付时 register、真实 `close` 后 unregister；grant/timer/provider/tab 沿各自 acquire/release、set/clear、claim/finish、own/release 点配对。                                                                                     |
+| Store/DB                      | `openWatchStore` 成功创建并发布 Repository 前 register 一个 Store identity，`repo.dispose()` 内 `closeDb` 返回后才 unregister；`openWatchDb/closeDb` 对每个真实 `DbHandle` 同样配对。逻辑大小只调用 Repository 写前预算所用的同一 `SQL_ESTIMATE_LOGICAL_BYTES`/估算函数，不另造算法。                                                                                                                                                                                                                                                                                                                                       |
+| DB 文件与 Watch 临时目录      | 固定 identity 只有隔离 userData 下的 `watch.db`、`watch.db-wal`、`watch.db-shm` 三个 path-kind 和资格时创建的专属 Watch temp root；绝对路径只在仓库外 ledger。每个正式/排水 slot 用 `CreateFileW(FILE_READ_ATTRIBUTES)`（共享 read/write/delete）+ `GetFileInformationByHandleEx(FileIdInfo/FileStandardInfo)` 记录存在、volume serial+file id 与字节；不存在记 absent，打开/查询失败记 invalid。temp root 用 `FindFirstFileW/FindNextFileW` 不跟随 reparse point，计相对 identity、目录/文件数和字节，并与产品 temp lease registry 逐项相等。                                                                              |
+| DB 文件 owner                 | 不使用未文档化系统 handle 枚举，也不把“文件存在”冒充“连接仍开”。正式 slot 0 与每个 drain slot 对三个 path-kind 分别创建独立 `RmStartSession → RmRegisterResources(仅该存在 path) → RmGetList → RmEndSession`；absent path 的 owner 固定为 0，禁止在一个 session 注册多个 path 后猜逐路径归属。每 path 以 `RM_UNIQUE_PROCESS.PID + ProcessStartTime` 去重，只统计 qualification job identity。任一 Restart Manager 调用或 `ERROR_MORE_DATA` 扩容重取失败为该 path/slot 无效。                                                                                                                                                |
+| 异步/异常/终态                | `WatchAsyncOperationRegistry` 必须覆盖 renderer Watch IPC admission、run request/execute、public acquisition、Session acquire/release/cleanup、Digest cycle/batch/provider/notification 的每个已创建未 settled Promise；在创建/入队前 register，唯一 Promise 的 `finally` 后 unregister。main 最早的 `uncaughtExceptionMonitor`、既有 `unhandledRejection` 处理入口分别只增 `uncaughtExceptionTotal/unhandledRejectionTotal`；Run/Digest/HTTP 等终态所有权 latch 只有真正第二次争抢才只增 `duplicateTerminalAttemptTotal`，终态后的 transport 丢弃与幂等 cleanup 不计。三者是本轮单调 counter，不是可回落 gauge。           |
+| 电池/电源                     | 只用本节 15.6.4 冻结的 `GetSystemPowerStatus` + Battery Class SetupAPI/IOCTL 字段；不使用 WMI、ACPI vendor counter、性能计数器、估算运行时间或 `BATTERY_STATUS.Rate` 积分冒充能量差。                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+active process list 读取时若进程恰好退出，整个 RSS/private/handle 枚举在该 slot 内最多重试三次，每次都重新读取
+完整 Job PID list；保留第一个全部 identity 成功的结果，不按指标挑最小值。三次仍失败则这些指标该 slot
+invalid。PID 相同但 creation FILETIME 不同是新 identity；旧成员退出 CPU 已由 job 累计量保存，内存/handle
+则按采样瞬时 active 集计算。Job list buffer 不足时必须扩容直到
+`NumberOfProcessIdsInList == NumberOfAssignedProcesses`，否则该次不完整。
 
 对正式观察有效样本，数值升序排序。median：奇数取中值，偶数取中间两值算术平均；P95 使用 nearest-rank
 `sorted[ceil(0.95*n)-1]`；peak 取最大值。趋势使用全部有效样本对 `(elapsedHours,value)` 做带截距普通最小
@@ -2102,45 +2150,111 @@ FakeProvider、fixture-only 结果或主观“无明显问题”均不能替代�
 interval 值，不计算斜率。负数、NaN、counter 回退、重复单调时间戳或来源不完整均把该指标该 slot 记 invalid，
 按丢样规则处理，不得替换为 0。
 
+Node type 的统计 universe 是 361 个正式 sample 中所有合法 key 的并集；某 sample 未返回已知 key 时该 key
+计 0，新 key 在此前 sample 也回填 0。`nodeActiveTotal` 是该 sample 全部 key count 之和，distinct key 数仅作
+审计、不套资源阈值。首段固定为正式 slot 0..60，末段固定为 slot 300..360，各 61 个值；“末段相对首段 median
+增量”和 OLS slope 必须对**每一个 key 以及 `nodeActiveTotal`**分别通过，不能只看类型数或选一个有利类型。
+内部/native type 没有 ignore list；现有 `+4/+6 per hour` 就是唯一 allowance。API 不可见的 renderer/native
+资源不声称由本指标覆盖，分别由 Job、handle、WebContents 和产品 registry 门覆盖。
+
 #### 15.6.3 固定 PASS/FAIL 阈值
 
 所有行必须同时 PASS；任一有效指标越界即 `FAIL-product`。绝对内存峰值不超过标准 8 GiB 机器的 25%，
 steady-state 斜率用于拦截预热后泄漏，CPU 阈值用于保证 100 条最短周期规则仍不把桌面应用变成高频爬虫。
 
-| 指标                   | median     | P95        | peak       | 60 分钟 OLS slope |
-| ---------------------- | ---------- | ---------- | ---------- | ----------------- |
-| 全机归一化 CPU         | ≤5%        | ≤20%       | ≤60%       | N/A               |
-| 进程树 RSS/working set | ≤1,024 MiB | ≤1,536 MiB | ≤2,048 MiB | ≤24 MiB/hour      |
-| private bytes          | ≤1,280 MiB | ≤1,792 MiB | ≤2,048 MiB | ≤24 MiB/hour      |
-| 聚合 JS heap used      | ≤256 MiB   | ≤384 MiB   | ≤512 MiB   | ≤12 MiB/hour      |
-| Windows handle count   | ≤3,000     | ≤4,000     | ≤5,000     | ≤60/hour          |
+| 指标                       | median     | P95        | peak       | 60 分钟 OLS slope |
+| -------------------------- | ---------- | ---------- | ---------- | ----------------- |
+| 全机归一化 CPU             | ≤5%        | ≤20%       | ≤60%       | N/A               |
+| 进程树 RSS/working set     | ≤1,024 MiB | ≤1,536 MiB | ≤2,048 MiB | ≤24 MiB/hour      |
+| private bytes              | ≤1,280 MiB | ≤1,792 MiB | ≤2,048 MiB | ≤24 MiB/hour      |
+| AIbrowse main JS heap used | ≤256 MiB   | ≤384 MiB   | ≤512 MiB   | ≤12 MiB/hour      |
+| Windows handle count       | ≤3,000     | ≤4,000     | ≤5,000     | ≤60/hour          |
 
 另有离散硬门：Watch-owned task Tab/WebContents 任意时刻 `≤4`；HostRequestGate active acquisition、HTTP
-request 和 socket 各 `≤4`，同 canonical host 各 `≤1`；WatchScheduler 与 DigestScheduler 正式 timer 各
-`≤1`；Provider 调用数恒为 0；watch.db 逻辑大小 `≤104,857,600` bytes。进程树、全部 WebContents 与 Node
-活动资源类型计数在最后 10 分钟相对最初 10 分钟的 median 增量分别不得超过 `+4`、`+2`、`+4`，且 OLS
-slope 分别不得超过 `+6/hour`、`+1/hour`、`+6/hour`。
+request、response 和 socket 各 `≤4`，同 canonical host 的 grant/request/socket 各 `≤1`；WatchScheduler 与
+DigestScheduler 正式 timer 各 `≤1`；Provider attempt/call 恒为 0；Store/DB connection 在正常观察期各恰为
+`1`；Repository 同源逻辑大小 `≤104,857,600` bytes。产品 registry snapshot 与事件重放集合须恒等；DB
+file/temp OS 观察与相应 product registry 不得矛盾。
+
+active Job 进程数、全部 WebContents 数在末段 slot 300..360 相对首段 slot 0..60 的 median 增量分别不得
+超过 `+4`、`+2`，全 361 slot OLS slope 分别不得超过 `+6/hour`、`+1/hour`。Node 活动资源按 §15.6.2 的
+每个 normalized key **及总量**分别要求 median 增量 `≤+4`、OLS slope `≤+6/hour`；absent/new type 已按 0
+计，禁止改为“类型数量”或跨类型择优。
 
 #### 15.6.4 排水与电池
 
-正常退出开始即冻结 drain start：零新 Watch/Digest admission。60 秒内必须首次达到以下全零集合，并以
-10 秒间隔连续 6 个样本保持全零；此后直至 10 分钟排水结束的全部样本仍须为零：新 Watch 请求/socket、
-HostRequestGate grant、scheduler/digest timer、Provider registry、task-owned Tab/WebContents、WatchStore/
-watch.db/WAL/SHM handle、WAL/SHM 文件、Watch 临时目录、AIbrowse 本次进程树、未结算 Promise、未处理异常、
-重复终态。
-本次 userData 由 harness 在确认进程树和 handle 归零后删除，排水结束必须不存在；删除失败或任何复活均为
-`FAIL-product`。排水测量窗口不得与正式观察重叠，wall clock 差不能替代单调 60 秒/10 分钟裁决。
+正常退出开始即由 harness QPC 冻结 drain start，并先经资格端口确认 admission closed；此后任何新的
+Watch/Digest admission/register 事件都是 `FAIL-product`。60 秒内必须首次达到以下 gauge 全零集合，并以
+10 秒 slot 连续 6 个样本保持全零；此后至 10 分钟 drain end 的每个 slot 仍须为零：HostRequestGate grant、
+HTTP request/response/socket、scheduler/digest timer、Provider attempt、task-owned Tab/对应 WebContents、
+Watch async operation、Store/DB connection、DB file owner association、Watch temp lease/OS temp entry，以及
+qualification Job `ActiveProcesses`。`watch.db-wal`/`watch.db-shm` 必须 absent；`watch.db` 在 userData 删除前
+可以存在，但须 owner=0。
 
-电池子门按 OS 事实唯一分类：
+`uncaughtExceptionTotal/unhandledRejectionTotal/duplicateTerminalAttemptTotal` 是单调 counter：进程创建时
+基线必须均为 0，从首次资格帧到最后一帧任何值非 0 或回退都直接 `FAIL-product`，不等待排水、也不要求它们
+“回零”。registry 的 unregister 只有在对应 close/settlement 真实完成后发生；仅置空顶层变量、Promise 已
+resolve、写一条 cleanup 日志或进程即将退出都不能冒充释放。
 
-- OS 明确 `NoSystemBattery`：记录 `N/A—无电池设备`，电池子门通过但不得声称观察到趋势；
-- 有电池且全程 AC：核心资源结果可保留，但 H3b 尚未完成，必须在同一标准环境或另一合格标准电池环境补做
-  连续 30 分钟 on-battery 子窗口；不得把 AC 写成 N/A/PASS；
-- 有电池且 on-battery：正式 60 分钟窗口中必须有连续 30 分钟、每 10 秒采样、零 AC/充电切换的子窗口。
-  该窗口系统平均放电功率（能量计数器差 ÷ 单调小时）必须 `≤15 W`，归一化电量下降必须
+在 Job active=0、所有 DB owner association=0、temp lease/entry=0 后，harness 才删除本轮独立 userData 与
+temp root；drain end 复查两个 root 均 absent。删除失败、文件/registry 复活、named pipe trace 未完整结束或
+任一全零 slot 缺失均为 `FAIL-product`；Restart Manager/文件 API/结构化端口自身失败导致无法判断时为
+`BLOCKED/evidence-insufficient`。drain 窗口不得与正式观察重叠，wall clock 差不能替代 QPC 的 60 秒/10 分钟
+裁决。
+
+电池子门的唯一 Windows 采集算法如下；所有 device handle 每个 slot 内打开、查询、关闭，不进入产品进程：
+
+1. 每 slot 先调用 `GetSystemPowerStatus(SYSTEM_POWER_STATUS)`。再以
+   `SetupDiGetClassDevs(GUID_DEVCLASS_BATTERY, DIGCF_PRESENT|DIGCF_DEVICEINTERFACE)`、
+   `SetupDiEnumDeviceInterfaces`、`SetupDiGetDeviceInterfaceDetailW` 枚举 battery port；稳定 slot identity 取
+   `SetupDiGetDeviceInstanceIdW` 的 UTF-16 NFC 值（ledger 只存 SHA-256）。每 port 用 `CreateFileW` 后调用
+   `IOCTL_BATTERY_QUERY_TAG`（timeout=0）；identity 为 `(instance-id hash, BatteryTag)`，Tag 只在该 port 内
+   有意义，不能跨 port 去重。`GetSystemPowerStatus`、SetupAPI 枚举（以 `ERROR_NO_MORE_ITEMS` 正常终结）、
+   instance/detail 查询、CreateFile/IOCTL 或 handle/DeviceInfoList 清理任一步失败，以及重复 instance identity，
+   都使该 slot invalid；不得把枚举失败当作空集合/无电池。
+2. 对每个 tag 用 `IOCTL_BATTERY_QUERY_INFORMATION(BatteryInformation, AtRate=0)` 读取
+   `BATTERY_INFORMATION.Capabilities/FullChargedCapacity`，再以
+   `IOCTL_BATTERY_QUERY_STATUS` 读取 `BATTERY_STATUS.PowerState/Capacity/Rate`；输入
+   `BATTERY_WAIT_STATUS` 的 `BatteryTag` 为本 slot tag，`Timeout/PowerState/LowCapacity/HighCapacity`
+   全为 0。只纳入
+   `BATTERY_SYSTEM_BATTERY` 且非 `BATTERY_IS_SHORT_TERM` 的系统电池；任一纳入电池设置
+   `BATTERY_CAPACITY_RELATIVE`、FullChargedCapacity/Capacity 为 `BATTERY_UNKNOWN_CAPACITY`、
+   FullChargedCapacity=0、
+   `Capacity>FullChargedCapacity` 或字段/API 失败，则该电池 slot invalid，不能用 percentage/WMI 补值。
+3. 单 slot 状态先由 `SYSTEM_POWER_STATUS.ACLineStatus/BatteryFlag` 与全部纳入电池 PowerState 交叉判定。
+   先排除 `BatteryFlag=255` 或 `ACLineStatus=255` unknown；其余只有 `(BatteryFlag & 128) != 0` 且纳入集合
+   为空才是 `no-system-battery`。no-battery bit 与非空集合并存，或该 bit 为 0 且集合为空，均 invalid。对每块
+   电池，`BATTERY_CHARGING` 与 `BATTERY_DISCHARGING` 同时置位也 invalid。`ACLineStatus=1` 且集合非空固定
+   分类为 `ac-or-charging`；`ACLineStatus=0` 时，任一 `BATTERY_POWER_ON_LINE/BATTERY_CHARGING` 都是
+   矛盾并 invalid，零 online/charging 且至少一个 `BATTERY_DISCHARGING` 才是 `on-battery`，否则 invalid。
+   Rate 只作一致性检查：文档化单位在 absolute 模式为 mW，正数=charging、负数=discharging、0=无当前
+   rate；`BATTERY_UNKNOWN_RATE` 记 unknown 但不拿来积分。任一 CHARGING 电池的已知 Rate<0、任一
+   DISCHARGING 电池的已知 Rate>0，或 on-battery 中任一已知 Rate>0，都使 slot invalid。
+4. 多电池按 identity UTF-8 排序；每 slot 系统 remaining mWh=`sum(Capacity)`，full mWh=
+   `sum(FullChargedCapacity)`，归一化电量=`100*remaining/full`。候选 on-battery 子窗内 identity 集、tag、
+   FullChargedCapacity 必须逐 slot 恒等；任一 Capacity 相对前一 slot 上升、ULONG wrap、tag/集合改变或
+   counter 超范围都使该候选窗失效，不做模运算、不把回退夹成 0。若后续重新形成完整稳定窗，按下面规则
+   重新候选。
+5. 在正式 361 slots 中按时间从早到晚选择**第一个**零缺样、全部 on-battery 且 identity/counter 合法的连续
+   slot run；其 end 是 run 内第一个满足 `QPC(end)-QPC(start) >= 1,800 秒` 的样本。不存在则
+   `BLOCKED/condition-unavailable`，不得挑选功耗较低的后续窗口覆盖较早合格窗口。平均放电功率固定为
+   `sum_i(Capacity_start_i-Capacity_end_i) / QPC_elapsed_hours / 1000` W；归一化下降速率固定为
+   `(percentage_start-percentage_end) / QPC_elapsed_hours` percentage-points/hour。两项均用同一 start/end，
+   中间任一电池 regression 即无效。
+
+据此电池子门按 OS 事实唯一分类：
+
+- 全部正式 slot 均满足上述 `no-system-battery`：记录 `N/A—无系统电池`，电池子门通过但不得声称观察到
+  趋势；只靠某一 slot 或 BatteryFlag=128 与设备枚举矛盾不能 N/A；
+- 有电池且存在上述 on-battery 子窗口：该窗口系统平均放电功率必须 `≤15 W`，归一化电量下降必须
   `≤20 percentage-points/hour`；能量计数器和电量百分比两项均为必需且均须通过；
-- 电池/能量 API 任一失败、任一指标缺失、读数回退或只有单点：`BLOCKED/condition-unavailable`，不是 PASS
-  也不是产品 FAIL。
+- 有电池、不存在上述窗口且 361 个正式 slot 全部有效并均为 `ac-or-charging`：核心资源结果可保留，但 H3b
+  尚未完成，必须在同一标准环境或另一合格标准电池环境补做连续 30 分钟 on-battery 子窗口；不得把 AC 写成
+  N/A/PASS；
+- 其余有电池但无上述窗口的情况，包括 AC/on-battery 混合不足 30 分钟、API/字段失败、relative-only 电池、
+  设备/tag/reset/regression 或样本缺失：`BLOCKED/condition-unavailable`，不是 PASS 也不是产品 FAIL；
+- 合法 on-battery 窗的任一固定阈值越界：`FAIL-product`。若另一合格标准电池环境补测，只补电池子门并保留
+  原核心资源 run/环境 ledger；不能删除当前机器结果或从多个合法窗中选择有利值。
 
 这些电池阈值是标准 8 GiB 日常 Windows 笔记本在无其它前台负载下的整机上限，用于拒绝明显持续耗电；
 它不宣称精确归因单个进程。运行前必须记录显示器常亮、系统电源模式和零其它前台负载，运行后不得据结果
@@ -2192,7 +2306,8 @@ D10 后续关闭顺序：H1 → H2 → H3a → H3b → H4 → 新 D11
 ```
 
 H1 正式契约必须先经新的独立安全/资源 Reviewer `PASS`，Closer 更新 progress、提交并双远程 push 后才可
-开始 H2。H2 修复 D10 计时/oracle 与当前 46/47，Reviewer PASS 后才可 H3a；H3a 完成 §15.4 三个真实网络
+开始 H2。H2 修复 D10 的未稳定计时/oracle（保留已观察 99ms 失败和 H1 单次 47/47），Reviewer PASS 后才可
+H3a；H3a 完成 §15.4 三个真实网络
 硬门后才可 H3b；H3b 完成 §15.6/§15.7 后才可 H4；H4 使用新的独立 Reviewer 审查
 `d85667c54a354d322b0180d4c17873860a86c611..候选HEAD` 完整 D10 区间。只有 H4 PASS 才能启动一个新的
 独立 D11 Stage Auditor。任何步骤不得越序；Provider/Windows packaged notification 观察不得混入 H3a/H3b
@@ -2362,6 +2477,19 @@ revalidated)` 单调更新。方案 B
   按 §15.7 冻结；当前 `GPU process isn't usable. Goodbye.` 保持 BLOCKED，禁止 `--disable-gpu` 规避。
 - **#S6-072**（H1 REPLAN，2026-09-02）：后续顺序唯一为 H1 Reviewer/Closer → H2 → H3a → H3b → H4
   完整区间 Reviewer → 新 D11；任何步骤不得越序。
+- **#S6-073**（H1 资源 REPLAN，2026-09-02）：电池功率唯一口径冻结为 Windows Battery Class
+  SetupAPI + `IOCTL_BATTERY_QUERY_TAG/INFORMATION/STATUS` 的多电池 absolute mWh remaining 差，并以
+  `GetSystemPowerStatus` 交叉判定 AC/charging/on-battery/no-battery；relative/unknown/reset/regression 或
+  不足连续 30 分钟全部 fail-closed 为 condition-unavailable，不用 WMI/Rate 积分伪造功率。
+- **#S6-074**（H1 资源 REPLAN，2026-09-02）：资格进程树必须在 resume 前进入专属 Windows Job；CPU
+  唯一采用包含已退出成员的 Job accounting，active identity 采用 PID+creation FILETIME。main heap 是单值；
+  Node 活动资源每 exact type 及总量共同套阈值，absent/new=0，零 ignore list。
+- **#S6-075**（H1 资源 REPLAN，2026-09-02）：DB/文件/异步排水的事实源冻结为非 renderer、非日志的
+  qualification named-pipe trace + 可重放 product registry，以及 FileId/Restart Manager/目录枚举交叉证据；
+  gauge 必须按真实 close/settlement 归零，未处理异常/拒绝与重复终态为从 0 开始只增的失败 counter。
+- **#S6-076**（H1 证据校正，2026-09-02）：D10 计时根因是 `setTimeout(100)` 后以 `Date.now()` 差值
+  判定，已观察过 99 ms 失败；H1 本轮固定 8 文件单次运行又得到 47/47，只证明概率抖动仍存在，不恢复
+  完成资格。H2 必须以可控单调时钟建立确定性红态并修复，禁止重跑挑绿。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。
