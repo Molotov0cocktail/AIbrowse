@@ -349,6 +349,40 @@ request。Evidence 允许面只包含已验证且在分享/保留边界内的有
 - v1 退出应用后不监控，Windows 系统通知可能因打包身份不可用；
 - 跨两个 SQLite 文件没有原子事务，使用 durable intent + revalidation 达成 fail-closed，而非假称原子。
 
+### 7.4 D10 证据状态回填（2026-09-02）
+
+以下状态对应 D10 原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757` 至批准产品 HEAD
+`5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381` 的当前机器证据，并经新的独立 Reviewer `PASS`。本表只回填证据
+状态，不改变 WRT 定义、风险等级、正式 oracle 或安全边界；结构性证明、受控观察、真实环境观察严格分栏。
+
+| WRT    | 结构性证明 / 确定性 oracle                       | 受控机器观察                                | 真实环境观察与限制                                            |
+| ------ | ------------------------------------------------ | ------------------------------------------- | ------------------------------------------------------------- |
+| WRT-01 | PASS：地址分类/IPv6 allowlist                    | PASS：特殊/未分配地址零 socket              | 未依赖公网                                                    |
+| WRT-02 | PASS：DNS rebinding/混合解析                     | PASS：批准 lookup 外整次拒绝                | 未依赖公网                                                    |
+| WRT-03 | PASS：端口/scheme/redirect/downgrade 逐跳复验    | PASS：危险目标零后续请求                    | 未依赖公网                                                    |
+| WRT-04 | PASS：共享 deadline 与 transport drain 分层      | PASS：超时/慢流/压缩/多地址/redirect 夹具   | 未依赖公网                                                    |
+| WRT-05 | PASS：强制 RobotsGate、octet 匹配、预算/频率     | PASS：robots 语法/边界/429/伪造入口         | 公网 RSS/Atom 为 blocked-environment                          |
+| WRT-06 | PASS：DTD/entity/XInclude 零 resolver            | PASS：XXE/Billion Laughs fail-closed        | 未依赖公网                                                    |
+| WRT-07 | PASS：XML 各独立预算与编码边界                   | PASS：`==` 接受、`+1` 拒绝                  | 未依赖公网                                                    |
+| WRT-08 | PASS：identity/去重/observation idempotency 分离 | PASS：重排零事件，A→B→A→B→A 四观察保留      | 未依赖公网                                                    |
+| WRT-09 | PASS：grant 绑定/一次性/精确 task-tab 所有权     | PASS：敌手 user tab id 零 close/navigate    | 未依赖公网                                                    |
+| WRT-10 | PASS：恢复/焦点/登录挑战/cleanup fail-closed     | PASS：重启 catch-up 与用户 Tab 保护         | 未依赖公网                                                    |
+| WRT-11 | PASS：Region/table/iframe/噪声边界               | PASS：歧义和跨域 iframe 零假 Event          | 未依赖公网                                                    |
+| WRT-12 | PASS：Evidence 与 Condition error 分支闭合       | PASS：unexplainable/condition_error oracle  | 未依赖公网                                                    |
+| WRT-13 | PASS：Digest/Facts/Explanation 白名单与零工具    | PASS：注入、重复/额外/非 canonical 草案拒绝 | Provider 凭据不可用，零真实调用                               |
+| WRT-14 | PASS：sharing 隔离与 factsRevision/hash CAS      | PASS：blocked/metadata/note/迟到写回防线    | Provider 凭据不可用，零真实调用                               |
+| WRT-15 | PASS：通知隐私/dedupe/UUID 路由                  | PASS：8×11 隐私矩阵与安全 DTO               | Windows 打包未打包，NOT RUN                                   |
+| WRT-16 | PASS：reservation/DST/回拨/补跑状态机            | PASS：三写原子、一次 catch-up、slot 不重放  | 未依赖公网                                                    |
+| WRT-17 | PASS：Source fingerprint/CAS/durable intent      | PASS：metadata/locator/delete 竞态防线      | 未依赖公网                                                    |
+| WRT-18 | PASS：watch.db 迁移/预算/journal/FK/恢复边界     | PASS：v5 回滚/默认回填/重开/future=6 零写入 | 长时资源资格为 condition-unavailable/observation-insufficient |
+| WRT-19 | PASS：HTML SAX 零脚本/子资源/Cookie              | PASS：私网子资源/巨树/恶意 HTML 夹具        | 未依赖公网                                                    |
+
+D10 机器证据另包括专项 `47/47`、全量 Vitest `3427/3427`、typecheck/lint/format/build、dev/production
+冒烟及 Session/Sources/Sources UI/Research/Watch set/check 全部退出码 `0`。公网 RSS 的
+`blocked-environment`、Provider 凭据不可用、Windows 打包通知 `NOT RUN` 和正式资源资格
+`condition-unavailable/observation-insufficient` 均不是 PASS；这些限制对 Sixth §9/§10 和 Exit Gate 的
+影响留待 D11 新独立 Stage Auditor 判定。
+
 ## 8. 与既有安全边界兼容
 
 - 远程 WebContents 保持 `nodeIntegration=false/contextIsolation=true/sandbox=true/webSecurity=true`；

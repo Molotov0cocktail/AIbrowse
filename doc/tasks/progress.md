@@ -26,8 +26,9 @@
   D10 Planner 接管时发现正式 detailed-design 仍停留在 latest=4，而 D9 已交付并审过 schema v5；
   **D10-P0 正式契约 REPLAN 已闭环**：#S6-068 候选 HEAD
   `7872f9ba1dcae8391a8798817278d07f5b889672` 已经新的独立持久化/安全 Reviewer `PASS`。
-  D10 产品实现仍未开始；下一唯一动作是 bounded Executor 从本次 Closer 收尾后的精确 HEAD 按正式
-  D10 Execution Contract 实施端到端、WRT-01～WRT-19、跨进程与真实条件门控。
+  D10 随后已从批准 baseline 实施并完成端到端、WRT-01～WRT-19、跨进程与真实条件门控；当前产品
+  HEAD 为 `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`，Closer 文档收尾提交后最终 HEAD 为本次收尾提交
+  本身（以 Git 与最终报告为准）。D10 已经新的独立 Reviewer `PASS`；D11 保持未开始并成为下一唯一任务。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -674,7 +675,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D7 | 确定性 Diff/Event/Evidence 与健康状态 | ✅ | 2026-08-31 完成（见下）：baseline `80a2174`，实施链 `623dee7` → `80a41ad` → `25a2549` → `7e17d38` → `3c7861f` → `bbaed6b` → `cd267ff` → `828daed` → `9d1a362` → `3f09378` → `0b5e5f3` → `4619318`（十二个候选提交）；独立 Reviewer=`PASS`，聚焦 8 files/239 tests、全量 137 files/3244 tests，typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟 8.21–8.24 与生产 WATCH set/check 0/0；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
 | D8 | Digest 分享投影与可选 AI 解释 | ✅ | 2026-08-31 完成：baseline `b55580a`，实施与有界修复链 `a05bb47` → `de855bb` → `64fc0f0` → `0e42857` → `ff65aa6`；最终候选 HEAD `ff65aa63a8a5151b93ac22deeaf8227f85ce65c8`，独立 Sol Reviewer=`PASS`；真实 Provider `NOT RUN`；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
 | D9 | Watch UI/IPC/通知/导出 | ✅ | 2026-09-01 完成：baseline `7b3fc60`，实施与有界修复链 `bdbee1e` → `6ca3e8b` → `c28a8cb` → `91ec0f2` → `5290859` → `83d3c7b` → `d277a98`；新的独立安全/隐私 Reviewer=`PASS`，全量 155 files/3379 tests、typecheck/lint/format/build/diff-check 与 production 全 Electron smoke 全绿；真实 Windows Notification 因无已验证 packaged identity `NOT RUN`，产品诚实降级 unavailable；任务文档 doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md |
-| D10 | 端到端、红队、隐私与真实门控 | ⏳ | D10-P0 #S6-068 正式契约候选 `7872f9b` 已经新的独立持久化/安全 Reviewer `PASS`；产品实现仍未开始，下一步由 bounded Executor 从本次 Closer 精确 HEAD 按正式 Execution Contract 红→绿实施；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
+| D10 | 端到端、红队、隐私与真实门控 | ✅ | 2026-09-02 完成：D10 原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`；批准产品 HEAD `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`；新的独立 Reviewer=`PASS`；专项 47/47、全量 Vitest 3427/3427、全量静态/构建/冒烟/跨进程与 WRT-01～19、8×11 隐私矩阵通过；公网 RSS、Provider、Windows 打包通知、正式资源资格限制见最近验证结果；Closer 文档提交后最终 HEAD 为本次收尾提交本身（以 Git 与最终报告为准）；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
 | D11 | 第六阶段独立 Exit Audit | ⏳ | 依赖 D10；必须使用新的独立 Reviewer；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
 
 > 编号说明（2026-08-14 实施前校正）：第三阶段任务编号 A1–A8（原 T1–T8），避免与
@@ -686,7 +687,20 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > （2026-08-23）第六阶段任务编号 D1–D11、威胁 WT-01 起、红队 WRT-01 起；
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
-## 最近验证结果（2026-08-14 起持续回填；2026-08-23 追加 Sixth Stage 正式设计审核）
+## 最近验证结果（2026-08-14 起持续回填；2026-09-02 追加 D10 验收证据）
+
+- **D10 端到端/红队/跨进程/隐私与真实条件门控关闭（2026-09-02，新的独立 Reviewer=`PASS`）**：① D10
+  原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`；Reviewer 批准的最终产品 HEAD
+  `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`，父提交 `cf57505af48b34b6e595b637ce40e4e2e77efca0`；
+  Closer 文档收尾提交后最终 HEAD 为本次收尾提交本身（以 Git 与最终报告为准）。② D10 专项
+  `47/47`；WRT-01～WRT-19 每项独立受控机器断言通过；8×11 隐私矩阵通过。③ 全量 Vitest
+  `3427/3427`；typecheck、lint、format、build、dev/production 冒烟均退出码 `0`；Session、Sources、
+  Sources UI、Research、Watch set/check 均退出码 `0`；Sources/Watch IPC 退出竞态已关闭。④ 结构性证明、
+  受控机器观察与真实环境观察分栏回填至 D10 任务文档和 threat-model §7.4。⑤ 诚实限制：公网 RSS 为
+  `blocked-environment`，必需场景未成功完成；Provider 凭据不可用、零真实调用；Windows 打包通知未打包、
+  `NOT RUN`；正式资源资格为 `condition-unavailable/observation-insufficient`，未宣称长期资源 `PASS`。
+  这些限制不否定 D10 验证基础设施完成，但由 D11 对 Sixth §9/§10 与 Exit Gate 的影响重新独立判定。D10
+  已关闭；未执行 D11，不判定 Sixth Stage Exit Gate，不进入 Seventh Stage。
 
 - **D10-P0 schema v5 正式契约漂移校准与独立复审关闭（2026-09-01，新的独立持久化/安全
   Reviewer=`PASS`）**：D10 Planner 在 baseline
@@ -694,9 +708,9 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
   工作区初始干净；代码与 D9 测试事实为 watch.db latest=5，v5 只追加 Rule CAS 与通知详情 opt-in 两列，
   但 detailed-design 仍写 latest=4/future>4，构成正式契约漂移。D10-P0 仅校准 detailed-design、
   threat-model、D9/D10 task 与本进度源，登记 #S6-068、v5 回滚/重开/future=6 oracle；不修改产品/测试代码，
-  不开始 D10 红队/live/smoke 8.27。校准候选 HEAD
+  校准候选 HEAD；随后进入 D10 红队/live/smoke 8.27 实施与验收。
   `7872f9ba1dcae8391a8798817278d07f5b889672` 已经新的独立持久化/安全 Reviewer 复审并得到 `PASS`；
-  D10-P0 关闭，允许 Planner 从 Closer 收尾后的精确新 HEAD 生成 D10 Executor Execution Contract。
+  D10-P0 关闭，D10 随后已完成其实施与验收。
 
 - **D9 Watch 工作区 / IPC bridge / 通知隐私 / 安全导出验收与关闭（2026-09-01，新的独立
   安全/隐私 Reviewer=`PASS`）**：① baseline
@@ -709,8 +723,8 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
   **155 files / 3379 tests**、typecheck/lint/format/build/diff-check 全 PASS；production 全 Electron
   smoke 退出码 0，D9 8.26 与全矩阵通过。当前终修未改 renderer/preload，既有 dev smoke 证据继续
   适用。④ 真实 Windows 系统通知 `NOT RUN`：当前无已验证 packaged identity，产品诚实降级
-  unavailable；未冒充真实通知观察。⑤ D9 已关闭；下一唯一任务为
-  `doc/stage6/tasks/D10-e2e-redteam-live-gates.md` 的 D10 Planner，本闭环不开始 D10。
+  unavailable；未冒充真实通知观察。⑤ D9 已关闭；随后由
+  `doc/stage6/tasks/D10-e2e-redteam-live-gates.md` 承接并完成 D10。
 
 - **D8 Digest / Sharing / 可选 AI Explanation 验收与关闭（2026-08-31，独立 Sol
   Reviewer=`PASS`）**：① 原始 baseline `b55580aa5d7c115474adca2ffe57b8a87e2f767d`；实施与
@@ -3266,6 +3280,11 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 （正常后续任务 / 已接受设计决议 / 明确延期，不虚构严重度与证据）
 
+- **D10 真实条件限制（2026-09-02，留待 D11 独立判定）**：公网 RSS/Atom 为
+  `blocked-environment`，必需场景未成功完成；Provider 凭据不可用，零真实调用；Windows 打包通知未打包，
+  `NOT RUN`；正式资源资格为 `condition-unavailable/observation-insufficient`，未宣称长期资源 `PASS`。
+  这些限制不否定 D10 验证基础设施完成，但必须由 D11 对 Sixth §9/§10 和 Exit Gate 的影响重新独立判定。
+
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过——已接受设计决议
   （detailed-design §12 决议 #13，快照为点时刻尽力采样）。
 - 采集边界（T4 落地，非缺陷）：iframe 跨域计数为尽力采样（未加载完成的同源 iframe 可能被
@@ -3374,10 +3393,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **D10 bounded Executor：端到端、WRT-01～WRT-19、跨进程与真实条件门控。**D10-P0 #S6-068 已经新的
-  独立持久化/安全 Reviewer `PASS`；Executor 必须从本次 Closer 收尾提交的精确 HEAD 开始，按本次正式
-  Execution Contract 红→绿实施，创建有界本地候选提交并停止、不得提前 push 或判定 Stage Exit Gate。
-  唯一任务文档：`doc/stage6/tasks/D10-e2e-redteam-live-gates.md`。
+- **D11 新独立 Stage Auditor。**停止，不提前执行 D11；由新的独立上下文复验 Sixth §9/§10、Exit Gate、
+  WRT、隐私/Key、真实网络/Provider/通知/资源条件。不得宣称 Sixth Stage Exit Gate 已通过，不进入
+  Seventh Stage。唯一任务文档：`doc/stage6/tasks/D11-independent-exit-audit.md`。
 
 ## 第一阶段验收未完成项
 
