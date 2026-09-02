@@ -165,7 +165,8 @@ H3b 是本任务的后续正式资格实现，不受“只改 smoke 模块”的
 - `src/main/index.ts`：在 logger/single-instance/BrowserWindow/Watch service 前接入非秘密 qualification app arg、
   bootstrap 和关闭顺序；常规启动必须零行为。
 - 新的 `src/main/watch/qualification/**`：编译期 `watch-h3b-load-v1` manifest/generator、同步
-  `QualificationPausableClock implements Clock` decorator、现有
+  `QualificationPausableClock implements Clock` decorator、只把 fixed measurement task 的 Coordinator
+  `earliestStartMs` 增大到 manifest release time 且不改 scheduledFor/nextDue 的 `QualificationRoundReleaseGate`、现有
   `WatchAcquisitionPort` 的 qualification-only 实现、固定 `about:blank` task-tab adapter、bootstrap/JCS/schema、
   incremental decoder、overlapped client adapter/operation owner、sequencer、registry、sample barrier、opaque
   temp binding、trace counter；以及 repo-owned 窄 x64 native identity/pipe/HMAC bridge。
@@ -197,9 +198,13 @@ H3b 是本任务的后续正式资格实现，不受“只改 smoke 模块”的
 实施前必须建立能在 legacy HEAD 稳定为红的 oracle，至少逐项证明：
 
 1. legacy HEAD 没有 authenticated `watch-h3b-load-v1` controller/manifest/acquisition port；旧 smoke 的小型即时
-   fixture 无法产生 788-byte descriptor/34,259-byte expanded manifest 的固定 hash/UUID golden、精确 100
-   Source/Rule、短 state/不变 near-budget padding 投影、seed 前冻结的 24 分钟 M0 lead/setup deadline、67
-   warmup+400 measurement runs、28 秒持有与 19/30 observation 的单 artifact Digest oracle，必须稳定红。新增
+   fixture 无法产生 891-byte descriptor（SHA-256
+   `823c33af49f69a6734cae78aa692c0fae39d9408d221438f273217801e47f83f`）/34,260-byte expanded manifest
+   （SHA-256 `3b77612df1c7420231046e1c40c9dad4622d216809a2232e93e9726a65fbbb27`）的固定 hash/UUID
+   golden、精确 100 Source/Rule、首末 schedule offset `36,000/828,000`、四 host 同波/33 秒波距、短 state/不变
+   near-budget padding 投影、seed 前冻结的 24 分钟 M0 lead/setup deadline、67 warmup+400 measurement runs、
+   28 秒 acquisition 压力，以及 `24/12`、`39/26` observation/Event 的单 artifact Digest oracle，必须稳定红。
+   新增
    port 仅在 bootstrap capability 后可达；env/argv value、
    renderer/web/model、第三方/localhost/private URL、普通 smoke flag 与 production acquisition fallback 的每个
    尝试均稳定拒绝。
@@ -234,6 +239,18 @@ H3b 是本任务的后续正式资格实现，不受“只改 smoke 模块”的
    §15.6/§15.7 唯一 oracle 裁决。`CreatePipe/SetHandleInformation/STARTF_USESTDHANDLES`、exact 三-handle list、
    parent endpoint close、满 capture 后继续异步 drain、fatal classifier、root exit+Job empty+双 EOF 都有机器
    red vector；observer 资源不进 Watch registry，但必须仍出现在 Job/handle/Node totals。
+7. coalesce legacy-red 必须独立调用现有 `computeJitterMs()` 相同算法并覆盖 event Rule 的全部轮次：旧
+   `D+[0,15,30,45]` nominal 设计在 canonical UTC day 的 1,440 个整分钟 M0 中，第二 Digest 固定 17 Events 只
+   有 96 个 M0 成立，测试必须稳定红；不得重跑挑其中 96 个。新 descriptor 的 scheduledFor 仍按 15 分钟，
+   release 固定 `D+[0,15,30.75,45]`，测试须枚举同一 1,440 M0×100 Rule，并另对
+   `jitter=0|500`、task-tab=`0|1,000`、acquisition/barrier=`28,000|30,000`、processing-entry=`0|500`、
+   writer=`0|500` 的全部边界向量作笛卡尔积；Event 时间只取 processing-entry，last commit 另加 writer。
+   每个预期 coalesce 必须证明实际 Event 时间差 `≤904,000 <1,800,000`
+   ms，每个预期 new Event 必须证明 `≥1,841,000 >=1,800,000` ms；last commit 必须
+   `≤M0+3,560,500`。Digest 000/001 只能读取已经完整提交的两轮/三轮，分别精确断言
+   `changed/unchanged/failed=48/52/0, observation/Event=24/12` 与
+   `78/72/0, 39/26`；queued/running 或下一轮任一 row 被预记都稳定红。任何 M0/Rule/边界失败都整体红，
+   不能关 jitter、改 coalesce `<30m`、按 M0 选 seed 或降低断言。
 
 上述红态、实现、聚焦绿态、全量/构建/production smoke、隐私/垃圾/进程终检和新的独立 H3b 安全/资源
 Reviewer `PASS` 缺一不可。当前 H1/H2/H3a 不得预跑或声称这些 H3b 结果。

@@ -61,11 +61,19 @@ Closer 合同收尾后，才满足本任务前置。
   Auditor 必须复核 exact-key JCS、bounded incremental UTF-8/LF、deadline/backpressure、无重连、双向 sequence、
   sample-open/close barrier 和每 sample 唯一 prefix replay；仅有 `{registry,identity}` 或可挑 prefix 的 snapshot
   不合格。同账户伪装、half-frame/CRLF/重复/乱序/重放/断连敌手证据缺失即 HOLD。
-- Auditor 必须重建并核对 `watch-h3b-load-v1` 788-byte descriptor 及固定 SHA-256，并独立展开 34,259-byte
-  100-entry manifest、命中固定 `78b914d0…` hash/首末 UUID golden；逐项确认 100 Source/Rule、
-  40 Feed/40 public Page/20 Session Page、四 `.invalid` host、seed 前冻结且不得后移的 M0、28 秒持有、峰值四
-  并发、67 warmup 与四轮 400 measurement acquisition，以及两个 Digest 的 19/12、30/17 observation/Event
-  oracle。资格 acquisition 必须从
+- Auditor 必须重建并核对 `watch-h3b-load-v1` 891-byte descriptor 及固定
+  `823c33af49f69a6734cae78aa692c0fae39d9408d221438f273217801e47f83f` SHA-256，并独立展开
+  34,260-byte 100-entry manifest、命中固定
+  `3b77612df1c7420231046e1c40c9dad4622d216809a2232e93e9726a65fbbb27` hash/首末 UUID 与
+  `scheduleOffsetMs=36,000/828,000` golden；逐项确认 100 Source/Rule、40 Feed/40 public Page/20 Session
+  Page、四 `.invalid` host、seed 前冻结且不得后移的 M0、28 秒 acquisition 压力、四 host 同波/33 秒波距/峰值四并发、
+  67 warmup（首波恰在 W0、末波最迟 M0-39.5 秒 settle）与四轮 400 measurement acquisition。scheduledFor
+  必须仍按 15 分钟推进，authenticated
+  qualification-only release 固定为 `D+[0,15,30.75,45]` 分钟；跨全部 M0/Rule/worst-case 时延必须得到
+  coalesce `≤904,000 ms`、new Event `≥1,841,000 ms` 与 measurement last commit
+  `≤M0+3,560,500`。两个 Digest 只能纳入完整两轮/三轮，oracle 分别为
+  `changed/unchanged/failed=48/52/0, observation/Event=24/12` 与
+  `78/72/0, 39/26`。资格 acquisition 必须从
   Coordinator 既有 `WatchAcquisitionPort` DI 注入，只在 authenticated bootstrap 后可达；NetworkPolicy/
   production acquisition 无 fixture 分支。H3b 的 Watch http-request/response/socket/provider/temp registry 应
   全程为 0；host-grant 应有 567 对并只在 initialization trace-prefix 达峰值 4、不能伪延长为 lease，task-tab/

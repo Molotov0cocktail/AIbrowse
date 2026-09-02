@@ -19,6 +19,8 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 - observation/item 的冗余 Event 身份错配、迁移半提交或非确定排序破坏证据归属；
 - old/new Evidence、事件、Digest 和通知的长期本地暴露；
 - 调度重入、时钟变化、离线补跑、退出/崩溃和跨库孤儿状态；
+- 资源资格四轮 nominal 恰落在 Event 30 分钟 coalesce 边界，使 jitter、task-tab/barrier 或 processing 时延把
+  同一 fixed manifest 随 M0 随机判成新建或合并，并进一步污染 Digest 固定计数；
 - feed/页面 Prompt Injection 进入自动 Digest；
 - 可变 Event 时间游标漏掉已消费 Event 的 late coalesce，或 batch/Provider 崩溃重入造成漏项、重复 artifact/
   重复计费；
@@ -176,6 +178,12 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 - scheduled reservation 在同事务创建 Run、消费 scheduledFor、推进 nextDue；提交后失败/pause/abort/crash 都不
   回拨或重放。未消费的 missed runs 只合并一次；DST logical date 幂等；手动 run 不改变计划、无安全旁路。
 - 0..500ms 确定性附加 jitter（永不提前于 due）+ 指数退避；429 零立即重试；login/captcha/security 立即暂停。
+- H3b 固定负载不得把 nominal 30 分钟当作 coalesce oracle。Rule scheduledFor 与 15 分钟 nextDue 保持产品
+  语义；authenticated qualification-only release gate 只把四轮最早 release 冻结为
+  `D+[0,15,30.75,45]` 分钟。结合 `jitter∈[0,500] ms`、task-tab `≤1,000 ms`、acquisition/barrier
+  `[28,000,30,000] ms`、进入 processing `≤500 ms`，预期 coalesce 的最大 Event 时间差是 904,000 ms，
+  预期新 Event 的最小差是 1,841,000 ms。任一时延越界是 timing-environment 证据不足，不能关 jitter、
+  改 30 分钟 `<` 语义、重选 M0 或挑 Rule；正常 production 不构造该 release gate。
 - Baseline 只在完整验证事务中 CAS 推进；失败/abort/陈旧 result 零覆盖。Feed 条件 validator 与
   baselineVersion/contentHash 同身份、同事务存储；条件 header 只能来自 acquisition 前已验证的 Baseline hint，
   禁止取“最新 Run metadata”，防止未推进 Baseline 的200响应污染下一次304判断。
@@ -361,6 +369,13 @@ oracle；FakeProvider 不得冒充真实观察。
   创建 HTTP/socket，所以 H3b 对相应 Watch registry 的唯一诚实 oracle 是始终 0；Host grant/tab/async/timer/
   store/db 必须按固定峰值出现，H3a 另证真实公网生命周期。伪 socket/伪 request event 与直接伪 Event 都是证据
   污染。
+- fixed manifest 的四轮必须同时证明时间界与 Digest 边界：首波为 M0+36 秒、每四个连续 index 同波、33 秒
+  波距，round release 使用 `0/15/30.75/45` 分钟且所有 Event/Run 最迟在 M0+59:20.500 提交；仍有
+  39,500 ms 明确尾裕量后才开始 drain。Digest 只能在 frozen upper 前纳入已经提交的完整轮次，分别固定为前
+  50 Source 两轮
+  `changed/unchanged/failed=48/52/0, observation/Event=24/12`，后 50 Source 三轮
+  `78/72/0, 39/26`。把 queued/running 或尚未 release 的下一轮预记入 count、依赖某个 M0 的 jitter 碰巧过线，
+  或以同一错误 generator 互相比对，都属于证据污染。
 - 产品 registry 必须在真实 acquire/release 线性化点经结构化 trace 重放，sample 只对应唯一冻结 prefix。
   observer 自身不得进入 Watch registry 造成自指，但仍计入 Job/OS/main/Node totals，禁止人为扣除。temp
   registry 的 opaque nonce-HMAC binding 必须与 sample barrier 内独立 OS relative-entry 枚举逐项相等；绝对/
