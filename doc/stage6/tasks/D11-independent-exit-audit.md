@@ -61,12 +61,38 @@ Closer 合同收尾后，才满足本任务前置。
   Auditor 必须复核 exact-key JCS、bounded incremental UTF-8/LF、deadline/backpressure、无重连、双向 sequence、
   sample-open/close barrier 和每 sample 唯一 prefix replay；仅有 `{registry,identity}` 或可挑 prefix 的 snapshot
   不合格。同账户伪装、half-frame/CRLF/重复/乱序/重放/断连敌手证据缺失即 HOLD。
+- Auditor 必须重建并核对 `watch-h3b-load-v1` 788-byte descriptor 及固定 SHA-256，并独立展开 34,259-byte
+  100-entry manifest、命中固定 `78b914d0…` hash/首末 UUID golden；逐项确认 100 Source/Rule、
+  40 Feed/40 public Page/20 Session Page、四 `.invalid` host、seed 前冻结且不得后移的 M0、28 秒持有、峰值四
+  并发、67 warmup 与四轮 400 measurement acquisition，以及两个 Digest 的 19/12、30/17 observation/Event
+  oracle。资格 acquisition 必须从
+  Coordinator 既有 `WatchAcquisitionPort` DI 注入，只在 authenticated bootstrap 后可达；NetworkPolicy/
+  production acquisition 无 fixture 分支。H3b 的 Watch http-request/response/socket/provider/temp registry 应
+  全程为 0；host-grant 应有 567 对并只在 initialization trace-prefix 达峰值 4、不能伪延长为 lease，task-tab/
+  timer/async/store/db 达冻结峰值。不得因上述五类为 0 判“没有压力”，也不得用 synthetic socket 补峰，真实
+  网络生命周期归 H3a。
+- sample-open 必须先 pause admission/scheduler/digest/fixture owner、保存 absolute timer deadline，只等待 main
+  sequencer writer quiesce，再在单一 JS turn 截 main snapshot；OS sample 后 close，按原 deadline resume。
+  `Clock` 同步 API 不得伪装 await，不能等 live resource=0 后采样；barrier 内 mutation 必须整轮失败而非排队。
+  CONNECT/READ/WRITE 每 operation 独占 OVERLAPPED/event/buffer；timeout 后 `CancelIoEx`（包括
+  `ERROR_NOT_FOUND` race）必须等 final completion 才 release/reuse，single-completion 与 peer crash teardown
+  缺任一机器证据即 HOLD。
 - Watch temp lease 必须以 nonce-HMAC opaque token 与无 reparse 专属 root 的 OS relative entries 在 barrier 内
   逐项相等，trace 不含 absolute/relative path、正文、URL 或凭据；symlink/junction/rename/case collision/
   cleanup 敌手矩阵必须闭合。Battery no-battery 只可来自成功完整 SetupAPI 枚举且所有 port 是 documented
   absence，并与 SystemPowerStatus 一致；tag error、exact struct/output bytes、relative/unknown、热插拔、
   PowerState/Rate 矛盾和 cleanup 任一未闭合都不得判 H3b PASS。observer 不进 Watch registry，但仍必须计入
   Job/OS/main/Node totals，禁止扣除观察成本。
+- nonce 必须严格解码为 32-byte raw HMAC key并只留在 native locked owned memory；domain-separated message、
+  两个 frozen token golden、collision/duplicate fail 与 complete/error zeroize 都须复验，Chromium child 零 key。
+  RFC 8785 实现必须有 product/harness 独立 golden，覆盖 UTF-16 key order、non-NFC reject/no normalization、
+  duplicate/lone surrogate/invalid UTF-8 与 safe-integer；普通 JSON.stringify/UTF-8 sort 不合格。Battery
+  success+invalid tag 与初始 `ERROR_NO_SUCH_DEVICE` 必须 invalid，合法 tag 后 `ERROR_NO_SUCH_DEVICE` 必须走
+  stale/change 下 slot 重枚举，不能算 absence。
+- production handle ledger 必须证明 `CreatePipe` 后 read ends 经 `SetHandleInformation` 取消继承、
+  `STARTF_USESTDHANDLES` 的 stdin/out/err 与三-handle allowlist 完全一致、harness 在 resume 前关闭 child ends。
+  drain thread 到 capture 上限后仍读并扫描完整 GPU fatal stream；最终同时具备 root exit=0、Job active=0、
+  stdout/stderr EOF+thread join，root 单独退出不算通过。
 - Provider 与 Windows packaged notification 不是 Exit Gate 硬门：确定性 Digest 在无 Provider 时仍成功且
   `explanation=null`；应用内通知必需，系统 sink identity 不可用时诚实 unavailable。不得用“恰好一次底层
   HTTP 请求”评判 Provider PASS。

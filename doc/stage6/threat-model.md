@@ -353,12 +353,41 @@ oracle；FakeProvider 不得冒充真实观察。
   传递；不得进入 args/env/inherited handle/log/persistence/renderer。exact-key canonical frame、bounded
   incremental UTF-8、deadline/backpressure、strict sequence、sample barrier、无重连和断连 fail-closed 共同
   防止半帧、CRLF、重放、乱序、丢帧、队列耗尽与同账户注入；任一项不能靠“本机只有一个用户”豁免。
+- H3b 的固定负载不允许借“真实”名义访问第三方，也不能为 localhost/私网放宽 NetworkPolicy。唯一 seam 是
+  Coordinator 现有 `WatchAcquisitionPort` 上的 bootstrap-authenticated、main-only、编译期
+  `watch-h3b-load-v1` port：真实 HostRequestGate grant 与 Session consent/task-tab ownership 在前，经过验证的
+  bounded projection 在后，再进入真实 Diff/Condition/Event/Digest/Store。normal production、renderer/web/model、
+  普通 env/argv 均不可达；manifest version/hash/rule/ordinal 不符即 fail-closed，不回退生产网络。该 seam 不
+  创建 HTTP/socket，所以 H3b 对相应 Watch registry 的唯一诚实 oracle 是始终 0；Host grant/tab/async/timer/
+  store/db 必须按固定峰值出现，H3a 另证真实公网生命周期。伪 socket/伪 request event 与直接伪 Event 都是证据
+  污染。
 - 产品 registry 必须在真实 acquire/release 线性化点经结构化 trace 重放，sample 只对应唯一冻结 prefix。
   observer 自身不得进入 Watch registry 造成自指，但仍计入 Job/OS/main/Node totals，禁止人为扣除。temp
   registry 的 opaque nonce-HMAC binding 必须与 sample barrier 内独立 OS relative-entry 枚举逐项相等；绝对/
   相对 path、URL、正文和凭据不得过 pipe。temp root/ancestor/entry 任一 reparse point、case collision、escape、
   unexpected entry 或 rename 中间态都 fail-closed。日志字符串、当前 PID 求和、文件存在性和 `{registry,
 identity}` 而无 temp binding 都不能单独成证。
+- sample barrier 不能把同步 `Clock.setTimeout` 当 Promise，也不能等待全部业务资源归零后采样。资格 controller
+  必须先暂停 admission/scheduler/digest/fixture deadline owner，保存 absolute deadline，等待的只是在 main
+  sequencer 上已经开始的 writer 退出；随后在单一 JS turn 同步截 main counters/registry，再由 harness 于 barrier
+  内取 OS 样本。barrier 中任一新 mutation 立即使整轮失败，禁止排队隐藏；close 后按原 absolute deadline 只
+  恢复一个 callback。否则 snapshot 可能把跨 sample 的 acquire/release 拼成从未存在的状态。
+- overlapped pipe 的 timeout 不等于 operation 已完成。每个 CONNECT/READ/WRITE 必须独占 OVERLAPPED/event/
+  buffer；deadline 后 `CancelIoEx` 的成功或 `ERROR_NOT_FOUND` race 都必须继续等待 final completion，再释放或
+  reuse。main/harness crash、peer close、cancel/DisconnectNamedPipe/CloseHandle 的次序和 single-completion 若
+  未机器闭合，可能形成 use-after-free、双回调或把半帧当 EOF，H3b 不得 PASS。
+- nonce 严格 base64url 解码后的 32 raw bytes 才是 HMAC key；key 只在 native locked owned memory，binding
+  message/domain separator、无 padding 输出和 zeroize 时点按 detailed §15.6.2 固定。JCS 必须按 RFC 8785 的
+  UTF-16 key order、原 code point preservation 与 ECMAScript serialization；先拒绝 non-NFC、duplicate、lone
+  surrogate、invalid UTF-8、非安全整数，禁止“normalize 后接受”或用普通 UTF-8 key sort 冒充 canonical。
+- Battery query-tag 只有 failure=`ERROR_FILE_NOT_FOUND` 且 observed tag invalid 才是 empty port；success+invalid
+  tag、初始 `ERROR_NO_SUCH_DEVICE` 都是 invalid。取得合法 tag 后的 `ERROR_NO_SUCH_DEVICE` 只证明 stale/tag
+  change，本 slot invalid 并下 slot 重枚举，不能洗成 absence。no-battery 仍要求完整枚举的每个 port 都满足
+  documented absence。
+- production stdout/stderr 若继承端点未精确收口，会让 descendant 持有 write end 造成假死，或让满 pipe 反压
+  产品。harness 必须以 `CreatePipe`+`SetHandleInformation`、`STARTF_USESTDHANDLES` 与三-handle allowlist 启动，
+  parent 及时关 child ends、独立线程持续 drain；2 MiB retained capture 之外仍流式扫描 GPU fatal。PASS 同时
+  需要 root exit、Job descendants=0 与双 EOF，不能只看 root exit code。
 - Node 24.x ClientRequest/IncomingMessage destroy/abort 在 pre-socket、pre-response、response 后各 emitter 的
   error/close 实际顺序；若未来 Node 出现当前 emitter-local drain 无法安全承载的顺序，必须 REPLAN transport
   drain，不得用 process 级异常兜底。

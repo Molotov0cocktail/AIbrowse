@@ -2054,22 +2054,158 @@ Windows packaged notification 同为非阻断观察，边界见 §12.1。
 ### 15.6 正式资源资格 oracle
 
 本节是 Sixth Stage Exit Gate 的硬门，全部数值在任何 H3b 资格运行前冻结。短时 D10 probe、单次运行结果、
-FakeProvider、fixture-only 结果或主观“无明显问题”均不能替代。阈值由 100 条 enabled Rule 上限、15 分钟最短
-周期、全局并发 4、单 run 90 秒、单公开 acquisition 30 秒、最多 4 个 task Tab、100 MiB watch.db 上限和
+FakeProvider、绕过产品路径的 fixture-only 结果或主观“无明显问题”均不能替代。阈值由 100 条 enabled Rule
+上限、15 分钟最短周期、全局并发 4、单 run 90 秒、单公开 acquisition 30 秒、最多 4 个 task Tab、100 MiB
+watch.db 上限和
 最低 8 GiB 标准机器预算推导，不得在读到资格结果后调整。
 
 #### 15.6.1 固定负载、窗口与采样
 
-- 在独立全新 userData 中创建恰好 100 条 enabled Rule，全部为 15 分钟 interval，并把 due time 在 900 秒内
-  等距交错：40 条 public Feed、40 条 public Page、20 条 Session Page。资源负载使用资格前冻结、仓库外受控
-  harness 的有界 acquisition 端口，不访问第三方站点；Scheduler、Coordinator、HostRequestGate、Session
-  task-owned Tab、Processing、Repository、Digest 与通知必须仍走正式产品路径，禁止用纯函数循环代替。该受控
-  负载只证明资源硬门，绝不计入 H3a 真实网络或真实 Session 观察证据。
-- 每条 Rule 首次建立 Baseline；随后 acquisition 结果按 Rule id UTF-8 排序固定为 50% unchanged、25%
-  changed-unmatched、25% event-created，下一轮反转同一有界值以覆盖 Baseline/Event/Evidence/retention 写路径。
-  失败注入不属于本负载，真实网络失败由 H3a 独立资格。
-- 创建两个 active daily DigestSchedule，各冻结 50 个 Source；在正式观察第 20 与第 40 分钟各到期一次。
-  `aiEnabled=false`，Provider 端口和凭据均不读取；Digest facts/artifact、cursor 和应用内通知正常执行。
+- 在独立全新 userData 中按下述 `watch-h3b-load-v1` manifest 创建恰好 100 个 Source 与 100 条 enabled Rule；
+  Rule 全部为 15 分钟 interval，40 条 public Feed、40 条 public Page、20 条 Session Page。资源负载不访问
+  第三方、真实公网、localhost 或私网，也不修改 `NetworkPolicy`/`HostRequestGate` allowlist；H3a 另以真实
+  产品网络路径证明 request/response/socket 生命周期。H3b 必须继续走 Scheduler、Coordinator、真实
+  HostRequestGate grant、Session consent、WatchTaskTabWorkspace task-owned Tab、Processing、Repository、
+  Digest 与应用内通知，禁止纯函数循环、直接伪造 Event/registry 或绕过产品所有权点。
+- manifest identity 固定为 version=`watch-h3b-load-v1`。下面一行是无 BOM/无 LF、已经按 key 的 UTF-16
+  code-unit 顺序写成 RFC 8785 JCS 的 788-byte UTF-8 descriptor；不得重排、增删或在运行时选 seed。其
+  SHA-256 必须逐字节等于 `7af65b3943123cc0a0e415ac23599699ea1cb2c076928aad6b434324f6b933a1`；生成后的
+  100-entry 展开 manifest 还必须在 product 与 harness 两端独立生成并逐字段恒等，version/hash 任一不符即
+  fail-closed，不能回退别的负载。
+
+  ```text
+  {"accessCounts":{"feedPublic":40,"pagePublic":40,"pageSession":20},"acquisitionLatencyMs":28000,"conditionClass":"index-mod-4","digestDueMinuteOffsets":[20,40],"digestPartitions":[[0,49],[50,99]],"encoding":"UTF-8","feedFormats":{"atom":20,"rss2":20},"filler":"x","hostCount":4,"hostSuffix":"aibrowse.invalid","idNamespace":"6ba7b811-9dad-11d1-80b4-00c04fd430c8","idSeed":"urn:aibrowse:h3b:v1","measurementMinutes":60,"measurementRounds":4,"projectionBytes":{"feed":32768,"page":24576,"rawBody":0},"ruleCount":100,"scheduleIntervalMinutes":15,"scheduleOffsetMs":{"first":30000,"step":8400},"setup":{"batchSize":4,"batchSpacingMs":30000,"m0LeadMinutes":24},"stateByPhase":{"initialization":"A","measurement":["B","A","B","A"],"warmup":"A"},"version":"watch-h3b-load-v1","warmupMinutes":10}
+  ```
+
+  规范展开物的 root exact keys/order 是 `{descriptorSha256,digests,entries,version}`；每个 entry exact
+  keys/order 是
+  `{accessMode,conditionClass,feedFormat,hostKey,index,kind,projectionBytes,ruleId,scheduleOffsetMs,sourceId,targetUrl}`，
+  其中 conditionClass 按 index mod 4 为 `unchanged|unchanged|changed-unmatched|event`，非 Feed 的
+  feedFormat=null；两个 digest exact keys/order 是 `{dueMinuteOffset,id,index,sourceEnd,sourceStart}`。这里的
+  scheduleOffsetMs 是 `30,000+8,400*i`，hostKey 是 host name 加 `:443`，URL/id/其余字段由下述唯一算法
+  产生；不把运行时 M0/absolute time 写入展开物。root 经同一 RFC 8785 JCS 后必须为 34,259 UTF-8 bytes，
+  SHA-256 固定 `78b914d069612505ab0a1ccf42abc00fa8377ef2508806b7512f368651f57802`。首项
+  source/rule id 必须为 `31f9c296-26a5-532d-99a9-910bab6db291`/
+  `8a0016c2-03c6-51bc-ba81-5587a37c5a30`，末项为
+  `1a310446-c6b5-51a9-9e3d-0c2a3cdef284`/`541c7c34-57d6-5d1e-bb0e-8da2f6eadf73`；两个 digest id 为
+  `dc6d5f93-23a3-5096-9897-5d8a3b2b960b`、`1a40aac3-9641-5804-925e-aad2afdb8acf`。product/harness 必须
+  独立生成并同时命中 descriptor 与展开物 length/hash/golden，不能只互相比对同一个错误实现。
+
+- entry index 固定为十进制 `i=0..99`，不得按随机 UUID 或数据库返回顺序重排。Source/Rule/Digest id 分别是
+  RFC 4122 UUIDv5：namespace 固定为 descriptor 的 `idNamespace`，name 分别为
+  `urn:aibrowse:h3b:v1:source:<i 三位零填充>`、`...:rule:<i 三位>` 与
+  `...:digest:000|001`；UUID 使用 SHA-1 的标准 version/variant bit 与 lowercase 8-4-4-4-12 格式。host 固定为
+  `h<i mod 4>.aibrowse.invalid`，HostRequestGate key 固定为该 name 加 `:443`。`i=0..39` 是 public Feed，其中
+  偶数 `rss2`、奇数 `atom`，URL 为
+  `https://<host>/h3b/feed/<i 三位>.xml`；`i=40..79` 是 public Page，`i=80..99` 是 Session Page，URL 分别为
+  `https://<host>/h3b/page/<i 三位>` 与 `https://<host>/h3b/session/<i 三位>`。四个 `.invalid` host 绝不
+  DNS/connect。Source exact fields 固定为：
+
+  ```text
+  id=sourceId; scope=page; canonicalKey=对应 URL; url=对应 URL; name="H3b <i 三位>"; groupId=null; tags=[]; priority=3; enabled=true; shareMode=full; trust={value:"unknown",assertedBy:"user",verification:"asserted"}; userNote=""; aiNote=""; createdBy="user"; version=1; createdAt=updatedAt=M0-3600 秒; deletedAt=null; lastUsedAt=null; lastUsageOutcome=null
+  ```
+
+  其 Watch projection 固定
+  `rowVersion=1,enabled=true,deletedAt=null,scope=page,canonicalKey=对应 URL`。Rule exact fields 固定为：
+
+  ```text
+  id=ruleId; sourceId=对应 sourceId; kind=Feed 时 feed、Page 时 page; accessMode=entry 对应 public|session; schedule={kind:"interval",intervalMinutes:15}; target=Feed 时 {type:"feed",feedUrl:targetUrl,format:feedFormat}、Page 时 {type:"page",pageUrl:targetUrl,regions:[{kind:"main-text",label:"H3b"},{kind:"headings",label:"H3b padding",levels:[1]}],sessionConsent:public 时 null/Session 时下述固定 consent}; condition=下述 index-mod-4 映射; version=1; state=enabled; pauseReason=null; desiredEnabled=true; muted=true; notificationLevel=normal; showDetails=false; sourceRowVersion=1; sourceLocatorFingerprint=既有 watch-locator-v1 输出; nextDueAt=null; createdAt=updatedAt=M0-3600 秒; lastConsumedScheduledFor=null; lastDailyLocalDate=null; consecutiveFailures=0; backoffUntil=null; baselineVersion=0
+  ```
+
+  locator fingerprint 必须调用既有 `watch-locator-v1` 产品函数生成。Page 只有上列顺序固定的 main/headings 两个
+  region；Session consent 固定 version=1、origin 等于目标 origin、
+  `grantedAt=M0-3600 秒`。其它 target/accessMode 组合一律拒绝。
+
+- setup 只允许一个 `QualificationManifestSeeder` 在已认证 capability、全新空 sources/watch DB 且服务 admission
+  尚关闭时使用三个窄 internal operation：Sources store 的 `seedWatchResourceQualificationSourcesV1()` 只接受
+  native-authenticated opaque capability 与 exact version/hash，并在自身 Repository transaction 中生成上述 100
+  固定 Source/id；Watch Repository 的 `seedWatchResourceQualificationRulesV1()` 同样只生成 100 条固定
+  baselineVersion=0 Rule（nextDue=null），不能接收任意 row/JSON。待下面 100 个 Baseline 全部 settle 后，后者再
+  以一个 qualification-only exact-100 transaction 写入初始 nextDue/bookkeeping；M0 时同 Repository 的
+  `seedWatchResourceQualificationDigestsV1()` 只在 high-water=0 时按本节 exact-two schema 创建 DigestSchedule。
+  每步写前要求 DB/既有行状态符合本节且 id/version/baseline 全等；Source/Rule operation 写后分别重读 exact
+  100 行与展开 entries 逐字段相等，Digest operation 写后重读 exact 2 行与 digests/schema 相等。任一 0/部分/
+  多余行、已有非 manifest row、事务失败都删除本轮隔离 roots 并终止，禁止合并用户数据。这些 operation 不进入 shared SourceService、renderer/
+  preload 或普通 production 构造，也不能更新任意 URL/condition/projection 内容。
+- `i mod 4` 冻结 outcome class：0/1 为 unchanged 且 `condition=null`；2 为 changed-unmatched，condition
+  固定 `{version:1,combine:"all",predicates:[{fieldKey,operator:"equals",operand:"H3B-NEVER",caseSensitive:true}]}`，
+  Feed `fieldKey="title"`、Page `fieldKey="r0:main"`；3 为 event 且 `condition=null`。定义
+  `F(text)={text,truncated:false,originalBytes:utf8ByteLength(text),valueHash:sha256(UTF8(text))}`。Feed/Page
+  value 的 exact insertion-order shape 分别是：
+
+  ```text
+  {type:"feed",format,title:F("H3b"),description:F(""),siteUrl:F(targetUrl),feedUrl:F(targetUrl),items:[{identity:"urn:aibrowse:h3b:item:<i 三位>",identityKind:"id",title:F(state),link:F(targetUrl+"#item"),summary:F(filler),publishedAt:null,updatedAt:null,author:F("")}],itemsTruncated:false}
+  {type:"page",fields:[{fieldKey:"r0:main",regionIndex:0,kind:"main-text",label:"H3b",value:state},{fieldKey:"r1:heading:1",regionIndex:1,kind:"heading",label:"H3b padding",level:1,ordinal:0,value:filler}]}
+  ```
+
+  只有 `state` 在等长 ASCII `state-A/state-B` 间切换，Feed summary 与 Page heading 的 filler 始终不变且只含
+  ASCII `x`，因此大字段不得进入 change pair。填充算法从
+  0 递增寻找使既有 `JSON.stringify(value)` UTF-8 长度精确等于 Feed 32,768 bytes/Page 24,576 bytes 的唯一
+  最小长度，FeedField `originalBytes/valueHash` 与 envelope `contentHash/byteLength` 必须据最终 bytes 重算并
+  经现有 projection validator；找不到唯一值即 fail-closed。该 seam 位于已验证 projection 边界，因此原始
+  body 固定为 0 bytes、从不构造/保存伪 HTTP body；Feed 成功 metadata 固定
+  `{httpStatus:200,etag:null,lastModified:null,warnings:[]}`，Page metadata=null，finalUrl=target URL，
+  documentId 对 Feed 为 null、对 Page 为同 namespace/name=`...:document:<i 三位>:<runOrdinal>` 的 UUIDv5。
+
+- authenticated bootstrap、manifest 双端校验与两个 DB 的 empty check 完成后、首次 seed 前，controller 在
+  §15.6.2 的合成 UTC timeline 上把 `M0` 一次冻结为 `>=当前 monotonic now+24 分钟` 的第一个 UTC 整分钟；
+  seed/source/rule/digest 的全部相对时间只能由该 M0 计算，之后不得重选。初始化期间 scheduled/digest/renderer
+  admission 关闭，仅 authenticated qualification controller 可提交固定 initialization manual-run；它在同一
+  Coordinator/Processing/Repository 路径中按 index 连续 25 批、每批恰 4 条建立 A Baseline；首批必须在 M0
+  freeze 后 30 秒内 admission，批 `j` 在首批起点后 `30,000*j` ms 同时 admission，前批四条全部 settle 后才开
+  下一批，manual requestId 固定为 `watch-h3b-init-v1:<i 三位>`，所有 run 必须是 `baseline-established`。
+  initialization 不开启 formal sample barrier，所以既有 0..500 ms jitter 后从 grant 到 settlement 精确 28,000
+  ms，单批最迟 28,500 ms settle，30,000 ms batch spacing 不允许 Executor 自选。setup 必须在
+  `W0=M0-600,000ms` 前至少 30 秒 settle，否则
+  `BLOCKED/timing-environment`，不得后移 M0 挑绿；到 W0 创建 scheduler entries 并打开 admission。Rule `i` 的
+  正常周期 anchor 是 `D(i)=M0+30,000+8,400*i` ms；warmup 起点 `W0=M0-600,000` 时，`i=0..32` 初始
+  nextDue=`D(i)`，`i=33..99` 初始 nextDue=`D(i)-900,000`。因此 warmup 精确产生 67 次 A/unchanged，正式
+  观察对每条 Rule 精确产生 `D(i)+900,000*r,r=0..3` 四轮、合计 400 次 acquisition；changed 两类四轮值
+  固定 B→A→B→A，event 类 outcome 固定 `event-created→event-coalesced→event-created→event-coalesced`，后
+  三轮 reversal oracle 必须命中。任何额外/缺失/重复 run、失败或其它 outcome 均 `FAIL-product`。
+- 每次受控 acquisition 必须先成功调用真实 HostRequestGate 登记式 `acquire`；该现有 API 只登记 start/gap，
+  不是 28 秒 lease，不能扩成假的 concurrency owner。28,000 ms 是从 grant 已交付且必要 task Tab 成功发布到
+  port 开始 settlement 的 QPC 目标，禁止早退，sample barrier 延迟只可使实际 settle 落在
+  `[28,000,30,000]` ms，超出
+  为 `BLOCKED/timing-environment`。Coordinator 既有 jitter 不得旁路：scheduled run 的 delay exact 为
+  `SHA256(UTF8(ruleId+"|"+hostKey+"|"+scheduledFor ISO))` 前四 byte big-endian `mod 501` ms；因此在无 barrier
+  穿过 settlement deadline 时 grant exact 为 D(i)+900,000r+jitter，barrier 只能按 §15.6.2 暂停并保持原 absolute
+  deadline。全局产品并发峰值必须为 4；wave 明确定义为连续 index
+  `{4w,4w+1,4w+2,4w+3}`，其四条 schedule anchor 按 8,400 ms 顺序分别落在四个 host，同 host 相邻 anchor
+  33,600 ms，
+  单 host 峰值 1。Session Rule 在 consent exact-check 后，由 qualification adapter
+  只把上述编译期 manifest target 映射到 `about:blank`，仍调用真实 BrowserController create 与
+  WatchTaskTabWorkspace own/release；不得接受 caller URL、导航用户 Tab、调用 BrowserWatchReader 或输出
+  synthetic tab identity。任何非 manifest rule/run ordinal/host/source/target 一律 fail-closed。
+- qualification acquisition 是 main-only、编译期有界的 `QualificationAcquisitionPort`，它实现既有
+  `WatchAcquisitionPort` 并使用 Coordinator 已有 constructor DI，位置在 HostRequestGate/Session authorization
+  之后、Diff 之前；不得修改生产 `WatchAcquisitionService`、PublicWatchHttpClient、NetworkPolicy 或加入
+  通用 fixture/任意网络控制面。它只有在独立 harness direct-launch、§15.6.2 bootstrap 双向 identity+nonce 已
+  认证、descriptor version/hash 通过后才可实例化；renderer/preload/web/model、普通 env/argv、smoke flag 或
+  非认证 main 均无启用/选内容能力。非资格 production build 默认不构造该 port，失败必须关闭 admission 并
+  退出，绝不回退生产 acquisition。
+- 该 seam 不产生真实 `ClientRequest`/`IncomingMessage`/socket/Provider/temp entry。因此 H3b 逐 sample 的
+  Watch registry oracle 固定：`http-request|http-response|socket|provider-attempt|watch-temp-lease` 始终为 0，
+  且 trace/OS 排水零残留；不得制造 synthetic socket/伪 HTTP event 追求非零峰值。H3a 单独证明前三类真实
+  网络生命周期。`host-grant` 必须恰有 567 对 register/unregister：从 HostRequestGate 成功更新
+  `lastStartedAt` 到对应 acquire Promise 向 caller settlement 的短生命周期；25 个四并发初始化批使 trace-prefix
+  live peak=4，但正式 10 秒 sample 可为 0，绝不能把它伪延长 28 秒。`task-tab` trace/sample peak=4，
+  `watch-timer|digest-timer|watch-async-operation` 各至少 1，`watch-store|watch-db` 在服务存活期各恰 1；task
+  tab/WebContents binding 逐项真实。Node/Job/OS totals 仍包含 Electron 自身网络或 observer 资源，不能按上述
+  registry 零值扣除。
+- initialization/warmup 只能产生 Baseline/unchanged，故 M0 前 digest journal high-water 必须恰为 0；非零立即
+  `FAIL-product`。M0 时在一个 qualification-only exact-two transaction 创建两个 active daily DigestSchedule：
+  000 的 `id` 为上述首个 digest UUID、`sourceIds=[sourceId(0)..sourceId(49)]` 且在 `M0+20 分钟` 到期；001 的
+  `id` 为第二 UUID、`sourceIds=[sourceId(50)..sourceId(99)]` 且在 `M0+40 分钟` 到期，数组严格按 index。
+  两者 exact common fields 为 `version=1,timeZone="UTC",localTime=nextDueAt 的 HH:mm,aiEnabled=false,
+cursorSequence=0,state="active",lastConsumedScheduledFor=null,lastDailyLocalDate=null,createdAt=updatedAt=M0,
+lastCheckedAt=null,lastPeriod=null,lastRunStats=null`；`nextDueAt` 分别为上述两个 ISO 时刻。不得读取 Provider/凭据，
+  且两 schedule 在本负载均只到期一次。按上述完成时序，000 的 period 机器 oracle 固定 changed=38、
+  unchanged=41、failed=0、19 个 observation/12 个 Event；001 固定 changed=60、unchanged=55、failed=0、
+  30 个 observation/17 个 Event。短 state Evidence + 不变 padding 必须使两者都恰好一个 facts/artifact；任一
+  facts JSON 仍须命中既有 49,152-byte 上限、cursor 原子推进并产生一条应用内通知；Rule
+  `muted=true` 使即时通知为 0，Windows system notification 不作为本负载硬门。计数、到期或 batch 任一漂移
+  都是 `FAIL-product`，不得换 seed/延后 due/拆 batch 挑绿。
 - 启动后预热精确 10 分钟，预热样本全部排除；随后正式观察精确 60 分钟；停止 admission 并正常退出后排水
   精确 10 分钟。三段持续时间只由 Windows QueryPerformanceCounter 裁决；UTC 审计时间只由 wall clock 产生。
 - 三段均每 10 秒一个固定 slot。正式观察包含首尾共 361 个期望样本，排水包含首尾共 61 个。样本必须落在
@@ -2115,22 +2251,56 @@ pipe 名和 nonce 不经命令行、环境变量、继承 handle、stdout/stderr
    record 使用 UTF-8、无 BOM、RFC 8785 canonical JSON + 单 LF，总长上限 8,192 bytes，只允许 version=1；
    duplicate/unknown/missing key、CR、半帧、第二帧或非 canonical bytes 均拒绝。三个绝对 root 仅存在于受控
    bootstrap 内和仓库外脱敏 ledger。
-3. main 校验 record、把 userData 在任何 Electron ready/single-instance/日志初始化前设为该独立 root，随后把
-   bootstrap byte buffer 覆写为 0 并关闭连接；不得把 record 放入 JS exception/log。telemetry client 连接后，
-   server/client 再分别以同一 API 复核对端 PID+creation identity，任一变化直接失败。该无秘密、按 PID 命名的
-   一次性 bootstrap 是唯一 launcher/bootstrap 通道；禁止以 inherited environment block 传递 pipe 名或 nonce，
-   因而 Chromium 子进程没有可继承的秘密。非资格启动没有该 app arg，完全不探测 bootstrap 名且零行为。
+3. native bridge 校验 record、只把三个 root、runId 和 identity 等非 HMAC key 字段作为 typed value 交给 main；
+   nonce 的 base64url 文本与解码后 32 bytes 始终留在 bridge 的 owned locked memory。main 把 userData 在任何
+   Electron ready/single-instance/日志初始化前设为该独立 root；bridge 随即 `SecureZeroMemory` bootstrap receive
+   buffer 并关闭 bootstrap，任何字段不得进入 JS exception/log。telemetry client 连接后，server/client 再分别
+   以同一 API 复核对端 PID+creation identity，任一变化直接失败。该无秘密、按 PID 命名的一次性 bootstrap 是
+   唯一 launcher/bootstrap 通道；禁止以 inherited environment block 传递 pipe 名或 nonce，因而 Chromium
+   子进程没有可继承的秘密。非资格启动没有该 app arg，完全不探测 bootstrap 名且零行为。
 
 main 为上述 client-side 核验允许加载一个 repo-owned、Electron 43 ABI 精确构建的 x64 qualification native
-bridge；只导出 `connectBootstrapForSelf()`、
-`connectTelemetryFromAuthenticatedBootstrap(record)`、`getSelfCreationIdentity()` 和
-`zeroAndCloseBootstrap()` 四个 typed operation。bridge 自己以 `CreateFileW(FILE_FLAG_OVERLAPPED)` 持有 client
-handle 并提供有界 async read/write/close；bootstrap 名只能由 self PID 内部推导，telemetry connect 只接受该
-bridge 同一实例刚验证的一次性 record，不能传任意 pipe path/PID/handle。内部才使用
-`GetNamedPipeServerProcessId/CreateToolhelp32Snapshot/OpenProcess/GetProcessTimes`；它不暴露 raw Win32、文件、
-网络、SQL 或 IPC 能力。bridge 只在非秘密资格 app arg 存在的 main 中加载；identity 闭合前只能打开当前
+bridge；只导出 `connectBootstrapForSelf()`、`connectTelemetryFromAuthenticatedBootstrap()`、
+`getSelfCreationIdentity()`、`readQualificationRequest()`、`writeQualificationFrame()`、
+`computeWatchTempBinding()` 和 `zeroQualificationSecretsAndClose()` 七个 typed operation。read/write 只接受/返回
+已经闭合的协议 DTO，native 内部注入/核验 nonce/runId/JCS bytes，不暴露 raw buffer、nonce、pipe path/PID/
+handle；temp operation 只接受编译期 enum entryKind 与已经由 main 路径规则验证的 relativePath，不能读写文件。
+bridge 自己以 `CreateFileW(FILE_FLAG_OVERLAPPED)` 持有 client handle 并提供有界 async read/write/close；
+bootstrap 名只能由 self PID 内部推导，telemetry connect 只接受同一实例刚验证的一次性 record。内部才使用
+`GetNamedPipeServerProcessId/CreateToolhelp32Snapshot/OpenProcess/GetProcessTimes`；它不暴露 raw Win32、网络、
+SQL 或通用 IPC 能力。bridge 只在非秘密资格 app arg 存在的 main 中加载；identity 闭合前只能打开当前
 bootstrap，闭合后才能一次打开 telemetry，始终不打入 preload/renderer。加载、ABI、签名/hash 或任一返回值
 异常均 fail-closed。不得引入 ffi/通用 native 执行依赖来绕过该白名单。
+
+bootstrap nonce 文本必须是 canonical base64url、无 padding、恰 43 ASCII chars，严格解码为恰 32 raw bytes；
+这 32 bytes 是 HMAC-SHA-256 key，而不是 43-byte 文本。key 从解码起只位于 bridge 独占、`VirtualLock` 成功的
+buffer；lock 失败即终止资格，禁止复制到 JS String/Buffer、child、日志、crash annotation 或 ledger。每个
+binding 的 message exact bytes 为
+`UTF8("watch-temp-v1") || 0x00 || ASCII(entryKind) || 0x00 || UTF8(relativePath)`；entryKind 只允许
+`file|directory`，relativePath 必须先按下表验证且已经是 NFC，公式不添加 LF/长度/终止 NUL。输出是 32-byte
+digest 的无 padding base64url、恰 43 chars。最后一个 temp lease 的 token 已完成双方核验且 complete frame 写毕后，
+或任一 abort/error/pipe close path，bridge 必须先 `SecureZeroMemory` key/nonce/canonical scratch、再
+`VirtualUnlock` 并释放；harness 在最终 OS/token/trace 核对后同序 zeroize。不同 `(entryKind,relativePath)` 得到
+相同 token、同 path duplicate、ordinal-ignore-case collision 或 token 复用都立即 fail-closed。固定 golden：
+nonce `AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8`（raw `00..1f`）时，
+`file,runs\000\artifact.bin` → `MeJef6Ihj3YThQBkC05DpO9QaDEDj1CgHkP8vJtgdQY`，
+`directory,runs\000` → `tD6bKCxMHRNbegKx6dV7-L2DAMpjCDP05mtkkqcbJy8`；product 与 harness 必须独立
+实现并逐 byte 命中，child 进程扫描必须零 key/nonce。
+
+本协议的 JCS 固定为 RFC 8785，不是普通的递归 key sort，也不做 Unicode normalization。实现策略固定为仓库内
+最小、无新 runtime dependency 的 qualification-only canonicalizer/duplicate-preserving JSON scanner；native
+bridge 与 TypeScript schema 层分别实现并共同跑 committed golden，禁止临时安装 JSON/JCS 包。输入先用 fatal
+UTF-8 decoder 拒绝 invalid UTF-8，再在对象 materialize 前拒绝 duplicate key；所有 key/value 必须 NFC，但
+canonicalizer 保留原 code points、绝不把非 NFC 正规化后接受。escaped 或 literal lone surrogate 均拒绝；对象
+key 递归按原始 UTF-16 code units 升序，数组保序；string escape 采用 ECMAScript/JCS（control 用规定 short
+escape 或 lowercase `\u00xx`，`/` 不转义），无 whitespace。协议 schema 只允许
+`0..Number.MAX_SAFE_INTEGER` 整数；`-0`、fraction、exponent spelling、超安全整数与 non-finite 均拒绝，不能
+round 后接受。接收 bytes 必须与重编码 UTF-8+单 LF exact 相等。跨语言 golden 至少固定：key 输入
+`{"€":1,"\r":2,"דּ":3,"1":4,"😀":5,"":6,"ö":7}` canonical 为
+`{"\r":2,"1":4,"":6,"ö":7,"€":1,"😀":5,"דּ":3}`；0 与 9007199254740991 接受，`-0`、`1.0`、
+`1e0`、`9007199254740992` 拒绝；literal `é` 接受、`e\u0301` 拒绝；duplicate key、`\ud800` 与 truncated
+UTF-8 拒绝。这个含 U+0080 的 key-order case 只测试 RFC 8785 canonicalizer；把同一 key 放入正式协议 frame
+仍由后续 schema 的 C1-control 红线拒绝，不能借 golden 扩大协议字符集。
 
 telemetry 线上编码固定为 UTF-8 JSON Lines：无 BOM、只以单个 LF 结尾，CR/空行均非法；每行含 LF 最大
 262,144 bytes。接收器使用跨 read 保留状态的 fatal incremental UTF-8 decoder，允许一帧跨任意 read、一次 read
@@ -2151,6 +2321,27 @@ deadline 起点也唯一：bootstrap connect 从 `ResumeThread` 成功计，tele
 zero/close 计，hello 从 telemetry `ConnectNamedPipe/CreateFileW` 双方完成计，read-frame 从首 byte 到 LF，
 write-frame 从进入全局 outbound sequence queue 到 overlapped completion，idle 从任一方向最后一帧 completion
 计；不能在 partial progress、retry 或 event-loop tick 时重置。
+
+每个 `CONNECT|READ|WRITE` 都必须分配唯一 operation owner；owner 独占一个从不复用的 `OVERLAPPED`、manual-
+reset event、buffer slice、QPC deadline 与 state=`pending|cancel-requested|completed|released`。同步成功和
+`ERROR_IO_PENDING` 都只进入同一个 atomic single-completion path；server `ConnectNamedPipe` 的 FALSE+
+`ERROR_PIPE_CONNECTED` 是 connect-completed race，也必须原子 signal/进入同一 completion path，不能重新
+connect 或算失败，其它非-pending error 进入失败 completion。partial read/write 结束当前 operation 后，
+余量只能以新 operation 继续，但沿用原 frame deadline。deadline owner 只允许一次把 pending CAS 为
+cancel-requested 并调用 `CancelIoEx(pipe,&overlapped)`；返回 TRUE 只代表请求已发出，FALSE+
+`ERROR_NOT_FOUND` 只代表 completion/cancel race，二者都不得释放 owner。其它 cancel error 记协议失败，但仍
+必须 reap。随后由 IOCP 或非 main worker 等待 event，并调用 `GetOverlappedResult(...,FALSE)` 取得唯一 final
+completion；success/实际 bytes 或 `ERROR_OPERATION_ABORTED|ERROR_BROKEN_PIPE|ERROR_PIPE_NOT_CONNECTED` 都须
+记录后才可按状态机释放 buffer/event/OVERLAPPED。cancel 后 2 秒仍无 final completion 时 run 立即失败、owner+
+handle 隔离且保持存活直至进程 teardown，绝不 close/reuse 内存制造 use-after-free；此路径不可能取得 PASS。
+
+正常关闭先停止新 operation，完成已排队 write，cancel outstanding read/connect，逐项等待 final completion，
+server 才 `DisconnectNamedPipe`，双方最后各 close 自己的 pipe/event。错误关闭先停止 admission、cancel 同
+handle 全部 pending op、逐项 reap，再 disconnect/close；不得先 close handle 再假定 operation 已完成。
+main crash/kill 时 harness 的 peer op 必须以 broken-pipe 类 final completion 收口并关闭 job；harness crash/cancel
+时 product 同样 reap、禁止重连、关闭 admission 并退出，Job `KILL_ON_JOB_CLOSE` 收口 descendants。任何 op
+double completion、deadline 后释放未完成 owner、复用 OVERLAPPED/event/buffer、漏 close，或用同步
+`PIPE_NOWAIT` polling 代替该状态机，均为 `FAIL-product`/明确 harness 责任的 `BLOCKED`，不能归为普通 EOF。
 
 协议 scalar 也固定：version/sequence/requestSequence/slot/PID 为 non-negative JSON safe integer（PID 还须
 `1..UINT32_MAX`）；qualificationRunId 是 128-bit CSPRNG base32、nonce 是 256-bit CSPRNG base64url，均无
@@ -2186,16 +2377,52 @@ register/unregister payload exact keys 扩为 `{bindingToken,identity,registry}`
 identity 固定为 `<registry>:<本轮 type-local 严格递增且永不复用的十进制 uint64>`；除
 `watch-temp-lease` 外 bindingToken 必须为 null；temp unregister 必须复述对应 register 的同一 token，temp
 binding 见下表；同一 token 同时绑定多个 live identity、token 复用或 identity/token 任一未配对都属协议违约。
-所有 registry acquire/release 和 sample
-在 main 的同一 qualification sequencer 上串行：register 的线性化点是底层资源成功创建、完成必要安全校验，
-但尚未发布给任何 consumer 之前；unregister 是底层 close/settlement 已成功、资源仍在 registry entry 中时；
-随后才删除 entry。失败 acquire 不发 register；失败 close 不得 unregister。sample-open 取得该 sequencer 的
-只读 barrier，等待此前 mutation 完成、冻结 gauge 后发 sample；barrier 在匹配 sample-close 后释放，期间新的
-resource/temp 生命周期异步等待而不阻塞 main。匹配 close 到达后须在仍持有 barrier 时先按下一 sequence
-enqueue `sample-closed`，再释放 barrier；sample 与 sample-closed 之间不得出现 register/unregister。sample-close
-必须在 2 秒内到达；超时自动 fail-closed，而不是
-静默释放继续运行。若 trace 证明产品按时 sample 后是 harness 未在 2 秒发送 close，则结果为
-`BLOCKED/harness-timeout`；产品未按时 sample/释放 barrier/停止 admission 则为 `FAIL-product`，不得混淆责任。
+所有 registry acquire/release 和 sample 在 main 的同一 qualification sequencer 上串行：register 的线性化点是
+底层资源成功创建、完成必要安全校验，但尚未发布给任何 consumer 之前；unregister 是底层 close/settlement 已
+成功、资源仍在 registry entry 中时，随后才删除 entry。失败 acquire 不发 register；失败 close 不得
+unregister。既有 `Clock` 公共接口仍是同步 `now/setTimeout/clearTimeout`，不得为了 sample 把 `setTimeout`
+伪改成可 await API。实现固定为一个 qualification-only `QualificationPausableClock implements Clock` decorator：
+main 只在认证资格装配中把同一实例注入 HostRequestGate、WatchScheduler、DigestScheduler、Coordinator 与
+qualification latency controller；它只把底层 `setTimeout/clearTimeout` 同步委托给既有 system Clock，并记录
+callback、absolute deadline、generation 和真实 TimerHandle。pause/resume owner hook 只向 qualification
+controller 暴露，不加入 `Clock` interface；非
+资格装配仍直接用 system Clock，所有业务模块公开接口/普通 timer 语义不变。禁止分别给 scheduler/digest 改出
+不一致的 async pause API。资格 bootstrap 时一次冻结 `(performance.now() anchor,UTC anchor)`，其 `now()`
+唯一返回 `new Date(UTC anchor + performance elapsed)`，absolute deadline 与 resume delay 也只由同一 monotonic
+elapsed 驱动；M0 是该合成 UTC timeline 上满足 §15.6.1 的整分钟。真实 wall clock 只由 harness 另采为审计
+字段，跳变不得改变 Rule/Digest due、28 秒 latency 或 pause 保存的 absolute business deadline。正式窗口仍只
+由 harness QPC 裁决；product monotonic elapsed 与相邻 QPC slot 相差超过 2 秒或任一来源异常时，资格记
+`BLOCKED/timing-environment`，不得退回 `Date.now()` 拼持续时间。
+
+`sample-open` 的可实现顺序唯一为：① sequencer 同步关闭本 slot 的 run/digest/fixture admission（qualification
+运行期间 renderer Watch mutation admission 始终关闭）；② 在同一 JS turn 调 decorator 的 pause hook，逐 owner
+以底层 Clock `clearTimeout` 当前 handle 并保存原 absolute business deadline，禁止延长/重建为“从 resume 再等
+完整 delay”；已经排入 event queue 但尚未调用的旧 generation callback 只能命中 decorator 的 stale-generation
+guard 并无副作用返回，绝不能调用业务 callback；
+每个 clear 必须在 barrier 前按真实 close 发 unregister，resume 的 `setTimeout` 是新 handle/新 identity 并在
+barrier 后 register，禁止复用旧 timer identity；因此 sample 内 timer gauge 可为 0，但完整 trace 必须达到本节
+冻结峰值，不能硬编码为 0；
+③ 等待的是 sequencer 前一 writer 已离开和 mutation-in-progress=0，不等待仍真实 live 的 acquisition/Promise/
+Tab/handle=0，否则会把峰值洗掉；④ 在同一 main 单线程 turn 设置 barrier flag，并同步取得 registry prefix、
+`process.memoryUsage().heapUsed`、`process.getActiveResourcesInfo()`、WebContents/binding、logical DB bytes 和
+counter；⑤ 最迟在收到完整 sample-open 后 250 ms 内 enqueue `sample`，保持 barrier 等 harness 取 OS/Job/
+File/Battery 样本；⑥ harness 必须在 sample frame completion 后 1,500 ms 内发送匹配 `sample-close`，且
+open→close 总计不得超过 2,000 ms；⑦ sequencer 在 barrier 内验证 token/prefix，先 enqueue 紧邻下一 sequence
+的 `sample-closed`，再清 barrier、恢复 admission/timer。
+
+resume 先把全部暂停项按 `(absolute deadline,ownerKind,timerIdentity)` 排序；ownerKind 固定
+`host-gate<watch-scheduler<digest-scheduler<coordinator<qualification-fixture`，timerIdentity 是本轮 type-local
+递增整数。仍在未来者同步 `setTimeout(deadline-now)`；已到或已过者也按该顺序各只排入一个 0-delay callback，
+由既有 scheduler/coordinator 正常逻辑决定 catch-up/next due，绝不补发多个 callback、改变 `scheduledFor` 或
+重置 15 分钟 anchor。因而与 M0+20/+40 sample 同时到期的 Digest 必须先于 absolute deadline 更晚的 acquisition
+settlement 执行，固定 period 计数不受 barrier close 时刻改变。pause 前已经 live 的业务资源保持注册并进入 sample；它们的 completion
+source 也必须先被对应 owner pause。barrier flag 为 true 时，除匹配 sample-close 外任何 register/unregister、
+counter/terminal、timer set/clear、temp create/delete/rename 或 Store mutation 尝试都**不得排队等待**，而是
+立即使本 slot 与整次 run `FAIL-product/barrier-mutation`、关闭永久 admission 并进入失败 teardown；这保证
+sample 对应唯一真实 prefix，而不是靠延迟 mutation 伪造一致。sample/sample-closed 间不得有 event frame。
+若 open/pause/snapshot/sample 超过 250 ms、产品未按序 resume 或产品导致 close 无法处理是 `FAIL-product`；
+若 trace 证明产品按时 sample 而 harness 未在 1,500/2,000 ms deadline 发 close，则是
+`BLOCKED/harness-timeout`。任一 timeout 都永久关闭 admission并终止，不得静默释放 barrier 后继续挑样。
 
 sample payload exact keys 为
 `{counters,mainHeapUsedBytes,nodeActiveByType,registryLive,registryPrefixSequence,sampleToken,taskTabBindings,watchLogicalDbBytes,webContentsIds}`；
@@ -2206,8 +2433,9 @@ registry identity 排序，元素 exact keys 为 `{identity,tabId,webContentsId}
 重复，数字必须是 non-negative JSON safe integer。`counters` exact keys 为
 `{duplicateTerminalAttemptTotal,uncaughtExceptionTotal,unhandledRejectionTotal}`。harness 必须逐 sequence 重放
 事件；每个 sample 的 registryLive 必须精确等于 sequence `<=registryPrefixSequence` 的前缀 live set，且该
-prefix 恰为 sample 前全部 frame，不能挑另一个 prefix。固定负载必须真实观察每类适用 registry 非零峰值；
-硬编码 snapshot、全零假端口、重复 identity、未配对 unregister 均为 `FAIL-product`。
+prefix 恰为 sample 前全部 frame，不能挑另一个 prefix。固定负载必须真实观察 §15.6.1 明列的 host-grant/
+task-tab/timer/async/store/db 适用峰值；同节固定为 0 的 http-request/response/socket/provider/temp 五类必须保持
+0。硬编码 snapshot、把应有峰值的端口做成全零、重复 identity、未配对 unregister 均为 `FAIL-product`。
 
 complete payload exact keys 为 `{counters,registryLive}`，只能在 stop 已原子关闭 admission、全部 live registry
 为空且三个 counter 均为 0 后发送，随后 main 才关闭 pipe/退出。harness 收到 complete 与干净 EOF 后，以已
@@ -2220,30 +2448,32 @@ heap、Node active type 或 process/WebContents 总量中扣除。observer 固�
 
 唯一来源冻结如下：
 
-| 指标                          | 唯一来源、身份与聚合                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 进程树与 CPU                  | `QueryInformationJobObject(JobObjectBasicProcessIdList)` 完整 active 列表；成员 identity 为 `PID + GetProcessTimes.lpCreationTime FILETIME`。harness 对 Job `NEW_PROCESS` 通知或 active-list 首见的每个 PID 立即 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`、冻结 creation FILETIME，并把 query handle 持有到 drain end，故已退出 parent 的 identity 仍被钉住且 PID 不可静默复用；首见时还须从 Toolhelp snapshot 冻结 parent PID/creation edge，无法闭合者在闭合前不能进入有效 slot。每 slot 另取 Toolhelp snapshot，对 root、每个 job active member 和从 snapshot 找到的每个 live descendant 逐级核对：active parent 用本次 `OpenProcess/GetProcessTimes`，已退出 parent 只能用上述 retained handle/immutable edge；parent creation 必须 `<` child creation，链必须恰好在 resume 前冻结的 root identity 截止，不检查/吸收 root 以上 harness ancestor。缺边、self-edge、cycle、深度超过 process ledger、PID 相同 creation 不同、仍 live 却无法打开均使本次 snapshot 无效。对 root 可达 live descendant set 与前后各一次 Job active identity set 做双向相等；job 中无 root chain 的成员是 `BLOCKED/harness-contamination`，root descendant 不在 job 是 `FAIL-product`。竞态只允许整套 Job+Toolhelp+identity 最多重取三次，不得按映像名或缺边猜退出。CPU 唯一累计量是 `JobObjectBasicAccountingInformation.TotalUserTime + TotalKernelTime`（100 ns ticks），它同时包含 active 与已经退出的 job 成员；相邻 job 累计差 ÷ QPC elapsed ÷ 冻结 logical processor 数 ×100，故采样间新建/退出进程不会漏算。job counter 回退/溢出或 active list 不完整使该 slot CPU 无效；不按 PID 做模运算。                         |
-| RSS/working set/private bytes | 对该 slot 完整 job active list 中每个 identity 调用 `GetProcessMemoryInfo(PROCESS_MEMORY_COUNTERS_EX)`，working set 是 Windows RSS 正式口径，`PrivateUsage` 是 private bytes；分别求和。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| handles                       | 对同一完整 active identity 集逐个 `GetProcessHandleCount` 后求和。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| AIbrowse main JS heap used    | 资格端口在 main 调用 `process.memoryUsage().heapUsed` 的单值；不聚合、不推测 renderer/utility JS heap。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| WebContents/task Tab          | main 的 `webContents.getAllWebContents()` 以 `webContents.id` 去重计总数；WatchTaskTabWorkspace 每个 owned entry 分配一个不复用的资格 registry identity，并在 `taskTabBindings` 绑定既有 task tabId 与恰一个 live WebContents id。只输出这些 identity/count/binding，不输出 URL/title。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Node 活动资源                 | main `process.getActiveResourcesInfo()`；每个返回字符串先 NFC，且须匹配 `^[A-Za-z][A-Za-z0-9_.:-]{0,127}$`，随后按 exact case key 计数并以 UTF-8 字节序输出。unknown/new type 不过滤、不重命名；API 抛错、非法 key 或非数组使该 slot 本指标无效。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Watch runtime registries      | HostRequestGate grant；Public HTTP `ClientRequest`、`IncomingMessage`、socket；Watch/Digest scheduler timer；Provider attempt；task-owned Tab；Watch async operation。identity 均为本轮从 1 递增的 type-local integer，不得用对象字符串或日志推断。request 在实际创建后 register、其 `close` 后 unregister；response 在交付后、安装 drain 前 register，其 `close` 后 unregister；socket 首次交付时 register、真实 `close` 后 unregister；grant/timer/provider/tab 沿各自 acquire/release、set/clear、claim/finish、own/release 点配对。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Store/DB                      | `openWatchStore` 成功创建并发布 Repository 前 register 一个 Store identity，`repo.dispose()` 内 `closeDb` 返回后才 unregister；`openWatchDb/closeDb` 对每个真实 `DbHandle` 同样配对。逻辑大小只调用 Repository 写前预算所用的同一 `SQL_ESTIMATE_LOGICAL_BYTES`/估算函数，不另造算法。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| DB 文件与 Watch 临时目录      | 固定 DB path-kind 只有 bootstrap 给出的隔离 userData 下 `watch.db`、`watch.db-wal`、`watch.db-shm`；绝对路径只在仓库外 ledger。每个正式/排水 slot 用 `CreateFileW(FILE_READ_ATTRIBUTES)`（共享 read/write/delete）+ `GetFileInformationByHandleEx(FileIdInfo/FileStandardInfo)` 记录存在、volume serial+file id 与字节；不存在记 absent，打开/查询失败记 invalid。所有 Watch transient file/dir 必须位于 bootstrap 给出的空专属 `watchTempRoot`；Electron/Chromium/TEMP/TMP 使用另一个 `processTempRoot`，两者不得互为祖先。watch root 在 resume 前以 directory handle 冻结 volume+FileId；root、每级 ancestor 和 entry 都用 `FILE_FLAG_OPEN_REPARSE_POINT` 重开并查 `FileAttributeTagInfo`，任一 symlink/junction/其它 reparse tag、root identity 改变或逃逸均 `FAIL-product`，且枚举必须递归但不得跟随 reparse。relative path 禁止 absolute/device/UNC/`..`/`.`/ADS/空 segment，先 Unicode NFC、`\` 分隔并保留 OS 返回 exact case；重复或 ordinal-ignore-case collision 非法。产品 temp lifecycle 为每个已安全创建的 relative entry 计算 `bindingToken=base64url(HMAC-SHA256(nonce, "watch-temp-v1\0" + entryKind + "\0" + UTF8(relativePath)))`，只发 token，不发正文、relative/absolute path、URL 或凭据；harness 在 sample barrier 内独立枚举 OS entry、用 nonce 重算 token，并要求与 live `watch-temp-lease` bindingToken 多重集逐项相等。create/register、delete/unregister 或 rename 的 old-unregister/new-register 在 qualification writer barrier 内完成，sample 不可观察中间态；rename 后 token 必须改变且 identity 不复用。unexpected entry、重复 token、删除后复现或 token/OS 不等均 `FAIL-product`。 |
-| DB 文件 owner                 | 不使用未文档化系统 handle 枚举，也不把“文件存在”冒充“连接仍开”。正式 slot 0 与每个 drain slot 对三个 path-kind 分别创建独立 `RmStartSession → RmRegisterResources(仅该存在 path) → RmGetList → RmEndSession`；absent path 的 owner 固定为 0，禁止在一个 session 注册多个 path 后猜逐路径归属。每 path 以 `RM_UNIQUE_PROCESS.PID + ProcessStartTime` 去重，只统计 qualification job identity。任一 Restart Manager 调用或 `ERROR_MORE_DATA` 扩容重取失败为该 path/slot 无效。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| 异步/异常/终态                | `WatchAsyncOperationRegistry` 必须覆盖 renderer Watch IPC admission、run request/execute、public acquisition、Session acquire/release/cleanup、Digest cycle/batch/provider/notification 的每个已创建未 settled Promise；在创建/入队前 register，唯一 Promise 的 `finally` 后 unregister。main 最早的 `uncaughtExceptionMonitor`、既有 `unhandledRejection` 处理入口分别只增 `uncaughtExceptionTotal/unhandledRejectionTotal`；Run/Digest/HTTP 等终态所有权 latch 只有真正第二次争抢才只增 `duplicateTerminalAttemptTotal`，终态后的 transport 丢弃与幂等 cleanup 不计。三者是本轮单调 counter，不是可回落 gauge。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 电池/电源                     | 只用本节 15.6.4 冻结的 `GetSystemPowerStatus` + Battery Class SetupAPI/IOCTL 字段；不使用 WMI、ACPI vendor counter、性能计数器、估算运行时间或 `BATTERY_STATUS.Rate` 积分冒充能量差。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 指标                          | 唯一来源、身份与聚合                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 进程树与 CPU                  | `QueryInformationJobObject(JobObjectBasicProcessIdList)` 完整 active 列表；成员 identity 为 `PID + GetProcessTimes.lpCreationTime FILETIME`。harness 对 Job `NEW_PROCESS` 通知或 active-list 首见的每个 PID 立即 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`、冻结 creation FILETIME，并把 query handle 持有到 drain end，故已退出 parent 的 identity 仍被钉住且 PID 不可静默复用；首见时还须从 Toolhelp snapshot 冻结 parent PID/creation edge，无法闭合者在闭合前不能进入有效 slot。每 slot 另取 Toolhelp snapshot，对 root、每个 job active member 和从 snapshot 找到的每个 live descendant 逐级核对：active parent 用本次 `OpenProcess/GetProcessTimes`，已退出 parent 只能用上述 retained handle/immutable edge；parent creation 必须 `<` child creation，链必须恰好在 resume 前冻结的 root identity 截止，不检查/吸收 root 以上 harness ancestor。缺边、self-edge、cycle、深度超过 process ledger、PID 相同 creation 不同、仍 live 却无法打开均使本次 snapshot 无效。对 root 可达 live descendant set 与前后各一次 Job active identity set 做双向相等；job 中无 root chain 的成员是 `BLOCKED/harness-contamination`，root descendant 不在 job 是 `FAIL-product`。竞态只允许整套 Job+Toolhelp+identity 最多重取三次，不得按映像名或缺边猜退出。CPU 唯一累计量是 `JobObjectBasicAccountingInformation.TotalUserTime + TotalKernelTime`（100 ns ticks），它同时包含 active 与已经退出的 job 成员；相邻 job 累计差 ÷ QPC elapsed ÷ 冻结 logical processor 数 ×100，故采样间新建/退出进程不会漏算。job counter 回退/溢出或 active list 不完整使该 slot CPU 无效；不按 PID 做模运算。                                                                                     |
+| RSS/working set/private bytes | 对该 slot 完整 job active list 中每个 identity 调用 `GetProcessMemoryInfo(PROCESS_MEMORY_COUNTERS_EX)`，working set 是 Windows RSS 正式口径，`PrivateUsage` 是 private bytes；分别求和。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| handles                       | 对同一完整 active identity 集逐个 `GetProcessHandleCount` 后求和。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| AIbrowse main JS heap used    | 资格端口在 main 调用 `process.memoryUsage().heapUsed` 的单值；不聚合、不推测 renderer/utility JS heap。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| WebContents/task Tab          | main 的 `webContents.getAllWebContents()` 以 `webContents.id` 去重计总数；WatchTaskTabWorkspace 每个 owned entry 分配一个不复用的资格 registry identity，并在 `taskTabBindings` 绑定既有 task tabId 与恰一个 live WebContents id。只输出这些 identity/count/binding，不输出 URL/title。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Node 活动资源                 | main `process.getActiveResourcesInfo()`；每个返回字符串先 NFC，且须匹配 `^[A-Za-z][A-Za-z0-9_.:-]{0,127}$`，随后按 exact case key 计数并以 UTF-8 字节序输出。unknown/new type 不过滤、不重命名；API 抛错、非法 key 或非数组使该 slot 本指标无效。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Watch runtime registries      | HostRequestGate grant；Public HTTP `ClientRequest`、`IncomingMessage`、socket；Watch/Digest scheduler timer；Provider attempt；task-owned Tab；Watch async operation。identity 均为本轮从 1 递增的 type-local integer，不得用对象字符串或日志推断。request 在实际创建后 register、其 `close` 后 unregister；response 在交付后、安装 drain 前 register，其 `close` 后 unregister；socket 首次交付时 register、真实 `close` 后 unregister；HostRequestGate grant 从登记式 acquire 成功更新 `lastStartedAt` register，到该 Promise 向 caller settlement unregister，它是瞬时 start capability 而非持有到 acquisition 结束的 lease；timer/provider/tab 分别沿 set/clear、claim/finish、own/release 点配对。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Store/DB                      | `openWatchStore` 成功创建并发布 Repository 前 register 一个 Store identity，`repo.dispose()` 内 `closeDb` 返回后才 unregister；`openWatchDb/closeDb` 对每个真实 `DbHandle` 同样配对。逻辑大小只调用 Repository 写前预算所用的同一 `SQL_ESTIMATE_LOGICAL_BYTES`/估算函数，不另造算法。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| DB 文件与 Watch 临时目录      | 固定 DB path-kind 只有 bootstrap 给出的隔离 userData 下 `watch.db`、`watch.db-wal`、`watch.db-shm`；绝对路径只在仓库外 ledger。每个正式/排水 slot 用 `CreateFileW(FILE_READ_ATTRIBUTES)`（共享 read/write/delete）+ `GetFileInformationByHandleEx(FileIdInfo/FileStandardInfo)` 记录存在、volume serial+file id 与字节；不存在记 absent，打开/查询失败记 invalid。所有 Watch transient file/dir 必须位于 bootstrap 给出的空专属 `watchTempRoot`；Electron/Chromium/TEMP/TMP 使用另一个 `processTempRoot`，两者不得互为祖先。watch root 在 resume 前以 directory handle 冻结 volume+FileId；root、每级 ancestor 和 entry 都用 `FILE_FLAG_OPEN_REPARSE_POINT` 重开并查 `FileAttributeTagInfo`，任一 symlink/junction/其它 reparse tag、root identity 改变或逃逸均 `FAIL-product`，且枚举必须递归但不得跟随 reparse。relative path 禁止 absolute/device/UNC/`..`/`.`/ADS/空 segment，必须已经是 Unicode NFC、以 `\` 分隔并保留 OS 返回 exact case；禁止 normalize 后接受，重复或 ordinal-ignore-case collision 非法。产品 temp lifecycle 按本节 frozen raw-key/message HMAC 算法为每个已安全创建的 relative entry 计算 bindingToken，只发 token，不发正文、relative/absolute path、URL 或凭据；harness 在 sample barrier 内独立枚举 OS entry、用同一 32-byte raw nonce key 重算 token，并要求与 live `watch-temp-lease` bindingToken 多重集逐项相等。create/register、delete/unregister 或 rename 的 old-unregister/new-register 在 qualification writer critical section 内完成；若 sample barrier 已打开则按 barrier-mutation 失败，绝不等待。rename 后 token 必须改变且 identity 不复用。unexpected entry、重复/collision token、删除后复现或 token/OS 不等均 `FAIL-product`。 |
+| DB 文件 owner                 | 不使用未文档化系统 handle 枚举，也不把“文件存在”冒充“连接仍开”。正式 slot 0 与每个 drain slot 对三个 path-kind 分别创建独立 `RmStartSession → RmRegisterResources(仅该存在 path) → RmGetList → RmEndSession`；absent path 的 owner 固定为 0，禁止在一个 session 注册多个 path 后猜逐路径归属。每 path 以 `RM_UNIQUE_PROCESS.PID + ProcessStartTime` 去重，只统计 qualification job identity。任一 Restart Manager 调用或 `ERROR_MORE_DATA` 扩容重取失败为该 path/slot 无效。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| 异步/异常/终态                | `WatchAsyncOperationRegistry` 必须覆盖 renderer Watch IPC admission、run request/execute、public acquisition、Session acquire/release/cleanup、Digest cycle/batch/provider/notification 的每个已创建未 settled Promise；在创建/入队前 register，唯一 Promise 的 `finally` 后 unregister。main 最早的 `uncaughtExceptionMonitor`、既有 `unhandledRejection` 处理入口分别只增 `uncaughtExceptionTotal/unhandledRejectionTotal`；Run/Digest/HTTP 等终态所有权 latch 只有真正第二次争抢才只增 `duplicateTerminalAttemptTotal`，终态后的 transport 丢弃与幂等 cleanup 不计。三者是本轮单调 counter，不是可回落 gauge。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 电池/电源                     | 只用本节 15.6.4 冻结的 `GetSystemPowerStatus` + Battery Class SetupAPI/IOCTL 字段；不使用 WMI、ACPI vendor counter、性能计数器、估算运行时间或 `BATTERY_STATUS.Rate` 积分冒充能量差。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-temp binding 的 `entryKind` 只允许 ASCII `file|directory`；公式中的 `\0` 是单个 zero octet，HMAC 输出是无
-padding 的 43-char base64url。目录 rename 必须对整个 descendant subtree 在同一 writer barrier 内按旧 token 全部
+temp binding 的 `entryKind` 只允许 ASCII `file|directory`；公式中的 `\0` 是单个 zero octet，HMAC key/message/
+golden 与 zeroize 时点以本节前述 frozen 算法为准，输出是无 padding 的 43-char base64url。目录 rename 必须对
+整个 descendant subtree 在同一 writer critical section 内按旧 token 全部
 unregister、再按新 relative path 全部 register；任一 close/delete/rename OS 调用失败则保留仍真实存在的旧 live
 binding 并终止资格，不能通过改 registry 伪造清理。product 与 harness 的 canonicalization version 固定为
 `watch-temp-v1`，每个 OS 名必须从创建时请求值到独立枚举值 exact round-trip，否则 entry invalid。harness 对
 root、产品对每个 live entry/ancestor 持有不含 `FILE_SHARE_DELETE` 的 attribute handle 至 lease 终止；新 entry
 只用 `CREATE_NEW|FILE_FLAG_OPEN_REPARSE_POINT`，已存在即拒绝。rename/delete 只用已验证 handle 的
 `SetFileInformationByHandle`、禁止重新按未可信 path 跟随打开，并在操作后按 FileId 和 reparse tag 复验；这套
-pre/open/post identity 复验必须位于同一 writer barrier，不能以“先检查 path、稍后另开”留下 junction race。
+pre/open/post identity 复验必须位于同一 writer critical section，不能以“先检查 path、稍后另开”留下 junction
+race，也不能跨 sample barrier 排队。
 
 active process list 读取时若进程恰好退出，整个 RSS/private/handle 枚举在该 slot 内最多重试三次，每次都重新读取
 完整 Job PID list；保留第一个全部 identity 成功的结果，不按指标挑最小值。三次仍失败则这些指标该 slot
@@ -2319,10 +2549,14 @@ pipe trace 未完整结束或任一全零 slot 缺失均为 `FAIL-product`；Res
    `RequiredSize`，第二次分配 exact bytes、设置 `SP_DEVICE_INTERFACE_DETAIL_DATA_W.cbSize` 后必须成功；其它
    组合 invalid。稳定 port identity 取 instance-id 的 UTF-16 NFC（ledger 只存 SHA-256）。每 port 用
    `CreateFileW(GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, OPEN_EXISTING)`，以输入 exact
-   `ULONG timeout=0`、输出 exact `ULONG BatteryTag` 调 `IOCTL_BATTERY_QUERY_TAG`，并要求 returned bytes
-   `==sizeof(ULONG)`。调用失败且 `GetLastError()==ERROR_FILE_NOT_FOUND`，或成功且输出
-   `BatteryTag==BATTERY_TAG_INVALID`，是该 port 在本 slot 的 documented absence；失败且其它 Win32 error 是
-   invalid。`BATTERY_TAG_INVALID` 不是合法 identity，也不得继续 query。重复 instance identity、detail length/
+   `ULONG timeout=0`、输出 exact `ULONG BatteryTag` 调 `IOCTL_BATTERY_QUERY_TAG`；调用成功必须同时满足 returned
+   bytes `==sizeof(ULONG)` 且 `BatteryTag!=BATTERY_TAG_INVALID`，success+invalid tag 是 protocol/API invalid，
+   绝不是 absence。调用前输出初始化为 `BATTERY_TAG_INVALID`；只有调用失败、
+   `GetLastError()==ERROR_FILE_NOT_FOUND` 且输出 buffer 观察为 `BATTERY_TAG_INVALID` 三项同时成立，才是
+   Microsoft 文档定义的 empty battery port/documented absence；该失败路径的 returned-byte value 只进 ledger，
+   不把未文档化的固定值另造为 absence 条件。
+   初始 query 的 `ERROR_NO_SUCH_DEVICE` 与其它错误一律 invalid；不得把 device removal/stale 状态洗成 absence。
+   `BATTERY_TAG_INVALID` 不是合法 identity，也不得继续 query。重复 instance identity、detail length/
    struct size 不符、SetupAPI/GetSystemPowerStatus/CreateFile/close/`SetupDiDestroyDeviceInfoList` 任一步失败，都使
    slot invalid；所有 handle 与 DeviceInfoList 在 success/error path 都必须恰好一次清理。只有**成功完整枚举且
    每一个已枚举 port 均为上述 documented absence**，设备层集合才可称为空；零 port 也必须由正常
@@ -2333,8 +2567,10 @@ pipe trace 未完整结束或任一全零 slot 缺失均为 `FAIL-product`；Res
    `IOCTL_BATTERY_QUERY_INFORMATION`，要求 returned bytes `==sizeof(BATTERY_INFORMATION)`；再以 exact input
    `BATTERY_WAIT_STATUS{BatteryTag=tag,Timeout=0,PowerState=0,LowCapacity=0,HighCapacity=0}`、input bytes
    `sizeof(BATTERY_WAIT_STATUS)`、output `BATTERY_STATUS` 调 `IOCTL_BATTERY_QUERY_STATUS`，要求 returned bytes
-   `==sizeof(BATTERY_STATUS)`。任一后续 IOCTL 返回 `ERROR_FILE_NOT_FOUND`、tag invalid/changed、short output、
-   其它 Win32 error 都使本 slot invalid，并在下一 slot 重新从 SetupAPI/tag 开始，不能把热拔插误记 absence。
+   `==sizeof(BATTERY_STATUS)`。取得合法 tag 后，任一后续 IOCTL 返回 `ERROR_NO_SUCH_DEVICE` 明确进入
+   tag-changed/stale 分支：本 slot invalid，关闭 handle，下一 slot 必须重新 SetupAPI/query-tag；它不能回退为
+   初始 absence。后续 `ERROR_FILE_NOT_FOUND`、tag invalid/changed、short output 与其它 Win32 error 同样使本
+   slot invalid，并在下一 slot重新开始，不能把热拔插误记 absence。
    identity 为 `(instance-id hash,BatteryTag)`，tag 只在该 port 内有效。只纳入 Capabilities 包含
    `BATTERY_SYSTEM_BATTERY` 且不含 `BATTERY_IS_SHORT_TERM` 的系统电池；任一有效 tag 不满足该条件时，整个
    slot 固定为 `unsupported-present-battery/condition-unavailable`，因为系统 BatteryFlag 无法再与完整 tagged
@@ -2415,10 +2651,24 @@ H3b production harness 的启动 identity 固定为当前仓库真实产物，�
   `lpCommandLine` 只含按 Windows quoting 规则编码的同一 exe、`.` 和一个非秘密 app 参数
   `--aibrowse-watch-resource-qualification`。`.` 在精确 repo-root `lpCurrentDirectory` 下由 Electron 读取
   `package.json.main` 并加载 `out/main/index.js`；不得把输出 JS 当可执行文件，也不得换成 preview wrapper。
-- 使用 `CREATE_SUSPENDED|CREATE_UNICODE_ENVIRONMENT|EXTENDED_STARTUPINFO_PRESENT`，`STARTUPINFOEXW` 的
-  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 只含 harness 创建的 stdin=`NUL` read handle 与分别有界捕获 stdout/stderr
-  的 write handles；三者不含秘密。`bInheritHandles=TRUE` 仅为该显式 allowlist，其它 pipe/job/process/thread/
-  ledger handle 均 non-inheritable。环境 block 按 Windows case-insensitive key 排序且**只**复制
+- stdout/stderr 必须分别调用 `CreatePipe`，`SECURITY_ATTRIBUTES.bInheritHandle=TRUE`；创建成功后立即对两个
+  harness read end 调 `SetHandleInformation(read,HANDLE_FLAG_INHERIT,0)` 并复查 non-inheritable。stdin 用
+  `CreateFileW("NUL",GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,...,OPEN_EXISTING,...)` 创建可继承 read
+  handle。`STARTUPINFOEXW.StartupInfo.dwFlags` 必须含 `STARTF_USESTDHANDLES`，且 `hStdInput=NUL read`、
+  `hStdOutput=stdout write`、`hStdError=stderr write`；`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 恰为这三个互异 handle，
+  `bInheritHandles=TRUE` 只为该显式 allowlist，其它 bootstrap/telemetry/job/process/thread/ledger/read-end handle
+  均在 CreateProcess 前复查 non-inheritable。CreateProcess 失败关闭所有已建端点；成功后 harness 必须在
+  ResumeThread 前立即关闭自己的 NUL read 与两个 write-end 副本，child 不持有 read end。
+- 两个专属 blocking drain thread 在 ResumeThread 前启动，各以 64 KiB buffer 持续 `ReadFile`，不能因 capture
+  满而停读。每流 retained capture 上限 2 MiB：保留首 256 KiB 与滚动末 1,792 KiB，另记 total bytes 与
+  truncated；GPU fatal/renderer crash classifier 对**全部**流式 bytes 做 ASCII pattern/state scan，不受截断
+  影响，故中段 `GPU process isn't usable. Goodbye.` 仍必须命中。成功 oracle 同时要求 root hProcess 已退出且
+  exit code=0、Job `ActiveProcesses=0`、stdout/stderr 都收到 0-byte/`ERROR_BROKEN_PIPE` EOF 且两个 drain thread
+  在 ActiveProcesses=0 后 5 秒内 join。root 先退时继续 drain descendants；descendant 未退出按 60 秒产品门
+  裁决。Job 已空但 EOF 缺失说明 harness handle/inheritance 合同不可信，记 `BLOCKED/harness-protocol`，不得
+  当产品干净退出；捕获超限本身不阻塞，只要持续 drain、classifier 与 truncation ledger 完整。
+- 使用 `CREATE_SUSPENDED|CREATE_UNICODE_ENVIRONMENT|EXTENDED_STARTUPINFO_PRESENT`。环境 block 按 Windows
+  case-insensitive key 排序且**只**复制
   `SystemRoot,WINDIR,COMSPEC,TEMP,TMP,LOCALAPPDATA,APPDATA,USERPROFILE`；TEMP/TMP 指向资格 processTempRoot，
   LOCALAPPDATA/APPDATA 指向本轮隔离父 root，其余保持宿主值。禁止 `ELECTRON_RUN_AS_NODE`、`NODE_OPTIONS`、
   `NODE_PATH`、代理/调试变量及任何 `AIBROWSE_*`；userData/watchTempRoot/pipe/nonce/runId 只走 §15.6.2
@@ -2668,6 +2918,28 @@ revalidated)` 单调更新。方案 B
   exact Electron 43.4.0 exe，参数 `.` 解析 package main=`./out/main/index.js`，固定 repo CWD、最小 Unicode env、
   显式非秘密 handle allowlist、suspended Job assignment 后 resume；初始 PID 即 browser/main。Job/Toolhelp 以
   PID+creation FILETIME 做双向全集/parent-chain 校验，禁止 wrapper、breakaway、PID/映像名猜测或提前关 Job。
+- **#S6-081**（H1 固定负载 REPLAN，2026-09-02）：H3b 使用 version/hash 固定的
+  `watch-h3b-load-v1` 100-entry manifest；唯一 acquisition seam 是 Coordinator 既有 `WatchAcquisitionPort` 的
+  bootstrap-authenticated main-only 实现。它复用 HostRequestGate/Session task-tab/Diff/Condition/Event/Digest/
+  Store 所有权点但不创建网络；HTTP registry 固定零且由 H3a 另证，禁止放宽 NetworkPolicy 或伪造 socket。
+- **#S6-082**（H1 sample REPLAN，2026-09-02）：sample-open 先关闭 admission，并以 qualification-only 同步
+  Clock decorator 暂停 HostGate/Scheduler/Digest/Coordinator/fixture 全部 timer、保存 absolute deadline；只等
+  sequencer writer quiesce，再于单一 JS turn 截 main snapshot，OS sample/close 后按原 deadline resume。Clock
+  公共接口不变，barrier 中 mutation 立即使整轮失败，不能排队或等 live gauge=0 后采样。
+- **#S6-083**（H1 overlapped REPLAN，2026-09-02）：named-pipe 每个 CONNECT/READ/WRITE 独占
+  OVERLAPPED/event/buffer owner；deadline 的 `CancelIoEx` 成功或 `ERROR_NOT_FOUND` race 后都必须等待唯一 final
+  completion，之后才 release/reuse。cancel/close/disconnect 与 main/harness crash 均按该状态机收口。
+- **#S6-084**（H1 canonical/secret REPLAN，2026-09-02）：bootstrap nonce 严格解码的 32 raw bytes 才是
+  HMAC-SHA-256 key，并只留 native locked owned memory；domain-separated message、无 padding output、collision
+  fail 与 zeroize 时点固定。协议 canonicalization 是 RFC 8785：UTF-16 key order、不 normalization、先拒绝
+  non-NFC/duplicate/lone surrogate/invalid UTF-8/非安全整数，product/harness 独立跑 frozen golden。
+- **#S6-085**（H1 Battery tag REPLAN，2026-09-02）：query-tag success 必须 non-invalid tag；只有
+  `ERROR_FILE_NOT_FOUND` failure+observed invalid tag 是 documented empty port。初始 `ERROR_NO_SUCH_DEVICE` 为
+  invalid；合法 tag 后该错误只走 stale/change 并下 slot 重枚举，no-battery 仍须所有 port 完整 absence。
+- **#S6-086**（H1 stdio REPLAN，2026-09-02）：production direct launcher 的 stdin/out/err 以
+  CreatePipe/NUL、SetHandleInformation、STARTF_USESTDHANDLES 与 exact 三-handle list 冻结；parent 在 resume 前
+  关 child ends，专属线程持续 drain 且全流扫描 GPU fatal。root exit=0、Job descendants=0、双 EOF/join 必须
+  同时成立。
 
 产品级待定决议：无。实现发现本契约无法给出红态 oracle、需要扩大网络/Browser/SourceService 公共能力、
 需要换 XML 包或新增后台身份时必须停止并 REPLAN。
