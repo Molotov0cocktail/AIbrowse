@@ -647,6 +647,127 @@ function domMatches(dom: SafeDomFailureState, expected: BoundsExpectation): bool
   );
 }
 
+function unknownBoundsFailure(): BoundsFailureClassification {
+  return { layer: 'unknown', rootCauseEstablished: false };
+}
+
+function completeRing<T>(ring: BoundsRingSnapshot<T>): boolean {
+  return !ring.truncated && ring.totalCount === ring.items.length;
+}
+
+function hasValidNativeState(state: SafeNativeViewState): boolean {
+  return state.viewId.status === 'valid' && state.bounds.status === 'valid';
+}
+
+function hasCompatibleFailureTiming(
+  entry: BoundsPhaseEntry,
+  snapshot: Matrix9FailureSnapshot,
+  failureObservedAtMonoMs: number,
+): boolean {
+  return (
+    Number.isFinite(entry.monoStartedAtMs) &&
+    Number.isFinite(failureObservedAtMonoMs) &&
+    Number.isFinite(snapshot.captureStartedAtMonoMs) &&
+    Number.isFinite(snapshot.captureFinishedAtMonoMs) &&
+    entry.monoStartedAtMs <= failureObservedAtMonoMs &&
+    failureObservedAtMonoMs <= snapshot.captureStartedAtMonoMs &&
+    snapshot.captureStartedAtMonoMs <= snapshot.captureFinishedAtMonoMs
+  );
+}
+
+function hasCompatibleNativeEvidence(
+  observation: BoundsObservationSnapshot,
+  failureObservedAtMonoMs: number,
+): boolean {
+  const entry = observation.phaseEntry;
+  if (
+    entry === null ||
+    observation.nativeSamples.items.length === 0 ||
+    !completeRing(observation.nativeSamples)
+  ) {
+    return false;
+  }
+  return observation.nativeSamples.items.every(
+    (sample) =>
+      sample.phase === entry.phase &&
+      Number.isFinite(sample.monoObservedAtMs) &&
+      entry.monoStartedAtMs <= sample.monoObservedAtMs &&
+      sample.monoObservedAtMs <= failureObservedAtMonoMs &&
+      sample.conditionMatched === false &&
+      hasValidNativeState(sample) &&
+      !boundsMatch(sample.bounds, entry.expected),
+  );
+}
+
+function hasCompatibleIpcEvidence(
+  observation: BoundsObservationSnapshot,
+  failureSnapshot: Matrix9FailureSnapshot,
+): boolean {
+  const entry = observation.phaseEntry;
+  if (
+    entry === null ||
+    observation.listener.attachStatus !== 'attached' ||
+    !completeRing(observation.ipcSamples)
+  ) {
+    return false;
+  }
+  return observation.ipcSamples.items.every(
+    (sample) =>
+      sample.phase === entry.phase &&
+      Number.isFinite(sample.monoObservedAtMs) &&
+      entry.monoStartedAtMs <= sample.monoObservedAtMs &&
+      sample.monoObservedAtMs <= failureSnapshot.captureFinishedAtMonoMs &&
+      sample.payloadBounds.status === 'valid' &&
+      hasValidNativeState(sample.selectedNative),
+  );
+}
+
+function uniquelyIdentifiesVisibleTarget(
+  windowState: SafeWindowFailureState,
+  expected: BoundsExpectation,
+  matchingIpc: readonly BoundsIpcSample[],
+): boolean {
+  if (
+    windowState.childViews.status !== 'valid' ||
+    windowState.childViews.truncated ||
+    windowState.childViews.totalCount !== windowState.childViews.items.length ||
+    !hasValidNativeState(windowState.selectedNative) ||
+    boundsMatch(windowState.selectedNative.bounds, expected)
+  ) {
+    return false;
+  }
+  if (
+    !windowState.childViews.items.every(
+      (child) =>
+        child.kind !== 'unavailable' &&
+        child.viewId.status === 'valid' &&
+        child.visible.status === 'valid' &&
+        child.bounds.status === 'valid',
+    )
+  ) {
+    return false;
+  }
+
+  const selectedId = windowState.selectedNative.viewId.value;
+  const candidates = windowState.childViews.items.filter(
+    (child) =>
+      child.kind === 'web-contents-view' &&
+      child.visible.status === 'valid' &&
+      child.visible.value &&
+      child.viewId.status === 'valid' &&
+      child.viewId.value !== selectedId &&
+      boundsMatch(child.bounds, expected),
+  );
+  if (candidates.length !== 1 || candidates[0]!.viewId.status !== 'valid') return false;
+  const candidateId = candidates[0]!.viewId.value;
+  return matchingIpc.every(
+    (sample) =>
+      boundsMatch(sample.selectedNative.bounds, expected) &&
+      sample.selectedNative.viewId.status === 'valid' &&
+      sample.selectedNative.viewId.value === candidateId,
+  );
+}
+
 export function classifyMatrix9BoundsFailure(
   observation: BoundsObservationSnapshot,
   failureSnapshot: Matrix9FailureSnapshot | null,
@@ -654,66 +775,87 @@ export function classifyMatrix9BoundsFailure(
 ): BoundsFailureClassification {
   const entry = observation.phaseEntry;
   if (entry === null || failureSnapshot === null) {
-    return { layer: 'unknown', rootCauseEstablished: false };
+    return unknownBoundsFailure();
   }
+  if (failureSnapshot.window.status !== 'valid') return unknownBoundsFailure();
   const currentSize = failureSnapshot.window.contentSize;
-  if (currentSize.status === 'valid' && currentSize.value.width !== entry.expected.windowWidth) {
+  if (currentSize.status !== 'valid') return unknownBoundsFailure();
+  if (currentSize.value.width !== entry.expected.windowWidth) {
     return { layer: 'window-precondition', rootCauseEstablished: false };
   }
 
   const matchesDom = domMatches(failureSnapshot.dom, entry.expected);
   if (matchesDom === false) return { layer: 'ui-layout', rootCauseEstablished: false };
-  if (matchesDom === null) return { layer: 'unknown', rootCauseEstablished: false };
+  if (matchesDom === null) return unknownBoundsFailure();
+
+  if (
+    failureSnapshot.window.visible.status !== 'valid' ||
+    !failureSnapshot.window.visible.value ||
+    failureSnapshot.window.minimized.status !== 'valid' ||
+    failureSnapshot.window.minimized.value ||
+    failureSnapshot.window.focused.status !== 'valid' ||
+    failureSnapshot.dom.visibilityState !== 'visible' ||
+    failureSnapshot.dom.hasFocus.status !== 'valid' ||
+    !hasCompatibleFailureTiming(entry, failureSnapshot, failureObservedAtMonoMs) ||
+    !hasCompatibleNativeEvidence(observation, failureObservedAtMonoMs) ||
+    !hasCompatibleIpcEvidence(observation, failureSnapshot)
+  ) {
+    return unknownBoundsFailure();
+  }
 
   const matchingIpc = observation.ipcSamples.items.filter((sample) =>
     boundsMatch(sample.payloadBounds, entry.expected),
   );
   if (matchingIpc.length === 0) {
-    return observation.ipcSamples.truncated
-      ? { layer: 'unknown', rootCauseEstablished: false }
-      : { layer: 'renderer-measurement-schedule-send', rootCauseEstablished: false };
+    return hasValidNativeState(failureSnapshot.window.selectedNative) &&
+      !boundsMatch(failureSnapshot.window.selectedNative.bounds, entry.expected)
+      ? { layer: 'renderer-measurement-schedule-send', rootCauseEstablished: false }
+      : unknownBoundsFailure();
   }
 
-  const ipcWithWrongNative = matchingIpc.find(
-    (sample) =>
-      sample.selectedNative.bounds.status === 'valid' &&
-      !boundsMatch(sample.selectedNative.bounds, entry.expected),
+  const onTimeMatchingIpc = matchingIpc.filter(
+    (sample) => sample.monoObservedAtMs <= failureObservedAtMonoMs,
   );
-  if (ipcWithWrongNative !== undefined) {
-    return { layer: 'main-apply', rootCauseEstablished: false };
+  const lateMatchingIpc = matchingIpc.filter(
+    (sample) => sample.monoObservedAtMs > failureObservedAtMonoMs,
+  );
+  if (onTimeMatchingIpc.length > 0 && lateMatchingIpc.length > 0) {
+    return unknownBoundsFailure();
   }
 
-  const selectedId = failureSnapshot.window.selectedNative.viewId;
-  const selectedMatches = boundsMatch(failureSnapshot.window.selectedNative.bounds, entry.expected);
-  const matchingOtherView = failureSnapshot.window.childViews.items.find(
-    (child) =>
-      boundsMatch(child.bounds, entry.expected) &&
-      child.viewId.status === 'valid' &&
-      (selectedId.status !== 'valid' || child.viewId.value !== selectedId.value),
+  const onTimeWrongNative = onTimeMatchingIpc.filter(
+    (sample) => !boundsMatch(sample.selectedNative.bounds, entry.expected),
   );
-  if (!selectedMatches && matchingOtherView !== undefined) {
-    return { layer: 'view-selection', rootCauseEstablished: false };
+  const onTimeCorrectNative = onTimeMatchingIpc.filter((sample) =>
+    boundsMatch(sample.selectedNative.bounds, entry.expected),
+  );
+  if (onTimeMatchingIpc.length > 0) {
+    if (
+      onTimeWrongNative.length === onTimeMatchingIpc.length &&
+      hasValidNativeState(failureSnapshot.window.selectedNative) &&
+      !boundsMatch(failureSnapshot.window.selectedNative.bounds, entry.expected)
+    ) {
+      return { layer: 'main-apply', rootCauseEstablished: false };
+    }
+    if (
+      onTimeCorrectNative.length === onTimeMatchingIpc.length &&
+      uniquelyIdentifiesVisibleTarget(failureSnapshot.window, entry.expected, onTimeCorrectNative)
+    ) {
+      return { layer: 'view-selection', rootCauseEstablished: false };
+    }
+    return unknownBoundsFailure();
   }
+
   if (
-    !selectedMatches &&
-    matchingOtherView === undefined &&
-    failureSnapshot.window.childViews.truncated
+    lateMatchingIpc.length === matchingIpc.length &&
+    lateMatchingIpc.every((sample) => boundsMatch(sample.selectedNative.bounds, entry.expected)) &&
+    hasValidNativeState(failureSnapshot.window.selectedNative) &&
+    boundsMatch(failureSnapshot.window.selectedNative.bounds, entry.expected)
   ) {
-    return { layer: 'unknown', rootCauseEstablished: false };
-  }
-
-  const lateIpc = matchingIpc.some(
-    (sample) =>
-      sample.monoObservedAtMs > failureObservedAtMonoMs &&
-      boundsMatch(sample.selectedNative.bounds, entry.expected),
-  );
-  const lateFinal =
-    selectedMatches && failureSnapshot.captureFinishedAtMonoMs > failureObservedAtMonoMs;
-  if (lateIpc || lateFinal) {
     return { layer: 'late-observation', rootCauseEstablished: false };
   }
 
-  return { layer: 'unknown', rootCauseEstablished: false };
+  return unknownBoundsFailure();
 }
 
 export async function runMatrix9BoundsWait(options: Matrix9BoundsWaitOptions): Promise<void> {

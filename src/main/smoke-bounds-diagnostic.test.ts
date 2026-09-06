@@ -91,6 +91,7 @@ function createStartedObservation(options?: {
 
 function failureSnapshot(options?: {
   currentWindowWidth?: number;
+  contentSizeStatus?: 'valid' | 'unavailable';
   domWidth?: number;
   domStatus?: 'valid' | 'timeout';
   selectedViewId?: number;
@@ -105,10 +106,13 @@ function failureSnapshot(options?: {
     captureFinishedAtMonoMs: options?.finishedAt ?? 100,
     window: {
       status: 'valid',
-      contentSize: {
-        status: 'valid',
-        value: { width: options?.currentWindowWidth ?? 1000, height: 700 },
-      },
+      contentSize:
+        options?.contentSizeStatus === 'unavailable'
+          ? { status: 'unavailable', value: null }
+          : {
+              status: 'valid',
+              value: { width: options?.currentWindowWidth ?? 1000, height: 700 },
+            },
       visible: { status: 'valid', value: true },
       minimized: { status: 'valid', value: false },
       focused: { status: 'valid', value: true },
@@ -142,9 +146,20 @@ function failureSnapshot(options?: {
 }
 
 function observationSnapshot(options?: {
+  native?: BoundsObservationSnapshot['nativeSamples']['items'];
+  nativeTruncated?: boolean;
   ipc?: BoundsObservationSnapshot['ipcSamples']['items'];
   ipcTruncated?: boolean;
+  listenerAttachStatus?: 'attached' | 'unavailable';
 }): BoundsObservationSnapshot {
+  const native = options?.native ?? [
+    {
+      phase: 'panel-open',
+      monoObservedAtMs: 90,
+      conditionMatched: false,
+      ...safeNative(1, 600),
+    },
+  ];
   const ipc = options?.ipc ?? [];
   return {
     phaseEntry: {
@@ -154,14 +169,18 @@ function observationSnapshot(options?: {
       monoStartedAtMs: 10,
       expected: EXPECTED,
     },
-    nativeSamples: { items: [], totalCount: 0, truncated: false },
+    nativeSamples: {
+      items: native,
+      totalCount: native.length + (options?.nativeTruncated ? 1 : 0),
+      truncated: options?.nativeTruncated ?? false,
+    },
     ipcSamples: {
       items: ipc,
       totalCount: ipc.length + (options?.ipcTruncated ? 1 : 0),
       truncated: options?.ipcTruncated ?? false,
     },
     listener: {
-      attachStatus: 'attached',
+      attachStatus: options?.listenerAttachStatus ?? 'attached',
       detachStatus: 'detached',
       ignoredSenderCount: 0,
     },
@@ -536,6 +555,160 @@ describe('矩阵 9 bounds 失败观测', () => {
     const serialized = JSON.stringify(summarizeMatrix9BoundsEvidence(evidence));
     expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThan(8192);
     expect(serialized).toContain('"outputTruncated":true');
+  });
+
+  it('IPC listener 未 attach 时不把空 IPC ring 误判为 renderer 层', () => {
+    const observation = createBoundsObservation({
+      ipc: {
+        on() {
+          throw new Error('attach failed');
+        },
+        removeListener() {},
+      },
+      channel: 'ui:content-bounds',
+      trustedSender: {},
+      sampleSelectedNative: () => ({ viewId: 1, bounds: rect(600) }),
+      nowMono: () => 90,
+      nowWall: () => 1_725_000_000_000,
+    });
+    observation.beginPhase({
+      phase: 'panel-open',
+      frozenWindowWidth: 1000,
+      expected: EXPECTED,
+    });
+    observation.recordNative({ viewId: 1, bounds: rect(600) }, false);
+
+    expect(classifyMatrix9BoundsFailure(observation.snapshot(), failureSnapshot(), 100)).toEqual({
+      layer: 'unknown',
+      rootCauseEstablished: false,
+    });
+  });
+
+  it('window contentSize 不可用时不暗认冻结宽度前提成立', () => {
+    expect(
+      classifyMatrix9BoundsFailure(
+        observationSnapshot(),
+        failureSnapshot({ contentSizeStatus: 'unavailable' }),
+        100,
+      ),
+    ).toEqual({ layer: 'unknown', rootCauseEstablished: false });
+  });
+
+  it('只有无关 hidden Tab 的旧 bounds 匹配时不误判 view-selection', () => {
+    expect(
+      classifyMatrix9BoundsFailure(
+        observationSnapshot({ ipc: [ipcSample({ nativeViewId: 2, nativeWidth: 620 })] }),
+        failureSnapshot({
+          selectedViewId: 1,
+          selectedWidth: 600,
+          childViews: [
+            {
+              kind: 'web-contents-view',
+              viewId: { status: 'valid', value: 2 },
+              visible: { status: 'valid', value: false },
+              bounds: safeBounds(620),
+            },
+          ],
+        }),
+        100,
+      ),
+    ).toEqual({ layer: 'unknown', rootCauseEstablished: false });
+  });
+
+  it('failure 前后均已有匹配 IPC/native 时不误判 late-observation', () => {
+    expect(
+      classifyMatrix9BoundsFailure(
+        observationSnapshot({ ipc: [ipcSample({ mono: 90 }), ipcSample({ mono: 101 })] }),
+        failureSnapshot({ selectedWidth: 620, finishedAt: 101 }),
+        100,
+      ),
+    ).toEqual({ layer: 'unknown', rootCauseEstablished: false });
+  });
+
+  it.each([
+    [
+      '非 WebContentsView',
+      {
+        kind: 'other' as const,
+        viewId: { status: 'valid' as const, value: 2 },
+        visible: { status: 'valid' as const, value: true },
+        bounds: safeBounds(620),
+      },
+    ],
+    [
+      '缺失目标 id',
+      {
+        kind: 'web-contents-view' as const,
+        viewId: { status: 'none' as const, value: null },
+        visible: { status: 'valid' as const, value: true },
+        bounds: safeBounds(620),
+      },
+    ],
+  ])('%s 的巧合 bounds 不足以判定 view-selection', (_label, childView) => {
+    expect(
+      classifyMatrix9BoundsFailure(
+        observationSnapshot({ ipc: [ipcSample({ nativeViewId: 2, nativeWidth: 620 })] }),
+        failureSnapshot({ childViews: [childView] }),
+        100,
+      ),
+    ).toEqual({ layer: 'unknown', rootCauseEstablished: false });
+  });
+
+  it('唯一可见 WebContentsView 与 on-time IPC 目标身份一致时保留 view-selection 正例', () => {
+    expect(
+      classifyMatrix9BoundsFailure(
+        observationSnapshot({ ipc: [ipcSample({ nativeViewId: 2, nativeWidth: 620 })] }),
+        failureSnapshot({
+          childViews: [
+            {
+              kind: 'web-contents-view',
+              viewId: { status: 'valid', value: 2 },
+              visible: { status: 'valid', value: true },
+              bounds: safeBounds(620),
+            },
+          ],
+        }),
+        100,
+      ),
+    ).toEqual({ layer: 'view-selection', rootCauseEstablished: false });
+  });
+
+  it.each([
+    [
+      'failure 前已匹配',
+      observationSnapshot({ ipc: [ipcSample({ mono: 90 })] }),
+      failureSnapshot({ selectedWidth: 620 }),
+    ],
+    [
+      'IPC ring 截断',
+      observationSnapshot({ ipc: [ipcSample({ mono: 101 })], ipcTruncated: true }),
+      failureSnapshot({ selectedWidth: 620, finishedAt: 101 }),
+    ],
+    [
+      'native ring 截断',
+      observationSnapshot({ ipc: [ipcSample({ mono: 101 })], nativeTruncated: true }),
+      failureSnapshot({ selectedWidth: 620, finishedAt: 101 }),
+    ],
+    [
+      '失败前 native 已报告匹配',
+      observationSnapshot({
+        native: [
+          {
+            phase: 'panel-open',
+            monoObservedAtMs: 90,
+            conditionMatched: true,
+            ...safeNative(1, 620),
+          },
+        ],
+        ipc: [ipcSample({ mono: 101 })],
+      }),
+      failureSnapshot({ selectedWidth: 620, finishedAt: 101 }),
+    ],
+  ])('%s 时证据不能证明仅 failure 后匹配', (_label, observation, snapshot) => {
+    expect(classifyMatrix9BoundsFailure(observation, snapshot, 100)).toEqual({
+      layer: 'unknown',
+      rootCauseEstablished: false,
+    });
   });
 
   it.each([
