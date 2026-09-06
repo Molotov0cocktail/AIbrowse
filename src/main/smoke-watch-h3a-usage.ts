@@ -85,8 +85,8 @@ function isCanonicalUtc(value: unknown): value is string {
 
 function isHistoricalProcessUtc(value: unknown): value is string {
   if (typeof value !== 'string') return false;
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3,7})(?:Z|\+00:00)$/.exec(
-    value,
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3,7})(?:Z|\+00:00)$/,
   );
   if (match === null) return false;
   const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction] = match;
