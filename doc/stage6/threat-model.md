@@ -433,49 +433,59 @@ identity}` 而无 temp binding 都不能单独成证。trace root exact schema�
 - v1 退出应用后不监控，Windows 系统通知可能因打包身份不可用；
 - 跨两个 SQLite 文件没有原子事务，使用 durable intent + revalidation 达成 fail-closed，而非假称原子。
 
-### 7.4 D10 证据状态回填（2026-09-02）
+### 7.4 D10/H2 证据状态回填（2026-09-06）
 
 历史 D10 回填曾以实现提交 `b9d956dc6b6eff626e3a668a2375de10380fc757` 自身作为 baseline 并记录专项
 `47/47`；该表述现已过期。机器证明 `b9d956d…` 的父提交精确为
 `d85667c54a354d322b0180d4c17873860a86c611`，因此新的完整审查区间固定为
 `d85667c54a354d322b0180d4c17873860a86c611..新候选HEAD`，不能排除首个大型实现提交。计时用例仍以
 `setTimeout(100)` 后的 `Date.now()` 差值作 oracle；已有一轮观察到 `observedForMs=99` 并失败，而 H1 REPLAN
-期间同一固定 8 文件单次运行得到 `47/47`。这两次结果共同证明当前状态是**未稳定计时缺陷**，不是固定
-`46/47`，也不是已恢复的稳定 `47/47`；断言仍要求 `>=100`，H2 不得以偶发绿态洗掉修复。本表只回填证据
-状态，不改变 WRT 定义、风险等级、正式 oracle 或安全边界；结构性证明、受控观察、真实环境观察严格分栏。
+期间同一固定 8 文件单次运行得到 `47/47`。H2 从
+`cda11af90aa11a0e937c58647f58c762655d206f` 经 `1e121401cc2e1221f55d881572583be75505df11` 修复至
+`9e41bd6f4ea55f8bb6a5a7c0f301502948a86c41`：duration/window/deadline 只由单调时钟裁决，wall clock 只生成
+独立 canonical UTC 审计时间；修复候选同时闭合小数单调时钟的计时下限。新的独立 Final Reviewer 对精确
+产品 HEAD `9e41bd6` 判定 `PASS`。历史 99ms 红态与 H1 单次 47/47 均保留，断言仍要求 `>=100`；当前分类为
+`timing-repair-verified`。本表只回填证据状态，不改变 WRT 定义、风险等级、正式 oracle 或安全边界；结构性
+证明、受控观察、真实环境观察严格分栏。
 
-| WRT    | 结构性证明 / 确定性 oracle                       | 受控机器观察                                          | 真实环境观察与限制                                            |
-| ------ | ------------------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------------- |
-| WRT-01 | PASS：地址分类/IPv6 allowlist                    | PASS：特殊/未分配地址零 socket                        | 未依赖公网                                                    |
-| WRT-02 | PASS：DNS rebinding/混合解析                     | PASS：批准 lookup 外整次拒绝                          | 未依赖公网                                                    |
-| WRT-03 | PASS：端口/scheme/redirect/downgrade 逐跳复验    | PASS：危险目标零后续请求                              | 未依赖公网                                                    |
-| WRT-04 | PASS：共享 deadline 与 transport drain 分层      | PASS：超时/慢流/压缩/多地址/redirect 夹具             | 未依赖公网                                                    |
-| WRT-05 | PASS：强制 RobotsGate、octet 匹配、预算/频率     | PASS：robots 语法/边界/429/伪造入口                   | 公网 RSS/Atom 为 blocked-environment                          |
-| WRT-06 | PASS：DTD/entity/XInclude 零 resolver            | PASS：XXE/Billion Laughs fail-closed                  | 未依赖公网                                                    |
-| WRT-07 | PASS：XML 各独立预算与编码边界                   | PASS：`==` 接受、`+1` 拒绝                            | 未依赖公网                                                    |
-| WRT-08 | PASS：identity/去重/observation idempotency 分离 | PASS：重排零事件，A→B→A→B→A 四观察保留                | 未依赖公网                                                    |
-| WRT-09 | PASS：grant 绑定/一次性/精确 task-tab 所有权     | PASS：敌手 user tab id 零 close/navigate              | 未依赖公网                                                    |
-| WRT-10 | PASS：恢复/焦点/登录挑战/cleanup fail-closed     | PASS：重启 catch-up 与用户 Tab 保护                   | 未依赖公网                                                    |
-| WRT-11 | PASS：Region/table/iframe/噪声边界               | PASS：歧义和跨域 iframe 零假 Event                    | 未依赖公网                                                    |
-| WRT-12 | PASS：Evidence 与 Condition error 分支闭合       | PASS：unexplainable/condition_error oracle            | 未依赖公网                                                    |
-| WRT-13 | PASS：Digest/Facts/Explanation 白名单与零工具    | PASS：注入、重复/额外/非 canonical 草案拒绝           | Provider 凭据不可用，零真实调用                               |
-| WRT-14 | PASS：sharing 隔离与 factsRevision/hash CAS      | PASS：blocked/metadata/note/迟到写回防线              | Provider 凭据不可用，零真实调用                               |
-| WRT-15 | PASS：通知隐私/dedupe/UUID 路由                  | PASS：8×11 隐私矩阵与安全 DTO                         | Windows 打包未打包，NOT RUN                                   |
-| WRT-16 | PASS：reservation/DST/回拨/补跑状态机            | PASS：三写原子、一次 catch-up、slot 不重放            | 未依赖公网                                                    |
-| WRT-17 | PASS：Source fingerprint/CAS/durable intent      | PASS：metadata/locator/delete 竞态防线                | 未依赖公网                                                    |
-| WRT-18 | PASS：watch.db 迁移/预算/journal/FK/恢复边界     | 最新单次 47/47，但 99ms/100ms 计时缺陷未稳定、仍待 H2 | 长时资源资格为 condition-unavailable/observation-insufficient |
-| WRT-19 | PASS：HTML SAX 零脚本/子资源/Cookie              | PASS：私网子资源/巨树/恶意 HTML 夹具                  | 未依赖公网                                                    |
+| WRT    | 结构性证明 / 确定性 oracle                       | 受控机器观察                                                 | 真实环境观察与限制                                            |
+| ------ | ------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------- |
+| WRT-01 | PASS：地址分类/IPv6 allowlist                    | PASS：特殊/未分配地址零 socket                               | 未依赖公网                                                    |
+| WRT-02 | PASS：DNS rebinding/混合解析                     | PASS：批准 lookup 外整次拒绝                                 | 未依赖公网                                                    |
+| WRT-03 | PASS：端口/scheme/redirect/downgrade 逐跳复验    | PASS：危险目标零后续请求                                     | 未依赖公网                                                    |
+| WRT-04 | PASS：共享 deadline 与 transport drain 分层      | PASS：超时/慢流/压缩/多地址/redirect 夹具                    | 未依赖公网                                                    |
+| WRT-05 | PASS：强制 RobotsGate、octet 匹配、预算/频率     | PASS：robots 语法/边界/429/伪造入口                          | 公网 RSS/Atom 为 blocked-environment                          |
+| WRT-06 | PASS：DTD/entity/XInclude 零 resolver            | PASS：XXE/Billion Laughs fail-closed                         | 未依赖公网                                                    |
+| WRT-07 | PASS：XML 各独立预算与编码边界                   | PASS：`==` 接受、`+1` 拒绝                                   | 未依赖公网                                                    |
+| WRT-08 | PASS：identity/去重/observation idempotency 分离 | PASS：重排零事件，A→B→A→B→A 四观察保留                       | 未依赖公网                                                    |
+| WRT-09 | PASS：grant 绑定/一次性/精确 task-tab 所有权     | PASS：敌手 user tab id 零 close/navigate                     | 未依赖公网                                                    |
+| WRT-10 | PASS：恢复/焦点/登录挑战/cleanup fail-closed     | PASS：重启 catch-up 与用户 Tab 保护                          | 未依赖公网                                                    |
+| WRT-11 | PASS：Region/table/iframe/噪声边界               | PASS：歧义和跨域 iframe 零假 Event                           | 未依赖公网                                                    |
+| WRT-12 | PASS：Evidence 与 Condition error 分支闭合       | PASS：unexplainable/condition_error oracle                   | 未依赖公网                                                    |
+| WRT-13 | PASS：Digest/Facts/Explanation 白名单与零工具    | PASS：注入、重复/额外/非 canonical 草案拒绝                  | Provider 凭据不可用，零真实调用                               |
+| WRT-14 | PASS：sharing 隔离与 factsRevision/hash CAS      | PASS：blocked/metadata/note/迟到写回防线                     | Provider 凭据不可用，零真实调用                               |
+| WRT-15 | PASS：通知隐私/dedupe/UUID 路由                  | PASS：8×11 隐私矩阵与安全 DTO                                | Windows 打包未打包，NOT RUN                                   |
+| WRT-16 | PASS：reservation/DST/回拨/补跑状态机            | PASS：三写原子、一次 catch-up、slot 不重放                   | 未依赖公网                                                    |
+| WRT-17 | PASS：Source fingerprint/CAS/durable intent      | PASS：metadata/locator/delete 竞态防线                       | 未依赖公网                                                    |
+| WRT-18 | PASS：watch.db 迁移/预算/journal/FK/恢复边界     | PASS：原 8 文件 47/47 恒等保留，H2 新增 24 项后 9 文件 71/71 | 长时资源资格为 condition-unavailable/observation-insufficient |
+| WRT-19 | PASS：HTML SAX 零脚本/子资源/Cookie              | PASS：私网子资源/巨树/恶意 HTML 夹具                         | 未依赖公网                                                    |
 
-D10 历史全量 Vitest `3427/3427`、typecheck/lint/format/build、dev/production 冒烟及
-Session/Sources/Sources UI/Research/Watch set/check 退出码 `0` 只作为历史证据；当前专项分类为
-`unstable-timing-defect`，保留 observedForMs=99 失败与最新单次 47/47 两项证据，不得用自动重跑挑绿。公网
-RSS/无 RSS fallback/真实失败路径、正式资源与标准
-Windows 生命周期仍是硬门；Provider 凭据不可用和 Windows 打包通知 `NOT RUN` 是非阻断条件性观察。
+D10 历史全量 Vitest `3427/3427`、Session/Sources/Sources UI/Research 跨进程门仍只作为历史证据。H2
+Final Reviewer 独立复验 9 文件 `71/71`、全量 163 文件 `3451/3451`、typecheck/lint/format:check/build、
+两范围 diff-check 及六个离线 Electron 场景（dev/production 默认和各自 Watch set/check）均退出码 `0`。
+三版本 driver 保留 observedForMs=99 失败，并证明旧候选在同一 `>=100` oracle 下失败、新候选通过；30 组
+origin/shutdown 与 timer-abort 补充矩阵全部通过。真实网络、Provider、凭据、系统通知、H3b 正式资源与标准
+Windows 生命周期 `NOT RUN`；公网 RSS/无 RSS fallback/真实失败路径和 H3b 仍是硬门。原始证据位于
+gitignored `log/h2-final-review-9e41bd6/` 与 `log/h2-independent-review-1e121401/`。
+
+旧沙箱内 `GPU process isn't usable. Goodbye.` 失败记录继续保留；合法沙箱外六个离线 Electron 场景成功
+说明 H2 产品可运行，不等价于 detailed-design §15.6/§15.7 的 H3b 标准 Windows/GPU 对照或
+10m/60m/10m 资源资格，也不再据此断言本机 Electron 现时完全不可启动。
 
 ### 7.5 H1 后续不可越序闭环
 
 `H1 独立安全/资源 Reviewer PASS → Closer 更新 progress/提交/双远程 push → H2 计时修复 → H2 Reviewer
-PASS → H3a 必需真实网络 → H3a Reviewer PASS → H3b 资源/标准 Windows → H3b Reviewer PASS → H4 新独立
+PASS` 已完成；当前后续为 `H3a 必需真实网络 → H3a Reviewer PASS → H3b 资源/标准 Windows → H3b Reviewer PASS → H4 新独立
 D10 完整区间 Reviewer PASS → 新 D11 Stage Auditor`。H4 前不得启动 D11；其它机器成功不得删除当前 GPU
 失败记录，Provider/Windows 系统通知观察不得混入 H3a/H3b 成为额外硬门。
 

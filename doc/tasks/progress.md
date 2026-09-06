@@ -31,9 +31,12 @@
   Exit Gate 已通过。H1 正式资源资格契约已完成收敛：文档 baseline
   `f262b4ed63eafd4528a0da49fa05febda995f014`，候选链顶端
   `61a2f0497853253050ffddbef81cc4fb5edb020a` 已经新的独立 Final Convergence Reviewer
-  `PASS`（blocker=0）。H2、H3a、H3b、H4 与新 D11 均未开始；唯一顺序为
-  **H2 → H3a → H3b → H4（完整区间 baseline
-  `d85667c54a354d322b0180d4c17873860a86c611`）→ 新 D11**，当前下一唯一任务为 H2。
+  `PASS`（blocker=0）。H2 已从 baseline
+  `cda11af90aa11a0e937c58647f58c762655d206f` 经候选 `1e121401cc2e1221f55d881572583be75505df11`
+  与修复候选 `9e41bd6f4ea55f8bb6a5a7c0f301502948a86c41` 完成，新的独立 Final Reviewer 对精确
+  产品 HEAD `9e41bd6` 判定 `PASS`。H3a、H3b、H4 与新 D11 均未开始；唯一顺序为
+  **H3a → H3b → H4（完整区间 baseline
+  `d85667c54a354d322b0180d4c17873860a86c611`）→ 新 D11**，当前下一唯一任务为 H3a。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -680,11 +683,11 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D7 | 确定性 Diff/Event/Evidence 与健康状态 | ✅ | 2026-08-31 完成（见下）：baseline `80a2174`，实施链 `623dee7` → `80a41ad` → `25a2549` → `7e17d38` → `3c7861f` → `bbaed6b` → `cd267ff` → `828daed` → `9d1a362` → `3f09378` → `0b5e5f3` → `4619318`（十二个候选提交）；独立 Reviewer=`PASS`，聚焦 8 files/239 tests、全量 137 files/3244 tests，typecheck/lint/format/build/diff-check 全绿、dev+生产冒烟 8.21–8.24 与生产 WATCH set/check 0/0；任务文档 doc/stage6/tasks/D7-diff-event-evidence-health.md |
 | D8 | Digest 分享投影与可选 AI 解释 | ✅ | 2026-08-31 完成：baseline `b55580a`，实施与有界修复链 `a05bb47` → `de855bb` → `64fc0f0` → `0e42857` → `ff65aa6`；最终候选 HEAD `ff65aa63a8a5151b93ac22deeaf8227f85ce65c8`，独立 Sol Reviewer=`PASS`；真实 Provider `NOT RUN`；任务文档 doc/stage6/tasks/D8-digest-sharing-ai.md |
 | D9 | Watch UI/IPC/通知/导出 | ✅ | 2026-09-01 完成：baseline `7b3fc60`，实施与有界修复链 `bdbee1e` → `6ca3e8b` → `c28a8cb` → `91ec0f2` → `5290859` → `83d3c7b` → `d277a98`；新的独立安全/隐私 Reviewer=`PASS`，全量 155 files/3379 tests、typecheck/lint/format/build/diff-check 与 production 全 Electron smoke 全绿；真实 Windows Notification 因无已验证 packaged identity `NOT RUN`，产品诚实降级 unavailable；任务文档 doc/stage6/tasks/D9-watch-ui-ipc-notification-export.md |
-| D10 | 端到端、红队、隐私与真实门控 | ✅ | 2026-09-02 完成历史产品实现与基础设施验收：原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`，批准产品 HEAD `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`；后续 H1 已校正正式 H2/H3a/H3b/H4 与新 D11 契约，历史 PASS 不替代这些门；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
+| D10 | 端到端、红队、隐私与真实门控 | ✅ | 2026-09-02 完成历史产品实现与基础设施验收：原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`，批准产品 HEAD `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`；后续 H1 已校正正式 H2/H3a/H3b/H4 与新 D11 契约，H2 已于 2026-09-06 关闭，历史 D10 PASS 不替代 H3a/H3b/H4/D11；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
 | H1 | 正式资源资格契约冻结与收敛 | ✅ | 文档 baseline `f262b4ed63eafd4528a0da49fa05febda995f014`；候选链 `4053270` → `5dfe110` → `3a1f715` → `d06cb3d` → `fc5180b` → `61a2f04`；Final Convergence Reviewer 对精确 HEAD `61a2f0497853253050ffddbef81cc4fb5edb020a` 判定 `PASS`、blocker=0 |
-| H2 | 修复 D10 确定性 99ms 红态并完成合同前置 | ⏳ | H1 后下一唯一任务；尚未开始，不以 H1 Reviewer 的偶发 47/47 覆盖历史 `observedForMs=99` |
-| H3a | 真实公网 RSS/Atom、public Page Watch fallback 与失败分类/退避/清理 | ⏳ | 依赖 H2；尚未开始 |
-| H3b | 标准 Windows/GPU 环境正式 10m/60m/10m 资源资格 | ⏳ | 依赖 H3a；尚未开始；当前机器 `GPU process isn't usable. Goodbye.` 仍是进入本门后的 `BLOCKED` 环境事实 |
+| H2 | 修复 D10 确定性 99ms 红态并完成合同前置 | ✅ | baseline `cda11af90aa11a0e937c58647f58c762655d206f`；候选 `1e12140` + 小数单调时钟修复 `9e41bd6`；新的独立 Final Reviewer 对精确产品 HEAD `9e41bd6f4ea55f8bb6a5a7c0f301502948a86c41` 判定 `PASS`；原 8 文件 47 项恒等保留，H2 新增 24 项，合计 9 文件 71/71 |
+| H3a | 真实公网 RSS/Atom、public Page Watch fallback 与失败分类/退避/清理 | ⏳ | 依赖 H2；当前下一唯一任务，尚未开始 |
+| H3b | 标准 Windows/GPU 环境正式 10m/60m/10m 资源资格 | ⏳ | 依赖 H3a；尚未开始；本机旧沙箱内 `GPU process isn't usable. Goodbye.` 失败证据保留；H2 Reviewer 已在合法沙箱外完成六个离线 Electron 场景，但这不等价于 H3b 标准环境资格 |
 | H4 | 完整 D10 区间独立审查 | ⏳ | 依赖 H3b；固定 baseline `d85667c54a354d322b0180d4c17873860a86c611`，尚未开始 |
 | D11 | 第六阶段新独立 Exit Audit | ⏳ | 依赖 H4；必须使用新的独立 Reviewer；尚未开始；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
 
@@ -697,7 +700,23 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 > （2026-08-23）第六阶段任务编号 D1–D11、威胁 WT-01 起、红队 WRT-01 起；
 > 正式编号以 `doc/stage6/` 当前契约为准，历史编号一律不复用。
 
-## 最近验证结果（2026-08-14 起持续回填；2026-09-03 追加 H1 收敛证据）
+## 最近验证结果（2026-08-14 起持续回填；2026-09-06 追加 H2 闭环证据）
+
+- **H2 确定性计时修复（2026-09-06，新的独立 Final Reviewer=`PASS`）**：产品 baseline
+  `cda11af90aa11a0e937c58647f58c762655d206f`，候选链 `1e121401cc2e1221f55d881572583be75505df11` →
+  `9e41bd6f4ea55f8bb6a5a7c0f301502948a86c41`。F1 将 duration/window/deadline 全部改由单调时钟裁决，UTC
+  只作独立审计时间；F2 闭合固定 deadline、早醒补等、single-settle、取消/非法 clock/timer error 清理；F3
+  以 actual port 经 runner 到 ledger 保留 canonical UTC、数量与 rollback 语义。修复候选另关闭小数单调时钟
+  下限：旧候选在同一 `>=100` oracle 上确定性失败，新候选通过；三版本独立 driver、30 组 origin/shutdown
+  矩阵及 timer-abort 补充矩阵全部通过。历史 `observedForMs=99` 红态保留，不以重跑洗绿。
+  独立复验确认原 8 文件 47 项测试名称/顺序恒等，H2 新增 24 项，合计 9 文件 **71/71**；全量
+  **163 files/3451 tests**；typecheck、lint、format:check、build、两范围 diff-check 均退出码 `0`。合法沙箱外
+  六个离线 Electron 场景（dev/production 默认及各自 Watch set/check）均退出码 `0`，覆盖 8.27 的
+  WRT-01～WRT-19/privacy/product-pipeline；真实网络、Provider、凭据、系统通知与 H3b 正式资源资格均
+  `NOT RUN`。原始复核证据保留在 gitignored `log/h2-final-review-9e41bd6/`，首次独立审查证据保留在
+  `log/h2-independent-review-1e121401/`。Reviewer 请求模型为 `gpt-6-astra/high`，实际模型未回显；H2
+  Closer 请求模型为 `gpt-5.6-sol/medium`，实际模型未回显。当前下一唯一任务为 H3a；H4 完整审查起点仍为
+  `d85667c54a354d322b0180d4c17873860a86c611`。
 
 - **H1 正式资源资格契约收敛（2026-09-03，Final Convergence Reviewer=`PASS`）**：文档
   baseline `f262b4ed63eafd4528a0da49fa05febda995f014`，六个单父候选提交依次为
@@ -3301,13 +3320,14 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 （正常后续任务 / 已接受设计决议 / 明确延期，不虚构严重度与证据）
 
-- **D10 后续正式门（H1 于 2026-09-03 冻结）**：历史 D10 运行中的公网 RSS/Atom
+- **D10 后续正式门（H1 于 2026-09-03 冻结，H2 于 2026-09-06 关闭）**：历史 D10 运行中的公网 RSS/Atom
   `blocked-environment`、Provider 凭据不可用、Windows 打包通知 `NOT RUN` 与资源资格
-  `condition-unavailable/observation-insufficient` 均不冒充正式通过。H1 已冻结后续唯一顺序：
-  H2 → H3a → H3b → H4 → 新 D11；其中真实 Provider、Windows 系统通知和真实登录网站 Session
+  `condition-unavailable/observation-insufficient` 均不冒充正式通过。H2 已按合同完成确定性计时修复；后续唯一顺序：
+  H3a → H3b → H4 → 新 D11；其中真实 Provider、Windows 系统通知和真实登录网站 Session
   观察为条件性观察，H3a 的真实公网路径与 H3b 的正式资源资格仍是硬门。当前机器
-  `GPU process isn't usable. Goodbye.` 保持为后续 H3b 的 `BLOCKED` 环境事实，其他机器成功
-  不能覆盖；H2、H3a、H3b、H4 与 D11 当前均未开始。
+  旧沙箱内 `GPU process isn't usable. Goodbye.` 失败证据继续保留；H2 独立复验在合法沙箱外六个离线
+  Electron 场景均成功，只补足 H2 产品运行证据，不构成 H3b 的正式标准环境资格。H3a、H3b、H4 与
+  D11 当前均未开始。
 
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过——已接受设计决议
   （detailed-design §12 决议 #13，快照为点时刻尽力采样）。
@@ -3406,9 +3426,11 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 阻塞项
 
-- **后续 H3b 标准环境阻塞（尚未进入 H3b）**：当前机器仍出现
-  `GPU process isn't usable. Goodbye.`；按已冻结 H1 契约，只有本机标准 Windows/GPU 环境
-  通过后才能完成 H3b，其他机器成功不能覆盖。当前流程先执行 H2，不提前运行 H3b。
+- **后续 H3b 标准环境资格（尚未进入 H3b）**：本机旧沙箱内
+  `GPU process isn't usable. Goodbye.` 失败证据保留；H2 独立复验已在合法沙箱外完成六个离线
+  Electron 场景，故当前不再把“本机完全无法启动 Electron”写成需用户先处理的现时阻塞。该结果不包含
+  detailed-design §15.6/§15.7 的正式 10m/60m/10m 资源与标准 Windows/GPU 对照，不能宣称 H3b 资格通过。
+  当前流程先执行 H3a。
 
 - **第三阶段最终验收阻塞（已解除，2026-08-14 A7 补验最终执行）**：§9 Engineering
   「多个真实网站 Agent smoke test 通过」原 BLOCKED（首轮 tools 载荷 HTTP 400）——
@@ -3421,9 +3443,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **H2：确定性修复 D10 的 `observedForMs=99` 红态并完成 H2 合同。**H1 已关闭；不得跳过
-  H2 提前执行 H3a/H3b/H4/D11，不得宣称正式 H3b 资格或 Sixth Stage Exit Gate 已通过，
-  不进入 Seventh Stage。后续固定顺序为 H2 → H3a → H3b → H4 → 新 D11。
+- **H3a：完成真实公网 RSS/Atom、真实无 RSS public Page Watch fallback 与真实网络失败分类/退避/清理
+  三个硬门。**H2 已关闭；不得跳过 H3a 提前执行 H3b/H4/D11，不得宣称正式 H3b 资格或 Sixth Stage
+  Exit Gate 已通过，不进入 Seventh Stage。后续固定顺序为 H3a → H3b → H4 → 新 D11。
 
 ## 第一阶段验收未完成项
 
