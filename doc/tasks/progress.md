@@ -34,9 +34,18 @@
   `PASS`（blocker=0）。H2 已从 baseline
   `cda11af90aa11a0e937c58647f58c762655d206f` 经候选 `1e121401cc2e1221f55d881572583be75505df11`
   与修复候选 `9e41bd6f4ea55f8bb6a5a7c0f301502948a86c41` 完成，新的独立 Final Reviewer 对精确
-  产品 HEAD `9e41bd6` 判定 `PASS`。H3a、H3b、H4 与新 D11 均未开始；唯一顺序为
+  产品 HEAD `9e41bd6` 判定 `PASS`；关闭提交
+  `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2` 已推送双远程。H3a 从该提交实施至当前候选
+  `1781da8804f4cac6172998192fcef48e9e66b2d3`，尚未整体 `PASS`、未推送。XML、聚合
+  R1/R2、OBS-R1、真实 Page 与真实失败子门已获独立接受；RSS 固定目标仍因 BBC robots
+  timeout/ECONNRESET 与 NASA target 两次 403 未闭合。旧 production-default 两次 bounds
+  失败和 `55917fb` 的 dev 地址栏导航失败均未解释；`55917fb` production-default 单次成功与
+  `1781da8` DEV-NAV 单次隔离成功均不能替代原失败。DEV-NAV 诊断额度 1/1 已耗尽，根因仍为
+  `unknown`，当前无新的可区分工程路线。H3a 保持 `HOLD`；H3b、H4、新 D11 与 Stage 7 均
+  `NOT STARTED`。固定顺序为
   **H3a → H3b → H4（完整区间 baseline
-  `d85667c54a354d322b0180d4c17873860a86c611`）→ 新 D11**，当前下一唯一任务为 H3a。
+  `d85667c54a354d322b0180d4c17873860a86c611`）→ 新 D11**。当前下一唯一任务为 H3a 的
+  progress 单文件独立文档审核；审核 `PASS` 后才可本地 checkpoint，再进入最小 USER_GATE。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -686,7 +695,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D10 | 端到端、红队、隐私与真实门控 | ✅ | 2026-09-02 完成历史产品实现与基础设施验收：原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`，批准产品 HEAD `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`；后续 H1 已校正正式 H2/H3a/H3b/H4 与新 D11 契约，H2 已于 2026-09-06 关闭，历史 D10 PASS 不替代 H3a/H3b/H4/D11；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
 | H1 | 正式资源资格契约冻结与收敛 | ✅ | 文档 baseline `f262b4ed63eafd4528a0da49fa05febda995f014`；候选链 `4053270` → `5dfe110` → `3a1f715` → `d06cb3d` → `fc5180b` → `61a2f04`；Final Convergence Reviewer 对精确 HEAD `61a2f0497853253050ffddbef81cc4fb5edb020a` 判定 `PASS`、blocker=0 |
 | H2 | 修复 D10 确定性 99ms 红态并完成合同前置 | ✅ | baseline `cda11af90aa11a0e937c58647f58c762655d206f`；候选 `1e12140` + 小数单调时钟修复 `9e41bd6`；新的独立 Final Reviewer 对精确产品 HEAD `9e41bd6f4ea55f8bb6a5a7c0f301502948a86c41` 判定 `PASS`；原 8 文件 47 项恒等保留，H2 新增 24 项，合计 9 文件 71/71 |
-| H3a | 真实公网 RSS/Atom、public Page Watch fallback 与失败分类/退避/清理 | ⏳ | 依赖 H2；当前下一唯一任务，尚未开始 |
+| H3a | 真实公网 RSS/Atom、public Page Watch fallback 与失败分类/退避/清理 | ⛔ | baseline `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2`；当前候选 `1781da8804f4cac6172998192fcef48e9e66b2d3` 未整体 PASS、未推送。XML、聚合 R1/R2、OBS-R1、原 Page/Failure 子门与 Watch 等价证据已独立接受。真实请求累计 16/64，剩余 48 只是账本余量；NASA 一次性诊断 claim 已永久消费。RSS 因固定 BBC robots timeout/ECONNRESET 与 NASA target 403 未闭合。旧 production bounds 两败和 559 dev 导航失败根因仍 unknown；559 prod 单次成功与 1781 DEV-NAV 单次成功不关闭旧失败，诊断额度 1/1 已耗尽。H3a 保持 HOLD，当前无新可区分工程路线，不得重领诊断或事后换目标洗绿 |
 | H3b | 标准 Windows/GPU 环境正式 10m/60m/10m 资源资格 | ⏳ | 依赖 H3a；尚未开始；本机旧沙箱内 `GPU process isn't usable. Goodbye.` 失败证据保留；H2 Reviewer 已在合法沙箱外完成六个离线 Electron 场景，但这不等价于 H3b 标准环境资格 |
 | H4 | 完整 D10 区间独立审查 | ⏳ | 依赖 H3b；固定 baseline `d85667c54a354d322b0180d4c17873860a86c611`，尚未开始 |
 | D11 | 第六阶段新独立 Exit Audit | ⏳ | 依赖 H4；必须使用新的独立 Reviewer；尚未开始；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
@@ -3326,8 +3335,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   H3a → H3b → H4 → 新 D11；其中真实 Provider、Windows 系统通知和真实登录网站 Session
   观察为条件性观察，H3a 的真实公网路径与 H3b 的正式资源资格仍是硬门。当前机器
   旧沙箱内 `GPU process isn't usable. Goodbye.` 失败证据继续保留；H2 独立复验在合法沙箱外六个离线
-  Electron 场景均成功，只补足 H2 产品运行证据，不构成 H3b 的正式标准环境资格。H3a、H3b、H4 与
-  D11 当前均未开始。
+  Electron 场景均成功，只补足 H2 产品运行证据，不构成 H3b 的正式标准环境资格。H3a 的 XML、
+  聚合 R1/R2、OBS-R1、Page 与失败子门已独立接受；RSS 固定目标访问失败，旧 default 失败根因
+  `unknown`，H3a 保持 `HOLD`。H3b、H4、D11 与 Stage 7 均未开始，不能把未闭合项转移到后续阶段。
 
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过——已接受设计决议
   （detailed-design §12 决议 #13，快照为点时刻尽力采样）。
@@ -3426,6 +3436,15 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 阻塞项
 
+- **H3a 当前阻塞（2026-09-07，`HOLD`）**：固定 BBC RSS 的 robots 路径
+  timeout/ECONNRESET，固定 NASA RSS 的 robots 200 但 target 两次 403；真实 RSS 成功硬门未满足，
+  不能判为已证产品错误或环境免责。请求账本为 16/64，剩余 48 不构成运行授权，NASA 一次性诊断
+  claim 已永久消费。旧 production-default 两次 bounds 失败与 `55917fb` dev-default 地址栏导航失败
+  根因仍为 `unknown`；`55917fb` production-default 单次成功和 `1781da8` DEV-NAV 单次隔离成功不关闭
+  旧失败。DEV-NAV 1/1 启动额度已耗尽，现有原件没有可区分的新工程路线，禁止机械重试。恢复 RSS
+  REPLAN 的最小用户裁决仅为：是否允许正式修订“运行后不得替换已冻结 RSS 目标”的政策；该裁决
+  不豁免 RSS/default/H3a 硬门，也不直接授权新目标或新请求。
+
 - **后续 H3b 标准环境资格（尚未进入 H3b）**：本机旧沙箱内
   `GPU process isn't usable. Goodbye.` 失败证据保留；H2 独立复验已在合法沙箱外完成六个离线
   Electron 场景，故当前不再把“本机完全无法启动 Electron”写成需用户先处理的现时阻塞。该结果不包含
@@ -3441,11 +3460,304 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   改判 `GO/PASS`**。真 Key 零暴露扫描与全量离线验证同步通过。历史证据与台账
   保留于最近验证结果与 git log。
 
-## 下一个推荐任务
+## H3a 历史检查点（按发生时序保留）
+
+> 本节保留父编排者在当前未提交 diff 中记录的 H3a 执行与审查链。下文“当前”“已启动”“待审”
+> 均指各条记录形成时的历史状态，不代表本文件顶部的当前结论；当前状态、阻塞与下一动作分别以
+> “当前状态”、任务表、“阻塞项”和本节之后的“下一个推荐任务”为准。
 
 - **H3a：完成真实公网 RSS/Atom、真实无 RSS public Page Watch fallback 与真实网络失败分类/退避/清理
-  三个硬门。**H2 已关闭；不得跳过 H3a 提前执行 H3b/H4/D11，不得宣称正式 H3b 资格或 Sixth Stage
+  三个硬门。**当前新 Astra/xhigh 执行 DEV-NAV 定向诊断准备 Phase A，实际 baseline 为
+  `1781da8804f4cac6172998192fcef48e9e66b2d3`；原失败版本为 `55917fb4cca97a79d503b8358d24b3ab5dfacaf4`。
+  OBS-R1 独立 PASS 范围为 `ba5cbc1841c0f4b05458de3b86ebadddfe0e9e63..1781da8804f4cac6172998192fcef48e9e66b2d3`；
+  完整 H3a 范围仍为 `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2..1781da8804f4cac6172998192fcef48e9e66b2d3`，未整体 PASS。
+  已消费的单次 NASA 诊断不得重跑，H3a 候选尚未批准，不得推送。
+  2026-09-06 编排检查点：baseline 为 `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2`，
+  Executor 请求配置为 `gpt-5.6-sol` / `xhigh`，已在独立路线裁决后恢复；
+  新独立 Route Assessment 请求配置为 `gpt-6-astra` / `xhigh`（启动回执均未回显实际模型/effort）。
+  Page validator 回归测试稳定失败：第二次同内容 Page 响应含 ETag 时 Processing 返回
+  `validation-failed/terminalWritten=false`，Run 留在 `running`；正式契约要求 Page Baseline
+  validator 为 null。独立路线裁决已确认根因并批准仅扩展 Processing 及其测试范围，正式契约不变。
+  Executor 报告修复前 ETag-only、Last-Modified-only、两者同时存在三项失败，修复后两个文件
+  28 项通过、typecheck 通过；这些是实施证据，尚不构成最终独立 Reviewer PASS。
+  当前本地修复候选为 `1d02c74a8e0188810ce97075e1ddb9d6f7e34276`，最终候选为
+  `0501acb9e8987bb5a319157d465cd43dddf17bba`；完整审查范围为上述 baseline 到最终候选。
+  Executor 报告相关 13 文件 356 项、全量 165 文件 3467 项通过及静态/构建门通过。
+  首次六个离线 Electron 的 shell 退出码输出截断；冻结候选补验已保存六场和外层实际 exit 0，
+  入口 `log/h3a-offline-0501acb9e898/results.json`，隔离目录已清理。
+  首次正式 campaign 于 `2026-09-06T07:02:37.281Z` 至 `07:02:47.104Z` 执行，exit 1；
+  唯一物理请求为 RSS 主目标首次 robots，未观察到 error/close，报告 `openRequests=1`，
+  runner 按 `PRODUCT_INVARIANT` 停止后续外部场景。Run 为 failed/unavailable 并持久化退避，
+  Baseline 为空、Event/Evidence/notification 均为零；无 target 请求，三项硬门均未满足。
+  原始证据保留于 `log/h3a-0501acb9e898/` 及同前缀 campaign process/stdout/stderr 文件。
+  累计已用 1/64（RSS 主目标 1/12），不得通过重启、新候选或新目录重置；旧未闭合台账不得改写。
+  新独立 `gpt-6-astra` / `xhigh` Route Assessment 已独立复现：业务终态先于实际 transport close
+  时观察器可能误判；另有原生请求启动 `end()` 同步抛错绕过立即清理的产品缺口；新候选目录
+  也缺少旧用量继承。诊断入口 `log/h3a-transport-route-0501acb9/`，原首次实网具体底层分支仍未知。
+  已批准 `S6-H3A-TRANSPORT-REPAIR`：仅扩展 Public HTTP client 启动异常清理及测试；H3a 增加
+  共用原 candidate 180 秒单调截止的事件驱动 close 屏障，业务 Promise 不等待 close；固定 workflow
+  用量台账经只读历史 receipt 继承 1/64，不修改旧未知 close。Executor 请求配置仍为 Sol/xhigh。
+  新增未审核候选 `e8cc5806eb1a309f224279f6416595b19641caba`（同步启动清理）与
+  `84d7650479d10eb0052238debd28de8fd3300437`（观察屏障/累计用量）。Executor 报告本轮红态
+  5 项、聚焦 114 项绿态、联合 13 文件 326 项与全量 166 文件 3481 项通过，静态/构建门通过。
+  新冻结候选首个 dev 默认冒烟因既有 AI UI bounds 场景 5 秒内未收缩失败，exit -2147483645；
+  唯一诊断复验及其余五场均 exit 0。修复 diff 不涉及 UI/renderer/browser bounds，首败仍记
+  “未稳定复现的时序失败，确切根因未定”，保留首败与复验，不修改 UI/oracle；证据入口
+  `log/h3a-offline-84d7650479d1/`。新独立 Reviewer 须审查这项观察及完整候选范围。
+  后续 receipt 预检发现历史 .NET UTC 格式兼容缺口，追加 `2241b399b26e1471d02201ad391095e20d1bdec3`；
+  该版本默认冒烟的 SRT-12 将 RegExp.exec 误识别为 SQL，追加等价 String.match 修复
+  `51438332691774e134ac00f1ae0ca6b7637519dc`，审计 oracle 未改。最终该候选全量 166 文件
+  3482 项、联合 327 项、静态/构建与六个 Electron 场景均通过，历史 receipt 继承预检通过。
+  正式补验于 `2026-09-06T08:38:35.574Z` 至 `08:38:46.983Z` 执行，exit 1：BBC robots
+  timeout/ECONNRESET 后正确退避且实际关闭；唯一 NASA 替补 robots/target 均 200 且实际关闭，
+  但 Feed 产品链终态为 `failed/budget_exceeded`，Baseline/Event/Evidence/notification 均未推进。
+  按当时合同立即停止，Page/失败场景未运行；清理全部闭合，open requests 为零。原始证据入口
+  `log/h3a-514383326917/`、同前缀 campaign process/logs 与
+  `log/h3a-workflow-usage/usage-ledger.json`。累计 4/64（BBC 2/12、NASA 2/12），剩余总额 60。
+  新独立 Astra/xhigh Feed Route Assessment 已结束：确认项目及 saxe 两层按标签聚合属性限制
+  违背现行单属性 4096 字节契约，两项正式接受 oracle 稳定红；另证实合法 Baseline 65536/65537
+  边界可在小响应中触发，NASA 原失败具体分支仍未知。证据 `log/h3a-feed-budget-route-5143833/`。
+  当时执行动作是 Executor 按已批准的 `S6-H3A-FEED-BUDGET-REPAIR` 修逐属性计量与有限
+  依赖保护、增加不含正文的预算 codes/counts；不抬产品预算、不换库、不换目标。
+  `H3A-NASA-FIRST-ENTRY-V1` 仅允许修复/全门/冻结后，使用精确既存 4 次账本与一次性 claim，
+  对原 NASA 目标执行一个首次产品 Run（最多剩余 10 次物理请求，仍计总 64）。诊断报告与
+  完整资格报告分离，即使 exit 0 也只表示已记录，不代表 H3a PASS；不执行 second/Page/失败站点。
+  属性修复候选 `445ad5ccef0d28323e6d67f1c99a7e924b7951db` 与诊断设施候选
+  `f7a5a7b35acd449186b80ef105df8b197ad0ebdc` 已形成；全量 167 文件 3501 项、静态/构建与
+  六场 Electron 均通过。唯一 NASA 诊断实际 exit 1 / inconclusive / qualification=not-evaluated：
+  robots 200（压缩 57 / 解压 69 字节），target 200（压缩 31557 / 解压 227332 字节），HTTP
+  预算未触发；Parser 报 dependency-limit / LimitExceeded，具体限制轴未知，不足以证明合法超限。
+  Run failed/budget_exceeded，Baseline/Event/Evidence/notification 均未推进，传输与资源全部关闭。
+  证据 `log/h3a-f7a5a7b35acd-nasa-feed-budget-first-v1/`；累计 6/64（BBC 2/12、NASA 4/12），
+  一次性 claim 永久保留；workflow hash 为 `71edeb949158774d4740ea891c462723071ac87b703932e1cb65e9289924b5f9`。
+  新独立 saxe Route Assessment 已完成 75 项离线矩阵（63 通过、12 契约红态），裁决 REPLAN：
+  namespace 默认 200 错拒、名称相加/UTF-8 漏检、引用拆分的节点/总文本漏计、普通文本与 CDATA
+  计数混用，以及 XML 声明窗口/BOM 导致的编码漏检；现有 UTF-16 正例还与正式冲突拒绝契约相反。
+  证据 `log/h3a-saxe-limits-route-f7a5a7b/`，不将离线反例归因 NASA 原响应。
+  独立 Astra/xhigh Planner 已冻结窄范围 XML REPLAN，明确 lexical/声明兼容边界、有限粗保护
+  与编码 oracle；Sol/high 文档执行者形成候选 `6cceba9edb7057583e753fb215f9c18a1b90d63d`，
+  仅改 detailed-design、threat-model、D3、D10 四文档（225 增 / 45 删）。父已核对 SHA、范围
+  和仅 progress 未暂存的状态。四文件旧基线 93 项及格式检查通过，不证明新增产品 oracle。
+  新独立 Astra/xhigh 设计 Reviewer 对 `f7a5a7b..6cceba9e` 裁决 REPAIR：D3 G13 错把文档内
+  entity-reference 名称扫描写成不可达；独立文本/属性 256/257 名称反例证明扫描可达且有界，
+  DTD 内名称与实体展开仍不可达。其余主路线未发现需 REPLAN 的冲突。Sol/high 窄修形成
+  `5c028b848d77c7ab415ebb7858a6a9c54b703d4d`（仅 D3 5 增 / 1 删）；独立 Reviewer 复跑
+  9 项公开 API 探针、格式与完整范围检查后给该完整 SHA 设计 PASS，原产品与依赖树未变。
+  复审证据 `log/h3a-xml-design-review-6cceba9/additional-r1-observations.json`。
+  已启动全新 Sol/xhigh 五文件产品修复，必须建立正式红态、完成全量与六场离线 Electron，
+  再经新的独立安全 Reviewer；设计 PASS 不代表产品修复或 H3a 真实资格通过。
+  Executor 报告正式红态 23 失败 / 103 通过，修复后聚焦 131 项及 typecheck/lint 通过；全量
+  3538 通过 / 1 失败为旧 diagnostic 测试把 ASCII 8193 错绑 dependency-limit。父直接核对
+  原断言与已批准 D3 F16 后，允许仅增加 `src/main/smoke-watch-h3a-diagnostic.test.ts` 测试范围：
+  改为项目预算分类，同时另保留真实 native-limit 的 inconclusive 分支覆盖，不改 runner/schema。
+  补充后 diagnostic 3/3、聚焦五文件 134/134；Executor 自审收紧 XML 声明 pseudo-attribute
+  结构后作废旧验证并重跑全量，报告 167 文件 3540/3540、exit 0。产品候选为
+  `39d81b17271e045c4a1d07ce997ff91ace92d726`，父已核仅批准六文件 873 增 / 56 删；
+  Executor 报告最终静态/构建与六场离线均 exit 0，证据入口 `log/h3a-xml-repair-offline-5c028-wt2/`。
+  事后索引 `log/h3a-xml-repair-receipt-39d81b1/evidence-receipt.json` 如实标明：红态/全量/静态/
+  build 与外层退出码原始输出未落盘，仅来自 Executor 工具回执；wt2 原始 stdout/stderr 已保存。
+  wt1 因后续代码修改失效。已启动全新 Astra/xhigh 安全 Reviewer，要求独立复验并保存原始输出，
+  不把事后索引当机器证据；产品候选尚未获 PASS，未推送。
+  独立安全 Reviewer 已保存聚焦 134/134、全量 167 文件 3540/3540、静态/构建通过的原始证据；
+  用当前五测试与 baseline 两产品 blob 重建旧态为 26 失败 / 108 通过（不是历史 23 项的复刻）。
+  新反例确认 XML 手动移除 BOM 后 TextDecoder 默认再次吞 BOM，UTF-8/LE/BE 双 BOM 被错误接受，
+  违反只移除一次；12 项独立探针 6 失败 / 6 通过。六场冒烟与其余审查仍在进行，待完整裁决。
+  证据入口 `log/h3a-xml-security-review-39d81b1/`。
+  独立安全最终裁决 REPAIR，唯一阻断 R1 双 BOM；原 75 项重放与补充组合边界通过，六场离线
+  外层均 0。两 default 直接获 Electron OS 句柄 exit 0，四短 set/check 经一次补验由直接 CLI
+  close→process.exit 转发证明 0，未获得 OS 句柄的限制保留。原输出与两轮目录清理证据齐全。
+  当前 Sol/xhigh 执行 `H3A-XML-R1-BOM-ONCE`，产品仅 text-encoding.ts，测试限编码/parser/
+  acquisition；先正式红态，原始输出同步落盘，再全量/静态/构建/六场离线，禁止真实补验或 push。
+  R1 Executor 报告正式红态四文件 141 项（7 失败 / 134 通过），失败名与原始输出已保存；
+  修复后 141/141，含 diagnostic 144/144，BOM/原 75 项/组合边界通过；全量 167 文件 3550/3550、
+  静态/构建通过。候选 `0554d86bd0058bb3236e833ef4d533f5e6f3dfc6` 仅四允许文件 115 增 / 5 删。
+  证据 `log/h3a-xml-r1-bom-once-39d81b1/final-evidence.json`；033 总 harness exit 1 为证据读取/
+  ExitCode 刷新问题，应用六场正常；两 default 有 OS exit 0，四短场景另经 036 direct CLI exit 0
+  与退出转发证明，限制与所有前序脚本失败保留。当前独立安全 Reviewer 复核 R1 与这些原始证据。
+  独立安全复审已对 `0554d86bd0058bb3236e833ef4d533f5e6f3dfc6` 给 XML 产品修复 PASS：
+  独立聚焦 144/144、全量 167 文件 3550/3550、原矩阵等探针 103/103、兼容探针 9/9（含 HTML
+  旧新 144 组比较）及静态/构建通过；BOM finding 关闭，冒烟按已披露的退出精度和产物等价性接受。
+  回执 `log/h3a-xml-r1-security-review-0554d86/review.receipt.json`，SHA-256
+  `5562ad055479998cb8771c2d71953d085013603d36485151432771ccfb01132e`。
+  已启动 Astra/medium 真实补验 Planner，必须保留原目标顺序/6 次累计请求/一次性 claim；
+  本 XML PASS 不代表 H3a 三硬门或完整候选链 PASS，未推送，尚不能进入 H3b。
+  Planner 已冻结 `H3A-REAL-REVALIDATION-EXEC-0554`，新 Sol/high Executor 已启动：仅一次常规
+  campaign，原 manifest/目标替补顺序/64 总预算不变，before=6、剩余 58，禁止诊断重领与自动重跑。
+  按实际 runner 保留首次 budget/security/dependency 强停、second failed 可能进入唯一替补的分支；
+  原 product-defect 标签不单独证明产品 bug，unknown 轴不得猜测。仅 ignored launcher/证据及
+  精确任务 userData 可写，父进度不属于实施范围；退出后由父继续审核或有界路线诊断。
+  唯一 campaign 已于 `2026-09-06T13:45:15.651Z` 至 `13:46:01.009Z` 执行，CLI PID 101300、
+  exit 1：Page（example.com 两次 target 200、Baseline 0→1→1 unchanged、零 Event）与真实失败门
+  （httpbin 两次 target 503、unavailable/backoff、零 Baseline/Event）取得通过结果；RSS 未通过，
+  BBC robots timeout/ECONNRESET，NASA robots 200 后 target 两次 403，均安全失败并退避。
+  原生 validator 仅报 RSS 无合格候选及三门未全通过，fatal=null；不能据此证明产品缺陷。
+  Executor 报告所有 transport/业务资源/隔离目录清理闭合，新增 10 请求，累计 16/64、rejected=0，
+  剩余 48；BBC/NASA 剩 9/5，Page 两目标剩 9/12，失败两目标剩 5/8。未第二次运行。
+  最终证据 `log/h3a-real-revalidation-0554d86bd005/evidence-index.json`，SHA-256
+  `3d8c6e4333fc4d6729363c54f0e0f4b910fa86c28f72a1fb32aea6c45aafcad1`；原生 report hash
+  `6583c8cad6b5f9a66a1c3eaf01beb9ac614d87b392bb364f37854be449952c82`。已启动新的 Astra/xhigh
+  Route Assessment 核对 RSS 未闭合项及所有仍可合法推进的工作，不换目标洗绿，不跳 H3b。
+  独立 Route Assessment 已裁决 RSS 资格 BLOCKED、无已证产品修复项：25 新证据与 4 历史证据、
+  20 冻结输入/构建 hash 及 16 请求守恒通过，新增请求精确最小起点间隔 5001ms。最新 workflow
+  hash 为 `34dfec249f8fb42d7f85469be4897d3a150545b1f47dd8492acb651f118c5ba4`。
+  回执 `log/h3a-rss-route-0554d86/review.receipt.json`，hash
+  `d222ace325e3210e7ba92b2b5517d184d02d497067436d685e028f91d0efb4c1`。
+  已启动全新 Astra/xhigh 对 `e6233a9..0554d86` 的完整候选离线审核（24 文件），先闭合所有不依赖
+  外部 RSS 成功的工程审查；没有新可区分外部事实时不得再次运行，改变事后换目标硬约束须用户裁决。
+  完整离线 Reviewer 已确认报告 validator 未强制三类场景唯一且齐全：保持原请求/计数/产物/
+  清理不变，仅用通过的 Page 复制项替换失败 RSS，错误返回空 errors；三个 Page 或 Failure
+  复制同样误通过。独立污染反例已保存，真实报告未改；待其余审查结束后给有界 Repair Contract。
+  另确认 `waitForTransportClose` 只在入口计算剩余时间、观察 close 时未复核原单调 deadline；
+  seam 在 deadline 后才 close 但早于 timer 回调仍返回 true。有效 `027-barrier-probe` 红态已保存，
+  不是延长网络 timeout 或重开 H2；本次真实 close 在短窗口完成的历史事实尚未被反例否定。
+  完整 24 文件审查最终 REPAIR，仅上述两项 P2；独立聚焦八文件 165/165、原始证据与输入哈希通过。
+  回执 `log/h3a-aggregate-offline-review-0554d86/review.receipt.json`，hash
+  `f0f6fe9708d97d34510ba04d04ca02a4bb89f9a2523e7ffec1a7d73aeb05e2f6`，同目录 repair-contract.md
+  为完整合同。已启动 Sol/xhigh，预期只改 smoke-watch-h3a.ts、runner 与测试；零真实请求、无 push，
+  先闭合两项工程缺陷并独立复审，RSS 外部缺口继续保留。
+  Executor 已保存正式红态（20 项中 4 失败），修复后 20/20、八文件 170/170、全量 167 文件
+  3555/3555 通过；typecheck/lint 通过，新增代码格式问题正定向修正，构建/离线冒烟待最终交回。
+  离线五场已通过，但 production-default 首次在 AI UI 矩阵 9 打开面板后 bounds 未收缩失败，
+  唯一复验在收起面板后 bounds 未恢复全宽失败，均 exit 1。精确根因未知，不因相关 UI 文件未改
+  就声称时序问题已解释。禁止第三次机械重跑；Executor 仅封存三文件候选并如实标记该门未满足，
+  随后新的 Astra/xhigh 定向路线诊断。旧 default 通过或当前 prod Watch 通过不能自行替代该失败。
+  三文件修复已封存为 `b97279d3f3164a17acd7f7897de74e946acc7773`（216 增 / 6 删），未推送；
+  完整回执 `log/h3a-aggregate-repair-r1-r2-0554d86/final-evidence.json`，hash
+  `12b97c3f60e6627d2210edb22019c476127015598630c10784c58df497488d55`。已启动新的 Astra/xhigh
+  只读路线诊断，先核原始日志与 UI/bounds 同步；只允许有新观测目的的有界隔离实验，不第三次盲跑。
+  两次获准隔离实验已用完：最小开合链正常；保留原默认前序与 5 秒断言的第二次实验也正常，
+  直接 Electron OS exit 0。实测排除该次的取错 view/仅因 UI 失焦解释，原两败缺少几何与 RO/IPC
+  数值，根因仍 unknown，不把诊断绿当正式 default PASS。下一路线仅补故障观测，已启动
+  `h3a_bounds_observation_executor`（requested `gpt-5.6-sol/xhigh`，actual 未回显，无嵌套 Agent）。
+  完整路线合同为 `log/h3a-prod-bounds-route-b972/route-contract.md`，回执 SHA-256 为
+  `d9bab79e46eef21b424bd8aeb62e8bbed33f04d1f4f2f78bfce3ecdbac385ccc`。只允许 smoke.ts 及
+  独立有界观测 helper/测试；不改布局、50ms debounce、原 5 秒断言。先红→绿、全量静态与构建，
+  再各一次带观测的 dev-default / production-default；保留默认既有 Bing 导航并如实记 wire unknown。
+  不额外运行 H3a 公网、Provider 或 NASA 诊断；新成功不能自行关闭历史失败，须新的独立审核。
+  观测候选已封存 `55917fb4cca97a79d503b8358d24b3ab5dfacaf4`（3 文件 1659 增 / 38 删），
+  聚焦 19/19、全量 168 文件 3574 项、typecheck/lint/format/build 均 exit 0。完整回执为
+  `log/h3a-bounds-observability-55917fb/final-evidence.json`，SHA-256
+  `82cbd0b5a236103f9a43ede4fd4d613dde1a67c0b37fdada3702f492867fef5c`。
+  授权正式两槽已全部使用：dev-default exit 1（地址栏输入 URL 后 10 秒未到目标页，尚未进入
+  bounds 矩阵）；production-default exit 0（完整默认矩阵通过，成功路径诊断正文为 0）。
+  不能将一败一过写成全默认门通过；历史 bounds 根因仍 unknown。两个临时 profile 已清理，
+  无 Electron 残留。新独立 `h3a_aggregate_bounds_reviewer` 请求 `gpt-6-astra/xhigh`，actual
+  未回显，正复核聚合 R1/R2、观测安全、旧证据版本等价及新前序失败；未授权新的 Electron 运行。
+  新独立审核已交回 REPAIR：聚合 R1/R2 为 PASS；0554 Page/Failure 子门与 b972 四个 Watch
+  set/check 已确认有界等价复用，必须保留原版本标签。OBS-R1 确认四种证据不足或反证误分类；
+  OBS-E1 原离线红绿/静态/build 原件未找到，不能以汇总冒充；OBS-E2 harness 漏扫 stderr，
+  dev 的 Bing 步骤常量错误。当前独立全量 168 文件 3574 项及 type/lint/format 均通过。
+  原件为 `log/h3a-aggregate-bounds-review-55917fb/review.receipt.json`，SHA-256
+  `477296a0c3efeed7e7882f6669a4a98f4a6513b0e8372f3ca613ca0d28f1dd16`；同目录完整
+  repair-contract.md 已批准交回原 Sol/xhigh Executor，baseline=55917fb，零新 Electron。
+  只修 helper/测试与新 ignored 派生证据，保存首次红态及所有当前命令原始输出；历史原件确实
+  无法恢复则明确 unavailable。DEV-NAV-1 的 route-contract.md 尚未执行，必须先闭合离线修复、
+  独立复审，再冻结精确新 SHA 和单次隔离仪表；禁止 wholedefault 盲跑。历史 bounds 根因未知，
+  RSS 仍 BLOCKED，H3b/H4/D11/Stage7 均未开始。
+  离线 Repair 已封存 `934470d67f822005da1f6558f7294230a3cd10e8`（仅 helper/test，357 增 / 42 删），
+  正式首红四例失败/其余 23 通过；最终聚焦 34/34、冻结十文件 204/204、全量 168 文件 3585 项，
+  type/lint/format/build/diff 均 0，完整保存 24 组逐命令原始输出与收据。原559历史离线原件
+  确认 unavailable，没有倒填；旧八个 Electron 原件未改，双流派生及 Bing 步骤旁注明确。
+  回执 `log/h3a-observability-evidence-repair-55917fb/final-evidence.json`，SHA-256
+  `5f8fcdb189cd4a04607d7a7d7c75c39f529e3025d935dc7ab4cc1216dd7ffe4d`。新独立
+  `h3a_observation_repair_reviewer`（requested Astra/xhigh，actual 未回显）已开始复审
+  `55917fb..934470d`，零新 Electron；不能用离线绿灯关闭默认门或 RSS。候选均未 push。
+  934470d 独立复审仍为 REPAIR：E1 历史缺失的诚实边界及本轮完整原件、E2 双流派生均接受
+  关闭；OBS-R1 同一 first-bad-state 第二次出现，payload 正向过滤丢掉 IPC native 时间反证，
+  宽度正向过滤把两可见目标误作唯一目标。新四个相邻反例实证，旧四例及六类足证正例通过。
+  新 Reviewer 已完成 Astra/xhigh 定向 Route Assessment，父已冻结同目录 route-repair-contract.md，
+  不改正式产品契约；先核所有 native 反证/完整可见集合，再归层，覆盖完整时间×payload×native
+  与可见性/身份交叉矩阵。收据 `log/h3a-observation-repair-review-934470d/review.receipt.json`，
+  SHA-256 `ed7d0ee91ea95e4884ec36a31e7c66121f218db69a4f4bc9a5c33ab11f9a5893`。
+  已交原 Sol/xhigh 执行新合同，baseline=934470d，仅 helper/test，零 Electron；不得机械猜一行，
+  同根因再现必须回新 Route。E1/E2、聚合与原 Page/Failure/Watch 子门不重开；DEV-NAV Route 尚未执行。
+  Route 后候选已封存 `ba5cbc1841c0f4b05458de3b86ebadddfe0e9e63`（仅 helper/test，308 增 / 16 删），
+  正式首红 8 失败/53 通过，首次绿态与最终聚焦均 61/61；冻结十文件 231/231，全量 168 文件
+  3612 项及 type/lint/format/build/diff 均 0。索引为
+  `log/h3a-obs-r1-consistency-repair-934470d/evidence-index.json`，最终 SHA-256
+  `816f8b1c312f8d1638e1ca12c86c03d07dab51159415063c7ad8040e50207a44`。014/015 审计脚本
+  首败保留，016 分类后通过；本轮无 Electron。新独立 `h3a_obs_consistency_reviewer`（requested
+  Astra/xhigh、actual 未回显）已启动核对 `934470d..ba5cbc1` 与交叉矩阵，尚未 PASS/推送。
+  ba5cbc1 独立复审为 REPLAN：旧反例及六类正例通过，十文件 231/231、294 原件比较一致，
+  但另一个唯一可见正确目标仍会被 renderer/main 的 payload/id 子集忽略，或仅失败后出现的
+  当前目标被用于解释原目标失败；共三个身份反例。第三例经真实导出 observer/collector 离线
+  重建可达，前两例仅声明分类器矛盾输入边界；captureStart==failure 仅观察，不升硬门。
+  原件 `log/h3a-obs-consistency-review-ba5cbc1/review.receipt.json`，SHA-256
+  `9daa11ab7fe2b53f1e0b3dde3e7bd2a1ef79162b90da5edccfbe860d15bdce23`；新完整 Route 在同目录。
+  依用户升级授权，已启新的 `h3a_identity_proof_executor`（requested Astra/xhigh，actual 未回显），
+  先仅只读 Phase A 形成目标关系/分类正证与反证表，父冻结后才可 Phase B 实施 helper/test；
+  当前禁止 tracked 修改/build/Electron。不能继续普通 Worker 逐例补丁；随后须另一个全新
+  Astra Reviewer。默认门、RSS、H3a 均未 PASS，DEV-NAV 尚未执行。
+  Phase A 已完成：原9项重放6正例符合/3身份反例错分，collector两项一正一反，原件完整；
+  898保护文件恒等。合同、目标证明表、testcase矩阵位于 `log/h3a-identity-proof-ba5cbc1/`，
+  phase-a.receipt.json SHA-256 为 `a1721563121c00d66e479eff00b4519f6a74f72a452dab00744b2b9d8b5a47ed`。
+  父已全文阅读并冻结D1–D6：原wait单一W、所有采样id相关、W=S同目标/ W=S≠V选择关系、
+  旧完整空child正例保持、逐层完整正证与反证、A==F不升精确native时间硬门。已明确授权
+  同一Astra/xhigh进入Phase B，仅helper/test，正式首红→矩阵绿→全量静态build与有界本地提交；
+  零Electron，后续另一个全新Astra Reviewer，不以本表或本轮离线验证关闭默认门/RSS。
+  Phase B 已封存 `1781da8804f4cac6172998192fcef48e9e66b2d3`，仅helper/test：正式首红
+  48失败/120通过，首绿168/168，新增107测试；52硬oracle全符合，时间观察独立保留。
+  冻结十文件338/338、全量168文件3719项及type/lint/format/build/diff全0。1021保护项仅
+  helper/test/main预期变化；smoke、父progress、冻结表、旧raw、账本/claim恒等。完整回执
+  `log/h3a-identity-proof-ba5cbc1/phase-b.receipt.json`，SHA-256
+  `c87c7ee45c83378fc956de149ceb3d449db1c54d2eb53ccfa56c6b811056bc38`。038映射脚本与045
+  默认沙箱暂存首错保留，040/046合法完成；未push。已启动另一个全新
+  `h3a_identity_proof_reviewer`（requested Astra/xhigh、actual未回显）独立审ba5cbc1..1781da8；
+  无Electron；OBS尚未PASS，DEV-NAV仍未开始，默认门和RSS继续阻塞。
+  全新独立身份证明Reviewer已对精确1781da8判定 OBS-R1 子范围 PASS：独立十文件338项，
+  235探针、552原件hash一致，审查期间1021保护路径恒等。收据
+  `log/h3a-identity-proof-review-1781da8/review.receipt.json`，SHA-256
+  `34a8efec0c1da762106bc8577b54051b7c70d9ec901de244e5276272e7068792`。
+  已启动新 `h3a_dev_nav_route`（requested Astra/xhigh，actual未回显）准备隔离仪表、精确patch
+  与harness/hash和离线合成资格；当前不准Electron，须父审完整执行版后另行授权唯一一次dev诊断。
+  仅保留默认前序至7.7.1，原100ms/helper/10000ms oracle不变，后续7.7.2/Bing/AI不可达；
+  不改tracked产品或正式out。此诊断不替正式默认门、不关闭历史bounds或RSS，不push。
+  网络证据口径更正：默认 smoke §7.7.5 有 Bing 搜索导航，ERR_ABORTED 不证明没有 wire 请求；
+  历史相关“0”仅指 H3a Public/Provider/diagnostic 及账本不变，总 Chromium 外网次数为 unknown。
+  独立观察保留：RSS 根 `xmlns=""` 在旧/新产品均 unknown-root，未并入 R1，后续 H4 按契约评估；
+  default dev/production 各出现两次既有 WebContents 11 listener 警告，本轮未出现 AI UI bounds 失败。
+  设计与文档执行证据入口 `log/h3a-xml-replan-planner/`；所有模型 actual 未由启动回执回显。
+  新增公网授权为零；不删除 claim、不重抓正文、不猜 NASA 轴。无 Reviewer PASS 或收尾提交，
+  不以诊断测试替代真实资格。
+  本检查点为父编排者所有的未提交进度修改，不属于 Executor 产品候选，不表示验收完成。
+  H2 已关闭；不得跳过 H3a 提前执行 H3b/H4/D11，不得宣称正式 H3b 资格或 Sixth Stage
   Exit Gate 已通过，不进入 Seventh Stage。后续固定顺序为 H3a → H3b → H4 → 新 D11。
+
+## H3a 当前证据边界（2026-09-07）
+
+- **已接受子范围**：完整 H3a 审查范围仍为
+  `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2..1781da8804f4cac6172998192fcef48e9e66b2d3`。
+  XML 修复 `0554d86`、聚合 R1/R2、OBS-R1 `ba5cbc1..1781da8`、0554 Page/Failure 真实运行及其
+  后续有界 Watch 等价标签均保持独立 `PASS`；这些子范围不合成为 H3a `PASS`。RSS 根
+  `xmlns=""` 在旧/新产品均为 `unknown-root` 的观察未并入 R1，留待 H4 按正式契约评估。
+- **真实门**：0554 Page 证据为 Baseline null→1→1、两次 200、第二次 unchanged；Failure 为两次
+  503、failed/unavailable、零 Baseline，并保留已接受的 backoff/close/清理证据。RSS 固定目标仍是
+  BBC robots timeout/ECONNRESET 与 NASA robots 200、target 403+403；两候选均零 Baseline、无第二次
+  acquisition。账本 16/64、剩余 48，NASA claim 永久消费。
+- **default 与 DEV-NAV**：旧 production-default 两次 bounds 失败仍未解释；旧 receipt 的 HEAD 标签
+  为 `0554d86`，其工作树随后封存为 `b97279d`，不得改写标签。`55917fb` production-default 单次成功，
+  dev-default 在 7.7.1 地址栏导航等待 10 秒失败。`1781da8` 的 DEV-NAV 仅运行获准的 1/1 隔离诊断，
+  CLI 实际 exit 0；19 个事件、11 个连续 rendererSeq、invalid/wrongSender=0，未观察首个错误层，
+  `rootCauseUnknown=true`。该成功不替代正式 default 门，也不关闭旧失败。
+- **进程与网络口径**：DEV-NAV 的原 PID 短暂观察身份未知，后来所查已知 PID 均消失；只证明最终所查
+  PID 不存在，不宣称 Chromium 全树或 H3b 生命周期资格。默认 smoke 含 Bing 导航，总 Chromium
+  公网请求数为 `unknown`；“零新增”只适用于 H3a Public/Provider/diagnostic 账本范围。
+- **审查索引**：XML 安全复审回执 SHA-256
+  `5562ad055479998cb8771c2d71953d085013603d36485151432771ccfb01132e`；OBS-R1 回执 SHA-256
+  `34a8efec0c1da762106bc8577b54051b7c70d9ec901de244e5276272e7068792`；DEV-NAV 原回执 SHA-256
+  `b2704b45f2cad1850eec3f036c69f8819293669beddd6f9a4dc04370aae0e974`。最新剩余路线独立审阅对
+  DEV-NAV 证据接受性判定 `PASS`、对剩余 default/RSS 判定 `BLOCKED`；其回执 SHA-256
+  `55d7c34f219541ff8652cca5ee15b366f7a8fe665be505edae6fe07526a45489`，共核对 1194 组 path/hash
+  （锁定输入 409、外部依赖 8、保护项 717），零不匹配。
+
+## 下一个推荐任务
+
+- **只审核本次 progress 事实收敛，不启动新的 H3a 工程或运行路线。**新的独立文档 Reviewer 应审核
+  `HEAD` 到 `doc/tasks/progress.md` 最终单文件 diff，确认当前摘要、任务表、阻塞、证据边界和下一动作
+  一致，且旧失败、SHA、请求账本、claim 与版本标签均保留。只有该文档范围 `PASS` 后，父才可另行
+  授权一次仅 stage `doc/tasks/progress.md` 的本地 checkpoint 提交；不得 stage 其它文件、不得 push。
+  checkpoint 后 H3a 仍保持 `HOLD`，进入上述最小 USER_GATE。若无新的固定目标外部可用性事实或用户
+  明确允许正式修订固定目标政策，则不机械重试；H3b、H4、D11 与 Stage 7 继续 `NOT STARTED`。
 
 ## 第一阶段验收未完成项
 
