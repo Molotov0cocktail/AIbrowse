@@ -566,11 +566,10 @@ export async function parseFeedXmlWithLoader(
           utf8ByteLength(name.namespace ?? '');
         if (nameBytes > MAX_XML_NAME_BYTES) throw new BudgetExceededError();
         if (attrs.size > MAX_XML_ATTRIBUTES_PER_TAG) throw new BudgetExceededError();
-        let attrBytes = 0;
         attrs.forEach((value, qname) => {
-          attrBytes += utf8ByteLength(qname.name) + utf8ByteLength(value);
+          const attributeBytes = utf8ByteLength(qname.name) + utf8ByteLength(value);
+          if (attributeBytes > MAX_XML_ATTRIBUTE_BYTES) throw new BudgetExceededError();
         });
-        if (attrBytes > MAX_XML_ATTRIBUTE_BYTES) throw new BudgetExceededError();
 
         // XInclude：元素或 xmlns 声明一经出现立即 security_rejected（零文件/网络，WT-06）
         if (name.namespace === XINCLUDE_NS) {
@@ -707,10 +706,10 @@ export async function parseFeedXmlWithLoader(
       maxElementDepth: MAX_XML_DEPTH,
       maxNameLength: MAX_XML_NAME_BYTES,
       maxTextLength: MAX_XML_TEXT_NODE_BYTES,
-      // saxe 以 UTF-16 code unit 计数且 == max 即拒绝（与 §2 UTF-8 字节预算的
-      // 「== 接受」语义冲突），故此处设为 2× 的粗防线回退；权威字节 oracle 是
-      // 上方 handler 的 MAX_XML_ATTRIBUTE_BYTES 精确检查（== 接受、+1 拒绝）。
-      maxAttributesLength: MAX_XML_ATTRIBUTE_BYTES * 2,
+      // saxe counts aggregate UTF-16 code units. Keep its guard finite at the
+      // largest aggregate allowed by the product's per-attribute byte limit;
+      // the handler above remains the exact UTF-8 oracle for every attribute.
+      maxAttributesLength: MAX_XML_ATTRIBUTE_BYTES * MAX_XML_ATTRIBUTES_PER_TAG,
     },
   );
 

@@ -6,6 +6,7 @@ import {
   MAX_FEED_FIELD_BYTES,
   MAX_FEED_ITEMS,
   MAX_FEED_PROJECTION_BYTES,
+  MAX_XML_ATTRIBUTE_BYTES,
   MAX_XML_ATTRIBUTES_PER_TAG,
   MAX_XML_DEPTH,
   MAX_XML_NAME_BYTES,
@@ -493,14 +494,63 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
   });
 
   it('attribute bytes 4096 接受、4097 拒绝（名+值合计；属性名受 256 限制故用短名长值）', async () => {
-    const atMax = wrap(`<title x="${'b'.repeat(4095)}">x</title>`); // 1 + 4095 = 4096
+    const atMax = wrap(`<title x="${'b'.repeat(MAX_XML_ATTRIBUTE_BYTES - 1)}">x</title>`);
     const ok = await parseFeedXml(Buffer.from(atMax, 'utf8'));
     expect(ok.ok).toBe(true);
 
-    const over = wrap(`<title x="${'b'.repeat(4096)}">x</title>`); // 1 + 4096 = 4097
+    const over = wrap(`<title x="${'b'.repeat(MAX_XML_ATTRIBUTE_BYTES)}">x</title>`);
     const bad = await parseFeedXml(Buffer.from(over, 'utf8'));
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.health).toBe('budget_exceeded');
+  });
+
+  it('每个属性独立计量：两个各 2049 字节的合法属性都接受', async () => {
+    const perAttributeBytes = 2_049;
+    const attrs = ['x', 'y']
+      .map((name) => `${name}="${'b'.repeat(perAttributeBytes - utf8ByteLength(name))}"`)
+      .join(' ');
+    const result = await parseFeedXml(Buffer.from(wrap(`<title ${attrs}>x</title>`), 'utf8'));
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('每个属性独立计量：三个各 4096 字节的合法属性都接受', async () => {
+    const attrs = ['x', 'y', 'z']
+      .map(
+        (name) =>
+          `${name}="${'b'.repeat(MAX_XML_ATTRIBUTE_BYTES - utf8ByteLength(name))}"`,
+      )
+      .join(' ');
+    const result = await parseFeedXml(Buffer.from(wrap(`<title ${attrs}>x</title>`), 'utf8'));
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('64 个各自合法且聚合超过依赖默认上限的属性接受', async () => {
+    const attrs = Array.from({ length: MAX_XML_ATTRIBUTES_PER_TAG }, (_, index) => {
+      const name = `a${index}`;
+      return `${name}="${'b'.repeat(MAX_XML_ATTRIBUTE_BYTES - utf8ByteLength(name))}"`;
+    }).join(' ');
+    const result = await parseFeedXml(Buffer.from(wrap(`<title ${attrs}>x</title>`), 'utf8'));
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('多字节属性按 UTF-8 名值字节精确接受 4096、拒绝 4097', async () => {
+    const exactValue = '界'.repeat(1_365);
+    expect(utf8ByteLength('x') + utf8ByteLength(exactValue)).toBe(MAX_XML_ATTRIBUTE_BYTES);
+    const exact = await parseFeedXml(
+      Buffer.from(wrap(`<title x="${exactValue}">x</title>`), 'utf8'),
+    );
+    expect(exact.ok).toBe(true);
+
+    const overValue = `${exactValue}a`;
+    expect(utf8ByteLength('x') + utf8ByteLength(overValue)).toBe(MAX_XML_ATTRIBUTE_BYTES + 1);
+    const over = await parseFeedXml(
+      Buffer.from(wrap(`<title x="${overValue}">x</title>`), 'utf8'),
+    );
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.health).toBe('budget_exceeded');
   });
 
   it('text node 8192 接受、8193 拒绝', async () => {
@@ -531,15 +581,19 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
   });
 
   it('FeedProjection 整体预算：超 262144 整次失败（不产残缺投影）', async () => {
-    // 每个 item 的 title 2000 + summary 2000 ≈ 4000+；120 项远超预算 → 中途 budget_exceeded
+    // JSON escaping makes the canonical projection limit reachable while XML
+    // text remains below its independent 131072-byte limit.
     const items = Array.from(
-      { length: 120 },
+      { length: MAX_FEED_ITEMS },
       (_, i) =>
-        `<item><guid>g${i}</guid><title>${'t'.repeat(2000)}${i}</title><link>https://example.com/${i}</link><description>${'s'.repeat(2000)}</description></item>`,
+        `<item><guid>g${i}</guid><title>${'\\'.repeat(300)}</title><description>${'\\'.repeat(300)}</description></item>`,
     ).join('');
     const r = await parseRss(items);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.health).toBe('budget_exceeded');
+    if (!r.ok) {
+      expect(r.health).toBe('budget_exceeded');
+      expect(r.reason).toBe('projection');
+    }
   });
 
   it('FeedProjection canonical 编码字节精确（byteLength == 完整 JSON 编码，不含自身字段）', async () => {
@@ -579,9 +633,8 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
   });
 
   it('canonical 编码器边界：== MAX 接受、MAX+1 拒绝依据（helper 级）', () => {
-    // 诚实限制：受 MAX_XML_TOTAL_TEXT_BYTES(131072) 约束，真实 feed 的完整编码无法达到
-    // MAX_FEED_PROJECTION_BYTES(262144)——总文本预算先绑定；此处直接机器验证 canonical
-    // 编码器的 ==MAX/+1 边界语义（完整编码超限即 budget_exceeded 的判定依据）。
+    // The real parser branch above proves reachability through JSON escaping;
+    // this helper isolates the canonical encoder's exact byte boundary.
     const payload = (titleText: string): FeedProjectionCanonicalPayload => ({
       type: 'feed',
       format: 'rss2',
