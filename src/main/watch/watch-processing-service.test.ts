@@ -14,6 +14,7 @@ import { WatchProcessingServiceImpl } from './watch-processing-service';
 import { FakeClock } from '../../shared/watch/clock';
 import { sha256Hex } from '../../shared/watch/diff/evidence';
 import type {
+  ConditionalResponseMetadata,
   FeedProjection,
   FeedProjectionValue,
   PageProjection,
@@ -137,6 +138,22 @@ function makeProjection(rule: WatchRule, title: string, capturedAt: string): Fee
     documentId: null,
     contentHash: sha256Hex(canonicalJson),
     byteLength: Buffer.byteLength(canonicalJson, 'utf8'),
+    value,
+  };
+}
+
+function makeStablePageProjection(rule: WatchRule): PageProjection {
+  const value: PageProjectionValue = { type: 'page', fields: [] };
+  const projectionJson = JSON.stringify(value);
+  return {
+    schemaVersion: 1,
+    ruleId: rule.id,
+    sourceId: rule.sourceId,
+    finalUrl: 'https://example.com/doc',
+    capturedAt: new Date(NOW_MS).toISOString(),
+    documentId: null,
+    contentHash: sha256Hex(projectionJson),
+    byteLength: Buffer.byteLength(projectionJson, 'utf8'),
     value,
   };
 }
@@ -287,6 +304,142 @@ describe('WatchProcessingService 结果事务（#S6-047～#S6-052/#S6-057）', (
       closeH(h);
     }
   });
+
+  it.each([
+    ['metadata null', null],
+    ['no validators', { httpStatus: 200, etag: null, lastModified: null, warnings: [] }],
+    ['ETag only', { httpStatus: 200, etag: '"page-etag"', lastModified: null, warnings: [] }],
+    [
+      'Last-Modified only',
+      {
+        httpStatus: 200,
+        etag: null,
+        lastModified: 'Sat, 05 Sep 2026 00:00:00 GMT',
+        warnings: [],
+      },
+    ],
+    [
+      'both validators',
+      {
+        httpStatus: 200,
+        etag: '"page-etag"',
+        lastModified: 'Sat, 05 Sep 2026 00:00:00 GMT',
+        warnings: [],
+      },
+    ],
+    [
+      'normalized oversize warning',
+      { httpStatus: 200, etag: null, lastModified: null, warnings: ['etag-oversize'] },
+    ],
+  ] satisfies Array<[string, ConditionalResponseMetadata | null]>)(
+    'Page unchanged 保留有界 Run metadata 但 Baseline validator 恒 null：%s',
+    (_label, responseMetadata) => {
+      const h = setup();
+      try {
+        const rule = makeRule({
+          kind: 'page',
+          accessMode: 'public',
+          muted: true,
+          target: {
+            type: 'page',
+            pageUrl: 'https://example.com/doc',
+            regions: [{ kind: 'main-text', label: '正文' }],
+            sessionConsent: null,
+          },
+        });
+        const projection = makeStablePageProjection(rule);
+        expect(h.repo.insertRule(rule)).toEqual({ ok: true });
+        expect(
+          h.repo.writeBaseline({
+            ruleId: rule.id,
+            expectedBaselineVersion: null,
+            projectionType: 'page',
+            projectionJson: JSON.stringify(projection.value),
+            contentHash: projection.contentHash,
+            byteLength: projection.byteLength,
+            finalUrl: projection.finalUrl,
+            capturedAt: projection.capturedAt,
+            documentId: null,
+            validators: { etag: null, lastModified: null },
+          }),
+        ).toEqual({ ok: true });
+        const freshRule = h.repo.getRule(rule.id)!;
+        const prepared = h.service.prepareAcquisition({ rule: freshRule });
+        expect(prepared.ok).toBe(true);
+        if (!prepared.ok) return;
+        const runId = randomUUID();
+        expect(
+          h.repo.insertRun({
+            id: runId,
+            ruleId: rule.id,
+            requestKey: `page-unchanged-${_label}`,
+            trigger: 'manual',
+            scheduledFor: null,
+          }),
+        ).toEqual({ ok: true });
+        expect(
+          h.repo.transitionRun(runId, 'queued', {
+            status: 'running',
+            startedAt: new Date(NOW_MS).toISOString(),
+          }),
+        ).toEqual({ ok: true });
+
+        const result = h.service.process({
+          rule: freshRule,
+          runId,
+          baselineHint: prepared.baselineHint,
+          acquisition: {
+            ok: true,
+            kind: 'projection',
+            projection,
+            expectedSourceLocatorFingerprint: freshRule.sourceLocatorFingerprint,
+            responseMetadata,
+          },
+          sourceAfterAcquisition: sourceProjection,
+        });
+
+        expect(result).toEqual({ ok: true, outcome: { kind: 'unchanged' } });
+        const baseline = h.repo.getBaseline(rule.id)!;
+        expect(baseline).toMatchObject({
+          version: 1,
+          projectionJson: JSON.stringify(projection.value),
+          contentHash: projection.contentHash,
+          byteLength: projection.byteLength,
+          conditionalEtag: null,
+          conditionalLastModified: null,
+        });
+        const run = h.repo.getRun(runId)!;
+        expect(run.status).toBe('finished');
+        expect(run.health).toEqual({ state: 'healthy', acquisition: 'browser', code: null });
+        expect(JSON.parse(run.responseMetadataJson!)).toEqual({
+          schemaVersion: 1,
+          http: responseMetadata,
+          conditionWarnings: [],
+        });
+        expect(h.repo.getRule(rule.id)).toMatchObject({
+          baselineVersion: 1,
+          consecutiveFailures: 0,
+        });
+        expect(h.repo.listEventsByRule(rule.id)).toEqual([]);
+        expect(
+          h.repo.dbHandle.prepare('SELECT COUNT(*) AS n FROM watch_event_observations').get(),
+        ).toEqual({ n: 0 });
+        expect(
+          h.repo.dbHandle.prepare('SELECT COUNT(*) AS n FROM watch_event_items').get(),
+        ).toEqual({ n: 0 });
+        expect(
+          h.repo.dbHandle.prepare('SELECT COUNT(*) AS n FROM notification_outbox').get(),
+        ).toEqual({ n: 0 });
+        expect(
+          h.repo
+            .listAudits(100)
+            .filter((audit) => audit.ruleId === rule.id && audit.reasonCode === 'unchanged'),
+        ).toHaveLength(1);
+      } finally {
+        closeH(h);
+      }
+    },
+  );
 
   it('change → matched（无 Condition）→ create Event：双侧 Evidence + outbox + baseline 推进', async () => {
     const h = setup();

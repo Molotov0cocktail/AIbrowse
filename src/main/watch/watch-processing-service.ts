@@ -287,7 +287,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
     ) {
       const responseMetadata = input.acquisition.responseMetadata;
       const validatorUpdate =
-        responseMetadata !== null
+        input.rule.kind === 'feed' && responseMetadata !== null
           ? { etag: responseMetadata.etag, lastModified: responseMetadata.lastModified }
           : { etag: null, lastModified: null };
       const outcome: WatchRunOutcome = { kind: 'unchanged' };
