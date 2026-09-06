@@ -25,6 +25,7 @@ import {
   MAX_FEED_FIELD_BYTES,
   MAX_FEED_ITEMS,
   MAX_FEED_PROJECTION_BYTES,
+  MAX_FEED_RESPONSE_BYTES,
   MAX_XML_ATTRIBUTE_BYTES,
   MAX_XML_ATTRIBUTES_PER_TAG,
   MAX_XML_DEPTH,
@@ -177,6 +178,9 @@ interface CollectorState {
   collector: FeedCollector;
   nodes: number;
   totalTextBytes: number;
+  logicalText: string;
+  logicalTextBytes: number;
+  logicalTextOpen: boolean;
   stack: StackEntry[];
   inItem: boolean;
   pendingItem: PendingItem | null;
@@ -324,11 +328,24 @@ function appendField(st: CollectorState, field: FieldKey, content: string): void
   }
 }
 
-function collectText(st: CollectorState, content: string): void {
-  if (utf8ByteLength(content) > MAX_XML_TEXT_NODE_BYTES) {
+function appendLogicalText(st: CollectorState, content: string): void {
+  const contentBytes = utf8ByteLength(content);
+  if (st.logicalTextBytes + contentBytes > MAX_XML_TEXT_NODE_BYTES) {
     throw new BudgetExceededError();
   }
-  // §8.1 顺序 1–3：NFC → 控制/bidi 清除 → 空白折叠/trim（复用 watch-budget 规范化）
+  st.logicalText += content;
+  st.logicalTextBytes += contentBytes;
+  st.logicalTextOpen = true;
+}
+
+function finishLogicalText(st: CollectorState): void {
+  if (!st.logicalTextOpen) return;
+  const content = st.logicalText;
+  st.logicalText = '';
+  st.logicalTextBytes = 0;
+  st.logicalTextOpen = false;
+
+  // A whole logical node is normalized once after its raw decoded byte guard.
   const normalized = normalizeWatchText(content);
   st.totalTextBytes += utf8ByteLength(normalized);
   if (st.totalTextBytes > MAX_XML_TOTAL_TEXT_BYTES) {
@@ -336,6 +353,19 @@ function collectText(st: CollectorState, content: string): void {
   }
   const field = currentField(st);
   if (field !== null) appendField(st, field, content);
+}
+
+function validateQName(name: {
+  name: string;
+  localName: string;
+  prefix?: string | undefined;
+  namespace?: string | undefined;
+}): void {
+  for (const value of [name.name, name.localName, name.prefix, name.namespace]) {
+    if (value !== undefined && utf8ByteLength(value) > MAX_XML_NAME_BYTES) {
+      throw new BudgetExceededError();
+    }
+  }
 }
 
 function sha256Hex(value: string): string {
@@ -574,6 +604,17 @@ export async function parseFeedXmlWithLoader(
   loader: SaxeLoader,
   observer?: FeedParserBudgetObserver,
 ): Promise<FeedParseResult> {
+  if (Buffer.isBuffer(body) && body.length > MAX_FEED_RESPONSE_BYTES) {
+    observeParserBudget(observer, {
+      stage: 'feed-parser',
+      outcome: 'product-budget',
+      reasonCode: 'budget',
+      inputBytes: body.length,
+      canonicalBytes: null,
+      itemCount: null,
+    });
+    return { ok: false, health: 'budget_exceeded', reason: 'budget' };
+  }
   const decoded = decodeXmlBytes(body);
   if (!decoded.ok) {
     observeParserBudget(observer, {
@@ -614,6 +655,9 @@ export async function parseFeedXmlWithLoader(
     collector,
     nodes: 0,
     totalTextBytes: 0,
+    logicalText: '',
+    logicalTextBytes: 0,
+    logicalTextOpen: false,
     stack: [],
     inItem: false,
     pendingItem: null,
@@ -623,10 +667,19 @@ export async function parseFeedXmlWithLoader(
   const baseHandler = {
     xmlDecl(): void {},
     doctype(): void {},
-    comment(): void {},
-    processingInstruction(): void {},
-    startCDataSection(): void {},
-    endCDataSection(): void {},
+    comment(): void {
+      finishLogicalText(st);
+    },
+    processingInstruction(target: string): void {
+      finishLogicalText(st);
+      if (utf8ByteLength(target) > MAX_XML_NAME_BYTES) throw new BudgetExceededError();
+    },
+    startCDataSection(): void {
+      finishLogicalText(st);
+    },
+    endCDataSection(): void {
+      finishLogicalText(st);
+    },
   };
 
   const saxeModule = saxe;
@@ -634,18 +687,19 @@ export async function parseFeedXmlWithLoader(
     {
       ...baseHandler,
       startTag(name, attrs) {
+        finishLogicalText(st);
         st.nodes += 1;
         if (st.nodes > MAX_XML_NODES) throw new BudgetExceededError();
         if (st.stack.length + 1 > MAX_XML_DEPTH) throw new BudgetExceededError();
-        const nameBytes =
-          utf8ByteLength(name.localName) +
-          utf8ByteLength(name.prefix ?? '') +
-          utf8ByteLength(name.namespace ?? '');
-        if (nameBytes > MAX_XML_NAME_BYTES) throw new BudgetExceededError();
+        validateQName(name);
         if (attrs.size > MAX_XML_ATTRIBUTES_PER_TAG) throw new BudgetExceededError();
         attrs.forEach((value, qname) => {
+          validateQName(qname);
           const attributeBytes = utf8ByteLength(qname.name) + utf8ByteLength(value);
           if (attributeBytes > MAX_XML_ATTRIBUTE_BYTES) throw new BudgetExceededError();
+          if (qname.namespace === XMLNS_NS && utf8ByteLength(value) > MAX_XML_NAME_BYTES) {
+            throw new BudgetExceededError();
+          }
         });
 
         // XInclude：元素或 xmlns 声明一经出现立即 security_rejected（零文件/网络，WT-06）
@@ -760,6 +814,8 @@ export async function parseFeedXmlWithLoader(
         st.stack.push({ localName: name.localName, ns: name.namespace, field });
       },
       endTag(name) {
+        finishLogicalText(st);
+        validateQName(name);
         st.stack.pop();
         const closingItem =
           (collector.format === 'rss2' &&
@@ -775,23 +831,26 @@ export async function parseFeedXmlWithLoader(
         // MAX_XML_NODES 覆盖 start element 与 text 事件（RED LINE）
         st.nodes += 1;
         if (st.nodes > MAX_XML_NODES) throw new BudgetExceededError();
-        collectText(st, content);
+        appendLogicalText(st, content);
       },
     },
     {
       dtd: 'prohibit',
       maxElementDepth: MAX_XML_DEPTH,
       maxNameLength: MAX_XML_NAME_BYTES,
-      maxTextLength: MAX_XML_TEXT_NODE_BYTES,
+      maxTextLength: MAX_FEED_RESPONSE_BYTES,
       // saxe counts aggregate UTF-16 code units. Keep its guard finite at the
       // largest aggregate allowed by the product's per-attribute byte limit;
       // the handler above remains the exact UTF-8 oracle for every attribute.
       maxAttributesLength: MAX_XML_ATTRIBUTE_BYTES * MAX_XML_ATTRIBUTES_PER_TAG,
+      maxNamespacePrefixes: MAX_XML_DEPTH * MAX_XML_ATTRIBUTES_PER_TAG,
+      incrementalText: false,
     },
   );
 
   try {
     parser.parse(decoded.text, { stream: false });
+    finishLogicalText(st);
   } catch (err) {
     if (err instanceof BudgetExceededError) {
       observeParserBudget(observer, {

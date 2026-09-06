@@ -216,7 +216,7 @@ describe('NASA Feed 预算单次诊断', () => {
     }
   });
 
-  it('saxe LimitExceeded 只记为 inconclusive，不猜成合法 Feed 超限或重启诊断', async () => {
+  it('ASCII 8193 项目文本预算记为 recorded/product-budget', async () => {
     const { runH3aFeedBudgetDiagnostic } = await import('./smoke-watch-h3a-runner');
     const rootDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-diagnostic-limit-'));
     const evidenceDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-diagnostic-limit-evidence-'));
@@ -225,6 +225,78 @@ describe('NASA Feed 预算单次诊断', () => {
     const feed = Buffer.from(
       `<rss version="2.0"><channel><title>${'a'.repeat(8_193)}</title></channel></rss>`,
     );
+    const requests: WatchRequestOptions[] = [];
+    prepareWorkflow(workflowDir);
+    try {
+      const result = await runH3aFeedBudgetDiagnostic({
+        candidateSha: 'a'.repeat(40),
+        buildHash: 'b'.repeat(64),
+        rootDir,
+        evidenceDir,
+        workflowDir,
+        historicalUsageSources: [],
+        mode: 'production-preview',
+        clock,
+        lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+        request: (options) => {
+          requests.push(options);
+          return new DiagnosticRequest(options, feed);
+        },
+        onPoll: async () => {
+          clock.advanceBy(5_000);
+          await Promise.resolve();
+        },
+        maxCandidateMs: 15_000,
+      });
+
+      expect(result.validationErrors).toEqual([]);
+      expect(result.report).toMatchObject({
+        qualification: 'not-evaluated',
+        executionStatus: 'recorded',
+        observation: 'budget-exceeded',
+        fatalErrorCode: null,
+        baselineBefore: null,
+        baselineAfter: null,
+        eventCount: 0,
+        typedEvidenceCount: 0,
+        notificationCount: 0,
+      });
+      expect(result.report.budgetObservations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stage: 'feed-parser',
+            outcome: 'product-budget',
+            reasonCode: 'budget',
+          }),
+          expect.objectContaining({
+            stage: 'feed-acquisition',
+            outcome: 'parser-rejected',
+            healthCode: 'budget_exceeded',
+          }),
+        ]),
+      );
+      expect(requests).toHaveLength(2);
+      expect(result.report.cumulativeRequests.diagnosticCount).toBe(2);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+      rmSync(evidenceDir, { recursive: true, force: true });
+      rmSync(workflowDir, { recursive: true, force: true });
+    }
+  });
+
+  it('saxe 固定声明边界 LimitExceeded 只记为 inconclusive，不猜具体轴', async () => {
+    const { runH3aFeedBudgetDiagnostic } = await import('./smoke-watch-h3a-runner');
+    const rootDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-diagnostic-native-limit-'));
+    const evidenceDir = mkdtempSync(
+      join(tmpdir(), 'aibrowse-h3a-diagnostic-native-limit-evidence-'),
+    );
+    const workflowDir = mkdtempSync(
+      join(tmpdir(), 'aibrowse-h3a-diagnostic-native-limit-workflow-'),
+    );
+    const clock = new FakeClock(Date.parse('2026-09-06T00:00:00.000Z'));
+    const declaration = `<?xml version="1.0"${' '.repeat(2_001 - 21)}?>`;
+    expect(declaration.length).toBe(2_001);
+    const feed = Buffer.from(`${declaration}<rss version="2.0"><channel/></rss>`);
     const requests: WatchRequestOptions[] = [];
     prepareWorkflow(workflowDir);
     try {

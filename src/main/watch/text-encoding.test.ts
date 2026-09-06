@@ -9,6 +9,22 @@ import {
   normalizeEncodingLabel,
 } from './text-encoding';
 
+function utf16Bytes(text: string, endian: 'le' | 'be', withBom = false): Buffer {
+  const encoded = Buffer.from(text, 'utf16le');
+  if (endian === 'be') encoded.swap16();
+  if (!withBom) return encoded;
+  return Buffer.concat([
+    endian === 'le' ? Buffer.from([0xff, 0xfe]) : Buffer.from([0xfe, 0xff]),
+    encoded,
+  ]);
+}
+
+function expectXmlDecodeFailure(body: Buffer, reason?: string): void {
+  const result = decodeXmlBytes(body);
+  expect(result.ok).toBe(false);
+  if (!result.ok && reason !== undefined) expect(result.reason).toBe(reason);
+}
+
 describe('normalizeEncodingLabel', () => {
   it('支持 UTF-8/UTF-16/windows-1252/ISO-8859-1 及其别名；未知返回 null', () => {
     expect(normalizeEncodingLabel('UTF-8')).toBe('utf-8');
@@ -74,6 +90,57 @@ describe('decodeXmlBytes — BOM', () => {
     ]);
     const r = decodeXmlBytes(buf);
     expect(r.ok).toBe(true);
+  });
+
+  it.each(['le', 'be'] as const)(
+    'UTF-16%s BOM：无声明、显式同序及 generic UTF-16 均通过',
+    (endian) => {
+      for (const xml of [
+        '<t>中文</t>',
+        `<?xml version="1.0" encoding="UTF-16${endian.toUpperCase()}"?><t>中文</t>`,
+        '<?xml version="1.0" encoding="UTF-16"?><t>中文</t>',
+      ]) {
+        const result = decodeXmlBytes(utf16Bytes(xml, endian, true));
+        expect(result.ok).toBe(true);
+        if (!result.ok) continue;
+        expect(result.encoding).toBe(endian === 'le' ? 'utf-16le' : 'utf-16be');
+        expect(result.text).toContain('中文');
+      }
+    },
+  );
+
+  it.each(['le', 'be'] as const)(
+    'UTF-16%s BOM：UTF-8、反向字节序、单字节及未知声明均拒绝',
+    (endian) => {
+      const opposite = endian === 'le' ? 'UTF-16BE' : 'UTF-16LE';
+      for (const label of ['UTF-8', opposite, 'windows-1252', 'shift_jis']) {
+        expectXmlDecodeFailure(
+          utf16Bytes(`<?xml version="1.0" encoding="${label}"?><t/>`, endian, true),
+        );
+      }
+    },
+  );
+
+  it('UTF-8 BOM：无声明与一致声明通过，generic UTF-16/未知声明拒绝', () => {
+    for (const xml of ['<t/>', '<?xml version="1.0" encoding="UTF-8"?><t/>']) {
+      const result = decodeXmlBytes(
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(xml)]),
+      );
+      expect(result.ok).toBe(true);
+    }
+    for (const label of ['UTF-16', 'shift_jis']) {
+      expectXmlDecodeFailure(
+        Buffer.concat([
+          Buffer.from([0xef, 0xbb, 0xbf]),
+          Buffer.from(`<?xml version="1.0" encoding="${label}"?><t/>`),
+        ]),
+      );
+    }
+  });
+
+  it('UTF-32 BOM 不得误识别为 UTF-16', () => {
+    expectXmlDecodeFailure(Buffer.from([0xff, 0xfe, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x00]));
+    expectXmlDecodeFailure(Buffer.from([0x00, 0x00, 0xfe, 0xff, 0x00, 0x00, 0x00, 0x3c]));
   });
 });
 
@@ -146,6 +213,89 @@ describe('decodeXmlBytes — 声明', () => {
   it('空输入 fail-closed', () => {
     expect(decodeXmlBytes(Buffer.alloc(0)).ok).toBe(false);
     expect(decodeXmlBytes('x' as unknown as Buffer).ok).toBe(false);
+  });
+
+  it.each([
+    ['le', 'UTF-16LE'],
+    ['le', 'UTF-16'],
+    ['be', 'UTF-16BE'],
+    ['be', 'UTF-16'],
+  ] as const)('无 BOM 确定性 UTF-16%s 声明 %s 一致时通过', (endian, label) => {
+    const result = decodeXmlBytes(
+      utf16Bytes(`<?xml version="1.0" encoding="${label}"?><t>中文</t>`, endian),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.encoding).toBe(endian === 'le' ? 'utf-16le' : 'utf-16be');
+    expect(result.text).toContain('中文');
+  });
+
+  it.each(['le', 'be'] as const)(
+    '无 BOM UTF-16%s：UTF-8、反向序、单字节及未知声明均拒绝',
+    (endian) => {
+      const opposite = endian === 'le' ? 'UTF-16BE' : 'UTF-16LE';
+      for (const label of ['UTF-8', opposite, 'windows-1252', 'shift_jis']) {
+        expectXmlDecodeFailure(utf16Bytes(`<?xml version="1.0" encoding="${label}"?><t/>`, endian));
+      }
+    },
+  );
+
+  it('ASCII 兼容声明不得宣称 UTF-16，单字节别名保持可用', () => {
+    for (const label of ['UTF-16', 'UTF-16LE', 'UTF-16BE']) {
+      expectXmlDecodeFailure(Buffer.from(`<?xml version="1.0" encoding="${label}"?><t/>`));
+    }
+    for (const label of ['utf8', 'cp1252', 'ISO8859-1', 'latin1', 'l1']) {
+      const result = decodeXmlBytes(
+        Buffer.from(`<?xml version="1.0" encoding="${label}"?><t/>`, 'latin1'),
+      );
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  it('完整开头声明超过原 1024 字节窗口仍按实际 encoding 判定', () => {
+    const declaration = (label: string): string =>
+      `<?xml version="1.0"${' '.repeat(1_050)}encoding="${label}"?>`;
+    expect(decodeXmlBytes(Buffer.from(`${declaration('UTF-8')}<t/>`)).ok).toBe(true);
+    expectXmlDecodeFailure(Buffer.from(`${declaration('shift_jis')}<t/>`, 'latin1'));
+    expect(decodeXmlBytes(utf16Bytes(`${declaration('UTF-16LE')}<t/>`, 'le')).ok).toBe(true);
+    expect(decodeXmlBytes(utf16Bytes(`${declaration('UTF-16BE')}<t/>`, 'be')).ok).toBe(true);
+    expectXmlDecodeFailure(utf16Bytes(`${declaration('UTF-8')}<t/>`, 'le'));
+    expectXmlDecodeFailure(utf16Bytes(`${declaration('UTF-8')}<t/>`, 'be'));
+  });
+
+  it('声明扫描尊重引号和 pseudo-attribute 边界，不从 PI/comment/正文抓伪 encoding', () => {
+    expectXmlDecodeFailure(
+      Buffer.from('<?xml version="1.0" encoding="UTF-8?>shift_jis"?><t/>'),
+      'invalid-xml-declaration',
+    );
+    expectXmlDecodeFailure(
+      Buffer.from('<?xml version="1.0" notencoding="windows-1252"?><t/>'),
+      'invalid-xml-declaration',
+    );
+
+    for (const xml of [
+      '<?xml-stylesheet encoding="windows-1252"?><t>caf\u00e9</t>',
+      '<!-- encoding="windows-1252" --><t>caf\u00e9</t>',
+      '<t>encoding="windows-1252" caf\u00e9</t>',
+    ]) {
+      const result = decodeXmlBytes(Buffer.from(xml, 'utf8'));
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(result.encoding).toBe('utf-8');
+      expect(result.text).toContain('caf\u00e9');
+    }
+  });
+
+  it('截断或引号未闭合的开头 XML 声明受控拒绝', () => {
+    expectXmlDecodeFailure(Buffer.from('<?xml version="1.0" encoding="UTF-8"'));
+    expectXmlDecodeFailure(Buffer.from('<?xml version="1.0" encoding="UTF-8?><t/>'));
+  });
+
+  it('UTF-16 非法 surrogate 受控拒绝', () => {
+    const prefix = Buffer.from('<?xml version="1.0" encoding="UTF-16LE"?><t>', 'utf16le');
+    const invalid = Buffer.from([0x00, 0xd8]);
+    const suffix = Buffer.from('</t>', 'utf16le');
+    expectXmlDecodeFailure(Buffer.concat([prefix, invalid, suffix]));
   });
 });
 
@@ -230,5 +380,21 @@ describe('decodeHtmlBytes — 优先级与冲突', () => {
 
   it('空输入 fail-closed', () => {
     expect(decodeHtmlBytes(Buffer.alloc(0), null).ok).toBe(false);
+  });
+
+  it('HTML 仍只扫描前 1024 字节 meta，XML 完整声明修复不改变其边界', () => {
+    const outside = Buffer.concat([
+      Buffer.from(`${' '.repeat(1_025)}<meta charset="windows-1252"><body>caf`, 'latin1'),
+      Buffer.from([0xe9]),
+      Buffer.from('</body>', 'latin1'),
+    ]);
+    expect(decodeHtmlBytes(outside, null).ok).toBe(false);
+
+    const inside = Buffer.concat([
+      Buffer.from('<meta charset="windows-1252"><body>caf', 'latin1'),
+      Buffer.from([0xe9]),
+      Buffer.from('</body>', 'latin1'),
+    ]);
+    expect(decodeHtmlBytes(inside, null).ok).toBe(true);
   });
 });

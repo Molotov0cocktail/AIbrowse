@@ -37,20 +37,128 @@ export function normalizeEncodingLabel(label: string | null | undefined): Suppor
   return LABEL_ALIASES[trimmed] ?? null;
 }
 
-function sniffDeclaredEncoding(head: Buffer): string | null {
-  // 在 latin1（字节保真）视图中提取 <?xml ... encoding="..."?> 声明标签（原始标签串）。
-  const text = head.toString('latin1');
-  const m = text.match(/^<\?xml[^>]*\bencoding\s*=\s*["']([^"']+)["']/i);
-  if (!m) return null;
-  const label = m[1] ?? '';
-  return label.length > 0 ? label : null;
-}
-
 function detectBom(buf: Buffer): SupportedEncoding | null {
   if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return 'utf-8';
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return 'utf-16le';
   if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) return 'utf-16be';
   return null;
+}
+
+type XmlDeclaredEncoding = SupportedEncoding | 'utf-16';
+
+type XmlDeclarationScan =
+  { kind: 'none' } | { kind: 'invalid' } | { kind: 'declaration'; encoding: string | null };
+
+function isXmlWhitespace(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n';
+}
+
+/**
+ * Scan only a leading XML declaration. The bounded feed input is the scan bound.
+ * Quote-aware scanning prevents `?>` or `encoding=` inside values from changing
+ * the selected decoder; the XML parser still owns full declaration grammar.
+ */
+function scanXmlDeclaration(text: string): XmlDeclarationScan {
+  if (!text.startsWith('<?xml')) return { kind: 'none' };
+  if (text.length === 5 || !isXmlWhitespace(text[5]!)) return { kind: 'none' };
+
+  let quote: '"' | "'" | null = null;
+  let close = -1;
+  for (let index = 5; index < text.length - 1; index += 1) {
+    const ch = text[index]!;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '?' && text[index + 1] === '>') {
+      close = index;
+      break;
+    }
+  }
+  if (close < 0 || quote !== null) return { kind: 'invalid' };
+
+  const content = text.slice(5, close);
+  let index = 0;
+  const attributes: Array<{ name: string; value: string }> = [];
+  const seen = new Set<string>();
+  while (index < content.length) {
+    if (!isXmlWhitespace(content[index]!)) return { kind: 'invalid' };
+    while (index < content.length && isXmlWhitespace(content[index]!)) index += 1;
+    if (index >= content.length) break;
+
+    const nameStart = index;
+    while (index < content.length && !isXmlWhitespace(content[index]!) && content[index] !== '=') {
+      index += 1;
+    }
+    const name = content.slice(nameStart, index);
+    if (name === '' || seen.has(name)) return { kind: 'invalid' };
+    seen.add(name);
+    while (index < content.length && isXmlWhitespace(content[index]!)) index += 1;
+    if (content[index] !== '=') return { kind: 'invalid' };
+    index += 1;
+    while (index < content.length && isXmlWhitespace(content[index]!)) index += 1;
+    const valueQuote = content[index];
+    if (valueQuote !== '"' && valueQuote !== "'") return { kind: 'invalid' };
+    index += 1;
+    const valueStart = index;
+    while (index < content.length && content[index] !== valueQuote) index += 1;
+    if (index >= content.length) return { kind: 'invalid' };
+    const value = content.slice(valueStart, index);
+    index += 1;
+    attributes.push({ name, value });
+    if (index < content.length && !isXmlWhitespace(content[index]!)) {
+      return { kind: 'invalid' };
+    }
+  }
+  if (attributes[0]?.name !== 'version' || !/^1\.[0-9]+$/.test(attributes[0].value)) {
+    return { kind: 'invalid' };
+  }
+  let attributeIndex = 1;
+  let encoding: string | null = null;
+  if (attributes[attributeIndex]?.name === 'encoding') {
+    encoding = attributes[attributeIndex]!.value;
+    if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(encoding)) return { kind: 'invalid' };
+    attributeIndex += 1;
+  }
+  if (attributes[attributeIndex]?.name === 'standalone') {
+    const standalone = attributes[attributeIndex]!.value;
+    if (standalone !== 'yes' && standalone !== 'no') return { kind: 'invalid' };
+    attributeIndex += 1;
+  }
+  if (attributeIndex !== attributes.length) return { kind: 'invalid' };
+  return { kind: 'declaration', encoding };
+}
+
+function normalizeXmlDeclaredEncoding(label: string): XmlDeclaredEncoding | null {
+  const normalized = label.toLowerCase();
+  if (normalized === 'utf-16') return 'utf-16';
+  return normalizeEncodingLabel(label);
+}
+
+function detectUnsupportedUnicodeBom(buf: Buffer): boolean {
+  return (
+    (buf.length >= 4 && buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0xfe && buf[3] === 0xff) ||
+    (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xfe && buf[2] === 0x00 && buf[3] === 0x00)
+  );
+}
+
+function detectBomlessUtf16Order(
+  buf: Buffer,
+): Extract<SupportedEncoding, 'utf-16le' | 'utf-16be'> | null {
+  const le = [0x3c, 0x00, 0x3f, 0x00, 0x78, 0x00, 0x6d, 0x00, 0x6c, 0x00];
+  const be = [0x00, 0x3c, 0x00, 0x3f, 0x00, 0x78, 0x00, 0x6d, 0x00, 0x6c];
+  if (buf.length < le.length) return null;
+  if (le.every((value, index) => buf[index] === value)) return 'utf-16le';
+  if (be.every((value, index) => buf[index] === value)) return 'utf-16be';
+  return null;
+}
+
+function decodeFailure(reason: string): DecodeResult {
+  return { ok: false, health: 'parse_changed', reason };
 }
 
 function bomOffset(enc: SupportedEncoding): number {
@@ -99,45 +207,56 @@ function tryDecode(enc: SupportedEncoding, buf: Buffer, offset: number): string 
  */
 export function decodeXmlBytes(buf: Buffer): DecodeResult {
   if (!Buffer.isBuffer(buf) || buf.length === 0) {
-    return { ok: false, health: 'parse_changed', reason: 'empty-xml-body' };
+    return decodeFailure('empty-xml-body');
   }
-  const bom = detectBom(buf);
-  // 声明探测从 BOM 之后开始（latin1 字节保真；BOM 字节不是 `<?xml` 前缀）
-  const headStart = bom !== null ? bomOffset(bom) : 0;
-  const head = buf.subarray(headStart, headStart + ENCODING_PROBE_BYTES);
-  const declaredRaw = sniffDeclaredEncoding(head);
-  const declaredEnc = declaredRaw === null ? null : normalizeEncodingLabel(declaredRaw);
+  if (detectUnsupportedUnicodeBom(buf)) return decodeFailure('unsupported-bom');
 
+  const bom = detectBom(buf);
   if (bom !== null) {
-    // BOM 权威；存在声明时未知编码或与 BOM 字节序冲突 → fail-closed
-    if (declaredEnc !== null) {
-      const compatible =
-        bom === declaredEnc ||
-        (bom === 'utf-16le' && declaredEnc === 'utf-16le') ||
-        (bom === 'utf-16be' && declaredEnc === 'utf-16be');
-      if (!compatible) {
-        return { ok: false, health: 'parse_changed', reason: 'encoding-conflict' };
-      }
-    } else if (declaredRaw !== null) {
-      return { ok: false, health: 'parse_changed', reason: 'unknown-encoding' };
-    }
     const text = tryDecode(bom, buf, bomOffset(bom));
-    if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
+    if (text === null) return decodeFailure('invalid-encoding');
+    const declaration = scanXmlDeclaration(text);
+    if (declaration.kind === 'invalid') return decodeFailure('invalid-xml-declaration');
+    if (declaration.kind === 'declaration' && declaration.encoding !== null) {
+      const declared = normalizeXmlDeclaredEncoding(declaration.encoding);
+      if (declared === null) return decodeFailure('unknown-encoding');
+      const compatible =
+        declared === bom || (declared === 'utf-16' && (bom === 'utf-16le' || bom === 'utf-16be'));
+      if (!compatible) return decodeFailure('encoding-conflict');
+    }
     return { ok: true, text, encoding: bom };
   }
 
-  if (declaredRaw === null) {
-    // 无 BOM 无声明：默认 UTF-8
-    const text = tryDecode('utf-8', buf, 0);
-    if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
-    return { ok: true, text, encoding: 'utf-8' };
+  const utf16Order = detectBomlessUtf16Order(buf);
+  if (utf16Order !== null) {
+    const text = tryDecode(utf16Order, buf, 0);
+    if (text === null) return decodeFailure('invalid-encoding');
+    const declaration = scanXmlDeclaration(text);
+    if (declaration.kind !== 'declaration' || declaration.encoding === null) {
+      return decodeFailure('missing-utf16-declaration');
+    }
+    const declared = normalizeXmlDeclaredEncoding(declaration.encoding);
+    if (declared === null) return decodeFailure('unknown-encoding');
+    if (declared !== 'utf-16' && declared !== utf16Order) {
+      return decodeFailure('encoding-conflict');
+    }
+    return { ok: true, text, encoding: utf16Order };
   }
-  if (declaredEnc === null) {
-    return { ok: false, health: 'parse_changed', reason: 'unknown-encoding' };
+
+  const declaration = scanXmlDeclaration(buf.toString('latin1'));
+  if (declaration.kind === 'invalid') return decodeFailure('invalid-xml-declaration');
+  let selected: SupportedEncoding = 'utf-8';
+  if (declaration.kind === 'declaration' && declaration.encoding !== null) {
+    const declared = normalizeXmlDeclaredEncoding(declaration.encoding);
+    if (declared === null) return decodeFailure('unknown-encoding');
+    if (declared === 'utf-16' || declared === 'utf-16le' || declared === 'utf-16be') {
+      return decodeFailure('encoding-conflict');
+    }
+    selected = declared;
   }
-  const text = tryDecode(declaredEnc, buf, 0);
-  if (text === null) return { ok: false, health: 'parse_changed', reason: 'invalid-encoding' };
-  return { ok: true, text, encoding: declaredEnc };
+  const text = tryDecode(selected, buf, 0);
+  if (text === null) return decodeFailure('invalid-encoding');
+  return { ok: true, text, encoding: selected };
 }
 
 // ---------------------------------------------------------------------------

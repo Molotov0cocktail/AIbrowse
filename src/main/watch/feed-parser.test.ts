@@ -6,6 +6,7 @@ import {
   MAX_FEED_FIELD_BYTES,
   MAX_FEED_ITEMS,
   MAX_FEED_PROJECTION_BYTES,
+  MAX_FEED_RESPONSE_BYTES,
   MAX_XML_ATTRIBUTE_BYTES,
   MAX_XML_ATTRIBUTES_PER_TAG,
   MAX_XML_DEPTH,
@@ -114,12 +115,34 @@ describe('CDATA / 编码', () => {
   });
 
   it('UTF-16LE BOM 解码', async () => {
-    const xml = RSS(RSS_ITEM('g', '中文', 'https://example.com/x'));
+    const xml = RSS(RSS_ITEM('g', '中文', 'https://example.com/x')).replace(
+      'encoding="UTF-8"',
+      'encoding="UTF-16LE"',
+    );
     const buf = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(xml, 'utf16le')]);
     const r = await parseFeedXml(buf);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.items[0]!.title.text).toBe('中文');
+  });
+
+  it('UTF-16LE BOM 与 UTF-8 声明冲突时拒绝', async () => {
+    const xml = RSS(RSS_ITEM('g', '中文', 'https://example.com/x'));
+    const result = await parseFeedXml(
+      Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(xml, 'utf16le')]),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.health).toBe('parse_changed');
+  });
+
+  it('无 BOM UTF-16 且无可识别一致声明时拒绝', async () => {
+    for (const body of [
+      Buffer.from('<rss><channel/></rss>', 'utf16le'),
+      Buffer.from('<rss><channel/></rss>', 'utf16le').swap16(),
+    ]) {
+      const result = await parseFeedXml(body);
+      expect(result).toMatchObject({ ok: false, health: 'parse_changed' });
+    }
   });
 
   it('windows-1252 声明解码（0xE9=é）', async () => {
@@ -335,6 +358,13 @@ describe('DTD/XXE/Bomb/XInclude（WRT-06）→ security_rejected', () => {
     const r = await parseFeedXml(Buffer.from(doc, 'utf8'));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.health).toBe('security_rejected');
+  });
+
+  it('XInclude namespace 声明值经 character reference 解码后仍拒绝', async () => {
+    const doc =
+      '<rss xmlns:xi="&#104;ttp://www.w3.org/2001/XInclude"><channel><title>x</title></channel></rss>';
+    const result = await parseFeedXml(Buffer.from(doc));
+    expect(result).toMatchObject({ ok: false, health: 'security_rejected' });
   });
 
   it('敌手失败后正常 feed 仍可解析（状态未污染）', async () => {
@@ -673,6 +703,261 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
   });
 });
 
+describe('XML 精确名称、namespace 与属性预算（detailed-design §6.4.1）', () => {
+  const wrap = (inner: string): string => `<rss><channel>${inner}</channel></rss>`;
+  const resultIsBudget = async (xml: string): Promise<void> => {
+    const result = await parseFeedXml(Buffer.from(xml));
+    expect(result).toMatchObject({ ok: false, health: 'budget_exceeded' });
+  };
+
+  it('元素与属性完整 QName 各自按 UTF-8 计量 256/257（含冒号）', async () => {
+    const local256 = `${'界'.repeat(84)}aa`; // p: + 254-byte localName = 256-byte QName
+    const local257 = `${'界'.repeat(84)}aaa`;
+    expect(utf8ByteLength(`p:${local256}`)).toBe(MAX_XML_NAME_BYTES);
+    expect(utf8ByteLength(`p:${local257}`)).toBe(MAX_XML_NAME_BYTES + 1);
+
+    expect(
+      (await parseFeedXml(Buffer.from(wrap(`<p:${local256} xmlns:p="u"></p:${local256}>`)))).ok,
+    ).toBe(true);
+    await resultIsBudget(wrap(`<p:${local257} xmlns:p="u"></p:${local257}>`));
+
+    expect(
+      (await parseFeedXml(Buffer.from(wrap(`<n xmlns:p="u" p:${local256}=""><x/></n>`)))).ok,
+    ).toBe(true);
+    await resultIsBudget(wrap(`<n xmlns:p="u" p:${local257}=""><x/></n>`));
+  });
+
+  it('短 QName 与 namespace URI 各自独立 256 接受、257 拒绝（used/unused/default/prefixed）', async () => {
+    const uri256 = 'u'.repeat(MAX_XML_NAME_BYTES);
+    const uri257 = `${uri256}u`;
+    const documents = (uri: string): string[] => [
+      wrap(`<p:n xmlns:p="${uri}"/>`),
+      wrap(`<n xmlns:p="${uri}"/>`),
+      wrap(`<n xmlns="${uri}"/>`),
+      wrap(`<n xmlns:p="${uri}" p:a="v"/>`),
+    ];
+    for (const xml of documents(uri256))
+      expect((await parseFeedXml(Buffer.from(xml))).ok).toBe(true);
+    for (const xml of documents(uri257)) await resultIsBudget(xml);
+
+    const decoded256 = `u${'&#117;'.repeat(MAX_XML_NAME_BYTES - 1)}`;
+    const decoded257 = `${decoded256}&#117;`;
+    expect((await parseFeedXml(Buffer.from(wrap(`<n xmlns:p="${decoded256}"/>`)))).ok).toBe(true);
+    await resultIsBudget(wrap(`<n xmlns:p="${decoded257}"/>`));
+  });
+
+  it('活动 namespace 以 binding record 计量：201 与 64 层各 64 个重绑定均通过', async () => {
+    const attrsFor = (depth: number): string =>
+      Array.from(
+        { length: MAX_XML_ATTRIBUTES_PER_TAG },
+        (_, index) => `xmlns:p${index}="urn:${depth}:${index}"`,
+      ).join(' ');
+    const twoHundredOne =
+      `<rss ${attrsFor(0)}><n ${attrsFor(1)}><n ${attrsFor(2)}>` +
+      `<n ${Array.from({ length: 9 }, (_, index) => `xmlns:q${index}="u${index}"`).join(' ')}/>` +
+      '</n></n></rss>';
+    expect((await parseFeedXml(Buffer.from(twoHundredOne))).ok).toBe(true);
+
+    let nested = '';
+    for (let depth = 0; depth < MAX_XML_DEPTH; depth += 1) {
+      nested += `<${depth === 0 ? 'rss' : 'n'} ${attrsFor(depth)}>`;
+    }
+    nested += '</n>'.repeat(MAX_XML_DEPTH - 1) + '</rss>';
+    expect((await parseFeedXml(Buffer.from(nested))).ok).toBe(true);
+  });
+
+  it('namespace 声明计入 attrs.size：64 接受、65 拒绝', async () => {
+    const declarations = (count: number): string =>
+      Array.from({ length: count }, (_, index) => `xmlns:p${index}="urn:${index}"`).join(' ');
+    expect(
+      (await parseFeedXml(Buffer.from(wrap(`<n ${declarations(MAX_XML_ATTRIBUTES_PER_TAG)}/>`))))
+        .ok,
+    ).toBe(true);
+    await resultIsBudget(wrap(`<n ${declarations(MAX_XML_ATTRIBUTES_PER_TAG + 1)}/>`));
+  });
+
+  it('64 个属性各自允许 4096 解码字节，numeric reference 不绕过单属性预算', async () => {
+    const attrs = Array.from({ length: MAX_XML_ATTRIBUTES_PER_TAG }, (_, index) => {
+      const name = `a${index}`;
+      return `${name}="${'x'.repeat(MAX_XML_ATTRIBUTE_BYTES - utf8ByteLength(name))}"`;
+    }).join(' ');
+    expect((await parseFeedXml(Buffer.from(wrap(`<n ${attrs}/>`)))).ok).toBe(true);
+
+    const decodedAtMax = `a="${'&#120;'.repeat(MAX_XML_ATTRIBUTE_BYTES - 1)}"`;
+    const decodedOver = `a="${'&#120;'.repeat(MAX_XML_ATTRIBUTE_BYTES)}"`;
+    expect((await parseFeedXml(Buffer.from(wrap(`<n ${decodedAtMax}/>`)))).ok).toBe(true);
+    await resultIsBudget(wrap(`<n ${decodedOver}/>`));
+  });
+});
+
+describe('XML 逻辑文本、lexical 边界与原始 SAX 事件（detailed-design §6.4.2）', () => {
+  const wrap = (inner: string): string => `<rss><channel>${inner}</channel></rss>`;
+  const title = (inner: string): string => wrap(`<title>${inner}</title>`);
+  const expectBudget = async (xml: string): Promise<void> => {
+    const result = await parseFeedXml(Buffer.from(xml));
+    expect(result).toMatchObject({ ok: false, health: 'budget_exceeded', reason: 'budget' });
+  };
+
+  it('ordinary/CDATA 的 ASCII 与多字节逻辑节点各自执行 8192/8193 UTF-8 边界', async () => {
+    const exactMultibyte = `${'界'.repeat(2_730)}aa`;
+    const overMultibyte = `${exactMultibyte}a`;
+    expect(utf8ByteLength(exactMultibyte)).toBe(MAX_XML_TEXT_NODE_BYTES);
+    for (const content of ['a'.repeat(MAX_XML_TEXT_NODE_BYTES), exactMultibyte]) {
+      expect((await parseFeedXml(Buffer.from(title(content)))).ok).toBe(true);
+      expect((await parseFeedXml(Buffer.from(title(`<![CDATA[${content}]]>`)))).ok).toBe(true);
+    }
+    for (const content of ['a'.repeat(MAX_XML_TEXT_NODE_BYTES + 1), overMultibyte]) {
+      await expectBudget(title(content));
+      await expectBudget(title(`<![CDATA[${content}]]>`));
+    }
+  });
+
+  it('XML 行尾解码后 8192 接受；numeric/predefined refs 仍属于同一逻辑节点', async () => {
+    const raw8193Decoded8192 = `${'a'.repeat(MAX_XML_TEXT_NODE_BYTES - 1)}\r\n`;
+    expect(utf8ByteLength(raw8193Decoded8192)).toBe(MAX_XML_TEXT_NODE_BYTES + 1);
+    expect((await parseFeedXml(Buffer.from(title(raw8193Decoded8192)))).ok).toBe(true);
+
+    const numericExact = `${'a'.repeat(4_095)}&#65;${'b'.repeat(4_096)}`;
+    const numericOver = `${numericExact}b`;
+    expect((await parseFeedXml(Buffer.from(title(numericExact)))).ok).toBe(true);
+    await expectBudget(title(numericOver));
+
+    expect(
+      (await parseFeedXml(Buffer.from(title('&amp;'.repeat(MAX_XML_TEXT_NODE_BYTES))))).ok,
+    ).toBe(true);
+    await expectBudget(title('&amp;'.repeat(MAX_XML_TEXT_NODE_BYTES + 1)));
+  });
+
+  it('CDATA、元素、comment 与 PI 都在栈变化前结算独立逻辑节点', async () => {
+    const a = 'a'.repeat(MAX_XML_TEXT_NODE_BYTES);
+    const b = 'b'.repeat(MAX_XML_TEXT_NODE_BYTES);
+    for (const inner of [
+      `${a}<![CDATA[${b}]]>`,
+      `<![CDATA[${a}]]><![CDATA[${b}]]>`,
+      `${a}<n>${b}</n>`,
+      `${a}<!--ignored-->${b}`,
+      `${a}<?p ignored?>${b}`,
+    ]) {
+      expect((await parseFeedXml(Buffer.from(title(inner)))).ok).toBe(true);
+    }
+  });
+
+  it('完整逻辑节点统一 normalize 后累计 131072/131073，不逐 reference trim', async () => {
+    const node = `<n>${'a'.repeat(4_095)} &#65;${'b'.repeat(4_095)}</n>`;
+    const exact = wrap(node.repeat(16));
+    expect((await parseFeedXml(Buffer.from(exact))).ok).toBe(true);
+    await expectBudget(wrap(`${node.repeat(16)}<n>x</n>`));
+  });
+
+  it('等价字符/reference 产生相同规范化字段、identity 与 valueHash', async () => {
+    const plain = await parseRss(RSS_ITEM('same', 'A &amp; e&#x301;', 'https://example.com/same'));
+    const references = await parseRss(
+      RSS_ITEM('&#115;ame', '&#65; &#38; &#xE9;', 'https://example.com/same'),
+    );
+    expect(plain.ok).toBe(true);
+    expect(references.ok).toBe(true);
+    if (!plain.ok || !references.ok) return;
+    expect(references.value).toEqual(plain.value);
+    expect(references.canonicalJson).toBe(plain.canonicalJson);
+    expect(references.value.items[0]!.title.valueHash).toBe(plain.value.items[0]!.title.valueHash);
+  });
+
+  it('累计预算包含不投影字段及第 200 项之后的文本', async () => {
+    const ignored = `<unknown>${'a'.repeat(MAX_XML_TEXT_NODE_BYTES)}</unknown>`.repeat(16);
+    expect((await parseFeedXml(Buffer.from(wrap(ignored)))).ok).toBe(true);
+    await expectBudget(wrap(`${ignored}<unknown>x</unknown>`));
+
+    const first200 = Array.from(
+      { length: MAX_FEED_ITEMS },
+      (_, index) => `<item><guid>g${index}</guid></item>`,
+    ).join('');
+    await expectBudget(wrap(`${first200}<item><title>${'x'.repeat(8_193)}</title></item>`));
+  });
+
+  it('原始 startTag/text 回调恰计 20000，reference 与空 CDATA 回调不漏计', async () => {
+    const refs = (count: number): string => `<n>${'&amp;'.repeat(count)}</n>`;
+    const exact = wrap(refs(6_665).repeat(3));
+    expect((await parseFeedXml(Buffer.from(exact))).ok).toBe(true);
+    await expectBudget(wrap(`${refs(6_665).repeat(2)}${refs(6_666)}`));
+
+    expect(
+      (await parseFeedXml(Buffer.from(wrap('<![CDATA[]]>'.repeat(MAX_XML_NODES - 2))))).ok,
+    ).toBe(true);
+    await expectBudget(wrap('<![CDATA[]]>'.repeat(MAX_XML_NODES - 1)));
+  });
+
+  it('comment/PI content 不进入文本预算；PI target 256/257 且畸形 lexical 仍由语法拒绝', async () => {
+    expect((await parseFeedXml(Buffer.from(wrap(`<!--${'a'.repeat(8_193)}-->`)))).ok).toBe(true);
+    expect((await parseFeedXml(Buffer.from(wrap(`<?p ${'a'.repeat(8_193)}?>`)))).ok).toBe(true);
+    const target256 = `${'界'.repeat(85)}a`;
+    const target257 = `${target256}a`;
+    expect(utf8ByteLength(target256)).toBe(MAX_XML_NAME_BYTES);
+    expect((await parseFeedXml(Buffer.from(wrap(`<?${target256} x?>`)))).ok).toBe(true);
+    await expectBudget(wrap(`<?${target257} x?>`));
+
+    for (const malformed of ['<!--a--b-->', '<?p', '<![CDATA[unterminated']) {
+      const result = await parseFeedXml(Buffer.from(wrap(malformed)));
+      expect(result).toMatchObject({ ok: false, health: 'parse_changed' });
+    }
+  });
+});
+
+describe('XML 输入、依赖兼容与恢复边界（detailed-design §6.4.3）', () => {
+  const wrap = (inner: string): string => `<rss><channel>${inner}</channel></rss>`;
+  const declaration = (length: number): string => `<?xml version="1.0"${' '.repeat(length - 21)}?>`;
+
+  it('输入 B 字节接受，B+1 在 decoder/loader/parser 前拒绝', async () => {
+    const base = wrap(`<title>${'a'.repeat(MAX_XML_TEXT_NODE_BYTES)}</title><!-- -->`);
+    const atMax = base.replace(
+      '<!-- ',
+      `<!-- ${'x'.repeat(MAX_FEED_RESPONSE_BYTES - Buffer.byteLength(base))}`,
+    );
+    expect(Buffer.byteLength(atMax)).toBe(MAX_FEED_RESPONSE_BYTES);
+    expect((await parseFeedXml(Buffer.from(atMax))).ok).toBe(true);
+
+    let loaderCalls = 0;
+    const over = await parseFeedXmlWithLoader(Buffer.from(`${atMax}x`), async () => {
+      loaderCalls += 1;
+      return import('@federicocarboni/saxe');
+    });
+    expect(over).toMatchObject({ ok: false, health: 'budget_exceeded', reason: 'budget' });
+    expect(loaderCalls).toBe(0);
+  });
+
+  it('固定依赖完整 XML declaration 2000 通过、2001 受控 dependency-limit', async () => {
+    expect(declaration(2_000).length).toBe(2_000);
+    expect((await parseFeedXml(Buffer.from(`${declaration(2_000)}${wrap('')}`))).ok).toBe(true);
+
+    const observations: object[] = [];
+    const over = await parseFeedXml(
+      Buffer.from(`${declaration(2_001)}${wrap('')}`),
+      (observation) => observations.push(observation),
+    );
+    expect(over).toMatchObject({ ok: false, health: 'budget_exceeded', reason: 'limit' });
+    expect(observations).toEqual([
+      expect.objectContaining({ outcome: 'dependency-limit', reasonCode: 'limit' }),
+    ]);
+  });
+
+  it('未知 entity 名称文本/属性 256/257 都安全拒绝且保留公开分类', async () => {
+    for (const location of ['text', 'attribute'] as const) {
+      for (const length of [MAX_XML_NAME_BYTES, MAX_XML_NAME_BYTES + 1]) {
+        const ref = `&${'a'.repeat(length)};`;
+        const xml = location === 'text' ? wrap(ref) : wrap(`<n a="${ref}"/>`);
+        const observations: object[] = [];
+        const result = await parseFeedXml(Buffer.from(xml), (value) => observations.push(value));
+        expect(result.ok).toBe(false);
+        expect(observations).toEqual([
+          expect.objectContaining({
+            outcome: length === MAX_XML_NAME_BYTES ? 'security-rejected' : 'dependency-limit',
+          }),
+        ]);
+      }
+    }
+    expect((await parseFeedXml(Buffer.from(wrap('<title>after</title>')))).ok).toBe(true);
+  });
+});
+
 describe('H3a 有界预算观察', () => {
   it('成功只记录 input/canonical/item 计数，observer 异常不改变结果', async () => {
     const observations: object[] = [];
@@ -715,11 +1000,23 @@ describe('H3a 有界预算观察', () => {
       }),
     ]);
 
-    const dependency: object[] = [];
-    const dependencyResult = await parseFeedXml(
+    const textProduct: object[] = [];
+    const textProductResult = await parseFeedXml(
       Buffer.from(
         `<rss><channel><title>${'a'.repeat(MAX_XML_TEXT_NODE_BYTES + 1)}</title></channel></rss>`,
       ),
+      (observation) => textProduct.push(observation),
+    );
+    expect(textProductResult).toMatchObject({ ok: false, reason: 'budget' });
+    expect(textProduct).toEqual([
+      expect.objectContaining({ outcome: 'product-budget', reasonCode: 'budget' }),
+    ]);
+
+    const dependency: object[] = [];
+    const declaration = (length: number): string =>
+      `<?xml version="1.0"${' '.repeat(length - 21)}?>`;
+    const dependencyResult = await parseFeedXml(
+      Buffer.from(`${declaration(2_001)}<rss><channel/></rss>`),
       (observation) => dependency.push(observation),
     );
     expect(dependencyResult).toMatchObject({ ok: false, reason: 'limit' });
@@ -731,6 +1028,16 @@ describe('H3a 有界预算观察', () => {
         canonicalBytes: null,
         itemCount: null,
       }),
+    ]);
+
+    const nativeDepth: object[] = [];
+    const depth65 = '<rss>' + '<n>'.repeat(MAX_XML_DEPTH) + '</n>'.repeat(MAX_XML_DEPTH) + '</rss>';
+    const depthResult = await parseFeedXml(Buffer.from(depth65), (observation) =>
+      nativeDepth.push(observation),
+    );
+    expect(depthResult).toMatchObject({ ok: false, reason: 'limit' });
+    expect(nativeDepth).toEqual([
+      expect.objectContaining({ outcome: 'dependency-limit', reasonCode: 'limit' }),
     ]);
   });
 

@@ -281,4 +281,98 @@ describe('FeedAcquisitionService（#S6-054/#S6-056）', () => {
     expect(meta.httpStatus).toBe(304);
     expect(meta.etag).toBe('"new"');
   });
+
+  it('XML 安全/预算/编码/依赖失败均零 Projection，hint 不变且同服务随后恢复', async () => {
+    const declaration = (length: number): string =>
+      `<?xml version="1.0"${' '.repeat(length - 21)}?>`;
+    const qnameOver = `${'界'.repeat(85)}aa`;
+    const utf16Conflict = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from('<?xml version="1.0" encoding="UTF-8"?><rss><channel/></rss>', 'utf16le'),
+    ]);
+    const cases: Array<{ body: Buffer; health: string; disposition: string }> = [
+      {
+        body: Buffer.from(`<rss><channel><${qnameOver}/></channel></rss>`),
+        health: 'budget_exceeded',
+        disposition: 'budget',
+      },
+      {
+        body: Buffer.from(`<rss><channel><title>${'&amp;'.repeat(8_193)}</title></channel></rss>`),
+        health: 'budget_exceeded',
+        disposition: 'budget',
+      },
+      { body: utf16Conflict, health: 'parse_changed', disposition: 'parse' },
+      {
+        body: Buffer.from(`${declaration(2_001)}<rss><channel/></rss>`),
+        health: 'budget_exceeded',
+        disposition: 'budget',
+      },
+      {
+        body: Buffer.from('<!DOCTYPE rss SYSTEM "file:///secret"><rss><channel/></rss>'),
+        health: 'security_rejected',
+        disposition: 'security',
+      },
+    ];
+    const healthy = Buffer.from(
+      '<rss><channel><title>ok</title><item><guid>g</guid><title>after</title></item></channel></rss>',
+    );
+    const queue = [...cases.map((entry) => entry.body), healthy];
+    const target = capturingTarget([], healthy);
+    target.get = async (request): Promise<PublicFetchResult> => {
+      const body = queue.shift();
+      if (body === undefined) throw new Error('fixture queue exhausted');
+      return {
+        kind: 'ok',
+        meta: {
+          finalUrl: request.url,
+          statusCode: 200,
+          statusMessage: 'OK',
+          contentType: 'application/rss+xml',
+          contentEncoding: null,
+          etag: null,
+          lastModified: null,
+          retryAfter: null,
+          fetchedAt: '2026-08-28T00:00:00.000Z',
+          byteLength: body.length,
+          compressedByteLength: body.length,
+        },
+        body,
+      };
+    };
+    const observations: Array<FeedAcquisitionBudgetObservation | FeedParserBudgetObservation> = [];
+    const service = new FeedAcquisitionService({
+      target,
+      observeBudget: (observation) => observations.push(observation),
+    });
+    const hint = feedHint();
+    const frozenHint = structuredClone(hint);
+    for (const expected of cases) {
+      observations.length = 0;
+      const result = await service.run(input(makeFeedRule(), hint));
+      expect(result).toMatchObject({
+        ok: false,
+        health: expected.health,
+        disposition: expected.disposition,
+      });
+      expect('projection' in result).toBe(false);
+      expect(JSON.stringify(result)).not.toContain('contentHash');
+      expect(JSON.stringify(observations)).not.toContain(expected.body.toString('base64'));
+      expect(hint).toEqual(frozenHint);
+      expect(observations).toHaveLength(2);
+      expect(observations[1]).toMatchObject({
+        stage: 'feed-acquisition',
+        outcome: 'parser-rejected',
+        healthCode: expected.health,
+        disposition: expected.disposition,
+        canonicalBytes: null,
+        itemCount: null,
+      });
+    }
+
+    const recovered = await service.run(input(makeFeedRule(), hint));
+    expect(recovered.ok).toBe(true);
+    if (!recovered.ok || recovered.kind !== 'projection') return;
+    expect(recovered.projection.value.items[0]!.title.text).toBe('after');
+    expect(recovered.expectedSourceLocatorFingerprint).toBe(FINGERPRINT);
+  });
 });
