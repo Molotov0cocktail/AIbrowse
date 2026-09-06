@@ -83,6 +83,35 @@ function isCanonicalUtc(value: unknown): value is string {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
 }
 
+function isHistoricalProcessUtc(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3,7})(?:Z|\+00:00)$/.exec(
+    value,
+  );
+  if (match === null) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const millisecond = Number(fraction!.slice(0, 3));
+  const parsed = new Date(0);
+  parsed.setUTCFullYear(year, month - 1, day);
+  parsed.setUTCHours(hour, minute, second, millisecond);
+  return (
+    Number.isFinite(parsed.getTime()) &&
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day &&
+    parsed.getUTCHours() === hour &&
+    parsed.getUTCMinutes() === minute &&
+    parsed.getUTCSeconds() === second &&
+    parsed.getUTCMilliseconds() === millisecond
+  );
+}
+
 function fileHash(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
@@ -284,8 +313,8 @@ function importHistoricalSource(source: H3aHistoricalUsageSource): ImportedHisto
   if (
     processRecord['candidateSha'] !== source.candidateSha ||
     !Number.isSafeInteger(processRecord['exitCode']) ||
-    !isCanonicalUtc(processRecord['startedAt']) ||
-    !isCanonicalUtc(processRecord['finishedAt'])
+    !isHistoricalProcessUtc(processRecord['startedAt']) ||
+    !isHistoricalProcessUtc(processRecord['finishedAt'])
   ) {
     throw new Error('H3a 历史 process receipt 不一致');
   }

@@ -87,8 +87,8 @@ function historicalFixture(root: string): {
   writeJson(processPath, {
     schemaVersion: 1,
     candidateSha,
-    startedAt: '2026-09-06T00:00:00.000Z',
-    finishedAt: '2026-09-06T00:00:01.000Z',
+    startedAt: '2026-09-06T00:00:00.0000000+00:00',
+    finishedAt: '2026-09-06T00:00:01.0000000+00:00',
     exitCode: 1,
     stdout: 'controlled.stdout.log',
     stderr: 'controlled.stderr.log',
@@ -208,7 +208,48 @@ describe('H3a workflow usage receipt', () => {
           'count-conflict',
         ),
       ).toThrow('计数矛盾');
+
+      for (const [suffix, invalidTime] of [
+        ['invalid-day', '2026-02-30T00:00:00.0000000+00:00'],
+        ['non-utc', '2026-09-06T00:00:00.0000000+08:00'],
+        ['incomplete', '2026-09-06T00:00:00Z'],
+      ] as const) {
+        const invalidProcess = historicalFixture(root);
+        const process = JSON.parse(readFileSync(invalidProcess.processPath, 'utf8')) as {
+          startedAt: string;
+        };
+        process.startedAt = invalidTime;
+        writeJson(invalidProcess.processPath, process);
+        expect(() =>
+          makeBudget(
+            { ...invalidProcess.source, processHash: hash(invalidProcess.processPath) },
+            suffix,
+          ),
+        ).toThrow('process receipt 不一致');
+      }
       expect(nativeCalls).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('历史 process UTC 时间允许保留三位 Z 精度', () => {
+    const root = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-history-ms-'));
+    try {
+      const fixture = historicalFixture(root);
+      const process = JSON.parse(readFileSync(fixture.processPath, 'utf8')) as {
+        startedAt: string;
+        finishedAt: string;
+      };
+      process.startedAt = '2026-09-06T00:00:00.000Z';
+      process.finishedAt = '2026-09-06T00:00:01.000Z';
+      writeJson(fixture.processPath, process);
+      expect(
+        new H3aWorkflowUsageLedger({
+          workflowDir: join(root, 'workflow'),
+          historicalSources: [{ ...fixture.source, processHash: hash(fixture.processPath) }],
+        }).snapshot.actualCount,
+      ).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
