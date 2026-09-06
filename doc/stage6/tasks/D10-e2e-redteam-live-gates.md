@@ -313,6 +313,21 @@ Reviewer `PASS` 缺一不可。H1/H2 的既有证据不得冒充这些 H3b 结�
 - 原始机器证据保留于 gitignored `log/h2-final-review-9e41bd6/`；首次独立审查证据保留于
   `log/h2-independent-review-1e121401/`。Reviewer 请求模型 `gpt-6-astra/high`，实际模型未回显。
 
+## H3a XML 预算修订前置
+
+Feed parser 的名称/namespace、逻辑文本、lexical、有限粗保护及编码 oracle 以 detailed-design §6.4 与 D3
+“XML 预算与编码的现行验收补充”为准。先完成正式文档候选和新的独立设计审核，再执行有界产品修复、完整离线
+验证及新的独立安全审核；通过后由 Planner 另行冻结真实补验合同。本修订不授权新增 live/diagnostic 入口、schema
+或站点，不恢复已消费的单次 claim，不放宽既有 workflow 请求账本。
+
+H3a 的 SourceService.addManual→Source locator/lifecycle→Repository/Scheduler/Coordinator→Acquisition/Processing
+链路、真实 Feed/Page 首次与第二次观察、Public 无 RSS 页面路径、失败分类/退避及所有网络/资源/隐私约束保持原
+契约。离线 fixture 和本修订验证不能冒充真实资格。历史 WRT-07 PASS 仅指原执行矩阵，新增 oracle 必须获得新的
+产品证据。
+
+产品修复轮允许既有测试及六场 Electron 的受控本地 fixture；外部真实公网、Provider 和 live/diagnostic gate 均为
+零。不为 fixture 给产品 NetworkPolicy 增加 localhost/private 例外。H3a→H3b→H4→新 D11 的顺序保持不变。
+
 ## 后续严格顺序
 
 1. H1 契约候选经新的独立安全/资源 Reviewer `PASS`，Closer 更新 progress、提交并双远程 push；

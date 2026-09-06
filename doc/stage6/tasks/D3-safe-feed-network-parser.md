@@ -106,9 +106,13 @@ octet 匹配；R2 未经新的独立安全 Reviewer `PASS` 前 D3 不完成、D4
   security_rejected 语义——该缺口由 D3-R1 修复，见下文「D3-R1 修复记录」）**；depth 64==接受/65
   拒绝、maxNameLength、maxAttributesLength、maxTextLength 均按配置生效；零
   `require`/`node:fs`/`node:http`/`fetch` 引用（注释剔除后字节扫描）。
-- 运行时语义发现：saxe 对 handler 方法**无条件调用**（类型标可选但运行时必需全提供）；
-  `maxAttributesLength` 按 code unit 且 `== max` 即拒绝（与项目 UTF-8「== 接受」语义冲突，
-  故作为 2× 粗防线回退，权威 oracle 为本项目 handler 的字节检查）；属性名也受 `maxNameLength` 约束。
+- **运行时语义勘误**：原资格记录把“所有 lexical hook 运行时必需”及“`maxAttributesLength == max` 即拒绝”
+  写成依赖事实，这两项表述不准确；原执行历史保留，不再作为当前实现依据。固定 `SaxNamespaceParser` 在
+  handler 未提供 comment/processingInstruction 时会关闭相应捕获，其它 lexical 转发也有可选处理；本次契约要求
+  保留 comment/PI 回调用于逻辑文本边界与 PI target 校验，不是依赖强制要求所有 hook，产品实现须经后续修复和
+  独立审核。
+  `maxAttributesLength` 实际比较为单标签解码后属性名和值的 UTF-16 合计 `> max`，等于允许。当前有限配置与
+  UTF-8 精确 oracle 统一见 detailed-design §6.4，不再引用历史 2× 回退解释。
 
 ### HTML：`parse5-sax-parser@8.0.0` + `parse5@8.0.1` = PASS
 
@@ -159,6 +163,39 @@ octet 匹配；R2 未经新的独立安全 Reviewer `PASS` 前 D3 不完成、D4
 | WRT-07 | depth/name/attr-count/attr-bytes/text-node/nodes/total-text/Projection 每项 == MAX 接受、+1 fail-closed          | feed-parser.test 边界套件                                       |
 | WRT-08 | 重复/冲突 identity 去重稳定、字段超长截断标记、feed 重排确定性、200/201 截断                                     | feed-parser.test identity/truncation 套件                       |
 | WRT-19 | HTML script/iframe/子资源/Cookie canary 零执行/请求、2 MiB/20k node/64 depth/64 attrs/64 KiB Projection 精确边界 | public-html-sax-reader.test + corpus（canary 逐字节零出现）     |
+
+## XML 预算与编码的现行验收补充
+
+本补充只校正 XML 名称、属性、namespace、逻辑文本、lexical 边界、编码与固定依赖的有限保护语义，不重开 D3
+网络/robots/HostRequestGate 或已关闭的 H1/H2。规范变更先经新的独立设计 Reviewer；产品修复再建立能甄别旧
+实现的红态并经新的独立安全 Reviewer。历史资格报告、候选提交和有效测试保留，不删除、不改写。
+
+现行 XML 预算与编码 oracle 以 detailed-design §6.4.1～§6.4.4 为准。固定依赖的稳定保护点如下；表中
+`B=MAX_FEED_RESPONSE_BYTES=2097152`：
+
+| ID  | 抛点                                               | 实际对象量纲                                 | 路线配置或不可达                                                                                  |
+| --- | -------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| G01 | 开头 XML declaration                               | 完整原始声明 UTF-16 code units               | native hard 2,000，不可通过 public API 调整；compatibility 受控失败                               |
+| G02 | DTD external/public/system identifier 长度         | DTD 标识符 UTF-16 code units                 | `dtd: 'prohibit'` 在解析前拒绝，不可达                                                            |
+| G03 | PI content 捕获                                    | 规范行尾后的 UTF-16 code units               | `maxTextLength=B`；callback 仅结算 boundary、校验 target，丢弃 content                            |
+| G04 | comment content 捕获                               | 规范行尾后的 UTF-16 code units               | `maxTextLength=B`；callback 仅结算 boundary，丢弃 content                                         |
+| G05 | element stack depth                                | 活动元素层数                                 | 64；64 接受、65 拒绝                                                                              |
+| G06 | DTD default attrs 加入后的 tag attrs aggregate     | 单标签属性名和值 UTF-16 合计                 | DTD prohibit，无 default injection，不可达                                                        |
+| G07 | explicit attrs name + decodedValue tag aggregate   | 单标签显式属性名和值 UTF-16 合计             | `4096 × 64 = 262144`；项目另限 64 attributes、每个属性 4,096 UTF-8 字节                           |
+| G08 | normal text 内部                                   | UTF-16 code units                            | `maxTextLength=B`；项目逻辑文本节点另限 8,192 UTF-8 字节                                          |
+| G09 | custom entity 展开 length/depth combined           | 实体展开 UTF-16 长度与深度                   | DTD prohibit 且无 entityProvider，不可达；numeric/predefined references 不走此分支                |
+| G10 | CDATA main，可含前置 normal text 残留              | 依赖内部 UTF-16 code units                   | `maxTextLength=B`；项目把独立 CDATA 节点另限 8,192 UTF-8 字节                                     |
+| G11 | CDATA 结束附近连续 `]` 累计                        | 依赖内部 UTF-16 code units                   | 同 G10；保留畸形输入及 8,192/8,193 项目边界                                                       |
+| G12 | 通用字符串追加 helper，含 attr values/line end/DTD | helper 路径 UTF-16 code units                | 可达属性用粗保护 B 并受项目 4,096 UTF-8 单属性预算；DTD 点不可达                                  |
+| G13 | element/attribute/PI/entity name                   | 单名称 UTF-16 code units                     | `maxNameLength=256`；项目精确校验 QName 分量与 PI target 的 UTF-8 字节；DTD/entity name 不可达    |
+| G14 | namespace URI + active bindings combined           | URI UTF-16 code units 与活动 binding records | `maxNameLength=256`、`maxNamespacePrefixes=4096`；项目精确校验所有已使用/未使用 URI 的 UTF-8 字节 |
+
+`maxEntityDepth`/`maxEntityLength` 不需要重新配置，不能用扩大它们来处理 references。所有 G 行都可能只返回相同
+`LimitExceeded`；本表是源码/设计审计，不授权运行时猜测具体轴。
+
+现有 UTF-16LE 正例错误复用了 `encoding="UTF-8"` 的 RSS 夹具，应改为实际一致的 UTF-16 声明并保留中文投影
+断言；原矛盾字节组合转为明确拒绝反例。ASCII 8,193 字节文本仍须 `budget_exceeded`，其观察分类在精确项目保护
+后为 `product-budget`；另用真实依赖限制反例验证 `dependency-limit`，不得删除该分支覆盖或新增观察 schema。
 
 ## D3-R1 修复记录（2026-08-26，Reviewer 待复验）
 

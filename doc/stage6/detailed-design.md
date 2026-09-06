@@ -672,25 +672,142 @@ FeedParser 验证。用户也可手工输入 URL。最多返回10个候选，按
 D3 先对 `@federicocarboni/saxe@0.8.0` 执行资格门。通过后精确固定版本和 lockfile；若任一门失败，
 D3 停止为 REPLAN，不能改用其他包或自实现。
 
-Parser 配置/外层防线：
+Parser 配置与项目精确防线：
 
-- `dtd: 'prohibit'`；DOCTYPE、ENTITY 声明、外部实体、XInclude namespace、未知自定义实体全部拒绝；
-- 不注册 resolver、不发网络、不读取文件；
-- 深度、名称、文本、属性、节点和总输出都设置不高于 §2 的项目上限；
-- 仅支持 UTF-8、UTF-16LE/BE BOM，以及 TextDecoder 明确支持的 UTF-8/UTF-16/
-  windows-1252/ISO-8859-1 声明；冲突/未知编码 fail-closed；
-- 接受 RSS 2.0 channel/item 和 Atom feed/entry；namespace 按 URI+localName，不信任前缀；
-- entry 身份：Atom id / RSS guid 首选，其次 canonical link，最后
-  SHA-256(title|published|canonicalLink) 受控复合键；身份缺失且复合键字段不足则丢弃该 item；
-- XML depth/name/attributes/text-node/node-count 任一达到“下一事件将使计数 `> MAX_*`”时整次
-  `budget_exceeded`；等于上限允许。累计文本超过 `MAX_XML_TOTAL_TEXT_BYTES` 或编码后的完整
-  FeedProjection 超过 `MAX_FEED_PROJECTION_BYTES` 也整次失败，旧 Baseline 保留。
-- Projection 最多保留 feed 顺序前 200 items；遇到第 201 项停止收集并标 `itemsTruncated=true`。字段逐项按
-  UTF-8 字节安全截断到4,096并标记，不把截断值冒充完整值；截断前必须先计算完整规范化值的
-  `SHA-256` 并写入 `FeedField.valueHash`（#S6-046），截断后不得也无法重建该哈希；结构/累计文本/整体
-  Projection 预算则不截断，整次失败。DTD/custom entity 已禁止，因此不存在可配置的递归实体预算，任何声明直接
-  security_rejected。
-- HTML 内容字段转纯文本安全子集，零 HTML 落盘/渲染。
+- 使用精确固定的 `@federicocarboni/saxe@0.8.0`、`SaxNamespaceParser` 和公开 API；`dtd: 'prohibit'`，
+  不注册 resolver 或 entityProvider。DOCTYPE、ENTITY 声明、外部实体、XInclude namespace 与未知自定义实体
+  均受控拒绝，零文件/网络解析能力。
+- FeedParser 在解码、加载依赖和创建 parser 前执行 `MAX_FEED_RESPONSE_BYTES` 输入硬限；2,097,152 字节允许，
+  超过则整次 `budget_exceeded`。输入、解码字符串及解析过程中内容只在内存存在。
+- §2 的深度、名称、单元素属性数、单属性字节、单逻辑文本节点字节、start/text 事件数、规范化累计文本和完整
+  canonical FeedProjection 预算彼此独立。每项等于上限允许，超过上限整次失败；不能合并量纲、截断结构预算或
+  因依赖回调分片而少计。
+- 依赖公开选项中的字符串长度按 UTF-16 code units 计量，是项目精确 UTF-8 校验之前的有限粗保护。固定配置为
+  `maxElementDepth=MAX_XML_DEPTH`、`maxNameLength=MAX_XML_NAME_BYTES`、
+  `maxAttributesLength=MAX_XML_ATTRIBUTE_BYTES × MAX_XML_ATTRIBUTES_PER_TAG`、
+  `maxNamespacePrefixes=MAX_XML_DEPTH × MAX_XML_ATTRIBUTES_PER_TAG`、
+  `maxTextLength=MAX_FEED_RESPONSE_BYTES`。这些换算不改变 §2 的任何项目预算值。
+- 字节解码只支持本节规定的 UTF-8、UTF-16LE/BE 与既有 windows-1252/ISO-8859-1 标签集合及既有别名。完整
+  开头 XML 声明、BOM 和确定性 UTF-16 字节序识别必须一致；未知、冲突或非法编码 fail-closed。HTML 的前
+  1,024 字节探测与优先级属于 §6.5，不能因 XML 修复改变。
+- 接受 RSS 2.0 channel/item 和 Atom feed/entry；核心元素按 namespace URI + localName 识别，不信任前缀，
+  不允许扩展 namespace 的同名元素覆盖核心字段。
+- Atom id / RSS guid 优先作为 entry 身份，其次 canonical link，最后使用
+  `SHA-256(title|published|canonicalLink)` 受控复合键；身份缺失且复合键字段不足则丢弃该 item。
+- Projection 最多保留 feed 顺序前 200 items；第 201 项标记 `itemsTruncated=true` 并停止 item 收集，但继续
+  执行整文档 XML 安全、结构、事件和文本预算验证。字段按既有规则规范化、先计算完整值 SHA-256，再安全截断到
+  4,096 UTF-8 字节并保留 `truncated/originalBytes/valueHash`。不得把截断值冒充完整值。
+- 规范化累计文本超过 `MAX_XML_TOTAL_TEXT_BYTES` 或编码后的完整 FeedProjection 超过
+  `MAX_FEED_PROJECTION_BYTES`，均整次失败并保留旧 Baseline。Feed parser canonical 262,144 字节与后续
+  持久化 Baseline 65,536 字节是不同层次的预算，不得相互代替。
+- HTML 内容字段按既有规则转为安全纯文本；原始 XML、HTML、注释、处理指令、响应正文和 parser 内部状态不得
+  落盘、进入日志或诊断报告。
+
+#### 6.4.1 名称、属性与命名空间
+
+对元素和每个属性提供的 QName，分别计算 `name`（含冒号与前缀的完整 QName）、`localName`、存在时的
+`prefix`、存在时的 `namespace` 的 UTF-8 字节数，每个值独立不得超过 `MAX_XML_NAME_BYTES=256`；不能把
+这些值相加后与 256 比较。prefix 校验是 QName 组成部分的显式校验，不新增独立产品预算。
+
+名称及 namespace 按 XML 解码后的原值计量，不做 NFC、URL 改写或其它可能改变 XML 身份的规范化。已解析的
+开始标签应在字段识别和收集前完成校验；结束标签的 QName 也必须保持相同不变量。
+
+`attrs.size` 包括 namespace 声明属性，单元素不得超过 64。每个属性独立计算
+`utf8(qname.name) + utf8(decodedValue)`，不得超过 4,096；不把 namespace URI 再加入该属性预算，也不把整标签
+属性合计错误限制为 4,096。
+
+`xmlns` 与 `xmlns:prefix` 的声明值是 namespace URI，必须额外执行独立的 256 字节校验，无论该映射是否被元素
+或属性使用。声明名称同时受普通属性 QName 与单属性预算约束。XInclude 检查覆盖解析后的元素 namespace 和所有
+namespace 声明值，不能等待首次使用后才拒绝。
+
+活动 namespace binding records 包括默认映射与同名 prefix 的嵌套重绑定；不是全文件唯一 prefix 数。合法输入
+同时受深度 64 和每层属性 64 约束，因此活动记录上界为 `64 × 64 = 4096`。公开
+`maxNamespacePrefixes` 固定为该乘积；结束元素后由依赖正常释放映射。201 个合法活动映射、64 层各 64 个映射
+及重绑定正例必须可通过，不再使用依赖默认 200。
+
+#### 6.4.2 逻辑文本节点、SAX 事件与累计文本
+
+一个普通逻辑文本节点是同一元素内容中两个 XML markup 边界之间的连续普通文本；numeric character reference 和
+五个 predefined entity reference 解码后仍属于同一个节点。依赖在 reference 处发出多个 `text` 回调不构成节点
+边界。
+
+元素开始、元素结束、comment、processing instruction 和 CDATA 开始/结束划分节点边界。每个 CDATA section
+单独计为一个文本节点；相邻普通文本与 CDATA、两个相邻 CDATA 均独立计量，不能继承前节点的项目字节计数。
+
+项目只使用公开回调维护当前逻辑节点；在结构栈变化前结算前一节点。普通文本/CDATA 的 `text` 内容已经经过 XML
+解码和相应行尾处理；在 NFC、控制字符清理、空白折叠或 trim 之前，对完整逻辑节点执行
+`MAX_XML_TEXT_NODE_BYTES=8192` UTF-8 字节硬限。追加片段前验证合计，节点缓冲不得超过该上限。
+
+每个完成的逻辑节点统一调用既有 `normalizeWatchText`，将结果的 UTF-8 字节数加入
+`MAX_XML_TOTAL_TEXT_BYTES=131072` 累计。不得逐 reference 片段独立 trim、独立 NFC 后再求和；总量结算前不能
+丢失节点内部空白或跨回调组合字符。该累计包括不进入投影的文本及第 200 项之后的文本。不同真实逻辑节点分别
+规范化，不插入虚构分隔符。
+
+`MAX_XML_NODES=20000` 继续计量 parser 原始 `startTag` 与每次 `text` 回调，包括 reference 导致的多个回调以及
+空 `text` 回调。逻辑节点合并只服务于文本字节预算，不能降低 SAX 事件数；endTag、comment、PI 和 CDATA 边界
+回调不额外充当 start/text 事件。固定使用 `incrementalText=false` 的单次
+`parse(decodedText, {stream:false})`，不能通过重新分块改变已冻结事件 oracle。
+
+comment 与 PI content 不属于元素文本节点，不进入文本总量、Feed 字段、identity 或 Evidence；它们仍受 2 MiB
+输入、依赖有限粗保护和 XML 语法验证约束。保留两种公开回调用于结算节点边界，收到 content 后直接丢弃，不缓存
+第二份正文。PI target 属于 XML 名称，单独执行 256 UTF-8 字节校验；不执行 PI 指令，不提供其目标能力。
+
+字段收集保持原文本语义：在节点结算时通过总量验证后，按既有字段归属追加原解码节点内容；字段的规范化、纯文本
+转换、完整值哈希和截断仍在既有字段收尾阶段完成。任何预算或解析失败都不得返回部分 Projection。
+
+#### 6.4.3 有限粗保护与固定依赖兼容边界
+
+令 `B=MAX_FEED_RESPONSE_BYTES=2097152`。解析前输入字节数不超过 B；已允许的严格解码方式产生的 UTF-16
+code units 不超过输入字节数。DTD 与自定义实体展开不可达，numeric/predefined reference 的解码不会把对应原始
+字符序列扩大为更多 UTF-16 单元。单次解析中普通文本、CDATA、属性值、comment 和 PI 的内容累计均从此有界输入
+产生；normal text 与随后 CDATA 共用依赖计数的情况，也不会超过整份解码输入上界。
+
+因而 `maxTextLength=B` 是适用于这些共用路径的有限粗保护，避免把普通文本残留计数或无用 lexical 内容错误套用到
+8,192 字节项目节点预算。项目节点缓冲仍最多 8,192 字节，已完成节点的规范化累计仍最多 131,072 字节；input、
+事件、字段、canonical 和持久化预算继续独立生效。这不是允许 2 MiB 的产品文本节点。
+
+每个合法属性的 `name+decodedValue` UTF-16 长度不大于该属性的 4,096 UTF-8 字节预算，故单标签合计粗保护为
+`4096 × 64=262144`。每个合法名称/URI 的 UTF-16 长度不大于其 256 UTF-8 字节预算，故
+`maxNameLength=256` 可作为保守粗保护，项目仍负责多字节精确检查。活动 namespace 上界按 §6.4.1 推导。
+
+固定版本依赖还对开头 XML declaration 存在不可通过公开选项调整的 2,000 UTF-16 code-unit 兼容边界，计量包含
+声明定界符和空白，不含已移除的 BOM。在其余语法与项目约束满足时，完整声明长度 2,000 的正例应通过，2,001 的
+正例保留依赖 `LimitExceeded` 的受控失败。
+
+该边界属于固定 parser 已有的兼容范围，不新增项目 `MAX_*`，不把 XML declaration 当成元素文本节点，也不意味着
+项目支持所有合法通用 XML 文档。必须如实保留该限制；禁止升级/patch/替换依赖、预先截断或改写声明、重复解析
+XML、读取或修改 parser 私有状态来掩盖它。所有 §2 明确预算的合法等号正例仍必须满足，H3a 的真实 RSS/Atom
+资格门不因此取消或降级。
+
+依赖 `LimitExceeded` 没有稳定公开的具体限制轴；继续使用现有受控 `dependency-limit/limit` 观察分类。项目自身
+精确预算使用既有 `product-budget/budget` 分类。不得由 message、stack、私有字段、最后一次回调或离线反例猜测旧
+响应的具体轴；不得新增诊断 schema 或输出正文。
+
+#### 6.4.4 XML 编码检查
+
+XML 编码检查只能作用于已受 Feed 输入硬限保护的 Buffer。它是对开头声明的有界字节/字符识别，不是第二次 XML
+文档解析；XML 元素、DTD、实体及完整语法继续由一次 SaxNamespaceParser 解析裁决。
+
+先区分允许的 UTF-8/UTF-16LE/UTF-16BE BOM；UTF-32 等不支持的 BOM 不得被误识别成合法 UTF-16。BOM 只移除
+一次。无 BOM 时，只有开头 UTF-16 XML 声明的确定性字节序模式可用于读取相应声明；其它无 BOM 输入以 ASCII
+兼容的声明视图识别编码，未声明则默认 UTF-8。
+
+对开头、大小写正确的 `<?xml` 声明读取直到其完整结束或受限输入结束，不再使用前 1,024 原始字节窗口。声明识别
+必须尊重引号与 pseudo-attribute 边界，只识别实际 `encoding` 值，不能从其它值、后续 PI、comment 或正文中抓取
+伪声明。未结束或无效的开头声明必须受控失败，不能当成没有声明。扫描是线性的，扫描上限来自既有输入预算；不能
+以扫描前缀替代传给 parser 的原声明。
+
+编码标签继续使用既有允许集合与别名，XML 分支单独保留 generic `UTF-16` 的语义：有 UTF-16 BOM 时服从 BOM
+字节序；无 BOM 但存在明确 UTF-16 声明字节序时服从该字节序。显式 `UTF-16LE`/`UTF-16BE` 必须与 BOM 或已
+识别声明字节序一致。ASCII 兼容声明字节却宣称 UTF-16、UTF-16 字节却宣称 UTF-8/单字节编码，均受控冲突拒绝。
+
+有 BOM 时，无声明允许；存在声明则必须已知且与 BOM 一致。无 BOM 的 UTF-16 只在存在可识别且一致的编码声明时
+允许，不能把无声明 UTF-16 当作无声明 UTF-8 的成功解码。无 BOM 的 UTF-8/windows-1252/ISO-8859-1 按已知声明
+选择；无任何声明默认 UTF-8。完整解码始终 `fatal=true`，非法 UTF-8、截断多字节、奇数 UTF-16 长度和非法
+surrogate 受控失败。
+
+`decodeHtmlBytes`、HTML 1,024 字节 meta 探测、Content-Type 优先级及共享标签函数对 HTML 的既有行为保持不变；
+所需 BOM/声明一致性和 generic UTF-16 处理置于 XML 专用分支。
 
 FeedParser 只拥有 XML→规范化 value，不伪造 acquisition 元数据。D7 把 D3 的裸投影收窄为以下接口
 （#S6-054）；`FeedField.valueHash` 在截断前生成，`FeedProjection` 名称专用于完整 envelope：
