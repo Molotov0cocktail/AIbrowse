@@ -4,7 +4,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { BrowserControllerImpl } from './browser/browser-controller';
@@ -37,6 +37,7 @@ import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
 import { resolveWatchD10Mode } from './smoke-watch-gate';
+import { runH3aCampaign } from './smoke-watch-h3a-runner';
 import {
   addWatchSubscriptionDestroyedListener,
   closeAndDrainThenDispose,
@@ -295,8 +296,16 @@ const watchD10Gate = resolveWatchD10Mode({
   researchSmoke: process.env['AIBROWSE_RESEARCH_SMOKE'],
   liveProvider: process.env['AIBROWSE_LIVE_PROVIDER'],
   liveWatch: process.env['AIBROWSE_LIVE_WATCH'],
+  liveSites: process.env['AIBROWSE_LIVE_SITES'],
+  liveAgent: process.env['AIBROWSE_LIVE_AGENT'],
+  liveAgentPre: process.env['AIBROWSE_LIVE_AGENT_PRE'],
+  liveAgentSupplement: process.env['AIBROWSE_LIVE_AGENT_SUPPLEMENT'],
+  liveAgentSources: process.env['AIBROWSE_LIVE_AGENT_SOURCES'],
+  liveResearch: process.env['AIBROWSE_LIVE_RESEARCH'],
+  h3a: process.env['AIBROWSE_WATCH_H3A'],
 });
 const LIVE_WATCH_MODE = SMOKE_MODE && watchD10Gate.ok && watchD10Gate.mode === 'live';
+const H3A_MODE = SMOKE_MODE && watchD10Gate.ok && watchD10Gate.mode === 'h3a';
 
 // Session 冒烟/测试隔离（§十四 Session 验收）：指定临时 userData 目录，避免触碰用户真实数据。
 // 必须在 app ready 前设置（Electron 官方 API）；仅测试/验证环境使用（AIBROWSE_SESSION_SMOKE）。
@@ -523,7 +532,7 @@ if (!gotLock) {
   // （AppRendererReady 处理内）——否则超 30 秒的冒烟场景（如真实 Provider 多网站
   // 验证）会被误杀（S6 验收时实测触发；场景自身有各自的超时与断言）。
   let smokeReadyTimer: ReturnType<typeof setTimeout> | null = null;
-  if (SMOKE_MODE) {
+  if (SMOKE_MODE && !H3A_MODE) {
     smokeReadyTimer = setTimeout(() => {
       logError('main', '冒烟超时：渲染进程未在 30 秒内就绪');
       app.exit(1);
@@ -542,6 +551,40 @@ if (!gotLock) {
     if (!researchGate.ok) {
       logError('main', researchGate.reason);
       app.exit(1);
+      return;
+    }
+    if (H3A_MODE) {
+      try {
+        if (process.env.NODE_ENV !== 'production') {
+          throw new Error('H3a 只允许 production preview 构建运行');
+        }
+        const candidateSha = process.env['AIBROWSE_WATCH_H3A_CANDIDATE_SHA'] ?? '';
+        const buildHash = createHash('sha256').update(readFileSync(__filename)).digest('hex');
+        const evidenceDir = join(app.getAppPath(), 'log', `h3a-${candidateSha.slice(0, 12)}`);
+        const result = await runH3aCampaign({
+          candidateSha,
+          buildHash,
+          rootDir: join(app.getPath('temp'), `aibrowse-h3a-${process.pid}`),
+          evidenceDir,
+          mode: 'production-preview',
+        });
+        if (result.validationErrors.length > 0) {
+          logError(
+            'main',
+            `H3a 资格失败（${result.validationErrors.length} 项；详见受控证据目录）`,
+          );
+          app.exit(1);
+          return;
+        }
+        logInfo(
+          'main',
+          `H3a 三项真实产品门通过（物理请求=${result.report.requests.actualCount}；详见受控证据目录）`,
+        );
+        app.exit(0);
+      } catch (error) {
+        logError('main', 'H3a 资格执行失败', sanitizeWatchError(error));
+        app.exit(1);
+      }
       return;
     }
     registerIpcHandlers();

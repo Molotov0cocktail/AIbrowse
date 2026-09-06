@@ -17,10 +17,17 @@ export interface WatchGateEnv {
   researchSmoke?: string;
   liveProvider?: string;
   liveWatch?: string;
+  liveSites?: string;
+  liveAgent?: string;
+  liveAgentPre?: string;
+  liveAgentSupplement?: string;
+  liveAgentSources?: string;
+  liveResearch?: string;
+  h3a?: string;
 }
 
 export type WatchGateVerdict =
-  { ok: true; mode: 'none' | 'set' | 'check' | 'live' } | { ok: false; reason: string };
+  { ok: true; mode: 'none' | 'set' | 'check' | 'live' | 'h3a' } | { ok: false; reason: string };
 
 function isSetCheck(value: string | undefined): boolean {
   return value === 'set' || value === 'check';
@@ -28,6 +35,39 @@ function isSetCheck(value: string | undefined): boolean {
 
 export function resolveWatchGate(env: WatchGateEnv): WatchGateVerdict {
   const requested = env.watchSmoke;
+  if (env.h3a !== undefined && env.h3a !== '1') {
+    return { ok: false, reason: `AIBROWSE_WATCH_H3A 值非法：${env.h3a}（仅支持 1）` };
+  }
+  if (env.h3a === '1') {
+    if (env.smoke !== '1') {
+      return { ok: false, reason: 'AIBROWSE_WATCH_H3A 必须从属于 AIBROWSE_SMOKE=1' };
+    }
+    const conflicts: string[] = [];
+    if (env.liveWatch !== undefined) conflicts.push('AIBROWSE_LIVE_WATCH');
+    if (env.liveProvider !== undefined) conflicts.push('AIBROWSE_LIVE_PROVIDER');
+    if (env.liveSites !== undefined) conflicts.push('AIBROWSE_LIVE_SITES');
+    if (env.liveAgent !== undefined) conflicts.push('AIBROWSE_LIVE_AGENT');
+    if (env.liveAgentPre !== undefined) conflicts.push('AIBROWSE_LIVE_AGENT_PRE');
+    if (env.liveAgentSupplement !== undefined) conflicts.push('AIBROWSE_LIVE_AGENT_SUPPLEMENT');
+    if (env.liveAgentSources !== undefined) conflicts.push('AIBROWSE_LIVE_AGENT_SOURCES');
+    if (env.liveResearch !== undefined) conflicts.push('AIBROWSE_LIVE_RESEARCH');
+    if (requested !== undefined && requested !== '') conflicts.push('AIBROWSE_WATCH_SMOKE');
+    if (env.sessionSmoke !== undefined && env.sessionSmoke !== '')
+      conflicts.push('AIBROWSE_SESSION_SMOKE');
+    if (env.sourcesSmoke !== undefined && env.sourcesSmoke !== '')
+      conflicts.push('AIBROWSE_SOURCES_SMOKE');
+    if (env.sourcesUiSmoke !== undefined && env.sourcesUiSmoke !== '')
+      conflicts.push('AIBROWSE_SOURCES_UI_SMOKE');
+    if (env.researchSmoke !== undefined && env.researchSmoke !== '')
+      conflicts.push('AIBROWSE_RESEARCH_SMOKE');
+    if (conflicts.length > 0) {
+      return {
+        ok: false,
+        reason: `AIBROWSE_WATCH_H3A 与 ${conflicts.join('、')} 互斥，请只选其一`,
+      };
+    }
+    return { ok: true, mode: 'h3a' };
+  }
   if (env.liveWatch !== undefined && env.liveWatch !== '1') {
     return { ok: false, reason: `AIBROWSE_LIVE_WATCH 值非法：${env.liveWatch}（仅支持 1）` };
   }
