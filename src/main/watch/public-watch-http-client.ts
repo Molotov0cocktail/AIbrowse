@@ -1049,33 +1049,38 @@ class PublicWatchHttpClient {
       }
       const activeRequest = request;
       guardRequest = activeRequest;
-      // #S6-043：request 创建成功后立即安装 emitter-local request drain（error sink +
-      // close cleanup），在业务 listener/timer/AbortSignal 装配之前；drain 保留至 request close。
-      installRequestDrain(activeRequest);
+      try {
+        // #S6-043：request 创建成功后立即安装 emitter-local request drain（error sink +
+        // close cleanup），在业务 listener/timer/AbortSignal 装配之前；drain 保留至 request close。
+        installRequestDrain(activeRequest);
 
-      // socket 超时只能设为 remaining（同一 absolute effectiveDeadline，不续杯）
-      const remaining = deadlineMs - this.clock.now().getTime();
-      if (remaining <= 0) {
-        finish(this.failed('unavailable', 'deadline'));
-        return;
-      }
-      timeoutHandle = this.clock.setTimeout(() => {
-        finish(this.failed('unavailable', 'deadline'));
-      }, remaining);
-
-      if (req.signal) {
-        if (req.signal.aborted) {
-          finish('aborted');
+        // socket 超时只能设为 remaining（同一 absolute effectiveDeadline，不续杯）
+        const remaining = deadlineMs - this.clock.now().getTime();
+        if (remaining <= 0) {
+          finish(this.failed('unavailable', 'deadline'));
           return;
         }
-        req.signal.addEventListener('abort', onAbort, { once: true });
+        timeoutHandle = this.clock.setTimeout(() => {
+          finish(this.failed('unavailable', 'deadline'));
+        }, remaining);
+
+        if (req.signal) {
+          if (req.signal.aborted) {
+            finish('aborted');
+            return;
+          }
+          req.signal.addEventListener('abort', onAbort, { once: true });
+        }
+
+        activeRequest.on('response', onResponse);
+        activeRequest.on('error', onRequestError);
+        activeRequest.on('timeout', onRequestTimeout);
+        activeRequest.end();
+      } catch {
+        // A synchronous transport startup failure uses the same one-shot cleanup as every
+        // asynchronous terminal path. The returned business result never waits for close.
+        finish(this.failed('unavailable', 'request-startup'));
       }
-
-      activeRequest.on('response', onResponse);
-      activeRequest.on('error', onRequestError);
-      activeRequest.on('timeout', onRequestTimeout);
-
-      activeRequest.end();
     });
   }
 

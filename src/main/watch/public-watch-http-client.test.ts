@@ -192,6 +192,83 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+describe('request startup 同步异常清理', () => {
+  it.each(['robots', 'target'] as const)(
+    '%s request.end 同步抛错时在返回前销毁 transport、清 timer 与业务 listener',
+    async (kind) => {
+      class EndThrowRequest extends EventEmitter implements WatchRequestLike {
+        destroyed = false;
+
+        setTimeout(): unknown {
+          return this;
+        }
+
+        end(): void {
+          throw Object.assign(new Error('offline controlled startup failure'), {
+            code: 'OFFLINE_END_THROW',
+          });
+        }
+
+        abort(): void {
+          this.destroy();
+        }
+
+        destroy(): void {
+          this.destroyed = true;
+        }
+      }
+
+      const requests: EndThrowRequest[] = [];
+      const clock = new FakeClock(0);
+      const controller = new AbortController();
+      const stack = createPublicWatchHttpStack({
+        clock,
+        lookup: PUBLIC_LOOKUP,
+        request: (options) => {
+          if (kind === 'target' && isRobotsRequest(options)) {
+            const request = new FakeRequest();
+            const captured = makeCap(request, options);
+            queueMicrotask(() => captured.respond(404, {}, ''));
+            return request;
+          }
+          const request = new EndThrowRequest();
+          requests.push(request);
+          return request;
+        },
+      });
+
+      const result =
+        kind === 'robots'
+          ? await stack.target.get({
+              url: 'https://example.com/',
+              purpose: 'page',
+              signal: controller.signal,
+            })
+          : await stack.target.get({
+              url: 'https://example.com/',
+              purpose: 'page',
+              signal: controller.signal,
+            });
+
+      expect(result).toMatchObject({ kind: 'failed', health: 'unavailable' });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ destroyed: true });
+      expect(clock.pendingTimerCount()).toBe(0);
+      expect(requests[0]!.listenerCount('response')).toBe(0);
+      expect(requests[0]!.listeners('error').map((listener) => listener.name)).toEqual([
+        'requestErrorDrain',
+      ]);
+      expect(requests[0]!.eventNames()).toEqual(expect.arrayContaining(['error', 'close']));
+
+      requests[0]!.emit('error', Object.assign(new Error('late'), { code: 'LATE' }));
+      requests[0]!.emit('close');
+      expect(requests[0]!.eventNames()).toEqual([]);
+      controller.abort();
+      stack.robots.clearCache();
+    },
+  );
+});
+
 /**
  * 安全工厂测试 harness：注入受控 lookup/request/Clock；robots 请求默认自动 404（allow-all），
  * 测试只关心目标请求时可设 autoRobots:false 手动驱动 robots 响应。
