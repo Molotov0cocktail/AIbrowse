@@ -4,7 +4,7 @@
 // S3 起覆盖 AI 共读主进程矩阵 1–8；S4 起覆盖 AI 面板 UI 端到端矩阵 1–12（§13.2）。
 // 任何断言失败 → logError + 抛出，入口 catch 后以退出码 1 结束（与基线冒烟语义一致）。
 
-import { app, session, webContents, WebContentsView } from 'electron';
+import { app, ipcMain, session, webContents, WebContentsView } from 'electron';
 import type { BrowserWindow, WebContents } from 'electron';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
@@ -101,6 +101,20 @@ import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 // （零 Electron，node 环境单测）——检查与条件点击同一次脚本执行内完成，
 // 消除 Undo 后 React 重渲染在两次 executeJavaScript 之间移除元素的 TOCTOU。
 import { clickIfPresentScript } from './smoke-ui-atomic';
+import {
+  BOUNDS_CHILD_VIEW_LIMIT,
+  collectMatrix9FailureSnapshot,
+  createBoundsObservation,
+  runMatrix9BoundsWait,
+  summarizeMatrix9BoundsEvidence,
+  type BoundsDiagnosticPhase,
+  type BoundsExpectation,
+  type BoundsIpcSource,
+  type BoundsObservation,
+  type BoundsRect,
+  type RawChildViewState,
+  type RawNativeViewState,
+} from './smoke-bounds-diagnostic';
 import { listTools } from './ai/tools/tool-registry';
 import type { ToolExecutor } from './ai/tools/tool-executor';
 import type { ToolExecutionContext } from './ai/tools/tool-types';
@@ -2519,6 +2533,23 @@ export async function runAiConversationScenarios(
 // （aiSmokeDir，主进程装配即用），场景 10 凭据为真实 safeStorage 密文。
 const PANEL_WIDTH = 380; // §11.2 定宽（bounds 断言基准）
 const SMOKE_KEY_MARKER = 'smoke-key-marker-aibrowse-9f3k2x'; // 场景 10 非真实可识别测试标记
+const MATRIX9_BOUNDS_DOM_SNAPSHOT_SCRIPT = `(() => {
+  const contentAreas = document.querySelectorAll('.content-area');
+  const aiPanels = document.querySelectorAll('.ai-panel');
+  const rect = contentAreas.length === 1 ? contentAreas[0].getBoundingClientRect() : null;
+  return {
+    contentAreaCount: contentAreas.length,
+    contentBounds: rect === null ? null : {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    },
+    aiPanelCount: aiPanels.length,
+    visibilityState: document.visibilityState,
+    hasFocus: document.hasFocus(),
+  };
+})()`;
 
 export interface AiUiSmokeHandle {
   runL3Ui: () => Promise<void>; // 矩阵 4：dispose 后经 UI 提问 → 无网页上下文
@@ -2536,9 +2567,92 @@ export async function runAiUiScenarios(
   const sessionsDir = join(aiSmokeDir, 'conversations');
   const [winW, winH] = uiWindow.getContentSize();
 
-  const activeViewBounds = async (): Promise<{ width: number; height: number } | null> => {
+  const activeViewState = (): { viewId: number; bounds: BoundsRect } | null => {
     const view = visibleTabView(uiWindow);
-    return view === null ? null : view.getBounds();
+    return view === null ? null : { viewId: view.webContents.id, bounds: view.getBounds() };
+  };
+
+  const activeViewBounds = async (): Promise<BoundsRect | null> => {
+    return activeViewState()?.bounds ?? null;
+  };
+
+  let matrix9BoundsObservation: BoundsObservation | null = null;
+
+  const readMatrix9FailureWindow = (): {
+    contentSize: unknown;
+    visible: unknown;
+    minimized: unknown;
+    focused: unknown;
+    selectedNative: RawNativeViewState | null;
+    childViews: readonly RawChildViewState[];
+    childViewTotalCount: unknown;
+  } => {
+    const children = uiWindow.contentView.children;
+    const childViews = children
+      .slice(0, BOUNDS_CHILD_VIEW_LIMIT)
+      .map((child): RawChildViewState => {
+        try {
+          if (child instanceof WebContentsView) {
+            return {
+              kind: 'web-contents-view',
+              viewId: child.webContents.id,
+              visible: child.getVisible(),
+              bounds: child.getBounds(),
+            };
+          }
+          return {
+            kind: 'other',
+            viewId: null,
+            visible: child.getVisible(),
+            bounds: child.getBounds(),
+          };
+        } catch {
+          return { kind: 'unavailable', viewId: null, visible: null, bounds: null };
+        }
+      });
+    return {
+      contentSize: uiWindow.getContentSize(),
+      visible: uiWindow.isVisible(),
+      minimized: uiWindow.isMinimized(),
+      focused: uiWindow.isFocused(),
+      selectedNative: activeViewState(),
+      childViews,
+      childViewTotalCount: children.length,
+    };
+  };
+
+  const beginMatrix9BoundsPhase = (
+    phase: BoundsDiagnosticPhase,
+    expected: BoundsExpectation,
+  ): void => {
+    matrix9BoundsObservation?.beginPhase({ phase, frozenWindowWidth: winW, expected });
+  };
+
+  const waitForMatrix9Bounds = async (
+    condition: (bounds: BoundsRect | null) => boolean,
+    failure: string,
+  ): Promise<void> => {
+    const observation = matrix9BoundsObservation;
+    if (observation === null) throw new Error('矩阵 9 bounds 观测器未初始化');
+    await runMatrix9BoundsWait({
+      condition: async () => {
+        const sample = activeViewState();
+        return { matched: condition(sample?.bounds ?? null), sample };
+      },
+      failure,
+      observation,
+      waitFor,
+      collectFailure: () =>
+        collectMatrix9FailureSnapshot({
+          readWindow: readMatrix9FailureWindow,
+          readDom: () => uiJs(uiWc, MATRIX9_BOUNDS_DOM_SNAPSHOT_SCRIPT),
+        }),
+      logFailure: (evidence) =>
+        logWarn(
+          'smoke',
+          `矩阵 9 bounds 失败观测（仅定位待查层）：${JSON.stringify(summarizeMatrix9BoundsEvidence(evidence))}`,
+        ),
+    });
   };
 
   const waitActiveUrl = async (url: string, failure: string): Promise<void> => {
@@ -2601,16 +2715,30 @@ export async function runAiUiScenarios(
     const pages = await startControlledPages();
     try {
       // —— 矩阵 9（开）：面板开 → 活动 view bounds.width 收缩 380（§11.2） ——
-      await waitFor(
-        async () => (await activeViewBounds())?.width === winW,
-        5000,
+      matrix9BoundsObservation = createBoundsObservation({
+        ipc: ipcMain as unknown as BoundsIpcSource,
+        channel: IPC.UiContentBounds,
+        trustedSender: uiWc,
+        sampleSelectedNative: activeViewState,
+      });
+      beginMatrix9BoundsPhase('precondition', {
+        windowWidth: winW,
+        contentBounds: { width: { operator: 'eq', value: winW } },
+        aiPanelPresent: false,
+      });
+      await waitForMatrix9Bounds(
+        (bounds) => bounds?.width === winW,
         '矩阵 9 前置：面板未开时活动 view bounds 应为窗口全宽',
       );
+      beginMatrix9BoundsPhase('panel-open', {
+        windowWidth: winW,
+        contentBounds: { width: { operator: 'eq', value: winW - PANEL_WIDTH } },
+        aiPanelPresent: true,
+      });
       await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
       await waitForUiText(uiWc, '.ai-panel-title', 'AI 共读助手', 5000, '矩阵 9：AI 面板未打开');
-      await waitFor(
-        async () => (await activeViewBounds())?.width === winW - PANEL_WIDTH,
-        5000,
+      await waitForMatrix9Bounds(
+        (bounds) => bounds?.width === winW - PANEL_WIDTH,
         `矩阵 9：面板打开后活动 view bounds.width 未收缩到窗口宽-${PANEL_WIDTH}`,
       );
       logInfo('smoke', 'AI 共读 UI 矩阵 9（开）：面板打开后 bounds 收缩 380');
@@ -2897,16 +3025,24 @@ export async function runAiUiScenarios(
       }
 
       // —— 矩阵 9（其余）：收起恢复 / DebugPanel 变化 / 切 Tab 保持 / 窗口缩放跟随 ——
+      beginMatrix9BoundsPhase('panel-close', {
+        windowWidth: winW,
+        contentBounds: { width: { operator: 'eq', value: winW } },
+        aiPanelPresent: false,
+      });
       await clickUi(uiWc, '.ai-collapse');
-      await waitFor(
-        async () => (await activeViewBounds())?.width === winW,
-        5000,
+      await waitForMatrix9Bounds(
+        (bounds) => bounds?.width === winW,
         '矩阵 9：面板收起后 bounds 未恢复全宽',
       );
+      beginMatrix9BoundsPhase('panel-reopen', {
+        windowWidth: winW,
+        contentBounds: { width: { operator: 'eq', value: winW - PANEL_WIDTH } },
+        aiPanelPresent: true,
+      });
       await clickUi(uiWc, 'button[aria-label="AI 侧栏"]');
-      await waitFor(
-        async () => (await activeViewBounds())?.width === winW - PANEL_WIDTH,
-        5000,
+      await waitForMatrix9Bounds(
+        (bounds) => bounds?.width === winW - PANEL_WIDTH,
         '矩阵 9：面板重新打开后 bounds 未收缩 380',
       );
       // 面板重开 = 重挂载：等待会话恢复（后续矩阵 11 提问需要当前会话）
@@ -2917,13 +3053,17 @@ export async function runAiUiScenarios(
       );
       const boundsExpanded = await activeViewBounds();
       assert(boundsExpanded !== null, '矩阵 9：应有活动 view bounds');
-      await clickUi(uiWc, '.debug-toggle'); // 收起调试面板 → 内容区变高
-      await waitFor(
-        async () => {
-          const b = await activeViewBounds();
-          return b !== null && b.height !== boundsExpanded?.height;
+      beginMatrix9BoundsPhase('debug-collapse', {
+        windowWidth: winW,
+        contentBounds: {
+          width: { operator: 'eq', value: winW - PANEL_WIDTH },
+          height: { operator: 'neq', value: boundsExpanded.height },
         },
-        5000,
+        aiPanelPresent: true,
+      });
+      await clickUi(uiWc, '.debug-toggle'); // 收起调试面板 → 内容区变高
+      await waitForMatrix9Bounds(
+        (bounds) => bounds !== null && bounds.height !== boundsExpanded.height,
         '矩阵 9：DebugPanel 收起后 bounds 高度未变化',
       );
       const boundsDebugCollapsed = await activeViewBounds();
@@ -2931,10 +3071,17 @@ export async function runAiUiScenarios(
         (boundsDebugCollapsed?.height ?? 0) > (boundsExpanded?.height ?? 0),
         '矩阵 9：DebugPanel 收起后内容区应更高',
       );
+      beginMatrix9BoundsPhase('debug-expand', {
+        windowWidth: winW,
+        contentBounds: {
+          width: { operator: 'eq', value: winW - PANEL_WIDTH },
+          height: { operator: 'eq', value: boundsExpanded.height },
+        },
+        aiPanelPresent: true,
+      });
       await clickUi(uiWc, '.debug-toggle'); // 展开恢复
-      await waitFor(
-        async () => (await activeViewBounds())?.height === boundsExpanded?.height,
-        5000,
+      await waitForMatrix9Bounds(
+        (bounds) => bounds?.height === boundsExpanded.height,
         '矩阵 9：DebugPanel 展开后 bounds 高度未恢复',
       );
       // 矩阵 9 新建 Tab 是为验证「切 Tab 后 bounds 应用到新活动 view」——场景自建自清：
@@ -2946,6 +3093,14 @@ export async function runAiUiScenarios(
       assert(activeBeforeNewTab !== null, '矩阵 9：新建标签页前应有活动 Tab');
       let matrix9TabCreated = false;
       try {
+        beginMatrix9BoundsPhase('tab-switch', {
+          windowWidth: winW,
+          contentBounds: {
+            width: { operator: 'eq', value: winW - PANEL_WIDTH },
+            height: { operator: 'eq', value: boundsExpanded.height },
+          },
+          aiPanelPresent: true,
+        });
         await clickUi(uiWc, 'button[aria-label="新建标签页"]'); // 切 Tab → bounds 应用到新活动 view
         matrix9TabCreated = true; // 点击已发出：无论后续断言成败都进入清理路径
         await waitFor(
@@ -2953,26 +3108,31 @@ export async function runAiUiScenarios(
           5000,
           '矩阵 9：新建标签页后应有 2 个标签页',
         );
-        await waitFor(
-          async () => {
-            const b = await activeViewBounds();
-            return (
-              b !== null && b.width === winW - PANEL_WIDTH && b.height === boundsExpanded?.height
-            );
-          },
-          5000,
+        await waitForMatrix9Bounds(
+          (bounds) =>
+            bounds !== null &&
+            bounds.width === winW - PANEL_WIDTH &&
+            bounds.height === boundsExpanded.height,
           '矩阵 9：切换 Tab 后 bounds 应保持',
         );
+        beginMatrix9BoundsPhase('window-resize', {
+          windowWidth: 1100,
+          contentBounds: { width: { operator: 'eq', value: 1100 - PANEL_WIDTH } },
+          aiPanelPresent: true,
+        });
         uiWindow.setContentSize(1100, 700); // 窗口缩放 → bounds 跟随
-        await waitFor(
-          async () => (await activeViewBounds())?.width === 1100 - PANEL_WIDTH,
-          5000,
+        await waitForMatrix9Bounds(
+          (bounds) => bounds?.width === 1100 - PANEL_WIDTH,
           '矩阵 9：窗口缩放后 bounds.width 未跟随（应为窗口宽-380）',
         );
+        beginMatrix9BoundsPhase('window-restore', {
+          windowWidth: winW,
+          contentBounds: { width: { operator: 'eq', value: winW - PANEL_WIDTH } },
+          aiPanelPresent: true,
+        });
         uiWindow.setContentSize(winW, winH); // 恢复窗口尺寸
-        await waitFor(
-          async () => (await activeViewBounds())?.width === winW - PANEL_WIDTH,
-          5000,
+        await waitForMatrix9Bounds(
+          (bounds) => bounds?.width === winW - PANEL_WIDTH,
           '矩阵 9：窗口尺寸恢复后 bounds 未恢复',
         );
       } finally {
@@ -3009,6 +3169,8 @@ export async function runAiUiScenarios(
         'smoke',
         'AI 共读 UI 矩阵 9 通过（开/关 380、DebugPanel、切 Tab、窗口缩放全路径 bounds 正确 + Tab 状态自清理恢复）',
       );
+      matrix9BoundsObservation.dispose();
+      matrix9BoundsObservation = null;
 
       // —— 矩阵 10：Key 安全（真实 safeStorage 运行：密文落盘、DOM/日志无值、无读回通道） ——
       await clickUi(uiWc, '.ai-settings-open');
@@ -3174,6 +3336,8 @@ export async function runAiUiScenarios(
         'AI 共读 UI 矩阵 1–3/5–12 全部通过（UI → bridge → IPC → 服务 → FakeProvider 全链路）',
       );
     } finally {
+      matrix9BoundsObservation?.dispose();
+      matrix9BoundsObservation = null;
       await pages.close();
     }
     return { runL3Ui, cleanup };
