@@ -171,6 +171,31 @@ describe('D10 H2 production Watch resource timing', () => {
     },
   );
 
+  it('waits past a fractional raw deadline until the published window reaches 100ms', async () => {
+    const timing = new ControlledResourceTiming();
+    timing.monotonicMs = 123.45;
+    const { runtime, calls } = createRuntime();
+    const pending = startProbe(timing, runtime);
+
+    timing.fireNextAt(223.45);
+    await flushAsyncContinuation();
+    expect(calls).toMatchObject({ metrics: 1, shutdown: 0 });
+    expect(timing.pendingTimerCount).toBe(1);
+    expect(timing.requestedDelays).toEqual([100, 1]);
+
+    timing.fireNextAt(224.45);
+    await flushAsyncContinuation();
+    expect(calls).toMatchObject({ metrics: 2, shutdown: 1, residuals: 1 });
+    await fireTimers(timing, [324.45, 424.45]);
+    const result = await pending;
+
+    expect(result.observedForMs).toBeGreaterThanOrEqual(100);
+    expect(result.resourceMetricTrend?.map((sample) => sample.observedAtMs)).toEqual([0, 100]);
+    expect(result.drainStartedAtMs).toBe(100);
+    expect(result.residualObservedAtMs).toEqual([100, 201, 301]);
+    expect(result.drainObservedForMs).toBe(201);
+  });
+
   it('records the actual monotonic span when a timer wakes late', async () => {
     const timing = new ControlledResourceTiming();
     const { runtime } = createRuntime();

@@ -28,13 +28,13 @@ const DEFAULT_RESOURCE_TIMING: ProductWatchResourceTiming = {
 
 interface MonotonicProbeClock {
   elapsedMs: () => number;
-  rawNow: () => number;
+  read: () => { rawMs: number; elapsedMs: number };
 }
 
 function createMonotonicProbeClock(timing: ProductWatchResourceTiming): MonotonicProbeClock {
   let origin: number | undefined;
   let previous: number | undefined;
-  const rawNow = (): number => {
+  const read = (): { rawMs: number; elapsedMs: number } => {
     const current = timing.monotonicNow();
     if (
       !Number.isFinite(current) ||
@@ -46,18 +46,15 @@ function createMonotonicProbeClock(timing: ProductWatchResourceTiming): Monotoni
     }
     previous = current;
     origin ??= current;
-    return current;
+    const elapsed = Math.floor(current - origin);
+    if (!Number.isSafeInteger(elapsed) || elapsed < 0) {
+      throw new Error('resource probe monotonic elapsed invalid');
+    }
+    return { rawMs: current, elapsedMs: elapsed };
   };
   return {
-    rawNow,
-    elapsedMs: () => {
-      const current = rawNow();
-      const elapsed = Math.floor(current - origin!);
-      if (!Number.isSafeInteger(elapsed) || elapsed < 0) {
-        throw new Error('resource probe monotonic elapsed invalid');
-      }
-      return elapsed;
-    },
+    read,
+    elapsedMs: () => read().elapsedMs,
   };
 }
 
@@ -67,14 +64,21 @@ function wait(
   clock: MonotonicProbeClock,
   timing: ProductWatchResourceTiming,
 ): Promise<void> {
-  let startedAt: number;
+  let startedAt: { rawMs: number; elapsedMs: number };
   try {
-    startedAt = clock.rawNow();
+    startedAt = clock.read();
   } catch (error) {
     return Promise.reject(error);
   }
-  const deadline = startedAt + ms;
-  if (!Number.isFinite(deadline) || deadline > Number.MAX_SAFE_INTEGER || deadline <= startedAt) {
+  const rawDeadline = startedAt.rawMs + ms;
+  const publishedDeadline = startedAt.elapsedMs + ms;
+  if (
+    !Number.isFinite(rawDeadline) ||
+    rawDeadline > Number.MAX_SAFE_INTEGER ||
+    rawDeadline <= startedAt.rawMs ||
+    !Number.isSafeInteger(publishedDeadline) ||
+    publishedDeadline <= startedAt.elapsedMs
+  ) {
     return Promise.reject(new Error('resource probe deadline invalid'));
   }
   return new Promise((resolve, reject) => {
@@ -128,9 +132,11 @@ function wait(
       if (settled) return;
       timer = undefined;
       try {
-        const current = clock.rawNow();
-        if (current < deadline) {
-          schedule(deadline - current);
+        const current = clock.read();
+        const rawRemainingMs = rawDeadline - current.rawMs;
+        const publishedRemainingMs = publishedDeadline - current.elapsedMs;
+        if (rawRemainingMs > 0 || publishedRemainingMs > 0) {
+          schedule(Math.max(rawRemainingMs, publishedRemainingMs));
           return;
         }
         settle();
