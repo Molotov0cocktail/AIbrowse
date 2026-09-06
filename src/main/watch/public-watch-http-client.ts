@@ -186,6 +186,23 @@ export interface WatchRequestOptions {
 
 export type WatchRequestFactory = (options: WatchRequestOptions) => WatchRequestLike;
 
+export interface PublicWatchBudgetObservation {
+  stage: 'public-http-body';
+  purpose: PublicRequestPurpose;
+  outcome:
+    | 'complete'
+    | 'response-too-large'
+    | 'decompress-failed-or-too-large'
+    | 'deadline'
+    | 'stream-error'
+    | 'aborted';
+  declaredContentLength: number | null;
+  compressedBytes: number;
+  decompressedBytes: number;
+}
+
+export type PublicWatchBudgetObserver = (observation: PublicWatchBudgetObservation) => void;
+
 /** D5 host gate 窄端口（FIXED DECISIONS 2/5）：实际 socket start 前登记式 acquire。 */
 export interface WatchHostGatePort {
   acquire(
@@ -210,6 +227,7 @@ export interface PublicWatchStackSeams {
   // D5：host gate（main 单例 HostRequestGate 的窄端口）。缺省未注入 → D3 独立行为
   // 保持不变（测试 seam 设施；产品装配必须注入，否则 5 秒 start-to-start 间隔不生效）。
   hostGate?: WatchHostGatePort;
+  observeBudget?: PublicWatchBudgetObserver;
 }
 
 /** target-gated client：只允许 page/feed/discovery。 */
@@ -383,6 +401,7 @@ class PublicWatchHttpClient {
   ) => WatchInflaterLike;
   private readonly robots: RobotsGatePort | null;
   private readonly hostGate: WatchHostGatePort | null;
+  private readonly observeBudget: PublicWatchBudgetObserver | undefined;
 
   constructor(
     seams: {
@@ -397,6 +416,7 @@ class PublicWatchHttpClient {
       ) => WatchInflaterLike;
       robots?: RobotsGatePort | null;
       hostGate?: WatchHostGatePort | null;
+      observeBudget?: PublicWatchBudgetObserver;
     } = {},
   ) {
     this.lookup =
@@ -418,6 +438,7 @@ class PublicWatchHttpClient {
       });
     this.robots = seams.robots ?? null;
     this.hostGate = seams.hostGate ?? null;
+    this.observeBudget = seams.observeBudget;
   }
 
   private defaultRequestFactory: WatchRequestFactory = (options) => {
@@ -1104,7 +1125,26 @@ class PublicWatchHttpClient {
     let finished = false;
     let released = false;
     let inflaterEnded = false;
+    let observationWritten = false;
+    let declaredContentLength: number | null = null;
     const buffer: Buffer[] = [];
+
+    const observeBody = (outcome: PublicWatchBudgetObservation['outcome']): void => {
+      if (observationWritten) return;
+      observationWritten = true;
+      try {
+        this.observeBudget?.({
+          stage: 'public-http-body',
+          purpose: req.purpose,
+          outcome,
+          declaredContentLength,
+          compressedBytes,
+          decompressedBytes,
+        });
+      } catch {
+        // Diagnostic observers never alter transport results or cleanup.
+      }
+    };
 
     const deadlineExpired = (): boolean =>
       Number.isFinite(deadlineMs) && this.clock.now().getTime() >= deadlineMs;
@@ -1170,6 +1210,7 @@ class PublicWatchHttpClient {
       if (finished || isOuterSettled()) return;
       finished = true;
       release();
+      observeBody('response-too-large');
       resolveFn({ kind: 'failed', health: 'budget_exceeded', reason: 'response-too-large' });
     }
 
@@ -1177,6 +1218,7 @@ class PublicWatchHttpClient {
       if (finished || isOuterSettled()) return;
       finished = true;
       release();
+      observeBody('deadline');
       resolveFn({ kind: 'failed', health: 'unavailable', reason: 'deadline' });
     }
 
@@ -1186,6 +1228,7 @@ class PublicWatchHttpClient {
       release();
       meta.byteLength = decompressedBytes;
       meta.compressedByteLength = compressedBytes;
+      observeBody('complete');
       resolveFn({ kind: 'ok', meta, body: Buffer.concat(buffer) });
     }
 
@@ -1244,6 +1287,7 @@ class PublicWatchHttpClient {
       }
       finished = true;
       release();
+      observeBody('stream-error');
       resolveFn({ kind: 'failed', health: 'unavailable', reason: 'stream-error' });
     }
 
@@ -1255,6 +1299,7 @@ class PublicWatchHttpClient {
       }
       finished = true;
       release();
+      observeBody('aborted');
       resolveFn({ kind: 'failed', health: 'unavailable', reason: 'aborted' });
     }
 
@@ -1292,6 +1337,7 @@ class PublicWatchHttpClient {
       }
       finished = true;
       release();
+      observeBody('decompress-failed-or-too-large');
       resolveFn({
         kind: 'failed',
         health: 'budget_exceeded',
@@ -1315,6 +1361,7 @@ class PublicWatchHttpClient {
       const declaredLength = headerValue(res.headers, 'content-length');
       if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
         const length = Number(declaredLength);
+        if (Number.isSafeInteger(length)) declaredContentLength = length;
         if (Number.isFinite(length) && length > maxBytes) {
           failBudget();
           return;
@@ -1407,6 +1454,7 @@ export function createPublicWatchHttpStack(seams: PublicWatchStackSeams = {}): P
     timeoutMs: seams.timeoutMs,
     userAgent: seams.userAgent,
     createInflater: seams.createInflater,
+    observeBudget: seams.observeBudget,
     hostGate: seams.hostGate,
     robots: {
       checkAllowed: async (input): Promise<RobotsGateDecision> => {

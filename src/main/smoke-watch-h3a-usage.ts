@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { canonicalH3aManifest, H3A_MANIFEST, H3A_MANIFEST_CONTENT_HASH } from './smoke-watch-h3a';
 
 export interface H3aHistoricalUsageSource {
@@ -400,11 +400,15 @@ export class H3aWorkflowUsageLedger {
   constructor(options: {
     workflowDir: string;
     historicalSources: readonly H3aHistoricalUsageSource[];
+    requireExisting?: boolean;
   }) {
     const workflowDir = resolve(options.workflowDir);
     if (!isAbsolute(options.workflowDir)) throw new Error('H3a workflow usage 目录必须为绝对路径');
-    mkdirSync(workflowDir, { recursive: true });
     this.ledgerPath = join(workflowDir, WORKFLOW_LEDGER_FILE);
+    if (options.requireExisting === true && !existsSync(this.ledgerPath)) {
+      throw new Error('H3a workflow usage ledger 必须已存在');
+    }
+    mkdirSync(workflowDir, { recursive: true });
     const ids = new Set<string>();
     const imported = options.historicalSources.map((source) => {
       if (ids.has(source.id)) throw new Error('H3a 历史 usage receipt 重复');
@@ -621,4 +625,75 @@ export class H3aWorkflowUsageLedger {
       ledger['rejectedCount'] >= importedRejected
     );
   }
+}
+
+export const H3A_NASA_DIAGNOSTIC_ID = 'nasa-feed-budget-first-v1' as const;
+export const H3A_NASA_DIAGNOSTIC_WORKFLOW_BEFORE_HASH =
+  '613874972b765bc73f4aa6b6d81cdc98ad1001fb60c7b15aceaf9d074fe7b828';
+
+export interface H3aNasaDiagnosticClaim {
+  schemaVersion: 1;
+  diagnosticId: typeof H3A_NASA_DIAGNOSTIC_ID;
+  candidateSha: string;
+  buildHash: string;
+  manifestHash: string;
+  claimedAt: string;
+  workflowBeforeHash: string;
+  beforeCount: 4;
+  perTargetBefore: Record<string, number>;
+}
+
+export function createH3aNasaDiagnosticClaim(options: {
+  workflow: H3aWorkflowUsageLedger;
+  candidateSha: string;
+  buildHash: string;
+  manifestHash: string;
+  expectedWorkflowHash?: string;
+}): { claim: H3aNasaDiagnosticClaim; claimHash: string; path: string } {
+  const snapshot = options.workflow.snapshot;
+  const workflowBeforeHash = fileHash(options.workflow.path);
+  const expectedWorkflowHash =
+    options.expectedWorkflowHash ?? H3A_NASA_DIAGNOSTIC_WORKFLOW_BEFORE_HASH;
+  const expectedCounts = emptyCandidateCounts();
+  expectedCounts['rss-primary'] = 2;
+  expectedCounts['rss-fallback'] = 2;
+  if (
+    workflowBeforeHash !== expectedWorkflowHash ||
+    snapshot.actualCount !== 4 ||
+    snapshot.rejectedCount !== 0 ||
+    JSON.stringify(snapshot.perCandidateCounts) !== JSON.stringify(expectedCounts)
+  ) {
+    throw new Error('NASA 单次诊断 workflow 前置计数或 hash 不匹配');
+  }
+  if (!/^[0-9a-f]{40}$/.test(options.candidateSha)) {
+    throw new Error('NASA 单次诊断 candidate SHA 非法');
+  }
+  if (!/^[0-9a-f]{64}$/.test(options.buildHash)) {
+    throw new Error('NASA 单次诊断 build hash 非法');
+  }
+  if (options.manifestHash !== H3A_MANIFEST_CONTENT_HASH) {
+    throw new Error('NASA 单次诊断 manifest hash 非法');
+  }
+  const claimPath = join(dirname(options.workflow.path), `${H3A_NASA_DIAGNOSTIC_ID}.claim.json`);
+  if (existsSync(claimPath)) throw new Error('NASA 单次诊断 claim 已存在或不完整');
+  const claim: H3aNasaDiagnosticClaim = {
+    schemaVersion: 1,
+    diagnosticId: H3A_NASA_DIAGNOSTIC_ID,
+    candidateSha: options.candidateSha,
+    buildHash: options.buildHash,
+    manifestHash: options.manifestHash,
+    claimedAt: new Date().toISOString(),
+    workflowBeforeHash,
+    beforeCount: 4,
+    perTargetBefore: snapshot.perCandidateCounts,
+  };
+  try {
+    writeFileSync(claimPath, `${JSON.stringify(claim, null, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+  } catch {
+    throw new Error('NASA 单次诊断 claim 写入失败');
+  }
+  return { claim, claimHash: fileHash(claimPath), path: claimPath };
 }

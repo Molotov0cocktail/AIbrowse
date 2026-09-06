@@ -28,13 +28,32 @@ import {
 } from '../../shared/types/watch';
 import type { TargetGatedClient, PublicFetchResult } from './public-watch-http-client';
 import { classifyPublicHttpStatus } from './public-watch-http-client';
-import { parseFeedXml } from './feed-parser';
+import {
+  parseFeedXml,
+  type FeedParserBudgetObservation,
+  type FeedParserBudgetObserver,
+} from './feed-parser';
 import { evidenceSafeUrl } from '../../shared/watch/diff/evidence';
 import { utf8ByteLength } from '../../shared/watch/watch-budget';
 
 export interface FeedAcquisitionServiceOptions {
   target: TargetGatedClient;
+  observeBudget?: FeedAcquisitionBudgetObserver;
 }
+
+export interface FeedAcquisitionBudgetObservation {
+  stage: 'feed-acquisition';
+  outcome:
+    'projection' | 'not-modified' | 'baseline-budget' | 'parser-rejected' | 'request-failure';
+  healthCode: WatchFailureCode | null;
+  disposition: FeedAcquisitionDisposition | 'projection' | 'not-modified';
+  canonicalBytes: number | null;
+  itemCount: number | null;
+}
+
+export type FeedAcquisitionBudgetObserver = (
+  observation: FeedAcquisitionBudgetObservation | FeedParserBudgetObservation,
+) => void;
 
 /**
  * Feed 网络请求 URL（#S6-054 FIXED DECISION 8）：保留合法 path+query，只去掉
@@ -58,16 +77,37 @@ function requestFeedUrl(raw: string): string | null {
 
 export class FeedAcquisitionService {
   private readonly target: TargetGatedClient;
+  private readonly observeBudget: FeedAcquisitionBudgetObserver | undefined;
 
   constructor(options: FeedAcquisitionServiceOptions) {
     this.target = options.target;
+    this.observeBudget = options.observeBudget;
+  }
+
+  private observe(observation: FeedAcquisitionBudgetObservation): void {
+    try {
+      this.observeBudget?.(observation);
+    } catch {
+      // Diagnostic observers never alter acquisition results.
+    }
   }
 
   private failure(
     health: WatchFailureCode,
     retryable: boolean,
     disposition: FeedAcquisitionDisposition,
+    outcome: FeedAcquisitionBudgetObservation['outcome'] = 'request-failure',
+    canonicalBytes: number | null = null,
+    itemCount: number | null = null,
   ): Extract<FeedAcquisitionResult, { ok: false }> {
+    this.observe({
+      stage: 'feed-acquisition',
+      outcome,
+      healthCode: health,
+      disposition,
+      canonicalBytes,
+      itemCount,
+    });
     return { ok: false, health, retryable, retryAfterSeconds: null, disposition };
   }
 
@@ -112,6 +152,14 @@ export class FeedAcquisitionService {
     if (statusClass === 'unchanged-http') {
       // 304
       if (hasBaseline) {
+        this.observe({
+          stage: 'feed-acquisition',
+          outcome: 'not-modified',
+          healthCode: null,
+          disposition: 'not-modified',
+          canonicalBytes: null,
+          itemCount: null,
+        });
         return {
           ok: true,
           kind: 'not-modified',
@@ -179,20 +227,28 @@ export class FeedAcquisitionService {
       retryAfter: number | null;
     },
   ): Promise<FeedAcquisitionResult> {
-    const parsed = await parseFeedXml(body);
+    const parserObserver: FeedParserBudgetObserver | undefined = this.observeBudget;
+    const parsed = await parseFeedXml(body, parserObserver);
     if (!parsed.ok) {
       if (parsed.health === 'security_rejected')
-        return this.failure('security_rejected', false, 'security');
+        return this.failure('security_rejected', false, 'security', 'parser-rejected');
       if (parsed.health === 'budget_exceeded')
-        return this.failure('budget_exceeded', false, 'budget');
+        return this.failure('budget_exceeded', false, 'budget', 'parser-rejected');
       if (parsed.health === 'dependency_unavailable') {
-        return this.failure('dependency_unavailable', false, 'dependency');
+        return this.failure('dependency_unavailable', false, 'dependency', 'parser-rejected');
       }
-      return this.failure('parse_changed', false, 'parse');
+      return this.failure('parse_changed', false, 'parse', 'parser-rejected');
     }
     // 进入 processing 的持久化预算：> MAX_PAGE_PROJECTION_BYTES → budget_exceeded
     if (parsed.byteLength > MAX_PAGE_PROJECTION_BYTES) {
-      return this.failure('budget_exceeded', false, 'budget');
+      return this.failure(
+        'budget_exceeded',
+        false,
+        'budget',
+        'baseline-budget',
+        parsed.byteLength,
+        parsed.value.items.length,
+      );
     }
     // finalUrl 安全投影（与 Evidence 相同：去 fragment/query；非法 → security_rejected）
     const finalUrl = evidenceSafeUrl(meta.finalUrl);
@@ -215,6 +271,14 @@ export class FeedAcquisitionService {
     };
     const responseMetadata = this.conditionalMetadata(meta, 200);
     logInfo('watch', `Feed 采集成功（rule=${rule.id}，bytes=${projection.byteLength}）`);
+    this.observe({
+      stage: 'feed-acquisition',
+      outcome: 'projection',
+      healthCode: null,
+      disposition: 'projection',
+      canonicalBytes: parsed.byteLength,
+      itemCount: parsed.value.items.length,
+    });
     return {
       ok: true,
       kind: 'projection',

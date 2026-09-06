@@ -7,6 +7,9 @@ import { describe, expect, it } from 'vitest';
 import { H3aRequestBudget } from './smoke-watch-h3a-runner';
 import { canonicalH3aManifest, H3A_MANIFEST_CONTENT_HASH } from './smoke-watch-h3a';
 import {
+  createH3aNasaDiagnosticClaim,
+  H3A_NASA_DIAGNOSTIC_ID,
+  H3A_NASA_DIAGNOSTIC_WORKFLOW_BEFORE_HASH,
   H3aWorkflowUsageLedger,
   initialH3aHistoricalUsageSources,
   type H3aHistoricalUsageSource,
@@ -347,5 +350,131 @@ describe('H3a workflow usage receipt', () => {
         processHash: '98812fa5790d09ee14adad53231e7ba58e720461f56689affc62d7cd5045bedd',
       }),
     ]);
+  });
+
+  it('requireExisting 在 workflow 缺失时 fail-closed 且不创建新 ledger', () => {
+    const root = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-existing-required-'));
+    const workflowDir = join(root, 'workflow');
+    try {
+      expect(
+        () =>
+          new H3aWorkflowUsageLedger({
+            workflowDir,
+            historicalSources: [],
+            requireExisting: true,
+          }),
+      ).toThrow('必须已存在');
+      expect(() => readFileSync(join(workflowDir, 'usage-ledger.json'))).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('H3aRequestBudget 透传 requireExisting 且在 native request 前失败', () => {
+    const root = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-budget-existing-'));
+    let nativeCalls = 0;
+    try {
+      expect(
+        () =>
+          new H3aRequestBudget({
+            evidenceDir: join(root, 'evidence'),
+            workflowDir: join(root, 'workflow'),
+            historicalReceipts: [],
+            candidateSha: 'c'.repeat(40),
+            buildHash: 'd'.repeat(64),
+            requireExistingWorkflow: true,
+            request: () => {
+              nativeCalls += 1;
+              return new UsageRequest();
+            },
+          }),
+      ).toThrow('必须已存在');
+      expect(nativeCalls).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('NASA 单次诊断 claim 只在精确 4/64 状态写一次且绑定原 ledger hash', () => {
+    const root = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-diagnostic-claim-'));
+    try {
+      const workflow = new H3aWorkflowUsageLedger({
+        workflowDir: root,
+        historicalSources: [],
+      });
+      const candidateSha = 'c'.repeat(40);
+      const buildHash = 'd'.repeat(64);
+      for (const [candidateId, ordinal] of [
+        ['rss-primary', 1],
+        ['rss-primary', 2],
+        ['rss-fallback', 1],
+        ['rss-fallback', 2],
+      ] as const) {
+        workflow.reserve({
+          candidateSha,
+          buildHash,
+          scenarioId: 'h3a-rss',
+          candidateId,
+          phase: 'first',
+          purposeClass: ordinal === 1 ? 'robots' : 'target',
+          startedAt: `2026-09-06T00:00:0${ordinal}.000Z`,
+        });
+      }
+      const workflowBeforeHash = hash(workflow.path);
+      const created = createH3aNasaDiagnosticClaim({
+        workflow,
+        candidateSha,
+        buildHash,
+        manifestHash: H3A_MANIFEST_CONTENT_HASH,
+        expectedWorkflowHash: workflowBeforeHash,
+      });
+      expect(created.claim).toMatchObject({
+        schemaVersion: 1,
+        diagnosticId: H3A_NASA_DIAGNOSTIC_ID,
+        candidateSha,
+        buildHash,
+        manifestHash: H3A_MANIFEST_CONTENT_HASH,
+        workflowBeforeHash,
+        beforeCount: 4,
+        perTargetBefore: { 'rss-primary': 2, 'rss-fallback': 2 },
+      });
+      expect(hash(created.path)).toBe(created.claimHash);
+      expect(() =>
+        createH3aNasaDiagnosticClaim({
+          workflow,
+          candidateSha,
+          buildHash,
+          manifestHash: H3A_MANIFEST_CONTENT_HASH,
+          expectedWorkflowHash: workflowBeforeHash,
+        }),
+      ).toThrow('claim 已存在');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('NASA 单次诊断不接受错误计数，固定生产 workflow hash 不可被测试重定义', () => {
+    const root = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-diagnostic-count-'));
+    try {
+      const workflow = new H3aWorkflowUsageLedger({
+        workflowDir: root,
+        historicalSources: [],
+      });
+      expect(H3A_NASA_DIAGNOSTIC_WORKFLOW_BEFORE_HASH).toBe(
+        '613874972b765bc73f4aa6b6d81cdc98ad1001fb60c7b15aceaf9d074fe7b828',
+      );
+      expect(() =>
+        createH3aNasaDiagnosticClaim({
+          workflow,
+          candidateSha: 'c'.repeat(40),
+          buildHash: 'd'.repeat(64),
+          manifestHash: H3A_MANIFEST_CONTENT_HASH,
+          expectedWorkflowHash: hash(workflow.path),
+        }),
+      ).toThrow('前置计数或 hash 不匹配');
+      expect(() => readFileSync(join(root, `${H3A_NASA_DIAGNOSTIC_ID}.claim.json`))).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

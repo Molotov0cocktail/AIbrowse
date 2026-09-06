@@ -516,10 +516,7 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
 
   it('每个属性独立计量：三个各 4096 字节的合法属性都接受', async () => {
     const attrs = ['x', 'y', 'z']
-      .map(
-        (name) =>
-          `${name}="${'b'.repeat(MAX_XML_ATTRIBUTE_BYTES - utf8ByteLength(name))}"`,
-      )
+      .map((name) => `${name}="${'b'.repeat(MAX_XML_ATTRIBUTE_BYTES - utf8ByteLength(name))}"`)
       .join(' ');
     const result = await parseFeedXml(Buffer.from(wrap(`<title ${attrs}>x</title>`), 'utf8'));
 
@@ -546,9 +543,7 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
 
     const overValue = `${exactValue}a`;
     expect(utf8ByteLength('x') + utf8ByteLength(overValue)).toBe(MAX_XML_ATTRIBUTE_BYTES + 1);
-    const over = await parseFeedXml(
-      Buffer.from(wrap(`<title x="${overValue}">x</title>`), 'utf8'),
-    );
+    const over = await parseFeedXml(Buffer.from(wrap(`<title x="${overValue}">x</title>`), 'utf8'));
     expect(over.ok).toBe(false);
     if (!over.ok) expect(over.health).toBe('budget_exceeded');
   });
@@ -675,6 +670,91 @@ describe('边界：== MAX 接受、MAX+1 fail-closed（WRT-07）', () => {
     expect(Buffer.byteLength(encoded, 'utf8')).toBe(MAX_FEED_PROJECTION_BYTES); // == MAX 接受
     const over = encodeFeedProjectionCanonical(payload('a'.repeat(titleLen + 1)));
     expect(Buffer.byteLength(over, 'utf8')).toBeGreaterThan(MAX_FEED_PROJECTION_BYTES); // MAX+1 拒绝
+  });
+});
+
+describe('H3a 有界预算观察', () => {
+  it('成功只记录 input/canonical/item 计数，observer 异常不改变结果', async () => {
+    const observations: object[] = [];
+    const body = Buffer.from(RSS(RSS_ITEM('g', 'T', 'https://example.com/x')), 'utf8');
+    const result = await parseFeedXml(body, (observation) => observations.push(observation));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(observations).toEqual([
+      {
+        stage: 'feed-parser',
+        outcome: 'success',
+        reasonCode: 'none',
+        inputBytes: body.length,
+        canonicalBytes: result.byteLength,
+        itemCount: 1,
+      },
+    ]);
+    const withThrowingObserver = await parseFeedXml(body, () => {
+      throw new Error('offline observer failure');
+    });
+    expect(withThrowingObserver).toEqual(result);
+  });
+
+  it('项目精确预算与 saxe 依赖粗 guard 使用不同受控原因', async () => {
+    const product: object[] = [];
+    const productResult = await parseFeedXml(
+      Buffer.from(
+        `<rss><channel><title x="${'a'.repeat(MAX_XML_ATTRIBUTE_BYTES)}">x</title></channel></rss>`,
+      ),
+      (observation) => product.push(observation),
+    );
+    expect(productResult).toMatchObject({ ok: false, reason: 'budget' });
+    expect(product).toEqual([
+      expect.objectContaining({
+        stage: 'feed-parser',
+        outcome: 'product-budget',
+        reasonCode: 'budget',
+        canonicalBytes: null,
+        itemCount: null,
+      }),
+    ]);
+
+    const dependency: object[] = [];
+    const dependencyResult = await parseFeedXml(
+      Buffer.from(
+        `<rss><channel><title>${'a'.repeat(MAX_XML_TEXT_NODE_BYTES + 1)}</title></channel></rss>`,
+      ),
+      (observation) => dependency.push(observation),
+    );
+    expect(dependencyResult).toMatchObject({ ok: false, reason: 'limit' });
+    expect(dependency).toEqual([
+      expect.objectContaining({
+        stage: 'feed-parser',
+        outcome: 'dependency-limit',
+        reasonCode: 'limit',
+        canonicalBytes: null,
+        itemCount: null,
+      }),
+    ]);
+  });
+
+  it('canonical projection 超限记录实际计数且不记录字段正文', async () => {
+    const observations: object[] = [];
+    const items = Array.from(
+      { length: MAX_FEED_ITEMS },
+      (_, i) =>
+        `<item><guid>g${i}</guid><title>${'\\'.repeat(300)}</title><description>${'\\'.repeat(300)}</description></item>`,
+    ).join('');
+    const body = Buffer.from(RSS(items), 'utf8');
+    const result = await parseFeedXml(body, (observation) => observations.push(observation));
+    expect(result).toMatchObject({ ok: false, reason: 'projection' });
+    expect(observations).toEqual([
+      expect.objectContaining({
+        stage: 'feed-parser',
+        outcome: 'projection-budget',
+        reasonCode: 'projection',
+        inputBytes: body.length,
+        canonicalBytes: expect.any(Number),
+        itemCount: MAX_FEED_ITEMS,
+      }),
+    ]);
+    expect(JSON.stringify(observations)).not.toContain('\\\\\\\\');
   });
 });
 

@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import type { FeedAcquisitionBudgetObservation } from './watch/feed-acquisition-service';
+import type { FeedParserBudgetObservation } from './watch/feed-parser';
+import type { PublicWatchBudgetObservation } from './watch/public-watch-http-client';
 
 export type H3aScenarioKind = 'rss-or-atom' | 'public-page-no-feed' | 'network-failure';
 
@@ -233,25 +236,90 @@ export interface H3aReport {
     workflowLedgerHash: string;
     entries: H3aRequestLedgerEntry[];
   };
-  cleanup: {
-    coordinatorActive: number;
-    coordinatorPending: number;
-    schedulerStopped: boolean;
-    hostGateEntries: number;
-    openRequests: number;
-    openResponses: number;
-    robotsCleared: boolean;
-    watchRepositoryClosed: boolean;
-    sourceServiceClosed: boolean;
-    rootRemoved: boolean;
-    idempotentDispose: boolean;
-    errorCodes: string[];
+  cleanup: H3aCleanupEvidence;
+}
+
+export interface H3aCleanupEvidence {
+  coordinatorActive: number;
+  coordinatorPending: number;
+  schedulerStopped: boolean;
+  hostGateEntries: number;
+  openRequests: number;
+  openResponses: number;
+  robotsCleared: boolean;
+  watchRepositoryClosed: boolean;
+  sourceServiceClosed: boolean;
+  rootRemoved: boolean;
+  idempotentDispose: boolean;
+  errorCodes: string[];
+}
+
+export type H3aBudgetObservation =
+  PublicWatchBudgetObservation | FeedParserBudgetObservation | FeedAcquisitionBudgetObservation;
+
+export interface H3aFeedBudgetDiagnosticReport {
+  reportKind: 'feed-budget-diagnostic';
+  schemaVersion: 1;
+  diagnosticId: 'nasa-feed-budget-first-v1';
+  qualification: 'not-evaluated';
+  executionStatus: 'recorded' | 'inconclusive' | 'failed';
+  observation:
+    | 'baseline-established'
+    | 'budget-exceeded'
+    | 'other-acquisition-failure'
+    | 'product-invariant-violation'
+    | 'not-observed';
+  candidateSha: string;
+  buildHash: string;
+  manifestHash: string;
+  mode: 'production-preview';
+  startedAt: string;
+  finishedAt: string;
+  fatalErrorCode: string | null;
+  claim: {
+    claimedAt: string;
+    claimHash: string;
+    workflowBeforeHash: string;
+  } | null;
+  sourceReadback: H3aCandidateEvidence['sourceReadback'];
+  firstRun: H3aRunEvidence | null;
+  baselineBefore: {
+    version: number;
+    contentHash: string;
+    validatorsPresent: boolean;
+  } | null;
+  baselineAfter: {
+    version: number;
+    contentHash: string;
+    validatorsPresent: boolean;
+  } | null;
+  eventCount: number;
+  typedEvidenceCount: number;
+  notificationCount: number;
+  auditReasonCodes: string[];
+  budgetObservations: H3aBudgetObservation[];
+  cumulativeRequests: {
+    beforeCount: number;
+    diagnosticCount: number;
+    actualCount: number;
+    rejectedCount: number;
+    perCandidateCounts: Record<string, number>;
+    workflowBeforeHash: string;
+    workflowAfterHash: string;
+    entries: H3aRequestLedgerEntry[];
   };
+  cleanup: H3aCleanupEvidence;
 }
 
 function isCanonicalUtc(value: string): boolean {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function hasExactOwnKeys(value: object, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
 
 function isUuid(value: string): boolean {
@@ -298,6 +366,14 @@ function validateSuccessfulSecondRun(candidate: H3aCandidateEvidence, errors: st
 
 export function validateH3aReport(report: H3aReport): string[] {
   const errors: string[] = [];
+  if (
+    typeof report === 'object' &&
+    report !== null &&
+    'reportKind' in report &&
+    report.reportKind === 'feed-budget-diagnostic'
+  ) {
+    return ['单次 Feed 预算诊断报告不能作为 H3a 三门资格报告'];
+  }
   if (report.schemaVersion !== 1) errors.push('report schemaVersion 非 1');
   if (!/^[0-9a-f]{40}$/.test(report.candidateSha)) errors.push('candidate SHA 非 40 位小写 hex');
   if (!/^[0-9a-f]{64}$/.test(report.buildHash)) errors.push('build hash 非 64 位小写 hex');
@@ -629,6 +705,277 @@ export function validateH3aReport(report: H3aReport): string[] {
     report.cleanup.errorCodes.length !== 0
   ) {
     errors.push('campaign cleanup 未完全闭合');
+  }
+  return errors;
+}
+
+function isSafeCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && typeof value === 'number' && value >= 0;
+}
+
+function validateDiagnosticObservation(value: H3aBudgetObservation): boolean {
+  if (value.stage === 'public-http-body') {
+    return (
+      hasExactOwnKeys(value, [
+        'stage',
+        'purpose',
+        'outcome',
+        'declaredContentLength',
+        'compressedBytes',
+        'decompressedBytes',
+      ]) &&
+      ['feed', 'page', 'robots', 'discovery'].includes(value.purpose) &&
+      [
+        'complete',
+        'response-too-large',
+        'decompress-failed-or-too-large',
+        'deadline',
+        'stream-error',
+        'aborted',
+      ].includes(value.outcome) &&
+      (value.declaredContentLength === null || isSafeCount(value.declaredContentLength)) &&
+      isSafeCount(value.compressedBytes) &&
+      isSafeCount(value.decompressedBytes)
+    );
+  }
+  if (value.stage === 'feed-parser') {
+    return (
+      hasExactOwnKeys(value, [
+        'stage',
+        'outcome',
+        'reasonCode',
+        'inputBytes',
+        'canonicalBytes',
+        'itemCount',
+      ]) &&
+      [
+        'success',
+        'projection-budget',
+        'product-budget',
+        'dependency-limit',
+        'dependency-unavailable',
+        'decode-failure',
+        'security-rejected',
+        'parse-failure',
+      ].includes(value.outcome) &&
+      [
+        'none',
+        'projection',
+        'budget',
+        'limit',
+        'dependency-unavailable',
+        'decode',
+        'security',
+        'parse',
+      ].includes(value.reasonCode) &&
+      isSafeCount(value.inputBytes) &&
+      (value.canonicalBytes === null || isSafeCount(value.canonicalBytes)) &&
+      (value.itemCount === null || isSafeCount(value.itemCount))
+    );
+  }
+  return (
+    value.stage === 'feed-acquisition' &&
+    hasExactOwnKeys(value, [
+      'stage',
+      'outcome',
+      'healthCode',
+      'disposition',
+      'canonicalBytes',
+      'itemCount',
+    ]) &&
+    [
+      'projection',
+      'not-modified',
+      'baseline-budget',
+      'parser-rejected',
+      'request-failure',
+    ].includes(value.outcome) &&
+    [
+      'projection',
+      'not-modified',
+      'security',
+      'budget',
+      'dependency',
+      'parse',
+      'aborted',
+      'first-baseline-304',
+      'network',
+      'internal',
+      'robots',
+    ].includes(value.disposition) &&
+    (value.canonicalBytes === null || isSafeCount(value.canonicalBytes)) &&
+    (value.itemCount === null || isSafeCount(value.itemCount))
+  );
+}
+
+export function validateH3aFeedBudgetDiagnosticReport(
+  report: H3aFeedBudgetDiagnosticReport,
+): string[] {
+  const errors: string[] = [];
+  if (
+    report.reportKind !== 'feed-budget-diagnostic' ||
+    report.schemaVersion !== 1 ||
+    report.diagnosticId !== 'nasa-feed-budget-first-v1' ||
+    report.qualification !== 'not-evaluated'
+  ) {
+    errors.push('NASA 单次诊断报告身份非法');
+  }
+  if (
+    !/^[0-9a-f]{40}$/.test(report.candidateSha) ||
+    !/^[0-9a-f]{64}$/.test(report.buildHash) ||
+    report.manifestHash !== H3A_MANIFEST_CONTENT_HASH ||
+    report.mode !== 'production-preview' ||
+    !isCanonicalUtc(report.startedAt) ||
+    !isCanonicalUtc(report.finishedAt)
+  ) {
+    errors.push('NASA 单次诊断运行元数据非法');
+  }
+  if (report.claim === null) {
+    errors.push('NASA 单次诊断缺少一次性 claim');
+  } else if (
+    !isCanonicalUtc(report.claim.claimedAt) ||
+    !/^[0-9a-f]{64}$/.test(report.claim.claimHash) ||
+    !/^[0-9a-f]{64}$/.test(report.claim.workflowBeforeHash)
+  ) {
+    errors.push('NASA 单次诊断 claim 非法');
+  }
+  const counts = report.cumulativeRequests;
+  const expectedCandidateKeys = H3A_MANIFEST.scenarios
+    .flatMap((scenario) => scenario.candidates.map((candidate) => candidate.id))
+    .sort();
+  if (
+    counts.beforeCount !== 4 ||
+    !isSafeCount(counts.diagnosticCount) ||
+    counts.diagnosticCount !== counts.actualCount - counts.beforeCount ||
+    counts.diagnosticCount !== counts.entries.length ||
+    counts.diagnosticCount > 10 ||
+    counts.actualCount > H3A_MANIFEST.totalMaxRequests ||
+    !isSafeCount(counts.rejectedCount) ||
+    counts.rejectedCount !== 0 ||
+    !/^[0-9a-f]{64}$/.test(counts.workflowBeforeHash) ||
+    !/^[0-9a-f]{64}$/.test(counts.workflowAfterHash) ||
+    report.claim?.workflowBeforeHash !== counts.workflowBeforeHash ||
+    Object.keys(counts.perCandidateCounts).sort().join('\0') !== expectedCandidateKeys.join('\0') ||
+    counts.perCandidateCounts['rss-primary'] !== 2 ||
+    counts.perCandidateCounts['rss-fallback'] !== 2 + counts.diagnosticCount ||
+    Object.entries(counts.perCandidateCounts).some(
+      ([candidateId, count]) =>
+        !isSafeCount(count) ||
+        (!['rss-primary', 'rss-fallback'].includes(candidateId) && count !== 0),
+    )
+  ) {
+    errors.push('NASA 单次诊断累计请求账本非法');
+  }
+  if (
+    counts.entries.some(
+      (entry, index) =>
+        entry.scenarioId !== 'h3a-rss' ||
+        entry.candidateId !== 'rss-fallback' ||
+        entry.phase !== 'first' ||
+        entry.totalOrdinal !== counts.beforeCount + index + 1 ||
+        entry.ordinal !== 2 + index + 1 ||
+        !isCanonicalUtc(entry.startedAt) ||
+        !entry.requestClosed ||
+        entry.requestClosedAt === null ||
+        !isCanonicalUtc(entry.requestClosedAt) ||
+        (entry.statusCode !== null && (!entry.responseClosed || entry.responseClosedAt === null)) ||
+        (entry.responseClosedAt !== null && !isCanonicalUtc(entry.responseClosedAt)) ||
+        entry.businessSettledAt === null,
+    )
+  ) {
+    errors.push('NASA 单次诊断存在越界或未闭合 transport');
+  }
+  if (
+    report.budgetObservations.length > 64 ||
+    !report.budgetObservations.every(validateDiagnosticObservation)
+  ) {
+    errors.push('NASA 单次诊断预算观察字段非法');
+  }
+  if (
+    !isSafeCount(report.eventCount) ||
+    !isSafeCount(report.typedEvidenceCount) ||
+    !isSafeCount(report.notificationCount) ||
+    report.eventCount !== 0 ||
+    report.typedEvidenceCount !== 0 ||
+    report.notificationCount !== 0
+  ) {
+    errors.push('NASA 单次诊断意外产生 Event/Evidence/Notification');
+  }
+  if (report.observation === 'baseline-established') {
+    if (
+      report.firstRun?.outcomeKind !== 'baseline-established' ||
+      report.baselineBefore !== null ||
+      report.baselineAfter?.version !== 1 ||
+      !report.auditReasonCodes.includes('baseline-established')
+    ) {
+      errors.push('NASA 首次 Baseline 全链证据不完整');
+    }
+  }
+  if (
+    report.sourceReadback === null ||
+    report.sourceReadback.status !== 'ok' ||
+    !isUuid(report.sourceReadback.sourceId) ||
+    !isUuid(report.sourceReadback.ruleId) ||
+    report.sourceReadback.rowVersion < 1 ||
+    !report.sourceReadback.enabled ||
+    !report.sourceReadback.locatorFingerprintMatched
+  ) {
+    errors.push('NASA 单次诊断 Source 身份读回不完整');
+  }
+  if (report.observation === 'budget-exceeded') {
+    if (
+      report.firstRun?.outcomeKind !== 'failed' ||
+      report.firstRun.healthCode !== 'budget_exceeded' ||
+      report.baselineBefore !== null ||
+      report.baselineAfter !== null
+    ) {
+      errors.push('NASA budget_exceeded 未保持 Baseline/Event 不变量');
+    }
+  }
+  if (
+    report.executionStatus === 'recorded' &&
+    (report.observation === 'not-observed' ||
+      report.observation === 'product-invariant-violation' ||
+      report.fatalErrorCode !== null)
+  ) {
+    errors.push('NASA 单次诊断 recorded 终态与观察不一致');
+  }
+  const hasDecisiveBudgetObservation = report.budgetObservations.some(
+    (item) =>
+      (item.stage === 'public-http-body' && item.outcome === 'response-too-large') ||
+      (item.stage === 'feed-parser' &&
+        (item.outcome === 'product-budget' || item.outcome === 'projection-budget')) ||
+      (item.stage === 'feed-acquisition' && item.outcome === 'baseline-budget'),
+  );
+  if (
+    report.executionStatus === 'recorded' &&
+    report.observation === 'budget-exceeded' &&
+    !hasDecisiveBudgetObservation
+  ) {
+    errors.push('NASA budget_exceeded 缺少可定位的预算层观察');
+  }
+  if (
+    report.executionStatus === 'failed' &&
+    report.observation !== 'product-invariant-violation' &&
+    report.fatalErrorCode === null
+  ) {
+    errors.push('NASA 单次诊断 failed 缺少不变量失败事实');
+  }
+  if (
+    report.cleanup.coordinatorActive !== 0 ||
+    report.cleanup.coordinatorPending !== 0 ||
+    !report.cleanup.schedulerStopped ||
+    report.cleanup.hostGateEntries !== 0 ||
+    report.cleanup.openRequests !== 0 ||
+    report.cleanup.openResponses !== 0 ||
+    !report.cleanup.robotsCleared ||
+    !report.cleanup.watchRepositoryClosed ||
+    !report.cleanup.sourceServiceClosed ||
+    !report.cleanup.rootRemoved ||
+    !report.cleanup.idempotentDispose ||
+    report.cleanup.errorCodes.length !== 0
+  ) {
+    errors.push('NASA 单次诊断 cleanup 未完全闭合');
   }
   return errors;
 }

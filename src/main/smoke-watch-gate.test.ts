@@ -69,6 +69,50 @@ describe('D10 Watch gate', () => {
     expect(branch).not.toContain('AIBROWSE_TEST_API_KEY');
   });
 
+  it('NASA 单次诊断只接受精确 literal，并继承 H3a 独占门控', () => {
+    expect(
+      resolveWatchGate({
+        smoke: '1',
+        h3a: '1',
+        h3aDiagnostic: 'nasa-feed-budget-first-v1',
+      }),
+    ).toEqual({
+      ok: true,
+      mode: 'h3a',
+      h3aDiagnostic: 'nasa-feed-budget-first-v1',
+    });
+    for (const value of ['', '0', 'nasa', 'rss-fallback']) {
+      const result = resolveWatchGate({ smoke: '1', h3a: '1', h3aDiagnostic: value });
+      expect(result).toEqual({ ok: false, reason: 'AIBROWSE_WATCH_H3A_DIAGNOSTIC 值非法' });
+    }
+    expect(resolveWatchGate({ h3aDiagnostic: 'nasa-feed-budget-first-v1' })).toEqual({
+      ok: false,
+      reason: 'AIBROWSE_WATCH_H3A_DIAGNOSTIC 必须从属于 AIBROWSE_SMOKE=1 与 AIBROWSE_WATCH_H3A=1',
+    });
+    expect(
+      resolveWatchGate({
+        smoke: '1',
+        h3a: '1',
+        h3aDiagnostic: 'nasa-feed-budget-first-v1',
+        liveProvider: '1',
+      }).ok,
+    ).toBe(false);
+    expect(resolveWatchGate({ smoke: '1', h3a: '1' })).toEqual({ ok: true, mode: 'h3a' });
+
+    const source = readFileSync('src/main/index.ts', 'utf8');
+    const gate = source.indexOf("h3aDiagnostic: process.env['AIBROWSE_WATCH_H3A_DIAGNOSTIC']");
+    const branch = source.indexOf("if (diagnostic === 'nasa-feed-budget-first-v1')");
+    const fullCampaign = source.indexOf('const result = await runH3aCampaign', branch);
+    const providerSetup = source.indexOf('const liveKey = LIVE_PROVIDER_SETUP_MODE');
+    expect(gate).toBeGreaterThanOrEqual(0);
+    expect(branch).toBeGreaterThan(gate);
+    expect(source.slice(branch, fullCampaign)).toContain('runH3aFeedBudgetDiagnostic');
+    expect(source.slice(branch, fullCampaign)).toContain('NASA 单次诊断已记录，未判定 H3a 资格');
+    expect(source.slice(branch, fullCampaign)).not.toContain('H3a 三项真实产品门通过');
+    expect(source.slice(gate, fullCampaign)).toContain('requireExistingWorkflow: true');
+    expect(fullCampaign).toBeLessThan(providerSetup);
+  });
+
   it('Research set 直接退出前必须完成 Watch 与 Sources 排水和 Watch 目录清理', () => {
     const source = readFileSync('src/main/index.ts', 'utf8');
     const branchStart = source.indexOf("if (RESEARCH_GATE_MODE && researchMode === 'set')");

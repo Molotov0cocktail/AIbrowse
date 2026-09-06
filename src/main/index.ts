@@ -37,7 +37,7 @@ import { removeSmokeDirWithRetry } from './smoke-cleanup';
 import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
 import { resolveWatchD10Mode } from './smoke-watch-gate';
-import { runH3aCampaign } from './smoke-watch-h3a-runner';
+import { runH3aCampaign, runH3aFeedBudgetDiagnostic } from './smoke-watch-h3a-runner';
 import { initialH3aHistoricalUsageSources } from './smoke-watch-h3a-usage';
 import {
   addWatchSubscriptionDestroyedListener,
@@ -304,6 +304,7 @@ const watchD10Gate = resolveWatchD10Mode({
   liveAgentSources: process.env['AIBROWSE_LIVE_AGENT_SOURCES'],
   liveResearch: process.env['AIBROWSE_LIVE_RESEARCH'],
   h3a: process.env['AIBROWSE_WATCH_H3A'],
+  h3aDiagnostic: process.env['AIBROWSE_WATCH_H3A_DIAGNOSTIC'],
 });
 const LIVE_WATCH_MODE = SMOKE_MODE && watchD10Gate.ok && watchD10Gate.mode === 'live';
 const H3A_MODE = SMOKE_MODE && watchD10Gate.ok && watchD10Gate.mode === 'h3a';
@@ -562,15 +563,42 @@ if (!gotLock) {
         const candidateSha = process.env['AIBROWSE_WATCH_H3A_CANDIDATE_SHA'] ?? '';
         const buildHash = createHash('sha256').update(readFileSync(__filename)).digest('hex');
         const logRoot = join(app.getAppPath(), 'log');
-        const evidenceDir = join(logRoot, `h3a-${candidateSha.slice(0, 12)}`);
-        const result = await runH3aCampaign({
+        const diagnostic = watchD10Gate.mode === 'h3a' ? watchD10Gate.h3aDiagnostic : undefined;
+        const evidenceDir = join(
+          logRoot,
+          diagnostic === 'nasa-feed-budget-first-v1'
+            ? `h3a-${candidateSha.slice(0, 12)}-nasa-feed-budget-first-v1`
+            : `h3a-${candidateSha.slice(0, 12)}`,
+        );
+        const campaignOptions = {
           candidateSha,
           buildHash,
           rootDir: join(app.getPath('temp'), `aibrowse-h3a-${process.pid}`),
           evidenceDir,
-          mode: 'production-preview',
+          mode: 'production-preview' as const,
           workflowDir: join(logRoot, 'h3a-workflow-usage'),
           historicalUsageSources: initialH3aHistoricalUsageSources(logRoot),
+          requireExistingWorkflow: true,
+        };
+        if (diagnostic === 'nasa-feed-budget-first-v1') {
+          const result = await runH3aFeedBudgetDiagnostic(campaignOptions);
+          if (
+            result.validationErrors.length === 0 &&
+            result.report.executionStatus === 'recorded'
+          ) {
+            logInfo('main', 'NASA 单次诊断已记录，未判定 H3a 资格');
+            app.exit(0);
+          } else {
+            logError(
+              'main',
+              `NASA 单次诊断未闭合（状态=${result.report.executionStatus}，校验=${result.validationErrors.length}）`,
+            );
+            app.exit(1);
+          }
+          return;
+        }
+        const result = await runH3aCampaign({
+          ...campaignOptions,
         });
         if (result.validationErrors.length > 0) {
           logError(

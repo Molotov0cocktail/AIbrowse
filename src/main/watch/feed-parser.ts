@@ -54,6 +54,44 @@ export type FeedParseResult =
       reason: FeedParseReasonCode | string;
     };
 
+export interface FeedParserBudgetObservation {
+  stage: 'feed-parser';
+  outcome:
+    | 'success'
+    | 'projection-budget'
+    | 'product-budget'
+    | 'dependency-limit'
+    | 'dependency-unavailable'
+    | 'decode-failure'
+    | 'security-rejected'
+    | 'parse-failure';
+  reasonCode:
+    | 'none'
+    | 'projection'
+    | 'budget'
+    | 'limit'
+    | 'dependency-unavailable'
+    | 'decode'
+    | 'security'
+    | 'parse';
+  inputBytes: number;
+  canonicalBytes: number | null;
+  itemCount: number | null;
+}
+
+export type FeedParserBudgetObserver = (observation: FeedParserBudgetObservation) => void;
+
+function observeParserBudget(
+  observer: FeedParserBudgetObserver | undefined,
+  observation: FeedParserBudgetObservation,
+): void {
+  try {
+    observer?.(observation);
+  } catch {
+    // Diagnostic observers never alter parsing or expose input data.
+  }
+}
+
 class BudgetExceededError extends Error {
   constructor() {
     super('budget_exceeded');
@@ -472,15 +510,18 @@ export type FeedProjectionCanonicalPayload = FeedProjectionValue;
 /**
  * FeedProjectionValue 完整、确定性的 canonical 编码（固定键序 JSON）。
  * 字节预算以该编码为准：== MAX 接受、MAX+1 整次失败（RED LINE）。
- * 注意：受 MAX_XML_TOTAL_TEXT_BYTES(131072) 约束，真实 feed 的完整编码无法达到
- * MAX_FEED_PROJECTION_BYTES(262144)（总文本预算先绑定）；本守卫为防御性正确实现，
- * 其 ==MAX/+1 边界语义由本函数在 helper 级机器验证。
+ * JSON escaping can make this limit reachable while normalized source text remains
+ * within its independent budget; the whole projection fails rather than truncating.
  */
 export function encodeFeedProjectionCanonical(payload: FeedProjectionCanonicalPayload): string {
   return JSON.stringify(payload);
 }
 
-function finalizeProjection(collector: FeedCollector): FeedParseResult {
+function finalizeProjection(
+  collector: FeedCollector,
+  inputBytes: number,
+  observer?: FeedParserBudgetObserver,
+): FeedParseResult {
   const channelTitle = normalizeFeedField(collector.channel.title);
   // channel description 同属 HTML/CDATA 内容字段：转安全纯文本
   const channelDescription = normalizeFeedField(htmlToPlainText(collector.channel.description));
@@ -500,21 +541,49 @@ function finalizeProjection(collector: FeedCollector): FeedParseResult {
   const canonicalJson = encodeFeedProjectionCanonical(value);
   const byteLength = utf8ByteLength(canonicalJson);
   if (byteLength > MAX_FEED_PROJECTION_BYTES) {
+    observeParserBudget(observer, {
+      stage: 'feed-parser',
+      outcome: 'projection-budget',
+      reasonCode: 'projection',
+      inputBytes,
+      canonicalBytes: byteLength,
+      itemCount: value.items.length,
+    });
     return { ok: false, health: 'budget_exceeded', reason: 'projection' };
   }
+  observeParserBudget(observer, {
+    stage: 'feed-parser',
+    outcome: 'success',
+    reasonCode: 'none',
+    inputBytes,
+    canonicalBytes: byteLength,
+    itemCount: value.items.length,
+  });
   return { ok: true, value, canonicalJson, byteLength };
 }
 
-export async function parseFeedXml(body: Buffer): Promise<FeedParseResult> {
-  return parseFeedXmlWithLoader(body, defaultSaxeLoader);
+export async function parseFeedXml(
+  body: Buffer,
+  observer?: FeedParserBudgetObserver,
+): Promise<FeedParseResult> {
+  return parseFeedXmlWithLoader(body, defaultSaxeLoader, observer);
 }
 
 export async function parseFeedXmlWithLoader(
   body: Buffer,
   loader: SaxeLoader,
+  observer?: FeedParserBudgetObserver,
 ): Promise<FeedParseResult> {
   const decoded = decodeXmlBytes(body);
   if (!decoded.ok) {
+    observeParserBudget(observer, {
+      stage: 'feed-parser',
+      outcome: 'decode-failure',
+      reasonCode: 'decode',
+      inputBytes: body.length,
+      canonicalBytes: null,
+      itemCount: null,
+    });
     return { ok: false, health: 'parse_changed', reason: decoded.reason };
   }
 
@@ -523,6 +592,14 @@ export async function parseFeedXmlWithLoader(
     saxe = await loader();
   } catch {
     // 依赖（ESM-only 包）加载失败 → 受控 dependency_unavailable，不泄漏 rejection
+    observeParserBudget(observer, {
+      stage: 'feed-parser',
+      outcome: 'dependency-unavailable',
+      reasonCode: 'dependency-unavailable',
+      inputBytes: body.length,
+      canonicalBytes: null,
+      itemCount: null,
+    });
     return { ok: false, health: 'dependency_unavailable', reason: 'dependency-unavailable' };
   }
 
@@ -717,24 +794,72 @@ export async function parseFeedXmlWithLoader(
     parser.parse(decoded.text, { stream: false });
   } catch (err) {
     if (err instanceof BudgetExceededError) {
+      observeParserBudget(observer, {
+        stage: 'feed-parser',
+        outcome: 'product-budget',
+        reasonCode: 'budget',
+        inputBytes: body.length,
+        canonicalBytes: null,
+        itemCount: null,
+      });
       return { ok: false, health: 'budget_exceeded', reason: 'budget' };
     }
     if (err instanceof ParseFailedError) {
+      observeParserBudget(observer, {
+        stage: 'feed-parser',
+        outcome: err.health === 'security_rejected' ? 'security-rejected' : 'parse-failure',
+        reasonCode: err.health === 'security_rejected' ? 'security' : 'parse',
+        inputBytes: body.length,
+        canonicalBytes: null,
+        itemCount: null,
+      });
       return { ok: false, health: err.health, reason: err.message };
     }
     const name = (err as { name?: string }).name;
     if (typeof name === 'string' && SECURITY_ERROR_NAMES.has(name)) {
+      observeParserBudget(observer, {
+        stage: 'feed-parser',
+        outcome: 'security-rejected',
+        reasonCode: 'security',
+        inputBytes: body.length,
+        canonicalBytes: null,
+        itemCount: null,
+      });
       return { ok: false, health: 'security_rejected', reason: 'dtd-or-entity' };
     }
     if (name === 'LimitExceeded') {
+      observeParserBudget(observer, {
+        stage: 'feed-parser',
+        outcome: 'dependency-limit',
+        reasonCode: 'limit',
+        inputBytes: body.length,
+        canonicalBytes: null,
+        itemCount: null,
+      });
       return { ok: false, health: 'budget_exceeded', reason: 'limit' };
     }
+    observeParserBudget(observer, {
+      stage: 'feed-parser',
+      outcome: 'parse-failure',
+      reasonCode: 'parse',
+      inputBytes: body.length,
+      canonicalBytes: null,
+      itemCount: null,
+    });
     return { ok: false, health: 'parse_changed', reason: 'xml-error' };
   }
 
   if (!formatSet) {
+    observeParserBudget(observer, {
+      stage: 'feed-parser',
+      outcome: 'parse-failure',
+      reasonCode: 'parse',
+      inputBytes: body.length,
+      canonicalBytes: null,
+      itemCount: null,
+    });
     return { ok: false, health: 'parse_changed', reason: 'empty-document' };
   }
 
-  return finalizeProjection(collector);
+  return finalizeProjection(collector, body.length, observer);
 }

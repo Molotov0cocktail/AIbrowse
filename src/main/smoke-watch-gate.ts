@@ -24,10 +24,17 @@ export interface WatchGateEnv {
   liveAgentSources?: string;
   liveResearch?: string;
   h3a?: string;
+  h3aDiagnostic?: string;
 }
 
 export type WatchGateVerdict =
-  { ok: true; mode: 'none' | 'set' | 'check' | 'live' | 'h3a' } | { ok: false; reason: string };
+  | { ok: true; mode: 'none' | 'set' | 'check' | 'live' }
+  | {
+      ok: true;
+      mode: 'h3a';
+      h3aDiagnostic?: 'nasa-feed-budget-first-v1';
+    }
+  | { ok: false; reason: string };
 
 function isSetCheck(value: string | undefined): boolean {
   return value === 'set' || value === 'check';
@@ -35,6 +42,15 @@ function isSetCheck(value: string | undefined): boolean {
 
 export function resolveWatchGate(env: WatchGateEnv): WatchGateVerdict {
   const requested = env.watchSmoke;
+  if (env.h3aDiagnostic !== undefined && env.h3aDiagnostic !== 'nasa-feed-budget-first-v1') {
+    return { ok: false, reason: 'AIBROWSE_WATCH_H3A_DIAGNOSTIC 值非法' };
+  }
+  if (env.h3aDiagnostic === 'nasa-feed-budget-first-v1' && (env.smoke !== '1' || env.h3a !== '1')) {
+    return {
+      ok: false,
+      reason: 'AIBROWSE_WATCH_H3A_DIAGNOSTIC 必须从属于 AIBROWSE_SMOKE=1 与 AIBROWSE_WATCH_H3A=1',
+    };
+  }
   if (env.h3a !== undefined && env.h3a !== '1') {
     return { ok: false, reason: `AIBROWSE_WATCH_H3A 值非法：${env.h3a}（仅支持 1）` };
   }
@@ -66,7 +82,9 @@ export function resolveWatchGate(env: WatchGateEnv): WatchGateVerdict {
         reason: `AIBROWSE_WATCH_H3A 与 ${conflicts.join('、')} 互斥，请只选其一`,
       };
     }
-    return { ok: true, mode: 'h3a' };
+    return env.h3aDiagnostic === 'nasa-feed-budget-first-v1'
+      ? { ok: true, mode: 'h3a', h3aDiagnostic: env.h3aDiagnostic }
+      : { ok: true, mode: 'h3a' };
   }
   if (env.liveWatch !== undefined && env.liveWatch !== '1') {
     return { ok: false, reason: `AIBROWSE_LIVE_WATCH 值非法：${env.liveWatch}（仅支持 1）` };

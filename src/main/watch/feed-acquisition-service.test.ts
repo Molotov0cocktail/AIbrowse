@@ -7,8 +7,12 @@
 // - 条件 header 只来自已验证 Baseline hint；304 首次/已有 Baseline 分支；
 // - 200 成功 → FeedProjection envelope（contentHash=SHA-256(canonical)）。
 import { describe, expect, it } from 'vitest';
-import { FeedAcquisitionService } from './feed-acquisition-service';
+import {
+  FeedAcquisitionService,
+  type FeedAcquisitionBudgetObservation,
+} from './feed-acquisition-service';
 import type { TargetGatedClient, PublicFetchResult } from './public-watch-http-client';
+import { parseFeedXml, type FeedParserBudgetObservation } from './feed-parser';
 import { sha256Hex } from '../../shared/watch/diff/evidence';
 import type {
   ConditionalResponseMetadata,
@@ -148,6 +152,89 @@ describe('FeedAcquisitionService（#S6-054/#S6-056）', () => {
     expect(Buffer.byteLength(canonical, 'utf8')).toBe(r.projection.byteLength);
     expect(sha256Hex(canonical)).toBe(r.projection.contentHash);
     expect(r.projection.documentId).toBeNull();
+  });
+
+  it('有界观察区分 parser success 与最终 projection，observer 异常不改变结果', async () => {
+    const urls: string[] = [];
+    const observations: Array<FeedAcquisitionBudgetObservation | FeedParserBudgetObservation> = [];
+    const svc = new FeedAcquisitionService({
+      target: capturingTarget(urls),
+      observeBudget: (observation) => observations.push(observation),
+    });
+    const result = await svc.run(
+      input(makeFeedRule(), { kind: 'none', expectedBaselineVersion: 0 }),
+    );
+    expect(result.ok).toBe(true);
+    expect(
+      observations.map((observation) => `${observation.stage}:${observation.outcome}`),
+    ).toEqual(['feed-parser:success', 'feed-acquisition:projection']);
+
+    const throwing = new FeedAcquisitionService({
+      target: capturingTarget([]),
+      observeBudget: () => {
+        throw new Error('offline observer failure');
+      },
+    });
+    expect(
+      (await throwing.run(input(makeFeedRule(), { kind: 'none', expectedBaselineVersion: 0 }))).ok,
+    ).toBe(true);
+  });
+
+  it('parser 262144 与 processing Baseline 65536 预算层可独立识别', async () => {
+    const wrap = (inner: string): string => `<rss><channel>${inner}</channel></rss>`;
+    const makeItems = (count: number): string =>
+      Array.from(
+        { length: count },
+        (_, index) => `<item><guid>g${index}</guid><title>t${index}</title></item>`,
+      ).join('');
+    let count = 1;
+    let parsed = await parseFeedXml(Buffer.from(wrap(makeItems(count))));
+    while (parsed.ok && parsed.byteLength < 65_536) {
+      count += 1;
+      parsed = await parseFeedXml(Buffer.from(wrap(makeItems(count))));
+    }
+    expect(parsed.ok).toBe(true);
+    count -= 1;
+    let padding = 0;
+    let equalBody = Buffer.from(wrap(`<title>${'a'.repeat(padding)}</title>${makeItems(count)}`));
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await parseFeedXml(equalBody);
+      expect(result.ok).toBe(true);
+      if (!result.ok) break;
+      if (result.byteLength === 65_536) break;
+      padding += 65_536 - result.byteLength;
+      equalBody = Buffer.from(wrap(`<title>${'a'.repeat(padding)}</title>${makeItems(count)}`));
+    }
+
+    const observations: Array<FeedAcquisitionBudgetObservation | FeedParserBudgetObservation> = [];
+    const equal = await new FeedAcquisitionService({
+      target: capturingTarget([], equalBody),
+      observeBudget: (observation) => observations.push(observation),
+    }).run(input(makeFeedRule(), { kind: 'none', expectedBaselineVersion: 0 }));
+    expect(equal.ok).toBe(true);
+    expect(observations.at(-1)).toMatchObject({
+      stage: 'feed-acquisition',
+      outcome: 'projection',
+      canonicalBytes: 65_536,
+    });
+
+    observations.length = 0;
+    const overBody = Buffer.from(
+      wrap(`<title>${'a'.repeat(padding + 1)}</title>${makeItems(count)}`),
+    );
+    const over = await new FeedAcquisitionService({
+      target: capturingTarget([], overBody),
+      observeBudget: (observation) => observations.push(observation),
+    }).run(input(makeFeedRule(), { kind: 'none', expectedBaselineVersion: 0 }));
+    expect(over).toMatchObject({ ok: false, health: 'budget_exceeded', disposition: 'budget' });
+    expect(observations.at(-1)).toMatchObject({
+      stage: 'feed-acquisition',
+      outcome: 'baseline-budget',
+      healthCode: 'budget_exceeded',
+      disposition: 'budget',
+      canonicalBytes: 65_537,
+      itemCount: count,
+    });
   });
 
   it('条件 header 只来自 hint：Feed hint → etag/lastModified 传给 target', async () => {

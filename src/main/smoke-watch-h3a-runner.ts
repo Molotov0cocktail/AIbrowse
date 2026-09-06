@@ -44,16 +44,25 @@ import {
   H3A_MANIFEST,
   H3A_MANIFEST_CONTENT_HASH,
   type H3aCandidate,
+  type H3aBudgetObservation,
   type H3aCandidateEvidence,
+  type H3aFeedBudgetDiagnosticReport,
   type H3aReport,
   type H3aRequestLedgerEntry,
   type H3aUsageReceiptEvidence,
   type H3aRunEvidence,
   type H3aScenarioEvidence,
   validateH3aManifest,
+  validateH3aFeedBudgetDiagnosticReport,
   validateH3aReport,
 } from './smoke-watch-h3a';
-import { H3aWorkflowUsageLedger, type H3aHistoricalUsageSource } from './smoke-watch-h3a-usage';
+import {
+  createH3aNasaDiagnosticClaim,
+  H3A_NASA_DIAGNOSTIC_ID,
+  H3aWorkflowUsageLedger,
+  type H3aHistoricalUsageSource,
+  type H3aNasaDiagnosticClaim,
+} from './smoke-watch-h3a-usage';
 
 interface RequestContext {
   scenarioId: string;
@@ -88,6 +97,7 @@ export interface H3aCampaignOptions {
   maxCandidateMs?: number;
   workflowDir?: string;
   historicalUsageSources?: readonly H3aHistoricalUsageSource[];
+  requireExistingWorkflow?: boolean;
 }
 
 export interface H3aCampaignResult {
@@ -95,6 +105,14 @@ export interface H3aCampaignResult {
   validationErrors: string[];
   reportPath: string;
   ledgerPath: string;
+}
+
+export interface H3aFeedBudgetDiagnosticResult {
+  report: H3aFeedBudgetDiagnosticReport;
+  validationErrors: string[];
+  reportPath: string;
+  ledgerPath: string;
+  observationsPath: string;
 }
 
 function isWithin(parent: string, child: string): boolean {
@@ -178,6 +196,7 @@ export class H3aRequestBudget {
     request?: WatchRequestFactory;
     workflowDir?: string;
     historicalReceipts?: readonly H3aHistoricalUsageSource[];
+    requireExistingWorkflow?: boolean;
   }) {
     this.evidenceDir = resolve(options.evidenceDir);
     mkdirSync(this.evidenceDir, { recursive: true });
@@ -191,6 +210,7 @@ export class H3aRequestBudget {
     this.workflow = new H3aWorkflowUsageLedger({
       workflowDir: resolve(options.workflowDir ?? join(this.evidenceDir, 'workflow-usage')),
       historicalSources: options.historicalReceipts ?? [],
+      requireExisting: options.requireExistingWorkflow,
     });
     const workflow = this.workflow.snapshot;
     const initial: PersistedLedger = {
@@ -239,6 +259,18 @@ export class H3aRequestBudget {
 
   get snapshot(): PersistedLedger {
     return JSON.parse(JSON.stringify(this.ledger)) as PersistedLedger;
+  }
+
+  claimNasaDiagnostic(
+    candidateSha: string,
+    buildHash: string,
+  ): { claim: H3aNasaDiagnosticClaim; claimHash: string; path: string } {
+    return createH3aNasaDiagnosticClaim({
+      workflow: this.workflow,
+      candidateSha,
+      buildHash,
+      manifestHash: H3A_MANIFEST_CONTENT_HASH,
+    });
   }
 
   countFor(candidateId: string, afterTotalOrdinal = 0): number {
@@ -707,6 +739,7 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
     request: options.request,
     workflowDir,
     historicalReceipts: options.historicalUsageSources,
+    requireExistingWorkflow: options.requireExistingWorkflow,
   });
   const requestCountBeforeCampaign = budget.snapshot.actualCount;
   const startedAt = new Date().toISOString();
@@ -1303,5 +1336,473 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
     validationErrors,
     reportPath,
     ledgerPath: join(evidenceDir, 'request-ledger.json'),
+  };
+}
+
+function diagnosticBaseline(
+  baseline: ReturnType<WatchRepository['getBaseline']>,
+): H3aFeedBudgetDiagnosticReport['baselineBefore'] {
+  return baseline === null
+    ? null
+    : {
+        version: baseline.version,
+        contentHash: baseline.contentHash,
+        validatorsPresent:
+          baseline.conditionalEtag !== null || baseline.conditionalLastModified !== null,
+      };
+}
+
+export async function runH3aFeedBudgetDiagnostic(
+  options: H3aCampaignOptions,
+): Promise<H3aFeedBudgetDiagnosticResult> {
+  assertRuntimeMetadata(options);
+  const rootDir = assertControlledRoot(options.rootDir);
+  const evidenceDir = resolve(options.evidenceDir);
+  if (isWithin(rootDir, evidenceDir)) throw new Error('H3a evidenceDir 不得位于待清理临时根目录内');
+  mkdirSync(evidenceDir, { recursive: true });
+  const manifestPath = join(evidenceDir, 'manifest.json');
+  const manifestBytes = canonicalH3aManifest();
+  if (existsSync(manifestPath)) {
+    if (readFileSync(manifestPath, 'utf8') !== manifestBytes) {
+      throw new Error('NASA 单次诊断既有 manifest 字节与冻结内容不一致');
+    }
+  } else {
+    writeFileSync(manifestPath, manifestBytes, { encoding: 'utf8', flag: 'wx' });
+  }
+  const scenario = H3A_MANIFEST.scenarios.find((item) => item.id === 'h3a-rss');
+  const candidate = scenario?.candidates.find((item) => item.id === 'rss-fallback');
+  if (
+    scenario === undefined ||
+    scenario.kind !== 'rss-or-atom' ||
+    candidate === undefined ||
+    candidate.url !== 'https://www.nasa.gov/feed/'
+  ) {
+    throw new Error('NASA 单次诊断冻结 manifest 身份非法');
+  }
+  const workflowDir = resolve(options.workflowDir ?? join(evidenceDir, 'workflow-usage'));
+  if (isWithin(rootDir, workflowDir)) {
+    throw new Error('H3a workflow usage 目录不得位于待清理临时根目录内');
+  }
+  const budget = new H3aRequestBudget({
+    evidenceDir,
+    candidateSha: options.candidateSha,
+    buildHash: options.buildHash,
+    request: options.request,
+    workflowDir,
+    historicalReceipts: options.historicalUsageSources,
+    requireExistingWorkflow: true,
+  });
+  const requestCountBefore = budget.snapshot.actualCount;
+  const claimResult = budget.claimNasaDiagnostic(options.candidateSha, options.buildHash);
+  const startedAt = new Date().toISOString();
+  atomicJson(immutableEvidencePath(evidenceDir, 'diagnostic-start', startedAt), {
+    schemaVersion: 1,
+    reportKind: 'feed-budget-diagnostic',
+    diagnosticId: H3A_NASA_DIAGNOSTIC_ID,
+    candidateSha: options.candidateSha,
+    buildHash: options.buildHash,
+    manifestHash: H3A_MANIFEST_CONTENT_HASH,
+    mode: options.mode,
+    startedAt,
+    workflowBeforeCount: requestCountBefore,
+    workflowBeforeHash: claimResult.claim.workflowBeforeHash,
+    claimHash: claimResult.claimHash,
+  });
+
+  mkdirSync(rootDir, { recursive: true });
+  const clock = options.clock ?? createSystemClock();
+  const lifecycle = new WatchLifecycleCoordinator({ nowMs: () => clock.now().getTime() });
+  let sourceService: (SourceService & SourceWatchProjectionProvider) | null = null;
+  let repo: WatchRepository | null = null;
+  let coordinator: WatchRunCoordinator | null = null;
+  let scheduler: WatchScheduler | null = null;
+  let hostGate: HostRequestGate | null = null;
+  let workspace: WatchTaskTabWorkspace | null = null;
+  let robots: { clearCache(): void } | null = null;
+  let sourceClosed: boolean;
+  let robotsCleared: boolean;
+  let idempotentDispose: boolean;
+  let fatalErrorCode: string | null = null;
+  const cleanupErrorCodes: string[] = [];
+  const budgetObservations: H3aBudgetObservation[] = [];
+  let observationOverflow = false;
+  const observeBudget = (observation: H3aBudgetObservation): void => {
+    if (budgetObservations.length >= 64) {
+      observationOverflow = true;
+      return;
+    }
+    budgetObservations.push(observation);
+  };
+  const candidateDeadlineMono = performance.now() + (options.maxCandidateMs ?? 180_000);
+  let sourceReadback: H3aFeedBudgetDiagnosticReport['sourceReadback'] = null;
+  let firstRun: H3aRunEvidence | null = null;
+  let baselineBefore: H3aFeedBudgetDiagnosticReport['baselineBefore'] = null;
+  let baselineAfter: H3aFeedBudgetDiagnosticReport['baselineAfter'] = null;
+  let eventCount = 0;
+  let typedEvidenceCount = 0;
+  let notificationCount = 0;
+  let auditReasonCodes: string[] = [];
+  let observation: H3aFeedBudgetDiagnosticReport['observation'];
+
+  try {
+    const sourcesDir = join(rootDir, 'sources');
+    const watchDir = join(rootDir, 'watch');
+    mkdirSync(sourcesDir, { recursive: true });
+    mkdirSync(watchDir, { recursive: true });
+    const sourceOutcome = openSourcesStore({
+      dbPath: join(sourcesDir, 'sources.db'),
+      backupsDir: join(sourcesDir, 'backups'),
+      observer: lifecycle,
+      nowMs: () => clock.now().getTime(),
+    });
+    if (sourceOutcome.mode !== 'normal' || !(sourceOutcome.service instanceof SourceServiceImpl)) {
+      throw codedError('SOURCE_ASSEMBLY_FAILED', 'NASA 单次诊断 Sources 装配失败');
+    }
+    sourceService = sourceOutcome.service as SourceService & SourceWatchProjectionProvider;
+    const sourceReader = (sourceId: string) => sourceService!.getSourceWatchProjection(sourceId);
+    const watchOutcome = openWatchStore({
+      dbPath: join(watchDir, 'watch.db'),
+      backupsDir: join(watchDir, 'backups'),
+      nowMs: () => clock.now().getTime(),
+      reconcile: (candidateRepo) => lifecycle.reconcileOnStartup(candidateRepo, sourceReader),
+      windowsNotificationsEnabled: false,
+    });
+    if (watchOutcome.mode !== 'normal') {
+      throw codedError('WATCH_ASSEMBLY_FAILED', 'NASA 单次诊断 Watch Store 装配失败');
+    }
+    const diagnosticRepo = watchOutcome.repo;
+    repo = diagnosticRepo;
+    lifecycle.bind(diagnosticRepo, sourceReader);
+    hostGate = new HostRequestGate({ clock });
+    const publicStack = createPublicWatchHttpStack({
+      clock,
+      hostGate,
+      lookup: options.lookup,
+      request: budget.factory,
+      observeBudget,
+    });
+    robots = publicStack.robots;
+    workspace = new WatchTaskTabWorkspace({
+      browser: failClosedTabBrowser(),
+      onCleanupFailure: () => lifecycle.markUnavailable('NASA 单次诊断 Session 工作区清理失败'),
+    });
+    const pageRouter = new PageAcquisitionRouter({
+      publicTarget: publicStack.target,
+      workspace,
+      reader: new BrowserWatchReader({ browser: failClosedReader(), clock }),
+      hostGate,
+      clock,
+    });
+    const acquisition = new WatchAcquisitionService({
+      feed: new FeedAcquisitionService({ target: publicStack.target, observeBudget }),
+      page: pageRouter,
+    });
+    const processing = new WatchProcessingServiceImpl({
+      repo: diagnosticRepo,
+      clock,
+      windowsNotificationsEnabled: false,
+    });
+    let coordinatorRef: WatchRunCoordinator | null = null;
+    scheduler = new WatchScheduler({
+      clock,
+      onDue: (entries) => coordinatorRef?.handleDue(entries),
+    });
+    coordinator = new WatchRunCoordinator({
+      repo: diagnosticRepo,
+      revalidator: lifecycle,
+      acquisition,
+      processing,
+      hostGate,
+      scheduler,
+      clock,
+    });
+    coordinatorRef = coordinator;
+    coordinator.start();
+
+    const added = await sourceService.addManual({
+      scope: 'page',
+      url: candidate.url,
+      name: 'H3a NASA Feed 单次预算诊断',
+      shareMode: 'blocked',
+    });
+    if (!added.ok) throw codedError('SOURCE_CREATE_FAILED', 'NASA 单次诊断 Source 创建失败');
+    const sourceProjection = sourceService.getSourceWatchProjection(added.source.id);
+    if (sourceProjection.status !== 'found') {
+      throw codedError('SOURCE_READBACK_FAILED', 'NASA 单次诊断 Source 读回失败');
+    }
+    const fingerprint = computeSourceLocatorFingerprint({
+      sourceId: sourceProjection.projection.sourceId,
+      scope: sourceProjection.projection.scope,
+      canonicalKey: sourceProjection.projection.canonicalKey,
+      kind: 'feed',
+      canonicalTargetUrl: candidate.url,
+    });
+    const nowIso = clock.now().toISOString();
+    const rule: WatchRule = {
+      id: randomUUID(),
+      version: 1,
+      sourceId: sourceProjection.projection.sourceId,
+      kind: 'feed',
+      state: 'enabled',
+      pauseReason: null,
+      desiredEnabled: true,
+      muted: true,
+      accessMode: 'public',
+      schedule: { kind: 'interval', intervalMinutes: 60 },
+      target: { type: 'feed', feedUrl: candidate.url, format: 'rss2' },
+      condition: null,
+      notificationLevel: 'normal',
+      showDetails: false,
+      sourceRowVersion: sourceProjection.projection.rowVersion,
+      sourceLocatorFingerprint: fingerprint,
+      nextDueAt: new Date(clock.now().getTime() + 86_400_000).toISOString(),
+      lastConsumedScheduledFor: null,
+      lastDailyLocalDate: null,
+      consecutiveFailures: 0,
+      backoffUntil: null,
+      baselineVersion: 0,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    const inserted = diagnosticRepo.insertRule(rule);
+    if (!inserted.ok) throw codedError('RULE_CREATE_FAILED', 'NASA 单次诊断 Rule 创建失败');
+    const ruleReadback = diagnosticRepo.getRule(rule.id);
+    sourceReadback = {
+      status: 'ok',
+      sourceId: sourceProjection.projection.sourceId,
+      ruleId: rule.id,
+      rowVersion: sourceProjection.projection.rowVersion,
+      enabled: sourceProjection.projection.enabled,
+      locatorFingerprintMatched:
+        ruleReadback?.sourceLocatorFingerprint === fingerprint &&
+        lifecycle.revalidateRuleSource(rule.id).status === 'ok',
+    };
+    baselineBefore = diagnosticBaseline(diagnosticRepo.getBaseline(rule.id));
+    budget.setContext({ scenarioId: scenario.id, candidateId: candidate.id, phase: 'first' });
+    const reservation = coordinator.manualRun(rule.id, `h3a:${H3A_NASA_DIAGNOSTIC_ID}:first`);
+    if (!reservation.ok) {
+      throw codedError('MANUAL_RUN_REJECTED', 'NASA 单次诊断 manualRun 被拒绝');
+    }
+    const terminal = await pollTerminal(
+      diagnosticRepo,
+      reservation.runId,
+      options,
+      candidateDeadlineMono,
+    );
+    await pollCoordinatorIdle(coordinator, options, candidateDeadlineMono);
+    budget.clearContext();
+    budget.markBusinessSettled(requestCountBefore);
+    if (
+      !(await budget.waitForTransportClose(
+        requestCountBefore,
+        candidateDeadlineMono,
+        options.onPoll,
+      ))
+    ) {
+      throw codedError('TRANSPORT_CLOSE_TIMEOUT', 'NASA 单次诊断 transport close 超过截止');
+    }
+    firstRun = runEvidence(terminal);
+    baselineAfter = diagnosticBaseline(diagnosticRepo.getBaseline(rule.id));
+    const events = diagnosticRepo.listEventsByRule(rule.id);
+    eventCount = events.length;
+    typedEvidenceCount = events.flatMap((event) => diagnosticRepo.listEventItems(event.id)).length;
+    notificationCount =
+      diagnosticRepo.listPendingNotifications('in-app', 50).filter((row) => row.ruleId === rule.id)
+        .length +
+      diagnosticRepo.listPendingNotifications('windows', 50).filter((row) => row.ruleId === rule.id)
+        .length;
+    auditReasonCodes = diagnosticRepo
+      .listAudits(1000)
+      .filter((audit) => audit.ruleId === rule.id)
+      .map((audit) => audit.reasonCode);
+
+    const commonInvariant =
+      sourceReadback.enabled &&
+      sourceReadback.locatorFingerprintMatched &&
+      baselineBefore === null &&
+      eventCount === 0 &&
+      typedEvidenceCount === 0 &&
+      notificationCount === 0;
+    if (firstRun?.outcomeKind === 'baseline-established') {
+      if (
+        !commonInvariant ||
+        baselineAfter?.version !== 1 ||
+        !auditReasonCodes.includes('baseline-established')
+      ) {
+        throw codedError('PRODUCT_INVARIANT', 'NASA 首次 Baseline 产品不变量未闭合');
+      }
+      observation = 'baseline-established';
+    } else if (firstRun?.outcomeKind === 'failed' && firstRun.healthCode === 'budget_exceeded') {
+      if (!commonInvariant || baselineAfter !== null) {
+        throw codedError('PRODUCT_INVARIANT', 'NASA budget_exceeded 产品不变量未闭合');
+      }
+      observation = 'budget-exceeded';
+    } else if (firstRun?.outcomeKind === 'failed') {
+      if (!commonInvariant || baselineAfter !== null) {
+        throw codedError('PRODUCT_INVARIANT', 'NASA 失败产品不变量未闭合');
+      }
+      observation = 'other-acquisition-failure';
+    } else {
+      throw codedError('PRODUCT_INVARIANT', 'NASA 单次诊断缺少合法首次 Run 终态');
+    }
+    if (observationOverflow) {
+      throw codedError('OBSERVATION_OVERFLOW', 'NASA 单次诊断预算观察超过固定上限');
+    }
+  } catch (error) {
+    budget.clearContext();
+    fatalErrorCode = safeErrorCode(error instanceof Error ? error : new Error('diagnostic'));
+    observation = 'product-invariant-violation';
+  } finally {
+    budget.clearContext();
+    const cleanup = async (code: string, work: () => void | Promise<void>): Promise<void> => {
+      try {
+        await work();
+      } catch {
+        cleanupErrorCodes.push(code);
+      }
+    };
+    await cleanup('COORDINATOR_STOP_1', async () => coordinator?.stop());
+    await cleanup('COORDINATOR_STOP_2', async () => coordinator?.stop());
+    await cleanup('TRANSPORT_CLOSE_BARRIER', async () => {
+      budget.markBusinessSettled(requestCountBefore);
+      if (
+        !(await budget.waitForTransportClose(
+          requestCountBefore,
+          candidateDeadlineMono,
+          options.onPoll,
+        ))
+      ) {
+        throw codedError('TRANSPORT_CLOSE_TIMEOUT', 'NASA 单次诊断最终 transport close 超过截止');
+      }
+    });
+    await cleanup('SCHEDULER_STOP_1', () => scheduler?.stop());
+    await cleanup('SCHEDULER_STOP_2', () => scheduler?.stop());
+    await cleanup('WORKSPACE_CLEANUP_1', async () => {
+      await workspace?.cleanupAll();
+    });
+    await cleanup('WORKSPACE_CLEANUP_2', async () => {
+      await workspace?.cleanupAll();
+    });
+    await cleanup('ROBOTS_CLEAR_1', () => robots?.clearCache());
+    await cleanup('ROBOTS_CLEAR_2', () => robots?.clearCache());
+    robotsCleared =
+      robots !== null && !cleanupErrorCodes.some((code) => code.startsWith('ROBOTS_'));
+    await cleanup('HOST_GATE_CLEAR_1', () => hostGate?.clear());
+    await cleanup('HOST_GATE_CLEAR_2', () => hostGate?.clear());
+    await cleanup('LIFECYCLE_DISPOSE_1', () => lifecycle.dispose());
+    await cleanup('LIFECYCLE_DISPOSE_2', () => lifecycle.dispose());
+    await cleanup('WATCH_REPOSITORY_DISPOSE_1', () => repo?.dispose());
+    await cleanup('WATCH_REPOSITORY_DISPOSE_2', () => repo?.dispose());
+    await cleanup('SOURCE_SERVICE_DISPOSE_1', () => sourceService?.dispose());
+    await cleanup('SOURCE_SERVICE_DISPOSE_2', () => sourceService?.dispose());
+    sourceClosed =
+      sourceService !== null &&
+      !cleanupErrorCodes.some((code) => code.startsWith('SOURCE_SERVICE_'));
+    await cleanup('ROOT_REMOVE', () => {
+      if (existsSync(rootDir)) rmSync(rootDir, { recursive: true, force: false });
+    });
+    idempotentDispose = cleanupErrorCodes.length === 0;
+    if (cleanupErrorCodes.length > 0 && fatalErrorCode === null) {
+      fatalErrorCode = 'CLEANUP_FAILED';
+      observation = 'product-invariant-violation';
+    }
+  }
+
+  const observationsPath = immutableEvidencePath(evidenceDir, 'budget-observations', startedAt);
+  try {
+    atomicJson(observationsPath, {
+      schemaVersion: 1,
+      reportKind: 'feed-budget-diagnostic-observations',
+      diagnosticId: H3A_NASA_DIAGNOSTIC_ID,
+      candidateSha: options.candidateSha,
+      buildHash: options.buildHash,
+      manifestHash: H3A_MANIFEST_CONTENT_HASH,
+      observations: budgetObservations,
+    });
+  } catch {
+    fatalErrorCode = 'EVIDENCE_WRITE_FAILED';
+    observation = 'product-invariant-violation';
+  }
+  const decisiveBudgetObservation = budgetObservations.some(
+    (item) =>
+      (item.stage === 'public-http-body' && item.outcome === 'response-too-large') ||
+      (item.stage === 'feed-parser' &&
+        (item.outcome === 'product-budget' || item.outcome === 'projection-budget')) ||
+      (item.stage === 'feed-acquisition' && item.outcome === 'baseline-budget'),
+  );
+  const executionStatus: H3aFeedBudgetDiagnosticReport['executionStatus'] =
+    fatalErrorCode !== null
+      ? 'failed'
+      : observation === 'baseline-established'
+        ? 'recorded'
+        : observation === 'budget-exceeded' && decisiveBudgetObservation
+          ? 'recorded'
+          : 'inconclusive';
+  const ledger = budget.snapshot;
+  const cleanupEvidence: H3aFeedBudgetDiagnosticReport['cleanup'] = {
+    coordinatorActive: coordinator?.activeRunCount() ?? 0,
+    coordinatorPending: coordinator?.pendingRunCount() ?? 0,
+    schedulerStopped: scheduler?.isStopped ?? true,
+    hostGateEntries: hostGate?.size ?? 0,
+    openRequests: ledger.entries.filter((entry) => !entry.requestClosed).length,
+    openResponses: ledger.entries.filter(
+      (entry) => entry.statusCode !== null && !entry.responseClosed,
+    ).length,
+    robotsCleared,
+    watchRepositoryClosed: repo?.isDisposed ?? true,
+    sourceServiceClosed: sourceClosed,
+    rootRemoved: !existsSync(rootDir),
+    idempotentDispose,
+    errorCodes: cleanupErrorCodes,
+  };
+  const report: H3aFeedBudgetDiagnosticReport = {
+    reportKind: 'feed-budget-diagnostic',
+    schemaVersion: 1,
+    diagnosticId: H3A_NASA_DIAGNOSTIC_ID,
+    qualification: 'not-evaluated',
+    executionStatus,
+    observation,
+    candidateSha: options.candidateSha,
+    buildHash: options.buildHash,
+    manifestHash: H3A_MANIFEST_CONTENT_HASH,
+    mode: options.mode,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    fatalErrorCode,
+    claim: {
+      claimedAt: claimResult.claim.claimedAt,
+      claimHash: claimResult.claimHash,
+      workflowBeforeHash: claimResult.claim.workflowBeforeHash,
+    },
+    sourceReadback,
+    firstRun,
+    baselineBefore,
+    baselineAfter,
+    eventCount,
+    typedEvidenceCount,
+    notificationCount,
+    auditReasonCodes,
+    budgetObservations,
+    cumulativeRequests: {
+      beforeCount: requestCountBefore,
+      diagnosticCount: ledger.actualCount - requestCountBefore,
+      actualCount: ledger.actualCount,
+      rejectedCount: ledger.rejectedCount,
+      perCandidateCounts: ledger.perCandidateCounts,
+      workflowBeforeHash: claimResult.claim.workflowBeforeHash,
+      workflowAfterHash: ledger.workflowLedgerHash,
+      entries: ledger.entries,
+    },
+    cleanup: cleanupEvidence,
+  };
+  const validationErrors = validateH3aFeedBudgetDiagnosticReport(report);
+  const reportPath = immutableEvidencePath(evidenceDir, 'report', startedAt);
+  atomicJson(reportPath, { report, validationErrors });
+  return {
+    report,
+    validationErrors,
+    reportPath,
+    ledgerPath: join(evidenceDir, 'request-ledger.json'),
+    observationsPath,
   };
 }

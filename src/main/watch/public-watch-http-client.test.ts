@@ -19,6 +19,7 @@ import {
   createPublicWatchHttpStack,
   WATCH_DEFAULT_USER_AGENT,
   type PublicWatchStackSeams,
+  type PublicWatchBudgetObservation,
   type WatchHostGatePort,
   type WatchIncomingLike,
   type WatchInflaterLike,
@@ -286,6 +287,7 @@ function createHarness(
       maxOutputLength: number,
     ) => WatchInflaterLike;
     hostGate?: WatchHostGatePort;
+    observeBudget?: (observation: PublicWatchBudgetObservation) => void;
   } = {},
 ) {
   const captured: CapturedRequest[] = [];
@@ -307,6 +309,7 @@ function createHarness(
     timeoutMs: opts.timeoutMs ?? 30_000,
     createInflater: opts.createInflater,
     hostGate: opts.hostGate,
+    observeBudget: opts.observeBudget,
   } as unknown as PublicWatchStackSeams);
   return {
     stack,
@@ -610,33 +613,131 @@ describe('redirect — 每跳复验（WRT-03）', () => {
 });
 
 describe('预算/超时/慢流（WRT-04）', () => {
+  it('预算观察只记录有界计数与终态，observer 异常不改变业务结果', async () => {
+    const observations: PublicWatchBudgetObservation[] = [];
+    const h = createHarness({ observeBudget: (observation) => observations.push(observation) });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    h.targets()[0]!.respond(200, { 'content-length': '3' }, 'abc');
+    const result = await promise;
+    expect(result.kind).toBe('ok');
+    expect(observations.filter((item) => item.purpose === 'feed')).toEqual([
+      {
+        stage: 'public-http-body',
+        purpose: 'feed',
+        outcome: 'complete',
+        declaredContentLength: 3,
+        compressedBytes: 3,
+        decompressedBytes: 3,
+      },
+    ]);
+
+    const throwing = createHarness({
+      observeBudget: () => {
+        throw new Error('offline observer failure');
+      },
+    });
+    const throwingPromise = throwing.stack.target.get({
+      url: 'https://example.com/feed',
+      purpose: 'feed',
+    });
+    await flush();
+    throwing.targets()[0]!.respond(200, {}, 'abc');
+    expect((await throwingPromise).kind).toBe('ok');
+  });
+
   it('Content-Length 超预算立即 budget_exceeded（feed 2 MiB）', async () => {
-    const h = createHarness();
+    const observations: PublicWatchBudgetObservation[] = [];
+    const h = createHarness({ observeBudget: (observation) => observations.push(observation) });
     const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
     await flush();
     h.targets()[0]!.respond(200, { 'content-length': String(MAX_FEED_RESPONSE_BYTES + 1) }, '');
     const r = await promise;
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') expect(r.health).toBe('budget_exceeded');
+    expect(observations.filter((item) => item.purpose === 'feed')).toEqual([
+      expect.objectContaining({
+        stage: 'public-http-body',
+        outcome: 'response-too-large',
+        declaredContentLength: MAX_FEED_RESPONSE_BYTES + 1,
+        compressedBytes: 0,
+        decompressedBytes: 0,
+      }),
+    ]);
+  });
+
+  it('inflater error 与确定超限分开观察，不把未知解压失败猜成字节超限', async () => {
+    const observations: PublicWatchBudgetObservation[] = [];
+    const h = createHarness({ observeBudget: (observation) => observations.push(observation) });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    h.targets()[0]!.respond(200, { 'content-encoding': 'gzip' }, Buffer.from('not-gzip'));
+    const result = await promise;
+    expect(result).toMatchObject({
+      kind: 'failed',
+      health: 'budget_exceeded',
+      reason: 'decompress-failed-or-too-large',
+    });
+    expect(observations.filter((item) => item.purpose === 'feed')).toEqual([
+      expect.objectContaining({
+        stage: 'public-http-body',
+        outcome: 'decompress-failed-or-too-large',
+        declaredContentLength: null,
+      }),
+    ]);
   });
 
   it('== MAX identity 接受；MAX+1 拒绝', async () => {
     const atMax = 'x'.repeat(MAX_FEED_RESPONSE_BYTES);
-    const h1 = createHarness();
+    const atMaxObservations: PublicWatchBudgetObservation[] = [];
+    const h1 = createHarness({
+      observeBudget: (observation) => atMaxObservations.push(observation),
+    });
     const p1 = h1.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
     await flush();
     h1.targets()[0]!.respond(200, {}, atMax);
     const r1 = await p1;
     expect(r1.kind).toBe('ok');
     if (r1.kind === 'ok') expect(r1.meta.byteLength).toBe(MAX_FEED_RESPONSE_BYTES);
+    expect(atMaxObservations.at(-1)).toMatchObject({
+      outcome: 'complete',
+      compressedBytes: MAX_FEED_RESPONSE_BYTES,
+      decompressedBytes: MAX_FEED_RESPONSE_BYTES,
+    });
 
-    const h2 = createHarness();
+    const overObservations: PublicWatchBudgetObservation[] = [];
+    const h2 = createHarness({
+      observeBudget: (observation) => overObservations.push(observation),
+    });
     const p2 = h2.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
     await flush();
     h2.targets()[0]!.respond(200, {}, 'x'.repeat(MAX_FEED_RESPONSE_BYTES + 1));
     const r2 = await p2;
     expect(r2.kind).toBe('failed');
     if (r2.kind === 'failed') expect(r2.health).toBe('budget_exceeded');
+    expect(overObservations.at(-1)).toMatchObject({
+      outcome: 'response-too-large',
+      compressedBytes: MAX_FEED_RESPONSE_BYTES + 1,
+      decompressedBytes: MAX_FEED_RESPONSE_BYTES + 1,
+    });
+  });
+
+  it('压缩输入自身超限在 inflater 前记录 compressed 轴，不猜测解压正文', async () => {
+    const observations: PublicWatchBudgetObservation[] = [];
+    const h = createHarness({ observeBudget: (observation) => observations.push(observation) });
+    const promise = h.stack.target.get({ url: 'https://example.com/feed', purpose: 'feed' });
+    await flush();
+    h.targets()[0]!.respond(
+      200,
+      { 'content-encoding': 'gzip' },
+      randomBytes(MAX_FEED_RESPONSE_BYTES + 1),
+    );
+    expect(await promise).toMatchObject({ kind: 'failed', health: 'budget_exceeded' });
+    expect(observations.at(-1)).toMatchObject({
+      outcome: 'response-too-large',
+      compressedBytes: MAX_FEED_RESPONSE_BYTES + 1,
+      decompressedBytes: 0,
+    });
   });
 
   it('gzip 解压后 == MAX 接受、MAX+1 拒绝（解压字节硬上限）', async () => {
