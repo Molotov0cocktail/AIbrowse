@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
@@ -47,11 +47,13 @@ import {
   type H3aCandidateEvidence,
   type H3aReport,
   type H3aRequestLedgerEntry,
+  type H3aUsageReceiptEvidence,
   type H3aRunEvidence,
   type H3aScenarioEvidence,
   validateH3aManifest,
   validateH3aReport,
 } from './smoke-watch-h3a';
+import { H3aWorkflowUsageLedger, type H3aHistoricalUsageSource } from './smoke-watch-h3a-usage';
 
 interface RequestContext {
   scenarioId: string;
@@ -60,12 +62,16 @@ interface RequestContext {
 }
 
 interface PersistedLedger {
-  schemaVersion: 1;
+  schemaVersion: 2;
   candidateSha: string;
   buildHash: string;
   manifestHash: string;
+  workflowBaseCount: number;
   actualCount: number;
   rejectedCount: number;
+  perCandidateCounts: Record<string, number>;
+  historicalReceipts: H3aUsageReceiptEvidence[];
+  workflowLedgerHash: string;
   entries: H3aRequestLedgerEntry[];
 }
 
@@ -80,6 +86,8 @@ export interface H3aCampaignOptions {
   lookup?: (hostname: string) => Promise<Array<{ address: string; family: 4 | 6 }>>;
   onPoll?: () => void | Promise<void>;
   maxCandidateMs?: number;
+  workflowDir?: string;
+  historicalUsageSources?: readonly H3aHistoricalUsageSource[];
 }
 
 export interface H3aCampaignResult {
@@ -156,14 +164,20 @@ export class H3aRequestBudget {
   private readonly ledgerPath: string;
   private readonly baseRequest: WatchRequestFactory;
   private readonly perCandidateLimits = new Map<string, number>();
+  private readonly workflow: H3aWorkflowUsageLedger;
+  private readonly requestObjects = new Map<number, WatchRequestLike>();
+  private readonly waiters = new Set<() => void>();
   private context: RequestContext | null = null;
   private ledger: PersistedLedger;
+  private observerFailure: Error | null = null;
 
   constructor(options: {
     evidenceDir: string;
     candidateSha: string;
     buildHash: string;
     request?: WatchRequestFactory;
+    workflowDir?: string;
+    historicalReceipts?: readonly H3aHistoricalUsageSource[];
   }) {
     this.evidenceDir = resolve(options.evidenceDir);
     mkdirSync(this.evidenceDir, { recursive: true });
@@ -174,13 +188,22 @@ export class H3aRequestBudget {
         this.perCandidateLimits.set(candidate.id, candidate.maxRequests);
       }
     }
+    this.workflow = new H3aWorkflowUsageLedger({
+      workflowDir: resolve(options.workflowDir ?? join(this.evidenceDir, 'workflow-usage')),
+      historicalSources: options.historicalReceipts ?? [],
+    });
+    const workflow = this.workflow.snapshot;
     const initial: PersistedLedger = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       candidateSha: options.candidateSha,
       buildHash: options.buildHash,
       manifestHash: H3A_MANIFEST_CONTENT_HASH,
-      actualCount: 0,
-      rejectedCount: 0,
+      workflowBaseCount: workflow.actualCount,
+      actualCount: workflow.actualCount,
+      rejectedCount: workflow.rejectedCount,
+      perCandidateCounts: workflow.perCandidateCounts,
+      historicalReceipts: workflow.receipts,
+      workflowLedgerHash: this.workflowHash(),
       entries: [],
     };
     if (existsSync(this.ledgerPath)) {
@@ -224,11 +247,113 @@ export class H3aRequestBudget {
     ).length;
   }
 
+  markBusinessSettled(afterTotalOrdinal: number): void {
+    this.assertObserverHealthy();
+    const settledAt = new Date().toISOString();
+    let changed = false;
+    for (const entry of this.ledger.entries) {
+      if (entry.totalOrdinal <= afterTotalOrdinal || entry.businessSettledAt !== null) continue;
+      const request = this.requestObjects.get(entry.totalOrdinal) as
+        (WatchRequestLike & { destroyed?: unknown; writableEnded?: unknown }) | undefined;
+      entry.businessSettledAt = settledAt;
+      entry.requestDestroyedAtBusinessEnd =
+        typeof request?.destroyed === 'boolean' ? request.destroyed : null;
+      entry.requestWritableEndedAtBusinessEnd =
+        typeof request?.writableEnded === 'boolean' ? request.writableEnded : null;
+      changed = true;
+    }
+    if (changed) this.persistCritical();
+  }
+
+  async waitForTransportClose(
+    afterTotalOrdinal: number,
+    deadlineMono: number,
+    onWait?: () => void | Promise<void>,
+  ): Promise<boolean> {
+    this.assertObserverHealthy();
+    if (this.isTransportClosed(afterTotalOrdinal)) return true;
+    const remaining = deadlineMono - performance.now();
+    if (!Number.isFinite(remaining) || remaining <= 0) return false;
+    return new Promise<boolean>((resolveWait, rejectWait) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const finish = (value: boolean, error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        this.waiters.delete(check);
+        if (timer !== null) clearTimeout(timer);
+        if (error !== undefined) rejectWait(error);
+        else resolveWait(value);
+      };
+      const check = (): void => {
+        try {
+          this.assertObserverHealthy();
+          if (this.isTransportClosed(afterTotalOrdinal)) finish(true);
+        } catch (error) {
+          finish(false, error);
+        }
+      };
+      this.waiters.add(check);
+      timer = setTimeout(() => finish(false), Math.ceil(remaining));
+      Promise.resolve()
+        .then(async () => onWait?.())
+        .then(check, (error: unknown) => finish(false, error));
+      check();
+    });
+  }
+
   private persist(): void {
+    const workflow = this.workflow.snapshot;
+    this.ledger.actualCount = workflow.actualCount;
+    this.ledger.rejectedCount = workflow.rejectedCount;
+    this.ledger.perCandidateCounts = workflow.perCandidateCounts;
+    this.ledger.historicalReceipts = workflow.receipts;
+    this.ledger.workflowLedgerHash = this.workflowHash();
     atomicJson(this.ledgerPath, this.ledger);
   }
 
+  private persistCritical(): void {
+    try {
+      this.persist();
+    } catch {
+      this.observerFailure ??= codedError(
+        'EVIDENCE_WRITE_FAILED',
+        'H3a transport observer 证据写入失败',
+      );
+      throw this.observerFailure;
+    }
+  }
+
+  private workflowHash(): string {
+    return createHash('sha256').update(readFileSync(this.workflow.path)).digest('hex');
+  }
+
+  private assertObserverHealthy(): void {
+    if (this.observerFailure !== null) throw this.observerFailure;
+  }
+
+  private captureObserverMutation(work: () => void): void {
+    if (this.observerFailure !== null) return;
+    try {
+      work();
+      this.persist();
+    } catch {
+      this.observerFailure = codedError(
+        'EVIDENCE_WRITE_FAILED',
+        'H3a transport observer 证据写入失败',
+      );
+    }
+    for (const waiter of [...this.waiters]) waiter();
+  }
+
+  private isTransportClosed(afterTotalOrdinal: number): boolean {
+    return this.ledger.entries
+      .filter((entry) => entry.totalOrdinal > afterTotalOrdinal)
+      .every((entry) => entry.requestClosed && (entry.statusCode === null || entry.responseClosed));
+  }
+
   private isValidExistingLedger(existing: PersistedLedger, initial: PersistedLedger): boolean {
+    const workflow = this.workflow.snapshot;
     if (
       existing === null ||
       typeof existing !== 'object' ||
@@ -237,32 +362,46 @@ export class H3aRequestBudget {
         'candidateSha',
         'buildHash',
         'manifestHash',
+        'workflowBaseCount',
         'actualCount',
         'rejectedCount',
+        'perCandidateCounts',
+        'historicalReceipts',
+        'workflowLedgerHash',
         'entries',
       ]) ||
-      existing.schemaVersion !== 1 ||
+      existing.schemaVersion !== 2 ||
       existing.candidateSha !== initial.candidateSha ||
       existing.buildHash !== initial.buildHash ||
       existing.manifestHash !== initial.manifestHash ||
+      !Number.isSafeInteger(existing.workflowBaseCount) ||
+      existing.workflowBaseCount < 0 ||
       !Number.isSafeInteger(existing.actualCount) ||
       existing.actualCount < 0 ||
       existing.actualCount > H3A_MANIFEST.totalMaxRequests ||
       !Number.isSafeInteger(existing.rejectedCount) ||
-      existing.rejectedCount !== 0 ||
+      existing.rejectedCount < 0 ||
+      existing.actualCount !== workflow.actualCount ||
+      existing.rejectedCount !== workflow.rejectedCount ||
+      JSON.stringify(existing.perCandidateCounts) !== JSON.stringify(workflow.perCandidateCounts) ||
+      JSON.stringify(existing.historicalReceipts) !== JSON.stringify(workflow.receipts) ||
+      existing.workflowLedgerHash !== this.workflowHash() ||
       !Array.isArray(existing.entries) ||
-      existing.actualCount !== existing.entries.length
+      existing.workflowBaseCount + existing.entries.length !== existing.actualCount
     ) {
       return false;
     }
-    const perCandidate = new Map<string, number>();
+    const workflowEntries = workflow.entries.filter(
+      (entry) =>
+        entry.candidateSha === existing.candidateSha && entry.buildHash === existing.buildHash,
+    );
+    if (workflowEntries.length !== existing.entries.length) return false;
     for (let index = 0; index < existing.entries.length; index += 1) {
       const entry = existing.entries[index];
       if (entry === null || typeof entry !== 'object') return false;
       const scenario = H3A_MANIFEST.scenarios.find((item) => item.id === entry.scenarioId);
       const frozenCandidate = scenario?.candidates.find((item) => item.id === entry.candidateId);
-      const count = (perCandidate.get(entry.candidateId) ?? 0) + 1;
-      perCandidate.set(entry.candidateId, count);
+      const usageEntry = workflowEntries[index];
       if (
         frozenCandidate === undefined ||
         !hasExactOwnKeys(entry, [
@@ -277,12 +416,24 @@ export class H3aRequestBudget {
           'startedAt',
           'statusCode',
           'errorCode',
+          'timeoutObserved',
+          'businessSettledAt',
+          'requestDestroyedAtBusinessEnd',
+          'requestWritableEndedAtBusinessEnd',
           'requestClosed',
+          'requestClosedAt',
           'responseClosed',
+          'responseClosedAt',
         ]) ||
-        entry.ordinal !== count ||
-        entry.totalOrdinal !== index + 1 ||
-        count > frozenCandidate.maxRequests ||
+        usageEntry === undefined ||
+        entry.ordinal !== usageEntry.ordinal ||
+        entry.totalOrdinal !== usageEntry.totalOrdinal ||
+        entry.scenarioId !== usageEntry.scenarioId ||
+        entry.candidateId !== usageEntry.candidateId ||
+        entry.phase !== usageEntry.phase ||
+        entry.purposeClass !== usageEntry.purposeClass ||
+        entry.startedAt !== usageEntry.startedAt ||
+        entry.ordinal > frozenCandidate.maxRequests ||
         (entry.phase !== 'first' && entry.phase !== 'second') ||
         (entry.purposeClass !== 'robots' && entry.purposeClass !== 'target') ||
         typeof entry.conditionalRequest !== 'boolean' ||
@@ -294,8 +445,22 @@ export class H3aRequestBudget {
             entry.statusCode < 100 ||
             entry.statusCode > 599)) ||
         (entry.errorCode !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(entry.errorCode)) ||
+        typeof entry.timeoutObserved !== 'boolean' ||
+        (entry.businessSettledAt !== null &&
+          new Date(Date.parse(entry.businessSettledAt)).toISOString() !==
+            entry.businessSettledAt) ||
+        (entry.requestDestroyedAtBusinessEnd !== null &&
+          typeof entry.requestDestroyedAtBusinessEnd !== 'boolean') ||
+        (entry.requestWritableEndedAtBusinessEnd !== null &&
+          typeof entry.requestWritableEndedAtBusinessEnd !== 'boolean') ||
         typeof entry.requestClosed !== 'boolean' ||
+        (entry.requestClosedAt !== null &&
+          new Date(Date.parse(entry.requestClosedAt)).toISOString() !== entry.requestClosedAt) ||
         typeof entry.responseClosed !== 'boolean' ||
+        (entry.responseClosedAt !== null &&
+          new Date(Date.parse(entry.responseClosedAt)).toISOString() !== entry.responseClosedAt) ||
+        entry.requestClosed !== (entry.requestClosedAt !== null) ||
+        entry.responseClosed !== (entry.responseClosedAt !== null) ||
         !entry.requestClosed ||
         (entry.statusCode !== null && !entry.responseClosed)
       ) {
@@ -306,36 +471,63 @@ export class H3aRequestBudget {
   }
 
   private create(options: WatchRequestOptions): WatchRequestLike {
+    this.assertObserverHealthy();
     const context = this.context;
     if (context === null) throw new Error('H3a 请求缺少场景上下文');
     const max = this.perCandidateLimits.get(context.candidateId);
     if (max === undefined) throw new Error('H3a 请求使用非冻结候选');
-    const candidateCount = this.countFor(context.candidateId);
-    if (this.ledger.actualCount >= H3A_MANIFEST.totalMaxRequests || candidateCount >= max) {
-      this.ledger.rejectedCount += 1;
-      this.persist();
-      throw new Error('H3a 请求预算已耗尽（未创建原生请求）');
+    const startedAt = new Date().toISOString();
+    const purposeClass = options.path === '/robots.txt' ? 'robots' : 'target';
+    let reservation: { ordinal: number; totalOrdinal: number };
+    try {
+      reservation = this.workflow.reserve({
+        candidateSha: this.ledger.candidateSha,
+        buildHash: this.ledger.buildHash,
+        scenarioId: context.scenarioId,
+        candidateId: context.candidateId,
+        phase: context.phase,
+        purposeClass,
+        startedAt,
+      });
+    } catch (error) {
+      const code =
+        error instanceof Error && 'code' in error && typeof error.code === 'string'
+          ? error.code
+          : null;
+      if (code === 'H3A_BUDGET_EXHAUSTED') {
+        this.persistCritical();
+        throw error;
+      }
+      this.observerFailure = codedError(
+        'WORKFLOW_USAGE_FAILED',
+        'H3a workflow usage reservation 失败',
+      );
+      throw this.observerFailure;
     }
-
     const entry: H3aRequestLedgerEntry = {
       ...context,
-      ordinal: candidateCount + 1,
-      totalOrdinal: this.ledger.actualCount + 1,
-      purposeClass: options.path === '/robots.txt' ? 'robots' : 'target',
+      ordinal: reservation.ordinal,
+      totalOrdinal: reservation.totalOrdinal,
+      purposeClass,
       conditionalRequest: Object.keys(options.headers).some((key) => {
         const normalized = key.toLowerCase();
         return normalized === 'if-none-match' || normalized === 'if-modified-since';
       }),
       hostClass: context.candidateId,
-      startedAt: new Date().toISOString(),
+      startedAt,
       statusCode: null,
       errorCode: null,
+      timeoutObserved: false,
+      businessSettledAt: null,
+      requestDestroyedAtBusinessEnd: null,
+      requestWritableEndedAtBusinessEnd: null,
       requestClosed: false,
+      requestClosedAt: null,
       responseClosed: false,
+      responseClosedAt: null,
     };
     this.ledger.entries.push(entry);
-    this.ledger.actualCount += 1;
-    this.persist();
+    this.persistCritical();
 
     let request: WatchRequestLike;
     try {
@@ -343,24 +535,37 @@ export class H3aRequestBudget {
     } catch (error) {
       entry.errorCode = safeErrorCode(error instanceof Error ? error : new Error('request-create'));
       entry.requestClosed = true;
-      this.persist();
+      entry.requestClosedAt = new Date().toISOString();
+      this.persistCritical();
       throw error;
     }
+    this.requestObjects.set(entry.totalOrdinal, request);
     request.on('response', (response: WatchIncomingLike) => {
-      entry.statusCode = Number.isSafeInteger(response.statusCode) ? response.statusCode : null;
-      this.persist();
+      this.captureObserverMutation(() => {
+        entry.statusCode = Number.isSafeInteger(response.statusCode) ? response.statusCode : null;
+      });
       response.on('close', () => {
-        entry.responseClosed = true;
-        this.persist();
+        this.captureObserverMutation(() => {
+          entry.responseClosed = true;
+          entry.responseClosedAt ??= new Date().toISOString();
+        });
       });
     });
     request.on('error', (error: Error) => {
-      entry.errorCode = safeErrorCode(error);
-      this.persist();
+      this.captureObserverMutation(() => {
+        entry.errorCode = safeErrorCode(error);
+      });
+    });
+    request.on('timeout', () => {
+      this.captureObserverMutation(() => {
+        entry.timeoutObserved = true;
+      });
     });
     request.on('close', () => {
-      entry.requestClosed = true;
-      this.persist();
+      this.captureObserverMutation(() => {
+        entry.requestClosed = true;
+        entry.requestClosedAt ??= new Date().toISOString();
+      });
     });
     return request;
   }
@@ -424,10 +629,9 @@ async function pollTerminal(
   repo: WatchRepository,
   runId: string,
   options: H3aCampaignOptions,
-  startedMono: number,
+  deadlineMono: number,
 ): Promise<ReturnType<WatchRepository['getRun']>> {
-  const maxMs = options.maxCandidateMs ?? 180_000;
-  while (performance.now() - startedMono <= maxMs) {
+  while (performance.now() <= deadlineMono) {
     const row = repo.getRun(runId);
     if (row !== null && (row.status === 'finished' || row.status === 'interrupted')) return row;
     await options.onPoll?.();
@@ -439,10 +643,9 @@ async function pollTerminal(
 async function pollCoordinatorIdle(
   coordinator: WatchRunCoordinator,
   options: H3aCampaignOptions,
-  startedMono: number,
+  deadlineMono: number,
 ): Promise<void> {
-  const maxMs = options.maxCandidateMs ?? 180_000;
-  while (performance.now() - startedMono <= maxMs) {
+  while (performance.now() <= deadlineMono) {
     if (coordinator.activeRunCount() === 0 && coordinator.pendingRunCount() === 0) return;
     await options.onPoll?.();
     await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 10));
@@ -493,6 +696,19 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
   } else {
     writeFileSync(manifestPath, manifestBytes, { encoding: 'utf8', flag: 'wx' });
   }
+  const workflowDir = resolve(options.workflowDir ?? join(evidenceDir, 'workflow-usage'));
+  if (isWithin(rootDir, workflowDir)) {
+    throw new Error('H3a workflow usage 目录不得位于待清理临时根目录内');
+  }
+  const budget = new H3aRequestBudget({
+    evidenceDir,
+    candidateSha: options.candidateSha,
+    buildHash: options.buildHash,
+    request: options.request,
+    workflowDir,
+    historicalReceipts: options.historicalUsageSources,
+  });
+  const requestCountBeforeCampaign = budget.snapshot.actualCount;
   const startedAt = new Date().toISOString();
   const campaignStartPath = immutableEvidencePath(evidenceDir, 'campaign-start', startedAt);
   atomicJson(campaignStartPath, {
@@ -502,15 +718,10 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
     manifestHash: H3A_MANIFEST_CONTENT_HASH,
     mode: options.mode,
     startedAt,
+    workflowBeforeCount: requestCountBeforeCampaign,
+    workflowLedgerHash: budget.snapshot.workflowLedgerHash,
+    historicalReceiptIds: budget.snapshot.historicalReceipts.map((receipt) => receipt.id),
   });
-
-  const budget = new H3aRequestBudget({
-    evidenceDir,
-    candidateSha: options.candidateSha,
-    buildHash: options.buildHash,
-    request: options.request,
-  });
-  const requestCountBeforeCampaign = budget.snapshot.actualCount;
   mkdirSync(rootDir, { recursive: true });
   const clock = options.clock ?? createSystemClock();
   const lifecycle = new WatchLifecycleCoordinator({ nowMs: () => clock.now().getTime() });
@@ -529,6 +740,7 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
   const pageDiscoveryCounts = new Map<string, number[]>();
   const pageInspectionFailures = new Map<string, string>();
   const scenarios: H3aScenarioEvidence[] = [];
+  let lastCandidateDeadlineMono = performance.now() + (options.maxCandidateMs ?? 180_000);
 
   try {
     const sourcesDir = join(rootDir, 'sources');
@@ -658,7 +870,8 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
         evidence.attempted = true;
         evidence.result = 'site-failure';
         evidence.startedAt = new Date().toISOString();
-        const candidateStartedMono = performance.now();
+        const candidateDeadlineMono = performance.now() + (options.maxCandidateMs ?? 180_000);
+        lastCandidateDeadlineMono = candidateDeadlineMono;
         try {
           const added = await sourceService.addManual({
             scope: 'page',
@@ -729,6 +942,7 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
               lifecycle.revalidateRuleSource(rule.id).status === 'ok',
           };
           evidence.baselineBeforeVersion = campaignRepo.getBaseline(rule.id)?.version ?? null;
+          const firstRequestStart = budget.snapshot.actualCount;
           budget.setContext({ scenarioId: scenario.id, candidateId: candidate.id, phase: 'first' });
           const firstReservation = coordinator.manualRun(rule.id, `h3a:${candidate.id}:first`);
           if (!firstReservation.ok) {
@@ -738,10 +952,23 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
             campaignRepo,
             firstReservation.runId,
             options,
-            candidateStartedMono,
+            candidateDeadlineMono,
           );
-          await pollCoordinatorIdle(coordinator, options, candidateStartedMono);
+          await pollCoordinatorIdle(coordinator, options, candidateDeadlineMono);
           budget.clearContext();
+          budget.markBusinessSettled(firstRequestStart);
+          if (
+            !(await budget.waitForTransportClose(
+              firstRequestStart,
+              candidateDeadlineMono,
+              options.onPoll,
+            ))
+          ) {
+            throw codedError(
+              'TRANSPORT_CLOSE_TIMEOUT',
+              'H3a 首次运行 transport close 超过 candidate 截止',
+            );
+          }
           evidence.firstRun = runEvidence(first);
           const firstBaseline = campaignRepo.getBaseline(rule.id);
           evidence.baselineAfterFirstVersion = firstBaseline?.version ?? null;
@@ -755,6 +982,7 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
             scenario.kind !== 'network-failure' &&
             first?.outcome?.kind === 'baseline-established'
           ) {
+            const secondRequestStart = budget.snapshot.actualCount;
             budget.setContext({
               scenarioId: scenario.id,
               candidateId: candidate.id,
@@ -768,10 +996,23 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
               campaignRepo,
               secondReservation.runId,
               options,
-              candidateStartedMono,
+              candidateDeadlineMono,
             );
-            await pollCoordinatorIdle(coordinator, options, candidateStartedMono);
+            await pollCoordinatorIdle(coordinator, options, candidateDeadlineMono);
             budget.clearContext();
+            budget.markBusinessSettled(secondRequestStart);
+            if (
+              !(await budget.waitForTransportClose(
+                secondRequestStart,
+                candidateDeadlineMono,
+                options.onPoll,
+              ))
+            ) {
+              throw codedError(
+                'TRANSPORT_CLOSE_TIMEOUT',
+                'H3a 第二次运行 transport close 超过 candidate 截止',
+              );
+            }
             evidence.secondRun = runEvidence(second);
             const secondBaseline = campaignRepo.getBaseline(rule.id);
             evidence.baselineAfterSecondVersion = secondBaseline?.version ?? null;
@@ -972,6 +1213,18 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
     };
     await cleanup('COORDINATOR_STOP_1', async () => coordinator?.stop());
     await cleanup('COORDINATOR_STOP_2', async () => coordinator?.stop());
+    await cleanup('TRANSPORT_CLOSE_BARRIER', async () => {
+      budget.markBusinessSettled(requestCountBeforeCampaign);
+      if (
+        !(await budget.waitForTransportClose(
+          requestCountBeforeCampaign,
+          lastCandidateDeadlineMono,
+          options.onPoll,
+        ))
+      ) {
+        throw codedError('TRANSPORT_CLOSE_TIMEOUT', 'H3a 最终 transport close 超过 candidate 截止');
+      }
+    });
     await cleanup('SCHEDULER_STOP_1', () => scheduler?.stop());
     await cleanup('SCHEDULER_STOP_2', () => scheduler?.stop());
     await cleanup('WORKSPACE_CLEANUP_1', async () => {
@@ -1020,6 +1273,9 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
       campaignCount: ledger.actualCount - requestCountBeforeCampaign,
       actualCount: ledger.actualCount,
       rejectedCount: ledger.rejectedCount,
+      perCandidateCounts: ledger.perCandidateCounts,
+      historicalReceipts: ledger.historicalReceipts,
+      workflowLedgerHash: ledger.workflowLedgerHash,
       entries: ledger.entries,
     },
     cleanup: {

@@ -140,8 +140,27 @@ export interface H3aRequestLedgerEntry {
   startedAt: string;
   statusCode: number | null;
   errorCode: string | null;
+  timeoutObserved: boolean;
+  businessSettledAt: string | null;
+  requestDestroyedAtBusinessEnd: boolean | null;
+  requestWritableEndedAtBusinessEnd: boolean | null;
   requestClosed: boolean;
+  requestClosedAt: string | null;
   responseClosed: boolean;
+  responseClosedAt: string | null;
+}
+
+export interface H3aUsageReceiptEvidence {
+  id: string;
+  candidateSha: string;
+  buildHash: string;
+  manifestHash: string;
+  ledgerHash: string;
+  reportHash: string;
+  processHash: string;
+  actualCount: number;
+  rejectedCount: number;
+  perCandidateCounts: Record<string, number>;
 }
 
 export interface H3aRunEvidence {
@@ -209,6 +228,9 @@ export interface H3aReport {
     campaignCount: number;
     actualCount: number;
     rejectedCount: number;
+    perCandidateCounts: Record<string, number>;
+    historicalReceipts: H3aUsageReceiptEvidence[];
+    workflowLedgerHash: string;
     entries: H3aRequestLedgerEntry[];
   };
   cleanup: {
@@ -409,6 +431,9 @@ export function validateH3aReport(report: H3aReport): string[] {
       scenario.candidates.map((candidate) => [candidate.id, candidate.maxRequests] as const),
     ),
   );
+  const expectedCandidateIds = [...requestLimits.keys()];
+  const candidateCountKeys = Object.keys(report.requests.perCandidateCounts).sort();
+  const expectedCandidateKeys = [...expectedCandidateIds].sort();
   if (
     !Number.isSafeInteger(report.requests.beforeCount) ||
     report.requests.beforeCount < 0 ||
@@ -419,21 +444,99 @@ export function validateH3aReport(report: H3aReport): string[] {
     !Number.isSafeInteger(report.requests.actualCount) ||
     report.requests.actualCount < 1 ||
     report.requests.actualCount > H3A_MANIFEST.totalMaxRequests ||
-    report.requests.actualCount !== report.requests.entries.length
+    report.requests.campaignCount !==
+      report.requests.entries.filter((entry) => entry.totalOrdinal > report.requests.beforeCount)
+        .length ||
+    report.requests.actualCount - report.requests.entries.length < 0 ||
+    candidateCountKeys.length !== expectedCandidateKeys.length ||
+    candidateCountKeys.some((key, index) => key !== expectedCandidateKeys[index]) ||
+    !/^[0-9a-f]{64}$/.test(report.requests.workflowLedgerHash)
   ) {
     errors.push('实际物理请求总数非法或与 ledger 不一致');
   }
   if (report.requests.rejectedCount !== 0) errors.push('campaign 发生请求预算拒绝');
+  if (!Array.isArray(report.requests.historicalReceipts)) {
+    errors.push('历史 usage receipt 链非法');
+  }
+  const receiptIds = new Set<string>();
+  let receiptActualCount = 0;
+  let receiptRejectedCount = 0;
+  for (const receipt of report.requests.historicalReceipts) {
+    if (
+      receiptIds.has(receipt.id) ||
+      !/^[A-Za-z0-9_-]{1,96}$/.test(receipt.id) ||
+      !/^[0-9a-f]{40}$/.test(receipt.candidateSha) ||
+      !/^[0-9a-f]{64}$/.test(receipt.buildHash) ||
+      receipt.manifestHash !== H3A_MANIFEST_CONTENT_HASH ||
+      !/^[0-9a-f]{64}$/.test(receipt.ledgerHash) ||
+      !/^[0-9a-f]{64}$/.test(receipt.reportHash) ||
+      !/^[0-9a-f]{64}$/.test(receipt.processHash) ||
+      !Number.isSafeInteger(receipt.actualCount) ||
+      receipt.actualCount < 0 ||
+      !Number.isSafeInteger(receipt.rejectedCount) ||
+      receipt.rejectedCount < 0 ||
+      Object.keys(receipt.perCandidateCounts).sort().join('\0') !==
+        expectedCandidateKeys.join('\0') ||
+      Object.values(receipt.perCandidateCounts).some(
+        (count) => !Number.isSafeInteger(count) || count < 0,
+      ) ||
+      Object.values(receipt.perCandidateCounts).reduce((sum, count) => sum + count, 0) !==
+        receipt.actualCount
+    ) {
+      errors.push('历史 usage receipt 链非法');
+      break;
+    }
+    receiptIds.add(receipt.id);
+    receiptActualCount += receipt.actualCount;
+    receiptRejectedCount += receipt.rejectedCount;
+  }
+  if (
+    receiptActualCount > report.requests.beforeCount ||
+    receiptRejectedCount > report.requests.rejectedCount
+  ) {
+    errors.push('历史 usage receipt 计数超过 campaign 前累计值');
+  }
+  const currentEntryCountByCandidate = new Map<string, number>();
+  for (const entry of report.requests.entries) {
+    currentEntryCountByCandidate.set(
+      entry.candidateId,
+      (currentEntryCountByCandidate.get(entry.candidateId) ?? 0) + 1,
+    );
+  }
+  const perCandidateStart = new Map<string, number>();
+  let perCandidateSum = 0;
+  for (const candidateId of expectedCandidateIds) {
+    const finalCount = report.requests.perCandidateCounts[candidateId];
+    const currentCount = currentEntryCountByCandidate.get(candidateId) ?? 0;
+    if (
+      !Number.isSafeInteger(finalCount) ||
+      finalCount === undefined ||
+      finalCount < currentCount ||
+      finalCount > (requestLimits.get(candidateId) ?? 0)
+    ) {
+      errors.push(`${candidateId} 累计请求计数非法`);
+      continue;
+    }
+    perCandidateSum += finalCount;
+    perCandidateStart.set(candidateId, finalCount - currentCount);
+  }
+  if (perCandidateSum !== report.requests.actualCount) {
+    errors.push('累计逐候选请求数与全局 usage 不一致');
+  }
   const perCandidate = new Map<string, number>();
   for (let entryIndex = 0; entryIndex < report.requests.entries.length; entryIndex += 1) {
     const entry = report.requests.entries[entryIndex]!;
-    const candidateOrdinal = (perCandidate.get(entry.candidateId) ?? 0) + 1;
-    perCandidate.set(entry.candidateId, candidateOrdinal);
+    const seenForCandidate = perCandidate.get(entry.candidateId) ?? 0;
+    const candidateOrdinal = (perCandidateStart.get(entry.candidateId) ?? 0) + seenForCandidate + 1;
+    perCandidate.set(entry.candidateId, seenForCandidate + 1);
     if (
       entry.ordinal !== candidateOrdinal ||
-      entry.totalOrdinal !== entryIndex + 1 ||
+      entry.totalOrdinal !==
+        report.requests.actualCount - report.requests.entries.length + entryIndex + 1 ||
       !entry.requestClosed ||
-      (entry.statusCode !== null && !entry.responseClosed)
+      entry.requestClosedAt === null ||
+      (entry.statusCode !== null && (!entry.responseClosed || entry.responseClosedAt === null)) ||
+      entry.businessSettledAt === null
     ) {
       errors.push(`${entry.candidateId} 存在未闭合 request/response`);
     }
@@ -447,6 +550,16 @@ export function validateH3aReport(report: H3aReport): string[] {
       (entry.phase !== 'first' && entry.phase !== 'second') ||
       (entry.purposeClass !== 'robots' && entry.purposeClass !== 'target') ||
       typeof entry.conditionalRequest !== 'boolean' ||
+      typeof entry.timeoutObserved !== 'boolean' ||
+      (entry.businessSettledAt !== null && !isCanonicalUtc(entry.businessSettledAt)) ||
+      (entry.requestDestroyedAtBusinessEnd !== null &&
+        typeof entry.requestDestroyedAtBusinessEnd !== 'boolean') ||
+      (entry.requestWritableEndedAtBusinessEnd !== null &&
+        typeof entry.requestWritableEndedAtBusinessEnd !== 'boolean') ||
+      (entry.requestClosedAt !== null && !isCanonicalUtc(entry.requestClosedAt)) ||
+      (entry.responseClosedAt !== null && !isCanonicalUtc(entry.responseClosedAt)) ||
+      entry.requestClosed !== (entry.requestClosedAt !== null) ||
+      entry.responseClosed !== (entry.responseClosedAt !== null) ||
       (entry.statusCode !== null &&
         (!Number.isSafeInteger(entry.statusCode) ||
           entry.statusCode < 100 ||
@@ -455,10 +568,6 @@ export function validateH3aReport(report: H3aReport): string[] {
     ) {
       errors.push(`${entry.candidateId} request ledger 身份或枚举非法`);
     }
-  }
-  for (const [candidateId, count] of perCandidate) {
-    const limit = requestLimits.get(candidateId);
-    if (limit === undefined || count > limit) errors.push(`${candidateId} 超出逐候选请求预算`);
   }
   for (const scenario of report.scenarios) {
     const selected = scenario.candidates.find(

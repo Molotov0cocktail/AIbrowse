@@ -38,6 +38,7 @@ import type { LiveProviderSmoke } from './smoke';
 import { resolveResearchGate } from './smoke-research-gate';
 import { resolveWatchD10Mode } from './smoke-watch-gate';
 import { runH3aCampaign } from './smoke-watch-h3a-runner';
+import { initialH3aHistoricalUsageSources } from './smoke-watch-h3a-usage';
 import {
   addWatchSubscriptionDestroyedListener,
   closeAndDrainThenDispose,
@@ -560,13 +561,16 @@ if (!gotLock) {
         }
         const candidateSha = process.env['AIBROWSE_WATCH_H3A_CANDIDATE_SHA'] ?? '';
         const buildHash = createHash('sha256').update(readFileSync(__filename)).digest('hex');
-        const evidenceDir = join(app.getAppPath(), 'log', `h3a-${candidateSha.slice(0, 12)}`);
+        const logRoot = join(app.getAppPath(), 'log');
+        const evidenceDir = join(logRoot, `h3a-${candidateSha.slice(0, 12)}`);
         const result = await runH3aCampaign({
           candidateSha,
           buildHash,
           rootDir: join(app.getPath('temp'), `aibrowse-h3a-${process.pid}`),
           evidenceDir,
           mode: 'production-preview',
+          workflowDir: join(logRoot, 'h3a-workflow-usage'),
+          historicalUsageSources: initialH3aHistoricalUsageSources(logRoot),
         });
         if (result.validationErrors.length > 0) {
           logError(
