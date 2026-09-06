@@ -186,15 +186,30 @@ function textDecoderLabel(enc: SupportedEncoding): string {
  * 严格解码：fatal=true，非法字节序列（如孤立 continuation、截断多字节、UTF-16 奇数
  * 字节）立即抛错——不得用 U+FFFD replacement character 掩盖（RED LINE）。
  */
-function decodeWith(enc: SupportedEncoding, buf: Buffer, offset: number): string {
-  const decoder = new TextDecoder(textDecoderLabel(enc), { fatal: true });
+function decodeWith(
+  enc: SupportedEncoding,
+  buf: Buffer,
+  offset: number,
+  preserveLeadingBom = false,
+): string {
+  const decoder = new TextDecoder(textDecoderLabel(enc), {
+    fatal: true,
+    // XML removes its byte-order mark by offset. A second mark is content and
+    // must remain visible to the parser; HTML retains the decoder default.
+    ignoreBOM: preserveLeadingBom,
+  });
   return decoder.decode(buf.subarray(offset));
 }
 
 /** 解码并捕获 strict 失败；失败返回 null。 */
-function tryDecode(enc: SupportedEncoding, buf: Buffer, offset: number): string | null {
+function tryDecode(
+  enc: SupportedEncoding,
+  buf: Buffer,
+  offset: number,
+  preserveLeadingBom = false,
+): string | null {
   try {
-    return decodeWith(enc, buf, offset);
+    return decodeWith(enc, buf, offset, preserveLeadingBom);
   } catch {
     return null;
   }
@@ -213,7 +228,7 @@ export function decodeXmlBytes(buf: Buffer): DecodeResult {
 
   const bom = detectBom(buf);
   if (bom !== null) {
-    const text = tryDecode(bom, buf, bomOffset(bom));
+    const text = tryDecode(bom, buf, bomOffset(bom), true);
     if (text === null) return decodeFailure('invalid-encoding');
     const declaration = scanXmlDeclaration(text);
     if (declaration.kind === 'invalid') return decodeFailure('invalid-xml-declaration');

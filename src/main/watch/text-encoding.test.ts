@@ -19,6 +19,20 @@ function utf16Bytes(text: string, endian: 'le' | 'be', withBom = false): Buffer 
   ]);
 }
 
+type XmlBomEncoding = 'utf-8' | 'utf-16le' | 'utf-16be';
+
+const XML_BOMS: Record<XmlBomEncoding, Buffer> = {
+  'utf-8': Buffer.from([0xef, 0xbb, 0xbf]),
+  'utf-16le': Buffer.from([0xff, 0xfe]),
+  'utf-16be': Buffer.from([0xfe, 0xff]),
+};
+
+function xmlBomBytes(text: string, encoding: XmlBomEncoding, bomCount: number): Buffer {
+  const encoded = Buffer.from(text, encoding === 'utf-8' ? 'utf8' : 'utf16le');
+  if (encoding === 'utf-16be') encoded.swap16();
+  return Buffer.concat([...Array.from({ length: bomCount }, () => XML_BOMS[encoding]), encoded]);
+}
+
 function expectXmlDecodeFailure(body: Buffer, reason?: string): void {
   const result = decodeXmlBytes(body);
   expect(result.ok).toBe(false);
@@ -141,6 +155,42 @@ describe('decodeXmlBytes — BOM', () => {
   it('UTF-32 BOM 不得误识别为 UTF-16', () => {
     expectXmlDecodeFailure(Buffer.from([0xff, 0xfe, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x00]));
     expectXmlDecodeFailure(Buffer.from([0x00, 0x00, 0xfe, 0xff, 0x00, 0x00, 0x00, 0x3c]));
+  });
+
+  it.each([
+    ['utf-8', 'UTF-8'],
+    ['utf-16le', 'UTF-16LE'],
+    ['utf-16be', 'UTF-16BE'],
+  ] as const)('XML %s BOM 只移除一次，剩余 BOM 保留为 U+FEFF', (encoding, label) => {
+    const xml = `<?xml version="1.0" encoding="${label}"?><rss><channel/></rss>`;
+    for (const count of [1, 2, 3]) {
+      const result = decodeXmlBytes(xmlBomBytes(xml, encoding, count));
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(result.encoding).toBe(encoding);
+      expect(result.text).toBe(`${'\uFEFF'.repeat(count - 1)}${xml}`);
+    }
+  });
+
+  it.each(['utf-8', 'utf-16le', 'utf-16be'] as const)(
+    'XML %s 正文内部 U+FEFF 在解码阶段保留',
+    (encoding) => {
+      const xml = '<rss><channel><title>a\uFEFFb</title></channel></rss>';
+      const result = decodeXmlBytes(xmlBomBytes(xml, encoding, 1));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.text).toBe(xml);
+    },
+  );
+
+  it('XML 专用 strip-once 不改变 HTML 的既有 BOM 解码行为', () => {
+    const html = '<html><body>ok</body></html>';
+    for (const encoding of ['utf-8', 'utf-16le', 'utf-16be'] as const) {
+      const result = decodeHtmlBytes(xmlBomBytes(html, encoding, 2), null);
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      expect(result.text).toBe(html);
+    }
   });
 });
 

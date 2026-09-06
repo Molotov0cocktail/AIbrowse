@@ -39,6 +39,21 @@ async function parseRss(items: string, extra = ''): Promise<ReturnType<typeof pa
   return parseFeedXml(Buffer.from(RSS(items, extra), 'utf8'));
 }
 
+type FeedBomEncoding = 'utf-8' | 'utf-16le' | 'utf-16be';
+
+function feedBomBytes(text: string, encoding: FeedBomEncoding, bomCount: number): Buffer {
+  const bom = Buffer.from(
+    encoding === 'utf-8'
+      ? [0xef, 0xbb, 0xbf]
+      : encoding === 'utf-16le'
+        ? [0xff, 0xfe]
+        : [0xfe, 0xff],
+  );
+  const encoded = Buffer.from(text, encoding === 'utf-8' ? 'utf8' : 'utf16le');
+  if (encoding === 'utf-16be') encoded.swap16();
+  return Buffer.concat([...Array.from({ length: bomCount }, () => bom), encoded]);
+}
+
 describe('RSS 2.0 / Atom 基本解析与格式识别', () => {
   it('RSS2 基本投影', async () => {
     const r = await parseRss(RSS_ITEM('g1', 'T1', 'https://example.com/a'));
@@ -84,6 +99,29 @@ describe('RSS 2.0 / Atom 基本解析与格式识别', () => {
     const r = await parseFeedXml(Buffer.from('', 'utf8'));
     expect(r.ok).toBe(false);
   });
+});
+
+describe('XML BOM 精确移除一次', () => {
+  it.each([
+    ['utf-8', 'UTF-8'],
+    ['utf-16le', 'UTF-16LE'],
+    ['utf-16be', 'UTF-16BE'],
+  ] as const)(
+    '%s single BOM + 完整一致声明成功，double/triple BOM 零投影拒绝',
+    async (encoding, label) => {
+      const xml = `<?xml version="1.0" encoding="${label}"?><rss><channel><title>Feed</title><item><guid>g</guid><title>ok</title></item></channel></rss>`;
+      const single = await parseFeedXml(feedBomBytes(xml, encoding, 1));
+      expect(single.ok).toBe(true);
+      if (single.ok) expect(single.value.items[0]!.title.text).toBe('ok');
+
+      for (const count of [2, 3]) {
+        const rejected = await parseFeedXml(feedBomBytes(xml, encoding, count));
+        expect(rejected).toMatchObject({ ok: false, health: 'parse_changed' });
+        expect('value' in rejected).toBe(false);
+        expect('byteLength' in rejected).toBe(false);
+      }
+    },
+  );
 });
 
 describe('namespace：URI+localName 不信任前缀', () => {

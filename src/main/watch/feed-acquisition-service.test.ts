@@ -290,6 +290,12 @@ describe('FeedAcquisitionService（#S6-054/#S6-056）', () => {
       Buffer.from([0xff, 0xfe]),
       Buffer.from('<?xml version="1.0" encoding="UTF-8"?><rss><channel/></rss>', 'utf16le'),
     ]);
+    const doubleUtf8Bom = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf]),
+      Buffer.from(
+        '<?xml version="1.0" encoding="UTF-8"?><rss><channel><item><guid>g</guid><title>hidden</title></item></channel></rss>',
+      ),
+    ]);
     const cases: Array<{ body: Buffer; health: string; disposition: string }> = [
       {
         body: Buffer.from(`<rss><channel><${qnameOver}/></channel></rss>`),
@@ -302,6 +308,7 @@ describe('FeedAcquisitionService（#S6-054/#S6-056）', () => {
         disposition: 'budget',
       },
       { body: utf16Conflict, health: 'parse_changed', disposition: 'parse' },
+      { body: doubleUtf8Bom, health: 'parse_changed', disposition: 'parse' },
       {
         body: Buffer.from(`${declaration(2_001)}<rss><channel/></rss>`),
         health: 'budget_exceeded',
