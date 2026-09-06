@@ -303,9 +303,9 @@ export class H3aRequestBudget {
     onWait?: () => void | Promise<void>,
   ): Promise<boolean> {
     this.assertObserverHealthy();
-    if (this.isTransportClosed(afterTotalOrdinal)) return true;
     const remaining = deadlineMono - performance.now();
     if (!Number.isFinite(remaining) || remaining <= 0) return false;
+    if (this.isTransportClosed(afterTotalOrdinal)) return true;
     return new Promise<boolean>((resolveWait, rejectWait) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -320,6 +320,11 @@ export class H3aRequestBudget {
       const check = (): void => {
         try {
           this.assertObserverHealthy();
+          const currentRemaining = deadlineMono - performance.now();
+          if (!Number.isFinite(currentRemaining) || currentRemaining <= 0) {
+            finish(false);
+            return;
+          }
           if (this.isTransportClosed(afterTotalOrdinal)) finish(true);
         } catch (error) {
           finish(false, error);

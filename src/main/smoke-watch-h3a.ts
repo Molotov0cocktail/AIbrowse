@@ -384,10 +384,17 @@ export function validateH3aReport(report: H3aReport): string[] {
     errors.push('campaign UTC 时间戳不规范');
   }
   if (report.fatalErrorCode !== null) errors.push(`campaign fatal：${report.fatalErrorCode}`);
-  if (
-    report.scenarios.length !== 3 ||
-    report.scenarios.some((scenario) => scenario.result !== 'pass')
-  ) {
+  const scenarioIdentitiesMatch =
+    report.scenarios.length === H3A_MANIFEST.scenarios.length &&
+    report.scenarios.every((scenario, index) => {
+      const frozenScenario = H3A_MANIFEST.scenarios[index];
+      return (
+        frozenScenario !== undefined &&
+        scenario.scenarioId === frozenScenario.id &&
+        scenario.kind === frozenScenario.kind
+      );
+    });
+  if (!scenarioIdentitiesMatch || report.scenarios.some((scenario) => scenario.result !== 'pass')) {
     errors.push('三类真实产品场景必须各有一个合格结果');
   }
   for (const scenario of report.scenarios) {

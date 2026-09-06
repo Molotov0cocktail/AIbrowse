@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FakeClock } from '../shared/watch/clock';
 import { resolveWatchGate } from './smoke-watch-gate';
 import { H3aRequestBudget, runH3aCampaign } from './smoke-watch-h3a-runner';
@@ -478,6 +478,93 @@ describe('H3a public product qualification', () => {
     },
   );
 
+  it.each([
+    { label: '截止前', closeAt: 1_999, expected: true },
+    { label: '恰到截止', closeAt: 2_000, expected: false },
+    { label: '截止后且 timer 尚未回调', closeAt: 2_001, expected: false },
+  ] as const)('transport close 只能在原绝对截止前完成：$label', async ({ closeAt, expected }) => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-close-deadline-'));
+    let monotonicNow = 1_000;
+    const performanceNow = vi.spyOn(performance, 'now').mockImplementation(() => monotonicNow);
+    const clearTimer = vi.spyOn(globalThis, 'clearTimeout');
+    try {
+      const request = new H3aObservedRequest();
+      const budget = new H3aRequestBudget({
+        evidenceDir,
+        candidateSha: 'a'.repeat(40),
+        buildHash: 'b'.repeat(64),
+        request: () => request,
+      });
+      budget.setContext({ scenarioId: 'h3a-rss', candidateId: 'rss-primary', phase: 'first' });
+      budget.factory({
+        method: 'GET',
+        protocol: 'https:',
+        hostname: 'feeds.bbci.co.uk',
+        port: 443,
+        path: '/news/rss.xml',
+        headers: {},
+        lookup: () => undefined,
+      });
+      request.end();
+      request.destroyed = true;
+      const response = new H3aFakeIncoming();
+      request.emit('response', response);
+      budget.markBusinessSettled(0);
+
+      const barrier = budget.waitForTransportClose(0, 2_000, () => {
+        monotonicNow = closeAt;
+        response.emit('close');
+        request.emit('close');
+      });
+
+      await expect(barrier).resolves.toBe(expected);
+      expect(clearTimer).toHaveBeenCalledTimes(1);
+      expect(budget.snapshot.entries[0]).toMatchObject({
+        requestClosed: true,
+        responseClosed: true,
+      });
+    } finally {
+      performanceNow.mockRestore();
+      clearTimer.mockRestore();
+      rmSync(evidenceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('截止点调用即使 transport 已闭合也按 remaining <= 0 拒绝', async () => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-preclosed-deadline-'));
+    let monotonicNow = 1_999;
+    const performanceNow = vi.spyOn(performance, 'now').mockImplementation(() => monotonicNow);
+    try {
+      const request = new H3aObservedRequest();
+      const budget = new H3aRequestBudget({
+        evidenceDir,
+        candidateSha: 'a'.repeat(40),
+        buildHash: 'b'.repeat(64),
+        request: () => request,
+      });
+      budget.setContext({ scenarioId: 'h3a-rss', candidateId: 'rss-primary', phase: 'first' });
+      budget.factory({
+        method: 'GET',
+        protocol: 'https:',
+        hostname: 'feeds.bbci.co.uk',
+        port: 443,
+        path: '/news/rss.xml',
+        headers: {},
+        lookup: () => undefined,
+      });
+      const response = new H3aFakeIncoming();
+      request.emit('response', response);
+      response.emit('close');
+      request.emit('close');
+      monotonicNow = 2_000;
+
+      await expect(budget.waitForTransportClose(0, 2_000)).resolves.toBe(false);
+    } finally {
+      performanceNow.mockRestore();
+      rmSync(evidenceDir, { recursive: true, force: true });
+    }
+  });
+
   it('observer 持久化失败由 barrier 受控抛出且 listener 不产生 uncaught exception', async () => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-observer-write-'));
     const request = new H3aObservedRequest();
@@ -722,6 +809,117 @@ describe('H3a public product qualification', () => {
       const evidenceFiles = readdirSync(evidenceDir);
       expect(evidenceFiles.filter((file) => file.startsWith('campaign-start-'))).toHaveLength(2);
       expect(evidenceFiles.filter((file) => file.startsWith('report-'))).toHaveLength(2);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+      rmSync(evidenceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('完整合格 fixture 必须保持 RSS、Page、Failure 三种冻结身份各一次', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-report-identities-'));
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-report-identities-evidence-'));
+    const clock = new FakeClock(Date.parse('2026-09-06T00:00:00.000Z'));
+    try {
+      const result = await runH3aCampaign({
+        candidateSha: 'a'.repeat(40),
+        buildHash: 'b'.repeat(64),
+        rootDir,
+        evidenceDir,
+        mode: 'production-preview',
+        clock,
+        lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+        request: makeOfflineProductTransport(),
+        onPoll: async () => {
+          clock.advanceBy(5_000);
+          await Promise.resolve();
+        },
+        maxCandidateMs: 15_000,
+      });
+      const valid = result.report;
+      const validateMutation = (mutate: (report: typeof valid) => void): string[] => {
+        const report = structuredClone(valid);
+        mutate(report);
+        return validateH3aReport(report);
+      };
+      const identityError = '三类真实产品场景必须各有一个合格结果';
+
+      expect(validateH3aReport(valid)).toEqual([]);
+      expect(
+        validateMutation((report) => {
+          report.scenarios[0] = structuredClone(report.scenarios[1]!);
+        }),
+      ).toContain(identityError);
+      expect(
+        validateMutation((report) => {
+          const page = structuredClone(report.scenarios[1]!);
+          report.scenarios = [structuredClone(page), structuredClone(page), structuredClone(page)];
+        }),
+      ).toContain(identityError);
+      expect(
+        validateMutation((report) => {
+          const failure = structuredClone(report.scenarios[2]!);
+          report.scenarios = [
+            structuredClone(failure),
+            structuredClone(failure),
+            structuredClone(failure),
+          ];
+        }),
+      ).toContain(identityError);
+      expect(
+        validateMutation((report) => {
+          report.scenarios = report.scenarios.slice(0, 2);
+        }),
+      ).toContain(identityError);
+      expect(
+        validateMutation((report) => {
+          report.scenarios.push(structuredClone(report.scenarios[0]!));
+        }),
+      ).toContain(identityError);
+      expect(
+        validateMutation((report) => {
+          report.scenarios[0]!.scenarioId = 'h3a-unknown';
+        }),
+      ).toContain(identityError);
+      expect(
+        validateMutation((report) => {
+          report.scenarios[0]!.kind = 'public-page-no-feed';
+        }),
+      ).toContain(identityError);
+      expect(
+        validateMutation((report) => {
+          report.scenarios.reverse();
+        }),
+      ).toContain(identityError);
+
+      expect(
+        validateMutation((report) => {
+          report.scenarios[0]!.candidates[0]!.result = 'site-failure';
+        }),
+      ).toContain('h3a-rss 缺少唯一通过候选');
+      expect(
+        validateMutation((report) => {
+          report.scenarios[1]!.candidates[0]!.baselineAfterFirstValidatorsPresent = true;
+        }),
+      ).toContain('page-primary Page Baseline validator 未保持 null');
+      expect(
+        validateMutation((report) => {
+          report.scenarios[2]!.candidates[0]!.backoffUntil = null;
+        }),
+      ).toContain('failure-primary 未证明真实失败分类、退避、Baseline/Event 不变量');
+      expect(
+        validateMutation((report) => {
+          const entry = report.requests.entries.find(
+            (item) => item.totalOrdinal > report.requests.beforeCount,
+          )!;
+          entry.requestClosed = false;
+          entry.requestClosedAt = null;
+        }),
+      ).toContain('rss-primary 存在未闭合 request/response');
+      expect(
+        validateH3aReport(
+          Object.assign(structuredClone(valid), { reportKind: 'feed-budget-diagnostic' as const }),
+        ),
+      ).toEqual(['单次 Feed 预算诊断报告不能作为 H3a 三门资格报告']);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
       rmSync(evidenceDir, { recursive: true, force: true });
