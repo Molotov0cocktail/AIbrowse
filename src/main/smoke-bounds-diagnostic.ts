@@ -713,13 +713,6 @@ function hasOnTimeNativeConflict(
   return [...evidenceByView.values()].some((evidence) => evidence.matched && evidence.unmatched);
 }
 
-function nativeFactsForView(
-  facts: readonly TimedNativeFact[],
-  viewId: number,
-): readonly TimedNativeFact[] {
-  return facts.filter((fact) => fact.viewId === viewId);
-}
-
 function hasCompatibleFailureTiming(
   entry: BoundsPhaseEntry,
   snapshot: Matrix9FailureSnapshot,
@@ -783,53 +776,76 @@ function hasCompatibleIpcEvidence(
   );
 }
 
-function uniquelyIdentifiesVisibleTarget(
+interface FailureTargetRelation {
+  waitedViewId: number;
+  selectedMatches: boolean;
+  visibleTarget: { viewId: number; matchesExpected: boolean } | null;
+}
+
+function collectFailureTargetRelation(
+  observation: BoundsObservationSnapshot,
   windowState: SafeWindowFailureState,
   expected: BoundsExpectation,
-  matchingIpc: readonly BoundsIpcSample[],
-): boolean {
+): FailureTargetRelation | null {
+  // Only the condition's own samples identify the object observed by the failed
+  // wait. An IPC sample or the later snapshot cannot substitute for this anchor.
+  const waitedIds = new Set<number>();
+  for (const sample of observation.nativeSamples.items) {
+    if (!hasValidNativeState(sample) || sample.viewId.status !== 'valid') return null;
+    waitedIds.add(sample.viewId.value);
+  }
+  const selected = windowState.selectedNative;
   if (
+    waitedIds.size !== 1 ||
+    !hasValidNativeState(selected) ||
+    selected.viewId.status !== 'valid' ||
+    !waitedIds.has(selected.viewId.value) ||
     windowState.childViews.status !== 'valid' ||
     windowState.childViews.truncated ||
-    windowState.childViews.totalCount !== windowState.childViews.items.length ||
-    !hasValidNativeState(windowState.selectedNative) ||
-    boundsMatch(windowState.selectedNative.bounds, expected)
+    windowState.childViews.totalCount !== windowState.childViews.items.length
   ) {
-    return false;
+    return null;
   }
-  if (
-    !windowState.childViews.items.every(
-      (child) =>
-        child.kind !== 'unavailable' &&
-        child.viewId.status === 'valid' &&
-        child.visible.status === 'valid' &&
-        child.bounds.status === 'valid',
-    )
-  ) {
-    return false;
-  }
+  const waitedViewId = selected.viewId.value;
+  const selectedMatches = boundsMatch(selected.bounds, expected);
+  const children = windowState.childViews.items;
+  // A complete empty child projection is not a target witness. Existing
+  // same-target proofs can still be established by wait/IPC/selected evidence.
+  if (children.length === 0) return { waitedViewId, selectedMatches, visibleTarget: null };
 
-  const selectedId = windowState.selectedNative.viewId.value;
-  const visibleWebContentsViews = windowState.childViews.items.filter(
-    (child) =>
-      child.kind === 'web-contents-view' && child.visible.status === 'valid' && child.visible.value,
-  );
-  if (visibleWebContentsViews.length !== 1) return false;
-  const target = visibleWebContentsViews[0]!;
-  if (
-    target.viewId.status !== 'valid' ||
-    target.viewId.value === selectedId ||
-    !boundsMatch(target.bounds, expected)
-  ) {
-    return false;
+  const childIds = new Set<number>();
+  const sampledIds = new Set([
+    waitedViewId,
+    ...observation.ipcSamples.items.flatMap((sample) =>
+      sample.selectedNative.viewId.status === 'valid' ? [sample.selectedNative.viewId.value] : [],
+    ),
+  ]);
+  const visibleTargets: { viewId: number; matchesExpected: boolean }[] = [];
+  for (const child of children) {
+    if (
+      child.kind === 'unavailable' ||
+      child.viewId.status !== 'valid' ||
+      child.visible.status !== 'valid' ||
+      !hasValidNativeState(child) ||
+      childIds.has(child.viewId.value)
+    ) {
+      return null;
+    }
+    const viewId = child.viewId.value;
+    childIds.add(viewId);
+    const matchesExpected = boundsMatch(child.bounds, expected);
+    if (
+      (child.kind === 'other' && sampledIds.has(viewId)) ||
+      (viewId === waitedViewId && matchesExpected !== selectedMatches)
+    ) {
+      return null;
+    }
+    if (child.kind === 'web-contents-view' && child.visible.value) {
+      visibleTargets.push({ viewId, matchesExpected });
+    }
   }
-  const targetId = target.viewId.value;
-  return matchingIpc.every(
-    (sample) =>
-      boundsMatch(sample.selectedNative.bounds, expected) &&
-      sample.selectedNative.viewId.status === 'valid' &&
-      sample.selectedNative.viewId.value === targetId,
-  );
+  if (visibleTargets.length !== 1) return null;
+  return { waitedViewId, selectedMatches, visibleTarget: visibleTargets[0]! };
 }
 
 export function classifyMatrix9BoundsFailure(
@@ -872,20 +888,39 @@ export function classifyMatrix9BoundsFailure(
     return unknownBoundsFailure();
   }
 
+  const relation = collectFailureTargetRelation(
+    observation,
+    failureSnapshot.window,
+    entry.expected,
+  );
+  if (relation === null) return unknownBoundsFailure();
+  const { waitedViewId, selectedMatches, visibleTarget } = relation;
+  const selectionTarget =
+    visibleTarget !== null && visibleTarget.viewId !== waitedViewId ? visibleTarget : null;
+
+  // Check every sampled target before payloads are used as positive witnesses.
+  // Current visibility cannot make an earlier IPC target unrelated to the wait.
+  if (selectionTarget === null) {
+    if (!nativeFacts.every((fact) => fact.viewId === waitedViewId)) return unknownBoundsFailure();
+  } else if (
+    selectedMatches ||
+    !selectionTarget.matchesExpected ||
+    !nativeFacts.every(
+      (fact) =>
+        (fact.viewId === waitedViewId && !fact.matchesExpected) ||
+        (fact.viewId === selectionTarget.viewId && fact.matchesExpected),
+    )
+  ) {
+    return unknownBoundsFailure();
+  }
+
   const matchingIpc = observation.ipcSamples.items.filter((sample) =>
     boundsMatch(sample.payloadBounds, entry.expected),
   );
   if (matchingIpc.length === 0) {
-    const selectedNative = failureSnapshot.window.selectedNative;
-    if (
-      selectedNative.viewId.status !== 'valid' ||
-      selectedNative.bounds.status !== 'valid' ||
-      boundsMatch(selectedNative.bounds, entry.expected)
-    ) {
-      return unknownBoundsFailure();
-    }
-    const selectedFacts = nativeFactsForView(nativeFacts, selectedNative.viewId.value);
-    return selectedFacts.length > 0 && selectedFacts.every((fact) => !fact.matchesExpected)
+    return selectionTarget === null &&
+      !selectedMatches &&
+      nativeFacts.every((fact) => !fact.matchesExpected)
       ? { layer: 'renderer-measurement-schedule-send', rootCauseEstablished: false }
       : unknownBoundsFailure();
   }
@@ -900,33 +935,21 @@ export function classifyMatrix9BoundsFailure(
     return unknownBoundsFailure();
   }
 
-  const onTimeWrongNative = onTimeMatchingIpc.filter(
-    (sample) => !boundsMatch(sample.selectedNative.bounds, entry.expected),
-  );
-  const onTimeCorrectNative = onTimeMatchingIpc.filter((sample) =>
-    boundsMatch(sample.selectedNative.bounds, entry.expected),
-  );
   if (onTimeMatchingIpc.length > 0) {
-    const selectedNative = failureSnapshot.window.selectedNative;
     if (
-      onTimeWrongNative.length === onTimeMatchingIpc.length &&
-      selectedNative.viewId.status === 'valid' &&
-      selectedNative.bounds.status === 'valid' &&
-      !boundsMatch(selectedNative.bounds, entry.expected) &&
-      onTimeWrongNative.every(
-        (sample) =>
-          sample.selectedNative.viewId.status === 'valid' &&
-          sample.selectedNative.viewId.value === selectedNative.viewId.value,
-      ) &&
-      nativeFactsForView(nativeFacts, selectedNative.viewId.value).every(
-        (fact) => !fact.matchesExpected,
-      )
+      selectionTarget === null &&
+      !selectedMatches &&
+      nativeFacts.every((fact) => !fact.matchesExpected)
     ) {
       return { layer: 'main-apply', rootCauseEstablished: false };
     }
     if (
-      onTimeCorrectNative.length === onTimeMatchingIpc.length &&
-      uniquelyIdentifiesVisibleTarget(failureSnapshot.window, entry.expected, onTimeCorrectNative)
+      selectionTarget !== null &&
+      onTimeMatchingIpc.every(
+        (sample) =>
+          sample.selectedNative.viewId.status === 'valid' &&
+          sample.selectedNative.viewId.value === selectionTarget.viewId,
+      )
     ) {
       return { layer: 'view-selection', rootCauseEstablished: false };
     }
@@ -934,36 +957,16 @@ export function classifyMatrix9BoundsFailure(
   }
 
   if (
+    selectionTarget === null &&
+    selectedMatches &&
     lateMatchingIpc.length === matchingIpc.length &&
-    lateMatchingIpc.every((sample) => boundsMatch(sample.selectedNative.bounds, entry.expected)) &&
-    failureSnapshot.window.selectedNative.viewId.status === 'valid' &&
-    failureSnapshot.window.selectedNative.bounds.status === 'valid' &&
-    boundsMatch(failureSnapshot.window.selectedNative.bounds, entry.expected)
+    nativeFacts.every((fact) =>
+      fact.monoObservedAtMs <= failureObservedAtMonoMs
+        ? !fact.matchesExpected
+        : fact.matchesExpected,
+    )
   ) {
-    const selectedId = failureSnapshot.window.selectedNative.viewId.value;
-    if (
-      lateMatchingIpc.every(
-        (sample) =>
-          sample.selectedNative.viewId.status === 'valid' &&
-          sample.selectedNative.viewId.value === selectedId,
-      )
-    ) {
-      const targetFacts = nativeFactsForView(nativeFacts, selectedId);
-      const onTimeTargetFacts = targetFacts.filter(
-        (fact) => fact.monoObservedAtMs <= failureObservedAtMonoMs,
-      );
-      const lateTargetFacts = targetFacts.filter(
-        (fact) => fact.monoObservedAtMs > failureObservedAtMonoMs,
-      );
-      if (
-        onTimeTargetFacts.length > 0 &&
-        onTimeTargetFacts.every((fact) => !fact.matchesExpected) &&
-        lateTargetFacts.length > 0 &&
-        lateTargetFacts.every((fact) => fact.matchesExpected)
-      ) {
-        return { layer: 'late-observation', rootCauseEstablished: false };
-      }
-    }
+    return { layer: 'late-observation', rootCauseEstablished: false };
   }
 
   return unknownBoundsFailure();

@@ -935,3 +935,527 @@ describe('矩阵 9 bounds 失败观测', () => {
     });
   });
 });
+
+type IdentityLayer = ReturnType<typeof classifyMatrix9BoundsFailure>['layer'];
+type IdentityScenario = 'renderer' | 'main' | 'selection' | 'late';
+interface IdentityInput {
+  observation: BoundsObservationSnapshot;
+  snapshot: Matrix9FailureSnapshot;
+  failureObservedAtMonoMs: number;
+}
+
+function identityInput(scenario: IdentityScenario): IdentityInput {
+  const ipc = {
+    renderer: [],
+    main: [ipcSample({ nativeWidth: 600 })],
+    selection: [ipcSample({ nativeViewId: 2 })],
+    late: [ipcSample({ mono: 102 })],
+  }[scenario];
+  const snapshot = failureSnapshot({
+    selectedWidth: scenario === 'late' ? 620 : 600,
+    finishedAt: 105,
+    childViews: scenario === 'selection' ? [childView(1, 600, false), childView(2, 620, true)] : [],
+  });
+  snapshot.captureStartedAtMonoMs = 101;
+  return {
+    observation: observationSnapshot({
+      native: [nativeSample(80, 600), nativeSample(95, 600)],
+      ipc,
+    }),
+    snapshot,
+    failureObservedAtMonoMs: 100,
+  };
+}
+
+function identityIpc(
+  input: IdentityInput,
+  items: BoundsObservationSnapshot['ipcSamples']['items'],
+) {
+  input.observation.ipcSamples = { items, totalCount: items.length, truncated: false };
+}
+
+function identityChildren(
+  input: IdentityInput,
+  items: Matrix9FailureSnapshot['window']['childViews']['items'],
+) {
+  input.snapshot.window.childViews = {
+    status: 'valid',
+    items,
+    totalCount: items.length,
+    truncated: false,
+  };
+}
+
+function identityCase(
+  id: string,
+  layer: IdentityLayer,
+  scenario: IdentityScenario,
+  change: (input: IdentityInput) => void = () => undefined,
+) {
+  const input = identityInput(scenario);
+  change(input);
+  return { id, layer, input };
+}
+
+describe('矩阵 9 原失败目标关系证明', () => {
+  it.each([
+    identityCase('R48 visible-target-correct-payload-600', 'unknown', 'selection', (input) => {
+      identityIpc(input, [ipcSample({ payloadWidth: 600, nativeViewId: 2 })]);
+    }),
+    identityCase('S49 visible-target-correct-payload-620', 'view-selection', 'selection'),
+    identityCase(
+      'M50 main-filter-discards-correct-visible-target',
+      'unknown',
+      'selection',
+      (input) => {
+        identityIpc(input, [
+          ipcSample({ mono: 85, nativeWidth: 600 }),
+          ipcSample({ payloadWidth: 600, nativeViewId: 2 }),
+        ]);
+      },
+    ),
+    identityCase(
+      'R51 renderer-only-after-failure-target-identity',
+      'unknown',
+      'renderer',
+      (input) => {
+        input.snapshot.window.selectedNative = safeNative(2, 600);
+        identityIpc(input, [
+          ipcSample({ mono: 102, payloadWidth: 600, nativeViewId: 2, nativeWidth: 600 }),
+        ]);
+      },
+    ),
+    ...([90, 100] as const).map((mono, index) =>
+      identityCase(
+        `R0${index + 1} IPC先于或等于失败不能替代原wait目标`,
+        'unknown',
+        'renderer',
+        (input) => {
+          input.snapshot.window.selectedNative = safeNative(2, 600);
+          identityIpc(input, [
+            ipcSample({ mono, payloadWidth: 600, nativeViewId: 2, nativeWidth: 600 }),
+          ]);
+        },
+      ),
+    ),
+    identityCase(
+      'R03 同目标重命名与late非匹配IPC',
+      'renderer-measurement-schedule-send',
+      'renderer',
+      (input) => {
+        input.observation.nativeSamples = {
+          items: [nativeSample(80, 600, { viewId: 2 }), nativeSample(95, 600, { viewId: 2 })],
+          totalCount: 2,
+          truncated: false,
+        };
+        input.snapshot.window.selectedNative = safeNative(2, 600);
+        identityIpc(input, [
+          ipcSample({ mono: 102, payloadWidth: 600, nativeViewId: 2, nativeWidth: 600 }),
+        ]);
+      },
+    ),
+    identityCase('R04 多wait目标不能只取最后一个', 'unknown', 'renderer', (input) => {
+      input.observation.nativeSamples = {
+        items: [nativeSample(80, 600), nativeSample(95, 600, { viewId: 2 })],
+        totalCount: 2,
+        truncated: false,
+      };
+      input.snapshot.window.selectedNative = safeNative(2, 600);
+      identityIpc(input, [
+        ipcSample({ mono: 102, payloadWidth: 600, nativeViewId: 2, nativeWidth: 600 }),
+      ]);
+    }),
+    ...([false, true] as const).map((hidden, index) =>
+      identityCase(
+        `R0${index + 5} 其它IPC目标不能被payload或当前hidden豁免`,
+        'unknown',
+        'renderer',
+        (input) => {
+          identityIpc(input, [ipcSample({ payloadWidth: 600, nativeViewId: 2, nativeWidth: 600 })]);
+          if (hidden) identityChildren(input, [childView(1, 600, true), childView(2, 600, false)]);
+        },
+      ),
+    ),
+    identityCase(
+      'R07 无关hidden的正确bounds不破坏renderer',
+      'renderer-measurement-schedule-send',
+      'renderer',
+      (input) => {
+        identityChildren(input, [childView(1, 600, true), childView(9, 620, false)]);
+      },
+    ),
+    identityCase(
+      'R08 无关other可见不制造第二WCV',
+      'renderer-measurement-schedule-send',
+      'renderer',
+      (input) => {
+        identityChildren(input, [
+          childView(1, 600, true),
+          { ...childView(9, 620, true), kind: 'other' },
+        ]);
+      },
+    ),
+    identityCase('M01 matching IPC与current相同仍须关联wait', 'unknown', 'main', (input) => {
+      input.snapshot.window.selectedNative = safeNative(2, 600);
+      identityIpc(input, [ipcSample({ nativeViewId: 2, nativeWidth: 600 })]);
+    }),
+    identityCase('M02 同目标late非匹配IPC允许main', 'main-apply', 'main', (input) => {
+      identityIpc(input, [
+        ...input.observation.ipcSamples.items,
+        ipcSample({ mono: 102, payloadWidth: 600, nativeWidth: 600 }),
+      ]);
+    }),
+    identityCase('M03 外来IPC目标不是同目标main证据', 'unknown', 'main', (input) => {
+      identityIpc(input, [
+        ...input.observation.ipcSamples.items,
+        ipcSample({ payloadWidth: 600, nativeViewId: 2, nativeWidth: 600 }),
+      ]);
+    }),
+    identityCase('M04 无关hidden正确bounds不破坏main', 'main-apply', 'main', (input) => {
+      identityChildren(input, [childView(1, 600, true), childView(9, 620, false)]);
+    }),
+    identityCase('M05 另一visible目标未匹配也不能忽略身份', 'unknown', 'main', (input) => {
+      identityChildren(input, [childView(1, 600, false), childView(2, 600, true)]);
+    }),
+    identityCase('S01 current第三目标不能解释原wait', 'unknown', 'selection', (input) => {
+      input.snapshot.window.selectedNative = safeNative(3, 600);
+      identityChildren(input, [
+        ...input.snapshot.window.childViews.items,
+        childView(3, 600, false),
+      ]);
+    }),
+    ...([85, 102] as const).map((mono, index) =>
+      identityCase(
+        `S0${index + 2} visible目标的完整native反证`,
+        'unknown',
+        'selection',
+        (input) => {
+          identityIpc(input, [
+            ...input.observation.ipcSamples.items,
+            ipcSample({ mono, payloadWidth: 600, nativeViewId: 2, nativeWidth: 600 }),
+          ]);
+        },
+      ),
+    ),
+    identityCase('S04 非匹配payload与wrong原目标相容', 'view-selection', 'selection', (input) => {
+      identityIpc(input, [
+        ipcSample({ mono: 85, payloadWidth: 600, nativeWidth: 600 }),
+        ...input.observation.ipcSamples.items,
+      ]);
+    }),
+    identityCase(
+      'S05 late非匹配payload与正确visible目标相容',
+      'view-selection',
+      'selection',
+      (input) => {
+        identityIpc(input, [
+          ...input.observation.ipcSamples.items,
+          ipcSample({ mono: 102, payloadWidth: 600, nativeViewId: 2 }),
+        ]);
+      },
+    ),
+    identityCase('S06 第三采样目标不能以当前hidden豁免', 'unknown', 'selection', (input) => {
+      identityIpc(input, [
+        ipcSample({ mono: 85, payloadWidth: 600, nativeViewId: 3, nativeWidth: 600 }),
+        ...input.observation.ipcSamples.items,
+      ]);
+      identityChildren(input, [
+        ...input.snapshot.window.childViews.items,
+        childView(3, 600, false),
+      ]);
+    }),
+    identityCase('S07 matching payload混合绑定不能选有利层', 'unknown', 'selection', (input) => {
+      identityIpc(input, [
+        ipcSample({ mono: 85, nativeWidth: 600 }),
+        ...input.observation.ipcSamples.items,
+      ]);
+    }),
+    ...([false, true] as const).map((before, index) =>
+      identityCase(
+        `L0${index + 1} 新late目标即使有before IPC仍不关联wait`,
+        'unknown',
+        'late',
+        (input) => {
+          input.snapshot.window.selectedNative = safeNative(2, 620);
+          identityIpc(input, [
+            ...(before
+              ? [ipcSample({ payloadWidth: 600, nativeViewId: 2, nativeWidth: 600 })]
+              : []),
+            ipcSample({ mono: 102, nativeViewId: 2 }),
+          ]);
+        },
+      ),
+    ),
+    identityCase('L03 另一采样目标不能忽略', 'unknown', 'late', (input) => {
+      identityIpc(input, [
+        ipcSample({ payloadWidth: 600, nativeViewId: 2, nativeWidth: 600 }),
+        ...input.observation.ipcSamples.items,
+      ]);
+    }),
+    identityCase('L04 late当前目标与visible目标不同', 'unknown', 'late', (input) => {
+      identityChildren(input, [childView(1, 620, false), childView(2, 620, true)]);
+    }),
+    identityCase('L05 无关hidden及other保留late', 'late-observation', 'late', (input) => {
+      identityChildren(input, [
+        childView(1, 620, true),
+        childView(9, 600, false),
+        { ...childView(10, 620, true), kind: 'other' },
+      ]);
+    }),
+    identityCase('L06 同目标late错误native是独立反证', 'unknown', 'late', (input) => {
+      identityIpc(input, [
+        ...input.observation.ipcSamples.items,
+        ipcSample({ mono: 102, payloadWidth: 600, nativeWidth: 600 }),
+      ]);
+    }),
+    identityCase('V04 同id当前child与selected状态相反', 'unknown', 'renderer', (input) => {
+      identityChildren(input, [childView(1, 620, true)]);
+    }),
+    identityCase('V05 child重复身份不能以visible过滤', 'unknown', 'selection', (input) => {
+      identityChildren(input, [
+        ...input.snapshot.window.childViews.items,
+        childView(2, 620, false),
+      ]);
+    }),
+    identityCase('V06 hidden同id失去无关豁免', 'unknown', 'renderer', (input) => {
+      identityChildren(input, [childView(1, 600, true), childView(1, 620, false)]);
+    }),
+    identityCase('T01 capture开始等于failure保留late', 'late-observation', 'late', (input) => {
+      input.snapshot.captureStartedAtMonoMs = 100;
+    }),
+    identityCase('T02 仅current正确不够证明late', 'unknown', 'late', (input) => {
+      identityIpc(input, []);
+    }),
+    identityCase('T03 equal IPC是on-time反证', 'unknown', 'late', (input) => {
+      identityIpc(input, [ipcSample({ mono: 100 })]);
+    }),
+  ])('$id => $layer', ({ input, layer }) => {
+    expect(
+      classifyMatrix9BoundsFailure(
+        input.observation,
+        input.snapshot,
+        input.failureObservedAtMonoMs,
+      ),
+    ).toEqual({ layer, rootCauseEstablished: false });
+  });
+
+  it.each([
+    ['C00 same-target-before-and-after-positive', 1, 'renderer-measurement-schedule-send'],
+    ['C01 target-only-after-failure-collector-produced', 2, 'unknown'],
+  ] as const)('%s（实际导出observer/collector）', async (_id, currentId, layer) => {
+    let mono = 10;
+    let selected = { viewId: 1, bounds: rect(600) };
+    const ipc = new FakeIpc();
+    const sender = {};
+    const observation = createBoundsObservation({
+      ipc,
+      channel: 'ui:content-bounds',
+      trustedSender: sender,
+      sampleSelectedNative: () => selected,
+      nowMono: () => mono,
+      nowWall: () => 1_725_000_000_000,
+    });
+    observation.beginPhase({ phase: 'panel-open', frozenWindowWidth: 1000, expected: EXPECTED });
+    for (const time of [80, 95]) {
+      mono = time;
+      observation.recordNative(selected, false);
+    }
+    mono = 101;
+    selected = { viewId: currentId, bounds: rect(600) };
+    const sequence: string[] = [];
+    let snapshot: Matrix9FailureSnapshot;
+    try {
+      snapshot = await collectMatrix9FailureSnapshot({
+        nowMono: () => mono,
+        readWindow: () => {
+          sequence.push('window101');
+          return {
+            ...rawWindow(),
+            selectedNative: selected,
+            childViews: [
+              { kind: 'web-contents-view', viewId: 1, bounds: rect(600), visible: currentId === 1 },
+              ...(currentId === 2
+                ? [{ kind: 'web-contents-view', viewId: 2, bounds: rect(600), visible: true }]
+                : []),
+            ],
+            childViewTotalCount: currentId,
+          };
+        },
+        readDom: async () => {
+          mono = 102;
+          ipc.emit(sender, rect(600));
+          sequence.push('ipc102');
+          mono = 105;
+          return { ...rawDom(), hasFocus: true };
+        },
+      });
+    } finally {
+      observation.dispose();
+    }
+    expect(sequence).toEqual(['window101', 'ipc102']);
+    expect(ipc.listeners.size).toBe(0);
+    expect(snapshot.captureStartedAtMonoMs).toBe(101);
+    expect(snapshot.captureFinishedAtMonoMs).toBe(105);
+    expect(classifyMatrix9BoundsFailure(observation.snapshot(), snapshot, 100)).toEqual({
+      layer,
+      rootCauseEstablished: false,
+    });
+  });
+
+  const childDefects: readonly [string, (input: IdentityInput) => void][] = [
+    ['V01 非空集合零visible', (input) => identityChildren(input, [childView(9, 600, false)])],
+    [
+      'V02 child unavailable',
+      (input) => {
+        input.snapshot.window.childViews.status = 'unavailable';
+      },
+    ],
+    [
+      'V02 child truncated',
+      (input) => {
+        input.snapshot.window.childViews.truncated = true;
+      },
+    ],
+    [
+      'V02 child count不符',
+      (input) => {
+        input.snapshot.window.childViews.totalCount = 1;
+      },
+    ],
+    [
+      'V02 child unknown kind',
+      (input) => identityChildren(input, [{ ...childView(9, 600, false), kind: 'unavailable' }]),
+    ],
+    [
+      'V02 child missing id',
+      (input) =>
+        identityChildren(input, [
+          { ...childView(9, 600, false), viewId: { status: 'none', value: null } },
+        ]),
+    ],
+    ...(
+      [
+        [600, 600],
+        [600, 620],
+        [620, 620],
+      ] as const
+    ).map(([first, second]): [string, (input: IdentityInput) => void] => [
+      `V03 两visible ${first}/${second}`,
+      (input) => identityChildren(input, [childView(1, first, true), childView(2, second, true)]),
+    ]),
+  ];
+  it.each(
+    (['renderer', 'main', 'late'] as const).flatMap((scenario) =>
+      childDefects.map(([id, change]) =>
+        identityCase(`${id}/${scenario}`, 'unknown', scenario, change),
+      ),
+    ),
+  )('$id => unknown', ({ input }) => {
+    expect(classifyMatrix9BoundsFailure(input.observation, input.snapshot, 100)).toEqual({
+      layer: 'unknown',
+      rootCauseEstablished: false,
+    });
+  });
+
+  const evidenceDefects: readonly [string, (input: IdentityInput) => void][] = [
+    [
+      'T04 native时间越过failure',
+      (input) => {
+        input.observation.nativeSamples = {
+          items: [nativeSample(102, 600)],
+          totalCount: 1,
+          truncated: false,
+        };
+      },
+    ],
+    ['T04 IPC时间越过capture', (input) => identityIpc(input, [ipcSample({ mono: 106 })])],
+    [
+      'T04 native phase不符',
+      (input) => {
+        input.observation.nativeSamples = {
+          items: [nativeSample(90, 600, { phase: 'panel-close' })],
+          totalCount: 1,
+          truncated: false,
+        };
+      },
+    ],
+    [
+      'T04 IPC phase不符',
+      (input) => identityIpc(input, [{ ...ipcSample(), phase: 'panel-close' }]),
+    ],
+    [
+      'T05 native空',
+      (input) => {
+        input.observation.nativeSamples = { items: [], totalCount: 0, truncated: false };
+      },
+    ],
+    [
+      'T05 native截断',
+      (input) => {
+        input.observation.nativeSamples.truncated = true;
+      },
+    ],
+    [
+      'T05 native缺id',
+      (input) => {
+        input.observation.nativeSamples = {
+          items: [{ ...nativeSample(90, 600), viewId: { status: 'none', value: null } }],
+          totalCount: 1,
+          truncated: false,
+        };
+      },
+    ],
+    [
+      'T05 IPC截断',
+      (input) => {
+        input.observation.ipcSamples.truncated = true;
+      },
+    ],
+    [
+      'T05 IPC缺id',
+      (input) =>
+        identityIpc(input, [
+          {
+            ...ipcSample(),
+            selectedNative: { viewId: { status: 'none', value: null }, bounds: safeBounds(600) },
+          },
+        ]),
+    ],
+    [
+      'T05 selected缺id',
+      (input) => {
+        input.snapshot.window.selectedNative = {
+          viewId: { status: 'none', value: null },
+          bounds: safeBounds(600),
+        };
+      },
+    ],
+  ];
+  it.each(
+    (['renderer', 'main', 'selection', 'late'] as const).flatMap((scenario) =>
+      evidenceDefects.map(([id, change]) =>
+        identityCase(`${id}/${scenario}`, 'unknown', scenario, change),
+      ),
+    ),
+  )('$id => unknown', ({ input }) => {
+    expect(classifyMatrix9BoundsFailure(input.observation, input.snapshot, 100)).toEqual({
+      layer: 'unknown',
+      rootCauseEstablished: false,
+    });
+  });
+
+  it.each([
+    ['window-precondition', 999, 620],
+    ['ui-layout', 1000, 619],
+  ] as const)('T06 下游缺证不抹掉独立可判层 %s', (layer, currentWindowWidth, domWidth) => {
+    const snapshot = failureSnapshot({ currentWindowWidth, domWidth });
+    snapshot.window.childViews.status = 'unavailable';
+    expect(
+      classifyMatrix9BoundsFailure(
+        observationSnapshot({ listenerAttachStatus: 'unavailable' }),
+        snapshot,
+        100,
+      ),
+    ).toEqual({ layer, rootCauseEstablished: false });
+  });
+});
