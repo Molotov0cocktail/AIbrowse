@@ -199,6 +199,28 @@ const ipcSample = (options?: {
   selectedNative: safeNative(options?.nativeViewId ?? 1, options?.nativeWidth ?? 620),
 });
 
+const nativeSample = (
+  mono: number,
+  width: number,
+  options?: { viewId?: number; matched?: boolean; phase?: 'panel-open' | 'panel-close' },
+): BoundsObservationSnapshot['nativeSamples']['items'][number] => ({
+  phase: options?.phase ?? 'panel-open',
+  monoObservedAtMs: mono,
+  conditionMatched: options?.matched ?? false,
+  ...safeNative(options?.viewId ?? 1, width),
+});
+
+const childView = (
+  viewId: number,
+  width: number,
+  visible: boolean,
+): Matrix9FailureSnapshot['window']['childViews']['items'][number] => ({
+  kind: 'web-contents-view',
+  viewId: { status: 'valid', value: viewId },
+  visible: { status: 'valid', value: visible },
+  bounds: safeBounds(width),
+});
+
 function rawWindow(childCount = 1) {
   return {
     contentSize: [1000, 700],
@@ -623,6 +645,165 @@ describe('矩阵 9 bounds 失败观测', () => {
         100,
       ),
     ).toEqual({ layer: 'unknown', rootCauseEstablished: false });
+  });
+
+  it.each([
+    [
+      'late-observation',
+      [
+        ipcSample({ mono: 90, payloadWidth: 600, nativeWidth: 620 }),
+        ipcSample({ mono: 102, payloadWidth: 620, nativeWidth: 620 }),
+      ],
+      failureSnapshot({ selectedWidth: 620, finishedAt: 105 }),
+    ],
+    [
+      'renderer-measurement-schedule-send',
+      [ipcSample({ mono: 90, payloadWidth: 600, nativeWidth: 620 })],
+      failureSnapshot({ selectedWidth: 600, finishedAt: 105 }),
+    ],
+    [
+      'main-apply',
+      [
+        ipcSample({ mono: 85, payloadWidth: 620, nativeWidth: 600 }),
+        ipcSample({ mono: 90, payloadWidth: 600, nativeWidth: 620 }),
+      ],
+      failureSnapshot({ selectedWidth: 600, finishedAt: 105 }),
+    ],
+  ])('同目标 on-time native 正反事实并存时不误判 %s', (_oldLayer, ipc, snapshot) => {
+    const observation = observationSnapshot({
+      native: [nativeSample(80, 600), nativeSample(95, 600)],
+      ipc,
+    });
+    expect(classifyMatrix9BoundsFailure(observation, snapshot, 100)).toEqual({
+      layer: 'unknown',
+      rootCauseEstablished: false,
+    });
+  });
+
+  it('两个 visible WebContentsView 中仅一个宽度匹配时仍不制造唯一目标', () => {
+    expect(
+      classifyMatrix9BoundsFailure(
+        observationSnapshot({
+          native: [nativeSample(80, 600), nativeSample(95, 600)],
+          ipc: [ipcSample({ mono: 90, nativeViewId: 2, nativeWidth: 620 })],
+        }),
+        failureSnapshot({
+          childViews: [childView(1, 600, true), childView(2, 620, true)],
+          finishedAt: 105,
+        }),
+        100,
+      ),
+    ).toEqual({ layer: 'unknown', rootCauseEstablished: false });
+  });
+
+  it.each(
+    ([false, true] as const).flatMap((payloadMatched) =>
+      ([false, true] as const).flatMap((nativeMatched) =>
+        (
+          [
+            ['before', 90],
+            ['equal', 100],
+            ['after', 102],
+          ] as const
+        ).map(([timing, mono]) => {
+          const expectedLayer = payloadMatched
+            ? nativeMatched
+              ? timing === 'after'
+                ? 'late-observation'
+                : 'unknown'
+              : timing === 'after'
+                ? 'unknown'
+                : 'main-apply'
+            : nativeMatched
+              ? 'unknown'
+              : 'renderer-measurement-schedule-send';
+          return { payloadMatched, nativeMatched, timing, mono, expectedLayer };
+        }),
+      ),
+    ),
+  )(
+    'IPC 完整矩阵 payload=$payloadMatched/native=$nativeMatched/time=$timing => $expectedLayer',
+    ({ payloadMatched, nativeMatched, mono, expectedLayer }) => {
+      const latePositive = expectedLayer === 'late-observation';
+      expect(
+        classifyMatrix9BoundsFailure(
+          observationSnapshot({
+            native: [nativeSample(80, 600), nativeSample(95, 600)],
+            ipc: [
+              ipcSample({
+                mono,
+                payloadWidth: payloadMatched ? 620 : 600,
+                nativeWidth: nativeMatched ? 620 : 600,
+              }),
+            ],
+          }),
+          failureSnapshot({ selectedWidth: latePositive ? 620 : 600, finishedAt: 105 }),
+          100,
+        ),
+      ).toEqual({ layer: expectedLayer, rootCauseEstablished: false });
+    },
+  );
+
+  it.each([
+    [
+      '独立 native ring 已匹配但 IPC native 未匹配',
+      observationSnapshot({
+        native: [nativeSample(90, 620, { matched: true })],
+        ipc: [ipcSample({ mono: 90, nativeWidth: 600 })],
+      }),
+    ],
+    [
+      'IPC wrong phase',
+      observationSnapshot({
+        ipc: [{ ...ipcSample(), phase: 'panel-close' }],
+      }),
+    ],
+    [
+      'IPC 非有限时间',
+      observationSnapshot({
+        ipc: [{ ...ipcSample(), monoObservedAtMs: Number.NaN }],
+      }),
+    ],
+    [
+      'IPC native 身份不可比',
+      observationSnapshot({
+        ipc: [
+          {
+            ...ipcSample(),
+            selectedNative: {
+              viewId: { status: 'none', value: null },
+              bounds: safeBounds(620),
+            },
+          },
+        ],
+      }),
+    ],
+    ['IPC ring 截断', observationSnapshot({ ipc: [ipcSample()], ipcTruncated: true })],
+  ])('%s 时保持 unknown', (_label, observation) => {
+    expect(classifyMatrix9BoundsFailure(observation, failureSnapshot(), 100)).toEqual({
+      layer: 'unknown',
+      rootCauseEstablished: false,
+    });
+  });
+
+  it.each([
+    ['0 visible / 0 matching', [childView(2, 600, false)], 'unknown'],
+    ['1 visible / 0 matching', [childView(2, 600, true)], 'unknown'],
+    ['1 visible / 1 matching', [childView(2, 620, true)], 'view-selection'],
+    ['2 visible / 0 matching', [childView(2, 600, true), childView(3, 600, true)], 'unknown'],
+    ['2 visible / 1 matching', [childView(1, 600, true), childView(2, 620, true)], 'unknown'],
+    ['2 visible / 2 matching', [childView(2, 620, true), childView(3, 620, true)], 'unknown'],
+  ] as const)('完整 child 集合 %s => %s', (_label, childViews, layer) => {
+    expect(
+      classifyMatrix9BoundsFailure(
+        observationSnapshot({
+          native: [nativeSample(80, 600), nativeSample(95, 600)],
+          ipc: [ipcSample({ mono: 90, nativeViewId: 2, nativeWidth: 620 })],
+        }),
+        failureSnapshot({ childViews, finishedAt: 105 }),
+        100,
+      ),
+    ).toEqual({ layer, rootCauseEstablished: false });
   });
 
   it.each([
