@@ -12,21 +12,142 @@ import type { WatchTaskTabWorkspace } from './watch/watch-task-tab-workspace';
 
 const RESOURCE_SAMPLE_INTERVAL_MS = 100;
 
-function wait(ms: number, signal: AbortSignal): Promise<void> {
+export interface ProductWatchResourceTiming {
+  monotonicNow: () => number;
+  utcNow: () => Date;
+  setTimeout: (callback: () => void, delayMs: number) => unknown;
+  clearTimeout: (handle: unknown) => void;
+}
+
+const DEFAULT_RESOURCE_TIMING: ProductWatchResourceTiming = {
+  monotonicNow: () => performance.now(),
+  utcNow: () => new Date(),
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+interface MonotonicProbeClock {
+  elapsedMs: () => number;
+  rawNow: () => number;
+}
+
+function createMonotonicProbeClock(timing: ProductWatchResourceTiming): MonotonicProbeClock {
+  let origin: number | undefined;
+  let previous: number | undefined;
+  const rawNow = (): number => {
+    const current = timing.monotonicNow();
+    if (
+      !Number.isFinite(current) ||
+      current < 0 ||
+      current > Number.MAX_SAFE_INTEGER ||
+      (previous !== undefined && current < previous)
+    ) {
+      throw new Error('resource probe monotonic clock invalid');
+    }
+    previous = current;
+    origin ??= current;
+    return current;
+  };
+  return {
+    rawNow,
+    elapsedMs: () => {
+      const current = rawNow();
+      const elapsed = Math.floor(current - origin!);
+      if (!Number.isSafeInteger(elapsed) || elapsed < 0) {
+        throw new Error('resource probe monotonic elapsed invalid');
+      }
+      return elapsed;
+    },
+  };
+}
+
+function wait(
+  ms: number,
+  signal: AbortSignal,
+  clock: MonotonicProbeClock,
+  timing: ProductWatchResourceTiming,
+): Promise<void> {
+  let startedAt: number;
+  try {
+    startedAt = clock.rawNow();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  const deadline = startedAt + ms;
+  if (!Number.isFinite(deadline) || deadline > Number.MAX_SAFE_INTEGER || deadline <= startedAt) {
+    return Promise.reject(new Error('resource probe deadline invalid'));
+  }
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
       reject(new Error('resource probe aborted'));
       return;
     }
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        reject(new Error('resource probe aborted'));
-      },
-      { once: true },
-    );
+    let settled = false;
+    let timer: unknown;
+    const cleanup = (): void => {
+      let cleanupError: unknown;
+      const activeTimer = timer;
+      timer = undefined;
+      if (activeTimer !== undefined) {
+        try {
+          timing.clearTimeout(activeTimer);
+        } catch (error) {
+          cleanupError = error;
+        }
+      }
+      try {
+        signal.removeEventListener('abort', onAbort);
+      } catch (error) {
+        cleanupError ??= error;
+      }
+      if (cleanupError !== undefined) throw cleanupError;
+    };
+    const settle = (error?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        cleanup();
+      } catch (cleanupError) {
+        reject(cleanupError);
+        return;
+      }
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+    function onAbort(): void {
+      settle(new Error('resource probe aborted'));
+    }
+    const schedule = (delayMs: number): void => {
+      try {
+        timer = timing.setTimeout(onTimer, Math.ceil(delayMs));
+      } catch (error) {
+        settle(error);
+      }
+    };
+    function onTimer(): void {
+      if (settled) return;
+      timer = undefined;
+      try {
+        const current = clock.rawNow();
+        if (current < deadline) {
+          schedule(deadline - current);
+          return;
+        }
+        settle();
+      } catch (error) {
+        settle(error);
+      }
+    }
+    try {
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      schedule(ms);
+    } catch (error) {
+      settle(error);
+    }
   });
 }
 
@@ -50,6 +171,7 @@ export interface ProductWatchRuntimeResourceProbe {
 export function createProductWatchResourcePort(
   _workspace: WatchTaskTabWorkspace | null,
   runtime?: ProductWatchRuntimeResourceProbe,
+  timing: ProductWatchResourceTiming = DEFAULT_RESOURCE_TIMING,
 ): WatchLiveResourcePort {
   return {
     async probe(_scenario, signal) {
@@ -67,16 +189,37 @@ export function createProductWatchResourcePort(
         };
       }
       try {
-        const sampleMetrics = (): WatchResourceMetricSample => ({
-          observedAtMs: Date.now(),
-          ...runtime.metrics(),
-        });
+        const clock = createMonotonicProbeClock(timing);
+        let previousUtcMs: number | undefined;
+        let wallClockRollbackObserved = false;
+        const readUtc = (): string => {
+          const reading = timing.utcNow();
+          if (!(reading instanceof Date) || !Number.isFinite(reading.getTime())) {
+            throw new Error('resource probe UTC clock invalid');
+          }
+          const readingMs = reading.getTime();
+          if (previousUtcMs !== undefined && readingMs < previousUtcMs) {
+            wallClockRollbackObserved = true;
+          }
+          previousUtcMs = readingMs;
+          return reading.toISOString();
+        };
+        const metricObservedAtUtc: string[] = [];
+        const sampleMetrics = (): WatchResourceMetricSample => {
+          const observedAtMs = clock.elapsedMs();
+          metricObservedAtUtc.push(readUtc());
+          return {
+            observedAtMs,
+            ...runtime.metrics(),
+          };
+        };
         const resourceMetricTrend: WatchResourceMetricSample[] = [sampleMetrics()];
         const measurementStartedAtMs = resourceMetricTrend[0].observedAtMs;
         const batterySamples: WatchResourceBatterySample[] = [];
+        const batteryObservedAtUtc: string[] = [];
         let batteryStatus: WatchResourceBatteryObservation['status'] = 'condition-unavailable';
         let batteryReason = '生产运行时未提供电池采样接口';
-        const sampleBattery = (observedAtMs: number): void => {
+        const sampleBattery = (observedAtMs: number, observedAtUtc: string): void => {
           const reading = runtime.battery?.();
           if (reading === undefined) return;
           if (reading.status === 'condition-unavailable') {
@@ -89,19 +232,23 @@ export function createProductWatchResourcePort(
             chargePercent: reading.chargePercent,
             onBatteryPower: reading.onBatteryPower,
           });
+          batteryObservedAtUtc.push(observedAtUtc);
         };
-        sampleBattery(resourceMetricTrend[0].observedAtMs);
-        await wait(RESOURCE_SAMPLE_INTERVAL_MS, signal);
+        sampleBattery(resourceMetricTrend[0].observedAtMs, metricObservedAtUtc[0]!);
+        await wait(RESOURCE_SAMPLE_INTERVAL_MS, signal, clock, timing);
         resourceMetricTrend.push(sampleMetrics());
-        sampleBattery(resourceMetricTrend[1].observedAtMs);
+        sampleBattery(resourceMetricTrend[1].observedAtMs, metricObservedAtUtc[1]!);
         const measurementEndedAtMs = resourceMetricTrend.at(-1)!.observedAtMs;
-        const drainStartedAtMs = Date.now();
+        const drainStartedAtMs = clock.elapsedMs();
+        const drainStartedAtUtc = readUtc();
         await runtime.shutdown();
         const residualObservedAtMs: number[] = [];
+        const residualObservedAtUtc: string[] = [];
         const residualTrend: ReturnType<ProductWatchRuntimeResourceProbe['residuals']>[] = [];
         for (let index = 0; index < 3; index += 1) {
-          if (index > 0) await wait(100, signal);
-          residualObservedAtMs.push(Date.now());
+          if (index > 0) await wait(RESOURCE_SAMPLE_INTERVAL_MS, signal, clock, timing);
+          residualObservedAtMs.push(clock.elapsedMs());
+          residualObservedAtUtc.push(readUtc());
           residualTrend.push(runtime.residuals());
         }
         const drainEndedAtMs = residualObservedAtMs.at(-1)!;
@@ -127,6 +274,13 @@ export function createProductWatchResourcePort(
           resourceMetrics: resourceMetricTrend.at(-1),
           resourceMetricTrend,
           batteryObservation,
+          clockAudit: {
+            metricObservedAtUtc,
+            batteryObservedAtUtc,
+            drainStartedAtUtc,
+            residualObservedAtUtc,
+            wallClockRollbackObserved,
+          },
         };
       } catch {
         return {

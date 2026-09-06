@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   classifyWatchLiveFailure,
   describeWatchLiveLedger,
@@ -41,6 +41,13 @@ const COMPLETE_RESOURCE_RESULT = {
       { observedAtMs: 1_000, chargePercent: 80, onBatteryPower: false },
       { observedAtMs: 2_000, chargePercent: 79, onBatteryPower: true },
     ],
+  },
+  clockAudit: {
+    metricObservedAtUtc: ['2026-09-06T00:00:00.000Z', '2026-09-06T00:00:01.000Z'],
+    batteryObservedAtUtc: ['2026-09-06T00:00:00.000Z', '2026-09-06T00:00:01.000Z'],
+    drainStartedAtUtc: '2026-09-06T00:00:01.000Z',
+    residualObservedAtUtc: ['2026-09-06T00:00:01.100Z', '2026-09-06T00:00:01.200Z'],
+    wallClockRollbackObserved: false,
   },
 };
 
@@ -116,44 +123,81 @@ describe('D10 bounded live Watch scenarios', () => {
   }, 5_000);
 
   it('生产资源端口把测量窗口与排水窗口分开并保留真实时间戳', async () => {
-    let metricsCalls = 0;
-    let shutdownCalled = false;
-    const resource = WATCH_LIVE_SCENARIO_MANIFEST.find((scenario) => scenario.kind === 'resource')!;
-    const result = await createProductWatchResourcePort(null, {
-      isAvailable: () => true,
-      metrics: () => {
-        metricsCalls += 1;
-        return {
-          rssBytes: 10 + metricsCalls,
-          heapUsedBytes: 20 + metricsCalls,
-          cpuUserMicros: 30 + metricsCalls,
-          cpuSystemMicros: 40 + metricsCalls,
-        };
-      },
-      battery: () => ({
-        status: 'observed' as const,
-        chargePercent: metricsCalls === 1 ? 80 : 79,
-        onBatteryPower: metricsCalls !== 1,
-      }),
-      shutdown: async () => {
-        shutdownCalled = true;
-      },
-      residuals: () => {
-        expect(shutdownCalled).toBe(true);
-        return { servers: 0, timers: 0, databases: 0, taskTabs: 0, children: 0, tempDirs: 0 };
-      },
-    }).probe(resource, new AbortController().signal);
+    vi.useFakeTimers();
+    try {
+      const utcReadings = [1_000, 1_099, 1_099, 1_099, 1_199, 1_299];
+      let metricsCalls = 0;
+      let shutdownCalled = false;
+      const resource = WATCH_LIVE_SCENARIO_MANIFEST.find(
+        (scenario) => scenario.kind === 'resource',
+      )!;
+      const pendingResult = createProductWatchResourcePort(
+        null,
+        {
+          isAvailable: () => true,
+          metrics: () => {
+            metricsCalls += 1;
+            return {
+              rssBytes: 10 + metricsCalls,
+              heapUsedBytes: 20 + metricsCalls,
+              cpuUserMicros: 30 + metricsCalls,
+              cpuSystemMicros: 40 + metricsCalls,
+            };
+          },
+          battery: () => ({
+            status: 'observed' as const,
+            chargePercent: metricsCalls === 1 ? 80 : 79,
+            onBatteryPower: metricsCalls !== 1,
+          }),
+          shutdown: async () => {
+            shutdownCalled = true;
+          },
+          residuals: () => {
+            expect(shutdownCalled).toBe(true);
+            return {
+              servers: 0,
+              timers: 0,
+              databases: 0,
+              taskTabs: 0,
+              children: 0,
+              tempDirs: 0,
+            };
+          },
+        },
+        {
+          monotonicNow: () => performance.now(),
+          utcNow: () => new Date(utcReadings.shift()!),
+          setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+          clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+        },
+      ).probe(resource, new AbortController().signal);
+      await vi.runAllTimersAsync();
+      const result = await pendingResult;
 
-    expect(result.errorCode).toBe('observation-insufficient');
-    expect(result.observedForMs).toBeGreaterThanOrEqual(100);
-    expect(result.drainObservedForMs).toBeGreaterThanOrEqual(0);
-    expect(result.resourceMetricTrend).toHaveLength(2);
-    expect(result.resourceMetricTrend![0]!.observedAtMs).toBeLessThan(
-      result.resourceMetricTrend![1]!.observedAtMs,
-    );
-    expect(result.residualObservedAtMs).toHaveLength(3);
-    expect(result.residualObservedAtMs![0]).toBeGreaterThanOrEqual(result.drainStartedAtMs!);
-    expect(result.batteryObservation?.status).toBe('observed');
+      expect(result.errorCode).toBe('observation-insufficient');
+      expect(result.observedForMs).toBeGreaterThanOrEqual(100);
+      expect(result.drainObservedForMs).toBeGreaterThanOrEqual(0);
+      expect(result.resourceMetricTrend).toHaveLength(2);
+      expect(result.resourceMetricTrend![0]!.observedAtMs).toBeLessThan(
+        result.resourceMetricTrend![1]!.observedAtMs,
+      );
+      expect(result.residualObservedAtMs).toHaveLength(3);
+      expect(result.residualObservedAtMs![0]).toBeGreaterThanOrEqual(result.drainStartedAtMs!);
+      expect(result.batteryObservation?.status).toBe('observed');
+      expect(result.clockAudit).toEqual({
+        metricObservedAtUtc: ['1970-01-01T00:00:01.000Z', '1970-01-01T00:00:01.099Z'],
+        batteryObservedAtUtc: ['1970-01-01T00:00:01.000Z', '1970-01-01T00:00:01.099Z'],
+        drainStartedAtUtc: '1970-01-01T00:00:01.099Z',
+        residualObservedAtUtc: [
+          '1970-01-01T00:00:01.099Z',
+          '1970-01-01T00:00:01.199Z',
+          '1970-01-01T00:00:01.299Z',
+        ],
+        wallClockRollbackObserved: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   }, 5_000);
 
   it('已打包 Windows 的产品缺陷不得降级成条件跳过', async () => {
@@ -474,6 +518,10 @@ describe('D10 bounded live Watch scenarios', () => {
             reason: 'battery condition unavailable',
             samples: [],
           },
+          clockAudit: {
+            ...COMPLETE_RESOURCE_RESULT.clockAudit,
+            batteryObservedAtUtc: [],
+          },
         }),
       },
     });
@@ -503,6 +551,10 @@ describe('D10 bounded live Watch scenarios', () => {
             status: 'condition-unavailable' as const,
             reason: 'battery condition unavailable',
             samples: [],
+          },
+          clockAudit: {
+            ...COMPLETE_RESOURCE_RESULT.clockAudit,
+            batteryObservedAtUtc: [],
           },
         }),
       },
@@ -554,6 +606,7 @@ describe('D10 bounded live Watch scenarios', () => {
         residualSampleCount: 2,
         batteryStatus: 'observed' as const,
         batterySampleCount: 2,
+        clockAudit: COMPLETE_RESOURCE_RESULT.clockAudit,
       },
     };
     expect(validateWatchLiveLedger([entry])).toEqual(
@@ -762,6 +815,7 @@ describe('D10 bounded live Watch scenarios', () => {
                 { observedAtMs: 2_000, chargePercent: 79, onBatteryPower: true },
               ],
             },
+            clockAudit: COMPLETE_RESOURCE_RESULT.clockAudit,
           };
         },
       },

@@ -3,6 +3,7 @@
 
 import {
   classifyWatchLiveFailure,
+  isWatchLiveResourceClockAudit,
   validateWatchLiveExecution,
   validateWatchLiveLedger,
   validateWatchLiveManifest,
@@ -104,6 +105,7 @@ export interface WatchLiveResourcePort {
     resourceMetrics?: WatchResourceMetricSample;
     resourceMetricTrend?: readonly WatchResourceMetricSample[];
     batteryObservation?: WatchResourceBatteryObservation;
+    clockAudit?: WatchLiveResourceObservation['clockAudit'];
   }>;
 }
 
@@ -333,6 +335,11 @@ export async function runWatchLiveScenarios(
           battery === undefined || battery.samples.length < 2
             ? undefined
             : battery.samples.at(-1)!.observedAtMs - battery.samples[0]!.observedAtMs;
+        const clockAuditIsWellFormed = isWatchLiveResourceClockAudit(result.clockAudit, {
+          metric: metricTrend?.length ?? -1,
+          battery: battery?.samples.length ?? -1,
+          residual: result.residualObservedAtMs?.length ?? -1,
+        });
         const residualTimestampsAreMonotonic =
           result.residualObservedAtMs !== undefined &&
           result.residualObservedAtMs.every(
@@ -365,7 +372,8 @@ export async function runWatchLiveScenarios(
           Number.isSafeInteger(result.drainObservedForMs) &&
           result.residualObservedAtMs !== undefined &&
           result.resourceMetricTrend !== undefined &&
-          result.batteryObservation !== undefined
+          result.batteryObservation !== undefined &&
+          result.clockAudit !== undefined
             ? {
                 measurementStartedAtMs: result.resourceMetricTrend[0]?.observedAtMs ?? -1,
                 measurementEndedAtMs: result.resourceMetricTrend.at(-1)?.observedAtMs ?? -1,
@@ -382,6 +390,7 @@ export async function runWatchLiveScenarios(
                 batteryStatus: result.batteryObservation.status,
                 batterySampleCount: result.batteryObservation.samples.length,
                 batteryReason: result.batteryObservation.reason,
+                clockAudit: result.clockAudit,
               }
             : undefined;
         const resourceCoreEvidenceIsWellFormed =
@@ -426,18 +435,23 @@ export async function runWatchLiveScenarios(
           [result.resourceMetrics, ...metricTrend].some((metrics) =>
             metricFields.some((field) => metrics[field] > 0),
           ) &&
+          clockAuditIsWellFormed &&
           resourceObservation !== undefined;
         const batteryEvidenceIsWellFormed =
           battery?.status === 'condition-unavailable'
             ? battery.reason !== undefined && battery.reason.trim() !== ''
             : battery?.status === 'observed' &&
               battery.samples.length >= 2 &&
+              battery.samples.length === metricTrend?.length &&
               batteryTimestampsAreMonotonic &&
               batteryStartedAtMs !== undefined &&
               batteryEndedAtMs !== undefined &&
               batteryStartedAtMs >= measurementStartedAtMs! &&
               batteryEndedAtMs <= measurementEndedAtMs! &&
               batterySamplesHaveValue &&
+              battery.samples.every(
+                (sample, index) => sample.observedAtMs === metricTrend?.[index]?.observedAtMs,
+              ) &&
               (batterySpan ?? -1) === metricSpan;
         const resourceEvidenceIsWellFormed =
           resourceCoreEvidenceIsWellFormed && batteryEvidenceIsWellFormed;
@@ -445,7 +459,8 @@ export async function runWatchLiveScenarios(
           result.observedForMs === undefined &&
           result.residuals === undefined &&
           result.resourceMetricTrend === undefined &&
-          result.batteryObservation === undefined;
+          result.batteryObservation === undefined &&
+          result.clockAudit === undefined;
         entries.push({
           scenario: scenario.id,
           requestCount: 0,

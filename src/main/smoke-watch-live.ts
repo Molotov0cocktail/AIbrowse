@@ -76,6 +76,62 @@ export type WatchLiveResultKind =
 
 export type WatchLiveResourceMetricTrend = 'changed' | 'stable';
 
+export interface WatchLiveResourceClockAudit {
+  metricObservedAtUtc: readonly string[];
+  batteryObservedAtUtc: readonly string[];
+  drainStartedAtUtc: string;
+  residualObservedAtUtc: readonly string[];
+  wallClockRollbackObserved: boolean;
+}
+
+export function isWatchLiveResourceClockAudit(
+  value: unknown,
+  counts: {
+    metric: number;
+    battery: number;
+    residual: number;
+  },
+): value is WatchLiveResourceClockAudit {
+  if (typeof value !== 'object' || value === null) return false;
+  const audit = value as Partial<WatchLiveResourceClockAudit>;
+  if (
+    !Array.isArray(audit.metricObservedAtUtc) ||
+    !Array.isArray(audit.batteryObservedAtUtc) ||
+    !Array.isArray(audit.residualObservedAtUtc) ||
+    typeof audit.drainStartedAtUtc !== 'string' ||
+    typeof audit.wallClockRollbackObserved !== 'boolean' ||
+    audit.metricObservedAtUtc.length !== counts.metric ||
+    audit.batteryObservedAtUtc.length !== counts.battery ||
+    audit.residualObservedAtUtc.length !== counts.residual
+  ) {
+    return false;
+  }
+  const isCanonicalUtc = (timestamp: unknown): timestamp is string => {
+    if (typeof timestamp !== 'string') return false;
+    const parsedMs = Date.parse(timestamp);
+    return Number.isFinite(parsedMs) && new Date(parsedMs).toISOString() === timestamp;
+  };
+  const utcTimeline = [
+    ...audit.metricObservedAtUtc,
+    audit.drainStartedAtUtc,
+    ...audit.residualObservedAtUtc,
+  ];
+  if (!utcTimeline.every(isCanonicalUtc) || !audit.batteryObservedAtUtc.every(isCanonicalUtc)) {
+    return false;
+  }
+  if (
+    !audit.batteryObservedAtUtc.every(
+      (timestamp, index) => timestamp === audit.metricObservedAtUtc![index],
+    )
+  ) {
+    return false;
+  }
+  const rollbackObserved = utcTimeline.some(
+    (timestamp, index) => index > 0 && Date.parse(timestamp) < Date.parse(utcTimeline[index - 1]!),
+  );
+  return audit.wallClockRollbackObserved === rollbackObserved;
+}
+
 export interface WatchLiveResourceObservation {
   measurementStartedAtMs: number;
   measurementEndedAtMs: number;
@@ -91,6 +147,7 @@ export interface WatchLiveResourceObservation {
   batteryStatus: 'observed' | 'condition-unavailable';
   batterySampleCount: number;
   batteryReason?: string;
+  clockAudit: WatchLiveResourceClockAudit;
 }
 
 export interface WatchLiveLedgerEntry {
@@ -189,7 +246,7 @@ export function describeWatchLiveLedger(entries: readonly WatchLiveLedgerEntry[]
         `${entry.scenario}：${entry.requestCount} 次（${entry.resultKind}；${entry.httpClass}${
           entry.resourceObservation === undefined
             ? ''
-            : `；测量 ${entry.resourceObservation.measurementWindowMs}ms/${entry.resourceObservation.metricSampleCount} 样本；排水 ${entry.resourceObservation.drainWindowMs}ms；指标${entry.resourceObservation.metricTrend}；电池${entry.resourceObservation.batteryStatus}/${entry.resourceObservation.batterySampleCount} 样本${entry.resourceObservation.batteryReason === undefined ? '' : `（${entry.resourceObservation.batteryReason}）`}`
+            : `；测量 ${entry.resourceObservation.measurementWindowMs}ms/${entry.resourceObservation.metricSampleCount} 样本；排水 ${entry.resourceObservation.drainWindowMs}ms；指标${entry.resourceObservation.metricTrend}；电池${entry.resourceObservation.batteryStatus}/${entry.resourceObservation.batterySampleCount} 样本${entry.resourceObservation.batteryReason === undefined ? '' : `（${entry.resourceObservation.batteryReason}）`}；UTC审计${entry.resourceObservation.clockAudit.wallClockRollbackObserved ? '检测到回拨' : '连续'}`
         }）`,
     )
     .join('；');
@@ -269,46 +326,56 @@ export function validateWatchLiveLedger(
         errors.push(`${entry.scenario}：Windows PASS 分类不一致`);
       }
     }
-    if (scenario.kind === 'resource' && entry.resultKind === 'pass') {
-      errors.push(`${entry.scenario}：当前未提供正式长时资格，不能报告 PASS`);
+    if (scenario.kind === 'resource') {
       const observation = entry.resourceObservation;
-      if (observation === undefined) {
+      if (entry.resultKind === 'pass') {
+        errors.push(`${entry.scenario}：当前未提供正式长时资格，不能报告 PASS`);
+      }
+      if (observation === undefined && entry.resultKind === 'pass') {
         errors.push(`${entry.scenario}：资源 PASS 缺少可审计观察证据`);
-      } else if (
-        !Number.isSafeInteger(observation.measurementStartedAtMs) ||
-        !Number.isSafeInteger(observation.measurementEndedAtMs) ||
-        !Number.isSafeInteger(observation.measurementWindowMs) ||
-        !Number.isSafeInteger(observation.drainStartedAtMs) ||
-        !Number.isSafeInteger(observation.drainEndedAtMs) ||
-        !Number.isSafeInteger(observation.drainWindowMs) ||
-        !Number.isSafeInteger(observation.metricSampleCount) ||
-        !Number.isSafeInteger(observation.residualSampleCount) ||
-        !Number.isSafeInteger(observation.batterySampleCount) ||
-        observation.measurementEndedAtMs < observation.measurementStartedAtMs ||
-        observation.measurementEndedAtMs > observation.drainStartedAtMs ||
-        observation.drainEndedAtMs < observation.drainStartedAtMs ||
-        observation.measurementWindowMs !==
-          observation.measurementEndedAtMs - observation.measurementStartedAtMs ||
-        observation.drainWindowMs !== observation.drainEndedAtMs - observation.drainStartedAtMs ||
-        observation.measurementWindowMs <= 0 ||
-        observation.drainWindowMs < 0 ||
-        observation.metricSampleCount < 2 ||
-        observation.residualSampleCount < 2 ||
-        observation.metricTrend !== 'changed' ||
-        observation.batterySampleCount < 0 ||
-        (observation.batteryStatus === 'observed' &&
-          (observation.batteryStartedAtMs === undefined ||
-            observation.batteryEndedAtMs === undefined ||
-            !Number.isSafeInteger(observation.batteryStartedAtMs) ||
-            !Number.isSafeInteger(observation.batteryEndedAtMs) ||
-            observation.batteryStartedAtMs < observation.measurementStartedAtMs ||
-            observation.batteryEndedAtMs > observation.measurementEndedAtMs ||
-            observation.batteryEndedAtMs < observation.batteryStartedAtMs ||
-            observation.batterySampleCount < 2)) ||
-        (observation.batteryStatus === 'condition-unavailable' &&
-          (observation.batteryReason === undefined || observation.batteryReason.trim() === ''))
-      ) {
-        errors.push(`${entry.scenario}：资源 PASS 观察证据不完整或不可信`);
+      } else if (observation !== undefined) {
+        const clockAuditIsWellFormed = isWatchLiveResourceClockAudit(observation.clockAudit, {
+          metric: observation.metricSampleCount,
+          battery: observation.batterySampleCount,
+          residual: observation.residualSampleCount,
+        });
+        if (
+          !Number.isSafeInteger(observation.measurementStartedAtMs) ||
+          !Number.isSafeInteger(observation.measurementEndedAtMs) ||
+          !Number.isSafeInteger(observation.measurementWindowMs) ||
+          !Number.isSafeInteger(observation.drainStartedAtMs) ||
+          !Number.isSafeInteger(observation.drainEndedAtMs) ||
+          !Number.isSafeInteger(observation.drainWindowMs) ||
+          !Number.isSafeInteger(observation.metricSampleCount) ||
+          !Number.isSafeInteger(observation.residualSampleCount) ||
+          !Number.isSafeInteger(observation.batterySampleCount) ||
+          observation.measurementEndedAtMs < observation.measurementStartedAtMs ||
+          observation.measurementEndedAtMs > observation.drainStartedAtMs ||
+          observation.drainEndedAtMs < observation.drainStartedAtMs ||
+          observation.measurementWindowMs !==
+            observation.measurementEndedAtMs - observation.measurementStartedAtMs ||
+          observation.drainWindowMs !== observation.drainEndedAtMs - observation.drainStartedAtMs ||
+          observation.measurementWindowMs <= 0 ||
+          observation.drainWindowMs < 0 ||
+          observation.metricSampleCount < 2 ||
+          observation.residualSampleCount < 2 ||
+          observation.metricTrend !== 'changed' ||
+          observation.batterySampleCount < 0 ||
+          (observation.batteryStatus === 'observed' &&
+            (observation.batteryStartedAtMs === undefined ||
+              observation.batteryEndedAtMs === undefined ||
+              !Number.isSafeInteger(observation.batteryStartedAtMs) ||
+              !Number.isSafeInteger(observation.batteryEndedAtMs) ||
+              observation.batteryStartedAtMs < observation.measurementStartedAtMs ||
+              observation.batteryEndedAtMs > observation.measurementEndedAtMs ||
+              observation.batteryEndedAtMs < observation.batteryStartedAtMs ||
+              observation.batterySampleCount < 2)) ||
+          (observation.batteryStatus === 'condition-unavailable' &&
+            (observation.batteryReason === undefined || observation.batteryReason.trim() === '')) ||
+          !clockAuditIsWellFormed
+        ) {
+          errors.push(`${entry.scenario}：资源观察证据不完整或不可信`);
+        }
       }
     }
   }
