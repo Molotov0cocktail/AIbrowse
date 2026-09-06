@@ -187,8 +187,12 @@ octet 匹配；R2 未经新的独立安全 Reviewer `PASS` 前 D3 不完成、D4
 | G10 | CDATA main，可含前置 normal text 残留              | 依赖内部 UTF-16 code units                   | `maxTextLength=B`；项目把独立 CDATA 节点另限 8,192 UTF-8 字节                                     |
 | G11 | CDATA 结束附近连续 `]` 累计                        | 依赖内部 UTF-16 code units                   | 同 G10；保留畸形输入及 8,192/8,193 项目边界                                                       |
 | G12 | 通用字符串追加 helper，含 attr values/line end/DTD | helper 路径 UTF-16 code units                | 可达属性用粗保护 B 并受项目 4,096 UTF-8 单属性预算；DTD 点不可达                                  |
-| G13 | element/attribute/PI/entity name                   | 单名称 UTF-16 code units                     | `maxNameLength=256`；项目精确校验 QName 分量与 PI target 的 UTF-8 字节；DTD/entity name 不可达    |
+| G13 | element/attribute/PI/reference name                | 单名称 UTF-16 code units                     | `maxNameLength=256`；QName/PI target 项目 UTF-8；DTD 声明名不可达，引用名扫描可达（见下）         |
 | G14 | namespace URI + active bindings combined           | URI UTF-16 code units 与活动 binding records | `maxNameLength=256`、`maxNamespacePrefixes=4096`；项目精确校验所有已使用/未使用 URI 的 UTF-8 字节 |
+
+G13 的 entity-reference 名称扫描在文档文本和属性值两条路径均可达：256 个 ASCII 字符继续进入实体裁决，未知引用为
+`UndeclaredEntity`；257 个 ASCII 字符先由 `maxNameLength` 粗保护返回 `LimitExceeded`。这不新增实体能力：DTD
+声明名仍因 `dtd: 'prohibit'` 不可达，自定义实体展开仍按 G09 不可达。
 
 `maxEntityDepth`/`maxEntityLength` 不需要重新配置，不能用扩大它们来处理 references。所有 G 行都可能只返回相同
 `LimitExceeded`；本表是源码/设计审计，不授权运行时猜测具体轴。
