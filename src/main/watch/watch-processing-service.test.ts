@@ -193,6 +193,115 @@ async function processProjection(
 }
 
 describe('WatchProcessingService 结果事务（#S6-047～#S6-052/#S6-057）', () => {
+  it('合法 typed Page 字段首建、SQLite 读回和后续采集均保留完整形状', async () => {
+    const h = setup();
+    try {
+      let rule = makeRule({
+        kind: 'page',
+        target: {
+          type: 'page',
+          pageUrl: 'https://example.com/doc',
+          regions: [{ kind: 'main-text', label: '正文' }],
+          sessionConsent: null,
+        },
+      });
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      const value: PageProjectionValue = {
+        type: 'page',
+        fields: [
+          { fieldKey: 'r0:main', regionIndex: 0, kind: 'main-text', label: '正文', value: '正文' },
+          {
+            fieldKey: 'r1:heading:1',
+            regionIndex: 1,
+            kind: 'heading',
+            label: '标题',
+            level: 1,
+            ordinal: 0,
+            value: '标题',
+          },
+          {
+            fieldKey: 'r2:header:0',
+            regionIndex: 2,
+            kind: 'table-header',
+            label: '表头',
+            occurrence: 0,
+            column: 0,
+            value: '价格',
+          },
+          {
+            fieldKey: 'r2:cell:0:0',
+            regionIndex: 2,
+            kind: 'table-cell',
+            label: '单元格',
+            occurrence: 0,
+            row: 0,
+            column: 0,
+            columnLabel: '价格',
+            value: '99',
+          },
+          {
+            fieldKey: 'r3:link:1',
+            regionIndex: 3,
+            kind: 'link',
+            label: '链接',
+            ordinal: 1,
+            text: '来源',
+            url: 'https://example.com/news',
+          },
+        ],
+      };
+      const json = JSON.stringify(value);
+      const projection: PageProjection = {
+        ...makeStablePageProjection(rule),
+        value,
+        contentHash: sha256Hex(json),
+        byteLength: Buffer.byteLength(json, 'utf8'),
+      };
+      for (const [index, outcome] of ['baseline-established', 'unchanged'].entries()) {
+        const prepared = h.service.prepareAcquisition({ rule });
+        expect(prepared.ok).toBe(true);
+        if (!prepared.ok) throw new Error('合法 Page Baseline 读回失败');
+        const runId = randomUUID();
+        expect(
+          h.repo.insertRun({
+            id: runId,
+            ruleId: rule.id,
+            requestKey: `typed-page-${index}`,
+            trigger: 'scheduled',
+            scheduledFor: null,
+          }).ok,
+        ).toBe(true);
+        expect(
+          h.repo.transitionRun(runId, 'queued', {
+            status: 'running',
+            startedAt: new Date(NOW_MS).toISOString(),
+          }).ok,
+        ).toBe(true);
+        const result = await h.service.process({
+          rule,
+          runId,
+          baselineHint: prepared.baselineHint,
+          acquisition: {
+            ok: true,
+            kind: 'projection',
+            projection,
+            expectedSourceLocatorFingerprint: rule.sourceLocatorFingerprint,
+            responseMetadata: null,
+          },
+          sourceAfterAcquisition: sourceProjection,
+        });
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error('合法 Page 采集处理失败');
+        expect(result.outcome.kind).toBe(outcome);
+        expect(h.repo.getBaseline(rule.id)?.projectionJson).toBe(json);
+        rule = h.repo.getRule(rule.id)!;
+      }
+      expect(h.repo.listEventsByRule(rule.id)).toHaveLength(0);
+    } finally {
+      closeH(h);
+    }
+  });
+
   it('首建 Baseline：零 Event + baseline-established + contentHash 持久化', async () => {
     const h = setup();
     try {

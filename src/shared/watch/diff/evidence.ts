@@ -236,7 +236,6 @@ export function isValidPageProjectionValue(raw: unknown): boolean {
   if (!Array.isArray(raw['fields'])) return false;
   for (const f of raw['fields']) {
     if (!isPlainRecord(f)) return false;
-    if (!exactOwnKeys(f, ['fieldKey', 'regionIndex', 'kind', 'label', 'value'])) return false;
     if (typeof f['fieldKey'] !== 'string' || f['fieldKey'] === '') return false;
     if (
       typeof f['regionIndex'] !== 'number' ||
@@ -255,9 +254,45 @@ export function isValidPageProjectionValue(raw: unknown): boolean {
       return false;
     }
     if (typeof f['label'] !== 'string' || f['label'] === '') return false;
-    if (typeof f['value'] !== 'string') return false;
+    const common = ['fieldKey', 'regionIndex', 'kind', 'label'];
+    switch (f['kind']) {
+      case 'main-text':
+        if (!exactOwnKeys(f, [...common, 'value']) || typeof f['value'] !== 'string') return false;
+        break;
+      case 'heading':
+        if (!exactOwnKeys(f, [...common, 'level', 'ordinal', 'value'])) return false;
+        if (f['level'] !== 1 && f['level'] !== 2 && f['level'] !== 3) return false;
+        if (!isNonnegativeInteger(f['ordinal']) || typeof f['value'] !== 'string') return false;
+        break;
+      case 'table-header':
+        if (!exactOwnKeys(f, [...common, 'occurrence', 'column', 'value'])) return false;
+        if (!isNonnegativeInteger(f['occurrence']) || !isNonnegativeInteger(f['column']))
+          return false;
+        if (typeof f['value'] !== 'string') return false;
+        break;
+      case 'table-cell':
+        if (!exactOwnKeys(f, [...common, 'occurrence', 'row', 'column', 'columnLabel', 'value']))
+          return false;
+        if (
+          !isNonnegativeInteger(f['occurrence']) ||
+          !isNonnegativeInteger(f['row']) ||
+          !isNonnegativeInteger(f['column'])
+        )
+          return false;
+        if (typeof f['columnLabel'] !== 'string' || typeof f['value'] !== 'string') return false;
+        break;
+      case 'link':
+        if (!exactOwnKeys(f, [...common, 'ordinal', 'text', 'url'])) return false;
+        if (!isNonnegativeInteger(f['ordinal']) || typeof f['text'] !== 'string') return false;
+        if (typeof f['url'] !== 'string' || evidenceSafeUrl(f['url']) === null) return false;
+        break;
+    }
   }
   return true;
+}
+
+function isNonnegativeInteger(value: unknown): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 export function isPlainRecord(raw: unknown): raw is Record<string, unknown> {
