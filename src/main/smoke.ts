@@ -4,10 +4,10 @@
 // S3 起覆盖 AI 共读主进程矩阵 1–8；S4 起覆盖 AI 面板 UI 端到端矩阵 1–12（§13.2）。
 // 任何断言失败 → logError + 抛出，入口 catch 后以退出码 1 结束（与基线冒烟语义一致）。
 
-import { app, ipcMain, session, webContents, WebContentsView } from 'electron';
-import type { BrowserWindow, WebContents } from 'electron';
+import { app, BrowserWindow, ipcMain, session, webContents, WebContentsView } from 'electron';
+import type { WebContents } from 'electron';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import {
   existsSync,
   mkdirSync,
@@ -1799,31 +1799,48 @@ function visibleTabView(win: BrowserWindow | null | undefined): WebContentsView 
 
 // ---------- T5：UI 端到端驱动（React DOM 点击/键盘事件，不引入 Playwright） ----------
 // React 事件系统监听根容器：原生 click / input / keydown 事件冒泡即触发对应 handler。
-// 受控输入（地址栏）用原型 value setter 写入——绕过 React 实例 tracker 后 dispatch
-// input 事件，ChangeEventPlugin 检测到值变化即触发 onChange（标准 React 驱动手法）。
+// Address-bar input uses native text/key events after establishing real renderer focus.
 export async function uiJs(uiWc: WebContents, script: string): Promise<unknown> {
   return uiWc.executeJavaScript(script);
 }
 
 async function typeIntoAddressBar(uiWc: WebContents, text: string): Promise<void> {
+  // Native input requires a focused renderer. DOM activeElement alone is not proof:
+  // a hidden/unfocused WebContents can select an element without React receiving focus.
+  const owner = BrowserWindow.fromWebContents(uiWc);
+  if (owner === null) throw new Error('地址栏所属窗口不存在');
+  owner.show();
+  owner.focus();
+  uiWc.focus();
+  await waitFor(
+    async () =>
+      (await uiJs(uiWc, `document.hasFocus() && document.visibilityState === 'visible'`)) === true,
+    5000,
+    '地址栏输入前 UI 未获得可见焦点',
+  );
   await uiJs(
     uiWc,
     `(() => {
       const el = document.querySelector('.address-bar');
       if (!el) throw new Error('地址栏元素不存在');
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-      setter.call(el, ${JSON.stringify(text)});
-      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.focus();
+      el.select();
     })()`,
   );
-  await delay(100); // React setState 落定后再发 Enter（防御批处理时序）
-  await uiJs(
-    uiWc,
-    `(() => {
-      const el = document.querySelector('.address-bar');
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    })()`,
+  await uiWc.insertText(text);
+  await delay(100);
+  assert(
+    (await uiJs(
+      uiWc,
+      `(() => {
+        const el = document.querySelector('.address-bar');
+        return document.hasFocus() && document.activeElement === el && el.value === ${JSON.stringify(text)};
+      })()`,
+    )) === true,
+    '地址栏原生输入未保持目标值与焦点',
   );
+  uiWc.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
+  uiWc.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
 }
 
 export async function clickUi(uiWc: WebContents, selector: string): Promise<void> {
@@ -1898,7 +1915,7 @@ async function uiTextAll(uiWc: WebContents, selector: string): Promise<string[]>
 }
 
 // 受控 textarea 写入（AI 提问输入）：原型 value setter + input 事件 → React onChange，
-// 随后 keydown Enter 触发发送（与 T5 地址栏同一标准 React 驱动手法）。
+// Then dispatch Enter after the controlled component has committed its state.
 async function typeIntoComposer(uiWc: WebContents, text: string): Promise<void> {
   await uiJs(
     uiWc,
@@ -1920,7 +1937,7 @@ async function typeIntoComposer(uiWc: WebContents, text: string): Promise<void> 
   );
 }
 
-// 受控 input 写入（Provider 设置表单）：与地址栏同一手法
+// Controlled Provider settings inputs use the prototype setter and a bubbling input event.
 async function typeIntoUiInput(uiWc: WebContents, selector: string, text: string): Promise<void> {
   await uiJs(
     uiWc,
@@ -10499,6 +10516,124 @@ export async function runSmokeScenario(
           5000,
           '标签栏标题未随网页更新（UI DOM 文案）',
         );
+
+        // Same-document navigation has start/stop-loading but no did-finish-load.
+        // Use an owned tab so this regression does not alter the original UI history oracle.
+        const sameDocumentTab = await controller.createTab(uiPages.simpleUrl);
+        try {
+          await waitFor(
+            async () =>
+              (await controller.getTabs()).find((tab) => tab.id === sameDocumentTab.id)?.state ===
+              'ready',
+            10000,
+            '同页导航回归的初始文档未就绪',
+          );
+          const initialSnapshot = await controller.getPageSnapshot(sameDocumentTab.id);
+          assert(initialSnapshot !== null, '同页导航回归应有初始快照');
+          let previousDocumentId = initialSnapshot.meta.documentId;
+          for (const step of [
+            { url: `${uiPages.simpleUrl}#hash`, sameDocument: true },
+            { url: `${uiPages.simpleUrl}#hash`, sameDocument: true },
+            { url: uiPages.simpleUrl, sameDocument: false },
+            { url: uiPages.simpleUrl, sameDocument: false },
+            { url: uiPages.iframeUrl, sameDocument: false },
+          ]) {
+            assert(
+              await controller.navigate(sameDocumentTab.id, step.url),
+              '同页/重复/新文档导航调用应成功',
+            );
+            await waitFor(
+              async () => {
+                const tab = (await controller.getTabs()).find(
+                  (candidate) => candidate.id === sameDocumentTab.id,
+                );
+                return tab?.url === step.url && tab.state === 'ready';
+              },
+              10000,
+              '原生导航已完成，但产品标签页仍未 ready',
+            );
+            const snapshot = await controller.getPageSnapshot(sameDocumentTab.id);
+            assert(snapshot !== null, '导航回归应可读取当前文档');
+            assert(
+              step.sameDocument
+                ? snapshot.meta.documentId === previousDocumentId
+                : snapshot.meta.documentId > previousDocumentId,
+              '同页导航必须保持文档世代，新文档导航必须更新世代',
+            );
+            previousDocumentId = snapshot.meta.documentId;
+          }
+          logInfo(
+            'smoke',
+            '同页导航状态回归通过（初始/新锚点/重复锚点/移除锚点/重复文档/新文档均 ready，世代语义正确）',
+          );
+
+          // A pending subframe already owns the spinner when the main frame starts.
+          // Hold both responses explicitly so the in-flight state is a deterministic oracle.
+          let frameResponse: ServerResponse | null = null;
+          let targetResponse: ServerResponse | null = null;
+          let pendingNavigation: Promise<boolean> | null = null;
+          const loadingServer = createServer((req, res) => {
+            if (req.url === '/frame') frameResponse = res;
+            else if (req.url === '/target') targetResponse = res;
+            else {
+              res.writeHead(404);
+              res.end();
+            }
+          });
+          try {
+            await new Promise<void>((resolve, reject) => {
+              loadingServer.once('error', reject);
+              loadingServer.listen(0, '127.0.0.1', resolve);
+            });
+            const address = loadingServer.address();
+            assert(address !== null && typeof address !== 'string', '重叠加载服务器未就绪');
+            const loadingBase = `http://127.0.0.1:${address.port}`;
+            const tabWc = visibleTabView(options.uiWindow)?.webContents;
+            assert(tabWc !== undefined, '重叠加载场景应有活动页面');
+            await tabWc.executeJavaScript(`(() => {
+              const frame = document.createElement('iframe');
+              frame.src = ${JSON.stringify(`${loadingBase}/frame`)};
+              document.body.append(frame);
+            })()`);
+            await waitFor(
+              async () =>
+                frameResponse !== null && tabWc.isLoading() && !tabWc.isLoadingMainFrame(),
+              5000,
+              '重叠加载场景的子框架未进入等待',
+            );
+            assert(
+              (await controller.getActiveTab())?.state === 'ready',
+              '子框架不得更改主文档 ready',
+            );
+            pendingNavigation = controller.navigate(sameDocumentTab.id, `${loadingBase}/target`);
+            await waitFor(
+              async () => targetResponse !== null && tabWc.isLoadingMainFrame(),
+              5000,
+              '重叠加载场景的主框架未进入等待',
+            );
+            assert(
+              (await controller.getActiveTab())?.state === 'loading',
+              '主框架导航等待时必须显示 loading',
+            );
+            const response = targetResponse as ServerResponse | null;
+            assert(response !== null, '重叠加载目标响应不存在');
+            response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            response.end('<!doctype html><html><body>重叠加载目标</body></html>');
+            assert(await pendingNavigation, '重叠加载的主框架导航应成功');
+            assert(
+              (await controller.getActiveTab())?.state === 'ready',
+              '重叠加载完成后必须恢复 ready',
+            );
+            logInfo('smoke', '重叠加载状态回归通过（子框架 ready→主框架 loading→完成 ready）');
+          } finally {
+            loadingServer.closeAllConnections();
+            if (pendingNavigation !== null) await pendingNavigation;
+            await new Promise<void>((resolve) => loadingServer.close(() => resolve()));
+          }
+        } finally {
+          await controller.closeTab(sameDocumentTab.id);
+          await controller.activateTab(firstTabId);
+        }
 
         // 7.7.3 后退/前进：地址栏导航到第二页 → 后退回到第一页 → 前进回到第二页
         await typeIntoAddressBar(uiWc, uiPages.iframeUrl);

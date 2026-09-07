@@ -285,6 +285,10 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   其余主框架失败 → `'error'`。
 - 事件→状态迁移仅上述三条；`TabInfo.title` 由 `page-title-updated` 更新、
   `TabInfo.url` 由主框架 `did-navigate` / `did-navigate-in-page` 更新；任一变化 → 推送 `tabs:updated`。
+- Electron 事件适配（2026-09-07 修复）：`did-start-loading` 按 `isLoadingMainFrame()` 判断是否进入
+  主框架 loading，同页/子框架 spinner 不改变状态；`did-start-navigation` 的主框架且非同页导航同时
+  映射为既有 `start-loading`，覆盖子框架正在加载时不会再次发出 spinner start 的交错。两入口可幂等
+  进入 loading；不新增 stop→ready 转换，不覆盖真实错误，也不改变同页导航的文档世代。
 
 `selectNextActive(tabs, activeTabId, closedTabId)` 策略（纯函数，T2 测试）：
 
@@ -297,7 +301,7 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 
 - 每个 Tab 的 webContents 监听器在创建时注册、在 closeTab/dispose 时**逐一移除**；
   TabManager 维护 `tabId → { view, info, cleanupFns }` 单一登记表。
-- 事件清单：`did-start-loading` / `did-finish-load` / `did-fail-load` /
+- 事件清单：`did-start-navigation` / `did-start-loading` / `did-finish-load` / `did-fail-load` /
   `page-title-updated` / `did-navigate` / `did-navigate-in-page` / `render-process-gone` /
   `destroyed` / `setWindowOpenHandler` / `will-navigate`（§9）。
 - 应用退出路径：`before-quit`/窗口 `closed` → `browserController.dispose()`（幂等）。

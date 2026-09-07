@@ -10,6 +10,8 @@ describe('D10 Watch red-team matrix', () => {
     expect(result.failures).toEqual([]);
   });
 
+  // One test runs 19 scenarios, including repeated real SQLite migration/rollback IO.
+  // This runner budget does not change any scenario's product deadline or oracle.
   it('WRT-01..19 每项独立执行且不允许静默缺项', async () => {
     const outcomes = await runWatchRedTeamScenarios();
     expect(outcomes).toHaveLength(19);
@@ -31,5 +33,5 @@ describe('D10 Watch red-team matrix', () => {
     expect(outcomes.find((outcome) => outcome.id === 'WRT-18')?.detail).toContain(
       'v3/v4-statement-failure,cycle/provider/scrub-crash,late-coalesce,cross-event',
     );
-  });
+  }, 30_000);
 });

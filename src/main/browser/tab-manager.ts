@@ -113,13 +113,29 @@ export class TabManager {
   private wireEvents(wc: WebContents, info: TabEntryInfo): Array<() => void> {
     const cleanup: Array<() => void> = [];
 
-    // did-start-loading / did-finish-load 只对应主框架（子框架事件另有 did-frame-* 通道）
+    // The WebContents spinner also starts for same-document and subframe loads.
+    // Those loads have no main-frame did-finish-load and must not strand the tab in loading.
     const onStartLoading = (): void => {
-      info.state = transition(info.state, { type: 'start-loading', isMainFrame: true });
+      info.state = transition(info.state, {
+        type: 'start-loading',
+        isMainFrame: wc.isLoadingMainFrame(),
+      });
       this.options.onChanged();
     };
     wc.on('did-start-loading', onStartLoading);
     cleanup.push(() => wc.removeListener('did-start-loading', onStartLoading));
+
+    // A subframe may already own the spinner when a new main-document navigation
+    // begins, so Chromium need not emit another did-start-loading event.
+    const onStartNavigation = (
+      details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
+    ): void => {
+      if (!details.isMainFrame || details.isSameDocument) return;
+      info.state = transition(info.state, { type: 'start-loading', isMainFrame: true });
+      this.options.onChanged();
+    };
+    wc.on('did-start-navigation', onStartNavigation);
+    cleanup.push(() => wc.removeListener('did-start-navigation', onStartNavigation));
 
     const onFinishLoad = (): void => {
       info.state = transition(info.state, { type: 'finish-load', isMainFrame: true });
