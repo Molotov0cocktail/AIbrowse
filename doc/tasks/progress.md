@@ -35,19 +35,16 @@
   `cda11af90aa11a0e937c58647f58c762655d206f` 经候选 `1e121401cc2e1221f55d881572583be75505df11`
   与修复候选 `9e41bd6f4ea55f8bb6a5a7c0f301502948a86c41` 完成，新的独立 Final Reviewer 对精确
   产品 HEAD `9e41bd6` 判定 `PASS`；关闭提交
-  `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2` 已推送双远程。H3a 从该提交实施至当前候选
-  `1781da8804f4cac6172998192fcef48e9e66b2d3`，尚未整体 `PASS`、未推送。XML、聚合
-  R1/R2、OBS-R1、真实 Page 与真实失败子门已获独立接受；RSS 固定目标仍因 BBC robots
-  timeout/ECONNRESET 与 NASA target 两次 403 未闭合。旧 production-default 两次 bounds
-  失败和 `55917fb` 的 dev 地址栏导航失败均未解释；`55917fb` production-default 单次成功与
-  `1781da8` DEV-NAV 单次隔离成功均不能替代原失败。历史 DEV-NAV 1/1 已耗尽，根因仍为
-  `unknown`；2026-09-07 用户已明确解除固定 RSS 目标/永久诊断额度锁，恢复有界工程调查。H3a 保持未通过；H3b、H4、新 D11 与 Stage 7 均
-  `NOT STARTED`。固定顺序为
-  **H3a → H3b → H4（完整区间 baseline
-  `d85667c54a354d322b0180d4c17873860a86c611`）→ 新 D11**。独立文档审核与本地 checkpoint
-  `95863338dd7073a3f699058d152a5153b7aa4801` 已完成，接管核验工作区干净，产品树与 `1781da8` 等价。
-  当前任务是恢复 RSS 新目标产品验证和 default-dev/default-prod 排查；必要授权已同步 AGENTS/D10/详细设计。
-  双远程最后核验仍为 `e6233a9`，候选未推送；不重复检查点或 USER_GATE。
+  `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2` 已推送双远程。H3a完整范围
+  `e6233a9..4888fb7d5a52149fe30f07837fff333f415c4ce6` 于2026-09-07经新的独立Astra Reviewer
+  **整体PASS**：XML/聚合/OBS、真实RSS/Page/Failure与default分别闭合，报告
+  `log/h3a-default-independent-current/h3a-convergence.md`。新xkcd Atom建立Baseline并第二次304 unchanged，
+  旧16+新4累计20次请求；默认门最终dev/prod各3次完整通过，全量169文件/3726项通过，独立聚焦243项通过。
+  本轮真实修复同页导航永久loading与慢子框架/主导航交错，稳定原生UI测试驱动；旧BBC/NASA失败、旧bounds/dev
+  历史根因unknown和MaxListeners观察保留，不冒充已查明或资源PASS。
+  H3b工程设计`5132aee`已独立PASS；当前下一任务为H3b实现与正式资源/Windows资格，H4、新D11、Stage7未启动。
+  顺序继续 **H3b → H4（完整baseline `d85667c54a354d322b0180d4c17873860a86c611`）→ 新D11**，
+  Stage6 GO/PASS后按授权进入Stage7设计准备，停在首个产品实现之前。当前正在H3a收尾双远程同步。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -697,8 +694,8 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D10 | 端到端、红队、隐私与真实门控 | ✅ | 2026-09-02 完成历史产品实现与基础设施验收：原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`，批准产品 HEAD `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`；后续 H1 已校正正式 H2/H3a/H3b/H4 与新 D11 契约，H2 已于 2026-09-06 关闭，历史 D10 PASS 不替代 H3a/H3b/H4/D11；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
 | H1 | 正式资源资格契约冻结与收敛 | ✅ | 文档 baseline `f262b4ed63eafd4528a0da49fa05febda995f014`；候选链 `4053270` → `5dfe110` → `3a1f715` → `d06cb3d` → `fc5180b` → `61a2f04`；Final Convergence Reviewer 对精确 HEAD `61a2f0497853253050ffddbef81cc4fb5edb020a` 判定 `PASS`、blocker=0 |
 | H2 | 修复 D10 确定性 99ms 红态并完成合同前置 | ✅ | baseline `cda11af90aa11a0e937c58647f58c762655d206f`；候选 `1e12140` + 小数单调时钟修复 `9e41bd6`；新的独立 Final Reviewer 对精确产品 HEAD `9e41bd6f4ea55f8bb6a5a7c0f301502948a86c41` 判定 `PASS`；原 8 文件 47 项恒等保留，H2 新增 24 项，合计 9 文件 71/71 |
-| H3a | 真实公网 RSS/Atom、public Page Watch fallback 与失败分类/退避/清理 | 🔨 | baseline `e6233a9`；产品候选 `1781da8`，本地检查点 `9586333`，尚未整体 PASS/推送。XML、聚合 R1/R2、OBS-R1、Page/Failure 已独立接受。原账本 16/64、NASA claim 保留；BBC/NASA 失败和旧 default 根因 unknown 保留。2026-09-07 用户已授权更换 RSS 验证目标、制定新诊断及有界补验，当前并行调查 RSS/default，Electron 串行运行；不重复 USER_GATE |
-| H3b | 标准 Windows/GPU 环境正式 10m/60m/10m 资源资格 | ⏳ | 依赖 H3a；尚未开始；本机旧沙箱内 `GPU process isn't usable. Goodbye.` 失败证据保留；H2 Reviewer 已在合法沙箱外完成六个离线 Electron 场景，但这不等价于 H3b 标准环境资格 |
+| H3a | 真实公网 RSS/Atom、public Page Watch fallback 与失败分类/退避/清理 | ✅ | 完整区间 `e6233a9..4888fb7` 经新独立Astra整体PASS；RSS累计20次，旧账本/claim保留；默认最终dev/prod各3次全通过，169文件3726全量与独立243项通过。历史bounds/dev根因unknown及MaxListeners观察保留。独立报告log/h3a-default-independent-current/h3a-convergence.md |
+| H3b | 标准 Windows/GPU 环境正式10m/60m/10m资源资格 | 🔨 | 前置H3a已PASS；单向资格设计5132aee经独立修复复审PASS，下一步native/TS隔离实现与正式实测。硬件预检不等于资格；用户已答应准备好后提供30分钟拔电窗口，当前无需拔电 |
 | H4 | 完整 D10 区间独立审查 | ⏳ | 依赖 H3b；固定 baseline `d85667c54a354d322b0180d4c17873860a86c611`，尚未开始 |
 | D11 | 第六阶段新独立 Exit Audit | ⏳ | 依赖 H4；必须使用新的独立 Reviewer；尚未开始；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
 
@@ -3438,19 +3435,22 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 阻塞项
 
-- **H3a 当前阻塞（2026-09-07，`HOLD`）**：固定 BBC RSS 的 robots 路径
-  timeout/ECONNRESET，固定 NASA RSS 的 robots 200 但 target 两次 403；真实 RSS 成功硬门未满足，
-  不能判为已证产品错误或环境免责。原请求账本为 16/64；用户已授权在新批次事先定义目标/预算后继续，NASA 一次性诊断
+- **H3a 验收阻塞已关闭（2026-09-07，整体PASS）**：新 xkcd Atom 全链已独立 PASS；固定 BBC RSS 的 robots 路径
+  timeout/ECONNRESET、NASA robots 200但target两次403仍为历史失败，不能称旧目标修复或环境免责。
+  原请求账本为16/64，新批次加4后累计20；NASA一次性诊断
   claim 已永久消费。旧 production-default 两次 bounds 失败与 `55917fb` dev-default 地址栏导航失败
   根因仍为 `unknown`；`55917fb` production-default 单次成功和 `1781da8` DEV-NAV 单次隔离成功不关闭
   旧失败。历史 DEV-NAV 1/1 不再限制后续有目的的调查；RSS 固定目标政策的用户裁决已明确肯定，
-  且包含新目标、新请求与必要补验。当前阻塞是实际 RSS/default 验收尚未闭合，工程调查已恢复。
+  且包含新目标、新请求与必要补验。同页导航与重叠加载缺陷已修复，最终完整default六次通过，
+  独立Reviewer据充分前瞻证据关闭当前验收阻塞；不声称历史根因已经恢复。
 
 - **后续 H3b 标准环境资格（尚未进入 H3b）**：本机旧沙箱内
   `GPU process isn't usable. Goodbye.` 失败证据保留；H2 独立复验已在合法沙箱外完成六个离线
   Electron 场景，故当前不再把“本机完全无法启动 Electron”写成需用户先处理的现时阻塞。该结果不包含
   detailed-design §15.6/§15.7 的正式 10m/60m/10m 资源与标准 Windows/GPU 对照，不能宣称 H3b 资格通过。
-  当前流程先执行 H3a。
+  H3a已PASS，当前进入H3b。2026-09-07只读预检：Windows25H2/20逻辑CPU/15.8GiB/活动RTX4060签名驱动，
+  存在电池且AC供电；用户已确认可在准备好并通知后提供至少30分钟拔电且桌面不锁屏窗口，现在不要求拔电。
+  硬件预检不等同完整H3b环境资格；实际GPU/电池原生字段与长时采样仍待执行。
 
 - **第三阶段最终验收阻塞（已解除，2026-08-14 A7 补验最终执行）**：§9 Engineering
   「多个真实网站 Agent smoke test 通过」原 BLOCKED（首轮 tools 载荷 HTTP 400）——
@@ -3726,11 +3726,26 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## H3a 当前证据边界（2026-09-07）
 
+- **最终默认门候选**：`4888fb7` 修复同页导航永久loading及慢子框架/主导航交错；7项新增TabManager
+  测试先红后绿，真实地址栏改用可见焦点与原生输入，原100ms/10s导航和bounds阈值保持。
+  WRT的19场景聚合测试仅框架预算改30s，保留原47名称/顺序及产品内部时限；此前超时/诊断失败全部保留。
+  最终无并发全量169文件/3726通过，type/lint/build/format/diff均0；固定dev/prod各3次完整门均0，
+  每次包括同页世代、慢iframe重叠与完整bounds，产物一致，profile已清理。
+  证据 `log/h3a-default-current/evidence-summary.json`；独立Reviewer对精确4888fb7判默认及H3a总PASS，
+  报告同目录独立入口 `log/h3a-default-independent-current/`，6文件243项复跑通过。
+- **H3b设计准备**：纯文档`5132aee`将资格通道改为单向遥测，全部负载/资源阈值/电池/标准环境条件保持。
+  经独立REPAIR修复早期profile隔离，再获设计PASS，报告 `log/h3b-design-independent-current/review-2.md`。
+  这不等于H3b实现或资格PASS；H3a已关闭，下一任务为按修订契约实施与真实资格。
 - **自治恢复接管**：`9586333` 工作区干净；Node `24.18.0`。本轮基线命令
   `npm test -- --maxWorkers=1 src/main/smoke-watch-h3a.test.ts src/main/smoke-watch-h3a-usage.test.ts src/main/smoke-watch-h3a-page-validator.test.ts src/main/smoke-bounds-diagnostic.test.ts`
   实际退出 0，4 文件/195 项通过；授权同步五份文档 Prettier check 与 diff-check 退出 0。
   当前新 RSS 方案：W3C 新闻 Feed→xkcd Atom，每目标最多 8 次物理请求，旧 16 条加新增最多 16，累计上限
-  32/64；无需额外 curl 预检，使用产品全链路，无 Provider。新批次完整证据与旧失败分别保留，尚未判 PASS。
+  32/64；实际新增 4、累计 20：W3C robots 200→robots_disallowed、零正文；xkcd Atom robots 200、
+  首次 target 200→Baseline 1、第二次条件请求 304→unchanged、零 Event，资源清理全部通过。
+  执行方式为 Node/Vitest 加载当前真实产品模块，无 Electron/Provider；原 report 的 production-preview 是 runner
+  遗留标签，不作 Electron 证据。原件索引 `log/h3a-rss-requalification-20260907/`；新独立 Astra 对RSS
+  子门判PASS，报告 `log/h3a-rss-independent-current/review.md`，独立聚焦5文件/232测试通过。
+  H3a已由独立总门报告整体PASS。旧16条账本/claim不变，新lineage从17连续记录到20。
 - **已接受子范围**：完整 H3a 审查范围仍为
   `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2..1781da8804f4cac6172998192fcef48e9e66b2d3`。
   XML 修复 `0554d86`、聚合 R1/R2、OBS-R1 `ba5cbc1..1781da8`、0554 Page/Failure 真实运行及其
@@ -3758,11 +3773,11 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **闭合 H3a RSS 与完整 default-dev/default-prod。**2026-09-07 用户已裁决允许更新验证目标、预算及
-  诊断方案；旧最小 USER_GATE 和 progress-only checkpoint 均已完成，不再作为前置。
-  本轮 baseline=`95863338dd7073a3f699058d152a5153b7aa4801`，保留旧失败、unknown 与 16/64 累计账本。
-  RSS 和 UI 独立调查，Electron/构建共享资源串行；先记录目的/预算/oracle，保留失败，再按风险独立审核。
-  H3b 只做不依赖缺失结果的准备，H3a 未通过前不执行其正式资格；随后 H3b → H4 → 新独立 D11。
+- **执行H3b正式资源与Windows资格。**H3a精确4888fb7整体PASS；先完成当前收尾双远程同步，再取实际HEAD
+  作为H3b实施baseline，按5132aee已独立PASS的单向资格契约实施。N负责native/独立OS采集，T负责产品装配、
+  真实owner与固定负载；先纵向诊断，再安全/并发独立审核与完整10m/60m/10m实测。低频采样、零Provider，
+  电池窗口准备好再通知用户拔电。此前所有RSS/default失败、unknown与累计20次请求保留。
+  后续 H3b → H4（baseline仍d85667c）→ 新独立D11，不把设计PASS或短探针当正式资源结果。
   Stage 6 GO/PASS 后自动收尾与双远程同步，完成下一阶段必要设计/任务准备后停在首个产品实现之前。
 
 ## 第一阶段验收未完成项

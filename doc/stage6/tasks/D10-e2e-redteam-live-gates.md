@@ -1,5 +1,14 @@
 # D10 — Watch 端到端、红队、跨进程、真实条件与打包通知资格矩阵
 
+## H3a关闭证据（2026-09-07）
+
+完整范围`e6233a9..4888fb7d5a52149fe30f07837fff333f415c4ce6`经新独立Astra Reviewer整体PASS。
+新xkcd Atom真实Public链为robots200→target200→Baseline1→条件304 unchanged；累计旧16+新4=20。
+旧Page/Failure、XML/聚合/OBS接受证据按未改变产品路径复用；最终default dev/prod各3次完整通过，
+全量169文件3726项及独立聚焦6文件243项通过，静态/构建/格式检查通过。原RSS失败、历史bounds/dev
+原因unknown、全部失败样本与MaxListeners观察保留。报告见`log/h3a-default-independent-current/h3a-convergence.md`。
+下一步H3b，设计修订5132aee已独立PASS；H3b资源、H4、D11尚未通过。下文2026-09-02证据为历史范围。
+
 ## 2026-09-07 工程授权更新
 
 按 AGENTS.md「工程自治授权」推进；旧固定角色、冻结工程方案、单次诊断耗尽与逐项审批限制不再阻止必要实现。
