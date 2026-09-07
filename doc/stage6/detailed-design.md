@@ -2168,7 +2168,12 @@ RSS/Atom 的产品全链路成功；至少一个真实无 RSS 页面经 §6.5/§
 它是公开无 RSS 页面的 Page Watch fallback，不是 parser-only fixture，也不等于 Chromium Session。每个成功
 场景至少完成首次合法 Baseline 和第二次 acquisition 的 `unchanged` 或带双侧 Evidence 的合法变化终态；失败
 场景不得推进 Baseline 或创建 Event。H3a 执行前必须在 ledger 冻结 URL、预期类别、请求上限和替补顺序；
-运行后不得替换目标或只保留成功轮次。真实网络不承担确定性 parser/diff oracle，fixture 不能替代这三项。
+单轮运行后不得改写该轮目标或只保留成功轮次。根据 2026-09-07 用户授权，可因公开目标不可用等工程理由
+在新一轮前更新对象/选择规则，先记录目的、请求预算、低频/退避与判定方式，再执行必要预检和实际产品验证。
+旧 BBC/NASA 失败、原始账本与已消费 claim 保留；已有 16/64 不清零，后续新增请求累加，必要时可在批次执行前
+说明理由并调整总工程预算，不能不断换批制造无限请求。新目标成功只证明其实际覆盖能力，不证明旧目标修复或
+所有站点可用，不提供环境免责。预检不能替代 Public/robots/解析/Baseline/后续 acquisition 硬门。
+真实网络不承担确定性 parser/diff oracle，fixture 不能替代这三项。
 
 Session 路径的结构、隐私、task-owned Tab、重启和失败闭环仍是必需确定性/受控 Electron 门，但正式契约没有
 把“常见登录网站真实成功”列为 Exit Gate 硬门；它是无需自动登录、凭据和额外权限时才执行的条件性真实观察。

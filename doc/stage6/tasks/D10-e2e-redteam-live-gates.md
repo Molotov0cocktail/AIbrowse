@@ -1,5 +1,14 @@
 # D10 — Watch 端到端、红队、跨进程、真实条件与打包通知资格矩阵
 
+## 2026-09-07 工程授权更新
+
+按 AGENTS.md「工程自治授权」推进；旧固定角色、冻结工程方案、单次诊断耗尽与逐项审批限制不再阻止必要实现。
+H3a 可按 detailed-design §15.4 更新真实 RSS 目标并执行有界请求，保留 BBC/NASA 失败及 16/64 原始账本。
+default-dev/default-prod 分别建立诊断与前瞻稳定性证据，保留历史 unknown；单次成功不算修复。
+RSS、完整 default 两门仍需实际闭合；H3a → H3b → H4 → 新独立 D11 顺序不变，H4 审查起点仍为
+`d85667c54a354d322b0180d4c17873860a86c611`。H3b 可按风险修订工程实现方案，但不得降低产品资源、安全、
+隐私和验收承诺。每轮目的、范围、预算及结果进入受控证据，当前状态只写 progress，不扩展通用工作流。
+
 ## 目标
 
 建立第六阶段完整机器验证闭环：Feed/Page→Baseline→Diff→Condition→Event/Evidence→Digest→Notification/UI，

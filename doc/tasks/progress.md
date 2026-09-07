@@ -40,12 +40,14 @@
   R1/R2、OBS-R1、真实 Page 与真实失败子门已获独立接受；RSS 固定目标仍因 BBC robots
   timeout/ECONNRESET 与 NASA target 两次 403 未闭合。旧 production-default 两次 bounds
   失败和 `55917fb` 的 dev 地址栏导航失败均未解释；`55917fb` production-default 单次成功与
-  `1781da8` DEV-NAV 单次隔离成功均不能替代原失败。DEV-NAV 诊断额度 1/1 已耗尽，根因仍为
-  `unknown`，当前无新的可区分工程路线。H3a 保持 `HOLD`；H3b、H4、新 D11 与 Stage 7 均
+  `1781da8` DEV-NAV 单次隔离成功均不能替代原失败。历史 DEV-NAV 1/1 已耗尽，根因仍为
+  `unknown`；2026-09-07 用户已明确解除固定 RSS 目标/永久诊断额度锁，恢复有界工程调查。H3a 保持未通过；H3b、H4、新 D11 与 Stage 7 均
   `NOT STARTED`。固定顺序为
   **H3a → H3b → H4（完整区间 baseline
-  `d85667c54a354d322b0180d4c17873860a86c611`）→ 新 D11**。当前下一唯一任务为 H3a 的
-  progress 单文件独立文档审核；审核 `PASS` 后才可本地 checkpoint，再进入最小 USER_GATE。
+  `d85667c54a354d322b0180d4c17873860a86c611`）→ 新 D11**。独立文档审核与本地 checkpoint
+  `95863338dd7073a3f699058d152a5153b7aa4801` 已完成，接管核验工作区干净，产品树与 `1781da8` 等价。
+  当前任务是恢复 RSS 新目标产品验证和 default-dev/default-prod 排查；必要授权已同步 AGENTS/D10/详细设计。
+  双远程最后核验仍为 `e6233a9`，候选未推送；不重复检查点或 USER_GATE。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -695,7 +697,7 @@ f38fb4d → abe7351 → 4c75a86` 连续单父历史悬挂原 baseline `3836587`�
 | D10 | 端到端、红队、隐私与真实门控 | ✅ | 2026-09-02 完成历史产品实现与基础设施验收：原始 baseline `b9d956dc6b6eff626e3a668a2375de10380fc757`，批准产品 HEAD `5d6a3cb4c298f8a4aa9ad63c288f6d6c2f51c381`；后续 H1 已校正正式 H2/H3a/H3b/H4 与新 D11 契约，H2 已于 2026-09-06 关闭，历史 D10 PASS 不替代 H3a/H3b/H4/D11；任务文档 doc/stage6/tasks/D10-e2e-redteam-live-gates.md |
 | H1 | 正式资源资格契约冻结与收敛 | ✅ | 文档 baseline `f262b4ed63eafd4528a0da49fa05febda995f014`；候选链 `4053270` → `5dfe110` → `3a1f715` → `d06cb3d` → `fc5180b` → `61a2f04`；Final Convergence Reviewer 对精确 HEAD `61a2f0497853253050ffddbef81cc4fb5edb020a` 判定 `PASS`、blocker=0 |
 | H2 | 修复 D10 确定性 99ms 红态并完成合同前置 | ✅ | baseline `cda11af90aa11a0e937c58647f58c762655d206f`；候选 `1e12140` + 小数单调时钟修复 `9e41bd6`；新的独立 Final Reviewer 对精确产品 HEAD `9e41bd6f4ea55f8bb6a5a7c0f301502948a86c41` 判定 `PASS`；原 8 文件 47 项恒等保留，H2 新增 24 项，合计 9 文件 71/71 |
-| H3a | 真实公网 RSS/Atom、public Page Watch fallback 与失败分类/退避/清理 | ⛔ | baseline `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2`；当前候选 `1781da8804f4cac6172998192fcef48e9e66b2d3` 未整体 PASS、未推送。XML、聚合 R1/R2、OBS-R1、原 Page/Failure 子门与 Watch 等价证据已独立接受。真实请求累计 16/64，剩余 48 只是账本余量；NASA 一次性诊断 claim 已永久消费。RSS 因固定 BBC robots timeout/ECONNRESET 与 NASA target 403 未闭合。旧 production bounds 两败和 559 dev 导航失败根因仍 unknown；559 prod 单次成功与 1781 DEV-NAV 单次成功不关闭旧失败，诊断额度 1/1 已耗尽。H3a 保持 HOLD，当前无新可区分工程路线，不得重领诊断或事后换目标洗绿 |
+| H3a | 真实公网 RSS/Atom、public Page Watch fallback 与失败分类/退避/清理 | 🔨 | baseline `e6233a9`；产品候选 `1781da8`，本地检查点 `9586333`，尚未整体 PASS/推送。XML、聚合 R1/R2、OBS-R1、Page/Failure 已独立接受。原账本 16/64、NASA claim 保留；BBC/NASA 失败和旧 default 根因 unknown 保留。2026-09-07 用户已授权更换 RSS 验证目标、制定新诊断及有界补验，当前并行调查 RSS/default，Electron 串行运行；不重复 USER_GATE |
 | H3b | 标准 Windows/GPU 环境正式 10m/60m/10m 资源资格 | ⏳ | 依赖 H3a；尚未开始；本机旧沙箱内 `GPU process isn't usable. Goodbye.` 失败证据保留；H2 Reviewer 已在合法沙箱外完成六个离线 Electron 场景，但这不等价于 H3b 标准环境资格 |
 | H4 | 完整 D10 区间独立审查 | ⏳ | 依赖 H3b；固定 baseline `d85667c54a354d322b0180d4c17873860a86c611`，尚未开始 |
 | D11 | 第六阶段新独立 Exit Audit | ⏳ | 依赖 H4；必须使用新的独立 Reviewer；尚未开始；任务文档 doc/stage6/tasks/D11-independent-exit-audit.md |
@@ -3438,12 +3440,11 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 - **H3a 当前阻塞（2026-09-07，`HOLD`）**：固定 BBC RSS 的 robots 路径
   timeout/ECONNRESET，固定 NASA RSS 的 robots 200 但 target 两次 403；真实 RSS 成功硬门未满足，
-  不能判为已证产品错误或环境免责。请求账本为 16/64，剩余 48 不构成运行授权，NASA 一次性诊断
+  不能判为已证产品错误或环境免责。原请求账本为 16/64；用户已授权在新批次事先定义目标/预算后继续，NASA 一次性诊断
   claim 已永久消费。旧 production-default 两次 bounds 失败与 `55917fb` dev-default 地址栏导航失败
   根因仍为 `unknown`；`55917fb` production-default 单次成功和 `1781da8` DEV-NAV 单次隔离成功不关闭
-  旧失败。DEV-NAV 1/1 启动额度已耗尽，现有原件没有可区分的新工程路线，禁止机械重试。恢复 RSS
-  REPLAN 的最小用户裁决仅为：是否允许正式修订“运行后不得替换已冻结 RSS 目标”的政策；该裁决
-  不豁免 RSS/default/H3a 硬门，也不直接授权新目标或新请求。
+  旧失败。历史 DEV-NAV 1/1 不再限制后续有目的的调查；RSS 固定目标政策的用户裁决已明确肯定，
+  且包含新目标、新请求与必要补验。当前阻塞是实际 RSS/default 验收尚未闭合，工程调查已恢复。
 
 - **后续 H3b 标准环境资格（尚未进入 H3b）**：本机旧沙箱内
   `GPU process isn't usable. Goodbye.` 失败证据保留；H2 独立复验已在合法沙箱外完成六个离线
@@ -3725,6 +3726,11 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## H3a 当前证据边界（2026-09-07）
 
+- **自治恢复接管**：`9586333` 工作区干净；Node `24.18.0`。本轮基线命令
+  `npm test -- --maxWorkers=1 src/main/smoke-watch-h3a.test.ts src/main/smoke-watch-h3a-usage.test.ts src/main/smoke-watch-h3a-page-validator.test.ts src/main/smoke-bounds-diagnostic.test.ts`
+  实际退出 0，4 文件/195 项通过；授权同步五份文档 Prettier check 与 diff-check 退出 0。
+  当前新 RSS 方案：W3C 新闻 Feed→xkcd Atom，每目标最多 8 次物理请求，旧 16 条加新增最多 16，累计上限
+  32/64；无需额外 curl 预检，使用产品全链路，无 Provider。新批次完整证据与旧失败分别保留，尚未判 PASS。
 - **已接受子范围**：完整 H3a 审查范围仍为
   `e6233a99a0e2f57a41389ba03dfaae3bfbdbc6d2..1781da8804f4cac6172998192fcef48e9e66b2d3`。
   XML 修复 `0554d86`、聚合 R1/R2、OBS-R1 `ba5cbc1..1781da8`、0554 Page/Failure 真实运行及其
@@ -3752,12 +3758,12 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **只审核本次 progress 事实收敛，不启动新的 H3a 工程或运行路线。**新的独立文档 Reviewer 应审核
-  `HEAD` 到 `doc/tasks/progress.md` 最终单文件 diff，确认当前摘要、任务表、阻塞、证据边界和下一动作
-  一致，且旧失败、SHA、请求账本、claim 与版本标签均保留。只有该文档范围 `PASS` 后，父才可另行
-  授权一次仅 stage `doc/tasks/progress.md` 的本地 checkpoint 提交；不得 stage 其它文件、不得 push。
-  checkpoint 后 H3a 仍保持 `HOLD`，进入上述最小 USER_GATE。若无新的固定目标外部可用性事实或用户
-  明确允许正式修订固定目标政策，则不机械重试；H3b、H4、D11 与 Stage 7 继续 `NOT STARTED`。
+- **闭合 H3a RSS 与完整 default-dev/default-prod。**2026-09-07 用户已裁决允许更新验证目标、预算及
+  诊断方案；旧最小 USER_GATE 和 progress-only checkpoint 均已完成，不再作为前置。
+  本轮 baseline=`95863338dd7073a3f699058d152a5153b7aa4801`，保留旧失败、unknown 与 16/64 累计账本。
+  RSS 和 UI 独立调查，Electron/构建共享资源串行；先记录目的/预算/oracle，保留失败，再按风险独立审核。
+  H3b 只做不依赖缺失结果的准备，H3a 未通过前不执行其正式资格；随后 H3b → H4 → 新独立 D11。
+  Stage 6 GO/PASS 后自动收尾与双远程同步，完成下一阶段必要设计/任务准备后停在首个产品实现之前。
 
 ## 第一阶段验收未完成项
 
