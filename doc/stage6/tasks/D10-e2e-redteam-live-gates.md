@@ -41,7 +41,7 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
 ## 预计修改文件
 
 - 新增 Watch smoke manifest/redteam/scan/live/gate/runner 模块与测试；已有 smoke/index 门控保持最小。
-- H3b 可新增 qualification bootstrap/protocol/sequencer/registry/temp-binding/trace 模块、窄 native identity
+- H3b 可新增 qualification启动认证/protocol/sequencer/registry/trace 模块、窄 native identity
   bridge 及其测试，并在获准真实模块添加 acquire/release/terminal/admission 观测；不得借 instrumentation 改
   业务语义、公开接口、安全边界或阈值。
 - 受控夹具进临时目录或源码小常量；不得提交真实用户数据、凭据、日志、截图、数据库或机器路径。
@@ -178,46 +178,27 @@ WRT-01～WRT-19 独立红队，隐私字节扫描，跨进程恢复，少量真�
   `GPU process isn't usable. Goodbye.` 失败证据保留；H2 独立复验已在合法沙箱外完成六个离线 Electron
   场景，但未执行同机最小 Electron 对照、正式负载或 10m/60m/10m 观察，不能据此判定 H3b。
 
-## H3b 实施范围与红态合同（H1 冻结；当前未开始）
+## H3b 实施范围与红态合同（2026-09-07 单向资格工程修订）
 
-H3b 是本任务的后续正式资格实现，不受“只改 smoke 模块”的旧范围限制，但只允许下列按所有权点收口的范围：
+本轮只替换采集/认证工程方法；detailed-design §15.6/§15.7是唯一完整契约，产品负载、数值、窗口、真实owner、
+Job/CPU/文件/电池及标准GPU资格不变。H3a期间允许本设计准备；H3a PASS前不执行H3b正式资格。
 
-- `src/main/index.ts`：在 logger/single-instance/BrowserWindow/Watch service 前接入非秘密 qualification app arg、
-  bootstrap 和关闭顺序；常规启动必须零行为。
-- 新的 `src/main/watch/qualification/**`：编译期 `watch-h3b-load-v1` manifest/generator、同步
-  `QualificationPausableClock implements Clock` decorator、只把 fixed measurement task 的 Coordinator
-  `earliestStartMs` 增大到 manifest release time 且不改 scheduledFor/nextDue 的 `QualificationRoundReleaseGate`、现有
-  `WatchAcquisitionPort` 的 qualification-only 实现、固定 `about:blank` task-tab adapter、bootstrap/JCS/schema、
-  incremental decoder、overlapped client adapter/operation owner、sequencer、registry、sample barrier、opaque
-  temp binding、trace counter；以及 repo-owned 窄 x64 native identity/pipe/HMAC bridge。
-  如 Electron ABI/build packaging 要求，可最小修改 `electron.vite.config.ts`、`package.json`、
-  `package-lock.json` 和新增 native
-  build 文件；JCS/HMAC 使用项目内最小实现与系统 crypto，不新增 runtime 包。只允许 native 构建所必需的
-  exact-version build dependency，禁止通用 FFI/任意 Win32 bridge。任何新 runtime capability、无法复现的预编译
-  binary 或需要扩大 renderer/preload 能力都必须停止 REPLAN。
-- `host-request-gate.ts`、`public-watch-http-client.ts`：grant/request/response/socket 的真实创建、交付、
-  close/drain 点；`watch-scheduler.ts`、`digest-scheduler.ts`：真实 timer set/clear；`digest-service.ts`：Provider
-  attempt 与 Digest Promise；`watch-task-tab-workspace.ts`：owned tab/WebContents claim/release。
-- `watch-store.ts`、`db/watch-driver.ts`、`repository/watch-repository.ts`：Store/DbHandle acquire/close、同源逻辑
-  bytes、DB/temp lifecycle、exact-100 qualification Rule seeder 与 M0 exact-two DigestSchedule seeder；
-  `watch-run-coordinator.ts`、`watch-acquisition-service.ts`、
-  `watch-processing-service.ts`、`watch-lifecycle-coordinator.ts`：run/acquisition/processing/cleanup Promise 和唯一
-  terminal latch；`watch-ipc.ts`、`watch-notification-service.ts`：renderer admission、notification Promise/
-  terminal。只在确有真实生命周期所有权的文件接线，不允许以集中轮询或测试 snapshot 冒充。
-- `src/main/sources/sources-store.ts`、`src/main/sources/source-service.ts` 只允许新增 native-authenticated、
-  exact-version/hash、isolated fresh empty DB 才可调用且不进入公共 SourceService API 的 SourceService-owned
-  固定 100 Source seeder；它必须复用 normalizer，在一个事务保持 sources100/FTS100/tag-links0，并经真实
-  `getSourceWatchProjection` 全量读回；对应 repository
-  现有 insert/transaction 不改通用 SQL 形状。负载必须利用 `watch-run-coordinator.ts` 已有 constructor DI
-  注入 qualification port；
-  `watch-acquisition-service.ts`/`public-watch-http-client.ts`/NetworkPolicy 只允许真实生命周期 registry 接线，
-  不允许增加 fixture 分支、`.invalid`/localhost/私网例外或任意 response seam。BrowserController 只由
-  qualification 目录内固定 adapter 以 `about:blank` 调既有 task-tab API，不修改 BrowserController 公共接口。
-- 上述文件的聚焦单元/集成测试、`smoke-watch-live-*` 的 qualification red-state/runner/gate，以及仓库外 x64
-  harness。harness 源/二进制/ledger 不提交，但其 hash、编译器/SDK 版本、签名分类、命令/result schema 和
-  一次性运行目录必须进入脱敏证据；不得放真实路径/pipe 名/nonce。
-
-实施前必须建立能在 legacy HEAD 稳定为红的 oracle，至少逐项证明：
+- 编译期隔离qualification入口、薄native身份/QPC/单向writer、harness只读collector；普通build不含可达入口，
+  normal build加app arg、renderer/网页/模型/env数据均不能授权或选择负载。index必要入口拆分只为在logger/
+  单实例/DB/Window前完成认证/隔离，不改正常启动行为。
+- native只五个operation：prepareLaunchIsolation/authenticateLaunchAndConnectTelemetry/readQpc/writeTelemetryFrame/closeTelemetry；
+  exact fixed-root/peer identity、不可继承owned handles与OS completion必须真实，不能以TS brand或自报PID替代。
+  无秘密、入站命令、任意路径/PID/Win32/SQL/raw buffer或通用temp写API。允许精确版本native构建依赖及最小
+  package/vite/native build接线，不使用通用FFI或不明预编译binary。
+- TS可新增qualification manifest/acquisition/release-gate/pausable-clock/registry/sequencer/controller/schema/trace；
+  SourceService/Store-owned exact-100 empty-DB seed、WatchRepository exact Rule/Digest seed保持原normalizer/FTS/
+  projection-readback/双revalidation。Sources公共API和用户数据语义不改变。
+- 在HostGate/Coordinator/Scheduler/Digest/TaskWorkspace/Processing/Store/DbHandle/IPC/Notification真实所有权点
+  注入可选qualification hooks；同一Clock decorator与固定about:blank adapter复用既有端口，NetworkPolicy/
+  production acquisition没有fixture或.invalid/localhost例外。http/socket/provider/temp在固定负载仍全程0。
+- 分工：native实现者独占native、native边界类型与仓库外harness；TS实现者独占其余qualification与产品接线、
+  index/package/vite整合。共享schema先交付、共享构建/Electron串行；不为每个文件另建一轮大型审核。
+  harness源/二进制/ledger不提交，保留编译器/SDK/产物hash与脱敏命令/result；真实roots/原始证据只在受控本地。
 
 当前唯一 manifest/timing/artifact 合同是：descriptor 1,502 bytes、SHA-256
 `3f59d95d74d373ef57e80eb56d05c4c9620a6e2bc2db8637ce5ddee48b5b85c3`；expanded manifest 34,252 bytes、
@@ -229,49 +210,35 @@ UUIDv5。business `D=M0+5,000+33,000*w`，qualification release
 31秒间隔，warmup indices33..99共67次，Digest在M0 boundary sample恢复后且不晚于M0+3秒seed，due分别为
 M0+24/M0+46分钟。此段 supersede 下列legacy-red中所有旧manifest数值，但不删除其红态证据。
 
-1. legacy HEAD 没有 authenticated `watch-h3b-load-v1` controller/manifest/acquisition port；旧 smoke 的小型即时
-   fixture 无法产生上段当前 descriptor/expanded manifest 的固定 hash/golden、精确 100 Source/Rule、首末
-   schedule offset、四 host 同波、33秒 business/34.2秒 release 波距、短 state/不变
-   near-budget padding 投影、冻结的 24 分钟 M0 lead/setup deadline、67 warmup+400 measurement runs、
-   28 秒 acquisition 压力，以及 `24/12`、`39/26` observation/Event 的单 artifact Digest oracle，必须稳定红。
-   新增
-   port 仅在 bootstrap capability 后可达；env/argv value、
-   renderer/web/model、第三方/localhost/private URL、普通 smoke flag 与 production acquisition fallback 的每个
-   尝试均稳定拒绝。
-2. harness 是 `FILE_FLAG_FIRST_PIPE_INSTANCE|PIPE_REJECT_REMOTE_CLIENTS` current-logon DACL 的唯一 server；
-   同账户伪 server/client、错误 PID/creation、nonce/run 重放、第二连接、断连/重连全部被拒且无秘密出现在
-   argv/env/child/log/db。half-frame/multi-frame/invalid UTF-8/CRLF/duplicate key/oversize/unknown key/乱序/
-   duplicate slot/backpressure/deadline 均 fail-closed，main event loop 可继续推进独立 heartbeat。每个
-   CONNECT/READ/WRITE 的独占 OVERLAPPED/buffer/event、`CancelIoEx`+`ERROR_NOT_FOUND` completion race、cancel
-   后 final reap、single completion、对端 crash/close 顺序都有独立 red vector；未 final completion 不得释放。
-3. legacy HEAD 没有覆盖 HostGate/Scheduler/Digest/Coordinator/fixture 全部 owner 的同步 pausable Clock
-   decorator；既有 `Clock.setTimeout/clearTimeout` 不能以
-   `await setTimeout` 或等 live operation=0 冒充 barrier。实现后按 detailed §15.6.2 的
-   pause→writer quiesce→同步
-   main snapshot→sample ack→OS sample→close→absolute-deadline resume 顺序，trace prefix 与 snapshot 逐
-   identity 恒等；barrier 中注入任一 mutation 必须整轮稳定红，而非排队。物理frame→linearize≤500ms、
-   logical→sample≤250ms、frame→sample≤750ms、sample→close≤1,250ms、frame→close≤2,000ms、
-   close→resume≤250ms，dequeue不重置deadline。固定负载必须使 host-grant 恰好567对、
-   per-host141/142/142/142、gap/no-wait/final0（peak仅诊断，不得伪延长到28秒）；独立真实
-   coordinator-slot必须567对、historical/sample peak4、never>4、final0；task-tab exact120/peak4/final0，timer/async/
-   store/db 达到冻结峰值；`http-request|http-response|socket|provider-attempt|watch-temp-lease`
-   必须全程为 0，H3a 另证真实网络，禁止 synthetic socket/event。
-4. `watch-temp-lease` 的 32-byte raw nonce HMAC binding 与无 reparse 专属 root 的 OS relative entries 逐项
-   相等；两个 frozen token golden、key zeroize/child 零秘密、JCS UTF-16 key order/NFC reject/no-normalize/
-   duplicate/lone-surrogate/invalid-UTF8/safe-integer golden 必须 product/harness 独立命中。正文、路径、
-   URL、Cookie/Key 零 trace。symlink/junction/reparse、case collision、escape、rename、duplicate、cleanup failure
-   有独立敌手用例；DB FileId/RM owner 与 product Store/DB registry 交叉而非“文件存在即连接”。
-5. Battery port 零枚举、全 documented absence、query-tag failure=`ERROR_FILE_NOT_FOUND`+observed invalid tag、
-   success+invalid tag、初始 `ERROR_NO_SUCH_DEVICE`、取得 tag 后 `ERROR_NO_SUCH_DEVICE` stale/change、short
-   output、relative/unknown、unsupported present battery、AC/charging/discharging/Rate 矛盾、热插拔/tag reuse、
-   cleanup failure 均命中 detailed-design §15.6.4 唯一分类；no-battery 只由完整成功枚举且所有 port documented
-   absent 产生。
-6. `CreateProcessW` 机器测试证明 `lpApplicationName` 是 exact repo Electron 43.4.0 exe、`.` 从 repo CWD 解析
-   package main=`./out/main/index.js`、初始 PID 是 browser/main、无 wrapper；suspended assignment、嵌套 Job
-   failure、kill-on-close、Chromium child capture、root 先退/child 残留和 Toolhelp PID reuse/snapshot race 都按
-   §15.6/§15.7 唯一 oracle 裁决。`CreatePipe/SetHandleInformation/STARTF_USESTDHANDLES`、exact 三-handle list、
-   parent endpoint close、满 capture 后继续异步 drain、fatal classifier、root exit+Job empty+双 EOF 都有机器
-   red vector；observer 资源不进 Watch registry，但必须仍出现在 Job/handle/Node totals。
+新增红→绿和机器反例聚焦如下，H1/H2未变化的静态/legacy证明按适用范围复用：
+
+1. 旧实现缺少认证固定负载、567真实owner对/120 task Tab、原窗口和Digest oracle时稳定红；新实现必须经过
+   SourceService→真实Scheduler/Coordinator/HostGate→DI acquisition→Processing/Repository/Digest/应用内通知。
+   不用纯函数循环或直接写Event替代；normal build/错误capability/非manifest target或ordinal全部拒绝。
+2. 真实direct-launch、suspended Job、root geometry/空库/无reparse与双方PID+creation：错parent、错writer、
+   PID复用、同账户伪server/client、非继承失败、已有/换绑root、第二连接/断连不得获得能力或污染用户数据。
+   同步native pin全部六root→首tick/任何await前固定setPath→异步认证→业务装配顺序必须稳定红绿；
+   isolation ticket不能冒充业务capability。按Electron43.4.0实际原生启动/PathService/日志代码，核验全部固定键
+   和最早可能IO；从CreateProcess起独立观察整个Job，包含延迟/失败认证、ready和退出，拒绝任何真实产品profile/
+   Cookie/凭据/默认应用日志访问。隔离根内合成canary与故意前移读取/副作用证明观察能捕获open/read/write；
+   不在真实用户目录制造测试数据。仅改APPDATA环境、mtime不变或JS hook不足；入口前仍有访问须先修最早路径选择。
+   单向通道确无入站read-data/parent write-data；strict DTO、frame预算、partialIO、late-write、sequence/slot/
+   prefix错误、队列backpressure、peer crash与CancelIoEx final-reap均有反例，main不阻塞。
+3. 自发QPC freeze：共同frequency与原始ticks、真实write receipt、每组OS API begin/end、sample/closed/resumed
+   exact配对与prefix恒等；跨窗/假完成/不同原点/缺记录/迟写/无2tick顺序余量不得PASS。保留全部
+   500/250/750/1,250/2,000/250ms上限、absolute timer/stale callback、barrier mutation整轮FAIL；不能等live0。
+   Coordinator历史与正式sample峰值4，HostGate不伪延长lease；Scheduler各≤1、其它owner仍受pause/Node总量；
+   退出cleanupOf仍计入资源和原60秒门，不能漏掉新建排水Promise。
+4. Job/Toolhelp双向完整identity、含已退出成员的Job CPU累计、main heap、Node各type及总量、FileId/RM/DBowner
+   和std三handle/双流持续drain均独立实采。漏child、root先退、PID reuse、满capture后的GPU fatal与缺EOF必须红。
+   temp无创建路径+零registry+逐slot OS空root共同证明；unexpected entry/reparse/root换绑/枚举失败不能硬编码为0。
+5. Battery Class各port的exact struct/tag/absence/error/stale/relative/unknown/AC/PowerState/Rate/cleanup
+   矩阵及第一次合法30分钟窗口完整保留；有电池AC不能N/A，合法窗超阈值仍FAIL-product。
+6. 全量必要回归、production renderer/Watch smoke、独立安全/资源审查、正式10m/60m/10m和标准GPU机器证据
+   才能关闭H3b。短纵向bootstrap→sample→stop诊断只用于实现验证，不能称正式资源资格。未知GPU历史不改写。
+
+以下固定负载/排序/极值证明不因遥测变为单向改变；已接受且字节/算法未变化的H1证明可引用，新runtime必须与之吻合：
+
 7. coalesce legacy-red 必须独立调用现有 `computeJitterMs()` 相同算法并覆盖 event Rule 的全部轮次。冻结旧
    `d06cb3d` descriptor=788 bytes/SHA=`7af65b3943123cc0a0e415ac23599699ea1cb2c076928aad6b434324f6b933a1`、
    first=30,000、step=8,400、rounds=0/15/30/45、Digest001 due=40min 与日期2026-09-02 UTC；全1440分钟分布
@@ -289,14 +256,14 @@ M0+24/M0+46分钟。此段 supersede 下列legacy-red中所有旧manifest数值�
    §15.6.1为唯一值），并命中Digest canonical数组各1,951 bytes及SHA
    `3b8b7861854044ac55240680dfcf76161261544cdd3ceb286e7e28f82353dd7d`/
    `7225b4d9000aa989994f0784cb7245cccb46e0094b661067c2147f76c2ae44d3`。register/unregister root exact keys为
-   `{bindingToken,detail,identity,registry}`；host-grant detail exact keys为
+   `{detail,identity,registry}`；host-grant detail exact keys为
    `{attemptOrdinal,entryIndex,grantElapsedMs,hostSlot,phase,round,waitedForGap}`，coordinator-slot detail为
    `{entryIndex,hostSlot,phase,round}`，不得包含hostKey、URL、路径或秘密。Source seed必须拒绝非空库、重复/
    非法v4-shaped id、canonical/FTS不一致及真实Service missing/unavailable，且不能绕过Coordinator两次
    Source revalidation、NetworkPolicy或真实HostGate。
 
-上述红态、实现、聚焦绿态、全量/构建/production smoke、隐私/垃圾/进程终检和新的独立 H3b 安全/资源
-Reviewer `PASS` 缺一不可。H1/H2 的既有证据不得冒充这些 H3b 结果；当前 H3a 不得预跑或声称 H3b 结果。
+上述新增实现、聚焦红→绿、必要全量/构建/production smoke、隐私/残留终检与新的独立H3b安全/资源
+Reviewer PASS不可省；不重复审计未受影响的H1静态证明，也不以它替代新运行结果。
 
 ## H2 计时修复合同（H1 后生效；2026-09-06 已关闭）
 

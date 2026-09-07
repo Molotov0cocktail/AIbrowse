@@ -201,7 +201,7 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
   unpaused；locator prepare 即使按 D4 只暂停并保留旧 fingerprint，也必须整体失败。Event 内相同 fingerprint 的
   新 observation 仍与 Baseline/Run 原子提交；真正 replay 只终结 running Run，不倒写 Baseline。
 - qualification Source identity 使用公开独立 SHA-256 domain 的 deterministic v4-shaped UUID，不是随机 UUIDv4
-  或 UUIDv5，也不复用 nonce/HMAC。SourceService-owned bootstrap 仅在 isolated fresh empty DB、Watch 引用出现
+  或 UUIDv5，也不是资格授权凭据。SourceService-owned bootstrap 仅在 isolated fresh empty DB、Watch 引用出现
   前以一个事务维护 100 Source/100 FTS/0 tag-links，并经真实 projection/fingerprint 读回；正常
   observer/journal/cleanup 语义不变，Coordinator 两次 Source revalidation 均不得旁路。
 - Public HTTP request 使用两阶段终态：业务首终态立即取得单一所有权，清除 timer/AbortSignal 以及
@@ -368,14 +368,18 @@ oracle；FakeProvider 不得冒充真实观察。
   wrapper、breakaway、映像名或 PID 猜测都不能成证。Battery Class absolute mWh 不可用时 fail-closed；tag
   absence、returned bytes、所有 port 聚合、热插拔和 SystemPowerStatus/PowerState/Rate 交叉矛盾均须按正式
   矩阵裁决，API 不确定不能伪装 no-battery。
-- 当前用户 DACL 不能单独阻止同账户进程伪装资格 client/server。qualification pipe 必须是 harness-only
-  first-instance/reject-remote server + main-only client，并在交付秘密前后双向校验 named-pipe peer PID 与
-  creation identity。高熵 telemetry 名和 nonce 只能经已认证、按 suspended main PID 定位的一次性 bootstrap
-  传递；不得进入 args/env/inherited handle/log/persistence/renderer。exact-key canonical frame、bounded
-  incremental UTF-8、deadline/backpressure、strict sequence、sample barrier、无重连和断连 fail-closed 共同
-  防止半帧、CRLF、重放、乱序、丢帧、队列耗尽与同账户注入；任一项不能靠“本机只有一个用户”豁免。
+- 当前用户DACL不能单独阻止同账户伪装。资格仅在独立编译入口中可达，父进程CreateProcess前pin全部六root，
+  CJS首tick同步native复核/pin后、任何await前同步覆盖§15.6.2固定Electron路径，再异步核对direct parent/main
+  PID+creation，最后业务装配；隔离ticket不能取得负载能力。APPDATA变量不能证明Windows Known Folder/
+  Electron PathService重定向。固定版本启动源码与从CreateProcess起的全Job独立IO证据必须涵盖入口前、延迟/
+  失败认证、ready及退出；合成canary/提前读取反例验证真实open/read/write捕获，不读写真实产品profile/凭据。
+  早期隔离未证明即实现不合格。单向named pipe由harness先建first-instance/
+  reject-remote/current-logon protected-DACL server，main只写、parent只读，handles不继承；双方持有真实query
+  handles并核验OS peer identity，错误parent/client/creation、占名、重连或伪writer均失败。协议无秘密或入站
+  应用命令，renderer/web/model仍无选择目标、路径、负载或执行能力；普通build加flag不能打开资格入口。
+  frame使用strict bounded DTO/UTF8/JCS/唯一sequence，迟写/断流/队列耗尽fail-closed；stdout日志不能替代认证通道。
 - H3b 的固定负载不允许借“真实”名义访问第三方，也不能为 localhost/私网放宽 NetworkPolicy。唯一 seam 是
-  Coordinator 现有 `WatchAcquisitionPort` 上的 bootstrap-authenticated、main-only、编译期
+  Coordinator 现有 `WatchAcquisitionPort` 上的 native-launch-authenticated、main-only、编译期
   `watch-h3b-load-v1` port：真实 HostRequestGate grant 与 Session consent/task-tab ownership 在前，经过验证的
   bounded projection 在后，再进入真实 Diff/Condition/Event/Digest/Store。normal production、renderer/web/model、
   普通 env/argv 均不可达；manifest version/hash/rule/ordinal 不符即 fail-closed，不回退生产网络。该 seam 不
@@ -392,29 +396,26 @@ oracle；FakeProvider 不得冒充真实观察。
   `changed/unchanged/failed=48/52/0, observation/Event=24/12`，后 50 Source 三轮
   `78/72/0, 39/26`。把 queued/running 或尚未 release 的下一轮预记入 count、依赖某个 M0 的 jitter 碰巧过线，
   或以同一错误 generator 互相比对，都属于证据污染。
-- 产品 registry 必须在真实 acquire/release 线性化点经结构化 trace 重放，sample 只对应唯一冻结 prefix。
-  observer 自身不得进入 Watch registry 造成自指，但仍计入 Job/OS/main/Node totals，禁止人为扣除。temp
-  registry 的 opaque nonce-HMAC binding 必须与 sample barrier 内独立 OS relative-entry 枚举逐项相等；绝对/
-  相对 path、URL、正文和凭据不得过 pipe。temp root/ancestor/entry 任一 reparse point、case collision、escape、
-  unexpected entry 或 rename 中间态都 fail-closed。日志字符串、当前 PID 求和、文件存在性和 `{registry,
-identity}` 而无 temp binding 都不能单独成证。trace root exact schema含`detail`；host-grant detail只允许
-  attempt/index/hostSlot/phase/round/elapsed/waited字段，不得传hostKey、URL、路径或秘密。
-- sample barrier 不能把同步 `Clock.setTimeout` 当 Promise，也不能等待全部业务资源归零后采样。资格 controller
-  必须先暂停 admission/scheduler/digest/fixture deadline owner，保存 absolute deadline，等待的只是在 main
-  sequencer 上已经开始的 writer 退出；随后在单一 JS turn 同步截 main counters/registry，再由 harness 于 barrier
-  内取 OS 样本。barrier 中任一新 mutation 立即使整轮失败，禁止排队隐藏；close 后按原 absolute deadline 只
-  恢复一个 callback。物理完整request frame、sequencer linearization、sample、close、resume必须分别留痕；
-  frame→linearize≤500ms、logical→sample≤250ms、frame→sample≤750ms、sample→close≤1,250ms、
-  frame→close≤2,000ms、close→resume≤250ms，任何外部deadline不得在dequeue重置。否则 snapshot 可能把跨
-  sample 的 acquire/release 拼成从未存在的状态。
-- overlapped pipe 的 timeout 不等于 operation 已完成。每个 CONNECT/READ/WRITE 必须独占 OVERLAPPED/event/
-  buffer；deadline 后 `CancelIoEx` 的成功或 `ERROR_NOT_FOUND` race 都必须继续等待 final completion，再释放或
-  reuse。main/harness crash、peer close、cancel/DisconnectNamedPipe/CloseHandle 的次序和 single-completion 若
-  未机器闭合，可能形成 use-after-free、双回调或把半帧当 EOF，H3b 不得 PASS。
-- nonce 严格 base64url 解码后的 32 raw bytes 才是 HMAC key；key 只在 native locked owned memory，binding
-  message/domain separator、无 padding 输出和 zeroize 时点按 detailed §15.6.2 固定。JCS 必须按 RFC 8785 的
-  UTF-16 key order、原 code point preservation 与 ECMAScript serialization；先拒绝 non-NFC、duplicate、lone
-  surrogate、invalid UTF-8、非安全整数，禁止“normalize 后接受”或用普通 UTF-8 key sort 冒充 canonical。
+- 产品registry必须在真实acquire/release点经trace重放，sample对应唯一冻结prefix。固定负载temp没有创建路径，
+  product零registry与parent每slot完整OS空目录核对；root/ancestor reparse、identity替换、unexpected entry、
+  枚举/close失败都不能PASS。不新增通用temp写/rename/HMAC接口，不以删除未知entry恢复绿态；路径/正文/URL/
+  凭据不进pipe。observer不进Watch registry但仍计入全部Job/OS/main/Node成本。
+- 单向协议不等于无barrier。product按固定QPC slot关闭admission、用同一同步Clock decorator暂停各真实owner、
+  保存absolute deadline，只等writer退出，同一JS turn截main snapshot；真实native write completion后按固定
+  min(trigger+1,750ms,sample+1,000ms)自动close并resume。parent独立记录每个OS API组的QPC begin/end，只接受
+  完整位于真实freeze区间内的样本，跨进程±1tick不确定须留2tick安全间隙而非猜顺序。sample/closed之间无
+  event/mutation、closed/resumed与prefix一致；frameTo*转为自主trigger后仍保持500/250/750/1,250/2,000/250ms
+  全部上限，不接收parent延时指令。等待live资源归零、只记API完成时间、使用不同performance.now原点、假写完
+  时间或把跨窗OS数值当快照均会污染证据，必须有反例测试。
+- barrier内owner mutation立即整轮FAIL，不能排队。Clock恢复原absolute deadline、generation与唯一callback；
+  567 run/120 task Tab/四轮与Digest oracle不变。stop后禁止新业务admission/acquire，仅允许释放已live资源的
+  cleanupOf有界Promise谱系，仍完整计入60秒/10分钟排水；不能隐藏cleanup来获得零计数。
+- 实际parent CONNECT/READ与child WRITE每operation独占OVERLAPPED/event/buffer；CancelIoEx成功或
+  ERROR_NOT_FOUND都不代表完成，必须final completion/reap后释放。timeout后2秒未完成的owner隔离到进程teardown，
+  不能close/reuse未完成内存。peer crash、broken-pipe、disconnect/close与Job fail-safe必须机器验证。
+- 无入站解析面不要求制造入站功能；实际单向writer与collector仍拒绝duplicate/unknown/missing字段、CRLF/半帧、
+  non-NFC/surrogate/invalidUTF8/非安全整数、错误sequence/slot/runId与非canonical bytes。原适用golden复用；
+  真实错误parent、伪writer、跨freeze、迟写、假prefix、Job漏进程与CPU漏累计必须有新的独立反例和实现证据。
 - Battery query-tag 只有 failure=`ERROR_FILE_NOT_FOUND` 且 observed tag invalid 才是 empty port；success+invalid
   tag、初始 `ERROR_NO_SUCH_DEVICE` 都是 invalid。取得合法 tag 后的 `ERROR_NO_SUCH_DEVICE` 只证明 stale/tag
   change，本 slot invalid 并下 slot 重枚举，不能洗成 absence。no-battery 仍要求完整枚举的每个 port 都满足
@@ -523,9 +524,19 @@ D10 完整区间 Reviewer PASS → 新 D11 Stage Auditor`。H4 前不得启动 D
 - IANA IPv6 Global Unicast Address Space：
   <https://www.iana.org/assignments/ipv6-unicast-address-assignments/>
 - Electron Session：<https://www.electronjs.org/docs/latest/api/session>
+- Electron app路径与首tick时序：<https://www.electronjs.org/docs/latest/api/app#appsetpathname-path>
+- Electron43.4.0固定版本路径/启动实现：
+  <https://github.com/electron/electron/blob/v43.4.0/shell/browser/api/electron_api_app.cc>、
+  <https://github.com/electron/electron/blob/v43.4.0/shell/common/electron_paths.cc>、
+  <https://github.com/electron/electron/blob/v43.4.0/shell/browser/electron_browser_main_parts.cc>、
+  <https://github.com/electron/electron/blob/v43.4.0/shell/common/logging.cc>
 - Electron Notification：<https://www.electronjs.org/docs/latest/tutorial/notifications>
 - Windows CreateNamedPipe（first-instance/reject-remote/overlapped）：
   <https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-createnamedpipew>
+- Windows QPC（同机跨进程共同计数器、跨线程±1tick顺序不确定）：
+  <https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps>
+- Windows单向pipe open mode（server inbound/client write）：
+  <https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-open-modes>
 - Windows Named Pipe security/access：
   <https://learn.microsoft.com/windows/win32/ipc/named-pipe-security-and-access-rights>
 - Windows named-pipe client/server PID：

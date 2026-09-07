@@ -59,11 +59,14 @@ Closer 合同收尾后，才满足本任务前置。
   初始 PID 就是 browser/main。suspended Job assignment、kill-on-close、零 breakaway、Chromium child 捕获、
   Toolhelp/Job 的 PID+creation FILETIME 双向全集、root 先退后的排水和 root process exit code 必须全部闭合；
   环境/handle allowlist 或 build hash 缺证即 HOLD。
-- qualification trace 必须来自 harness first-instance/reject-remote/current-logon DACL server 与 main client；
-  bootstrap 在双向 PID+creation 验证后才交付高熵 pipe 名/nonce，argv/env/Chromium child/log/db/renderer 零秘密。
-  Auditor 必须复核 exact-key JCS、bounded incremental UTF-8/LF、deadline/backpressure、无重连、双向 sequence、
-  sample-open/close barrier 和每 sample 唯一 prefix replay；仅有 `{registry,identity}`（缺 exact `detail`）或可挑 prefix 的 snapshot
-  不合格。同账户伪装、half-frame/CRLF/重复/乱序/重放/断连敌手证据缺失即 HOLD。
+- qualification变体必须共享同一产品模块/commit/依赖，普通build编译期无可达资格入口。Auditor核对native
+  同步pin全部六root、首tick/任何await前同步固定setPath、随后异步direct-parent/main PID+creation认证，
+  认证后才装配logger/DB/Window；FileId匹配parent冻结值，准备ticket不是业务capability。按实际Electron43.4.0
+  源码与CreateProcess起全Job独立IO观测复核入口前/延迟或失败认证/ready/退出不触及真实产品profile/Cookie/凭据；
+  合成canary及提前访问反例必须证明观测有效，APPDATA变量、mtime或单次成功不能证明隔离。
+  单向pipe main只写/parent只读、first-instance/reject-remote/logon DACL与全部non-inherited
+  handles真实。错误parent/伪writer/非空或换绑root、断连/乱序/迟写/缺frame必须有反例；TS brand不能授权。
+  协议不再处理秘密、入站命令或HMAC。Auditor以detailed§15.6.2 version2 strict DTO与唯一sequence核验实际trace。
 - Auditor 必须重建并核对 `watch-h3b-load-v1` 1,502-byte descriptor 及固定
   `3f59d95d74d373ef57e80eb56d05c4c9620a6e2bc2db8637ce5ddee48b5b85c3` SHA-256，并独立展开
   34,252-byte 100-entry manifest、命中固定
@@ -80,7 +83,7 @@ Closer 合同收尾后，才满足本任务前置。
   只能纳入完整两轮/三轮，oracle分别为
   `changed/unchanged/failed=48/52/0, observation/Event=24/12` 与
   `78/72/0, 39/26`。资格 acquisition 必须从
-  Coordinator 既有 `WatchAcquisitionPort` DI 注入，只在 authenticated bootstrap 后可达；NetworkPolicy/
+  Coordinator 既有 `WatchAcquisitionPort` DI 注入，只在编译期资格入口与native身份/隔离认证后可达；NetworkPolicy/
   production acquisition 无 fixture 分支。H3b 的 Watch http-request/response/socket/provider/temp registry 应
   全程为0；host-grant应有567对、per-host141/142/142/142、gap/no-wait/final0，sample0合法且peak仅诊断，
   不能伪延长为lease。全局peak4必须由与Coordinator activeGlobal同步的独立`coordinator-slot`证明；通用async
@@ -93,26 +96,19 @@ Closer 合同收尾后，才满足本任务前置。
   `7225b4d9000aa989994f0784cb7245cccb46e0094b661067c2147f76c2ae44d3`。legacy-red固定旧`d06cb3d`
   descriptor=788 bytes、日期2026-09-02 UTC；全日分布须为`13:84,14:363,15:545,16:352,17:96`，midnight
   稳定证明`14!=17`，不得以未定义canonical day或挑96个绿态替代。
-- sample-open 必须先 pause admission/scheduler/digest/fixture owner、保存 absolute timer deadline，只等待 main
-  sequencer writer quiesce，再在单一 JS turn 截 main snapshot；OS sample 后 close，按原 deadline resume。
-  `Clock`同步API不得伪装await，不能等live resource=0后采样；物理frame→linearize≤500ms、logical→sample≤250ms、
-  frame→sample≤750ms、sample→close≤1,250ms、frame→close≤2,000ms、close→resume≤250ms，所有外部deadline
-  从完整frame起算且不在dequeue重置；barrier内mutation必须整轮失败而非排队。
-  CONNECT/READ/WRITE 每 operation 独占 OVERLAPPED/event/buffer；timeout 后 `CancelIoEx`（包括
-  `ERROR_NOT_FOUND` race）必须等 final completion 才 release/reuse，single-completion 与 peer crash teardown
-  缺任一机器证据即 HOLD。
-- Watch temp lease 必须以 nonce-HMAC opaque token 与无 reparse 专属 root 的 OS relative entries 在 barrier 内
-  逐项相等，trace 不含 absolute/relative path、正文、URL 或凭据；symlink/junction/rename/case collision/
-  cleanup 敌手矩阵必须闭合。Battery no-battery 只可来自成功完整 SetupAPI 枚举且所有 port 是 documented
-  absence，并与 SystemPowerStatus 一致；tag error、exact struct/output bytes、relative/unknown、热插拔、
-  PowerState/Rate 矛盾和 cleanup 任一未闭合都不得判 H3b PASS。observer 不进 Watch registry，但仍必须计入
-  Job/OS/main/Node totals，禁止扣除观察成本。
-- nonce 必须严格解码为 32-byte raw HMAC key并只留在 native locked owned memory；domain-separated message、
-  两个 frozen token golden、collision/duplicate fail 与 complete/error zeroize 都须复验，Chromium child 零 key。
-  RFC 8785 实现必须有 product/harness 独立 golden，覆盖 UTF-16 key order、non-NFC reject/no normalization、
-  duplicate/lone surrogate/invalid UTF-8 与 safe-integer；普通 JSON.stringify/UTF-8 sort 不合格。Battery
-  success+invalid tag 与初始 `ERROR_NO_SUCH_DEVICE` 必须 invalid，合法 tag 后 `ERROR_NO_SUCH_DEVICE` 必须走
-  stale/change 下 slot 重枚举，不能算 absence。
+- 每sample必须由共同QPC固定slot自主freeze，pause一个Clock decorator的全部owner并保持absolute deadline，
+  只等writer而非live资源归零。原500/250/750/1,250/2,000/250ms上限全部满足；native write receipt与
+  sample/closed/resumed真实时间、prefix恒等、零barrier mutation及parent每个OS API组全过程被freeze包含须
+  逐slot可证。跨进程±1tick顺序不确定按2tick余量拒绝，不能比较不同performance.now原点或只看API完成时间。
+  缺closed/resumed、假时间、跨窗、迟写、计时重置和barrier内排队必须红；不得借单向采集降低原缺样要求。
+- parent CONNECT/READ与child WRITE的OVERLAPPED/event/buffer独占、timeout CancelIoEx后final-reap、peer
+  crash/close与Job收口有机器证据；无入站功能不要求新增入站代码。observer不入Watch registry但仍计入全部
+  Job/OS/main/Node总量。stop后禁止新业务，cleanupOf清理Promise全部计数并受原60秒/10分钟排水门。
+- temp固定负载无创建路径、product零lease、每slot无reparse/稳定FileId的OS空root三者一致；unexpected
+  entry/root替换/枚举或close失败不得PASS。删去HMAC/temp写能力不能删OS观察，不声称验证任意rename场景。
+- Battery Class完整port/tag/returned-byte/absence/error/stale/relative/unknown/PowerState/Rate与cleanup分类
+  仍逐项按§15.6.4执行；合法on-battery能量/百分比两个阈值同时通过，AC不等于N/A。JCS/NFC/duplicate/
+  surrogate/UTF8/safe-integer等仍适用的writer/collector golden必须独立，不能共用错误实现互证。
 - production handle ledger 必须证明 `CreatePipe` 后 read ends 经 `SetHandleInformation` 取消继承、
   `STARTF_USESTDHANDLES` 的 stdin/out/err 与三-handle allowlist 完全一致、harness 在 resume 前关闭 child ends。
   drain thread 到 capture 上限后仍读并扫描完整 GPU fatal stream；最终同时具备 root exit=0、Job active=0、
