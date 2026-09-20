@@ -2309,6 +2309,9 @@ watch.db 上限和
   `i40` initialization `e2840cd9-1aa9-542a-b940-589c34a80d99`、`i99` 最终 measurement
   `aedaaf84-df8c-598c-9a39-f5abcdbcb947`。
 
+- empty check 指业务负载为空；正常完整装配必须保留恰好一条 `ruleId=null / reconciliation / complete`
+  启动审计，Rule seed 事务逐项复核该唯一行，拒绝缺失、额外或失败审计，且不删除该行。此澄清修正了
+  裸 Repository 测试遗漏正常启动 reconciliation 的假设，不跳过产品启动路径或改变固定负载。
 - native启动身份/隔离认证、manifest 双端校验与两个 DB 的 empty check 完成后、首次 seed 前，controller 在
   §15.6.2 的合成 UTC timeline 上把 `M0` 一次冻结为 `>=当前 monotonic now+24 分钟` 的第一个 UTC 整分钟；
   seed/source/rule/digest 的全部相对时间只能由该 M0 计算，之后不得重选。初始化期间 scheduled/digest/renderer
@@ -2316,8 +2319,9 @@ watch.db 上限和
   Coordinator/Processing/Repository 路径中按 index 连续 25 批、每批恰 4 条建立 A Baseline；首批必须在 M0
   freeze 后 30 秒内 admission，批 `j` 在首批起点后 `31,000*j` ms 同时 admission，前批四条全部 settle 后才开
   下一批，manual requestId 固定为 `watch-h3b-init-v1:<i 三位>`，所有 run 必须是 `baseline-established`。
-  initialization 不开启 formal sample barrier，所以既有 0..500 ms jitter 后从 grant 到 settlement 精确 28,000
-  ms，单批最迟 29,500 ms settle，31,000 ms batch spacing 不允许 Executor 自选。setup 必须在
+  initialization 不开启 formal sample barrier；既有 0..500 ms jitter 后，qualification port entry 的 raw QPC
+  加 28,000 ms 为最早 settlement 目标，timer/Promise 迟到与二次校验共用下述既有 500 ms 处理预算。
+  单批最迟 29,500 ms settle，31,000 ms batch spacing 不允许 Executor 自选。setup 必须在
   `W0=M0-600,000ms` 前至少 30 秒 settle，否则
   `BLOCKED/timing-environment`，不得后移 M0 挑绿。以 freeze 时刻 T 计，M0 lead 至少 1,440,000 ms；即使首批到
   `T+30,000` 才 admission，第 25 批仍最迟在
@@ -2325,7 +2329,9 @@ watch.db 上限和
   6,500 ms。到 W0 创建 scheduler entries 并打开 admission。Rule `i` 的
   正常周期 anchor 是 `D(i)=M0+5,000+33,000*floor(i/4)` ms；warmup 起点 `W0=M0-600,000` 时，
   `i=0..32` 初始 nextDue=`D(i)`，`i=33..99` 初始 nextDue=`D(i)-900,000`。因此 warmup 精确产生 67 次
-  A/unchanged。warmup 的唯一映射是 `k=0` 包含 `i=33..35`、`k=1..16` 各含连续四项
+  A/unchanged。其中`i=33..35`在W0时已经到期，按既有Scheduler.initialize语义为`catch-up`，其余64条为
+  `scheduled`；两类都保留上述原scheduledFor与正常nextDue推进，不重写触发类型冒充准时运行。
+  warmup 的唯一映射是 `k=0` 包含 `i=33..35`、`k=1..16` 各含连续四项
   `i=36..99`，release 为 `Rw(k)=W0+34,200*k`；每条真实
   `scheduledFor(i)=D(i)-900,000`，requestKey=`ruleId+"|"+canonical ISO(scheduledFor)`，并以
   `computeJitterMs(ruleId,hostKey,scheduledFor)` 计算完整 seed。qualification gate 只在逐项复核
@@ -2347,19 +2353,26 @@ watch.db 上限和
   `D(0)+3,600,000=M0+3,605,000`，已经晚于该上界。任何额外/缺失/
   重复 run、失败或其它 outcome 均 `FAIL-product`。
 - 每次受控 acquisition 必须先成功调用真实 HostRequestGate 登记式 `acquire`；该现有 API 只登记 start/gap，
-  不是 28 秒 lease，不能扩成假的 concurrency owner。`A=28,000 ms` 是从 qualification port entry 到完整
-  Promise settlement 的 exact QPC 目标，覆盖 projection；Session 还覆盖真实 task-tab create/hold、
-  `getTabs/closeTab` 与 verified release/close，publish deadline=`1,000 ms`、release target offset=`27,000 ms`，
-  成功 Promise 必须在 `28,000 ms` 完成。跨该 absolute deadline 的一次 barrier 可增加 wall delay，但不得把
-  deadline 重置成新的 relative timeout。Coordinator 既有 jitter 不得旁路：scheduled run 的 delay exact 为
+  不是 28 秒 lease，不能扩成假的 concurrency owner。记录 qualification port entry 的 raw QPC `E`，
+  `D=E+28,000 ms` 为完整 Promise settlement 的最早目标，禁止经 Date 毫秒截断推导 D。projection 在该
+  区间内生成，capturedAt 取实际生成时刻；Session 还覆盖真实 task-tab create/hold、`getTabs/closeTab`
+  与 verified release/close，publish deadline=`1,000 ms`、release target offset=`27,000 ms`。
+  不要求 Windows timer/Promise 零调度误差，也不另增宽松预算：只有实际 sample barrier 的
+  `[triggerQpcTicks,resumeQpcTicks)` 包含 D 时，才令 `D_eff=resumeQpcTicks`，否则 `D_eff=D`。
+  补偿为该次真实 `resume-D`，整次 barrier 必须 ≤2,250 ms；不累加其它 barrier、不重置 relative timeout。
+  从 D_eff 至 Processing 取得 observedAt 的 raw QPC `O` 合计 ≤500 ms，统一包含晚到 timer、Session close、
+  projection、完整 Promise 链及第二次 Source revalidation；只跨 27 秒 release target 而未跨 D 的 barrier
+  不提供补偿，晚 close 仍消费同一 500 ms。Coordinator 既有 jitter 不得旁路：scheduled run 的 delay exact 为
   `SHA256(UTF8(ruleId+"|"+hostKey+"|"+scheduledFor ISO))` 前四 byte big-endian `mod 501` ms；因此在无 barrier
   穿过 settlement deadline 时 grant 不得早于 `R(i,r)+jitter(i,r)`；jitter seed 仍用真实 S，不得改用 R。sample
   barrier 只能按 §15.6.2 暂停并保持原 absolute deadline。每个 warmup/measurement run 还冻结以下 QPC
   deadline：
   release 前、jitter 中或 grant 前的一次 barrier 最多增加 `H=2,250 ms`，跨 acquisition deadline 的另一次
   barrier 最多增加一个 H；其它 barrier phase 也必须落入同一 absolute-deadline 状态机。第二次 Source
-  revalidation 至进入 `WatchProcessingService.process()`、取得
-  `observedAt` `≤500 ms`；从 observedAt 到 Event/Baseline/Run 结果事务提交并释放 run `≤500 ms`。因此令
+  revalidation 不重开处理预算，始终按上述 `O-D_eff≤500 ms` 检查；从 observedAt 到 Event/Baseline/Run
+  结果事务提交并释放 run 的 raw QPC `C` 满足 `C-O≤500 ms`。另外分别检查原始 QPC 的
+  `O-R≤33,500 ms` 与 `C-R≤34,000 ms`，不得以局部分段合格替代。以上是合成负载时序目标的工程澄清，
+  不增加总时限或资源阈值。因此令
   `j∈[0,500]`，Event 时间相对 release 满足 `O-R∈[28,000,33,500]`；完整 Coordinator slot 满足
   `Lslot_min=28,000`、
   `Lslot_max=H+500+A+H+500+500=34,000 ms`，即 `C-R≤34,000`。任何单项或总 deadline 越界均为
@@ -2489,10 +2502,19 @@ native 从这四个非秘密环境值验证 exact sibling geometry并推导root/
 main连接认证前只允许下述同步隔离、QPC/进程身份及固定pipe连接，不能初始化logger、单实例锁、DB、Window或业务服务。
 harness必须在CreateProcess前、native必须在资格CJS入口第一个同步执行段，分别对runRoot、全部五个固定子目录及各级ancestor以
 `FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS` 打开并核验
-`FileAttributeTagInfo/FileIdInfo`；父子分别持有自己的非继承 attribute handles、排除 FILE_SHARE_DELETE，独立
+`FileAttributeTagInfo/FileIdInfo`；六个新root在创建时原子设置protected DACL：只给当前交互logon SID所需权限，
+同时以仅作用于目录本身的OWNER RIGHTS deny拒绝 `FILE_WRITE_ATTRIBUTES/WRITE_DAC/WRITE_OWNER`；
+不得先创建可改写的目录再补ACL，也不得把该deny继承到业务子文件以破坏SQLite正常写入。
+harness以相对已持有父目录handle的 `NtCreateFile(FILE_CREATE)` 在创建同一操作中取得该无delete-share
+目录handle，逐层拒绝reparse；不得保留 `CreateDirectory→首次pin` 间的DELETE/换名空窗。
+父子分别持有非继承的目录data-read handles（`FILE_LIST_DIRECTORY`，share仅READ），独立
 核对并在ready中仅回证全部六个root的FileId，parent必须与resume前冻结值一致；父句柄从创建到完整退出清理均持有，
 所以appdata/localappdata也不能在native接管前被换成junction。同步检查时user-data/watch-temp仍须空；process-temp在
 Electron启动后的普通引擎残留不能冒充Watch temp。目录pin是隔离条件，不是取得业务能力的对端认证。
+工程修订依据：旧attribute-only/no-delete pin实测仍可通过WRITE_ATTRIBUTES把空目录原地设为junction；
+仅去掉share WRITE也无效。新组合必须实证拒绝属性/data/DACL/owner改绑，同时验证正常SQLite WAL、双进程pin
+与最终精确清理。既有祖先目录不修改ACL；逐层无reparse/FileId核验、持有句柄与被pin的子目录共同保护路径。
+这不对拥有管理员或系统级权限的攻击者作隔离承诺；资格harness与产品仍以普通非提升token运行。
 
 启动顺序固定为：编译期资格CJS入口只同步加载Electron的app与固定native bridge → 无参数
 `prepareLaunchIsolation()`同步验证/pin上述六root、返回不可伪造本地isolation ticket与非秘密固定paths →
@@ -2561,6 +2583,11 @@ parent独立重算，频率、UTC锚点、M0规则或descriptor/expanded hash任
 **单向frame与异步所有权。**wire为无BOM、单LF结尾的UTF-8 JSON Lines，line含LF≤262,144 bytes；envelope exact
 keys为 `{kind,payload,qualificationRunId,sequence,slotIndex,version}`，version=2，sequence从1连续且永不复用。
 slotIndex仅sample/sample-closed/sample-resumed非null；其余为null。不存在harness→product命令或回复序号。
+资格入口在ready之后、setup之前仅查询一次`app.getGPUInfo('complete')`（5秒有界等待），通过`gpu-info`传出
+`beginQpcTicks/endQpcTicks/devices/softwareRendering`；devices至多8项且每项仅有boolean active与uint32
+vendorId/deviceId。仅保留Electron公开API最小投影，不传原始GPU文本、机器型号或任意对象；失败或缺字段
+明确记录空devices/null，不能当作硬件资格通过。parent将其与Windows设备/驱动和实际模块原件交叉核验；
+PnP已安装设备列表本身不能证明Electron实际选用了该设备。此观察不新增NAPI能力、不进入普通构建。
 main在唯一sequencer同步分配sequence、验证DTO并进入唯一发送序；native同步接受有界frame，异步Promise只在真实
 GetOverlappedResult确认OS write已完成后兑现并立即记录完成观察QPC；不声称读取到内核未公开的精确完成瞬间。
 native不得接受任意JSON字符串，也不得自动修复丢号/字段。
@@ -2597,6 +2624,10 @@ frame kind/payload唯一如下，所有未列字段均非法：
   unregister或detail不一致即FAIL-product。host-grant detail仍exact
   `{attemptOrdinal,entryIndex,grantElapsedMs,hostSlot,phase,round,waitedForGap}`，coordinator-slot仍exact
   `{entryIndex,hostSlot,phase,round}`，值/ordinal/567次oracle沿§15.6.1，不含hostKey/URL/路径。
+  host-grant的`attemptOrdinal=1`、`grantElapsedMs`为非负safe integer、`waitedForGap=false`；
+  `grantElapsedMs`以已认证的`qpcAnchorTicks/utcAnchorMs`为共同起点，取grant时QPC elapsed毫秒的floor，
+  量化误差小于1ms；不得使用墙钟差或各进程独立时钟原点。
+  `hostSlot=entryIndex%4`，initialization/warmup的`round=null`，measurement的`round=0..3`。
   watch-timer/digest-timer只登记各自正式Scheduler timer，detail=null；其它Clock owner的timer归watch-owner-timer，
   detail exact `{ownerKind}`，值只允许host-gate/coordinator/qualification-fixture；每个真实set/clear仍逐identity
   配对并受pause/Node总量/最终close约束，不冒充Scheduler≤1的计数。freeze/heartbeat的observer timer仍不入Watch registry。
@@ -2663,6 +2694,14 @@ sample/closed之间无event，closed复述同一prefix，resume全部预算通�
 parent收集器超时且product时序合格为BLOCKED/harness-timeout，产品晚写/越界/变更/假prefix为FAIL-product。
 不额外重开同slot或更换M0；同slot重复OS观察仍只保留最早完整有效identity集合，不按指标选低值。
 
+parent采集器可在Job accounting完成后启动一个独立DB/RM worker，与其后的进程树/lifecycle、临时目录、电池
+串行链重叠；五组名称和记录位置固定，前四组仍按原依赖串行，DB组不得早于accounting结束。DB内部仍是三个
+独立路径的当次RM查询，不缓存占用者、不合并路径；每支独占原始API账本，DB不访问ProcessLedger。DB组begin/end
+取worker实际执行时刻，end须晚于全部RM session和文件pin关闭，不能取调度或主线程取回结果的时间。所有组仍按
+共同min/max包络与各自API包含关系验证，真实进程成员矛盾只能使证据无效。返回或异常传播前必须真实回收worker，
+并在此之前保持roots/Job及既有drain互斥保护；回收等待超过固定2秒或无法确认完成则以exit78终止harness，不能
+detach、提前释放借用对象或生成成功样本。此工程并发不改变产品close目标、实际freeze边界或任何既有验收预算。
+
 上述有界freeze的最坏额外延迟仍≤2,250ms，故§15.6.1的slot/coalesce/new Event/Digest证明继续成立。完整trace
 仍须命中567 grant/Coordinator对、Coordinator sample/historical peak4、120 task Tab/peak4、Scheduler/async/store/db
 真实峰值与最终零；五个本负载零类不能伪造非零峰值。CPU/内存等正式数字、统计、丢样、真实进程树与电池条件
@@ -2714,6 +2753,14 @@ Node type 的统计 universe 是 361 个正式 sample 中所有合法 key 的并
 内部/native type 没有 ignore list；现有 `+4/+6 per hour` 就是唯一 allowance。API 不可见的 renderer/native
 资源不声称由本指标覆盖，分别由 Job、handle、WebContents 和产品 registry 门覆盖。
 
+Restart Manager 的有界缓冲区工程实现：每个存在 path 仍独立创建、注册、实时查询并关闭 session；
+首次 `RmGetList` 提供 16 个 `RM_PROCESS_INFO` 的固定缓冲区，不强制先进行零容量查询。
+仅 `ERROR_MORE_DATA` 可按本次实际 required 严格增长，容量上限仍为 65,536，总调用最多 4 次；
+不足、增长异常或 API 失败均使该 path/slot 无效，不截断 owner、不复用旧 owner 结果。
+原件逐次保存 initial/retry、QPC begin/end、return、capacity/required/count/rebootReasons，
+成功 count 必须与逐项身份复核后保留的完整 associations 数相等。FileId/pin、共享模式、PID/creation、
+Job 成员判断和外部 owner 门保持；采集全过程仍必须满足原 freeze、slot 与排水时间界。
+
 #### 15.6.3 固定 PASS/FAIL 阈值
 
 所有行必须同时 PASS；任一有效指标越界即 `FAIL-product`。绝对内存峰值不超过标准 8 GiB 机器的 25%，
@@ -2757,9 +2804,11 @@ resolve、写一条 cleanup 日志或进程即将退出都不能冒充释放。
 
 在 Job active=0、所有 DB owner association=0、temp lease/entry=0 后，harness 才在仍持有的身份句柄下复核
 本轮 runRoot 与五个固定子目录的 FileId/reparse 属性，关闭阻止删除的本轮句柄，再删除这一已验证的完整隔离根；
-路径或身份变化不得跟随删除，未知目录不得清理。drain end 复查 runRoot 与五个子目录均 absent。删除失败、文件/registry 复活、named
-pipe trace 未完整结束或任一全零 slot 缺失均为 `FAIL-product`；Restart Manager/文件 API/结构化端口自身失败导致无法判断时为
-`BLOCKED/evidence-insufficient`。drain 窗口不得与正式观察重叠，wall clock 差不能替代 QPC 的 60 秒/10 分钟
+路径或身份变化不得跟随删除，未知目录不得清理。drain end 复查 runRoot 与五个子目录均 absent。已证实删除失败、文件/registry
+复活，或首次全零后任一有效slot不再满足全零集合，均为 `FAIL-product`。缺测、超slot观测窗、Restart Manager/文件
+API/结构化端口失败而无法判断，归 `BLOCKED/evidence-insufficient`；不能把晚于60秒首次观测到零等同于证明此前未排空。
+完整61点、60秒内首次全零、连续6个及直到10分钟保持全零仍必须有证据，缺证不能PASS。Job已空但pipe EOF缺失
+按§15.7归`BLOCKED/harness-protocol`。drain 窗口不得与正式观察重叠，wall clock 差不能替代 QPC 的 60 秒/10 分钟
 裁决。
 
 电池子门的唯一 Windows 采集算法如下；所有 device handle 每个 slot 内打开、查询、关闭，不进入产品进程：
@@ -2870,7 +2919,8 @@ arch、CPU/RAM/free disk、GPU/driver、远程会话状态、启动命令参数�
 H3b production harness 的启动 identity 固定为当前仓库真实产物，不得使用 npm/cmd/PowerShell、
 `electron-vite dev|preview`、shell association 或 PATH 查找：
 
-- 运行前先完成普通`npm run build`及其必要回归，再以固定production模式的`build:watch-qualification`生成资格变体。
+- 运行前先完成普通`npm run build`及其必要回归，再以固定production模式的`build:qualification`生成资格变体
+  （与实际 package.json 命令名同步；构建隔离、产品模块和验收要求不变）。
   两者共享同一commit、依赖、Browser/Watch/Source/Renderer产品模块；资格变体只增加main-only入口、固定DI与观察，
   普通build以编译期常量移除可达资格入口。normal build加app arg仍必须拒绝；不得以另写简化业务壳替代产品。
   冻结两种build配置/模块来源与资格产物hash，验证`package.json.main` exact 为 `./out/main/index.js` 且该文件存在；冻结
@@ -2899,12 +2949,15 @@ H3b production harness 的启动 identity 固定为当前仓库真实产物，�
   当产品干净退出；捕获超限本身不阻塞，只要持续 drain、classifier 与 truncation ledger 完整。
 - 使用 `CREATE_SUSPENDED|CREATE_UNICODE_ENVIRONMENT|EXTENDED_STARTUPINFO_PRESENT`。环境 block 按 Windows
   case-insensitive key 排序且**只**复制
-  `SystemRoot,WINDIR,COMSPEC,TEMP,TMP,LOCALAPPDATA,APPDATA,USERPROFILE`；TEMP/TMP 指向资格 processTempRoot，
+  `SystemDrive,SystemRoot,WINDIR,COMSPEC,TEMP,TMP,LOCALAPPDATA,APPDATA,USERPROFILE`；TEMP/TMP 指向资格 processTempRoot，
   LOCALAPPDATA/APPDATA精确指向§15.6.2的localappdata/appdata兄弟目录，其余保持宿主值。禁止 `ELECTRON_RUN_AS_NODE`、`NODE_OPTIONS`、
   `NODE_PATH`、代理/调试变量及任何 `AIBROWSE_*`；userData/watchTempRoot/runId由§15.6.2固定root geometry推导，pipe名仅由self PID推导；无额外路径/URL/秘密参数。
   native同步交叉核验TEMP/TMP/LOCALAPPDATA/APPDATA固定关系并pin全部六root，首tick结束前同步setPath；
   环境变量不能替代§15.6.2的PathService覆盖及从CreateProcess起的早期IO证据，异步认证之前不加载产品装配。
   缺少上述任一系统值或 Electron 不能在该 block 下启动，记环境 `BLOCKED`，不得扩大继承环境后挑绿。
+  工程修订：显式保留宿主 `SystemDrive`，不继承整套环境。旧短诊断发现工作目录下生成字面量
+  `%SystemDrive%/ProgramData`；创建进程归因尚未确定，原件保留。该修订恢复基本 Windows 路径展开条件，
+  不授权读取真实 AIbrowse profile，也不替代早期 IO、模块签名或后续环境资格验证。
 - `PROCESS_INFORMATION.dwProcessId`/hProcess 指向的初始进程必须就是 Electron browser/main OS process；ready必须回证 `process.type=="browser"`、`process.pid==dwProcessId`、`process.execPath` FileId/hash 等于冻结 exe、
   `app.getAppPath()` FileId 等于 repo root、main entry hash 等于冻结 `out/main/index.js`。Job root、named-pipe client、
   renderer lifecycle 的 main identity 均为同一 `(PID,creation FILETIME)`。正常结束码只从该 hProcess 的

@@ -175,6 +175,17 @@ const SQL_UPDATE_SOURCE_USAGE =
 const SQL_LIST_GROUPS = `SELECT * FROM source_groups WHERE deleted_at IS NULL
   ORDER BY name COLLATE NOCASE ASC, id ASC LIMIT ? OFFSET ?`;
 const SQL_COUNT_GROUPS = 'SELECT COUNT(*) AS n FROM source_groups WHERE deleted_at IS NULL';
+const SQL_QUALIFICATION_COUNTS = `SELECT
+  (SELECT COUNT(*) FROM sources) AS sources,
+  (SELECT COUNT(*) FROM sources_fts_docsize) AS indexed,
+  (SELECT COUNT(*) FROM source_groups) AS groups,
+  (SELECT COUNT(*) FROM source_tags) AS tags,
+  (SELECT COUNT(*) FROM source_tag_links) AS links,
+  (SELECT COUNT(*) FROM change_journal) AS journal,
+  (SELECT COUNT(*) FROM usage_events) AS usage`;
+// rank=1 verifies external-content rows against the actual index, including ghosts.
+const SQL_QUALIFICATION_FTS_INTEGRITY =
+  "INSERT INTO sources_fts(sources_fts,rank) VALUES('integrity-check',1)";
 // B5（决议 #72）：同 origin「可能相关」有界读取——origin 作用域条目（键=origin 精确）
 // 与 page 条目（键=origin 路径前缀，LIKE 转义只作数据）；排除目标键（精确重复非「相关」
 // 页面）；软删过滤；确定性排序 + LIMIT 上限（由服务层传 QUICK_ADD_RELATED_MAX=5）。
@@ -265,6 +276,30 @@ export function rowToGroup(row: GroupRow): SourceGroup {
 
 export class SourceRepository {
   constructor(private readonly handle: DbHandle) {}
+
+  assertWatchResourceQualificationState(expectedSources: 0 | 100): void {
+    const counts = this.handle.prepare(SQL_QUALIFICATION_COUNTS).get() as {
+      sources: number;
+      indexed: number;
+      groups: number;
+      tags: number;
+      links: number;
+      journal: number;
+      usage: number;
+    };
+    if (
+      counts.sources !== expectedSources ||
+      counts.indexed !== expectedSources ||
+      counts.groups !== 0 ||
+      counts.tags !== 0 ||
+      counts.links !== 0 ||
+      counts.journal !== 0 ||
+      counts.usage !== 0
+    ) {
+      throw new Error('资格 Source 库或索引计数不匹配');
+    }
+    this.handle.prepare(SQL_QUALIFICATION_FTS_INTEGRITY).run();
+  }
 
   // --- 读 ---
 

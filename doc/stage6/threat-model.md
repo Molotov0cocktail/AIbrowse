@@ -369,6 +369,9 @@ oracle；FakeProvider 不得冒充真实观察。
   absence、returned bytes、所有 port 聚合、热插拔和 SystemPowerStatus/PowerState/Rate 交叉矛盾均须按正式
   矩阵裁决，API 不确定不能伪装 no-battery。
 - 当前用户DACL不能单独阻止同账户伪装。资格仅在独立编译入口中可达，父进程CreateProcess前pin全部六root，
+  新root使用原子OWNER RIGHTS deny属性/DACL/owner写入与data-read/no-write-share目录pin组合；旧attribute-only
+  pin原地junction反例保留。具体ACL与祖先不改写规则见详细设计§15.6.2；必须验证真实SQLite/WAL及精确清理，
+  不把“持有句柄”本身当作拒绝改绑证明，也不对管理员/系统级攻击者作隔离承诺。
   CJS首tick同步native复核/pin后、任何await前同步覆盖§15.6.2固定Electron路径，再异步核对direct parent/main
   PID+creation，最后业务装配；隔离ticket不能取得负载能力。APPDATA变量不能证明Windows Known Folder/
   Electron PathService重定向。固定版本启动源码与从CreateProcess起的全Job独立IO证据必须涵盖入口前、延迟/

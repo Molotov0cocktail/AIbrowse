@@ -115,6 +115,14 @@ export class BrowserControllerImpl implements BrowserController {
     return this.toTabInfo(entry, true);
   }
 
+  /** Main-only ownership observation; not part of the BrowserController tool interface. */
+  getOwnedWebContentsId(tabId: string): number | null {
+    const entry = this.tabManager.get(tabId);
+    return entry === undefined || entry.view.webContents.isDestroyed()
+      ? null
+      : entry.view.webContents.id;
+  }
+
   async closeTab(tabId: string): Promise<boolean> {
     if (this.disposed) return false;
     const entry = this.tabManager.get(tabId);

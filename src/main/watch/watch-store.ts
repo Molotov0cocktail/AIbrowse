@@ -28,11 +28,19 @@ import {
   validateBackupTarget,
 } from '../sources/db/backup';
 import { runMigrations, type MigrationStep } from '../sources/db/migrations';
-import { closeDb, openWatchDb, withTransaction, type DbHandle } from './db/watch-driver';
+import {
+  closeDb,
+  openWatchDb,
+  registerWatchStore,
+  withTransaction,
+  type DbHandle,
+} from './db/watch-driver';
+import type { QualificationResourceOwner } from './qualification/registry';
 import { WATCH_MIGRATIONS } from './db/watch-migrations';
 import { WatchRepository } from './repository/watch-repository';
 
 export interface WatchStoreOptions {
+  ownership?: QualificationResourceOwner;
   dbPath: string; // 主进程生成的绝对路径（<userData>/watch/watch.db 或冒烟临时目录）
   backupsDir: string; // 主进程生成的绝对路径（<userData>/watch/backups）
   migrations?: readonly MigrationStep[]; // SMOKE 注入（迁移失败矩阵）；生产缺省 WATCH_MIGRATIONS
@@ -183,7 +191,7 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
   if (probe.state === 'missing') {
     // 新库首次创建：直接迁移到最新版本（无既有数据，无备份语义）
     try {
-      const handle = openWatchDb(options.dbPath);
+      const handle = openWatchDb(options.dbPath, {}, options.ownership);
       try {
         runMigrations(handle, steps);
       } catch (err) {
@@ -220,7 +228,7 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
       return unavailable(`数据库完整性检查失败：${quick.reason ?? '未知原因'}。原文件已保留`);
     }
     try {
-      const handle = openWatchDb(options.dbPath);
+      const handle = openWatchDb(options.dbPath, {}, options.ownership);
       const outcome = assembleNormal(handle, nowMs, latestVersion, '已就绪', options);
       return outcome;
     } catch (err) {
@@ -247,7 +255,7 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
         `迁移前一致性备份失败：${backup.reason ?? '未知原因'}。原文件未做任何修改，请保留原库文件`,
       );
     }
-    handle = openWatchDb(options.dbPath, { wal: false });
+    handle = openWatchDb(options.dbPath, { wal: false }, options.ownership);
     runMigrations(handle, steps);
     const integrity = checkDbIntegrity(options.dbPath);
     if (!integrity.ok) {
@@ -258,7 +266,7 @@ export function openWatchStore(options: WatchStoreOptions): WatchStoreOutcome {
       );
     }
     closeDb(handle);
-    handle = openWatchDb(options.dbPath);
+    handle = openWatchDb(options.dbPath, {}, options.ownership);
     const outcome = assembleNormal(handle, nowMs, latestVersion, '迁移完成', options);
     if (outcome.mode === 'normal')
       logInfo('watch', `Watch Store 已校验（v${currentVersion} → v${latestVersion} 迁移完成）`);
@@ -377,6 +385,7 @@ function assembleNormal(
     // 备份保留清理（最佳努力——失败不阻塞启动，同 Sources tryPrune 纪律）
     pruneWatchBackups(options.backupsDir, dirname(options.dbPath), nowMs());
     logInfo('watch', `Watch Store 同步校验完成（${label}，schema v${latestVersion}）`);
+    registerWatchStore(handle);
     return { mode: 'normal', repo, schedulerReady: true, reason: null };
   } catch (err) {
     logError('watch', 'Watch 正常装配失败（句柄已关闭）', sanitizeWatchError(err));

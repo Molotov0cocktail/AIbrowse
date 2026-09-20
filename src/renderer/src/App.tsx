@@ -37,7 +37,9 @@ export default function App() {
   useContentBounds(contentRef);
   const addressBarRef = useRef<HTMLInputElement>(null);
   const [sidePanel, setSidePanel] = useState<'ai' | 'sources' | 'research' | null>(null);
-  const [viewMode, setViewMode] = useState<'browser' | 'research-result' | 'watch'>('browser');
+  const [viewMode, setViewMode] = useState<'browser' | 'research-result' | 'watch'>(
+    __WATCH_QUALIFICATION__ ? 'watch' : 'browser',
+  );
   const [watchSourceId, setWatchSourceId] = useState<string | null>(null);
   const [watchNotice, setWatchNotice] = useState<InAppNotificationDto | null>(null);
   const [watchUnreadCount, setWatchUnreadCount] = useState(0);

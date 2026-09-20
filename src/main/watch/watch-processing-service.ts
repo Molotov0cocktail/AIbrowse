@@ -82,6 +82,10 @@ export interface WatchProcessingServiceOptions {
   onNotificationReady?: () => void;
   onStateChanged?: () => void;
   windowsNotificationsEnabled?: boolean;
+  observer?: {
+    onEntered(runId: string, observedAt: string): void;
+    onDuplicateTerminalAttempt(runId: string): void;
+  };
 }
 
 interface FailureDraft {
@@ -95,6 +99,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
   private readonly onNotificationReady: () => void;
   private readonly onStateChanged: () => void;
   private readonly windowsNotificationsEnabled: boolean;
+  private readonly observer: WatchProcessingServiceOptions['observer'];
 
   constructor(options: WatchProcessingServiceOptions) {
     this.repo = options.repo;
@@ -102,6 +107,7 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
     this.onNotificationReady = options.onNotificationReady ?? (() => undefined);
     this.onStateChanged = options.onStateChanged ?? (() => undefined);
     this.windowsNotificationsEnabled = options.windowsNotificationsEnabled ?? false;
+    this.observer = options.observer;
   }
 
   private iso(): string {
@@ -192,6 +198,9 @@ export class WatchProcessingServiceImpl implements WatchProcessingService {
     sourceAfterAcquisition: SourceWatchProjection;
   }): WatchProcessingResult {
     const nowIso = this.iso();
+    if (this.observer !== undefined && this.repo.getRun(input.runId)?.status === 'finished')
+      this.observer.onDuplicateTerminalAttempt(input.runId);
+    this.observer?.onEntered(input.runId, nowIso);
     const identity = {
       sourceId: input.rule.sourceId,
       sourceLocatorFingerprint: input.rule.sourceLocatorFingerprint,

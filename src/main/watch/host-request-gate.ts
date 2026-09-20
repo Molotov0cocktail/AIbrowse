@@ -63,6 +63,8 @@ interface PendingWaiter {
   settled: boolean;
   onAbort: () => void;
   finalize: (result: HostGateResult) => void;
+  waitedForGap: boolean;
+  releaseGrant: (() => void) | null;
 }
 
 export class HostRequestGate {
@@ -70,10 +72,18 @@ export class HostRequestGate {
   private readonly gapMs: number;
   private readonly registry = new Map<string, number>();
   private readonly queues = new Map<string, PendingWaiter[]>();
+  private readonly onGrant?: (hostKey: string, atMs: number, waitedForGap: boolean) => () => void;
 
-  constructor(options: { clock?: Clock; gapMs?: number } = {}) {
+  constructor(
+    options: {
+      clock?: Clock;
+      gapMs?: number;
+      onGrant?: (hostKey: string, atMs: number, waitedForGap: boolean) => () => void;
+    } = {},
+  ) {
     this.clock = options.clock ?? createSystemClock();
     this.gapMs = options.gapMs ?? MIN_HOST_REQUEST_GAP_MS;
+    this.onGrant = options.onGrant;
   }
 
   /** 观测：某 hostKey 最近一次登记 start（测试/诊断；无则 null）。 */
@@ -125,7 +135,8 @@ export class HostRequestGate {
   ): Promise<HostGateResult> {
     const signal = options?.signal;
     const deadline = options?.deadlineMs;
-    return new Promise<HostGateResult>((resolve) => {
+    let ownedWaiter: PendingWaiter | null = null;
+    const result = new Promise<HostGateResult>((resolve) => {
       const waiter: PendingWaiter = {
         hostKey,
         register,
@@ -134,11 +145,14 @@ export class HostRequestGate {
         gapTimer: null,
         deadlineTimer: null,
         settled: false,
+        waitedForGap: false,
+        releaseGrant: null,
         onAbort: () => {},
         finalize: (result) => {
           resolve(result);
         },
       };
+      ownedWaiter = waiter;
       const settle = (result: HostGateResult): void => {
         if (waiter.settled) return;
         this.finalizeWaiter(waiter, result);
@@ -158,11 +172,19 @@ export class HostRequestGate {
         this.queues.set(hostKey, [waiter]);
         this.processHead(hostKey, waiter);
       } else {
+        waiter.waitedForGap = true;
         list.push(waiter);
       }
       // 每个 waiter（含非队首）的绝对 deadline 从入队时刻生效：自装 deadline timer，
       // 先于 gap 到达即受控失败；processHead 已同步结算时（settled）此处自动跳过。
       this.armDeadlineTimer(hostKey, waiter);
+    });
+    if (this.onGrant === undefined) return result;
+    return result.finally(() => {
+      if (ownedWaiter !== null) {
+        ownedWaiter.releaseGrant?.();
+        ownedWaiter.releaseGrant = null;
+      }
     });
   }
 
@@ -226,12 +248,16 @@ export class HostRequestGate {
     const last = this.registry.get(hostKey);
     const elapsed = last === undefined ? Number.POSITIVE_INFINITY : now - last;
     if (elapsed >= this.gapMs) {
-      if (waiter.register) this.registry.set(hostKey, now);
+      if (waiter.register) {
+        this.registry.set(hostKey, now);
+        waiter.releaseGrant = this.onGrant?.(hostKey, now, waiter.waitedForGap) ?? null;
+      }
       this.finalizeWaiter(waiter, { ok: true });
       this.removeAndAdvance(hostKey, waiter);
       return;
     }
     const waitMs = this.gapMs - elapsed;
+    waiter.waitedForGap = true;
     // gap timer：补齐到间隔满（deadline timer 已在入队时安装，谁先到谁定终态，
     // settle 单次守卫；绝不越过外部截止）。
     waiter.gapTimer = this.clock.setTimeout(() => {
@@ -244,7 +270,10 @@ export class HostRequestGate {
         this.settleDeadline(hostKey, waiter);
         return;
       }
-      if (waiter.register) this.registry.set(hostKey, grantedAt);
+      if (waiter.register) {
+        this.registry.set(hostKey, grantedAt);
+        waiter.releaseGrant = this.onGrant?.(hostKey, grantedAt, waiter.waitedForGap) ?? null;
+      }
       this.finalizeWaiter(waiter, { ok: true });
       this.removeAndAdvance(hostKey, waiter);
     }, waitMs);

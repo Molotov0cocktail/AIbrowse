@@ -29,6 +29,7 @@ import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sq
 // C8 定向修复（2026-08-17）：冒烟临时目录清理 helper（句柄关闭后删除 +
 // Windows EPERM 有限重试——工厂冒烟场景 2026-08-16 23:30 遗留根因）
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
+import { isWatchDriverSqlForward } from './smoke-sql-forward-policy';
 // D4：8.21 Watch store 冒烟（默认矩阵；dev+生产双场景）
 import { runWatchStoreSmokeScenario } from './smoke-watch-store';
 import { runWatchPageSessionScenario, type WatchPageSmokeBundle } from './smoke-watch-page-session'; // D5：8.22 Watch 生命周期冒烟（默认矩阵；dev+生产双场景）
@@ -15132,7 +15133,12 @@ async function runSrtScenarios(
                       .replace(/^[\\/]/, '')
                       .split(/[\\/]/)
                       .pop() ?? '';
-                  if (sqlAllowed[rel] === undefined) {
+                  // The qualification observer forwards the same driver arguments without adding SQL.
+                  const driverForward = isWatchDriverSqlForward(
+                    full.replace(srcRoot, '').replace(/^[\\/]/, ''),
+                    line,
+                  );
+                  if (sqlAllowed[rel] === undefined && !driverForward) {
                     sqlHits.push(`${rel}:${i + 1} → 未分类 SQL 调用`);
                   }
                   if (full.includes(`src${sep}renderer`) || full.includes(`src${sep}preload`)) {

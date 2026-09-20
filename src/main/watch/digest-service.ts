@@ -40,6 +40,7 @@ export interface DigestScheduleControlPort {
 }
 
 export interface DigestServiceOptions {
+  ownership?: { track<T>(create: () => Promise<T>): Promise<T>; admissionOpen(): boolean };
   repository: WatchRepository;
   clock: Clock;
   sharing: DigestSharingPort;
@@ -365,7 +366,16 @@ export class DigestService {
     this.abort();
   }
 
-  private async processRun(
+  private processRun(
+    schedule: StoredDigestSchedule,
+    initialRun: StoredDigestRun,
+  ): Promise<boolean> {
+    return this.options.ownership === undefined
+      ? this.processRunOwned(schedule, initialRun)
+      : this.options.ownership.track(() => this.processRunOwned(schedule, initialRun));
+  }
+
+  private async processRunOwned(
     schedule: StoredDigestSchedule,
     initialRun: StoredDigestRun,
   ): Promise<boolean> {
@@ -591,7 +601,10 @@ export class DigestService {
   }
 
   private track<T>(work: () => Promise<T>): Promise<T> {
-    const operation = work();
+    if (this.options.ownership?.admissionOpen() === false)
+      return Promise.reject(new Error('资格Digest入口已关闭'));
+    const operation =
+      this.options.ownership === undefined ? work() : this.options.ownership.track(work);
     this.attempts.add(operation);
     void operation.then(
       () => this.attempts.delete(operation),

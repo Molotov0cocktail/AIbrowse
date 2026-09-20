@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron';
+import { getQualificationContext } from './watch/qualification/context';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -200,6 +201,10 @@ import {
 
 // 冒烟模式 AI 子系统数据目录（进程专属临时目录，不触碰用户真实 userData）——S4 起
 // UI 端到端矩阵经真实 IPC/bridge 链路驱动同一实例；路径经 SmokeOptions 传给冒烟场景断言。
+const qualification = __WATCH_QUALIFICATION__ ? getQualificationContext() : null;
+if (qualification !== null && Object.keys(process.env).some((key) => key.startsWith('AIBROWSE_'))) {
+  qualification.fail('qualification-mixed-mode');
+}
 const SMOKE_AI_DATA_DIR = join(app.getPath('temp'), `aibrowse-smoke-ai-${process.pid}`);
 
 // 冒烟自检模式：窗口创建 + 渲染进程就绪后驱动浏览器核心场景（smoke.ts），全部断言通过后正常退出
@@ -317,7 +322,10 @@ if (userDataOverride !== undefined && userDataOverride !== '') {
 }
 
 // 开发期日志写项目根目录 log/（AGENTS.md §3 红线）；打包后写入用户数据目录（asar 只读）
-initLogger(app.isPackaged ? app.getPath('userData') : app.getAppPath());
+initLogger(
+  qualification?.paths.localAppDataRoot ??
+    (app.isPackaged ? app.getPath('userData') : app.getAppPath()),
+);
 // 真实 Provider 场景 Key 零暴露日志扫描起点（独立复验增强，2026-08-14）：在
 // logEnvironment 与环境变量读取之前取定日志字节偏移，使扫描覆盖 Key 进入进程 →
 // 装配 → 密文落盘 → 请求 → 流式 → 结束清理全过程（此前偏移在冒烟场景开始时才取，
@@ -625,6 +633,7 @@ if (!gotLock) {
       `日志文件目录：${app.isPackaged ? app.getPath('userData') : app.getAppPath()}/log`,
     );
     await createBrowserWindow();
+    qualification?.start();
     app.on('activate', () => {
       // macOS 惯例：点击 Dock 图标且无窗口时重建窗口（当前目标平台为 Windows，保留兼容）
       if (BrowserWindow.getAllWindows().length === 0) void createBrowserWindow();
@@ -1159,12 +1168,14 @@ if (!gotLock) {
         };
         if (!validateWatchIpcOutput(push)) return false;
         sender.send(IPC.WatchSubscribe, push);
+        qualification?.onNotification(notification);
         pushWatchStatus();
         return true;
       },
       (result) => logInfo('audit', `watch-notification result=${result}`),
       'in-app',
       resolveWatchSourceName,
+      qualification?.registry,
     );
     const windowsSink = windowsQualificationResult.available
       ? new WindowsNotificationSink(
@@ -1238,19 +1249,33 @@ if (!gotLock) {
       },
       audit: (message) => logInfo('audit', message),
       onStateChanged: pushWatchStatus,
-      isAdmitted: () => watchIpcAdmission.isOpen(),
+      isAdmitted: () => watchIpcAdmission.isOpen() && (qualification?.admissionOpen() ?? true),
       admission: watchIpcAdmission,
     });
     watchIpcAdapter = watchIpc;
     for (const channel of WATCH_IPC_CHANNELS) {
       if (channel !== IPC.WatchSubscribe)
-        handle(channel, (payload) => watchIpc.invoke(channel, payload));
+        handle(channel, (payload) => {
+          if (qualification === null) return watchIpc.invoke(channel, payload);
+          if (!qualification.admissionOpen()) return { ok: false, code: 'watch-unavailable' };
+          const allowed: readonly string[] = [
+            IPC.WatchListRules,
+            IPC.WatchGetRule,
+            IPC.WatchListEvents,
+            IPC.WatchListDigestSchedules,
+            IPC.WatchListDigests,
+            IPC.WatchGetStatus,
+          ];
+          if (!allowed.includes(channel)) return { ok: false, code: 'watch-unavailable' };
+          return qualification.registry.track(() => watchIpc.invoke(channel, payload));
+        });
     }
 
     ipcMain.on(IPC.WatchSubscribe, (event, payload: unknown) => {
       if (
         mainWindow === null ||
         !watchIpcAdmission.isOpen() ||
+        !(qualification?.admissionOpen() ?? true) ||
         !isTrustedSender(event, mainWindow) ||
         !validateWatchIpcPayload(IPC.WatchSubscribe, payload).ok
       )
@@ -1348,6 +1373,7 @@ if (!gotLock) {
         return;
       }
       logInfo('main', '渲染进程就绪（React 已挂载，preload bridge 链路正常）');
+      qualification?.isRendererReady();
       if (smokeReadyTimer !== null) {
         clearTimeout(smokeReadyTimer); // 已就绪：取消 30 秒兜底，场景自身超时接管
         smokeReadyTimer = null;
@@ -2540,6 +2566,7 @@ async function createBrowserWindow(): Promise<void> {
           : provider.getSourceWatchProjection(sourceId);
       };
       const watchOutcome: WatchStoreOutcome = openWatchStore({
+        ownership: qualification?.registry,
         dbPath: join(watchDir, 'watch.db'),
         backupsDir: join(watchDir, 'backups'),
         reconcile: (repo) => watchCoordinator!.reconcileOnStartup(repo, sourceProjectionReader),
@@ -2553,14 +2580,18 @@ async function createBrowserWindow(): Promise<void> {
         // pipeline 接线时消费 D6 PageAcquisitionRouter 并替换该注入点；
         // D6 禁止把 Projection 写入当前 {ok:true} 端口（会被 Coordinator
         // 误判 unchanged 丢弃）。默认无 Rule → 零 timer 新增行为。
-        const watchClock = createSystemClock();
-        const hostGate = new HostRequestGate({ clock: watchClock });
+        const watchClock = qualification?.clock('coordinator') ?? createSystemClock();
+        const hostGate = new HostRequestGate({
+          clock: qualification?.clock('host-gate') ?? watchClock,
+          onGrant: qualification?.grant,
+        });
         // D7：统一 acquisition 端口（Feed/Page 路由）与 processing service。
         // browserController 可用时装配真实网络/Session 能力；否则 fail-closed stub
         //（dependency_unavailable，零网络零能力）。
         const processingService = new WatchProcessingServiceImpl({
           repo: watchOutcome.repo,
           clock: watchClock,
+          observer: qualification?.processingObserver,
           onNotificationReady: () => {
             if (watchSubscriptionSender !== null) void watchNotifications?.drain();
             void watchWindowsNotifications?.drain();
@@ -2587,7 +2618,8 @@ async function createBrowserWindow(): Promise<void> {
           watchPublicTarget = publicStack.target;
           watchPublicStackRobots = publicStack.robots;
           watchWorkspace = new WatchTaskTabWorkspace({
-            browser: browserController,
+            browser: qualification?.workspaceBrowser(browserController) ?? browserController,
+            ownership: qualification?.workspaceOwnership(browserController),
             onCleanupFailure: () => {
               try {
                 watchCoordinator?.markUnavailable('Session 任务标签页清理失败（Watch 不可用）');
@@ -2621,6 +2653,8 @@ async function createBrowserWindow(): Promise<void> {
                 deadline: input.deadline,
               }),
           };
+          if (qualification !== null)
+            acquisitionPort = qualification.createAcquisition(hostGate, watchWorkspace);
           if (SMOKE_MODE && !WATCH_GATE_MODE) {
             smokeWatchPageSession.current = createWatchPageSmokeBundle(browserController);
           }
@@ -2636,7 +2670,7 @@ async function createBrowserWindow(): Promise<void> {
           };
         }
         const scheduler = new WatchScheduler({
-          clock: watchClock,
+          clock: qualification?.clock('watch-scheduler') ?? watchClock,
           onDue: (entries) => {
             watchRunCoordinator?.handleDue(entries);
           },
@@ -2649,6 +2683,7 @@ async function createBrowserWindow(): Promise<void> {
           hostGate,
           scheduler,
           clock: watchClock,
+          observer: qualification?.runObserver,
         });
         // DigestScheduler owns only Clock/timer capabilities. Repository, Source,
         // and Provider access stays in DigestService. Recover frozen cycles first.
@@ -2656,14 +2691,24 @@ async function createBrowserWindow(): Promise<void> {
           DigestSharingProjectionProvider &
           DigestMembershipProjectionProvider;
         const digestHolder: { current: DigestService | null } = { current: null };
-        const digestDue = new DigestScheduler(watchClock, (entry) => {
-          const current = digestHolder.current;
-          if (current === null) return;
-          void current
-            .handleDue(entry)
-            .catch(() => logWarn('watch', 'Digest due 执行失败（保留 frozen cycle）'));
-        });
+        const digestDue = new DigestScheduler(
+          qualification?.clock('digest-scheduler') ?? watchClock,
+          (entry) => {
+            const current = digestHolder.current;
+            if (current === null) return;
+            void current
+              .handleDue(entry)
+              .catch(() => logWarn('watch', 'Digest due 执行失败（保留 frozen cycle）'));
+          },
+        );
         const digest = new DigestService({
+          ownership:
+            qualification === null
+              ? undefined
+              : {
+                  track: <T>(work: () => Promise<T>) => qualification.registry.track(work),
+                  admissionOpen: () => qualification.admissionOpen(),
+                },
           repository: watchOutcome.repo,
           clock: watchClock,
           sharing: {
@@ -2674,6 +2719,7 @@ async function createBrowserWindow(): Promise<void> {
           },
           provider: {
             resolve: async () => {
+              if (qualification !== null) return qualification.fail('provider-unexpected');
               if (configStore === null || credentials === null) return null;
               const config = configStore.get(PROVIDER_KIND_OPENAI_COMPATIBLE);
               if (config === null) return null;
@@ -2705,6 +2751,28 @@ async function createBrowserWindow(): Promise<void> {
         // before-quit 可据此 stop-admission/abort/drain，避免恢复竞态产生新 claim。
         digestService = digest;
         digestScheduler = digestDue;
+        if (qualification !== null) {
+          if (browserController === null) qualification.fail('browser-unavailable');
+          await qualification.attach({
+            repo: watchOutcome.repo,
+            source: sourceService,
+            coordinator,
+            scheduler,
+            digestScheduler: digestDue,
+            browser: browserController,
+            shutdown: async () => {
+              await closeAndDrainRendererAdmissions();
+              await researchService?.shutdown();
+              researchShutdownDone = true;
+              await watchShutdown();
+              watchShutdownDone = true;
+              sourceService?.dispose();
+              sourceIpcDrainDone = true;
+              conversationService?.dispose();
+              browserController?.dispose();
+            },
+          });
+        }
         const started = await recoverAndStartWatchRuntime({
           repo: watchOutcome.repo,
           digest,
@@ -2745,6 +2813,7 @@ async function createBrowserWindow(): Promise<void> {
       //（调度也不启动——schedulerReady=false）
     }
   } catch (err) {
+    qualification?.assemblyFailure(err);
     logError(
       'main',
       'Watch 子系统初始化失败（Watch 功能全拒、Scheduler 不启动）',

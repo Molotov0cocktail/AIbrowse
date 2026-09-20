@@ -204,6 +204,20 @@ export interface WatchRunCoordinatorOptions {
   hostGate: HostRequestGate;
   scheduler: SchedulerPort;
   clock: Clock;
+  observer?: WatchRunObserver;
+}
+
+export interface WatchRunObserver {
+  admissionOpen(): boolean;
+  release(task: Readonly<RunTask>): number;
+  enter(task: Readonly<RunTask>): string;
+  leave(identity: string, task: Readonly<RunTask>): void;
+  track<T>(create: () => Promise<T>): Promise<T>;
+  assertMutable(): void;
+  revalidated?(task: Readonly<RunTask>): void;
+  processed?(task: Readonly<RunTask>): void;
+  duplicateTerminalAttempt?(runId: string): void;
+  acquired?(task: Readonly<RunTask>): void;
 }
 
 export type ManualRunResult =
@@ -213,7 +227,7 @@ export type ManualRunResult =
       reason: 'stopped' | 'unavailable' | 'rule-not-found' | 'rule-disabled' | 'invalid-request';
     };
 
-interface RunTask {
+export interface RunTask {
   ruleId: string;
   runId: string;
   trigger: WatchRunTrigger;
@@ -236,6 +250,7 @@ export class WatchRunCoordinator {
   private readonly hostGate: HostRequestGate;
   private readonly scheduler: SchedulerPort;
   private readonly clock: Clock;
+  private readonly observer?: WatchRunObserver;
 
   private pending: RunTask[] = [];
   private active = new Map<string, ActiveRun>();
@@ -255,6 +270,7 @@ export class WatchRunCoordinator {
     this.hostGate = options.hostGate;
     this.scheduler = options.scheduler;
     this.clock = options.clock;
+    this.observer = options.observer;
   }
 
   // -------------------------------------------------------------------------
@@ -370,9 +386,11 @@ export class WatchRunCoordinator {
 
   handleDue(entries: readonly { ruleId: string; trigger: 'catch-up' | 'scheduled' }[]): void {
     if (!this.started || this.stopped || this.unavailable) return;
+    if (this.observer?.admissionOpen() === false) return;
     const nowMs = this.nowMs();
     for (const entry of entries) {
       if (this.stopped || this.unavailable) return;
+      if (this.observer?.admissionOpen() === false) return;
       let rule: WatchRule | null;
       try {
         rule = this.repo.getRule(entry.ruleId);
@@ -433,6 +451,7 @@ export class WatchRunCoordinator {
 
   manualRun(ruleId: string, requestId: string): ManualRunResult {
     if (!this.started || this.stopped || this.unavailable) return { ok: false, reason: 'stopped' };
+    if (this.observer?.admissionOpen() === false) return { ok: false, reason: 'stopped' };
     if (typeof requestId !== 'string' || requestId === '' || requestId.length > 200) {
       return { ok: false, reason: 'invalid-request' };
     }
@@ -490,6 +509,7 @@ export class WatchRunCoordinator {
 
   private pump(): void {
     if (this.stopped || this.unavailable) return;
+    if (this.observer?.admissionOpen() === false) return;
     while (this.activeGlobal < MAX_GLOBAL_WATCH_RUNS) {
       const now = this.nowMs();
       const idx = this.pending.findIndex(
@@ -498,12 +518,20 @@ export class WatchRunCoordinator {
       );
       if (idx === -1) break;
       const [task] = this.pending.splice(idx, 1);
-      void this.executeRun(task);
+      if (this.observer === undefined) void this.executeRun(task);
+      else void this.observer.track(() => this.executeRun(task));
     }
     this.armPendingWake();
   }
 
   private enqueue(task: RunTask): void {
+    if (this.observer !== undefined) {
+      const release = this.observer.release(task);
+      if (!Number.isFinite(release) || release < task.earliestStartMs) {
+        throw new Error('资格运行释放时间无效');
+      }
+      task = { ...task, earliestStartMs: release };
+    }
     this.pending.push(task);
     this.armPendingWake();
   }
@@ -534,7 +562,9 @@ export class WatchRunCoordinator {
   // -------------------------------------------------------------------------
 
   private async executeRun(task: RunTask): Promise<void> {
+    this.observer?.assertMutable();
     this.activeGlobal += 1;
+    const slotIdentity = this.observer?.enter(task);
     const hostKey = task.hostKey;
     this.hostActive.set(hostKey, (this.hostActive.get(hostKey) ?? 0) + 1);
     const controller = new AbortController();
@@ -598,16 +628,20 @@ export class WatchRunCoordinator {
           failure = { health: 'unavailable', retryable: true, retryAfterSeconds: null };
           break;
         }
-        const gate = await this.hostGate.waitUntilAvailable(hostKey, {
-          signal: controller.signal,
-          deadlineMs,
-        });
+        const gate = await this.trackOperation(() =>
+          this.hostGate.waitUntilAvailable(hostKey, {
+            signal: controller.signal,
+            deadlineMs,
+          }),
+        );
         if (!gate.ok) {
           failure = { health: 'unavailable', retryable: true, retryAfterSeconds: null };
           break;
         }
         if (attempt === 1 && jitterMs > 0) {
-          const waited = await this.delay(jitterMs, controller.signal, deadlineMs);
+          const waited = await this.trackOperation(() =>
+            this.delay(jitterMs, controller.signal, deadlineMs),
+          );
           if (!waited) {
             failure = { health: 'unavailable', retryable: true, retryAfterSeconds: null };
             break;
@@ -615,27 +649,30 @@ export class WatchRunCoordinator {
         }
         const ruleNow = this.repo.getRule(task.ruleId);
         if (ruleNow === null) return; // 规则已删除（运行行已级联删除）：零终态
-        const result = await this.raceWithAbort(
-          this.acquisition.run({
-            rule: ruleNow,
-            runId: task.runId,
-            requestKey: task.requestKey,
-            scheduledFor: task.scheduledFor,
-            hostKey,
-            baselineHint,
-            signal: controller.signal,
-            deadline,
-          }),
-          controller.signal,
-          (): WatchAcquisitionResult => ({
-            ok: false,
-            health: 'unavailable',
-            retryable: true,
-            retryAfterSeconds: null,
-            disposition: 'network',
-          }),
+        const result = await this.trackOperation(() =>
+          this.raceWithAbort(
+            this.acquisition.run({
+              rule: ruleNow,
+              runId: task.runId,
+              requestKey: task.requestKey,
+              scheduledFor: task.scheduledFor,
+              hostKey,
+              baselineHint,
+              signal: controller.signal,
+              deadline,
+            }),
+            controller.signal,
+            (): WatchAcquisitionResult => ({
+              ok: false,
+              health: 'unavailable',
+              retryable: true,
+              retryAfterSeconds: null,
+              disposition: 'network',
+            }),
+          ),
         );
         if (result.ok) {
+          this.observer?.acquired?.(task);
           acquired = result;
           break;
         }
@@ -667,6 +704,7 @@ export class WatchRunCoordinator {
         return;
       }
       if (acquired !== null) {
+        this.observer?.revalidated?.(task);
         // ProcessingService 统一编排结果事务（§8.1）：成功终态由 processing 单事务
         // 写定；identity/baseline/event-conflict 为零写 conflict（不另写 Run audit）。
         const ruleNow = this.repo.getRule(task.ruleId);
@@ -678,6 +716,7 @@ export class WatchRunCoordinator {
           acquisition: acquired,
           sourceAfterAcquisition: reval2.sourceAfterAcquisition,
         });
+        this.observer?.processed?.(task);
         if (!processed.ok) {
           logWarn(
             'watch',
@@ -710,11 +749,13 @@ export class WatchRunCoordinator {
       } catch {
         // 幂等
       }
+      this.observer?.assertMutable();
       this.active.delete(task.ruleId);
       this.activeGlobal -= 1;
       const next = (this.hostActive.get(hostKey) ?? 1) - 1;
       if (next <= 0) this.hostActive.delete(hostKey);
       else this.hostActive.set(hostKey, next);
+      if (slotIdentity !== undefined) this.observer?.leave(slotIdentity, task);
       this.pump();
     }
   }
@@ -819,6 +860,8 @@ export class WatchRunCoordinator {
         audit: { id: randomUUID(), createdAt: nowIso },
       };
     }
+    if (this.observer !== undefined && this.repo.getRun(task.runId)?.status === 'finished')
+      this.observer.duplicateTerminalAttempt?.(task.runId);
     const result = this.repo.finalizeRun(input);
     if (!result.ok) {
       if (result.code === 'run-state-conflict' || result.code === 'run-not-found') {
@@ -854,6 +897,10 @@ export class WatchRunCoordinator {
 
   private nowMs(): number {
     return this.clock.now().getTime();
+  }
+
+  private trackOperation<T>(create: () => Promise<T>): Promise<T> {
+    return this.observer === undefined ? create() : this.observer.track(create);
   }
 
   private iso(): string {

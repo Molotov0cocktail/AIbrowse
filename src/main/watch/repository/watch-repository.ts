@@ -15,6 +15,22 @@
 //   ==/+1 边界；生产缺省 §2 常量）。
 import { closeDb, withTransaction, type DbHandle } from '../db/watch-driver';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  createQualificationRules,
+  createQualificationDigestSchedules,
+  qualificationInitialNextDueAt,
+  getQualificationRun,
+  createQualificationProjection,
+} from '../qualification/manifest';
+import {
+  assertQualificationSeedAuthorization,
+  assertQualificationSeedDatabase,
+  completeQualificationSeed,
+  type QualificationSeedAuthorization,
+} from '../qualification/seed-authorization';
+
+declare const __WATCH_QUALIFICATION__: boolean;
 import { logWarn } from '../../logger';
 import {
   MAX_EVENT_EVIDENCE_BYTES,
@@ -247,6 +263,19 @@ const SQL_SELECT_RULE_STATE_FIELDS =
   'SELECT state, pause_reason, source_row_version, source_locator_fingerprint FROM watch_rules WHERE id = ?';
 const SQL_SELECT_RULE_EXISTS = 'SELECT 1 AS x FROM watch_rules WHERE id = ?';
 const SQL_SELECT_RUN_EXISTS = 'SELECT 1 AS x FROM watch_runs WHERE id = ?';
+const SQL_QUALIFICATION_RULE_COUNT = 'SELECT COUNT(*) AS n FROM watch_rules';
+const SQL_QUALIFICATION_BASELINE_COUNT = 'SELECT COUNT(*) AS n FROM watch_baselines';
+const SQL_QUALIFICATION_RUN_COUNT = 'SELECT COUNT(*) AS n FROM watch_runs';
+const SQL_QUALIFICATION_AUDIT_COUNT = 'SELECT COUNT(*) AS n FROM watch_audits';
+const SQL_QUALIFICATION_RUN_BY_KEY = 'SELECT id FROM watch_runs WHERE request_key = ?';
+const SQL_QUALIFICATION_SET_INITIAL_SCHEDULE = `UPDATE watch_rules SET next_due_at = ?
+  WHERE id = ? AND baseline_version = 1 AND next_due_at IS NULL AND last_consumed_scheduled_for IS NULL`;
+const SQL_QUALIFICATION_ARTIFACT_COUNT = `SELECT
+  (SELECT COUNT(*) FROM watch_events) + (SELECT COUNT(*) FROM watch_event_items) +
+  (SELECT COUNT(*) FROM watch_event_observations) + (SELECT COUNT(*) FROM digest_change_journal) +
+  (SELECT COUNT(*) FROM digest_schedules) + (SELECT COUNT(*) FROM digest_runs) +
+  (SELECT COUNT(*) FROM watch_digests) + (SELECT COUNT(*) FROM digest_event_refs) +
+  (SELECT COUNT(*) FROM notification_outbox) + (SELECT COUNT(*) FROM source_cleanup_intents) AS n`;
 const SQL_SELECT_INTENT_EXISTS = 'SELECT 1 AS x FROM source_cleanup_intents WHERE mutation_id = ?';
 const SQL_SELECT_RULES_ACCESS = 'SELECT id, access_mode FROM watch_rules';
 const SQL_DELETE_RULE = 'DELETE FROM watch_rules WHERE id = ?';
@@ -439,6 +468,8 @@ const SQL_SELECT_OBSERVATION_BY_IDEM = `SELECT o.id, o.event_id, o.sequence,
 const SQL_UPDATE_EVENT_COALESCE = `UPDATE watch_events
   SET event_kind = ?, last_observed_at = ?, item_count = ?
   WHERE id = ? AND first_observed_at = ? AND item_count = ?`;
+const SQL_SELECT_EVENT_OBSERVATION_KINDS = `SELECT DISTINCT event_kind
+  FROM watch_event_observations WHERE event_id = ? LIMIT 6`;
 
 // 启动完整性/JSON 形状/预算扫描（§10.2 步骤 4；store 编排、SQL 仍在本模块）
 const SQL_SELECT_ALL_BASELINES = `SELECT rule_id, version, projection_type, projection_json,
@@ -767,6 +798,17 @@ function monotonicIso(nowIso: string, ...previous: Array<string | null>): string
   return latest;
 }
 
+function qualificationNumber(raw: unknown, key: 'n' | 'last_sequence'): number {
+  if (
+    !isPlainRecord(raw) ||
+    typeof raw[key] !== 'number' ||
+    !Number.isSafeInteger(raw[key]) ||
+    raw[key] < 0
+  )
+    throw new Error('资格数据库计数无效');
+  return raw[key];
+}
+
 export class WatchRepository {
   private readonly handle: DbHandle;
   private readonly maxDbBytes: number;
@@ -840,6 +882,211 @@ export class WatchRepository {
 
   private nowIso(): string {
     return new Date(Date.now()).toISOString();
+  }
+
+  assertWatchResourceQualificationFreshStoreV1(auth: QualificationSeedAuthorization): void {
+    this.ensureOpen();
+    if (typeof __WATCH_QUALIFICATION__ === 'undefined' || !__WATCH_QUALIFICATION__)
+      throw new Error('普通构建不支持资格seed');
+    assertQualificationSeedDatabase(auth, 'watch', this.handle.path);
+    this.assertQualificationFreshStore();
+  }
+
+  seedWatchResourceQualificationRulesV1(
+    auth: QualificationSeedAuthorization,
+    descriptorHash: string,
+    expandedHash: string,
+    m0Ms: number,
+  ): void {
+    this.ensureOpen();
+    if (typeof __WATCH_QUALIFICATION__ === 'undefined' || !__WATCH_QUALIFICATION__)
+      throw new Error('普通构建不支持资格seed');
+    assertQualificationSeedAuthorization(auth, 'rules', descriptorHash, expandedHash, m0Ms);
+    assertQualificationSeedDatabase(auth, 'watch', this.handle.path);
+    const expected = createQualificationRules(m0Ms);
+    withTransaction(this.handle, () => {
+      this.assertQualificationFreshStore();
+      for (const rule of expected) {
+        if (!this.insertRule(rule).ok) throw new Error('资格Rule写入失败');
+      }
+      if (qualificationNumber(this.handle.prepare(SQL_QUALIFICATION_RULE_COUNT).get(), 'n') !== 100)
+        throw new Error('资格Rule数量不符');
+      for (const rule of expected) {
+        if (!isDeepStrictEqual(this.getRule(rule.id), rule)) throw new Error('资格Rule读回不符');
+      }
+    });
+    completeQualificationSeed(auth, 'rules');
+  }
+
+  seedWatchResourceQualificationRuleScheduleV1(
+    auth: QualificationSeedAuthorization,
+    descriptorHash: string,
+    expandedHash: string,
+    m0Ms: number,
+  ): void {
+    this.ensureOpen();
+    if (typeof __WATCH_QUALIFICATION__ === 'undefined' || !__WATCH_QUALIFICATION__)
+      throw new Error('普通构建不支持资格seed');
+    assertQualificationSeedAuthorization(auth, 'schedule', descriptorHash, expandedHash, m0Ms);
+    assertQualificationSeedDatabase(auth, 'watch', this.handle.path);
+    withTransaction(this.handle, () => {
+      this.assertQualificationSettled(m0Ms, false);
+      for (const [index, rule] of createQualificationRules(m0Ms).entries()) {
+        const nextDue = qualificationInitialNextDueAt(index, m0Ms);
+        const result = this.handle
+          .prepare(SQL_QUALIFICATION_SET_INITIAL_SCHEDULE)
+          .run(nextDue, rule.id);
+        if (result.changes !== 1) throw new Error('资格周期写入数量不符');
+        if (this.getRule(rule.id)?.nextDueAt !== nextDue) throw new Error('资格周期读回不符');
+      }
+    });
+    completeQualificationSeed(auth, 'schedule');
+  }
+
+  seedWatchResourceQualificationDigestsV1(
+    auth: QualificationSeedAuthorization,
+    descriptorHash: string,
+    expandedHash: string,
+    m0Ms: number,
+  ): void {
+    this.ensureOpen();
+    if (typeof __WATCH_QUALIFICATION__ === 'undefined' || !__WATCH_QUALIFICATION__)
+      throw new Error('普通构建不支持资格seed');
+    assertQualificationSeedAuthorization(auth, 'digests', descriptorHash, expandedHash, m0Ms);
+    assertQualificationSeedDatabase(auth, 'watch', this.handle.path);
+    withTransaction(this.handle, () => {
+      this.assertQualificationSettled(m0Ms, true);
+      for (const schedule of createQualificationDigestSchedules(m0Ms)) {
+        this.handle.prepare(SQL_INSERT_DIGEST_SCHEDULE).run(
+          schedule.id,
+          JSON.stringify(schedule.sourceIds),
+          JSON.stringify({
+            kind: 'daily',
+            localTime: schedule.localTime,
+            timeZone: schedule.timeZone,
+          }),
+          0,
+          0,
+          schedule.nextDueAt,
+          schedule.createdAt,
+          schedule.updatedAt,
+        );
+        const { cursor, ...expected } = schedule;
+        if (
+          !isDeepStrictEqual(this.getDigestSchedule(schedule.id), {
+            ...expected,
+            cursorSequence: cursor.changeSequence,
+          })
+        )
+          throw new Error('资格Digest读回不符');
+      }
+      if (this.listDigestSchedules().length !== 2) throw new Error('资格Digest数量不符');
+    });
+    completeQualificationSeed(auth, 'digests');
+  }
+
+  private assertQualificationFreshStore(): void {
+    if (typeof __WATCH_QUALIFICATION__ === 'undefined' || !__WATCH_QUALIFICATION__)
+      throw new Error('普通构建不支持资格seed');
+    this.assertQualificationEmptyArtifacts();
+    if (
+      qualificationNumber(this.handle.prepare(SQL_QUALIFICATION_RULE_COUNT).get(), 'n') !== 0 ||
+      qualificationNumber(this.handle.prepare(SQL_QUALIFICATION_BASELINE_COUNT).get(), 'n') !== 0 ||
+      qualificationNumber(this.handle.prepare(SQL_QUALIFICATION_RUN_COUNT).get(), 'n') !== 0 ||
+      qualificationNumber(this.handle.prepare(SQL_QUALIFICATION_AUDIT_COUNT).get(), 'n') !== 1
+    )
+      throw new Error('资格Watch库非空');
+    // Normal startup reconciliation is retained, never erased to manufacture an empty store.
+    const startupAudit = this.listAudits(2);
+    if (
+      startupAudit.length !== 1 ||
+      startupAudit[0]!.ruleId !== null ||
+      startupAudit[0]!.kind !== 'reconciliation' ||
+      startupAudit[0]!.reasonCode !== 'complete'
+    )
+      throw new Error('资格Watch启动审计不符');
+  }
+
+  private assertQualificationEmptyArtifacts(): void {
+    if (typeof __WATCH_QUALIFICATION__ === 'undefined' || !__WATCH_QUALIFICATION__)
+      throw new Error('普通构建不支持资格seed');
+    if (
+      qualificationNumber(this.handle.prepare(SQL_QUALIFICATION_ARTIFACT_COUNT).get(), 'n') !== 0 ||
+      qualificationNumber(
+        this.handle.prepare(SQL_SELECT_DIGEST_CHANGE_STATE).get(),
+        'last_sequence',
+      ) !== 0
+    )
+      throw new Error('资格库已有业务产物');
+  }
+
+  private assertQualificationSettled(m0Ms: number, warmup: boolean): void {
+    if (typeof __WATCH_QUALIFICATION__ === 'undefined' || !__WATCH_QUALIFICATION__)
+      throw new Error('普通构建不支持资格seed');
+    this.assertQualificationEmptyArtifacts();
+    if (
+      qualificationNumber(this.handle.prepare(SQL_QUALIFICATION_RULE_COUNT).get(), 'n') !== 100 ||
+      qualificationNumber(this.handle.prepare(SQL_QUALIFICATION_BASELINE_COUNT).get(), 'n') !==
+        100 ||
+      qualificationNumber(this.handle.prepare(SQL_QUALIFICATION_RUN_COUNT).get(), 'n') !==
+        (warmup ? 167 : 100)
+    )
+      throw new Error('资格初始化数量不符');
+    for (const [index, expected] of createQualificationRules(m0Ms).entries()) {
+      const rule = this.getRule(expected.id);
+      const baseline = this.getBaseline(expected.id);
+      if (rule === null || baseline === null || baseline.version !== 1)
+        throw new Error('资格Baseline未就绪');
+      const projection = createQualificationProjection(
+        getQualificationRun(index, 'initialization', null, m0Ms),
+        baseline.capturedAt,
+      );
+      if (
+        baseline.projectionJson !== JSON.stringify(projection.value) ||
+        baseline.contentHash !== projection.contentHash ||
+        baseline.byteLength !== projection.byteLength ||
+        baseline.projectionType !== expected.kind ||
+        baseline.finalUrl !== projection.finalUrl ||
+        baseline.documentId !== projection.documentId
+      )
+        throw new Error('资格Baseline内容不符');
+      const nextDueAt = warmup
+        ? new Date(m0Ms + 5000 + 33000 * Math.floor(index / 4)).toISOString()
+        : null;
+      const warmupPlan =
+        warmup && index >= 33 ? getQualificationRun(index, 'warmup', null, m0Ms) : null;
+      if (
+        !isDeepStrictEqual(
+          { ...rule, updatedAt: expected.updatedAt },
+          {
+            ...expected,
+            baselineVersion: 1,
+            nextDueAt,
+            lastConsumedScheduledFor: warmupPlan?.scheduledFor ?? null,
+          },
+        )
+      )
+        throw new Error('资格Rule初始化状态不符');
+      const plans = [
+        getQualificationRun(index, 'initialization', null, m0Ms),
+        ...(warmupPlan === null ? [] : [warmupPlan]),
+      ];
+      for (const plan of plans) {
+        const row = this.handle.prepare(SQL_QUALIFICATION_RUN_BY_KEY).get(plan.requestKey);
+        const run =
+          isPlainRecord(row) && typeof row['id'] === 'string' ? this.getRun(row['id']) : null;
+        if (
+          run === null ||
+          run.ruleId !== expected.id ||
+          run.status !== 'finished' ||
+          run.outcome?.kind !== plan.expectedOutcome ||
+          run.scheduledFor !== plan.scheduledFor ||
+          run.trigger !==
+            (plan.phase === 'initialization' ? 'manual' : index <= 35 ? 'catch-up' : 'scheduled')
+        )
+          throw new Error('资格Run未正确终结');
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -3114,6 +3361,34 @@ export class WatchRepository {
           if (!isValidNewObservationId(input.coalesce.observationId)) {
             throw new TxnAbortError('validation-failed');
           }
+          // Recompute from immutable observations inside the result transaction;
+          // a previous summary may be stale, and the incoming observation keeps its own kind.
+          const observationKinds = this.handle
+            .prepare(SQL_SELECT_EVENT_OBSERVATION_KINDS)
+            .all(input.coalesce.eventId)
+            .map((row) => {
+              if (
+                typeof row !== 'object' ||
+                row === null ||
+                !('event_kind' in row) ||
+                typeof row.event_kind !== 'string'
+              )
+                throw new TxnAbortError('event-conflict');
+              return row.event_kind;
+            });
+          if (
+            observationKinds.length === 0 ||
+            observationKinds.length > 5 ||
+            observationKinds.some(
+              (kind) => !['added', 'removed', 'changed', 'reversal', 'mixed'].includes(kind),
+            )
+          )
+            throw new TxnAbortError('event-conflict');
+          const aggregateKind: WatchEventKind = observationKinds.every(
+            (kind) => kind === input.coalesce!.eventKind,
+          )
+            ? input.coalesce.eventKind
+            : 'mixed';
           // R2-2 FIXED DECISION 7：coalesce 必须在任何 Event/Baseline/observation/
           // item/audit/Run mutation 前，于同一事务计算当前逻辑字节 + 完整新增写集
           //（observation 元数据、items observation 关系列、Baseline/validators、
@@ -3125,6 +3400,7 @@ export class WatchRepository {
             idempotencyKey: input.coalesce.idempotencyKey,
             changeFingerprint: input.coalesce.changeFingerprint,
             eventKind: input.coalesce.eventKind,
+            aggregateKind,
             lastObservedAt: input.coalesce.lastObservedAt,
             newItemCount: input.coalesce.newItemCount,
             itemsBytes,
@@ -3140,7 +3416,7 @@ export class WatchRepository {
           const updatedEvent = this.handle
             .prepare(SQL_UPDATE_EVENT_COALESCE)
             .run(
-              input.coalesce.eventKind,
+              aggregateKind,
               input.coalesce.lastObservedAt,
               input.coalesce.newItemCount,
               input.coalesce.eventId,
@@ -4966,6 +5242,7 @@ export class WatchRepository {
     idempotencyKey: string;
     changeFingerprint: string;
     eventKind: string;
+    aggregateKind: WatchEventKind;
     lastObservedAt: string;
     newItemCount: number;
     itemsBytes: number;
@@ -4987,7 +5264,7 @@ export class WatchRepository {
   }): number {
     let bytes = 0;
     // Event 行增长（event_kind/last_observed_at/item_count 更新）
-    bytes += utf8ByteLength(input.eventKind) + utf8ByteLength(input.lastObservedAt) + 8 + 8;
+    bytes += utf8ByteLength(input.aggregateKind) + utf8ByteLength(input.lastObservedAt) + 8 + 8;
     // 新增 observation 元数据行
     bytes +=
       utf8ByteLength(input.observationId) +

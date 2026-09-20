@@ -44,7 +44,165 @@
   历史根因unknown和MaxListeners观察保留，不冒充已查明或资源PASS。
   H3b工程设计`5132aee`已独立PASS；当前下一任务为H3b实现与正式资源/Windows资格，H4、新D11、Stage7未启动。
   顺序继续 **H3b → H4（完整baseline `d85667c54a354d322b0180d4c17873860a86c611`）→ 新D11**，
-  Stage6 GO/PASS后按授权进入Stage7设计准备，停在首个产品实现之前。当前正在H3a收尾双远程同步。
+  Stage6 GO/PASS后按授权进入Stage7设计准备，停在首个产品实现之前。
+  H3a关闭提交`bcd38eeba5b81d055ad319aded9a748b6969c861`已正常推送并核验双远程一致，作为H3b实现baseline。
+  **H3b实现进行中**：固定负载、完整应用资格入口、native桥接/外部Windows采集与精确数据库seed并行实现；
+  尚未进行正式资源运行；产品实现已获限定独立PASS。准备中发现typed Page字段读回校验错误，已按原类型恢复heading/table/link
+  校验，保留9失败红态；当前相关Repository/Processing回归147项通过（`log/h3b-page-validator-current/`）。
+  独立短diagnostic构建只验证启动/认证/采样/排水，不得作为正式负载或资源PASS；正式窗口与阈值不变。
+  用户已同意准备完成后手动切换电池并保持桌面不锁屏，届时再通知，目前不要求拔电。
+  用户另已明确允许诊断时临时切换已安装的系统英文输入法、暂时停止`NahimicService`并在测试后恢复；
+  不卸载、不改启动类型。短诊断已执行临时暂停并核验恢复，具体结果见下方最新运行记录；不得重复索要相同授权。
+  Page类型修复已获独立有限PASS并提交本地`19c492d`，尚未推送；Sources/Watch seed事务另获独立有限PASS，
+  不代表native或整体验收。控制时钟的真实Scheduler/Processing/DB/Digest已完成567次负载、120任务Tab、两个
+  AI关闭Digest；Windows短诊断证明普通非管理员token可启动并完成遥测/排水，旧受限token GPU失败保留。
+  OS样本曾因串行RestartManager越过freeze而无效；改并行后四Session诊断完成，四次采样三次有效，首个仍越窗，
+  原件`3PZ3PDPSKA4NHS3ESSQ4UOC4UA`保留，继续定位采样开销。带Session负载诊断暴露正常启动审计被
+  seed空库假设误拒，现保留唯一成功reconciliation并新增缺失/额外/失败审计反例，相关10测试通过。
+  受控实验确认属性句柄不能阻止目录原地变成junction；原子ACL+data pin及管理员ETW诊断helper修复已获
+  有限安全启动PASS（`log/h3b-early-io-independent-current/launch-review.md`）。正式helper仍在增加完整进程
+  生存期与退出/释放协议，后续增量审核和实际管理员ETW运行结果见本节最新记录。
+  正式资源窗口尚未开始，零真实Provider；原始失败均留在`log/h3b-native-current/`，不得据短诊断写H3b PASS。
+  最新稳定树全量183文件/3826测试、typecheck/lint/format/diff检查通过；先前全量因运行中代码变化及短测试重叠
+  主动中止，不计结果。普通build已验证裁剪资格fixture/runtime/native入口；QPC预算修正获独立限定PASS
+  （23测试），未增加500/33500/34000ms阈值。新root原子ACL+data pin已通过改绑反例与真实SQLite WAL验证，
+  普通dev/prod完整冒烟均已通过；此前SRT扫描器误拒仅转发参数的Watch driver，现仅精确分类两条转发语句，
+  两个反例测试与独立有限审核通过，原失败保留。环境活动显示路径确认为NVIDIA硬件，但Electron实际GPU/模块
+  及已装驱动维护资格仍待补证；管理员工具、全Windows负载与正式资源门仍未闭合。
+  后续真实诊断`HED6KUPA3FVVO7OOUN6ZR6VGQQ`四Session/四OS槽均满足freeze，保留旧首槽失败，
+  不将一次成功当正式稳定性验收。`QWHQ4CIQRZA3IKIUHJIUUVGREA`完整GPU查询确认活跃NVIDIA适配器，
+  softwareRendering缺字段仍为unknown；真实FileId/hash pin修复项目原生模块路径别名误判。
+  两轮都观察到搜狗/Nahimic外部模块，环境资格仍BLOCKED；已有模块注册只读调查原件。
+  独立DB oracle又发现Event合并类型被末次观察覆盖，已在Repository事务中按全部观察聚合、保留单次观察原类型，
+  完整负载新增50Event断言旧红→绿，新的独立持久化Reviewer有限PASS（2文件98测试）。
+  修后全量185文件3832测试、typecheck/lint/format及普通build通过；开发版和生产版完整冒烟各一次通过，临时profile清理完成。
+  产品实现独审另发现native写入异常路径可能提前释放pending OVERLAPPED/event/buffer；旧取消/等待/QPC三反例稳定红。
+  已用作用域owner在完成回收后才抛错，保留两秒写入/两秒取消及无法回收时exit76，新增20项故障与真实pipe验证通过，
+  原24项保留；独审已关闭P1并对66产品文件限定PASS，独立233项TS、普通构建和Electron ABI限定检查通过，
+  原件位于`log/h3b-product-independent-current/product-review.md`；复用既有未变全量回归，不代表H3b资源资格。
+  管理员helper必填整数missing/0、harness诊断finish握手与pending IO异常所有权修复已获独立有限PASS；
+  原始stdout/stderr保留、RM查询自身只读pin分类和单一管理员入口已获独立有限启动PASS；
+  wrapper独立16项、self/finish独立28项通过；固定入口为`log/h3b-native-current/run-admin-diagnostic.ps1`，
+  仅绑定已审核SHA，保留PS5.1所需BOM。各真实运行必须使用新request并保留旧原件；当前实际记录见下方。
+  服务守护最长等待120秒后开始恢复，并核验Running；不能保证OS拒绝时仍恢复成功。
+  2026-09-20实际接续：首轮`VZSAWEL4N46V3XXENDGP4KHU7I`因管理员Windows PowerShell5.1把无BOM中文
+  脚本误解码而在解析阶段失败，harness等待超时；已保留原件并补BOM，真实5.1旧20/5错误→三个脚本0错误，
+  独立窄复核PASS（`ps51-bom-review.md`）。随后`M22JLTIKK4TZ7D5G3KHDDRQQQU`实际启动helper与应用，
+  canary产生open/write/read，但产品遥测停在setup第11帧，harness报`collector-frame-timeout`，
+  helper清理报`early-io-consumer-timeout`（ownedSession=0/stopCode=0/closeCode=7007）；本轮不通过。
+  Nahimic停止/恢复原件及实时查询均确认Running、Automatic不变；harness/helper均已退出。已通知用户恢复输入法，
+  当前自主排查harness收帧与ETW消费线程，暂不要求再次执行管理员命令，不把canary局部记录当完整IO证据。
+  已定位harness把同步OS查询耗时误计入同批后续帧2秒接收时限的缺陷；本轮具体分包unknown。
+  helper最初错误被cleanup强制退出覆盖的问题已修复，实际阻塞API仍unknown。
+  2026-09-20普通宿主查询也确认MSVC及固定SDK Include/Lib缺失，旧二进制保持；已准备两组件
+  `native-build-restore.vsconfig`；用户已授权仅安装这两项及必要依赖，系统工具使用C盘默认位置，安装材料放项目log。
+  **任务结束清理义务（用户明确要求）**：本轮Stage6验收与Stage7设计准备结束、停止于首个实现任务前，
+  使用官方安装器移除本轮新增的Build Tools/MSVC及Windows SDK组件，清理对应下载包与安装缓存；
+  安装前后记录组件差异，保留原有或其他软件共用组件及验收原始证据，不以删除项目目录代替系统卸载。
+  清理结果必须进入最终交付；若发现其他软件新增依赖而无法安全移除，明确报告具体剩余项并请求裁决，不静默保留。
+  安装已完成exit0、无重启，MSVC14.44.35207与SDK10.0.26100.0所需文件已核验；安装器签名及安装前后
+  组件清单保存在`log/native-build-install/`。两harness与helper已编译；接收时序旧4/15、新15/15，
+  真实pipe回归15/15；helper取消处理旧红、新6/6。原件见`frame-arrival-repair-M22-receipt-v2.json`及
+  `helper-repair-M22/verification.json`；新的独立有限启动审核PASS，脚本仅更新固定审核hash并保留BOM，
+  实际PS5.1三脚本0解析错误。用户就绪后按`admin-module-repair-M22-plan.json`执行唯一一次
+  `IVDN7464SCFDMTNHAUMRHQVQ2A`：产品27帧到complete，两个OS样本虽原始API细节有效，但独立复核
+  **0/2满足freeze**（OSend为1776.7528/1417.2592ms，均越1250ms且晚于close；RM组1609.9127/1331.6146ms），
+  不得纳入资源统计。实际GPU活跃NVIDIA，
+  当前Job模块快照全部已分类（非全生存期证明）；但helper首故障`early-io-missing-file-class`提前退出，
+  harness报`helper-finish-peer-not-live`，整体失败且缺完整helper终态，不作正式资格PASS。
+  Nahimic原件和实时查询确认恢复Running/Automatic，harness/helper已退出，已通知恢复输入法；
+  保留全部新原件，当前分别定位ETW读写事件分类缺口与数据库占用查询超窗，不立即重复运行。
+  后续有界修复：helper仅补首次失败的闭合脱敏事件上下文，9+6测试及新独立有限审核PASS
+  （`helper-repair-IVDN/verification.json`）；RM保留逐文件独立实时查询，首轮给16容量，仅MORE_DATA时有界扩容，
+  11单元/58组合回归和18次真实文件查询通过，含self/Job/nonJob/释放及外部占用拒绝，仍不证明产品freeze。
+  新harness候选见`rm-buffer-candidate-receipt.json`，已获独立有限PASS（独立11+58测试、18真实path对照），
+  新管理员脚本三处hash/BOM/实际PS5.1语法核验均通过。
+  下次最多一次计划为`admin-diagnostic-IVDN-followup-plan.json`，用于ETW首故障定界及原freeze复验，
+  不以输入法/模块清洁作为本轮定位前置，不要求拔电；保留已授权的服务恢复守护。
+  实际启动尝试`IVGCRODNKABC4TXOBVGUH3OYL4`未进入产品：RunAs返回“操作已被用户取消”，
+  harness随后`early-io-ready-timeout`退出1，无helper ready/服务窗口；实时Nahimic仍Running/Automatic。
+  `launch-result-IVGCRODNKABC4TXOBVGUH3OYL4.json`保留本轮失败；不自动重试，待用户确认可处理UAC后恢复。
+  用户回复continue后按一次恢复计划执行`SSPE7NUA2P7BEM2SZNKULP3T5I`：27帧arrival有效，
+  RM组984.7564/624.9759ms，freeze仅1/2合格；helper仍因missing-file-class退出，整体失败。
+  首故障已定界为ID15/version1，同发起线程，FileKey存在但与FileObject不同且关联表无匹配，不能归因为跨PID。
+  当前修复已订阅却被忽略的NameCreate/NameDelete关联，保持缺失/冲突拒绝，并继续定位首个OS窗口越界。
+  Nahimic已恢复Running/Automatic；原件及`prefix-result-SSPE7NUA2P7BEM2SZNKULP3T5I.json`保留，未开启正式资源窗口。
+  SSPE后续候选已获独立有限启动PASS：helper仅在已核target/canary门后处理NameCreate，数字NameDelete只使
+  已知键失效；FileKey与FileObject分离且绑定代次，独立发现的name-only复用缺口已红→绿，最终63项通过。
+  并发采集保持accounting后启动DB worker、前四组串行、共同真实freeze及异常有界join；独立17原生+81离线
+  测试和真实共享collector对照通过，不代表实际产品slot通过。入口分别为`SSPE-helper-filekey-review.md`与
+  `parallel-collection-candidate-receipt.json`。启动脚本三处hash已更新、BOM与PS5.1语法验证通过。
+  用户就绪后已按`admin-diagnostic-SSPE-followup-plan.json`执行唯一一次`MWWRXSB7J7FMDFQZLI3OFYPV24`。
+  独立复核确认两个OS窗口有效（894.6272/628.9246ms，分别早于close119.6802/382.5411ms），六条RM
+  查询确与tree重叠；仅本run证据，不代表正式稳定性。helper仍失败，首错为`early-io-open-class-conflict`，
+  确切是同(pid,FileObject)再次Open的粗类不同，不是已证明Name/Open关联成功或路径别名根因。
+  产品/Job退出与双EOF正常，helper完整终态仍缺，服务已恢复Running/Automatic；报告`MWW-limited-raw-review.md`。
+  下一步先补有界、目标范围内的首故障类别/来源/事件上下文，区分对象复用或失败Open，不放宽冲突拒绝，
+  不连续重跑；正式运行工程准备可独立推进，但H3b/H4/D11资格均未获通过。
+  MWW原request已核原PID不存在后原样归档，服务再次只读核验Running/Automatic。当前并行准备正式环境门
+  与离线汇总；新增资源replay六项原件变异反例通过，仍缺完整正式正例及独审，不能作为资格结果。
+  本机只读TDH确认OpEnd字段为Status(UInt32)；拟加入的请求状态只作诊断，必须绑定原target身份与请求代次，
+  系统代发/复用/倒序等保持unknown，不改变接受规则，也未因此启动新一轮ETW。
+  诊断候选source`39b141f`/helper`e0f7ed8`已获新的有限启动PASS，独立90项通过，报告
+  `MWW-opend-diagnostic-review.md`。固定脚本两处hash已更新并通过真实PS5.1/BOM核验；下一轮预算一次，
+  计划`admin-diagnostic-MWW-context-plan.json`已在用户就绪后执行唯一一次`GZ3ZNKYUNOJ2CM3S5WJIS5BB74`，
+  harness/admin均exit1；原harness527752/helper522792已消失，服务再次核验Running/Automatic。
+  首错仍为Open分类冲突；本次上下文为旧repository-product(10)→windows-runtime(9)，两者ID12/v1、nt-device，
+  sameOpenIrp=true但priorOpenStatus=null/irp-ambiguous，Name来源none。此证据不证明失败Open或复用的具体历史根因；
+  27帧接收与两个OS窗口有效（910.399/899.9408ms）；helper完整终态仍缺。此轮模块快照发生在服务恢复后，
+  不能套用旧轮恢复前范围。后续IRP碰撞清掉已观察状态的诊断缺陷已窄修并独立87项PASS；GZ是否走此支路仍unknown。
+  原件与request完整保留/归档；同一canary失败Open→成功Open实验候选经两处完整性反例修复，独立229项及6项
+  反例通过，source`02262f0`/helper`5cff8729`获有限启动PASS。固定脚本已绑定新hash、真实PS5.1三脚本0解析错误；
+  `admin-canary-activation.json`与`admin-diagnostic-canary-create-plan.json`保存一次预算/目的；用户就绪后已执行
+  `KV6BUDDGVXEWHMGCVHIIXMRZ6U`，harness/admin均exit1，首错回到ID15/v1 missing-file-class，helper终态缺失。
+  新sidecar保存失败Open(error2)及原成功读写关闭删除API事实；truncated=true、trace/windowComplete=false，
+  不能作缺失事件的否定证明。服务已核验Running/Automatic，harness528016/helper531072/admin535324均已消失，
+  request原样归档。独立报告`KV6-limited-raw-review.md`确认OS两槽831.174/745.3645ms有效，root/6成员exit0、
+  Job空及双EOF通过，helper五类终态缺失；8个外部模块均为Sogou，快照跨服务恢复，不归因Nahimic。
+  sidecar前3.7942ms已达128条；一次Win32 Create中有两ID12+ID30，IRP随后复用，不能据此提升Status归属。
+  当前按这些正向事实修订已知对象/Key的寿命关联，保留未知事件来源，不全机缓存名称、不默认outside，无新运行。
+  窄硬化的跨target Object复用反例已独立复现并修复，独立257项有限PASS，报告`known-lifetime-model-review.md`；
+  source`ce6deb`/隔离helper`a2a45a`未激活，不声称解除KV6 missing-class。
+  新classic FileIo同源ReadWrite.FileKey→Name.FileObject/rundown路线已获隔离原型准备有限PASS
+  （`classic-rundown-plan-review.md`），只对目标已用过且世代无歧义的pending键解名、零ETL，真实原型尚未运行。
+  原型55项模型/布局检查通过，链接中间失败保留；启动前flush凭证/ACK、实际child映像绑定、同GUID/name查询后
+  按实际handle清理及外层期限已补齐，独立79项有限启动PASS。候选`classic-file-candidate/freeze-001.json`已核验，
+  `actual-run-plan-001.json`冻结唯一一次隔离实验；已于用户就绪后执行，admin540784 exit1，原件目录
+  `classic-file-candidate/guard-05f4d66bf84ad538891813863ebb1535`。Start/Read4096/STOP/consumer均正常，
+  targetReads=1但pending未解析、incomplete=true/namesDecoded=0，能力未成立；0丢失/截断、guard确认sessionAbsent。
+  admin与child540628已消失，自有canary文件已清理，未涉及Electron或服务暂停。正在静态定位缺口，不直接重跑。
+  已定位明确foreign Read在TTID过滤前校验无关尾部的候选缺陷，已红绿窄修并补首次callback原因/安全头计数；
+  旧原件不能证明触发该分支，namesDecoded=0也不能证明rundown未送达。新候选`classic-file-diagnostic-002`独立95项
+  有限启动PASS，probe`a31fc227`/guard`c88496ad`，29项hash恒等；用户就绪后单次执行完毕，admin529696 exit1。
+  原件`classic-file-diagnostic-002/guard-f655557cbfd5d0bb9079b8b88f8e9677`定位首错为未处理opcode80/v3。
+  STOP收到44597条rundown且命中目标键1次，均在incomplete下拒绝，名称未解，不能称能力PASS；
+  0丢失/截断/溢出，guard确认sessionAbsent、child539252reaped，两个PID已消失。按官方语义成组修订关联事件，未重跑。
+  资源汇总独审发现CPU应使用实际accounting时点、超过3缺样的指标不得计算PASS/FAIL，已修复并独立反例3项复验；
+  完整合成正例、分组有效性和退出/drain汇总已按下述限定审核闭合。正式服务入口草案
+  保留零harness哈希以拒绝启动，未执行。产品阈值不变，正式资源资格仍未开始。
+  环境native v2已获独立有限PASS（43原生+7集合反例，BIOS字段真实API补证）；JS原件oracle修复严格解析对象
+  比较后独立55项PASS，报告`formal-environment-oracle-review-v2.md`；未激活正式构建，不替实际环境资格。
+  正式模块候选补实际Windows目录API冻结与triggerSequence；同root退出码矛盾反例修后获有限独审PASS，
+  最终独立59项、未变native8/环境45复用，报告`formal-module-review.md`，v2收据保存56项hash。
+  二进制仅在module-candidate，不替换已激活程序。总验算入口固定闭包/实际seal子进程/Node保护接线已有限独审PASS，
+  65项hash、30聚焦+6独立反例、真实正例与瞬时WAL攻击验证通过；每轮140修改攻击拒绝、567合成DB事实通过。
+  `formal-assembler-candidate-receipt-v1.json`固定候选；classic/final-build仍显式BLOCKED，不构成实际H3b资格。
+  资源/退出汇总随后按独立反例修复分组缺测、DB存在性矛盾、observer pin硬门及实际drain API时点，
+  已获独立资源/生命周期窄范围PASS（独立43项及相关89项），报告`formal-replay-resource-lifecycle-review.md`，
+  精确九文件见`formal-replay-reviewed-candidate-011.json`；旧QWH归档仍EPERM/NOT RUN，不冒充全门验收。
+  首次晚于60秒才看到零只属缺证，
+  明确截止后非零仍FAIL，未降低及时排水要求。DB校验全程pin已有限独审PASS：固定Node读取567合成Runs，
+  20项live-child攻击拒绝；目录R-oplock检测真实短暂WAL增删并弃用结果，取消与超时真回收通过。
+  独立files22/watch4/Node链1/JS27通过，报告`evidence-db-continuous-pin-review.md`；不包含正式产品567运行。
+  额外进程已定位为conhost并调整离线启动方式；新文件保持任务后可精确清理，旧失败探针残留有清理清单。
+  用户SID私有封存已独立21项有限PASS（`evidence-seal-review.md`），固定13项原件、receipt最后发布；
+  JS字节重算经真实native CRLF publication反例窄修后独立35项PASS（`formal-seal-js-review.md`），
+  不替来源认证、实际caller pin或整门组装；旧ACL/原件不改。正式服务动作时序校验独立14项有限PASS，
+  `formal-service-timing-review.md`明确不证明中间持续Stopped，不替模块与环境资格。
+  部分旧受控归档当前读取EPERM，未改ACL；OS校验器窄修与混合端口顺序修复已独立26项PASS，
+  旧归档回放仍NOT RUN，不代表Windows正式资格。
+  OEM DS561867官方可检索索引的精确版本推荐与本机WHQL已获独立支持资格接受，保留非实时、补丁未知和全PnP
+  汇总false；实际外部模块门仍未闭合。有限审核入口`log/h3b-increment-independent-current/review.md`。
 - 已完成（第五阶段，历史）：独立 Stage Auditor 于 2026-08-23 在批准产品 HEAD
   `c1aafd963f4952c81933ab2d873d154fe1b2741b` 完成复验，Reviewer / Stage Auditor =
   `PASS`，Fifth Stage Exit Gate = `GO/PASS`；C10 仅做确定性文档闭环，产品代码 HEAD 不变。
@@ -3334,9 +3492,9 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   H3a → H3b → H4 → 新 D11；其中真实 Provider、Windows 系统通知和真实登录网站 Session
   观察为条件性观察，H3a 的真实公网路径与 H3b 的正式资源资格仍是硬门。当前机器
   旧沙箱内 `GPU process isn't usable. Goodbye.` 失败证据继续保留；H2 独立复验在合法沙箱外六个离线
-  Electron 场景均成功，只补足 H2 产品运行证据，不构成 H3b 的正式标准环境资格。H3a 的 XML、
-  聚合 R1/R2、OBS-R1、Page 与失败子门已独立接受；RSS 固定目标访问失败，旧 default 失败根因
-  `unknown`，H3a 保持 `HOLD`。H3b、H4、D11 与 Stage 7 均未开始，不能把未闭合项转移到后续阶段。
+  Electron 场景均成功，只补足 H2 产品运行证据，不构成 H3b 的正式标准环境资格。H3a已整体PASS关闭；
+  旧RSS目标失败及旧default根因`unknown`仍保留。H3b实现中，短诊断已得到普通令牌下完整退出证据，
+  当前仍需完整资源/Windows资格；H4、D11与Stage7未启动，不把未闭合项转移到后续阶段。
 
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过——已接受设计决议
   （detailed-design §12 决议 #13，快照为点时刻尽力采样）。
@@ -3444,7 +3602,7 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
   且包含新目标、新请求与必要补验。同页导航与重叠加载缺陷已修复，最终完整default六次通过，
   独立Reviewer据充分前瞻证据关闭当前验收阻塞；不声称历史根因已经恢复。
 
-- **后续 H3b 标准环境资格（尚未进入 H3b）**：本机旧沙箱内
+- **H3b 标准环境资格（当前实现中）**：本机旧沙箱内
   `GPU process isn't usable. Goodbye.` 失败证据保留；H2 独立复验已在合法沙箱外完成六个离线
   Electron 场景，故当前不再把“本机完全无法启动 Electron”写成需用户先处理的现时阻塞。该结果不包含
   detailed-design §15.6/§15.7 的正式 10m/60m/10m 资源与标准 Windows/GPU 对照，不能宣称 H3b 资格通过。
@@ -3773,8 +3931,8 @@ thin, tabId)`）、决议 #19（`createSession(opts?) → Promise<ConversationSe
 
 ## 下一个推荐任务
 
-- **执行H3b正式资源与Windows资格。**H3a精确4888fb7整体PASS；先完成当前收尾双远程同步，再取实际HEAD
-  作为H3b实施baseline，按5132aee已独立PASS的单向资格契约实施。N负责native/独立OS采集，T负责产品装配、
+- **执行H3b正式资源与Windows资格。**H3a已关闭且双远程同步，实施baseline为`bcd38ee`，无需重复收尾。
+  按5132aee及当前有界澄清实施单向资格契约。N负责native/独立OS采集，T负责产品装配、
   真实owner与固定负载；先纵向诊断，再安全/并发独立审核与完整10m/60m/10m实测。低频采样、零Provider，
   电池窗口准备好再通知用户拔电。此前所有RSS/default失败、unknown与累计20次请求保留。
   后续 H3b → H4（baseline仍d85667c）→ 新独立D11，不把设计PASS或短探针当正式资源结果。

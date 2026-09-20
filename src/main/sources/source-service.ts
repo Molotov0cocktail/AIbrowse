@@ -1,14 +1,16 @@
 // Fourth Stage B2: SourceService — the single entry for both UI and Agent
 // (detailed-design §6/§7, adjudications #51–#57). Dependency direction:
 // UI/Tools → SourceService → Repository/Journal → sqlite-driver. All methods
-// safe-fail on invalid input (never throw); unexpected errors normalize to
+// public methods safe-fail on invalid input (never throw); unexpected errors normalize to
 // source-unavailable with a diagnostic warn log (no note bodies / URLs / payloads
 // in messages — validation reasons never embed user text, SQLite errors carry
-// only schema names). Writes compose Repository + FTS sync + journal inside a
+// only schema names). The main-only qualification seed instead throws to abort its launch.
+// Writes compose Repository + FTS sync + journal inside a
 // single transaction (all-or-nothing). Idempotent replay per adjudication #53;
 // Undo consumption semantics per adjudication #52; hard-delete capability token
 // per adjudication #56; journal exact cleanup per adjudication #55.
 import { randomBytes, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { closeDb, withTransaction, type DbHandle } from './db/sqlite-driver';
 import { logWarn } from '../logger';
 import { normalizeSourceUrl } from './domain/source-canonical';
@@ -84,6 +86,13 @@ import type {
 } from '../../shared/types/watch';
 import type { DigestSourceSharingProjection } from '../../shared/watch/digest-sharing-projector';
 import { truncateUtf8 } from '../../shared/watch/watch-budget';
+import { createQualificationSources } from '../watch/qualification/manifest';
+import {
+  assertQualificationSeedAuthorization,
+  assertQualificationSeedDatabase,
+  completeQualificationSeed,
+  type QualificationSeedAuthorization,
+} from '../watch/qualification/seed-authorization';
 
 export const CONFIRM_TOKEN_TTL_MS = 300_000; // 决议 #56：TTL 300s
 const SEARCH_LIMIT_DEFAULT = 10;
@@ -236,6 +245,87 @@ export class SourceServiceImpl implements SourceService {
   private get index(): SourceSearchIndex {
     if (this.indexImpl === null) throw new Error('程序缺陷：恢复态下访问 SourceSearchIndex');
     return this.indexImpl;
+  }
+
+  seedWatchResourceQualificationSourcesV1(
+    auth: QualificationSeedAuthorization,
+    descriptorHash: string,
+    expandedHash: string,
+    m0Ms: number,
+  ): void {
+    if (typeof __WATCH_QUALIFICATION__ === 'undefined' || !__WATCH_QUALIFICATION__) {
+      throw new Error('资格 Source seed 入口未编译');
+    }
+    if (this.disposed || this.state.mode !== 'normal') throw new Error('资格 Source 服务不可用');
+    assertQualificationSeedDatabase(auth, 'sources', this.handle.path);
+    assertQualificationSeedAuthorization(auth, 'sources', descriptorHash, expandedHash, m0Ms);
+    const sources = createQualificationSources(m0Ms);
+    if (sources.length !== 100 || new Set(sources.map((source) => source.id)).size !== 100) {
+      throw new Error('资格 Source 固定集合不匹配');
+    }
+    withTransaction(this.handle, () => {
+      this.repo.assertWatchResourceQualificationState(0);
+      for (const source of sources) {
+        const normalized = normalizeSourceUrl(source.url, 'page');
+        if (
+          !isUuidShape(source.id) ||
+          !normalized.ok ||
+          normalized.canonicalKey !== source.canonicalKey ||
+          normalized.displayUrl !== source.url ||
+          source.scope !== 'page' ||
+          source.tags.length !== 0 ||
+          source.groupId !== null
+        ) {
+          throw new Error('资格 Source 身份或规范地址不匹配');
+        }
+        const row: SourceRow = {
+          id: source.id,
+          scope: source.scope,
+          canonical_key: normalized.canonicalKey,
+          url: normalized.displayUrl,
+          name: source.name,
+          group_id: null,
+          priority: source.priority,
+          enabled: source.enabled ? 1 : 0,
+          share_mode: source.shareMode,
+          trust_value: source.trust.value,
+          trust_asserted_by: source.trust.assertedBy,
+          trust_verification: source.trust.verification,
+          user_note: source.userNote,
+          ai_note: source.aiNote,
+          created_by: source.createdBy,
+          version: source.version,
+          created_at: source.createdAt,
+          updated_at: source.updatedAt,
+          deleted_at: source.deletedAt,
+          last_used_at: source.lastUsedAt,
+          last_usage_outcome: source.lastUsageOutcome,
+        };
+        const rowid = this.repo.insertSource(row);
+        this.repo.ftsInsert(rowid, row.name, row.url, row.user_note, row.ai_note);
+      }
+      this.repo.assertWatchResourceQualificationState(100);
+      for (const source of sources) {
+        const row = this.repo.getSourceById(source.id);
+        if (row === null || !isDeepStrictEqual(rowToSource(row), source)) {
+          throw new Error('资格 Source 完整行读回不匹配');
+        }
+        const read = this.getSourceWatchProjection(source.id);
+        const expected: SourceWatchProjection = {
+          sourceId: source.id,
+          rowVersion: 1,
+          enabled: true,
+          deletedAt: null,
+          scope: 'page',
+          canonicalKey: source.canonicalKey,
+        };
+        if (read.status !== 'found' || !isDeepStrictEqual(read.projection, expected)) {
+          throw new Error('资格 Source 服务投影读回不匹配');
+        }
+      }
+    });
+    // Advance authority only after the actual SQLite commit succeeded.
+    completeQualificationSeed(auth, 'sources');
   }
 
   // --- D4（§10.3）：Watch 生命周期协调（内部 observer + 窄投影读取端口） ---

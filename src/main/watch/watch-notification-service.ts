@@ -1,6 +1,7 @@
 import type { InAppNotificationDto } from '../../shared/types/watch-ipc';
 import type { WatchRule } from '../../shared/types/watch';
 import { buildInAppNotification } from './notification-policy';
+import type { QualificationResourceOwner } from './qualification/registry';
 
 interface PrivacyProjection {
   eventKind: string;
@@ -41,9 +42,16 @@ export class WatchNotificationService {
     private readonly audit: (result: string) => void,
     private readonly channel: 'in-app' | 'windows' = 'in-app',
     private readonly sourceName: (sourceId: string) => string | null = () => null,
+    private readonly ownership?: QualificationResourceOwner,
   ) {}
 
-  async drain(): Promise<void> {
+  drain(): Promise<void> {
+    return this.ownership === undefined
+      ? this.performDrain()
+      : this.ownership.track(() => this.performDrain());
+  }
+
+  private async performDrain(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
     try {

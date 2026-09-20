@@ -70,6 +70,12 @@ export interface WatchTaskTabWorkspaceOptions {
   browser: WatchTaskTabBrowser;
   /** closeTab=false/抛错（清理事实失败）时回调；装配层接 WatchLifecycleCoordinator.markUnavailable。 */
   onCleanupFailure?: () => void;
+  ownership?: {
+    assertMutable(): void;
+    own(tabId: string): void;
+    release(tabId: string): void;
+    track<T>(create: () => Promise<T>): Promise<T>;
+  };
 }
 
 interface FocusOutcome {
@@ -89,6 +95,7 @@ function urlHost(url: string): string {
 export class WatchTaskTabWorkspace {
   private readonly browser: WatchTaskTabBrowser;
   private readonly onCleanupFailure: () => void;
+  private readonly ownership?: WatchTaskTabWorkspaceOptions['ownership'];
   private readonly owned = new Set<string>();
   private readonly ownedUrls = new Map<string, string>();
   private inFlightCount = 0;
@@ -99,6 +106,7 @@ export class WatchTaskTabWorkspace {
   constructor(options: WatchTaskTabWorkspaceOptions) {
     this.browser = options.browser;
     this.onCleanupFailure = options.onCleanupFailure ?? (() => {});
+    this.ownership = options.ownership;
   }
 
   isOwned(tabId: string): boolean {
@@ -117,7 +125,13 @@ export class WatchTaskTabWorkspace {
   // acquire：open → create-in-flight → provisional-owned → owned
   // -------------------------------------------------------------------------
 
-  async acquire(url: string, signal: AbortSignal): Promise<WatchTaskTabAcquireResult> {
+  acquire(url: string, signal: AbortSignal): Promise<WatchTaskTabAcquireResult> {
+    return this.ownership === undefined
+      ? this.acquireOwned(url, signal)
+      : this.ownership.track(() => this.acquireOwned(url, signal));
+  }
+
+  private async acquireOwned(url: string, signal: AbortSignal): Promise<WatchTaskTabAcquireResult> {
     const norm = normalizeSourceUrl(url, 'page' as SourceScope);
     if (!norm.ok) {
       return { ok: false, errorCode: 'invalid-url', reason: norm.reason };
@@ -162,7 +176,9 @@ export class WatchTaskTabWorkspace {
           };
         }
         newTabId = tab.id;
+        this.ownership?.assertMutable();
         this.owned.add(newTabId);
+        this.ownership?.own(newTabId);
         this.ownedUrls.set(newTabId, norm.displayUrl);
 
         if (signal.aborted) {
@@ -180,7 +196,9 @@ export class WatchTaskTabWorkspace {
         // 创建后存在性确认：getTabs 明确确认已消失 → 移除所有权（用户关闭）
         const tabsNow = await this.browser.getTabs();
         if (!tabsNow.some((t) => t.id === newTabId)) {
+          this.ownership?.assertMutable();
           this.owned.delete(newTabId);
+          this.ownership?.release(newTabId);
           this.ownedUrls.delete(newTabId);
           return { ok: false, errorCode: 'tab-closed-by-user', reason: '标签页创建后已被用户关闭' };
         }
@@ -298,7 +316,13 @@ export class WatchTaskTabWorkspace {
    * userClosed；closeTab=false/抛错 → ownership 保留、onCleanupFailure、
    * cleanup-failed（当前 attempt 零 Projection）。
    */
-  async release(tabId: string): Promise<WatchTaskTabReleaseResult> {
+  release(tabId: string): Promise<WatchTaskTabReleaseResult> {
+    return this.ownership === undefined
+      ? this.releaseOwned(tabId)
+      : this.ownership.track(() => this.releaseOwned(tabId));
+  }
+
+  private async releaseOwned(tabId: string): Promise<WatchTaskTabReleaseResult> {
     if (typeof tabId !== 'string' || !this.owned.has(tabId)) {
       return { ok: true, userClosed: false }; // 幂等（未持有/已清理）
     }
@@ -306,7 +330,9 @@ export class WatchTaskTabWorkspace {
     try {
       const tabs = await this.browser.getTabs();
       if (!tabs.some((t) => t.id === tabId)) {
+        this.ownership?.assertMutable();
         this.owned.delete(tabId);
+        this.ownership?.release(tabId);
         this.ownedUrls.delete(tabId);
         return { ok: true, userClosed: true, warnings: ['任务标签页在读取期间被用户关闭'] };
       }
@@ -325,7 +351,9 @@ export class WatchTaskTabWorkspace {
       closeOk = false;
     }
     if (closeOk) {
+      this.ownership?.assertMutable();
       this.owned.delete(tabId);
+      this.ownership?.release(tabId);
       this.ownedUrls.delete(tabId);
       return { ok: true, userClosed: false };
     }
