@@ -24,6 +24,21 @@
   首次64仅能证明已释放Object数值命中，不能据此宣称Key复用。接下来验证产品trace后Create的名称→opened Object→Read Key关联，
   与完整Job线程归属集成，避免依赖预开文件关闭后及时产生35。纯线程寿命模型另获有限独审PASS
   （50项作者测试及10项独立测试），尚未接入实际helper，不代表真实线程或完整Job归属已通过。
+  新在线Thread门已修复独审发现的同callback重复消费缺陷（3个原始红态保留），40项作者及14项独立测试通过；
+  条件式文件重放134+15、runtime/匿名ledger 10+12测试获有限独审PASS，报告在
+  `log/h3b-increment-independent-current/`。真实Session来源、Process/Thread实例及在线授权引用仍在隔离
+  `classic-job-candidate` / `classic-proof-candidate`已接线。退休PID复用、读名前owned Session累计loss查询与
+  停止前完整callback水位已修并获有限启动独审PASS（47项冻结文件、35项独立/复跑测试）；旧consumer
+  EventsLost字段不能证明真实零丢失。验算器中间缺行红态保留，v2修复及逐次QUERY门获限定独审PASS
+  （102项复验）；terminal/canary完整消费及正式assembler仍未闭合，不代表真实trace或H3b通过。
+  精确Session清理壳与最终字面绑定均已独审PASS。新helper `a3619c76c5a9f07dc0bc25220160e2259386892c744c6d5c10af07fc814be3cc`
+  已激活，旧产物留在`classic-job-launch-candidate/before-activation`；激活收据`activation-001.json`。
+  完整应用短诊断`WFYO63JUED3Z645LJYOY2IHXV4`已执行且失败，单次claim已消费：Windows默认添加
+  `STOP_ON_HYBRID_SHUTDOWN`，Start/QUERY/header为`0x12400100`而旧门精确要求`0x12000100`，
+  在ProcessTrace与应用ready前被拒；callback/nameQuery均0。STOP实际EventsLost=37658保留，不冒充零loss
+  或已运行consumer吞吐结论。helper/admin均exit1，harness自然ready超时exit1；双EOF、SessionAbsent与
+  Nahimic恢复Running/Automatic有原件，请求已归档。当前离线修复为显式请求该标志且保持未知位严格拒绝，
+  不复用本次claim、不直接重跑；下一次实测仍须新候选独审和用户UAC时机。
   下一步据004事实接入完整Job；不得将held-file局部成功或清理成功写成H3b资格。
   H3b整体、H4、新D11及Stage7仍未通过或启动；临时Build Tools/MSVC/SDK最终移除义务继续保留。
 
