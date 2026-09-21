@@ -9,38 +9,38 @@
 
 ## 当前状态
 
-- **用户于2026-09-21恢复推进**。已审H3b产品实现保存为本地候选
-  `43efffbc82ff11122230c2362d6484d5feb9b581`，未推送。classic第三次单次隔离实测已执行，不能复用claim：
-  `log/h3b-native-current/classic-file-operations-003/guard-0a698979c5ba8c3bec2a1c3127978467`保存原件。
-  真实4096字节Read位于API窗内，30110条rundown中目标Key一次命中并解名匹配；零丢失/截断/完整性错误，
-  admin/probe均exit0、双EOF和sessionAbsent；独立原件复核确认本轮仅证明held-file能力，报告
-  `log/h3b-increment-independent-current/classic-raw-review-003.md`。
-  普通关闭短命文件实验004已修复独审发现的65/66截断前缀正证缺口，旧反例失败保留；
-  `classic-file-short-lived-004/freeze-002.json`已获有限启动PASS，249项作者测试及8项独立边界测试通过。
-  用户确认后单次实测已执行，claim已消费；原件`classic-file-short-lived-004/guard-e396328abf9403ee55bbc1199bfcfcf1`。
-  Read4096与普通Close成功，65/66已观察，随后opcode64触发`short-competing-generation`；目标35缺证，
-  STOP36虽命中Key也未补通过，实际能力FAIL。零loss、原身份文件删除及absence、child退出/双EOF/sessionAbsent
-  均经独立原件复核确认，报告`log/h3b-increment-independent-current/classic-raw-review-004.md`；不自动重跑。
-  首次64仅能证明已释放Object数值命中，不能据此宣称Key复用。接下来验证产品trace后Create的名称→opened Object→Read Key关联，
-  与完整Job线程归属集成，避免依赖预开文件关闭后及时产生35。纯线程寿命模型另获有限独审PASS
-  （50项作者测试及10项独立测试），尚未接入实际helper，不代表真实线程或完整Job归属已通过。
-  新在线Thread门已修复独审发现的同callback重复消费缺陷（3个原始红态保留），40项作者及14项独立测试通过；
-  条件式文件重放134+15、runtime/匿名ledger 10+12测试获有限独审PASS，报告在
-  `log/h3b-increment-independent-current/`。真实Session来源、Process/Thread实例及在线授权引用仍在隔离
-  `classic-job-candidate` / `classic-proof-candidate`已接线。退休PID复用、读名前owned Session累计loss查询与
-  停止前完整callback水位已修并获有限启动独审PASS（47项冻结文件、35项独立/复跑测试）；旧consumer
-  EventsLost字段不能证明真实零丢失。验算器中间缺行红态保留，v2修复及逐次QUERY门获限定独审PASS
-  （102项复验）；terminal/canary完整消费及正式assembler仍未闭合，不代表真实trace或H3b通过。
-  精确Session清理壳与最终字面绑定均已独审PASS。新helper `a3619c76c5a9f07dc0bc25220160e2259386892c744c6d5c10af07fc814be3cc`
-  已激活，旧产物留在`classic-job-launch-candidate/before-activation`；激活收据`activation-001.json`。
-  完整应用短诊断`WFYO63JUED3Z645LJYOY2IHXV4`已执行且失败，单次claim已消费：Windows默认添加
-  `STOP_ON_HYBRID_SHUTDOWN`，Start/QUERY/header为`0x12400100`而旧门精确要求`0x12000100`，
-  在ProcessTrace与应用ready前被拒；callback/nameQuery均0。STOP实际EventsLost=37658保留，不冒充零loss
-  或已运行consumer吞吐结论。helper/admin均exit1，harness自然ready超时exit1；双EOF、SessionAbsent与
-  Nahimic恢复Running/Automatic有原件，请求已归档。当前离线修复为显式请求该标志且保持未知位严格拒绝，
-  不复用本次claim、不直接重跑；下一次实测仍须新候选独审和用户UAC时机。
-  下一步据004事实接入完整Job；不得将held-file局部成功或清理成功写成H3b资格。
-  H3b整体、H4、新D11及Stage7仍未通过或启动；临时Build Tools/MSVC/SDK最终移除义务继续保留。
+- **2026-09-21，H3b仍在修复，正式资源验收未开始。**产品候选
+  `43efffbc82ff11122230c2362d6484d5feb9b581`已获限定独审PASS，未推送；H3a已关闭。
+  当前无实测进程或待处理管理员窗口；后续仍为H3b → H4 → 新D11 → Stage7设计准备，
+  停在Stage7首个产品实现之前。临时Build Tools/MSVC/SDK最终移除义务保持。
+- **最新实际失败：**`7ZH3LHUDMG7EVBK6ESGEECUVEM`，完整Job观测路线累计3/3已用，claim不可复用。
+  Thread v3/x64尾长74–182已被新前缀解码接受，但首错`early-io-canary-not-observed`；
+  无ready或应用启动，STOP EventsLost=356271、discarded=225255、两条unresolved IO。
+  两次读名前QUERY均零loss、合计168 QPC ticks，不能覆盖之后丢失；ProcessTrace返回0不代表完整观察。
+  helper/admin/harness均exit1；SessionAbsent、双EOF、四PID退出及Nahimic恢复Running/Automatic均经独审。
+  请求已按精确身份归档；4096B canary仍残留，保留待精确清理，不把session清理冒充文件清理。
+  原件`log/h3b-native-current/early-io-7ZH3LHUDMG7EVBK6ESGEECUVEM.jsonl`；独审REPAIR报告
+  `log/h3b-increment-independent-current/classic-raw-review-7ZH.md`（17原件、14343连续序号）。
+- **已证根因与当前修复：**冻结原生模型直接重放确认seq46 foreign completion错误撤销独立成立的Opened
+  关联；JS离线模型无此误失效，两者须以同一语料对齐。永久匿名token作为实时关联入口产生14283条
+  known-invalidation，逐行FlushFileBuffers及最大7.327s记录滞后已核；事件损失唯一性能成因仍unknown。
+  N已获准在`log/h3b-native-current/classic-job-lifecycle-candidate`综合修复请求/活跃关系退休、
+  有界异步输出、失败root-pin/FileId精确清理和API失败证据，并按微软定义统一CloseTrace成功待排空7007。
+  F同步新增版本离线验算，Safety独立审核；旧冻结件和失败原件不变。保留零loss、完整消费、5s、128MiB
+  与产品资源阈值；新增实测尚未安排，不能复用先前就绪答复。
+- **当前已激活观测产物：**native004 helper SHA-256
+  `0be7e586511a6a8498fc66073c4540649f958ba9c9f569d63c4494fa0fb9ab7c`。
+  native004有限独审PASS（70冻结项、445绿、旧176红复现）；v4 header接点145项、terminal/canary共享
+  35/234项、wrapper原件绑定57项复跑获限定PASS，均不证明完整Job/真实trace或H3b通过。
+  收据入口`classic-job-thread-candidate`、`classic-job-thread-launch-candidate`、`classic-proof-candidate`；
+  最终正式产物/Job完整绑定仍未闭合。
+- **旧失败与有限能力保留：**WFYO首次因Windows默认模式位被拒，0 callback/nameQuery，STOP loss37658；
+  YCXD第二次模式修复后被Thread opcode3/v3旧固定长度拒绝，原件缺length/width，精确布局unknown。
+  YCXD零loss但首错后忽略67863条，不能算完整观察。三轮均无应用ready；各退出/请求归档/服务恢复见
+  `classic-raw-review-WFYO.md`、`classic-raw-review-YCXD.md`、`classic-raw-review-7ZH.md`。
+  早期held-file003仅局部PASS；ordinary-close004因short-competing-generation失败，目标35缺证，
+  STOP36不能补通过，详见同一独审目录`classic-raw-review-003.md`与`classic-raw-review-004.md`。
+  历史详录见Git及上述原件，不能将局部能力或清理成功写成H3b资格。
 
 - 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
   D1–D9 均已完成并关闭。**用户通过 U01–U31
