@@ -9,7 +9,7 @@
 
 ## 当前状态
 
-- **2026-09-21，H3b仍在修复，正式资源验收未开始。**产品候选
+- **2026-09-22，H3b仍在修复，正式资源验收未开始。**产品候选
   `43efffbc82ff11122230c2362d6484d5feb9b581`已获限定独审PASS；新增RSS修复已独审并合为
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee`，均未推送。H3a已关闭。
   当前无实测进程或待处理管理员窗口；后续仍为H3b → H4 → 新D11 → Stage7设计准备，
@@ -27,8 +27,16 @@
   补跑现有native构建和测试全0，实际Electron仅加载五导出成功；证据在`log/h3b-native-current/bridge-preflight-repair/`。
   独立普通权限、无ETW/服务变化的单次产品短诊断`V4Z7FAJUPAWMY5EDDSXPFXUUNI`已exit0，
   291帧、4/4采样freeze、ARRIVAL-VALID、Job空、双EOF；正式时刻/环境/IO资格仍不满足，不外推正式验收。
+  独立限定恢复PASS：`log/h3b-increment-independent-current/bridge-restoration-review-001.md`。
   原validator直接CLI因旧raw shape拒绝的输出保留，现有report-diagnostic/protocol-projection入口正确解析，未改断言。
-  正补mandatory原生桥输入预检；N在新隔离010设计已认证Read的定向路径证据及脱敏shape诊断，Safety独审。
+  mandatory原生桥输入预检已获父独审PASS（17/17及实际19项verify全0），入口
+  `log/h3b-native-current/qualification-preflight-candidate/`；仅快照。
+  正式持续pin/assembler必需项已隔离实现并获父限定PASS（原生10/10、JS21/21），
+  `formal-artifact-candidate/`及来源追溯覆盖18原生依赖，无未解释源码漂移；FINAL_BINDING仍null。
+  新harness626b84a2…e9909a尚未激活；单次普通权限集成`OPVWV26WFXXAWJZI4VOV7HZRFU`已exit0，
+  279帧、4/4freeze、Job空/双EOF，实际清单含addon FileId/SHA和WindowsDirectory。未暂停服务，
+  两模块快照因3个外部音频DLL保持BLOCKED；该次无ETW，不授正式资格。原件及结果在同候选目录。
+  N在新隔离010设计已认证Read的定向路径证据及脱敏shape诊断，Safety独审；纯原型许可不等于启动PASS。
   尚无下一次综合运行安排；不复用第7次claim或就绪答复，不补造MB3缺失路径，也不归因全部历史退出。
 - **前次实际窗口：**`77T6X64G5FNV3TCMEQ2AKPOC7I`已执行，综合路线累计6/6，claim已消费。
   native008不再因Thread72失败；首错`early-io-canary-not-observed`，6步API成功、Write/Read各4096，
