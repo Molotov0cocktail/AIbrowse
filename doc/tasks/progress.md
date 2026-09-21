@@ -14,7 +14,23 @@
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee`，均未推送。H3a已关闭。
   当前无实测进程或待处理管理员窗口；后续仍为H3b → H4 → 新D11 → Stage7设计准备，
   停在Stage7首个产品实现之前。临时Build Tools/MSVC/SDK最终移除义务保持。
-- **最新实际窗口（2026-09-21）：**`77T6X64G5FNV3TCMEQ2AKPOC7I`已执行，综合路线累计6/6，claim已消费。
+- **最新实际窗口（2026-09-21）：**`MB3DR56PBL2OMYWKSAZHVDDRNY`已执行，综合路线累计7/7，claim已消费。
+  native009实际canary-prefix complete=true并发布ready，产品153760启动后约164.9ms以exit1退出；
+  harness自然exit1 `collector-io-timeout`，helper随后报`early-io-harness-exited-before-finish`。
+  无callbackFailure，callbacks108227、ignored/discard/loss均0；仍有6个invalid-components Create及2条无同O
+  Create的目标Read未解，与应用启动问题分别处理。traceComplete=false，不授完整Job/资源资格。
+  helper/admin均1、cleanup0、SessionAbsent；五已知PID已无、服务Running/Automatic、本次canary不存在，
+  请求精确归档；收口见`classic-job-key-window-launch-candidate/harness-exit-MB3DR56PBL2OMYWKSAZHVDDRNY.json`。
+  独立原件审核REPAIR：`log/h3b-increment-independent-current/classic-raw-review-MB3.md`，机器复核exit0。
+- **启动遗漏已修复，观测缺口继续：**发现整合构建只跑electron-vite、清除了必需的
+  `out/main/watch-qualification.node`，准备17项及实际枚举也漏检不存在项。保存MODULE_NOT_FOUND红态，
+  补跑现有native构建和测试全0，实际Electron仅加载五导出成功；证据在`log/h3b-native-current/bridge-preflight-repair/`。
+  独立普通权限、无ETW/服务变化的单次产品短诊断`V4Z7FAJUPAWMY5EDDSXPFXUUNI`已exit0，
+  291帧、4/4采样freeze、ARRIVAL-VALID、Job空、双EOF；正式时刻/环境/IO资格仍不满足，不外推正式验收。
+  原validator直接CLI因旧raw shape拒绝的输出保留，现有report-diagnostic/protocol-projection入口正确解析，未改断言。
+  正补mandatory原生桥输入预检；N在新隔离010设计已认证Read的定向路径证据及脱敏shape诊断，Safety独审。
+  尚无下一次综合运行安排；不复用第7次claim或就绪答复，不补造MB3缺失路径，也不归因全部历史退出。
+- **前次实际窗口：**`77T6X64G5FNV3TCMEQ2AKPOC7I`已执行，综合路线累计6/6，claim已消费。
   native008不再因Thread72失败；首错`early-io-canary-not-observed`，6步API成功、Write/Read各4096，
   但2IO未关联。成功Create/End后、首次Write前的两条opaque barrier（seq19 SetInfo69、20 FSControl75）
   触发全局lastMutation规则；原件未导出其Key/InfoClass，不能推断与canary同文件或相异。
@@ -26,7 +42,7 @@
   异Key不全局污染；不持久化外部名称/身份/原指针，不给负向缓存正向授权。实际命中以原始时序、
   Create/firstIO引用与InfoClass数值导出负向witness；未匹配Key完整性仍依赖已审native完整数字源。
   作者405项、独立模型/接线83项通过；父独立离线消费者226项全0。旧77T6仍失败，缺失字段保持unknown。
-  单次计划累计上限6→7，已消费6；待新的物理就绪后运行，尚未创建claim，不复用已消费答复。
+  单次计划累计上限6→7已于MB3执行，claim已消费，结果见上；不复用已消费答复。
 - **前次实际窗口：**`4VCUBHNX24EG4UYNGE4CWGI2CI`已执行，综合路线累计5/5，claim已消费。
   首错`classic-prefix-callback-failed`，callbackFailure=`classic-thread-descriptor`：Thread opcode72/v2/x64、
   54字节、callback10248。已按微软PerfView定义确认为SetName非生命周期通知；线程名及具体归属未采集、不恢复。
@@ -87,7 +103,7 @@
   native收据`classic-job-key-window-candidate/candidate-receipt-009.json`；父消费者报告
   `classic-proof-candidate/key-window-root-review-001.md`。wrapper/admin仅替换固定摘要，旧008三件备份、
   输入及激活记录在`log/h3b-native-current/classic-job-key-window-launch-candidate/`。
-  新单次计划`classic-job-key-window-diagnostic-plan.json` SHA9af73bd0…7625f；尚未实际运行或创建claim。
+  单次计划`classic-job-key-window-diagnostic-plan.json` SHA9af73bd0…7625f已于MB3执行，claim永久消费。
   完整Job/真实trace与正式资源资格仍未闭合；零Provider、原5秒成功期限、输出预算与资源阈值不变。
 - **旧失败与有限能力保留：**WFYO首次因Windows默认模式位被拒，0 callback/nameQuery，STOP loss37658；
   YCXD第二次模式修复后被Thread opcode3/v3旧固定长度拒绝，原件缺length/width，精确布局unknown。
