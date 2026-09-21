@@ -14,7 +14,17 @@
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee`，均未推送。H3a已关闭。
   当前无实测进程或待处理管理员窗口；后续仍为H3b → H4 → 新D11 → Stage7设计准备，
   停在Stage7首个产品实现之前。临时Build Tools/MSVC/SDK最终移除义务保持。
-- **最新实际窗口（2026-09-21）：**`L55623CZST3DAIE2ZGN2QQKTBY`已执行，综合路线累计4/4，claim已消费。
+- **最新实际窗口（2026-09-21）：**`4VCUBHNX24EG4UYNGE4CWGI2CI`已执行，综合路线累计5/5，claim已消费。
+  首错`classic-prefix-callback-failed`，callbackFailure=`classic-thread-descriptor`：Thread opcode72/v2/x64、
+  54字节、callback10248。已按微软PerfView定义确认为SetName非生命周期通知；线程名及具体归属未采集、不恢复。
+  canary6步API成功、2IO已关联、pending0；prefix FLUSH0/zeroLoss但complete=false，watermark/ready皆0，
+  新ready门阻止发布，无产品进程或遥测。QUERY/STOP零loss，ignoredAfterFailure57315、traceComplete=false，
+  不作完整源证明。helper/admin均exit1，cleanup0及SessionAbsent；harness自然exit1 ready-timeout，
+  四已知PID均退出、Nahimic恢复Running/Automatic，请求已按精确身份归档，本次canary实际不存在。
+  独审REPAIR报告`log/h3b-increment-independent-current/classic-raw-review-4VCU.md`，18原件与退出/清理已核。
+  N修精确事件分类；F独立影响验证8项通过，既有消费者无需改decoder。无当前实测或待处理弹窗，
+  native007与全部失败证据保持；新单次计划预置累计5→6，候选尚未完成审核或激活。
+- **前次实际窗口：**`L55623CZST3DAIE2ZGN2QQKTBY`已执行，综合路线累计4/4，claim已消费。
   初次通过helper canary并发布ready，创建产品进程139600，但无产品协议ready；首错为
   `classic-operation-required-key`（opcode74/v3/x64、40字节、callback17796）。完整数字前缀中至少I/O/K一项为0，
   原件未记零值mask，不能猜哪项或称foreign/fast-IO。QUERY/STOP均零loss、discard0，但ignoredAfterFailure60869，
@@ -34,7 +44,7 @@
   不读Status、不授Opened；原9项已独立全绿，加数值/negative/canary共79项通过，IPC10项复用。
   native007冻结312项，14编译/13测试及585作者断言全0；006及旧原件保持。F新消费者61项匹配，
   父独立160测试全0并限定PASS，报告`classic-proof-candidate/metadata-root-review-001.md`。
-  下一单次计划预置累计4→5，native与消费者已获有限启动复核；实际启动只待新的用户就绪确认。
+  累计4→5的单次计划及native/消费者限定复核已执行于4VCU；不得复用claim或先前就绪答复。
 - **上轮实际失败：**`7ZH3LHUDMG7EVBK6ESGEECUVEM`，完整Job观测路线累计3/3已用，claim不可复用。
   Thread v3/x64尾长74–182已被新前缀解码接受，但首错`early-io-canary-not-observed`；
   无ready或应用启动，STOP EventsLost=356271、discarded=225255、两条unresolved IO。
@@ -61,7 +71,7 @@
   312项native及17项输入匹配，PS5.1三脚本解析全0。wrapper/admin仅替换固定摘要并已激活，旧005三件
   原件完整保存在`classic-job-metadata-launch-candidate/before-activation`；单次计划SHA4851a98a…30460。
   native收据`classic-job-metadata-candidate/candidate-receipt-007.json`，启动输入/激活记录在同级launch目录。
-  未创建新claim、未实际运行；旧壳和未变证据按范围复用，完整Job/真实trace与正式资源资格仍未闭合。
+  已创建并消费本次claim，实际结果见4VCU；旧壳和未变证据按范围复用，完整Job/真实trace与正式资源资格仍未闭合。
 - **旧失败与有限能力保留：**WFYO首次因Windows默认模式位被拒，0 callback/nameQuery，STOP loss37658；
   YCXD第二次模式修复后被Thread opcode3/v3旧固定长度拒绝，原件缺length/width，精确布局unknown。
   YCXD零loss但首错后忽略67863条，不能算完整观察。三轮均无应用ready；各退出/请求归档/服务恢复见
