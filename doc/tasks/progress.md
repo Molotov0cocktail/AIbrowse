@@ -10,7 +10,8 @@
 ## 当前状态
 
 - **2026-09-21，H3b仍在修复，正式资源验收未开始。**产品候选
-  `43efffbc82ff11122230c2362d6484d5feb9b581`已获限定独审PASS，未推送；H3a已关闭。
+  `43efffbc82ff11122230c2362d6484d5feb9b581`已获限定独审PASS；新增RSS修复已独审并合为
+  `ee61ceb9d60d89dd60f6186030d6890b019a94ee`，均未推送。H3a已关闭。
   当前无实测进程或待处理管理员窗口；后续仍为H3b → H4 → 新D11 → Stage7设计准备，
   停在Stage7首个产品实现之前。临时Build Tools/MSVC/SDK最终移除义务保持。
 - **最新实际失败：**`7ZH3LHUDMG7EVBK6ESGEECUVEM`，完整Job观测路线累计3/3已用，claim不可复用。
@@ -27,13 +28,19 @@
   N已获准在`log/h3b-native-current/classic-job-lifecycle-candidate`综合修复请求/活跃关系退休、
   有界异步输出、失败root-pin/FileId精确清理和API失败证据，并按微软定义统一CloseTrace成功待排空7007。
   F同步新增版本离线验算，Safety独立审核；旧冻结件和失败原件不变。保留零loss、完整消费、5s、128MiB
-  与产品资源阈值；新增实测尚未安排，不能复用先前就绪答复。
-- **当前已激活观测产物：**native004 helper SHA-256
-  `0be7e586511a6a8498fc66073c4540649f958ba9c9f569d63c4494fa0fb9ab7c`。
-  native004有限独审PASS（70冻结项、445绿、旧176红复现）；v4 header接点145项、terminal/canary共享
-  35/234项、wrapper原件绑定57项复跑获限定PASS，均不证明完整Job/真实trace或H3b通过。
-  收据入口`classic-job-thread-candidate`、`classic-job-thread-launch-candidate`、`classic-proof-candidate`；
-  最终正式产物/Job完整绑定仍未闭合。
+  与产品资源阈值。综合候选005已冻结（136项），helper为a97c7b4e…50763，22编译目标及21测试目标全0；
+  独立model17/owner4/writer6反例闭合；初始CREATE句柄立即保留，身份查询失败仍可精确清理但不虚称FileId已知。
+  离线验算004的55项已独立匹配、362测试全0，隐藏退休占用明确依赖已审native完整数字消费，不新增全局名称。
+  最终wrapper新版49项匹配、63测试独立全0；报告`classic-proof-candidate/wrapper-lifecycle-root-review-001.md`。
+  新计划只新增一次短诊断，累计上限3调至4、旧3次及claim保留；脚本绑定已审完并激活，待新的UAC时机确认，
+  不复用先前就绪答复。此为当前综合修复验证，正式95分钟容量仍须依据新实测速率和原件增长评估。
+- **当前已激活观测产物：**综合native005 helper SHA-256
+  `a97c7b4e93d68b1e2845ca18d8a719dc82b2f786d0f2fae9d487068e6bb50763`。
+  新独立有限启动PASS报告`log/h3b-increment-independent-current/classic-lifecycle-launch-review-005.md`；
+  136项native及17项输入均核验。wrapper/admin仅替换固定摘要并已激活，旧004三件原件完整保存在
+  `classic-job-lifecycle-launch-candidate/before-activation`；新计划SHA defcc7de…17fb5。
+  旧004的header/terminal/canary证据依适用范围复用；最终完整Job/真实trace与正式资源资格仍未闭合。
+  入口收据`classic-job-lifecycle-candidate/candidate-receipt-005.json`及同级launch/proof目录。
 - **旧失败与有限能力保留：**WFYO首次因Windows默认模式位被拒，0 callback/nameQuery，STOP loss37658；
   YCXD第二次模式修复后被Thread opcode3/v3旧固定长度拒绝，原件缺length/width，精确布局unknown。
   YCXD零loss但首错后忽略67863条，不能算完整观察。三轮均无应用ready；各退出/请求归档/服务恢复见
@@ -41,6 +48,13 @@
   早期held-file003仅局部PASS；ordinary-close004因short-competing-generation失败，目标35缺证，
   STOP36不能补通过，详见同一独审目录`classic-raw-review-003.md`与`classic-raw-review-004.md`。
   历史详录见Git及上述原件，不能将局部能力或清理成功写成H3b资格。
+- **不依赖H3b结果的隔离准备：**旧RSS根`xmlns=""`拒绝及item静默遗漏已复现，在独立worktree
+  `log/h4-namespace-worktree`形成候选`5df7215f525caccc3e4f418444a499516bc0a903`。
+  新增9测试旧8红，新解析91/91、全量185文件3841项及type/lint/format/build全0；独立安全审核PASS，
+  独立144聚焦测试及18反例通过，报告`log/h4-preparation-current/independent-review.md`。
+  已合主线ee61ceb，整合后144项再次通过，产品树与已验隔离候选一致；仅重建qualification-load-diagnostic
+  JS产物成功，未重编native harness/bridge。这样后续真实窗口覆盖已修产品。无新增网络/Electron，
+  H4正式审核未启动；阶段最终整体验收和受影响门仍须完成，不能以该子范围PASS替代H3b/H4。
 
 - 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
   D1–D9 均已完成并关闭。**用户通过 U01–U31
