@@ -22,9 +22,11 @@
   helper/admin均exit1，cleanup0及SessionAbsent，harness自然exit1 ready-timeout；四已知PID已无，
   服务Running/Automatic、本次canary实际不存在，请求精确归档。原件SHAe595e38d…e02bce9全部保留。
   独审REPAIR报告`log/h3b-increment-independent-current/classic-raw-review-77T6.md`，18原件及收口核验通过。
-  正在隔离修订首次Key前的负向关联：RAM有界Key窗口、同Key/缺键/时序/预算不足仍拒，异Key不全局污染；
-  不持久化外部名称/身份/原指针，不给负向缓存正向授权。N纯模型，F最小原件投影，Safety独立反例与范围复核。
-  尚无新候选或下一实际运行安排，不复用已消费claim/就绪答复，也不宣称旧77T6已被新路线修复。
+  后继native009已独立有限启动PASS并激活：RAM有界Key窗口，同Key/缺键/时序/预算不足仍拒，
+  异Key不全局污染；不持久化外部名称/身份/原指针，不给负向缓存正向授权。实际命中以原始时序、
+  Create/firstIO引用与InfoClass数值导出负向witness；未匹配Key完整性仍依赖已审native完整数字源。
+  作者405项、独立模型/接线83项通过；父独立离线消费者226项全0。旧77T6仍失败，缺失字段保持unknown。
+  单次计划累计上限6→7，已消费6；待新的物理就绪后运行，尚未创建claim，不复用已消费答复。
 - **前次实际窗口：**`4VCUBHNX24EG4UYNGE4CWGI2CI`已执行，综合路线累计5/5，claim已消费。
   首错`classic-prefix-callback-failed`，callbackFailure=`classic-thread-descriptor`：Thread opcode72/v2/x64、
   54字节、callback10248。已按微软PerfView定义确认为SetName非生命周期通知；线程名及具体归属未采集、不恢复。
@@ -78,14 +80,15 @@
   最终wrapper新版49项匹配、63测试独立全0；报告`classic-proof-candidate/wrapper-lifecycle-root-review-001.md`。
   新计划只新增一次短诊断，累计上限3调至4、旧3次及claim保留；脚本绑定已审完并激活，该次已于L556执行，
   不复用先前就绪答复。此为当前综合修复验证，正式95分钟容量仍须依据新实测速率和原件增长评估。
-- **当前已激活观测产物：**native008 helper SHA-256
-  `dd57b5bf90a18f49870876b81f822e0dcd1adc3d70cb4d744bfc0aa210063b98`。
-  独立有限启动PASS报告`log/h3b-increment-independent-current/classic-thread-events-launch-review-008.md`；
-  94新增依赖及17项输入核验，312旧冻结项复用，PS5.1三脚本解析全0。wrapper/admin只换固定摘要，旧007
-  三件备份在`classic-job-thread-events-launch-candidate/before-activation`；新计划SHA4d2698c9…0c48da。
-  native收据`classic-job-thread-events-candidate/candidate-receipt-008.json`；父消费者复核
-  `classic-proof-candidate/thread-setname-root-review-001.md`。启动输入/激活记录在同级thread-events-launch目录。
-  claim已消费，实际结果见77T6；旧壳证据按范围复用，完整Job/真实trace与正式资源资格仍未闭合。
+- **当前已激活观测产物：**native009 helper SHA-256
+  `b698dd1b17b228248bc4fd4644d149f8f1d1f3f97c04b68e58323dd62d6a77b7`。
+  独立有限启动PASS报告`log/h3b-increment-independent-current/classic-key-window-launch-review-009.md`；
+  native95项与17项准备输入匹配，父消费者47项匹配、226项独立复跑全0；未变壳/身份/清理按范围复用。
+  native收据`classic-job-key-window-candidate/candidate-receipt-009.json`；父消费者报告
+  `classic-proof-candidate/key-window-root-review-001.md`。wrapper/admin仅替换固定摘要，旧008三件备份、
+  输入及激活记录在`log/h3b-native-current/classic-job-key-window-launch-candidate/`。
+  新单次计划`classic-job-key-window-diagnostic-plan.json` SHA9af73bd0…7625f；尚未实际运行或创建claim。
+  完整Job/真实trace与正式资源资格仍未闭合；零Provider、原5秒成功期限、输出预算与资源阈值不变。
 - **旧失败与有限能力保留：**WFYO首次因Windows默认模式位被拒，0 callback/nameQuery，STOP loss37658；
   YCXD第二次模式修复后被Thread opcode3/v3旧固定长度拒绝，原件缺length/width，精确布局unknown。
   YCXD零loss但首错后忽略67863条，不能算完整观察。三轮均无应用ready；各退出/请求归档/服务恢复见
