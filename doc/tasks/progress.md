@@ -9,6 +9,24 @@
 
 ## 当前状态
 
+- **用户于2026-09-21恢复推进**。已审H3b产品实现保存为本地候选
+  `43efffbc82ff11122230c2362d6484d5feb9b581`，未推送。classic第三次单次隔离实测已执行，不能复用claim：
+  `log/h3b-native-current/classic-file-operations-003/guard-0a698979c5ba8c3bec2a1c3127978467`保存原件。
+  真实4096字节Read位于API窗内，30110条rundown中目标Key一次命中并解名匹配；零丢失/截断/完整性错误，
+  admin/probe均exit0、双EOF和sessionAbsent；独立原件复核确认本轮仅证明held-file能力，报告
+  `log/h3b-increment-independent-current/classic-raw-review-003.md`。
+  普通关闭短命文件实验004已修复独审发现的65/66截断前缀正证缺口，旧反例失败保留；
+  `classic-file-short-lived-004/freeze-002.json`已获有限启动PASS，249项作者测试及8项独立边界测试通过。
+  用户确认后单次实测已执行，claim已消费；原件`classic-file-short-lived-004/guard-e396328abf9403ee55bbc1199bfcfcf1`。
+  Read4096与普通Close成功，65/66已观察，随后opcode64触发`short-competing-generation`；目标35缺证，
+  STOP36虽命中Key也未补通过，实际能力FAIL。零loss、原身份文件删除及absence、child退出/双EOF/sessionAbsent
+  均经独立原件复核确认，报告`log/h3b-increment-independent-current/classic-raw-review-004.md`；不自动重跑。
+  首次64仅能证明已释放Object数值命中，不能据此宣称Key复用。接下来验证产品trace后Create的名称→opened Object→Read Key关联，
+  与完整Job线程归属集成，避免依赖预开文件关闭后及时产生35。纯线程寿命模型另获有限独审PASS
+  （50项作者测试及10项独立测试），尚未接入实际helper，不代表真实线程或完整Job归属已通过。
+  下一步据004事实接入完整Job；不得将held-file局部成功或清理成功写成H3b资格。
+  H3b整体、H4、新D11及Stage7仍未通过或启动；临时Build Tools/MSVC/SDK最终移除义务继续保留。
+
 - 阶段：**第六阶段（RSS/Page Watch、确定性变更事件与摘要）已正式切换，设计闭环与
   D1–D9 均已完成并关闭。**用户通过 U01–U31
   完成全部需求裁决；正式设计候选在
