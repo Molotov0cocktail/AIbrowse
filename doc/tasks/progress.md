@@ -14,7 +14,18 @@
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee`，均未推送。H3a已关闭。
   当前无实测进程或待处理管理员窗口；后续仍为H3b → H4 → 新D11 → Stage7设计准备，
   停在Stage7首个产品实现之前。临时Build Tools/MSVC/SDK最终移除义务保持。
-- **最新实际窗口（2026-09-21）：**`4VCUBHNX24EG4UYNGE4CWGI2CI`已执行，综合路线累计5/5，claim已消费。
+- **最新实际窗口（2026-09-21）：**`77T6X64G5FNV3TCMEQ2AKPOC7I`已执行，综合路线累计6/6，claim已消费。
+  native008不再因Thread72失败；首错`early-io-canary-not-observed`，6步API成功、Write/Read各4096，
+  但2IO未关联。成功Create/End后、首次Write前的两条opaque barrier（seq19 SetInfo69、20 FSControl75）
+  触发全局lastMutation规则；原件未导出其Key/InfoClass，不能推断与canary同文件或相异。
+  callbacks83736、ignored0、QUERY/STOP零loss但traceComplete=false；无ready、产品或遥测。
+  helper/admin均exit1，cleanup0及SessionAbsent，harness自然exit1 ready-timeout；四已知PID已无，
+  服务Running/Automatic、本次canary实际不存在，请求精确归档。原件SHAe595e38d…e02bce9全部保留。
+  独审REPAIR报告`log/h3b-increment-independent-current/classic-raw-review-77T6.md`，18原件及收口核验通过。
+  正在隔离修订首次Key前的负向关联：RAM有界Key窗口、同Key/缺键/时序/预算不足仍拒，异Key不全局污染；
+  不持久化外部名称/身份/原指针，不给负向缓存正向授权。N纯模型，F最小原件投影，Safety独立反例与范围复核。
+  尚无新候选或下一实际运行安排，不复用已消费claim/就绪答复，也不宣称旧77T6已被新路线修复。
+- **前次实际窗口：**`4VCUBHNX24EG4UYNGE4CWGI2CI`已执行，综合路线累计5/5，claim已消费。
   首错`classic-prefix-callback-failed`，callbackFailure=`classic-thread-descriptor`：Thread opcode72/v2/x64、
   54字节、callback10248。已按微软PerfView定义确认为SetName非生命周期通知；线程名及具体归属未采集、不恢复。
   canary6步API成功、2IO已关联、pending0；prefix FLUSH0/zeroLoss但complete=false，watermark/ready皆0，
@@ -24,8 +35,8 @@
   独审REPAIR报告`log/h3b-increment-independent-current/classic-raw-review-4VCU.md`，18原件与退出/清理已核。
   N仅将SetName72/v2在载荷读取前分类，其它未知拒绝，生命周期规则保持。作者受影响547项通过，
   独立旧5/16红→新21/21绿；既有消费者无需改decoder，新固定pair与header影响19项由父独立复跑全0。
-  native008与启动入口已获限定独审PASS并激活，native007与失败原件保持。新单次计划累计5→6，
-  未创建新claim或实际运行，下一步仅等用户确认新的管理员弹窗时间。
+  native008与启动入口已获限定独审PASS并激活，native007与失败原件保持。累计5→6计划已执行于77T6，
+  其claim永久消费，不能以修复前独审替代这次失败或后续路线审核。
 - **前次实际窗口：**`L55623CZST3DAIE2ZGN2QQKTBY`已执行，综合路线累计4/4，claim已消费。
   初次通过helper canary并发布ready，创建产品进程139600，但无产品协议ready；首错为
   `classic-operation-required-key`（opcode74/v3/x64、40字节、callback17796）。完整数字前缀中至少I/O/K一项为0，
@@ -74,7 +85,7 @@
   三件备份在`classic-job-thread-events-launch-candidate/before-activation`；新计划SHA4d2698c9…0c48da。
   native收据`classic-job-thread-events-candidate/candidate-receipt-008.json`；父消费者复核
   `classic-proof-candidate/thread-setname-root-review-001.md`。启动输入/激活记录在同级thread-events-launch目录。
-  新claim未创建、未实际运行；旧壳证据按范围复用，完整Job/真实trace与正式资源资格仍未闭合。
+  claim已消费，实际结果见77T6；旧壳证据按范围复用，完整Job/真实trace与正式资源资格仍未闭合。
 - **旧失败与有限能力保留：**WFYO首次因Windows默认模式位被拒，0 callback/nameQuery，STOP loss37658；
   YCXD第二次模式修复后被Thread opcode3/v3旧固定长度拒绝，原件缺length/width，精确布局unknown。
   YCXD零loss但首错后忽略67863条，不能算完整观察。三轮均无应用ready；各退出/请求归档/服务恢复见
