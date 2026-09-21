@@ -692,6 +692,8 @@ export async function parseFeedXmlWithLoader(
         if (st.nodes > MAX_XML_NODES) throw new BudgetExceededError();
         if (st.stack.length + 1 > MAX_XML_DEPTH) throw new BudgetExceededError();
         validateQName(name);
+        // An empty default declaration means no namespace (Namespaces in XML 1.0 §6.2).
+        const namespace = name.namespace === '' ? undefined : name.namespace;
         if (attrs.size > MAX_XML_ATTRIBUTES_PER_TAG) throw new BudgetExceededError();
         attrs.forEach((value, qname) => {
           validateQName(qname);
@@ -703,7 +705,7 @@ export async function parseFeedXmlWithLoader(
         });
 
         // XInclude：元素或 xmlns 声明一经出现立即 security_rejected（零文件/网络，WT-06）
-        if (name.namespace === XINCLUDE_NS) {
+        if (namespace === XINCLUDE_NS) {
           throw new ParseFailedError('security_rejected', 'xinclude');
         }
         attrs.forEach((value, qname) => {
@@ -713,9 +715,9 @@ export async function parseFeedXmlWithLoader(
         });
 
         if (!formatSet) {
-          if (name.localName === 'rss' && name.namespace === undefined) {
+          if (name.localName === 'rss' && namespace === undefined) {
             collector.format = 'rss2';
-          } else if (name.localName === 'feed' && name.namespace === ATOM_NS) {
+          } else if (name.localName === 'feed' && namespace === ATOM_NS) {
             collector.format = 'atom';
           } else {
             throw new ParseFailedError('parse_changed', 'unknown-root');
@@ -726,12 +728,8 @@ export async function parseFeedXmlWithLoader(
         // item/entry 边界（RSS 核心无 namespace；Atom 须 ATOM_NS）
         if (
           !st.inItem &&
-          ((collector.format === 'rss2' &&
-            name.localName === 'item' &&
-            name.namespace === undefined) ||
-            (collector.format === 'atom' &&
-              name.localName === 'entry' &&
-              name.namespace === ATOM_NS))
+          ((collector.format === 'rss2' && name.localName === 'item' && namespace === undefined) ||
+            (collector.format === 'atom' && name.localName === 'entry' && namespace === ATOM_NS))
         ) {
           st.inItem = true;
           st.pendingItem = newPendingItem();
@@ -744,11 +742,7 @@ export async function parseFeedXmlWithLoader(
         if (st.inItem) {
           if (st.pendingItem !== null && collector.items.length < MAX_FEED_ITEMS) {
             // Atom/RSS link 特殊处理（canonical link 用属性 href）；核心 link 须 ATOM_NS
-            if (
-              collector.format === 'atom' &&
-              name.localName === 'link' &&
-              name.namespace === ATOM_NS
-            ) {
+            if (collector.format === 'atom' && name.localName === 'link' && namespace === ATOM_NS) {
               let rel = '';
               let href = '';
               attrs.forEach((value, qname) => {
@@ -766,29 +760,21 @@ export async function parseFeedXmlWithLoader(
               }
               field = null;
             } else {
-              if (
-                collector.format === 'atom' &&
-                name.namespace === ATOM_NS &&
-                name.localName === 'id'
-              ) {
+              if (collector.format === 'atom' && namespace === ATOM_NS && name.localName === 'id') {
                 st.pendingItem.hasId = true;
               }
               if (
                 collector.format === 'rss2' &&
-                name.namespace === undefined &&
+                namespace === undefined &&
                 name.localName === 'guid'
               ) {
                 st.pendingItem.hasId = true;
               }
-              field = itemFieldFor(collector.format, name.localName, name.namespace);
+              field = itemFieldFor(collector.format, name.localName, namespace);
             }
           }
         } else {
-          if (
-            collector.format === 'atom' &&
-            name.localName === 'link' &&
-            name.namespace === ATOM_NS
-          ) {
+          if (collector.format === 'atom' && name.localName === 'link' && namespace === ATOM_NS) {
             let rel = '';
             let href = '';
             attrs.forEach((value, qname) => {
@@ -807,21 +793,21 @@ export async function parseFeedXmlWithLoader(
             }
             field = null;
           } else {
-            field = channelFieldFor(collector.format, name.localName, name.namespace);
+            field = channelFieldFor(collector.format, name.localName, namespace);
           }
         }
 
-        st.stack.push({ localName: name.localName, ns: name.namespace, field });
+        st.stack.push({ localName: name.localName, ns: namespace, field });
       },
       endTag(name) {
         finishLogicalText(st);
         validateQName(name);
+        // An empty default declaration means no namespace (Namespaces in XML 1.0 §6.2).
+        const namespace = name.namespace === '' ? undefined : name.namespace;
         st.stack.pop();
         const closingItem =
-          (collector.format === 'rss2' &&
-            name.localName === 'item' &&
-            name.namespace === undefined) ||
-          (collector.format === 'atom' && name.localName === 'entry' && name.namespace === ATOM_NS);
+          (collector.format === 'rss2' && name.localName === 'item' && namespace === undefined) ||
+          (collector.format === 'atom' && name.localName === 'entry' && namespace === ATOM_NS);
         if (closingItem && st.inItem) {
           finalizeItem(st);
           st.inItem = false;

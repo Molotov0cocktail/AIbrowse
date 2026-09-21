@@ -419,6 +419,48 @@ describe('DTD/XXE/Bomb/XInclude（WRT-06）→ security_rejected', () => {
 });
 
 describe('namespace 校验：扩展 namespace 不得覆盖核心字段', () => {
+  it.each(['rss', 'channel', 'item', 'title', 'guid', 'link', 'description'])(
+    'RSS：%s 显式清空默认 namespace 与未声明语义相同',
+    async (element) => {
+      const original = RSS(
+        RSS_ITEM('g1', 'First', 'https://example.com/1') +
+          RSS_ITEM('g2', 'Second', 'https://example.com/2'),
+      );
+      const explicit = original.replace(
+        new RegExp(`<${element}(?=[\\s>])`, 'g'),
+        `<${element} xmlns=""`,
+      );
+      const expected = await parseFeedXml(Buffer.from(original));
+      expect(expected.ok).toBe(true);
+      expect(await parseFeedXml(Buffer.from(explicit))).toEqual(expected);
+    },
+  );
+
+  it('RSS：非空默认 namespace 的同名 item 不得成为条目，离开作用域后恢复', async () => {
+    const r = await parseRss(
+      '<item xmlns="urn:foreign"><guid>fake</guid><title>Fake</title></item>' +
+        RSS_ITEM('real', 'Real', 'https://example.com/real').replace('<item>', '<item xmlns="">') +
+        RSS_ITEM('next', 'Next', 'https://example.com/next'),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.items.map((item) => item.identity)).toEqual(['real', 'next']);
+  });
+
+  it('Atom：清空 namespace 的 entry 仍不属于 Atom，兄弟节点恢复 Atom namespace', async () => {
+    const r = await parseFeedXml(
+      Buffer.from(
+        ATOM(
+          '<entry xmlns=""><id>fake</id><title>Fake</title></entry>' +
+            ATOM_ENTRY('real', 'Real', 'https://example.com/real'),
+        ),
+      ),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.items.map((item) => item.identity)).toEqual(['real']);
+  });
+
   it('Atom：foreign namespace 的 title/link/id 不覆盖核心字段', async () => {
     const xml =
       '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom" xmlns:x="http://evil.test/x"><title>F</title><x:title>FAKE TITLE</x:title><entry><id>real-id</id><x:id>fake-id</x:id><title>Real T</title><x:title>FAKE</x:title><link rel="alternate" href="https://real.example.com/1"/><x:link rel="alternate" href="https://evil.example.com/"/></entry></feed>';
