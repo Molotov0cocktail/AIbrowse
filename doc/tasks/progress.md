@@ -36,8 +36,16 @@
   新harness626b84a2…e9909a尚未激活；单次普通权限集成`OPVWV26WFXXAWJZI4VOV7HZRFU`已exit0，
   279帧、4/4freeze、Job空/双EOF，实际清单含addon FileId/SHA和WindowsDirectory。未暂停服务，
   两模块快照因3个外部音频DLL保持BLOCKED；该次无ETW，不授正式资格。原件及结果在同候选目录。
-  N在新隔离010设计已认证Read的定向路径证据及脱敏shape诊断，Safety独审；纯原型许可不等于启动PASS。
-  尚无下一次综合运行安排；不复用第7次claim或就绪答复，不补造MB3缺失路径，也不归因全部历史退出。
+  新隔离010已实现已认证missing-Create读写的同Key历史名称分类及脱敏shape诊断；
+  独立模型49、目录30、source控制28、shape18、Runtime/数字门45项通过，均只授各自模块范围。
+  最终作者251项、实际Observer并发独立14项与原件回读通过；native/pair独审有限启动PASS，
+  报告`log/h3b-increment-independent-current/classic-key-name-launch-review-010.md`。
+  新离线消费者父独立337/337 exit0，限定PASS见`classic-proof-candidate/key-name-root-review-001.md`；
+  未导出负向尾窗仍依赖已审native控制流，正式assembler/完整Job资格不因此通过。
+  单次计划`classic-job-key-name-diagnostic-plan.json`已准备但未claim/启动：累计7已消费，最多增至8。
+  010 helper410dcc88…25ff8、新harness626b、必需addon9b617及19项输入已核验；组合已激活，
+  四个旧产物保存在`classic-job-key-name-launch-candidate/before-activation/`，恢复事实见`activation.json`。
+  下一动作是用户新鲜确认UAC时机后执行该单次短测；不复用第7次就绪答复，不补造MB3缺失路径或归因全部历史退出。
 - **前次实际窗口：**`77T6X64G5FNV3TCMEQ2AKPOC7I`已执行，综合路线累计6/6，claim已消费。
   native008不再因Thread72失败；首错`early-io-canary-not-observed`，6步API成功、Write/Read各4096，
   但2IO未关联。成功Create/End后、首次Write前的两条opaque barrier（seq19 SetInfo69、20 FSControl75）
