@@ -24,7 +24,17 @@
   独审REPAIR：`log/h3b-increment-independent-current/classic-raw-review-L556.md`，19份原件及现场退出/清理已核。
   seq55为Close窗内额外O3 Read，错误按self线程归为canary；seq102/105 Delete/DeletePath同IRP碰撞早于首错。
   N在新隔离候选修数值解码/关联门及精确canary代与API窗，F同步离线验算，Safety独立反例；不重复启动。
-  70/79语义与canary尾部消费边界仍调查，不猜真实IRP数量、不将原失败改写成通过。
+  当前隔离实现入口`log/h3b-native-current/classic-job-zero-candidate`：数值矩阵404项及独立44项已绿；
+  精确canary范围使L556整段只剩2条已关联IO、pending0；实际段加明确合成后缀仍复现合法IRP复用被拒。
+  已按独审工程推论批准纯negative activity有序76仅结束busy，不生成Status/Opened；正向Create竞争仍poison。
+  数值、精确canary、API6后消费水位及固定本地IPC分类已形成冻结006（211项），各模块有限独审通过；
+  最终复核另发现完整target辅助70/79被误建正向请求；partial辅助丢失首次IRP占用还可误借后续End。
+  独立9项当前4绿5红，原件`log/h3b-increment-independent-current/L556-target-metadata-red-003.log`。
+  新入口`classic-job-metadata-candidate`区分认证身份与正向64/67/68证明，辅助保有界负向占用，
+  不读Status、不授Opened；原9项已独立全绿，加数值/negative/canary共79项通过，IPC10项复用。
+  native007冻结312项，14编译/13测试及585作者断言全0；006及旧原件保持。F新消费者61项匹配，
+  父独立160测试全0并限定PASS，报告`classic-proof-candidate/metadata-root-review-001.md`。
+  下一单次计划预置累计4→5，native与消费者已获有限启动复核；实际启动只待新的用户就绪确认。
 - **上轮实际失败：**`7ZH3LHUDMG7EVBK6ESGEECUVEM`，完整Job观测路线累计3/3已用，claim不可复用。
   Thread v3/x64尾长74–182已被新前缀解码接受，但首错`early-io-canary-not-observed`；
   无ready或应用启动，STOP EventsLost=356271、discarded=225255、两条unresolved IO。
@@ -45,13 +55,13 @@
   最终wrapper新版49项匹配、63测试独立全0；报告`classic-proof-candidate/wrapper-lifecycle-root-review-001.md`。
   新计划只新增一次短诊断，累计上限3调至4、旧3次及claim保留；脚本绑定已审完并激活，该次已于L556执行，
   不复用先前就绪答复。此为当前综合修复验证，正式95分钟容量仍须依据新实测速率和原件增长评估。
-- **当前已激活观测产物：**综合native005 helper SHA-256
-  `a97c7b4e93d68b1e2845ca18d8a719dc82b2f786d0f2fae9d487068e6bb50763`。
-  新独立有限启动PASS报告`log/h3b-increment-independent-current/classic-lifecycle-launch-review-005.md`；
-  136项native及17项输入均核验。wrapper/admin仅替换固定摘要并已激活，旧004三件原件完整保存在
-  `classic-job-lifecycle-launch-candidate/before-activation`；新计划SHA defcc7de…17fb5。
-  旧004的header/terminal/canary证据依适用范围复用；最终完整Job/真实trace与正式资源资格仍未闭合。
-  入口收据`classic-job-lifecycle-candidate/candidate-receipt-005.json`及同级launch/proof目录。
+- **当前已激活观测产物：**native007 helper SHA-256
+  `6f4c543e7b3d9bec83c31d1fed11e8fc0ddeaa722c564663c6c44cf10f4bf351`。
+  独立有限启动PASS报告`log/h3b-increment-independent-current/classic-metadata-launch-review-007.md`；
+  312项native及17项输入匹配，PS5.1三脚本解析全0。wrapper/admin仅替换固定摘要并已激活，旧005三件
+  原件完整保存在`classic-job-metadata-launch-candidate/before-activation`；单次计划SHA4851a98a…30460。
+  native收据`classic-job-metadata-candidate/candidate-receipt-007.json`，启动输入/激活记录在同级launch目录。
+  未创建新claim、未实际运行；旧壳和未变证据按范围复用，完整Job/真实trace与正式资源资格仍未闭合。
 - **旧失败与有限能力保留：**WFYO首次因Windows默认模式位被拒，0 callback/nameQuery，STOP loss37658；
   YCXD第二次模式修复后被Thread opcode3/v3旧固定长度拒绝，原件缺length/width，精确布局unknown。
   YCXD零loss但首错后忽略67863条，不能算完整观察。三轮均无应用ready；各退出/请求归档/服务恢复见
