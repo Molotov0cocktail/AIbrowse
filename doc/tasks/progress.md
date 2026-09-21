@@ -14,7 +14,18 @@
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee`，均未推送。H3a已关闭。
   当前无实测进程或待处理管理员窗口；后续仍为H3b → H4 → 新D11 → Stage7设计准备，
   停在Stage7首个产品实现之前。临时Build Tools/MSVC/SDK最终移除义务保持。
-- **最新实际失败：**`7ZH3LHUDMG7EVBK6ESGEECUVEM`，完整Job观测路线累计3/3已用，claim不可复用。
+- **最新实际窗口（2026-09-21）：**`L55623CZST3DAIE2ZGN2QQKTBY`已执行，综合路线累计4/4，claim已消费。
+  初次通过helper canary并发布ready，创建产品进程139600，但无产品协议ready；首错为
+  `classic-operation-required-key`（opcode74/v3/x64、40字节、callback17796）。完整数字前缀中至少I/O/K一项为0，
+  原件未记零值mask，不能猜哪项或称foreign/fast-IO。QUERY/STOP均零loss、discard0，但ignoredAfterFailure60869，
+  traceComplete=false；433连续经典序号、149247B原件完整保留，不等于完整事件观测。writer高水位3569B/8行，
+  前缀433行全部written/durable。新canary精确删除成功；五PID已退出，harness实际exit1 `collector-io-timeout`，
+  admin/helper均1、清理子进程0，SessionAbsent，Nahimic恢复Running/Automatic。请求已精确归档。
+  独审REPAIR：`log/h3b-increment-independent-current/classic-raw-review-L556.md`，19份原件及现场退出/清理已核。
+  seq55为Close窗内额外O3 Read，错误按self线程归为canary；seq102/105 Delete/DeletePath同IRP碰撞早于首错。
+  N在新隔离候选修数值解码/关联门及精确canary代与API窗，F同步离线验算，Safety独立反例；不重复启动。
+  70/79语义与canary尾部消费边界仍调查，不猜真实IRP数量、不将原失败改写成通过。
+- **上轮实际失败：**`7ZH3LHUDMG7EVBK6ESGEECUVEM`，完整Job观测路线累计3/3已用，claim不可复用。
   Thread v3/x64尾长74–182已被新前缀解码接受，但首错`early-io-canary-not-observed`；
   无ready或应用启动，STOP EventsLost=356271、discarded=225255、两条unresolved IO。
   两次读名前QUERY均零loss、合计168 QPC ticks，不能覆盖之后丢失；ProcessTrace返回0不代表完整观察。
@@ -32,7 +43,7 @@
   独立model17/owner4/writer6反例闭合；初始CREATE句柄立即保留，身份查询失败仍可精确清理但不虚称FileId已知。
   离线验算004的55项已独立匹配、362测试全0，隐藏退休占用明确依赖已审native完整数字消费，不新增全局名称。
   最终wrapper新版49项匹配、63测试独立全0；报告`classic-proof-candidate/wrapper-lifecycle-root-review-001.md`。
-  新计划只新增一次短诊断，累计上限3调至4、旧3次及claim保留；脚本绑定已审完并激活，待新的UAC时机确认，
+  新计划只新增一次短诊断，累计上限3调至4、旧3次及claim保留；脚本绑定已审完并激活，该次已于L556执行，
   不复用先前就绪答复。此为当前综合修复验证，正式95分钟容量仍须依据新实测速率和原件增长评估。
 - **当前已激活观测产物：**综合native005 helper SHA-256
   `a97c7b4e93d68b1e2845ca18d8a719dc82b2f786d0f2fae9d487068e6bb50763`。
