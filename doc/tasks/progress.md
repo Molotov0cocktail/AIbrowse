@@ -22,8 +22,10 @@
   不作完整源证明。helper/admin均exit1，cleanup0及SessionAbsent；harness自然exit1 ready-timeout，
   四已知PID均退出、Nahimic恢复Running/Automatic，请求已按精确身份归档，本次canary实际不存在。
   独审REPAIR报告`log/h3b-increment-independent-current/classic-raw-review-4VCU.md`，18原件与退出/清理已核。
-  N修精确事件分类；F独立影响验证8项通过，既有消费者无需改decoder。无当前实测或待处理弹窗，
-  native007与全部失败证据保持；新单次计划预置累计5→6，候选尚未完成审核或激活。
+  N仅将SetName72/v2在载荷读取前分类，其它未知拒绝，生命周期规则保持。作者受影响547项通过，
+  独立旧5/16红→新21/21绿；既有消费者无需改decoder，新固定pair与header影响19项由父独立复跑全0。
+  native008与启动入口已获限定独审PASS并激活，native007与失败原件保持。新单次计划累计5→6，
+  未创建新claim或实际运行，下一步仅等用户确认新的管理员弹窗时间。
 - **前次实际窗口：**`L55623CZST3DAIE2ZGN2QQKTBY`已执行，综合路线累计4/4，claim已消费。
   初次通过helper canary并发布ready，创建产品进程139600，但无产品协议ready；首错为
   `classic-operation-required-key`（opcode74/v3/x64、40字节、callback17796）。完整数字前缀中至少I/O/K一项为0，
@@ -65,13 +67,14 @@
   最终wrapper新版49项匹配、63测试独立全0；报告`classic-proof-candidate/wrapper-lifecycle-root-review-001.md`。
   新计划只新增一次短诊断，累计上限3调至4、旧3次及claim保留；脚本绑定已审完并激活，该次已于L556执行，
   不复用先前就绪答复。此为当前综合修复验证，正式95分钟容量仍须依据新实测速率和原件增长评估。
-- **当前已激活观测产物：**native007 helper SHA-256
-  `6f4c543e7b3d9bec83c31d1fed11e8fc0ddeaa722c564663c6c44cf10f4bf351`。
-  独立有限启动PASS报告`log/h3b-increment-independent-current/classic-metadata-launch-review-007.md`；
-  312项native及17项输入匹配，PS5.1三脚本解析全0。wrapper/admin仅替换固定摘要并已激活，旧005三件
-  原件完整保存在`classic-job-metadata-launch-candidate/before-activation`；单次计划SHA4851a98a…30460。
-  native收据`classic-job-metadata-candidate/candidate-receipt-007.json`，启动输入/激活记录在同级launch目录。
-  已创建并消费本次claim，实际结果见4VCU；旧壳和未变证据按范围复用，完整Job/真实trace与正式资源资格仍未闭合。
+- **当前已激活观测产物：**native008 helper SHA-256
+  `dd57b5bf90a18f49870876b81f822e0dcd1adc3d70cb4d744bfc0aa210063b98`。
+  独立有限启动PASS报告`log/h3b-increment-independent-current/classic-thread-events-launch-review-008.md`；
+  94新增依赖及17项输入核验，312旧冻结项复用，PS5.1三脚本解析全0。wrapper/admin只换固定摘要，旧007
+  三件备份在`classic-job-thread-events-launch-candidate/before-activation`；新计划SHA4d2698c9…0c48da。
+  native收据`classic-job-thread-events-candidate/candidate-receipt-008.json`；父消费者复核
+  `classic-proof-candidate/thread-setname-root-review-001.md`。启动输入/激活记录在同级thread-events-launch目录。
+  新claim未创建、未实际运行；旧壳证据按范围复用，完整Job/真实trace与正式资源资格仍未闭合。
 - **旧失败与有限能力保留：**WFYO首次因Windows默认模式位被拒，0 callback/nameQuery，STOP loss37658；
   YCXD第二次模式修复后被Thread opcode3/v3旧固定长度拒绝，原件缺length/width，精确布局unknown。
   YCXD零loss但首错后忽略67863条，不能算完整观察。三轮均无应用ready；各退出/请求归档/服务恢复见
