@@ -25,7 +25,9 @@
   四窗口仅3有效，measurement seq272的DB/RM结束晚于close44.9267ms；两模块快照都在服务恢复后，
   第二次AudioDevProps2.dll阻塞。独审当前13已知PID不存在、旧root PID已被不同creation复用，原root实例退出0。
   可见数据分型见`classic-proof-candidate/visible-3EQG-002.json`；隐藏negative End导致重放差异，
-  978只可作条件分型，不能声称精确恢复native逐因。N修局部依赖Unknown与最小失败诊断，原始触发参数仍unknown。
+  978只可作条件分型，不能声称精确恢复native逐因。局部依赖纯模型经独审26/26+作者30/30有限PASS，
+  入口`log/h3b-increment-independent-current/dependency-pure-review-001/review-v3-pass-001.md`；
+  Name独审捕获detach/换current遗失历史O/K证明边界，仍REPAIR；Runtime/DTO/整体接线未审，原始触发参数仍unknown。
   无下一次claim/启动安排，不复用本次就绪。
 - **第八次实际窗口：**`RMOO4HPDTGFIHRZRFY3WZTDNRY`已执行并失败，累计8/8、claim已消费。
   010首错`classic-protected-path-attempt`（callback55336、Create64/v3/x64），Unknown attempts=0；
@@ -46,7 +48,12 @@
   结果与开放限制见`classic-workspace-launch-candidate/ordinary-integration-result-001.json`，N只读调查窗口超时。
   该单次ETW计划`classic-workspace-diagnostic-plan.json`已于3EQ执行并失败，累计9次已消费，见上。
   MYQL窗口首因是三次并行RmGetList首次成功耗时1110–1223ms；OS总1230.7864ms未超1250ms，
-  但晚于实际close225.5255ms，不能相加并行组或放宽close门。18次自有文件会话复用对照正在准备、尚未执行。
+  但晚于实际close225.5255ms，不能相加并行组或放宽close门。会话复用对照已执行两次（同一18次查询目标，累计GetList9次）。
+  默认沙箱VYD…三Start=29、零GetList；沙箱外普通权限2X6…9次GetList成功返回，
+  第3组复用wal仍报告已关闭的旧外部持有者，按oracle停止；不采用复用路线，不追加第三次。
+  两次worker退出/Job空/三自有文件与root精确清理、已知PID不存在，全部原件保留于
+  `rm-session-experiment-candidate/`。264–604ms的少量返回不能证明正式尾延迟或归属正确。
+  001失败路径日志文件标签错误已在002修正，实际关闭HANDLE正确；不能唯一归因首次29于沙箱。
   正式Job通知join v2已修root NEW缺失、ZERO载荷/逐条时序、异常EXIT类别；独立有限PASS，
   作者111/111、独立27/27，见`log/h3b-increment-independent-current/formal-job-join-review-001/review-v2-001.md`。
   RMOO与3EQ原件仍BLOCKED，未授正式资格。

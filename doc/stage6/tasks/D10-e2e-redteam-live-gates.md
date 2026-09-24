@@ -273,6 +273,9 @@ M0+24/M0+46分钟。此段 supersede 下列legacy-red中所有旧manifest数值�
    非法v4-shaped id、canonical/FTS不一致及真实Service missing/unavailable，且不能绕过Coordinator两次
    Source revalidation、NetworkPolicy或真实HostGate。
 
+采集范围按 detailed-design §15.6.2：去除非owner slot的额外RM时，仍验证每slot的FileId/bytes及实际freeze；
+not-requested必须由真实phase/index决定，measurement0/360、全部drain及finish/cleanup的真实owner门不得跳过。
+
 上述新增实现、聚焦红→绿、必要全量/构建/production smoke、隐私/残留终检与新的独立H3b安全/资源
 Reviewer PASS不可省；不重复审计未受影响的H1静态证明，也不以它替代新运行结果。
 

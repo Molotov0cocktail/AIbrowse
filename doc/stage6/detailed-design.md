@@ -2704,8 +2704,12 @@ parent收集器超时且product时序合格为BLOCKED/harness-timeout，产品�
 
 parent采集器可在Job accounting完成后启动一个独立DB/RM worker，与其后的进程树/lifecycle、临时目录、电池
 串行链重叠；五组名称和记录位置固定，前四组仍按原依赖串行，DB组不得早于accounting结束。DB内部仍是三个
-独立路径的当次RM查询，不缓存占用者、不合并路径；每支独占原始API账本，DB不访问ProcessLedger。DB组begin/end
-取worker实际执行时刻，end须晚于全部RM session和文件pin关闭，不能取调度或主线程取回结果的时间。所有组仍按
+独立路径的当次观测，不缓存占用者、不合并路径；每支独占原始API账本，DB不访问ProcessLedger。
+按下表原有owner范围，measurement0、作为drain0的measurement360和drain1..60必须逐路径新建RM会话；
+warmup及measurement1..359仍完整采集FileId/bytes/pin，但不附加RM查询。此类原件显式标记
+`ownerObservation=not-requested`，不提供伪零owners；validator必须从真实frame的phase/index决定允许形状，
+必需owner的slot、finish及cleanup不得使用该变体，也不能将失败查询转成not-requested。
+DB组begin/end取worker实际执行时刻，end须晚于该组全部实际RM session和文件pin关闭，不能取调度或主线程取回结果的时间。所有组仍按
 共同min/max包络与各自API包含关系验证，真实进程成员矛盾只能使证据无效。返回或异常传播前必须真实回收worker，
 并在此之前保持roots/Job及既有drain互斥保护；回收等待超过固定2秒或无法确认完成则以exit78终止harness，不能
 detach、提前释放借用对象或生成成功样本。此工程并发不改变产品close目标、实际freeze边界或任何既有验收预算。
