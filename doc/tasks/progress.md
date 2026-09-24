@@ -14,6 +14,19 @@
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee`，均未推送。H3a已关闭。
   当前无实测进程或待处理管理员窗口；后续仍为H3b → H4 → 新D11 → Stage7设计准备，
   停在Stage7首个产品实现之前。临时Build Tools/MSVC/SDK最终移除义务保持。
+- **第九次实际窗口：**`3EQGHQGLFILCE5JP5DG2W6WMOA`已执行并失败，累计9/9、claim已消费。
+  首错`classic-request-model-invalid`（callback271477、opcode75/v3/x64、数值零mask0）；32,312,004字节/87137行，
+  已跟踪6进程/5884IO、unresolved978，Name登记253IO/15代但source/proof均0；ignored62899、traceComplete=false。
+  首错callback在model失败前未完整导出，末条可见foreign75不能被当作其完整参数。Unknown attempts=0，
+  不据中断前未见保护命中宣称全程保护门通过。应用279帧/complete，harness自然exit1
+  `BLOCKED/helper-finish-peer-not-live`；helper/admin1、cleanup0/SessionAbsent，收口当时五已知PID已无、服务恢复，
+  请求精确归档。收口在`classic-workspace-launch-candidate/harness-exit-3EQGHQGLFILCE5JP5DG2W6WMOA.json`。
+  新独立原件复核保持BLOCKED：`log/h3b-increment-independent-current/raw-review-3EQ-001/review-3EQ-001.md`。
+  四窗口仅3有效，measurement seq272的DB/RM结束晚于close44.9267ms；两模块快照都在服务恢复后，
+  第二次AudioDevProps2.dll阻塞。独审当前13已知PID不存在、旧root PID已被不同creation复用，原root实例退出0。
+  可见数据分型见`classic-proof-candidate/visible-3EQG-002.json`；隐藏negative End导致重放差异，
+  978只可作条件分型，不能声称精确恢复native逐因。N修局部依赖Unknown与最小失败诊断，原始触发参数仍unknown。
+  无下一次claim/启动安排，不复用本次就绪。
 - **第八次实际窗口：**`RMOO4HPDTGFIHRZRFY3WZTDNRY`已执行并失败，累计8/8、claim已消费。
   010首错`classic-protected-path-attempt`（callback55336、Create64/v3/x64），Unknown attempts=0；
   Name补证登记1条IO，source/proof均0；ignoredAfterFailure=62922、traceComplete=false。
@@ -31,9 +44,17 @@
   一次普通无ETW集成`MYQLGKLQZP4SZF7NHMPQE3YM3A`已exit0：新工作根、279帧/complete、root0/Job空/EOF。
   仅3/4 freeze有效（seq267的DB/RestartManager组1228.3873ms），输入法/音频模块仍BLOCKED；不授资源资格。
   结果与开放限制见`classic-workspace-launch-candidate/ordinary-integration-result-001.json`，N只读调查窗口超时。
-  下一单次ETW计划`classic-workspace-diagnostic-plan.json`最多累计9次，当前8次已消费；尚未claim/启动，
-  需新鲜UAC就绪，不复用RMOO答复。独立提前准备的正式Job通知join仍在新Reviewer复核/修复，不授正式资格。
-- **最新实际窗口（2026-09-21）：**`MB3DR56PBL2OMYWKSAZHVDDRNY`已执行，综合路线累计7/7，claim已消费。
+  该单次ETW计划`classic-workspace-diagnostic-plan.json`已于3EQ执行并失败，累计9次已消费，见上。
+  MYQL窗口首因是三次并行RmGetList首次成功耗时1110–1223ms；OS总1230.7864ms未超1250ms，
+  但晚于实际close225.5255ms，不能相加并行组或放宽close门。18次自有文件会话复用对照正在准备、尚未执行。
+  正式Job通知join v2已修root NEW缺失、ZERO载荷/逐条时序、异常EXIT类别；独立有限PASS，
+  作者111/111、独立27/27，见`log/h3b-increment-independent-current/formal-job-join-review-001/review-v2-001.md`。
+  RMOO与3EQ原件仍BLOCKED，未授正式资格。
+  正式封存遗漏wrapper intent与cleanup两流，root隔离补三文件及v2 schema；39JS/27真实文件测试全0，
+  `formal-seal-completion-candidate/candidate-receipt-001.json`已获有限独审PASS：额外27JS/18真实文件全0，
+  报告`log/h3b-increment-independent-current/seal-completion-review-001/review-001.md`。旧13项/总640MiB门保持；
+  未激活、未装配正式assembler，不能从字节封存通过推出语义或H3b通过。
+- **第七次实际窗口（2026-09-21）：**`MB3DR56PBL2OMYWKSAZHVDDRNY`已执行，综合路线累计7/7，claim已消费。
   native009实际canary-prefix complete=true并发布ready，产品153760启动后约164.9ms以exit1退出；
   harness自然exit1 `collector-io-timeout`，helper随后报`early-io-harness-exited-before-finish`。
   无callbackFailure，callbacks108227、ignored/discard/loss均0；仍有6个invalid-components Create及2条无同O
@@ -131,7 +152,7 @@
   最终wrapper新版49项匹配、63测试独立全0；报告`classic-proof-candidate/wrapper-lifecycle-root-review-001.md`。
   新计划只新增一次短诊断，累计上限3调至4、旧3次及claim保留；脚本绑定已审完并激活，该次已于L556执行，
   不复用先前就绪答复。此为当前综合修复验证，正式95分钟容量仍须依据新实测速率和原件增长评估。
-- **当前已激活观测产物：**native009 helper SHA-256
+- **历史009激活记录：**native009 helper SHA-256
   `b698dd1b17b228248bc4fd4644d149f8f1d1f3f97c04b68e58323dd62d6a77b7`。
   独立有限启动PASS报告`log/h3b-increment-independent-current/classic-key-window-launch-review-009.md`；
   native95项与17项准备输入匹配，父消费者47项匹配、226项独立复跑全0；未变壳/身份/清理按范围复用。
