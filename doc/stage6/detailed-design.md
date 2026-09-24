@@ -2499,6 +2499,14 @@ harness 在 CreateProcess 前创建全新 `run-<128-bit CSPRNG uppercase base32�
 process-temp，LOCALAPPDATA/APPDATA 精确指向对应目录；真实用户 userData、配置或凭据不读取。
 roots必须是本地卷绝对路径，原本NFC；UNC/device/ADS、`.`/`..`、空segment或非固定兄弟关系均拒绝，不能normalize后接受。
 native 从这四个非秘密环境值验证 exact sibling geometry并推导root/runId/userData/watchTemp；不接受调用方路径。
+资格临时工作目录必须位于默认应用日志保护域之外。harness在CreateProcess前用相同路径分类规则验证
+runRoot、五个子根及同步pin必需的全部祖先；任何保护类或Unknown命中均拒绝启动，不通过豁免祖先降低保护门。
+这是针对2026-09-25已证工程布局冲突的修订：旧工作根位于repo日志目录之下，而native隔离检查必须打开
+runRoot及祖先，两项要求无法同时满足。迁移只改变合成运行数据的工程位置，原日志、失败证据和真实用户数据不迁移；
+完整Job的早期IO观察、六root精确授权、目录pin及所有性能阈值保持。
+工作容器及必要祖先在创建六个私有root前就必须受到有效目录data/list读取句柄保护，实际拒绝改名/替换；
+仅有attributes句柄不构成此保证。已有六root的pin能拒绝改名，不覆盖此前创建窗口。用自有目录的实际
+改名/恢复反例验证，不把单独取得DELETE访问句柄等同于改名成功；普通子文件创建和原子私有root创建仍须可用。
 main连接认证前只允许下述同步隔离、QPC/进程身份及固定pipe连接，不能初始化logger、单实例锁、DB、Window或业务服务。
 harness必须在CreateProcess前、native必须在资格CJS入口第一个同步执行段，分别对runRoot、全部五个固定子目录及各级ancestor以
 `FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS` 打开并核验

@@ -231,6 +231,8 @@ M0+24/M0+46分钟。此段 supersede 下列legacy-red中所有旧manifest数值�
    和最早可能IO；从CreateProcess起独立观察整个Job，包含延迟/失败认证、ready和退出，拒绝任何真实产品profile/
    Cookie/凭据/默认应用日志访问。隔离根内合成canary与故意前移读取/副作用证明观察能捕获open/read/write；
    不在真实用户目录制造测试数据。仅改APPDATA环境、mtime不变或JS hook不足；入口前仍有访问须先修最早路径选择。
+   资格工作根必须避开默认日志保护域；启动前检查六root和同步pin全部祖先的分类，旧日志域嵌套布局稳定拒绝，
+   新非日志布局仍需真实全Job观测，不以预检替代验收或豁免受保护目录访问。
    单向通道确无入站read-data/parent write-data；strict DTO、frame预算、partialIO、late-write、sequence/slot/
    prefix错误、队列backpressure、peer crash与CancelIoEx final-reap均有反例，main不阻塞。
 3. 自发QPC freeze：共同frequency与原始ticks、真实write receipt、每组OS API begin/end、sample/closed/resumed

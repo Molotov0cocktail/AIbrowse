@@ -9,11 +9,30 @@
 
 ## 当前状态
 
-- **2026-09-22，H3b仍在修复，正式资源验收未开始。**产品候选
+- **2026-09-25，H3b仍在修复，正式资源验收未开始。**产品候选
   `43efffbc82ff11122230c2362d6484d5feb9b581`已获限定独审PASS；新增RSS修复已独审并合为
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee`，均未推送。H3a已关闭。
   当前无实测进程或待处理管理员窗口；后续仍为H3b → H4 → 新D11 → Stage7设计准备，
   停在Stage7首个产品实现之前。临时Build Tools/MSVC/SDK最终移除义务保持。
+- **第八次实际窗口：**`RMOO4HPDTGFIHRZRFY3WZTDNRY`已执行并失败，累计8/8、claim已消费。
+  010首错`classic-protected-path-attempt`（callback55336、Create64/v3/x64），Unknown attempts=0；
+  Name补证登记1条IO，source/proof均0；ignoredAfterFailure=62922、traceComplete=false。
+  应用遥测已到complete seq279、Job空/双EOF；harness自然exit1 `BLOCKED/helper-finish-peer-not-live`，
+  helper/admin均1、cleanup0/SessionAbsent。五已知PID实际已无，Nahimic恢复Running/Automatic，
+  请求精确归档；收口在`classic-job-key-name-launch-candidate/harness-exit-RMOO4HPDTGFIHRZRFY3WZTDNRY.json`。
+  独立原件REPAIR见`log/h3b-increment-independent-current/classic-raw-review-RMOO.md`；F实际报告002保持BLOCKED。
+  已证旧runRoot在日志保护域内、native必须pin自身/祖先，布局与保护规则冲突；首错具体目录层级仍unknown。
+- **011布局修复已有限独审并激活：**改用repo内`.h3b-workspaces/run-<id>`，六root与全部pin祖先启动前检查；
+  保留保护日志/Profile门。独审还捕获创建前属性pin挡不住空parent改名，已改有效list pin；旧完整六root阶段
+  实际改名原本被拒，不能扩大漏洞结论。作者50项、独立几何12/真实文件6/新绑定15全0；最终报告
+  `log/h3b-increment-independent-current/classic-workspace-launch-review-011.md`。
+  helper d44ca126…c867fe、harness87461a27…451d01、wrapper877b…8200及19输入已核，旧4产物保存于
+  `classic-workspace-launch-candidate/before-activation/`；产品bridge/addon未改，正式harness只编译。
+  一次普通无ETW集成`MYQLGKLQZP4SZF7NHMPQE3YM3A`已exit0：新工作根、279帧/complete、root0/Job空/EOF。
+  仅3/4 freeze有效（seq267的DB/RestartManager组1228.3873ms），输入法/音频模块仍BLOCKED；不授资源资格。
+  结果与开放限制见`classic-workspace-launch-candidate/ordinary-integration-result-001.json`，N只读调查窗口超时。
+  下一单次ETW计划`classic-workspace-diagnostic-plan.json`最多累计9次，当前8次已消费；尚未claim/启动，
+  需新鲜UAC就绪，不复用RMOO答复。独立提前准备的正式Job通知join仍在新Reviewer复核/修复，不授正式资格。
 - **最新实际窗口（2026-09-21）：**`MB3DR56PBL2OMYWKSAZHVDDRNY`已执行，综合路线累计7/7，claim已消费。
   native009实际canary-prefix complete=true并发布ready，产品153760启动后约164.9ms以exit1退出；
   harness自然exit1 `collector-io-timeout`，helper随后报`early-io-harness-exited-before-finish`。
@@ -45,7 +64,7 @@
   单次计划`classic-job-key-name-diagnostic-plan.json`已准备但未claim/启动：累计7已消费，最多增至8。
   010 helper410dcc88…25ff8、新harness626b、必需addon9b617及19项输入已核验；组合已激活，
   四个旧产物保存在`classic-job-key-name-launch-candidate/before-activation/`，恢复事实见`activation.json`。
-  下一动作是用户新鲜确认UAC时机后执行该单次短测；不复用第7次就绪答复，不补造MB3缺失路径或归因全部历史退出。
+  该单次短测已于RMOO执行并失败，见上；不复用就绪答复，不补造MB3缺失路径或归因全部历史退出。
 - **前次实际窗口：**`77T6X64G5FNV3TCMEQ2AKPOC7I`已执行，综合路线累计6/6，claim已消费。
   native008不再因Thread72失败；首错`early-io-canary-not-observed`，6步API成功、Write/Read各4096，
   但2IO未关联。成功Create/End后、首次Write前的两条opaque barrier（seq19 SetInfo69、20 FSControl75）
