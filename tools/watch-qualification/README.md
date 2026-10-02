@@ -22,6 +22,13 @@ worker失败记录invalid，不补零。main遥测原件的QPC为固定16位十�
 CPU、内存、main、释放结果分别报告，已证越界不会被其它指标的缺证掩盖。电池、关闭后DB业务事实、隐私和
 Windows稳定性未覆盖时，总门保持缺证。工具不会自动删除运行根；后续必须先按身份复核数据库与本轮所有权。
 
+报告格式v3使用`rss-growth-v2`、`private-growth-v2`及`handle-growth-v3`。增长按认证task-tab生命周期
+分为idle、Session和过渡；仅过渡再按该点实际存活成员数分组。各组对原始进程树总量与实际QPC独立回归，
+不得扣除子进程成本或用组间平均抵消增长。覆盖门与全部阈值见正式设计§15.6.3，缺覆盖保持缺证。
+所有有效点仍计入绝对预算。`resources`下各指标的`verdict`为当前门结果，`statisticsScope=raw-all-points`
+标明其统计量仍是全点观察；原全点斜率及旧公式结论保存在`rawAllPoints`，详细分组见对应`*Growth`。
+离线重算旧原件须使用新报告文件，保留原计划、原报告及当时的判定，不把后继判据说成旧轮已预声明。
+
 ## 验证
 
 `npm test -- --maxWorkers=1 tools/watch-qualification` 运行报告器与安全预检反例。

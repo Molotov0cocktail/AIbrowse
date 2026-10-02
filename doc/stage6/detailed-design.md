@@ -2327,6 +2327,8 @@ Electron固定版本的`PreSandboxStartup`在应用JS之前处理`--user-data-di
 
 统计固定：median为排序中位数（偶数取中间均值），P95为nearest-rank的ceil(0.95*n)项，peak为最大有效值；
 OLS以有效样本实际QPC小时为x、原值为y，计算带截距斜率。无效/duplicate原件保留，reporter独立复算。
+同一资源槽出现重复有效观察时该序列不得PASS，不能仅选择首条后忽略完整性缺口；重复记录不增加
+median/P95/OLS的样本权重，但任何窗内身份/数值有效观察的绝对peak越界仍须保留FAIL，不受到达顺序影响。
 Node key先NFC并须匹配`^[A-Za-z][A-Za-z0-9_.:-]{0,127}$`，按exact case计数及UTF-8字节排序，不重命名；每key及总量
 均统计、absent/new按0、零ignore list，不改为类型数量。结束进程后的零不能加入正式窗口降低统计。
 

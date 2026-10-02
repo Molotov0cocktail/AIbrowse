@@ -7,6 +7,8 @@ import { reportExit } from './exit-report.ts';
 import { reportBattery } from './battery-report.ts';
 import { reportLoad } from './load-report.ts';
 import { reportHandleGrowth } from './handle-growth-report.ts';
+import { reportRssGrowth } from './rss-growth-report.ts';
+import { reportPrivateGrowth } from './private-growth-report.ts';
 
 export function report(external: string, mainText: string): object {
   const evidence = readEvidence(external, mainText);
@@ -32,10 +34,18 @@ export function report(external: string, mainText: string): object {
     mainTraceComplete: main.traceComplete,
     loadVerdict: load.verdict,
   });
-  const resources = reportResources(evidence.resources, { handleGrowth });
+  const rssGrowth = reportRssGrowth(evidence.resources, evidence.runId, evidence.main, {
+    mainTraceComplete: main.traceComplete,
+    loadVerdict: load.verdict,
+  });
+  const privateGrowth = reportPrivateGrowth(evidence.resources, evidence.runId, evidence.main, {
+    mainTraceComplete: main.traceComplete,
+    loadVerdict: load.verdict,
+  });
+  const resources = reportResources(evidence.resources, { handleGrowth, rssGrowth, privateGrowth });
   // Unimplemented or externally reviewed gates stay explicit; local resource PASS is not H3b PASS.
   return {
-    version: 2,
+    version: 3,
     runId: evidence.runId,
     mode: evidence.resources.window.mode,
     h3b: [resources.verdict, main.verdict, exit.verdict, battery.verdict, load.verdict].includes(
@@ -48,6 +58,8 @@ export function report(external: string, mainText: string): object {
     pendingGates: ['独立关闭后DB业务复算', '安全隔离专项', '电池', 'Windows稳定性及完整生产冒烟'],
     resources,
     handleGrowth,
+    rssGrowth,
+    privateGrowth,
     main,
     exit,
     battery,

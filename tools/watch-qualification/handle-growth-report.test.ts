@@ -12,15 +12,15 @@ import {
   hexQpc,
   resequence,
 } from './growth-report-fixture.ts';
-describe('handle-growth-v2反例', () => {
+describe('handle-growth-v3反例', () => {
   it('恒定周期成本会保留raw OLS失败，但两个阶段均可通过', () => {
     const { input, frames } = fixture();
     const report = reportHandleGrowth(input, RUN_ID, frames, dependencies);
-    expect(report.revision).toBe('handle-growth-v2');
+    expect(report.revision).toBe('handle-growth-v3');
     expect(report.classifications).toEqual({
-      idle: 305,
+      idle: 302,
       session: 51,
-      transition: 5,
+      transition: 8,
       unclassified: 0,
     });
     expect(report.rawAllPoints.statistics!.slopePerHour).toBeGreaterThan(60);
@@ -59,7 +59,7 @@ describe('handle-growth-v2反例', () => {
   });
 
   it('净count相同的task-tab换代仍是过渡', () => {
-    const { input, frames } = fixture();
+    const { input, frames } = fixture({ transitions: [30, 120, 220, 320, 358] });
     const report = reportHandleGrowth(input, RUN_ID, frames, dependencies);
     expect(report.classifications.transition).toBe(5);
     expect(report.classifications.idle + report.classifications.session).toBe(356);
@@ -120,7 +120,7 @@ describe('handle-growth-v2反例', () => {
     report = reportHandleGrowth(gap.input, RUN_ID, gap.frames, dependencies);
     expect(report.verdict).toBe('BLOCKED/evidence-insufficient');
     expect(report.evidenceIssues).toContain('至少一个members观察的锚序、锚距或QPC不可信');
-    expect(report.classifications.transition).toBe(5);
+    expect(report.classifications.transition).toBe(8);
   });
 
   it('跨过OS begin的sample区间不能冒充前锚', () => {

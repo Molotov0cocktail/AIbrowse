@@ -41,28 +41,39 @@ export interface MetricReport {
   missingSlots: number[];
   duplicateSlots: number[];
   invalidObservations: number;
+  peakObservationCount: number;
   violations: string[];
   endpointErrorsSeconds: { first: number | null; last: number | null };
 }
 export interface ResourceReport {
   mode: Window['mode'];
   verdict: Verdict;
-  handleGrowthRevision: 'raw-all-points-v1' | 'handle-growth-v2';
+  handleGrowthRevision: 'raw-all-points-v1' | 'handle-growth-v3';
+  rssGrowthRevision: 'raw-all-points-v1' | 'rss-growth-v2';
+  privateGrowthRevision: 'raw-all-points-v1' | 'private-growth-v2';
   evidenceIssues: string[];
   cpuPercent: MetricReport & {
     counterEndpointSpanSeconds: number | null;
     coveredIntervalSeconds: number;
   };
-  rssMiB: MetricReport;
-  privateMiB: MetricReport;
-  handles: MetricReport;
+  rssMiB: GrowthMetricReport;
+  privateMiB: GrowthMetricReport;
+  handles: GrowthMetricReport;
   activeProcesses: MetricReport;
 }
 export interface ResourceReportOptions {
-  handleGrowth?: { revision: 'handle-growth-v2'; verdict: Verdict };
+  handleGrowth?: { revision: 'handle-growth-v3'; verdict: Verdict; violations?: string[] };
+  rssGrowth?: { revision: 'rss-growth-v2'; verdict: Verdict; violations?: string[] };
+  privateGrowth?: { revision: 'private-growth-v2'; verdict: Verdict; violations?: string[] };
+}
+export interface GrowthMetricReport extends MetricReport {
+  growthRevision: 'raw-all-points-v1' | 'handle-growth-v3' | 'rss-growth-v2' | 'private-growth-v2';
+  statisticsScope: 'raw-all-points';
+  rawAllPoints: MetricReport;
 }
 interface Selected<T> {
   values: Map<number, Observation<T>>;
+  allValid: Observation<T>[];
   missing: number[];
   duplicate: number[];
   invalid: number;
@@ -112,7 +123,9 @@ export function selectObservations<T>(
 ): Selected<T> {
   const last = validateWindow(window);
   const values = new Map<number, Observation<T>>();
-  const duplicate: number[] = [];
+  const allValid: Observation<T>[] = [];
+  const seen = new Set<number>();
+  const duplicate = new Set<number>();
   let invalid = 0;
   for (const observation of observations) {
     try {
@@ -124,15 +137,22 @@ export function selectObservations<T>(
         ++invalid;
         continue;
       }
-      if (values.has(observation.slot)) duplicate.push(observation.slot);
-      else values.set(observation.slot, observation);
+      allValid.push(observation);
+      if (seen.has(observation.slot)) {
+        duplicate.add(observation.slot);
+        values.delete(observation.slot);
+      } else {
+        seen.add(observation.slot);
+        values.set(observation.slot, observation);
+      }
     } catch {
       ++invalid;
     }
   }
   return {
     values,
-    duplicate,
+    allValid,
+    duplicate: [...duplicate].sort((a, b) => a - b),
     invalid,
     missing: Array.from({ length: last + 1 }, (_, slot) => slot).filter(
       (slot) => !values.has(slot),
@@ -237,11 +257,25 @@ export function metric(
   },
   complete: boolean,
   extraViolations: string[] = [],
+  peakPoints: readonly Point[] = points,
 ): MetricReport {
   const stats = statistics(points);
+  // Ambiguous slots do not enter distributions; every valid observation still constrains peak.
+  const peak = peakPoints.reduce<number | null>(
+    (maximum, row) => (maximum === null ? row.value : Math.max(maximum, row.value)),
+    null,
+  );
+  if (stats !== null && peak !== null) stats.observedPeak = peak;
   const violations = [...extraViolations];
+  if (
+    window.mode === 'formal' &&
+    limits.observedPeak !== undefined &&
+    peak !== null &&
+    peak > limits.observedPeak
+  )
+    violations.push(`observedPeak=${peak} 超过 ${limits.observedPeak}`);
   if (stats !== null && window.mode === 'formal') {
-    for (const name of ['median', 'p95', 'observedPeak', 'slopePerHour'] as const) {
+    for (const name of ['median', 'p95', 'slopePerHour'] as const) {
       const limit = limits[name];
       const value = stats[name];
       if (limit !== undefined && value !== null && value > limit)
@@ -260,13 +294,14 @@ export function metric(
   return {
     verdict: violations.length
       ? 'FAIL-product'
-      : complete && stats !== null && window.mode === 'formal'
+      : complete && !selection.duplicate.length && stats !== null && window.mode === 'formal'
         ? 'PASS'
         : 'BLOCKED/evidence-insufficient',
     statistics: stats,
     missingSlots: selection.missing,
     duplicateSlots: selection.duplicate,
     invalidObservations: selection.invalid,
+    peakObservationCount: peakPoints.length,
     violations,
     endpointErrorsSeconds: {
       first: first?.seconds ?? null,
@@ -284,6 +319,7 @@ export function reportResources(
   const evidenceIssues = cadenceIssues(input);
   if (window.mode === 'short') evidenceIssues.push('短验只报告观察数据，不授正式资源门通过');
   const cpu = selectObservations(window, input.cpu, (value) => ticks(value) >= 0n);
+  if (cpu.duplicate.length) evidenceIssues.push('CPU存在重复有效观察槽');
   const cpuPoints: Point[] = [];
   const missingIntervals: number[] = [];
   let coveredIntervalSeconds = 0;
@@ -336,9 +372,14 @@ export function reportResources(
   const lastCpu = cpu.values.get(last);
   cpuReport.endpointErrorsSeconds.first = firstCpu ? point(window, firstCpu, 0).seconds : null;
   const members = selectObservations(window, input.members, validMembers);
+  if (members.duplicate.length) evidenceIssues.push('members存在重复有效观察槽');
   const rows = [...members.values.values()].sort((a, b) => a.slot - b.slot);
-  const sum = (field: 'rssBytes' | 'privateBytes' | 'handles', divisor = 1): Point[] =>
-    rows.map((row) =>
+  const sum = (
+    field: 'rssBytes' | 'privateBytes' | 'handles',
+    divisor = 1,
+    observations = rows,
+  ): Point[] =>
+    observations.map((row) =>
       point(
         window,
         row,
@@ -347,6 +388,30 @@ export function reportResources(
     );
   const memberComplete = complete && members.missing.length <= 3;
   const processPoints = rows.map((row) => point(window, row, row.value!.processes.length));
+  const growthMetric = (
+    raw: MetricReport,
+    absolute: MetricReport,
+    growth:
+      | ResourceReportOptions['handleGrowth']
+      | ResourceReportOptions['rssGrowth']
+      | ResourceReportOptions['privateGrowth'],
+  ): GrowthMetricReport => {
+    const verdicts = growth ? [absolute.verdict, growth.verdict] : [raw.verdict];
+    return {
+      ...raw,
+      verdict: verdicts.includes('FAIL-product')
+        ? 'FAIL-product'
+        : verdicts.every((verdict) => verdict === 'PASS')
+          ? 'PASS'
+          : 'BLOCKED/evidence-insufficient',
+      violations: growth
+        ? [...new Set([...absolute.violations, ...(growth.violations ?? [])])]
+        : raw.violations,
+      growthRevision: growth?.revision ?? 'raw-all-points-v1',
+      statisticsScope: 'raw-all-points',
+      rawAllPoints: raw,
+    };
+  };
   const reports = {
     cpuPercent: {
       ...cpuReport,
@@ -356,26 +421,68 @@ export function reportResources(
           : null,
       coveredIntervalSeconds,
     },
-    rssMiB: metric(
-      window,
-      members,
-      sum('rssBytes', 1048576),
-      { median: 1024, p95: 1536, observedPeak: 2048, slopePerHour: 24 },
-      memberComplete,
+    rssMiB: growthMetric(
+      metric(
+        window,
+        members,
+        sum('rssBytes', 1048576),
+        { median: 1024, p95: 1536, observedPeak: 2048, slopePerHour: 24 },
+        memberComplete,
+        [],
+        sum('rssBytes', 1048576, members.allValid),
+      ),
+      metric(
+        window,
+        members,
+        sum('rssBytes', 1048576),
+        { median: 1024, p95: 1536, observedPeak: 2048 },
+        memberComplete,
+        [],
+        sum('rssBytes', 1048576, members.allValid),
+      ),
+      options.rssGrowth,
     ),
-    privateMiB: metric(
-      window,
-      members,
-      sum('privateBytes', 1048576),
-      { median: 1280, p95: 1792, observedPeak: 2048, slopePerHour: 24 },
-      memberComplete,
+    privateMiB: growthMetric(
+      metric(
+        window,
+        members,
+        sum('privateBytes', 1048576),
+        { median: 1280, p95: 1792, observedPeak: 2048, slopePerHour: 24 },
+        memberComplete,
+        [],
+        sum('privateBytes', 1048576, members.allValid),
+      ),
+      metric(
+        window,
+        members,
+        sum('privateBytes', 1048576),
+        { median: 1280, p95: 1792, observedPeak: 2048 },
+        memberComplete,
+        [],
+        sum('privateBytes', 1048576, members.allValid),
+      ),
+      options.privateGrowth,
     ),
-    handles: metric(
-      window,
-      members,
-      sum('handles'),
-      { median: 3000, p95: 4000, observedPeak: 5000, slopePerHour: 60 },
-      memberComplete,
+    handles: growthMetric(
+      metric(
+        window,
+        members,
+        sum('handles'),
+        { median: 3000, p95: 4000, observedPeak: 5000, slopePerHour: 60 },
+        memberComplete,
+        [],
+        sum('handles', 1, members.allValid),
+      ),
+      metric(
+        window,
+        members,
+        sum('handles'),
+        { median: 3000, p95: 4000, observedPeak: 5000 },
+        memberComplete,
+        [],
+        sum('handles', 1, members.allValid),
+      ),
+      options.handleGrowth,
     ),
     activeProcesses: metric(
       window,
@@ -385,15 +492,7 @@ export function reportResources(
       memberComplete,
     ),
   };
-  const verdicts = options.handleGrowth
-    ? [
-        reports.cpuPercent.verdict,
-        reports.rssMiB.verdict,
-        reports.privateMiB.verdict,
-        reports.activeProcesses.verdict,
-        options.handleGrowth.verdict,
-      ]
-    : Object.values(reports).map((report) => report.verdict);
+  const verdicts = Object.values(reports).map((report) => report.verdict);
   return {
     mode: window.mode,
     verdict: verdicts.includes('FAIL-product')
@@ -402,6 +501,8 @@ export function reportResources(
         ? 'PASS'
         : 'BLOCKED/evidence-insufficient',
     handleGrowthRevision: options.handleGrowth?.revision ?? 'raw-all-points-v1',
+    rssGrowthRevision: options.rssGrowth?.revision ?? 'raw-all-points-v1',
+    privateGrowthRevision: options.privateGrowth?.revision ?? 'raw-all-points-v1',
     evidenceIssues,
     ...reports,
   };

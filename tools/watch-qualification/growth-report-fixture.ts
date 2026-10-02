@@ -15,6 +15,7 @@ export const PULSE_LENGTHS = [3, 2, 3, 2, 3, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2,
 interface FixtureOptions {
   handle?: (slot: number, session: boolean) => number;
   transitions?: number[];
+  ownedTransitionPulses?: number[];
 }
 
 export function hexQpc(value: number): string {
@@ -56,7 +57,10 @@ export function fixture(options: FixtureOptions = {}): {
   );
   for (const [pulseIndex, slots] of pulseSlots.entries())
     for (const slot of slots) phase.set(slot, pulseIndex);
-  const transitions = new Set(options.transitions ?? [30, 120, 220, 320, 358]);
+  const ownedPulses =
+    options.ownedTransitionPulses ?? (options.transitions ? [] : [0, 3, 5, 8, 10, 13, 15, 18]);
+  const ownedTransitions = new Map(ownedPulses.map((pulse) => [PULSE_STARTS[pulse]! - 1, pulse]));
+  const transitions = new Set(options.transitions ?? []);
   const frames: QualificationFrame[] = [];
   const add = (frame: QualificationFrame): void => {
     frames.push({ ...frame, sequence: frames.length + 1 } as QualificationFrame);
@@ -126,6 +130,11 @@ export function fixture(options: FixtureOptions = {}): {
     }
     const target = BEGIN + slot * 10 * FREQUENCY;
     heartbeat(slot === 0 ? target : target - 500);
+    const enteringPulse = ownedTransitions.get(slot);
+    if (enteringPulse !== undefined) {
+      registerPulse(enteringPulse);
+      currentPulse = enteringPulse;
+    }
     if (transitions.has(slot)) {
       const transient = `task-tab:${++taskIdentity}`;
       add({
@@ -202,3 +211,38 @@ export const dependencies = {
   mainTraceComplete: true,
   loadVerdict: 'PASS' as const,
 };
+export function groupedFixture(memberCount?: (pulse: number) => number) {
+  const data = fixture({ ownedTransitionPulses: Array.from({ length: 20 }, (_, index) => index) });
+  const pulseBySlot = new Map(PULSE_STARTS.map((start, pulse) => [start - 1, pulse]));
+  const busy = new Set(data.pulseSlots.flat());
+  for (const row of data.input.members) {
+    const pulse = pulseBySlot.get(row.slot);
+    const count =
+      pulse === undefined
+        ? busy.has(row.slot)
+          ? 8
+          : 4
+        : (memberCount?.(pulse) ?? (pulse % 5 < (pulse < 10 ? 3 : 2) ? 4 : 8));
+    const processes = Array.from({ length: count }, (_, index) => ({
+      pid: index < 4 ? index + 10 : 1000 + row.slot * 16 + index,
+      creationFileTime: (index < 4 ? index + 1 : 1000 + row.slot * 16 + index)
+        .toString(16)
+        .padStart(16, '0'),
+      inJob: true,
+      rssBytes: 100 * 1048576,
+      privateBytes: 120 * 1048576,
+      handles: 100,
+    }));
+    const identities = processes.map(({ pid, creationFileTime }) => ({ pid, creationFileTime }));
+    row.value = { before: identities, after: identities, processes };
+  }
+  return { ...data, pulseBySlot, busy };
+}
+
+export function hours(data: ReturnType<typeof fixture>, slot: number): number {
+  return (
+    Number(BigInt(data.input.members[slot]!.endQpc) - BigInt(data.input.window.beginQpc)) /
+    data.input.window.qpcFrequency /
+    3600
+  );
+}

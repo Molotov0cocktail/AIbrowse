@@ -15,7 +15,6 @@ import {
 } from './resource-report.ts';
 import { statistics, type Point, type Statistics } from './statistics.ts';
 
-const REVISION = 'handle-growth-v2' as const;
 const SESSION_INDEX_FIRST = 80;
 const SESSION_INDEX_LAST = 99;
 const PULSES_PER_ROUND = 5;
@@ -43,8 +42,14 @@ export interface HandleGrowthPulseCoverage {
   lifecycleComplete: boolean;
 }
 
+export interface TransitionGrowthGroup extends HandleGrowthPhaseReport {
+  memberCount: number;
+  roundPoints: number[];
+  slots: number[];
+}
+
 export interface HandleGrowthReport {
-  revision: typeof REVISION;
+  revision: 'handle-growth-v3' | 'rss-growth-v2' | 'private-growth-v2';
   verdict: Verdict;
   evidenceIssues: string[];
   violations: string[];
@@ -59,6 +64,10 @@ export interface HandleGrowthReport {
   idle: HandleGrowthPhaseReport;
   session: HandleGrowthPhaseReport;
   pulseCoverage: HandleGrowthPulseCoverage[];
+  transitionGroups: TransitionGrowthGroup[];
+  transitionUnassignedSlots: number[];
+  transitionObserved: boolean;
+  phaseSlots: { idle: number[]; session: number[]; transition: number[]; unclassified: number[] };
 }
 
 interface Anchor {
@@ -68,6 +77,7 @@ interface Anchor {
   taskTabs: number;
   taskTabGeneration: number;
   pulseKey: string | null;
+  taskRounds: (number | null)[];
 }
 
 interface PulseLifecycle {
@@ -133,6 +143,7 @@ function replayAnchors(
   trusted: boolean;
   anchors: Anchor[];
   lifecycles: Map<string, PulseLifecycle>;
+  taskChanges: { sequence: number; round: number | null }[];
   issues: string[];
 } {
   const issues: string[] = [];
@@ -143,6 +154,7 @@ function replayAnchors(
   const tasks = new Map<string, string | null>();
   const seenTasks = new Set<string>();
   const lifecycles = new Map<string, PulseLifecycle>();
+  const taskChanges: { sequence: number; round: number | null }[] = [];
   let generation = 0;
   let ready = false;
   let complete = false;
@@ -193,12 +205,20 @@ function replayAnchors(
               seenTasks.add(event.identity);
               const assignment = fullPulse(coordinators);
               tasks.set(event.identity, assignment);
+              taskChanges.push({
+                sequence: frame.sequence,
+                round: assignment === null ? null : Number(assignment.split(':')[0]),
+              });
               if (assignment !== null) ++lifecycle(assignment).registrations;
             }
           } else {
             if (!tasks.has(event.identity)) issue('task-tab释放没有匹配注册');
             else {
               const assignment = tasks.get(event.identity);
+              taskChanges.push({
+                sequence: frame.sequence,
+                round: assignment == null ? null : Number(assignment.split(':')[0]),
+              });
               tasks.delete(event.identity);
               if (assignment !== null && assignment !== undefined) ++lifecycle(assignment).releases;
             }
@@ -224,6 +244,9 @@ function replayAnchors(
           taskTabs: tasks.size,
           taskTabGeneration: generation,
           pulseKey: anchorPulse(tasks, coordinators),
+          taskRounds: [...tasks.values()].map((assignment) =>
+            assignment === null ? null : Number(assignment.split(':')[0]),
+          ),
         };
         if (end < begin || (previousAnchor !== null && begin < previousAnchor.end))
           issue('heartbeat/sample锚的QPC与序列不一致');
@@ -244,15 +267,17 @@ function replayAnchors(
       dependencies.mainTraceComplete && dependencies.loadVerdict === 'PASS' && !issues.length,
     anchors,
     lifecycles,
+    taskChanges,
     issues: [...new Set(issues)],
   };
 }
 
 function phaseReport(
-  name: 'idle' | 'session',
+  name: string,
   points: Point[],
   coverageComplete: boolean,
   formal: boolean,
+  limit: number,
 ): HandleGrowthPhaseReport {
   const stats = statistics(points);
   const violations: string[] = [];
@@ -261,9 +286,9 @@ function phaseReport(
     coverageComplete &&
     stats?.slopePerHour !== null &&
     stats?.slopePerHour !== undefined &&
-    stats.slopePerHour > 60
+    stats.slopePerHour > limit
   )
-    violations.push(`${name} slopePerHour=${stats.slopePerHour} 超过 60`);
+    violations.push(`${name} slopePerHour=${stats.slopePerHour} 超过 ${limit}`);
   return {
     count: points.length,
     spanSeconds: stats?.spanSeconds ?? null,
@@ -274,41 +299,63 @@ function phaseReport(
 }
 
 /**
- * Applies the frozen handle-growth-v2 oracle. All-point absolute statistics and the legacy raw
- * OLS remain visible; only the two phase-qualified slopes replace raw OLS as the growth gate.
+ * Classifies from authenticated owners only. Transition topology is the validated OS member
+ * count; the complete raw tree total remains the dependent value in every regression.
  */
-export function reportHandleGrowth(
+export function reportResourceGrowth(
   input: ResourceInput,
   runId: string,
   frames: readonly QualificationFrame[],
   dependencies: HandleGrowthDependencies,
+  resource: 'handles' | 'rssMiB' | 'privateMiB',
 ): HandleGrowthReport {
+  const revision =
+    resource === 'handles'
+      ? 'handle-growth-v3'
+      : resource === 'rssMiB'
+        ? 'rss-growth-v2'
+        : 'private-growth-v2';
+  const limit = resource === 'handles' ? 60 : 24;
+  const absoluteLimits =
+    resource === 'handles'
+      ? { median: 3000, p95: 4000, observedPeak: 5000 }
+      : resource === 'rssMiB'
+        ? { median: 1024, p95: 1536, observedPeak: 2048 }
+        : { median: 1280, p95: 1792, observedPeak: 2048 };
+  const total = (row: ResourceInput['members'][number]): number =>
+    row.value!.processes.reduce(
+      (sum, member) =>
+        sum +
+        (resource === 'handles'
+          ? member.handles
+          : (resource === 'rssMiB' ? member.rssBytes : member.privateBytes) / 1048576),
+      0,
+    );
   const evidenceIssues = cadenceIssues(input);
-  if (input.window.mode === 'short')
-    evidenceIssues.push('短验只报告句柄观察数据，不授handle-growth-v2通过');
+  if (input.window.mode === 'short') evidenceIssues.push(`短验只报告观察数据，不授${revision}通过`);
   const selected = selectObservations(input.window, input.members, validMembers);
+  if (selected.duplicate.length) evidenceIssues.push('members存在重复有效观察槽');
   const rows = [...selected.values.values()].sort((a, b) => a.slot - b.slot);
-  const handlePoints = rows.map((row) =>
-    point(
-      input.window,
-      row,
-      row.value!.processes.reduce((sum, member) => sum + member.handles, 0),
-    ),
-  );
+  const resourcePoints = rows.map((row) => point(input.window, row, total(row)));
+  const peakPoints = selected.allValid.map((row) => point(input.window, row, total(row)));
   const complete = evidenceIssues.length === 0 && selected.missing.length <= 3;
   const rawAllPoints = metric(
     input.window,
     selected,
-    handlePoints,
-    { median: 3000, p95: 4000, observedPeak: 5000, slopePerHour: 60 },
+    resourcePoints,
+    { ...absoluteLimits, slopePerHour: limit },
     complete,
+    [],
+    peakPoints,
   );
   const absolute = metric(
     input.window,
     selected,
-    handlePoints,
-    { median: 3000, p95: 4000, observedPeak: 5000 },
+    resourcePoints,
+    absoluteLimits,
     complete,
+    [],
+    peakPoints,
   );
   const replay = replayAnchors(runId, frames, dependencies);
   evidenceIssues.push(...replay.issues);
@@ -318,6 +365,17 @@ export function reportHandleGrowth(
   const pulsePoints = new Map<string, number>();
   let transition = 0;
   let unclassified = 0;
+  const transitionPoints = new Map<
+    number,
+    { points: Point[]; rounds: number[]; unassigned: number }
+  >();
+  const transitionUnassignedSlots: number[] = [];
+  const phaseSlots: HandleGrowthReport['phaseSlots'] = {
+    idle: [],
+    session: [],
+    transition: [],
+    unclassified: [],
+  };
   if (replay.trusted) {
     const frequency = BigInt(input.window.qpcFrequency);
     for (const row of rows) {
@@ -331,6 +389,7 @@ export function reportHandleGrowth(
       }
       if (!left || !right) {
         ++unclassified;
+        phaseSlots.unclassified.push(row.slot);
         evidenceIssues.push('至少一个members观察缺少前锚或后锚');
         continue;
       }
@@ -340,28 +399,64 @@ export function reportHandleGrowth(
         right.begin - left.end > 12n * frequency
       ) {
         ++unclassified;
+        phaseSlots.unclassified.push(row.slot);
         evidenceIssues.push('至少一个members观察的锚序、锚距或QPC不可信');
         continue;
       }
-      if (left.taskTabGeneration !== right.taskTabGeneration) {
+      const classified = point(input.window, row, total(row));
+      if (
+        left.taskTabGeneration !== right.taskTabGeneration ||
+        (left.taskTabs === right.taskTabs && left.taskTabs !== 0 && left.taskTabs !== 4)
+      ) {
         ++transition;
+        phaseSlots.transition.push(row.slot);
+        const changed = replay.taskChanges.filter(
+          (change) => change.sequence > left!.sequence && change.sequence < right!.sequence,
+        );
+        const rounds = [
+          ...left.taskRounds,
+          ...right.taskRounds,
+          ...changed.map((change) => change.round),
+        ];
+        const assigned = new Set(rounds);
+        const round =
+          rounds.length > 0 && !assigned.has(null) && assigned.size === 1 ? rounds[0] : null;
+        const memberCount = row.value!.processes.length;
+        const group = transitionPoints.get(memberCount) ?? {
+          points: [],
+          rounds: [0, 0, 0, 0],
+          unassigned: 0,
+        };
+        group.points.push(classified);
+        if (round === null || round === undefined || round < 0 || round >= ROUNDS) {
+          transitionUnassignedSlots.push(row.slot);
+          ++group.unassigned;
+        } else {
+          group.rounds[round]! += 1;
+        }
+        transitionPoints.set(memberCount, group);
         continue;
       }
       if (left.taskTabs !== right.taskTabs) {
         ++unclassified;
+        phaseSlots.unclassified.push(row.slot);
         evidenceIssues.push('无task-tab变更时前后锚状态不一致');
         continue;
       }
-      const value = row.value!.processes.reduce((sum, member) => sum + member.handles, 0);
-      const classified = point(input.window, row, value);
-      if (left.taskTabs === 0) idlePoints.push(classified);
-      else if (left.taskTabs === 4) {
+      if (left.taskTabs === 0) {
+        idlePoints.push(classified);
+        phaseSlots.idle.push(row.slot);
+      } else if (left.taskTabs === 4) {
         sessionPoints.push(classified);
+        phaseSlots.session.push(row.slot);
         if (left.pulseKey !== null && left.pulseKey === right.pulseKey)
           pulsePoints.set(left.pulseKey, (pulsePoints.get(left.pulseKey) ?? 0) + 1);
-      } else ++transition;
+      }
     }
-  } else unclassified = rows.length;
+  } else {
+    unclassified = rows.length;
+    phaseSlots.unclassified.push(...rows.map((row) => row.slot));
+  }
 
   const pulseCoverage: HandleGrowthPulseCoverage[] = [];
   for (let round = 0; round < ROUNDS; ++round) {
@@ -396,11 +491,36 @@ export function reportHandleGrowth(
   if (unclassified) evidenceIssues.push('存在因缺锚或trace不可信而无法分类的members观察');
 
   const formal = input.window.mode === 'formal';
-  const idle = phaseReport('idle', idlePoints, idleCoverage, formal);
-  const session = phaseReport('session', sessionPoints, sessionCoverage, formal);
-  const violations = [...absolute.violations, ...idle.violations, ...session.violations];
+  const idle = phaseReport('idle', idlePoints, idleCoverage, formal, limit);
+  const session = phaseReport('session', sessionPoints, sessionCoverage, formal, limit);
+  const transitionGroups: TransitionGrowthGroup[] = [...transitionPoints.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([memberCount, group]) => {
+      const stats = statistics(group.points);
+      const coverage =
+        replay.trusted &&
+        group.unassigned === 0 &&
+        group.rounds.every((count) => count >= 2) &&
+        group.points.length >= 8 &&
+        (stats?.spanSeconds ?? -1) >= 2700;
+      if (!coverage) evidenceIssues.push(`过渡T[${memberCount}]缺少四轮各两点或2700秒覆盖`);
+      return {
+        memberCount,
+        roundPoints: group.rounds,
+        slots: group.points.map((row) => row.slot),
+        ...phaseReport(`transition[${memberCount}]`, group.points, coverage, formal, limit),
+      };
+    });
+  if (transitionUnassignedSlots.length)
+    evidenceIssues.push('存在不能由task-tab所有权归属正式轮次的过渡观察');
+  const violations = [
+    ...absolute.violations,
+    ...idle.violations,
+    ...session.violations,
+    ...transitionGroups.flatMap((group) => group.violations),
+  ];
   return {
-    revision: REVISION,
+    revision,
     verdict: violations.length
       ? 'FAIL-product'
       : formal &&
@@ -424,5 +544,21 @@ export function reportHandleGrowth(
     idle,
     session,
     pulseCoverage,
+    transitionGroups,
+    transitionUnassignedSlots,
+    transitionObserved: transition > 0,
+    phaseSlots,
+  };
+}
+
+export function reportHandleGrowth(
+  input: ResourceInput,
+  runId: string,
+  frames: readonly QualificationFrame[],
+  dependencies: HandleGrowthDependencies,
+): HandleGrowthReport & { revision: 'handle-growth-v3' } {
+  return {
+    ...reportResourceGrowth(input, runId, frames, dependencies, 'handles'),
+    revision: 'handle-growth-v3',
   };
 }

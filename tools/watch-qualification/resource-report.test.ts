@@ -35,6 +35,100 @@ function fixture(): ResourceInput {
 }
 
 describe('独立资源报告反例', () => {
+  it('重复members槽不授PASS，且先低后高或先高后低都保留可信绝对peak', () => {
+    for (const highFirst of [false, true]) {
+      const input = fixture();
+      const high = structuredClone(input.members[20]!);
+      Object.assign(high.value!.processes[0]!, {
+        rssBytes: 2049 * 1048576,
+        privateBytes: 2049 * 1048576,
+        handles: 5001,
+      });
+      if (highFirst) input.members.unshift(high);
+      else input.members.push(high);
+      const report = reportResources(input);
+      for (const [name, peak] of [
+        ['rssMiB', 2049],
+        ['privateMiB', 2049],
+        ['handles', 5001],
+      ] as const) {
+        expect(report[name].verdict).toBe('FAIL-product');
+        expect(report[name].statistics!.observedPeak).toBe(peak);
+        expect(report[name].statistics!.count).toBe(360);
+        expect(report[name].statistics!.slopePerHour).toBe(0);
+        expect(report[name].duplicateSlots).toEqual([20]);
+        expect(report[name].missingSlots).toEqual([20]);
+      }
+    }
+  });
+
+  it('相同低值重复成员或CPU端点仍阻断PASS，不拼造CPU区间', () => {
+    const input = fixture();
+    input.members.push(structuredClone(input.members[20]!));
+    input.cpu.push(structuredClone(input.cpu[20]!));
+    const report = reportResources(input);
+    expect(report.rssMiB.verdict).toBe('BLOCKED/evidence-insufficient');
+    expect(report.cpuPercent.verdict).toBe('BLOCKED/evidence-insufficient');
+    expect(report.cpuPercent.missingSlots).toEqual([20, 21]);
+    expect(report.cpuPercent.statistics!.count).toBe(358);
+    expect(report.cpuPercent.coveredIntervalSeconds).toBe(3580);
+  });
+
+  it('第三条重复不会重新进入统计，三种到达顺序不改变唯一统计与全部有效峰值', () => {
+    for (const order of [
+      [100, 200, 2049],
+      [2049, 100, 200],
+      [200, 2049, 100],
+    ]) {
+      const input = fixture();
+      const template = input.members.splice(20, 1)[0]!;
+      for (const value of order) {
+        const row = structuredClone(template);
+        row.value!.processes[0]!.rssBytes = value * 1048576;
+        input.members.push(row);
+      }
+      const report = reportResources(input).rssMiB;
+      expect(report.verdict).toBe('FAIL-product');
+      expect(report.statistics).toMatchObject({
+        count: 360,
+        median: 100,
+        p95: 100,
+        observedPeak: 2049,
+        slopePerHour: 0,
+      });
+      expect(report.peakObservationCount).toBe(363);
+      expect(report.duplicateSlots).toEqual([20]);
+      expect(report.missingSlots).toEqual([20]);
+    }
+  });
+
+  it('全部槽重复仍保留有效峰值，窗外或身份无效的高值不能当作可信峰值', () => {
+    const input = fixture();
+    for (const row of [...input.members]) {
+      const duplicate = structuredClone(row);
+      duplicate.value!.processes[0]!.rssBytes = 2049 * 1048576;
+      input.members.push(duplicate);
+    }
+    const duplicated = reportResources(input).rssMiB;
+    expect(duplicated.statistics).toBeNull();
+    expect(duplicated.peakObservationCount).toBe(722);
+    expect(duplicated.violations).toEqual(['observedPeak=2049 超过 2048']);
+    expect(duplicated.verdict).toBe('FAIL-product');
+    const valid = fixture();
+    const outside = structuredClone(valid.members[20]!);
+    outside.endQpc = outside.beginQpc = '1';
+    outside.value!.processes[0]!.rssBytes = 2049 * 1048576;
+    const untrusted = structuredClone(outside);
+    untrusted.beginQpc = untrusted.endQpc = valid.members[20]!.endQpc;
+    untrusted.value!.processes[0]!.inJob = false;
+    valid.members.push(outside, untrusted);
+    const report = reportResources(valid).rssMiB;
+    expect(report.statistics!.observedPeak).toBe(100);
+    expect(report.peakObservationCount).toBe(361);
+    expect(report.duplicateSlots).toEqual([]);
+    expect(report.invalidObservations).toBe(2);
+  });
+
   it('用Job累计量与实际端点计算CPU，slot0不混入统计', () => {
     const input = fixture();
     input.cpu[0]!.value = '0';
@@ -76,7 +170,7 @@ describe('独立资源报告反例', () => {
     expect(reportResources(rollback).cpuPercent.verdict).toBe('BLOCKED/evidence-insufficient');
   });
 
-  it('仅接收第一份有效重复值，不按较低值挑选', () => {
+  it('重复有效槽退出统计且不可通过，不按较低值挑选', () => {
     const input = fixture();
     input.members[0]!.value!.processes[0]!.rssBytes = 3000 * 1048576;
     // Fixture shares its constant member deliberately; replace a duplicate independently.
@@ -190,11 +284,28 @@ describe('独立资源报告反例', () => {
     expect(legacy.handles.statistics!.slopePerHour).toBeCloseTo(120, 1);
     expect(legacy.verdict).toBe('FAIL-product');
     const revised = reportResources(input, {
-      handleGrowth: { revision: 'handle-growth-v2', verdict: 'PASS' },
+      handleGrowth: { revision: 'handle-growth-v3', verdict: 'PASS' },
     });
-    expect(revised.handleGrowthRevision).toBe('handle-growth-v2');
+    expect(revised.handleGrowthRevision).toBe('handle-growth-v3');
     expect(revised.handles.statistics!.slopePerHour).toBeCloseTo(120, 1);
-    expect(revised.handles.verdict).toBe('FAIL-product');
+    expect(revised.handles.rawAllPoints.verdict).toBe('FAIL-product');
+    expect(revised.handles.verdict).toBe('PASS');
     expect(revised.verdict).toBe('PASS');
+  });
+
+  it('显式新门也不能遮蔽全部原点的绝对预算失败', () => {
+    const input = fixture();
+    input.members[20]!.value!.processes[0]!.rssBytes = 2049 * 1048576;
+    input.members[20]!.value!.processes[0]!.privateBytes = 2049 * 1048576;
+    input.members[20]!.value!.processes[0]!.handles = 5001;
+    const report = reportResources(input, {
+      handleGrowth: { revision: 'handle-growth-v3', verdict: 'PASS' },
+      rssGrowth: { revision: 'rss-growth-v2', verdict: 'PASS' },
+      privateGrowth: { revision: 'private-growth-v2', verdict: 'PASS' },
+    });
+    expect(report.handles.verdict).toBe('FAIL-product');
+    expect(report.rssMiB.verdict).toBe('FAIL-product');
+    expect(report.privateMiB.verdict).toBe('FAIL-product');
+    expect(report.verdict).toBe('FAIL-product');
   });
 });
