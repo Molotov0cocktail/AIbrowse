@@ -374,8 +374,12 @@ oracle；FakeProvider 不得冒充真实观察。
   拒绝reparse/换绑，且不得改写未知祖先；旧attribute-only pin原地junction反例保留。目录数量/ACL具体实现
   可经独立安全复核替换，不再把已撤换详细设计中的旧算法当作现行定义。必须验证真实SQLite/WAL及精确清理，
   不把“持有句柄”本身当作拒绝改绑证明，也不对管理员/系统级攻击者作隔离承诺。
-  CJS首tick同步native复核/pin后、任何await前同步覆盖实际使用的Electron数据/日志/temp路径，再异步核对direct parent/main
-  PID+creation，最后业务装配；隔离ticket不能取得负载能力。APPDATA变量不能证明Windows Known Folder/
+  launcher仅传一个与已pin的userDataRoot精确绑定的`--user-data-dir`。native四项argv闭合白名单拒绝缺失、
+  重复、分离值、额外参数及不同根；该复核发生在Chromium处理开关之后，须同时审核launcher参数生成，
+  错参反例只用合成目录，拒绝资格入口不等于撤销先前原生路径解析/创建。CJS首tick同步native复核/pin后、任何setPath/await前核对当前
+  userData/sessionData均为该合成根，再同步覆盖实际使用的Electron数据/日志/temp路径，再异步核对direct parent/main
+  PID+creation，最后业务装配；隔离ticket不能取得负载能力。匹配收据只输出boolean或固定错误，不包含路径；
+  stdout不能替代认证/产物及独立审核证据。APPDATA变量不能证明Windows Known Folder/
   Electron PathService重定向，六root的pin也不限制同token访问其它目录。这些机制可复用，但只证明指定目录
   不可换绑和应用同步入口之后的路径选择，不自动证明CJS入口前或原生依赖没有访问真实profile。
   启动隐私是独立硬门：运行前须由独立安全审核核对固定版本启动路径、编译期装配、延迟/失败认证、
@@ -394,6 +398,11 @@ oracle；FakeProvider 不得冒充真实观察。
   handles并核验OS peer identity，错误parent/client/creation、占名、重连或伪writer均失败。协议无秘密或入站
   应用命令，renderer/web/model仍无选择目标、路径、负载或执行能力；普通build加flag不能打开资格入口。
   frame使用strict bounded DTO/UTF8/JCS/唯一sequence，迟写/断流/队列耗尽fail-closed；stdout日志不能替代认证通道。
+  标准Electron启动路径可按固定版本源码、实际构建及合成反例形成限定证据：早期userData开关先于应用JS，
+  Local State初始化晚于应用脚本初始化。该结论保护真实AIbrowse数据及Provider/DPAPI/harness凭据的要求不变，
+  不扩写为任意Windows组件/第三方注入DLL从首指令起零profile访问；未覆盖项仍须单列。
+  参数绑定与覆盖前读回不能仅凭代码授PASS，延迟/拒绝认证及提前读取等受影响反例须实跑且经新独立审核；
+  不以mtime不变、canary未外泄或资源长测成功替代读取证据，不追溯改写旧运行候选的验证范围。
 - H3b 的固定负载不允许借“真实”名义访问第三方，也不能为 localhost/私网放宽 NetworkPolicy。唯一 seam 是
   Coordinator 现有 `WatchAcquisitionPort` 上的 native-launch-authenticated、main-only、编译期
   `watch-h3b-load-v1` port：真实 HostRequestGate grant 与 Session consent/task-tab ownership 在前，经过验证的

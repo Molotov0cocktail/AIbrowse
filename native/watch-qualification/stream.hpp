@@ -43,4 +43,20 @@ inline bool qualificationEntryArgument(const std::wstring& value) {
          value == L"out/qualification-diagnostic/main/index.js" ||
          value == L"out/qualification-load-diagnostic/main/index.js";
 }
+
+inline std::wstring qualificationUserDataArgument(
+    const std::wstring& expectedUserDataRoot) {
+  return L"--user-data-dir=" + expectedUserDataRoot;
+}
+
+inline bool qualificationLaunchArguments(
+    const std::vector<std::wstring>& arguments,
+    const std::wstring& expectedExe,
+    const std::wstring& expectedUserDataRoot) {
+  return arguments.size() == 4 && arguments[0] == expectedExe &&
+         qualificationEntryArgument(arguments[1]) &&
+         arguments[2] == L"--aibrowse-watch-resource-qualification" &&
+         !expectedUserDataRoot.empty() &&
+         arguments[3] == qualificationUserDataArgument(expectedUserDataRoot);
+}
 }  // namespace h3b

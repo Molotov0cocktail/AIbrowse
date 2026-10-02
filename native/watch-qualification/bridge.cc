@@ -377,17 +377,10 @@ napi_value prepare(napi_env env, napi_callback_info info) {
     state->prepared = true;
     try {
       int count = 0;
-      LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
-      require(args != nullptr, "qualification-launch-invalid");
-      bool valid =
-          count == 3 && qualificationEntryArgument(args[1]) &&
-          std::wstring(args[2]) == L"--aibrowse-watch-resource-qualification";
-      if (valid) {
-        state->mainEntry = args[1];
-        std::replace(state->mainEntry.begin(), state->mainEntry.end(), L'/', L'\\');
-      }
-      LocalFree(args);
-      require(valid, "qualification-launch-invalid");
+      LPWSTR* rawArgs = CommandLineToArgvW(GetCommandLineW(), &count);
+      std::unique_ptr<void, decltype(&LocalFree)> argsOwner(rawArgs, &LocalFree);
+      require(rawArgs != nullptr && count == 4, "qualification-launch-invalid");
+      const std::vector<std::wstring> arguments(rawArgs, rawArgs + count);
       auto temp = environment(L"TEMP");
       strictLocalPath(temp);
       auto root = parentPath(temp);
@@ -396,6 +389,11 @@ napi_value prepare(napi_env env, napi_callback_info info) {
                   environment(L"LOCALAPPDATA") == root + L"\\localappdata",
               "qualification-isolation-invalid");
       state->roots.pin(root, false);
+      require(qualificationLaunchArguments(
+                  arguments, exePath(), state->roots.paths.at("userDataRoot")),
+              "qualification-launch-invalid");
+      state->mainEntry = arguments[1];
+      std::replace(state->mainEntry.begin(), state->mainEntry.end(), L'/', L'\\');
       Value::Object paths, ids;
       for (const auto& [k, v] : state->roots.paths)
         paths.emplace(wide(k), Value(v));

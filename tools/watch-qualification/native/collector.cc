@@ -4,6 +4,7 @@
 #include "telemetry.hpp"
 #include "battery.hpp"
 #include "released.hpp"
+#include "stream.hpp"
 #include <powrprof.h>
 #include <atomic>
 #include <fcntl.h>
@@ -188,7 +189,8 @@ int launch(int argc, wchar_t** argv) {
   auto expectedExe = sha256(exe), expectedMain = sha256(mainDirectory + L"\\index.js");
   auto applicationJob = job(), workerJob = job();
   Child application;
-  application.launch(exe, quote(exe) + L" " + quote(entry) + L" --aibrowse-watch-resource-qualification", repo, &environment);
+  application.launch(exe, quote(exe) + L" " + quote(entry) + L" --aibrowse-watch-resource-qualification " +
+      quote(qualificationUserDataArgument(roots.paths.at("userDataRoot"))), repo, &environment);
   auto rootCreation = creation(application.process.value);
   assign(applicationJob.value, application.process.value);
   Telemetry telemetry; telemetry.connect(application.pid);

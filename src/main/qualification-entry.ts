@@ -12,7 +12,8 @@ let isolated = false;
 try {
   if (app.isReady()) throw new Error('资格入口过迟');
   prepared = prepareQualificationLaunch();
-  applyQualificationLaunchIsolation(app, prepared);
+  const earlyPaths = applyQualificationLaunchIsolation(app, prepared);
+  process.stdout.write(`资格早期路径核对 ${JSON.stringify(earlyPaths)}\n`);
   isolated = true;
 } catch {
   void closeQualificationLaunch().finally(() => app.exit(1));

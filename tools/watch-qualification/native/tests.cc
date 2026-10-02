@@ -4,6 +4,7 @@
 #include "telemetry.hpp"
 #include "battery.hpp"
 #include "released.hpp"
+#include "stream.hpp"
 #include <filesystem>
 #include <iostream>
 #include <sstream>
@@ -77,6 +78,25 @@ int run(int argc, wchar_t** argv) {
     }
     require(!success && GetLastError() == ERROR_ACCESS_DENIED, "test-breakaway-allowed");
     return 0;
+  }
+  {
+    const std::wstring executable = L"D:\\synthetic app\\electron.exe";
+    const std::wstring entry = L"out/qualification/main/index.js";
+    const std::wstring userData = L"D:\\synthetic work\\run-AAAAAAAAAAAAAAAAAAAAAAAAAA\\user-data";
+    const auto command = quote(executable) + L" " + quote(entry) +
+        L" --aibrowse-watch-resource-qualification " + quote(qualificationUserDataArgument(userData));
+    int count = 0;
+    auto raw = CommandLineToArgvW(command.c_str(), &count);
+    std::unique_ptr<void, decltype(&LocalFree)> argumentOwner(raw, &LocalFree);
+    require(raw != nullptr && count == 4, "test-launch-argument-count");
+    const std::vector<std::wstring> arguments(raw, raw + count);
+    require(arguments[3] == L"--user-data-dir=D:\\synthetic work\\run-AAAAAAAAAAAAAAAAAAAAAAAAAA\\user-data" &&
+                qualificationLaunchArguments(arguments, executable, userData),
+            "test-launch-user-data-argument");
+    auto duplicate = arguments;
+    duplicate.push_back(arguments[3]);
+    require(!qualificationLaunchArguments(duplicate, executable, userData),
+            "test-launch-duplicate-user-data");
   }
   auto owner = job();
   Child root;

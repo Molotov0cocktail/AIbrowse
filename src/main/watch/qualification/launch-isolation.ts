@@ -3,13 +3,28 @@ import type { PreparedLaunchIsolation } from './native-contract';
 
 type IsolationApp = Pick<App, 'isReady' | 'setPath' | 'getPath'>;
 
-/** Synchronous only: no default PathService read is permitted before all overrides. */
+export interface QualificationEarlyPathReceipt {
+  readonly userDataMatches: true;
+  readonly sessionDataMatches: true;
+}
+
+/** Read only the two paths already bound by the native-validated early switch. */
 export function applyQualificationLaunchIsolation(
   app: IsolationApp,
   prepared: PreparedLaunchIsolation,
-): void {
+): QualificationEarlyPathReceipt {
   if (app.isReady()) throw new Error('资格隔离启动过迟');
   const { paths } = prepared;
+  let userDataMatches: boolean;
+  let sessionDataMatches: boolean;
+  try {
+    userDataMatches = app.getPath('userData') === paths.userDataRoot;
+    sessionDataMatches = app.getPath('sessionData') === paths.userDataRoot;
+  } catch {
+    throw new Error('资格早期路径不可用');
+  }
+  if (app.isReady()) throw new Error('资格隔离启动过迟');
+  if (!userDataMatches || !sessionDataMatches) throw new Error('资格早期路径不一致');
   app.setPath('appData', paths.appDataRoot);
   app.setPath('cache', paths.appDataRoot);
   app.setPath('userData', paths.userDataRoot);
@@ -30,4 +45,5 @@ export function applyQualificationLaunchIsolation(
   for (const key of Object.keys(expected) as (keyof typeof expected)[]) {
     if (app.getPath(key) !== expected[key]) throw new Error('资格隔离路径不一致');
   }
+  return Object.freeze({ userDataMatches: true, sessionDataMatches: true });
 }

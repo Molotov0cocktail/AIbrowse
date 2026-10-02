@@ -119,6 +119,60 @@ int main() {
                 !qualificationEntryArgument(L"out/qualification/../main/index.js"),
             "entry-whitelist-invalid");
   });
+  const std::wstring launchExe = L"D:\\synthetic app\\electron.exe";
+  const std::wstring userData = L"D:\\synthetic work\\run-AAAAAAAAAAAAAAAAAAAAAAAAAA\\user-data";
+  const std::vector<std::wstring> launchArguments{
+      launchExe, L"out/qualification/main/index.js",
+      L"--aibrowse-watch-resource-qualification",
+      L"--user-data-dir=D:\\synthetic work\\run-AAAAAAAAAAAAAAAAAAAAAAAAAA\\user-data"};
+  test("qualification-launch-exact-four-arguments", false, [&] {
+    for (const auto* entry : {L"out/qualification/main/index.js",
+                             L"out/qualification-diagnostic/main/index.js",
+                             L"out/qualification-load-diagnostic/main/index.js"}) {
+      auto arguments = launchArguments;
+      arguments[1] = entry;
+      require(qualificationLaunchArguments(arguments, launchExe, userData), "launch-invalid");
+    }
+  });
+  auto rejectLaunch = [&](const char* name, std::vector<std::wstring> arguments) {
+    test(name, true, [&] {
+      require(qualificationLaunchArguments(arguments, launchExe, userData), "launch-invalid");
+    });
+  };
+  auto absent = launchArguments;
+  absent.pop_back();
+  rejectLaunch("qualification-user-data-required", absent);
+  auto duplicate = launchArguments;
+  duplicate.push_back(launchArguments[3]);
+  rejectLaunch("qualification-user-data-duplicate-rejected", duplicate);
+  auto split = launchArguments;
+  split[3] = L"--user-data-dir";
+  split.push_back(userData);
+  rejectLaunch("qualification-user-data-split-rejected", split);
+  auto empty = launchArguments;
+  empty[3] = L"--user-data-dir=";
+  rejectLaunch("qualification-user-data-empty-rejected", empty);
+  auto wrongRoot = launchArguments;
+  wrongRoot[3] = L"--user-data-dir=D:\\synthetic other\\user-data";
+  rejectLaunch("qualification-user-data-wrong-root-rejected", wrongRoot);
+  auto alias = launchArguments;
+  alias[3] = qualificationUserDataArgument(userData + L"\\.");
+  rejectLaunch("qualification-user-data-alias-rejected", alias);
+  auto caseVariant = launchArguments;
+  caseVariant[3] = L"--user-data-dir=d:\\synthetic work\\run-AAAAAAAAAAAAAAAAAAAAAAAAAA\\user-data";
+  rejectLaunch("qualification-user-data-case-mismatch-rejected", caseVariant);
+  auto additional = launchArguments;
+  additional.push_back(L"--disable-web-security");
+  rejectLaunch("qualification-extra-switch-rejected", additional);
+  auto wrongExe = launchArguments;
+  wrongExe[0] = L"D:\\other\\electron.exe";
+  rejectLaunch("qualification-exe-mismatch-rejected", wrongExe);
+  auto wrongEntry = launchArguments;
+  wrongEntry[1] = L"out/main/index.js";
+  rejectLaunch("qualification-entry-mismatch-rejected", wrongEntry);
+  auto wrongQualifier = launchArguments;
+  wrongQualifier[2] = L"--aibrowse-watch-resource-qualification=1";
+  rejectLaunch("qualification-qualifier-mismatch-rejected", wrongQualifier);
   test("retry-attempt-rejected", true, [] { validateFrame(grant(2, 1, 0)); });
   test("fifth-host-rejected", true, [] { validateFrame(grant(1, 4, 0)); });
   test("fifth-round-rejected", true, [] { validateFrame(grant(1, 1, 4)); });
