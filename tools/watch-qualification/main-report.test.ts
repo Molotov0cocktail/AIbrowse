@@ -94,6 +94,63 @@ describe('main prefix独立复算', () => {
     expect(report.complete).toBe(true);
     expect(report.traceComplete).toBe(true);
   });
+  it('重复合法sample不进入分布，但无论先后顺序都保留主堆绝对峰值', () => {
+    for (const highFirst of [false, true]) {
+      const rows = fixture();
+      const index = rows.findIndex((row) => row.kind === 'sample' && row.slotIndex === 20);
+      const duplicate = structuredClone(rows[index]!);
+      if (duplicate.kind !== 'sample') throw new Error('测试sample缺失');
+      duplicate.payload.mainHeapUsedBytes = 600 * 1048576;
+      rows.splice(index + (highFirst ? 0 : 1), 0, duplicate);
+      rows.forEach((row, sequence) => {
+        row.sequence = sequence + 1;
+        if (row.kind === 'sample') row.payload.registryPrefixSequence = sequence;
+      });
+      const result = reportMain(window, runId, rows);
+      expect(result.traceComplete).toBe(true);
+      expect(result.evidenceIssues).toEqual([]);
+      expect(result.heapMiB.statistics).toMatchObject({
+        count: 360,
+        median: 100,
+        p95: 100,
+        observedPeak: 600,
+        slopePerHour: 0,
+      });
+      expect(result.heapMiB.peakObservationCount).toBe(362);
+      expect(result.heapMiB.duplicateSlots).toEqual([20]);
+      expect(result.heapMiB.missingSlots).toEqual([20]);
+      expect(result.heapMiB.violations).toEqual(['observedPeak=600 超过 512']);
+      expect(result.heapMiB.verdict).toBe('FAIL-product');
+      expect(result.verdict).toBe('FAIL-product');
+    }
+  });
+  it('合法低值重复仍BLOCKED，无效prefix或窗外高值不冒充可信主堆峰值', () => {
+    for (const scenario of ['low', 'prefix', 'outside'] as const) {
+      const rows = fixture();
+      const index = rows.findIndex((row) => row.kind === 'sample' && row.slotIndex === 20);
+      const duplicate = structuredClone(rows[index]!);
+      if (duplicate.kind !== 'sample') throw new Error('测试sample缺失');
+      duplicate.payload.mainHeapUsedBytes = (scenario === 'low' ? 100 : 600) * 1048576;
+      rows.splice(index + 1, 0, duplicate);
+      rows.forEach((row, sequence) => {
+        row.sequence = sequence + 1;
+        if (row.kind === 'sample') row.payload.registryPrefixSequence = sequence;
+      });
+      if (scenario === 'prefix') duplicate.payload.registryPrefixSequence = 0;
+      if (scenario === 'outside') duplicate.slotIndex = 0;
+      const result = reportMain(window, runId, rows);
+      expect(result.heapMiB.statistics!.observedPeak).toBe(100);
+      expect(result.heapMiB.violations).toEqual([]);
+      if (scenario === 'low') {
+        expect(result.heapMiB.verdict).toBe('BLOCKED/evidence-insufficient');
+        expect(result.heapMiB.statistics!.count).toBe(360);
+        expect(result.heapMiB.peakObservationCount).toBe(362);
+      } else {
+        expect(result.heapMiB.statistics!.count).toBe(361);
+        expect(result.heapMiB.peakObservationCount).toBe(361);
+      }
+    }
+  });
   it('拒绝伪身份、缺帧、伪prefix及假归零', () => {
     for (const mutate of [
       (rows: QualificationFrame[]) => {

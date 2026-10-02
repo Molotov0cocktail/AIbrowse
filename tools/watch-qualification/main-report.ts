@@ -330,6 +330,8 @@ export function reportMain(
     rows.map((row) => point(window, row, row.value!.mainHeapUsedBytes / 1048576)),
     { median: 256, p95: 384, observedPeak: 512, slopePerHour: 12 },
     sufficient,
+    [],
+    selected.allValid.map((row) => point(window, row, row.value!.mainHeapUsedBytes / 1048576)),
   );
   const webContents = metric(
     window,
