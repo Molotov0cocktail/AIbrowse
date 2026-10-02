@@ -177,7 +177,7 @@ function interact(params: InteractionScriptParams): unknown {
   }
 }
 
-// 自安装函数源：注入后在页面主世界立即执行；参数在 buildInteractionSource 经 JSON 字面量追加
+// Fixed function source; PageReader executes it in its private isolated world.
 export const INTERACTION_SCRIPT_SOURCE: string = `(${interact.toString()})`;
 
 // 组装注入源：模板编译期固定 + 参数 JSON 字面量（JSON.stringify 保证字符串转义，

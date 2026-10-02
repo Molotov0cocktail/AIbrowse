@@ -12,6 +12,14 @@ import { transition } from './tab-state';
 // 登记表条目的可变信息；active 由 controller 组装 TabsState 时填充（§2.3 单一事实源）
 export type TabEntryInfo = Omit<TabInfo, 'active'>;
 
+export interface PendingTabLoad {
+  serial: number;
+  purpose: 'materialize' | 'navigation';
+  status: 'pending' | 'succeeded' | 'failed' | 'cancelled';
+  promise: Promise<boolean>;
+  cancel(): void;
+}
+
 export interface TabEntry {
   view: WebContentsView;
   info: TabEntryInfo;
@@ -21,6 +29,19 @@ export interface TabEntry {
   // 均不能证明文档身份（同 URL 刷新世代同样递增；页内导航/hash 变化不递增，
   // 文档未重建时旧 elementId 依然有效）。主进程侧可信状态，页面/模型不可读写。
   generation: number;
+  // Includes navigation starts before commit; same-document/subframe events do not count.
+  navigationSerial: number;
+  // 默认空白 Tab 可先保留未加载的真实 WebContentsView；首次需要 DOM 时由
+  // BrowserController 以单一 Promise 物化。显式 about:blank 不走该分支。
+  deferredBlank: boolean;
+  loadSerial: number;
+  // 保留最新 load 的 Promise 与终态，直到下一次 load 或条目销毁；旧等待者据此
+  // 跟随替代导航，即使替代 load 同步失败也不会把 pending=null 误判为成功。
+  latestLoad: PendingTabLoad | null;
+}
+
+export interface CreateTabOptions {
+  deferInitialBlankLoad?: boolean;
 }
 
 export interface TabManagerOptions {
@@ -35,7 +56,8 @@ export class TabManager {
 
   constructor(private readonly options: TabManagerOptions) {}
 
-  createTab(url: string): TabEntry {
+  createTab(url: string, options: CreateTabOptions = {}): TabEntry {
+    const deferredBlank = options.deferInitialBlankLoad === true;
     const view = new WebContentsView({
       // 安全基线（§11）：远程网页无 preload、无 Node 集成；显式声明，不依赖默认值
       webPreferences: {
@@ -46,7 +68,14 @@ export class TabManager {
         // 不配置 preload：远程网页不得获得任何 bridge（§3.2 最小权限）
       },
     });
-    const info: TabEntryInfo = { id: randomUUID(), title: '', url, state: 'idle' };
+    // 延迟空白 view 已能显示、聚焦和立即导航，因此对 UI 作为 ready 暴露；它尚无
+    // 可采 DOM，首次 snapshot/reload/scroll 会先实际 loadURL('about:blank')。
+    const info: TabEntryInfo = {
+      id: randomUUID(),
+      title: '',
+      url,
+      state: deferredBlank ? 'ready' : 'idle',
+    };
     const wc = view.webContents;
 
     wc.setWindowOpenHandler(({ url: targetUrl }) => {
@@ -60,11 +89,23 @@ export class TabManager {
     const cleanupFns = this.wireEvents(wc, info);
     this.options.ownerWindow.contentView.addChildView(view);
     view.setVisible(false); // 可见性由 controller 统一管理（活动 Tab 才可见）
-    this.entries.set(info.id, { view, info, cleanupFns, generation: 1 });
+    const entry: TabEntry = {
+      view,
+      info,
+      cleanupFns,
+      generation: deferredBlank ? 0 : 1,
+      navigationSerial: 0,
+      deferredBlank,
+      loadSerial: 0,
+      latestLoad: null,
+    };
+    this.entries.set(info.id, entry);
 
     // 防御：正常情况下 closeTab/dispose 先移除条目；此处兜底意外销毁
     wc.once('destroyed', () => {
-      if (this.entries.has(info.id)) {
+      const registered = this.entries.get(info.id);
+      if (registered !== undefined) {
+        this.invalidateLoads(registered);
         this.entries.delete(info.id);
         logWarn(
           'browser',
@@ -75,7 +116,7 @@ export class TabManager {
     });
 
     this.options.onChanged();
-    return { view, info, cleanupFns, generation: 1 };
+    return entry;
   }
 
   get(tabId: string): TabEntry | undefined {
@@ -90,6 +131,7 @@ export class TabManager {
     const entry = this.entries.get(tabId);
     if (entry === undefined) return false;
     // 顺序（§6）：移除条目 → removeChildView（对非子 view 是 no-op）→ 关闭 → 逐一移除监听器
+    this.invalidateLoads(entry);
     this.entries.delete(tabId);
     // 窗口 closed 后 BaseWindow 已销毁，contentView 不可再操作；此时跳过摘除（窗口即将销毁）
     if (!this.options.ownerWindow.isDestroyed()) {
@@ -106,6 +148,13 @@ export class TabManager {
 
   dispose(): void {
     for (const tabId of [...this.entries.keys()]) this.closeTab(tabId);
+  }
+
+  private invalidateLoads(entry: TabEntry): void {
+    entry.loadSerial += 1;
+    entry.latestLoad?.cancel();
+    entry.deferredBlank = false;
+    entry.latestLoad = null;
   }
 
   // 注册全部 webContents 监听器并返回逐一移除的清理函数（生命周期纪律，§5）。
@@ -131,6 +180,8 @@ export class TabManager {
       details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
     ): void => {
       if (!details.isMainFrame || details.isSameDocument) return;
+      const entry = this.entries.get(info.id);
+      if (entry !== undefined) entry.navigationSerial += 1;
       info.state = transition(info.state, { type: 'start-loading', isMainFrame: true });
       this.options.onChanged();
     };

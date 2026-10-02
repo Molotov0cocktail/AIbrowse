@@ -27,9 +27,10 @@ export interface NormalizedInteractionResult {
 const GENERIC_FAILURE = '页面返回异常，交互结果不可用';
 
 // 脚本 code → ToolResultErrorCode 闭合映射：not-found → element-not-found；
-// not-interactable → not-interactable；其余一切（kind-mismatch/forbidden-type/
+// not-interactable → not-interactable；stale-element → stale-element；其余（kind-mismatch/forbidden-type/
 // not-fillable/bad-args/error/未知/缺失）→ execution-failed。
 function mapCode(code: unknown): ToolResultErrorCode {
+  if (code === 'stale-element') return 'stale-element';
   if (code === 'not-found') return 'element-not-found';
   if (code === 'not-interactable') return 'not-interactable';
   return 'execution-failed';

@@ -23,6 +23,7 @@ import { resolveViewVisibility } from './view-visibility';
 
 const ELEMENT_ID_PATTERN = /^el-\d{1,10}$/;
 const ALLOWED_KINDS: ReadonlySet<string> = new Set(['nav', 'expand', 'toggle', 'submit']);
+const MAX_SNAPSHOT_ATTEMPTS = 2;
 
 export interface BrowserController {
   createTab(url?: string): Promise<TabInfo>;
@@ -90,23 +91,19 @@ export class BrowserControllerImpl implements BrowserController {
 
   async createTab(url?: string): Promise<TabInfo> {
     this.assertAlive();
+    const deferInitialBlankLoad = url === undefined || url === '';
     let target = url ?? 'about:blank';
-    if (target === '') {
+    if (url === '') {
       // §2.1：URL 无效不失败，创建空白 Tab + warn（规范化通常已在 IPC handler 完成）
       logWarn('browser', 'createTab 收到空 URL，创建空白标签页');
       target = 'about:blank';
     }
-    const entry = this.tabManager.createTab(target);
+    const entry = this.tabManager.createTab(target, { deferInitialBlankLoad });
     this.activeTabId = entry.info.id;
     this.applyActiveVisual();
-    // 状态机（§5）：idle --loadURL--> loading --> ready，事件驱动；此处仅记录加载异常
-    entry.view.webContents.loadURL(target).catch((err: unknown) => {
-      logWarn(
-        'browser',
-        `加载失败（tabId=${redactTabIdForLog(entry.info.id)}，url=${redactUrlForLog(target)}）`,
-        err,
-      );
-    });
+    // 无参数/空字符串的默认空白 view 延迟到首次 DOM 操作再物化；显式 URL（包括
+    // 显式 about:blank）保持原来的真实加载语义。
+    if (!deferInitialBlankLoad) void this.startLoad(entry, target, 'navigation');
     logInfo(
       'browser',
       `已创建标签页（tabId=${redactTabIdForLog(entry.info.id)}，url=${redactUrlForLog(target)}）`,
@@ -176,18 +173,9 @@ export class BrowserControllerImpl implements BrowserController {
       logWarn('browser', `navigate 未知 tabId=${redactTabIdForLog(tabId)}`);
       return false;
     }
-    try {
-      // loadURL 在主框架加载完成时 resolve；失败（含被新导航取代）时 reject → false
-      await entry.view.webContents.loadURL(url);
-      return true;
-    } catch (err) {
-      logWarn(
-        'browser',
-        `navigate 失败（tabId=${redactTabIdForLog(tabId)}，url=${redactUrlForLog(url)}）`,
-        err,
-      );
-      return false;
-    }
+    // 用户导航优先于正在物化的默认空白页。先 stop 再发起目标导航，且以 serial
+    // 使迟到的 blank Promise 失效，不能覆盖目标页或伪报成功。
+    return this.startLoad(entry, url, 'navigation');
   }
 
   async goBack(tabId: string): Promise<boolean> {
@@ -217,6 +205,12 @@ export class BrowserControllerImpl implements BrowserController {
   async reload(tabId: string): Promise<boolean> {
     const entry = this.guardNavigation('reload', tabId);
     if (entry === null) return false;
+    if (
+      entry.deferredBlank ||
+      (entry.latestLoad?.purpose === 'materialize' && entry.latestLoad.status === 'pending')
+    ) {
+      return this.materializeDeferredBlank(entry);
+    }
     entry.view.webContents.reload();
     return true;
   }
@@ -234,11 +228,29 @@ export class BrowserControllerImpl implements BrowserController {
   async getPageSnapshot(tabId: string): Promise<PageSnapshot | null> {
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) return null; // L3：tab 不存在
+    if (!(await this.materializeDeferredBlank(entry))) return null;
+    if (this.disposed || this.tabManager.get(tabId) !== entry) return null;
     const wc = entry.view.webContents;
     if (wc.isDestroyed()) return null; // L3：webContents 已销毁
-    // L0–L2 由 PageReader 编排（§8.1/§8.5）：注入只读采集脚本 + normalize 校验 + 降级阶梯；
-    // A3：documentId 由主进程侧导航世代盖章（快照时刻），页面/模型不可提供或修改
-    return this.pageReader.snapshot(wc, entry.generation);
+    // Electron may defer executeJavaScript until a pending navigation has loaded.
+    // Never re-stamp a cross-document result: discard it and collect afresh once.
+    for (let attempt = 0; attempt < MAX_SNAPSHOT_ATTEMPTS; attempt += 1) {
+      const generation = entry.generation;
+      const navigationSerial = entry.navigationSerial;
+      const loadSerial = entry.loadSerial;
+      const collected = await this.pageReader.snapshot(wc, generation);
+      if (this.disposed || this.tabManager.get(tabId) !== entry || wc.isDestroyed()) return null;
+      if (
+        entry.generation === generation &&
+        entry.navigationSerial === navigationSerial &&
+        entry.loadSerial === loadSerial
+      ) {
+        this.pageReader.acceptSnapshot(wc, collected);
+        return collected.snapshot;
+      }
+    }
+    logWarn('browser', `采集期间页面连续导航，已丢弃快照（tabId=${redactTabIdForLog(tabId)}）`);
+    return null;
   }
 
   // A3：交互前置守卫（tab 存在/未销毁/参数形状）——安全返回 ok:false，不抛异常
@@ -257,6 +269,13 @@ export class BrowserControllerImpl implements BrowserController {
     const wc = entry.view.webContents;
     if (wc.isDestroyed()) {
       return { ok: false, errorCode: 'execution-failed', reason: '标签页已销毁' };
+    }
+    if (entry.generation === 0) {
+      return {
+        ok: false,
+        errorCode: 'execution-failed',
+        reason: '空白标签页尚未实际加载，请先读取页面',
+      };
     }
     return null;
   }
@@ -291,7 +310,12 @@ export class BrowserControllerImpl implements BrowserController {
         reason: '元素所属的快照已过期（页面已导航或刷新），请重新读取页面',
       };
     }
-    const norm = await this.pageReader.click(entry.view.webContents, elementId, allowedKind);
+    const norm = await this.pageReader.click(
+      entry.view.webContents,
+      elementId,
+      allowedKind,
+      expectedDocumentId,
+    );
     return norm.ok
       ? { ok: true, tag: norm.tag, text: norm.text }
       : { ok: false, errorCode: norm.errorCode, reason: norm.reason };
@@ -324,7 +348,12 @@ export class BrowserControllerImpl implements BrowserController {
         reason: '元素所属的快照已过期（页面已导航或刷新），请重新读取页面',
       };
     }
-    const norm = await this.pageReader.fill(entry.view.webContents, elementId, text);
+    const norm = await this.pageReader.fill(
+      entry.view.webContents,
+      elementId,
+      text,
+      expectedDocumentId,
+    );
     return norm.ok
       ? { ok: true, tag: norm.tag, type: norm.type }
       : { ok: false, errorCode: norm.errorCode, reason: norm.reason };
@@ -340,6 +369,12 @@ export class BrowserControllerImpl implements BrowserController {
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) {
       logWarn('browser', `scrollTab 未知 tabId=${redactTabIdForLog(tabId)}`);
+      return { ok: false, reason: '标签页不存在' };
+    }
+    if (!(await this.materializeDeferredBlank(entry))) {
+      return { ok: false, reason: '空白标签页加载失败，无法滚动' };
+    }
+    if (this.disposed || this.tabManager.get(tabId) !== entry) {
       return { ok: false, reason: '标签页不存在' };
     }
     const wc = entry.view.webContents;
@@ -425,6 +460,103 @@ export class BrowserControllerImpl implements BrowserController {
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) logWarn('browser', `${method} 未知 tabId=${redactTabIdForLog(tabId)}`);
     return entry ?? null;
+  }
+
+  private startLoad(
+    entry: TabEntry,
+    target: string,
+    purpose: 'materialize' | 'navigation',
+  ): Promise<boolean> {
+    const wc = entry.view.webContents;
+    if (this.disposed || this.tabManager.get(entry.info.id) !== entry || wc.isDestroyed()) {
+      return Promise.resolve(false);
+    }
+
+    const previous = entry.latestLoad;
+    const requiresFirstCommit = entry.generation === 0;
+    const stopMaterialization =
+      purpose === 'navigation' &&
+      previous?.purpose === 'materialize' &&
+      previous.status === 'pending';
+    const serial = ++entry.loadSerial;
+    entry.deferredBlank = false;
+    previous?.cancel();
+    if (stopMaterialization) wc.stop();
+
+    let settleResult: ((ok: boolean) => void) | null = null;
+    const promise = new Promise<boolean>((resolve) => {
+      settleResult = resolve;
+    });
+    let latest: TabEntry['latestLoad'] = null;
+    const settle = (ok: boolean, err?: unknown): void => {
+      if (latest === null || latest.status !== 'pending') return;
+      const isCurrent =
+        !this.disposed &&
+        this.tabManager.get(entry.info.id) === entry &&
+        !wc.isDestroyed() &&
+        entry.loadSerial === serial;
+      const acceptedSuccess = ok && isCurrent && (!requiresFirstCommit || entry.generation > 0);
+      // Electron rejects an old loadURL with -3 when reload/history/page navigation
+      // supersedes it. Cancellation must not overwrite the successor's state.
+      const aborted =
+        typeof err === 'object' &&
+        err !== null &&
+        (('errno' in err && err.errno === -3) || ('code' in err && err.code === 'ERR_ABORTED'));
+      latest.status = acceptedSuccess
+        ? 'succeeded'
+        : isCurrent && !aborted
+          ? 'failed'
+          : 'cancelled';
+      if (latest.status === 'failed') {
+        entry.info.state = 'error';
+        if (entry.generation === 0) entry.deferredBlank = true;
+        logWarn(
+          'browser',
+          `加载失败（tabId=${redactTabIdForLog(entry.info.id)}，url=${redactUrlForLog(target)}）`,
+          err,
+        );
+        this.pushState();
+      }
+      settleResult?.(latest.status === 'succeeded');
+      settleResult = null;
+    };
+    latest = {
+      serial,
+      purpose,
+      status: 'pending',
+      promise,
+      cancel: () => settle(false),
+    };
+    entry.latestLoad = latest;
+
+    try {
+      void wc.loadURL(target).then(
+        () => settle(true),
+        (err: unknown) => settle(false, err),
+      );
+    } catch (err) {
+      settle(false, err);
+    }
+    return promise;
+  }
+
+  private async materializeDeferredBlank(entry: TabEntry): Promise<boolean> {
+    let latest = entry.latestLoad;
+    if (entry.deferredBlank) {
+      const promise = this.startLoad(entry, 'about:blank', 'materialize');
+      latest = entry.latestLoad;
+      if (latest === null) return promise;
+    } else if (latest?.purpose !== 'materialize' || latest.status !== 'pending') {
+      return entry.generation > 0;
+    }
+
+    while (latest !== null) {
+      const ok = await latest.promise;
+      if (this.disposed || this.tabManager.get(entry.info.id) !== entry) return false;
+      if (entry.loadSerial === latest.serial) return ok;
+      latest = entry.latestLoad;
+    }
+    return false;
   }
 
   private toTabInfo(entry: TabEntry, active: boolean): TabInfo {

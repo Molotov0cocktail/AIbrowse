@@ -63,10 +63,19 @@
   （invalid-args），Agent 继续但不执行动作。
 - **elementId 生命周期**（§3.3 落地；A3 校准决议 #31）：id 仅当轮快照有效；快照
   `meta.documentId` 为主进程导航世代盖章（模型/网页不可提供或修改）；执行前
-  主进程侧世代校验 + 执行时刻重新定位 + 元素类型复核；页面导航/刷新后旧 id →
+  主进程侧世代校验 + 隔离 world 内执行前 token/Document 校验 + 实时定位与元素类型复核；页面导航/刷新后旧 id →
   stale-element 安全返回——旧引用不因新文档重新分配相同 `el-N` 字符串而命中新元素
   （真实 DOM 红态探针实证：跨 URL 导航与同 URL 刷新均重新分配，URL/标题/capturedAt
   不能证明文档身份）。
+- **异步注入窗口（2026-10-02 修复）**：Electron 注入会等待加载停止，前置世代校验不能单独阻止旧授权落到
+  新文档。固定 isolated world 1001 为实际 Document 生成私有随机 token；仅稳定采集结果可绑定到主进程
+  documentId。click/fill 在同一段同步脚本中先比较 token 与 Document，再执行动作；交互不初始化 token，
+  不以动作后的失败返回掩盖已经发生的副作用。网页预置同名 window 属性、同编号 DOM、伪造 snapshot 字段
+  都不能取得绑定。token 不通过 renderer/模型/DOM/持久化暴露，主进程以 WeakMap 按 WebContents 保存。
+- **BFCache 资格**：当前固定 Electron 43.4.0/Chromium 150.0.7871.224 的隔离注入以 sticky
+  `kInjectedJavascript` 禁止文档进入 BFCache，已绑定文档历史返回会重新创建。源码链与版本变更复验要求见
+  detailed-design §5.2。共享 DOM 生命周期事件可能被网页阻断，不能作为唯一撤销机制；不宣称同一私有
+  token 可在任意允许 BFCache 的平台安全复用。保留同一 Document 的动态 DOM 改写仍按实时语义复核。
 
 ### 3.3 决策层（确定性程序判定，模型只是提议者）
 
@@ -171,7 +180,7 @@ L3 敏感动作（click 允许列表 + fail-closed + 执行器层复核，无执
 
 - 第一阶段红线（远程网页隔离/nodeIntegration=false/contextIsolation/sandbox=true/
   permission 默认拒绝/Tab 无 preload）**一律不变**，本阶段新增交互注入脚本沿用
-  快照脚本同等的页面世界约束（无 preload、无 IPC、无 Node API）。
+  快照脚本同等的隔离 world 约束（无 preload、无 IPC、无 Node API）；仅执行编译期固定模板与 JSON 参数。
 - 第二阶段红线（Key 零暴露/只写不读/日志脱敏）**一律不变**，Agent 审计日志与
   工具日志同样受 sanitize 规则约束。
 - 本阶段不新增任何远程网页权限、不注册自定义协议、不改变 setWindowOpenHandler

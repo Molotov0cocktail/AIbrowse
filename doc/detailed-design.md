@@ -59,9 +59,11 @@ export interface BrowserController {
   不抛异常——越界安全返回）。未来 AI Tool Layer 可直接据此判断动作是否生效。
 - `navigate` 的 `url` 必须是**已规范化** URL（main 侧 IPC handler 统一调用 `shared/url`，
   见 §9）；controller 对空串/明显非法输入仍做防御性 `false` 返回。
-- `createTab` 不因 URL 无效而失败：URL 无效时创建空白 Tab（`about:blank`）+ warn 日志；
-  仅未预期内部异常才 reject（明确豁免，由 IPC 层兜底记录）。
-- `getPageSnapshot` 返回 `null` 仅一种情况：tab 不存在 / 页面已销毁（降级阶梯 L3，§4）。
+- `createTab` 不因 URL 无效而失败：无参数或空字符串时创建 URL 为 `about:blank` 的真实
+  `WebContentsView`（空字符串另记 warn），但延迟首次 `loadURL('about:blank')`；显式传入
+  `about:blank` 或其他合法 URL 仍立即真实加载。仅未预期内部异常才 reject（明确豁免，由 IPC 层兜底记录）。
+- `getPageSnapshot` 返回 `null`：tab 不存在、页面已销毁，或默认空白页在尚无任何真实主框架提交时
+  物化失败（降级阶梯 L3，§4）；不得在 generation 0 上伪造 DOM/readyState。
 - `dispose()`：应用退出路径统一调用；实现须保证重复调用幂等（防重复清理）。
 
 ### 2.2 PageSnapshot（结构化快照，First_stage.md §七 + meta 定稿）
@@ -119,6 +121,9 @@ export interface TabsState {
 
 - 草案的 `isLoading` 由 `state === 'loading'` 派生，不再单独存（单一事实源）。
 - `destroyed` 不是 TabInfo 状态：关闭即从列表移除并销毁 view（§5）。
+- 无参数/空字符串创建的默认空白 view 初始化为 `ready`，表示它已经挂载、可见、可聚焦并可立即
+  `navigate`，不表示已有可采集 DOM，也不伪造 `did-finish-load`。首次 snapshot/reload/scroll 会先
+  物化真实 `about:blank` 文档；`PageSnapshot.meta.readyState` 只取实际页面返回值。
 
 ### 2.4 SessionManager（Q3 决议）
 
@@ -139,9 +144,13 @@ export interface SessionManager {
 ```ts
 // src/main/browser/page-reader.ts
 export class PageReader {
-  // 前置守卫（tab 存在、webContents 未销毁）由 BrowserController 完成；
-  // PageReader 只管「给定一个活的 webContents，产出快照」，L2 降级内部处理（§4/§8.5）
-  snapshot(webContents: WebContents): Promise<PageSnapshot>;
+  // Main-process-only result; the controller checks navigation before accepting a binding.
+  snapshot(webContents: WebContents, documentId: number): Promise<CollectedPageSnapshot>;
+  acceptSnapshot(webContents: WebContents, collected: CollectedPageSnapshot): void;
+}
+interface CollectedPageSnapshot {
+  snapshot: PageSnapshot;
+  token: string | null; // Never included in the public PageSnapshot or renderer bridge.
 }
 ```
 
@@ -233,7 +242,7 @@ export interface AibrowseBridge {
 最小权限定稿：
 
 - **远程网页不挂载任何 preload**：Tab 的 WebContentsView 不配置 preload（`nodeIntegration=false`、
-  `contextIsolation=true`、`sandbox=true`），PageReader 采集走 `executeJavaScript` 只读注入（§8），
+  `contextIsolation=true`、`sandbox=true`），PageReader 采集走固定 world 1001 隔离注入（§8），
   与 bridge 完全无关。
 - `tabs:updated` **全量推送**（整个 `TabsState`）而非增量事件：渲染层幂等更新，
   避免增量事件乱序/丢失导致 UI 与主进程状态漂移。
@@ -257,12 +266,12 @@ export interface AibrowseBridge {
 
 ### 快照降级阶梯（`getPageSnapshot` 返回 `PageSnapshot | null`）
 
-| 级别 | 触发条件                                             | 返回内容                                                         | meta.degraded         |
-| ---- | ---------------------------------------------------- | ---------------------------------------------------------------- | --------------------- |
-| L0   | 脚本执行成功且 `readyState === 'complete'`           | 完整快照                                                         | `'none'`              |
-| L1   | 脚本成功但页面仍在加载 / 存在被跳过的 iframe         | 完整快照 + warnings                                              | `'partial'`           |
-| L2   | `executeJavaScript` 失败（页面冻结/崩溃/上下文失效） | 仅主进程侧 url/title + 空集合 + warnings（明确写出采集失败原因） | `'main-process-only'` |
-| L3   | tab 不存在 / webContents 已销毁 / 渲染进程已退出     | `null`                                                           | （无快照）            |
+| 级别 | 触发条件                                                                           | 返回内容                                                         | meta.degraded         |
+| ---- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------- | --------------------- |
+| L0   | 脚本执行成功且 `readyState === 'complete'`                                         | 完整快照                                                         | `'none'`              |
+| L1   | 脚本成功但页面仍在加载 / 存在被跳过的 iframe                                       | 完整快照 + warnings                                              | `'partial'`           |
+| L2   | `executeJavaScript` 失败（页面冻结/崩溃/上下文失效）                               | 仅主进程侧 url/title + 空集合 + warnings（明确写出采集失败原因） | `'main-process-only'` |
+| L3   | tab 不存在 / webContents 已销毁 / 渲染进程已退出 / generation 0 的默认空白物化失败 | `null`                                                           | （无快照）            |
 
 - `render-process-gone` 发生后：该 Tab 立即降级为 L2 语义（TabInfo.state → error，
   快照走 L2/L3 路径），并记 error 日志。
@@ -271,8 +280,10 @@ export interface AibrowseBridge {
 ## 5. Tab 状态机与关闭策略（定稿）
 
 ```
-createTab(无 URL) ──► idle ──loadURL(about:blank)──► loading ──► ready
-createTab(有 URL) ──────────────loadURL───────────► loading ──► ready
+createTab(无 URL/空字符串) ──► ready（真实 view、未加载 DOM）
+  ├─navigate(url)───────────────────────────────► loading ──► ready
+  └─首次 snapshot/reload/scroll ──loadURL(about:blank)──► loading ──► ready
+createTab(显式 URL，含 about:blank) ──────────────► loading ──► ready
 ready ──reload/navigate──► loading        loading ──fail-load(主框架)──► error
 error ──reload/navigate──► loading        任意状态 ──closeTab──► 从列表移除 + view 销毁
 ```
@@ -289,6 +300,20 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   主框架 loading，同页/子框架 spinner 不改变状态；`did-start-navigation` 的主框架且非同页导航同时
   映射为既有 `start-loading`，覆盖子框架正在加载时不会再次发出 spinner start 的交错。两入口可幂等
   进入 loading；不新增 stop→ready 转换，不覆盖真实错误，也不改变同页导航的文档世代。
+- 上述纯函数内仍只有实际 `finish-load` 能把加载中的文档置为 `ready`。默认空白 view 的初始
+  `ready` 是创建时的 view 可用标记；其内部 `generation=0`，因此尚未产生快照绑定的 elementId。
+  首次真实主框架提交后 generation 从 0 递增，click/fill 在 0 世代一律拒绝注入。
+- 默认空白首次物化使用每 Tab 共享 Promise；并发 snapshot/reload/scroll 只发起一次
+  `loadURL('about:blank')`。物化期间若收到 `navigate(url)`，controller 先停止空白加载并立即发起目标
+  导航，以单调 load serial 忽略迟到结果；等待物化的读取改为等待当前目标导航，不能被迟到空白覆盖。
+- 每个 Tab 保留最新 load Promise 及 succeeded/failed/cancelled 终态直至下一次 load 或销毁；同步异常也先
+  写入最新失败终态，因此旧物化等待者不会把 `pending=null` 当成成功。generation 0 上当前 load 失败时，
+  Tab 进入 `error` 并恢复为可重试的未物化空白状态；下一次 snapshot/reload/scroll 重新物化。当前调用中
+  snapshot 返回 `null`，reload 返回 `false`，scroll 返回 `ok:false`，三者均不得在失败后继续注入或假成功。
+  首次 load 即使 Promise resolve，仍须已经观察到真实主框架提交（generation > 0）才算物化成功。
+- Electron `loadURL` 的 `ERR_ABORTED`（`errno=-3` 或 `code=ERR_ABORTED`）为 cancelled 终态。
+  包括 reload、历史和页面自身导航取代旧 load 的情况，旧 Promise 不得将后继 loading/ready 改成 error，
+  也不得恢复 deferredBlank 而覆盖正在加载的目标。其他当前 load 的同步/异步失败仍按上条显式失败。
 
 `selectNextActive(tabs, activeTabId, closedTabId)` 策略（纯函数，T2 测试）：
 
@@ -320,6 +345,10 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   窗口首次显示前 view 先按窗口尺寸兜底设 bounds，收到上报后校正。
 - **生命周期**：view 随 Tab 创建/销毁；closeTab → `removeChildView` → `webContents.close()` →
   移除全部监听器 → 删除登记表条目。窗口关闭 → `dispose()` 全量清理。
+- 默认空白延迟加载只省去其初始 renderer 物化，不省略 view：每 Tab 仍创建并挂载真实
+  `WebContentsView`，沿用默认 GPU，且保持 `nodeIntegration=false`、`contextIsolation=true`、
+  `sandbox=true`、无 preload。Electron 43 实验已验证构造、挂载、显示和 focus 后可保持 renderer PID 0，
+  显式 `loadURL` 后产生真实 renderer 与 DOM；该恒定底座优化本身不代表 H3b 趋势阈值通过。
 - **单窗口假设**：本阶段仅一个 UI 窗口；BrowserController 不处理多窗口（未来扩展点）。
 
 ## 7. Session 分区（Q3 决议）
@@ -338,12 +367,21 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 
 ### 8.1 流程
 
-1. BrowserController 守卫：tabId → 登记的 view/webContents 存在且未销毁 → 否则 L3 `null`。
+1. BrowserController 守卫：tabId → 登记的 view/webContents 存在且未销毁 → 否则 L3 `null`；若是
+   未物化的默认空白 view，先通过共享 Promise 实际加载 `about:blank`，完成后再次核对 Tab 所有权与存活状态；
+   物化链失败则返回 L3 `null`，不执行采集脚本。
 2. 主进程侧兜底数据：`webContents.getURL()` / `getTitle()`（L2 时使用；`isCrashed()` 检查）。
-3. `webContents.executeJavaScript(SNAPSHOT_SCRIPT_SOURCE, false)` 注入主文档 main world
-   （脚本源为 `snapshot-script.ts` 导出的自安装 IIFE 字符串，与 preload 无关）。
+3. `webContents.executeJavaScriptInIsolatedWorld(1001, [{code}], false)` 向主文档的独立世界注入固定模板，
+   world 1001 与网页 world 0、Electron preload world 999 分离，不赋予 Node/IPC/preload 能力。
+   固定包装器按实际 Document 首次生成 128 位随机 token，同文档并发/后续采集复用；包装器内部执行
+   `snapshot-script.ts` 的自安装 IIFE。Document 替换后只能生成新 token，旧快照不得向新文档写入旧 token。
 4. 脚本只读遍历 DOM 采集（§8.2–§8.4），返回**纯 JSON**（结构化克隆，不含函数/节点引用）。
-5. 主进程 `normalizeSnapshot(raw, fallback)` 校验/强制转换（§8.6）→ 组装 meta → 返回。
+5. 主进程 `normalizeSnapshot(raw, fallback)` 校验/强制转换（§8.6）→ 组装 meta；Controller 在返回前
+   再次核对条目所有权、存活、文档 generation、主框架跨文档导航序号及程序化 load serial。
+   任一导航标识变化则丢弃本次结果并重新采集一次；第二次仍跨越导航则返回 `null`，不重盖旧内容的 documentId。
+   只有稳定结果的 token 才与该 documentId 绑定进 PageReader 主进程 WeakMap；公开返回值只有 PageSnapshot。
+   token 不进共享 schema、模型、DOM 属性、日志、数据库或会话文件。click/fill 的执行前文档防线见
+   `doc/stage3/detailed-design.md` §5.2；固定平台的 BFCache 资格同时适用。
 
 ### 8.2 采集内容与过滤
 
@@ -372,7 +410,7 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 - 脚本以**观察性采集**为主：不注册事件、不触发任何页面回调、不修改页面数据、
   不执行 Node API；唯一写操作是**唯一、命名空间受控（`data-aibrowse-el`）、幂等**
   的 elementId 属性烙印（§8.4）。
-- 脚本被页面世界隔离：无 preload、无 Node 集成、无 IPC 通道，页面无法借快照执行
+- 固定脚本在独立 world 执行：无 preload、无 Node 集成、无 IPC 通道，页面无法借快照执行
   Node.js / Electron 特权 API（First_stage §七.7）。
 
 ### 8.4 elementId 映射（Q1 决议：双层映射）
@@ -388,16 +426,17 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   快照生命周期 = 交付后至下一次快照/导航（页面世界重置时 Map 随世界销毁，自动释放）。
 - 同导航生命周期内回查：`Map` 直接取元素；跨导航（世界重置）后：经 `data-aibrowse-el`
   重扫描可找回同一 id（DOM 未变时）。
-- **页面是敌手**：页面 JS 可清除 `window.__aibrowsePage` 或篡改属性——只影响快照内容
-  （不可信输入，§8.6 兜底），不构成权限问题；未来 AI 点击/填写工具执行前必须
-  重新校验元素存在性（后阶段职责，此处记录为约束）。
+- **页面是敌手**：页面仍可篡改共享 DOM 与元素属性，所有内容继续经 §8.6 校验；独立 world 内的
+  Map 和文档 token 不可通过网页同名 window 属性读写。交互执行前仍实时定位并复核元素类型和权限语义。
 
 ### 8.5 降级与失败（Q4 决议，阶梯见 §4）
 
 - `executeJavaScript` reject（页面冻结/崩溃/导航竞态导致上下文失效）→ L2：
   主进程侧 url/title + 空集合 + warnings（写明失败原因）+ `readyState: 'unknown'`。
-- 导航竞态说明：快照是**点时刻尽力采样**，导航中的快照返回当时文档（可能 L1），
-  不追求与导航事件的强一致。
+- 导航竞态说明：快照仍是点时刻尽力采样，不冻结页面；但采集内容与可信 documentId 必须来自同一文档。
+  Electron 43.4.0 的两种 JavaScript 注入 API 都可能等待 `did-stop-loading` 后才注入，故采集前保存世代不足以保证
+  绑定；采集返回后必须执行 §8.1 的稳定性复核，最多重采一次。同 URL 刷新同样使世代失效，同页和子框架
+  导航不使文档世代失效。来源：[固定版本实现](https://github.com/electron/electron/blob/v43.4.0/lib/browser/api/web-contents.ts#L141-L170)。
 
 ### 8.6 normalize 校验（T4 单测重点）
 
@@ -409,7 +448,7 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 
 - **规范化位置定稿**：renderer 把**原始输入**交给 `nav:navigate` / `tabs:create`，
   main 侧 IPC handler 统一调用 `shared/url.resolveAddressBarInput`；
-  返回 `''` → 动作返回 `false`（navigate）或创建空白 Tab（create），warn 日志。
+  返回 `''` → 动作返回 `false`（navigate）或创建延迟加载的默认空白 Tab（create），warn 日志。
   BrowserController 只接受规范化 URL（§2.1）。UI 不做 URL 判断（First_stage §十「不要散落在 UI」）。
 - **导航白名单**：每个 Tab webContents 的 `will-navigate` **与 `will-redirect`**（T5 R-02 加固，
   302 目标同样过白名单——程序化 loadURL 遇重定向时唯一拦截点）仅放行 `http:`/`https:`/`about:`，

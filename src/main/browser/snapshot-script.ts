@@ -1,4 +1,4 @@
-// PageSnapshot 采集脚本源：自安装 IIFE 字符串（经 executeJavaScript 注入页面主世界）.
+// PageSnapshot collection IIFE, injected through PageReader's private isolated world.
 // Contract source: doc/detailed-design.md §8.1–§8.4（只读遍历 DOM、纯 JSON 返回、elementId 双层映射）.
 // 保持 TS 检查：采集逻辑为真实函数（下方 collectSnapshot），经 .toString() 序列化——
 // 本文件用 <reference lib="dom" /> 单独引入 DOM 类型（已验证与 @types/node 共存无冲突），

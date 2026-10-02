@@ -431,15 +431,32 @@ export function validateToolArgs(
    导航世代计数（页内导航/hash 变化不递增）；快照 `meta.documentId` 由主进程世代
    盖章（页面/模型不可提供或修改，脚本输出同名字段被忽略）；click/fill 执行前
    BrowserController 校验「语义绑定世代 === 当前世代」，不符 → stale-element
-   不注入脚本、无任何 DOM 动作——旧引用不因新文档复用相同 el-N 而命中新元素；
-4. 世代一致时**执行时刻实时重新定位**：注入脚本在 DOM 中查找该烙印元素——元素
+   不注入脚本、无任何 DOM 动作。此检查之后仍可能等待导航结束，故还必须执行下述隔离文档绑定；
+4. **执行前文档绑定（2026-10-02 安全修复）**：PageReader 在固定 isolated world 1001 运行采集与交互模板。
+   采集包装器按实际 Document 生成并复用 128 位随机 token；主进程仅在采集前后 generation、主框架导航序号
+   与 load serial 均稳定时接受该 token/documentId 绑定。click/fill 的固定包装器在执行时先核对私有 token
+   与实际 Document 对象，再在同一段同步脚本中完成 DOM 动作；缺失或不符返回 stale-element，动作不发生。
+   交互不得初始化/更新 token，不得用执行后的 generation 校验冒充防护。旧快照和旧操作同时等待新文档时，
+   旧快照也只能读取新文档自己的 token，不能重建旧授权；新文档复用相同 el-N、同 URL 刷新都仍被拒绝。
+   token 仅存隔离 world 与主进程 WeakMap，不进入 PageSnapshot、模型 schema、DOM 属性或任何持久化。
+   网页同名 window 属性与共享 DOM 烙印均不能提供此绑定；普通同页导航保持 Document，沿用原 token。
+5. 文档绑定一致时**执行时刻实时重新定位**：注入脚本在 DOM 中查找该烙印元素——元素
    不存在 → element-not-found；存在但类型不符/不可交互 → not-interactable/
    execution-failed；
-5. 定位成功也**重新验证元素类型与允许列表语义**（click 按 allowedKind 复核
+6. 定位成功也**重新验证元素类型与允许列表语义**（click 按 allowedKind 复核
    DOM 实时属性（§5.1）——权限层判 L1/L2 后页面动态变化 → 拒绝；fill 目标必须
    是 input/textarea，password/file/disabled/readonly/隐藏执行层再次拒绝）；
-6. 找不到、失效、不可交互 → 结构化错误回注（模型可 read 新快照后重试）；
-7. 不允许 AI 直接构造任意 DOM JavaScript（§5.1 模板固定）。
+7. 找不到、失效、不可交互 → 结构化错误回注（模型可 read 新快照后重试）；
+8. 不允许 AI 直接构造任意 DOM JavaScript（§5.1 模板固定）。
+
+**固定平台资格**：Electron 43.4.0 使用 Chromium 150.0.7871.224；其隔离注入传入
+`BackForwardCacheAware::kPossiblyDisallow`，Chromium 将 `kInjectedJavascript` 注册为禁用 BFCache 的 sticky feature。
+因此已经取得绑定的文档离开后不会原样恢复其私有 token；历史返回重新创建文档并需新快照。
+来源：[Electron 固定注入实现](https://github.com/electron/electron/blob/v43.4.0/shell/renderer/api/electron_api_web_frame.cc#L702-L713)、
+[Chromium 固定下游实现](https://github.com/chromium/chromium/blob/150.0.7871.224/third_party/blink/renderer/core/frame/local_frame.cc#L2967-L2995)。
+此资格依赖固定平台；升级 Electron/Chromium、替换注入 API 或启用会允许文档恢复的选项时必须先重新核验。
+不依赖网页可阻断的 pagehide/pageshow 监听器作为安全防线。`document.open()` 等保留同一 Document 的 DOM 改写
+按既有动态 DOM 语义处理，执行前重新定位和类型/权限复核；实际 Document 对象替换仍必须拒绝旧 token。
 
 ### 5.3 BrowserController 扩展（A3）
 
@@ -479,11 +496,11 @@ export interface ScrollActionResult {
 }
 ```
 
-- 实现：PageReader 侧新增交互编排（复用 executeJavaScript 通道，固定模板 +
+- 实现：PageReader 侧交互编排使用固定 world 1001 的 executeJavaScriptInIsolatedWorld 通道，固定模板 +
   JSON 字面量参数 + interaction-normalize 逐字段校验）；前置守卫（tab 不存在/
   已销毁/L3）安全返回；注入失败 → ok:false。clickElement/fillElement 先做
   **世代校验**（entry.generation === expectedDocumentId，不符 → stale-element
-  不注入脚本——决议 #31）；scrollTab 无 elementId 绑定，不做世代校验。
+  不注入脚本——决议 #31），随后执行 §5.2 的隔离文档绑定；scrollTab 无 elementId 绑定，不做世代校验。
 - tabId 缺省语义在工具层解析（活动 Tab id 由 executor 注入），BrowserController
   仍要求显式 tabId（契约不变）。
 - **allowedKind/documentId 为执行器内部参数**（由权限决策派生注入，§7.1；
