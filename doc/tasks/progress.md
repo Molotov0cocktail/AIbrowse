@@ -12,7 +12,9 @@
 首次正式接电轮`C7XQOSFIJOEGPO7ZLEYRELGKNA`已正常完成（北京时间19:39–20:39，drain至20:49）。
 361个资源点、360个CPU区间及61个drain点完整。句柄median 3048>3000、P95 4187>4000、
 OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与退出门通过。电池因接电未验。
-默认空白页固定开销及导航快照世代修复已限定独审通过；真实冒烟又确认旧页面授权的fill可写入新页面，正在修复。
+默认空白页固定开销、导航快照世代及跨文档click/fill修复均已限定独审通过；实际8组浏览器冒烟通过。
+完整dev默认003、production默认002及各五组set/check已全部通过。旧Research往返失败具体字段仍unknown，
+诊断实证原等待会放行loading Tab，已改受控静态页面及真实ready/完整快照门，保留原四字段恒等断言。
 句柄增长按独立确认的失效工程oracle修订为`handle-growth-v2`，已实现并限定独审通过；绝对阈值与四Session负载不变。
 停止旧012整合与classic ETW路线。
 详见 `doc/stage6/acceptance-replan.md`、detailed-design §15.6/§15.7及D10。
@@ -28,8 +30,9 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
 ## Git、产物与证据基线
 
 - 本轮实现接管HEAD：`cc16bb57ce681e00d9d505060e20be9e49418d7e`，工作区干净；产品后继提交`5145164`。
-- 最新工具候选 `4eff347`：增长判定器5文件已限定独审提交；此前`05b049e`为DB/load/副本工具、
-  `0c8581d`为早期profile隔离、`0b2ff54`为真实浏览器窄冒烟，均未推送。精确HEAD以Git为准。
+- 当前已提交 `e78c9df`：Research受控夹具；`54136ad`为真实浏览器反例/只读控制台工具，产品修复`6024573`已限定独审。
+  `4eff347`为增长判定器、`4a10a24`为Watch日期夹具、`fbcab59`为完整冒烟runner；
+  此前`05b049e`为DB/load/副本工具、`0c8581d`为早期profile隔离，均未推送。精确HEAD以Git为准。
   上轮文档接管`d976ac5`的未提交收据已保存完整原文，最终工具候选SHA以Git为准。
 - H3b资格产品候选 `43efffbc82ff11122230c2362d6484d5feb9b581` 仅获限定独审；RSS空默认namespace修复
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee` 已独审；本轮产品后继`5145164`已限定独审，均尚未推送。
@@ -86,16 +89,32 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
   175项Browser测试及真实`browser-smoke-run-003.txt`通过，独审`review-deferred-blank.md`限定PASS。
 - 该审查另发现既有跨文档交互风险。真实`browser-smoke-run-004.txt`确认旧页面授权fill写入新页面，
   run `M4FDSAM22B3ZSUH2IJU3OO7CWQ`记录accepted=true/newDocumentModified=true；原bundle/map/launcher
-  已保存在`log/h3br-browser-interaction-red-artifacts/`。正在修复执行前的文档绑定，未授交互或阶段PASS。
+  已保存在`log/h3br-browser-interaction-red-artifacts/`。隔离世界中实际文档私有token同步校验已修复。
+  005实际发现完整脚本末尾分号导致的嵌入语法错误，真实SOURCE反例红→绿；失败产物已归档。
+  006真实8组通过（含正常动作、旧snapshot并发、跨文档fill/click拒绝及历史返回新文档），run
+  `GHMWJOM5NB25OEZS3CWXML5ESU`；产物在`log/h3br-browser-interaction-green-artifacts/`，独审
+  `review-document-interaction.md`及binding收据限定PASS。固定平台注入会禁用BFCache的资格须随版本/通道变更复核。
 - `handle-growth-v2`限定独审见`review-formal-tools.md`及`review-growth-evidence-001.json`：
   旧原件只读分类305 idle/51 Session/5过渡，20波各2–3点；原OLS保留，新诊断仍因绝对median/P95失败。
   原正式轮三项FAIL不改写，修订只用于新正式轮。
 - 完整production默认冒烟`product-production-default-001.txt`因Watch固定日期夹具被真实日期保留清理而失败。
   两个未来日期的红态已复现，统一夹具业务时钟后27项聚焦通过；生产保留策略未变，后续失败夹具保留。
-  原件`watch-store-clock-red-001/002.txt`及`watch-store-clock-green-001.txt`，全矩阵待当前浏览器修复后重验。
+  原件`watch-store-clock-red-001/002.txt`及`watch-store-clock-green-001.txt`；最终dev/prod完整矩阵已通过。
+- 新产品候选完整质量门199文件3993项、typecheck/lint/format通过，原件`final-interaction-*-001.txt`。
+  dev默认轮`d2c7930eeb85401a99cc3de66dbac255`在8.19-B Research画布往返Tab四字段恒等断言失败，
+  原stderr/stdout/退出收据保留。诊断002全场景通过，但捕获新链接Tab从loading到ready；该等待门缺陷已确定，
+  001具体变化字段仍unknown。修复夹具10项先红→绿，dev003全场景通过，所有Tab均ready且四字段无变化。
+  五组dev set/check（Session/Sources/Sources UI/Research/Watch）业务断言及退出均通过。原件前缀
+  `product-dev-*`；production默认及五组set/check均通过，11份退出收据绑定相同入口hash，见
+  `production-matrix-binding-001.json`；实际normal产物归档`log/h3br-final-normal-artifacts/`，尚不授H3b。
+  最终质量门200文件4003项及typecheck/lint/format通过（`final-candidate-*-001.txt`）；三种资格产物已一致重建。
+  Browser后继`a0b3875`仅翻译新增注释，
+  编译后代码与6024573逐字节相同（`browser-comment-only-001.json`），006行为证据仍适用。
+- `formal-002-console-environment.json`实证当前进程与物理控制台同为Session1、UserInteractive=true；
+  只说明该时刻本地交互会话，不排除远程协助/锁屏。原OS/CPU/RAM/驱动事实可复用，新窗口仍核活动GPU。
 - 正式旧产物已按plan四项hash核对后保存于 `log/h3br-formal-001-artifacts/`，manifest为
-  `formal-001-artifact-archive.json`。早期profile修改后的normal/diagnostic已构建，正式collector和其余
-  qualification目录仍需一致重建；不得混用新addon与旧三参数collector。
+  `formal-001-artifact-archive.json`。当前normal、三种qualification及四参数collector均已重建；
+  不得混用新addon与旧三参数collector。
 - DB先以native独占复制关闭后的两库，hash前后及副本一致；SQLite仅打开副本，实际567Run、
   50Event、100observation、100typed Evidence、2Digest及全部业务内容通过。原件
   `formal-001-copy-001.txt`、`formal-001-database-report-001.json`；副本关闭后原库再次释放检查
@@ -227,12 +246,12 @@ H3b长时资源/电池/当前Windows兼容性和新隔离证据仍开放，不�
 
 ## 下一唯一执行任务
 
-先关闭真实Electron已确认的跨文档填充缺陷并独立复核，再完成受影响完整冒烟/质量门。
-默认空白和快照世代修复、DB/load报告、启动隔离及增长判定器已限定独审通过；绝对句柄总量仍须新正式轮证明。
+执行新真实短验；完整dev/prod矩阵、最终质量门与全部资格产物重建均已完成。
+默认空白、快照世代及交互修复、DB/load报告、启动隔离及增长判定器已限定独审通过；绝对句柄总量仍须新正式轮证明。
 原件在`log/h3br-current/`，首次正式绑定`350c3f5`及`formal-001-plan.json`，旧产物已保存。
 既有361点分解见`formal-001-handle-decomposition-001.json`：稳定5进程OLS15.97696/h，
 瞬态进程恒246句柄，0/4个进程的时间分布贡献159.21105/h；原总门175.188/h仍为FAIL，未认证每个子进程角色。
-下一正式轮前须有明确修复或等价工程oracle依据，重建collector/全部对应产物，并做有界真实短验。
+下一正式轮已具备默认空白开销修复及handle-growth-v2依据；新collector/全部对应产物已构建，先做有界真实短验。
 已有有效数据，不重跑取绿、不继续扩展通用取证；按具体产品或工具原因修复，
 不继续012、全机ETW、逐补丁UAC循环或另写通用证明框架。完整执行指令在 `doc/prompt.md`。
 
