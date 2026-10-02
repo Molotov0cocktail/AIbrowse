@@ -177,4 +177,24 @@ describe('独立资源报告反例', () => {
     input.window.endQpc = '120000';
     expect(() => reportResources(input)).toThrow('六十分钟');
   });
+
+  it('显式v2门替换增长判定但继续返回原全点OLS', () => {
+    const input = fixture();
+    for (let slot = 0; slot <= 360; ++slot) {
+      const value = structuredClone(input.members[slot]!.value!);
+      value.processes[0]!.handles = 1000 + Math.floor(slot / 3);
+      input.members[slot]!.value = value;
+    }
+    const legacy = reportResources(input);
+    expect(legacy.handleGrowthRevision).toBe('raw-all-points-v1');
+    expect(legacy.handles.statistics!.slopePerHour).toBeCloseTo(120, 1);
+    expect(legacy.verdict).toBe('FAIL-product');
+    const revised = reportResources(input, {
+      handleGrowth: { revision: 'handle-growth-v2', verdict: 'PASS' },
+    });
+    expect(revised.handleGrowthRevision).toBe('handle-growth-v2');
+    expect(revised.handles.statistics!.slopePerHour).toBeCloseTo(120, 1);
+    expect(revised.handles.verdict).toBe('FAIL-product');
+    expect(revised.verdict).toBe('PASS');
+  });
 });

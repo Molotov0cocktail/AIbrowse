@@ -47,6 +47,7 @@ export interface MetricReport {
 export interface ResourceReport {
   mode: Window['mode'];
   verdict: Verdict;
+  handleGrowthRevision: 'raw-all-points-v1' | 'handle-growth-v2';
   evidenceIssues: string[];
   cpuPercent: MetricReport & {
     counterEndpointSpanSeconds: number | null;
@@ -56,6 +57,9 @@ export interface ResourceReport {
   privateMiB: MetricReport;
   handles: MetricReport;
   activeProcesses: MetricReport;
+}
+export interface ResourceReportOptions {
+  handleGrowth?: { revision: 'handle-growth-v2'; verdict: Verdict };
 }
 interface Selected<T> {
   values: Map<number, Observation<T>>;
@@ -271,7 +275,10 @@ export function metric(
   };
 }
 
-export function reportResources(input: ResourceInput): ResourceReport {
+export function reportResources(
+  input: ResourceInput,
+  options: ResourceReportOptions = {},
+): ResourceReport {
   const { window } = input;
   const last = validateWindow(window);
   const evidenceIssues = cadenceIssues(input);
@@ -378,7 +385,15 @@ export function reportResources(input: ResourceInput): ResourceReport {
       memberComplete,
     ),
   };
-  const verdicts = Object.values(reports).map((report) => report.verdict);
+  const verdicts = options.handleGrowth
+    ? [
+        reports.cpuPercent.verdict,
+        reports.rssMiB.verdict,
+        reports.privateMiB.verdict,
+        reports.activeProcesses.verdict,
+        options.handleGrowth.verdict,
+      ]
+    : Object.values(reports).map((report) => report.verdict);
   return {
     mode: window.mode,
     verdict: verdicts.includes('FAIL-product')
@@ -386,6 +401,7 @@ export function reportResources(input: ResourceInput): ResourceReport {
       : verdicts.every((value) => value === 'PASS')
         ? 'PASS'
         : 'BLOCKED/evidence-insufficient',
+    handleGrowthRevision: options.handleGrowth?.revision ?? 'raw-all-points-v1',
     evidenceIssues,
     ...reports,
   };
