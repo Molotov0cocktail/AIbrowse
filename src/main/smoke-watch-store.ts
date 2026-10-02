@@ -182,10 +182,18 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
   const dbPath = join(dir, 'watch.db');
   const backupsDir = join(dir, 'backups');
   const logFrom = currentLogOffset();
+  // Keep retention, backup creation and restore on the same synthetic clock.
+  const storeOptions = {
+    dbPath,
+    backupsDir,
+    reconcile: OK_RECONCILE,
+    nowMs: () => Date.parse(NOW),
+  };
+  let passed = false;
   let repo: WatchRepository | null = null;
   try {
     // 1. 新库装配 normal + schedulerReady；Rule/Baseline/Event/intent 原子写入
-    let outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    let outcome = openWatchStore(storeOptions);
     assert(outcome.mode === 'normal', '8.21：新库应 normal 装配');
     if (outcome.mode !== 'normal') return;
     assert(outcome.schedulerReady, '8.21：reconciliation 成功后才允许 Scheduler 启动');
@@ -224,7 +232,7 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
     repo = null;
 
     // 2. 重开读回恒等 + 遗留 Run interrupted + 保留分级清理
-    outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    outcome = openWatchStore(storeOptions);
     assert(outcome.mode === 'normal', '8.21：重开应 normal');
     if (outcome.mode !== 'normal') return;
     repo = outcome.repo;
@@ -257,7 +265,7 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
     repo.dispose();
     repo = null;
 
-    outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    outcome = openWatchStore(storeOptions);
     assert(outcome.mode === 'normal', '8.21：第三次重开应 normal');
     if (outcome.mode !== 'normal') return;
     repo = outcome.repo;
@@ -270,7 +278,7 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
     // 3. corrupt/future/截断 → unavailable 且原库字节保留
     const intact = readFileSync(dbPath);
     writeFileSync(dbPath, 'garbage-not-sqlite');
-    let bad = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    let bad = openWatchStore(storeOptions);
     assert(bad.mode === 'unavailable', '8.21：corrupt 应 unavailable');
     rmSync(dbPath, { force: true });
     writeFileSync(dbPath, intact);
@@ -278,11 +286,11 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
     runWatchMigrations(handle);
     handle.exec('PRAGMA user_version = 99');
     closeDb(handle);
-    bad = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    bad = openWatchStore(storeOptions);
     assert(bad.mode === 'unavailable', '8.21：future 版本应 unavailable');
     rmSync(dbPath, { force: true });
     writeFileSync(dbPath, 'SQLite format 3\u0000'.padEnd(20, 'x'));
-    bad = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    bad = openWatchStore(storeOptions);
     assert(bad.mode === 'unavailable', '8.21：截断/坏 magic 应 unavailable');
     rmSync(dbPath, { force: true });
     writeFileSync(dbPath, intact);
@@ -295,14 +303,14 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
       dbPath,
       backupsDir,
       currentDbVersion(dbPath),
-      () => Date.UTC(2026, 7, 28, 0, 0, 0),
+      storeOptions.nowMs,
       () => 'beef0001',
       { namePrefix: 'watch-backup-', parentLabel: '监控' },
     );
     assert(backup.ok && backup.backupPath !== null, '8.21：Watch 备份生成失败');
     const backupName = backup.backupPath!.slice(backup.backupPath!.lastIndexOf('\\') + 1);
     assert(WATCH_BACKUP_NAME_PATTERN.test(backupName), '8.21：备份名应匹配 watch 严格命名');
-    outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    outcome = openWatchStore(storeOptions);
     assert(outcome.mode === 'normal', '8.21：恢复前装配失败');
     if (outcome.mode !== 'normal') return;
     const sessionRule = makeRule({
@@ -331,10 +339,8 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
     );
     outcome.repo.dispose();
     const restored = restoreWatchStore({
-      dbPath,
-      backupsDir,
+      ...storeOptions,
       backupFileName: backupName,
-      reconcile: OK_RECONCILE,
     });
     assert(restored.mode === 'normal', '8.21：恢复应 normal 装配');
     if (restored.mode !== 'normal') return;
@@ -354,6 +360,7 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
       'Watch 冒烟 watch 目录',
     );
     logInfo('smoke', '8.21 D4 Watch store 冒烟全部通过');
+    passed = true;
   } finally {
     try {
       if (repo !== null && !repo.isDisposed) repo.dispose();
@@ -361,7 +368,7 @@ export async function runWatchStoreSmokeScenario(): Promise<void> {
       // 已关闭
     }
     try {
-      rmSync(dir, { recursive: true, force: true });
+      if (passed) rmSync(dir, { recursive: true, force: true });
     } catch {
       // 清理失败保留现场（不掩盖原始错误）
     }
