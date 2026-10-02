@@ -1,14 +1,10 @@
 # AIbrowse — AI 信息浏览器
 
-> 当前阶段（第六阶段）：**RSS/Page Watch、确定性变更事件与摘要**。需求澄清 U01–U31、
-> proposal、高层设计、详细设计、威胁模型及 D1–D11 任务拆分已经定稿，并经新的独立
-> Reviewer 审核 `PASS`；**产品实现尚未开始**。采集、Diff、Condition 与 Event 均由
-> 确定性程序生成；每个 Event 必须保留类型化、可解释的 old/new Evidence，不能只有哈希；
-> AI 只对已经验证的事件生成可选摘要解释。
-> 契约源 `doc/stage6/detailed-design.md`；安全契约源
-> `doc/stage6/threat-model.md`；需求源 `Sixth_stage.md`；
-> 任务 `doc/stage6/tasks/D1–D11`。当前不安装候选依赖、不调用 Provider、不修改产品代码；
-> 下一唯一动作是等待用户明确授权后从 D1 logger/Clock 基座开始。
+> 当前阶段：**第六阶段 RSS/Page Watch**。D1–D9产品能力已实现，Stage Exit尚未通过。
+> 采集、Diff、Condition与Event由确定性程序生成，保留typed old/new Evidence；AI只作可选解释。
+> 产品/安全契约见 `doc/stage6/detailed-design.md` 与 `doc/stage6/threat-model.md`。
+> 当前任务与证据只看 `doc/tasks/progress.md`；验收架构修订见 `doc/stage6/acceptance-replan.md`，
+> 新会话执行入口见 `doc/prompt.md`。已获工程自治授权，无需等待D1授权或重做已完成阶段。
 >
 > 已完成（第五阶段，历史）：**多源 Research、证据链与结构化展示**，Exit Gate 已
 > `GO/PASS`。正式契约、威胁模型与任务证据保留在 `doc/stage5/`；真实 Provider 的长期授权
@@ -134,12 +130,10 @@
 >     核心原则：AI 决定「需要做什么」；确定性程序决定「是否允许、如何执行、执行结果是什么」。
 >     需求源：`Fourth_stage.md`（历史）；开发手册：`AGENTS.md`；进度：`doc/tasks/progress.md`。
 
-## 当前状态（2026-08-23）
+## 当前状态
 
-- ⏳ **第六阶段正式设计已通过，产品实现未开始**——U01–U31 用户裁决、
-  `Sixth_stage.md`、`doc/stage6/` 四份正式设计和 D1–D11 任务契约已经闭合；独立 Reviewer
-  对设计候选给出 `PASS`。本轮只有文档变更，未安装依赖、未调用 Provider、未修改产品代码。
-  下一唯一动作是等待用户明确授权 D1；D3 的解析器候选只有通过资格门后才允许安装。
+- 第六阶段产品能力与已关闭门、剩余资源验收及下一动作见 `doc/tasks/progress.md`。
+  H3b按现行D10和详细设计实施，历史设计通过不代表阶段整体通过；不以旧验收工具路线阻止工程替换。
 - ✅ **第五阶段（Research & Rendering）已完成并通过验收（GO/PASS，2026-08-23；历史证据
   保留不改写）**——C1–C10、独立 Stage Audit 与正式契约见 `doc/stage5/` 和
   `doc/tasks/progress.md`。

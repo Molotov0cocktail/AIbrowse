@@ -19,7 +19,7 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 - observation/item 的冗余 Event 身份错配、迁移半提交或非确定排序破坏证据归属；
 - old/new Evidence、事件、Digest 和通知的长期本地暴露；
 - 调度重入、时钟变化、离线补跑、退出/崩溃和跨库孤儿状态；
-- 资源资格四轮 nominal 恰落在 Event 30 分钟 coalesce 边界，使 jitter、task-tab/barrier 或 processing 时延把
+- 资源资格四轮 nominal 恰落在 Event 30 分钟 coalesce 边界，使 jitter、task-tab 或 processing 时延把
   同一 fixed manifest 随 M0 随机判成新建或合并，并进一步污染 Digest 固定计数；
 - feed/页面 Prompt Injection 进入自动 Digest；
 - 可变 Event 时间游标漏掉已消费 Event 的 late coalesce，或 batch/Provider 崩溃重入造成漏项、重复 artifact/
@@ -188,8 +188,8 @@ Fifth Stage 是用户显式启动、一次性、有界 Research；Sixth Stage �
 - H3b 固定负载不得把 nominal 30 分钟当作 coalesce oracle。Rule scheduledFor 与 15 分钟 nextDue 保持产品
   语义；authenticated qualification-only release gate 只把四轮最早 release 冻结为
   `R=M0+5,000+34,200*w+[0,900,000,1,845,000,2,700,000]`。完整 qualification acquisition Promise
-  `A=28,000 ms` 覆盖 Session create/hold/getTabs/closeTab/verified cleanup；两类 barrier 与 jitter/
-  processing/writer 后完整 Coordinator slot `≤34,000 ms`。预期 coalesce 的最大 Event 时间差分别是
+  `A=28,000 ms` 覆盖 Session create/hold/getTabs/closeTab/verified cleanup；非暂停采样下 jitter/
+  processing/writer 后完整 Coordinator slot `≤34,000 ms`。原 barrier 的余量不能转成额外负载延时；预期 coalesce 的最大 Event 时间差分别是
   905,500/860,500 ms，预期新 Event 的最小差是 1,839,500 ms。只有运行环境越过已经全域证明自洽的固定
   absolute deadline 才是 timing-environment；合同 overlap/等号或缺失 owner 上界不是环境问题。不能关 jitter、
   改 30 分钟 `<` 语义、重选 M0 或挑 Rule；正常 production 不构造该 release gate。
@@ -364,19 +364,29 @@ oracle；FakeProvider 不得冒充真实观察。
 - 应用长时运行的 CPU/内存/handle/WebContents/活动资源/request/socket/timer/task Tab/DB/临时目录/进程树和
   电池/电源状态全部按 detailed-design §15.6 的唯一来源、统计和阈值观察。进程 CPU 必须来自包含已退出
   成员的专属 Windows Job accounting；Job root 只能是 suspended 后先 assignment、再 resume 的 direct
-  Electron browser/main，Toolhelp parent-chain 与 Job active identity 必须按 PID+creation FILETIME 双向闭合，
+  Electron browser/main，采样时完整 Job active 集按 PID+creation FILETIME 核验，活跃后代与 Job 成员按详细设计复核，
+  不要求可靠性不足的全进程历史通知链成为每项指标前置；成员事件只作辅助，不能替代 Job 累计 CPU 或活跃集完整性。
   wrapper、breakaway、映像名或 PID 猜测都不能成证。Battery Class absolute mWh 不可用时 fail-closed；tag
   absence、returned bytes、所有 port 聚合、热插拔和 SystemPowerStatus/PowerState/Rate 交叉矛盾均须按正式
   矩阵裁决，API 不确定不能伪装 no-battery。
-- 当前用户DACL不能单独阻止同账户伪装。资格仅在独立编译入口中可达，父进程CreateProcess前pin全部六root，
-  新root使用原子OWNER RIGHTS deny属性/DACL/owner写入与data-read/no-write-share目录pin组合；旧attribute-only
-  pin原地junction反例保留。具体ACL与祖先不改写规则见详细设计§15.6.2；必须验证真实SQLite/WAL及精确清理，
+- 当前用户DACL不能单独阻止同账户伪装。资格仅在独立编译入口中可达；可复用已审native启动隔离的六root
+  及其祖先pin、OWNER RIGHTS deny与data-read/no-write-share保护。新方案也必须在应用启动前固定受控根身份，
+  拒绝reparse/换绑，且不得改写未知祖先；旧attribute-only pin原地junction反例保留。目录数量/ACL具体实现
+  可经独立安全复核替换，不再把已撤换详细设计中的旧算法当作现行定义。必须验证真实SQLite/WAL及精确清理，
   不把“持有句柄”本身当作拒绝改绑证明，也不对管理员/系统级攻击者作隔离承诺。
-  CJS首tick同步native复核/pin后、任何await前同步覆盖§15.6.2固定Electron路径，再异步核对direct parent/main
+  CJS首tick同步native复核/pin后、任何await前同步覆盖实际使用的Electron数据/日志/temp路径，再异步核对direct parent/main
   PID+creation，最后业务装配；隔离ticket不能取得负载能力。APPDATA变量不能证明Windows Known Folder/
-  Electron PathService重定向。固定版本启动源码与从CreateProcess起的全Job独立IO证据必须涵盖入口前、延迟/
-  失败认证、ready及退出；合成canary/提前读取反例验证真实open/read/write捕获，不读写真实产品profile/凭据。
-  早期隔离未证明即实现不合格。单向named pipe由harness先建first-instance/
+  Electron PathService重定向，六root的pin也不限制同token访问其它目录。这些机制可复用，但只证明指定目录
+  不可换绑和应用同步入口之后的路径选择，不自动证明CJS入口前或原生依赖没有访问真实profile。
+  启动隐私是独立硬门：运行前须由独立安全审核核对固定版本启动路径、编译期装配、延迟/失败认证、
+  合成profile/canary、提前读取和六root改绑敌手实测，明确覆盖范围与未覆盖原生时段；不能用长测成功、
+  文件mtime、单个JS hook或环境变量代替证明。不在真实用户目录造canary、读正文或导出名称/凭据。
+  默认先检查是否已有无真实数据且与原用户数据隔离的普通测试身份/Windows环境，并复用已验证的启动组件；
+  当前用户环境只有在已有足够独立早期隔离证据时才可使用。没有安全环境时，启动前集中请求必要的准备权限/
+  物理操作；不默认安装系统工具或新建OS用户，也不另开发取证系统绕开环境准备。
+  空userData本身不等于受控身份；不得修改真实profile ACL或占用其文件来制造隔离。没有足够安全条件时
+  只完成离线实现与反例，不试启动碰运气。全机ETW/自制文件请求证明不再是每次资源测量的串联前置，
+  但移除它不意味着隐私门已通过。单向named pipe由harness先建first-instance/
   reject-remote/current-logon protected-DACL server，main只写、parent只读，handles不继承；双方持有真实query
   handles并核验OS peer identity，错误parent/client/creation、占名、重连或伪writer均失败。协议无秘密或入站
   应用命令，renderer/web/model仍无选择目标、路径、负载或执行能力；普通build加flag不能打开资格入口。
@@ -399,26 +409,28 @@ oracle；FakeProvider 不得冒充真实观察。
   `changed/unchanged/failed=48/52/0, observation/Event=24/12`，后 50 Source 三轮
   `78/72/0, 39/26`。把 queued/running 或尚未 release 的下一轮预记入 count、依赖某个 M0 的 jitter 碰巧过线，
   或以同一错误 generator 互相比对，都属于证据污染。
-- 产品registry必须在真实acquire/release点经trace重放，sample对应唯一冻结prefix。固定负载temp没有创建路径，
+- 产品registry必须在真实acquire/release点经trace重放，sample对应同一JS turn的唯一prefix。固定负载temp没有创建路径，
   product零registry与parent每slot完整OS空目录核对；root/ancestor reparse、identity替换、unexpected entry、
   枚举/close失败都不能PASS。不新增通用temp写/rename/HMAC接口，不以删除未知entry恢复绿态；路径/正文/URL/
   凭据不进pipe。observer不进Watch registry但仍计入全部Job/OS/main/Node成本。
-- 单向协议不等于无barrier。product按固定QPC slot关闭admission、用同一同步Clock decorator暂停各真实owner、
-  保存absolute deadline，只等writer退出，同一JS turn截main snapshot；真实native write completion后按固定
-  min(trigger+1,750ms,sample+1,000ms)自动close并resume。parent独立记录每个OS API组的QPC begin/end，只接受
-  完整位于真实freeze区间内的样本，跨进程±1tick不确定须留2tick安全间隙而非猜顺序。sample/closed之间无
-  event/mutation、closed/resumed与prefix一致；frameTo*转为自主trigger后仍保持500/250/750/1,250/2,000/250ms
-  全部上限，不接收parent延时指令。等待live资源归零、只记API完成时间、使用不同performance.now原点、假写完
-  时间或把跨窗OS数值当快照均会污染证据，必须有反例测试。
-- barrier内owner mutation立即整轮FAIL，不能排队。Clock恢复原absolute deadline、generation与唯一callback；
-  567 run/120 task Tab/四轮与Digest oracle不变。stop后禁止新业务admission/acquire，仅允许释放已live资源的
+- 资源测量不暂停业务、不清除再重建timer，也不等待其它域冻结。main在一个无await的同步段获取QPC边界、
+  registry prefix/live/counters、任务Tab绑定、heap/Node活动资源及有界DB逻辑大小；同步分配sample序号并复制
+  DTO后才异步写出。后继正常mutation不使该快照失效；序列缺口、假prefix、修改已排队DTO、乱序或队列溢出
+  必须拒绝。逐事件trace复算瞬时峰值和最终归零，不能只用10秒gauge遗漏中间超限。
+- 外部采样器独立获取Job累计CPU、完整活跃集RSS/private/handles、文件元数据、目录枚举和电池，分别记录
+  QPC begin/end、身份与有效性；main与OS各自是有界时间内的观察，不声称跨域原子快照。按详细设计的
+  固定slot和完整性规则判断，保留无效样本，不选最有利重试、不补零、不平滑。DB文件size与应用逻辑大小
+  不要求同一瞬时等值；连接释放以实际close返回、进程退出和独立排水证据证明。Restart Manager不再作为
+  所有资源slot前置，文件存在不能冒充连接未释放。异步采样器的资源成本和产品内observer成本如实计量。
+- 固定100 Rule、567 run/120 task Tab/四轮与Digest oracle、10m/60m/10m、资源数值阈值及30分钟电池条件不变。
+  正式观察结束时才stop admission。stop后禁止新业务admission/acquire，仅允许释放已live资源的
   cleanupOf有界Promise谱系，仍完整计入60秒/10分钟排水；不能隐藏cleanup来获得零计数。
 - 实际parent CONNECT/READ与child WRITE每operation独占OVERLAPPED/event/buffer；CancelIoEx成功或
   ERROR_NOT_FOUND都不代表完成，必须final completion/reap后释放。timeout后2秒未完成的owner隔离到进程teardown，
   不能close/reuse未完成内存。peer crash、broken-pipe、disconnect/close与Job fail-safe必须机器验证。
 - 无入站解析面不要求制造入站功能；实际单向writer与collector仍拒绝duplicate/unknown/missing字段、CRLF/半帧、
   non-NFC/surrogate/invalidUTF8/非安全整数、错误sequence/slot/runId与非canonical bytes。原适用golden复用；
-  真实错误parent、伪writer、跨freeze、迟写、假prefix、Job漏进程与CPU漏累计必须有新的独立反例和实现证据。
+  真实错误parent、伪writer、跨slot错配、迟写、假prefix、Job漏进程与CPU漏累计必须有新的独立反例和实现证据。
 - Battery query-tag 只有 failure=`ERROR_FILE_NOT_FOUND` 且 observed tag invalid 才是 empty port；success+invalid
   tag、初始 `ERROR_NO_SUCH_DEVICE` 都是 invalid。取得合法 tag 后的 `ERROR_NO_SUCH_DEVICE` 只证明 stale/tag
   change，本 slot invalid 并下 slot 重枚举，不能洗成 absence。no-battery 仍要求完整枚举的每个 port 都满足
@@ -433,6 +445,10 @@ oracle；FakeProvider 不得冒充真实观察。
 
 真实观察失败不得通过放宽确定性契约伪造 PASS；应记录站点/平台限制、修复夹具或 REPLAN。
 
+2026-10-02 REPLAN 替代旧采样freeze、全机ETW文件模型与历史进程通知全覆盖作为资源串联前置的实现要求。
+历史协议、失败原件、unknown和累计窗口/claim保留为superseded路线证据，不改写为PASS，不自动授予新路线资格。
+可维护资格工具源码可以进入`tools/`；原始日志、机器路径、产物和用户数据不入库。新实现与独立验收仍未执行。
+
 ### 7.3 诚实限制
 
 - robots 不是法律/ToS 授权；严格遵守也不保证网站允许自动访问；
@@ -445,6 +461,9 @@ oracle；FakeProvider 不得冒充真实观察。
 - 跨两个 SQLite 文件没有原子事务，使用 durable intent + revalidation 达成 fail-closed，而非假称原子。
 
 ### 7.4 D10/H2 证据状态回填（2026-09-06）
+
+本节是当日历史证据快照，保留原结果及限制；当前H3a已关闭、H3b未通过的状态只见progress及D10。
+其中旧资源采集方法由现行§7.2及detailed-design §15.6/§15.7替换，不再作为下一轮实施合同。
 
 历史 D10 回填曾以实现提交 `b9d956dc6b6eff626e3a668a2375de10380fc757` 自身作为 baseline 并记录专项
 `47/47`；该表述现已过期。机器证明 `b9d956d…` 的父提交精确为

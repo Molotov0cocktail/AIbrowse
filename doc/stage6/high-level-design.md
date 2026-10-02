@@ -252,6 +252,24 @@ watch.db     Rule / Baseline / Run / Event / Evidence / Digest / cleanup intent
 - 真实外部条件：少量公开 feed、robots、重定向、真实 Provider Digest；调用台账和 Key 零暴露。
 - 独立 D11 Stage Auditor 复跑全量、dev/production、跨进程、红队、真实条件并逐项判定 §9/§10。
 
+### 7.1 资源验收工程边界
+
+H3b复用产品Scheduler、Coordinator、HostRequestGate、任务Tab、Diff/Condition/Event/Digest和Repository；
+固定投影acquisition seam只用于可复现负载，不能证明真实HTTP/解析能力，真实网络仍由H3a独立验收。
+固定100 Rule、567次运行、120次任务Tab、10分钟预热/60分钟测量/10分钟排水、60秒释放门及条件式
+30分钟电池窗口与所有资源数值阈值保持；具体oracle只以detailed-design §15.6/§15.7为准。
+
+2026-10-02 REPLAN把资源观察改成非暂停采样：main同一JS turn生成有界registry/状态快照及自洽prefix，
+外部按QPC独立采集Job累计CPU、活跃成员内存/handles及文件/电池指标，不宣称跨域原子性。
+生命周期在真实acquire/release点记账，事件trace和最终DB事实独立复算；普通build、renderer和网页不可进入
+资格能力。移除每10秒业务freeze、Restart Manager和自制全机ETW作为资源串联前置，避免验证器改变调度负载。
+
+启动隐私仍为独立硬门，必须在真实运行前有足够安全条件。默认复用native早期root pins、编译期入口、
+首tick PathService覆盖、对端身份和合成敌手证据；这些机制不能自行证明原生入口前不读取真实profile。
+证据不足时集中请求必要权限或无真实数据的受控身份/环境，不默认安装工具/建用户，不试跑真实用户数据。
+资源、隐私、负载正确性分别报告，全部必需门通过才关闭H3b；历史失败和unknown保留，不因REPLAN改成PASS。
+资格工具源码可进入`tools/`，日志与机器数据不入库；本次只修订设计，不代表新路线已经实现或验收。
+
 ## 8. 风险与替代方案
 
 | 风险                   | 缓解                                                    | 诚实限制                           |

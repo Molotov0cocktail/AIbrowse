@@ -1,149 +1,56 @@
 ---
 name: vibe-coding-workflow
-description: Run a document-driven Vibe Coding workflow for complex AI-assisted software projects. Use when the user wants to build or refactor a non-trivial project with Codex, Claude Code, Cursor, or another coding agent; asks for vibe coding; wants requirements, design docs, task decomposition, multi-agent implementation, progress tracking, or verification loops; or needs to turn a rough product idea into an executable engineering plan.
+description: Run a document-driven workflow for substantial software design, implementation, refactoring, or engineering replanning. Use when requirements, design decisions, task coordination, or verification need a maintained contract; ordinary small edits can use the existing project workflow directly.
 ---
 
 # Vibe Coding Workflow
 
-Use this skill to turn a vague or complex coding goal into a controlled engineering workflow:
-requirements, design, task split, implementation, and verification. Prefer this workflow when a
-single prompt would create too much ambiguity, context pressure, or unreviewable code.
+把已授权的软件目标转成可实施、可验证、可持续接管的工程工作。项目 `AGENTS.md` 与用户当前授权优先；
+本技能不增加逐任务审批，不把内部实现和历史采集方案当作产品要求。
 
-## Core Rules
+## 接管与决策
 
-- Do not start implementation until the goal, scope, and success criteria are clear enough to test.
-- Keep project knowledge in files, not only in chat. Use `doc/` for planning artifacts and update existing project state files when present.
-- Make every phase produce an artifact that the next phase consumes.
-- Keep tasks small, but make each task a complete, machine-verifiable loop with an explicit goal, scope, non-goals, modules involved, acceptance criteria, verification, and definition of done — not mechanically one file or one module.
-- Treat AI output as a draft until verified with diffs, tests, lint, type checks, and runtime checks.
-- Pause and ask the user when a requirement, product decision, data contract, destructive action, or external dependency is unclear.
+- 查看 Git/工作区、当前进度入口，以及本次任务涉及的需求、设计、安全章节、代码与测试。仅在影响面需要时
+  追溯历史，不要求每次重读全部阶段文档或复跑所有旧检查。
+- 明确产品承诺、工程选择、证据手段和外部条件分别是什么。工程架构、依赖、工具或任务边界失效时，说明
+  根因并自主 REPLAN；只有产品取舍、接受用户风险、凭据/外部权限等必要事项请求裁决。
+- 为不确定路线先定义最小可行性证据、预算与停止/换路条件。连续无新增证据时换路，不堆叠补丁或重跑挑绿。
+- 纯设计任务只做设计；实现授权已有时持续完成，不在每个文档、小步、提交或聊天边界重新请求许可。
 
-## Workflow
+## 维护必要契约
 
-### 1. Stabilize The Project
+使用仓库已有的文档链，不另建第二套事实源：
 
-Inspect the repository before planning. Identify the language, framework, package manager, test
-commands, lint commands, and existing conventions. If the project is new, choose conservative
-defaults and prefer tooling the user already knows.
+- proposal/阶段需求：用户目标、非目标、产品承诺和取舍；
+- 高层/详细设计与威胁模型：架构、能力边界、数据语义、工程选择、风险和验收 oracle；
+- 任务文档：完整目标、实施范围、依赖、验证和完成条件；
+- `progress.md`：当前状态、有效证据索引、开放问题和下一动作；
+- Git/受控机器原件：实现与执行历史。
 
-For Python projects, prefer `uv` when no project-specific tool is established. Use it for virtual
-environment, dependency, and command management.
+已有文档充分时引用具体章节，只写差量。一个任务可覆盖多个相关模块，也可合并普通文档收尾；不要把
+“任务小”解释为每个文件一次审批。大规模 REPLAN 直接改写失效规则与设计，避免不断追加互相覆盖的补丁条款。
 
-Create planning directories only when needed:
+需要新文档骨架、实施合同或角色提示词时，按当前模式选读
+[references/prompt-templates.md](references/prompt-templates.md)，不默认加载全部模板。
 
-```text
-doc/
-  proposal.md
-  high-level-design.md
-  detailed-design.md
-  prompt.md
-  tasks/
-    progress.md
-```
+## 实现与验证
 
-### 2. Clarify Requirements
+- 行为缺陷先建立可甄别旧实现的红态；安全、持久化和并发需实际反例。文档及可逆低影响调整以直接检查为主。
+- 工程 oracle 错误先修订正式契约，说明替代证据仍覆盖同一产品承诺；不能降低数值阈值、删除有意义断言或
+  用 Fake/日志字符串冒充真实门通过。
+- 从聚焦验证开始，按风险在集成点补全量、构建、冒烟与真实条件。未受影响且版本与来源明确的证据可复用，
+  完成后不机械重复高成本矩阵；最终阶段全量和独立审核按项目正式契约执行。
+- 通用验收工具源码、判定器、回放器和合成夹具进入受控 `tools/` 或正式工具目录；原始日志/trace、机器配置、
+  凭据和运行产物留仓库外。保留失败原件与请求账本，只清理确认无证据价值的自有临时产物。
+- 采用项目模型调度与协作规则。可并行独立调查/不重叠实现；同文件不并行写，保护用户修改。
 
-Interview the user or the existing codebase before writing code. Convert rough intent into
-`doc/proposal.md`.
+## 审核与持续推进
 
-Include:
+普通变更可由主协调者复核。安全/隐私、持久化/迁移、并发、大规模架构变化及用户要求的独立验收使用新独立
+Reviewer；阶段最终验收使用新独立 Stage Auditor。审查对象是风险和候选变化，不是为每个内部动作重复建门。
 
-- Goal and non-goals
-- Target users or runtime context
-- Inputs, outputs, and external dependencies
-- Functional requirements
-- Constraints and assumptions
-- Success criteria and acceptance checks
-- Open questions
+Reviewer 独立核验 Git/代码/机器证据，输出 PASS / REPAIR / REPLAN / BLOCKED。复用旧证据必须说明适用范围；
+历史 unknown 继续保留，当前充分证据可以关闭当前阻塞，不能声称已恢复历史根因。
 
-If important answers are missing, ask targeted questions before moving to design.
-
-### 3. Design Before Implementation
-
-Generate or update:
-
-- `doc/high-level-design.md` for architecture, modules, data flow, storage, dependencies, and major tradeoffs.
-- `doc/detailed-design.md` for module responsibilities, interfaces, file layout, algorithms, errors, tests, and edge cases.
-
-Require the design to call out risk, ambiguity, and alternatives. Do not hide uncertainty in confident prose.
-
-### 4. Split Tasks
-
-Break `doc/detailed-design.md` into independent task files:
-
-```text
-doc/tasks/<module-or-feature>.md
-doc/tasks/progress.md
-```
-
-Each task file must include:
-
-- Objective
-- Scope and non-goals
-- Modules involved
-- Input docs
-- Files expected to change
-- Implementation steps
-- Acceptance criteria and tests/checks
-- Definition of done
-- Dependencies on other tasks
-
-`progress.md` must be the shared source of truth. Use checklists for task state and keep notes short.
-
-### 5. Generate The Control Prompt
-
-When the project is ready for agentic implementation, generate `doc/prompt.md`. It should define:
-
-- Main agent role: coordinate, track progress, review diffs, run checks, update `progress.md`.
-- Sub-agent role: implement exactly one task or module, add tests, report blockers, update task status.
-- Required context files: proposal, designs, task files, progress.
-- Guardrails: ask on ambiguity, avoid unrelated refactors, do not skip tests, do not overwrite user work.
-- Verification commands and final reporting format.
-
-Load detailed templates from `references/prompt-templates.md` when drafting prompts or planning docs.
-
-### 6. Implement In Small Passes
-
-Work from `doc/tasks/progress.md`, one task or tightly related group at a time. Before edits, inspect
-the relevant files and confirm the task still matches the codebase.
-
-For each implementation pass:
-
-1. Select the next unblocked task.
-2. Read the task file and dependent design sections.
-3. Implement only the scoped change.
-4. Add or update focused tests.
-5. Run the task's checks.
-6. Inspect `git diff`.
-7. Update `progress.md` with status, commands run, failures, and next steps.
-
-Use sub-agents only when the task boundaries are clean enough that their work can be reviewed
-independently.
-
-### 7. Verify And Close
-
-Before calling the work done:
-
-- Run the relevant test suite.
-- Run lint and type checks when available.
-- Run a smoke test or dev server for user-facing behavior when applicable.
-- Inspect the final diff for unrelated edits, generated clutter, secrets, and accidental rewrites.
-- Update project state files when the session produced durable context (progress files every loop;
-  long-lived rule files only on real change).
-- Leave the workspace handoffable: clean `git status --short`, no unexplained temp files, no failing
-  tests without a recorded reason, state files consistent with the working tree.
-- Report what changed, what was verified, remaining issues, and the next best standalone task.
-
-## Templates
-
-Use `references/prompt-templates.md` for reusable prompts and document skeletons:
-
-- Requirements discussion prompt
-- Proposal template
-- High-level design template
-- Detailed design template
-- Task file template
-- Progress file template
-- Main-agent prompt
-- Sub-agent prompt
-- Verification checklist
+所需审核 PASS 后更新现有进度/设计、完成最终 diff/格式/敏感信息检查，按授权提交推送，并继续下一项已授权工作。
+有外部阻塞时说明所需条件并推进独立事项；纯设计、本阶段结束或下一阶段边界按用户当前指令停止，不由模板自设。
