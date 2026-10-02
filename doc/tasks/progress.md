@@ -5,44 +5,81 @@
 ## 当前结论（2026-10-02）
 
 第六阶段尚未完成。H1/H2/H3a已关闭，H3b没有正式长时资源结论，H4/D11未开始。
-本轮按用户要求完成整体评估与验收架构REPLAN，**不启动实现、Electron、ETW、UAC或系统修改**。
-停止旧012整合和下一次classic窗口；下一任务改为D10 **H3b-R：可解释的产品资源测量闭环**。
-详见 `doc/stage6/acceptance-replan.md`、detailed-design §15.6/§15.7及D10；新会话直接用 `doc/prompt.md`。
+已从 `cc16bb57ce681e00d9d505060e20be9e49418d7e` 的干净工作区启动D10 **H3b-R实现**。
+产品非暂停采样及独立构建目录已独审并提交 `5145164`；Windows Job采集器与独立报告器已实现，
+首次真实Electron短验已正常完成并独立复算。电池采集、独立报告及正式运行入口已限定独审PASS，
+启动前全量测试193文件3920项通过；尚未执行正式资源窗口。
+停止旧012整合与classic ETW路线。
+详见 `doc/stage6/acceptance-replan.md`、detailed-design §15.6/§15.7及D10。
 
 主要根因是资源验收与自建完整Windows文件事件证明系统耦合，周期freeze、OS查询尾延迟和工具缺陷使测量无法开始。
 不能因此判产品性能FAIL，也不能判PASS。保留Watch产品架构、固定负载及全部数值/隐私承诺，改为非暂停分项采样。
-当前真实用户身份下的早期隔离证据仍不足；需要先验证安全环境，不能删ETW后直接宣称隐私已证。
+用户已明确允许完整开发期间使用当前Windows账户，并声明应用内不会产生个人数据；不再要求新建账户。
+使用全新合成根、零Provider，既有DPAPI/harness凭据不读取。当前账户不是OS文件沙箱；CJS前路径隔离
+尚未实证，独立报告必须保留该缺证，不把资源采样通过当隐私或H3b通过。
 
 ## Git、产物与证据基线
 
-- 接管HEAD：`d976ac525b0d137987c3d2c8c006a27cce5eddac`。接管仅本文件有未提交近期收据更新，已保存完整原文。
-  本轮文档提交的最终SHA以Git为准，不把文档SHA当产品已实现。
+- 本轮实现接管HEAD：`cc16bb57ce681e00d9d505060e20be9e49418d7e`，工作区干净；产品后继提交`5145164`。
+  上轮文档接管`d976ac5`的未提交收据已保存完整原文，最终工具候选SHA以Git为准。
 - H3b资格产品候选 `43efffbc82ff11122230c2362d6484d5feb9b581` 仅获限定独审；RSS空默认namespace修复
-  `ee61ceb9d60d89dd60f6186030d6890b019a94ee` 已独审。后续未有产品新提交，均尚未推送。
+  `ee61ceb9d60d89dd60f6186030d6890b019a94ee` 已独审；本轮产品后继`5145164`已限定独审，均尚未推送。
 - 双远程上次已核验同步于H3a收尾 `bcd38eeba5b81d055ad319aded9a748b6969c861`；本轮不做网络写入，
   不因文档REPLAN审核通过就推送未验收的完整H3b候选历史。下次网络操作仍核真实状态，不假设远程未变。
 - H4完整审查起点固定 `d85667c54a354d322b0180d4c17873860a86c611`，不能排除首个D10大型实现。
-- 当前out仍为旧qualification-load-diagnostic产物，含native addon；新路线尚未实现。后续重建前保留来源，
-  normal与qualification分开输出/保存，避免再次清掉必需addon。旧log候选不自动激活。
+- normal和三种qualification均已构建并分目录输出，必需addon在各自目录；旧out保存于
+  `log/h3br-product-build-before/out/`。旧log候选不自动激活。
 - 原progress完整4124行保存 `log/replan-20261002/progress-before.md`，SHA256
   `f79e502f68349532527888789328845fe7cb826d40fc4860a239320e5cf2fdad`；已提交历史也可从 `d976ac5` 读取。
   这是只读历史快照，不是第二进度源；含原未提交收据，原始失败日志均未删改。
 
 ## 阶段状态
 
-| 范围         | 状态                 | 证据/边界                                                                                                |
-| ------------ | -------------------- | -------------------------------------------------------------------------------------------------------- |
-| Stage1–5     | 已关闭               | 各Stage任务/设计和Git历史保留，本轮不重审全部历史                                                        |
-| Stage6 D1–D9 | 已完成               | 已有独立安全/持久化/UI审核，变更涉及的部分按影响复验                                                     |
-| H1           | 历史关闭             | 其旧验收工程方案已由本轮替换，不重做旧合同                                                               |
-| H2           | PASS关闭             | `9e41bd6`，原47项保留+24项；99ms红态和单调计时修复保留                                                   |
-| H3a          | PASS关闭             | `log/h3a-default-independent-current/h3a-convergence.md`；RSS累计20次，default dev/prod最终各3次完整通过 |
-| H3b / H3b-R  | 未通过；新路线待实现 | 不再推进classic012；隔离/资源/退出/电池均须实际闭合                                                      |
-| H4           | 待开始               | 可做独立准备，H3b完成后授最终结论                                                                        |
-| D11          | 待开始               | H4后新的独立Stage Auditor                                                                                |
-| Stage7       | 未开始               | Stage6真GO后入口/风险/设计/任务准备，停在第一个产品实现前                                                |
+| 范围         | 状态             | 证据/边界                                                                                                |
+| ------------ | ---------------- | -------------------------------------------------------------------------------------------------------- |
+| Stage1–5     | 已关闭           | 各Stage任务/设计和Git历史保留，本轮不重审全部历史                                                        |
+| Stage6 D1–D9 | 已完成           | 已有独立安全/持久化/UI审核，变更涉及的部分按影响复验                                                     |
+| H1           | 历史关闭         | 其旧验收工程方案已由本轮替换，不重做旧合同                                                               |
+| H2           | PASS关闭         | `9e41bd6`，原47项保留+24项；99ms红态和单调计时修复保留                                                   |
+| H3a          | PASS关闭         | `log/h3a-default-independent-current/h3a-convergence.md`；RSS累计20次，default dev/prod最终各3次完整通过 |
+| H3b / H3b-R  | 未通过；短验完成 | 已取得真实资源及正常退出；正式长时、隐私、电池及DB业务总门仍须闭合                                       |
+| H4           | 待开始           | 可做独立准备，H3b完成后授最终结论                                                                        |
+| D11          | 待开始           | H4后新的独立Stage Auditor                                                                                |
+| Stage7       | 未开始           | Stage6真GO后入口/风险/设计/任务准备，停在第一个产品实现前                                                |
 
-## 本轮验证
+## H3b-R当前实现与验证
+
+- 真实短验 `VXW46AFHWAOCBAVLQHBNDPZB3U` 已自然exit0：5个OS点、4个CPU区间、240条连续main帧，
+  固定index80..83四次Session初始化，Coordinator/task Tab峰4，Provider/HTTP/socket为0。
+  CPU median/观测peak 0.031249%/1.728728%；RSS 617.085938/803.742188 MiB；private
+  352.125/376.707031 MiB；handles 3865/4144。短窗不授正式阈值PASS/FAIL，句柄需正式窗确认。
+  M1+10.0577291秒首次root0/Job0/三EOF/DB独占/WAL-SHM无/temp0，随后连续6点保持。
+  原件及独立算术 `log/h3br-current/short-001-raw-independent-001.json`；采集JSONL、初报/复报全部保留。
+- 首次measurement文件slot0为invalid，main短窗slot0缺失，均未填零/丢弃；不把短验当567负载或61点排水。
+  采集期间一次只读进程/文件快照没有看到Electron及已写大小；最终原件证明该轮正常完成，未终止/重跑，
+  不因此编造启动卡死根因。
+- 非暂停产品/预检独审 `review-nonpause.md` 限定PASS；原六文件reporter初REPAIR后修复，再审PASS，
+  `review-reporter.md`保留全链。电池及DB当前实现已增量限定PASS，正式DB oracle待补完整。
+  `review-extensions.md`对电池API、释放身份、watchdog及AwakeRequest限定PASS，允许正式采集。
+- 原始关闭后DB业务复算通过短验全部项目（2库完整性、100 Source/Rule、4 Baseline/Run及零Event/Digest）。
+  工具直接SQLite readOnly打开原WAL库后创建了sidecar，原始drain已证明这些文件此前不存在；该工具副作用
+  与二次释放拒绝证据保留于 `short-001-database-report-side-effect.md`，不判产品泄漏、不删除原件。
+  后续改为独占释放检查后的受控一致性副本复算，不再用Node SQLite重开原库。
+
+- 产品侧甄别红态：旧writer阻塞会阻止sample产生；旧正式末点位于stop之后。已取消周期pause/freeze/重排timer，
+  同步registry prefix与快照后异步发送，正式末点在M1前、M1独立停止。原件 `log/h3br-product-nonpause-red.txt`。
+- normal输出仍为out/main；资格构建分为out/qualification及两种诊断目录，addon随对应目录构建。
+  重建前旧out保留于 `log/h3br-product-build-before/out/`；此次修改不把旧产物当新候选。
+- `tools/watch-qualification/` 新增最小Job/pipe采集器、独立报告器和安全预检。真实合成子进程/SQLite反例
+  已运行，覆盖退出子进程CPU、残余进程、共享读/写/DELETE句柄及temp。安全复核发现DB路径应为
+  userData/watch/watch.db，已修复，失败/修复证据保留于 `log/watch-qualification-build/`。
+- 启动前全量测试193文件3920项通过，typecheck通过，原件 `log/h3br-current/`。
+  全量lint首次因历史隔离产物目录ACL无法遍历而中断；已把`.h3b-workspaces`加入lint/format运行产物忽略，
+  不改变源码检查范围或原件ACL。随后检查结果以各次原始日志为准，不覆盖失败。
+- 当前没有新建账户、启动ETW/UAC、修改原profile ACL或读取真实凭据。短验已取得资源/释放证据，
+  新增电池与总超时保护已完成风险复核，下一步执行正式窗口；用户已安排先接电完成资源验收，再补电池窗口。
+
+## 既有重规划验证（证据复用边界）
 
 - 独立产品评估实际运行：Node `v24.18.0`；
   `npm test -- --maxWorkers=1 src/main/watch/feed-parser.test.ts src/main/watch/watch-run-coordinator.test.ts src/main/watch/watch-processing-service.test.ts src/main/watch/qualification/full-load.test.ts src/main/watch/qualification/launch-isolation.test.ts`
@@ -143,9 +180,9 @@ H3b长时资源/电池/当前Windows兼容性和新隔离证据仍开放，不�
 
 ## 下一唯一执行任务
 
-直接执行D10的H3b-R。先核实安全测试身份/环境是否可用，同时实现最小非暂停采样和独立报告器；
-一次有界短验取得真实产品数据后执行完整负载与资源窗口。短验无有效数据就定位/换方法，
+完成新增电池/启动总超时保护/副本DB报告的受影响复核，记录正式候选与环境，执行完整固定负载及资源窗口。
+短验已有有效数据，不重跑取绿、不继续扩展通用取证；若正式测量失败，按具体产品或工具原因修复，
 不继续012、全机ETW、逐补丁UAC循环或另写通用证明框架。完整执行指令在 `doc/prompt.md`。
 
-本轮结束于文档REPLAN交付；新会话再实施。后续正式顺序为H3b → H4 → 新D11 → Stage7设计准备，
+当前仍在实施，不是文档REPLAN停点。后续正式顺序为H3b → H4 → 新D11 → Stage7设计准备，
 停在Stage7首个产品实现前。

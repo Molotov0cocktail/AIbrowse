@@ -18,8 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format": "prettier --write .agents doc native src tools .prettierrc.json \"*.{json,md,mjs,ts}\"",
+    "format:check": "prettier --check .agents doc native src tools .prettierrc.json \"*.{json,md,mjs,ts}\""
   },
   "dependencies": {
     "@federicocarboni/saxe": "0.8.0",

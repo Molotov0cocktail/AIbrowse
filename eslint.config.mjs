@@ -6,7 +6,7 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['out', 'dist', 'release', 'node_modules', 'log', 'coverage'],
+    ignores: ['out', 'dist', 'release', 'node_modules', 'log', 'coverage', '.h3b-workspaces'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -28,6 +28,7 @@ export default tseslint.config(
       'src/main/**/*.ts',
       'src/preload/**/*.ts',
       'src/shared/**/*.ts',
+      'tools/**/*.ts',
       '*.config.ts',
       '*.config.mjs',
     ],

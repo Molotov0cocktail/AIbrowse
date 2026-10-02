@@ -2297,6 +2297,11 @@ Chromium子进程被Job约束；漏出成员/权限不足/身份混淆不能PASS
 不恢复自制全机ETW路线；记录其采集边界，不保存真实路径、正文或凭据。独立安全Reviewer确认替代证据充分，
 包括启动、失败认证、目录换绑、普通build拒绝资格入口及不触达真实数据。安全门仍是H3b总门的必要条件。
 
+2026-10-02用户环境裁决：完整项目开发期间允许直接使用当前账户，并声明应用中不会产生个人数据。
+本轮据此使用当前账户和全新合成运行根，不要求新建账户；已有DPAPI/harness凭据仍受保护且资源窗口零Provider。
+此环境前提不是原profile不可访问的OS证明。先核对最小启动/路径/凭据防护后可取得资源分项证据；
+尚未实证的CJS前路径隔离必须如实列为独立缺证，不能因有资源数据而关闭隐私或H3b总门。
+
 统计固定：median为排序中位数（偶数取中间均值），P95为nearest-rank的ceil(0.95*n)项，peak为最大有效值；
 OLS以有效样本实际QPC小时为x、原值为y，计算带截距斜率。无效/duplicate原件保留，reporter独立复算。
 Node key先NFC并须匹配`^[A-Za-z][A-Za-z0-9_.:-]{0,127}$`，按exact case计数及UTF-8字节排序，不重命名；每key及总量
@@ -2336,8 +2341,10 @@ Watch async operation、Store/DB connection、temp lease/OS entry、Job ActivePr
 不能冒充产品泄漏；真实残余子进程/连接/业务在期限后仍存在是产品失败。
 
 DB释放采用独立、被反例验证的文件oracle，代替逐slot强制RM名单：在保留身份的owned根中，关闭后
-watch.db可独占read/write/delete-share-denied打开，WAL/SHM不存在；独立重开验证integrity与预期业务事实，
-关闭验证连接后再次独占检查，随后按FileId/reparse与所有权精确删除本轮根。独占打开不证明“任何性质的
+watch.db可独占read/write/delete-share-denied打开，WAL/SHM不存在；在保留原文件身份并禁止写入的句柄下复制
+关闭后一致性的watch/sources数据库至本轮证据副本根，记录复制前后内容hash，仅在副本上独立重开验证integrity
+与预期业务事实。Node SQLite的readOnly连接仍可能创建WAL/SHM，故不得直接重开原运行库制造观测副作用。
+关闭验证连接后对原根再次独占检查，随后按FileId/reparse与所有权精确删除本轮根。独占打开不证明“任何性质的
 HANDLE都不存在”，而证明业务所需读写/删除未受残留占用；与真实产品close/Job空证据共同支持释放结论。
 必须以故意保留SQLite连接、普通读/写/DELETE共享句柄、子进程及temp条目的反例证明不会错误通过；
 RM可定位占用者，但其返回/缓存不能替代该反例或延长60秒期限。
@@ -2451,7 +2458,8 @@ Remote Desktop/虚拟GPU替代本机验收。新增支持版本通过工程复�
 参数必须拒绝进入资格路径。两种产物分开保存，构建完整性预检包含必需addon；不得让后构建覆盖已绑定产物。
 记录版本、源码commit、构建配置和实际产物清单/hash一次，用于来源追溯，不把哈希当功能验收。
 
-launcher以绝对Electron exe直接启动真实package.main和固定工作目录，不用npm/preview包装进程替代main；
+launcher以绝对Electron exe、闭合白名单中的对应资格main入口和固定工作目录直接启动，不用npm/preview包装进程替代main；
+普通build仍使用package.main；资格入口仅允许out/qualification及两种诊断目录中的main/index.js。
 先suspended加入无breakaway且kill-on-job-close的Job，再resume，正常结束前保持Job句柄。只传必要且明确的
 环境、非秘密参数和显式handle allowlist；TEMP/APPDATA及Electron路径指向受控根，USERPROFILE等原用户
 路径继承须经隔离门核对。父进程及时关闭child pipe副本，持续drain全流并有界保留，不能让满pipe反压产品。
