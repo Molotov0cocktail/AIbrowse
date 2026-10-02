@@ -23,6 +23,7 @@ export interface MainReport {
   violations: string[];
   frames: number;
   complete: boolean;
+  traceComplete: boolean;
   peaks: Record<string, number>;
   registrations: Record<string, number>;
   heapMiB: MetricReport;
@@ -109,7 +110,7 @@ export function reportMain(
   input: readonly QualificationFrame[],
   windowIssues: readonly string[] = [],
 ): MainReport {
-  const issues: string[] = [...windowIssues];
+  const issues: string[] = [];
   const violations: string[] = [];
   const live = new Map<string, QualificationRegistryEvent>();
   const seen = new Set<string>();
@@ -321,7 +322,8 @@ export function reportMain(
   if (!ready || !complete) issues.push('缺少认证开始或正常结束遥测');
   const selected = selectObservations(window, observations, sampleValid);
   const rows = [...selected.values.values()].sort((a, b) => a.slot - b.slot);
-  const sufficient = issues.length === 0 && selected.missing.length <= 3;
+  const sufficient =
+    windowIssues.length === 0 && issues.length === 0 && selected.missing.length <= 3;
   const heapMiB = metric(
     window,
     selected,
@@ -367,10 +369,11 @@ export function reportMain(
         : verdicts.every((value) => value === 'PASS') && sufficient
           ? 'PASS'
           : 'BLOCKED/evidence-insufficient',
-    evidenceIssues: [...new Set(issues)],
+    evidenceIssues: [...new Set([...windowIssues, ...issues])],
     violations: [...new Set(violations)],
     frames: input.length,
     complete,
+    traceComplete: ready && complete && issues.length === 0,
     peaks,
     registrations,
     heapMiB,

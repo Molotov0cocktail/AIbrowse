@@ -92,6 +92,7 @@ describe('main prefix独立复算', () => {
     expect(report.heapMiB.statistics!.count).toBe(361);
     expect(report.nodeByType.Timeout!.statistics!.median).toBe(4);
     expect(report.complete).toBe(true);
+    expect(report.traceComplete).toBe(true);
   });
   it('拒绝伪身份、缺帧、伪prefix及假归零', () => {
     for (const mutate of [
@@ -165,6 +166,7 @@ describe('main prefix独立复算', () => {
     expect(reportMain(window, runId, rows, ['窗口发生系统暂停']).verdict).toBe(
       'BLOCKED/evidence-insufficient',
     );
+    expect(reportMain(window, runId, rows, ['窗口发生系统暂停']).traceComplete).toBe(true);
     const sample = rows.find((row) => row.kind === 'sample')!;
     if (sample.kind === 'sample') sample.payload.mainHeapUsedBytes = 600 * 1048576;
     expect(reportMain(window, runId, rows, ['窗口发生系统暂停']).verdict).toBe('FAIL-product');

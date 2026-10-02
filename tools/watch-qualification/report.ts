@@ -5,6 +5,7 @@ import { cadenceIssues, reportResources } from './resource-report.ts';
 import { reportMain } from './main-report.ts';
 import { reportExit } from './exit-report.ts';
 import { reportBattery } from './battery-report.ts';
+import { reportLoad } from './load-report.ts';
 
 export function report(external: string, mainText: string): object {
   const evidence = readEvidence(external, mainText);
@@ -15,22 +16,26 @@ export function report(external: string, mainText: string): object {
     evidence.main,
     cadenceIssues(evidence.resources),
   );
-  const exit = reportExit(
-    evidence.resources.window,
-    evidence.records,
-    main.complete && main.evidenceIssues.length === 0,
-  );
+  const exit = reportExit(evidence.resources.window, evidence.records, main.traceComplete);
   const battery = reportBattery(
     evidence.resources.window,
     evidence.records,
     cadenceIssues(evidence.resources),
+  );
+  const load = reportLoad(
+    evidence.resources.window.mode,
+    evidence.runId,
+    evidence.main,
+    main.traceComplete,
   );
   // Unimplemented or externally reviewed gates stay explicit; local resource PASS is not H3b PASS.
   return {
     version: 1,
     runId: evidence.runId,
     mode: evidence.resources.window.mode,
-    h3b: [resources.verdict, main.verdict, exit.verdict, battery.verdict].includes('FAIL-product')
+    h3b: [resources.verdict, main.verdict, exit.verdict, battery.verdict, load.verdict].includes(
+      'FAIL-product',
+    )
       ? 'FAIL-product'
       : 'BLOCKED/evidence-insufficient',
     evidenceIssues: evidence.issues,
@@ -40,6 +45,7 @@ export function report(external: string, mainText: string): object {
     main,
     exit,
     battery,
+    load,
   };
 }
 

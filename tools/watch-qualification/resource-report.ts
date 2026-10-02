@@ -48,7 +48,10 @@ export interface ResourceReport {
   mode: Window['mode'];
   verdict: Verdict;
   evidenceIssues: string[];
-  cpuPercent: MetricReport;
+  cpuPercent: MetricReport & {
+    counterEndpointSpanSeconds: number | null;
+    coveredIntervalSeconds: number;
+  };
   rssMiB: MetricReport;
   privateMiB: MetricReport;
   handles: MetricReport;
@@ -276,6 +279,7 @@ export function reportResources(input: ResourceInput): ResourceReport {
   const cpu = selectObservations(window, input.cpu, (value) => ticks(value) >= 0n);
   const cpuPoints: Point[] = [];
   const missingIntervals: number[] = [];
+  let coveredIntervalSeconds = 0;
   let rollback = false;
   let prior: bigint | null = null;
   for (let slot = 0; slot <= last; ++slot) {
@@ -298,6 +302,7 @@ export function reportResources(input: ResourceInput): ResourceReport {
       rollback = true;
       continue;
     }
+    coveredIntervalSeconds += Number(elapsed) / window.qpcFrequency;
     cpuPoints.push(
       point(
         window,
@@ -321,6 +326,7 @@ export function reportResources(input: ResourceInput): ResourceReport {
   );
   // CPU slot zero is a counter baseline, never a fabricated zero-percent sample.
   const firstCpu = cpu.values.get(0);
+  const lastCpu = cpu.values.get(last);
   cpuReport.endpointErrorsSeconds.first = firstCpu ? point(window, firstCpu, 0).seconds : null;
   const members = selectObservations(window, input.members, validMembers);
   const rows = [...members.values.values()].sort((a, b) => a.slot - b.slot);
@@ -335,7 +341,14 @@ export function reportResources(input: ResourceInput): ResourceReport {
   const memberComplete = complete && members.missing.length <= 3;
   const processPoints = rows.map((row) => point(window, row, row.value!.processes.length));
   const reports = {
-    cpuPercent: cpuReport,
+    cpuPercent: {
+      ...cpuReport,
+      counterEndpointSpanSeconds:
+        firstCpu && lastCpu
+          ? Number(ticks(lastCpu.endQpc) - ticks(firstCpu.endQpc)) / window.qpcFrequency
+          : null,
+      coveredIntervalSeconds,
+    },
     rssMiB: metric(
       window,
       members,

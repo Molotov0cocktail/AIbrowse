@@ -46,6 +46,9 @@ describe('独立资源报告反例', () => {
       p95: 1,
       observedPeak: 1,
     });
+    expect(report.cpuPercent.counterEndpointSpanSeconds).toBe(3600);
+    expect(report.cpuPercent.coveredIntervalSeconds).toBe(3600);
+    expect(report.cpuPercent.statistics?.spanSeconds).toBe(3590);
     input.cpu[20]!.value = String(20 * 4000000 + 300000000);
     expect(reportResources(input).cpuPercent.verdict).toBe('FAIL-product');
   });
@@ -54,6 +57,8 @@ describe('独立资源报告反例', () => {
     const input = fixture();
     input.cpu[100]!.value = null;
     expect(reportResources(input).cpuPercent.missingSlots).toEqual([100, 101]);
+    expect(reportResources(input).cpuPercent.counterEndpointSpanSeconds).toBe(3600);
+    expect(reportResources(input).cpuPercent.coveredIntervalSeconds).toBe(3580);
     expect(reportResources(input).cpuPercent.verdict).toBe('PASS');
     input.cpu[200]!.value = null;
     expect(reportResources(input).cpuPercent.missingSlots).toEqual([100, 101, 200, 201]);
@@ -63,6 +68,8 @@ describe('独立资源报告反例', () => {
   it('首末累计端点缺失和counter回退不能通过', () => {
     const input = fixture();
     input.cpu[0]!.value = null;
+    expect(reportResources(input).cpuPercent.counterEndpointSpanSeconds).toBeNull();
+    expect(reportResources(input).cpuPercent.coveredIntervalSeconds).toBe(3590);
     expect(reportResources(input).cpuPercent.verdict).toBe('BLOCKED/evidence-insufficient');
     const rollback = fixture();
     rollback.cpu[360]!.value = '1';
