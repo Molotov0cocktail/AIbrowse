@@ -83,9 +83,8 @@ Module._load = function (request, parent, isMain) {
   if (typeof resolved === 'string' && path.isAbsolute(resolved) && !seen.has(resolved)) {
     seen.add(resolved);
     const relative = path.relative(process.cwd(), resolved).replaceAll('\\', '/');
-    const artifact = /^out\/(?:qualification-diagnostic\/)?main\/[^/]+\.(?:js|node)$/.test(
-      relative,
-    );
+    const artifact =
+      /^out\/(?:qualification-(?:load-)?diagnostic\/)?main\/[^/]+\.(?:js|node)$/.test(relative);
     const positive = relative === 'tools/watch-qualification/startup-check-positive.cjs';
     if (artifact || positive) {
       const bytes = Reflect.apply(originalReadFile, fs, [resolved]);
@@ -143,6 +142,40 @@ Module._load = function (request, parent, isMain) {
       },
     );
   };
+  if (mode === 'writer-main-delay') {
+    const pendingWrites = new Set();
+    let injected = false;
+    wrapped.writeTelemetryFrame = function (...args) {
+      const promise = Reflect.apply(exported.writeTelemetryFrame, exported, args);
+      const frameSequence = args[1].sequence;
+      pendingWrites.add(frameSequence);
+      // Promise settlement is only the trigger. Native diagnostics and parent
+      // pipe reads determine whether bytes were actually submitted/completed.
+      void promise.then(
+        () => pendingWrites.delete(frameSequence),
+        () => pendingWrites.delete(frameSequence),
+      );
+      if (!injected && pendingWrites.size === 2) {
+        injected = true;
+        const [firstSequence, secondSequence] = pendingWrites;
+        const before = exported.readQpc();
+        emit('writer-main-delay-begin', {
+          firstSequence,
+          secondSequence,
+          pendingWrites: pendingWrites.size,
+          qpcTicks: before.ticks,
+          qpcFrequency: before.frequency,
+          waitMilliseconds: 2500,
+        });
+        const waited = Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+        emit('writer-main-delay-end', {
+          qpcTicks: exported.readQpc().ticks,
+          timedOut: waited === 'timed-out',
+        });
+      }
+      return promise;
+    };
+  }
   return wrapped;
 };
 emit('observer-start', {

@@ -95,6 +95,7 @@ bool businessFilesAbsent(const Roots& roots) {
 void runCase(const std::wstring& repo, const std::wstring& parent, const std::wstring& output,
              const std::string& mode) {
   const bool positive = mode == "positive", observed = mode != "native-normal";
+  const bool writerDelay = mode == "writer-main-delay";
   const bool success = mode == "normal" || mode == "delayed" || mode == "native-normal";
   const bool normalBuild = mode == "normal-build";
   auto roots = freshRoots(parent);
@@ -103,6 +104,7 @@ void runCase(const std::wstring& repo, const std::wstring& parent, const std::ws
   const auto exe = repo + L"\\node_modules\\electron\\dist\\electron.exe";
   const auto observer = repo + L"\\tools\\watch-qualification\\startup-check-observer.cjs";
   const std::wstring entry = positive ? L"tools/watch-qualification/startup-check-positive.cjs" :
+      writerDelay ? L"out/qualification-load-diagnostic/main/index.js" :
       normalBuild ? L"out/main/index.js" : L"out/qualification-diagnostic/main/index.js";
   auto fullEntry = repo + L"\\" + entry;
   std::replace(fullEntry.begin(), fullEntry.end(), L'/', L'\\');
@@ -141,7 +143,7 @@ void runCase(const std::wstring& repo, const std::wstring& parent, const std::ws
       {L"qpcFrequency", Value(freq)}, {L"sameUserDataRenameBeforePins", Value(true)}}));
   swapRejected(*roots, records, "before-resume");
   std::unique_ptr<Telemetry> telemetry;
-  if (success && mode != "delayed") {
+  if ((success && mode != "delayed") || writerDelay) {
     telemetry = std::make_unique<Telemetry>(); telemetry->connect(child.pid);
   }
   child.resume();
@@ -152,6 +154,8 @@ void runCase(const std::wstring& repo, const std::wstring& parent, const std::ws
   std::string rejection;
   bool swappedDuringWait = false;
   uint64_t frames = 0, observerSequence = 0;
+  uint64_t delayFirst = 0, delaySecond = 0;
+  bool delayEnded = false;
   std::string lines;
   while (true) {
     const auto now = qpc();
@@ -180,6 +184,20 @@ void runCase(const std::wstring& repo, const std::wstring& parent, const std::ws
         } else if (kind == "prepared") prepared = true;
         else if (kind == "authenticate-start") authenticateStarted = qpc();
         else if (kind == "authenticated") authenticated = true;
+        else if (kind == "writer-main-delay-begin") {
+          require(writerDelay && !delayFirst && observation.at("pendingWrites").number() == 2 &&
+              observation.at("waitMilliseconds").number() == 2500 &&
+              observation.at("qpcFrequency").number() == freq, "startup-writer-delay-trigger-invalid");
+          delayFirst = observation.at("firstSequence").number();
+          delaySecond = observation.at("secondSequence").number();
+          require(delayFirst > 1 && delaySecond == delayFirst + 1, "startup-writer-delay-sequence-invalid");
+          ticksField(observation.at("qpcTicks"));
+        } else if (kind == "writer-main-delay-end") {
+          require(writerDelay && delayFirst && !delayEnded &&
+              std::get<bool>(observation.at("timedOut").data), "startup-writer-delay-end-invalid");
+          ticksField(observation.at("qpcTicks"));
+          delayEnded = true;
+        }
         else if (kind == "prepare-rejected" || kind == "authenticate-rejected") {
           rejected = true; rejection = observation.at("classification").string();
         }
@@ -230,7 +248,9 @@ void runCase(const std::wstring& repo, const std::wstring& parent, const std::ws
           ready = true;
         }
         if (kind == "complete") complete = true;
-        records.line(object({{L"kind", Value("telemetry")}, {L"frame", frame}}));
+        if (writerDelay)
+          records.line(object({{L"kind", Value("telemetry")}, {L"frame", frame}, {L"qpc", decimal(qpc())}}));
+        else records.line(object({{L"kind", Value("telemetry")}, {L"frame", frame}}));
       }
     }
     if (WaitForSingleObject(child.process.value, 0) == WAIT_OBJECT_0 &&
@@ -248,6 +268,9 @@ void runCase(const std::wstring& repo, const std::wstring& parent, const std::ws
       {L"businessFilesAbsent", Value(businessFilesAbsent(*roots))}}));
   require(lines.empty() && (!observed || hook), "startup-observer-unavailable");
   if (positive) require(exitCode == 0 && positiveModule && positiveRead && !authenticated, "startup-positive-not-detected");
+  else if (writerDelay) require(exitCode != 0 && ready && !complete && earlyMatch &&
+      prepared && authenticated && delayFirst && delayEnded && frames == delayFirst,
+      "startup-writer-delay-inconclusive");
   else if (success) require(exitCode == 0 && ready && complete && earlyMatch &&
       (!observed || (prepared && authenticated)) && (mode != "delayed" || swappedDuringWait), "startup-success-oracle-failed");
   else {
@@ -261,11 +284,16 @@ void runCase(const std::wstring& repo, const std::wstring& parent, const std::ws
   std::cout << "启动专项完成一个有界场景：" << mode << '\n';
 }
 int run(int argc, wchar_t** argv) {
-  require(argc == 5 && std::wstring(argv[4]) == L"--window-ended", "startup-arguments-invalid");
+  require((argc == 5 || argc == 6) && std::wstring(argv[4]) == L"--window-ended" &&
+      (argc == 5 || std::wstring(argv[5]) == L"writer-main-delay"), "startup-arguments-invalid");
   const std::wstring repo = argv[1], parent = argv[2], output = argv[3];
   strictLocalPath(repo); strictLocalPath(parent); strictLocalPath(output);
   auto parentPin = openAttributes(parent), outputPin = openAttributes(output);
   fileId(parentPin.value, true); fileId(outputPin.value, true);
+  if (argc == 6) {
+    runCase(repo, parent, output, "writer-main-delay");
+    return 0;
+  }
   // Missing/empty user-data arguments are never launched; native pure tests cover them.
   for (const auto* mode : {"positive", "native-normal", "normal", "delayed", "missing",
                           "wrong-root", "duplicate", "extra", "normal-build"})

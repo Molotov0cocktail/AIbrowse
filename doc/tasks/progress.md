@@ -16,7 +16,8 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
 完整dev默认003、production默认002及各五组set/check已全部通过。旧Research往返失败具体字段仍unknown，
 诊断实证原等待会放行loading Tab，已改受控静态页面及真实ready/完整快照门，保留原四字段恒等断言。
 句柄增长按独立确认的失效工程oracle修订为`handle-growth-v2`，已实现并限定独审通过；绝对阈值与四Session负载不变。
-新短验002在认证启动后约3秒失败，尚未进入固定负载；当前先定位native遥测首个失败，不启动正式长测。
+新短验002在认证启动后约3秒失败，尚未进入固定负载；003仅新增首错诊断后正常完成，002首因仍unknown。
+单次受控反例已证实native后继写入依赖主线程完成回调，排队超时发生于提交I/O之前；当前修复该并发缺陷。
 停止旧012整合与classic ETW路线。
 详见 `doc/stage6/acceptance-replan.md`、detailed-design §15.6/§15.7及D10。
 
@@ -118,6 +119,18 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
   collector记录`telemetry-incomplete-eof`并以79退出，未超外部期限。未取得负载/资源或正常退出结论。
   原件`short-002-plan.json`、`short-002-run.txt`及逐run文件保留；实际产物完整归档
   `log/h3br-short-002-artifacts/`。当前补最小首错分类与数字时序定位，不放宽时限或无诊断重跑。
+- 首错诊断`b232853`保持原调度/两秒期限，45项native及20项IO生命周期通过并限定独审。
+  短验003 run `PBMM25RXUGC5Y4ZSIAKY5NODEA`正常exit0，244连续main帧、5OS点/4CPU区间、
+  四Session/Coordinator/grant完整，HTTP/Provider零。CPU median/peak 0.066388%/1.586228%，
+  RSS median/peak 423.938/744.355 MiB，handles median/peak 2688/3846；不授正式阈值通过。
+  stop+10.0640203秒首次全零释放，后六点持续，7点drain完整；原件`short-003-*`及逐run文件，
+  实际产物在`log/h3br-short-003-artifacts/`。本轮未复现002，不能据此声称其首因已定位或修复。
+- 003两库由native独占副本复算通过100 Source/Rule、4 Run/Baseline、零Event/Digest，复制后原库仍释放。
+  首份root身份JSON因调用方CRLF被严格解析拒绝，原件保留；`root-ids-002`改单LF后复核通过，非产品释放失败。
+  受控反例`writer-main-delay-001` run `SYSRL5BWWQ2WQBYLH6324LVS3I`证实：main阻塞2.514421秒，
+  seq2父进程已收到，seq3排队2.5216373秒后在提交I/O前超时，native执行仅33.5微秒、ioCompleted=0。
+  child exit1、Job0及三EOF，工具exit0表示反例命中；实际红态addon/启动器/observer已归档至该目录`red-artifacts/`。
+  保留两秒入队总限、队列预算及取消后实际完成要求，修复后台有序排水对逐帧main回调的依赖；002首因仍unknown。
 - 正式旧产物已按plan四项hash核对后保存于 `log/h3br-formal-001-artifacts/`，manifest为
   `formal-001-artifact-archive.json`。当前normal、三种qualification及四参数collector均已重建；
   不得混用新addon与旧三参数collector。
@@ -252,7 +265,8 @@ H3b长时资源/电池/当前Windows兼容性和新隔离证据仍开放，不�
 
 ## 下一唯一执行任务
 
-定位短验002的native遥测首错，针对性修复后复验；完整dev/prod矩阵、最终质量门与全部资格产物重建均已完成。
+修复已由真实反例证实的native队列调度依赖，独立并发审核及新短验后再正式验收；003资源与退出已正常取得。
+完整dev/prod矩阵、最终质量门与全部资格产物重建均已完成。
 默认空白、快照世代及交互修复、DB/load报告、启动隔离及增长判定器已限定独审通过；绝对句柄总量仍须新正式轮证明。
 原件在`log/h3br-current/`，首次正式绑定`350c3f5`及`formal-001-plan.json`，旧产物已保存。
 既有361点分解见`formal-001-handle-decomposition-001.json`：稳定5进程OLS15.97696/h，

@@ -2290,6 +2290,11 @@ Chromium子进程被Job约束；漏出成员/权限不足/身份混淆不能PASS
 伪writer、buffer耗尽不能PASS。异步IO的buffer/event/OVERLAPPED必须等final completion后释放；cancel返回
 不等于完成。对代码中仍存在的旧freeze接线必须明确替换和回归，不能只改reporter接受旧数据。
 
+native有序写入须独立于JS主线程逐帧完成回调：已入队帧应继续后台排水，Promise完成仍回主线程处理。
+入队至实际写入完成的两秒总限、闭合DTO、单调序列、有界队列和关闭顺序保持；不能延长期限掩盖排队问题。
+受控反例须让main停顿超过两秒、父端持续读取，并从实际帧及QPC确认已入队后继仍及时写出；
+真实管道阻塞、队列耗尽、取消和环境销毁仍fail-closed，不提前释放内核可能使用的buffer/OVERLAPPED。
+
 启动前先完成安全可行性判断，不能先长测再补隐私证明。默认用无真实AIbrowse数据/凭据的独立普通测试身份
 或干净Windows环境，验证其不能读取原用户profile/凭据路径；Job和环境变量不是文件安全沙箱。
 使用当前用户环境时，必须已有足够独立证据覆盖CJS入口前至退出的路径隔离，不能仅凭root pins/app.setPath。
