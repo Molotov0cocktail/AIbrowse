@@ -1,4 +1,4 @@
-param([switch]$Tests, [string]$OutputDirectory)
+param([switch]$Tests, [string]$OutputDirectory, [ValidateSet('collector', 'blank-feasibility')][string]$Target = 'collector')
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot 'log/watch-qualification-build' }
@@ -20,11 +20,12 @@ try {
   $compiler = Join-Path $msvcRoot 'bin/Hostx64/x64/cl.exe'
   $native = Join-Path $PSScriptRoot 'native'
   $argsCommon = @('/nologo', '/std:c++20', '/EHsc', '/W4', '/WX', '/MT', '/O2', '/utf-8', '/DUNICODE', '/D_UNICODE', "/I$native", "/I$repoRoot/native/watch-qualification")
-  $targets = @('collector')
+  if ($Tests -and $Target -ne 'collector') { throw '合成反例只用于collector目标' }
+  $targets = @($Target)
   if ($Tests) { $targets += 'tests' }
-  foreach ($target in $targets) {
-    & $compiler @argsCommon (Join-Path $native "$target.cc") "/Fo$buildRoot/$target.obj" '/link' "/OUT:$buildRoot/$target.exe" 'advapi32.lib' 'bcrypt.lib' 'shell32.lib' 'normaliz.lib' 'psapi.lib' 'powrprof.lib' 'setupapi.lib' 'uuid.lib' '/DYNAMICBASE' '/NXCOMPAT'
-    if ($LASTEXITCODE -ne 0) { throw "原生工具构建失败：$target" }
+  foreach ($buildTarget in $targets) {
+    & $compiler @argsCommon (Join-Path $native "$buildTarget.cc") "/Fo$buildRoot/$buildTarget.obj" '/link' "/OUT:$buildRoot/$buildTarget.exe" 'advapi32.lib' 'bcrypt.lib' 'shell32.lib' 'normaliz.lib' 'psapi.lib' 'powrprof.lib' 'setupapi.lib' 'uuid.lib' '/DYNAMICBASE' '/NXCOMPAT'
+    if ($LASTEXITCODE -ne 0) { throw "原生工具构建失败：$buildTarget" }
   }
   if ($Tests) {
     & (Join-Path $buildRoot 'tests.exe') (Get-Command node -ErrorAction Stop).Source
