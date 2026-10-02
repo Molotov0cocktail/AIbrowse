@@ -81,6 +81,10 @@ C5（Service/事件）、C6（数据模型）、C7（Renderer 组件）。
    桩写系统 TEMP 受控文件——读取字节断言（BOM/CRLF/公式防护/当前视图
    一致性/Evidence 摘录零出现）后 finally 精确清理（不弹真实对话框）；
    Research unavailable 不影响 Browser/Sources/Chat。
+   safe URL 使用本场景受控静态 HTTP 页面；新建精确 Tab 的主进程状态为 ready、
+   URL/标题匹配，且真实 PageSnapshot 为 complete 后才保存往返基线。连续两次元数据
+   相同不能替代加载完成。往返比较仍覆盖全部 Tab 的 id/url/title/active；失败时服务
+   与服务器始终关闭，合成 CSV/research 临时目录保留，成功后精确清理。
 4. 全量回归 + 红线扫描（renderer 零 dangerouslySetInnerHTML；导出仅
    主进程通道；审计/日志脱敏字节扫描）。
 

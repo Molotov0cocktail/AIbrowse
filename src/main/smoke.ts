@@ -102,6 +102,7 @@ import { getCurrentLogFilePath, logError, logInfo, logWarn } from './logger';
 // （零 Electron，node 环境单测）——检查与条件点击同一次脚本执行内完成，
 // 消除 Undo 后 React 重渲染在两次 executeJavaScript 之间移除元素的 TOCTOU。
 import { clickIfPresentScript } from './smoke-ui-atomic';
+import { researchUiTabSnapshot, waitForResearchUiLinkReady } from './smoke-research-ui-tabs';
 import {
   BOUNDS_CHILD_VIEW_LIMIT,
   collectMatrix9FailureSnapshot,
@@ -17552,7 +17553,7 @@ const UI_CAPTURE_SEQ = ['ui-capture-a', 'ui-capture-b'];
 let uiIdSeqRuntime: string[] = [];
 let uiCaptureSeqRuntime: string[] = [];
 
-function makeUiCompletionScript(): FakeProviderScript {
+function makeUiCompletionScript(safeLinkUrl: string): FakeProviderScript {
   return {
     rounds: [
       [
@@ -17664,7 +17665,7 @@ function makeUiCompletionScript(): FakeProviderScript {
               blocks: [
                 {
                   kind: 'markdown',
-                  text: '结论正文 [官方文档](https://example.com/docs) 与 <script>alert(1)</script> 敌对文本',
+                  text: `结论正文 [官方文档](${safeLinkUrl}) 与 <script>alert(1)</script> 敌对文本`,
                 },
                 {
                   kind: 'table',
@@ -17724,27 +17725,11 @@ async function runResearchUiScenario(options: {
   const csvPath = join(csvDir, 'research-export.csv');
   let service: ResearchService | null = null;
   let tmpDir: string | null = null;
+  let scenarioPassed = false;
   const pages = await startControlledPages();
 
   const tabSnapshot = async (tabs?: readonly TabInfo[]): Promise<string> =>
-    JSON.stringify(
-      (tabs ?? (await controller.getTabs())).map((t) => ({
-        id: t.id,
-        url: t.url,
-        title: t.title,
-        active: t.active,
-      })),
-    );
-  const waitForStableTabs = async (failure: string): Promise<void> => {
-    let previous = await tabSnapshot();
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      await delay(100);
-      const current = await tabSnapshot();
-      if (current === previous) return;
-      previous = current;
-    }
-    throw new Error(failure);
-  };
+    researchUiTabSnapshot(tabs ?? (await controller.getTabs()));
 
   const assertNoTabFocused = async (failure: string): Promise<void> => {
     // WebContentsView 不可见机器证据：结果画布模式（contentVisible=false）下
@@ -17834,7 +17819,7 @@ async function runResearchUiScenario(options: {
     // —— 场景 B：完整四阶段完成（planning→reading→verifying→synthesizing 渐进） ——
     uiIdSeqRuntime = [...UI_ID_SEQ];
     uiCaptureSeqRuntime = [...UI_CAPTURE_SEQ];
-    smokeResearchScript.current = makeUiCompletionScript();
+    smokeResearchScript.current = makeUiCompletionScript(pages.researchCaptureUrl);
     await uiJs(
       uiWc,
       "(() => {\n        const el = document.querySelector('.research-panel-goal');\n        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;\n        setter.call(el, '完成场景研究目标');\n        el.dispatchEvent(new Event('input', { bubbles: true }));\n      })()",
@@ -18011,9 +17996,30 @@ async function runResearchUiScenario(options: {
       10000,
       '8.19-B：safe URL 未创建新 Tab',
     );
+    const newLinkTabs = (await controller.getTabs()).filter(
+      (tab) => !tabsBeforeLink.some((before) => before.id === tab.id),
+    );
+    assert(newLinkTabs.length === 1, '8.19-B：safe URL 应精确创建一个新 Tab');
+    const linkTab = await waitForResearchUiLinkReady({
+      readTabs: () => controller.getTabs(),
+      expected: {
+        id: newLinkTabs[0]!.id,
+        url: pages.researchCaptureUrl,
+        title: '研究采集页',
+      },
+      sleep: delay,
+    });
+    assert(linkTab.active, '8.19-B：safe URL 新建 Tab 应为活动 Tab');
+    const linkSnapshot = await controller.getPageSnapshot(linkTab.id);
+    assert(
+      linkSnapshot?.url === pages.researchCaptureUrl &&
+        linkSnapshot.title === '研究采集页' &&
+        linkSnapshot.meta.readyState === 'complete' &&
+        linkSnapshot.meta.degraded !== 'main-process-only',
+      '8.19-B：safe URL 受控文档应真实完成加载',
+    );
     // 画布已关闭（viewMode 回 browser）
     await delay(300);
-    await waitForStableTabs('8.19-B：打开来源后 Tab 状态未稳定');
     const canvasGone = (await uiJs(
       uiWc,
       `document.querySelector('.research-canvas') === null`,
@@ -18048,7 +18054,7 @@ async function runResearchUiScenario(options: {
     );
     await clickUi(uiWc, '.research-panel-open-result');
     await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：画布二次往返失败');
-    await waitForStableTabs('8.19-B：二次打开结果后 Tab 状态未稳定');
+    await delay(100);
     const afterRoundTripTabs = await controller.getTabs();
     const afterRoundTrip = await tabSnapshot(afterRoundTripTabs);
     // Report bounded field names and lifecycle states, never page metadata values.
@@ -18102,6 +18108,7 @@ async function runResearchUiScenario(options: {
     // Evidence 摘录/候选标题/URL 元数据零出现
     assert(!csvText.includes('这是研究采集页'), '8.19-B：CSV 不得含 Evidence 摘录');
     assert(!csvText.includes('https://'), '8.19-B：CSV 不得含 URL 元数据');
+    assert(!csvText.includes(pages.researchCaptureUrl), '8.19-B：CSV 不得含受控来源 URL');
     assert(!csvText.includes('卡片甲'), '8.19-B：CSV 不得含其他块内容');
     assert(!csvText.includes('UI 冒烟研究结果'), '8.19-B：CSV 不得含 Result 标题');
 
@@ -18116,6 +18123,7 @@ async function runResearchUiScenario(options: {
       "(() => { const b = [...document.querySelectorAll('button')].find(x => x.textContent === 'AI'); if (b) b.click(); })()",
     );
     await delay(150);
+    scenarioPassed = true;
   } finally {
     smokeResearchScript.current = null;
     smokeCsvExportPath.current = null;
@@ -18132,8 +18140,12 @@ async function runResearchUiScenario(options: {
     } catch (err) {
       logWarn('smoke', '8.19-B：受控页面服务器关闭异常', err);
     }
-    // 精确清理：导出文件 + 临时目录（Windows 句柄已关闭——removeSmokeDirWithRetry）
-    if (tmpDir !== null) await removeSmokeDirWithRetry(tmpDir);
-    await removeSmokeDirWithRetry(csvDir);
+    // Always release handles, but preserve synthetic evidence after a failure.
+    if (scenarioPassed) {
+      if (tmpDir !== null) await removeSmokeDirWithRetry(tmpDir);
+      await removeSmokeDirWithRetry(csvDir);
+    } else {
+      logWarn('smoke', `8.19-B：失败合成证据已保留 ${JSON.stringify({ tmpDir, csvDir })}`);
+    }
   }
 }
