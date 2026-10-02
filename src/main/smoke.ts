@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserController } from './browser/browser-controller';
-import type { PageSnapshot } from '../shared/types/browser';
+import type { PageSnapshot, TabInfo } from '../shared/types/browser';
 import { PERSIST_PARTITION } from './browser/session-manager';
 import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sqlite-driver';
 // C8 定向修复（2026-08-17）：冒烟临时目录清理 helper（句柄关闭后删除 +
@@ -17726,9 +17726,9 @@ async function runResearchUiScenario(options: {
   let tmpDir: string | null = null;
   const pages = await startControlledPages();
 
-  const tabSnapshot = async (): Promise<string> =>
+  const tabSnapshot = async (tabs?: readonly TabInfo[]): Promise<string> =>
     JSON.stringify(
-      (await controller.getTabs()).map((t) => ({
+      (tabs ?? (await controller.getTabs())).map((t) => ({
         id: t.id,
         url: t.url,
         title: t.title,
@@ -17999,7 +17999,8 @@ async function runResearchUiScenario(options: {
     assert(hostileInjected === 0, '8.19-B：敌对 Markdown 零可执行元素注入');
 
     // —— safe URL 新建 Tab 后返回 browser 模式 ——
-    const tabsBefore = await tabSnapshot();
+    const tabsBeforeLink = await controller.getTabs();
+    const tabsBefore = await tabSnapshot(tabsBeforeLink);
     await clickUi(uiWc, '.research-link');
     await delay(400);
     await waitFor(
@@ -18032,7 +18033,8 @@ async function runResearchUiScenario(options: {
     );
     await clickUi(uiWc, '.research-panel-open-result');
     await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：画布往返失败');
-    const beforeRoundTrip = await tabSnapshot();
+    const beforeRoundTripTabs = await controller.getTabs();
+    const beforeRoundTrip = await tabSnapshot(beforeRoundTripTabs);
     await clickUi(uiWc, '.research-canvas-back');
     await delay(300);
     await waitFor(
@@ -18047,7 +18049,27 @@ async function runResearchUiScenario(options: {
     await clickUi(uiWc, '.research-panel-open-result');
     await waitForUiText(uiWc, '.research-canvas', '返回浏览', 10000, '8.19-B：画布二次往返失败');
     await waitForStableTabs('8.19-B：二次打开结果后 Tab 状态未稳定');
-    const afterRoundTrip = await tabSnapshot();
+    const afterRoundTripTabs = await controller.getTabs();
+    const afterRoundTrip = await tabSnapshot(afterRoundTripTabs);
+    // Report bounded field names and lifecycle states, never page metadata values.
+    const tabFields = ['id', 'url', 'title', 'active'] as const;
+    logInfo(
+      'smoke',
+      `8.19-B：Tab 往返诊断 ${JSON.stringify({
+        beforeCount: beforeRoundTripTabs.length,
+        afterCount: afterRoundTripTabs.length,
+        tabs: beforeRoundTripTabs.slice(0, 32).map((before, index) => {
+          const after = afterRoundTripTabs[index];
+          return {
+            index,
+            safeLinkTab: !tabsBeforeLink.some((tab) => tab.id === before.id),
+            beforeState: before.state,
+            afterState: after?.state ?? 'missing',
+            changedFields: tabFields.filter((field) => before[field] !== after?.[field]),
+          };
+        }),
+      })}`,
+    );
     assert(
       JSON.stringify(afterRoundTrip) === JSON.stringify(beforeRoundTrip),
       '8.19-B：viewMode 往返前后用户 Tab id/url/title/active 恒等',
