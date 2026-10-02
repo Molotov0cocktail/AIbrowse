@@ -108,7 +108,7 @@ int run(int argc, wchar_t** argv) {
       // Only this immutable, synthetic fixture writes the phase receipt.
       const auto phase = collector::Scanner(line).parse();
       if (productSmoke && phase.at("kind").string() == "浏览器产品冒烟通过")
-        productComplete = phase.at("scenarios").number() == 7 &&
+        productComplete = phase.at("scenarios").number() == 8 &&
             std::get<bool>(phase.at("allOwnedDestroyed").data);
       const auto begin = qpc();
       try {

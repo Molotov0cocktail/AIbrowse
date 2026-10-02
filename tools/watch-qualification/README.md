@@ -53,7 +53,19 @@ CLI参数为`<副本runRoot> <runId> short|formal [认证setup中的M0 UTC]`，�
 四个Session任务或正式资源门通过；只用于决定是否继续默认空白页延迟加载的工程候选。
 
 产品修复后的窄集成冒烟：`build-browser-smoke.ps1` 编译实际BrowserController/SessionManager，
-再给同一启动脚本加 `-ProductSmoke`。启动器额外固定bundle并记录hash。七组场景验证默认空白
-显示聚焦、首次导航、并发物化、替代导航、显式空白兼容及关闭/销毁的等待取消。仅使用本机
+再给同一启动脚本加 `-ProductSmoke`。启动器额外固定bundle并记录hash。八组场景验证默认空白
+显示聚焦、首次导航、并发物化、替代导航、显式空白兼容、交互跨文档拒绝及关闭/销毁的等待取消。仅使用本机
 公开固定HTTP夹具；没有Provider、用户profile或公网请求。单进程预算50秒，外部预算仍120秒。
 产品日志保留在raw stdout；必须收到全部场景通过收据并且exit0/Job0/EOF，不能只看退出码。
+
+## 完整产品冒烟矩阵
+
+`run-product-smoke.ps1 -Variant dev|production -Kind default|session|sources|sources-ui|research|watch -ArtifactRoot <证据目录>`
+为每组创建新的合成根；跨进程组在同一根顺序执行set/check。子进程只继承必要系统环境，使用离线FakeProvider，
+保存stdout/stderr、退出收据和失败根。production须先明确构建当前候选，脚本通过preview的`--skipBuild`
+复用该产物并逐模式记录入口hash；完成production矩阵前不要交错运行会改写out的dev构建。
+每次进程最多15分钟，失败即停止后继。退出收据仍须与实际产品断言及清理日志核对，不替代正式Job释放门。
+
+`read-console-environment.ps1`只读当前进程SessionId及[物理控制台会话](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-wtsgetactiveconsolesessionid)，
+补充UserInteractive和[SM_REMOTESESSION](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getsystemmetrics)。
+不能仅以SM_REMOTESESSION=0判定本地会话；输出不证明未锁屏、无远程协助或整个窗口环境恒定，也不改系统设置。

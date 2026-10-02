@@ -33,10 +33,11 @@ export async function run(emit: Emit): Promise<void> {
     owned.push(wc);
     return wc;
   };
-  const server = createServer((_request, response) => {
+  const server = createServer(async (request, response) => {
+    if (request.url === '/next') await delay(300);
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     response.end(
-      '<!doctype html><html><head><title>固定浏览器夹具</title></head><body><main><h1>固定浏览器夹具</h1><p>这是一段只用于本地浏览器生命周期验证的公开固定文本。</p></main></body></html>',
+      '<!doctype html><html><head><title>固定浏览器夹具</title></head><body><main><h1>固定浏览器夹具</h1><p>这是一段只用于本地浏览器生命周期验证的公开固定文本。</p><p id="instance"></p><input id="value" data-aibrowse-el="1"><button id="action" type="button" aria-expanded="false" data-aibrowse-el="2" onclick="this.dataset.clicked=\'yes\'">展开</button></main><script>document.querySelector("#instance").textContent = "文档实例：" + Array.from(crypto.getRandomValues(new Uint32Array(4))).join("-"); window.addEventListener("pagehide", (event) => event.stopImmediatePropagation(), true);</script></body></html>',
     );
   });
   try {
@@ -72,6 +73,25 @@ export async function run(emit: Emit): Promise<void> {
     await delay(1000);
     check(first.getURL() === target, '首次导航被迟到空白覆盖');
     emit('浏览器场景通过', { scenario: '首次导航和真实快照', rendererPid: first.getOSProcessId() });
+
+    check(
+      await controller.navigate(initial.id, `http://127.0.0.1:${address.port}/next`),
+      '历史返回夹具导航失败',
+    );
+    check(await controller.goBack(initial.id), '历史返回失败');
+    await until(() => !first.isLoadingMainFrame() && first.getURL() === target);
+    const returnedSnapshot = await controller.getPageSnapshot(initial.id);
+    const newDocumentInstance =
+      firstSnapshot.visibleText?.includes('文档实例：') === true &&
+      returnedSnapshot?.visibleText?.includes('文档实例：') === true &&
+      firstSnapshot.visibleText !== returnedSnapshot.visibleText;
+    check(
+      newDocumentInstance &&
+        returnedSnapshot !== null &&
+        returnedSnapshot.meta.documentId > firstSnapshot.meta.documentId,
+      '历史返回意外复用了旧文档实例',
+    );
+    emit('历史返回文档核对', { newDocumentInstance, lifecycleHandlerBlockedByPage: true });
 
     const concurrent = await controller.createTab();
     const concurrentWc = contents(concurrent.id);
@@ -137,6 +157,81 @@ export async function run(emit: Emit): Promise<void> {
     check(explicitSnapshot?.meta.readyState === 'complete', '显式空白未保持真实加载');
     emit('浏览器场景通过', { scenario: '显式空白兼容', rendererPid: explicitWc.getOSProcessId() });
 
+    const interaction = await controller.createTab();
+    const interactionWc = contents(interaction.id);
+    check(await controller.navigate(interaction.id, target), '交互夹具首次导航失败');
+    const oldDocument = await controller.getPageSnapshot(interaction.id);
+    check(oldDocument !== null, '交互夹具快照缺失');
+    check(
+      oldDocument.inputs?.some((input) => input.id === 'el-1') &&
+        oldDocument.buttons.some((button) => button.id === 'el-2'),
+      '交互夹具烙印不匹配，不能证明同编号跨文档反例',
+    );
+    const validFill = await controller.fillElement(
+      interaction.id,
+      'el-1',
+      '合成测试值',
+      oldDocument.meta.documentId,
+    );
+    const validClick = await controller.clickElement(
+      interaction.id,
+      'el-2',
+      'expand',
+      oldDocument.meta.documentId,
+    );
+    const positiveControl: unknown = await interactionWc.executeJavaScript(
+      'document.querySelector("#value").value === "合成测试值" && document.querySelector("#action").dataset.clicked === "yes"',
+    );
+    check(validFill.ok && validClick.ok && positiveControl === true, '同文档交互正控失败');
+    const nextNavigation = controller.navigate(
+      interaction.id,
+      `http://127.0.0.1:${address.port}/next`,
+    );
+    await until(() => interactionWc.isLoadingMainFrame());
+    const readingDuringNavigation = controller.getPageSnapshot(interaction.id);
+    const filling = await controller.fillElement(
+      interaction.id,
+      'el-1',
+      '合成测试值',
+      oldDocument.meta.documentId,
+    );
+    check(await nextNavigation, '交互夹具替代导航失败');
+    const refreshedDocument = await readingDuringNavigation;
+    check(
+      refreshedDocument !== null && refreshedDocument.meta.documentId > oldDocument.meta.documentId,
+      '导航期间采集没有重取新文档',
+    );
+    const nextValue: unknown = await interactionWc.executeJavaScript(
+      'document.querySelector("#value").value',
+    );
+    emit('跨文档填充核对', {
+      accepted: filling.ok,
+      newDocumentModified: nextValue !== '',
+      expectedDocumentId: oldDocument.meta.documentId,
+    });
+    check(!filling.ok && nextValue === '', '旧文档授权的填充写入了新文档');
+
+    const clickDocument = await controller.getPageSnapshot(interaction.id);
+    check(clickDocument !== null, '点击夹具快照缺失');
+    const clickNavigation = controller.navigate(
+      interaction.id,
+      `http://127.0.0.1:${address.port}/next`,
+    );
+    await until(() => interactionWc.isLoadingMainFrame());
+    const clicking = await controller.clickElement(
+      interaction.id,
+      'el-2',
+      'expand',
+      clickDocument.meta.documentId,
+    );
+    check(await clickNavigation, '点击夹具替代导航失败');
+    const wasClicked: unknown = await interactionWc.executeJavaScript(
+      'document.querySelector("#action").dataset.clicked === "yes"',
+    );
+    emit('跨文档点击核对', { accepted: clicking.ok, newDocumentModified: wasClicked });
+    check(!clicking.ok && wasClicked === false, '旧文档授权的点击作用于新文档');
+    emit('浏览器场景通过', { scenario: '交互跨文档拒绝' });
+
     const closing = await controller.createTab();
     const closingWc = contents(closing.id);
     const closingRead = controller.getPageSnapshot(closing.id);
@@ -160,7 +255,7 @@ export async function run(emit: Emit): Promise<void> {
     check((await controller.getTabs()).length === 0, '浏览器销毁后存在登记残留');
     owner.close();
     check(owner.isDestroyed(), '浏览器窗口未销毁');
-    emit('浏览器产品冒烟通过', { scenarios: 7, allOwnedDestroyed: true, defaultGpu: true });
+    emit('浏览器产品冒烟通过', { scenarios: 8, allOwnedDestroyed: true, defaultGpu: true });
   } finally {
     controller.dispose();
     if (!owner.isDestroyed()) owner.close();
