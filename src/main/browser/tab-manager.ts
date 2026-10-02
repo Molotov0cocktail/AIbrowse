@@ -31,12 +31,12 @@ export interface TabEntry {
   generation: number;
   // Includes navigation starts before commit; same-document/subframe events do not count.
   navigationSerial: number;
-  // 默认空白 Tab 可先保留未加载的真实 WebContentsView；首次需要 DOM 时由
-  // BrowserController 以单一 Promise 物化。显式 about:blank 不走该分支。
+  // An implicit blank tab keeps an unloaded real WebContentsView until its first
+  // DOM operation shares one materialization promise. Explicit about:blank loads.
   deferredBlank: boolean;
   loadSerial: number;
-  // 保留最新 load 的 Promise 与终态，直到下一次 load 或条目销毁；旧等待者据此
-  // 跟随替代导航，即使替代 load 同步失败也不会把 pending=null 误判为成功。
+  // Retain the latest load promise and terminal state until replacement or disposal.
+  // Old waiters follow it, including synchronous failure, without mistaking null for success.
   latestLoad: PendingTabLoad | null;
 }
 
@@ -68,8 +68,8 @@ export class TabManager {
         // 不配置 preload：远程网页不得获得任何 bridge（§3.2 最小权限）
       },
     });
-    // 延迟空白 view 已能显示、聚焦和立即导航，因此对 UI 作为 ready 暴露；它尚无
-    // 可采 DOM，首次 snapshot/reload/scroll 会先实际 loadURL('about:blank')。
+    // An unloaded blank view can display, focus and navigate, so the UI sees ready.
+    // Snapshot, reload and scroll first load about:blank to obtain a real document.
     const info: TabEntryInfo = {
       id: randomUUID(),
       title: '',

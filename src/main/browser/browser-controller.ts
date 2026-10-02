@@ -101,8 +101,8 @@ export class BrowserControllerImpl implements BrowserController {
     const entry = this.tabManager.createTab(target, { deferInitialBlankLoad });
     this.activeTabId = entry.info.id;
     this.applyActiveVisual();
-    // 无参数/空字符串的默认空白 view 延迟到首次 DOM 操作再物化；显式 URL（包括
-    // 显式 about:blank）保持原来的真实加载语义。
+    // Materialize an implicit blank view on its first DOM operation. Explicit
+    // URLs, including about:blank, keep their existing real-load behavior.
     if (!deferInitialBlankLoad) void this.startLoad(entry, target, 'navigation');
     logInfo(
       'browser',
@@ -173,8 +173,8 @@ export class BrowserControllerImpl implements BrowserController {
       logWarn('browser', `navigate 未知 tabId=${redactTabIdForLog(tabId)}`);
       return false;
     }
-    // 用户导航优先于正在物化的默认空白页。先 stop 再发起目标导航，且以 serial
-    // 使迟到的 blank Promise 失效，不能覆盖目标页或伪报成功。
+    // User navigation supersedes pending blank materialization. Stop it first;
+    // the serial prevents late blank completion from overwriting the new load.
     return this.startLoad(entry, url, 'navigation');
   }
 
