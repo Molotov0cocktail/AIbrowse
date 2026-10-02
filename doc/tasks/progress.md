@@ -16,6 +16,7 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
 完整dev默认003、production默认002及各五组set/check已全部通过。旧Research往返失败具体字段仍unknown，
 诊断实证原等待会放行loading Tab，已改受控静态页面及真实ready/完整快照门，保留原四字段恒等断言。
 句柄增长按独立确认的失效工程oracle修订为`handle-growth-v2`，已实现并限定独审通过；绝对阈值与四Session负载不变。
+新短验002在认证启动后约3秒失败，尚未进入固定负载；当前先定位native遥测首个失败，不启动正式长测。
 停止旧012整合与classic ETW路线。
 详见 `doc/stage6/acceptance-replan.md`、detailed-design §15.6/§15.7及D10。
 
@@ -112,6 +113,11 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
   编译后代码与6024573逐字节相同（`browser-comment-only-001.json`），006行为证据仍适用。
 - `formal-002-console-environment.json`实证当前进程与物理控制台同为Session1、UserInteractive=true；
   只说明该时刻本地交互会话，不排除远程协助/锁屏。原OS/CPU/RAM/驱动事实可复用，新窗口仍核活动GPU。
+- 新短验002（`a4b2c14`，run `BGM2EYMZCVCR7LWVYRRFULECPQ`）启动路径核对/ready认证通过，
+  6条main帧后出现`qualification-capability-invalid`、`telemetry-write`和native完成路径fatal；
+  collector记录`telemetry-incomplete-eof`并以79退出，未超外部期限。未取得负载/资源或正常退出结论。
+  原件`short-002-plan.json`、`short-002-run.txt`及逐run文件保留；实际产物完整归档
+  `log/h3br-short-002-artifacts/`。当前补最小首错分类与数字时序定位，不放宽时限或无诊断重跑。
 - 正式旧产物已按plan四项hash核对后保存于 `log/h3br-formal-001-artifacts/`，manifest为
   `formal-001-artifact-archive.json`。当前normal、三种qualification及四参数collector均已重建；
   不得混用新addon与旧三参数collector。
@@ -246,7 +252,7 @@ H3b长时资源/电池/当前Windows兼容性和新隔离证据仍开放，不�
 
 ## 下一唯一执行任务
 
-执行新真实短验；完整dev/prod矩阵、最终质量门与全部资格产物重建均已完成。
+定位短验002的native遥测首错，针对性修复后复验；完整dev/prod矩阵、最终质量门与全部资格产物重建均已完成。
 默认空白、快照世代及交互修复、DB/load报告、启动隔离及增长判定器已限定独审通过；绝对句柄总量仍须新正式轮证明。
 原件在`log/h3br-current/`，首次正式绑定`350c3f5`及`formal-001-plan.json`，旧产物已保存。
 既有361点分解见`formal-001-handle-decomposition-001.json`：稳定5进程OLS15.97696/h，

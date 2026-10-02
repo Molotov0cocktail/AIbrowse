@@ -1,7 +1,9 @@
 #include "wire.hpp"
 #include "stream.hpp"
+#include "writer-diagnostics.hpp"
 #include <functional>
 #include <iostream>
+#include <thread>
 
 using namespace h3b;
 Value grant(unsigned attempt, unsigned host, unsigned round) {
@@ -68,6 +70,53 @@ int main() {
       std::cout << "FAIL " << name << '\n';
     }
   };
+  test("首错只允许一个并发报告者", false, [] {
+    FirstWriterFailure first;
+    std::atomic<unsigned> winners{0};
+    std::array<std::thread, 16> threads;
+    for (auto& thread : threads) thread = std::thread([&] {
+      for (unsigned attempt = 0; attempt < 100; ++attempt)
+        if (first.claim()) ++winners;
+    });
+    for (auto& thread : threads) thread.join();
+    require(winners == 1 && !first.claim(), "diagnostic-first-invalid");
+  });
+  test("首错分类不接受任意错误正文", false, [] {
+    require(writerFailureCode("qualification-io-timeout") == WriterFailureCode::IoTimeout &&
+                writerFailureCode("qualification-io-timeout\nprivate-frame") == WriterFailureCode::Unknown &&
+                writerFailureCode("D:\\private\\credential") == WriterFailureCode::Unknown,
+            "diagnostic-classification-invalid");
+    WriterFailureCode captured = WriterFailureCode::IoFailed;
+    try { throw Failure("private-frame"); }
+    catch (...) { captured = currentWriterFailureCode(); }
+    require(captured == WriterFailureCode::Unknown, "diagnostic-exception-invalid");
+  });
+  test("首错数字收据保留排队执行和完成时序", false, [] {
+    const WriterFailureSnapshot snapshot{WorkKind::Write,
+        WriterFailureStage::EnqueueDeadline, 7, 100, 250, 251, 252, 0, 300};
+    const auto line = formatWriterFailure(snapshot, WriterFailureCode::IoTimeout,
+                                          1000, 301, false);
+    require(std::string(line.data()) ==
+        "资格原生首错 {\"record\":1,\"code\":1,\"stage\":3,\"workKind\":1,"
+        "\"sequence\":7,\"frequency\":1000,\"enqueuedQpc\":100,\"scheduledQpc\":250,"
+        "\"executeBeginQpc\":251,\"executeEndQpc\":252,\"ioCompletedQpc\":0,"
+        "\"mainCompletionQpc\":300,\"observedQpc\":301}\n",
+        "diagnostic-timing-invalid");
+    const auto completion = formatWriterFailure(snapshot, WriterFailureCode::IoTimeout,
+                                                1000, 301, true);
+    require(std::string(completion.data()).find("\"record\":2") != std::string::npos,
+            "diagnostic-completion-invalid");
+  });
+  test("首错最大数字保持有界完整单行", false, [] {
+    const WriterFailureSnapshot snapshot{WorkKind::Close,
+        WriterFailureStage::MainCompletionFatal, UINT64_MAX, UINT64_MAX, UINT64_MAX,
+        UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
+    const auto line = formatWriterFailure(snapshot, WriterFailureCode::Unknown,
+                                          UINT64_MAX, UINT64_MAX, false);
+    const std::string text(line.data());
+    require(text.ends_with("}\n") && text.find('\n') == text.size() - 1 &&
+                text.size() < line.size(), "diagnostic-bound-invalid");
+  });
   auto gpuFrame = [](Value devices, Value software) {
     return object({{L"kind", Value("gpu-info")},
       {L"payload", object({{L"beginQpcTicks", Value("0000000000000001")},

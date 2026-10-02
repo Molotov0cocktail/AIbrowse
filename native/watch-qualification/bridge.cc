@@ -1,6 +1,7 @@
 #include "wire.hpp"
 #include "stream.hpp"
 #include "write-io.hpp"
+#include "writer-diagnostics.hpp"
 #include <delayimp.h>
 #include <node_api.h>
 
@@ -117,7 +118,6 @@ Value fromJs(napi_env env, napi_value v, size_t& budget, unsigned depth = 0) {
   return Value(out);
 }
 struct State;
-enum class WorkKind { Connect, Write, Close };
 struct Work {
   State* state;
   WorkKind kind;
@@ -128,6 +128,10 @@ struct Work {
   uint64_t sequence = 0;
   uint64_t enqueued = 0;
   uint64_t completed = 0;
+  uint64_t scheduled = 0, executeBegin = 0, executeEnd = 0, mainCompletion = 0;
+  WriterFailureStage failureStage = WriterFailureStage::Execute;
+  WriterFailureCode failureCode = WriterFailureCode::Unknown;
+  bool firstFailure = false;
   bool event = false;
   Value result;
 };
@@ -139,6 +143,7 @@ struct State {
   bool prepared = false, authenticated = false, closing = false, closed = false,
        serializing = false;
   std::atomic<bool> failed{false};
+  FirstWriterFailure firstFailure;
   TelemetryStream stream;
   std::wstring mainEntry;
   uint64_t sequence = 0;
@@ -149,6 +154,21 @@ struct State {
   size_t eventCount = 0, eventBytes = 0, controlCount = 0, controlBytes = 0;
   explicit State(napi_env e) : env(e) {}
 };
+WriterFailureSnapshot writerSnapshot(const Work& work) noexcept {
+  return {work.kind, work.failureStage, work.sequence, work.enqueued,
+          work.scheduled, work.executeBegin, work.executeEnd, work.completed,
+          work.mainCompletion};
+}
+bool reportFirstWriterFailure(State* state, const WriterFailureSnapshot& snapshot,
+                              WriterFailureCode code) noexcept {
+  if (!state->firstFailure.claim()) return false;
+  emitWriterFailure(snapshot, code, state->freq);
+  return true;
+}
+void reportWorkFailure(Work* work, WriterFailureCode code) noexcept {
+  work->failureCode = code;
+  work->firstFailure = reportFirstWriterFailure(work->state, writerSnapshot(*work), code);
+}
 State* getState(napi_env env) {
   State* state = nullptr;
   napiCheck(napi_get_instance_data(env, reinterpret_cast<void**>(&state)));
@@ -242,16 +262,21 @@ void authenticate(State* s, Work* work) {
                Value((fileTime(utc) - 116444736000000000ULL) / 10000)}});
 }
 void writeFrame(State* s, Work* work) {
+  work->failureStage = WriterFailureStage::Peer;
   require(
       s->pipe.valid() && WaitForSingleObject(s->peer.value, 0) == WAIT_TIMEOUT,
       "qualification-peer-invalid");
   size_t offset = 0;
   while (offset < work->bytes.size()) {
+    work->failureStage = WriterFailureStage::EnqueueDeadline;
     require(qpc() - work->enqueued < s->freq * 2, "qualification-io-timeout");
+    work->failureStage = WriterFailureStage::Submit;
     PendingWrite operation(s->pipe.value);
     operation.submit(work->bytes.data() + offset,
                      static_cast<DWORD>(work->bytes.size() - offset));
+    work->failureStage = WriterFailureStage::AwaitCompletion;
     const auto completion = finishWriteWith(operation, work->enqueued, s->freq);
+    work->failureStage = WriterFailureStage::WriteResult;
     const auto bytes = completion.bytes;
     require(bytes > 0 && bytes <= work->bytes.size() - offset,
             "qualification-io-failed");
@@ -265,16 +290,23 @@ void writeFrame(State* s, Work* work) {
 void execute(napi_env, void* data) {
   auto work = static_cast<Work*>(data);
   auto state = work->state;
+  work->executeBegin = writerDiagnosticQpc();
   try {
     if (state->failed && work->kind != WorkKind::Close)
       throw Failure("qualification-closed");
-    if (work->kind == WorkKind::Connect)
+    if (work->kind == WorkKind::Connect) {
+      work->failureStage = WriterFailureStage::Connect;
       authenticate(state, work);
-    else if (work->kind == WorkKind::Write)
+    } else if (work->kind == WorkKind::Write)
       writeFrame(state, work);
-    else
+    else {
+      work->failureStage = WriterFailureStage::Cleanup;
       cleanup(state);
+    }
+    work->executeEnd = writerDiagnosticQpc();
   } catch (const Failure& error) {
+    work->executeEnd = writerDiagnosticQpc();
+    reportWorkFailure(work, writerFailureCode(error.what()));
     work->error = error.what();
     state->failed = true;
     if (work->kind == WorkKind::Connect) {
@@ -284,6 +316,8 @@ void execute(napi_env, void* data) {
       }
     }
   } catch (...) {
+    work->executeEnd = writerDiagnosticQpc();
+    reportWorkFailure(work, WriterFailureCode::Unknown);
     work->error = "qualification-io-failed";
     state->failed = true;
     if (work->kind == WorkKind::Connect) {
@@ -298,8 +332,15 @@ void schedule(State* state);
 void completed(napi_env env, napi_status status, void* data) {
   auto work = static_cast<Work*>(data);
   auto state = work->state;
-  if (status != napi_ok && work->error.empty())
+  work->mainCompletion = writerDiagnosticQpc();
+  if (work->firstFailure)
+    emitWriterFailure(writerSnapshot(*work), work->failureCode, state->freq, true);
+  if (status != napi_ok && work->error.empty()) {
+    work->failureStage = WriterFailureStage::MainCompletion;
+    reportWorkFailure(work, WriterFailureCode::IoFailed);
     work->error = "qualification-io-failed";
+  }
+  auto failureSnapshot = writerSnapshot(*work);
   try {
     if (!work->error.empty()) {
       state->failed = true;
@@ -333,6 +374,9 @@ void completed(napi_env env, napi_status status, void* data) {
     delete work;
     if (!state->queue.empty()) schedule(state);
   } catch (...) {
+    // The Work may already be deleted if scheduling its successor failed.
+    failureSnapshot.stage = WriterFailureStage::MainCompletionFatal;
+    reportFirstWriterFailure(state, failureSnapshot, currentWriterFailureCode());
     napi_fatal_error("qualification", NAPI_AUTO_LENGTH, "资格原生完成路径失败",
                      NAPI_AUTO_LENGTH);
   }
@@ -344,6 +388,7 @@ void schedule(State* state) {
                                     NAPI_AUTO_LENGTH, &name));
   napiCheck(napi_create_async_work(state->env, nullptr, name, execute,
                                    completed, work, &work->work));
+  work->scheduled = writerDiagnosticQpc();
   napiCheck(napi_queue_async_work(state->env, work->work));
 }
 napi_value enqueue(State* state, Work* work) {
@@ -407,6 +452,8 @@ napi_value prepare(napi_env env, napi_callback_info info) {
                                         opaque(env, state->ticket)));
       return result;
     } catch (...) {
+      reportFirstWriterFailure(state,
+          {WorkKind::Connect, WriterFailureStage::Prepare}, currentWriterFailureCode());
       state->failed = true;
       cleanup(state);
       throw;
@@ -458,6 +505,9 @@ napi_value write(napi_env env, napi_callback_info info) {
       frame = fromJs(env, args[1], budget);
       validateFrame(frame);
     } catch (...) {
+      reportFirstWriterFailure(s,
+          {WorkKind::Write, WriterFailureStage::Serialize, s->sequence + 1},
+          currentWriterFailureCode());
       s->serializing = false;
       s->failed = true;
       throw;
@@ -481,6 +531,9 @@ napi_value write(napi_env env, napi_callback_info info) {
                    s->eventBytes + bytes.size() >= 8388608)) ||
         (!event && (s->controlCount + 1 >= 64 ||
                     s->controlBytes + bytes.size() >= 1048576))) {
+      reportFirstWriterFailure(s,
+          {WorkKind::Write, WriterFailureStage::QueueLimit, sequence},
+          WriterFailureCode::QueueLimit);
       s->failed = true;
       throw Failure("qualification-queue-limit");
     }
