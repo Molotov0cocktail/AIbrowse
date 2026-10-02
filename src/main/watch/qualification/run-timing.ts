@@ -13,7 +13,6 @@ interface RunTiming {
 /** All budgets share actual QPC; timer lateness never creates another allowance. */
 export class QualificationRunTiming {
   private readonly runs = new Map<string, RunTiming>();
-  private readonly barriers: { pause: QpcTicks; resume: QpcTicks }[] = [];
 
   constructor(
     private readonly qpc: QualificationQpcClock,
@@ -27,23 +26,11 @@ export class QualificationRunTiming {
     return entry;
   }
 
-  barrierResumed(pause: QpcTicks, resume: QpcTicks): void {
-    const previous = this.barriers.at(-1);
-    if (
-      !this.qpc.within(pause, resume, 2_250) ||
-      parseQpcTicks(resume) > parseQpcTicks(this.qpc.readTicks()) ||
-      (previous !== undefined && parseQpcTicks(pause) <= parseQpcTicks(previous.resume))
-    )
-      this.fail('run-barrier-timing');
-    this.barriers.push({ pause, resume });
-    if (this.barriers.length > 8) this.barriers.shift();
-  }
-
   sessionClosed(runId: string): void {
     const run = this.get(runId);
     const now = this.qpc.readTicks();
     if (parseQpcTicks(now) <= parseQpcTicks(run.deadline)) return;
-    const basis = this.deferredDeadline(run.deadline);
+    const basis = run.deadline;
     if (!this.qpc.within(basis, now, 500)) this.fail('session-close-deadline');
   }
 
@@ -53,7 +40,7 @@ export class QualificationRunTiming {
     if (
       run.acquired !== undefined ||
       parseQpcTicks(now) < parseQpcTicks(run.deadline) ||
-      !this.qpc.within(this.deferredDeadline(run.deadline), now, 500)
+      !this.qpc.within(run.deadline, now, 500)
     )
       this.fail('acquisition-settlement-deadline');
     run.acquired = now;
@@ -74,7 +61,7 @@ export class QualificationRunTiming {
       run.observed !== undefined ||
       !Number.isFinite(Date.parse(observedAt)) ||
       new Date(observedAt).toISOString() !== observedAt ||
-      !this.qpc.within(this.deferredDeadline(run.deadline), now, 500)
+      !this.qpc.within(run.deadline, now, 500)
     )
       this.fail('processing-entry-deadline');
     if (releaseAtMs !== null && !this.qpc.within(this.qpc.ticksForUtc(releaseAtMs), now, 33_500))
@@ -107,15 +94,5 @@ export class QualificationRunTiming {
     const run = this.runs.get(runId);
     if (run === undefined) return this.fail('acquisition-timing-missing');
     return run;
-  }
-
-  private deferredDeadline(deadline: QpcTicks): QpcTicks {
-    return (
-      this.barriers.find(
-        (barrier) =>
-          parseQpcTicks(barrier.pause) <= parseQpcTicks(deadline) &&
-          parseQpcTicks(deadline) < parseQpcTicks(barrier.resume),
-      )?.resume ?? deadline
-    );
   }
 }

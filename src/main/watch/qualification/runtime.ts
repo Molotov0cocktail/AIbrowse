@@ -125,11 +125,6 @@ export class QualificationRuntime {
         closeAdmission: () => {
           this.stopped = true;
         },
-        onResumed: (phase, index) => {
-          if (!__WATCH_QUALIFICATION_DIAGNOSTIC__ && phase === 'measurement' && index === 0)
-            this.seedDigests();
-        },
-        onBarrierResumed: (pause, resume) => this.rounds?.barrierResumed(pause, resume),
         shutdown: async () => {
           if (!__WATCH_QUALIFICATION_DIAGNOSTIC__) this.verifyFinal();
           else if (__WATCH_QUALIFICATION_LOAD_DIAGNOSTIC__) {
@@ -394,6 +389,10 @@ export class QualificationRuntime {
       return;
     }
     this.sampler.start(this.m0Ms);
+    this.clock('qualification-fixture').setTimeout(
+      () => this.seedDigests(),
+      Math.max(0, this.m0Ms - this.qpc.now().getTime()),
+    );
     void this.initialize().catch(() => this.fail('initialization-failed'));
   }
 

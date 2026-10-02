@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron';
 import { getQualificationContext } from './watch/qualification/context';
+import { hasQualificationLaunchArgument } from './watch/qualification/launch-mode';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -198,6 +199,12 @@ import {
   makeSmokeGateScript,
   runResearchSmokeGate,
 } from './smoke';
+
+// Reject before any main-body path lookup, logger, profile, or credential-store setup.
+if (!__WATCH_QUALIFICATION__ && hasQualificationLaunchArgument(process.argv)) {
+  app.exit(1);
+  throw new Error('普通构建拒绝资格启动参数');
+}
 
 // 冒烟模式 AI 子系统数据目录（进程专属临时目录，不触碰用户真实 userData）——S4 起
 // UI 端到端矩阵经真实 IPC/bridge 链路驱动同一实例；路径经 SmokeOptions 传给冒烟场景断言。

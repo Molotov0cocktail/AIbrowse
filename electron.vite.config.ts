@@ -2,6 +2,14 @@ import { resolve } from 'node:path';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 
+const qualificationModes = new Set([
+  'qualification',
+  'qualification-diagnostic',
+  'qualification-load-diagnostic',
+]);
+const outputDirectory = (mode: string, part: string): string =>
+  resolve(__dirname, 'out', ...(qualificationModes.has(mode) ? [mode] : []), part);
+
 export default defineConfig(({ mode }) => ({
   main: {
     define: {
@@ -19,6 +27,7 @@ export default defineConfig(({ mode }) => ({
     },
     plugins: [externalizeDepsPlugin()],
     build: {
+      outDir: outputDirectory(mode, 'main'),
       rollupOptions: {
         treeshake: {
           // Main-private qualification modules initialize only pure data or exported factories.
@@ -43,6 +52,7 @@ export default defineConfig(({ mode }) => ({
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
+      outDir: outputDirectory(mode, 'preload'),
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/preload/index.ts') },
       },
@@ -59,6 +69,7 @@ export default defineConfig(({ mode }) => ({
     root: 'src/renderer',
     plugins: [react()],
     build: {
+      outDir: outputDirectory(mode, 'renderer'),
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/renderer/index.html') },
       },

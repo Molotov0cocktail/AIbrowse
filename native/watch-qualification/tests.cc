@@ -1,4 +1,5 @@
 #include "wire.hpp"
+#include "stream.hpp"
 #include <functional>
 #include <iostream>
 
@@ -22,6 +23,32 @@ Value grant(unsigned attempt, unsigned host, unsigned round) {
        {L"sequence", Value(uint64_t(3))},
        {L"slotIndex", Value(nullptr)},
        {L"version", Value(uint64_t(2))}});
+}
+Value sample(uint64_t sequence, uint64_t prefix, const char* phase = "measurement") {
+  Value::Array live;
+  for (const auto* name : registries)
+    live.push_back(object({{L"registry", Value(name)},
+                          {L"identities", Value(Value::Array{})}}));
+  return object({
+      {L"kind", Value("sample")},
+      {L"qualificationRunId", Value("AAAAAAAAAAAAAAAAAAAAAAAAAA")},
+      {L"sequence", Value(sequence)}, {L"slotIndex", Value(uint64_t(0))},
+      {L"version", Value(uint64_t(2))},
+      {L"payload", object({
+          {L"counters", object({{L"duplicateTerminalAttemptTotal", Value(uint64_t(0))},
+              {L"uncaughtExceptionTotal", Value(uint64_t(0))},
+              {L"unhandledRejectionTotal", Value(uint64_t(0))}})},
+          {L"mainHeapUsedBytes", Value(uint64_t(1))},
+          {L"nodeActiveByType", Value(Value::Array{})}, {L"phase", Value(phase)},
+          {L"registryLive", Value(live)}, {L"registryPrefixSequence", Value(prefix)},
+          {L"sampleToken", Value("AAAAAAAAAAAAAAAAAAAAAAAAAA")},
+          {L"taskTabBindings", Value(Value::Array{})},
+          {L"timing", object({{L"linearizedQpcTicks", Value("0000000000000001")},
+              {L"slotQpcTicks", Value("0000000000000001")},
+              {L"snapshotQpcTicks", Value("0000000000000002")},
+              {L"triggerQpcTicks", Value("0000000000000001")}})},
+          {L"watchLogicalDbBytes", Value(uint64_t(1))},
+          {L"webContentsIds", Value(Value::Array{})}})}});
 }
 int main() {
   unsigned passed = 0, failed = 0;
@@ -55,6 +82,43 @@ int main() {
   test("gpu-info-device-bound", true, [&] { validateFrame(gpuFrame(Value(Value::Array(9, gpuDevice)), Value(false))); });
   test("gpu-info-boolean-required", true, [&] { validateFrame(gpuFrame(Value(Value::Array{gpuDevice}), Value(uint64_t(0)))); });
   test("fixed-grant-valid", false, [] { validateFrame(grant(1, 1, 0)); });
+  test("nonpause-sample-then-event-without-write-receipt", false, [] {
+    TelemetryStream stream;
+    stream.sequence = 2;
+    stream.setup = true;
+    stream.accept(sample(3, 2));
+    auto event = grant(1, 1, 0);
+    std::get<Value::Object>(event.data)[L"sequence"] = Value(uint64_t(4));
+    stream.accept(event);
+    stream.accept(sample(5, 4));
+  });
+  test("nonpause-sample-wrong-prefix", true, [] {
+    TelemetryStream stream;
+    stream.sequence = 2;
+    stream.setup = true;
+    stream.accept(sample(3, 1));
+  });
+  test("measurement-after-stop-rejected", true, [] {
+    TelemetryStream stream;
+    stream.sequence = 2;
+    stream.setup = stream.stopped = true;
+    stream.accept(sample(3, 2));
+  });
+  test("drain-after-stop-accepted", false, [] {
+    TelemetryStream stream;
+    stream.sequence = 2;
+    stream.setup = stream.stopped = true;
+    stream.accept(sample(3, 2, "drain"));
+  });
+  test("qualification-build-entry-whitelist", false, [] {
+    require(qualificationEntryArgument(L"out/qualification/main/index.js") &&
+                qualificationEntryArgument(L"out/qualification-diagnostic/main/index.js") &&
+                qualificationEntryArgument(L"out/qualification-load-diagnostic/main/index.js") &&
+                !qualificationEntryArgument(L".") &&
+                !qualificationEntryArgument(L"out/main/index.js") &&
+                !qualificationEntryArgument(L"out/qualification/../main/index.js"),
+            "entry-whitelist-invalid");
+  });
   test("retry-attempt-rejected", true, [] { validateFrame(grant(2, 1, 0)); });
   test("fifth-host-rejected", true, [] { validateFrame(grant(1, 4, 0)); });
   test("fifth-round-rejected", true, [] { validateFrame(grant(1, 1, 4)); });

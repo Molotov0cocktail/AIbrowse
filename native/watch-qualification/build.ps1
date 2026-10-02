@@ -1,4 +1,8 @@
-param([switch]$Tests)
+param(
+  [switch]$Tests,
+  [ValidateSet('qualification', 'qualification-diagnostic', 'qualification-load-diagnostic')]
+  [string]$Mode = 'qualification'
+)
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $artifactRoot = Join-Path $repoRoot 'log/h3b-native-current'
@@ -24,7 +28,7 @@ $env:LIB = @((Join-Path $msvcRoot 'lib/x64'), (Join-Path $sdkLib 'ucrt/x64'), (J
 $compiler = Join-Path $msvcRoot 'bin/Hostx64/x64/cl.exe'
 $headers = Get-ChildItem $dependencyRoot -Filter node_api.h -Recurse | Select-Object -First 1 -ExpandProperty DirectoryName
 if (-not $headers) { throw 'Electron 头文件缺失' }
-$nativeOut = Join-Path $repoRoot 'out/main'
+$nativeOut = Join-Path $repoRoot "out/$Mode/main"
 New-Item -ItemType Directory -Force -Path $nativeOut | Out-Null
 $argsCommon = @('/nologo', '/std:c++20', '/EHsc', '/W4', '/WX', '/MT', '/O2', '/utf-8', '/DUNICODE', '/D_UNICODE', '/DNAPI_VERSION=8', "/I$headers", "/I$PSScriptRoot")
 & $compiler @argsCommon '/LD' (Join-Path $PSScriptRoot 'bridge.cc') "/Fo$buildRoot/bridge.obj" '/link' "/OUT:$nativeOut/watch-qualification.node" "/IMPLIB:$buildRoot/watch-qualification.lib" (Join-Path $dependencyRoot 'win-x64-node.lib') 'delayimp.lib' 'advapi32.lib' 'bcrypt.lib' 'shell32.lib' 'normaliz.lib' '/DELAYLOAD:node.exe' '/DYNAMICBASE' '/NXCOMPAT'

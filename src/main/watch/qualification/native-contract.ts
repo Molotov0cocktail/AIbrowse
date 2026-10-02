@@ -115,6 +115,7 @@ export interface QualificationSample {
   sampleToken: string;
   taskTabBindings: { identity: string; tabId: string; webContentsId: number }[];
   timing: {
+    /** Begin/end of the synchronous main observation; no cross-process barrier. */
     linearizedQpcTicks: QpcTicks;
     slotQpcTicks: QpcTicks;
     snapshotQpcTicks: QpcTicks;

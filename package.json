@@ -10,9 +10,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "build:qualification": "electron-vite build --mode qualification && pwsh -NoProfile -File native/watch-qualification/build.ps1",
-    "build:qualification:diagnostic": "electron-vite build --mode qualification-diagnostic && pwsh -NoProfile -File native/watch-qualification/build.ps1",
-    "build:qualification:load-diagnostic": "electron-vite build --mode qualification-load-diagnostic && pwsh -NoProfile -File native/watch-qualification/build.ps1",
+    "build:qualification": "electron-vite build --mode qualification && pwsh -NoProfile -File native/watch-qualification/build.ps1 -Mode qualification",
+    "build:qualification:diagnostic": "electron-vite build --mode qualification-diagnostic && pwsh -NoProfile -File native/watch-qualification/build.ps1 -Mode qualification-diagnostic",
+    "build:qualification:load-diagnostic": "electron-vite build --mode qualification-load-diagnostic && pwsh -NoProfile -File native/watch-qualification/build.ps1 -Mode qualification-load-diagnostic",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json --composite false && tsc --noEmit -p tsconfig.web.json --composite false",
     "test": "vitest run",

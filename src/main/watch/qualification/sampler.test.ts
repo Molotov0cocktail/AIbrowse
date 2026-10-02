@@ -21,8 +21,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function setup() {
+function setup(holdWrites = false) {
   const frames: QualificationFrame[] = [];
+  const pendingWrites: (() => void)[] = [];
   const readQpc = () => ({ ticks: formatQpcTicks(BigInt(Date.now()) * 1000n), frequency: 1000000 });
   const native: QualificationNativeBridge = {
     readQpc,
@@ -35,6 +36,7 @@ function setup() {
     closeTelemetry: async () => {},
     writeTelemetryFrame: async (_capability, frame) => {
       frames.push(frame);
+      if (holdWrites) await new Promise<void>((resolve) => pendingWrites.push(resolve));
       return { sequence: frame.sequence, writeCompletedQpcTicks: readQpc().ticks };
     },
   };
@@ -69,53 +71,91 @@ function setup() {
         webContentsIds: [],
       }),
       closeAdmission,
-      onResumed: () => {},
       shutdown,
       completed,
     },
     fail,
   );
-  return { sampler, frames, registry, clock, shutdown, completed, closeAdmission };
+  return { sampler, frames, registry, clock, shutdown, completed, closeAdmission, pendingWrites };
 }
 
 describe('资格采样器：可控时钟协议单元验证（不代替native/OS资格）', () => {
-  it('短诊断sample闭合前拒绝owner变化，保留连续sequence与同token', async () => {
-    const h = setup();
+  it('writer未完成时照常采样，业务timer不重排，registry后续变化不污染已取prefix', async () => {
+    const h = setup(true);
+    const fired: string[] = [];
+    h.clock.forOwner('qualification-fixture').setTimeout(() => fired.push('fixture'), 10001);
+    h.clock.forOwner('digest-scheduler').setTimeout(() => fired.push('digest'), 10001);
     h.sampler.startHeartbeat();
     h.sampler.startDiagnostic();
     await vi.advanceTimersByTimeAsync(10000);
     const sample = h.frames.find((frame) => frame.kind === 'sample');
     expect(sample?.kind).toBe('sample');
-    expect(h.sampler.isAdmissionOpen()).toBe(false);
-    expect(() => h.registry.register({ registry: 'watch-store', detail: null })).toThrow(
-      'barrier-mutation',
-    );
+    expect(h.sampler.isAdmissionOpen()).toBe(true);
+    const owner = h.registry.register({ registry: 'watch-store', detail: null });
+    h.registry.unregister(owner);
     expect(h.frames.some((frame) => frame.kind === 'sample-closed')).toBe(false);
-    await vi.advanceTimersByTimeAsync(1001);
-    const closed = h.frames.find((frame) => frame.kind === 'sample-closed');
-    const resumed = h.frames.find((frame) => frame.kind === 'sample-resumed');
-    expect(closed?.kind).toBe('sample-closed');
-    expect(resumed?.kind).toBe('sample-resumed');
-    if (
-      sample?.kind !== 'sample' ||
-      closed?.kind !== 'sample-closed' ||
-      resumed?.kind !== 'sample-resumed'
-    )
-      throw new Error('协议缺帧');
-    expect(closed.payload.sampleToken).toBe(sample.payload.sampleToken);
-    expect(resumed.payload.sampleToken).toBe(sample.payload.sampleToken);
-    expect(closed.payload.registryPrefixSequence).toBe(sample.payload.registryPrefixSequence);
+    expect(h.frames.some((frame) => frame.kind === 'sample-resumed')).toBe(false);
+    if (sample?.kind !== 'sample') throw new Error('协议缺帧');
+    expect(sample.payload.registryPrefixSequence).toBe(sample.sequence - 1);
+    expect(
+      sample.payload.registryLive.find((row) => row.registry === 'watch-store')?.identities,
+    ).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fired).toEqual(['fixture', 'digest']);
+    const timerRegistrations = h.frames.filter(
+      (frame) =>
+        frame.kind === 'register' &&
+        (frame.payload.registry === 'watch-owner-timer' ||
+          frame.payload.registry === 'digest-timer'),
+    );
+    expect(timerRegistrations).toHaveLength(2);
     expect(h.frames.map((frame) => frame.sequence)).toEqual(
       h.frames.map((_frame, index) => index + 1),
     );
-    expect(h.sampler.isAdmissionOpen()).toBe(true);
-    await vi.advanceTimersByTimeAsync(11000);
+    await vi.advanceTimersByTimeAsync(9999);
     expect(h.closeAdmission).toHaveBeenCalledOnce();
     expect(h.shutdown).toHaveBeenCalledOnce();
+    for (const resolve of h.pendingWrites) resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(h.completed).toHaveBeenCalledOnce();
     expect(h.frames.at(-1)?.kind).toBe('complete');
     expect(h.sampler.isAdmissionOpen()).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
+  });
+  it('正式末点在M1之前，M1独立停止不等待writer，shutdown后的快照只归drain', async () => {
+    const h = setup();
+    const m0 = Date.now() + 600000;
+    h.sampler.start(m0);
+    await vi.advanceTimersByTimeAsync(4199000);
+    const formal = h.frames.filter(
+      (frame) => frame.kind === 'sample' && frame.payload.phase === 'measurement',
+    );
+    expect(formal).toHaveLength(361);
+    const last = formal.at(-1);
+    if (last?.kind !== 'sample') throw new Error('协议缺帧');
+    expect(last.slotIndex).toBe(360);
+    expect(last.payload.timing.snapshotQpcTicks < last.payload.timing.slotQpcTicks).toBe(true);
+    expect(h.sampler.isAdmissionOpen()).toBe(true);
+    expect(h.closeAdmission).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.closeAdmission).toHaveBeenCalledOnce();
+    expect(h.shutdown).toHaveBeenCalledOnce();
+    const stop = h.frames.find((frame) => frame.kind === 'stop');
+    expect(stop?.kind).toBe('stop');
+    expect(
+      h.frames.filter(
+        (frame) =>
+          frame.kind === 'sample' &&
+          frame.payload.phase === 'measurement' &&
+          frame.sequence > stop!.sequence,
+      ),
+    ).toEqual([]);
+    expect(
+      h.frames.some(
+        (frame) =>
+          frame.kind === 'sample' && frame.payload.phase === 'drain' && frame.slotIndex === 0,
+      ),
+    ).toBe(true);
   });
   it('即使stop定时器尚未回调，M1时刻也拒绝新admission', () => {
     const h = setup();
@@ -126,6 +166,19 @@ describe('资格采样器：可控时钟协议单元验证（不代替native/OS�
     vi.setSystemTime(m0 + 3600000);
     expect(h.sampler.isAdmissionOpen()).toBe(false);
     expect(h.closeAdmission).not.toHaveBeenCalled();
+  });
+  it('迟到快照保留实际QPC，继续固定slot，不补零或重定目标洗掉缺样', async () => {
+    const h = setup();
+    h.sampler.startDiagnostic();
+    vi.setSystemTime(Date.now() + 3000);
+    await vi.advanceTimersByTimeAsync(10000);
+    const sample = h.frames.find((frame) => frame.kind === 'sample');
+    if (sample?.kind !== 'sample') throw new Error('协议缺帧');
+    expect(sample.payload.timing.slotQpcTicks).toBe(formatQpcTicks(110000000n));
+    expect(sample.payload.timing.linearizedQpcTicks).toBe(formatQpcTicks(113000000n));
+    expect(h.sampler.isAdmissionOpen()).toBe(true);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(h.frames.filter((frame) => frame.kind === 'sample')).toHaveLength(2);
   });
   it('普通资格构建不能调用缩短窗口入口', () => {
     vi.stubGlobal('__WATCH_QUALIFICATION_DIAGNOSTIC__', false);

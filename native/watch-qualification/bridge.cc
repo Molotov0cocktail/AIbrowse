@@ -1,4 +1,5 @@
 #include "wire.hpp"
+#include "stream.hpp"
 #include "write-io.hpp"
 #include <delayimp.h>
 #include <node_api.h>
@@ -138,14 +139,12 @@ struct State {
   bool prepared = false, authenticated = false, closing = false, closed = false,
        serializing = false;
   std::atomic<bool> failed{false};
-  bool setup = false, stopped = false, complete = false;
+  TelemetryStream stream;
+  std::wstring mainEntry;
   uint64_t sequence = 0;
   uint64_t freq = frequency();
   uint64_t lastQpc = 0;
   Value ready;
-  std::string sampleToken, samplePhase;
-  uint64_t sampleSlot = 0, samplePrefix = 0, sampleWriteCompleted = 0;
-  bool sampleOpen = false, sampleClosed = false;
   std::deque<Work*> queue;
   size_t eventCount = 0, eventBytes = 0, controlCount = 0, controlBytes = 0;
   explicit State(napi_env e) : env(e) {}
@@ -215,15 +214,16 @@ void authenticate(State* s, Work* work) {
   auto exe = exePath();
   require(exe == repo + L"\\node_modules\\electron\\dist\\electron.exe",
           "qualification-launch-invalid");
-  auto repoHandle = openAttributes(repo);
+  const auto entry = repo + L"\\" + s->mainEntry;
+  auto appHandle = openAttributes(entry.substr(0, entry.find_last_of(L"\\")));
   auto exeHandle = openAttributes(exe);
   Value::Object ids;
   for (const auto& [k, id] : s->roots.ids) ids.emplace(wide(k), Value(id));
   s->ready = object(
-      {{L"appPathFileId", Value(fileId(repoHandle.value, true))},
+      {{L"appPathFileId", Value(fileId(appHandle.value, true))},
        {L"electronExeFileId", Value(fileId(exeHandle.value))},
        {L"mainCreationFileTime", Value(hex(selfCreation))},
-       {L"mainEntrySha256", Value(sha256(repo + L"\\out\\main\\index.js"))},
+       {L"mainEntrySha256", Value(sha256(entry))},
        {L"mainPid", Value(static_cast<uint64_t>(self))},
        {L"processExecPathSha256", Value(sha256(exe))},
        {L"processType", Value("browser")},
@@ -315,9 +315,6 @@ void completed(napi_env env, napi_status status, void* data) {
         napiCheck(napi_set_named_property(env, result, "capability",
                                           opaque(env, state->capability)));
       }
-      if (work->kind == WorkKind::Write && state->sampleOpen &&
-          work->sequence == state->samplePrefix + 1)
-        state->sampleWriteCompleted = work->completed;
       napiCheck(napi_resolve_deferred(env, work->deferred, result));
     }
     napi_delete_async_work(env, work->work);
@@ -383,8 +380,12 @@ napi_value prepare(napi_env env, napi_callback_info info) {
       LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
       require(args != nullptr, "qualification-launch-invalid");
       bool valid =
-          count == 3 && std::wstring(args[1]) == L"." &&
+          count == 3 && qualificationEntryArgument(args[1]) &&
           std::wstring(args[2]) == L"--aibrowse-watch-resource-qualification";
+      if (valid) {
+        state->mainEntry = args[1];
+        std::replace(state->mainEntry.begin(), state->mainEntry.end(), L'/', L'\\');
+      }
       LocalFree(args);
       require(valid, "qualification-launch-invalid");
       auto temp = environment(L"TEMP");
@@ -449,7 +450,7 @@ napi_value write(napi_env env, napi_callback_info info) {
     napiCheck(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
     auto s = getState(env);
     require(argc == 2 && sameObject(env, s->capability, args[0]) &&
-                s->authenticated && !s->failed && !s->closing && !s->complete &&
+                s->authenticated && !s->failed && !s->closing && !s->stream.complete &&
                 !s->serializing,
             "qualification-capability-invalid");
     s->serializing = true;
@@ -474,51 +475,7 @@ napi_value write(napi_env env, napi_callback_info info) {
     if (kind == "ready")
       require(canonical(frame.at("payload")) == canonical(s->ready),
               "qualification-peer-invalid");
-    const auto& payload = frame.at("payload");
-    if (s->sampleOpen && !s->sampleClosed)
-      require(kind == "sample-closed", "qualification-sequence-invalid");
-    if (kind == "sample") {
-      require(!s->sampleOpen &&
-                  payload.at("registryPrefixSequence").number() == sequence - 1,
-              "qualification-sequence-invalid");
-      s->sampleOpen = true;
-      s->sampleClosed = false;
-      s->sampleToken = payload.at("sampleToken").string();
-      s->samplePhase = payload.at("phase").string();
-      s->sampleSlot = frame.at("slotIndex").number();
-      s->samplePrefix = sequence - 1;
-      s->sampleWriteCompleted = 0;
-    }
-    if (kind == "sample-closed" || kind == "sample-resumed") {
-      require(s->sampleOpen &&
-                  frame.at("slotIndex").number() == s->sampleSlot &&
-                  payload.at("sampleToken").string() == s->sampleToken &&
-                  payload.at("phase").string() == s->samplePhase,
-              "qualification-sequence-invalid");
-      if (kind == "sample-closed") {
-        require(!s->sampleClosed && s->sampleWriteCompleted > 0 &&
-                    payload.at("sampleWriteCompletedQpcTicks").string() ==
-                        hex(s->sampleWriteCompleted) &&
-                    payload.at("registryPrefixSequence").number() ==
-                        s->samplePrefix,
-                "qualification-sequence-invalid");
-        s->sampleClosed = true;
-      } else {
-        require(s->sampleClosed, "qualification-sequence-invalid");
-        s->sampleOpen = false;
-      }
-    }
-    if (kind == "setup") {
-      require(!s->setup && !s->stopped, "qualification-sequence-invalid");
-      s->setup = true;
-    }
-    if (kind == "sample") require(s->setup, "qualification-sequence-invalid");
-    if (kind == "stop") {
-      require(s->setup && !s->stopped, "qualification-sequence-invalid");
-      s->stopped = true;
-    }
-    if (kind == "complete")
-      require(s->stopped, "qualification-sequence-invalid");
+    s->stream.accept(frame);
     auto bytes = canonical(frame) + '\n';
     require(bytes.size() <= 262144, "qualification-frame-invalid");
     bool event = kind == "register" || kind == "unregister";
@@ -542,7 +499,6 @@ napi_value write(napi_env env, napi_callback_info info) {
       s->controlBytes += work->bytes.size();
     }
     s->sequence = sequence;
-    if (kind == "complete") s->complete = true;
     return enqueue(s, work);
   });
 }

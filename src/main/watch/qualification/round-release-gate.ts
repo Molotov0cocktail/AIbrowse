@@ -9,7 +9,6 @@ import {
 } from './manifest';
 import { QualificationRegistry } from './registry';
 import { QualificationQpcClock } from './qpc';
-import type { QpcTicks } from './native-contract';
 import { QualificationRunTiming } from './run-timing';
 
 export class QualificationRoundReleaseGate implements WatchRunObserver {
@@ -62,10 +61,6 @@ export class QualificationRoundReleaseGate implements WatchRunObserver {
 
   acquired(task: Readonly<RunTask>): void {
     this.timing.acquired(task.runId);
-  }
-
-  barrierResumed(pause: QpcTicks, resume: QpcTicks): void {
-    this.timing.barrierResumed(pause, resume);
   }
 
   duplicateTerminalAttempt(): void {

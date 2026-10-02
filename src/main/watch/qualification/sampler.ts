@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import type { QualificationPhase, QualificationSample, QpcTicks } from './native-contract';
+import type { QualificationPhase, QualificationSample } from './native-contract';
 import { QualificationPausableClock } from './pausable-clock';
 import { QualificationQpcClock, parseQpcTicks } from './qpc';
 import { QualificationRegistry } from './registry';
@@ -15,8 +15,6 @@ export interface QualificationSamplePort {
     | 'webContentsIds'
   >;
   closeAdmission(): void;
-  onResumed(phase: QualificationPhase, index: number): void;
-  onBarrierResumed?(pause: QpcTicks, resume: QpcTicks): void;
   shutdown(): Promise<void>;
   completed(): Promise<void>;
 }
@@ -58,7 +56,6 @@ export function readNodeActiveResources(): { type: string; count: number }[] {
 export class QualificationSampler {
   private observer: ReturnType<typeof setTimeout> | null = null;
   private heartbeat: ReturnType<typeof setTimeout> | null = null;
-  private active = false;
   private failed = false;
   private stopped = false;
   private nextHeartbeatMs = 0;
@@ -67,7 +64,7 @@ export class QualificationSampler {
   private diagnostic = false;
   private finalOrdinal = 420;
   private admissionDeadlineMs = 0;
-  private heartbeatPending = false;
+  private endingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly qpc: QualificationQpcClock,
@@ -90,6 +87,7 @@ export class QualificationSampler {
       ? m0Ms - 600_000 + this.finalOrdinal * 10_000
       : m0Ms + 3_600_000;
     this.armNext();
+    this.armEnding();
   }
 
   startDiagnostic(): void {
@@ -109,7 +107,6 @@ export class QualificationSampler {
 
   isAdmissionOpen(): boolean {
     return (
-      !this.active &&
       !this.stopped &&
       !this.failed &&
       (this.m0Ms === 0 ||
@@ -121,8 +118,10 @@ export class QualificationSampler {
   stopObservers(): void {
     if (this.observer !== null) clearTimeout(this.observer);
     if (this.heartbeat !== null) clearTimeout(this.heartbeat);
+    if (this.endingTimer !== null) clearTimeout(this.endingTimer);
     this.observer = null;
     this.heartbeat = null;
+    this.endingTimer = null;
   }
 
   private armNext(): void {
@@ -132,12 +131,17 @@ export class QualificationSampler {
     this.observer = setTimeout(
       () => {
         this.observer = null;
-        void this.sample(ordinal, targetMs).catch(() => {
+        try {
+          this.sample(ordinal, targetMs);
+        } catch {
           this.failed = true;
           this.fail('sample-failed');
-        });
+        }
       },
-      Math.max(0, targetMs - this.qpc.now().getTime()),
+      Math.max(
+        0,
+        targetMs - (ordinal === this.finalOrdinal ? 1_000 : 0) - this.qpc.now().getTime(),
+      ),
     );
   }
 
@@ -146,8 +150,7 @@ export class QualificationSampler {
     this.heartbeat = setTimeout(
       () => {
         this.heartbeat = null;
-        if (!this.active) void this.sequencer.send('heartbeat', { qpcTicks: this.qpc.readTicks() });
-        else this.heartbeatPending = true;
+        void this.sequencer.send('heartbeat', { qpcTicks: this.qpc.readTicks() });
         this.nextHeartbeatMs += 10_000;
         this.armHeartbeat();
       },
@@ -155,9 +158,8 @@ export class QualificationSampler {
     );
   }
 
-  private async sample(ordinal: number, targetMs: number): Promise<void> {
-    const trigger = this.qpc.readTicks();
-    if (this.active || ordinal !== this.nextOrdinal) this.fail('sample-overlap');
+  private sample(ordinal: number, targetMs: number): void {
+    if (this.stopped || ordinal !== this.nextOrdinal) this.fail('sample-state');
     const phase =
       this.diagnostic && ordinal === this.finalOrdinal
         ? 'measurement'
@@ -171,131 +173,88 @@ export class QualificationSampler {
       : ordinal < 60
         ? ordinal
         : ordinal - 60;
-    const slotTicks = this.qpc.ticksForUtc(targetMs);
-    if (
-      parseQpcTicks(trigger) < parseQpcTicks(slotTicks) ||
-      !this.qpc.within(slotTicks, trigger, 2_000)
-    ) {
-      this.fail('sample-trigger-deadline');
-    }
-    this.active = true;
-    const ending = ordinal === this.finalOrdinal;
-    if (ending) {
-      this.stopped = true;
-      this.product.closeAdmission();
-      this.registry.closeAdmission();
-      void this.sequencer.send('stop', {
-        admissionClosedQpcTicks: slotTicks,
-        observedQpcTicks: trigger,
-        reason: 'normal-exit',
-      });
-    }
-    this.businessClock.pause();
-    await this.sequencer.flush();
-    const linearized = this.qpc.readTicks();
-    if (!this.qpc.within(trigger, linearized, 500)) this.fail('sample-linearize-deadline');
-    this.registry.freeze();
+    // Keep late observations as evidence. The reporter applies each slot's QPC window.
+    this.capture(phase, slotIndex, targetMs);
+    ++this.nextOrdinal;
+    this.armNext();
+  }
+
+  private capture(phase: QualificationPhase, slotIndex: number, targetMs: number): void {
+    const trigger = this.qpc.readTicks();
+    const begin = this.qpc.readTicks();
     const prefix = this.sequencer.prefix;
+    // No await or owner mutation: this is a single main-thread registry prefix.
     const values = this.product.snapshot();
-    const snapshot = this.qpc.readTicks();
-    const token = qualificationSampleToken();
-    const receipt = await this.sequencer.send(
+    const counters = this.registry.counters();
+    const registryLive = this.registry.snapshot();
+    const end = this.qpc.readTicks();
+    if (this.sequencer.prefix !== prefix) this.fail('sample-snapshot-mutation');
+    void this.sequencer.send(
       'sample',
       {
         ...values,
-        counters: this.registry.counters(),
+        counters,
         phase,
-        registryLive: this.registry.snapshot(),
+        registryLive,
         registryPrefixSequence: prefix,
-        sampleToken: token,
+        sampleToken: qualificationSampleToken(),
         timing: {
-          linearizedQpcTicks: linearized,
-          slotQpcTicks: slotTicks,
-          snapshotQpcTicks: snapshot,
+          linearizedQpcTicks: begin,
+          slotQpcTicks: this.qpc.ticksForUtc(targetMs),
+          snapshotQpcTicks: end,
           triggerQpcTicks: trigger,
         },
       },
       slotIndex,
     );
-    const completed = receipt.writeCompletedQpcTicks;
-    if (
-      !this.qpc.within(linearized, completed, 250) ||
-      !this.qpc.within(trigger, completed, 750) ||
-      parseQpcTicks(completed) < parseQpcTicks(snapshot)
-    )
-      this.fail('sample-write-deadline');
-    const closeTarget = [this.qpc.addMs(trigger, 1_750), this.qpc.addMs(completed, 1_000)].sort(
-      (a, b) =>
-        parseQpcTicks(a) < parseQpcTicks(b) ? -1 : parseQpcTicks(a) > parseQpcTicks(b) ? 1 : 0,
-    )[0]!;
-    await this.waitUntil(closeTarget);
-    const close = this.qpc.readTicks();
-    if (
-      this.sequencer.prefix !== prefix + 1 ||
-      !this.qpc.within(trigger, close, 2_000) ||
-      !this.qpc.within(completed, close, 1_250)
-    )
-      this.fail('sample-close-deadline');
-    void this.sequencer.send(
-      'sample-closed',
-      {
-        closeQpcTicks: close,
-        phase,
-        registryPrefixSequence: prefix,
-        sampleToken: token,
-        sampleWriteCompletedQpcTicks: completed,
-      },
-      slotIndex,
-    );
-    this.registry.thaw();
-    if (ending) this.businessClock.stop();
-    this.businessClock.resume();
-    const resumed = this.qpc.readTicks();
-    if (!this.qpc.within(close, resumed, 250)) this.fail('sample-resume-deadline');
-    void this.sequencer.send(
-      'sample-resumed',
-      { phase, resumeQpcTicks: resumed, sampleToken: token },
-      slotIndex,
-    );
-    this.active = false;
-    if (this.heartbeatPending && !ending) {
-      this.heartbeatPending = false;
-      void this.sequencer.send('heartbeat', { qpcTicks: this.qpc.readTicks() });
-    }
-    ++this.nextOrdinal;
-    this.product.onBarrierResumed?.(trigger, resumed);
-    this.product.onResumed(phase, slotIndex);
-    if (ending) {
-      this.stopObservers();
-      await this.product.shutdown();
-      const live = this.registry.snapshot();
-      if (
-        live.some((row) => row.identities.length !== 0) ||
-        Object.values(this.registry.counters()).some((value) => value !== 0)
-      ) {
-        this.fail('complete-live-resources');
-      }
-      await this.sequencer.send('complete', {
-        counters: this.registry.counters(),
-        registryLive: live,
-      });
-      await this.product.completed();
-      return;
-    }
-    this.armNext();
   }
 
-  private waitUntil(target: QpcTicks): Promise<void> {
-    return new Promise((resolve) => {
-      const arm = (): void => {
-        const now = this.qpc.readTicks();
-        if (parseQpcTicks(now) >= parseQpcTicks(target)) {
-          resolve();
+  private armEnding(): void {
+    this.endingTimer = setTimeout(
+      () => {
+        this.endingTimer = null;
+        // A timer may fire early after conversion to whole milliseconds.
+        if (
+          parseQpcTicks(this.qpc.readTicks()) <
+          parseQpcTicks(this.qpc.ticksForUtc(this.admissionDeadlineMs))
+        ) {
+          this.armEnding();
           return;
         }
-        this.observer = setTimeout(arm, this.qpc.elapsedMs(now, target));
-      };
-      arm();
+        void this.end().catch(() => {
+          this.failed = true;
+          this.fail('shutdown-failed');
+        });
+      },
+      Math.max(0, this.admissionDeadlineMs - this.qpc.now().getTime()),
+    );
+  }
+
+  private async end(): Promise<void> {
+    this.stopped = true;
+    this.product.closeAdmission();
+    this.registry.closeAdmission();
+    this.stopObservers();
+    void this.sequencer.send('stop', {
+      admissionClosedQpcTicks: this.qpc.ticksForUtc(this.admissionDeadlineMs),
+      observedQpcTicks: this.qpc.readTicks(),
+      reason: 'normal-exit',
     });
+    this.capture('drain', 0, this.admissionDeadlineMs);
+    // Writer completion does not delay the product's shutdown deadline.
+    await this.product.shutdown();
+    const live = this.registry.snapshot();
+    if (
+      this.businessClock.pendingCount !== 0 ||
+      live.some((row) => row.identities.length !== 0) ||
+      Object.values(this.registry.counters()).some((value) => value !== 0)
+    )
+      this.fail('complete-live-resources');
+    this.businessClock.stop();
+    await this.sequencer.send('complete', {
+      counters: this.registry.counters(),
+      registryLive: live,
+    });
+    await this.product.completed();
   }
 }

@@ -16,7 +16,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it('独立load诊断固定10/20/30/40秒四个barrier，40秒谓词先于callback关闭准入', async () => {
+it('独立load诊断固定10/20/30/39秒四次非暂停观察，40秒关闭准入', async () => {
   vi.useFakeTimers();
   vi.setSystemTime(100_000);
   vi.stubGlobal('__WATCH_QUALIFICATION_DIAGNOSTIC__', true);
@@ -67,7 +67,6 @@ it('独立load诊断固定10/20/30/40秒四个barrier，40秒谓词先于callbac
         webContentsIds: [],
       }),
       closeAdmission: () => {},
-      onResumed: () => {},
       shutdown,
       completed: async () => {},
     },
@@ -76,15 +75,13 @@ it('独立load诊断固定10/20/30/40秒四个barrier，40秒谓词先于callbac
   sampler.startLoadDiagnostic();
   await vi.advanceTimersByTimeAsync(31_001);
   expect(frames.filter((row) => row.kind === 'sample')).toHaveLength(3);
-  expect(frames.filter((row) => row.kind === 'sample-closed')).toHaveLength(3);
-  const current = Date.now();
-  vi.setSystemTime(140_000);
-  expect(sampler.isAdmissionOpen()).toBe(false);
+  expect(frames.filter((row) => row.kind === 'sample-closed')).toHaveLength(0);
+  expect(sampler.isAdmissionOpen()).toBe(true);
   expect(shutdown).not.toHaveBeenCalled();
-  vi.setSystemTime(current);
   await vi.advanceTimersByTimeAsync(10_000);
-  expect(frames.filter((row) => row.kind === 'sample')).toHaveLength(4);
-  expect(frames.filter((row) => row.kind === 'sample-resumed')).toHaveLength(4);
+  expect(sampler.isAdmissionOpen()).toBe(false);
+  expect(frames.filter((row) => row.kind === 'sample')).toHaveLength(5);
+  expect(frames.filter((row) => row.kind === 'sample-resumed')).toHaveLength(0);
   expect(frames.at(-1)?.kind).toBe('complete');
   expect(shutdown).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);
