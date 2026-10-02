@@ -142,22 +142,34 @@ Module._load = function (request, parent, isMain) {
       },
     );
   };
-  if (mode === 'writer-main-delay') {
+  if (mode === 'writer-main-delay' || mode === 'writer-main-delay-green') {
     const pendingWrites = new Set();
+    const receiptSequences = new Set();
     let injected = false;
     wrapped.writeTelemetryFrame = function (...args) {
+      const submitBeginQpcTicks = exported.readQpc().ticks;
       const promise = Reflect.apply(exported.writeTelemetryFrame, exported, args);
       const frameSequence = args[1].sequence;
       pendingWrites.add(frameSequence);
       // Promise settlement is only the trigger. Native diagnostics and parent
       // pipe reads determine whether bytes were actually submitted/completed.
       void promise.then(
-        () => pendingWrites.delete(frameSequence),
+        (receipt) => {
+          pendingWrites.delete(frameSequence);
+          if (receiptSequences.has(frameSequence))
+            emit('writer-frame-completed', {
+              frameSequence,
+              submitBeginQpcTicks,
+              writeCompletedQpcTicks: receipt.writeCompletedQpcTicks,
+            });
+        },
         () => pendingWrites.delete(frameSequence),
       );
       if (!injected && pendingWrites.size === 2) {
         injected = true;
         const [firstSequence, secondSequence] = pendingWrites;
+        receiptSequences.add(firstSequence);
+        receiptSequences.add(secondSequence);
         const before = exported.readQpc();
         emit('writer-main-delay-begin', {
           firstSequence,

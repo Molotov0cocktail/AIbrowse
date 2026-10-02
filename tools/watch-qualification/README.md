@@ -69,3 +69,12 @@ CLI参数为`<副本runRoot> <runId> short|formal [认证setup中的M0 UTC]`，�
 `read-console-environment.ps1`只读当前进程SessionId及[物理控制台会话](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-wtsgetactiveconsolesessionid)，
 补充UserInteractive和[SM_REMOTESESSION](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getsystemmetrics)。
 不能仅以SM_REMOTESESSION=0判定本地会话；输出不证明未锁屏、无远程协助或整个窗口环境恒定，也不改系统设置。
+
+## 写入器主线程停顿反例
+
+`startup-check-run.ps1`沿用独立合成根、显式启动参数和Job收口。默认`-Case all`仍执行启动隔离专项；
+`-Case writer-main-delay`用于旧候选的排队超时反例，`-Case writer-main-delay-green`验证修复。
+两者只在受控观察器中对主线程施加一次2500ms停顿，父端持续读pipe，不改变原始DTO。
+绿态须在main恢复前收到两帧，native后帧完成耗时上界不超过原两秒，并让真实短负载自然complete/exit0/Job0/EOF。
+旧反例场景预算15秒、外部60秒；绿态场景100秒、外部120秒。每轮使用新的原件目录，保留失败和实际产物。
+这些是写入器甄别证据，不能替代不带观察器的资源短验或正式窗口。

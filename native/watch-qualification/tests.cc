@@ -1,11 +1,19 @@
 #include "wire.hpp"
 #include "stream.hpp"
 #include "writer-diagnostics.hpp"
+#include "writer-queue.hpp"
+#include <barrier>
 #include <functional>
 #include <iostream>
 #include <thread>
 
 using namespace h3b;
+struct QueueTestWork {
+  unsigned sequence;
+  WorkKind kind = WorkKind::Write;
+  QueueTestWork* nextInBatch = nullptr;
+  bool readyToSettle = false;
+};
 Value grant(unsigned attempt, unsigned host, unsigned round) {
   return object(
       {{L"kind", Value("register")},
@@ -70,6 +78,83 @@ int main() {
       std::cout << "FAIL " << name << '\n';
     }
   };
+  test("后台连续排水不等待逐帧main完成", false, [] {
+    WriterQueue<QueueTestWork> queue;
+    QueueTestWork first{1}, second{2};
+    WriterBatch<QueueTestWork> batch;
+    require(queue.enqueue(&first) && !queue.enqueue(&second), "queue-single-consumer");
+    require(queue.takePending() == &first, "queue-first"); batch.append(&first);
+    require(queue.takePending() == &second, "queue-second"); batch.append(&second);
+    require(queue.takePending() == nullptr && queue.size() == 2 && !queue.takeReady(),
+            "queue-awaits-main-ownership");
+    queue.complete(batch);
+    require(queue.takeReady() == &first && queue.takeReady() == &second && queue.empty(),
+            "queue-ordered-settlement");
+  });
+  test("旧批回调未到仍可启动新批且逆序回调按FIFO回收", false, [] {
+    WriterQueue<QueueTestWork> queue;
+    QueueTestWork first{1}, second{2};
+    WriterBatch<QueueTestWork> oldBatch, newBatch;
+    require(queue.enqueue(&first) && queue.takePending() == &first, "queue-first");
+    oldBatch.append(&first);
+    require(!queue.takePending() && queue.enqueue(&second), "queue-new-batch-before-main");
+    require(queue.takePending() == &second && !queue.takePending(), "queue-second");
+    newBatch.append(&second);
+    queue.complete(newBatch);
+    require(!queue.takeReady() && queue.size() == 2, "queue-no-early-free-or-budget-release");
+    queue.complete(oldBatch);
+    require(queue.takeReady() == &first && queue.takeReady() == &second && queue.empty(),
+            "queue-out-of-order-batch-callback");
+  });
+  test("取空与入队竞争不会丢失调度或产生两个消费者", false, [] {
+    for (unsigned iteration = 0; iteration < 200; ++iteration) {
+      WriterQueue<QueueTestWork> queue;
+      QueueTestWork first{1}, second{2};
+      require(queue.enqueue(&first) && queue.takePending() == &first, "queue-first");
+      std::barrier gate(2);
+      QueueTestWork* taken = nullptr;
+      std::thread worker([&] { gate.arrive_and_wait(); taken = queue.takePending(); });
+      gate.arrive_and_wait();
+      const bool newBatch = queue.enqueue(&second);
+      worker.join();
+      require((newBatch && !taken) || (!newBatch && taken == &second), "queue-idle-enqueue-race");
+      if (newBatch) require(queue.takePending() == &second, "queue-new-consumer-work");
+      require(!queue.takePending(), "queue-no-duplicate-work");
+    }
+  });
+  test("Close在同批与跨批都排在全部写入之后", false, [] {
+    for (bool separate : {false, true}) {
+      WriterQueue<QueueTestWork> queue;
+      QueueTestWork first{1}, close{2, WorkKind::Close};
+      WriterBatch<QueueTestWork> writeBatch, closeBatch;
+      require(queue.enqueue(&first) && queue.takePending() == &first, "queue-first");
+      writeBatch.append(&first);
+      if (separate) require(!queue.takePending(), "queue-finish-write-batch");
+      require(queue.enqueue(&close) == separate && queue.takePending() == &close,
+              "queue-close-order");
+      if (separate) closeBatch.append(&close);
+      else writeBatch.append(&close);
+      require(!queue.takePending(), "queue-close-last");
+      if (separate) {
+        queue.complete(closeBatch);
+        require(!queue.takeReady(), "queue-close-cannot-retire-before-write");
+      }
+      queue.complete(writeBatch);
+      require(queue.takeReady() == &first && queue.takeReady() == &close, "queue-close-settlement");
+    }
+  });
+  test("环境销毁须等全部Work和批回调收口", false, [] {
+    WriterQueue<QueueTestWork> queue;
+    QueueTestWork first{1};
+    WriterBatch<QueueTestWork> batch;
+    require(queue.canFinalize(0) && !queue.canFinalize(1), "queue-empty-live-batch");
+    require(queue.enqueue(&first) && queue.takePending() == &first && !queue.takePending(), "queue-first");
+    batch.append(&first);
+    require(!queue.canFinalize(0) && !queue.canFinalize(1), "queue-work-still-owned");
+    queue.complete(batch);
+    require(!queue.canFinalize(0) && queue.takeReady() == &first && queue.canFinalize(0) &&
+                !queue.canFinalize(1), "queue-finalize-lifecycle");
+  });
   test("首错只允许一个并发报告者", false, [] {
     FirstWriterFailure first;
     std::atomic<unsigned> winners{0};

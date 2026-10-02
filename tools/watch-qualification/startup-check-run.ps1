@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory)][string]$ArtifactRoot,
   [Parameter(Mandatory)][string]$ToolPath,
   [Parameter(Mandatory)][switch]$WindowEnded,
-  [ValidateSet('all', 'writer-main-delay')][string]$Case = 'all'
+  [ValidateSet('all', 'writer-main-delay', 'writer-main-delay-green')][string]$Case = 'all'
 )
 $ErrorActionPreference = 'Stop'
 if (-not $WindowEnded) { throw '正式窗口及drain结束后才能运行启动专项' }
@@ -18,7 +18,7 @@ $id = [Guid]::NewGuid().ToString('N')
 $stdoutPath = Join-Path $outputRoot "startup-launcher-$id.stdout.txt"
 $stderrPath = Join-Path $outputRoot "startup-launcher-$id.stderr.txt"
 $manifest = @()
-$artifactDirectories = if ($Case -eq 'writer-main-delay') { @('out/qualification-load-diagnostic/main') } else { @('out/main', 'out/qualification-diagnostic/main') }
+$artifactDirectories = if ($Case -ne 'all') { @('out/qualification-load-diagnostic/main') } else { @('out/main', 'out/qualification-diagnostic/main') }
 foreach ($directory in $artifactDirectories) {
   $files = Get-ChildItem -LiteralPath (Join-Path $repoRoot $directory) -File |
     Where-Object { $_.Extension -in @('.js', '.node') } | Sort-Object Name
@@ -33,7 +33,7 @@ foreach ($source in @('startup-check-observer.cjs', 'startup-check-positive.cjs'
 $manifest += @{ category = 'launcher'; artifact = 'startup-check.exe'; sha256 = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant() }
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $outputRoot "startup-manifest-$id.json") -Encoding utf8
 $launchArguments = @($repoRoot, $parentRoot, $outputRoot, '--window-ended')
-if ($Case -eq 'writer-main-delay') { $launchArguments += 'writer-main-delay' }
+if ($Case -ne 'all') { $launchArguments += $Case }
 $quoted = foreach ($argument in $launchArguments) {
   if ($argument.Contains('"') -or $argument.EndsWith('\')) { throw '启动专项参数无效' }
   '"' + $argument + '"'
@@ -43,7 +43,7 @@ $timedOut = $false
 try {
   $null = $process.Handle
   $birth = $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()
-  $limitMilliseconds = if ($Case -eq 'writer-main-delay') { 60000 } else { 420000 }
+  $limitMilliseconds = if ($Case -eq 'writer-main-delay-green') { 120000 } elseif ($Case -eq 'writer-main-delay') { 60000 } else { 420000 }
   if (-not $process.WaitForExit($limitMilliseconds)) {
     $timedOut = $true
     $process.Kill()
@@ -54,20 +54,40 @@ try {
   Get-Content -LiteralPath $stdoutPath
   Get-Content -LiteralPath $stderrPath
   if ($timedOut -or $process.ExitCode -ne 0) { throw '启动专项失败，原件保留；禁止无诊断重复' }
-  if ($Case -eq 'writer-main-delay') {
-    $recordFiles = @(Get-ChildItem -LiteralPath $outputRoot -Filter 'startup-writer-main-delay-*.jsonl' -File)
-    $errorFiles = @(Get-ChildItem -LiteralPath $outputRoot -Filter 'startup-writer-main-delay-*.stderr.txt' -File)
+  if ($Case -ne 'all') {
+    $recordFiles = @(Get-ChildItem -LiteralPath $outputRoot -Filter "startup-$Case-*.jsonl" -File)
+    $errorFiles = @(Get-ChildItem -LiteralPath $outputRoot -Filter "startup-$Case-*.stderr.txt" -File)
     if ($recordFiles.Count -ne 1 -or $errorFiles.Count -ne 1) { throw '写入反例需要独立的单轮原件目录' }
     $records = @(Get-Content -LiteralPath $recordFiles[0].FullName | ConvertFrom-Json)
     $begin = @($records | Where-Object { $_.kind -eq 'observer' -and $_.observation.kind -eq 'writer-main-delay-begin' })
     $end = @($records | Where-Object { $_.kind -eq 'observer' -and $_.observation.kind -eq 'writer-main-delay-end' })
     $failures = @(Get-Content -LiteralPath $errorFiles[0].FullName | Where-Object { $_.StartsWith('资格原生首错 ') } | ForEach-Object { $_.Substring('资格原生首错 '.Length) | ConvertFrom-Json } | Where-Object { $_.record -eq 1 })
-    if ($begin.Count -ne 1 -or $end.Count -ne 1 -or $failures.Count -ne 1) { throw '写入反例首错或阻塞时序缺证，原件保留' }
+    if ($begin.Count -ne 1 -or $end.Count -ne 1) { throw '写入反例阻塞时序缺证，原件保留' }
     $beginTicks = [Convert]::ToUInt64($begin[0].observation.qpcTicks, 16)
     $endTicks = [Convert]::ToUInt64($end[0].observation.qpcTicks, 16)
     $failure = $failures[0]
     $firstFrame = @($records | Where-Object { $_.kind -eq 'telemetry' -and $_.frame.sequence -eq $begin[0].observation.firstSequence })
     $frequency = [uint64]$begin[0].observation.qpcFrequency
+    if ($Case -eq 'writer-main-delay-green') {
+      $secondFrame = @($records | Where-Object { $_.kind -eq 'telemetry' -and $_.frame.sequence -eq $begin[0].observation.secondSequence })
+      $receipt = @($records | Where-Object { $_.kind -eq 'observer' -and $_.observation.kind -eq 'writer-frame-completed' -and $_.observation.frameSequence -eq $begin[0].observation.secondSequence })
+      if ($receipt.Count -ne 1) { throw '写入绿态缺少真实native完成收据，原件保留' }
+      $submitBegin = [Convert]::ToUInt64($receipt[0].observation.submitBeginQpcTicks, 16)
+      $completed = [Convert]::ToUInt64($receipt[0].observation.writeCompletedQpcTicks, 16)
+      $completionUpperBoundSeconds = ($completed - $submitBegin) / $frequency
+      $verified = $failures.Count -eq 0 -and $firstFrame.Count -eq 1 -and $secondFrame.Count -eq 1 -and
+        [uint64]$firstFrame[0].qpc -lt $endTicks -and [uint64]$secondFrame[0].qpc -lt $endTicks -and
+        $endTicks -gt $beginTicks -and ($endTicks - $beginTicks) / $frequency -ge 2.5 -and
+        $completed -ge $submitBegin -and $completed -lt $endTicks -and $completionUpperBoundSeconds -le 2
+      @{ nativeCompletedBeforeMainRelease = $verified; firstSequence = $begin[0].observation.firstSequence;
+         secondSequence = $begin[0].observation.secondSequence; mainDelaySeconds = ($endTicks - $beginTicks) / $frequency;
+         completionUpperBoundSeconds = $completionUpperBoundSeconds; nativeFailureCount = $failures.Count } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputRoot 'writer-main-delay-report.json') -Encoding utf8
+      if (-not $verified) { throw '写入绿态未证明main释放前有序写入，原件保留；禁止无诊断重复' }
+      Write-Output '写入绿态已证明：main释放前父端收到连续两帧，后帧native完成距调用开始不超过原两秒上限。'
+      return
+    }
+    if ($failures.Count -ne 1) { throw '写入反例首错缺证，原件保留' }
     $queueSeconds = ([uint64]$failure.scheduledQpc - [uint64]$failure.enqueuedQpc) / $frequency
     $executeSeconds = ([uint64]$failure.executeEndQpc - [uint64]$failure.executeBeginQpc) / $frequency
     $verified = $firstFrame.Count -eq 1 -and [uint64]$firstFrame[0].qpc -lt $endTicks -and

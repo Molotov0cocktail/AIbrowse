@@ -95,8 +95,9 @@ bool businessFilesAbsent(const Roots& roots) {
 void runCase(const std::wstring& repo, const std::wstring& parent, const std::wstring& output,
              const std::string& mode) {
   const bool positive = mode == "positive", observed = mode != "native-normal";
-  const bool writerDelay = mode == "writer-main-delay";
-  const bool success = mode == "normal" || mode == "delayed" || mode == "native-normal";
+  const bool writerGreen = mode == "writer-main-delay-green";
+  const bool writerDelay = mode == "writer-main-delay" || writerGreen;
+  const bool success = mode == "normal" || mode == "delayed" || mode == "native-normal" || writerGreen;
   const bool normalBuild = mode == "normal-build";
   auto roots = freshRoots(parent);
   std::unique_ptr<Roots> alternate;
@@ -265,14 +266,16 @@ void runCase(const std::wstring& repo, const std::wstring& parent, const std::ws
       {L"prepared", Value(prepared)}, {L"authenticated", Value(authenticated)},
       {L"earlyPathsMatch", Value(earlyMatch)},
       {L"activeProcesses", Value(uint64_t(0))}, {L"stdoutEof", Value(true)}, {L"stderrEof", Value(true)},
+      {L"telemetryEof", Value(!telemetry || telemetry->eof)},
       {L"businessFilesAbsent", Value(businessFilesAbsent(*roots))}}));
   require(lines.empty() && (!observed || hook), "startup-observer-unavailable");
   if (positive) require(exitCode == 0 && positiveModule && positiveRead && !authenticated, "startup-positive-not-detected");
-  else if (writerDelay) require(exitCode != 0 && ready && !complete && earlyMatch &&
+  else if (writerDelay && !writerGreen) require(exitCode != 0 && ready && !complete && earlyMatch &&
       prepared && authenticated && delayFirst && delayEnded && frames == delayFirst,
       "startup-writer-delay-inconclusive");
   else if (success) require(exitCode == 0 && ready && complete && earlyMatch &&
-      (!observed || (prepared && authenticated)) && (mode != "delayed" || swappedDuringWait), "startup-success-oracle-failed");
+      (!observed || (prepared && authenticated)) && (mode != "delayed" || swappedDuringWait) &&
+      (!writerGreen || (delayFirst && delayEnded && frames >= delaySecond)), "startup-success-oracle-failed");
   else {
     require(exitCode != 0 && !ready && !authenticated && businessFilesAbsent(*roots) &&
         (normalBuild || rejected), "startup-rejection-oracle-failed");
@@ -285,13 +288,14 @@ void runCase(const std::wstring& repo, const std::wstring& parent, const std::ws
 }
 int run(int argc, wchar_t** argv) {
   require((argc == 5 || argc == 6) && std::wstring(argv[4]) == L"--window-ended" &&
-      (argc == 5 || std::wstring(argv[5]) == L"writer-main-delay"), "startup-arguments-invalid");
+      (argc == 5 || std::wstring(argv[5]) == L"writer-main-delay" ||
+          std::wstring(argv[5]) == L"writer-main-delay-green"), "startup-arguments-invalid");
   const std::wstring repo = argv[1], parent = argv[2], output = argv[3];
   strictLocalPath(repo); strictLocalPath(parent); strictLocalPath(output);
   auto parentPin = openAttributes(parent), outputPin = openAttributes(output);
   fileId(parentPin.value, true); fileId(outputPin.value, true);
   if (argc == 6) {
-    runCase(repo, parent, output, "writer-main-delay");
+    runCase(repo, parent, output, utf8(argv[5]));
     return 0;
   }
   // Missing/empty user-data arguments are never launched; native pure tests cover them.

@@ -7,7 +7,7 @@ namespace h3b {
 enum class WorkKind { Connect, Write, Close };
 enum class WriterFailureStage {
   Execute, Connect, Peer, EnqueueDeadline, Submit, AwaitCompletion, WriteResult,
-  Cleanup, MainCompletion, MainCompletionFatal, Serialize, QueueLimit, Prepare
+  Cleanup, MainCompletion, MainCompletionFatal, Serialize, QueueLimit, Prepare, Schedule
 };
 enum class WriterFailureCode {
   Unknown, IoTimeout, IoFailed, QpcInvalid, PeerInvalid, Closed, FrameInvalid,

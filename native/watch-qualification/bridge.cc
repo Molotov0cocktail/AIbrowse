@@ -2,6 +2,7 @@
 #include "stream.hpp"
 #include "write-io.hpp"
 #include "writer-diagnostics.hpp"
+#include "writer-queue.hpp"
 #include <delayimp.h>
 #include <node_api.h>
 
@@ -121,7 +122,6 @@ struct State;
 struct Work {
   State* state;
   WorkKind kind;
-  napi_async_work work = nullptr;
   napi_deferred deferred = nullptr;
   std::string bytes;
   std::string error;
@@ -132,8 +132,16 @@ struct Work {
   WriterFailureStage failureStage = WriterFailureStage::Execute;
   WriterFailureCode failureCode = WriterFailureCode::Unknown;
   bool firstFailure = false;
+  Work* nextInBatch = nullptr;
+  bool readyToSettle = false;
   bool event = false;
   Value result;
+};
+struct Batch {
+  State* state;
+  napi_async_work work = nullptr;
+  WriterBatch<Work> completed;
+  bool started = false;
 };
 struct State {
   napi_env env;
@@ -150,7 +158,9 @@ struct State {
   uint64_t freq = frequency();
   uint64_t lastQpc = 0;
   Value ready;
-  std::deque<Work*> queue;
+  WriterQueue<Work> queue;
+  // Main-only: includes batches whose worker is done but callback is pending.
+  size_t liveBatches = 0;
   size_t eventCount = 0, eventBytes = 0, controlCount = 0, controlBytes = 0;
   explicit State(napi_env e) : env(e) {}
 };
@@ -287,8 +297,7 @@ void writeFrame(State* s, Work* work) {
       object({{L"sequence", Value(work->sequence)},
               {L"writeCompletedQpcTicks", Value(hex(work->completed))}});
 }
-void execute(napi_env, void* data) {
-  auto work = static_cast<Work*>(data);
+void executeWork(Work* work) {
   auto state = work->state;
   work->executeBegin = writerDiagnosticQpc();
   try {
@@ -328,18 +337,28 @@ void execute(napi_env, void* data) {
     }
   }
 }
-void schedule(State* state);
-void completed(napi_env env, napi_status status, void* data) {
-  auto work = static_cast<Work*>(data);
+void execute(napi_env, void* data) {
+  auto batch = static_cast<Batch*>(data);
+  batch->started = true;
+  try {
+    while (auto work = batch->state->queue.takePending()) {
+      batch->completed.append(work);
+      // For a drain batch this is dispatch from the pending queue, not the
+      // libuv submission time of the containing batch.
+      work->scheduled = writerDiagnosticQpc();
+      executeWork(work);
+    }
+  } catch (...) {
+    // Keep ownership intact if the queue itself cannot complete its protocol.
+    TerminateProcess(GetCurrentProcess(), 77);
+    std::terminate();
+  }
+}
+void settleWork(napi_env env, Work* work) {
   auto state = work->state;
   work->mainCompletion = writerDiagnosticQpc();
   if (work->firstFailure)
     emitWriterFailure(writerSnapshot(*work), work->failureCode, state->freq, true);
-  if (status != napi_ok && work->error.empty()) {
-    work->failureStage = WriterFailureStage::MainCompletion;
-    reportWorkFailure(work, WriterFailureCode::IoFailed);
-    work->error = "qualification-io-failed";
-  }
   auto failureSnapshot = writerSnapshot(*work);
   try {
     if (!work->error.empty()) {
@@ -358,7 +377,6 @@ void completed(napi_env env, napi_status status, void* data) {
       }
       napiCheck(napi_resolve_deferred(env, work->deferred, result));
     }
-    napi_delete_async_work(env, work->work);
     if (work->kind == WorkKind::Write) {
       if (work->event) {
         --state->eventCount;
@@ -368,34 +386,79 @@ void completed(napi_env env, napi_status status, void* data) {
         state->controlBytes -= work->bytes.size();
       }
     }
-    require(!state->queue.empty() && state->queue.front() == work,
-            "qualification-sequence-invalid");
-    state->queue.pop_front();
     delete work;
-    if (!state->queue.empty()) schedule(state);
   } catch (...) {
-    // The Work may already be deleted if scheduling its successor failed.
     failureSnapshot.stage = WriterFailureStage::MainCompletionFatal;
     reportFirstWriterFailure(state, failureSnapshot, currentWriterFailureCode());
     napi_fatal_error("qualification", NAPI_AUTO_LENGTH, "资格原生完成路径失败",
                      NAPI_AUTO_LENGTH);
   }
 }
-void schedule(State* state) {
-  Work* work = state->queue.front();
-  napi_value name;
-  napiCheck(napi_create_string_utf8(state->env, "AIbrowseQualification",
-                                    NAPI_AUTO_LENGTH, &name));
-  napiCheck(napi_create_async_work(state->env, nullptr, name, execute,
-                                   completed, work, &work->work));
-  work->scheduled = writerDiagnosticQpc();
-  napiCheck(napi_queue_async_work(state->env, work->work));
+void completed(napi_env env, napi_status status, void* data) {
+  auto batch = static_cast<Batch*>(data);
+  auto state = batch->state;
+  try {
+    if (status != napi_ok) {
+      // A cancelled batch that never started still exclusively owns pending
+      // work. Retire it as failure instead of stranding an active consumer.
+      if (!batch->started) {
+        while (auto work = state->queue.takePending()) {
+          batch->completed.append(work);
+          // No worker or pending OS write belongs to an unstarted batch.
+          if (work->kind == WorkKind::Close) cleanup(state);
+        }
+      }
+      for (auto work = batch->completed.first; work; work = work->nextInBatch) {
+        if (!work->error.empty()) continue;
+        work->failureStage = WriterFailureStage::MainCompletion;
+        reportWorkFailure(work, WriterFailureCode::IoFailed);
+        work->error = "qualification-io-failed";
+      }
+      state->failed = true;
+    }
+    napiCheck(napi_delete_async_work(env, batch->work));
+    state->queue.complete(batch->completed);
+    delete batch;
+    --state->liveBatches;
+    while (auto work = state->queue.takeReady()) settleWork(env, work);
+  } catch (...) {
+    napi_fatal_error("qualification", NAPI_AUTO_LENGTH, "资格原生批完成路径失败",
+                     NAPI_AUTO_LENGTH);
+  }
+}
+[[noreturn]] void failScheduling(State* state, Work* first, WriterFailureCode code) {
+  first->failureStage = WriterFailureStage::Schedule;
+  reportWorkFailure(first, code);
+  state->failed = true;
+  napi_fatal_error("qualification", NAPI_AUTO_LENGTH, "资格原生批调度失败",
+                   NAPI_AUTO_LENGTH);
+}
+void schedule(State* state, Work* first) {
+  try {
+    // The callback owns this allocation after success. On failure retain it
+    // until fatal teardown, including any N-API object that refers to it.
+    auto batch = new Batch{state};
+    napi_value name;
+    napiCheck(napi_create_string_utf8(state->env, "AIbrowseQualification",
+                                      NAPI_AUTO_LENGTH, &name));
+    napiCheck(napi_create_async_work(state->env, nullptr, name, execute,
+                                     completed, batch, &batch->work));
+    napiCheck(napi_queue_async_work(state->env, batch->work));
+    ++state->liveBatches;
+  } catch (...) {
+    // A failed N-API submission cannot leave an active queue without a worker.
+    // Preserve ownership until process teardown instead of accepting more work.
+    failScheduling(state, first, currentWriterFailureCode());
+  }
 }
 napi_value enqueue(State* state, Work* work) {
   napi_value promise;
-  napiCheck(napi_create_promise(state->env, &work->deferred, &promise));
-  state->queue.push_back(work);
-  if (state->queue.size() == 1) schedule(state);
+  try {
+    napiCheck(napi_create_promise(state->env, &work->deferred, &promise));
+    if (state->queue.enqueue(work)) schedule(state, work);
+  } catch (...) {
+    failScheduling(state, work, currentWriterFailureCode());
+  }
   return promise;
 }
 template <typename F>
@@ -568,7 +631,7 @@ napi_value close(napi_env env, napi_callback_info info) {
 }
 void finalize(napi_env, void* data, void*) {
   auto s = static_cast<State*>(data);
-  if (!s->queue.empty()) {
+  if (!s->queue.canFinalize(s->liveBatches)) {
     TerminateProcess(GetCurrentProcess(), 77);
     return;
   }

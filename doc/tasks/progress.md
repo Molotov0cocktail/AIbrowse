@@ -17,7 +17,7 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
 诊断实证原等待会放行loading Tab，已改受控静态页面及真实ready/完整快照门，保留原四字段恒等断言。
 句柄增长按独立确认的失效工程oracle修订为`handle-growth-v2`，已实现并限定独审通过；绝对阈值与四Session负载不变。
 新短验002在认证启动后约3秒失败，尚未进入固定负载；003仅新增首错诊断后正常完成，002首因仍unknown。
-单次受控反例已证实native后继写入依赖主线程完成回调，排队超时发生于提交I/O之前；当前修复该并发缺陷。
+单次受控反例已证实native后继写入依赖主线程完成回调，排队超时发生于提交I/O之前；批排水修复已实现并完成真实红→绿和独立并发限定PASS。
 停止旧012整合与classic ETW路线。
 详见 `doc/stage6/acceptance-replan.md`、detailed-design §15.6/§15.7及D10。
 
@@ -67,7 +67,7 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
   固定index80..83四次Session初始化，Coordinator/task Tab峰4，Provider/HTTP/socket为0。
   CPU median/观测peak 0.031249%/1.728728%；RSS 617.085938/803.742188 MiB；private
   352.125/376.707031 MiB；handles 3865/4144。短窗不授正式阈值PASS/FAIL，句柄需正式窗确认。
-  M1+10.0577291秒首次root0/Job0/三EOF/DB独占/WAL-SHM无/temp0，随后连续6点保持。
+  M1+10.0577291秒首次root0/Job0/三EOF/DB独占/WAL-SHM无/temp0，共6个连续归零点（含首次）。
   原件及独立算术 `log/h3br-current/short-001-raw-independent-001.json`；采集JSONL、初报/复报全部保留。
 - 首次measurement文件slot0为invalid，main短窗slot0缺失，均未填零/丢弃；不把短验当567负载或61点排水。
   采集期间一次只读进程/文件快照没有看到Electron及已写大小；最终原件证明该轮正常完成，未终止/重跑，
@@ -76,7 +76,7 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
   `review-formal-arithmetic-001.json`（均在 `log/h3br-current/`）。CPU median/P95/peak 为
   0.007820%/0.226460%/0.319859%；RSS median/P95/peak 为431.359/773.785/793.215 MiB。
   句柄三项FAIL见当前结论。M1+10.0559193秒首次root0/Job0/三EOF/DB独占/WAL-SHM无/temp0，
-  后续60点持续为零，collector持有Job直到完整600秒drain结束。
+  slot1..60共60个连续归零点，collector持有Job直到完整600秒drain结束。
   一次5 PID+creation限定CIM角色查询均超时，子进程角色仍unknown，未重试；见
   `handle-role-map-formal-001-note.md`。只读源码调查`handle-investigation.md`没有发现足以解释总量的
   native句柄泄漏。受控blank实验 `blank-run-002.txt` 实证挂载/显示/聚焦八秒仍无renderer，显式
@@ -123,14 +123,23 @@ OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与�
   短验003 run `PBMM25RXUGC5Y4ZSIAKY5NODEA`正常exit0，244连续main帧、5OS点/4CPU区间、
   四Session/Coordinator/grant完整，HTTP/Provider零。CPU median/peak 0.066388%/1.586228%，
   RSS median/peak 423.938/744.355 MiB，handles median/peak 2688/3846；不授正式阈值通过。
-  stop+10.0640203秒首次全零释放，后六点持续，7点drain完整；原件`short-003-*`及逐run文件，
+  stop+10.0640203秒首次全零释放，slot1..6共六点持续，7点drain完整；原件`short-003-*`及逐run文件，
   实际产物在`log/h3br-short-003-artifacts/`。本轮未复现002，不能据此声称其首因已定位或修复。
+  独立复算`review-short-003.md`及`review-short-003-arithmetic.json`确认资源/负载/退出和副本hash一致；
+  files首slot invalid、main首短窗slot缺失保留。GPU active NVIDIA，仅此字段不证明硬件渲染。
 - 003两库由native独占副本复算通过100 Source/Rule、4 Run/Baseline、零Event/Digest，复制后原库仍释放。
   首份root身份JSON因调用方CRLF被严格解析拒绝，原件保留；`root-ids-002`改单LF后复核通过，非产品释放失败。
   受控反例`writer-main-delay-001` run `SYSRL5BWWQ2WQBYLH6324LVS3I`证实：main阻塞2.514421秒，
   seq2父进程已收到，seq3排队2.5216373秒后在提交I/O前超时，native执行仅33.5微秒、ioCompleted=0。
   child exit1、Job0及三EOF，工具exit0表示反例命中；实际红态addon/启动器/observer已归档至该目录`red-artifacts/`。
   保留两秒入队总限、队列预算及取消后实际完成要求，修复后台有序排水对逐帧main回调的依赖；002首因仍unknown。
+- native批排水候选让后台连续处理已入队Work，main只按全局FIFO完成Promise；空批与新入队交接受mutex保护。
+  50项原生聚焦及20项IO生命周期通过（`writer-batch-build-002.txt`）。真实绿态
+  `ZIT5CH27SQQAEABEABQIGXB7F4`中main停顿2.513573秒，父端已收到seq2/3，seq3 native完成耗时
+  上界76微秒；242帧/complete/自然exit0/Job0/EOF。原件`writer-main-delay-green-001/`，
+  来源绑定`writer-batch-binding-001.json`。该注入停顿专项不是无hook资源短验，正式轮仍未启动。
+  独审`review-writer-batch.md`核对10项绑定和14项实际归档，独立50项native测试通过，确认FIFO/批交接/
+  Close/finalize及调度失败收口；实际绿态归档`log/h3br-writer-green-artifacts/`。允许最终构建和无hook短验。
 - 正式旧产物已按plan四项hash核对后保存于 `log/h3br-formal-001-artifacts/`，manifest为
   `formal-001-artifact-archive.json`。当前normal、三种qualification及四参数collector均已重建；
   不得混用新addon与旧三参数collector。
@@ -265,7 +274,7 @@ H3b长时资源/电池/当前Windows兼容性和新隔离证据仍开放，不�
 
 ## 下一唯一执行任务
 
-修复已由真实反例证实的native队列调度依赖，独立并发审核及新短验后再正式验收；003资源与退出已正常取得。
+native批排水已独审通过；统一重建normal/三资格版本并核对normal与已验矩阵产物一致，执行无hook短004后正式接电验收。
 完整dev/prod矩阵、最终质量门与全部资格产物重建均已完成。
 默认空白、快照世代及交互修复、DB/load报告、启动隔离及增长判定器已限定独审通过；绝对句柄总量仍须新正式轮证明。
 原件在`log/h3br-current/`，首次正式绑定`350c3f5`及`formal-001-plan.json`，旧产物已保存。
