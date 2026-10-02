@@ -2302,6 +2302,24 @@ Chromium子进程被Job约束；漏出成员/权限不足/身份混淆不能PASS
 此环境前提不是原profile不可访问的OS证明。先核对最小启动/路径/凭据防护后可取得资源分项证据；
 尚未实证的CJS前路径隔离必须如实列为独立缺证，不能因有资源数据而关闭隐私或H3b总门。
 
+早期应用数据路径采用显式启动绑定：launcher在六root已创建并pin后，只传一个完整的
+`--user-data-dir=<本轮userDataRoot>`；native只接受固定exe、编译入口、资格flag及该参数四项argv，
+缺失、重复、拆分值、额外参数或不同根均拒绝，参数值须与native实际pin的userDataRoot精确相同。
+Chromium先处理该开关，native复核随后发生；受审launcher的参数生成是安全启动边界的一部分。
+错参反例只使用独立合成目录，入口拒绝不能证明撤销此前的原生路径解析或创建。
+资格CJS入口在native prepare成功后、任何路径覆盖或await之前，只读取`userData/sessionData`两项，
+精确核对其已指向同一合成根，再同步覆盖现有八项路径；失败不装配业务、不加载凭据模块。
+只允许输出匹配boolean或固定错误分类，不记录读回的真实路径。stdout收据仅作诊断，不能替代认证ready、
+实际产物绑定及独立安全审核。普通build不增加资格入口。
+
+Electron固定版本的`PreSandboxStartup`在应用JS之前处理`--user-data-dir`；标准sessionData和Crashpad路径
+从该userData派生，Local State在应用脚本初始化之后读取。该源码依据与覆盖前读回共同验证已审标准路径，
+不把APPDATA变量等同Windows Known Folder重定向，不把文件mtime或canary未出现当作零读取证明。
+隐私承诺仍覆盖真实AIbrowse应用数据、既有Provider密文及仓库外DPAPI/harness凭据，禁止读取、复制或解密。
+普通Windows配置查询与任意第三方DLL的全部文件行为不是同一命题；未覆盖原生时段必须列明，不能用前者
+替后者授PASS。新增参数/读回须完成启动、延迟/拒绝认证、参数反例和路径换绑的受影响验证及新的独立审核。
+运行中已封存候选不追溯改标；仅有源码变更或静态分析时，新安全证据仍为待验证。
+
 统计固定：median为排序中位数（偶数取中间均值），P95为nearest-rank的ceil(0.95*n)项，peak为最大有效值；
 OLS以有效样本实际QPC小时为x、原值为y，计算带截距斜率。无效/duplicate原件保留，reporter独立复算。
 Node key先NFC并须匹配`^[A-Za-z][A-Za-z0-9_.:-]{0,127}$`，按exact case计数及UTF-8字节排序，不重命名；每key及总量
@@ -2318,6 +2336,31 @@ Node key先NFC并须匹配`^[A-Za-z][A-Za-z0-9_.:-]{0,127}$`，按exact case计�
 | private bytes              | ≤1,280 MiB | ≤1,792 MiB | ≤2,048 MiB | ≤24 MiB/hour    |
 | AIbrowse main JS heap used | ≤256 MiB   | ≤384 MiB   | ≤512 MiB   | ≤12 MiB/hour    |
 | Windows handle count       | ≤3,000     | ≤4,000     | ≤5,000     | ≤60/hour        |
+
+句柄增长按以下 `handle-growth-v2` 判据解释表内的60/hour，其余指标统计不变。首次正式轮的全点
+OLS失败保留：完整数据中每个瞬态进程始终246句柄，固定忙时分布本身贡献159.211/hour；
+恒定生命周期反例也会超60，故全点OLS不能单独区分长期积累。median/P95/peak仍对全部有效
+成员观察计算，原全点OLS仍完整报告，不扣成本、不换采样相位、不缩短或削减Session负载。
+
+- 只复用现有认证main序列、heartbeat的QPC点和sample的完整`linearized..snapshot`区间。
+  对每个有效外部members观察，找结束不晚于OS begin的最近前锚和开始不早于OS end的最近后锚。
+  两锚必须顺序一致、前锚结束至后锚开始的间距≤12秒，task-tab注册/释放事件的累计变更序号相同，才能确认整个
+  OS观察区间的业务阶段。相同净计数不够；释放后再注册仍为过渡。禁止按句柄数或OS进程数分类。
+- 可信且恒定的task-tab count=0为无Session阶段，count=4为Session阶段；其它计数或锚间发生
+  所有权变化为过渡。缺锚、时序不可信、负载/trace不完整均为缺证，不能把它们塞进过渡或补值。
+  所有阶段及过渡点仍进入全部绝对预算；过渡点不用于同阶段增长回归，也不能从原件或总量图删除。
+- 两阶段分别对原始总句柄数和实际QPC小时计算带截距OLS，均须≤60/hour；不以一个阶段的
+  负斜率抵消另一阶段，不用进程数回归扣除成本，不事后改变分组。原值而非去基线值进入回归。
+- 预设覆盖：无Session阶段≥240点且首末跨度≥3,300秒；Session阶段≥20点且跨度≥2,700秒，
+  正式四轮的20个固定Session波（每波4个实际task Tab）每波至少1点。波以认证Coordinator
+  的round/index80..99与完整task-tab生灭顺序关联，不能按实测资源值挑波。过渡点≤36；
+  任何覆盖不足为BLOCKED，不能更换seed/边界取绿。某阶段自身覆盖完整后，其OLS越界仍单列
+  FAIL-product，不因另一阶段缺证消失；该阶段自身覆盖不足时，少量点的OLS不授增长FAIL。
+  全点绝对预算的有效违例始终保留，不依赖阶段覆盖。
+- 完整567次负载、120个task Tab的创建/释放、两阶段覆盖、既有进程/WebContents/Node增长门
+  和60秒释放/10分钟无复活全部保留。首次正式轮三项原判不回写；新门须经独立反例审核后，
+  在下个预先声明的正式运行使用。反例至少包括恒定周期成本、两阶段共同泄漏、仅Session泄漏、
+  每轮台阶式残留、净数相同的换代、序列/锚缺失、缺波与过渡过多，以及绝对预算失败不被掩盖。
 
 离散硬门：task-owned Tab/WebContents、active acquisition及实际HTTP/request/response/socket各≤4，
 同canonical host grant/request/socket各≤1；WatchScheduler/DigestScheduler正式timer各≤1；Provider attempt/call=0；

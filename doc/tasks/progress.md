@@ -4,23 +4,32 @@
 
 ## 当前结论（2026-10-02）
 
-第六阶段尚未完成。H1/H2/H3a已关闭，H3b没有正式长时资源结论，H4/D11未开始。
+第六阶段尚未完成。H1/H2/H3a已关闭，H3b首次正式接电轮为 **FAIL-product（句柄）**，H4/D11未开始。
 已从 `cc16bb57ce681e00d9d505060e20be9e49418d7e` 的干净工作区启动D10 **H3b-R实现**。
 产品非暂停采样及独立构建目录已独审并提交 `5145164`；Windows Job采集器与独立报告器已实现，
 首次真实Electron短验已正常完成并独立复算。电池采集、独立报告及正式运行入口已限定独审PASS，
-启动前全量测试193文件3920项通过；尚未执行正式资源窗口。
+启动前全量测试193文件3920项及typecheck/lint/format通过。工具候选`350c3f5`已提交，
+首次正式接电轮`C7XQOSFIJOEGPO7ZLEYRELGKNA`已正常完成（北京时间19:39–20:39，drain至20:49）。
+361个资源点、360个CPU区间及61个drain点完整。句柄median 3048>3000、P95 4187>4000、
+OLS 175.188/h>60，三项真实产品失败；CPU/RSS/private、固定负载与退出门通过。电池因接电未验。
+默认空白页固定开销及导航快照世代修复已限定独审通过；真实冒烟又确认旧页面授权的fill可写入新页面，正在修复。
+句柄增长按独立确认的失效工程oracle修订为`handle-growth-v2`，已实现并限定独审通过；绝对阈值与四Session负载不变。
 停止旧012整合与classic ETW路线。
 详见 `doc/stage6/acceptance-replan.md`、detailed-design §15.6/§15.7及D10。
 
 主要根因是资源验收与自建完整Windows文件事件证明系统耦合，周期freeze、OS查询尾延迟和工具缺陷使测量无法开始。
-不能因此判产品性能FAIL，也不能判PASS。保留Watch产品架构、固定负载及全部数值/隐私承诺，改为非暂停分项采样。
+旧测量失败本身不能判产品性能FAIL或PASS；本轮已取得完整数据，按原门判定句柄FAIL。
+保留Watch产品架构、固定负载及全部数值/隐私承诺，采用非暂停分项采样。
 用户已明确允许完整开发期间使用当前Windows账户，并声明应用内不会产生个人数据；不再要求新建账户。
 使用全新合成根、零Provider，既有DPAPI/harness凭据不读取。当前账户不是OS文件沙箱；CJS前路径隔离
-尚未实证，独立报告必须保留该缺证，不把资源采样通过当隐私或H3b通过。
+已按固定源码、启动参数、同步路径绑定与真实反例组合验证并限定独审通过；该证明不覆盖所有OS/DLL访问，
+不把资源采样或启动专项通过当H3b通过。
 
 ## Git、产物与证据基线
 
 - 本轮实现接管HEAD：`cc16bb57ce681e00d9d505060e20be9e49418d7e`，工作区干净；产品后继提交`5145164`。
+- 最新工具候选 `4eff347`：增长判定器5文件已限定独审提交；此前`05b049e`为DB/load/副本工具、
+  `0c8581d`为早期profile隔离、`0b2ff54`为真实浏览器窄冒烟，均未推送。精确HEAD以Git为准。
   上轮文档接管`d976ac5`的未提交收据已保存完整原文，最终工具候选SHA以Git为准。
 - H3b资格产品候选 `43efffbc82ff11122230c2362d6484d5feb9b581` 仅获限定独审；RSS空默认namespace修复
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee` 已独审；本轮产品后继`5145164`已限定独审，均尚未推送。
@@ -35,17 +44,17 @@
 
 ## 阶段状态
 
-| 范围         | 状态             | 证据/边界                                                                                                |
-| ------------ | ---------------- | -------------------------------------------------------------------------------------------------------- |
-| Stage1–5     | 已关闭           | 各Stage任务/设计和Git历史保留，本轮不重审全部历史                                                        |
-| Stage6 D1–D9 | 已完成           | 已有独立安全/持久化/UI审核，变更涉及的部分按影响复验                                                     |
-| H1           | 历史关闭         | 其旧验收工程方案已由本轮替换，不重做旧合同                                                               |
-| H2           | PASS关闭         | `9e41bd6`，原47项保留+24项；99ms红态和单调计时修复保留                                                   |
-| H3a          | PASS关闭         | `log/h3a-default-independent-current/h3a-convergence.md`；RSS累计20次，default dev/prod最终各3次完整通过 |
-| H3b / H3b-R  | 未通过；短验完成 | 已取得真实资源及正常退出；正式长时、隐私、电池及DB业务总门仍须闭合                                       |
-| H4           | 待开始           | 可做独立准备，H3b完成后授最终结论                                                                        |
-| D11          | 待开始           | H4后新的独立Stage Auditor                                                                                |
-| Stage7       | 未开始           | Stage6真GO后入口/风险/设计/任务准备，停在第一个产品实现前                                                |
+| 范围         | 状态                 | 证据/边界                                                                                                |
+| ------------ | -------------------- | -------------------------------------------------------------------------------------------------------- |
+| Stage1–5     | 已关闭               | 各Stage任务/设计和Git历史保留，本轮不重审全部历史                                                        |
+| Stage6 D1–D9 | 已完成               | 已有独立安全/持久化/UI审核，变更涉及的部分按影响复验                                                     |
+| H1           | 历史关闭             | 其旧验收工程方案已由本轮替换，不重做旧合同                                                               |
+| H2           | PASS关闭             | `9e41bd6`，原47项保留+24项；99ms红态和单调计时修复保留                                                   |
+| H3a          | PASS关闭             | `log/h3a-default-independent-current/h3a-convergence.md`；RSS累计20次，default dev/prod最终各3次完整通过 |
+| H3b / H3b-R  | FAIL-product；修复中 | 首次正式轮三项句柄门失败；其余资源、固定负载、退出及DB内容通过；早期隔离专项已通过，产品修复和电池待闭合 |
+| H4           | 待开始               | 可做独立准备，H3b完成后授最终结论                                                                        |
+| D11          | 待开始               | H4后新的独立Stage Auditor                                                                                |
+| Stage7       | 未开始               | Stage6真GO后入口/风险/设计/任务准备，停在第一个产品实现前                                                |
 
 ## H3b-R当前实现与验证
 
@@ -58,6 +67,44 @@
 - 首次measurement文件slot0为invalid，main短窗slot0缺失，均未填零/丢弃；不把短验当567负载或61点排水。
   采集期间一次只读进程/文件快照没有看到Electron及已写大小；最终原件证明该轮正常完成，未终止/重跑，
   不因此编造启动卡死根因。
+- 首次正式接电轮已结束，独立报告与算术分别见 `review-formal-report-001.json`、
+  `review-formal-arithmetic-001.json`（均在 `log/h3br-current/`）。CPU median/P95/peak 为
+  0.007820%/0.226460%/0.319859%；RSS median/P95/peak 为431.359/773.785/793.215 MiB。
+  句柄三项FAIL见当前结论。M1+10.0559193秒首次root0/Job0/三EOF/DB独占/WAL-SHM无/temp0，
+  后续60点持续为零，collector持有Job直到完整600秒drain结束。
+  一次5 PID+creation限定CIM角色查询均超时，子进程角色仍unknown，未重试；见
+  `handle-role-map-formal-001-note.md`。只读源码调查`handle-investigation.md`没有发现足以解释总量的
+  native句柄泄漏。受控blank实验 `blank-run-002.txt` 实证挂载/显示/聚焦八秒仍无renderer，显式
+  loadURL后才创建renderer并取得真实DOM。首次实验因CRLF工具解析失败保留于 `blank-run-001.txt`。
+  默认空白延迟加载产品候选已完成：旧实现4项红态、新Browser157项及typecheck通过；显式about:blank
+  保持加载，Session固定负载不变。独审和真实产品冒烟已限定通过，此常数优化不独自解释OLS。
+- 默认空白候选独审F1（替代加载同步失败误报成功）及F2（正常ERR_ABORTED覆盖新加载状态）均已修复。
+  真实七组smoke首次成功，但补强
+  文档世代断言后 `browser-smoke-run-002.txt` 失败：同一固定目标快照initialDocumentId=1，
+  稳定后=2。红态run `QRKLNZILA367VWXGVKFDVZYCYE`，bundle/map/launcher保存在
+  `log/h3br-browser-generation-red-artifacts/`。F3现通过采集前后文档/导航/加载序号复验和有界重采关闭，
+  175项Browser测试及真实`browser-smoke-run-003.txt`通过，独审`review-deferred-blank.md`限定PASS。
+- 该审查另发现既有跨文档交互风险。真实`browser-smoke-run-004.txt`确认旧页面授权fill写入新页面，
+  run `M4FDSAM22B3ZSUH2IJU3OO7CWQ`记录accepted=true/newDocumentModified=true；原bundle/map/launcher
+  已保存在`log/h3br-browser-interaction-red-artifacts/`。正在修复执行前的文档绑定，未授交互或阶段PASS。
+- `handle-growth-v2`限定独审见`review-formal-tools.md`及`review-growth-evidence-001.json`：
+  旧原件只读分类305 idle/51 Session/5过渡，20波各2–3点；原OLS保留，新诊断仍因绝对median/P95失败。
+  原正式轮三项FAIL不改写，修订只用于新正式轮。
+- 完整production默认冒烟`product-production-default-001.txt`因Watch固定日期夹具被真实日期保留清理而失败。
+  两个未来日期的红态已复现，统一夹具业务时钟后27项聚焦通过；生产保留策略未变，后续失败夹具保留。
+  原件`watch-store-clock-red-001/002.txt`及`watch-store-clock-green-001.txt`，全矩阵待当前浏览器修复后重验。
+- 正式旧产物已按plan四项hash核对后保存于 `log/h3br-formal-001-artifacts/`，manifest为
+  `formal-001-artifact-archive.json`。早期profile修改后的normal/diagnostic已构建，正式collector和其余
+  qualification目录仍需一致重建；不得混用新addon与旧三参数collector。
+- DB先以native独占复制关闭后的两库，hash前后及副本一致；SQLite仅打开副本，实际567Run、
+  50Event、100observation、100typed Evidence、2Digest及全部业务内容通过。原件
+  `formal-001-copy-001.txt`、`formal-001-database-report-001.json`；副本关闭后原库再次释放检查
+  `formal-001-release-after-copy-report.txt` 通过（identity不变、WAL/SHM无、temp0）。DB12项反例通过。
+- 启动专项 `startup-run-004.txt` 九场景成功（含无hook正常启动、延迟认证、拒绝参数、换绑及读取正控）。
+  前三次失败分别为正控位置、NODE_OPTIONS路径转义和Electron过早app访问，原件完整保留；修复仅工具。
+  `review-early-profile.md` 已独立核验实际产物/装配顺序、9场景及归档9项，授限定PASS；归档
+  `log/h3br-startup-004-artifacts/` 保留实际out/launcher。新collector及全部产品构建已完成，
+  仍需修复浏览器竞态后的新候选短验，不能把该专项当H3b总门PASS。
 - 非暂停产品/预检独审 `review-nonpause.md` 限定PASS；原六文件reporter初REPAIR后修复，再审PASS，
   `review-reporter.md`保留全链。电池及DB当前实现已增量限定PASS，正式DB oracle待补完整。
   `review-extensions.md`对电池API、释放身份、watchdog及AwakeRequest限定PASS，允许正式采集。
@@ -77,7 +124,7 @@
   全量lint首次因历史隔离产物目录ACL无法遍历而中断；已把`.h3b-workspaces`加入lint/format运行产物忽略，
   不改变源码检查范围或原件ACL。随后检查结果以各次原始日志为准，不覆盖失败。
 - 当前没有新建账户、启动ETW/UAC、修改原profile ACL或读取真实凭据。短验已取得资源/释放证据，
-  新增电池与总超时保护已完成风险复核，下一步执行正式窗口；用户已安排先接电完成资源验收，再补电池窗口。
+  新增电池与总超时保护已完成风险复核，首次接电正式轮已结束；用户安排之后补电池窗口，尚未通知物理就绪。
 
 ## 既有重规划验证（证据复用边界）
 
@@ -171,7 +218,7 @@ H3b长时资源/电池/当前Windows兼容性和新隔离证据仍开放，不�
 用户已授权本地工程实现、合理依赖/架构调整、测试、提交及审核后正常双远程同步；不用逐任务问是否继续。
 尚未授权的系统级动作、实际外部权限、凭据或物理操作才集中请求，产品取舍不能伪装工程细节。
 用户已答应准备好后提供≥30分钟拔电/不锁屏窗口，也授权必要时临时系统英文输入法及Nahimic暂停后恢复。
-这些不是当前已就绪的事实；本轮没有待处理UAC或新测量安排，不复用已经消费的就绪答复。
+用户本轮选择先接电完成资源验收，之后再补电池窗；接电证据不能授电池PASS。当前没有待处理UAC。
 
 **任务结束后必须移除临时工具**：VS2022 Build Tools/MSVC x64/x86及Windows SDK26100的本任务新增部分。
 按 `log/native-build-install/before-install.json`、`after-install.json`、`removal-inventory.json` 和
@@ -180,8 +227,13 @@ H3b长时资源/电池/当前Windows兼容性和新隔离证据仍开放，不�
 
 ## 下一唯一执行任务
 
-完成新增电池/启动总超时保护/副本DB报告的受影响复核，记录正式候选与环境，执行完整固定负载及资源窗口。
-短验已有有效数据，不重跑取绿、不继续扩展通用取证；若正式测量失败，按具体产品或工具原因修复，
+先关闭真实Electron已确认的跨文档填充缺陷并独立复核，再完成受影响完整冒烟/质量门。
+默认空白和快照世代修复、DB/load报告、启动隔离及增长判定器已限定独审通过；绝对句柄总量仍须新正式轮证明。
+原件在`log/h3br-current/`，首次正式绑定`350c3f5`及`formal-001-plan.json`，旧产物已保存。
+既有361点分解见`formal-001-handle-decomposition-001.json`：稳定5进程OLS15.97696/h，
+瞬态进程恒246句柄，0/4个进程的时间分布贡献159.21105/h；原总门175.188/h仍为FAIL，未认证每个子进程角色。
+下一正式轮前须有明确修复或等价工程oracle依据，重建collector/全部对应产物，并做有界真实短验。
+已有有效数据，不重跑取绿、不继续扩展通用取证；按具体产品或工具原因修复，
 不继续012、全机ETW、逐补丁UAC循环或另写通用证明框架。完整执行指令在 `doc/prompt.md`。
 
 当前仍在实施，不是文档REPLAN停点。后续正式顺序为H3b → H4 → 新D11 → Stage7设计准备，
