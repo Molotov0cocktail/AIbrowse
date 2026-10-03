@@ -6,7 +6,9 @@
 
 用户已明确授权 Stage7 E1–E6 实现、验证、必要独立审核和阶段收尾，取代历史 E1 前停止边界。
 本次接管 HEAD 为25a6aa5489b0596d529b97d62eab8ee789bb1e70，main干净，双远程跟踪引用同点。
-入口文档已同步；E1差量合同见doc/stage7/tasks.md。E1实现、验证与新的独立安全审核已PASS，正在逻辑提交与双远程收尾。
+入口文档已同步；E1差量合同见doc/stage7/tasks.md。E1实现、验证与新的独立安全审核已PASS，已提交并同步双远程。
+E1实现提交fabcb2111c005a2f493f02dd30110279bb4451e7；Gitee直连、GitHub代理HTTP200后使用http.proxy推送均exit0，
+两端ls-remote均核对同SHA。最终暂存106文件无日志/产物/私有数据，敏感扫描只命中两个已核baseline的测试字面量。
 下一实施范围为E2维护准入、真实排水与容量合同闭合；不可信容器读取/解析须等待其预算冻结。
 范围为Windows x64未签名内部候选、手动升级；不公开发布/自动更新，Stage7完成后停止。
 并行子任务请求模型按AGENTS调度；工具未回显actual时记不可验证。
@@ -82,7 +84,11 @@ E2只做独立容量资格准备，工具位于tools/data-qualification；最终
 总I/O12.014s，RSS采样峰79958016字节；Job已归零。不声称冷缓存/物理盘吞吐，不授E2产品完成。
 后续仍须维护排水与语义投影预算资格，才能冻结完整容器导入合同。
 drain-18b0f2c92a5c465ebf26decb9c7c2747首轮保留失败：Conversation已实证dispose后仍落盘，Research夹具20s超时。
-独审静态定位为夹具误拒规划阶段必需listGroups调用；该工具假设正在修复，Job已归零，不授Research排水证据。
+独审定位为夹具误拒规划阶段必需listGroups调用，真实库为failed/research-internal且模型零轮；修复并加入提前结束守卫。
+drain-d8946b318de244fc85efb5fc4b3b1651三轮9个反例完成，Job2.551s/已归零，相关进程0。
+Conversation提前返回后仍持久化；Research stop返回仍running，真实runtime结束才cancelled；Watch活动0仍有原采集在途，
+原采集结束后旧run仍running。这些差距含人为150ms保持，不能冻结自然排水预算，不授E2产品PASS。
+E2先实现主维护屏障及Conversation/Agent/Research/Watch/Digest真实排水；容器解析继续等待完整预算冻结。
 
 ### Stage6与设计轮既有证据（保留适用边界）
 
