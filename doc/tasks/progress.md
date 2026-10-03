@@ -68,7 +68,7 @@ T4共14点、四轮3/4/4/3；T8共19点、四轮5/5/4/5，跨度2800.010950/2839
 - H3b资格产品候选 `43efffbc82ff11122230c2362d6484d5feb9b581` 仅获限定独审；RSS空默认namespace修复
   `ee61ceb9d60d89dd60f6186030d6890b019a94ee` 已独审；本轮产品后继`5145164`已限定独审，均已随Stage6收尾推送。
 - 2026-10-03已正常将Stage6收尾 `6bc4f00ab065d2c751d89ab120106aa4accce805` 推至Gitee/GitHub，两次push均exit0；
-  包含原H3a后全部H3b/H4/D11已审提交。GitHub操作前代理HTTP200；Stage7设计收尾后再同步，实际HEAD以Git为准。
+  包含原H3a后全部H3b/H4/D11已审提交。Stage7设计提交`adf2899`及仅Markdown换行格式后继`a1e4d2b`亦已推双远程，ls-remote核验两端均为`a1e4d2bc8e0c3c2a23ca0703736d60865a101559`。GitHub操作前代理HTTP200；本记录后继的精确HEAD与远端以Git为准。
 - H4完整审查起点固定 `d85667c54a354d322b0180d4c17873860a86c611`，不能排除首个D10大型实现。
 - normal和三种qualification均已构建并分目录输出，必需addon在各自目录；旧out保存于
   `log/h3br-product-build-before/out/`。旧log候选不自动激活。
@@ -314,7 +314,7 @@ Stage7五份设计及E1–E6任务合同已完成并独立PASS，报告为`log/h
 收到就绪后先核现有实例/签名/清单，仅卸载任务新增Build Tools/MSVC/SDK；必要时按精确SDK bundle做后继官方卸载，
 核对原有组件/文件与实际退出码，不自动重启，不删除共享父目录、旧失败证据或未知文件。
 
-设计独审/文档格式/敏感模式与diff终检已通过，现做逻辑提交及正常双远程同步；工程收尾不需要重跑未变Stage6长时验收。
+设计独审/文档格式/敏感模式与diff终检、逻辑提交及正常双远程交付均已完成；工程收尾没有重跑未变Stage6长时验收。设计审核之后仅Markdown引用块换行格式修正，无契约变更；暂存区发现的四处行尾空格已在独立后继提交修复，最终范围diff-check通过。
 正式原件、失败及unknown继续保留：`log/h3br-current/`；H3b非暂停工具源码均已在Git。
 D11监听器诊断观察到同一对象在未销毁时归零；一次性hook污染子进程JSON的exit1完整保留，未替代无hook三进程PASS。
 完整当前接管边界见`doc/prompt.md`，不返回旧012/ETW路线。
