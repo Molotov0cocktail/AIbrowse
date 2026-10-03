@@ -1,7 +1,9 @@
 # AIbrowse 第七阶段威胁模型
 
-> 本文件是第七阶段安全设计；审核状态、E1–E6 的实际证据与完成状态只记录在任务文档和 `doc/tasks/progress.md`。  
-> 设计 baseline：`6bc4f00ab065d2c751d89ab120106aa4accce805`。  
+> 本文件是第七阶段安全设计；审核状态、E1–E6 的实际证据与完成状态只记录在任务文档和 `doc/tasks/progress.md`。
+>
+> 设计 baseline：`6bc4f00ab065d2c751d89ab120106aa4accce805`。
+>
 > 需求：`Seventh_stage.md`；产品/接口契约：`detailed-design.md`。第一至六阶段安全契约继续生效。
 
 ## 1. 保护对象与新增攻击面

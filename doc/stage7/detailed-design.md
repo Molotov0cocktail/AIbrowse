@@ -1,7 +1,9 @@
 # AIbrowse 第七阶段详细设计
 
-> 本文件是第七阶段设计合同；审核与执行状态只看 progress。本文件不表示 E1 已启动或任一发布门已通过。  
-> 设计接管 baseline：`6bc4f00ab065d2c751d89ab120106aa4accce805`。  
+> 本文件是第七阶段设计合同；审核与执行状态只看 progress。本文件不表示 E1 已启动或任一发布门已通过。
+>
+> 设计接管 baseline：`6bc4f00ab065d2c751d89ab120106aa4accce805`。
+>
 > 需求源：`Seventh_stage.md`；安全契约：`threat-model.md`；任务拆分：`tasks.md` 的 E1–E6；当前状态只看 `doc/tasks/progress.md`。
 
 ## 1. 目标、边界与工程决定
