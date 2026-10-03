@@ -10,7 +10,7 @@ RSS/private-v2及handle-v3的工具独审与两轮原件复算均已完成；第
 原合同RSS增长FAIL原样保留。第一轮句柄绝对median/P95真实FAIL也保留，没有通过更换公式抹去。
 H4已对`d85667c..9365ec4`完整范围正式PASS，报告`log/h3br-current/h4-final-audit-001.md`；
 新的独立D11报告为`log/h3br-current/d11-independent-exit-audit-001.md`；production默认及Watch set/check三进程exit0，
-独立8文件114项通过，两轮正式原件/registry/61槽退出复核完成。Stage7进入纯设计准备，首个产品实现不启动。
+独立8文件114项通过，两轮正式原件/registry/61槽退出复核完成。Stage7五份设计及任务合同已独立PASS，停在首个产品实现之前。
 当前实现候选`391948e`（前驱`d53f607`），最终全量202文件4031测试PASS，typecheck/lint/format通过；
 normal五产物及正式002的collector/qualification十二产物与原验收归档全部一致，无需为离线工具重建或重采。
 此前“稍后安排，等我通知”已由取消强制测试的新裁决替代；不再等待或启动电池窗口，不改写既有机器报告。
@@ -59,16 +59,16 @@ T4共14点、四轮3/4/4/3；T8共19点、四轮5/5/4/5，跨度2800.010950/2839
 - 本轮实现接管HEAD：`cc16bb57ce681e00d9d505060e20be9e49418d7e`，工作区干净；产品后继提交`5145164`。
 - 当前工具候选`391948e`：主堆重复样本的可信峰值接线；`d53f607`为增长v3及重复槽修复，均已限定独审PASS。
   方法合同`e81f51e`/`48791ed`；本次最终全量`growth-final-full-test-002.txt`为202文件4031项，
-  完整静态门`growth-final-typecheck/lint/format-001.txt`与最小后继聚焦/静态均通过。未推送。
+  完整静态门`growth-final-typecheck/lint/format-001.txt`与最小后继聚焦/静态均通过，已随Stage6收尾推送。
   已提交 `a4cc258`：native批排水及真实红→绿，独立并发审核PASS；`b232853`为首错诊断、`1d5f7f8`为真实反例。
   `e78c9df`为Research受控夹具；`54136ad`为真实浏览器反例/只读控制台工具，产品修复`6024573`已限定独审。
   `4eff347`为增长判定器、`4a10a24`为Watch日期夹具、`fbcab59`为完整冒烟runner；
-  此前`05b049e`为DB/load/副本工具、`0c8581d`为早期profile隔离，均未推送。精确HEAD以Git为准。
+  此前`05b049e`为DB/load/副本工具、`0c8581d`为早期profile隔离，均已随Stage6收尾推送。精确HEAD以Git为准。
   上轮文档接管`d976ac5`的未提交收据已保存完整原文，最终工具候选SHA以Git为准。
 - H3b资格产品候选 `43efffbc82ff11122230c2362d6484d5feb9b581` 仅获限定独审；RSS空默认namespace修复
-  `ee61ceb9d60d89dd60f6186030d6890b019a94ee` 已独审；本轮产品后继`5145164`已限定独审，均尚未推送。
-- 双远程上次已核验同步于H3a收尾 `bcd38eeba5b81d055ad319aded9a748b6969c861`；本轮不做网络写入，
-  不因文档REPLAN审核通过就推送未验收的完整H3b候选历史。下次网络操作仍核真实状态，不假设远程未变。
+  `ee61ceb9d60d89dd60f6186030d6890b019a94ee` 已独审；本轮产品后继`5145164`已限定独审，均已随Stage6收尾推送。
+- 2026-10-03已正常将Stage6收尾 `6bc4f00ab065d2c751d89ab120106aa4accce805` 推至Gitee/GitHub，两次push均exit0；
+  包含原H3a后全部H3b/H4/D11已审提交。GitHub操作前代理HTTP200；Stage7设计收尾后再同步，实际HEAD以Git为准。
 - H4完整审查起点固定 `d85667c54a354d322b0180d4c17873860a86c611`，不能排除首个D10大型实现。
 - normal和三种qualification均已构建并分目录输出，必需addon在各自目录；旧out保存于
   `log/h3br-product-build-before/out/`。旧log候选不自动激活。
@@ -88,7 +88,7 @@ T4共14点、四轮3/4/4/3；T8共19点、四轮5/5/4/5，跨度2800.010950/2839
 | H3b / H3b-R  | PASS关闭     | 正式002独立PASS；电池按用户#S6-092列NOT RUN，旧失败与机器输出保留                                        |
 | H4           | PASS         | `h4-final-audit-001.md`，完整`d85667c..9365ec4`，用户电池裁决单列                                        |
 | D11          | GO / PASS    | 新独立审核候选9365ec4；`d11-independent-exit-audit-001.md`                                               |
-| Stage7       | 纯设计准备中 | 入口/风险/设计/任务准备，停在第一个产品实现前                                                            |
+| Stage7       | 设计独审PASS | `stage7-independent-design-review-001.md`；E1–E6未开始，停在第一个产品实现前                             |
 
 ## H3b-R当前实现与验证
 
@@ -295,41 +295,26 @@ H3b接电长时资源、当前Windows及限定隔离证据已闭合；电池按�
 尚未授权的系统级动作、实际外部权限、凭据或物理操作才集中请求，产品取舍不能伪装工程细节。
 用户已答应准备好后提供≥30分钟拔电/不锁屏窗口，也授权必要时临时系统英文输入法及Nahimic暂停后恢复。
 用户先选择接电验收、后补电池，曾答“稍后安排，等我通知”；2026-10-03又明确因基本插电使用取消强制电池测试。
-最新裁决替代等待物理窗口的安排，不重复请求确认；接电证据仍不能授电池PASS。当前没有待处理UAC。
+最新裁决替代等待物理窗口的安排，不重复请求确认；接电证据仍不能授电池PASS。
 
 **任务结束后必须移除临时工具**：VS2022 Build Tools/MSVC x64/x86及Windows SDK26100的本任务新增部分。
 按 `log/native-build-install/before-install.json`、`after-install.json`、`removal-inventory.json` 和
 `log/h3b-native-current/native-build-restore.vsconfig`核对，官方安装器卸载，不改/删原有SDK/WPT/调试器/运行库，不自动重启。
-当前仍安装，尚未移除；不能只删下载缓存声称完成。
+当前仍安装，尚未移除；不能只删下载缓存声称完成。2026-10-03官方卸载首次启动在UAC阶段返回取消，未开始卸载；已集中询问是否重试，等待用户实际操作。原有39项版本及368个保护文件hash未变，新增49项仍在；收据为 `log/native-build-install/removal-result-001.json`、`after-cancelled-removal-001.json`。禁止自动重试提权或自动重启。
 
 ## 下一唯一执行任务
 
-native批排水已独审通过；normal/三资格版本已统一重建，normal五文件hash及长度与已验矩阵一致。
-无hook短004 `GKQXRDCK22APCWEUAOUZHYIL6U` 已完成，plan/report、独占副本及前后释放复核均在`log/h3br-current/short-004-*`。
-CPU中位0.066378%/峰1.578745%，RSS中位424.480469MiB/峰746.359375MiB，句柄中位2687/峰3848；短验不授正式门。
-副本上100Source/Rule、4Run/Baseline、5Audit（含1reconciliation）及零Event/Digest符合短负载；原DB没有SQLite打开。
-实际12个产物已保存在`log/h3br-short-004-artifacts/`。正式接电002已结束，实际产物另存`log/h3br-formal-002-artifacts/`。
-完整dev/prod矩阵、最终质量门与全部资格产物重建均已完成。
-默认空白、快照世代及交互修复、DB/load报告、启动隔离已限定独审通过；正式002已证明绝对句柄总量修复。
-增长方法合同已提交`e81f51e`/`48791ed`：RSS/private各组仍≤24MiB/h、句柄≤60/h；稳定idle/Session
-保持原始总量，仅过渡按实际成员数T[n]细分；每T组须四轮各至少两点、跨度≥2700秒，不按数值挑组。
-工具最终独审PASS，第一轮与第二轮原件均已独立重放，见`review-growth-v3-formal-001/002-arithmetic-002.json`。
-第二轮292 idle/36 Session/33 transition，T4共14点(3/4/4/3)、T8共19点(5/5/4/5)，各组增长均在阈值内；
-第一轮T5只有1点、T9各轮1点且跨度2699.999734秒，新增长门缺证，绝对句柄FAIL仍保留。
-独审另复现重复有效槽被择首忽略及main堆峰值漏接两项工具缺陷；红态与中间REPAIR原件保留。
-`d53f607`/`391948e`修复后独立51项及main9项通过，真实原件内存构造反例亦已独立关闭；重复不得PASS、
-不增加分布权重，所有可信有效观察仍约束绝对peak，CPU重复端点不拼区间。只改离线工具，无产品/采集变更。
-最终CLI两轮各598项与独立算术吻合，后继输出与前驱逐字节一致；旧plan/report/raw不改写。
-**下一步完成官方新增工具卸载及Stage7纯设计准备**。H4已PASS，新独立D11已GO/PASS，用户已取消强制电池测试，合同#S6-092及D10/D11已同步；
-电池NOT RUN及续航/功耗未验证限制必须在最终报告保留，不改变既有AC/BLOCKED机器结果或其它验收门。
-无需再运行95分钟窗口，不请求拔电。完整D10区间已独审；现在清理新增构建工具、
-正常双远程收尾，再完成Stage7入口/风险/设计/任务准备，停在首个产品实现之前。
-原件在`log/h3br-current/`，首次正式绑定`350c3f5`及`formal-001-plan.json`，旧产物已保存。
-既有361点分解见`formal-001-handle-decomposition-001.json`：稳定5进程OLS15.97696/h，
-瞬态进程恒246句柄，0/4个进程的时间分布贡献159.21105/h；原总门175.188/h仍为FAIL，未认证每个子进程角色。
-正式002原报告`formal-002-report-001.json`、独立算术`review-formal-002-arithmetic.json`和DB副本链保留。
-已有有效数据，不重跑取绿、不继续扩展通用取证；按具体产品或工具原因修复，
-不继续012、全机ETW、逐补丁UAC循环或另写通用证明框架。完整执行指令在 `doc/prompt.md`。
+Stage6已经GO/PASS，H3b/H4/D11没有待补硬门；电池依用户裁决NOT RUN，不再安排拔电。
+Stage7五份设计及E1–E6任务合同已完成并独立PASS，报告为`log/h3br-current/stage7-independent-design-review-001.md`；本轮没有改产品源码、工具、依赖或构建配置。
+设计基线为`6bc4f00`，设计入口为`doc/stage7/proposal.md`与`tasks.md`。本轮停在E1首个产品实现动作之前，
+后续只有用户明确启动实现才进入发行构建/安全能力边界；不会把设计通过当发行包或Stage7产品完成。
 
-软件及接电验收已完成，取消电池阻塞后继续正式顺序H3b → H4 → 新D11 → Stage7设计准备，
-停在Stage7首个产品实现前。
+**剩余操作为官方新增构建工具卸载。** 首次UAC未完成，主协调已集中询问是否现在重试；用户未答前不再次发起提权。
+当前新增49条仍在，原有39条和368个保护文件不变，详见上节清理收据。若用户选择稍后，保留本待办，不能称整体清理完成。
+收到就绪后先核现有实例/签名/清单，仅卸载任务新增Build Tools/MSVC/SDK；必要时按精确SDK bundle做后继官方卸载，
+核对原有组件/文件与实际退出码，不自动重启，不删除共享父目录、旧失败证据或未知文件。
+
+设计独审/文档格式/敏感模式与diff终检已通过，现做逻辑提交及正常双远程同步；工程收尾不需要重跑未变Stage6长时验收。
+正式原件、失败及unknown继续保留：`log/h3br-current/`；H3b非暂停工具源码均已在Git。
+D11监听器诊断观察到同一对象在未销毁时归零；一次性hook污染子进程JSON的exit1完整保留，未替代无hook三进程PASS。
+完整当前接管边界见`doc/prompt.md`，不返回旧012/ETW路线。

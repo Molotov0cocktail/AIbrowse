@@ -33,17 +33,15 @@
 - **定位**：Windows 桌面「AI 信息浏览器 / AI Information Browser」。应用内置 Chromium
   多标签页浏览器，用户与 AI 共享同一浏览器会话和登录状态；AI 只能经受限、可审计的
   BrowserController / Tool Layer 操作浏览器，不拥有任意系统权限。
-- **当前 Stage**：Sixth Stage——RSS/Page Watch、确定性变更事件与摘要。正式设计已经独立
-  Reviewer `PASS`，D1–D9 已实现并闭环。需求见 `Sixth_stage.md`；唯一产品契约源为
-  `doc/stage6/detailed-design.md`，安全契约源为 `doc/stage6/threat-model.md`，任务契约为
-  `doc/stage6/tasks/D1–D11`。具体完成项、当前 HEAD 与下一唯一动作只看
-  `doc/tasks/progress.md`。
-- **阶段纪律**：本轮纯设计授权与 D1–D9 已闭环；D8 实施前 REPLAN 与产品实现均已经新的独立
-  持久化/隐私 Reviewer `PASS`，D9 已经新的独立安全/隐私 Reviewer `PASS`。下一唯一任务只看
-  `doc/tasks/progress.md`；D3 已经新的独立安全 Reviewer `PASS`。
+- **当前 Stage**：Seventh Stage——安全、稳定、性能、Windows安装与发布加固，当前授权止于设计和任务准备。
+  需求见 `Seventh_stage.md`；设计见 `doc/stage7/proposal.md`、`high-level-design.md`、
+  `detailed-design.md`，安全契约为 `doc/stage7/threat-model.md`，任务契约为 `doc/stage7/tasks.md`。
+  具体审核状态、当前 HEAD 与下一唯一动作只看 `doc/tasks/progress.md`。
+- **阶段纪律**：第六阶段已由新的独立D11关闭；第七阶段设计不等于实现完成，也不授发行包或公开发布通过。
+  本轮停在E1首个产品实现之前；历史安全、隐私、资源阈值及真实证据边界继续保持。
 - **已完成阶段**：第一阶段浏览器核心、第二阶段 AI 共读、第三阶段 Browser Agent、第四阶段
-  Sources、第五阶段 Research 均已通过各自 Exit Gate。历史需求、契约与验收证据分别留在
-  对应 Stage 文件、`doc/stage2/`～`doc/stage5/`、任务文档和 Git 中，不在本文件复述执行轮次。
+  Sources、第五阶段 Research、第六阶段 Watch 均已通过各自适用 Exit Gate。历史需求、契约与验收证据分别留在
+  对应 Stage 文件、`doc/stage2/`～`doc/stage6/`、任务文档和 Git 中，不在本文件复述执行轮次。
 
 ### 1.1 稳定架构
 
