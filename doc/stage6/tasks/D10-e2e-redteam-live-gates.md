@@ -127,6 +127,11 @@ H4后启动新独立D11。Stage6关闭后按用户授权完成Stage7入口/风�
 
 ## 5. 历史与清理义务
 
+2026-10-03收口：H3b适用硬门及H4已PASS，H4完整范围`d85667c..9365ec4`，报告
+`log/h3br-current/h4-final-audit-001.md`；新的D11在候选`9365ec4`给出Stage6 GO/PASS，
+见同目录`d11-independent-exit-audit-001.md`及D11任务。电池按#S6-092保持NOT RUN；
+正式001真实句柄FAIL、正式002旧RSS方法FAIL及所有原件/unknown不改写。后续状态以progress为准。
+
 完整旧D10合同及2026-09-02矩阵保留于Git `d976ac5:doc/stage6/tasks/D10-e2e-redteam-live-gates.md`；
 当前接受的H2/H3a报告及全部H3b失败原件保持。历史合同的工程freeze/固定路线/逐项许可不再约束H3b-R。
 固定网络预算原账本不清零。旧7ZH的4096-byte canary身份未完整恢复，不能盲删。

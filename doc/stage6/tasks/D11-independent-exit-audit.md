@@ -50,5 +50,17 @@ Reviewer可按足够当前功能/稳定性证据关闭当前验收阻塞，保�
 4. 自动完成 `Seventh_stage.md` Entry Gate、开放风险承接、必要proposal/high-level/detailed/threat/task设计，
    缺真正产品决定时集中询问。**停在Stage7第一个产品实现任务启动之前**，给出明确入口，不需再问是否继续设计。
 
-本任务当前未执行。原D11的全机ETW/freeze/每文件RM/三方SHA作为启动资格等工程细节在Git `d976ac5`保留，
+## 实际验收结论（2026-10-03）
+
+新独立Stage Auditor在`9365ec4c4c0c40927f30bf6cdce6c7d618c68b79`上给出 **GO / PASS**。
+报告为`log/h3br-current/d11-independent-exit-audit-001.md`，前置H4覆盖完整`d85667c..9365ec4`。
+独立production默认与Watch set/check三进程均exit0；8文件114项聚焦通过，两轮正式原件及registry/退出复核完成。
+当前全量202文件4031项、静态/构建/dev/prod矩阵按未变源码与产物明确复用；没有为文档变化重跑长窗。
+
+电池NOT RUN及续航/功耗/电池模式未验证按#S6-092保留。真实Provider、登录站点、packaged通知仍为条件性NOT RUN。
+两条监听器警告的单次只读诊断观察到同一emitter在未销毁时从11归零，随后销毁；未发现该对象累计泄漏。
+该诊断hook污染WRT-04子进程JSON导致exit1，原件保留，不替代无hook通过，不冒充产品PASS。
+Stage6 GO不授packaged发行安全通过；发行环境入口由Stage7 E1设计承接。
+
+原D11的全机ETW/freeze/每文件RM/三方SHA作为启动资格等工程细节在Git `d976ac5`保留，
 由现行详细设计和本任务替代；这不是删除任何真实产品、安全、隐私或资源阈值。
