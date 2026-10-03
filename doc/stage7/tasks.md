@@ -4,13 +4,14 @@
 
 设计baseline：`6bc4f00ab065d2c751d89ab120106aa4accce805`；实际实现开始前记录当时精确HEAD与工作区归属。
 权威源依次为Seventh_stage、proposal、detailed-design、threat-model；状态只在progress。
-**本轮所有E任务均未开始，停在E1第一个产品实现动作之前。** 文档审核不是实现授权或运行PASS。
+用户2026-10-04已授权依次完成E1–E6实现、验证、必要独立审核与收尾；原E1前停止边界失效。
+文档审核不等于运行PASS；Stage7硬门满足并收尾后停止，不启动Stage8产品实现。
 
 每项保留所有Stage1–6能力/隐私/数值承诺，先建可区分旧实现的反例，再修复；维护源码与测试均受Git管理。
 共享规则：不读真实凭据/用户库来做夹具；固定范围合成数据、受控临时根、精确退出/清理；失败原件保留。
 缺真产品决定、外部权限/凭据或物理条件时集中提问，继续独立工程事项；连续两轮同路无新证据则REPLAN。
 
-## E1 — 发行构建与安全能力边界（下一首项）
+## E1 — 发行构建与安全能力边界
 
 - **目标**：使实际目录发行候选无法通过开发环境变量进入smoke/qualification、替换受信UI或重定向私有数据；
   同时封闭新Security Model确认的Provider凭据目标、权限、下载和资源来源缺口。
@@ -96,7 +97,79 @@
 - **完成**：新的独立`gpt-6-astra/xhigh` Stage Auditor GO后方可称Stage7完成；范围/NOT RUN/已知限制与产物相符，
   正常提交及双远程同步遵守代理规则。任何实质安全/数据缺陷不能作为“已知限制”自行接受。
 
+## E1 本次差量实施合同（2026-10-04）
+
+- **TASK / BASELINE**：E1；`25a6aa5489b0596d529b97d62eab8ee789bb1e70`，main干净，无已有修改。
+- **GOAL / NON-GOALS**：落实本文件E1及详细设计§3、威胁模型S7RT-01–06/15–16；交付Windows x64未签名目录候选。
+  不公开发布、不改变CookieEncryption、不实现自动更新、不重新安装已卸载的构建工具。
+- **CURRENT VERIFIED STATE**：Stage6 D11与Stage7设计独审原件已核对，适用范围保持；当前源码无release隔离或Key目标绑定。
+  历史PASS仅覆盖未改产品范围，不授新包通过。Node实际为24.18.0。
+- **FIXED DECISIONS / INVARIANTS**：沿用详细设计§3及E1不变量；独立release输出与正向资产清单；主进程原生确认持有授权。
+  保留aibrowse实际identity/userData；打包器与fuse版本先查官方和最小资格，再精确安装。兼容失效先定位并修订工程方案。
+- **SCOPE / PLAN**：并行打包资格、凭据目标绑定与资产/Session边界；主协调负责bootstrap/IPC集成及文档。
+  同文件单写者；模块产物合并后做实际release资格，再由新独立安全Reviewer复核完整E1风险边界。
+- **TEST PLAN / ACCEPTANCE**：先保存可甄别旧行为的红态；聚焦绿态及受影响回归、默认单worker全量、typecheck/lint/format/build；
+  dev/production默认及受影响跨进程冒烟；实际EXE环境反例、包清单/合成canary/fuses/ASAR篡改、Session/IPC/Key零外泄反例。
+  全部必要证据与候选一致、独立安全PASS后才提交完成状态及双远程推送。
+- **STOP / REPLAN**：连续两轮无新增证据则换方法；资格失败不降低阈值，不把配置文本当运行证据。
+  外部硬门缺失集中说明并继续独立工作，不以当前账户新profile冒充独立机器。
+- **FINAL EVIDENCE**：通用工具入tools/，原件保留log/stage7-e1/；结果和候选绑定写本文件/progress，不建立第二进度源。
+
+### E1 资格修订与外部条件
+
+Electron43.4.0在E1依赖资格中命中需上游修复的sandbox preload cache公告；按详细设计§3.1更新43.7.7，
+实际产物与受影响壳/全量验证重新绑定。打包工具依赖继续按具体公告、能力与锁树资格处理，不盲目依赖audit自动修复建议。
+用户2026-10-04确认目前无独立Windows环境；E5独立安装硬门保留BLOCKED，继续其余工程工作，不关闭Stage7。
+当前账户真实EXE测试另做可逆profile隔离工具资格；原profile仅原子rename、禁止读取/复制/解析私有内容，
+先证明排他所有权、持久恢复清单、逐步中断恢复及原FileId/ACL恒等，再经独立审核执行；不能以该方法替代E5。
+实际只读预检发现当前AppData与既有aibrowse根的volume API/最终路径身份不一致，同父同卷原子rename前提不成立。
+工具必须拒绝实际切换；未知根因保留，不跨卷复制私有profile或放宽身份门。E1实际EXE需另一个可通过隔离资格的数据环境，
+本机空白测试账户可作为E1候选条件，但仍不替代E5独立环境。其余源码/合成工具验证继续。
+用户随后明确现有AIbrowse仅为开发版且未留实际用户数据，授权删除当前账户的AIbrowse数据。
+因此本轮允许一次性清空精确KnownFolder/AppData下的aibrowse开发数据根，先核实际路径/进程/重解析属性，
+不触及仓库与原始验收证据。删除后固定KnownFolder根落在当前宿主的MSIX虚拟化映射内，旧同父rename路线退出使用。
+合成scope核对KnownFolder别名与解析实体的128位FileID、卷及ACL，以双句柄锁定同一空根；
+通过有界所有权marker、固定All执行入口、进程创建时间与Windows Job证明本轮归属，独审后准入实际EXE。
+该路线不移动或恢复旧profile；失败保留整份自有合成根、终态记录与原始日志，不能把失败根当空根直接重跑；
+该授权仅替代此处旧profile保留要求，不允许自动清除后续测试失败数据或放松产品恢复语义。
+
+Electron升级后的A-04冒烟保留“最多三步，第四步零调用/零副作用/零审计”。原断言把CSS滚动1+2+3当作整数6，
+在当前设备像素比例下得到6.6666665，属于失效的渲染量化假设；改为同一实际浏览器三步参考与四步参考必须可区分，
+精确核对实际scrollBy调用序列为[[0,1],[0,2],[0,3]]、最终位移严格等于三步参考，原失败保留。
+
+实际production trace定位到ContextBadge在Tab加载期重复preview，引起Electron等待加载监听累积。
+徽标按活动Tab与文档状态合并刷新，每个存活Tab最多一个在途preview，只保留最新脏世代；加载期等待既有Tab事件。
+旧请求、已销毁Tab及旧effect不得发布结果；预览或初次列表失败显示“预览暂不可用，提问时实时采集”，
+仅无活动Tab显示无上下文。提问/Agent仍在执行时实时采集，不能复用徽标快照。
+以真实组件反例和实际Electron加载期30次更新的监听峰值/完成后归零证明修复，不提高监听上限。
+
+实际EXE第二轮在凭据tmp→final原子rename触发EXDEV，保存失败且原生确认尚未出现，作为新的真实红态保留。
+按详细设计§3.1统一Node实体根，保留逻辑userData/Session/单实例及原子持久化；不只修改credentials或加入复制回退。
+补同对象旧目录、两侧缺项、嵌套路径偏移/链接及预算反例，复验Provider配置/凭据、Conversation与三库、日志落点，
+重建最终包并重新实际运行后再由独立安全Reviewer闭合此差量。
+
+### E1 最终证据与交付边界
+
+实现差量基线为25a6aa5489b0596d529b97d62eab8ee789bb1e70；新的独立安全Reviewer已限定E1 PASS，
+报告`log/stage7-e1/independent-e1-final-review-001.md`，受审106文件清单SHA256为
+e859f35d5b05dc02bc7fbcdd6e3c529dfca5652bd9d38668178d2b9a9a245e70。
+候选005的EXE为88d7370c5569c3c08d50971ea3171459b5f5c07464663be3d30309183e70710e，
+ASAR为ee5e3623b2e905e22a621c19593337e99ce52193a346dfb353d0703ccb79abe4。
+
+Product journal-b997103bbdd14bf1ae6987564f82d956覆盖原生取消/确认、绑定网络去向、第二实例和冷重启；
+该All的旧AppData探针悬挂原件保持失败。修复后固定新空scope的Tamper journal-8edf39ba16924ace964b70341acfc2ef
+实证调试入口关闭、等价单字节ASAR篡改失败、裸app拒绝；`independent-release-dynamic-binding-001.json`
+将两份报告、当前包与篡改副本绑定，不将旧All改为成功。
+全量222文件4203项通过，最终typecheck/lint/format及diff检查通过；native-root之后dev/production默认及各五组
+跨进程set/check原件通过。全部位于`log/stage7-e1/`，未变化的独立六场景Electron安全资格按范围复用。
+
+本轮实际网络使用合成Key和受控loopback；真实外部Provider NOT RUN，不能称无授权或凭据不可用。
+实际包冷重启使用受控强制终止，三库只证明空库同对象/schema/完整性重开；既有业务行另有dev/production证据。
+UTF-8字节canary零命中、DPAPI和无Key读回机制分别报告，不扩大为所有编码的观察结论。
+production audit为0，完整构建树仍有8条同一缓存公告的high传播，当前调用面无共享缓存且依赖不入ASAR；
+不称依赖树全无漏洞。Windows x64未签名内部候选、手动升级、E5独立环境缺失和Stage7未关闭边界不变。
+
 ## 本轮交付检查
 
-仅检查上述合同与设计一致、入口事实/风险归属准确、首个实现目标及oracle清楚、无凭据/机器数据进入文档。
-文档完成后独立设计Reviewer审核；本轮**不执行E1–E6**，不为设计变更重跑Stage6产品矩阵。
+按各E任务和Seventh_stage逐项核对实际证据，必要独立审核PASS后逻辑提交、正常双远程同步。
+Stage7只有在E6新独立Stage Auditor通过且全部硬门满足时才关闭。历史失败、电池NOT RUN及外部缺证如实保留。

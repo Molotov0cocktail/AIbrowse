@@ -7,6 +7,7 @@
 // 恰好在 done 之前；原始分片仅为适配器内部状态，对外不暴露半截 arguments——决议 #30）。
 import { logDebug, logWarn } from '../../logger';
 import type { SecureCredentialStore } from '../credential-store';
+import { getProviderAuthorization, type ProviderAuthorizationSnapshot } from '../config-store';
 import type { ProviderConfig } from '../../../shared/types/conversation';
 import type {
   NormalizedProviderError,
@@ -457,12 +458,16 @@ export function mapMessages(request: {
 export class OpenAICompatibleProvider implements LLMProvider {
   readonly metadata: ProviderMetadata;
   private readonly baseUrl: string;
+  private readonly config: ProviderConfig;
+  private readonly authorization: ProviderAuthorizationSnapshot | null;
 
   constructor(
-    private readonly config: ProviderConfig,
+    config: ProviderConfig,
     private readonly store: SecureCredentialStore,
     private readonly timeouts: ProviderTimeouts = PROVIDER_TIMEOUTS,
   ) {
+    this.config = { ...config };
+    this.authorization = getProviderAuthorization(config);
     this.baseUrl = config.baseUrl.replace(/\/+$/, ''); // Defensive; config-store also strips
     this.metadata = {
       id: config.providerId,
@@ -479,12 +484,23 @@ export class OpenAICompatibleProvider implements LLMProvider {
       providerId: this.config.providerId,
       model: request.model,
     };
-    // Key fetched per request, never cached; nothing about the key is ever logged.
-    const apiKey = await this.store.get(this.config.providerId);
-    if (apiKey === null || apiKey === '') {
+    // The opaque main-process snapshot binds this request to an authorized target
+    // and credential generation. Never fall back to providerId-only credential reads.
+    const authorization = this.authorization;
+    const apiKey =
+      authorization !== null && authorization.target === this.baseUrl && authorization.isCurrent()
+        ? ((await this.store.getBound?.(this.config.providerId, authorization.generation)) ?? null)
+        : null;
+    if (
+      apiKey === null ||
+      apiKey === '' ||
+      authorization === null ||
+      !authorization.isCurrent() ||
+      this.store.getGeneration?.(this.config.providerId) !== authorization.generation
+    ) {
       logWarn(
         'provider',
-        `未找到 API Key（${context.providerId}/${context.model ?? '-'}，req=${context.requestId}）`,
+        `Provider 凭据缺失或目标未授权（${context.providerId}/${context.model ?? '-'}，req=${context.requestId}）`,
       );
       yield {
         type: 'error',
@@ -538,6 +554,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       try {
         response = await fetch(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
+          redirect: 'error',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
           // A1：tools 直接透传 IR（程序生成）；未传 tools 时不发送该字段（共读路径不变）。
           // v1 不发送 tool_choice（默认 auto，§3.1）。

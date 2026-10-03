@@ -1,7 +1,10 @@
 // LLMProvider registry + resolveProvider tests: not-configured paths must resolve to
 // null WITHOUT any network activity (resolve is pure wiring, no fetch involved).
 // Contract source: doc/stage2/detailed-design.md §3.3.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   PROVIDER_KIND_OPENAI_COMPATIBLE,
   listProviderKinds,
@@ -10,7 +13,9 @@ import {
   type LLMProvider,
 } from './llm-provider';
 import { FakeProvider } from './fake-provider';
-import type { SecureCredentialStore } from '../credential-store';
+import { SecureCredentialStoreImpl, type SecureCredentialStore } from '../credential-store';
+import { ConfigStore } from '../config-store';
+import { CredentialTargetGuard } from '../credential-target-guard';
 import type { ProviderConfig } from '../../../shared/types/conversation';
 
 class MemoryCredentials implements SecureCredentialStore {
@@ -42,6 +47,10 @@ const CONFIG: ProviderConfig = {
   baseUrl: 'https://api.example.com/v1/',
   model: 'test-model',
 };
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 describe('resolveProvider — 未配置/无 Key → null（→ not-configured，不发起网络请求）', () => {
   it('config 为 null → null', async () => {
@@ -57,9 +66,23 @@ describe('resolveProvider — 未配置/无 Key → null（→ not-configured，
     expect(await resolveProvider({ ...CONFIG, providerId: 'unknown-kind' }, store)).toBeNull();
   });
 
-  it('配置 + Key → LLMProvider（metadata 取自配置）', async () => {
-    const store = new MemoryCredentials({ 'openai-compatible': 'sk-test-1234567890' });
-    const provider = await resolveProvider(CONFIG, store);
+  it('配置 + Key + 主进程确认 → LLMProvider（metadata 取自配置）', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'aibrowse-resolver-'));
+    roots.push(root);
+    const store = new SecureCredentialStoreImpl(root, {
+      isAvailable: () => true,
+      encrypt: (text) => Buffer.from(text).toString('base64'),
+      decrypt: (text) => Buffer.from(text, 'base64').toString(),
+    });
+    await store.set(CONFIG.providerId, 'synthetic-test-secret');
+    const configs = new ConfigStore(root, store);
+    const guard = new CredentialTargetGuard({
+      configStore: configs,
+      credentials: store,
+      confirm: async () => true,
+    });
+    expect(await guard.updateConfig(CONFIG, { isCurrent: () => true })).toBe(true);
+    const provider = await resolveProvider(configs.get(CONFIG.providerId), store);
     expect(provider).not.toBeNull();
     const metadata = (provider as LLMProvider).metadata;
     expect(metadata.id).toBe('openai-compatible');

@@ -1,7 +1,7 @@
 // Address-bar input resolution: pure logic, zero environment dependency (分层纪律).
 // Contract source: First_stage.md §十（URL / 搜索框行为）.
 // Rules:
-//   "https://…" / "http://…" / "about:…"  → keep, canonicalized via URL
+//   "https://…" / "http://…" / "about:blank"  → keep, canonicalized via URL
 //   bare domain / IP / localhost (+ port/path/query/fragment) → https:// prefix
 //   anything else (including non-web schemes) → search engine URL
 // Invalid inputs safely return '' (越界安全返回); the caller treats it as a no-op.
@@ -17,7 +17,7 @@ export const SEARCH_ENGINE_URL = 'https://www.bing.com/search';
 // "example.com:8080" is a host:port, but the generic pattern would misread
 // "example.com:" as a scheme (dots are legal in scheme names per RFC 3986).
 // Also shared by the tab will-navigate whitelist (doc/detailed-design.md §9).
-export const ALLOWED_SCHEME_PATTERN = /^(https?|about):/i;
+export const ALLOWED_SCHEME_PATTERN = /^(?:https?:|about:blank$)/i;
 const DOMAIN_PATTERN =
   /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?([/?#].*)?$/i;
 const LOCALHOST_PATTERN = /^localhost(:\d{1,5})?([/?#].*)?$/i;

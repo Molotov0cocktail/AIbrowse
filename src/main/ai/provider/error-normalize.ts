@@ -28,7 +28,7 @@ export type NormalizeInput =
     };
 
 const MESSAGES: Record<NormalizedErrorCode, string> = {
-  'not-configured': '尚未配置 AI Provider 或 API Key，请先在设置中配置',
+  'not-configured': 'AI Provider、API Key 或接口目标尚未授权，请在设置中保存并完成系统确认',
   'invalid-key': 'API Key 无效或无权限，请检查设置',
   'rate-limit': '请求过于频繁，请稍后重试',
   timeout: '请求超时，请稍后重试',

@@ -1,6 +1,11 @@
 import { resolve } from 'node:path';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
+import {
+  releaseModuleReport,
+  releaseAssetManifest,
+  releaseCompileProfile,
+} from './tools/build/release-plugins';
 
 const qualificationModes = new Set([
   'qualification',
@@ -8,11 +13,17 @@ const qualificationModes = new Set([
   'qualification-load-diagnostic',
 ]);
 const outputDirectory = (mode: string, part: string): string =>
-  resolve(__dirname, 'out', ...(qualificationModes.has(mode) ? [mode] : []), part);
+  resolve(
+    __dirname,
+    'out',
+    ...(qualificationModes.has(mode) || mode === 'release' ? [mode] : []),
+    part,
+  );
 
 export default defineConfig(({ mode }) => ({
   main: {
     define: {
+      __RELEASE__: JSON.stringify(mode === 'release'),
       __WATCH_QUALIFICATION__: JSON.stringify(
         mode === 'qualification' ||
           mode === 'qualification-diagnostic' ||
@@ -25,7 +36,10 @@ export default defineConfig(({ mode }) => ({
         mode === 'qualification-load-diagnostic',
       ),
     },
-    plugins: [externalizeDepsPlugin()],
+    plugins: [
+      externalizeDepsPlugin(),
+      ...(mode === 'release' ? [releaseCompileProfile(), releaseModuleReport(__dirname)] : []),
+    ],
     build: {
       outDir: outputDirectory(mode, 'main'),
       rollupOptions: {
@@ -33,7 +47,13 @@ export default defineConfig(({ mode }) => ({
           // Main-private qualification modules initialize only pure data or exported factories.
           // Unused fixture validation must not run in the ordinary product build.
           moduleSideEffects: (id) =>
-            !id.replaceAll('\\', '/').includes('/src/main/watch/qualification/'),
+            !id.replaceAll('\\', '/').includes('/src/main/watch/qualification/') &&
+            !(
+              mode === 'release' &&
+              /\/src\/main\/(?:smoke[^/]*|ai\/provider\/fake-provider)/.test(
+                id.replaceAll('\\', '/'),
+              )
+            ),
         },
         output: { chunkFileNames: '[name]-[hash].js' },
         input: {
@@ -67,7 +87,7 @@ export default defineConfig(({ mode }) => ({
       ),
     },
     root: 'src/renderer',
-    plugins: [react()],
+    plugins: [react(), ...(mode === 'release' ? [releaseAssetManifest()] : [])],
     build: {
       outDir: outputDirectory(mode, 'renderer'),
       rollupOptions: {

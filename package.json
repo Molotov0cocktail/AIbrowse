@@ -7,9 +7,18 @@
   "engines": {
     "node": ">=24 <25"
   },
+  "overrides": {
+    "@electron/get": {
+      "undici": "7.29.1"
+    }
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "build:release": "electron-vite build --mode release",
+    "package:release-dir": "npm run build:release && electron-builder --win dir --x64 --publish never",
+    "verify:release": "node --experimental-strip-types tools/release/verify-package.ts release/win-unpacked",
+    "test:release-security": "pwsh -NoProfile -File tools/release-profile/disposable-profile.ps1 -Action Run -Runner All -PackageRoot release/win-unpacked",
     "build:qualification": "electron-vite build --mode qualification && pwsh -NoProfile -File native/watch-qualification/build.ps1 -Mode qualification",
     "build:qualification:diagnostic": "electron-vite build --mode qualification-diagnostic && pwsh -NoProfile -File native/watch-qualification/build.ps1 -Mode qualification-diagnostic",
     "build:qualification:load-diagnostic": "electron-vite build --mode qualification-load-diagnostic && pwsh -NoProfile -File native/watch-qualification/build.ps1 -Mode qualification-load-diagnostic",
@@ -24,26 +33,30 @@
   "dependencies": {
     "@federicocarboni/saxe": "0.8.0",
     "parse5": "8.0.1",
-    "parse5-sax-parser": "8.0.0",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "parse5-sax-parser": "8.0.0"
   },
   "devDependencies": {
+    "@electron/asar": "4.3.1",
+    "@electron/fuses": "2.1.3",
     "@eslint/js": "10.0.1",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "5.2.0",
-    "electron": "43.4.0",
+    "electron": "43.7.7",
+    "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "eslint": "10.8.1",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-react-refresh": "0.5.4",
     "globals": "17.11.0",
     "prettier": "3.9.6",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "resedit": "3.1.0",
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
     "vite": "7.3.6",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }

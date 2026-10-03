@@ -59,6 +59,7 @@ foreach ($mode in $modes) {
   $startInfo.Environment['TEMP'] = $runRoot
   $startInfo.Environment['TMP'] = $runRoot
   $startInfo.Environment['AIBROWSE_SMOKE'] = '1'
+  $startInfo.Environment['NODE_OPTIONS'] = '--trace-warnings'
   $startInfo.Environment['AIBROWSE_USER_DATA_DIR'] = $dataRoot
   if ($flag) { $startInfo.Environment[$flag] = $mode }
   $entryHash = if ($Variant -eq 'production') { (Get-FileHash -LiteralPath $productionEntry -Algorithm SHA256).Hash } else { $null }
@@ -87,7 +88,7 @@ foreach ($mode in $modes) {
     if (-not [Threading.Tasks.Task]::WaitAll(@($outCopy, $errCopy), 5000)) { throw '产品冒烟输出管道未结束' }
     @{ variant=$Variant; kind=$Kind; mode=$mode; runId=$runId; pid=$process.Id; creationFileTime=$birth;
        elapsedSeconds=$deadline.Elapsed.TotalSeconds; exitCode=$process.ExitCode; timedOut=$timedOut;
-       userData=$dataRoot; entrySha256=$entryHash; provider='离线FakeProvider；没有真实Provider授权注入' } |
+       userData=$dataRoot; entrySha256=$entryHash; provider='离线FakeProvider；本轮未注入真实Provider凭据' } |
       ConvertTo-Json | Set-Content -LiteralPath ($prefix + '.json') -Encoding utf8
     Write-Output "产品冒烟 $Variant/$Kind/$mode exit=$($process.ExitCode)"
     if ($timedOut -or $process.ExitCode -ne 0) { throw '产品冒烟失败，停止后继并保留根及原件' }

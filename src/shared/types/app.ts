@@ -122,6 +122,7 @@ export interface AibrowseBridge {
   config: {
     providers: {
       list(): Promise<ProviderInfo[]>; // 含 hasKey，无 Key 值
+      hasKey(providerId: string): Promise<boolean>;
       set(cfg: { providerId: string; baseUrl: string; model: string }): Promise<boolean>;
       // API Key 只写不回读（§10）：setKey 之后 Key 无法经任何通道回到渲染层
       setKey(providerId: string, apiKey: string): Promise<boolean>; // apiKey='' = 删除
@@ -164,6 +165,7 @@ export interface AibrowseBridge {
     result(taskId: string): Promise<ResearchIpcResult<{ view: ResearchResultView }>>;
     list(payload: ResearchListPayload): Promise<ResearchIpcResult<ResearchIpcListValue>>;
     delete(taskId: string): Promise<ResearchIpcResult<{ deleted: true }>>;
+    copyTable(payload: ResearchExportCsvPayload): Promise<boolean>;
     exportCsv(payload: ResearchExportCsvPayload): Promise<ExportCsvResult>;
     onProgress(listener: (e: ResearchProgressEvent) => void): () => void;
     onTaskDone(listener: (e: ResearchTaskDoneEvent) => void): () => void;

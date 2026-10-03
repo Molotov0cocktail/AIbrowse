@@ -487,7 +487,10 @@ async function buildProductSurfaces(
     const credentials = new SecureCredentialStoreImpl(join(root, 'credentials'), {
       isAvailable: () => true,
       encrypt: (value) => sha256Hex(value),
-      decrypt: () => '',
+      decrypt: (value) => {
+        if (value !== sha256Hex(apiKey)) throw new Error('合成凭据不匹配');
+        return apiKey;
+      },
     });
     if (
       !(await credentials.set('d10-provider', apiKey)) ||

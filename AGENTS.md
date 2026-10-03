@@ -7,8 +7,9 @@
 
 ## 工程自治授权
 
-- 主 Prompter 持续完成第六阶段剩余开发、独立验收与收尾，随后完成下一阶段入口、必要设计和任务准备，
-  停在下一阶段第一个产品实现任务启动前；无需逐任务询问。产品需求缺失时集中请求裁决，不编造需求。
+- 主 Prompter 持续完成第七阶段 E1–E6 的实现、验证、必要独立审核及阶段收尾，无需逐任务询问。
+  交付限定 Windows x64、未签名内部开发候选、手动升级；不公开发布、不引入自动更新。
+  第七阶段完成后停止，不启动 Stage8 产品实现。产品需求缺失时集中请求裁决，不编造需求。
 - 保持功能、体验、兼容性、安全、隐私、数据语义及实质性能/可靠性承诺；内部架构、实现、重构、依赖、
   工具、文件范围、测试和诊断方案由工程 Agent 决定。现有工程方案无法有效证明产品承诺时，应先定位约束，
   自主替换方案并修订正式契约，不把历史实现或采集手段当作不可撤销需求。不得降低验收阈值迁就失败。
@@ -33,12 +34,12 @@
 - **定位**：Windows 桌面「AI 信息浏览器 / AI Information Browser」。应用内置 Chromium
   多标签页浏览器，用户与 AI 共享同一浏览器会话和登录状态；AI 只能经受限、可审计的
   BrowserController / Tool Layer 操作浏览器，不拥有任意系统权限。
-- **当前 Stage**：Seventh Stage——安全、稳定、性能、Windows安装与发布加固，当前授权止于设计和任务准备。
+- **当前 Stage**：Seventh Stage——安全、稳定、性能、Windows安装与发布加固，当前授权覆盖 E1–E6 实现与验收。
   需求见 `Seventh_stage.md`；设计见 `doc/stage7/proposal.md`、`high-level-design.md`、
   `detailed-design.md`，安全契约为 `doc/stage7/threat-model.md`，任务契约为 `doc/stage7/tasks.md`。
   具体审核状态、当前 HEAD 与下一唯一动作只看 `doc/tasks/progress.md`。
 - **阶段纪律**：第六阶段已由新的独立D11关闭；第七阶段设计不等于实现完成，也不授发行包或公开发布通过。
-  本轮停在E1首个产品实现之前；历史安全、隐私、资源阈值及真实证据边界继续保持。
+  阶段硬门满足并经新独立审核后方可关闭；历史安全、隐私、资源阈值及真实证据边界继续保持。
 - **已完成阶段**：第一阶段浏览器核心、第二阶段 AI 共读、第三阶段 Browser Agent、第四阶段
   Sources、第五阶段 Research、第六阶段 Watch 均已通过各自适用 Exit Gate。历史需求、契约与验收证据分别留在
   对应 Stage 文件、`doc/stage2/`～`doc/stage6/`、任务文档和 Git 中，不在本文件复述执行轮次。
@@ -97,9 +98,11 @@ Event 投影生成可选摘要解释，不能决定是否变化、是否命中�
 
 - Electron + TypeScript + React + Vite + Node.js；浏览器承载使用 WebContentsView，禁用已废弃的
   BrowserView；测试 Vitest，lint ESLint，格式 Prettier。
-- Node.js 24.x（`.node-version` = 24.18.0，`engines.node` = `>=24 <25`）；Electron 43.4.0；
-  electron-vite 5.0.0；Vite 7.3.6；React 19.2.8；TypeScript 6.0.3；Vitest 4.1.10；
+- Node.js 24.x（`.node-version` = 24.18.0，`engines.node` = `>=24 <25`）；Electron 43.7.7；
+  electron-vite 5.0.0；Vite 7.3.6；React 19.2.8；TypeScript 6.0.3；Vitest 4.1.11；
   ESLint 10.8.1；Prettier 3.9.6。
+- Stage7 发行构建辅助依赖精确固定：electron-builder 26.15.3、@electron/fuses 2.1.3、
+  @electron/asar 4.3.1、resedit 3.1.0。它们只用于构建/验收，不扩大产品运行权限。
 - 依赖精确版本固定，无 `^`/`~`；`.npmrc` `save-exact=true`；`package-lock.json` 必须入库。
   main/preload 输出 CJS，preload 必须兼容 `sandbox=true`。
 - 核心工具链变更先说明工程理由、修订基线，完成受影响的 typecheck/lint/test/build/Electron

@@ -9,6 +9,7 @@ import type {
   ProviderRequest,
 } from '../../../shared/types/conversation';
 import type { SecureCredentialStore } from '../credential-store';
+import { isProviderAuthorized } from '../config-store';
 import { OpenAICompatibleProvider } from './openai-compatible';
 
 // stream: signal = abort; timeouts are composed inside the adapter (§8.2).
@@ -51,6 +52,8 @@ export async function resolveProvider(
   if (config === null) return null;
   const factory = providerFactories.get(config.providerId);
   if (factory === undefined) return null;
+  if (config.providerId === PROVIDER_KIND_OPENAI_COMPATIBLE && !isProviderAuthorized(config, store))
+    return null;
   const hasKey = await store.has(config.providerId);
   if (!hasKey) return null;
   return factory.create(config, store);

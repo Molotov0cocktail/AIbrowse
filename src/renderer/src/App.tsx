@@ -147,6 +147,13 @@ export default function App() {
                 rows={block.rows}
                 sourceRefs={block.sourceRefs}
                 onSelectSource={(candidateId) => setSelectedCandidateId(candidateId)}
+                onCopy={(viewState: TableViewState) =>
+                  window.aibrowse.research.copyTable({
+                    taskId: result.taskId,
+                    tableBlockIndex: i,
+                    view: viewState,
+                  })
+                }
                 onExportCsv={(viewState: TableViewState) =>
                   research.exportCsv({
                     taskId: result.taskId,

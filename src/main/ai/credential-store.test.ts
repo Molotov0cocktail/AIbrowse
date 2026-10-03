@@ -111,18 +111,19 @@ describe('SecureCredentialStoreImpl — has/delete 语义', () => {
 });
 
 describe('SecureCredentialStoreImpl — 损坏容错（fail-closed）', () => {
-  it('文件非 JSON → 视为空 + 可恢复写入', async () => {
+  it('文件非 JSON → 读取失败并保留原件', async () => {
     const dir = join(baseDir, 'case-corrupt');
     mkdirSync(dir, { recursive: true });
     const store = new SecureCredentialStoreImpl(dir, new Base64Cipher());
     writeFileSync(join(dir, 'credentials.json'), 'not json{{', 'utf8');
     expect(await store.get('openai')).toBeNull();
     expect(await store.has('openai')).toBe(false);
-    expect(await store.set('openai', PLAIN_KEY)).toBe(true);
-    expect(await store.get('openai')).toBe(PLAIN_KEY);
+    expect(await store.set('openai', PLAIN_KEY)).toBe(false);
+    expect(await store.get('openai')).toBeNull();
+    expect(readFileSync(join(dir, 'credentials.json'), 'utf8')).toBe('not json{{');
   });
 
-  it('sk- 明文形态条目与非法值在加载时被丢弃（fail-closed）', async () => {
+  it('包含明文形态或非法值的文件整体拒绝读取（fail-closed）', async () => {
     const dir = join(baseDir, 'case-plain-entry');
     mkdirSync(dir, { recursive: true });
     const store = new SecureCredentialStoreImpl(dir, new Base64Cipher());
@@ -141,7 +142,7 @@ describe('SecureCredentialStoreImpl — 损坏容错（fail-closed）', () => {
     );
     expect(await store.has('plain')).toBe(false);
     expect(await store.has('junk')).toBe(false);
-    expect(await store.get('good')).toBe('ok-value');
+    expect(await store.get('good')).toBeNull();
   });
 
   it('解密失败 → get 返回 null（不抛异常）', async () => {
@@ -210,8 +211,7 @@ describe('纯文件格式函数（parse/serialize/isCiphertextShape）', () => {
     expect(parseCredentialsFile('')).toBeNull();
     expect(parseCredentialsFile('[1,2]')).toBeNull();
     expect(parseCredentialsFile('{"version":2,"providers":{}}')).toBeNull();
-    expect(parseCredentialsFile('{"version":1,"providers":[]}')).not.toBeNull(); // providers 非对象 → 视为空
-    expect(parseCredentialsFile('{"version":1,"providers":[]}')?.data.providers).toEqual({});
+    expect(parseCredentialsFile('{"version":1,"providers":[]}')).toBeNull();
   });
 
   it('非法条目丢弃计数（dropped）', () => {

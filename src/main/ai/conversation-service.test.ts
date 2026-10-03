@@ -406,7 +406,9 @@ describe('ConversationService — ask 编排时序（§6.1）', () => {
     const { turn } = await askAndWait(f, session?.id ?? '', '没有配置的问题');
     expect(turn.status).toBe('error');
     expect(turn.error?.code).toBe('not-configured');
-    expect(turn.error?.message).toBe('尚未配置 AI Provider 或 API Key，请先在设置中配置');
+    expect(turn.error?.message).toBe(
+      'AI Provider、API Key 或接口目标尚未授权，请在设置中保存并完成系统确认',
+    );
     expect(f.resolverCalls()).toBe(0);
     // 终态 assistant 错误消息照常落盘（§6.1 第 7 步），引用链 user 在前
     const history = await f.service.getHistory(session?.id ?? '');

@@ -121,17 +121,18 @@ describe('ConfigStore — 读写与持久化', () => {
 });
 
 describe('ConfigStore — 加载形状校验（fail-closed）', () => {
-  it('文件损坏 → 视为空 + 可恢复写入', () => {
+  it('文件损坏 → 读取失败并保留原件', () => {
     const dir = join(baseDir, 'case-corrupt');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'provider-config.json'), 'not json{{', 'utf8');
     const store = new ConfigStore(dir, new MemoryCredentials());
     expect(store.get('openai-compatible')).toBeNull();
-    expect(store.set(VALID)).toBe(true);
-    expect(store.get('openai-compatible')).not.toBeNull();
+    expect(store.set(VALID)).toBe(false);
+    expect(store.get('openai-compatible')).toBeNull();
+    expect(readFileSync(join(dir, 'provider-config.json'), 'utf8')).toBe('not json{{');
   });
 
-  it('非法条目加载时丢弃，合法条目保留', () => {
+  it('包含非法条目的文件整体拒绝读取', () => {
     const dir = join(baseDir, 'case-drop-entry');
     mkdirSync(dir, { recursive: true });
     writeFileSync(
@@ -149,7 +150,7 @@ describe('ConfigStore — 加载形状校验（fail-closed）', () => {
     const store = new ConfigStore(dir, new MemoryCredentials());
     expect(store.get('bad-url')).toBeNull();
     expect(store.get('bad-model')).toBeNull();
-    expect(store.get('openai-compatible')?.baseUrl).toBe('https://api.example.com/v1');
+    expect(store.get('openai-compatible')).toBeNull();
   });
 });
 

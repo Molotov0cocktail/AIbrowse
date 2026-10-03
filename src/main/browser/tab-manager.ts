@@ -44,6 +44,8 @@ export interface CreateTabOptions {
   deferInitialBlankLoad?: boolean;
 }
 
+declare const __RELEASE__: boolean;
+
 export interface TabManagerOptions {
   ownerWindow: BaseWindow; // contentView 挂载/卸载
   session: Session; // 持久分区会话（SessionManager 提供，§7）
@@ -65,6 +67,8 @@ export class TabManager {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        webSecurity: true,
+        devTools: typeof __RELEASE__ === 'undefined' || !__RELEASE__,
         // 不配置 preload：远程网页不得获得任何 bridge（§3.2 最小权限）
       },
     });

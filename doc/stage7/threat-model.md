@@ -65,6 +65,8 @@ host 变体和未登记资源即拒绝。CSP 保持本地脚本边界，实际�
 最终 EXE 验证 RunAsNode、NodeOptions、CLI inspect 禁用；ASAR integrity 与 OnlyLoadAppFromAsar 成对启用。
 ASAR 完整性是内容检查，不能替代发布者签名，也不能保证同账户攻击者不能同时改 EXE 与其检查逻辑。
 Windows 实际产物必须做篡改反例；不能从 `asar: true` 推断 integrity 已经生效。
+UI导航安全以当前文档令牌和固定入口校验为准：实际about:blank可能跳过可取消导航事件，
+导航开始即暂停IPC、非入口提交即撤销授权，并最多恢复一次固定入口。不得声称所有导航均可同步拦截。
 该 EXE 的 `Integrity/ElectronAsar` header 资源必须对应最终 ASAR；只翻转 fuse 不构成证明。
 CookieEncryption 保留现状，未来启用须证明单向数据升级与回退限制，不能在打包时默默改变已有 Session。
 相关平台能力依据 [Electron Fuses](https://www.electronjs.org/docs/latest/tutorial/fuses) 与

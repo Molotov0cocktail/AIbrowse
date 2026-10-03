@@ -6,7 +6,7 @@
 `9365ec4`上给出GO/PASS，H4覆盖完整`d85667c..9365ec4`；正式结论见
 [D11任务](../stage6/tasks/D11-independent-exit-audit.md)。产品需求来自[Seventh_stage.md](../../Seventh_stage.md)。
 
-当前只交付入口、风险、设计及任务合同。**本轮不启动E1，也不修改产品源码、安装打包依赖或生成发行包。**
+用户2026-10-04已授权E1–E6实现、验证、必要独立审核与阶段收尾，取代原设计轮的E1前停止边界。
 实现进度和下一动作只写[progress](../tasks/progress.md)，本提案不复制运行日记。
 
 | Entry Gate              | 已核事实                                                                                                          |
@@ -70,4 +70,4 @@ electron-vite官方同时支持builder与Forge；本项目选择builder以直接
 
 所有Seventh_stage Exit项均须映射到实际证据；设计审核PASS仅允许准备就绪，不能替代产品测试。
 实现阶段的任何确认缺陷先修复，真凭据/签名/独立机器不足则具体报告，不用“将来支持”关闭必需门。
-用户本轮停止点是**E1第一个产品实现动作之前**；不创建release/tag，不修改运行能力。
+本轮在Stage7满足全部硬门并完成收尾后停止，不启动Stage8产品实现，不创建公开Release或公开发布。

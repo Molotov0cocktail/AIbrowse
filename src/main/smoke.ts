@@ -23,6 +23,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserController } from './browser/browser-controller';
+import { PAGE_READER_WORLD_ID } from './browser/document-binding-script';
+import { qualifyContextPreviewLoading } from '../../tools/security/context-preview-smoke';
 import type { PageSnapshot, TabInfo } from '../shared/types/browser';
 import { PERSIST_PARTITION } from './browser/session-manager';
 import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sqlite-driver';
@@ -236,7 +238,7 @@ export interface SmokeOptions {
   liveWatch?: WatchLiveRunnerOptions; // D10：AIBROWSE_LIVE_WATCH=1 有界真实 Watch runner
   watchD10?: WatchD10OfflineOptions; // D10：真实产品表面/资源观察器
   liveSites?: boolean; // S6：真实 Provider 多网站共读验证（AIBROWSE_LIVE_SITES=1 时启用）
-  liveAgent?: boolean; // A7：真实 Provider Agent 验证（AIBROWSE_LIVE_AGENT=1 时启用，需用户授权）
+  liveAgent?: boolean; // A7: explicit live harness injection under the standing Provider authorization.
   liveAgentPre?: boolean; // A7 补验：最小 tools 兼容性预检（AIBROWSE_LIVE_AGENT_PRE=1，仅场景 1 + 零泄漏终检）
   liveAgentSupplement?: boolean; // A7 补验补证：定向补验（AIBROWSE_LIVE_AGENT_SUPPLEMENT=1，仅修订场景 2/3 + 零泄漏终检）
   liveAgentSources?: boolean; // B6：真实 Provider AI 自然语言管理验证（AIBROWSE_LIVE_AGENT_SOURCES=1；
@@ -1803,7 +1805,11 @@ function visibleTabView(win: BrowserWindow | null | undefined): WebContentsView 
 // React 事件系统监听根容器：原生 click / input / keydown 事件冒泡即触发对应 handler。
 // Address-bar input uses native text/key events after establishing real renderer focus.
 export async function uiJs(uiWc: WebContents, script: string): Promise<unknown> {
-  return uiWc.executeJavaScript(script);
+  try {
+    return await uiWc.executeJavaScript(script);
+  } catch (cause) {
+    throw new Error('冒烟UI脚本执行失败（调用点见主进程堆栈）', { cause });
+  }
 }
 
 async function typeIntoAddressBar(uiWc: WebContents, text: string): Promise<void> {
@@ -2586,6 +2592,30 @@ export async function runAiUiScenarios(
   const sessionsDir = join(aiSmokeDir, 'conversations');
   const [winW, winH] = uiWindow.getContentSize();
 
+  const malformedResult = (await uiJs(
+    uiWc,
+    `(async () => {
+    const beforeTabs = await window.aibrowse.tabs.list();
+    const beforeSessions = await window.aibrowse.conversation.list();
+    let rejected = 0;
+    for (const call of [
+      () => window.aibrowse.tabs.create(42),
+      () => window.aibrowse.conversation.create({ ephemeral: 'false' }),
+      () => window.aibrowse.config.providers.set({ providerId: 'openai-compatible', baseUrl: 'https://example.invalid', model: 'synthetic', approved: true }),
+    ]) {
+      try { await call(); } catch { rejected += 1; }
+    }
+    const afterTabs = await window.aibrowse.tabs.list();
+    const afterSessions = await window.aibrowse.conversation.list();
+    return { rejected, tabsStable: JSON.stringify(beforeTabs) === JSON.stringify(afterTabs), sessionsStable: JSON.stringify(beforeSessions) === JSON.stringify(afterSessions) };
+  })()`,
+  )) as { rejected: number; tabsStable: boolean; sessionsStable: boolean };
+  assert(
+    malformedResult.rejected === 3 && malformedResult.tabsStable && malformedResult.sessionsStable,
+    'E1实际preload与IPC畸形参数必须拒绝且零业务写',
+  );
+  logInfo('smoke', 'E1实际preload与IPC畸形参数反例通过（3项拒绝、Tab/会话无变更）');
+
   const activeViewState = (): { viewId: number; bounds: BoundsRect } | null => {
     const view = visibleTabView(uiWindow);
     return view === null ? null : { viewId: view.webContents.id, bounds: view.getBounds() };
@@ -2761,6 +2791,8 @@ export async function runAiUiScenarios(
         `矩阵 9：面板打开后活动 view bounds.width 未收缩到窗口宽-${PANEL_WIDTH}`,
       );
       logInfo('smoke', 'AI 共读 UI 矩阵 9（开）：面板打开后 bounds 收缩 380');
+
+      await qualifyContextPreviewLoading(controller, uiWindow);
 
       // —— 矩阵 5：薄快照（空白页正文稀薄 → thin 徽标提示 + 提问正常） ——
       await waitForUiText(
@@ -3254,8 +3286,8 @@ export async function runAiUiScenarios(
         ((await uiJs(
           uiWc,
           `Object.keys(window.aibrowse.config.providers).sort().join(',')`,
-        )) as string) === 'list,set,setKey',
-        '矩阵 10：bridge 白名单应为 list/set/setKey（无读回方法）',
+        )) as string) === 'hasKey,list,set,setKey',
+        '矩阵 10：bridge 白名单应为 hasKey/list/set/setKey（Key值不可读回）',
       );
       assert(
         ((await uiJs(uiWc, `typeof window.aibrowse.config.providers.getKey`)) as string) ===
@@ -4352,7 +4384,23 @@ async function runAgentRuntimeScenarios(
     // —— A-04：step-limit（注入 maxSteps=3；绝不执行第 4 步） ——
     {
       const tabId = await openAndReady(pages.interactionUrl);
-      await pageJs('window.scrollTo(0, 0)');
+      const scrollProbe = (code: string): Promise<unknown> =>
+        activeWc().executeJavaScriptInIsolatedWorld(PAGE_READER_WORLD_ID, [{ code }]);
+      const scrollReference = (await scrollProbe(`(() => {
+        window.scrollTo(0, 0);
+        const positions = [];
+        for (const dy of [1, 2, 3, 4]) { window.scrollBy(0, dy); positions.push(window.scrollY); }
+        window.scrollTo(0, 0);
+        const nativeScroll = window.scrollBy.bind(window);
+        window.__a04ScrollCalls = [];
+        window.scrollBy = (...args) => { window.__a04ScrollCalls.push(args); return nativeScroll(...args); };
+        return { positions, devicePixelRatio: window.devicePixelRatio };
+      })()`)) as { positions: number[]; devicePixelRatio: number };
+      assert(
+        scrollReference.positions[2] !== scrollReference.positions[3],
+        'A-04三步与四步实际滚动参考必须可区分',
+      );
+      logInfo('smoke', `A-04实际浏览器滚动参考：${JSON.stringify(scrollReference)}`);
       const scrollRound = (id: string, dy: number): Array<Array<string | FakeChunk>> => [
         [
           {
@@ -4384,7 +4432,15 @@ async function runAgentRuntimeScenarios(
       assert(run.run?.status === 'step-limit', `A-04 应 step-limit（实际 ${run.run?.status}）`);
       assert(run.run?.stepsUsed === 3, `A-04 应 3 步（实际 ${run.run?.stepsUsed}）`);
       const scrollY = (await pageJs('window.scrollY')) as number;
-      assert(scrollY === 6, `A-04 只应执行 3 次滚动（scrollY 应累计 1+2+3=6，实际 ${scrollY}）`);
+      const scrollCalls = await scrollProbe('window.__a04ScrollCalls');
+      assert(
+        JSON.stringify(scrollCalls) === '[[0,1],[0,2],[0,3]]',
+        'A-04必须恰好执行指定三次滚动，第4次零调用',
+      );
+      assert(
+        scrollY === scrollReference.positions[2],
+        `A-04滚动结果必须等于本浏览器三步参考（实际 ${scrollY}）`,
+      );
       assert(h.auditEntries.length === 3, 'A-04 审计应恰好 3 条（未执行调用零审计零伪造）');
       h.service.dispose();
       await restoreTabs('A-04');
@@ -6939,7 +6995,7 @@ async function runRedTeamScenarios(
   }
 }
 
-// ---------- A7 真实 Provider Agent 场景（AIBROWSE_LIVE_AGENT=1，需用户授权——询问边界） ----------
+// ---------- A7 live Provider scenarios (explicit harness injection required) ----------
 // Third_stage.md §7 场景 1–6 + RT-10 敌对页 + 取消/停止 + 零泄漏终检 + 真 Key 零暴露扫描。
 // 完整生产链路：UI 任务模式 → preload bridge → IPC（sender+主帧校验）→ 生产
 // ConversationServiceImpl.agentAsk → AgentLoop → ToolRegistry（17 工具）→ 权限/确认/审计
@@ -8619,7 +8675,7 @@ async function runSourcesToolsSmoke(
   }
 }
 
-// ---------- B6 真实 Provider AI 自然语言管理验证（AIBROWSE_LIVE_AGENT_SOURCES=1，需用户授权） ----------
+// ---------- B6 live Provider Source management (explicit harness injection required) ----------
 // Fourth_stage.md §7 场景 1–5 的 AI 侧（离线确定性由 8.12/8.13 覆盖；本函数为真实模型
 // 证据——与 A7 runLiveAgentScenarios 同纪律：任务文案要求明确、断言落在结果语义
 // （容许合理额外工具步骤）、确认门真实 UI 驱动、真 Key 零暴露扫描、台账只报次数与
@@ -10913,7 +10969,7 @@ export async function runSmokeScenario(
         options.liveAgentPre === true ||
         options.liveAgentSupplement === true
       ) {
-        // A7：真实 Provider Agent 验证（AIBROWSE_LIVE_AGENT=1，需用户授权——询问边界；
+        // A7 uses the explicitly injected live harness under the standing authorization.
         // 场景 1–6 + RT-10 敌对页 + 停止 + 零泄漏终检 + 真 Key 零暴露扫描）；
         // 补验预检（AIBROWSE_LIVE_AGENT_PRE=1）：仅场景 1 + 零泄漏终检 + 台账；
         // 定向补验（AIBROWSE_LIVE_AGENT_SUPPLEMENT=1）：仅修订场景 2/3 + 零泄漏终检 + 台账
@@ -11207,7 +11263,7 @@ export async function runSmokeScenario(
     // 8.15 B8 红队矩阵 SRT-01～SRT-12（决议 #93 校准）：敌对夹具（诱导收藏+标官方/
     // 注入 note/SQL·FTS 注入/URL 变体/超量垃圾夹具）+ SRT-08 逐通道字节级隐私扫描 +
     // SRT-09 核验 8.14 结构化证据 + SRT-12 核验 8.6 结构化证据 + RT-09 扩展静态审计 +
-    // RT-10 本轮状态登记（未授权 NOT RUN）。LIVE 模式跳过同 8.4–8.6 条件。
+    // RT-10 is NOT RUN without live credential injection; LIVE skips this offline matrix.
     if (options.liveSmoke === undefined) {
       await runSrtScenarios(controller, options, rtEvidence, recoveryEvidence);
     }
@@ -12241,7 +12297,11 @@ async function runWatchD9EndToEndSmoke(
         button.click();
       })()`,
     );
-    await waitFor(() => uiHas(uiWc, '.watch-event-row'), 5000, '8.26-E2E：Event 行未恢复');
+    await waitFor(
+      () => uiHas(uiWc, `[aria-label="选择事件 ${digestEventId}"]`),
+      5000,
+      '8.26-E2E：待删除的精确Event行未恢复',
+    );
     await uiJs(
       uiWc,
       `(() => {
@@ -13550,7 +13610,7 @@ async function runSourcesRecoverySmoke(
 // 威胁模型 §4 断言表逐项落地；每项 SRT 独立断言（禁止总布尔代替）；SRT-09/SRT-12
 // 核验 8.14/8.6 结构化已通过证据（非日志字符串）；SRT-08 逐通道字节级隐私扫描
 // （敏感标记在运行时分片构造，禁止源码真实 Key 形态）；SRT-03/SRT-12 限产品代码
-// 的分类静态审计（不靠全仓库零字符串结论）；RT-10 本轮未授权 → 明确 NOT RUN 登记。
+// 的分类静态审计（不靠全仓库零字符串结论）；RT-10 未注入真实凭据时登记 NOT RUN。
 async function runSrtScenarios(
   controller: BrowserController,
   options: SmokeOptions,
@@ -15198,11 +15258,11 @@ async function runSrtScenarios(
         // 敏感标记运行时分片（本场景自身纪律）：8.15 全部标记经 randomBytes 构造
         // （SRT-08 标记已断言；静态面禁止源码真实 Key 形态由既有 logger 单测 + 本次
         // 日志字节扫描覆盖）
-        // RT-10 本轮状态登记：真实 Provider 观察性验证未获用户授权 → NOT RUN
-        //（不得把 2026-08-14 历史证据冒充本轮实测；不阻塞离线 B8）
+        // This offline run has no live credential injection; retain NOT RUN explicitly.
+        // Historical live evidence does not substitute for a current Provider observation.
         logInfo(
           'smoke',
-          'SRT-12 静态审计分类证据：SQL 执行点全部位于允许点（Repository/migrations/driver/backup/SMOKE 测试设施）；renderer/preload 零 SQL；Electron 隔离/Key 零读回/Source Tool 零网络代码证据在位；RT-10 本轮状态 = NOT RUN（未获用户授权，真实 Provider 观察性验证，不冒充历史证据）',
+          'SRT-12 静态审计分类证据：SQL 执行点全部位于允许点（Repository/migrations/driver/backup/SMOKE 测试设施）；renderer/preload 零 SQL；Electron 隔离/Key 零读回/Source Tool 零网络代码证据在位；RT-10 本轮状态 = NOT RUN（本轮未注入真实 Provider 凭据，未执行真实 Provider 观察性验证，不冒充历史证据）',
         );
       }
       logInfo(
@@ -15214,7 +15274,7 @@ async function runSrtScenarios(
     }
     logInfo(
       'smoke',
-      '8.15 B8 红队矩阵 SRT-01～SRT-12 全部通过（敌对收藏诱导/provenance 恒等/note 块隔离/禁具与上限/注入仅作数据/canonicalization 欺骗/中途失败整体回滚/重放・迟到・跨 run/逐通道隐私扫描/8.14 证据核验/hard delete 清理/垃圾上界/8.6 证据核验 + RT-09 扩展审计；RT-10 未授权 NOT RUN）',
+      '8.15 B8 红队矩阵 SRT-01～SRT-12 全部通过（敌对收藏诱导/provenance 恒等/note 块隔离/禁具与上限/注入仅作数据/canonicalization 欺骗/中途失败整体回滚/重放・迟到・跨 run/逐通道隐私扫描/8.14 证据核验/hard delete 清理/垃圾上界/8.6 证据核验 + RT-09 扩展审计；RT-10 本轮未注入真实凭据，NOT RUN）',
     );
   } catch (err) {
     logError('smoke', '8.15 红队矩阵失败', err);

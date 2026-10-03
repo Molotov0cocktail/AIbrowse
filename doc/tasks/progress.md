@@ -2,7 +2,89 @@
 
 > 唯一进度源。历史放Git/原始证据；不再逐轮累积开发日记。风险编号不重排、不复用。
 
-## 当前结论（2026-10-03）
+## 当前结论（2026-10-04）
+
+用户已明确授权 Stage7 E1–E6 实现、验证、必要独立审核和阶段收尾，取代历史 E1 前停止边界。
+本次接管 HEAD 为25a6aa5489b0596d529b97d62eab8ee789bb1e70，main干净，双远程跟踪引用同点。
+入口文档已同步；E1差量合同见doc/stage7/tasks.md。E1实现、验证与新的独立安全审核已PASS，正在逻辑提交与双远程收尾。
+下一实施范围为E2维护准入、真实排水与容量合同闭合；不可信容器读取/解析须等待其预算冻结。
+范围为Windows x64未签名内部候选、手动升级；不公开发布/自动更新，Stage7完成后停止。
+并行子任务请求模型按AGENTS调度；工具未回显actual时记不可验证。
+
+E1最终独审为PASS（`log/stage7-e1/independent-e1-final-review-001.md`），仅授E1，不授E2–E6或Stage7整体通过。
+受审工作区106文件清单SHA256为e859f35d5b05dc02bc7fbcdd6e3c529dfca5652bd9d38668178d2b9a9a245e70。
+首轮REPAIR/REPLAN原件`independent-review-interim-001.md`及全部失败保留。
+IPC值schema、取消确认后的Key显示、第二实例聚焦与凭据配额已修复；实际包动态门由同候选005的Product与Tamper证据共同关闭。
+Electron安全资格已据上游公告从43.4.0修订为精确43.7.7，Vitest安全补丁升至4.1.11；须在最终候选重做受影响门。
+43.4.0壳资格、普通production三次失败和release构建红态原件均保留在`log/stage7-e1/`，不以旧包静态PASS代替最终运行。
+2026-10-04用户确认没有独立Windows环境：E5独立环境硬门BLOCKED，继续实现和开发机验证，Stage7不得关闭。
+旧profile隔离预检证实AppData/既有aibrowse卷与路径身份不一致，实际rename被拒绝，私有目录未移动或跨卷复制。
+用户随后授权清空现有开发版数据，已受控执行；原件在`log/stage7-e1/authorized-profile-reset-9fc28e79375a4c87b009a1e5361f8787/`。
+新根为MSIX虚拟化映射，KnownFolder别名/实体128位FileID、卷及ACL一致；改用空根合成scope与固定Job执行入口，
+获得独立执行范围PASS（`independent-disposable-scope-review-001.md`）。不再需要空白账户，不恢复旧rename路线。
+该同机scope不能替代E5；最终实际EXE证据与未通过的早期轮次分列如下。
+Electron43.7.7六场景安全资格009及独立复验通过；全量213文件4119测试通过（full-tests-002.txt），需纳入后续增量终检。
+production008默认全部PASS/正常退出；此前A04量化/隔离世界观测位置及D9精确DOM等待问题已修订工具并保留失败。
+production session/sources/research/watch四组set/check共8进程通过（cross-production-001）。
+trace定位ContextBadge重复preview累积Electron加载监听，已按Tab/世代合并。production009真实30更新峰值不涨且归零，
+后段L3发现主进程明确none被误判unavailable，已红→绿修复并独审；最新聚焦2文件25项通过。
+实际probe已加强为renderer明确确认全部30条且页面仍loading后再释放响应；dev-default001及production-default010完整通过，
+均确认30条、监听baseline/peak=2/2且完成后0，无监听超限警告。normal build011对应最终普通production产物。
+dev/production各五组set/check合计20进程通过；最终全量218文件4158测试通过（final-full-tests-001），
+final-typecheck/lint/format-001通过。全量包含E2独立准备工具测试，不授E2产品通过。
+release候选004静态独审通过，EXE SHA256为514a93eaa26d6f743fa0270d632de5fb09e2463f5fee7f72261af20d81ffdcbd。
+首次实际All在Product的Snapshot操作失败，原因是工具未先打开默认关闭的AI侧栏；未进入Tamper。
+失败journal为disposable-profile/journal-24fe0464b8074846851a6f18624c5d80，Job实际归零、marker与目录身份复验通过。
+UIA流程已修复，固定失败合成目录的完整归档/新根工具经独审准入，第一轮原件完整归档。
+第二轮journal-23c0ec96cc854f129338c1652fbf8867在credentials.json.tmp→final触发实际EXDEV，未进入原生确认或Tamper。
+只读诊断确认KnownFolder声明路径与实体是同一Windows对象，Node普通realpath保留声明路径，realpathSync.native返回实体路径。
+已保持Electron逻辑userData/Session不变，在单实例锁之后、logger/Store之前验证并固定全部Node持久化实体根；
+不加入复制回退。固定九个成员作流式路径/对象检查，无累计文件数上限，深度32；源码差量已独审限定PASS。
+新红绿及独审111项通过；native-root-production-default-001与native-root-cross-production-001共11进程通过，
+普通production主入口绑定D012E189976A49D8622C5C00258681803F36CA4DEC3D9417E9415D8DA984C97B。
+release候选005静态独审通过，EXE SHA256为88d7370c5569c3c08d50971ea3171459b5f5c07464663be3d30309183e70710e。
+实际All加入已确认首进程终止后的同profile冷重启，核对原Key/配置版本与凭据世代、历史会话、三空库重开；
+该工具使用受控强制终止，不将它写成正常关闭证据。工具差量独审限定PASS。
+候选005首次实际All（journal-06a4b476c6694474b5a1cd04d72fd47b）已进入原生目标确认，但UIA工具未识别弹窗而失败；
+Job归零且现场保留，Tamper未运行。只确认此前EXDEV未在该步骤重现，不授完整持久化或原生确认门通过。
+工具按Win32窗口owner关系替换UIA顶层枚举假设。后继journal-0b39a32e1eaf43a3bea20e579bb6ae2b确认原生#32770窗口
+与main同PID、owner精确相符；该轮因UIA选中同名但不支持InvokePattern的元素而失败，原元素类型未记录，
+尚未点击取消，Job归零、原件保留。
+工具统一收紧可交互选择器并补反例；不以标题单独认领窗口，不用坐标或系统消息回退。
+后继journal-8f23042cf5a24539ba4d0854654ee291因非敏感设置值的即时读回假设失败，已改有界收敛等待。
+最新journal-bfaadf81d8784fdb9429bbe4d31a5bee证明实际TaskDialog取消/确认控件为Pane、无InvokePattern，
+WinForms Button夹具不覆盖此平台控件。已停止实际profile复跑，先做真实TaskDialog的公开语义动作资格；
+两轮均Job归零、marker复验通过、失败原件保留；这些轮次未提供原生取消/确认、冷重启或Tamper通过证据。
+同版Electron TaskDialog的MSAA语义默认动作已独审限定PASS（取消response0、确认response1、重复候选拒绝）。
+候选005后继journal-b997103bbdd14bf1ae6987564f82d956的Product报告已PASS：原生取消/确认、3次合法绑定请求、
+零重定向接收、第二实例恢复聚焦及同profile冷重启成立；配置/凭据哈希、世代与文件身份保持。
+UTF-8字节canary扫描89文件、135项、4381680字节零命中；不将该扫描单独泛化为所有编码的泄漏证明。
+该All在Tamper的ESM AppData探针顶层等待ready时悬挂，已受控停止，All失败及Product成功原件分别保留，Job归零。
+探针改为ready前读取固定路径，最小真实资格已退出；新空scope的固定Tamper-only续验入口正由独审核准，
+它绑定已有Product证据与同包哈希，不重复已通过产品序列、不改写旧All失败。
+最终Tamper journal-8edf39ba16924ace964b70341acfc2ef实际PASS：原包存活、三个调试端口全未监听，
+一字节等价空白篡改与移走ASAR后裸app两个反例均exit1拒绝、canary零执行；Job归零、marker复验通过。
+独立复算`independent-release-dynamic-binding-001.json`确认两份报告与当前005 EXE/ASAR/header一致。
+native-root-dev-default-001及native-root-cross-dev-001五组10进程均已通过。
+final-full-tests-002为222文件4203项PASS；final-typecheck/format-002及final-normal-build-002通过。
+final-lint-002的新工具入口错误已修；final-lint/typecheck/format-003与diff-check-003全部通过，E1门已闭合。
+本轮smoke旧RT-10日志误写“未授权”，已修为“本轮未注入真实Provider凭据”；原件不改写，真实Provider仍NOT RUN。
+E2只做独立容量资格准备，工具位于tools/data-qualification；最终run-003报告为
+`log/stage7-e2/2026-10-03T17-59-41-617Z-7936/report.json`。预算尚未全部冻结，未开始E2产品导入实现，未授E2 PASS。
+补测envelope-Hs4Ih1覆盖Research接近预算、Watch逻辑预算99.228%及Conversation结构/编码；不能把物理样本当历史上界。
+独立utility资格前两轮在UI初始化失败，第二轮诊断确认file协议对ASAR内UI返回ERR_FILE_NOT_FOUND；未测到worker。
+已改固定两资产安全协议并通过6项工具测试，保持相同fuses与权限；utility-55e3a21470824285b36c730a6e1b4a10
+实际单轮7场景通过、Job归零。三轮native阻塞后的kill→exit为20.0853/3.1569/2.7043ms，
+各16个真实UI往返样本、最大0.8/0.7/0.5ms；迟到/洪泛/畸形响应均拒绝且零切换。证据为该包runtime/report.json及job-result.json。
+这仅资格化utilityProcess执行方案，旧失败保留，不能替代E2维护排水、导入或产品验收。
+5GiB容器顺序I/O资格已执行，原件container-io-18c1a85af6964ce49052acf323fc3327；
+实际写入/读回均5368709120字节、哈希一致，普通非稀疏且未压缩。写入8.487s、fsync0.224s、读回与哈希3.295s，
+总I/O12.014s，RSS采样峰79958016字节；Job已归零。不声称冷缓存/物理盘吞吐，不授E2产品完成。
+后续仍须维护排水与语义投影预算资格，才能冻结完整容器导入合同。
+drain-18b0f2c92a5c465ebf26decb9c7c2747首轮保留失败：Conversation已实证dispose后仍落盘，Research夹具20s超时。
+独审静态定位为夹具误拒规划阶段必需listGroups调用；该工具假设正在修复，Job已归零，不授Research排水证据。
+
+### Stage6与设计轮既有证据（保留适用边界）
 
 第六阶段已由新的独立D11判定 **GO / PASS**（受审候选`9365ec4`）。H1/H2/H3a已关闭；H3b第二次正式接电轮的**资源、固定负载、隐私、退出及Windows子门已闭合**，
 用户2026-10-03因主要接电使用明确取消强制拔电测试；电池记NOT RUN、续航/功耗未验证，按#S6-092不再阻塞阶段。
@@ -10,7 +92,7 @@ RSS/private-v2及handle-v3的工具独审与两轮原件复算均已完成；第
 原合同RSS增长FAIL原样保留。第一轮句柄绝对median/P95真实FAIL也保留，没有通过更换公式抹去。
 H4已对`d85667c..9365ec4`完整范围正式PASS，报告`log/h3br-current/h4-final-audit-001.md`；
 新的独立D11报告为`log/h3br-current/d11-independent-exit-audit-001.md`；production默认及Watch set/check三进程exit0，
-独立8文件114项通过，两轮正式原件/registry/61槽退出复核完成。Stage7五份设计及任务合同已独立PASS，停在首个产品实现之前。
+独立8文件114项通过，两轮正式原件/registry/61槽退出复核完成。Stage7五份设计及任务合同已独立PASS；本次依据新授权开始E1实现。
 当前实现候选`391948e`（前驱`d53f607`），最终全量202文件4031测试PASS，typecheck/lint/format通过；
 normal五产物及正式002的collector/qualification十二产物与原验收归档全部一致，无需为离线工具重建或重采。
 此前“稍后安排，等我通知”已由取消强制测试的新裁决替代；不再等待或启动电池窗口，不改写既有机器报告。
@@ -79,17 +161,17 @@ T4共14点、四轮3/4/4/3；T8共19点、四轮5/5/4/5，跨度2800.010950/2839
 
 ## 阶段状态
 
-| 范围         | 状态         | 证据/边界                                                                                                |
-| ------------ | ------------ | -------------------------------------------------------------------------------------------------------- |
-| Stage1–5     | 已关闭       | 各Stage任务/设计和Git历史保留，本轮不重审全部历史                                                        |
-| Stage6 D1–D9 | 已完成       | 已有独立安全/持久化/UI审核，变更涉及的部分按影响复验                                                     |
-| H1           | 历史关闭     | 其旧验收工程方案已由本轮替换，不重做旧合同                                                               |
-| H2           | PASS关闭     | `9e41bd6`，原47项保留+24项；99ms红态和单调计时修复保留                                                   |
-| H3a          | PASS关闭     | `log/h3a-default-independent-current/h3a-convergence.md`；RSS累计20次，default dev/prod最终各3次完整通过 |
-| H3b / H3b-R  | PASS关闭     | 正式002独立PASS；电池按用户#S6-092列NOT RUN，旧失败与机器输出保留                                        |
-| H4           | PASS         | `h4-final-audit-001.md`，完整`d85667c..9365ec4`，用户电池裁决单列                                        |
-| D11          | GO / PASS    | 新独立审核候选9365ec4；`d11-independent-exit-audit-001.md`                                               |
-| Stage7       | 设计独审PASS | `stage7-independent-design-review-001.md`；E1–E6未开始，停在第一个产品实现前                             |
+| 范围         | 状态       | 证据/边界                                                                                                |
+| ------------ | ---------- | -------------------------------------------------------------------------------------------------------- |
+| Stage1–5     | 已关闭     | 各Stage任务/设计和Git历史保留，本轮不重审全部历史                                                        |
+| Stage6 D1–D9 | 已完成     | 已有独立安全/持久化/UI审核，变更涉及的部分按影响复验                                                     |
+| H1           | 历史关闭   | 其旧验收工程方案已由本轮替换，不重做旧合同                                                               |
+| H2           | PASS关闭   | `9e41bd6`，原47项保留+24项；99ms红态和单调计时修复保留                                                   |
+| H3a          | PASS关闭   | `log/h3a-default-independent-current/h3a-convergence.md`；RSS累计20次，default dev/prod最终各3次完整通过 |
+| H3b / H3b-R  | PASS关闭   | 正式002独立PASS；电池按用户#S6-092列NOT RUN，旧失败与机器输出保留                                        |
+| H4           | PASS       | `h4-final-audit-001.md`，完整`d85667c..9365ec4`，用户电池裁决单列                                        |
+| D11          | GO / PASS  | 新独立审核候选9365ec4；`d11-independent-exit-audit-001.md`                                               |
+| Stage7       | E1独审PASS | `independent-e1-final-review-001.md`；E2准备/维护接口为下一范围，E5独立环境BLOCKED，阶段未关闭           |
 
 ## H3b-R当前实现与验证
 
@@ -312,14 +394,10 @@ normal五产物与既有验收字节一致；未重新构建或重复产品冒�
 
 ## 下一唯一执行任务
 
-Stage6已经GO/PASS，H3b/H4/D11没有待补硬门；电池依用户裁决NOT RUN，不再安排拔电。
-Stage7五份设计及E1–E6任务合同已完成并独立PASS，报告为`log/h3br-current/stage7-independent-design-review-001.md`；本轮没有改产品源码、工具、依赖或构建配置。
-设计基线为`6bc4f00`，设计入口为`doc/stage7/proposal.md`与`tasks.md`。本轮停在E1首个产品实现动作之前，
-后续只有用户明确启动实现才进入发行构建/安全能力边界；不会把设计通过当发行包或Stage7产品完成。
+完成Stage7 E1：release编译/包白名单、稳定identity与单实例、资产协议/CSP/IPC文档世代、所有Session权限与下载、
+Provider凭据目标原生授权及实际EXE fuses/ASAR反例。先聚焦红绿，再全量与dev/production/packaged真实验收，
+由新的独立安全Reviewer审核后逻辑提交、正常双远程推送，随后依次推进E2–E6。
 
-**本轮授权工作已完成，无待处理UAC或构建工具清理。** Stage6及Stage7纯设计收尾完成，新增构建环境已移除并独立复核；停在Stage7 E1产品实现之前。后续若用户明确启动实现，再按E1合同接管当时Git，不自动推进产品实现。
-
-设计独审/文档格式/敏感模式与diff终检、逻辑提交及正常双远程交付均已完成；工程收尾没有重跑未变Stage6长时验收。设计审核之后仅Markdown引用块换行格式修正，无契约变更；暂存区发现的四处行尾空格已在独立后继提交修复，最终范围diff-check通过。
-正式原件、失败及unknown继续保留：`log/h3br-current/`；H3b非暂停工具源码均已在Git。
-D11监听器诊断观察到同一对象在未销毁时归零；一次性hook污染子进程JSON的exit1完整保留，未替代无hook三进程PASS。
-完整当前接管边界见`doc/prompt.md`，不返回旧012/ETW路线。
+Stage6 D11报告为log/h3br-current/d11-independent-exit-audit-001.md；设计独审报告为
+log/h3br-current/stage7-independent-design-review-001.md。二者不授Stage7实现或包验收通过。
+新增构建工具卸载义务已关闭；电池NOT RUN保持。原历史停止指令只作Git历史，不再约束本轮。

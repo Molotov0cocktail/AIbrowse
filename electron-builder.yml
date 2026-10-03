@@ -1,0 +1,52 @@
+appId: com.aibrowse.desktop
+productName: AIbrowse
+asar:
+  smartUnpack: false
+compression: normal
+directories:
+  output: release
+files:
+  - out/release/main/*.js
+  - '!out/release/main/release-modules.json'
+  - out/release/preload/index.js
+  - out/release/renderer/index.html
+  - out/release/renderer/asset-manifest.json
+  - out/release/renderer/assets/**/*
+  - package.json
+  - node_modules/@federicocarboni/saxe/package.json
+  - node_modules/@federicocarboni/saxe/LICENSE
+  - node_modules/@federicocarboni/saxe/lib/index.js
+  - node_modules/parse5-sax-parser/package.json
+  - node_modules/parse5-sax-parser/LICENSE
+  - node_modules/parse5-sax-parser/dist/*.js
+  - node_modules/parse5/package.json
+  - node_modules/parse5/LICENSE
+  - node_modules/parse5/dist/**/*.js
+  - node_modules/entities/package.json
+  - node_modules/entities/LICENSE
+  - node_modules/entities/dist/**/*.js
+  - '!node_modules/**/*.map'
+  - '!node_modules/**/*.d.ts'
+  - '!node_modules/**/src/**'
+  - '!node_modules/**/README*'
+extraMetadata:
+  main: out/release/main/index.js
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  loadBrowserProcessSpecificV8Snapshot: false
+  grantFileProtocolExtraPrivileges: false
+npmRebuild: false
+nodeGypRebuild: false
+forceCodeSigning: false
+publish: null
+win:
+  target:
+    - target: dir
+      arch:
+        - x64
+  executableName: AIbrowse

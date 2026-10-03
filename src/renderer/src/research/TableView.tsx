@@ -1,12 +1,11 @@
 // C8 决议 #160：TableView 交互组件——表头点击排序（asc/desc 循环）、基础筛选、
-// 清除筛选、复制当前视图（navigator.clipboard 仅明确用户点击后调用；失败显示
+// 清除筛选、复制当前视图（主进程专用通道仅明确用户点击后调用；失败显示
 // 固定中文诊断，不记录单元格内容——FT-16）、CSV 导出触发（受限 view state）。
 // 排序/筛选/复制文本由 shared 纯函数（table-utils）承担——本组件只做 UI 状态
 // 与事件接线；输入（columns/rows）零修改。
 import { useMemo, useState, type ReactElement } from 'react';
 import {
   applyTableView,
-  buildTableCopyText,
   TABLE_FILTER_MAX_CHARS,
   type TableViewState,
 } from '../../../shared/research/table-utils';
@@ -18,6 +17,7 @@ export interface TableViewProps {
   rows: string[][];
   sourceRefs: string[];
   onSelectSource?: (candidateId: string) => void;
+  onCopy?: (view: TableViewState) => Promise<boolean>;
   onExportCsv?: (view: TableViewState) => Promise<ExportCsvResult> | ExportCsvResult;
   title?: string;
 }
@@ -27,6 +27,7 @@ export function TableView({
   rows,
   sourceRefs,
   onSelectSource,
+  onCopy,
   onExportCsv,
   title = '表格',
 }: TableViewProps): ReactElement {
@@ -51,13 +52,15 @@ export function TableView({
     setNotice(null);
   };
 
-  // 决议 #160(6)：Clipboard 只能在明确用户点击后调用 navigator.clipboard.writeText；
+  // Clipboard writes use the main-process verified table projection.
   // 失败显示固定中文诊断，不记录单元格内容
   const copyView = async (): Promise<void> => {
     setNotice(null);
     try {
-      const text = buildTableCopyText(projected.columns, projected.rows);
-      await navigator.clipboard.writeText(text);
+      if (onCopy === undefined || !(await onCopy(view))) {
+        setNotice('复制失败，请重试');
+        return;
+      }
       setNotice('已复制当前视图');
     } catch {
       setNotice('复制失败，请重试');

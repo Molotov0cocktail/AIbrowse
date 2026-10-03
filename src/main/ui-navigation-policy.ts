@@ -9,8 +9,10 @@
 export interface UiNavigationPolicy {
   // 开发模式：仅放行 ELECTRON_RENDERER_URL 的 origin（重定向目标同样过该判定）
   selfOrigin: string | null;
-  // 生产模式：仅放行 file: 入口文件 URL（精确匹配，hash/query 变体视为同一文档）
+  // 未打包 production preview：仍只放行唯一 file: 入口文档。
   selfFileUrl: string | null;
+  // release：仅放行固定 aibrowse://app/index.html（hash 属同一文档，query 拒绝）。
+  selfAppUrl?: string | null;
 }
 
 export function resolveUiNavigationAllowed(targetUrl: string, policy: UiNavigationPolicy): boolean {
@@ -21,10 +23,32 @@ export function resolveUiNavigationAllowed(targetUrl: string, policy: UiNavigati
       return false; // 畸形 URL（含空串）一律拒绝
     }
   }
+  if (policy.selfAppUrl != null) {
+    try {
+      const target = new URL(targetUrl);
+      const entry = new URL(policy.selfAppUrl);
+      const hashAt = targetUrl.indexOf('#');
+      const documentUrl = hashAt === -1 ? targetUrl : targetUrl.slice(0, hashAt);
+      return (
+        documentUrl === policy.selfAppUrl &&
+        target.protocol === 'aibrowse:' &&
+        target.hostname === 'app' &&
+        target.username === '' &&
+        target.password === '' &&
+        target.port === '' &&
+        target.search === '' &&
+        target.pathname === '/index.html' &&
+        entry.href === 'aibrowse://app/index.html'
+      );
+    } catch {
+      return false;
+    }
+  }
   if (policy.selfFileUrl !== null) {
     try {
       const target = new URL(targetUrl);
       const entry = new URL(policy.selfFileUrl);
+      const rawDocumentUrl = targetUrl.split(/[?#]/, 1)[0];
       // 精确入口匹配：file: 协议 + pathname 完全相等；hash/query 变体是同一文档（放行）。
       // 注意 file: 的 origin 语义（Chromium 中恒为 'null'）：绝不能用 origin 比较——
       // 那会把所有本地文件视为同源（宽松判断）；同目录其他文件、'..' 路径穿越、
@@ -32,6 +56,7 @@ export function resolveUiNavigationAllowed(targetUrl: string, policy: UiNavigati
       return (
         target.protocol === 'file:' &&
         entry.protocol === 'file:' &&
+        rawDocumentUrl === policy.selfFileUrl &&
         target.pathname === entry.pathname
       );
     } catch {

@@ -10,7 +10,7 @@
 
 本阶段把既有 Browser、AI、Agent、Sources、Research、Watch 主路径加固为可安装、可恢复、可验证的 Windows 产品。
 保留第一至六阶段的数据语义、权限矩阵、网络隔离和验收承诺；功能扩展不进入本阶段。
-当前授权止于入口、设计和任务准备，完成设计后停在 E1 首个产品实现动作之前。
+用户2026-10-04已授权E1–E6实现、验证、独立审核与收尾，Stage7完成后停止，不启动Stage8产品实现。
 
 | 项目     | 本轮决定                                                                                 | 改变条件                                                    |
 | -------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -60,7 +60,44 @@
 测试装配、smoke、qualification、native qualification addon 和诊断 hook 不进入可达 release 模块图。
 生产 preview 仍用于开发验收，不能等同最终安装包。
 
-release 启动顺序：固定应用 identity/路径 → 获取单实例所有权 → 安全 Session/资产协议 → 检查未完成恢复清单 →
+E1使用`release` mode输出`out/release/{main,preload,renderer}`。入口先做编译期分支转换，再由Rollup生成模块清单；
+残留任何已渲染smoke/qualification/test模块即构建失败。原生产admission模块移到`watch/ipc-admission`，
+不因历史smoke文件名将实际产品并发门排除。builder 26.15.3、fuses 2.1.3、asar 4.3.1、resedit 3.1.0为精确构建依赖。
+产品名AIbrowse、package/app name保持aibrowse，appId为com.aibrowse.desktop；启动先固定现有appData/aibrowse数据根，
+不把产品显示名改变误当数据迁移。CookieEncryption按原Electron EXE实读的Disabled保持关闭。
+
+E1安全资格REPLAN：Electron43.4.0命中上游GHSA-qmv3-fv6v-rmhq（sandbox preload cache），官方明确无应用层替代修复。
+据[官方安全公告](https://github.com/electron/electron/security/advisories/GHSA-qmv3-fv6v-rmhq)与
+[43.7.7发行记录](https://releases.electronjs.org/release/v43.7.7)，同major更新到精确43.7.7，保持安全/资源阈值。
+其余公告按实际功能适用性核对，不宣称版本命中等同产品可利用。新版本重做全量、build、dev/production及
+实际packaged、导航/IPC/Session/fuse/ASAR资格；旧43.4.0壳证据仅作历史和反例，不冒充新版本通过。
+Vitest固定4.1.11，锁闭包brace-expansion为5.0.12、undici为7.29.1，补齐可用安全修复。
+构建树仍报告[http-cache-semantics共享缓存公告](https://github.com/advisories/GHSA-ch52-4w7c-c8xp)的8项派生high；
+该库无已发布修复，当前仅builder下载链存在、不进入ASAR；实际got默认HTTP cache未启用且构建配置未启用它，
+不构成跨用户认证响应共享缓存。保留audit原件及不可达范围，不把生产依赖audit为0描述成整树无告警。
+
+本机E1目录运行的工程隔离受MSIX KnownFolder虚拟化影响：声明路径和实体路径可能不同。
+用户已明确允许清空现有开发数据后，工具可以把固定KnownFolder/aibrowse空目录作为合成根，
+分别打开声明路径和解析实体路径，复验128位FileID、64位卷号、ACL、类型并持有根句柄；
+独占marker/持久manifest证明本轮所有权，子进程复验同一目录视图和实际数据落点，Job确认全部进程收口。
+这一替代不做旧profile的跨卷复制或同父rename；失败数据和journal保留，也不替代独立Windows验收。
+
+实际EXE揭示MSIX文件系统视图会使同一声明目录的Node临时文件rename返回EXDEV。
+保持逻辑KnownFolder/aibrowse、单实例identity和Chromium userData/sessionData路径；所有Node持久层统一使用
+`realpathSync.native`解析并验证为同一对象的实体根，包括logger、凭据、配置、Conversation与三库。
+这是同一目录的路径表示，不迁移/复制旧数据，不以copy/unlink代替原子rename，环境变量不能提供发行数据根。
+启动前对固定Node成员及其既存子树，在两侧枚举中逐项核对每个已枚举成员的双路径可访问性、普通类型、dev/ino和精确native路径；同根表示也需核对子项。
+包括配置/凭据的tmp、会话索引、数据库WAL/SHM及备份。只读元数据，不读取正文，不枚举Chromium或其它未知根成员。
+双向流式逐项核对，不按文件累计总量拒绝旧profile，也不保存目录名称全集；不声称两个枚举器的名称集合已严格比较。
+DFS只在一侧递归，另一侧只反向核对。
+深度最多32层、每层至多两个目录迭代句柄且异常必关闭；现有产品仅生成固定浅层结构，超深目录不是既有产品生成形状。
+拒绝可识别symlink/junction、非普通类型、普通文件nlink>1、路径偏移、缺项和对象差异。
+Node API不提供全部Windows reparse tag信息，不宣称此检查构成OS沙箱；同账户本机攻击限制保持。
+结构深度、权限、旧混合视图或身份检查失败均在业务写者与logger初始化前停止，以固定中文原生提示说明业务库未打开；
+不把不一致视图当空库，不自动修改旧目录，也不由本次合成空根推断任意历史profile都兼容。
+该检查只界定扫描内存/句柄，不声称总耗时恒定；实际启动成本纳入E4基线。
+
+release 启动顺序：固定应用 identity/路径 → 获取单实例所有权 → 核对Node实体数据根并初始化logger → 安全 Session/资产协议 → 检查未完成恢复清单 →
 打开数据 Store/执行已授权迁移 → 装配服务 → 打开业务 admission → 创建/接入 UI。
 恢复未完成时只开放维护状态/用户恢复入口，Browser 可按明确隔离范围使用，不装配依赖不一致数据的业务写路径。
 
@@ -91,6 +128,14 @@ UI IPC 统一验证当前窗口、主帧、当前受信文档/世代以及 paylo
 E1 增加 Session `will-download` 拦截：没有产品下载入口的下载一律取消，不能自动保存、启动可执行文件或调用外部 shell。
 此处不新增下载管理器。用户选择应用内导出的原生保存对话框走专用主进程服务。
 
+IPC文档令牌由main在受信主文档提交时生成，经隔离preload持有且不向renderer暴露；所有invoke/send携带令牌。
+导航期间暂停授权，主进程明确拦截且原文档身份不变时恢复；新文档提交/窗口销毁后旧令牌失效。
+实际Electron反例表明`about:blank`可能跳过will-navigate/will-frame-navigate，但触发导航开始和文档提交。
+因此共享产品装配在导航开始暂停令牌、提交时核对固定入口；非入口至多异步重载固定入口一次，之后保持业务通道关闭。
+不在native导航回调中同步stop（实际造成Chromium崩溃的失败原件保留），不把“同步拦截所有导航”当作平台保证。
+开发同源的其他path也不能获得业务IPC。Research复制使用专用`research:copy-table`，仅接收既有导出视图DTO，
+main读取已验证Result并重新排序/筛选/规范化，复制前再次核对文档世代；不开放通用文本或剪贴板读取通道。
+
 ### 3.3 已有 Key 与 Provider 目标绑定
 
 主 UI 被攻破后能调用合法 bridge，因此 sender 校验不能证明真人授权。现有 Provider 配置可以改变同一 providerId
@@ -105,8 +150,25 @@ E1 增加 Session `will-download` 拦截：没有产品下载入口的下载一�
 5. Provider redirect 不允许把凭据转移到未绑定目标。若当前适配器无法证明授权头和重定向边界，安全拒绝重定向并给受控错误。
 6. 新 Key 的设置本身仍只写；Key 删除/替换作废旧绑定世代和未完成确认。绑定持久化失败不得留下“内存已授权、磁盘旧状态”的成功回执。
 
+E1具体契约：确认有效期60秒，配置与绑定在provider-config v2中单文件原子提交；v1配置读入无绑定，首次原生确认后迁移。
+每次Key写入（包括同值）创建新UUID世代；旧credentials v1用密文字节摘要标识旧世代，写/删时迁移v2，摘要不是密钥授权。
+Provider调用使用main私有WeakMap中的不可伪造快照，并在读Key前后复验；redirect一律安全拒绝，不能转发到第二地址。
+Key只在safeStorage可用时持久化；原内存回退继续支持，经相同原生目标确认后仅本次运行有效，重启不继承该授权。
+读取及配置预算：最多64个Provider、配置文件256KiB；baseUrl原串2048字符、providerId为1–128个受限ASCII字符、
+model为trim后1–256字符且拒控制字符，Key最多16384字符。目标拒绝userinfo/query/fragment、反斜杠、点路径段、
+编码控制字符/分隔符/嵌套百分号；规范化scheme/host/有效端口、保留path大小写、百分号HEX大写、移除尾斜线。
+凭据持久层与内存回退按Provider ID并集合计最多64项；单密文128KiB、credentials文件9MiB。
+预算覆盖最大合法Key的UTF-8、DPAPI及base64膨胀，另保留固定结构余量；实际safeStorage最大输入作资格核对。
+配置/凭据先open与fstat，再有界读取并探测尾随字节；损坏、超限和读取失败只返回不可用，不作为空库覆盖原件。
+Key写删使用全局单调mutation epoch，使任何并发Key变更都令未完成确认过期，避免任意ID造成无界Map。
+首次保存Key但取消目标确认时，设置仍显示hasKey并说明尚未授权；hasKey只返回布尔，不返回密文或Key。
+
 这保护已有凭据目标；不声称被攻破的 UI 不能读取已向 UI 展示的数据、调用合法业务写接口或伪造当前 renderer 内的普通确认。
 完整边界和对应红队见威胁模型 §2、§4。
+
+E1受影响UI生命周期：ContextBadge只负责提示，按活动Tab状态与请求世代合并preview；加载期间不反复注入采集脚本。
+每个存活Tab最多一个在途请求，旧文档/旧effect结果不可发布。读取失败显示预览暂不可用，无Tab才显示无上下文；
+提问与Agent继续按原契约实时采集，不使用徽标缓存作为实际模型上下文。
 
 ## 4. E2：数据、迁移、备份与恢复
 
@@ -133,6 +195,13 @@ E2 第一子步骤冻结容量契约：使用合成库、由 Git 中真实历史
 既有 Watch/Research/Sources 数值预算继续生效，新预算不得截短合法旧数据以制造成功。
 超限旧 Conversation 文件保留原件并进入该会话可恢复错误态；禁止静默截断、删除或空文件覆盖。
 读文件前检查字节量，逐字段投影；文件名只取主进程合法 ID，拒绝旧索引中的路径穿越 ID。
+
+E2容量资格需区分“支持导入的资源范围”与“历史合法数据的最大值”：实际旧Sources无总行数硬上限，
+Conversation部分持久字段无总字节上限，不能由有限合成测量声称历史合法数据有有限最大值。
+冻结预算须覆盖已验证合法包络；超限明确进入可恢复错误态并保留原件，不静默截断、跳过成员或声称恢复成功。
+SQLite文件长度还包括页/索引开销，不能直接把Research/Watch业务投影预算当作物理文件上限。
+历史Watch migration存在同user_version的真实定义变体；根据Git中精确历史schema白名单和逐字段语义复验识别，
+在staging显式规范化后再验证当前定义，不仅凭user_version接受，也不把可支持的已知历史变体误判敌手SQL。
 
 ### 4.2 维护协调与一致副本
 
@@ -182,6 +251,8 @@ E1 要求关闭 RunAsNode，不能默认采用 `child_process.fork`。仅接收�
 确认进程实际退出后才可清理或复用本次 staging；终止/退出无法确认则保留现场并进入 `recovery-required`，禁止切换。
 迟到结果和已失败 operation 的 IPC 不得重新授予成功。正常成功也必须同时证明进程退出、结果形状和成员摘要有效，
 再进入 §4.4。若替换为其他执行方案，须先证明 native 阻塞时仍能及时终止、主 UI 保持响应及同等文件/IPC 边界。
+实际Windows utilityProcess资格中，被kill的进程也可报告exitCode=0。因此退出码只是一项观测；
+必须以未失败的operation世代、完整有效结果、成员摘要及实际退出共同授予成功，超时/取消不可因exit0复活。
 
 ### 4.4 可恢复切换
 
@@ -282,4 +353,5 @@ E6 逐项审查 `Seventh_stage.md` 最终验收，并对威胁模型红队矩阵
 
 资格失败、同路线连续两轮无新证据、无法证明跨库一致性、容量损害合法旧数据、发现凭据越界或需改变产品承诺时停止该路线。
 工程限制先 REPLAN；产品取舍、未解决用户风险和必需外部条件集中请求裁决。其他独立且已授权工作可继续。
-当前纯设计交付后停在 E1 实施前，不运行打包、安装、迁移或产品代码修改。
+用户已授权持续完成 E1–E6 实现、验证、独立审核及收尾；依赖与硬门满足后方可授予各任务通过。
+Stage7完成后停止，不启动Stage8产品实现；未签名内部候选和手动升级边界不变。

@@ -712,7 +712,7 @@ describe('D10 bounded live Watch scenarios', () => {
     const capture = source.indexOf('watchD10NotificationCapture.push(notification)');
     expect(capture).toBeGreaterThanOrEqual(0);
     const callback = source.slice(source.lastIndexOf('watchNotifications =', capture), capture);
-    expect(callback).toContain('if (SMOKE_MODE)');
+    expect(callback).toContain('if (!__RELEASE__ && SMOKE_MODE)');
   });
 
   it('注入端口时每个真实类别只执行一次并记录成功分类', async () => {

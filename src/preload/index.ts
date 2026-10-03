@@ -60,8 +60,26 @@ import type { WatchIpcChannel } from '../shared/watch/watch-ipc-validator';
 // Minimal-privilege bridge (design §3.2 + stage2 §4.2): only whitelisted methods are
 // exposed; the raw ipcRenderer is never handed to the renderer (安全红线：preload bridge
 // 最小权限；API Key 只写不回读——无任何读回方法).
-const invoke = <T>(channel: string, payload?: unknown): Promise<T> =>
-  ipcRenderer.invoke(channel, payload) as Promise<T>;
+// This token remains in the isolated preload and expires on every document navigation.
+let documentAuthorized = false;
+const documentToken = (ipcRenderer.invoke(IPC.UiDocumentOpen) as Promise<string | null>).then(
+  (token) => {
+    documentAuthorized = typeof token === 'string';
+    return token;
+  },
+);
+const invoke = async <T>(channel: string, payload?: unknown): Promise<T> => {
+  const token = await documentToken;
+  if (typeof token !== 'string') throw new Error('应用文档尚未授权');
+  return ipcRenderer.invoke(channel, payload, token) as Promise<T>;
+};
+const send = (channel: string, payload?: unknown): void => {
+  void documentToken
+    .then((token) => {
+      if (typeof token === 'string') ipcRenderer.send(channel, payload, token);
+    })
+    .catch(() => undefined);
+};
 
 // 事件推送（tabs:updated + conversation 两通道）：preload 内同一通道只注册一次
 // ipcRenderer 监听，由 JS 侧管理 listener 列表（防重复注册；渲染层卸载时退订，§3.2/§4.2）。
@@ -70,6 +88,7 @@ function eventRelay<T>(channel: string): {
 } {
   const listeners = new Set<(payload: T) => void>();
   const receive = (_event: Electron.IpcRendererEvent, payload: T): void => {
+    if (!documentAuthorized) return;
     for (const listener of listeners) listener(payload);
   };
   return {
@@ -103,13 +122,14 @@ const researchTaskDoneRelay = eventRelay<ResearchTaskDoneEvent>(IPC.ResearchTask
 
 const watchListeners = new Set<(push: WatchPushDto) => void>();
 const receiveWatchPush = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
+  if (!documentAuthorized) return;
   if (!validateWatchIpcOutput(payload)) return;
   for (const listener of watchListeners) listener(payload as WatchPushDto);
 };
 const subscribeWatch = (listener: (push: WatchPushDto) => void): (() => void) => {
   if (watchListeners.size === 0) {
     ipcRenderer.on(IPC.WatchSubscribe, receiveWatchPush);
-    ipcRenderer.send(IPC.WatchSubscribe, { action: 'start' });
+    send(IPC.WatchSubscribe, { action: 'start' });
   }
   watchListeners.add(listener);
   let active = true;
@@ -119,7 +139,7 @@ const subscribeWatch = (listener: (push: WatchPushDto) => void): (() => void) =>
     watchListeners.delete(listener);
     if (watchListeners.size === 0) {
       ipcRenderer.removeListener(IPC.WatchSubscribe, receiveWatchPush);
-      ipcRenderer.send(IPC.WatchSubscribe, { action: 'stop' });
+      send(IPC.WatchSubscribe, { action: 'stop' });
     }
   };
 };
@@ -137,7 +157,7 @@ const invokeWatch = async <T>(
 const bridge: AibrowseBridge = {
   getAppInfo: () => invoke<AppInfo>(IPC.AppGetInfo),
   notifyRendererReady: () => {
-    ipcRenderer.send(IPC.AppRendererReady);
+    send(IPC.AppRendererReady);
   },
   tabs: {
     list: () => invoke<TabInfo[]>(IPC.TabsList),
@@ -157,11 +177,11 @@ const bridge: AibrowseBridge = {
   },
   ui: {
     reportContentBounds: (bounds) => {
-      ipcRenderer.send(IPC.UiContentBounds, bounds);
+      send(IPC.UiContentBounds, bounds);
     },
     // C8 决议 #158(5)：受控 send（payload 白名单在主进程校验；不暴露 Electron 对象）
     setBrowserContentVisible: (visible) => {
-      ipcRenderer.send(IPC.UiBrowserContentVisible, { visible });
+      send(IPC.UiBrowserContentVisible, { visible });
     },
   },
   // —— Second Stage（§4.2）：AI 共读白名单（invoke 全部经 main 侧 sender+主帧校验） ——
@@ -190,6 +210,7 @@ const bridge: AibrowseBridge = {
   config: {
     providers: {
       list: () => invoke<ProviderInfo[]>(IPC.ConfigProvidersList),
+      hasKey: (providerId) => invoke<boolean>(IPC.ConfigProvidersHasKey, { providerId }),
       set: (cfg) => invoke<boolean>(IPC.ConfigProvidersSet, cfg),
       // 只写不回读（§10）：无任何读回方法；apiKey='' = 删除
       setKey: (providerId, apiKey) =>
@@ -238,6 +259,7 @@ const bridge: AibrowseBridge = {
       invoke<ResearchIpcResult<ResearchIpcListValue>>(IPC.ResearchList, payload),
     delete: (taskId) =>
       invoke<ResearchIpcResult<{ deleted: true }>>(IPC.ResearchDelete, { taskId }),
+    copyTable: (payload) => invoke<boolean>(IPC.ResearchCopyTable, payload),
     exportCsv: (payload: ResearchExportCsvPayload) =>
       invoke<ExportCsvResult>(IPC.ResearchExportCsv, payload),
     onProgress: researchProgressRelay.subscribe,

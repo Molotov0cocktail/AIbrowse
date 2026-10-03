@@ -5,9 +5,11 @@
 import { describe, expect, it } from 'vitest';
 import { resolveUiNavigationAllowed } from './ui-navigation-policy';
 
-const DEV_POLICY = { selfOrigin: 'http://localhost:5173', selfFileUrl: null };
+const DEV_POLICY = { selfOrigin: 'http://localhost:5173', selfFileUrl: null, selfAppUrl: null };
 const FILE_ENTRY = 'file:///D:/AIbrowse/out/renderer/index.html';
-const FILE_POLICY = { selfOrigin: null, selfFileUrl: FILE_ENTRY };
+const FILE_POLICY = { selfOrigin: null, selfFileUrl: FILE_ENTRY, selfAppUrl: null };
+const RELEASE_ENTRY = 'aibrowse://app/index.html';
+const RELEASE_POLICY = { selfOrigin: null, selfFileUrl: null, selfAppUrl: RELEASE_ENTRY };
 
 describe('resolveUiNavigationAllowed — 开发模式（origin 白名单）', () => {
   it('放行同 origin 的任意路径/查询/片段', () => {
@@ -36,53 +38,70 @@ describe('resolveUiNavigationAllowed — 开发模式（origin 白名单）', ()
   });
 });
 
-describe('resolveUiNavigationAllowed — 生产模式（file: 入口精确匹配）', () => {
-  it('放行入口文件自身及其 hash/query 导航（同一文档）', () => {
-    expect(resolveUiNavigationAllowed(FILE_ENTRY, FILE_POLICY)).toBe(true);
-    expect(resolveUiNavigationAllowed(`${FILE_ENTRY}#top`, FILE_POLICY)).toBe(true);
-    expect(resolveUiNavigationAllowed(`${FILE_ENTRY}?v=1`, FILE_POLICY)).toBe(true);
+describe('resolveUiNavigationAllowed — release 模式（aibrowse: 入口精确匹配）', () => {
+  it('只放行入口自身及 hash 路由，拒绝 query 变体', () => {
+    expect(resolveUiNavigationAllowed(RELEASE_ENTRY, RELEASE_POLICY)).toBe(true);
+    expect(resolveUiNavigationAllowed(`${RELEASE_ENTRY}#top`, RELEASE_POLICY)).toBe(true);
+    expect(resolveUiNavigationAllowed(`${RELEASE_ENTRY}?v=1`, RELEASE_POLICY)).toBe(false);
   });
 
   it('拒绝同目录其他文件与字符串前缀扩展（非入口文件一律拒绝）', () => {
     // 旧前缀语义下 index.htmlx 会被放行；精确匹配必须拒绝（只允许准确的 renderer 入口）
-    expect(resolveUiNavigationAllowed(`${FILE_ENTRY}x`, FILE_POLICY)).toBe(false);
-    expect(
-      resolveUiNavigationAllowed('file:///D:/AIbrowse/out/renderer/other.html', FILE_POLICY),
-    ).toBe(false);
+    expect(resolveUiNavigationAllowed(`${RELEASE_ENTRY}x`, RELEASE_POLICY)).toBe(false);
+    expect(resolveUiNavigationAllowed('aibrowse://app/other.html', RELEASE_POLICY)).toBe(false);
   });
 
-  it('拒绝路径穿越与大小写变体（失败关闭，不做宽松本地文件判断）', () => {
+  it('拒绝路径穿越、其他 host 和编码变体', () => {
     expect(
-      resolveUiNavigationAllowed(
-        'file:///D:/AIbrowse/out/renderer/index.html/../other.html',
-        FILE_POLICY,
-      ),
+      resolveUiNavigationAllowed('aibrowse://app/index.html/../other.html', RELEASE_POLICY),
     ).toBe(false);
-    expect(
-      resolveUiNavigationAllowed('file:///d:/aibrowse/out/renderer/index.html', FILE_POLICY),
-    ).toBe(false);
+    expect(resolveUiNavigationAllowed('aibrowse://evil/index.html', RELEASE_POLICY)).toBe(false);
+    expect(resolveUiNavigationAllowed('aibrowse://app/%69ndex.html', RELEASE_POLICY)).toBe(false);
   });
 
   it('拒绝远程 URL、其他 scheme 与畸形输入', () => {
-    expect(resolveUiNavigationAllowed('https://example.com/', FILE_POLICY)).toBe(false);
-    // javascript:/about: 等 origin 为 'null' 的 URL 同样不匹配 file: 入口
-    expect(resolveUiNavigationAllowed('javascript:alert(1)', FILE_POLICY)).toBe(false);
-    expect(resolveUiNavigationAllowed('about:blank', FILE_POLICY)).toBe(false);
-    expect(resolveUiNavigationAllowed('', FILE_POLICY)).toBe(false);
-    expect(resolveUiNavigationAllowed('not a url', FILE_POLICY)).toBe(false);
+    expect(resolveUiNavigationAllowed('https://example.com/', RELEASE_POLICY)).toBe(false);
+    expect(
+      resolveUiNavigationAllowed('file:///D:/AIbrowse/out/renderer/index.html', RELEASE_POLICY),
+    ).toBe(false);
+    expect(resolveUiNavigationAllowed('javascript:alert(1)', RELEASE_POLICY)).toBe(false);
+    expect(resolveUiNavigationAllowed('about:blank', RELEASE_POLICY)).toBe(false);
+    expect(resolveUiNavigationAllowed('', RELEASE_POLICY)).toBe(false);
+    expect(resolveUiNavigationAllowed('not a url', RELEASE_POLICY)).toBe(false);
   });
 });
 
 describe('resolveUiNavigationAllowed — 防御语义', () => {
   it('双空策略（装配错误）一律拒绝', () => {
-    const emptyPolicy = { selfOrigin: null, selfFileUrl: null };
+    const emptyPolicy = { selfOrigin: null, selfFileUrl: null, selfAppUrl: null };
     expect(resolveUiNavigationAllowed('http://localhost:5173/', emptyPolicy)).toBe(false);
-    expect(resolveUiNavigationAllowed(FILE_ENTRY, emptyPolicy)).toBe(false);
+    expect(resolveUiNavigationAllowed(RELEASE_ENTRY, emptyPolicy)).toBe(false);
   });
 
   it('两字段同时存在时 origin 优先（互斥由装配保证，防御性固化）', () => {
-    const both = { selfOrigin: 'http://localhost:5173', selfFileUrl: FILE_ENTRY };
+    const both = {
+      selfOrigin: 'http://localhost:5173',
+      selfFileUrl: null,
+      selfAppUrl: RELEASE_ENTRY,
+    };
     expect(resolveUiNavigationAllowed('http://localhost:5173/', both)).toBe(true);
-    expect(resolveUiNavigationAllowed(FILE_ENTRY, both)).toBe(false);
+    expect(resolveUiNavigationAllowed(RELEASE_ENTRY, both)).toBe(false);
+  });
+});
+
+describe('resolveUiNavigationAllowed — production preview（file: 入口精确匹配）', () => {
+  it('保留既有唯一入口兼容，拒绝同目录文件和远程 URL', () => {
+    expect(resolveUiNavigationAllowed(FILE_ENTRY, FILE_POLICY)).toBe(true);
+    expect(resolveUiNavigationAllowed(`${FILE_ENTRY}#route`, FILE_POLICY)).toBe(true);
+    expect(
+      resolveUiNavigationAllowed('file:///D:/AIbrowse/out/renderer/other.html', FILE_POLICY),
+    ).toBe(false);
+    expect(resolveUiNavigationAllowed('https://example.com/', FILE_POLICY)).toBe(false);
+    expect(
+      resolveUiNavigationAllowed(
+        'file:///D:/AIbrowse/out/renderer/assets/../index.html',
+        FILE_POLICY,
+      ),
+    ).toBe(false);
   });
 });

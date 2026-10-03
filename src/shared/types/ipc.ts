@@ -3,6 +3,7 @@
 // preload bridge 白名单（AibrowseBridge）T3 接入；main 侧 handler 已于 T2 落地。
 
 export const IPC = {
+  UiDocumentOpen: 'ui:document-open',
   // renderer → main（invoke）
   TabsList: 'tabs:list',
   TabsCreate: 'tabs:create', // payload: { url?: string }（原始地址栏输入，main 侧规范化）
@@ -32,6 +33,7 @@ export const IPC = {
   ConversationAbort: 'conversation:abort', // payload: { requestId } → boolean
   ConversationPreview: 'conversation:preview', // → ContextPreview | null
   ConfigProvidersList: 'config:providers:list', // → ProviderInfo[]（含 hasKey，无 Key 值）
+  ConfigProvidersHasKey: 'config:providers:has-key', // → boolean, including an unbound key
   ConfigProvidersSet: 'config:providers:set', // payload: { providerId, baseUrl, model } → boolean
   ConfigProvidersSetKey: 'config:providers:set-key', // payload: { providerId, apiKey } → boolean
   //（apiKey='' = 删除；只写不回读）
@@ -73,6 +75,7 @@ export const IPC = {
   ResearchList: 'research:list', // payload: { page ≥1, pageSize 1..20 }（严格拒绝非法值；
   // status 不属 IPC 暴露面——未知字段 fail-closed，决议 #164）
   ResearchDelete: 'research:delete', // payload: { taskId }（仅终态/created；running·预占拒绝）
+  ResearchCopyTable: 'research:copy-table',
   ResearchExportCsv: 'research:export-csv', // payload: { taskId, tableBlockIndex, view:{sort,filter} }
   // （决议 #161：view 为受限排序/筛选状态——renderer 零 rows/路径/内容通道；
   // 主进程 dialog 安全通道 + 同一 applyTableView 重投影）

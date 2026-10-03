@@ -134,7 +134,9 @@ describe('normalizeProviderError — 非 HTTP 条件（§5.1）', () => {
     const err = normalizeProviderError({ kind: 'not-configured', requestId: 'req-2' });
     expect(err.code).toBe('not-configured');
     expect(err.retryable).toBe(false);
-    expect(err.message).toBe('尚未配置 AI Provider 或 API Key，请先在设置中配置');
+    expect(err.message).toBe(
+      'AI Provider、API Key 或接口目标尚未授权，请在设置中保存并完成系统确认',
+    );
     expect(err.providerId).toBeNull();
     expect(err.model).toBeNull();
     expect(err.requestId).toBe('req-2');
