@@ -14,6 +14,7 @@ H4已对`d85667c..9365ec4`完整范围正式PASS，报告`log/h3br-current/h4-fi
 当前实现候选`391948e`（前驱`d53f607`），最终全量202文件4031测试PASS，typecheck/lint/format通过；
 normal五产物及正式002的collector/qualification十二产物与原验收归档全部一致，无需为离线工具重建或重采。
 此前“稍后安排，等我通知”已由取消强制测试的新裁决替代；不再等待或启动电池窗口，不改写既有机器报告。
+2026-10-03用户确认UAC后，本任务新增Build Tools/MSVC/SDK已官方卸载并独立终检PASS；原有组件保留，未重启，清理义务关闭。
 已从 `cc16bb57ce681e00d9d505060e20be9e49418d7e` 的干净工作区启动D10 **H3b-R实现**。
 产品非暂停采样及独立构建目录已独审并提交 `5145164`；Windows Job采集器与独立报告器已实现，
 首次真实Electron短验已正常完成并独立复算。电池采集、独立报告及正式运行入口已限定独审PASS，
@@ -300,7 +301,14 @@ H3b接电长时资源、当前Windows及限定隔离证据已闭合；电池按�
 **任务结束后必须移除临时工具**：VS2022 Build Tools/MSVC x64/x86及Windows SDK26100的本任务新增部分。
 按 `log/native-build-install/before-install.json`、`after-install.json`、`removal-inventory.json` 和
 `log/h3b-native-current/native-build-restore.vsconfig`核对，官方安装器卸载，不改/删原有SDK/WPT/调试器/运行库，不自动重启。
-当前仍安装，尚未移除；不能只删下载缓存声称完成。2026-10-03官方卸载首次启动在UAC阶段返回取消，未开始卸载；已集中询问是否重试，等待用户实际操作。原有39项版本及368个保护文件hash未变，新增49项仍在；收据为 `log/native-build-install/removal-result-001.json`、`after-cancelled-removal-001.json`。禁止自动重试提权或自动重启。
+**2026-10-03清理已完成。** 首次UAC取消原件保留；用户随后明确“确认”，官方Installer于北京时间23:17–23:20完成指定Build Tools实例卸载，exit0，SDK随依赖管理移除，无需第二次SDK卸载。
+实例与原49条新增登记均已消失，完整65个SDK MSI均有成功卸载日志，独立核验260个精确安装注册键零残留；MSVC编译器和SDK26100头文件/库不再存在。原有39项软件登记及版本保持，原Visual Studio Installer保留原版。
+卸载前368文件快照包含原有与本任务新增文件：221个原有文件（WPT207、Debuggers4、旧Catalogs9、Facade1）长度/hash不变；147个本任务SDK Catalogs正常移除。
+147项均与官方FileRemove一一对应，其48个MSI产品码/版本/status0全部匹配本任务2026-09-20的安装事件；9个保留Catalogs绑定既有WPT。
+因此旧预检把全部Catalogs都列为原有保护对象不准确，不能声称368个全保留；按安装归属复核后确认未破坏原有组件。
+官方进程已结束，未自动重启；本次exit0，CBS/WU重启标志为false，卸载前就存在的PendingFileRenameOperations仍存在，不归因于本次卸载。
+独立终检PASS：`log/h3br-current/build-tools-cleanup-final-review-001.md`；官方结果、逐项核验、MSI安装/卸载证据及日志位于`log/native-build-install/`，均不入Git。
+normal五产物与既有验收字节一致；未重新构建或重复产品冒烟，既有产品验收按未变源码/产物复用。原失败、请求账本及未知canary未清理。
 
 ## 下一唯一执行任务
 
@@ -309,10 +317,7 @@ Stage7五份设计及E1–E6任务合同已完成并独立PASS，报告为`log/h
 设计基线为`6bc4f00`，设计入口为`doc/stage7/proposal.md`与`tasks.md`。本轮停在E1首个产品实现动作之前，
 后续只有用户明确启动实现才进入发行构建/安全能力边界；不会把设计通过当发行包或Stage7产品完成。
 
-**剩余操作为官方新增构建工具卸载。** 首次UAC未完成，主协调已集中询问是否现在重试；用户未答前不再次发起提权。
-当前新增49条仍在，原有39条和368个保护文件不变，详见上节清理收据。若用户选择稍后，保留本待办，不能称整体清理完成。
-收到就绪后先核现有实例/签名/清单，仅卸载任务新增Build Tools/MSVC/SDK；必要时按精确SDK bundle做后继官方卸载，
-核对原有组件/文件与实际退出码，不自动重启，不删除共享父目录、旧失败证据或未知文件。
+**本轮授权工作已完成，无待处理UAC或构建工具清理。** Stage6及Stage7纯设计收尾完成，新增构建环境已移除并独立复核；停在Stage7 E1产品实现之前。后续若用户明确启动实现，再按E1合同接管当时Git，不自动推进产品实现。
 
 设计独审/文档格式/敏感模式与diff终检、逻辑提交及正常双远程交付均已完成；工程收尾没有重跑未变Stage6长时验收。设计审核之后仅Markdown引用块换行格式修正，无契约变更；暂存区发现的四处行尾空格已在独立后继提交修复，最终范围diff-check通过。
 正式原件、失败及unknown继续保留：`log/h3br-current/`；H3b非暂停工具源码均已在Git。
