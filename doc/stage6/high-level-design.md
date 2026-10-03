@@ -257,7 +257,8 @@ watch.db     Rule / Baseline / Run / Event / Evidence / Digest / cleanup intent
 H3b复用产品Scheduler、Coordinator、HostRequestGate、任务Tab、Diff/Condition/Event/Digest和Repository；
 固定投影acquisition seam只用于可复现负载，不能证明真实HTTP/解析能力，真实网络仍由H3a独立验收。
 固定100 Rule、567次运行、120次任务Tab、10分钟预热/60分钟测量/10分钟排水、60秒释放门及条件式
-30分钟电池窗口与所有资源数值阈值保持；具体oracle只以detailed-design §15.6/§15.7为准。
+所有资源数值阈值保持；2026-10-03用户因主要接电使用取消本轮强制30分钟电池窗口，单列NOT RUN及未验证限制。
+具体oracle及产品裁决只以detailed-design §15.6/§15.7和#S6-092为准。
 
 2026-10-02 REPLAN把资源观察改成非暂停采样：main同一JS turn生成有界registry/状态快照及自洽prefix，
 外部按QPC独立采集Job累计CPU、活跃成员内存/handles及文件/电池指标，不宣称跨域原子性。

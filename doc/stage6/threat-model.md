@@ -434,7 +434,8 @@ oracle；FakeProvider 不得冒充真实观察。
   固定slot和完整性规则判断，保留无效样本，不选最有利重试、不补零、不平滑。DB文件size与应用逻辑大小
   不要求同一瞬时等值；连接释放以实际close返回、进程退出和独立排水证据证明。Restart Manager不再作为
   所有资源slot前置，文件存在不能冒充连接未释放。异步采样器的资源成本和产品内observer成本如实计量。
-- 固定100 Rule、567 run/120 task Tab/四轮与Digest oracle、10m/60m/10m、资源数值阈值及30分钟电池条件不变。
+- 固定100 Rule、567 run/120 task Tab/四轮与Digest oracle、10m/60m/10m及资源数值阈值不变。
+  30分钟电池实测按2026-10-03用户裁决#S6-092取消本轮强制执行，记NOT RUN及续航/功耗未验证；其它隐私、安全与退出门不豁免。
   正式观察结束时才stop admission。stop后禁止新业务admission/acquire，仅允许释放已live资源的
   cleanupOf有界Promise谱系，仍完整计入60秒/10分钟排水；不能隐藏cleanup来获得零计数。
 - 实际parent CONNECT/READ与child WRITE每operation独占OVERLAPPED/event/buffer；CancelIoEx成功或
