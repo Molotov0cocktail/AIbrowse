@@ -11,6 +11,7 @@ export interface TabInfo {
   url: string;
   active: boolean;
   state: TabState;
+  failure?: 'load-failed' | 'renderer-gone';
 }
 
 export interface TabsState {

@@ -2,6 +2,7 @@ import type { InAppNotificationDto } from '../../shared/types/watch-ipc';
 import type { WatchRule } from '../../shared/types/watch';
 import { buildInAppNotification } from './notification-policy';
 import type { QualificationResourceOwner } from './qualification/registry';
+import { MaintenanceAdmission } from '../storage/maintenance-admission';
 
 interface PrivacyProjection {
   eventKind: string;
@@ -36,6 +37,8 @@ function parsePrivacy(raw: string): PrivacyProjection | null {
 
 export class WatchNotificationService {
   private draining = false;
+  private persistenceFailed = false;
+  private readonly admission = new MaintenanceAdmission();
   constructor(
     private readonly repository: () => NotificationRepository | null,
     private readonly deliver: (notification: InAppNotificationDto) => boolean,
@@ -45,10 +48,43 @@ export class WatchNotificationService {
     private readonly ownership?: QualificationResourceOwner,
   ) {}
 
-  drain(): Promise<void> {
-    return this.ownership === undefined
-      ? this.performDrain()
-      : this.ownership.track(() => this.performDrain());
+  pauseForMaintenance(generation: number): boolean {
+    return this.admission.pauseForMaintenance(generation);
+  }
+
+  async drainForMaintenance(generation: number): Promise<void> {
+    await this.admission.drainForMaintenance(generation);
+    this.assertPersistence();
+  }
+
+  resumeAfterMaintenance(generation: number): boolean {
+    return !this.persistenceFailed && this.admission.resumeAfterMaintenance(generation);
+  }
+
+  prepareResumeAfterMaintenance(generation: number): boolean {
+    return !this.persistenceFailed && this.admission.prepareResumeAfterMaintenance(generation);
+  }
+
+  beginShutdown(): void {
+    this.admission.beginShutdown();
+  }
+
+  async drainBeforeClose(): Promise<void> {
+    this.beginShutdown();
+    await this.admission.drain();
+    this.assertPersistence();
+  }
+
+  async drain(): Promise<void> {
+    this.assertPersistence();
+    const release = this.admission.enter();
+    if (release === null) return;
+    try {
+      if (this.ownership === undefined) await this.performDrain();
+      else await this.ownership.track(() => this.performDrain());
+    } finally {
+      release();
+    }
   }
 
   private async performDrain(): Promise<void> {
@@ -58,13 +94,15 @@ export class WatchNotificationService {
       const repo = this.repository();
       if (repo === null) return;
       for (let batch = 0; batch < 10; batch += 1) {
+        if (!this.admission.isOpen()) break;
         const pending = repo.listPendingNotifications(this.channel, 20);
         if (pending.length === 0) break;
         for (const row of pending) {
+          if (!this.admission.isOpen()) break;
           if (!repo.claimPendingNotification(row.id, new Date().toISOString())) continue;
           const privacy = parsePrivacy(row.privacyJson);
           if (privacy === null) {
-            repo.finishClaimedNotification(row.id, 'failed', new Date().toISOString());
+            this.finishNotification(repo, row.id, 'failed');
             this.audit('failed');
             continue;
           }
@@ -91,11 +129,7 @@ export class WatchNotificationService {
           } catch {
             delivered = false;
           }
-          repo.finishClaimedNotification(
-            row.id,
-            delivered ? 'sent' : 'failed',
-            new Date().toISOString(),
-          );
+          this.finishNotification(repo, row.id, delivered ? 'sent' : 'failed');
           this.audit(delivered ? 'sent' : 'failed');
         }
         if (pending.length < 20) break;
@@ -103,6 +137,24 @@ export class WatchNotificationService {
     } finally {
       this.draining = false;
     }
+  }
+
+  private finishNotification(
+    repo: NotificationRepository,
+    id: string,
+    state: 'sent' | 'failed',
+  ): void {
+    try {
+      if (repo.finishClaimedNotification(id, state, new Date().toISOString())) return;
+    } catch {
+      // Delivery may already have happened. Never forget or automatically replay it.
+    }
+    this.persistenceFailed = true;
+    this.assertPersistence();
+  }
+
+  private assertPersistence(): void {
+    if (this.persistenceFailed) throw new Error('通知终态未确认保存，数据维护保持暂停');
   }
 }
 

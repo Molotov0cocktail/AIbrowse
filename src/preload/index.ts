@@ -1,4 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import {
+  RUNTIME_PING,
+  RUNTIME_SAMPLE,
+  type RuntimeUiBridge,
+} from '../../tools/data-qualification/runtime/ui-protocol';
 import type { AibrowseBridge, AppInfo } from '../shared/types/app';
 import type { PageSnapshot, TabInfo, TabsState } from '../shared/types/browser';
 import type {
@@ -6,6 +11,7 @@ import type {
   ContextPreview,
   ConversationMessage,
   ConversationSession,
+  ConversationStorageStatus,
   ProviderInfo,
   StreamChunkEvent,
   TurnDoneEvent,
@@ -56,27 +62,46 @@ import { IPC } from '../shared/types/ipc';
 import type { WatchIpcResult, WatchPushDto, WatchStatusDto } from '../shared/types/watch-ipc';
 import { validateWatchIpcOutput } from '../shared/watch/watch-ipc-validator';
 import type { WatchIpcChannel } from '../shared/watch/watch-ipc-validator';
+import { parseDataTransferStatus } from './data-transfer-status';
+import { UiDocumentAuthorization } from './ui-document-authorization';
+import type {
+  DiagnosticExportPayload,
+  DiagnosticExportResult,
+  DiagnosticPreviewResult,
+} from '../shared/types/diagnostics';
 
 // Minimal-privilege bridge (design §3.2 + stage2 §4.2): only whitelisted methods are
 // exposed; the raw ipcRenderer is never handed to the renderer (安全红线：preload bridge
 // 最小权限；API Key 只写不回读——无任何读回方法).
 // This token remains in the isolated preload and expires on every document navigation.
-let documentAuthorized = false;
-const documentToken = (ipcRenderer.invoke(IPC.UiDocumentOpen) as Promise<string | null>).then(
-  (token) => {
-    documentAuthorized = typeof token === 'string';
-    return token;
-  },
+const documentAuthorization = new UiDocumentAuthorization(
+  () => ipcRenderer.invoke(IPC.UiDocumentOpen) as Promise<string | null>,
 );
+const onDocumentCommitted = (): void => documentAuthorization.documentCommitted();
+ipcRenderer.on(IPC.UiDocumentReady, onDocumentCommitted);
+const documentToken = documentAuthorization.open();
+void documentToken.then(() => ipcRenderer.removeListener(IPC.UiDocumentReady, onDocumentCommitted));
+if (typeof window !== 'undefined')
+  window.addEventListener('pagehide', () => documentAuthorization.dispose(), { once: true });
 const invoke = async <T>(channel: string, payload?: unknown): Promise<T> => {
   const token = await documentToken;
-  if (typeof token !== 'string') throw new Error('应用文档尚未授权');
+  if (typeof token !== 'string' || !documentAuthorization.isAuthorized())
+    throw new Error('应用文档尚未授权');
   return ipcRenderer.invoke(channel, payload, token) as Promise<T>;
 };
+if (__E2_RUNTIME_QUALIFICATION__) {
+  const bridge: RuntimeUiBridge = Object.freeze({
+    ping: (sequence: number) => invoke<number>(RUNTIME_PING, { sequence }),
+    sample: (sequence: number, roundTripMs: number) =>
+      invoke<boolean>(RUNTIME_SAMPLE, { sequence, roundTripMs }),
+  });
+  contextBridge.exposeInMainWorld('e2RuntimeQualification', bridge);
+}
 const send = (channel: string, payload?: unknown): void => {
   void documentToken
     .then((token) => {
-      if (typeof token === 'string') ipcRenderer.send(channel, payload, token);
+      if (typeof token === 'string' && documentAuthorization.isAuthorized())
+        ipcRenderer.send(channel, payload, token);
     })
     .catch(() => undefined);
 };
@@ -88,7 +113,7 @@ function eventRelay<T>(channel: string): {
 } {
   const listeners = new Set<(payload: T) => void>();
   const receive = (_event: Electron.IpcRendererEvent, payload: T): void => {
-    if (!documentAuthorized) return;
+    if (!documentAuthorization.isAuthorized()) return;
     for (const listener of listeners) listener(payload);
   };
   return {
@@ -122,7 +147,7 @@ const researchTaskDoneRelay = eventRelay<ResearchTaskDoneEvent>(IPC.ResearchTask
 
 const watchListeners = new Set<(push: WatchPushDto) => void>();
 const receiveWatchPush = (_event: Electron.IpcRendererEvent, payload: unknown): void => {
-  if (!documentAuthorized) return;
+  if (!documentAuthorization.isAuthorized()) return;
   if (!validateWatchIpcOutput(payload)) return;
   for (const listener of watchListeners) listener(payload as WatchPushDto);
 };
@@ -156,6 +181,24 @@ const invokeWatch = async <T>(
 
 const bridge: AibrowseBridge = {
   getAppInfo: () => invoke<AppInfo>(IPC.AppGetInfo),
+  getConversationStorageStatus: () =>
+    invoke<ConversationStorageStatus>(IPC.ConversationStorageStatus),
+  dataTransfer: {
+    getStatus: () => invoke<unknown>(IPC.DataTransferStatus).then(parseDataTransferStatus),
+    start: (action) =>
+      invoke<unknown>(IPC.DataTransferStart, { action }).then(parseDataTransferStatus),
+    cancel: (operationId) =>
+      invoke<unknown>(IPC.DataTransferCancel, { operationId }).then(parseDataTransferStatus),
+    recoverOriginal: (operationId) =>
+      invoke<unknown>(IPC.DataTransferRecoverOriginal, { operationId }).then(
+        parseDataTransferStatus,
+      ),
+  },
+  diagnostics: {
+    preview: () => invoke<DiagnosticPreviewResult>(IPC.DiagnosticPreview),
+    export: (payload: DiagnosticExportPayload) =>
+      invoke<DiagnosticExportResult>(IPC.DiagnosticExport, payload),
+  },
   notifyRendererReady: () => {
     send(IPC.AppRendererReady);
   },

@@ -51,6 +51,12 @@ vi.mock('electron', async () => {
   class MockWebContents extends Emitter {
     currentUrl = '';
     destroyed = false;
+    private loading = false;
+    override emit(name: string | symbol, ...args: unknown[]): boolean {
+      if (name === 'did-start-loading') this.loading = true;
+      if (name === 'did-finish-load' || name === 'did-stop-loading') this.loading = false;
+      return super.emit(name, ...args);
+    }
     private loadSerial = 0;
     private pendingReject: ((reason: Error) => void) | null = null;
     readonly navigationHistory = {
@@ -138,7 +144,7 @@ vi.mock('electron', async () => {
     });
     setWindowOpenHandler(): void {}
     isLoadingMainFrame(): boolean {
-      return true;
+      return this.loading;
     }
     isDestroyed(): boolean {
       return this.destroyed;
@@ -500,6 +506,45 @@ describe('BrowserController 默认空白 view 延迟物化', () => {
         viewport: { scrollX: 0, scrollY: 25, width: 1024, height: 768 },
       });
       expect(wc.loadURL).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('撤销一个快照读者不结束共享物化、不停止用户Tab，其余读者仍获得实际结果', async () => {
+    electronMock.deferBlankLoads = true;
+    const { controller } = harness();
+    try {
+      const tab = await controller.createTab();
+      const wc = electronMock.instances[0]!.webContents;
+      const cancellation = new AbortController();
+      const first = controller.getPageSnapshot(tab.id, cancellation.signal);
+      let secondSettled = false;
+      const second = controller.getPageSnapshot(tab.id);
+      void second.then(() => (secondSettled = true));
+      cancellation.abort();
+      expect(await first).toBeNull();
+      expect(secondSettled).toBe(false);
+      expect(wc.loadURL).toHaveBeenCalledOnce();
+      expect(wc.stop).not.toHaveBeenCalled();
+      expect(wc.close).not.toHaveBeenCalled();
+      expect(wc.collectScript).not.toHaveBeenCalled();
+      electronMock.pending[0]!.resolve();
+      expect(await second).toMatchObject({ url: 'about:blank', meta: { documentId: 1 } });
+      expect(wc.collectScript).toHaveBeenCalledOnce();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('已撤销快照不启动空白物化', async () => {
+    const { controller } = harness();
+    try {
+      const tab = await controller.createTab();
+      const cancellation = new AbortController();
+      cancellation.abort();
+      expect(await controller.getPageSnapshot(tab.id, cancellation.signal)).toBeNull();
+      expect(electronMock.instances[0]!.webContents.loadURL).not.toHaveBeenCalled();
     } finally {
       controller.dispose();
     }

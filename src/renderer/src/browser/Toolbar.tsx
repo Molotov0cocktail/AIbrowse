@@ -12,6 +12,7 @@ interface ToolbarProps {
   onToggleAiPanel: () => void;
   onToggleSourcesPanel: () => void; // B5：信源面板开关（与 AI 面板互斥，决议 #68）
   onToggleResearchPanel: () => void; // C8 决议 #163(1)：研究面板（三态互斥）
+  onToggleDiagnostics: () => void;
   onOpenWatch: () => void;
   onWatchCurrentPage: () => void;
   addressBarRef: Ref<HTMLInputElement>;
@@ -29,6 +30,7 @@ export function Toolbar({
   onToggleAiPanel,
   onToggleSourcesPanel,
   onToggleResearchPanel,
+  onToggleDiagnostics,
   onOpenWatch,
   onWatchCurrentPage,
   addressBarRef,
@@ -110,6 +112,15 @@ export function Toolbar({
         onClick={onCreateTab}
       >
         ＋
+      </button>
+      <button
+        type="button"
+        className="nav-button"
+        aria-label="诊断信息"
+        title="诊断信息"
+        onClick={onToggleDiagnostics}
+      >
+        诊断
       </button>
     </div>
   );

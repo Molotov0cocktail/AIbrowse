@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import type {
   EventDetailDto,
   EventListItemDto,
@@ -41,6 +41,17 @@ interface WatchWorkspaceProps {
 }
 
 export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchWorkspaceProps) {
+  const focusSubjectRef = useRef(focusSubject);
+  focusSubjectRef.current = focusSubject;
+  const eventRequestVersion = useRef(0);
+  const digestRequestVersion = useRef(0);
+  useEffect(
+    () => () => {
+      eventRequestVersion.current += 1;
+      digestRequestVersion.current += 1;
+    },
+    [],
+  );
   const [state, dispatch] = useReducer(reduceWatchState, INITIAL_WATCH_STATE);
   const [status, setStatus] = useState<WatchStatusDto | null>(null);
   const [rules, setRules] = useState<RuleSummaryDto[]>([]);
@@ -151,17 +162,39 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     toExclusive: eventToFilter === '' ? null : new Date(eventToFilter).toISOString(),
   } as const;
   const loadEvents = (selectedEventId: string | null = null): void => {
+    const requestVersion = ++eventRequestVersion.current;
+    const requestedFocus = focusSubjectRef.current;
+    setEventDetail(null);
     void window.aibrowse.watch
       .listEvents({ page: 1, pageSize: 50, filter: eventFilter, selectedEventId })
       .then((result) => {
+        if (
+          requestVersion !== eventRequestVersion.current ||
+          requestedFocus !== focusSubjectRef.current
+        )
+          return;
         if (!result.ok || !isObject(result.value) || !Array.isArray(result.value['items'])) return;
         setEvents(result.value['items'] as EventListItemDto[]);
         setEventDetail(
-          isObject(result.value['selected'])
+          isObject(result.value['selected']) && result.value['selected']['id'] === selectedEventId
             ? (result.value['selected'] as unknown as EventDetailDto)
             : null,
         );
       });
+  };
+  const loadDigest = (digestId: string): void => {
+    const requestVersion = ++digestRequestVersion.current;
+    const requestedFocus = focusSubjectRef.current;
+    setDigestDetail(null);
+    void window.aibrowse.watch.getDigest({ digestId }).then((result) => {
+      if (
+        requestVersion !== digestRequestVersion.current ||
+        requestedFocus !== focusSubjectRef.current
+      )
+        return;
+      if (result.ok && isObject(result.value) && result.value['id'] === digestId)
+        setDigestDetail(result.value);
+    });
   };
   const loadDigests = (): void => {
     void window.aibrowse.watch.listDigestSchedules({ page: 1, pageSize: 50 }).then((result) => {
@@ -189,7 +222,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
       window.aibrowse.watch.subscribe((push) => {
         dispatch({ type: 'push-revision', revision: push.revision });
         if (push.type === 'status') setStatus(push.status);
-        else setMessage(push.notification.body);
+        else if (push.type === 'notification') setMessage(push.notification.body);
       }),
     [],
   );
@@ -199,8 +232,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     else if (state.view === 'digests') loadDigests();
   }, [
     state.view,
-    focusSubject?.type,
-    focusSubject?.id,
+    focusSubject,
     readState,
     eventKindFilter,
     importanceFilter,
@@ -211,14 +243,22 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
   ]);
   useEffect(() => {
     if (focusSubject === null) return;
+    setWizardOpen(false);
+    setMessage(null);
     if (focusSubject.type === 'event') {
+      digestRequestVersion.current += 1;
+      setDigestDetail(null);
       dispatch({ type: 'select-view', view: 'events' });
     } else {
+      eventRequestVersion.current += 1;
+      setEventDetail(null);
       dispatch({ type: 'select-view', view: 'digests' });
-      void window.aibrowse.watch.getDigest({ digestId: focusSubject.id }).then((result) => {
-        if (result.ok && isObject(result.value)) setDigestDetail(result.value);
-      });
+      loadDigest(focusSubject.id);
     }
+    return () => {
+      eventRequestVersion.current += 1;
+      digestRequestVersion.current += 1;
+    };
   }, [focusSubject]);
 
   const readHandles = (
@@ -969,14 +1009,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
             >
               导出 Markdown
             </button>
-            <button
-              type="button"
-              onClick={() =>
-                void window.aibrowse.watch.getDigest({ digestId: digest.id }).then((result) => {
-                  if (result.ok && isObject(result.value)) setDigestDetail(result.value);
-                })
-              }
-            >
+            <button type="button" onClick={() => loadDigest(digest.id)}>
               查看事实与引用状态
             </button>
           </article>

@@ -60,10 +60,12 @@ export class ConfirmManager {
     if (this.pending !== null) {
       return Promise.resolve('denied');
     }
-    this.pending = { runId, toolCallId, toolName, summary, createdAt: Date.now() };
-    this.emit({ kind: 'pending', request: this.pending });
+    const pending = { runId, toolCallId, toolName, summary, createdAt: Date.now() };
+    this.pending = pending;
     return new Promise<ConfirmOutcome>((resolve) => {
       this.settle = resolve;
+      // A listener may synchronously cancel while handling the pending event.
+      this.emit({ kind: 'pending', request: pending });
     });
   }
 
@@ -78,9 +80,9 @@ export class ConfirmManager {
   // run 取消/超时：作废该 run 的全部 pending（决议 cancelled）。幂等。
   cancelAll(runId: string): void {
     if (this.pending !== null && this.pending.runId === runId) {
-      this.emitSettled(this.pending, 'cancelled');
+      const pending = this.pending;
       this.pending = null;
-      this.settle = null;
+      this.emitSettled(pending, 'cancelled');
     }
   }
 

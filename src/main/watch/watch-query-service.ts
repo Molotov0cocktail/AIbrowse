@@ -135,9 +135,7 @@ export class WatchQueryService {
       read: event.readAt !== null,
     }));
     const selectedEvent =
-      input.selectedEventId === null
-        ? null
-        : events.find((item) => item.id === input.selectedEventId);
+      input.selectedEventId === null ? null : repo.getEvent(input.selectedEventId);
     const selected =
       selectedEvent === undefined || selectedEvent === null
         ? null

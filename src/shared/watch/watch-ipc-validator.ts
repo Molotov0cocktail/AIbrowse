@@ -469,6 +469,13 @@ export function validateWatchIpcOutput(value: unknown, channel?: WatchIpcChannel
     return value['ok'] === true && channel !== undefined && successValue(channel, value['value']);
   if (record(value, ['type', 'revision', 'status']))
     return value['type'] === 'status' && integer(value['revision']) && watchStatus(value['status']);
+  if (record(value, ['type', 'revision', 'subjectType', 'subjectId']))
+    return (
+      value['type'] === 'activation' &&
+      integer(value['revision']) &&
+      (value['subjectType'] === 'event' || value['subjectType'] === 'digest') &&
+      uuid(value['subjectId'])
+    );
   if (record(value, ['type', 'revision', 'notification']))
     return (
       value['type'] === 'notification' &&

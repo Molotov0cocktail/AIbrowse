@@ -31,7 +31,7 @@ import { closeDb, openDb, withTransaction, type DbHandle } from './sources/db/sq
 // C8 定向修复（2026-08-17）：冒烟临时目录清理 helper（句柄关闭后删除 +
 // Windows EPERM 有限重试——工厂冒烟场景 2026-08-16 23:30 遗留根因）
 import { removeSmokeDirWithRetry } from './smoke-cleanup';
-import { isWatchDriverSqlForward } from './smoke-sql-forward-policy';
+import { isReviewedTransferSqlLocation, isWatchDriverSqlForward } from './smoke-sql-forward-policy';
 // D4：8.21 Watch store 冒烟（默认矩阵；dev+生产双场景）
 import { runWatchStoreSmokeScenario } from './smoke-watch-store';
 import { runWatchPageSessionScenario, type WatchPageSmokeBundle } from './smoke-watch-page-session'; // D5：8.22 Watch 生命周期冒烟（默认矩阵；dev+生产双场景）
@@ -2547,7 +2547,6 @@ export async function runAiConversationScenarios(
     return { runL3, cleanup };
   } catch (err) {
     logError('smoke', 'AI 共读冒烟场景失败', err);
-    await cleanup();
     throw err;
   }
 }
@@ -3394,7 +3393,6 @@ export async function runAiUiScenarios(
     return { runL3Ui, cleanup };
   } catch (err) {
     logError('smoke', 'AI 共读 UI 冒烟场景失败', err);
-    await cleanup();
     throw err;
   }
 }
@@ -11607,13 +11605,11 @@ export async function runSmokeScenario(
     // 9.1 矩阵 4（L3 → mode='none'）：dispose 后无任何标签页，提问走真实 L3 路径
     //     （主进程驱动 + UI 驱动双路径；真实 Provider 场景无 FakeProvider 矩阵，跳过）
     if (aiSmoke !== null) {
-      try {
-        await aiSmoke.runL3();
-        if (aiUiSmoke !== null) await aiUiSmoke.runL3Ui();
-      } finally {
-        await aiSmoke.cleanup(); // 会话冒烟临时目录整体清理（含 provider-config 测试残留）
-        if (aiUiSmoke !== null) await aiUiSmoke.cleanup(); // 冒烟 AI 数据目录整体清理
-      }
+      await aiSmoke.runL3();
+      if (aiUiSmoke !== null) await aiUiSmoke.runL3Ui();
+      // Local scenario services have already stopped. The live UI data belongs
+      // to main and is removed only after the complete runtime has drained.
+      await aiSmoke.cleanup();
     }
 
     logInfo(
@@ -11625,14 +11621,7 @@ export async function runSmokeScenario(
           : '冒烟场景全部通过（浏览器核心 + S5 真实 Provider 流式一问一答）',
     );
   } catch (err) {
-    // 失败路径同样清理冒烟临时目录（最佳努力，不掩盖原始错误）——步骤 9.1 的正常清理
-    // 在失败时不执行；各场景自身的 catch 只覆盖场景内部失败，后置步骤失败会留下残留
-    try {
-      if (aiSmoke !== null) await aiSmoke.cleanup();
-      if (aiUiSmoke !== null) await aiUiSmoke.cleanup();
-    } catch (cleanupErr) {
-      logError('smoke', '冒烟失败路径临时目录清理失败', cleanupErr);
-    }
+    // Preserve the synthetic files needed to diagnose the original failure.
     logError('smoke', '冒烟场景失败', err);
     throw err;
   }
@@ -15199,7 +15188,11 @@ async function runSrtScenarios(
                     full.replace(srcRoot, '').replace(/^[\\/]/, ''),
                     line,
                   );
-                  if (sqlAllowed[rel] === undefined && !driverForward) {
+                  const transferSql = isReviewedTransferSqlLocation(
+                    full.replace(srcRoot, '').replace(/^[\\/]/, ''),
+                    line,
+                  );
+                  if (sqlAllowed[rel] === undefined && !driverForward && !transferSql) {
                     sqlHits.push(`${rel}:${i + 1} → 未分类 SQL 调用`);
                   }
                   if (full.includes(`src${sep}renderer`) || full.includes(`src${sep}preload`)) {

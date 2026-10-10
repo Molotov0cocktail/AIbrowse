@@ -24,6 +24,7 @@ import type {
   ContextSource,
   ConversationMessage,
   ConversationSession,
+  ConversationStorageStatus,
   NormalizedProviderError,
   ProviderRequest,
   ProviderToolCall,
@@ -83,7 +84,7 @@ export function selectRegisteredProviderInfo(
 // 网页上下文快照来源（提问/预览时刻实时采集，禁止缓存复用——防串页核心，§6.1/§6.3）
 export interface SnapshotSource {
   getActiveTab(): Promise<TabInfo | null>;
-  getPageSnapshot(tabId: string): Promise<PageSnapshot | null>; // null = L3（tab 不可用）
+  getPageSnapshot(tabId: string, signal?: AbortSignal): Promise<PageSnapshot | null>; // null = L3（tab 不可用）
 }
 
 // Third Stage A5：Agent Runtime 装配（§8.1/§8.5 + 决议 #33）——browser 为完整
@@ -124,6 +125,7 @@ export interface ConversationServiceOptions {
 }
 
 export interface ConversationService {
+  getStorageStatus(): ConversationStorageStatus;
   // 决议 #19（2026-08-13）：达 50 会话上限拒绝新建 → null（§9 定稿「拒绝新建 + 提示」；
   // §4.2 bridge 本就按可空返回建模）——原草图签名无失败通道，属校准而非变更。
   createSession(opts?: { ephemeral?: boolean }): Promise<ConversationSession | null>;
@@ -163,14 +165,162 @@ export class ConversationServiceImpl implements ConversationService {
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly inFlight = new Map<string, InFlight>(); // 每会话单在途（决议 Q8）
   private disposed = false;
+  private shuttingDown = false;
+  private maintenanceGeneration: number | null = null;
+  private lastMaintenanceGeneration = 0;
+  private maintenanceDrained = false;
+  private maintenancePrepared = false;
+  private maintenanceDrain: Promise<void> | null = null;
+  private shutdownPromise: Promise<void> | null = null;
+  private readonly operations = new Map<Promise<unknown>, 'ask' | 'agentAsk' | 'previewContext'>();
+  private readonly previewControllers = new Set<AbortController>();
+  private storageReadFailed = false;
+  private drainFailed = false;
+
+  getPendingOperationCounts(): { ask: number; agentAsk: number; previewContext: number } {
+    const counts = { ask: 0, agentAsk: 0, previewContext: 0 };
+    for (const kind of this.operations.values()) counts[kind] += 1;
+    return counts;
+  }
+
+  private get unavailable(): boolean {
+    return (
+      this.disposed ||
+      this.shuttingDown ||
+      this.storageReadFailed ||
+      this.drainFailed ||
+      this.maintenanceGeneration !== null
+    );
+  }
+
+  private track<T>(
+    operation: Promise<T>,
+    kind: 'ask' | 'agentAsk' | 'previewContext',
+    requireSuccess = true,
+  ): Promise<T> {
+    this.operations.set(operation, kind);
+    void operation.then(
+      () => this.operations.delete(operation),
+      () => {
+        this.operations.delete(operation);
+        if (requireSuccess) this.drainFailed = true;
+      },
+    );
+    return operation;
+  }
+
+  pauseForMaintenance(generation: number): boolean {
+    if (this.disposed || this.shuttingDown) return false;
+    if (this.maintenanceGeneration !== null) return this.maintenanceGeneration === generation;
+    if (!Number.isSafeInteger(generation) || generation <= this.lastMaintenanceGeneration)
+      return false;
+    this.maintenanceGeneration = generation;
+    this.lastMaintenanceGeneration = generation;
+    this.maintenanceDrained = false;
+    this.maintenancePrepared = false;
+    this.maintenanceDrain = null;
+    return true;
+  }
+
+  drainForMaintenance(generation: number): Promise<void> {
+    if (this.disposed || this.shuttingDown || this.maintenanceGeneration !== generation)
+      return Promise.reject(new Error('会话维护世代不可用'));
+    this.maintenanceDrain ??= this.drainOperations().then(() => {
+      if (this.getStorageStatus().state === 'recovery-required')
+        throw new Error('会话数据不可用，数据维护保持暂停');
+      this.maintenanceDrained = true;
+    });
+    return this.maintenanceDrain;
+  }
+
+  prepareResumeAfterMaintenance(generation: number): boolean {
+    if (
+      this.disposed ||
+      this.shuttingDown ||
+      this.getStorageStatus().state === 'recovery-required' ||
+      this.maintenanceGeneration !== generation ||
+      !this.maintenanceDrained
+    )
+      return false;
+    this.maintenancePrepared = true;
+    return true;
+  }
+
+  resumeAfterMaintenance(generation: number): boolean {
+    if (
+      this.disposed ||
+      this.shuttingDown ||
+      this.getStorageStatus().state === 'recovery-required' ||
+      this.maintenanceGeneration !== generation ||
+      !this.maintenanceDrained ||
+      !this.maintenancePrepared
+    )
+      return false;
+    this.maintenanceGeneration = null;
+    this.maintenanceDrained = false;
+    this.maintenancePrepared = false;
+    this.maintenanceDrain = null;
+    return true;
+  }
+
+  private async drainOperations(): Promise<void> {
+    for (const entry of this.inFlight.values()) entry.controller.abort();
+    for (const controller of this.previewControllers) controller.abort();
+    await Promise.allSettled([...this.operations.keys()]);
+    if (this.drainFailed) throw new Error('会话排水失败，数据维护保持暂停');
+  }
+
+  beginShutdown(): void {
+    this.shuttingDown = true;
+    this.maintenancePrepared = false;
+  }
+
+  drainBeforeClose(): Promise<void> {
+    this.beginShutdown();
+    if (this.shutdownPromise !== null) return this.shutdownPromise;
+    let start!: () => void;
+    this.shutdownPromise = new Promise<void>((resolve, reject) => {
+      start = () => {
+        try {
+          this.dispose();
+          void this.drainOperations().then(resolve, reject);
+        } catch (error) {
+          reject(error);
+        }
+      };
+    });
+    // Publish the promise before abort callbacks can synchronously re-enter.
+    start();
+    return this.shutdownPromise;
+  }
+
+  shutdown(): Promise<void> {
+    return this.drainBeforeClose();
+  }
+
+  private persist(operation: () => boolean): boolean {
+    try {
+      if (operation()) return true;
+    } catch {
+      logWarn('conversation', '会话持久化操作失败，服务已暂停');
+    }
+    this.drainFailed = true;
+    this.maintenancePrepared = false;
+    return false;
+  }
   // A6：ConfirmManager 多监听者（Set 分发）——dispose 时退订（多 Service 共享同一
   // ConfirmManager 时互不覆盖、互不串扰；A5 计划内限制「最后构造实例所有权」关闭）
   private unsubscribePendingChange: (() => void) | null = null;
 
   constructor(private readonly options: ConversationServiceOptions) {
     // 启动加载磁盘会话（index.json 损坏容错在 store 内 fail-closed）
-    for (const session of options.store.loadSessions()) {
-      this.sessions.set(session.id, { session, messages: null });
+    try {
+      for (const session of options.store.loadSessions()) {
+        this.sessions.set(session.id, { session, messages: null });
+      }
+    } catch {
+      // A failed read seals business admission but owns no unfinished write.
+      this.storageReadFailed = true;
     }
     // A5/A6：确认请求可见性事件源——ConfirmManager.addPendingChangeListener 在 Service
     // 层接线一次（映射 runId → sessionId 经在途注册表查找；多会话并行 run 不串事件；
@@ -215,7 +365,7 @@ export class ConversationServiceImpl implements ConversationService {
   }
 
   async createSession(opts?: { ephemeral?: boolean }): Promise<ConversationSession | null> {
-    if (this.disposed) return null;
+    if (this.unavailable) return null;
     const ephemeral = opts?.ephemeral ?? false;
     const persistedCount = [...this.sessions.values()].filter((e) => !e.session.ephemeral).length;
     if (!ephemeral && persistedCount >= SESSION_LIMIT) {
@@ -231,8 +381,12 @@ export class ConversationServiceImpl implements ConversationService {
       updatedAt: now,
       ephemeral,
     };
+    if (
+      !ephemeral &&
+      !this.persist(() => this.options.store.saveSessions([...this.sessionList(), session]))
+    )
+      return null;
     this.sessions.set(session.id, { session, messages: [] });
-    if (!ephemeral) this.options.store.saveSessions(this.sessionList());
     logInfo(
       'conversation',
       `会话已创建（sessionId=${session.id}，ephemeral=${String(ephemeral)}）`,
@@ -241,6 +395,7 @@ export class ConversationServiceImpl implements ConversationService {
   }
 
   async listSessions(): Promise<ConversationSession[]> {
+    if (this.unavailable) return [];
     // 新→旧（createdAt 降序；同刻稳定按创建顺序）
     return [...this.sessions.values()]
       .map((e) => e.session)
@@ -248,37 +403,76 @@ export class ConversationServiceImpl implements ConversationService {
   }
 
   async getHistory(sessionId: string): Promise<ConversationMessage[] | null> {
+    if (this.unavailable) return null;
     const entry = this.sessions.get(sessionId);
     if (entry === undefined) return null;
-    return [...this.ensureMessages(entry)];
+    try {
+      return [...this.ensureMessages(entry)];
+    } catch {
+      return null;
+    }
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
+    if (this.unavailable) return false;
     const entry = this.sessions.get(sessionId);
     if (entry === undefined) return false;
-    // §9：先中止其进行中生成 → 删内存 + 删文件（含残留 tmp）→ 更新索引
+    try {
+      this.ensureMessages(entry);
+    } catch {
+      return false;
+    }
+    // Abort generation, remove the durable index entry, then delete owned files.
+    // Any failed write keeps new admission closed and prevents a success receipt.
     const inFlight = this.inFlight.get(sessionId);
     if (inFlight !== undefined) inFlight.controller.abort();
+    if (
+      !this.persist(() =>
+        this.options.store.saveSessions(
+          this.sessionList().filter((session) => session.id !== sessionId),
+        ),
+      )
+    )
+      return false;
     this.sessions.delete(sessionId);
-    this.options.store.deleteFiles(sessionId);
-    this.options.store.saveSessions(this.sessionList());
+    if (!this.persist(() => this.options.store.deleteFiles(sessionId))) return false;
     logInfo('conversation', `会话已删除（sessionId=${sessionId}）`);
     return true;
   }
 
   async setEphemeral(sessionId: string, ephemeral: boolean): Promise<boolean> {
+    if (this.unavailable) return false;
     const entry = this.sessions.get(sessionId);
     if (entry === undefined) return false;
-    entry.session.ephemeral = ephemeral;
+    try {
+      this.ensureMessages(entry);
+    } catch {
+      return false;
+    }
+    if (entry.session.ephemeral === ephemeral) return true;
+    if (
+      !ephemeral &&
+      this.sessionList().filter((session) => !session.ephemeral).length >= SESSION_LIMIT
+    )
+      return false;
+    const nextSession = { ...entry.session, ephemeral };
+    const nextSessions = this.sessionList().map((session) =>
+      session.id === sessionId ? nextSession : session,
+    );
     if (ephemeral) {
       // 「不保存」全程不落盘：移除既有文件与索引条目（§9）
-      this.options.store.deleteFiles(sessionId);
-      this.options.store.saveSessions(this.sessionList());
+      if (!this.persist(() => this.options.store.saveSessions(nextSessions))) return false;
+      if (!this.persist(() => this.options.store.deleteFiles(sessionId))) return false;
     } else {
       // 现有消息落盘（写入索引与消息文件）
-      this.options.store.saveSessions(this.sessionList());
-      this.options.store.saveMessages(sessionId, this.ensureMessages(entry));
+      if (
+        !this.persist(() =>
+          this.options.store.promoteSession(sessionId, this.ensureMessages(entry), nextSessions),
+        )
+      )
+        return false;
     }
+    entry.session = nextSession;
     logInfo(
       'conversation',
       `会话保存模式变更（sessionId=${sessionId}，ephemeral=${String(ephemeral)}）`,
@@ -289,10 +483,17 @@ export class ConversationServiceImpl implements ConversationService {
   // ask 同步完成参数/状态校验并注册在途（JS 单线程内原子），随后后台执行生成、
   // 经事件回调推送——立即返回 {ok:true, requestId}，终态由 turn-done 通知（§3.1/§8.1）。
   async ask(input: { sessionId: string; question: string }): Promise<AskResult> {
-    if (this.disposed) return this.failResult('internal');
+    if (this.disposed || this.shuttingDown || this.storageReadFailed || this.drainFailed)
+      return this.failResult('internal');
+    if (this.maintenanceGeneration !== null) return this.failResult('busy');
     const entry = this.sessions.get(input.sessionId);
     if (entry === undefined) return this.failResult('not-found');
     if (this.inFlight.has(input.sessionId)) return this.failResult('busy');
+    try {
+      this.ensureMessages(entry);
+    } catch {
+      return this.failResult('internal');
+    }
     if (typeof input.question !== 'string' || input.question.trim() === '') {
       // §4.1：空串/非串 → 参数无效安全返回（internal），不抛异常
       logWarn('conversation', `ask 参数无效（sessionId=${input.sessionId}，question 为空或非串）`);
@@ -302,7 +503,10 @@ export class ConversationServiceImpl implements ConversationService {
     const controller = new AbortController();
     this.inFlight.set(input.sessionId, { requestId, controller });
     // 生成在后台执行；内部异常已归一化并保证 turn-done 恰好一次，此处兜底日志
-    void this.runAsk(entry, input.question, requestId, controller).catch((err: unknown) => {
+    void this.track(
+      Promise.resolve().then(() => this.runAsk(entry, input.question, requestId, controller)),
+      'ask',
+    ).catch((err: unknown) => {
       logError('conversation', `ask 编排未预期失败（requestId=${requestId}）`, err);
     });
     return { ok: true, requestId };
@@ -311,10 +515,17 @@ export class ConversationServiceImpl implements ConversationService {
   // A5：Agent 任务入口（§8.5 + 决议 #33）。同步段完成参数/状态校验并注册在途（与共读 ask
   // 共享同一 in-flight 注册表——决议 #25 互斥）；生成后台执行经事件回调推送。
   async agentAsk(input: { sessionId: string; goal: string }): Promise<AskResult> {
-    if (this.disposed) return this.failResult('internal');
+    if (this.disposed || this.shuttingDown || this.storageReadFailed || this.drainFailed)
+      return this.failResult('internal');
+    if (this.maintenanceGeneration !== null) return this.failResult('busy');
     const entry = this.sessions.get(input.sessionId);
     if (entry === undefined) return this.failResult('not-found');
     if (this.inFlight.has(input.sessionId)) return this.failResult('busy');
+    try {
+      this.ensureMessages(entry);
+    } catch {
+      return this.failResult('internal');
+    }
     let goal = input.goal;
     if (typeof goal !== 'string' || goal.trim() === '') {
       logWarn('conversation', `agentAsk 参数无效（sessionId=${input.sessionId}，goal 为空或非串）`);
@@ -331,6 +542,10 @@ export class ConversationServiceImpl implements ConversationService {
     const requestId = randomUUID();
     const controller = new AbortController();
     this.inFlight.set(input.sessionId, { requestId, controller });
+    const operation = this.track(
+      Promise.resolve().then(() => this.runAgentRun(entry, goal, requestId, controller)),
+      'agentAsk',
+    );
     // A6：run 已启动（在途注册后的确定性事实；先于 IPC 返回到达 renderer——reducer 以
     // starting 相位收养 run）。stepsUsed=0/maxSteps 取装配 limits（单事实源）。
     this.options.onAgentStatus?.({
@@ -340,7 +555,7 @@ export class ConversationServiceImpl implements ConversationService {
       stepsUsed: 0,
       maxSteps: this.options.agent?.limits?.maxSteps ?? AGENT_LOOP_LIMITS.maxSteps,
     });
-    void this.runAgentRun(entry, goal, requestId, controller).catch((err: unknown) => {
+    void operation.catch((err: unknown) => {
       logError('conversation', `agentAsk 编排未预期失败（requestId=${requestId}）`, err);
     });
     return { ok: true, requestId };
@@ -348,6 +563,7 @@ export class ConversationServiceImpl implements ConversationService {
 
   // A5：L2 确认决定（A6 起经 IPC 转发；未知/已终结 id → false 幂等，由 ConfirmManager 保证）
   async confirmTool(toolCallId: string, approve: boolean): Promise<boolean> {
+    if (this.unavailable && approve) return false;
     const manager = this.options.agent?.confirmManager;
     if (manager === undefined) return false;
     return approve ? manager.approve(toolCallId) : manager.deny(toolCallId);
@@ -365,11 +581,44 @@ export class ConversationServiceImpl implements ConversationService {
     return false; // 无匹配在途 / 已终态 → 幂等安全返回 false
   }
 
-  async previewContext(): Promise<ContextPreview> {
+  /** Main-only UI lifecycle boundary; retain service admission and persisted sessions. */
+  interruptUiRequests(): void {
+    for (const entry of this.inFlight.values()) {
+      entry.controller.abort();
+      this.options.agent?.confirmManager.cancelAll(entry.requestId);
+    }
+    for (const controller of this.previewControllers) controller.abort();
+  }
+
+  previewContext(): Promise<ContextPreview> {
+    if (this.unavailable) return Promise.reject(new Error('会话维护中，预览暂不可用'));
+    const controller = new AbortController();
+    this.previewControllers.add(controller);
+    return this.track(
+      Promise.resolve()
+        .then(() => this.readPreviewContext(controller.signal))
+        .catch((error: unknown) => {
+          if (controller.signal.aborted && this.unavailable)
+            throw new Error('会话维护中，预览暂不可用');
+          throw error;
+        })
+        .finally(() => this.previewControllers.delete(controller)),
+      'previewContext',
+      false,
+    );
+  }
+
+  private async readPreviewContext(signal: AbortSignal): Promise<ContextPreview> {
+    signal.throwIfAborted();
+    if (this.unavailable) throw new Error('会话维护中，预览暂不可用');
     // §6.3：每次调用实时采集（与提问同一路径，不共享缓存），只回摘要不含快照正文
     const activeTab = await this.options.browser.getActiveTab();
+    signal.throwIfAborted();
+    if (this.unavailable) throw new Error('会话维护中，预览暂不可用');
     const snapshot =
-      activeTab === null ? null : await this.options.browser.getPageSnapshot(activeTab.id);
+      activeTab === null ? null : await this.options.browser.getPageSnapshot(activeTab.id, signal);
+    signal.throwIfAborted();
+    if (this.unavailable) throw new Error('会话维护中，预览暂不可用');
     const thin = snapshot !== null && isThinSnapshot(snapshot);
     const mode = deriveContextMode(snapshot, thin);
     const selectionTrimmed = (snapshot?.selection ?? '').trim();
@@ -388,7 +637,9 @@ export class ConversationServiceImpl implements ConversationService {
 
   dispose(): void {
     if (this.disposed) return; // 幂等（before-quit 与窗口 closed 可能重复调用）
+    this.beginShutdown();
     this.disposed = true;
+    this.maintenancePrepared = false;
     this.unsubscribePendingChange?.(); // A6：退订确认事件监听（多 Service 共享状态机不泄漏）
     this.unsubscribePendingChange = null;
     let aborted = 0;
@@ -396,8 +647,7 @@ export class ConversationServiceImpl implements ConversationService {
       entry.controller.abort();
       aborted += 1;
     }
-    this.inFlight.clear(); // runAsk 终态路径的 delete 为幂等，互不冲突
-    logInfo('conversation', `conversation-service 已释放（中止 ${aborted} 个在途生成）`);
+    logInfo('conversation', `会话服务已关闭准入（请求中止 ${aborted} 个在途生成）`);
   }
 
   // ---------- ask 编排（§6.1 时序即契约） ----------
@@ -413,11 +663,16 @@ export class ConversationServiceImpl implements ConversationService {
     let contextSource = buildContextSource(null, 'none', false, null);
     let userAppended = false;
     try {
+      controller.signal.throwIfAborted();
       // 1. 实时采集（防串页核心）：提问时刻 getPageSnapshot(activeTabId)，禁止复用缓存
       //    快照（调试面板快照与 AI 上下文零关联——决议 #13）；L3 → null
       const activeTab = await this.options.browser.getActiveTab();
+      controller.signal.throwIfAborted();
       const snapshot =
-        activeTab === null ? null : await this.options.browser.getPageSnapshot(activeTab.id);
+        activeTab === null
+          ? null
+          : await this.options.browser.getPageSnapshot(activeTab.id, controller.signal);
+      controller.signal.throwIfAborted();
       const thin = snapshot !== null && isThinSnapshot(snapshot);
       const mode = deriveContextMode(snapshot, thin);
       contextSource = buildContextSource(snapshot, mode, thin, activeTab?.id ?? null);
@@ -428,6 +683,7 @@ export class ConversationServiceImpl implements ConversationService {
         await this.options.configStore.list(),
         listProviderKinds(),
       );
+      controller.signal.throwIfAborted();
       const config = info === null ? null : this.options.configStore.get(info.providerId);
 
       // 3. buildContext（requestId 先生成、model 来自配置——决议 #18）
@@ -451,7 +707,7 @@ export class ConversationServiceImpl implements ConversationService {
       if (this.ensureMessages(entry).length === 0) {
         entry.session.title = deriveTitle(question); // §2：首问截断（≤ 30 字符）
       }
-      this.appendMessage(entry, {
+      this.requireAppendMessage(entry, {
         id: randomUUID(),
         role: 'user',
         content: question,
@@ -469,6 +725,7 @@ export class ConversationServiceImpl implements ConversationService {
               config,
               this.options.credentials,
             );
+      controller.signal.throwIfAborted();
       if (provider === null) {
         logWarn(
           'conversation',
@@ -537,9 +794,9 @@ export class ConversationServiceImpl implements ConversationService {
         sessionId,
         contextSource,
         text: '',
-        status: 'error',
+        status: controller.signal.aborted ? 'aborted' : 'error',
         error: normalizeProviderError({
-          kind: 'internal',
+          kind: controller.signal.aborted ? 'aborted' : 'internal',
           context: { requestId, providerId: null, model: null },
         }),
         startedAt,
@@ -564,11 +821,18 @@ export class ConversationServiceImpl implements ConversationService {
     const startedAt = performance.now();
     let contextSource = buildContextSource(null, 'none', false, null);
     let userAppended = false;
+    let loop: AgentLoop | null = null;
+    const maxSteps = this.options.agent?.limits?.maxSteps ?? AGENT_LOOP_LIMITS.maxSteps;
     try {
+      controller.signal.throwIfAborted();
       // 1. 启动时刻实时采集（防串页契约，与共读 ask 同路径）
       const activeTab = await this.options.browser.getActiveTab();
+      controller.signal.throwIfAborted();
       const snapshot =
-        activeTab === null ? null : await this.options.browser.getPageSnapshot(activeTab.id);
+        activeTab === null
+          ? null
+          : await this.options.browser.getPageSnapshot(activeTab.id, controller.signal);
+      controller.signal.throwIfAborted();
       const thin = snapshot !== null && isThinSnapshot(snapshot);
       const mode = deriveContextMode(snapshot, thin);
       contextSource = buildContextSource(snapshot, mode, thin, activeTab?.id ?? null);
@@ -578,6 +842,7 @@ export class ConversationServiceImpl implements ConversationService {
         await this.options.configStore.list(),
         listProviderKinds(),
       );
+      controller.signal.throwIfAborted();
       const config = info === null ? null : this.options.configStore.get(info.providerId);
 
       // 3. 先持久化 goal user 消息（含 ContextSource）——引用链先于生成落地；
@@ -586,7 +851,7 @@ export class ConversationServiceImpl implements ConversationService {
         entry.session.title = deriveTitle(goal);
       }
       const prior = [...this.ensureMessages(entry)];
-      this.appendMessage(entry, {
+      this.requireAppendMessage(entry, {
         id: randomUUID(),
         role: 'user',
         content: goal,
@@ -619,7 +884,7 @@ export class ConversationServiceImpl implements ConversationService {
             sessionId,
             status: 'error',
             stepsUsed: 0,
-            maxSteps: 0,
+            maxSteps,
             finalText: '',
             toolStepCount: 0,
           },
@@ -636,6 +901,7 @@ export class ConversationServiceImpl implements ConversationService {
               config,
               this.options.credentials,
             );
+      controller.signal.throwIfAborted();
       if (provider === null) {
         logWarn(
           'conversation',
@@ -654,7 +920,7 @@ export class ConversationServiceImpl implements ConversationService {
             sessionId,
             status: 'error',
             stepsUsed: 0,
-            maxSteps: 0,
+            maxSteps,
             finalText: '',
             toolStepCount: 0,
           },
@@ -676,7 +942,7 @@ export class ConversationServiceImpl implements ConversationService {
           requestId,
           status: 'running',
           stepsUsed: 0,
-          maxSteps: agent.limits?.maxSteps ?? 12,
+          maxSteps,
         }),
       );
       logInfo(
@@ -688,7 +954,7 @@ export class ConversationServiceImpl implements ConversationService {
       //    B6（决议 #79/#81）：每 run 独立 usage 桥（SourceSearchHintStore 关联）——
       //    AgentLoop 终态（含取消/超时）调用其 clearRun，迟到工具结果零写入。
       const runUsage = agent.usageBridge?.(requestId);
-      const loop = new AgentLoop({
+      loop = new AgentLoop({
         requestId,
         model: config?.model ?? '',
         goalMessage: goalBuilt.message,
@@ -708,7 +974,7 @@ export class ConversationServiceImpl implements ConversationService {
           },
           onAgentRound: (e) => {
             // 每轮 assistant 消息（轮次文本 + 脱敏 toolCalls）先于其 tool 消息持久化（协议合法序）
-            this.appendMessage(
+            this.requireAppendMessage(
               entry,
               buildRoundAssistantMessage({
                 id: randomUUID(),
@@ -721,7 +987,7 @@ export class ConversationServiceImpl implements ConversationService {
           onAgentStep: (e) => {
             // 每步终态：ToolStep 持久化（§9.3 精简版，fill 值/快照正文/内部参数零落盘）+ 可见性事件
             // （argsSummary 为 A6 非持久化字段——审计同源脱敏摘要，渲染层不得自行解析参数）
-            this.appendMessage(
+            this.requireAppendMessage(
               entry,
               buildToolStepMessage({ id: randomUUID(), step: e.step, now: Date.now() }),
             );
@@ -805,24 +1071,23 @@ export class ConversationServiceImpl implements ConversationService {
         contextSource,
         finalText: '',
         finalToolCalls: [],
-        status: 'error',
+        status: controller.signal.aborted ? 'aborted' : 'error',
         error: normalizeProviderError({
-          kind: 'internal',
+          kind: controller.signal.aborted ? 'aborted' : 'internal',
           context: { requestId, providerId: null, model: null },
         }),
         summary: {
           requestId,
           sessionId,
-          status: 'error',
-          stepsUsed: 0,
-          maxSteps: 0,
+          status: controller.signal.aborted ? 'cancelled' : 'error',
           finalText: '',
-          toolStepCount: 0,
+          ...(loop?.getProgress() ?? { stepsUsed: 0, maxSteps, toolStepCount: 0 }),
         },
         startedAt,
       });
     } finally {
       this.inFlight.delete(sessionId);
+      await loop?.waitForIdle();
     }
   }
 
@@ -851,7 +1116,14 @@ export class ConversationServiceImpl implements ConversationService {
       now: Date.now(),
     });
     // 会话可能已在生成中被删除 → appendMessage 内部跳过持久化（存活守卫），事件仍发送
-    this.appendMessage(entry, message);
+    if (!this.appendMessage(entry, message)) {
+      e.status = 'error';
+      e.error = this.persistenceError(e.requestId);
+      e.summary = { ...e.summary, status: 'error' };
+      message.status = 'error';
+      message.errorCode = 'internal';
+      message.agentRun = e.summary;
+    }
 
     const elapsed = Math.round(performance.now() - e.startedAt);
     logInfo(
@@ -888,8 +1160,15 @@ export class ConversationServiceImpl implements ConversationService {
     };
     let text = '';
     try {
+      signal.throwIfAborted();
       // request 为 null 时 provider 必为 null（runAsk 已分叉），此处仅防御类型收窄
       for await (const event of provider.stream(request as ProviderRequest, signal)) {
+        if (signal.aborted)
+          return {
+            text,
+            status: 'aborted',
+            error: normalizeProviderError({ kind: 'aborted', context }),
+          };
         if (event.type === 'delta') {
           text += event.text;
           this.options.onStreamChunk?.({ requestId, sessionId, delta: event.text });
@@ -915,6 +1194,12 @@ export class ConversationServiceImpl implements ConversationService {
         }
       }
     } catch (err) {
+      if (signal.aborted)
+        return {
+          text,
+          status: 'aborted',
+          error: normalizeProviderError({ kind: 'aborted', context }),
+        };
       // Provider 迭代抛异常（未走事件协议的供应商缺陷）→ 归一化 internal，保留已生成文本
       logError('conversation', `Provider 流异常（requestId=${requestId}）`, err);
       return {
@@ -951,7 +1236,12 @@ export class ConversationServiceImpl implements ConversationService {
     if (e.status === 'error' && e.error !== null) message.errorCode = e.error.code;
     // 会话可能已在生成中被删除（deleteSession 中止路径）→ appendMessage 内部跳过持久化，
     // 终态事件仍发送（turn-done 恰好一次）
-    this.appendMessage(entry, message);
+    if (!this.appendMessage(entry, message)) {
+      e.status = 'error';
+      e.error = this.persistenceError(e.requestId);
+      message.status = 'error';
+      message.errorCode = 'internal';
+    }
 
     const elapsed = Math.round(performance.now() - e.startedAt);
     logInfo(
@@ -971,8 +1261,14 @@ export class ConversationServiceImpl implements ConversationService {
   // 追加消息（200 条上限确定性裁剪 + 非 ephemeral 原子落盘；updatedAt 同步）。
   // 会话存活守卫：deleteSession 中止在途生成后，runAsk 终态路径不得复活已删会话的文件
   // （§9「删除即消失」——删内存 + 删文件后，在途编排的后续落盘一律跳过）。
-  private appendMessage(entry: SessionEntry, message: ConversationMessage): void {
-    if (this.sessions.get(entry.session.id) !== entry) return;
+  private appendMessage(entry: SessionEntry, message: ConversationMessage): boolean {
+    if (this.sessions.get(entry.session.id) !== entry) return true;
+    if (this.getStorageStatus().state === 'recovery-required') {
+      // An accepted turn still owes its terminal write even if another read failed.
+      this.drainFailed = true;
+      this.maintenancePrepared = false;
+      return false;
+    }
     let messages = this.ensureMessages(entry);
     messages.push(message);
     const cropped = cropMessagesToLimit(messages);
@@ -987,14 +1283,26 @@ export class ConversationServiceImpl implements ConversationService {
     }
     entry.session.updatedAt = Date.now();
     if (!entry.session.ephemeral) {
-      this.options.store.saveMessages(entry.session.id, messages);
-      this.options.store.saveSessions(this.sessionList());
+      if (!this.persist(() => this.options.store.saveMessages(entry.session.id, messages)))
+        return false;
+      return this.persist(() => this.options.store.saveSessions(this.sessionList()));
     }
+    return true;
+  }
+
+  private requireAppendMessage(entry: SessionEntry, message: ConversationMessage): void {
+    if (!this.appendMessage(entry, message)) throw new Error('会话持久化失败，后续生成已停止');
   }
 
   private ensureMessages(entry: SessionEntry): ConversationMessage[] {
     if (entry.messages === null) {
-      entry.messages = this.options.store.loadMessages(entry.session.id);
+      try {
+        entry.messages = this.options.store.loadMessages(entry.session.id);
+      } catch (error) {
+        this.storageReadFailed = true;
+        this.maintenancePrepared = false;
+        throw error;
+      }
     }
     return entry.messages;
   }
@@ -1003,13 +1311,37 @@ export class ConversationServiceImpl implements ConversationService {
     return [...this.sessions.values()].map((e) => e.session);
   }
 
+  getStorageStatus(): ConversationStorageStatus {
+    const status = this.options.store.getStorageStatus();
+    return status.state === 'ready' && (this.storageReadFailed || this.drainFailed)
+      ? { state: 'recovery-required', code: 'io' }
+      : status;
+  }
+
+  private persistenceError(requestId: string): NormalizedProviderError {
+    return {
+      code: 'internal',
+      message:
+        this.getStorageStatus().code === 'budget'
+          ? '本轮内容超过本地保存上限，未完整保存；已保存记录保持不变'
+          : '本轮内容未能完整保存，已保存记录保持不变，请恢复后重试',
+      retryable: false,
+      providerId: null,
+      model: null,
+      requestId,
+    };
+  }
+
   private failResult(code: 'busy' | 'not-found' | 'internal'): AskResult {
     // 无本轮生成，requestId 为空串（NormalizedProviderError 类型要求）；仅状态/参数拒绝
     return {
       ok: false,
       error: {
         code,
-        message: SERVICE_ERROR_MESSAGES[code],
+        message:
+          code === 'internal' && this.getStorageStatus().state === 'recovery-required'
+            ? '会话数据无法读取，原文件已保留，请恢复备份'
+            : SERVICE_ERROR_MESSAGES[code],
         retryable: false,
         providerId: null,
         model: null,

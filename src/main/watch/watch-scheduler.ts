@@ -129,6 +129,7 @@ export interface SchedulerEntry {
 
 export interface WatchSchedulerOptions {
   clock: Clock;
+  startupHold?: boolean;
   maxStartsPerTick?: number;
   onDue: (entries: readonly { ruleId: string; trigger: 'catch-up' | 'scheduled' }[]) => void;
 }
@@ -151,15 +152,30 @@ export class WatchScheduler {
   private readonly index = new Map<string, number>();
   private timer: TimerHandle | null = null;
   private stopped = false;
+  private startupHeld: boolean;
+  private maintenanceGeneration: number | null = null;
+  private lastMaintenanceGeneration = 0;
+  private maintenanceDrained = false;
+  private maintenanceResumePrepared = false;
+  private timerEpoch = 0;
 
   constructor(options: WatchSchedulerOptions) {
     this.clock = options.clock;
+    this.startupHeld = options.startupHold ?? false;
     this.maxStartsPerTick = options.maxStartsPerTick ?? MAX_DUE_STARTS_PER_TICK;
     this.onDue = options.onDue;
   }
 
   get size(): number {
     return this.heap.length;
+  }
+
+  releaseStartup(): boolean {
+    if (this.stopped) return false;
+    if (!this.startupHeld) return true;
+    this.startupHeld = false;
+    this.arm();
+    return true;
   }
 
   has(ruleId: string): boolean {
@@ -225,6 +241,73 @@ export class WatchScheduler {
     this.index.clear();
   }
 
+  pauseForMaintenance(generation: number): boolean {
+    if (this.stopped) return false;
+    if (this.maintenanceGeneration !== null) return this.maintenanceGeneration === generation;
+    if (!Number.isSafeInteger(generation) || generation <= this.lastMaintenanceGeneration)
+      return false;
+    this.maintenanceGeneration = generation;
+    this.lastMaintenanceGeneration = generation;
+    this.maintenanceDrained = false;
+    this.maintenanceResumePrepared = false;
+    this.disarm();
+    return true;
+  }
+
+  drainForMaintenance(generation: number): Promise<void> {
+    if (this.stopped || this.maintenanceGeneration !== generation) {
+      return Promise.reject(new Error('Watch 调度维护世代不可用'));
+    }
+    this.maintenanceDrained = true;
+    return Promise.resolve();
+  }
+
+  prepareResumeAfterMaintenance(
+    generation: number,
+    entries: readonly { ruleId: string; effectiveDueAt: number }[],
+  ): boolean {
+    if (this.stopped || this.maintenanceGeneration !== generation || !this.maintenanceDrained)
+      return false;
+    if (this.maintenanceResumePrepared) return true;
+    const seen = new Set<string>();
+    for (const entry of entries) {
+      if (
+        entry.ruleId.length === 0 ||
+        !Number.isFinite(entry.effectiveDueAt) ||
+        seen.has(entry.ruleId)
+      )
+        return false;
+      seen.add(entry.ruleId);
+    }
+    this.heap.length = 0;
+    this.index.clear();
+    const now = this.clock.now().getTime();
+    for (const entry of entries) {
+      this.insert({
+        ruleId: entry.ruleId,
+        effectiveDueAt: entry.effectiveDueAt,
+        trigger: entry.effectiveDueAt <= now ? 'catch-up' : 'scheduled',
+      });
+    }
+    this.maintenanceResumePrepared = true;
+    return true;
+  }
+
+  resumeAfterMaintenance(generation: number): boolean {
+    if (
+      this.stopped ||
+      this.maintenanceGeneration !== generation ||
+      !this.maintenanceDrained ||
+      !this.maintenanceResumePrepared
+    )
+      return false;
+    this.maintenanceGeneration = null;
+    this.maintenanceDrained = false;
+    this.maintenanceResumePrepared = false;
+    this.arm();
+    return true;
+  }
+
   get isStopped(): boolean {
     return this.stopped;
   }
@@ -276,7 +359,7 @@ export class WatchScheduler {
   }
 
   private arm(): void {
-    if (this.stopped) return;
+    if (this.stopped || this.startupHeld || this.maintenanceGeneration !== null) return;
     if (this.heap.length === 0) {
       this.disarm();
       return;
@@ -284,10 +367,12 @@ export class WatchScheduler {
     const now = this.clock.now().getTime();
     const delay = Math.max(0, this.heap[0]!.effectiveDueAt - now);
     if (this.timer !== null) this.disarm();
-    this.timer = this.clock.setTimeout(() => this.fire(), delay);
+    const epoch = ++this.timerEpoch;
+    this.timer = this.clock.setTimeout(() => this.fire(epoch), delay);
   }
 
   private disarm(): void {
+    this.timerEpoch += 1;
     if (this.timer === null) return;
     try {
       this.clock.clearTimeout(this.timer);
@@ -297,9 +382,10 @@ export class WatchScheduler {
     this.timer = null;
   }
 
-  private fire(): void {
+  private fire(epoch: number): void {
+    if (epoch !== this.timerEpoch) return;
     this.timer = null;
-    if (this.stopped) return;
+    if (this.stopped || this.startupHeld || this.maintenanceGeneration !== null) return;
     const now = this.clock.now().getTime();
     const due: SchedulerEntry[] = [];
     while (

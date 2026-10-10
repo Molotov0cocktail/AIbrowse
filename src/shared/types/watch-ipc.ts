@@ -103,7 +103,13 @@ export interface WatchStatusDto {
 
 export type WatchPushDto =
   | { type: 'status'; revision: number; status: WatchStatusDto }
-  | { type: 'notification'; revision: number; notification: InAppNotificationDto };
+  | { type: 'notification'; revision: number; notification: InAppNotificationDto }
+  | {
+      type: 'activation';
+      revision: number;
+      subjectType: 'event' | 'digest';
+      subjectId: string;
+    };
 
 export interface WatchBridge {
   listRules(payload: unknown): Promise<WatchIpcResult<unknown>>;

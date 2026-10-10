@@ -711,6 +711,14 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
     }
   }
 
+  // Local-only reconciliation while the main coordinator holds all producer gates.
+  reconcileForMaintenance(reader: SourceProjectionReader): { ok: boolean; reason: string | null } {
+    if (this.getState().mode !== 'normal') return { ok: false, reason: '监控数据不可用' };
+    const result = this.reconcileOnStartup(this.activeRepo, reader);
+    if (!result.ok) this.markUnavailable('维护期间信源与监控数据协调失败');
+    return result;
+  }
+
   private pauseSingleRuleSourceDeleted(
     repo: WatchRepository,
     rule: WatchRule,

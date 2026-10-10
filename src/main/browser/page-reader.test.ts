@@ -89,6 +89,9 @@ class ContentsFixture {
   isCrashed(): boolean {
     return false;
   }
+  isLoadingMainFrame(): boolean {
+    return false;
+  }
   getURL(): string {
     return this.document.url;
   }

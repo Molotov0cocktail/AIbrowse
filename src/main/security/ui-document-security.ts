@@ -1,6 +1,7 @@
 import type { WebContents } from 'electron';
 import { resolveUiNavigationAllowed, type UiNavigationPolicy } from '../ui-navigation-policy';
 import { UiDocumentGuard } from './ui-document-guard';
+import { IPC } from '../../shared/types/ipc';
 
 interface UiDocumentSecurityOptions {
   entry: string;
@@ -25,7 +26,11 @@ export function installUiDocumentSecurity(
     if (!isMainFrame) return;
     const committed = { owner: contents, frame: contents.mainFrame, url };
     guard.commit(committed);
-    if (guard.token(committed) !== null || recoveries >= 1) return;
+    if (guard.token(committed) !== null) {
+      contents.send(IPC.UiDocumentReady);
+      return;
+    }
+    if (recoveries >= 1) return;
     recoveries += 1;
     options.onRecovery?.();
     // Stopping during this native callback can crash Chromium; queue a fixed reload.

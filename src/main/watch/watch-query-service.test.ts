@@ -88,6 +88,7 @@ describe('D9 renderer-safe Watch 查询投影', () => {
     const repo = {
       listRules: () => [rule],
       listEventsByRule: () => [newer, older],
+      getEvent: (id: string) => [newer, older].find((item) => item.id === id) ?? null,
       listEventItems: () => [],
     } as unknown as WatchRepository;
     const query = new WatchQueryService(

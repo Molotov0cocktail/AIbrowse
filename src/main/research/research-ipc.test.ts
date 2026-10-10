@@ -25,6 +25,7 @@ import {
 } from './research-ipc';
 import type { ResearchResultView, ResearchTask } from '../../shared/types/research';
 import { MAX_GOAL_CHARS } from '../../shared/types/research';
+import { MaintenanceAdmission } from '../storage/maintenance-admission';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-research-ipc-'));
 
@@ -213,6 +214,65 @@ afterAll(() => {
 });
 
 // ---------- payload 白名单（决议 #156(2)） ----------
+
+describe('E2 Research IPC维护边界', () => {
+  it('关闭准入后拒绝新任务且保留恰好一条审计', async () => {
+    const admission = new MaintenanceAdmission();
+    const adapter = buildIpc({ admission });
+    admission.pauseForMaintenance(1);
+    expect(await adapter.create({ goal: '维护时不得新建' })).toEqual({
+      ok: false,
+      errorCode: 'research-unavailable',
+    });
+    expect((await svc.listTasks()).ok).toBe(true);
+    expect(repo.countTasks()).toBe(0);
+    expect(audits).toHaveLength(1);
+  });
+
+  it('原生导出选择跨越维护：等待旧对话框退出且零文件写入', async () => {
+    makeCompletedFixture();
+    const admission = new MaintenanceAdmission();
+    let resolvePath!: (path: string) => void;
+    const selected = new Promise<string>((resolve) => {
+      resolvePath = resolve;
+    });
+    let entered!: () => void;
+    const dialogEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let writes = 0;
+    const adapter = buildIpc({
+      admission,
+      exportPort: {
+        showSaveDialog: () => {
+          entered();
+          return selected;
+        },
+        writeCsv: async () => {
+          writes += 1;
+        },
+      },
+    });
+    const exporting = adapter.exportCsv({
+      taskId: TASK_ID,
+      tableBlockIndex: 0,
+      view: { sort: null, filter: '' },
+    });
+    await dialogEntered;
+    admission.pauseForMaintenance(1);
+    let drained = false;
+    const drain = admission.drainForMaintenance(1).then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    resolvePath(join(exportDir, 'maintenance.csv'));
+    expect(await exporting).toEqual({ ok: false, errorCode: 'cancelled' });
+    await drain;
+    expect(writes).toBe(0);
+    expect(audits).toHaveLength(1);
+  });
+});
 
 describe('payload 严格白名单（决议 #156(2)/(3)/(4)）', () => {
   it('create：goal trim 非空 ≤MAX_GOAL_CHARS；超长/空/非串/未知字段/原型键拒绝', () => {

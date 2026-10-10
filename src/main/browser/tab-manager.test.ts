@@ -8,6 +8,8 @@ vi.mock('electron', async () => {
   class TestWebContents extends Emitter {
     loadingMainFrame = false;
     destroyed = false;
+    loadURL = vi.fn();
+    reload = vi.fn();
     isLoadingMainFrame(): boolean {
       return this.loadingMainFrame;
     }
@@ -30,7 +32,12 @@ vi.mock('electron', async () => {
 
 interface TestWebContents extends EventEmitter {
   loadingMainFrame: boolean;
+  destroyed: boolean;
+  loadURL: ReturnType<typeof vi.fn>;
+  reload: ReturnType<typeof vi.fn>;
 }
+
+vi.mock('../logger', () => ({ logError: vi.fn(), logWarn: vi.fn() }));
 
 function harness() {
   const ownerWindow = {
@@ -171,5 +178,142 @@ describe('TabManager 主框架加载状态与真实事件顺序', () => {
     manager.dispose();
     expect(wc.eventNames()).toEqual([]);
     expect(ownerWindow.contentView.removeChildView).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('TabManager 单网页崩溃隔离与显式恢复', () => {
+  it('崩溃立即废弃旧文档和待处理加载，取消回调已不能将旧加载当作当前加载', () => {
+    const { manager, entry, wc } = harness();
+    try {
+      wc.emit('did-finish-load');
+      const generation = entry.generation;
+      const navigationSerial = entry.navigationSerial;
+      const loadSerial = entry.loadSerial;
+      const cancel = vi.fn(() => {
+        expect(entry.generation).toBe(generation + 1);
+        expect(entry.loadSerial).toBeGreaterThan(loadSerial);
+      });
+      entry.latestLoad = {
+        serial: loadSerial,
+        purpose: 'navigation',
+        status: 'pending',
+        promise: Promise.resolve(false),
+        cancel,
+      };
+      wc.emit('render-process-gone');
+      expect(entry.generation).toBe(generation + 1);
+      expect(entry.navigationSerial).toBe(navigationSerial + 1);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(entry.latestLoad).toBeNull();
+      expect(entry.info.state).toBe('error');
+      expect(entry.info.failure).toBe('renderer-gone');
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('未物化空白页崩溃不隐式重启物化或关闭用户标签', () => {
+    const { manager } = harness();
+    try {
+      const blank = manager.createTab('about:blank', { deferInitialBlankLoad: true });
+      const wc = blank.view.webContents as unknown as TestWebContents;
+      wc.emit('render-process-gone');
+      expect(blank.generation).toBe(1);
+      expect(blank.deferredBlank).toBe(false);
+      expect(blank.info.state).toBe('error');
+      expect(manager.get(blank.info.id)).toBe(blank);
+      expect(wc.destroyed).toBe(false);
+      expect(wc.loadURL).not.toHaveBeenCalled();
+      expect(wc.reload).not.toHaveBeenCalled();
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('迟到加载完成、旧提交及子框架事件不能把崩溃页伪报正常', () => {
+    const { manager, entry, wc } = harness();
+    try {
+      wc.emit('render-process-gone');
+      const generation = entry.generation;
+      wc.loadingMainFrame = true;
+      wc.emit('did-start-loading');
+      wc.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+      wc.emit('did-navigate', {}, 'https://example.com/late');
+      wc.emit('did-navigate-in-page', {}, 'https://example.com/late#hash', true);
+      wc.emit('did-finish-load');
+      wc.emit('did-fail-load', {}, -105, '', '', true);
+      expect(entry.info.state).toBe('error');
+      expect(entry.info.failure).toBe('renderer-gone');
+      expect(entry.info.url).toBe('https://example.com/page');
+      expect(entry.generation).toBe(generation);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('显式主文档重载允许恢复，同址新提交仍使崩溃前元素保持过期', () => {
+    const { manager, entry, wc } = harness();
+    try {
+      const originalGeneration = entry.generation;
+      wc.emit('render-process-gone');
+      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+      expect(entry.info.state).toBe('loading');
+      expect(entry.info.failure).toBeUndefined();
+      wc.emit('did-navigate', {}, entry.info.url);
+      wc.emit('did-finish-load');
+      expect(entry.info.state).toBe('ready');
+      expect(entry.info.failure).toBeUndefined();
+      expect(entry.generation).toBe(originalGeneration + 2);
+      expect(wc.loadURL).not.toHaveBeenCalled();
+      expect(wc.reload).not.toHaveBeenCalled();
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('连续崩溃不启动自动重试，其他用户标签的文档、标题和登记保持', () => {
+    const { manager, entry, wc, ownerWindow } = harness();
+    const other = manager.createTab('https://example.com/other');
+    const otherWc = other.view.webContents as unknown as TestWebContents;
+    otherWc.emit('did-finish-load');
+    otherWc.emit('page-title-updated', {}, '另一个用户标签');
+    const otherInfo = { ...other.info };
+    const otherGeneration = other.generation;
+    const generation = entry.generation;
+    for (let attempt = 0; attempt < 5; attempt += 1) wc.emit('render-process-gone');
+    expect(entry.generation).toBe(generation + 5);
+    expect(manager.list()).toEqual([entry, other]);
+    expect(other.info).toEqual(otherInfo);
+    expect(other.generation).toBe(otherGeneration);
+    expect(wc.reload).not.toHaveBeenCalled();
+    expect(wc.loadURL).not.toHaveBeenCalled();
+    expect(otherWc.reload).not.toHaveBeenCalled();
+    expect(otherWc.loadURL).not.toHaveBeenCalled();
+    expect(ownerWindow.contentView.removeChildView).not.toHaveBeenCalled();
+    manager.dispose();
+    manager.dispose();
+    expect(wc.eventNames()).toEqual([]);
+    expect(otherWc.eventNames()).toEqual([]);
+    expect(ownerWindow.contentView.removeChildView).toHaveBeenCalledTimes(2);
+  });
+
+  it('重载失败显示加载失败原因，下一次主框架导航才能清除它', () => {
+    const { manager, entry, wc } = harness();
+    try {
+      wc.emit('render-process-gone');
+      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+      wc.emit('did-fail-load', {}, -105, '', '', true);
+      expect(entry.info).toMatchObject({ state: 'error', failure: 'load-failed' });
+      wc.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+      wc.emit('did-fail-load', {}, -3, '', '', true);
+      expect(entry.info).toMatchObject({ state: 'error', failure: 'load-failed' });
+      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+      expect(entry.info.state).toBe('loading');
+      expect(entry.info.failure).toBeUndefined();
+    } finally {
+      manager.dispose();
+    }
   });
 });

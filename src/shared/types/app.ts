@@ -9,6 +9,7 @@ import type {
   ContextPreview,
   ConversationMessage,
   ConversationSession,
+  ConversationStorageStatus,
   ProviderInfo,
   StreamChunkEvent,
   TurnDoneEvent,
@@ -57,6 +58,12 @@ import type {
 } from './research';
 import type { ResearchExportCsvPayload, ResearchListPayload } from './ipc';
 import type { WatchBridge } from './watch-ipc';
+import type { DataTransferAction, DataTransferStatus } from './data-transfer';
+import type {
+  DiagnosticExportPayload,
+  DiagnosticExportResult,
+  DiagnosticPreviewResult,
+} from './diagnostics';
 
 export interface AppInfo {
   appVersion: string;
@@ -69,6 +76,17 @@ export interface AppInfo {
 // Minimal-privilege bridge exposed by the preload script to the renderer (React UI only).
 export interface AibrowseBridge {
   getAppInfo(): Promise<AppInfo>;
+  getConversationStorageStatus(): Promise<ConversationStorageStatus>;
+  dataTransfer: {
+    getStatus(): Promise<DataTransferStatus>;
+    start(action: DataTransferAction): Promise<DataTransferStatus>;
+    cancel(operationId: string): Promise<DataTransferStatus>;
+    recoverOriginal(operationId: string): Promise<DataTransferStatus>;
+  };
+  diagnostics: {
+    preview(): Promise<DiagnosticPreviewResult>;
+    export(payload: DiagnosticExportPayload): Promise<DiagnosticExportResult>;
+  };
   notifyRendererReady(): void;
   tabs: {
     list(): Promise<TabInfo[]>;

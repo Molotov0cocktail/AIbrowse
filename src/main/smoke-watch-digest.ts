@@ -200,6 +200,7 @@ export async function runWatchDigestSmokeScenario(): Promise<void> {
         start: () => {
           watchStarts += 1;
         },
+        beginShutdown: () => undefined,
         stop: async () => undefined,
       },
       lifecycle: {

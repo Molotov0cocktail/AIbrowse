@@ -46,7 +46,7 @@ function makeMessage(overrides: Partial<ConversationMessage> = {}): Conversation
 
 function makeSession(overrides: Partial<ConversationSession> = {}): ConversationSession {
   return {
-    id: 'sess-1',
+    id: '11111111-1111-4111-8111-000000000001',
     title: '标题',
     createdAt: 1000,
     updatedAt: 1000,
@@ -153,15 +153,16 @@ describe('serialize/parseMessagesFile — 消息文件纯格式', () => {
       ],
     });
     const parsed = parseMessagesFile(text);
-    expect(parsed).not.toBeNull();
-    expect(parsed?.messages.map((m) => m.id)).toEqual(['msg-1', 'msg-3']);
-    expect(parsed?.dropped).toBe(3);
+    expect(parsed).toBeNull();
   });
 });
 
 describe('serialize/parseIndexFile — 会话索引纯格式（不含 ephemeral）', () => {
   it('序列化/解析往返一致', () => {
-    const sessions = [makeSession(), makeSession({ id: 'sess-2', title: '乙' })];
+    const sessions = [
+      makeSession(),
+      makeSession({ id: '11111111-1111-4111-8111-000000000002', title: '乙' }),
+    ];
     const parsed = parseIndexFile(serializeIndexFile(sessions));
     expect(parsed).not.toBeNull();
     expect(parsed?.sessions).toEqual(sessions);
@@ -175,13 +176,15 @@ describe('serialize/parseIndexFile — 会话索引纯格式（不含 ephemeral�
   });
 
   it('ephemeral 条目在索引中一律丢弃（存储不变式：索引不含 ephemeral）', () => {
-    const text = serializeIndexFile([
-      makeSession(),
-      makeSession({ id: 'sess-ep', ephemeral: true }),
-    ]);
+    const text = JSON.stringify({
+      version: 1,
+      sessions: [
+        makeSession(),
+        makeSession({ id: '11111111-1111-4111-8111-000000000003', ephemeral: true }),
+      ],
+    });
     const parsed = parseIndexFile(text);
-    expect(parsed?.sessions.map((s) => s.id)).toEqual(['sess-1']);
-    expect(parsed?.dropped).toBe(1);
+    expect(parsed).toBeNull();
   });
 
   it('形状非法条目（id 非串/title 非串/时间戳非数/ephemeral 非布尔）丢弃并计数', () => {
@@ -189,14 +192,13 @@ describe('serialize/parseIndexFile — 会话索引纯格式（不含 ephemeral�
       version: 1,
       sessions: [
         makeSession(),
-        { ...makeSession({ id: 'sess-x' }), createdAt: 'bad' },
-        { ...makeSession({ id: 'sess-y' }), ephemeral: 1 },
+        { ...makeSession({ id: '11111111-1111-4111-8111-000000000004' }), createdAt: 'bad' },
+        { ...makeSession({ id: '11111111-1111-4111-8111-000000000005' }), ephemeral: 1 },
         null,
       ],
     });
     const parsed = parseIndexFile(text);
-    expect(parsed?.sessions.map((s) => s.id)).toEqual(['sess-1']);
-    expect(parsed?.dropped).toBe(3);
+    expect(parsed).toBeNull();
   });
 });
 
@@ -243,12 +245,15 @@ describe('ConversationStore — JSON 文件读写（§9：原子写/损坏容错
     const dir = join(baseDir, 'case-roundtrip');
     const store = new ConversationStore(dir);
     expect(
-      store.saveSessions([makeSession(), makeSession({ id: 'sess-ep', ephemeral: true })]),
+      store.saveSessions([
+        makeSession(),
+        makeSession({ id: '11111111-1111-4111-8111-000000000003', ephemeral: true }),
+      ]),
     ).toBe(true);
     expect(store.loadSessions()).toEqual([makeSession()]);
     // 落盘内容同样不含 ephemeral（序列化层面再核对）
     const fileText = readFileSync(join(dir, 'conversations', 'index.json'), 'utf8');
-    expect(fileText).not.toContain('sess-ep');
+    expect(fileText).not.toContain('11111111-1111-4111-8111-000000000003');
   });
 
   it('原子写：成功写入后无 .tmp 残留，文件可解析', () => {
@@ -266,52 +271,66 @@ describe('ConversationStore — JSON 文件读写（§9：原子写/损坏容错
     expect(store.loadSessions()).toEqual([]); // 目录缺失
     mkdirSync(join(dir, 'conversations'), { recursive: true });
     writeFileSync(join(dir, 'conversations', 'index.json'), '### not json ###', 'utf8');
-    expect(store.loadSessions()).toEqual([]);
+    expect(() => store.loadSessions()).toThrow('原文件已保留');
     const valid = makeSession();
-    const bad = { ...makeSession({ id: 'sess-x' }), title: 9 };
+    const bad = { ...makeSession({ id: '11111111-1111-4111-8111-000000000004' }), title: 9 };
     writeFileSync(
       join(dir, 'conversations', 'index.json'),
-      serializeIndexFile([valid, bad as never]),
+      JSON.stringify({ version: 1, sessions: [valid, bad] }),
       'utf8',
     );
-    expect(store.loadSessions()).toEqual([valid]);
+    expect(() => new ConversationStore(dir).loadSessions()).toThrow('原文件已保留');
   });
 
   it('saveMessages/loadMessages 往返；原子写无 tmp 残留', () => {
     const dir = join(baseDir, 'case-messages');
     const store = new ConversationStore(dir);
     const messages = [makeMessage(), makeMessage({ id: 'msg-2', role: 'assistant' })];
-    expect(store.saveMessages('sess-1', messages)).toBe(true);
-    expect(store.loadMessages('sess-1')).toEqual(messages);
-    expect(existsSync(join(dir, 'conversations', 'sess-1.json.tmp'))).toBe(false);
+    expect(store.saveMessages('11111111-1111-4111-8111-000000000001', messages)).toBe(true);
+    expect(store.loadMessages('11111111-1111-4111-8111-000000000001')).toEqual(messages);
+    expect(
+      existsSync(join(dir, 'conversations', '11111111-1111-4111-8111-000000000001.json.tmp')),
+    ).toBe(false);
   });
 
   it('消息文件损坏容错：缺失 → 空；整体不可解析 → 空；非法条目丢弃保留合法条目', () => {
     const dir = join(baseDir, 'case-corrupt-messages');
     const store = new ConversationStore(dir);
-    expect(store.loadMessages('missing')).toEqual([]);
+    expect(store.loadMessages('11111111-1111-4111-8111-000000000001')).toEqual([]);
     mkdirSync(join(dir, 'conversations'), { recursive: true });
-    writeFileSync(join(dir, 'conversations', 'sess-1.json'), 'garbage', 'utf8');
-    expect(store.loadMessages('sess-1')).toEqual([]);
+    writeFileSync(
+      join(dir, 'conversations', '11111111-1111-4111-8111-000000000001.json'),
+      'garbage',
+      'utf8',
+    );
+    expect(() => store.loadMessages('11111111-1111-4111-8111-000000000001')).toThrow(
+      '原文件已保留',
+    );
     const valid = makeMessage();
     writeFileSync(
-      join(dir, 'conversations', 'sess-1.json'),
+      join(dir, 'conversations', '11111111-1111-4111-8111-000000000001.json'),
       JSON.stringify({ version: 1, messages: [{ role: 'tool' }, valid] }),
       'utf8',
     );
-    expect(store.loadMessages('sess-1')).toEqual([valid]);
+    expect(() =>
+      new ConversationStore(dir).loadMessages('11111111-1111-4111-8111-000000000001'),
+    ).toThrow('原文件已保留');
   });
 
   it('deleteFiles 删除消息文件与残留 tmp（写入中断遗留）', () => {
     const dir = join(baseDir, 'case-delete');
     const store = new ConversationStore(dir);
-    store.saveMessages('sess-1', [makeMessage()]);
+    store.saveMessages('11111111-1111-4111-8111-000000000001', [makeMessage()]);
     const storeDir = join(dir, 'conversations');
-    writeFileSync(join(storeDir, 'sess-1.json.tmp'), 'half-written', 'utf8'); // 模拟中断残留
-    expect(existsSync(join(storeDir, 'sess-1.json'))).toBe(true);
-    store.deleteFiles('sess-1');
-    expect(existsSync(join(storeDir, 'sess-1.json'))).toBe(false);
-    expect(existsSync(join(storeDir, 'sess-1.json.tmp'))).toBe(false);
+    writeFileSync(
+      join(storeDir, '11111111-1111-4111-8111-000000000001.json.tmp'),
+      'half-written',
+      'utf8',
+    ); // 模拟中断残留
+    expect(existsSync(join(storeDir, '11111111-1111-4111-8111-000000000001.json'))).toBe(true);
+    store.deleteFiles('11111111-1111-4111-8111-000000000001');
+    expect(existsSync(join(storeDir, '11111111-1111-4111-8111-000000000001.json'))).toBe(false);
+    expect(existsSync(join(storeDir, '11111111-1111-4111-8111-000000000001.json.tmp'))).toBe(false);
   });
 });
 
@@ -398,8 +417,7 @@ describe('conversation-store v2 — 消息形状校验（role=tool / toolCalls /
   it('assistant toolCalls 形状非法 → 丢弃该字段保留文本（内容仍可用）', () => {
     const bad = { ...makeAssistantWithCalls(), toolCalls: [{ id: '' }] };
     const valid = validateMessageShape(bad);
-    expect(valid).not.toBeNull();
-    expect(valid?.toolCalls).toBeUndefined(); // 非法扩展字段被丢弃（fail-closed）
+    expect(valid).toBeNull();
   });
 
   it('assistant agentRun 形状非法 → 丢弃该字段；合法则保留', () => {
@@ -417,7 +435,7 @@ describe('conversation-store v2 — 消息形状校验（role=tool / toolCalls /
     };
     expect(validateMessageShape(withRun)?.agentRun?.status).toBe('done');
     const badRun = { ...makeAssistantWithCalls(), agentRun: { status: 'flying' } };
-    expect(validateMessageShape(badRun)?.agentRun).toBeUndefined();
+    expect(validateMessageShape(badRun)).toBeNull();
   });
 
   it('未知 role 仍丢弃（v1 纪律不回归）', () => {
@@ -458,9 +476,7 @@ describe('conversation-store v2 — 文件格式（写入恒 v2，读取兼容 v
   it('孤立 tool 消息（无前导 assistant toolCalls 对应）→ 解析时丢弃 + dropped 计数', () => {
     const v2 = JSON.stringify({ version: 2, messages: [makeMessage(), makeToolStepMessage()] });
     const parsed = parseMessagesFile(v2);
-    expect(parsed).not.toBeNull();
-    expect(parsed?.messages.map((m) => m.role)).toEqual(['user']);
-    expect(parsed?.dropped).toBe(1);
+    expect(parsed).toBeNull();
   });
 
   it('toolCallId 重复的 tool 消息 → 后续丢弃', () => {
@@ -473,8 +489,7 @@ describe('conversation-store v2 — 文件格式（写入恒 v2，读取兼容 v
       ],
     });
     const parsed = parseMessagesFile(v2);
-    expect(parsed?.messages.filter((m) => m.role === 'tool').length).toBe(1);
-    expect(parsed?.dropped).toBe(1);
+    expect(parsed).toBeNull();
   });
 
   it('完整工具组（assistant toolCalls + 同序 tool 消息）保留', () => {
@@ -616,8 +631,11 @@ describe('conversation-store v2 — 零持久化红线（真实文件字节断�
         status: 'complete',
       },
     ];
-    expect(store.saveMessages('sess-red', messages)).toBe(true);
-    const bytes = readFileSync(join(dir, 'conversations', 'sess-red.json'), 'utf8');
+    expect(store.saveMessages('11111111-1111-4111-8111-000000000006', messages)).toBe(true);
+    const bytes = readFileSync(
+      join(dir, 'conversations', '11111111-1111-4111-8111-000000000006.json'),
+      'utf8',
+    );
     expect(bytes).not.toContain(fillSecret); // fill 原文零落盘
     expect(bytes).not.toContain(snapshotBody); // 快照正文零落盘
     expect(bytes).not.toContain('sk-'); // Key 形态零落盘
@@ -630,10 +648,15 @@ describe('conversation-store v2 — 零持久化红线（真实文件字节断�
   it('saveMessages 写入恒 v2（原子写/tmp 无残留不回归）', () => {
     const dir = join(baseDir, 'case-v2-atomic');
     const store = new ConversationStore(dir);
-    expect(store.saveMessages('sess-x', [makeMessage()])).toBe(true);
-    const text = readFileSync(join(dir, 'conversations', 'sess-x.json'), 'utf8');
+    expect(store.saveMessages('11111111-1111-4111-8111-000000000004', [makeMessage()])).toBe(true);
+    const text = readFileSync(
+      join(dir, 'conversations', '11111111-1111-4111-8111-000000000004.json'),
+      'utf8',
+    );
     expect((JSON.parse(text) as { version: number }).version).toBe(2);
-    expect(existsSync(join(dir, 'conversations', 'sess-x.json.tmp'))).toBe(false);
+    expect(
+      existsSync(join(dir, 'conversations', '11111111-1111-4111-8111-000000000004.json.tmp')),
+    ).toBe(false);
   });
 });
 

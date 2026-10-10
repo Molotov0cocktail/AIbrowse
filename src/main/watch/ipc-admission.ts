@@ -1,6 +1,7 @@
 // D10 repair: a small, Electron-free admission gate shared by Watch IPC and
 // subscription publishing. Shutdown closes the gate synchronously so a late
 // renderer event cannot reach a repository that is being disposed.
+import { MaintenanceAdmission } from '../storage/maintenance-admission';
 
 export interface ShutdownAdmission {
   beginShutdown(): void;
@@ -43,43 +44,22 @@ export async function closeAndDrainThenDispose(
   await dispose();
 }
 
-export class WatchIpcAdmission {
-  private open = true;
+export class WatchIpcAdmission extends MaintenanceAdmission {
   private sender: object | null = null;
-  private inFlight = 0;
-  private drainWaiters: Array<() => void> = [];
 
-  beginShutdown(): void {
-    this.open = false;
+  override beginShutdown(): void {
+    super.beginShutdown();
     this.sender = null;
   }
 
-  enter(): (() => void) | null {
-    if (!this.open) return null;
-    this.inFlight += 1;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.inFlight -= 1;
-      if (this.inFlight === 0) {
-        const waiters = this.drainWaiters.splice(0);
-        for (const resolve of waiters) resolve();
-      }
-    };
-  }
-
-  drain(): Promise<void> {
-    if (this.inFlight === 0) return Promise.resolve();
-    return new Promise<void>((resolve) => this.drainWaiters.push(resolve));
-  }
-
-  isOpen(): boolean {
-    return this.open;
+  override pauseForMaintenance(generation: number): boolean {
+    const paused = super.pauseForMaintenance(generation);
+    if (paused) this.sender = null;
+    return paused;
   }
 
   subscribe(sender: object): boolean {
-    if (!this.open) return false;
+    if (!this.isOpen()) return false;
     if (this.sender !== null && this.sender !== sender) return false;
     this.sender = sender;
     return true;

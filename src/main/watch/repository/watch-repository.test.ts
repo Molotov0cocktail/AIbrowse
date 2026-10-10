@@ -37,6 +37,28 @@ afterEach(() => {
 
 const FINGERPRINT = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const NOW = '2026-08-28T00:00:00.000Z';
+it('transfer notification normalization preserves attempts and every nonpending fact', () => {
+  for (const state of ['pending', 'uncertain', 'sent', 'failed'])
+    handle
+      .prepare(
+        "INSERT INTO notification_outbox VALUES(?,NULL,'digest','subject','windows',?,'{}',?,?,?,?)",
+      )
+      .run(state, state, state, state === 'pending' ? 0 : 3, NOW, NOW);
+  expect(repo.failPendingNotificationsForTransfer('2026-08-29T00:00:00.000Z')).toBe(1);
+  expect(
+    handle.prepare('SELECT id,state,attempts FROM notification_outbox ORDER BY id').all(),
+  ).toEqual([
+    { id: 'failed', state: 'failed', attempts: 3 },
+    { id: 'pending', state: 'failed', attempts: 0 },
+    { id: 'sent', state: 'sent', attempts: 3 },
+    { id: 'uncertain', state: 'uncertain', attempts: 3 },
+  ]);
+  expect(repo.failPendingNotificationsForTransfer(NOW)).toBe(0);
+});
+it('does not swallow notification transfer SQL failure', () => {
+  handle.exec('PRAGMA query_only=ON');
+  expect(() => repo.failPendingNotificationsForTransfer(NOW)).toThrow();
+});
 
 function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
   return {
@@ -815,6 +837,55 @@ describe('级联删除 + Digest tombstone + outbox 清理', () => {
       { digestId: 'd1', eventId: event.id, status: 'expired' },
     ]);
     expect(count('watch_audits')).toBe(0); // §10.1：删除 Rule CASCADE audits
+  });
+
+  it('deleteDigestSchedule：Digest outbox 与 artifact 同事务删除，版本冲突和删除失败零半成品', () => {
+    const rule = makeRule();
+    expect(repo.insertRule(rule)).toEqual({ ok: true });
+    const event = makeEvent(rule.id);
+    expect(
+      repo.writeEventTransaction({
+        event,
+        items: [makeItem()],
+        identity: identity(rule.id),
+        outbox: [],
+      }),
+    ).toEqual({ ok: true });
+    insertDigestRefFixture(event.id);
+    handle
+      .prepare(
+        `INSERT INTO notification_outbox
+        (id,rule_id,subject_type,subject_id,channel,dedupe_key,privacy_json,
+         state,attempts,created_at,updated_at)
+        VALUES ('digest-outbox',NULL,'digest','d1','in-app','in-app|digest|d1|1',?,
+          'pending',0,?,?)`,
+      )
+      .run(JSON.stringify({ eventKind: 'digest', importance: 'normal', itemCount: 1 }), NOW, NOW);
+
+    expect(repo.deleteDigestSchedule('ds1', 2)).toEqual({
+      ok: false,
+      code: 'rule-state-conflict',
+    });
+    expect(count('digest_schedules')).toBe(1);
+    expect(count('watch_digests')).toBe(1);
+    expect(count('notification_outbox')).toBe(1);
+
+    handle.exec(`CREATE TRIGGER reject_digest_schedule_delete
+      BEFORE DELETE ON digest_schedules BEGIN SELECT RAISE(ABORT,'injected'); END`);
+    expect(repo.deleteDigestSchedule('ds1', 1)).toEqual({
+      ok: false,
+      code: 'sqlite-error',
+    });
+    expect(count('digest_schedules')).toBe(1);
+    expect(count('watch_digests')).toBe(1);
+    expect(count('notification_outbox')).toBe(1);
+    handle.exec('DROP TRIGGER reject_digest_schedule_delete');
+
+    expect(repo.deleteDigestSchedule('ds1', 1)).toEqual({ ok: true });
+    expect(count('digest_schedules')).toBe(0);
+    expect(count('digest_runs')).toBe(0);
+    expect(count('watch_digests')).toBe(0);
+    expect(count('notification_outbox')).toBe(0);
   });
 });
 

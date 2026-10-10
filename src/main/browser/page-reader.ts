@@ -30,6 +30,41 @@ export interface CollectedPageSnapshot {
   token: string | null;
 }
 
+// Own the pre-dispatch wait. Electron's implicit loading wait has no abort or
+// destroyed settlement, so it must not acquire our operation while loading.
+function waitForSnapshotReadiness(
+  webContents: WebContents,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const alive = (): boolean =>
+    !signal?.aborted && !webContents.isDestroyed() && !webContents.isCrashed();
+  const ready = (): boolean => webContents.getURL() !== '' && !webContents.isLoadingMainFrame();
+  if (!alive()) return Promise.resolve(false);
+  if (ready()) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      webContents.removeListener('did-stop-loading', check);
+      webContents.removeListener('destroyed', cancel);
+      webContents.removeListener('render-process-gone', cancel);
+      signal?.removeEventListener('abort', cancel);
+      resolve(value);
+    };
+    const cancel = (): void => finish(false);
+    const check = (): void => {
+      if (!alive()) finish(false);
+      else if (ready()) finish(true);
+    };
+    webContents.on('did-stop-loading', check);
+    webContents.once('destroyed', cancel);
+    webContents.once('render-process-gone', cancel);
+    signal?.addEventListener('abort', cancel, { once: true });
+    check();
+  });
+}
+
 export class PageReader {
   private readonly bindings = new WeakMap<WebContents, { documentId: number; token: string }>();
 
@@ -42,7 +77,11 @@ export class PageReader {
     });
   }
 
-  async snapshot(webContents: WebContents, documentId: number): Promise<CollectedPageSnapshot> {
+  async snapshot(
+    webContents: WebContents,
+    documentId: number,
+    signal?: AbortSignal,
+  ): Promise<CollectedPageSnapshot> {
     const fallback = {
       url: webContents.getURL(),
       title: webContents.getTitle(),
@@ -62,11 +101,25 @@ export class PageReader {
 
     let raw: unknown;
     try {
+      for (;;) {
+        if (!(await waitForSnapshotReadiness(webContents, signal)))
+          return {
+            snapshot: this.buildL2(fallback, '页面采集等待已取消或页面已不可用'),
+            token: null,
+          };
+        // A navigation can begin during the readiness Promise handoff.
+        if (signal?.aborted || webContents.isDestroyed() || webContents.isCrashed())
+          return { snapshot: this.buildL2(fallback, '页面采集已取消或页面已不可用'), token: null };
+        if (webContents.getURL() !== '' && !webContents.isLoadingMainFrame()) break;
+      }
       raw = await webContents.executeJavaScriptInIsolatedWorld(
         PAGE_READER_WORLD_ID,
         [{ code: BOUND_SNAPSHOT_SCRIPT_SOURCE }],
         false,
       );
+      // Once dispatched, keep the original transport until it really settles.
+      if (signal?.aborted)
+        return { snapshot: this.buildL2(fallback, '页面采集已取消'), token: null };
     } catch (err) {
       // L2：页面冻结/崩溃/导航竞态导致执行上下文失效（§8.5）
       const reason = err instanceof Error ? err.message : String(err);

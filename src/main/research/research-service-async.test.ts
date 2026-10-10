@@ -379,7 +379,7 @@ describe('shutdown/dispose（决议 #135(7)）', () => {
     if (!after.ok) expect(after.errorCode).toBe('research-unavailable');
   });
 
-  it('dispose 有 active run 时不立即关库（触发 shutdown 流程）——getTask 仍可用直至 settle', async () => {
+  it('dispose 有 active run 时关闭准入，数据库直至真实 settle 后才关闭', async () => {
     const created = await svc.createTask('比较主流模型');
     expect(created.ok).toBe(true);
     if (!created.ok) return;
@@ -389,8 +389,8 @@ describe('shutdown/dispose（决议 #135(7)）', () => {
     svc2.dispose();
     // 未 settle：库仍可用（读回 running）
     const mid = await svc2.getTask(created.task.id);
-    expect(mid.ok).toBe(true);
-    if (mid.ok) expect(mid.task.status).toBe('running');
+    expect(mid).toEqual({ ok: false, errorCode: 'research-unavailable' });
+    expect(new ResearchRepository(handle).getTaskById(created.task.id)?.status).toBe('running');
     expect(factory.runs[0]!.fake.aborts).toBe(1);
     factory.runs[0]!.fake.resolveDone();
     await factory.runs[0]!.handle.done;

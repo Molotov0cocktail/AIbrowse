@@ -2437,7 +2437,10 @@ async function wrt15(): Promise<boolean> {
     createdAt: NOW,
   });
   const native = new EventEmitter() as unknown as NativeNotificationLike & EventEmitter;
-  Object.assign(native, { show: () => undefined });
+  Object.assign(native, {
+    show: () => native.emit('show'),
+    close: () => native.emit('close', { reason: 'applicationHidden' }),
+  });
   const created: Array<{ title: string; body: string; silent: boolean }> = [];
   const routes: Array<{ subjectType: 'event' | 'digest'; subjectId: string }> = [];
   const audits: string[] = [];
@@ -2464,7 +2467,6 @@ async function wrt15(): Promise<boolean> {
     packaged: true,
     identityConfigured: true,
     supported: true,
-    probeIdentity: () => true,
   });
   const verdict =
     notification.title === 'AIbrowse 监控提醒' &&

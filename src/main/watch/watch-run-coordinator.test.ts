@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { openDb, closeDb } from '../sources/db/sqlite-driver';
 import { runWatchMigrations } from './db/watch-migrations';
 import { WatchRepository } from './repository/watch-repository';
@@ -89,6 +89,7 @@ class FakeAcquisition implements WatchAcquisitionPort {
   registerGate = false;
   hostGate: HostRequestGate | null = null;
   abortObserved = false;
+  onAbort: (() => void) | null = null;
   private hostConcurrent = new Map<string, number>();
   readonly maxHostConcurrent = new Map<string, number>();
   private globalConcurrent = 0;
@@ -116,13 +117,23 @@ class FakeAcquisition implements WatchAcquisitionPort {
       Math.max(this.maxHostConcurrent.get(input.hostKey) ?? 0, hc),
     );
     if (this.hang) {
-      // 永不自行结算：仅依赖 Coordinator 的 raceWithAbort（abort 时受控失败）；
-      // 观察 abort 信号确实到达在途 port
-      return new Promise<WatchAcquisitionResult>(() => {
+      // 长时叶操作在 abort 后仍须结算原始 Promise；Coordinator 的永久
+      // stop 会等待这个结算，而不只等 raceWithAbort 的前台结果。
+      return new Promise<WatchAcquisitionResult>((resolve) => {
         input.signal.addEventListener(
           'abort',
           () => {
             this.abortObserved = true;
+            this.onAbort?.();
+            this.hostConcurrent.set(input.hostKey, hc - 1);
+            this.globalConcurrent -= 1;
+            resolve({
+              ok: false,
+              health: 'unavailable',
+              retryable: true,
+              retryAfterSeconds: null,
+              disposition: 'network',
+            });
           },
           { once: true },
         );
@@ -1070,6 +1081,33 @@ describe('M5 生命周期（§4.4/FIXED 12：stop-admission→abort→drain→cl
     }
   });
 
+  it('M5②b stop 先发布唯一 Promise，再触发可同步重入的 abort 回调', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      h.acquisition.hang = true;
+      let reentered: Promise<void> | null = null;
+      h.acquisition.onAbort = () => {
+        reentered = h.coordinator.stop();
+      };
+      h.coordinator.handleDue([{ ruleId: rule.id, trigger: 'scheduled' }]);
+      await Promise.resolve();
+      h.clock.advanceBy(1_000);
+      for (let step = 0; step < 3; step += 1) await Promise.resolve();
+      expect(h.acquisition.calls).toHaveLength(1);
+
+      const first = h.coordinator.stop();
+      expect(reentered).toBe(first);
+      expect(h.coordinator.stop()).toBe(first);
+      await expect(first).resolves.toBeUndefined();
+    } finally {
+      h.repo.dispose();
+      closeDb(h.repo.dbHandle);
+      rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+
   it('M5⑤ 排水后重启：遗留 running 恰标 interrupted 一次、已消费 slot 零重放', async () => {
     const dir = mkdtempSync(join(root, 'm5-restart-'));
     const dbPath = join(dir, 'watch.db');
@@ -1182,23 +1220,146 @@ describe('M5 生命周期（§4.4/FIXED 12：stop-admission→abort→drain→cl
       expect(h.coordinator.getState().mode).toBe('unavailable');
       // stop() 不得因 stopped 早退跳过 drain：同步调用后不得立即 resolved（红：直接返回）
       const p = h.coordinator.stop();
+      expect(h.coordinator.stop()).toBe(p);
       let resolved = false;
-      void p.then(() => (resolved = true));
+      void p.then(
+        () => (resolved = true),
+        () => undefined,
+      );
       await Promise.resolve();
       expect(resolved).toBe(false); // 红：stopped 早退 → 立即 resolved
-      await p;
+      await expect(p).rejects.toThrow('revalidation unavailable');
       expect(h.acquisition.abortObserved).toBe(true); // stop 返回前 abort 已到达
       expect(h.coordinator.activeRunCount()).toBe(0);
       expect(h.coordinator.pendingRunCount()).toBe(0);
       expect(h.clock.pendingTimerCount()).toBe(0);
       // 重复/并发 stop 共享同一排水结果
-      await Promise.all([h.coordinator.stop(), h.coordinator.stop(), h.coordinator.stop()]);
+      await Promise.allSettled([h.coordinator.stop(), h.coordinator.stop(), h.coordinator.stop()]);
       expect(h.coordinator.activeRunCount()).toBe(0);
       expect(h.coordinator.getState().mode).toBe('unavailable');
     } finally {
       h.repo.dispose();
       closeDb(h.repo.dbHandle);
       rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('M5⑧ 终态持久化失败被锁存；stop 等原操作后拒绝，普通 parse 终态不误报', async () => {
+    const failed = setup();
+    try {
+      const rule = makeRule();
+      expect(failed.repo.insertRule(rule).ok).toBe(true);
+      failed.acquisition.results = [failedResult('parse_changed', false)];
+      vi.spyOn(failed.repo, 'finalizeRun').mockReturnValue({
+        ok: false,
+        code: 'store-unavailable',
+      });
+      expect(failed.coordinator.manualRun(rule.id, 'terminal-store-failure').ok).toBe(true);
+      await settle(failed.clock);
+      expect(failed.coordinator.getState().mode).toBe('unavailable');
+      const drain = failed.coordinator.stop();
+      expect(failed.coordinator.stop()).toBe(drain);
+      await expect(drain).rejects.toThrow('终态事务失败');
+      expect(failed.coordinator.activeRunCount()).toBe(0);
+    } finally {
+      await failed.coordinator.stop().catch(() => undefined);
+      failed.repo.dispose();
+      closeDb(failed.repo.dbHandle);
+      rmSync(failed.dir, { recursive: true, force: true });
+    }
+
+    const ordinary = setup();
+    try {
+      const rule = makeRule();
+      expect(ordinary.repo.insertRule(rule).ok).toBe(true);
+      ordinary.acquisition.results = [failedResult('parse_changed', false)];
+      expect(ordinary.coordinator.manualRun(rule.id, 'ordinary-parse-failure').ok).toBe(true);
+      await settle(ordinary.clock);
+      expect(ordinary.repo.getRun(ordinary.acquisition.calls[0]!.runId)!.status).toBe('finished');
+      await expect(ordinary.coordinator.stop()).resolves.toBeUndefined();
+    } finally {
+      ordinary.repo.dispose();
+      closeDb(ordinary.repo.dbHandle);
+      rmSync(ordinary.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('M5⑨ 仅接受其它所有者已经提交的相同终态事实，不因CAS冲突盲目重写', async () => {
+    const h = setup();
+    try {
+      const rule = makeRule();
+      expect(h.repo.insertRule(rule).ok).toBe(true);
+      h.acquisition.results = [failedResult('parse_changed', false)];
+      const originalFinalize = h.repo.finalizeRun.bind(h.repo);
+      const finalize = vi.spyOn(h.repo, 'finalizeRun').mockImplementation((input) => {
+        expect(originalFinalize(input)).toEqual({ ok: true });
+        return { ok: false, code: 'run-state-conflict' };
+      });
+      expect(h.coordinator.manualRun(rule.id, 'same-terminal-takeover').ok).toBe(true);
+      await settle(h.clock);
+      expect(finalize).toHaveBeenCalledOnce();
+      expect(h.coordinator.getState().mode).toBe('running');
+      await expect(h.coordinator.stop()).resolves.toBeUndefined();
+    } finally {
+      h.repo.dispose();
+      closeDb(h.repo.dbHandle);
+      rmSync(h.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('M5⑩ CAS冲突中的不同终态及Processing持久层失败都锁存为退出失败', async () => {
+    const mismatched = setup();
+    try {
+      const rule = makeRule();
+      expect(mismatched.repo.insertRule(rule).ok).toBe(true);
+      mismatched.acquisition.results = [failedResult('parse_changed', false)];
+      const originalFinalize = mismatched.repo.finalizeRun.bind(mismatched.repo);
+      vi.spyOn(mismatched.repo, 'finalizeRun').mockImplementation((input) => {
+        expect(input.outcome.kind).toBe('failed');
+        if (input.outcome.kind !== 'failed') return { ok: false, code: 'validation-failed' };
+        expect(
+          originalFinalize({
+            ...input,
+            outcome: { ...input.outcome, retryable: !input.outcome.retryable },
+          }),
+        ).toEqual({ ok: true });
+        return { ok: false, code: 'run-state-conflict' };
+      });
+      expect(mismatched.coordinator.manualRun(rule.id, 'different-terminal-takeover').ok).toBe(
+        true,
+      );
+      await settle(mismatched.clock);
+      expect(mismatched.coordinator.getState().mode).toBe('unavailable');
+      await expect(mismatched.coordinator.stop()).rejects.toThrow('终态事务失败');
+    } finally {
+      await mismatched.coordinator.stop().catch(() => undefined);
+      mismatched.repo.dispose();
+      closeDb(mismatched.repo.dbHandle);
+      rmSync(mismatched.dir, { recursive: true, force: true });
+    }
+
+    const processingFailure = setup();
+    try {
+      const rule = makeRule();
+      expect(processingFailure.repo.insertRule(rule).ok).toBe(true);
+      vi.spyOn(processingFailure.processing, 'process').mockReturnValue({
+        ok: false,
+        code: 'store-unavailable',
+        terminalWritten: false,
+      });
+      expect(processingFailure.coordinator.manualRun(rule.id, 'processing-store-failure').ok).toBe(
+        true,
+      );
+      await settle(processingFailure.clock);
+      expect(processingFailure.coordinator.getState().mode).toBe('unavailable');
+      await expect(processingFailure.coordinator.stop()).rejects.toThrow(
+        '结果处理失败（store-unavailable）',
+      );
+    } finally {
+      await processingFailure.coordinator.stop().catch(() => undefined);
+      processingFailure.repo.dispose();
+      closeDb(processingFailure.repo.dbHandle);
+      rmSync(processingFailure.dir, { recursive: true, force: true });
     }
   });
 });

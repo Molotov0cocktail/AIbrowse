@@ -35,7 +35,7 @@ export interface BrowserController {
   reload(tabId: string): Promise<boolean>;
   getTabs(): Promise<TabInfo[]>;
   getActiveTab(): Promise<TabInfo | null>;
-  getPageSnapshot(tabId: string): Promise<PageSnapshot | null>;
+  getPageSnapshot(tabId: string, signal?: AbortSignal): Promise<PageSnapshot | null>;
   // —— A3 交互能力（AI Tool 层专用；UI 不接线）——
   // expectedDocumentId 为执行器内部参数：来自权限决策派生绑定的快照世代（meta.documentId），
   // 模型/网页不可见不可写。执行前主进程侧校验「当前世代 === expectedDocumentId」——
@@ -225,10 +225,11 @@ export class BrowserControllerImpl implements BrowserController {
     return entry === undefined ? null : this.toTabInfo(entry, true);
   }
 
-  async getPageSnapshot(tabId: string): Promise<PageSnapshot | null> {
+  async getPageSnapshot(tabId: string, signal?: AbortSignal): Promise<PageSnapshot | null> {
+    if (signal?.aborted) return null;
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) return null; // L3：tab 不存在
-    if (!(await this.materializeDeferredBlank(entry))) return null;
+    if (!(await this.materializeDeferredBlank(entry, signal))) return null;
     if (this.disposed || this.tabManager.get(tabId) !== entry) return null;
     const wc = entry.view.webContents;
     if (wc.isDestroyed()) return null; // L3：webContents 已销毁
@@ -238,7 +239,9 @@ export class BrowserControllerImpl implements BrowserController {
       const generation = entry.generation;
       const navigationSerial = entry.navigationSerial;
       const loadSerial = entry.loadSerial;
-      const collected = await this.pageReader.snapshot(wc, generation);
+      if (signal?.aborted) return null;
+      const collected = await this.pageReader.snapshot(wc, generation, signal);
+      if (signal?.aborted) return null;
       if (this.disposed || this.tabManager.get(tabId) !== entry || wc.isDestroyed()) return null;
       if (
         entry.generation === generation &&
@@ -540,7 +543,8 @@ export class BrowserControllerImpl implements BrowserController {
     return promise;
   }
 
-  private async materializeDeferredBlank(entry: TabEntry): Promise<boolean> {
+  private async materializeDeferredBlank(entry: TabEntry, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return false;
     let latest = entry.latestLoad;
     if (entry.deferredBlank) {
       const promise = this.startLoad(entry, 'about:blank', 'materialize');
@@ -551,7 +555,29 @@ export class BrowserControllerImpl implements BrowserController {
     }
 
     while (latest !== null) {
-      const ok = await latest.promise;
+      // The Tab owns this shared load independently of a snapshot consumer.
+      // Cancellation releases only this reader, never declares the load finished.
+      const ok = signal
+        ? await new Promise<boolean>((resolve) => {
+            const cancel = (): void => {
+              signal.removeEventListener('abort', cancel);
+              resolve(false);
+            };
+            signal.addEventListener('abort', cancel, { once: true });
+            if (signal.aborted) cancel();
+            void latest!.promise.then(
+              (value) => {
+                signal.removeEventListener('abort', cancel);
+                resolve(value);
+              },
+              () => {
+                signal.removeEventListener('abort', cancel);
+                resolve(false);
+              },
+            );
+          })
+        : await latest.promise;
+      if (signal?.aborted) return false;
       if (this.disposed || this.tabManager.get(entry.info.id) !== entry) return false;
       if (entry.loadSerial === latest.serial) return ok;
       latest = entry.latestLoad;

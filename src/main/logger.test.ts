@@ -21,14 +21,137 @@ import { basename, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   getCurrentLogFilePath,
+  getDiagnosticErrorCounts,
   initLogger,
+  getLogSessionId,
   logInfo,
+  logError,
+  logStructured,
   logWarn,
   normalizeLogMessage,
   sanitize,
 } from './logger';
 import { redactUrlForLog } from '../shared/url';
 import { MAX_LOG_FILES } from '../shared/types/watch';
+
+describe('结构化日志白名单', () => {
+  it('从logger初始化起按固定组件计数，未知组件归other且快照不可变', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-error-counts-'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      initLogger(dir);
+      expect(getDiagnosticErrorCounts()).toEqual({
+        startup: 0,
+        storage: 0,
+        browser: 0,
+        provider: 0,
+        research: 0,
+        watch: 0,
+        renderer: 0,
+        other: 0,
+      });
+      logError('browser', '固定消息');
+      logError('sources', '固定消息');
+      logError('unknown-component', '不用于分类的正文');
+      expect(
+        logStructured({
+          level: 'ERROR',
+          component: 'diagnostics',
+          operation: 'diagnostic-export',
+          errorCategory: 'watch',
+          context: { result: 'failed' },
+        }),
+      ).toBe(true);
+      const counts = getDiagnosticErrorCounts();
+      expect(counts).toEqual({
+        startup: 0,
+        storage: 1,
+        browser: 1,
+        provider: 0,
+        research: 0,
+        watch: 1,
+        renderer: 0,
+        other: 1,
+      });
+      expect(Object.isFrozen(counts)).toBe(true);
+      initLogger(dir);
+      expect(Object.values(getDiagnosticErrorCounts()).every((value) => value === 0)).toBe(true);
+    } finally {
+      error.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('写入固定schema、稳定进程sessionId和有限context', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'aibrowse-structured-log-'));
+    try {
+      initLogger(dir);
+      expect(
+        logStructured({
+          level: 'INFO',
+          component: 'diagnostics',
+          operation: 'diagnostic-export',
+          durationMs: 12,
+          errorCategory: 'none',
+          context: { result: 'ok', bytes: 123, sequence: 2 },
+        }),
+      ).toBe(true);
+      const text = readFileSync(getCurrentLogFilePath(), 'utf8');
+      expect(text).toContain(`"sessionId":"${getLogSessionId()}"`);
+      expect(text).toContain('"operation":"diagnostic-export"');
+      expect(text).toContain('"bytes":123');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('拒绝未知字段、自由字符串、URL/路径/Key和非有限数且不回显污染值', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const hostile = 'C:/Users/name?apiKey=sk-secret-value';
+      for (const entry of [
+        { level: 'INFO', component: 'diagnostics', operation: 'diagnostic-export', url: hostile },
+        {
+          level: 'INFO',
+          component: 'diagnostics',
+          operation: 'diagnostic-export',
+          context: { path: hostile },
+        },
+        { level: 'INFO', component: 'diagnostics', operation: hostile },
+        {
+          level: 'INFO',
+          component: 'diagnostics',
+          operation: 'diagnostic-export',
+          durationMs: Number.NaN,
+        },
+        {
+          level: 'INFO',
+          component: 'diagnostics',
+          operation: 'diagnostic-export',
+          context: { count: Number.POSITIVE_INFINITY },
+        },
+      ])
+        expect(logStructured(entry)).toBe(false);
+      expect(error).toHaveBeenCalledTimes(5);
+      expect(error.mock.calls.flat().join(' ')).not.toContain(hostile);
+      expect(error.mock.calls.flat().join(' ')).not.toContain('secret');
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('拒绝getter与原始Error对象，不执行访问器', () => {
+    const getter = vi.fn(() => 'INFO');
+    const entry = { component: 'diagnostics', operation: 'diagnostic-export' } as Record<
+      string,
+      unknown
+    >;
+    Object.defineProperty(entry, 'level', { enumerable: true, get: getter });
+    expect(logStructured(entry)).toBe(false);
+    expect(getter).not.toHaveBeenCalled();
+    expect(logStructured(new Error('secret path'))).toBe(false);
+  });
+});
 
 describe('sanitize — sk- 形态 API Key 脱敏（S1 专项）', () => {
   it('典型 sk- Key（OpenAI/Anthropic 形态）被整体替换为 sk-***', () => {

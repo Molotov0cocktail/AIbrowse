@@ -12,6 +12,7 @@
 // - stop-admission → abort → drain → close 幂等可重复；退出路径不写复杂终态
 //   （未完成行留待下次启动标 interrupted）。
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { logWarn, logError, logInfo } from '../logger';
 import {
   MAX_GLOBAL_WATCH_RUNS,
@@ -194,6 +195,13 @@ export interface SchedulerPort {
   upsert(entry: { ruleId: string; effectiveDueAt: number }): void;
   remove(ruleId: string): void;
   stop(): void;
+  pauseForMaintenance?(generation: number): boolean;
+  drainForMaintenance?(generation: number): Promise<void>;
+  prepareResumeAfterMaintenance?(
+    generation: number,
+    entries: readonly { ruleId: string; effectiveDueAt: number }[],
+  ): boolean;
+  resumeAfterMaintenance?(generation: number): boolean;
 }
 
 export interface WatchRunCoordinatorOptions {
@@ -260,7 +268,16 @@ export class WatchRunCoordinator {
   private stopped = false;
   private unavailable = false;
   private pendingWakeTimer: TimerHandle | null = null;
+  private pendingWakeEpoch = 0;
   private drainPromise: Promise<void> | null = null;
+  private fatalOperationError: Error | null = null;
+  private readonly operations = new Set<Promise<unknown>>();
+  private maintenanceGeneration: number | null = null;
+  private lastMaintenanceGeneration = 0;
+  private maintenanceDrained = false;
+  private maintenanceDrain: Promise<void> | null = null;
+  private maintenanceOperationFailed = false;
+  private maintenanceResumePrepared = false;
 
   constructor(options: WatchRunCoordinatorOptions) {
     this.repo = options.repo;
@@ -320,31 +337,35 @@ export class WatchRunCoordinator {
     logInfo('watch', `Watch 调度启动：${entries.length} 条 enabled 规则载入到期队列`);
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
     // 共享同一排水结果：重复/并发调用返回同一个 drain promise（幂等且不重复 abort/清空）。
     if (this.drainPromise !== null) {
-      await this.drainPromise;
-      return;
+      return this.drainPromise;
     }
+    // 必须先发布 Promise，再触发任何同步 abort 回调；abort 监听器重入 stop()
+    // 时只能取得同一个排水所有权，不能创建第二条排水链。
+    const drain = Promise.resolve().then(async () => {
+      await this.waitForOperationsDrain();
+      if (this.fatalOperationError !== null) throw this.fatalOperationError;
+    });
+    this.drainPromise = drain;
+    this.beginShutdown();
+    // abort 全部在途（signal）→ port 在 raceWithAbort 下立即受控结算
+    this.abortActiveRuns();
+    return drain;
+  }
+
+  beginShutdown(): void {
+    if (this.stopped) return;
     this.stopped = true;
-    // stop-admission：新 tick/manual 全受控拒绝（handleDue/manualRun 检查 stopped）
+    // 只封闭新 tick/manual 与未启动队列。全域同步封闭完成前不在此处
+    // abort 在途叶操作；stop() 才取得取消和原 Promise 排水所有权。
     this.pending = [];
     this.clearPendingWake();
-    // abort 全部在途（signal）→ port 在 raceWithAbort 下立即受控结算
-    for (const active of this.active.values()) {
-      try {
-        active.controller.abort();
-      } catch {
-        // 幂等
-      }
-    }
-    const drain = this.waitForActiveDrain();
-    this.drainPromise = drain;
-    await drain;
-    // close：scheduler 由装配层调用 stop（本模块只负责自身排水）
   }
 
   private clearPendingWake(): void {
+    this.pendingWakeEpoch += 1;
     if (this.pendingWakeTimer !== null) {
       try {
         this.clock.clearTimeout(this.pendingWakeTimer);
@@ -355,15 +376,127 @@ export class WatchRunCoordinator {
     }
   }
 
-  private async waitForActiveDrain(): Promise<void> {
-    for (let i = 0; i < 2000 && this.active.size > 0; i += 1) {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 1);
-      });
+  pauseForMaintenance(generation: number): boolean {
+    if (this.stopped || this.unavailable) return false;
+    if (this.maintenanceGeneration !== null) return this.maintenanceGeneration === generation;
+    if (!Number.isSafeInteger(generation) || generation <= this.lastMaintenanceGeneration)
+      return false;
+    try {
+      if (this.scheduler.pauseForMaintenance?.(generation) !== true) return false;
+    } catch {
+      return false;
+    }
+    this.maintenanceGeneration = generation;
+    this.lastMaintenanceGeneration = generation;
+    this.maintenanceDrained = false;
+    this.maintenanceDrain = null;
+    this.maintenanceOperationFailed = false;
+    this.maintenanceResumePrepared = false;
+    this.clearPendingWake();
+    return true;
+  }
+
+  drainForMaintenance(generation: number): Promise<void> {
+    if (
+      this.stopped ||
+      this.unavailable ||
+      this.maintenanceGeneration !== generation ||
+      this.scheduler.drainForMaintenance === undefined
+    ) {
+      return Promise.reject(new Error('Watch 维护世代不可用'));
+    }
+    this.maintenanceDrain ??= this.drainMaintenance(generation);
+    return this.maintenanceDrain;
+  }
+
+  prepareResumeAfterMaintenance(generation: number): boolean {
+    if (
+      this.stopped ||
+      this.unavailable ||
+      this.maintenanceGeneration !== generation ||
+      !this.maintenanceDrained ||
+      this.scheduler.prepareResumeAfterMaintenance === undefined
+    )
+      return false;
+    if (this.maintenanceResumePrepared) return true;
+    let rules: WatchRule[];
+    try {
+      rules = this.repo.listRules();
+    } catch {
+      return false;
+    }
+    const entries: Array<{ ruleId: string; effectiveDueAt: number }> = [];
+    for (const rule of rules) {
+      if (rule.state !== 'enabled') continue;
+      const effectiveDueAt = effectiveDueAtMs(rule);
+      if (effectiveDueAt !== null) entries.push({ ruleId: rule.id, effectiveDueAt });
+    }
+    try {
+      if (!this.scheduler.prepareResumeAfterMaintenance(generation, entries)) return false;
+    } catch {
+      return false;
+    }
+    this.maintenanceResumePrepared = true;
+    return true;
+  }
+
+  resumeAfterMaintenance(generation: number): boolean {
+    if (
+      this.stopped ||
+      this.unavailable ||
+      this.maintenanceGeneration !== generation ||
+      !this.maintenanceDrained ||
+      !this.maintenanceResumePrepared ||
+      this.scheduler.resumeAfterMaintenance === undefined
+    )
+      return false;
+    try {
+      if (!this.scheduler.resumeAfterMaintenance(generation)) return false;
+    } catch {
+      return false;
+    }
+    this.maintenanceGeneration = null;
+    this.maintenanceDrained = false;
+    this.maintenanceDrain = null;
+    this.maintenanceResumePrepared = false;
+    this.pump();
+    return true;
+  }
+
+  private async drainMaintenance(generation: number): Promise<void> {
+    this.abortActiveRuns();
+    const schedulerDrain = this.scheduler.drainForMaintenance!(generation);
+    await schedulerDrain;
+    await this.waitForOperationsDrain();
+    if (
+      this.maintenanceGeneration !== generation ||
+      this.stopped ||
+      this.unavailable ||
+      this.maintenanceOperationFailed
+    ) {
+      throw new Error('Watch 维护排水期间状态已改变');
+    }
+    this.pending = [];
+    this.repo.markAllNonTerminalInterrupted(this.iso());
+    this.maintenanceDrained = true;
+  }
+
+  private abortActiveRuns(): void {
+    for (const active of this.active.values()) {
+      try {
+        active.controller.abort();
+      } catch {
+        // 幂等
+      }
     }
   }
 
+  private async waitForOperationsDrain(): Promise<void> {
+    while (this.operations.size > 0) await Promise.allSettled([...this.operations]);
+  }
+
   private markUnavailable(reason = 'watch.db 操作失败'): void {
+    this.latchFatalOperation(reason);
     if (this.unavailable) return;
     this.unavailable = true;
     this.stopped = true;
@@ -380,16 +513,21 @@ export class WatchRunCoordinator {
     logWarn('watch', `Watch 进入不可用（停止调度）：${reason}`);
   }
 
+  private latchFatalOperation(reason: string): void {
+    this.fatalOperationError ??= new Error(`Watch 排水检测到未恢复的致命失败：${reason}`);
+  }
+
   // -------------------------------------------------------------------------
   // 入口：scheduler.onDue 回调（计划/补跑）与手动 run
   // -------------------------------------------------------------------------
 
   handleDue(entries: readonly { ruleId: string; trigger: 'catch-up' | 'scheduled' }[]): void {
-    if (!this.started || this.stopped || this.unavailable) return;
+    if (!this.started || this.stopped || this.unavailable || this.maintenanceGeneration !== null)
+      return;
     if (this.observer?.admissionOpen() === false) return;
     const nowMs = this.nowMs();
     for (const entry of entries) {
-      if (this.stopped || this.unavailable) return;
+      if (this.stopped || this.unavailable || this.maintenanceGeneration !== null) return;
       if (this.observer?.admissionOpen() === false) return;
       let rule: WatchRule | null;
       try {
@@ -450,7 +588,8 @@ export class WatchRunCoordinator {
   }
 
   manualRun(ruleId: string, requestId: string): ManualRunResult {
-    if (!this.started || this.stopped || this.unavailable) return { ok: false, reason: 'stopped' };
+    if (!this.started || this.stopped || this.unavailable || this.maintenanceGeneration !== null)
+      return { ok: false, reason: 'stopped' };
     if (this.observer?.admissionOpen() === false) return { ok: false, reason: 'stopped' };
     if (typeof requestId !== 'string' || requestId === '' || requestId.length > 200) {
       return { ok: false, reason: 'invalid-request' };
@@ -508,7 +647,7 @@ export class WatchRunCoordinator {
   // -------------------------------------------------------------------------
 
   private pump(): void {
-    if (this.stopped || this.unavailable) return;
+    if (this.stopped || this.unavailable || this.maintenanceGeneration !== null) return;
     if (this.observer?.admissionOpen() === false) return;
     while (this.activeGlobal < MAX_GLOBAL_WATCH_RUNS) {
       const now = this.nowMs();
@@ -518,8 +657,11 @@ export class WatchRunCoordinator {
       );
       if (idx === -1) break;
       const [task] = this.pending.splice(idx, 1);
-      if (this.observer === undefined) void this.executeRun(task);
-      else void this.observer.track(() => this.executeRun(task));
+      const operation =
+        this.observer === undefined
+          ? this.executeRun(task)
+          : this.observer.track(() => this.executeRun(task));
+      this.registerOperation(operation);
     }
     this.armPendingWake();
   }
@@ -539,6 +681,7 @@ export class WatchRunCoordinator {
   // 为未来 earliestStart（如手动 run 等 backoff）的单 timer 唤醒；到点后 pump 启动。
   private armPendingWake(): void {
     if (this.pendingWakeTimer !== null) {
+      this.pendingWakeEpoch += 1;
       try {
         this.clock.clearTimeout(this.pendingWakeTimer);
       } catch {
@@ -546,11 +689,20 @@ export class WatchRunCoordinator {
       }
       this.pendingWakeTimer = null;
     }
-    if (this.stopped || this.unavailable || this.pending.length === 0) return;
+    if (
+      this.stopped ||
+      this.unavailable ||
+      this.maintenanceGeneration !== null ||
+      this.pending.length === 0
+    )
+      return;
     const now = this.nowMs();
     const earliest = Math.min(...this.pending.map((t) => t.earliestStartMs));
     if (earliest <= now) return; // 无需唤醒：pump 会直接处理
+    const wakeEpoch = ++this.pendingWakeEpoch;
     this.pendingWakeTimer = this.clock.setTimeout(() => {
+      if (wakeEpoch !== this.pendingWakeEpoch) return;
+      this.pendingWakeEpoch += 1;
       this.pendingWakeTimer = null;
       this.pump();
     }, earliest - now);
@@ -622,7 +774,7 @@ export class WatchRunCoordinator {
       } | null = null;
       let acquired: WatchAcquisitionResult | null = null;
       let attempt = 0;
-      while (!this.stopped) {
+      while (!this.stopped && this.maintenanceGeneration === null) {
         attempt += 1;
         if (controller.signal.aborted || this.nowMs() >= deadlineMs) {
           failure = { health: 'unavailable', retryable: true, retryAfterSeconds: null };
@@ -634,6 +786,11 @@ export class WatchRunCoordinator {
             deadlineMs,
           }),
         );
+        if (this.maintenanceGeneration !== null || this.stopped || this.unavailable) return;
+        if (controller.signal.aborted || this.nowMs() >= deadlineMs) {
+          failure = { health: 'unavailable', retryable: true, retryAfterSeconds: null };
+          break;
+        }
         if (!gate.ok) {
           failure = { health: 'unavailable', retryable: true, retryAfterSeconds: null };
           break;
@@ -642,34 +799,43 @@ export class WatchRunCoordinator {
           const waited = await this.trackOperation(() =>
             this.delay(jitterMs, controller.signal, deadlineMs),
           );
+          if (this.maintenanceGeneration !== null || this.stopped || this.unavailable) return;
+          if (controller.signal.aborted || this.nowMs() >= deadlineMs) {
+            failure = { health: 'unavailable', retryable: true, retryAfterSeconds: null };
+            break;
+          }
           if (!waited) {
             failure = { health: 'unavailable', retryable: true, retryAfterSeconds: null };
             break;
           }
         }
+        if (this.maintenanceGeneration !== null || this.stopped || this.unavailable) return;
+        if (controller.signal.aborted || this.nowMs() >= deadlineMs) {
+          failure = { health: 'unavailable', retryable: true, retryAfterSeconds: null };
+          break;
+        }
         const ruleNow = this.repo.getRule(task.ruleId);
         if (ruleNow === null) return; // 规则已删除（运行行已级联删除）：零终态
+        const acquisition = this.createTrackedOperation(() =>
+          this.acquisition.run({
+            rule: ruleNow,
+            runId: task.runId,
+            requestKey: task.requestKey,
+            scheduledFor: task.scheduledFor,
+            hostKey,
+            baselineHint,
+            signal: controller.signal,
+            deadline,
+          }),
+        );
         const result = await this.trackOperation(() =>
-          this.raceWithAbort(
-            this.acquisition.run({
-              rule: ruleNow,
-              runId: task.runId,
-              requestKey: task.requestKey,
-              scheduledFor: task.scheduledFor,
-              hostKey,
-              baselineHint,
-              signal: controller.signal,
-              deadline,
-            }),
-            controller.signal,
-            (): WatchAcquisitionResult => ({
-              ok: false,
-              health: 'unavailable',
-              retryable: true,
-              retryAfterSeconds: null,
-              disposition: 'network',
-            }),
-          ),
+          this.raceWithAbort(acquisition, controller.signal, (): WatchAcquisitionResult => ({
+            ok: false,
+            health: 'unavailable',
+            retryable: true,
+            retryAfterSeconds: null,
+            disposition: 'network',
+          })),
         );
         if (result.ok) {
           this.observer?.acquired?.(task);
@@ -690,7 +856,7 @@ export class WatchRunCoordinator {
         if (!canRetry) break;
         // 重试重过 host gate（下次循环开头 waitUntilAvailable）
       }
-      if (this.stopped) return; // 退出路径：不写复杂终态（留待下次启动 interrupted）
+      if (this.stopped || this.maintenanceGeneration !== null) return;
       // 第二次 Source revalidation（结果事务前；§10.3 步骤 5）
       const reval2 = this.revalidator.revalidateRuleSource(task.ruleId);
       if (reval2.status === 'unavailable') {
@@ -718,6 +884,10 @@ export class WatchRunCoordinator {
         });
         this.observer?.processed?.(task);
         if (!processed.ok) {
+          if (processed.code === 'store-unavailable' || processed.code === 'validation-failed') {
+            this.markUnavailable(`结果处理失败（${processed.code}）`);
+            return;
+          }
           logWarn(
             'watch',
             `结果处理 conflict（rule=${task.ruleId}，code=${processed.code}；零写，交协调/恢复）`,
@@ -865,15 +1035,31 @@ export class WatchRunCoordinator {
     const result = this.repo.finalizeRun(input);
     if (!result.ok) {
       if (result.code === 'run-state-conflict' || result.code === 'run-not-found') {
-        // 已终态/已删除：幂等跳过
-        return;
+        // 只接受已经由其它合法所有者写入完全相同终态，或 Rule 删除已经级联
+        // 删除 Run 的事实。冲突本身不是成功证明，也不得盲目重试终态事务。
+        try {
+          const run = this.repo.getRun(task.runId);
+          if (
+            run !== null &&
+            run.status === 'finished' &&
+            run.ruleId === task.ruleId &&
+            isDeepStrictEqual(run.outcome, outcome) &&
+            isDeepStrictEqual(run.health, health) &&
+            run.responseMetadataJson === runMetadata
+          ) {
+            return;
+          }
+          if (run === null && this.repo.getRule(task.ruleId) === null) return;
+        } catch {
+          // 下方统一锁存持久层致命失败。
+        }
       }
       this.markUnavailable('终态事务失败');
     }
   }
 
   private requeueIfEnabled(ruleId: string): void {
-    if (this.stopped || this.unavailable) return;
+    if (this.stopped || this.unavailable || this.maintenanceGeneration !== null) return;
     let rule: WatchRule | null;
     try {
       rule = this.repo.getRule(ruleId);
@@ -900,7 +1086,36 @@ export class WatchRunCoordinator {
   }
 
   private trackOperation<T>(create: () => Promise<T>): Promise<T> {
-    return this.observer === undefined ? create() : this.observer.track(create);
+    return this.registerOperation(
+      this.observer === undefined ? this.invoke(create) : this.observer.track(create),
+    );
+  }
+
+  private createTrackedOperation<T>(create: () => Promise<T>): Promise<T> {
+    return this.registerOperation(this.invoke(create), false);
+  }
+
+  private invoke<T>(create: () => Promise<T>): Promise<T> {
+    try {
+      return create();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private registerOperation<T>(operation: Promise<T>, failureIsFatal = true): Promise<T> {
+    this.operations.add(operation);
+    void operation.then(
+      () => this.operations.delete(operation),
+      () => {
+        this.operations.delete(operation);
+        if (failureIsFatal) {
+          if (this.maintenanceGeneration !== null) this.maintenanceOperationFailed = true;
+          this.markUnavailable('在途操作异常退出');
+        }
+      },
+    );
+    return operation;
   }
 
   private iso(): string {
@@ -960,13 +1175,14 @@ export class WatchRunCoordinator {
   private raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal, onAbort: () => T): Promise<T> {
     return new Promise<T>((resolve) => {
       let settled = false;
+      const onSignal = (): void => done(onAbort());
       const done = (value: T): void => {
         if (settled) return;
         settled = true;
+        signal.removeEventListener('abort', onSignal);
         resolve(value);
       };
       promise.then(done, () => done(onAbort()));
-      const onSignal = (): void => done(onAbort());
       if (signal.aborted) {
         onSignal();
         return;

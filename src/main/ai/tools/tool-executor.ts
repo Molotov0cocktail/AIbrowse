@@ -92,10 +92,18 @@ export class ToolExecutor {
         decision = 'invalid';
         argsSummary = summarizeRawArgs(call.arguments);
         result = toolFailure(call.id, 'invalid-args', `参数校验失败：${validated.reason}`);
+      } else if (signal.aborted) {
+        decision = 'denied';
+        argsSummary = summarizeArgs(call.name, validated.args);
+        result = toolFailure(call.id, 'execution-failed', '任务已取消，未执行工具');
       } else {
         const binding = await this.extractSemantics(validated.args, ctx);
         const perm = decide(call.name, validated.args, binding?.semantics ?? null);
-        if (perm.level === 3) {
+        if (signal.aborted) {
+          decision = 'denied';
+          argsSummary = summarizeArgs(call.name, validated.args);
+          result = toolFailure(call.id, 'execution-failed', '任务已取消，未执行工具');
+        } else if (perm.level === 3) {
           decision = 'forbidden';
           argsSummary = summarizeArgs(call.name, validated.args);
           result = toolFailure(call.id, 'forbidden', `操作被禁止：${perm.reason}`);
@@ -105,7 +113,11 @@ export class ToolExecutor {
           // fail-closed 终止（不进入确认、零写入、审计恰好一条 decision=invalid）。
           const hookResult =
             def.confirmSummary !== undefined ? await def.confirmSummary(validated.args, ctx) : null;
-          if (hookResult !== null && !hookResult.ok) {
+          if (signal.aborted) {
+            decision = 'denied';
+            argsSummary = summarizeArgs(call.name, validated.args);
+            result = toolFailure(call.id, 'execution-failed', '任务已取消，未执行工具');
+          } else if (hookResult !== null && !hookResult.ok) {
             decision = 'invalid';
             argsSummary = summarizeArgs(call.name, validated.args);
             result = toolFailure(call.id, hookResult.errorCode, hookResult.content);
@@ -118,13 +130,11 @@ export class ToolExecutor {
                     validated.args,
                     binding?.semantics.text,
                     ctx,
+                    signal,
                   );
-            const outcome = await this.confirmManager.requestConfirm(
-              ctx.runId,
-              call.id,
-              call.name,
-              summary,
-            );
+            const outcome = signal.aborted
+              ? 'cancelled'
+              : await this.confirmManager.requestConfirm(ctx.runId, call.id, call.name, summary);
             argsSummary = summarizeArgs(call.name, validated.args);
             if (outcome === 'approved') {
               decision = 'confirmed';
@@ -223,12 +233,13 @@ export class ToolExecutor {
     args: Record<string, unknown>,
     elementText: string | undefined,
     ctx: ToolExecutionContext,
+    signal: AbortSignal,
   ): Promise<ConfirmSummary> {
     let url = typeof args.url === 'string' ? args.url : undefined;
     if (url === undefined) {
       const tabId =
         typeof args.tabId === 'string' ? args.tabId : (await ctx.browser.getActiveTab())?.id;
-      if (tabId !== undefined) {
+      if (tabId !== undefined && !signal.aborted) {
         const tab = (await ctx.browser.getTabs()).find((t) => t.id === tabId);
         if (tab !== undefined && tab.url !== '') url = tab.url;
       }

@@ -54,7 +54,16 @@ export function ResearchPanel({
       )}
 
       <div className="research-panel-body">
+        {state.historyError !== null && (
+          <div className="research-panel-error">{normalizePlainText(state.historyError)}</div>
+        )}
+        {state.task === null && state.error !== null && (
+          <div className="research-panel-error">{normalizePlainText(state.error)}</div>
+        )}
         {/* 目标输入 + 开始 */}
+        <button type="button" onClick={() => void research.refreshList(state.historyPage)}>
+          刷新历史
+        </button>
         <label className="research-panel-label" htmlFor="research-goal-input">
           研究目标
         </label>

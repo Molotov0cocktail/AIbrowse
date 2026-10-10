@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { qualifyWindowsNotification, WindowsNotificationSink } from './windows-notification-sink';
+import { configureWindowsNotificationIdentity } from './windows-notification-bootstrap';
 
 describe('D9 Windows Notification identity gate', () => {
   const base = {
@@ -7,28 +8,26 @@ describe('D9 Windows Notification identity gate', () => {
     packaged: true,
     identityConfigured: true,
     supported: true,
-    probeIdentity: (): boolean => true,
   };
   it.each([
     [{ ...base, platform: 'linux' as const }, 'not-windows'],
     [{ ...base, packaged: false }, 'not-packaged'],
     [{ ...base, identityConfigured: false }, 'identity-not-configured'],
     [{ ...base, supported: false }, 'unsupported'],
-    [{ ...base, probeIdentity: (): boolean => false }, 'probe-failed'],
   ] as const)('资格不满足时 fail-closed: %s', (input, reason) => {
     expect(qualifyWindowsNotification(input)).toEqual({ available: false, reason });
   });
   it('仅注入式完整 PASS 分支可用', () =>
     expect(qualifyWindowsNotification(base)).toEqual({ available: true, reason: null }));
-  it('probe 异常不泄露正文', () =>
+  it('身份配置异常不泄露正文', () =>
     expect(
       qualifyWindowsNotification({
         ...base,
-        probeIdentity: (): boolean => {
+        identityConfigured: configureWindowsNotificationIdentity(() => {
           throw new Error('secret');
-        },
+        }),
       }),
-    ).toEqual({ available: false, reason: 'probe-failed' }));
+    ).toEqual({ available: false, reason: 'identity-not-configured' }));
 });
 
 describe('D9 Windows Notification sink', () => {
@@ -39,8 +38,10 @@ describe('D9 Windows Notification sink', () => {
     const sink = new WindowsNotificationSink(
       {
         create: () => ({
-          once: (event, listener) => listeners.set(event, listener),
-          show: () => undefined,
+          on: (event, listener) => listeners.set(event, listener),
+          removeListener: (event) => listeners.delete(event),
+          show: () => listeners.get('show')?.(),
+          close: () => undefined,
         }),
       },
       (type, id) => routed.push(`${type}:${id}`),
@@ -65,7 +66,9 @@ describe('D9 Windows Notification sink', () => {
     const sink = new WindowsNotificationSink(
       {
         create: () => ({
-          once: () => undefined,
+          on: () => undefined,
+          removeListener: () => undefined,
+          close: () => undefined,
           show: () => {
             throw new Error('不可回显');
           },

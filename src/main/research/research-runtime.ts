@@ -282,6 +282,7 @@ export class ResearchRuntime {
   private readonly stopSignal: AbortSignal;
   private readonly deadlineController: AbortController;
   private readonly startedAt: number;
+  private readonly persistedStartedAt: string | null;
   private stats: ResearchTaskStats;
   private merged: SourceCandidate[] = [];
   private selected: SourceCandidate[] = [];
@@ -310,6 +311,7 @@ export class ResearchRuntime {
     this.deadlineController = new AbortController();
     this.startedAt = this.nowMs();
     const task = options.persistence.getTask();
+    this.persistedStartedAt = task?.startedAt ?? null;
     this.stats = task === null ? zeroStats() : { ...task.stats };
   }
 
@@ -1282,14 +1284,30 @@ export class ResearchRuntime {
       this.clearRuntimeState(); // 决议 #145(7)：failed/cancelled 终态清空内存状态
       this.emit(terminal, null);
     } catch (commitErr) {
-      // 终态写失败防御：StaleRunError = 终态已由他处写入（重复提交防御）；
-      // 其余（含预算拒绝）= 记录脱敏诊断并保留所有权供 shutdown 重试；
-      // 不抛出失控 rejection（决议 #138(4)）
-      this.clearRuntimeState(); // 终态路径统一清空（运行已收敛）
-      if (!(commitErr instanceof StaleRunError)) {
-        void commitErr;
+      this.clearRuntimeState();
+      if (commitErr instanceof StaleRunError && this.hasSettledPersistedTask()) {
+        this.finished = true;
+        return;
       }
-      return;
+      throw new Error('研究终态持久化失败，任务所有权保留', { cause: commitErr });
+    }
+  }
+
+  private hasSettledPersistedTask(): boolean {
+    try {
+      const task = this.options.persistence.getTask();
+      return (
+        task?.id === this.options.taskId &&
+        this.persistedStartedAt !== null &&
+        task.startedAt === this.persistedStartedAt &&
+        task.finishedAt !== null &&
+        task.phase === null &&
+        ((task.status === 'completed' && task.resultId !== null) ||
+          task.status === 'failed' ||
+          task.status === 'cancelled')
+      );
+    } catch {
+      return false;
     }
   }
 }

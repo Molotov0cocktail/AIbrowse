@@ -101,8 +101,83 @@ export class ResearchServiceImpl implements ResearchService {
   private disposed = false;
   private shuttingDown = false;
   private shutdownPromise: Promise<void> | null = null;
+  private shutdownDrainPromise: Promise<void> | null = null;
   private activeSlot: ActiveRunSlot | null = null;
   private startingSlot: StartingSlot | null = null;
+  private maintenanceGeneration: number | null = null;
+  private lastMaintenanceGeneration = 0;
+  private maintenanceDrained = false;
+  private maintenancePrepared = false;
+  private maintenanceDrain: Promise<void> | null = null;
+  private readonly startingOperations = new Set<Promise<ResearchStartResult>>();
+  private readonly runningOperations = new Set<Promise<void>>();
+  private drainFailed = false;
+
+  private get unavailable(): boolean {
+    return this.disposed || this.shuttingDown || this.maintenanceGeneration !== null;
+  }
+
+  pauseForMaintenance(generation: number): boolean {
+    if (this.disposed || this.shuttingDown) return false;
+    if (this.maintenanceGeneration !== null) return this.maintenanceGeneration === generation;
+    if (!Number.isSafeInteger(generation) || generation <= this.lastMaintenanceGeneration)
+      return false;
+    this.maintenanceGeneration = generation;
+    this.lastMaintenanceGeneration = generation;
+    this.maintenanceDrained = false;
+    this.maintenancePrepared = false;
+    this.maintenanceDrain = null;
+    return true;
+  }
+
+  drainForMaintenance(generation: number): Promise<void> {
+    if (this.maintenanceGeneration !== generation || this.disposed || this.shuttingDown) {
+      return Promise.reject(new Error('研究维护世代不可用'));
+    }
+    this.maintenanceDrain ??= this.drainOperations().then(() => {
+      this.maintenanceDrained = true;
+    });
+    return this.maintenanceDrain;
+  }
+
+  prepareResumeAfterMaintenance(generation: number): boolean {
+    if (
+      this.disposed ||
+      this.shuttingDown ||
+      this.drainFailed ||
+      this.maintenanceGeneration !== generation ||
+      !this.maintenanceDrained
+    )
+      return false;
+    this.maintenancePrepared = true;
+    return true;
+  }
+
+  resumeAfterMaintenance(generation: number): boolean {
+    if (
+      this.disposed ||
+      this.shuttingDown ||
+      this.drainFailed ||
+      this.maintenanceGeneration !== generation ||
+      !this.maintenanceDrained ||
+      !this.maintenancePrepared
+    )
+      return false;
+    this.maintenanceGeneration = null;
+    this.maintenanceDrained = false;
+    this.maintenancePrepared = false;
+    this.maintenanceDrain = null;
+    return true;
+  }
+
+  private async drainOperations(): Promise<void> {
+    const slot = this.activeSlot;
+    slot?.runtime.abort();
+    await Promise.all([...this.startingOperations]);
+    if (this.activeSlot !== slot) this.activeSlot?.runtime.abort();
+    await Promise.all([...this.runningOperations]);
+    if (this.drainFailed) throw new Error('研究任务未完整收敛，数据维护保持暂停');
+  }
   // 决议 #157(2)-(5)：事件出口——Runtime onProgress/onSettle 经 Service 正式
   // 转发；listener 异常隔离（逐个 try/catch + 脱敏 warn）；shutdown/dispose
   // 后零事件并清除 listener；迟到事件安全 no-op
@@ -197,7 +272,7 @@ export class ResearchServiceImpl implements ResearchService {
   }
 
   async createTask(goal: string): Promise<ResearchCreateResult> {
-    if (this.disposed) return { ok: false, errorCode: 'research-unavailable' };
+    if (this.unavailable) return { ok: false, errorCode: 'research-unavailable' };
     // 决议 #107：非串/trim 后空串 → 拒绝；超长 → 确定性截断 + warn
     if (typeof goal !== 'string' || goal.trim() === '') {
       return { ok: false, errorCode: 'research-invalid-goal' };
@@ -241,7 +316,7 @@ export class ResearchServiceImpl implements ResearchService {
   }
 
   async getTask(id: string): Promise<ResearchTaskResult> {
-    if (this.disposed) return { ok: false, errorCode: 'research-unavailable' };
+    if (this.unavailable) return { ok: false, errorCode: 'research-unavailable' };
     if (!isUuidShape(id)) return { ok: false, errorCode: 'research-not-found' };
     try {
       const task = this.repo.getTaskById(id);
@@ -253,7 +328,7 @@ export class ResearchServiceImpl implements ResearchService {
   }
 
   async listTasks(opts: ResearchListOptions = {}): Promise<ResearchListResult> {
-    if (this.disposed) return { ok: false, errorCode: 'research-unavailable' };
+    if (this.unavailable) return { ok: false, errorCode: 'research-unavailable' };
     // 越界安全返回：非法分页参数安全 clamp（§9.1 契约「非法输入安全返回」）
     const page =
       Number.isInteger(opts?.page) && (opts!.page as number) >= 1 ? (opts!.page as number) : 1;
@@ -274,7 +349,7 @@ export class ResearchServiceImpl implements ResearchService {
   }
 
   async deleteTask(id: string): Promise<ResearchDeleteResult> {
-    if (this.disposed) return { ok: false, errorCode: 'research-unavailable' };
+    if (this.unavailable) return { ok: false, errorCode: 'research-unavailable' };
     if (!isUuidShape(id)) return { ok: false, errorCode: 'research-not-found' };
     try {
       const task = this.repo.getTaskById(id);
@@ -298,8 +373,18 @@ export class ResearchServiceImpl implements ResearchService {
     }
   }
 
-  async startTask(id: string): Promise<ResearchStartResult> {
-    if (this.disposed) return { ok: false, errorCode: 'research-unavailable' };
+  startTask(id: string): Promise<ResearchStartResult> {
+    const operation = this.startTaskOperation(id);
+    this.startingOperations.add(operation);
+    void operation.then(
+      () => this.startingOperations.delete(operation),
+      () => this.startingOperations.delete(operation),
+    );
+    return operation;
+  }
+
+  private async startTaskOperation(id: string): Promise<ResearchStartResult> {
+    if (this.unavailable) return { ok: false, errorCode: 'research-unavailable' };
     if (!isUuidShape(id)) return { ok: false, errorCode: 'research-not-found' };
     let startToken: string | null = null; // 决议 #154(4)：异常路径按身份清除预占
     try {
@@ -360,7 +445,7 @@ export class ResearchServiceImpl implements ResearchService {
       }
       // 决议 #154(3)：resolve 后守卫——shutdown/释放期间完成解析的迟到
       // continuation 零 DB 写入、零 launch、prepared 被释放
-      if (this.shuttingDown || this.disposed || this.startingSlot?.token !== startToken) {
+      if (this.unavailable || this.startingSlot?.token !== startToken) {
         if (resolved.ok) resolved.prepared.release();
         clearStarting();
         return { ok: false, errorCode: 'research-unavailable' };
@@ -419,11 +504,23 @@ export class ResearchServiceImpl implements ResearchService {
           goal: task.goal,
           runToken,
           onProgress,
-          onSettle,
+          // Only the complete handle.done may release the slot.
+          onSettle: () => undefined,
         });
         this.activeSlot = { taskId: id, runToken, runtime: handle };
         // slot 清除挂在 done settle 上（同一运行实例 promise 链）
-        void handle.done.finally(onSettle);
+        this.runningOperations.add(handle.done);
+        void handle.done.then(
+          () => {
+            this.runningOperations.delete(handle.done);
+            onSettle();
+          },
+          () => {
+            this.runningOperations.delete(handle.done);
+            this.drainFailed = true;
+            logWarn('research', '研究任务未完整收敛，保留任务所有权');
+          },
+        );
       } catch (err) {
         // 决议 #135(2)：launch 失败不得留下永久 running → 立即写 failed
         resolved.prepared.release();
@@ -457,6 +554,10 @@ export class ResearchServiceImpl implements ResearchService {
 
   async stopTask(id: string): Promise<ResearchStopResult> {
     if (this.disposed) return { ok: false, errorCode: 'research-unavailable' };
+    if (this.unavailable) {
+      if (this.activeSlot?.taskId === id) this.activeSlot.runtime.abort();
+      return { ok: false, errorCode: 'research-unavailable' };
+    }
     if (!isUuidShape(id)) return { ok: false, errorCode: 'research-not-found' };
     try {
       const task = this.repo.getTaskById(id);
@@ -502,7 +603,7 @@ export class ResearchServiceImpl implements ResearchService {
   // Evidence 支撑）；畸形/外部篡改数据库 fail-closed research-internal（禁止
   // 把不一致数据交给 Renderer）
   async getResearchResultView(taskId: string): Promise<ResearchResultViewResult> {
-    if (this.disposed) return { ok: false, errorCode: 'research-unavailable' };
+    if (this.unavailable) return { ok: false, errorCode: 'research-unavailable' };
     if (!isUuidShape(taskId)) return { ok: false, errorCode: 'research-not-found' };
     try {
       const task = this.repo.getTaskById(taskId);
@@ -596,27 +697,43 @@ export class ResearchServiceImpl implements ResearchService {
     return true;
   }
 
-  // 决议 #135(7)：幂等 async shutdown——abort → 等待 Runtime settle →
-  // cleanupAll（由 Runtime 终态执行，此处为补漏）→ 关闭 store；重复调用
-  // 返回同一 Promise；dispose 只在 shutdown 完成后关闭连接
+  // Main seals every root before cancellation, then closes databases after all drains.
+  beginShutdown(): void {
+    this.shuttingDown = true;
+    this.maintenancePrepared = false;
+  }
+
+  drainBeforeClose(): Promise<void> {
+    this.beginShutdown();
+    if (this.shutdownDrainPromise !== null) return this.shutdownDrainPromise;
+    let start!: () => void;
+    this.shutdownDrainPromise = new Promise<void>((resolve, reject) => {
+      start = () => {
+        void this.drainOperations().then(resolve, reject);
+      };
+    });
+    // Publish the promise before abort callbacks can synchronously re-enter.
+    start();
+    return this.shutdownDrainPromise;
+  }
+
   shutdown(): Promise<void> {
     if (this.shutdownPromise !== null) return this.shutdownPromise;
-    this.shuttingDown = true;
-    this.shutdownPromise = this.doShutdown();
+    let start!: () => void;
+    this.shutdownPromise = new Promise<void>((resolve, reject) => {
+      start = () => {
+        void this.doShutdown().then(resolve, reject);
+      };
+    });
+    start();
     return this.shutdownPromise;
   }
 
   private async doShutdown(): Promise<void> {
-    const slot = this.activeSlot;
-    if (slot !== null) {
-      slot.runtime.abort();
-      try {
-        await slot.runtime.done;
-      } catch {
-        // done 自身不拒绝（Runtime 内部收敛）；防御性吞掉失控 rejection
-      }
-    }
-    this.dispose();
+    await this.drainBeforeClose();
+    this.disposed = true;
+    this.clearListeners();
+    if (this.dbHandle !== null) closeDb(this.dbHandle);
   }
 
   // 决议 #157(5)：dispose 后零事件并清除 listener（迟到事件安全 no-op——
@@ -632,9 +749,11 @@ export class ResearchServiceImpl implements ResearchService {
       if (this.dbHandle !== null) closeDb(this.dbHandle);
       return;
     }
-    if (this.activeSlot !== null && !this.shuttingDown) {
+    if (this.activeSlot !== null || this.startingOperations.size > 0 || this.shuttingDown) {
       // 决议 #135(7)：有在途 run 时不立即关库——触发 shutdown 流程（幂等）
-      void this.shutdown();
+      void this.shutdown().catch(() => {
+        logWarn('research', '研究服务尚未完成排水，数据库保持打开');
+      });
       return;
     }
     this.disposed = true;

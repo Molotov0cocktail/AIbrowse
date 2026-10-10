@@ -10,8 +10,38 @@ import {
 } from 'electron';
 import { copyResearchTable } from './research/research-copy';
 import { resolveNativeDataRoot } from './storage/native-data-root';
+import { DatasetStartup } from './storage/dataset-startup';
+import { createDataTransferRuntime } from './storage/data-transfer-runtime';
+import { startLifecycleGuardian, type LifecycleGuardianHandle } from './storage/lifecycle-guardian';
+import { inspectNativeRestoreInput } from './storage/native-transfer-selection';
+import type { DataTransferStatus, DataTransferAction } from '../shared/types/data-transfer';
+import type { NativeTransferSelection } from './storage/data-transfer-service';
+import { createRecoveryTransferRuntime } from './storage/recovery-transfer-runtime';
+import { createPartialRecoveryEntry } from './storage/partial-recovery-entry';
+import { ensureRecoveryGate } from './storage/dataset-replacement';
+import { createStartupDataPreparation } from './storage/startup-data-preparation';
+import { TransferBudget, TRANSFER_WORK_MS } from './storage/transfer-budget';
+import { transferSpaceAllocation } from './storage/transfer-space';
+import { statfs } from 'node:fs/promises';
+import { assembleVerifiedTransferSourcesStore } from './sources/sources-store';
+import { assembleVerifiedTransferResearchStore } from './research/research-store';
+import { assembleVerifiedTransferWatchStore } from './watch/watch-store';
+import { MaintenanceAdmission } from './storage/maintenance-admission';
+import type { MaintenanceCoordinator } from './storage/maintenance-coordinator';
+import {
+  createRuntimeMaintenance,
+  MAINTENANCE_UNAVAILABLE_MESSAGE,
+  runWithMaintenanceAdmission,
+} from './storage/runtime-maintenance';
+import { RuntimeShutdown, type ShutdownProducer } from './storage/runtime-shutdown';
+import { runtimeQualification } from '../../tools/data-qualification/runtime/harness';
+import { RUNTIME_PING, RUNTIME_SAMPLE } from '../../tools/data-qualification/runtime/ui-protocol';
 import type { UiDocumentGuard } from './security/ui-document-guard';
 import { installUiDocumentSecurity } from './security/ui-document-security';
+import { UiRendererRecovery } from './security/ui-renderer-recovery';
+import { isCurrentUiFrame } from './security/current-ui-frame';
+import { MainFailureShutdown } from './security/main-failure-shutdown';
+import { DiagnosticService } from './diagnostics/diagnostic-service';
 import { validateCoreIpcPayload } from './security/core-ipc-payload';
 import {
   APP_ENTRY_URL,
@@ -35,11 +65,13 @@ import { handleUiBrowserContentVisible } from './browser/content-visible-ipc';
 import { AppSessionManager } from './browser/session-manager';
 import {
   getCurrentLogFilePath,
+  getDiagnosticErrorCounts,
   initLogger,
   logDebug,
   logEnvironment,
   logError,
   logInfo,
+  logStructured,
   logWarn,
 } from './logger';
 import {
@@ -62,11 +94,7 @@ import { resolveResearchGate } from './smoke-research-gate';
 import { resolveWatchD10Mode } from './smoke-watch-gate';
 import { runH3aCampaign, runH3aFeedBudgetDiagnostic } from './smoke-watch-h3a-runner';
 import { initialH3aHistoricalUsageSources } from './smoke-watch-h3a-usage';
-import {
-  addWatchSubscriptionDestroyedListener,
-  closeAndDrainThenDispose,
-  WatchIpcAdmission,
-} from './watch/ipc-admission';
+import { addWatchSubscriptionDestroyedListener, WatchIpcAdmission } from './watch/ipc-admission';
 import type { WatchLiveRunnerOptions } from './smoke-watch-live-runner';
 import { createProductWatchResourcePort } from './smoke-watch-live-resource';
 // Sixth Stage D4：Watch 存储/生命周期装配（observer 恒 active + 延迟端口绑定 +
@@ -83,12 +111,8 @@ import {
 } from './watch/watch-lifecycle-coordinator';
 import type { WatchRepository } from './watch/repository/watch-repository';
 import { runWatchSmokeGate } from './smoke-watch-store';
-// Sixth Stage D5：Scheduler/Coordinator/共享 HostRequestGate 生产装配（FIXED
-// DECISIONS 10/12）：acquisition port 以确定性 fail-closed stub 为生产缺省，
-// D7 在 Run pipeline 接线时消费 D6 PageAcquisitionRouter 并替换该注入点
-//（D6 只装配路由、禁止把 D6 success 写入 {ok:true} 端口——否则会被
-// Coordinator 误判 unchanged）；before-quit 走 Research 同款
-// preventDefault→await watchShutdown→app.quit() 重入排水。
+// Watch uses the shared host gate and acquisition pipeline. Permanent shutdown
+// joins all producer operations before closing any database or browser handle.
 import { HostRequestGate } from './watch/host-request-gate';
 import { WatchRunCoordinator, type WatchAcquisitionPort } from './watch/watch-run-coordinator';
 import { WatchScheduler } from './watch/watch-scheduler';
@@ -104,6 +128,7 @@ import {
   qualifyWindowsNotification,
   WindowsNotificationSink,
 } from './watch/windows-notification-sink';
+import { configureWindowsNotificationIdentity } from './watch/windows-notification-bootstrap';
 import {
   WATCH_IPC_CHANNELS,
   validateWatchIpcOutput,
@@ -141,6 +166,7 @@ import type {
   ProviderInfo,
 } from '../shared/types/conversation';
 import type { ChangeEvidencePair, WatchEvent, WatchRule } from '../shared/types/watch';
+import { MIN_HOST_REQUEST_GAP_MS } from '../shared/types/watch';
 import type {
   AgentAskPayload,
   AgentConfirmPayload,
@@ -161,7 +187,7 @@ import { CredentialTargetGuard } from './ai/credential-target-guard';
 import { ConfigStore, validateProviderConfig } from './ai/config-store';
 import { SecureCredentialStoreImpl, type SecureCredentialStore } from './ai/credential-store';
 import { SafeStorageCipher } from './ai/safe-storage-cipher';
-import { ConversationServiceImpl, type ConversationService } from './ai/conversation-service';
+import { ConversationServiceImpl } from './ai/conversation-service';
 import { ConversationStore } from './ai/conversation-store';
 import { CONTEXT_BUDGET, truncateWithMark } from './ai/context-budget';
 import { FakeProvider } from './ai/provider/fake-provider';
@@ -192,6 +218,7 @@ import { registerTool } from './ai/tools/tool-registry';
 // 原库与已有备份进入只读恢复态，浏览器其余能力不受影响）。
 import { mkdirSync, rmSync } from 'node:fs';
 import { openSourcesStore } from './sources/sources-store';
+import { SourceServiceImpl } from './sources/source-service';
 import type {
   DigestMembershipProjectionProvider,
   DigestSharingProjectionProvider,
@@ -204,7 +231,7 @@ import { createSourceTools } from './sources/tools/source-tools';
 import { computeSourceLocatorFingerprint } from '../shared/watch/watch-rule-state';
 // B6：usage 接线（决议 #79/#81）——SourceSearchHintStore 每 run 独立 + browser_open
 // 打开后比对写 usage；写入失败安全 no-op，不影响工具结果与 Agent 终态。
-import { SourceUsageTracker } from './sources/usage/usage-tracker';
+import { SourceUsageTracker, type SourceUsageWriter } from './sources/usage/usage-tracker';
 // B5：Sources IPC 适配器（参数严格白名单 + audience 硬编码 user + 状态门控 +
 // 独立 manual 审计 + sources:changed 仅成功后触发）
 import { createSourcesAdapter, SourcesIpcAdmission } from './sources/source-ipc';
@@ -212,6 +239,7 @@ import { createSourcesAdapter, SourcesIpcAdmission } from './sources/source-ipc'
 // RuntimeFactory（C6/C7 端口缺失 fail-closed）；SMOKE 注入确定性 stub 工厂；
 // RESEARCH_SMOKE set/check 双进程门控；退出走安全 shutdown。
 import { openResearchStore } from './research/research-store';
+import { ResearchServiceImpl } from './research/research-service';
 import { createProductionResearchRuntimeFactory } from './research/research-runtime-factory';
 import { createResearchIpcAdapter } from './research/research-ipc';
 import type { ResearchService } from '../shared/types/research';
@@ -222,13 +250,18 @@ import {
   runResearchSmokeGate,
 } from './smoke';
 
+let windowsNotificationIdentityConfigured = false;
 // Preserve the existing product data identity before any profile or writer setup.
 if (__RELEASE__) {
   registerAppAssetScheme(protocol);
   app.setName('aibrowse');
   app.setPath('userData', join(app.getPath('appData'), 'aibrowse'));
   app.setPath('sessionData', app.getPath('userData'));
-  app.setAppUserModelId('com.aibrowse.desktop');
+  if (process.platform === 'win32') {
+    windowsNotificationIdentityConfigured = configureWindowsNotificationIdentity((appId) =>
+      app.setAppUserModelId(appId),
+    );
+  }
   for (const flag of [
     'remote-debugging-port',
     'remote-debugging-pipe',
@@ -397,8 +430,60 @@ function requireNodeDataRoot(): string {
 // 内部持有实现类：setContentBounds（§6 UI 接线）是类方法，不属于 §2.1 AI 契约接口
 let browserController: BrowserControllerImpl | null = null;
 let mainWindow: BrowserWindow | null = null;
+let diagnosticTabCount: number | null = null;
 const uiDocuments = new WeakMap<BrowserWindow, UiDocumentGuard>();
-let conversationService: ConversationService | null = null;
+const uiRecoveries = new WeakMap<BrowserWindow, UiRendererRecovery>();
+let conversationService: ConversationServiceImpl | null = null;
+const mainRootAdmission = new MaintenanceAdmission();
+const researchIpcAdmission = new MaintenanceAdmission();
+let runtimeMaintenance: MaintenanceCoordinator | null = null;
+let startupHealthOnly = false;
+const datasetStartup = new DatasetStartup({
+  assertNoWriters(mode) {
+    if (startupPreparation?.ownsDataProcess()) throw new Error('启动数据子进程尚未退出');
+    if (
+      !lifecycleGuardian ||
+      !mainRootAdmission.isOpen() ||
+      runtimeShutdown !== null ||
+      dataAdmissionOpen
+    )
+      throw new Error('启动数据进程状态不可验证');
+    if (mode === 'read-only-health') {
+      if (!startupHealthOnly) throw new Error('启动图不是只读健康图');
+      return;
+    }
+    const hasStores =
+      sourceService !== null ||
+      researchService !== null ||
+      watchRepo !== null ||
+      assemblingWatch !== null ||
+      conversationService !== null;
+    if (hasStores && !(startupHealthOnly && !datasetStartup.hasOpenHealthHandles()))
+      throw new Error('旧数据句柄尚未关闭');
+  },
+});
+let dataAdmissionOpen = false;
+let finalizeStartupWatch: (() => Promise<boolean>) | null = null;
+let researchStoreReady = false;
+let startupAssemblyFailed = false;
+let startupAdmissionFailed = false;
+let dataTransferRuntime: ReturnType<typeof createDataTransferRuntime> | null = null;
+let lifecycleGuardian: LifecycleGuardianHandle | null = null;
+let recoveryTransferRuntime: ReturnType<typeof createRecoveryTransferRuntime> | null = null;
+let partialRecoveryEntry: ReturnType<typeof createPartialRecoveryEntry> | null = null;
+let startupPreparation: ReturnType<typeof createStartupDataPreparation> | null = null;
+let startupTransferMessage = '本地数据尚未就绪或需要恢复，数据维护暂不可用，原件已保留';
+let guardianFinished: Promise<void> | null = null;
+const smokePendingChannels = new Map<string, number>();
+let smokeWindowReady = false;
+let smokeScenarioFailed = false;
+let resumeSmokeAfterAssembly: (() => void) | null = null;
+let sourceMaintenance: SourceServiceImpl | null = null;
+let researchMaintenance: ResearchServiceImpl | null = null;
+let sourceUsageTracker: SourceUsageTracker | null = null;
+let runtimeShutdown: RuntimeShutdown | null = null;
+let shutdownQuitScheduled = false;
+let shutdownQuitReady = false;
 // S4：config:providers:* handler 需要直接引用生产 ConfigStore/凭据实例
 let configStore: ConfigStore | null = null;
 let credentialTargetGuard: CredentialTargetGuard | null = null;
@@ -413,14 +498,13 @@ let sourceService: SourceService | null = null;
 let smokeSourcesDir: string | null = null;
 let researchService: ResearchService | null = null;
 let smokeResearchDir: string | null = null;
-let researchShutdownDone = false;
-let researchShutdownStarted = false;
 // D4：Watch 生命周期协调器（构造先于 Sources 装配——observer 恒注入 active
 // coordinator，无论 watch.db 是否存在；缺失库由 Store 正常创建，corrupt/
 // future/unavailable 必须返回失败，绝不因文件缺失静默退化为 no-op）
 let watchCoordinator: WatchLifecycleCoordinator | null = null;
 let watchRepo: WatchRepository | null = null;
 let watchSubscriptionSender: Electron.WebContents | null = null;
+let watchSubscriptionCurrent: () => boolean = () => false;
 let watchSubscriptionDestroyedCleanup: (() => void) | null = null;
 let watchRevision = 0;
 let pushWatchStatus: () => void = () => undefined;
@@ -436,23 +520,27 @@ let watchRunCoordinator: WatchRunCoordinator | null = null;
 let watchScheduler: WatchScheduler | null = null;
 let digestService: DigestService | null = null;
 let digestScheduler: DigestScheduler | null = null;
-let watchShutdownDone = false;
 let watchShutdownStarted = false;
 let sourceIpcAdmissionOpen = true;
-let sourceIpcDrainDone = false;
-let sourceIpcDrainStarted = false;
 const sourceIpcAdmission = new SourcesIpcAdmission();
-let rendererAdmissionDrain: Promise<void> | null = null;
+let assemblingWatch: {
+  repo: WatchRepository;
+  coordinator: WatchRunCoordinator | null;
+  scheduler: WatchScheduler | null;
+  hostGate: HostRequestGate | null;
+  startupDrainFailed: boolean;
+} | null = null;
 // D6：Session 页面采集装配（workspace/grant/router）——before-quit 顺序：
 // Coordinator stop → workspace cleanupAll drain → grant clear → robots cache
 // clear → host gate clear。
 let watchWorkspace: WatchTaskTabWorkspace | null = null;
 let watchGrantStore: SessionGrantStore | null = null;
-let watchPageRouter: PageAcquisitionRouter | null = null;
 let watchAcquisitionService: WatchAcquisitionService | null = null;
 let watchPublicTarget: TargetGatedClient | null = null;
 let watchPreviewReader: BrowserWatchReader | null = null;
 let watchPreviewStore: WatchPreviewStore | null = null;
+let watchPreviewService: WatchPreviewService | null = null;
+let watchExportService: WatchExportService | null = null;
 let watchIpcAdapter: WatchIpcAdapter | null = null;
 const watchIpcAdmission = new WatchIpcAdmission();
 let watchPublicStackRobots: { clearCache(): void } | null = null;
@@ -477,111 +565,610 @@ let smokeSourcesStateOverride: { current: SourcesState | null } | null = null;
 // 「审计工具名全部为注册表工具」机器断言用；生产不收集（决议 #84 同精神测试设施）
 const smokeAuditCollector: AuditEntry[] = [];
 
+const diagnosticService = new DiagnosticService({
+  snapshot: {
+    snapshot: () => ({
+      application: { version: app.getVersion(), buildId: __BUILD_ID__ },
+      runtime: {
+        electron: process.versions.electron,
+        node: process.versions.node,
+        chromium: process.versions.chrome,
+      },
+      features: {
+        browser: browserController === null ? 'unavailable' : 'available',
+        ai: conversationService === null ? 'unavailable' : 'available',
+        sources: sourceService?.getState().mode === 'normal' ? 'available' : 'unavailable',
+        research: researchStoreReady ? 'available' : 'unavailable',
+        watch: watchCoordinator?.getState().mode === 'normal' ? 'available' : 'unavailable',
+        storage: dataAdmissionOpen ? 'available' : 'degraded',
+      },
+      errors: getDiagnosticErrorCounts(),
+      counts: {
+        tabs: diagnosticTabCount,
+        sessions: null,
+        sources: null,
+        researchTasks: null,
+        watchRules: null,
+        pendingOperations: null,
+      },
+      durationsMs: {
+        startup: null,
+        pageSnapshot: null,
+        sourceSearch: null,
+        researchRun: null,
+        watchCycle: null,
+      },
+    }),
+  },
+  isOwnerCurrent: (token) => {
+    const win = mainWindow;
+    if (
+      win === null ||
+      win.isDestroyed() ||
+      win.webContents.isDestroyed() ||
+      !mainRootAdmission.isOpen() ||
+      runtimeShutdown !== null ||
+      mainFailureShutdown.isActive() ||
+      !(runtimeMaintenance?.admission.isOpen() ?? true)
+    )
+      return false;
+    const frame = win.webContents.mainFrame;
+    return (
+      uiDocuments.get(win)?.accepts({ owner: win.webContents, frame, url: frame.url }, token) ===
+      true
+    );
+  },
+  save: {
+    showSaveDialog: async (defaultFileName) => {
+      const win = mainWindow;
+      if (win === null || win.isDestroyed()) throw new Error('诊断保存窗口不可用');
+      const result = await dialog.showSaveDialog(win, {
+        title: '导出诊断信息',
+        defaultPath: defaultFileName,
+        filters: [{ name: '诊断信息 JSON', extensions: ['json'] }],
+      });
+      return result.canceled ? null : (result.filePath ?? null);
+    },
+    write: async (path, bytes) => {
+      await writeFile(path, bytes);
+    },
+  },
+});
+
+const mainFailureShutdown = new MainFailureShutdown({
+  stopAdmission: () => {
+    dataAdmissionOpen = false;
+    stopRendererAdmissions();
+    const pending = confirmManager?.getPending();
+    if (pending) confirmManager?.cancelAll(pending.runId);
+    conversationService?.interruptUiRequests();
+    interruptWatchUiRequests();
+  },
+  notify: async (reason, signal) => {
+    logError(
+      'main',
+      reason === 'main-error'
+        ? '主进程发生不可恢复错误，已关闭操作入口并开始安全退出'
+        : '应用界面无法恢复，已关闭操作入口并开始退出',
+    );
+    if (!app.isReady() || guardianFinished !== null) return;
+    await dialog.showMessageBox({
+      type: 'error',
+      title: 'AIbrowse 需要退出',
+      message:
+        reason === 'main-error'
+          ? '应用发生异常，无法确认所有操作已保存。'
+          : '应用界面无法恢复，正在退出；未提交的界面输入可能丢失。',
+      detail: '应用将在十秒内退出。请重新启动以检查和恢复本地数据；不要删除或移动原数据。',
+      buttons: ['知道了'],
+      noLink: true,
+      signal,
+    });
+  },
+  drain: shutdownRuntime,
+  hasGuardianFinishStarted: () => guardianFinished !== null,
+  finishGuardian: () => finishGuardianShutdown('failure'),
+  exit: (code) => app.exit(code),
+});
+
+function interruptWatchUiRequests(): void {
+  if (watchPreviewService !== null) watchPreviewService.interruptUiRequests();
+  else {
+    watchPreviewStore?.dispose();
+    watchGrantStore?.clear();
+  }
+}
+
+function mainRootIsOpen(): boolean {
+  return (
+    dataAdmissionOpen &&
+    mainRootAdmission.isOpen() &&
+    (runtimeMaintenance?.admission.isOpen() ?? true)
+  );
+}
+
+function openSourcesForStartup(options: Parameters<typeof openSourcesStore>[0]) {
+  return datasetStartup.isChecking()
+    ? assembleVerifiedTransferSourcesStore(options, datasetStartup.open('sources'))
+    : openSourcesStore(options);
+}
+function openResearchForStartup(options: Parameters<typeof openResearchStore>[0]) {
+  return datasetStartup.isChecking()
+    ? assembleVerifiedTransferResearchStore(options, datasetStartup.open('research'))
+    : openResearchStore(options);
+}
+function openWatchForStartup(options: Parameters<typeof openWatchStore>[0]) {
+  return datasetStartup.isChecking()
+    ? assembleVerifiedTransferWatchStore(options, datasetStartup.open('watch'))
+    : openWatchStore(options);
+}
+
+function runMainRoot<T>(
+  work: (isCurrent: () => boolean) => T | Promise<T>,
+  isOwnerCurrent: () => boolean = () => true,
+): Promise<T> {
+  return runWithMaintenanceAdmission(
+    mainRootAdmission,
+    work,
+    () => mainRootIsOpen() && isOwnerCurrent(),
+  );
+}
+
+function runMainBackground(work: () => void | Promise<unknown>): void {
+  if (!mainRootIsOpen()) return;
+  void runMainRoot(work).catch(() => logWarn('main', '后台数据操作未完成（详见所属域诊断）'));
+}
+
 function stopWatchIpcAdmission(): void {
-  // Fail closed before any failure-path repository cleanup or asynchronous work.
   watchIpcAdmission.beginShutdown();
+  watchWindowsSink?.dispose();
+  watchWindowsSink = null;
   watchSubscriptionDestroyedCleanup?.();
   watchSubscriptionDestroyedCleanup = null;
   watchSubscriptionSender = null;
+  watchSubscriptionCurrent = () => false;
   pushWatchStatus = () => undefined;
 }
 
 function stopRendererAdmissions(): void {
-  void closeAndDrainRendererAdmissions();
+  // This function only closes admission. Cancellation starts after every
+  // producer has also closed its own admission in RuntimeShutdown.
+  mainRootAdmission.beginShutdown();
+  void diagnosticService.invalidateAndDrain();
+  researchIpcAdmission.beginShutdown();
+  sourceIpcAdmission.beginShutdown();
+  sourceIpcAdmissionOpen = false;
+  watchShutdownStarted = true;
+  stopWatchIpcAdmission();
+  runtimeMaintenance?.shutdown();
 }
 
-function closeAndDrainRendererAdmissions(): Promise<void> {
-  if (rendererAdmissionDrain === null) {
-    sourceIpcAdmissionOpen = false;
-    rendererAdmissionDrain = closeAndDrainThenDispose(
-      [sourceIpcAdmission, watchIpcAdmission],
-      () => undefined,
+function shutdownRuntime(): Promise<void> {
+  if (runtimeShutdown === null) {
+    lifecycleGuardian?.beginShutdown();
+    // Keep the same dataset and ownership references through every await.
+    // Startup resources are retained here before their normal publication.
+    const conversation = conversationService;
+    const research = researchMaintenance;
+    const source = sourceService;
+    const usage = sourceUsageTracker;
+    const watch = assemblingWatch?.coordinator ?? watchRunCoordinator;
+    const repository = assemblingWatch?.repo ?? watchRepo;
+    const scheduler = assemblingWatch?.scheduler ?? watchScheduler;
+    const hostGate = assemblingWatch?.hostGate ?? watchHostGate;
+    const digest = digestService;
+    const digestDue = digestScheduler;
+    const workspace = watchWorkspace;
+    const lifecycle = watchCoordinator;
+    const browser = browserController;
+    const previewStore = watchPreviewStore;
+    const grants = watchGrantStore;
+    const adapter = watchIpcAdapter;
+    const robots = watchPublicStackRobots;
+    const startup = assemblingWatch;
+    const maintenance = runtimeMaintenance;
+    const producers: Array<ShutdownProducer | null> = [
+      dataTransferRuntime?.service ?? null,
+      recoveryTransferRuntime,
+      partialRecoveryEntry,
+      startupPreparation,
+      conversation,
+      research,
+      watchPreviewService,
+      watchExportService,
+      watchNotifications,
+      watchWindowsNotifications,
+      {
+        beginShutdown: () => {
+          void diagnosticService.invalidateAndDrain();
+        },
+        drainBeforeClose: () => diagnosticService.invalidateAndDrain(),
+      },
+      {
+        beginShutdown: () => scheduler?.stop(),
+        drainBeforeClose: () => Promise.resolve(),
+      },
+      {
+        beginShutdown: () => digestDue?.stop(),
+        drainBeforeClose: () => Promise.resolve(),
+      },
+      {
+        beginShutdown: () => watch?.beginShutdown(),
+        drainBeforeClose: () => watch?.stop() ?? Promise.resolve(),
+      },
+      {
+        beginShutdown: () => digest?.stopAdmission(),
+        drainBeforeClose: async () => {
+          try {
+            digest?.abort();
+          } finally {
+            await digest?.drain();
+          }
+        },
+      },
+    ];
+    const activeProducers = producers.filter(
+      (producer): producer is ShutdownProducer => producer !== null,
     );
-    // Keep the sender closed synchronously, before the helper reaches its
-    // first await. This also covers the explicit Watch publish path.
-    stopWatchIpcAdmission();
+    const producerNames = [
+      'data-transfer',
+      'recovery-transfer',
+      'partial-recovery',
+      'startup-data',
+      'conversation',
+      'research',
+      'preview',
+      'export',
+      'notifications',
+      'windows-notifications',
+      'diagnostics',
+      'scheduler',
+      'digest-scheduler',
+      'watch',
+      'digest',
+    ].filter((_, index) => producers[index] !== null);
+    runtimeShutdown = new RuntimeShutdown({
+      roots: [
+        {
+          beginShutdown: stopRendererAdmissions,
+          drain: async () => {
+            await mainRootAdmission.drain();
+            if (startup?.startupDrainFailed || startupAdmissionFailed)
+              throw new Error('Watch 原启动排水失败，句柄保持保留');
+          },
+        },
+        sourceIpcAdmission,
+        researchIpcAdmission,
+        watchIpcAdmission,
+        {
+          beginShutdown: () => maintenance?.shutdown(),
+          drain: () => maintenance?.waitForIdle() ?? Promise.resolve(),
+        },
+      ],
+      producers: activeProducers,
+      waitForUsage: () => usage?.waitForIdle() ?? Promise.resolve(),
+      cleanupWorkspace: () =>
+        workspace?.cleanupAll() ?? Promise.resolve({ ok: true, retainedCount: 0 }),
+      closeResources: async () => {
+        // Research shutdown is now close-only in effect: its owned drain already
+        // succeeded together with every other domain and original IPC operation.
+        await research?.shutdown();
+        digest?.dispose();
+        grants?.clear();
+        previewStore?.dispose();
+        adapter?.dispose();
+        robots?.clearCache();
+        hostGate?.clear();
+        lifecycle?.dispose();
+        repository?.dispose();
+        if (watchRepo === repository) watchRepo = null;
+        if (assemblingWatch?.repo === repository) assemblingWatch = null;
+        source?.dispose();
+        browser?.dispose();
+      },
+    });
+    if (!__RELEASE__ && SMOKE_MODE) {
+      const observed = runtimeShutdown;
+      // One bounded observation of fixed assembly names; never a user payload.
+      const timer = setTimeout(() => {
+        if (observed.getPhase() !== 'draining') return;
+        const pending = observed.getPending();
+        const roots = ['main', 'sources-ipc', 'research-ipc', 'watch-ipc', 'maintenance'];
+        logWarn(
+          'main',
+          `冒烟退出仍在排水：${JSON.stringify({
+            roots: pending.roots.map((index) => roots[index]),
+            producers: pending.producers.map((index) => producerNames[index]),
+            conversation: conversation?.getPendingOperationCounts(),
+            channels: Object.fromEntries(smokePendingChannels),
+          })}`,
+        );
+      }, 5_000);
+      void observed.shutdown().then(
+        () => clearTimeout(timer),
+        () => clearTimeout(timer),
+      );
+    }
   }
-  return rendererAdmissionDrain;
+  return runtimeShutdown.shutdown();
+}
+
+function reportShutdownFailure(): void {
+  logWarn('main', '退出排水失败：剩余数据句柄和任务所有权已保留，未正常退出');
+}
+
+function finishGuardianShutdown(owner: 'normal' | 'failure' = 'normal'): Promise<void> {
+  if (mainFailureShutdown.isActive() && owner !== 'failure')
+    return Promise.reject(new Error('异常退出已接管，不能启动正常退休'));
+  if (lifecycleGuardian === null) return Promise.resolve();
+  if (runtimeShutdown?.getPhase() !== 'closed')
+    return Promise.reject(new Error('业务清理尚未完成，不能确认正常退出'));
+  guardianFinished ??= lifecycleGuardian.finishShutdown();
+  return guardianFinished;
 }
 
 function exitAfterRendererAdmissionDrain(code: number, cleanup: () => void | Promise<void>): void {
-  void (async () => {
-    try {
-      await closeAndDrainRendererAdmissions();
-    } catch (error) {
-      logError('main', '退出前 renderer admission 排水异常', error);
-    }
-    try {
+  void shutdownRuntime()
+    .then(async () => {
+      if (mainFailureShutdown.isActive()) return;
       await cleanup();
-    } catch (error) {
-      logError('main', '退出前冒烟资源清理异常', error);
-    }
-    app.exit(code);
-  })().catch((error: unknown) => {
-    logError('main', '退出前清理调度异常', error);
-    app.exit(code);
+      if (mainFailureShutdown.isActive()) return;
+      await finishGuardianShutdown();
+      if (mainFailureShutdown.isActive()) return;
+      app.exit(code);
+    })
+    .catch(reportShutdownFailure);
+}
+
+function shutdownRendererSubsystems(): Promise<void> {
+  return shutdownRuntime();
+}
+
+async function chooseNativeTransfer(
+  action: DataTransferAction,
+): Promise<NativeTransferSelection | null> {
+  const win = mainWindow;
+  if (win === null) return null;
+  if (win.isDestroyed()) return null;
+  const filters = [{ name: 'AIbrowse 备份', extensions: ['aibak'] }];
+  if (action === 'backup') {
+    const choice = await dialog.showSaveDialog(win, {
+      title: '保存本地数据备份',
+      defaultPath: 'AIbrowse-backup.aibak',
+      filters,
+    });
+    return choice.canceled || !choice.filePath ? null : { action, destination: choice.filePath };
+  }
+  const choice = await dialog.showOpenDialog(win, {
+    title: '选择要恢复的 AIbrowse 备份',
+    properties: ['openFile'],
+    filters,
   });
+  if (choice.canceled || choice.filePaths.length !== 1) return null;
+  return { action, ...(await inspectNativeRestoreInput(choice.filePaths[0]!)) };
 }
 
-// D5（FIXED DECISIONS 12）：Watch 退出排水——stop-admission → abort 全部在途 →
-// 有界 drain → D6 workspace cleanupAll/grant clear/robots cache clear →
-// 交回既有 watchCoordinator.dispose()/watchRepo.dispose()（兜底清理在
-// before-quit 重入时执行）。幂等可重复调用；未完成行留待下次启动标 interrupted。
-async function watchShutdown(): Promise<void> {
-  // Stop all Watch IPC admission before the first await. Late renderer-ready or
-  // subscription events must not observe a repository that is about to close.
-  watchShutdownStarted = true;
-  await closeAndDrainRendererAdmissions();
-  const repository = watchRepo;
-  watchRepo = null;
+async function confirmNativeRestore(message: string): Promise<boolean> {
+  const win = mainWindow;
+  if (win === null) return false;
+  if (win.isDestroyed()) return false;
+  const answer = await dialog.showMessageBox(win, {
+    type: 'warning',
+    title: '确认恢复本地数据',
+    message,
+    buttons: ['恢复并重新启动', '取消'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  return answer.response === 0;
+}
+
+async function requestDataRelaunch(deadline: number): Promise<boolean> {
+  if (
+    mainFailureShutdown.isActive() ||
+    runtimeShutdown !== null ||
+    performance.now() >= deadline ||
+    !lifecycleGuardian
+  )
+    return false;
+  await lifecycleGuardian.requestRelaunch();
+  if (mainFailureShutdown.isActive() || runtimeShutdown !== null || performance.now() >= deadline)
+    return false;
+  // Service must leave its own start promise before shutdown joins it.
+  setImmediate(() => {
+    void shutdownRuntime()
+      .then(async () => {
+        if (mainFailureShutdown.isActive()) return;
+        if (performance.now() >= deadline) throw new Error('恢复关闭额度已耗尽');
+        await finishGuardianShutdown();
+        if (mainFailureShutdown.isActive()) return;
+        if (performance.now() >= deadline) throw new Error('恢复关闭额度已耗尽');
+        shutdownQuitReady = true;
+        app.quit();
+      })
+      .catch(() => {
+        dataTransferRuntime?.relaunchFailed();
+        recoveryTransferRuntime?.relaunchFailed();
+        partialRecoveryEntry?.relaunchFailed();
+        startupTransferMessage = '数据准备已登记，但重新启动未完成，业务保持关闭';
+        reportShutdownFailure();
+      });
+  });
+  return true;
+}
+
+function assertStartupNoStores(): void {
+  if (
+    !lifecycleGuardian ||
+    !mainRootAdmission.isOpen() ||
+    runtimeShutdown !== null ||
+    dataAdmissionOpen ||
+    sourceService !== null ||
+    researchService !== null ||
+    watchRepo !== null ||
+    assemblingWatch !== null ||
+    conversationService !== null ||
+    dataTransferRuntime !== null
+  )
+    throw new Error('启动数据图尚未静止');
+}
+
+function installRecoveryTransfer(): void {
   try {
-    digestScheduler?.stop();
-    digestService?.stopAdmission();
-    digestService?.abort();
-    await digestService?.drain();
-    digestService?.dispose();
-    if (watchRunCoordinator !== null) {
-      await watchRunCoordinator.stop();
-    }
-    watchScheduler?.stop();
-    // D6：task Tab 精确清理（失败 ownership 保留，重启后本进程退出不持久化）→
-    // grant 内存清空 → robots 缓存清空 → host gate 注册表清空
-    if (watchWorkspace !== null) {
-      try {
-        await watchWorkspace.cleanupAll();
-      } catch {
-        // 清理异常不阻塞退出（所有权仅内存，进程退出即销毁）
-      }
-    }
-    watchGrantStore?.clear();
-    watchPreviewStore?.dispose();
-    watchIpcAdapter?.dispose();
-    watchPublicStackRobots?.clearCache();
-    watchPublicTarget = null;
-    // D7 将在 Run pipeline 接线时消费 watchPageRouter（FIXED DECISIONS 12）：
-    // 保持引用存活至 shutdown，杜绝“已装配但不可达”的悬挂态。
-    void watchPageRouter;
-    watchHostGate?.clear();
-  } finally {
-    // Repository release is the final step even when a coordinator or workspace
-    // cleanup reports an error. Admission was closed before the first await.
-    watchCoordinator?.dispose();
-    repository?.dispose();
+    assertStartupNoStores();
+    if (startupPreparation?.ownsDataProcess()) throw new Error('数据子进程退出状态不明');
+    recoveryTransferRuntime = createRecoveryTransferRuntime({
+      userDataRoot: requireNodeDataRoot(),
+      productVersion: app.getVersion(),
+      guardian: lifecycleGuardian!,
+      assertNoStores() {
+        assertStartupNoStores();
+        if (startupPreparation?.ownsDataProcess()) throw new Error('数据子进程尚未退出');
+      },
+      chooseNative: chooseNativeTransfer,
+      confirmRestore: confirmNativeRestore,
+      requestRelaunch: requestDataRelaunch,
+    });
+  } catch {
+    startupTransferMessage = '本地数据恢复仍在等待旧操作结束，请关闭应用后重新启动；原件已保留';
   }
 }
 
-async function shutdownRendererSubsystems(): Promise<void> {
-  try {
-    await watchShutdown();
-    watchShutdownDone = true;
-  } catch (error) {
-    logError('main', '退出前 Watch 排水异常', error);
+function installPartialRecovery(): void {
+  dataAdmissionOpen = false;
+  stopStartupSchedulers();
+  if (partialRecoveryEntry !== null || !mainRootAdmission.isOpen() || runtimeShutdown !== null)
+    return;
+  const original = {
+    guardian: lifecycleGuardian,
+    source: sourceService,
+    research: researchService,
+    conversation: conversationService,
+    watch: watchRepo,
+    assembling: assemblingWatch,
+    preparation: startupPreparation,
+    browser: browserController,
+  };
+  partialRecoveryEntry = createPartialRecoveryEntry({
+    assertPartialGraph() {
+      if (
+        !original.guardian ||
+        lifecycleGuardian !== original.guardian ||
+        !mainRootAdmission.isOpen() ||
+        runtimeShutdown !== null ||
+        dataAdmissionOpen ||
+        sourceService !== original.source ||
+        researchService !== original.research ||
+        conversationService !== original.conversation ||
+        watchRepo !== original.watch ||
+        assemblingWatch !== original.assembling ||
+        startupPreparation !== original.preparation ||
+        browserController !== original.browser
+      )
+        throw new Error('原数据服务图已改变，恢复准备不可继续');
+    },
+    confirmRestart: confirmNativeRestore,
+    async ensureRecoveryGate(context) {
+      context.assertCurrent();
+      await ensureRecoveryGate(requireNodeDataRoot(), {
+        check: context.assertCurrent,
+        requireRollbackSpace() {
+          throw new Error('恢复入口不能复制活数据');
+        },
+      });
+      context.assertCurrent();
+    },
+    requestRelaunch: requestDataRelaunch,
+  });
+  startupTransferMessage = '本地数据服务未完整启动，请确认重新启动到恢复界面；原件已保留';
+}
+
+function stopStartupSchedulers(): void {
+  // Observe both stops even when the first throws; preserve a real admission
+  // failure for unified shutdown rather than replacing it with a later success.
+  for (const scheduler of [assemblingWatch?.scheduler ?? watchScheduler, digestScheduler]) {
+    try {
+      scheduler?.stop();
+    } catch {
+      startupAdmissionFailed = true;
+    }
   }
+}
+
+function startupGraphReady(): boolean {
+  return (
+    mainRootAdmission.isOpen() &&
+    !startupAssemblyFailed &&
+    !startupAdmissionFailed &&
+    runtimeShutdown === null &&
+    lifecycleGuardian !== null &&
+    runtimeMaintenance !== null &&
+    sourceService?.getState().mode === 'normal' &&
+    researchStoreReady &&
+    researchMaintenance !== null &&
+    watchCoordinator?.getState().mode === 'normal' &&
+    watchRunCoordinator?.getState().mode === 'running' &&
+    watchScheduler !== null &&
+    digestScheduler !== null &&
+    conversationService?.getStorageStatus().state === 'ready' &&
+    finalizeStartupWatch !== null
+  );
+}
+
+async function finalizeStartupDataGraph(): Promise<boolean> {
+  dataAdmissionOpen = false;
+  const checking = datasetStartup.isChecking();
   try {
-    sourceService?.dispose();
-  } catch (error) {
-    logError('main', '退出前 Sources 句柄释放异常', error);
+    if (!startupGraphReady() || !(await finalizeStartupWatch!()) || !startupGraphReady())
+      throw new Error('数据服务图尚未完整就绪');
+    if (checking) {
+      // Index preparation above is read-only and both schedulers remain held.
+      await new Promise<void>((resolve) => setTimeout(resolve, MIN_HOST_REQUEST_GAP_MS));
+      if (!startupGraphReady() || !(await datasetStartup.complete(startupGraphReady)))
+        throw new Error('恢复数据健康确认未完成');
+    }
+    if (!startupGraphReady()) throw new Error('数据服务图已停止');
+    // No await may split this final release. A failure closes both producers
+    // before the event loop can dispatch a newly armed scheduler callback.
+    dataAdmissionOpen = true;
+    if (
+      !watchScheduler!.releaseStartup() ||
+      !startupGraphReady() ||
+      !digestScheduler!.releaseStartup() ||
+      !startupGraphReady()
+    )
+      throw new Error('数据调度未能共同开放');
+    return true;
+  } catch {
+    dataAdmissionOpen = false;
+    stopStartupSchedulers();
+    if (checking && mainRootAdmission.isOpen() && runtimeShutdown === null) {
+      await datasetStartup.fail();
+    }
+    installPartialRecovery();
+    return false;
   }
+}
+
+async function cleanupSmokeDirectories(): Promise<void> {
+  if (smokeScenarioFailed) {
+    logWarn('main', '冒烟失败合成证据已保留');
+    return;
+  }
+  if (smokeResearchDir !== null) {
+    await removeSmokeDirWithRetry(smokeResearchDir);
+    smokeResearchDir = null;
+  }
+  if (smokeSourcesDir !== null) {
+    await removeSmokeDirWithRetry(smokeSourcesDir);
+    smokeSourcesDir = null;
+  }
+  if (smokeWatchDir !== null) {
+    await removeSmokeDirWithRetry(smokeWatchDir);
+    smokeWatchDir = null;
+  }
+  if (!__RELEASE__ && SMOKE_MODE) await removeSmokeDirWithRetry(SMOKE_AI_DATA_DIR);
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -711,6 +1298,25 @@ if (!gotLock) {
       }
       return;
     }
+    try {
+      lifecycleGuardian = await startLifecycleGuardian({
+        userDataRoot: requireNodeDataRoot(),
+        executablePath: process.execPath,
+        ...(!app.isPackaged ? { developmentAppRoot: app.getAppPath() } : {}),
+      });
+      lifecycleGuardian.onFailure(() => {
+        dataAdmissionOpen = false;
+        stopRendererAdmissions();
+        void shutdownRuntime().catch(reportShutdownFailure);
+      });
+    } catch {
+      dialog.showErrorBox(
+        '数据进程无法安全启动',
+        '无法核验上次数据进程是否已退出。本次未打开业务数据库，原有数据和恢复现场已保留。',
+      );
+      app.exit(1);
+      return;
+    }
     if (__RELEASE__) {
       const assets = JSON.parse(
         readFileSync(join(__dirname, '../renderer/asset-manifest.json'), 'utf8'),
@@ -735,102 +1341,26 @@ if (!gotLock) {
     if (process.platform !== 'darwin') app.quit();
   });
   app.on('before-quit', (event) => {
-    // C5（决议 #139(5)）：Research 走安全 shutdown（abort → await settle →
-    // closeDb；幂等）。D5（FIXED DECISIONS 12）：Watch 走 Research 同款
-    // preventDefault→await watchShutdown→app.quit() 重入排水——stop-admission →
-    // abort 全部在途 → 有界 drain → 交回既有 watchCoordinator.dispose()/
-    // watchRepo.dispose()（兜底清理延后到两个 shutdown 都完成后）。
-    // Close both renderer-facing admissions synchronously before either
-    // subsystem begins its asynchronous drain. Late Sources/Watch calls then
-    // fail closed while their repositories are still available for cleanup.
-    stopRendererAdmissions();
-    let shutdownPending = false;
-    if (!researchShutdownDone) {
+    if (mainFailureShutdown.isActive()) {
       event.preventDefault();
-      shutdownPending = true;
-      if (!researchShutdownStarted) {
-        researchShutdownStarted = true;
-        void (researchService?.shutdown() ?? Promise.resolve()).finally(() => {
-          researchShutdownDone = true;
-          // 冒烟临时 Research 目录：closeDb 后 Windows 句柄释放有微小窗口——
-          // 有限重试（EPERM 不阻塞退出；最终失败保留所有权由下次冒烟自清）
-          if (smokeResearchDir !== null) {
-            let removed = false;
-            for (let attempt = 0; attempt < 3 && !removed; attempt++) {
-              try {
-                rmSync(smokeResearchDir, { recursive: true, force: true });
-                removed = true;
-              } catch {
-                // 重试间隔由退出路径自然等待（同步循环 10ms 让步）
-                const waitUntil = Date.now() + 10;
-                while (Date.now() < waitUntil) {
-                  // 忙等待让步（退出路径无计时器依赖）
-                }
-              }
-            }
-            if (removed) {
-              smokeResearchDir = null;
-            } else {
-              logWarn('main', '冒烟临时 Research 目录清理失败（将保留，请勿手动删除用户数据）');
-            }
-          }
-          app.quit(); // 再次触发 before-quit（researchShutdownDone=true）
-        });
-      }
+      return;
     }
-    if (!watchShutdownDone) {
-      event.preventDefault();
-      shutdownPending = true;
-      if (!watchShutdownStarted) {
-        watchShutdownStarted = true;
-        void watchShutdown()
-          .catch((err: unknown) => {
-            logError('main', 'Watch 退出排水异常（已完成兜底释放）', err);
-          })
-          .finally(() => {
-            watchShutdownDone = true;
-            app.quit(); // 再次触发 before-quit（watchShutdownDone=true）
-          });
-      }
-    }
-    if (!sourceIpcDrainDone) {
-      event.preventDefault();
-      shutdownPending = true;
-      if (!sourceIpcDrainStarted) {
-        sourceIpcDrainStarted = true;
-        void closeAndDrainRendererAdmissions()
-          .catch((err: unknown) => {
-            logError('main', 'Sources IPC 退出排水异常', err);
-          })
-          .finally(() => {
-            sourceIpcDrainDone = true;
-            app.quit();
-          });
-      }
-    }
-    if (shutdownPending) return; // 任一在排水：兜底清理延后到重入
-    // 退出路径兜底清理（幂等；research + watch 均已排水）；主路径为窗口 closed → dispose（§5）
-    conversationService?.dispose(); // S3：中止全部在途生成
-    stopRendererAdmissions();
-    sourceService?.dispose(); // B4：Sources 句柄幂等释放（driver closeDb 幂等）
-    // D4：Watch dispose 幂等接线（coordinator 解绑 → repo 句柄释放）
-    watchCoordinator?.dispose();
-    watchRepo?.dispose();
-    if (smokeSourcesDir !== null) {
-      rmSync(smokeSourcesDir, { recursive: true, force: true }); // 冒烟临时 Sources 目录
-      smokeSourcesDir = null;
-    }
-    if (smokeWatchDir !== null) {
-      rmSync(smokeWatchDir, { recursive: true, force: true }); // 冒烟临时 Watch 目录
-      smokeWatchDir = null;
-    }
-    if (!__RELEASE__ && SMOKE_MODE) {
-      // 冒烟 AI 数据目录兜底清理（默认矩阵由 aiSmoke.cleanup 主路径清理；
-      // SESSION/SOURCES/SOURCES_UI 门控跳过矩阵——此前残留 pid 专属目录）
-      rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
-    }
-    browserController?.dispose();
-    logInfo('main', '应用退出');
+    if (shutdownQuitReady) return;
+    event.preventDefault();
+    if (shutdownQuitScheduled) return;
+    shutdownQuitScheduled = true;
+    void shutdownRuntime()
+      .then(async () => {
+        if (mainFailureShutdown.isActive()) return;
+        await cleanupSmokeDirectories();
+        if (mainFailureShutdown.isActive()) return;
+        await finishGuardianShutdown();
+        if (mainFailureShutdown.isActive()) return;
+        logInfo('main', '应用退出');
+        shutdownQuitReady = true;
+        app.quit();
+      })
+      .catch(reportShutdownFailure);
   });
 
   // 纵深防御（§3.2）：React UI 主窗口是 IPC 的唯一合法调用方；sender 为主窗口且为主帧
@@ -842,11 +1372,10 @@ if (!gotLock) {
     try {
       const frame = event.senderFrame;
       return (
+        !mainFailureShutdown.isActive() &&
         !win.isDestroyed() &&
         frame !== null &&
-        !frame.detached &&
-        event.sender === win.webContents &&
-        frame === win.webContents.mainFrame &&
+        isCurrentUiFrame(event, win.webContents) &&
         (uiDocuments.get(win)?.accepts({ owner: event.sender, frame, url: frame.url }, token) ??
           false)
       );
@@ -856,18 +1385,28 @@ if (!gotLock) {
   }
 
   function registerIpcHandlers(): void {
+    if (__E2_RUNTIME_QUALIFICATION__) {
+      for (const channel of [RUNTIME_PING, RUNTIME_SAMPLE]) {
+        ipcMain.handle(channel, (event, payload: unknown, token: unknown) => {
+          if (mainWindow === null || !isTrustedSender(event, mainWindow, token))
+            throw new Error('未授权的资格 UI 调用');
+          return channel === RUNTIME_PING
+            ? runtimeQualification().ping(payload)
+            : runtimeQualification().sample(payload);
+        });
+      }
+    }
     // invoke 通道：未授权调用一律拒绝 + warn（handler 只注册一次，调用时解引用当前窗口）
     ipcMain.handle(IPC.UiDocumentOpen, (event) => {
       const win = mainWindow;
+      if (mainFailureShutdown.isActive()) return null;
       try {
         const frame = event.senderFrame;
         if (
           win === null ||
           win.isDestroyed() ||
           frame === null ||
-          frame.detached ||
-          event.sender !== win.webContents ||
-          frame !== win.webContents.mainFrame
+          !isCurrentUiFrame(event, win.webContents)
         )
           return null;
         return uiDocuments.get(win)?.token({ owner: event.sender, frame, url: frame.url }) ?? null;
@@ -877,7 +1416,7 @@ if (!gotLock) {
     });
     const handle = (
       channel: string,
-      fn: (payload: unknown, isCurrent: () => boolean) => unknown,
+      fn: (payload: unknown, isCurrent: () => boolean, ownerToken: string) => unknown,
     ): void => {
       ipcMain.handle(channel, (event, payload: unknown, token: unknown) => {
         if (mainWindow === null || !isTrustedSender(event, mainWindow, token)) {
@@ -886,7 +1425,66 @@ if (!gotLock) {
         }
         if (!validateCoreIpcPayload(channel, payload)) throw new Error('IPC 参数无效');
         const win = mainWindow;
-        return fn(payload, () => mainWindow === win && isTrustedSender(event, win, token));
+        const ownerToken = token as string;
+        if (
+          channel === IPC.DataTransferStatus ||
+          channel === IPC.DataTransferStart ||
+          channel === IPC.DataTransferCancel ||
+          channel === IPC.DataTransferRecoverOriginal ||
+          channel === IPC.ConversationStorageStatus
+        ) {
+          // Maintenance controls must not hold a business lease while draining it.
+          return fn(
+            payload,
+            () =>
+              runtimeShutdown === null && mainWindow === win && isTrustedSender(event, win, token),
+            ownerToken,
+          );
+        }
+        if (
+          !dataAdmissionOpen &&
+          (/^(?:tabs|nav):/.test(channel) ||
+            channel === IPC.PageSnapshot ||
+            channel === IPC.AppGetInfo ||
+            channel === IPC.DiagnosticPreview ||
+            channel === IPC.DiagnosticExport)
+        ) {
+          return runWithMaintenanceAdmission(
+            mainRootAdmission,
+            (isCurrent) => fn(payload, isCurrent, ownerToken),
+            () => mainWindow === win && isTrustedSender(event, win, token),
+          );
+        }
+        return runMainRoot(
+          async (isCurrent) => {
+            if (__RELEASE__ || !SMOKE_MODE) return fn(payload, isCurrent, ownerToken);
+            smokePendingChannels.set(channel, (smokePendingChannels.get(channel) ?? 0) + 1);
+            try {
+              return await fn(payload, isCurrent, ownerToken);
+            } finally {
+              const remaining = (smokePendingChannels.get(channel) ?? 1) - 1;
+              if (remaining === 0) smokePendingChannels.delete(channel);
+              else smokePendingChannels.set(channel, remaining);
+            }
+          },
+          () => mainWindow === win && isTrustedSender(event, win, token),
+        );
+      });
+    };
+    const on = (
+      channel: string,
+      fn: (event: IpcMainEvent, payload: unknown, token: unknown) => void,
+    ): void => {
+      ipcMain.on(channel, (event, payload: unknown, token: unknown) => {
+        if (!mainRootAdmission.isOpen() || !(runtimeMaintenance?.admission.isOpen() ?? true))
+          return;
+        const release = mainRootAdmission.enter();
+        if (release === null) return;
+        try {
+          fn(event, payload, token);
+        } finally {
+          release();
+        }
       });
     };
 
@@ -937,6 +1535,80 @@ if (!gotLock) {
       node: process.versions.node ?? '',
       platform: `${process.platform}-${process.arch}`,
     }));
+    handle(IPC.DiagnosticPreview, (_payload, _isCurrent, ownerToken) => {
+      const result = diagnosticService.preview(ownerToken);
+      logStructured({
+        level: 'INFO',
+        component: 'diagnostics',
+        operation: 'diagnostic-preview',
+        context: { result: result.ok ? 'ok' : 'rejected' },
+      });
+      return result;
+    });
+    handle(IPC.DiagnosticExport, async (payload, _isCurrent, ownerToken) => {
+      const started = performance.now();
+      const result = await diagnosticService.export(ownerToken, payload);
+      logStructured({
+        level: 'INFO',
+        component: 'diagnostics',
+        operation: 'diagnostic-export',
+        durationMs: Math.min(86_400_000, Math.round(performance.now() - started)),
+        context: {
+          result: result.ok ? 'ok' : result.errorCode === 'cancelled' ? 'cancelled' : 'failed',
+          ...(result.ok ? { bytes: result.byteLength } : {}),
+        },
+      });
+      return result;
+    });
+
+    const transferStatus = (): DataTransferStatus =>
+      partialRecoveryEntry?.getStatus() ??
+      recoveryTransferRuntime?.getStatus() ??
+      dataTransferRuntime?.getStatus() ?? {
+        operationId: null,
+        action: null,
+        state: 'recovery-required',
+        code: 'recovery',
+        message: startupTransferMessage,
+        canCancel: false,
+        canRecoverOriginal: false,
+        availableActions: [],
+      };
+    handle(IPC.DataTransferStatus, transferStatus);
+    handle(
+      IPC.ConversationStorageStatus,
+      () => conversationService?.getStorageStatus() ?? { state: 'recovery-required', code: 'io' },
+    );
+    handle(IPC.DataTransferStart, async (payload, isCurrent) => {
+      if (!isCurrent()) return transferStatus();
+      const action = (payload as { action: 'backup' | 'restore' }).action;
+      if (partialRecoveryEntry) return partialRecoveryEntry.start(action, { isCurrent });
+      if (recoveryTransferRuntime) return recoveryTransferRuntime.start(action, { isCurrent });
+      if (!dataTransferRuntime) return transferStatus();
+      const result = await dataTransferRuntime.service.start(action, { isCurrent });
+      return result.code === 'busy' || result.code === 'stale-document'
+        ? result
+        : dataTransferRuntime.getStatus();
+    });
+    handle(IPC.DataTransferCancel, (payload, isCurrent) => {
+      if (partialRecoveryEntry) return transferStatus();
+      if (recoveryTransferRuntime && isCurrent())
+        return recoveryTransferRuntime.cancel((payload as { operationId: string }).operationId, {
+          isCurrent,
+        });
+      if (!dataTransferRuntime || !isCurrent()) return transferStatus();
+      return dataTransferRuntime.service.cancel((payload as { operationId: string }).operationId, {
+        isCurrent,
+      });
+    });
+    handle(IPC.DataTransferRecoverOriginal, async (payload, isCurrent) => {
+      if (partialRecoveryEntry) return transferStatus();
+      if (!dataTransferRuntime || !isCurrent()) return transferStatus();
+      return dataTransferRuntime.service.recoverOriginal(
+        (payload as { operationId: string }).operationId,
+        { isCurrent },
+      );
+    });
 
     handle(IPC.TabsList, () => browserController?.getTabs() ?? []);
 
@@ -1126,7 +1798,7 @@ if (!gotLock) {
           mainWindow.webContents.send(IPC.SourcesChanged, { reason: 'sources-changed' });
         }
       },
-      isAdmitted: () => sourceIpcAdmissionOpen,
+      isAdmitted: () => sourceIpcAdmissionOpen && dataAdmissionOpen,
       admission: sourceIpcAdmission,
       stateOverride:
         !__RELEASE__ && SMOKE_MODE
@@ -1149,9 +1821,12 @@ if (!gotLock) {
     handle(IPC.SourcesUndo, (payload) => sourcesAdapter.undo(payload));
     // 决议 #72：quick-add 不接收 renderer 提供的 URL/标题——main 在点击时读取当前
     // 活动 Tab（仅 http/https，其余由服务层 unsupported-url 结构化拒绝）。
-    handle(IPC.SourcesQuickAdd, async () =>
-      sourcesAdapter.quickAdd((await browserController?.getActiveTab()) ?? null),
-    );
+    handle(IPC.SourcesQuickAdd, async (_payload, isCurrent) => {
+      const browser = browserController;
+      const tab = (await browser?.getActiveTab()) ?? null;
+      if (!isCurrent()) throw new Error(MAINTENANCE_UNAVAILABLE_MESSAGE);
+      return sourcesAdapter.quickAdd(tab);
+    });
     handle(IPC.SourcesState, () => sourcesAdapter.state());
     handle(IPC.SourcesPrepareHardDelete, (payload) => sourcesAdapter.prepareHardDelete(payload));
     handle(IPC.SourcesHardDelete, (payload) => sourcesAdapter.hardDelete(payload));
@@ -1165,6 +1840,7 @@ if (!gotLock) {
     // 可单测）；exportPort 生产装配 = Electron dialog.showSaveDialog + fs 写入
     // （仅主进程；renderer 零路径参数）。audit 经 logInfo('audit', …) 脱敏链。
     const researchIpcAdapter = createResearchIpcAdapter({
+      admission: researchIpcAdmission,
       // C8（8.19-B）：SMOKE 专属 override——场景自建受控 service 经真实
       // IPC/preload/bridge 链路驱动 UI；生产/其余冒烟路径 = researchService
       service: () =>
@@ -1209,10 +1885,8 @@ if (!gotLock) {
     const windowsQualificationResult = qualifyWindowsNotification({
       platform: process.platform,
       packaged: app.isPackaged,
-      // 当前产品尚无经打包验证的 AUMID/identity 配置；不得用开发态冒充生产资格。
-      identityConfigured: false,
+      identityConfigured: windowsNotificationIdentityConfigured,
       supported: Notification.isSupported(),
-      probeIdentity: () => false,
     });
     watchWindowsNotificationsQualified = windowsQualificationResult.available;
     const windowsQualification = (): ReturnType<typeof qualifyWindowsNotification> =>
@@ -1233,10 +1907,20 @@ if (!gotLock) {
       },
       resolveWatchSourceName,
     );
+    const currentWatchSender = (): Electron.WebContents | null => {
+      if (!mainRootIsOpen() || !watchSubscriptionCurrent()) return null;
+      const sender = watchSubscriptionSender;
+      if (sender === null || sender.isDestroyed()) return null;
+      // A same-dataset pause invalidates the gate's subscription. Reattach only
+      // the still-current trusted document; no old preview or grant is revived.
+      if (watchIpcAdmission.currentSender() !== sender && !watchIpcAdmission.subscribe(sender))
+        return null;
+      return sender;
+    };
     pushWatchStatus = (): void => {
       if (!watchIpcAdmission.isOpen()) return;
-      const sender = watchSubscriptionSender;
-      if (sender === null || sender.isDestroyed()) return;
+      const sender = currentWatchSender();
+      if (sender === null) return;
       const push: WatchPushDto = {
         type: 'status',
         revision: ++watchRevision,
@@ -1246,6 +1930,7 @@ if (!gotLock) {
     };
     const watchExporter = new WatchExportService(watchQuery, {
       showSaveDialog: async (kind, defaultFileName) => {
+        if (__E2_RUNTIME_QUALIFICATION__) return runtimeQualification().saveDialog();
         if (!__RELEASE__ && SMOKE_MODE) {
           const target =
             kind === 'csv' ? smokeWatchCsvExportPath.current : smokeWatchMarkdownExportPath.current;
@@ -1267,6 +1952,7 @@ if (!gotLock) {
         await writeFile(path, bytes);
       },
     });
+    watchExportService = watchExporter;
     watchPreviewStore = new WatchPreviewStore();
     const watchPreview = new WatchPreviewService({
       store: watchPreviewStore,
@@ -1280,6 +1966,7 @@ if (!gotLock) {
       reader: () => watchPreviewReader,
       grants: () => watchGrantStore,
     });
+    watchPreviewService = watchPreview;
     const watchCommands = new WatchCommandService(
       watchPreviewStore,
       (sourceId) => {
@@ -1293,8 +1980,8 @@ if (!gotLock) {
       () => watchRepo,
       (notification) => {
         if (!__RELEASE__ && SMOKE_MODE) watchD10NotificationCapture.push(notification);
-        const sender = watchSubscriptionSender;
-        if (sender === null || sender.isDestroyed()) return false;
+        const sender = currentWatchSender();
+        if (sender === null) return false;
         const push: WatchPushDto = {
           type: 'notification',
           revision: ++watchRevision,
@@ -1317,31 +2004,35 @@ if (!gotLock) {
             create: (options) => new Notification(options),
           },
           (subjectType, subjectId) => {
-            if (mainWindow === null || mainWindow.isDestroyed()) return;
-            mainWindow.show();
-            mainWindow.focus();
-            const sender = watchSubscriptionSender;
-            if (sender === null || sender.isDestroyed()) return;
-            const createdAt = new Date().toISOString();
-            const notification = {
-              notificationId: subjectId,
-              dedupeKey: `in-app|${subjectType}|${subjectId}|1`,
-              subjectType,
-              subjectId,
-              privacyVersion: 1 as const,
-              importance: 'normal' as const,
-              title: 'AIbrowse 监控提醒',
-              body: subjectType === 'event' ? '监控来源发生变化' : '监控摘要已生成',
-              createdAt,
-            };
-            const push: WatchPushDto = {
-              type: 'notification',
-              revision: ++watchRevision,
-              notification,
-            };
-            if (validateWatchIpcOutput(push)) sender.send(IPC.WatchSubscribe, push);
+            runMainBackground(() => {
+              if (!mainRootIsOpen() || !watchIpcAdmission.isOpen()) return;
+              const sender = currentWatchSender();
+              if (sender === null || mainWindow === null || mainWindow.isDestroyed()) return;
+              const push: WatchPushDto = {
+                type: 'activation',
+                revision: ++watchRevision,
+                subjectType,
+                subjectId,
+              };
+              if (!validateWatchIpcOutput(push)) return;
+              if (mainWindow.isMinimized()) mainWindow.restore();
+              mainWindow.show();
+              mainWindow.focus();
+              sender.send(IPC.WatchSubscribe, push);
+            });
           },
           (result) => logInfo('audit', `watch-windows-notification result=${result}`),
+          () => {
+            const ownerWatch = watchRepo;
+            const ownerSource = sourceService;
+            return () =>
+              ownerWatch !== null &&
+              ownerSource !== null &&
+              watchRepo === ownerWatch &&
+              sourceService === ownerSource &&
+              mainRootIsOpen() &&
+              watchIpcAdmission.isOpen();
+          },
         )
       : null;
     watchWindowsSink = windowsSink;
@@ -1383,7 +2074,8 @@ if (!gotLock) {
       },
       audit: (message) => logInfo('audit', message),
       onStateChanged: pushWatchStatus,
-      isAdmitted: () => watchIpcAdmission.isOpen() && (qualification?.admissionOpen() ?? true),
+      isAdmitted: () =>
+        dataAdmissionOpen && watchIpcAdmission.isOpen() && (qualification?.admissionOpen() ?? true),
       admission: watchIpcAdmission,
     });
     watchIpcAdapter = watchIpc;
@@ -1405,7 +2097,7 @@ if (!gotLock) {
         });
     }
 
-    ipcMain.on(IPC.WatchSubscribe, (event, payload: unknown, token: unknown) => {
+    on(IPC.WatchSubscribe, (event, payload: unknown, token: unknown) => {
       if (
         mainWindow === null ||
         !watchIpcAdmission.isOpen() ||
@@ -1420,25 +2112,37 @@ if (!gotLock) {
           watchSubscriptionDestroyedCleanup?.();
           watchSubscriptionDestroyedCleanup = null;
           watchSubscriptionSender = null;
+          watchSubscriptionCurrent = () => false;
           watchIpcAdmission.unsubscribe(event.sender);
         }
         return;
       }
+      const subscribedWindow = mainWindow;
+      const currentDocument = (): boolean =>
+        mainWindow === subscribedWindow && isTrustedSender(event, subscribedWindow, token);
       if (watchSubscriptionSender === event.sender) {
-        void watchNotifications?.drain();
+        if (!watchIpcAdmission.subscribe(event.sender)) return;
+        watchSubscriptionCurrent = currentDocument;
+        const notifications = watchNotifications;
+        runMainBackground(() => notifications?.drain());
         return;
       }
       if (watchSubscriptionSender !== null) return;
       if (!watchIpcAdmission.subscribe(event.sender)) return;
       watchSubscriptionSender = event.sender;
+      watchSubscriptionCurrent = currentDocument;
       pushWatchStatus();
-      void watchNotifications?.drain();
+      const notifications = watchNotifications;
+      runMainBackground(() => notifications?.drain());
       watchSubscriptionDestroyedCleanup = addWatchSubscriptionDestroyedListener(
         event.sender,
         () => {
           watchSubscriptionDestroyedCleanup = null;
           watchIpcAdmission.unsubscribe(event.sender);
-          if (watchSubscriptionSender === event.sender) watchSubscriptionSender = null;
+          if (watchSubscriptionSender === event.sender) {
+            watchSubscriptionSender = null;
+            watchSubscriptionCurrent = () => false;
+          }
         },
       );
     });
@@ -1492,7 +2196,7 @@ if (!gotLock) {
     });
 
     // send 通道（单向无回执）：未授权消息忽略 + warn
-    ipcMain.on(IPC.UiContentBounds, (event, payload: unknown, token: unknown) => {
+    on(IPC.UiContentBounds, (event, payload: unknown, token: unknown) => {
       if (mainWindow === null || !isTrustedSender(event, mainWindow, token)) {
         logWarn('main', `拒绝非主窗口的 IPC 消息：${IPC.UiContentBounds}`);
         return;
@@ -1504,14 +2208,14 @@ if (!gotLock) {
     // 其余形态拒绝 + warn（fail-closed）；仅供受信 UI 切换 WebContentsView 可见性。
     // 校验边界为纯逻辑（content-visible-ipc.ts——零 Electron import 单测全矩阵）；
     // 此处只做事件解包与依赖委托（isTrustedSender/browserController），语义恒等
-    ipcMain.on(IPC.UiBrowserContentVisible, (event, payload: unknown, token: unknown) => {
+    on(IPC.UiBrowserContentVisible, (event, payload: unknown, token: unknown) => {
       handleUiBrowserContentVisible(payload, {
         isTrusted: mainWindow !== null && isTrustedSender(event, mainWindow, token),
         warn: (message) => logWarn('main', message),
         setContentVisible: (visible) => browserController?.setContentVisible(visible),
       });
     });
-    ipcMain.on(IPC.AppRendererReady, (event, payload: unknown, token: unknown) => {
+    const rendererReady = (event: IpcMainEvent, payload: unknown, token: unknown): void => {
       if (!validateCoreIpcPayload(IPC.AppRendererReady, payload)) return;
       if (watchShutdownStarted || !sourceIpcAdmissionOpen) return;
       if (mainWindow === null || !isTrustedSender(event, mainWindow, token)) {
@@ -1519,10 +2223,15 @@ if (!gotLock) {
         return;
       }
       logInfo('main', '渲染进程就绪（React 已挂载，preload bridge 链路正常）');
+      uiRecoveries.get(mainWindow)?.rendererReady();
       qualification?.isRendererReady();
       if (smokeReadyTimer !== null) {
         clearTimeout(smokeReadyTimer); // 已就绪：取消 30 秒兜底，场景自身超时接管
         smokeReadyTimer = null;
+      }
+      if (!__RELEASE__ && SMOKE_MODE && !smokeWindowReady) {
+        resumeSmokeAfterAssembly ??= () => rendererReady(event, payload, token);
+        return;
       }
       if (!__RELEASE__ && SMOKE_MODE && !smokeStarted && browserController !== null) {
         smokeStarted = true;
@@ -2110,8 +2819,7 @@ if (!gotLock) {
                       };
                     },
                     shutdown: async () => {
-                      await watchShutdown();
-                      watchShutdownDone = true;
+                      await shutdownRuntime();
                       if (smokeWatchDir !== null) {
                         await removeSmokeDirWithRetry(smokeWatchDir);
                         smokeWatchDir = null;
@@ -2374,113 +3082,64 @@ if (!gotLock) {
         }
         run
           .then(async () => {
-            logInfo('main', '冒烟自检通过，正常退出');
             if (RESEARCH_GATE_MODE && researchMode === 'set') {
-              // 决议 #139：set 门控经 app.exit 直接退出（不触发 before-quit 的
-              // shutdown）——遗留 running 任务保持原状，由 check 进程验证
-              // interrupted 自动标记。app.exit 不触发 before-quit：冒烟临时
-              // 目录与进程资源在此精确清理（保留共享 userData 的 research.db；
-              // EPERM 容忍——db 句柄随进程退出由 OS 释放）
+              // Deliberate crash-recovery fixture: preserve the running task.
+              // Do not close any live handles before this explicit process exit.
               stopRendererAdmissions();
-              await closeAndDrainRendererAdmissions();
-              // Keep the Sources gate explicit in this app.exit-only path: the
-              // shared helper has already closed and drained it, and this await
-              // documents the exact lifetime boundary for the gate.
-              await sourceIpcAdmission.drain();
-              try {
-                await watchShutdown();
-                watchShutdownDone = true;
-              } catch (shutdownError) {
-                logError('main', 'Research set 路径 Watch 排水异常', shutdownError);
-              }
-              sourceService?.dispose();
-              try {
-                rmSync(SMOKE_AI_DATA_DIR, { recursive: true, force: true });
-              } catch {
-                // 不阻塞退出（EPERM 容忍）
-              }
-              if (smokeSourcesDir !== null) {
-                try {
-                  rmSync(smokeSourcesDir, { recursive: true, force: true });
-                  smokeSourcesDir = null;
-                } catch {
-                  smokeSourcesDir = null;
-                }
-              }
-              if (smokeResearchDir !== null) {
-                try {
-                  rmSync(smokeResearchDir, { recursive: true, force: true });
-                  smokeResearchDir = null;
-                } catch {
-                  smokeResearchDir = null;
-                }
-              }
-              if (smokeWatchDir !== null) {
-                try {
-                  await removeSmokeDirWithRetry(smokeWatchDir);
-                  smokeWatchDir = null;
-                } catch {
-                  smokeWatchDir = null;
-                }
-              }
+              logInfo(
+                'main',
+                'Research set 异常恢复夹具：准入已关闭，保留 running 任务，请求故意异常退出',
+              );
               app.exit(0);
               return;
             }
+            logInfo('main', '冒烟自检通过，正常退出');
             app.quit();
           })
-          .catch(async (err: unknown) => {
+          .catch((err: unknown) => {
+            smokeScenarioFailed = true;
             logError('main', '冒烟场景失败（调度层）', err);
-            // app.exit 不触发 before-quit：执行同一有序排水，避免在途
-            // Watch 任务访问已经关闭的数据库。
-            stopRendererAdmissions();
-            try {
-              await watchShutdown();
-            } catch (shutdownError) {
-              logError('main', '冒烟失败路径 Watch 排水异常', shutdownError);
-            }
-            await closeAndDrainRendererAdmissions();
-            sourceService?.dispose();
-            // 失败路径同样清理冒烟 Sources 临时目录（否则每次失败运行残留
-            // pid 专属目录——清理纪律）
-            if (smokeSourcesDir !== null) {
-              rmSync(smokeSourcesDir, { recursive: true, force: true });
-              smokeSourcesDir = null;
-            }
-            // D4：watchShutdown 已按 stop-admission → drain → dispose 关闭句柄。
-            if (smokeWatchDir !== null) {
-              try {
-                await removeSmokeDirWithRetry(smokeWatchDir);
-                smokeWatchDir = null;
-              } catch {
-                smokeWatchDir = null; // 最终保留不阻塞退出（极少数持久占用）
-              }
-            }
-            if (smokeResearchDir !== null) {
-              // C8 定向修复（2026-08-17，与 factory-smoke 残留同根因）：失败路径
-              // 单次 rmSync 遇 db 句柄未关（Windows EPERM）静默放弃 → 每次失败
-              // 运行残留 `aibrowse-smoke-research-<pid>` 目录。修复：先
-              // researchService.shutdown()（幂等——关闭 store 句柄）再
-              // removeSmokeDirWithRetry（有限重试吸收句柄延迟释放窗口）
-              try {
-                await researchService?.shutdown();
-              } catch {
-                // 忽略（关闭失败不阻塞退出）
-              }
-              try {
-                await removeSmokeDirWithRetry(smokeResearchDir);
-                smokeResearchDir = null;
-              } catch {
-                smokeResearchDir = null; // 最终保留不阻塞退出（极少数持久占用）
-              }
-            }
-            app.exit(1); // 失败原因已由 runSessionSmokeScenario / runSmokeScenario 记录 error 日志
+            exitAfterRendererAdmissionDrain(1, cleanupSmokeDirectories);
           });
       }
-    });
+    };
+    on(IPC.AppRendererReady, rendererReady);
   }
 }
 
 async function createBrowserWindow(): Promise<void> {
+  const release = mainRootAdmission.enter();
+  if (release === null) return;
+  try {
+    await assembleBrowserWindow();
+    if (!__RELEASE__ && SMOKE_MODE) {
+      smokeWindowReady = true;
+      const resume = resumeSmokeAfterAssembly;
+      resumeSmokeAfterAssembly = null;
+      if (resume) setImmediate(resume);
+    }
+  } catch {
+    // Keep the original partially assembled resources owned by shutdownRuntime.
+    // Never await that shutdown while this assembly still holds the root lease.
+    installPartialRecovery();
+    logWarn('main', '数据服务装配未完成，业务保持关闭，恢复入口和原件已保留');
+    const browser = browserController;
+    if (browser && mainRootAdmission.isOpen()) {
+      try {
+        const tabs = await browser.getTabs();
+        if (tabs.length === 0 && mainRootAdmission.isOpen() && browserController === browser)
+          await browser.createTab();
+      } catch {
+        logWarn('main', '恢复界面浏览器未能创建空白标签页，原数据保持关闭');
+      }
+    }
+  } finally {
+    release();
+  }
+}
+
+async function assembleBrowserWindow(): Promise<void> {
+  if (!mainRootAdmission.isOpen()) return;
   const win = createMainWindow();
   mainWindow = win;
   const controller = new BrowserControllerImpl({
@@ -2492,12 +3151,65 @@ async function createBrowserWindow(): Promise<void> {
       return { x: 0, y: 0, width, height };
     },
     onTabsStateChanged: (state) => {
+      diagnosticTabCount = Math.min(1_000_000, state.tabs.length);
       if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
         win.webContents.send(IPC.TabsUpdated, state);
       }
     },
   });
   browserController = controller;
+  win.on('closed', () => {
+    void shutdownRuntime().catch(reportShutdownFailure);
+    if (mainWindow === win) mainWindow = null;
+    logInfo('main', '主窗口已关闭');
+  });
+  dataAdmissionOpen = false;
+  const startupState = await datasetStartup.prepare(requireNodeDataRoot());
+  startupHealthOnly = startupState === 'checking';
+  if (startupState === 'recovery-required') {
+    logWarn('main', '本地数据需要恢复，关联业务写入保持关闭，原件已保留');
+    installRecoveryTransfer();
+    void controller.createTab();
+    return;
+  }
+  if (startupState === 'normal') {
+    assertStartupNoStores();
+    startupTransferMessage = '正在检查本地数据，相关业务暂未开放';
+    startupPreparation = createStartupDataPreparation({
+      userDataRoot: requireNodeDataRoot(),
+      productVersion: app.getVersion(),
+      guardian: lifecycleGuardian!,
+      assertNoStores: assertStartupNoStores,
+      async requireSpace(check) {
+        check();
+        const volume = await statfs(requireNodeDataRoot(), { bigint: true });
+        check();
+        if (
+          volume.bsize <= 0n ||
+          volume.bavail < 0n ||
+          volume.bavail > volume.blocks ||
+          volume.bavail * volume.bsize < transferSpaceAllocation(volume.bsize, 'restore').userData
+        )
+          throw new Error('整批迁移所需空间不足，原件已保留');
+      },
+      requestRelaunch: requestDataRelaunch,
+    });
+    const deadline = performance.now() + TRANSFER_WORK_MS;
+    const prepared = await startupPreparation.prepare({
+      budget: new TransferBudget(),
+      absoluteDeadline: deadline,
+    });
+    if (prepared.state !== 'normal') {
+      startupTransferMessage =
+        prepared.state === 'awaiting-restart'
+          ? '整批数据迁移已登记，正在重新启动以验证完整数据集'
+          : '本地数据检查未通过，原件和现场已保留';
+      if (prepared.state === 'recovery-required') installRecoveryTransfer();
+      void controller.createTab();
+      return;
+    }
+    assertStartupNoStores();
+  }
   // Third Stage A2/A3/A4：工具层装配——注册表 8 个只读/导航 + 4 个交互 + search_web
   // （工具实现只经 BrowserController/SearchProvider 接口执行，不 import Electron）+
   // 确认状态机 + 审计薄封装 + ToolExecutor 管线。A5 AgentLoop 接线复用本实例；本任务
@@ -2528,13 +3240,14 @@ async function createBrowserWindow(): Promise<void> {
     if (!__RELEASE__ && SMOKE_MODE && !SOURCES_UI_GATE_MODE) smokeSourcesDir = sourcesDir;
     if (!__RELEASE__ && SMOKE_MODE) smokeSourcesStateOverride = { current: null }; // B5：冒烟注入点装配
     mkdirSync(sourcesDir, { recursive: true });
-    const outcome = openSourcesStore({
+    const outcome = openSourcesForStartup({
       dbPath: join(sourcesDir, 'sources.db'),
       backupsDir: join(sourcesDir, 'backups'),
       observer: watchCoordinator, // D4：恒注入 active coordinator
     });
     if (outcome.mode === 'normal') {
       sourceService = outcome.service;
+      sourceMaintenance = outcome.service instanceof SourceServiceImpl ? outcome.service : null;
       logInfo('main', 'Sources 子系统就绪（使用已核验的数据目录）');
     } else if (outcome.mode === 'readonly-recovery') {
       // 只读恢复态：service 已装配（读写全拒），浏览器其余能力继续可用
@@ -2543,15 +3256,18 @@ async function createBrowserWindow(): Promise<void> {
       sourceService = null;
     }
   } catch (err) {
-    sourceService = null;
+    startupAssemblyFailed = true;
     logError('main', 'Sources 子系统初始化失败（Source 工具将返回 source-unavailable）', err);
   }
-  // B6（决议 #79/#81）：usage tracker 装配——writer 闭包调用时解引用 sourceService
-  // （初始化失败为 null → 零写入，无 SourceService 不记录）；bridge 每 run 创建
-  // （AgentLoop 终态调用 clearRun）。
+  // Bind the usage writer to this dataset. A late old write must never resolve
+  // a newly published SourceService through a mutable global.
+  const usageSource = sourceService;
+  const usageWriter: SourceUsageWriter = (sourceId, outcome) =>
+    usageSource?.recordUsage(sourceId, outcome) ?? Promise.resolve();
   const usageTracker = new SourceUsageTracker(
-    (sourceId, outcome) => sourceService?.recordUsage(sourceId, outcome) ?? Promise.resolve(),
+    __E2_RUNTIME_QUALIFICATION__ ? runtimeQualification().usageWriter(usageWriter) : usageWriter,
   );
+  sourceUsageTracker = usageTracker;
   for (const def of BROWSER_TOOL_DEFINITIONS) registerTool(def);
   for (const def of INTERACTION_TOOL_DEFINITIONS) registerTool(def);
   // B4：Source 四工具注册（13 → 17；executor 零 Electron import，只经 ctx.sourceService）
@@ -2584,6 +3300,8 @@ async function createBrowserWindow(): Promise<void> {
   const aiDir = !__RELEASE__ && SMOKE_MODE ? SMOKE_AI_DATA_DIR : requireNodeDataRoot();
   credentials = new SecureCredentialStoreImpl(aiDir, new SafeStorageCipher());
   configStore = new ConfigStore(aiDir, credentials);
+  if (__E2_RUNTIME_QUALIFICATION__)
+    await runtimeQualification().configure(configStore, credentials);
   credentialTargetGuard = new CredentialTargetGuard({
     configStore,
     credentials,
@@ -2629,7 +3347,7 @@ async function createBrowserWindow(): Promise<void> {
         : join(requireNodeDataRoot(), 'research');
     if (!__RELEASE__ && SMOKE_MODE && !RESEARCH_GATE_MODE) smokeResearchDir = researchDir;
     mkdirSync(researchDir, { recursive: true });
-    const researchOutcome = openResearchStore({
+    const researchOutcome = openResearchForStartup({
       dbPath: join(researchDir, 'research.db'),
       // 决议 #155(4)：真实状态查询（Service 构造注入；闭包解引用——本块已位于
       // Sources/SearchProvider/ConfigStore/CredentialStore 装配之后，变量就绪）
@@ -2662,7 +3380,7 @@ async function createBrowserWindow(): Promise<void> {
               if (configStore === null || credentials === null) {
                 throw new Error('程序缺陷：Research 装配先于 Provider 配置');
               }
-              return createProductionResearchRuntimeFactory({
+              const factory = createProductionResearchRuntimeFactory({
                 db,
                 browser: controller,
                 sourceService,
@@ -2670,9 +3388,15 @@ async function createBrowserWindow(): Promise<void> {
                 configStore,
                 credentials,
               });
+              return __E2_RUNTIME_QUALIFICATION__
+                ? runtimeQualification().factory(factory)
+                : factory;
             },
     });
     researchService = researchOutcome.service;
+    researchStoreReady = researchOutcome.mode === 'normal';
+    researchMaintenance =
+      researchOutcome.service instanceof ResearchServiceImpl ? researchOutcome.service : null;
     if (researchOutcome.mode === 'normal') {
       logInfo('main', `Research 子系统就绪（${join(researchDir, 'research.db')}）`);
     }
@@ -2705,7 +3429,8 @@ async function createBrowserWindow(): Promise<void> {
     };
     forwardResearchEvents();
   } catch (err) {
-    researchService = null;
+    startupAssemblyFailed = true;
+    researchStoreReady = false;
     logError('main', 'Research 子系统初始化失败（研究功能全拒，其余能力不受影响）', err);
   }
 
@@ -2739,7 +3464,7 @@ async function createBrowserWindow(): Promise<void> {
           ? { status: 'unavailable' as const }
           : provider.getSourceWatchProjection(sourceId);
       };
-      const watchOutcome: WatchStoreOutcome = openWatchStore({
+      const watchOutcome: WatchStoreOutcome = openWatchForStartup({
         ownership: qualification?.registry,
         dbPath: join(watchDir, 'watch.db'),
         backupsDir: join(watchDir, 'backups'),
@@ -2747,6 +3472,13 @@ async function createBrowserWindow(): Promise<void> {
         windowsNotificationsEnabled: watchWindowsNotificationsQualified,
       });
       if (watchOutcome.mode === 'normal') {
+        assemblingWatch = {
+          repo: watchOutcome.repo,
+          coordinator: null,
+          scheduler: null,
+          hostGate: null,
+          startupDrainFailed: false,
+        };
         // D5（FIXED DECISIONS 10）：watchOutcome normal + schedulerReady + Sources
         // normal + 协调器已 bind → 构造单例 HostRequestGate + Coordinator +
         // Scheduler 并 start。acquisition port 以确定性 fail-closed stub
@@ -2759,6 +3491,7 @@ async function createBrowserWindow(): Promise<void> {
           clock: qualification?.clock('host-gate') ?? watchClock,
           onGrant: qualification?.grant,
         });
+        assemblingWatch.hostGate = hostGate;
         // D7：统一 acquisition 端口（Feed/Page 路由）与 processing service。
         // browserController 可用时装配真实网络/Session 能力；否则 fail-closed stub
         //（dependency_unavailable，零网络零能力）。
@@ -2767,8 +3500,10 @@ async function createBrowserWindow(): Promise<void> {
           clock: watchClock,
           observer: qualification?.processingObserver,
           onNotificationReady: () => {
-            if (watchSubscriptionSender !== null) void watchNotifications?.drain();
-            void watchWindowsNotifications?.drain();
+            const inApp = watchNotifications;
+            const windows = watchWindowsNotifications;
+            if (watchSubscriptionSender !== null) runMainBackground(() => inApp?.drain());
+            runMainBackground(() => windows?.drain());
           },
           onStateChanged: pushWatchStatus,
           windowsNotificationsEnabled: watchWindowsNotifications !== null,
@@ -2812,11 +3547,16 @@ async function createBrowserWindow(): Promise<void> {
             hostGate,
             clock: watchClock,
           });
-          watchPageRouter = pageRouter;
           const feedService = new FeedAcquisitionService({
             target: publicStack.target,
           });
-          const unified = new WatchAcquisitionService({ feed: feedService, page: pageRouter });
+          const actualAcquisition = new WatchAcquisitionService({
+            feed: feedService,
+            page: pageRouter,
+          });
+          const unified = __E2_RUNTIME_QUALIFICATION__
+            ? runtimeQualification().acquisition(actualAcquisition)
+            : actualAcquisition;
           watchAcquisitionService = unified;
           acquisitionPort = {
             run: async (input) =>
@@ -2843,12 +3583,16 @@ async function createBrowserWindow(): Promise<void> {
             }),
           };
         }
+        const runHolder: { current: WatchRunCoordinator | null } = { current: null };
         const scheduler = new WatchScheduler({
+          startupHold: true,
           clock: qualification?.clock('watch-scheduler') ?? watchClock,
           onDue: (entries) => {
-            watchRunCoordinator?.handleDue(entries);
+            const current = runHolder.current;
+            if (current !== null) runMainBackground(() => current.handleDue(entries));
           },
         });
+        assemblingWatch.scheduler = scheduler;
         const coordinator = new WatchRunCoordinator({
           repo: watchOutcome.repo,
           revalidator: watchCoordinator!,
@@ -2859,6 +3603,8 @@ async function createBrowserWindow(): Promise<void> {
           clock: watchClock,
           observer: qualification?.runObserver,
         });
+        runHolder.current = coordinator;
+        assemblingWatch.coordinator = coordinator;
         // DigestScheduler owns only Clock/timer capabilities. Repository, Source,
         // and Provider access stays in DigestService. Recover frozen cycles first.
         const sourceDigestProvider = sourceService as SourceService &
@@ -2870,10 +3616,9 @@ async function createBrowserWindow(): Promise<void> {
           (entry) => {
             const current = digestHolder.current;
             if (current === null) return;
-            void current
-              .handleDue(entry)
-              .catch(() => logWarn('watch', 'Digest due 执行失败（保留 frozen cycle）'));
+            runMainBackground(() => current.handleDue(entry));
           },
+          { startupHold: true },
         );
         const digest = new DigestService({
           ownership:
@@ -2893,6 +3638,7 @@ async function createBrowserWindow(): Promise<void> {
           },
           provider: {
             resolve: async () => {
+              if (__E2_RUNTIME_QUALIFICATION__) return runtimeQualification().digestProvider();
               if (qualification !== null) return qualification.fail('provider-unexpected');
               if (configStore === null || credentials === null) return null;
               const config = configStore.get(PROVIDER_KIND_OPENAI_COMPATIBLE);
@@ -2916,8 +3662,10 @@ async function createBrowserWindow(): Promise<void> {
           scheduleControl: digestDue,
           windowsNotificationsEnabled: watchWindowsNotifications !== null,
           onArtifactReady: () => {
-            if (watchSubscriptionSender !== null) void watchNotifications?.drain();
-            void watchWindowsNotifications?.drain();
+            const inApp = watchNotifications;
+            const windows = watchWindowsNotifications;
+            if (watchSubscriptionSender !== null) runMainBackground(() => inApp?.drain());
+            runMainBackground(() => windows?.drain());
           },
         });
         digestHolder.current = digest;
@@ -2934,28 +3682,19 @@ async function createBrowserWindow(): Promise<void> {
             scheduler,
             digestScheduler: digestDue,
             browser: browserController,
-            shutdown: async () => {
-              await closeAndDrainRendererAdmissions();
-              await researchService?.shutdown();
-              researchShutdownDone = true;
-              await watchShutdown();
-              watchShutdownDone = true;
-              sourceService?.dispose();
-              sourceIpcDrainDone = true;
-              conversationService?.dispose();
-              browserController?.dispose();
-            },
+            shutdown: shutdownRuntime,
           });
         }
-        const started = await recoverAndStartWatchRuntime({
+        if (!mainRootAdmission.isOpen()) return;
+        const startupPorts = {
           repo: watchOutcome.repo,
           digest,
           digestScheduler: digestDue,
           watchScheduler: scheduler,
           runCoordinator: coordinator,
           lifecycle: {
-            bind: (repo) => watchCoordinator!.bind(repo, sourceProjectionReader),
-            markUnavailable: (reason) => watchCoordinator!.markUnavailable(reason),
+            bind: (repo: WatchRepository) => watchCoordinator!.bind(repo, sourceProjectionReader),
+            markUnavailable: (reason?: string) => watchCoordinator!.markUnavailable(reason),
           },
           publish: () => {
             watchRepo = watchOutcome.repo;
@@ -2970,23 +3709,49 @@ async function createBrowserWindow(): Promise<void> {
             watchRunCoordinator = null;
           },
           shuttingDown: () => watchShutdownStarted,
-        });
-        if (!started.ok) {
-          digestService = null;
-          digestScheduler = null;
-          throw new Error(started.reason);
-        }
-        // 日志隐私（§13）：不记录 watch.db/userData 绝对路径
-        logInfo(
-          'main',
-          'Watch 子系统就绪（协调器已绑定，调度已启动，acquisition 端口 fail-closed，D6 页面采集路由已装配）',
-        );
-        void watchWindowsNotifications?.drain();
+        };
+        // These are private ownership references. Both schedulers remain held
+        // until the complete graph has passed its final admission checks.
+        startupPorts.lifecycle.bind(watchOutcome.repo);
+        startupPorts.publish();
+        const startupOwner = assemblingWatch;
+        const checking = datasetStartup.isChecking();
+        finalizeStartupWatch = async () => {
+          if (!mainRootAdmission.isOpen() || runtimeShutdown !== null || dataAdmissionOpen)
+            return false;
+          if (checking) {
+            coordinator.start();
+            digestDue.initialize(
+              watchOutcome.repo
+                .listActiveDigestSchedules()
+                .filter(
+                  (schedule) => watchOutcome.repo.getNonterminalDigestRun(schedule.id) === null,
+                )
+                .map((schedule) => ({
+                  scheduleId: schedule.id,
+                  expectedNextDueAt: schedule.nextDueAt,
+                  timeZone: schedule.timeZone,
+                })),
+            );
+            return coordinator.getState().mode === 'running';
+          }
+          const started = await recoverAndStartWatchRuntime(startupPorts);
+          if (!started.ok) {
+            // A constructor failure is not a drain receipt. Only an actual
+            // failed cleanup remains sticky across the later unified shutdown.
+            if (started.drainFailed) startupOwner.startupDrainFailed = true;
+            if (!started.retained && assemblingWatch === startupOwner) assemblingWatch = null;
+            return false;
+          }
+          return mainRootAdmission.isOpen() && coordinator.getState().mode === 'running';
+        };
+        logInfo('main', 'Watch 服务已装配，调度保持暂停，等待完整数据服务图确认');
       }
       // unavailable 分支：coordinator 保持未绑定 → prepare 恒 fail-closed
       //（调度也不启动——schedulerReady=false）
     }
   } catch (err) {
+    startupAssemblyFailed = true;
     qualification?.assemblyFailure(err);
     logError(
       'main',
@@ -2994,6 +3759,8 @@ async function createBrowserWindow(): Promise<void> {
       sanitizeWatchError(err),
     );
   }
+
+  if (!mainRootAdmission.isOpen()) return;
 
   // S5 真实 Provider 装配（AIBROWSE_LIVE_PROVIDER=1 + AIBROWSE_TEST_API_KEY，§6）：
   // baseUrl/model 写入进程专属临时配置（非机密，供冒烟场景对照断言）；Key 经
@@ -3065,7 +3832,9 @@ async function createBrowserWindow(): Promise<void> {
   }
   conversationService = new ConversationServiceImpl({
     browser: controller, // SnapshotSource 结构兼容：getActiveTab/getPageSnapshot
-    store: new ConversationStore(aiDir),
+    store: __E2_RUNTIME_QUALIFICATION__
+      ? runtimeQualification().store(new ConversationStore(aiDir))
+      : new ConversationStore(aiDir),
     configStore,
     credentials,
     // 冒烟注入（决议 #17 async 签名同形）：每 ask 新 FakeProvider 实例，脚本由冒烟场景设置；
@@ -3140,12 +3909,121 @@ async function createBrowserWindow(): Promise<void> {
       }
     },
   });
+  if (
+    sourceMaintenance !== null &&
+    researchMaintenance !== null &&
+    watchRunCoordinator !== null &&
+    digestService !== null &&
+    watchPreviewService !== null &&
+    watchExportService !== null &&
+    watchNotifications !== null &&
+    watchWorkspace !== null &&
+    watchCoordinator !== null
+  ) {
+    const originalWatchPreview = watchPreviewService;
+    runtimeMaintenance = createRuntimeMaintenance({
+      rootAdmission: mainRootAdmission,
+      sourceIpcAdmission,
+      researchIpcAdmission,
+      watchIpcAdmission,
+      conversation: conversationService,
+      research: researchMaintenance,
+      sources: sourceMaintenance,
+      usage: usageTracker,
+      watch: watchRunCoordinator,
+      digest: digestService,
+      preview: {
+        pauseForMaintenance: (generation) => {
+          void diagnosticService.invalidateAndDrain();
+          return originalWatchPreview.pauseForMaintenance(generation);
+        },
+        drainForMaintenance: async (generation) => {
+          await diagnosticService.invalidateAndDrain();
+          await originalWatchPreview.drainForMaintenance(generation);
+        },
+        prepareResumeAfterMaintenance: (generation) =>
+          originalWatchPreview.prepareResumeAfterMaintenance(generation),
+        resumeAfterMaintenance: (generation) =>
+          originalWatchPreview.resumeAfterMaintenance(generation),
+      },
+      exporter: watchExportService,
+      notifications: watchNotifications,
+      windowsNotifications: watchWindowsNotifications,
+      workspace: watchWorkspace,
+      lifecycle: watchCoordinator,
+    });
+    if (!mainRootAdmission.isOpen()) runtimeMaintenance.shutdown();
+  }
+  if (!__RELEASE__ && SMOKE_MODE && WATCH_GATE_MODE && !datasetStartup.isChecking()) {
+    // This isolated fixture owns Watch itself and intentionally omits the product
+    // Watch graph. The branch is absent from every release artifact.
+    dataAdmissionOpen = mainRootAdmission.isOpen();
+  } else {
+    await finalizeStartupDataGraph();
+  }
+  if (
+    runtimeMaintenance !== null &&
+    dataAdmissionOpen &&
+    runtimeShutdown === null &&
+    lifecycleGuardian !== null
+  ) {
+    const originalSources = sourceService;
+    const originalResearch = researchMaintenance;
+    const originalWatch = watchRepo;
+    const originalConversation = conversationService;
+    dataTransferRuntime = createDataTransferRuntime({
+      userDataRoot: requireNodeDataRoot(),
+      guardian: lifecycleGuardian,
+      productVersion: app.getVersion(),
+      maintenance: runtimeMaintenance,
+      isDatasetCurrent: () =>
+        sourceService === originalSources &&
+        researchMaintenance === originalResearch &&
+        watchRepo === originalWatch &&
+        conversationService === originalConversation,
+      chooseNative: chooseNativeTransfer,
+      confirmRestore: confirmNativeRestore,
+      requestRelaunch: requestDataRelaunch,
+    });
+  }
+  if (dataAdmissionOpen) {
+    const inApp = watchNotifications;
+    const windows = watchWindowsNotifications;
+    if (watchSubscriptionSender !== null) runMainBackground(() => inApp?.drain());
+    runMainBackground(() => windows?.drain());
+  }
   void controller.createTab(); // 初始空白标签页（浏览器常驻形态）
-  win.on('closed', () => {
-    controller.dispose(); // 退出路径全量清理（幂等，§2.1）
-    if (mainWindow === win) mainWindow = null;
-    logInfo('main', '主窗口已关闭');
-  });
+  if (__E2_RUNTIME_QUALIFICATION__) {
+    if (
+      runtimeMaintenance === null ||
+      researchMaintenance === null ||
+      watchRunCoordinator === null ||
+      watchRepo === null ||
+      digestService === null ||
+      watchPreviewService === null ||
+      watchExportService === null ||
+      watchNotifications === null
+    )
+      throw new Error('资格所需真实 main 域未就绪');
+    // Start after the assembly root lease has returned. The fixture observes the
+    // actual same-dataset coordinator; it never owns a parallel service assembly.
+    setImmediate(() => {
+      void runtimeQualification().run({
+        maintenance: runtimeMaintenance!,
+        conversation: conversationService!,
+        research: researchMaintenance!,
+        watch: watchRunCoordinator!,
+        repository: watchRepo!,
+        digest: digestService!,
+        preview: watchPreviewService!,
+        exporter: watchExportService!,
+        notifications: watchNotifications!,
+        usage: usageTracker,
+        runRoot: (work) => runMainRoot(work),
+        shutdown: shutdownRuntime,
+      });
+    });
+  }
 }
 
 function createMainWindow(): BrowserWindow {
@@ -3185,6 +4063,57 @@ function createMainWindow(): BrowserWindow {
     onRecoveryFailed: () => logError('main', '应用页面恢复失败，业务通道保持关闭'),
   });
   uiDocuments.set(win, guard);
+  const recovery = new UiRendererRecovery({
+    now: () => performance.now(),
+    isAlive: () =>
+      mainWindow === win &&
+      !win.isDestroyed() &&
+      !win.webContents.isDestroyed() &&
+      runtimeShutdown === null &&
+      !mainFailureShutdown.isActive(),
+    invalidate: () => {
+      guard.invalidate();
+      void diagnosticService.invalidateAndDrain();
+      const pending = confirmManager?.getPending();
+      if (pending) confirmManager?.cancelAll(pending.runId);
+      conversationService?.interruptUiRequests();
+      interruptWatchUiRequests();
+      if (watchSubscriptionSender === win.webContents) {
+        watchSubscriptionDestroyedCleanup?.();
+        watchSubscriptionDestroyedCleanup = null;
+        watchIpcAdmission.unsubscribe(win.webContents);
+        watchSubscriptionSender = null;
+        watchSubscriptionCurrent = () => false;
+      }
+    },
+    load: () => win.webContents.loadURL(entry),
+    choose: async (allowRetry) => {
+      const result = await dialog.showMessageBox(win, {
+        type: 'error',
+        title: '应用界面恢复失败',
+        message: '应用界面暂时无法恢复，浏览器标签和已保存数据仍保留。',
+        detail: allowRetry
+          ? '旧界面的生成请求和待确认操作已中断，不会自动重放。可以手动重试一次，或退出后重新启动。'
+          : '手动重试未能恢复界面。请退出后重新启动；未提交的界面输入可能丢失。',
+        buttons: allowRetry ? ['手动重试', '退出'] : ['退出'],
+        defaultId: allowRetry ? 1 : 0,
+        cancelId: allowRetry ? 1 : 0,
+        noLink: true,
+      });
+      return allowRetry && result.response === 0 ? 'retry' : 'exit';
+    },
+    exit: () => mainFailureShutdown.begin('ui-unavailable'),
+  });
+  const onRendererGone = (): void => recovery.crashed();
+  uiRecoveries.set(win, recovery);
+  const recoveryContents = win.webContents;
+  recoveryContents.on('render-process-gone', onRendererGone);
+  win.once('closed', () => {
+    void diagnosticService.invalidateAndDrain();
+    recovery.dispose();
+    uiRecoveries.delete(win);
+    recoveryContents.removeListener('render-process-gone', onRendererGone);
+  });
   win.webContents.on('did-finish-load', () => {
     logInfo('main', '渲染进程页面加载完成');
   });
@@ -3219,9 +4148,5 @@ function buildUiNavigationPolicy(): UiNavigationPolicy {
   };
 }
 
-process.on('uncaughtException', (err) => {
-  logError('process', '未捕获异常', err);
-});
-process.on('unhandledRejection', (reason) => {
-  logError('process', '未处理的 Promise 拒绝', reason);
-});
+process.on('uncaughtException', () => mainFailureShutdown.begin());
+process.on('unhandledRejection', () => mainFailureShutdown.begin());

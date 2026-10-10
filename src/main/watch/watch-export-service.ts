@@ -2,6 +2,7 @@ import { serializeCsv } from '../../shared/csv/csv-serializer';
 import type { ChangeEvidencePair, DigestFacts } from '../../shared/types/watch';
 import type { WatchIpcErrorCode, WatchIpcResult } from '../../shared/types/watch-ipc';
 import type { WatchQueryService } from './watch-query-service';
+import { MaintenanceAdmission } from '../storage/maintenance-admission';
 
 export const MAX_WATCH_EXPORT_ROWS = 5_000;
 export const MAX_WATCH_EXPORT_BYTES = 8 * 1024 * 1024;
@@ -132,13 +133,63 @@ export function renderDigestMarkdown(input: {
 }
 
 export class WatchExportService {
+  private readonly admission = new MaintenanceAdmission();
   constructor(
     private readonly query: WatchQueryService,
     private readonly port: WatchExportPort,
   ) {}
 
-  async exportEventsCsv(
+  pauseForMaintenance(generation: number): boolean {
+    return this.admission.pauseForMaintenance(generation);
+  }
+
+  drainForMaintenance(generation: number): Promise<void> {
+    return this.admission.drainForMaintenance(generation);
+  }
+
+  resumeAfterMaintenance(generation: number): boolean {
+    return this.admission.resumeAfterMaintenance(generation);
+  }
+
+  prepareResumeAfterMaintenance(generation: number): boolean {
+    return this.admission.prepareResumeAfterMaintenance(generation);
+  }
+
+  beginShutdown(): void {
+    this.admission.beginShutdown();
+  }
+
+  drainBeforeClose(): Promise<void> {
+    this.beginShutdown();
+    return this.admission.drain();
+  }
+
+  exportEventsCsv(
     filter: Record<string, unknown>,
+  ): Promise<WatchIpcResult<{ exportedRows: number; exportedBytes: number }>> {
+    return this.exportOwned((epoch) => this.writeEventsCsv(filter, epoch));
+  }
+
+  exportDigestMarkdown(digestId: string): Promise<WatchIpcResult<{ exportedBytes: number }>> {
+    return this.exportOwned((epoch) => this.writeDigestMarkdown(digestId, epoch));
+  }
+
+  private async exportOwned<T>(
+    work: (epoch: number) => Promise<WatchIpcResult<T>>,
+  ): Promise<WatchIpcResult<T>> {
+    const release = this.admission.enter();
+    if (release === null) return failure('unavailable');
+    const epoch = this.admission.captureEpoch();
+    try {
+      return await work(epoch);
+    } finally {
+      release();
+    }
+  }
+
+  private async writeEventsCsv(
+    filter: Record<string, unknown>,
+    epoch: number,
   ): Promise<WatchIpcResult<{ exportedRows: number; exportedBytes: number }>> {
     const rows: string[][] = [];
     for (let page = 1; rows.length < MAX_WATCH_EXPORT_ROWS; page += 1) {
@@ -172,6 +223,7 @@ export class WatchExportService {
     );
     if (csv.utf8Bytes > MAX_WATCH_EXPORT_BYTES) return failure('budget-exceeded');
     const path = await this.port.showSaveDialog('csv', 'watch-events.csv');
+    if (!this.admission.isCurrent(epoch)) return failure('cancelled');
     if (path === null) return failure('cancelled');
     if (!/\.csv$/iu.test(path)) return failure('write-failed');
     try {
@@ -182,12 +234,16 @@ export class WatchExportService {
     return { ok: true, value: { exportedRows: rows.length, exportedBytes: csv.utf8Bytes } };
   }
 
-  async exportDigestMarkdown(digestId: string): Promise<WatchIpcResult<{ exportedBytes: number }>> {
+  private async writeDigestMarkdown(
+    digestId: string,
+    epoch: number,
+  ): Promise<WatchIpcResult<{ exportedBytes: number }>> {
     const digest = this.query.getDigest(digestId);
     if (digest === null) return failure('not-found');
     const rendered = renderDigestMarkdown(digest);
     if (rendered === null) return failure('budget-exceeded');
     const path = await this.port.showSaveDialog('markdown', 'watch-digest.md');
+    if (!this.admission.isCurrent(epoch)) return failure('cancelled');
     if (path === null) return failure('cancelled');
     if (!/\.md$/iu.test(path)) return failure('write-failed');
     try {

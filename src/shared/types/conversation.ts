@@ -9,6 +9,10 @@ import type { AgentRunSummary, ToolStep } from './agent';
 
 export type ContextMode = 'selection' | 'snapshot' | 'none';
 
+export type ConversationStorageStatus =
+  | { state: 'ready'; code: null }
+  | { state: 'recovery-required'; code: 'invalid' | 'budget' | 'io' };
+
 export interface ContextSource {
   mode: ContextMode;
   tabId: string | null; // Active tab id at capture time

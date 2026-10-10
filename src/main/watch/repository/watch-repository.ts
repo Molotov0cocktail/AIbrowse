@@ -524,6 +524,8 @@ const SQL_CLAIM_PENDING_OUTBOX = `UPDATE notification_outbox
   WHERE id = ? AND state = 'pending'`;
 const SQL_FINISH_UNCERTAIN_OUTBOX = `UPDATE notification_outbox SET state = ?, updated_at = ?
   WHERE id = ? AND state = 'uncertain'`;
+const SQL_FAIL_PENDING_OUTBOX_FOR_TRANSFER = `UPDATE notification_outbox
+  SET state = 'failed', updated_at = MAX(updated_at, ?) WHERE state = 'pending'`;
 
 const SQL_INSERT_DIGEST_REF = `INSERT INTO digest_event_refs (digest_id, event_id, status)
   VALUES (?, ?, ?)`;
@@ -611,6 +613,9 @@ const SQL_SELECT_FINISHED_RUNS_FOR_DIGEST_STATS = `SELECT w.source_id, r.status,
   ORDER BY r.finished_at ASC, r.id ASC`;
 const SQL_UPDATE_DIGEST_SCHEDULE_STATE = `UPDATE digest_schedules SET state = ?,
   version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND state = ?`;
+const SQL_DELETE_DIGEST_OUTBOX_BY_SCHEDULE = `DELETE FROM notification_outbox
+  WHERE subject_type = 'digest' AND subject_id IN
+    (SELECT id FROM watch_digests WHERE schedule_id = ?)`;
 const SQL_DELETE_DIGEST_SCHEDULE = `DELETE FROM digest_schedules WHERE id = ? AND version = ?`;
 const SQL_UPDATE_DIGEST_AI = `UPDATE digest_schedules SET ai_enabled = ?,
   version = version + 1, updated_at = ? WHERE id = ? AND version = ? AND ai_enabled = ?`;
@@ -2668,6 +2673,12 @@ export class WatchRepository {
     return Number(this.handle.prepare(SQL_CLAIM_PENDING_OUTBOX).run(nowIso, id).changes) === 1;
   }
 
+  /** Cancel unsent imported notifications without pretending a delivery was attempted. */
+  failPendingNotificationsForTransfer(nowIso: string): number {
+    this.ensureOpen();
+    return Number(this.handle.prepare(SQL_FAIL_PENDING_OUTBOX_FOR_TRANSFER).run(nowIso).changes);
+  }
+
   finishClaimedNotification(id: string, state: 'sent' | 'failed', nowIso: string): boolean {
     this.ensureOpen();
     return (
@@ -3726,10 +3737,24 @@ export class WatchRepository {
 
   deleteDigestSchedule(id: string, expectedVersion: number): WatchResult {
     this.ensureOpen();
-    const changed = this.handle.prepare(SQL_DELETE_DIGEST_SCHEDULE).run(id, expectedVersion);
-    return Number(changed.changes) === 1
-      ? { ok: true }
-      : { ok: false, code: 'rule-state-conflict' };
+    try {
+      return withTransaction(this.handle, () => {
+        // The polymorphic subject_id has no FK. Remove owned notifications
+        // before the schedule CAS cascades away their artifacts. A conflict
+        // or later DELETE failure rolls back the entire transaction.
+        this.handle.prepare(SQL_DELETE_DIGEST_OUTBOX_BY_SCHEDULE).run(id);
+        const changed = this.handle.prepare(SQL_DELETE_DIGEST_SCHEDULE).run(id, expectedVersion);
+        if (Number(changed.changes) !== 1) {
+          throw new TxnAbortError('rule-state-conflict');
+        }
+        return { ok: true };
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        code: err instanceof TxnAbortError ? err.code : this.translate(err).code,
+      };
+    }
   }
 
   setDigestScheduleAiEnabled(

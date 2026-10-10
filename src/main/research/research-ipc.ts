@@ -14,6 +14,7 @@ import { logWarn } from '../logger';
 import { isUuidShape } from '../sources/domain/source-change-set';
 import { applyTableView, TABLE_FILTER_MAX_CHARS } from '../../shared/research/table-utils';
 import { MAX_CSV_EXPORT_BYTES, serializeCsv } from '../../shared/csv/csv-serializer';
+import type { MaintenanceAdmission } from '../storage/maintenance-admission';
 import type {
   ExportCsvResult,
   ResearchExportCsvView,
@@ -184,6 +185,7 @@ export interface ResearchExportPort {
 // ---------- 适配器 ----------
 
 export interface ResearchIpcAdapterOptions {
+  admission?: MaintenanceAdmission;
   // 惰性解析：主进程 index.ts 的 handler 注册早于 ResearchService 装配，
   // 传入 getter 调用时解引用；单测可直接传实例
   service: ResearchService | null | (() => ResearchService | null);
@@ -418,6 +420,9 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
     // applyTableView 纯函数重算（禁止信任 renderer 数据）；tableBlockIndex
     // 指 Result.blocks 的原始 0-based 索引（非整数/越界/非 table 块拒绝）
     async exportCsv(payload) {
+      const epoch = options.admission?.captureEpoch();
+      const current = (): boolean =>
+        epoch === undefined || options.admission?.isCurrent(epoch) === true;
       const v = validateResearchExportCsvPayload(payload);
       if (!v.ok) {
         auditEntry({
@@ -445,6 +450,18 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         return { ok: false, errorCode: 'internal' };
       }
       const viewResult = await svc.getResearchResultView(v.value.taskId);
+      if (!current()) {
+        auditEntry({
+          op: 'export',
+          taskId: v.value.taskId,
+          goalLen: null,
+          tableBlockIndex: v.value.tableBlockIndex,
+          rows: null,
+          columns: null,
+          result: 'cancelled',
+        });
+        return { ok: false, errorCode: 'cancelled' };
+      }
       if (!viewResult.ok) {
         const mapped =
           viewResult.errorCode === 'research-not-found'
@@ -513,7 +530,7 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
         });
         return { ok: false, errorCode: 'write-failed' };
       }
-      if (path === null) {
+      if (path === null || !current()) {
         auditEntry({
           op: 'export',
           taskId: v.value.taskId,
@@ -573,5 +590,42 @@ export function createResearchIpcAdapter(options: ResearchIpcAdapterOptions): Re
     },
   };
 
-  return adapter;
+  const guarded =
+    <T>(
+      call: (payload: unknown) => Promise<ResearchIpcResult<T>>,
+      op?: ResearchAuditEntry['op'],
+    ): ((payload: unknown) => Promise<ResearchIpcResult<T>>) =>
+    async (payload) => {
+      const release = options.admission?.enter() ?? null;
+      if (options.admission !== undefined && release === null) {
+        if (op !== undefined) auditUnavailable(op, {});
+        return unavailable<T>();
+      }
+      try {
+        return await call(payload);
+      } finally {
+        release?.();
+      }
+    };
+  return {
+    create: guarded(adapter.create, 'create'),
+    start: guarded(adapter.start, 'start'),
+    stop: guarded(adapter.stop, 'stop'),
+    get: guarded(adapter.get),
+    result: guarded(adapter.result),
+    list: guarded(adapter.list),
+    delete: guarded(adapter.delete, 'delete'),
+    async exportCsv(payload) {
+      const release = options.admission?.enter() ?? null;
+      if (options.admission !== undefined && release === null) {
+        auditUnavailable('export', {});
+        return { ok: false, errorCode: 'cancelled' };
+      }
+      try {
+        return await adapter.exportCsv(payload);
+      } finally {
+        release?.();
+      }
+    },
+  };
 }

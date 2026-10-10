@@ -4,6 +4,7 @@
 // 清理/写失败受控降级 console（绝不递归 logger）。Contract: doc/stage6/detailed-design.md
 // §2/§13/§14、threat-model §3.8/WRT-18。
 import { appendFileSync, lstatSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import {
   MAX_LOG_AGE_DAYS,
@@ -13,6 +14,84 @@ import {
 } from '../shared/types/watch';
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+
+export const STRUCTURED_LOG_COMPONENTS = [
+  'main',
+  'browser',
+  'ai',
+  'sources',
+  'research',
+  'watch',
+  'storage',
+  'renderer',
+  'diagnostics',
+] as const;
+export type StructuredLogComponent = (typeof STRUCTURED_LOG_COMPONENTS)[number];
+
+export const STRUCTURED_LOG_OPERATIONS = [
+  'startup',
+  'shutdown',
+  'navigate',
+  'page-snapshot',
+  'provider-request',
+  'source-search',
+  'research-run',
+  'watch-cycle',
+  'storage-open',
+  'storage-transfer',
+  'diagnostic-preview',
+  'diagnostic-export',
+] as const;
+export type StructuredLogOperation = (typeof STRUCTURED_LOG_OPERATIONS)[number];
+
+export const STRUCTURED_ERROR_CATEGORIES = [
+  'none',
+  'startup',
+  'storage',
+  'browser',
+  'provider',
+  'research',
+  'watch',
+  'renderer',
+  'other',
+] as const;
+export type StructuredErrorCategory = (typeof STRUCTURED_ERROR_CATEGORIES)[number];
+
+export interface StructuredLogContext {
+  readonly result?: 'ok' | 'cancelled' | 'rejected' | 'failed';
+  readonly state?: 'available' | 'degraded' | 'unavailable' | 'disabled';
+  readonly count?: number;
+  readonly bytes?: number;
+  readonly attempt?: number;
+  readonly sequence?: number;
+}
+
+export interface StructuredLogEntry {
+  readonly level: LogLevel;
+  readonly component: StructuredLogComponent;
+  readonly operation: StructuredLogOperation;
+  readonly durationMs?: number | null;
+  readonly errorCategory?: StructuredErrorCategory;
+  readonly context?: StructuredLogContext;
+}
+
+const logSessionId = randomUUID();
+
+export interface DiagnosticErrorCounts {
+  readonly startup: number;
+  readonly storage: number;
+  readonly browser: number;
+  readonly provider: number;
+  readonly research: number;
+  readonly watch: number;
+  readonly renderer: number;
+  readonly other: number;
+}
+
+type DiagnosticErrorCategory = keyof DiagnosticErrorCounts;
+const MAX_DIAGNOSTIC_ERROR_COUNT = 1_000_000;
+let diagnosticCountingActive = false;
+let diagnosticErrorCounts: Record<DiagnosticErrorCategory, number> = newDiagnosticErrorCounts();
 
 let logDir = '';
 let currentDate = '';
@@ -29,6 +108,8 @@ let needsHousekeeping = false;
 const CONTROLLED_LOG_NAME = /^aibrowse-(\d{4})-(\d{2})-(\d{2})(?:\.(\d+))?\.log$/;
 
 export function initLogger(baseDir: string): void {
+  diagnosticErrorCounts = newDiagnosticErrorCounts();
+  diagnosticCountingActive = true;
   // 决议 #153(4)：重入重置——currentDate/currentLogFile 清空后按新 baseDir
   // 重新轮转（不得继续写旧目录）
   const nextDir = join(baseDir, 'log');
@@ -428,8 +509,177 @@ export const logInfo = (category: string, message: string): void =>
   write('INFO', category, message);
 export const logWarn = (category: string, message: string, error?: unknown): void =>
   write('WARN', category, message, error);
-export const logError = (category: string, message: string, error?: unknown): void =>
+export const logError = (category: string, message: string, error?: unknown): void => {
+  incrementDiagnosticError(categoryToDiagnosticError(category));
   write('ERROR', category, message, error);
+};
+
+export function getDiagnosticErrorCounts(): DiagnosticErrorCounts {
+  return Object.freeze({ ...diagnosticErrorCounts });
+}
+
+export function getLogSessionId(): string {
+  return logSessionId;
+}
+
+export function logStructured(entry: unknown): boolean {
+  const parsed = parseStructuredLogEntry(entry);
+  if (parsed === null) {
+    console.error('[logger] 结构化日志字段无效');
+    return false;
+  }
+  const message = JSON.stringify({ sessionId: logSessionId, ...parsed });
+  if (parsed.level === 'ERROR') {
+    incrementDiagnosticError(
+      parsed.errorCategory === undefined || parsed.errorCategory === 'none'
+        ? componentToDiagnosticError(parsed.component)
+        : parsed.errorCategory,
+    );
+  }
+  write(parsed.level, 'structured', message);
+  return true;
+}
+
+function parseStructuredLogEntry(entry: unknown): StructuredLogEntry | null {
+  const record = closedDataRecord(entry, [
+    'level',
+    'component',
+    'operation',
+    'durationMs',
+    'errorCategory',
+    'context',
+  ]);
+  if (
+    record === null ||
+    !Object.hasOwn(record, 'level') ||
+    !Object.hasOwn(record, 'component') ||
+    !Object.hasOwn(record, 'operation')
+  )
+    return null;
+  if (!includes(LEVELS, record.level)) return null;
+  if (!includes(STRUCTURED_LOG_COMPONENTS, record.component)) return null;
+  if (!includes(STRUCTURED_LOG_OPERATIONS, record.operation)) return null;
+  const durationMs = record.durationMs;
+  if (
+    durationMs !== undefined &&
+    durationMs !== null &&
+    (!Number.isSafeInteger(durationMs) ||
+      (durationMs as number) < 0 ||
+      (durationMs as number) > 86_400_000)
+  )
+    return null;
+  const errorCategory = record.errorCategory;
+  if (errorCategory !== undefined && !includes(STRUCTURED_ERROR_CATEGORIES, errorCategory))
+    return null;
+  const context = parseStructuredContext(record.context);
+  if (record.context !== undefined && context === null) return null;
+  return Object.freeze({
+    level: record.level,
+    component: record.component,
+    operation: record.operation,
+    ...(durationMs === undefined ? {} : { durationMs: durationMs as number | null }),
+    ...(errorCategory === undefined ? {} : { errorCategory }),
+    ...(context === null ? {} : { context }),
+  });
+}
+
+const LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR'] as const;
+const CONTEXT_RESULTS = ['ok', 'cancelled', 'rejected', 'failed'] as const;
+const CONTEXT_STATES = ['available', 'degraded', 'unavailable', 'disabled'] as const;
+const CONTEXT_KEYS = ['result', 'state', 'count', 'bytes', 'attempt', 'sequence'] as const;
+
+function parseStructuredContext(value: unknown): StructuredLogContext | null {
+  if (value === undefined) return null;
+  const record = closedDataRecord(value, CONTEXT_KEYS);
+  if (record === null) return null;
+  if (record.result !== undefined && !includes(CONTEXT_RESULTS, record.result)) return null;
+  if (record.state !== undefined && !includes(CONTEXT_STATES, record.state)) return null;
+  for (const key of ['count', 'bytes', 'attempt', 'sequence'] as const) {
+    const number = record[key];
+    if (
+      number !== undefined &&
+      (!Number.isSafeInteger(number) ||
+        (number as number) < 0 ||
+        (number as number) > 1_000_000_000)
+    )
+      return null;
+  }
+  return Object.freeze({ ...record }) as StructuredLogContext;
+}
+
+function closedDataRecord(
+  value: unknown,
+  allowed: readonly string[],
+): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== 'string' || !allowed.includes(key))) return null;
+  const output = Object.create(null) as Record<string, unknown>;
+  for (const key of keys as string[]) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) return null;
+    output[key] = descriptor.value;
+  }
+  return output;
+}
+
+function includes<const Values extends readonly string[]>(
+  values: Values,
+  value: unknown,
+): value is Values[number] {
+  return typeof value === 'string' && (values as readonly string[]).includes(value);
+}
+
+function newDiagnosticErrorCounts(): Record<DiagnosticErrorCategory, number> {
+  return {
+    startup: 0,
+    storage: 0,
+    browser: 0,
+    provider: 0,
+    research: 0,
+    watch: 0,
+    renderer: 0,
+    other: 0,
+  };
+}
+
+function incrementDiagnosticError(category: DiagnosticErrorCategory): void {
+  if (!diagnosticCountingActive) return;
+  diagnosticErrorCounts[category] = Math.min(
+    MAX_DIAGNOSTIC_ERROR_COUNT,
+    diagnosticErrorCounts[category] + 1,
+  );
+}
+
+function categoryToDiagnosticError(category: string): DiagnosticErrorCategory {
+  switch (category) {
+    case 'main':
+      return 'startup';
+    case 'storage':
+    case 'sources':
+      return 'storage';
+    case 'browser':
+      return 'browser';
+    case 'provider':
+    case 'ai':
+    case 'conversation':
+      return 'provider';
+    case 'research':
+      return 'research';
+    case 'watch':
+      return 'watch';
+    case 'renderer':
+      return 'renderer';
+    default:
+      return 'other';
+  }
+}
+
+function componentToDiagnosticError(component: StructuredLogComponent): DiagnosticErrorCategory {
+  return categoryToDiagnosticError(component);
+}
 
 export function logEnvironment(): void {
   const v = process.versions;

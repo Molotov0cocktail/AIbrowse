@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import vm from 'node:vm';
+import ts from 'typescript';
+import { describe, expect, it, vi } from 'vitest';
 import {
   resolveWatchD10Mode,
   resolveWatchGate,
@@ -113,15 +115,50 @@ describe('D10 Watch gate', () => {
     expect(fullCampaign).toBeLessThan(providerSetup);
   });
 
-  it('Research set 直接退出前必须完成 Watch 与 Sources 排水和 Watch 目录清理', () => {
-    const source = readFileSync('src/main/index.ts', 'utf8');
-    const branchStart = source.indexOf("if (RESEARCH_GATE_MODE && researchMode === 'set')");
-    const branchEnd = source.indexOf('app.exit(0);', branchStart);
-    expect(branchStart).toBeGreaterThanOrEqual(0);
-    expect(branchEnd).toBeGreaterThan(branchStart);
-    const branch = source.slice(branchStart, branchEnd);
-    expect(branch).toContain('await watchShutdown()');
-    expect(branch).toContain('await sourceIpcAdmission.drain()');
-    expect(branch).toContain('smokeWatchDir');
+  it('Research set真实分支封准入后标记故意异常退出，不关闭活数据或授正常finish', async () => {
+    const source = ts.createSourceFile(
+      'index.ts',
+      readFileSync('src/main/index.ts', 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    let callback: ts.ArrowFunction | undefined;
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isArrowFunction(node) &&
+        node.body.getText(source).includes("if (RESEARCH_GATE_MODE && researchMode === 'set')")
+      )
+        callback = node;
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(callback).toBeDefined();
+    const order: string[] = [];
+    const forbidden = vi.fn(() => {
+      throw new Error('异常夹具不能正常排水或关库');
+    });
+    const context = vm.createContext({
+      RESEARCH_GATE_MODE: true,
+      researchMode: 'set',
+      stopRendererAdmissions: () => order.push('sealed'),
+      logInfo: (_category: string, text: string) => order.push(text),
+      app: { exit: (code: number) => order.push(`exit:${code}`), quit: forbidden },
+      shutdownRuntime: forbidden,
+      finishGuardianShutdown: forbidden,
+      cleanupSmokeDirectories: forbidden,
+      watchShutdown: forbidden,
+      sourceIpcAdmission: { drain: forbidden },
+    });
+    const compiled = ts.transpileModule(`(${callback!.getText(source)})()`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    await (vm.runInContext(compiled, context) as Promise<void>);
+    expect(order).toEqual([
+      'sealed',
+      'Research set 异常恢复夹具：准入已关闭，保留 running 任务，请求故意异常退出',
+      'exit:0',
+    ]);
+    expect(forbidden).not.toHaveBeenCalled();
+    expect(order.join('\n')).not.toContain('正常退出');
   });
 });

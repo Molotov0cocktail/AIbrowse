@@ -2,13 +2,38 @@
 // Contract source: doc/stage2/detailed-design.md §9 — index.json (sessions, never
 // ephemeral) + one <sessionId>.json per session (messages); atomic writes (tmp+rename);
 // 50-session / 200-message limits (limit enforcement lives in the Service, §3.1);
-// corruption tolerance is fail-closed (invalid entries dropped + warn; unparseable
-// file → empty, the raw file content never reaches the renderer).
+// Stage 7: bounded reads and closed projection reject the whole damaged member.
+// Missing files are empty; all other read failures preserve originals and seal writes.
 // Pure format/validation/crop/title functions are exported for unit tests (分层纪律).
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  openSync,
+  fstatSync,
+  fsyncSync,
+  readSync,
+  closeSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  lstatSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { logWarn } from '../logger';
-import type { ConversationMessage, ConversationSession } from '../../shared/types/conversation';
+import type {
+  ConversationMessage,
+  ConversationSession,
+  ConversationStorageStatus,
+} from '../../shared/types/conversation';
+import {
+  LIMITS,
+  UUID,
+  ProjectionError,
+  projectSession,
+  projectIndex,
+  projectMessage,
+  projectSessionMetadata,
+} from './conversation-transfer';
+import { JsonReadError, parseBoundedJson } from '../storage/bounded-json';
 
 // —— 上限常量（§9；SESSION_LIMIT 由 Service 在 createSession 时执行） ——
 
@@ -23,232 +48,197 @@ export function deriveTitle(question: string): string {
   return single.length <= TITLE_MAX_CHARS ? single : single.slice(0, TITLE_MAX_CHARS);
 }
 
-// —— 纯函数：消息形状校验（§9 逐条校验；非法 → null，由调用方丢弃 + warn） ——
-// A5 version 2 扩展（§9.3 + 决议 #33）：role 白名单增 'tool'（toolCallId/toolStep 必填，
-// ToolStep 逐字段 fail-closed）；assistant 可选 toolCalls/agentRun 形状校验——非法扩展字段
-// 丢弃该字段保留文本（内容仍可用）；内部能力字段（documentId/allowedKind/fill 原文）不出现在
-// 任何校验通过的结构内（写入端脱敏纪律保证，读取端按形状 fail-closed）。
-
-const TOOL_STEP_DECISIONS = new Set([
-  'auto',
-  'auto-visible',
-  'confirmed',
-  'denied',
-  'forbidden',
-  'invalid',
-]);
-
-const TOOL_RESULT_ERROR_CODES = new Set([
-  'invalid-args',
-  'tool-not-found',
-  'element-not-found',
-  'stale-element',
-  'not-interactable',
-  'forbidden',
-  'denied-by-user',
-  'execution-failed',
-  'search-failed',
-  // B4：Source 工具错误码（ToolResultErrorCode 扩展 8 值）
-  'source-invalid-change',
-  'source-version-conflict',
-  'source-duplicate',
-  'source-not-found',
-  'source-forbidden',
-  'source-limit',
-  'source-unavailable',
-  'source-conflict',
-]);
-
-const AGENT_RUN_STATUSES = new Set([
-  'running',
-  'waiting-confirm',
-  'done',
-  'cancelled',
-  'step-limit',
-  'timeout',
-  'loop-detected',
-  'no-progress',
-  'error',
-]);
-
-function isToolStepShape(raw: unknown): boolean {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false;
-  const step = raw as Record<string, unknown>;
-  if (typeof step.id !== 'string' || step.id === '') return false;
-  if (typeof step.toolCallId !== 'string' || step.toolCallId === '') return false;
-  if (typeof step.name !== 'string' || step.name === '') return false;
-  if (typeof step.ok !== 'boolean') return false;
-  if (typeof step.contentPreview !== 'string') return false;
-  if (typeof step.decision !== 'string' || !TOOL_STEP_DECISIONS.has(step.decision)) return false;
-  if (typeof step.createdAt !== 'number' || !Number.isFinite(step.createdAt)) return false;
-  if (
-    step.errorCode !== undefined &&
-    (typeof step.errorCode !== 'string' || !TOOL_RESULT_ERROR_CODES.has(step.errorCode))
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function isToolCallsShape(raw: unknown): boolean {
-  if (!Array.isArray(raw)) return false;
-  return raw.every(
-    (call) =>
-      typeof call === 'object' &&
-      call !== null &&
-      typeof (call as Record<string, unknown>).id === 'string' &&
-      (call as Record<string, unknown>).id !== '' &&
-      typeof (call as Record<string, unknown>).name === 'string' &&
-      (call as Record<string, unknown>).name !== '' &&
-      typeof (call as Record<string, unknown>).arguments === 'string',
-  );
-}
-
-function isAgentRunShape(raw: unknown): boolean {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false;
-  const run = raw as Record<string, unknown>;
-  if (typeof run.requestId !== 'string') return false;
-  if (typeof run.sessionId !== 'string') return false;
-  if (typeof run.status !== 'string' || !AGENT_RUN_STATUSES.has(run.status)) return false;
-  if (typeof run.stepsUsed !== 'number' || !Number.isFinite(run.stepsUsed)) return false;
-  if (typeof run.maxSteps !== 'number' || !Number.isFinite(run.maxSteps)) return false;
-  if (typeof run.finalText !== 'string') return false;
-  if (typeof run.toolStepCount !== 'number' || !Number.isFinite(run.toolStepCount)) return false;
-  return true;
-}
-
+// The projection module owns the one closed schema for disk and transfer.
 export function validateMessageShape(raw: unknown): ConversationMessage | null {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
-  const record = raw as Record<string, unknown>;
-  if (typeof record.id !== 'string') return null;
-  if (record.role !== 'user' && record.role !== 'assistant' && record.role !== 'tool') return null;
-  if (typeof record.content !== 'string') return null;
-  if (record.status !== 'complete' && record.status !== 'aborted' && record.status !== 'error') {
+  try {
+    return projectMessage(raw);
+  } catch {
     return null;
   }
-  if (typeof record.createdAt !== 'number' || !Number.isFinite(record.createdAt)) return null;
-
-  if (record.role === 'tool') {
-    // tool 消息：toolCallId 非空 + ToolStep 逐字段 fail-closed（任一非法 → 整条丢弃）
-    if (typeof record.toolCallId !== 'string' || record.toolCallId === '') return null;
-    if (!isToolStepShape(record.toolStep)) return null;
-    return {
-      id: record.id,
-      role: 'tool',
-      content: record.content,
-      createdAt: record.createdAt,
-      status: record.status,
-      toolCallId: record.toolCallId,
-      toolStep: record.toolStep as unknown as ConversationMessage['toolStep'],
-    };
-  }
-
-  // user/assistant：v1 宽容字段（contextSource/errorCode）原样保留；
-  // A5 扩展字段形状非法 → 丢弃该字段（fail-closed 保留文本）
-  const message = { ...record } as unknown as ConversationMessage;
-  if (record.role === 'assistant') {
-    if (record.toolCalls !== undefined && !isToolCallsShape(record.toolCalls)) {
-      delete (message as { toolCalls?: unknown }).toolCalls;
-    }
-    if (record.agentRun !== undefined && !isAgentRunShape(record.agentRun)) {
-      delete (message as { agentRun?: unknown }).agentRun;
-    }
-  }
-  return message;
 }
-
-// —— 纯函数：会话形状校验（索引条目；ephemeral 条目由 parseIndexFile 统一丢弃） ——
-
 export function validateSessionShape(raw: unknown): ConversationSession | null {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
-  const record = raw as Record<string, unknown>;
-  if (typeof record.id !== 'string' || record.id === '') return null;
-  if (typeof record.title !== 'string') return null;
-  if (typeof record.createdAt !== 'number' || !Number.isFinite(record.createdAt)) return null;
-  if (typeof record.updatedAt !== 'number' || !Number.isFinite(record.updatedAt)) return null;
-  if (typeof record.ephemeral !== 'boolean') return null;
-  return record as unknown as ConversationSession;
+  try {
+    return projectSessionMetadata(raw);
+  } catch {
+    return null;
+  }
 }
-
-// —— 纯函数：文件格式（A5 起 version 2 写入恒 v2；读取兼容 v1——v1 文件按 v2 语义解析，
-// 无迁移写回要求；未知 version/整体不可解析 → null = 按空处理 fail-closed） ——
-
 export function serializeMessagesFile(messages: ConversationMessage[]): string {
-  return JSON.stringify({ version: 2, messages }, null, 2);
+  return JSON.stringify(projectSession({ version: 2, messages }).value);
 }
-
+export function serializeIndexFile(sessions: ConversationSession[]): string {
+  return JSON.stringify(projectIndex({ version: 1, sessions }).value);
+}
 export function parseMessagesFile(
   text: string,
 ): { messages: ConversationMessage[]; dropped: number } | null {
-  let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    return { messages: decodeMessages(text), dropped: 0 };
   } catch {
     return null;
   }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
-  const record = raw as Record<string, unknown>;
-  if ((record.version !== 1 && record.version !== 2) || !Array.isArray(record.messages)) {
-    return null;
-  }
-  const messages: ConversationMessage[] = [];
-  const usedToolCallIds = new Set<string>();
-  let dropped = 0;
-  for (const entry of record.messages) {
-    const valid = validateMessageShape(entry);
-    if (valid === null) {
-      dropped += 1;
-      continue;
-    }
-    if (valid.role === 'tool') {
-      // 孤立/重复 tool 消息安全处理（决议 #33③）：tool 消息必须紧跟前一条 assistant 且其
-      // toolCalls 含该 toolCallId（同序组内），同一 toolCallId 不得重复使用——否则丢弃 + 计数
-      const prev = messages.at(-1);
-      const callId = valid.toolCallId ?? '';
-      const linked =
-        prev !== undefined &&
-        prev.role === 'assistant' &&
-        prev.toolCalls !== undefined &&
-        prev.toolCalls.some((c) => c.id === callId) &&
-        !usedToolCallIds.has(callId);
-      if (!linked) {
-        dropped += 1;
-        continue;
-      }
-      usedToolCallIds.add(callId);
-    }
-    messages.push(valid);
-  }
-  return { messages, dropped };
 }
-
-export function serializeIndexFile(sessions: ConversationSession[]): string {
-  return JSON.stringify({ version: 1, sessions }, null, 2);
-}
-
-// 存储不变式（§9）：索引不含 ephemeral —— 解析时同样丢弃（防御手工编辑/损坏）。
 export function parseIndexFile(
   text: string,
 ): { sessions: ConversationSession[]; dropped: number } | null {
-  let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    return { sessions: decodeIndex(text), dropped: 0 };
   } catch {
     return null;
   }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
-  const record = raw as Record<string, unknown>;
-  if (record.version !== 1 || !Array.isArray(record.sessions)) return null;
-  const sessions: ConversationSession[] = [];
-  let dropped = 0;
-  for (const entry of record.sessions) {
-    const valid = validateSessionShape(entry);
-    if (valid === null || valid.ephemeral) dropped += 1;
-    else sessions.push(valid);
+}
+function decodeMessages(text: string): ConversationMessage[] {
+  const raw = parseBoundedJson(text, {
+    bytes: LIMITS.sessionBytes,
+    depth: LIMITS.inputDepth,
+    nodes: LIMITS.nodes,
+  });
+  return projectSession(raw).value.messages as unknown as ConversationMessage[];
+}
+function decodeIndex(text: string): ConversationSession[] {
+  const raw = parseBoundedJson(text, {
+    bytes: LIMITS.indexBytes,
+    depth: LIMITS.inputDepth,
+    nodes: LIMITS.nodes,
+  });
+  return projectIndex(raw).value.sessions as unknown as ConversationSession[];
+}
+export class ConversationReadError extends Error {
+  constructor(readonly code: 'invalid' | 'budget' | 'io') {
+    super('会话数据无法读取，原文件已保留，请恢复备份');
   }
-  return { sessions, dropped };
 }
 
+type WriteMember = 'index' | 'messages';
+type WriteStage =
+  | 'prepare'
+  | 'validate-id'
+  | 'project'
+  | 'mkdir'
+  | 'open'
+  | 'inspect'
+  | 'write'
+  | 'sync'
+  | 'close'
+  | 'verify-temp'
+  | 'check-target'
+  | 'rename'
+  | 'verify-target'
+  | 'rollback-verify'
+  | 'rollback-remove';
+
+class WriteGuardError extends Error {
+  constructor(readonly code: 'identity' | 'target-exists') {
+    super('会话文件保护检查失败');
+  }
+}
+
+function writeErrorCode(error: unknown): string {
+  // Only fixed errno values are safe to record; never invoke a foreign code getter.
+  let code: unknown;
+  try {
+    code =
+      typeof error === 'object' && error !== null
+        ? Object.getOwnPropertyDescriptor(error, 'code')?.value
+        : undefined;
+    if (typeof code !== 'string') return 'other';
+    if (
+      error instanceof ProjectionError &&
+      ['shape', 'id', 'count', 'link', 'depth', 'nodes', 'bytes'].includes(code)
+    )
+      return `projection-${code}`;
+    if (error instanceof WriteGuardError && ['identity', 'target-exists'].includes(code))
+      return code;
+    if (error instanceof ConversationReadError && code === 'invalid') return 'invalid-id';
+  } catch {
+    return 'other';
+  }
+  return typeof code === 'string' &&
+    [
+      'EACCES',
+      'EPERM',
+      'EEXIST',
+      'ENOENT',
+      'ENOTDIR',
+      'EISDIR',
+      'ENOSPC',
+      'EDQUOT',
+      'EMFILE',
+      'ENFILE',
+      'EIO',
+      'EBUSY',
+      'EINVAL',
+      'EBADF',
+      'EROFS',
+      'ENAMETOOLONG',
+      'ENOTEMPTY',
+      'ELOOP',
+      'EXDEV',
+    ].includes(code)
+    ? code
+    : 'other';
+}
+
+class WriteOperationError extends Error {
+  readonly category: 'invalid' | 'budget' | 'io';
+  readonly code: string;
+
+  constructor(
+    readonly member: WriteMember,
+    readonly stage: WriteStage,
+    error: unknown,
+  ) {
+    super('会话写入操作失败');
+    this.code = writeErrorCode(error);
+    this.category = this.code.startsWith('projection-')
+      ? ['projection-bytes', 'projection-count', 'projection-depth', 'projection-nodes'].includes(
+          this.code,
+        )
+        ? 'budget'
+        : 'invalid'
+      : 'io';
+  }
+}
+
+function writeStage<T>(member: WriteMember, stage: WriteStage, operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    throw new WriteOperationError(member, stage, error);
+  }
+}
+
+function readBounded(path: string, limit: number): string {
+  const fd = openSync(path, 'r');
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new ConversationReadError('io');
+    if (stat.size > limit) throw new ConversationReadError('budget');
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const n = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (n === 0) throw new ConversationReadError('io');
+      offset += n;
+    }
+    const extra = Buffer.alloc(1);
+    if (readSync(fd, extra, 0, 1, offset) !== 0) throw new ConversationReadError('io');
+    const after = fstatSync(fd);
+    if (
+      after.size !== stat.size ||
+      after.mtimeMs !== stat.mtimeMs ||
+      after.ctimeMs !== stat.ctimeMs
+    )
+      throw new ConversationReadError('io');
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      throw new ConversationReadError('invalid');
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
 // —— 纯函数：每会话消息上限裁剪（§9：超出确定性裁掉最早消息） ——
 // A5 组感知（决议 #33③）：裁剪头部不得从孤立 tool 消息开始（其 assistant toolCalls 组已
 // 被裁掉）——连续前导 tool 消息一并丢弃，不产生缺少对应 assistant toolCalls 的非法历史。
@@ -271,6 +261,103 @@ export function cropMessagesToLimit(
 export class ConversationStore {
   readonly dirPath: string; // <userData>/conversations/
   private readonly indexPath: string;
+  private readFailure: ConversationReadError | null = null;
+  private writeFailure: ConversationReadError | null = null;
+  private promotionFiles: Array<{ path: string; dev: bigint; ino: bigint }> | null = null;
+
+  private atomicWrite(target: string, payload: string, member: WriteMember): void {
+    const temporary = `${target}.tmp`;
+    const fd = writeStage(member, 'open', () => openSync(temporary, 'wx'));
+    let identity: { dev: bigint; ino: bigint };
+    try {
+      identity = writeStage(member, 'inspect', () => {
+        const created = fstatSync(fd, { bigint: true });
+        if (!created.isFile() || created.nlink !== 1n) throw new WriteGuardError('identity');
+        return { dev: created.dev, ino: created.ino };
+      });
+      this.promotionFiles?.push({ path: temporary, ...identity });
+      writeStage(member, 'write', () => writeFileSync(fd, payload, 'utf8'));
+      writeStage(member, 'sync', () => fsyncSync(fd));
+    } catch (error) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Closing still runs once, but must not replace the first write failure.
+      }
+      throw error;
+    }
+    writeStage(member, 'close', () => closeSync(fd));
+    writeStage(member, 'verify-temp', () => this.verifyIdentity(temporary, identity));
+    // The promotion's message target was absent. Bind its possible rollback
+    // identity to the exclusive descriptor before publication, never to a
+    // subsequently observed path that could already name a different object.
+    if (this.promotionFiles && target !== this.indexPath) {
+      writeStage(member, 'check-target', () => this.requireAbsent(target));
+      this.promotionFiles.push({ path: target, ...identity });
+    }
+    writeStage(member, 'rename', () => renameSync(temporary, target));
+    writeStage(member, 'verify-target', () => this.verifyIdentity(target, identity));
+  }
+
+  private requireAbsent(path: string): void {
+    try {
+      lstatSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    throw new WriteGuardError('target-exists');
+  }
+
+  private verifyIdentity(path: string, identity: { dev: bigint; ino: bigint }): void {
+    const current = lstatSync(path, { bigint: true });
+    if (
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      current.nlink !== 1n ||
+      current.dev !== identity.dev ||
+      current.ino !== identity.ino
+    )
+      throw new WriteGuardError('identity');
+  }
+
+  getStorageStatus(): ConversationStorageStatus {
+    const failure = this.readFailure ?? this.writeFailure;
+    return failure === null
+      ? { state: 'ready', code: null }
+      : { state: 'recovery-required', code: failure.code };
+  }
+
+  private failedWrite(error: unknown, member: WriteMember): false {
+    const failure =
+      error instanceof WriteOperationError
+        ? error
+        : new WriteOperationError(member, 'prepare', error);
+    this.writeFailure ??= new ConversationReadError(failure.category);
+    logWarn(
+      'conversation-store',
+      `会话写入失败，已保存文件保留，后续写入已暂停（member=${failure.member}，stage=${failure.stage}，category=${failure.category}，code=${failure.code}）`,
+    );
+    return false;
+  }
+
+  private failedRead(error: unknown): never {
+    const code =
+      error instanceof ConversationReadError
+        ? error.code
+        : error instanceof JsonReadError
+          ? error.code === 'budget-exceeded'
+            ? 'budget'
+            : 'invalid'
+          : error instanceof ProjectionError
+            ? ['bytes', 'count', 'depth', 'nodes'].includes(error.code)
+              ? 'budget'
+              : 'invalid'
+            : 'io';
+    this.readFailure ??= new ConversationReadError(code);
+    logWarn('conversation-store', '会话数据读取失败，原文件已保留');
+    throw this.readFailure;
+  }
 
   constructor(userDataDir: string) {
     this.dirPath = join(userDataDir, 'conversations');
@@ -278,90 +365,111 @@ export class ConversationStore {
   }
 
   loadSessions(): ConversationSession[] {
+    if (this.readFailure) throw this.readFailure;
     try {
-      const text = readFileSync(this.indexPath, 'utf8');
-      const parsed = parseIndexFile(text);
-      if (parsed === null) {
-        logWarn('conversation-store', '会话索引损坏，按空处理（fail-closed）');
-        return [];
-      }
-      if (parsed.dropped > 0) {
-        logWarn('conversation-store', `会话索引中 ${parsed.dropped} 条非法会话已忽略`);
-      }
-      return parsed.sessions;
+      return decodeIndex(readBounded(this.indexPath, LIMITS.indexBytes));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logWarn('conversation-store', '会话索引读取失败', error);
-      }
-      return [];
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      return this.failedRead(error);
     }
   }
 
   // 写入前过滤 ephemeral（§9 红线：ephemeral 全程不落盘——此处为纵深防御，Service 亦不传入）
   saveSessions(sessions: ConversationSession[]): boolean {
+    if (this.readFailure || this.writeFailure) return false;
     const persisted = sessions.filter((s) => !s.ephemeral);
     try {
-      mkdirSync(this.dirPath, { recursive: true });
-      const tmpPath = `${this.indexPath}.tmp`;
-      writeFileSync(tmpPath, serializeIndexFile(persisted), 'utf8');
-      renameSync(tmpPath, this.indexPath); // Atomic replace
+      writeStage('index', 'mkdir', () => mkdirSync(this.dirPath, { recursive: true }));
+      const payload = writeStage('index', 'project', () => serializeIndexFile(persisted));
+      this.atomicWrite(this.indexPath, payload, 'index');
       return true;
     } catch (error) {
-      logWarn('conversation-store', '会话索引写入失败', error);
-      return false;
+      return this.failedWrite(error, 'index');
     }
   }
 
-  // 缺失/损坏 → 空数组（fail-closed，不把原始文件内容暴露给调用方）
+  // Missing is empty; corrupt/over-budget members require explicit recovery.
   loadMessages(sessionId: string): ConversationMessage[] {
+    if (this.readFailure) throw this.readFailure;
     try {
-      const text = readFileSync(this.messagePath(sessionId), 'utf8');
-      const parsed = parseMessagesFile(text);
-      if (parsed === null) {
-        logWarn('conversation-store', `会话消息文件损坏，按空处理（sessionId=${sessionId}）`);
-        return [];
-      }
-      if (parsed.dropped > 0) {
-        logWarn(
-          'conversation-store',
-          `会话消息文件有 ${parsed.dropped} 条非法消息已忽略（sessionId=${sessionId}）`,
-        );
-      }
-      return parsed.messages;
+      return decodeMessages(readBounded(this.messagePath(sessionId), LIMITS.sessionBytes));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logWarn('conversation-store', `会话消息读取失败（sessionId=${sessionId}）`, error);
-      }
-      return [];
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      return this.failedRead(error);
     }
   }
 
   saveMessages(sessionId: string, messages: ConversationMessage[]): boolean {
+    if (this.readFailure || this.writeFailure) return false;
     try {
-      mkdirSync(dirname(this.messagePath(sessionId)), { recursive: true });
-      const target = this.messagePath(sessionId);
-      const tmpPath = `${target}.tmp`;
-      writeFileSync(tmpPath, serializeMessagesFile(messages), 'utf8');
-      renameSync(tmpPath, target); // Atomic replace
+      const target = writeStage('messages', 'validate-id', () => this.messagePath(sessionId));
+      writeStage('messages', 'mkdir', () => mkdirSync(dirname(target), { recursive: true }));
+      const payload = writeStage('messages', 'project', () => serializeMessagesFile(messages));
+      this.atomicWrite(target, payload, 'messages');
       return true;
     } catch (error) {
-      logWarn('conversation-store', `会话消息写入失败（sessionId=${sessionId}）`, error);
-      return false;
+      return this.failedWrite(error, 'messages');
     }
   }
 
-  // 删除消息文件与残留 tmp（写入中断遗留；索引由 Service 更新后落盘）
-  deleteFiles(sessionId: string): void {
+  // A previously ephemeral member has no owned files. Validate both payloads
+  // before writing either, and roll back only files created by this synchronous
+  // promotion if the index cannot be published. Existing remnants are preserved.
+  promoteSession(
+    sessionId: string,
+    messages: ConversationMessage[],
+    sessions: ConversationSession[],
+  ): boolean {
+    if (this.readFailure || this.writeFailure) return false;
+    const created: Array<{ path: string; dev: bigint; ino: bigint }> = [];
+    try {
+      writeStage('messages', 'project', () => serializeMessagesFile(messages));
+      writeStage('index', 'project', () =>
+        serializeIndexFile(sessions.filter((session) => !session.ephemeral)),
+      );
+      const target = writeStage('messages', 'validate-id', () => this.messagePath(sessionId));
+      for (const path of [target, `${target}.tmp`, `${this.indexPath}.tmp`]) {
+        writeStage(path === `${this.indexPath}.tmp` ? 'index' : 'messages', 'check-target', () =>
+          this.requireAbsent(path),
+        );
+      }
+      this.promotionFiles = created;
+      if (this.saveMessages(sessionId, messages) && this.saveSessions(sessions)) return true;
+    } catch (error) {
+      this.failedWrite(error, 'messages');
+    } finally {
+      this.promotionFiles = null;
+    }
+    for (const owned of created) {
+      const member = owned.path === `${this.indexPath}.tmp` ? 'index' : 'messages';
+      try {
+        writeStage(member, 'rollback-verify', () => this.verifyIdentity(owned.path, owned));
+        writeStage(member, 'rollback-remove', () => rmSync(owned.path));
+      } catch (error) {
+        if (!(error instanceof WriteOperationError && error.code === 'ENOENT'))
+          this.failedWrite(error, member);
+      }
+    }
+    return false;
+  }
+
+  // Remove message and interrupted-write files; report every deletion failure.
+  deleteFiles(sessionId: string): boolean {
+    if (this.readFailure || this.writeFailure || !UUID.test(sessionId)) return false;
+    let removed = true;
     for (const path of [this.messagePath(sessionId), `${this.messagePath(sessionId)}.tmp`]) {
       try {
         rmSync(path, { force: true });
       } catch (error) {
+        removed = false;
         logWarn('conversation-store', `会话文件删除失败（sessionId=${sessionId}）`, error);
       }
     }
+    return removed;
   }
 
   private messagePath(sessionId: string): string {
+    if (!UUID.test(sessionId)) throw new ConversationReadError('invalid');
     return join(this.dirPath, `${sessionId}.json`);
   }
 }

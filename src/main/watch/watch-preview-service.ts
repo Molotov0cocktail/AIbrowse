@@ -17,8 +17,23 @@ import type { TargetGatedClient } from './public-watch-http-client';
 import { parseDiscoveryCandidates } from './feed-discovery';
 import { readPublicHtml } from './public-html-sax-reader';
 import { extractContentTypeCharset } from './text-encoding';
+import { MaintenanceAdmission } from '../storage/maintenance-admission';
 
 const TABLE_DISCOVERY_FINGERPRINT = '0'.repeat(64);
+
+interface FeedPreviewInput {
+  mode: 'source' | 'manual' | 'candidate';
+  sourceId?: string;
+  feedUrl?: string;
+  discoveryHandle?: string;
+  candidateId?: string;
+}
+
+interface PagePreviewInput {
+  sourceId: string;
+  accessMode: 'public' | 'session';
+  regions: RegionDescriptor[];
+}
 
 type PreviewResult =
   | { ok: true; value: Record<string, unknown> }
@@ -39,15 +54,81 @@ export interface WatchPreviewServiceOptions {
 }
 
 export class WatchPreviewService {
+  private readonly admission = new MaintenanceAdmission();
+  private readonly controllers = new Set<AbortController>();
   constructor(private readonly options: WatchPreviewServiceOptions) {}
 
-  async previewFeed(input: {
-    mode: 'source' | 'manual' | 'candidate';
-    sourceId?: string;
-    feedUrl?: string;
-    discoveryHandle?: string;
-    candidateId?: string;
-  }): Promise<PreviewResult> {
+  /** Retire only UI capabilities; accepted work retains its lease until finally. */
+  interruptUiRequests(): void {
+    this.options.store.dispose();
+    this.options.grants()?.clear();
+    for (const controller of this.controllers) controller.abort();
+  }
+
+  pauseForMaintenance(generation: number): boolean {
+    const paused = this.admission.pauseForMaintenance(generation);
+    if (paused) {
+      this.options.store.dispose();
+      this.options.grants()?.clear();
+    }
+    return paused;
+  }
+
+  drainForMaintenance(generation: number): Promise<void> {
+    if (!this.admission.isPausedForMaintenance(generation)) {
+      return Promise.reject(new Error('维护世代已失效'));
+    }
+    for (const controller of this.controllers) controller.abort();
+    return this.admission.drainForMaintenance(generation);
+  }
+
+  resumeAfterMaintenance(generation: number): boolean {
+    return this.admission.resumeAfterMaintenance(generation);
+  }
+
+  prepareResumeAfterMaintenance(generation: number): boolean {
+    return this.admission.prepareResumeAfterMaintenance(generation);
+  }
+
+  beginShutdown(): void {
+    this.admission.beginShutdown();
+    this.options.store.dispose();
+    this.options.grants()?.clear();
+  }
+
+  drainBeforeClose(): Promise<void> {
+    this.beginShutdown();
+    for (const controller of this.controllers) controller.abort();
+    return this.admission.drain();
+  }
+
+  previewFeed(input: FeedPreviewInput): Promise<PreviewResult> {
+    return this.runPreview((signal) => this.readFeed(input, signal));
+  }
+
+  previewPage(input: PagePreviewInput): Promise<PreviewResult> {
+    return this.runPreview((signal) => this.readPage(input, signal));
+  }
+
+  private async runPreview(
+    work: (signal: AbortSignal) => Promise<PreviewResult>,
+  ): Promise<PreviewResult> {
+    const release = this.admission.enter();
+    if (release === null) return { ok: false, errorCode: 'unavailable' };
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    try {
+      const result = await work(controller.signal);
+      return controller.signal.aborted || !this.admission.isOpen()
+        ? { ok: false, errorCode: 'unavailable' }
+        : result;
+    } finally {
+      this.controllers.delete(controller);
+      release();
+    }
+  }
+
+  private async readFeed(input: FeedPreviewInput, signal: AbortSignal): Promise<PreviewResult> {
     const candidate =
       input.mode === 'candidate' &&
       input.discoveryHandle !== undefined &&
@@ -73,17 +154,15 @@ export class WatchPreviewService {
       source.projection,
       { type: 'feed', feedUrl, format: 'rss2' },
       'public',
+      signal,
     );
+    if (signal.aborted || !this.admission.isOpen()) return { ok: false, errorCode: 'unavailable' };
     if (direct.result.ok || input.mode !== 'source' || !direct.discoveryEligible)
       return direct.result;
-    return this.discoverFeedCandidates(source.projection);
+    return this.discoverFeedCandidates(source.projection, signal);
   }
 
-  async previewPage(input: {
-    sourceId: string;
-    accessMode: 'public' | 'session';
-    regions: RegionDescriptor[];
-  }): Promise<PreviewResult> {
+  private async readPage(input: PagePreviewInput, signal: AbortSignal): Promise<PreviewResult> {
     const source = this.options.source(input.sourceId);
     if (source.status !== 'found')
       return { ok: false, errorCode: source.status === 'missing' ? 'not-found' : 'unavailable' };
@@ -93,7 +172,7 @@ export class WatchPreviewService {
       input.regions[0].headerFingerprint === TABLE_DISCOVERY_FINGERPRINT &&
       input.regions[0].occurrence === 0
     )
-      return this.discoverPageTables(source.projection, input.accessMode, input.regions);
+      return this.discoverPageTables(source.projection, input.accessMode, input.regions, signal);
     const target = {
       type: 'page' as const,
       pageUrl: source.projection.canonicalKey,
@@ -101,10 +180,12 @@ export class WatchPreviewService {
       sessionConsent: null,
     };
     if (input.accessMode === 'public')
-      return (await this.previewWithAcquisition(source.projection, target, 'public')).result;
+      return (await this.previewWithAcquisition(source.projection, target, 'public', signal))
+        .result;
     const browser = this.options.browser();
     const reader = this.options.reader();
     const active = (await browser?.getActiveTab()) ?? null;
+    if (signal.aborted || !this.admission.isOpen()) return { ok: false, errorCode: 'unavailable' };
     if (
       browser === null ||
       reader === null ||
@@ -112,12 +193,12 @@ export class WatchPreviewService {
       urlOrigin(active.url) !== urlOrigin(source.projection.canonicalKey)
     )
       return { ok: false, errorCode: 'security-rejected' };
-    const abort = new AbortController();
     const read = await reader.read({
       tabId: active.id,
-      signal: abort.signal,
+      signal,
       deadline: new Date(Date.now() + 30_000),
     });
+    if (signal.aborted || !this.admission.isOpen()) return { ok: false, errorCode: 'unavailable' };
     if (!read.ok)
       return {
         ok: false,
@@ -185,6 +266,7 @@ export class WatchPreviewService {
     source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
     accessMode: 'public' | 'session',
     regions: RegionDescriptor[],
+    signal: AbortSignal,
   ): Promise<PreviewResult> {
     let channels: import('../../shared/types/watch').DocumentChannels;
     if (accessMode === 'public') {
@@ -193,9 +275,11 @@ export class WatchPreviewService {
       const response = await target.get({
         url: source.canonicalKey,
         purpose: 'page',
-        signal: new AbortController().signal,
+        signal,
         deadline: new Date(Date.now() + 30_000),
       });
+      if (signal.aborted || !this.admission.isOpen())
+        return { ok: false, errorCode: 'unavailable' };
       if (response.kind !== 'ok')
         return {
           ok: false,
@@ -224,6 +308,8 @@ export class WatchPreviewService {
       const browser = this.options.browser();
       const reader = this.options.reader();
       const active = (await browser?.getActiveTab()) ?? null;
+      if (signal.aborted || !this.admission.isOpen())
+        return { ok: false, errorCode: 'unavailable' };
       if (
         browser === null ||
         reader === null ||
@@ -233,9 +319,11 @@ export class WatchPreviewService {
         return { ok: false, errorCode: 'security-rejected' };
       const read = await reader.read({
         tabId: active.id,
-        signal: new AbortController().signal,
+        signal,
         deadline: new Date(Date.now() + 30_000),
       });
+      if (signal.aborted || !this.admission.isOpen())
+        return { ok: false, errorCode: 'unavailable' };
       if (!read.ok) return { ok: false, errorCode: 'security-rejected' };
       if (!hasSameHttpOrigin(source.canonicalKey, read.meta.url))
         return { ok: false, errorCode: 'security-rejected' };
@@ -263,6 +351,7 @@ export class WatchPreviewService {
   }
 
   issueSessionGrant(previewHandle: string): PreviewResult {
+    if (!this.admission.isOpen()) return { ok: false, errorCode: 'unavailable' };
     const record = this.options.store.consume(previewHandle);
     if (record === null) return { ok: false, errorCode: 'preview-expired' };
     const targetDigest = readTargetDigest(record);
@@ -293,6 +382,7 @@ export class WatchPreviewService {
     source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
     target: WatchRule['target'],
     accessMode: 'public',
+    signal: AbortSignal,
   ): Promise<{ result: PreviewResult; discoveryEligible: boolean }> {
     const acquisition = this.options.acquisition();
     if (acquisition === null)
@@ -324,13 +414,14 @@ export class WatchPreviewService {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    const abort = new AbortController();
     const acquired = await acquisition.run({
       rule,
       baselineHint: { kind: 'none', expectedBaselineVersion: 0 },
-      signal: abort.signal,
+      signal,
       deadline: new Date(Date.now() + 30_000),
     });
+    if (signal.aborted || !this.admission.isOpen())
+      return { result: { ok: false, errorCode: 'unavailable' }, discoveryEligible: false };
     if (!acquired.ok || acquired.kind !== 'projection')
       return {
         result: {
@@ -401,15 +492,17 @@ export class WatchPreviewService {
 
   private async discoverFeedCandidates(
     source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
+    signal: AbortSignal,
   ): Promise<PreviewResult> {
     const target = this.options.discoveryTarget();
     if (target === null) return { ok: false, errorCode: 'unavailable' };
     const response = await target.get({
       url: source.canonicalKey,
       purpose: 'discovery',
-      signal: new AbortController().signal,
+      signal,
       deadline: new Date(Date.now() + 30_000),
     });
+    if (signal.aborted || !this.admission.isOpen()) return { ok: false, errorCode: 'unavailable' };
     if (response.kind !== 'ok')
       return {
         ok: false,

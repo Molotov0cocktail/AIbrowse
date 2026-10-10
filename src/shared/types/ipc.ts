@@ -4,6 +4,7 @@
 
 export const IPC = {
   UiDocumentOpen: 'ui:document-open',
+  UiDocumentReady: 'ui:document-ready',
   // renderer → main（invoke）
   TabsList: 'tabs:list',
   TabsCreate: 'tabs:create', // payload: { url?: string }（原始地址栏输入，main 侧规范化）
@@ -15,6 +16,13 @@ export const IPC = {
   NavReload: 'nav:reload',
   PageSnapshot: 'page:snapshot', // payload: { tabId }
   AppGetInfo: 'app:get-info', // 基线已有
+  DataTransferStatus: 'data-transfer:status',
+  DataTransferStart: 'data-transfer:start',
+  DataTransferCancel: 'data-transfer:cancel',
+  DataTransferRecoverOriginal: 'data-transfer:recover-original',
+  ConversationStorageStatus: 'conversation:storage-status',
+  DiagnosticPreview: 'diagnostic:preview',
+  DiagnosticExport: 'diagnostic:export',
   // renderer → main（send，单向无回执）
   UiContentBounds: 'ui:content-bounds', // payload: ContentBounds（§6）
   AppRendererReady: 'app:renderer-ready', // 基线已有

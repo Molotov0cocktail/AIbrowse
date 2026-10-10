@@ -27,6 +27,7 @@ export interface ResearchUiState {
   stats: ResearchTask['stats'] | null;
   finishedAt: string | null;
   error: string | null; // 固定中文诊断（操作失败）
+  historyError: string | null;
   history: ResearchTask[];
   historyPage: number;
   historyPageSize: number;
@@ -47,6 +48,7 @@ export const INITIAL_RESEARCH_UI_STATE: ResearchUiState = {
   stats: null,
   finishedAt: null,
   error: null,
+  historyError: null,
   history: [],
   historyPage: 1,
   historyPageSize: 20,
@@ -100,7 +102,7 @@ export type ResearchUiEvent =
   | { kind: 'start-ok'; task: ResearchTask }
   | { kind: 'stop-ok'; task: ResearchTask }
   | { kind: 'get-ok'; task: ResearchTask }
-  | { kind: 'invoke-error'; errorCode: ResearchErrorCode | string }
+  | { kind: 'invoke-error'; errorCode: ResearchErrorCode | string; scope?: 'history' }
   | { kind: 'progress'; event: ResearchProgressEvent }
   | { kind: 'task-done'; taskId: string; status: ResearchTaskDoneStatus }
   | { kind: 'list-ok'; items: ResearchTask[]; page: number; pageSize: number; total: number }
@@ -204,6 +206,8 @@ export function reduceResearchUi(state: ResearchUiState, event: ResearchUiEvent)
         resultCanvasCleared: false,
       };
     case 'invoke-error':
+      if (event.scope === 'history')
+        return { ...state, historyError: describeResearchError(event.errorCode) };
       return { ...state, error: describeResearchError(event.errorCode), busy: false };
     case 'progress': {
       const e = event.event;
@@ -240,6 +244,7 @@ export function reduceResearchUi(state: ResearchUiState, event: ResearchUiEvent)
     case 'list-ok':
       return {
         ...state,
+        historyError: null,
         history: event.items,
         historyPage: event.page,
         historyPageSize: event.pageSize,
@@ -325,6 +330,7 @@ export interface UseResearchApi {
 export function useResearch(): UseResearchApi {
   const [state, dispatch] = useReducer(reduceResearchUi, INITIAL_RESEARCH_UI_STATE);
   const mounted = useRef(true);
+  const listSequence = useRef(0);
   const stateRef = useRef(state);
   stateRef.current = state; // 同步最新 state（异步回调竞态守卫读）
 
@@ -332,6 +338,7 @@ export function useResearch(): UseResearchApi {
     mounted.current = true;
     return () => {
       mounted.current = false; // 退订后零 setState（决议 #163(4)）
+      listSequence.current += 1;
     };
   }, []);
 
@@ -392,18 +399,25 @@ export function useResearch(): UseResearchApi {
     if (!mounted.current) return;
     const pageSize = 20;
     const target = page ?? 1;
-    const res = await window.aibrowse.research.list({ page: target, pageSize });
-    if (!mounted.current) return;
-    if (res.ok) {
-      dispatch({
-        kind: 'list-ok',
-        items: res.value.items,
-        page: res.value.page,
-        pageSize: res.value.pageSize,
-        total: res.value.total,
-      });
-    } else {
-      dispatch({ kind: 'invoke-error', errorCode: res.errorCode });
+    const sequence = ++listSequence.current;
+    const current = () => mounted.current && sequence === listSequence.current;
+    try {
+      const res = await window.aibrowse.research.list({ page: target, pageSize });
+      if (!current()) return;
+      if (res.ok) {
+        dispatch({
+          kind: 'list-ok',
+          items: res.value.items,
+          page: res.value.page,
+          pageSize: res.value.pageSize,
+          total: res.value.total,
+        });
+      } else {
+        dispatch({ kind: 'invoke-error', errorCode: res.errorCode, scope: 'history' });
+      }
+    } catch {
+      if (current())
+        dispatch({ kind: 'invoke-error', errorCode: 'research-unavailable', scope: 'history' });
     }
   }, []);
 

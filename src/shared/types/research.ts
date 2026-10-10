@@ -579,6 +579,8 @@ export interface ResearchRuntimeHandle {
   readonly runToken: string;
   readonly done: Promise<void>; // run() 完整收敛（含终态写入与 cleanupAll）
   abort(): void; // 幂等（stop/shutdown 请求）
+  // Retains exact workspace ownership after a failed terminal cleanup.
+  cleanup?(): Promise<void>;
 }
 
 export interface ResearchPreparedLaunch {

@@ -462,14 +462,14 @@ async function buildProductSurfaces(
     const conversationStore = new ConversationStore(conversationRoot);
     const conversationTime = Date.parse(D10_NOW);
     const session: ConversationSession = {
-      id: 'd10-session',
+      id: randomUUID(),
       title: 'D10 conversation product path',
       createdAt: conversationTime,
       updatedAt: conversationTime,
       ephemeral: false,
     };
     const message: ConversationMessage = {
-      id: 'd10-message',
+      id: randomUUID(),
       role: 'user',
       content: 'D10 conversation product path',
       createdAt: conversationTime,

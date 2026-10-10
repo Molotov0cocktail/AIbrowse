@@ -107,6 +107,7 @@ export function createProductionResearchRuntimeFactory(
           if (consumed) throw new Error('程序缺陷：prepared 已被消费');
           consumed = true;
           const stopController = new AbortController();
+          const workspace = new ResearchWorkspace(input.taskId, options.browser);
           const runtime = new ResearchRuntime({
             taskId: input.taskId,
             goal: input.goal,
@@ -116,7 +117,7 @@ export function createProductionResearchRuntimeFactory(
             sourceService: source,
             searchProvider: options.searchProvider as SearchProvider,
             captureService: new CaptureService({
-              workspace: new ResearchWorkspace(input.taskId, options.browser),
+              workspace,
               browser: options.browser,
             }),
             persistence: createRepositoryPersistence(options.db, input.taskId),
@@ -125,15 +126,22 @@ export function createProductionResearchRuntimeFactory(
             resultValidation: RESEARCH_RESULT_VALIDATION_PORT,
             createId: options.createId,
             onProgress: input.onProgress,
-            onSettle: input.onSettle,
             stopSignal: stopController.signal,
           });
-          const done = runtime.run();
+          const cleanup = async (): Promise<void> => {
+            const result = await workspace.cleanupAll();
+            if (!result.ok) throw new Error('研究任务标签页清理失败');
+          };
+          const done = runtime
+            .run()
+            .finally(cleanup)
+            .then(() => input.onSettle());
           return {
             taskId: input.taskId,
             runToken: input.runToken,
             done,
             abort: () => stopController.abort(),
+            cleanup,
           };
         },
         release() {

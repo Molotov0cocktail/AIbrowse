@@ -24,6 +24,7 @@ export interface TabEntry {
   view: WebContentsView;
   info: TabEntryInfo;
   cleanupFns: Array<() => void>;
+  // Document epochs advance on main-document commits and renderer crashes.
   // A3 elementId 生命周期：导航世代计数（主框架 did-navigate 提交时递增）。快照
   // meta.documentId 由此盖章，click/fill 执行前校验世代一致——URL/标题/capturedAt
   // 均不能证明文档身份（同 URL 刷新世代同样递增；页内导航/hash 变化不递增，
@@ -165,10 +166,14 @@ export class TabManager {
   // 显式逐个注册：类型完全走 Electron 事件签名，关闭标签时一一 removeListener。
   private wireEvents(wc: WebContents, info: TabEntryInfo): Array<() => void> {
     const cleanup: Array<() => void> = [];
+    // A crash retires the document until a new main-document navigation begins.
+    // Late load callbacks must not present the dead document as a healthy page.
+    let crashed = false;
 
     // The WebContents spinner also starts for same-document and subframe loads.
     // Those loads have no main-frame did-finish-load and must not strand the tab in loading.
     const onStartLoading = (): void => {
+      if (crashed) return;
       info.state = transition(info.state, {
         type: 'start-loading',
         isMainFrame: wc.isLoadingMainFrame(),
@@ -184,6 +189,8 @@ export class TabManager {
       details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
     ): void => {
       if (!details.isMainFrame || details.isSameDocument) return;
+      crashed = false;
+      delete info.failure;
       const entry = this.entries.get(info.id);
       if (entry !== undefined) entry.navigationSerial += 1;
       info.state = transition(info.state, { type: 'start-loading', isMainFrame: true });
@@ -193,6 +200,8 @@ export class TabManager {
     cleanup.push(() => wc.removeListener('did-start-navigation', onStartNavigation));
 
     const onFinishLoad = (): void => {
+      if (crashed) return;
+      delete info.failure;
       info.state = transition(info.state, { type: 'finish-load', isMainFrame: true });
       this.options.onChanged();
     };
@@ -206,7 +215,9 @@ export class TabManager {
       _url: string,
       isMainFrame: boolean,
     ): void => {
+      if (crashed) return;
       if (isMainFrame && errorCode !== -3) {
+        info.failure = 'load-failed';
         // -3（ERR_ABORTED）为导航竞态，由 transition 统一忽略；这里只记录真实失败
         logWarn(
           'browser',
@@ -227,6 +238,7 @@ export class TabManager {
     cleanup.push(() => wc.removeListener('page-title-updated', onTitleUpdated));
 
     const onNavigate = (_e: Electron.Event, url: string): void => {
+      if (crashed) return;
       info.url = url; // 主框架导航提交后的实际 URL（含重定向结果）
       // A3：主框架提交 = 新文档建立（跨 URL 导航与同 URL 刷新均触发；did-navigate
       // 仅主框架、页内导航走 did-navigate-in-page 不触发）→ 导航世代递增，旧 elementId
@@ -239,6 +251,7 @@ export class TabManager {
     cleanup.push(() => wc.removeListener('did-navigate', onNavigate));
 
     const onNavigateInPage = (_e: Electron.Event, url: string, isMainFrame: boolean): void => {
+      if (crashed) return;
       if (!isMainFrame) return; // 仅主框架的页内导航更新 URL
       info.url = url;
       this.options.onChanged();
@@ -278,9 +291,17 @@ export class TabManager {
     cleanup.push(() => wc.removeListener('will-redirect', onWillRedirect));
 
     const onRenderGone = (): void => {
-      // §4：渲染进程退出 → 该 Tab 立即降级为 error（快照走 L2/L3 路径）。
-      // 不属于三事件状态机（transition 只覆盖加载事件），按契约直接置 error。
+      crashed = true;
+      const entry = this.entries.get(info.id);
+      if (entry !== undefined) {
+        // Retire authorization before resolving cancelled readers or navigations.
+        // Keep the user's tab and URL; only an explicit navigation can recover it.
+        entry.generation += 1;
+        entry.navigationSerial += 1;
+        this.invalidateLoads(entry);
+      }
       info.state = 'error';
+      info.failure = 'renderer-gone';
       logError('browser', `渲染进程退出（tabId=${redactTabIdForLog(info.id)}）`);
       this.options.onChanged();
     };

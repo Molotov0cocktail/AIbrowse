@@ -1,8 +1,22 @@
 import { IPC } from '../../shared/types/ipc';
 import { validateProviderConfig } from '../ai/config-store';
+import { parseDiagnosticExportPayload } from '../../shared/types/diagnostics';
+
+const transferChannels = new Set<string>([
+  IPC.DataTransferStatus,
+  IPC.DataTransferStart,
+  IPC.DataTransferCancel,
+  IPC.DataTransferRecoverOriginal,
+  IPC.ConversationStorageStatus,
+]);
 
 const schemas: Readonly<Record<string, readonly string[]>> = {
   [IPC.AppGetInfo]: [],
+  [IPC.DataTransferStatus]: [],
+  [IPC.DataTransferStart]: ['action'],
+  [IPC.DataTransferCancel]: ['operationId'],
+  [IPC.DataTransferRecoverOriginal]: ['operationId'],
+  [IPC.ConversationStorageStatus]: [],
   [IPC.TabsList]: [],
   [IPC.TabsCreate]: ['url'],
   [IPC.TabsClose]: ['tabId'],
@@ -32,13 +46,44 @@ const schemas: Readonly<Record<string, readonly string[]>> = {
 
 /** Domain adapters retain their stricter value and budget validation. */
 export function validateCoreIpcPayload(channel: string, payload: unknown): boolean {
+  if (channel === IPC.DiagnosticExport) return parseDiagnosticExportPayload(payload) !== null;
+  if (channel === IPC.DiagnosticPreview) {
+    if (payload === undefined) return true;
+    try {
+      if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return false;
+      const prototype: unknown = Object.getPrototypeOf(payload);
+      return (
+        (prototype === Object.prototype || prototype === null) &&
+        Reflect.ownKeys(payload).length === 0
+      );
+    } catch {
+      return false;
+    }
+  }
   const allowed = schemas[channel];
   if (allowed === undefined) return true;
   if (payload === undefined)
     return allowed.length === 0 || channel === IPC.ConversationCreate || channel === IPC.TabsCreate;
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return false;
   const record = payload as Record<string, unknown>;
+  if (transferChannels.has(channel)) {
+    const prototype: unknown = Object.getPrototypeOf(record);
+    if (
+      (prototype !== Object.prototype && prototype !== null) ||
+      Object.keys(record).length !== allowed.length
+    )
+      return false;
+  }
   if (!Object.keys(record).every((key) => allowed.includes(key))) return false;
+  if (channel === IPC.DataTransferStart)
+    return record.action === 'backup' || record.action === 'restore';
+  if (channel === IPC.DataTransferCancel || channel === IPC.DataTransferRecoverOriginal)
+    return (
+      typeof record.operationId === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        record.operationId,
+      )
+    );
   if (channel === IPC.TabsCreate) return record.url === undefined || typeof record.url === 'string';
   if (channel === IPC.ConversationCreate)
     return record.ephemeral === undefined || typeof record.ephemeral === 'boolean';

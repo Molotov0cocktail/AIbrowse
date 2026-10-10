@@ -138,6 +138,29 @@ function abortedError(context: { requestId: string }): NormalizedProviderError {
 }
 
 export class AgentLoop {
+  private readonly operations = new Set<Promise<unknown>>();
+
+  private track<T>(operation: Promise<T>): Promise<T> {
+    this.operations.add(operation);
+    void operation.then(
+      () => this.operations.delete(operation),
+      () => this.operations.delete(operation),
+    );
+    return operation;
+  }
+
+  // Call after run settles: UI cancellation and physical drain are separate.
+  async waitForIdle(): Promise<void> {
+    while (this.operations.size > 0) await Promise.allSettled([...this.operations]);
+  }
+
+  getProgress(): Pick<AgentRunResult, 'stepsUsed' | 'maxSteps' | 'toolStepCount'> {
+    return {
+      stepsUsed: this.stepsUsed,
+      maxSteps: this.limits.maxSteps,
+      toolStepCount: this.toolSteps.length,
+    };
+  }
   private readonly limits: AgentLoopLimits;
   private readonly now: () => number;
   private terminal: Terminal | null = null;
@@ -227,7 +250,7 @@ export class AgentLoop {
       }
       // Provider 解析与终态竞争（解析期间被中止 → run 不挂起）
       const provider = await Promise.race([
-        this.options.providerResolver(),
+        this.track(this.options.providerResolver()),
         this.terminalReached.then(() => null),
       ]);
       if (this.terminal !== null) return this.buildResult(); // 解析期间被中止
@@ -282,7 +305,7 @@ export class AgentLoop {
         this.roundCommitted = false;
         this.roundReasoning = '';
         await Promise.race([
-          this.streamRound(provider, request, supportsTools),
+          this.track(this.streamRound(provider, request, supportsTools)),
           this.terminalReached,
         ]);
         if (this.terminal !== null) break;
@@ -388,25 +411,28 @@ export class AgentLoop {
           // 迟到结果被忽略——不记录步骤/事件/不继续执行后续工具；底层审计由 ToolExecutor
           // 单出口保证恰好一条）
           const result = await Promise.race([
-            this.executor.execute(
-              call,
-              {
-                browser: this.options.browser,
-                runId: this.options.requestId,
-                ...(this.options.searchProvider !== undefined
-                  ? { searchProvider: this.options.searchProvider }
-                  : {}),
-                ...(this.options.sourceService !== undefined
-                  ? { sourceService: this.options.sourceService }
-                  : {}),
-                ...(this.options.sourceUsage !== undefined
-                  ? { sourceUsage: this.options.sourceUsage }
-                  : {}),
-                getElementSemantics: (tabId, elementId) => this.semantics.lookup(tabId, elementId),
-                recordSnapshot: (tabId, snapshot) =>
-                  this.semantics.updateFromSnapshot(tabId, snapshot),
-              },
-              this.loopController.signal,
+            this.track(
+              this.executor.execute(
+                call,
+                {
+                  browser: this.options.browser,
+                  runId: this.options.requestId,
+                  ...(this.options.searchProvider !== undefined
+                    ? { searchProvider: this.options.searchProvider }
+                    : {}),
+                  ...(this.options.sourceService !== undefined
+                    ? { sourceService: this.options.sourceService }
+                    : {}),
+                  ...(this.options.sourceUsage !== undefined
+                    ? { sourceUsage: this.options.sourceUsage }
+                    : {}),
+                  getElementSemantics: (tabId, elementId) =>
+                    this.semantics.lookup(tabId, elementId),
+                  recordSnapshot: (tabId, snapshot) =>
+                    this.semantics.updateFromSnapshot(tabId, snapshot),
+                },
+                this.loopController.signal,
+              ),
             ),
             this.terminalReached.then(() => null),
           ]);
@@ -425,6 +451,11 @@ export class AgentLoop {
         if (this.terminal !== null) break;
         // 本轮全部执行完：继续下一模型轮（步数用尽后若下一轮为最终回答 → done）
       }
+      return this.buildResult();
+    } catch {
+      // A persistence callback can fail after a tool has already completed.
+      // Stop the run before any next action and preserve its actual counters.
+      this.finish('error', internalError('任务步骤处理失败，已停止后续操作', context));
       return this.buildResult();
     } finally {
       clearTimeout(timeoutTimer);
@@ -510,9 +541,7 @@ export class AgentLoop {
       status: terminal.status,
       finalText: committed ? '' : this.roundText, // 完成轮文本在轮次消息中（无重复拼接）
       finalToolCalls: committed ? [] : [...this.roundCalls],
-      stepsUsed: this.stepsUsed,
-      maxSteps: this.limits.maxSteps,
-      toolStepCount: this.toolSteps.length,
+      ...this.getProgress(),
       rounds: this.rounds,
       error: terminal.error,
     };

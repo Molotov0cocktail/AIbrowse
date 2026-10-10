@@ -37,6 +37,13 @@ export interface DigestProviderPort {
 export interface DigestScheduleControlPort {
   upsert(entry: { scheduleId: string; expectedNextDueAt: string; timeZone: string }): void;
   remove(scheduleId: string): void;
+  pauseForMaintenance?(generation: number): boolean;
+  drainForMaintenance?(generation: number): Promise<void>;
+  prepareResumeAfterMaintenance?(
+    generation: number,
+    entries: readonly { scheduleId: string; expectedNextDueAt: string; timeZone: string }[],
+  ): boolean;
+  resumeAfterMaintenance?(generation: number): boolean;
 }
 
 export interface DigestServiceOptions {
@@ -63,6 +70,14 @@ export class DigestService {
   private readonly controllers = new Set<AbortController>();
   private readonly attempts = new Set<Promise<unknown>>();
   private accepting = true;
+  private disposed = false;
+  private maintenanceGeneration: number | null = null;
+  private lastMaintenanceGeneration = 0;
+  private maintenanceDrained = false;
+  private maintenanceDrain: Promise<void> | null = null;
+  private maintenanceOperationFailed = false;
+  private maintenanceResumePrepared = false;
+  private unresolvedPersistenceFailure = false;
 
   constructor(private readonly options: DigestServiceOptions) {}
 
@@ -74,9 +89,9 @@ export class DigestService {
     aiEnabled?: boolean;
   }): Promise<{ ok: boolean }> {
     return this.track(async () => {
-      if (!this.accepting || this.options.membership === undefined) return { ok: false };
+      if (!this.admissionOpen || this.options.membership === undefined) return { ok: false };
       const resolution = await this.options.membership.resolve(input.selector);
-      if (!this.accepting || resolution.status !== 'ok') return { ok: false };
+      if (!this.admissionOpen || resolution.status !== 'ok') return { ok: false };
       const sourceIds = [...new Set(resolution.members.map((member) => member.sourceId))].sort(
         (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)),
       );
@@ -119,7 +134,7 @@ export class DigestService {
     expectedNextDueAt: string;
     logicalDate: string;
   }): Promise<{ ok: boolean; nextDueAt: string | null }> {
-    if (!this.accepting) return { ok: false, nextDueAt: null };
+    if (!this.admissionOpen) return { ok: false, nextDueAt: null };
     let schedule = this.options.repository.getDigestSchedule(input.scheduleId);
     if (
       schedule === null ||
@@ -163,6 +178,7 @@ export class DigestService {
 
   resumeActiveCycles(): Promise<void> {
     return this.track(async () => {
+      if (!this.admissionOpen) return;
       for (const schedule of this.options.repository.listActiveDigestSchedules()) {
         let run = this.options.repository.getNonterminalDigestRun(schedule.id);
         if (run?.state === 'budget_exceeded') {
@@ -189,7 +205,7 @@ export class DigestService {
   }
 
   pause(id: string, expectedVersion: number): WatchResult {
-    if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+    if (!this.admissionOpen) return { ok: false, code: 'store-unavailable' };
     const result = this.options.repository.pauseDigestSchedule(
       id,
       expectedVersion,
@@ -201,7 +217,7 @@ export class DigestService {
 
   resume(id: string, expectedVersion: number): Promise<WatchResult> {
     return this.track(async () => {
-      if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+      if (!this.admissionOpen) return { ok: false, code: 'store-unavailable' };
       const resumed = this.options.repository.resumeDigestSchedule(
         id,
         expectedVersion,
@@ -234,7 +250,7 @@ export class DigestService {
   }
 
   delete(id: string, expectedVersion: number): WatchResult {
-    if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+    if (!this.admissionOpen) return { ok: false, code: 'store-unavailable' };
     this.options.scheduleControl.remove(id);
     const result = this.options.repository.deleteDigestSchedule(id, expectedVersion);
     if (!result.ok) {
@@ -246,7 +262,7 @@ export class DigestService {
 
   retryBudget(runId: string): Promise<WatchResult> {
     return this.track(async () => {
-      if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+      if (!this.admissionOpen) return { ok: false, code: 'store-unavailable' };
       const retried = this.options.repository.revalidateDigestRunBudget(
         runId,
         this.options.clock.now().toISOString(),
@@ -269,7 +285,7 @@ export class DigestService {
   }
 
   setAiEnabled(id: string, expectedVersion: number, enabled: boolean): WatchResult {
-    if (!this.accepting) return { ok: false, code: 'store-unavailable' };
+    if (!this.admissionOpen) return { ok: false, code: 'store-unavailable' };
     return this.options.repository.setDigestScheduleAiEnabled(
       id,
       expectedVersion,
@@ -350,6 +366,105 @@ export class DigestService {
     this.accepting = false;
   }
 
+  pauseForMaintenance(generation: number): boolean {
+    if (this.disposed || !this.accepting) return false;
+    if (this.maintenanceGeneration !== null) return this.maintenanceGeneration === generation;
+    if (!Number.isSafeInteger(generation) || generation <= this.lastMaintenanceGeneration)
+      return false;
+    try {
+      if (this.options.scheduleControl.pauseForMaintenance?.(generation) !== true) return false;
+    } catch {
+      return false;
+    }
+    this.maintenanceGeneration = generation;
+    this.lastMaintenanceGeneration = generation;
+    this.maintenanceDrained = false;
+    this.maintenanceDrain = null;
+    this.maintenanceOperationFailed = false;
+    this.maintenanceResumePrepared = false;
+    return true;
+  }
+
+  drainForMaintenance(generation: number): Promise<void> {
+    if (
+      this.disposed ||
+      !this.accepting ||
+      this.maintenanceGeneration !== generation ||
+      this.options.scheduleControl.drainForMaintenance === undefined
+    ) {
+      return Promise.reject(new Error('Digest 维护世代不可用'));
+    }
+    this.maintenanceDrain ??= this.drainMaintenance(generation);
+    return this.maintenanceDrain;
+  }
+
+  prepareResumeAfterMaintenance(generation: number): boolean {
+    const control = this.options.scheduleControl;
+    if (
+      this.disposed ||
+      !this.accepting ||
+      this.maintenanceGeneration !== generation ||
+      !this.maintenanceDrained ||
+      control.prepareResumeAfterMaintenance === undefined
+    )
+      return false;
+    if (this.maintenanceResumePrepared) return true;
+    try {
+      const entries = this.options.repository.listActiveDigestSchedules().map((schedule) => ({
+        scheduleId: schedule.id,
+        expectedNextDueAt: schedule.nextDueAt,
+        timeZone: schedule.timeZone,
+      }));
+      if (!control.prepareResumeAfterMaintenance(generation, entries)) return false;
+    } catch {
+      return false;
+    }
+    this.maintenanceResumePrepared = true;
+    return true;
+  }
+
+  resumeAfterMaintenance(generation: number): boolean {
+    const control = this.options.scheduleControl;
+    if (
+      this.disposed ||
+      !this.accepting ||
+      this.maintenanceGeneration !== generation ||
+      !this.maintenanceDrained ||
+      !this.maintenanceResumePrepared ||
+      control.resumeAfterMaintenance === undefined
+    )
+      return false;
+    try {
+      if (!control.resumeAfterMaintenance(generation)) return false;
+    } catch {
+      return false;
+    }
+    this.maintenanceGeneration = null;
+    this.maintenanceDrained = false;
+    this.maintenanceDrain = null;
+    this.maintenanceResumePrepared = false;
+    return true;
+  }
+
+  private async drainMaintenance(generation: number): Promise<void> {
+    this.abort();
+    const schedulerDrain = this.options.scheduleControl.drainForMaintenance!(generation);
+    await schedulerDrain;
+    await this.drain();
+    if (
+      this.disposed ||
+      !this.accepting ||
+      this.maintenanceGeneration !== generation ||
+      this.maintenanceOperationFailed ||
+      this.unresolvedPersistenceFailure ||
+      this.hasClaimedProviderArtifact() ||
+      this.controllers.size !== 0
+    ) {
+      throw new Error('Digest 维护排水期间状态已改变');
+    }
+    this.maintenanceDrained = true;
+  }
+
   abort(): void {
     for (const controller of this.controllers) controller.abort();
   }
@@ -364,15 +479,18 @@ export class DigestService {
   dispose(): void {
     this.stopAdmission();
     this.abort();
+    this.disposed = true;
   }
 
   private processRun(
     schedule: StoredDigestSchedule,
     initialRun: StoredDigestRun,
   ): Promise<boolean> {
-    return this.options.ownership === undefined
-      ? this.processRunOwned(schedule, initialRun)
-      : this.options.ownership.track(() => this.processRunOwned(schedule, initialRun));
+    return this.registerAttempt(
+      this.options.ownership === undefined
+        ? this.invoke(() => this.processRunOwned(schedule, initialRun))
+        : this.options.ownership.track(() => this.processRunOwned(schedule, initialRun)),
+    );
   }
 
   private async processRunOwned(
@@ -381,10 +499,10 @@ export class DigestService {
   ): Promise<boolean> {
     let run = initialRun;
     for (const pending of this.options.repository.listPendingDigestArtifacts(run.id)) {
-      if (!this.accepting) return false;
+      if (!this.admissionOpen) return false;
       await this.attemptProvider(pending.id, schedule);
     }
-    while (this.accepting && run.nextSequence < run.upperSequence) {
+    while (this.admissionOpen && run.nextSequence < run.upperSequence) {
       const journal = this.options.repository.readDigestJournalSlice(run.id);
       if (journal === null) return false;
       const observations: DigestObservationSlice[] = [];
@@ -436,6 +554,7 @@ export class DigestService {
       run = refreshed;
       await Promise.resolve();
     }
+    if (!this.admissionOpen) return false;
     const refreshed = this.options.repository.getDigestRun(run.id);
     if (refreshed === null) return false;
     return this.options.repository.completeDigestRun(
@@ -445,9 +564,9 @@ export class DigestService {
   }
 
   private async attemptProvider(id: string, schedule: StoredDigestSchedule): Promise<void> {
-    if (!this.accepting) return;
+    if (!this.admissionOpen) return;
     const resolved = await this.options.provider.resolve();
-    if (!this.accepting) return;
+    if (!this.admissionOpen) return;
     let currentSchedule = this.options.repository.getDigestSchedule(schedule.id);
     let artifact = this.options.repository.getDigestArtifact(id);
     if (artifact === null || artifact.providerState !== 'pending' || currentSchedule === null)
@@ -472,7 +591,7 @@ export class DigestService {
       return;
     }
     const sharing = await this.options.sharing.get(currentSchedule.sourceIds);
-    if (!this.accepting) return;
+    if (!this.admissionOpen) return;
     currentSchedule = this.options.repository.getDigestSchedule(schedule.id);
     artifact = this.options.repository.getDigestArtifact(id);
     if (artifact === null || artifact.providerState !== 'pending' || currentSchedule === null)
@@ -511,7 +630,7 @@ export class DigestService {
       );
       return;
     }
-    if (!this.accepting) return;
+    if (!this.admissionOpen) return;
     const claimed = this.options.repository.claimDigestProvider({
       id,
       scheduleId: currentSchedule.id,
@@ -577,7 +696,7 @@ export class DigestService {
     const nowIso = this.options.clock.now().toISOString();
     if (failure === null && !done) failure = 'provider-error';
     if (failure !== null) {
-      this.options.repository.finishClaimedDigest({
+      const finished = this.options.repository.finishClaimedDigest({
         id: claimed.id,
         factsRevision: claimed.factsRevision,
         factsHash: claimed.factsHash,
@@ -586,10 +705,14 @@ export class DigestService {
         explanationJson: null,
         nowIso,
       });
+      if (!finished.ok && !this.claimWasAlreadyTerminal(claimed)) {
+        this.unresolvedPersistenceFailure = true;
+        throw new Error('Digest Provider 失败终态写入失败');
+      }
       return;
     }
     const explanation = parseDigestExplanation(raw, visibleEventIds);
-    this.options.repository.finishClaimedDigest({
+    const finished = this.options.repository.finishClaimedDigest({
       id: claimed.id,
       factsRevision: claimed.factsRevision,
       factsHash: claimed.factsHash,
@@ -598,23 +721,72 @@ export class DigestService {
       explanationJson: explanation === null ? null : raw,
       nowIso,
     });
+    if (!finished.ok && !this.claimWasAlreadyTerminal(claimed)) {
+      this.unresolvedPersistenceFailure = true;
+      throw new Error('Digest Provider 完成终态写入失败');
+    }
   }
 
   private track<T>(work: () => Promise<T>): Promise<T> {
     if (this.options.ownership?.admissionOpen() === false)
       return Promise.reject(new Error('资格Digest入口已关闭'));
     const operation =
-      this.options.ownership === undefined ? work() : this.options.ownership.track(work);
+      this.options.ownership === undefined ? this.invoke(work) : this.options.ownership.track(work);
+    return this.registerAttempt(operation);
+  }
+
+  private registerAttempt<T>(operation: Promise<T>): Promise<T> {
     this.attempts.add(operation);
     void operation.then(
       () => this.attempts.delete(operation),
-      () => this.attempts.delete(operation),
+      () => {
+        this.attempts.delete(operation);
+        if (this.maintenanceGeneration !== null) this.maintenanceOperationFailed = true;
+      },
     );
     return operation;
   }
 
+  private invoke<T>(work: () => Promise<T>): Promise<T> {
+    try {
+      return work();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  private get admissionOpen(): boolean {
+    return this.accepting && !this.disposed && this.maintenanceGeneration === null;
+  }
+
+  private claimWasAlreadyTerminal(claimed: StoredDigestArtifact): boolean {
+    let current: StoredDigestArtifact | null;
+    try {
+      current = this.options.repository.getDigestArtifact(claimed.id);
+    } catch {
+      this.unresolvedPersistenceFailure = true;
+      return false;
+    }
+    return (
+      current !== null &&
+      current.factsRevision === claimed.factsRevision &&
+      current.factsHash === claimed.factsHash &&
+      ['succeeded', 'failed', 'uncertain'].includes(current.providerState)
+    );
+  }
+
+  private hasClaimedProviderArtifact(): boolean {
+    return this.options.repository
+      .listDigestSchedules()
+      .some((schedule) =>
+        this.options.repository
+          .listDigestArtifactsBySchedule(schedule.id)
+          .some((artifact) => artifact.providerState === 'claimed'),
+      );
+  }
+
   private upsertSchedule(schedule: StoredDigestSchedule): void {
-    if (!this.accepting) return;
+    if (!this.admissionOpen) return;
     this.options.scheduleControl.upsert({
       scheduleId: schedule.id,
       expectedNextDueAt: schedule.nextDueAt,

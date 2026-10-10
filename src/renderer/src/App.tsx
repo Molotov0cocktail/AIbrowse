@@ -18,6 +18,8 @@ import type { ResearchResultView } from '../../shared/types/research';
 import type { TableViewState } from '../../shared/research/table-utils';
 import { WatchWorkspace } from './watch/WatchWorkspace';
 import type { InAppNotificationDto } from '../../shared/types/watch-ipc';
+import { LocalDataPanel } from './storage/LocalDataPanel';
+import { DiagnosticPanel } from './diagnostics/DiagnosticPanel';
 
 // 浏览器 chrome（T3）+ AI 侧栏停靠（S4，design §11.1）+ Agent 确认对话框（A6 §11.2，
 // App 级全局挂载）：顶部工具栏 + 标签栏为渲染层 UI，主内容区由主进程 WebContentsView
@@ -36,7 +38,9 @@ export default function App() {
   const contentRef = useRef<HTMLDivElement>(null);
   useContentBounds(contentRef);
   const addressBarRef = useRef<HTMLInputElement>(null);
-  const [sidePanel, setSidePanel] = useState<'ai' | 'sources' | 'research' | null>(null);
+  const [sidePanel, setSidePanel] = useState<'ai' | 'sources' | 'research' | 'diagnostics' | null>(
+    null,
+  );
   const [viewMode, setViewMode] = useState<'browser' | 'research-result' | 'watch'>(
     __WATCH_QUALIFICATION__ ? 'watch' : 'browser',
   );
@@ -68,7 +72,13 @@ export default function App() {
     () =>
       window.aibrowse.watch.subscribe((push) => {
         if (push.type === 'status') setWatchUnreadCount(push.status.unreadCount);
-        else if (viewModeRef.current !== 'watch') setWatchNotice(push.notification);
+        else if (push.type === 'activation') {
+          setWatchSourceId(null);
+          setSidePanel(null);
+          setWatchFocus({ type: push.subjectType, id: push.subjectId });
+          setViewMode('watch');
+          setWatchNotice(null);
+        } else if (viewModeRef.current !== 'watch') setWatchNotice(push.notification);
       }),
     [],
   );
@@ -184,6 +194,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="chrome">
+        <LocalDataPanel />
         <Toolbar
           activeTab={activeTab}
           onNavigate={(input) =>
@@ -199,7 +210,14 @@ export default function App() {
           }}
           onToggleAiPanel={() => setSidePanel((p) => (p === 'ai' ? null : 'ai'))}
           onToggleSourcesPanel={() => setSidePanel((p) => (p === 'sources' ? null : 'sources'))}
-          onToggleResearchPanel={() => setSidePanel((p) => (p === 'research' ? null : 'research'))}
+          onToggleDiagnostics={() =>
+            setSidePanel((p) => (p === 'diagnostics' ? null : 'diagnostics'))
+          }
+          onToggleResearchPanel={() => {
+            const opening = sidePanel !== 'research';
+            setSidePanel(opening ? 'research' : null);
+            if (opening) void research.refreshList(1);
+          }}
           onOpenWatch={() => {
             setSidePanel(null);
             setWatchFocus(null);
@@ -221,6 +239,7 @@ export default function App() {
           activeTabId={tabsState?.activeTabId ?? null}
           onActivate={(tabId) => void window.aibrowse.tabs.activate(tabId)}
           onClose={(tabId) => void window.aibrowse.tabs.close(tabId)}
+          onReload={(tabId) => void window.aibrowse.nav.reload(tabId)}
         />
       </header>
       {/* 内容行：内容容器（WebContentsView 覆盖区）+ 面板停靠（C8 决议 #163(1)：
@@ -259,6 +278,7 @@ export default function App() {
             }}
           />
         )}
+        {sidePanel === 'diagnostics' && <DiagnosticPanel onClose={() => setSidePanel(null)} />}
       </div>
       {/* 调试面板在底部通栏：高度变化被内容容器的 ResizeObserver 测量并上报 bounds（§11.2） */}
       <DebugPanel activeTabId={tabsState?.activeTabId ?? null} />

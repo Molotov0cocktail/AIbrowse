@@ -222,8 +222,20 @@ describe('ConversationService — 会话生命周期', () => {
     const dir = join(baseDir, 'case-order');
     const store = new ConversationStore(dir);
     store.saveSessions([
-      { id: 's-old', title: '旧', createdAt: 1000, updatedAt: 1000, ephemeral: false },
-      { id: 's-new', title: '新', createdAt: 2000, updatedAt: 2000, ephemeral: false },
+      {
+        id: '11111111-1111-4111-8111-000000000001',
+        title: '旧',
+        createdAt: 1000,
+        updatedAt: 1000,
+        ephemeral: false,
+      },
+      {
+        id: '11111111-1111-4111-8111-000000000002',
+        title: '新',
+        createdAt: 2000,
+        updatedAt: 2000,
+        ephemeral: false,
+      },
     ]);
     const service = new ConversationServiceImpl({
       browser: new StubBrowser(),
@@ -231,7 +243,10 @@ describe('ConversationService — 会话生命周期', () => {
       configStore: new ConfigStore(dir, stubCredentials),
       credentials: stubCredentials,
     });
-    expect((await service.listSessions()).map((s) => s.id)).toEqual(['s-new', 's-old']);
+    expect((await service.listSessions()).map((s) => s.id)).toEqual([
+      '11111111-1111-4111-8111-000000000002',
+      '11111111-1111-4111-8111-000000000001',
+    ]);
   });
 
   it(`会话上限 ${SESSION_LIMIT}：达上限拒绝新建非 ephemeral（返回 null），ephemeral 不受限`, async () => {
@@ -752,7 +767,7 @@ describe('ConversationService — 持久化与 ephemeral 不落盘', () => {
   it('每会话消息上限 200：超出确定性裁掉最早消息并保留最近 200 条', async () => {
     const dir = join(baseDir, 'case-msg-limit');
     const store = new ConversationStore(dir);
-    const id = 'sess-limit';
+    const id = '11111111-1111-4111-8111-000000000003';
     store.saveSessions([{ id, title: '上限', createdAt: 1000, updatedAt: 1000, ephemeral: false }]);
     const seeded: ConversationMessage[] = Array.from({ length: 199 }, (_, i) => ({
       id: `seed-${i}`,
@@ -1162,6 +1177,38 @@ describe('ConversationService — agentAsk 编排（Provider 未配置/不支持
 });
 
 describe('ConversationService — agentAsk 多步编排与持久化', () => {
+  it('单轮四个工具调用全部落盘并完成，终态不因第二条工具结果变成错误', async () => {
+    const f = makeAgentService();
+    const toolCalls = ['browser_read', 'browser_get_tabs', 'browser_read', 'browser_get_tabs'].map(
+      (name, index) => ({ id: `batch-${index}`, name, arguments: '{}' }),
+    );
+    f.setScript({ rounds: [[{ kind: 'toolCalls', toolCalls }], [{ text: '批次完成' }]] });
+    const session = await f.service.createSession();
+    const sid = session?.id ?? '';
+    const { result, run } = await agentAskAndWait(f, sid, '读取并列出标签页');
+    expect(run.run).toMatchObject({ status: 'done', stepsUsed: 4, toolStepCount: 4 });
+    expect(run.status).toBe('complete');
+    const persisted = new ConversationStore(f.dir).loadMessages(sid);
+    expect(persisted.map((entry) => entry.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'tool',
+      'tool',
+      'tool',
+      'assistant',
+    ]);
+    expect(
+      persisted.filter((entry) => entry.role === 'tool').map((entry) => entry.toolCallId),
+    ).toEqual(toolCalls.map((call) => call.id));
+    expect(f.turns.filter((turn) => turn.requestId === result.requestId)).toHaveLength(1);
+    expect(f.runs.filter((turn) => turn.requestId === result.requestId)).toHaveLength(1);
+    expect(f.steps).toHaveLength(4);
+    expect(f.auditEntries).toHaveLength(4);
+    expect(f.service.getStorageStatus()).toEqual({ state: 'ready', code: null });
+    await f.service.shutdown();
+  });
+
   it('多步 run：ToolStep 持久化 + 终态 assistant 恰好一次 + turn-done/agent-run-done 各恰好一次', async () => {
     const f = makeAgentService();
     f.setScript({
