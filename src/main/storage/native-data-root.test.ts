@@ -36,6 +36,12 @@ const metadata = new Map<string, BigIntStats | Error>();
 const nativePaths = new Map<string, string>();
 const aliases = new Map<string, string>();
 
+it.each(['data-transfer', 'lifecycle-guardian'])('拒绝 %s 持久恢复目录的视图替换', (member) => {
+  file(member + '/record');
+  metadata.set(join(logical, member), changedStats(join(native, member), { ino: 987654321n }));
+  expect(() => resolveNativeDataRoot(logical)).toThrow();
+});
+
 function mapped(path: PathLike): string {
   const value = String(path);
   const alias = aliases.get(value);

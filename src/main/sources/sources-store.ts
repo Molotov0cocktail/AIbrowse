@@ -30,7 +30,7 @@ import {
   quickCheckDb,
 } from './db/backup';
 import { MIGRATIONS, runMigrations, type MigrationStep } from './db/migrations';
-import { openDb, closeDb, type DbHandle } from './db/sqlite-driver';
+import { openDb, closeDb, requireVerifiedTransferHandle, type DbHandle } from './db/sqlite-driver';
 import { SourceServiceImpl } from './source-service';
 import type { SourceService } from '../../shared/types/sources';
 import type { SourceLifecycleObserver } from '../../shared/types/watch';
@@ -49,6 +49,32 @@ export type SourcesStoreOutcome =
   | { mode: 'normal'; service: SourceService; reason: null }
   | { mode: 'readonly-recovery'; service: SourceService; reason: string }
   | { mode: 'unavailable'; service: null; reason: string };
+
+/** Main-only assembly after utility normalization and parent hash verification.
+ * Business admission stays closed until durable dataset commit and activation.
+ * The supplied handle transfers to the service; startup maintenance is not replayed.
+ */
+export function assembleVerifiedTransferSourcesStore(
+  options: SourcesStoreOptions,
+  handle: DbHandle,
+): SourcesStoreOutcome {
+  try {
+    requireVerifiedTransferHandle(handle, options.dbPath);
+    const service = new SourceServiceImpl({
+      observer: options.observer,
+      db: handle,
+      now: options.nowMs ?? (() => Date.now()),
+    });
+    return { mode: 'normal', service, reason: null };
+  } catch {
+    try {
+      handle.close();
+    } catch {
+      /* Main retains ownership if close fails. */
+    }
+    return { mode: 'unavailable', service: null, reason: '恢复后的信源服务健康装配失败' };
+  }
+}
 
 export function openSourcesStore(options: SourcesStoreOptions): SourcesStoreOutcome {
   const steps = options.migrations ?? MIGRATIONS;

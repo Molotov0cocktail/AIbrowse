@@ -8,6 +8,8 @@
 // (B2+). The ExperimentalWarning emitted on first node:sqlite import is recorded
 // truthfully by the process (stderr), never suppressed.
 import { DatabaseSync } from 'node:sqlite';
+import { closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
 
 // --- connection-level operational SQL (compile-time constants only) ---
 const SQL_BEGIN = 'BEGIN';
@@ -106,6 +108,165 @@ export function openDb(path: string, options: DbOpenOptions = {}): DbHandle {
 
 export function closeDb(handle: DbHandle): void {
   handle.close(); // 幂等（内部守卫）
+}
+
+const verifiedHandles = new WeakMap<DbHandle, () => boolean>();
+const transferError = (): Error => new Error('恢复健康句柄未就绪或操作不允许');
+
+export interface VerifiedTransferDatabase {
+  readonly handle: DbHandle;
+  /** Main retains this closure until its same-instance health proof and durable commit. */
+  activateWrites(): void;
+}
+
+/** Only a fixed, hash-verified, normalized transfer member may enter this API.
+ * Caller owns the directory identity, instance lock and closed business admission.
+ * The connection stays in DELETE mode for this process, including after activation.
+ * This factory does not grant schema/semantic validation or a successful commit.
+ */
+export function openVerifiedTransferDb(path: string): VerifiedTransferDatabase {
+  let actual: DbHandle | null = null;
+  try {
+    if (!isAbsolute(path)) throw transferError();
+    const before = lstatSync(path, { bigint: true });
+    const canonical = realpathSync.native(path);
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      before.nlink !== 1n ||
+      before.size < 100n ||
+      (process.platform === 'win32'
+        ? canonical.toLowerCase() !== resolve(path).toLowerCase()
+        : canonical !== resolve(path))
+    )
+      throw transferError();
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      try {
+        lstatSync(path + suffix);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') continue;
+        throw transferError();
+      }
+      throw transferError();
+    }
+    // Reject WAL headers before SQLite can create SHM/WAL while opening them.
+    const fd = openSync(path, 'r');
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      const header = Buffer.alloc(20);
+      if (
+        opened.dev !== before.dev ||
+        opened.ino !== before.ino ||
+        readSync(fd, header, 0, header.length, 0) !== header.length ||
+        !header.subarray(0, 16).equals(Buffer.from('SQLite format 3\0')) ||
+        header[18] !== 1 ||
+        header[19] !== 1
+      )
+        throw transferError();
+    } finally {
+      closeSync(fd);
+    }
+    actual = openDb(path, { wal: false });
+    actual.exec('PRAGMA query_only = ON');
+    const after = lstatSync(path, { bigint: true });
+    if (
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      (actual.prepare('PRAGMA query_only').get() as { query_only: number }).query_only !== 1 ||
+      (actual.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode !==
+        'delete'
+    )
+      throw transferError();
+    const connection = actual;
+    let active = false;
+    const requireWrites = (): void => {
+      if (!connection.isOpen || !active) throw transferError();
+    };
+    const requireRead = (sql: string): void => {
+      if (!connection.isOpen) throw transferError();
+      if (active) return;
+      // query_only rejects DML reached through get/all (including WITH/RETURNING).
+      // A closed PRAGMA allowlist prevents read methods from turning query_only off.
+      const text = sql.trim();
+      if (
+        !/^(?:SELECT|WITH)\b/iu.test(text) &&
+        !/^PRAGMA\s+(?:query_only|journal_mode|user_version|foreign_keys|quick_check|integrity_check|foreign_key_check)\s*;?$/iu.test(
+          text,
+        )
+      )
+        throw transferError();
+    };
+    const handle: DbHandle = {
+      path,
+      get isOpen() {
+        return connection.isOpen;
+      },
+      prepare: (sql) => {
+        if (!connection.isOpen) throw transferError();
+        // Some PRAGMAs execute during SQLite prepare, before get/run/all.
+        // Keep preparation lazy so admission checks precede compilation too.
+        let statement: DbStatement | undefined;
+        const prepared = (): DbStatement => (statement ??= connection.prepare(sql));
+        return {
+          run: (...params) => {
+            requireWrites();
+            return prepared().run(...params);
+          },
+          get: (...params) => {
+            requireRead(sql);
+            return prepared().get(...params);
+          },
+          all: (...params) => {
+            requireRead(sql);
+            return prepared().all(...params);
+          },
+        };
+      },
+      exec: (sql) => {
+        requireWrites();
+        connection.exec(sql);
+      },
+      close: () => connection.close(),
+    };
+    verifiedHandles.set(handle, () => connection.isOpen && !active);
+    return {
+      handle,
+      activateWrites: () => {
+        if (!connection.isOpen) throw transferError();
+        if (active) return;
+        try {
+          connection.exec('PRAGMA query_only = OFF');
+          if (
+            (connection.prepare('PRAGMA query_only').get() as { query_only: number }).query_only !==
+            0
+          )
+            throw transferError();
+          active = true;
+        } catch {
+          try {
+            connection.close();
+          } catch {
+            /* Main keeps the admission gate closed. */
+          }
+          throw transferError();
+        }
+      },
+    };
+  } catch {
+    try {
+      actual?.close();
+    } catch {
+      /* The caller retains the failed dataset. */
+    }
+    throw transferError();
+  }
+}
+
+/** Store-only capability check; ordinary or already-activated handles are rejected. */
+export function requireVerifiedTransferHandle(handle: DbHandle, path: string): void {
+  if (handle.path !== path || verifiedHandles.get(handle)?.() !== true) throw transferError();
 }
 
 export function withTransaction<T>(handle: DbHandle, fn: () => T): T {

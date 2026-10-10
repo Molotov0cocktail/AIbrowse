@@ -122,6 +122,10 @@ export class InMemoryConfirmTokenIssuer implements ConfirmTokenIssuer {
 
   constructor(private readonly nowMs: () => number) {}
 
+  clear(): void {
+    this.tokens.clear();
+  }
+
   issue(sourceId: string): string {
     const token = randomBytes(32).toString('hex');
     this.tokens.set(token, {
@@ -209,6 +213,51 @@ export class SourceServiceImpl implements SourceService {
   private readonly state: { mode: 'normal' | 'readonly-recovery'; reason: string | null };
   private readonly watchObserver: SourceLifecycleObserver;
   private disposed = false;
+  private maintenanceGeneration: number | null = null;
+  private lastMaintenanceGeneration = 0;
+  private maintenancePrepared = false;
+
+  private get admissionClosed(): boolean {
+    return this.disposed || this.maintenanceGeneration !== null;
+  }
+
+  // Called only after every producer and its local persistence tail has settled.
+  sealForMaintenance(generation: number): boolean {
+    if (this.disposed || this.state.mode !== 'normal' || this.dbHandle?.isOpen !== true)
+      return false;
+    if (this.maintenanceGeneration !== null) return this.maintenanceGeneration === generation;
+    if (!Number.isSafeInteger(generation) || generation <= this.lastMaintenanceGeneration)
+      return false;
+    this.maintenanceGeneration = generation;
+    this.lastMaintenanceGeneration = generation;
+    this.maintenancePrepared = false;
+    this.tokenIssuer.clear();
+    return true;
+  }
+
+  prepareResumeAfterMaintenance(generation: number): boolean {
+    if (
+      this.disposed ||
+      this.maintenanceGeneration !== generation ||
+      this.dbHandle?.isOpen !== true
+    )
+      return false;
+    this.maintenancePrepared = true;
+    return true;
+  }
+
+  resumeAfterMaintenance(generation: number): boolean {
+    if (
+      !this.maintenancePrepared ||
+      this.disposed ||
+      this.maintenanceGeneration !== generation ||
+      this.dbHandle?.isOpen !== true
+    )
+      return false;
+    this.maintenanceGeneration = null;
+    this.maintenancePrepared = false;
+    return true;
+  }
 
   constructor(options: SourceServiceOptions) {
     this.dbHandle = options.db;
@@ -256,7 +305,8 @@ export class SourceServiceImpl implements SourceService {
     if (typeof __WATCH_QUALIFICATION__ === 'undefined' || !__WATCH_QUALIFICATION__) {
       throw new Error('资格 Source seed 入口未编译');
     }
-    if (this.disposed || this.state.mode !== 'normal') throw new Error('资格 Source 服务不可用');
+    if (this.admissionClosed || this.state.mode !== 'normal')
+      throw new Error('资格 Source 服务不可用');
     assertQualificationSeedDatabase(auth, 'sources', this.handle.path);
     assertQualificationSeedAuthorization(auth, 'sources', descriptorHash, expandedHash, m0Ms);
     const sources = createQualificationSources(m0Ms);
@@ -346,7 +396,20 @@ export class SourceServiceImpl implements SourceService {
   // found/missing/unavailable。coordinator 经延迟端口读取；unavailable 绝不
   // 降级为 missing。
   getSourceWatchProjection(sourceId: string): SourceWatchProjectionReadResult {
-    if (this.disposed) return { status: 'unavailable' };
+    if (this.admissionClosed) return { status: 'unavailable' };
+    return this.readSourceWatchProjection(sourceId);
+  }
+
+  getSourceWatchProjectionForMaintenance(
+    sourceId: string,
+    generation: number,
+  ): SourceWatchProjectionReadResult {
+    if (this.disposed || this.maintenanceGeneration !== generation)
+      return { status: 'unavailable' };
+    return this.readSourceWatchProjection(sourceId);
+  }
+
+  private readSourceWatchProjection(sourceId: string): SourceWatchProjectionReadResult {
     if (!isUuidShape(sourceId)) return { status: 'missing' }; // 非法 id 确定性不存在
     let row: SourceRow | null;
     try {
@@ -366,7 +429,7 @@ export class SourceServiceImpl implements SourceService {
   // body, usage, group or repository handle; missing Sources are omitted so the
   // Provider projector treats them exactly like blocked rows.
   getDigestSharingProjections(sourceIds: readonly string[]): DigestSharingReadResult {
-    if (this.disposed || sourceIds.length > 100) return { status: 'unavailable' };
+    if (this.admissionClosed || sourceIds.length > 100) return { status: 'unavailable' };
     const projections: DigestSourceSharingProjection[] = [];
     try {
       for (const sourceId of [...new Set(sourceIds)].sort()) {
@@ -392,7 +455,7 @@ export class SourceServiceImpl implements SourceService {
     sourceIds?: readonly string[];
     groupId?: string;
   }): DigestMembershipReadResult {
-    if (this.disposed) return { status: 'unavailable', members: [] };
+    if (this.admissionClosed) return { status: 'unavailable', members: [] };
     const hasIds = Array.isArray(selector.sourceIds);
     const hasGroup = typeof selector.groupId === 'string';
     if (hasIds === hasGroup) return { status: 'unavailable', members: [] };
@@ -496,7 +559,7 @@ export class SourceServiceImpl implements SourceService {
     query: string,
     opts: { limit?: number; audience: SourceReadAudience },
   ): Promise<SourceSearchResult> {
-    if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { ok: false, errorCode: 'source-unavailable' };
     const audience = this.validAudience(opts?.audience);
     if (audience === null) return { ok: false, errorCode: 'source-invalid-change' };
     if (
@@ -552,7 +615,7 @@ export class SourceServiceImpl implements SourceService {
     enabledOnly?: boolean;
     audience: SourceReadAudience;
   }): Promise<SourceListResult> {
-    if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { ok: false, errorCode: 'source-unavailable' };
     const audience = this.validAudience(opts?.audience);
     if (audience === null) return { ok: false, errorCode: 'source-invalid-change' };
     const page = opts?.page;
@@ -582,7 +645,7 @@ export class SourceServiceImpl implements SourceService {
   }
 
   async get(id: string, audience: SourceReadAudience): Promise<SourceResult> {
-    if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { ok: false, errorCode: 'source-unavailable' };
     if (this.validAudience(audience) === null) {
       return { ok: false, errorCode: 'source-invalid-change' };
     }
@@ -607,7 +670,7 @@ export class SourceServiceImpl implements SourceService {
   // B5 决议 #71：分组浏览最小有界读取路径——分页 pageSize ≤20、确定性排序
   // （Repository 编译期常量 SQL：名 NOCASE + id 收尾）、软删过滤；非法输入安全返回。
   async listGroups(opts: { page: number; pageSize?: number }): Promise<SourceGroupsResult> {
-    if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { ok: false, errorCode: 'source-unavailable' };
     const page = opts?.page;
     if (typeof page !== 'number' || !Number.isInteger(page) || page < 0) {
       return { ok: false, errorCode: 'source-invalid-change' };
@@ -632,7 +695,7 @@ export class SourceServiceImpl implements SourceService {
   // metadata 默认（手工通道缺省，决议 #52）；精确重复 → duplicate（唯一约束语义，
   // 不自动覆盖/合并）；同 origin 不同页面 → ≤5 条「可能相关」有界提示。
   async quickAddPage(rawUrl: string): Promise<QuickAddResult> {
-    if (this.disposed) return { status: 'error', errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { status: 'error', errorCode: 'source-unavailable' };
     const normalized = normalizeSourceUrl(rawUrl, 'page');
     if (!normalized.ok) return { status: 'unsupported-url' };
     try {
@@ -670,7 +733,7 @@ export class SourceServiceImpl implements SourceService {
     cs: SourceChangeSet,
     meta: { runId: string; toolCallId: string },
   ): Promise<SourceChangeResult> {
-    if (this.disposed) {
+    if (this.admissionClosed) {
       return { ok: false, idempotencyKey: '', errorCode: 'source-unavailable', results: [] };
     }
     if (
@@ -945,7 +1008,7 @@ export class SourceServiceImpl implements SourceService {
   // （不生成 journal/idempotency key、不触碰任何写路径）。预览失败 → 对应错误码
   // （调用方 fail-closed，模型可修正重提）。
   async previewChangeSet(cs: SourceChangeSet): Promise<SourcePreviewResult> {
-    if (this.disposed) return { ok: false, opsCount: 0, errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { ok: false, opsCount: 0, errorCode: 'source-unavailable' };
     const opsCount =
       (cs as { ops?: unknown })?.ops !== undefined && Array.isArray((cs as { ops: unknown }).ops)
         ? (cs as { ops: unknown[] }).ops.length
@@ -1003,7 +1066,7 @@ export class SourceServiceImpl implements SourceService {
   // --- 手工操作（UI 通道：同一事务/journal 语义；trust 恒 user-asserted） ---
 
   async addManual(input: ManualAddInput): Promise<ManualWriteResult> {
-    if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { ok: false, errorCode: 'source-unavailable' };
     const validation = validateManualAddInput(input);
     if (!validation.ok || validation.input === null) {
       return { ok: false, errorCode: validation.errorCode ?? 'source-invalid-change' };
@@ -1068,7 +1131,7 @@ export class SourceServiceImpl implements SourceService {
     patch: ManualPatch,
     expectedVersion: number,
   ): Promise<ManualWriteResult> {
-    if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { ok: false, errorCode: 'source-unavailable' };
     if (!isUuidShape(id)) return { ok: false, errorCode: 'source-invalid-change' };
     if (
       typeof expectedVersion !== 'number' ||
@@ -1159,7 +1222,7 @@ export class SourceServiceImpl implements SourceService {
   }
 
   async hardDeleteManual(id: string, confirmToken: string): Promise<ManualWriteResult> {
-    if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { ok: false, errorCode: 'source-unavailable' };
     if (!isUuidShape(id)) return { ok: false, errorCode: 'source-invalid-change' };
     if (!this.tokenIssuer.consume(id, confirmToken)) {
       return { ok: false, errorCode: 'source-conflict' }; // 未签发/错绑定/过期/重用（决议 #56）
@@ -1204,14 +1267,14 @@ export class SourceServiceImpl implements SourceService {
   }
 
   issueDeleteConfirmToken(sourceId: string): string {
-    if (this.disposed) return ''; // 恢复态/不可用态：删除通道整体关闭
+    if (this.admissionClosed) return ''; // 恢复态/不可用态：删除通道整体关闭
     return this.tokenIssuer.issue(sourceId);
   }
 
   // --- Undo（§7.5：消费语义决议 #52；版本冲突拒绝；畸形 payload 安全失败） ---
 
   async undoChange(idempotencyKey: string): Promise<UndoResult> {
-    if (this.disposed) return { ok: false, errorCode: 'source-unavailable' };
+    if (this.admissionClosed) return { ok: false, errorCode: 'source-unavailable' };
     if (typeof idempotencyKey !== 'string' || idempotencyKey === '') {
       return { ok: false, errorCode: 'source-undo-not-found' };
     }
@@ -1326,7 +1389,7 @@ export class SourceServiceImpl implements SourceService {
   }
 
   async listUndoable(): Promise<UndoableChange[]> {
-    if (this.disposed) return [];
+    if (this.admissionClosed) return [];
     try {
       const entries = this.journal.listRecent(JOURNAL_MAX_ENTRIES);
       const out: UndoableChange[] = [];
@@ -1367,7 +1430,7 @@ export class SourceServiceImpl implements SourceService {
   // updated_at、不写 journal、不触发 changed。写失败继续 B6 安全 no-op 契约
   // （不改变 browser_open 的 ToolResult/权限/Agent 终态）。
   async recordUsage(sourceId: string, outcome: SourceUsageOutcome): Promise<void> {
-    if (this.disposed) return;
+    if (this.admissionClosed) return;
     if (!isUuidShape(sourceId) || !USAGE_OUTCOMES.includes(outcome)) {
       logWarn('sources', 'recordUsage 输入非法（安全 no-op）');
       return;
@@ -1389,7 +1452,7 @@ export class SourceServiceImpl implements SourceService {
   // 均返回有界中文诊断（行数对比；renderer 不得获得绝对路径）。复用
   // SourceSearchIndex.rebuildFts/verifyFtsConsistency（B3 内部能力）。
   async rebuildSearchIndex(): Promise<FtsRebuildResult> {
-    if (this.disposed) {
+    if (this.admissionClosed) {
       return {
         ok: false,
         sourceCount: 0,
@@ -1425,7 +1488,7 @@ export class SourceServiceImpl implements SourceService {
   }
 
   dispose(): void {
-    if (this.disposed) return; // 幂等
+    if (this.disposed) return; // Idempotent even when maintenance has sealed admission.
     this.disposed = true;
     if (this.dbHandle !== null) closeDb(this.dbHandle);
   }
@@ -1817,7 +1880,8 @@ export class SourceServiceImpl implements SourceService {
     expectedVersion: number,
     kind: 'disable' | 'restore',
   ): Promise<ManualWriteResult> {
-    if (this.disposed) return Promise.resolve({ ok: false, errorCode: 'source-unavailable' });
+    if (this.admissionClosed)
+      return Promise.resolve({ ok: false, errorCode: 'source-unavailable' });
     if (!isUuidShape(id)) return Promise.resolve({ ok: false, errorCode: 'source-invalid-change' });
     if (
       typeof expectedVersion !== 'number' ||

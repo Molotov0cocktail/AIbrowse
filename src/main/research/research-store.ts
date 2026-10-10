@@ -16,6 +16,7 @@ import { checkDbIntegrity, probeDbFile, quickCheckDb } from '../sources/db/backu
 import { runMigrations, type MigrationStep } from '../sources/db/migrations';
 import { closeDb, openResearchDb, withTransaction, type DbHandle } from './db/research-driver';
 import { RESEARCH_MIGRATIONS } from './db/research-migrations';
+import { requireVerifiedTransferHandle } from '../sources/db/sqlite-driver';
 import { ResearchRepository } from './repository/research-repository';
 import { ResearchServiceImpl } from './research-service';
 import type {
@@ -38,6 +39,33 @@ export interface ResearchStoreOptions {
   // 状态查询不谎报：同步仅能证明的粗粒度状态，真实 capability 异步 resolve）
   getSourcesState?: () => ResearchSourcesState;
   getProviderState?: () => ResearchProviderState;
+}
+
+/** Main-only assembly of an already-normalized and hash-verified transfer member.
+ * Startup writes ran in private work. Main keeps admission shut through commit.
+ */
+export function assembleVerifiedTransferResearchStore(
+  options: ResearchStoreOptions,
+  handle: DbHandle,
+): ResearchStoreOutcome {
+  try {
+    requireVerifiedTransferHandle(handle, options.dbPath);
+    const service = new ResearchServiceImpl({
+      db: handle,
+      now: options.nowMs ?? (() => Date.now()),
+      runtimeFactory: options.buildRuntimeFactory?.(handle),
+      getSourcesState: options.getSourcesState,
+      getProviderState: options.getProviderState,
+    });
+    return { mode: 'normal', service, reason: null };
+  } catch {
+    try {
+      handle.close();
+    } catch {
+      /* Main retains ownership if close fails. */
+    }
+    return { mode: 'unavailable', service: null, reason: '恢复后的研究服务健康装配失败' };
+  }
 }
 
 export function openResearchStore(options: ResearchStoreOptions): ResearchStoreOutcome {

@@ -12,6 +12,8 @@ const NODE_MEMBERS = [
   ['research', 'directory'],
   ['watch', 'directory'],
   ['log', 'directory'],
+  ['data-transfer', 'directory'],
+  ['lifecycle-guardian', 'directory'],
 ] as const;
 const MAX_DIRECTORY_DEPTH = 32;
 

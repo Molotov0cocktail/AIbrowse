@@ -77,6 +77,13 @@ export type SourceUsageWriter = (
 
 export class SourceUsageTracker {
   private readonly store = new SourceSearchHintStore();
+  private readonly writes = new Set<Promise<void>>();
+  private disposed = false;
+
+  // Admission is closed by the owner before waiting; clearing hints never drops writes.
+  async waitForIdle(): Promise<void> {
+    while (this.writes.size > 0) await Promise.allSettled([...this.writes]);
+  }
 
   // writer 为装配层注入（index.ts 传 SourceService.recordUsage 绑定；null = 无
   // SourceService → 零写入零抛出）。
@@ -85,10 +92,18 @@ export class SourceUsageTracker {
   // run 级桥（装配层每 run 创建一次，绑定 runId）——recordSearchHits/onBrowserOpen/
   // clearRun 为闭包，模型/工具无任何通道指定或跨 run；AgentLoop 终态调用 clearRun。
   bridge(runId: string): SourceUsageContext {
+    let cleared = false;
     return {
-      recordSearchHits: (hits) => this.store.recordHits(runId, hits),
-      onBrowserOpen: (url, ok) => this.handleOpen(runId, url, ok),
-      clearRun: () => this.store.clearRun(runId),
+      recordSearchHits: (hits) => {
+        if (!cleared && !this.disposed) this.store.recordHits(runId, hits);
+      },
+      onBrowserOpen: (url, ok) => {
+        if (!cleared && !this.disposed) this.handleOpen(runId, url, ok);
+      },
+      clearRun: () => {
+        cleared = true;
+        this.store.clearRun(runId);
+      },
     };
   }
 
@@ -97,6 +112,7 @@ export class SourceUsageTracker {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.store.dispose();
   }
 
@@ -113,9 +129,20 @@ export class SourceUsageTracker {
     try {
       const result = this.writer(sourceId, outcome);
       if (typeof result === 'object' && result !== null && typeof result.then === 'function') {
-        void result.catch((err: unknown) => {
-          logWarn('sources', `usage 写入失败（已忽略，不影响工具结果；sourceId=${sourceId}）`, err);
-        });
+        this.writes.add(result);
+        void result.then(
+          () => {
+            this.writes.delete(result);
+          },
+          (err: unknown) => {
+            this.writes.delete(result);
+            logWarn(
+              'sources',
+              `usage 写入失败（已忽略，不影响工具结果；sourceId=${sourceId}）`,
+              err,
+            );
+          },
+        );
       }
     } catch (err) {
       logWarn('sources', `usage 写入失败（已忽略，不影响工具结果；sourceId=${sourceId}）`, err);

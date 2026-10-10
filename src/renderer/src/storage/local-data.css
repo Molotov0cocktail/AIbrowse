@@ -1,0 +1,33 @@
+.local-data {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+.local-data summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.local-data-body {
+  max-height: 260px;
+  overflow: auto;
+  padding: 4px 0;
+}
+.local-data p {
+  margin: 6px 0;
+}
+.local-data [role='alert'] {
+  color: #ffb4a9;
+}
+.local-data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.local-data button,
+.local-data summary {
+  min-height: 28px;
+}
+.local-data button:focus-visible,
+.local-data summary:focus-visible {
+  outline: 2px solid #73b7ff;
+  outline-offset: 2px;
+}

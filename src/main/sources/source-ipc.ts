@@ -9,6 +9,7 @@
 // stateOverride 为 SMOKE_MODE 专属注入点（生产行为不变）——冒烟驱动恢复态/
 // 不可用态 UI 断言（决议 #74 测试落点）。
 import { logInfo } from '../logger';
+import { MaintenanceAdmission } from '../storage/maintenance-admission';
 import {
   isUuidShape,
   validateManualAddInput,
@@ -306,43 +307,7 @@ function fieldLens(raw: Record, allowed: readonly string[]): { fields: string[];
  * dispose 前完成。这个小型计数器保持在 Sources IPC 边界，不改变 SourceService
  * 或 repository 的公共协议。
  */
-export class SourcesIpcAdmission {
-  private open = true;
-  private inFlight = 0;
-  private readonly drainWaiters: Array<() => void> = [];
-
-  isOpen(): boolean {
-    return this.open;
-  }
-
-  beginShutdown(): void {
-    this.open = false;
-    this.resolveDrainWaiters();
-  }
-
-  enter(): (() => void) | null {
-    if (!this.open) return null;
-    this.inFlight += 1;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.inFlight -= 1;
-      this.resolveDrainWaiters();
-    };
-  }
-
-  async drain(): Promise<void> {
-    if (this.inFlight === 0) return;
-    await new Promise<void>((resolve) => this.drainWaiters.push(resolve));
-  }
-
-  private resolveDrainWaiters(): void {
-    if (this.inFlight !== 0) return;
-    const waiters = this.drainWaiters.splice(0);
-    for (const resolve of waiters) resolve();
-  }
-}
+export class SourcesIpcAdmission extends MaintenanceAdmission {}
 
 export interface SourcesAdapterOptions {
   // 惰性解析：主进程 index.ts 的 handler 注册早于 SourceService 装配（createBrowserWindow

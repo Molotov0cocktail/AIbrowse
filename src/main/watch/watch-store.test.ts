@@ -30,6 +30,7 @@ import {
   recoverAndStartWatchRuntime,
   restoreWatchStore,
   WATCH_BACKUP_NAME_PATTERN,
+  type RecoveredWatchRuntimePorts,
 } from './watch-store';
 import { WatchRepository } from './repository/watch-repository';
 import type { WatchRule } from '../../shared/types/watch';
@@ -98,6 +99,7 @@ describe('D8 产品启动恢复闸门', () => {
     let published = false;
     let unavailable = false;
     let admissionStopped = false;
+    let coordinatorSealed = false;
     const result = await recoverAndStartWatchRuntime({
       repo: outcome.repo,
       digest: {
@@ -121,6 +123,9 @@ describe('D8 产品启动恢复闸门', () => {
         start: () => {
           watchStarts += 1;
         },
+        beginShutdown: () => {
+          coordinatorSealed = true;
+        },
         stop: async () => undefined,
       },
       lifecycle: {
@@ -137,13 +142,119 @@ describe('D8 产品启动恢复闸门', () => {
       },
     });
     expect(result.ok).toBe(false);
-    expect({ watchStarts, digestInitializes, published, unavailable, admissionStopped }).toEqual({
+    expect(result).toEqual({
+      ok: false,
+      reason: 'Digest cycle 启动恢复失败',
+      retained: false,
+      drainFailed: false,
+    });
+    expect({
+      watchStarts,
+      digestInitializes,
+      published,
+      unavailable,
+      admissionStopped,
+      coordinatorSealed,
+    }).toEqual({
       watchStarts: 0,
       digestInitializes: 0,
       published: false,
       unavailable: true,
       admissionStopped: true,
+      coordinatorSealed: true,
     });
+    expect(() => outcome.repo.listRules()).toThrow();
+  });
+
+  it('启动失败排水保持端口实例this绑定', async () => {
+    const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('normal');
+    if (outcome.mode !== 'normal') return;
+    const calls: string[] = [];
+    const ports: RecoveredWatchRuntimePorts = {
+      repo: outcome.repo,
+      digest: {
+        async resumeActiveCycles() {
+          if (this !== ports.digest) throw new Error('digest this lost');
+          calls.push('resume');
+          throw new Error('controlled recovery failure');
+        },
+        stopAdmission() {
+          if (this !== ports.digest) throw new Error('digest this lost');
+          calls.push('digest-seal');
+        },
+        abort() {
+          if (this !== ports.digest) throw new Error('digest this lost');
+          calls.push('digest-abort');
+        },
+        async drain() {
+          if (this !== ports.digest) throw new Error('digest this lost');
+          calls.push('digest-drain');
+        },
+      },
+      digestScheduler: {
+        initialize() {
+          calls.push('digest-start');
+        },
+        stop() {
+          if (this !== ports.digestScheduler) throw new Error('digest scheduler this lost');
+          calls.push('digest-scheduler-stop');
+        },
+      },
+      watchScheduler: {
+        stop() {
+          if (this !== ports.watchScheduler) throw new Error('watch scheduler this lost');
+          calls.push('watch-scheduler-stop');
+        },
+      },
+      runCoordinator: {
+        start() {
+          calls.push('watch-start');
+        },
+        beginShutdown() {
+          if (this !== ports.runCoordinator) throw new Error('coordinator this lost');
+          calls.push('watch-seal');
+        },
+        async stop() {
+          if (this !== ports.runCoordinator) throw new Error('coordinator this lost');
+          calls.push('watch-stop');
+        },
+      },
+      lifecycle: {
+        bind() {
+          calls.push('bind');
+        },
+        markUnavailable() {
+          if (this !== ports.lifecycle) throw new Error('lifecycle this lost');
+          calls.push('unavailable');
+        },
+      },
+      publish() {
+        calls.push('publish');
+      },
+      unpublish() {
+        if (this !== ports) throw new Error('runtime port this lost');
+        calls.push('unpublish');
+      },
+    };
+    await expect(recoverAndStartWatchRuntime(ports)).resolves.toEqual({
+      ok: false,
+      reason: 'Digest cycle 启动恢复失败',
+      retained: false,
+      drainFailed: false,
+    });
+    expect(calls).toEqual([
+      'resume',
+      'unpublish',
+      'digest-seal',
+      'digest-scheduler-stop',
+      'watch-scheduler-stop',
+      'watch-seal',
+      'digest-abort',
+      'digest-drain',
+      'watch-stop',
+      'unavailable',
+    ]);
     expect(() => outcome.repo.listRules()).toThrow();
   });
 
@@ -169,6 +280,7 @@ describe('D8 产品启动恢复闸门', () => {
       watchScheduler: { stop: () => undefined },
       runCoordinator: {
         start: () => order.push('watch-start'),
+        beginShutdown: () => undefined,
         stop: async () => undefined,
       },
       lifecycle: {
@@ -182,6 +294,170 @@ describe('D8 产品启动恢复闸门', () => {
     expect(order).toEqual(['resume', 'bind', 'publish', 'watch-start', 'digest-start']);
     outcome.repo.dispose();
   });
+
+  it('排水任一失败时等待全部分支并保留repo给主关闭屏障', async () => {
+    const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('normal');
+    if (outcome.mode !== 'normal') return;
+    let releaseStop!: () => void;
+    let stopCalled = false;
+    let stopSettled = false;
+    let drainCalled = false;
+    const resultPromise = recoverAndStartWatchRuntime({
+      repo: outcome.repo,
+      digest: {
+        resumeActiveCycles: async () => {
+          throw new Error('controlled recovery failure');
+        },
+        stopAdmission: () => undefined,
+        abort: () => undefined,
+        drain: async () => {
+          drainCalled = true;
+          throw new Error('controlled digest drain failure');
+        },
+      },
+      digestScheduler: { initialize: () => undefined, stop: () => undefined },
+      watchScheduler: { stop: () => undefined },
+      runCoordinator: {
+        start: () => undefined,
+        beginShutdown: () => undefined,
+        stop: () => {
+          stopCalled = true;
+          return new Promise<void>((resolve) => {
+            releaseStop = () => {
+              stopSettled = true;
+              resolve();
+            };
+          });
+        },
+      },
+      lifecycle: { bind: () => undefined, markUnavailable: () => undefined },
+      publish: () => undefined,
+      unpublish: () => undefined,
+    });
+    for (let index = 0; index < 8 && !stopCalled; index += 1) await Promise.resolve();
+    expect({ drainCalled, stopCalled, stopSettled }).toEqual({
+      drainCalled: true,
+      stopCalled: true,
+      stopSettled: false,
+    });
+    let resultSettled = false;
+    void resultPromise.then(() => (resultSettled = true));
+    await Promise.resolve();
+    expect(resultSettled).toBe(false);
+    releaseStop();
+    await expect(resultPromise).resolves.toEqual({
+      ok: false,
+      reason: 'Digest cycle 启动恢复失败',
+      retained: true,
+      drainFailed: true,
+    });
+    expect(outcome.repo.listRules()).toEqual([]);
+    outcome.repo.dispose();
+  });
+
+  it('主关闭已接管时只结算startup并保留资源，不等待或重入总排水', async () => {
+    const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+    expect(outcome.mode).toBe('normal');
+    if (outcome.mode !== 'normal') return;
+    const calls: string[] = [];
+    const result = await recoverAndStartWatchRuntime({
+      repo: outcome.repo,
+      digest: {
+        resumeActiveCycles: async () => {
+          calls.push('resume');
+        },
+        stopAdmission: () => calls.push('digest-seal'),
+        abort: () => calls.push('digest-abort'),
+        drain: async () => {
+          calls.push('digest-drain');
+        },
+      },
+      digestScheduler: {
+        initialize: () => calls.push('digest-start'),
+        stop: () => calls.push('digest-scheduler-stop'),
+      },
+      watchScheduler: { stop: () => calls.push('watch-scheduler-stop') },
+      runCoordinator: {
+        start: () => calls.push('watch-start'),
+        beginShutdown: () => calls.push('watch-seal'),
+        stop: async () => {
+          calls.push('watch-stop');
+        },
+      },
+      lifecycle: {
+        bind: () => calls.push('bind'),
+        markUnavailable: () => calls.push('unavailable'),
+      },
+      publish: () => calls.push('publish'),
+      unpublish: () => calls.push('unpublish'),
+      shuttingDown: () => true,
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'Digest cycle 启动恢复失败',
+      retained: true,
+      drainFailed: false,
+    });
+    expect(calls).toEqual(['resume', 'unpublish']);
+    expect(outcome.repo.listRules()).toEqual([]);
+    outcome.repo.dispose();
+  });
+
+  it.each([false, true])(
+    '主关闭已接管时仅实际撤销入口失败锁存排水失败：%s',
+    async (unpublishFails) => {
+      const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
+      expect(outcome.mode).toBe('normal');
+      if (outcome.mode !== 'normal') return;
+      const calls: string[] = [];
+      const result = await recoverAndStartWatchRuntime({
+        repo: outcome.repo,
+        digest: {
+          resumeActiveCycles: async () => {
+            calls.push('resume');
+            throw new Error('unknown startup rejection');
+          },
+          stopAdmission: () => calls.push('digest-seal'),
+          abort: () => calls.push('digest-abort'),
+          drain: async () => {
+            calls.push('digest-drain');
+          },
+        },
+        digestScheduler: {
+          initialize: () => calls.push('digest-start'),
+          stop: () => calls.push('digest-scheduler-stop'),
+        },
+        watchScheduler: { stop: () => calls.push('watch-scheduler-stop') },
+        runCoordinator: {
+          start: () => calls.push('watch-start'),
+          beginShutdown: () => calls.push('watch-seal'),
+          stop: async () => {
+            calls.push('watch-stop');
+          },
+        },
+        lifecycle: {
+          bind: () => calls.push('bind'),
+          markUnavailable: () => calls.push('unavailable'),
+        },
+        publish: () => calls.push('publish'),
+        unpublish: () => {
+          calls.push('unpublish');
+          if (unpublishFails) throw new Error('unpublish failed');
+        },
+        shuttingDown: () => true,
+      });
+      expect(result).toEqual({
+        ok: false,
+        reason: 'Digest cycle 启动恢复失败',
+        retained: true,
+        drainFailed: unpublishFails,
+      });
+      expect(calls).toEqual(['resume', 'unpublish']);
+      expect(outcome.repo.listRules()).toEqual([]);
+      outcome.repo.dispose();
+    },
+  );
 });
 
 /** R3-2：canonical WatchRunResponseMetadata（finished Run 必填）。 */

@@ -38,6 +38,7 @@ import {
 import type { QualificationResourceOwner } from './qualification/registry';
 import { WATCH_MIGRATIONS } from './db/watch-migrations';
 import { WatchRepository } from './repository/watch-repository';
+import { requireVerifiedTransferHandle } from '../sources/db/sqlite-driver';
 
 export interface WatchStoreOptions {
   ownership?: QualificationResourceOwner;
@@ -58,6 +59,34 @@ export type WatchStoreOutcome =
   | { mode: 'normal'; repo: WatchRepository; schedulerReady: true; reason: null }
   | { mode: 'unavailable'; repo: null; schedulerReady: false; reason: string };
 
+/** Main-only assembly after private normalization, full scans and parent hashes.
+ * schedulerReady describes repository readiness, not permission to start producers.
+ * Main must hold all scheduling/admission gates until durable commit and activation.
+ */
+export function assembleVerifiedTransferWatchStore(
+  options: WatchStoreOptions,
+  handle: DbHandle,
+): WatchStoreOutcome {
+  try {
+    requireVerifiedTransferHandle(handle, options.dbPath);
+    const repo = new WatchRepository(handle);
+    registerWatchStore(handle);
+    return { mode: 'normal', repo, schedulerReady: true, reason: null };
+  } catch {
+    try {
+      handle.close();
+    } catch {
+      /* Main retains ownership if close fails. */
+    }
+    return {
+      mode: 'unavailable',
+      repo: null,
+      schedulerReady: false,
+      reason: '恢复后的监控服务健康装配失败',
+    };
+  }
+}
+
 export interface RecoveredWatchRuntimePorts {
   repo: WatchRepository;
   digest: {
@@ -73,7 +102,7 @@ export interface RecoveredWatchRuntimePorts {
     stop(): void;
   };
   watchScheduler: { stop(): void };
-  runCoordinator: { start(): void; stop(): Promise<void> };
+  runCoordinator: { start(): void; beginShutdown(): void; stop(): Promise<void> };
   lifecycle: {
     bind(repo: WatchRepository): void;
     markUnavailable(reason?: string): void;
@@ -84,14 +113,19 @@ export interface RecoveredWatchRuntimePorts {
 }
 
 // 产品装配唯一的异步恢复闸门：正常 repo 在本函数返回 ok 前不得发布给产品入口。
-// 失败时两类 Scheduler 均未启动或已停止，Digest admission 已关闭并排水，
-// Source observer/Coordinator 进入 unavailable，repo 句柄关闭。
+// 失败时两类 Scheduler 均未启动或已停止，Digest admission 已关闭并排水。
+// 只有全域排水全部成功才关闭 repo；失败或主关闭已接管时保留所有权。
+export type RecoverWatchRuntimeResult =
+  { ok: true } | { ok: false; reason: string; retained: boolean; drainFailed: boolean };
+
+const STARTUP_SHUTDOWN_REQUESTED = Symbol('watch-startup-shutdown-requested');
+
 export async function recoverAndStartWatchRuntime(
   ports: RecoveredWatchRuntimePorts,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+): Promise<RecoverWatchRuntimeResult> {
   try {
     await ports.digest.resumeActiveCycles();
-    if (ports.shuttingDown?.() === true) throw new Error('启动恢复期间收到关闭请求');
+    if (ports.shuttingDown?.() === true) throw STARTUP_SHUTDOWN_REQUESTED;
     ports.lifecycle.bind(ports.repo);
     ports.publish();
     ports.runCoordinator.start();
@@ -110,52 +144,67 @@ export async function recoverAndStartWatchRuntime(
     );
     return { ok: true };
   } catch {
-    try {
-      ports.unpublish();
-    } catch {
-      // 继续执行 fail-closed 清理
+    const reason = 'Digest cycle 启动恢复失败';
+    const failures: unknown[] = [];
+    const attempt = (action: () => void): void => {
+      try {
+        action();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    const shuttingDown = (): boolean => {
+      try {
+        return ports.shuttingDown?.() === true;
+      } catch (error) {
+        failures.push(error);
+        return true;
+      }
+    };
+
+    // 入口始终先撤销发布。若主进程已接管关闭，startup 不等待总根排水，
+    // 也不关闭其句柄；专属 holder 继续保留资源供统一 shutdown 收敛。
+    attempt(() => ports.unpublish());
+    if (shuttingDown()) {
+      return {
+        ok: false,
+        reason,
+        retained: true,
+        drainFailed: failures.length > 0,
+      };
     }
-    try {
-      ports.digest.stopAdmission();
-    } catch {
-      // 继续执行 fail-closed 清理
+
+    // 普通启动失败先同步封闭所有本域生产者，然后才取消。每个排水都
+    // 必须被观测；一项失败就保留 repo/所有权，不用 dispose 伪造安全关闭。
+    attempt(() => ports.digest.stopAdmission());
+    attempt(() => ports.digestScheduler.stop());
+    attempt(() => ports.watchScheduler.stop());
+    attempt(() => ports.runCoordinator.beginShutdown());
+    attempt(() => ports.digest.abort());
+    const drains = await Promise.allSettled([
+      Promise.resolve().then(() => ports.digest.drain()),
+      Promise.resolve().then(() => ports.runCoordinator.stop()),
+    ]);
+    for (const result of drains) {
+      if (result.status === 'rejected') failures.push(result.reason);
     }
-    try {
-      ports.digest.abort();
-    } catch {
-      // 继续执行 fail-closed 清理
+    if (shuttingDown()) {
+      return { ok: false, reason, retained: true, drainFailed: failures.length > 0 };
     }
-    try {
-      await ports.digest.drain();
-    } catch {
-      // 继续执行 fail-closed 清理
-    }
-    try {
-      ports.digestScheduler.stop();
-    } catch {
-      // 继续执行 fail-closed 清理
-    }
-    try {
-      ports.watchScheduler.stop();
-    } catch {
-      // 继续执行 fail-closed 清理
-    }
-    try {
-      await ports.runCoordinator.stop();
-    } catch {
-      // 继续执行 fail-closed 清理
-    }
-    try {
-      ports.lifecycle.markUnavailable('Digest cycle 启动恢复失败');
-    } catch {
-      // observer 入口仍未发布，保持 fail-closed
-    }
+
+    attempt(() => ports.lifecycle.markUnavailable(reason));
+    if (failures.length > 0) return { ok: false, reason, retained: true, drainFailed: true };
     try {
       ports.repo.dispose();
-    } catch {
-      // repo 已不再发布；关闭失败不恢复正常入口
+    } catch (error) {
+      failures.push(error);
     }
-    return { ok: false, reason: 'Digest cycle 启动恢复失败' };
+    return {
+      ok: false,
+      reason,
+      retained: failures.length > 0,
+      drainFailed: failures.length > 0,
+    };
   }
 }
 
