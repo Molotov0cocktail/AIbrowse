@@ -136,7 +136,9 @@
   E4 `ef21fc3bb3a0d7bfb9da41d7dd3bf39a32e7b411`、E5/E6 `8de1a91c6262982a79b85014cb5f64b6f4f9928b`；未push。
   前三条逐次保持原projection暂存8原始raw不变，第四条将含两项AM最终工作区版的完整工具组纳入，索引无遗漏；证据candidate-source-commits-001。
   五组是配套候选，不将中间提交称作可独立构建的交付版。正式文档已提交207cdde3，双洁净构建均绑定它；首次全量期间只修改Git索引/HEAD，未改受测源码。
-  旧工具HEAD假设的差量回归与实际负控独审均已限定PASS；下一动作收口文档和正常双远程同步候选。E4覆盖裁决、通知OS与ordinal3–6仍开放，Stage7未PASS。
+  旧工具HEAD假设的差量回归与实际负控独审均已限定PASS；实现、工具修复和证据文档候选a4de1e7eda1ecbccd165f53851537ff9e35368be已正常推Gitee/GitHub，两实际exit0。
+  回执在candidate-source-commits-001/push-{gitee,github}-a4de1e7.txt及对应数值文件；Gitee直连，GitHub先HTTP200复验7890再用http.proxy。
+  当前下一依赖E4覆盖裁决和安全桌面实际UAC；通知OS与ordinal3–6仍开放，Stage7未PASS。
 - 此前来源恢复已完成：R `restore-check-b00cba3ee4c44791b9e36b6d890cbd35`、P `restore-check-313eb56a02f94b43b26dcb56c4684745` 均实际 PASS；
   R 19.805s/7 Job、P 20.380s/5 Job 全部 root0、ActualZero、资源限制核验及空 writer。四域 UI、28表/会话、审计继承、取消及实际 guardian 继任/冷启动成立。
   新独立 `current-risk-independent-review-001/report.md` 复算各656项来源、48制品、12 Job、四组30摘要与9个拒绝反例，限定 E2 业务风险 PASS。
@@ -1237,7 +1239,8 @@ normal五产物与既有验收字节一致；未重新构建或重复产品冒�
 E4两小时原场RSS28.0413MiB/h超过24为FAIL，独立结论及原件保留；分层补验覆盖提案等待用户裁决，不自行关硬门或无诊断重跑。
 E5按已批准UAC全机MSI与同机替代执行，产品账本已2/6；安全桌面实际确认缺失时不启动3–6。
 两洁净构建与最终FIRST静态、两篡改负控均已独审限定PASS。第5场正确包恶意环境联合正控仍待实际安装，不推定通过。
-五条配套候选与一条工具修复已保存；当前文档差量待收口、尚未push。必要Reviewer已限定PASS，可正常双远程同步，GitHub网络前核代理并使用http.proxy，不强推、不改历史。
+实现、工具修复和证据文档候选已正常双远程推至a4de1e7，两实际exit0，当前仅收口这项回执文档并继续正常同步；无强推或公开发布。
+下一实际产品动作须用户安全桌面UAC可用后执行已授权ordinal3/4，随后固定FIRST的5/6及OS通知/正确包联合安全正控；不再追加旧工具资格链。
 完成真实剩余门后再启动新的独立Stage Auditor，当前不授阶段通过。
 三库物理上限/full50、R/P四域和当前E3主路径按未受影响来源/差量复用，不再回到旧UIA宿主工具资格链。
 剩余额度≤1%立即保存当前证据/进度并停止；电池、独立Windows及其它已说明NOT RUN不伪判PASS。
