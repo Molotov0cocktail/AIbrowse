@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 
 const source = readFileSync('tools/data-qualification/oversize-preflight/run.ps1', 'utf8');
+const buildSource = readFileSync('tools/data-qualification/oversize-preflight/build.ts', 'utf8');
 
 it('wrapper以声明参数和CreateNew intent形成一次性claim', () => {
   expect(source).toContain('[CmdletBinding()]');
@@ -43,10 +44,20 @@ it('新build-only证明精确绑定真实esbuild输入并集和三个制品', as
   expect(receipt.executed).toBe(false);
   const scope = join(repository, 'log/stage7-e2', receipt.scopeId);
   const proof = JSON.parse(readFileSync(join(scope, 'build-proof.json'), 'utf8')) as {
+    sourceCommit: string;
     sources: Record<string, string>;
     artifacts: Record<string, { bytes: number; sha256: string }>;
     workerBundle: { inputs: Record<string, string>; sha256: string };
   };
+  expect(proof.sourceCommit).toBe(
+    execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repository,
+      encoding: 'utf8',
+      windowsHide: true,
+    }).trim(),
+  );
+  expect(buildSource.match(/\['rev-parse', 'HEAD'\]/gu)).toHaveLength(2);
+  expect(buildSource).not.toContain('54783cd0c3e22c1fb692b54fca95fc650e2ea15d');
   const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
   const rebuilt = await build({
     absWorkingDir: repository,

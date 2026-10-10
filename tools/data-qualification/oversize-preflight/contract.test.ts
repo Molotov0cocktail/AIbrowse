@@ -8,6 +8,7 @@ import {
   parseReceipt,
   requiredFreeBytes,
   requireScopeId,
+  requireSourceCommit,
 } from './contract';
 
 const scopeId = 'oversize-preflight-' + 'a'.repeat(32);
@@ -71,6 +72,12 @@ it('拒绝错scope、缺正控、错误容量、sidecar和任何资格外推', (
     expect(() => parseReceipt(value, scopeId)).toThrow();
   }
   expect(() => parseReceipt({ ...validReceipt(), extra: true }, scopeId)).toThrow();
+});
+
+it('当前源码提交仅接受固定小写40位十六进制字符串', () => {
+  expect(() => requireSourceCommit('a'.repeat(40))).not.toThrow();
+  for (const value of ['a'.repeat(39), 'A'.repeat(40), 'g'.repeat(40), 1, true, ['a'.repeat(40)]])
+    expect(() => requireSourceCommit(value)).toThrow();
 });
 
 it('空间门只预留16MiB工具额和原1GiB余量', () => {

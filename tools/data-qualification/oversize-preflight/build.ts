@@ -18,7 +18,13 @@ import {
 import type { BigIntStats } from 'node:fs';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BASELINE, JOB_SOURCE_SHA256, NODE_SHA256, NODE_VERSION, need } from './contract.ts';
+import {
+  JOB_SOURCE_SHA256,
+  NODE_SHA256,
+  NODE_VERSION,
+  need,
+  requireSourceCommit,
+} from './contract.ts';
 
 function fileFact(path: string): BigIntStats {
   const result = lstatSync(path, { bigint: true });
@@ -97,14 +103,13 @@ need(
     hash(process.execPath) === NODE_SHA256,
 );
 const verifyParents = captureParents(join(repository, 'log/stage7-e2'));
-need(
-  execFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd: repository,
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: 10_000,
-  }).trim() === BASELINE,
-);
+const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+  cwd: repository,
+  encoding: 'utf8',
+  windowsHide: true,
+  timeout: 10_000,
+}).trim();
+requireSourceCommit(sourceCommit);
 const jobSource = join(repository, 'tools/data-qualification/full-transfer/FixedTransferJob.cs');
 need(hash(jobSource) === JOB_SOURCE_SHA256);
 
@@ -200,11 +205,19 @@ need(
     sources['tools/data-qualification/oversize-preflight/SparseFile.cs'],
 );
 need(artifacts['FixedTransferJob.cs']!.sha256 === JOB_SOURCE_SHA256);
+need(
+  execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repository,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 10_000,
+  }).trim() === sourceCommit,
+);
 const proof = JSON.stringify({
   version: 1,
   scopeId,
   kind: 'oversize-preflight-build',
-  baseline: BASELINE,
+  sourceCommit,
   sources,
   artifacts,
   workerBundle: {

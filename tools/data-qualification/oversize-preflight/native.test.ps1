@@ -124,6 +124,9 @@ $templateJson=$template|ConvertTo-Json -Depth 10 -Compress
 $entryCases=@(
     @{name='缺proof';phase='claim';mutation={param($entry,$proof)};missingProof=$true},
     @{name='坏proof';phase='claim';mutation={param($entry,$proof)};badProof=$true},
+    @{name='提交错格式';phase='claim';mutation={param($entry,$proof)$proof.sourceCommit='A'*40}},
+    @{name='提交错类型';phase='claim';mutation={param($entry,$proof)$proof.sourceCommit=1}},
+    @{name='运行proof不同HEAD';phase='claim';mutation={param($entry,$proof)$proof.sourceCommit='0'*40}},
     @{name='缺helper';phase='binding';mutation={param($entry,$proof)}},
     @{name='删除容器来源';phase='binding';mutation={param($entry,$proof)$proof.sources.PSObject.Properties.Remove('src/main/storage/backup-container.ts')}},
     @{name='删除布局来源';phase='binding';mutation={param($entry,$proof)$proof.sources.PSObject.Properties.Remove('src/main/storage/dataset-layout.ts')}},

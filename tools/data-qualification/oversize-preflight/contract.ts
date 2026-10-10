@@ -1,4 +1,3 @@
-export const BASELINE = '54783cd0c3e22c1fb692b54fca95fc650e2ea15d';
 export const NODE_VERSION = 'v24.18.0';
 export const NODE_SHA256 = '9a4eb5f1c29c6a2e93852ead46b999e284a6a5ca8bab4d4e241d587d025a52de';
 export const JOB_SOURCE_SHA256 = 'be1fbf5623ae06da19848f33c5837c1c3ca42827935961d99453a1397cbcd167';
@@ -73,6 +72,10 @@ export interface PreflightReceipt {
 
 export function need(value: unknown): asserts value {
   if (!value) throw new Error('超限读前拒绝工具前置条件不成立，原件保留');
+}
+
+export function requireSourceCommit(value: unknown): asserts value is string {
+  need(typeof value === 'string' && /^[a-f0-9]{40}$/u.test(value));
 }
 
 export function requireScopeId(value: string): void {
