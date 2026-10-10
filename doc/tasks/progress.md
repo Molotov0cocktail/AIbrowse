@@ -9,7 +9,7 @@
 - 用户最新授权直接操作或模拟点击普通窗口，用户暂休息；诊断预览取消/保存及恢复A冷态28表核对已完成。
   采用外部受控UIA/可见窗口动作补真实发行证据，不新增产品测试接口；安全桌面UAC仍需实际确认，余下安装ordinal3–6暂不启动。
   用户另要求剩余额度达到1%立即保存并停止；已通过本机Codex app-server官方只读account/rateLimits/read取得额度，
-  最新`log/stage7-e6/quota-checkpoint-010.json`（2026-10-10T20:58:24Z）主codex周窗口used70%，即remaining30%，未触发停止；001–009原件保留。
+  最新`log/stage7-e6/quota-checkpoint-013.json`（2026-10-10T21:30:13Z）主codex周窗口used71%，即remaining29%，未触发停止；001–012原件保留。
   不读取/打印认证文件、不启动模型turn；后续批次前复查窗口，remaining≤1%时先持久当前证据/本入口并停止执行、派发任务。
   此接口只覆盖服务返回的窗口，不冒称每个token实时监控；界面/用户更早提供阈值信号同样立即停止。
   最新候选实际747条：原739清单遗漏v3应用新增的8个既有文件，已补入E3；未发现链接、超1MiB文件、数据库/日志/构建产物/凭据文件名。
@@ -48,7 +48,7 @@
   已新增未导入bootstrap真实setter模块/9例（旧装配1红/8绿）；v2隔离候选patch be3113bc...应用检查通过，旧生命周期3红、隔离32绿。
   新独审另建实际App订阅回调2红：原生click被普通提醒通道吞为二次点击或忽略，尚不能精确打开目标；v2因此REPAIR，原件不改。
   v3候选bed8b41f...已完成typed activation/最小化恢复/实际renderer/精确所选详情/晚到查询保护，隔离7文件72项绿；旧renderer8红8绿、query2红1绿原件保留。
-  windows-notification-independent-review-001独立28项实际接线/validator/query/生命周期反例限定PASS；11个既有root文件仍冻结未应用，6新增与未变preload逐SHA核对。
+  windows-notification-independent-review-001独立28项实际接线/validator/query/生命周期反例限定PASS；候选11个既有文件与6新增随后已应用并逐SHA核对。
   按该独审的执行分支差量复用E2容量/wire/排水/guardian与E4非packaged短/长负载，未冒称整份旧来源字节相等；完整质量与最终安装活态OS证据仍待。
   preload源字节虽未改，其现有共享validator捆绑会随activation分支改变；正式E6已补三个bundle逐差量归因、方法/通道/能力白名单不扩，不能声称preload产物未变。
   长测实际结束后已应用通知v3：11项before精确SHA匹配、6项新增精确SHA匹配。
@@ -64,7 +64,7 @@
   final-package-stage.ps1两固定文件复制入口已实现；904063cd...首审REPAIR（UNC/device/ADS/drive-relative可到IO、JSON读后验预算），实际四路径零IO红控与旧源保留。
   ef57ccff...关闭前两项，但独立真实WinPS helper正控发现LP/Out-Printer和H/Get-History默认alias冲突，REPAIR原件保留；未打印任何数据。
   最终408101e4...集中更名后，System32 WinPS5.1真实七helper与默认alias零交集、八路径负控、实际路径/abc摘要正控、同buffer有界JSON及Prepare合成正控均独立通过，限定PASS；904/ef57原件不变。
-  实际final binding/双clean报告/保护副本尚不存在，没有Prepare/Launch/UAC执行。
+  实际双clean报告随后已完成；final binding仍须先取得第4场真实退休，保护副本尚不存在，没有Prepare/Launch/UAC执行。
   通知动作04babb57...已退休旧toast并复用10秒唯一单卡边界为live-toast，Invoke后route仍NOT_ASSERTED、待实际最终应用详情核对；双PS parse/窄guard绿，无GUI。
   新独审指出同位同文案卡片替换仍可通过原谓词，局部REPAIR原件保持；最终d61541e5...及test e2bbd76f...补有界RuntimeId首次/动作前严格实体比较。
   WinPS5.1真实helper/动作if的同实体正控和异ID、顺序、空、字符串、几何反控独立通过，限定PASS；不扩观察器、不重发事件，真实OS及精确详情仍待第5场。
@@ -72,13 +72,34 @@
   首摘要误用不存在的title列而sourceA=false，原件保留；correction以实际name/note/version及完整旧行重新核对成立，不将首摘要改绿。
   最终安全复验工程方案已同步E6：保留真实恢复的非空合成profile，不采用empty/marker/同包Product前置；两ASAR篡改仅最终payload副本/6秒自然拒绝，正常恶意env启动与第5次安装合并。
   最小专项薄runner已冻结四源2cea1ff0/cfa73484/c2cccfc1/712ec5ac，12项纯控制通过；`final-runtime-security-independent-review-001/report.md`独立10反控及正控限定PASS。
-  不清理/移动SourceA，不读取凭据，不以正常启动合法日志/审计/outbox变化冒称全profile字节恒等；Prepare、最终包两真实篡改及第5场正确包联合正控仍NOT RUN。
-  后续`final-runtime-security-compile-001/report.md`已实测pwsh7同一Add-Type编译5个C#源成功，4个string参数与唯一正式调用一致、源码前后恒等；Prepare/真实包运行仍NOT RUN。
+  不清理/移动SourceA，不读取凭据，不以正常启动合法日志/审计/outbox变化冒称全profile字节恒等；第5场正确包联合正控仍NOT RUN，两真实篡改随后已补实际证据。
+  后续`final-runtime-security-compile-001/report.md`已实测pwsh7同一Add-Type编译5个C#源成功，4个string参数与唯一正式调用一致、源码前后恒等。
   正式入口仅支持PS7；额外WinPS5.1中文无BOM按ANSI解析失败保留，不伪称该入口跨两宿主合格。三个最新PS动作/recorder/copy窄测试分别在两宿主通过。
   已应用通知根目录8文件85项PASS、typecheck/lint均exit0；format首检查12文件FAIL已保留并按Prettier格式化，未改语义。
   `final-quality-96f8f1511f5346de9921805e6ddd92dd`实测完整摘要460文件/6740项PASS、1文件/2项SKIP，541.60s；1227来源起止JSON逐字恒等、drift0。
   记录器在测试及after快照完成后因PowerShell泛型List展开报错，外层实际exit1，内层npm数值exit未持久；不能将全量断言成功冒称整个质量命令exit0。
   原日志/失败/恢复事实均保留；最终洁净候选改用标准npm命令直接先保存退出码，再作其它记录，补齐仍未证明的数值退出门，不扩工具。
+  `final-quality-numeric-dccbb0b307bf43279afd8161bfcfb842`随后标准全量实际exit1，459文件/6739项PASS、1文件/1项FAIL、1文件/2项SKIP，535.31s；
+  精确HEAD207cdde3前后不变，1321 Git来源清单前后SHA3a47ce55c6015c0bc92f5e57171f1b68d2eddab88be138bd515a0fcbe777e210恒等、漂移0。
+  唯一失败是oversize-preflight/build.ts把历史54783cd HEAD写死为前置；合法新提交207因此在scope/产物创建前拒绝，不是产品缺陷或并行碰撞。
+  正式E6差量已改为构建记录当前commit、构建末尾复验HEAD、运行复验proof和十九来源；修复已完成并提交4c4fa96e97ea5d77d1a5fc6a5da20780b86aef8e。
+  采用原完整通过集合逐源复用加受影响工具完整补验，不第三次机械全量；原标准exit1保持，不虚称整体命令exit0。
+  `oversize-current-commit-repair-001`最终3文件/9项Vitest实际exit0，两次native小夹具均53/53、实际exit0；
+  首次30秒观察时尚未退出但底层随后完成，第二次因当时未确认而已启动，两原件保留、不再重跑；报告已更正，不将观察窗结束声称进程终止。
+  `quality-applicability-independent-review-001/final-applicability-check.json`独审限定PASS，sha a0db974567210bd19b29229be1887573de71d6a7d9a5825a6fc019b39d9ce6f4。
+  同scope完整独审`report.md`sha a2ece33defe37ab128f475ac8dd22d50da64f3622527f7a0e1a440126a0946c0，明确全部适用性和未覆盖门。
+  原459文件通过中移除受影响两文件的7项，再用整个工具3文件/9项替换：457未变+3补验=460文件、6739−7+9=6741项PASS；1文件/2项SKIP保持。
+  这是去重分层覆盖，不声称单个6741全量命令已运行；七源精确冻结，生产/197主模块图/锁文件/登记发行构建输入全未变，FIRST仍绑定207。
+  新三种proof拒绝原始回执均在claim、Job null、无helper/大EOF；type/lint/format/PSparse的0仅有实时工具响应，scope不冒称保存了不存在的日志。
+  两次洁净构建在同一207cdde3源码完成，75外层payload/54 ASAR全等；固定FIRST不再重建，manifest SHA b587dc18fc3cac46f9038ed31983631d0f8a8a27d27fcc3381114f20611d310a。
+  FIRST EXE119265470B/sha6c60ed65cd49ab991e269d375a0a48fea944a13882a5d182295c110b897cf6db，MSI119369728B/sha208f3570e3a7fe030cc6afd7724f9ce0165c85678fe041bb555a2328b58bf0c3。
+  `clean-build-independent-review-001/report.md`限定PASS；两轮安装器不同字节、比较exit1保持，差量全归因ProductCode/PackageCode/时间/MVID和CAB三成员DOS时间，压缩数据段全等。
+  dirty到FIRST实际main/preload/renderer差量均限BuildId和已审通知修复，余73外层/49 ASAR全等；未授旧通知OS证据适用或全profile零写。
+  最终负控第一次选错E6 scope格式、第二次在准备后因既有进程准入失败均保留；当时进程身份未记录，不推定其来源。
+  待标准全量结束且app/guardian全0后，串行`final-runtime-security-61beb9581b174bfb8379d6aa58c8e5aa`实际wrapper exit0；
+  content-tamper/loose-app-tamper均自然exit1，218/276ms，Job0、canary无、原包/三库身份摘要未变、不读凭据或重置profile。
+  `final-runtime-security-actual-independent-001/report.md`已独审限定PASS，sha436ebcdb761e6cf63dab199e1b6c5454c598e6b9e2b86a5fa20d1050eb36ca29；
+  75原包/75内容副本/77裸app副本完整闭合，12工具源SHA未漂移，精确FileTime及四份根/三库快照全等，晚态app/guardian全0；未授第5联合正控或阶段通过。
 - 最终质量首轮 `final-quality-5e6ae2b0dde0438ebf5a193a8d587b78` 为6661 PASS/13 FAIL，已区分并修复Watch合法外键及性能Job时间/启动审计正控两类测试缺陷，
   和预览取消返回英文AbortError的产品错误体验；聚焦46及新独立18项通过，未将旧失败改PASS。
   第二轮 `final-quality-315c18b0370f46af95efce9a15a1f5a1` 为6675 PASS/1 FAIL/2 SKIP，991来源起止恒等、532.19s；
@@ -114,8 +135,8 @@
   已按显式pathspec形成四条候选源码提交：E2 `39362db56a9c1dfbe119c38164e01b84a8e4246b`、E3 `36d51321115dcacd1833133af6128f2c25ee7d9f`、
   E4 `ef21fc3bb3a0d7bfb9da41d7dd3bf39a32e7b411`、E5/E6 `8de1a91c6262982a79b85014cb5f64b6f4f9928b`；未push。
   前三条逐次保持原projection暂存8原始raw不变，第四条将含两项AM最终工作区版的完整工具组纳入，索引无遗漏；证据candidate-source-commits-001。
-  五组是配套候选，不将中间提交称作可独立构建的交付版。只剩正式文档10项待收口；全量期间只修改Git索引/HEAD，未改受测源码。
-  下一动作是收口文档洁净候选、两次完整来源绑定构建及最终包安全复验，并补标准全量质量数值退出门；E4覆盖裁决、通知OS与ordinal3–6仍开放，Stage7未PASS。
+  五组是配套候选，不将中间提交称作可独立构建的交付版。正式文档已提交207cdde3，双洁净构建均绑定它；首次全量期间只修改Git索引/HEAD，未改受测源码。
+  旧工具HEAD假设的差量回归与实际负控独审均已限定PASS；下一动作收口文档和正常双远程同步候选。E4覆盖裁决、通知OS与ordinal3–6仍开放，Stage7未PASS。
 - 此前来源恢复已完成：R `restore-check-b00cba3ee4c44791b9e36b6d890cbd35`、P `restore-check-313eb56a02f94b43b26dcb56c4684745` 均实际 PASS；
   R 19.805s/7 Job、P 20.380s/5 Job 全部 root0、ActualZero、资源限制核验及空 writer。四域 UI、28表/会话、审计继承、取消及实际 guardian 继任/冷启动成立。
   新独立 `current-risk-independent-review-001/report.md` 复算各656项来源、48制品、12 Job、四组30摘要与9个拒绝反例，限定 E2 业务风险 PASS。
@@ -1210,13 +1231,14 @@ normal五产物与既有验收字节一致；未重新构建或重复产品冒�
 
 ## 下一唯一执行任务
 
-当前全量`final-quality-96f8f1511f5346de9921805e6ddd92dd`断言全部成功、1227来源起止恒等，但后处理exit1/内层数值exit未知保留。
-提交正式文档，在同一洁净候选commit构建两次并选定最终包；以标准npm命令先直接持久退出码补最终质量门，不扩工具或掩盖旧失败。
+标准全量`final-quality-numeric-dccbb0b307bf43279afd8161bfcfb842`实际exit1原件保持；唯一工具固定历史HEAD缺陷已修复、提交4c4fa96并独审限定PASS。
+按正式E6去重分层证明460文件/6741项PASS、1文件/2项SKIP，不宣称同一全量命令exit0；只涉及离线工具/文档的后继差量不重建固定FIRST包。
 已应用通知v3有17源精确绑定、85聚焦及限定独审；最终包仍需新真实OS显示/默认隐私/活态精确点击，不能复用旧NOTOBSERVED。
 E4两小时原场RSS28.0413MiB/h超过24为FAIL，独立结论及原件保留；分层补验覆盖提案等待用户裁决，不自行关硬门或无诊断重跑。
 E5按已批准UAC全机MSI与同机替代执行，产品账本已2/6；安全桌面实际确认缺失时不启动3–6。
-两洁净构建、最终包静态/两篡改负控及第5场正常恶意环境联合正控准备继续，完成真实剩余门后再启动新的独立Stage Auditor。
-四条逻辑源码候选已保存、正式文档待收口；未push、不强推、不改历史。Reviewer通过的提交可正常双远程同步，GitHub网络前核代理并使用http.proxy。
+两洁净构建与最终FIRST静态、两篡改负控均已独审限定PASS。第5场正确包恶意环境联合正控仍待实际安装，不推定通过。
+五条配套候选与一条工具修复已保存；当前文档差量待收口、尚未push。必要Reviewer已限定PASS，可正常双远程同步，GitHub网络前核代理并使用http.proxy，不强推、不改历史。
+完成真实剩余门后再启动新的独立Stage Auditor，当前不授阶段通过。
 三库物理上限/full50、R/P四域和当前E3主路径按未受影响来源/差量复用，不再回到旧UIA宿主工具资格链。
 剩余额度≤1%立即保存当前证据/进度并停止；电池、独立Windows及其它已说明NOT RUN不伪判PASS。
 Stage6已关闭，新增构建工具卸载已关闭，不恢复旧ETW/freeze、不再次清理或安装MSVC/SDK；Stage7结束后停止，不启动Stage8。
