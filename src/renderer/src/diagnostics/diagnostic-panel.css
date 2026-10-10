@@ -1,0 +1,66 @@
+.diagnostic-panel {
+  width: 380px;
+  min-width: 380px;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-left: 1px solid var(--border-color, #d8dde6);
+  background: var(--panel-bg, #ffffff);
+  color: var(--text-color, #20242b);
+}
+
+.diagnostic-panel-header,
+.diagnostic-panel-actions,
+.diagnostic-preview-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.diagnostic-panel-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.diagnostic-panel-note,
+.diagnostic-panel-message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.diagnostic-panel-message {
+  color: #7a4b00;
+}
+
+.diagnostic-preview {
+  min-height: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diagnostic-preview-meta {
+  font-size: 12px;
+  color: #5c6470;
+}
+
+.diagnostic-preview pre {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: #f5f7fa;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    12px/1.45 Consolas,
+    monospace;
+}
