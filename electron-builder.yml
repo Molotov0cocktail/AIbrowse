@@ -1,5 +1,7 @@
 appId: com.aibrowse.desktop
 productName: AIbrowse
+electronDist: node_modules/electron/dist
+afterExtract: tools/build/local-electron-after-extract.mjs
 asar:
   smartUnpack: false
 compression: normal
@@ -7,6 +9,7 @@ directories:
   output: release
 files:
   - out/release/main/*.js
+  - out/release/main/lifecycle-guardian-integrity.json
   - '!out/release/main/release-modules.json'
   - out/release/preload/index.js
   - out/release/renderer/index.html
@@ -29,6 +32,9 @@ files:
   - '!node_modules/**/*.d.ts'
   - '!node_modules/**/src/**'
   - '!node_modules/**/README*'
+extraResources:
+  - from: out/lifecycle-guardian/guardian.exe
+    to: lifecycle-guardian/guardian.exe
 extraMetadata:
   main: out/release/main/index.js
 electronFuses:
@@ -45,6 +51,7 @@ nodeGypRebuild: false
 forceCodeSigning: false
 publish: null
 win:
+  icon: resources/aibrowse.ico
   target:
     - target: dir
       arch:

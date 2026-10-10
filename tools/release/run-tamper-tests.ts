@@ -188,11 +188,7 @@ const launchAndObserve = async (
     processIdentity =
       processIdentityLabel === undefined
         ? undefined
-        : await probeControlledProcessIdentity(
-            profileJournalRoot,
-            child.pid,
-            processIdentityLabel,
-          );
+        : await probeControlledProcessIdentity(profileJournalRoot, child.pid, processIdentityLabel);
   } catch (error: unknown) {
     if (!exited) {
       await terminateOwnedProcessTree(child.pid);
@@ -271,9 +267,12 @@ const probeActualAppData = async (): Promise<AppDataProbeObservation> => {
   if (
     typeof parsed !== 'object' ||
     parsed === null ||
-    !('appData' in parsed) || typeof parsed.appData !== 'string' ||
-    !('userData' in parsed) || typeof parsed.userData !== 'string' ||
-    !('sessionData' in parsed) || typeof parsed.sessionData !== 'string'
+    !('appData' in parsed) ||
+    typeof parsed.appData !== 'string' ||
+    !('userData' in parsed) ||
+    typeof parsed.userData !== 'string' ||
+    !('sessionData' in parsed) ||
+    typeof parsed.sessionData !== 'string'
   ) {
     throw new Error('AppData 探针结果形状无效');
   }
@@ -297,7 +296,8 @@ const tamperMainWhitespace = (asarPath: string): void => {
     throw new Error('main bundle 不是 ASAR 内普通文件');
   }
   const fileOffset = Number.parseInt(info.offset, 10);
-  if (!Number.isSafeInteger(fileOffset) || fileOffset < 0) throw new Error('main bundle offset 无效');
+  if (!Number.isSafeInteger(fileOffset) || fileOffset < 0)
+    throw new Error('main bundle offset 无效');
   const absoluteOffset = 8 + getRawHeader(asarPath).headerSize + fileOffset + marker + 1;
   const descriptor = openSync(asarPath, 'r+');
   try {
@@ -314,10 +314,7 @@ const main = async (): Promise<void> => {
   if (actualAppData.toLowerCase() !== expectedAppDataRoot.toLowerCase()) {
     throw new Error(`当前 Windows KnownFolder 不属于声明的隔离账户：${actualAppData}`);
   }
-  const profileIsolation = verifyProfileIsolationJournal(
-    expectedAppDataRoot,
-    profileJournalRoot,
-  );
+  const profileIsolation = verifyProfileIsolationJournal(expectedAppDataRoot, profileJournalRoot);
   const canaryPath = join(runRoot, 'node-options-canary.cjs');
   const canaryHit = join(runRoot, 'node-options-canary-hit.txt');
   writeFileSync(

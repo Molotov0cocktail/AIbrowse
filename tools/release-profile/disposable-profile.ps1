@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('Preflight', 'Run', 'ProbeProcess', 'ProbeDataFiles', 'ArchiveFailed', 'FixtureArchive', 'ValidateTamperBinding')][string]$Action,
-    [ValidateSet('All', 'Tamper')][string]$Runner = '',
+    [Parameter(Mandatory)][ValidateSet('Preflight', 'Run', 'ProbeProcess', 'ProbeDataFiles', 'ArchiveFailed', 'ArchiveCompleted', 'FixtureArchive', 'ValidateTamperBinding')][string]$Action,
+    [ValidateSet('All', 'Tamper', 'ProductTransfer', 'RestoreR', 'RestoreP')][string]$Runner = '',
     [string]$PackageRoot,
     [string]$Journal,
     [string]$BindingJournal,
@@ -9,11 +9,22 @@ param(
     [ValidateSet('RunnerNode', 'ProductOriginal', 'ProductSecond', 'ProductRestart', 'TamperOriginal')][string]$Label = '',
     [ValidateSet('BeforeRestart', 'AfterRestart')][string]$Checkpoint = '',
     [string]$RunId = '',
-    [ValidateSet('none', 'rename-before', 'rename-after', 'new-root-created', 'target-exists', 'identity-mismatch')][string]$Fault = ''
+    [ValidateSet('none', 'rename-before', 'rename-after', 'new-root-created', 'target-exists', 'identity-mismatch')][string]$Fault = '',
+    [string]$RestoreScopeId = '',
+    [string]$RestoreProofSha256 = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$restoreArguments = $PSBoundParameters.ContainsKey('RestoreScopeId') -or $PSBoundParameters.ContainsKey('RestoreProofSha256')
+$restoreRun = $Action -eq 'Run' -and $Runner -in @('RestoreR', 'RestoreP')
+if ($restoreArguments -or $restoreRun) {
+    if ((-not $restoreRun -and $Action -ne 'ArchiveCompleted') -or
+        $RestoreScopeId -cnotmatch '^restore-campaign-[a-f0-9]{32}$' -or
+        $RestoreProofSha256 -cnotmatch '^[a-f0-9]{64}$' -or $BindingJournal -ne '') {
+        throw '恢复固定入口与外部冻结proof参数不一致。'
+    }
+}
 if ($PSVersionTable.PSEdition -ne 'Core' -or $PSVersionTable.PSVersion.Major -lt 7) {
     throw '需要现成PowerShell 7；工具不安装任何运行时。'
 }
@@ -24,12 +35,12 @@ switch ($Action) {
     'Preflight' { [AIbrowse.ReleaseProfile.DisposableProfile]::Preflight() }
     'Run' {
         if ($Runner -eq '') { throw '实际入口必须选择固定Runner。' }
-        [AIbrowse.ReleaseProfile.DisposableProfile]::Run(
-            $PackageRoot,
-            (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source,
-            $(if ($Runner -eq 'All') { [AIbrowse.ReleaseProfile.ReleaseRunner]::All } else { [AIbrowse.ReleaseProfile.ReleaseRunner]::Tamper }),
-            $BindingJournal
-        )
+        $node = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
+        if ($restoreRun) {
+            [AIbrowse.ReleaseProfile.DisposableProfile]::Run($PackageRoot, $node, [AIbrowse.ReleaseProfile.ReleaseRunner]::$Runner, $BindingJournal, $RestoreScopeId, $RestoreProofSha256)
+        } else {
+            [AIbrowse.ReleaseProfile.DisposableProfile]::Run($PackageRoot, $node, [AIbrowse.ReleaseProfile.ReleaseRunner]::$Runner, $BindingJournal)
+        }
     }
     'ProbeProcess' {
         if ($Label -eq '' -or $ProcessId -eq 0) { throw '进程探针缺少固定标签或PID。' }
@@ -42,6 +53,14 @@ switch ($Action) {
     'ArchiveFailed' {
         if ($Journal -eq '') { throw '失败归档缺少固定journal。' }
         [AIbrowse.ReleaseProfile.DisposableProfile]::ArchiveFailedRun($Journal)
+    }
+    'ArchiveCompleted' {
+        if ($Journal -eq '') { throw '成功归档缺少固定journal。' }
+        if ($restoreArguments) {
+            [AIbrowse.ReleaseProfile.DisposableProfile]::ArchiveCompletedRun($Journal, $RestoreScopeId, $RestoreProofSha256)
+        } else {
+            [AIbrowse.ReleaseProfile.DisposableProfile]::ArchiveCompletedRun($Journal)
+        }
     }
     'ValidateTamperBinding' {
         if ($Journal -eq '' -or $PackageRoot -eq '') { throw 'Tamper绑定只读验证缺少固定输入。' }

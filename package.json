@@ -1,6 +1,6 @@
 {
   "name": "aibrowse",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI 信息浏览器 —— Windows 桌面多标签页浏览器：内置 Chromium，AI 与用户共享同一浏览器会话，可共读网页、自主浏览、管理长期信源并完成多源研究",
   "main": "./out/main/index.js",
   "private": true,
@@ -17,6 +17,7 @@
     "build": "electron-vite build",
     "build:release": "electron-vite build --mode release",
     "package:release-dir": "npm run build:release && electron-builder --win dir --x64 --publish never",
+    "package:release-installer": "npm run package:release-dir && node --experimental-strip-types tools/build/msi-build.ts --product",
     "verify:release": "node --experimental-strip-types tools/release/verify-package.ts release/win-unpacked",
     "test:release-security": "pwsh -NoProfile -File tools/release-profile/disposable-profile.ps1 -Action Run -Runner All -PackageRoot release/win-unpacked",
     "build:qualification": "electron-vite build --mode qualification && pwsh -NoProfile -File native/watch-qualification/build.ps1 -Mode qualification",

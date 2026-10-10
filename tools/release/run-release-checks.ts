@@ -63,10 +63,7 @@ const runFixedCheck = async (
 const main = async (): Promise<void> => {
   // Product must run first because its cancellation oracle requires no existing
   // provider-config. A failure stops the sequence and preserves the profile.
-  const product = await runFixedCheck(
-    'product',
-    'run-packaged-product-checks.ts',
-  );
+  const product = await runFixedCheck('product', 'run-packaged-product-checks.ts');
   const tamper = await runFixedCheck('tamper', 'run-tamper-tests.ts');
   const report = { ok: true, order: ['product', 'tamper'], results: [product, tamper] };
   writeFileSync(

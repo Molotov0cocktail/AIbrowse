@@ -19,7 +19,10 @@ namespace AIbrowse.ReleaseProfile
     {
         Tamper,
         Product,
-        All
+        All,
+        ProductTransfer,
+        RestoreR,
+        RestoreP
     }
 
     public sealed class Identity

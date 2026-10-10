@@ -132,6 +132,16 @@ namespace AIbrowse.ReleaseProfile
         }
 
         public static uint Execute(string executable, string[] arguments, string directory, string runId, int timeoutMs, Action<uint, long> started)
+        { return ExecuteCore(executable, arguments, directory, runId, timeoutMs, started, null, null); }
+
+        public static uint Execute(string executable, string[] arguments, string directory, string runId, int absoluteDeadlineMs, Action<uint, long> started, Stopwatch originalClock, Func<bool> stopRequested)
+        {
+            if (originalClock == null || !originalClock.IsRunning || absoluteDeadlineMs < 1 || originalClock.ElapsedMilliseconds >= absoluteDeadlineMs)
+                throw new InvalidOperationException("恢复Job原期限已耗尽");
+            return ExecuteCore(executable, arguments, directory, runId, absoluteDeadlineMs, started, originalClock, stopRequested);
+        }
+
+        private static uint ExecuteCore(string executable, string[] arguments, string directory, string runId, int timeoutMs, Action<uint, long> started, Stopwatch originalClock, Func<bool> stopRequested)
         {
             using (SafeFileHandle job = CreateJobObjectW(IntPtr.Zero, Name(runId)))
             {
@@ -153,6 +163,8 @@ namespace AIbrowse.ReleaseProfile
                         throw new Win32Exception(Marshal.GetLastWin32Error(), "平台不支持创建时原子加入 Job");
                     StartupEx startup = new StartupEx { Startup = new Startup { Size = (uint)Marshal.SizeOf<StartupEx>() }, Attributes = attributes };
                     string command = String.Join(" ", new[] { executable }.Concat(arguments).Select(Quote));
+                    if (originalClock != null && originalClock.ElapsedMilliseconds >= timeoutMs)
+                        throw new InvalidOperationException("恢复Job启动前原期限已耗尽");
                     if (!CreateProcessW(executable, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false, 0x08080000,
                         IntPtr.Zero, directory, ref startup, out ProcessInformation info)) throw new Win32Exception(Marshal.GetLastWin32Error(), "固定验收工具启动失败");
                     using (SafeFileHandle process = new SafeFileHandle(info.Process, true))
@@ -160,20 +172,30 @@ namespace AIbrowse.ReleaseProfile
                     {
                         if (!GetProcessTimes(process, out long created, out _, out _, out _)) throw new Win32Exception(Marshal.GetLastWin32Error());
                         started(info.ProcessId, created);
-                        Stopwatch budget = Stopwatch.StartNew();
+                        Stopwatch budget = originalClock ?? Stopwatch.StartNew();
                         bool timedOut = false;
+                        bool rejected = false;
+                        long stoppedAt = -1;
                         while (Active(job) != 0)
                         {
-                            if (budget.ElapsedMilliseconds > timeoutMs && !timedOut)
+                            if (!timedOut && !rejected && stopRequested != null && stopRequested()) {
+                                rejected = true; stoppedAt = budget.ElapsedMilliseconds;
+                                if (!TerminateJobObject(job, 93)) throw new Win32Exception(Marshal.GetLastWin32Error(), "恢复失败Job终止失败");
+                            }
+                            if ((originalClock == null ? budget.ElapsedMilliseconds > timeoutMs : budget.ElapsedMilliseconds >= timeoutMs) && !timedOut && !rejected)
                             {
                                 timedOut = true;
+                                stoppedAt = originalClock == null ? -1 : timeoutMs;
                                 if (!TerminateJobObject(job, 92)) throw new Win32Exception(Marshal.GetLastWin32Error(), "终止超时 Job 失败");
                             }
-                            if (budget.ElapsedMilliseconds > timeoutMs + 30000) throw new InvalidOperationException("Job 终止后未实际归零，保留待恢复");
+                            if (budget.ElapsedMilliseconds > (stoppedAt >= 0 ? stoppedAt : timeoutMs) + 30000) throw new InvalidOperationException("Job 终止后未实际归零，保留待恢复");
                             Thread.Sleep(50);
                         }
                         if (timedOut) throw new InvalidOperationException("固定验收超时；Job 已确认实际归零");
+                        if (rejected) throw new InvalidOperationException("恢复场景失败；Job 已确认实际归零");
                         if (!GetExitCodeProcess(process, out uint exitCode) || exitCode == 259) throw new InvalidOperationException("Job 归零但根进程终态未知");
+                        if (originalClock != null && originalClock.ElapsedMilliseconds >= timeoutMs)
+                            throw new InvalidOperationException("恢复Job根进程退出晚于原期限");
                         return exitCode;
                     }
                 }

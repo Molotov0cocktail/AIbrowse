@@ -3,12 +3,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
 import { extractFile, getRawHeader, listPackage, statFile } from '@electron/asar';
-import {
-  FuseState,
-  FuseV1Options,
-  FuseVersion,
-  getCurrentFuseWire,
-} from '@electron/fuses';
+import { FuseState, FuseV1Options, FuseVersion, getCurrentFuseWire } from '@electron/fuses';
 import { NtExecutable, NtExecutableResource } from 'resedit';
 
 export const PACKAGED_EXECUTABLE = 'AIbrowse.exe';
@@ -16,6 +11,9 @@ export const PACKAGED_EXECUTABLE = 'AIbrowse.exe';
 const REQUIRED_FILES = [
   'package.json',
   'out/release/main/index.js',
+  'out/release/main/transfer-worker.js',
+  'out/release/main/startup-probe-worker.js',
+  'out/release/main/lifecycle-guardian-integrity.json',
   'out/release/preload/index.js',
   'out/release/renderer/index.html',
   'out/release/renderer/asset-manifest.json',
@@ -58,6 +56,7 @@ export interface PackageVerification {
   files: string[];
   rendererAssets: string[];
   externalPackages: string[];
+  guardianSha256: string;
 }
 
 const fail = (message: string): never => {
@@ -74,6 +73,7 @@ export const isAllowedArchivePath = (archivePath: string): boolean => {
   const path = normalizeArchivePath(archivePath);
   if (path === 'package.json') return true;
   if (path === 'out/release/main/index.js') return true;
+  if (path === 'out/release/main/lifecycle-guardian-integrity.json') return true;
   if (/^out\/release\/main\/[a-z0-9][a-z0-9_-]*\.js$/i.test(path)) return true;
   if (path === 'out/release/preload/index.js') return true;
   if (path === 'out/release/renderer/index.html') return true;
@@ -104,6 +104,24 @@ export const findForbiddenArchivePaths = (archivePaths: readonly string[]): stri
 
 const sha256File = (path: string): string =>
   createHash('sha256').update(readFileSync(path)).digest('hex');
+
+export function verifyGuardianBytes(manifest: unknown, bytes: Buffer): string {
+  if (
+    !isRecord(manifest) ||
+    Object.keys(manifest).sort().join(',') !== 'bytes,sha256,version' ||
+    manifest.version !== 1 ||
+    !Number.isSafeInteger(manifest.bytes) ||
+    Number(manifest.bytes) < 1 ||
+    Number(manifest.bytes) > 512 * 1024 ||
+    manifest.bytes !== bytes.length ||
+    typeof manifest.sha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(manifest.sha256)
+  )
+    throw new Error('guardian 完整性清单无效');
+  const actual = createHash('sha256').update(bytes).digest('hex');
+  if (actual !== manifest.sha256) throw new Error('guardian 与 ASAR 内清单不一致');
+  return actual;
+}
 
 export const readIntegrityResource = (executablePath: string): IntegrityResource => {
   const executable = NtExecutable.from(readFileSync(executablePath));
@@ -147,7 +165,9 @@ const verifyFuses = async (executablePath: string): Promise<FuseVersion> => {
   if (fuses.version !== FuseVersion.V1) fail(`不支持的 fuse 版本：${String(fuses.version)}`);
   for (const [option, expected] of REQUIRED_FUSES) {
     if (fuses[option] !== expected) {
-      fail(`fuse ${FuseV1Options[option]} 状态错误：期望 ${expected}，实际 ${String(fuses[option])}`);
+      fail(
+        `fuse ${FuseV1Options[option]} 状态错误：期望 ${expected}，实际 ${String(fuses[option])}`,
+      );
     }
   }
   return fuses.version;
@@ -224,7 +244,12 @@ export const verifyPackagedDirectory = async (inputRoot: string): Promise<Packag
   if (!statSync(asar, { throwIfNoEntry: false })?.isFile()) fail('缺少最终 resources/app.asar');
 
   const outerFiles = listFilesRecursively(packageRoot);
-  if (outerFiles.some((path) => path.startsWith('resources/app/') || path.startsWith('resources/app.asar.unpacked/'))) {
+  if (
+    outerFiles.some(
+      (path) =>
+        path.startsWith('resources/app/') || path.startsWith('resources/app.asar.unpacked/'),
+    )
+  ) {
     fail('打包目录不得包含裸 app 或 app.asar.unpacked');
   }
 
@@ -246,6 +271,22 @@ export const verifyPackagedDirectory = async (inputRoot: string): Promise<Packag
   }
   verifyPackageMetadata(asar);
   const rendererAssets = verifyRendererManifest(asar, fileSet);
+  const guardianPath = join(packageRoot, 'resources/lifecycle-guardian/guardian.exe');
+  const guardianStat = statSync(guardianPath, { throwIfNoEntry: false });
+  if (!guardianStat?.isFile() || guardianStat.size > 512 * 1024 || guardianStat.nlink !== 1)
+    fail('固定 guardian 文件不存在或形状无效');
+  const guardianSha256 = verifyGuardianBytes(
+    readJsonFromAsar(asar, 'out/release/main/lifecycle-guardian-integrity.json'),
+    readFileSync(guardianPath),
+  );
+  if (
+    outerFiles.some(
+      (path) =>
+        path.startsWith('resources/') &&
+        !['resources/app.asar', 'resources/lifecycle-guardian/guardian.exe'].includes(path),
+    )
+  )
+    fail('resources 出现未批准的附加文件');
 
   const headerHash = createHash('sha256').update(getRawHeader(asar).headerString).digest('hex');
   const integrityResource = readIntegrityResource(executable);
@@ -254,8 +295,8 @@ export const verifyPackagedDirectory = async (inputRoot: string): Promise<Packag
   }
   const fuseVersion = await verifyFuses(executable);
 
-  const externalPackages = ALLOWED_NODE_MODULE_ROOTS.map((path) => path.slice(0, -1)).filter((path) =>
-    files.some((file) => file.startsWith(`${path}/`)),
+  const externalPackages = ALLOWED_NODE_MODULE_ROOTS.map((path) => path.slice(0, -1)).filter(
+    (path) => files.some((file) => file.startsWith(`${path}/`)),
   );
   if (externalPackages.length !== ALLOWED_NODE_MODULE_ROOTS.length) {
     fail(`生产依赖闭包不完整：${externalPackages.join(', ')}`);
@@ -273,5 +314,6 @@ export const verifyPackagedDirectory = async (inputRoot: string): Promise<Packag
     files,
     rendererAssets,
     externalPackages,
+    guardianSha256,
   };
 };

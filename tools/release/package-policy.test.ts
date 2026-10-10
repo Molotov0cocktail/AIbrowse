@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { verifyGuardianBytes } from './package-policy';
 
-import { findForbiddenArchivePaths, isAllowedArchivePath, normalizeArchivePath } from './package-policy';
+it('guardian 必须与 ASAR 中唯一固定清单匹配，拒绝篡改与扩展字段', () => {
+  const bytes = Buffer.from('synthetic-helper');
+  const manifest = {
+    version: 1,
+    bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+  };
+  expect(verifyGuardianBytes(manifest, bytes)).toBe(manifest.sha256);
+  expect(() => verifyGuardianBytes(manifest, Buffer.from('synthetic-helpez'))).toThrow();
+  expect(() => verifyGuardianBytes({ ...manifest, path: 'other.exe' }, bytes)).toThrow();
+  expect(() => verifyGuardianBytes({ ...manifest, bytes: 0 }, Buffer.alloc(0))).toThrow();
+});
+
+import {
+  findForbiddenArchivePaths,
+  isAllowedArchivePath,
+  normalizeArchivePath,
+} from './package-policy';
 
 describe('release package positive allowlist', () => {
   it('accepts only fixed release outputs and the qualified production dependency closure', () => {

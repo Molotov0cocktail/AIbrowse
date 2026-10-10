@@ -1,0 +1,77 @@
+name: Windows internal candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-candidate:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node 24.18.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+
+      - name: Use pinned portable PowerShell compiler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $compilerRoot = Join-Path $env:RUNNER_TEMP 'aibrowse-powershell-7.6.5'
+          New-Item -ItemType Directory -Path $compilerRoot | Out-Null
+          $compilerArchive = Join-Path $compilerRoot 'powershell.zip'
+          Invoke-WebRequest -Uri 'https://github.com/PowerShell/PowerShell/releases/download/v7.6.5/PowerShell-7.6.5-win-x64.zip' -OutFile $compilerArchive
+          if ((Get-FileHash -LiteralPath $compilerArchive -Algorithm SHA256).Hash.ToLowerInvariant() -cne '32eb8f6cdce08f86e987d625a2733e54ac3e289ae7e1621b14c0b5bcec2434ea') {
+            throw '固定 PowerShell 构建工具摘要不符'
+          }
+          $compilerBin = Join-Path $compilerRoot 'bin'
+          Expand-Archive -LiteralPath $compilerArchive -DestinationPath $compilerBin
+          if ((Get-Item -LiteralPath $compilerBin).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw '构建工具目录类型不符'
+          }
+          $compilerBin | Out-File -LiteralPath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run unit and integration tests
+        run: npm test -- --maxWorkers=1
+
+      - name: Check TypeScript
+        run: npm run typecheck
+
+      - name: Check lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Build unsigned internal MSI-wrapped installer
+        run: npm run package:release-installer
+
+      - name: Verify packaged payload
+        run: node --experimental-strip-types tools/release/verify-package.ts release/win-unpacked
+
+      - name: Record source and payload provenance
+        run: node --experimental-strip-types tools/release/build-provenance.ts
+
+      - name: Upload internal candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIbrowse-${{ github.sha }}-win-x64-internal
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/AIbrowse-*-win-x64-internal.exe
+            release/AIbrowse-*-win-x64-internal.msi
+            release/installer-build.json
+            release/build-provenance.json

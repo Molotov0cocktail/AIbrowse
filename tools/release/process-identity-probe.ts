@@ -5,6 +5,22 @@ import { basename, join, resolve } from 'node:path';
 export type ControlledProcessLabel =
   'ProductOriginal' | 'ProductSecond' | 'ProductRestart' | 'TamperOriginal';
 
+export class ControlledProcessProbeError extends Error {
+  readonly diagnostic: {
+    label: ControlledProcessLabel;
+    pid: number;
+    exitCode: number | null;
+    stderr: string;
+    capturedBytes: number;
+    truncated: boolean;
+  };
+
+  constructor(diagnostic: ControlledProcessProbeError['diagnostic']) {
+    super(`受控进程身份探针失败：${diagnostic.label}`);
+    this.diagnostic = diagnostic;
+  }
+}
+
 export interface ControlledProcessIdentity {
   label: ControlledProcessLabel;
   pid: number;
@@ -22,6 +38,9 @@ export const probeControlledProcessIdentity = async (
   label: ControlledProcessLabel,
 ): Promise<ControlledProcessIdentity> => {
   const script = resolve('tools', 'release-profile', 'disposable-profile.ps1');
+  const chunks: Buffer[] = [];
+  let capturedBytes = 0;
+  let truncated = false;
   const exitCode = await new Promise<number | null>((resolveExit, rejectExit) => {
     const child = spawn(
       'pwsh.exe',
@@ -38,12 +57,28 @@ export const probeControlledProcessIdentity = async (
         '-Label',
         label,
       ],
-      { cwd: resolve('.'), windowsHide: true, stdio: 'ignore' },
+      { cwd: resolve('.'), windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] },
     );
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const take = Math.min(chunk.length, 8192 - capturedBytes);
+      if (take > 0) chunks.push(Buffer.from(chunk.subarray(0, take)));
+      capturedBytes += take;
+      if (take < chunk.length) truncated = true;
+    });
+    child.stderr?.on('error', rejectExit);
     child.once('error', rejectExit);
-    child.once('exit', resolveExit);
+    // Preserve diagnostics emitted between native exit and pipe closure.
+    child.once('close', resolveExit);
   });
-  if (exitCode !== 0) throw new Error(`受控进程身份探针失败：${label}`);
+  if (exitCode !== 0)
+    throw new ControlledProcessProbeError({
+      label,
+      pid: processId,
+      exitCode,
+      stderr: Buffer.concat(chunks).toString('utf8'),
+      capturedBytes,
+      truncated,
+    });
   const path = join(
     resolve(journalRoot),
     'runner-output',
