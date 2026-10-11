@@ -182,3 +182,9 @@ Sources/Research/Watch 按同一快照 ID 不可拆分地恢复，Conversation �
 - [Electron Fuses](https://www.electronjs.org/docs/latest/tutorial/fuses)：关闭不用的启动能力；file 额外权限和 Cookie 兼容需专项验证。
 - [ASAR Integrity](https://www.electronjs.org/docs/latest/tutorial/asar-integrity)：Windows 支持、完整性元数据和配套 fuse；开启 asar 不等于已验证完整性。
 - [electron-builder NSIS](https://www.electron.build/nsis/)：选定安装器路线；per-user、数据保留等实际配置由 E1/E5 验证，不能依赖默认值推断。
+
+## 8. 阶段后新发现：Session预览归属（2026-10-11）
+
+真实固定FIRST出现同源其它path正文被绑定为选定Source Baseline的P1，独立源码核验确认预览前后仅核origin、正式采集却严格核locator的差异。威胁是错误Baseline/Evidence、伪变化及按错误Source分享策略进入摘要；未证明跨源读取或凭据泄漏。
+这属于未接受的新产品风险，当前候选REPAIR；历史阶段PASS及句柄/周转/环境等风险批准不豁免。必须保持Stage6页面locator一致契约；待修复需读前/读后拒绝错path/query，拒绝不产生可消费预览/授权，覆盖表格发现及create/rebaseline，并且不增加query或正文落盘。
+实际错误事件保留，新规则/摘要计划暂停；临时Key依用户明确指令保留。Watch AI解释0调用/NOT RUN，reasoning兼容风险只做静态分类。完整边界见tasks末节与progress当前入口，不将未执行项授PASS。

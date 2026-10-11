@@ -1021,3 +1021,22 @@ production audit为0，完整构建树仍有8条同一缓存公告的high传播�
 
 按各E任务和Seventh_stage逐项核对实际证据，必要独立审核PASS后逻辑提交、正常双远程同步。
 Stage7只有在E6新独立Stage Auditor通过且当前合同的全部适用门满足时才关闭；E4按上述用户限定性能风险例外验收，句柄增长门不授PASS。历史失败、电池NOT RUN及外部缺证如实保留。
+
+## 阶段后真实 Provider 扩展回归（2026-10-11）
+
+- **授权 / 基线**：Stage7限定关闭后的基础真实对话已通过；用户随后确认保留临时Key，并要求真实Key的各工具、各场景及弱点实测。Git基线854ea2a71ebc6a77fbccc23fb7b99fa4c5e3c22a；FIRST仍绑定207cdde3，不重建、换包或启用dev/smoke。基础对话收尾文档差量保持。
+- **目标 / 范围**：有界覆盖17个Agent工具及L2同意/拒绝、普通共读与取消、页面注入观察、Sources变更与UI撤销、Research独立多源路径、Watch确定性事件及真实AI解释。工具名被模型提及不算调用，Agent同名工具不替代Research覆盖，Watch事实预览不算Provider解释。
+- **方法 / 等价性**：经普通FIRST UI驱动真实Provider；交互写入只面向loopback合成网页或本轮命名的新建记录。单一静态网页夹具提供导航、表单、两来源及Watch A/B事实，仍由实际BrowserController/权限/数据服务执行；不替代真实网站兼容性或语义注入普遍免疫证明，不扩建通用采集系统。
+- **预算 / 停止**：首批最多8个顶层场景；Agent保持每run12步/420秒，Research和Watch沿用产品预算。不预承诺精确HTTP上限等于任务数，逐场记录真实可核调用分类与累计数；同根因连续两次无新增证据即停止该路线。产品缺陷保持失败，不以换模型、改阈值或重复挑绿掩盖，不启动Stage8。
+- **判据 / 证据**：逐项区分实际成功、确定性安全拒绝、Provider兼容失败、环境不可用与未执行；核可信UI的工具回执/终态及必要脱敏日志分类。原始Key、思维、完整对话和真实业务正文不进入报告；只记录用途、调用次数、结果分类及可核的缺陷代码依据。新增弱点不由旧阶段PASS豁免。
+- **约束**：用户明确保留临时Key；不读取凭据文件，不接触已有业务记录，不进行外部表单提交/发布/交易，不重放安装、长测、负控或Stage6取证。新增工具源码仅静态夹具纳入tools/Git；运行产物不入库。最终按实际覆盖收尾，不声称穷尽所有网站与组合。
+
+### 实际结果与新缺陷
+
+- 首批8组完成有界执行：搜索、导航、交互拒绝、权限允许/禁止、Sources、Research、Watch、注入/取消。扩展59次Provider请求开始，加基础1次共60次；报告在`log/stage7-e6/post-stage-real-api-expanded-001/result.json`，不含Key、思维或完整对话。子场分开分类，不把HTTP请求数等同场景数或成功回答数。
+- 17个Agent工具全部有实际成功回执；L2提交/Source变更各有拒绝与确认，password/file填入和无安全语义按钮点击共3次forbidden。Source UI撤销恢复业务字段，不宣称版本/journal/库字节回退。单一敌对页未诱发越权工具调用，不证明普遍抗注入。
+- Research两份显式合成Sources完成候选2/选定2/读取2、证据11/拒绝8、结论3/冲突2，UI核价格、日期、未解决冲突和来源下钻。此前仅目标中指定两个URL的场次completed但候选/证据为0，目标未达成；目标URL不是当前自动候选入口。规划仍有分组元数据查询，不宣称禁止Sources文字使其零查询。Research原生六工具及reasoning工具回传未由上述统计证明。
+- 普通对话中止、Agent cancelled/aborted、Research已取消均实际触达在途请求；仅覆盖本次取消时刻。两次Agent观察错误使用普通对话的中止控件，实际任务自然done；工具FAIL保留，纠正为实际停止按钮后一次通过。原生时间控件程序设值未提交React状态、异步预览前置拒绝等工具失败亦不删除或算产品PASS。
+- **P1 / REPAIR：Session Baseline归属。** Source目标`/watch`，活动Tab为同源`/form`，预览仍成功；首次正式采集使事件成为`/form→/watch`，并非A→B。`watch-preview-service.ts`在读前/读后仅核origin，将其它页面投影与目标摘要绑定；`watch-command-service.ts`直接保存Baseline，而正式`watch-acquisition-service.ts`按目标导航并严格核locator。独立源码核验已确认违反Stage6 canonical locator契约；Session表格发现同类路径也需修复。可能造成伪变化、Evidence误归属及分享策略错配，未证实跨源读取或凭据泄漏。旧阶段风险批准不覆盖此问题。
+- **Watch AI解释NOT RUN。** 规则被暂停前仅有一条上述错误归属的合成事件；第二次相同采集无重复事件。新摘要计划cursor排除创建前事件，暂无摘要/0调用不能判调度器FAIL。为触达解释安排的后续合成事件未在固定30分钟夹具寿命内完成，未确认重建；补测停止，不重启夹具挑绿。3个本轮计划均暂停、规则暂停/静音，原事件/记录保留。`digest-service.ts:683`把reasoning判invalid-output是静态Provider兼容风险，本次未真实复现。Research工具reasoning回传亦仅列未证风险。
+- **收口/修复边界**：当前固定FIRST标为REPAIR，历史Stage7审核原件不改。最小修复应在Session正文/Region预览、表格发现的读取前后用现成`pageLocatorKey`核对真实元数据，错path/query拒绝且不签发预览/授权，不自动导航用户Tab，不额外持久化query。保留正确URL及fragment规范化正控，补错path、读中跳转、query、表格及拒绝后create/rebaseline反例；同时核Watch reasoning兼容及明确Research候选入口提示。产品源码/新包尚未修改；先将上述实际结果提交用户，请求解除固定FIRST禁重建约束后再制作修复候选。不得假称修复已在FIRST生效，不重开未受影响安装/长测矩阵，不启动Stage8。

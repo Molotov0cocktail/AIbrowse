@@ -6,6 +6,16 @@
 
 ### 当前任务与后继
 
+- 2026-10-11阶段后真实Provider扩展回归已收口：**当前固定FIRST为REPAIR，存在未获豁免的P1 Session Baseline归属缺陷**。下方Stage7 GO/PASS是此前限定合同的历史审核结果，不覆盖本次新发现。
+  固定FIRST普通UI、同一真实profile，扩展实际请求开始59次，加基础对话1次累计60次；不把取消请求算作正常完成。17个Agent工具均有真实成功回执，L2拒绝/确认、L3三种危险控件拒绝、Source备注变更/撤销、两源Research引用/冲突，以及Chat/Agent/Research在途取消均取得限定证据。
+  Watch选定`/watch`却从同源活动`/form`建立Baseline，产生错误的`/form→/watch`事件；原事件保留。新规则已暂停/静音，3个本轮摘要计划均暂停。
+  Research直接URL目标得到零候选的completed结果，目标未完成；有效两源场使用显式合成Source分组，不声称Research六工具逐一触达或工具reasoning回传已证。
+  Watch AI解释实际0调用/NOT RUN：计划排除创建前事件；补事件未在固定夹具寿命内完成。Digest对reasoning判invalid-output为静态风险，未冒称真实复现。
+  报告`log/stage7-e6/post-stage-real-api-expanded-001/result.json` SHA256 `8059e39dbb8789fadb8af8b753fa07150d3cb586bc33a5d0b59c3b9d26633b8f`，仅目的/调用次数/结果分类。
+  `close-addendum.json` SHA256 `c798f035f5c12a9634c9dbae74c9a09b119575c4eb7af4a0d5c5510231bde253`限定终态证据：首次Agent失败只知控件名误用及随后done，撤回未记录精确时序的“点击前已完成”断言；原报告不覆盖。
+  P1独立源码核验`session-locator-independent-review.json` SHA256 `6ac196c5653ff493bf7ddce058d411475cecb2f94e5dcb406b20d9b847a58d4a`；独核未读取实际事件数据库，不冒称其独立重现了UI事实。
+  基线main/854ea2a71ebc6a77fbccc23fb7b99fa4c5e3c22a；本次不改产品源码、不重建/替换FIRST。实际应用正常关窗并已退出，主进程数值exit未取得；夹具自然exit0，不延长/重启，不清理记录。临时Key按用户要求保留，不读取凭据文件。
+  下一步仅请求是否解除固定FIRST禁重建约束，以进行最小归属修复、兼容性修复及受影响新候选验收；未获此变更前不换包，不继续调用API，不启动Stage8。
 - 2026-10-11 Stage7 E1–E6 已经新的独立`gpt-6-astra/xhigh` Stage Auditor **GO / PASS**，按全部已批准风险的限定合同关闭。
   审核baseline为main / `eab99d88d0662dd99f1d37ced04d6ee35c7a8526`及14项受保护差量；逐SHA与候选快照相符，无新增阻塞。
   实际模型未回显，记不可验证。最终报告`log/stage7-e6/final-stage-audit-001/report.md`，
@@ -17,9 +27,11 @@
   当前质量去重460文件/6746项PASS、1文件/2项SKIP（6741−36+41），不是新全量exit0；
   来源/依赖核验`final-quality-coverage-001/report.md` SHA256 `a114abb65ac12494bc6f105610818c2ad0d338e453a052e8c230d7e515151253`。
   Gitee直连与GitHub指定7890代理的真实ls-remote均exit0，预检远端main均为eab99d88；正常双远程push及最终远端身份由上述remote-close回执记录，不改公开历史。
-  当前唯一后继为用户阶段后真实临时API实测，仍**PENDING**，不预授通过；通过后停止，不启动Stage8。
-  普通桌面启动保留FIRST完整载荷，profile从native-profile-preflight-002及既有身份解析；不读凭据、不重装、不制造空profile。
-  一次有界真实Provider对话核流式响应和正常完成，报告只记目的/调用次数/结果分类；临时Key后续处理由用户确认，不误删已有凭据。
+  阶段后真实临时API实测已**PASS**：一次真实Provider调用，已观察在途部分正文、后续完整回答及无错误/中止的正常终态。
+  先前一次目标配置未提交导致本地not-configured拒绝，未进入Provider网络路径；该失败保留，不计为外部调用成功。
+  普通桌面启动保留FIRST完整载荷，仅启用系统无障碍访问；profile从native-profile-preflight-002及既有身份解析，未读凭据文件、重装或创建空profile。
+  实测会话设为不保存；报告`log/stage7-e6/post-stage-real-api-001/result.json`只记目的/调用次数/结果分类。
+  保存前应用显示没有旧Key；用户随后明确暂不删除，并新增授权真实Key的各工具/各场景及弱点实测。扩展结果及当前新缺陷见上方，不启动Stage8。
 - 2026-10-11早期接管历史（以下执行证据不取代上方当前结论）：main、干净工作区、HEAD `eab99d88d0662dd99f1d37ced04d6ee35c7a8526`，双远程当时同SHA；Node24.18.0。
   当时未提交或push；随后工作区差量为E4补验工具/合同、E5合成通知fixture及正式文档，不进入固定FIRST产品构建闭包。
   用户已回到电脑；普通窗口可直接操作，安全桌面UAC须用户实际确认。固定FIRST仍绑定207，禁止重建、换包或声称由当前HEAD构建。
@@ -1296,11 +1308,11 @@ normal五产物与既有验收字节一致；未重新构建或重复产品冒�
 
 Stage7已由`log/stage7-e6/final-stage-audit-001/report.md`新的独立阶段审计**GO / PASS**关闭；全部原FAIL/REPLAN/NOT RUN及已批准风险保持。
 已审14项工具/合同差量提交`d75b52849f3aa91ab9a3631b2f122db811e0cee0`；后继只关闭文档，双远程实际同步状态和最终HEAD见`final-stage-audit-001/remote-close.json`。
-当前唯一动作是请求用户阶段后真实临时API实测，状态**PENDING**，不预授通过。
-普通桌面启动保留的完整FIRST：`log/stage7-e6/clean-builds-001/first-release/win-unpacked/AIbrowse.exe`；
-源绑定207cdde3、应用EXE SHA373f81b386ea1cd439b6f1b1d350b3e9dbd05f173879200796cbf83998693aea不变，不进行第七次MSI安装或重建。
-真实profile从`log/stage7-e5/native-profile-preflight-002.txt`及既有身份记录解析；只验目录身份，不读凭据、不猜路径或创建空profile。
-用户在聊天提供临时Key及必要接口/模型；一次有界真实Provider对话核流式响应与正常完成，报告只记目的、调用次数和结果分类。
-临时Key处理由用户确认，不能误删已有凭据；通过后停止，不启动Stage8。
+阶段后真实临时API实测已**PASS**，实际Provider调用1次，流式响应与正常完成均已观察；一次本地not-configured零网络拒绝保持。
+实际使用保留FIRST完整载荷，仍绑定207cdde3及原应用EXE摘要；真实profile身份已核验，无第七次MSI安装或重建。
+实测报告为`log/stage7-e6/post-stage-real-api-001/result.json`，只记目的、调用次数和结果分类；不保存Key或对话正文。
+用户已确认暂不删除临时Key；阶段后8组有界扩展回归已收口，实际请求59次、累计60次。当前固定FIRST因新发现的Session预览跨路径Baseline归属P1标为REPAIR，基础对话及历史审核PASS不外推为该缺陷豁免。
+下一唯一动作：提交实际发现及最小修复方案，请用户裁决是否解除固定FIRST禁重建约束，允许制作受影响修复候选；当前停止Provider调用，不换包、不进入Stage8。Watch AI解释NOT RUN及Research原生工具兼容覆盖缺口保持，不靠追加无界工具/重跑补绿。
+固定FIRST未变；合成记录和失败保留，新规则/3个新摘要计划已暂停，应用正常关闭，临时Key保留。Research规划有既定分组元数据查询，不宣称既有元数据零读取；既有业务内容未作为测试对象。
 剩余额度≤1%立即保存当前证据/进度并停止；电池、独立Windows及其它已说明NOT RUN不伪判PASS。
 Stage6与构建工具卸载已关闭，不恢复旧ETW/freeze、不再次清理或安装MSVC/SDK；不重放安装、负控、长测或工具资格链。

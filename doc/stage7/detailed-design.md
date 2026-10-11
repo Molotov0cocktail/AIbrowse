@@ -812,3 +812,9 @@ E6 逐项审查 `Seventh_stage.md` 最终验收，并对威胁模型红队矩阵
 工程限制先 REPLAN；产品取舍、未解决用户风险和必需外部条件集中请求裁决。其他独立且已授权工作可继续。
 用户已授权持续完成 E1–E6 实现、验证、独立审核及收尾；依赖与硬门满足后方可授予各任务通过。
 Stage7完成后停止，不启动Stage8产品实现；未签名内部候选和手动升级边界不变。
+
+### 阶段后真实Provider回归的新发现（2026-10-11）
+
+固定FIRST在普通UI实测中暴露Session预览归属P1：同源`/form`正文可成为选定`/watch`的Baseline，正式采集随后产生错误变化。当前候选REPAIR，历史Stage7审核和已批准风险不覆盖此问题。
+Stage6的canonical locator契约继续有效，不把origin相同解释成页面相同。待修复方案是在正文/Region预览及表格发现的读取前后，用原始主进程元数据和现成`pageLocatorKey`匹配目标；错path或有效query拒绝，不签发预览/授权、不自动导航用户Tab、不增加query落盘。正确URL及仅fragment变化保持兼容。
+Watch AI解释实际未触达；Digest拒绝reasoning事件及Research工具reasoning回传列为待核兼容风险。Research直接URL目标未形成候选，显式合成Sources场取得有效两源结果，不能混称通过。真实覆盖和修复反例见tasks末节；固定FIRST未改，替换候选前须解除本次固定包约束，不扩Stage8。
