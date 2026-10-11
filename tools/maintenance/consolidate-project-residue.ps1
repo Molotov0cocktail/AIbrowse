@@ -197,6 +197,23 @@ if (@(Get-Process | Where-Object ProcessName -match '^(AIbrowse|aibrowse-guardia
 function Is-Within([string]$Path, [string]$Root) {
     return $Path.Equals($Root, [StringComparison]::OrdinalIgnoreCase) -or $Path.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase)
 }
+function Test-CredentialLikePath([string]$Path) {
+    return $Path -match '(?i)credential|secret|password|passwd|api[-_]?key|dpapi|(^|[\\.])env([\\.]|$)'
+}
+function Test-PermissionDenied([object]$Failure) {
+    if ($Failure -is [Management.Automation.ErrorRecord] -and $Failure.CategoryInfo.Category -eq 'PermissionDenied') { return $true }
+    $exception = if ($Failure -is [Management.Automation.ErrorRecord]) { $Failure.Exception } else { $Failure }
+    while ($exception) {
+        if ($exception -is [UnauthorizedAccessException] -or $exception -is [Security.SecurityException]) { return $true }
+        if ($exception -is [ComponentModel.Win32Exception] -and $exception.NativeErrorCode -eq 5) { return $true }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+function Get-PlanArray([string]$Name) {
+    if ($plan.PSObject.Properties.Name -contains $Name) { return @($plan.$Name) }
+    return @()
+}
 function Assert-NoLinkAncestors([string]$Path) {
     $candidate = $Path
     while ($candidate) {
@@ -208,26 +225,57 @@ function Assert-NoLinkAncestors([string]$Path) {
 Assert-NoLinkAncestors $output
 Assert-NoLinkAncestors $first
 Assert-NoLinkAncestors $archive
-$tempRoot = [IO.Path]::GetFullPath([string]$plan.tempRoot).TrimEnd('\')
-if ($tempRoot -notmatch '^[A-Z]:\\Users\\[^\\]+\\AppData\\Local\\Temp$') { throw '非预期用户Temp根。' }
 $jobs = @($plan.jobs)
+$tempRoot = $null
+if (@($jobs | Where-Object mode -eq 'empty-temp').Count) {
+    if (-not ($plan.PSObject.Properties.Name -contains 'tempRoot')) { throw 'empty-temp缺少Temp根。' }
+    $tempRoot = [IO.Path]::GetFullPath([string]$plan.tempRoot).TrimEnd('\')
+    if ($tempRoot -notmatch '^[A-Z]:\\Users\\[^\\]+\\AppData\\Local\\Temp$') { throw '非预期用户Temp根。' }
+}
 foreach ($job in $jobs) {
     $full = [IO.Path]::GetFullPath([string]$job.path).TrimEnd('\')
     if ($full -cne $job.path) { throw '清理目标不是规范绝对路径。' }
     $valid = switch ($job.mode) {
         'prune-log' { $full -ceq (Join-Path $repository 'log') }
+        'retire-log' { $full -ceq (Join-Path $repository 'log') }
         'test-tree' { $full -match '^D:\\AIbrowse\\\.h3b-workspaces\\run-[A-Z2-7]{26}$' -or $full.StartsWith((Join-Path $repository 'log') + '\', [StringComparison]::OrdinalIgnoreCase) }
-        'empty-temp' { [IO.Path]::GetDirectoryName($full).Equals($tempRoot, [StringComparison]::OrdinalIgnoreCase) }
+        'empty-temp' { $tempRoot -and [IO.Path]::GetDirectoryName($full).Equals($tempRoot, [StringComparison]::OrdinalIgnoreCase) }
         'archive-review' { [IO.Path]::GetDirectoryName($full) -ceq 'C:\Program Files' -and [IO.Path]::GetFileName($full).StartsWith('AIbrowse', [StringComparison]::Ordinal) }
         default { $false }
     }
     if (-not $valid -or (Is-Within $full $first) -or (Is-Within $full $archive) -or (Is-Within $full $maintenance)) { throw ('拒绝目标范围：' + $full) }
     Assert-NoLinkAncestors ([IO.Path]::GetDirectoryName($full))
 }
+$retireLog = @($jobs | Where-Object mode -eq 'retire-log').Count -gt 0
+$keepFileSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$keepTreeSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$skipPathSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+if ($retireLog) {
+    $keepFiles = Get-PlanArray 'keepFiles'
+    $keepTrees = Get-PlanArray 'keepTrees'
+    $skipPaths = Get-PlanArray 'skipPaths'
+    if ($skipPaths.Count -ne 3) { throw 'retire-log必须精确提供三个既有策略拒绝条目。' }
+    foreach ($candidate in @($keepFiles + $keepTrees + $skipPaths)) {
+        $full = [IO.Path]::GetFullPath([string]$candidate).TrimEnd('\')
+        if ($full -cne $candidate -or $full -ceq (Join-Path $repository 'log') -or -not (Is-Within $full (Join-Path $repository 'log'))) {
+            throw ('retire-log保留项不是log内规范绝对路径：' + $candidate)
+        }
+    }
+    foreach ($candidate in $keepFiles) { [void]$keepFileSet.Add([string]$candidate) }
+    foreach ($candidate in $keepTrees) { [void]$keepTreeSet.Add(([string]$candidate).TrimEnd('\')) }
+    foreach ($candidate in $skipPaths) {
+        if (-not (Test-Path -LiteralPath ([string]$candidate))) { throw ('既有策略拒绝条目已不存在：' + $candidate) }
+        [void]$skipPathSet.Add(([string]$candidate).TrimEnd('\'))
+    }
+    if ($skipPathSet.Count -ne 3) { throw 'retire-log的三个策略拒绝条目必须互不相同。' }
+    foreach ($requiredTree in @($first,$archive,$maintenance)) {
+        if (-not $keepTreeSet.Contains($requiredTree)) { throw ('retire-log缺少强制保护树：' + $requiredTree) }
+    }
+}
 $firstBefore = @(Get-ChildItem -LiteralPath $first -File -Recurse -Force | ForEach-Object {
     [pscustomobject]@{ Path=$_.FullName; Length=$_.Length; Sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
 })
-$result = [ordered]@{ startedUtc=[DateTime]::UtcNow.ToString('o'); status='running'; filesDeleted=0L; directoriesDeleted=0L; linksDeleted=0L; logicalBytesDeleted=0L; archivedFiles=0L; archivedBytes=0L; reusedArchivedFiles=0L; reusedArchivedBytes=0L; filesRetained=0L; directoriesDaclRestored=0L; retainedHardLinks=[Collections.Generic.List[string]]::new(); jobs=[Collections.Generic.List[object]]::new(); errors=[Collections.Generic.List[object]]::new(); firstVerified=$false; credentialContentsRead=$false; followedLinks=$false }
+$result = [ordered]@{ startedUtc=[DateTime]::UtcNow.ToString('o'); status='running'; filesDeleted=0L; directoriesDeleted=0L; linksDeleted=0L; logicalBytesDeleted=0L; archivedFiles=0L; archivedBytes=0L; reusedArchivedFiles=0L; reusedArchivedBytes=0L; filesRetained=0L; sensitiveEntriesRetained=0L; canaryEntriesRetained=0L; directoriesDaclRestored=0L; retainedHardLinks=[Collections.Generic.List[string]]::new(); retainedPlanPaths=@((Get-PlanArray 'keepFiles') + (Get-PlanArray 'keepTrees') + (Get-PlanArray 'skipPaths')); jobs=[Collections.Generic.List[object]]::new(); errors=[Collections.Generic.List[object]]::new(); firstVerified=$false; credentialContentsRead=$false; followedLinks=$false }
 $timer = [Diagnostics.Stopwatch]::StartNew()
 $script:visited = 0
 $script:lastProgress = 0.0
@@ -235,7 +283,7 @@ $testRoots = @($jobs | Where-Object mode -eq 'test-tree' | ForEach-Object path)
 $testRootSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 foreach ($testRoot in $testRoots) { [void]$testRootSet.Add($testRoot) }
 $exactFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-foreach ($deleteFile in @($plan.exactDeleteFiles)) {
+foreach ($deleteFile in (Get-PlanArray 'exactDeleteFiles')) {
     $deleteFileFull = [IO.Path]::GetFullPath([string]$deleteFile)
     if ($deleteFileFull -cne $deleteFile -or -not (Is-Within $deleteFileFull (Join-Path $repository 'log'))) { throw '精确文件清单越界。' }
     foreach ($protected in @($first,$archive,$maintenance)) { if (Is-Within $deleteFileFull $protected) { throw '精确文件清单包含保留目录。' } }
@@ -265,11 +313,76 @@ function Update-Progress {
         [IO.File]::WriteAllText((Join-Path $output 'cleanup-progress.json'), ([ordered]@{ elapsedSeconds=$timer.Elapsed.TotalSeconds; visited=$script:visited; filesDeleted=$result.filesDeleted; directoriesDeleted=$result.directoriesDeleted; bytesDeleted=$result.logicalBytesDeleted; archivedFiles=$result.archivedFiles } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
     }
 }
+function Add-ResultError([string]$Path, [object]$Failure) {
+    $message = if ($Failure -is [Management.Automation.ErrorRecord]) { $Failure.Exception.Message } elseif ($Failure -is [Exception]) { $Failure.Message } else { [string]$Failure }
+    $result.errors.Add([pscustomobject]@{path=$Path;message=$message})
+}
+function Test-RetirementProtectedPath([string]$Path) {
+    if ($keepFileSet.Contains($Path) -or $skipPathSet.Contains($Path)) { return $true }
+    foreach ($tree in $keepTreeSet) { if (Is-Within $Path $tree) { return $true } }
+    return $false
+}
+function Remove-RetirementFile([string]$Path, [string]$Root, [long]$Length) {
+    $pin = $null
+    try { $pin = [ProjectCleanupAccess]::Pin($Path, $Root) }
+    catch {
+        $cause=$_.Exception
+        while ($cause.InnerException) { $cause=$cause.InnerException }
+        if ($cause.Message -ceq 'Multiple hard links retained') {
+            $result.retainedHardLinks.Add($Path)
+            $result.filesRetained++
+            return
+        }
+        throw
+    }
+    $pin.Dispose()
+    try {
+        Remove-Item -LiteralPath $Path -Force -Confirm:$false -ErrorAction Stop
+        $result.filesDeleted++
+        $result.logicalBytesDeleted += $Length
+        return
+    } catch { if (-not (Test-PermissionDenied $_)) { throw } }
+    $unlocked = $null
+    $originalDacl = $null
+    try {
+        try { $unlocked = [ProjectCleanupAccess]::Unlock($Path, $Root, [ref]$originalDacl) }
+        catch {
+            $cause=$_.Exception
+            while ($cause.InnerException) { $cause=$cause.InnerException }
+            if ($cause.Message -ceq 'Multiple hard links retained') {
+                $result.retainedHardLinks.Add($Path)
+                $result.filesRetained++
+                return
+            }
+            throw
+        }
+    } finally { if ($unlocked) { $unlocked.Dispose() } }
+    try { Remove-Item -LiteralPath $Path -Force -Confirm:$false -ErrorAction Stop }
+    catch {
+        $deleteFailure = $_
+        $restorePin = $null
+        try {
+            $restorePin = [ProjectCleanupAccess]::Pin($Path, $Root)
+            [ProjectCleanupAccess]::RestoreDacl($restorePin, $originalDacl)
+        } catch {
+            throw [InvalidOperationException]::new(('删除失败且DACL恢复失败：' + $deleteFailure.Exception.Message + '；' + $_.Exception.Message), $_.Exception)
+        } finally { if ($restorePin) { $restorePin.Dispose() } }
+        throw $deleteFailure
+    }
+    $result.filesDeleted++
+    $result.logicalBytesDeleted += $Length
+}
 function Visit-Entry([string]$Path, [string]$Root, [string]$Mode, [int]$Depth) {
     $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
     if (-not (Is-Within $full $Root)) { throw '拒绝越界条目。' }
     foreach ($protected in @($first,$archive,$maintenance)) { if (Is-Within $full $protected) { return } }
-    if ($full -match '(?i)7ZH3LHUDMG7EVBK6ESGEECUVEM|canary') { return }
+    if ($Mode -eq 'retire-log' -and (Test-RetirementProtectedPath $full)) { return }
+    if ($full -match '(?i)7ZH3LHUDMG7EVBK6ESGEECUVEM|canary') { $result.canaryEntriesRetained++; return }
+    # Path classification happens before Get-Item so credential-like entries are never opened.
+    if ((Test-CredentialLikePath $full) -or ($Mode -ne 'archive-review' -and $full -match 'e5-review-unknown')) {
+        $result.sensitiveEntriesRetained++
+        return
+    }
     $script:visited++
     if ($Depth -gt 128 -or $script:visited -gt 300000 -or $timer.Elapsed.TotalMinutes -gt 25) { throw '达到清理预算。' }
     Update-Progress
@@ -292,7 +405,14 @@ function Visit-Entry([string]$Path, [string]$Root, [string]$Mode, [int]$Depth) {
                 $pinned = [ProjectCleanupAccess]::Unlock($full, $Root, [ref]$originalDacl)
                 $children = @(Get-ChildItem -LiteralPath $full -Force)
             }
-            foreach ($child in $children) { Visit-Entry $child.FullName $Root $Mode ($Depth + 1) }
+            foreach ($child in $children) {
+                if ($Mode -ne 'retire-log') { Visit-Entry $child.FullName $Root $Mode ($Depth + 1); continue }
+                try { Visit-Entry $child.FullName $Root $Mode ($Depth + 1) }
+                catch {
+                    if ($_.Exception.Message -ceq '达到清理预算。') { throw }
+                    Add-ResultError $child.FullName $_
+                }
+            }
             $empty = @(Get-ChildItem -LiteralPath $full -Force).Count -eq 0
         } finally {
             try { if ($originalDacl) { [ProjectCleanupAccess]::RestoreDacl($pinned, $originalDacl); $result.directoriesDaclRestored++ } }
@@ -304,9 +424,8 @@ function Visit-Entry([string]$Path, [string]$Root, [string]$Mode, [int]$Depth) {
         }
         return
     }
-    # Never open, archive, or delete credential-like files or unresolved canary records.
-    if ($full -match '(?i)credential|secret|password|passwd|api[-_]?key|dpapi|(^|[\\.])env([\\.]|$)' -or ($Mode -ne 'archive-review' -and $full -match 'e5-review-unknown')) {
-        $result.filesRetained++
+    if ($Mode -eq 'retire-log') {
+        Remove-RetirementFile $full $Root $entry.Length
         return
     }
     if ($Mode -eq 'empty-temp') { $result.filesRetained++; return }
@@ -375,7 +494,8 @@ try {
         }
     }
     foreach ($file in $firstBefore) {
-        if ((Get-Item -LiteralPath $file.Path).Length -ne $file.Length -or (Get-FileHash -LiteralPath $file.Path -Algorithm SHA256).Hash -cne $file.Sha256) { throw 'FIRST身份发生变化。' }
+        $current = Get-Item -LiteralPath $file.Path
+        if ($current.Length -ne $file.Length -or (Get-FileHash -LiteralPath $file.Path -Algorithm SHA256).Hash -cne $file.Sha256) { throw 'FIRST身份发生变化。' }
     }
     if (@(Get-ChildItem -LiteralPath $first -File -Recurse -Force).Count -ne $firstBefore.Count) { throw 'FIRST文件数发生变化。' }
     $result.firstVerified = $true
