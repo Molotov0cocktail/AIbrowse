@@ -32,6 +32,8 @@ export function ResearchPanel({
     !unavailable && state.task !== null && state.task.status !== 'running' && !state.busy;
   const canOpenResult =
     !unavailable && state.task !== null && state.task.status === 'completed' && !state.busy;
+  const completedStats =
+    state.task?.status === 'completed' ? (state.stats ?? state.task.stats) : null;
 
   const totalPages = Math.max(1, Math.ceil(state.historyTotal / state.historyPageSize));
 
@@ -80,10 +82,14 @@ export function ResearchPanel({
           className="research-panel-goal"
           value={goal}
           maxLength={2000}
+          aria-describedby="research-source-help"
           placeholder="例如：比较主流模型当前 Agent 能力"
           disabled={unavailable}
           onChange={(e) => setGoal(e.target.value)}
         />
+        <p id="research-source-help" className="research-source-help">
+          来源由已保存信源或网页搜索提供。研究指定网页时，请先保存为信源；仅在目标中填写网址不会自动采集。
+        </p>
         <button type="button" className="research-panel-start" disabled={!canStart} onClick={start}>
           开始研究
         </button>
@@ -102,6 +108,13 @@ export function ResearchPanel({
                 {state.stats.evidenceCount} · 拒绝 {state.stats.rejectedEvidenceCount} · 结论{' '}
                 {state.stats.claimCount} · 冲突 {state.stats.conflictCount} · 步数{' '}
                 {state.stats.stepsUsed}
+              </div>
+            )}
+            {completedStats !== null && completedStats.evidenceCount === 0 && (
+              <div className="research-coverage-notice" role="status">
+                {completedStats.candidateCount === 0
+                  ? '本次研究未找到可用来源，未获得可用证据。请先将目标网页保存为信源，或调整研究目标后重试。'
+                  : '本次研究未获得可用证据，尚不能形成有依据的结论。请检查来源是否可读取，或调整研究目标后重试。'}
               </div>
             )}
             {state.error !== null && (

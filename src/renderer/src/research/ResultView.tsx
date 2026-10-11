@@ -340,6 +340,11 @@ export function ResultView(props: ResultViewProps): ReactElement {
   return (
     <div className="research-result-view">
       <h2 className="research-result-title">{safeText(result.title)}</h2>
+      {evidenceEntries.length === 0 && (
+        <div className="research-coverage-notice" role="status">
+          此结果没有可核验的来源证据，请勿将其视为已证实结论。请检查研究来源或调整目标后重试。
+        </div>
+      )}
       <p className="research-result-summary">{safeText(result.summary)}</p>
       {result.blocks
         .filter((block) => !(skipTableBlocks && block.kind === 'table'))
