@@ -1035,6 +1035,10 @@ Stage7只有在E6新独立Stage Auditor通过且当前合同的全部适用门�
 
 ### 实际结果与新缺陷
 
+2026-10-12后继：用户已授权尝试修复全部实际遗留、遇难停止；本节以下保留2026-10-11原结果，
+本轮Session归属、Digest兼容和Research提示的修复合同/反例/审核及运行结果统一见
+`doc/tasks/legacy-repair.md`，当前动作看progress。原固定FIRST身份和历史未证项不因源码差量改变。
+
 - 首批8组完成有界执行：搜索、导航、交互拒绝、权限允许/禁止、Sources、Research、Watch、注入/取消。扩展59次Provider请求开始，加基础1次共60次；报告在`log/stage7-e6/post-stage-real-api-expanded-001/result.json`，不含Key、思维或完整对话。子场分开分类，不把HTTP请求数等同场景数或成功回答数。
 - 17个Agent工具全部有实际成功回执；L2提交/Source变更各有拒绝与确认，password/file填入和无安全语义按钮点击共3次forbidden。Source UI撤销恢复业务字段，不宣称版本/journal/库字节回退。单一敌对页未诱发越权工具调用，不证明普遍抗注入。
 - Research两份显式合成Sources完成候选2/选定2/读取2、证据11/拒绝8、结论3/冲突2，UI核价格、日期、未解决冲突和来源下钻。此前仅目标中指定两个URL的场次completed但候选/证据为0，目标未达成；目标URL不是当前自动候选入口。规划仍有分组元数据查询，不宣称禁止Sources文字使其零查询。Research原生六工具及reasoning工具回传未由上述统计证明。

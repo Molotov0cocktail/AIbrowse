@@ -188,3 +188,10 @@ Sources/Research/Watch 按同一快照 ID 不可拆分地恢复，Conversation �
 真实固定FIRST出现同源其它path正文被绑定为选定Source Baseline的P1，独立源码核验确认预览前后仅核origin、正式采集却严格核locator的差异。威胁是错误Baseline/Evidence、伪变化及按错误Source分享策略进入摘要；未证明跨源读取或凭据泄漏。
 这属于未接受的新产品风险，当前候选REPAIR；历史阶段PASS及句柄/周转/环境等风险批准不豁免。必须保持Stage6页面locator一致契约；待修复需读前/读后拒绝错path/query，拒绝不产生可消费预览/授权，覆盖表格发现及create/rebaseline，并且不增加query或正文落盘。
 实际错误事件保留，新规则/摘要计划暂停；临时Key依用户明确指令保留。Watch AI解释0调用/NOT RUN，reasoning兼容风险只做静态分类。完整边界见tasks末节与progress当前入口，不将未执行项授PASS。
+
+2026-10-12用户授权修复后的代码差量：Session预览/表格发现读取前后严格核完整locator，实际捕获摘要与
+授权、create/rebaseline独立重算；Digest丢弃reasoning而继续严格校验最终解释。反例测试及新的独立
+安全/隐私/持久化审核通过，具体候选与执行结果见 `doc/tasks/legacy-repair.md`。本段不改旧FIRST结论，
+不声称旧错误Baseline/Event被恢复，也不关闭长时句柄未知根因或Research工具回传的未证边界。
+同轮真实production冒烟虽完成全部功能标记，但退出存在一个未结预览操作，整轮仍为REPAIR；
+原生快照传输未返回仅是待证假设。按用户遇难停报停止新增修复，不将局部PASS外推为可替换的发行包。

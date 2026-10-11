@@ -3592,3 +3592,14 @@ links[0].href`。**summary 来源**：sectionCount/tableCount/
   C6 并行）→ C8（依赖 C5–C7）→ C9（依赖 C1–C8）→ C10（依赖全部且独立复验）。
 - 每任务闭环边界、红态测试、验收标准、停止条件见 `doc/stage5/tasks/C1–C10`。
 - C10 通过后停止，不实现 RSS/Watch/Sixth Stage；等待用户指令。
+
+## 2026-10-12 遗留体验修复：来源入口与零证据提示
+
+Research 候选仍仅来自已保存 Sources 与受控网页搜索，目标文本中的 URL 不自动变为候选；
+不扩大 `browser_open` 的候选约束、不伪造 Search provenance，也不改变零候选可完成并输出
+uncertain 的既有状态机。目标输入旁必须说明指定网页需先保存为信源。
+
+任务完成且可信统计 evidenceCount=0 时，侧栏由程序明确提示未取得可用证据；candidateCount=0
+时另说明未找到来源。运行中不提前作该终局判断。已验证 Result 的 evidenceMap 为空时，结果
+正文之前固定显示“没有可核验的来源证据”的提示，不依赖模型自行生成警告。提示可用于旧结果，
+不修改数据库、历史状态或模型输出。自动 URL 候选入口及 Research 工具 reasoning 回传仍未实现。

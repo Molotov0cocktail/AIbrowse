@@ -6,6 +6,13 @@
 
 ### 当前任务与后继
 
+- 2026-10-12用户新增授权尝试修复全部实际遗留问题，遇到难以修复的问题停止汇报。
+  接管 baseline `9083172b0d0848e62a78c4b7c03c697a81470572`，工作区干净；本轮合同为 `doc/tasks/legacy-repair.md`。
+  已修 Session Watch 页面归属 P1、Digest reasoning 兼容，并补 Research 来源入口/零证据提示；119文件/2378项相关回归通过，typecheck/lint/format/build通过，新独立安全/隐私/持久化审核限定 PASS。
+  默认 production 首轮 `default-smoke-production-d79c8b7dafce4e13ac6922776a4bbfac` 的 Watch D9 与全功能场通过，但退出仍有一个 previewContext/conversation:preview 未排空，**整体 REPAIR，不能凭全场 marker 判通过**。原监督器在575315ms超时收口，outer exit1、result/completion passed=false、app exitCode=null；prepare/application Job归零，读回未启动、writer账本未退休。零重试、零手工杀进程；后继UI矩阵取消/NOT RUN。
+  已按用户遇难停报停止新增修复；一轮只读只能提出原生快照传输未返回的假设，精确根因与本轮差量因果未证。旧句柄增长、Research工具回传兼容及旧错误事件恢复仍未解决/未证。
+  修复保存为本地候选，当前不push、不更新output；普通out已含候选，旧FIRST及历史失败、真实数据保持。P2-3字节预算、P2-4单worker、O-1 UUID守卫经代码核对已解决，已纠正陈旧风险登记。本轮不调用真实Provider、不开始新长测或Stage8。
+  本地产品候选提交为 Watch `178e4d6ad21f518a942ad987543e486c12ae27cb`、Digest `cd6c9aeb3b34efeeeb8480f48585728da4f62fad`、Research `19a4db950482b6a57a3fcab0413f69a1b4ebd8a0`；文档收尾以Git为准。后继先定位退出阻塞，本轮到此停止。
 - 2026-10-12完成用户新增的整体 UI 风格迭代，baseline `fb8d1ab0a1581be5917204088999256b98a233f1`。
   已实际搜索并查看 Arc、Comet、Edge、Brave、Vivaldi、Feedly、Inoreader、Readwise Reader、Notion、Elicit 共十款商业产品 UI 图片；五维分析、来源和执行合同见 `doc/tasks/ui-visual-refresh.md`。
   按用户“跟随品牌、提升精致度、深浅双模式”要求，统一灰蓝品牌色、字体层级、留白、图标、导航及卡片；支持浅色/深色/跟随系统和本地外观偏好保持。
@@ -1292,6 +1299,11 @@ H3b接电长时资源、当前Windows及限定隔离证据已闭合；电池按�
 
 ### 开放风险登记
 
+2026-10-12本轮按实际代码核对：以下 P2-3、P2-4 为历史登记，当前已关闭，原发现保留。
+`conversation-transfer.ts` 已具备 4MiB 消息/64MiB 会话预算，`conversation-store.ts` 在读取前与写入投影执行边界；
+`vitest.config.ts` 已固定 `maxWorkers: 1`。相关字节精确边界与非法路径反例见 `conversation-store-transfer.test.ts`。
+当前仍未解决或未证项以顶部及 `doc/tasks/legacy-repair.md` 为准，不把这两项计入本轮新增修复。
+
 - **审计 P2-3 会话字节上限（B9 独立处置，2026-08-15；未修复，后续硬化）**：
   会话持久化有会话数（50）与消息条数（200）上限，**无字节上限**——触发
   条件 = 单会话 200 条内持续追问或超大单条消息；影响 = 会话 JSON 文件可达
@@ -1330,7 +1342,7 @@ H3b接电长时资源、当前Windows及限定隔离证据已闭合；电池按�
 - R-01 UI导航保护、R-02服务器重定向保护、审计P2备份发布清理竞态、P2-2日志保留/大小已关闭，
   原编号与结论保留于Git/相关Stage任务；不复用编号。
 - PageSnapshot主文档/iframe降级、shared/url不支持IDN、搜索snippet/站点结构限制维持原产品设计。
-- O-1 ConversationStore UUID路径纵深防御在会话导入/同步或信任边界变化前复核；无已知外部攻击入口。
+- O-1 ConversationStore UUID路径纵深防御已由当前 `messagePath`/删除守卫落实；路径穿越及尾换行反例见 `conversation-store-transfer.test.ts`。本轮仅核对关闭陈旧登记，未来信任边界变化仍须复核。
 - Provider跨run不持久化reasoning_content，要求原样回传的Provider旧会话重问可能受控400；原决议#35保留。
 - Prompt Injection结构防御不等于语义免疫，第三阶段四类已接受设计风险继续由当前threat-model承接。
 - 未打包系统通知、真实登录网站、当前Stage6真实Provider条件观察如实NOT RUN/条件不可用；不要把历史
@@ -1367,7 +1379,9 @@ normal五产物与既有验收字节一致；未重新构建或重复产品冒�
 
 ## 下一唯一执行任务
 
-当前程序与安装器已迁到`D:\AIbrowse\output\`，完整80文件摘要不变，旧log包目录已移除。后续选定版本统一放入output；历史记录中的旧包路径只表示当时位置。迁移与文档收尾完成后停止，不启动产品或下一阶段。
+按用户“遇难停止”完成本地候选与失败记录收尾后汇报；当前不再启动修复或验证。后继若恢复，先定位本轮预览退出阻塞，不能重跑无差量候选碰运气。当前选定程序仍在 `D:\AIbrowse\output\`，旧 FIRST 身份不因源码修复自动改变。
+
+以下为此前任务收尾历史，停止/禁重建指令由本次明确修复授权在相应范围替代，旧证据及未执行事实保持。
 
 本轮旧日志退役及完整保留清单已交付；新增删除105,030文件、38,986目录、约966MiB。项目当前约0.71GiB，主体为FIRST、用户资料归档及Git源码；重点保留61份报告，另有约6.6MiB敏感名称/canary保护项、38KiB硬链接夹具和维护回执。三个旧审批拒绝路径终检不存在，本轮跳过、未归因其消失。详细边界见当前入口及`log/maintenance/log-retirement-20261012-001/report.md`；此前976MiB混合资料数字已失效。
 程序/安装包、Git源码、真实profile/Key保留；后续开发从项目环境入口开始。大体积原始验收产物已按用户明确批准删除，旧报告只能作为历史结论和剩余证据入口，不能据缺失原件声称可完整复核。

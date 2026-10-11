@@ -1875,6 +1875,11 @@ explanation 必须非空、已 trim/NFC、无 C0/C1/bidi 控制；单段 `String
 恒等；Event scrub 或其它变化使 CAS 失败时迟到输出整份丢弃并按上表终结为 failed/aborted。成功/失败只更新 explanation/provider 安全状态、
 finishedAt/byte_length，不改 facts/ref/cursor/runStats；不持久化 prompt、模型原始响应、思维过程或 tool call。
 
+2026-10-12 兼容修复明确流事件语义：`reasoning` 增量立即丢弃，不拼接、不显示、不记录、不回传；
+仅 `delta` 正文参与上述 16,384 字节与 canonical JSON 校验。`toolCalls` 仍整份拒绝，`done` 后的
+任何事件仍属非法终态序列；只有 reasoning、没有合法最终 JSON 的响应仍失败。这保持同一解释验证与
+隐私承诺，避免把受支持 Provider 的思考通道误判为解释正文错误。
+
 ### 11.6 删除/过期与审计
 
 §10.4 的 scrub 是 Event 删除/保留清理/Source 级联的唯一入口。一个 explanation section 只要包含被 scrub 的
@@ -1912,6 +1917,18 @@ Schedule → Condition → 通知隐私 → Baseline 预览 → 最终确认。S
 失效并绑定 tabId/sourceId/final origin/目标摘要；renderer 只拿一次性 opaque handle，handle 零 DB/日志，
 最终仅持久化无凭据 consent 元数据和 `PageTarget.pageUrl`。preview tabId 与后续每次 run 的 task tabId 都不持久化，
 也不要求原授权 Tab 在运行时仍存在。
+
+2026-10-12 页面归属修复：Session 正文/Region 预览和表格发现均在读取前检查活动 Tab URL、
+读取后检查主进程 `read.meta.url`，两者的 `pageLocatorKey` 必须与 Source 页面目标相等；
+不同 path 或有效 query 安全拒绝，fragment 与默认端口按既有函数规范化。拒绝不能签发可消费
+预览或授权，不能导航用户 Tab。预览的目标摘要从实际读取 URL 和 Region 计算；签发授权及
+create/rebaseline 消费时独立重算目标摘要，同时复核脱敏投影 URL 的对应关系。完整 query 只
+沿既有目标定位与摘要校验路径使用，不新增到 Projection、日志或通知。一次性预览仍是有时效的
+采样结果，后续用户 Tab 导航不追溯撤销已经正确采集的冻结预览；Source 版本和 fingerprint 仍在提交时复验。
+
+旧版本产生的错误 Baseline/Event 不作静默删除或重写。旧投影已脱敏，无法仅凭现存投影排除
+所有历史 query 错配；已知受影响规则应保持暂停，由用户针对正确目标显式预览并重新建立基线，
+历史错误事件保留。这是后续数据处置边界，代码修复不等于历史数据已修复。
 
 ### 12.3 IPC/bridge 白名单
 
