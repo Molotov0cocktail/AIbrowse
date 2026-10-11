@@ -6,15 +6,74 @@
 
 ### 当前任务与后继
 
-- 用户最新授权直接操作或模拟点击普通窗口，用户暂休息；诊断预览取消/保存及恢复A冷态28表核对已完成。
-  采用外部受控UIA/可见窗口动作补真实发行证据，不新增产品测试接口；安全桌面UAC仍需实际确认，余下安装ordinal3–6暂不启动。
-  用户另要求剩余额度达到1%立即保存并停止；已通过本机Codex app-server官方只读account/rateLimits/read取得额度，
-  最新`log/stage7-e6/quota-checkpoint-013.json`（2026-10-10T21:30:13Z）主codex周窗口used71%，即remaining29%，未触发停止；001–012原件保留。
-  不读取/打印认证文件、不启动模型turn；后续批次前复查窗口，remaining≤1%时先持久当前证据/本入口并停止执行、派发任务。
-  此接口只覆盖服务返回的窗口，不冒称每个token实时监控；界面/用户更早提供阈值信号同样立即停止。
-  最新候选实际747条：原739清单遗漏v3应用新增的8个既有文件，已补入E3；未发现链接、超1MiB文件、数据库/日志/构建产物/凭据文件名。
-  当前五组显式路径/每文件SHA/原暂存8在`candidate-commit-applicability-001/applicability.json`；原projection两项AM须纳入最终工作区版，不reset索引。
-  该新独审限定PASS允许候选源码逻辑提交（244/152/38/303/10），17通知文件现与v3精确全等，未授阶段或未执行包/安装/性能门PASS。
+- 2026-10-11本轮收口核实：main、HEAD仍为`eab99d88d0662dd99f1d37ced04d6ee35c7a8526`，14个受控工具/文档文件未提交，均为本轮已保护差量。
+  双远程本地tracking refs仍为该SHA，本次未重新联网核远端；本轮未提交/推送。实际AIbrowse/guardian/Electron/msiexec进程均0。
+  用户已明确“接受”唯一周转场的可能短暂并存及严格退休顺序未证风险；tasks/design/threat/release已同步限定覆盖替代，原FAIL/严格断言/REPLAN保留，不授原顺序门PASS。
+  当前对话已按用户要求接管最终验收与收尾，不启动新真实场或扩建工具；质量来源/依赖与正式合同收口后立即进入新的独立阶段审核。
+  真正待办仅为：①质量来源/依赖覆盖与正式合同一致性收口；②新的独立`gpt-6-astra/xhigh` Stage Auditor按E1–E6及批准风险逐项验收；
+  ③审核通过后逻辑提交/正常双远程push；④Stage7关闭后请求用户真实临时API实测，通过后停止，不启动Stage8。
+  当前无已知待用户裁决的Stage7风险项；批准范围仅本次最终有界退休/资源包络/精确归属/四域证据与上述顺序风险，不泛化豁免新失败。
+  不重跑周转、不扩建采集器、不因本裁决修产品或换FIRST；新审核发现真正缺口时按风险处理，产品取舍直接裁决。
+  既已接受的固定场句柄越限、分层覆盖差异、同机Windows替代及最终恶意env/debug正控替代不重新请求裁决。
+  本次用户明确答复已记录，不再询问同一裁决。其它已获限定PASS的证据按来源复用，不恢复旧待办。
+  质量来源收口核四个受影响默认测试：历史组36项由三文件40项及entry-setup一项完整替换；
+  当前去重460文件/6746项PASS、1文件/2项SKIP（6741−36+41），不是新全量exit0；来源/依赖核验原件见`final-quality-coverage-001/`。
+- 2026-10-11实际接管为main、干净工作区、HEAD `eab99d88d0662dd99f1d37ced04d6ee35c7a8526`，双远程此前同SHA；Node24.18.0。
+  本轮未提交或push；工作区差量为E4补验工具/合同、E5合成通知fixture及正式文档，不进入固定FIRST产品构建闭包。
+  用户已回到电脑；普通窗口可直接操作，安全桌面UAC须用户实际确认。固定FIRST仍绑定207，禁止重建、换包或声称由当前HEAD构建。
+  用户批准E4分层补验及覆盖差异：RSS/private24MiB/h、handles60/h阈值不变，原动态两小时RSS28.0413MiB/h FAIL永久保留；
+  固定实体两小时增长＋独立有界重复Tab周转＋绝对资源、旧实体退休、冷态一致性，不完整证明任意更多周转/更长周期的极慢泄漏。
+  正式合同已同步；R1–R3一次集中修复的原REPAIR保留，`performance-supplement-independent-review-001/report-after-repair.md`限定PASS，
+  SHA `beff5b4e21bc2f4b26ec5f24cb40051c54ca5cff0b63bfc77a2673081f105a10`；baseline-applicability SHA `941e4573c21e8f9eb50d0bc519dd42e3c57a366c432df103d4d0e7ae7740953d`。
+  唯一正式fixed-long scope `performance-check-5fcee9da687f4dcb97920d0b62df276b`已自然结束：session89575实际exit1，main28868创建2026-10-11T03:46:06.470708Z；原件及execution-tool-response保留。
+  真实7200026.7221ms两小时仍FAIL：全660暖机后点、同15精确实体，RSS−484.0905701103MiB/h、private4.97049509965MiB/h，handles60.91778813410/h超过60；不四舍五入或删点。
+  runtime Job实际exit0/Succeeded/ActualZero/LimitsVerified；oracle因growth前置失败未执行后续完整lifetime/renderer首尾/writer/冷态门，不冒称这些已PASS。
+  用户明确接受该句柄越限及更长运行可能继续增长的风险，原FAIL/60硬门保留、不授增长门PASS；正式tasks/design/threat/release同步限定性能承诺变更。
+  `actual-supplement-independent-review-001/report.md`原结论REPLAN保留，SHA6a5c8817bd7a065453ca570af340d4cc12f537d53878e8f7f68b635eb0c2737a；
+  独立已核实体/绝对资源/交互/正常退出/Job0/writer，冷态四域由下述追加报告闭合；当时允许的唯一turnover亦已运行，结果见下。
+  冷态补充`actual-supplement-independent-review-001/cold-addendum.md`限定PASS，SHA6449fcefee46a44d4a33ab9802d823471d062fd3eac69d646ffb7516255b4e64；
+  27非审计表及两会话不变、唯一启动审计/精确时窗通过，原5文件保全。附加副本5文件断言因合法WAL/SHM失败exit1保留，非产品FAIL，原oracle不改。
+  唯一turnover隔离工具构建`performance-check-9bc22f4f563543b48426fa014f3118df`actualexit0；18min工作窗结束后session70326 actualexit1，oracle FAIL“旧renderer实体退休无法唯一证明”。
+  execution-tool-response及完整工具响应CreateNew保留；禁止重跑/改门/追加采集链，后继阶段验收停止，一次集中只读核原因与其它门后直接提出覆盖裁决。
+  实际独审初核20旧/新PID各唯一creation实体，20旧实体均随后退休；退役观测晚于create26.9544–136.3601ms，5次LastObserved也晚于create，不能证明纯观察延迟或完全无短暂并存。
+  此项曾请求具体覆盖裁决；用户现已明确接受短暂并存/严格顺序未证风险与最终有界退休/包络/归属/四域替代，原件及FAIL不改，正式合同同步。
+  一次集中实核`actual-supplement-independent-review-001/turnover-evidence.json` SHA9bb75e10dc8fd8b27859c28bae4eab8175e56332f2d679720e6cfd12a795cb80；
+  20旧实体均最终退休且在下轮close前归零，10槽两代30Tab文档链/47快照精确绑定，资源/交互门通过，setup/runtime正常exit0/Job0/writer双null。
+  唯一既有函数副本冷态actualexit0：28表/27非审计不变/1合法审计/会话恒等，原5文件身份hash恒等；完整capture另存turnover-cold-capture.json，原oracle严格顺序FAIL仍保留。
+  `actual-supplement-independent-review-001/turnover-report.md`收口REPLAN，SHA22cec11ae0c77c60fbfb1c968e98536948d01dd1a7f1b6705bc463d537cae81f；
+  当时的退休-before-create覆盖阻塞已由用户明确接受风险关闭，其余周转门实核成立；原REPLAN报告不改，新的Stage Auditor按更新合同独立判断，当前尚无阶段PASS。
+  完整cold capture SHA8021d50e1f9bf250188299a2abca9ce0206b2f4d43e8a7bf4c1f542267c455da。
+  独立三文件质量补验实际25PASS/15FAIL、exit1；旧legacy反例夹具缺Members导致错误早拒，E6先同步等价性，受委派只补夹具合法schema，保留全部原断言与FAIL。
+  夹具适配仅+66/-2，旧增长/拓扑/writer/冷态反例继续触达原断言；一次完整三文件补验40/40、actualexit0，原失败不覆盖。
+  原件`performance-supplement-quality-001/focused-tests-after-fixture-repair.txt`与数值exit回执已保存；当前typecheck/lint均actualexit0，changed格式已修正并actualexit0。
+  后续纯文档更新只做相应格式/一致性检查；相关entry-setup一文件一项补验actualexit0，原件entry-setup-delta.txt/exit.json保留，不重复已绿40或全量。
+  E5原产品scope `product-msi-abbdce4a26244f04a51b7008cb4cdc35`账本已实际6/6，不重放、不重置历史小样19及失败。
+  第3运行时卸载实际1603/6122ms，安装快照逐字恒等、同一普通权限main存活；第4正常关窗/完整退休后卸载exit0。
+  `native-ordinal34-independent-review-001/report.md`限定PASS；75owned消失、150旧组件-1、原cache/related/shortcut退休，unknown3及三库28表保全。
+  PS7 UTC词法差异首审REPAIR、关闭宿主误拒及零动作失败原件保留；独审CreateNew第4状态后生成最终binding。
+  最终binding SHA `6bd1b65a3a83567acea134875410c14a2598c0fbbadde4ff68b4f8fac8256b3d`，绑定原manifest、第4实际退出/退休、双clean/行为独审及FIRST两安装器。
+  受保护FIRST复制hash/bytes/ACL均成立，旧保护包不覆盖。第5用户确认UAC，NSIS PID29792实际exit0/32781ms；子MSI数值exit NOTOBSERVED保持。
+  第5安装75文件/组件、cache、注册、快捷方式及82项ACL独核通过；普通token/可信app文档成立，SourceA/旧数据继续保留。
+  第5联合env/debug启动被自动审批拒绝，回执仅“blocked by policy”、零执行；用户明确接受FIRST两负控＋同安全实现旧正控＋最终普通启动的替代及风险，联合场永久NOT RUN。
+  旧正控精确来源为E1 Tamper `journal-8edf39ba16924ace964b70341acfc2ef/runner-output/run-1791057306175/report.json` SHA3be2087a...，
+  E1 Product `journal-b997103bbdd14bf1ae6987564f82d956/runner-output/product/run-1791056729922/report.json` SHAa2c23cc2...；末尾强杀/All FAIL不变，安全分支/fuses适用性经新独审核实。
+  `native-final-positive-notification-001` Session预览后main fatal，原FAIL/exit NOTOBSERVED保持；源A/旧事件保全，新增合成Source不删除。
+  `final-preview-fatal-independent-review-001/report.md`为方法REPLAN、历史原因unknown；没有证实EPIPE。Copy-Item EFS失败原件及有界字节保全替代保持。
+  唯一十分钟ShellExecute桌面对照 `native-final-desktop-control-001` main37792，同FIRST/保留profile，Session授权→Baseline预览→建规则真实成功。
+  早期前台、几何、宿主时间前置拒绝和22-live-toast失败均保留，未执行检查/卡点击；人工来源合同同步后由用户完成同场一次检查与唯一OS卡正文点击。
+  用户报告“1张，正文正确，已点击”；自动RuntimeId回执NOT RUN。即时26可信UIA及27窗口截图显示独特A/B old/new只读Evidence，
+  冷态新event `429d889c-7b7d-4c48-8485-5b695742a562`→rule747803d3...→sourcee0da089c.../64423精确对应，outbox sent、details0、新规则paused/user，SourceA/旧事件原行保留。
+  桌面对照正常WM_CLOSE、heldhandle实际exit0、app/guardian0、fixture STOP自然exit0；原负耗时及Number舍入错误不改，独立BigInt解释纠正另存。
+  main创建到exit579523.9809ms、fixture退休579862.1381ms；只读冷态封存609004.1381ms，十分钟整场工具预算FAIL永久保持；仅预算内产品事实＋写者退休后冷态事实获限定PASS。
+  诊断承接旧真实生成一次→取消→保存与FIRST实际JS语义未变/207 BuildId差量；FIRST新UI诊断NOT RUN，不复用旧JSON字节，不第三次启动。
+  第6用户确认UAC，systemmsiexec PID28904实际exit0/5749ms，claim严格绑定实际5的claim/exit；75最终+150旧组件-1、owned/cache/locator/related/shortcut完整退休。
+  unknown3及external hash/ACL、三库物理身份/字节和28表卸载前后恒等；错误tableCount数组及两处元数据字段准备失败原件保持，独审直接核28表，零额外事务。
+  `final-native-e5-independent-review-001/report.md`已独立限定PASS第5/6、真实通知与安全/诊断证据适用性，
+  SHA `c8aae5808f8d474fed2dcf69c15062dc680507f29b904c0fbca63b73eb361030`；绑定33份关键原件，不授E4或Stage7最终通过。
+  系统WindowsInstaller msiserver Running/Manual/PID25000的观察保留，不强杀、不冒称全部msiexec0；所有产品实例、直接事务及E4固定场均已退出。
+  本轮官方只读额度检查历史点 `quota-checkpoint-014.json` 为2026-10-11T02:56:14Z remaining28%，001–013保持；不视为实时值。
+  用户明确无需再复查，由其在窗口前监控；不再主动调用额度接口。达到1%或用户提供阈值信号时立即持久证据/本入口并停止执行及派发任务。
+  全部剩余硬门成立后仍须新的独立Stage Auditor逐项验收、逻辑提交和正常双远程push；其后请求用户真实临时API实测，通过后停止，不启动Stage8。
 - 真实安装版恢复已完整补证：自动guardian重启后SourceA可见，外部可信RootWebArea/aibrowse://app/index.html按钮生成诊断一次，
   原生取消后预览不变并再次保存；实际默认文件`native-package-restore-001/aibrowse-diagnostic.json`为651B/sha84c9199f92b6c71867caab5c4ab97dd0bf8df425e564067a47284e86601cd095，与前后预览逐字节相同。
   WM_SETTEXT仅改变filename控件读回而未改变IFileDialog内部选择，期望native-diagnostic.json未产生；工具路径控制FAIL原件保留、不重试/不授工具保存资格。
@@ -1234,14 +1293,18 @@ normal五产物与既有验收字节一致；未重新构建或重复产品冒�
 ## 下一唯一执行任务
 
 标准全量`final-quality-numeric-dccbb0b307bf43279afd8161bfcfb842`实际exit1原件保持；唯一工具固定历史HEAD缺陷已修复、提交4c4fa96并独审限定PASS。
-按正式E6去重分层证明460文件/6741项PASS、1文件/2项SKIP，不宣称同一全量命令exit0；只涉及离线工具/文档的后继差量不重建固定FIRST包。
-已应用通知v3有17源精确绑定、85聚焦及限定独审；最终包仍需新真实OS显示/默认隐私/活态精确点击，不能复用旧NOTOBSERVED。
-E4两小时原场RSS28.0413MiB/h超过24为FAIL，独立结论及原件保留；分层补验覆盖提案等待用户裁决，不自行关硬门或无诊断重跑。
-E5按已批准UAC全机MSI与同机替代执行，产品账本已2/6；安全桌面实际确认缺失时不启动3–6。
-两洁净构建与最终FIRST静态、两篡改负控均已独审限定PASS。第5场正确包恶意环境联合正控仍待实际安装，不推定通过。
-实现、工具修复和证据文档候选已正常双远程推至a4de1e7，两实际exit0，当前仅收口这项回执文档并继续正常同步；无强推或公开发布。
-下一实际产品动作须用户安全桌面UAC可用后执行已授权ordinal3/4，随后固定FIRST的5/6及OS通知/正确包联合安全正控；不再追加旧工具资格链。
-完成真实剩余门后再启动新的独立Stage Auditor，当前不授阶段通过。
+历史正式E6去重分层证明460文件/6741项PASS、1文件/2项SKIP；本轮性能工具三文件40项及entry-setup一项actualexit0，替换同四文件旧36项。
+当前去重覆盖为460文件/6746项PASS、1文件/2项SKIP，原全量exit1保留；质量来源/依赖核验见`log/stage7-e6/final-quality-coverage-001/`。
+最终审核独立核未变来源/依赖与该替换集合，不将旧6741数字冒称包含新断言；只涉及离线工具/文档的后继差量不重建固定FIRST包。
+通知v3的最终包新真实OS卡/默认隐私/活态精确详情已由最终E5独审限定PASS；人工OS来源与自动RuntimeId NOT RUN分开，旧NOTOBSERVED保持。
+E4原动态RSS28.0413MiB/h FAIL保留；批准分层后的唯一fixed-long也actualexit1，handles60.91778813410/h超60，15实体固定、RSS/private合格，用户已接受句柄风险。
+唯一turnover亦actualexit1/FAIL；20旧实体最终退休但严格退休先于create为0/20，观测晚26.9544–136.3601ms，5次最后活态采样也晚create；其余周转门和冷态独核成立。禁止重试挑绿。
+E5按批准UAC全机MSI及同机替代完成原账本6/6；ordinal3/4和最终5/6均独审限定PASS，绑定、保护复制、完整退休和数据保全闭合，不重放旧场。
+两洁净构建与FIRST静态、两篡改负控均独审限定PASS。联合env/debug正控因自动审批拒绝NOT RUN；用户批准的旧同实现正控＋FIRST负控＋普通启动替代及风险已独核适用性，未跑场不标绿。
+接管HEAD为eab99d88d0662dd99f1d37ced04d6ee35c7a8526且双远程tracking refs一致；本轮尚未提交/推送新差量，无强推或公开发布。
+下一唯一动作是完成本次质量来源/依赖收口后，立即启动新的独立`gpt-6-astra/xhigh` Stage Auditor逐项验收E1–E6和全部批准风险。
+用户已接受唯一turnover可能短暂并存/严格顺序未证风险，事实由turnover-report.md集中核完，不再请求同一裁决或展开定位/工具资格链。原FAIL/严格不等式/固定场60断言保持，E5限定独审已闭合。
+当前不授阶段通过；审核GO后才逻辑提交/正常双远程push，并请求用户真实临时API实测，通过后停止。
 三库物理上限/full50、R/P四域和当前E3主路径按未受影响来源/差量复用，不再回到旧UIA宿主工具资格链。
 剩余额度≤1%立即保存当前证据/进度并停止；电池、独立Windows及其它已说明NOT RUN不伪判PASS。
 Stage6已关闭，新增构建工具卸载已关闭，不恢复旧ETW/freeze、不再次清理或安装MSVC/SDK；Stage7结束后停止，不启动Stage8。

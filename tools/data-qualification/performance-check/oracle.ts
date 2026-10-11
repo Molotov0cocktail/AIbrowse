@@ -1,12 +1,16 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
+  fixedIdentityTreeGrowth,
   fixedTopologyGrowth,
   percentile,
   relativeLimit,
   summarize,
   summarizeCpu,
+  validateSupplementSourceCompatibility,
+  validateFixedIdentityLifetimes,
   validateTimeline,
+  validateTurnoverLifetimes,
 } from './metric-oracle';
 
 type JsonObject = Record<string, unknown>;
@@ -79,6 +83,130 @@ function buildBinding(): JsonObject {
 
 function sameBinding(left: JsonObject, right: JsonObject): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+const SUPPLEMENT_BASELINE_SCOPE = 'performance-check-c8e3852d7c5e4e54b92b171652ba6f48';
+const SUPPLEMENT_BASELINE_SHA = 'bd04e914df32a4661f2ba54216767ac4a1821278f4c0334ee3ed3bd9d49ad0ba';
+const SUPPLEMENT_REVIEW_RELATIVE =
+  'log/stage7-e4/performance-supplement-independent-review-001/baseline-applicability.json';
+
+function validateSupplementBaselineApplicability(
+  control: JsonObject,
+  baselineReport: JsonObject,
+  currentBinding: JsonObject,
+): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { createHash } = require('node:crypto') as typeof import('node:crypto');
+  const applicabilityBinding = object(control.baselineApplicability, 'baseline适用性绑定');
+  if (
+    applicabilityBinding.relativePath !== SUPPLEMENT_REVIEW_RELATIVE ||
+    !/^[a-f0-9]{64}$/u.test(String(applicabilityBinding.sha256))
+  )
+    throw new Error('baseline适用性路径或摘要无效');
+  const applicabilityPath = resolve(
+    scope,
+    '..',
+    'performance-supplement-independent-review-001',
+    'baseline-applicability.json',
+  );
+  const bytes = readFileSync(applicabilityPath);
+  if (bytes.length < 2 || bytes.length > 256 * 1024) throw new Error('baseline适用性原件大小无效');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const report = object(JSON.parse(bytes.toString('utf8')) as unknown, 'baseline适用性原件');
+  if (
+    sha256 !== applicabilityBinding.sha256 ||
+    !sameBinding(report, object(applicabilityBinding.report, 'baseline适用性内嵌报告'))
+  )
+    throw new Error('baseline适用性原件绑定改变');
+  const mode = String(control.mode);
+  if (
+    report.version !== 1 ||
+    report.verdict !== 'PASS' ||
+    report.baselineScopeId !== SUPPLEMENT_BASELINE_SCOPE ||
+    report.baselineOracleSha256 !== SUPPLEMENT_BASELINE_SHA ||
+    report.fixedFirstSourceCommit !== '207cdde3cb05550679c612e6e3561aac7a2bf248' ||
+    report.fixedFirstProvenanceSha256 !==
+      'b587dc18fc3cac46f9038ed31983631d0f8a8a27d27fcc3381114f20611d310a' ||
+    report.fixedFirstSourceManifestSha256 !==
+      '3a47ce55c6015c0bc92f5e57171f1b68d2eddab88be138bd515a0fcbe777e210' ||
+    report.arbitraryAdditionalTurnoverCovered !== false ||
+    report.longerIntervalLeakCovered !== false ||
+    JSON.stringify(report.approvedModes) !== JSON.stringify(['fixed-long', 'turnover']) ||
+    !['fixed-long', 'turnover'].includes(mode)
+  )
+    throw new Error('baseline适用性独审结论无效');
+  const baselineBinding = object(baselineReport.buildBinding, 'baseline构建绑定');
+  if (
+    baselineBinding.workloadSha256 !==
+      'f08a8cb178694d8faa2e60c082f3a3b4ad42f82d8a67aaf4eaa9c86bb22f5298' ||
+    !sameBinding(
+      object(baselineBinding.environment, 'baseline环境'),
+      object(currentBinding.environment, '当前环境'),
+    )
+  )
+    throw new Error('补验baseline原工作负载或机器环境改变');
+  const reviewedSources = object(report.supplementSources, '补验独审来源');
+  const expectedSources = [
+    'tools/data-qualification/performance-check/entry.ts',
+    'tools/data-qualification/performance-check/metric-oracle.ts',
+    'tools/data-qualification/performance-check/oracle.ts',
+    'tools/data-qualification/performance-check/PerformanceJob.cs',
+    'tools/data-qualification/performance-check/run.ps1',
+  ];
+  if (
+    Object.keys(reviewedSources).length !== expectedSources.length ||
+    expectedSources.some((name) => !/^[a-f0-9]{64}$/u.test(String(reviewedSources[name])))
+  )
+    throw new Error('补验独审来源集合无效');
+  const buildSources = object(read('build.json', 4 * 1024 * 1024).sources, '当前构建来源');
+  if (expectedSources.some((name) => reviewedSources[name] !== buildSources[name]))
+    throw new Error('补验独审来源已改变');
+  const sourceManifestPath = resolve(
+    scope,
+    '..',
+    '..',
+    'stage7-e6',
+    'final-quality-numeric-dccbb0b307bf43279afd8161bfcfb842',
+    'git-files-before.sha256',
+  );
+  const sourceManifest = readFileSync(sourceManifestPath);
+  if (
+    createHash('sha256').update(sourceManifest).digest('hex') !==
+    '3a47ce55c6015c0bc92f5e57171f1b68d2eddab88be138bd515a0fcbe777e210'
+  )
+    throw new Error('固定FIRST来源清单改变');
+  const fixedSources = new Map<string, string>();
+  for (const line of sourceManifest.toString('utf8').trimEnd().split(/\r?\n/u)) {
+    const match = line.match(/^([a-f0-9]{64}) {2}(.+)$/u);
+    if (match === null || fixedSources.has(match[2]!)) throw new Error('固定FIRST来源清单无效');
+    fixedSources.set(match[2]!, match[1]!);
+  }
+  const baselineBuildPath = resolve(scope, '..', SUPPLEMENT_BASELINE_SCOPE, 'build.json');
+  const baselineBuildBytes = readFileSync(baselineBuildPath);
+  if (
+    createHash('sha256').update(baselineBuildBytes).digest('hex') !==
+    '3b4b4ab8f2dbf21abb7ee751fe22bba747d72de8300a2e8a1c13f6d7850d3a99'
+  )
+    throw new Error('固定短baseline构建清单改变');
+  const baselineBuild = object(
+    JSON.parse(baselineBuildBytes.toString('utf8')) as unknown,
+    '固定短baseline构建清单',
+  );
+  validateSupplementSourceCompatibility(
+    buildSources,
+    Object.fromEntries(fixedSources),
+    object(baselineBuild.sources, '固定短baseline来源'),
+  );
+  const preservedSources: Record<string, string> = {
+    'tools/data-qualification/performance-check/baseline-fixture.ts':
+      'd3daaefa68e9a38ab6f7cbf58cc50425fb074db2d63e07963e335b1f9e897da4',
+    'tools/data-qualification/performance-check/build.ts':
+      '18bde8801eb8eef2f089a944bbe1ee481dde80d2d17117c4f217deece26f063d',
+    'tools/data-qualification/performance-check/config.ts':
+      'c5622e64f73f82387583c401e29c37143893ce1882596b6b01bbafd22da7d3ad',
+  };
+  if (Object.entries(preservedSources).some(([name, hash]) => buildSources[name] !== hash))
+    throw new Error('补验复用的短baseline来源已改变');
 }
 
 function checkJob(job: JsonObject): void {
@@ -349,8 +477,19 @@ function referenceThresholds(control: JsonObject): {
   const baselineReport = object(baseline.report, 'baseline报告');
   if (baselineReport.verdict !== 'PASS' || baselineReport.mode !== 'baseline')
     throw new Error('baseline报告无效');
-  if (!sameBinding(object(baselineReport.buildBinding, 'baseline构建绑定'), buildBinding()))
+  const currentBinding = buildBinding();
+  if (['fixed-long', 'turnover'].includes(String(control.mode))) {
+    if (
+      baseline.scopeId !== SUPPLEMENT_BASELINE_SCOPE ||
+      baseline.sha256 !== SUPPLEMENT_BASELINE_SHA
+    )
+      throw new Error('补验baseline不是固定已批准原件');
+    validateSupplementBaselineApplicability(control, baselineReport, currentBinding);
+  } else if (
+    !sameBinding(object(baselineReport.buildBinding, 'baseline构建绑定'), currentBinding)
+  ) {
     throw new Error('baseline工作负载或机器环境改变');
+  }
   return {
     scopeId: baseline.scopeId,
     thresholds: object(baselineReport.thresholds, 'baseline阈值'),
@@ -471,12 +610,44 @@ try {
       throw new Error('Job资源时点数量无效');
     const normalized = resourcePoints.map((value, index) => {
       const point = object(value, `resource${index}`);
+      const members = array(point.Members, `resource${index}.Members`).map((value, memberIndex) => {
+        const member = object(value, `resource${index}.member${memberIndex}`);
+        const pid = finite(member.ProcessId, '原生实体PID', 1);
+        const createdFileTime = member.CreatedFileTime;
+        const handles = finite(member.Handles, '原生实体handles');
+        if (
+          !Number.isSafeInteger(pid) ||
+          typeof createdFileTime !== 'string' ||
+          !/^[1-9][0-9]*$/u.test(createdFileTime) ||
+          !Number.isSafeInteger(handles)
+        )
+          throw new Error('原生实体身份或handles无效');
+        return {
+          pid,
+          createdFileTime,
+          rssBytes: finite(member.RssBytes, '原生实体RSS'),
+          privateBytes: finite(member.PrivateBytes, '原生实体private'),
+          handles,
+        };
+      });
+      const rss = finite(point.RssBytes, 'RSS');
+      const privateBytes = finite(point.PrivateBytes, 'private');
+      const handles = finite(point.Handles, 'handles');
+      const processes = finite(point.Processes, 'processes', 1);
+      if (
+        members.length !== processes ||
+        members.reduce((sum, member) => sum + member.rssBytes, 0) !== rss ||
+        members.reduce((sum, member) => sum + member.privateBytes, 0) !== privateBytes ||
+        members.reduce((sum, member) => sum + member.handles, 0) !== handles
+      )
+        throw new Error('原生实体明细与树总量不符');
       return {
         time: finite(point.ElapsedMs, 'Job资源时钟') - jobWorkloadStart,
-        rss: finite(point.RssBytes, 'RSS'),
-        privateBytes: finite(point.PrivateBytes, 'private'),
-        handles: finite(point.Handles, 'handles'),
-        processes: finite(point.Processes, 'processes', 1),
+        rss,
+        privateBytes,
+        handles,
+        processes,
+        members,
       };
     });
     const workloadPoints = normalized.filter(
@@ -491,7 +662,9 @@ try {
       actualDuration,
     );
     const long = control.mode === 'long';
-    if (long) {
+    const fixedLong = control.mode === 'fixed-long';
+    const turnover = control.mode === 'turnover';
+    if (long || fixedLong || turnover) {
       const thresholds = referenceThresholds(control).thresholds;
       if (startupMs > finite(thresholds.startup, '启动相对门'))
         throw new Error('启动相对回归门失败');
@@ -529,7 +702,7 @@ try {
           throw new Error('每分钟交互绑定无效');
       }
       const navigationEvents = array(runtime.navigationEvents, '十分钟导航事件');
-      const expectedNavigations = Math.floor((requestedDuration - 1) / 600_000);
+      const expectedNavigations = long ? Math.floor((requestedDuration - 1) / 600_000) : 0;
       if (navigationEvents.length !== expectedNavigations) throw new Error('十分钟导航次数无效');
       for (const [index, value] of navigationEvents.entries()) {
         const event = object(value, `十分钟导航${index}`);
@@ -545,7 +718,7 @@ try {
           throw new Error('十分钟导航绑定无效');
       }
       const ownershipEvents = array(runtime.ownershipEvents, 'Tab重建事件');
-      const expectedRecreates = Math.floor((requestedDuration - 1) / 900_000);
+      const expectedRecreates = long ? Math.floor((requestedDuration - 1) / 900_000) : 0;
       if (ownershipEvents.length !== expectedRecreates) throw new Error('Tab重建次数无效');
       for (const [index, value] of ownershipEvents.entries()) {
         const event = object(value, `Tab重建${index}`);
@@ -560,7 +733,7 @@ try {
           throw new Error('Tab重建绑定无效');
       }
     }
-    const growth = long
+    const legacyGrowth = long
       ? {
           rssBytesPerHour: fixedTopologyGrowth(
             workloadPoints.map((point) => ({
@@ -586,14 +759,202 @@ try {
         }
       : null;
     if (
-      growth !== null &&
-      (Object.values(growth.rssBytesPerHour.evaluated).some((value) => value > 24 * 1024 ** 2) ||
-        Object.values(growth.privateBytesPerHour.evaluated).some(
+      legacyGrowth !== null &&
+      (Object.values(legacyGrowth.rssBytesPerHour.evaluated).some(
+        (value) => value > 24 * 1024 ** 2,
+      ) ||
+        Object.values(legacyGrowth.privateBytesPerHour.evaluated).some(
           (value) => value > 24 * 1024 ** 2,
         ) ||
-        Object.values(growth.handlesPerHour.evaluated).some((value) => value > 60))
+        Object.values(legacyGrowth.handlesPerHour.evaluated).some((value) => value > 60))
     )
       throw new Error('长时增长超过上限');
+    const lifetimes = array(job.IdentityLifetimes, '原生实体lifetime').map((value, index) => {
+      const lifetime = object(value, `原生实体lifetime${index}`);
+      const pid = finite(lifetime.ProcessId, 'lifetime PID', 1);
+      if (!Number.isSafeInteger(pid)) throw new Error('lifetime PID无效');
+      if (
+        typeof lifetime.CreatedFileTime !== 'string' ||
+        !/^[1-9][0-9]*$/u.test(lifetime.CreatedFileTime)
+      )
+        throw new Error('lifetime creation time无效');
+      return {
+        pid,
+        createdFileTime: lifetime.CreatedFileTime,
+        firstObservedMs: finite(lifetime.FirstObservedMs, 'lifetime首次观察'),
+        lastObservedMs: finite(lifetime.LastObservedMs, 'lifetime末次观察'),
+        retiredObservedMs:
+          lifetime.RetiredObservedMs === null
+            ? null
+            : finite(lifetime.RetiredObservedMs, 'lifetime退休观察'),
+      };
+    });
+    const lifetimeByIdentity = new Map<string, (typeof lifetimes)[number]>();
+    for (const lifetime of lifetimes) {
+      const key = `${lifetime.pid}:${lifetime.createdFileTime}`;
+      if (
+        lifetimeByIdentity.has(key) ||
+        lifetime.lastObservedMs < lifetime.firstObservedMs ||
+        (lifetime.retiredObservedMs !== null &&
+          lifetime.retiredObservedMs < lifetime.lastObservedMs)
+      )
+        throw new Error('原生实体lifetime重复或倒置');
+      lifetimeByIdentity.set(key, lifetime);
+    }
+    for (const point of normalized) {
+      const nativeTime = jobWorkloadStart + point.time;
+      for (const member of point.members) {
+        const lifetime = lifetimeByIdentity.get(`${member.pid}:${member.createdFileTime}`);
+        if (
+          lifetime === undefined ||
+          lifetime.firstObservedMs > nativeTime ||
+          (lifetime.retiredObservedMs !== null && lifetime.retiredObservedMs < nativeTime)
+        )
+          throw new Error('资源点成员缺少同一原生lifetime');
+      }
+    }
+    const fixedGrowth = fixedLong
+      ? fixedIdentityTreeGrowth(
+          workloadPoints.map((point) => ({ elapsedMs: point.time, members: point.members })),
+        )
+      : null;
+    if (
+      fixedGrowth !== null &&
+      (fixedGrowth.rssBytesPerHour > 24 * 1024 ** 2 ||
+        fixedGrowth.privateBytesPerHour > 24 * 1024 ** 2 ||
+        fixedGrowth.handlesPerHour > 60)
+    )
+      throw new Error('固定实体长时增长超过上限');
+    if (fixedGrowth !== null) {
+      validateFixedIdentityLifetimes(
+        fixedGrowth.identities,
+        lifetimes,
+        jobWorkloadStart + 600_000,
+        jobWorkloadEnd,
+      );
+    }
+    function rendererBindings(name: 'initialRendererBindings' | 'finalRendererBindings') {
+      const bindings = array(runtime[name], name);
+      if ((fixedLong || turnover) && bindings.length !== 10) throw new Error(`${name}数量无效`);
+      const ids = new Set<number>();
+      const pids = new Set<number>();
+      const normalizedBindings: JsonObject[] = [];
+      for (const value of bindings) {
+        const binding = object(value, name);
+        const webContentsId = finite(binding.webContentsId, 'WebContents id', 1);
+        const rendererPid = finite(binding.rendererPid, 'renderer PID', 1);
+        if (
+          !Number.isSafeInteger(webContentsId) ||
+          !Number.isSafeInteger(rendererPid) ||
+          !Number.isSafeInteger(binding.documentId) ||
+          !/^[a-f0-9]{64}$/u.test(String(binding.tabIdHash)) ||
+          !/^[a-f0-9]{64}$/u.test(String(binding.urlHash)) ||
+          ids.has(webContentsId) ||
+          pids.has(rendererPid)
+        )
+          throw new Error(`${name}身份不唯一`);
+        ids.add(webContentsId);
+        pids.add(rendererPid);
+        normalizedBindings.push({
+          tabIdHash: String(binding.tabIdHash),
+          webContentsId,
+          rendererPid,
+          documentId: Number(binding.documentId),
+          urlHash: String(binding.urlHash),
+        });
+      }
+      return normalizedBindings;
+    }
+    const initialRendererBindings =
+      fixedLong || turnover ? rendererBindings('initialRendererBindings') : [];
+    const finalRendererBindings =
+      fixedLong || turnover ? rendererBindings('finalRendererBindings') : [];
+    if (
+      fixedLong &&
+      JSON.stringify(initialRendererBindings) !== JSON.stringify(finalRendererBindings)
+    )
+      throw new Error('固定场renderer身份漂移');
+    const parsedTurnoverEvents = turnover
+      ? array(runtime.turnoverEvents, '周转事件').map((value, index) => {
+          const event = object(value, `周转事件${index}`);
+          for (const hashName of [
+            'oldTabIdHash',
+            'newTabIdHash',
+            'oldUrlHash',
+            'newUrlHash',
+          ] as const)
+            if (!/^[a-f0-9]{64}$/u.test(String(event[hashName])))
+              throw new Error('周转Tab或URL身份摘要无效');
+          for (const idName of [
+            'oldWebContentsId',
+            'newWebContentsId',
+            'oldDocumentId',
+            'newDocumentId',
+          ] as const)
+            if (!Number.isSafeInteger(event[idName]) || Number(event[idName]) < 1)
+              throw new Error('周转WebContents或document身份无效');
+          return {
+            slot: finite(event.slot, '周转槽'),
+            generation: finite(event.generation, '周转代'),
+            closeStartedMs: finite(event.closeStartedMs, '周转关闭时钟'),
+            createStartedMs: finite(event.createStartedMs, '周转创建时钟'),
+            createCompletedMs: finite(event.createCompletedMs, '周转完成时钟'),
+            oldTabIdHash: String(event.oldTabIdHash),
+            newTabIdHash: String(event.newTabIdHash),
+            oldUrlHash: String(event.oldUrlHash),
+            newUrlHash: String(event.newUrlHash),
+            oldWebContentsId: Number(event.oldWebContentsId),
+            newWebContentsId: Number(event.newWebContentsId),
+            oldDocumentId: Number(event.oldDocumentId),
+            newDocumentId: Number(event.newDocumentId),
+            oldRendererPid: finite(event.oldRendererPid, '旧renderer PID', 1),
+            newRendererPid: finite(event.newRendererPid, '新renderer PID', 1),
+          };
+        })
+      : [];
+    if (turnover) {
+      if (parsedTurnoverEvents.length !== 20) throw new Error('周转事件数无效');
+      const current = initialRendererBindings.map((binding) => object(binding, '初始renderer'));
+      for (const [index, event] of parsedTurnoverEvents.entries()) {
+        const expected = current[event.slot];
+        if (
+          event.slot !== index % 10 ||
+          event.generation !== Math.floor(index / 10) + 1 ||
+          expected === undefined ||
+          expected.tabIdHash !== event.oldTabIdHash ||
+          expected.urlHash !== event.oldUrlHash ||
+          expected.webContentsId !== event.oldWebContentsId ||
+          expected.rendererPid !== event.oldRendererPid ||
+          expected.documentId !== event.oldDocumentId ||
+          event.oldTabIdHash === event.newTabIdHash ||
+          event.oldWebContentsId === event.newWebContentsId
+        )
+          throw new Error('周转Tab/document/renderer前代错绑');
+        current[event.slot] = {
+          tabIdHash: event.newTabIdHash,
+          webContentsId: event.newWebContentsId,
+          rendererPid: event.newRendererPid,
+          documentId: event.newDocumentId,
+          urlHash: event.newUrlHash,
+        };
+      }
+      if (JSON.stringify(current) !== JSON.stringify(finalRendererBindings))
+        throw new Error('周转最终renderer所有权错绑');
+    }
+    const resolvedTurnover = turnover
+      ? validateTurnoverLifetimes(
+          parsedTurnoverEvents.map((event) => ({
+            slot: event.slot,
+            generation: event.generation,
+            closeStartedMs: jobWorkloadStart + event.closeStartedMs,
+            createStartedMs: jobWorkloadStart + event.createStartedMs,
+            createCompletedMs: jobWorkloadStart + event.createCompletedMs,
+            oldPid: event.oldRendererPid,
+            newPid: event.newRendererPid,
+          })),
+          lifetimes,
+        )
+      : null;
     const writers = read('profile/lifecycle-guardian/writers.json', 512 * 1024);
     if (writers.version !== 1 || writers.main !== null || writers.utility !== null)
       throw new Error('writer账本未退休');
@@ -640,7 +1001,8 @@ try {
             ]),
         ),
       },
-      growth,
+      growth: fixedGrowth ?? legacyGrowth,
+      turnover: resolvedTurnover,
       buildBinding: buildBinding(),
       omitted: {
         provider: runtime.provider,

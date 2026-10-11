@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, webContents as electronWebContents } from 'electron';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
@@ -11,7 +11,7 @@ import { SafeStorageCipher } from '../../../src/main/ai/safe-storage-cipher';
 
 interface Control {
   version: 1;
-  mode: 'baseline' | 'candidate' | 'feasibility' | 'long';
+  mode: 'baseline' | 'candidate' | 'feasibility' | 'long' | 'fixed-long' | 'turnover';
   durationMs: number;
   deadlineEpochMs: number;
   externalProviderStatus:
@@ -23,11 +23,15 @@ if (!/^performance-check-[a-f0-9]{32}$/u.test(scope.split(/[\\/]/u).at(-1)!))
 const control = JSON.parse(readFileSync(join(scope, 'control.json'), 'utf8')) as Control;
 if (
   control.version !== 1 ||
-  !['baseline', 'candidate', 'feasibility', 'long'].includes(control.mode) ||
+  !['baseline', 'candidate', 'feasibility', 'long', 'fixed-long', 'turnover'].includes(
+    control.mode,
+  ) ||
   !Number.isSafeInteger(control.durationMs) ||
   (['baseline', 'candidate'].includes(control.mode) && control.durationMs !== 0) ||
   control.durationMs < (['baseline', 'candidate'].includes(control.mode) ? 0 : 60_000) ||
   control.durationMs > 7_200_000 ||
+  (control.mode === 'fixed-long' && control.durationMs !== 7_200_000) ||
+  (control.mode === 'turnover' && control.durationMs !== 1_080_000) ||
   ![
     'not-run-credential-file-missing',
     'not-run-credential-file-present-has-key-not-checked',
@@ -91,6 +95,30 @@ const navigationEvents: Array<{
   tabIdHash: string;
   priorDocumentId: number;
   currentDocumentId: number;
+}> = [];
+interface RendererBinding {
+  readonly tabIdHash: string;
+  readonly webContentsId: number;
+  readonly rendererPid: number;
+  readonly documentId: number;
+  readonly urlHash: string;
+}
+const turnoverEvents: Array<{
+  slot: number;
+  generation: number;
+  closeStartedMs: number;
+  createStartedMs: number;
+  createCompletedMs: number;
+  oldTabIdHash: string;
+  newTabIdHash: string;
+  oldWebContentsId: number;
+  newWebContentsId: number;
+  oldRendererPid: number;
+  newRendererPid: number;
+  oldDocumentId: number;
+  newDocumentId: number;
+  oldUrlHash: string;
+  newUrlHash: string;
 }> = [];
 let window: BrowserWindow | null = null;
 let failed = false;
@@ -251,6 +279,44 @@ async function measureSnapshot(tabId: string, expected?: TabExpectation): Promis
     generation: expected.generation,
     latencyMs: elapsed,
   });
+}
+function bindExclusiveRenderer(tabId: string, expected: TabExpectation): RendererBinding {
+  need(expected.documentId !== null, 'renderer绑定前缺少document');
+  const expectedUrl = `${base}/page/${expected.pageIndex}?g=${expected.generation}`;
+  const all = electronWebContents.getAllWebContents().filter((contents) => !contents.isDestroyed());
+  const matches = all.filter(
+    (contents) => contents !== window?.webContents && contents.getURL() === expectedUrl,
+  );
+  need(matches.length === 1, 'renderer URL无法唯一绑定');
+  const contents = matches[0]!;
+  const rendererPid = contents.getOSProcessId();
+  need(Number.isSafeInteger(rendererPid) && rendererPid > 0, 'renderer PID无效');
+  const owners = all.filter((candidate) => candidate.getOSProcessId() === rendererPid);
+  need(owners.length === 1 && owners[0]!.id === contents.id, 'renderer进程并非Tab独占');
+  return {
+    tabIdHash: sha(tabId),
+    webContentsId: contents.id,
+    rendererPid,
+    documentId: expected.documentId,
+    urlHash: sha(expectedUrl),
+  };
+}
+async function waitForRendererRetirement(binding: RendererBinding): Promise<void> {
+  const deadline = performance.now() + 20_000;
+  while (performance.now() < deadline) {
+    check();
+    const all = electronWebContents
+      .getAllWebContents()
+      .filter((contents) => !contents.isDestroyed());
+    const oldContentsAlive = all.some((contents) => contents.id === binding.webContentsId);
+    const pidStillOwned = all.some((contents) => contents.getOSProcessId() === binding.rendererPid);
+    const pidStillMeasured = app
+      .getAppMetrics()
+      .some((member) => member.pid === binding.rendererPid);
+    if (!oldContentsAlive && !pidStillOwned && !pidStillMeasured) return;
+    await sleep(50);
+  }
+  throw new Error('旧renderer未在有界窗口退休');
 }
 async function finishWindow(): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -506,11 +572,16 @@ async function runSteady(): Promise<void> {
     '10 Tab ready',
   );
   for (const tabId of tabIds) await measureSnapshot(tabId, tabExpectations.get(tabId));
+  const initialRendererBindings =
+    control.mode === 'fixed-long' || control.mode === 'turnover'
+      ? tabIds.map((tabId) => bindExclusiveRenderer(tabId, tabExpectations.get(tabId)!))
+      : [];
   const workloadStart = performance.now();
   let nextResource = workloadStart;
   let nextInteraction = workloadStart + 60_000;
   let nextNavigate = workloadStart + 600_000;
   let nextRecreate = workloadStart + 900_000;
+  let nextTurnover = workloadStart + 60_000;
   let generation = 0;
   let interactionIndex = 0;
   while (performance.now() - workloadStart < control.durationMs) {
@@ -539,7 +610,7 @@ async function runSteady(): Promise<void> {
       });
       nextInteraction += 60_000;
     }
-    if (now >= nextNavigate) {
+    if (control.mode === 'long' && now >= nextNavigate) {
       generation += 1;
       const index = generation % tabIds.length;
       const tabId = tabIds[index]!;
@@ -564,7 +635,7 @@ async function runSteady(): Promise<void> {
       });
       nextNavigate += 600_000;
     }
-    if (now >= nextRecreate) {
+    if (control.mode === 'long' && now >= nextRecreate) {
       const index = Math.floor((now - workloadStart) / 900_000) % tabIds.length;
       const oldId = tabIds[index]!;
       await evaluate(`window.aibrowse.tabs.close(${JSON.stringify(oldId)})`);
@@ -603,6 +674,72 @@ async function runSteady(): Promise<void> {
       });
       nextRecreate += 900_000;
     }
+    if (control.mode === 'turnover' && turnoverEvents.length < 20 && now >= nextTurnover) {
+      const sequence = turnoverEvents.length;
+      const index = sequence % 10;
+      const turnoverGeneration = Math.floor(sequence / 10) + 1;
+      const oldId = tabIds[index]!;
+      const oldExpected = tabExpectations.get(oldId);
+      need(oldExpected !== undefined, '旧Tab期待缺失');
+      const oldBinding = bindExclusiveRenderer(oldId, oldExpected);
+      const closeStartedMs = performance.now() - workloadStart;
+      need(
+        (await evaluate(`window.aibrowse.tabs.close(${JSON.stringify(oldId)})`)) === true,
+        '关闭周转Tab失败',
+      );
+      await waitFor(
+        `window.aibrowse.tabs.list().then(v=>v.length===9&&!v.some(t=>t.id===${JSON.stringify(oldId)})?v:null)`,
+        '周转关闭精确Tab',
+      );
+      await waitForRendererRetirement(oldBinding);
+      const createStartedMs = performance.now() - workloadStart;
+      const created = await evaluate(
+        `window.aibrowse.tabs.create(${JSON.stringify(`${base}/page/${index}?g=${turnoverGeneration}`)})`,
+      );
+      need(
+        created !== null &&
+          typeof created === 'object' &&
+          typeof (created as { id?: unknown }).id === 'string',
+        '周转新建Tab失败',
+      );
+      const newId = (created as { id: string }).id;
+      tabIds[index] = newId;
+      tabExpectations.delete(oldId);
+      const expected = {
+        pageIndex: index,
+        generation: turnoverGeneration,
+        documentId: null,
+      };
+      tabExpectations.set(newId, expected);
+      await waitFor(
+        `window.aibrowse.tabs.list().then(v=>v.length===10&&v.some(t=>t.id===${JSON.stringify(newId)}&&t.state==='ready')?v:null)`,
+        '周转重建Tab ready',
+        5_000,
+      );
+      const createdMs = performance.now() - workloadStart - createStartedMs;
+      need(createdMs <= 5_000, '周转重建Tab超过绝对上限');
+      createLatencies.push(createdMs);
+      await measureSnapshot(newId, expected);
+      const newBinding = bindExclusiveRenderer(newId, expected);
+      turnoverEvents.push({
+        slot: index,
+        generation: turnoverGeneration,
+        closeStartedMs,
+        createStartedMs,
+        createCompletedMs: performance.now() - workloadStart,
+        oldTabIdHash: sha(oldId),
+        newTabIdHash: sha(newId),
+        oldWebContentsId: oldBinding.webContentsId,
+        newWebContentsId: newBinding.webContentsId,
+        oldRendererPid: oldBinding.rendererPid,
+        newRendererPid: newBinding.rendererPid,
+        oldDocumentId: oldBinding.documentId,
+        newDocumentId: newBinding.documentId,
+        oldUrlHash: oldBinding.urlHash,
+        newUrlHash: newBinding.urlHash,
+      });
+      nextTurnover += 45_000;
+    }
     await sleep(25);
   }
   const workloadEnd = performance.now();
@@ -624,6 +761,16 @@ async function runSteady(): Promise<void> {
     finalTabs.length === 10 && tabIds.every((id) => finalTabs.some((tab) => tab.id === id)),
     '最终Tab所有权不符',
   );
+  if (control.mode === 'turnover') need(turnoverEvents.length === 20, '周转事件覆盖不足');
+  const finalRendererBindings =
+    control.mode === 'fixed-long' || control.mode === 'turnover'
+      ? tabIds.map((tabId) => bindExclusiveRenderer(tabId, tabExpectations.get(tabId)!))
+      : [];
+  if (control.mode === 'fixed-long')
+    need(
+      JSON.stringify(initialRendererBindings) === JSON.stringify(finalRendererBindings),
+      '固定场renderer所有权漂移',
+    );
   writeNew('runtime-result.json', {
     version: 1,
     mode: control.mode,
@@ -640,6 +787,9 @@ async function runSteady(): Promise<void> {
     ownershipEvents,
     interactionEvents,
     navigationEvents,
+    initialRendererBindings,
+    finalRendererBindings,
+    turnoverEvents,
     appMetrics,
     localFixture: { pages: 10, kinds: 3 },
     provider: control.externalProviderStatus,

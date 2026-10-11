@@ -149,7 +149,70 @@ function evidence() {
   };
 }
 
+type LegacyResourcePoint = {
+  ElapsedMs: number;
+  RssBytes: number;
+  PrivateBytes: number;
+  Handles: number;
+  Processes: number;
+  Members?: Array<{
+    ProcessId: number;
+    CreatedFileTime: string;
+    RssBytes: number;
+    PrivateBytes: number;
+    Handles: number;
+  }>;
+};
+
+function splitNativeTotal(total: number, count: number) {
+  const share = Math.floor(total / count);
+  return Array.from({ length: count }, (_, index) =>
+    index === count - 1 ? total - share * (count - 1) : share,
+  );
+}
+
+function bindLegacyNativeEvidence(job: {
+  ResourcePoints: LegacyResourcePoint[];
+  IdentityLifetimes?: Array<{
+    ProcessId: number;
+    CreatedFileTime: string;
+    FirstObservedMs: number;
+    LastObservedMs: number;
+    RetiredObservedMs: number | null;
+  }>;
+}) {
+  const lifetimes = new Map<number, { first: number; last: number }>();
+  for (const point of job.ResourcePoints) {
+    const rss = splitNativeTotal(point.RssBytes, point.Processes);
+    const privateBytes = splitNativeTotal(point.PrivateBytes, point.Processes);
+    const handles = splitNativeTotal(point.Handles, point.Processes);
+    point.Members = Array.from({ length: point.Processes }, (_, index) => {
+      const processId = 1_001 + index;
+      const lifetime = lifetimes.get(processId);
+      lifetimes.set(processId, {
+        first: lifetime?.first ?? point.ElapsedMs,
+        last: point.ElapsedMs,
+      });
+      return {
+        ProcessId: processId,
+        CreatedFileTime: String(10_000 + index),
+        RssBytes: rss[index]!,
+        PrivateBytes: privateBytes[index]!,
+        Handles: handles[index]!,
+      };
+    });
+  }
+  job.IdentityLifetimes = [...lifetimes].map(([processId, lifetime]) => ({
+    ProcessId: processId,
+    CreatedFileTime: String(10_000 + processId - 1_001),
+    FirstObservedMs: lifetime.first,
+    LastObservedMs: lifetime.last,
+    RetiredObservedMs: null,
+  }));
+}
+
 function runOracle(input = evidence(), persistence = seed) {
+  bindLegacyNativeEvidence(input.job);
   const runScope = join(scope, `performance-check-${randomUUID().replaceAll('-', '')}`);
   const runProfile = join(runScope, 'profile');
   mkdirSync(runScope);
@@ -237,9 +300,10 @@ it.each(['RssBytes', 'PrivateBytes', 'Handles'] as const)(
     const input = evidence();
     for (const point of input.job.ResourcePoints) {
       const rate = field === 'Handles' ? 70 : 50 * 1024 ** 2;
-      point[field] =
+      point[field] = Math.round(
         (field === 'Handles' ? 500 : 500 * 1024 ** 2) +
-        ((point.Processes === 15 ? 1 : -1) * rate * point.ElapsedMs) / 3_600_000;
+          ((point.Processes === 15 ? 1 : -1) * rate * point.ElapsedMs) / 3_600_000,
+      );
     }
     expect(runOracle(input).report).toMatchObject({
       verdict: 'FAIL',

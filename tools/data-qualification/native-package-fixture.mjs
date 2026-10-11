@@ -7,8 +7,8 @@ const HOST = '127.0.0.1';
 const MAX_LIFETIME_MS = 15 * 60 * 1000;
 const MAX_COMMAND_BYTES = 8;
 const pages = Object.freeze({
-  A: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Watch Session A</title></head><body><main><h1>Watch Session 固定页面</h1><p id="watch-value">固定正文 A</p></main></body></html>',
-  B: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Watch Session B</title></head><body><main><h1>Watch Session 固定页面</h1><p id="watch-value">固定正文 B</p></main></body></html>',
+  A: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Watch Session A</title></head><body><main><h1>Watch Session 固定页面</h1><p id="watch-value">Stage7最终通知证据 A</p></main></body></html>',
+  B: '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Watch Session B</title></head><body><main><h1>Watch Session 固定页面</h1><p id="watch-value">Stage7最终通知证据 B</p></main></body></html>',
 });
 
 let state = 'A';

@@ -121,8 +121,18 @@ namespace AIbrowse.Performance
             public int PidListExpansions, SampledIdentities;
             public PidListObservation PidListFirst, PidListLast, ExpandedPidListFirst, ExpandedPidListLast;
             public System.Collections.Generic.List<ResourcePoint> ResourcePoints = new System.Collections.Generic.List<ResourcePoint>();
+            public System.Collections.Generic.List<IdentityLifetime> IdentityLifetimes = new System.Collections.Generic.List<IdentityLifetime>();
         }
-        public sealed class ResourcePoint { public long ElapsedMs; public ulong RssBytes, PrivateBytes, Handles; public uint Processes; }
+        public sealed class ResourcePoint {
+            public long ElapsedMs; public ulong RssBytes, PrivateBytes, Handles; public uint Processes;
+            public System.Collections.Generic.List<ResourceMember> Members = new System.Collections.Generic.List<ResourceMember>();
+        }
+        public sealed class ResourceMember {
+            public uint ProcessId; public string CreatedFileTime; public ulong RssBytes, PrivateBytes, Handles;
+        }
+        public sealed class IdentityLifetime {
+            public uint ProcessId; public string CreatedFileTime; public long FirstObservedMs, LastObservedMs; public long? RetiredObservedMs;
+        }
         public sealed class PidListObservation {
             public uint Capacity, Assigned, Count, ReturnedBytes;
             public int Error;
@@ -211,7 +221,19 @@ namespace AIbrowse.Performance
                 throw new InvalidOperationException("Job原生限额读回不符");
         }
 
-        private sealed class Sampled { public SafeFileHandle Handle; public long Created; }
+        public static bool ShouldRegisterReopenedLifetime(bool known, uint priorWait, long priorCreation, long openedCreation, bool alreadyRetired) {
+            if(alreadyRetired)return false;
+            if(!known)return true;
+            if(priorWait!=0)throw new InvalidOperationException("仍存活实体不得登记为重开身份");
+            return priorCreation!=openedCreation;
+        }
+
+        private static string Identity(uint pid,long created) { return pid.ToString(System.Globalization.CultureInfo.InvariantCulture)+":"+created.ToString(System.Globalization.CultureInfo.InvariantCulture); }
+
+        private sealed class Sampled { public SafeFileHandle Handle; public long Created; public IdentityLifetime Lifetime; }
+        private static void Retire(Sampled sample,long elapsed) {
+            if(sample.Lifetime.RetiredObservedMs==null)sample.Lifetime.RetiredObservedMs=elapsed;
+        }
         // This bounded diagnostic never changes the failure, member count, or ownership gate.
         private static string FailedImage(Sampled sample,uint pid,SafeFileHandle job,Result result,Stopwatch budget,int workMs) {
             try {
@@ -232,7 +254,7 @@ namespace AIbrowse.Performance
             diagnostic.Stage=NativeStage.PidListDeadline;
             if(budget.ElapsedMilliseconds>=workMs) {result.Failure="deadline";throw new InvalidOperationException("采样已超过原工作期限");}
         }
-        private static ulong SampleJob(SafeFileHandle job,System.Collections.Generic.Dictionary<uint,Sampled> held,Result result,NativeDiagnostic diagnostic,Stopwatch budget,int workMs,ref long nextResourceMs) {
+        private static ulong SampleJob(SafeFileHandle job,System.Collections.Generic.Dictionary<uint,Sampled> held,System.Collections.Generic.HashSet<string> retired,Result result,NativeDiagnostic diagnostic,Stopwatch budget,int workMs,ref long nextResourceMs) {
             diagnostic.ListObserved=false;diagnostic.Assigned=0;diagnostic.Count=0;diagnostic.Pid=0;diagnostic.Wait=0;
             result.PidListFirst=null;result.PidListLast=null;
             CheckSampleTime(result,diagnostic,budget,workMs);
@@ -277,6 +299,8 @@ namespace AIbrowse.Performance
                     pids[i]=pid;
                 }
                 ulong tree=0,privateBytes=0,handles=0;uint activeCandidates=0;
+                bool captureMembers=budget.ElapsedMilliseconds>=nextResourceMs;
+                System.Collections.Generic.List<ResourceMember> resourceMembers=captureMembers?new System.Collections.Generic.List<ResourceMember>():null;
                 foreach(uint pid in pids) {
                     CheckSampleTime(result,diagnostic,budget,workMs);
                     diagnostic.Pid=pid;diagnostic.Wait=0;
@@ -297,10 +321,20 @@ namespace AIbrowse.Performance
                             diagnostic.Stage=NativeStage.SampleMembership;
                             if(!IsProcessInJob(handle,job,out bool member))throw new Win32Exception(Marshal.GetLastWin32Error());
                             if(!member)throw new InvalidOperationException();
+                            string openedIdentity=Identity(pid,created);
+                            if(!ShouldRegisterReopenedLifetime(known,priorWait,sample==null?0:sample.Created,created,retired.Contains(openedIdentity))) {
+                                if(sample!=null) {
+                                    Retire(sample,budget.ElapsedMilliseconds);retired.Add(Identity(pid,sample.Created));sample.Handle.Dispose();held.Remove(pid);
+                                }
+                                retired.Add(openedIdentity);continue;
+                            }
                             diagnostic.Stage=NativeStage.SampleHandleBudget;
                             if(result.SampledIdentities>=128)throw new InvalidOperationException("采样身份预算超限");
-                            if(sample!=null)sample.Handle.Dispose();
-                            sample=new Sampled {Handle=handle,Created=created};held[pid]=sample;handle=null;result.SampledIdentities++;
+                            if(sample!=null) {Retire(sample,budget.ElapsedMilliseconds);retired.Add(Identity(pid,sample.Created));sample.Handle.Dispose();}
+                            var lifetime=new IdentityLifetime {ProcessId=pid,CreatedFileTime=created.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                FirstObservedMs=budget.ElapsedMilliseconds,LastObservedMs=budget.ElapsedMilliseconds,RetiredObservedMs=null};
+                            result.IdentityLifetimes.Add(lifetime);
+                            sample=new Sampled {Handle=handle,Created=created,Lifetime=lifetime};held[pid]=sample;handle=null;result.SampledIdentities++;
                         } finally {if(handle!=null)handle.Dispose();}
                     }
                     diagnostic.Stage=NativeStage.SampleWait;
@@ -314,7 +348,7 @@ namespace AIbrowse.Performance
                     if(!still)throw new InvalidOperationException();
                     if(wait==0) {
                         // A proven exited identity needs no held reference; rejected processes can otherwise remain accounted.
-                        sample.Handle.Dispose();held.Remove(pid);continue;
+                        Retire(sample,budget.ElapsedMilliseconds);retired.Add(Identity(pid,sample.Created));sample.Handle.Dispose();held.Remove(pid);continue;
                     }
                     diagnostic.Stage=NativeStage.SampleActiveBudget;
                     if(++activeCandidates>result.ProcessLimit) {
@@ -328,6 +362,10 @@ namespace AIbrowse.Performance
                     privateBytes=checked(privateBytes+memory.PrivateUsage.ToUInt64());
                     if(!GetProcessHandleCount(sample.Handle,out uint handleCount))throw new Win32Exception(Marshal.GetLastWin32Error());
                     handles=checked(handles+handleCount);
+                    sample.Lifetime.LastObservedMs=budget.ElapsedMilliseconds;
+                    if(captureMembers)resourceMembers.Add(new ResourceMember {ProcessId=pid,
+                        CreatedFileTime=sample.Created.ToString(System.Globalization.CultureInfo.InvariantCulture),RssBytes=rss,
+                        PrivateBytes=memory.PrivateUsage.ToUInt64(),Handles=handleCount});
                     if(rss>result.RssPeakBytes) {
                         result.RssPeakBytes=rss;
                         result.RssPeakProcessId=pid;
@@ -338,9 +376,19 @@ namespace AIbrowse.Performance
                     diagnostic.Stage=NativeStage.SampleSum;
                     tree=checked(tree+memory.WorkingSet.ToUInt64());
                 }
-                if(budget.ElapsedMilliseconds>=nextResourceMs) {
+                foreach(uint pid in held.Keys.Where(value=>!unique.Contains(value)).ToArray()) {
+                    Sampled sample=held[pid];
+                    uint wait=WaitForSingleObject(sample.Handle,0);
+                    if(wait!=0&&wait!=258)throw new Win32Exception(Marshal.GetLastWin32Error());
+                    if(wait==258)throw new InvalidOperationException("活成员未出现在完整Job列表");
+                    if(!GetProcessTimes(sample.Handle,out long current,out _,out _,out _)||current!=sample.Created)
+                        throw new InvalidOperationException("退休实体身份无效");
+                    Retire(sample,budget.ElapsedMilliseconds);retired.Add(Identity(pid,sample.Created));sample.Handle.Dispose();held.Remove(pid);
+                }
+                if(captureMembers) {
                     if(result.ResourcePoints.Count>=751)throw new InvalidOperationException("资源时点预算超限");
-                    result.ResourcePoints.Add(new ResourcePoint {ElapsedMs=budget.ElapsedMilliseconds,RssBytes=tree,PrivateBytes=privateBytes,Handles=handles,Processes=activeCandidates});
+                    result.ResourcePoints.Add(new ResourcePoint {ElapsedMs=budget.ElapsedMilliseconds,RssBytes=tree,PrivateBytes=privateBytes,
+                        Handles=handles,Processes=activeCandidates,Members=resourceMembers});
                     do {nextResourceMs=checked(nextResourceMs+10000);} while(nextResourceMs<=budget.ElapsedMilliseconds);
                 }
                 CheckSampleTime(result,diagnostic,budget,workMs);
@@ -359,6 +407,7 @@ namespace AIbrowse.Performance
             if(job.IsInvalid || creationError==183) {job.Dispose();throw new InvalidOperationException("无法创建唯一Job");}
             SafeFileHandle process = null;
             bool assigned = false; var sampled = new System.Collections.Generic.Dictionary<uint, Sampled>();
+            var retired = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
             var diagnostic=new NativeDiagnostic();
             try {
                 var limits = new ExtendedLimits { Basic = new BasicLimits { Flags=0x2308, ActiveProcessLimit=modeProcesses }, ProcessMemory=new UIntPtr(CommitBytes), JobMemory=new UIntPtr(mode == "import" ? CommitBytes : 2 * CommitBytes) };
@@ -413,7 +462,7 @@ namespace AIbrowse.Performance
                     result.ActiveAtEnd=Active(job);
                     if(result.ActiveAtEnd==0) {result.ActualZero=true;break;}
                     if(budget.ElapsedMilliseconds>=workMs) {result.Failure="deadline";break;}
-                    ulong tree=SampleJob(job, sampled, result,diagnostic,budget,workMs,ref nextResourceMs);
+                    ulong tree=SampleJob(job, sampled, retired, result,diagnostic,budget,workMs,ref nextResourceMs);
                     result.TreeRssPeakBytes=Math.Max(result.TreeRssPeakBytes,tree);
                     if(result.RssPeakBytes>RssBytes || tree>(mode == "import" ? RssBytes : 2*RssBytes)) {result.Failure="rss-sample-limit";break;}
                     diagnostic.Stage=NativeStage.Sleep;Thread.Sleep(100);
