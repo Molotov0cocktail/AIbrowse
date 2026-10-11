@@ -7,6 +7,7 @@ import { useState, type ReactElement } from 'react';
 import { normalizePlainText } from '../../../shared/markdown/markdown-text';
 import type { ResearchTask } from '../../../shared/types/research';
 import { RESEARCH_PHASE_LABELS, RESEARCH_STATUS_LABELS, type UseResearchApi } from './use-research';
+import { Icon } from '../ui/Icon';
 
 export interface ResearchPanelProps {
   research: UseResearchApi;
@@ -54,6 +55,13 @@ export function ResearchPanel({
       )}
 
       <div className="research-panel-body">
+        <div className="panel-introduction">
+          <span className="welcome-icon">
+            <Icon name="research" />
+          </span>
+          <h2>从问题到有据可查的结论</h2>
+          <p>明确研究目标，汇集多个来源，再查看结论与引用证据。</p>
+        </div>
         {state.historyError !== null && (
           <div className="research-panel-error">{normalizePlainText(state.historyError)}</div>
         )}

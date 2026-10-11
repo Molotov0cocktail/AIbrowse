@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/types/watch-ipc';
 import type { WatchIpcErrorCode } from '../../../shared/types/watch-ipc';
 import { INITIAL_WATCH_STATE, WATCH_VIEWS, reduceWatchState, type WatchView } from './watch-state';
+import { Icon } from '../ui/Icon';
 
 const VIEW_LABELS: Record<WatchView, string> = {
   overview: '概览',
@@ -510,24 +511,40 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
 
   const renderOverview = () => (
     <div className="watch-grid" data-watch-view="overview">
-      <article>
+      <article className="watch-metric">
+        <Icon name="activity" />
         <strong>{status?.ruleCount ?? rules.length}</strong>
         <span>规则</span>
       </article>
-      <article>
+      <article className="watch-metric">
+        <Icon name="globe" />
         <strong>{status?.eventCount ?? 0}</strong>
         <span>事件</span>
       </article>
-      <article>
+      <article className="watch-metric">
+        <Icon name="bookmark" />
         <strong>{status?.unreadCount ?? 0}</strong>
         <span>未读</span>
       </article>
-      <article>
+      <article className="watch-metric">
+        <Icon name="research" />
         <strong>{status?.digestCount ?? 0}</strong>
         <span>摘要</span>
       </article>
-      <p>监控仅在 AIbrowse 打开时运行；页面采集目前只覆盖主文档。</p>
-      <p>
+      <div className="watch-overview-guide">
+        <span className="welcome-icon">
+          <Icon name="activity" />
+        </span>
+        <div>
+          <h3>持续关注，及时发现变化</h3>
+          <p>把重要信源加入监控，通过事件与摘要回顾变化。</p>
+        </div>
+        <button type="button" className="primary-button" onClick={openCreateWizard}>
+          <Icon name="plus" /> 创建监控
+        </button>
+      </div>
+      <p className="watch-scope-note">监控仅在 AIbrowse 打开时运行；页面采集目前只覆盖主文档。</p>
+      <p className="watch-retention-note">
         公开事件保留 {status?.publicRetentionDays ?? 90} 天；登录态事件保留{' '}
         {status?.sessionRetentionDays ?? 30} 天。
       </p>
@@ -540,7 +557,13 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
         创建监控
       </button>
       {rules.length === 0 ? (
-        <p>暂无监控规则。</p>
+        <div className="workspace-empty">
+          <span className="welcome-icon">
+            <Icon name="activity" />
+          </span>
+          <h3>暂无监控规则。</h3>
+          <p>创建第一条规则，开始关注信源的变化。</p>
+        </div>
       ) : (
         rules.map((rule) => (
           <article className="watch-rule-card" key={rule.id}>
@@ -1050,10 +1073,13 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
         <button type="button" onClick={onBack}>
           ← 返回浏览
         </button>
-        <h2>监控</h2>
+        <div className="watch-heading">
+          <span className="workspace-eyebrow">关注重要变化</span>
+          <h2>监控</h2>
+        </div>
         {status !== null && <span className="watch-badge">{status.unreadCount}</span>}
       </header>
-      <nav>
+      <nav aria-label="监控视图">
         {WATCH_VIEWS.map((view) => (
           <button
             type="button"

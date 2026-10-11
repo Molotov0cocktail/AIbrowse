@@ -4,6 +4,7 @@ import { AGENT_RUN_STATUS_LABELS, TOOL_DECISION_LABELS, TOOL_ERROR_LABELS } from
 import { ERROR_CODE_LABELS } from './error-labels';
 import { CitationCard } from './CitationCard';
 import type { StreamState } from './stream-state';
+import { Icon } from '../ui/Icon';
 
 interface ChatViewProps {
   history: ConversationMessage[];
@@ -35,7 +36,22 @@ export function ChatView({ history, stream, currentSessionId, agentActive }: Cha
   return (
     <div className="ai-messages" ref={scrollRef}>
       {history.length === 0 && !streamingVisible && (
-        <p className="ai-empty-hint">输入问题或任务目标，与 AI 助手协作</p>
+        <div className="ai-welcome">
+          <span className="welcome-icon">
+            <Icon name="sparkles" />
+          </span>
+          <h2>让信息，变成洞察</h2>
+          <p className="ai-empty-hint">输入问题或任务目标，与 AI 助手协作</p>
+          <div className="ai-welcome-capabilities">
+            <span>
+              <Icon name="globe" /> 共读当前网页
+            </span>
+            <span>
+              <Icon name="research" /> 梳理问题与线索
+            </span>
+          </div>
+          <p className="ai-welcome-note">选择对话或任务模式，从一个问题开始。</p>
+        </div>
       )}
       {history.map((message) => {
         if (message.role === 'tool') {

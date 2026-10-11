@@ -6,6 +6,15 @@
 
 ### 当前任务与后继
 
+- 2026-10-12完成用户新增的整体 UI 风格迭代，baseline `fb8d1ab0a1581be5917204088999256b98a233f1`。
+  已实际搜索并查看 Arc、Comet、Edge、Brave、Vivaldi、Feedly、Inoreader、Readwise Reader、Notion、Elicit 共十款商业产品 UI 图片；五维分析、来源和执行合同见 `doc/tasks/ui-visual-refresh.md`。
+  按用户“跟随品牌、提升精致度、深浅双模式”要求，统一灰蓝品牌色、字体层级、留白、图标、导航及卡片；支持浅色/深色/跟随系统和本地外观偏好保持。
+  覆盖浏览器壳、AI、Sources、Research、Watch、设置与本地数据；380px 侧栏及原生网页区域对齐保持，主进程/preload/业务协议/数据边界未改。
+  长 L2 确认框经四场景红→绿修复正文滚动与操作可见性，默认拒绝焦点保持；合成压力场不冒充真实确认执行。
+  typecheck、全量 lint/format、build 通过；renderer 17文件/214测试通过。44场景真实 Electron 可视矩阵通过，覆盖两主题/两视口、系统响应与偏好重载；新的独立 Reviewer 对本轮产品/UI 差量给出限定 PASS。
+  默认 production 冒烟外层及应用均 exit 0，result/completion passed=true、三个 Job 归零、ledgerRetired=true；证据 `log/stage7-e2/default-smoke-production-fc449c9e89aa4cd5b51c0fc29824dac4/`，完整边界及失败原件索引见任务文档。
+  新 UI 已进入普通 `out/` 开发构建；`output/` 程序及安装器仍为下面固定 FIRST，EXE SHA256 终检保持 `373f81b386ea1cd439b6f1b1d350b3e9dbd05f173879200796cbf83998693aea`，未重建或替换发行包。
+  既有 P1 Session Baseline 归属缺陷仍为 REPAIR；本轮无真实 Provider 调用、不重开阶段验收、不启动 Stage8。UI 任务完成后停止产品实现，后继安装包更新与 P1 修复另行承接。
 - 2026-10-12按用户要求，将当前选定包从`log/stage7-e6/clean-builds-001/first-release`整目录迁到根目录`output/`。
   baseline为`ee0ad73f754c7660e2109ab33f61676036cdaf30`；80文件/619,715,306字节前后逐SHA256恒等，旧包目录已不存在，未留下副本或目录链接。
   当前程序为`D:\AIbrowse\output\win-unpacked\AIbrowse.exe`，EXE/MSI安装器及原构建身份文件位于`D:\AIbrowse\output\`。

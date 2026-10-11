@@ -1,0 +1,1027 @@
+/* global __dirname, clearTimeout, process, require, setTimeout, URL */
+// CommonJS is required because Electron loads this file as the tool application's main entry.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { app, nativeTheme } = require('electron');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } = require('node:fs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { isAbsolute, join, relative, resolve, sep } = require('node:path');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { fileURLToPath, pathToFileURL } = require('node:url');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { randomUUID } = require('node:crypto');
+
+const repositoryRoot = resolve(__dirname, '..', '..');
+const evidenceParent = resolve(repositoryRoot, 'log', 'ui-refresh-20261012');
+const requestedRunRoot = process.env.AIBROWSE_UI_VISUAL_RUN_ROOT;
+const runRoot = requestedRunRoot
+  ? resolve(requestedRunRoot)
+  : join(
+      evidenceParent,
+      `${new Date().toISOString().replaceAll(':', '').replaceAll('.', '')}-${randomUUID()}`,
+    );
+const profileRoot = join(runRoot, 'profile');
+const sessionRoot = join(runRoot, 'session');
+const capturesRoot = join(runRoot, 'captures');
+const mainEntry = join(repositoryRoot, 'out', 'main', 'index.js');
+const rendererEntry = join(repositoryRoot, 'out', 'renderer', 'index.html');
+const preloadEntry = join(repositoryRoot, 'out', 'preload', 'index.js');
+const resultPath = join(runRoot, 'result.json');
+const startedAt = new Date().toISOString();
+const topLevelTimeoutMs = 165_000;
+const localDate = new Date();
+const localDateStamp = [
+  localDate.getFullYear(),
+  String(localDate.getMonth() + 1).padStart(2, '0'),
+  String(localDate.getDate()).padStart(2, '0'),
+].join('-');
+const appLogPath = join(repositoryRoot, 'log', `aibrowse-${localDateStamp}.log`);
+const appLogOffsetBefore = existsSync(appLogPath) ? statSync(appLogPath).size : 0;
+
+function assertInside(child, parent, label) {
+  const relationship = relative(parent, child);
+  if (
+    relationship === '' ||
+    relationship.startsWith(`..${sep}`) ||
+    relationship === '..' ||
+    isAbsolute(relationship)
+  ) {
+    throw new Error(`${label} 不在允许目录内`);
+  }
+}
+
+assertInside(runRoot, evidenceParent, '运行目录');
+for (const required of [mainEntry, rendererEntry, preloadEntry]) {
+  if (!existsSync(required)) throw new Error(`缺少构建文件：${required}`);
+}
+
+mkdirSync(profileRoot, { recursive: true });
+mkdirSync(sessionRoot, { recursive: true });
+mkdirSync(capturesRoot, { recursive: true });
+
+const disallowedEnvironment = Object.keys(process.env).filter(
+  (key) =>
+    key === 'AIBROWSE_SMOKE' ||
+    (key.startsWith('AIBROWSE_') &&
+      (key.includes('_SMOKE') || key.includes('_LIVE_') || key.includes('_H3A'))),
+);
+for (const key of disallowedEnvironment) delete process.env[key];
+delete process.env.ELECTRON_RENDERER_URL;
+process.env.AIBROWSE_USER_DATA_DIR = profileRoot;
+app.setPath('userData', profileRoot);
+app.setPath('sessionData', sessionRoot);
+app.setAppPath(repositoryRoot);
+
+const result = {
+  schemaVersion: 1,
+  purpose: 'AIbrowse 深浅主题与主要空态的真实 Electron UI 有界验收',
+  status: 'running',
+  startedAt,
+  finishedAt: null,
+  repositoryRoot,
+  runRoot,
+  profileRoot,
+  sessionRoot,
+  inputs: {
+    mainEntry,
+    rendererEntry,
+    preloadEntry,
+    smokeMode: false,
+    providerCalls: 0,
+    clearedEnvironment: disallowedEnvironment,
+    timeoutMs: topLevelTimeoutMs,
+    appLogPath,
+    appLogOffsetBefore,
+  },
+  renderer: null,
+  persistence: null,
+  nativeThemeContract: null,
+  captures: [],
+  console: [],
+  failures: [],
+  shutdown: { requested: false, willQuit: false },
+};
+
+function persistResult() {
+  writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
+}
+
+function preserveAppLogTail() {
+  if (!existsSync(appLogPath)) return;
+  const bytes = readFileSync(appLogPath);
+  if (bytes.length < appLogOffsetBefore) return;
+  writeFileSync(join(runRoot, 'app-log-tail.log'), bytes.subarray(appLogOffsetBefore));
+}
+
+function noteFailure(message, details) {
+  result.failures.push({
+    at: new Date().toISOString(),
+    message,
+    ...(details === undefined ? {} : { details }),
+  });
+  persistResult();
+}
+
+process.prependListener('uncaughtException', (error) => {
+  noteFailure(
+    '捕获主进程未处理异常',
+    error instanceof Error ? (error.stack ?? error.message) : String(error),
+  );
+});
+
+process.prependListener('unhandledRejection', (reason) => {
+  noteFailure(
+    '捕获主进程未处理 Promise 拒绝',
+    reason instanceof Error ? (reason.stack ?? reason.message) : String(reason),
+  );
+});
+
+function delay(milliseconds) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+}
+
+async function waitFor(description, probe, timeoutMs = 20_000, intervalMs = 100) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const value = await probe();
+      if (value) return value;
+      lastError = null;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(intervalMs);
+  }
+  throw new Error(
+    `${description}超时${lastError instanceof Error ? `：${lastError.message}` : ''}`,
+  );
+}
+
+function normalizeFilePath(value) {
+  return resolve(value).toLocaleLowerCase('en-US');
+}
+
+function inspectRendererUrl(actualUrl) {
+  try {
+    const parsed = new URL(actualUrl);
+    if (parsed.protocol !== 'file:' || parsed.username !== '' || parsed.password !== '') {
+      return { trusted: false, actualUrl, reason: 'renderer 不是本地 file URL' };
+    }
+    const actualPath = fileURLToPath(parsed);
+    const trusted = normalizeFilePath(actualPath) === normalizeFilePath(rendererEntry);
+    return {
+      trusted,
+      actualUrl,
+      actualPath,
+      expectedUrl: pathToFileURL(rendererEntry).href,
+      expectedPath: rendererEntry,
+      reason: trusted ? null : 'renderer 文件不是当前 out/renderer/index.html',
+    };
+  } catch (error) {
+    return {
+      trusted: false,
+      actualUrl,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function evaluate(webContents, source) {
+  return webContents.executeJavaScript(source, true);
+}
+
+async function waitForSelector(webContents, selector, timeoutMs = 15_000) {
+  const encoded = JSON.stringify(selector);
+  return waitFor(
+    `等待 ${selector} `,
+    () => evaluate(webContents, `Boolean(document.querySelector(${encoded}))`),
+    timeoutMs,
+  );
+}
+
+async function clickSelector(webContents, selector) {
+  const encoded = JSON.stringify(selector);
+  const clicked = await evaluate(
+    webContents,
+    `(() => {
+      const element = document.querySelector(${encoded});
+      if (!(element instanceof HTMLElement)) return false;
+      element.click();
+      return true;
+    })()`,
+  );
+  if (!clicked) throw new Error(`无法点击 ${selector}`);
+}
+
+async function clickButtonText(webContents, containerSelector, text) {
+  const container = JSON.stringify(containerSelector);
+  const expected = JSON.stringify(text);
+  const clicked = await evaluate(
+    webContents,
+    `(() => {
+      const root = document.querySelector(${container});
+      if (!(root instanceof HTMLElement)) return false;
+      const element = [...root.querySelectorAll('button')].find(
+        (candidate) => candidate.textContent?.trim() === ${expected},
+      );
+      if (!(element instanceof HTMLButtonElement)) return false;
+      element.click();
+      return true;
+    })()`,
+  );
+  if (!clicked) throw new Error(`无法点击 ${containerSelector} 内的“${text}”`);
+}
+
+async function setTheme(webContents, theme) {
+  const encoded = JSON.stringify(theme);
+  const state = await evaluate(
+    webContents,
+    `(() => {
+      const select = document.querySelector('select[aria-label="界面外观"]');
+      if (!(select instanceof HTMLSelectElement)) return { ok: false };
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+      if (setter === undefined) return { ok: false };
+      setter.call(select, ${encoded});
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return {
+        ok: true,
+        value: select.value,
+        options: [...select.options].map((option) => option.value),
+      };
+    })()`,
+  );
+  if (!state.ok) throw new Error('无法通过原生 select setter 切换主题');
+  await waitFor(
+    `等待 ${theme} 主题生效`,
+    () =>
+      evaluate(
+        webContents,
+        `document.documentElement.dataset.theme === ${encoded} && localStorage.getItem('aibrowse.appearance') === ${encoded}`,
+      ),
+    5_000,
+  );
+  return state;
+}
+
+async function readComputedTheme(webContents) {
+  return evaluate(
+    webContents,
+    `(() => {
+      const style = getComputedStyle(document.body);
+      return {
+        select: document.querySelector('select[aria-label="界面外观"]')?.value ?? null,
+        root: document.documentElement.dataset.theme ?? null,
+        prefersDark: matchMedia('(prefers-color-scheme: dark)').matches,
+        color: style.color,
+        backgroundColor: style.backgroundColor,
+      };
+    })()`,
+  );
+}
+
+async function verifyNativeThemeContract(webContents) {
+  const originalThemeSource = nativeTheme.themeSource;
+  const evidence = { originalThemeSource, restoredThemeSource: null, checks: {} };
+  try {
+    await setTheme(webContents, 'system');
+    nativeTheme.themeSource = 'light';
+    const systemLight = await waitFor(
+      '等待 system 响应 nativeTheme light ',
+      async () => {
+        const state = await readComputedTheme(webContents);
+        return state.select === 'system' && state.root === 'system' && !state.prefersDark
+          ? state
+          : false;
+      },
+      5_000,
+    );
+    nativeTheme.themeSource = 'dark';
+    const systemDark = await waitFor(
+      '等待 system 响应 nativeTheme dark ',
+      async () => {
+        const state = await readComputedTheme(webContents);
+        return state.select === 'system' && state.root === 'system' && state.prefersDark
+          ? state
+          : false;
+      },
+      5_000,
+    );
+
+    await setTheme(webContents, 'light');
+    nativeTheme.themeSource = 'dark';
+    await delay(150);
+    const explicitLightUnderNativeDark = await readComputedTheme(webContents);
+    await setTheme(webContents, 'dark');
+    nativeTheme.themeSource = 'light';
+    await delay(150);
+    const explicitDarkUnderNativeLight = await readComputedTheme(webContents);
+
+    evidence.systemLight = systemLight;
+    evidence.systemDark = systemDark;
+    evidence.explicitLightUnderNativeDark = explicitLightUnderNativeDark;
+    evidence.explicitDarkUnderNativeLight = explicitDarkUnderNativeLight;
+    evidence.checks = {
+      systemSelectRespondsToNativeThemeOk:
+        systemLight.color !== systemDark.color &&
+        systemLight.backgroundColor !== systemDark.backgroundColor,
+      explicitLightIgnoresNativeDarkOk:
+        explicitLightUnderNativeDark.root === 'light' &&
+        explicitLightUnderNativeDark.color === systemLight.color &&
+        explicitLightUnderNativeDark.backgroundColor === systemLight.backgroundColor,
+      explicitDarkIgnoresNativeLightOk:
+        explicitDarkUnderNativeLight.root === 'dark' &&
+        explicitDarkUnderNativeLight.color === systemDark.color &&
+        explicitDarkUnderNativeLight.backgroundColor === systemDark.backgroundColor,
+    };
+    return evidence;
+  } finally {
+    nativeTheme.themeSource = originalThemeSource;
+    evidence.restoredThemeSource = nativeTheme.themeSource;
+  }
+}
+
+async function setViewport(win, width, height) {
+  win.setContentSize(width, height);
+  await waitFor(
+    `等待内容区尺寸 ${width}x${height} `,
+    () => {
+      const [actualWidth, actualHeight] = win.getContentSize();
+      return actualWidth === width && actualHeight === height;
+    },
+    5_000,
+  );
+  await delay(250);
+}
+
+function rgbChannels(value) {
+  const match = /^rgba?\((\d+(?:\.\d+)?)[, ]+(\d+(?:\.\d+)?)[, ]+(\d+(?:\.\d+)?)/.exec(value);
+  return match === null ? null : match.slice(1, 4).map(Number);
+}
+
+function contrastRatio(foreground, background) {
+  const foregroundRgb = rgbChannels(foreground);
+  const backgroundRgb = rgbChannels(background);
+  if (foregroundRgb === null || backgroundRgb === null) return null;
+  const luminance = (channels) => {
+    const converted = channels.map((channel) => {
+      const normalized = channel / 255;
+      return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * converted[0] + 0.7152 * converted[1] + 0.0722 * converted[2];
+  };
+  const first = luminance(foregroundRgb);
+  const second = luminance(backgroundRgb);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
+
+function inspectWebContentsViews(win) {
+  return win.contentView.children.map((view, index) => ({
+    index,
+    type: view.constructor.name,
+    bounds: view.getBounds(),
+    visible: view.getVisible(),
+    url:
+      'webContents' in view && view.webContents && !view.webContents.isDestroyed()
+        ? view.webContents.getURL()
+        : null,
+  }));
+}
+
+async function inspectDom(webContents, panelSelector, expectedTheme) {
+  const selector = JSON.stringify(panelSelector);
+  const theme = JSON.stringify(expectedTheme);
+  return evaluate(
+    webContents,
+    `(() => {
+      const rect = (element) => {
+        if (!(element instanceof HTMLElement)) return null;
+        const value = element.getBoundingClientRect();
+        return {
+          x: value.x,
+          y: value.y,
+          width: value.width,
+          height: value.height,
+          right: value.right,
+          bottom: value.bottom,
+        };
+      };
+      const html = document.documentElement;
+      const body = document.body;
+      const panel = ${selector} === null ? null : document.querySelector(${selector});
+      const themeSelect = document.querySelector('select[aria-label="界面外观"]');
+      const bodyStyle = getComputedStyle(body);
+      const chrome = document.querySelector('.chrome');
+      const chromeStyle = chrome instanceof HTMLElement ? getComputedStyle(chrome) : null;
+      return {
+        expectedTheme: ${theme},
+        activeTheme: html.dataset.theme ?? null,
+        storedTheme: localStorage.getItem('aibrowse.appearance'),
+        themeSelect: themeSelect instanceof HTMLSelectElement
+          ? {
+              value: themeSelect.value,
+              ariaLabel: themeSelect.getAttribute('aria-label'),
+              options: [...themeSelect.options].map((option) => option.value),
+            }
+          : null,
+        document: {
+          clientWidth: html.clientWidth,
+          clientHeight: html.clientHeight,
+          scrollWidth: html.scrollWidth,
+          scrollHeight: html.scrollHeight,
+        },
+        body: {
+          clientWidth: body.clientWidth,
+          clientHeight: body.clientHeight,
+          scrollWidth: body.scrollWidth,
+          scrollHeight: body.scrollHeight,
+          color: bodyStyle.color,
+          backgroundColor: bodyStyle.backgroundColor,
+        },
+        chrome: {
+          rect: rect(chrome),
+          color: chromeStyle?.color ?? null,
+          backgroundColor: chromeStyle?.backgroundColor ?? null,
+        },
+        app: rect(document.querySelector('.app')),
+        mainRow: rect(document.querySelector('.main-row')),
+        contentArea: rect(document.querySelector('.content-area')),
+        panel: rect(panel),
+      };
+    })()`,
+  );
+}
+
+async function capture(win, captureName, context) {
+  await delay(300);
+  const dom = await inspectDom(win.webContents, context.panelSelector, context.theme);
+  const views = inspectWebContentsViews(win);
+  const [contentWidth, contentHeight] = win.getContentSize();
+  const bodyContrast = contrastRatio(dom.body.color, dom.body.backgroundColor);
+  const extraInspection =
+    context.inspect === undefined ? null : await context.inspect(win.webContents);
+  const panelWidthOk =
+    context.panelSelector === null ||
+    (dom.panel !== null && Math.abs(dom.panel.width - 380) <= 0.01);
+  const contentView = views.find((view) => view.type === 'WebContentsView') ?? null;
+  const expectedViewBounds =
+    context.browserVisible && dom.contentArea !== null
+      ? {
+          x: Math.round(dom.contentArea.x),
+          y: Math.round(dom.contentArea.y),
+          width: Math.round(dom.contentArea.width),
+          height: Math.round(dom.contentArea.height),
+        }
+      : null;
+  const webContentsViewBoundsOk =
+    !context.browserVisible ||
+    (contentView !== null &&
+      contentView.visible &&
+      JSON.stringify(contentView.bounds) === JSON.stringify(expectedViewBounds));
+  const checks = {
+    requestedContentSize: context.viewport,
+    actualContentSize: { width: contentWidth, height: contentHeight },
+    contentSizeOk:
+      contentWidth === context.viewport.width && contentHeight === context.viewport.height,
+    themeOk:
+      dom.activeTheme === context.theme &&
+      dom.storedTheme === context.theme &&
+      dom.themeSelect?.value === context.theme,
+    themeContractOk:
+      dom.themeSelect?.ariaLabel === '界面外观' &&
+      JSON.stringify(dom.themeSelect.options) === JSON.stringify(['system', 'light', 'dark']),
+    documentHorizontalOverflowOk:
+      dom.document.scrollWidth <= dom.document.clientWidth + 1 &&
+      dom.body.scrollWidth <= dom.body.clientWidth + 1,
+    documentVerticalOverflowOk:
+      dom.document.scrollHeight <= dom.document.clientHeight + 1 &&
+      dom.body.scrollHeight <= dom.body.clientHeight + 1,
+    panelWidthOk,
+    webContentsViewBoundsOk,
+    bodyTextContrast: bodyContrast,
+    bodyTextContrastOk: bodyContrast !== null && bodyContrast >= 4.5,
+    ...(extraInspection?.checks ?? {}),
+  };
+  const failures = Object.entries(checks)
+    .filter(([, value]) => value === false)
+    .map(([name]) => name);
+  const record = {
+    name: captureName,
+    theme: context.theme,
+    viewport: context.viewport,
+    scene: context.scene,
+    panelSelector: context.panelSelector,
+    browserVisible: context.browserVisible,
+    png: `captures/${captureName}.png`,
+    json: `captures/${captureName}.json`,
+    checks,
+    dom,
+    webContentsViews: views,
+    expectedViewBounds,
+    extraInspection: extraInspection?.details ?? null,
+    failures,
+  };
+  const rawImage = await win.capturePage();
+  const rawImageSize = rawImage.getSize();
+  const image = rawImage.resize({ width: contentWidth, height: contentHeight, quality: 'best' });
+  const imageSize = image.getSize();
+  record.rawImageSize = rawImageSize;
+  record.imageSize = imageSize;
+  if (imageSize.width !== contentWidth || imageSize.height !== contentHeight) {
+    record.failures.push('imageSizeOk');
+  }
+  writeFileSync(join(capturesRoot, `${captureName}.png`), image.toPNG());
+  writeFileSync(
+    join(capturesRoot, `${captureName}.json`),
+    `${JSON.stringify(record, null, 2)}\n`,
+    'utf8',
+  );
+  result.captures.push(record);
+  if (record.failures.length > 0) {
+    noteFailure(`截图 ${captureName} 的检查失败`, record.failures);
+  } else {
+    persistResult();
+  }
+}
+
+async function mountSyntheticConfirm(win) {
+  for (const view of win.contentView.children) view.setVisible(false);
+  const mounted = await evaluate(
+    win.webContents,
+    `(() => {
+      if (document.querySelector('[data-ui-visual-synthetic="long-confirm"]')) return false;
+      const repeated = (seed, length) => Array.from({ length }, (_, index) =>
+        seed[index % seed.length],
+      ).join('');
+      const overlay = document.createElement('div');
+      overlay.className = 'ai-confirm-overlay';
+      overlay.dataset.uiVisualSynthetic = 'long-confirm';
+      overlay.setAttribute('role', 'presentation');
+      const dialog = document.createElement('div');
+      dialog.className = 'ai-confirm-dialog';
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('aria-label', '合成长内容确认压力夹具');
+      const title = document.createElement('h3');
+      title.className = 'ai-confirm-title';
+      title.textContent = '需要你的确认（合成压力夹具）';
+      const body = document.createElement('div');
+      body.className = 'ai-confirm-body';
+      const addLine = (labelText, valueText, valueClass = '') => {
+        const line = document.createElement('div');
+        line.className = 'ai-confirm-line';
+        const label = document.createElement('span');
+        label.className = 'ai-confirm-label';
+        label.textContent = labelText;
+        const value = document.createElement('span');
+        value.className = 'ai-confirm-value ' + valueClass;
+        value.textContent = valueText;
+        line.append(label, value);
+        body.append(line);
+      };
+      addLine('工具', 'source_apply_changes');
+      addLine('目标站点', 'https://example.invalid/' + repeated('路径参数', 280), 'ai-confirm-url');
+      addLine('目标元素', repeated('页面提供的不可信元素文本', 200), 'ai-confirm-element-text');
+      addLine('原因', repeated('变更详情第一行；变更详情第二行；', 2000), 'ai-confirm-detail');
+      const actions = document.createElement('div');
+      actions.className = 'ai-confirm-actions';
+      const deny = document.createElement('button');
+      deny.type = 'button';
+      deny.className = 'ai-confirm-deny';
+      deny.textContent = '拒绝';
+      const approve = document.createElement('button');
+      approve.type = 'button';
+      approve.className = 'ai-confirm-approve';
+      approve.textContent = '批准';
+      actions.append(deny, approve);
+      dialog.append(title, body, actions);
+      overlay.append(dialog);
+      document.body.append(overlay);
+      deny.focus();
+      return true;
+    })()`,
+  );
+  if (!mounted) throw new Error('无法挂载合成长确认压力夹具');
+}
+
+async function inspectSyntheticConfirm(webContents) {
+  const details = await evaluate(
+    webContents,
+    `(() => {
+      const overlay = document.querySelector('[data-ui-visual-synthetic="long-confirm"]');
+      const dialog = overlay?.querySelector('.ai-confirm-dialog');
+      const body = overlay?.querySelector('.ai-confirm-body');
+      const actions = overlay?.querySelector('.ai-confirm-actions');
+      const deny = overlay?.querySelector('.ai-confirm-deny');
+      const approve = overlay?.querySelector('.ai-confirm-approve');
+      const inspect = (element) => {
+        if (!(element instanceof HTMLElement)) return null;
+        const bounds = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return {
+          top: bounds.top,
+          bottom: bounds.bottom,
+          left: bounds.left,
+          right: bounds.right,
+          width: bounds.width,
+          height: bounds.height,
+          clientHeight: element.clientHeight,
+          scrollHeight: element.scrollHeight,
+          overflowY: style.overflowY,
+          maxHeight: style.maxHeight,
+        };
+      };
+      return {
+        synthetic: overlay instanceof HTMLElement && overlay.dataset.uiVisualSynthetic === 'long-confirm',
+        viewport: { width: innerWidth, height: innerHeight },
+        dialog: inspect(dialog),
+        body: inspect(body),
+        actions: inspect(actions),
+        deny: inspect(deny),
+        approve: inspect(approve),
+        activeClass: document.activeElement?.className ?? null,
+      };
+    })()`,
+  );
+  const scrollTargets = [details.dialog, details.body].filter((value) => value !== null);
+  const scrollAvailable = scrollTargets.some(
+    (value) =>
+      value.scrollHeight > value.clientHeight + 1 &&
+      (value.overflowY === 'auto' || value.overflowY === 'scroll'),
+  );
+  const insideViewport = (value) =>
+    value !== null &&
+    value.top >= 0 &&
+    value.left >= 0 &&
+    value.bottom <= details.viewport.height &&
+    value.right <= details.viewport.width;
+  return {
+    details,
+    checks: {
+      syntheticFixtureMarkedOk: details.synthetic,
+      syntheticDefaultFocusOk: details.activeClass === 'ai-confirm-deny',
+      syntheticDialogWithinViewportOk: insideViewport(details.dialog),
+      syntheticScrollAvailableOk: scrollAvailable,
+      syntheticDenyVisibleOk: insideViewport(details.deny),
+      syntheticApproveVisibleOk: insideViewport(details.approve),
+    },
+  };
+}
+
+async function unmountSyntheticConfirm(win) {
+  await evaluate(
+    win.webContents,
+    `document.querySelector('[data-ui-visual-synthetic="long-confirm"]')?.remove()`,
+  );
+  for (const view of win.contentView.children) view.setVisible(true);
+}
+
+async function ensureBrowserMode(webContents) {
+  const inWatch = await evaluate(
+    webContents,
+    `Boolean(document.querySelector('.watch-workspace'))`,
+  );
+  if (inWatch) {
+    await clickButtonText(webContents, '.watch-header', '← 返回浏览');
+    await waitForSelector(webContents, '.content-area');
+    await waitFor(
+      '等待浏览器工作区恢复 ',
+      () => evaluate(webContents, `!document.querySelector('.watch-workspace')`),
+      5_000,
+    );
+  }
+  const pressed = await evaluate(
+    webContents,
+    `document.querySelector('.workspace-nav button[aria-pressed="true"]')?.getAttribute('aria-label') ?? null`,
+  );
+  if (pressed !== null) {
+    const selector = `.workspace-nav button[aria-label=${JSON.stringify(pressed)}]`;
+    await clickSelector(webContents, selector);
+    await delay(150);
+  }
+}
+
+async function captureMatrix(win) {
+  const webContents = win.webContents;
+  const viewports = [
+    { width: 1280, height: 800 },
+    { width: 1100, height: 760 },
+  ];
+  const themes = ['light', 'dark'];
+  const scenes = [
+    {
+      name: 'browser',
+      scene: '浏览器基线',
+      panelSelector: null,
+      browserVisible: true,
+      open: async () => ensureBrowserMode(webContents),
+      close: async () => {},
+    },
+    {
+      name: 'ai-settings',
+      scene: 'AI 设置',
+      panelSelector: '.ai-panel',
+      browserVisible: true,
+      open: async () => {
+        await clickSelector(webContents, '.ai-toggle');
+        await waitForSelector(webContents, '.ai-panel');
+        await clickSelector(webContents, '.ai-settings-open');
+        await waitForSelector(webContents, '.ai-settings');
+      },
+      close: async () => clickSelector(webContents, '.ai-toggle'),
+    },
+    {
+      name: 'sources',
+      scene: '信源空态',
+      panelSelector: '.sources-panel',
+      browserVisible: true,
+      open: async () => {
+        await clickSelector(webContents, '.sources-toggle');
+        await waitForSelector(webContents, '.sources-panel');
+      },
+      close: async () => clickSelector(webContents, '.sources-toggle'),
+    },
+    {
+      name: 'research',
+      scene: '研究空态',
+      panelSelector: '.research-panel',
+      browserVisible: true,
+      open: async () => {
+        await clickSelector(webContents, '.research-toggle');
+        await waitForSelector(webContents, '.research-panel');
+      },
+      close: async () => clickSelector(webContents, '.research-toggle'),
+    },
+    {
+      name: 'diagnostics',
+      scene: '诊断面板',
+      panelSelector: '.diagnostic-panel',
+      browserVisible: true,
+      open: async () => {
+        await clickSelector(webContents, 'button[aria-label="诊断信息"]');
+        await waitForSelector(webContents, '.diagnostic-panel');
+      },
+      close: async () => clickSelector(webContents, 'button[aria-label="诊断信息"]'),
+    },
+    {
+      name: 'local-data',
+      scene: '本地数据详情',
+      panelSelector: null,
+      browserVisible: true,
+      open: async () => {
+        await clickSelector(webContents, '.local-data summary');
+        await waitForSelector(webContents, '.local-data details[open] .local-data-body');
+      },
+      close: async () => clickSelector(webContents, '.local-data summary'),
+    },
+    {
+      name: 'synthetic-long-confirm',
+      scene: '合成长 L2 确认 CSS 压力夹具',
+      panelSelector: null,
+      browserVisible: false,
+      open: async () => mountSyntheticConfirm(win),
+      close: async () => unmountSyntheticConfirm(win),
+      inspect: inspectSyntheticConfirm,
+    },
+    {
+      name: 'watch-overview',
+      scene: 'Watch 概览',
+      panelSelector: null,
+      browserVisible: false,
+      open: async () => {
+        await clickSelector(webContents, '.watch-open');
+        await waitForSelector(webContents, '[data-watch-view="overview"]');
+      },
+      close: async () => {},
+    },
+    {
+      name: 'watch-rules',
+      scene: 'Watch 规则空态',
+      panelSelector: null,
+      browserVisible: false,
+      open: async () => {
+        await clickButtonText(webContents, 'nav[aria-label="监控视图"]', '规则');
+        await waitForSelector(webContents, '[data-watch-view="rules"]');
+      },
+      close: async () => {},
+    },
+    {
+      name: 'watch-wizard',
+      scene: 'Watch 创建向导',
+      panelSelector: null,
+      browserVisible: false,
+      open: async () => {
+        await clickButtonText(webContents, '[data-watch-view="rules"]', '创建监控');
+        await waitForSelector(webContents, '.watch-wizard');
+      },
+      close: async () => {
+        await clickButtonText(webContents, '.watch-wizard', '取消');
+        await waitFor(
+          '等待监控向导关闭 ',
+          () => evaluate(webContents, `!document.querySelector('.watch-wizard')`),
+          5_000,
+        );
+      },
+    },
+    {
+      name: 'watch-health',
+      scene: 'Watch 健康',
+      panelSelector: null,
+      browserVisible: false,
+      open: async () => {
+        await clickButtonText(webContents, 'nav[aria-label="监控视图"]', '健康');
+        await waitForSelector(webContents, '[data-watch-view="health"]');
+      },
+      close: async () => {
+        await clickButtonText(webContents, '.watch-header', '← 返回浏览');
+        await waitFor(
+          '等待离开监控工作区 ',
+          () => evaluate(webContents, `!document.querySelector('.watch-workspace')`),
+          5_000,
+        );
+      },
+    },
+  ];
+
+  for (const viewport of viewports) {
+    await setViewport(win, viewport.width, viewport.height);
+    for (const theme of themes) {
+      await ensureBrowserMode(webContents);
+      await setTheme(webContents, theme);
+      for (const scene of scenes) {
+        await scene.open();
+        await delay(200);
+        const name = `${viewport.width}x${viewport.height}-${theme}-${scene.name}`;
+        await capture(win, name, {
+          viewport,
+          theme,
+          scene: scene.scene,
+          panelSelector: scene.panelSelector,
+          browserVisible: scene.browserVisible,
+          inspect: scene.inspect,
+        });
+        await scene.close();
+        await delay(150);
+      }
+    }
+  }
+}
+
+let activeWindow = null;
+let runnerStarted = false;
+let completing = false;
+
+async function captureFailureOriginal(win, label) {
+  if (win === null || win.isDestroyed()) return;
+  try {
+    const image = await win.capturePage();
+    writeFileSync(join(capturesRoot, `${label}.png`), image.toPNG());
+  } catch (error) {
+    noteFailure('失败现场截图未能写出', error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function finish(status, exitCode) {
+  if (completing) return;
+  completing = true;
+  clearTimeout(timeout);
+  result.status = status;
+  result.finishedAt = new Date().toISOString();
+  result.shutdown.requested = true;
+  persistResult();
+  process.exitCode = exitCode;
+  app.quit();
+}
+
+async function run(win) {
+  activeWindow = win;
+  win.webContents.on('console-message', (details) => {
+    if (result.console.length >= 200) return;
+    result.console.push({
+      level: details.level,
+      message: String(details.message).slice(0, 1000),
+      lineNumber: details.lineNumber,
+      sourceId: String(details.sourceId).slice(0, 300),
+    });
+  });
+  try {
+    await waitFor(
+      '等待主窗口 renderer ',
+      async () => {
+        if (win.isDestroyed() || win.webContents.isDestroyed()) return false;
+        const renderer = inspectRendererUrl(win.webContents.getURL());
+        if (!renderer.trusted) return false;
+        const ready = await evaluate(
+          win.webContents,
+          `document.readyState === 'complete' && Boolean(document.querySelector('.app')) && Boolean(document.querySelector('select[aria-label="界面外观"]'))`,
+        );
+        return ready ? renderer : false;
+      },
+      30_000,
+    );
+    result.renderer = inspectRendererUrl(win.webContents.getURL());
+    if (!result.renderer.trusted) throw new Error(result.renderer.reason);
+    await delay(750);
+
+    await setTheme(win.webContents, 'dark');
+    const beforeReload = await evaluate(
+      win.webContents,
+      `({
+        select: document.querySelector('select[aria-label="界面外观"]')?.value ?? null,
+        root: document.documentElement.dataset.theme ?? null,
+        storage: localStorage.getItem('aibrowse.appearance'),
+      })`,
+    );
+    await win.webContents.reload();
+    await waitForSelector(win.webContents, 'select[aria-label="界面外观"]', 20_000);
+    const afterReload = await waitFor(
+      '等待主题重载保持 ',
+      async () => {
+        const state = await evaluate(
+          win.webContents,
+          `({
+            select: document.querySelector('select[aria-label="界面外观"]')?.value ?? null,
+            root: document.documentElement.dataset.theme ?? null,
+            storage: localStorage.getItem('aibrowse.appearance'),
+          })`,
+        );
+        return state.select === 'dark' && state.root === 'dark' && state.storage === 'dark'
+          ? state
+          : false;
+      },
+      10_000,
+    );
+    result.persistence = { beforeReload, afterReload, ok: true };
+    persistResult();
+
+    result.nativeThemeContract = await verifyNativeThemeContract(win.webContents);
+    const nativeThemeFailures = Object.entries(result.nativeThemeContract.checks)
+      .filter(([, value]) => value !== true)
+      .map(([name]) => name);
+    if (
+      result.nativeThemeContract.restoredThemeSource !==
+      result.nativeThemeContract.originalThemeSource
+    ) {
+      nativeThemeFailures.push('nativeThemeSourceRestoreOk');
+    }
+    if (nativeThemeFailures.length > 0) {
+      noteFailure('系统主题响应检查失败', nativeThemeFailures);
+    } else {
+      persistResult();
+    }
+
+    await captureMatrix(win);
+    const captureFailures = result.captures.reduce(
+      (count, item) => count + item.failures.length,
+      0,
+    );
+    await finish(
+      result.failures.length === 0 && captureFailures === 0 ? 'passed' : 'failed',
+      captureFailures === 0 && result.failures.length === 0 ? 0 : 1,
+    );
+  } catch (error) {
+    noteFailure(
+      'UI 验收执行失败',
+      error instanceof Error ? (error.stack ?? error.message) : String(error),
+    );
+    await captureFailureOriginal(win, 'failure-original');
+    await finish('failed', 1);
+  }
+}
+
+app.on('browser-window-created', (_event, win) => {
+  if (runnerStarted) return;
+  runnerStarted = true;
+  void run(win);
+});
+
+app.on('will-quit', () => {
+  result.shutdown.willQuit = true;
+  preserveAppLogTail();
+  persistResult();
+});
+
+process.on('exit', (code) => {
+  if (result.status === 'running') {
+    result.status = 'failed';
+    result.finishedAt = new Date().toISOString();
+    result.failures.push({
+      at: result.finishedAt,
+      message: 'Electron 在验收收口前退出',
+      details: { exitCode: code },
+    });
+  }
+  persistResult();
+});
+
+const timeout = setTimeout(() => {
+  void (async () => {
+    noteFailure('UI 验收达到顶层超时', { timeoutMs: topLevelTimeoutMs });
+    await captureFailureOriginal(activeWindow, 'timeout-original');
+    await finish('timed-out', 1);
+  })();
+}, topLevelTimeoutMs);
+
+persistResult();
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+require(mainEntry);

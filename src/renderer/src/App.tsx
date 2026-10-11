@@ -20,6 +20,8 @@ import { WatchWorkspace } from './watch/WatchWorkspace';
 import type { InAppNotificationDto } from '../../shared/types/watch-ipc';
 import { LocalDataPanel } from './storage/LocalDataPanel';
 import { DiagnosticPanel } from './diagnostics/DiagnosticPanel';
+import { Icon } from './ui/Icon';
+import { ThemeSelect } from './ui/ThemeSelect';
 
 // 浏览器 chrome（T3）+ AI 侧栏停靠（S4，design §11.1）+ Agent 确认对话框（A6 §11.2，
 // App 级全局挂载）：顶部工具栏 + 标签栏为渲染层 UI，主内容区由主进程 WebContentsView
@@ -194,8 +196,20 @@ export default function App() {
   return (
     <div className="app">
       <header className="chrome">
-        <LocalDataPanel />
+        <div className="workspace-bar">
+          <div className="brand-lockup" aria-label="AIbrowse 信息工作台">
+            <span className="brand-mark">
+              <Icon name="globe" />
+            </span>
+            <span className="brand-name">AIbrowse</span>
+            <span className="brand-caption">信息工作台</span>
+          </div>
+          <LocalDataPanel />
+          <ThemeSelect />
+        </div>
         <Toolbar
+          activePanel={sidePanel}
+          watchActive={viewMode === 'watch'}
           activeTab={activeTab}
           onNavigate={(input) =>
             withActiveTab((tabId) => window.aibrowse.nav.navigate(tabId, input))

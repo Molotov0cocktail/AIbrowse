@@ -1,0 +1,5 @@
+{
+  "name": "aibrowse-ui-visual-harness",
+  "private": true,
+  "main": "harness.cjs"
+}
