@@ -1,5 +1,7 @@
 # 依赖
 node_modules/
+# 项目局部开发缓存和临时目录
+/.local-dev/
 
 # 构建产物
 out/

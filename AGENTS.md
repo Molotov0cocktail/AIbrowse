@@ -454,6 +454,9 @@ D:\AIbrowse\
 
 ### 6.1 本地环境
 
+- Windows 开发命令所在 PowerShell 先点调用 `. .\tools\maintenance\enter-project-environment.ps1`，
+  将当前进程的 npm/Electron/electron-builder 缓存与 TEMP/TMP 放入项目 `.local-dev/`；不改全局变量，
+  不迁移普通发行应用的真实 profile/凭据或第三方助手管理的共享数据。历史外部资料归档在 gitignored `log/local-archive/`。
 - `node --version` 应为 24.x；版本不符先修环境，不用 `--force`。
 - 本机可能存在全局 `ELECTRON_RUN_AS_NODE=1`，不要改全局值。启动 Electron 前在当前进程清除：
   PowerShell `$env:ELECTRON_RUN_AS_NODE=$null`。

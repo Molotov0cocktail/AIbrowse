@@ -317,6 +317,18 @@ TypeScript 6.0.3 · Vitest 4 · ESLint 10（flat config）· Prettier 3.9 · Nod
 
 ## 快速开始
 
+Windows 开发时先在当前 PowerShell 点调用项目环境入口：
+
+```powershell
+. .\tools\maintenance\enter-project-environment.ps1
+```
+
+该入口将当前终端及子进程使用的 npm、Electron、electron-builder 缓存和 TEMP/TMP 集中到
+项目内的 `.local-dev/`，并定位到仓库根目录；关闭终端即可结束，不修改用户或系统环境变量。
+`.npmrc` 也为从仓库根执行的 npm 设置本地缓存。`.local-dev/`、`log/local-archive/` 均不入 Git；
+后者保留迁入项目的历史资料。应用普通桌面启动仍使用原有用户 profile 和凭据位置，
+第三方开发助手管理的历史记录及既有共享缓存不由此入口移动或删除。
+
 ```bash
 npm install      # 首次安装 Electron 二进制见下方「本机环境注意」第 2 条
 npm run dev      # 开发模式启动（真实启动 Electron 应用）
