@@ -454,9 +454,15 @@ D:\AIbrowse\
 
 ### 6.1 本地环境
 
-- Windows 开发命令所在 PowerShell 先点调用 `. .\tools\maintenance\enter-project-environment.ps1`，
-  将当前进程的 npm/Electron/electron-builder 缓存与 TEMP/TMP 放入项目 `.local-dev/`；不改全局变量，
-  不迁移普通发行应用的真实 profile/凭据或第三方助手管理的共享数据。历史外部资料归档在 gitignored `log/local-archive/`。
+- **用户决议（2026-10-12）：开发环境尽量集中在项目目录内。** 开发者和工程 Agent 在每个新开的
+  Windows 开发 PowerShell 中，执行安装依赖、测试、构建或开发启动命令前，先点调用
+  `. D:\AIbrowse\tools\maintenance\enter-project-environment.ps1`；已位于仓库内时可用
+  `. .\tools\maintenance\enter-project-environment.ps1`。由开发者或 Agent 主动执行，无需用户逐次提醒。
+- 该入口将当前终端及其子进程使用的 npm/Electron/electron-builder 缓存与 TEMP/TMP 指向项目
+  `.local-dev/`，并定位到仓库根目录。新开发终端须重新执行；不修改用户或系统全局环境变量。
+  新增开发工具的可配置缓存和临时输出也应优先使用项目内路径，不承诺所有第三方工具均遵循这些变量。
+- `.local-dev/` 不入 Git；可迁移历史资料归档在 gitignored `log/local-archive/`。正式应用的真实
+  profile/凭据、第三方助手管理的共享数据和共享软件继续使用原有位置，不因本决议自动移动或删除。
 - `node --version` 应为 24.x；版本不符先修环境，不用 `--force`。
 - 本机可能存在全局 `ELECTRON_RUN_AS_NODE=1`，不要改全局值。启动 Electron 前在当前进程清除：
   PowerShell `$env:ELECTRON_RUN_AS_NODE=$null`。

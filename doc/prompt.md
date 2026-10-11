@@ -1,6 +1,9 @@
 # 当前接管入口：Stage7 E1–E6 实现与验收
 
 先读 AGENTS.md、doc/tasks/progress.md 及 Git 实际状态，保护已有修改，接续真实后继。
+用户2026-10-12确认开发环境尽量集中到项目目录：每个新开发PowerShell在安装依赖、测试、构建或开发启动前，
+先点调用 `. D:\AIbrowse\tools\maintenance\enter-project-environment.ps1`，由工程Agent主动执行；
+具体缓存/TEMP范围、进程生效边界及正式应用profile/凭据等例外以AGENTS.md §6.1用户决议为准。
 用户 2026-10-04 明确授权从 E1 开始持续完成 E1–E6，实现、验证、必要独立审核与收尾均无需逐任务确认。
 该授权取代历史“停在 E1 首个产品实现前”的边界；Stage7 完成后停止，不启动 Stage8 产品实现。
 
