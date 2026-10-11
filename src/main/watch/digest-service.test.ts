@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -7,7 +7,10 @@ import { FakeClock } from '../../shared/watch/clock';
 import { buildDigestFacts } from '../../shared/watch/digest-facts';
 import { serializeDigestArtifact } from '../../shared/watch/digest-validator';
 import type { ChangeEvidencePair, WatchRule } from '../../shared/types/watch';
+import { MAX_DIGEST_PROVIDER_OUTPUT_BYTES } from '../../shared/types/watch';
+import type { ProviderEvent } from '../../shared/types/conversation';
 import { FakeProvider } from '../ai/provider/fake-provider';
+import type { LLMProvider } from '../ai/provider/llm-provider';
 import { openDb, type DbHandle } from '../sources/db/sqlite-driver';
 import { runWatchMigrations } from './db/watch-migrations';
 import { DigestService, type DigestScheduleControlPort } from './digest-service';
@@ -208,7 +211,7 @@ function seedClockRollbackCycle(): {
 }
 
 function service(
-  provider: FakeProvider | null = null,
+  provider: LLMProvider | null = null,
   repository = repo,
   scheduleControl?: DigestScheduleControlPort,
   windowsNotificationsEnabled = false,
@@ -364,6 +367,82 @@ describe('DigestService frozen cycle', () => {
       run: { runStats: { changed: 3, unchanged: 3, failed: 3 } },
     });
   });
+
+  it('reasoning 在正文前后与分片间直接丢弃，合法解释成功且思维零持久化', async () => {
+    prepare(1, true);
+    const canary = `digest-reasoning-${randomUUID()}`;
+    const raw = '{"sections":[{"eventIds":["event-000"],"explanation":"确定性变化"}]}';
+    const fake = new FakeProvider({
+      chunks: [
+        { kind: 'reasoning', text: canary.repeat(MAX_DIGEST_PROVIDER_OUTPUT_BYTES) },
+        raw.slice(0, 25),
+        { kind: 'reasoning', text: canary },
+        raw.slice(25),
+        { kind: 'reasoning', text: canary },
+      ],
+    });
+    await service(fake).handleDue({
+      scheduleId: 'schedule-1',
+      expectedNextDueAt: due,
+      logicalDate: '2026-08-29',
+    });
+    expect(fake.getRequests()).toHaveLength(1);
+    expect(JSON.stringify(fake.getRequests())).not.toContain(canary);
+    expect(
+      handle
+        .prepare('SELECT provider_state,provider_result_code,explanation_json FROM watch_digests')
+        .get(),
+    ).toEqual({
+      provider_state: 'succeeded',
+      provider_result_code: 'success',
+      explanation_json: raw,
+    });
+    for (const name of readdirSync(root)) {
+      expect(readFileSync(join(root, name)).includes(Buffer.from(canary))).toBe(false);
+    }
+  });
+
+  it.each(['toolCalls', 'after-done', 'body-budget'] as const)(
+    '忽略 reasoning 不放宽 %s 拒绝边界',
+    async (kind) => {
+      prepare(1, true);
+      const raw = '{"sections":[{"eventIds":["event-000"],"explanation":"确定性变化"}]}';
+      const suffix: ProviderEvent[] =
+        kind === 'toolCalls'
+          ? [{ type: 'toolCalls', toolCalls: [] }, { type: 'done' }]
+          : kind === 'after-done'
+            ? [{ type: 'done' }, { type: 'reasoning', text: '迟到思维' }]
+            : [
+                { type: 'delta', text: '字'.repeat(MAX_DIGEST_PROVIDER_OUTPUT_BYTES / 2) },
+                { type: 'done' },
+              ];
+      let calls = 0;
+      const provider: LLMProvider = {
+        metadata: new FakeProvider().metadata,
+        async *stream(): AsyncIterable<ProviderEvent> {
+          calls++;
+          yield { type: 'reasoning', text: '只应丢弃' };
+          yield { type: 'delta', text: raw };
+          yield* suffix;
+        },
+      };
+      await service(provider).handleDue({
+        scheduleId: 'schedule-1',
+        expectedNextDueAt: due,
+        logicalDate: '2026-08-29',
+      });
+      expect(calls).toBe(1);
+      expect(
+        handle
+          .prepare('SELECT provider_state,provider_result_code,explanation_json FROM watch_digests')
+          .get(),
+      ).toEqual({
+        provider_state: 'failed',
+        provider_result_code: 'invalid-output',
+        explanation_json: null,
+      });
+    },
+  );
 
   it.each([
     [49, [49]],

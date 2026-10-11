@@ -680,7 +680,9 @@ export class DigestService {
                 ? 'aborted'
                 : 'provider-error';
           break;
-        } else if (event.type === 'toolCalls' || event.type === 'reasoning') {
+        } else if (event.type === 'reasoning') {
+          // Discard opaque reasoning without accumulating, replaying or persisting it.
+        } else if (event.type === 'toolCalls') {
           failure = 'invalid-output';
           controller.abort();
           break;
