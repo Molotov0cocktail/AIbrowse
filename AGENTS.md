@@ -121,6 +121,9 @@ Event 投影生成可选摘要解释，不能决定是否变化、是否命中�
 ### 1.3 交付、语言与远程
 
 - 交付形态：Windows Electron 桌面应用。
+- 用户决议（2026-10-12）：项目根目录 `output/` 专门保存当前选定版本的完整程序、安装器与构建身份文件，
+  不再放在 `log/`，产物不入 Git。新版本通过适用验证后再更新 `output/`；构建中间产物继续使用既有目录。
+  迁移已有包时保持全部文件字节和源码绑定，历史证据路径作为历史记录保留，当前位置记入 `progress.md`。
 - Gitee（默认直连）：`https://gitee.com/Molotov0coaktail/aibrowse`。
 - GitHub（镜像；网络操作前必须确认代理）：
   `https://github.com/Molotov0cocktail/AIbrowse`。两个平台用户名拼写不同是已确认事实。
@@ -376,6 +379,7 @@ D:\AIbrowse\
 │   ├── renderer/                          # React UI
 │   └── shared/                            # 共享类型与纯逻辑
 ├── log/                                   # 运行时日志，gitignored
+├── output/                                # 当前选定程序、安装器及身份文件，gitignored
 ├── tools/                                 # 验收工具源码的受控位置（按任务建立）
 ├── package.json / package-lock.json
 └── electron.vite.config.ts / vitest.config.ts / tsconfig*.json / eslint.config.mjs

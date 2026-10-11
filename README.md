@@ -1,5 +1,11 @@
 # AIbrowse — AI 信息浏览器
 
+本机当前程序和安装器统一放在项目根目录 `output/`（产物不入 Git）：
+
+- 直接运行：`output/win-unpacked/AIbrowse.exe`，须保留完整 `win-unpacked/` 文件夹。
+- 安装器：`output/AIbrowse-0.1.1-win-x64-internal.exe` 或同名 `.msi`。
+- 当前包身份、已知问题和历史记录以 `doc/tasks/progress.md` 为准；新版本经验证后更新此目录。
+
 > 当前阶段：**第六阶段 RSS/Page Watch**。D1–D9产品能力已实现，Stage Exit尚未通过。
 > 采集、Diff、Condition与Event由确定性程序生成，保留typed old/new Evidence；AI只作可选解释。
 > 产品/安全契约见 `doc/stage6/detailed-design.md` 与 `doc/stage6/threat-model.md`。

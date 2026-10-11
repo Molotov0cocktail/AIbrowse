@@ -104,7 +104,7 @@ while($ancestor){if((Get-Item -LiteralPath $ancestor -Force).Attributes -band [I
 $csv=Join-Path $output 'remaining-project-files.csv'
 $summary=Join-Path $output 'remaining-project-summary.json'
 if ((Test-Path -LiteralPath $csv) -or (Test-Path -LiteralPath $summary)) { throw '清单已存在，拒绝覆盖。' }
-$first=$root+'\log\stage7-e6\clean-builds-001\first-release'
+$currentOutput=$root+'\output'
 $rows=[Collections.Generic.List[object]]::new()
 $errors=[Collections.Generic.List[object]]::new()
 $links=[Collections.Generic.List[object]]::new()
@@ -118,7 +118,7 @@ while($queue.Count) {
             if($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $links.Add([pscustomobject]@{path=$item.FullName;type='reparse_point_not_followed'}); continue }
             if($item.IsDirectory) { $directoryCount++; $queue.Push($item.FullName); continue }
             $relative=$item.FullName.Substring($root.Length+1)
-            $group=if($item.FullName.StartsWith($first+'\',[StringComparison]::OrdinalIgnoreCase)){'FIRST'}
+            $group=if($item.FullName.StartsWith($currentOutput+'\',[StringComparison]::OrdinalIgnoreCase)){'当前交付程序'}
                 elseif($relative.StartsWith('log\local-archive\')){'迁入项目的历史资料'}
                 elseif($relative.StartsWith('log\')){'历史报告及保留证据'}
                 elseif($relative.StartsWith('.git\')){'Git历史'}
