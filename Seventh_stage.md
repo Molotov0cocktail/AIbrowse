@@ -241,32 +241,38 @@ GitHub/Gitee 双远程策略遵守项目既有规则。
 
 ## 8. 最终验收
 
+2026-10-11 新独立 Stage Auditor 按已批准的限定合同判定 **GO / PASS**；证据见
+`log/stage7-e6/final-stage-audit-001/report.md`，当前索引见`doc/tasks/progress.md`。
+下列完成标记仅覆盖 Windows x64 未签名内部 FIRST 与手动升级。固定场句柄增长及周转严格退休顺序原门仍为 **FAIL**，
+按用户明确接受的风险及本次替代覆盖完成阶段；独立 Windows、电池、实际 CI 等 **NOT RUN** 保持，不泛化为其它环境或任意长时负载通过。
+阶段后真实临时 API 对话尚待单独验证，不预授成功；不公开发布、不创建公开 Release 或 tag、不启动 Stage8。
+
 ### Functional
-- [ ] 第一至六阶段主路径全部通过回归
-- [ ] 批准的同机 NSIS 安装可运行，独立环境 NOT RUN 与剩余风险明确
-- [ ] 升级/卸载语义明确
+- [x] 第一至六阶段主路径全部通过适用回归
+- [x] 批准的同机 NSIS 安装可运行，独立环境 NOT RUN 与剩余风险明确
+- [x] 升级/卸载语义明确
 
 ### Security
-- [ ] Electron 安全审查通过
-- [ ] Prompt Injection / Tool 权限红队通过
-- [ ] 密钥和敏感数据无泄漏
-- [ ] 安装包不包含开发残留/密钥
+- [x] Electron 安全审查通过
+- [x] Prompt Injection / Tool 权限红队通过，保留语义层诚实限制
+- [x] 密钥和敏感数据无泄漏的结构与合成反例覆盖通过
+- [x] 实际安装包不包含开发残留/密钥
 
 ### Stability
-- [ ] 多 Tab 长时间运行稳定
-- [ ] renderer/webContents 崩溃有恢复
-- [ ] DB migration 真实升级测试通过
-- [ ] Watch/Research 异常不会拖垮主应用
+- [x] 多 Tab 长时间运行按批准的性能风险与分层覆盖验收，原失败保持
+- [x] renderer/webContents 崩溃有恢复
+- [x] DB migration 真实升级测试通过
+- [x] Watch/Research 异常不会拖垮主应用
 
 ### Performance
-- [ ] 有性能基线
-- [ ] 无明显不可接受回归
+- [x] 有性能基线，外部 Provider 本轮性能 NOT RUN
+- [x] 按用户已接受的限定风险完成回归验收，原数值门不改判 PASS
 
 ### Release
-- [ ] version/tag/build 对齐
-- [ ] Release artifact 可复现
-- [ ] 批准的同机安装替代证据完整，独立机器安装 NOT RUN
-- [ ] Release notes 与已知限制明确
+- [x] 内部候选 version/源码/build 身份对齐，本轮无公开 tag
+- [x] 完整应用 payload 可复现，安装器封装字节差异已归因，原比较 exit1 保持
+- [x] 批准的同机安装替代证据完整，独立机器安装 NOT RUN
+- [x] Release notes 与已知限制明确
 
 ---
 
