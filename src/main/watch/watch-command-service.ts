@@ -10,7 +10,7 @@ import type {
 import type { SourceWatchProjectionReadResult } from '../sources/source-service';
 import { computeSourceLocatorFingerprint } from '../../shared/watch/watch-rule-state';
 import { validateStructuredCondition } from '../../shared/watch/condition-engine';
-import { urlOrigin } from './page-projector';
+import { computeSessionTargetDigest, safeProjectionUrl, urlOrigin } from './page-projector';
 import type { WatchRepository } from './repository/watch-repository';
 import type { SessionGrantStore } from './session-grant-store';
 import { WatchPreviewStore, type WatchPreviewRecord } from './watch-preview-store';
@@ -252,6 +252,22 @@ function consentedTarget(
     targetDigest: digest,
   });
   if (!consumed.ok) return null;
+  // The in-memory digest binds the unsanitized captured locator and regions. The
+  // persisted projection URL intentionally omits query and cannot prove that binding.
+  const expectedDigest = computeSessionTargetDigest({
+    accessMode: 'session',
+    pageUrl: target.pageUrl,
+    regions: target.regions,
+  });
+  const projection = readProjection(preview.projection);
+  if (
+    expectedDigest === null ||
+    digest !== expectedDigest ||
+    projection === null ||
+    projection.value.type !== 'page' ||
+    projection.finalUrl !== safeProjectionUrl(target.pageUrl)
+  )
+    return null;
   const targetOrigin = urlOrigin(target.pageUrl);
   const grantOrigin = consumed.grant.origin;
   if (

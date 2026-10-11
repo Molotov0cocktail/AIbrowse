@@ -7,6 +7,7 @@ import type { WatchAcquisitionService } from './watch-acquisition-service';
 import type { BrowserWatchReader } from './browser-watch-reader';
 import {
   computeSessionTargetDigest,
+  pageLocatorKey,
   previewPageRegions,
   projectPageProjection,
   urlOrigin,
@@ -190,7 +191,7 @@ export class WatchPreviewService {
       browser === null ||
       reader === null ||
       active === null ||
-      urlOrigin(active.url) !== urlOrigin(source.projection.canonicalKey)
+      !hasSamePageLocator(source.projection.canonicalKey, active.url)
     )
       return { ok: false, errorCode: 'security-rejected' };
     const read = await reader.read({
@@ -207,7 +208,7 @@ export class WatchPreviewService {
     const finalOrigin = urlOrigin(read.meta.url);
     // Re-check after the asynchronous read: the active tab may have navigated while the
     // main process was collecting channels.
-    if (finalOrigin === null || !hasSameHttpOrigin(source.projection.canonicalKey, read.meta.url))
+    if (finalOrigin === null || !hasSamePageLocator(source.projection.canonicalKey, read.meta.url))
       return { ok: false, errorCode: 'security-rejected' };
     const regionPreview = previewPageRegions(read.channels, input.regions);
     if (!regionPreview.ok)
@@ -231,7 +232,7 @@ export class WatchPreviewService {
       };
     const digest = computeSessionTargetDigest({
       accessMode: 'session',
-      pageUrl: source.projection.canonicalKey,
+      pageUrl: read.meta.url,
       regions: input.regions,
     });
     if (digest === null) return { ok: false, errorCode: 'security-rejected' };
@@ -314,7 +315,7 @@ export class WatchPreviewService {
         browser === null ||
         reader === null ||
         active === null ||
-        urlOrigin(active.url) !== urlOrigin(source.canonicalKey)
+        !hasSamePageLocator(source.canonicalKey, active.url)
       )
         return { ok: false, errorCode: 'security-rejected' };
       const read = await reader.read({
@@ -325,7 +326,7 @@ export class WatchPreviewService {
       if (signal.aborted || !this.admission.isOpen())
         return { ok: false, errorCode: 'unavailable' };
       if (!read.ok) return { ok: false, errorCode: 'security-rejected' };
-      if (!hasSameHttpOrigin(source.canonicalKey, read.meta.url))
+      if (!hasSamePageLocator(source.canonicalKey, read.meta.url))
         return { ok: false, errorCode: 'security-rejected' };
       channels = read.channels;
     }
@@ -543,9 +544,9 @@ export class WatchPreviewService {
   }
 }
 
-function hasSameHttpOrigin(sourceUrl: string, finalUrl: string): boolean {
-  const sourceOrigin = urlOrigin(sourceUrl);
-  return sourceOrigin !== null && urlOrigin(finalUrl) === sourceOrigin;
+function hasSamePageLocator(sourceUrl: string, observedUrl: string): boolean {
+  const sourceKey = pageLocatorKey(sourceUrl);
+  return sourceKey !== null && pageLocatorKey(observedUrl) === sourceKey;
 }
 
 function safeDisplay(raw: string): string {
@@ -557,11 +558,24 @@ function safeDisplay(raw: string): string {
   }
 }
 function readTargetDigest(record: WatchPreviewRecord): string | null {
+  if (typeof record.target !== 'object' || record.target === null) return null;
+  const target = record.target as WatchRule['target'];
+  if (target.type !== 'page') return null;
   const v = record.validator;
-  return typeof v === 'object' &&
+  const digest =
+    typeof v === 'object' &&
     v !== null &&
     typeof (v as { targetDigest?: unknown }).targetDigest === 'string'
-    ? (v as { targetDigest: string }).targetDigest
+      ? (v as { targetDigest: string }).targetDigest
+      : null;
+  return digest !== null &&
+    digest ===
+      computeSessionTargetDigest({
+        accessMode: 'session',
+        pageUrl: target.pageUrl,
+        regions: target.regions,
+      })
+    ? digest
     : null;
 }
 function locatorFingerprint(

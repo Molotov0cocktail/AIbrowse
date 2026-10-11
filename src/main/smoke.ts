@@ -11651,6 +11651,23 @@ async function runWatchD9EndToEndSmoke(
   let wizardSourceId: string | null = null;
   let wizardRuleId: string | null = null;
   let scheduleId: string | null = null;
+  let wizardPages: ControlledPages | null = null;
+  let wizardTabId: string | null = null;
+  const releaseWizardTab = async (): Promise<void> => {
+    if (wizardTabId !== null) {
+      const tabId = wizardTabId;
+      if ((await controller.getTabs()).some((tab) => tab.id === tabId)) {
+        assert(await controller.closeTab(tabId), '8.26-E2E：专属向导 Tab 未关闭');
+      }
+      wizardTabId = null;
+    }
+    if (
+      beforeActive !== null &&
+      (await controller.getTabs()).some((tab) => tab.id === beforeActive)
+    ) {
+      assert(await controller.activateTab(beforeActive), '8.26-E2E：原活动 Tab 未恢复');
+    }
+  };
   try {
     const added = await sources.addManual({
       scope: 'page',
@@ -11662,24 +11679,54 @@ async function runWatchD9EndToEndSmoke(
     if (!added.ok) return;
     sourceId = added.source.id;
     const source = added.source;
-    const activeForWizard = await controller.getActiveTab();
-    assert(
-      activeForWizard !== null && /^https?:\/\//.test(activeForWizard.url),
-      '8.26-E2E：七步向导缺少可绑定的活动 http(s) Tab',
+    // Use a task-owned page: the positive wizard must never depend on the old
+    // same-origin/different-path preview bug or navigate an existing user tab.
+    wizardPages = await startControlledPages();
+    wizardTabId = (await controller.createTab(wizardPages.simpleUrl)).id;
+    await waitFor(
+      async () =>
+        (await controller.getTabs()).find((tab) => tab.id === wizardTabId)?.state === 'ready',
+      10000,
+      '8.26-E2E：专属向导反例页未就绪',
     );
-    const wizardSourceUrl = new URL(activeForWizard!.url);
-    wizardSourceUrl.pathname = `/aibrowse-d9-wizard-${randomUUID()}`;
-    wizardSourceUrl.search = '';
-    wizardSourceUrl.hash = '';
     const wizardSource = await sources.addManual({
       scope: 'page',
-      url: wizardSourceUrl.toString(),
+      url: wizardPages.researchCaptureUrl,
       name: 'D9 七步向导信源',
       shareMode: 'metadata',
     });
     assert(wizardSource.ok, '8.26-E2E：七步向导 Source 夹具创建失败');
     if (!wizardSource.ok) return;
     wizardSourceId = wizardSource.source.id;
+    for (const regions of [
+      [{ kind: 'main-text', label: '正文' }],
+      [{ kind: 'table', label: '表格候选', headerFingerprint: '0'.repeat(64), occurrence: 0 }],
+    ]) {
+      const previewCountBefore = store.size;
+      const rejectedPreview = await uiJs(
+        uiWc,
+        `(async () => window.aibrowse.watch.previewPageRegions({
+          sourceId: ${JSON.stringify(wizardSourceId)}, accessMode: 'session',
+          regions: ${JSON.stringify(regions)}
+        }))()`,
+      );
+      assert(
+        JSON.stringify(rejectedPreview) ===
+          JSON.stringify({ ok: false, errorCode: 'security-rejected' }),
+        '8.26-E2E：同源错误页面不应获得正文或表格预览',
+      );
+      assert(store.size === previewCountBefore, '8.26-E2E：拒绝后不应生成可消费预览');
+    }
+    assert(
+      await controller.navigate(wizardTabId, wizardPages.researchCaptureUrl),
+      '8.26-E2E：专属向导目标页导航失败',
+    );
+    await waitFor(
+      async () =>
+        (await controller.getTabs()).find((tab) => tab.id === wizardTabId)?.state === 'ready',
+      10000,
+      '8.26-E2E：专属向导目标页未就绪',
+    );
     const target = {
       type: 'page' as const,
       pageUrl: source.canonicalKey,
@@ -12357,6 +12404,7 @@ async function runWatchD9EndToEndSmoke(
     assert(sourceDeleted.ok, '8.26-E2E：Source 夹具清理失败');
     sourceId = null;
 
+    await releaseWizardTab();
     const afterTabs = await controller.getTabs();
     const afterActive = (await controller.getActiveTab())?.id ?? null;
     assert(
@@ -12398,6 +12446,11 @@ async function runWatchD9EndToEndSmoke(
     if (wizardSourceId !== null) {
       const token = sources.issueDeleteConfirmToken(wizardSourceId);
       await sources.hardDeleteManual(wizardSourceId, token).catch(() => undefined);
+    }
+    try {
+      await releaseWizardTab();
+    } finally {
+      await wizardPages?.close();
     }
     rmSync(tempDir, { recursive: true, force: true });
   }

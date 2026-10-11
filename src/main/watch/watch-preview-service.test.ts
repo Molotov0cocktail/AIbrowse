@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { WatchAcquisitionService } from './watch-acquisition-service';
 import type { TargetGatedClient } from './public-watch-http-client';
 import { WatchPreviewService } from './watch-preview-service';
 import { WatchPreviewStore } from './watch-preview-store';
 import { readPublicHtml } from './public-html-sax-reader';
-import { previewPageRegions } from './page-projector';
+import { computeSessionTargetDigest, previewPageRegions } from './page-projector';
 import type { BrowserController } from '../browser/browser-controller';
 import type { BrowserWatchReader } from './browser-watch-reader';
+import { SessionGrantStore } from './session-grant-store';
+import type { RegionDescriptor } from '../../shared/types/watch';
 
 const sourceId = '00000000-0000-4000-8000-000000000001';
 const source = {
@@ -248,5 +250,162 @@ describe('D9 Session 预览 origin 竞态', () => {
         ],
       }),
     ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
+  });
+});
+
+describe('Session 预览页面归属', () => {
+  const regions: Array<{ name: string; value: RegionDescriptor[] }> = [
+    { name: '正文', value: [{ kind: 'main-text', label: '正文' }] },
+    {
+      name: '表格发现',
+      value: [
+        {
+          kind: 'table',
+          label: '表格候选',
+          headerFingerprint: '0'.repeat(64),
+          occurrence: 0,
+        },
+      ],
+    },
+  ];
+  const targetUrl = `${source.projection.canonicalKey}?view=selected`;
+
+  function sessionPreview(activeUrl: string, capturedUrl: string) {
+    const store = new WatchPreviewStore();
+    const grants = new SessionGrantStore();
+    const read = vi.fn(async () => ({
+      ok: true as const,
+      channels: {
+        mainText: '所选页面的正文',
+        headings: [],
+        links: [],
+        tables: [{ headers: ['名称', '价格'], rows: [['商品', '1']] }],
+      },
+      meta: {
+        url: capturedUrl,
+        capturedAt: '2026-10-12T00:00:00.000Z',
+        documentId: '42',
+      },
+      suspicion: null,
+    }));
+    const preview = new WatchPreviewService({
+      store,
+      source: () => ({
+        ...source,
+        projection: { ...source.projection, canonicalKey: targetUrl },
+      }),
+      acquisition: () => null,
+      discoveryTarget: () => null,
+      browser: () =>
+        ({
+          getActiveTab: async () => ({ id: 'tab-preview', url: activeUrl }),
+        }) as unknown as BrowserController,
+      reader: () => ({ read }) as unknown as BrowserWatchReader,
+      grants: () => grants,
+    });
+    return { store, grants, read, preview };
+  }
+
+  for (const region of regions) {
+    for (const mismatch of [
+      { name: '同源不同路径', url: 'https://example.com/form?view=selected' },
+      { name: '同源不同 query', url: 'https://example.com/news?view=other' },
+      { name: '同源缺少 query', url: source.projection.canonicalKey },
+    ]) {
+      it(`${region.name}读取前拒绝${mismatch.name}且不读取页面或签发能力`, async () => {
+        const fixture = sessionPreview(mismatch.url, mismatch.url);
+        await expect(
+          fixture.preview.previewPage({ sourceId, accessMode: 'session', regions: region.value }),
+        ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
+        expect(fixture.read).not.toHaveBeenCalled();
+        expect(fixture.store.size).toBe(0);
+        expect(fixture.grants.recordCount()).toBe(0);
+      });
+
+      it(`${region.name}读取中导航到${mismatch.name}时拒绝最终投影`, async () => {
+        const fixture = sessionPreview(targetUrl, mismatch.url);
+        await expect(
+          fixture.preview.previewPage({ sourceId, accessMode: 'session', regions: region.value }),
+        ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
+        expect(fixture.read).toHaveBeenCalledOnce();
+        expect(fixture.store.size).toBe(0);
+        expect(fixture.grants.recordCount()).toBe(0);
+      });
+    }
+
+    it(`${region.name}允许相同 query 及默认端口、fragment 规范化`, async () => {
+      const fixture = sessionPreview(
+        'https://EXAMPLE.com:443/news?view=selected#active',
+        `${targetUrl}#captured`,
+      );
+      const result = await fixture.preview.previewPage({
+        sourceId,
+        accessMode: 'session',
+        regions: region.value,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(JSON.stringify(result)).not.toContain('view=');
+      expect(JSON.stringify(result)).not.toContain('#captured');
+      const handle = String(result.value['previewHandle']);
+      if (region.name === '表格发现') {
+        expect(fixture.preview.issueSessionGrant(handle)).toEqual({
+          ok: false,
+          errorCode: 'preview-expired',
+        });
+        expect(fixture.store.size).toBe(0);
+        expect(fixture.grants.recordCount()).toBe(0);
+        return;
+      }
+      const record = fixture.store.consume(handle);
+      expect(record).not.toBeNull();
+      expect(record?.validator).toMatchObject({
+        targetDigest: computeSessionTargetDigest({
+          accessMode: 'session',
+          pageUrl: `${targetUrl}#captured`,
+          regions: region.value,
+        }),
+      });
+      expect(JSON.stringify(record?.projection)).not.toContain('view=');
+      expect(JSON.stringify(record?.projection)).not.toContain('#captured');
+      expect(JSON.stringify(record?.validator)).not.toContain('view=');
+      expect(fixture.preview.issueSessionGrant(fixture.store.issue(record!)!)).toMatchObject({
+        ok: true,
+      });
+    });
+  }
+
+  it('实际读取目标摘要与待授权目标不一致时不签发授权', () => {
+    const fixture = sessionPreview(targetUrl, targetUrl);
+    const target = {
+      type: 'page' as const,
+      pageUrl: targetUrl,
+      regions: regions[0]!.value,
+      sessionConsent: null,
+    };
+    const handle = fixture.store.issue({
+      sourceId,
+      sourceRowVersion: 1,
+      locatorFingerprint: 'a'.repeat(64),
+      finalOrigin: 'https://example.com',
+      accessMode: 'session',
+      target,
+      projection: {},
+      fieldCatalog: [],
+      validator: {
+        targetDigest: computeSessionTargetDigest({
+          accessMode: 'session',
+          pageUrl: 'https://example.com/news?view=other',
+          regions: target.regions,
+        }),
+      },
+      previewTabId: 'tab-preview',
+    })!;
+    expect(fixture.preview.issueSessionGrant(handle)).toEqual({
+      ok: false,
+      errorCode: 'security-rejected',
+    });
+    expect(fixture.store.size).toBe(0);
+    expect(fixture.grants.recordCount()).toBe(0);
   });
 });
