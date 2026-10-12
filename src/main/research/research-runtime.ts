@@ -11,7 +11,16 @@
 // assembly fails closed without real C6/C7).
 import { randomUUID } from 'node:crypto';
 import { verifyEvidence } from './evidence-validator';
-import { mergeCandidates, selectCandidates } from './source-selector';
+import {
+  mergeCandidates,
+  selectCandidates,
+  type GoalUrlCandidateEntry,
+  type SourcesCandidateFeed,
+  type WebSearchCandidateEntry,
+} from './source-selector';
+import { extractGoalUrls } from './goal-urls';
+import { normalizeSourceUrl } from '../sources/domain/source-canonical';
+import type { ResearchUrlAccessResult } from '../../shared/types/sources';
 import { buildDefaultPlan, parseResearchPlan, type PlanGroupRef } from './research-plan';
 import {
   listResearchTools,
@@ -135,6 +144,7 @@ export interface ResearchCapturePort {
 
 // SourceService 最小结构端口（SourceServiceImpl 结构兼容；audience 恒 agent）
 export interface ResearchSourcePort {
+  resolveResearchUrls(urls: readonly string[]): ResearchUrlAccessResult;
   search(
     query: string,
     opts: { limit?: number; audience: SourceReadAudience },
@@ -641,7 +651,7 @@ export class ResearchRuntime {
   // 只能读取已进入当前任务候选集合的 URL（决议 #132(2)）
   private async executeBrowserOpen(args: { url: string }): Promise<string> {
     const candidate = this.matchCandidateUrl(args.url);
-    if (candidate === null) {
+    if (candidate === null || !this.isGoalCandidateAllowed(candidate)) {
       return serializeResearchToolResult({
         ok: false,
         error: 'not-allowed-url：URL 不在本任务候选集合中',
@@ -714,6 +724,13 @@ export class ResearchRuntime {
       if (candidate.displayUrl === input || candidate.url === input) return candidate;
     }
     return null;
+  }
+
+  private isGoalCandidateAllowed(candidate: SourceCandidate): boolean {
+    if (!candidate.discoveredVia.includes('goal-url')) return true;
+    const access = this.options.sourceService.resolveResearchUrls([candidate.url]);
+    if (!access.ok || access.entries.length !== 1) throw new SourcesUnavailableError();
+    return access.entries[0]!.allowed;
   }
 
   private async executeSearchWeb(args: { query: string }): Promise<string> {
@@ -888,16 +905,41 @@ export class ResearchRuntime {
   }
 
   private async mergeForPlan(plan: ResearchPlan): Promise<SourceCandidate[] | null> {
+    const urls = extractGoalUrls(this.options.goal);
+    const denied = new Set<string>();
+    const goals: GoalUrlCandidateEntry[] = [];
+    if (urls.length > 0) {
+      this.guard();
+      this.assertSteps();
+      this.stats.stepsUsed += 1;
+      const access = this.options.sourceService.resolveResearchUrls(urls);
+      if (!access.ok || access.entries.length !== urls.length) throw new SourcesUnavailableError();
+      urls.forEach((url, index) => {
+        const entry = access.entries[index]!;
+        if (entry.allowed) goals.push({ candidateId: this.createId(), url, source: entry.source });
+        else {
+          const normalized = normalizeSourceUrl(url, 'page');
+          if (normalized.ok) denied.add(normalized.canonicalKey);
+        }
+      });
+    }
+    const allowed = (url: string): boolean => {
+      const normalized = normalizeSourceUrl(url, 'page');
+      return normalized.ok && !denied.has(normalized.canonicalKey);
+    };
     const sourcesFeed = await this.collectSourcesFeed(plan);
-    const searchEntries = await this.collectSearchEntries(plan);
-    const merged = mergeCandidates({ sources: sourcesFeed, search: searchEntries });
+    if (sourcesFeed?.kind === 'source-search')
+      sourcesFeed.entries = sourcesFeed.entries.filter(({ item }) => allowed(item.url));
+    else if (sourcesFeed?.kind === 'group-list')
+      sourcesFeed.entries = sourcesFeed.entries.filter(({ item }) => allowed(item.url));
+    const searchEntries = (await this.collectSearchEntries(plan)).filter(({ result }) =>
+      allowed(result.url),
+    );
+    const merged = mergeCandidates({ sources: sourcesFeed, search: searchEntries, goals });
     return merged.ok ? merged.candidates : null;
   }
 
-  private async collectSourcesFeed(plan: ResearchPlan): Promise<{
-    kind: 'source-search' | 'group-list';
-    entries: Array<{ candidateId: string; item: never }>;
-  } | null> {
+  private async collectSourcesFeed(plan: ResearchPlan): Promise<SourcesCandidateFeed | null> {
     this.guard();
     this.assertSteps();
     this.stats.stepsUsed += 1; // 一次 SourceService 检索计 1 步
@@ -911,7 +953,7 @@ export class ResearchRuntime {
         kind: 'source-search',
         entries: result.results.map((item) => ({
           candidateId: this.createId(),
-          item: item as never,
+          item,
         })),
       };
     }
@@ -929,15 +971,13 @@ export class ResearchRuntime {
       kind: 'group-list',
       entries: result.items.map((item) => ({
         candidateId: this.createId(),
-        item: item as never,
+        item,
       })),
     };
   }
 
-  private async collectSearchEntries(
-    plan: ResearchPlan,
-  ): Promise<Array<{ candidateId: string; result: never }>> {
-    const entries: Array<{ candidateId: string; result: never }> = [];
+  private async collectSearchEntries(plan: ResearchPlan): Promise<WebSearchCandidateEntry[]> {
+    const entries: WebSearchCandidateEntry[] = [];
     for (const query of plan.webQueries) {
       this.guard();
       this.assertSteps();
@@ -947,7 +987,7 @@ export class ResearchRuntime {
       // 决议 #133(5)：Search 失败允许 Sources-only 降级（零日志正文）
       if (!result.ok) continue;
       for (const r of result.results) {
-        entries.push({ candidateId: this.createId(), result: r as never });
+        entries.push({ candidateId: this.createId(), result: r });
       }
     }
     return entries;
@@ -989,6 +1029,7 @@ export class ResearchRuntime {
     this.emit('running', 'reading');
     for (const candidate of this.selected) {
       this.guard();
+      if (!this.isGoalCandidateAllowed(candidate)) continue;
       if (this.stats.captureCount >= MAX_CAPTURES_PER_TASK) {
         throw new BudgetExhaustedError(`Capture 数量上限（${MAX_CAPTURES_PER_TASK}）`);
       }

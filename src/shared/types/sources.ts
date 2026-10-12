@@ -281,7 +281,14 @@ export interface SourceUsageContext {
   clearRun(): void;
 }
 
+// Main-process-only admission; never exposed on the renderer bridge or model tools.
+export const MAX_RESEARCH_URL_LOOKUPS = 24;
+export type ResearchUrlAccessResult =
+  | { ok: true; entries: Array<{ allowed: boolean; source: SourceListItem | null }> }
+  | { ok: false; errorCode: SourceErrorCode };
+
 export interface SourceService {
+  resolveResearchUrls(urls: readonly string[]): ResearchUrlAccessResult;
   readonly id: string; // 'sources'
   // 检索（§8；audience 必填——决议 #58：agent 视角 blocked 不可见，user 视角可见可管理）
   search(

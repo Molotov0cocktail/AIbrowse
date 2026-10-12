@@ -13,10 +13,10 @@ import { emptyPlan, emptyResult, researchFixture } from './models-fixtures';
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-model-diagnosis-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 describe('模型兼容与候选根因诊断', () => {
-  it.each([false, true])('相同URL目标，显式Sources候选=%s决定是否进入捕获', async (withSource) => {
+  it.each([false, true])('明确URL目标在Sources匹配=%s时均能进入捕获', async (withSource) => {
     const rounds = [
       [{ text: emptyPlan }],
-      ...(withSource ? [[{ text: '{"selectedCandidateIds":[]}' }]] : []),
+      [{ text: '{"selectedCandidateIds":[]}' }],
       [{ text: '{"vendorCandidateIds":[],"claims":[],"conflicts":[]}' }],
       [{ text: emptyResult }],
     ];
@@ -24,8 +24,8 @@ describe('模型兼容与候选根因诊断', () => {
     try {
       await fixture.runtime.run();
       expect(fixture.task()?.status, JSON.stringify(fixture.task())).toBe('completed');
-      expect(fixture.task()?.stats.candidateCount).toBe(withSource ? 1 : 0);
-      expect(fixture.observed.captureCalls).toBe(withSource ? 1 : 0);
+      expect(fixture.task()?.stats.candidateCount).toBe(1);
+      expect(fixture.observed.captureCalls).toBe(1);
       expect(fixture.observed.searchCalls).toBe(0);
       expect(fixture.task()?.stats.evidenceCount).toBe(0);
     } finally {
@@ -44,6 +44,7 @@ describe('模型兼容与候选根因诊断', () => {
           },
         ],
         [{ text: emptyPlan }],
+        [{ text: '{"selectedCandidateIds":[]}' }],
         [{ text: '{"vendorCandidateIds":[],"claims":[],"conflicts":[]}' }],
         [{ text: emptyResult }],
       ],

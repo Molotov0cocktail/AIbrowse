@@ -179,7 +179,7 @@ export interface ResearchTask {
 
 // ---------- 候选来源（C3） ----------
 
-export type CandidateOrigin = 'sources' | 'search';
+export type CandidateOrigin = 'sources' | 'search' | 'goal-url';
 
 export interface SourceCandidate {
   id: string; // 主进程生成（合并后唯一）

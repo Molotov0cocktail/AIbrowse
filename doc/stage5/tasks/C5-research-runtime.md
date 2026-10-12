@@ -7,6 +7,11 @@
 
 ## 目标
 
+2026-10-12 用户授权差量：按 detailed-design 末节实现目标显式 http(s) URL 候选入口；
+批量 Source 分享准入、真实 goal-url provenance、旧持久化兼容与预算不变量均须反例验证。
+验证覆盖多网址/IDN/尾标点/query/fragment/非法 scheme/凭据/私网/blocked 与 Sources/Search
+均空的实际 Runtime 捕获路径。当前本轮实施合同及机器证据索引见 `doc/tasks/legacy-repair.md`。
+
 落地 ResearchRuntime 独立有界编排状态机（纯核心零 Electron import）：
 阶段循环（planning→reading→verifying→synthesizing）、Research 六工具
 专属执行模型、ResearchPlan 判别联合、C6/C7 稳定端口（fail-closed 装配）、

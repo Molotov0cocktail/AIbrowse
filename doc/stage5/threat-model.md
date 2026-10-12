@@ -71,6 +71,13 @@
 
 ### 3.2 能力层（数据访问边界 + 禁具）
 
+- 用户明确目标网址入口（2026-10-12）只提取目标原文的显式 http(s) URL，使用现有 URL
+  规范化与有界候选合并；不解码隐藏 URL、不从模型输出扩候选。主进程只读批量 Source
+  准入拒绝同 page/适用 origin 的 blocked 或 disabled，metadata 不带 note；目标未保存
+  为 Source 时不虚构 trust。`goal-url` provenance 与优先顺序由程序生成，仍受六工具、
+  task-owned Tab、Capture/Evidence/Result 校验及全部预算约束。该入口不增加网络种类或
+  公网承诺，沿用 Research 浏览器既有 URL 边界。
+
 - **Research 工具子集**（详细设计 §15 决议 #96 + 决议 #132 执行模型）：
   Research 模型轮 tools 仅 `browser_open/browser_read/search_web/
 source_search/source_list/source_get` 六工具（编译期常量子集

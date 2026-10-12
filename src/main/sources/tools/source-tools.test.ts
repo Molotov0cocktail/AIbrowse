@@ -68,6 +68,7 @@ function stubSourceService(): SourceService {
   const unavailable = { ok: false as const, errorCode: 'source-unavailable' as const };
   return {
     id: 'sources',
+    resolveResearchUrls: () => unavailable,
     search: async () => unavailable,
     list: async () => unavailable,
     get: async () => unavailable,

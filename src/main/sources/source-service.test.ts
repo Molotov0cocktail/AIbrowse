@@ -58,6 +58,79 @@ const addOne = async (
   return okView(r);
 };
 
+describe('Research 目标 URL 主进程只读准入', () => {
+  it('同 canonical page blocked/disabled 拒绝，其它同站 page 不受影响', async () => {
+    const blocked = await addOne('https://example.com/p?x=1#one', { shareMode: 'blocked' });
+    const disabled = await addOne('https://example.com/disabled');
+    await service.disableManual(disabled.id, disabled.version);
+    const result = service.resolveResearchUrls([
+      'https://EXAMPLE.com:443/p?x=1#two',
+      'https://example.com/disabled',
+      'https://example.com/p?x=2',
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      entries: [
+        { allowed: false, source: null },
+        { allowed: false, source: null },
+        { allowed: true, source: null },
+      ],
+    });
+    expect(JSON.stringify(result)).not.toContain(blocked.id);
+  });
+  it('适用 origin blocked 拒绝子页面，即使该 page 单独可用；不同 origin 允许', async () => {
+    await service.addManual({ scope: 'origin', url: 'https://example.com/', shareMode: 'blocked' });
+    await addOne('https://example.com/child', { shareMode: 'full' });
+    expect(
+      service.resolveResearchUrls(['https://example.com/child', 'https://other.test/']),
+    ).toEqual({
+      ok: true,
+      entries: [
+        { allowed: false, source: null },
+        { allowed: true, source: null },
+      ],
+    });
+  });
+  it.each(['metadata', 'full'] as const)(
+    '%s 返回原信源元数据而不返回 note，也不写信源',
+    async (shareMode) => {
+      const saved = await addOne('https://例子.测试/路径?q=1#x', {
+        shareMode,
+        userNote: 'RESEARCH_SECRET_NOTE',
+      });
+      const before = await service.list({ page: 0, audience: 'user' });
+      const result = service.resolveResearchUrls([
+        'https://xn--fsqu00a.xn--0zwm56d/%E8%B7%AF%E5%BE%84?q=1#y',
+        'http://127.0.0.1:8000/',
+      ]);
+      expect(result).toMatchObject({
+        ok: true,
+        entries: [
+          { allowed: true, source: { id: saved.id, shareMode, trust: saved.trust } },
+          { allowed: true, source: null },
+        ],
+      });
+      expect(JSON.stringify(result)).not.toContain('RESEARCH_SECRET_NOTE');
+      expect(await service.list({ page: 0, audience: 'user' })).toEqual(before);
+    },
+  );
+  it('非法网址拒绝、超批次预算及关闭服务 fail-closed', () => {
+    expect(service.resolveResearchUrls(['https://user:pass@example.com/', 'file:///x'])).toEqual({
+      ok: true,
+      entries: [
+        { allowed: false, source: null },
+        { allowed: false, source: null },
+      ],
+    });
+    expect(service.resolveResearchUrls(Array(25).fill('https://example.com/'))).toEqual({
+      ok: false,
+      errorCode: 'source-limit',
+    });
+    service.dispose();
+    expect(service.resolveResearchUrls(['https://example.com/']).ok).toBe(false);
+  });
+});
+
 describe('D8 Digest main-internal sharing projection', () => {
   it('只返回有界 name/canonical URL/shareMode，Source note 零字节', async () => {
     const source = await addOne('https://example.com/path#fragment', {

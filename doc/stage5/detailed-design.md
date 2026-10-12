@@ -3595,11 +3595,36 @@ links[0].href`。**summary 来源**：sectionCount/tableCount/
 
 ## 2026-10-12 遗留体验修复：来源入口与零证据提示
 
-Research 候选仍仅来自已保存 Sources 与受控网页搜索，目标文本中的 URL 不自动变为候选；
+Research 候选来自已保存 Sources、受控网页搜索与用户目标中明确的 http(s) URL。
 不扩大 `browser_open` 的候选约束、不伪造 Search provenance，也不改变零候选可完成并输出
-uncertain 的既有状态机。目标输入旁必须说明指定网页需先保存为信源。
+uncertain 的既有状态机。目标输入旁说明明确网址进入候选、仍受读取预算与信源分享规则限制。
 
 任务完成且可信统计 evidenceCount=0 时，侧栏由程序明确提示未取得可用证据；candidateCount=0
 时另说明未找到来源。运行中不提前作该终局判断。已验证 Result 的 evidenceMap 为空时，结果
 正文之前固定显示“没有可核验的来源证据”的提示，不依赖模型自行生成警告。提示可用于旧结果，
-不修改数据库、历史状态或模型输出。自动 URL 候选入口及 Research 工具 reasoning 回传仍未实现。
+不修改历史状态或模型输出；Research 工具 reasoning 回传仍不实现。
+
+### 用户目标网址入口（2026-10-12，用户明确授权）
+
+- 主进程从目标原文确定性提取显式 `http://` / `https://` 网址；不从模型、网页、备注、
+  编码文本或其它 scheme 内恢复隐藏地址，不推断无协议域名。目标仍只进入 UNTRUSTED 块。
+  空白、引号、尖括号与中文句读分隔网址；普通文本尾部英文句读及不配对右括号不属于网址，
+  配对括号保留。需要保留歧义尾标点时使用 `<完整网址>`；路径中的分隔句读可百分号编码。
+- 复用 `normalizeSourceUrl(..., 'page')`：IDN 按 WHATWG 规范化，拒绝凭据/控制字符/非法
+  scheme；保留 query 的值与顺序，fragment 保留显示但不参与去重。私网、loopback 和端口
+  沿用 Research 浏览器既有许可边界，不套用 Watch Public HTTP 的公网限制。
+- 目标最多 2,000 字符，提取后按 canonical page 去重，前 24 个进入只读批量准入。
+  SourceService 主进程专用 `resolveResearchUrls` 查询同 canonical page 及适用 origin
+  信源；任一 blocked 或 disabled 拒绝该目标，不得换成搜索发现再次加入。其它同站 page
+  不影响该目标。Source 不可用/准入异常 fail-closed，不把空返回冒充允许；不增加 IPC/模型工具。
+  目标候选在自动读取和 `browser_open` 实际读取前再次只读复核分享门，用户在规划期间禁用或
+  blocked 时零 Capture；复核属于既有读取操作，不增加网络或模型步骤。
+- 同 canonical page 已保存且可用时，继承其 sourceId/name/trust/priority/lastUsedAt；返回
+  最小列表元数据，不返回任何 note（full/metadata 均不提升分享）。没有已保存 Source 时
+  sourceId/trust/priority/lastUsedAt/note 均 null；不自动写 Sources 或提升可信度。
+- 在现有合并器增加真实 `goal-url` provenance 与 tier 0；目标按首次出现次序排在其它候选前。
+  同身份与 Sources/Search 合并，保留发现路径及 Source 元数据；总候选 24、选定 8、capture/
+  轮次/步骤/上下文/持久化预算不变。一次批量准入计一个步骤。模型只能从程序候选选子集。
+- `discovered_via_json` 增加枚举而非新表/列，无 SQLite migration；读取与严格 transfer 校验
+  同步接受新枚举和 tier 0，旧 sources/search 行仍合法。目标 URL 必须经真实 CaptureService/
+  ResearchWorkspace/BrowserController，Evidence 与 Result 验证不绕过；零候选提示继续保留。

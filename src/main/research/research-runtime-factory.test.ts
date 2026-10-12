@@ -59,6 +59,10 @@ function makeCredentials(): SecureCredentialStore {
 // 零候选 Sources 端口（normal 态；search 恒空——合法空候选）
 function makeSourceService(mode: 'normal' | 'readonly-recovery' | 'unavailable'): SourceService {
   return {
+    resolveResearchUrls: (urls: readonly string[]) => ({
+      ok: true,
+      entries: urls.map(() => ({ allowed: true, source: null })),
+    }),
     search: async () => ({ ok: true, query: '', results: [] }),
     list: async () => ({ ok: true, page: 0, pageSize: 20, total: 0, items: [] }),
     listGroups: async () => ({ ok: true, page: 0, pageSize: 20, total: 0, groups: [] }),

@@ -254,6 +254,32 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe('Research transfer semantic scan', () => {
+  it('旧 search 与新 goal-url 及三路径持久化均兼容，tier 与发现路径必须匹配', () => {
+    seed();
+    expect(validateResearchTransfer(db).ok).toBe(true);
+    const sortKey = buildCandidateSortKey({
+      tier: 0,
+      inputRank: 0,
+      priority: null,
+      lastUsedAt: null,
+      scope: 'page',
+      canonicalKey: URL,
+      candidateId: CANDIDATE,
+    });
+    db.prepare('UPDATE research_candidates SET discovered_via_json=?,sort_key=?').run(
+      '["goal-url"]',
+      sortKey,
+    );
+    expect(validateResearchTransfer(db).ok).toBe(true);
+    db.prepare('UPDATE research_candidates SET discovered_via_json=?,source_id=?').run(
+      '["sources","search","goal-url"]',
+      OTHER,
+    );
+    db.prepare('UPDATE research_evidence SET source_id=?').run(OTHER);
+    expect(validateResearchTransfer(db).ok).toBe(true);
+    db.prepare('UPDATE research_candidates SET discovered_via_json=?').run('["sources","search"]');
+    expect(validateResearchTransfer(db).ok).toBe(false);
+  });
   it('rejects oversized JSON before selecting any business row', () => {
     task();
     db.prepare('UPDATE research_tasks SET stats_json=?').run(' '.repeat(500001));

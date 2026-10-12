@@ -85,6 +85,11 @@ const ZERO_STATS: ResearchTaskStats = {
 // —— 可控替身 ——
 
 class FakeSources {
+  resolveResearchUrls(
+    urls: readonly string[],
+  ): import('../../shared/types/sources').ResearchUrlAccessResult {
+    return { ok: true, entries: urls.map(() => ({ allowed: true, source: null })) };
+  }
   async search(): Promise<SourceSearchResult> {
     return { ok: true, query: '', results: [] };
   }

@@ -226,7 +226,7 @@ export function parseCandidateDiscoveredVia(raw: unknown): CandidateOrigin[] | n
   if (arr === null) return null;
   const result: CandidateOrigin[] = [];
   for (const item of arr) {
-    if (item !== 'sources' && item !== 'search') return null;
+    if (item !== 'sources' && item !== 'search' && item !== 'goal-url') return null;
     result.push(item);
   }
   return result;

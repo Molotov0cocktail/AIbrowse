@@ -14,6 +14,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { closeDb, withTransaction, type DbHandle } from './db/sqlite-driver';
 import { logWarn } from '../logger';
 import { normalizeSourceUrl } from './domain/source-canonical';
+import { MAX_RESEARCH_URL_LOOKUPS, type ResearchUrlAccessResult } from '../../shared/types/sources';
 import {
   isUuidShape,
   stripControlChars,
@@ -694,6 +695,37 @@ export class SourceServiceImpl implements SourceService {
   // 不提供 URL/标题）。仅 http/https（normalizeSourceUrl 拒绝其余）；page scope +
   // metadata 默认（手工通道缺省，决议 #52）；精确重复 → duplicate（唯一约束语义，
   // 不自动覆盖/合并）；同 origin 不同页面 → ≤5 条「可能相关」有界提示。
+  resolveResearchUrls(urls: readonly string[]): ResearchUrlAccessResult {
+    if (this.admissionClosed || this.getState().mode !== 'normal') {
+      return { ok: false, errorCode: 'source-unavailable' };
+    }
+    if (!Array.isArray(urls) || urls.length > MAX_RESEARCH_URL_LOOKUPS) {
+      return { ok: false, errorCode: 'source-limit' };
+    }
+    try {
+      const entries = urls.map((url) => {
+        const normalized = normalizeSourceUrl(url, 'page');
+        if (!normalized.ok) return { allowed: false, source: null };
+        const page = this.repo.getSourceByCanonical('page', normalized.canonicalKey);
+        const origin = this.repo.getSourceByCanonical(
+          'origin',
+          new URL(normalized.displayUrl).origin,
+        );
+        if (
+          [page, origin].some(
+            (row) => row !== null && (row.enabled !== 1 || row.share_mode === 'blocked'),
+          )
+        ) {
+          return { allowed: false, source: null };
+        }
+        return { allowed: true, source: page === null ? null : this.buildListItemFromRow(page) };
+      });
+      return { ok: true, entries };
+    } catch {
+      return { ok: false, errorCode: 'source-unavailable' };
+    }
+  }
+
   async quickAddPage(rawUrl: string): Promise<QuickAddResult> {
     if (this.admissionClosed) return { status: 'error', errorCode: 'source-unavailable' };
     const normalized = normalizeSourceUrl(rawUrl, 'page');

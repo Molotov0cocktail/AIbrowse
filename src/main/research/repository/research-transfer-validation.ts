@@ -413,7 +413,7 @@ const SHAPES: Record<Table, Record<string, Check>> = {
     title: bounded(R.MAX_CANDIDATE_TITLE_CHARS),
     canonical_key: nonempty,
     scope: enumeration(['origin', 'page']),
-    discovered_via_json: json(array(enumeration(['sources', 'search']), 2, 1, true)),
+    discovered_via_json: json(array(enumeration(['sources', 'search', 'goal-url']), 3, 1, true)),
     source_id: nullable(isUuidShape),
     trust_value: nullable(
       enumeration(['official', 'primary', 'secondary', 'community', 'unknown']),
@@ -588,9 +588,14 @@ function validateCandidate(candidate: R.SourceCandidate, row: ResearchCandidateR
   const parts = candidate.sortKey.split('|');
   const tier = Number(parts[0]);
   const rank = Number(parts[1]);
-  requireValid((tier === 3) === (candidate.sourceId === null));
   requireValid(
-    (tier === 1 || tier === 2 || tier === 3) &&
+    tier === 0
+      ? candidate.discoveredVia.includes('goal-url')
+      : (tier === 3) === (candidate.sourceId === null),
+  );
+  requireValid(candidate.discoveredVia.includes('goal-url') === (tier === 0));
+  requireValid(
+    (tier === 0 || tier === 1 || tier === 2 || tier === 3) &&
       Number.isInteger(rank) &&
       rank >= 0 &&
       rank <= 99999,

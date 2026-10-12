@@ -188,6 +188,9 @@ export async function researchCase(root: string, trace: Trace): Promise<CaseEvid
           getPageSnapshot: async () => null,
         },
         sourceService: {
+          resolveResearchUrls: () => {
+            throw new Error('固定取消场景不得解析目标网址');
+          },
           getState: () => ({ mode: 'normal' }),
           search: async () => {
             throw new Error('固定取消场景不得检索 Sources');

@@ -37,6 +37,101 @@ import {
   type WebSearchCandidateEntry,
 } from './source-selector';
 
+describe('目标 URL 合并', () => {
+  it('目标优先、Sources/Search/目标去重，保留 Source 元数据及三条发现路径', () => {
+    const item = makeSearchItem({ shareMode: 'metadata', note: null });
+    const result = mergeCandidates({
+      sources: { kind: 'source-search', entries: [{ candidateId: U.a, item }] },
+      search: [{ candidateId: U.b, result: makeSearchResult() }],
+      goals: [
+        {
+          candidateId: U.c,
+          url: 'https://example.com/p#target',
+          source: makeListItem({ shareMode: 'metadata' }),
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      id: U.a,
+      sourceId: item.id,
+      trust: item.trust,
+      priority: item.priority,
+      note: null,
+      url: 'https://example.com/p#target',
+      discoveredVia: ['sources', 'search', 'goal-url'],
+    });
+    expect(result.candidates[0]!.sortKey.startsWith('00|')).toBe(true);
+  });
+  it('未命中 Sources feed 的已保存目标仍继承真实元数据，无信源目标不虚构信任', () => {
+    const result = mergeCandidates({
+      sources: null,
+      search: [],
+      goals: [
+        { candidateId: U.a, url: 'https://example.com/p', source: makeListItem() },
+        { candidateId: U.b, url: 'https://fresh.test/', source: null },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates[0]).toMatchObject({
+      discoveredVia: ['sources', 'goal-url'],
+      sourceId: makeListItem().id,
+      note: null,
+    });
+    expect(result.candidates[1]).toMatchObject({
+      discoveredVia: ['goal-url'],
+      sourceId: null,
+      trust: null,
+      priority: null,
+      lastUsedAt: null,
+      note: null,
+    });
+  });
+  it('目标不被其它24候选挤出，最终仍裁剪24/8', () => {
+    const result = mergeCandidates({
+      sources: null,
+      search: Array.from({ length: 24 }, (_, i) => ({
+        candidateId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+        result: makeSearchResult({ url: `https://example.com/${i}` }),
+      })),
+      goals: [{ candidateId: U.a, url: 'https://target.test/', source: null }],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidates).toHaveLength(24);
+    expect(selectCandidates(result.candidates)).toHaveLength(8);
+    expect(result.candidates[0]!.url).toBe('https://target.test/');
+  });
+  it('目标条目重复 UUID fail-closed；blocked/错误Source身份不提升成可用网址', () => {
+    expect(
+      mergeCandidates({
+        sources: null,
+        search: [],
+        goals: [
+          { candidateId: U.a, url: 'https://example.com/p', source: null },
+          { candidateId: U.a, url: 'https://example.com/q', source: null },
+        ],
+      }),
+    ).toMatchObject({ ok: false, errorCode: 'candidate-id-conflict' });
+    for (const source of [
+      makeListItem({ shareMode: 'blocked' }),
+      makeListItem({ enabled: false }),
+      makeListItem({ canonicalKey: 'https://wrong.test/' }),
+    ]) {
+      expect(
+        mergeCandidates({
+          sources: null,
+          search: [],
+          goals: [{ candidateId: U.a, url: 'https://example.com/p', source }],
+        }),
+      ).toMatchObject({ ok: true, candidates: [] });
+    }
+  });
+});
+
 // ---------- fixtures ----------
 
 const U = {

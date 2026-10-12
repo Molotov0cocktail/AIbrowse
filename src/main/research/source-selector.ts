@@ -1,13 +1,13 @@
 // Fifth Stage C3: Source selection pure functions (detailed-design §4,
 // adjudications #120–#123). Zero Electron imports, zero I/O, zero logging:
-// mergeCandidates merges the Sources + Search candidate feeds with
+// mergeCandidates merges Sources + Search + literal goal URL feeds with
 // deterministic ordering; buildCandidateSortKey encodes the full order into
 // an ASCII sortKey (JavaScript binary < order === SQLite BINARY order —
 // ResearchRepository lists candidates by `ORDER BY sort_key ASC,
 // candidate_id ASC`, §9.1); selectCandidates crops a bounded top-N.
 //
 // Discovery tiers (#120 — this is a source-selection order, NOT a
-// trust/quality score): tier 1 = source-search (preserves the SourceService
+// trust/quality score): tier 0 = explicit goal URL; tier 1 = source-search (preserves the SourceService
 // input order, adjudication #61 total order); tier 2 = group-list (priority
 // desc, lastUsedAt desc, scope/canonicalKey/id); tier 3 = web-search
 // (preserves the SearchProvider result order; trust/priority/lastUsedAt/note
@@ -65,6 +65,13 @@ export interface WebSearchCandidateEntry {
 export interface MergeCandidatesInput {
   sources: SourcesCandidateFeed | null; // null = 无 Sources 候选（合法输入）
   search: readonly WebSearchCandidateEntry[];
+  goals?: readonly GoalUrlCandidateEntry[];
+}
+
+export interface GoalUrlCandidateEntry {
+  candidateId: string;
+  url: string;
+  source: SourceListItem | null;
 }
 
 export type CandidateMergeErrorCode = 'candidate-invalid-input' | 'candidate-id-conflict';
@@ -74,7 +81,7 @@ export type MergeCandidatesResult =
   | { ok: false; errorCode: CandidateMergeErrorCode; reason: string };
 
 export interface CandidateSortKeyInput {
-  tier: 1 | 2 | 3;
+  tier: 0 | 1 | 2 | 3;
   inputRank: number; // source-search/web-search 原输入 rank；group-list 用固定值
   priority: number | null;
   lastUsedAt: string | null;
@@ -231,7 +238,8 @@ function encodeTime(iso: string): string {
 // TT|RRRRR|P|IIIIIIIIIIIIIIIIIIIIIIII|S|canonicalKey|candidateId——
 // 全 ASCII：JS 二元 < 比较与 SQLite BINARY 排序一致（不得 localeCompare）
 export function buildCandidateSortKey(input: CandidateSortKeyInput): string {
-  const tierCode = input.tier === 1 ? '01' : input.tier === 2 ? '02' : '03';
+  const tierCode =
+    input.tier === 0 ? '00' : input.tier === 1 ? '01' : input.tier === 2 ? '02' : '03';
   const rank =
     Number.isInteger(input.inputRank) && input.inputRank >= 0
       ? Math.min(input.inputRank, RANK_ENCODE_MAX)
@@ -253,7 +261,7 @@ export function buildCandidateSortKey(input: CandidateSortKeyInput): string {
 
 interface PendingCandidate {
   candidateId: string;
-  tier: 1 | 2 | 3;
+  tier: 0 | 1 | 2 | 3;
   inputRank: number;
   url: string;
   displayUrl: string;
@@ -271,6 +279,7 @@ interface CandidateSlot {
   pending: PendingCandidate;
   fromSources: boolean;
   viaSearch: boolean;
+  viaGoal?: boolean;
 }
 
 function mergeIdentityKey(scope: SourceScope, canonicalKey: string): string {
@@ -395,8 +404,10 @@ function compareCandidates(a: SourceCandidate, b: SourceCandidate): number {
 export function mergeCandidates(input: MergeCandidatesInput): MergeCandidatesResult {
   // ---- 顶层结构校验（fail-closed；reason 不含 URL/note/标题正文）----
   if (!isRecord(input)) return failInput('输入必须是对象');
-  const { sources, search } = input;
+  const { sources, search, goals = [] } = input;
   if (!Array.isArray(search)) return failInput('search 必须是数组');
+  if (!Array.isArray(goals) || goals.length > MAX_SOURCE_CANDIDATES)
+    return failInput('目标网址输入非法');
   if (sources !== null && sources !== undefined) {
     if (!isRecord(sources)) return failInput('sources 结构非法');
     if (sources.kind !== 'source-search' && sources.kind !== 'group-list') {
@@ -435,6 +446,17 @@ export function mergeCandidates(input: MergeCandidatesInput): MergeCandidatesRes
   }
   for (const entry of searchEntries) {
     const err = checkEntry(entry, false);
+    if (err !== null) return err;
+  }
+  for (const entry of goals) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.url !== 'string' ||
+      (entry.source !== null && !isRecord(entry.source))
+    ) {
+      return failInput('目标网址条目非法');
+    }
+    const err = checkEntry({ candidateId: entry.candidateId, result: {} }, false);
     if (err !== null) return err;
   }
 
@@ -498,13 +520,61 @@ export function mergeCandidates(input: MergeCandidatesInput): MergeCandidatesRes
     slots.set(key, { pending, fromSources: false, viaSearch: true });
   });
 
+  goals.forEach((entry, index) => {
+    const normalized = normalizeSourceUrl(entry.url, 'page');
+    if (!normalized.ok) {
+      dropped += 1;
+      return;
+    }
+    const fromSource =
+      entry.source === null
+        ? null
+        : buildFromSourceItem(
+            entry.candidateId,
+            entry.source as unknown as Record<string, unknown>,
+            'group-list',
+            index,
+          );
+    if (
+      entry.source !== null &&
+      (fromSource === null ||
+        fromSource.scope !== 'page' ||
+        fromSource.canonicalKey !== normalized.canonicalKey)
+    ) {
+      dropped += 1;
+      return;
+    }
+    const key = mergeIdentityKey('page', normalized.canonicalKey);
+    const existing = slots.get(key);
+    if (existing?.viaGoal) {
+      dropped += 1;
+      return;
+    }
+    const pending = existing?.fromSources
+      ? existing.pending
+      : (fromSource ??
+        existing?.pending ??
+        buildFromSearchResult(entry.candidateId, { url: entry.url }, index)!);
+    pending.tier = 0;
+    pending.inputRank = index;
+    pending.url = normalized.displayUrl;
+    pending.displayUrl = normalized.displayUrl;
+    slots.set(key, {
+      pending,
+      fromSources: pending.sourceId !== null,
+      viaSearch: existing?.viaSearch ?? false,
+      viaGoal: true,
+    });
+  });
+
   // ---- 排序与有界裁剪（§4.6：24 上限，超出计入 droppedCount）----
   const candidates = [...slots.values()]
     .map((slot) =>
-      finalizeCandidate(
-        slot.pending,
-        slot.fromSources ? (slot.viaSearch ? ['sources', 'search'] : ['sources']) : ['search'],
-      ),
+      finalizeCandidate(slot.pending, [
+        ...(slot.fromSources ? ['sources' as const] : []),
+        ...(slot.viaSearch ? ['search' as const] : []),
+        ...(slot.viaGoal ? ['goal-url' as const] : []),
+      ]),
     )
     .sort(compareCandidates);
   const total = candidates.length;

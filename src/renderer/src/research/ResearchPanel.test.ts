@@ -48,16 +48,16 @@ function renderTask(status: ResearchTask['status'], candidates: number, evidence
 }
 
 describe('研究来源与结果边界提示', () => {
-  it('开始前明确网址不会自动采集并关联目标输入说明', () => {
+  it('开始前说明目标完整网址进入候选并关联目标输入说明', () => {
     const html = renderTask('created', 0, 0);
-    expect(html).toContain('仅在目标中填写网址不会自动采集');
+    expect(html).toContain('目标中的完整 http(s) 网址会加入候选');
     expect(html).toContain('aria-describedby="research-source-help"');
   });
 
   it('已完成但没有候选时明确未找到来源，不依赖模型生成提示', () => {
     const html = renderTask('completed', 0, 0);
     expect(html).toContain('未找到可用来源');
-    expect(html).toContain('请先将目标网页保存为信源');
+    expect(html).toContain('请检查目标网址与信源分享设置');
   });
 
   it('找到来源但没有证据时明确证据不足', () => {

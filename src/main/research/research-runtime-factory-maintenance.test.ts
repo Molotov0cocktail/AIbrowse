@@ -48,6 +48,10 @@ async function prepared() {
       activateTab: async () => false,
     },
     sourceService: {
+      resolveResearchUrls: (urls) => ({
+        ok: true,
+        entries: urls.map(() => ({ allowed: true, source: null })),
+      }),
       getState: () => ({ mode: 'normal' }),
       search: async () => ({ ok: true, query: '', results: [] }),
       list: async () => ({ ok: true, page: 0, pageSize: 20, total: 0, items: [] }),

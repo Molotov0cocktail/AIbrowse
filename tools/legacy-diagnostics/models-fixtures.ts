@@ -98,6 +98,10 @@ export function researchFixture(
     model,
     provider,
     sourceService: {
+      resolveResearchUrls: (urls) => ({
+        ok: true,
+        entries: urls.map(() => ({ allowed: true, source: withSource ? source : null })),
+      }),
       search: async (query) => {
         observed.sourceCalls++;
         return { ok: true, query, results: withSource ? [source] : [] };
