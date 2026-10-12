@@ -26,6 +26,8 @@ export const IPC = {
   NavReload: 'nav:reload',
   PageSnapshot: 'page:snapshot', // payload: { tabId }
   AppGetInfo: 'app:get-info', // 基线已有
+  AppPreferencesGet: 'app-preferences:get',
+  AppPreferencesSet: 'app-preferences:set', // payload: { runInTray: boolean }
   DataTransferStatus: 'data-transfer:status',
   DataTransferStart: 'data-transfer:start',
   DataTransferCancel: 'data-transfer:cancel',
@@ -136,6 +138,10 @@ export interface ContentBounds {
   y: number;
   width: number;
   height: number;
+}
+
+export interface AppPreferencesSetPayload {
+  runInTray: boolean;
 }
 
 // invoke payload 类型（main 侧 handler 校验用；renderer 经 preload bridge 传入）

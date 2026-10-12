@@ -25,10 +25,10 @@ function text(value: ReactNode): string {
     .join('');
 }
 
-it('设置页提供四个分类并将数据故障标在常驻分类入口', () => {
+it('设置页提供常规托盘入口及其余分类并将数据故障标在常驻分类入口', () => {
   const onSectionChange = vi.fn<(section: SettingsSection) => void>();
   const tree = SettingsPage({
-    section: 'appearance',
+    section: 'general',
     onSectionChange,
     onBack: vi.fn(),
     appearance: { appearance: 'system', setAppearance: vi.fn() },
@@ -49,7 +49,8 @@ it('设置页提供四个分类并将数据故障标在常驻分类入口', () =
     onWatchCurrentPage: vi.fn(),
   });
   const body = text(tree);
-  for (const label of ['外观', 'AI 配置', '本地数据', '高级']) expect(body).toContain(label);
+  for (const label of ['常规', '外观', 'AI 配置', '本地数据', '高级'])
+    expect(body).toContain(label);
   expect(body).toContain('!');
   const data = nodes(tree).find(
     (node) => node.type === 'button' && text(node.props.children).includes('本地数据'),

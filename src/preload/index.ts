@@ -4,7 +4,7 @@ import {
   RUNTIME_SAMPLE,
   type RuntimeUiBridge,
 } from '../../tools/data-qualification/runtime/ui-protocol';
-import type { AibrowseBridge, AppInfo } from '../shared/types/app';
+import type { AibrowseBridge, AppInfo, TraySettings } from '../shared/types/app';
 import type { PageSnapshot, TabInfo, TabsState } from '../shared/types/browser';
 import type {
   AskResult,
@@ -180,6 +180,10 @@ const invokeWatch = async <T>(
 };
 
 const bridge: AibrowseBridge = {
+  appPreferences: {
+    get: () => invoke<TraySettings>(IPC.AppPreferencesGet),
+    setRunInTray: (runInTray) => invoke<TraySettings>(IPC.AppPreferencesSet, { runInTray }),
+  },
   browserLibrary: {
     getStatus: () => invoke(IPC.BrowserLibraryStatus),
     listHistory: (request) => invoke(IPC.BrowserHistoryList, request),

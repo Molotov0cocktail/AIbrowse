@@ -4,8 +4,9 @@ import type { LocalDataController } from '../storage/useLocalData';
 import { Icon } from '../ui/Icon';
 import { ThemeSelect } from '../ui/ThemeSelect';
 import type { AppearanceController } from '../ui/useAppearance';
+import { TraySettingsControl } from './TraySettingsControl';
 
-export type SettingsSection = 'appearance' | 'ai' | 'data' | 'advanced';
+export type SettingsSection = 'general' | 'appearance' | 'ai' | 'data' | 'advanced';
 
 interface SettingsPageProps {
   section: SettingsSection;
@@ -20,6 +21,7 @@ interface SettingsPageProps {
 }
 
 const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
+  { id: 'general', label: '常规' },
   { id: 'appearance', label: '外观' },
   { id: 'ai', label: 'AI 配置' },
   { id: 'data', label: '本地数据' },
@@ -64,6 +66,12 @@ export function SettingsPage({
           ))}
         </nav>
         <div className="settings-content">
+          {section === 'general' && (
+            <section className="settings-section-card">
+              <h2>常规</h2>
+              <TraySettingsControl />
+            </section>
+          )}
           {section === 'appearance' && (
             <section className="settings-section-card">
               <h2>外观</h2>

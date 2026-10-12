@@ -340,7 +340,8 @@ ACCEPTANCE / STOP OR REPLAN CONDITIONS / FINAL EVIDENCE
 
 ### 3.6 Sixth Stage 产品边界
 
-- Watch 只在应用进程存活期间运行；仅支持固定间隔与每日时刻，不做 cron、系统服务或退出后后台运行。
+- Watch 只在应用进程存活期间运行；用户可在设置开启托盘运行，关闭主窗口只隐藏，显式退出后停止。
+  仅支持固定间隔与每日时刻，不做 cron、系统服务、开机自启或退出后后台运行。
 - Public 采集使用 Node 核心 HTTP/HTTPS，仅允许 80/443，逐跳执行 DNS/重定向/robots 校验，
   不发送 Cookie、不执行 JavaScript、不加载子资源。Session 采集必须使用明确的 task-owned Tab
   获取路径，与 Public 共用主进程 HostRequestGate；不持久化 tabId/Cookie，不导航或关闭用户 Tab。

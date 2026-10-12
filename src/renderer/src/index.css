@@ -2175,6 +2175,53 @@ body {
   padding: 0;
 }
 
+.tray-settings {
+  margin-top: 18px;
+}
+
+.tray-settings-toggle {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  cursor: pointer;
+}
+
+.tray-settings-toggle > span {
+  display: grid;
+  gap: 6px;
+}
+
+.tray-settings-toggle strong {
+  font-size: 15px;
+}
+
+.tray-settings-toggle span span,
+.tray-settings-note {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.tray-settings-toggle input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.tray-settings-toggle:has(input:disabled) {
+  cursor: default;
+}
+
+.tray-settings-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+}
+
+.tray-settings-error {
+  margin: 12px 0 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
 .settings-browser-data-alert {
   padding: 10px 12px;
   border: 1px solid var(--danger);

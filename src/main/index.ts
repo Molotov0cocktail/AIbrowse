@@ -8,9 +8,14 @@ import {
   session,
   clipboard,
   nativeTheme,
+  Tray,
+  Menu,
+  nativeImage,
 } from 'electron';
 import { installWindowAppearance, titlebarColors } from './ui/window-appearance';
-import type { Appearance } from '../shared/types/app';
+import { TrayController } from './ui/tray-controller';
+import { TrayPreferences } from './ui/tray-preferences';
+import type { Appearance, TraySettings } from '../shared/types/app';
 import { dispatchBrowserLibrary, browserPageForLibrary } from './browser-library-ipc';
 import type { BrowserLibraryService } from './browser-library/browser-library-service';
 import {
@@ -496,6 +501,9 @@ let researchMaintenance: ResearchServiceImpl | null = null;
 let sourceUsageTracker: SourceUsageTracker | null = null;
 let runtimeShutdown: RuntimeShutdown | null = null;
 let shutdownQuitReady = false;
+let trayController: TrayController | null = null;
+let trayPreferences: TrayPreferences | null = null;
+let trayError: string | null = null;
 // S4：config:providers:* handler 需要直接引用生产 ConfigStore/凭据实例
 let configStore: ConfigStore | null = null;
 let credentialTargetGuard: CredentialTargetGuard | null = null;
@@ -649,6 +657,7 @@ const diagnosticService = new DiagnosticService({
 
 const mainFailureShutdown = new MainFailureShutdown({
   stopAdmission: () => {
+    trayController?.beginQuit();
     normalQuit.interrupt();
     dataAdmissionOpen = false;
     stopRendererAdmissions();
@@ -797,6 +806,7 @@ function stopRendererAdmissions(): void {
 }
 
 function shutdownRuntime(): Promise<void> {
+  trayController?.beginQuit();
   if (runtimeShutdown === null) {
     lifecycleGuardian?.beginShutdown();
     // Keep the same dataset and ownership references through every await.
@@ -1400,6 +1410,7 @@ if (!gotLock) {
     app.on('activate', () => {
       // macOS 惯例：点击 Dock 图标且无窗口时重建窗口（当前目标平台为 Windows，保留兼容）
       if (BrowserWindow.getAllWindows().length === 0) void createBrowserWindow();
+      else trayController?.showWindow();
     });
   });
 
@@ -1407,6 +1418,7 @@ if (!gotLock) {
     if (process.platform !== 'darwin') app.quit();
   });
   app.on('before-quit', (event) => {
+    trayController?.beginQuit();
     if (mainFailureShutdown.isActive()) {
       event.preventDefault();
       return;
@@ -1415,6 +1427,7 @@ if (!gotLock) {
     event.preventDefault();
     normalQuit.request();
   });
+  app.on('will-quit', () => trayController?.dispose());
 
   // 纵深防御（§3.2）：React UI 主窗口是 IPC 的唯一合法调用方；sender 为主窗口且为主帧
   function isTrustedSender(
@@ -1485,6 +1498,7 @@ if (!gotLock) {
           channel === IPC.DataTransferCancel ||
           channel === IPC.DataTransferRecoverOriginal ||
           channel === IPC.BrowserLibraryStatus ||
+          channel === IPC.AppPreferencesGet ||
           channel === IPC.ConversationStorageStatus
         ) {
           // Maintenance controls must not hold a business lease while draining it.
@@ -1542,6 +1556,19 @@ if (!gotLock) {
         }
       });
     };
+
+    handle(IPC.AppPreferencesGet, () => getTraySettings());
+    handle(IPC.AppPreferencesSet, (payload) => {
+      const enabled = (payload as { runInTray: boolean }).runInTray;
+      if (!getTraySettings().available) return getTraySettings();
+      try {
+        trayController!.setEnabled(enabled);
+        trayError = null;
+      } catch {
+        trayError = '托盘运行设置未能保存或应用，请重试。';
+      }
+      return getTraySettings();
+    });
 
     for (const channel of [
       IPC.BrowserLibraryStatus,
@@ -3295,14 +3322,18 @@ async function assembleBrowserWindow(): Promise<void> {
   };
   win.on('close', (event) => {
     if (shutdownQuitReady) return;
+    if (trayController?.handleClose(event)) return;
     event.preventDefault();
     if (!mainFailureShutdown.isActive()) normalQuit.request();
   });
   win.on('closed', () => {
+    trayController?.dispose();
     void shutdownRuntime().catch(reportShutdownFailure);
     if (mainWindow === win) mainWindow = null;
     logInfo('main', '主窗口已关闭');
   });
+  win.on('query-session-end', () => trayController?.beginQuit());
+  installTrayController(win);
   dataAdmissionOpen = false;
   const startupState = await datasetStartup.prepare(requireNodeDataRoot());
   startupHealthOnly = startupState === 'checking';
@@ -4199,6 +4230,75 @@ async function assembleBrowserWindow(): Promise<void> {
       });
     });
   }
+}
+
+function getTraySettings(): TraySettings {
+  const loadError = trayPreferences?.getLoadError() ?? null;
+  return {
+    runInTray: trayController?.isEnabled() ?? false,
+    available:
+      process.platform === 'win32' &&
+      trayController !== null &&
+      trayPreferences !== null &&
+      loadError === null &&
+      mainRootAdmission.isOpen() &&
+      runtimeShutdown === null &&
+      !mainFailureShutdown.isActive(),
+    error: loadError ?? trayError,
+  };
+}
+
+function showMainWindow(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function installTrayController(win: BrowserWindow): void {
+  if (process.platform !== 'win32') return;
+  trayPreferences = new TrayPreferences(requireNodeDataRoot());
+  const preferences = trayPreferences;
+  trayController = new TrayController({
+    createTray: (onShow, onQuit) => {
+      const icon = nativeImage.createFromPath(join(app.getAppPath(), 'resources/aibrowse.ico'));
+      if (icon.isEmpty()) throw new Error('应用托盘图标不可用');
+      const tray = new Tray(icon);
+      try {
+        tray.setToolTip('AIbrowse — 托盘运行');
+        tray.setContextMenu(
+          Menu.buildFromTemplate([
+            { label: '打开 AIbrowse', click: onShow },
+            { type: 'separator' },
+            { label: '退出 AIbrowse', click: onQuit },
+          ]),
+        );
+        tray.on('click', onShow);
+        tray.on('double-click', onShow);
+        return tray;
+      } catch {
+        tray.destroy();
+        throw new Error('系统托盘无法创建');
+      }
+    },
+    saveEnabled: (enabled) => preferences.saveEnabled(enabled),
+    showWindow: () => showMainWindow(win),
+    hideWindow: () => win.hide(),
+    isWindowVisible: () => !win.isDestroyed() && win.isVisible(),
+    canHide: () =>
+      !win.isDestroyed() &&
+      !win.webContents.isDestroyed() &&
+      dataAdmissionOpen &&
+      mainRootAdmission.isOpen() &&
+      runtimeShutdown === null &&
+      !mainFailureShutdown.isActive(),
+    requestQuit: () => app.quit(),
+    reportError: () => {
+      trayError = '系统托盘暂不可用，关闭窗口将退出应用。';
+      logWarn('main', trayError);
+    },
+  });
+  trayController.initialize(preferences.getEnabled());
 }
 
 function createMainWindow(): BrowserWindow {

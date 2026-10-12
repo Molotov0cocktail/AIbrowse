@@ -52,6 +52,8 @@ const transferChannels = new Set<string>([
 
 const schemas: Readonly<Record<string, readonly string[]>> = {
   [IPC.AppGetInfo]: [],
+  [IPC.AppPreferencesGet]: [],
+  [IPC.AppPreferencesSet]: ['runInTray'],
   [IPC.DataTransferStatus]: [],
   [IPC.DataTransferStart]: ['action'],
   [IPC.DataTransferCancel]: ['operationId'],
@@ -86,6 +88,9 @@ const schemas: Readonly<Record<string, readonly string[]>> = {
 
 /** Domain adapters retain their stricter value and budget validation. */
 export function validateCoreIpcPayload(channel: string, payload: unknown): boolean {
+  if (channel === IPC.AppPreferencesGet) return payload === undefined;
+  if (channel === IPC.AppPreferencesSet)
+    return closed(payload, ['runInTray']) && typeof payload.runInTray === 'boolean';
   if (channel.startsWith('browser-library:') || channel === IPC.UiAppearance)
     return validateBrowserUiPayload(channel, payload);
   if (channel === IPC.DiagnosticExport) return parseDiagnosticExportPayload(payload) !== null;

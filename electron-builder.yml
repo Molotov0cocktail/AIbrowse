@@ -16,6 +16,7 @@ files:
   - out/release/renderer/asset-manifest.json
   - out/release/renderer/assets/**/*
   - package.json
+  - resources/aibrowse.ico
   - node_modules/@federicocarboni/saxe/package.json
   - node_modules/@federicocarboni/saxe/LICENSE
   - node_modules/@federicocarboni/saxe/lib/index.js

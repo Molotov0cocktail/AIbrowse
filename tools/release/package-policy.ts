@@ -10,6 +10,7 @@ export const PACKAGED_EXECUTABLE = 'AIbrowse.exe';
 
 const REQUIRED_FILES = [
   'package.json',
+  'resources/aibrowse.ico',
   'out/release/main/index.js',
   'out/release/main/transfer-worker.js',
   'out/release/main/startup-probe-worker.js',
@@ -72,6 +73,7 @@ export const normalizeArchivePath = (value: string): string =>
 export const isAllowedArchivePath = (archivePath: string): boolean => {
   const path = normalizeArchivePath(archivePath);
   if (path === 'package.json') return true;
+  if (path === 'resources/aibrowse.ico') return true;
   if (path === 'out/release/main/index.js') return true;
   if (path === 'out/release/main/lifecycle-guardian-integrity.json') return true;
   if (/^out\/release\/main\/[a-z0-9][a-z0-9_-]*\.js$/i.test(path)) return true;

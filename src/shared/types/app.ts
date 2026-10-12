@@ -84,8 +84,18 @@ export interface AppInfo {
   platform: string;
 }
 
+export interface TraySettings {
+  runInTray: boolean;
+  available: boolean;
+  error: string | null;
+}
+
 // Minimal-privilege bridge exposed by the preload script to the renderer (React UI only).
 export interface AibrowseBridge {
+  appPreferences: {
+    get(): Promise<TraySettings>;
+    setRunInTray(enabled: boolean): Promise<TraySettings>;
+  };
   browserLibrary: {
     getStatus(): Promise<BrowserLibraryStatus>;
     listHistory(

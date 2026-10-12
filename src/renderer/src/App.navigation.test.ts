@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { TabBar } from './browser/TabBar';
 import { Toolbar } from './browser/Toolbar';
+import { SettingsPage } from './settings/SettingsPage';
 
 const hooks = vi.hoisted(() => ({
   initialView: 'watch' as 'watch' | 'research-result' | 'settings' | 'library',
@@ -136,3 +137,18 @@ describe.each(['watch', 'research-result', 'settings', 'library'] as const)(
     });
   },
 );
+
+it('设置工作区初次进入常规页', () => {
+  hooks.initialView = 'settings';
+  hooks.viewWrites = [];
+  vi.stubGlobal('__WATCH_QUALIFICATION__', false);
+  vi.stubGlobal('window', {
+    aibrowse: {
+      nav: {},
+      tabs: {},
+      browserLibrary: { getCurrentBookmark: vi.fn() },
+    },
+  });
+  const settings = component<Record<string, unknown>>(App(), SettingsPage);
+  expect(settings.section).toBe('general');
+});

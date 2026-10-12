@@ -2,6 +2,26 @@ import { expect, it } from 'vitest';
 import { IPC } from '../../shared/types/ipc';
 import { validateCoreIpcPayload } from './core-ipc-payload';
 
+it('托盘偏好读取零参数且写入只接受闭合布尔值', () => {
+  expect(validateCoreIpcPayload(IPC.AppPreferencesGet, undefined)).toBe(true);
+  for (const payload of [{}, { runInTray: false }, new Date()])
+    expect(validateCoreIpcPayload(IPC.AppPreferencesGet, payload)).toBe(false);
+
+  expect(validateCoreIpcPayload(IPC.AppPreferencesSet, { runInTray: true })).toBe(true);
+  expect(validateCoreIpcPayload(IPC.AppPreferencesSet, { runInTray: false })).toBe(true);
+  for (const payload of [
+    undefined,
+    {},
+    { runInTray: 'true' },
+    { runInTray: true, startup: true },
+    Object.create({ runInTray: true }),
+    new (class {
+      runInTray = true;
+    })(),
+  ])
+    expect(validateCoreIpcPayload(IPC.AppPreferencesSet, payload)).toBe(false);
+});
+
 it('浏览资料库严格限制查询、标识、网址与外观枚举', () => {
   const request = { query: '', cursor: null, limit: 50 };
   expect(validateCoreIpcPayload('browser-library:history-list', request)).toBe(true);

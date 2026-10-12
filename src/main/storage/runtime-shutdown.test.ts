@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
+import { TrayController } from '../ui/tray-controller';
 import { MaintenanceAdmission } from './maintenance-admission';
 import { NormalQuitCoordinator, snapshotQuitMessage } from './normal-quit';
 import { RuntimeShutdown, RuntimeShutdownError, type ShutdownProducer } from './runtime-shutdown';
@@ -213,7 +214,7 @@ function extract(predicate: (node: ts.Node) => boolean): string {
   return found.getText(index);
 }
 
-function mainFixture(digestFailure = false, duringStartup = false) {
+function mainFixture(digestFailure = false, duringStartup = false, trayEnabled = false) {
   const libraryDisposed = vi.fn();
   const root = new MaintenanceAdmission();
   const rootRelease = root.enter()!;
@@ -272,6 +273,32 @@ function mainFixture(digestFailure = false, duringStartup = false) {
   let beforeQuit!: (event: { preventDefault(): void }) => void;
   let onClose!: (event: { preventDefault(): void }) => void;
   let onClosed!: () => void;
+  let visible = true;
+  let trayDestroyed = false;
+  const hideWindow = vi.fn(() => {
+    visible = false;
+    order.push('window:hide');
+  });
+  const showWindow = vi.fn(() => {
+    visible = true;
+    order.push('window:show');
+  });
+  const trayController = new TrayController({
+    createTray: () => ({
+      destroy: () => {
+        trayDestroyed = true;
+      },
+      isDestroyed: () => trayDestroyed,
+    }),
+    saveEnabled: () => undefined,
+    showWindow,
+    hideWindow,
+    isWindowVisible: () => visible,
+    canHide: () => root.isOpen() && !duringStartup,
+    requestQuit: () => beforeQuit({ preventDefault: vi.fn() }),
+    reportError: vi.fn(),
+  });
+  trayController.initialize(trayEnabled);
   const context = vm.createContext({
     RuntimeShutdown,
     NormalQuitCoordinator,
@@ -280,6 +307,7 @@ function mainFixture(digestFailure = false, duringStartup = false) {
     dialog: { showMessageBox },
     __RELEASE__: true,
     runtimeShutdown: null,
+    trayController,
     dataTransferRuntime: null,
     recoveryTransferRuntime: null,
     partialRecoveryEntry: null,
@@ -413,6 +441,10 @@ function mainFixture(digestFailure = false, duringStartup = false) {
     quit,
     snapshots,
     showMessageBox,
+    trayController,
+    hideWindow,
+    showWindow,
+    isWindowVisible: () => visible,
     onClose,
     beforeQuit: () => beforeQuit({ preventDefault: vi.fn() }),
     onClosed: () => onClosed(),
@@ -425,6 +457,72 @@ function mainFixture(digestFailure = false, duringStartup = false) {
 }
 
 describe('实际 main 接线 AST 集成', () => {
+  it('启用托盘后的实际窗口close仅隐藏，根准入与Watch生产者保持运行', async () => {
+    const fixture = mainFixture(false, false, true);
+    fixture.snapshots.getPendingSnapshotCount.mockReturnValue(1);
+    const preventDefault = vi.fn();
+    fixture.onClose({ preventDefault });
+    await flush();
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(fixture.isWindowVisible()).toBe(false);
+    expect(fixture.hideWindow).toHaveBeenCalledOnce();
+    expect(fixture.order).toEqual(['window:hide']);
+    expect(fixture.context.runtimeShutdown).toBeNull();
+    expect(fixture.root.isOpen()).toBe(true);
+    expect(fixture.watch.stop).not.toHaveBeenCalled();
+    expect(fixture.digest.abort).not.toHaveBeenCalled();
+    expect(fixture.snapshots.beginSnapshotShutdown).not.toHaveBeenCalled();
+    expect(fixture.showMessageBox).not.toHaveBeenCalled();
+    expect(fixture.closed).not.toHaveBeenCalled();
+    const release = fixture.root.enter();
+    expect(release).not.toBeNull();
+    release?.();
+    fixture.trayController.showWindow();
+    expect(fixture.isWindowVisible()).toBe(true);
+    fixture.trayController.dispose();
+  });
+
+  it.each(['tray', 'app'] as const)(
+    '隐藏后的明确退出（%s）恢复窗口并走原正常排水，不再次隐藏',
+    async (source) => {
+      const fixture = mainFixture(false, false, true);
+      fixture.onClose({ preventDefault: vi.fn() });
+      fixture.order.length = 0;
+      fixture.snapshots.getPendingSnapshotCount.mockReturnValue(1);
+      if (source === 'tray') fixture.trayController.requestQuit();
+      else fixture.beforeQuit();
+      await flush();
+      expect(fixture.order[0]).toBe('window:show');
+      expect(fixture.isWindowVisible()).toBe(true);
+      expect(fixture.showMessageBox).toHaveBeenCalledOnce();
+      expect(fixture.snapshots.beginSnapshotShutdown).toHaveBeenCalledOnce();
+      expect(fixture.root.isOpen()).toBe(false);
+      expect(fixture.watch.stop).toHaveBeenCalledOnce();
+      expect(fixture.digest.abort).toHaveBeenCalledOnce();
+      expect(fixture.closed).not.toHaveBeenCalled();
+      fixture.showMessageBox.mockResolvedValueOnce({ response: 0 });
+      fixture.onClose({ preventDefault: vi.fn() });
+      await flush();
+      expect(fixture.hideWindow).toHaveBeenCalledOnce();
+      expect(fixture.isWindowVisible()).toBe(true);
+      expect(fixture.snapshots.stopSnapshotsForShutdown).toHaveBeenCalledOnce();
+      fixture.watchPending.resolve();
+      await flush();
+      expect(fixture.closed).not.toHaveBeenCalled();
+      fixture.usagePending.resolve();
+      await fixture.shutdown();
+      await flush();
+      expect(fixture.closed).toHaveBeenCalledTimes(6);
+      expect(fixture.libraryDisposed).toHaveBeenCalledOnce();
+      expect(fixture.quit).toHaveBeenCalledOnce();
+      const finalClose = { preventDefault: vi.fn() };
+      fixture.onClose(finalClose);
+      expect(finalClose.preventDefault).not.toHaveBeenCalled();
+      fixture.onClosed();
+      expect(fixture.trayController.isEnabled()).toBe(false);
+    },
+  );
+
   it('窗口close保持窗口并进入可信原生选择，默认等待后可再次确认停止', async () => {
     const fixture = mainFixture();
     fixture.snapshots.getPendingSnapshotCount.mockReturnValue(1);

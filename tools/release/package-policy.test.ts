@@ -22,6 +22,11 @@ import {
 } from './package-policy';
 
 describe('release package positive allowlist', () => {
+  it('只接纳固定托盘图标，不开放任意资源目录', () => {
+    expect(isAllowedArchivePath('resources/aibrowse.ico')).toBe(true);
+    expect(isAllowedArchivePath('resources/other.ico')).toBe(false);
+    expect(isAllowedArchivePath('resources/app-preferences.json')).toBe(false);
+  });
   it('accepts only fixed release outputs and the qualified production dependency closure', () => {
     expect(isAllowedArchivePath('out/release/main/index.js')).toBe(true);
     expect(isAllowedArchivePath('out/release/main/runtime-a1b2.js')).toBe(true);

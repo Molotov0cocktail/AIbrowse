@@ -3,8 +3,12 @@
 本机当前程序和安装器统一放在项目根目录 `output/`（产物不入 Git）：
 
 - 直接运行：`output/win-unpacked/AIbrowse.exe`，须保留完整 `win-unpacked/` 文件夹。
-- 安装器：`output/AIbrowse-0.1.1-win-x64-internal.exe` 或同名 `.msi`。
+- 安装器：`output/AIbrowse-<版本号>-win-x64-internal.exe` 或同名 `.msi`。
 - 当前包身份、已知问题和历史记录以 `doc/tasks/progress.md` 为准；新版本经验证后更新此目录。
+
+在“设置 → 常规”开启“托盘运行”后，关闭主窗口会隐藏到系统托盘，监控任务继续执行。
+点击托盘图标或选择“打开 AIbrowse”可恢复窗口；选择“退出 AIbrowse”会停止任务并正常退出。
+此功能默认关闭，不会开机自启；退出应用或关闭 Windows 后不再运行监控。
 
 > 当前阶段：**第六阶段 RSS/Page Watch**。D1–D9产品能力已实现，Stage Exit尚未通过。
 > 采集、Diff、Condition与Event由确定性程序生成，保留typed old/new Evidence；AI只作可选解释。

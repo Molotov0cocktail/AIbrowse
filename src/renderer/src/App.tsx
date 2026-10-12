@@ -50,7 +50,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<
     'browser' | 'research-result' | 'watch' | 'settings' | 'library'
   >(__WATCH_QUALIFICATION__ ? 'watch' : 'browser');
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>('appearance');
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
   const [libraryMode, setLibraryMode] = useState<BrowserLibraryMode>('history');
   const [currentBookmark, setCurrentBookmark] = useState<BrowserBookmark | null>(null);
   const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
@@ -323,7 +323,7 @@ export default function App() {
           }}
           onOpenHistory={() => openLibrary('history')}
           onOpenBookmarks={() => openLibrary('bookmarks')}
-          onOpenSettings={() => openSettings('appearance')}
+          onOpenSettings={() => openSettings('general')}
           onToggleBookmark={toggleCurrentBookmark}
           bookmarked={currentBookmark !== null}
           addressBarRef={addressBarRef}
