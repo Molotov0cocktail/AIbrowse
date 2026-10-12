@@ -24,6 +24,31 @@
 - DELIVERY：按既有当前程序交付约定，将合格候选重建为 Windows x64 内部版 0.1.7，图标作为固定
   ASAR 成员纳入发行白名单及来源绑定。独审后用既有受控选择工具更新 output 并保留完整旧包；
   不执行安装器，不触碰真实数据或凭据，打包启动是否实测单独记载。
+- 2026-10-13 验证 REPLAN：两个完整运行均停止且保留 FAIL。首场在初始可见前置条件超时，
+  零网络且正常退出，原因 unknown；第二场显式建立可见夹具，已通过设置开启/真实托盘/隐藏及首周期。
+  其后工具错误要求两个独立 Event；实际数据库已有两次 finished scheduled、event-created 后
+  event-coalesced、同一事件两项 Evidence、Baseline v3，符合 Stage6 §9/§10 的既有去抖语义。
+  不进行第三次整场网络试跑；改为只读离线复核已保存的 A→B→C 证据和运行终态，原 FAIL 不改写。
+  单独补未执行的原窗口恢复/菜单退出/跨进程启用和禁用：先在该工具唯一隔离规则建立 paused 前置，
+  不修改真实用户数据、不追加采集网络，每个补验进程最多180秒、失败即停。此次替换覆盖同一调度与
+  生命周期承诺，保留去抖阈值和全部原断言；新的 oracle 明确接纳并核实 event-coalesced 的 typed Evidence。
+  工具补正、来源映射及组合结果须经新的独立 Reviewer 核查，启动可见性/物理点击/打包启动仍不冒称通过。
+- 分段补验已零网络暂停规则并正常退出，但工具在新建空白 Tab 后立即按 URL 查原生实例，违反
+  `createTabInternal` 异步 startLoad 后返回的现有契约，尚未执行隐藏/恢复。此 FAIL 与原工具快照保留；
+  改用现有 `getOwnedWebContentsId(tab.id)` 精确所有权观测，不再把文档完成当作实体存在条件。
+  仅新增一次独立 `completion-*` 补验：要求原补验错误精确匹配、exit0、networkZero、规则已暂停且
+  run 数仍2；原DB/报告/工具摘要保持可复核。各进程180秒，零追加网络，失败后停止本轮运行。
+- 结果：全量 `full-tests-01.txt` 实际7235PASS/3FAIL/3SKIP、exit1；失败仅两处旧AST夹具缺新增
+  trayController/installTrayController依赖。保留全部原断言并加强准确失败边界后，两文件22PASS；
+  新独审同样22PASS，精确组合7238PASS/3SKIP，不重复计入复跑中的19项旧通过。
+  `quality-close.json` 的typecheck/lint/format均0，普通build通过，独立聚焦118项及额外6反例通过。
+- 运行组合：`runtime-aa89f645-c9a3-49ff-a564-6b071bcf4f7b/second-cycle-replay.json` 与
+  独立 `review-coalescence.json` 核两次scheduled、created/coalesced、两组typed pair及Baseline v3；
+  `completion-result.json` 三阶段全部exit0，真实原窗口/controller/用户Tab原生对象保持、托盘菜单
+  退出、true跨重启、UI禁用后关闭及false再启动关闭均通过；全部正常排水及托盘销毁。
+  累计本地页面请求3、补验各层网络计数0、Provider0；browserLibrary最终available，设置启用/禁用截图
+  无布局溢出。原首场、第二场和首补验FAIL及其工具/DB原件全部保留；不是原完整场改判通过。
+  本轮不证明自动启动可见性、真实长间隔墙钟、物理点击或打包应用启动，不改历史unknown。
 
 ## 独立监控真实 Provider 验证、用户数据清空与重新交付（2026-10-12）
 

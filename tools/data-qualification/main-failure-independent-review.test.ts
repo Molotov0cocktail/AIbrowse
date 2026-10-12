@@ -98,6 +98,7 @@ it.each(['drain', 'cleanup'] as const)(
       exit,
     });
     const app = { quit: vi.fn() };
+    const trayController = { beginQuit: vi.fn() };
     const code = ts.transpileModule(
       `let shutdownQuitReady = false;
        const normalQuit = ${normalQuitInitializer()};
@@ -117,6 +118,7 @@ it.each(['drain', 'cleanup'] as const)(
       'app',
       'logInfo',
       'reportShutdownFailure',
+      'trayController',
       code,
     )(
       NormalQuitCoordinator,
@@ -131,6 +133,7 @@ it.each(['drain', 'cleanup'] as const)(
       app,
       vi.fn(),
       vi.fn(),
+      trayController,
     ) as {
       normalQuit: NormalQuitCoordinator;
       handler(event: { preventDefault(): void }): void;
@@ -138,6 +141,7 @@ it.each(['drain', 'cleanup'] as const)(
     lifecycle.normalQuit = assembled.normalQuit;
     const handler = assembled.handler;
     handler({ preventDefault: vi.fn() });
+    expect(trayController.beginQuit).toHaveBeenCalledOnce();
     if (stage === 'cleanup') {
       releaseDrain();
       await vi.advanceTimersByTimeAsync(0);

@@ -104,6 +104,7 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
   const context = vm.createContext({
     mainRootAdmission: { isOpen: () => true },
     createMainWindow: () => ({ on: vi.fn(), getContentSize: () => [800, 600] }),
+    installTrayController: vi.fn(),
     BrowserControllerImpl: class {},
     AppSessionManager: class {},
     datasetStartup: { prepare: async () => 'normal', isChecking: () => false },
@@ -139,9 +140,10 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
   });
   vm.runInContext(compile(['assembleBrowserWindow']), context);
   // Later domain dependencies are intentionally absent: only the real prefix runs.
-  await (vm.runInContext('assembleBrowserWindow()', context) as Promise<void>).catch(
-    () => undefined,
-  );
+  await expect(
+    vm.runInContext('assembleBrowserWindow()', context) as Promise<void>,
+  ).rejects.toThrow('到达实际首个 Store 边界');
+  expect(context.installTrayController).toHaveBeenCalledOnce();
   expect(observed).toEqual([false]);
 });
 

@@ -1,8 +1,10 @@
+import { DatabaseSync } from 'node:sqlite';
 import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import {
   closeSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -218,6 +220,220 @@ if (args.length === 1 && args[0] === '--prepare-only') {
   });
   process.stdout.write(`${runRoot}\npassed=${passed}\n`);
   process.exitCode = passed ? 0 : 1;
+} else if (args.length === 2 && ['--resume-ui', '--complete-ui'].includes(args[0]!)) {
+  const completing = args[0] === '--complete-ui';
+  const artifactPrefix = completing ? 'completion' : 'resume';
+  const phasePrefix = completing ? 'completion-' : '';
+  const runRoot = resolve(args[1]!);
+  if (
+    !isStrictChild(evidenceRoot, runRoot) ||
+    realpathSync(runRoot) !== runRoot ||
+    lstatSync(runRoot).isSymbolicLink()
+  )
+    throw new Error('补验目录非法');
+  const original = JSON.parse(readFileSync(join(runRoot, 'input.json'), 'utf8')) as Input;
+  const prior = JSON.parse(readFileSync(join(runRoot, 'result.json'), 'utf8')) as {
+    passed: boolean;
+    sourceAndArtifactsUnchanged: boolean;
+    phases: Array<{ code: number }>;
+  };
+  const writeReport = JSON.parse(readFileSync(join(runRoot, 'write.json'), 'utf8')) as {
+    willQuit: boolean;
+  };
+  if (
+    prior.passed ||
+    !prior.sourceAndArtifactsUnchanged ||
+    prior.phases.length !== 1 ||
+    prior.phases[0]?.code !== 0 ||
+    !writeReport.willQuit
+  )
+    throw new Error('原场退出事实不符');
+  if (completing) {
+    const failed = JSON.parse(readFileSync(join(runRoot, 'resume-ui.json'), 'utf8')) as {
+      passed: boolean;
+      willQuit: boolean;
+      error: string;
+      facts: Record<string, unknown>;
+    };
+    const result = JSON.parse(readFileSync(join(runRoot, 'resume-result.json'), 'utf8')) as {
+      passed: boolean;
+      sourceAndArtifactsUnchanged: boolean;
+      phases: Array<{ code: number }>;
+    };
+    if (
+      failed.passed ||
+      !failed.willQuit ||
+      !failed.error.includes('assert(ids.length > 0)') ||
+      failed.facts['networkZero'] !== true ||
+      failed.facts['rulesPaused'] !== true ||
+      result.passed ||
+      !result.sourceAndArtifactsUnchanged ||
+      result.phases.length !== 1 ||
+      result.phases[0]?.code !== 0
+    )
+      throw new Error('续验只允许已知空白Tab观测前置失败');
+    const oldInput = JSON.parse(readFileSync(join(runRoot, 'resume-input.json'), 'utf8')) as Input;
+    for (const filename of ['run.ts', 'harness.cjs', 'oracle.ts'])
+      if (
+        hash(join(runRoot, 'resume-tool-snapshot', filename)) !==
+        oldInput.binding[`tools/tray-runtime/${filename}`]
+      )
+        throw new Error('补验原工具快照不符');
+  }
+  const productBinding = Object.fromEntries(
+    Object.entries(original.binding).filter(
+      ([path]) => !path.replaceAll('\\', '/').startsWith('tools/tray-runtime/'),
+    ),
+  );
+  if (!checkBinding({ ...original, binding: productBinding }))
+    throw new Error('产品绑定变化，不可复用原场');
+  for (const filename of ['harness.cjs', 'run.ts', 'oracle.ts']) {
+    if (
+      hash(join(runRoot, 'tool-snapshot', filename)) !==
+      original.binding[`tools/tray-runtime/${filename}`]
+    )
+      throw new Error('原工具快照不符');
+  }
+  const processOutput = execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-Command',
+      "@(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'electron.exe' } | Select-Object ProcessId, CommandLine) | ConvertTo-Json -Compress",
+    ],
+    { encoding: 'utf8', windowsHide: true },
+  );
+  const parsed: unknown = processOutput.trim() === '' ? [] : JSON.parse(processOutput);
+  const processes = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{
+    ProcessId: number;
+    CommandLine: string | null;
+  }>;
+  if (
+    processes.some(
+      (item) =>
+        item.CommandLine === null || item.CommandLine.toLowerCase().includes(runRoot.toLowerCase()),
+    )
+  )
+    throw new Error('无法证明隔离profile没有存活Electron持有者');
+  const dbPath = join(runRoot, 'profile/watch/watch.db');
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  let scheduled: { id: string; state: string; next_due_at: string }[];
+  let runCount: number;
+  try {
+    runCount = Number(
+      (db.prepare('SELECT COUNT(*) AS count FROM watch_runs').get() as { count: number }).count,
+    );
+    scheduled = db
+      .prepare('SELECT id,state,next_due_at FROM watch_rules')
+      .all() as typeof scheduled;
+  } finally {
+    db.close();
+  }
+  if (
+    scheduled.length !== 1 ||
+    runCount !== 2 ||
+    scheduled.some((rule) =>
+      completing
+        ? rule.state !== 'paused'
+        : rule.state !== 'enabled' ||
+          !Number.isFinite(Date.parse(rule.next_due_at)) ||
+          Date.parse(rule.next_due_at) <= Date.now() + 240_000,
+    )
+  )
+    throw new Error('规则到期距离不足240秒，禁止启动补验');
+  copyFileSync(dbPath, join(runRoot, `${artifactPrefix}-original-watch.db`), 1);
+  const toolPaths = execFileSync(
+    'git',
+    ['ls-files', '--cached', '--others', '--exclude-standard', '-z', 'tools/tray-runtime'],
+    { cwd: repository, encoding: 'utf8' },
+  )
+    .split('\0')
+    .filter((path) => path !== '');
+  const input: Input = {
+    ...original,
+    binding: {
+      ...productBinding,
+      ...Object.fromEntries(toolPaths.map((path) => [path, hash(resolve(repository, path))])),
+    },
+  };
+  save(join(runRoot, `${artifactPrefix}-input.json`), {
+    ...input,
+    executionHead: execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repository,
+      encoding: 'utf8',
+    }).trim(),
+    priorResultSha256: hash(join(runRoot, 'result.json')),
+    originalDbSha256: hash(dbPath),
+    processOwnerCheck: { matchingElectronProcesses: 0 },
+    scheduled,
+  });
+  const replay = JSON.parse(readFileSync(join(runRoot, 'second-cycle-replay.json'), 'utf8')) as {
+    passed: boolean;
+    dbSha256: string;
+  };
+  if (
+    !replay.passed ||
+    replay.dbSha256 !== hash(completing ? join(runRoot, 'resume-original-watch.db') : dbPath)
+  )
+    throw new Error('缺少绑定原DB的离线回放');
+  const phases: Array<{ phase: string; code: number; failures: string[] }> = [];
+  for (const phase of ['resume-ui', 'resume-reopen', 'resume-disabled'] as const) {
+    const env = { ...process.env };
+    for (const key of Object.keys(env))
+      if (
+        key.startsWith('AIBROWSE_') ||
+        ['ELECTRON_RUN_AS_NODE', 'ELECTRON_RENDERER_URL', 'NODE_OPTIONS'].includes(key)
+      )
+        delete env[key];
+    const log = openSync(join(runRoot, `${phasePrefix}${phase}-process.txt`), 'wx');
+    const child = spawn(
+      join(repository, 'node_modules/electron/dist/electron.exe'),
+      [
+        join(repository, 'tools/tray-runtime/harness.cjs'),
+        runRoot,
+        phase,
+        ...(completing ? ['completion'] : []),
+      ],
+      { cwd: repository, env, windowsHide: true, stdio: ['ignore', log, log] },
+    );
+    closeSync(log);
+    const deadline = setTimeout(() => child.kill(), input.deadlineMs + 20_000);
+    let code: number;
+    try {
+      code = await new Promise<number>((done, reject) => {
+        child.once('error', reject);
+        child.once('exit', (value) => done(value ?? -1));
+      });
+    } finally {
+      clearTimeout(deadline);
+    }
+    const reportPath = join(runRoot, `${phasePrefix}${phase}.json`);
+    const failures = validatePhase(
+      existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : null,
+      phase,
+    );
+    phases.push({ phase, code, failures });
+    if (code !== 0 || failures.length > 0) break;
+  }
+  const unchanged = checkBinding(input);
+  const passed =
+    phases.length === 3 &&
+    phases.every((phase) => phase.code === 0 && phase.failures.length === 0) &&
+    unchanged;
+  save(join(runRoot, `${artifactPrefix}-result.json`), {
+    passed,
+    phases,
+    sourceAndArtifactsUnchanged: unchanged,
+    providerCalls: 0,
+    networkEvidence:
+      '每阶段Session onSendHeaders与Node http/https.request/fetch只读计数；networkZero为必要事实',
+    originalFailurePreserved: true,
+    originalDbSnapshot: `${artifactPrefix}-original-watch.db`,
+  });
+  process.stdout.write(`${runRoot}\nresumePassed=${passed}\n`);
+  process.exitCode = passed ? 0 : 1;
 } else {
-  throw new Error('用法：run.ts --prepare-only；冻结源码后 run.ts --run <返回目录>');
+  throw new Error(
+    '用法：--prepare-only / --run <目录> / --resume-ui <原失败目录> / --complete-ui <补验失败目录>',
+  );
 }

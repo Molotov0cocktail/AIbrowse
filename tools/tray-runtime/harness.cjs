@@ -17,8 +17,22 @@ const phase = process.argv[3];
 const rel = relative(join(repository, 'log/tray-runtime-20261012'), root);
 assert(rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 assert.equal(realpathSync(root), root);
-assert(['write', 'reopen', 'disabled'].includes(phase));
-const input = JSON.parse(readFileSync(join(root, 'input.json'), 'utf8'));
+assert(
+  ['write', 'reopen', 'disabled', 'resume-ui', 'resume-reopen', 'resume-disabled'].includes(phase),
+);
+const resuming = phase.startsWith('resume-');
+const completing = process.argv[4] === 'completion';
+assert(!completing || resuming);
+const artifactPhase = completing ? `completion-${phase}` : phase;
+const input = JSON.parse(
+  readFileSync(
+    join(
+      root,
+      completing ? 'completion-input.json' : resuming ? 'resume-input.json' : 'input.json',
+    ),
+    'utf8',
+  ),
+);
 const launch = JSON.parse(readFileSync(join(root, 'launch.json'), 'utf8'));
 assert.equal(input.repository, repository);
 assert.equal(input.deadlineMs, 180000);
@@ -34,6 +48,30 @@ app.setPath('sessionData', session);
 app.setAppPath(repository);
 process.env.AIBROWSE_USER_DATA_DIR = profile;
 
+const network = { electron: 0, node: 0, fetch: 0, sessions: 0 };
+if (resuming) {
+  // A separate observation event does not replace the product's file request guard.
+  app.on('session-created', (value) => {
+    network.sessions += 1;
+    value.webRequest.onSendHeaders({ urls: ['http://*/*', 'https://*/*'] }, () => {
+      network.electron += 1;
+    });
+  });
+  for (const protocol of ['node:http', 'node:https']) {
+    const module = require(protocol);
+    const original = module.request;
+    module.request = function (...args) {
+      network.node += 1;
+      return original.apply(this, args);
+    };
+  }
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = function (...args) {
+    network.fetch += 1;
+    return originalFetch.apply(this, args);
+  };
+}
+
 const report = {
   phase,
   passed: false,
@@ -44,7 +82,8 @@ const report = {
   captures: [],
   ipc: {},
 };
-const persist = () => writeFileSync(join(root, `${phase}.json`), JSON.stringify(report, null, 2));
+const persist = () =>
+  writeFileSync(join(root, `${artifactPhase}.json`), JSON.stringify(report, null, 2));
 const fact = (name, details) => {
   report.facts[name] = true;
   if (details !== undefined) report.details[name] = details;
@@ -248,12 +287,14 @@ async function eventWhileHidden(ruleId, count, from, to) {
       alive();
       assert.equal(win.isVisible(), false);
       const value = watchRows(ruleId);
-      return value.events.length === count &&
+      return value.events.length >= 1 &&
+        value.events.length <= count &&
         value.runs.filter(
           (run) =>
             run.trigger === 'scheduled' &&
             run.status === 'finished' &&
-            JSON.parse(run.outcome_json).kind === 'event-created',
+            ['event-created', 'event-coalesced'].includes(JSON.parse(run.outcome_json).kind) &&
+            value.events.some((event) => event.id === JSON.parse(run.outcome_json).eventId),
         ).length === count
         ? value
         : null;
@@ -330,6 +371,59 @@ async function runWrite() {
   fact('menuQuitRequested');
   menu('退出 AIbrowse');
 }
+async function runResumeUi() {
+  assert.deepEqual(await preferences(), { runInTray: true, available: true, error: null });
+  const before = readDb(
+    'watch/watch.db',
+    (db) => db.prepare('SELECT COUNT(*) AS count FROM watch_runs').get().count,
+  );
+  const list = await rules();
+  assert.equal(list.length, 1);
+  if (!completing) {
+    const result = await watch('setPaused', {
+      ruleId: list[0].id,
+      expectedVersion: list[0].version,
+      paused: true,
+    });
+    assert(result.ok, JSON.stringify(result));
+  } else assert.equal(list[0].state, 'paused');
+  assert.equal((await rules())[0].state, 'paused');
+  assert.equal(
+    readDb(
+      'watch/watch.db',
+      (db) => db.prepare('SELECT COUNT(*) AS count FROM watch_runs').get().count,
+    ),
+    before,
+  );
+  fact('rulesPaused', { ruleId: list[0].id, runCount: before });
+  const tab = await invoke('tabs', 'create', 'about:blank');
+  assert(tab);
+  const ownedId = runtimeBefore.browserController.getOwnedWebContentsId(tab.id);
+  assert.equal(typeof ownedId, 'number');
+  const ownedContents = webContents.fromId(ownedId);
+  assert(ownedContents && !ownedContents.isDestroyed());
+  report.details.browserLibraryStatus = await invoke('browserLibrary', 'getStatus');
+  const rendererId = win.webContents.id;
+  await hide();
+  menu('打开 AIbrowse');
+  await until('恢复原窗口', () => win.isVisible());
+  alive();
+  assert.equal(win.webContents.id, rendererId);
+  assert((await invoke('tabs', 'list')).some((item) => item.id === tab.id));
+  assert.equal(runtimeBefore.browserController.getOwnedWebContentsId(tab.id), ownedId);
+  assert.equal(webContents.fromId(ownedId), ownedContents);
+  assert(!ownedContents.isDestroyed());
+  fact('sameWindowAndTabRestored', {
+    windowId: win.id,
+    rendererId,
+    userTabId: tab.id,
+    webContentsId: ownedId,
+  });
+  assert.equal(network.electron + network.node + network.fetch, 0);
+  report.passed = true;
+  fact('menuQuitRequested');
+  menu('退出 AIbrowse');
+}
 async function runReopen() {
   assert.deepEqual(await preferences(), { runInTray: true, available: true, error: null });
   assert(tray && !tray.isDestroyed());
@@ -372,8 +466,9 @@ async function run() {
       runtimeBefore.watchRunCoordinator,
   );
   win.setSize(1280, 900);
-  if (phase === 'write') await runWrite();
-  else if (phase === 'reopen') await runReopen();
+  if (phase === 'resume-ui') await runResumeUi();
+  else if (phase === 'write') await runWrite();
+  else if (phase === 'reopen' || phase === 'resume-reopen') await runReopen();
   else await runDisabled();
 }
 const timer = setTimeout(() => {
@@ -399,6 +494,11 @@ app.on('will-quit', () => {
   persist();
 });
 process.on('exit', () => {
+  if (resuming) {
+    report.details.network = network;
+    if (network.electron === 0 && network.node === 0 && network.fetch === 0 && network.sessions > 0)
+      fact('networkZero');
+  }
   if (tray?.isDestroyed()) fact('nativeTrayDestroyed');
   if (observedRuntime?.().runtimeShutdown?.getPhase() === 'closed') fact('orderlyShutdown');
   persist();
