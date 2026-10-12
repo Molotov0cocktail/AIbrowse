@@ -3,7 +3,7 @@
 ## 设置托盘运行与关闭窗口后监控（2026-10-12）
 
 - TASK / BASELINE：用户明确要求设置新增可开启的托盘运行，关闭主窗口后继续监控；接管干净
-  `70f2d04f318ae4a930db861440741bd522bd69f2`，当前选定 output 0.1.6。
+  `70f2d04f318ae4a930db861440741bd522bd69f2`，接管时选定 output 0.1.6。
 - GOAL / NON-GOALS：设置“常规”页增加默认关闭的托盘运行开关；开启后关闭窗口只隐藏，
   托盘可重新打开或显式退出。保留同一窗口、Tab、登录 Session、Watch/Digest 调度实例；
   不新增系统服务、开机自启、退出后运行、自动更新或 Stage8 产品功能。
@@ -49,6 +49,20 @@
   累计本地页面请求3、补验各层网络计数0、Provider0；browserLibrary最终available，设置启用/禁用截图
   无布局溢出。原首场、第二场和首补验FAIL及其工具/DB原件全部保留；不是原完整场改判通过。
   本轮不证明自动启动可见性、真实长间隔墙钟、物理点击或打包应用启动，不改历史unknown。
+- 最终交付（2026-10-13）：产品实现`ce161d5f95035ba6633b62c41ca86e6af10aaa0a`，工具/夹具与契约
+  `46269982b3b0c690b730e03fc963739cc4b7ba20`；独立产品审核PASS及668源码/工具恒等映射见
+  `review-product.json`、`review-candidate-binding.json`。按干净46269982构建0.1.7，package、verify、
+  static、provenance与PE比较均exit0；独立复跑静态绑定209模块/15产物，完整75程序文件及安装器核对通过。
+  Electron43.7.7独立探针直接从最终ASAR读取固定图标，14879字节/256×256与来源及渲染摘要恒等；
+  该探针不代表打包产品启动。PE差异限定资源节版本/ASAR完整性资源，未宣称整个PE头恒等。
+  manifest SHA256 `da3a45dcaa0d433fd022e426fcf49eac618b9e7992c87a1c02c2a55e78b8bcd8`；
+  `review-package.json` PASS，`selection-review.json`冻结139份证明；CheckOnly/Switch均exit0，
+  切换ID`6865630414904b308ddad5c73f21654d`。output已选中0.1.7，79文件/619976007字节，
+  入口`D:\AIbrowse\output\win-unpacked\AIbrowse.exe`，EXE/MSI及两身份文件齐备。
+  旧0.1.6的79文件/619937270字节完整保留在本轮log的同ID previous-output目录；切后独审
+  `review-output-final.json`核新旧全树、140证明（含审核记录）、668源码及干净HEAD全部PASS。
+  当前产品及两安装器均未签名，packageLaunchStatus/installerExecution仍NOTRUN；不触真实profile。
+  本任务完成，后续只提交两份收尾文档并正常同步双远程；包的源码绑定仍为46269982，不启动额外产品实现。
 
 ## 独立监控真实 Provider 验证、用户数据清空与重新交付（2026-10-12）
 

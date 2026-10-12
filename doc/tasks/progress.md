@@ -15,7 +15,14 @@
   分段补验首轮又发现工具按未就绪URL查空白Tab；换精确tabId原生所有权后completion三阶段PASS，
   覆盖同窗口/标签恢复、托盘退出、偏好跨重启与禁用后关闭。累计本地3请求，补验网络0、Provider0。
   本轮证据 `log/tray-runtime-20261012/`，完整边界与REPLAN见任务首节；启动可见性原因unknown，
-  物理点击/长间隔等待/打包启动NOTRUN。0.1.7待包来源检查后更新output，当前仍0.1.6；不触真实profile。
+  物理点击/长间隔等待/打包启动NOTRUN；未触真实profile。产品独审PASS，668源码/工具恒等绑定干净
+  `46269982b3b0c690b730e03fc963739cc4b7ba20`；0.1.7安装器/verify/静态绑定/provenance/PE比较均0，
+  独审209模块/15产物及真实ASAR图标探针通过。**output已更新0.1.7**，79文件/619976007字节，
+  入口`D:\AIbrowse\output\win-unpacked\AIbrowse.exe`；manifest SHA256
+  `da3a45dcaa0d433fd022e426fcf49eac618b9e7992c87a1c02c2a55e78b8bcd8`。
+  CheckOnly/Switch均0，切换ID`6865630414904b308ddad5c73f21654d`，旧0.1.6完整79文件保留在本轮log
+  同ID previous-output目录。切后独审新旧完整树、140证明与668源码PASS，见`review-output-final.json`。
+  未执行打包产品或安装器；本任务完成，仅两份任务文档收尾及正常同步双远程，不启动额外产品实现。
 
 - 2026-10-12 用户已退出应用并授权新临时 Key 真实验证、清除 AIbrowse 本地数据、重新打包。
   接管干净 `a343e4b21425d4bc422588c947887c82baa3c0f8`，当时两远程已同步、output 为 0.1.5。
