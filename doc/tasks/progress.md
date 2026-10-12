@@ -7,12 +7,21 @@
 ### 当前任务与后继
 
 - 2026-10-13 用户要求调研至少20款同类应用logo后设计并更新本应用icon；接管干净
-  `28ab54cb07acc8960c3a7ff9772f10fd770263d3`，当前output为0.1.7。
+  `28ab54cb07acc8960c3a7ff9772f10fd770263d3`，接管时output为0.1.7。
   合同见legacy-repair首节，正式设计见`doc/design/icon-study-20261013.md`；22款资料调研完成，
   已选定并更新“折页视窗A”母版与8档ICO，浅深底小尺寸视觉独审通过。默认DPI导致仅元数据字节漂移的失败
   已保留并修复：固定96dpi后23项工具检查、隔离重建与根Check通过，图案和PNG原字节不变。
-  视觉/转换/包图标工具独审PASS，发行相关30测试及typecheck/lint/format均0；旧release已完整归档，
-  下一步从干净候选构建、核发行图标来源并更新0.1.8。仅变更视觉资产与对应构建流程，不触真实用户数据或托盘业务语义。
+  视觉/转换/包图标工具独审PASS，发行相关30测试及typecheck/lint/format均0；旧release已完整归档。
+  干净源码候选`eaab1057904b573539d4f8d78b3d9d2fe6f05f97`构建0.1.8安装器、发行验证、静态绑定、
+  provenance及PE比较均0；独审209模块/15产物通过。EXE/NSIS各8帧与来源字节一致，native逐帧像素比较通过；
+  ASAR图标及MSI完整Icon流、卸载入口、两快捷方式绑定通过，未变产品源码与既有功能证据复用。
+  **output已更新0.1.8**，79文件/620805410字节，入口`D:\AIbrowse\output\win-unpacked\AIbrowse.exe`；
+  manifest SHA256 `71c5fdb1dfae8032863ca3d6009457bc7c8a4ea70390590b4aae219d5e8f1156`。
+  CheckOnly/Switch均0，切换ID`e3c3864124b04283ab64848e8e28c09f`；旧0.1.7完整79文件保留在
+  `log/icon-design-20261013/previous-output-e3c3864124b04283ab64848e8e28c09f`。
+  切后独审新旧全树、122份冻结证明及12源码候选文件PASS，见本轮`review-output-final.json`。
+  仅隔离图标探针，打包产品启动/安装器执行/物理系统图标缓存观察NOTRUN，不触真实用户数据或托盘业务语义。
+  本任务完成，包仍绑定eaab105；末尾仅两份任务文档收尾，正常同步双远程，不启动额外产品实现。
 
 - 2026-10-12 用户新增“设置托盘运行，关闭主窗口后继续监控”，接管干净
   `70f2d04f318ae4a930db861440741bd522bd69f2`；合同见 legacy-repair 首节。

@@ -27,9 +27,23 @@
   实际`-Check`通过，修后`preview-02`保留；原母版SHA`1421abd6914eb1afb380a3c4e272036f4108c60026017bc836ae050e29e77c01`不变。
 - 候选资格：独立重跑23项及真实母版Check通过，额外8项ICO解析反例拒绝；视觉/转换和包图标工具分别
   见`review-asset-02.json`、`review-package-tools.json` PASS。发行相关3文件30测试、typecheck/lint/format均0。
-  NSIS会重编码部分图标帧，静态报告中的renderValidationRequired必须由同组文件摘要的native逐帧像素相等关闭，
+  旧0.1.7可行性检查中NSIS重编码部分图标帧，静态报告中的renderValidationRequired必须由同组文件摘要的native逐帧像素相等关闭，
   不把静态passed单独当最终通过；MSI只读检查完整Icon流、ARP及两快捷方式引用。产品源码未改，不重复上一轮功能全量。
-  旧release完整80文件/619978775字节已按固定路径归档，manifest仍绑定已知0.1.7，output尚未切换。
+  旧release完整80文件/619978775字节已按固定路径归档，manifest仍绑定已知0.1.7。
+- 发行候选：干净提交`eaab1057904b573539d4f8d78b3d9d2fe6f05f97`，产品源码零改动。0.1.8安装器构建、
+  verify:release、静态绑定、图标资源检查、provenance及PE比较均0；PE仅资源段及预期图标/版本/ASAR完整性资源变化。
+  EXE/NSIS各8帧均与本轮ICO原字节一致；ASAR图标、MSI完整Icon流、ARP和桌面/开始菜单快捷方式引用通过。
+  隔离Electron探针验证ASAR实际解码与EXE/NSIS各8帧像素相等，未调用产品入口或安装器。
+  独审重跑209模块/15产物静态绑定、图标检查及native探针exit0，`review-package.json` PASS。
+  审核首轮静态工具参数顺序错误及直接启动Electron导致管道提前关闭的失败均保留；参数修正和
+  Start-Process隐藏等待启动各有一次成功复验，不将工具调用失误误报为产品失败。
+- 本地交付：121份证明形成`selection-review.json`，既有选择工具CheckOnly/Switch均0，
+  切换ID`e3c3864124b04283ab64848e8e28c09f`。output为0.1.8、79文件/620805410字节，
+  manifest SHA256 `71c5fdb1dfae8032863ca3d6009457bc7c8a4ea70390590b4aae219d5e8f1156`。
+  旧0.1.7的79文件/619976007字节完整保存在本轮log同ID的previous-output目录。
+  切后`review-output-final.json`独审新旧全树、122份冻结证明（含selection记录）、12源码候选文件及干净HEAD PASS。
+  未签名内部候选边界不变；打包产品启动、安装器执行、物理托盘/系统图标缓存观察NOTRUN，未触真实profile。
+  本任务完成；后续两份收尾文档不改变eaab105源码包绑定，正常双远程同步，不启动额外产品实现。
 
 ## 设置托盘运行与关闭窗口后监控（2026-10-12）
 
