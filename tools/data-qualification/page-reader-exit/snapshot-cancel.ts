@@ -165,7 +165,8 @@ async function loading(action: 'abort' | 'destroy' | 'release') {
   else answer(response);
   await until(() => reader.state !== 'pending');
   const value = await pending;
-  if (state(reader) !== 'fulfilled') throw new Error('原reader未真实完成');
+  if (state(reader) !== 'fulfilled' || value.status !== 'collected')
+    throw new Error('原reader未真实完成');
   const actual = counts(f.wc);
   if (
     getEventListeners(controller.signal, 'abort').length !== 0 ||

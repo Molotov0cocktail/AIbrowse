@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { MaintenanceAdmission } from './maintenance-admission';
+import { NormalQuitCoordinator, snapshotQuitMessage } from './normal-quit';
 import { RuntimeShutdown, RuntimeShutdownError, type ShutdownProducer } from './runtime-shutdown';
 
 function deferred() {
@@ -260,10 +261,22 @@ function mainFixture(digestFailure = false, duringStartup = false) {
     startupDrainFailed: false,
   };
   const startupPending = deferred();
+  const snapshots = {
+    dispose: closed,
+    beginSnapshotShutdown: vi.fn(),
+    getPendingSnapshotCount: vi.fn(() => 0),
+    stopSnapshotsForShutdown: vi.fn(async () => undefined),
+  };
+  const showMessageBox = vi.fn(async () => ({ response: 1 }));
   let beforeQuit!: (event: { preventDefault(): void }) => void;
+  let onClose!: (event: { preventDefault(): void }) => void;
   let onClosed!: () => void;
   const context = vm.createContext({
     RuntimeShutdown,
+    NormalQuitCoordinator,
+    snapshotQuitMessage,
+    AbortController,
+    dialog: { showMessageBox },
     __RELEASE__: true,
     runtimeShutdown: null,
     dataTransferRuntime: null,
@@ -274,7 +287,6 @@ function mainFixture(digestFailure = false, duringStartup = false) {
     lifecycleGuardian: null,
     mainFailureShutdown: { isActive: () => false },
     diagnosticService: { invalidateAndDrain: vi.fn(async () => undefined) },
-    shutdownQuitScheduled: false,
     shutdownQuitReady: false,
     mainRootAdmission: root,
     researchIpcAdmission: new MaintenanceAdmission(),
@@ -309,7 +321,7 @@ function mainFixture(digestFailure = false, duringStartup = false) {
     },
     watchWorkspace: { cleanupAll: vi.fn(async () => ({ ok: true, retainedCount: 0 })) },
     watchCoordinator: { dispose: closed },
-    browserController: { dispose: closed },
+    browserController: snapshots,
     watchPreviewService: producer('preview'),
     watchExportService: producer('export'),
     watchNotifications: producer('notifications'),
@@ -330,8 +342,9 @@ function mainFixture(digestFailure = false, duringStartup = false) {
       quit,
     },
     win: {
-      on: (_event: string, handler: typeof onClosed) => {
-        onClosed = handler;
+      on: (event: string, handler: typeof onClose & typeof onClosed) => {
+        if (event === 'close') onClose = handler;
+        else onClosed = handler;
       },
     },
   });
@@ -345,6 +358,21 @@ function mainFixture(digestFailure = false, duringStartup = false) {
   ];
   const nodes = declarations.map((name) =>
     extract((node) => ts.isFunctionDeclaration(node) && node.name?.text === name),
+  );
+  nodes.push(
+    'const ' +
+      extract(
+        (node) => ts.isVariableDeclaration(node) && node.name.getText(index) === 'normalQuit',
+      ) +
+      ';',
+  );
+  nodes.push(
+    extract(
+      (node) =>
+        ts.isCallExpression(node) &&
+        node.expression.getText(index) === 'win.on' &&
+        node.arguments[0]?.getText(index) === "'close'",
+    ),
   );
   nodes.push(
     extract(
@@ -380,6 +408,9 @@ function mainFixture(digestFailure = false, duringStartup = false) {
     usagePending,
     closed,
     quit,
+    snapshots,
+    showMessageBox,
+    onClose,
     beforeQuit: () => beforeQuit({ preventDefault: vi.fn() }),
     onClosed: () => onClosed(),
     shutdown,
@@ -391,6 +422,30 @@ function mainFixture(digestFailure = false, duringStartup = false) {
 }
 
 describe('实际 main 接线 AST 集成', () => {
+  it('窗口close保持窗口并进入可信原生选择，默认等待后可再次确认停止', async () => {
+    const fixture = mainFixture();
+    fixture.snapshots.getPendingSnapshotCount.mockReturnValue(1);
+    const preventDefault = vi.fn();
+    fixture.onClose({ preventDefault });
+    await flush();
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(fixture.snapshots.beginSnapshotShutdown).toHaveBeenCalledOnce();
+    expect(fixture.showMessageBox).toHaveBeenCalledOnce();
+    expect(fixture.snapshots.stopSnapshotsForShutdown).not.toHaveBeenCalled();
+    expect(fixture.closed).not.toHaveBeenCalled();
+    fixture.showMessageBox.mockResolvedValueOnce({ response: 0 });
+    fixture.onClose({ preventDefault });
+    await flush();
+    expect(fixture.snapshots.stopSnapshotsForShutdown).toHaveBeenCalledOnce();
+    expect(fixture.closed).not.toHaveBeenCalled();
+    fixture.watchPending.resolve();
+    fixture.usagePending.resolve();
+    await fixture.shutdown();
+    await flush();
+    expect(fixture.quit).toHaveBeenCalledOnce();
+    fixture.onClose({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledTimes(2);
+  });
   it('持根退出会立即 abort，窗口关闭与 before-quit 共享排水，usage 之后仅关闭一次', async () => {
     const fixture = mainFixture();
     fixture.beforeQuit();

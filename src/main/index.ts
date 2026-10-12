@@ -34,6 +34,7 @@ import {
   runWithMaintenanceAdmission,
 } from './storage/runtime-maintenance';
 import { RuntimeShutdown, type ShutdownProducer } from './storage/runtime-shutdown';
+import { NormalQuitCoordinator, snapshotQuitMessage } from './storage/normal-quit';
 import { runtimeQualification } from '../../tools/data-qualification/runtime/harness';
 import { RUNTIME_PING, RUNTIME_SAMPLE } from '../../tools/data-qualification/runtime/ui-protocol';
 import type { UiDocumentGuard } from './security/ui-document-guard';
@@ -482,7 +483,6 @@ let sourceMaintenance: SourceServiceImpl | null = null;
 let researchMaintenance: ResearchServiceImpl | null = null;
 let sourceUsageTracker: SourceUsageTracker | null = null;
 let runtimeShutdown: RuntimeShutdown | null = null;
-let shutdownQuitScheduled = false;
 let shutdownQuitReady = false;
 // S4：config:providers:* handler 需要直接引用生产 ConfigStore/凭据实例
 let configStore: ConfigStore | null = null;
@@ -637,6 +637,7 @@ const diagnosticService = new DiagnosticService({
 
 const mainFailureShutdown = new MainFailureShutdown({
   stopAdmission: () => {
+    normalQuit.interrupt();
     dataAdmissionOpen = false;
     stopRendererAdmissions();
     const pending = confirmManager?.getPending();
@@ -669,6 +670,35 @@ const mainFailureShutdown = new MainFailureShutdown({
   hasGuardianFinishStarted: () => guardianFinished !== null,
   finishGuardian: () => finishGuardianShutdown('failure'),
   exit: (code) => app.exit(code),
+});
+
+const normalQuit = new NormalQuitCoordinator({
+  closeSnapshotAdmission: () => browserController?.beginSnapshotShutdown(),
+  pendingSnapshots: () => browserController?.getPendingSnapshotCount() ?? 0,
+  askToStop: async (count, signal) => {
+    const options = snapshotQuitMessage(count, signal);
+    const win = mainWindow;
+    const result = await (win !== null && !win.isDestroyed()
+      ? dialog.showMessageBox(win, options)
+      : dialog.showMessageBox(options));
+    return result.response === 0 && !signal.aborted ? 'stop' : 'wait';
+  },
+  stopSnapshots: async () => {
+    await browserController?.stopSnapshotsForShutdown();
+  },
+  shutdown: shutdownRuntime,
+  finish: async () => {
+    if (mainFailureShutdown.isActive()) return;
+    await cleanupSmokeDirectories();
+    if (mainFailureShutdown.isActive()) return;
+    await finishGuardianShutdown();
+    if (mainFailureShutdown.isActive()) return;
+    logInfo('main', '应用退出');
+    shutdownQuitReady = true;
+    app.quit();
+  },
+  isFailureActive: () => mainFailureShutdown.isActive(),
+  reportFailure: reportShutdownFailure,
 });
 
 function interruptWatchUiRequests(): void {
@@ -1347,20 +1377,7 @@ if (!gotLock) {
     }
     if (shutdownQuitReady) return;
     event.preventDefault();
-    if (shutdownQuitScheduled) return;
-    shutdownQuitScheduled = true;
-    void shutdownRuntime()
-      .then(async () => {
-        if (mainFailureShutdown.isActive()) return;
-        await cleanupSmokeDirectories();
-        if (mainFailureShutdown.isActive()) return;
-        await finishGuardianShutdown();
-        if (mainFailureShutdown.isActive()) return;
-        logInfo('main', '应用退出');
-        shutdownQuitReady = true;
-        app.quit();
-      })
-      .catch(reportShutdownFailure);
+    normalQuit.request();
   });
 
   // 纵深防御（§3.2）：React UI 主窗口是 IPC 的唯一合法调用方；sender 为主窗口且为主帧
@@ -3158,6 +3175,11 @@ async function assembleBrowserWindow(): Promise<void> {
     },
   });
   browserController = controller;
+  win.on('close', (event) => {
+    if (shutdownQuitReady) return;
+    event.preventDefault();
+    if (!mainFailureShutdown.isActive()) normalQuit.request();
+  });
   win.on('closed', () => {
     void shutdownRuntime().catch(reportShutdownFailure);
     if (mainWindow === win) mainWindow = null;

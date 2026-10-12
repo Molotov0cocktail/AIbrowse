@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { WebContents } from 'electron';
-import { afterAll, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, expect, it, vi } from 'vitest';
 import { PageReader } from '../../src/main/browser/page-reader';
 import { ConversationServiceImpl } from '../../src/main/ai/conversation-service';
 import { ConversationStore } from '../../src/main/ai/conversation-store';
@@ -20,6 +20,10 @@ vi.mock('../../src/main/logger', () => ({
   logError: vi.fn(),
 }));
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: Error) => void;
@@ -31,6 +35,20 @@ function deferred<T>() {
 }
 async function flush() {
   for (let n = 0; n < 20; n++) await Promise.resolve();
+}
+function captureReadinessSignals(): AbortSignal[] {
+  const signals: AbortSignal[] = [];
+  const add = AbortSignal.prototype.addEventListener;
+  vi.spyOn(AbortSignal.prototype, 'addEventListener').mockImplementation(function (
+    this: AbortSignal,
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | AddEventListenerOptions,
+  ) {
+    if (type === 'abort' && !signals.includes(this)) signals.push(this);
+    add.call(this, type, listener, options);
+  });
+  return signals;
 }
 function fixture(loading = true) {
   const raw = deferred<unknown>();
@@ -71,15 +89,22 @@ it('无URL的stop通知不授予就绪；撤销移除EventTarget与WebContents�
   const { wc, contents } = fixture(false);
   wc.url = '';
   const controller = new AbortController();
+  const readinessSignals = captureReadinessSignals();
   const pending = new PageReader().snapshot(contents, 7, controller.signal);
   wc.emit('did-stop-loading');
   await flush();
   expect(wc.listenerCount('did-stop-loading')).toBe(1);
-  expect(getEventListeners(controller.signal, 'abort')).toHaveLength(1);
+  expect(readinessSignals).toHaveLength(1);
+  const combined = readinessSignals[0]!;
+  expect(combined).not.toBe(controller.signal);
+  expect(getEventListeners(combined, 'abort')).toHaveLength(1);
+  expect(getEventListeners(controller.signal, 'abort')).toEqual([]);
   expect(wc.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
   controller.abort();
   await pending;
+  expect(combined.aborted).toBe(true);
   expect(wc.eventNames()).toEqual([]);
+  expect(getEventListeners(combined, 'abort')).toEqual([]);
   expect(getEventListeners(controller.signal, 'abort')).toEqual([]);
   wc.url = 'https://example.test/';
   wc.emit('did-stop-loading');
@@ -90,6 +115,7 @@ it('无URL的stop通知不授予就绪；撤销移除EventTarget与WebContents�
 it('stop至续体之间再次开始加载会重新挂等待且取消全量移除监听', async () => {
   const { wc, contents } = fixture();
   const controller = new AbortController();
+  const readinessSignals = captureReadinessSignals();
   const pending = new PageReader().snapshot(contents, 7, controller.signal);
   wc.loading = false;
   wc.emit('did-stop-loading');
@@ -97,10 +123,16 @@ it('stop至续体之间再次开始加载会重新挂等待且取消全量移除
   await flush();
   expect(wc.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
   expect(wc.listenerCount('did-stop-loading')).toBe(1);
-  expect(getEventListeners(controller.signal, 'abort')).toHaveLength(1);
+  expect(readinessSignals).toHaveLength(1);
+  const combined = readinessSignals[0]!;
+  expect(combined).not.toBe(controller.signal);
+  expect(getEventListeners(combined, 'abort')).toHaveLength(1);
+  expect(getEventListeners(controller.signal, 'abort')).toEqual([]);
   controller.abort();
   await pending;
+  expect(combined.aborted).toBe(true);
   expect(wc.eventNames()).toEqual([]);
+  expect(getEventListeners(combined, 'abort')).toEqual([]);
   expect(getEventListeners(controller.signal, 'abort')).toEqual([]);
 });
 
@@ -108,11 +140,19 @@ it('一个读者撤销不会释放另一读者的readiness，完成后监听全�
   const { wc, contents, raw } = fixture();
   const first = new AbortController(),
     second = new AbortController();
+  const readinessSignals = captureReadinessSignals();
   const reader = new PageReader();
   const a = reader.snapshot(contents, 7, first.signal);
   const b = reader.snapshot(contents, 7, second.signal);
   first.abort();
   await a;
+  expect(readinessSignals).toHaveLength(2);
+  const firstCombined = readinessSignals[0]!;
+  const secondCombined = readinessSignals[1]!;
+  expect(firstCombined).not.toBe(secondCombined);
+  expect(firstCombined.aborted).toBe(true);
+  expect(getEventListeners(firstCombined, 'abort')).toEqual([]);
+  expect(getEventListeners(secondCombined, 'abort')).toHaveLength(1);
   expect(wc.listenerCount('did-stop-loading')).toBe(1);
   expect(getEventListeners(first.signal, 'abort')).toEqual([]);
   expect(second.signal.aborted).toBe(false);
@@ -120,6 +160,7 @@ it('一个读者撤销不会释放另一读者的readiness，完成后监听全�
   wc.emit('did-stop-loading');
   await flush();
   expect(wc.executeJavaScriptInIsolatedWorld).toHaveBeenCalledOnce();
+  expect(getEventListeners(secondCombined, 'abort')).toEqual([]);
   expect(getEventListeners(second.signal, 'abort')).toEqual([]);
   raw.resolve(null);
   await b;

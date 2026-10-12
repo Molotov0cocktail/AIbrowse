@@ -225,6 +225,60 @@ beforeEach(() => {
 });
 
 describe('BrowserController 默认空白 view 延迟物化', () => {
+  it('退出封闭快照准入，批准仅撤销空白物化读者而不谎报共享 load 完成', async () => {
+    electronMock.deferBlankLoads = true;
+    const { controller } = harness();
+    const tab = await controller.createTab();
+    const wc = electronMock.instances[0]!.webContents;
+    const snapshot = controller.getPageSnapshot(tab.id);
+    expect(controller.getPendingSnapshotCount()).toBe(1);
+    controller.beginSnapshotShutdown();
+    expect(await controller.getPageSnapshot(tab.id)).toBeNull();
+    expect(controller.getPendingSnapshotCount()).toBe(1);
+    await controller.stopSnapshotsForShutdown();
+    expect(await snapshot).toBeNull();
+    expect(controller.getPendingSnapshotCount()).toBe(0);
+    expect(wc.close).not.toHaveBeenCalled();
+    expect(wc.collectScript).not.toHaveBeenCalled();
+    electronMock.pending[0]!.resolve();
+    await Promise.resolve();
+    expect(wc.collectScript).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it('物化 Promise 交接时退出不能再派发快照', async () => {
+    electronMock.deferBlankLoads = true;
+    const { controller } = harness();
+    const tab = await controller.createTab();
+    const wc = electronMock.instances[0]!.webContents;
+    const snapshot = controller.getPageSnapshot(tab.id);
+    electronMock.pending[0]!.resolve();
+    controller.beginSnapshotShutdown();
+    expect(await snapshot).toBeNull();
+    expect(wc.collectScript).not.toHaveBeenCalled();
+    expect(controller.getPendingSnapshotCount()).toBe(0);
+    controller.dispose();
+  });
+
+  it('已摘除 Tab 的快照仍登记在途，批准后不创建替代 Tab', async () => {
+    const { controller } = harness();
+    const tab = await controller.createTab('https://example.com/');
+    const wc = electronMock.instances[0]!.webContents;
+    wc.collectScript.mockReturnValue(new Promise(() => undefined));
+    const snapshot = controller.getPageSnapshot(tab.id);
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    wc.destroyUnexpectedly();
+    controller.beginSnapshotShutdown();
+    expect(controller.getPendingSnapshotCount()).toBe(1);
+    expect(await controller.getTabs()).toHaveLength(0);
+    await controller.stopSnapshotsForShutdown();
+    expect(await snapshot).toBeNull();
+    expect(controller.getPendingSnapshotCount()).toBe(0);
+    expect(await controller.getTabs()).toHaveLength(0);
+    expect(electronMock.instances).toHaveLength(1);
+    controller.dispose();
+  });
+
   it.each(['reload', 'goBack', 'goForward', 'page'] as const)(
     '%s 替代加载后，旧 ERR_ABORTED 在新导航开始及完成后回调均不覆盖状态',
     async (method) => {

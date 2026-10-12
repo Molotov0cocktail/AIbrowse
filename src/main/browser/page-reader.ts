@@ -25,10 +25,27 @@ import {
   type NormalizedInteractionResult,
 } from './interaction-normalize';
 
-export interface CollectedPageSnapshot {
-  snapshot: PageSnapshot;
-  token: string | null;
+export type CollectedPageSnapshot =
+  | { status: 'collected'; snapshot: PageSnapshot; token: string | null }
+  | { status: 'cancelled'; snapshot: null; token: null };
+
+type SnapshotRequestResult =
+  | { status: 'fulfilled'; value: unknown }
+  | { status: 'rejected'; error: unknown }
+  | { status: 'cancelled' };
+
+interface SnapshotRequest {
+  webContents: WebContents;
+  approved: boolean;
+  promise: Promise<SnapshotRequestResult>;
+  finish(result: SnapshotRequestResult): void;
 }
+
+const cancelledSnapshot = (): CollectedPageSnapshot => ({
+  status: 'cancelled',
+  snapshot: null,
+  token: null,
+});
 
 // Own the pre-dispatch wait. Electron's implicit loading wait has no abort or
 // destroyed settlement, so it must not acquire our operation while loading.
@@ -67,6 +84,85 @@ function waitForSnapshotReadiness(
 
 export class PageReader {
   private readonly bindings = new WeakMap<WebContents, { documentId: number; token: string }>();
+  private snapshotShutdown = false;
+  private stopOperation: Promise<void> | null = null;
+  private readonly readers = new Map<AbortController, Promise<CollectedPageSnapshot>>();
+  private readonly requests = new Set<SnapshotRequest>();
+  private readonly interactions = new Map<WebContents, Set<Promise<NormalizedInteractionResult>>>();
+
+  beginSnapshotShutdown(): void {
+    this.snapshotShutdown = true;
+  }
+
+  /** Main-only: the caller must obtain native user consent before this operation. */
+  stopSnapshotsForShutdown(): Promise<void> {
+    if (!this.snapshotShutdown) return Promise.reject(new Error('尚未进入退出阶段'));
+    this.stopOperation ??= Promise.resolve().then(async () => {
+      for (const reader of this.readers.keys()) reader.abort();
+      const targets = new Set<WebContents>();
+      for (const request of this.requests) {
+        request.approved = true;
+        targets.add(request.webContents);
+      }
+      await Promise.all([...targets].map((contents) => this.retireSnapshotTarget(contents)));
+      await Promise.allSettled([...this.readers.values()]);
+    });
+    return this.stopOperation;
+  }
+
+  private async retireSnapshotTarget(contents: WebContents): Promise<void> {
+    // Approval covers snapshots only. Existing interaction transports retain their
+    // original completion and cannot be interrupted by destroying a shared target.
+    await Promise.allSettled([...(this.interactions.get(contents) ?? [])]);
+    const pending = [...this.requests].filter((item) => item.webContents === contents);
+    if (pending.length === 0) return;
+    const destroyed = (): void => {
+      if (!contents.isDestroyed()) return;
+      for (const request of pending) request.finish({ status: 'cancelled' });
+    };
+    contents.on('destroyed', destroyed);
+    try {
+      if (contents.isDestroyed()) destroyed();
+      else {
+        contents.close({ waitForBeforeUnload: false });
+        destroyed();
+      }
+      await Promise.all(pending.map((item) => item.promise));
+    } finally {
+      contents.removeListener('destroyed', destroyed);
+    }
+  }
+
+  private collectRequest(contents: WebContents): Promise<SnapshotRequestResult> {
+    let resolve!: (result: SnapshotRequestResult) => void;
+    const promise = new Promise<SnapshotRequestResult>((done) => (resolve = done));
+    const request: SnapshotRequest = {
+      webContents: contents,
+      approved: false,
+      promise,
+      finish: (result) => {
+        if (!this.requests.delete(request)) return;
+        resolve(request.approved ? { status: 'cancelled' } : result);
+      },
+    };
+    this.requests.add(request);
+    try {
+      // The original Electron Promise remains observed even after entity retirement.
+      // Only this owned request has a cancelled terminal; the transport is not fulfilled.
+      const native = contents.executeJavaScriptInIsolatedWorld(
+        PAGE_READER_WORLD_ID,
+        [{ code: BOUND_SNAPSHOT_SCRIPT_SOURCE }],
+        false,
+      );
+      void native.then(
+        (value: unknown) => request.finish({ status: 'fulfilled', value }),
+        (error: unknown) => request.finish({ status: 'rejected', error }),
+      );
+    } catch (error) {
+      request.finish({ status: 'rejected', error });
+    }
+    return promise;
+  }
 
   // Called only after the controller confirms that collection did not cross navigation.
   acceptSnapshot(webContents: WebContents, collected: CollectedPageSnapshot): void {
@@ -77,10 +173,25 @@ export class PageReader {
     });
   }
 
-  async snapshot(
+  snapshot(
     webContents: WebContents,
     documentId: number,
     signal?: AbortSignal,
+  ): Promise<CollectedPageSnapshot> {
+    if (this.snapshotShutdown) return Promise.resolve(cancelledSnapshot());
+    const controller = new AbortController();
+    const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    const operation = this.readSnapshot(webContents, documentId, combined).finally(() =>
+      this.readers.delete(controller),
+    );
+    this.readers.set(controller, operation);
+    return operation;
+  }
+
+  private async readSnapshot(
+    webContents: WebContents,
+    documentId: number,
+    signal: AbortSignal,
   ): Promise<CollectedPageSnapshot> {
     const fallback = {
       url: webContents.getURL(),
@@ -90,10 +201,15 @@ export class PageReader {
 
     // 防御：契约上前置守卫已完成 L3 判定，此处兜底竞态（快照瞬间销毁/崩溃）
     if (webContents.isDestroyed()) {
-      return { snapshot: this.buildL2(fallback, 'webContents 已销毁'), token: null };
+      return {
+        status: 'collected',
+        snapshot: this.buildL2(fallback, 'webContents 已销毁'),
+        token: null,
+      };
     }
     if (webContents.isCrashed()) {
       return {
+        status: 'collected',
         snapshot: this.buildL2(fallback, '渲染进程已崩溃，仅返回主进程侧数据'),
         token: null,
       };
@@ -102,28 +218,46 @@ export class PageReader {
     let raw: unknown;
     try {
       for (;;) {
-        if (!(await waitForSnapshotReadiness(webContents, signal)))
+        if (!(await waitForSnapshotReadiness(webContents, signal))) {
+          if (this.snapshotShutdown) return cancelledSnapshot();
           return {
+            status: 'collected',
             snapshot: this.buildL2(fallback, '页面采集等待已取消或页面已不可用'),
             token: null,
           };
+        }
+        if (this.snapshotShutdown) return cancelledSnapshot();
         // A navigation can begin during the readiness Promise handoff.
         if (signal?.aborted || webContents.isDestroyed() || webContents.isCrashed())
-          return { snapshot: this.buildL2(fallback, '页面采集已取消或页面已不可用'), token: null };
+          return {
+            status: 'collected',
+            snapshot: this.buildL2(fallback, '页面采集已取消或页面已不可用'),
+            token: null,
+          };
         if (webContents.getURL() !== '' && !webContents.isLoadingMainFrame()) break;
       }
-      raw = await webContents.executeJavaScriptInIsolatedWorld(
-        PAGE_READER_WORLD_ID,
-        [{ code: BOUND_SNAPSHOT_SCRIPT_SOURCE }],
-        false,
-      );
-      // Once dispatched, keep the original transport until it really settles.
-      if (signal?.aborted)
-        return { snapshot: this.buildL2(fallback, '页面采集已取消'), token: null };
+      const result = await this.collectRequest(webContents);
+      if (result.status === 'cancelled') return cancelledSnapshot();
+      if (result.status === 'rejected') throw result.error;
+      raw = result.value;
+      // Ordinary abort still waits for the original transport. Explicit shutdown
+      // approval additionally permits retirement of the exact destroyed entity.
+      if (signal.aborted) {
+        if (this.snapshotShutdown) return cancelledSnapshot();
+        return {
+          status: 'collected',
+          snapshot: this.buildL2(fallback, '页面采集已取消'),
+          token: null,
+        };
+      }
     } catch (err) {
       // L2：页面冻结/崩溃/导航竞态导致执行上下文失效（§8.5）
       const reason = err instanceof Error ? err.message : String(err);
-      return { snapshot: this.buildL2(fallback, `页面采集脚本执行失败：${reason}`), token: null };
+      return {
+        status: 'collected',
+        snapshot: this.buildL2(fallback, `页面采集脚本执行失败：${reason}`),
+        token: null,
+      };
     }
 
     const envelope =
@@ -133,11 +267,11 @@ export class PageReader {
         ? envelope['token']
         : null;
     const snapshot = normalizeSnapshot(token === null ? null : envelope?.['snapshot'], fallback);
-    const collected = { snapshot, token };
+    const collected: CollectedPageSnapshot = { status: 'collected', snapshot, token };
     if (snapshot.meta.degraded === 'main-process-only') {
       // 执行成功但结果不可用（脚本返回 ok:false/垃圾）——补充上下文说明
       logWarn('page-reader', `快照降级 L2（脚本结果不可用，url=${redactUrlForLog(fallback.url)}）`);
-      return { snapshot, token: null };
+      return { status: 'collected', snapshot, token: null };
     }
     if (snapshot.meta.degraded === 'partial') {
       logWarn(
@@ -166,6 +300,9 @@ export class PageReader {
   // 失效只产生结构化失败——异常与堆栈只进日志（logWarn），不穿透 ToolResult。
 
   private guardInteractive(webContents: WebContents): NormalizedInteractionResult | null {
+    if (this.snapshotShutdown) {
+      return { ok: false, errorCode: 'execution-failed', reason: '应用正在退出，无法执行交互' };
+    }
     if (webContents.isDestroyed()) {
       return { ok: false, errorCode: 'execution-failed', reason: '标签页已销毁' };
     }
@@ -175,13 +312,39 @@ export class PageReader {
     return null;
   }
 
-  private async inject(
+  private inject(
     webContents: WebContents,
     source: string,
     method: InteractionAction,
   ): Promise<NormalizedInteractionResult> {
     const guard = this.guardInteractive(webContents);
-    if (guard !== null) return guard;
+    if (guard !== null) return Promise.resolve(guard);
+    let resolve!: (result: NormalizedInteractionResult) => void;
+    let reject!: (error: unknown) => void;
+    const operation = new Promise<NormalizedInteractionResult>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    let pending = this.interactions.get(webContents);
+    if (pending === undefined) {
+      pending = new Set();
+      this.interactions.set(webContents, pending);
+    }
+    const owned = pending;
+    const tracked = operation.finally(() => {
+      owned.delete(tracked);
+      if (owned.size === 0) this.interactions.delete(webContents);
+    });
+    owned.add(tracked);
+    void this.runInteraction(webContents, source, method).then(resolve, reject);
+    return tracked;
+  }
+
+  private async runInteraction(
+    webContents: WebContents,
+    source: string,
+    method: InteractionAction,
+  ): Promise<NormalizedInteractionResult> {
     try {
       const raw: unknown = await webContents.executeJavaScriptInIsolatedWorld(
         PAGE_READER_WORLD_ID,

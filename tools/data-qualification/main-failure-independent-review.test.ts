@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
 import { MainFailureShutdown } from '../../src/main/security/main-failure-shutdown';
+import { NormalQuitCoordinator, snapshotQuitMessage } from '../../src/main/storage/normal-quit';
 
 // Execute the current production before-quit callback, without booting Electron.
 const source = ts.createSourceFile(
@@ -27,6 +28,22 @@ function beforeQuit(): string {
   visit(source);
   expect(callbacks).toHaveLength(1);
   return callbacks[0]!.getText(source);
+}
+
+function normalQuitInitializer(): string {
+  const matches: ts.Expression[] = [];
+  function visit(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(source) === 'normalQuit' &&
+      node.initializer
+    )
+      matches.push(node.initializer);
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  expect(matches).toHaveLength(1);
+  return matches[0]!.getText(source);
 }
 
 function notification(): string {
@@ -69,8 +86,9 @@ it.each(['drain', 'cleanup'] as const)(
     const finish = vi.fn(async () => undefined);
     const exit = vi.fn();
     let signal: AbortSignal | undefined;
+    const lifecycle: { normalQuit?: NormalQuitCoordinator } = {};
     const shutdown = new MainFailureShutdown({
-      stopAdmission: vi.fn(),
+      stopAdmission: () => lifecycle.normalQuit?.interrupt(),
       notify: (_reason, current) => {
         signal = current;
         return new Promise<void>(() => {});
@@ -82,11 +100,16 @@ it.each(['drain', 'cleanup'] as const)(
     const app = { quit: vi.fn() };
     const code = ts.transpileModule(
       `let shutdownQuitReady = false;
-       let shutdownQuitScheduled = false;
-       return ${beforeQuit()};`,
+       const normalQuit = ${normalQuitInitializer()};
+       return { normalQuit, handler: ${beforeQuit()} };`,
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText;
-    const handler = new Function(
+    const assembled = new Function(
+      'NormalQuitCoordinator',
+      'snapshotQuitMessage',
+      'browserController',
+      'dialog',
+      'mainWindow',
       'mainFailureShutdown',
       'shutdownRuntime',
       'cleanupSmokeDirectories',
@@ -96,6 +119,11 @@ it.each(['drain', 'cleanup'] as const)(
       'reportShutdownFailure',
       code,
     )(
+      NormalQuitCoordinator,
+      snapshotQuitMessage,
+      null,
+      { showMessageBox: vi.fn() },
+      null,
       shutdown,
       () => drain,
       () => cleanup,
@@ -103,7 +131,12 @@ it.each(['drain', 'cleanup'] as const)(
       app,
       vi.fn(),
       vi.fn(),
-    ) as (event: { preventDefault(): void }) => void;
+    ) as {
+      normalQuit: NormalQuitCoordinator;
+      handler(event: { preventDefault(): void }): void;
+    };
+    lifecycle.normalQuit = assembled.normalQuit;
+    const handler = assembled.handler;
     handler({ preventDefault: vi.fn() });
     if (stage === 'cleanup') {
       releaseDrain();

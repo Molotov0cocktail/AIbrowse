@@ -123,7 +123,11 @@ async function normal(): Promise<void> {
   const reader = observe('normal-reader', snapshot);
   await until(() => reader.state !== 'pending');
   const value = await snapshot;
-  if (reader.state !== 'fulfilled' || value.snapshot.meta.degraded === 'main-process-only')
+  if (
+    reader.state !== 'fulfilled' ||
+    value.status !== 'collected' ||
+    value.snapshot.meta.degraded === 'main-process-only'
+  )
     throw new Error('真实PageReader正常控制失败');
   record('control-complete', { degraded: value.snapshot.meta.degraded });
   f.win.destroy();

@@ -588,9 +588,24 @@ gate、replacement写入、两次归档、新active发布与gate退役每个边�
 Conversation排水须取消尚未注入的快照等待。PageReader在页面尚无URL或主框架加载中使用自有等待，
 监听页面就绪、销毁、崩溃及主进程AbortSignal；只在当前就绪且未撤销时调用固定隔离脚本，Promise交接后重查。
 ask/Agent初始采集沿原请求signal，预览持有独立controller，在全域封闭准入之后的真实drain中取消。
-每个预览controller仅在原操作finally中解除所有权。已发出的原生脚本调用仍等待原Promise实际结算，
+每个预览controller仅在原操作finally中解除所有权。通常已发出的原生脚本调用仍等待原Promise实际结算，
 不能以abort、导航、destroy或超时race声称原调用已结束。共享空白物化仍由Tab持有，取消一个快照读者只撤销该读者，
-不停止、关闭或改导航用户Tab，也不把共享load记为已完成。维护20s失败仍保留原工作和数据句柄，不伪造排水成功。
+不把共享load记为已完成。维护20s失败仍保留原工作和数据句柄，不伪造排水成功。
+
+用户明确退出且快照仍在途时，主进程原生对话框提供“停止快照并退出／继续等待”；默认、ESC、关闭和弹窗失败
+均为继续等待。主窗口先拦截close并保留到正常退出链完成；等待后可再次关闭以重开选择。全部业务准入先关闭，
+对话框只展示固定说明和有界请求数，不消费网页或模型的批准。正常排水完成或异常退出接管时撤销弹窗；批准返回后
+重查当前关闭所有权与在途状态。此能力仅在主进程实现类中，不进入BrowserController工具接口、preload或IPC。
+
+针对Electron原生调用在WebContents销毁后可能永不结算的已复现机制，2026-10-12按用户裁决修订工程终态：
+已派发快照可由原transport结算，或由用户明确批准后、精确执行WebContents确认destroyed后以cancelled终态退休。
+PageReader从派发前持有请求与实体引用，因此已从TabManager删除的实体也能核对；监听destroyed前后复查，
+close调用或超时本身不证明退休。原transport继续保留成功／拒绝观察器，取消后迟到结果不归一化、不接纳、
+不触发后续业务写入，不能将原transport记为fulfilled。destroyed仅证明该WebContents不再可用，不宣称OS进程已退出。
+批准先封闭快照和交互的新准入，未派发的自有就绪等待可撤销；同实体尚有已派发交互时须先等待交互原Promise，
+再关闭精确快照实体，不用closeTab触发补空白Tab，也不提前dispose整个浏览器。普通维护和未批准的退出不获得此强停能力。
+该例外仅退休只读快照：Conversation/Research/Watch等业务原操作仍须完成取消后的真实收尾，RuntimeShutdown继续
+等待其它原操作、usage、workspace和数据库关闭，最后由guardian核验writer退休；不以快照取消绕过数据排水。
 
 restore/migrate在work内规范化未完成动作：Research running和Watch非终态采集标记interrupted，
 claimed Digest Provider保持uncertain、不重发，Session授权全部失效。含非终态Digest cycle的active

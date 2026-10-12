@@ -73,6 +73,9 @@ export class BrowserControllerImpl implements BrowserController {
   private activeTabId: string | null = null;
   private lastContentBounds: Rectangle | null = null;
   private disposed = false;
+  private snapshotShutdown = false;
+  private snapshotStopOperation: Promise<void> | null = null;
+  private readonly snapshotOperations = new Map<AbortController, Promise<PageSnapshot | null>>();
   // C8 决议 #158：contentVisible——仅供受信 UI 使用（ui:browser-content-visible
   // 通道；不进 AI BrowserController/Tool 能力接口——本接口文件零新增方法）。
   // false = 结果画布模式：全部 Tab view 不可见（不关闭/不导航/不改 Tab 集合）；
@@ -225,12 +228,46 @@ export class BrowserControllerImpl implements BrowserController {
     return entry === undefined ? null : this.toTabInfo(entry, true);
   }
 
-  async getPageSnapshot(tabId: string, signal?: AbortSignal): Promise<PageSnapshot | null> {
+  /** Main-only lifecycle controls; never exposed through the browser tool interface. */
+  beginSnapshotShutdown(): void {
+    this.snapshotShutdown = true;
+    this.pageReader.beginSnapshotShutdown();
+  }
+
+  getPendingSnapshotCount(): number {
+    return this.snapshotOperations.size;
+  }
+
+  stopSnapshotsForShutdown(): Promise<void> {
+    if (!this.snapshotShutdown) return Promise.reject(new Error('尚未进入退出阶段'));
+    this.snapshotStopOperation ??= Promise.resolve().then(async () => {
+      for (const controller of this.snapshotOperations.keys()) controller.abort();
+      await this.pageReader.stopSnapshotsForShutdown();
+      await Promise.allSettled([...this.snapshotOperations.values()]);
+    });
+    return this.snapshotStopOperation;
+  }
+
+  getPageSnapshot(tabId: string, signal?: AbortSignal): Promise<PageSnapshot | null> {
+    if (this.snapshotShutdown || this.disposed || signal?.aborted) return Promise.resolve(null);
+    const controller = new AbortController();
+    const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    const operation = this.collectPageSnapshot(tabId, combined).finally(() =>
+      this.snapshotOperations.delete(controller),
+    );
+    this.snapshotOperations.set(controller, operation);
+    return operation;
+  }
+
+  private async collectPageSnapshot(
+    tabId: string,
+    signal: AbortSignal,
+  ): Promise<PageSnapshot | null> {
     if (signal?.aborted) return null;
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) return null; // L3：tab 不存在
     if (!(await this.materializeDeferredBlank(entry, signal))) return null;
-    if (this.disposed || this.tabManager.get(tabId) !== entry) return null;
+    if (this.snapshotShutdown || this.disposed || this.tabManager.get(tabId) !== entry) return null;
     const wc = entry.view.webContents;
     if (wc.isDestroyed()) return null; // L3：webContents 已销毁
     // Electron may defer executeJavaScript until a pending navigation has loaded.
@@ -239,9 +276,9 @@ export class BrowserControllerImpl implements BrowserController {
       const generation = entry.generation;
       const navigationSerial = entry.navigationSerial;
       const loadSerial = entry.loadSerial;
-      if (signal?.aborted) return null;
+      if (signal.aborted || this.snapshotShutdown) return null;
       const collected = await this.pageReader.snapshot(wc, generation, signal);
-      if (signal?.aborted) return null;
+      if (collected.status === 'cancelled' || signal.aborted || this.snapshotShutdown) return null;
       if (this.disposed || this.tabManager.get(tabId) !== entry || wc.isDestroyed()) return null;
       if (
         entry.generation === generation &&
