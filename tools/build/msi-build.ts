@@ -138,15 +138,19 @@ export async function buildMsi(options: BuildOptions): Promise<string> {
   const commands: { name: string; command: string; sha256: string; args: readonly string[] }[] = [];
   const run = (name: string, command: string, args: readonly string[], env = process.env): void => {
     commands.push({ name, command, sha256: hash(readFileSync(command)), args });
+    const timeoutMs = name === 'light' ? 600000 : 120000;
+    const started = performance.now();
+    let succeeded = false;
     try {
       const output = execFileSync(command, args, {
         cwd: scope,
         env,
         encoding: 'utf8',
-        timeout: 120000,
+        timeout: timeoutMs,
         windowsHide: true,
       });
       writeFileSync(join(scope, `${name}.log`), output, { flag: 'wx' });
+      succeeded = true;
     } catch (error) {
       const e = error as Error & { stdout?: string; stderr?: string };
       writeFileSync(
@@ -155,6 +159,12 @@ export async function buildMsi(options: BuildOptions): Promise<string> {
         { flag: 'wx' },
       );
       throw error;
+    } finally {
+      writeFileSync(
+        join(scope, `${name}.timing.json`),
+        JSON.stringify({ name, timeoutMs, elapsedMs: performance.now() - started, succeeded }) + '\n',
+        { flag: 'wx' },
+      );
     }
   };
   run(
