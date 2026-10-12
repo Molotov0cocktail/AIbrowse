@@ -1826,6 +1826,10 @@ Source note 永不进入 Digest prompt，Source adapter 也不得返回 note。�
 `DIGEST_FACTS`（只含程序 ID/计数/时间）与固定 `UNTRUSTED_WATCH_EVIDENCE` 块组成，边界字符转义固定。请求
 不带 `tools` 字段，模型无网络/Browser/Source/SQL 能力。全部来源 blocked、Key 不可用或完整 canonical
 ProviderRequest 超预算时零调用、explanation=null；不得为迁就模型而删减 facts 或改变 artifact 边界。
+编译期 system prompt 必须逐项传达 §11.5 的完整输出协议：根对象与 section 的 exact-key/字段顺序、
+`sections/eventIds/explanation` canonical JSON 形状、可见 Event 引用与全局递增/去重规则，以及 section 数量、
+单段字符/UTF-8、总字符、canonical explanation 与原始输出预算。Evidence 内敌手文本只能留在固定 untrusted 块，
+不能拼入或改写该协议；生产 validator 仍是唯一接受判定，不以 prompt 服从替代确定性校验。
 
 ### 11.5 Provider at-most-once 与模型草案验证
 
