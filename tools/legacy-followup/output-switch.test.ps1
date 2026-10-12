@@ -94,6 +94,152 @@ try {
   InvokeFixtureGit @('add','tracked.txt')
   InvokeFixtureGit @('-c','user.name=AIbrowse fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false','commit','--quiet','-m','test: 合成产品差量拒绝')
   Reject '来源之后产品差量拒绝' {&$tool -Action CheckOnly -PackageJournal $journal -Qualification EquivalentEvidence -EquivalenceRecord $recordPath}
+  # The new scope is a separate synthetic tree; all earlier fixtures remain retained.
+  [IO.Directory]::Move($output,(Join-Path $scope 'legacy-output-retained'))
+  $requiredSources=@('src/main/ai/provider/openai-compatible.ts','src/main/ai/conversation-service.ts','src/main/ai/agent/agent-loop.ts','src/main/research/research-runtime.ts','src/main/research/synthesis/research-prompts.ts','src/main/research/result-validator.ts')
+  foreach($source in $requiredSources){WriteText (Join-Path $fixture $source) ('合成源码 '+$source)}
+  $unchangedTests="// ---------- 测试替身 ----------`n合成替身与60项断言保持完整`n"
+  WriteText (Join-Path $fixture 'src/main/ai/conversation-service.test.ts') ("合成新增只读插桩`n"+$unchangedTests)
+  WriteText (Join-Path $fixture 'tools/real-provider/conversation-lock-diagnostic.test.ts') '合成Windows真实锁工具源码'
+  WriteText (Join-Path $fixture 'node_modules/electron/dist/electron.exe') '合成Electron'
+  InvokeFixtureGit @('add','.');InvokeFixtureGit @('-c','user.name=AIbrowse fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false','commit','--quiet','-m','test: 新scope合成来源')
+  $head=(& git -C $fixture rev-parse HEAD).Trim()
+  $manifest.source.gitSha=$head
+  $manifest.inputs=@{toolchain=@{electron='43.7.7'};buildConfiguration=@(@{path='electron-builder.yml';sha256=('b'*64)});guardianCompiler=@{sourceSha256=('c'*64)};installerCompiler=@{tools=@{nsis='3.13'};sources=@(@{path='tools/build/msi-build.ts';sha256=('d'*64)})}}
+  SaveJson $manifestPath $manifest
+  foreach($fact in @(Inventory $release)) {if($fact.path -ne 'builder-debug.yml'){WriteText (Join-Path $output $fact.path) ([IO.File]::ReadAllText((Join-Path $release $fact.path)))}}
+  $previousManifest=Get-Content -LiteralPath (Join-Path $output 'build-provenance.json') -Raw|ConvertFrom-Json
+  $old=Inventory $output
+  $manifest.source.version='0.1.3'
+  $stem='AIbrowse-0.1.3-win-x64-internal'
+  foreach($relative in @(($stem+'.exe'),($stem+'.msi'))){WriteText (Join-Path $release $relative) ('合成新安装器 '+$relative)}
+  $manifest.installer=Fact $release ($stem+'.exe');$manifest.msi=Fact $release ($stem+'.msi');SaveJson $manifestPath $manifest
+  $newRoot='log/real-provider-20261012'
+  $newRecordPath=Join-Path $fixture ($newRoot+'/equivalence-record.json')
+  $v2Paths=[ordered]@{candidateManifest='release/build-provenance.json';previousManifest='output/build-provenance.json';staticBinding=($newRoot+'/static.json');packagingComparison=($newRoot+'/packaging.json');providerReview=($newRoot+'/provider-review.md');quality=($newRoot+'/quality.json');priorQualification='log/legacy-followup-20261012/equivalence-record.json';packageReview=($newRoot+'/package-review.json');validatorSupplement=($newRoot+'/validator-supplement.json')}
+  SaveJson (Join-Path $fixture $v2Paths.staticBinding) @{ok=$true;executableSha256=$manifest.payload.executable.sha256;asarSha256=$manifest.payload.asar.sha256;guardianSha256=$manifest.payload.guardian.sha256;productExecuted=$false}
+  SaveJson (Join-Path $fixture $v2Paths.packagingComparison) @{version=1;previousExecutableSha256=$previousManifest.payload.executable.sha256;candidateExecutableSha256=$manifest.payload.executable.sha256;oldSections=2;newSections=2;sections=@(@{name='.text';sameBytes=$true},@{name='.rsrc';sameBytes=$false});oldResourceCount=2;newResourceCount=2;changedResources=@('INTEGRITY/ELECTRONASAR/1033','16/1/1033');sameExtra=$true}
+  WriteText (Join-Path $fixture $v2Paths.providerReview) '合成独立Provider审核 PASS'
+  $record.sourceGitSha=$previousManifest.source.gitSha;$record.proofs.candidateManifest.sha256=(Fact $output 'build-provenance.json').sha256;SaveJson $recordPath $record
+  $quality=@{version=1;sourceGitSha=$head;checks=@{}}
+  foreach($kind in @('test','typecheck','lint','format','build')){$relative=$newRoot+'/'+$kind+'.log';WriteText (Join-Path $fixture $relative) '合成成功输出';$quality.checks[$kind]=@{exitCode=0;log=(Fact $fixture $relative)}}
+  SaveJson (Join-Path $fixture $v2Paths.quality) $quality
+  $caseNames=@('实时共读来源A','同会话切页来源B','在途互斥与真实流取消','Agent实际读取来源A','同会话第二次Agent工具历史重放','L2表单拒绝无导航','L2表单允许后实际提交','敌对网页共读结构边界')
+  foreach($phase in @('probe','conversation','research')){
+    $campaign=$newRoot+'/campaign-'+[Guid]::NewGuid().ToString()
+    $v2Paths[$phase+'Result']=$campaign+'/result.json';$v2Paths[$phase+'Binding']=$campaign+'/binding.json';$v2Paths[$phase+'Process']=$campaign+'/process-result.json'
+    WriteText (Join-Path $fixture ($campaign+'/entry.cjs')) '合成bundle'
+    $sourceMap=@{};foreach($source in $requiredSources){$sourceMap[$source]=(Fact $fixture $source).sha256}
+    if($phase -eq 'research'){$sourceMap['src/main/research/result-validator.ts']='e'*64}
+    SaveJson (Join-Path $fixture $v2Paths[$phase+'Binding']) @{baseline=$head;sources=$sourceMap;bundle=(Fact $fixture ($campaign+'/entry.cjs')).sha256;electron=(Fact $fixture 'node_modules/electron/dist/electron.exe').sha256;requestBudget=28;lifetimeMs=900000}
+    SaveJson (Join-Path $fixture $v2Paths[$phase+'Process']) @{root=(Join-Path $fixture $campaign);phase=$phase;exitCode=0;exited=$true;signal=$null}
+    $phaseCases=switch($phase){'probe'{@(@{passed=$true},@{passed=$true})};'conversation'{@(@{passed=$true;drained=$true;cases=@($caseNames|ForEach-Object {@{name=$_;passed=$true;terminal=$(if($_ -ceq '在途互斥与真实流取消'){'aborted'}else{'done'})}})})};'research'{@(@{passed=$true;checks=@{sourceStoreEmpty=$true;twoGoalCandidates=$true;capturesPerSource=$true;evidencePerSource=$true;claimsLinked=$true;resultLinked=$true;ownershipIsolated=$true;transferValid=$true;cleanupComplete=$true;withinProviderBudget=$true}})}}
+    SaveJson (Join-Path $fixture $v2Paths[$phase+'Result']) @{phase=$phase;budget=28;networkRequests=2;calls=@(@{status=200;errors=@();done=$true},@{status=200;errors=@();done=$true});cases=$phaseCases;finished=$true;fatal=$null;credentialsDeleted=$true;browserDisposed=($phase -ne 'probe')}
+  }
+  $savedDb=$campaign+'/research/research-scenarios-abc123/research.db';WriteText (Join-Path $fixture $savedDb) '合成只读研究数据'
+  $replayDirectory=$newRoot+'/validator-replay-'+[Guid]::NewGuid().ToString()
+  $replayReport=$replayDirectory+'/report.json';$replayLog=$replayDirectory+'/process-output.log';$validatorTests=$newRoot+'/research-independent-green.log'
+  WriteText (Join-Path $fixture $replayLog) '合成只读回放成功';WriteText (Join-Path $fixture $validatorTests) '合成独立验证88通过，其中独立反例31'
+  $fields=@{};foreach($name in @('resultId','taskId','title','summary','blocks','evidenceMap','conflicts','coverage','fetchedAt')){$fields[$name]=$true}
+  SaveJson (Join-Path $fixture $replayReport) @{version=1;scope='saved-result-validator-compatibility';passed=$true;rawModelOutputRevalidated=$false;networkCalls=0;readOnlyDatabase=$true;databaseUnchanged=$true;normalizedResultUnchanged=$true;validationPassed=$true;fieldChecks=$fields;conflictOrder='restored-by-persisted-result-ids';database=(Fact $fixture $savedDb);validator=(Fact $fixture 'src/main/research/result-validator.ts');counts=@{tasks=1;results=1;blocks=4;evidence=12;claims=3;conflicts=2}}
+  $supplement=@{version=1;scope='saved-result-validator-compatibility';passed=$true;rawModelOutputRevalidated=$false;networkCalls=0;product=@{path='src/main/research/result-validator.ts';beforeSha256=('e'*64);afterSha256=(Fact $fixture 'src/main/research/result-validator.ts').sha256};researchBinding=(Fact $fixture $v2Paths.researchBinding);tests=@{exitCode=0;passed=88;independentPassed=31;log=(Fact $fixture $validatorTests)};replay=@{exitCode=0;report=(Fact $fixture $replayReport);log=(Fact $fixture $replayLog)}}
+  SaveJson (Join-Path $fixture $v2Paths.validatorSupplement) $supplement
+  $v2Proofs=[ordered]@{}
+  foreach($name in $v2Paths.Keys){if($name -ne 'packageReview'){$v2Proofs[$name]=Fact $fixture $v2Paths[$name]}}
+  $reviewText=$newRoot+'/package-review.md';WriteText (Join-Path $fixture $reviewText) '合成新独立审核：限定本机可回退更新 PASS，包启动 NOTRUN'
+  $reviewHashes=@{};foreach($name in $v2Proofs.Keys){$reviewHashes[$name]=$v2Proofs[$name].sha256}
+  $review=@{version=1;sourceGitSha=$head;conclusion='PASS_WITH_NOTRUN_PACKAGED_STARTUP';proofs=$reviewHashes;report=(Fact $fixture $reviewText)}
+  SaveJson (Join-Path $fixture $v2Paths.packageReview) $review
+  $v2Proofs.packageReview=Fact $fixture $v2Paths.packageReview
+  $v2=@{version=2;qualification='EquivalentEvidence';passed=$true;scope='same-machine-local-reversible';packageLaunchTested=$false;packageLaunchStatus='NOTRUN';sourceGitSha=$head;reviewerConclusion='PASS_WITH_NOTRUN_PACKAGED_STARTUP';machine=@{computerName=[Environment]::MachineName;platform='win32';architecture='x64'};proofs=$v2Proofs}
+  SaveJson $newRecordPath $v2
+  $argsV2=@{Action='CheckOnly';PackageJournal=$journal;Qualification='EquivalentEvidence';EquivalenceRecord=$newRecordPath;EvidenceScope='real-provider-20261012'}
+  $newPlan=(&$tool @argsV2)|ConvertFrom-Json
+  if($newPlan.packageLaunchTested -or $newPlan.packageLaunchStatus -cne 'NOTRUN' -or $newPlan.source.version -cne '0.1.3'){throw '新scope计划边界不符'}
+  Same $old (Inventory $output);$checks.Add('新scope完整绑定计划保持旧树与NOTRUN')
+  Reject '新scope无显式qualification拒绝' {&$tool -Action CheckOnly -PackageJournal $journal -EquivalenceRecord $newRecordPath -EvidenceScope real-provider-20261012}
+  $v2Proofs.probeResult.sha256='f'*64;SaveJson $newRecordPath $v2
+  Reject '新scope未绑定结果拒绝' {&$tool @argsV2}
+  $v2Proofs.probeResult=Fact $fixture $v2Paths.probeResult;SaveJson $newRecordPath $v2
+  $review.proofs.probeResult='f'*64;SaveJson (Join-Path $fixture $v2Paths.packageReview) $review;$v2Proofs.packageReview=Fact $fixture $v2Paths.packageReview;SaveJson $newRecordPath $v2
+  Reject '新scope独审绑定不符拒绝' {&$tool @argsV2}
+  $review.proofs.probeResult=$v2Proofs.probeResult.sha256;SaveJson (Join-Path $fixture $v2Paths.packageReview) $review;$v2Proofs.packageReview=Fact $fixture $v2Paths.packageReview;SaveJson $newRecordPath $v2
+  function RefreshV2 {
+    foreach($name in $v2Paths.Keys){if($name -ne 'packageReview'){$v2Proofs[$name]=Fact $fixture $v2Paths[$name];$review.proofs[$name]=$v2Proofs[$name].sha256}}
+    SaveJson (Join-Path $fixture $v2Paths.packageReview) $review
+    $v2Proofs.packageReview=Fact $fixture $v2Paths.packageReview;SaveJson $newRecordPath $v2
+  }
+  function RejectBoundMutation([string]$name,[string]$proofName,[scriptblock]$mutation){
+    $path=Join-Path $fixture $v2Paths[$proofName];$original=[IO.File]::ReadAllText($path)
+    try {$value=$original|ConvertFrom-Json;&$mutation $value;SaveJson $path $value;RefreshV2;Reject $name {&$tool @argsV2}}
+    finally {WriteText $path $original;RefreshV2}
+  }
+  RejectBoundMutation '新scope真实结果失败即使重绑也拒绝' 'researchResult' {param($v)$v.cases[0].passed=$false}
+  RejectBoundMutation '新scope空研究check集合拒绝' 'researchResult' {param($v)$v.cases[0].checks=[pscustomobject]@{}}
+  RejectBoundMutation '新scope真实调用HTTP非200拒绝' 'probeResult' {param($v)$v.calls[0].status=401}
+  RejectBoundMutation '新scope真实进程未退出拒绝' 'probeProcess' {param($v)$v.exited=$false}
+  RejectBoundMutation '新scope关键产品源码未绑定拒绝' 'conversationBinding' {param($v)$v.sources.'src/main/ai/provider/openai-compatible.ts'='f'*64}
+  RejectBoundMutation '新scopebundle变化拒绝' 'probeBinding' {param($v)$v.bundle='f'*64}
+  RejectBoundMutation '新scope不允许把非零质量门写成通过' 'quality' {param($v)$v.checks.test.exitCode=1}
+  RejectBoundMutation '新scopePE代码节变化拒绝' 'packagingComparison' {param($v)$v.sections[0].sameBytes=$false}
+  RejectBoundMutation '新scope静态ASAR绑定不符拒绝' 'staticBinding' {param($v)$v.asarSha256='f'*64}
+  RejectBoundMutation 'validator补证不得批准其它源码路径' 'validatorSupplement' {param($v)$v.product.path='src/main/research/research-runtime.ts'}
+  RejectBoundMutation 'validator补证before摘要不符拒绝' 'validatorSupplement' {param($v)$v.product.beforeSha256='f'*64}
+  RejectBoundMutation 'validator补证after摘要不符拒绝' 'validatorSupplement' {param($v)$v.product.afterSha256='f'*64}
+  RejectBoundMutation 'validator补证不能声称重验原模型输出' 'validatorSupplement' {param($v)$v.rawModelOutputRevalidated=$true}
+  RejectBoundMutation 'validator补证独立测试未通过拒绝' 'validatorSupplement' {param($v)$v.tests.exitCode=1}
+  RejectBoundMutation 'validator补证绑定其它研究运行拒绝' 'validatorSupplement' {param($v)$v.researchBinding.path=$v2Paths.probeBinding}
+  $savedReplay=[IO.File]::ReadAllText((Join-Path $fixture $replayReport))
+  $replayValue=$savedReplay|ConvertFrom-Json;$replayValue.fieldChecks.blocks=$false;SaveJson (Join-Path $fixture $replayReport) $replayValue
+  $supplement.replay.report=Fact $fixture $replayReport;SaveJson (Join-Path $fixture $v2Paths.validatorSupplement) $supplement;RefreshV2
+  Reject 'validator已绑定回放字段变化拒绝' {&$tool @argsV2}
+  WriteText (Join-Path $fixture $replayReport) $savedReplay;$supplement.replay.report=Fact $fixture $replayReport;SaveJson (Join-Path $fixture $v2Paths.validatorSupplement) $supplement;RefreshV2
+  $v2.packageLaunchTested=$true;SaveJson $newRecordPath $v2;Reject '新scope不得把未运行包启动写成已运行' {&$tool @argsV2};$v2.packageLaunchTested=$false;SaveJson $newRecordPath $v2
+  $oldProviderHash=$review.report.sha256;$oldProviderPath=$review.report.path;$oldProviderBytes=$review.report.bytes
+  $review.report=$v2Proofs.providerReview;SaveJson (Join-Path $fixture $v2Paths.packageReview) $review;$v2Proofs.packageReview=Fact $fixture $v2Paths.packageReview;SaveJson $newRecordPath $v2
+  Reject '新scope不得用单项审核冒充最终独审' {&$tool @argsV2}
+  $review.report=@{path=$oldProviderPath;bytes=$oldProviderBytes;sha256=$oldProviderHash};RefreshV2
+  # Composite quality preserves the failed full run and replaces exactly one file.
+  $compositePaths=@{fullLog=($newRoot+'/full-002.log');fullExit=($newRoot+'/full-exit-002.json');replacementReport=($newRoot+'/conversation-diagnostic.json');replacementLog=($newRoot+'/conversation-diagnostic.log');beforeSource=($newRoot+'/conversation-service.before.ts');patch=($newRoot+'/conversation-service.patch');controlSource='tools/real-provider/conversation-lock-diagnostic.test.ts';controlReport=($newRoot+'/lock-final.json');controlLog=($newRoot+'/lock-final.log');lockResult='log/conversation-lock-diagnostic/case-abc123/result.json'}
+  WriteText (Join-Path $fixture $compositePaths.fullLog) "FAIL  src/main/ai/conversation-service.test.ts > 合成原失败`nsrc/main/ai/conversation-service.test.ts (60 tests | 1 failed)`nstage=rename code=EPERM`nTest Files  1 failed | 472 passed | 1 skipped (474)`nTests  1 failed | 6954 passed | 3 skipped (6958)`n"
+  SaveJson (Join-Path $fixture $compositePaths.fullExit) @{exitCode=1;log=$compositePaths.fullLog}
+  WriteText (Join-Path $fixture $compositePaths.beforeSource) ("合成原始imports`n"+$unchangedTests)
+  WriteText (Join-Path $fixture $compositePaths.patch) "diff --git a/src/main/ai/conversation-service.test.ts b/src/main/ai/conversation-service.test.ts`n--- a/src/main/ai/conversation-service.test.ts`n+++ b/src/main/ai/conversation-service.test.ts`n@@ -1 +1 @@`n-合成原始imports`n+合成新增只读插桩`n"
+  foreach($kind in @('replacementLog','controlLog')){WriteText (Join-Path $fixture $compositePaths[$kind]) '合成补验日志'}
+  foreach($part in @(@{report='replacementReport';path='src/main/ai/conversation-service.test.ts';count=60},@{report='controlReport';path='tools/real-provider/conversation-lock-diagnostic.test.ts';count=1})){
+    $assertions=@(1..$part.count|ForEach-Object {@{status='passed';fullName=('合成断言'+$_);failureMessages=@()}})
+    SaveJson (Join-Path $fixture $compositePaths[$part.report]) @{success=$true;numFailedTests=0;numPendingTests=0;numTodoTests=0;testResults=@(@{name=(Join-Path $fixture $part.path);status='passed';assertionResults=$assertions})}
+  }
+  SaveJson (Join-Path $fixture $compositePaths.lockResult) @{controlWrites=50;saved=$false;oldIndexPreserved=$true;temporaryPreserved=$true;exitCode=0;forcedCleanup=$false}
+  $compositeFacts=@{};foreach($name in $compositePaths.Keys){$compositeFacts[$name]=Fact $fixture $compositePaths[$name]}
+  $compositeReviewPath=$newRoot+'/composite-review.json';$compositeReviewText=$newRoot+'/composite-review.md'
+  WriteText (Join-Path $fixture $compositeReviewText) '合成独立组合审核通过，历史EPERM根因unknown，原全量exit1保留'
+  $compositeReviewHashes=@{};foreach($name in $compositeFacts.Keys){$compositeReviewHashes[$name]=$compositeFacts[$name].sha256}
+  SaveJson (Join-Path $fixture $compositeReviewPath) @{version=1;sourceGitSha=$head;conclusion='PASS_WITH_UNKNOWN_HISTORICAL_EPERM';proofs=$compositeReviewHashes;report=(Fact $fixture $compositeReviewText)}
+  $quality.version=2
+  $quality.checks.test=@{mode='bounded-composite';scope='conversation-service-rename-eperm';historicalRootCause='unknown';full=@{exitCode=1;exit=$compositeFacts.fullExit;log=$compositeFacts.fullLog;passed=6954;failed=1;skipped=3;unchangedFilesPassed=472};replacement=@{path='src/main/ai/conversation-service.test.ts';exitCode=0;report=$compositeFacts.replacementReport;log=$compositeFacts.replacementLog;passed=60;beforeTestSha256=$compositeFacts.beforeSource.sha256;afterTestSha256=(Fact $fixture 'src/main/ai/conversation-service.test.ts').sha256;beforeSource=$compositeFacts.beforeSource;patch=$compositeFacts.patch};control=@{path='tools/real-provider/conversation-lock-diagnostic.test.ts';source=$compositeFacts.controlSource;report=$compositeFacts.controlReport;log=$compositeFacts.controlLog;passed=1;lockResult=$compositeFacts.lockResult};deduplicated=@{passed=6955;skipped=3;additionalControlPassed=1};review=(Fact $fixture $compositeReviewPath)}
+  SaveJson (Join-Path $fixture $v2Paths.quality) $quality;RefreshV2
+  $compositePlan=(&$tool @argsV2)|ConvertFrom-Json
+  Same $old (Inventory $output);$checks.Add('quality v2固定组合通过且不改写原全量exit1')
+  RejectBoundMutation '组合验收不得把全量exit1改写0' 'quality' {param($v)$v.checks.test.full.exitCode=0}
+  RejectBoundMutation '组合验收不得替换其它测试文件' 'quality' {param($v)$v.checks.test.replacement.path='src/main/ai/other.test.ts'}
+  RejectBoundMutation '组合验收不能声称历史根因已定位' 'quality' {param($v)$v.checks.test.historicalRootCause='file-lock'}
+  RejectBoundMutation '组合验收必须全部60断言' 'quality' {param($v)$v.checks.test.replacement.passed=59}
+  RejectBoundMutation '组合验收计数不得重复旧已通过59项' 'quality' {param($v)$v.checks.test.deduplicated.passed=7014}
+  RejectBoundMutation '组合验收须绑定当前测试插桩源码' 'quality' {param($v)$v.checks.test.replacement.afterTestSha256='f'*64}
+  RejectBoundMutation '组合验收锁反例不能算进原60项' 'quality' {param($v)$v.checks.test.replacement.report=$v.checks.test.control.report}
+  $savedBefore=[IO.File]::ReadAllText((Join-Path $fixture $compositePaths.beforeSource))
+  WriteText (Join-Path $fixture $compositePaths.beforeSource) ($savedBefore+'原断言差量')
+  $quality.checks.test.replacement.beforeSource=Fact $fixture $compositePaths.beforeSource;$quality.checks.test.replacement.beforeTestSha256=$quality.checks.test.replacement.beforeSource.sha256
+  SaveJson (Join-Path $fixture $v2Paths.quality) $quality;RefreshV2
+  Reject '组合验收插桩改变原断言后缀拒绝' {&$tool @argsV2}
+  WriteText (Join-Path $fixture $compositePaths.beforeSource) $savedBefore;$quality.checks.test.replacement.beforeSource=Fact $fixture $compositePaths.beforeSource;$quality.checks.test.replacement.beforeTestSha256=$quality.checks.test.replacement.beforeSource.sha256
+  SaveJson (Join-Path $fixture $v2Paths.quality) $quality;RefreshV2
+  $argsV2.Action='Switch';$newSwitch=(&$tool @argsV2)|ConvertFrom-Json
+  Same $old (Inventory $newSwitch.previousOutput);$newTree=Inventory $output
+  &$tool -Action Rollback -SwitchId $newSwitch.id -EvidenceScope real-provider-20261012|Out-Null
+  Same $old (Inventory $output);Same $newTree (Inventory (Join-Path $newSwitch.scope 'rolled-back-candidate'))
+  $checks.Add('新scope实际Switch与Rollback保全两树')
   SaveJson (Join-Path $scope 'result.json') @{passed=$true;checks=$checks;checkCount=$checks.Count;sourceSha256=(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'output-switch.ps1')).Hash.ToLowerInvariant();testSha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant();realOutputTouched=$false;realProfileTouched=$false;productExecuted=$false;syntheticEvidenceOnly=$true;switchId=$switched.id}
   @{passed=$true;scope=$scope;checks=$checks.Count;syntheticEvidenceOnly=$true}|ConvertTo-Json
 } catch {
