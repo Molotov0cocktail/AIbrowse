@@ -61,7 +61,7 @@
 - 质量验收据此REPLAN为显式组合证据：若独审确认原60项与锁下完整性/停止写入反例通过，可复用
   当前全量其余472文件的未变通过结果，并补齐唯一失败文件，去重后6955PASS/3SKIP；不进行
   第三次无新增诊断的全量来挑绿。两次full命令均如实exit1，历史原因unknown，组合门必须另标
-  fullCommandPassed=false，并绑定全量原件、唯一替代路径、仅留证插桩的差量、补验、锁对照与
+  full.exitCode=1且不得伪造test.exitCode=0，并绑定全量原件、唯一替代路径、仅留证插桩的差量、补验、锁对照与
   独审结论。等价依据是同一产品源码与全部原断言逐项覆盖，替换的是验收调度方式而不是正确性
   阈值；若原断言再失败、出现新产品差量或无法证明fail-stop/完整性，停止组合路线并重新定位。
 - 实际诊断原60项全部通过，另1项真实锁反例通过，旧index恒等/tmp保留/锁释放后仍封存；
@@ -78,6 +78,30 @@
   以及唯一validator后继补证逐摘要绑定；新的包来源必须与当前干净HEAD完全一致。补证只许可
   已审result-validator.ts精确before/after摘要，rawModelOutputRevalidated必须false，离线网络数为0。
   旧output完整保留后才切换；失败不覆盖用户当前选定版本，不删除旧运行证据。
+
+### 新临时凭据实测交付结果
+
+- 产品修复提交04cd9cc（Provider四项）和50a7f65（Research协议/卡片校验）；通用真实场景与
+  留证工具bda1c1a。最终干净候选e16cf4664e1ea620ef96b6972b6ff2a4d7450335，版本0.1.3。
+  换包工具43项实施与新独审均通过，质量v2和所有实际证明经新的独立审核逐摘要绑定，
+  结论仅为PASS_WITH_NOTRUN_PACKAGED_STARTUP；详见本轮package-review.md及其JSON。
+- package:release-installer、verify:release、源码/ASAR静态绑定、build-provenance和新旧PE对比均exit0。
+  75载荷成员中73个逐字节相同；PE14非资源段及extra相同，54资源仅版本和ASAR integrity改变。
+  新包candidateEligible=true；旧release完整80文件已归档，历史字节未覆盖。
+- CheckOnly与Switch实际均exit0，切换ID534575150ef347da9f3c81540cbc802d。
+  output现为0.1.3完整79文件/619787616字节，含程序、EXE/MSI安装器和构建身份文件。
+  旧0.1.2全部79文件/619783005字节保留于本轮previous-output-534575150ef347da9f3c81540cbc802d，
+  result.originalBytesPreserved=true。plan/result和343份切前复核证明索引保存在
+  output-switch-534575150ef347da9f3c81540cbc802d，result SHA256
+  fa4c77231e7189227aa5d9dae00d163568a0b2f4998605ba1845d3e296a82a05。
+- 换包后新的独立只读复核再次核对新旧各79文件及全部343个绑定事实，PASS；旧output的manifest
+  正确映射到完整backup，未实际运行Rollback或产品。报告output-switch-final-independent-review.md，
+  机器结果output-switch-final-independent.json，SHA256
+  82f98f9ac0c7370fe13dbdcb4ed73e66f8d23a451d351f171e8ddcdeeedb81a1。
+- 当前manifest SHA256 b99ce0f588b7674c5ff76dd6e33cb0a336dc471083fbfe4fe65a8550aa468008；
+  主程序SHA256 8439b2e15338bd6c700282d963fe7983058234f61280edf452e89a38e9f980d9。
+  真实key调用已经结束且隔离凭据已删除。两次全量失败/历史unknown、原始模型输出未重验、
+  包启动NOTRUN、旧资源增长及旧fatal unknown保持，未开始Stage8、公开发行或自动更新。
 
 ## 用户裁决后的产品修复与本地更新合同（2026-10-12）
 

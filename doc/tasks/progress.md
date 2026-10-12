@@ -23,8 +23,18 @@
   后者单次诊断原60PASS和真实文件占用控制1PASS，均未恢复历史唯一根因。原会话测试afterAll
   已删该场临时目录，此证据缺口保留；测试现增加失败现场保留和透明rename元数据，产品未加重试。
   显式组合证据获独审限定PASS：主矩阵去重6955PASS/3SKIP，锁反例另1PASS；旧两场全量仍exit1。
-  最终typecheck/lint/format/普通build均0，候选版本0.1.3，换包工具43项通过，正完成独审与包构建；
-  **output暂仍0.1.2**，不能提前声称全量命令PASS、新包通过或已切换。旧资源增长与fatal历史unknown继续保留。
+  最终typecheck/lint/format/普通build均0，换包工具实施与独审各43项通过；新包构建、verify、
+  静态源码绑定、provenance和PE比对全部0，独审批准本机可回退更新。包来源干净
+  e16cf4664e1ea620ef96b6972b6ff2a4d7450335；产品修复04cd9cc/50a7f65，工具bda1c1a。
+  **output已更新为0.1.3**，79文件/619787616字节，程序入口仍为D:\AIbrowse\output\win-unpacked\AIbrowse.exe，
+  EXE/MSI安装器和身份文件齐备。manifest SHA256
+  b99ce0f588b7674c5ff76dd6e33cb0a336dc471083fbfe4fe65a8550aa468008。
+  实际CheckOnly/Switch均0，ID534575150ef347da9f3c81540cbc802d，343份证明切前复核；
+  旧0.1.2完整79文件/619783005字节保留在本轮previous-output-534575150ef347da9f3c81540cbc802d，
+  result passed/originalBytesPreserved均true。来源、独审与切换索引见legacy-repair首节及本轮package-review.md。
+  换包后独立核新旧各79文件及343个证据事实PASS，见output-switch-final-independent.json与同名review报告。
+  两次全量命令仍FAIL/exit1，PackageLaunch仍NOTRUN；旧资源增长与fatal历史unknown继续保留。
+  本轮52次真实测试和六项修复已完成，停止新增实现，不启动Stage8。下列0.1.2与更早状态均为历史。
 
 - 2026-10-12用户逐项裁决后启动产品修复和本地更新，baseline829b7a164019af7e5825fce8cbbb34d199790c29、接管干净。
   退出时在途快照提供主进程可信“停止快照并退出/继续等待”，只有用户确认才强制停止；修复Digest输出协议、
