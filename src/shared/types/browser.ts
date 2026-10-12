@@ -30,6 +30,9 @@ export interface SnapshotMeta {
   documentId: number;
   readyState: 'loading' | 'interactive' | 'complete' | 'unknown';
   degraded: SnapshotDegradation;
+  // Derived by main-process normalization; raw page fields cannot assert coverage.
+  // Optional only for legacy internal producers. An unqualified partial is never complete.
+  mainDocument?: 'complete' | 'incomplete';
   warnings: string[]; // 中文警告（iframe 跳过、截断、部分采集失败等）
 }
 

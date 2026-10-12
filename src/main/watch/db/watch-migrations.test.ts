@@ -18,6 +18,7 @@ import {
   WATCH_MIGRATION_V3,
   WATCH_MIGRATION_V4,
   WATCH_MIGRATION_V5,
+  WATCH_MIGRATION_V6,
   runWatchMigrations,
 } from './watch-migrations';
 
@@ -106,19 +107,21 @@ function insertDigestFixture(db: DbHandle): void {
   ).run();
 }
 
-describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rule CAS）', () => {
-  it('v1..v5 五级、版本连续、语句全部编译期常量', () => {
+describe('migration v1→v6 契约断言（保留旧迁移并追加独立目标）', () => {
+  it('v1..v6 六级、版本连续、语句全部编译期常量', () => {
     expect(WATCH_MIGRATION_V1.version).toBe(1);
     expect(WATCH_MIGRATION_V2.version).toBe(2);
     expect(WATCH_MIGRATION_V5.version).toBe(5);
-    expect(WATCH_MIGRATIONS).toHaveLength(5);
-    expect(WATCH_MIGRATIONS.map((s) => s.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(WATCH_MIGRATION_V6.version).toBe(6);
+    expect(WATCH_MIGRATIONS).toHaveLength(6);
+    expect(WATCH_MIGRATIONS.map((s) => s.version)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(
       WATCH_MIGRATION_V1.statements.every((s) => typeof s === 'string') &&
         WATCH_MIGRATION_V2.statements.every((s) => typeof s === 'string') &&
         WATCH_MIGRATION_V3.statements.every((s) => typeof s === 'string') &&
         WATCH_MIGRATION_V4.statements.every((s) => typeof s === 'string') &&
-        WATCH_MIGRATION_V5.statements.every((s) => typeof s === 'string'),
+        WATCH_MIGRATION_V5.statements.every((s) => typeof s === 'string') &&
+        WATCH_MIGRATION_V6.statements.every((s) => typeof s === 'string'),
     ).toBe(true);
     // R3-3：v3 语句数 21（含 watch_baselines_v3 的条件 validator CHECK 内嵌）——
     // M0-9 逐语句失败注入按此固定语句数全部切点执行
@@ -126,7 +129,10 @@ describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rul
   });
 
   it('v5 保留严格 Digest 表并追加 Rule CAS/showDetails 默认值', () => {
-    const outcome = runWatchMigrations(handle);
+    const outcome = runMigrations(
+      handle,
+      WATCH_MIGRATIONS.filter((step) => step.version <= 5),
+    );
     expect(outcome.ok).toBe(true);
     expect(outcome.toVersion).toBe(5);
     expect(tableNames(handle)).toEqual(
@@ -347,7 +353,10 @@ describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rul
         WATCH_MIGRATION_V4,
       ]);
       insertRule(db, 'r-reopen');
-      runMigrations(db, WATCH_MIGRATIONS);
+      runMigrations(
+        db,
+        WATCH_MIGRATIONS.filter((step) => step.version <= 5),
+      );
       expect(
         db
           .prepare(
@@ -357,7 +366,12 @@ describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rul
       ).toEqual({ id: 'r-reopen', rule_version: 1, notification_show_details: 0 });
       closeDb(db);
       db = openDb(path);
-      expect(runWatchMigrations(db).toVersion).toBe(5);
+      expect(
+        runMigrations(
+          db,
+          WATCH_MIGRATIONS.filter((step) => step.version <= 5),
+        ).toVersion,
+      ).toBe(5);
       expect(
         db
           .prepare(
@@ -370,10 +384,60 @@ describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rul
     }
   });
 
-  it('运行后 user_version=5 且 15 张表全部存在', () => {
+  it('v6 每个 statement 失败均回滚到逐行恒等 v5，成功迁移保持旧信源绑定', () => {
+    for (let index = 0; index < WATCH_MIGRATION_V6.statements.length; index += 1) {
+      const db = openDb(join(root, `v6-fault-${index}-${Math.random()}.db`));
+      try {
+        const historical = WATCH_MIGRATIONS.filter((step) => step.version <= 5);
+        runMigrations(db, historical);
+        insertRule(db, 'legacy-rule');
+        insertDigestFixture(db);
+        const beforeSchema = db
+          .prepare(
+            "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+          )
+          .all();
+        const beforeRule = db.prepare('SELECT * FROM watch_rules').all() as Array<
+          Record<string, unknown>
+        >;
+        const beforeSchedule = db.prepare('SELECT * FROM digest_schedules').all() as Array<
+          Record<string, unknown>
+        >;
+        const broken = {
+          ...WATCH_MIGRATION_V6,
+          statements: WATCH_MIGRATION_V6.statements.map((statement, current) =>
+            current === index ? 'SELECT * FROM absent_v6_table' : statement,
+          ),
+        };
+        expect(() => runMigrations(db, [...historical, broken])).toThrow();
+        expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 5 });
+        expect(
+          db
+            .prepare(
+              "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+            )
+            .all(),
+        ).toEqual(beforeSchema);
+        expect(db.prepare('SELECT * FROM watch_rules').all()).toEqual(beforeRule);
+        expect(db.prepare('SELECT * FROM digest_schedules').all()).toEqual(beforeSchedule);
+        expect(runWatchMigrations(db).ok).toBe(true);
+        expect(db.prepare('SELECT * FROM watch_rules').all()).toEqual(
+          beforeRule.map((row) => ({ ...row, binding_kind: 'source' })),
+        );
+        expect(db.prepare('SELECT * FROM digest_schedules').all()).toEqual(
+          beforeSchedule.map((row) => ({ ...row, binding_kind: 'source' })),
+        );
+        expect(db.prepare('SELECT * FROM watch_targets').all()).toEqual([]);
+      } finally {
+        closeDb(db);
+      }
+    }
+  });
+
+  it('运行后 user_version=6 且 16 张表全部存在', () => {
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(true);
-    expect(outcome.toVersion).toBe(5);
+    expect(outcome.toVersion).toBe(6);
     expect(tableNames(handle)).toEqual([
       'digest_change_journal',
       'digest_change_state',
@@ -390,6 +454,7 @@ describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rul
       'watch_events',
       'watch_rules',
       'watch_runs',
+      'watch_targets',
     ]);
   });
 
@@ -411,6 +476,7 @@ describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rul
       'idx_watch_event_observations_event',
       'idx_watch_events_rule',
       'idx_watch_events_source',
+      'idx_watch_rules_binding',
       'idx_watch_rules_source',
       'idx_watch_rules_state_due',
       'idx_watch_runs_rule',
@@ -425,8 +491,8 @@ describe('migration v1→v5 契约断言（v1-v4 字节冻结；D9 仅追加 Rul
     expect(again.ok).toBe(true);
   });
 
-  it('未知更高版本零写入（newer-than-program；latest=5 → 6 为未来版本）', () => {
-    handle.exec('PRAGMA user_version = 6');
+  it('未知更高版本零写入（newer-than-program；latest=6 → 7 为未来版本）', () => {
+    handle.exec('PRAGMA user_version = 7');
     const outcome = runWatchMigrations(handle);
     expect(outcome.ok).toBe(false);
     expect(outcome.state).toBe('newer-than-program');
@@ -864,7 +930,7 @@ describe('SQL 注入串仅作数据（§10.1 参数绑定）', () => {
       .get('inj-1') as { source_id: string; target_json: string };
     expect(row.source_id).toBe(injection);
     expect(row.target_json).toBe(injection);
-    expect(tableNames(handle).length).toBe(15);
+    expect(tableNames(handle).length).toBe(16);
   });
 });
 
@@ -991,7 +1057,7 @@ describe('migration v2 契约断言（#S6-044 FIXED 14/15：watch_audits CHECK �
     expect(() => insertAudit('run', 'Unavailable')).toThrow();
   });
 
-  it('v4 后 19 索引恒等；重建后删除 Rule → 审计级联删除、rule_id=NULL 孤儿审计存活', () => {
+  it('v6 后 20 索引恒等；重建后删除 Rule → 审计级联删除、rule_id=NULL 孤儿审计存活', () => {
     runWatchMigrations(handle);
     expect(indexNames(handle)).toEqual([
       'idx_digest_change_journal_event',
@@ -1009,6 +1075,7 @@ describe('migration v2 契约断言（#S6-044 FIXED 14/15：watch_audits CHECK �
       'idx_watch_event_observations_event',
       'idx_watch_events_rule',
       'idx_watch_events_source',
+      'idx_watch_rules_binding',
       'idx_watch_rules_source',
       'idx_watch_rules_state_due',
       'idx_watch_runs_rule',

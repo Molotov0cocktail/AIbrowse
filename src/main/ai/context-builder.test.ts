@@ -325,6 +325,29 @@ describe('buildContext — 历史重放（§7.6）', () => {
 });
 
 describe('buildContext — warnings 合并去重', () => {
+  it('仅 iframe 范围限制保留具体提示，不重复添加采集失败且展示不降级', () => {
+    const meta = {
+      ...makeSnapshot().meta,
+      degraded: 'partial' as const,
+      mainDocument: 'complete' as const,
+      warnings: ['跳过 3 个 iframe（其中 1 个跨域）'],
+    };
+    const snapshot = makeSnapshot({ visibleText: '完整正文'.repeat(100), meta });
+    const output = buildContext(makeInput({ snapshot }));
+    expect(output.meta.warnings).toEqual(meta.warnings);
+    expect(buildContextSource(snapshot, 'snapshot', false, 'tab-1').degraded).toBe(false);
+    expect(output.request.messages[0].content).toContain('完整正文');
+  });
+
+  it('主文档不完整即使旧 degraded=none 也展示采集降级', () => {
+    const meta = { ...makeSnapshot().meta, mainDocument: 'incomplete' as const };
+    const snapshot = makeSnapshot({ meta });
+    expect(buildContextSource(snapshot, 'snapshot', false, 'tab-1').degraded).toBe(true);
+    expect(buildContext(makeInput({ snapshot })).meta.warnings).toContain(
+      '页面内容采集降级，可能缺少部分内容',
+    );
+  });
+
   it('meta 警告在前 + 构建警告去重合并（§3.2 meta.warnings）', () => {
     const snapshot = makeSnapshot({
       visibleText: 'a'.repeat(12_001),

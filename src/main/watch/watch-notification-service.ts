@@ -1,5 +1,5 @@
 import type { InAppNotificationDto } from '../../shared/types/watch-ipc';
-import type { WatchRule } from '../../shared/types/watch';
+import type { WatchRule, WatchIndependentTarget } from '../../shared/types/watch';
 import { buildInAppNotification } from './notification-policy';
 import type { QualificationResourceOwner } from './qualification/registry';
 import { MaintenanceAdmission } from '../storage/maintenance-admission';
@@ -120,7 +120,9 @@ export class WatchNotificationService {
                 sourceName:
                   rule === null
                     ? '来源'
-                    : (this.sourceName(rule.sourceId) ?? `信源 ${rule.sourceId.slice(0, 8)}`),
+                    : rule.bindingKind === 'watch-target'
+                      ? (repo.getIndependentTarget?.(rule.sourceId)?.displayName ?? '监控目标')
+                      : (this.sourceName(rule.sourceId) ?? `信源 ${rule.sourceId.slice(0, 8)}`),
                 changeCount: privacy.itemCount,
                 fieldLabels: [privacy.eventKind],
                 createdAt: row.createdAt,
@@ -159,6 +161,7 @@ export class WatchNotificationService {
 }
 
 export interface NotificationRepository {
+  getIndependentTarget?(id: string): WatchIndependentTarget | null;
   listPendingNotifications(
     channel: 'in-app' | 'windows',
     limit: number,

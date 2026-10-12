@@ -166,6 +166,26 @@ try {
   Need ($failure.oldMoved -and -not $failure.newMoved -and $failure.originalUntouchedOrRestored -and $null -eq $failure.rollbackError) '自动回退结论错误'
   Need (Test-Path -LiteralPath (Join-Path $failures[0].DirectoryName 'staging/build-provenance.json')) '失败 staging 被删除'
   $checks.Add('失败收据及 staging 现场保留')
+  Fixture 'explicit-scope-version' $source
+  $review.scope = 'watch-repair-20261012'
+  $manifest.source.version = '0.1.6'
+  foreach ($extension in @('exe', 'msi')) {
+    $relative = 'AIbrowse-0.1.6-win-x64-internal.' + $extension
+    WriteText (Join-Path $release $relative) ('合成新版本：' + $extension)
+    $key = if ($extension -eq 'exe') { 'installer' } else { 'msi' }
+    $manifest[$key] = Fact $release $relative
+  }
+  Rebind
+  Reject '新任务不能误用历史默认范围' { & $tool -ReviewRecord $reviewPath -ExpectedVersion '0.1.6' }
+  Reject '新版本不能误用历史默认版本' { & $tool -ReviewRecord $reviewPath -QualificationScope 'watch-repair-20261012' }
+  Reject '任务范围拒绝父目录' { & $tool -ReviewRecord $reviewPath -QualificationScope '../watch-repair' -ExpectedVersion '0.1.6' }
+  Reject '任务版本拒绝路径' { & $tool -ReviewRecord $reviewPath -QualificationScope 'watch-repair-20261012' -ExpectedVersion '../0.1.6' }
+  $selected = (& $tool -Action Switch -ReviewRecord $reviewPath -QualificationScope 'watch-repair-20261012' -ExpectedVersion '0.1.6') | ConvertFrom-Json -AsHashtable
+  Need ($selected.scope.StartsWith((Join-Path $fixture 'log/watch-repair-20261012') + [IO.Path]::DirectorySeparatorChar)) '新任务证据目录不符'
+  Same $old (Inventory $selected.backup)
+  $rolled = (& $tool -Action Rollback -SwitchId $selected.id -QualificationScope 'watch-repair-20261012' -ExpectedVersion '0.1.6') | ConvertFrom-Json -AsHashtable
+  Need $rolled.restored '显式范围回退失败'; Same $old (Inventory $output)
+  $checks.Add('显式任务与版本完整换包和回退，历史默认兼容')
   $result = @{ passed = $true; scope = 'synthetic-output-selection'; productLaunched = $false; candidateToolSha256 = $sourceSha256; testSha256 = (Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant(); count = $checks.Count; checks = $checks.ToArray(); retained = $run }
   Save (Join-Path $run 'result.json') $result
   $result | ConvertTo-Json -Depth 5

@@ -64,6 +64,7 @@ function makeRule(overrides: Partial<WatchRule> = {}): WatchRule {
   return {
     id: randomUUID(),
     version: 1,
+    bindingKind: 'source',
     sourceId: 'src-1',
     kind: 'feed',
     state: 'enabled',

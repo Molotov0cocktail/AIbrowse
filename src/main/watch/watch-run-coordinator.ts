@@ -278,6 +278,7 @@ export class WatchRunCoordinator {
   private maintenanceDrain: Promise<void> | null = null;
   private maintenanceOperationFailed = false;
   private maintenanceResumePrepared = false;
+  private scheduledRuleIds = new Set<string>();
 
   constructor(options: WatchRunCoordinatorOptions) {
     this.repo = options.repo;
@@ -334,7 +335,22 @@ export class WatchRunCoordinator {
       entries.push({ ruleId: rule.id, effectiveDueAt: eff });
     }
     this.scheduler.initialize(entries);
+    this.scheduledRuleIds = new Set(entries.map((entry) => entry.ruleId));
     logInfo('watch', `Watch 调度启动：${entries.length} 条 enabled 规则载入到期队列`);
+  }
+
+  syncSchedule(): void {
+    if (!this.started || this.stopped || this.unavailable || this.maintenanceGeneration !== null)
+      return;
+    try {
+      const rules = this.repo.listRules();
+      const ids = new Set(rules.map((rule) => rule.id));
+      for (const id of this.scheduledRuleIds) if (!ids.has(id)) this.scheduler.remove(id);
+      this.scheduledRuleIds = ids;
+      for (const rule of rules) this.requeueIfEnabled(rule.id);
+    } catch {
+      this.markUnavailable('规则更新后的排程同步失败');
+    }
   }
 
   stop(): Promise<void> {

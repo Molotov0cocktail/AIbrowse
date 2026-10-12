@@ -210,6 +210,8 @@ describe('Session 创建与重建的页面归属', () => {
       capturedUrl?: string;
       projectionUrl?: string;
       sourceVersion?: number;
+      previewBinding?: 'source' | 'watch-target';
+      grantBinding?: 'source' | 'watch-target';
     } = {},
   ) {
     const store = new WatchPreviewStore();
@@ -223,6 +225,7 @@ describe('Session 创建与重建的页面归属', () => {
       regions: selectedTarget.regions,
     })!;
     const previewHandle = store.issue({
+      bindingKind: input.previewBinding ?? 'source',
       sourceId: source.sourceId,
       sourceRowVersion: source.rowVersion,
       locatorFingerprint: computeSourceLocatorFingerprint({
@@ -249,6 +252,7 @@ describe('Session 创建与重建的页面归属', () => {
       previewTabId: 'tab-preview',
     })!;
     const grant = grants.issue({
+      bindingKind: input.grantBinding ?? 'source',
       sourceId: source.sourceId,
       previewTabId: 'tab-preview',
       finalOrigin: 'https://example.com',
@@ -292,6 +296,19 @@ describe('Session 创建与重建的页面归属', () => {
   }
 
   for (const operation of ['create', 'rebaseline'] as const) {
+    it.each(['source', 'watch-target'] as const)(
+      `${operation}拒绝同ID同页面但owner类型不同的授权：%s`,
+      (previewBinding) => {
+        const fixture = sessionCommand({
+          previewBinding,
+          grantBinding: previewBinding === 'source' ? 'watch-target' : 'source',
+        });
+        expect(fixture.execute(operation)).toEqual({ ok: false, errorCode: 'consent-required' });
+        expect(fixture.createRuleWithBaseline).not.toHaveBeenCalled();
+        expect(fixture.rebaselineRule).not.toHaveBeenCalled();
+        expect(fixture.grants.recordCount()).toBe(0);
+      },
+    );
     for (const mismatch of [
       { name: '实际读取路径不同', capturedUrl: 'https://example.com/form?view=selected' },
       { name: '实际读取 query 不同', capturedUrl: 'https://example.com/doc?view=other' },

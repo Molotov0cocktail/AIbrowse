@@ -304,6 +304,53 @@ describe('BrowserWatchReader — ready 等待与失败分类', () => {
 });
 
 describe('BrowserWatchReader — snapshot 元数据与迟到结果', () => {
+  it('主进程确认主文档完整时允许 iframe-only L1，且不返回可疑挑战', async () => {
+    const clock = new ManualClock();
+    const browser = new FakeBrowser();
+    const meta = {
+      ...snapshot().meta,
+      degraded: 'partial' as const,
+      mainDocument: 'complete' as const,
+      warnings: ['提示内容不参与准入'],
+    };
+    browser.snapshots.set('task-tab-1', snapshot({ meta }));
+    const r = await makeReader(browser, clock).read({
+      tabId: 'task-tab-1',
+      signal: new AbortController().signal,
+      deadline: new Date(DEADLINE),
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.channels.mainText).toBe('正文 内容');
+      expect(r.suspicion).toBeNull();
+    }
+  });
+
+  it.each([
+    ['partial', 'incomplete'],
+    ['none', 'incomplete'],
+    ['partial', undefined],
+    ['partial', 'unknown'],
+    ['main-process-only', 'complete'],
+    ['unknown', 'complete'],
+  ])('degraded=%s、mainDocument=%s 不因 iframe 提示放行', async (degraded, mainDocument) => {
+    const clock = new ManualClock();
+    const browser = new FakeBrowser();
+    const meta = {
+      ...snapshot().meta,
+      degraded,
+      mainDocument,
+      warnings: ['跳过 1 个 iframe（其中 1 个跨域）'],
+    } as PageSnapshot['meta'];
+    browser.snapshots.set('task-tab-1', snapshot({ meta }));
+    const r = await makeReader(browser, clock).read({
+      tabId: 'task-tab-1',
+      signal: new AbortController().signal,
+      deadline: new Date(DEADLINE),
+    });
+    expect(r).toMatchObject({ ok: false, code: 'snapshot-degraded' });
+  });
+
   it('readyState 非 complete → snapshot-invalid', async () => {
     const clock = new ManualClock();
     const browser = new FakeBrowser();

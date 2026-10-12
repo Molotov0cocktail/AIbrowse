@@ -54,7 +54,7 @@ export default function App() {
   const [libraryMode, setLibraryMode] = useState<BrowserLibraryMode>('history');
   const [currentBookmark, setCurrentBookmark] = useState<BrowserBookmark | null>(null);
   const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
-  const [watchSourceId, setWatchSourceId] = useState<string | null>(null);
+  const [watchTargetUrl, setWatchTargetUrl] = useState<string | null>(null);
   const [watchNotice, setWatchNotice] = useState<InAppNotificationDto | null>(null);
   const [watchUnreadCount, setWatchUnreadCount] = useState(0);
   const [watchFocus, setWatchFocus] = useState<{ type: 'event' | 'digest'; id: string } | null>(
@@ -92,7 +92,7 @@ export default function App() {
       window.aibrowse.watch.subscribe((push) => {
         if (push.type === 'status') setWatchUnreadCount(push.status.unreadCount);
         else if (push.type === 'activation') {
-          setWatchSourceId(null);
+          setWatchTargetUrl(null);
           setSidePanel(null);
           setWatchFocus({ type: push.subjectType, id: push.subjectId });
           setViewMode('watch');
@@ -318,6 +318,7 @@ export default function App() {
           onOpenWatch={() => {
             setSidePanel(null);
             setWatchFocus(null);
+            setWatchTargetUrl(null);
             setViewMode('watch');
           }}
           onOpenHistory={() => openLibrary('history')}
@@ -344,7 +345,9 @@ export default function App() {
             renderResultCanvas(research.state.resultView)
           ) : viewMode === 'watch' ? (
             <WatchWorkspace
-              initialSourceId={watchSourceId}
+              key={watchTargetUrl ?? 'watch-home'}
+              initialUrl={watchTargetUrl}
+              currentPageUrl={tabsState?.tabs.find((tab) => tab.id === tabsState.activeTabId)?.url}
               focusSubject={watchFocus}
               onBack={() => setViewMode('browser')}
             />
@@ -365,15 +368,14 @@ export default function App() {
                 setDebugOpen(true);
               }}
               onWatchCurrentPage={() => {
-                void window.aibrowse.sources
-                  .quickAdd()
-                  .then((result) => {
-                    if (result.status === 'added') setWatchSourceId(result.source.id);
-                    else if (result.status === 'duplicate') setWatchSourceId(result.existing.id);
-                    else return;
-                    setViewMode('watch');
-                  })
-                  .catch(() => setLibraryNotice('监控入口暂不可用，请稍后重试'));
+                const active = tabsState?.tabs.find((tab) => tab.id === tabsState.activeTabId);
+                if (active === undefined || !isSafeMarkdownUrl(active.url)) {
+                  setLibraryNotice('请先打开要监控的 http 或 https 网页');
+                  return;
+                }
+                setWatchTargetUrl(active.url);
+                setWatchFocus(null);
+                setViewMode('watch');
               }}
             />
           ) : viewMode === 'library' ? (
@@ -405,9 +407,19 @@ export default function App() {
           <SourcesPanel
             onCollapse={() => setSidePanel(null)}
             onCreateWatch={(sourceId) => {
-              setWatchSourceId(sourceId);
-              setSidePanel(null);
-              setViewMode('watch');
+              void window.aibrowse.sources
+                .get({ sourceId })
+                .then((result) => {
+                  if (!result.ok) {
+                    setLibraryNotice('无法读取该信源的网址，请刷新后重试');
+                    return;
+                  }
+                  setWatchTargetUrl(result.source.url);
+                  setWatchFocus(null);
+                  setSidePanel(null);
+                  setViewMode('watch');
+                })
+                .catch(() => setLibraryNotice('监控入口暂不可用，请稍后重试'));
             }}
           />
         )}

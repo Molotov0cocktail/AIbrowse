@@ -193,7 +193,7 @@ function region(v: unknown): boolean {
 }
 
 function manualFeedUrl(value: unknown): boolean {
-  if (typeof value !== 'string' || value.length > 2048) return false;
+  if (!pageUrl(value)) return false;
   try {
     const url = new URL(value);
     return (
@@ -201,6 +201,27 @@ function manualFeedUrl(value: unknown): boolean {
       url.username === '' &&
       url.password === '' &&
       (url.port === '' || url.port === '80' || url.port === '443')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function pageUrl(value: unknown): value is string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 2048 ||
+    Array.from(value).some((char) => char.charCodeAt(0) <= 32 || char.charCodeAt(0) === 127)
+  )
+    return false;
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.hostname !== '' &&
+      url.username === '' &&
+      url.password === ''
     );
   } catch {
     return false;
@@ -237,6 +258,14 @@ function saveDigest(v: unknown): boolean {
 }
 
 function digestSelector(v: unknown): boolean {
+  if (record(v, ['kind', 'targetIds']))
+    return (
+      v['kind'] === 'targets' &&
+      Array.isArray(v['targetIds']) &&
+      v['targetIds'].length >= 1 &&
+      v['targetIds'].length <= 100 &&
+      v['targetIds'].every(uuid)
+    );
   if (record(v, ['kind', 'sourceIds']))
     return (
       v['kind'] === 'sources' &&
@@ -325,6 +354,8 @@ function validate(channel: WatchIpcChannel, v: unknown): boolean {
         v['confirmed'] === true
       );
     case 'watch:previewFeed':
+      if (record(v, ['mode', 'url'])) return v['mode'] === 'standalone' && manualFeedUrl(v['url']);
+      if (record(v, ['mode', 'ruleId'])) return v['mode'] === 'rule' && uuid(v['ruleId']);
       if (record(v, ['mode', 'sourceId'])) return v['mode'] === 'source' && uuid(v['sourceId']);
       if (record(v, ['mode', 'discoveryHandle', 'candidateId']))
         return (
@@ -338,8 +369,13 @@ function validate(channel: WatchIpcChannel, v: unknown): boolean {
       );
     case 'watch:previewPageRegions':
       return (
-        record(v, ['sourceId', 'accessMode', 'regions']) &&
-        uuid(v['sourceId']) &&
+        ((record(v, ['sourceId', 'accessMode', 'regions']) && uuid(v['sourceId'])) ||
+          (record(v, ['mode', 'url', 'accessMode', 'regions']) &&
+            v['mode'] === 'standalone' &&
+            pageUrl(v['url'])) ||
+          (record(v, ['mode', 'ruleId', 'accessMode', 'regions']) &&
+            v['mode'] === 'rule' &&
+            uuid(v['ruleId']))) &&
         (v['accessMode'] === 'public' || v['accessMode'] === 'session') &&
         Array.isArray(v['regions']) &&
         v['regions'].length >= 1 &&
@@ -456,6 +492,9 @@ export function validateWatchIpcOutput(value: unknown, channel?: WatchIpcChannel
         'invalid-state',
         'budget-exceeded',
         'security-rejected',
+        'page-incomplete',
+        'page-not-ready',
+        'target-mismatch',
         'consent-required',
         'preview-expired',
         'feature-unavailable',
@@ -618,6 +657,7 @@ function ruleSummary(value: unknown): boolean {
     record(value, [
       'id',
       'version',
+      'bindingKind',
       'sourceId',
       'sourceName',
       'kind',
@@ -639,6 +679,7 @@ function ruleSummary(value: unknown): boolean {
     ]) &&
     uuid(value['id']) &&
     integer(value['version']) &&
+    (value['bindingKind'] === 'source' || value['bindingKind'] === 'watch-target') &&
     uuid(value['sourceId']) &&
     boundedText(value['sourceName'], 512) &&
     (value['kind'] === 'feed' || value['kind'] === 'page') &&
@@ -668,6 +709,7 @@ function eventListItem(value: unknown): boolean {
     record(value, [
       'id',
       'ruleId',
+      'bindingKind',
       'sourceId',
       'sourceName',
       'eventKind',
@@ -679,6 +721,7 @@ function eventListItem(value: unknown): boolean {
     ]) &&
     uuid(value['id']) &&
     uuid(value['ruleId']) &&
+    (value['bindingKind'] === 'source' || value['bindingKind'] === 'watch-target') &&
     uuid(value['sourceId']) &&
     boundedText(value['sourceName'], 512) &&
     (WATCH_EVENT_KINDS as readonly unknown[]).includes(value['eventKind']) &&
@@ -696,6 +739,7 @@ function eventDetail(value: unknown): boolean {
     (record(value, [
       'id',
       'ruleId',
+      'bindingKind',
       'sourceId',
       'sourceName',
       'eventKind',

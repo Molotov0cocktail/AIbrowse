@@ -80,6 +80,7 @@ export async function runWatchDigestSmokeScenario(): Promise<void> {
     const rule: WatchRule = {
       id: 'rule-smoke',
       version: 1,
+      bindingKind: 'source',
       sourceId,
       kind: 'feed',
       state: 'enabled',

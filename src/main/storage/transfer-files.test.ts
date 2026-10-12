@@ -71,7 +71,7 @@ async function fixture(budget = new TransferBudget(), action: 'backup' | 'restor
       members: BACKUP_IDS.map((id) => ({
         id,
         present: true,
-        schemaVersion: id === 'watch' ? 5 : 1,
+        schemaVersion: id === 'watch' ? 6 : 1,
         ...digest(id),
       })),
     },

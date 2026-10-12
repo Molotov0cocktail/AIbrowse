@@ -84,7 +84,7 @@ describe('原生用户点击与被动 Watch 提醒分流', () => {
       setWatchFocus,
       setViewMode,
       setWatchNotice,
-      setWatchSourceId: vi.fn(),
+      setWatchTargetUrl: vi.fn(),
       setSidePanel: vi.fn(),
       setWatchUnreadCount: vi.fn(),
     });
@@ -116,7 +116,7 @@ describe('原生用户点击与被动 Watch 提醒分流', () => {
         setWatchFocus,
         setViewMode,
         setWatchNotice,
-        setWatchSourceId: vi.fn(),
+        setWatchTargetUrl: vi.fn(),
         setSidePanel: vi.fn(),
         setWatchUnreadCount: vi.fn(),
       }),

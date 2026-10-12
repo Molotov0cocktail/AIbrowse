@@ -36,6 +36,7 @@ function ruleRow(overrides: Partial<WatchRuleRowColumns> = {}): WatchRuleRowColu
   return {
     id: 'r1',
     rule_version: 1,
+    binding_kind: 'source',
     source_id: 's1',
     kind: 'feed',
     state: 'enabled',
@@ -877,6 +878,7 @@ describe('D8 Digest v4 runtime validators', () => {
         id: 's1',
         version: 1,
         source_ids_json: '["a","b"]',
+        binding_kind: 'source',
         schedule_json: '{"kind":"daily","localTime":"09:00","timeZone":"UTC"}',
         ai_enabled: 0,
         cursor_sequence: 0,

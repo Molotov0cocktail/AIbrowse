@@ -40,7 +40,7 @@ describe('实际容量夹具的最小同形资格', () => {
             original.exec('PRAGMA user_version = 1');
             seedResearch(original, 1);
           } else {
-            original.exec('PRAGMA user_version = 5');
+            original.exec('PRAGMA user_version = 6');
             seedWatch(original, 1, 1);
           }
         } finally {

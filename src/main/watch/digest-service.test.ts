@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeClock } from '../../shared/watch/clock';
 import { buildDigestFacts } from '../../shared/watch/digest-facts';
 import { serializeDigestArtifact } from '../../shared/watch/digest-validator';
@@ -17,6 +17,8 @@ import { DigestService, type DigestScheduleControlPort } from './digest-service'
 import { DigestScheduler } from './digest-scheduler';
 import { WatchRepository } from './repository/watch-repository';
 import { openWatchStore } from './watch-store';
+import { newIndependentTarget } from './watch-independent-target';
+import { computeSourceLocatorFingerprint } from '../../shared/watch/watch-rule-state';
 
 const root = mkdtempSync(join(tmpdir(), 'aibrowse-digest-service-'));
 const created = '2026-08-28T00:00:00.000Z';
@@ -42,6 +44,7 @@ function rule(): WatchRule {
   return {
     id: 'rule-1',
     version: 1,
+    bindingKind: 'source',
     sourceId: 'source-1',
     kind: 'feed',
     state: 'enabled',
@@ -254,6 +257,76 @@ function deferredSignal(): {
     release: () => release(),
   };
 }
+
+it.each([false, true])(
+  '独立目标仅按当前摘要计划显式AI授权，默认不发模型且不读取同ID Source：%s',
+  async (aiEnabled) => {
+    prepare(1, aiEnabled);
+    const target = newIndependentTarget('https://example.com/home?private=SECRET_TARGET_QUERY')!;
+    handle
+      .prepare(
+        'INSERT INTO watch_targets(id,version,scope,canonical_url,display_name,ai_share_mode) VALUES(?,?,?,?,?,?)',
+      )
+      .run(
+        target.id,
+        target.version,
+        target.scope,
+        target.canonicalUrl,
+        target.displayName,
+        target.aiShareMode,
+      );
+    const fingerprint = computeSourceLocatorFingerprint({
+      sourceId: target.id,
+      scope: target.scope,
+      canonicalKey: target.canonicalUrl,
+      kind: 'feed',
+      canonicalTargetUrl: rule().target.type === 'feed' ? 'https://example.com/feed' : '',
+    });
+    handle
+      .prepare(
+        "UPDATE watch_rules SET source_id=?,binding_kind='watch-target',source_locator_fingerprint=?",
+      )
+      .run(target.id, fingerprint);
+    handle.prepare('UPDATE watch_events SET source_id=?').run(target.id);
+    handle
+      .prepare("UPDATE digest_change_journal SET source_id=?,binding_kind='watch-target'")
+      .run(target.id);
+    handle
+      .prepare("UPDATE digest_schedules SET source_ids_json=?,binding_kind='watch-target'")
+      .run(JSON.stringify([target.id]));
+    const getSourceSharing = vi.fn(async () => [
+      {
+        sourceId: target.id,
+        shareMode: 'blocked' as const,
+        displayName: '禁止借用的Source',
+        canonicalUrl: 'https://source.invalid',
+      },
+    ]);
+    const fake = new FakeProvider({
+      chunks: ['{"sections":[{"eventIds":["event-000"],"explanation":"确定性变化"}]}'],
+    });
+    const digest = new DigestService({
+      repository: repo,
+      clock: new FakeClock(Date.parse(due)),
+      sharing: { get: getSourceSharing },
+      provider: { resolve: async () => ({ provider: fake, model: 'fake' }) },
+      scheduleControl: noopScheduleControl,
+    });
+    await digest.handleDue({
+      scheduleId: 'schedule-1',
+      expectedNextDueAt: due,
+      logicalDate: '2026-08-29',
+    });
+    expect(fake.getRequests()).toHaveLength(aiEnabled ? 1 : 0);
+    expect(getSourceSharing).not.toHaveBeenCalled();
+    expect(JSON.stringify(fake.getRequests())).not.toContain('SECRET_TARGET_QUERY');
+    expect(JSON.stringify(fake.getRequests())).not.toContain('禁止借用的Source');
+    expect(repo.getIndependentTarget(target.id)?.aiShareMode).toBe('blocked');
+    expect(handle.prepare('SELECT provider_state FROM watch_digests').get()).toEqual({
+      provider_state: aiEnabled ? 'succeeded' : 'disabled',
+    });
+  },
+);
 
 class RecordingScheduleControl implements DigestScheduleControlPort {
   readonly entries = new Map<

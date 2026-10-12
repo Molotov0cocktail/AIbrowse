@@ -18,6 +18,7 @@ import { validateRuleRow } from '../../src/main/watch/watch-row-validation';
 import { MAX_TASK_PERSISTED_CHARS } from '../../src/shared/types/research';
 import { validate } from '../../src/main/research/result-validator';
 import { computeSourceLocatorFingerprint } from '../../src/shared/watch/watch-rule-state';
+import { normalizeTransferSchema } from '../../src/main/storage/transfer-schema';
 
 const root = process.cwd();
 const baseline = git(root, ['rev-parse', 'HEAD']);
@@ -77,6 +78,7 @@ describe('E2容量资格夹具与证据边界', () => {
           expect(db.prepare('SELECT count(*) n FROM research_tasks').get()?.n).toBe(30);
         } else {
           populateWatch(db);
+          expect(normalizeTransferSchema(db, 'watch').ok).toBe(true);
           const rules = db.prepare('SELECT * FROM watch_rules').all();
           expect(rules).toHaveLength(200);
           expect(rules.every((rule) => validateRuleRow(rule).ok)).toBe(true);

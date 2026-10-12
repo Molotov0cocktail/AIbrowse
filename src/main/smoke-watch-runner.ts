@@ -181,6 +181,7 @@ function d10Rule(id: string): WatchRule {
     // Keep the offline fixture on the same UUID contract as the product
     // repository. The renderer IPC validator must be able to consume the
     // event produced by this exact cohesive path.
+    bindingKind: 'source',
     sourceId: randomUUID(),
     kind: 'feed',
     state: 'enabled',
@@ -1320,7 +1321,7 @@ function assertWatchD10GateSchema(dbPath: string, label: string): void {
   try {
     const version = (db.prepare('PRAGMA user_version').get() as { user_version: number })
       .user_version;
-    if (version !== 5) throw new Error(`${label}：Watch schema version 非 v5`);
+    if (version !== 6) throw new Error(`${label}：Watch schema version 非 v6`);
     const tables = new Set(
       (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{

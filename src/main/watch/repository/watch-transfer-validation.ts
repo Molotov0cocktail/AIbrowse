@@ -1,3 +1,5 @@
+import { validateIndependentTargetRow, targetProjection } from '../watch-independent-target';
+import { computeSourceLocatorFingerprint } from '../../../shared/watch/watch-rule-state';
 // Caller owns schema/physical-file validation, snapshot isolation and disposal.
 // This scanner never writes, prunes, opens files, or returns stored text/IDs.
 import { createHash } from 'node:crypto';
@@ -44,6 +46,7 @@ import {
 } from '../watch-row-validation';
 
 const QUERIES = {
+  watch_targets: 'SELECT * FROM watch_targets',
   watch_rules: 'SELECT * FROM watch_rules',
   watch_baselines: 'SELECT * FROM watch_baselines',
   watch_runs: 'SELECT * FROM watch_runs',
@@ -453,6 +456,11 @@ function outbox(row: Row): void {
 // accept. Reject both before materializing any business row or JSON string.
 const SCALAR_PREFLIGHT: ReadonlyArray<readonly [WatchTransferTable, string]> = [
   [
+    'watch_targets',
+    `SELECT 1 FROM watch_targets WHERE typeof(id)<>'text' OR typeof(version)<>'integer'
+    OR typeof(scope)<>'text' OR typeof(canonical_url)<>'text' OR typeof(display_name)<>'text' OR typeof(ai_share_mode)<>'text' LIMIT 1`,
+  ],
+  [
     'watch_rules',
     `SELECT 1 FROM watch_rules WHERE typeof(id)<>'text'
     OR typeof(rule_version)<>'integer' OR typeof(source_row_version)<>'integer'
@@ -601,6 +609,9 @@ export function validateWatchTransferDatabase(
         counts[name]++;
         preparse(row);
         switch (name) {
+          case 'watch_targets':
+            check(validateIndependentTargetRow(row) !== null);
+            break;
           case 'watch_rules':
             check(validateRuleRow(row).ok);
             dailyDate(row);
@@ -643,6 +654,7 @@ export function validateWatchTransferDatabase(
                 str(row['observation_id']) &&
                 str(row['event_id']) &&
                 str(row['source_id']) &&
+                member(row['binding_kind'], ['source', 'watch-target']) &&
                 iso(row['observed_at']) &&
                 member(row['status'], ['active', 'expired', 'user-deleted']),
             );
@@ -692,7 +704,10 @@ export function validateWatchTransferDatabase(
     table = 'digest_change_state';
     check(counts.digest_change_state === 1);
     table = 'watch_rules';
-    check(counts.watch_rules <= MAX_WATCH_RULES_TOTAL, 'budget-exceeded');
+    check(
+      counts.watch_rules <= MAX_WATCH_RULES_TOTAL && counts.watch_targets <= MAX_WATCH_RULES_TOTAL,
+      'budget-exceeded',
+    );
     check(
       (database.prepare("SELECT COUNT(*) AS n FROM watch_rules WHERE state='enabled'").get()?.[
         'n'
@@ -703,6 +718,62 @@ export function validateWatchTransferDatabase(
       table = name;
       check(database.prepare(sql).get() === undefined, 'reference-invalid');
     }
+    for (const row of database
+      .prepare("SELECT * FROM watch_rules WHERE binding_kind='watch-target'")
+      .iterate()) {
+      const rule = validateRuleRow(row);
+      check(rule.ok && rule.value !== null, 'reference-invalid');
+      const owner = validateIndependentTargetRow(
+        database.prepare('SELECT * FROM watch_targets WHERE id=?').get(rule.value.sourceId),
+      );
+      check(owner !== null && owner.version === rule.value.sourceRowVersion, 'reference-invalid');
+      const projection = targetProjection(owner);
+      check(
+        computeSourceLocatorFingerprint({
+          sourceId: projection.sourceId,
+          scope: projection.scope,
+          canonicalKey: projection.canonicalKey,
+          kind: rule.value.kind,
+          canonicalTargetUrl:
+            rule.value.target.type === 'page'
+              ? rule.value.target.pageUrl
+              : rule.value.target.feedUrl,
+        }) === rule.value.sourceLocatorFingerprint,
+        'reference-invalid',
+      );
+    }
+    check(
+      database
+        .prepare(
+          "SELECT 1 FROM watch_targets t WHERE NOT EXISTS(SELECT 1 FROM watch_rules r WHERE r.binding_kind='watch-target' AND r.source_id=t.id) LIMIT 1",
+        )
+        .get() === undefined,
+      'reference-invalid',
+    );
+    check(
+      database
+        .prepare(
+          "SELECT 1 FROM digest_change_journal j JOIN watch_events e ON e.id=j.event_id JOIN watch_rules r ON r.id=e.rule_id WHERE j.status='active' AND j.binding_kind<>r.binding_kind LIMIT 1",
+        )
+        .get() === undefined,
+      'reference-invalid',
+    );
+    check(
+      database
+        .prepare(
+          "SELECT 1 FROM digest_event_refs f JOIN watch_digests d ON d.id=f.digest_id JOIN digest_schedules s ON s.id=d.schedule_id JOIN watch_events e ON e.id=f.event_id JOIN watch_rules r ON r.id=e.rule_id WHERE f.status='active' AND s.binding_kind<>r.binding_kind LIMIT 1",
+        )
+        .get() === undefined,
+      'reference-invalid',
+    );
+    check(
+      database
+        .prepare(
+          "SELECT 1 FROM source_cleanup_intents i JOIN json_each(i.affected_rule_state_json) a JOIN watch_rules r ON r.id=a.key WHERE r.binding_kind<>'source' OR r.source_id<>i.source_id LIMIT 1",
+        )
+        .get() === undefined,
+      'reference-invalid',
+    );
     table = 'watch_events';
     const observations = database.prepare(
       'SELECT * FROM watch_event_observations WHERE event_id=? ORDER BY sequence',
@@ -859,7 +930,7 @@ export function validateWatchTransferDatabase(
 }
 
 const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
-  COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(source_id AS BLOB))
+  COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(source_id AS BLOB)) + LENGTH(CAST(binding_kind AS BLOB))
     + LENGTH(CAST(kind AS BLOB)) + LENGTH(CAST(state AS BLOB))
     + LENGTH(CAST(COALESCE(pause_reason,'') AS BLOB))
     + LENGTH(CAST(schedule_json AS BLOB)) + LENGTH(CAST(target_json AS BLOB))
@@ -917,7 +988,7 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     + LENGTH(CAST(event_kind AS BLOB)) + LENGTH(CAST(observed_at AS BLOB)) + 24)
     FROM watch_event_observations), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB))
-    + LENGTH(CAST(source_ids_json AS BLOB)) + LENGTH(CAST(schedule_json AS BLOB))
+    + LENGTH(CAST(source_ids_json AS BLOB)) + LENGTH(CAST(binding_kind AS BLOB)) + LENGTH(CAST(schedule_json AS BLOB))
     + LENGTH(CAST(next_due_at AS BLOB))
     + LENGTH(CAST(state AS BLOB)) + LENGTH(CAST(created_at AS BLOB))
     + LENGTH(CAST(updated_at AS BLOB))
@@ -942,7 +1013,7 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     + LENGTH(CAST(COALESCE(provider_finished_at,'') AS BLOB))
     + LENGTH(CAST(created_at AS BLOB)) + 40) FROM watch_digests), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(observation_id AS BLOB))
-    + LENGTH(CAST(event_id AS BLOB)) + LENGTH(CAST(source_id AS BLOB))
+    + LENGTH(CAST(event_id AS BLOB)) + LENGTH(CAST(source_id AS BLOB)) + LENGTH(CAST(binding_kind AS BLOB))
     + LENGTH(CAST(observed_at AS BLOB)) + LENGTH(CAST(status AS BLOB)) + 8)
     FROM digest_change_journal), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(digest_id AS BLOB))
@@ -960,4 +1031,4 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     + LENGTH(CAST(COALESCE(after_projection_json,'') AS BLOB))
     + LENGTH(CAST(affected_rule_state_json AS BLOB)) + LENGTH(CAST(state AS BLOB))
     + LENGTH(CAST(created_at AS BLOB)) + LENGTH(CAST(updated_at AS BLOB)))
-    FROM source_cleanup_intents), 0) AS total`;
+    FROM source_cleanup_intents), 0) + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB))+LENGTH(CAST(canonical_url AS BLOB))+LENGTH(CAST(display_name AS BLOB))+LENGTH(CAST(ai_share_mode AS BLOB))+LENGTH(CAST(scope AS BLOB))+8) FROM watch_targets),0) AS total`;

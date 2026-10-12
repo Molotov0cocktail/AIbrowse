@@ -385,6 +385,8 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
     for (const [ruleId, affected] of Object.entries(intent.affectedRuleState)) {
       const rule = repo.getRule(ruleId);
       if (rule === null || rule.state === 'deleted') continue;
+      if (rule.bindingKind !== 'source' || rule.sourceId !== intent.sourceId)
+        throw new Error('Source清理意图归属不匹配');
       const updated = repo.updateRuleCoordination(
         ruleId,
         {
@@ -628,7 +630,11 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
         // 直接改动等路径）：任一孤儿一律暂停，零联网保证。
         for (const rule of repo.listRules()) {
           if (rule.state === 'deleted') continue;
-          const current = projectionOrNull(reader(rule.sourceId));
+          const current = projectionOrNull(
+            rule.bindingKind === 'watch-target'
+              ? repo.readIndependentTargetProjection(rule.sourceId)
+              : reader(rule.sourceId),
+          );
           if (current === null) {
             this.pauseSingleRuleSourceDeleted(repo, rule, nowIso);
             continue;
@@ -774,7 +780,11 @@ export class WatchLifecycleCoordinator implements SourceLifecycleObserver {
         if (rule === null) return { status: 'rule-missing' as const };
         if (rule.state === 'deleted') return { status: 'rule-deleted' as const };
         // unavailable 抛错 → 本事务回滚 + Watch unavailable
-        const current = projectionOrNull(reader(rule.sourceId));
+        const current = projectionOrNull(
+          rule.bindingKind === 'watch-target'
+            ? repo.readIndependentTargetProjection(rule.sourceId)
+            : reader(rule.sourceId),
+        );
         if (current === null) {
           this.pauseSingleRuleSourceDeleted(repo, rule, this.iso());
           return { status: 'source-missing' as const };

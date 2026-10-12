@@ -594,6 +594,12 @@ body {
   color: var(--danger);
 }
 
+.ai-citation-notices {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: var(--muted);
+}
+
 .ai-composer {
   flex-shrink: 0;
   padding: 16px;
@@ -1945,7 +1951,9 @@ body {
 .watch-wizard ol {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px 16px;
+  list-style-position: inside;
+  line-height: 1.6;
   padding-left: 20px;
 }
 .watch-wizard li[aria-current='true'] {

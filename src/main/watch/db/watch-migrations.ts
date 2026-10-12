@@ -565,12 +565,31 @@ export const WATCH_MIGRATION_V5: MigrationStep = {
   ],
 };
 
+export const WATCH_MIGRATION_V6: MigrationStep = {
+  version: 6,
+  statements: [
+    `CREATE TABLE watch_targets (
+  id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL CHECK(version >= 1),
+  scope TEXT NOT NULL CHECK(scope = 'page'),
+  canonical_url TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  ai_share_mode TEXT NOT NULL DEFAULT 'blocked' CHECK(ai_share_mode IN ('full','metadata','blocked'))
+)`,
+    "ALTER TABLE watch_rules ADD COLUMN binding_kind TEXT NOT NULL DEFAULT 'source' CHECK(binding_kind IN ('source','watch-target'))",
+    "ALTER TABLE digest_change_journal ADD COLUMN binding_kind TEXT NOT NULL DEFAULT 'source' CHECK(binding_kind IN ('source','watch-target'))",
+    "ALTER TABLE digest_schedules ADD COLUMN binding_kind TEXT NOT NULL DEFAULT 'source' CHECK(binding_kind IN ('source','watch-target'))",
+    'CREATE INDEX idx_watch_rules_binding ON watch_rules(binding_kind, source_id)',
+  ],
+};
+
 export const WATCH_MIGRATIONS: readonly MigrationStep[] = [
   WATCH_MIGRATION_V1,
   WATCH_MIGRATION_V2,
   WATCH_MIGRATION_V3,
   WATCH_MIGRATION_V4,
   WATCH_MIGRATION_V5,
+  WATCH_MIGRATION_V6,
 ];
 
 // 薄封装：固定使用 Watch 独立迁移列表（引擎复用 B1 冻结模式）

@@ -508,6 +508,7 @@ export function validateAffectedRuleStateMap(
 export interface WatchRuleRowColumns {
   id: string;
   rule_version: number;
+  binding_kind: string;
   source_id: string;
   kind: string;
   state: string;
@@ -545,6 +546,8 @@ export function validateRuleRow(row: unknown): WatchRowValidation<WatchRule> {
   ) {
     return { ok: false, value: null, reason: 'row-shape-invalid' };
   }
+  if (r.binding_kind !== 'source' && r.binding_kind !== 'watch-target')
+    return { ok: false, value: null, reason: 'enum-invalid' };
   if (!isInt(r.rule_version, 1)) return { ok: false, value: null, reason: 'integer-invalid' };
   if (!isIn(r.kind, WATCH_RULE_KINDS)) return { ok: false, value: null, reason: 'enum-invalid' };
   if (!isIn(r.state, WATCH_RULE_STATES)) return { ok: false, value: null, reason: 'enum-invalid' };
@@ -627,6 +630,7 @@ export function validateRuleRow(row: unknown): WatchRowValidation<WatchRule> {
   const rule: WatchRule = {
     id: r.id,
     version: r.rule_version,
+    bindingKind: r.binding_kind,
     sourceId: r.source_id,
     kind: r.kind as WatchRule['kind'],
     state: r.state as WatchRuleState,
@@ -879,6 +883,7 @@ function validRunStats(value: unknown): boolean {
 }
 
 export function validateDigestScheduleRow(row: Record<string, unknown>): boolean {
+  if (row['binding_kind'] !== 'source' && row['binding_kind'] !== 'watch-target') return false;
   const sourceIds = parseCanonicalJson(row['source_ids_json']);
   const schedule = parseCanonicalJson(row['schedule_json']);
   if (

@@ -8,6 +8,34 @@ import { SESSION_GRANT_TTL_MS } from '../../shared/types/watch';
 
 const time0 = 1_752_000_000_000;
 
+it.each(['source', 'watch-target'] as const)(
+  '同UUID与页面范围也不能跨owner类型消费Session授权：%s',
+  (bindingKind) => {
+    const store = new SessionGrantStore({ nowMs: () => time0 });
+    const binding = {
+      sourceId: '00000000-0000-4000-8000-000000000001',
+      previewTabId: 'same-tab',
+      finalOrigin: 'https://example.com',
+      targetDigest: 'same-digest',
+      bindingKind,
+    };
+    const issued = store.issue(binding);
+    expect(issued.ok).toBe(true);
+    if (!issued.ok) return;
+    expect(
+      store.consume({
+        ...binding,
+        handle: issued.handle,
+        bindingKind: bindingKind === 'source' ? 'watch-target' : 'source',
+      } as never),
+    ).toEqual({ ok: false, reason: 'binding-mismatch' });
+    expect(store.consume({ ...binding, handle: issued.handle })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+  },
+);
+
 function makeStore(nowMs: () => number = () => time0): SessionGrantStore {
   return new SessionGrantStore({ nowMs });
 }

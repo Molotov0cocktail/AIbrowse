@@ -1,5 +1,60 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 独立监控目标与采集提示修复合同（2026-10-12）
+
+- TASK / BASELINE：用户先要求定位监控预览失败和采集红字，后明确监控不得依赖标记信源、默认不影响 AI 搜寻，
+  并授权继续实现、验证、更新本地程序。接管 HEAD `838478046c406ba92a6d01d3978c4f5bcb70cce1`，工作区干净；
+  现有 0.1.5 包绑定 `d37e6276645b7064d6e8b744890ad931a5ab6dac`，其后只有文档差量。
+- GOAL：新监控直接接受 URL 或当前页；从信源进入时只复制定位信息，不自动新增或修改信源、不写 AI 选源/检索/usage。
+  含 iframe 的主文档可在完整采集证据成立时监控；采集边界、上下文裁剪和实际失败分级显示；错误提供具体可操作原因。
+- FIXED PRODUCT：新监控目标独立保存在 watch.db，默认不向模型共享内容，AI 解释仍须明确开启并通过共享门。
+  独立摘要显式开启 AI 时只授权该计划的有界 Event 投影，不改变目标的默认共享标志或其它计划，不改变 AI 搜寻。
+  旧 Source 绑定规则、计划、暂停原因和历史 Event/Evidence 保持原语义，不自动脱钩、复活或扩大共享。
+  不扩充 17 个 Agent 工具；AI 可说明监控工作区入口，不得把自身无工具说成应用无监控。
+- ENGINEERING：watch schema v6 增加独立目标及 typed binding；保留旧 source_id/版本/指纹字段作为兼容 owner 字段，
+  用明确 bindingKind 区分真实 Source 与 Watch target，禁止按 UUID 在两个库依次猜测归属。
+  预览目标只在有界内存中存在，确认创建时 target/rule/baseline 同事务；恢复校验、生命周期、采集前后 CAS、
+  Digest、删除与预算均按绑定类型分流。新目标不作为隐藏 Source 存储。
+- SNAPSHOT：保留现有整体 L1 语义，新增由主进程 normalize 派生的主文档完整性标记，页面直接提交同名字段不可信。
+  iframe 只说明范围不含子文档，不自动判主文档失败；未完成、丢弃/截断、未知 partial、L2/L3 继续拒绝可信监控投影。
+  ContextSource 的展示降级标志表示主文档不完整，普通范围与上下文预算提示保留且不统一使用危险色。
+- RED LINES：Public DNS/robots/TLS/重定向、Session 明确授权与精确 locator/世代、任务 Tab 所有权、预算、正文零落盘、
+  确定性 Diff/Event 及旧隐私门不变；不因输入体验绕过 IPC 校验，不把未知错误统称安全攻击。
+- PLAN / SCOPE：主协调负责正式合同、IPC/UI/装配与交付；两个独立 worker 负责目标存储/生命周期和采集/提示；
+  新独立 Reviewer 审查持久化、安全、恢复、共享与并发。按工程规则调度，actual 型号未回显记不可验证。
+- TEST / ACCEPTANCE：先保存现实现的甄别红态；覆盖独立目标零 Source 写、重启/旧库迁移/备份恢复、碰撞与跨目标拒绝、
+  默认零模型共享、同页面授权、iframe-only 成功及截断/未完成失败；再做 typecheck/lint/format、受影响回归、完整构建
+  与隔离真实 Electron 操作。候选 0.1.6 经独审与包身份验证后可回退更新 output，完整保留原 0.1.5。
+- STOP / REPLAN：不操作正在运行的真实 profile、不把外部路径视图异常当作产品库损坏；同路线两轮无新增证据即换路。
+  新安全/隐私或数据语义取舍集中裁决；本轮不启动其他 Stage8 能力。诊断原件保留在
+  `log/watch-diagnosis-20261012-001/`，实现验证在 `log/watch-repair-20261012/`。
+- 实现验证：网址 IPC 红态 3 FAIL/10 PASS，补齐独立 page/feed/rule 与严格输入门后含消费绑定回归 20 PASS。
+  Snapshot 红态分别 22 FAIL/113 PASS 与脚本 8 FAIL/1 PASS，修后独审 11 文件 315 PASS、独立内存探针 33 断言 PASS；
+  探针首轮阈值误设原件保留，生产预算未变。独立目标域已完成原子创建、typed 生命周期/CAS、摘要计划权限与调度同步。
+  审查发现 Feed discovery 丢失 owner 和重新预览误用 HTML URL 两项缺陷，修后服务完整链验证通过。
+  Watch 全域第二轮 1502 PASS/1 FAIL 是新增测试误把旧硬删 expired 期望为 user-deleted，保持产品旧语义修正后聚焦 94 PASS。
+  首轮集成 storage/migration 为 664 PASS/12 FAIL：5 项旧 current schema 夹具已适配 v6，7 项未改文件在并发 I/O 下超时；
+  当时负载是观察，不能据此确定历史唯一原因。失败原件 `root-migration-storage-01.txt` 保留，正在独占全量复验，不提高阈值。
+- 当前运行证据：`ordinary-build-02` 为普通开发构建；Runtime `runtime-d71ba0e1-e5b9-45d0-8365-16fbf18314c5`
+  两进程正常退出，9 次本地请求/0 拒绝/Provider 0，scheduled 自动产生 A→B typed Evidence、manual unchanged 无重复事件，
+  复启保留规则/事件/基线；Sources、FTS、usage、change journal 内容摘要恒等，quickAdd 0。
+  这是程序化真实 DOM/Session 验证，不代表物理点击、打包启动、真实 YouTube、Public 网络或 15 分钟实等。
+  独立换包工具 42+4 项通过，显式任务范围/版本参数保留旧默认与完整新旧树、证明复核、幂等回退门；未因此授实际包通过。
+- 最终实现证据：完整运行 `full-tests-01` 实际 7095 PASS/38 FAIL/15 SKIP、exit1；14 失败文件全部来自旧 schema/工具
+  夹具或已改名的 UI mock。修复后精确同一 14 文件 `full-failures-repaired` 为 108 PASS/exit0，包含原初始化失败的
+  测试及新增断言。原失败保留，不表述为全量命令通过；未受影响通过项复用，经独立 `combined-independent-check.json` 核对无漏项。
+  原 7 项存储超时本轮同阈值全部通过，历史唯一原因仍 unknown。新授权/预览风险分别独立 70 与 86 项通过，含重叠不加总。
+  v6 每语句迁移失败回滚及旧行默认 Source 绑定通过；Session grant 显式加入主进程 bindingKind，同 ID 跨类型复用拒绝并消耗。
+- 工具契约校准：历史 `expected.ts` 哈希原封保留；先验证新表为空及三个 discriminator 列均为 source，再对历史列投影比对。
+  A/B/H v5 物理 942553 字节证据保留，v6 精确 950745 字节均已生成确认；逐列反例由 700 增至 708，完整扫描覆盖 16 表。
+  runtime 资格的 current schema 改为 1/1/6，历史迁移矩阵由 13 增至 15；容量/时间上限不变，未重跑正式大容量与长时场。
+  独立数据工具 37 项与最终失败集合核对 PASS；独立域 282 项及内存 13 反例 PASS，报告在本轮 log。
+- 最终普通构建与 Runtime02：`quality-final-exits.json` typecheck/lint/format/build 全 0；
+  `runtime-7a9723fe-f90b-4cd8-97d8-94ddb36c8514` 两进程正常退出、14 写入事实/3 复启事实 PASS、源与产物绑定保持，
+  两主题顶部误导降级提示消失，iframe 范围说明保留，向导步骤间距可读；四图已视觉复核。
+  两轮累计 18 本地请求、4 个自有 Electron 进程、8 截图，Provider 0，真实用户 profile 未操作。
+  实现及所需独审已 PASS，下一步只做干净源码发行构建、身份复核及可回退 output 选择。
+
 ## 统一设置、标题栏标签与浏览资料合同（2026-10-12）
 
 - TASK / BASELINE：用户明确新增独立设置页、标题栏内标签、浏览历史和书签；接管

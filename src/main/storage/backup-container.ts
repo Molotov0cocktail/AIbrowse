@@ -77,11 +77,11 @@ const SHA = /^[a-f0-9]{64}$/;
 const SCHEMAS = {
   sources: [0, 1],
   research: [0, 1],
-  watch: [0, 1, 2, 3, 4, 5],
+  watch: [0, 1, 2, 3, 4, 5, 6],
   conversations: [1],
   browser: [0, 1],
 } as const;
-const CURRENT = { sources: 1, research: 1, watch: 5, conversations: 1, browser: 1 } as const;
+const CURRENT = { sources: 1, research: 1, watch: 6, conversations: 1, browser: 1 } as const;
 export type BackupErrorCode =
   | 'invalid-container'
   | 'unsupported-version'

@@ -14,7 +14,7 @@ const SQL = {
   ruleCount: 'SELECT count(*) AS count FROM watch_rules',
   rules: 'SELECT * FROM watch_rules',
   source: 'SELECT version,enabled,deleted_at,scope,canonical_key FROM sources WHERE id = ?',
-  schedules: 'SELECT source_ids_json FROM digest_schedules',
+  schedules: 'SELECT source_ids_json,binding_kind FROM digest_schedules',
 } as const;
 
 export interface WatchSourceTransferCounts {
@@ -81,6 +81,7 @@ export function validateWatchSourceTransfer(
         counts.historicalRules++;
         continue;
       }
+      if (rule.bindingKind === 'watch-target') continue;
       const source = lookup.get(rule.sourceId);
       if (!source) {
         if (rule.state === 'enabled') return { ok: false, code: 'rule-source-missing' };
@@ -135,7 +136,8 @@ export function validateWatchSourceTransfer(
       counts.scheduleMembers += ids.length;
       // Schedule membership is a fixed historical selection, even when active.
       // A completed hard delete scrubs Digest evidence, not these member IDs.
-      for (const id of ids) if (!lookup.get(id)) counts.missingScheduleMembers++;
+      if (row.binding_kind === 'source')
+        for (const id of ids) if (!lookup.get(id)) counts.missingScheduleMembers++;
       if (!Number.isSafeInteger(counts.scheduleMembers)) {
         return { ok: false, code: 'budget-exceeded' };
       }

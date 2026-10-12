@@ -31,7 +31,7 @@ function fixture(): WriteBackupOptions {
   for (const id of BACKUP_IDS) {
     const path = join(source, BACKUP_FILES[id]);
     fs.writeFileSync(path, Buffer.from(`合成-${id}`));
-    files[id] = { path, snapshotId, schemaVersion: id === 'watch' ? 5 : 1 };
+    files[id] = { path, snapshotId, schemaVersion: id === 'watch' ? 6 : 1 };
   }
   return {
     snapshotDirectory: source,

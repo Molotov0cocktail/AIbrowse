@@ -15,7 +15,7 @@ const result: ScanResult = {
   stageMs: STAGES.map(() => 1),
   rssPeakBytes: 1024,
   migrationCases: FIXTURE.migrationCases,
-  versions: [1, 1, 5],
+  versions: [1, 1, 6],
   sourceIndexRebuilt: true,
   inputsUnchanged: true,
 };

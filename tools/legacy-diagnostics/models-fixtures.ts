@@ -151,6 +151,7 @@ export function digestFixture(
   const rule: WatchRule = {
     id: 'rule-1',
     version: 1,
+    bindingKind: 'source',
     sourceId: 'source-1',
     kind: 'feed',
     state: 'enabled',

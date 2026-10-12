@@ -36,7 +36,7 @@ function fixture(participants: MaintenanceParticipant[] = []) {
       members: ['sources', 'research', 'watch', 'conversations'].map((id) => ({
         id,
         present: true,
-        schemaVersion: id === 'watch' ? 5 : 1,
+        schemaVersion: id === 'watch' ? 6 : 1,
         bytes: 100,
         sha256,
       })) as TransferResult['manifest']['members'],

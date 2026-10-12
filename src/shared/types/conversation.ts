@@ -19,7 +19,7 @@ export interface ContextSource {
   url: string | null; // Main-process-side url at capture time (never trust page clock/content)
   title: string | null;
   capturedAt: number | null; // Main-process epoch ms; null when no web context
-  degraded: boolean; // L1/L2 degradation (meta.degraded !== 'none')
+  degraded: boolean; // Incomplete main-document capture; frame scope notices alone are informational.
   thin: boolean; // Thin snapshot (§7.4)
   selectionExcerpt: string | null; // selection mode: excerpt ≤ 200 chars (display only)
   warnings: string[]; // Display-oriented Chinese warnings

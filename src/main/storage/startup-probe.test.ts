@@ -186,7 +186,7 @@ it('recognizes historical Watch table spelling at the current version as requiri
   const result = await runStartupProbe(path, control());
   expect(result.state).toBe('migrate');
   if (result.state !== 'recovery-required')
-    expect(result.members[2]).toMatchObject({ state: 'legacy', version: 5 });
+    expect(result.members[2]).toMatchObject({ state: 'legacy', version: 6 });
 });
 it('accepts an actual empty version-zero file without initializing it', async () => {
   const path = profile();

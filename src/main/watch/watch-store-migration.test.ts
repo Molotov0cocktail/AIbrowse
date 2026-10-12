@@ -26,6 +26,7 @@ function makeRule(sourceId = 'src-1'): WatchRule {
   return {
     id: randomUUID(),
     version: 1,
+    bindingKind: 'source',
     sourceId,
     kind: 'feed',
     state: 'enabled',
@@ -211,7 +212,7 @@ function seedV1Db(dbPath: string): { rule: WatchRule; event: WatchEvent; mutatio
 }
 
 describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
-  it('M0-3 数据恒等：v1 库经 openWatchStore 升至 v5，逐行读回恒等 + v1 备份 + user_version=5', () => {
+  it('M0-3 数据恒等：v1 库经 openWatchStore 升至 v6，逐行读回恒等 + v1 备份 + user_version=6', () => {
     const dir = mkdtempSync(join(root, 'identity-'));
     const dbPath = join(dir, 'watch.db');
     const backupsDir = join(dir, 'backups');
@@ -221,10 +222,10 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     if (outcome.mode !== 'normal') return;
     expect(outcome.schedulerReady).toBe(true);
     const repo = outcome.repo;
-    // Read user_version=5 through the repository handle in this test fixture.
+    // Read the current schema version through the repository handle.
     expect(
       (repo.dbHandle.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
-    ).toBe(5);
+    ).toBe(6);
     // 规则/基线/运行/事件恒等
     const readRule = repo.getRule(rule.id);
     expect(readRule).not.toBeNull();
@@ -336,13 +337,13 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('M0-6 未来版本 user_version=6 → 零写入 unavailable（latest=5，6 为未来）', () => {
+  it('M0-6 未来版本 user_version=7 → 零写入 unavailable（latest=6，7 为未来）', () => {
     const dir = mkdtempSync(join(root, 'future-'));
     const dbPath = join(dir, 'watch.db');
     const backupsDir = join(dir, 'backups');
     seedV1Db(dbPath);
     const h = openDb(dbPath);
-    h.exec('PRAGMA user_version = 6');
+    h.exec('PRAGMA user_version = 7');
     closeDb(h);
     const before = readFileSync(dbPath);
     const outcome = openWatchStore({ dbPath, backupsDir, reconcile: OK_RECONCILE });
@@ -354,14 +355,14 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     try {
       expect(
         (probe.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
-      ).toBe(6);
+      ).toBe(7);
     } finally {
       closeDb(probe);
     }
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('M0-8 迁移+恢复交互：v1 备份经 restoreWatchStore 自动升至 v5、增量数据消失语义不变', () => {
+  it('M0-8 迁移+恢复交互：v1 备份经 restoreWatchStore 自动升至 v6、增量数据消失语义不变', () => {
     const dir = mkdtempSync(join(root, 'restore-'));
     const dbPath = join(dir, 'watch.db');
     const backupsDir = join(dir, 'backups');
@@ -397,7 +398,7 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
     expect(
       (restored.repo.dbHandle.prepare('PRAGMA user_version').get() as { user_version: number })
         .user_version,
-    ).toBe(5);
+    ).toBe(6);
     expect(restored.repo.getRule(extra.id)).toBeNull(); // 增量数据消失
     expect(restored.repo.getRule(rule.id)).not.toBeNull(); // 备份内规则读回
     restored.repo.dispose();
@@ -524,7 +525,7 @@ describe('D7 #S6-044/#S6-055 M0：v1→v3 store 升级（FIXED 16）', () => {
       expect(
         (fixed.repo.dbHandle.prepare('PRAGMA user_version').get() as { user_version: number })
           .user_version,
-      ).toBe(5);
+      ).toBe(6);
       fixed.repo.dispose();
     }
     rmSync(dir, { recursive: true, force: true });

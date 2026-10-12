@@ -22,6 +22,7 @@ describe('原生点击精确事件读取', () => {
       const listEventItems = vi.fn(() => []);
       const repo = {
         listRules: () => [{ id: target.ruleId }],
+        getRule: () => ({ id: target.ruleId, bindingKind: 'source', sourceId: target.sourceId }),
         listEventsByRule: () => [target],
         getEvent,
         listEventItems,

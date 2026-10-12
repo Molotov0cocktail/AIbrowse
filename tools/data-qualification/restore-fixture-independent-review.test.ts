@@ -14,7 +14,11 @@ import { beforeAll, expect, it } from 'vitest';
 import { createDatasetScope } from '../../src/main/storage/dataset-layout';
 import { runTransferPipeline } from '../../src/main/storage/transfer-pipeline';
 import { computeSourceLocatorFingerprint } from '../../src/shared/watch/watch-rule-state';
-import { createSmallFixture, type Variant } from './product-restore-fixtures/seed';
+import {
+  createSmallFixture,
+  FIXTURE_BYTES_V6,
+  type Variant,
+} from './product-restore-fixtures/seed';
 import {
   readSmallSnapshot,
   verifySmallFixture,
@@ -93,7 +97,7 @@ beforeAll(async () => {
 it.each(variants)('%s四域实质内容、主键和关联独立核验', (variant) => {
   const snapshot = snapshots.get(variant)!;
   const n = { A: 10, B: 20, H: 30 }[variant];
-  expect(verifySmallFixture(join(root, variant), variant, 'source').bytes).toBe(942553);
+  expect(verifySmallFixture(join(root, variant), variant, 'source').bytes).toBe(FIXTURE_BYTES_V6);
   expect(rows(snapshot, 'sources')).toHaveLength(1);
   const source = rows(snapshot, 'sources')[0];
   const rule = rows(snapshot, 'watch_rules')[0];
@@ -310,7 +314,8 @@ it('所有业务列逐项篡改均拒绝，不把规范化当整行豁免', () =
       }
     }
   }
-  expect(mutations).toBe(700);
+  // Preserve all 700 historical columns, plus eight explicit v6 binding fields.
+  expect(mutations).toBe(708);
   writeRecord('column-mutations.json', { mutations });
 });
 

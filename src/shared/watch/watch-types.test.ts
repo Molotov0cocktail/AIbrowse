@@ -175,6 +175,7 @@ describe('判别联合 DTO 形状（编译期/结构自检）', () => {
     const rule: watch.WatchRule = {
       id: 'r1',
       version: 1,
+      bindingKind: 'source',
       sourceId: 's1',
       kind: 'feed',
       state: 'enabled',

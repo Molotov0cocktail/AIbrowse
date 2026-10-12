@@ -18,6 +18,7 @@ function intervalRule(overrides: Partial<WatchRule> = {}): WatchRule {
   return {
     id: 'r1',
     version: 1,
+    bindingKind: 'source',
     sourceId: 's1',
     kind: 'feed',
     state: 'enabled',

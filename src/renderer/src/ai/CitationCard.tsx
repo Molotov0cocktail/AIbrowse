@@ -42,13 +42,12 @@ export function CitationCard({ source }: { source: ContextSource }) {
       <div className="ai-citation-meta">
         {capturedAt !== null && <span>采集于 {capturedAt}</span>}
         {source.thin && <span className="ai-citation-flag">内容稀薄</span>}
-        {source.degraded && <span className="ai-citation-flag">采集降级</span>}
       </div>
       {source.selectionExcerpt !== null && (
         <blockquote className="ai-citation-excerpt">{source.selectionExcerpt}</blockquote>
       )}
       {source.warnings.length > 0 && (
-        <ul className="ai-citation-warnings">
+        <ul className={source.degraded ? 'ai-citation-warnings' : 'ai-citation-notices'}>
           {source.warnings.map((warning) => (
             <li key={warning}>{warning}</li>
           ))}

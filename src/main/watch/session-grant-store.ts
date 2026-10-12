@@ -6,16 +6,17 @@
 // - TTL 精确 SESSION_GRANT_TTL_MS（300,000ms）；now == expiresAt 已过期；
 // - consume 必须先原子移除记录再验证绑定——失败同样消耗，攻击者无法重放探测；
 // - 成功只返回 {version:1, origin, grantedAt}；record 绑定
-//   sourceId/previewTabId/finalOrigin/targetDigest，单次、不可重放、
+//   bindingKind/sourceId/previewTabId/finalOrigin/targetDigest，单次、不可重放、
 //   不可跨 source/tab/origin/target；
 // - lazy expiry（零 timer）；clear()/dispose() 幂等清空全部；
 // - handle/record/preview tabId 零 DB、零日志、零 audit、零 renderer DTO。
 import { randomBytes } from 'node:crypto';
-import { SESSION_GRANT_TTL_MS } from '../../shared/types/watch';
+import { SESSION_GRANT_TTL_MS, type WatchBindingKind } from '../../shared/types/watch';
 
 const HANDLE_PATTERN = /^[A-Za-z0-9_-]{43}$/; // randomBytes(32) base64url 无填充
 
 interface SessionGrantRecord {
+  bindingKind: WatchBindingKind;
   sourceId: string;
   previewTabId: string;
   finalOrigin: string;
@@ -25,6 +26,8 @@ interface SessionGrantRecord {
 }
 
 export interface SessionGrantIssueInput {
+  // Omission preserves the legacy main-process Source caller contract.
+  bindingKind?: WatchBindingKind;
   sourceId: string;
   previewTabId: string;
   finalOrigin: string;
@@ -39,6 +42,8 @@ export type SessionGrantIssueResult =
     };
 
 export interface SessionGrantConsumeInput {
+  // Production previews always pass the explicit owner kind.
+  bindingKind?: WatchBindingKind;
   handle: string;
   sourceId: string;
   previewTabId: string;
@@ -92,7 +97,9 @@ export class SessionGrantStore {
   }
 
   issue(input: SessionGrantIssueInput): SessionGrantIssueResult {
+    const bindingKind = input.bindingKind ?? 'source';
     if (
+      (bindingKind !== 'source' && bindingKind !== 'watch-target') ||
       !isValidBindingString(input.sourceId, 128) ||
       !isValidBindingString(input.previewTabId, 128) ||
       !isValidOrigin(input.finalOrigin) ||
@@ -111,6 +118,7 @@ export class SessionGrantStore {
       return { ok: false, reason: 'invalid-request' };
     }
     this.records.set(handle, {
+      bindingKind,
       sourceId: input.sourceId,
       previewTabId: input.previewTabId,
       finalOrigin: input.finalOrigin,
@@ -148,6 +156,7 @@ export class SessionGrantStore {
     // 绑定验证（形状与逐字节值都在此处判定；record 已删除，一律消耗）：
     // 只有全部绑定形状合法且逐字节匹配才算成功
     if (
+      record.bindingKind !== (input.bindingKind ?? 'source') ||
       !isValidBindingString(input.sourceId, 128) ||
       !isValidBindingString(input.previewTabId, 128) ||
       !isValidOrigin(input.finalOrigin) ||

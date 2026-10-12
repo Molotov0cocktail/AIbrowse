@@ -6,7 +6,7 @@
 //      检查 signal/deadline/tab 存在；error/missing/用户关闭/abort/deadline 全失败）；
 //   2. ready 后读取一次实时 snapshot（迟到/终态后回调只能丢弃，零 Projection）；
 //   3. snapshot 后再次检查 signal、deadline、tab 仍存在、状态仍 ready；
-//   4. 元数据校验（session）：readyState==='complete'、degraded==='none'、
+//   4. Metadata validation requires a complete main document; iframe scope is separate.
 //      capturedAt 为有限整数 epoch ms、documentId 为 >=1 安全整数；
 //   5. PageSnapshot → DocumentChannels 纯映射（visibleText→mainText、level 1..3
 //      headings、tables、links.text/href；inputs/buttons 零进入——禁止读取
@@ -16,12 +16,7 @@
 // 单条敌手正文字符串绝不触发可信分类。
 import type { Clock } from '../../shared/types/watch';
 import { NETWORK_ATTEMPT_TIMEOUT_MS } from '../../shared/types/watch';
-import type {
-  PageSnapshot,
-  SnapshotDegradation,
-  SnapshotMeta,
-  TabInfo,
-} from '../../shared/types/browser';
+import type { PageSnapshot, SnapshotMeta, TabInfo } from '../../shared/types/browser';
 import type { DocumentChannels } from '../../shared/types/watch';
 import { normalizeWatchText } from '../../shared/watch/watch-budget';
 import type { SourceScope } from '../../shared/types/sources';
@@ -206,11 +201,14 @@ function hasSubmitControl(snapshot: Readonly<PageSnapshot>): boolean {
   return false;
 }
 
-/** 任意降级（meta.degraded !== 'none'；未知降级值同样视为降级，fail-closed）。 */
+/** Only main-process coverage can qualify partial; warning text never grants access. */
 function isDegraded(snapshot: Readonly<PageSnapshot>): boolean {
   const meta = snapshot.meta;
-  if (meta === null || typeof meta !== 'object') return false;
-  return (meta.degraded as SnapshotDegradation) !== 'none';
+  if (meta === null || typeof meta !== 'object') return true;
+  if (meta.degraded === 'none' && meta.mainDocument === undefined) return false;
+  return (
+    (meta.degraded !== 'none' && meta.degraded !== 'partial') || meta.mainDocument !== 'complete'
+  );
 }
 
 /**
@@ -219,7 +217,7 @@ function isDegraded(snapshot: Readonly<PageSnapshot>): boolean {
  *   1. password 结构信号（或 login URL + password/submit 结构信号）→ 'login'；
  *   2. challenge URL + 结构信号（password/submit）→ 'captcha'；
  *   3. login/challenge URL 单独出现（无可靠结构信号）→ 'unknown'；
- *   4. 任意 degraded（含 iframe 降级）→ 'degraded'；
+ *   4. Incomplete or unqualified main-document coverage → 'degraded'.
  *   5. 其余 → null。
  * 通用 iframe warning 绝不单独触发 captcha（R4：challenge 必须由 URL/navigation
  * 信号与结构信号的可区分组合证明）；零敌手正文、零 input/form 值、零 Cookie。
@@ -339,7 +337,7 @@ export class BrowserWatchReader {
       return { ok: false, code: 'tab-error', reason: `tab-state-${tabNow.state}` };
     }
 
-    // 元数据（session 只接受 complete + 零降级）
+    // Main-document coverage is independent of intentionally omitted frames.
     const meta = snapshot.meta;
     const suspicion = classifySnapshotSuspicion(snapshot);
     if (meta === null || typeof meta !== 'object' || meta.readyState !== 'complete') {
@@ -350,12 +348,15 @@ export class BrowserWatchReader {
         reason: 'ready-state-not-complete',
       };
     }
-    if ((meta.degraded as SnapshotDegradation) !== 'none') {
+    if (isDegraded(snapshot)) {
       return {
         ok: false,
         code: 'snapshot-degraded',
         suspicion: suspicion ?? undefined,
-        reason: `degraded-${meta.degraded}`,
+        reason:
+          meta.mainDocument === 'incomplete'
+            ? 'main-document-incomplete'
+            : `degraded-${meta.degraded}`,
       };
     }
     const capturedAtMs = validCapturedAtMs(meta);

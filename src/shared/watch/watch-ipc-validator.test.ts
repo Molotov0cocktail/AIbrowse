@@ -8,6 +8,92 @@ import {
 } from './watch-ipc-validator';
 
 describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
+  it('独立网址监控与规则重预览不要求信源 ID', () => {
+    const regions = [{ kind: 'main-text', label: '正文' }];
+    expect(
+      validateWatchIpcPayload('watch:previewPageRegions', {
+        mode: 'standalone',
+        url: 'https://example.com/channel',
+        accessMode: 'session',
+        regions,
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateWatchIpcPayload('watch:previewPageRegions', {
+        mode: 'rule',
+        ruleId: crypto.randomUUID(),
+        accessMode: 'session',
+        regions,
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateWatchIpcPayload('watch:previewFeed', {
+        mode: 'standalone',
+        url: 'https://example.com/feed.xml',
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateWatchIpcPayload('watch:previewFeed', {
+        mode: 'rule',
+        ruleId: crypto.randomUUID(),
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('独立监控拒绝混合绑定、危险网址和未知输入字段', () => {
+    const base = {
+      mode: 'standalone',
+      url: 'https://example.com/channel',
+      accessMode: 'session',
+      regions: [{ kind: 'main-text', label: '正文' }],
+    };
+    for (const url of [
+      'file:///C:/secret',
+      'javascript:alert(1)',
+      'https://user:secret@example.com/',
+      'https://example.com/\u0000',
+      'x'.repeat(2049),
+    ])
+      expect(validateWatchIpcPayload('watch:previewPageRegions', { ...base, url }).ok).toBe(false);
+    expect(
+      validateWatchIpcPayload('watch:previewPageRegions', {
+        ...base,
+        sourceId: crypto.randomUUID(),
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateWatchIpcPayload('watch:previewPageRegions', { ...base, bindingKind: 'source' }).ok,
+    ).toBe(false);
+    expect(
+      validateWatchIpcPayload('watch:previewFeed', {
+        mode: 'standalone',
+        url: 'https://example.com:8443/feed',
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateWatchIpcPayload('watch:previewPageRegions', {
+        ...base,
+        url: 'https://example.com:8443/',
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('独立监控摘要按明确目标集合预览', () => {
+    const input = {
+      selector: { kind: 'targets', targetIds: [crypto.randomUUID()] },
+      fromExclusive: '2026-10-11T00:00:00.000Z',
+      toInclusive: '2026-10-12T00:00:00.000Z',
+      afterSequence: 0,
+    };
+    expect(validateWatchIpcPayload('watch:generateDigestPreview', input).ok).toBe(true);
+    expect(
+      validateWatchIpcPayload('watch:generateDigestPreview', {
+        ...input,
+        selector: { ...input.selector, sourceIds: [crypto.randomUUID()] },
+      }).ok,
+    ).toBe(false);
+  });
+
   it('精确暴露 24 个固定 channel', () => {
     expect(WATCH_IPC_CHANNELS).toHaveLength(24);
     expect(new Set(WATCH_IPC_CHANNELS).size).toBe(24);
@@ -149,6 +235,7 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
       id,
       ruleId,
       sourceId,
+      bindingKind: 'source',
       sourceName: '来源',
       eventKind: 'changed',
       importance: 'normal',
@@ -243,6 +330,7 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
       id: crypto.randomUUID(),
       version: 1,
       sourceId: crypto.randomUUID(),
+      bindingKind: 'source',
       sourceName: '安全名称',
       kind: 'page',
       state: 'enabled',
@@ -344,6 +432,7 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
       id,
       version: 1,
       sourceId: id2,
+      bindingKind: 'source',
       sourceName: '来源',
       kind: 'page',
       state: 'enabled',
@@ -366,6 +455,7 @@ describe('D9 Watch IPC 闭合 manifest 与输入验证', () => {
       id,
       ruleId: id2,
       sourceId: id3,
+      bindingKind: 'source',
       sourceName: '来源',
       eventKind: 'changed',
       importance: 'normal',

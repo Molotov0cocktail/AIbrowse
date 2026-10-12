@@ -34,6 +34,7 @@ const QUERIES = {
     research_results: 'SELECT * FROM research_results ORDER BY result_id',
   },
   watch: {
+    watch_targets: 'SELECT * FROM watch_targets ORDER BY id',
     watch_rules: 'SELECT * FROM watch_rules ORDER BY id',
     watch_baselines: 'SELECT * FROM watch_baselines ORDER BY rule_id',
     watch_runs: 'SELECT * FROM watch_runs ORDER BY id',
@@ -222,9 +223,30 @@ function normalizeExpectedChanges(snapshot: Snapshot, variant: Variant, mode: Mo
   return copy;
 }
 
+/** Validate the v6 additions before comparing every historical business field with the frozen v5 oracle. */
+export function projectHistoricalFixtureSnapshot(snapshot: Snapshot): Snapshot {
+  const legacy = structuredClone(snapshot);
+  requireFact(
+    Array.isArray(legacy.watch_targets) && legacy.watch_targets.length === 0,
+    'v6固定夹具不应出现独立目标',
+  );
+  delete legacy.watch_targets;
+  for (const table of ['watch_rules', 'digest_schedules', 'digest_change_journal']) {
+    const rows = legacy[table];
+    requireFact(Array.isArray(rows), `${table}行集合`);
+    for (const row of rows as Row[]) {
+      requireFact(row.binding_kind === 'source', `${table}旧数据必须显式绑定Source`);
+      delete row.binding_kind;
+    }
+  }
+  return legacy;
+}
+
 export function verifySmallSnapshot(snapshot: Snapshot, variant: Variant, mode: Mode): void {
   requireFact(mode === 'source' || mode === 'restored', '模式');
-  const hashes = snapshotHashes(normalizeExpectedChanges(snapshot, variant, mode));
+  const hashes = snapshotHashes(
+    projectHistoricalFixtureSnapshot(normalizeExpectedChanges(snapshot, variant, mode)),
+  );
   requireFact(canonical(hashes) === canonical(EXPECTED[variant]), '固定业务集合');
 }
 export function verifySmallFixture(

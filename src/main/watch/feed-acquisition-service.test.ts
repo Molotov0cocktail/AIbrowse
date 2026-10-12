@@ -27,6 +27,7 @@ function makeFeedRule(overrides: Partial<WatchRule> = {}): WatchRule {
   return {
     id: 'rule-1',
     version: 1,
+    bindingKind: 'source',
     sourceId: 'src-1',
     kind: 'feed',
     state: 'enabled',

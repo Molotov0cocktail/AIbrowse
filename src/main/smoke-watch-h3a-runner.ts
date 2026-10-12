@@ -943,6 +943,7 @@ export async function runH3aCampaign(options: H3aCampaignOptions): Promise<H3aCa
           const rule: WatchRule = {
             id: randomUUID(),
             version: 1,
+            bindingKind: 'source',
             sourceId: sourceProjection.projection.sourceId,
             kind,
             state: 'enabled',
@@ -1546,6 +1547,7 @@ export async function runH3aFeedBudgetDiagnostic(
     const rule: WatchRule = {
       id: randomUUID(),
       version: 1,
+      bindingKind: 'source',
       sourceId: sourceProjection.projection.sourceId,
       kind: 'feed',
       state: 'enabled',

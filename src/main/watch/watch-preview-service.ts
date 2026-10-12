@@ -1,3 +1,10 @@
+import type { WatchRepository } from './repository/watch-repository';
+import { newIndependentTarget, targetProjection } from './watch-independent-target';
+import type {
+  WatchBindingKind,
+  WatchIndependentTarget,
+  SourceWatchProjection,
+} from '../../shared/types/watch';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { BrowserController } from '../browser/browser-controller';
 import type { SourceWatchProjectionReadResult } from '../sources/source-service';
@@ -23,7 +30,9 @@ import { MaintenanceAdmission } from '../storage/maintenance-admission';
 const TABLE_DISCOVERY_FINGERPRINT = '0'.repeat(64);
 
 interface FeedPreviewInput {
-  mode: 'source' | 'manual' | 'candidate';
+  mode: 'source' | 'manual' | 'candidate' | 'standalone' | 'rule';
+  url?: string;
+  ruleId?: string;
   sourceId?: string;
   feedUrl?: string;
   discoveryHandle?: string;
@@ -31,20 +40,36 @@ interface FeedPreviewInput {
 }
 
 interface PagePreviewInput {
-  sourceId: string;
+  sourceId?: string;
+  mode?: 'standalone' | 'rule';
+  url?: string;
+  ruleId?: string;
   accessMode: 'public' | 'session';
   regions: RegionDescriptor[];
 }
+
+type PreviewOwner = SourceWatchProjection & {
+  bindingKind?: WatchBindingKind;
+  independentTarget?: WatchIndependentTarget;
+};
 
 type PreviewResult =
   | { ok: true; value: Record<string, unknown> }
   | {
       ok: false;
       errorCode:
-        'not-found' | 'security-rejected' | 'preview-expired' | 'unavailable' | 'budget-exceeded';
+        | 'not-found'
+        | 'security-rejected'
+        | 'preview-expired'
+        | 'unavailable'
+        | 'budget-exceeded'
+        | 'page-incomplete'
+        | 'page-not-ready'
+        | 'target-mismatch';
     };
 
 export interface WatchPreviewServiceOptions {
+  repository?: () => WatchRepository | null;
   store: WatchPreviewStore;
   source: (sourceId: string) => SourceWatchProjectionReadResult;
   acquisition: () => WatchAcquisitionService | null;
@@ -137,20 +162,38 @@ export class WatchPreviewService {
         ? this.options.store.consumeDiscovery(input.discoveryHandle, input.candidateId)
         : null;
     const sourceId = input.mode === 'candidate' ? candidate?.sourceId : input.sourceId;
-    if (sourceId === undefined)
+    if (sourceId === undefined && input.mode !== 'standalone' && input.mode !== 'rule')
       return {
         ok: false,
         errorCode: input.mode === 'candidate' ? 'preview-expired' : 'unavailable',
       };
-    const source = this.options.source(sourceId);
+    const source =
+      candidate?.bindingKind === 'watch-target' && candidate.independentTarget !== undefined
+        ? {
+            status: 'found' as const,
+            projection: {
+              ...targetProjection(candidate.independentTarget),
+              bindingKind: 'watch-target' as const,
+              independentTarget: candidate.independentTarget,
+            },
+          }
+        : this.resolveOwner({ ...input, sourceId });
     if (source.status !== 'found')
       return { ok: false, errorCode: source.status === 'missing' ? 'not-found' : 'unavailable' };
+    const savedRule =
+      input.mode === 'rule' && input.ruleId !== undefined
+        ? this.options.repository?.()?.getRule(input.ruleId)
+        : null;
+    if (input.mode === 'rule' && savedRule?.target.type !== 'feed')
+      return { ok: false, errorCode: 'not-found' };
     const feedUrl =
       input.mode === 'manual'
         ? input.feedUrl!
         : input.mode === 'candidate'
           ? candidate!.feedUrl
-          : source.projection.canonicalKey;
+          : savedRule?.target.type === 'feed'
+            ? savedRule.target.feedUrl
+            : source.projection.canonicalKey;
     const direct = await this.previewWithAcquisition(
       source.projection,
       { type: 'feed', feedUrl, format: 'rss2' },
@@ -158,13 +201,60 @@ export class WatchPreviewService {
       signal,
     );
     if (signal.aborted || !this.admission.isOpen()) return { ok: false, errorCode: 'unavailable' };
-    if (direct.result.ok || input.mode !== 'source' || !direct.discoveryEligible)
+    if (
+      direct.result.ok ||
+      (input.mode !== 'source' && input.mode !== 'standalone') ||
+      !direct.discoveryEligible
+    )
       return direct.result;
     return this.discoverFeedCandidates(source.projection, signal);
   }
 
+  private resolveOwner(input: {
+    mode?: string;
+    sourceId?: string;
+    url?: string;
+    ruleId?: string;
+  }): { status: 'found'; projection: PreviewOwner } | { status: 'missing' | 'unavailable' } {
+    if (input.mode === 'standalone') {
+      const target = typeof input.url === 'string' ? newIndependentTarget(input.url) : null;
+      return target === null
+        ? { status: 'missing' }
+        : {
+            status: 'found',
+            projection: {
+              ...targetProjection(target),
+              bindingKind: 'watch-target',
+              independentTarget: target,
+            },
+          };
+    }
+    if (input.mode === 'rule') {
+      const repo = this.options.repository?.();
+      if (repo === null || repo === undefined) return { status: 'unavailable' };
+      const rule = typeof input.ruleId === 'string' ? repo.getRule(input.ruleId) : null;
+      if (rule === null) return { status: 'missing' };
+      if (rule.bindingKind === 'watch-target') {
+        const target = repo.getIndependentTarget(rule.sourceId);
+        return target === null
+          ? { status: 'missing' }
+          : {
+              status: 'found',
+              projection: {
+                ...targetProjection(target),
+                bindingKind: 'watch-target',
+              },
+            };
+      }
+      return this.options.source(rule.sourceId);
+    }
+    return typeof input.sourceId === 'string'
+      ? this.options.source(input.sourceId)
+      : { status: 'missing' };
+  }
+
   private async readPage(input: PagePreviewInput, signal: AbortSignal): Promise<PreviewResult> {
-    const source = this.options.source(input.sourceId);
+    const source = this.resolveOwner(input);
     if (source.status !== 'found')
       return { ok: false, errorCode: source.status === 'missing' ? 'not-found' : 'unavailable' };
     if (
@@ -193,7 +283,7 @@ export class WatchPreviewService {
       active === null ||
       !hasSamePageLocator(source.projection.canonicalKey, active.url)
     )
-      return { ok: false, errorCode: 'security-rejected' };
+      return { ok: false, errorCode: 'target-mismatch' };
     const read = await reader.read({
       tabId: active.id,
       signal,
@@ -203,13 +293,23 @@ export class WatchPreviewService {
     if (!read.ok)
       return {
         ok: false,
-        errorCode: read.code === 'timeout' ? 'unavailable' : 'security-rejected',
+        errorCode:
+          read.code === 'snapshot-degraded' || read.code === 'snapshot-invalid'
+            ? 'page-incomplete'
+            : read.code === 'timeout' ||
+                read.code === 'tab-error' ||
+                read.code === 'tab-missing' ||
+                read.code === 'tab-closed-by-user'
+              ? 'page-not-ready'
+              : 'security-rejected',
       };
+    if (read.suspicion === 'login' || read.suspicion === 'captcha' || read.suspicion === 'unknown')
+      return { ok: false, errorCode: 'security-rejected' };
     const finalOrigin = urlOrigin(read.meta.url);
     // Re-check after the asynchronous read: the active tab may have navigated while the
     // main process was collecting channels.
     if (finalOrigin === null || !hasSamePageLocator(source.projection.canonicalKey, read.meta.url))
-      return { ok: false, errorCode: 'security-rejected' };
+      return { ok: false, errorCode: 'target-mismatch' };
     const regionPreview = previewPageRegions(read.channels, input.regions);
     if (!regionPreview.ok)
       return {
@@ -237,6 +337,10 @@ export class WatchPreviewService {
     });
     if (digest === null) return { ok: false, errorCode: 'security-rejected' };
     const record: WatchPreviewRecord = {
+      bindingKind: source.projection.bindingKind ?? 'source',
+      ...(source.projection.independentTarget === undefined
+        ? {}
+        : { independentTarget: source.projection.independentTarget }),
       sourceId: source.projection.sourceId,
       sourceRowVersion: source.projection.rowVersion,
       locatorFingerprint: locatorFingerprint(source.projection, target),
@@ -264,7 +368,7 @@ export class WatchPreviewService {
   }
 
   private async discoverPageTables(
-    source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
+    source: PreviewOwner,
     accessMode: 'public' | 'session',
     regions: RegionDescriptor[],
     signal: AbortSignal,
@@ -317,7 +421,7 @@ export class WatchPreviewService {
         active === null ||
         !hasSamePageLocator(source.canonicalKey, active.url)
       )
-        return { ok: false, errorCode: 'security-rejected' };
+        return { ok: false, errorCode: 'target-mismatch' };
       const read = await reader.read({
         tabId: active.id,
         signal,
@@ -325,9 +429,22 @@ export class WatchPreviewService {
       });
       if (signal.aborted || !this.admission.isOpen())
         return { ok: false, errorCode: 'unavailable' };
-      if (!read.ok) return { ok: false, errorCode: 'security-rejected' };
-      if (!hasSamePageLocator(source.canonicalKey, read.meta.url))
+      if (!read.ok)
+        return {
+          ok: false,
+          errorCode:
+            read.code === 'snapshot-degraded' || read.code === 'snapshot-invalid'
+              ? 'page-incomplete'
+              : 'page-not-ready',
+        };
+      if (
+        read.suspicion === 'login' ||
+        read.suspicion === 'captcha' ||
+        read.suspicion === 'unknown'
+      )
         return { ok: false, errorCode: 'security-rejected' };
+      if (!hasSamePageLocator(source.canonicalKey, read.meta.url))
+        return { ok: false, errorCode: 'target-mismatch' };
       channels = read.channels;
     }
     // Table-only documents legitimately have no mainText because table cell text is kept in the
@@ -365,6 +482,7 @@ export class WatchPreviewService {
     )
       return { ok: false, errorCode: 'security-rejected' };
     const issued = grants.issue({
+      bindingKind: record.bindingKind ?? 'source',
       sourceId: record.sourceId,
       previewTabId: record.previewTabId,
       finalOrigin: record.finalOrigin,
@@ -380,7 +498,7 @@ export class WatchPreviewService {
   }
 
   private async previewWithAcquisition(
-    source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
+    source: PreviewOwner,
     target: WatchRule['target'],
     accessMode: 'public',
     signal: AbortSignal,
@@ -392,6 +510,7 @@ export class WatchPreviewService {
     const rule: WatchRule = {
       id: randomUUID(),
       version: 1,
+      bindingKind: source.bindingKind ?? 'source',
       sourceId: source.sourceId,
       kind: target.type,
       state: 'enabled',
@@ -443,6 +562,10 @@ export class WatchPreviewService {
         ? ['title', 'link', 'summary', 'published']
         : acquired.projection.value.fields.map((field) => field.fieldKey);
     const record: WatchPreviewRecord = {
+      bindingKind: source.bindingKind ?? 'source',
+      ...(source.independentTarget === undefined
+        ? {}
+        : { independentTarget: source.independentTarget }),
       sourceId: source.sourceId,
       sourceRowVersion: source.rowVersion,
       locatorFingerprint: fingerprint,
@@ -492,7 +615,7 @@ export class WatchPreviewService {
   }
 
   private async discoverFeedCandidates(
-    source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
+    source: PreviewOwner,
     signal: AbortSignal,
   ): Promise<PreviewResult> {
     const target = this.options.discoveryTarget();
@@ -529,6 +652,7 @@ export class WatchPreviewService {
     const issued = this.options.store.issueDiscovery(
       source.sourceId,
       parsed.candidates.map((candidate) => candidate.url),
+      source,
     );
     if (issued === null) return { ok: false, errorCode: 'budget-exceeded' };
     return {
@@ -578,10 +702,7 @@ function readTargetDigest(record: WatchPreviewRecord): string | null {
     ? digest
     : null;
 }
-function locatorFingerprint(
-  source: Extract<SourceWatchProjectionReadResult, { status: 'found' }>['projection'],
-  target: WatchRule['target'],
-): string {
+function locatorFingerprint(source: PreviewOwner, target: WatchRule['target']): string {
   return computeSourceLocatorFingerprint({
     sourceId: source.sourceId,
     scope: source.scope,

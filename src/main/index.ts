@@ -2036,6 +2036,7 @@ if (!gotLock) {
     watchPreviewStore = new WatchPreviewStore();
     const watchPreview = new WatchPreviewService({
       store: watchPreviewStore,
+      repository: () => watchRepo,
       source: (sourceId) => {
         const provider = sourceService as (SourceService & SourceWatchProjectionProvider) | null;
         return provider?.getSourceWatchProjection(sourceId) ?? { status: 'unavailable' };
@@ -2142,6 +2143,21 @@ if (!gotLock) {
       commands: watchCommands,
       digest: () => digestService,
       resolveDigestSources: (selector) => {
+        if (selector.targetIds !== undefined) {
+          if (
+            watchRepo === null ||
+            selector.targetIds.length < 1 ||
+            selector.targetIds.length > 100
+          )
+            return null;
+          const targets = [...new Set(selector.targetIds)].map((id) =>
+            watchRepo!.getIndependentTarget(id),
+          );
+          if (targets.some((target) => target === null)) return null;
+          return targets.flatMap((target) =>
+            target === null ? [] : [{ sourceId: target.id, displayName: target.displayName }],
+          );
+        }
         const provider = sourceService as
           (SourceService & DigestMembershipProjectionProvider) | null;
         const resolved = provider?.resolveDigestMembership(selector);
@@ -2153,7 +2169,10 @@ if (!gotLock) {
           : null;
       },
       audit: (message) => logInfo('audit', message),
-      onStateChanged: pushWatchStatus,
+      onStateChanged: () => {
+        watchRunCoordinator?.syncSchedule();
+        pushWatchStatus();
+      },
       isAdmitted: () =>
         dataAdmissionOpen && watchIpcAdmission.isOpen() && (qualification?.admissionOpen() ?? true),
       admission: watchIpcAdmission,
@@ -2529,6 +2548,7 @@ if (!gotLock) {
                           ...(baseRule ?? {
                             id: randomUUID(),
                             version: 1,
+                            bindingKind: 'source' as const,
                             sourceId: randomUUID(),
                             kind: 'feed' as const,
                             state: 'enabled' as const,
@@ -2669,6 +2689,7 @@ if (!gotLock) {
                         rule = {
                           id: randomUUID(),
                           version: 1,
+                          bindingKind: 'source',
                           sourceId: source.source.id,
                           kind: 'feed' as const,
                           state: 'enabled' as const,
@@ -3778,7 +3799,32 @@ async function assembleBrowserWindow(): Promise<void> {
             },
           },
           membership: {
-            resolve: async (selector) => sourceDigestProvider.resolveDigestMembership(selector),
+            resolve: async (selector) => {
+              if (selector.targetIds === undefined)
+                return sourceDigestProvider.resolveDigestMembership(selector);
+              if (selector.targetIds.length < 1 || selector.targetIds.length > 100)
+                return { status: 'unavailable', members: [] };
+              const targets = [...new Set(selector.targetIds)].map((id) =>
+                watchOutcome.repo.getIndependentTarget(id),
+              );
+              if (targets.some((target) => target === null))
+                return { status: 'unavailable', members: [] };
+              return {
+                status: 'ok',
+                bindingKind: 'watch-target',
+                members: targets.flatMap((target) =>
+                  target === null
+                    ? []
+                    : [
+                        {
+                          sourceId: target.id,
+                          displayName: target.displayName,
+                          canonicalUrl: target.canonicalUrl,
+                        },
+                      ],
+                ),
+              };
+            },
           },
           scheduleControl: digestDue,
           windowsNotificationsEnabled: watchWindowsNotifications !== null,

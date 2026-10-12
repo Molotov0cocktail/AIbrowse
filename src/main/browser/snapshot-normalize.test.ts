@@ -29,6 +29,68 @@ function validRaw(overrides: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
+describe('normalizeSnapshot — 主文档覆盖与 iframe 范围分离', () => {
+  it('仅跳过 iframe 保持 L1，但主进程证明主文档完整', () => {
+    const snap = normalizeSnapshot(validRaw({ iframes: { total: 3, crossOrigin: 1 } }), FALLBACK);
+    expect(snap.meta.degraded).toBe('partial');
+    expect(snap.meta).toMatchObject({ mainDocument: 'complete' });
+  });
+
+  it.each([
+    ['加载未完成', { readyState: 'interactive' }],
+    ['正文截断标志', { truncated: ['visibleText'] }],
+    ['未知截断标志', { truncated: ['unknown'] }],
+    ['无效截断元数据', { truncated: null }],
+    ['缺失截断元数据', { truncated: undefined }],
+    ['主进程正文截断', { visibleText: 'x'.repeat(L.visibleText + 1) }],
+    ['标题字段截断', { title: 'x'.repeat(L.title + 1) }],
+    ['标题文字截断', { headings: [{ level: 1, text: 'x'.repeat(L.text + 1) }] }],
+    ['按钮文字截断', { buttons: [{ id: 'el-0', text: 'x'.repeat(L.text + 1) }] }],
+    ['输入文字截断', { inputs: [{ id: 'el-0', type: 'text', value: 'x'.repeat(L.text + 1) }] }],
+    ['按钮语义丢弃', { buttons: [{ id: 'el-0', text: '按钮', isSubmit: 'true' }] }],
+    ['iframe 元数据非法', { iframes: null }],
+    [
+      '链接文字截断',
+      { links: [{ id: 'el-0', text: 'x'.repeat(L.text + 1), href: 'https://example.com' }] },
+    ],
+    [
+      '链接地址截断',
+      { links: [{ id: 'el-0', text: '链接', href: 'https://example.com/' + 'x'.repeat(L.href) }] },
+    ],
+    ['无效集合', { headings: null }],
+    ['丢弃非法条目', { links: [{ id: 'evil', text: '链接', href: 'https://example.com' }] }],
+    ['表格单元格截断', { tables: [{ headers: ['列'], rows: [['x'.repeat(L.text + 1)]] }] }],
+    [
+      '表格列截断',
+      { tables: [{ headers: Array.from({ length: L.tableCols + 1 }, () => '列'), rows: [] }] },
+    ],
+    ['丢弃非法表格行', { tables: [{ headers: ['列'], rows: [null, ['值']] }] }],
+    ['无效表格单元格', { tables: [{ headers: ['列'], rows: [[null]] }] }],
+    [
+      '伪造完整且正文缺失',
+      { visibleText: undefined, mainDocument: 'complete', meta: { mainDocument: 'complete' } },
+    ],
+  ])('%s 即使同时存在 iframe 也不能证明主文档完整', (_label, overrides) => {
+    const snap = normalizeSnapshot(
+      validRaw({ iframes: { total: 1, crossOrigin: 1 }, ...overrides }),
+      FALLBACK,
+    );
+    expect(snap.meta).toMatchObject({ mainDocument: 'incomplete' });
+  });
+
+  it('raw 自报覆盖状态被忽略；L2 必须不完整', () => {
+    expect(
+      normalizeSnapshot(
+        validRaw({ mainDocument: 'incomplete', meta: { mainDocument: 'incomplete' } }),
+        FALLBACK,
+      ).meta,
+    ).toMatchObject({ mainDocument: 'complete' });
+    expect(normalizeSnapshot({ ok: false, mainDocument: 'complete' }, FALLBACK).meta).toMatchObject(
+      { mainDocument: 'incomplete' },
+    );
+  });
+});
+
 describe('normalizeSnapshot — 不可信输入（L2 形状，永不抛异常）', () => {
   it.each([
     ['null', null],

@@ -230,10 +230,22 @@ export type WatchSchedule =
       timeZone: string; // Intl 支持的 IANA id，创建/编辑时冻结（复用 D1 isValidTimeZone）
     };
 
+export type WatchBindingKind = 'source' | 'watch-target';
+
+export interface WatchIndependentTarget {
+  id: string;
+  version: number;
+  scope: 'page';
+  canonicalUrl: string;
+  displayName: string;
+  aiShareMode: WatchSharingMode;
+}
+
 export interface WatchRule {
   id: string; // UUID
   version: number; // D9 用户配置 CAS；runtime bookkeeping 不递增
   sourceId: string;
+  bindingKind: WatchBindingKind;
   kind: WatchRuleKind;
   state: WatchRuleState;
   pauseReason: PauseReason | null;

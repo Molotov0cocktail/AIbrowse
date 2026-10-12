@@ -55,6 +55,20 @@ export class WatchQueryService {
     return { page: input.page, pageSize: input.pageSize, total: filtered.length, items };
   }
 
+  private ownerName(rule: WatchRule): string {
+    return rule.bindingKind === 'watch-target'
+      ? (this.repo()?.getIndependentTarget(rule.sourceId)?.displayName ??
+          displayTarget(rule.target.type === 'feed' ? rule.target.feedUrl : rule.target.pageUrl))
+      : (this.sourceName(rule.sourceId) ?? `信源 ${rule.sourceId.slice(0, 8)}`);
+  }
+
+  private eventOwner(ruleId: string) {
+    const rule = this.repo()?.getRule(ruleId);
+    return rule === null || rule === undefined
+      ? { bindingKind: 'source' as const, sourceName: '已删除目标' }
+      : { bindingKind: rule.bindingKind, sourceName: this.ownerName(rule) };
+  }
+
   private projectRule(rule: WatchRule): RuleSummaryDto {
     const activity = this.repo()?.getRuleActivity(rule.id) ?? {
       lastCheckedAt: null,
@@ -64,7 +78,8 @@ export class WatchQueryService {
       id: rule.id,
       version: rule.version,
       sourceId: rule.sourceId,
-      sourceName: this.sourceName(rule.sourceId) ?? `信源 ${rule.sourceId.slice(0, 8)}`,
+      bindingKind: rule.bindingKind,
+      sourceName: this.ownerName(rule),
       kind: rule.kind,
       state: rule.state === 'deleted' ? 'paused' : rule.state,
       pauseReason: rule.pauseReason,
@@ -126,7 +141,7 @@ export class WatchQueryService {
       id: event.id,
       ruleId: event.ruleId,
       sourceId: event.sourceId,
-      sourceName: this.sourceName(event.sourceId) ?? `信源 ${event.sourceId.slice(0, 8)}`,
+      ...this.eventOwner(event.ruleId),
       eventKind: event.eventKind,
       importance: event.importance,
       firstObservedAt: event.firstObservedAt,
@@ -143,9 +158,7 @@ export class WatchQueryService {
             id: selectedEvent.id,
             ruleId: selectedEvent.ruleId,
             sourceId: selectedEvent.sourceId,
-            sourceName:
-              this.sourceName(selectedEvent.sourceId) ??
-              `信源 ${selectedEvent.sourceId.slice(0, 8)}`,
+            ...this.eventOwner(selectedEvent.ruleId),
             eventKind: selectedEvent.eventKind,
             importance: selectedEvent.importance,
             firstObservedAt: selectedEvent.firstObservedAt,

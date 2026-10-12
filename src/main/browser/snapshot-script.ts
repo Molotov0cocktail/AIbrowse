@@ -95,8 +95,13 @@ function collectSnapshot(): unknown {
     }
 
     // ---------- 通用工具 ----------
+    const truncated: string[] = [];
     const textOf = (el: Element): string => (el.textContent ?? '').trim().replace(/\s+/g, ' ');
-    const cap = (s: string, n: number): string => (s.length > n ? s.slice(0, n) : s);
+    const cap = (s: string, n: number, channel: string): string => {
+      if (s.length <= n) return s;
+      if (!truncated.includes(channel)) truncated.push(channel);
+      return s.slice(0, n);
+    };
 
     // 可见性粗筛（§8.2，O(n) 零副作用）：aria-hidden/hidden 属性跳过；
     // 无 offsetParent 且无布局盒跳过（position:fixed 无 offsetParent 但有盒，保留）.
@@ -123,7 +128,6 @@ function collectSnapshot(): unknown {
         : rawSelection;
     const bodyText = doc.body !== null ? doc.body.innerText : ''; // 布局感知，天然跳过 display:none
     const visibleText = bodyText.trim().replace(/\s+/g, ' ');
-    const truncated: string[] = [];
     if (rawSelection.length > LIMITS.selection) truncated.push('selection');
     if (visibleText.length > LIMITS.visibleText) truncated.push('visibleText');
 
@@ -137,7 +141,7 @@ function collectSnapshot(): unknown {
       }
       if (isSkippable(el)) continue;
       const level = Number(el.tagName.slice(1));
-      const text = cap(textOf(el), LIMITS.text);
+      const text = cap(textOf(el), LIMITS.text, 'headings');
       if (text !== '') headings.push({ level, text });
     }
 
@@ -150,9 +154,9 @@ function collectSnapshot(): unknown {
         break;
       }
       if (isSkippable(el)) continue;
-      const href = cap((el as HTMLAnchorElement).href, LIMITS.href); // 取解析后的绝对 URL
+      const href = cap((el as HTMLAnchorElement).href, LIMITS.href, 'links'); // 取解析后的绝对 URL
       if (href === '') continue;
-      links.push({ id: elementIdOf(el), text: cap(textOf(el), LIMITS.text), href });
+      links.push({ id: elementIdOf(el), text: cap(textOf(el), LIMITS.text, 'links'), href });
     }
 
     // ---------- buttons（§8.2：button / input[type=button|submit|reset] / [role=button]） ----------
@@ -175,8 +179,8 @@ function collectSnapshot(): unknown {
       // input 类按钮的可见文案是 value 属性而非 textContent
       const text =
         el.tagName === 'INPUT'
-          ? cap((el as HTMLInputElement).value.trim().replace(/\s+/g, ' '), LIMITS.text)
-          : cap(textOf(el), LIMITS.text);
+          ? cap((el as HTMLInputElement).value.trim().replace(/\s+/g, ' '), LIMITS.text, 'buttons')
+          : cap(textOf(el), LIMITS.text, 'buttons');
       const entry: { id: string; text: string; isSubmit?: boolean; ariaExpanded?: boolean } = {
         id: elementIdOf(el),
         text,
@@ -232,7 +236,7 @@ function collectSnapshot(): unknown {
       if (type === 'submit') entry.isSubmit = true; // A3（§5.4）：inputs 提交类标志
       const placeholder = el.getAttribute('placeholder');
       if (placeholder !== null && placeholder !== '') {
-        entry.placeholder = cap(placeholder.trim().replace(/\s+/g, ' '), LIMITS.text);
+        entry.placeholder = cap(placeholder.trim().replace(/\s+/g, ' '), LIMITS.text, 'inputs');
       }
       // type=password 不采集 value（敏感信息不得进入快照）
       if (type !== 'password') {
@@ -244,7 +248,7 @@ function collectSnapshot(): unknown {
           value = (el as HTMLInputElement | HTMLTextAreaElement).value;
         }
         if (value !== null && value !== '') {
-          entry.value = cap(value.trim().replace(/\s+/g, ' '), LIMITS.text);
+          entry.value = cap(value.trim().replace(/\s+/g, ' '), LIMITS.text, 'inputs');
         }
       }
       inputs.push(entry);
@@ -274,7 +278,7 @@ function collectSnapshot(): unknown {
           ':scope > th, :scope > td, :scope > [role=gridcell], :scope > [role=columnheader]',
         );
         const rowTexts: string[] = [];
-        for (const cell of cells) rowTexts.push(cap(textOf(cell), LIMITS.text));
+        for (const cell of cells) rowTexts.push(cap(textOf(cell), LIMITS.text, 'tables'));
         rows.push(rowTexts);
         rowCount++;
       }
@@ -290,7 +294,7 @@ function collectSnapshot(): unknown {
         const headerCells = firstRow.querySelectorAll(
           ':scope > th, :scope > td, :scope > [role=gridcell], :scope > [role=columnheader]',
         );
-        for (const cell of headerCells) headers.push(cap(textOf(cell), LIMITS.text));
+        for (const cell of headerCells) headers.push(cap(textOf(cell), LIMITS.text, 'tables'));
         rows.shift();
       }
       tables.push({ headers, rows });

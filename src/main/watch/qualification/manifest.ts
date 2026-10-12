@@ -339,6 +339,7 @@ export function createQualificationRules(m0Ms: number): WatchRule[] {
           };
     return {
       id: entry.ruleId,
+      bindingKind: 'source',
       sourceId: entry.sourceId,
       kind: entry.kind,
       accessMode: entry.accessMode,

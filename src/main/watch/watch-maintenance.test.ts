@@ -53,6 +53,7 @@ function watchRule(now: string): WatchRule {
   return {
     id: randomUUID(),
     version: 1,
+    bindingKind: 'source',
     sourceId: 'source-1',
     kind: 'feed',
     state: 'enabled',

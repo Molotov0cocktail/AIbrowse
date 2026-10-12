@@ -73,15 +73,29 @@ function collapseWhitespace(value: string): string {
 }
 
 // 文本字段：空白折叠 + 截断（§8.2「文本一律 textContent.trim()（空白折叠）」）
-function textField(value: unknown, limit: number): string {
+type ReportLoss = () => void;
+
+function textField(value: unknown, limit: number, reportLoss?: ReportLoss): string {
   const s = asString(value);
-  return s === null ? '' : collapseWhitespace(s).slice(0, limit);
+  if (s === null) {
+    reportLoss?.();
+    return '';
+  }
+  const text = collapseWhitespace(s);
+  if (text.length > limit) reportLoss?.();
+  return text.slice(0, limit);
 }
 
 // 非文本字段（href/url/type）：仅 trim + 截断，不做空白折叠
-function rawField(value: unknown, limit: number): string {
+function rawField(value: unknown, limit: number, reportLoss?: ReportLoss): string {
   const s = asString(value);
-  return s === null ? '' : s.trim().slice(0, limit);
+  if (s === null) {
+    reportLoss?.();
+    return '';
+  }
+  const text = s.trim();
+  if (text.length > limit) reportLoss?.();
+  return text.slice(0, limit);
 }
 
 function isValidElementId(value: unknown): value is string {
@@ -124,6 +138,7 @@ export function normalizeSnapshot(raw: unknown, fallback: SnapshotFallback): Pag
         documentId: fallback.documentId,
         readyState: 'unknown',
         degraded: 'main-process-only',
+        mainDocument: 'incomplete',
         warnings: l2Warnings,
       },
     };
@@ -131,9 +146,17 @@ export function normalizeSnapshot(raw: unknown, fallback: SnapshotFallback): Pag
 
   // ---------- 基础字段 ----------
 
-  const rawUrl = rawField(rawObj['url'], NORMALIZE_LIMITS.url);
+  let contentLost = false;
+  const reportLoss: ReportLoss = () => {
+    contentLost = true;
+  };
+  const contentWarning: AddWarning = (text) => {
+    reportLoss();
+    addWarning(text);
+  };
+  const rawUrl = rawField(rawObj['url'], NORMALIZE_LIMITS.url, reportLoss);
   const url = rawUrl !== '' ? rawUrl : fallbackUrl;
-  const rawTitle = textField(rawObj['title'], NORMALIZE_LIMITS.title);
+  const rawTitle = textField(rawObj['title'], NORMALIZE_LIMITS.title, reportLoss);
   const title = rawTitle !== '' ? rawTitle : fallbackTitle;
 
   const readyStateValue = asString(rawObj['readyState']);
@@ -144,28 +167,33 @@ export function normalizeSnapshot(raw: unknown, fallback: SnapshotFallback): Pag
 
   const viewport = readViewport(rawObj['viewport']);
 
-  const selectionValue = textField(rawObj['selection'], NORMALIZE_LIMITS.selection);
+  const selectionValue = textField(rawObj['selection'], NORMALIZE_LIMITS.selection, reportLoss);
   const selection = selectionValue !== '' ? selectionValue : undefined;
-  const visibleTextValue = textField(rawObj['visibleText'], NORMALIZE_LIMITS.visibleText);
+  const visibleTextValue = textField(
+    rawObj['visibleText'],
+    NORMALIZE_LIMITS.visibleText,
+    reportLoss,
+  );
   const visibleText = visibleTextValue !== '' ? visibleTextValue : undefined;
 
   // ---------- iframe 统计（L1 判定依据，警告最先产出保持顺序稳定） ----------
 
-  const iframes = readIframes(rawObj['iframes']);
+  const iframes = readIframes(rawObj['iframes'], reportLoss);
   if (iframes.total > 0) {
     addWarning(`跳过 ${iframes.total} 个 iframe（其中 ${iframes.crossOrigin} 个跨域）`);
   }
 
   // ---------- 集合字段（限额二次截断 + 非法条目丢弃） ----------
 
-  const headings = readHeadings(rawObj['headings'], addWarning);
-  const links = readLinks(rawObj['links'], addWarning);
-  const buttons = readButtons(rawObj['buttons'], addWarning);
-  const inputs = readInputs(rawObj['inputs'], addWarning);
-  const tables = readTables(rawObj['tables'], addWarning);
+  const headings = readHeadings(rawObj['headings'], contentWarning, reportLoss);
+  const links = readLinks(rawObj['links'], contentWarning, reportLoss);
+  const buttons = readButtons(rawObj['buttons'], contentWarning, reportLoss);
+  const inputs = readInputs(rawObj['inputs'], contentWarning, reportLoss);
+  const tables = readTables(rawObj['tables'], contentWarning, reportLoss);
 
   // 脚本侧截断标志 → 对应中文警告（未知键/非字符串条目忽略）
   const truncatedRaw = readArrayField(rawObj['truncated']);
+  if (truncatedRaw === null || truncatedRaw.length > 0) reportLoss();
   if (truncatedRaw !== null) {
     for (const key of truncatedRaw) {
       const name = asString(key);
@@ -187,6 +215,7 @@ export function normalizeSnapshot(raw: unknown, fallback: SnapshotFallback): Pag
       documentId: fallback.documentId, // A3：世代由主进程盖章，脚本输出中的 documentId 被忽略
       readyState,
       degraded,
+      mainDocument: readyState === 'complete' && !contentLost ? 'complete' : 'incomplete',
       warnings: warnings.slice(0, NORMALIZE_LIMITS.warnings),
     },
   };
@@ -212,20 +241,40 @@ function readViewport(value: unknown): PageSnapshot['viewport'] {
   return { scrollX, scrollY, width, height };
 }
 
-function readIframes(value: unknown): { total: number; crossOrigin: number } {
+function readIframes(
+  value: unknown,
+  reportLoss: ReportLoss,
+): { total: number; crossOrigin: number } {
   const rec = asRecord(value);
-  if (rec === null) return { total: 0, crossOrigin: 0 };
+  if (rec === null) {
+    reportLoss();
+    return { total: 0, crossOrigin: 0 };
+  }
   let total = asFiniteNumber(rec['total']);
   let crossOrigin = asFiniteNumber(rec['crossOrigin']);
-  if (total === null || total < 0 || !Number.isInteger(total)) total = 0;
-  if (crossOrigin === null || crossOrigin < 0 || !Number.isInteger(crossOrigin)) crossOrigin = 0;
+  if (total === null || total < 0 || !Number.isSafeInteger(total)) {
+    reportLoss();
+    total = 0;
+  }
+  if (crossOrigin === null || crossOrigin < 0 || !Number.isSafeInteger(crossOrigin)) {
+    reportLoss();
+    crossOrigin = 0;
+  }
+  if (crossOrigin > total) reportLoss();
   // 收敛：跨域计数钳制在总数内（畸形数据不产生矛盾警告）
   return { total, crossOrigin: Math.min(crossOrigin, total) };
 }
 
-function readHeadings(value: unknown, addWarning: AddWarning): PageSnapshot['headings'] {
+function readHeadings(
+  value: unknown,
+  addWarning: AddWarning,
+  reportLoss: ReportLoss,
+): PageSnapshot['headings'] {
   const arr = readArrayField(value);
-  if (arr === null) return [];
+  if (arr === null) {
+    reportLoss();
+    return [];
+  }
   const items = arr.slice(0, NORMALIZE_LIMITS.headings);
   if (arr.length > NORMALIZE_LIMITS.headings) addWarning(TRUNCATED_WARNING['headings']);
   const result: PageSnapshot['headings'] = [];
@@ -237,7 +286,7 @@ function readHeadings(value: unknown, addWarning: AddWarning): PageSnapshot['hea
       continue;
     }
     const level = rec['level'];
-    const text = textField(rec['text'], NORMALIZE_LIMITS.text);
+    const text = textField(rec['text'], NORMALIZE_LIMITS.text, reportLoss);
     if (
       typeof level !== 'number' ||
       !Number.isInteger(level) ||
@@ -254,9 +303,16 @@ function readHeadings(value: unknown, addWarning: AddWarning): PageSnapshot['hea
   return result;
 }
 
-function readLinks(value: unknown, addWarning: AddWarning): PageSnapshot['links'] {
+function readLinks(
+  value: unknown,
+  addWarning: AddWarning,
+  reportLoss: ReportLoss,
+): PageSnapshot['links'] {
   const arr = readArrayField(value);
-  if (arr === null) return [];
+  if (arr === null) {
+    reportLoss();
+    return [];
+  }
   const items = arr.slice(0, NORMALIZE_LIMITS.links);
   if (arr.length > NORMALIZE_LIMITS.links) addWarning(TRUNCATED_WARNING['links']);
   const result: PageSnapshot['links'] = [];
@@ -268,21 +324,28 @@ function readLinks(value: unknown, addWarning: AddWarning): PageSnapshot['links'
       continue;
     }
     const id = rec['id'];
-    const href = rawField(rec['href'], NORMALIZE_LIMITS.href);
+    const href = rawField(rec['href'], NORMALIZE_LIMITS.href, reportLoss);
     const text = rec['text'];
     if (!isValidElementId(id) || href === '' || typeof text !== 'string') {
       dropped++;
       continue;
     }
-    result.push({ id, text: textField(text, NORMALIZE_LIMITS.text), href });
+    result.push({ id, text: textField(text, NORMALIZE_LIMITS.text, reportLoss), href });
   }
   if (dropped > 0) addWarning(`丢弃 ${dropped} 条无效 link`);
   return result;
 }
 
-function readButtons(value: unknown, addWarning: AddWarning): PageSnapshot['buttons'] {
+function readButtons(
+  value: unknown,
+  addWarning: AddWarning,
+  reportLoss: ReportLoss,
+): PageSnapshot['buttons'] {
   const arr = readArrayField(value);
-  if (arr === null) return [];
+  if (arr === null) {
+    reportLoss();
+    return [];
+  }
   const items = arr.slice(0, NORMALIZE_LIMITS.buttons);
   if (arr.length > NORMALIZE_LIMITS.buttons) addWarning(TRUNCATED_WARNING['buttons']);
   const result: PageSnapshot['buttons'] = [];
@@ -301,21 +364,30 @@ function readButtons(value: unknown, addWarning: AddWarning): PageSnapshot['butt
     }
     const entry: PageSnapshot['buttons'][number] = {
       id,
-      text: textField(text, NORMALIZE_LIMITS.text),
+      text: textField(text, NORMALIZE_LIMITS.text, reportLoss),
     };
     // A3（§5.4）：click 语义元数据——严格布尔校验，非布尔形状丢弃字段（敌手输入纪律；
     // 字段缺失 = 无法证明 → 权限层 fail-closed，不整条丢弃条目）
     if (typeof rec['isSubmit'] === 'boolean') entry.isSubmit = rec['isSubmit'];
     if (typeof rec['ariaExpanded'] === 'boolean') entry.ariaExpanded = rec['ariaExpanded'];
+    if (rec['isSubmit'] !== undefined && typeof rec['isSubmit'] !== 'boolean') reportLoss();
+    if (rec['ariaExpanded'] !== undefined && typeof rec['ariaExpanded'] !== 'boolean') reportLoss();
     result.push(entry);
   }
   if (dropped > 0) addWarning(`丢弃 ${dropped} 条无效 button`);
   return result;
 }
 
-function readInputs(value: unknown, addWarning: AddWarning): PageSnapshot['inputs'] {
+function readInputs(
+  value: unknown,
+  addWarning: AddWarning,
+  reportLoss: ReportLoss,
+): PageSnapshot['inputs'] {
   const arr = readArrayField(value);
-  if (arr === null) return [];
+  if (arr === null) {
+    reportLoss();
+    return [];
+  }
   const items = arr.slice(0, NORMALIZE_LIMITS.inputs);
   if (arr.length > NORMALIZE_LIMITS.inputs) addWarning(TRUNCATED_WARNING['inputs']);
   const result: PageSnapshot['inputs'] = [];
@@ -327,7 +399,7 @@ function readInputs(value: unknown, addWarning: AddWarning): PageSnapshot['input
       continue;
     }
     const id = rec['id'];
-    const type = rawField(rec['type'], NORMALIZE_LIMITS.inputType);
+    const type = rawField(rec['type'], NORMALIZE_LIMITS.inputType, reportLoss);
     if (!isValidElementId(id) || type === '') {
       dropped++;
       continue;
@@ -335,11 +407,16 @@ function readInputs(value: unknown, addWarning: AddWarning): PageSnapshot['input
     const entry: NonNullable<PageSnapshot['inputs']>[number] = { id, type };
     // A3（§5.4）：inputs 提交类标志——严格布尔，非布尔丢弃字段（fail-closed）
     if (typeof rec['isSubmit'] === 'boolean') entry.isSubmit = rec['isSubmit'];
-    const placeholder = textField(rec['placeholder'], NORMALIZE_LIMITS.text);
+    if (rec['isSubmit'] !== undefined && typeof rec['isSubmit'] !== 'boolean') reportLoss();
+    const placeholder =
+      rec['placeholder'] === undefined
+        ? ''
+        : textField(rec['placeholder'], NORMALIZE_LIMITS.text, reportLoss);
     if (placeholder !== '') entry.placeholder = placeholder;
     const valueValue = asString(rec['value']);
+    if (rec['value'] !== undefined && valueValue === null) reportLoss();
     if (valueValue !== null) {
-      const value = collapseWhitespace(valueValue).slice(0, NORMALIZE_LIMITS.text);
+      const value = textField(valueValue, NORMALIZE_LIMITS.text, reportLoss);
       if (value !== '') entry.value = value;
     }
     result.push(entry);
@@ -348,9 +425,16 @@ function readInputs(value: unknown, addWarning: AddWarning): PageSnapshot['input
   return result.length > 0 ? result : undefined;
 }
 
-function readTables(value: unknown, addWarning: AddWarning): PageSnapshot['tables'] {
+function readTables(
+  value: unknown,
+  addWarning: AddWarning,
+  reportLoss: ReportLoss,
+): PageSnapshot['tables'] {
   const arr = readArrayField(value);
-  if (arr === null) return [];
+  if (arr === null) {
+    reportLoss();
+    return [];
+  }
   const items = arr.slice(0, NORMALIZE_LIMITS.tables);
   if (arr.length > NORMALIZE_LIMITS.tables) addWarning(TRUNCATED_WARNING['tables']);
   const result: PageSnapshot['tables'] = [];
@@ -367,19 +451,24 @@ function readTables(value: unknown, addWarning: AddWarning): PageSnapshot['table
       dropped++;
       continue;
     }
+    if (headersRaw.length > NORMALIZE_LIMITS.tableCols) reportLoss();
     const headers = headersRaw
       .slice(0, NORMALIZE_LIMITS.tableCols)
-      .map((cell) => textField(cell, NORMALIZE_LIMITS.text));
+      .map((cell) => textField(cell, NORMALIZE_LIMITS.text, reportLoss));
     const rowItems = rowsRaw.slice(0, NORMALIZE_LIMITS.tableRows);
     if (rowsRaw.length > NORMALIZE_LIMITS.tableRows) addWarning(TRUNCATED_WARNING['tableRows']);
     const rows: string[][] = [];
     for (const row of rowItems) {
       const cells = readArrayField(row);
-      if (cells === null) continue; // 非数组行丢弃（对齐以行为单位，无法修复）
+      if (cells === null) {
+        reportLoss();
+        continue;
+      }
+      if (cells.length > NORMALIZE_LIMITS.tableCols) reportLoss();
       rows.push(
         cells
           .slice(0, NORMALIZE_LIMITS.tableCols)
-          .map((cell) => textField(cell, NORMALIZE_LIMITS.text)),
+          .map((cell) => textField(cell, NORMALIZE_LIMITS.text, reportLoss)),
       );
     }
     if (headers.length === 0 && rows.length === 0) {

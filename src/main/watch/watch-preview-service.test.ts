@@ -198,7 +198,7 @@ describe('D9 Session 预览 origin 竞态', () => {
         accessMode: 'session',
         regions: [{ kind: 'main-text', label: '正文' }],
       }),
-    ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
+    ).resolves.toEqual({ ok: false, errorCode: 'target-mismatch' });
   });
 
   it('表格候选读取期间导航到其他 origin 时不消费敌手 channels', async () => {
@@ -249,7 +249,7 @@ describe('D9 Session 预览 origin 竞态', () => {
           },
         ],
       }),
-    ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
+    ).resolves.toEqual({ ok: false, errorCode: 'target-mismatch' });
   });
 });
 
@@ -270,7 +270,11 @@ describe('Session 预览页面归属', () => {
   ];
   const targetUrl = `${source.projection.canonicalKey}?view=selected`;
 
-  function sessionPreview(activeUrl: string, capturedUrl: string) {
+  function sessionPreview(
+    activeUrl: string,
+    capturedUrl: string,
+    suspicion: 'login' | 'captcha' | 'unknown' | null = null,
+  ) {
     const store = new WatchPreviewStore();
     const grants = new SessionGrantStore();
     const read = vi.fn(async () => ({
@@ -286,7 +290,7 @@ describe('Session 预览页面归属', () => {
         capturedAt: '2026-10-12T00:00:00.000Z',
         documentId: '42',
       },
-      suspicion: null,
+      suspicion,
     }));
     const preview = new WatchPreviewService({
       store,
@@ -307,6 +311,17 @@ describe('Session 预览页面归属', () => {
   }
 
   for (const region of regions) {
+    it.each(['login', 'captcha', 'unknown'] as const)(
+      `${region.name}拒绝挑战页面 %s 且不签发预览或授权`,
+      async (suspicion) => {
+        const fixture = sessionPreview(targetUrl, targetUrl, suspicion);
+        await expect(
+          fixture.preview.previewPage({ sourceId, accessMode: 'session', regions: region.value }),
+        ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
+        expect(fixture.store.size).toBe(0);
+        expect(fixture.grants.recordCount()).toBe(0);
+      },
+    );
     for (const mismatch of [
       { name: '同源不同路径', url: 'https://example.com/form?view=selected' },
       { name: '同源不同 query', url: 'https://example.com/news?view=other' },
@@ -316,7 +331,7 @@ describe('Session 预览页面归属', () => {
         const fixture = sessionPreview(mismatch.url, mismatch.url);
         await expect(
           fixture.preview.previewPage({ sourceId, accessMode: 'session', regions: region.value }),
-        ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
+        ).resolves.toEqual({ ok: false, errorCode: 'target-mismatch' });
         expect(fixture.read).not.toHaveBeenCalled();
         expect(fixture.store.size).toBe(0);
         expect(fixture.grants.recordCount()).toBe(0);
@@ -326,7 +341,7 @@ describe('Session 预览页面归属', () => {
         const fixture = sessionPreview(targetUrl, mismatch.url);
         await expect(
           fixture.preview.previewPage({ sourceId, accessMode: 'session', regions: region.value }),
-        ).resolves.toEqual({ ok: false, errorCode: 'security-rejected' });
+        ).resolves.toEqual({ ok: false, errorCode: 'target-mismatch' });
         expect(fixture.read).toHaveBeenCalledOnce();
         expect(fixture.store.size).toBe(0);
         expect(fixture.grants.recordCount()).toBe(0);
@@ -374,6 +389,27 @@ describe('Session 预览页面归属', () => {
       });
     });
   }
+
+  it.each(['source', 'watch-target'] as const)(
+    '显式Session授权签发绑定来自主进程预览owner类型：%s',
+    async (bindingKind) => {
+      const fixture = sessionPreview(targetUrl, targetUrl);
+      const preview = await fixture.preview.previewPage({
+        sourceId,
+        accessMode: 'session',
+        regions: regions[0]!.value,
+      });
+      expect(preview.ok).toBe(true);
+      if (!preview.ok) return;
+      const record = fixture.store.consume(String(preview.value['previewHandle']))!;
+      const issue = vi.spyOn(fixture.grants, 'issue');
+      const granted = fixture.preview.issueSessionGrant(
+        fixture.store.issue({ ...record, bindingKind })!,
+      );
+      expect(granted.ok).toBe(true);
+      expect(issue).toHaveBeenCalledWith(expect.objectContaining({ bindingKind, sourceId }));
+    },
+  );
 
   it('实际读取目标摘要与待授权目标不一致时不签发授权', () => {
     const fixture = sessionPreview(targetUrl, targetUrl);

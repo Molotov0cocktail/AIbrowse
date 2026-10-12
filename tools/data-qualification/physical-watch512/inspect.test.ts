@@ -20,13 +20,14 @@ function fixture() {
   return { db, path, root: join(profile, 'watch') };
 }
 
-it('小Watch历史集合扩至1MiB后独立backup保留十五表、schema与业务关系', async () => {
+it('小Watch历史集合扩至1MiB后独立backup保留十六表、schema与业务关系', async () => {
   const { db, path, root } = fixture();
   let after: ReturnType<typeof inspectWatch>;
   try {
     const before = inspectWatch(db, () => {});
     expect(before.semantic.counts.watch_rules).toBe(1);
-    expect(Object.keys(before.semantic.counts)).toHaveLength(15);
+    expect(Object.keys(before.semantic.counts)).toHaveLength(16);
+    expect(before.semantic.counts.watch_targets).toBe(0);
     const padding = padPrivateFixture(db, 1024 ** 2, () => {});
     after = inspectWatch(db, () => {});
     expect(after.schemaSha256).toBe(before.schemaSha256);

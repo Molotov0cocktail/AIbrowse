@@ -72,7 +72,7 @@ it.each(['snapshot', 'unknown', 'duplicate', 'schema', 'hash', 'oversize'] as co
       members: BACKUP_IDS.map((id) => ({
         id,
         present: true,
-        schemaVersion: id === 'watch' ? 5 : 1,
+        schemaVersion: id === 'watch' ? 6 : 1,
         bytes: 0,
         sha256: 'a'.repeat(64),
       })),
@@ -109,7 +109,7 @@ it.each(['backup', 'restore', 'migrate'] as const)(
         members: BACKUP_IDS.map((id) => ({
           id,
           present: true,
-          schemaVersion: id === 'watch' ? 5 : 1,
+          schemaVersion: id === 'watch' ? 6 : 1,
           bytes: 0,
           sha256: 'a'.repeat(64),
         })),
@@ -141,7 +141,7 @@ it.each(['missing-member', 'old-schema', 'output-path', 'output-limit', 'output-
         members: BACKUP_IDS.map((id) => ({
           id,
           present: true,
-          schemaVersion: id === 'watch' ? 5 : 1,
+          schemaVersion: id === 'watch' ? 6 : 1,
           bytes: 0,
           sha256: 'a'.repeat(64),
         })),

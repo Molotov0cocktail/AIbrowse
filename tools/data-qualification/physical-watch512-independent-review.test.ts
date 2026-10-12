@@ -32,6 +32,12 @@ function fixture() {
   const { db } = openPrivateStagingDatabase(path, 'watch');
   const projection = JSON.stringify({ type: 'page', fields: [] });
   const rule = watchIds('H').rule;
+  db.prepare(
+    "INSERT INTO watch_targets(id,version,scope,canonical_url,display_name,ai_share_mode) VALUES(?,1,'page',?,'独立目标','blocked')",
+  ).run(id('H'), url('H'));
+  db.exec(
+    "UPDATE watch_rules SET binding_kind='watch-target'; UPDATE digest_change_journal SET binding_kind='watch-target'; UPDATE digest_schedules SET binding_kind='watch-target'",
+  );
   db.exec('UPDATE watch_rules SET baseline_version=1');
   db.prepare("INSERT INTO watch_baselines VALUES (?,1,'page',?,?,?,?,?,NULL,NULL,NULL)").run(
     rule,
@@ -52,13 +58,13 @@ function fixture() {
   return { db, root, path, directory: join(profile, 'watch') };
 }
 
-it('独立夹具十五表非空，全部列及rowid变化均拒绝或改变摘要', () => {
+it('独立夹具十六表非空，全部列及rowid变化均拒绝或改变摘要', () => {
   const { db } = fixture();
   const outcomes: { table: string; column: string; rejected: boolean }[] = [];
   try {
     const before = inspectWatch(db, noop);
-    expect(Object.keys(before.semantic.counts)).toHaveLength(15);
-    expect(Object.values(before.semantic.counts)).toEqual(Array(15).fill(1));
+    expect(Object.keys(before.semantic.counts)).toHaveLength(16);
+    expect(Object.values(before.semantic.counts)).toEqual(Array(16).fill(1));
     db.exec('PRAGMA foreign_keys=OFF; PRAGMA ignore_check_constraints=ON');
     for (const table of Object.keys(before.semantic.counts)) {
       expect(table).toMatch(/^[a-z_]+$/u);
@@ -95,7 +101,7 @@ it('独立夹具十五表非空，全部列及rowid变化均拒绝或改变摘�
       }
     }
     expect(outcomes.filter((entry) => !entry.rejected).length).toBeGreaterThan(15);
-    expect(new Set(outcomes.map((entry) => entry.table)).size).toBe(15);
+    expect(new Set(outcomes.map((entry) => entry.table)).size).toBe(16);
     expect(inspectWatch(db, noop)).toEqual(before);
     writeFileSync(join(evidence, 'column-mutations-001.json'), JSON.stringify(outcomes, null, 2), {
       flag: 'wx',

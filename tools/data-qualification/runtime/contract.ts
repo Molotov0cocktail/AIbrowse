@@ -28,8 +28,8 @@ export const FIXTURE = Object.freeze({
   watchDigests: 1030,
   conversationSessions: 50,
   denseSessionBytes: 64 * 1024 ** 2,
-  currentVersions: [1, 1, 5] as const,
-  migrationCases: 13,
+  currentVersions: [1, 1, 6] as const,
+  migrationCases: 15,
 });
 
 export const STAGES = [

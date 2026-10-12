@@ -308,6 +308,7 @@ function makeSessionRule(
   return {
     id: ruleId,
     version: 1,
+    bindingKind: 'source',
     sourceId,
     kind: 'page',
     state: 'enabled',

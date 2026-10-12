@@ -332,6 +332,7 @@ function fixedRule(): WatchRule {
   return {
     id: '22222222-2222-4222-8222-222222222222',
     version: 1,
+    bindingKind: 'source',
     sourceId,
     kind: 'feed',
     state: 'enabled',
@@ -409,6 +410,7 @@ export async function watchCase(root: string, trace: Trace): Promise<CaseEvidenc
         status: 'ok',
         rowVersion: 1,
         sourceAfterAcquisition: {
+          bindingKind: 'source',
           sourceId: rule.sourceId,
           rowVersion: 1,
           enabled: true,

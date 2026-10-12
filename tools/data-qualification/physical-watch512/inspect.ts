@@ -8,6 +8,7 @@ import { need } from './contract';
 // Every business table has a fixed query. Include rowids where SQLite owns them;
 // the composite-key WITHOUT ROWID table has its own deterministic order.
 const DATA_QUERIES = [
+  'SELECT rowid AS qualification_rowid,* FROM watch_targets ORDER BY id',
   'SELECT rowid AS qualification_rowid,* FROM watch_rules ORDER BY id',
   'SELECT rowid AS qualification_rowid,* FROM watch_baselines ORDER BY rule_id',
   'SELECT rowid AS qualification_rowid,* FROM watch_runs ORDER BY id',

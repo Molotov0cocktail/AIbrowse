@@ -27,6 +27,9 @@ const ERROR_TEXT: Record<WatchIpcErrorCode, string> = {
   'invalid-state': '当前状态不允许此操作',
   'budget-exceeded': '内容超过安全上限',
   'security-rejected': '安全检查未通过',
+  'page-incomplete': '主文档采集不完整，请等待页面加载完成或选择内容更少的页面',
+  'page-not-ready': '目标页面尚未就绪，请返回网页完成加载后重试',
+  'target-mismatch': '当前网页与监控网址不一致，请先打开目标网页再预览',
   'consent-required': '需要重新授权',
   'preview-expired': '预览已过期',
   'feature-unavailable': '功能当前不可用',
@@ -36,20 +39,30 @@ const ERROR_TEXT: Record<WatchIpcErrorCode, string> = {
 };
 
 interface WatchWorkspaceProps {
-  initialSourceId: string | null;
+  initialUrl: string | null;
+  currentPageUrl?: string;
   focusSubject: { type: 'event' | 'digest'; id: string } | null;
   onBack(): void;
 }
 
-export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchWorkspaceProps) {
+export function WatchWorkspace({
+  initialUrl,
+  currentPageUrl,
+  focusSubject,
+  onBack,
+}: WatchWorkspaceProps) {
   const focusSubjectRef = useRef(focusSubject);
   focusSubjectRef.current = focusSubject;
   const eventRequestVersion = useRef(0);
   const digestRequestVersion = useRef(0);
+  const digestPreviewRequestVersion = useRef(0);
+  const previewRequestVersion = useRef(0);
   useEffect(
     () => () => {
       eventRequestVersion.current += 1;
       digestRequestVersion.current += 1;
+      digestPreviewRequestVersion.current += 1;
+      previewRequestVersion.current += 1;
     },
     [],
   );
@@ -62,9 +75,11 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     Array<{ id: string; createdAt: string; eventCount: number; providerState: string }>
   >([]);
   const [message, setMessage] = useState<string | null>(null);
-  const [wizardOpen, setWizardOpen] = useState(initialSourceId !== null);
+  const [wizardOpen, setWizardOpen] = useState(initialUrl !== null);
   const [wizardStep, setWizardStep] = useState(0);
-  const [sourceId, setSourceId] = useState(initialSourceId ?? '');
+  const [targetUrl, setTargetUrl] = useState(initialUrl ?? '');
+  const [digestRuleId, setDigestRuleId] = useState('');
+  const [previewBusy, setPreviewBusy] = useState(false);
   const [ruleKind, setRuleKind] = useState<'page' | 'feed'>('page');
   const [accessMode, setAccessMode] = useState<'public' | 'session'>('public');
   const [showDetails, setShowDetails] = useState(false);
@@ -120,6 +135,8 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
   ];
 
   const clearPreviewState = (): void => {
+    previewRequestVersion.current += 1;
+    setPreviewBusy(false);
     setPreviewHandle(null);
     setSessionGrantHandle(null);
     setPreviewFields([]);
@@ -133,6 +150,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
 
   const openCreateWizard = (): void => {
     clearPreviewState();
+    setTargetUrl(initialUrl ?? '');
     setSettingsRule(null);
     setRebaselineRule(null);
     setConditionEnabled(false);
@@ -275,6 +293,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
   };
 
   const acceptPreview = async (value: unknown): Promise<void> => {
+    const version = previewRequestVersion.current;
     let handles = readHandles(value);
     if (handles === null) {
       setMessage('预览结果不可用');
@@ -288,6 +307,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
       const grant = await window.aibrowse.watch.issueSessionGrant({
         previewHandle: handles.previewHandle,
       });
+      if (version !== previewRequestVersion.current) return;
       if (!grant.ok) {
         setMessage(`授权失败：${ERROR_TEXT[grant.errorCode]}`);
         return;
@@ -314,103 +334,144 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
     fingerprint: string;
     occurrence: number;
   }): Promise<void> => {
-    setMessage('正在安全采集 Baseline 预览…');
-    if (ruleKind === 'page' && regionKind === 'table' && tableSelection === undefined) {
-      const discovery = await window.aibrowse.watch.previewPageRegions({
-        sourceId,
-        accessMode,
-        regions: [
-          {
-            kind: 'table',
-            label: '表格候选',
-            headerFingerprint: '0'.repeat(64),
-            occurrence: 0,
-          },
-        ],
-      });
-      if (!discovery.ok || !isObject(discovery.value)) {
-        setMessage(
-          `表格发现失败：${discovery.ok ? '结果不可用' : ERROR_TEXT[discovery.errorCode]}`,
-        );
+    if (previewBusy) return;
+    const version = ++previewRequestVersion.current;
+    let normalizedUrl = '';
+    if (rebaselineRule === null) {
+      try {
+        if (
+          Array.from(targetUrl).some(
+            (char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+          )
+        )
+          throw new Error('invalid-url');
+        const parsed = new URL(targetUrl.trim());
+        if (
+          !['http:', 'https:'].includes(parsed.protocol) ||
+          parsed.username !== '' ||
+          parsed.password !== ''
+        )
+          throw new Error('invalid-url');
+        normalizedUrl = parsed.href;
+      } catch {
+        setMessage('请输入完整的 http 或 https 监控网址');
         return;
       }
-      const regions = Array.isArray(discovery.value['regions']) ? discovery.value['regions'] : [];
-      const table = regions.find((region) => isObject(region) && region['kind'] === 'table');
-      const candidates =
-        isObject(table) && Array.isArray(table['groups'])
-          ? table['groups'].flatMap((candidate) =>
-              isObject(candidate) &&
-              typeof candidate['fingerprint'] === 'string' &&
-              typeof candidate['occurrenceCount'] === 'number' &&
-              typeof candidate['columns'] === 'number'
-                ? [
-                    {
-                      fingerprint: candidate['fingerprint'],
-                      occurrenceCount: candidate['occurrenceCount'],
-                      columns: candidate['columns'],
-                    },
-                  ]
-                : [],
+    }
+    const owner =
+      rebaselineRule === null
+        ? { mode: 'standalone' as const, url: normalizedUrl }
+        : rebaselineRule.bindingKind === 'watch-target'
+          ? { mode: 'rule' as const, ruleId: rebaselineRule.id }
+          : { sourceId: rebaselineRule.sourceId };
+    setPreviewBusy(true);
+    try {
+      setMessage('正在安全采集 Baseline 预览…');
+      if (ruleKind === 'page' && regionKind === 'table' && tableSelection === undefined) {
+        const discovery = await window.aibrowse.watch.previewPageRegions({
+          ...owner,
+          accessMode,
+          regions: [
+            {
+              kind: 'table',
+              label: '表格候选',
+              headerFingerprint: '0'.repeat(64),
+              occurrence: 0,
+            },
+          ],
+        });
+        if (version !== previewRequestVersion.current) return;
+        if (!discovery.ok || !isObject(discovery.value)) {
+          setMessage(
+            `表格发现失败：${discovery.ok ? '结果不可用' : ERROR_TEXT[discovery.errorCode]}`,
+          );
+          return;
+        }
+        const regions = Array.isArray(discovery.value['regions']) ? discovery.value['regions'] : [];
+        const table = regions.find((region) => isObject(region) && region['kind'] === 'table');
+        const candidates =
+          isObject(table) && Array.isArray(table['groups'])
+            ? table['groups'].flatMap((candidate) =>
+                isObject(candidate) &&
+                typeof candidate['fingerprint'] === 'string' &&
+                typeof candidate['occurrenceCount'] === 'number' &&
+                typeof candidate['columns'] === 'number'
+                  ? [
+                      {
+                        fingerprint: candidate['fingerprint'],
+                        occurrenceCount: candidate['occurrenceCount'],
+                        columns: candidate['columns'],
+                      },
+                    ]
+                  : [],
+              )
+            : [];
+        setTableCandidates(candidates);
+        setMessage(candidates.length === 0 ? '页面未发现可用表格' : '请选择表格候选及序号');
+        return;
+      }
+      const selectedFingerprint = tableSelection?.fingerprint ?? tableFingerprint;
+      const selectedOccurrence = tableSelection?.occurrence ?? tableOccurrence;
+      const result =
+        ruleKind === 'feed'
+          ? await window.aibrowse.watch.previewFeed(
+              'sourceId' in owner ? { mode: 'source', sourceId: owner.sourceId } : owner,
             )
-          : [];
-      setTableCandidates(candidates);
-      setMessage(candidates.length === 0 ? '页面未发现可用表格' : '请选择表格候选及序号');
-      return;
+          : await window.aibrowse.watch.previewPageRegions({
+              ...owner,
+              accessMode,
+              regions:
+                regionKind === 'headings'
+                  ? [{ kind: 'headings', label: '标题', levels: [1, 2, 3] }]
+                  : regionKind === 'links'
+                    ? [{ kind: 'links', label: '链接', sameOriginOnly: true }]
+                    : regionKind === 'table'
+                      ? [
+                          {
+                            kind: 'table',
+                            label: '表格',
+                            headerFingerprint: selectedFingerprint,
+                            occurrence: selectedOccurrence,
+                          },
+                        ]
+                      : [{ kind: 'main-text', label: '正文' }],
+            });
+      if (version !== previewRequestVersion.current) return;
+      if (!result.ok) {
+        setMessage(`预览失败：${ERROR_TEXT[result.errorCode]}`);
+        return;
+      }
+      if (
+        ruleKind === 'feed' &&
+        isObject(result.value) &&
+        Array.isArray(result.value['candidates'])
+      ) {
+        const discoveryHandle = result.value['discoveryHandle'];
+        if (typeof discoveryHandle !== 'string') return;
+        setFeedCandidates(
+          result.value['candidates'].flatMap((candidate) =>
+            isObject(candidate) &&
+            typeof candidate['candidateId'] === 'string' &&
+            typeof candidate['targetDisplay'] === 'string'
+              ? [
+                  {
+                    discoveryHandle,
+                    candidateId: candidate['candidateId'],
+                    targetDisplay: candidate['targetDisplay'],
+                  },
+                ]
+              : [],
+          ),
+        );
+        setMessage('请选择发现的 Feed，再完成格式验证');
+        return;
+      }
+      await acceptPreview(result.value);
+    } catch {
+      if (version === previewRequestVersion.current) setMessage('预览暂不可用，请稍后重试');
+    } finally {
+      if (version === previewRequestVersion.current) setPreviewBusy(false);
     }
-    const selectedFingerprint = tableSelection?.fingerprint ?? tableFingerprint;
-    const selectedOccurrence = tableSelection?.occurrence ?? tableOccurrence;
-    const result =
-      ruleKind === 'feed'
-        ? await window.aibrowse.watch.previewFeed({ mode: 'source', sourceId })
-        : await window.aibrowse.watch.previewPageRegions({
-            sourceId,
-            accessMode,
-            regions:
-              regionKind === 'headings'
-                ? [{ kind: 'headings', label: '标题', levels: [1, 2, 3] }]
-                : regionKind === 'links'
-                  ? [{ kind: 'links', label: '链接', sameOriginOnly: true }]
-                  : regionKind === 'table'
-                    ? [
-                        {
-                          kind: 'table',
-                          label: '表格',
-                          headerFingerprint: selectedFingerprint,
-                          occurrence: selectedOccurrence,
-                        },
-                      ]
-                    : [{ kind: 'main-text', label: '正文' }],
-          });
-    if (!result.ok) {
-      setMessage(`预览失败：${ERROR_TEXT[result.errorCode]}`);
-      return;
-    }
-    if (
-      ruleKind === 'feed' &&
-      isObject(result.value) &&
-      Array.isArray(result.value['candidates'])
-    ) {
-      const discoveryHandle = result.value['discoveryHandle'];
-      if (typeof discoveryHandle !== 'string') return;
-      setFeedCandidates(
-        result.value['candidates'].flatMap((candidate) =>
-          isObject(candidate) &&
-          typeof candidate['candidateId'] === 'string' &&
-          typeof candidate['targetDisplay'] === 'string'
-            ? [
-                {
-                  discoveryHandle,
-                  candidateId: candidate['candidateId'],
-                  targetDisplay: candidate['targetDisplay'],
-                },
-              ]
-            : [],
-        ),
-      );
-      setMessage('请选择发现的 Feed，再完成格式验证');
-      return;
-    }
-    await acceptPreview(result.value);
   };
 
   const confirmCreate = async (): Promise<void> => {
@@ -537,7 +598,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
         </span>
         <div>
           <h3>持续关注，及时发现变化</h3>
-          <p>把重要信源加入监控，通过事件与摘要回顾变化。</p>
+          <p>独立关注网页或订阅的变化，通过事件与摘要回顾更新。</p>
         </div>
         <button type="button" className="primary-button" onClick={openCreateWizard}>
           <Icon name="plus" /> 创建监控
@@ -562,7 +623,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
             <Icon name="activity" />
           </span>
           <h3>暂无监控规则。</h3>
-          <p>创建第一条规则，开始关注信源的变化。</p>
+          <p>输入网址或使用当前网页即可创建监控，无需加入信源库。</p>
         </div>
       ) : (
         rules.map((rule) => (
@@ -635,6 +696,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                 type="button"
                 onClick={() => {
                   setSettingsRule(rule);
+                  setTargetUrl(rule.targetDisplay);
                   setRebaselineRule(null);
                   clearPreviewState();
                   setNotificationLevel(rule.notificationLevel);
@@ -661,7 +723,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                   clearPreviewState();
                   setSettingsRule(null);
                   setRebaselineRule(rule);
-                  setSourceId(rule.sourceId);
+                  setTargetUrl(rule.targetDisplay);
                   setRuleKind(rule.kind);
                   setAccessMode(rule.accessMode);
                   setConditionEnabled(rule.condition !== null);
@@ -702,7 +764,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
         </select>
       </label>
       <label>
-        信源 ID
+        目标 ID（旧规则为信源 ID）
         <input
           value={eventSourceFilter}
           onChange={(event) => setEventSourceFilter(event.target.value)}
@@ -850,8 +912,24 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
       <h3>更新摘要</h3>
       <p>摘要引用会明确显示 active、expired 或 user-deleted；已删除 Evidence 不可恢复。</p>
       <label>
-        摘要信源 ID
-        <input value={sourceId} onChange={(event) => setSourceId(event.target.value)} />
+        监控目标
+        <select
+          value={digestRuleId}
+          onChange={(event) => {
+            digestPreviewRequestVersion.current += 1;
+            setDigestRuleId(event.target.value);
+            setDigestPreview(null);
+            setDigestPreviewHandle(null);
+            setDigestFrozenMembers([]);
+          }}
+        >
+          <option value="">请选择监控</option>
+          {rules.map((rule) => (
+            <option key={rule.id} value={rule.id}>
+              {rule.sourceName} · {rule.targetDisplay}
+            </option>
+          ))}
+        </select>
       </label>
       <label>
         每日时间
@@ -871,22 +949,31 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
           checked={digestAiEnabled}
           onChange={(event) => setDigestAiEnabled(event.target.checked)}
         />
-        启用可选 AI 解释
+        允许此摘要向 AI 发送选中监控的有界变化内容（不加入信源库）
       </label>
       <button
         type="button"
-        disabled={!/^[0-9a-f-]{36}$/.test(sourceId)}
+        disabled={!rules.some((rule) => rule.id === digestRuleId)}
         onClick={() => {
+          const selectedRule = rules.find((rule) => rule.id === digestRuleId);
+          if (selectedRule === undefined) return;
+          const requestVersion = ++digestPreviewRequestVersion.current;
+          setDigestPreview(null);
+          setDigestPreviewHandle(null);
           const toInclusive = new Date().toISOString();
           const fromExclusive = new Date(Date.now() - 7 * 86_400_000).toISOString();
           void window.aibrowse.watch
             .generateDigestPreview({
-              selector: { kind: 'sources', sourceIds: [sourceId] },
+              selector:
+                selectedRule.bindingKind === 'watch-target'
+                  ? { kind: 'targets', targetIds: [selectedRule.sourceId] }
+                  : { kind: 'sources', sourceIds: [selectedRule.sourceId] },
               fromExclusive,
               toInclusive,
               afterSequence: 0,
             })
             .then((result) => {
+              if (requestVersion !== digestPreviewRequestVersion.current) return;
               if (
                 !result.ok ||
                 !isObject(result.value) ||
@@ -920,9 +1007,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
           <p>冻结成员（创建后不随分组变化）：</p>
           <ul>
             {digestFrozenMembers.map((member) => (
-              <li key={member.sourceId}>
-                {member.displayName}（{member.sourceId}）
-              </li>
+              <li key={member.sourceId}>{member.displayName}</li>
             ))}
           </ul>
           <pre>{JSON.stringify(digestPreview, null, 2)}</pre>
@@ -939,9 +1024,14 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                   aiEnabled: digestAiEnabled,
                   confirmed: true,
                 })
-                .then(() => {
+                .then((result) => {
+                  if (!result.ok) {
+                    setMessage(`保存摘要计划失败：${ERROR_TEXT[result.errorCode]}`);
+                    return;
+                  }
                   setDigestPreview(null);
                   setDigestPreviewHandle(null);
+                  setMessage('每日摘要计划已保存');
                   loadDigests();
                 })
             }
@@ -1118,9 +1208,41 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
             ))}
           </ol>
           <label>
-            信源 ID
-            <input value={sourceId} onChange={(event) => setSourceId(event.target.value)} />
+            监控网址
+            <input
+              value={targetUrl}
+              disabled={previewBusy || rebaselineRule !== null || settingsRule !== null}
+              placeholder="https://example.com/updates"
+              onChange={(event) => {
+                setTargetUrl(event.target.value);
+                clearPreviewState();
+                setWizardStep(0);
+              }}
+            />
           </label>
+          {wizardStep === 0 &&
+            rebaselineRule === null &&
+            settingsRule === null &&
+            currentPageUrl !== undefined &&
+            /^https?:\/\//u.test(currentPageUrl) && (
+              <button
+                type="button"
+                disabled={previewBusy}
+                onClick={() => {
+                  clearPreviewState();
+                  setTargetUrl(currentPageUrl);
+                  setRuleKind('page');
+                  setAccessMode('session');
+                }}
+              >
+                使用当前网页
+              </button>
+            )}
+          <p>
+            {rebaselineRule?.bindingKind === 'source'
+              ? '这是旧版信源绑定规则，保留原有信源关联。'
+              : '此监控独立保存，不加入信源库，也不影响 AI 搜寻。'}
+          </p>
           {wizardStep === 0 && (
             <>
               <label>
@@ -1159,8 +1281,8 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
                 value={accessMode}
                 onChange={(event) => setAccessMode(event.target.value as 'public' | 'session')}
               >
-                <option value="public">公开</option>
-                <option value="session">Session 登录态</option>
+                <option value="public">公开网页（不运行脚本）</option>
+                <option value="session">当前浏览会话（动态或登录页面）</option>
               </select>
             </label>
           )}
@@ -1263,9 +1385,7 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
               通知显示安全来源名和字段标签（不显示 before/after 值）
             </label>
           )}
-          {wizardStep === 5 && (
-            <p>确认预览后才会建立 Baseline；Source 或 origin 变化将要求重新预览。</p>
-          )}
+          {wizardStep === 5 && <p>确认后才会建立比较基线；网址或页面来源变化时需要重新预览。</p>}
           {wizardStep === 5 && ruleKind === 'page' && accessMode === 'session' && (
             <label>
               <input
@@ -1313,30 +1433,46 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
               <button
                 type="button"
                 key={candidate.candidateId}
-                onClick={() =>
+                disabled={previewBusy}
+                onClick={() => {
+                  const version = ++previewRequestVersion.current;
+                  setPreviewBusy(true);
                   void window.aibrowse.watch
                     .previewFeed({
                       mode: 'candidate',
                       discoveryHandle: candidate.discoveryHandle,
                       candidateId: candidate.candidateId,
                     })
-                    .then((result) =>
-                      result.ok
-                        ? acceptPreview(result.value)
-                        : setMessage(`Feed 验证失败：${ERROR_TEXT[result.errorCode]}`),
-                    )
-                }
+                    .then(async (result) => {
+                      if (version !== previewRequestVersion.current) return;
+                      if (result.ok) await acceptPreview(result.value);
+                      else setMessage(`Feed 验证失败：${ERROR_TEXT[result.errorCode]}`);
+                    })
+                    .catch(() => {
+                      if (version === previewRequestVersion.current)
+                        setMessage('Feed 验证暂不可用');
+                    })
+                    .finally(() => {
+                      if (version === previewRequestVersion.current) setPreviewBusy(false);
+                    });
+                }}
               >
                 验证 Feed：{candidate.targetDisplay}
               </button>
             ))}
           <div>
-            <button type="button" onClick={() => setWizardOpen(false)}>
+            <button
+              type="button"
+              onClick={() => {
+                clearPreviewState();
+                setWizardOpen(false);
+              }}
+            >
               取消
             </button>
             <button
               type="button"
-              disabled={wizardStep === 0}
+              disabled={wizardStep === 0 || previewBusy}
               onClick={() => setWizardStep((step) => Math.max(0, step - 1))}
             >
               上一步
@@ -1357,7 +1493,8 @@ export function WatchWorkspace({ initialSourceId, focusSubject, onBack }: WatchW
               <button
                 type="button"
                 disabled={
-                  sourceId === '' ||
+                  targetUrl.trim() === '' ||
+                  previewBusy ||
                   (ruleKind === 'page' && accessMode === 'session' && !sessionAuthorized)
                 }
                 onClick={() => void createPreview()}

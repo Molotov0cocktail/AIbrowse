@@ -1,6 +1,7 @@
+import { safeProjectionUrl } from './page-projector';
 import { randomUUID } from 'node:crypto';
 import type { LLMProvider } from '../ai/provider/llm-provider';
-import type { Clock } from '../../shared/types/watch';
+import type { Clock, WatchBindingKind } from '../../shared/types/watch';
 import { MAX_DIGEST_PROVIDER_OUTPUT_BYTES } from '../../shared/types/watch';
 import { createTimeZoneResolver } from '../../shared/watch/clock';
 import { buildDigestFacts, type DigestObservationSlice } from '../../shared/watch/digest-facts';
@@ -20,8 +21,13 @@ import type {
 } from './repository/watch-repository';
 
 export interface DigestMembershipPort {
-  resolve(selector: { sourceIds?: readonly string[]; groupId?: string }): Promise<{
+  resolve(selector: {
+    sourceIds?: readonly string[];
+    groupId?: string;
+    targetIds?: readonly string[];
+  }): Promise<{
     status: 'ok' | 'unavailable';
+    bindingKind?: WatchBindingKind;
     members: readonly { sourceId: string; displayName: string; canonicalUrl: string }[];
   }>;
 }
@@ -83,7 +89,7 @@ export class DigestService {
 
   createSchedule(input: {
     id: string;
-    selector: { sourceIds?: readonly string[]; groupId?: string };
+    selector: { sourceIds?: readonly string[]; groupId?: string; targetIds?: readonly string[] };
     localTime: string;
     timeZone: string;
     aiEnabled?: boolean;
@@ -107,6 +113,7 @@ export class DigestService {
       const created = this.options.repository.createDigestSchedule({
         id: input.id,
         sourceIds,
+        bindingKind: input.selector.targetIds === undefined ? 'source' : 'watch-target',
         localTime: input.localTime,
         timeZone: input.timeZone,
         aiEnabled: input.aiEnabled === true,
@@ -313,6 +320,7 @@ export class DigestService {
   }
 
   preview(input: {
+    bindingKind?: WatchBindingKind;
     previewId: string;
     sourceIds: readonly string[];
     afterSequence?: number;
@@ -327,6 +335,7 @@ export class DigestService {
       sourceIds: [...new Set(input.sourceIds)].sort((a, b) =>
         Buffer.compare(Buffer.from(a), Buffer.from(b)),
       ),
+      bindingKind: input.bindingKind,
       afterSequence: input.afterSequence ?? 0,
       fromExclusive: input.fromExclusive,
       toInclusive: input.toInclusive,
@@ -590,7 +599,24 @@ export class DigestService {
       );
       return;
     }
-    const sharing = await this.options.sharing.get(currentSchedule.sourceIds);
+    // Explicit schedule opt-in authorizes only this bounded explanation request.
+    // Independent targets never inherit a same-ID Source's sharing settings.
+    const sharing =
+      currentSchedule.bindingKind === 'watch-target'
+        ? currentSchedule.sourceIds.flatMap((id) => {
+            const target = this.options.repository.getIndependentTarget(id);
+            return target === null
+              ? []
+              : [
+                  {
+                    sourceId: id,
+                    shareMode: 'full' as const,
+                    displayName: target.displayName,
+                    canonicalUrl: safeProjectionUrl(target.canonicalUrl) ?? '',
+                  },
+                ];
+          })
+        : await this.options.sharing.get(currentSchedule.sourceIds);
     if (!this.admissionOpen) return;
     currentSchedule = this.options.repository.getDigestSchedule(schedule.id);
     artifact = this.options.repository.getDigestArtifact(id);

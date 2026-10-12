@@ -1,3 +1,4 @@
+import { targetProjection } from './watch-independent-target';
 import { randomUUID } from 'node:crypto';
 import type {
   FeedProjection,
@@ -52,7 +53,12 @@ export class WatchCommandService {
         ok: false,
         errorCode: preview.accessMode === 'session' ? 'consent-required' : 'security-rejected',
       };
-    const current = this.source(preview.sourceId);
+    const current =
+      preview.bindingKind === 'watch-target'
+        ? preview.independentTarget === undefined
+          ? { status: 'missing' as const }
+          : { status: 'found' as const, projection: targetProjection(preview.independentTarget) }
+        : this.source(preview.sourceId);
     if (current.status !== 'found')
       return { ok: false, errorCode: current.status === 'missing' ? 'conflict' : 'unavailable' };
     if (
@@ -69,6 +75,7 @@ export class WatchCommandService {
     const rule: WatchRule = {
       id: randomUUID(),
       version: 1,
+      bindingKind: preview.bindingKind ?? 'source',
       sourceId: preview.sourceId,
       kind: target.type,
       state: 'enabled',
@@ -95,6 +102,7 @@ export class WatchCommandService {
     const validators = readValidators(preview.validator);
     const written = repo.createRuleWithBaseline({
       rule,
+      independentTarget: preview.independentTarget,
       baseline: {
         projectionType: projection.value.type === 'feed' ? 'feed' : 'page',
         projectionJson: JSON.stringify(projection.value),
@@ -136,7 +144,12 @@ export class WatchCommandService {
         ok: false,
         errorCode: preview.accessMode === 'session' ? 'consent-required' : 'security-rejected',
       };
-    const current = this.source(preview.sourceId);
+    const current =
+      preview.bindingKind === 'watch-target'
+        ? (this.repository()?.readIndependentTargetProjection(preview.sourceId) ?? {
+            status: 'unavailable' as const,
+          })
+        : this.source(preview.sourceId);
     if (
       current.status !== 'found' ||
       current.projection.rowVersion !== preview.sourceRowVersion ||
@@ -150,7 +163,11 @@ export class WatchCommandService {
     if (existing === null) return { ok: false, errorCode: 'conflict' };
     // A preview is Source-owned. Never allow a valid preview for Source B to replace the
     // target/baseline of a Rule that remains owned by Source A.
-    if (existing.sourceId !== preview.sourceId) return { ok: false, errorCode: 'conflict' };
+    if (
+      existing.sourceId !== preview.sourceId ||
+      (existing.bindingKind ?? 'source') !== (preview.bindingKind ?? 'source')
+    )
+      return { ok: false, errorCode: 'conflict' };
     if (!conditionMatchesPreview(input.condition, preview.fieldCatalog))
       return { ok: false, errorCode: 'security-rejected' };
     const written = repo.rebaselineRule({
@@ -245,6 +262,7 @@ function consentedTarget(
       : null;
   if (digest === null) return null;
   const consumed = grants.consume({
+    bindingKind: preview.bindingKind ?? 'source',
     handle: grantHandle,
     sourceId: preview.sourceId,
     previewTabId: preview.previewTabId,

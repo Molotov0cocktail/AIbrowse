@@ -114,7 +114,7 @@ export function createTransferProtocol(record: TransferJobRecord): {
             requireProtocol(
               manifest.members.every(
                 (member) =>
-                  member.present && member.schemaVersion === (member.id === 'watch' ? 5 : 1),
+                  member.present && member.schemaVersion === (member.id === 'watch' ? 6 : 1),
               ),
             );
             const output = row.result.backup;

@@ -21,6 +21,7 @@ function rule(): WatchRule {
   return {
     id: RULE_ID,
     version: 1,
+    bindingKind: 'source',
     sourceId: SOURCE_ID,
     kind: 'page',
     state: 'enabled',
@@ -231,73 +232,108 @@ describe('D9 WatchIpcAdapter fail-closed dispatch/audit', () => {
     );
   });
 
-  it('dispose 后销毁冻结成员对应的 digest preview handle', async () => {
-    const eventId = '33333333-3333-4333-8333-333333333333';
-    const createSchedule = vi.fn(async () => ({ ok: true }));
-    const digest = {
-      preview: () => ({
-        facts: {
-          schemaVersion: 1,
-          scheduleId: 'preview:schedule',
-          digestRunId: 'preview:run',
-          batchIndex: 0,
-          period: {
-            fromExclusive: '2026-08-30T00:00:00.000Z',
-            toInclusive: '2026-08-31T00:00:00.000Z',
-          },
-          eventCount: 1,
-          runStats: { changed: 1, failed: 0, unchanged: 0 },
-          events: [
-            {
-              eventId,
-              ruleId: RULE_ID,
-              sourceId: SOURCE_ID,
-              eventKind: 'changed',
-              importance: 'normal',
-              firstIncludedAt: '2026-08-31T00:00:00.000Z',
-              lastIncludedAt: '2026-08-31T00:00:00.000Z',
-              observationCount: 1,
-              itemCount: 1,
+  it.each(['sources', 'targets'] as const)(
+    '%s 摘要冻结绑定，消费后不能复用且 dispose 销毁预览',
+    async (kind) => {
+      const eventId = '33333333-3333-4333-8333-333333333333';
+      const createSchedule = vi.fn(async () => ({ ok: true }));
+      const digest = {
+        preview: () => ({
+          facts: {
+            schemaVersion: 1,
+            scheduleId: 'preview:schedule',
+            digestRunId: 'preview:run',
+            batchIndex: 0,
+            period: {
+              fromExclusive: '2026-08-30T00:00:00.000Z',
+              toInclusive: '2026-08-31T00:00:00.000Z',
             },
-          ],
-          evidenceMap: Object.create(null) as Record<string, never>,
-          referenceStates: Object.assign(Object.create(null) as Record<string, string>, {
-            [eventId]: 'expired',
-          }),
-          fetchedAt: '2026-08-31T00:00:00.000Z',
-        },
-        hasMore: false,
-        nextPreviewSequence: 1,
-      }),
-      createSchedule,
-    } as unknown as DigestService;
-    const ipc = adapter({
-      digest,
-      resolveDigestSources: () => [{ sourceId: SOURCE_ID, displayName: '示例来源' }],
-    });
-    const preview = await ipc.invoke('watch:generateDigestPreview', {
-      selector: { kind: 'sources', sourceIds: [SOURCE_ID] },
-      afterSequence: 0,
-      fromExclusive: '2026-08-30T00:00:00.000Z',
-      toInclusive: '2026-08-31T00:00:00.000Z',
-    });
-    expect(preview).toMatchObject({ ok: true });
-    if (!preview.ok) throw new Error('digest preview should succeed');
-    expect(preview.value).toMatchObject({
-      frozenMembers: [{ sourceId: SOURCE_ID, displayName: '示例来源' }],
-    });
-    const previewHandle = (preview.value as { previewHandle: string }).previewHandle;
-    ipc.dispose();
-    await expect(
-      ipc.invoke('watch:saveDigestSchedule', {
+            eventCount: 1,
+            runStats: { changed: 1, failed: 0, unchanged: 0 },
+            events: [
+              {
+                eventId,
+                ruleId: RULE_ID,
+                sourceId: SOURCE_ID,
+                eventKind: 'changed',
+                importance: 'normal',
+                firstIncludedAt: '2026-08-31T00:00:00.000Z',
+                lastIncludedAt: '2026-08-31T00:00:00.000Z',
+                observationCount: 1,
+                itemCount: 1,
+              },
+            ],
+            evidenceMap: Object.create(null) as Record<string, never>,
+            referenceStates: Object.assign(Object.create(null) as Record<string, string>, {
+              [eventId]: 'expired',
+            }),
+            fetchedAt: '2026-08-31T00:00:00.000Z',
+          },
+          hasMore: false,
+          nextPreviewSequence: 1,
+        }),
+        createSchedule,
+      } as unknown as DigestService;
+      const ipc = adapter({
+        digest,
+        resolveDigestSources: () => [{ sourceId: SOURCE_ID, displayName: '示例来源' }],
+      });
+      const preview = await ipc.invoke('watch:generateDigestPreview', {
+        selector:
+          kind === 'targets' ? { kind, targetIds: [SOURCE_ID] } : { kind, sourceIds: [SOURCE_ID] },
+        afterSequence: 0,
+        fromExclusive: '2026-08-30T00:00:00.000Z',
+        toInclusive: '2026-08-31T00:00:00.000Z',
+      });
+      expect(preview).toMatchObject({ ok: true });
+      if (!preview.ok) throw new Error('digest preview should succeed');
+      expect(preview.value).toMatchObject({
+        frozenMembers: [{ sourceId: SOURCE_ID, displayName: '示例来源' }],
+      });
+      const previewHandle = (preview.value as { previewHandle: string }).previewHandle;
+      const create = {
         action: 'create',
         previewHandle,
         localTime: '09:00',
         timeZone: 'Asia/Shanghai',
         aiEnabled: false,
         confirmed: true,
-      }),
-    ).resolves.toEqual({ ok: false, errorCode: 'preview-expired' });
-    expect(createSchedule).not.toHaveBeenCalled();
-  });
+      };
+      await expect(ipc.invoke('watch:saveDigestSchedule', create)).resolves.toEqual({
+        ok: true,
+        value: { created: true },
+      });
+      expect(createSchedule).toHaveBeenCalledExactlyOnceWith({
+        id: expect.any(String),
+        selector: kind === 'targets' ? { targetIds: [SOURCE_ID] } : { sourceIds: [SOURCE_ID] },
+        localTime: '09:00',
+        timeZone: 'Asia/Shanghai',
+        aiEnabled: false,
+      });
+      await expect(ipc.invoke('watch:saveDigestSchedule', create)).resolves.toEqual({
+        ok: false,
+        errorCode: 'preview-expired',
+      });
+      const secondPreview = await ipc.invoke('watch:generateDigestPreview', {
+        selector:
+          kind === 'targets' ? { kind, targetIds: [SOURCE_ID] } : { kind, sourceIds: [SOURCE_ID] },
+        afterSequence: 0,
+        fromExclusive: '2026-08-30T00:00:00.000Z',
+        toInclusive: '2026-08-31T00:00:00.000Z',
+      });
+      if (!secondPreview.ok) throw new Error('second preview should succeed');
+      ipc.dispose();
+      await expect(
+        ipc.invoke('watch:saveDigestSchedule', {
+          action: 'create',
+          previewHandle: (secondPreview.value as { previewHandle: string }).previewHandle,
+          localTime: '09:00',
+          timeZone: 'Asia/Shanghai',
+          aiEnabled: false,
+          confirmed: true,
+        }),
+      ).resolves.toEqual({ ok: false, errorCode: 'preview-expired' });
+      expect(createSchedule).toHaveBeenCalledTimes(1);
+    },
+  );
 });

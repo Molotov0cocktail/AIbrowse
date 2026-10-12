@@ -14,6 +14,9 @@ export type WatchIpcErrorCode =
   | 'invalid-state'
   | 'budget-exceeded'
   | 'security-rejected'
+  | 'page-incomplete'
+  | 'page-not-ready'
+  | 'target-mismatch'
   | 'consent-required'
   | 'preview-expired'
   | 'feature-unavailable'
@@ -39,6 +42,7 @@ export interface InAppNotificationDto {
 export interface RuleSummaryDto {
   id: string;
   version: number;
+  bindingKind: 'source' | 'watch-target';
   sourceId: string;
   sourceName: string;
   kind: 'feed' | 'page';
@@ -62,6 +66,7 @@ export interface RuleSummaryDto {
 export interface EventListItemDto {
   id: string;
   ruleId: string;
+  bindingKind: 'source' | 'watch-target';
   sourceId: string;
   sourceName: string;
   eventKind: WatchEventKind;

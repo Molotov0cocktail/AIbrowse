@@ -54,10 +54,10 @@ for (let index = 0; index < FIXTURE.conversationSessions; index++)
 expected.push('fixtures/conversations/index.json');
 for (const domain of ['sources', 'research', 'watch']) {
   expected.push(`fixtures/${domain}/${domain}.db`);
-  for (let version = 0; version <= (domain === 'watch' ? 5 : 1); version++)
+  for (let version = 0; version <= (domain === 'watch' ? 6 : 1); version++)
     expected.push(`fixtures/history/${domain}-current-${version}.db`);
 }
-for (let version = 3; version <= 5; version++)
+for (let version = 3; version <= 6; version++)
   expected.push(`fixtures/history/watch-historical-${version}.db`);
 expected.sort();
 

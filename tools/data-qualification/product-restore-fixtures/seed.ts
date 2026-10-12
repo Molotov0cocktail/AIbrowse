@@ -16,6 +16,9 @@ export type Variant = 'A' | 'B' | 'H';
 export const STAMP = '2026-10-10T00:00:00.000Z';
 export const LATER = '2026-10-10T01:00:00.000Z';
 export const LIMIT = 16 * 1024 ** 2;
+// Physical bytes of the same fixed three-database fixture; historical v5 evidence stays unchanged.
+export const FIXTURE_BYTES_V5 = 942553;
+export const FIXTURE_BYTES_V6 = 950745;
 export const DOMAINS = ['sources', 'research', 'watch'] as const;
 export const offsets = { A: 10, B: 20, H: 30 } as const;
 export const id = (variant: Variant, offset = 0): string => fixtureId(offsets[variant] + offset);
@@ -202,12 +205,9 @@ function watch(db: DatabaseSync, variant: Variant): void {
     url(variant),
   );
   db.exec('UPDATE digest_change_state SET last_sequence=1');
-  db.prepare(`INSERT INTO digest_change_journal VALUES (1,?,?,?,?, 'active')`).run(
-    observation,
-    event,
-    id(variant),
-    STAMP,
-  );
+  db.prepare(
+    `INSERT INTO digest_change_journal(sequence,observation_id,event_id,source_id,observed_at,status) VALUES (1,?,?,?,?, 'active')`,
+  ).run(observation, event, id(variant), STAMP);
   db.prepare(
     `INSERT INTO digest_schedules(id,version,source_ids_json,schedule_json,ai_enabled,cursor_sequence,state,next_due_at,last_consumed_scheduled_for,last_daily_local_date,created_at,updated_at) VALUES(?,1,?,?,1,1,'active',?,?,'2026-10-10',?,?)`,
   ).run(

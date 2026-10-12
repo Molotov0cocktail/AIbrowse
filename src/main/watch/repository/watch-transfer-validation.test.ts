@@ -96,7 +96,7 @@ function fixture(): DatabaseSync {
   ).run(NOW, NOW);
   db.exec('UPDATE digest_change_state SET last_sequence=1');
   db.prepare(
-    "INSERT INTO digest_change_journal VALUES (1,'v2:event','event','source',?,'active')",
+    "INSERT INTO digest_change_journal(sequence,observation_id,event_id,source_id,observed_at,status) VALUES (1,'v2:event','event','source',?,'active')",
   ).run(NOW);
   db.prepare(
     `INSERT INTO digest_schedules (id,version,source_ids_json,schedule_json,ai_enabled,cursor_sequence,state,next_due_at,created_at,updated_at)
@@ -188,8 +188,13 @@ describe('Watch 完整导入语义扫描', () => {
     const result = validateWatchTransferDatabase(db);
     expect(result).toMatchObject({ ok: true });
     if (!result.ok) return;
-    expect(Object.keys(result.counts)).toHaveLength(15);
-    expect(Object.values(result.counts)).toEqual(Array.from({ length: 15 }, () => 1));
+    expect(Object.keys(result.counts)).toHaveLength(16);
+    expect(result.counts.watch_targets).toBe(0);
+    expect(
+      Object.entries(result.counts)
+        .filter(([name]) => name !== 'watch_targets')
+        .map(([, n]) => n),
+    ).toEqual(Array.from({ length: 15 }, () => 1));
     expect(result.logicalBytes).toBeGreaterThan(0);
     expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
     const repository = new WatchRepository({

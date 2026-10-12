@@ -35,7 +35,7 @@ describe('固定数据库schema白名单', () => {
     for (const [domain, latest] of [
       ['sources', 1],
       ['research', 1],
-      ['watch', 5],
+      ['watch', 6],
     ] as const) {
       for (let version = 0; version <= latest; version++) {
         const db = fixture(domain, version);
@@ -92,7 +92,7 @@ describe('固定数据库schema白名单', () => {
         expect(db.prepare('SELECT * FROM watch_baselines').all()).toEqual(before);
         expect(validateTransferSchema(db, 'watch')).toEqual({
           ok: true,
-          version: 5,
+          version: 6,
           variant: bad ? 'historical-watch-v3' : 'current',
         });
         if (!bad) expect(validateWatchTransferDatabase(db).ok).toBe(true);
@@ -110,12 +110,12 @@ describe('固定数据库schema白名单', () => {
           ok: true,
           fromVersion: version,
           fromVariant: 'historical-watch-v3',
-          version: 5,
+          version: 6,
         });
         expect(validateTransferSchema(db, 'watch')).toEqual({
           ok: true,
           variant: 'current',
-          version: 5,
+          version: 6,
         });
         expect(validateWatchTransferDatabase(db).ok).toBe(true);
       } finally {
@@ -171,7 +171,7 @@ describe('固定数据库schema白名单', () => {
     for (const [domain, latest] of [
       ['sources', 1],
       ['research', 1],
-      ['watch', 5],
+      ['watch', 6],
     ] as const) {
       for (let version = 0; version <= latest; version++) {
         const db = fixture(domain, version);

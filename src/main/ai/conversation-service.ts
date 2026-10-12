@@ -631,7 +631,7 @@ export class ConversationServiceImpl implements ConversationService {
       hasSelection: selectionTrimmed !== '',
       selectionLength: selectionTrimmed.length,
       thin,
-      degraded: snapshot !== null && snapshot.meta.degraded !== 'none',
+      degraded: buildContextSource(snapshot, mode, thin, activeTab?.id ?? null).degraded,
     };
   }
 

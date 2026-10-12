@@ -75,7 +75,7 @@ async function fixture(mode: 'normal' | 'migrate' = 'normal') {
             ...(['sources', 'research', 'watch'] as const).map((id) => ({
               id,
               present: true,
-              schemaVersion: id === 'watch' ? 5 : 1,
+              schemaVersion: id === 'watch' ? 6 : 1,
               ...digest(id),
             })),
             { id: 'conversations', present: true, schemaVersion: 1, bytes: 2, sha256: treeHash },

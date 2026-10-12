@@ -21,7 +21,7 @@ async function fixture() {
       members: LEGACY_BACKUP_IDS.map((id) => ({
         id,
         present: false,
-        schemaVersion: id === 'watch' ? 5 : 1,
+        schemaVersion: id === 'watch' ? 6 : 1,
         bytes: 0,
         sha256: null,
       })),

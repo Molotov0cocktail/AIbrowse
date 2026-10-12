@@ -6,6 +6,28 @@
 
 ## 0. 契约优先级与不变量
 
+### 0.1 阶段后独立监控修订（2026-10-12）
+
+用户明确要求监控不依赖标记信源，并授权实现、验证及更新内部程序。本节覆盖下文关于所有监控必须绑定 Source、
+Session 必须整体零降级的旧假设；其余预算、授权、安全、数据与事件语义保持。旧规则仍按原 Source 契约执行。
+
+- 新建规则直接提供 URL，或复制当前页/已有信源的 URL。独立目标保存在 watch.db 的 watch_targets 中，
+  不写 sources.db、FTS、Source usage 或 AI 搜寻配置。旧 Source 规则不自动转换，以保留原有暂停、删除与共享语义。
+- schema v6 为 Rule、摘要计划及需要保留归属的变更记录引入 bindingKind（source/watch-target）。旧行默认 source；
+  新目标具有主进程生成的 UUID、版本、规范 URL、显示名和默认 blocked 共享标志。既有 source_id/sourceId 等字段
+  在新绑定下承载 Watch owner ID，仅为内部兼容命名；必须由绑定类型选择确定的仓库，禁止跨库查找兜底。
+- 新预览的目标只存在于有界、短期内存；用户确认后目标、Rule、Baseline 原子提交。采集前后复验正确 owner、
+  版本与 locator；Source 生命周期操作仅影响 source 绑定，独立目标清理不能碰其它规则。恢复/启动扫描及逻辑预算
+  覆盖新目标、绑定一致性、变更归属与引用；旧 Evidence、hash、cursor 不为改名重写。
+- 独立目标默认不向 Provider 发内容。摘要计划单独明确启用 AI 时，只授权该计划选中目标的有界 Event 解释，
+  不改变目标默认共享标志、不传播到其它摘要，不修改 Sources 或 AI 选源；旧 Source 计划继续遵守既有 sharing 门。
+- PageSnapshot 保留 L1 等整体标记，增加 normalize 派生的 mainDocument complete/incomplete；raw 自报同名字段无效。
+  iframe-only 为主文档范围提示，在主文档完整时可参与 Session 监控；采集未完成、截断、非法丢弃、未知 partial、
+  L2/L3 或登录/挑战信号不得生成可信基线。AI 上下文裁剪是另一层有界投影，不与监控的主文档完整性混淆。
+- UI 不要求手填内部 UUID；新建目标不隐式添加信源。普通采集范围/上下文预算提示用提示样式，真实不完整或失败
+  保留错误展示；预览返回 page-incomplete/page-not-ready/target-mismatch 等闭合原因，不混同权限拒绝。
+- Agent 仍为既有 17 工具，可以引导用户进入监控工作区，不能声称自己已建立不存在的规则。
+
 1. 远程 feed、HTML、PageSnapshot、Projection、Diff 文本、Source note 和模型输出全部不可信。
 2. Diff equality、Condition、Event、EvidenceMap、DigestFacts、Notification DTO 由确定性程序所有。
 3. 哈希只用于完整性、快速比较和去重；正式变化事件必须有可解释的 before/after Evidence。

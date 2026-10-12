@@ -65,7 +65,7 @@ function wire(version: 1 | 2 = 1) {
   const members = chunks.map((chunk, i) => ({
     id: ['sources', 'research', 'watch', 'conversations', 'browser'][i],
     present: true,
-    schemaVersion: [1, 1, 5, 1, 1][i],
+    schemaVersion: [1, 1, 6, 1, 1][i],
     bytes: chunk.length,
     sha256: createHash('sha256').update(chunk).digest('hex'),
   }));

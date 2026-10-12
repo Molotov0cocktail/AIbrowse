@@ -47,6 +47,7 @@ function makeRule(overrides: Partial<WatchRule> & { feedUrl?: string } = {}): Wa
   return {
     id: randomUUID(),
     version: 1,
+    bindingKind: 'source',
     sourceId,
     kind: overrides.kind ?? 'feed',
     state: 'enabled',
@@ -281,6 +282,27 @@ class FakeScheduler implements SchedulerPort {
     this.stopped = true;
   }
 }
+
+it('启动后同步新建规则到队列，删除后移出，停止后不再接纳', async () => {
+  const h = setup();
+  try {
+    const rule = makeRule();
+    expect(h.repo.insertRule(rule).ok).toBe(true);
+    const coordinator = h.coordinator as WatchRunCoordinator & { syncSchedule(): void };
+    coordinator.syncSchedule();
+    expect(h.scheduler.upserts).toContainEqual({ ruleId: rule.id, effectiveDueAt: NOW_MS });
+    expect(h.repo.deleteRule(rule.id).ok).toBe(true);
+    coordinator.syncSchedule();
+    expect(h.scheduler.removals).toContain(rule.id);
+    await coordinator.stop();
+    const before = h.scheduler.upserts.length;
+    coordinator.syncSchedule();
+    expect(h.scheduler.upserts).toHaveLength(before);
+  } finally {
+    await h.coordinator.stop();
+    h.repo.dispose();
+  }
+});
 
 // 模拟真实 revalidateRuleSource 的暂停副作用（D4 契约：source-missing/disabled/
 // locator-changed 会把规则暂停对应原因）。Coordinator 只消费状态；暂停由 revalidator 完成。

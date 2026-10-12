@@ -41,6 +41,7 @@ function makeRule(): WatchRule {
   return {
     id: randomUUID(),
     version: 1,
+    bindingKind: 'source',
     sourceId,
     kind: 'feed',
     state: 'enabled',

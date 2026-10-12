@@ -24,6 +24,7 @@ it('H3a Page 200 ETag finishes unchanged without writing Page validators', () =>
     const rule: WatchRule = {
       id: randomUUID(),
       version: 1,
+      bindingKind: 'source',
       sourceId,
       kind: 'page',
       state: 'enabled',

@@ -62,6 +62,7 @@ export interface WatchIpcAdapterOptions {
   resolveDigestSources: (selector: {
     sourceIds?: readonly string[];
     groupId?: string;
+    targetIds?: readonly string[];
   }) => Array<{ sourceId: string; displayName: string }> | null;
   audit: (message: string) => void;
   onStateChanged?: () => void;
@@ -82,7 +83,10 @@ const STATUS_CHANGING_WATCH_CHANNELS = new Set<WatchIpcChannel>([
 ]);
 
 export class WatchIpcAdapter {
-  private readonly digestPreviews = new Map<string, { sourceIds: string[]; expiresAt: number }>();
+  private readonly digestPreviews = new Map<
+    string,
+    { sourceIds: string[]; bindingKind: 'source' | 'watch-target'; expiresAt: number }
+  >();
   private static readonly MAX_DIGEST_PREVIEWS = 128;
   private static readonly DIGEST_PREVIEW_TTL_MS = 300_000;
   constructor(private readonly options: WatchIpcAdapterOptions) {}
@@ -172,14 +176,17 @@ export class WatchIpcAdapter {
       case 'watch:generateDigestPreview': {
         const digest = this.options.digest();
         const selector = p['selector'] as {
-          kind: 'sources' | 'group';
+          kind: 'sources' | 'group' | 'targets';
           sourceIds?: string[];
           groupId?: string;
+          targetIds?: string[];
         };
         const members = this.options.resolveDigestSources(
           selector.kind === 'sources'
             ? { sourceIds: selector.sourceIds }
-            : { groupId: selector.groupId },
+            : selector.kind === 'targets'
+              ? { targetIds: selector.targetIds }
+              : { groupId: selector.groupId },
         );
         if (digest === null || members === null) return fail('unavailable');
         const frozenMembers = [...members]
@@ -190,6 +197,7 @@ export class WatchIpcAdapter {
         const preview = digest.preview({
           previewId: randomUUID(),
           sourceIds,
+          ...(selector.kind === 'targets' ? { bindingKind: 'watch-target' as const } : {}),
           afterSequence: Number(p['afterSequence']),
           fromExclusive: String(p['fromExclusive']),
           toInclusive: String(p['toInclusive']),
@@ -201,6 +209,7 @@ export class WatchIpcAdapter {
         const previewHandle = randomBytes(32).toString('base64url');
         this.digestPreviews.set(previewHandle, {
           sourceIds,
+          bindingKind: selector.kind === 'targets' ? 'watch-target' : 'source',
           expiresAt: Date.now() + WatchIpcAdapter.DIGEST_PREVIEW_TTL_MS,
         });
         // Digest facts intentionally use null-prototype maps internally. Normalize the
@@ -310,7 +319,10 @@ export class WatchIpcAdapter {
             return fail('preview-expired');
           const result = await digest.createSchedule({
             id: randomUUID(),
-            selector: { sourceIds: preview.sourceIds },
+            selector:
+              preview.bindingKind === 'watch-target'
+                ? { targetIds: preview.sourceIds }
+                : { sourceIds: preview.sourceIds },
             localTime: String(p['localTime']),
             timeZone: String(p['timeZone']),
             aiEnabled: p['aiEnabled'] === true,

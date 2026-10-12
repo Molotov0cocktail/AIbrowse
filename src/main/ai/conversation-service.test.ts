@@ -878,6 +878,32 @@ describe('ConversationService — 持久化与 ephemeral 不落盘', () => {
 // ---------- previewContext（§6.3：实时快照摘要，不含正文） ----------
 
 describe('ConversationService — previewContext', () => {
+  it.each([
+    ['iframe 范围提示', 'partial', 'complete', false],
+    ['主文档截断', 'partial', 'incomplete', true],
+    ['未知 partial', 'partial', undefined, true],
+    ['隐式字段裁剪', 'none', 'incomplete', true],
+    ['L2 降级', 'main-process-only', 'complete', true],
+    ['旧完整快照', 'none', undefined, false],
+  ] as const)(
+    '%s 与引用卡使用同一主文档完整性判定',
+    async (_label, degraded, mainDocument, expected) => {
+      const f = makeService();
+      f.browser.activeTab = makeTab();
+      f.browser.snapshot = makeSnapshot({
+        meta: {
+          ...makeSnapshot().meta,
+          degraded,
+          ...(mainDocument === undefined ? {} : { mainDocument }),
+          warnings: ['跳过 1 个 iframe（其中 0 个跨域）'],
+        },
+      });
+      const preview = await f.service.previewContext();
+      expect(preview.mode).toBe('snapshot');
+      expect(preview.degraded).toBe(expected);
+    },
+  );
+
   it('摘要字段正确且不含快照正文（正文不跨边界）', async () => {
     const f = makeService();
     f.browser.activeTab = makeTab();

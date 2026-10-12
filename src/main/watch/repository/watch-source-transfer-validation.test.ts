@@ -163,7 +163,9 @@ it.each(['active', 'paused'] as const)(
       'UPDATE digest_change_state SET last_sequence=1; UPDATE digest_schedules SET cursor_sequence=1',
     );
     watch
-      .prepare("INSERT INTO digest_change_journal VALUES(1,'observation','event',?,?,'expired')")
+      .prepare(
+        "INSERT INTO digest_change_journal(sequence,observation_id,event_id,source_id,observed_at,status) VALUES(1,'observation','event',?,?,'expired')",
+      )
       .run(ID, NOW);
     watch
       .prepare(
@@ -327,7 +329,9 @@ it('意外缺失Source的暂停规则仍可保留已校验Event及Evidence', () 
     .run(JSON.stringify({ kind: 'absent' }), JSON.stringify(after), NOW, NOW);
   watch.exec('UPDATE digest_change_state SET last_sequence=1');
   watch
-    .prepare("INSERT INTO digest_change_journal VALUES(1,'v2:event','event',?,?,'active')")
+    .prepare(
+      "INSERT INTO digest_change_journal(sequence,observation_id,event_id,source_id,observed_at,status) VALUES(1,'v2:event','event',?,?,'active')",
+    )
     .run(ID, NOW);
   expect(verify(sources, watch)).toMatchObject({ ok: true, counts: { missingRuleSources: 1 } });
   expect(watch.prepare('SELECT count(*) AS n FROM watch_event_items').get()).toEqual({ n: 1 });

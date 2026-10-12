@@ -1,3 +1,4 @@
+import { validateIndependentTargetRow, targetProjection } from '../watch-independent-target';
 // Sixth Stage D4: WatchRepository — watch.db 唯一业务 SQL 执行点
 // （detailed-design §7/§10、threat-model §3.5、AGENTS §3.4 永久护栏）。
 // - 全部业务语句为编译期常量 + 位置参数绑定；无动态表/列/ORDER BY/exec(拼接)；
@@ -34,6 +35,10 @@ declare const __WATCH_QUALIFICATION__: boolean;
 import { logWarn } from '../../logger';
 import {
   MAX_EVENT_EVIDENCE_BYTES,
+  MAX_WATCH_RULES_TOTAL,
+  MAX_WATCH_RULES_ENABLED,
+  type WatchIndependentTarget,
+  type WatchBindingKind,
   MAX_PAGE_PROJECTION_BYTES,
   MAX_WATCH_DB_BYTES,
   PUBLIC_EVENT_RETENTION_DAYS,
@@ -52,6 +57,7 @@ import {
 import { validateFeedTarget, validatePageTarget } from '../../../shared/watch/watch-targets';
 import {
   transitionRuleState,
+  computeSourceLocatorFingerprint,
   validateWatchSchedule,
   type HealthPauseReason,
 } from '../../../shared/watch/watch-rule-state';
@@ -159,6 +165,7 @@ export type ReserveRunResult =
   { ok: true; runId: string; reused?: boolean } | { ok: false; code: WatchErrorCode };
 
 export interface StoredDigestSchedule {
+  bindingKind: WatchBindingKind;
   id: string;
   version: number;
   sourceIds: string[];
@@ -238,6 +245,30 @@ const SQL_INSERT_RULE = `INSERT INTO watch_rules
    last_consumed_scheduled_for, last_daily_local_date, consecutive_failures,
    backoff_until, baseline_version, created_at, updated_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+const SQL_INSERT_RULE_V6 = `INSERT INTO watch_rules
+  (id, rule_version, source_id, kind, state, pause_reason, desired_enabled, muted, access_mode,
+   schedule_json, target_json, condition_json, notification_level,
+   notification_show_details, source_row_version, source_locator_fingerprint, next_due_at,
+   last_consumed_scheduled_for, last_daily_local_date, consecutive_failures,
+   backoff_until, baseline_version, created_at, updated_at, binding_kind)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+const SQL_INSERT_TARGET = `INSERT INTO watch_targets(id,version,scope,canonical_url,display_name,ai_share_mode) VALUES(?,?,?,?,?,?)`;
+const SQL_SELECT_TARGET =
+  'SELECT id,version,scope,canonical_url,display_name,ai_share_mode FROM watch_targets WHERE id=?';
+const SQL_ALL_TARGETS =
+  'SELECT id,version,scope,canonical_url,display_name,ai_share_mode FROM watch_targets';
+const SQL_DELETE_ORPHAN_TARGETS =
+  "DELETE FROM watch_targets WHERE NOT EXISTS(SELECT 1 FROM watch_rules WHERE binding_kind='watch-target' AND source_id=watch_targets.id)";
+const SQL_TARGET_RELATIONS_INVALID = `SELECT 1 FROM watch_rules r LEFT JOIN watch_targets t ON t.id=r.source_id
+  WHERE r.binding_kind='watch-target' AND (t.id IS NULL OR t.version != r.source_row_version) LIMIT 1`;
+const SQL_TARGET_ORPHANS =
+  "SELECT 1 FROM watch_targets t WHERE NOT EXISTS(SELECT 1 FROM watch_rules r WHERE r.binding_kind='watch-target' AND r.source_id=t.id) LIMIT 1";
+const SQL_TYPED_JOURNAL_INVALID =
+  "SELECT 1 FROM digest_change_journal j JOIN watch_events e ON e.id=j.event_id JOIN watch_rules r ON r.id=e.rule_id WHERE j.status='active' AND j.binding_kind<>r.binding_kind LIMIT 1";
+const SQL_TYPED_DIGEST_INVALID =
+  "SELECT 1 FROM digest_event_refs f JOIN watch_digests d ON d.id=f.digest_id JOIN digest_schedules s ON s.id=d.schedule_id JOIN watch_events e ON e.id=f.event_id JOIN watch_rules r ON r.id=e.rule_id WHERE f.status='active' AND s.binding_kind<>r.binding_kind LIMIT 1";
+const SQL_TYPED_CLEANUP_INVALID =
+  "SELECT 1 FROM source_cleanup_intents i JOIN json_each(i.affected_rule_state_json) a JOIN watch_rules r ON r.id=a.key WHERE r.binding_kind<>'source' OR r.source_id<>i.source_id LIMIT 1";
 const SQL_INSERT_RULE_LEGACY = `INSERT INTO watch_rules
   (id, source_id, kind, state, pause_reason, desired_enabled, muted, access_mode,
    schedule_json, target_json, condition_json, notification_level, source_row_version,
@@ -247,7 +278,7 @@ const SQL_INSERT_RULE_LEGACY = `INSERT INTO watch_rules
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 const SQL_SCHEMA_VERSION = 'PRAGMA user_version';
 
-const SQL_RULE_COLUMNS = `SELECT id, rule_version, source_id, kind, state, pause_reason, desired_enabled,
+const SQL_RULE_COLUMNS = `SELECT id, rule_version, binding_kind, source_id, kind, state, pause_reason, desired_enabled,
   muted, access_mode, schedule_json, target_json, condition_json, notification_level,
   notification_show_details,
   source_row_version, source_locator_fingerprint, next_due_at,
@@ -256,8 +287,8 @@ const SQL_RULE_COLUMNS = `SELECT id, rule_version, source_id, kind, state, pause
 
 const SQL_SELECT_RULE_BY_ID = `${SQL_RULE_COLUMNS} WHERE id = ?`;
 const SQL_SELECT_ALL_RULES = `${SQL_RULE_COLUMNS} ORDER BY created_at ASC, id ASC`;
-const SQL_SELECT_RULES_BY_SOURCE = `${SQL_RULE_COLUMNS} WHERE source_id = ? ORDER BY created_at ASC, id ASC`;
-const SQL_SELECT_RULE_IDENTITY = `SELECT state, source_id, source_locator_fingerprint, baseline_version
+const SQL_SELECT_RULES_BY_SOURCE = `${SQL_RULE_COLUMNS} WHERE source_id = ? AND binding_kind='source' ORDER BY created_at ASC, id ASC`;
+const SQL_SELECT_RULE_IDENTITY = `SELECT state, binding_kind, source_id, source_locator_fingerprint, baseline_version
   FROM watch_rules WHERE id = ?`;
 const SQL_SELECT_RULE_STATE_FIELDS =
   'SELECT state, pause_reason, source_row_version, source_locator_fingerprint FROM watch_rules WHERE id = ?';
@@ -271,6 +302,7 @@ const SQL_QUALIFICATION_RUN_BY_KEY = 'SELECT id FROM watch_runs WHERE request_ke
 const SQL_QUALIFICATION_SET_INITIAL_SCHEDULE = `UPDATE watch_rules SET next_due_at = ?
   WHERE id = ? AND baseline_version = 1 AND next_due_at IS NULL AND last_consumed_scheduled_for IS NULL`;
 const SQL_QUALIFICATION_ARTIFACT_COUNT = `SELECT
+  (SELECT COUNT(*) FROM watch_targets) +
   (SELECT COUNT(*) FROM watch_events) + (SELECT COUNT(*) FROM watch_event_items) +
   (SELECT COUNT(*) FROM watch_event_observations) + (SELECT COUNT(*) FROM digest_change_journal) +
   (SELECT COUNT(*) FROM digest_schedules) + (SELECT COUNT(*) FROM digest_runs) +
@@ -296,7 +328,8 @@ const SQL_PAUSE_RULE_USER = `UPDATE watch_rules SET state = 'paused', pause_reas
 const SQL_RESUME_RULE_USER = `UPDATE watch_rules SET state = 'enabled', pause_reason = NULL,
   desired_enabled = 1, rule_version = rule_version + 1, updated_at = ?
   WHERE id = ? AND rule_version = ? AND state = 'paused' AND pause_reason = 'user'`;
-const SQL_DELETE_RULES_BY_SOURCE = 'DELETE FROM watch_rules WHERE source_id = ?';
+const SQL_DELETE_RULES_BY_SOURCE =
+  "DELETE FROM watch_rules WHERE source_id = ? AND binding_kind='source'";
 const SQL_UPDATE_RULE_COORDINATION = `UPDATE watch_rules
   SET state = ?, pause_reason = ?, source_row_version = ?, source_locator_fingerprint = ?, updated_at = ?
   WHERE id = ? AND state IS ? AND pause_reason IS ? AND source_row_version = ?
@@ -322,7 +355,7 @@ const SQL_UPDATE_RULE_BASELINE_VERSION =
 // baselineVersion）。sourceRowVersion 不参与 CAS；写入必须是单调 max(current, revalidated)
 //（#S6-052）。
 const SQL_SELECT_RULE_RESULT_IDENTITY = `SELECT state, desired_enabled, pause_reason,
-  source_id, source_locator_fingerprint, baseline_version, source_row_version
+  source_id, binding_kind, source_locator_fingerprint, baseline_version, source_row_version
   FROM watch_rules WHERE id = ?`;
 const SQL_UPDATE_RULE_RESULT_ROWVERSION = `UPDATE watch_rules
   SET source_row_version = MAX(source_row_version, ?), updated_at = ?
@@ -390,8 +423,8 @@ const SQL_INSERT_OBSERVATION = `INSERT INTO watch_event_observations
 const SQL_NEXT_DIGEST_CHANGE_SEQUENCE = `UPDATE digest_change_state
   SET last_sequence = last_sequence + 1 WHERE id = 1 RETURNING last_sequence`;
 const SQL_INSERT_DIGEST_CHANGE = `INSERT INTO digest_change_journal
-  (sequence, observation_id, event_id, source_id, observed_at, status)
-  VALUES (?, ?, ?, ?, ?, 'active')`;
+  (sequence, observation_id, event_id, source_id, observed_at, status, binding_kind)
+  VALUES (?, ?, ?, ?, ?, 'active', (SELECT r.binding_kind FROM watch_rules r JOIN watch_events e ON e.rule_id=r.id WHERE e.id=?))`;
 const SQL_INSERT_EVENT_ITEM = `INSERT INTO watch_event_items
   (id, event_id, sequence, observation_id, observation_item_sequence,
    item_id, field_key, label, before_value_json, after_value_json,
@@ -435,7 +468,7 @@ const SQL_SELECT_OLDEST_SAFE_EVENT_GLOBAL = `SELECT e.id FROM watch_events e
 const SQL_SELECT_EVENT_MAX_CHANGE_SEQUENCE = `SELECT COALESCE(MAX(sequence), 0) AS sequence
   FROM digest_change_journal WHERE event_id = ?`;
 const SQL_SELECT_EVENTS_BY_SOURCE = `SELECT e.id FROM watch_events e
-  JOIN watch_rules r ON e.rule_id = r.id WHERE r.source_id = ?`;
+  JOIN watch_rules r ON e.rule_id = r.id WHERE r.source_id = ? AND r.binding_kind='source'`;
 
 // D7 §9.4/#S6-047：coalesce 候选 = 该 Rule 最近一个 Event（first_observed_at DESC, id DESC LIMIT 1）
 const SQL_SELECT_LATEST_EVENT = `SELECT id, rule_id, source_id, event_kind, importance,
@@ -494,7 +527,7 @@ const SQL_SELECT_ALL_ITEMS_WITH_OBS = `SELECT event_id, sequence, observation_id
 const SQL_SELECT_ALL_INTENTS = `SELECT mutation_id, source_id, operation,
   before_projection_json, after_projection_json, affected_rule_state_json, state,
   created_at, updated_at FROM source_cleanup_intents`;
-const SQL_SELECT_ALL_SCHEDULES = `SELECT id, version, source_ids_json, schedule_json,
+const SQL_SELECT_ALL_SCHEDULES = `SELECT id, version, binding_kind, source_ids_json, schedule_json,
   ai_enabled, cursor_sequence, state, next_due_at, last_consumed_scheduled_for,
   last_daily_local_date, created_at, updated_at, last_checked_at, last_period_json,
   last_run_stats_json FROM digest_schedules`;
@@ -513,7 +546,7 @@ const SQL_SELECT_ALL_DIGESTS = `SELECT id, schedule_id, run_id, batch_index,
 const SQL_SELECT_ALL_DIGEST_REFS = `SELECT digest_id, event_id, status FROM digest_event_refs`;
 const SQL_SELECT_DIGEST_CHANGE_STATE = `SELECT id, last_sequence FROM digest_change_state`;
 const SQL_SELECT_ALL_DIGEST_CHANGES = `SELECT sequence, observation_id, event_id, source_id,
-  observed_at, status FROM digest_change_journal ORDER BY sequence ASC`;
+  observed_at, status, binding_kind FROM digest_change_journal ORDER BY sequence ASC`;
 const SQL_SELECT_ALL_OUTBOX = `SELECT id, rule_id, subject_type, subject_id, channel,
   dedupe_key, privacy_json, state, attempts, created_at, updated_at
   FROM notification_outbox`;
@@ -534,8 +567,8 @@ const SQL_SELECT_DIGEST_REFS = `SELECT digest_id, event_id, status FROM digest_e
 
 const SQL_INSERT_DIGEST_SCHEDULE = `INSERT INTO digest_schedules
   (id, version, source_ids_json, schedule_json, ai_enabled, cursor_sequence, state,
-   next_due_at, created_at, updated_at)
-  VALUES (?, 1, ?, ?, ?, ?, 'active', ?, ?, ?)`;
+   next_due_at, created_at, updated_at, binding_kind)
+  VALUES (?, 1, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`;
 const SQL_SELECT_DIGEST_SCHEDULE = `${SQL_SELECT_ALL_SCHEDULES} WHERE id = ?`;
 const SQL_SELECT_ACTIVE_DIGEST_SCHEDULES = `${SQL_SELECT_ALL_SCHEDULES}
   WHERE state = 'active' ORDER BY next_due_at ASC, id ASC`;
@@ -555,7 +588,7 @@ const SQL_RESERVE_DIGEST_SCHEDULE = `UPDATE digest_schedules SET
   WHERE id = ? AND version = ? AND state = 'active' AND next_due_at = ?
     AND last_consumed_scheduled_for IS ? AND last_daily_local_date IS ?`;
 const SQL_SELECT_DIGEST_OBSERVATIONS = `SELECT j.sequence, j.observation_id, j.event_id,
-  j.source_id, j.observed_at, j.status, o.event_kind, e.rule_id, e.importance
+  j.source_id, j.binding_kind, j.observed_at, j.status, o.event_kind, e.rule_id, e.importance
   FROM digest_change_journal j
   LEFT JOIN watch_event_observations o ON o.id = j.observation_id AND o.event_id = j.event_id
   LEFT JOIN watch_events e ON e.id = j.event_id
@@ -607,7 +640,7 @@ const SQL_SELECT_PENDING_DIGEST_IDS_BY_RUN = `SELECT id FROM watch_digests
   WHERE run_id = ? AND provider_state = 'pending' ORDER BY batch_index ASC`;
 const SQL_SELECT_NEXT_DIGEST_BATCH_INDEX = `SELECT COALESCE(MAX(batch_index), -1) + 1 AS n
   FROM watch_digests WHERE run_id = ?`;
-const SQL_SELECT_FINISHED_RUNS_FOR_DIGEST_STATS = `SELECT w.source_id, r.status, r.finished_at, r.outcome_json
+const SQL_SELECT_FINISHED_RUNS_FOR_DIGEST_STATS = `SELECT w.source_id, w.binding_kind, r.status, r.finished_at, r.outcome_json
   FROM watch_runs r JOIN watch_rules w ON w.id = r.rule_id
   WHERE r.status IN ('finished','interrupted') AND r.finished_at > ? AND r.finished_at <= ?
   ORDER BY r.finished_at ASC, r.id ASC`;
@@ -680,7 +713,7 @@ const AUDIT_REASON_CODES: readonly WatchAuditReasonCode[] = WATCH_AUDIT_REASON_C
 // 诚实限制：不含 SQLite 页/索引/空闲页开销——实际文件字节 ≥ 该估算（保守方向
 // fail-closed：估算只会低估，写前拒绝更严格）。
 const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
-  COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(source_id AS BLOB))
+  COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB)) + LENGTH(CAST(source_id AS BLOB)) + LENGTH(CAST(binding_kind AS BLOB))
     + LENGTH(CAST(kind AS BLOB)) + LENGTH(CAST(state AS BLOB))
     + LENGTH(CAST(COALESCE(pause_reason,'') AS BLOB))
     + LENGTH(CAST(schedule_json AS BLOB)) + LENGTH(CAST(target_json AS BLOB))
@@ -738,7 +771,7 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     + LENGTH(CAST(event_kind AS BLOB)) + LENGTH(CAST(observed_at AS BLOB)) + 24)
     FROM watch_event_observations), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB))
-    + LENGTH(CAST(source_ids_json AS BLOB)) + LENGTH(CAST(schedule_json AS BLOB))
+    + LENGTH(CAST(source_ids_json AS BLOB)) + LENGTH(CAST(binding_kind AS BLOB)) + LENGTH(CAST(schedule_json AS BLOB))
     + LENGTH(CAST(next_due_at AS BLOB))
     + LENGTH(CAST(state AS BLOB)) + LENGTH(CAST(created_at AS BLOB))
     + LENGTH(CAST(updated_at AS BLOB))
@@ -763,7 +796,7 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     + LENGTH(CAST(COALESCE(provider_finished_at,'') AS BLOB))
     + LENGTH(CAST(created_at AS BLOB)) + 40) FROM watch_digests), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(observation_id AS BLOB))
-    + LENGTH(CAST(event_id AS BLOB)) + LENGTH(CAST(source_id AS BLOB))
+    + LENGTH(CAST(event_id AS BLOB)) + LENGTH(CAST(source_id AS BLOB)) + LENGTH(CAST(binding_kind AS BLOB))
     + LENGTH(CAST(observed_at AS BLOB)) + LENGTH(CAST(status AS BLOB)) + 8)
     FROM digest_change_journal), 0)
   + COALESCE((SELECT SUM(LENGTH(CAST(digest_id AS BLOB))
@@ -781,7 +814,7 @@ const SQL_ESTIMATE_LOGICAL_BYTES = `SELECT
     + LENGTH(CAST(COALESCE(after_projection_json,'') AS BLOB))
     + LENGTH(CAST(affected_rule_state_json AS BLOB)) + LENGTH(CAST(state AS BLOB))
     + LENGTH(CAST(created_at AS BLOB)) + LENGTH(CAST(updated_at AS BLOB)))
-    FROM source_cleanup_intents), 0) AS total`;
+    FROM source_cleanup_intents), 0) + COALESCE((SELECT SUM(LENGTH(CAST(id AS BLOB))+LENGTH(CAST(canonical_url AS BLOB))+LENGTH(CAST(display_name AS BLOB))+LENGTH(CAST(ai_share_mode AS BLOB))+LENGTH(CAST(scope AS BLOB))+8) FROM watch_targets),0) AS total`;
 
 // ---------------------------------------------------------------------------
 // 实现
@@ -975,11 +1008,13 @@ export class WatchRepository {
           schedule.nextDueAt,
           schedule.createdAt,
           schedule.updatedAt,
+          'source',
         );
         const { cursor, ...expected } = schedule;
         if (
           !isDeepStrictEqual(this.getDigestSchedule(schedule.id), {
             ...expected,
+            bindingKind: 'source',
             cursorSequence: cursor.changeSequence,
           })
         )
@@ -1106,6 +1141,8 @@ export class WatchRepository {
     if (rule.state !== 'paused' && rule.pauseReason !== null) {
       return { ok: false, code: 'validation-failed' };
     }
+    if (rule.bindingKind !== 'source' && rule.bindingKind !== 'watch-target')
+      return { ok: false, code: 'validation-failed' };
     const scheduleValidation = validateWatchSchedule(rule.schedule);
     if (!scheduleValidation.ok) {
       return { ok: false, code: 'validation-failed' };
@@ -1155,13 +1192,14 @@ export class WatchRepository {
       ];
       if (schemaVersion >= 5) {
         this.handle
-          .prepare(SQL_INSERT_RULE)
+          .prepare(schemaVersion >= 6 ? SQL_INSERT_RULE_V6 : SQL_INSERT_RULE)
           .run(
             commonValues[0],
             rule.version,
             ...commonValues.slice(1, 12),
             rule.showDetails ? 1 : 0,
             ...commonValues.slice(12),
+            ...(schemaVersion >= 6 ? [rule.bindingKind] : []),
           );
       } else {
         if (rule.version !== 1 || rule.showDetails) return { ok: false, code: 'validation-failed' };
@@ -1178,6 +1216,7 @@ export class WatchRepository {
 
   createRuleWithBaseline(input: {
     rule: WatchRule;
+    independentTarget?: WatchIndependentTarget;
     baseline: {
       projectionType: 'feed' | 'page';
       projectionJson: string;
@@ -1206,6 +1245,48 @@ export class WatchRepository {
       return withTransaction(this.handle, () => {
         if (this.estimateLogicalBytesInternal() + actualBytes + 500 > this.maxDbBytes)
           throw new TxnAbortError('db-budget-exceeded');
+        const rules = this.listRules();
+        if (
+          rules.length >= MAX_WATCH_RULES_TOTAL ||
+          (input.rule.state === 'enabled' &&
+            rules.filter((r) => r.state === 'enabled').length >= MAX_WATCH_RULES_ENABLED)
+        )
+          throw new TxnAbortError('db-budget-exceeded');
+        if (input.rule.bindingKind === 'watch-target') {
+          const t = input.independentTarget;
+          if (
+            t === undefined ||
+            t.id !== input.rule.sourceId ||
+            t.version !== input.rule.sourceRowVersion ||
+            t.aiShareMode !== 'blocked' ||
+            !validateIndependentTargetRow({
+              id: t.id,
+              version: t.version,
+              scope: t.scope,
+              canonical_url: t.canonicalUrl,
+              display_name: t.displayName,
+              ai_share_mode: t.aiShareMode,
+            })
+          )
+            throw new TxnAbortError('validation-failed');
+          this.handle
+            .prepare(SQL_INSERT_TARGET)
+            .run(t.id, t.version, t.scope, t.canonicalUrl, t.displayName, t.aiShareMode);
+          if (
+            computeSourceLocatorFingerprint({
+              sourceId: t.id,
+              scope: t.scope,
+              canonicalKey: t.canonicalUrl,
+              kind: input.rule.kind,
+              canonicalTargetUrl:
+                input.rule.target.type === 'feed'
+                  ? input.rule.target.feedUrl
+                  : input.rule.target.pageUrl,
+            }) !== input.rule.sourceLocatorFingerprint
+          )
+            throw new TxnAbortError('validation-failed');
+        } else if (input.independentTarget !== undefined)
+          throw new TxnAbortError('validation-failed');
         const inserted = this.insertRule(input.rule);
         if (!inserted.ok) throw new TxnAbortError(inserted.code);
         const baseline = this.applyBaselineInternal({
@@ -1214,6 +1295,8 @@ export class WatchRepository {
           ...input.baseline,
         });
         if (!baseline.ok) throw new TxnAbortError(baseline.code);
+        if (this.estimateLogicalBytesInternal() > this.maxDbBytes)
+          throw new TxnAbortError('db-budget-exceeded');
         this.handle
           .prepare(SQL_INSERT_AUDIT)
           .run(
@@ -1237,6 +1320,30 @@ export class WatchRepository {
   // 或行读回校验失败一律抛 WatchRepositoryError，绝不降级为 null/[]（合法空结果
   // 与 not-found 才返回 null/[]）。调用方（coordinator/store）捕获后回滚并使
   // Watch unavailable。
+  getIndependentTarget(id: string): WatchIndependentTarget | null {
+    this.ensureOpen();
+    const row = this.handle.prepare(SQL_SELECT_TARGET).get(id);
+    if (row === undefined) return null;
+    const target = validateIndependentTargetRow(row);
+    if (target === null) throw new WatchRepositoryError('validation-failed', '独立监控目标无效');
+    return target;
+  }
+
+  readIndependentTargetProjection(id: string) {
+    const target = this.getIndependentTarget(id);
+    return target === null
+      ? { status: 'missing' as const }
+      : { status: 'found' as const, projection: targetProjection(target) };
+  }
+
+  listIndependentTargets(): WatchIndependentTarget[] {
+    return (this.handle.prepare(SQL_ALL_TARGETS).all() as unknown[]).map((row) => {
+      const target = validateIndependentTargetRow(row);
+      if (target === null) throw new WatchRepositoryError('validation-failed', '独立监控目标无效');
+      return target;
+    });
+  }
+
   getRule(id: string): WatchRule | null {
     this.ensureOpen();
     let row: unknown;
@@ -1419,11 +1526,19 @@ export class WatchRepository {
   deleteRuleExpectedVersion(ruleId: string, expectedVersion: number): WatchResult {
     this.ensureOpen();
     try {
-      const result = this.handle.prepare(SQL_DELETE_RULE_CAS).run(ruleId, expectedVersion);
-      if (result.changes === 1) return { ok: true };
-      return this.handle.prepare(SQL_SELECT_RULE_EXISTS).get(ruleId) === undefined
-        ? { ok: false, code: 'rule-not-found' }
-        : { ok: false, code: 'rule-version-conflict' };
+      return withTransaction(this.handle, () => {
+        const rule = this.getRule(ruleId);
+        if (rule === null) return { ok: false, code: 'rule-not-found' };
+        if (rule.version !== expectedVersion) return { ok: false, code: 'rule-version-conflict' };
+        for (const event of this.listEventsByRule(ruleId)) {
+          this.scrubEventInternal(event.id, 'user-deleted');
+          this.handle.prepare(SQL_DELETE_EVENT_OUTBOX).run(event.id);
+        }
+        const result = this.handle.prepare(SQL_DELETE_RULE_CAS).run(ruleId, expectedVersion);
+        if (result.changes !== 1) throw new TxnAbortError('rule-version-conflict');
+        this.handle.prepare(SQL_DELETE_ORPHAN_TARGETS).run();
+        return { ok: true };
+      });
     } catch (err) {
       return { ok: false, code: this.translate(err).code };
     }
@@ -1538,6 +1653,7 @@ export class WatchRepository {
     this.ensureOpen();
     try {
       const result = this.handle.prepare(SQL_DELETE_RULE).run(ruleId);
+      this.handle.prepare(SQL_DELETE_ORPHAN_TARGETS).run();
       return Number(result.changes) === 0 ? { ok: false, code: 'rule-not-found' } : { ok: true };
     } catch (err) {
       return { ok: false, code: this.translate(err).code };
@@ -1739,6 +1855,7 @@ export class WatchRepository {
           | {
               state: string;
               source_id: string;
+              binding_kind: WatchBindingKind;
               source_locator_fingerprint: string;
               baseline_version: number;
             }
@@ -2379,6 +2496,7 @@ export class WatchRepository {
           | {
               state: string;
               source_id: string;
+              binding_kind: WatchBindingKind;
               source_locator_fingerprint: string;
               baseline_version: number;
             }
@@ -3159,6 +3277,7 @@ export class WatchRepository {
               desired_enabled: number;
               pause_reason: string | null;
               source_id: string;
+              binding_kind: WatchBindingKind;
               source_locator_fingerprint: string;
               baseline_version: number;
               source_row_version: number;
@@ -3173,6 +3292,7 @@ export class WatchRepository {
           throw new TxnAbortError('identity-conflict');
         }
         if (
+          identityRow.binding_kind !== input.rule.bindingKind ||
           identityRow.source_id !== input.identity.sourceId ||
           identityRow.source_locator_fingerprint !== input.identity.sourceLocatorFingerprint
         ) {
@@ -3600,6 +3720,7 @@ export class WatchRepository {
   // -------------------------------------------------------------------------
 
   createDigestSchedule(input: {
+    bindingKind?: WatchBindingKind;
     id: string;
     sourceIds: readonly string[];
     localTime: string;
@@ -3629,6 +3750,11 @@ export class WatchRepository {
       return { ok: false, code: 'validation-failed' };
     try {
       return withTransaction(this.handle, () => {
+        if (
+          input.bindingKind === 'watch-target' &&
+          sourceIds.some((id) => this.getIndependentTarget(id) === null)
+        )
+          throw new TxnAbortError('validation-failed');
         const highWater = this.handle.prepare(SQL_SELECT_DIGEST_CHANGE_STATE).get() as
           { id: number; last_sequence: number } | undefined;
         if (highWater?.id !== 1 || !Number.isSafeInteger(highWater.last_sequence))
@@ -3644,6 +3770,7 @@ export class WatchRepository {
             input.nextDueAt,
             input.nowIso,
             input.nowIso,
+            input.bindingKind ?? 'source',
           );
         return { ok: true };
       });
@@ -3665,6 +3792,7 @@ export class WatchRepository {
       id: row['id'] as string,
       version: row['version'] as number,
       sourceIds: [...sourceIds],
+      bindingKind: row['binding_kind'] as WatchBindingKind,
       localTime: schedule.localTime,
       timeZone: schedule.timeZone,
       aiEnabled: row['ai_enabled'] === 1,
@@ -3822,6 +3950,11 @@ export class WatchRepository {
       return withTransaction(this.handle, () => {
         if (this.handle.prepare(SQL_SELECT_NONTERMINAL_DIGEST_RUN).get(input.id) !== undefined)
           throw new TxnAbortError('rule-already-running');
+        if (
+          currentSchedule?.bindingKind === 'watch-target' &&
+          sourceIds.some((id) => this.getIndependentTarget(id) === null)
+        )
+          throw new TxnAbortError('validation-failed');
         const highWater = this.handle.prepare(SQL_SELECT_DIGEST_CHANGE_STATE).get() as {
           last_sequence: number;
         };
@@ -4203,11 +4336,12 @@ export class WatchRepository {
       .prepare(SQL_SELECT_FINISHED_RUNS_FOR_DIGEST_STATS)
       .all(period.fromExclusive, period.toInclusive) as Array<{
       source_id: string;
+      binding_kind: WatchBindingKind;
       status: string;
       outcome_json: string | null;
     }>;
     for (const row of rows) {
-      if (!sourceIds.has(row.source_id)) continue;
+      if (!sourceIds.has(row.source_id) || row.binding_kind !== schedule.bindingKind) continue;
       if (row.status === 'interrupted') {
         runStats.failed += 1;
         continue;
@@ -4304,10 +4438,12 @@ export class WatchRepository {
       schedule.sourceIds,
       Number(runRow['next_sequence']),
       Number(runRow['upper_sequence']),
+      schedule.bindingKind,
     );
   }
 
   readDigestPreviewSlice(input: {
+    bindingKind?: WatchBindingKind;
     sourceIds: readonly string[];
     afterSequence: number;
     fromExclusive: string;
@@ -4329,6 +4465,7 @@ export class WatchRepository {
       input.sourceIds,
       input.afterSequence,
       state.last_sequence,
+      input.bindingKind ?? 'source',
       input.fromExclusive,
       input.toInclusive,
     );
@@ -4339,6 +4476,7 @@ export class WatchRepository {
     sourceIds: readonly string[],
     afterSequence: number,
     upperSequence: number,
+    bindingKind: WatchBindingKind,
     fromExclusive?: string,
     toInclusive?: string,
   ): DigestJournalSlice[] | null {
@@ -4353,7 +4491,11 @@ export class WatchRepository {
         fromExclusive === undefined ||
         toInclusive === undefined ||
         (String(row['observed_at']) > fromExclusive && String(row['observed_at']) <= toInclusive);
-      if (!allowed.has(String(row['source_id'])) || !inPeriod) {
+      if (
+        !allowed.has(String(row['source_id'])) ||
+        row['binding_kind'] !== bindingKind ||
+        !inPeriod
+      ) {
         output.push({ sequence, status: 'skipped', observation: null });
         continue;
       }
@@ -4768,6 +4910,37 @@ export class WatchRepository {
   scanIntegrity(): { ok: boolean; reason: string | null } {
     this.ensureOpen();
     try {
+      const targets = this.listIndependentTargets();
+      if (
+        targets.length > MAX_WATCH_RULES_TOTAL ||
+        this.handle.prepare(SQL_TARGET_RELATIONS_INVALID).get() !== undefined
+      )
+        return { ok: false, reason: '独立监控目标归属无效' };
+      if (
+        [
+          SQL_TARGET_ORPHANS,
+          SQL_TYPED_JOURNAL_INVALID,
+          SQL_TYPED_DIGEST_INVALID,
+          SQL_TYPED_CLEANUP_INVALID,
+        ].some((sql) => this.handle.prepare(sql).get() !== undefined)
+      )
+        return { ok: false, reason: '监控目标类型归属无效' };
+      for (const rule of this.listRules())
+        if (rule.bindingKind === 'watch-target') {
+          const owner = this.getIndependentTarget(rule.sourceId);
+          if (
+            owner === null ||
+            computeSourceLocatorFingerprint({
+              sourceId: owner.id,
+              scope: owner.scope,
+              canonicalKey: owner.canonicalUrl,
+              kind: rule.kind,
+              canonicalTargetUrl:
+                rule.target.type === 'page' ? rule.target.pageUrl : rule.target.feedUrl,
+            }) !== rule.sourceLocatorFingerprint
+          )
+            return { ok: false, reason: '独立监控目标指纹无效' };
+        }
       for (const row of this.handle.prepare(SQL_SELECT_ALL_RULES).all() as unknown[]) {
         if (!validateRuleRow(row).ok) return { ok: false, reason: '规则行读回校验失败' };
       }
@@ -5111,6 +5284,7 @@ export class WatchRepository {
           typeof row['observation_id'] !== 'string' ||
           typeof row['event_id'] !== 'string' ||
           typeof row['source_id'] !== 'string' ||
+          !isIn(row['binding_kind'], ['source', 'watch-target'] as const) ||
           typeof row['observed_at'] !== 'string' ||
           !Number.isFinite(Date.parse(row['observed_at'])) ||
           !isIn(row['status'], ['active', 'expired', 'user-deleted'] as const)
@@ -5356,7 +5530,7 @@ export class WatchRepository {
     }
     this.handle
       .prepare(SQL_INSERT_DIGEST_CHANGE)
-      .run(sequence, observationId, eventId, sourceId, observedAt);
+      .run(sequence, observationId, eventId, sourceId, observedAt, eventId);
     return sequence;
   }
 

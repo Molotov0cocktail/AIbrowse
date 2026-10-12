@@ -403,7 +403,7 @@ export interface WatchMigrationMatrixResult {
   failures: string[];
 }
 
-/** WRT-18 独立夹具：v4→v5 成功/逐语句失败/重开/future=6 全矩阵。 */
+/** WRT-18 独立夹具：v4→v5 成功/逐语句失败/重开/future=7 全矩阵。 */
 export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
   const dir = mkdtempSync(join(tmpdir(), 'aibrowse-d10-wrt18-'));
   const failures: string[] = [];
@@ -430,8 +430,8 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
       db.prepare('PRAGMA table_info(watch_rules)').all() as Array<{ name: string }>
     ).map((row) => row.name);
     check(
-      (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version === 5,
-      'v5 user_version',
+      (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version === 6,
+      'v6 user_version',
     );
     check(
       columns.includes('rule_version') && columns.includes('notification_show_details'),
@@ -450,8 +450,8 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
     db = openDb(successPath);
     runWatchMigrations(db);
     check(
-      (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version === 5,
-      'v5 重开成功',
+      (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version === 6,
+      'v6 重开成功',
     );
     closeDb(db);
 
@@ -554,7 +554,7 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
     const futurePath = join(dir, 'future.db');
     const futureDb = openDb(futurePath);
     runWatchMigrations(futureDb);
-    futureDb.exec('PRAGMA user_version = 6');
+    futureDb.exec('PRAGMA user_version = 7');
     closeDb(futureDb);
     const beforeFuture = readFileSync(futurePath);
     const future = openWatchStore({
@@ -565,9 +565,9 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
     const afterFuture = readFileSync(futurePath);
     check(
       future.mode === 'unavailable' && !future.schedulerReady && future.repo === null,
-      'future=6 unavailable 且 Scheduler 不启动',
+      'future=7 unavailable 且 Scheduler 不启动',
     );
-    check(beforeFuture.equals(afterFuture), 'future=6 零写入');
+    check(beforeFuture.equals(afterFuture), 'future=7 零写入');
 
     for (const prefix of [3, 4] as const) {
       const prefixPath = join(dir, `prefix-v${String(prefix)}.db`);
@@ -578,8 +578,8 @@ export function runWatchMigrationV5Matrix(): WatchMigrationMatrixResult {
         runWatchMigrations(prefixDb);
         check(
           (prefixDb.prepare('PRAGMA user_version').get() as { user_version: number })
-            .user_version === 5,
-          `v${String(prefix)}→v5 迁移完成`,
+            .user_version === 6,
+          `v${String(prefix)}→v6 迁移完成`,
         );
         check(
           prefixDb.prepare('SELECT 1 FROM watch_event_observations LIMIT 1').get() === undefined,
@@ -1564,6 +1564,7 @@ async function wrt08(): Promise<boolean> {
   const rule: WatchRule = {
     id: 'wrt08-rule',
     version: 1,
+    bindingKind: 'source',
     sourceId: 'source-d10',
     kind: 'feed',
     state: 'enabled',
@@ -2005,6 +2006,7 @@ async function wrt12(): Promise<boolean> {
   const rule: WatchRule = {
     id: 'wrt12-rule',
     version: 1,
+    bindingKind: 'source',
     sourceId: 'source-d10',
     kind: 'feed',
     state: 'enabled',
@@ -2224,6 +2226,7 @@ async function wrt14(): Promise<boolean> {
   const rule: WatchRule = {
     id: 'wrt14-rule',
     version: 1,
+    bindingKind: 'source',
     sourceId: 'source-d10',
     kind: 'feed',
     state: 'enabled',
@@ -2531,6 +2534,7 @@ async function wrt16(): Promise<boolean> {
     const rule: WatchRule = {
       id: 'wrt16-rule',
       version: 1,
+      bindingKind: 'source',
       sourceId: 'source-d10',
       kind: 'feed',
       state: 'enabled',
@@ -2681,6 +2685,7 @@ async function wrt17(): Promise<boolean> {
     const rule: WatchRule = {
       id: 'wrt17-rule',
       version: 1,
+      bindingKind: 'source',
       sourceId: added.source.id,
       kind: 'feed',
       state: 'enabled',

@@ -14,6 +14,7 @@ import { createSmallFixture, DOMAINS, id, type Variant } from '../product-restor
 import {
   readSmallSnapshot,
   snapshotHashes,
+  projectHistoricalFixtureSnapshot,
   verifySmallFixture,
 } from '../product-restore-fixtures/oracle';
 import { EXPECTED } from '../product-restore-fixtures/expected';
@@ -122,7 +123,7 @@ async function main(): Promise<void> {
         copyFileSync(join(source, domain, name), join(copy, domain, name), 1);
     }
     const actual = readSmallSnapshot(copy, 'A'),
-      hashes = snapshotHashes(actual.snapshot);
+      hashes = snapshotHashes(projectHistoricalFixtureSnapshot(actual.snapshot));
     const mismatch = Object.keys(hashes).filter((key) => hashes[key] !== EXPECTED.A[key]);
     writeNew(join(scope, 'diagnostic-A.json'), {
       mismatch,

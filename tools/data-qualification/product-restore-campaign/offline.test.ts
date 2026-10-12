@@ -1,3 +1,4 @@
+import { FIXTURE_BYTES_V6 } from '../product-restore-fixtures/seed';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, readdir, lstat, rename } from 'node:fs/promises';
 import { resolve, join, toNamespacedPath } from 'node:path';
@@ -69,7 +70,7 @@ it('编译后offline工具实际进程验证A/B装配及H生产备份，无产�
       [bundle, 'prepare', 'R', r.appData, r.journal],
       deadline,
     );
-    expect(verifyCampaignFixture(r.root, 'A', 'source').legacyBytes).toBe(942553);
+    expect(verifyCampaignFixture(r.root, 'A', 'source').legacyBytes).toBe(FIXTURE_BYTES_V6);
     await mkdir(join(r.root, 'lifecycle-guardian'));
     await save(join(r.root, 'lifecycle-guardian/writers.json'), {
       version: 1,
@@ -83,11 +84,11 @@ it('编译后offline工具实际进程验证A/B装配及H生产备份，无产�
       [bundle, 'install-b', 'R', r.appData, r.journal],
       deadline,
     );
-    expect(verifyCampaignFixture(r.root, 'B', 'source').legacyBytes).toBe(942553);
+    expect(verifyCampaignFixture(r.root, 'B', 'source').legacyBytes).toBe(FIXTURE_BYTES_V6);
     expect(
       verifyCampaignFixture(join(r.root, 'restore-campaign-preserved-A'), 'A', 'source')
         .legacyBytes,
-    ).toBe(942553);
+    ).toBe(FIXTURE_BYTES_V6);
     await processes.external(
       process.execPath,
       [bundle, 'prepare', 'P', p.appData, p.journal],
@@ -95,7 +96,7 @@ it('编译后offline工具实际进程验证A/B装配及H生产备份，无产�
     );
     const evidence = join(p.journal, 'runner-output/restore-campaign');
     expect(verifyCampaignFixture(join(evidence, 'fixtures/H'), 'H', 'source').legacyBytes).toBe(
-      942553,
+      FIXTURE_BYTES_V6,
     );
     expect(
       JSON.parse((await readFile(join(evidence, 'synthetic-H-wire.json'))).toString()).origin,
@@ -119,7 +120,7 @@ it('编译后offline工具实际进程验证A/B装配及H生产备份，无产�
 it('A装配→拒绝忙writer→退休后保留A且安装B，全部原件保持', async () => {
   const f = await fixture();
   await offline('prepare', 'R', f.appData, f.journal);
-  expect(verifyCampaignFixture(f.root, 'A', 'source').legacyBytes).toBe(942553);
+  expect(verifyCampaignFixture(f.root, 'A', 'source').legacyBytes).toBe(FIXTURE_BYTES_V6);
   await mkdir(join(f.root, 'lifecycle-guardian'));
   const ledger = {
     version: 1,
@@ -131,13 +132,13 @@ it('A装配→拒绝忙writer→退休后保留A且安装B，全部原件保持'
   const path = join(f.root, 'lifecycle-guardian/writers.json');
   await save(path, ledger);
   await expect(offline('install-b', 'R', f.appData, f.journal)).rejects.toThrow();
-  expect(verifyCampaignFixture(f.root, 'A', 'source').legacyBytes).toBe(942553);
+  expect(verifyCampaignFixture(f.root, 'A', 'source').legacyBytes).toBe(FIXTURE_BYTES_V6);
   await writeFile(path, JSON.stringify({ ...ledger, main: null }));
   await offline('install-b', 'R', f.appData, f.journal);
-  expect(verifyCampaignFixture(f.root, 'B', 'source').legacyBytes).toBe(942553);
+  expect(verifyCampaignFixture(f.root, 'B', 'source').legacyBytes).toBe(FIXTURE_BYTES_V6);
   expect(
     verifyCampaignFixture(join(f.root, 'restore-campaign-preserved-A'), 'A', 'source').legacyBytes,
-  ).toBe(942553);
+  ).toBe(FIXTURE_BYTES_V6);
   await expect(offline('install-b', 'R', f.appData, f.journal)).rejects.toThrow();
 });
 it('P构造保留坏index、有效四库以及明确合成H备份，重复准备拒绝覆盖', async () => {
@@ -153,7 +154,7 @@ it('P构造保留坏index、有效四库以及明确合成H备份，重复准备
   expect(wire.origin).toBe('受控合成生产管线备份');
   expect(wire.members).toHaveLength(5);
   expect(verifyCampaignFixture(join(evidence, 'fixtures/H'), 'H', 'source').legacyBytes).toBe(
-    942553,
+    FIXTURE_BYTES_V6,
   );
   await expect(offline('prepare', 'P', f.appData, f.journal)).rejects.toThrow();
   expect(hash(await read(join(f.root, 'conversations/index.json')))).toBe(hash(index));
@@ -170,7 +171,7 @@ it.each(['history', 'bookmarks', 'missing'] as const)(
     const root = join(f.evidence, 'browser-oracle');
     createCampaignFixture(root, 'A');
     const valid = verifyCampaignFixture(root, 'A', 'source');
-    expect(valid.legacyBytes).toBe(942553);
+    expect(valid.legacyBytes).toBe(FIXTURE_BYTES_V6);
     expect(valid.browserBytes).toBeGreaterThan(0);
     expect(valid.bytes).toBe(valid.legacyBytes + valid.browserBytes);
     expect(valid.hashes.browser).toMatch(/^[a-f0-9]{64}$/u);
@@ -186,7 +187,7 @@ it.each(['history', 'bookmarks', 'missing'] as const)(
         db.close();
       }
     }
-    expect(verifySmallFixture(root, 'A', 'source').bytes).toBe(942553);
+    expect(verifySmallFixture(root, 'A', 'source').bytes).toBe(FIXTURE_BYTES_V6);
     expect(() => verifyCampaignFixture(root, 'A', 'source')).toThrow();
   },
 );

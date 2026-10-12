@@ -222,7 +222,7 @@ export async function scanFixedDataset(
       for (const variant of domain === 'watch' ? ['current', 'historical'] : ['current']) {
         for (
           let version = variant === 'historical' ? 3 : 0;
-          version <= (domain === 'watch' ? 5 : 1);
+          version <= (domain === 'watch' ? 6 : 1);
           version++
         ) {
           const name = `${domain}-${variant}-${version}.db`;
@@ -319,8 +319,8 @@ export async function scanFixedDataset(
     counts: [5000, 30, 200, 2800, 8400, 1030, 50],
     stageMs: stageMs as ScanResult['stageMs'],
     rssPeakBytes,
-    migrationCases: 13,
-    versions: [1, 1, 5],
+    migrationCases: 15,
+    versions: [1, 1, 6],
     sourceIndexRebuilt: true,
     inputsUnchanged: true,
   };

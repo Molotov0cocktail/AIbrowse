@@ -2,14 +2,16 @@
 param(
   [ValidateSet('CheckOnly', 'Switch', 'Rollback')][string]$Action = 'CheckOnly',
   [string]$ReviewRecord = '',
-  [ValidatePattern('^[a-f0-9]{32}$')][string]$SwitchId = ''
+  [ValidatePattern('^[a-f0-9]{32}$')][string]$SwitchId = '',
+  [ValidatePattern('^[a-z0-9][a-z0-9-]{0,79}$')][string]$QualificationScope = 'browser-settings-20261012',
+  [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')][string]$ExpectedVersion = '0.1.5'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $release = Join-Path $repository 'release'
 $output = Join-Path $repository 'output'
-$evidence = Join-Path $repository 'log/browser-settings-20261012'
+$evidence = Join-Path $repository ('log/' + $QualificationScope)
 function Need([bool]$value, [string]$message) { if (-not $value) { throw $message } }
 Need ([OperatingSystem]::IsWindows()) '此工具仅适用 Windows 本地候选选择'
 
@@ -193,7 +195,7 @@ if ($Action -eq 'Rollback') {
   $scope = SafePath (Join-Path $evidence ('output-selection-' + $SwitchId))
   $backup = SafePath (Join-Path $evidence ('previous-output-' + $SwitchId))
   $plan = (ReadJson (Join-Path $scope 'plan.json')).value
-  Need ($plan.version -eq 1 -and $plan.id -ceq $SwitchId -and $plan.scope -ceq 'browser-settings-20261012' -and $plan.output -ceq $output -and $plan.backup -ceq $backup -and $plan.release -ceq $release -and $plan.staging -ceq (Join-Path $scope 'staging')) '回退计划不属于固定目录'
+  Need ($plan.version -eq 1 -and $plan.id -ceq $SwitchId -and $plan.scope -ceq $QualificationScope -and $plan.output -ceq $output -and $plan.backup -ceq $backup -and $plan.release -ceq $release -and $plan.staging -ceq (Join-Path $scope 'staging')) '回退计划不属于固定目录'
   Facts $plan.previous.files $output
   Need ($plan.previous.count -eq $plan.previous.files.Count) '回退文件计数不符'
   RestorePrevious $plan $scope $backup
@@ -210,15 +212,15 @@ $reviewRelative = [IO.Path]::GetRelativePath($repository, $reviewPath).Replace('
 $reviewRead = ReadJson $reviewPath; $review = $reviewRead.value
 ExactKeys $review @('sourceGitSha', 'manifestSha256', 'decision', 'scope', 'proofs', 'packageLaunchStatus')
 foreach ($key in @('sourceGitSha', 'manifestSha256', 'decision', 'scope', 'packageLaunchStatus')) { Need ($review[$key] -is [string]) '审核固定字段类型无效' }
-Need ($review.decision -ceq 'PASS' -and $review.scope -ceq 'browser-settings-20261012' -and $review.sourceGitSha -ceq $verificationHead -and $review.manifestSha256 -cmatch '^[a-f0-9]{64}$' -and $review.packageLaunchStatus -cin @('PASS', 'NOTRUN')) '独立审核范围、结论或源码绑定无效'
+Need ($review.decision -ceq 'PASS' -and $review.scope -ceq $QualificationScope -and $review.sourceGitSha -ceq $verificationHead -and $review.manifestSha256 -cmatch '^[a-f0-9]{64}$' -and $review.packageLaunchStatus -cin @('PASS', 'NOTRUN')) '独立审核范围、结论或源码绑定无效'
 Need ($review.proofs -is [array] -and $review.proofs.Count -ge 1 -and $review.proofs.Count -le 1024) '审核证明数量超限或为空'
 $seenProofs = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 foreach ($proof in $review.proofs) { AssertProof $proof; Need ($seenProofs.Add($proof.path) -and $proof.path -cne $reviewRelative) '审核证明重复或自引用' }
 $manifestRead = ReadJson (Member $release 'build-provenance.json'); $manifest = $manifestRead.value
 Need ($manifestRead.fact.sha256 -ceq $review.manifestSha256) '审核未绑定当前包 manifest'
 Need ($manifest.source.gitSha -is [string] -and $manifest.source.version -is [string]) '包来源身份类型无效'
-Need ($manifest.schemaVersion -eq 1 -and $manifest.candidateEligible -is [bool] -and $manifest.candidateEligible -and $manifest.source.dirty -is [bool] -and -not $manifest.source.dirty -and $manifest.source.gitSha -ceq $verificationHead -and $manifest.source.version -ceq '0.1.5') '包来源不是本轮干净源码候选'
-$stem = 'AIbrowse-0.1.5-win-x64-internal'
+Need ($manifest.schemaVersion -eq 1 -and $manifest.candidateEligible -is [bool] -and $manifest.candidateEligible -and $manifest.source.dirty -is [bool] -and -not $manifest.source.dirty -and $manifest.source.gitSha -ceq $verificationHead -and $manifest.source.version -ceq $ExpectedVersion) '包来源不是本轮干净源码候选'
+$stem = 'AIbrowse-' + $ExpectedVersion + '-win-x64-internal'
 Need ($manifest.installer.path -ceq ($stem + '.exe') -and $manifest.msi.path -ceq ($stem + '.msi') -and $manifest.installerBuild.path -ceq 'installer-build.json') '两个安装器或身份文件命名不符'
 AssertFiles (Join-Path $release 'win-unpacked') $manifest.payload.packageFiles
 foreach ($key in @('executable', 'asar', 'guardian')) {
@@ -245,7 +247,7 @@ $scope = SafePath (Join-Path $evidence ('output-selection-' + $id))
 $backup = SafePath (Join-Path $evidence ('previous-output-' + $id))
 $staging = SafePath (Join-Path $scope 'staging')
 $proofFiles = @($review.proofs) + @($reviewRead.fact)
-$plan = [ordered]@{ version = 1; id = $id; scope = 'browser-settings-20261012'; release = $release; output = $output; backup = $backup; staging = $staging; sourceGitSha = $verificationHead; manifestSha256 = $manifestRead.fact.sha256; packageLaunchStatus = $review.packageLaunchStatus; candidate = @{ count = $candidateFiles.Count; files = $candidateFiles }; previous = @{ count = $old.Count; files = $old }; evidence = $proofFiles; scriptSha256 = (FileFact $PSCommandPath 'select-output.ps1').sha256 }
+$plan = [ordered]@{ version = 1; id = $id; scope = $QualificationScope; release = $release; output = $output; backup = $backup; staging = $staging; sourceGitSha = $verificationHead; manifestSha256 = $manifestRead.fact.sha256; packageLaunchStatus = $review.packageLaunchStatus; candidate = @{ count = $candidateFiles.Count; files = $candidateFiles }; previous = @{ count = $old.Count; files = $old }; evidence = $proofFiles; scriptSha256 = (FileFact $PSCommandPath 'select-output.ps1').sha256 }
 if ($Action -eq 'CheckOnly') { $plan | ConvertTo-Json -Depth 24; return }
 Need (-not (Test-Path -LiteralPath $scope) -and -not (Test-Path -LiteralPath $backup)) '唯一操作目录已被占用'
 [void][IO.Directory]::CreateDirectory($staging)
@@ -284,6 +286,6 @@ try {
       RestorePrevious $plan $scope $backup; $restored = $true
     } else { AssertFiles $output $old; $restored = $true }
   } catch { $rollbackError = $_.Exception.Message }
-  NewJson (Join-Path $scope ('failure-' + [Guid]::NewGuid().ToString('N') + '.json')) @{ error = $originalError; oldMoved = $oldMoved; newMoved = $newMoved; originalUntouchedOrRestored = $restored; rollbackError = $rollbackError; recovery = "pwsh -NoProfile -File tools/browser-library-runtime/select-output.ps1 -Action Rollback -SwitchId $id" }
+  NewJson (Join-Path $scope ('failure-' + [Guid]::NewGuid().ToString('N') + '.json')) @{ error = $originalError; oldMoved = $oldMoved; newMoved = $newMoved; originalUntouchedOrRestored = $restored; rollbackError = $rollbackError; recovery = "pwsh -NoProfile -File tools/browser-library-runtime/select-output.ps1 -Action Rollback -SwitchId $id -QualificationScope $QualificationScope -ExpectedVersion $ExpectedVersion" }
   throw "候选选择失败；现场已保留：$scope；原输出保持或恢复：$restored"
 }

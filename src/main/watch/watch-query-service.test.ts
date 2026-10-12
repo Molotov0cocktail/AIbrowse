@@ -8,6 +8,7 @@ const ruleId = '00000000-0000-4000-8000-000000000002';
 const rule: WatchRule = {
   id: ruleId,
   version: 2,
+  bindingKind: 'source',
   sourceId,
   kind: 'page',
   state: 'enabled',
@@ -88,6 +89,7 @@ describe('D9 renderer-safe Watch 查询投影', () => {
     const repo = {
       listRules: () => [rule],
       listEventsByRule: () => [newer, older],
+      getRule: () => rule,
       getEvent: (id: string) => [newer, older].find((item) => item.id === id) ?? null,
       listEventItems: () => [],
     } as unknown as WatchRepository;

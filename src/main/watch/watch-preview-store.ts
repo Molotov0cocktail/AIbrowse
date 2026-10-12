@@ -1,9 +1,12 @@
+import type { WatchBindingKind, WatchIndependentTarget } from '../../shared/types/watch';
 import { randomBytes } from 'node:crypto';
 
 export const WATCH_PREVIEW_TTL_MS = 300_000;
 const HANDLE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 export interface WatchPreviewRecord {
+  bindingKind?: WatchBindingKind;
+  independentTarget?: WatchIndependentTarget;
   sourceId: string;
   sourceRowVersion: number;
   locatorFingerprint: string;
@@ -22,6 +25,8 @@ interface Entry {
 }
 
 interface DiscoveryEntry {
+  independentTarget?: WatchIndependentTarget;
+  bindingKind?: WatchBindingKind;
   expiresAt: number;
   sourceId: string;
   candidates: Map<string, string>;
@@ -57,6 +62,7 @@ export class WatchPreviewStore {
   issueDiscovery(
     sourceId: string,
     urls: readonly string[],
+    owner?: { bindingKind?: WatchBindingKind; independentTarget?: WatchIndependentTarget },
   ): {
     discoveryHandle: string;
     candidates: Array<{ candidateId: string; feedUrl: string }>;
@@ -72,6 +78,7 @@ export class WatchPreviewStore {
     });
     this.discoveries.set(discoveryHandle, {
       expiresAt: this.now() + WATCH_PREVIEW_TTL_MS,
+      ...owner,
       sourceId,
       candidates: new Map(
         candidates.map((candidate) => [candidate.candidateId, candidate.feedUrl]),
@@ -83,13 +90,27 @@ export class WatchPreviewStore {
   consumeDiscovery(
     discoveryHandle: string,
     candidateId: string,
-  ): { sourceId: string; feedUrl: string } | null {
+  ): {
+    sourceId: string;
+    feedUrl: string;
+    bindingKind?: WatchBindingKind;
+    independentTarget?: WatchIndependentTarget;
+  } | null {
     if (!HANDLE_PATTERN.test(discoveryHandle) || !HANDLE_PATTERN.test(candidateId)) return null;
     const entry = this.discoveries.get(discoveryHandle);
     this.discoveries.delete(discoveryHandle);
     if (entry === undefined || this.now() >= entry.expiresAt) return null;
     const feedUrl = entry.candidates.get(candidateId);
-    return feedUrl === undefined ? null : { sourceId: entry.sourceId, feedUrl };
+    return feedUrl === undefined
+      ? null
+      : {
+          sourceId: entry.sourceId,
+          feedUrl,
+          ...(entry.bindingKind === undefined ? {} : { bindingKind: entry.bindingKind }),
+          ...(entry.independentTarget === undefined
+            ? {}
+            : { independentTarget: entry.independentTarget }),
+        };
   }
 
   dispose(): void {
