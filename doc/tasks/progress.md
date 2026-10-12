@@ -17,8 +17,16 @@
   Windows锁控制1PASS；历史占用者unknown，原测试afterAll删除场景的证据缺口保留。
   显式组合6971PASS/3SKIP及产品差量已获限定独审PASS，独立191项通过；不能写成全量命令通过。
   最终78场绑定322源码/5产物，默认217.33→79.67 CSS px，网页高度582.67→720.33。
-  当前准备0.1.4构建与等价换包材料；
-  **output仍为0.1.3**，新包适用验证和独审通过前不覆盖。下一动作：最终证据绑定、独审、构建/更新output及双远程收尾。
+  产品提交4548933，工具与干净包来源ed834c1d50fa01b58be24b03254b7d39dd7e4daa。
+  typecheck/lint/format/build、发行构建/verify/199模块静态绑定/provenance/PE比较均0。
+  换包工具最终54项及独立4拒绝反例PASS；缺bounds检查可误接纳的问题已红→绿关闭，收尾脚本失败原件保留。
+  实际包及八项证明获独审PASS_WITH_NOTRUN_PACKAGED_STARTUP；PackageLaunch仍NOTRUN，不冒称启动实测。
+  **output已更新为0.1.4**，79文件/619797056字节，入口D:\AIbrowse\output\win-unpacked\AIbrowse.exe，
+  EXE/MSI及身份文件齐备；manifest SHA256 7a99b1db64034a6bd1cd28dc8d8a74680688265b895cc0b4f061a880dc242021。
+  CheckOnly/Switch均0，ID cd3fc4a8e3664f37a4f8496074b4bfa2，27份证明切前复核；旧0.1.3完整79文件
+  保留在log/browser-ux-20261012/previous-output-cd3fc4a8e3664f37a4f8496074b4bfa2，原字节保留true。
+  换包后独立核新旧各79完整文件、27证明及322产品源码PASS，见本轮output-final-review.md/json。
+  本轮修复与output更新已完成；停止新增实现，不启动Stage8。下列0.1.3及更早状态均为历史。
 
 - 2026-10-12用户提供新临时 DeepSeek 凭据并授权严格实测/修复，基线
   `ae9ee07b009c7a82516560d40465407b93a608ba`。真实请求共52次，测试已经结束；有效场次

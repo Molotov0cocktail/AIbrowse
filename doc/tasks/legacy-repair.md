@@ -59,6 +59,26 @@ TabBar 子按钮 Enter/Space 冒泡缺陷红 4 FAIL/2 PASS、修后 6 PASS；App
 正常/新页/Ctrl 后台/无手势/危险协议/POST/任务/AI 八场加真实 Bing→bilibili 成功，摘要见本轮 `aggregate.json`；
 iframe 物理输入未送达为 NOTRUN，两原场 exit1 保留。打包启动仍 NOTRUN，不将开发 Electron GUI 等同于包启动。
 
+### 0.1.4 交付与闭合证据
+
+- 产品修复提交 `4548933`；验收工具与干净包来源 `ed834c1d50fa01b58be24b03254b7d39dd7e4daa`。
+  typecheck/lint/format/build、package:release-installer、verify:release、199 模块源码/ASAR 静态绑定、
+  provenance、PE 比较及事实包装全部 exit0，原件位于 `log/browser-ux-20261012/`。
+- output-switch 新 scope 最终 54 项合成检查 PASS；独审发现缺少必需 bounds 字段仍可接纳的工具缺陷，
+  原红态保留，修后缺字段/总失败/77场/非 bool 可见性四反例准确拒绝。上一轮 54 项完成后的脚本收尾错误
+  原件保留，修后完整一次复跑通过；真实 output/profile 未被合成夹具触碰。
+- `product-review.md`、`tool-review.md`、`package-review.md` 分别冻结适用批准范围；最终独审
+  `PASS_WITH_NOTRUN_PACKAGED_STARTUP` 绑定八项证明，不授 packaged startup 或 iframe 物理输入通过。
+  `fact-wrap.json` 明确 Research 返回浏览依据组件测试，Watch 返回浏览与几何依据真实 Electron。
+- 实际 CheckOnly/Switch 均 exit0，ID `cd3fc4a8e3664f37a4f8496074b4bfa2`，27 份证明切前重验；
+  新 output 为 0.1.4、79 文件/619797056 字节，包含完整程序、EXE/MSI 安装器及构建身份。
+  manifest SHA256 `7a99b1db64034a6bd1cd28dc8d8a74680688265b895cc0b4f061a880dc242021`。
+  旧 0.1.3 的 79 文件完整保留在本轮 `previous-output-cd3fc4a8e3664f37a4f8496074b4bfa2`；
+  `output-switch-cd3fc4a8e3664f37a4f8496074b4bfa2/result.json` 的 passed/originalBytesPreserved 均 true。
+- 换包后独立 `output-final-review.md/json` PASS：新旧各 79 文件逐字节/摘要匹配，无额外成员或重解析点；
+  27 份证明恒等（历史 previousManifest 按保留后的备份位置核验）、322 产品源码及已审执行器身份不变。
+  此后仅两份收尾文档变化，不重建未变产品；本轮完成，不启动 Stage8。
+
 ## 新临时 DeepSeek 凭据严格实测合同（2026-10-12）
 
 - TASK / BASELINE：用户明确授权新临时凭据、多场景严格实测和缺陷修复；基线
