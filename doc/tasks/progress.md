@@ -16,8 +16,12 @@
   不能宣称新代码当前真实Provider已通过。全量首轮失败及旧工具适配原件保留；最终全量6,896 PASS/
   3 SKIP、470文件PASS/1 SKIP，typecheck/lint/format及普通build通过。完整production-891cae9a场407.764秒
   exit0、三Job0、ledgerRetired、passed均true；真实preview挂起时可信弹窗保持等待，经隔离测试明确点击
-  停止后正常退出（不是无交互自动退出），全部原件保留。下一动作是干净0.1.2包构建和实际包验证，
-  再保留旧output并替换。资源旧超限、旧fatal unknown均不关闭。
+  停止后正常退出（不是无交互自动退出），全部原件保留。0.1.2完整包与EXE/MSI已构建，
+  verify/static binding及candidateEligible均通过，包源为干净5c7f487b1ab9e1cd7dc4225505823f6616f03476。
+  实际PackageSmoke在创建合成profile时被宿主路径重定向阻挡，产品未启动、原profile目录身份未变，
+  隔离失败原件保留。已按授权工程REPLAN采用未变封装/运行时证据、当前完整production与包字节/源码绑定，
+  独审限定本地可回退更新；不把新封装启动记PASS、不授完整安装/发行门。下一动作是显式替代证据入口
+  终检后保留旧output并切换；资源旧超限、旧fatal unknown均不关闭。
 
 - 2026-10-12用户追加要求严格验证所有剩余事项并定位根因，已恢复有界诊断。baseline `dedbfdcbdcea2723eb09c4f73c0f1b5810cbe9e8`、接管工作区干净；差量合同和结果矩阵见 `doc/tasks/legacy-repair.md` 首节。三方向并行准备、真实运行串行；不修改真实数据或选定 output。以下上一轮遇难停止为历史状态，诊断不预授修复/发行通过。
   用户明确软件主要用于当前电脑接电环境，无需断电或其它电脑测试；两项排除本轮验收且不作为当前使用阻塞，保留未实测事实。

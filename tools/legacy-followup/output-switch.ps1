@@ -2,6 +2,8 @@
 param(
   [ValidateSet('CheckOnly','Switch','Rollback')][string]$Action='CheckOnly',
   [string]$PackageJournal='',
+  [ValidateSet('PackageSmoke','EquivalentEvidence')][string]$Qualification='PackageSmoke',
+  [string]$EquivalenceRecord='',
   [ValidatePattern('^[a-f0-9]{32}$')][string]$SwitchId=''
 )
 $ErrorActionPreference='Stop'
@@ -83,6 +85,16 @@ function Head {
   Need ($LASTEXITCODE -eq 0 -and $dirty.Count -eq 0) '当前项目源码工作区不干净'
   return $value
 }
+function AssertSource([string]$source,[string]$current) {
+  Need ($source -cmatch '^[a-f0-9]{40}$') '来源源码身份无效'
+  if($Qualification -eq 'PackageSmoke'){Need ($source -ceq $current) '包来源不是当前源码';return}
+  & git -C $repository merge-base --is-ancestor $source $current
+  Need ($LASTEXITCODE -eq 0) '包来源不是当前源码祖先'
+  $changed=@(& git -C $repository diff --name-only --no-renames $source $current --)
+  Need ($LASTEXITCODE -eq 0) '无法核对来源源码差量'
+  $allowed=@('doc/tasks/legacy-repair.md','doc/tasks/progress.md','tools/legacy-followup/output-switch.ps1','tools/legacy-followup/output-switch.test.ps1')
+  foreach($path in $changed){Need ($path -cin $allowed) '来源之后存在产品、构建或依赖差量'}
+}
 function RestorePrevious($plan,[string]$scope,[string]$backup) {
   Idle
   if(-not (Test-Path -LiteralPath $backup)){AssertFiles $output $plan.previous.files;return}
@@ -101,7 +113,7 @@ function RestorePrevious($plan,[string]$scope,[string]$backup) {
   AssertFiles $output $plan.previous.files
 }
 if($Action -eq 'Rollback') {
-  Need ($SwitchId -ne '' -and $PackageJournal -eq '') '回退只接受固定SwitchId'
+  Need ($SwitchId -ne '' -and $PackageJournal -eq '' -and $EquivalenceRecord -eq '' -and $Qualification -eq 'PackageSmoke') '回退只接受固定SwitchId'
   $scope=SafePath (Join-Path $evidence ('output-switch-'+$SwitchId))
   $backup=SafePath (Join-Path $evidence ('previous-output-'+$SwitchId))
   $plan=ReadJson (Join-Path $scope 'plan.json')
@@ -111,23 +123,49 @@ if($Action -eq 'Rollback') {
   @{restored=$true;output=$output;scope=$scope}|ConvertTo-Json
   return
 }
-Need ($SwitchId -eq '' -and $PackageJournal -ne '') '计划或换包须提供已通过的PackageSmoke journal'
+Need ($SwitchId -eq '' -and $PackageJournal -ne '') '计划或换包须提供PackageSmoke journal'
 Idle
 $journal=SafePath $PackageJournal
 Need ([IO.Path]::GetDirectoryName($journal) -ceq (Join-Path $evidence 'package') -and [IO.Path]::GetFileName($journal) -cmatch '^journal-[a-f0-9]{32}$') '不是固定PackageSmoke journal'
 $manifestPath=Member $release 'build-provenance.json'
 $manifest=ReadJson $manifestPath
-Need ($manifest.candidateEligible -is [bool] -and $manifest.candidateEligible -and $manifest.source.dirty -is [bool] -and -not $manifest.source.dirty -and $manifest.source.gitSha -ceq (Head)) '包来源不是当前干净源码候选'
+$verificationHead=Head
+Need ($manifest.candidateEligible -is [bool] -and $manifest.candidateEligible -and $manifest.source.dirty -is [bool] -and -not $manifest.source.dirty) '包来源不是干净源码候选'
+AssertSource $manifest.source.gitSha $verificationHead
 Need ($manifest.source.version -cmatch '^\d+\.\d+\.\d+$') '版本无效'
 $stem='AIbrowse-'+$manifest.source.version+'-win-x64-internal'
 Need ($manifest.installer.path -ceq ($stem+'.exe') -and $manifest.msi.path -ceq ($stem+'.msi') -and $manifest.installerBuild.path -ceq 'installer-build.json') '两个安装器或身份文件命名不符'
 $manifestFact=FileFact $manifestPath 'build-provenance.json'
+$proofFiles=[Collections.Generic.List[object]]::new()
+if($Qualification -eq 'PackageSmoke') {
+Need ($EquivalenceRecord -eq '') '默认验收不接受等价记录'
 $terminalPath=Member $journal 'package-terminal.json'
 $resultPath=Member $journal 'runner-output/package-result.json'
 $terminal=ReadJson $terminalPath;$result=ReadJson $resultPath
 Need ($terminal.passed -is [bool] -and $terminal.passed -and $terminal.jobCompleted -is [bool] -and $terminal.jobCompleted -and $terminal.rootExitCode -eq 0 -and $terminal.originalRestored -is [bool] -and $terminal.originalRestored) 'PackageSmoke未正常结束并恢复原profile'
 Need ($result.passed -is [bool] -and $result.passed -and $result.rootExitCode -eq 0 -and $result.native.passed -is [bool] -and $result.native.passed -and $result.native.closeCount -eq 1) '实际包启动或正常关闭未通过'
 Need ($result.binding.runId -ceq [IO.Path]::GetFileName($journal).Substring(8) -and $result.binding.packageRoot -ceq (Join-Path $release 'win-unpacked') -and $result.binding.journal -ceq $journal -and $result.binding.provenanceSha256 -ceq $manifestFact.sha256 -and $result.binding.executableSha256 -ceq $manifest.payload.executable.sha256 -and $result.binding.guardianSha256 -ceq $manifest.payload.guardian.sha256 -and $result.binding.asarSha256 -ceq $manifest.payload.asar.sha256) '验收证据与当前包不匹配'
+foreach($path in @($terminalPath,$resultPath)){$proofFiles.Add((FileFact $path ([IO.Path]::GetRelativePath($repository,$path).Replace('\','/'))))}
+} else {
+  Need ($EquivalenceRecord -ne '' -and (SafePath $EquivalenceRecord) -ceq (Join-Path $evidence 'equivalence-record.json')) '等价记录不属于固定本轮证据目录'
+  $record=ReadJson $EquivalenceRecord
+  Need ($record.version -eq 1 -and $record.qualification -ceq 'EquivalentEvidence' -and $record.passed -is [bool] -and $record.passed -and $record.scope -ceq 'same-machine-local-reversible' -and $record.reviewerConclusion -ceq 'PASS_WITH_NOTRUN_PACKAGED_STARTUP') '等价记录未获限定审核通过'
+  Need ($record.packageLaunchTested -is [bool] -and -not $record.packageLaunchTested -and $record.packageLaunchStatus -ceq 'NOTRUN' -and $record.sourceGitSha -ceq $manifest.source.gitSha) '等价记录隐瞒实际包未启动或来源不符'
+  Need ($record.machine.computerName -ceq [Environment]::MachineName -and $record.machine.platform -ceq 'win32' -and $record.machine.architecture -ceq 'x64' -and [OperatingSystem]::IsWindows() -and [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [Runtime.InteropServices.Architecture]::X64) '等价记录不适用于当前机器'
+  $proofNames=@('candidateManifest','previousManifest','productionResult','productionCompletion','productionReadback','productionLog','productionDialogAction','failedPackageManifest','failedPackageEvents','failedPackageRun','profileIdentity','staticBinding','peComparison')
+  Need (@($record.proofs.PSObject.Properties).Count -eq $proofNames.Count) '等价证明集合不闭合'
+  $fixed=@{candidateManifest='release/build-provenance.json';previousManifest='output/build-provenance.json';failedPackageManifest=([IO.Path]::GetRelativePath($repository,(Join-Path $journal 'manifest.json')).Replace('\','/'));failedPackageEvents=([IO.Path]::GetRelativePath($repository,(Join-Path $journal 'events.jsonl')).Replace('\','/'));failedPackageRun='log/legacy-followup-20261012/package-smoke-run.log';profileIdentity='log/legacy-followup-20261012/package-profile-identity.json';staticBinding='log/legacy-followup-20261012/reviewer-package-static-binding.txt';peComparison='log/legacy-followup-20261012/reviewer-package-pe-reuse.json'}
+  $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach($name in $proofNames) {
+    $proof=$record.proofs.$name
+    Need ($proof.sha256 -cmatch '^[a-f0-9]{64}$' -and $seen.Add($proof.path)) '证明摘要或成员重复'
+    if($fixed.ContainsKey($name)){Need ($proof.path -ceq $fixed[$name]) '证明不属于固定文件'}else{Need ($proof.path.StartsWith('log/',[StringComparison]::Ordinal)) '运行证明不属于项目日志'}
+    $actual=FileFact (Member $repository $proof.path) $proof.path
+    Need ($actual.sha256 -ceq $proof.sha256) '等价证明缺失或摘要不匹配'
+    $proofFiles.Add($actual)
+  }
+  $proofFiles.Add((FileFact $EquivalenceRecord 'log/legacy-followup-20261012/equivalence-record.json'))
+}
 $candidate=[Collections.Generic.List[object]]::new()
 foreach($fact in $manifest.payload.packageFiles){$candidate.Add([ordered]@{path=('win-unpacked/'+$fact.path);bytes=$fact.bytes;sha256=$fact.sha256})}
 AssertFiles (Join-Path $release 'win-unpacked') $manifest.payload.packageFiles
@@ -142,7 +180,7 @@ $id=[Guid]::NewGuid().ToString('N')
 $scope=SafePath (Join-Path $evidence ('output-switch-'+$id))
 $backup=SafePath (Join-Path $evidence ('previous-output-'+$id))
 $staging=SafePath (Join-Path $scope 'staging')
-$plan=[ordered]@{version=1;id=$id;release=$release;output=$output;backup=$backup;staging=$staging;source=$manifest.source;candidate=@{count=$candidate.Count;files=@($candidate|Sort-Object path)};previous=@{count=$old.Count;files=$old};packageJournal=$journal;evidence=@((FileFact $terminalPath 'package-terminal.json'),(FileFact $resultPath 'runner-output/package-result.json'));scriptSha256=(FileFact $PSCommandPath 'output-switch.ps1').sha256}
+$plan=[ordered]@{version=1;id=$id;release=$release;output=$output;backup=$backup;staging=$staging;source=$manifest.source;verificationHead=$verificationHead;qualification=$Qualification;packageLaunchTested=($Qualification -eq 'PackageSmoke');packageLaunchStatus=$(if($Qualification -eq 'PackageSmoke'){'PASS'}else{'NOTRUN'});scope='same-machine-local-reversible';candidate=@{count=$candidate.Count;files=@($candidate|Sort-Object path)};previous=@{count=$old.Count;files=$old};packageJournal=$journal;evidence=@($proofFiles.ToArray());scriptSha256=(FileFact $PSCommandPath 'output-switch.ps1').sha256}
 if($Action -eq 'CheckOnly'){$plan|ConvertTo-Json -Depth 24;return}
 Need (-not (Test-Path -LiteralPath $scope) -and -not (Test-Path -LiteralPath $backup)) '唯一换包目录已存在'
 [void][IO.Directory]::CreateDirectory($scope)
@@ -158,15 +196,16 @@ try {
   AssertFiles $staging $plan.candidate.files
   foreach($fact in $plan.candidate.files){$actual=FileFact (Member $release $fact.path) $fact.path;Need ($actual.bytes -eq $fact.bytes -and $actual.sha256 -ceq $fact.sha256) '复制期间发行源变化'}
   AssertFiles $output $plan.previous.files
-  foreach($fact in $plan.evidence){Need ((FileFact (Member $journal $fact.path) $fact.path).sha256 -ceq $fact.sha256) '验收证据变化'}
-  Need ((Head) -ceq $plan.source.gitSha) '切换前源码HEAD变化'
+  foreach($fact in $plan.evidence){Need ((FileFact (Member $repository $fact.path) $fact.path).sha256 -ceq $fact.sha256) '验收证据变化'}
+  Need ((Head) -ceq $plan.verificationHead) '切换前源码HEAD变化'
+  AssertSource $plan.source.gitSha $plan.verificationHead
   Idle
   [IO.Directory]::Move($output,$backup);$oldMoved=$true
   AssertFiles $backup $plan.previous.files
   [IO.Directory]::Move($staging,$output);$newMoved=$true
   AssertFiles $output $plan.candidate.files
   AssertFiles $backup $plan.previous.files
-  NewJson (Join-Path $scope 'result.json') @{passed=$true;id=$id;output=$output;previousOutput=$backup;source=$plan.source;files=$plan.candidate.count;previousFiles=$plan.previous.count;originalBytesPreserved=$true}
+  NewJson (Join-Path $scope 'result.json') @{passed=$true;id=$id;output=$output;previousOutput=$backup;source=$plan.source;qualification=$plan.qualification;packageLaunchTested=$plan.packageLaunchTested;packageLaunchStatus=$plan.packageLaunchStatus;scope=$plan.scope;files=$plan.candidate.count;previousFiles=$plan.previous.count;originalBytesPreserved=$true}
   @{passed=$true;id=$id;output=$output;previousOutput=$backup;scope=$scope}|ConvertTo-Json
 } catch {
   $problem=$_.Exception.Message;$restored=$false;$restoreProblem=$null

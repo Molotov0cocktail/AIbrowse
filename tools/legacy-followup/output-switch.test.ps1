@@ -60,6 +60,40 @@ try {
   Same $old (Inventory $output)
   Same $new (Inventory (Join-Path $switched.scope 'rolled-back-candidate'))
   $checks.Add('实际Rollback原目录三成员恢复且候选七成员保留')
+  # This second fixture is explicitly synthetic and never claims packaged startup.
+  SaveJson (Join-Path $output 'build-provenance.json') @{synthetic=$true;version='previous'}
+  $old=Inventory $output
+  $recordPath=Join-Path $fixture 'log/legacy-followup-20261012/equivalence-record.json'
+  $paths=[ordered]@{candidateManifest='release/build-provenance.json';previousManifest='output/build-provenance.json';productionResult='log/fixture/result.json';productionCompletion='log/fixture/completion.json';productionReadback='log/fixture/readback.json';productionLog='log/fixture/production.log';productionDialogAction='log/fixture/dialog.json';failedPackageManifest=([IO.Path]::GetRelativePath($fixture,(Join-Path $journal 'manifest.json')).Replace('\','/'));failedPackageEvents=([IO.Path]::GetRelativePath($fixture,(Join-Path $journal 'events.jsonl')).Replace('\','/'));failedPackageRun='log/legacy-followup-20261012/package-smoke-run.log';profileIdentity='log/legacy-followup-20261012/package-profile-identity.json';staticBinding='log/legacy-followup-20261012/reviewer-package-static-binding.txt';peComparison='log/legacy-followup-20261012/reviewer-package-pe-reuse.json'}
+  $proofs=[ordered]@{}
+  foreach($name in $paths.Keys){$relative=$paths[$name];if($name -notin @('candidateManifest','previousManifest')){SaveJson (Join-Path $fixture $relative) @{syntheticEvidenceOnly=$true;name=$name}};$proofs[$name]=Fact $fixture $relative}
+  $record=@{version=1;qualification='EquivalentEvidence';passed=$true;scope='same-machine-local-reversible';packageLaunchTested=$false;packageLaunchStatus='NOTRUN';sourceGitSha=$head;reviewerConclusion='PASS_WITH_NOTRUN_PACKAGED_STARTUP';machine=@{computerName=[Environment]::MachineName;platform='win32';architecture='x64'};proofs=$proofs}
+  SaveJson $recordPath $record
+  WriteText (Join-Path $fixture 'doc/tasks/progress.md') '合成允许文档差量'
+  InvokeFixtureGit @('add','doc/tasks/progress.md')
+  InvokeFixtureGit @('-c','user.name=AIbrowse fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false','commit','--quiet','-m','docs: 合成白名单差量')
+  $equivalent=(& $tool -Action CheckOnly -PackageJournal $journal -Qualification EquivalentEvidence -EquivalenceRecord $recordPath)|ConvertFrom-Json
+  if($equivalent.packageLaunchTested -or $equivalent.packageLaunchStatus -cne 'NOTRUN' -or $equivalent.evidence.Count -ne 14){throw '等价计划未诚实保留NOTRUN和全部证据'}
+  $checks.Add('显式等价模式允许已提交文档差量并诚实NOTRUN')
+  $proofs.productionLog.sha256='a'*64;SaveJson $recordPath $record
+  Reject '等价证明摘要不匹配拒绝' {&$tool -Action CheckOnly -PackageJournal $journal -Qualification EquivalentEvidence -EquivalenceRecord $recordPath}
+  $proofs.productionLog=Fact $fixture $paths.productionLog
+  $proofs.productionLog.path='log/fixture/missing.log';SaveJson $recordPath $record
+  Reject '等价证明缺失拒绝' {&$tool -Action CheckOnly -PackageJournal $journal -Qualification EquivalentEvidence -EquivalenceRecord $recordPath}
+  $proofs.productionLog=Fact $fixture $paths.productionLog;SaveJson $recordPath $record
+  $equivalentSwitch=(& $tool -Action Switch -PackageJournal $journal -Qualification EquivalentEvidence -EquivalenceRecord $recordPath)|ConvertFrom-Json
+  Same $old (Inventory $equivalentSwitch.previousOutput)
+  Same $new (Inventory $output)
+  $equivalentResult=Get-Content -LiteralPath (Join-Path $equivalentSwitch.scope 'result.json') -Raw|ConvertFrom-Json
+  if($equivalentResult.packageLaunchTested -or $equivalentResult.packageLaunchStatus -cne 'NOTRUN'){throw '等价换包回执夸大验收'}
+  &$tool -Action Rollback -SwitchId $equivalentSwitch.id|Out-Null
+  Same $old (Inventory $output)
+  Same $new (Inventory (Join-Path $equivalentSwitch.scope 'rolled-back-candidate'))
+  $checks.Add('等价Switch与Rollback保持两树字节且回执NOTRUN')
+  WriteText (Join-Path $fixture 'tracked.txt') '合成产品源码差量'
+  InvokeFixtureGit @('add','tracked.txt')
+  InvokeFixtureGit @('-c','user.name=AIbrowse fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false','commit','--quiet','-m','test: 合成产品差量拒绝')
+  Reject '来源之后产品差量拒绝' {&$tool -Action CheckOnly -PackageJournal $journal -Qualification EquivalentEvidence -EquivalenceRecord $recordPath}
   SaveJson (Join-Path $scope 'result.json') @{passed=$true;checks=$checks;checkCount=$checks.Count;sourceSha256=(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'output-switch.ps1')).Hash.ToLowerInvariant();testSha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant();realOutputTouched=$false;realProfileTouched=$false;productExecuted=$false;syntheticEvidenceOnly=$true;switchId=$switched.id}
   @{passed=$true;scope=$scope;checks=$checks.Count;syntheticEvidenceOnly=$true}|ConvertTo-Json
 } catch {

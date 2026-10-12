@@ -18,7 +18,8 @@
   先更新受影响正式设计；行为反例红→绿；原始记录存 log/legacy-followup-20261012，通用工具受控。
 - VERIFICATION：相关单元/集成、全局 typecheck/lint/format/build；退出等待/拒绝/批准及迟到结果、
   安全 URL/候选去重/分享规则、Digest 真实 Provider 至多 2 次合成调用（本轮账本独立、保留前轮累计8）。
-  真实 Electron 串行；新的独立并发/安全 Reviewer；最终实际包校验和隔离 profile 启动后才切换 output。
+  真实 Electron 串行；新的独立并发/安全 Reviewer；最终校验实际包及来源绑定，隔离 profile 启动
+  在当前宿主失败后按下述已审工程 REPLAN 验收本地换包，不冒称实际封装运行或安装验收通过。
 - STOP / REPLAN：同路线两轮无新证据即换路；物理条件、产品取舍或安全/数据完整性不能保持时明确报告。
   工程取消路径需有真实生命周期证据，不把“用户同意”泛化为允许丢弃业务写入。失败和旧产物完整保留。
 - DELIVERABLE：Windows x64 未签名内部候选、手动升级；通过后本地保存并正常双远程同步（GitHub先核代理），
@@ -50,6 +51,24 @@
   原生句柄正常 exit 0、同会话 writer 双 null、外层 Job 自然归零，以及前后包摘要不变。
   工作总期限 120 秒、正常关窗 20 秒、失败收口至多 30 秒；强制收口只记 FAIL。18 项恢复/身份/账本
   合成测试通过后独审工具，实际运行须绑定干净提交与新包来源清单；这不替代长期资源验收。
+- 实际 PackageSmoke 的隔离前置失败后，停止该宿主路径，不追加外部会话、注册表或其它隔离方案。
+  新建 synthetic 的句柄实际落在 Codex 包的 `D:/WpSystem/.../LocalCache/Roaming`，与请求的
+  `C:/Users/30910/AppData/Roaming` 同父条件不符，原校验正确拒绝；相同卷编号不等于同父。
+  原 profile/父目录 FileID、SDDL、卷和实际路径均与 manifest 一致，backup/retired 均不存在；
+  未读取业务正文，不宣称逐文件字节审计。失败 journal 只到 manifest/synthetic-created，未保护、
+  激活或启动产品，完整保留在 `package/journal-7cacd772d0ee46baa72771a6e63377bd`。
+- 本地更新的替代证据：旧 FIRST 与新包的 75 载荷成员中 73 个逐字节恒等，仅 AIbrowse.exe 和
+  app.asar 不同；guardian、工具链、构建配置、安装器编译工具不变，安装器源码仅 package 版本输入
+  变化。主程序 PE 的 14 个非资源段及额外数据恒等，54 个资源仅 ASAR integrity 和版本两项变化。
+  新包安全策略与严格 ASAR→构建→当前源码校验通过，新增行为又在完整 production 中实际
+  覆盖挂起、确认、排水、writer 退休及 guardian 闭合。独立 Reviewer 核验差量后可批准**本地可回退
+  内部更新**；实际新封装启动仍为 NOT RUN，不授新的完整发行、安装/升级或真实用户数据运行验收。
+  这是利用未受影响封装证据和当前实证替代失效采集方法，不把失败改记成功、不接纳重定向测试目录。
+- 换包工具增加显式 EquivalentEvidence 入口，要求固定独审记录与新旧包、完整 production 终态、
+  静态校验和原 profile 身份证据逐摘要绑定；保留默认 PackageSmoke 门。包仍绑定已构建的干净
+  `5c7f487b1ab9e1cd7dc4225505823f6616f03476`，后继 HEAD 只允许本文、progress 及 output-switch
+  脚本/合成测试四条路径差量，且实际工作区必须干净；产品、依赖、构建输入有任何差量即拒绝。
+  不因仅文档/换包工具变化重建相同产品，切换前后核全成员摘要，完整保留旧 output 与失败原件。
 
 ### 当前修复结果与证据边界
 
