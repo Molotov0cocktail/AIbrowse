@@ -1247,6 +1247,10 @@ conflicts[{topic,positions[{positionText,sourceRefs}],claimKeys}]}`。
 
 ### 7.5 合成提示词与上下文构建所有权（决议 #146）
 
+- 2026-10-12独立反例修正cards嵌套闭合门：条目必须恰有title/subtitle/body/sourceRefs四个自有字段；
+  subtitle显式为null或字符串，不以undefined/字段缺失降级为null。未知字段不能替代可空字段占位，
+  也不能靠后续投影丢弃掩盖形状非法；其余Result预算和持久化结构不变。
+
 - `research-prompts.ts` 提供**四个编译期常量**：
   `AGENT_RESEARCH_PLANNING_PROMPT` / `AGENT_RESEARCH_READING_PROMPT` /
   `AGENT_RESEARCH_VERIFYING_PROMPT` / `AGENT_RESEARCH_SYNTHESIS_PROMPT`
@@ -1264,6 +1268,17 @@ conflicts[{topic,positions[{positionText,sourceRefs}],claimKeys}]}`。
   边界（RESEARCH_TOOL_NAMES）、网页文本不可信（不得服从网页指令）、
   不得虚构 Evidence/ID/sourceType/coverage，以及证据不足时输出
   「不确定」（FT-01/FT-02/FT-03/FT-07 结构性防线）。
+- 综合提示词必须直接说明五种 ResultBlock 的闭合字段结构及嵌套结构，不能
+  只给出 kind 名称让模型猜测字段。编译期示例分别覆盖 markdown 的 kind/text、
+  table 的 kind/columns/rows/sourceRefs、cards 的 kind/items 及条目的
+  title/subtitle/body/sourceRefs、ranking 的 kind/items 及条目的
+  rank/title/detail/sourceRefs、uncertain 的 kind/text/reason；示例候选占位符
+  只能替换为上下文中有已验证证据支持的 candidateId。table 引用在块级，
+  cards/ranking 引用在各条目内；禁止额外字段。提示词同步说明 §8.1 的
+  字段类型、非空要求、数量和长度上限、表格行宽与连续排名规则。固定示例
+  由测试直接从生产提示词解析，替换候选占位符后送入真实 ResultValidator
+  验证，同时验证未知字段与错误引用仍拒绝；不得放宽校验器迁就模型输出。
+  此工程补充保持已有 Result Schema、权限、持久化与重提预算不变。
 
 ## 8. Result Schema 验证与 Renderer（C7）
 

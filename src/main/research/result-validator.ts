@@ -266,7 +266,13 @@ function checkBlock(
       for (let it = 0; it < itemsRaw.length; it += 1) {
         const item = itemsRaw[it];
         const base = `blocks[${index}].items[${it}]`;
-        if (!isRecord(item) || Object.keys(item).length !== 4) {
+        if (
+          !isRecord(item) ||
+          Object.keys(item).length !== 4 ||
+          Object.keys(item).some(
+            (key) => !['title', 'subtitle', 'body', 'sourceRefs'].includes(key),
+          )
+        ) {
           errors.add(base, '：cards 条目形状非法（仅允许 title/subtitle/body/sourceRefs）');
           return null;
         }
@@ -280,7 +286,7 @@ function checkBlock(
           return null;
         }
         let subtitle: string | null = null;
-        if (item['subtitle'] !== null && item['subtitle'] !== undefined) {
+        if (item['subtitle'] !== null) {
           if (typeof item['subtitle'] !== 'string') {
             errors.add(`${base}.subtitle`, '：必须是字符串或 null');
             return null;

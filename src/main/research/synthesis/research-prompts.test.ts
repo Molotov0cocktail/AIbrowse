@@ -19,6 +19,124 @@ import {
 } from './research-prompts';
 import { SYSTEM_PROMPT } from '../../ai/context-builder';
 import { AGENT_SYSTEM_PROMPT } from '../../ai/agent/agent-context-builder';
+import { validate } from '../result-validator';
+import type { ResearchResultValidationContext } from '../../../shared/types/research';
+
+function synthesisExampleContext(): ResearchResultValidationContext {
+  return {
+    taskId: 'prompt-example-task',
+    candidates: [
+      {
+        id: 'example-candidate',
+        url: 'https://example.test/source',
+        displayUrl: 'https://example.test/source',
+        title: '测试来源',
+        canonicalKey: 'https://example.test/source',
+        scope: 'page',
+        discoveredVia: ['goal-url'],
+        sourceId: null,
+        trust: null,
+        priority: null,
+        lastUsedAt: null,
+        note: null,
+        sortKey: 'example',
+      },
+    ],
+    evidence: [
+      {
+        evidenceId: 'example-evidence',
+        taskId: 'prompt-example-task',
+        captureId: 'example-capture',
+        candidateId: 'example-candidate',
+        sourceId: null,
+        url: 'https://example.test/source',
+        title: '测试来源',
+        accessTime: '2026-10-12T00:00:00.000Z',
+        documentId: 'example-document',
+        contentHash: 'a'.repeat(32),
+        type: 'quote',
+        locator: { kind: 'text', excerpt: '测试摘录' },
+        excerpt: '测试摘录',
+        value: null,
+        verification: 'verified',
+      },
+    ],
+    claims: [],
+    conflicts: [],
+    verificationState: 'unavailable',
+    now: '2026-10-12T00:00:00.000Z',
+    createId: () => '11111111-1111-4111-8111-111111111111',
+  };
+}
+
+function synthesisBlockExamples(): Record<string, unknown>[] {
+  const lines = AGENT_RESEARCH_SYNTHESIS_PROMPT.split('\n').filter((line) =>
+    line.startsWith('{"kind":'),
+  );
+  expect(lines).toHaveLength(5);
+  return lines.map((line) => {
+    const parsed: unknown = JSON.parse(line.replaceAll('<candidateId>', 'example-candidate'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('提示词块示例必须是 JSON 对象');
+    }
+    return parsed as Record<string, unknown>;
+  });
+}
+
+describe('综合提示词示例与真实 ResultValidator 对齐', () => {
+  it('直接解析五种生产示例，可生成通过实际校验的完整结果', () => {
+    const blocks = synthesisBlockExamples();
+    expect(blocks.map((block) => block['kind'])).toEqual([
+      'markdown',
+      'table',
+      'cards',
+      'ranking',
+      'uncertain',
+    ]);
+    const outcome = validate({ title: '结构示例', summary: '', blocks }, synthesisExampleContext());
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.result.blocks).toEqual(blocks);
+  });
+
+  it('示例每种块的额外字段仍整体拒绝，不靠放宽校验通过', () => {
+    const blocks = synthesisBlockExamples();
+    for (let index = 0; index < blocks.length; index += 1) {
+      const modified = blocks.map((block, i) =>
+        i === index ? { ...block, extra: '不允许' } : block,
+      );
+      expect(
+        validate({ title: '结构示例', summary: '', blocks: modified }, synthesisExampleContext())
+          .ok,
+      ).toBe(false);
+    }
+  });
+
+  it('表格示例引用必须有证据，行列必须对齐且 sourceRefs 位于块级', () => {
+    const blocks = synthesisBlockExamples();
+    const table = blocks.find((block) => block['kind'] === 'table');
+    expect(table).toBeDefined();
+    const context = synthesisExampleContext();
+    for (const invalid of [
+      { ...table, sourceRefs: ['unknown-candidate'] },
+      { ...table, rows: [['一', '二', '三']] },
+      { kind: 'table', columns: ['字段'], rows: [['内容']] },
+    ]) {
+      expect(
+        validate(
+          {
+            title: '结构示例',
+            summary: '',
+            blocks: blocks.map((block) => (block['kind'] === 'table' ? invalid : block)),
+          },
+          context,
+        ).ok,
+      ).toBe(false);
+    }
+    expect(
+      validate({ title: '结构示例', summary: '', blocks }, { ...context, evidence: [] }).ok,
+    ).toBe(false);
+  });
+});
 
 const PROMPTS = [
   AGENT_RESEARCH_PLANNING_PROMPT,
