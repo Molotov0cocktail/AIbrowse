@@ -162,7 +162,8 @@ export async function buildMsi(options: BuildOptions): Promise<string> {
     } finally {
       writeFileSync(
         join(scope, `${name}.timing.json`),
-        JSON.stringify({ name, timeoutMs, elapsedMs: performance.now() - started, succeeded }) + '\n',
+        JSON.stringify({ name, timeoutMs, elapsedMs: performance.now() - started, succeeded }) +
+          '\n',
         { flag: 'wx' },
       );
     }
