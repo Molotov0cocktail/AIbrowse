@@ -6,6 +6,17 @@
 
 ### 当前任务与后继
 
+- 2026-10-12用户逐项裁决后启动产品修复和本地更新，baseline829b7a164019af7e5825fce8cbbb34d199790c29、接管干净。
+  退出时在途快照提供主进程可信“停止快照并退出/继续等待”，只有用户确认才强制停止；修复Digest输出协议、
+  Research目标网址入口及无协议IDN支持。用户明确暂留资源增长，只测当前电脑接电；完成其余修复并验证后
+  立即更新本地output，无需再次询问。合同见doc/tasks/legacy-repair.md首节。四项产品修复已完成并获
+  新独立安全/并发审查限定PASS；真实Electron九场完成，退出的原生等待与批准停止、独立写入阻塞、
+  Research空Source/Search实际采集均通过（模型为Fake，完整index/guardian另验）。
+  本轮真实Digest仅一次HTTP401，未生成结果；严格schema修复有前轮真实对照及本轮离线证据，
+  不能宣称新代码当前真实Provider已通过。全量首轮失败及旧工具适配原件保留；最终全量6,896 PASS/
+  3 SKIP、470文件PASS/1 SKIP，typecheck/lint/format及普通build通过。下一动作是完整production和
+  干净0.1.2包验证，再保留旧output并替换。资源旧超限、旧fatal unknown均不关闭。
+
 - 2026-10-12用户追加要求严格验证所有剩余事项并定位根因，已恢复有界诊断。baseline `dedbfdcbdcea2723eb09c4f73c0f1b5810cbe9e8`、接管工作区干净；差量合同和结果矩阵见 `doc/tasks/legacy-repair.md` 首节。三方向并行准备、真实运行串行；不修改真实数据或选定 output。以下上一轮遇难停止为历史状态，诊断不预授修复/发行通过。
   用户明确软件主要用于当前电脑接电环境，无需断电或其它电脑测试；两项排除本轮验收且不作为当前使用阻塞，保留未实测事实。
   已完成 Watch 旧/新 33 项模块对照（旧19 FAIL、当前全通过）、442 项聚焦回归及有来源边界的存储/隐私/语义验证。Research/跨run reasoning 在当前真实服务未复现兼容失败；真实请求累计8次硬止，Digest第7次证实合法JSON缺规定schema、第8次同一请求仅补system结构说明即通过生产Service/validator，**产品prompt尚未修复**。

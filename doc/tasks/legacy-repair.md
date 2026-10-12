@@ -1,5 +1,96 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 用户裁决后的产品修复与本地更新合同（2026-10-12）
+
+- TASK / BASELINE：用户逐项授权修复退出快照、Digest 输出协议、Research 目标网址入口及无协议 IDN；
+  baseline `829b7a164019af7e5825fce8cbbb34d199790c29`，接管工作区干净。
+- GOAL / ACCEPTANCE：四项按实际行为通过甄别测试、相关回归、真实 Electron 与必要独立审核；
+  修复完成后立即将完整程序、安装器和来源身份更新到本地 output，不再另询问已获授权的更新。
+- FIXED DECISIONS：退出有在途快照时由可信主进程原生界面提供“停止快照并退出 / 继续等待”；
+  未确认不得强制停止。批准只中断只读网页快照，仍等待业务操作结束、持久化资源和 guardian 正常退休，
+  不用 app.exit 或伪造原生 Promise fulfilled 绕过数据库关闭。具体取消/实体退休手段按工程调查修订。
+- INVARIANTS：不降低现有 JSON/引用/数据预算，不扩大网页/模型系统能力，不把目标网址写成永久信源，
+  保持 URL 和 Source 分享/blocked 语义；用户文本不能改写系统提示。保留当前品牌深浅模式及旧 Watch
+  页面归属修复，不改真实用户记录或删除旧错误事件。
+- NON-GOALS：用户明确暂留资源增长；旧 fatal 历史原因保留 unknown，不新增长测或重开调查。
+  仅当前电脑接电，不测断电或其它电脑，不启动 Stage8，不公开发布或自动更新。
+- IMPLEMENTATION：Digest/IDN 与 Research 独立文件边界并行，主协调实现退出并管理版本/打包。
+  先更新受影响正式设计；行为反例红→绿；原始记录存 log/legacy-followup-20261012，通用工具受控。
+- VERIFICATION：相关单元/集成、全局 typecheck/lint/format/build；退出等待/拒绝/批准及迟到结果、
+  安全 URL/候选去重/分享规则、Digest 真实 Provider 至多 2 次合成调用（本轮账本独立、保留前轮累计8）。
+  真实 Electron 串行；新的独立并发/安全 Reviewer；最终实际包校验和隔离 profile 启动后才切换 output。
+- STOP / REPLAN：同路线两轮无新证据即换路；物理条件、产品取舍或安全/数据完整性不能保持时明确报告。
+  工程取消路径需有真实生命周期证据，不把“用户同意”泛化为允许丢弃业务写入。失败和旧产物完整保留。
+- DELIVERABLE：Windows x64 未签名内部候选、手动升级；通过后本地保存并正常双远程同步（GitHub先核代理），
+  旧 output 在项目受控历史目录保留再切换，新版本来源清楚且可回退。实际结果写本节与 progress。
+
+### 本轮工程验收修订
+
+- 全量首轮保留 `log/legacy-followup-20261012/full-tests-001.log`（实际目录以最终索引为准）：
+  471 文件中 462 PASS / 8 FAIL / 1 SKIP，6,899 项中 6,868 PASS / 29 FAIL / 2 SKIP；
+  测试启动时安全修复仍在产生红态，另有旧工具夹具接线和历史机器证据缺失；不把该场称为冻结候选通过。
+  后续冻结后只再执行一次完整回归，失败先定位再决定受影响验证。
+- 旧 snapshot 测试改为观察生产 `AbortSignal.any` 的实际信号，继续验证监听器从 1 归零、取消、
+  双读者隔离和迟到结果；main-failure 测试接入生产 NormalQuit 构造器及当前退出回调；两个旧数据库
+  测试只补 `mkdtemp` 父目录创建；保存框合成 UIA 类型改用独立 namespace，避免误载系统同名类型。
+  上述均不修改产品或缩小行为断言，独立复核 5 文件 55 项通过。集中本地开发环境后，ESLint 把
+  `.local-dev/temp` 的合成非法 JS/TS 当作源码，产生 46 项错误；将本已 gitignored 的 `.local-dev`
+  和 `output` 加入与 out/log 同类的生成目录排除，不关闭源码检查规则。
+- H3a 单元截止测试采用受控单调时钟，在真实 transport close 门将时钟推进至原 100ms deadline，
+  调用未改生产判定，仍断言唯一首轮请求、替补未尝试、未闭合请求及同一截止。生产阈值和真实采集
+  预算均未变化；旧普通 Error 的精确历史抛点无栈，不能宣称已恢复唯一原因。独审后另一旧冻结身份
+  用例出现 EVIDENCE_WRITE_FAILED（19 PASS / 1 FAIL，原件 reviewer-h3a-clock-green.txt 文件名虽
+  含 green 但实际是 FAIL），新增透明文件操作诊断与失败留证，避免不明原因重复运行。
+- 四份已清理的历史 physical-full-transfer `fixture-proof.json` 是固定场次机器证据，不能伪造为可移植夹具。
+  对其原字节/摘要的检查改为显式历史审计：设置 `AIBROWSE_VERIFY_HISTORICAL_PROOFS=1` 后执行该测试文件；
+  原 65,536 字节上限和固定 SHA256 断言完整保留，启用后缺失仍失败。默认记录该项 NOT RUN，
+  其余四项纯校验器反例照常运行。这是验收类别修订，不是等价替代丢失原件，更不重新授予历史物理场 PASS。
+- 实际发行包采用窄 PackageSmoke：临时同父目录 rename 隔离 profile，记录原目录 FileID/SDDL，
+  在 finally 中按原实体恢复；不复制替代真实数据。可信 UI 就绪后一次普通关窗，分别验证精确 main/guardian
+  原生句柄正常 exit 0、同会话 writer 双 null、外层 Job 自然归零，以及前后包摘要不变。
+  工作总期限 120 秒、正常关窗 20 秒、失败收口至多 30 秒；强制收口只记 FAIL。18 项恢复/身份/账本
+  合成测试通过后独审工具，实际运行须绑定干净提交与新包来源清单；这不替代长期资源验收。
+
+### 当前修复结果与证据边界
+
+- 退出：新增主进程 NormalQuitCoordinator，正常关窗与 app.quit 共用一次 drain；可信原生弹窗默认和 ESC
+  均为继续等待，再次关窗可重新选择。批准停止才停止新快照并取消精确请求；已派发原生请求只在对应
+  WebContents 确认销毁后退休应用侧等待，原生 Promise 仍 pending 时如实记录。正常写入/usage/workspace
+  继续等待，main failure 保留独立接管，guardian 门不跳过。旧实际竞态的触发机制已证，旧 d79 场唯一
+  触发者仍 unknown，不把新成功倒推为历史唯一根因。
+- 摘要：把闭合 sections/eventIds/explanation JSON 结构、字段顺序、引用范围和原长度预算加入生产
+  system prompt；校验器保持严格。上一轮同请求只补 schema 的真实 Provider 对照支持根因，本轮生产
+  prompt 真实复验 `log/legacy-diagnosis-20261012/models/repair-live-001` 仅 1 次请求，返回 HTTP 401
+  invalid-key，未得到输出，不能记当前在线生成通过。配置/凭据/Local State 原摘要不变，不重复调用
+  无效凭据；前轮 8 次请求与本轮 1 次均保留，离线协议和校验器回归通过。
+- Research：目标中的显式 HTTP(S) 网址进入有界候选，去重后优先保留；已有信源的 disabled/blocked、
+  分享及 trust 规则仍生效，并在读取前复验；无存量信源的网址不自动收藏或获得可信标记。纯内存/SQLite
+  反例覆盖禁止规则、IDN、query/fragment 去重与 transfer 冷读；零 Sources/Search 的真实 Electron
+  捕获产生 1 candidate / 1 capture / 1 evidence / 1 claim。该场模型为 FakeProvider，只证明入口、
+  真实页面采集和持久化联通，不冒充当前真实模型成功。
+- 地址栏：支持无协议 Unicode 域名和 Unicode 点号，经 WHATWG 规范化为 punycode；保留搜索词语义。
+  独审发现的 user:password@authority 搜索泄露反例已修复，含凭据的地址先安全拒绝，不导航/搜索，
+  不再把原地址或 tabId 写入无效输入日志；普通邮箱和路径中的 @ 保持原语义。原始隐私红态与最终
+  56 项地址/安全回归及独立 81 项结果全部保留。
+- 真实 Electron 9 场：`shutdown/matrix-acb9dec9753b439f8d3594541de48552`，4,800.9894ms、
+  exit 0 / Job 0、completed true。原脚本同 tick / setImmediate 销毁竞态均先观察到 pending，再经
+  明确批准闭合；系统按钮由固定 PID 的测试自动化点击（先等待、再次关闭后停止），不声称真人点击。
+  其余含活页面和写入阻塞的受控 Promise 场为补充反例；整个矩阵使用实际相关产品模块，未执行完整
+  index/guardian，因此完整 production 和新发行包另验。独审后继逐摘要复核 99 个绑定源码：98 个
+  恒等，唯一变化 url.ts 的地址栏解析/凭据拒绝未进入该场 bundle；实际打入的 URL 日志脱敏函数未改，
+  因此限定复用这九场，index 的退出整合和日志修复另由完整场覆盖。completed.json SHA256 为
+  `7712fe8359147c2f71254b547d7d6f51e915373dc48ad6223ff6355dee03f7ae`。
+- 独立安全/并发审查已对产品差量给出限定 PASS，原件 `independent-review.md`；后继工具准入与
+  最终包运行分开判断。先前 UI 深浅双模式、Watch locator 和 reasoning 修复继续包含在交付范围。
+  用户明确暂留资源增长；旧 60.9178/h 超限及分配根因 unknown 不关闭，不新增长时资源测试。
+- 最终全量 `full-tests-final.log`：470 文件 PASS / 1 SKIP，6,896 项 PASS / 3 SKIP，550.23 秒、exit 0。
+  三个 skip 含原有条件项与本轮显式历史 proof 审计，不代表这些场景已实测。H3a 证据写入失败未再现，
+  透明文件诊断保留，旧精确 errno 仍 unknown。该场启动后 20 秒，仅 H3a 测试诊断的路径参数筛选
+  做了隐私修正（不改产品/断言），在进入该文件前冻结；最终文件 SHA256 为
+  `6bfce13a8b3487974ae07047cd373523caa521909fb650cf88310599bec1f855`，时序原件
+  `full-test-diagnostic-revision.json`。全局 typecheck/lint/format 最终 `*-final-002.log` 均 exit 0，
+  普通 build `build-ordinary.log` exit 0。后续完整 production 与干净发行包仍须单独核验。
+
 ## 后继严格验证与根因诊断合同（2026-10-12）
 
 - TASK / GOAL：用户新指令要求严格测试上一轮列出的剩余事项，确认是否成立并定位根因；本轮恢复有界诊断，替代上一轮停止状态。先验证与归因，不扩大为新产品功能或发布任务。
