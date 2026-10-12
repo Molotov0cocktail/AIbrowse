@@ -216,8 +216,13 @@ export function parseBingSearchResults(snapshot: PageSnapshot | null): BingParse
   return { results, warnings, hasContent };
 }
 
+type SearchBrowser = Pick<
+  BrowserController,
+  'createTab' | 'closeTab' | 'activateTab' | 'getTabs' | 'getActiveTab' | 'getPageSnapshot'
+>;
+
 export interface BingSearchProviderOptions {
-  browser: BrowserController; // 唯一浏览器通道（构造注入，不 import Electron）
+  browser: SearchBrowser; // Only task-tab lifecycle and read capabilities are needed.
   timeoutMs?: number; // ready 等待超时（缺省 15 秒，§6.2；测试可注入）
   pollIntervalMs?: number; // 状态轮询间隔（缺省 50ms；测试可注入）
   now?: () => number; // 注入时钟（确定性测试）
@@ -247,7 +252,7 @@ type WaitOutcome = 'ready' | 'error' | 'missing' | 'aborted' | 'timeout';
 
 export class BingSearchProvider implements SearchProvider {
   readonly id = 'bing';
-  private readonly browser: BrowserController;
+  private readonly browser: SearchBrowser;
   private readonly timeoutMs: number;
   private readonly pollIntervalMs: number;
   private readonly now: () => number;

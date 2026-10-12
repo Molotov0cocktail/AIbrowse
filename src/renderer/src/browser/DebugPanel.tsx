@@ -3,6 +3,7 @@ import type { PageSnapshot } from '../../../shared/types/browser';
 
 interface DebugPanelProps {
   activeTabId: string | null;
+  onClose: () => void;
 }
 
 // 采集状态：区分「尚未读取」/「读取中」/「IPC 异常」/「完成」；null 快照 = L3（tab 不可用）
@@ -22,9 +23,8 @@ const DEGRADED_LABEL: Record<PageSnapshot['meta']['degraded'], string> = {
 // 「读取当前网页」→ 经 bridge 调用 page.snapshot（UI → BrowserController 分层），
 // 展示当前活动 Tab 的 PageSnapshot JSON + degraded 等级 + warnings（§4：用户能看出采集受限）。
 // 快照是点时刻尽力采样（§8.5），面板保留最近一次结果直至下一次读取。
-export function DebugPanel({ activeTabId }: DebugPanelProps) {
+export function DebugPanel({ activeTabId, onClose }: DebugPanelProps) {
   const [capture, setCapture] = useState<CaptureState>({ status: 'idle' });
-  const [collapsed, setCollapsed] = useState(false);
 
   const readSnapshot = (): void => {
     if (activeTabId === null) {
@@ -63,35 +63,33 @@ export function DebugPanel({ activeTabId }: DebugPanelProps) {
         <button
           type="button"
           className="debug-toggle"
-          aria-label={collapsed ? '展开调试面板' : '收起调试面板'}
-          onClick={() => setCollapsed(!collapsed)}
+          aria-label="关闭页面快照调试"
+          onClick={onClose}
         >
-          {collapsed ? '展开' : '收起'}
+          关闭
         </button>
       </div>
-      {!collapsed && (
-        <div className="debug-panel-body">
-          {capture.status === 'error' && <p className="debug-error">{capture.message}</p>}
-          {capture.status === 'idle' && (
-            <p className="debug-hint">点击「读取当前网页」采集活动标签页的结构化快照</p>
-          )}
-          {capture.status === 'done' && capture.snapshot === null && (
-            <p className="debug-error">快照不可用（L3：标签页不存在或已销毁）</p>
-          )}
-          {snapshot !== null && (
-            <>
-              {snapshot.meta.warnings.length > 0 && (
-                <ul className="debug-warnings" aria-label="采集警告">
-                  {snapshot.meta.warnings.map((warning) => (
-                    <li key={warning}>{warning}</li>
-                  ))}
-                </ul>
-              )}
-              <pre className="debug-json">{JSON.stringify(snapshot, null, 2)}</pre>
-            </>
-          )}
-        </div>
-      )}
+      <div className="debug-panel-body">
+        {capture.status === 'error' && <p className="debug-error">{capture.message}</p>}
+        {capture.status === 'idle' && (
+          <p className="debug-hint">点击「读取当前网页」采集活动标签页的结构化快照</p>
+        )}
+        {capture.status === 'done' && capture.snapshot === null && (
+          <p className="debug-error">快照不可用（L3：标签页不存在或已销毁）</p>
+        )}
+        {snapshot !== null && (
+          <>
+            {snapshot.meta.warnings.length > 0 && (
+              <ul className="debug-warnings" aria-label="采集警告">
+                {snapshot.meta.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            )}
+            <pre className="debug-json">{JSON.stringify(snapshot, null, 2)}</pre>
+          </>
+        )}
+      </div>
     </div>
   );
 }

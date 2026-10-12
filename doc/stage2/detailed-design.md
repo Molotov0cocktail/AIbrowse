@@ -579,20 +579,24 @@ export const SYSTEM_PROMPT: string = `你是 AIbrowse 的网页共读助手，�
 
 ```
 ┌─────────────────────────────────────────────┐
-│ Toolbar / TabBar（chrome，既有，不变）        │
+│ TabBar / Toolbar（默认两行紧凑 chrome）      │
 ├──────────────────────────────┬──────────────┤
 │ 内容容器（flex:1）            │ AI 面板       │
 │ = WebContentsView bounds 区  │ 定宽 380px，  │
 │                              │ 可收起        │
-├──────────────────────────────┴──────────────┤
-│ DebugPanel（既有底部面板，保留，不变）        │
-└─────────────────────────────────────────────┘
+└──────────────────────────────┴──────────────┘
 ```
 
 ### 11.2 bounds 协调（既有机制升级，决议 Q6）
 
 - `useContentBounds` 从「chrome 高度 → 内容区矩形」升级为**测量内容容器元素两维矩形**
-  （ResizeObserver + 防抖 50ms，通道/契约不变：`ui:content-bounds` 全量覆盖式）；
+  （React layout effect 在布局提交时直接上报，ResizeObserver、window resize 与原生 details toggle 补充观察，
+  相同矩形去重；通道/契约不变：`ui:content-bounds` 全量覆盖式）；
+  2026-10-12 移除 renderer 的 50ms 定时防抖：原版真实打开侧栏后，DOM 已缩窄而原生 View 尚覆盖侧栏；
+  仅移除定时器仍有原生 View 与 DOM 错配，故提交时同步测量并保留观察兜底，避免依赖后台 renderer 帧调度。原件与红态保留，不能据此反推所有
+  历史错配的唯一根因。主进程仍校验并限幅 bounds，权限及网页覆盖区的 oracle 不变。
+
+- 2026-10-12 默认不挂载 DebugPanel；经更多菜单按需在顶部展开，关闭后零占位。AI 侧栏仍定宽 380px。
   面板开/关、窗口缩放、DebugPanel 收起都经同一路径更新活动 view bounds。
 - 面板定宽 380px（常量）；开/关切换即时生效（view bounds 直接跳到终值，无动画——
   WebContentsView 非 DOM 元素，不做过渡）。

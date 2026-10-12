@@ -133,8 +133,10 @@ body {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 16px 12px;
+  gap: 5px;
+  min-height: 43px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
 }
 
 .nav-button {
@@ -177,10 +179,12 @@ body {
 
 .tab-bar {
   display: flex;
+  flex: 1;
+  min-width: 0;
   overflow-x: auto; /* 标签多时横向滚动，chrome 高度保持恒定（bounds 测量稳定） */
   scrollbar-width: thin;
-  gap: 4px;
-  padding: 0 16px;
+  gap: 2px;
+  padding: 0;
 }
 
 .tab {
@@ -188,16 +192,18 @@ body {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: 224px;
-  min-width: 120px;
+  max-width: 210px;
+  min-width: 96px;
   flex-shrink: 0;
-  padding: 9px 12px;
+  height: 33px;
+  padding: 5px 9px;
   border: 1px solid transparent;
   border-bottom: none;
   border-radius: 9px 9px 0 0;
   color: var(--muted);
   cursor: default;
   user-select: none;
+  outline-offset: -2px;
 }
 
 .tab:hover {
@@ -238,6 +244,26 @@ body {
 .tab-close:hover {
   background: var(--accent);
   color: var(--text);
+}
+
+.tab-strip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 36px;
+  padding: 3px 8px 0;
+}
+
+.new-tab-button {
+  flex: 0 0 auto;
+  width: 31px;
+  height: 31px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
 }
 
 .spinner {
@@ -765,7 +791,7 @@ body {
 }
 
 .debug-panel-body {
-  max-height: 220px;
+  max-height: 190px;
   overflow: auto;
   border-top: 1px solid var(--border);
   padding: 8px;
@@ -1924,45 +1950,6 @@ body {
   color: var(--on-primary);
 }
 
-/* Shared workspace identity, controls and reading rhythm. */
-.workspace-bar {
-  display: flex;
-  align-items: baseline;
-  gap: 20px;
-  padding: 12px 20px 6px;
-}
-
-.brand-lockup {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  flex-shrink: 0;
-}
-
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  background: var(--primary);
-  color: var(--on-primary);
-}
-
-.brand-name {
-  font-size: 16px;
-  letter-spacing: -0.5px;
-  font-weight: 650;
-}
-
-.brand-caption {
-  margin-left: 3px;
-  padding-left: 12px;
-  border-left: 1px solid var(--border-strong);
-  color: var(--muted);
-  font-size: 11px;
-}
-
 .ui-icon {
   display: inline-block;
   flex-shrink: 0;
@@ -1986,7 +1973,6 @@ body {
 }
 
 .nav-controls,
-.page-actions,
 .workspace-nav {
   display: flex;
   align-items: center;
@@ -1994,14 +1980,13 @@ body {
   flex-shrink: 0;
 }
 
-.nav-controls .toolbar-label,
-.page-actions .toolbar-label {
+.nav-controls .toolbar-label {
   display: none;
 }
 
 .workspace-nav {
   border-left: 1px solid var(--border);
-  padding-left: 12px;
+  padding-left: 7px;
 }
 
 .workspace-nav .nav-button[aria-pressed='true'] {
@@ -2013,14 +1998,56 @@ body {
 .address-field {
   display: flex;
   align-items: center;
-  min-width: 80px;
+  min-width: 160px;
   flex: 1;
-  padding: 0 10px;
+  height: 34px;
+  padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
   color: var(--muted);
   box-shadow: var(--shadow-card);
+}
+
+.ai-toggle {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 650;
+}
+
+.ai-toggle:hover,
+.ai-toggle[aria-pressed='true'] {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 84%, var(--surface));
+  color: var(--on-primary);
+}
+
+.tools-tray {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: 38px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.tools-tray[hidden] {
+  display: none;
+}
+
+.tools-tray button {
+  min-height: 28px;
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+.tools-tray button[aria-pressed='true'] {
+  border-color: var(--brand);
+  background: var(--accent);
+  color: var(--brand);
 }
 
 .address-field:focus-within {
@@ -2444,10 +2471,6 @@ body {
     padding: 0 7px;
   }
 
-  .toolbar {
-    gap: 8px;
-  }
-
   .watch-workspace {
     padding: 24px;
   }
@@ -2463,13 +2486,22 @@ body {
 }
 
 @media (max-width: 860px) {
-  .workspace-nav .toolbar-label,
-  .brand-caption {
+  .workspace-nav .toolbar-label {
     display: none;
   }
 
-  .workspace-bar {
-    gap: 12px;
+  .workspace-nav .nav-button {
+    width: 32px;
+    padding: 0;
+  }
+
+  .toolbar {
+    gap: 3px;
+    padding-inline: 5px;
+  }
+
+  .address-field {
+    min-width: 120px;
   }
 }
 

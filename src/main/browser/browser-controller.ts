@@ -88,11 +88,33 @@ export class BrowserControllerImpl implements BrowserController {
       ownerWindow: options.ownerWindow,
       session: options.sessionManager.getSession(),
       onChanged: () => this.pushState(),
+      isUserTabInteractive: (tabId) =>
+        !this.disposed &&
+        !this.snapshotShutdown &&
+        this.contentVisible &&
+        this.activeTabId === tabId,
+      onUserOpenTab: (_sourceTabId, url, background) => {
+        void this.createTabInternal(url, { background }).catch(() => {
+          logWarn('browser', '用户链接新标签页创建失败');
+        });
+      },
     });
     this.pageReader = new PageReader();
   }
 
   async createTab(url?: string): Promise<TabInfo> {
+    return this.createTabInternal(url);
+  }
+
+  /** Main-only task creation; task pages never receive user popup routing. */
+  async createTaskTab(url: string): Promise<TabInfo> {
+    return this.createTabInternal(url, { taskOwned: true });
+  }
+
+  private async createTabInternal(
+    url?: string,
+    options: { taskOwned?: boolean; background?: boolean } = {},
+  ): Promise<TabInfo> {
     this.assertAlive();
     const deferInitialBlankLoad = url === undefined || url === '';
     let target = url ?? 'about:blank';
@@ -101,9 +123,15 @@ export class BrowserControllerImpl implements BrowserController {
       logWarn('browser', 'createTab 收到空 URL，创建空白标签页');
       target = 'about:blank';
     }
-    const entry = this.tabManager.createTab(target, { deferInitialBlankLoad });
-    this.activeTabId = entry.info.id;
-    this.applyActiveVisual();
+    this.tabManager.clearPopupGestures();
+    const entry = this.tabManager.createTab(target, {
+      deferInitialBlankLoad,
+      allowUserPopupRouting: options.taskOwned !== true,
+    });
+    if (options.background !== true) {
+      this.activeTabId = entry.info.id;
+      this.applyActiveVisual();
+    }
     // Materialize an implicit blank view on its first DOM operation. Explicit
     // URLs, including about:blank, keep their existing real-load behavior.
     if (!deferInitialBlankLoad) void this.startLoad(entry, target, 'navigation');
@@ -112,7 +140,7 @@ export class BrowserControllerImpl implements BrowserController {
       `已创建标签页（tabId=${redactTabIdForLog(entry.info.id)}，url=${redactUrlForLog(target)}）`,
     );
     this.pushState();
-    return this.toTabInfo(entry, true);
+    return this.toTabInfo(entry, this.activeTabId === entry.info.id);
   }
 
   /** Main-only ownership observation; not part of the BrowserController tool interface. */
@@ -159,6 +187,7 @@ export class BrowserControllerImpl implements BrowserController {
       return false;
     }
     if (this.activeTabId === tabId) return true; // 幂等
+    this.tabManager.clearPopupGestures();
     this.activeTabId = tabId;
     this.applyActiveVisual();
     this.pushState();
@@ -350,15 +379,20 @@ export class BrowserControllerImpl implements BrowserController {
         reason: '元素所属的快照已过期（页面已导航或刷新），请重新读取页面',
       };
     }
-    const norm = await this.pageReader.click(
-      entry.view.webContents,
-      elementId,
-      allowedKind,
-      expectedDocumentId,
-    );
-    return norm.ok
-      ? { ok: true, tag: norm.tag, text: norm.text }
-      : { ok: false, errorCode: norm.errorCode, reason: norm.reason };
+    const restorePopups = this.tabManager.suppressUserPopups(tabId);
+    try {
+      const norm = await this.pageReader.click(
+        entry.view.webContents,
+        elementId,
+        allowedKind,
+        expectedDocumentId,
+      );
+      return norm.ok
+        ? { ok: true, tag: norm.tag, text: norm.text }
+        : { ok: false, errorCode: norm.errorCode, reason: norm.reason };
+    } finally {
+      restorePopups();
+    }
   }
 
   async fillElement(
@@ -388,15 +422,20 @@ export class BrowserControllerImpl implements BrowserController {
         reason: '元素所属的快照已过期（页面已导航或刷新），请重新读取页面',
       };
     }
-    const norm = await this.pageReader.fill(
-      entry.view.webContents,
-      elementId,
-      text,
-      expectedDocumentId,
-    );
-    return norm.ok
-      ? { ok: true, tag: norm.tag, type: norm.type }
-      : { ok: false, errorCode: norm.errorCode, reason: norm.reason };
+    const restorePopups = this.tabManager.suppressUserPopups(tabId);
+    try {
+      const norm = await this.pageReader.fill(
+        entry.view.webContents,
+        elementId,
+        text,
+        expectedDocumentId,
+      );
+      return norm.ok
+        ? { ok: true, tag: norm.tag, type: norm.type }
+        : { ok: false, errorCode: norm.errorCode, reason: norm.reason };
+    } finally {
+      restorePopups();
+    }
   }
 
   async scrollTab(tabId: string, dy: number): Promise<ScrollActionResult> {
@@ -422,10 +461,15 @@ export class BrowserControllerImpl implements BrowserController {
       return { ok: false, reason: '标签页已销毁' };
     }
     // scroll 无 elementId 绑定：作用于当前文档本身，不存在陈旧元素引用问题
-    const norm = await this.pageReader.scroll(wc, dy);
-    return norm.ok && norm.viewport !== undefined
-      ? { ok: true, viewport: norm.viewport }
-      : { ok: false, reason: norm.reason ?? '页面滚动失败' };
+    const restorePopups = this.tabManager.suppressUserPopups(tabId);
+    try {
+      const norm = await this.pageReader.scroll(wc, dy);
+      return norm.ok && norm.viewport !== undefined
+        ? { ok: true, viewport: norm.viewport }
+        : { ok: false, reason: norm.reason ?? '页面滚动失败' };
+    } finally {
+      restorePopups();
+    }
   }
 
   dispose(): void {
@@ -490,6 +534,7 @@ export class BrowserControllerImpl implements BrowserController {
   setContentVisible(visible: boolean): void {
     const next = visible === true;
     if (next === this.contentVisible) return;
+    this.tabManager.clearPopupGestures();
     this.contentVisible = next;
     logInfo('browser', `内容可见性切换（contentVisible=${String(next)}）`);
     this.applyActiveVisual();

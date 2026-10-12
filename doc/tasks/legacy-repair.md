@@ -1,5 +1,64 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 浏览器空间与网页链接修复合同（2026-10-12）
+
+- TASK / BASELINE：用户要求收紧常驻 UI、实际查看至少十款同类浏览器界面，并修复 Bing 搜索结果无法打开；
+  基线 `e32ea88a942dc3766ae793f3985a760e3cda7aca`，接管工作区干净。
+- GOAL / SCOPE：浏览器顶部收敛为标签与地址导航两行，默认快照调试区零占位，AI 入口保持直接可达；
+  低频设置按需展开。普通网页链接、目标新标签及工作区返回浏览路径正常可用。
+  范围为 renderer 浏览器布局、主窗口菜单、BrowserController/TabManager 导航与对应测试/工具。
+- INVARIANTS：保留原生窗口控制、所有既有功能、本地数据恢复告警、L2 确认可达性及 WebContentsView bounds；
+  远程页面无 preload/Node/系统能力。原生 window.open 仍拒绝，只允许受控路由合法普通链接；
+  AI 交互不得旁路权限，Research/Watch 任务 Tab 不得产生未归属子 Tab。不得开放任意协议、下载或外部程序。
+- PLAN / ORACLE：先记录原版真实 Electron 布局；浏览器调研记录来源与实际看见的界面；链接缺陷先红后绿。
+  默认 renderer chrome 高度目标不超过 86 CSS px，底部默认零占位；两种主题及 1280×800、1100×760、
+  800×600 受影响布局/边界/入口验证。导航采用真实 Electron 合成链接（同页、新页、后台页、危险协议及任务隔离），
+  再对 Bing→bilibili 做一次有界在线复验，不把网站网络失败混同于链接分派失败。
+- ACCEPTANCE：适用聚焦/全量、typecheck/lint/format/build、真实 UI/导航验证及新的独立安全审核；
+  有效包重新构建与校验后按既有授权更新 output，保留旧包。原始证据留 log，不入 Git。
+- STOP / REPLAN：同一路径连续两轮无新增证据则换方案；禁止降低安全边界或以描述冒充实际看图。
+  不新增 Stage8 产品能力，不调用真实 Provider，不重开未受影响的资源长测和历史未知根因。
+
+### 十款界面调研与布局依据
+
+已在隔离 Electron 查看器显示公开参考图，并逐张查看实际渲染截图；成功索引为
+`log/browser-ux-20261012/references-1791796545252/index.json`。这证明参考图的视觉检查，
+不声称安装或交互测试了十个浏览器，也不把截图年代/裁切当成当前全部功能。查看器源码在
+`tools/browser-ui-reference/`，Provider 0；失败原件及累计 32 个允许主文档请求、3 个拒绝附属请求保留。
+
+| 产品与来源                                                                                    | 实际看见的布局及本次采用依据                                            |
+| --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [Chrome](https://www.google.com/chrome/)                                                      | 标签及窗口按钮一行、地址导航一行，无独立品牌横幅；采用紧凑两层。        |
+| [Edge](https://www.microsoft.com/en-us/edge/features/vertical-tabs)                           | 左侧标签明确选中态，地址仍在顶部；保留清楚的标签身份，不新增宽侧栏。    |
+| [Firefox](https://support.mozilla.org/en-US/kb/get-started-firefox-overview-main-features)    | 标签与地址两层、可选书签行、低频操作在右端；默认不再重复铺开低频功能。  |
+| [Safari](https://www.apple.com/safari/)                                                       | 标签组与页面分层，选中态克制；工作区入口明确但不抢网页。                |
+| [Opera](https://www.opera.com/features/opera-ai)                                              | 紧凑顶栏、窄工具轨道与右侧 AI 对话并置；AI 按需打开。                   |
+| [Brave](https://support.brave.app/hc/en-us/articles/5181998802061-How-do-I-use-Brave-Sidebar) | 窄单列工具图标、网页保有主要面积；信源/研究/监控采用小入口。            |
+| [Vivaldi](https://help.vivaldi.com/desktop-sr/panels-sr/panels/)                              | Workspace 与标签同排，面板通过窄图标栏开合；合并重复全局栏。            |
+| [Arc](https://www.appsntips.com/home/arc-browser-review-top-features/)                        | 地址、快捷站点、标签、空间集中一侧；借鉴入口聚合，不照搬横向占位。      |
+| [Zen](https://docs.zen-browser.app/user-manual/compact-mode)                                  | 侧栏集成地址与标签，具 Compact 菜单；辅助工具收起，核心导航仍固定可达。 |
+| [Floorp](https://docs.floorp.app/docs/features/panel-sidebar/)                                | 顶部两层、右侧窄轨道及可关闭面板；关闭辅助内容后归还网页空间。          |
+
+构建/安装工具链未改变；本轮候选更新采用当前 UI、导航、回归、静态包绑定及独审证据，复用未变封装与
+运行时的既有同机证据。旧宿主 profile 路径重定向导致 packaged 启动未执行的事实继续 NOTRUN；
+新换包 scope 只替换不相关的旧 Provider 场次检查，保留来源、完整新旧文件树、证据绑定和回退门。
+本轮调度请求分别为导航 `gpt-6-astra/xhigh`、实现 `gpt-5.6-sol/high`、调研 `gpt-6-astra/high`。
+两次新 Reviewer spawn 均被平台 thread limit 拒绝，因此由未参与产品实现的调研 Agent 独立审查候选代码；
+既有 Agent 调度仍为 Astra/high，工具未回显 actual。其外部图像研究经历不替代安全代码核验。
+
+全量回归实际 6970 PASS/1 FAIL/3 SKIP，唯一失败为未修改的会话中断测试发生 index rename EPERM；
+原四个断言单独一次 4 PASS，既有 Windows 外部文件锁控制一次 1 PASS。业务产品与测试均未加重试或降低断言。
+原场 `afterAll` 删除临时目录、未记录绝对路径，故真实占用者与历史唯一根因仍 unknown，不能声称已恢复现场。
+组合 oracle 仅用原四断言补齐缺失的一项，6971 PASS/3 SKIP，另外三项旧 PASS 与既有锁对照不重复计数；
+原全量 exit1 保留。新的 UI/键盘/工作区测试另列聚焦结果。此受影响范围证据复用须独审，不能自动判绿。
+
+产品差量及组合证据已获独立 PASS，报告 `log/browser-ux-20261012/product-review.md`；191 独立测试通过。
+TabBar 子按钮 Enter/Space 冒泡缺陷红 4 FAIL/2 PASS、修后 6 PASS；App 返回浏览器旧版 10 FAIL，修后 12 PASS。
+最终 UI `log/ui-refresh-20261012/20261012T093349920Z-c7dd21f05e4d4252a7cb71c6ff6c19d8/` 的 78 场通过，
+与当前 322 产品源码/5 构建产物摘要一致；1280×800 默认 chrome 217.33→79.67 CSS px，网页高度 582.67→720.33。
+正常/新页/Ctrl 后台/无手势/危险协议/POST/任务/AI 八场加真实 Bing→bilibili 成功，摘要见本轮 `aggregate.json`；
+iframe 物理输入未送达为 NOTRUN，两原场 exit1 保留。打包启动仍 NOTRUN，不将开发 Electron GUI 等同于包启动。
+
 ## 新临时 DeepSeek 凭据严格实测合同（2026-10-12）
 
 - TASK / BASELINE：用户明确授权新临时凭据、多场景严格实测和缺陷修复；基线

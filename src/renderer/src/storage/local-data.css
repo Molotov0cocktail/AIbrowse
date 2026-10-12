@@ -1,14 +1,35 @@
 .local-data {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: min(360px, 42vw);
   padding: 0;
   margin-left: auto;
   font-size: 12px;
   color: var(--muted);
 }
+.local-data:has(details[open]) {
+  order: 2;
+  flex: 1 0 100%;
+  max-width: 100%;
+}
+.local-data:has(details[open]) details,
+.local-data:has(details[open]) .local-data-body {
+  width: 100%;
+  max-width: 100%;
+}
+.local-data > p {
+  max-width: 360px;
+  margin: 1px 6px 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .local-data summary {
   cursor: pointer;
   width: fit-content;
   margin-left: auto;
-  padding: 5px 10px;
+  min-height: 29px;
+  padding: 5px 8px;
   border-radius: 6px;
 }
 .local-data summary:hover {
@@ -16,6 +37,7 @@
   color: var(--text);
 }
 .local-data-body {
+  width: min(460px, calc(100vw - 24px));
   max-height: 260px;
   overflow: auto;
   padding: 12px;
@@ -25,7 +47,7 @@
   background: var(--surface);
   color: var(--text);
 }
-.local-data p {
+.local-data-body p {
   margin: 6px 0;
 }
 .local-data [role='alert'] {

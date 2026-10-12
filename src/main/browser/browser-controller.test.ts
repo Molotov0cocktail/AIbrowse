@@ -11,6 +11,7 @@ interface PendingLoad {
 }
 
 interface TestWebContents extends EventEmitter {
+  windowOpen: (details: Electron.HandlerDetails) => Electron.WindowOpenHandlerResponse;
   currentUrl: string;
   destroyed: boolean;
   loadURL: ReturnType<typeof vi.fn<(url: string) => Promise<void>>>;
@@ -142,7 +143,12 @@ vi.mock('electron', async () => {
       this.pendingReject?.(new Error('ERR_ABORTED'));
       this.pendingReject = null;
     });
-    setWindowOpenHandler(): void {}
+    windowOpen: (details: Electron.HandlerDetails) => Electron.WindowOpenHandlerResponse = () => ({
+      action: 'deny',
+    });
+    setWindowOpenHandler(handler: typeof this.windowOpen): void {
+      this.windowOpen = handler;
+    }
     isLoadingMainFrame(): boolean {
       return this.loading;
     }
@@ -222,6 +228,212 @@ beforeEach(() => {
   electronMock.noCommitUrls.length = 0;
   electronMock.syncFailureUrls.length = 0;
   electronMock.deferBlankLoads = false;
+});
+
+function popupDetails(
+  url = 'https://www.bilibili.com/',
+  disposition: Electron.HandlerDetails['disposition'] = 'foreground-tab',
+): Electron.HandlerDetails {
+  return {
+    url,
+    disposition,
+    frameName: '_blank',
+    features: '',
+    referrer: { url: '', policy: 'default' },
+  };
+}
+
+function userClick(wc: TestWebContents): void {
+  wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left', x: 10, y: 10 });
+}
+
+describe('BrowserController 用户新标签导航安全边界', () => {
+  it('AI点击与填充撤销用户额度并阻止在途/迟到popup', async () => {
+    const { controller } = harness();
+    try {
+      const source = await controller.createTab('https://example.com/');
+      const wc = electronMock.instances[0]!.webContents;
+      const snapshot = await controller.getPageSnapshot(source.id);
+      expect(snapshot).not.toBeNull();
+      wc.collectScript.mockImplementation(async () => {
+        userClick(wc);
+        wc.windowOpen(popupDetails());
+        return { ok: true, tag: 'a', text: '链接' };
+      });
+      userClick(wc);
+      await controller.clickElement(source.id, 'el-1', 'nav', snapshot!.meta.documentId);
+      wc.windowOpen(popupDetails());
+      userClick(wc);
+      await controller.fillElement(source.id, 'el-1', 'test', snapshot!.meta.documentId);
+      wc.windowOpen(popupDetails());
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('队列中的popup在隐藏再恢复后仍撤销，后台旧页输入无效', async () => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://example.com/');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      wc.windowOpen(popupDetails());
+      controller.setContentVisible(false);
+      controller.setContentVisible(true);
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(1);
+      await controller.createTab('https://example.org/');
+      userClick(wc);
+      wc.windowOpen(popupDetails());
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(2);
+    } finally {
+      controller.dispose();
+    }
+  });
+  it('用户点击 target=_blank 拒绝原生窗口并在应用内打开安全目标', async () => {
+    const { controller } = harness();
+    try {
+      const source = await controller.createTab('https://www.bing.com/search?q=bilibili');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      expect(wc.windowOpen(popupDetails())).toEqual({ action: 'deny' });
+      await Promise.resolve();
+      const tabs = await controller.getTabs();
+      expect(tabs).toHaveLength(2);
+      expect(tabs[0]?.id).toBe(source.id);
+      expect(tabs[1]).toMatchObject({ url: 'https://www.bilibili.com/', active: true });
+      expect(electronMock.instances[1]?.preferences).toMatchObject({
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+      });
+      expect(electronMock.instances[1]?.preferences.preload).toBeUndefined();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('Ctrl/中键后台打开不夺走活动页面且同次输入只开一个标签', async () => {
+    const { controller } = harness();
+    try {
+      const source = await controller.createTab('https://example.com/');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      wc.windowOpen(popupDetails('https://example.org/', 'background-tab'));
+      wc.windowOpen(popupDetails('https://example.net/', 'background-tab'));
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(2);
+      expect((await controller.getActiveTab())?.id).toBe(source.id);
+      expect(electronMock.instances[1]?.webContents.focus).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it.each([
+    'javascript:alert(1)',
+    'file:///C:/private',
+    'data:text/html,x',
+    'mailto:a@example.com',
+    'about:blank',
+    'https://u:p@example.com/',
+  ])('即使用户输入也拒绝危险/非网页目标 %s', async (url) => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://example.com/');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      expect(wc.windowOpen(popupDetails(url))).toEqual({ action: 'deny' });
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('无输入脚本、失焦和隐藏页面不能获得新标签能力', async () => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://example.com/');
+      const wc = electronMock.instances[0]!.webContents;
+      wc.windowOpen(popupDetails());
+      userClick(wc);
+      wc.emit('blur');
+      wc.windowOpen(popupDetails());
+      userClick(wc);
+      controller.setContentVisible(false);
+      wc.windowOpen(popupDetails());
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('任务所有标签即使处于活动可见状态并收到输入仍拒绝popup', async () => {
+    const { controller } = harness();
+    try {
+      await controller.createTaskTab('https://example.com/');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      wc.windowOpen(popupDetails());
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('过期额度、文档导航、POST 与已关闭源均拒绝', async () => {
+    const { controller } = harness();
+    const now = vi.spyOn(performance, 'now').mockReturnValue(100);
+    try {
+      const source = await controller.createTab('https://example.com/');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      now.mockReturnValue(1101);
+      wc.windowOpen(popupDetails());
+      userClick(wc);
+      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+      wc.windowOpen(popupDetails());
+      userClick(wc);
+      wc.windowOpen({
+        ...popupDetails(),
+        postBody: { data: [], contentType: 'application/x-www-form-urlencoded' },
+      });
+      userClick(wc);
+      wc.windowOpen(popupDetails());
+      await controller.closeTab(source.id);
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(1);
+      expect((await controller.getActiveTab())?.url).toBe('about:blank');
+    } finally {
+      now.mockRestore();
+      controller.dispose();
+    }
+  });
+
+  it('键盘Enter用户输入可打开链接，重复按键不授予额度', async () => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://example.com/');
+      const wc = electronMock.instances[0]!.webContents;
+      wc.emit('before-input-event', {}, { type: 'keyDown', key: 'Enter', isAutoRepeat: true });
+      wc.windowOpen(popupDetails());
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(1);
+      wc.emit('before-input-event', {}, { type: 'keyDown', key: 'Enter', isAutoRepeat: false });
+      wc.windowOpen(popupDetails());
+      await Promise.resolve();
+      expect(await controller.getTabs()).toHaveLength(2);
+    } finally {
+      controller.dispose();
+    }
+  });
 });
 
 describe('BrowserController 默认空白 view 延迟物化', () => {

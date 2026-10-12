@@ -3175,6 +3175,15 @@ async function assembleBrowserWindow(): Promise<void> {
     },
   });
   browserController = controller;
+  // Background work must never turn page popups into unowned user tabs.
+  const taskBrowser = {
+    createTab: (url: string) => controller.createTaskTab(url),
+    closeTab: (id: string) => controller.closeTab(id),
+    activateTab: (id: string) => controller.activateTab(id),
+    getTabs: () => controller.getTabs(),
+    getActiveTab: () => controller.getActiveTab(),
+    getPageSnapshot: (id: string) => controller.getPageSnapshot(id),
+  };
   win.on('close', (event) => {
     if (shutdownQuitReady) return;
     event.preventDefault();
@@ -3295,7 +3304,7 @@ async function assembleBrowserWindow(): Promise<void> {
   // B4：Source 四工具注册（13 → 17；executor 零 Electron import，只经 ctx.sourceService）
   for (const def of createSourceTools(sourceService)) registerTool(def);
   // A5：SearchProvider 实例化后同时用于工具注册与 Agent 运行时装配（决议 #32⑥ 注入点）
-  const searchProvider = new BingSearchProvider({ browser: controller });
+  const searchProvider = new BingSearchProvider({ browser: taskBrowser });
   registerTool(createSearchTool(searchProvider));
   // A6 UI 矩阵（仅冒烟模式）：委托 Provider——每次 search() 调用时读取受控夹具 holder
   // （离线确定性；生产模式直用 Bing 实现，行为不变）
@@ -3389,7 +3398,7 @@ async function assembleBrowserWindow(): Promise<void> {
           ? (db) =>
               createSmokeResearchRuntimeFactory({
                 db,
-                browser: controller,
+                browser: taskBrowser,
                 sourceService,
                 searchProvider: new SmokeSearchFixture(null),
                 // C8（8.19-B）：懒解析——场景设置 smokeResearchScript.current 驱动
@@ -3404,7 +3413,7 @@ async function assembleBrowserWindow(): Promise<void> {
               }
               const factory = createProductionResearchRuntimeFactory({
                 db,
-                browser: controller,
+                browser: taskBrowser,
                 sourceService,
                 searchProvider,
                 configStore,
@@ -3549,7 +3558,7 @@ async function assembleBrowserWindow(): Promise<void> {
           watchPublicTarget = publicStack.target;
           watchPublicStackRobots = publicStack.robots;
           watchWorkspace = new WatchTaskTabWorkspace({
-            browser: qualification?.workspaceBrowser(browserController) ?? browserController,
+            browser: qualification?.workspaceBrowser(browserController) ?? taskBrowser,
             ownership: qualification?.workspaceOwnership(browserController),
             onCleanupFailure: () => {
               try {
@@ -4054,6 +4063,8 @@ function createMainWindow(): BrowserWindow {
     height: 800,
     show: false,
     title: 'AIbrowse',
+    // Keep native window controls without a permanently occupied menu row.
+    autoHideMenuBar: true,
     // 安全默认值：本项目自身 React UI 同样不开启 Node 集成（安全红线，第一版起生效）
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

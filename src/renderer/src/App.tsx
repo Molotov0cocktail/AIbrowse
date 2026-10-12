@@ -20,7 +20,6 @@ import { WatchWorkspace } from './watch/WatchWorkspace';
 import type { InAppNotificationDto } from '../../shared/types/watch-ipc';
 import { LocalDataPanel } from './storage/LocalDataPanel';
 import { DiagnosticPanel } from './diagnostics/DiagnosticPanel';
-import { Icon } from './ui/Icon';
 import { ThemeSelect } from './ui/ThemeSelect';
 
 // 浏览器 chrome（T3）+ AI 侧栏停靠（S4，design §11.1）+ Agent 确认对话框（A6 §11.2，
@@ -43,6 +42,8 @@ export default function App() {
   const [sidePanel, setSidePanel] = useState<'ai' | 'sources' | 'research' | 'diagnostics' | null>(
     null,
   );
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'browser' | 'research-result' | 'watch'>(
     __WATCH_QUALIFICATION__ ? 'watch' : 'browser',
   );
@@ -107,6 +108,17 @@ export default function App() {
 
   const withActiveTab = (action: (tabId: string) => Promise<boolean>): void => {
     if (activeTab !== null) void action(activeTab.id);
+  };
+
+  const returnToBrowser = (): void => {
+    setViewMode('browser');
+    setSelectedCandidateId(null);
+    setCanvasError(null);
+  };
+
+  const runBrowserAction = (action: (tabId: string) => Promise<boolean>): void => {
+    returnToBrowser();
+    withActiveTab(action);
   };
 
   // 决议 #159(5)：打开 Markdown/Evidence URL——先经 shared URL 白名单（仅绝对
@@ -196,37 +208,48 @@ export default function App() {
   return (
     <div className="app">
       <header className="chrome">
-        <div className="workspace-bar">
-          <div className="brand-lockup" aria-label="AIbrowse 信息工作台">
-            <span className="brand-mark">
-              <Icon name="globe" />
-            </span>
-            <span className="brand-name">AIbrowse</span>
-            <span className="brand-caption">信息工作台</span>
-          </div>
+        <div className="tab-strip-row">
+          <TabBar
+            tabs={tabsState?.tabs ?? []}
+            activeTabId={tabsState?.activeTabId ?? null}
+            onActivate={(tabId) => {
+              returnToBrowser();
+              void window.aibrowse.tabs.activate(tabId);
+            }}
+            onClose={(tabId) => void window.aibrowse.tabs.close(tabId)}
+            onReload={(tabId) => {
+              returnToBrowser();
+              void window.aibrowse.nav.reload(tabId);
+            }}
+          />
+          <button
+            type="button"
+            className="new-tab-button"
+            aria-label="新建标签页"
+            title="新建标签页"
+            onClick={() => {
+              void window.aibrowse.tabs.create().then(() => {
+                returnToBrowser();
+                addressBarRef.current?.focus();
+              });
+            }}
+          >
+            ＋
+          </button>
           <LocalDataPanel />
-          <ThemeSelect />
         </div>
         <Toolbar
           activePanel={sidePanel}
           watchActive={viewMode === 'watch'}
           activeTab={activeTab}
           onNavigate={(input) =>
-            withActiveTab((tabId) => window.aibrowse.nav.navigate(tabId, input))
+            runBrowserAction((tabId) => window.aibrowse.nav.navigate(tabId, input))
           }
-          onBack={() => withActiveTab((tabId) => window.aibrowse.nav.back(tabId))}
-          onForward={() => withActiveTab((tabId) => window.aibrowse.nav.forward(tabId))}
-          onReload={() => withActiveTab((tabId) => window.aibrowse.nav.reload(tabId))}
-          onCreateTab={() => {
-            void window.aibrowse.tabs.create().then(() => {
-              addressBarRef.current?.focus(); // 新标签页聚焦地址栏，便于直接输入
-            });
-          }}
+          onBack={() => runBrowserAction((tabId) => window.aibrowse.nav.back(tabId))}
+          onForward={() => runBrowserAction((tabId) => window.aibrowse.nav.forward(tabId))}
+          onReload={() => runBrowserAction((tabId) => window.aibrowse.nav.reload(tabId))}
           onToggleAiPanel={() => setSidePanel((p) => (p === 'ai' ? null : 'ai'))}
           onToggleSourcesPanel={() => setSidePanel((p) => (p === 'sources' ? null : 'sources'))}
-          onToggleDiagnostics={() =>
-            setSidePanel((p) => (p === 'diagnostics' ? null : 'diagnostics'))
-          }
           onToggleResearchPanel={() => {
             const opening = sidePanel !== 'research';
             setSidePanel(opening ? 'research' : null);
@@ -237,24 +260,54 @@ export default function App() {
             setWatchFocus(null);
             setViewMode('watch');
           }}
-          onWatchCurrentPage={() => {
-            void window.aibrowse.sources.quickAdd().then((result) => {
-              if (result.status === 'added') setWatchSourceId(result.source.id);
-              else if (result.status === 'duplicate') setWatchSourceId(result.existing.id);
-              else return;
-              setSidePanel(null);
-              setViewMode('watch');
+          onToggleTools={() => {
+            setToolsOpen((open) => {
+              if (open) setDebugOpen(false);
+              return !open;
             });
           }}
+          toolsOpen={toolsOpen}
           addressBarRef={addressBarRef}
         />
-        <TabBar
-          tabs={tabsState?.tabs ?? []}
-          activeTabId={tabsState?.activeTabId ?? null}
-          onActivate={(tabId) => void window.aibrowse.tabs.activate(tabId)}
-          onClose={(tabId) => void window.aibrowse.tabs.close(tabId)}
-          onReload={(tabId) => void window.aibrowse.nav.reload(tabId)}
-        />
+        <div className="tools-tray" aria-label="更多功能" hidden={!toolsOpen}>
+          <button
+            type="button"
+            onClick={() => {
+              void window.aibrowse.sources.quickAdd().then((result) => {
+                if (result.status === 'added') setWatchSourceId(result.source.id);
+                else if (result.status === 'duplicate') setWatchSourceId(result.existing.id);
+                else return;
+                setSidePanel(null);
+                setViewMode('watch');
+              });
+            }}
+          >
+            监控此页
+          </button>
+          <button
+            type="button"
+            aria-pressed={sidePanel === 'diagnostics'}
+            onClick={() =>
+              setSidePanel((panel) => (panel === 'diagnostics' ? null : 'diagnostics'))
+            }
+          >
+            诊断信息
+          </button>
+          <button
+            type="button"
+            aria-pressed={debugOpen}
+            onClick={() => setDebugOpen((open) => !open)}
+          >
+            页面快照调试
+          </button>
+          <ThemeSelect />
+        </div>
+        {debugOpen && (
+          <DebugPanel
+            activeTabId={tabsState?.activeTabId ?? null}
+            onClose={() => setDebugOpen(false)}
+          />
+        )}
       </header>
       {/* 内容行：内容容器（WebContentsView 覆盖区）+ 面板停靠（C8 决议 #163(1)：
           AI/Sources/Research 三态互斥，380px 同模式） */}
@@ -294,8 +347,6 @@ export default function App() {
         )}
         {sidePanel === 'diagnostics' && <DiagnosticPanel onClose={() => setSidePanel(null)} />}
       </div>
-      {/* 调试面板在底部通栏：高度变化被内容容器的 ResizeObserver 测量并上报 bounds（§11.2） */}
-      <DebugPanel activeTabId={tabsState?.activeTabId ?? null} />
       {/* L2 确认对话框（App 级全局，独立于面板挂载——切换/折叠面板不遮断确认）：
           deny 默认高亮/焦点；pending 作废自动关闭 */}
       <ConfirmDialog pending={pendingConfirm} onDecide={agent.confirmTool} />

@@ -13,16 +13,33 @@ interface TabBarProps {
 export function TabBar({ tabs, activeTabId, onActivate, onClose, onReload }: TabBarProps) {
   return (
     <div className="tab-bar" role="tablist" aria-label="标签栏">
-      {tabs.map((tab) => {
+      {tabs.map((tab, index) => {
         const label = tab.title !== '' ? tab.title : '新标签页';
         return (
           <div
             key={tab.id}
             role="tab"
             aria-selected={tab.id === activeTabId}
+            tabIndex={tab.id === activeTabId ? 0 : -1}
             className={`tab${tab.id === activeTabId ? ' active' : ''}${tab.state === 'error' ? ' error' : ''}`}
             title={tab.title !== '' ? `${tab.title}\n${tab.url}` : tab.url}
             onClick={() => onActivate(tab.id)}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onActivate(tab.id);
+                return;
+              }
+              const offset = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0;
+              if (offset === 0 || tabs.length < 2) return;
+              event.preventDefault();
+              const nextIndex = (index + offset + tabs.length) % tabs.length;
+              onActivate(tabs[nextIndex]!.id);
+              const tabElements =
+                event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="tab"]');
+              tabElements?.[nextIndex]?.focus();
+            }}
           >
             {tab.state === 'loading' && <span className="spinner" aria-label="加载中" />}
             {tab.state === 'error' && (

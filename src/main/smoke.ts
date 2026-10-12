@@ -16490,7 +16490,10 @@ export class SmokeSearchFixture implements SearchProvider {
 
 interface SmokeResearchRuntimeDeps {
   db: DbHandle;
-  browser: BrowserController;
+  browser: Pick<
+    BrowserController,
+    'createTab' | 'closeTab' | 'activateTab' | 'getTabs' | 'getActiveTab' | 'getPageSnapshot'
+  >;
   sourceService: SourceService | null;
   searchProvider: SearchProvider;
   // C8（8.19-B）：懒解析（调用时解引用模块级 holder——场景按阶段切换确定性脚本；

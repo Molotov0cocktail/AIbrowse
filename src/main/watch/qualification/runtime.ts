@@ -233,7 +233,7 @@ export class QualificationRuntime {
     return {
       createTab: (url) => {
         if (!this.admissionOpen() || !urls.has(url)) this.fail('session-target-invalid');
-        return this.registry.track(() => browser.createTab('about:blank'));
+        return this.registry.track(() => browser.createTaskTab('about:blank'));
       },
       closeTab: (id) => this.registry.track(() => browser.closeTab(id)),
       activateTab: (id) => this.registry.track(() => browser.activateTab(id)),

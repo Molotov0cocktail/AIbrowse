@@ -339,8 +339,9 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 - **可见性切换用 `setVisible`，不用 removeChildView**：`setVisible(false)` 即不渲染不遮挡，
   避免重挂载开销、焦点抖动与 z 序变化。活动 Tab：`setVisible(true)` + 应用最新 bounds +
   `webContents.focus()`；其余全部 `setVisible(false)`。
-- **bounds 上报**：渲染进程用 ResizeObserver 测量 chrome（工具栏+标签栏）高度，
-  防抖 50ms 后经 `ui:content-bounds`（send）上报内容区矩形 `{x:0, y:chromeH, width, height-chromeH}`；
+- **bounds 上报**：渲染进程用 ResizeObserver 测量真实内容容器的完整矩形，
+  回调直接经 `ui:content-bounds`（send）上报 `{x,y,width,height}`，窗口 resize 亦触发；
+  2026-10-12 移除额外 50ms renderer 定时防抖，避免侧栏展开后原生网页视图迟滞遮挡（Stage2 §11.2）。
   main 收到后应用到**当前活动** view（全量覆盖式，切换标签时用最近一次值）。
   窗口首次显示前 view 先按窗口尺寸兜底设 bounds，收到上报后校正。
 - **生命周期**：view 随 Tab 创建/销毁；closeTab → `removeChildView` → `webContents.close()` →
@@ -446,6 +447,11 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 
 ## 9. 导航与地址栏（URL 判断接入，T3）
 
+2026-10-12 浏览器布局修订：默认顶部只保留标签行与地址导航行（不含原生标题栏合计 ≤86 CSS px），
+默认隐藏系统菜单行且可按 Alt 访问。移除独立品牌工作台行，快照调试默认不占位；AI、信源、研究、监控
+保留紧凑直接入口，主题/诊断/监控此页/快照工具按需展开。原生窗口控制、本地数据异常告警和 L2 确认可达。
+新建/激活标签、地址导航/前进/后退/刷新均返回浏览画布；已保存主题在工具区未展开时也应生效。
+
 - **规范化位置定稿**：renderer 把**原始输入**交给 `nav:navigate` / `tabs:create`，
   main 侧 IPC handler 统一调用 `shared/url.resolveAddressBarInput`；
   返回 `''` → 动作返回 `false`（navigate）或创建延迟加载的默认空白 Tab（create），warn 日志。
@@ -459,7 +465,12 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 - **导航白名单**：每个 Tab webContents 的 `will-navigate` **与 `will-redirect`**（T5 R-02 加固，
   302 目标同样过白名单——程序化 loadURL 遇重定向时唯一拦截点）仅放行 `http:`/`https:`/`about:`，
   其余（`file:`、自定义协议等）`preventDefault` + warn 日志（First_stage §八「对导航做好合理处理」）。
-- **window.open**：每个 Tab webContents 的 `setWindowOpenHandler` 一律 `deny` + warn（与基线主窗口一致）。
+- **window.open**：每个 Tab webContents 的原生窗口请求仍一律 `deny`；2026-10-12 用户要求修复普通网页
+  新标签链接后，由 BrowserController 对活动可见的普通 Tab 最近一次主进程实体鼠标/键盘输入，签发
+  一次性、最长 1 秒的打开额度。合法无凭据 HTTP(S) GET 请求可重路由为应用内隔离 Tab；Ctrl/中键保持后台。
+  隐藏、失焦、切页、导航、崩溃及 AI 交互撤销额度，排队执行前复验来源与文档；任务 Tab 永不获得额度。
+  不传递 opener、POST 或页面提供的窗口特权，不开放 file/外部协议/系统窗口。无输入脚本请求仍拒绝。
+  该实体输入边界覆盖同一 WebContents 的子 frame，不声称框架 API 能证明点击只来自主 frame。
 - **UI 窗口自身导航保护**（T3，安全红线；**是 tabs/nav/page/ui bridge 扩展的硬前提**——导航保护
   必须先于或与 bridge 扩展同闭环落地，不得先暴露 bridge 再补保护）：React UI 所在窗口的 preload 会随
   该窗口的**任何**导航加载——若 UI 窗口主框架被导航到远程页面，远程页面将获得 `window.aibrowse`
@@ -512,12 +523,12 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 
 ### proposal Q1–Q4 拍板
 
-| #   | 决议                                                                                                                                                                                                   | 理由                                                                                                                      |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| Q1  | elementId 双层映射：`data-aibrowse-el` 属性烙印 + 注入上下文 Map（每次快照重建，有界无泄漏）                                                                                                           | 同导航生命周期内回查最快（Map）；跨导航可经属性找回；Map 重建保证生命周期语义与内存有界；页面篡改仅影响数据不构成权限问题 |
-| Q2  | 全部 view 常驻 contentView，`setVisible` 切换可见性；bounds 由渲染层 ResizeObserver 上报（`ui:content-bounds`，防抖 50ms）；closeTab → removeChildView + close + 清监听器；窗口关闭 → dispose 幂等全清 | setVisible 避免重挂载/焦点抖动/z 序变化；chrome 高度是 React 布局结果，渲染层测量是唯一事实源                             |
-| Q3  | 显式 `persist:aibrowse` 分区（SessionManager 持有，多 Profile 预留）                                                                                                                                   | persist: 语义明确（重启保登录态）；命名分区是多 Profile 接口落点；defaultSession 隐式语义不利迁移                         |
-| Q4  | 四级降级阶梯 L0/L1/L2/L3 + 必填 meta.degraded/warnings                                                                                                                                                 | 「空集合」与「采集失败」必须可区分（调试面板与未来 AI 工具都依赖）；参数/状态问题安全返回不抛异常                         |
+| #   | 决议                                                                                                                                                                                                              | 理由                                                                                                                      |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Q1  | elementId 双层映射：`data-aibrowse-el` 属性烙印 + 注入上下文 Map（每次快照重建，有界无泄漏）                                                                                                                      | 同导航生命周期内回查最快（Map）；跨导航可经属性找回；Map 重建保证生命周期语义与内存有界；页面篡改仅影响数据不构成权限问题 |
+| Q2  | 全部 view 常驻 contentView，`setVisible` 切换可见性；bounds 由渲染层 ResizeObserver 上报（`ui:content-bounds`，布局观察回调直接上报）；closeTab → removeChildView + close + 清监听器；窗口关闭 → dispose 幂等全清 | setVisible 避免重挂载/焦点抖动/z 序变化；chrome 高度是 React 布局结果，渲染层测量是唯一事实源                             |
+| Q3  | 显式 `persist:aibrowse` 分区（SessionManager 持有，多 Profile 预留）                                                                                                                                              | persist: 语义明确（重启保登录态）；命名分区是多 Profile 接口落点；defaultSession 隐式语义不利迁移                         |
+| Q4  | 四级降级阶梯 L0/L1/L2/L3 + 必填 meta.degraded/warnings                                                                                                                                                            | 「空集合」与「采集失败」必须可区分（调试面板与未来 AI 工具都依赖）；参数/状态问题安全返回不抛异常                         |
 
 ### 相对草案的变更点（定稿后生效，T2/T4 按此实现）
 

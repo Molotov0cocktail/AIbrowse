@@ -39,10 +39,15 @@ export interface TabEntry {
   // Retain the latest load promise and terminal state until replacement or disposal.
   // Old waiters follow it, including synchronous failure, without mistaking null for success.
   latestLoad: PendingTabLoad | null;
+  popupRoutingAllowed: boolean;
+  popupGestureExpiresAt: number;
+  popupSuppressionCount: number;
+  popupRoutingEpoch: number;
 }
 
 export interface CreateTabOptions {
   deferInitialBlankLoad?: boolean;
+  allowUserPopupRouting?: boolean;
 }
 
 declare const __RELEASE__: boolean;
@@ -51,6 +56,8 @@ export interface TabManagerOptions {
   ownerWindow: BaseWindow; // contentView 挂载/卸载
   session: Session; // 持久分区会话（SessionManager 提供，§7）
   onChanged: () => void; // 增删/标题/URL/状态变化 → controller 组装并推送 TabsState
+  isUserTabInteractive?: (tabId: string) => boolean;
+  onUserOpenTab?: (sourceTabId: string, url: string, background: boolean) => void;
 }
 
 export class TabManager {
@@ -83,10 +90,46 @@ export class TabManager {
     };
     const wc = view.webContents;
 
-    wc.setWindowOpenHandler(({ url: targetUrl }) => {
+    wc.setWindowOpenHandler((details) => {
+      const source = this.entries.get(info.id);
+      const hasGesture = source !== undefined && source.popupGestureExpiresAt > performance.now();
+      if (source !== undefined) source.popupGestureExpiresAt = 0;
+      const targetUrl = this.popupTarget(details);
+      if (
+        source !== undefined &&
+        hasGesture &&
+        targetUrl !== null &&
+        source.popupRoutingAllowed &&
+        source.popupSuppressionCount === 0 &&
+        this.options.isUserTabInteractive?.(info.id) === true
+      ) {
+        const generation = source.generation;
+        const navigationSerial = source.navigationSerial;
+        const popupRoutingEpoch = source.popupRoutingEpoch;
+        // Deny Chromium's native child first. Recheck the source before creating
+        // an isolated application tab without an opener or inherited preferences.
+        queueMicrotask(() => {
+          if (
+            this.entries.get(info.id) !== source ||
+            wc.isDestroyed() ||
+            source.generation !== generation ||
+            source.navigationSerial !== navigationSerial ||
+            source.popupRoutingEpoch !== popupRoutingEpoch ||
+            source.popupSuppressionCount !== 0 ||
+            this.options.isUserTabInteractive?.(info.id) !== true
+          )
+            return;
+          this.options.onUserOpenTab?.(
+            info.id,
+            targetUrl,
+            details.disposition === 'background-tab',
+          );
+        });
+        return { action: 'deny' };
+      }
       logWarn(
         'browser',
-        `已拦截 window.open 新窗口请求（tabId=${redactTabIdForLog(info.id)}）：${redactUrlForLog(targetUrl)}`,
+        `已拦截 window.open 新窗口请求（tabId=${redactTabIdForLog(info.id)}）：${redactUrlForLog(details.url)}`,
       );
       return { action: 'deny' };
     });
@@ -103,6 +146,10 @@ export class TabManager {
       deferredBlank,
       loadSerial: 0,
       latestLoad: null,
+      popupRoutingAllowed: options.allowUserPopupRouting === true,
+      popupGestureExpiresAt: 0,
+      popupSuppressionCount: 0,
+      popupRoutingEpoch: 0,
     };
     this.entries.set(info.id, entry);
 
@@ -130,6 +177,48 @@ export class TabManager {
 
   list(): TabEntry[] {
     return [...this.entries.values()];
+  }
+
+  clearPopupGestures(): void {
+    for (const entry of this.entries.values()) {
+      entry.popupGestureExpiresAt = 0;
+      entry.popupRoutingEpoch += 1;
+    }
+  }
+
+  suppressUserPopups(tabId: string): () => void {
+    const entry = this.entries.get(tabId);
+    if (entry === undefined) return () => {};
+    entry.popupGestureExpiresAt = 0;
+    entry.popupRoutingEpoch += 1;
+    entry.popupSuppressionCount += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      entry.popupGestureExpiresAt = 0;
+      entry.popupRoutingEpoch += 1;
+      entry.popupSuppressionCount -= 1;
+    };
+  }
+
+  private popupTarget(details: Electron.HandlerDetails): string | null {
+    if (
+      details.postBody !== undefined ||
+      details.url.length > 8192 ||
+      !['default', 'foreground-tab', 'background-tab', 'new-window'].includes(details.disposition)
+    )
+      return null;
+    try {
+      const target = new URL(details.url);
+      return (target.protocol === 'https:' || target.protocol === 'http:') &&
+        target.username === '' &&
+        target.password === ''
+        ? target.href
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   closeTab(tabId: string): boolean {
@@ -166,6 +255,43 @@ export class TabManager {
   // 显式逐个注册：类型完全走 Electron 事件签名，关闭标签时一一 removeListener。
   private wireEvents(wc: WebContents, info: TabEntryInfo): Array<() => void> {
     const cleanup: Array<() => void> = [];
+    const grantPopupGesture = (): void => {
+      const entry = this.entries.get(info.id);
+      if (
+        entry === undefined ||
+        !entry.popupRoutingAllowed ||
+        entry.popupSuppressionCount !== 0 ||
+        this.options.isUserTabInteractive?.(info.id) !== true
+      )
+        return;
+      entry.popupGestureExpiresAt = performance.now() + 1000;
+    };
+    const clearPopupGesture = (): void => {
+      const entry = this.entries.get(info.id);
+      if (entry !== undefined) {
+        entry.popupGestureExpiresAt = 0;
+        entry.popupRoutingEpoch += 1;
+      }
+    };
+    const onMouse = (_event: Electron.Event, mouse: Electron.MouseInputEvent): void => {
+      if (mouse.type === 'mouseUp' && (mouse.button === 'left' || mouse.button === 'middle'))
+        grantPopupGesture();
+    };
+    const onInput = (_event: Electron.Event, input: Electron.Input): void => {
+      if (
+        input.type === 'keyDown' &&
+        !input.isAutoRepeat &&
+        !input.isComposing &&
+        (input.key === 'Enter' || input.key === ' ')
+      )
+        grantPopupGesture();
+    };
+    wc.on('before-mouse-event', onMouse);
+    wc.on('before-input-event', onInput);
+    wc.on('blur', clearPopupGesture);
+    cleanup.push(() => wc.removeListener('before-mouse-event', onMouse));
+    cleanup.push(() => wc.removeListener('before-input-event', onInput));
+    cleanup.push(() => wc.removeListener('blur', clearPopupGesture));
     // A crash retires the document until a new main-document navigation begins.
     // Late load callbacks must not present the dead document as a healthy page.
     let crashed = false;
@@ -189,6 +315,7 @@ export class TabManager {
       details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
     ): void => {
       if (!details.isMainFrame || details.isSameDocument) return;
+      clearPopupGesture();
       crashed = false;
       delete info.failure;
       const entry = this.entries.get(info.id);
@@ -291,6 +418,7 @@ export class TabManager {
     cleanup.push(() => wc.removeListener('will-redirect', onWillRedirect));
 
     const onRenderGone = (): void => {
+      clearPopupGesture();
       crashed = true;
       const entry = this.entries.get(info.id);
       if (entry !== undefined) {
