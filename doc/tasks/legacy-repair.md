@@ -43,6 +43,19 @@
   本轮最终 typecheck、lint、format:check 均 exit0；Provider 工具 13 项与清空工具 16 项独立验证通过。
   工具、合同与实际证据审核后生成干净源码候选，再重建安装器并核完整树；旧 release 80 文件已逐项归档，
   output 旧 0.1.5 尚未替换，最终选择另记录。
+- 最终交付：工具与合同提交 `442a59a804f40b723978ea4c65f0d67d2fd687f6`，干净源码重建 0.1.6；
+  package、verify、static、provenance 与 PE 比较均 exit0。独立核 207 模块/15 产物、75 个程序文件及完整安装器，
+  light 104159.9353ms、makensis 3514.7036ms。相对上一已审 0.1.6 唯一代码字节差异为 BUILD_ID，
+  Runtime02 的 358 绑定及真实 Provider 的 121 来源保持恒等，未重开未受影响测试。
+  manifest SHA256 `46aba55416de2aad1d114ba226572162731864669876e89a3b641572bc095346`，
+  新包独审 PASS 及 307 条冻结证明见 `log/watch-live-reset-20261012/selection-review.json`。
+  CheckOnly 与 Switch 均 exit0，切换 ID `12fcae9557a04e23b5d47f6f7d163aa9`；output 已选中 0.1.6，
+  共 79 文件/619937270 字节，入口 `D:\AIbrowse\output\win-unpacked\AIbrowse.exe`，EXE/MSI 安装器及身份文件齐备。
+  原 0.1.5 的完整 79 文件保留在本轮 log 的同 ID `previous-output` 目录，不包含被清空的用户数据备份。
+  本轮不执行安装器、打包启动或真实 YouTube 场景，packageLaunchStatus=NOTRUN，应用数据保持空态。
+  切后独立复核新旧各 79 文件、308 项证明（含审核记录）、manifest 与两个 profile 空态通过；
+  最后工作区检查发生在收尾文档编辑期间，仅两份任务文档改变，不影响构建时干净源码绑定，原检查记录保留。
+  本任务完成，仅以文档收尾提交同步双远程，不启动额外产品工作。
 
 ## 独立监控目标与采集提示修复合同（2026-10-12）
 
