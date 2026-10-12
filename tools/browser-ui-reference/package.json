@@ -1,0 +1,5 @@
+{
+  "name": "aibrowse-browser-ui-reference-viewer",
+  "private": true,
+  "main": "viewer.cjs"
+}

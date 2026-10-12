@@ -4,7 +4,7 @@ param(
   [string]$PackageJournal='',
   [ValidateSet('PackageSmoke','EquivalentEvidence')][string]$Qualification='PackageSmoke',
   [string]$EquivalenceRecord='',
-  [ValidateSet('legacy-followup-20261012','real-provider-20261012')][string]$EvidenceScope='legacy-followup-20261012',
+  [ValidateSet('legacy-followup-20261012','real-provider-20261012','browser-ux-20261012')][string]$EvidenceScope='legacy-followup-20261012',
   [ValidatePattern('^[a-f0-9]{32}$')][string]$SwitchId=''
 )
 $ErrorActionPreference='Stop'
@@ -88,7 +88,7 @@ function Head {
 }
 function AssertSource([string]$source,[string]$current) {
   Need ($source -cmatch '^[a-f0-9]{40}$') '来源源码身份无效'
-  if($Qualification -eq 'PackageSmoke' -or $EvidenceScope -eq 'real-provider-20261012'){Need ($source -ceq $current) '包来源不是当前源码';return}
+  if($Qualification -eq 'PackageSmoke' -or $EvidenceScope -in @('real-provider-20261012','browser-ux-20261012')){Need ($source -ceq $current) '包来源不是当前源码';return}
   & git -C $repository merge-base --is-ancestor $source $current
   Need ($LASTEXITCODE -eq 0) '包来源不是当前源码祖先'
   $changed=@(& git -C $repository diff --name-only --no-renames $source $current --)
@@ -105,7 +105,7 @@ function SameValue($first,$second) {return (($first|ConvertTo-Json -Depth 24 -Co
 function BoundProof($proof,[Collections.Generic.List[object]]$collected,[bool]$currentScope=$true) {
   ExactKeys $proof @('path','bytes','sha256')
   Need ($proof.path -is [string] -and $proof.sha256 -cmatch '^[a-f0-9]{64}$') '证明路径或摘要无效'
-  if($currentScope){Need ($proof.path.StartsWith('log/real-provider-20261012/',[StringComparison]::Ordinal)) '证明不属于本轮固定目录'}
+  if($currentScope){Need ($proof.path.StartsWith(('log/'+$EvidenceScope+'/'),[StringComparison]::Ordinal)) '证明不属于本轮固定目录'}
   $actual=FileFact (Member $repository $proof.path) $proof.path
   Need ($actual.bytes -eq $proof.bytes -and $actual.sha256 -ceq $proof.sha256) '证明字节或摘要不匹配'
   $collected.Add($actual)
@@ -316,6 +316,77 @@ function AssertProviderEvidence($record,$manifest,$manifestFact,[Collections.Gen
   Need (-not $seen.Contains($review.report.path) -and $review.report.sha256 -cne $record.proofs.providerReview.sha256) '最终独审正文不能复用既有单项审核'
   [void](BoundProof $review.report $collected)
 }
+function AssertBrowserUxComposite($test,[string]$sourceGitSha,[Collections.Generic.List[object]]$collected) {
+  ExactKeys $test @('mode','historicalRootCause','full','replacement','deduplicated','review')
+  Need ($test.mode -ceq 'bounded-composite' -and $test.historicalRootCause -ceq 'unknown') '浏览器UX组合门范围或历史unknown边界不符'
+  ExactKeys $test.full @('exitCode','passed','failed','skipped','log','exit')
+  Need ($test.full.exitCode -is [long] -and $test.full.exitCode -eq 1 -and $test.full.passed -eq 6970 -and $test.full.failed -eq 1 -and $test.full.skipped -eq 3) '浏览器UX组合门改写全量失败或计数'
+  $fullLog=BoundProof $test.full.log $collected;$exitPath=BoundProof $test.full.exit $collected
+  Need ([IO.File]::ReadAllText($exitPath).Trim() -ceq '1') '浏览器UX全量退出未保留原始exit1'
+  $target='src/main/ai/conversation-ui-interruption.test.ts';$fullText=[IO.File]::ReadAllText($fullLog);$failures=[regex]::Matches($fullText,'(?m)^\s*FAIL\s+([^\r\n>]+)\s*>')
+  Need ($failures.Count -eq 1 -and $failures[0].Groups[1].Value.Trim() -ceq $target -and $fullText.Contains($target+' (4 tests | 1 failed)') -and $fullText.Contains('stage=rename') -and $fullText.Contains('code=EPERM') -and $fullText -match 'Test Files\s+1 failed \| 474 passed \| 1 skipped \(476\)' -and $fullText -match 'Tests\s+1 failed \| 6970 passed \| 3 skipped \(6974\)') '浏览器UX全量日志不是唯一固定失败及计数'
+  $replacement=$test.replacement;ExactKeys $replacement @('path','exitCode','passed','failed','report','log','sourceSha256')
+  Need ($replacement.path -ceq $target -and $replacement.exitCode -is [long] -and $replacement.exitCode -eq 0 -and $replacement.passed -eq 4 -and $replacement.failed -eq 0) '浏览器UX补验不是固定原四项'
+  $source=FileFact (Member $repository $replacement.path) $replacement.path;Need ($source.sha256 -ceq $replacement.sourceSha256) '浏览器UX补验测试源码已变化';$collected.Add($source)
+  $report=ReadJson (BoundProof $replacement.report $collected);[void](BoundProof $replacement.log $collected)
+  Need ((TrueValue $report.success) -and $report.numTotalTests -eq 4 -and $report.numPassedTests -eq 4 -and $report.numFailedTests -eq 0 -and $report.numPendingTests -eq 0 -and $report.numTodoTests -eq 0) '浏览器UX补验JSON汇总不是原四项全绿'
+  $rows=@($report.testResults|Where-Object {([IO.Path]::GetFullPath($_.name)) -ceq (Member $repository $replacement.path)});Need ($rows.Count -eq 1 -and $rows[0].status -ceq 'passed' -and @($rows[0].assertionResults).Count -eq 4) '浏览器UX补验未覆盖精确测试文件'
+  foreach($assertion in $rows[0].assertionResults){Need ($assertion.status -ceq 'passed' -and @($assertion.failureMessages).Count -eq 0) '浏览器UX原断言未全部通过'}
+  ExactKeys $test.deduplicated @('passed','skipped');Need ($test.deduplicated.passed -eq 6971 -and $test.deduplicated.skipped -eq 3) '浏览器UX组合门去重计数不符'
+  $review=ReadJson (BoundProof $test.review $collected);ExactKeys $review @('version','sourceGitSha','conclusion','proofs','report')
+  Need ($review.version -eq 1 -and $review.sourceGitSha -ceq $sourceGitSha -and $review.conclusion -ceq 'PASS_WITH_UNKNOWN_HISTORICAL_EPERM') '浏览器UX组合门未获限定独审'
+  ExactKeys $review.proofs @('fullLog','fullExit','replacementReport','replacementLog','sourceSha256');Need ($review.proofs.fullLog -ceq $test.full.log.sha256 -and $review.proofs.fullExit -ceq $test.full.exit.sha256 -and $review.proofs.replacementReport -ceq $replacement.report.sha256 -and $review.proofs.replacementLog -ceq $replacement.log.sha256 -and $review.proofs.sourceSha256 -ceq $replacement.sourceSha256) '浏览器UX组合独审未绑定完整证明'
+  [void](BoundProof $review.report $collected)
+}
+function AssertBrowserUxEvidence($record,$manifest,$manifestFact,[Collections.Generic.List[object]]$collected) {
+  ExactKeys $record @('version','qualification','passed','scope','packageLaunchTested','packageLaunchStatus','packageLaunchNotRunReason','sourceGitSha','reviewerConclusion','machine','proofs')
+  Need ($record.version -eq 3 -and $manifest.source.version -ceq '0.1.4' -and $record.qualification -ceq 'EquivalentEvidence' -and (TrueValue $record.passed) -and $record.scope -ceq 'browser-ux-navigation-repair' -and $record.reviewerConclusion -ceq 'PASS_WITH_NOTRUN_PACKAGED_STARTUP') '浏览器UI等价记录不适用'
+  Need ($record.packageLaunchTested -is [bool] -and -not $record.packageLaunchTested -and $record.packageLaunchStatus -ceq 'NOTRUN' -and $record.packageLaunchNotRunReason -ceq 'host-profile-path-redirection-blocked' -and $record.sourceGitSha -ceq $manifest.source.gitSha) '包启动NOTRUN边界或候选源码不符'
+  ExactKeys $record.machine @('computerName','platform','architecture')
+  Need ($record.machine.computerName -ceq [Environment]::MachineName -and $record.machine.platform -ceq 'win32' -and $record.machine.architecture -ceq 'x64' -and [OperatingSystem]::IsWindows() -and [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [Runtime.InteropServices.Architecture]::X64) '浏览器UI等价记录不适用于当前机器'
+  $names=@('candidateManifest','previousManifest','staticBinding','packageInventory','guiEvidence','quality','hostConstraint','priorQualification','independentReview')
+  ExactKeys $record.proofs $names
+  $fixed=@{candidateManifest='release/build-provenance.json';previousManifest='output/build-provenance.json';priorQualification='log/real-provider-20261012/equivalence-record.json'}
+  $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach($name in $names){$proof=$record.proofs.$name;Need ($seen.Add($proof.path)) '浏览器UI证明路径重复';if($fixed.ContainsKey($name)){Need ($proof.path -ceq $fixed[$name]) '浏览器UI固定证明路径不符'};[void](BoundProof $proof $collected (-not $fixed.ContainsKey($name)))}
+  Need ($record.proofs.candidateManifest.sha256 -ceq $manifestFact.sha256) '浏览器UI候选清单绑定不符'
+  $previous=ReadJson (Member $repository $fixed.previousManifest)
+  Need ($previous.source.version -ceq '0.1.3' -and (TrueValue $previous.candidateEligible) -and $previous.source.dirty -is [bool] -and -not $previous.source.dirty) '旧output不是干净0.1.3候选'
+  AssertFiles (Join-Path $output 'win-unpacked') $previous.payload.packageFiles
+  foreach($fact in @($previous.installer,$previous.msi,$previous.installerBuild)){$actual=FileFact (Member $output $fact.path) $fact.path;Need ($actual.bytes -eq $fact.bytes -and $actual.sha256 -ceq $fact.sha256) '旧output封装成员变化'}
+  foreach($key in @('toolchain','buildConfiguration','guardianCompiler')){Need (SameValue $previous.inputs.$key $manifest.inputs.$key) '未变封装或Guardian工具链变化'}
+  Need (SameValue $previous.inputs.installerCompiler.tools $manifest.inputs.installerCompiler.tools) '安装器工具变化'
+  $oldInstallerSources=@($previous.inputs.installerCompiler.sources|Where-Object {$_.path -notin @('package.json','package-lock.json')});$newInstallerSources=@($manifest.inputs.installerCompiler.sources|Where-Object {$_.path -notin @('package.json','package-lock.json')})
+  Need (SameValue $oldInstallerSources $newInstallerSources -and $previous.payload.guardian.sha256 -ceq $manifest.payload.guardian.sha256) '安装器作者源码或Guardian字节变化'
+  $prior=ReadJson (Member $repository $fixed.priorQualification)
+  Need ($prior.version -eq 2 -and (TrueValue $prior.passed) -and $prior.sourceGitSha -ceq $previous.source.gitSha -and $prior.reviewerConclusion -ceq 'PASS_WITH_NOTRUN_PACKAGED_STARTUP' -and $prior.proofs.candidateManifest.sha256 -ceq $record.proofs.previousManifest.sha256) '旧0.1.3资格记录与当前旧包不符'
+  $static=ReadJson (Member $repository $record.proofs.staticBinding.path);ExactKeys $static @('version','passed','sourceGitSha','manifestSha256','executableSha256','asarSha256','guardianSha256')
+  Need ($static.version -eq 1 -and (TrueValue $static.passed) -and $static.sourceGitSha -ceq $manifest.source.gitSha -and $static.manifestSha256 -ceq $manifestFact.sha256 -and $static.executableSha256 -ceq $manifest.payload.executable.sha256 -and $static.asarSha256 -ceq $manifest.payload.asar.sha256 -and $static.guardianSha256 -ceq $manifest.payload.guardian.sha256) '0.1.4静态绑定未闭合'
+  $inventory=ReadJson (Member $repository $record.proofs.packageInventory.path);ExactKeys $inventory @('version','passed','sourceGitSha','manifestSha256','packageRoot','files','installers')
+  Need ($inventory.version -eq 1 -and (TrueValue $inventory.passed) -and $inventory.sourceGitSha -ceq $manifest.source.gitSha -and $inventory.manifestSha256 -ceq $manifestFact.sha256 -and $inventory.packageRoot -ceq 'release/win-unpacked' -and (SameValue @($inventory.files) @($manifest.payload.packageFiles))) '0.1.4完整包清单未绑定'
+  ExactKeys $inventory.installers @('installer','msi','installerBuild');foreach($name in @('installer','msi','installerBuild')){Need (SameValue $inventory.installers.$name $manifest.$name) '0.1.4封装成员未绑定'}
+  $gui=ReadJson (Member $repository $record.proofs.guiEvidence.path);ExactKeys $gui @('version','scope','passed','sourceGitSha','actualElectron','runtimeExecutable','checks','artifacts')
+  Need ($gui.version -eq 1 -and $gui.scope -ceq 'browser-ux-navigation-repair' -and (TrueValue $gui.passed) -and $gui.sourceGitSha -ceq $manifest.source.gitSha -and (TrueValue $gui.actualElectron)) 'GUI实际Electron验收不适用'
+  Need ($gui.runtimeExecutable.path -ceq 'node_modules/electron/dist/electron.exe') 'GUI未绑定固定Electron运行时';[void](BoundProof $gui.runtimeExecutable $collected $false);$guiChecks=@('compactChrome','debugDefaultAbsent','localDataMounted','smallWindow','navigationFromWatch','navigationFromResearch','sidePanelBounds');ExactKeys $gui.checks $guiChecks;foreach($name in $guiChecks){Need (TrueValue $gui.checks.$name) 'GUI或导航验收未通过'}
+  $artifactNames=@('desktop1280','desktop800','navigation','bounds');ExactKeys $gui.artifacts $artifactNames
+  foreach($desktopName in @('desktop1280','desktop800')){$desktop=ReadJson (BoundProof $gui.artifacts.$desktopName $collected);$expectedWidth=if($desktopName -eq 'desktop1280'){1280}else{800};Need ($desktop.viewport.width -eq $expectedWidth -and @($desktop.failures).Count -eq 0 -and (TrueValue $desktop.checks.compactChromeOk) -and (TrueValue $desktop.checks.noDefaultDebugOk) -and (TrueValue $desktop.checks.noBottomChromeOk) -and $desktop.dom.chrome.rect.height -le 86 -and $desktop.dom.address.width -ge 180) '桌面紧凑布局原始证据失败'}
+  $bounds=ReadJson (BoundProof $gui.artifacts.bounds $collected);Need ($bounds.status -ceq 'passed' -and @($bounds.failures).Count -eq 0 -and @($bounds.captures).Count -eq 78) 'GUI总结果未通过、保留失败或没有完整78场'
+  foreach($capture in $bounds.captures){
+    Need ($capture.browserVisible -is [bool] -and @($capture.failures).Count -eq 0 -and $null -ne $capture.checks.PSObject.Properties['webContentsViewBoundsOk'] -and (TrueValue $capture.checks.webContentsViewBoundsOk)) 'GUI capture可见性类型、边界检查缺失或失败'
+    foreach($property in $capture.checks.PSObject.Properties){Need ($property.Value -isnot [bool] -or $property.Value) 'GUI capture存在false检查'}
+    if(TrueValue $capture.browserVisible){$visible=@($capture.webContentsViews|Where-Object {TrueValue $_.visible});Need ($visible.Count -eq 1 -and $null -ne $capture.expectedViewBounds -and (SameValue $visible[0].bounds $capture.expectedViewBounds)) '可见浏览器实际View边界与期望不符'}
+  }
+  $navigation=ReadJson (BoundProof $gui.artifacts.navigation $collected);$navigationNames=@('normal','blank','ctrl','script','dangerous','post','task','ai','真实Bing到bilibili')
+  Need ((TrueValue $navigation.passed) -and $navigation.scope -ceq '仅列明的八个本地场景与一次真实Bing到bilibili导航；不是原始整场通过，也不授iframe物理输入通过' -and @($navigation.cases).Count -eq $navigationNames.Count) '导航聚合范围或结论不符'
+  foreach($name in $navigationNames){$case=@($navigation.cases|Where-Object {$_.name -ceq $name});Need ($case.Count -eq 1 -and (TrueValue $case[0].passed)) '导航聚合缺少固定通过场景'}
+  $excluded=@($navigation.excluded|Where-Object {$_.name -ceq 'iframe-input-not-delivered'});Need ($excluded.Count -eq 1 -and $excluded[0].status -ceq 'NOTRUN' -and -not [string]::IsNullOrWhiteSpace($excluded[0].reason)) '导航聚合隐瞒iframe NOTRUN'
+  foreach($source in $navigation.sources){Need ($source.originalPassed -is [bool] -and -not $source.originalPassed -and $source.originalExitCode -eq 1 -and @($source.excludedOriginalFailures|Where-Object {$_.name -ceq 'iframe' -and $_.passed -is [bool] -and -not $_.passed}).Count -eq 1) '导航聚合改写原场失败'}
+  $quality=ReadJson (Member $repository $record.proofs.quality.path);ExactKeys $quality @('version','sourceGitSha','checks');Need ($quality.version -in @(1,2) -and $quality.sourceGitSha -ceq $manifest.source.gitSha) '质量门来源不符'
+  $qualityNames=@('test','typecheck','lint','format','build');ExactKeys $quality.checks $qualityNames;foreach($name in $qualityNames){$check=$quality.checks.$name;if($quality.version -eq 2 -and $name -eq 'test'){AssertBrowserUxComposite $check $quality.sourceGitSha $collected;continue};ExactKeys $check @('exitCode','log');Need ($check.exitCode -is [long] -and $check.exitCode -eq 0) '全量质量门未通过';[void](BoundProof $check.log $collected)}
+  $constraint=ReadJson (Member $repository $record.proofs.hostConstraint.path);ExactKeys $constraint @('version','sourceGitSha','status','reason','blockedByHostPathRedirection','packageExecuted');Need ($constraint.version -eq 1 -and $constraint.sourceGitSha -ceq $manifest.source.gitSha -and $constraint.status -ceq 'NOTRUN' -and $constraint.reason -ceq $record.packageLaunchNotRunReason -and (TrueValue $constraint.blockedByHostPathRedirection) -and $constraint.packageExecuted -is [bool] -and -not $constraint.packageExecuted) '宿主路径重定向阻塞事实不符'
+  $review=ReadJson (Member $repository $record.proofs.independentReview.path);ExactKeys $review @('version','sourceGitSha','conclusion','proofs','report');Need ($review.version -eq 1 -and $review.sourceGitSha -ceq $manifest.source.gitSha -and $review.conclusion -ceq $record.reviewerConclusion) '浏览器UI独立审核未通过'
+  $reviewed=@($names|Where-Object {$_ -ne 'independentReview'});ExactKeys $review.proofs $reviewed;foreach($name in $reviewed){Need ($review.proofs.$name -ceq $record.proofs.$name.sha256) '浏览器UI独立审核未绑定完整证明'};[void](BoundProof $review.report $collected)
+}
 function RestorePrevious($plan,[string]$scope,[string]$backup) {
   Idle
   if(-not (Test-Path -LiteralPath $backup)){AssertFiles $output $plan.previous.files;return}
@@ -374,6 +445,9 @@ foreach($path in @($terminalPath,$resultPath)){$proofFiles.Add((FileFact $path (
   if($EvidenceScope -eq 'real-provider-20261012') {
     AssertProviderEvidence $record $manifest $manifestFact $proofFiles
     $proofFiles.Add((FileFact $EquivalenceRecord 'log/real-provider-20261012/equivalence-record.json'))
+  } elseif($EvidenceScope -eq 'browser-ux-20261012') {
+    AssertBrowserUxEvidence $record $manifest $manifestFact $proofFiles
+    $proofFiles.Add((FileFact $EquivalenceRecord 'log/browser-ux-20261012/equivalence-record.json'))
   } else {
   Need ($record.version -eq 1 -and $record.qualification -ceq 'EquivalentEvidence' -and $record.passed -is [bool] -and $record.passed -and $record.scope -ceq 'same-machine-local-reversible' -and $record.reviewerConclusion -ceq 'PASS_WITH_NOTRUN_PACKAGED_STARTUP') '等价记录未获限定审核通过'
   Need ($record.packageLaunchTested -is [bool] -and -not $record.packageLaunchTested -and $record.packageLaunchStatus -ceq 'NOTRUN' -and $record.sourceGitSha -ceq $manifest.source.gitSha) '等价记录隐瞒实际包未启动或来源不符'

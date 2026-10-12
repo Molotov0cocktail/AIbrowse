@@ -15,6 +15,7 @@ $checks=[Collections.Generic.List[string]]::new()
 function Reject([string]$name,[scriptblock]$operation){$rejected=$false;try{&$operation|Out-Null}catch{$rejected=$true};if(-not $rejected){throw "合成反例未拒绝：$name"};Same $script:old (Inventory $script:output);$checks.Add($name)}
 try {
   WriteText $tool ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'output-switch.ps1')))
+  $toolSourceSha256=(Get-FileHash -LiteralPath $tool).Hash.ToLowerInvariant();$testSourceSha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant()
   WriteText (Join-Path $fixture '.gitignore') "/release/`n/output/`n/log/`n"
   WriteText (Join-Path $fixture 'tracked.txt') '合成源码'
   InvokeFixtureGit @('init','--quiet');InvokeFixtureGit @('add','.gitignore','tracked.txt','tools/legacy-followup/output-switch.ps1')
@@ -100,6 +101,7 @@ try {
   foreach($source in $requiredSources){WriteText (Join-Path $fixture $source) ('合成源码 '+$source)}
   $unchangedTests="// ---------- 测试替身 ----------`n合成替身与60项断言保持完整`n"
   WriteText (Join-Path $fixture 'src/main/ai/conversation-service.test.ts') ("合成新增只读插桩`n"+$unchangedTests)
+  WriteText (Join-Path $fixture 'src/main/ai/conversation-ui-interruption.test.ts') '合成原四项中断测试源码'
   WriteText (Join-Path $fixture 'tools/real-provider/conversation-lock-diagnostic.test.ts') '合成Windows真实锁工具源码'
   WriteText (Join-Path $fixture 'node_modules/electron/dist/electron.exe') '合成Electron'
   InvokeFixtureGit @('add','.');InvokeFixtureGit @('-c','user.name=AIbrowse fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false','commit','--quiet','-m','test: 新scope合成来源')
@@ -240,7 +242,74 @@ try {
   &$tool -Action Rollback -SwitchId $newSwitch.id -EvidenceScope real-provider-20261012|Out-Null
   Same $old (Inventory $output);Same $newTree (Inventory (Join-Path $newSwitch.scope 'rolled-back-candidate'))
   $checks.Add('新scope实际Switch与Rollback保全两树')
-  SaveJson (Join-Path $scope 'result.json') @{passed=$true;checks=$checks;checkCount=$checks.Count;sourceSha256=(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'output-switch.ps1')).Hash.ToLowerInvariant();testSha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant();realOutputTouched=$false;realProfileTouched=$false;productExecuted=$false;syntheticEvidenceOnly=$true;switchId=$switched.id}
+  # Browser UX scope: promote the synthetic 0.1.3 candidate to previous output, then validate 0.1.4.
+  $providerPrevious=Join-Path $scope 'provider-previous-output-retained'
+  [IO.Directory]::Move($output,$providerPrevious)
+  [IO.Directory]::Move((Join-Path $newSwitch.scope 'rolled-back-candidate'),$output)
+  $previousManifest=Get-Content -LiteralPath (Join-Path $output 'build-provenance.json') -Raw|ConvertFrom-Json
+  $old=Inventory $output
+  $manifest.source.version='0.1.4';$stem='AIbrowse-0.1.4-win-x64-internal'
+  foreach($relative in @(($stem+'.exe'),($stem+'.msi'))){WriteText (Join-Path $release $relative) ('合成浏览器UX安装器 '+$relative)}
+  $manifest.installer=Fact $release ($stem+'.exe');$manifest.msi=Fact $release ($stem+'.msi');SaveJson $manifestPath $manifest
+  $uxRoot='log/browser-ux-20261012';$uxRecordPath=Join-Path $fixture ($uxRoot+'/equivalence-record.json')
+  $uxPaths=[ordered]@{candidateManifest='release/build-provenance.json';previousManifest='output/build-provenance.json';staticBinding=($uxRoot+'/static-binding.json');packageInventory=($uxRoot+'/package-inventory.json');guiEvidence=($uxRoot+'/gui-evidence.json');quality=($uxRoot+'/quality.json');hostConstraint=($uxRoot+'/package-launch-constraint.json');priorQualification='log/real-provider-20261012/equivalence-record.json';independentReview=($uxRoot+'/independent-review.json')}
+  SaveJson (Join-Path $fixture $uxPaths.staticBinding) @{version=1;passed=$true;sourceGitSha=$head;manifestSha256=(Fact $fixture $uxPaths.candidateManifest).sha256;executableSha256=$manifest.payload.executable.sha256;asarSha256=$manifest.payload.asar.sha256;guardianSha256=$manifest.payload.guardian.sha256}
+  SaveJson (Join-Path $fixture $uxPaths.packageInventory) @{version=1;passed=$true;sourceGitSha=$head;manifestSha256=(Fact $fixture $uxPaths.candidateManifest).sha256;packageRoot='release/win-unpacked';files=$manifest.payload.packageFiles;installers=@{installer=$manifest.installer;msi=$manifest.msi;installerBuild=$manifest.installerBuild}}
+  $uxArtifacts=[ordered]@{}
+  foreach($width in @(1280,800)){$name='desktop'+$width;$relative=$uxRoot+'/'+$name+'.json';SaveJson (Join-Path $fixture $relative) @{viewport=@{width=$width;height=$(if($width -eq 1280){800}else{600})};failures=@();checks=@{compactChromeOk=$true;noDefaultDebugOk=$true;noBottomChromeOk=$true};dom=@{chrome=@{rect=@{height=80}};address=@{width=$(if($width -eq 1280){790}else{476})}}};$uxArtifacts[$name]=Fact $fixture $relative}
+  $relative=$uxRoot+'/bounds.json';$uxBoundsPath=Join-Path $fixture $relative;$uxBounds=@{status='passed';failures=@();captures=@(1..78|ForEach-Object {$expected=@{x=0;y=80;width=1280;height=720};@{browserVisible=$true;checks=@{contentSizeOk=$true;webContentsViewBoundsOk=$true;contrast=13};webContentsViews=@(@{visible=$true;bounds=@{x=0;y=80;width=1280;height=720}});expectedViewBounds=$expected;failures=@()}})};SaveJson $uxBoundsPath $uxBounds;$uxArtifacts.bounds=Fact $fixture $relative
+  $navigationNames=@('normal','blank','ctrl','script','dangerous','post','task','ai','真实Bing到bilibili');$navigationSources=@(@{originalPassed=$false;originalExitCode=1;excludedOriginalFailures=@(@{name='iframe';passed=$false})},@{originalPassed=$false;originalExitCode=1;excludedOriginalFailures=@(@{name='iframe';passed=$false})})
+  $relative=$uxRoot+'/navigation.json';SaveJson (Join-Path $fixture $relative) @{passed=$true;scope='仅列明的八个本地场景与一次真实Bing到bilibili导航；不是原始整场通过，也不授iframe物理输入通过';cases=@($navigationNames|ForEach-Object {@{name=$_;passed=$true}});excluded=@(@{name='iframe-input-not-delivered';status='NOTRUN';reason='合成保留失败'});sources=$navigationSources};$uxArtifacts.navigation=Fact $fixture $relative
+  $uxChecks=@{compactChrome=$true;debugDefaultAbsent=$true;localDataMounted=$true;smallWindow=$true;navigationFromWatch=$true;navigationFromResearch=$true;sidePanelBounds=$true}
+  SaveJson (Join-Path $fixture $uxPaths.guiEvidence) @{version=1;scope='browser-ux-navigation-repair';passed=$true;sourceGitSha=$head;actualElectron=$true;runtimeExecutable=(Fact $fixture 'node_modules/electron/dist/electron.exe');checks=$uxChecks;artifacts=$uxArtifacts}
+  $uxQuality=@{version=2;sourceGitSha=$head;checks=@{}};foreach($kind in @('typecheck','lint','format','build')){$relative=$uxRoot+'/'+$kind+'.log';WriteText (Join-Path $fixture $relative) ('合成全量门 '+$kind);$uxQuality.checks[$kind]=@{exitCode=0;log=(Fact $fixture $relative)}}
+  $uxFullLog=$uxRoot+'/full.log';$uxFullExit=$uxRoot+'/full-exit.json';$uxReplacementReport=$uxRoot+'/conversation-ui-interruption.json';$uxReplacementLog=$uxRoot+'/conversation-ui-interruption.log'
+  $uxFullText="FAIL  src/main/ai/conversation-ui-interruption.test.ts > 合成rename失败`nsrc/main/ai/conversation-ui-interruption.test.ts (4 tests | 1 failed)`nstage=rename code=EPERM`nTest Files  1 failed | 474 passed | 1 skipped (476)`nTests  1 failed | 6970 passed | 3 skipped (6974)";WriteText (Join-Path $fixture $uxFullLog) $uxFullText;WriteText (Join-Path $fixture $uxFullExit) '1';WriteText (Join-Path $fixture $uxReplacementLog) '合成原四项复验通过'
+  $uxAssertions=@(1..4|ForEach-Object {@{status='passed';fullName=('合成原断言'+$_);failureMessages=@()}})
+  SaveJson (Join-Path $fixture $uxReplacementReport) @{success=$true;numTotalTests=4;numPassedTests=4;numFailedTests=0;numPendingTests=0;numTodoTests=0;testResults=@(@{name=(Join-Path $fixture 'src/main/ai/conversation-ui-interruption.test.ts');status='passed';assertionResults=$uxAssertions})}
+  $uxCompositeReport=$uxRoot+'/composite-review.md';$uxCompositeReview=$uxRoot+'/composite-review.json';WriteText (Join-Path $fixture $uxCompositeReport) '合成独立组合审核PASS，历史EPERM根因unknown'
+  $uxTestSource=(Fact $fixture 'src/main/ai/conversation-ui-interruption.test.ts').sha256
+  $uxTest=@{mode='bounded-composite';historicalRootCause='unknown';full=@{exitCode=1;passed=6970;failed=1;skipped=3;log=(Fact $fixture $uxFullLog);exit=(Fact $fixture $uxFullExit)};replacement=@{path='src/main/ai/conversation-ui-interruption.test.ts';exitCode=0;passed=4;failed=0;report=(Fact $fixture $uxReplacementReport);log=(Fact $fixture $uxReplacementLog);sourceSha256=$uxTestSource};deduplicated=@{passed=6971;skipped=3}}
+  SaveJson (Join-Path $fixture $uxCompositeReview) @{version=1;sourceGitSha=$head;conclusion='PASS_WITH_UNKNOWN_HISTORICAL_EPERM';proofs=@{fullLog=$uxTest.full.log.sha256;fullExit=$uxTest.full.exit.sha256;replacementReport=$uxTest.replacement.report.sha256;replacementLog=$uxTest.replacement.log.sha256;sourceSha256=$uxTestSource};report=(Fact $fixture $uxCompositeReport)}
+  $uxTest.review=Fact $fixture $uxCompositeReview;$uxQuality.checks.test=$uxTest;SaveJson (Join-Path $fixture $uxPaths.quality) $uxQuality
+  SaveJson (Join-Path $fixture $uxPaths.hostConstraint) @{version=1;sourceGitSha=$head;status='NOTRUN';reason='host-profile-path-redirection-blocked';blockedByHostPathRedirection=$true;packageExecuted=$false}
+  $uxProofs=[ordered]@{};foreach($name in $uxPaths.Keys){if($name -ne 'independentReview'){$uxProofs[$name]=Fact $fixture $uxPaths[$name]}}
+  $uxReviewReport=$uxRoot+'/independent-review.md';WriteText (Join-Path $fixture $uxReviewReport) '合成独立浏览器UI与导航审核 PASS，包启动NOTRUN'
+  $uxReviewHashes=[ordered]@{};foreach($name in $uxProofs.Keys){$uxReviewHashes[$name]=$uxProofs[$name].sha256}
+  $uxReview=@{version=1;sourceGitSha=$head;conclusion='PASS_WITH_NOTRUN_PACKAGED_STARTUP';proofs=$uxReviewHashes;report=(Fact $fixture $uxReviewReport)}
+  SaveJson (Join-Path $fixture $uxPaths.independentReview) $uxReview;$uxProofs.independentReview=Fact $fixture $uxPaths.independentReview
+  $uxRecord=@{version=3;qualification='EquivalentEvidence';passed=$true;scope='browser-ux-navigation-repair';packageLaunchTested=$false;packageLaunchStatus='NOTRUN';packageLaunchNotRunReason='host-profile-path-redirection-blocked';sourceGitSha=$head;reviewerConclusion='PASS_WITH_NOTRUN_PACKAGED_STARTUP';machine=@{computerName=[Environment]::MachineName;platform='win32';architecture='x64'};proofs=$uxProofs}
+  SaveJson $uxRecordPath $uxRecord
+  $uxArgs=@{Action='CheckOnly';PackageJournal=$journal;Qualification='EquivalentEvidence';EquivalenceRecord=$uxRecordPath;EvidenceScope='browser-ux-20261012'}
+  $uxPlan=(&$tool @uxArgs)|ConvertFrom-Json
+  if($uxPlan.source.version -cne '0.1.4' -or $uxPlan.packageLaunchTested -or $uxPlan.packageLaunchStatus -cne 'NOTRUN'){throw '浏览器UX计划边界不符'}
+  Same $old (Inventory $output);$checks.Add('浏览器UX新scope闭合0.1.4与旧0.1.3且诚实NOTRUN')
+  function RefreshUx([string]$name){$uxProofs[$name]=Fact $fixture $uxPaths[$name];if($name -ne 'independentReview'){$uxReview.proofs[$name]=$uxProofs[$name].sha256;SaveJson (Join-Path $fixture $uxPaths.independentReview) $uxReview;$uxProofs.independentReview=Fact $fixture $uxPaths.independentReview};SaveJson $uxRecordPath $uxRecord}
+  $uxQuality.checks.test.full.exitCode=0;SaveJson (Join-Path $fixture $uxPaths.quality) $uxQuality;RefreshUx 'quality';Reject '浏览器UX组合门不得伪造全量exit0' {&$tool @uxArgs}
+  $uxQuality.checks.test.full.exitCode=1;SaveJson (Join-Path $fixture $uxPaths.quality) $uxQuality;RefreshUx 'quality'
+  $uxQuality.checks.test.replacement.sourceSha256='f'*64;SaveJson (Join-Path $fixture $uxPaths.quality) $uxQuality;RefreshUx 'quality';Reject '浏览器UX组合门必须绑定原四项源码' {&$tool @uxArgs}
+  $uxQuality.checks.test.replacement.sourceSha256=$uxTestSource;SaveJson (Join-Path $fixture $uxPaths.quality) $uxQuality;RefreshUx 'quality'
+  WriteText (Join-Path $fixture $uxFullLog) ($uxFullText+"`nFAIL  src/main/ai/other.test.ts > 合成混入失败");$uxQuality.checks.test.full.log=Fact $fixture $uxFullLog;SaveJson (Join-Path $fixture $uxPaths.quality) $uxQuality;RefreshUx 'quality';Reject '浏览器UX组合门拒绝混入不同FAIL路径' {&$tool @uxArgs}
+  WriteText (Join-Path $fixture $uxFullLog) $uxFullText;$uxQuality.checks.test.full.log=Fact $fixture $uxFullLog;SaveJson (Join-Path $fixture $uxPaths.quality) $uxQuality;RefreshUx 'quality'
+  $uxBounds.captures[0].webContentsViews[0].bounds.width=1279;SaveJson $uxBoundsPath $uxBounds;$uxArtifacts.bounds=Fact $fixture ($uxRoot+'/bounds.json');SaveJson (Join-Path $fixture $uxPaths.guiEvidence) @{version=1;scope='browser-ux-navigation-repair';passed=$true;sourceGitSha=$head;actualElectron=$true;runtimeExecutable=(Fact $fixture 'node_modules/electron/dist/electron.exe');checks=$uxChecks;artifacts=$uxArtifacts};RefreshUx 'guiEvidence';Reject '浏览器UX可见View坐标错配拒绝' {&$tool @uxArgs}
+  $uxBounds.captures[0].webContentsViews[0].bounds.width=1280;SaveJson $uxBoundsPath $uxBounds;$uxArtifacts.bounds=Fact $fixture ($uxRoot+'/bounds.json');SaveJson (Join-Path $fixture $uxPaths.guiEvidence) @{version=1;scope='browser-ux-navigation-repair';passed=$true;sourceGitSha=$head;actualElectron=$true;runtimeExecutable=(Fact $fixture 'node_modules/electron/dist/electron.exe');checks=$uxChecks;artifacts=$uxArtifacts};RefreshUx 'guiEvidence'
+  $desktop800Path=Join-Path $fixture ($uxRoot+'/desktop800.json');$desktop800=Get-Content -LiteralPath $desktop800Path -Raw|ConvertFrom-Json;$desktop800.failures=@('合成溢出失败');SaveJson $desktop800Path $desktop800;$uxArtifacts.desktop800=Fact $fixture ($uxRoot+'/desktop800.json')
+  SaveJson (Join-Path $fixture $uxPaths.guiEvidence) @{version=1;scope='browser-ux-navigation-repair';passed=$true;sourceGitSha=$head;actualElectron=$true;runtimeExecutable=(Fact $fixture 'node_modules/electron/dist/electron.exe');checks=$uxChecks;artifacts=$uxArtifacts};RefreshUx 'guiEvidence';Reject '浏览器UX原始桌面失败不可由wrapper通过掩盖' {&$tool @uxArgs}
+  $desktop800.failures=@();SaveJson $desktop800Path $desktop800;$uxArtifacts.desktop800=Fact $fixture ($uxRoot+'/desktop800.json');SaveJson (Join-Path $fixture $uxPaths.guiEvidence) @{version=1;scope='browser-ux-navigation-repair';passed=$true;sourceGitSha=$head;actualElectron=$true;runtimeExecutable=(Fact $fixture 'node_modules/electron/dist/electron.exe');checks=$uxChecks;artifacts=$uxArtifacts};RefreshUx 'guiEvidence'
+  $uxProofs.guiEvidence.sha256='f'*64;SaveJson $uxRecordPath $uxRecord;Reject '浏览器UX篡改摘要拒绝' {&$tool @uxArgs};RefreshUx 'guiEvidence'
+  $uxRecord.sourceGitSha='f'*40;SaveJson $uxRecordPath $uxRecord;Reject '浏览器UX错误源码拒绝' {&$tool @uxArgs};$uxRecord.sourceGitSha=$head;SaveJson $uxRecordPath $uxRecord
+  $uxChecks.navigationFromResearch=$false;SaveJson (Join-Path $fixture $uxPaths.guiEvidence) @{version=1;scope='browser-ux-navigation-repair';passed=$true;sourceGitSha=$head;actualElectron=$true;runtimeExecutable=(Fact $fixture 'node_modules/electron/dist/electron.exe');checks=$uxChecks;artifacts=$uxArtifacts};RefreshUx 'guiEvidence';Reject '浏览器UX失败导航证据拒绝' {&$tool @uxArgs}
+  $uxChecks.navigationFromResearch=$true;SaveJson (Join-Path $fixture $uxPaths.guiEvidence) @{version=1;scope='browser-ux-navigation-repair';passed=$true;sourceGitSha=$head;actualElectron=$true;runtimeExecutable=(Fact $fixture 'node_modules/electron/dist/electron.exe');checks=$uxChecks;artifacts=$uxArtifacts};RefreshUx 'guiEvidence'
+  $previousManifest.source.version='0.1.2';SaveJson (Join-Path $output 'build-provenance.json') $previousManifest;RefreshUx 'previousManifest'
+  $wrongOldRejected=$false;try{&$tool @uxArgs|Out-Null}catch{$wrongOldRejected=$true};if(-not $wrongOldRejected){throw '合成反例未拒绝：浏览器UX旧包版本错配拒绝'}
+  $previousManifest.source.version='0.1.3';SaveJson (Join-Path $output 'build-provenance.json') $previousManifest;RefreshUx 'previousManifest';Same $old (Inventory $output);$checks.Add('浏览器UX旧包版本错配拒绝')
+  $uxArgs.Action='Switch';$uxSwitch=(&$tool @uxArgs)|ConvertFrom-Json
+  Same $old (Inventory $uxSwitch.previousOutput);$uxNew=Inventory $output
+  &$tool -Action Rollback -SwitchId $uxSwitch.id -EvidenceScope browser-ux-20261012|Out-Null
+  Same $old (Inventory $output);Same $uxNew (Inventory (Join-Path $uxSwitch.scope 'rolled-back-candidate'))
+  $checks.Add('浏览器UX实际Switch与Rollback反例保全0.1.3及0.1.4两树')
+  if((Get-FileHash -LiteralPath $tool).Hash.ToLowerInvariant() -cne $toolSourceSha256 -or (Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant() -cne $testSourceSha256){throw 'fixture运行期间工具或测试源码变化'}
+  SaveJson (Join-Path $scope 'result.json') @{passed=$true;checks=$checks;checkCount=$checks.Count;sourceSha256=$toolSourceSha256;testSha256=$testSourceSha256;realOutputTouched=$false;realProfileTouched=$false;productExecuted=$false;syntheticEvidenceOnly=$true;switchId=$switched.id}
   @{passed=$true;scope=$scope;checks=$checks.Count;syntheticEvidenceOnly=$true}|ConvertTo-Json
 } catch {
   SaveJson (Join-Path $scope 'failure.json') @{passed=$false;error=$_.Exception.Message;checks=$checks;realOutputTouched=$false;productExecuted=$false}

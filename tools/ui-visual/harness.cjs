@@ -2,14 +2,23 @@
 // CommonJS is required because Electron loads this file as the tool application's main entry.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { app, nativeTheme } = require('electron');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } = require('node:fs');
+const {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+} = require('node:fs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { isAbsolute, join, relative, resolve, sep } = require('node:path');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { fileURLToPath, pathToFileURL } = require('node:url');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { execFileSync } = require('node:child_process');
 
 const repositoryRoot = resolve(__dirname, '..', '..');
 const evidenceParent = resolve(repositoryRoot, 'log', 'ui-refresh-20261012');
@@ -92,6 +101,30 @@ const result = {
     timeoutMs: topLevelTimeoutMs,
     appLogPath,
     appLogOffsetBefore,
+    sourceHashes: Object.fromEntries(
+      execFileSync('git', ['ls-files', '-z', 'src'], { cwd: repositoryRoot, encoding: 'utf8' })
+        .split('\0')
+        .filter((path) => path !== '' && !path.endsWith('.test.ts'))
+        .map((path) => [
+          path,
+          createHash('sha256')
+            .update(readFileSync(join(repositoryRoot, path)))
+            .digest('hex'),
+        ]),
+    ),
+    artifactHashes: Object.fromEntries(
+      [
+        mainEntry,
+        rendererEntry,
+        preloadEntry,
+        ...readdirSync(join(repositoryRoot, 'out/renderer/assets')).map((name) =>
+          join(repositoryRoot, 'out/renderer/assets', name),
+        ),
+      ].map((path) => [
+        relative(repositoryRoot, path).replaceAll('\\', '/'),
+        createHash('sha256').update(readFileSync(path)).digest('hex'),
+      ]),
+    ),
   },
   renderer: null,
   persistence: null,
@@ -99,6 +132,7 @@ const result = {
   captures: [],
   console: [],
   failures: [],
+  workspaceNavigation: null,
   shutdown: { requested: false, willQuit: false },
 };
 
@@ -446,6 +480,8 @@ async function inspectDom(webContents, panelSelector, expectedTheme) {
         app: rect(document.querySelector('.app')),
         mainRow: rect(document.querySelector('.main-row')),
         contentArea: rect(document.querySelector('.content-area')),
+        address: rect(document.querySelector('.address-field')),
+        debugVisible: document.querySelector('.debug-panel') !== null,
         panel: rect(panel),
       };
     })()`,
@@ -500,6 +536,15 @@ async function capture(win, captureName, context) {
     webContentsViewBoundsOk,
     bodyTextContrast: bodyContrast,
     bodyTextContrastOk: bodyContrast !== null && bodyContrast >= 4.5,
+    ...(context.scene === '浏览器基线'
+      ? {
+          compactChromeOk: dom.chrome.rect.height <= 86,
+          noDefaultDebugOk: !dom.debugVisible,
+          noBottomChromeOk: Math.abs(dom.contentArea.bottom - contentHeight) <= 1,
+          usableAddressOk: dom.address.width >= 180,
+          nativeMenuHiddenOk: !win.isMenuBarVisible(),
+        }
+      : {}),
     ...(extraInspection?.checks ?? {}),
   };
   const failures = Object.entries(checks)
@@ -521,6 +566,12 @@ async function capture(win, captureName, context) {
     extraInspection: extraInspection?.details ?? null,
     failures,
   };
+  // Preserve measured geometry even if the host cannot capture its compositor.
+  writeFileSync(
+    join(capturesRoot, `${captureName}.json`),
+    `${JSON.stringify(record, null, 2)}\n`,
+    'utf8',
+  );
   const rawImage = await win.capturePage();
   const rawImageSize = rawImage.getSize();
   const image = rawImage.resize({ width: contentWidth, height: contentHeight, quality: 'best' });
@@ -706,6 +757,7 @@ async function captureMatrix(win) {
   const viewports = [
     { width: 1280, height: 800 },
     { width: 1100, height: 760 },
+    { width: 800, height: 600 },
   ];
   const themes = ['light', 'dark'];
   const scenes = [
@@ -758,10 +810,39 @@ async function captureMatrix(win) {
       panelSelector: '.diagnostic-panel',
       browserVisible: true,
       open: async () => {
-        await clickSelector(webContents, 'button[aria-label="诊断信息"]');
+        await clickSelector(webContents, '.tools-toggle');
+        await clickButtonText(webContents, '.tools-tray', '诊断信息');
+        await clickSelector(webContents, '.tools-toggle');
         await waitForSelector(webContents, '.diagnostic-panel');
       },
-      close: async () => clickSelector(webContents, 'button[aria-label="诊断信息"]'),
+      close: async () => {
+        await clickSelector(webContents, '.tools-toggle');
+        await clickButtonText(webContents, '.tools-tray', '诊断信息');
+        await clickSelector(webContents, '.tools-toggle');
+      },
+    },
+    {
+      name: 'tools',
+      scene: '按需工具区',
+      panelSelector: null,
+      browserVisible: true,
+      open: async () => clickSelector(webContents, '.tools-toggle'),
+      close: async () => clickSelector(webContents, '.tools-toggle'),
+    },
+    {
+      name: 'snapshot-debug',
+      scene: '按需快照调试区',
+      panelSelector: null,
+      browserVisible: true,
+      open: async () => {
+        await clickSelector(webContents, '.tools-toggle');
+        await clickButtonText(webContents, '.tools-tray', '页面快照调试');
+        await waitForSelector(webContents, '.debug-panel');
+      },
+      close: async () => {
+        await clickSelector(webContents, '.debug-toggle');
+        await clickSelector(webContents, '.tools-toggle');
+      },
     },
     {
       name: 'local-data',
@@ -865,6 +946,36 @@ async function captureMatrix(win) {
       }
     }
   }
+}
+
+async function verifyWorkspaceNavigation(win) {
+  const wc = win.webContents;
+  await ensureBrowserMode(wc);
+  const before = await evaluate(wc, `document.querySelectorAll('.tab').length`);
+  await clickSelector(wc, '.watch-open');
+  await waitForSelector(wc, '.watch-workspace');
+  await clickSelector(wc, '.new-tab-button');
+  await waitFor('新建标签返回浏览', () =>
+    evaluate(
+      wc,
+      `!document.querySelector('.watch-workspace') && document.querySelectorAll('.tab').length === ${before + 1}`,
+    ),
+  );
+  await clickSelector(wc, '.tab.active .tab-close');
+  await clickSelector(wc, '.watch-open');
+  await waitForSelector(wc, '.watch-workspace');
+  await clickSelector(wc, '.tab');
+  await waitFor('激活标签返回浏览', () =>
+    evaluate(wc, `!document.querySelector('.watch-workspace')`),
+  );
+  const visible = inspectWebContentsViews(win).some((view) => view.visible);
+  result.workspaceNavigation = {
+    watchNewTab: true,
+    watchActivateTab: true,
+    nativeContentVisible: visible,
+  };
+  if (!visible) noteFailure('返回浏览后原生网页仍不可见');
+  persistResult();
 }
 
 let activeWindow = null;
@@ -971,6 +1082,19 @@ async function run(win) {
     }
 
     await captureMatrix(win);
+    await verifyWorkspaceNavigation(win);
+    for (const [path, expected] of Object.entries({
+      ...result.inputs.sourceHashes,
+      ...result.inputs.artifactHashes,
+    })) {
+      if (
+        createHash('sha256')
+          .update(readFileSync(join(repositoryRoot, path)))
+          .digest('hex') !== expected
+      ) {
+        noteFailure('验收期间源码或构建产物发生变化', path);
+      }
+    }
     const captureFailures = result.captures.reduce(
       (count, item) => count + item.failures.length,
       0,
