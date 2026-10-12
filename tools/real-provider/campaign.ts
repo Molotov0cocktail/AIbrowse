@@ -1,6 +1,6 @@
 // Test-only composition of production services. Secrets arrive over a one-use pipe.
 import { app, BaseWindow, session } from 'electron';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { connect } from 'node:net';
 import { SecureCredentialStoreImpl } from '../../src/main/ai/credential-store';
@@ -12,6 +12,8 @@ import { BrowserControllerImpl } from '../../src/main/browser/browser-controller
 import { digestFixture } from '../legacy-diagnostics/models-fixtures';
 import { runResearchScenarios } from './research-scenarios';
 import { runConversationScenarios } from './conversation-scenarios';
+import { runIndependentWatchScenarios } from './watch-scenarios';
+import { campaignPolicy, validCampaignPolicyBinding } from './campaign-policy';
 
 console.log = console.warn = console.error = console.debug = () => undefined;
 const root = app.getAppPath();
@@ -22,8 +24,17 @@ app.commandLine.appendSwitch('disable-http-cache');
 app.on('window-all-closed', () => undefined);
 const phase = process.env.AIBROWSE_CAMPAIGN_PHASE ?? 'all';
 const origin = process.env.AIBROWSE_CAMPAIGN_ORIGIN ?? '';
-const model = process.env.AIBROWSE_CAMPAIGN_MODEL ?? 'deepseek-flash';
-const budget = 28;
+const model =
+  phase === 'watch-repair'
+    ? 'deepseek-flash'
+    : (process.env.AIBROWSE_CAMPAIGN_MODEL ?? 'deepseek-flash');
+const policy = campaignPolicy(phase);
+if (
+  !validCampaignPolicyBinding(JSON.parse(readFileSync(join(root, 'binding.json'), 'utf8')), phase)
+)
+  throw new Error('验收阶段预算绑定不符');
+const budget = policy.requestBudget;
+const campaignAbort = new AbortController();
 interface Call {
   purpose: string;
   status: number | null;
@@ -46,6 +57,7 @@ const report = {
   stage: 'startup',
   credentialsDeleted: false,
   browserDisposed: false,
+  ...(phase === 'watch-repair' ? { passed: false } : {}),
 };
 const save = () => writeFileSync(join(root, 'result.json'), JSON.stringify(report, null, 2));
 let purpose = '准备';
@@ -103,12 +115,45 @@ const inputKey = new Promise<string>((resolve, reject) => {
   });
   input.once('error', () => reject(new Error('凭据输入失败')));
 });
-const guard = setTimeout(() => {
-  report.fatal = '总期限耗尽（失败退出）';
-  save();
-  app.exit(2);
-}, 900000);
+const guard = setTimeout(
+  () => {
+    report.fatal = '总期限耗尽（失败退出）';
+    save();
+    if (phase !== 'watch-repair') {
+      app.exit(2);
+      return;
+    }
+    networkBlocked = true;
+    campaignAbort.abort();
+    void Promise.race([cleanupCredential(), new Promise((done) => setTimeout(done, 3000))]).finally(
+      () => {
+        save();
+        app.exit(2);
+      },
+    );
+  },
+  phase === 'watch-repair' ? policy.lifetimeMs - 5000 : policy.lifetimeMs,
+);
 let credentials: SecureCredentialStoreImpl | null = null;
+let credentialCleanup: Promise<void> | null = null;
+function cleanupCredential(): Promise<void> {
+  credentialCleanup ??= (async () => {
+    try {
+      if (credentials) report.credentialsDeleted = await credentials.delete('openai-compatible');
+      else if (phase === 'watch-repair')
+        report.credentialsDeleted = !existsSync(join(profile, 'credentials.json'));
+      if (report.credentialsDeleted && existsSync(join(profile, 'credentials.json')))
+        report.credentialsDeleted = !readFileSync(
+          join(profile, 'credentials.json'),
+          'utf8',
+        ).includes('openai-compatible');
+    } catch {
+      report.credentialsDeleted = false;
+      report.fatal ??= '凭据清除失败';
+    }
+  })();
+  return credentialCleanup;
+}
 let browser: BrowserControllerImpl | null = null;
 let win: BaseWindow | null = null;
 async function run() {
@@ -159,7 +204,10 @@ async function run() {
       save();
       const started = performance.now();
       try {
-        for await (const event of actual.stream(request, signal)) {
+        for await (const event of actual.stream(
+          request,
+          AbortSignal.any([signal, campaignAbort.signal]),
+        )) {
           if (event.type === 'delta') call.textChars += event.text.length;
           if (event.type === 'reasoning') call.reasoningChars += event.text.length;
           if (event.type === 'toolCalls') call.tools += event.toolCalls.length;
@@ -174,7 +222,7 @@ async function run() {
       }
     },
   };
-  if (phase === 'probe' || phase === 'all') {
+  if (phase === 'probe' || phase === 'all' || phase === 'watch-repair') {
     purpose = '基本流式连通与准确回答';
     let text = '';
     for await (const event of provider.stream(
@@ -197,6 +245,19 @@ async function run() {
     });
     save();
     if (networkBlocked) return;
+    if (phase === 'watch-repair') {
+      if (
+        !report.cases.every(
+          (item) =>
+            typeof item === 'object' && item !== null && 'passed' in item && item.passed === true,
+        )
+      )
+        return;
+      purpose = '独立Watch目标显式授权AI解释';
+      report.cases.push(await runIndependentWatchScenarios(root, provider, model));
+      save();
+      return;
+    }
     purpose = 'Watch生产摘要schema与真实解释';
     const fixture = digestFixture(root, provider, model);
     try {
@@ -269,14 +330,24 @@ void run()
       report.browserDisposed = true;
     }
     win?.destroy();
-    if (credentials) report.credentialsDeleted = await credentials.delete('openai-compatible');
-    // The remaining file is an empty production credential container, never the temporary key.
-    if (report.credentialsDeleted)
-      report.credentialsDeleted = !readFileSync(join(profile, 'credentials.json'), 'utf8').includes(
-        'openai-compatible',
-      );
+    await cleanupCredential();
     clearTimeout(guard);
     globalThis.fetch = realFetch;
+    if (phase === 'watch-repair')
+      report.passed =
+        report.finished &&
+        report.fatal === null &&
+        report.credentialsDeleted &&
+        report.networkRequests === 2 &&
+        report.calls.length === 2 &&
+        report.calls.every(
+          (call) => call.status === 200 && call.done && call.errors.length === 0,
+        ) &&
+        report.cases.length === 2 &&
+        report.cases.every(
+          (item) =>
+            typeof item === 'object' && item !== null && 'passed' in item && item.passed === true,
+        );
     save();
     app.quit();
   });

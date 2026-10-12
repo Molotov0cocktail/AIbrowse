@@ -5,6 +5,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import process from 'node:process';
+import { campaignPolicy } from './campaign-policy.ts';
+
+if (process.argv.length > 3 || !['legacy', 'watch-repair'].includes(process.argv[2] ?? 'legacy'))
+  throw new Error('构建阶段仅允许 legacy 或 watch-repair');
+const policy = campaignPolicy(process.argv[2] ?? 'legacy');
 
 const root = resolve('log/real-provider-20261012', 'campaign-' + randomUUID());
 mkdirSync(join(root, 'profile'), { recursive: true });
@@ -34,12 +39,14 @@ writeFileSync(
           'tools/real-provider/campaign-build.mjs',
           'tools/real-provider/campaign-launch.mjs',
           'tools/real-provider/page-fixture.mjs',
+          'tools/real-provider/campaign-policy.ts',
+          'tools/real-provider/secret-scan.ts',
+          'tools/real-provider/campaign-cleanup.ts',
         ].map((file) => [file, hash(file)]),
       ),
       bundle: hash(join(root, 'entry.cjs')),
       electron: hash('node_modules/electron/dist/electron.exe'),
-      requestBudget: 28,
-      lifetimeMs: 900000,
+      ...policy,
     },
     null,
     2,

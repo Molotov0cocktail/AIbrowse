@@ -1,5 +1,49 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 独立监控真实 Provider 验证、用户数据清空与重新交付（2026-10-12）
+
+- TASK / BASELINE：用户已正常退出应用，明确授权使用新临时 Key 验证、清除本地数据并重新打包；
+  接管干净 `a343e4b21425d4bc422588c947887c82baa3c0f8`。上一轮 0.1.6 包独审已 PASS，但因旧程序运行尚未切换，
+  output 仍为 0.1.5；旧失败、210 项绑定证据及 packageLaunchStatus=NOTRUN 保留。
+- GOAL / SCOPE：在隔离 profile 中复用生产 Provider 验证基本流式响应与独立监控摘要的显式 AI 授权，
+  然后清空当前账户 AIbrowse 的应用数据，重建 Windows x64 未签名内部候选并完成 output 选择。
+  不重复未受影响的产品测试，不新增监控产品能力，不执行安装器、公开发行或自动更新。
+- INVARIANTS：用户 Key 只在调用者内存、单次挑战管道及测试 profile 的生产 DPAPI 容器内存在；不进入
+  命令行、环境变量、源码、日志、报告、模型消息或包。完成后删除临时凭据，原始模型正文与 reasoning 不落盘。
+  目标固定为当前已配置的 `https://api.deepseek.com/chat/completions` / `deepseek-flash`，
+  接口参考 [DeepSeek 官方文档](https://api-docs.deepseek.com/api/create-chat-completion/)，实际结果以本轮请求为准。
+- 凭据输入工程修订：内置 Node REPL 拒绝启动器所需的 `node:process`，普通执行会话的 stdin 已关闭，
+  两项均为零网络、零凭据输入的准备失败。改用项目 Node 24.18 的受控终端入口：确认 TTY raw mode 无回显后
+  将 Key 送到 Node 内存，再沿已审一次性管道传给 Electron；Key 不作为 shell 文本或命令参数。
+  已用非秘密占位输入验证无回显；最终原件、父进程 Node 版本及清理事实分别保留。
+- TEST / ACCEPTANCE：首批最多 2 次真实请求（基本流式 1、独立监控摘要 1），单请求 60 秒、整场 3 分钟。
+  未开启和其它摘要计划零请求、Source/FTS/usage/journal 恒等、默认目标共享状态不扩大；成功须同时具备
+  有效服务结果、流式终态、严格摘要校验、正常退出及凭据清除，HTTP 200 不单独算通过。
+  鉴权/余额/限流失败立即停止后继请求；同路线两次无新增证据即换路，追加网络预算须先记录具体诊断目的。
+- DATA RESET：用户授权覆盖当前 AIbrowse 会话、Sources、Research、Watch、历史书签、Cookie、缓存、
+  Provider 配置及凭据；不清空项目源码、测试证据或其它应用数据。先核逻辑与 native 实体根及各子项映射，
+  仅对已确认的绝对应用目录操作，应用/guardian 退出与边界核验均须成立；不依据旧外部 SQLite 错误修库。
+  不读取业务正文，不保留未说明的用户数据备份；只留无正文的路径身份、数量与清空结果证据。
+- PLAN / COMPLETION：主协调持有临时 Key 并执行请求、清空和交付；Worker 分别维护隔离验证工具和清空工具；
+  独立 Reviewer 核安全/隐私与实际证据。清空完成并核空态、临时凭据清除、最终包全树/来源独审通过后更新 output，
+  完整保留旧程序文件；正文或凭据不得进入包。产品启动是否实测另记，不把清空或静态绑定冒称运行通过。
+- 真实 Provider 已完成：`log/real-provider-20261012/campaign-34e9b1c4-2f58-4b65-acab-1511b90e4b77/`
+  精确 2 请求，基础流式与独立 Watch 授权摘要均 200、done、无错误；仅选中事件进入摘要，未开启计划零调用，
+  Sources/FTS/usage/journal、事件事实和目标默认共享状态恒等。父子进程均通过且 exit0，整场 4840ms；
+  两个凭据路径已不存在，扫描 10 文件/1527819 字节/0 明文命中。源码、bundle、Electron 与实际结果独审 PASS，
+  见 `log/watch-live-reset-20261012/provider-result-independent.json`。此次不测试真实 YouTube 或打包程序启动。
+- 清空工程修订：首场 `log/authorized-profile-inspect-20261012-04/reset-85c900fb16bb4eb9abe87ca3ef83d397/`
+  在逻辑目录删除返回后发现目录身份变化，按门停止；native 视图已不存在，逻辑路径显露其原底层目录，
+  剩 101 文件/17878345 字节。旧失败及元数据保留，不声称清空成功。续清仍只覆盖原两个授权绝对根，
+  允许重新 Inspect 一个根已不存在的状态；剩余根与全部成员须重新核定身份、最终路径、链接与进程边界。
+  新计划之后的身份变化仍拒绝，不放宽旧比较，不以原计划直接重试；不读取正文、不新增备份或清理范围。
+- 续清结果：独立复跑 16 项合成测试通过，Inspect05 精确新计划通过独审；实际续清 exit0，
+  `log/authorized-profile-inspect-20261012-05/reset-e5e2c5ed6eac4eca8ff29102b72949ff/result.json`
+  两个应用根均不存在、文件/目录/字节均为 0；未读取业务正文，未创建用户数据备份。首场部分删除如实保留。
+  本轮最终 typecheck、lint、format:check 均 exit0；Provider 工具 13 项与清空工具 16 项独立验证通过。
+  工具、合同与实际证据审核后生成干净源码候选，再重建安装器并核完整树；旧 release 80 文件已逐项归档，
+  output 旧 0.1.5 尚未替换，最终选择另记录。
+
 ## 独立监控目标与采集提示修复合同（2026-10-12）
 
 - TASK / BASELINE：用户先要求定位监控预览失败和采集红字，后明确监控不得依赖标记信源、默认不影响 AI 搜寻，
