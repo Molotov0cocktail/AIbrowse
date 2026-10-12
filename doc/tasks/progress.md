@@ -6,6 +6,14 @@
 
 ### 当前任务与后继
 
+- 2026-10-12用户追加要求严格验证所有剩余事项并定位根因，已恢复有界诊断。baseline `dedbfdcbdcea2723eb09c4f73c0f1b5810cbe9e8`、接管工作区干净；差量合同和结果矩阵见 `doc/tasks/legacy-repair.md` 首节。三方向并行准备、真实运行串行；不修改真实数据或选定 output。以下上一轮遇难停止为历史状态，诊断不预授修复/发行通过。
+  用户明确软件主要用于当前电脑接电环境，无需断电或其它电脑测试；两项排除本轮验收且不作为当前使用阻塞，保留未实测事实。
+  已完成 Watch 旧/新 33 项模块对照（旧19 FAIL、当前全通过）、442 项聚焦回归及有来源边界的存储/隐私/语义验证。Research/跨run reasoning 在当前真实服务未复现兼容失败；真实请求累计8次硬止，Digest第7次证实合法JSON缺规定schema、第8次同一请求仅补system结构说明即通过生产Service/validator，**产品prompt尚未修复**。
+  资源唯一636.684秒场exit0/Job0，118快照/20周转及62类型点；新增计数主要Thread/Event、周转回落，无分配栈，旧长时超限和fatal历史unknown不关闭。20次旧OS实体均先于新实体出生，不能保证create调用前已退休。当前代码/source与output保持原样。
+  最小退出矩阵两轮均复现关闭在途快照后原API/preview/drain在观察窗内未结算。首完整关联场因工具额外监听器碰撞既有listenerCount oracle提前自然exit1/Job0（工具FAIL，非产品新FAIL）；观察器1红/3绿→4绿并经限定独审后，唯一补正full-283436f89b184c39a7e0a99d67b5b236在107.864秒自然exit0/Job0、2165操作全部结算、writer双null、pending空。本场未复现不关闭最小竞态，也不恢复d79历史精确触发者；没有第三场。
+  最终全局typecheck、全诊断工具lint/format均0；README的IDN/CI两条陈旧描述已纠正。当前产品仍REPAIR（退出竞态、Digest输出协议缺失未修）；旧长时资源分配根因和旧fatal保持unknown。原始报告/质量/独审统一在log/legacy-diagnosis-20261012，任务首节为结论矩阵；本轮测试停止，仅收口诊断与文档，不自动修产品、换包、推送候选或启动Stage8。
+  独立Reviewer对本轮诊断/最终工具/文档限定PASS（report SHA256 df40e33df4c95334757b984539d0643dc7ab1f9dcb9218d7e5cc3a55af5600f3），不授产品通过。源码/依赖零差量，output EXE373f81…与manifest b587dc…未变；通用诊断源码及文档仅本地提交保全，未推送。当前任务结束，下一产品动作应针对上述两个明确机制，资源旧根因仍不能编造。
+
 - 2026-10-12用户新增授权尝试修复全部实际遗留问题，遇到难以修复的问题停止汇报。
   接管 baseline `9083172b0d0848e62a78c4b7c03c697a81470572`，工作区干净；本轮合同为 `doc/tasks/legacy-repair.md`。
   已修 Session Watch 页面归属 P1、Digest reasoning 兼容，并补 Research 来源入口/零证据提示；119文件/2378项相关回归通过，typecheck/lint/format/build通过，新独立安全/隐私/持久化审核限定 PASS。

@@ -629,9 +629,9 @@ ToolExecutor derived 派生（allowedKind+documentId）、快照 click 语义元
 ## 已知限制
 
 - PageSnapshot v1 仅采集主文档，跨域 iframe 内容 L1 降级跳过（设计决议，点时刻尽力采样）。
-- 地址栏不支持中文/国际化域名（IDN，走搜索兜底）；搜索引擎暂硬编码 Bing（SearchProvider
+- 地址栏未带协议的中文/国际化域名（IDN）走搜索兜底；完整 HTTPS IDN 与 punycode 域名可规范化导航。搜索引擎暂硬编码 Bing（SearchProvider
   接口隔离已落地，v1 为 Bing 搜索页实现，未来 API 供应商实现同接口即可替换）。
-- 无 CI / 打包配置（第一阶段验收不要求；打包属 Seventh Stage）。
+- 已有 Windows CI 流程与 Stage7 打包配置；本轮诊断未验证远端 CI 执行结果。
 - 冒烟中的搜索验证在离线环境断言「发起 Bing 搜索导航」而非页面加载完成（联网冒烟变体可验证）。
 - **Sources v1 本地明文边界（如实声明）**：信源的网址、分组、标签与备注以明文保存在
   本机 `<userData>/sources/sources.db`（本地检索所需），依赖操作系统用户权限保护；

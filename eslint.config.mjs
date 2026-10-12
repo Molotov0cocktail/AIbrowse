@@ -16,6 +16,7 @@ export default tseslint.config(
       'tools/watch-qualification/blank-feasibility.cjs',
       'tools/watch-qualification/startup-check-observer.cjs',
       'tools/watch-qualification/startup-check-positive.cjs',
+      'tools/legacy-diagnostics/resources-entry.cjs',
     ],
     languageOptions: { globals: globals.node },
     rules: { '@typescript-eslint/no-require-imports': 'off' },
