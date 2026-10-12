@@ -8,18 +8,28 @@
 
 - 2026-10-12 用户新增统一设置、标题栏标签、浏览历史和书签，baseline
   `1a0597f52670be5e9ffcc38b3afd84c67cdddbd4`、接管干净。历史保留已裁决为直到用户手动删除/清空。
-  当前按legacy-repair首节合同实施；新增browser.db必须接入完整备份/恢复/维护链，旧v1恢复保留新增浏览资料。
+  本轮已按legacy-repair首节合同完成；新增browser.db已接入完整备份/恢复/维护链，旧v1恢复保留新增浏览资料。
   主协调负责窗口/IPC/导航装配，两个worker分别负责资料持久化和renderer，新独立Reviewer保留实现独立性。
   0.1.5产品实现已接通；资料安全/持久化独审117项PASS，三项发现已修复（孤立附属文件、恢复确认、NUL字节门）。
   首全量7020PASS/45FAIL/3SKIP，原件`log/browser-settings-20261012/full-tests-01.*`保留；
   大部分失败是新增域后的旧固定夹具，逐项保留原断言补齐；未改凭据预算一项rename EPERM原系统根因unknown，
-  独立单次16项复验PASS。当前不宣称全量通过。
-  旧夹具差量已修复，第二次冻结全量正在执行；质量quality-final-02的typecheck/lint/format/build均0。
+  独立单次16项复验PASS。第二次冻结全量7074PASS/1FAIL/3SKIP，仍为同一未修改凭据预算测试初始化
+  rename EPERM，首轮p37/本轮p14，实际占用者unknown，原afterEach删除临时目录的证据缺口保留。
+  仅用独立原16项中的同名1项补齐、其它15项不重计，组合7075PASS/3SKIP已获限定独审PASS；
+  两次全量命令仍exit1。quality-final-02的typecheck/lint/format/build均0。
   GUI第三轮102场PASS，六个浏览器基线覆盖两主题三尺寸的80px顶栏、原生WCO保留区及drag/no-drag。
   runtime07完整退出/复启两阶段PASS，历史/书签URL和标题保留、清空隔离及原生窗口API状态/几何通过；
   原物理输入四轮失败保留，后两轮明确前台校验拒绝，鼠标拖动/三键点击仍NOTRUN。
   本轮真实Bing一查询/一点击打开bilibili新Tab通过；资料独审及换包工具独审已限定PASS，原件在本轮log。
-  output仍为0.1.4；下一动作：冻结源码、构建0.1.5、汇总全量与包证据并独审后可回退选择。
+  干净包源码d37e6276645b7064d6e8b744890ad931a5ab6dac。首安装器构建EEXIST保留，归档旧身份文件与
+  首新产物后安装器/provenance通过；verify、206模块/15产物静态绑定、PE比较均通过并独审。
+  PackageSmoke仍在隔离目录身份校验前被宿主路径重定向门拦截，未启动产品，前后原profile身份一致。
+  **output已更新为0.1.5**，79文件/619872825字节，完整程序入口`D:\AIbrowse\output\win-unpacked\AIbrowse.exe`；
+  EXE/MSI及身份文件齐备，manifest SHA256 c205e19a9e0fc445ac6aac40ce33986bd206edb24da5212e88dffbca85c27e13。
+  切换ID5869ed9547dd4d89bc8cd031e9385dcc，旧0.1.4完整79文件保留在本轮log的同ID previous-output目录。
+  独立CheckOnly和实际Switch均0，348证明切前重验；切后独审新旧树和所有证明PASS，见
+  `log/browser-library-independent-review-20261012/final-output-review.json`。打包启动/物理点击仍NOTRUN。
+  本轮收尾，不启动Stage8或新增产品实现；源码与文档按既有授权正常同步双远程。
   下列为已完成历史任务。
 
 - 2026-10-12 用户新增浏览器空间与搜索链接修复要求，接管 baseline

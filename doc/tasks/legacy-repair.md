@@ -49,8 +49,10 @@
   明示历史/书签覆盖范围；SQLite NUL 截断不能绕过 ID/时间字节包络。最终117项独立断言PASS，
   见`log/browser-library-independent-review-20261012/review.json`及addendum；原红态保留。
 - 首全量7020PASS/45FAIL/3SKIP原件保留；旧三库/四成员夹具已按新四库/五成员扩展原语义。
-  未修改凭据预算测试一次rename EPERM的实际占用者unknown，独立原16项单次复验PASS；
-  不用单次复验声称历史根因已知。新全量与包绑定结果在交付收尾补记。
+  第二次冻结全量7074PASS/1FAIL/3SKIP，488文件为486PASS/1FAIL/1SKIP，622.40秒；
+  唯一失败仍是未改凭据预算用例初始化rename EPERM，首轮p37/本轮p14，实际占用者unknown。
+  独立原16项单次复验PASS，只将精确同名的1项补齐，其余15项不重复计数，显式组合7075PASS/3SKIP；
+  独审批准此适用范围。两次全量仍exit1，不用复验声称历史根因已知，原afterEach删除临时目录的缺口保留。
 - GUI最终`log/browser-settings-20261012/20261012T105058895Z-9cf1447b039748a5aec4c83c5255ed7a/result.json`
   为102场、0失败；真实资料操作/搜索/编辑/删除/清空与页面互切通过。两主题×三尺寸的六个浏览器基线
   检查WCO、顶部位置、drag/no-drag，默认chrome80px；不称102场都重复原生标题栏断言。
@@ -62,7 +64,27 @@
 - 本轮真实Bing→bilibili`log/browser-ux-20261012/electron-fb391135-d73a-4a40-80dc-bf7eed15d032/result.json`
   一查询/一结果点击PASS，受控新Tab打开，Provider0。无需重复十款界面调研，沿用下节实际图像证据。
 - typecheck/lint/format/build的`quality-final-02`均exit0。新output选择器作者37断言及独立6断言PASS，
-  含两处真实子进程中断、回退幂等和损坏拒绝；真实output尚未切换。资料/UI/工具验证不等于打包启动。
+  含两处真实子进程中断、回退幂等和损坏拒绝。资料/UI/工具验证不等于打包启动。
+
+### 0.1.5 交付闭合
+
+- 产品、工具及合同提交`d37e6276645b7064d6e8b744890ad931a5ab6dac`是干净包来源。
+  首次安装器命令在已有`installer-build.json`处EEXIST，失败原件保留；将release旧4文件及首轮新2安装器
+  按SHA归档到`log/browser-settings-20261012/release-files-before-rebuild-02`后，仅重跑安装器及生成provenance成功。
+  未重复已成功的Electron目录构建，也不改写首场失败。verify、206模块/15产物ASAR静态绑定均0。
+- 独立复核75个payload文件、安装器和身份文件，PE只有.rsrc中的version/ASAR integrity资源变化；
+  不声称所有PE头完全相同。审核`log/browser-library-independent-review-20261012/final-review.md/json`限定PASS。
+  PackageSmoke首尝试相对路径被入口拒绝，第二次绝对路径仍在隔离身份校验拒绝，未到产品Runner；
+  新journal `log/legacy-followup-20261012/package/journal-9362a7afbf7a4185a8d581a4a0372c08`保留。
+  前后原profile FileID/ACL/卷/路径一致，未读原内容；新包启动和安装器执行仍NOTRUN。
+- 严格六字段`selection-review.json`绑定347份证明，SHA256
+  `15b52fdf148dbb0efeb4f6a30a502927b0b39acffb544da5f0c89ff6c7587984`；独立CheckOnly exit0。
+  实际Switch exit0，ID`5869ed9547dd4d89bc8cd031e9385dcc`，348证明（含审核record）切前重验，
+  output为0.1.5、79文件/619872825字节，完整程序、EXE/MSI及身份文件齐备。
+  manifest SHA256 `c205e19a9e0fc445ac6aac40ce33986bd206edb24da5212e88dffbca85c27e13`。
+  旧0.1.4的79文件/619797056字节完整保存在本轮`previous-output-5869ed9547dd4d89bc8cd031e9385dcc`。
+- 切后独立`final-output-review.json/md`PASS：完整新旧成员/bytes/hash、347证明与record、已审源码及工具均未变；
+  `originalBytesPreserved/passed`均true。最终仅这两份收尾文档变化，不重建未变产品；本轮完成，不启动Stage8。
 
 ## 浏览器空间与网页链接修复合同（2026-10-12）
 
