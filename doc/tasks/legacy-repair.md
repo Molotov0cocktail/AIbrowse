@@ -119,7 +119,30 @@
   初次只查顶层窗口未见嵌套弹窗；首次按钮守卫预期 Button、实际 UIA class 为 CCPushButton，故
   动作前拒绝且零点击。按实际子窗口身份核准后只投递一次停止按钮。观察/动作原件位于本轮目录
   `production-dialog-*.json`，报告 SHA256 `1489444426887ce8d23b56d61cb263ab95326f99a44430f395e22c1f138f6d1e`。
-  新包构建与实际发行包零快照普通关闭仍须独立验证；旧 d79 精确触发者继续 unknown。
+  新包构建和静态绑定随后通过，实际发行包零快照普通关闭因上述隔离前置失败为 NOT RUN；
+  旧 d79 精确触发者继续 unknown。
+- 本地更新已经执行：独审最终工具 `output-switch.ps1` SHA256
+  `47f6855bd54dea9c279094fb800ca1e6a9b3792e8bd2d9c4b87c3918243b1b9b`，独立 11 项合成检查
+  `output-switch-fixture-265b0960b8fd4a388db767c0e5982b83/result.json` 全部通过。实际工具来源为干净
+  `e6ce91a436f3ccc96b9ea73591426aa85b2d1e18`；CheckOnly / Switch 均 exit 0，显式
+  EquivalentEvidence，packageLaunchTested=false、packageLaunchStatus=NOTRUN。
+  当前 `output/` 为 0.1.2 的 79 文件 / 619,783,005 字节，包含完整程序、EXE/MSI 安装器和身份文件；
+  包源为干净 `5c7f487b1ab9e1cd7dc4225505823f6616f03476`，后继仅合同允许的文档/换包工具差量。
+  manifest SHA256 `a903cea5d1ab6d5683f8456ffc96ac8d91f1d61391ae47cb3c8613b5fd504b9b`，
+  程序 SHA256 `754b10c8aabcc0c89ff01fb868e3593e5eb322b9189325039edb06d3c199a504`。
+  旧 0.1.1 的 80 文件 / 619,715,306 字节逐摘要恒等保留于本轮目录
+  `previous-output-c54e75b394b0408890ebe06a99b82a06`；无需删除旧版完成更新。
+  切换计划与回执在 `output-switch-c54e75b394b0408890ebe06a99b82a06`，result passed=true、
+  originalBytesPreserved=true，result SHA256
+  `339a44794a9287b69962c1567723978ae33a42c0369d4268368c81d0cbc78425`；plan SHA256
+  `b06d8d2e701f6b5db8b8c5e019996c631662c3feeba8d541c9e7b6184c6f58e9`。
+  最后独立只读复核新旧全部文件与 14 份绑定证据通过；旧 manifest 按 plan 映射至旧树保留位置。
+  `reviewer-output-final.json` SHA256 `3b507cb0293e324715309fc93db2dbcf39d54c8af079dd361d443cff6543c322`；
+  最终 `independent-review.md` SHA256 `d75289cab97de1bcb12dc306cb197a6c5c43f27ee7d563ab648645cb095748fa`。
+  回退入口为 `pwsh -NoProfile -File tools/legacy-followup/output-switch.ps1 -Action Rollback -SwitchId c54e75b394b0408890ebe06a99b82a06`，
+  实际回退未执行；工具会先要求应用/guardian 退出并核对固定计划和完整旧树，再保全新树和恢复旧树。
+  本轮到此停止新增产品实现，资源旧超限与 fatal 历史 unknown、当前真实 Provider 401 和实际新包
+  直接启动未测边界继续保留；不把本机内部可回退更新外推为完整发行验收。
 
 ## 后继严格验证与根因诊断合同（2026-10-12）
 

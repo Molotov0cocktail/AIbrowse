@@ -20,8 +20,20 @@
   verify/static binding及candidateEligible均通过，包源为干净5c7f487b1ab9e1cd7dc4225505823f6616f03476。
   实际PackageSmoke在创建合成profile时被宿主路径重定向阻挡，产品未启动、原profile目录身份未变，
   隔离失败原件保留。已按授权工程REPLAN采用未变封装/运行时证据、当前完整production与包字节/源码绑定，
-  独审限定本地可回退更新；不把新封装启动记PASS、不授完整安装/发行门。下一动作是显式替代证据入口
-  终检后保留旧output并切换；资源旧超限、旧fatal unknown均不关闭。
+  独审限定本地可回退更新；不把新封装启动记PASS、不授完整安装/发行门。受审工具11项合成验证通过，
+  在干净e6ce91a436f3ccc96b9ea73591426aa85b2d1e18上实际CheckOnly和Switch均exit0。
+  **当前选定output已更新为0.1.2**：79文件/619,783,005字节；程序入口仍为
+  `D:\AIbrowse\output\win-unpacked\AIbrowse.exe`，EXE/MSI安装器及身份文件同在output。
+  包来源仍为上述5c7f487，后继仅文档与换包工具差量。manifest SHA256
+  `a903cea5d1ab6d5683f8456ffc96ac8d91f1d61391ae47cb3c8613b5fd504b9b`，程序SHA256
+  `754b10c8aabcc0c89ff01fb868e3593e5eb322b9189325039edb06d3c199a504`。
+  旧0.1.1全部80文件/619,715,306字节原样保留于
+  `log/legacy-followup-20261012/previous-output-c54e75b394b0408890ebe06a99b82a06`。
+  切换原件在同目录`output-switch-c54e75b394b0408890ebe06a99b82a06`；result passed=true、
+  originalBytesPreserved=true、PackageLaunch NOTRUN，摘要339a44794a9287b69962c1567723978ae33a42c0369d4268368c81d0cbc78425。
+  最终独立只读核对新旧所有文件及14份绑定证据PASS，见`reviewer-output-final.json`和`independent-review.md`。
+  本轮产品修复与本地换包完成，资源旧超限、旧fatal unknown及本轮Provider401验证缺口保留，停止新增实现。
+  以下各轮“当前output仍旧版/未修”均为当时历史状态，不覆盖本条。
 
 - 2026-10-12用户追加要求严格验证所有剩余事项并定位根因，已恢复有界诊断。baseline `dedbfdcbdcea2723eb09c4f73c0f1b5810cbe9e8`、接管工作区干净；差量合同和结果矩阵见 `doc/tasks/legacy-repair.md` 首节。三方向并行准备、真实运行串行；不修改真实数据或选定 output。以下上一轮遇难停止为历史状态，诊断不预授修复/发行通过。
   用户明确软件主要用于当前电脑接电环境，无需断电或其它电脑测试；两项排除本轮验收且不作为当前使用阻塞，保留未实测事实。
