@@ -5,8 +5,8 @@
 // The store is the real ConversationStore on a temp dir (real persistence files);
 // browser/config/credentials/provider-resolver are injected stubs per 分层纪律.
 // Contract source: doc/stage2/detailed-design.md §3.1/§6/§8.3/§9.
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { existsSync, readFileSync, rmSync, mkdtempSync } from 'node:fs';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initLogger } from '../logger';
@@ -36,6 +36,66 @@ import {
   type SnapshotSource,
 } from './conversation-service';
 
+const filesystemEvidence = vi.hoisted(() => ({
+  root: '',
+  test: '',
+  failed: [] as string[],
+  renames: [] as unknown[],
+}));
+// Observe the real operation once, preserving its return/throw behavior. Metadata
+// reads add observer overhead; a passing run cannot explain an earlier failure.
+vi.mock('node:fs', async (original) => {
+  const actual = await original<typeof import('node:fs')>();
+  function metadata(path: Parameters<typeof actual.renameSync>[0]) {
+    try {
+      const stat = actual.lstatSync(path, { bigint: true });
+      return {
+        dev: String(stat.dev),
+        ino: String(stat.ino),
+        size: String(stat.size),
+        mtimeNs: String(stat.mtimeNs),
+        ctimeNs: String(stat.ctimeNs),
+        mode: String(stat.mode),
+        nlink: String(stat.nlink),
+        file: stat.isFile(),
+        symlink: stat.isSymbolicLink(),
+      };
+    } catch (error) {
+      return { code: (error as NodeJS.ErrnoException).code ?? 'unknown' };
+    }
+  }
+  return {
+    ...actual,
+    renameSync(...args: Parameters<typeof actual.renameSync>) {
+      if (!filesystemEvidence.root || !String(args[0]).startsWith(filesystemEvidence.root))
+        return actual.renameSync(...args);
+      const before = { source: metadata(args[0]), target: metadata(args[1]) };
+      const startedAt = Date.now();
+      const startedMonoMs = performance.now();
+      let code: string | null = null;
+      try {
+        return actual.renameSync(...args);
+      } catch (error) {
+        code = (error as NodeJS.ErrnoException).code ?? 'unknown';
+        throw error;
+      } finally {
+        const finishedMonoMs = performance.now();
+        filesystemEvidence.renames.push({
+          test: filesystemEvidence.test,
+          source: String(args[0]),
+          target: String(args[1]),
+          startedAt,
+          startedMonoMs,
+          finishedMonoMs,
+          code,
+          before,
+          after: { source: metadata(args[0]), target: metadata(args[1]) },
+        });
+      }
+    },
+  };
+});
+
 // 'fake' kind 注册（测试进程内）：v1 Provider 选择契约（决议 #20）依赖已注册 kind 集合，
 // 与生产 openai-compatible 同路径；工厂仅满足类型（流式实现由注入的 resolveProviderFn
 // 提供，工厂不会被调用）。
@@ -47,9 +107,25 @@ registerProviderFactory({
 let baseDir: string;
 beforeAll(() => {
   baseDir = mkdtempSync(join(tmpdir(), 'aibrowse-svc-'));
+  filesystemEvidence.root = baseDir;
   initLogger(join(baseDir, 'app'));
 });
+beforeEach((context) => {
+  filesystemEvidence.test = context.task.name;
+  context.onTestFailed(() => {
+    filesystemEvidence.failed.push(context.task.name);
+  });
+});
 afterAll(() => {
+  if (
+    filesystemEvidence.failed.length > 0 ||
+    process.env.AIBROWSE_CONVERSATION_TEST_RETAIN_EVIDENCE === '1'
+  ) {
+    const evidencePath = join(baseDir, 'filesystem-evidence.json');
+    writeFileSync(evidencePath, JSON.stringify(filesystemEvidence, null, 2), 'utf8');
+    console.warn(`会话测试现场已保留（文件元数据，不含会话正文）：${evidencePath}`);
+    return;
+  }
   rmSync(baseDir, { recursive: true, force: true });
 });
 
