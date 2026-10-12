@@ -235,6 +235,13 @@ export function resolveProvider(
   `data:` 行 JSON，`[DONE]` 终止；`choices[0].delta.content` 拼接为 delta；
   usage 取自末帧（缺失则 done 无 usage）。**禁止**：LLMProvider 直接访问 webContents /
   Electron API（依赖方向纪律）。
+  SSE 的 CRLF 规范化必须跨网络 chunk 保持等价；`finish_reason` 为 `length`、
+  `content_filter` 或其它非成功原因时，以受控 `provider-error` 终结，不产出 `done`
+  或执行累积工具半成品。成功原因为 `stop` / `tool_calls`；保留既有无 finish reason
+  的 `[DONE]` / 干净 EOF 兼容。错误原因不回显供应商正文。
+  HTTP 错误仅在 400/422 时读取最多 8 KiB 响应前缀，并仍只使用前 2000 字符判定
+  上下文超限；其它状态直接取消响应体。读取、消费提前结束及异常路径均须关闭流，
+  不因先全量读取再截断而失去内存预算。
 
 ### 3.4 SecureCredentialStore（S1）
 
@@ -526,7 +533,9 @@ export const SYSTEM_PROMPT: string = `你是 AIbrowse 的网页共读助手，�
 
 ### 8.2 超时（适配器内部组合，常量集中一处）
 
-- 连接超时 15s（响应头前）；空闲 chunk 超时 60s（每收到 chunk 重置）；总时长 300s。
+- 连接超时 15s（响应头前）；空闲 chunk 超时 60s（从收到响应头开始，每收到 chunk
+  重置，包含首块及错误响应读取）；总时长 300s。外部取消及超时读取错误体时仍分别
+  归类 aborted / timeout，不能由已有 HTTP 状态覆盖。消费提前结束须取消底层响应。
 - 实现：`AbortController` 组合（外部 signal + 内部定时 signal），超时 → error(timeout)，
   重试性见 §5.1。
 

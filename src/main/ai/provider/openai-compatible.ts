@@ -349,6 +349,22 @@ export async function* streamSseBody(
       carryUsage(event.usage);
       state.finishReason = event.reason;
     }
+    // A syntactically valid stream can still be truncated or rejected by the provider.
+    // Never turn a non-success finish into a successful answer or executable tool calls.
+    if (
+      state.finishReason !== null &&
+      state.finishReason !== 'stop' &&
+      state.finishReason !== 'tool_calls'
+    ) {
+      yield {
+        type: 'error',
+        error: {
+          ...normalizeProviderError({ kind: 'parse', context }),
+          message: '服务输出未完整结束，请重试',
+        },
+      };
+      return 'error';
+    }
     // finish_reason=tool_calls 末帧后：聚合校验 → toolCalls 事件（恰好在 done 之前，
     // 恰好产出一次）。finish 非 tool_calls 或零槽时静默丢弃累积（半成品不暴露）。
     if (state.finishReason === 'tool_calls' && !state.toolCallsEmitted) {
@@ -363,7 +379,8 @@ export async function* streamSseBody(
   for await (const chunk of body) {
     onChunk?.();
     // Normalize CRLF line endings so '\n\n' framing holds for servers that emit \r\n.
-    buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, '\n');
+    // Normalize the retained suffix too: CR and LF can arrive in separate chunks.
+    buffer = (buffer + decoder.decode(chunk, { stream: true })).replace(/\r\n/g, '\n');
     let separator: number;
     while ((separator = buffer.indexOf('\n\n')) !== -1) {
       const frameText = buffer.slice(0, separator);
@@ -571,11 +588,17 @@ export class OpenAICompatibleProvider implements LLMProvider {
         return;
       }
       clearTimeout(connectTimer);
+      // The first body chunk is subject to the same idle budget as later chunks.
+      resetIdle();
 
       if (!response.ok) {
         // Response body read ONLY for the 400/422 context-overflow sniff; never logged,
         // never included in the error (provider text never reaches the UI, §5.1).
-        const responseText = await this.readErrorBody(response);
+        const responseText = await this.readErrorBody(response, resetIdle);
+        if (controller.signal.aborted) {
+          yield { type: 'error', error: this.mapFailure(phase, context) };
+          return;
+        }
         logWarn(
           'provider',
           `HTTP ${response.status}（${context.providerId}/${context.model ?? '-'}，req=${context.requestId}）`,
@@ -603,6 +626,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       clearTimeout(totalTimer);
       if (idleTimer !== null) clearTimeout(idleTimer);
       signal.removeEventListener('abort', onExternalAbort);
+      controller.abort();
     }
   }
 
@@ -613,11 +637,32 @@ export class OpenAICompatibleProvider implements LLMProvider {
     return normalizeProviderError({ kind: 'network', context });
   }
 
-  private async readErrorBody(response: Response): Promise<string | null> {
+  private async readErrorBody(response: Response, onChunk: () => void): Promise<string | null> {
+    if (response.body === null) return null;
+    const reader = response.body.getReader();
     try {
-      return (await response.text()).slice(0, 2000);
+      if (response.status !== 400 && response.status !== 422) return null;
+      const decoder = new TextDecoder();
+      let remaining = 8192;
+      let text = '';
+      while (remaining > 0) {
+        const part = await reader.read();
+        if (part.done) break;
+        onChunk();
+        const prefix = part.value.subarray(0, remaining);
+        remaining -= prefix.byteLength;
+        text += decoder.decode(prefix, { stream: true });
+      }
+      return (text + decoder.decode()).slice(0, 2000);
     } catch {
       return null;
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        // The stream may already be errored by timeout, cancellation or transport failure.
+      }
+      reader.releaseLock();
     }
   }
 }
