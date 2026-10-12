@@ -450,6 +450,12 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   main 侧 IPC handler 统一调用 `shared/url.resolveAddressBarInput`；
   返回 `''` → 动作返回 `false`（navigate）或创建延迟加载的默认空白 Tab（create），warn 日志。
   BrowserController 只接受规范化 URL（§2.1）。UI 不做 URL 判断（First_stage §十「不要散落在 UI」）。
+- **无协议 IDN**：地址栏识别层允许包含真实有效 Unicode 标签的多标签域名，并在导航前由 WHATWG URL/IDNA
+  转成 canonical punycode；同时接受 `。`、`．`、`｡` 三种点变体和既有 punycode。识别前拒绝空标签、首尾连字符、
+  非字母/数字/组合标记/连字符标签及转换后不满足 LDH/长度约束的主机，这些输入保持搜索兜底。显式 HTTP(S)
+  userinfo 与明显的裸 `user:password@authority`（包括反斜杠、空白或控制字符混淆）在控制字符/搜索分支前闭合为
+  no-op `''`，不得导航、写日志或发送给第三方搜索；普通裸邮箱仍走搜索，路径中的 `@` 不按凭据处理。该扩展只
+  属于地址栏启发式判断，不改变 BrowserController、网络策略或全系统 URL canonicalizer 的权限边界。
 - **导航白名单**：每个 Tab webContents 的 `will-navigate` **与 `will-redirect`**（T5 R-02 加固，
   302 目标同样过白名单——程序化 loadURL 遇重定向时唯一拦截点）仅放行 `http:`/`https:`/`about:`，
   其余（`file:`、自定义协议等）`preventDefault` + warn 日志（First_stage §八「对导航做好合理处理」）。

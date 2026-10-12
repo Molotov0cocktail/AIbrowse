@@ -2,7 +2,7 @@
 // Contract source: First_stage.md §十（URL / 搜索框行为）.
 // Rules:
 //   "https://…" / "http://…" / "about:blank"  → keep, canonicalized via URL
-//   bare domain / IP / localhost (+ port/path/query/fragment) → https:// prefix
+//   bare domain / IDN / IP / localhost (+ port/path/query/fragment) → https:// prefix
 //   anything else (including non-web schemes) → search engine URL
 // Invalid inputs safely return '' (越界安全返回); the caller treats it as a no-op.
 // The hardcoded search engine will be replaced by a SearchProvider later.
@@ -21,10 +21,15 @@ export const ALLOWED_SCHEME_PATTERN = /^(?:https?:|about:blank$)/i;
 const DOMAIN_PATTERN =
   /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?([/?#].*)?$/i;
 const LOCALHOST_PATTERN = /^localhost(:\d{1,5})?([/?#].*)?$/i;
+const UNICODE_DOT_PATTERN = /[\u3002\uff0e\uff61]/gu;
+const ASCII_HOST_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+const IDN_INPUT_LABEL_PATTERN = /^[\p{L}\p{M}\p{N}-]+$/u;
 
 export function resolveAddressBarInput(raw: string): string {
   const input = raw.trim();
   if (input === '') return '';
+  if (containsSensitiveUserInfo(raw)) return '';
+  if (containsControlCharacter(raw)) return toSearchUrl(input);
 
   if (ALLOWED_SCHEME_PATTERN.test(input)) {
     return canonicalize(input);
@@ -35,8 +40,98 @@ export function resolveAddressBarInput(raw: string): string {
     return canonicalize(`https://${input}`);
   }
 
+  const idnCandidate = normalizeBareIdnCandidate(input);
+  if (idnCandidate !== null) return canonicalize(`https://${idnCandidate}`);
+
   // Everything else — free text, non-web schemes (javascript:, file:, data:) — goes to search
   return toSearchUrl(input);
+}
+
+function withoutControlCharacters(value: string): string {
+  let result = '';
+  for (const character of value) {
+    const code = character.codePointAt(0)!;
+    if (code > 0x1f && (code < 0x7f || code > 0x9f)) result += character;
+  }
+  return result;
+}
+
+function containsSensitiveUserInfo(raw: string): boolean {
+  const input = withoutControlCharacters(raw).trim().normalize('NFKC');
+  const explicitHttp = /^https?:/iu.test(input);
+  try {
+    const parsed = new URL(explicitHttp ? input : `https://${input}`);
+    if (parsed.username !== '' || parsed.password !== '') {
+      if (explicitHttp || parsed.password !== '') return true;
+    }
+  } catch {
+    // Fall through to a narrow raw-authority check for malformed disguises.
+  }
+
+  let authority: string;
+  if (explicitHttp) {
+    const afterScheme = input.slice(input.indexOf(':') + 1).replace(/\\/gu, '/');
+    authority = afterScheme.replace(/^\/+/, '').split(/[/?#]/u, 1)[0] ?? '';
+    return authority.includes('@') && authority.slice(0, authority.lastIndexOf('@')) !== '';
+  }
+  authority = input.split(/[\\/?#]/u, 1)[0] ?? '';
+  const at = authority.lastIndexOf('@');
+  if (at === -1) return false;
+  const userInfo = authority.slice(0, at);
+  return userInfo.includes(':') || /%3a/iu.test(userInfo);
+}
+
+function containsControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0)!;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
+
+/**
+ * Recognize only a complete, valid bare web authority. WHATWG URL performs IDNA
+ * conversion; the post-check keeps the older LDH/domain shape and rejects
+ * credentials, empty/oversized labels and host-like free text.
+ */
+function normalizeBareIdnCandidate(input: string): string | null {
+  if (/\s/.test(input) || containsControlCharacter(input)) return null;
+  const boundary = input.search(/[/?#]/u);
+  const authority = boundary === -1 ? input : input.slice(0, boundary);
+  const suffix = boundary === -1 ? '' : input.slice(boundary);
+  if (authority.includes('@')) return null;
+
+  const normalizedAuthority = authority.replace(UNICODE_DOT_PATTERN, '.').normalize('NFC');
+  const colon = normalizedAuthority.lastIndexOf(':');
+  const rawHostname =
+    colon !== -1 && /^\d{1,5}$/u.test(normalizedAuthority.slice(colon + 1))
+      ? normalizedAuthority.slice(0, colon)
+      : normalizedAuthority;
+  if (rawHostname.includes(':')) return null;
+  const rawLabels = rawHostname.split('.');
+  if (
+    rawLabels.some(
+      (label) =>
+        label === '' ||
+        label.startsWith('-') ||
+        label.endsWith('-') ||
+        !IDN_INPUT_LABEL_PATTERN.test(label),
+    )
+  )
+    return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(`https://${normalizedAuthority}${suffix}`);
+  } catch {
+    return null;
+  }
+  if (parsed.username !== '' || parsed.password !== '') return null;
+
+  const hostname = parsed.hostname;
+  if (hostname.length > 253 || !hostname.includes('.')) return null;
+  const labels = hostname.split('.');
+  if (labels.some((label) => !ASCII_HOST_LABEL_PATTERN.test(label))) return null;
+  return `${normalizedAuthority}${suffix}`;
 }
 
 function canonicalize(url: string): string {

@@ -19,6 +19,19 @@ describe('resolveAddressBarInput（地址栏输入 → URL/搜索判断）', () 
     expect(resolveAddressBarInput('example.com')).toBe('https://example.com/');
   });
 
+  it.each([
+    ['例子.测试', 'https://xn--fsqu00a.xn--0zwm56d/'],
+    [
+      '例子。测试/路径?值=一',
+      'https://xn--fsqu00a.xn--0zwm56d/%E8%B7%AF%E5%BE%84?%E5%80%BC=%E4%B8%80',
+    ],
+    ['例子．测试', 'https://xn--fsqu00a.xn--0zwm56d/'],
+    ['例子｡测试', 'https://xn--fsqu00a.xn--0zwm56d/'],
+    ['xn--fsqu00a.xn--0zwm56d', 'https://xn--fsqu00a.xn--0zwm56d/'],
+  ])('有效无协议 IDN/Unicode 点变体作为网址导航：%s', (input, expected) => {
+    expect(resolveAddressBarInput(input)).toBe(expected);
+  });
+
   it('带路径/查询/端口的裸域名保留完整结构', () => {
     expect(resolveAddressBarInput('example.com:8080/a?b=1#c')).toBe(
       'https://example.com:8080/a?b=1#c',
@@ -55,6 +68,53 @@ describe('resolveAddressBarInput（地址栏输入 → URL/搜索判断）', () 
   it('危险 scheme（javascript:）不被直开，按搜索处理', () => {
     expect(resolveAddressBarInput('javascript:alert(1)')).toBe(
       'https://www.bing.com/search?q=javascript%3Aalert%281%29',
+    );
+  });
+
+  it.each([
+    'javascript:alert(1)',
+    'file:///secret',
+    'user@example.com',
+    '例子..测试',
+    '-例子.测试',
+    '例子_.测试',
+    '😀.测试',
+    '例子.测试\u0000/path',
+    '\texample.com',
+    'https://exa\nmple.com',
+  ])('危险协议、混淆凭据、控制字符或无效域名不被当作直接导航：%s', (input) => {
+    const resolved = resolveAddressBarInput(input);
+    expect(resolved).toMatch(/^https:\/\/www\.bing\.com\/search\?q=/);
+  });
+
+  it.each([
+    'https://user@example.com',
+    'https://user:password@example.com',
+    'http://用户:密码@例子.测试/path',
+    'user:password@例子.测试',
+    'user:password@example.com\\path',
+    'https:\\user:password@example.com',
+    'https://user:password @example.com',
+    'https://user:password@\texample.com',
+    'user:password@\n例子.测试',
+    'user%3Apassword@example.com',
+    '//user:password@example.com',
+    'https:////user:password@example.com',
+    'ｕｓｅｒ：ｐａｓｓｗｏｒｄ＠例子.测试',
+    'https://用户：密码＠例子.测试',
+  ])('userinfo/明显 password@authority 输入受控 no-op，绝不导航或外发搜索：%s', (input) => {
+    expect(resolveAddressBarInput(input)).toBe('');
+  });
+
+  it('普通裸邮箱保留原有搜索语义', () => {
+    expect(resolveAddressBarInput('user@example.com')).toBe(
+      'https://www.bing.com/search?q=user%40example.com',
+    );
+  });
+
+  it('普通 URL 路径中的 @ 不被误判为 authority 凭据', () => {
+    expect(resolveAddressBarInput('https://example.com/path@name')).toBe(
+      'https://example.com/path@name',
     );
   });
 

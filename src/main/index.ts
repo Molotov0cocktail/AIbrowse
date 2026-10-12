@@ -1622,7 +1622,7 @@ if (!gotLock) {
           : undefined;
       const url = input === undefined ? undefined : resolveAddressBarInput(input);
       if (input !== undefined && url === '') {
-        logWarn('main', `tabs:create 输入无法解析，创建空白标签页：${input}`);
+        logWarn('main', 'tabs:create 输入无法解析，创建空白标签页（原始输入已省略）');
       }
       return browserController?.createTab(url === '' ? undefined : url);
     });
@@ -1646,7 +1646,7 @@ if (!gotLock) {
       if (tabId === null || input === null) return false;
       const url = resolveAddressBarInput(input); // §9：导航输入在 main 侧统一规范化
       if (url === '') {
-        logWarn('main', `nav:navigate 输入无法解析（tabId=${tabId}）：${input}`);
+        logWarn('main', 'nav:navigate 输入无法解析（原始输入与 tabId 已省略）');
         return false;
       }
       return browserController?.navigate(tabId, url) ?? false;
