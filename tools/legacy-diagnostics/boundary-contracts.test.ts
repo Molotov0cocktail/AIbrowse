@@ -95,10 +95,8 @@ describe('遗留边界的实际反例', () => {
     ).toMatchObject({ ok: false, code: 'excerpt-not-in-content' });
   });
 
-  it('未加协议的中文域名走搜索，但完整 HTTPS 中文域名可规范化', () => {
-    expect(resolveAddressBarInput('例子.测试')).toBe(
-      'https://www.bing.com/search?q=%E4%BE%8B%E5%AD%90.%E6%B5%8B%E8%AF%95',
-    );
+  it('修复后未加协议与完整 HTTPS 中文域名都可规范化', () => {
+    expect(resolveAddressBarInput('例子.测试')).toBe('https://xn--fsqu00a.xn--0zwm56d/');
     expect(resolveAddressBarInput('https://例子.测试/')).toBe('https://xn--fsqu00a.xn--0zwm56d/');
     expect(resolveAddressBarInput('xn--fsqu00a.xn--0zwm56d')).toBe(
       'https://xn--fsqu00a.xn--0zwm56d/',

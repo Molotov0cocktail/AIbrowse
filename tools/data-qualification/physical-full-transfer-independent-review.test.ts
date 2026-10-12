@@ -46,13 +46,17 @@ function validProof() {
   };
 }
 
-it('四份固定小proof原件摘要与候选合同逐项一致', () => {
-  for (const value of Object.values(SOURCE_SCOPES)) {
-    const bytes = readFileSync(resolve('log/stage7-e2', value.scopeId, 'fixture-proof.json'));
-    expect(bytes.byteLength).toBeLessThanOrEqual(65_536);
-    expect(createHash('sha256').update(bytes).digest('hex')).toBe(value.proofSha256);
-  }
-});
+// Historical machine evidence is an explicit audit, not a portable unit-test fixture.
+it.runIf(process.env.AIBROWSE_VERIFY_HISTORICAL_PROOFS === '1')(
+  '四份固定小proof原件摘要与候选合同逐项一致',
+  () => {
+    for (const value of Object.values(SOURCE_SCOPES)) {
+      const bytes = readFileSync(resolve('log/stage7-e2', value.scopeId, 'fixture-proof.json'));
+      expect(bytes.byteLength).toBeLessThanOrEqual(65_536);
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(value.proofSha256);
+    }
+  },
+);
 
 it('全部54成员的内容摘要、长度、身份长度及成员替换均拒绝', () => {
   expect(validateInputProof(validProof()).files).toHaveLength(54);

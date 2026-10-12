@@ -26,7 +26,7 @@ function select(rows: Observation[], repeat = 1) {
   const command = `$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest;
     [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);
     Add-Type -TypeDefinition @'
-namespace Windows.Automation {
+namespace AIbrowse.SaveDialogFixture {
   public static class ControlType {
     public static readonly string Edit="edit", ComboBox="comboBox";
   }
@@ -55,15 +55,15 @@ namespace Windows.Automation {
     foreach($name in @('Get-FilenameAutomationIdClass','Get-FilenameValueClass','New-FilenameControlTypeDiagnostic','New-FilenameQualificationDiagnostic','Add-FilenameQualificationObservation','Filename-Input')) {
       $functions=@($tree.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true));
       if($functions.Count -ne 1){throw '受审实际函数不唯一'};
-      . ([scriptblock]::Create($functions[0].Extent.Text));
+      . ([scriptblock]::Create($functions[0].Extent.Text.Replace('[Windows.Automation.', '[AIbrowse.SaveDialogFixture.')));
     };
     $script:nodes=@(foreach($iteration in 1..([int]$env:AIBROWSE_REVIEW_REPEAT)) { foreach($row in (ConvertFrom-Json $env:AIBROWSE_REVIEW_ROWS)) {
-      $node=[Windows.Automation.SyntheticNode]::new();
-      $node.Current=[Windows.Automation.NodeState]::new();
+      $node=[AIbrowse.SaveDialogFixture.SyntheticNode]::new();
+      $node.Current=[AIbrowse.SaveDialogFixture.NodeState]::new();
       $node.Current.ControlType=$row.type; $node.Current.AutomationId=$row.id; $node.Current.IsEnabled=$row.enabled;
       if($row.pattern) {
-        $node.Value=[Windows.Automation.ValuePattern]::new();
-        $node.Value.Current=[Windows.Automation.ValueState]::new();
+        $node.Value=[AIbrowse.SaveDialogFixture.ValuePattern]::new();
+        $node.Value.Current=[AIbrowse.SaveDialogFixture.ValueState]::new();
         $node.Value.Current.IsReadOnly=$row.readOnly; $node.Value.Current.Value=$row.value;
       };
       $node;

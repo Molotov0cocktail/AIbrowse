@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import * as nodeFs from 'node:fs';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,57 @@ import type {
   WatchRequestLike,
   WatchRequestOptions,
 } from './watch/public-watch-http-client';
+
+interface FsFailureObservation {
+  operation: 'readFileSync' | 'writeFileSync' | 'renameSync';
+  code: string | null;
+  syscall: string | null;
+  basenames: string[];
+}
+
+const fsObserver = vi.hoisted(() => ({
+  enabled: false,
+  failures: [] as FsFailureObservation[],
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const observed = (
+    operation: FsFailureObservation['operation'],
+    args: unknown[],
+    call: () => unknown,
+  ): unknown => {
+    try {
+      return call();
+    } catch (error) {
+      if (fsObserver.enabled) {
+        const shaped =
+          typeof error === 'object' && error !== null
+            ? (error as { code?: unknown; syscall?: unknown })
+            : null;
+        const pathArguments = operation === 'renameSync' ? args.slice(0, 2) : args.slice(0, 1);
+        fsObserver.failures.push({
+          operation,
+          code: typeof shaped?.code === 'string' ? shaped.code : null,
+          syscall: typeof shaped?.syscall === 'string' ? shaped.syscall : null,
+          basenames: pathArguments
+            .filter((value): value is string => typeof value === 'string')
+            .map((value) => (value.replaceAll('\\', '/').split('/').at(-1) ?? '').slice(0, 128)),
+        });
+      }
+      throw error;
+    }
+  };
+  return {
+    ...actual,
+    readFileSync: (...args: unknown[]) =>
+      observed('readFileSync', args, () => Reflect.apply(actual.readFileSync, actual, args)),
+    writeFileSync: (...args: unknown[]) =>
+      observed('writeFileSync', args, () => Reflect.apply(actual.writeFileSync, actual, args)),
+    renameSync: (...args: unknown[]) =>
+      observed('renameSync', args, () => Reflect.apply(actual.renameSync, actual, args)),
+  };
+});
 
 class H3aFakeIncoming extends EventEmitter implements WatchIncomingLike {
   statusCode = 200;
@@ -637,6 +689,23 @@ describe('H3a public product qualification', () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-never-close-'));
     const evidenceDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-never-close-evidence-'));
     const clock = new FakeClock(Date.parse('2026-09-06T00:00:00.000Z'));
+    const candidateStartedAtMono = 1_000;
+    let monotonicNow = candidateStartedAtMono;
+    const performanceNow = vi.spyOn(performance, 'now').mockImplementation(() => monotonicNow);
+    const waitForTransportClose = H3aRequestBudget.prototype.waitForTransportClose;
+    const observedDeadlines: number[] = [];
+    const transportClose = vi
+      .spyOn(H3aRequestBudget.prototype, 'waitForTransportClose')
+      .mockImplementation(function (
+        this: H3aRequestBudget,
+        afterTotalOrdinal,
+        deadlineMono,
+        onWait,
+      ) {
+        observedDeadlines.push(deadlineMono);
+        monotonicNow = deadlineMono;
+        return waitForTransportClose.call(this, afterTotalOrdinal, deadlineMono, onWait);
+      });
     try {
       const result = await runH3aCampaign({
         candidateSha: 'a'.repeat(40),
@@ -656,12 +725,24 @@ describe('H3a public product qualification', () => {
 
       expect(result.report.fatalErrorCode).toBe('TRANSPORT_CLOSE_TIMEOUT');
       expect(result.report.requests.campaignCount).toBe(1);
+      expect(result.report.requests.entries).toHaveLength(1);
+      expect(result.report.requests.entries[0]).toMatchObject({
+        totalOrdinal: 1,
+        candidateId: 'rss-primary',
+        phase: 'first',
+      });
+      expect(observedDeadlines.length).toBeGreaterThan(0);
+      expect(observedDeadlines.every((deadline) => deadline === candidateStartedAtMono + 100)).toBe(
+        true,
+      );
       expect(result.report.scenarios[0]!.candidates[1]).toMatchObject({
         attempted: false,
         result: 'not-needed',
       });
       expect(result.report.cleanup.openRequests).toBe(1);
     } finally {
+      transportClose.mockRestore();
+      performanceNow.mockRestore();
       rmSync(rootDir, { recursive: true, force: true });
       rmSync(evidenceDir, { recursive: true, force: true });
     }
@@ -819,7 +900,23 @@ describe('H3a public product qualification', () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-report-identities-'));
     const evidenceDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-report-identities-evidence-'));
     const clock = new FakeClock(Date.parse('2026-09-06T00:00:00.000Z'));
+    let completed = false;
+    fsObserver.enabled = true;
+    fsObserver.failures.length = 0;
     try {
+      const controlledSource = join(evidenceDir, 'controlled-missing.tmp');
+      const controlledTarget = join(evidenceDir, 'controlled-target.json');
+      expect(() => nodeFs.renameSync(controlledSource, controlledTarget)).toThrow();
+      expect(fsObserver.failures).toEqual([
+        {
+          operation: 'renameSync',
+          code: 'ENOENT',
+          syscall: 'rename',
+          basenames: ['controlled-missing.tmp', 'controlled-target.json'],
+        },
+      ]);
+      fsObserver.failures.length = 0;
+
       const result = await runH3aCampaign({
         candidateSha: 'a'.repeat(40),
         buildHash: 'b'.repeat(64),
@@ -843,7 +940,9 @@ describe('H3a public product qualification', () => {
       };
       const identityError = '三类真实产品场景必须各有一个合格结果';
 
-      expect(validateH3aReport(valid)).toEqual([]);
+      const failureDiagnostic = JSON.stringify(fsObserver.failures);
+      expect(fsObserver.failures, `安全文件系统失败诊断：${failureDiagnostic}`).toEqual([]);
+      expect(validateH3aReport(valid), `安全文件系统失败诊断：${failureDiagnostic}`).toEqual([]);
       expect(
         validateMutation((report) => {
           report.scenarios[0] = structuredClone(report.scenarios[1]!);
@@ -920,9 +1019,11 @@ describe('H3a public product qualification', () => {
           Object.assign(structuredClone(valid), { reportKind: 'feed-budget-diagnostic' as const }),
         ),
       ).toEqual(['单次 Feed 预算诊断报告不能作为 H3a 三门资格报告']);
+      completed = true;
     } finally {
+      fsObserver.enabled = false;
       rmSync(rootDir, { recursive: true, force: true });
-      rmSync(evidenceDir, { recursive: true, force: true });
+      if (completed) rmSync(evidenceDir, { recursive: true, force: true });
     }
   });
 

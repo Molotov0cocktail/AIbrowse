@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -90,6 +90,7 @@ function terminal() {
 }
 
 async function newRoot(scene: string): Promise<string> {
+  await mkdir(evidence, { recursive: true });
   const parent = await mkdtemp(join(evidence, `pure-${scene}-`));
   return join(parent, 'fixture');
 }

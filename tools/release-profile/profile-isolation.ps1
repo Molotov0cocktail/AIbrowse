@@ -4,7 +4,7 @@ param(
     [string]$Journal,
     [string]$FixtureParent,
     [string]$PackageRoot,
-    [ValidateSet('Tamper', 'Product')][string]$Runner = '',
+    [ValidateSet('Tamper', 'Product', 'PackageSmoke')][string]$Runner = '',
     [string]$Fault = ''
 )
 
@@ -33,6 +33,10 @@ switch ($Action) {
         $runnerValue = switch ($Runner) {
             'Tamper' { [AIbrowse.ReleaseProfile.ReleaseRunner]::Tamper }
             'Product' { [AIbrowse.ReleaseProfile.ReleaseRunner]::Product }
+            'PackageSmoke' { [AIbrowse.ReleaseProfile.ReleaseRunner]::PackageSmoke }
+        }
+        if ($Runner -eq 'PackageSmoke') {
+            [void][IO.Directory]::CreateDirectory((Join-Path $repository 'log/legacy-followup-20261012/package'))
         }
         [AIbrowse.ReleaseProfile.Isolation]::Run(
             $PackageRoot,

@@ -6,7 +6,17 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['out', 'dist', 'release', 'node_modules', 'log', 'coverage', '.h3b-workspaces'],
+    ignores: [
+      'out',
+      'dist',
+      'release',
+      'output',
+      'node_modules',
+      'log',
+      'coverage',
+      '.h3b-workspaces',
+      '.local-dev',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

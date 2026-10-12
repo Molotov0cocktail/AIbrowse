@@ -22,7 +22,8 @@ namespace AIbrowse.ReleaseProfile
         All,
         ProductTransfer,
         RestoreR,
-        RestoreP
+        RestoreP,
+        PackageSmoke
     }
 
     public sealed class Identity
@@ -299,6 +300,13 @@ namespace AIbrowse.ReleaseProfile
             }
         }
 
+        private static void CheckPackageGuardians()
+        {
+            Process[] processes = Process.GetProcessesByName("guardian");
+            try { if(processes.Length!=0) throw new InvalidOperationException("guardian尚未退休，不能切换包验收profile"); }
+            finally { foreach(Process process in processes)process.Dispose(); }
+        }
+
         public static string Preflight(string parent)
         {
             parent = Canonical(parent);
@@ -337,8 +345,7 @@ namespace AIbrowse.ReleaseProfile
         private static void CheckJournal(string journal, Manifest manifest)
         {
             journal = Canonical(journal);
-            string evidence = Path.Combine(Repository(), "log", "stage7-e1", "profile-isolation");
-            if (Path.GetDirectoryName(journal) != evidence || Path.GetFileName(journal) != "journal-" + manifest.RunId)
+            if (!EvidenceParent(Path.GetDirectoryName(journal)) || Path.GetFileName(journal) != "journal-" + manifest.RunId)
                 throw new InvalidOperationException("清单位置不属于固定隔离证据目录");
             if (journal.StartsWith(manifest.Parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("清单不能位于被切换目录内");
@@ -347,10 +354,15 @@ namespace AIbrowse.ReleaseProfile
         private static void CheckJournalLocation(string journal)
         {
             journal = Canonical(journal);
-            string evidence = Path.Combine(Repository(), "log", "stage7-e1", "profile-isolation");
             string name = Path.GetFileName(journal);
-            if (Path.GetDirectoryName(journal) != evidence || !name.StartsWith("journal-") || !Guid.TryParseExact(name.Substring(8), "N", out _))
+            if (!EvidenceParent(Path.GetDirectoryName(journal)) || !name.StartsWith("journal-") || !Guid.TryParseExact(name.Substring(8), "N", out _))
                 throw new InvalidOperationException("恢复只接受固定证据目录中的 UUID journal");
+        }
+
+        private static bool EvidenceParent(string path)
+        {
+            return path == Path.Combine(Repository(), "log", "stage7-e1", "profile-isolation") ||
+                path == Path.Combine(Repository(), "log", "legacy-followup-20261012", "package");
         }
 
         private static void Rename(string source, string destination, Identity identity, string journal, string stage, string fault)
@@ -379,10 +391,15 @@ namespace AIbrowse.ReleaseProfile
         }
 
         public static string Prepare(string parent, bool fixture, string fault)
+        { return PrepareCore(parent, fixture, fault, false); }
+
+        private static string PrepareCore(string parent, bool fixture, string fault, bool packageSmoke)
         {
             Manifest manifest = new Manifest { RunId = Guid.NewGuid().ToString("N"), Parent = Canonical(parent), Fixture = fixture };
             EnsureTarget(manifest);
-            string journal = Path.Combine(Repository(), "log", "stage7-e1", "profile-isolation", "journal-" + manifest.RunId);
+            string journal = packageSmoke
+                ? Path.Combine(Repository(), "log", "legacy-followup-20261012", "package", "journal-" + manifest.RunId)
+                : Path.Combine(Repository(), "log", "stage7-e1", "profile-isolation", "journal-" + manifest.RunId);
             CheckJournal(journal, manifest);
             using (Scope scope = new Scope(parent))
             using (DirectoryLease original = new DirectoryLease(Child(manifest, "active"), false))
@@ -508,6 +525,7 @@ namespace AIbrowse.ReleaseProfile
             Equal(Native.Identity(scope.Parent.Handle, true), manifest.ParentIdentity);
             JobProcess.ConfirmReleased(manifest.RunId);
             CheckProcesses();
+            if(Path.GetDirectoryName(journal)==Path.Combine(Repository(),"log","legacy-followup-20261012","package"))CheckPackageGuardians();
             string active = Child(manifest, "active"), original = Child(manifest, "original"), retired = Child(manifest, "retired");
             if (!Exists(original))
             {
@@ -602,6 +620,8 @@ namespace AIbrowse.ReleaseProfile
 
         public static string Run(string packageRoot, string nodeExecutable, ReleaseRunner runner)
         {
+            Stopwatch packageClock = Stopwatch.StartNew();
+            if(runner==ReleaseRunner.PackageSmoke)CheckPackageGuardians();
             string parent = Canonical(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
             packageRoot = Canonical(packageRoot);
             nodeExecutable = Path.GetFullPath(nodeExecutable);
@@ -609,7 +629,7 @@ namespace AIbrowse.ReleaseProfile
                 throw new InvalidOperationException("固定入口需要本机 node.exe");
             using (Scope scope = new Scope(parent))
             {
-                string journal = Prepare(parent, false, "");
+                string journal = PrepareCore(parent, false, "", runner == ReleaseRunner.PackageSmoke);
                 Console.WriteLine("隔离恢复清单：" + journal);
                 Console.WriteLine("异常中断后运行 tools/release-profile/profile-isolation.ps1 -Action Restore -Journal <上述清单目录>。");
                 using (Scope journalScope = new Scope(journal))
@@ -617,6 +637,7 @@ namespace AIbrowse.ReleaseProfile
                     Manifest manifest = Load(journal);
                     LoadSynthetic(journal, manifest);
                     uint result = 0;
+                    bool packageJobCompleted = false;
                     try
                     {
                         Activate(journal, manifest, scope, "");
@@ -625,18 +646,25 @@ namespace AIbrowse.ReleaseProfile
                         Event(journal, "job-intent", "");
                         string runnerScript = runner switch
                         {
-                            ReleaseRunner.Tamper => "run-tamper-tests.ts",
-                            ReleaseRunner.Product => "run-packaged-product-checks.ts",
+                            ReleaseRunner.Tamper => Path.Combine("tools", "release", "run-tamper-tests.ts"),
+                            ReleaseRunner.Product => Path.Combine("tools", "release", "run-packaged-product-checks.ts"),
+                            ReleaseRunner.PackageSmoke => Path.Combine("tools", "legacy-followup", "package-smoke.ts"),
                             _ => throw new InvalidOperationException("未知固定验收入口")
                         };
-                        result = JobProcess.Execute(nodeExecutable, new[] {
-                            Path.Combine(Repository(), "tools", "release", runnerScript),
+                        string[] arguments = new[] {
+                            Path.Combine(Repository(), runnerScript),
                             packageRoot, output, parent, journal
-                        }, Repository(), manifest.RunId, 300000, (pid, created) => {
+                        };
+                        Action<uint,long> started = (pid, created) => {
                             Durable(Path.Combine(journal, "owned-process.json"), JsonSerializer.Serialize(new { pid, creationFileTime = created }), false);
                             Event(journal, "job-started", "");
-                        });
+                        };
+                        result = runner == ReleaseRunner.PackageSmoke
+                            ? JobProcess.Execute(nodeExecutable, arguments, Repository(), manifest.RunId, 120000, started,
+                                packageClock, () => File.Exists(Path.Combine(output, "package-failure.json")))
+                            : JobProcess.Execute(nodeExecutable, arguments, Repository(), manifest.RunId, 300000, started);
                         Event(journal, "job-zero", "");
+                        packageJobCompleted = true;
                     }
                     catch
                     {
@@ -646,7 +674,14 @@ namespace AIbrowse.ReleaseProfile
                     finally
                     {
                         // Restore errors remain visible. No directory or evidence is deleted, including on runner failure.
-                        RestoreLocked(journal, manifest, scope, "");
+                        try { RestoreLocked(journal, manifest, scope, ""); }
+                        catch {
+                            if(runner==ReleaseRunner.PackageSmoke)
+                                Durable(Path.Combine(journal,"package-terminal.json"),JsonSerializer.Serialize(new{passed=false,jobCompleted=packageJobCompleted,rootExitCode=packageJobCompleted?(uint?)result:null,originalRestored=false}),false);
+                            throw;
+                        }
+                        if(runner==ReleaseRunner.PackageSmoke)
+                            Durable(Path.Combine(journal,"package-terminal.json"),JsonSerializer.Serialize(new{passed=packageJobCompleted&&result==0,jobCompleted=packageJobCompleted,rootExitCode=packageJobCompleted?(uint?)result:null,originalRestored=true,originalIdentity=manifest.OriginalIdentity}),false);
                     }
                     if (result != 0) throw new InvalidOperationException("固定验收工具失败，原 profile 已恢复；详见 journal 中证据");
                     return journal;
