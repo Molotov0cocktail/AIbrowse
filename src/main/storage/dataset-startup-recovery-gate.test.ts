@@ -12,7 +12,7 @@ import { TransferBudget } from './transfer-budget';
 
 afterEach(() => vi.restoreAllMocks());
 const context = { check() {}, requireRollbackSpace() {}, assertNoWriters() {} };
-const domains = ['sources', 'research', 'watch'] as const;
+const domains = ['sources', 'research', 'watch', 'browser'] as const;
 async function fixture(replacement = true) {
   const root = await mkdtemp(join(tmpdir(), 'aibrowse-startup-gate-'));
   const scope = await createDatasetScope(

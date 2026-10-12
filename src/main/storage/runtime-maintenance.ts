@@ -34,6 +34,7 @@ type SealedSource = Pick<
 
 export interface RuntimeMaintenanceOptions {
   readonly rootAdmission: MaintenanceAdmission;
+  readonly browserLibrary?: MaintenanceParticipant;
   readonly sourceIpcAdmission: MaintenanceParticipant;
   readonly researchIpcAdmission: MaintenanceParticipant;
   readonly watchIpcAdmission: MaintenanceParticipant;
@@ -86,6 +87,7 @@ export function createRuntimeMaintenance(
     options.sourceIpcAdmission,
     options.researchIpcAdmission,
     options.watchIpcAdmission,
+    ...(options.browserLibrary ? [options.browserLibrary] : []),
     options.rootAdmission,
   ];
   const coordinator = new MaintenanceCoordinator(

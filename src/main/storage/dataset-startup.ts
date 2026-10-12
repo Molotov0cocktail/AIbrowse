@@ -13,7 +13,7 @@ import { transferMetadataAllocation } from './transfer-space';
 import { DatasetReplacement, readRecoveryGate } from './dataset-replacement';
 
 export type DatasetStartupState = 'normal' | 'checking' | 'recovery-required';
-type Domain = 'sources' | 'research' | 'watch';
+type Domain = 'sources' | 'research' | 'watch' | 'browser';
 type HealthHandle = ReturnType<typeof openVerifiedTransferDb>;
 
 export interface DatasetStartupOptions {
@@ -41,6 +41,9 @@ export class DatasetStartup {
   hasOpenHealthHandles(): boolean {
     return this.handles.size > 0;
   }
+  includesDomain(domain: Domain): boolean {
+    return domain !== 'browser' || this.engine?.includesBrowser() === true;
+  }
 
   async prepare(root: string): Promise<DatasetStartupState> {
     if (this.attempted) throw new Error('启动数据维护不能重复执行');
@@ -60,8 +63,8 @@ export class DatasetStartup {
           this.options.assertNoWriters(this.proofMode);
           // Metadata/temporary metadata are counted separately from the measured R.
           // R already includes each old file/directory allocation; reserve the
-          // fixed metadata plus the three possibly missing live domain directories.
-          const metadata = transferMetadataAllocation(fs.bsize) + 3n * fs.bsize;
+          // Reserve all four directories, also safe for a legacy three-domain switch.
+          const metadata = transferMetadataAllocation(fs.bsize) + 4n * fs.bsize;
           if (
             !Number.isSafeInteger(bytes) ||
             bytes < 0 ||
@@ -134,7 +137,12 @@ export class DatasetStartup {
   }
 
   open(domain: Domain): DbHandle {
-    if (this.state !== 'checking' || !this.scope || this.handles.has(domain))
+    if (
+      this.state !== 'checking' ||
+      !this.scope ||
+      this.handles.has(domain) ||
+      !this.includesDomain(domain)
+    )
       throw new Error('恢复数据健康句柄不可用');
     this.proofMode = 'read-only-health';
     this.options.assertNoWriters(this.proofMode);
@@ -152,7 +160,15 @@ export class DatasetStartup {
       !this.engine ||
       !this.scope ||
       !this.context ||
-      this.handles.size !== 3 ||
+      this.handles.size !== (this.includesDomain('browser') ? 4 : 3) ||
+      !(
+        [
+          'sources',
+          'research',
+          'watch',
+          ...(this.includesDomain('browser') ? ['browser'] : []),
+        ] as Domain[]
+      ).every((domain) => this.handles.has(domain)) ||
       !healthy()
     )
       return false;

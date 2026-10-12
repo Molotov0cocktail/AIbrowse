@@ -20,7 +20,7 @@ async function fixture() {
     },
     context,
   );
-  for (const domain of ['sources', 'research', 'watch']) {
+  for (const domain of ['sources', 'research', 'watch', 'browser']) {
     await mkdir(join(root, domain));
     for (const [path, value] of [
       [join(root, domain, `${domain}.db`), 'old'],
@@ -55,8 +55,8 @@ describe('启动先恢复再开放Store', () => {
     const { root } = await fixture();
     const boot = new DatasetStartup({ assertNoWriters() {} });
     expect(await boot.prepare(root)).toBe('checking');
-    const handles = ['sources', 'research', 'watch'].map((domain) =>
-      boot.open(domain as 'sources' | 'research' | 'watch'),
+    const handles = ['sources', 'research', 'watch', 'browser'].map((domain) =>
+      boot.open(domain as 'sources' | 'research' | 'watch' | 'browser'),
     );
     expect(await boot.complete(false)).toBe(false);
     expect(() => handles[0]!.prepare('INSERT INTO marker VALUES (?)').run('illegal')).toThrow();
@@ -82,7 +82,9 @@ describe('启动先恢复再开放Store', () => {
     const { root } = await fixture();
     const boot = new DatasetStartup({ assertNoWriters() {} });
     expect(await boot.prepare(root)).toBe('checking');
-    const handles = (['sources', 'research', 'watch'] as const).map((domain) => boot.open(domain));
+    const handles = (['sources', 'research', 'watch', 'browser'] as const).map((domain) =>
+      boot.open(domain),
+    );
     let checks = 0;
     expect(await boot.complete(() => ++checks === 1)).toBe(false);
     expect(boot.getState()).toBe('recovery-required');

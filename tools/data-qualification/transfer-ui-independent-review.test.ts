@@ -23,7 +23,11 @@ vi.mock('react', () => ({
 }));
 // Keep this Node tool's compilation independent from the renderer JSX project.
 const componentModule: string = '../../src/renderer/src/storage/LocalDataPanel.tsx';
-const { LocalDataPanel } = (await import(componentModule)) as { LocalDataPanel(): unknown };
+const hookModule: string = '../../src/renderer/src/storage/useLocalData.ts';
+const { LocalDataPanel } = (await import(componentModule)) as {
+  LocalDataPanel(props: { controller: unknown }): unknown;
+};
+const { useLocalData } = (await import(hookModule)) as { useLocalData(): unknown };
 function plain(value: unknown): string {
   if (typeof value === 'string') return value;
   if (Array.isArray(value)) return value.map(plain).join('');
@@ -33,7 +37,7 @@ function plain(value: unknown): string {
 }
 function render() {
   hooks.cursor = 0;
-  return plain(LocalDataPanel());
+  return plain(LocalDataPanel({ controller: useLocalData() }));
 }
 const idle: DataTransferStatus = {
   operationId: null,

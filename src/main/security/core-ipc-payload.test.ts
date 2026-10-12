@@ -2,6 +2,33 @@ import { expect, it } from 'vitest';
 import { IPC } from '../../shared/types/ipc';
 import { validateCoreIpcPayload } from './core-ipc-payload';
 
+it('浏览资料库严格限制查询、标识、网址与外观枚举', () => {
+  const request = { query: '', cursor: null, limit: 50 };
+  expect(validateCoreIpcPayload('browser-library:history-list', request)).toBe(true);
+  for (const payload of [
+    undefined,
+    { ...request, limit: 101 },
+    { ...request, sql: 'SELECT 1' },
+    Object.create(request),
+    { ...request, cursor: { at: 'bad', id: 'bad' } },
+  ])
+    expect(validateCoreIpcPayload('browser-library:history-list', payload)).toBe(false);
+  for (const channel of [
+    'browser-library:history-clear',
+    'browser-library:bookmark-add-current',
+    'browser-library:status',
+  ]) {
+    expect(validateCoreIpcPayload(channel, undefined)).toBe(true);
+    for (const payload of [{ path: 'private' }, new Date(), { [Symbol('x')]: true }])
+      expect(validateCoreIpcPayload(channel, payload)).toBe(false);
+  }
+  expect(validateCoreIpcPayload('ui:appearance', { appearance: 'dark' })).toBe(true);
+  expect(validateCoreIpcPayload('ui:appearance', { appearance: 'system', color: 'red' })).toBe(
+    false,
+  );
+  expect(validateCoreIpcPayload('ui:appearance', { appearance: 'invalid' })).toBe(false);
+});
+
 it('诊断仅接受空预览与闭合候选标识，不接收路径或正文', () => {
   const digest = 'a'.repeat(64);
   expect(validateCoreIpcPayload(IPC.DiagnosticPreview, undefined)).toBe(true);

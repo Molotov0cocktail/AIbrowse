@@ -41,6 +41,7 @@ function fixture(): {
     sources: null,
     research: null,
     watch: null,
+    browser: null,
     conversations: null,
   };
   for (const id of BACKUP_IDS) {

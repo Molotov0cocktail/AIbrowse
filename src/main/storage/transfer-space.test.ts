@@ -33,7 +33,7 @@ it('admits sufficient same-volume space for both work and the additional publica
 it('reserves replacement final/tmp metadata, the recovery gate and the evidence directory', () => {
   const unit = 4096n;
   expect(transferSpaceAllocation(unit, 'backup')).toEqual({
-    userData: 13698n * 1024n ** 2n + 184n * 1024n + 111n * unit,
+    userData: 14722n * 1024n ** 2n + 184n * 1024n + 111n * unit,
     publication: 5120n * 1024n ** 2n + unit,
   });
 });

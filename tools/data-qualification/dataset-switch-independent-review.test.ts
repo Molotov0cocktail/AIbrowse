@@ -18,7 +18,7 @@ const context: DatasetContext = { check: () => {}, requireRollbackSpace: () => {
 async function fixture() {
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(join(root, 'fixture-'));
-  for (const domain of ['sources', 'research', 'watch']) {
+  for (const domain of ['sources', 'research', 'watch', 'browser']) {
     await mkdir(join(directory, domain));
     await writeFile(join(directory, domain, `${domain}.db`), `old-${domain}`);
   }
@@ -33,7 +33,7 @@ async function fixture() {
     },
     context,
   );
-  for (const domain of ['sources', 'research', 'watch'])
+  for (const domain of ['sources', 'research', 'watch', 'browser'])
     await writeFile(join(scope.operationRoot, 'work', `${domain}.db`), `new-${domain}`);
   await mkdir(join(scope.operationRoot, 'work', 'conversations'));
   await writeFile(join(scope.operationRoot, 'work', 'conversations', 'index.json'), 'new-index');

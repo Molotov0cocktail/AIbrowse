@@ -21,8 +21,12 @@ import { GENERATIONS, LIMITS, OPERATION_IDS, need, type Scene } from './contract
 const ORACLE_NAME = '.old-data-deadline-oracle.json';
 const SIDE_BRANCH_NAME = 'qualification-side-branch.bin';
 const OLD_SOURCES_BYTES = 257;
-const OLD_FILE_LENGTHS = [257, 263, 269, 271, 277, 281, 283, 293, 307, 311, 313, 317] as const;
-const WORK_FILE_LENGTHS = [101, 103, 107] as const;
+// This fixture follows the current v2 five-member dataset. Historical v1 fixtures must
+// select LEGACY_DATASET_MEMBERS explicitly instead of silently omitting browser data.
+const OLD_FILE_LENGTHS = [
+  257, 263, 269, 271, 277, 281, 283, 293, 307, 311, 313, 317, 347, 349, 353, 359,
+] as const;
+const WORK_FILE_LENGTHS = [101, 103, 107, 131] as const;
 const OLD_CONVERSATION_LENGTHS = [331, 337] as const;
 const WORK_CONVERSATION_LENGTHS = [109, 113] as const;
 
@@ -42,7 +46,7 @@ interface TreeFact {
   readonly files: readonly FileFact[];
 }
 export interface FixtureOracle {
-  readonly version: 1;
+  readonly version: 2;
   readonly scene: Scene;
   readonly operationId: string;
   readonly generation: string;
@@ -210,7 +214,8 @@ function journalSummary(journal: Record<string, unknown>): {
 
 async function writeLiveMembers(root: string): Promise<void> {
   let index = 0;
-  for (const [, live] of DATASET_MEMBERS.slice(0, 12)) {
+  for (const [id, live] of DATASET_MEMBERS) {
+    if (id === 'conversations') continue;
     const path = join(root, live);
     await mkdir(resolve(path, '..'), { recursive: true });
     await writeFile(path, payload(OLD_FILE_LENGTHS[index]!, 0x20 + index), { flag: 'wx' });
@@ -229,7 +234,7 @@ async function writeLiveMembers(root: string): Promise<void> {
   await writeFile(join(root, SIDE_BRANCH_NAME), payload(127, 0x5a), { flag: 'wx' });
 }
 async function writeWorkMembers(scope: DatasetScope): Promise<void> {
-  for (const [index, domain] of ['sources', 'research', 'watch'].entries())
+  for (const [index, domain] of ['sources', 'research', 'watch', 'browser'].entries())
     await writeFile(
       join(scope.operationRoot, 'work', `${domain}.db`),
       payload(WORK_FILE_LENGTHS[index]!, 0x70 + index),
@@ -258,12 +263,12 @@ async function collectOracle(
     old.push(await memberFact(root, join(root, live)));
     if (workName) work.push(await memberFact(root, join(scope.operationRoot, 'work', workName)));
   }
-  need(old.length === 13 && work.length === 4);
+  need(old.length === 17 && work.length === 5);
   need(old[0]?.bytes === OLD_SOURCES_BYTES);
   const lengths = [...old.map((member) => member.bytes), ...work.map((member) => member.bytes)];
   need(new Set(lengths).size === lengths.length, '哨兵长度不唯一，不能选择精确进度点');
   const oracle: FixtureOracle = {
-    version: 1,
+    version: 2,
     scene,
     operationId: scope.operationId,
     generation: scope.generation,
@@ -421,11 +426,11 @@ export async function readOracle(root: string): Promise<FixtureOracle> {
   need(value && typeof value === 'object' && !Array.isArray(value));
   const oracle = value as FixtureOracle;
   need(
-    oracle.version === 1 &&
+    oracle.version === 2 &&
       OPERATION_IDS[oracle.scene] === oracle.operationId &&
       GENERATIONS[oracle.scene] === oracle.generation &&
-      oracle.old.length === 13 &&
-      oracle.work.length === 4,
+      oracle.old.length === 17 &&
+      oracle.work.length === 5,
   );
   return oracle;
 }
@@ -443,7 +448,7 @@ export async function inspectInterruptedFixture(
   root: string,
   scene: Exclude<Scene, 'normal'>,
   afterReopen: boolean,
-): Promise<{ oldMembers: 13; workMembers: 4; retainedRollbackCopies: number }> {
+): Promise<{ oldMembers: 17; workMembers: 5; retainedRollbackCopies: number }> {
   const absolute = resolve(root);
   const oracle = await readOracle(absolute);
   need(oracle.scene === scene);
@@ -478,7 +483,7 @@ export async function inspectInterruptedFixture(
     summary.phase ===
       (scene === 'inventory' ? 'inventory' : afterReopen ? 'rolled-back' : 'backing-up'),
   );
-  return { oldMembers: 13, workMembers: 4, retainedRollbackCopies: retained.length };
+  return { oldMembers: 17, workMembers: 5, retainedRollbackCopies: retained.length };
 }
 
 export async function inspectCommittedFixture(root: string): Promise<void> {

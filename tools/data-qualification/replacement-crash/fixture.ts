@@ -28,7 +28,8 @@ import { isCheckpoint, type ReplacementCheckpoint } from './contracts';
 const OPERATION_ID = 'a'.repeat(32);
 const GENERATION = 'b'.repeat(32);
 const ORACLE_NAME = '.replacement-crash-oracle.json';
-const DOMAINS = ['sources', 'research', 'watch'] as const;
+const LEGACY_DOMAINS = ['sources', 'research', 'watch'] as const;
+const DOMAINS = [...LEGACY_DOMAINS, 'browser'] as const;
 const OPAQUE_ACTIVE = Buffer.from('opaque-active-v1\n');
 const OPAQUE_TEMP = Buffer.from('{invalid-json-active-v1\n');
 const CANARY = Buffer.from('旁支不得改变\n');
@@ -42,7 +43,7 @@ interface OracleMember {
 }
 
 export interface FixtureOracle {
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly operationId: string;
   readonly generation: string;
   readonly operationRoot: string;
@@ -146,7 +147,7 @@ async function writeOracle(root: string, scope: DatasetScope): Promise<FixtureOr
     newSha256: (await hashPath(join(root, newConversation)))!,
   });
   const oracle: FixtureOracle = {
-    version: 1,
+    version: 2,
     operationId: OPERATION_ID,
     generation: GENERATION,
     operationRoot: relative(root, scope.operationRoot),
@@ -240,10 +241,12 @@ async function assertNewConversation(root: string): Promise<void> {
 }
 
 export async function reopenFixture(root: string): Promise<DatasetStartupState> {
+  const oracle = await readOracle(resolve(root));
+  const domains = oracle.version === 1 ? LEGACY_DOMAINS : DOMAINS;
   const startup = new DatasetStartup({ assertNoWriters() {} });
   const state = await startup.prepare(resolve(root));
   if (state === 'checking') {
-    const handles = DOMAINS.map((domain) => startup.open(domain));
+    const handles = domains.map((domain) => startup.open(domain));
     try {
       for (const handle of handles) {
         const row = handle.prepare('SELECT value FROM marker').get() as
@@ -259,7 +262,7 @@ export async function reopenFixture(root: string): Promise<DatasetStartupState> 
     return 'normal';
   }
   if (state === 'normal') {
-    for (const domain of DOMAINS)
+    for (const domain of domains)
       if (readMarker(domainFile(resolve(root), domain)) !== 'new')
         throw new Error('普通准入包含非新代marker');
     await assertNewConversation(resolve(root));
@@ -280,11 +283,13 @@ async function readOracle(root: string): Promise<FixtureOracle> {
   if (bytes.length > 64 * 1024) throw new Error('oracle文件超限');
   const value = JSON.parse(bytes.toString('utf8')) as FixtureOracle;
   if (
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== 2) ||
     value.operationId !== OPERATION_ID ||
     value.generation !== GENERATION ||
     !Array.isArray(value.members) ||
-    value.members.length !== 4
+    value.members.length !== (value.version === 1 ? 4 : 5) ||
+    value.members.map((member) => member.id).join(',') !==
+      [...(value.version === 1 ? LEGACY_DOMAINS : DOMAINS), 'conversations'].join(',')
   )
     throw new Error('oracle文件非法');
   return value;

@@ -41,7 +41,8 @@ export function transferSpaceAllocation(
   const dbs =
     round(BigInt(BACKUP_LIMITS.sources), unit) +
     round(BigInt(BACKUP_LIMITS.research), unit) +
-    round(BigInt(BACKUP_LIMITS.watch), unit);
+    round(BigInt(BACKUP_LIMITS.watch), unit) +
+    round(BigInt(BACKUP_LIMITS.browser), unit);
   // A closed tree has at most 51 files. Its aggregate byte cap plus 50 extra
   // units bounds per-file rounding, also covering the alternative single wire.
   const conversations =

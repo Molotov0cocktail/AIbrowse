@@ -5,10 +5,10 @@
 
 ## 固定编排与边界
 
-- R：小 A → 健康产品 UI backup → 精确 main/guardian 退出与账本退休 → 同根保留四域 A、装 B →
+- R：小 A → 健康产品 UI backup → 精确 main/guardian 退出与账本退休 → 同根保留五域 A、装 B →
   Open 取消、确认取消 → arm 后批准 → 唯一守护后继 → 四域 UI → 正常关闭 → A 与 rollback B oracle →
   无额外参数普通冷启 → 四域 UI → 正常关闭、完整语义摘要不变。
-- P：合法 A 三库与坏会话 index → partial 确认取消/批准 → gate、退休及零 Store 恢复入口 →
+- P：合法 A 四库与坏会话 index → partial 确认取消/批准 → gate、退休及零 Store 恢复入口 →
   Open 取消、H 确认取消/批准 → 健康后继 → 四域 UI、H 历史规范化及坏 index 回退原件 →
   普通冷启 → 四域 UI 与完全相同的恢复后业务摘要。
 - H 由绑定的生产 Node backup pipeline 生成，原件标记“受控合成生产管线备份”；不称为产品 UI backup。
@@ -58,12 +58,14 @@ node <scope>/run.cjs R|P <scope> <packageRoot> <journal>/runner-output <appData>
 外层 Job0、未结算 Promise/child/observer/ordinary lease 全零和固定原件。最后原件 flush/close
 仍计原工具与场景余额；磁盘残留 `ok=true` 不覆盖最终进程失败。
 
-恢复源 A/B/H 每套 942553 字节的已审 oracle复用。安装 B 前必须已取得原生退休证明；
-离线入口另核 ledger null/null。只移动明确四域到同实体根内固定保留目录，不移动整个 profile，
+历史恢复源 A/B/H 每套 942553 字节的三库与会话 oracle 继续复用；当前另加独立 browser.db，
+每套固定两条历史与一条书签，保留 URL query/hash 并逐行核验 A/B/H 归属及完整语义摘要。
+新备份须精确五成员且全部存在；旧历史原件与数字不改写。安装 B 前必须已取得原生退休证明；
+离线入口另核 ledger null/null。只移动明确五域到同实体根内固定保留目录，不移动整个 profile，
 不删除任何输入。业务 oracle不在活 writer 上运行，P 恢复入口只读取固定 gate 和坏 index。
 “零 Store”采用固定恢复 UI、gate 与绑定的产品装配路径联合证明，不能单据窗口文字声称。
 
-关闭后 fixed oracle 约束整套业务列/行、跨库关系和会话集合；R 回退区必须精确四域且 B oracle通过。
+关闭后 fixed oracle 约束整套业务列/行、跨库关系、会话与浏览资料集合；R 回退区必须精确五域且 B oracle通过。
 每次退休后仍在同一 close30 余额内核固定原生 Job 样本，main、guardian、Chromium、utility 必须全部为零，
 只允许剩余工具；R 三次、P 两次。该门失败不能读取 oracle、安装 B 或普通冷启。
 P保留旧坏 index；H断言 interrupted/uncertain、paused、通知 failed/attempts0、旧 claim/cursor/slot

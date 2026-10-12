@@ -136,7 +136,7 @@ it('原生选择只返回冻结身份与snapshot，合法头部但未验证帧�
   const snapshotId = randomUUID();
   const manifest = Buffer.from(
     JSON.stringify({
-      formatVersion: 1,
+      formatVersion: 2,
       productVersion: '0.1.0',
       snapshotId,
       members: BACKUP_IDS.map((id) => ({
@@ -150,7 +150,7 @@ it('原生选择只返回冻结身份与snapshot，合法头部但未验证帧�
   );
   const header = Buffer.alloc(16);
   header.write('AIBAK001');
-  header.writeUInt32BE(1, 8);
+  header.writeUInt32BE(2, 8);
   header.writeUInt32BE(manifest.length, 12);
   const path = join(root, 'selected.aibak');
   const bytes = Buffer.concat([header, manifest, Buffer.from('deliberately invalid frames')]);
@@ -173,7 +173,7 @@ async function startupFixture() {
     },
     noWrite,
   );
-  for (const domain of ['sources', 'research', 'watch']) {
+  for (const domain of ['sources', 'research', 'watch', 'browser']) {
     await mkdir(join(root, domain));
     for (const path of [
       join(root, domain, domain + '.db'),
@@ -201,12 +201,14 @@ async function startupFixture() {
   return { root, scope };
 }
 
-it('真实handoff账本启动后健康门撤销，三个句柄均不解除写保护；显式fail只关闭不复活', async () => {
+it('真实handoff账本启动后健康门撤销，四个句柄均不解除写保护；显式fail只关闭不复活', async () => {
   const f = await startupFixture();
   // This synthetic health-handle test does not claim native writer-exit evidence.
   const boot = new DatasetStartup({ assertNoWriters() {} });
   expect(await boot.prepare(f.root)).toBe('checking');
-  const handles = (['sources', 'research', 'watch'] as const).map((domain) => boot.open(domain));
+  const handles = (['sources', 'research', 'watch', 'browser'] as const).map((domain) =>
+    boot.open(domain),
+  );
   try {
     let calls = 0;
     expect(await boot.complete(() => ++calls === 1)).toBe(false);

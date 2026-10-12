@@ -161,13 +161,13 @@ async function freshFixture(): Promise<string> {
   return join(evidence, `fixture-${randomUUID().replaceAll('-', '')}`);
 }
 
-it('独审：正常小SQLite控制和重开保留四类old/new及opaque active', async () => {
+it('独审：正常小SQLite控制和重开保留五类old/new及opaque active', async () => {
   const root = await freshFixture();
   await runWriter(root, () => {});
   await expect(reopenFixture(root)).resolves.toBe('normal');
   await expect(inspectFixture(root, 'normal')).resolves.toMatchObject({
-    completeOldCopies: 8,
-    completeNewCopies: 4,
+    completeOldCopies: 10,
+    completeNewCopies: 5,
   });
 });
 
@@ -207,8 +207,8 @@ it('独审：创建中空gate和已flush完整gate均触发恢复门并保全旧
     );
     await expect(reopenFixture(root)).resolves.toBe('recovery-required');
     await expect(inspectFixture(root, 'recovery-required')).resolves.toMatchObject({
-      completeOldCopies: 4,
-      completeNewCopies: 4,
+      completeOldCopies: 5,
+      completeNewCopies: 5,
     });
   }
 });

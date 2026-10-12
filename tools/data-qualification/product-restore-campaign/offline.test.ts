@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile, readdir, lstat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, readdir, lstat, rename } from 'node:fs/promises';
 import { resolve, join, toNamespacedPath } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { expect, it } from 'vitest';
 import { offline } from './offline';
 import { exactSources, record } from './binding';
 import { hash, read, save } from './files';
+import { createCampaignFixture, verifyCampaignFixture } from './browser-fixture';
 import { verifySmallFixture } from '../product-restore-fixtures/oracle';
 import { projectBinding } from './project-binding';
 import { compileBundle } from './compile';
@@ -67,7 +69,7 @@ it('编译后offline工具实际进程验证A/B装配及H生产备份，无产�
       [bundle, 'prepare', 'R', r.appData, r.journal],
       deadline,
     );
-    expect(verifySmallFixture(r.root, 'A', 'source').bytes).toBe(942553);
+    expect(verifyCampaignFixture(r.root, 'A', 'source').legacyBytes).toBe(942553);
     await mkdir(join(r.root, 'lifecycle-guardian'));
     await save(join(r.root, 'lifecycle-guardian/writers.json'), {
       version: 1,
@@ -81,9 +83,10 @@ it('编译后offline工具实际进程验证A/B装配及H生产备份，无产�
       [bundle, 'install-b', 'R', r.appData, r.journal],
       deadline,
     );
-    expect(verifySmallFixture(r.root, 'B', 'source').bytes).toBe(942553);
+    expect(verifyCampaignFixture(r.root, 'B', 'source').legacyBytes).toBe(942553);
     expect(
-      verifySmallFixture(join(r.root, 'restore-campaign-preserved-A'), 'A', 'source').bytes,
+      verifyCampaignFixture(join(r.root, 'restore-campaign-preserved-A'), 'A', 'source')
+        .legacyBytes,
     ).toBe(942553);
     await processes.external(
       process.execPath,
@@ -91,7 +94,9 @@ it('编译后offline工具实际进程验证A/B装配及H生产备份，无产�
       deadline,
     );
     const evidence = join(p.journal, 'runner-output/restore-campaign');
-    expect(verifySmallFixture(join(evidence, 'fixtures/H'), 'H', 'source').bytes).toBe(942553);
+    expect(verifyCampaignFixture(join(evidence, 'fixtures/H'), 'H', 'source').legacyBytes).toBe(
+      942553,
+    );
     expect(
       JSON.parse((await readFile(join(evidence, 'synthetic-H-wire.json'))).toString()).origin,
     ).toBe('受控合成生产管线备份');
@@ -114,7 +119,7 @@ it('编译后offline工具实际进程验证A/B装配及H生产备份，无产�
 it('A装配→拒绝忙writer→退休后保留A且安装B，全部原件保持', async () => {
   const f = await fixture();
   await offline('prepare', 'R', f.appData, f.journal);
-  expect(verifySmallFixture(f.root, 'A', 'source').bytes).toBe(942553);
+  expect(verifyCampaignFixture(f.root, 'A', 'source').legacyBytes).toBe(942553);
   await mkdir(join(f.root, 'lifecycle-guardian'));
   const ledger = {
     version: 1,
@@ -126,16 +131,16 @@ it('A装配→拒绝忙writer→退休后保留A且安装B，全部原件保持'
   const path = join(f.root, 'lifecycle-guardian/writers.json');
   await save(path, ledger);
   await expect(offline('install-b', 'R', f.appData, f.journal)).rejects.toThrow();
-  expect(verifySmallFixture(f.root, 'A', 'source').bytes).toBe(942553);
+  expect(verifyCampaignFixture(f.root, 'A', 'source').legacyBytes).toBe(942553);
   await writeFile(path, JSON.stringify({ ...ledger, main: null }));
   await offline('install-b', 'R', f.appData, f.journal);
-  expect(verifySmallFixture(f.root, 'B', 'source').bytes).toBe(942553);
+  expect(verifyCampaignFixture(f.root, 'B', 'source').legacyBytes).toBe(942553);
   expect(
-    verifySmallFixture(join(f.root, 'restore-campaign-preserved-A'), 'A', 'source').bytes,
+    verifyCampaignFixture(join(f.root, 'restore-campaign-preserved-A'), 'A', 'source').legacyBytes,
   ).toBe(942553);
   await expect(offline('install-b', 'R', f.appData, f.journal)).rejects.toThrow();
 });
-it('P构造保留坏index、有效三库以及明确合成H备份，重复准备拒绝覆盖', async () => {
+it('P构造保留坏index、有效四库以及明确合成H备份，重复准备拒绝覆盖', async () => {
   const f = await fixture();
   await offline('prepare', 'P', f.appData, f.journal);
   const index = await readFile(join(f.root, 'conversations/index.json'));
@@ -146,8 +151,10 @@ it('P构造保留坏index、有效三库以及明确合成H备份，重复准备
     members: unknown[];
   };
   expect(wire.origin).toBe('受控合成生产管线备份');
-  expect(wire.members).toHaveLength(4);
-  expect(verifySmallFixture(join(evidence, 'fixtures/H'), 'H', 'source').bytes).toBe(942553);
+  expect(wire.members).toHaveLength(5);
+  expect(verifyCampaignFixture(join(evidence, 'fixtures/H'), 'H', 'source').legacyBytes).toBe(
+    942553,
+  );
   await expect(offline('prepare', 'P', f.appData, f.journal)).rejects.toThrow();
   expect(hash(await read(join(f.root, 'conversations/index.json')))).toBe(hash(index));
   await mkdir(join(f.root, 'data-transfer'));
@@ -156,6 +163,33 @@ it('P构造保留坏index、有效三库以及明确合成H备份，重复准备
   expect((await lstat(join(evidence, 'recovery-entry.json'))).isFile()).toBe(true);
   expect(await readdir(join(f.root, 'conversations'))).toHaveLength(2);
 });
+it.each(['history', 'bookmarks', 'missing'] as const)(
+  '旧三库 oracle 仍通过时新增浏览资料 %s 缺陷必须单独拒绝',
+  async (kind) => {
+    const f = await fixture();
+    const root = join(f.evidence, 'browser-oracle');
+    createCampaignFixture(root, 'A');
+    const valid = verifyCampaignFixture(root, 'A', 'source');
+    expect(valid.legacyBytes).toBe(942553);
+    expect(valid.browserBytes).toBeGreaterThan(0);
+    expect(valid.bytes).toBe(valid.legacyBytes + valid.browserBytes);
+    expect(valid.hashes.browser).toMatch(/^[a-f0-9]{64}$/u);
+    const path = join(root, 'browser/browser.db');
+    if (kind === 'missing') await rename(path, path + '.retained');
+    else {
+      const db = new DatabaseSync(path);
+      try {
+        db.exec(
+          kind === 'history' ? 'DELETE FROM browser_history' : 'DELETE FROM browser_bookmarks',
+        );
+      } finally {
+        db.close();
+      }
+    }
+    expect(verifySmallFixture(root, 'A', 'source').bytes).toBe(942553);
+    expect(() => verifyCampaignFixture(root, 'A', 'source')).toThrow();
+  },
+);
 it('固定闭包不能删除bundle输入与source两处来隐藏来源，也拒绝空map和路径越界', () => {
   const sources = { 'a.ts': 'a'.repeat(64), 'b.ts': 'b'.repeat(64) };
   expect(() => exactSources(sources, ['a.ts', 'b.ts'])).not.toThrow();

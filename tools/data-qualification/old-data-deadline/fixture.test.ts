@@ -60,8 +60,8 @@ describe('旧集合期限文件协议', () => {
     });
     expect(initial.waitedMs).toBe(LIMITS.realDelayMs);
     await expect(inspectInterruptedFixture(sceneRoot, 'inventory', false)).resolves.toEqual({
-      oldMembers: 13,
-      workMembers: 4,
+      oldMembers: 17,
+      workMembers: 5,
       retainedRollbackCopies: 0,
     });
     const reopened = await reopenScene(sceneRoot, 'inventory');
@@ -101,8 +101,8 @@ describe('旧集合期限文件协议', () => {
       rollbackCopyBudget: 0,
     });
     await expect(inspectInterruptedFixture(sceneRoot, 'backing-up', false)).resolves.toEqual({
-      oldMembers: 13,
-      workMembers: 4,
+      oldMembers: 17,
+      workMembers: 5,
       retainedRollbackCopies: 1,
     });
     const reopened = await reopenScene(sceneRoot, 'backing-up');
@@ -115,14 +115,14 @@ describe('旧集合期限文件协议', () => {
       rollbackCopyBudget: 0,
     });
     await expect(inspectInterruptedFixture(sceneRoot, 'backing-up', true)).resolves.toEqual({
-      oldMembers: 13,
-      workMembers: 4,
+      oldMembers: 17,
+      workMembers: 5,
       retainedRollbackCopies: 1,
     });
   });
 
   it('固定哨兵长度唯一且已有scene根不能重用', async () => {
-    expect(new Set(fixtureConstants.oldFileLengths).size).toBe(12);
+    expect(new Set(fixtureConstants.oldFileLengths).size).toBe(16);
     expect(fixtureConstants.oldFileLengths[0]).toBe(fixtureConstants.oldSourcesBytes);
     const sceneRoot = await root('reuse');
     await executeInitialScene(sceneRoot, 'normal', {

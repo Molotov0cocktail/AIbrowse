@@ -1,5 +1,69 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 统一设置、标题栏标签与浏览资料合同（2026-10-12）
+
+- TASK / BASELINE：用户明确新增独立设置页、标题栏内标签、浏览历史和书签；接管
+  `1a0597f52670be5e9ffcc38b3afd84c67cdddbd4`，工作区干净。该授权覆盖本轮基础浏览能力，
+  不沿用 First Stage 的收藏非目标拒绝本次请求，也不启动其它 Stage8 能力。
+- GOAL：本地数据、外观、AI 配置及低频诊断进入专门设置页；保留直接可达的 AI/信源/研究/监控。
+  标签置于窗口顶部，采用 Electron hidden title bar + native Window Controls Overlay，原生三键、拖动、
+  缩放和正常关闭链保留；控件不属于拖动区域。默认顶部仍最多两行，不另占原生品牌标题行。
+- FIXED PRODUCT：用户明确历史一直本地保留至手动删除或清空，无 TTL 或隐藏条数淘汰。
+  历史只记录普通 Tab 已提交的主框架 HTTP(S) 导航；Research/Watch/search 任务 Tab、子帧、空白及未提交失败不记。
+  保留合法 query/fragment 供再次访问，拒绝 userinfo/危险协议；URL、标题、时间属于本机明文私密资料，
+  不进日志/诊断/模型。书签独立于 Sources，可添加、搜索、修改、删除和打开，不自动成为 AI 信源。
+- ENGINEERING：独立主进程 `browser/browser.db`，node:sqlite、编译期 migration/SQL、prepared 参数；
+  稳定 keyset 分页，每页1–100、查询≤200字符、URL≤8192、标题≤1000；库无业务行数淘汰。
+  renderer 仅消费有界 DTO，严格 IPC 与当前 UI 文档认证；模型工具集合不变。导航写入与标题更新也必须受维护准入，
+  不能绕过排水/关闭。标题只更新精确访问 ID，清空后迟到更新不复活旧记录。
+- SETTINGS：主题初始化和数据故障观察保持 App 常驻；设置页只负责显示/操作，不重复启动轮询。
+  保存/恢复故障以紧凑全局提醒链接至设置，即使业务 Store 不可用仍有恢复入口。凭据依旧只写不读。
+- BACKUP：新容器 v2 增加 browser 固定成员，并贯穿路径白名单、WAL/SHM/journal、startup-probe、
+  schema/语义、维护、世代切换及回退。旧 v1 仅恢复原四成员，其不包含的现有浏览资料在同一排水静止点
+  复制/核验后保留到新世代，事前 UI/原生确认明确说明；不静默清空、不拒绝旧有效备份。
+  browser 备份输入包络512MiB、总容器仍5GiB；超过有界处理预算时明确失败、保留原库，绝不裁掉历史迁就预算。
+  Guardian 票据仍属于写者进程，browser 句柄在 main writer 登记之后打开、退役之前关闭。
+- PLAN / SCOPE：主协调维护合同、标题栏、导航回调和 IPC/装配；独立 worker 实现资料域及存储全链；
+  renderer worker 实现设置和资料 UI；新独立 Astra/xhigh Reviewer 审持久化/隐私/并发及必要反例。
+  调度实际型号未回显时如实记不可验证。版本候选0.1.5，适用验收通过后更新output并完整保留0.1.4。
+- TEST / ACCEPTANCE：聚焦状态/数据反例、重启持久化、v2往返/v1兼容、维护/清除/退出竞态、IPC拒绝；
+  typecheck/lint/format/build及受影响集成回归。真实 Electron 检查两主题三尺寸、窗口按钮/拖动、设置与网页互切、
+  历史/书签完整用户路径、无 Store 恢复入口；不调用真实 Provider、不重开未变资源长测。
+  包静态绑定、受影响验证、独审通过后本地可回退更新及双远程收尾；打包启动是否实测单独报告。
+- STOP / REPLAN：相同路线两次无新增证据即换路；不得为新库跳过旧数据完整性门或降低原阈值。
+  新数据/权限取舍先集中裁决，工程文件范围可按完整目标扩展，不重复审批已授权工作。
+- DELIVERY ENGINEERING：旧output选择脚本把0.1.4版本、历史EPERM补验和固定测试数量写入代码；
+  本轮改用`tools/browser-library-runtime/select-output.ps1`消费独立审核绑定的本轮证据清单。
+  等价性是仍逐文件核验发行清单、干净源码HEAD、审核证据摘要，先完整复制校验再切换，
+  保留旧output全部字节并提供失败回退；不以固定历史数量替代本轮功能/数据/退出验收。
+  包启动是否实测继续独立记PASS或NOTRUN，同机本地选择不扩大到独立机器/公开发行承诺。
+- WINDOW ORACLE REPLAN：原生输入首次未产生移动，补充精确 HWND/PID/DPI/前台校验后，Windows
+  连续拒绝前台资格，未发送鼠标输入；停止相同物理输入路线并保留四场失败原件。
+  本轮改以真实 Window Controls Overlay 几何、CSS drag/no-drag、原生窗口移动/最小化/最大化/恢复
+  和正常 close→退出→重新启动验证承载与生命周期。物理拖动及三键点击明确 NOTRUN，不把 API 调用
+  等同于鼠标交互；该限制随内部候选交付，不授独立机器窗口交互通过。
+
+### 0.1.5 实现与当前证据
+
+- 独立持久化/安全审核发现并关闭三项问题：无主库的孤立附属文件必须保留并拒绝打开；原生恢复确认
+  明示历史/书签覆盖范围；SQLite NUL 截断不能绕过 ID/时间字节包络。最终117项独立断言PASS，
+  见`log/browser-library-independent-review-20261012/review.json`及addendum；原红态保留。
+- 首全量7020PASS/45FAIL/3SKIP原件保留；旧三库/四成员夹具已按新四库/五成员扩展原语义。
+  未修改凭据预算测试一次rename EPERM的实际占用者unknown，独立原16项单次复验PASS；
+  不用单次复验声称历史根因已知。新全量与包绑定结果在交付收尾补记。
+- GUI最终`log/browser-settings-20261012/20261012T105058895Z-9cf1447b039748a5aec4c83c5255ed7a/result.json`
+  为102场、0失败；真实资料操作/搜索/编辑/删除/清空与页面互切通过。两主题×三尺寸的六个浏览器基线
+  检查WCO、顶部位置、drag/no-drag，默认chrome80px；不称102场都重复原生标题栏断言。
+- runtime最终`log/browser-settings-20261012/runtime-684353e8-e945-4318-9cf0-7e3a494162bb/`两阶段
+  write/reopen均passed/willQuit，真实访问/后退后3条历史与1条书签、URL/标题在完整退出后保留；
+  清空历史不影响书签。API移动、最小化/恢复、最大化/还原状态与几何通过，物理输入NOTRUN。
+  原01位移未改变、02子进程退出原因未知、03/04前台资格拒绝均保留，均未进入reopen；
+  原工具固定phases=2不能解释成完成两阶段，最终已分planned/attempted/completed。
+- 本轮真实Bing→bilibili`log/browser-ux-20261012/electron-fb391135-d73a-4a40-80dc-bf7eed15d032/result.json`
+  一查询/一结果点击PASS，受控新Tab打开，Provider0。无需重复十款界面调研，沿用下节实际图像证据。
+- typecheck/lint/format/build的`quality-final-02`均exit0。新output选择器作者37断言及独立6断言PASS，
+  含两处真实子进程中断、回退幂等和损坏拒绝；真实output尚未切换。资料/UI/工具验证不等于打包启动。
+
 ## 浏览器空间与网页链接修复合同（2026-10-12）
 
 - TASK / BASELINE：用户要求收紧常驻 UI、实际查看至少十款同类浏览器界面，并修复 Bing 搜索结果无法打开；

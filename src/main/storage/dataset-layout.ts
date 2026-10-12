@@ -5,7 +5,7 @@ import type { FileHandle } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { parseBoundedJson } from './bounded-json';
 
-export const DATASET_MEMBERS = [
+export const LEGACY_DATASET_MEMBERS = [
   ['sources', 'sources/sources.db', 'sources.db'],
   ['sources-wal', 'sources/sources.db-wal', null],
   ['sources-shm', 'sources/sources.db-shm', null],
@@ -20,6 +20,13 @@ export const DATASET_MEMBERS = [
   ['watch-journal', 'watch/watch.db-journal', null],
   ['conversations', 'conversations', 'conversations'],
 ] as const;
+export const DATASET_MEMBERS = [
+  ...LEGACY_DATASET_MEMBERS,
+  ['browser', 'browser/browser.db', 'browser.db'],
+  ['browser-wal', 'browser/browser.db-wal', null],
+  ['browser-shm', 'browser/browser.db-shm', null],
+  ['browser-journal', 'browser/browser.db-journal', null],
+] as const;
 export type DatasetMemberId = (typeof DATASET_MEMBERS)[number][0];
 export type DatasetPhase = 'register' | 'backup' | 'switch' | 'recovery' | 'health';
 export interface DatasetContext {
@@ -32,7 +39,7 @@ export interface DatasetFingerprint {
   sha256: string;
 }
 export type NewDatasetFingerprints = Record<
-  'sources' | 'research' | 'watch' | 'conversations',
+  'sources' | 'research' | 'watch' | 'conversations' | 'browser',
   DatasetFingerprint
 >;
 type Identity = [string, string];

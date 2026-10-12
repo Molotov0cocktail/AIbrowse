@@ -3,6 +3,16 @@
 // preload bridge 白名单（AibrowseBridge）T3 接入；main 侧 handler 已于 T2 落地。
 
 export const IPC = {
+  BrowserHistoryList: 'browser-library:history-list',
+  BrowserHistoryDelete: 'browser-library:history-delete',
+  BrowserHistoryClear: 'browser-library:history-clear',
+  BrowserBookmarksList: 'browser-library:bookmarks-list',
+  BrowserBookmarkAddCurrent: 'browser-library:bookmark-add-current',
+  BrowserBookmarkUpdate: 'browser-library:bookmark-update',
+  BrowserBookmarkRemove: 'browser-library:bookmark-remove',
+  BrowserBookmarkGetCurrent: 'browser-library:bookmark-get-current',
+  BrowserLibraryStatus: 'browser-library:status',
+  UiAppearance: 'ui:appearance',
   UiDocumentOpen: 'ui:document-open',
   UiDocumentReady: 'ui:document-ready',
   // renderer → main（invoke）

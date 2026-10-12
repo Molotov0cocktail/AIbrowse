@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { BaseWindow, Session } from 'electron';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BrowserControllerImpl } from './browser-controller';
+import { BrowserControllerImpl, type BrowserControllerOptions } from './browser-controller';
 import type { SessionManager } from './session-manager';
 
 interface PendingLoad {
@@ -200,7 +200,7 @@ vi.mock('../logger', () => ({
   logWarn: vi.fn(),
 }));
 
-function harness(): {
+function harness(observers: Partial<BrowserControllerOptions> = {}): {
   controller: BrowserControllerImpl;
   ownerWindow: BaseWindow;
 } {
@@ -216,6 +216,7 @@ function harness(): {
       ownerWindow,
       sessionManager,
       getFallbackBounds: () => ({ x: 0, y: 80, width: 1200, height: 720 }),
+      ...observers,
     }),
     ownerWindow,
   };
@@ -228,6 +229,43 @@ beforeEach(() => {
   electronMock.noCommitUrls.length = 0;
   electronMock.syncFailureUrls.length = 0;
   electronMock.deferBlankLoads = false;
+});
+
+it('只有普通标签主框架提交写历史；后台、失败和子框架不会写入', async () => {
+  const onNavigationCommitted = vi.fn(() => 'visit-1');
+  const { controller } = harness({ onNavigationCommitted });
+  await controller.createTaskTab('https://example.com/task');
+  await controller.createTab();
+  const wc = electronMock.instances[1]!.webContents;
+  wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+  wc.emit('did-fail-load', {}, -105, '', 'https://failure.test', true);
+  wc.emit('did-navigate-in-page', {}, 'https://example.com/frame', false);
+  expect(onNavigationCommitted).not.toHaveBeenCalled();
+  wc.emit('did-navigate', {}, 'https://example.com/final');
+  expect(onNavigationCommitted).toHaveBeenCalledWith({
+    url: 'https://example.com/final',
+    title: '',
+  });
+  wc.emit('did-navigate-in-page', {}, 'https://example.com/final#one', true);
+  expect(onNavigationCommitted).toHaveBeenCalledTimes(2);
+  controller.dispose();
+});
+
+it('标题更新只携带已提交访问标识，导航开始后旧标题失效', async () => {
+  const onVisitTitleChanged = vi.fn();
+  const { controller } = harness({ onNavigationCommitted: () => 'visit-1', onVisitTitleChanged });
+  await controller.createTab('https://example.com/');
+  const wc = electronMock.instances[0]!.webContents;
+  wc.emit('page-title-updated', {}, '网页一');
+  expect(onVisitTitleChanged).toHaveBeenCalledWith({
+    id: 'visit-1',
+    url: 'https://example.com/',
+    title: '网页一',
+  });
+  wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+  wc.emit('page-title-updated', {}, '迟到标题');
+  expect(onVisitTitleChanged).toHaveBeenCalledTimes(1);
+  controller.dispose();
 });
 
 function popupDetails(

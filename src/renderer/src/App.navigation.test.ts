@@ -4,7 +4,7 @@ import { TabBar } from './browser/TabBar';
 import { Toolbar } from './browser/Toolbar';
 
 const hooks = vi.hoisted(() => ({
-  initialView: 'watch' as 'watch' | 'research-result',
+  initialView: 'watch' as 'watch' | 'research-result' | 'settings' | 'library',
   viewWrites: [] as string[],
 }));
 
@@ -49,6 +49,15 @@ vi.mock('./research/use-research', () => ({
     exportCsv: vi.fn(),
   }),
 }));
+vi.mock('./ui/useAppearance', () => ({
+  useAppearance: () => ({ appearance: 'system', setAppearance: vi.fn() }),
+}));
+vi.mock('./storage/useLocalData', () => ({
+  useLocalData: () => ({ issue: null }),
+}));
+vi.mock('./browser-library/useBrowserLibraryStatus', () => ({
+  useBrowserLibraryStatus: () => ({ state: 'available', message: '' }),
+}));
 
 interface ElementNode {
   type: unknown;
@@ -66,61 +75,64 @@ function component<T extends ElementNode['props']>(tree: unknown, type: unknown)
   return elements(tree).find((node) => node.type === type)!.props as T;
 }
 
-describe.each(['watch', 'research-result'] as const)('从 %s 返回浏览', (initialView) => {
-  beforeEach(() => {
-    hooks.initialView = initialView;
-    hooks.viewWrites = [];
-    vi.stubGlobal('__WATCH_QUALIFICATION__', false);
-    const nav = {
-      navigate: vi.fn(async () => true),
-      back: vi.fn(async () => true),
-      forward: vi.fn(async () => true),
-      reload: vi.fn(async () => true),
-    };
-    vi.stubGlobal('window', {
-      aibrowse: {
-        nav,
-        tabs: {
-          activate: vi.fn(async () => true),
-          close: vi.fn(async () => true),
-          create: vi.fn(async () => ({ id: 'tab-2' })),
+describe.each(['watch', 'research-result', 'settings', 'library'] as const)(
+  '从 %s 返回浏览',
+  (initialView) => {
+    beforeEach(() => {
+      hooks.initialView = initialView;
+      hooks.viewWrites = [];
+      vi.stubGlobal('__WATCH_QUALIFICATION__', false);
+      const nav = {
+        navigate: vi.fn(async () => true),
+        back: vi.fn(async () => true),
+        forward: vi.fn(async () => true),
+        reload: vi.fn(async () => true),
+      };
+      vi.stubGlobal('window', {
+        aibrowse: {
+          nav,
+          tabs: {
+            activate: vi.fn(async () => true),
+            close: vi.fn(async () => true),
+            create: vi.fn(async () => ({ id: 'tab-2' })),
+          },
         },
-      },
+      });
     });
-  });
 
-  it.each([
-    ['地址栏导航', 'onNavigate', 'navigate', '搜索词'],
-    ['后退', 'onBack', 'back', undefined],
-    ['前进', 'onForward', 'forward', undefined],
-    ['刷新', 'onReload', 'reload', undefined],
-  ] as const)('%s会切回浏览并派发当前标签动作', async (_label, callback, bridgeMethod, input) => {
-    const toolbar = component<Record<string, unknown>>(App(), Toolbar);
-    (toolbar[callback] as (value?: string) => void)(input);
-    await Promise.resolve();
+    it.each([
+      ['地址栏导航', 'onNavigate', 'navigate', '搜索词'],
+      ['后退', 'onBack', 'back', undefined],
+      ['前进', 'onForward', 'forward', undefined],
+      ['刷新', 'onReload', 'reload', undefined],
+    ] as const)('%s会切回浏览并派发当前标签动作', async (_label, callback, bridgeMethod, input) => {
+      const toolbar = component<Record<string, unknown>>(App(), Toolbar);
+      (toolbar[callback] as (value?: string) => void)(input);
+      await Promise.resolve();
 
-    expect(hooks.viewWrites).toContain('browser');
-    expect((window.aibrowse.nav[bridgeMethod] as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual(
-      input === undefined ? ['tab-1'] : ['tab-1', input],
-    );
-  });
+      expect(hooks.viewWrites).toContain('browser');
+      expect((window.aibrowse.nav[bridgeMethod] as ReturnType<typeof vi.fn>).mock.calls[0]).toEqual(
+        input === undefined ? ['tab-1'] : ['tab-1', input],
+      );
+    });
 
-  it('激活标签会切回浏览并派发精确tabId', async () => {
-    const tabBar = component<Record<string, unknown>>(App(), TabBar);
-    (tabBar.onActivate as (tabId: string) => void)('tab-1');
-    await Promise.resolve();
+    it('激活标签会切回浏览并派发精确tabId', async () => {
+      const tabBar = component<Record<string, unknown>>(App(), TabBar);
+      (tabBar.onActivate as (tabId: string) => void)('tab-1');
+      await Promise.resolve();
 
-    expect(hooks.viewWrites).toContain('browser');
-    expect(window.aibrowse.tabs.activate).toHaveBeenCalledExactlyOnceWith('tab-1');
-  });
+      expect(hooks.viewWrites).toContain('browser');
+      expect(window.aibrowse.tabs.activate).toHaveBeenCalledExactlyOnceWith('tab-1');
+    });
 
-  it('新建标签成功后切回浏览', async () => {
-    const button = elements(App()).find((node) => node.props.className === 'new-tab-button')!;
-    (button.props.onClick as () => void)();
-    await Promise.resolve();
-    await Promise.resolve();
+    it('新建标签成功后切回浏览', async () => {
+      const button = elements(App()).find((node) => node.props.className === 'new-tab-button')!;
+      (button.props.onClick as () => void)();
+      await Promise.resolve();
+      await Promise.resolve();
 
-    expect(window.aibrowse.tabs.create).toHaveBeenCalledExactlyOnceWith();
-    expect(hooks.viewWrites).toContain('browser');
-  });
-});
+      expect(window.aibrowse.tabs.create).toHaveBeenCalledExactlyOnceWith();
+      expect(hooks.viewWrites).toContain('browser');
+    });
+  },
+);

@@ -5,6 +5,17 @@
 
 import type { PageSnapshot, TabInfo, TabsState } from './browser';
 import type {
+  BrowserBookmark,
+  BrowserBookmarkUpdate,
+  BrowserHistoryEntry,
+  BrowserLibraryListRequest,
+  BrowserLibraryPage,
+  BrowserLibraryResult,
+  BrowserLibraryStatus,
+} from './browser-library';
+
+export type Appearance = 'system' | 'light' | 'dark';
+import type {
   AskResult,
   ContextPreview,
   ConversationMessage,
@@ -75,6 +86,23 @@ export interface AppInfo {
 
 // Minimal-privilege bridge exposed by the preload script to the renderer (React UI only).
 export interface AibrowseBridge {
+  browserLibrary: {
+    getStatus(): Promise<BrowserLibraryStatus>;
+    listHistory(
+      request: BrowserLibraryListRequest,
+    ): Promise<BrowserLibraryResult<BrowserLibraryPage<BrowserHistoryEntry>>>;
+    deleteHistory(id: string): Promise<BrowserLibraryResult<boolean>>;
+    clearHistory(): Promise<BrowserLibraryResult<boolean>>;
+    listBookmarks(
+      request: BrowserLibraryListRequest,
+    ): Promise<BrowserLibraryResult<BrowserLibraryPage<BrowserBookmark>>>;
+    addCurrentBookmark(): Promise<BrowserLibraryResult<BrowserBookmark>>;
+    updateBookmark(
+      input: BrowserBookmarkUpdate,
+    ): Promise<BrowserLibraryResult<BrowserBookmark | null>>;
+    removeBookmark(id: string): Promise<BrowserLibraryResult<boolean>>;
+    getCurrentBookmark(): Promise<BrowserLibraryResult<BrowserBookmark | null>>;
+  };
   getAppInfo(): Promise<AppInfo>;
   getConversationStorageStatus(): Promise<ConversationStorageStatus>;
   dataTransfer: {
@@ -109,6 +137,7 @@ export interface AibrowseBridge {
     snapshot(tabId: string): Promise<PageSnapshot | null>;
   };
   ui: {
+    setAppearance(appearance: Appearance): Promise<boolean>;
     // 渲染层 ResizeObserver 测量内容容器两维矩形后上报（§11.2，单向 send）
     reportContentBounds(bounds: ContentBounds): void;
     // C8 决议 #158(5)：受控 UI send——切换 WebContentsView 可见性

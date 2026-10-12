@@ -8,6 +8,7 @@ import {
 } from './transfer-budget';
 import {
   DATASET_MEMBERS,
+  LEGACY_DATASET_MEMBERS,
   METADATA_BYTES,
   assertPath,
   assertScope,
@@ -36,7 +37,7 @@ type Phase =
   | 'rolled-back'
   | 'committed';
 interface Journal {
-  version: 1;
+  version: 1 | 2;
   operationId: string;
   generation: string;
   seq: number;
@@ -166,20 +167,33 @@ function validStamp(value: unknown): value is Stamp {
       /^[a-f0-9]{64}$/u.test(value[1]))
   );
 }
-function validStamps(value: unknown): value is Stamp[] {
-  return Array.isArray(value) && value.length === DATASET_MEMBERS.length && value.every(validStamp);
+function membersFor(version: 1 | 2) {
+  return version === 1 ? LEGACY_DATASET_MEMBERS : DATASET_MEMBERS;
 }
-function nextStamps(value: unknown): Stamp[] {
+function validStamps(value: unknown, version: 1 | 2): value is Stamp[] {
+  return (
+    Array.isArray(value) && value.length === membersFor(version).length && value.every(validStamp)
+  );
+}
+function nextStamps(value: unknown, version: 1 | 2 = 2): Stamp[] {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw datasetFailure();
   const r = value as Record<string, unknown>;
-  if (!keys(r, ['sources', 'research', 'watch', 'conversations'])) throw datasetFailure();
+  const members = membersFor(version);
+  if (
+    !keys(
+      r,
+      members.flatMap(([id, , name]) => (name ? [id] : [])),
+    )
+  )
+    throw datasetFailure();
   const caps = {
     sources: 512 * 1024 ** 2,
     research: 64 * 1024 ** 2,
     watch: 512 * 1024 ** 2,
+    browser: 512 * 1024 ** 2,
     conversations: 3201 * 1024 ** 2,
   };
-  return DATASET_MEMBERS.map(([id, , name]) => {
+  return members.map(([id, , name]) => {
     if (!name) return null;
     const v = r[id];
     if (typeof v !== 'object' || v === null || Array.isArray(v)) throw datasetFailure();
@@ -207,15 +221,15 @@ function decodeJournal(raw: unknown, scope: DatasetScope): Journal {
       'remaining',
       'budget',
     ]) ||
-    r.version !== 1 ||
+    (r.version !== 1 && r.version !== 2) ||
     r.operationId !== scope.operationId ||
     r.generation !== scope.generation ||
     !Number.isSafeInteger(r.seq) ||
     (r.seq as number) < 0 ||
     (r.seq as number) > 256 ||
     !PHASES.includes(r.phase as Phase) ||
-    (r.old !== null && !validStamps(r.old)) ||
-    !validStamps(r.next) ||
+    (r.old !== null && !validStamps(r.old, r.version)) ||
+    !validStamps(r.next, r.version) ||
     !Array.isArray(r.attempts) ||
     r.attempts.length !== 3 ||
     !r.attempts.every((v) => v === 0 || v === 1) ||
@@ -227,14 +241,16 @@ function decodeJournal(raw: unknown, scope: DatasetScope): Journal {
   const j = r as unknown as Journal;
   const budget = budgetState(j.budget);
   if (JSON.stringify(budget) !== JSON.stringify(j.budget)) throw datasetFailure();
-  for (let i = 0; i < DATASET_MEMBERS.length; i++)
-    if ((DATASET_MEMBERS[i]![2] === null) !== (j.next[i] === null)) throw datasetFailure();
+  const members = membersFor(j.version);
+  for (let i = 0; i < members.length; i++)
+    if ((members[i]![2] === null) !== (j.next[i] === null)) throw datasetFailure();
   nextStamps(
     Object.fromEntries(
-      DATASET_MEMBERS.flatMap(([id, , name], i) =>
+      members.flatMap(([id, , name], i) =>
         name ? [[id, { bytes: j.next[i]![0], sha256: j.next[i]![1] }]] : [],
       ),
     ),
+    j.version,
   );
   if (
     j.phase === 'handoff' &&
@@ -298,7 +314,7 @@ export class DatasetSwitch {
     }
   }
   private path(index: number, area: 'live' | 'work' | 'rollback' | 'retired'): string {
-    const [id, live, work] = DATASET_MEMBERS[index]!;
+    const [id, live, work] = this.members()[index]!;
     if (area === 'live') return join(this.scope.userDataRoot, live);
     if (area === 'work') {
       if (work === null) throw datasetFailure();
@@ -352,6 +368,12 @@ export class DatasetSwitch {
     const journal = await this.load();
     return journal ? budgetState(journal.budget) : null;
   }
+  includesBrowser(): boolean {
+    return this.journal?.version === 2;
+  }
+  private members() {
+    return membersFor(this.journal?.version ?? 2);
+  }
   private async load(): Promise<Journal | null> {
     await assertScope(this.scope);
     const raw = await readMetadata(this.scope, 'journal.json');
@@ -363,6 +385,7 @@ export class DatasetSwitch {
         journal === null
           ? next.seq !== 0 || next.phase !== 'handoff'
           : next.seq !== journal.seq + 1 ||
+            next.version !== journal.version ||
             !stampsEqual(next.next, journal.next) ||
             (journal.old !== null && (next.old === null || !stampsEqual(journal.old, next.old))) ||
             next.remaining.some((v, i) => v > journal!.remaining[i]!) ||
@@ -457,8 +480,9 @@ export class DatasetSwitch {
     account?: (bytes: number, directory: boolean) => void,
   ): Promise<Stamp[]> {
     const values: Stamp[] = [];
-    for (let i = 0; i < DATASET_MEMBERS.length; i++) {
-      if (area === 'work' && DATASET_MEMBERS[i]![2] === null) {
+    const members = this.members();
+    for (let i = 0; i < members.length; i++) {
+      if (area === 'work' && members[i]![2] === null) {
         values.push(null);
         continue;
       }
@@ -511,7 +535,7 @@ export class DatasetSwitch {
       const next = nextStamps(expected);
       await this.write(
         {
-          version: 1,
+          version: 2,
           operationId: this.scope.operationId,
           generation: this.scope.generation,
           seq: 0,
@@ -555,7 +579,9 @@ export class DatasetSwitch {
           context,
           'backup',
         );
-        for (const domain of ['sources', 'research', 'watch']) {
+        for (const domain of this.members().flatMap(([id, , name]) =>
+          name && id !== 'conversations' ? [id] : [],
+        )) {
           const parent = join(this.scope.userDataRoot, domain);
           await assertPath(this.scope, parent);
           if (!(await checkedStat(parent, 'directory'))) await mkdir(parent);
@@ -573,7 +599,7 @@ export class DatasetSwitch {
         });
         await context.requireRollbackSpace(allocatedBytes);
         await context.check('backup', 0);
-        const empty = DATASET_MEMBERS.map(() => null);
+        const empty = this.members().map(() => null);
         if (
           !stampsEqual(await this.inspect('rollback', context, 'backup'), empty) ||
           !stampsEqual(await this.inspect('retired', context, 'backup'), empty)

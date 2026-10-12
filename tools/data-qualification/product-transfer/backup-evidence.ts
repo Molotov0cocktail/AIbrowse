@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { lstat, open } from 'node:fs/promises';
 import type { BigIntStats } from 'node:fs';
 
-const ids = ['sources', 'research', 'watch', 'conversations'] as const;
-const limits = [512, 64, 512, 3201].map((value) => value * 1048576);
+const legacyIds = ['sources', 'research', 'watch', 'conversations'] as const;
+const currentIds = [...legacyIds, 'browser'] as const;
+const limits = [512, 64, 512, 3201, 512].map((value) => value * 1048576);
 export interface BackupEvidence {
   bytes: number;
   sha256: string;
@@ -65,7 +66,9 @@ export async function inspectProductBackup(
       return buffer;
     };
     const header = await read(16);
-    if (header.subarray(0, 8).toString('ascii') !== 'AIBAK001' || header.readUInt32BE(8) !== 1)
+    const version = header.readUInt32BE(8);
+    const ids = version === 1 ? legacyIds : currentIds;
+    if (header.subarray(0, 8).toString('ascii') !== 'AIBAK001' || (version !== 1 && version !== 2))
       fail();
     const length = header.readUInt32BE(12);
     if (length < 1 || length > 4096) fail();
@@ -76,18 +79,18 @@ export async function inspectProductBackup(
     const value = parsed as Record<string, unknown>;
     if (
       Object.keys(value).join(',') !== 'formatVersion,productVersion,snapshotId,members' ||
-      value.formatVersion !== 1 ||
+      value.formatVersion !== version ||
       typeof value.productVersion !== 'string' ||
       !/^[\x20-\x7e]{1,64}$/.test(value.productVersion) ||
       typeof value.snapshotId !== 'string' ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.snapshotId) ||
       !Array.isArray(value.members) ||
-      value.members.length !== 4 ||
+      value.members.length !== ids.length ||
       JSON.stringify(value) !== text
     )
       fail();
     const members: BackupEvidence['members'] = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < ids.length; i++) {
       const entry: unknown = value.members[i];
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) fail();
       const row = entry as Record<string, unknown>;
@@ -95,7 +98,7 @@ export async function inspectProductBackup(
         Object.keys(row).join(',') !== 'id,present,schemaVersion,bytes,sha256' ||
         row.id !== ids[i] ||
         typeof row.present !== 'boolean' ||
-        row.schemaVersion !== [1, 1, 5, 1][i] ||
+        row.schemaVersion !== [1, 1, 5, 1, 1][i] ||
         typeof row.bytes !== 'number' ||
         !Number.isSafeInteger(row.bytes) ||
         row.bytes < 0 ||
@@ -115,7 +118,7 @@ export async function inspectProductBackup(
       members.push(member);
     }
     if (
-      BigInt(16 + length + 4 * 58 + members.reduce((sum, row) => sum + row.bytes, 0)) !==
+      BigInt(16 + length + ids.length * 58 + members.reduce((sum, row) => sum + row.bytes, 0)) !==
       before.size
     )
       fail();

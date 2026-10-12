@@ -66,7 +66,7 @@ it.each(['snapshot', 'unknown', 'duplicate', 'schema', 'hash', 'oversize'] as co
   'rejects invalid closed result metadata: %s',
   (change) => {
     const result: Record<string, unknown> = {
-      formatVersion: 1,
+      formatVersion: 2,
       productVersion: '0.1.0',
       snapshotId: job.snapshotId,
       members: BACKUP_IDS.map((id) => ({
@@ -103,7 +103,7 @@ it.each(['backup', 'restore', 'migrate'] as const)(
   (action) => {
     const result = {
       manifest: {
-        formatVersion: 1,
+        formatVersion: 2,
         productVersion: '0.1.0',
         snapshotId: job.snapshotId,
         members: BACKUP_IDS.map((id) => ({
@@ -135,7 +135,7 @@ it.each(['missing-member', 'old-schema', 'output-path', 'output-limit', 'output-
       backup: Record<string, unknown>;
     } = {
       manifest: {
-        formatVersion: 1,
+        formatVersion: 2,
         productVersion: '0.1.0',
         snapshotId: job.snapshotId,
         members: BACKUP_IDS.map((id) => ({

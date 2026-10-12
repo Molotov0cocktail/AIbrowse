@@ -53,7 +53,7 @@ if(-not $rejected -or [IO.File]::ReadAllText($path) -cne $before){throw '排他�
   });
 });
 
-function wire() {
+function wire(version: 1 | 2 = 1) {
   const snapshotId = '12345678-1234-4234-8234-123456789abc';
   const chunks = [
     Buffer.from('sources'),
@@ -61,19 +61,20 @@ function wire() {
     Buffer.from('watch'),
     Buffer.from('conversations'),
   ];
+  if (version === 2) chunks.push(Buffer.from('browser'));
   const members = chunks.map((chunk, i) => ({
-    id: ['sources', 'research', 'watch', 'conversations'][i],
+    id: ['sources', 'research', 'watch', 'conversations', 'browser'][i],
     present: true,
-    schemaVersion: [1, 1, 5, 1][i],
+    schemaVersion: [1, 1, 5, 1, 1][i],
     bytes: chunk.length,
     sha256: createHash('sha256').update(chunk).digest('hex'),
   }));
   const json = Buffer.from(
-    JSON.stringify({ formatVersion: 1, productVersion: '0.1.0', snapshotId, members }),
+    JSON.stringify({ formatVersion: version, productVersion: '0.1.0', snapshotId, members }),
   );
   const header = Buffer.alloc(16);
   header.write('AIBAK001');
-  header.writeUInt32BE(1, 8);
+  header.writeUInt32BE(version, 8);
   header.writeUInt32BE(json.length, 12);
   const frames = chunks.flatMap((chunk, i) => {
     const frame = Buffer.alloc(58);
@@ -86,17 +87,20 @@ function wire() {
   });
   return Buffer.concat([header, json, ...frames]);
 }
-it('实际小容器逐成员校验且只读，不把语义未校验内容冒充完整恢复', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'product-wire-'));
-  const path = join(root, 'backup.aibak');
-  const bytes = wire();
-  await writeFile(path, bytes);
-  const result = await inspectProductBackup(path, performance.now() + 3000);
-  expect(result.bytes).toBe(bytes.length);
-  expect(result.members).toHaveLength(4);
-  expect(result.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
-  expect(await readFile(path)).toEqual(bytes);
-});
+it.each([1, 2] as const)(
+  '实际v%s小容器逐成员校验且只读，不把语义未校验内容冒充完整恢复',
+  async (version) => {
+    const root = await mkdtemp(join(tmpdir(), 'product-wire-'));
+    const path = join(root, 'backup.aibak');
+    const bytes = wire(version);
+    await writeFile(path, bytes);
+    const result = await inspectProductBackup(path, performance.now() + 3000);
+    expect(result.bytes).toBe(bytes.length);
+    expect(result.members).toHaveLength(version === 1 ? 4 : 5);
+    expect(result.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(await readFile(path)).toEqual(bytes);
+  },
+);
 it('非有限deadline不会禁用流读监督', async () => {
   const path = join(await mkdtemp(join(tmpdir(), 'product-deadline-')), 'backup.aibak');
   await writeFile(path, wire());

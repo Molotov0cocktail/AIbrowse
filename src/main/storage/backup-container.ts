@@ -15,13 +15,15 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseBoundedJson, JsonReadError } from './bounded-json';
 import { LIMITS, UUID } from '../ai/conversation-transfer';
 
-export const BACKUP_IDS = ['sources', 'research', 'watch', 'conversations'] as const;
+export const LEGACY_BACKUP_IDS = ['sources', 'research', 'watch', 'conversations'] as const;
+export const BACKUP_IDS = [...LEGACY_BACKUP_IDS, 'browser'] as const;
 export type BackupMemberId = (typeof BACKUP_IDS)[number];
 export const BACKUP_FILES = {
   sources: 'sources.db',
   research: 'research.db',
   watch: 'watch.db',
   conversations: 'conversations.bin',
+  browser: 'browser.db',
 } as const;
 export interface OperationControl {
   readonly signal: AbortSignal;
@@ -41,7 +43,7 @@ export interface BackupManifestMember {
   sha256: string | null;
 }
 export interface BackupManifest {
-  formatVersion: 1;
+  formatVersion: 1 | 2;
   productVersion: string;
   snapshotId: string;
   members: BackupManifestMember[];
@@ -65,6 +67,7 @@ export const BACKUP_LIMITS = Object.freeze({
   sources: LIMITS.sourcesBytes,
   research: LIMITS.researchBytes,
   watch: LIMITS.watchBytes,
+  browser: 512 * 1024 * 1024,
   conversations: LIMITS.conversationsBytes,
   chunk: 65536,
 });
@@ -76,8 +79,9 @@ const SCHEMAS = {
   research: [0, 1],
   watch: [0, 1, 2, 3, 4, 5],
   conversations: [1],
+  browser: [0, 1],
 } as const;
-const CURRENT = { sources: 1, research: 1, watch: 5, conversations: 1 } as const;
+const CURRENT = { sources: 1, research: 1, watch: 5, conversations: 1, browser: 1 } as const;
 export type BackupErrorCode =
   | 'invalid-container'
   | 'unsupported-version'
@@ -460,23 +464,24 @@ export function parseBackupManifest(bytes: Buffer): BackupManifest {
       closed(value, ['formatVersion', 'productVersion', 'snapshotId', 'members']),
       'invalid-manifest',
     );
-    requireTransfer(value.formatVersion === 1, 'unsupported-version');
+    requireTransfer(value.formatVersion === 1 || value.formatVersion === 2, 'unsupported-version');
+    const ids = value.formatVersion === 1 ? LEGACY_BACKUP_IDS : BACKUP_IDS;
     requireTransfer(
       typeof value.productVersion === 'string' &&
         /^[\x21-\x7e]{1,64}$/.test(value.productVersion) &&
         typeof value.snapshotId === 'string' &&
         isTransferUuid(value.snapshotId) &&
         Array.isArray(value.members) &&
-        value.members.length === 4,
+        value.members.length === ids.length,
       'invalid-manifest',
     );
-    let total = 16 + bytes.length + 4 * FRAME_BYTES;
+    let total = 16 + bytes.length + ids.length * FRAME_BYTES;
     const members: BackupManifestMember[] = value.members.map((row: unknown, index: number) => {
       requireTransfer(
         closed(row, ['id', 'present', 'schemaVersion', 'bytes', 'sha256']),
         'invalid-manifest',
       );
-      const id = BACKUP_IDS[index];
+      const id = ids[index];
       requireTransfer(
         row.id === id &&
           typeof row.present === 'boolean' &&
@@ -512,7 +517,7 @@ export function parseBackupManifest(bytes: Buffer): BackupManifest {
     });
     requireTransfer(total <= BACKUP_LIMITS.container, 'budget-exceeded');
     return {
-      formatVersion: 1,
+      formatVersion: value.formatVersion,
       productVersion: value.productVersion,
       snapshotId: value.snapshotId,
       members,
@@ -568,7 +573,7 @@ export function writeBackupContainer(options: WriteBackupOptions): {
     });
     const manifestBytes = Buffer.from(
       JSON.stringify({
-        formatVersion: 1,
+        formatVersion: 2,
         productVersion: options.productVersion,
         snapshotId: options.snapshotId,
         members,
@@ -577,7 +582,7 @@ export function writeBackupContainer(options: WriteBackupOptions): {
     const manifest = parseBackupManifest(manifestBytes);
     const header = Buffer.alloc(16);
     MAGIC.copy(header);
-    header.writeUInt32BE(1, 8);
+    header.writeUInt32BE(2, 8);
     header.writeUInt32BE(manifestBytes.length, 12);
     const output = new TransferOutput(options.outputPath, BACKUP_LIMITS.container, options.control);
     try {
@@ -634,14 +639,16 @@ export function readBackupContainer(options: ReadBackupOptions): {
     try {
       const header = input.read(16);
       requireTransfer(header.subarray(0, 8).equals(MAGIC), 'invalid-container');
-      requireTransfer(header.readUInt32BE(8) === 1, 'unsupported-version');
+      const formatVersion = header.readUInt32BE(8);
+      requireTransfer(formatVersion === 1 || formatVersion === 2, 'unsupported-version');
       const length = header.readUInt32BE(12);
       requireTransfer(length > 0 && length <= BACKUP_LIMITS.manifest, 'budget-exceeded');
       const manifest = parseBackupManifest(input.read(length));
+      requireTransfer(manifest.formatVersion === formatVersion, 'invalid-manifest');
       const expected =
         16 +
         length +
-        4 * FRAME_BYTES +
+        manifest.members.length * FRAME_BYTES +
         manifest.members.reduce((sum, member) => sum + member.bytes, 0);
       requireTransfer(input.size === expected, 'integrity-failed');
       const directory = new TransferDirectory(options.stagingDirectory, true);

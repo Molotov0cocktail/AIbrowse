@@ -197,6 +197,9 @@ it('restore native确认取消零维护/worker/handoff，选取时间不消耗�
     return false;
   });
   expect((await f.service.start('restore', document)).state).toBe('cancelled');
+  expect(f.ports.confirmRestore).toHaveBeenCalledWith(
+    '恢复将替换当前信源、研究、监控数据和已保存会话。新版备份还会替换浏览历史与书签；旧版备份不含这两项，将保留当前浏览历史与书签。应用将关闭当前标签页后重新启动。是否继续？',
+  );
   expect(f.ports.createScope).not.toHaveBeenCalled();
   expect(f.ports.run).not.toHaveBeenCalled();
   expect(f.ports.registerHandoff).not.toHaveBeenCalled();

@@ -416,7 +416,7 @@ export class DatasetReplacement {
       if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw datasetFailure();
       const journal = raw as Record<string, unknown>;
       if (
-        journal.version !== 1 ||
+        (journal.version !== 1 && journal.version !== 2) ||
         journal.operationId !== this.scope.operationId ||
         journal.generation !== this.scope.generation ||
         journal.phase !== 'committed'

@@ -11,10 +11,7 @@ import {
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { inspectNativeRestoreInput } from '../../../src/main/storage/native-transfer-selection';
-import {
-  openPrivateStagingDatabase,
-  type StagingDatabaseDomain,
-} from '../../../src/main/storage/staging-sqlite';
+import { openPrivateStagingDatabase } from '../../../src/main/storage/staging-sqlite';
 import {
   CASES,
   NODE_VERSION,
@@ -141,7 +138,7 @@ export async function reachControls(
   for (const item of CASES.slice(1)) {
     const control = join(scope, item.control);
     writeDatabaseControl(control);
-    const opened = dependencies.openDatabase(control, item.domain as StagingDatabaseDomain);
+    const opened = dependencies.openDatabase(control, item.domain as DatabaseDomain);
     opened.close();
     need(noSidecars(control));
   }

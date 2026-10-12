@@ -8,6 +8,10 @@ import type { TabInfo } from '../../shared/types/browser';
 import { ALLOWED_SCHEME_PATTERN, redactTabIdForLog, redactUrlForLog } from '../../shared/url';
 import { logError, logWarn } from '../logger';
 import { transition } from './tab-state';
+import type {
+  BrowserBookmarkInput,
+  BrowserVisitTitleUpdate,
+} from '../../shared/types/browser-library';
 
 // 登记表条目的可变信息；active 由 controller 组装 TabsState 时填充（§2.3 单一事实源）
 export type TabEntryInfo = Omit<TabInfo, 'active'>;
@@ -21,6 +25,9 @@ export interface PendingTabLoad {
 }
 
 export interface TabEntry {
+  readonly taskOwned: boolean;
+  committedUrl: string | null;
+  historyVisitId: string | null;
   view: WebContentsView;
   info: TabEntryInfo;
   cleanupFns: Array<() => void>;
@@ -46,6 +53,7 @@ export interface TabEntry {
 }
 
 export interface CreateTabOptions {
+  taskOwned?: boolean;
   deferInitialBlankLoad?: boolean;
   allowUserPopupRouting?: boolean;
 }
@@ -53,6 +61,8 @@ export interface CreateTabOptions {
 declare const __RELEASE__: boolean;
 
 export interface TabManagerOptions {
+  onNavigationCommitted?: (page: BrowserBookmarkInput) => string | null;
+  onVisitTitleChanged?: (visit: BrowserVisitTitleUpdate) => void;
   ownerWindow: BaseWindow; // contentView 挂载/卸载
   session: Session; // 持久分区会话（SessionManager 提供，§7）
   onChanged: () => void; // 增删/标题/URL/状态变化 → controller 组装并推送 TabsState
@@ -138,6 +148,9 @@ export class TabManager {
     this.options.ownerWindow.contentView.addChildView(view);
     view.setVisible(false); // 可见性由 controller 统一管理（活动 Tab 才可见）
     const entry: TabEntry = {
+      taskOwned: options.taskOwned === true,
+      committedUrl: null,
+      historyVisitId: null,
       view,
       info,
       cleanupFns,
@@ -319,7 +332,10 @@ export class TabManager {
       crashed = false;
       delete info.failure;
       const entry = this.entries.get(info.id);
-      if (entry !== undefined) entry.navigationSerial += 1;
+      if (entry !== undefined) {
+        entry.navigationSerial += 1;
+        entry.historyVisitId = null;
+      }
       info.state = transition(info.state, { type: 'start-loading', isMainFrame: true });
       this.options.onChanged();
     };
@@ -358,7 +374,20 @@ export class TabManager {
     cleanup.push(() => wc.removeListener('did-fail-load', onFailLoad));
 
     const onTitleUpdated = (_e: Electron.Event, title: string): void => {
+      if (crashed) return;
       info.title = title;
+      const entry = this.entries.get(info.id);
+      if (entry?.historyVisitId && entry.committedUrl !== null && !entry.taskOwned) {
+        try {
+          this.options.onVisitTitleChanged?.({
+            id: entry.historyVisitId,
+            url: entry.committedUrl,
+            title,
+          });
+        } catch {
+          logWarn('browser', '浏览历史标题保存失败');
+        }
+      }
       this.options.onChanged();
     };
     wc.on('page-title-updated', onTitleUpdated);
@@ -371,7 +400,11 @@ export class TabManager {
       // 仅主框架、页内导航走 did-navigate-in-page 不触发）→ 导航世代递增，旧 elementId
       // 世代过期（执行前主进程侧校验 → stale-element）。事件触发时条目已登记。
       const entry = this.entries.get(info.id);
-      if (entry !== undefined) entry.generation += 1;
+      if (entry !== undefined) {
+        entry.generation += 1;
+        info.title = '';
+        this.recordCommit(entry, url, '');
+      }
       this.options.onChanged();
     };
     wc.on('did-navigate', onNavigate);
@@ -381,6 +414,8 @@ export class TabManager {
       if (crashed) return;
       if (!isMainFrame) return; // 仅主框架的页内导航更新 URL
       info.url = url;
+      const entry = this.entries.get(info.id);
+      if (entry !== undefined) this.recordCommit(entry, url, info.title);
       this.options.onChanged();
     };
     wc.on('did-navigate-in-page', onNavigateInPage);
@@ -426,6 +461,7 @@ export class TabManager {
         // Keep the user's tab and URL; only an explicit navigation can recover it.
         entry.generation += 1;
         entry.navigationSerial += 1;
+        entry.historyVisitId = null;
         this.invalidateLoads(entry);
       }
       info.state = 'error';
@@ -437,5 +473,16 @@ export class TabManager {
     cleanup.push(() => wc.removeListener('render-process-gone', onRenderGone));
 
     return cleanup;
+  }
+
+  private recordCommit(entry: TabEntry, url: string, title: string): void {
+    entry.committedUrl = url;
+    entry.historyVisitId = null;
+    if (entry.taskOwned || !/^https?:\/\//i.test(url)) return;
+    try {
+      entry.historyVisitId = this.options.onNavigationCommitted?.({ url, title }) ?? null;
+    } catch {
+      logWarn('browser', '浏览历史保存失败');
+    }
   }
 }

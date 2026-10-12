@@ -9,10 +9,10 @@ import { useStream } from './useStream';
 import { ChatView } from './ChatView';
 import { Composer } from './Composer';
 import { ContextBadge } from './ContextBadge';
-import { ProviderSettings } from './ProviderSettings';
 
 interface AiPanelProps {
   onCollapse: () => void;
+  onOpenSettings: () => void;
   agent: UseAgentResult; // App 级 useAgent（确认对话框全局挂载需要同一状态源）
 }
 
@@ -24,7 +24,7 @@ type PanelMode = 'chat' | 'task';
 // requestId 调 abort（「正在停止」非终态）。共读 Composer 行为不变；模式切换/面板
 // 折叠/会话切换不静默取消正在运行的 Agent（确认对话框在 App 级全局挂载，pending
 // 不因切换而不可访问）。
-export function AiPanel({ onCollapse, agent }: AiPanelProps) {
+export function AiPanel({ onCollapse, onOpenSettings, agent }: AiPanelProps) {
   const {
     sessions,
     currentSessionId,
@@ -37,7 +37,6 @@ export function AiPanel({ onCollapse, agent }: AiPanelProps) {
     refreshHistory,
   } = useConversation();
   const { stream, startStreaming, rejectStream } = useStream();
-  const [showSettings, setShowSettings] = useState(false);
   const [mode, setMode] = useState<PanelMode>('chat');
 
   const currentSession = sessions.find((session) => session.id === currentSessionId) ?? null;
@@ -129,7 +128,7 @@ export function AiPanel({ onCollapse, agent }: AiPanelProps) {
         <button type="button" className="ai-new-session" onClick={() => void createSession()}>
           新建会话
         </button>
-        <button type="button" className="ai-settings-open" onClick={() => setShowSettings(true)}>
+        <button type="button" className="ai-settings-open" onClick={onOpenSettings}>
           设置
         </button>
         <button
@@ -142,50 +141,40 @@ export function AiPanel({ onCollapse, agent }: AiPanelProps) {
         </button>
       </div>
 
-      {showSettings ? (
-        <ProviderSettings onClose={() => setShowSettings(false)} />
-      ) : (
+      <SessionList
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        currentEphemeral={currentSession?.ephemeral ?? false}
+        onSelect={(id) => void selectSession(id)}
+        onDelete={(id) => void deleteSession(id)}
+        onToggleEphemeral={(ephemeral) => void setCurrentEphemeral(ephemeral)}
+      />
+      <ContextBadge />
+      {mode === 'task' && (
         <>
-          <SessionList
-            sessions={sessions}
-            currentSessionId={currentSessionId}
-            currentEphemeral={currentSession?.ephemeral ?? false}
-            onSelect={(id) => void selectSession(id)}
-            onDelete={(id) => void deleteSession(id)}
-            onToggleEphemeral={(ephemeral) => void setCurrentEphemeral(ephemeral)}
-          />
-          <ContextBadge />
-          {mode === 'task' && (
-            <>
-              <AgentStatusBar entry={agentEntry} />
-              <ToolCallList steps={agentEntry?.steps ?? []} />
-            </>
-          )}
-          <ChatView
-            history={history}
-            stream={stream}
-            currentSessionId={currentSessionId}
-            agentActive={agentActive}
-          />
-          <Composer
-            disabled={currentSessionId === null}
-            // 同一会话 busy 时不能重复发起共读或 Agent（主进程每会话单在途 + UI 侧禁用）
-            busy={chatStreaming || agentActive}
-            // Agent run 进行中显示「停止」；仅共读流时显示「中止」；Agent 进行中在对话
-            // 模式不显示中止按钮（停止入口在任务模式——不静默取消 Agent）
-            showAbort={agentActive || chatStreaming}
-            abortLabel={agentActive ? '停止' : '中止'}
-            note={
-              mode === 'task' && chatStreaming && !agentActive ? '共读回答生成中，请稍候' : null
-            }
-            errorMessage={
-              mode === 'task' ? (agentEntry?.errorMessage ?? null) : stream.errorMessage
-            }
-            onSend={mode === 'task' ? sendTask : sendChat}
-            onAbort={agentActive ? stopTask : abortChat}
-          />
+          <AgentStatusBar entry={agentEntry} />
+          <ToolCallList steps={agentEntry?.steps ?? []} />
         </>
       )}
+      <ChatView
+        history={history}
+        stream={stream}
+        currentSessionId={currentSessionId}
+        agentActive={agentActive}
+      />
+      <Composer
+        disabled={currentSessionId === null}
+        // 同一会话 busy 时不能重复发起共读或 Agent（主进程每会话单在途 + UI 侧禁用）
+        busy={chatStreaming || agentActive}
+        // Agent run 进行中显示「停止」；仅共读流时显示「中止」；Agent 进行中在对话
+        // 模式不显示中止按钮（停止入口在任务模式——不静默取消 Agent）
+        showAbort={agentActive || chatStreaming}
+        abortLabel={agentActive ? '停止' : '中止'}
+        note={mode === 'task' && chatStreaming && !agentActive ? '共读回答生成中，请稍候' : null}
+        errorMessage={mode === 'task' ? (agentEntry?.errorMessage ?? null) : stream.errorMessage}
+        onSend={mode === 'task' ? sendTask : sendChat}
+        onAbort={agentActive ? stopTask : abortChat}
+      />
     </aside>
   );
 }

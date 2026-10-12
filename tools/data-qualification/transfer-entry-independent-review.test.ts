@@ -110,7 +110,7 @@ it.each([false, true])(
     const registration = await registerTransferWorker(f.scope, f.job, '0.1.0', input);
     const result: TransferResult = {
       manifest: {
-        formatVersion: 1,
+        formatVersion: 2,
         productVersion: '0.1.0',
         snapshotId: f.job.snapshotId,
         members: BACKUP_IDS.map((id) => ({

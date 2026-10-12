@@ -179,7 +179,7 @@ it.each([
   [
     'unknown-version',
     (m: Record<string, unknown>) => {
-      m.formatVersion = 2;
+      m.formatVersion = 3;
     },
   ],
   [
@@ -234,8 +234,8 @@ it('rejects duplicate decoded manifest keys instead of accepting the last value'
   const input = fixture();
   const result = writeBackupContainer(input);
   const text = JSON.stringify(result.manifest).replace(
-    '"formatVersion":1',
-    '"formatVersion":0,"\\u0066ormatVersion":1',
+    '"formatVersion":2',
+    '"formatVersion":0,"\\u0066ormatVersion":2',
   );
   alteredManifest(input.outputPath, () => {}, text);
   expect(rejectedRead(input).code).toBe('invalid-container');
@@ -248,7 +248,7 @@ it.each(['magic', 'version', 'manifest-overflow', 'short', 'frame-snapshot', 'bo
     let data = fs.readFileSync(input.outputPath);
     const frame = 16 + data.readUInt32BE(12);
     if (kind === 'magic') data[0] ^= 1;
-    if (kind === 'version') data.writeUInt32BE(2, 8);
+    if (kind === 'version') data.writeUInt32BE(3, 8);
     if (kind === 'manifest-overflow') data.writeUInt32BE(4097, 12);
     if (kind === 'short') data = data.subarray(0, data.length - 1);
     if (kind === 'frame-snapshot') data[frame + 2] ^= 1;

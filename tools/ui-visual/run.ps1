@@ -19,13 +19,13 @@ if ($Build) {
 
 if ([string]::IsNullOrWhiteSpace($RunRoot)) {
   $timestamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
-  $RunRoot = Join-Path $repositoryRoot ('log/ui-refresh-20261012/' + $timestamp + '-' + [guid]::NewGuid().ToString('N'))
+  $RunRoot = Join-Path $repositoryRoot ('log/browser-settings-20261012/' + $timestamp + '-' + [guid]::NewGuid().ToString('N'))
 }
 
 $resolvedRunRoot = [IO.Path]::GetFullPath($RunRoot)
-$allowedRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'log/ui-refresh-20261012'))
+$allowedRoot = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'log/browser-settings-20261012'))
 if (-not $resolvedRunRoot.StartsWith($allowedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-  throw '运行目录必须是 log/ui-refresh-20261012 下的唯一子目录'
+  throw '运行目录必须是 log/browser-settings-20261012 下的唯一子目录'
 }
 if (Test-Path -LiteralPath $resolvedRunRoot) {
   throw '运行目录已存在，拒绝覆盖既有原件'
@@ -34,6 +34,13 @@ if (Test-Path -LiteralPath $resolvedRunRoot) {
 $electron = Join-Path $repositoryRoot 'node_modules/electron/dist/electron.exe'
 $harness = Join-Path $repositoryRoot 'tools/ui-visual'
 if (-not (Test-Path -LiteralPath $electron -PathType Leaf)) { throw '工程 Electron 不可用，请先安装锁定依赖' }
+$runParent = Split-Path -Parent $resolvedRunRoot
+$runName = Split-Path -Leaf $resolvedRunRoot
+$launchStdout = Join-Path $runParent ($runName + '-launch.stdout.log')
+$launchStderr = Join-Path $runParent ($runName + '-launch.stderr.log')
+foreach ($launchLog in @($launchStdout, $launchStderr)) {
+  if (Test-Path -LiteralPath $launchLog) { throw '启动日志已存在，拒绝覆盖既有原件' }
+}
 
 $isolatedEnvironmentKeys = @(
   'ELECTRON_RUN_AS_NODE',
@@ -64,9 +71,22 @@ foreach ($key in $isolatedEnvironmentKeys) {
   Remove-Item -LiteralPath ('Env:' + $key) -ErrorAction SilentlyContinue
 }
 [Environment]::SetEnvironmentVariable('AIBROWSE_UI_VISUAL_RUN_ROOT', $resolvedRunRoot, 'Process')
+$exitCode = 1
+$launchFailure = $null
 try {
-  $electronProcess = Start-Process -FilePath $electron -ArgumentList @($harness) -PassThru -Wait -WindowStyle Hidden
-  $exitCode = $electronProcess.ExitCode
+  try {
+    $electronProcess = Start-Process -FilePath $electron -ArgumentList @($harness) -PassThru -WindowStyle Hidden `
+      -RedirectStandardOutput $launchStdout -RedirectStandardError $launchStderr
+    if (-not $electronProcess.WaitForExit(180000)) {
+      $launchFailure = '启动后 180 秒未退出'
+      Stop-Process -Id $electronProcess.Id -Force
+      $electronProcess.WaitForExit()
+    } else {
+      $exitCode = $electronProcess.ExitCode
+    }
+  } catch {
+    $launchFailure = $_.Exception.Message
+  }
 } finally {
   foreach ($key in $isolatedEnvironmentKeys) {
     if ($null -eq $savedEnvironment[$key]) {
@@ -78,7 +98,11 @@ try {
 }
 
 Write-Output ('UI_VISUAL_RUN_ROOT=' + $resolvedRunRoot)
-if ($null -eq $exitCode) { $exitCode = 1 }
+Write-Output ('UI_VISUAL_LAUNCH_STDOUT=' + $launchStdout)
+Write-Output ('UI_VISUAL_LAUNCH_STDERR=' + $launchStderr)
+if ($null -ne $launchFailure) {
+  throw ('UI 可视验收启动失败：' + $launchFailure)
+}
 $resultPath = Join-Path $resolvedRunRoot 'result.json'
 if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
   $resultStatus = (Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json).status

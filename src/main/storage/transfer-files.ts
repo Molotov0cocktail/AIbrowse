@@ -241,7 +241,10 @@ async function inspectPreparedWork(
   const expectedNames = BACKUP_IDS.map((id) =>
     id === 'conversations' && context.job.action !== 'backup' ? 'conversations' : BACKUP_FILES[id],
   ).sort();
-  if (JSON.stringify(await names(context, work, 4)) !== JSON.stringify(expectedNames)) failure();
+  if (
+    JSON.stringify(await names(context, work, BACKUP_IDS.length)) !== JSON.stringify(expectedNames)
+  )
+    failure();
   const workStat = await step(context, () => checkedStat(work, 'directory'));
   if (!workStat) failure();
   const receipts: Receipt[] = [{ path: work, stat: workStat }];

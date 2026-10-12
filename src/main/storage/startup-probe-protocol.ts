@@ -2,9 +2,9 @@ import { parseBoundedJson } from './bounded-json';
 import { isTransferUuid } from './backup-container';
 import { TRANSFER_FRAME_LIMITS, TRANSFER_PHASE_MS } from './transfer-budget';
 
-export const STARTUP_PROBE_DOMAINS = ['sources', 'research', 'watch'] as const;
+export const STARTUP_PROBE_DOMAINS = ['sources', 'research', 'watch', 'browser'] as const;
 export type StartupProbeDomain = (typeof STARTUP_PROBE_DOMAINS)[number];
-export const STARTUP_PROBE_VERSIONS = { sources: 1, research: 1, watch: 5 } as const;
+export const STARTUP_PROBE_VERSIONS = { sources: 1, research: 1, watch: 5, browser: 1 } as const;
 export interface StartupFileIdentity {
   dev: string;
   ino: string;
@@ -75,7 +75,7 @@ export function validateStartupProbeResult(value: unknown): StartupProbeResult {
       (value.state === 'normal' || value.state === 'migrate') &&
       identity(value.root, false) &&
       Array.isArray(value.members) &&
-      value.members.length === 3,
+      value.members.length === STARTUP_PROBE_DOMAINS.length,
   );
   let legacy = false;
   for (const [i, member] of value.members.entries()) {

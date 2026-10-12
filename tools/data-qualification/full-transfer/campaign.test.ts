@@ -48,6 +48,7 @@ function fixture() {
             sources: { bytes: 1, sha256: 'a'.repeat(64) },
             research: { bytes: 1, sha256: 'a'.repeat(64) },
             watch: { bytes: 1, sha256: 'a'.repeat(64) },
+            browser: { bytes: 1, sha256: 'a'.repeat(64) },
             conversations: { bytes: FULL_BYTES, sha256: TREE_SHA },
           },
         },

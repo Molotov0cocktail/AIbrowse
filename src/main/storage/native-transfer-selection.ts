@@ -95,12 +95,18 @@ export async function inspectNativeRestoreInput(
       if (!sameFile(before, await handle.stat({ bigint: true })))
         throw new NativeTransferSelectionError();
       const header = await exact(handle, 16, 0);
-      if (!header.subarray(0, 8).equals(Buffer.from('AIBAK001')) || header.readUInt32BE(8) !== 1)
+      const formatVersion = header.readUInt32BE(8);
+      if (
+        !header.subarray(0, 8).equals(Buffer.from('AIBAK001')) ||
+        (formatVersion !== 1 && formatVersion !== 2)
+      )
         throw new NativeTransferSelectionError();
       const length = header.readUInt32BE(12);
       if (length === 0 || length > BACKUP_LIMITS.manifest || BigInt(length + 16) > before.size)
         throw new NativeTransferSelectionError();
-      snapshotId = parseBackupManifest(await exact(handle, length, 16)).snapshotId;
+      const manifest = parseBackupManifest(await exact(handle, length, 16));
+      if (manifest.formatVersion !== formatVersion) throw new NativeTransferSelectionError();
+      snapshotId = manifest.snapshotId;
       if (!sameFile(before, await handle.stat({ bigint: true })))
         throw new NativeTransferSelectionError();
     } finally {

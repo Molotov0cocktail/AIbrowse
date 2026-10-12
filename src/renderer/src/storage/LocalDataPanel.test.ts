@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { DataTransferStatus } from '../../../shared/types/data-transfer';
 import type { ConversationStorageStatus } from '../../../shared/types/conversation';
 import { LocalDataPanel } from './LocalDataPanel';
+import { useLocalData } from './useLocalData';
 
 const hooks = vi.hoisted(() => ({
   cursor: 0,
@@ -47,7 +48,7 @@ function text(value: unknown): string {
 }
 function render() {
   hooks.cursor = 0;
-  return LocalDataPanel();
+  return LocalDataPanel({ controller: useLocalData() });
 }
 function button(label: string) {
   return nodes(render()).find((n) => n.type === 'button' && text(n.props.children) === label)!;

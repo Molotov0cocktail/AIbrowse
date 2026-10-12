@@ -5,15 +5,16 @@ import { join, resolve } from 'node:path';
 import { createDatasetScope } from '../../../src/main/storage/dataset-layout';
 import { runTransferPipeline } from '../../../src/main/storage/transfer-pipeline';
 import { TransferBudget } from '../../../src/main/storage/transfer-budget';
-import { createSmallFixture, id, DOMAINS, type Variant } from '../product-restore-fixtures/seed';
-import { verifySmallFixture } from '../product-restore-fixtures/oracle';
+import { id, DOMAINS, type Variant } from '../product-restore-fixtures/seed';
+import { createCampaignFixture, verifyCampaignFixture } from './browser-fixture';
 import { inspectProductBackup } from '../product-transfer/backup-evidence';
 import { decodeLedger, type Scene } from '../product-restore-process/protocol';
 import { verifyProfileIsolationJournal } from '../../release/profile-isolation-policy';
 import { hash, object, parents, read, save } from './files';
 import { need } from './contract';
 
-const FOUR = [...DOMAINS, 'conversations'] as const;
+const DATABASES = [...DOMAINS, 'browser'] as const;
+const FIVE = [...DATABASES, 'conversations'] as const;
 const BAD_INDEX = Buffer.from('{"version":1,"sessions":');
 async function absent(path: string): Promise<void> {
   try {
@@ -27,7 +28,7 @@ async function absent(path: string): Promise<void> {
 async function copySet(source: string, destination: string, variant: Variant): Promise<void> {
   await parents(source);
   await parents(destination);
-  for (const domain of FOUR) {
+  for (const domain of FIVE) {
     const from = join(source, domain),
       to = join(destination, domain);
     await parents(from);
@@ -44,7 +45,7 @@ async function copySet(source: string, destination: string, variant: Variant): P
       need(hash(await read(targetPath, 16 * 1024 ** 2)) === hash(bytes));
     }
   }
-  verifySmallFixture(destination, variant, 'source');
+  verifyCampaignFixture(destination, variant, 'source');
 }
 async function retired(root: string): Promise<void> {
   const ledger = decodeLedger(
@@ -77,10 +78,10 @@ export async function offline(
     const fixtureRoot = join(evidence, 'fixtures');
     await mkdir(fixtureRoot);
     for (const variant of scene === 'R' ? (['A', 'B'] as const) : (['A', 'H'] as const)) {
-      createSmallFixture(join(fixtureRoot, variant), variant);
+      createCampaignFixture(join(fixtureRoot, variant), variant);
       await save(
         join(evidence, `fixture-${variant}.json`),
-        verifySmallFixture(join(fixtureRoot, variant), variant, 'source'),
+        verifyCampaignFixture(join(fixtureRoot, variant), variant, 'source'),
       );
     }
     if (scene === 'P') {
@@ -114,7 +115,7 @@ export async function offline(
         origin: '受控合成生产管线备份',
         ...wire,
       });
-      verifySmallFixture(h, 'H', 'source');
+      verifyCampaignFixture(h, 'H', 'source');
     }
     await copySet(join(fixtureRoot, 'A'), root, 'A');
     if (scene === 'P') {
@@ -136,17 +137,17 @@ export async function offline(
   } else if (command === 'install-b') {
     need(scene === 'R');
     await retired(root);
-    verifySmallFixture(root, 'A', 'source');
+    verifyCampaignFixture(root, 'A', 'source');
     const preserved = join(root, 'restore-campaign-preserved-A');
     await absent(preserved);
     await mkdir(preserved);
-    for (const domain of FOUR) {
+    for (const domain of FIVE) {
       verifyRoot();
       await parents(join(root, domain));
       await absent(join(preserved, domain));
       await rename(join(root, domain), join(preserved, domain));
     }
-    verifySmallFixture(preserved, 'A', 'source');
+    verifyCampaignFixture(preserved, 'A', 'source');
     await copySet(join(evidence, 'fixtures/B'), root, 'B');
   } else if (command === 'backup') {
     need(scene === 'R');
@@ -171,7 +172,7 @@ export async function offline(
   } else if (command === 'verify' || command === 'verify-cold') {
     await retired(root);
     const variant = scene === 'R' ? 'A' : 'H';
-    const semantic = verifySmallFixture(root, variant, 'restored');
+    const semantic = verifyCampaignFixture(root, variant, 'restored');
     if (command === 'verify-cold') {
       const previous = object(await read(join(evidence, 'verify-oracle.json')));
       need(
@@ -197,11 +198,11 @@ export async function offline(
       need(candidates.length === 1);
       const rollback = join(candidates[0]!, 'rollback');
       await parents(rollback);
-      need((await readdir(rollback)).sort().join('|') === [...FOUR].sort().join('|'));
+      need((await readdir(rollback)).sort().join('|') === [...FIVE].sort().join('|'));
       if (scene === 'R') {
         const projection = join(evidence, 'rollback-B');
         await mkdir(projection);
-        for (const domain of DOMAINS) {
+        for (const domain of DATABASES) {
           await mkdir(join(projection, domain));
           await copyFile(
             join(rollback, domain),
@@ -218,7 +219,7 @@ export async function offline(
           );
         await save(
           join(evidence, 'rollback-B-oracle.json'),
-          verifySmallFixture(projection, 'B', 'source'),
+          verifyCampaignFixture(projection, 'B', 'source'),
         );
       } else {
         need(hash(await read(join(rollback, 'conversations/index.json'))) === hash(BAD_INDEX));

@@ -14,6 +14,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { MIGRATIONS } from '../../src/main/sources/db/migrations';
 import { RESEARCH_MIGRATIONS } from '../../src/main/research/db/research-migrations';
 import { WATCH_MIGRATIONS } from '../../src/main/watch/db/watch-migrations';
+import { BROWSER_MIGRATIONS } from '../../src/main/browser-library/browser-library-migrations';
 import { assertStartupProbeInputs, runStartupProbe } from '../../src/main/storage/startup-probe';
 import {
   STARTUP_PROBE_DOMAINS,
@@ -28,8 +29,8 @@ mkdirSync(scope);
 writeFileSync(
   join(scope, 'intent.json'),
   JSON.stringify({
-    purpose: '独立合成三域正控和跨域迟到WAL、根替换、孤立SHM及主进程严格复核反例',
-    maxDatabasesPerTest: 3,
+    purpose: '独立合成四域正控和跨域迟到WAL、根替换、孤立SHM及主进程严格复核反例',
+    maxDatabasesPerTest: 4,
     maxBytesPerTest: 8 * 1024 * 1024,
     maxWorkMsPerTest: 30000,
     actualProfiles: false,
@@ -55,7 +56,13 @@ function seed(root: string, id: StartupProbeDomain, wal = true): string {
   try {
     if (wal) db.exec('PRAGMA journal_mode=WAL');
     const steps =
-      id === 'sources' ? MIGRATIONS : id === 'research' ? RESEARCH_MIGRATIONS : WATCH_MIGRATIONS;
+      id === 'sources'
+        ? MIGRATIONS
+        : id === 'research'
+          ? RESEARCH_MIGRATIONS
+          : id === 'watch'
+            ? WATCH_MIGRATIONS
+            : BROWSER_MIGRATIONS;
     for (const step of steps) {
       for (const sql of step.statements) db.exec(sql);
       db.exec(`PRAGMA user_version=${step.version}`);
@@ -99,19 +106,19 @@ function onClose(file: string, action: () => void): () => number {
   return () => calls;
 }
 
-it('独立三域关闭WAL正控保持主库全部元数据和字节，逐域登记空WAL', async () => {
-  const root = profile('three-domains');
+it('独立四域关闭WAL正控保持主库全部元数据和字节，逐域登记空WAL', async () => {
+  const root = profile('four-domains');
   const files = STARTUP_PROBE_DOMAINS.map((id) => seed(root, id));
   const before = files.map(facts);
   const result = await runStartupProbe(root, control());
   expect(result.state).toBe('normal');
-  if (result.state === 'recovery-required') throw new Error('三域预检未通过');
-  expect(result.members.map((member) => member.version)).toEqual([1, 1, 5]);
+  if (result.state === 'recovery-required') throw new Error('四域预检未通过');
+  expect(result.members.map((member) => member.version)).toEqual([1, 1, 5, 1]);
   expect(result.members.every((member) => member.wal?.size === '0')).toBe(true);
   expect(files.map(facts)).toEqual(before);
   await expect(assertStartupProbeInputs(root, result, () => {})).resolves.toBeUndefined();
   expect(byteCount(root)).toBeLessThan(8 * 1024 * 1024);
-  writeFileSync(join(scope, 'three-domains.json'), JSON.stringify({ before, result }), {
+  writeFileSync(join(scope, 'four-domains.json'), JSON.stringify({ before, result }), {
     flag: 'wx',
   });
 }, 30000);

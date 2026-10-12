@@ -7,7 +7,16 @@ import {
   protocol,
   session,
   clipboard,
+  nativeTheme,
 } from 'electron';
+import { installWindowAppearance, titlebarColors } from './ui/window-appearance';
+import type { Appearance } from '../shared/types/app';
+import { dispatchBrowserLibrary, browserPageForLibrary } from './browser-library-ipc';
+import type { BrowserLibraryService } from './browser-library/browser-library-service';
+import {
+  openBrowserLibraryStore,
+  assembleVerifiedTransferBrowserLibraryStore,
+} from './browser-library/browser-library-store';
 import { copyResearchTable } from './research/research-copy';
 import { resolveNativeDataRoot } from './storage/native-data-root';
 import { DatasetStartup } from './storage/dataset-startup';
@@ -431,6 +440,8 @@ function requireNodeDataRoot(): string {
 // 内部持有实现类：setContentBounds（§6 UI 接线）是类方法，不属于 §2.1 AI 契约接口
 let browserController: BrowserControllerImpl | null = null;
 let mainWindow: BrowserWindow | null = null;
+let browserLibraryService: BrowserLibraryService | null = null;
+const windowAppearances = new WeakMap<BrowserWindow, (appearance: Appearance) => boolean>();
 let diagnosticTabCount: number | null = null;
 const uiDocuments = new WeakMap<BrowserWindow, UiDocumentGuard>();
 const uiRecoveries = new WeakMap<BrowserWindow, UiRendererRecovery>();
@@ -454,6 +465,7 @@ const datasetStartup = new DatasetStartup({
       return;
     }
     const hasStores =
+      browserLibraryService !== null ||
       sourceService !== null ||
       researchService !== null ||
       watchRepo !== null ||
@@ -733,6 +745,17 @@ function openWatchForStartup(options: Parameters<typeof openWatchStore>[0]) {
     : openWatchStore(options);
 }
 
+function openBrowserLibraryForStartup(): void {
+  if (browserLibraryService !== null || !mainRootAdmission.isOpen() || runtimeShutdown !== null)
+    return;
+  const options = { dbPath: join(requireNodeDataRoot(), 'browser', 'browser.db') };
+  const outcome = datasetStartup.isChecking()
+    ? assembleVerifiedTransferBrowserLibraryStore(options, datasetStartup.open('browser'))
+    : openBrowserLibraryStore(options);
+  browserLibraryService = outcome.service;
+  if (outcome.mode !== 'normal') throw new Error('浏览历史与书签未能安全打开');
+}
+
 function runMainRoot<T>(
   work: (isCurrent: () => boolean) => T | Promise<T>,
   isOwnerCurrent: () => boolean = () => true,
@@ -779,6 +802,7 @@ function shutdownRuntime(): Promise<void> {
     // Keep the same dataset and ownership references through every await.
     // Startup resources are retained here before their normal publication.
     const conversation = conversationService;
+    const library = browserLibraryService;
     const research = researchMaintenance;
     const source = sourceService;
     const usage = sourceUsageTracker;
@@ -894,6 +918,7 @@ function shutdownRuntime(): Promise<void> {
         if (watchRepo === repository) watchRepo = null;
         if (assemblingWatch?.repo === repository) assemblingWatch = null;
         source?.dispose();
+        library?.dispose();
         browser?.dispose();
       },
     });
@@ -1039,6 +1064,7 @@ function assertStartupNoStores(): void {
     watchRepo !== null ||
     assemblingWatch !== null ||
     conversationService !== null ||
+    browserLibraryService !== null ||
     dataTransferRuntime !== null
   )
     throw new Error('启动数据图尚未静止');
@@ -1075,6 +1101,7 @@ function installPartialRecovery(): void {
     source: sourceService,
     research: researchService,
     conversation: conversationService,
+    library: browserLibraryService,
     watch: watchRepo,
     assembling: assemblingWatch,
     preparation: startupPreparation,
@@ -1091,6 +1118,7 @@ function installPartialRecovery(): void {
         sourceService !== original.source ||
         researchService !== original.research ||
         conversationService !== original.conversation ||
+        browserLibraryService !== original.library ||
         watchRepo !== original.watch ||
         assemblingWatch !== original.assembling ||
         startupPreparation !== original.preparation ||
@@ -1126,14 +1154,15 @@ function stopStartupSchedulers(): void {
   }
 }
 
-function startupGraphReady(): boolean {
+function startupGraphReady(requireLibrary = true, requireMaintenance = true): boolean {
   return (
     mainRootAdmission.isOpen() &&
     !startupAssemblyFailed &&
     !startupAdmissionFailed &&
     runtimeShutdown === null &&
     lifecycleGuardian !== null &&
-    runtimeMaintenance !== null &&
+    (!requireMaintenance || runtimeMaintenance !== null) &&
+    (!requireLibrary || browserLibraryService?.isOpen() === true) &&
     sourceService?.getState().mode === 'normal' &&
     researchStoreReady &&
     researchMaintenance !== null &&
@@ -1146,18 +1175,25 @@ function startupGraphReady(): boolean {
   );
 }
 
-async function finalizeStartupDataGraph(): Promise<boolean> {
+async function finalizeStartupDataGraph(prepareMaintenance: () => void): Promise<boolean> {
   dataAdmissionOpen = false;
   const checking = datasetStartup.isChecking();
+  const needsBrowserHealth = !checking || datasetStartup.includesDomain('browser');
+  const healthGraphReady = () => startupGraphReady(needsBrowserHealth, false);
   try {
-    if (!startupGraphReady() || !(await finalizeStartupWatch!()) || !startupGraphReady())
+    if (!healthGraphReady() || !(await finalizeStartupWatch!()) || !healthGraphReady())
       throw new Error('数据服务图尚未完整就绪');
     if (checking) {
       // Index preparation above is read-only and both schedulers remain held.
       await new Promise<void>((resolve) => setTimeout(resolve, MIN_HOST_REQUEST_GAP_MS));
-      if (!startupGraphReady() || !(await datasetStartup.complete(startupGraphReady)))
+      if (!healthGraphReady() || !(await datasetStartup.complete(healthGraphReady)))
         throw new Error('恢复数据健康确认未完成');
     }
+    // A v1 journal owns only its original three databases. Add the independent
+    // library after that commit, before admitting users or scheduler producers.
+    if (browserLibraryService === null && !datasetStartup.isChecking())
+      openBrowserLibraryForStartup();
+    prepareMaintenance();
     if (!startupGraphReady()) throw new Error('数据服务图已停止');
     // No await may split this final release. A failure closes both producers
     // before the event loop can dispatch a newly armed scheduler callback.
@@ -1448,6 +1484,7 @@ if (!gotLock) {
           channel === IPC.DataTransferStart ||
           channel === IPC.DataTransferCancel ||
           channel === IPC.DataTransferRecoverOriginal ||
+          channel === IPC.BrowserLibraryStatus ||
           channel === IPC.ConversationStorageStatus
         ) {
           // Maintenance controls must not hold a business lease while draining it.
@@ -1463,6 +1500,7 @@ if (!gotLock) {
           (/^(?:tabs|nav):/.test(channel) ||
             channel === IPC.PageSnapshot ||
             channel === IPC.AppGetInfo ||
+            channel === IPC.UiAppearance ||
             channel === IPC.DiagnosticPreview ||
             channel === IPC.DiagnosticExport)
         ) {
@@ -1504,6 +1542,31 @@ if (!gotLock) {
         }
       });
     };
+
+    for (const channel of [
+      IPC.BrowserLibraryStatus,
+      IPC.BrowserHistoryList,
+      IPC.BrowserHistoryDelete,
+      IPC.BrowserHistoryClear,
+      IPC.BrowserBookmarksList,
+      IPC.BrowserBookmarkAddCurrent,
+      IPC.BrowserBookmarkUpdate,
+      IPC.BrowserBookmarkRemove,
+      IPC.BrowserBookmarkGetCurrent,
+    ]) {
+      handle(channel, (payload) =>
+        dispatchBrowserLibrary(
+          channel,
+          payload,
+          browserLibraryService,
+          () => browserController?.getActiveUserPage() ?? null,
+        ),
+      );
+    }
+    handle(IPC.UiAppearance, (payload) => {
+      const appearance = (payload as { appearance: Appearance }).appearance;
+      return mainWindow !== null && (windowAppearances.get(mainWindow)?.(appearance) ?? false);
+    });
 
     const readTabId = (payload: unknown): string | null =>
       typeof payload === 'object' &&
@@ -3160,6 +3223,31 @@ async function assembleBrowserWindow(): Promise<void> {
   const win = createMainWindow();
   mainWindow = win;
   const controller = new BrowserControllerImpl({
+    onNavigationCommitted: (input) => {
+      if (!mainRootIsOpen()) return null;
+      const page = browserPageForLibrary(input);
+      if (page === null) return null;
+      const release = mainRootAdmission.enter();
+      if (release === null) return null;
+      try {
+        const result = browserLibraryService?.recordNavigation(page);
+        return result?.ok ? result.value.id : null;
+      } finally {
+        release();
+      }
+    },
+    onVisitTitleChanged: (input) => {
+      if (!mainRootIsOpen()) return;
+      const page = browserPageForLibrary(input);
+      if (page === null) return;
+      const release = mainRootAdmission.enter();
+      if (release === null) return;
+      try {
+        browserLibraryService?.updateVisitTitle({ ...page, id: input.id });
+      } finally {
+        release();
+      }
+    },
     ownerWindow: win,
     sessionManager: new AppSessionManager(),
     getFallbackBounds: () => {
@@ -3241,6 +3329,8 @@ async function assembleBrowserWindow(): Promise<void> {
     }
     assertStartupNoStores();
   }
+  if (!datasetStartup.isChecking() || datasetStartup.includesDomain('browser'))
+    openBrowserLibraryForStartup();
   // Third Stage A2/A3/A4：工具层装配——注册表 8 个只读/导航 + 4 个交互 + search_web
   // （工具实现只经 BrowserController/SearchProvider 接口执行，不 import Electron）+
   // 确认状态机 + 审计薄封装 + ToolExecutor 管线。A5 AgentLoop 接线复用本实例；本任务
@@ -3940,57 +4030,63 @@ async function assembleBrowserWindow(): Promise<void> {
       }
     },
   });
-  if (
-    sourceMaintenance !== null &&
-    researchMaintenance !== null &&
-    watchRunCoordinator !== null &&
-    digestService !== null &&
-    watchPreviewService !== null &&
-    watchExportService !== null &&
-    watchNotifications !== null &&
-    watchWorkspace !== null &&
-    watchCoordinator !== null
-  ) {
-    const originalWatchPreview = watchPreviewService;
-    runtimeMaintenance = createRuntimeMaintenance({
-      rootAdmission: mainRootAdmission,
-      sourceIpcAdmission,
-      researchIpcAdmission,
-      watchIpcAdmission,
-      conversation: conversationService,
-      research: researchMaintenance,
-      sources: sourceMaintenance,
-      usage: usageTracker,
-      watch: watchRunCoordinator,
-      digest: digestService,
-      preview: {
-        pauseForMaintenance: (generation) => {
-          void diagnosticService.invalidateAndDrain();
-          return originalWatchPreview.pauseForMaintenance(generation);
+  const prepareMaintenance = (): void => {
+    if (
+      conversationService !== null &&
+      sourceMaintenance !== null &&
+      researchMaintenance !== null &&
+      watchRunCoordinator !== null &&
+      digestService !== null &&
+      watchPreviewService !== null &&
+      watchExportService !== null &&
+      watchNotifications !== null &&
+      watchWorkspace !== null &&
+      watchCoordinator !== null &&
+      browserLibraryService !== null
+    ) {
+      const originalWatchPreview = watchPreviewService;
+      runtimeMaintenance = createRuntimeMaintenance({
+        rootAdmission: mainRootAdmission,
+        browserLibrary: browserLibraryService,
+        sourceIpcAdmission,
+        researchIpcAdmission,
+        watchIpcAdmission,
+        conversation: conversationService,
+        research: researchMaintenance,
+        sources: sourceMaintenance,
+        usage: usageTracker,
+        watch: watchRunCoordinator,
+        digest: digestService,
+        preview: {
+          pauseForMaintenance: (generation) => {
+            void diagnosticService.invalidateAndDrain();
+            return originalWatchPreview.pauseForMaintenance(generation);
+          },
+          drainForMaintenance: async (generation) => {
+            await diagnosticService.invalidateAndDrain();
+            await originalWatchPreview.drainForMaintenance(generation);
+          },
+          prepareResumeAfterMaintenance: (generation) =>
+            originalWatchPreview.prepareResumeAfterMaintenance(generation),
+          resumeAfterMaintenance: (generation) =>
+            originalWatchPreview.resumeAfterMaintenance(generation),
         },
-        drainForMaintenance: async (generation) => {
-          await diagnosticService.invalidateAndDrain();
-          await originalWatchPreview.drainForMaintenance(generation);
-        },
-        prepareResumeAfterMaintenance: (generation) =>
-          originalWatchPreview.prepareResumeAfterMaintenance(generation),
-        resumeAfterMaintenance: (generation) =>
-          originalWatchPreview.resumeAfterMaintenance(generation),
-      },
-      exporter: watchExportService,
-      notifications: watchNotifications,
-      windowsNotifications: watchWindowsNotifications,
-      workspace: watchWorkspace,
-      lifecycle: watchCoordinator,
-    });
-    if (!mainRootAdmission.isOpen()) runtimeMaintenance.shutdown();
-  }
+        exporter: watchExportService,
+        notifications: watchNotifications,
+        windowsNotifications: watchWindowsNotifications,
+        workspace: watchWorkspace,
+        lifecycle: watchCoordinator,
+      });
+      if (!mainRootAdmission.isOpen()) runtimeMaintenance.shutdown();
+    }
+  };
   if (!__RELEASE__ && SMOKE_MODE && WATCH_GATE_MODE && !datasetStartup.isChecking()) {
     // This isolated fixture owns Watch itself and intentionally omits the product
     // Watch graph. The branch is absent from every release artifact.
+    prepareMaintenance();
     dataAdmissionOpen = mainRootAdmission.isOpen();
   } else {
-    await finalizeStartupDataGraph();
+    await finalizeStartupDataGraph(prepareMaintenance);
   }
   if (
     runtimeMaintenance !== null &&
@@ -3998,6 +4094,7 @@ async function assembleBrowserWindow(): Promise<void> {
     runtimeShutdown === null &&
     lifecycleGuardian !== null
   ) {
+    const originalLibrary = browserLibraryService;
     const originalSources = sourceService;
     const originalResearch = researchMaintenance;
     const originalWatch = watchRepo;
@@ -4008,6 +4105,7 @@ async function assembleBrowserWindow(): Promise<void> {
       productVersion: app.getVersion(),
       maintenance: runtimeMaintenance,
       isDatasetCurrent: () =>
+        browserLibraryService === originalLibrary &&
         sourceService === originalSources &&
         researchMaintenance === originalResearch &&
         watchRepo === originalWatch &&
@@ -4065,6 +4163,12 @@ function createMainWindow(): BrowserWindow {
     title: 'AIbrowse',
     // Keep native window controls without a permanently occupied menu row.
     autoHideMenuBar: true,
+    ...(process.platform === 'win32'
+      ? {
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: titlebarColors('system', nativeTheme.shouldUseDarkColors),
+        }
+      : {}),
     // 安全默认值：本项目自身 React UI 同样不开启 Node 集成（安全红线，第一版起生效）
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -4076,6 +4180,7 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
+  windowAppearances.set(win, installWindowAppearance(win, nativeTheme));
   win.once('ready-to-show', () => {
     win.show();
     logInfo('main', '主窗口已显示');

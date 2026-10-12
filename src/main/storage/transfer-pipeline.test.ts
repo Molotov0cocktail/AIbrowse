@@ -639,7 +639,7 @@ it('attempts to close every private work handle when one close reports failure',
     code: 'io',
     message: '数据维护校验失败，原件和现场已保留',
   });
-  expect(closed).toHaveLength(3);
+  expect(closed).toHaveLength(4);
   expect(fs.existsSync(join(options.scope.operationRoot, 'output.aibak'))).toBe(false);
 });
 it.each(['-wal', '-shm', '-journal'])(

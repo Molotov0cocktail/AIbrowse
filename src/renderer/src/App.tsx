@@ -18,9 +18,13 @@ import type { ResearchResultView } from '../../shared/types/research';
 import type { TableViewState } from '../../shared/research/table-utils';
 import { WatchWorkspace } from './watch/WatchWorkspace';
 import type { InAppNotificationDto } from '../../shared/types/watch-ipc';
-import { LocalDataPanel } from './storage/LocalDataPanel';
+import { useLocalData } from './storage/useLocalData';
 import { DiagnosticPanel } from './diagnostics/DiagnosticPanel';
-import { ThemeSelect } from './ui/ThemeSelect';
+import { useAppearance } from './ui/useAppearance';
+import { SettingsPage, type SettingsSection } from './settings/SettingsPage';
+import { BrowserLibraryPage, type BrowserLibraryMode } from './browser-library/BrowserLibraryPage';
+import { useBrowserLibraryStatus } from './browser-library/useBrowserLibraryStatus';
+import type { BrowserBookmark } from '../../shared/types/browser-library';
 
 // 浏览器 chrome（T3）+ AI 侧栏停靠（S4，design §11.1）+ Agent 确认对话框（A6 §11.2，
 // App 级全局挂载）：顶部工具栏 + 标签栏为渲染层 UI，主内容区由主进程 WebContentsView
@@ -30,7 +34,7 @@ import { ThemeSelect } from './ui/ThemeSelect';
 // useAgent 在 App 级：ConfirmDialog 全局跟随精确 pending（ConfirmManager 单 pending
 // 事实）——不因切换会话/模式/折叠面板而不可访问（L2 确认必须可达）。
 // C8 决议 #163(1)/#158(6)：sidePanel 三态互斥 'ai'|'sources'|'research'|null；
-// viewMode 'browser'|'research-result'——research-result 时经
+// 非 browser viewMode 经
 // ui.setBrowserContentVisible(false) 隐藏全部 WebContentsView（原生视图覆盖 DOM，
 // 仅 React 切 viewMode 不够），React 结果画布独立滚动；返回浏览/创建激活 Tab/
 // 从结果打开来源后恢复 browser 模式。
@@ -42,11 +46,14 @@ export default function App() {
   const [sidePanel, setSidePanel] = useState<'ai' | 'sources' | 'research' | 'diagnostics' | null>(
     null,
   );
-  const [toolsOpen, setToolsOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<'browser' | 'research-result' | 'watch'>(
-    __WATCH_QUALIFICATION__ ? 'watch' : 'browser',
-  );
+  const [viewMode, setViewMode] = useState<
+    'browser' | 'research-result' | 'watch' | 'settings' | 'library'
+  >(__WATCH_QUALIFICATION__ ? 'watch' : 'browser');
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('appearance');
+  const [libraryMode, setLibraryMode] = useState<BrowserLibraryMode>('history');
+  const [currentBookmark, setCurrentBookmark] = useState<BrowserBookmark | null>(null);
+  const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
   const [watchSourceId, setWatchSourceId] = useState<string | null>(null);
   const [watchNotice, setWatchNotice] = useState<InAppNotificationDto | null>(null);
   const [watchUnreadCount, setWatchUnreadCount] = useState(0);
@@ -58,6 +65,15 @@ export default function App() {
   const viewModeRef = useRef(viewMode);
   const agent = useAgent();
   const research = useResearch();
+  const appearance = useAppearance();
+  const localData = useLocalData();
+  const libraryStatus = useBrowserLibraryStatus();
+  const browserDataIssue =
+    libraryStatus !== null && libraryStatus.state === 'storage-error'
+      ? '浏览数据保存或读取失败，部分新访问可能未保存；请检查本地数据'
+      : libraryStatus !== null && libraryStatus.state === 'unavailable'
+        ? '浏览数据暂不可用，请检查本地数据'
+        : null;
   const pendingConfirm = globalPendingRequest(agent.agentState);
 
   useEffect(() => {
@@ -106,6 +122,17 @@ export default function App() {
       ? null
       : (tabsState.tabs.find((t) => t.id === tabsState.activeTabId) ?? null);
 
+  const refreshCurrentBookmark = (): void => {
+    void window.aibrowse.browserLibrary
+      .getCurrentBookmark()
+      .then((result) => setCurrentBookmark(result.ok ? result.value : null))
+      .catch(() => setCurrentBookmark(null));
+  };
+
+  useEffect(() => {
+    refreshCurrentBookmark();
+  }, [activeTab?.id, activeTab?.url]);
+
   const withActiveTab = (action: (tabId: string) => Promise<boolean>): void => {
     if (activeTab !== null) void action(activeTab.id);
   };
@@ -114,6 +141,37 @@ export default function App() {
     setViewMode('browser');
     setSelectedCandidateId(null);
     setCanvasError(null);
+  };
+
+  const openSettings = (section: SettingsSection): void => {
+    setSettingsSection(section);
+    setSidePanel(null);
+    setDebugOpen(false);
+    setViewMode('settings');
+  };
+
+  const openLibrary = (mode: BrowserLibraryMode): void => {
+    setLibraryMode(mode);
+    setSidePanel(null);
+    setDebugOpen(false);
+    setViewMode('library');
+  };
+
+  const toggleCurrentBookmark = (): void => {
+    setLibraryNotice(null);
+    const action =
+      currentBookmark === null
+        ? window.aibrowse.browserLibrary.addCurrentBookmark()
+        : window.aibrowse.browserLibrary.removeBookmark(currentBookmark.id);
+    void action
+      .then((result) => {
+        if (!result.ok) {
+          setLibraryNotice('书签操作未完成，请稍后重试');
+          return;
+        }
+        refreshCurrentBookmark();
+      })
+      .catch(() => setLibraryNotice('书签操作未完成，请稍后重试'));
   };
 
   const runBrowserAction = (action: (tabId: string) => Promise<boolean>): void => {
@@ -209,34 +267,36 @@ export default function App() {
     <div className="app">
       <header className="chrome">
         <div className="tab-strip-row">
-          <TabBar
-            tabs={tabsState?.tabs ?? []}
-            activeTabId={tabsState?.activeTabId ?? null}
-            onActivate={(tabId) => {
-              returnToBrowser();
-              void window.aibrowse.tabs.activate(tabId);
-            }}
-            onClose={(tabId) => void window.aibrowse.tabs.close(tabId)}
-            onReload={(tabId) => {
-              returnToBrowser();
-              void window.aibrowse.nav.reload(tabId);
-            }}
-          />
-          <button
-            type="button"
-            className="new-tab-button"
-            aria-label="新建标签页"
-            title="新建标签页"
-            onClick={() => {
-              void window.aibrowse.tabs.create().then(() => {
+          <div className="tab-cluster">
+            <TabBar
+              tabs={tabsState?.tabs ?? []}
+              activeTabId={tabsState?.activeTabId ?? null}
+              onActivate={(tabId) => {
                 returnToBrowser();
-                addressBarRef.current?.focus();
-              });
-            }}
-          >
-            ＋
-          </button>
-          <LocalDataPanel />
+                void window.aibrowse.tabs.activate(tabId);
+              }}
+              onClose={(tabId) => void window.aibrowse.tabs.close(tabId)}
+              onReload={(tabId) => {
+                returnToBrowser();
+                void window.aibrowse.nav.reload(tabId);
+              }}
+            />
+            <button
+              type="button"
+              className="new-tab-button"
+              aria-label="新建标签页"
+              title="新建标签页"
+              onClick={() => {
+                void window.aibrowse.tabs.create().then(() => {
+                  returnToBrowser();
+                  addressBarRef.current?.focus();
+                });
+              }}
+            >
+              ＋
+            </button>
+          </div>
+          <div className="titlebar-drag-space" aria-hidden="true" />
         </div>
         <Toolbar
           activePanel={sidePanel}
@@ -260,48 +320,13 @@ export default function App() {
             setWatchFocus(null);
             setViewMode('watch');
           }}
-          onToggleTools={() => {
-            setToolsOpen((open) => {
-              if (open) setDebugOpen(false);
-              return !open;
-            });
-          }}
-          toolsOpen={toolsOpen}
+          onOpenHistory={() => openLibrary('history')}
+          onOpenBookmarks={() => openLibrary('bookmarks')}
+          onOpenSettings={() => openSettings('appearance')}
+          onToggleBookmark={toggleCurrentBookmark}
+          bookmarked={currentBookmark !== null}
           addressBarRef={addressBarRef}
         />
-        <div className="tools-tray" aria-label="更多功能" hidden={!toolsOpen}>
-          <button
-            type="button"
-            onClick={() => {
-              void window.aibrowse.sources.quickAdd().then((result) => {
-                if (result.status === 'added') setWatchSourceId(result.source.id);
-                else if (result.status === 'duplicate') setWatchSourceId(result.existing.id);
-                else return;
-                setSidePanel(null);
-                setViewMode('watch');
-              });
-            }}
-          >
-            监控此页
-          </button>
-          <button
-            type="button"
-            aria-pressed={sidePanel === 'diagnostics'}
-            onClick={() =>
-              setSidePanel((panel) => (panel === 'diagnostics' ? null : 'diagnostics'))
-            }
-          >
-            诊断信息
-          </button>
-          <button
-            type="button"
-            aria-pressed={debugOpen}
-            onClick={() => setDebugOpen((open) => !open)}
-          >
-            页面快照调试
-          </button>
-          <ThemeSelect />
-        </div>
         {debugOpen && (
           <DebugPanel
             activeTabId={tabsState?.activeTabId ?? null}
@@ -323,9 +348,59 @@ export default function App() {
               focusSubject={watchFocus}
               onBack={() => setViewMode('browser')}
             />
+          ) : viewMode === 'settings' ? (
+            <SettingsPage
+              section={settingsSection}
+              onSectionChange={setSettingsSection}
+              onBack={returnToBrowser}
+              appearance={appearance}
+              localData={localData}
+              browserDataIssue={browserDataIssue}
+              onOpenDiagnostics={() => {
+                setViewMode('browser');
+                setSidePanel('diagnostics');
+              }}
+              onOpenPageDebug={() => {
+                setViewMode('browser');
+                setDebugOpen(true);
+              }}
+              onWatchCurrentPage={() => {
+                void window.aibrowse.sources
+                  .quickAdd()
+                  .then((result) => {
+                    if (result.status === 'added') setWatchSourceId(result.source.id);
+                    else if (result.status === 'duplicate') setWatchSourceId(result.existing.id);
+                    else return;
+                    setViewMode('watch');
+                  })
+                  .catch(() => setLibraryNotice('监控入口暂不可用，请稍后重试'));
+              }}
+            />
+          ) : viewMode === 'library' ? (
+            <BrowserLibraryPage
+              mode={libraryMode}
+              onModeChange={setLibraryMode}
+              onBack={returnToBrowser}
+              onOpenUrl={(url) => {
+                void window.aibrowse.tabs
+                  .create(url)
+                  .then((tab) => {
+                    if (tab !== null) returnToBrowser();
+                    else setLibraryNotice('无法打开该地址，请稍后重试');
+                  })
+                  .catch(() => setLibraryNotice('无法打开该地址，请稍后重试'));
+              }}
+              onBookmarksChanged={refreshCurrentBookmark}
+            />
           ) : null}
         </main>
-        {sidePanel === 'ai' && <AiPanel onCollapse={() => setSidePanel(null)} agent={agent} />}
+        {sidePanel === 'ai' && (
+          <AiPanel
+            onCollapse={() => setSidePanel(null)}
+            onOpenSettings={() => openSettings('ai')}
+            agent={agent}
+          />
+        )}
         {sidePanel === 'sources' && (
           <SourcesPanel
             onCollapse={() => setSidePanel(null)}
@@ -374,6 +449,20 @@ export default function App() {
           }}
         >
           {watchNotice.body}
+        </button>
+      )}
+      {(localData.issue !== null || browserDataIssue !== null) && (
+        <button type="button" className="data-global-alert" onClick={() => openSettings('data')}>
+          {localData.issue ?? browserDataIssue}
+        </button>
+      )}
+      {libraryNotice !== null && (
+        <button
+          type="button"
+          className="library-global-toast"
+          onClick={() => setLibraryNotice(null)}
+        >
+          {libraryNotice}
         </button>
       )}
     </div>

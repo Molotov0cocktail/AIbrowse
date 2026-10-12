@@ -33,8 +33,8 @@ it('小型真实SQLite writer组合保留旧原件并完成完整新代', async 
     REPLACEMENT_CHECKPOINTS.slice(0, 10).concat(REPLACEMENT_CHECKPOINTS.slice(14, 16)),
   );
   const result = await inspectFixture(root, 'normal');
-  expect(result.completeOldCopies).toBeGreaterThanOrEqual(4);
-  expect(result.completeNewCopies).toBeGreaterThanOrEqual(4);
+  expect(result.completeOldCopies).toBeGreaterThanOrEqual(5);
+  expect(result.completeNewCopies).toBeGreaterThanOrEqual(5);
 });
 
 it('实际DatasetStartup checking用三个只读句柄核new marker后闭合提交', async () => {

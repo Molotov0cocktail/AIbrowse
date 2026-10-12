@@ -1,6 +1,46 @@
 import { IPC } from '../../shared/types/ipc';
 import { validateProviderConfig } from '../ai/config-store';
 import { parseDiagnosticExportPayload } from '../../shared/types/diagnostics';
+import {
+  isBrowserBookmarkUpdate,
+  isBrowserLibraryId,
+  isBrowserLibraryListRequest,
+} from '../../shared/browser-library';
+
+function closed(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  const own = Reflect.ownKeys(value);
+  return (
+    (prototype === Object.prototype || prototype === null) &&
+    own.length === keys.length &&
+    own.every((key) => typeof key === 'string' && keys.includes(key))
+  );
+}
+
+function validateBrowserUiPayload(channel: string, payload: unknown): boolean {
+  try {
+    if (channel === IPC.UiAppearance)
+      return (
+        closed(payload, ['appearance']) &&
+        typeof payload.appearance === 'string' &&
+        ['system', 'light', 'dark'].includes(payload.appearance)
+      );
+    if (channel === IPC.BrowserHistoryList || channel === IPC.BrowserBookmarksList)
+      return (
+        closed(payload, ['query', 'cursor', 'limit']) &&
+        (payload.cursor === null || closed(payload.cursor, ['at', 'id'])) &&
+        isBrowserLibraryListRequest(payload)
+      );
+    if (channel === IPC.BrowserBookmarkUpdate)
+      return closed(payload, ['id', 'url', 'title']) && isBrowserBookmarkUpdate(payload);
+    if (channel === IPC.BrowserHistoryDelete || channel === IPC.BrowserBookmarkRemove)
+      return closed(payload, ['id']) && isBrowserLibraryId(payload.id);
+    return payload === undefined || closed(payload, []);
+  } catch {
+    return false;
+  }
+}
 
 const transferChannels = new Set<string>([
   IPC.DataTransferStatus,
@@ -46,6 +86,8 @@ const schemas: Readonly<Record<string, readonly string[]>> = {
 
 /** Domain adapters retain their stricter value and budget validation. */
 export function validateCoreIpcPayload(channel: string, payload: unknown): boolean {
+  if (channel.startsWith('browser-library:') || channel === IPC.UiAppearance)
+    return validateBrowserUiPayload(channel, payload);
   if (channel === IPC.DiagnosticExport) return parseDiagnosticExportPayload(payload) !== null;
   if (channel === IPC.DiagnosticPreview) {
     if (payload === undefined) return true;

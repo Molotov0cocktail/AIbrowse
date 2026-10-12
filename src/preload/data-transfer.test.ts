@@ -100,6 +100,11 @@ it('文档token拒绝时五个新入口均不能抵达main业务handler', async 
   electron.invoke.mockResolvedValue(null);
   const api = await bridge();
   const actions = [
+    () => api.browserLibrary.getStatus(),
+    () => api.browserLibrary.listHistory({ query: '', cursor: null, limit: 50 }),
+    () => api.browserLibrary.clearHistory(),
+    () => api.browserLibrary.addCurrentBookmark(),
+    () => api.ui.setAppearance('dark'),
     () => api.dataTransfer.getStatus(),
     () => api.getConversationStorageStatus(),
     () => api.dataTransfer.start('backup'),

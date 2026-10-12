@@ -95,7 +95,13 @@ beforeEach(() => {
   mocked.verify.mockReset().mockImplementation(async (context) => ({
     action: 'restore',
     snapshotId: context.job.snapshotId,
-    expected: { sources: digest, research: digest, watch: digest, conversations: digest },
+    expected: {
+      sources: digest,
+      research: digest,
+      watch: digest,
+      browser: digest,
+      conversations: digest,
+    },
   }));
 });
 it('main证明同步重入start时准入槽已占用，不能启动第二次原生选择', async () => {

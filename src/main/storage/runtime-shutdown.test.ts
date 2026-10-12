@@ -214,6 +214,7 @@ function extract(predicate: (node: ts.Node) => boolean): string {
 }
 
 function mainFixture(digestFailure = false, duringStartup = false) {
+  const libraryDisposed = vi.fn();
   const root = new MaintenanceAdmission();
   const rootRelease = root.enter()!;
   const watchPending = deferred();
@@ -300,6 +301,7 @@ function mainFixture(digestFailure = false, duringStartup = false) {
     sourceIpcAdmissionOpen: true,
     watchShutdownStarted: false,
     conversationService: producer('conversation'),
+    browserLibraryService: { dispose: libraryDisposed },
     researchMaintenance: research,
     sourceService: { dispose: closed },
     sourceUsageTracker: { waitForIdle: vi.fn(() => usagePending.promise) },
@@ -407,6 +409,7 @@ function mainFixture(digestFailure = false, duringStartup = false) {
     watchPending,
     usagePending,
     closed,
+    libraryDisposed,
     quit,
     snapshots,
     showMessageBox,
@@ -462,13 +465,16 @@ describe('实际 main 接线 AST 集成', () => {
     fixture.watchPending.resolve();
     await flush();
     expect(fixture.closed).not.toHaveBeenCalled();
+    expect(fixture.libraryDisposed).not.toHaveBeenCalled();
     fixture.usagePending.resolve();
     await work;
     await flush();
     expect(fixture.closed).toHaveBeenCalledTimes(6);
+    expect(fixture.libraryDisposed).toHaveBeenCalledOnce();
     expect(fixture.quit).toHaveBeenCalledOnce();
     fixture.beforeQuit();
     expect(fixture.closed).toHaveBeenCalledTimes(6);
+    expect(fixture.libraryDisposed).toHaveBeenCalledOnce();
   });
 
   it('Digest 排水拒绝仍等 Watch 原操作，保留所有句柄且不会 app.quit', async () => {

@@ -180,6 +180,17 @@ const invokeWatch = async <T>(
 };
 
 const bridge: AibrowseBridge = {
+  browserLibrary: {
+    getStatus: () => invoke(IPC.BrowserLibraryStatus),
+    listHistory: (request) => invoke(IPC.BrowserHistoryList, request),
+    deleteHistory: (id) => invoke(IPC.BrowserHistoryDelete, { id }),
+    clearHistory: () => invoke(IPC.BrowserHistoryClear),
+    listBookmarks: (request) => invoke(IPC.BrowserBookmarksList, request),
+    addCurrentBookmark: () => invoke(IPC.BrowserBookmarkAddCurrent),
+    updateBookmark: (input) => invoke(IPC.BrowserBookmarkUpdate, input),
+    removeBookmark: (id) => invoke(IPC.BrowserBookmarkRemove, { id }),
+    getCurrentBookmark: () => invoke(IPC.BrowserBookmarkGetCurrent),
+  },
   getAppInfo: () => invoke<AppInfo>(IPC.AppGetInfo),
   getConversationStorageStatus: () =>
     invoke<ConversationStorageStatus>(IPC.ConversationStorageStatus),
@@ -219,6 +230,7 @@ const bridge: AibrowseBridge = {
     snapshot: (tabId) => invoke<PageSnapshot | null>(IPC.PageSnapshot, { tabId }),
   },
   ui: {
+    setAppearance: (appearance) => invoke<boolean>(IPC.UiAppearance, { appearance }),
     reportContentBounds: (bounds) => {
       send(IPC.UiContentBounds, bounds);
     },

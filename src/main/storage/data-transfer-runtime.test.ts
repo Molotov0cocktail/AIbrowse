@@ -101,6 +101,7 @@ beforeEach(() => {
             sources: digest,
             research: digest,
             watch: digest,
+            browser: digest,
             conversations: digest,
           },
         },

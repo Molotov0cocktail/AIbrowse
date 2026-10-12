@@ -27,9 +27,9 @@ import { TransferBudget } from './transfer-budget';
 const context: DatasetContext = { check: () => {}, requireRollbackSpace: () => {} };
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'aibrowse-dataset-switch-'));
-  for (const name of ['sources', 'research', 'watch', 'conversations'])
+  for (const name of ['sources', 'research', 'watch', 'conversations', 'browser'])
     await mkdir(join(root, name));
-  for (const domain of ['sources', 'research', 'watch']) {
+  for (const domain of ['sources', 'research', 'watch', 'browser']) {
     await writeFile(join(root, domain, `${domain}.db`), `old-${domain}`);
     await writeFile(join(root, domain, `${domain}.db-wal`), `wal-${domain}`);
     await writeFile(join(root, domain, `${domain}.db-shm`), `shm-${domain}`);
@@ -48,7 +48,7 @@ async function fixture() {
     },
     context,
   );
-  for (const domain of ['sources', 'research', 'watch'])
+  for (const domain of ['sources', 'research', 'watch', 'browser'])
     await writeFile(join(scope.operationRoot, 'work', `${domain}.db`), `new-${domain}`);
   await mkdir(join(scope.operationRoot, 'work', 'conversations'));
   await writeFile(join(scope.operationRoot, 'work', 'conversations', 'index.json'), 'new-index');
@@ -133,8 +133,8 @@ it('旧数据按实际分配单元准入，空间失败前不创建回退副本�
   await engine.registerHandoff(expected, new TransferBudget().suspend());
   expect(requested).toBe(0);
   expect((await engine.resumeAtStartup()).state).toBe('old-unchanged');
-  // Thirteen small files, one larger file and two directory allocation units.
-  expect(requested).toBe(15 * cluster + Math.ceil(8193 / cluster) * cluster);
+  // Seventeen small files, one larger file and two directory allocation units.
+  expect(requested).toBe(19 * cluster + Math.ceil(8193 / cluster) * cluster);
   expect(await readdir(join(scope.operationRoot, 'rollback'))).toEqual([]);
   expect(await readFile(join(root, 'sources', 'sources.db'), 'utf8')).toBe('old-sources');
 });
@@ -198,7 +198,7 @@ it.each(DATASET_MEMBERS.map(([id], index) => [id, index] as const))(
     await engine.registerHandoff(expected, new TransferBudget().suspend());
     expect((await engine.resumeAtStartup()).state).toBe('old-restored');
     expect(fired).toBe(true);
-    for (const domain of ['sources', 'research', 'watch']) {
+    for (const domain of ['sources', 'research', 'watch', 'browser']) {
       expect(await readFile(join(root, domain, `${domain}.db`), 'utf8')).toBe(`old-${domain}`);
       expect(await readFile(join(root, domain, `${domain}.db-wal`), 'utf8')).toBe(`wal-${domain}`);
       expect(await readFile(join(root, domain, `${domain}.db-shm`), 'utf8')).toBe(`shm-${domain}`);

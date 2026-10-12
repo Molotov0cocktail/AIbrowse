@@ -57,7 +57,7 @@ async function fixture(mode: 'normal' | 'migrate' = 'normal') {
       budget.enter('sqlite');
       now += 1;
       budget.leave();
-      for (const id of ['sources', 'research', 'watch'])
+      for (const id of ['sources', 'research', 'watch', 'browser'])
         await writeFile(join(work, id + '.db'), id);
       await mkdir(join(work, 'conversations'));
       await writeFile(join(work, 'conversations', 'index.json'), '[]');
@@ -68,7 +68,7 @@ async function fixture(mode: 'normal' | 'migrate' = 'normal') {
         .digest('hex');
       const transferResult: TransferResult = {
         manifest: {
-          formatVersion: 1,
+          formatVersion: 2,
           productVersion: registration.productVersion,
           snapshotId: job.snapshotId,
           members: [
@@ -79,6 +79,7 @@ async function fixture(mode: 'normal' | 'migrate' = 'normal') {
               ...digest(id),
             })),
             { id: 'conversations', present: true, schemaVersion: 1, bytes: 2, sha256: treeHash },
+            { id: 'browser', present: true, schemaVersion: 1, ...digest('browser') },
           ],
         },
         backup: null,

@@ -104,7 +104,7 @@ const MESSAGES: Record<DataTransferState, string> = {
   'original-restored': '原数据业务已恢复，失败操作未重试',
 };
 const CONFIRM =
-  '恢复将替换当前信源、研究、监控数据和已保存会话，并关闭当前标签页后重新启动。是否继续？';
+  '恢复将替换当前信源、研究、监控数据和已保存会话。新版备份还会替换浏览历史与书签；旧版备份不含这两项，将保留当前浏览历史与书签。应用将关闭当前标签页后重新启动。是否继续？';
 interface Operation {
   job: TransferJobRecord;
   generation: string;

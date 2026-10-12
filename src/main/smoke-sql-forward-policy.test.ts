@@ -70,6 +70,8 @@ describe('SRT-12 E2 精确职责路径分类', () => {
     expect(lines.filter((line) => /\.(prepare|exec)\(/.test(line))).toEqual([]);
   });
   it.each([
+    'main/browser-library/browser-library-repository.ts',
+    'main/browser-library/browser-library-store.ts',
     'main/research/repository/research-transfer-validation.ts',
     'main/sources/repository/source-transfer-validation.ts',
     'main/watch/repository/watch-transfer-validation.ts',

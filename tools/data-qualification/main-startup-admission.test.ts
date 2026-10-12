@@ -61,6 +61,7 @@ it('恢复入口要求已就绪guardian、零业务图和前次data进程实际�
     mainRootAdmission: { isOpen: () => true },
     runtimeShutdown: null,
     dataAdmissionOpen: false,
+    browserLibraryService: null,
     sourceService: null,
     startupAssemblyFailed: false,
     researchService: null,
@@ -105,7 +106,7 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
     createMainWindow: () => ({ on: vi.fn(), getContentSize: () => [800, 600] }),
     BrowserControllerImpl: class {},
     AppSessionManager: class {},
-    datasetStartup: { prepare: async () => 'normal' },
+    datasetStartup: { prepare: async () => 'normal', isChecking: () => false },
     assertStartupNoStores: vi.fn(),
     createStartupDataPreparation: () => ({ prepare: async () => ({ state: 'normal' }) }),
     requireNodeDataRoot: () => 'synthetic',
@@ -128,8 +129,9 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
     startupPreparation: null,
     startupTransferMessage: '',
     watchCoordinator: null,
+    browserLibraryService: null,
     sourceService: null,
-    openSourcesForStartup: () => {
+    openBrowserLibraryForStartup: () => {
       observed.push(context.dataAdmissionOpen as boolean);
       throw new Error('到达实际首个 Store 边界');
     },
@@ -176,6 +178,7 @@ function graphFixture(checking = false) {
     runtimeShutdown: null,
     lifecycleGuardian: {},
     runtimeMaintenance: {},
+    browserLibraryService: { isOpen: () => true },
     sourceService: { getState: () => ({ mode: 'normal' }) },
     researchStoreReady: true,
     researchMaintenance: {},
@@ -188,6 +191,7 @@ function graphFixture(checking = false) {
     finalizeStartupWatch: recover,
     datasetStartup: {
       isChecking: () => checking,
+      includesDomain: () => true,
       complete,
       fail: vi.fn(async () => 'recovery-required'),
     },
@@ -212,7 +216,7 @@ function graphFixture(checking = false) {
     close() {
       open = false;
     },
-    run: () => vm.runInContext('finalizeStartupDataGraph()', context) as Promise<boolean>,
+    run: () => vm.runInContext('finalizeStartupDataGraph(() => {})', context) as Promise<boolean>,
   };
 }
 
@@ -383,6 +387,7 @@ it('实际partial安装保留已开的服务并经原生确认、固定gate和�
     mainRootAdmission: { isOpen: () => true },
     lifecycleGuardian: {},
     sourceService: source,
+    browserLibraryService: null,
     researchService: null,
     conversationService: null,
     watchRepo: null,

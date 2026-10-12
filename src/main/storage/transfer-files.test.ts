@@ -65,7 +65,7 @@ async function fixture(budget = new TransferBudget(), action: 'backup' | 'restor
   };
   const result: TransferResult = {
     manifest: {
-      formatVersion: 1,
+      formatVersion: 2,
       productVersion: '0.1.0',
       snapshotId: context.job.snapshotId,
       members: BACKUP_IDS.map((id) => ({

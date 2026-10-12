@@ -11,6 +11,7 @@ const NODE_MEMBERS = [
   ['sources', 'directory'],
   ['research', 'directory'],
   ['watch', 'directory'],
+  ['browser', 'directory'],
   ['log', 'directory'],
   ['data-transfer', 'directory'],
   ['lifecycle-guardian', 'directory'],

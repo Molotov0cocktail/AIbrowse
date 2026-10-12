@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, expect, it, vi } from 'vitest';
-import { BACKUP_IDS } from './backup-container';
+import { LEGACY_BACKUP_IDS } from './backup-container';
 import { inspectNativeRestoreInput } from './native-transfer-selection';
 vi.mock('node:fs/promises', async (original) => ({
   ...(await original<typeof import('node:fs/promises')>()),
@@ -18,7 +18,7 @@ async function fixture() {
       formatVersion: 1,
       productVersion: '0.1.0',
       snapshotId,
-      members: BACKUP_IDS.map((id) => ({
+      members: LEGACY_BACKUP_IDS.map((id) => ({
         id,
         present: false,
         schemaVersion: id === 'watch' ? 5 : 1,
@@ -55,7 +55,7 @@ it.each([
   const f = await fixture();
   let manifest = f.manifest;
   if (kind === 'magic') f.header[0] = 0;
-  if (kind === 'version') f.header.writeUInt32BE(2, 8);
+  if (kind === 'version') f.header.writeUInt32BE(3, 8);
   if (kind === 'manifest+1') f.header.writeUInt32BE(4097, 12);
   if (kind === 'zero') f.header.writeUInt32BE(0, 12);
   if (kind === 'truncated') manifest = manifest.subarray(0, manifest.length - 1);

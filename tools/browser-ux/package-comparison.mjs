@@ -1,11 +1,18 @@
 // Compare executable sections and resources without changing either candidate.
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import process from 'node:process';
 import { NtExecutable, NtExecutableResource } from 'resedit';
 
+const outputArgument = process.argv[2];
+if (outputArgument !== undefined && outputArgument.trim() === '')
+  throw new Error('比较证据输出路径不能为空');
+const outputPath = resolve(outputArgument ?? 'log/browser-ux-20261012/packaging-comparison.json');
+const outputDirectory = dirname(outputPath);
+if (!existsSync(outputDirectory) || !statSync(outputDirectory).isDirectory())
+  throw new Error('比较证据输出目录必须已存在');
 const previous = readFileSync(resolve('output/win-unpacked/AIbrowse.exe'));
 const candidate = readFileSync(resolve('release/win-unpacked/AIbrowse.exe'));
 const hash = (value) => createHash('sha256').update(value).digest('hex');
@@ -50,9 +57,5 @@ const result = {
     Buffer.from(right.getExtraData() ?? new ArrayBuffer(0)),
   ),
 };
-writeFileSync(
-  resolve('log/browser-ux-20261012/packaging-comparison.json'),
-  JSON.stringify(result, null, 2),
-  { flag: 'wx' },
-);
+writeFileSync(outputPath, JSON.stringify(result, null, 2), { flag: 'wx' });
 process.stdout.write(JSON.stringify(result) + '\n');

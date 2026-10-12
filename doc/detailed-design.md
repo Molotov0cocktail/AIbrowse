@@ -491,6 +491,24 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
      实现注意：TS 监听器首参 `details` 已并入 params（读 `details.url` / `details.isMainFrame`），
      位置参数已标 `@deprecated`。
 
+### 9.1 统一设置与浏览资料（2026-10-12 用户授权）
+
+标签区占用 Windows Window Controls Overlay 的标题栏内容区，保留原生窗口按钮及主进程关闭链。
+依据 [Electron 标题栏文档](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar) 使用
+`titleBarStyle: hidden`、`titleBarOverlay` 与 CSS titlebar-area 环境变量；标题空白区可拖动，按钮和标签不可拖动。
+主 UI 只可发送枚举 appearance，主进程选择固定原生颜色，不暴露通用窗口对象/任意样式或系统调用。
+
+设置、历史、书签属于可信 renderer 工作区，进入时隐藏原生网页，返回/激活/新建/导航恢复浏览。
+设置包含外观、AI配置、本地数据及高级工具；主题初始化与保存故障提醒独立于设置页挂载。
+浏览资料通过独立 BrowserLibraryService/Repository 操作 browser.db，不扩展 BrowserController 的 AI 接口、
+ToolRegistry 或 Source sharing。历史永久本地保留直至手动清除；书签与 Source 分离。
+
+History 为逐次已提交访问 id/url/title/visitedAt；Bookmark 为 id/url/title/createdAt/updatedAt，URL 唯一。
+只记录主进程判定的非 taskOwned 主框架 HTTP(S) 导航，标题更新绑定精确访问 ID；不持久化网页正文、
+Cookie 或未提交地址。合法 URL query/fragment 保留，userinfo 拒绝。URL/标题只作为 prepared 参数和纯文本显示，
+不进入模型、诊断或日志；列表 keyset 游标以时间/id 稳定排序，每页≤100，查询≤200、URL≤8192、标题≤1000。
+新库纳入主进程维护/排水/退出及完整备份恢复；旧备份缺浏览资料时保留同一静止点的当前独立域，详见 Stage7 数据契约。
+
 ## 10. 测试规格（T2/T4 规划，红→绿纪律）
 
 | 测试文件                                      | 用例要点                                                                                                                                      | 任务 |

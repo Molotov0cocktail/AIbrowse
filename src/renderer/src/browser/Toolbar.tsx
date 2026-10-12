@@ -13,11 +13,14 @@ interface ToolbarProps {
   onToggleSourcesPanel: () => void; // B5：信源面板开关（与 AI 面板互斥，决议 #68）
   onToggleResearchPanel: () => void; // C8 决议 #163(1)：研究面板（三态互斥）
   onOpenWatch: () => void;
-  onToggleTools: () => void;
+  onOpenHistory: () => void;
+  onOpenBookmarks: () => void;
+  onOpenSettings: () => void;
+  onToggleBookmark: () => void;
   addressBarRef: Ref<HTMLInputElement>;
   activePanel?: 'ai' | 'sources' | 'research' | 'diagnostics' | null;
   watchActive?: boolean;
-  toolsOpen?: boolean;
+  bookmarked?: boolean;
 }
 
 // 顶部工具栏（First_stage §六）：后退/前进/刷新/地址栏/新建标签页 + AI 侧栏开关（S4）。
@@ -32,11 +35,14 @@ export function Toolbar({
   onToggleSourcesPanel,
   onToggleResearchPanel,
   onOpenWatch,
-  onToggleTools,
+  onOpenHistory,
+  onOpenBookmarks,
+  onOpenSettings,
+  onToggleBookmark,
   addressBarRef,
   activePanel = null,
   watchActive = false,
-  toolsOpen = false,
+  bookmarked = false,
 }: ToolbarProps) {
   return (
     <div className="toolbar">
@@ -75,6 +81,15 @@ export function Toolbar({
       <div className="address-field">
         <Icon name="globe" />
         <AddressBar ref={addressBarRef} activeTab={activeTab} onNavigate={onNavigate} />
+        <button
+          type="button"
+          className={`address-bookmark${bookmarked ? ' saved' : ''}`}
+          aria-label={bookmarked ? '移除当前页书签' : '将当前页加入书签'}
+          title={bookmarked ? '移除当前页书签' : '将当前页加入书签'}
+          onClick={onToggleBookmark}
+        >
+          <Icon name="bookmark" />
+        </button>
       </div>
       <nav className="workspace-nav" aria-label="工作区">
         <button
@@ -123,14 +138,33 @@ export function Toolbar({
         </button>
         <button
           type="button"
-          className="nav-button tools-toggle"
-          aria-label="更多功能"
-          title="更多功能"
-          onClick={onToggleTools}
-          aria-expanded={toolsOpen}
+          className="nav-button history-open"
+          aria-label="历史记录"
+          title="历史记录"
+          onClick={onOpenHistory}
+        >
+          <Icon name="clock" />
+          <span className="toolbar-label">历史</span>
+        </button>
+        <button
+          type="button"
+          className="nav-button bookmarks-open"
+          aria-label="书签"
+          title="书签"
+          onClick={onOpenBookmarks}
+        >
+          <Icon name="bookmark" />
+          <span className="toolbar-label">书签</span>
+        </button>
+        <button
+          type="button"
+          className="nav-button settings-open"
+          aria-label="设置"
+          title="设置"
+          onClick={onOpenSettings}
         >
           <Icon name="settings" />
-          <span className="toolbar-label">更多</span>
+          <span className="toolbar-label">设置</span>
         </button>
       </nav>
     </div>

@@ -9,6 +9,8 @@ export function isWatchDriverSqlForward(relativePath: string, line: string): boo
 // Exact reviewed modules, not a directory exemption. Repository scanners use compiled
 // statements/parameters; storage modules own fixed PRAGMAs, catalogs and migrations.
 const TRANSFER_SQL_LOCATIONS = new Set([
+  'main/browser-library/browser-library-repository.ts',
+  'main/browser-library/browser-library-store.ts',
   'main/research/repository/research-transfer-validation.ts',
   'main/sources/repository/source-transfer-validation.ts',
   'main/watch/repository/watch-transfer-validation.ts',

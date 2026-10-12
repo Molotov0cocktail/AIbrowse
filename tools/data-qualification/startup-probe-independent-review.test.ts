@@ -58,7 +58,7 @@ it('合法result先到但实际exit晚于原SQLite额度，未触发timer也不�
               result: {
                 state: 'normal',
                 root: { dev: '1', ino: '2' },
-                members: ['sources', 'research', 'watch'].map((id) => ({
+                members: ['sources', 'research', 'watch', 'browser'].map((id) => ({
                   id,
                   state: 'missing',
                   version: null,

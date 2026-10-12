@@ -11,7 +11,7 @@ import { registerActiveDataset, readActiveDataset } from '../../src/main/storage
 import { TransferBudget } from '../../src/main/storage/transfer-budget';
 
 afterEach(() => vi.restoreAllMocks());
-const domains = ['sources', 'research', 'watch'] as const;
+const domains = ['sources', 'research', 'watch', 'browser'] as const;
 const context = { check() {}, requireRollbackSpace() {}, assertNoWriters() {} };
 
 it('gate已真实退休后健康授权撤销，不解锁旧健康图；冷启动只凭完整committed证据完成', async () => {

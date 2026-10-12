@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { PROVIDER_KIND_OPENAI_COMPATIBLE } from '../../../shared/types/conversation';
 
 interface ProviderSettingsProps {
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 // Provider 设置（§10/§11.3 + 决议 #20）：v1 只配置已注册的 openai-compatible kind——
@@ -22,15 +22,27 @@ export function ProviderSettings({ onClose }: ProviderSettingsProps) {
   };
 
   useEffect(() => {
+    let live = true;
     void (async () => {
-      await refreshHasKey();
-      const infos = await window.aibrowse.config.providers.list();
-      const mine = infos.find((info) => info.providerId === PROVIDER_KIND_OPENAI_COMPATIBLE);
-      if (mine !== undefined) {
-        setBaseUrl(mine.baseUrl);
-        setModel(mine.model);
+      try {
+        const [keyPresent, infos] = await Promise.all([
+          window.aibrowse.config.providers.hasKey(PROVIDER_KIND_OPENAI_COMPATIBLE),
+          window.aibrowse.config.providers.list(),
+        ]);
+        if (!live) return;
+        setHasKey(keyPresent);
+        const mine = infos.find((info) => info.providerId === PROVIDER_KIND_OPENAI_COMPATIBLE);
+        if (mine !== undefined) {
+          setBaseUrl(mine.baseUrl);
+          setModel(mine.model);
+        }
+      } catch {
+        if (live) setNotice('AI 配置暂不可用，请稍后重试');
       }
     })();
+    return () => {
+      live = false;
+    };
   }, []);
 
   const save = async (): Promise<void> => {
@@ -85,6 +97,8 @@ export function ProviderSettings({ onClose }: ProviderSettingsProps) {
       );
       await refreshHasKey();
       setNotice(deleted ? 'API Key 已删除' : 'API Key 删除失败，原密钥可能仍保留，请重试');
+    } catch {
+      setNotice('API Key 删除未完成，请稍后重试');
     } finally {
       setBusy(false);
     }
@@ -94,9 +108,11 @@ export function ProviderSettings({ onClose }: ProviderSettingsProps) {
     <div className="ai-settings">
       <div className="ai-settings-header">
         <span className="ai-settings-title">Provider 设置</span>
-        <button type="button" className="ai-settings-close" onClick={onClose}>
-          返回
-        </button>
+        {onClose !== undefined && (
+          <button type="button" className="ai-settings-close" onClick={onClose}>
+            返回
+          </button>
+        )}
       </div>
       <p className="ai-settings-hint">
         v1 支持 OpenAI 兼容接口（任意符合 OpenAI Chat Completions 协议的服务）。

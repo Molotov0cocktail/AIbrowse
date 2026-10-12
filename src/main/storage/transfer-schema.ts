@@ -2,8 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS, type MigrationStep } from '../sources/db/migrations';
 import { RESEARCH_MIGRATIONS } from '../research/db/research-migrations';
 import { WATCH_MIGRATIONS, WATCH_MIGRATION_V3 } from '../watch/db/watch-migrations';
+import { BROWSER_MIGRATIONS } from '../browser-library/browser-library-migrations';
 
-export type TransferDatabaseDomain = 'sources' | 'research' | 'watch';
+export type TransferDatabaseDomain = 'sources' | 'research' | 'watch' | 'browser';
 type Variant = 'current' | 'historical-watch-v3';
 interface SchemaObject {
   type: string;
@@ -55,6 +56,7 @@ const CURRENT: Record<TransferDatabaseDomain, readonly MigrationStep[]> = {
   sources: MIGRATIONS,
   research: RESEARCH_MIGRATIONS,
   watch: WATCH_MIGRATIONS,
+  browser: BROWSER_MIGRATIONS,
 };
 const CATALOG = 'SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name';
 const SIZES = `SELECT rowid AS object_id, length(CAST(type AS BLOB)) AS type_bytes,

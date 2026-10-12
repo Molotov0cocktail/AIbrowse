@@ -6,6 +6,7 @@ export const STAGING_DATABASE_LIMITS = {
   sources: 512 * 1024 * 1024,
   research: 64 * 1024 * 1024,
   watch: 512 * 1024 * 1024,
+  browser: 512 * 1024 * 1024,
 } as const;
 export type StagingDatabaseDomain = keyof typeof STAGING_DATABASE_LIMITS;
 

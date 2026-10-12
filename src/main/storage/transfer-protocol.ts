@@ -110,7 +110,7 @@ export function createTransferProtocol(record: TransferJobRecord): {
           requireProtocol(closed(row.result, ['manifest', 'backup']));
           {
             const manifest = parseBackupManifest(Buffer.from(JSON.stringify(row.result.manifest)));
-            requireProtocol(manifest.snapshotId === job.snapshotId);
+            requireProtocol(manifest.formatVersion === 2 && manifest.snapshotId === job.snapshotId);
             requireProtocol(
               manifest.members.every(
                 (member) =>

@@ -17,7 +17,8 @@ import { logInfo, logWarn } from '../logger';
 import { redactTabIdForLog, redactUrlForLog } from '../../shared/url';
 import { PageReader } from './page-reader';
 import type { SessionManager } from './session-manager';
-import { TabManager, type TabEntry } from './tab-manager';
+import { TabManager, type TabEntry, type TabManagerOptions } from './tab-manager';
+import type { BrowserBookmarkInput } from '../../shared/types/browser-library';
 import { selectNextActive } from './tab-state';
 import { resolveViewVisibility } from './view-visibility';
 
@@ -59,6 +60,8 @@ export interface BrowserController {
 }
 
 export interface BrowserControllerOptions {
+  onNavigationCommitted?: TabManagerOptions['onNavigationCommitted'];
+  onVisitTitleChanged?: TabManagerOptions['onVisitTitleChanged'];
   ownerWindow: BaseWindow; // contentView 挂载点 + 兜底 bounds 来源
   sessionManager: SessionManager; // 持久 Session（§7，多 Profile 预留）
   getFallbackBounds: () => Rectangle; // chrome 高度上报前按窗口内容区兜底（§6）
@@ -88,6 +91,8 @@ export class BrowserControllerImpl implements BrowserController {
       ownerWindow: options.ownerWindow,
       session: options.sessionManager.getSession(),
       onChanged: () => this.pushState(),
+      onNavigationCommitted: options.onNavigationCommitted,
+      onVisitTitleChanged: options.onVisitTitleChanged,
       isUserTabInteractive: (tabId) =>
         !this.disposed &&
         !this.snapshotShutdown &&
@@ -127,6 +132,7 @@ export class BrowserControllerImpl implements BrowserController {
     const entry = this.tabManager.createTab(target, {
       deferInitialBlankLoad,
       allowUserPopupRouting: options.taskOwned !== true,
+      taskOwned: options.taskOwned === true,
     });
     if (options.background !== true) {
       this.activeTabId = entry.info.id;
@@ -141,6 +147,19 @@ export class BrowserControllerImpl implements BrowserController {
     );
     this.pushState();
     return this.toTabInfo(entry, this.activeTabId === entry.info.id);
+  }
+
+  /** Main-only ownership observation; not part of the BrowserController tool interface. */
+  getActiveUserPage(): BrowserBookmarkInput | null {
+    if (this.disposed || this.activeTabId === null) return null;
+    const entry = this.tabManager.get(this.activeTabId);
+    return entry === undefined ||
+      entry.taskOwned ||
+      entry.committedUrl === null ||
+      entry.info.state === 'error' ||
+      entry.view.webContents.isDestroyed()
+      ? null
+      : { url: entry.committedUrl, title: entry.info.title };
   }
 
   /** Main-only ownership observation; not part of the BrowserController tool interface. */

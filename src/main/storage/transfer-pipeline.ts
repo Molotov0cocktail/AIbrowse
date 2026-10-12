@@ -48,6 +48,7 @@ import {
 import { validateResearchTransfer } from '../research/repository/research-transfer-validation';
 import { validateWatchTransferDatabase } from '../watch/repository/watch-transfer-validation';
 import { validateWatchSourceTransfer } from '../watch/repository/watch-source-transfer-validation';
+import { validateBrowserLibraryTransfer } from '../browser-library/browser-library-repository';
 import { ResearchRepository } from '../research/repository/research-repository';
 import { WatchRepository } from '../watch/repository/watch-repository';
 import { withTransaction, type DbHandle } from '../sources/db/sqlite-driver';
@@ -61,7 +62,7 @@ export interface TransferPipelineOptions {
   enterPhase(phase: ValidationPhase): Promise<void>;
   nowIso: string;
 }
-const DOMAINS = ['sources', 'research', 'watch'] as const;
+const DOMAINS = ['sources', 'research', 'watch', 'browser'] as const;
 type Domain = (typeof DOMAINS)[number];
 // Storage operations only. All business SQL remains in repositories and migrations.
 const INTEGRITY = 'PRAGMA integrity_check';
@@ -135,7 +136,9 @@ function semantics(db: DatabaseSync, domain: Domain): void {
       ? validateSourceTransfer(db)
       : domain === 'research'
         ? validateResearchTransfer(db)
-        : validateWatchTransferDatabase(db)
+        : domain === 'watch'
+          ? validateWatchTransferDatabase(db)
+          : validateBrowserLibraryTransfer(db)
     ).ok,
   );
 }
@@ -221,7 +224,13 @@ export async function runTransferPipeline(
     let originalConversation: ConversationReceipt | null = null;
     let completedConversation: ConversationReceipt | null = null;
     const databaseDigests = new Map<Domain, FileDigest>();
-    const present = { sources: false, research: false, watch: false, conversations: false };
+    const present = {
+      sources: false,
+      research: false,
+      watch: false,
+      conversations: false,
+      browser: false,
+    };
     let imported: BackupManifest | null = null;
     let phaseIndex = 0;
     const phase = async (next: ValidationPhase): Promise<void> => {
@@ -264,7 +273,9 @@ export async function runTransferPipeline(
     await phase('sqlite');
     for (const domain of DOMAINS) {
       check();
-      if (job.action !== 'restore') {
+      const preserveLocal =
+        job.action === 'restore' && imported?.formatVersion === 1 && domain === 'browser';
+      if (job.action !== 'restore' || preserveLocal) {
         const sourceDirectory = join(options.scope.userDataRoot, domain);
         if (optionalStat(sourceDirectory)) assertDirectory(sourceDirectory);
         const source = join(sourceDirectory, BACKUP_FILES[domain]);
@@ -344,7 +355,7 @@ export async function runTransferPipeline(
       const target = work.file(BACKUP_FILES[domain]);
       if (present[domain]) {
         const source =
-          job.action === 'restore'
+          job.action === 'restore' && !preserveLocal
             ? join(raw.path, 'import', BACKUP_FILES[domain])
             : raw.file(BACKUP_FILES[domain]);
         copyMember(source, target, BACKUP_LIMITS[domain], control);
@@ -360,7 +371,7 @@ export async function runTransferPipeline(
         check();
         const schema = validateTransferSchema(db, domain);
         requirePipeline(schema.ok);
-        if (imported && present[domain])
+        if (imported && present[domain] && !(imported.formatVersion === 1 && domain === 'browser'))
           requirePipeline(
             imported.members.find((member) => member.id === domain)!.schemaVersion ===
               schema.version,
@@ -487,7 +498,7 @@ export async function runTransferPipeline(
       },
     };
     const manifest: BackupManifest = {
-      formatVersion: 1,
+      formatVersion: 2,
       productVersion: options.productVersion,
       snapshotId: job.snapshotId,
       members: [],
