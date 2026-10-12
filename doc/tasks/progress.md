@@ -14,8 +14,10 @@
   Research空Source/Search实际采集均通过（模型为Fake，完整index/guardian另验）。
   本轮真实Digest仅一次HTTP401，未生成结果；严格schema修复有前轮真实对照及本轮离线证据，
   不能宣称新代码当前真实Provider已通过。全量首轮失败及旧工具适配原件保留；最终全量6,896 PASS/
-  3 SKIP、470文件PASS/1 SKIP，typecheck/lint/format及普通build通过。下一动作是完整production和
-  干净0.1.2包验证，再保留旧output并替换。资源旧超限、旧fatal unknown均不关闭。
+  3 SKIP、470文件PASS/1 SKIP，typecheck/lint/format及普通build通过。完整production-891cae9a场407.764秒
+  exit0、三Job0、ledgerRetired、passed均true；真实preview挂起时可信弹窗保持等待，经隔离测试明确点击
+  停止后正常退出（不是无交互自动退出），全部原件保留。下一动作是干净0.1.2包构建和实际包验证，
+  再保留旧output并替换。资源旧超限、旧fatal unknown均不关闭。
 
 - 2026-10-12用户追加要求严格验证所有剩余事项并定位根因，已恢复有界诊断。baseline `dedbfdcbdcea2723eb09c4f73c0f1b5810cbe9e8`、接管工作区干净；差量合同和结果矩阵见 `doc/tasks/legacy-repair.md` 首节。三方向并行准备、真实运行串行；不修改真实数据或选定 output。以下上一轮遇难停止为历史状态，诊断不预授修复/发行通过。
   用户明确软件主要用于当前电脑接电环境，无需断电或其它电脑测试；两项排除本轮验收且不作为当前使用阻塞，保留未实测事实。

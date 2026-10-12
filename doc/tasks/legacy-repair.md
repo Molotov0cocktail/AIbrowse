@@ -89,7 +89,18 @@
   做了隐私修正（不改产品/断言），在进入该文件前冻结；最终文件 SHA256 为
   `6bfce13a8b3487974ae07047cd373523caa521909fb650cf88310599bec1f855`，时序原件
   `full-test-diagnostic-revision.json`。全局 typecheck/lint/format 最终 `*-final-002.log` 均 exit 0，
-  普通 build `build-ordinary.log` exit 0。后续完整 production 与干净发行包仍须单独核验。
+  普通 build `build-ordinary.log` exit 0。
+- 完整 production 唯一场 `log/stage7-e2/default-smoke-production-891cae9aa1d94418845b3dfeef3eda83`：
+  407.764 秒，应用/外层 exit 0，result/completion passed true，prepare/application/readback 三个
+  Job 实际归零、ledgerRetired true，源码/运行时/制品绑定未变。候选为干净 `4524529e57ceeaa1012a54fd3c97c40c60e17ab9`。
+  本场再次出现真实 previewContext=1 在途等待，新的可信原生弹窗确实保持等待；隔离测试在
+  14:02:50.878 明确选择“停止快照并退出”，14:02:50.992 应用记录正常退出并完成独立账本读回。
+  该选择是固定 PID/创建时间/窗口归属的测试自动化 BM_CLICK，不是真人决定，也不是 kill/app.exit；
+  不能将 407 秒含人工排查/选择等待的墙钟视为正常关闭耗时，亦不称为全自动无交互退出。
+  初次只查顶层窗口未见嵌套弹窗；首次按钮守卫预期 Button、实际 UIA class 为 CCPushButton，故
+  动作前拒绝且零点击。按实际子窗口身份核准后只投递一次停止按钮。观察/动作原件位于本轮目录
+  `production-dialog-*.json`，报告 SHA256 `1489444426887ce8d23b56d61cb263ab95326f99a44430f395e22c1f138f6d1e`。
+  新包构建与实际发行包零快照普通关闭仍须独立验证；旧 d79 精确触发者继续 unknown。
 
 ## 后继严格验证与根因诊断合同（2026-10-12）
 
