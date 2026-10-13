@@ -26,6 +26,8 @@ export function isReviewedTransferSqlLocation(relativePath: string, line: string
   if (TRANSFER_SQL_LOCATIONS.has(path)) return true;
   // These exact orchestration calls prepare ownership/metadata, never SQL.
   const statement = line.trim();
+  if (path === 'main/userscripts-qualified/feature.ts')
+    return statement === ['event.returnValue = runtime.', 'prepare(event, payload);'].join('');
   if (path === 'main/index.ts')
     return [
       ['const startupState = await datasetStartup.', 'prepare(requireNodeDataRoot());'].join(''),

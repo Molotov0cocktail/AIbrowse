@@ -17,7 +17,8 @@
   在线安装两root直连超时保留，增加同摘要本地安装；包位于script-packages，真实IDM下载/线上全站兼容NOTRUN。
   完整UI双进程a63e5cc8 PASS：工具入口/深浅600px/原分组与脚本持久化，7本地请求/0Provider/0IDM。
   首两场验收工具误拦guardian失败已定位保留；修后恢复默认GPU、原UI门不减。
-  typecheck/build通过，全量回归运行中；准备0.1.10发行候选与包身份审核，output仍0.1.9。
+  全量7550PASS/2FAIL/3SKIP（exit1）保留；2项旧验收夹具/方法名误归SQL修后39项通过，组合7553PASS/3SKIP。
+  typecheck/lint/format及普通build通过；准备0.1.10最终干净发行构建与包身份审核，output仍0.1.9。
 
 - 2026-10-13 用户进一步要求接入原版油猴、IDM 下载助手、沉浸式翻译；接管干净
   `73c378329c755fff2ea1555b4e461348923f1fcd`。正在核对官方包/API、本机 IDM 和任务页隔离方案；

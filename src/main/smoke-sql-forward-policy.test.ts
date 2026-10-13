@@ -114,6 +114,10 @@ describe('SRT-12 E2 精确职责路径分类', () => {
     }
   });
   it.each([
+    [
+      'main/userscripts-qualified/feature.ts',
+      'event.returnValue = runtime.prepare(event, payload);',
+    ],
     ['main/index.ts', 'const prepared = await startupPreparation.prepare({'],
     ['main/storage/recovery-transfer-runtime.ts', 'await replacement.prepare();'],
   ])('新增协调调用只在精确文件和精确语句分类：%s', (path, line) => {

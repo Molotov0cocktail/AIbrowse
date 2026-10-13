@@ -140,6 +140,12 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
     createMainWindow: () => ({ on: vi.fn(), getContentSize: () => [800, 600] }),
     installTrayController: vi.fn(),
     createUserScriptFeature: vi.fn(() => ({ service: {}, runtime: { attach: vi.fn() } })),
+    createIdmFeature: vi.fn(() => ({})),
+    createQualifiedScriptFeature: vi.fn(() => ({ runtime: { attach: vi.fn() } })),
+    idmService: null,
+    qualifiedScripts: null,
+    mainRootIsOpen: () => false,
+    __dirname: 'synthetic-main',
     userScriptService: null,
     BrowserControllerImpl: class {},
     AppSessionManager: class {},
@@ -181,6 +187,8 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
   ).rejects.toThrow('到达实际首个 Store 边界');
   expect(context.installTrayController).toHaveBeenCalledOnce();
   expect(context.createUserScriptFeature).toHaveBeenCalledOnce();
+  expect(context.createIdmFeature).toHaveBeenCalledOnce();
+  expect(context.createQualifiedScriptFeature).toHaveBeenCalledOnce();
   expect(observed).toEqual([false]);
 });
 
