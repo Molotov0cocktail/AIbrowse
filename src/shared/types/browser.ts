@@ -17,6 +17,36 @@ export interface TabInfo {
 export interface TabsState {
   tabs: TabInfo[];
   activeTabId: string | null;
+  groups?: TabGroupInfo[];
+  userTabIds?: string[];
+}
+
+export type TabGroupColor = 'grey' | 'blue' | 'red' | 'yellow' | 'green' | 'purple';
+
+export interface TabGroupInfo {
+  id: string;
+  name: string;
+  color: TabGroupColor;
+  collapsed: boolean;
+  tabIds: string[];
+}
+
+export interface CreateTabGroupPayload {
+  tabId: string;
+  name: string;
+  color: TabGroupColor;
+}
+
+export interface UpdateTabGroupPayload {
+  groupId: string;
+  name: string;
+  color: TabGroupColor;
+  collapsed: boolean;
+}
+
+export interface SetTabGroupPayload {
+  tabId: string;
+  groupId: string | null;
 }
 
 // 快照降级阶梯（§4）：L0 none / L1 partial / L2 main-process-only / L3 null（无快照）

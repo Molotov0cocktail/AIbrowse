@@ -15,6 +15,13 @@ import {
 import { installWindowAppearance, titlebarColors } from './ui/window-appearance';
 import { TrayController } from './ui/tray-controller';
 import { TrayPreferences } from './ui/tray-preferences';
+import { createUserScriptFeature } from './userscript-ui';
+import type { UserScriptService } from './userscripts/service';
+import type {
+  CreateTabGroupPayload,
+  UpdateTabGroupPayload,
+  SetTabGroupPayload,
+} from '../shared/types/browser';
 import type { Appearance, TraySettings } from '../shared/types/app';
 import { dispatchBrowserLibrary, browserPageForLibrary } from './browser-library-ipc';
 import type { BrowserLibraryService } from './browser-library/browser-library-service';
@@ -503,6 +510,7 @@ let runtimeShutdown: RuntimeShutdown | null = null;
 let shutdownQuitReady = false;
 let trayController: TrayController | null = null;
 let trayPreferences: TrayPreferences | null = null;
+let userScriptService: UserScriptService | null = null;
 let trayError: string | null = null;
 // S4：config:providers:* handler 需要直接引用生产 ConfigStore/凭据实例
 let configStore: ConfigStore | null = null;
@@ -1718,6 +1726,51 @@ if (!gotLock) {
     });
 
     handle(IPC.TabsList, () => browserController?.getTabs() ?? []);
+    handle(
+      IPC.TabsGetState,
+      () =>
+        browserController?.getTabsState() ?? {
+          tabs: [],
+          activeTabId: null,
+          groups: [],
+          userTabIds: [],
+        },
+    );
+    handle(
+      IPC.TabsCreateGroup,
+      (payload) => browserController?.createTabGroup(payload as CreateTabGroupPayload) ?? false,
+    );
+    handle(
+      IPC.TabsUpdateGroup,
+      (payload) => browserController?.updateTabGroup(payload as UpdateTabGroupPayload) ?? false,
+    );
+    handle(
+      IPC.TabsSetGroup,
+      (payload) => browserController?.setTabGroup(payload as SetTabGroupPayload) ?? false,
+    );
+    handle(
+      IPC.TabsUngroup,
+      (payload) =>
+        browserController?.ungroupTabs((payload as { groupId: string }).groupId) ?? false,
+    );
+    const scriptsUnavailable = () => ({
+      ok: false as const,
+      code: 'unavailable' as const,
+      message: '用户脚本服务暂不可用。',
+    });
+    handle(IPC.UserScriptsList, () => userScriptService?.list() ?? scriptsUnavailable());
+    handle(
+      IPC.UserScriptsImport,
+      (_payload, isCurrent) => userScriptService?.importScript(isCurrent) ?? scriptsUnavailable(),
+    );
+    handle(
+      IPC.UserScriptsSetEnabled,
+      (payload) => userScriptService?.setEnabled(payload) ?? scriptsUnavailable(),
+    );
+    handle(
+      IPC.UserScriptsRemove,
+      (payload) => userScriptService?.remove(payload) ?? scriptsUnavailable(),
+    );
 
     handle(IPC.TabsCreate, (payload) => {
       // §9：原始地址栏输入在 main 侧统一规范化；无法解析 → 创建空白 Tab + warn
@@ -3270,7 +3323,15 @@ async function assembleBrowserWindow(): Promise<void> {
   if (!mainRootAdmission.isOpen()) return;
   const win = createMainWindow();
   mainWindow = win;
+  const scripts = createUserScriptFeature(
+    win,
+    !__RELEASE__ && SMOKE_MODE ? SMOKE_AI_DATA_DIR : requireNodeDataRoot(),
+  );
+  userScriptService = scripts.service;
   const controller = new BrowserControllerImpl({
+    onUserTabCreated: (webContents) => {
+      scripts.runtime.attach(webContents);
+    },
     onNavigationCommitted: (input) => {
       if (!mainRootIsOpen()) return null;
       const page = browserPageForLibrary(input);

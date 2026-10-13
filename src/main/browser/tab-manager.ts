@@ -61,6 +61,7 @@ export interface CreateTabOptions {
 declare const __RELEASE__: boolean;
 
 export interface TabManagerOptions {
+  onUserTabCreated?: (webContents: WebContents) => void;
   onNavigationCommitted?: (page: BrowserBookmarkInput) => string | null;
   onVisitTitleChanged?: (visit: BrowserVisitTitleUpdate) => void;
   ownerWindow: BaseWindow; // contentView 挂载/卸载
@@ -180,6 +181,13 @@ export class TabManager {
       }
     });
 
+    if (!entry.taskOwned) {
+      try {
+        this.options.onUserTabCreated?.(wc);
+      } catch {
+        logWarn('browser', '用户标签页初始化观察失败');
+      }
+    }
     this.options.onChanged();
     return entry;
   }

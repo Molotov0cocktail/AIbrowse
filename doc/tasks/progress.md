@@ -6,6 +6,23 @@
 
 ### 当前任务与后继
 
+- 2026-10-13 用户新增外观选项修复、标签分组与插件，已明确“两者都需要，先完成油猴脚本支持”。
+  接管干净 `6ccbef2216977b78affdd76695654b557280a5ff`；当前 output 仍为 0.1.8。
+  正式差量见 `doc/design/browser-groups-userscripts.md` 与 legacy-repair 首节。
+  用户进一步裁决保持研究/监控隔离、先交付脚本，Chrome 扩展另做隔离方案，本轮不安装 Tampermonkey 本体。
+  外观应用内三选、会话内标签分组及受限用户脚本已接通；renderer 分组/竞态/UI 60 项、脚本 UI 5 项通过。
+  IPC symbol 闭合缺口修后集成 16 项通过；独审新增同 URL 跨 document 迟到 prepare、用户 strict 源码声明
+  `GM`/`GM_info`/`GM_addStyle` 四个反例，修后脚本 82 项、分组与 IPC 78 项通过，原红态保留。
+  浅色对比、工具 localhost resolver、原生加载事件时序的四场 FAIL/诊断原件均保留，细节见任务文档。
+  加载时序已按真实 Electron finish 早于 loading=false 的事实修复，runtime 加独审 21 项 PASS。
+  全量实际 7356 PASS / 4 FAIL / 3 SKIP、exit1；3 项旧存储超时原预算复跑50项通过（原原因 unknown），
+  1项SQL扫描误归正则已等价修复并64项通过，主矩阵组合7360 PASS/3 SKIP，原全量命令不改判。
+  新增冒烟根隔离4例、原生加载时序4例分别通过；typecheck/lint/format/build及受影响增量通过。
+  runtime-978af2ff-4c2d-4146-b283-34c108836aa4 两进程/全部功能事实PASS，源码工具产物绑定一致，
+  7/20本地请求、0Provider；真实GM边界、启停删除、重启状态与执行已验证。首帧既有组装期提示原件保留。
+  当前等待独立最终判定、提交、0.1.9打包和output更新，不预授新安装包通过；不触真实数据、不公开发布。
+  下列为已完成历史任务。
+
 - 2026-10-13 用户要求调研至少20款同类应用logo后设计并更新本应用icon；接管干净
   `28ab54cb07acc8960c3a7ff9772f10fd770263d3`，接管时output为0.1.7。
   合同见legacy-repair首节，正式设计见`doc/design/icon-study-20261013.md`；22款资料调研完成，

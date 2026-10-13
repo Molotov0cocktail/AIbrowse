@@ -6,6 +6,7 @@ import { globalPendingRequest } from './ai/agent-run-state';
 import { useAgent } from './ai/useAgent';
 import { DebugPanel } from './browser/DebugPanel';
 import { TabBar } from './browser/TabBar';
+import { TabGroupEditor } from './browser/TabGroupEditor';
 import { Toolbar } from './browser/Toolbar';
 import { useContentBounds } from './browser/useContentBounds';
 import { useTabsState } from './browser/useTabsState';
@@ -54,6 +55,8 @@ export default function App() {
   const [libraryMode, setLibraryMode] = useState<BrowserLibraryMode>('history');
   const [currentBookmark, setCurrentBookmark] = useState<BrowserBookmark | null>(null);
   const [libraryNotice, setLibraryNotice] = useState<string | null>(null);
+  const [groupEditorTabId, setGroupEditorTabId] = useState<string | null>(null);
+  const [groupEditorIssue, setGroupEditorIssue] = useState<string | null>(null);
   const [watchTargetUrl, setWatchTargetUrl] = useState<string | null>(null);
   const [watchNotice, setWatchNotice] = useState<InAppNotificationDto | null>(null);
   const [watchUnreadCount, setWatchUnreadCount] = useState(0);
@@ -85,6 +88,10 @@ export default function App() {
   useEffect(() => {
     viewModeRef.current = viewMode;
     if (viewMode === 'watch') setWatchNotice(null);
+    if (viewMode !== 'browser') {
+      setGroupEditorTabId(null);
+      setGroupEditorIssue(null);
+    }
   }, [viewMode]);
 
   useEffect(
@@ -143,7 +150,24 @@ export default function App() {
     setCanvasError(null);
   };
 
+  const openTabGroupEditor = (tabId: string): void => {
+    returnToBrowser();
+    setGroupEditorIssue(null);
+    setGroupEditorTabId(tabId);
+  };
+
+  const runTabGroupAction = (action: Promise<boolean>): void => {
+    setGroupEditorIssue(null);
+    void action
+      .then((ok) => {
+        if (!ok) setGroupEditorIssue('分组操作未完成，请刷新后重试');
+      })
+      .catch(() => setGroupEditorIssue('分组操作未完成，请刷新后重试'));
+  };
+
   const openSettings = (section: SettingsSection): void => {
+    setGroupEditorTabId(null);
+    setGroupEditorIssue(null);
     setSettingsSection(section);
     setSidePanel(null);
     setDebugOpen(false);
@@ -151,6 +175,8 @@ export default function App() {
   };
 
   const openLibrary = (mode: BrowserLibraryMode): void => {
+    setGroupEditorTabId(null);
+    setGroupEditorIssue(null);
     setLibraryMode(mode);
     setSidePanel(null);
     setDebugOpen(false);
@@ -271,6 +297,8 @@ export default function App() {
             <TabBar
               tabs={tabsState?.tabs ?? []}
               activeTabId={tabsState?.activeTabId ?? null}
+              groups={tabsState?.groups}
+              userTabIds={tabsState?.userTabIds}
               onActivate={(tabId) => {
                 returnToBrowser();
                 void window.aibrowse.tabs.activate(tabId);
@@ -280,13 +308,59 @@ export default function App() {
                 returnToBrowser();
                 void window.aibrowse.nav.reload(tabId);
               }}
+              onToggleGroup={(group) =>
+                runTabGroupAction(
+                  window.aibrowse.tabs.updateGroup({
+                    groupId: group.id,
+                    name: group.name,
+                    color: group.color,
+                    collapsed: !group.collapsed,
+                  }),
+                )
+              }
+              onEditGroup={(groupId) => {
+                const group = tabsState?.groups?.find((candidate) => candidate.id === groupId);
+                const editableIds = new Set(tabsState?.userTabIds ?? []);
+                const tabId =
+                  group?.tabIds.find(
+                    (candidate) =>
+                      candidate === tabsState?.activeTabId && editableIds.has(candidate),
+                  ) ?? group?.tabIds.find((candidate) => editableIds.has(candidate));
+                if (tabId !== undefined) openTabGroupEditor(tabId);
+              }}
+              onEditTabGroup={openTabGroupEditor}
             />
+            <button
+              type="button"
+              className="tab-group-editor-trigger"
+              aria-label="标签分组"
+              title={
+                tabsState?.activeTabId !== null &&
+                tabsState?.activeTabId !== undefined &&
+                tabsState?.userTabIds?.includes(tabsState.activeTabId) === true
+                  ? '管理当前标签的分组'
+                  : '当前标签不能分组'
+              }
+              disabled={
+                tabsState?.activeTabId === null ||
+                tabsState?.activeTabId === undefined ||
+                tabsState?.userTabIds?.includes(tabsState.activeTabId) !== true
+              }
+              onClick={() => {
+                if (tabsState?.activeTabId !== null && tabsState?.activeTabId !== undefined) {
+                  openTabGroupEditor(tabsState.activeTabId);
+                }
+              }}
+            >
+              ▦
+            </button>
             <button
               type="button"
               className="new-tab-button"
               aria-label="新建标签页"
               title="新建标签页"
               onClick={() => {
+                setGroupEditorTabId(null);
                 void window.aibrowse.tabs.create().then(() => {
                   returnToBrowser();
                   addressBarRef.current?.focus();
@@ -316,6 +390,8 @@ export default function App() {
             if (opening) void research.refreshList(1);
           }}
           onOpenWatch={() => {
+            setGroupEditorTabId(null);
+            setGroupEditorIssue(null);
             setSidePanel(null);
             setWatchFocus(null);
             setWatchTargetUrl(null);
@@ -328,6 +404,26 @@ export default function App() {
           bookmarked={currentBookmark !== null}
           addressBarRef={addressBarRef}
         />
+        {groupEditorTabId !== null &&
+          tabsState?.groups !== undefined &&
+          tabsState.userTabIds !== undefined && (
+            <TabGroupEditor
+              tabs={tabsState.tabs}
+              groups={tabsState.groups}
+              userTabIds={tabsState.userTabIds}
+              selectedTabId={groupEditorTabId}
+              issue={groupEditorIssue}
+              onClose={() => {
+                setGroupEditorTabId(null);
+                setGroupEditorIssue(null);
+              }}
+              onSelectTab={openTabGroupEditor}
+              onCreate={(payload) => runTabGroupAction(window.aibrowse.tabs.createGroup(payload))}
+              onUpdate={(payload) => runTabGroupAction(window.aibrowse.tabs.updateGroup(payload))}
+              onSetGroup={(payload) => runTabGroupAction(window.aibrowse.tabs.setGroup(payload))}
+              onUngroup={(groupId) => runTabGroupAction(window.aibrowse.tabs.ungroup(groupId))}
+            />
+          )}
         {debugOpen && (
           <DebugPanel
             activeTabId={tabsState?.activeTabId ?? null}

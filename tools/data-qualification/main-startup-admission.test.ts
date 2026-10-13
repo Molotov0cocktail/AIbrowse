@@ -22,6 +22,40 @@ function compile(names: string[]) {
     },
   ).outputText;
 }
+it.each([
+  { release: false, smoke: true, expected: 'synthetic-smoke-ai' },
+  { release: false, smoke: false, expected: 'synthetic-user-data' },
+  { release: true, smoke: false, expected: 'synthetic-user-data' },
+  { release: true, smoke: true, expected: 'synthetic-user-data' },
+])('实际脚本装配根目录隔离 release=$release smoke=$smoke', ({ release, smoke, expected }) => {
+  const calls: ts.CallExpression[] = [];
+  function visit(node: ts.Node): void {
+    if (ts.isCallExpression(node) && node.expression.getText(file) === 'createUserScriptFeature')
+      calls.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  expect(calls).toHaveLength(1);
+  const window = {};
+  const createUserScriptFeature = vi.fn();
+  const requireNodeDataRoot = vi.fn(() => 'synthetic-user-data');
+  const context = vm.createContext({
+    win: window,
+    createUserScriptFeature,
+    requireNodeDataRoot,
+    __RELEASE__: release,
+    SMOKE_MODE: smoke,
+    SMOKE_AI_DATA_DIR: 'synthetic-smoke-ai',
+  });
+  vm.runInContext(
+    ts.transpileModule(calls[0]!.getText(file), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+    context,
+  );
+  expect(createUserScriptFeature).toHaveBeenCalledExactlyOnceWith(window, expected);
+  expect(requireNodeDataRoot).toHaveBeenCalledTimes(!release && smoke ? 0 : 1);
+});
 it('真实装配 Promise 返回并释放主租约后才开始排队的冒烟', async () => {
   let finish!: () => void;
   const assembly = new Promise<void>((resolve) => {
@@ -105,6 +139,8 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
     mainRootAdmission: { isOpen: () => true },
     createMainWindow: () => ({ on: vi.fn(), getContentSize: () => [800, 600] }),
     installTrayController: vi.fn(),
+    createUserScriptFeature: vi.fn(() => ({ service: {}, runtime: { attach: vi.fn() } })),
+    userScriptService: null,
     BrowserControllerImpl: class {},
     AppSessionManager: class {},
     datasetStartup: { prepare: async () => 'normal', isChecking: () => false },
@@ -144,6 +180,7 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
     vm.runInContext('assembleBrowserWindow()', context) as Promise<void>,
   ).rejects.toThrow('到达实际首个 Store 边界');
   expect(context.installTrayController).toHaveBeenCalledOnce();
+  expect(context.createUserScriptFeature).toHaveBeenCalledOnce();
   expect(observed).toEqual([false]);
 });
 

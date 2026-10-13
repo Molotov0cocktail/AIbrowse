@@ -1,0 +1,113 @@
+.theme-choice-group {
+  min-width: 0;
+  margin: 18px 0 0;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+}
+
+.theme-choice-group legend {
+  margin-bottom: 9px;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.theme-choice-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.theme-choice {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  min-height: 78px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.theme-choice:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.theme-choice:has(input:checked) {
+  border-color: var(--primary);
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.theme-choice:has(input:focus-visible) {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}
+
+.theme-choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.theme-choice-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--surface-hover);
+  color: var(--brand);
+}
+
+.theme-choice:has(input:checked) .theme-choice-icon {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.theme-choice-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.theme-choice-copy strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.theme-choice-copy > span {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.theme-choice-selected {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--on-primary);
+  opacity: 0;
+}
+
+.theme-choice:has(input:checked) .theme-choice-selected {
+  opacity: 1;
+}

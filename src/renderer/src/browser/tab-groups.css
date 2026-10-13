@@ -1,0 +1,286 @@
+.tab-group-header {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 31px;
+  margin: 1px 1px 0 3px;
+  border: 1px solid color-mix(in srgb, currentColor 42%, var(--border));
+  border-radius: 9px;
+  color: var(--tab-group-color);
+  background: color-mix(in srgb, currentColor 11%, var(--surface));
+  -webkit-app-region: no-drag;
+}
+
+.tab-group-toggle,
+.tab-group-edit {
+  height: 29px;
+  padding: 0 7px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.tab-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tab-group-edit {
+  width: 25px;
+  padding: 0;
+  font-weight: 700;
+}
+
+.tab-group-dot,
+.tab-group-color-swatch {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--tab-group-color);
+}
+
+.tab-group-name {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.tab-group-color-grey {
+  --tab-group-color: #87909f;
+}
+
+.tab-group-color-blue {
+  --tab-group-color: #4f7edb;
+}
+
+.tab-group-color-red {
+  --tab-group-color: #d6535d;
+}
+
+.tab-group-color-yellow {
+  --tab-group-color: #c58b22;
+}
+
+.tab-group-color-green {
+  --tab-group-color: #319064;
+}
+
+.tab-group-color-purple {
+  --tab-group-color: #8a63cf;
+}
+
+.tab-group-editor-trigger {
+  flex: 0 0 auto;
+  width: 31px;
+  height: 31px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  font-size: 15px;
+  -webkit-app-region: no-drag;
+}
+
+.tab-group-editor {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(0, 2fr);
+  gap: 8px 14px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.tab-group-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tab-group-editor-heading > div {
+  display: grid;
+  gap: 1px;
+}
+
+.tab-group-editor-heading span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tab-group-editor-heading > button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.tab-group-tab-list {
+  display: flex;
+  grid-row: 2;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 5px;
+  max-height: 68px;
+  overflow: auto;
+}
+
+.tab-group-tab-list button {
+  max-width: 145px;
+  overflow: hidden;
+  padding: 4px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.tab-group-tab-list button[aria-pressed='true'] {
+  border-color: var(--primary);
+  background: var(--accent);
+  color: var(--brand);
+}
+
+.tab-group-editor-controls {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.tab-group-name-field {
+  display: grid;
+  gap: 3px;
+  min-width: 150px;
+  flex: 1 1 180px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tab-group-name-field input {
+  height: 31px;
+  padding-block: 4px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.tab-group-colors {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.tab-group-colors legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.tab-group-colors label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 29px;
+  height: 29px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.tab-group-colors label:has(input:checked) {
+  border-color: var(--text);
+  background: var(--surface-hover);
+}
+
+.tab-group-colors label:has(input:focus-visible) {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.tab-group-colors input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.tab-group-colors label > span:last-child {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.tab-group-color-swatch {
+  width: 15px;
+  height: 15px;
+}
+
+.tab-group-editor-actions,
+.tab-group-existing-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.tab-group-editor-actions button,
+.tab-group-existing-groups button {
+  min-height: 31px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.tab-group-primary-action {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.tab-group-existing-groups button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tab-group-empty {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  margin: 0;
+  color: var(--muted);
+}
+
+.tab-group-editor-issue {
+  grid-column: 1;
+  margin: 0;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+@media (max-width: 760px) {
+  .tab-group-editor {
+    grid-template-columns: 1fr;
+  }
+
+  .tab-group-tab-list,
+  .tab-group-editor-controls,
+  .tab-group-empty,
+  .tab-group-editor-issue {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}

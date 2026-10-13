@@ -3,7 +3,15 @@
 // doc/stage2/detailed-design.md §4.2（Second Stage conversation/config 扩展，S4 落地）。
 // 最小权限：仅白名单方法；远程网页无 preload（Tab view 不配置 preload），不触及本 bridge。
 
-import type { PageSnapshot, TabInfo, TabsState } from './browser';
+import type {
+  PageSnapshot,
+  TabInfo,
+  TabsState,
+  CreateTabGroupPayload,
+  UpdateTabGroupPayload,
+  SetTabGroupPayload,
+} from './browser';
+import type { UserScriptResult, UserScriptSummary } from './userscripts';
 import type {
   BrowserBookmark,
   BrowserBookmarkUpdate,
@@ -92,6 +100,12 @@ export interface TraySettings {
 
 // Minimal-privilege bridge exposed by the preload script to the renderer (React UI only).
 export interface AibrowseBridge {
+  userscripts: {
+    list(): Promise<UserScriptResult<UserScriptSummary[]>>;
+    importScript(): Promise<UserScriptResult<UserScriptSummary | null>>;
+    setEnabled(id: string, enabled: boolean): Promise<UserScriptResult<UserScriptSummary>>;
+    remove(id: string): Promise<UserScriptResult<null>>;
+  };
   appPreferences: {
     get(): Promise<TraySettings>;
     setRunInTray(enabled: boolean): Promise<TraySettings>;
@@ -128,6 +142,11 @@ export interface AibrowseBridge {
   notifyRendererReady(): void;
   tabs: {
     list(): Promise<TabInfo[]>;
+    getState(): Promise<TabsState>;
+    createGroup(payload: CreateTabGroupPayload): Promise<boolean>;
+    updateGroup(payload: UpdateTabGroupPayload): Promise<boolean>;
+    setGroup(payload: SetTabGroupPayload): Promise<boolean>;
+    ungroup(groupId: string): Promise<boolean>;
     // 原始地址栏输入（可为空），main 侧统一规范化（§9）；无法解析 → 创建空白 Tab
     create(url?: string): Promise<TabInfo | null>;
     close(tabId: string): Promise<boolean>;

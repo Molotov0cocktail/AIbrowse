@@ -10,6 +10,9 @@ import type {
   ScrollActionResult,
   TabInfo,
   TabsState,
+  CreateTabGroupPayload,
+  UpdateTabGroupPayload,
+  SetTabGroupPayload,
 } from '../../shared/types/browser';
 import type { ClickAllowedKind } from '../../shared/types/agent';
 import type { ContentBounds } from '../../shared/types/ipc';
@@ -21,6 +24,7 @@ import { TabManager, type TabEntry, type TabManagerOptions } from './tab-manager
 import type { BrowserBookmarkInput } from '../../shared/types/browser-library';
 import { selectNextActive } from './tab-state';
 import { resolveViewVisibility } from './view-visibility';
+import { TabGroups } from './tab-groups';
 
 const ELEMENT_ID_PATTERN = /^el-\d{1,10}$/;
 const ALLOWED_KINDS: ReadonlySet<string> = new Set(['nav', 'expand', 'toggle', 'submit']);
@@ -60,6 +64,7 @@ export interface BrowserController {
 }
 
 export interface BrowserControllerOptions {
+  onUserTabCreated?: TabManagerOptions['onUserTabCreated'];
   onNavigationCommitted?: TabManagerOptions['onNavigationCommitted'];
   onVisitTitleChanged?: TabManagerOptions['onVisitTitleChanged'];
   ownerWindow: BaseWindow; // contentView 挂载点 + 兜底 bounds 来源
@@ -72,6 +77,7 @@ export interface BrowserControllerOptions {
 // 避免类/接口同名声明合并（@typescript-eslint/no-unsafe-declaration-merging）
 export class BrowserControllerImpl implements BrowserController {
   private readonly tabManager: TabManager;
+  private readonly tabGroups = new TabGroups(() => this.userTabIds());
   private readonly pageReader: PageReader;
   private activeTabId: string | null = null;
   private lastContentBounds: Rectangle | null = null;
@@ -90,6 +96,7 @@ export class BrowserControllerImpl implements BrowserController {
     this.tabManager = new TabManager({
       ownerWindow: options.ownerWindow,
       session: options.sessionManager.getSession(),
+      onUserTabCreated: options.onUserTabCreated,
       onChanged: () => this.pushState(),
       onNavigationCommitted: options.onNavigationCommitted,
       onVisitTitleChanged: options.onVisitTitleChanged,
@@ -268,6 +275,42 @@ export class BrowserControllerImpl implements BrowserController {
 
   async getTabs(): Promise<TabInfo[]> {
     return this.tabManager.list().map((e) => this.toTabInfo(e, e.info.id === this.activeTabId));
+  }
+
+  /** Trusted UI metadata only; excluded from the AI BrowserController interface. */
+  getTabsState(): TabsState {
+    return {
+      tabs: this.tabManager
+        .list()
+        .map((entry) => this.toTabInfo(entry, entry.info.id === this.activeTabId)),
+      activeTabId: this.activeTabId,
+      groups: this.tabGroups.snapshot(),
+      userTabIds: this.userTabIds(),
+    };
+  }
+
+  createTabGroup(payload: CreateTabGroupPayload): boolean {
+    if (this.disposed || !this.tabGroups.create(payload)) return false;
+    this.pushState();
+    return true;
+  }
+
+  updateTabGroup(payload: UpdateTabGroupPayload): boolean {
+    if (this.disposed || !this.tabGroups.update(payload)) return false;
+    this.pushState();
+    return true;
+  }
+
+  setTabGroup(payload: SetTabGroupPayload): boolean {
+    if (this.disposed || !this.tabGroups.set(payload)) return false;
+    this.pushState();
+    return true;
+  }
+
+  ungroupTabs(groupId: string): boolean {
+    if (this.disposed || !this.tabGroups.ungroup(groupId)) return false;
+    this.pushState();
+    return true;
   }
 
   async getActiveTab(): Promise<TabInfo | null> {
@@ -496,6 +539,7 @@ export class BrowserControllerImpl implements BrowserController {
     this.disposed = true;
     const tabCount = this.tabManager.list().length;
     this.tabManager.dispose(); // 全量清理，不走最后 Tab 策略
+    this.tabGroups.clear();
     this.activeTabId = null;
     this.lastContentBounds = null;
     logInfo('browser', `dispose 完成（已清理 ${tabCount} 个标签页）`);
@@ -692,10 +736,14 @@ export class BrowserControllerImpl implements BrowserController {
 
   private pushState(): void {
     if (this.disposed) return;
-    this.options.onTabsStateChanged?.({
-      tabs: this.tabManager.list().map((e) => this.toTabInfo(e, e.info.id === this.activeTabId)),
-      activeTabId: this.activeTabId,
-    });
+    this.options.onTabsStateChanged?.(this.getTabsState());
+  }
+
+  private userTabIds(): string[] {
+    return this.tabManager
+      .list()
+      .filter((entry) => !entry.taskOwned)
+      .map((entry) => entry.info.id);
   }
 
   private assertAlive(): void {

@@ -1,0 +1,91 @@
+.userscripts-heading,
+.userscript-title-row,
+.userscript-remove {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.userscripts-heading h2,
+.userscript-title-row h3 {
+  margin: 0 0 6px;
+}
+
+.userscripts-heading p,
+.userscripts-note,
+.userscript-title-row span {
+  color: var(--muted);
+}
+
+.userscripts-list {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.userscript-card,
+.userscripts-empty {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+
+.userscript-card details,
+.userscripts-compatibility {
+  margin-top: 14px;
+}
+
+.userscript-card summary,
+.userscripts-compatibility summary {
+  cursor: pointer;
+}
+
+.userscript-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.userscript-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary);
+}
+
+.userscript-card dt {
+  margin-top: 10px;
+  font-weight: 600;
+}
+
+.userscript-card dd {
+  margin: 4px 0 0;
+}
+
+.userscript-card code {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.userscript-remove {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.userscripts-error {
+  color: var(--danger);
+}
+
+.userscripts-notice {
+  padding: 10px 12px;
+  border-left: 3px solid var(--primary);
+}
+
+.userscripts-extension-status {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}

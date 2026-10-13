@@ -2,6 +2,32 @@ import { expect, it } from 'vitest';
 import { IPC } from '../../shared/types/ipc';
 import { validateCoreIpcPayload } from './core-ipc-payload';
 
+it('分组与用户脚本通道拒绝未知字段、路径、代码和不合法参数', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  for (const channel of [IPC.TabsGetState, IPC.UserScriptsList, IPC.UserScriptsImport]) {
+    expect(validateCoreIpcPayload(channel, undefined)).toBe(true);
+    for (const payload of [{}, { path: 'arbitrary.user.js' }, { code: 'arbitrary' }])
+      expect(validateCoreIpcPayload(channel, payload)).toBe(false);
+  }
+  const cases = [
+    [IPC.TabsCreateGroup, { tabId: id, name: '阅读', color: 'blue' }],
+    [IPC.TabsUpdateGroup, { groupId: id, name: '阅读', color: 'green', collapsed: false }],
+    [IPC.TabsSetGroup, { tabId: id, groupId: null }],
+    [IPC.TabsUngroup, { groupId: id }],
+    [IPC.UserScriptsSetEnabled, { id, enabled: true }],
+    [IPC.UserScriptsRemove, { id }],
+  ] as const;
+  for (const [channel, payload] of cases) {
+    expect(validateCoreIpcPayload(channel, payload)).toBe(true);
+    expect(validateCoreIpcPayload(channel, { ...payload, code: 'arbitrary' })).toBe(false);
+    expect(validateCoreIpcPayload(channel, Object.create(payload))).toBe(false);
+    expect(validateCoreIpcPayload(channel, { ...payload, [Symbol('hidden')]: true })).toBe(false);
+  }
+  expect(validateCoreIpcPayload(IPC.UserScriptsSetEnabled, { id, enabled: 'true' })).toBe(false);
+  expect(validateCoreIpcPayload(IPC.UserScriptsRemove, { id: '../config' })).toBe(false);
+  expect(validateCoreIpcPayload(IPC.TabsSetGroup, { tabId: id, groupId: 'wrong' })).toBe(false);
+});
+
 it('托盘偏好读取零参数且写入只接受闭合布尔值', () => {
   expect(validateCoreIpcPayload(IPC.AppPreferencesGet, undefined)).toBe(true);
   for (const payload of [{}, { runInTray: false }, new Date()])

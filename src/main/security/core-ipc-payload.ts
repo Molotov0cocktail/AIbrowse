@@ -1,4 +1,10 @@
 import { IPC } from '../../shared/types/ipc';
+import {
+  isCreateTabGroupPayload,
+  isUpdateTabGroupPayload,
+  isSetTabGroupPayload,
+  isTabGroupId,
+} from '../../shared/tab-groups';
 import { validateProviderConfig } from '../ai/config-store';
 import { parseDiagnosticExportPayload } from '../../shared/types/diagnostics';
 import {
@@ -88,6 +94,24 @@ const schemas: Readonly<Record<string, readonly string[]>> = {
 
 /** Domain adapters retain their stricter value and budget validation. */
 export function validateCoreIpcPayload(channel: string, payload: unknown): boolean {
+  if (
+    channel === IPC.TabsGetState ||
+    channel === IPC.UserScriptsList ||
+    channel === IPC.UserScriptsImport
+  )
+    return payload === undefined;
+  if (channel === IPC.TabsCreateGroup) return isCreateTabGroupPayload(payload);
+  if (channel === IPC.TabsUpdateGroup) return isUpdateTabGroupPayload(payload);
+  if (channel === IPC.TabsSetGroup) return isSetTabGroupPayload(payload);
+  if (channel === IPC.TabsUngroup)
+    return closed(payload, ['groupId']) && isTabGroupId(payload.groupId);
+  if (channel === IPC.UserScriptsSetEnabled)
+    return (
+      closed(payload, ['id', 'enabled']) &&
+      isTabGroupId(payload.id) &&
+      typeof payload.enabled === 'boolean'
+    );
+  if (channel === IPC.UserScriptsRemove) return closed(payload, ['id']) && isTabGroupId(payload.id);
   if (channel === IPC.AppPreferencesGet) return payload === undefined;
   if (channel === IPC.AppPreferencesSet)
     return closed(payload, ['runInTray']) && typeof payload.runInTray === 'boolean';

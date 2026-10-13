@@ -22,7 +22,7 @@ pwsh -NoProfile -File tools/ui-visual/run.ps1 -Build
 检查矩阵覆盖 1280×800、1100×760、800×600 与 light/dark，共 78 个场景。每组包含浏览器基线、更多工具、
 按需快照调试、AI 设置、信源、研究、诊断、本地数据展开态、Watch 概览、规则空态、创建向导和健康视图，
 并检查文档整体无水平/垂直溢出、三个侧栏
-精确 380px、主题原生 select 契约、localStorage 重载保持、正文对比度样本，以及浏览器场景中
+精确 380px、外观原生 radio 契约、localStorage 重载保持、正文对比度样本，以及浏览器场景中
 真实 `WebContentsView` bounds 与 renderer 报告的 `.content-area` 一致。
 
 默认浏览器还要求 chrome ≤86 CSS px、地址栏宽度 ≥180px、快照调试无默认占位、网页到底边，

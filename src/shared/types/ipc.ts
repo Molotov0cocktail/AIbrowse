@@ -17,6 +17,15 @@ export const IPC = {
   UiDocumentReady: 'ui:document-ready',
   // renderer → main（invoke）
   TabsList: 'tabs:list',
+  TabsGetState: 'tabs:get-state',
+  TabsCreateGroup: 'tabs:create-group',
+  TabsUpdateGroup: 'tabs:update-group',
+  TabsSetGroup: 'tabs:set-group',
+  TabsUngroup: 'tabs:ungroup',
+  UserScriptsList: 'userscripts:list',
+  UserScriptsImport: 'userscripts:import',
+  UserScriptsSetEnabled: 'userscripts:set-enabled',
+  UserScriptsRemove: 'userscripts:remove',
   TabsCreate: 'tabs:create', // payload: { url?: string }（原始地址栏输入，main 侧规范化）
   TabsClose: 'tabs:close', // payload: { tabId }
   TabsActivate: 'tabs:activate', // payload: { tabId }

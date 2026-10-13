@@ -231,6 +231,80 @@ beforeEach(() => {
   electronMock.deferBlankLoads = false;
 });
 
+describe('用户标签分组', () => {
+  it('完整UI快照保留分组；任务Tab加入与创建均拒绝且不改变活动页', async () => {
+    const onTabsStateChanged = vi.fn();
+    const { controller } = harness({ onTabsStateChanged });
+    const user = await controller.createTab();
+    const task = await controller.createTaskTab('https://example.com/task');
+    expect(controller.createTabGroup({ tabId: user.id, name: ' 阅读 ', color: 'blue' })).toBe(true);
+    const state = controller.getTabsState();
+    const group = state.groups![0]!;
+    expect(state.userTabIds).toEqual([user.id]);
+    expect(group.name).toBe('阅读');
+    expect(state.activeTabId).toBe(task.id);
+    expect(onTabsStateChanged).toHaveBeenLastCalledWith(state);
+    expect(controller.createTabGroup({ tabId: task.id, name: '任务', color: 'red' })).toBe(false);
+    expect(controller.setTabGroup({ tabId: task.id, groupId: group.id })).toBe(false);
+    expect(controller.getTabsState()).toEqual(state);
+    expect(await controller.activateTab(user.id)).toBe(true);
+    expect(
+      controller.updateTabGroup({
+        groupId: group.id,
+        name: '已折叠',
+        color: 'green',
+        collapsed: true,
+      }),
+    ).toBe(true);
+    expect(controller.getTabsState().activeTabId).toBe(user.id);
+    expect(electronMock.instances[0]!.setVisible).toHaveBeenLastCalledWith(true);
+    expect(controller.ungroupTabs(group.id)).toBe(true);
+    expect(await controller.getTabs()).toHaveLength(2);
+    controller.dispose();
+  });
+
+  it('关闭及意外销毁都清除组成员，dispose后不能修改或泄漏组', async () => {
+    const { controller } = harness();
+    const first = await controller.createTab();
+    const second = await controller.createTab();
+    controller.createTabGroup({ tabId: first.id, name: '分组', color: 'grey' });
+    const groupId = controller.getTabsState().groups![0]!.id;
+    controller.setTabGroup({ tabId: second.id, groupId });
+    await controller.closeTab(first.id);
+    expect(controller.getTabsState().groups![0]!.tabIds).toEqual([second.id]);
+    electronMock.instances[1]!.webContents.destroyUnexpectedly();
+    expect(controller.getTabsState().groups).toEqual([]);
+    const third = await controller.createTab();
+    controller.createTabGroup({ tabId: third.id, name: '分组', color: 'yellow' });
+    controller.dispose();
+    expect(controller.getTabsState()).toEqual({
+      tabs: [],
+      activeTabId: null,
+      groups: [],
+      userTabIds: [],
+    });
+    expect(controller.createTabGroup({ tabId: third.id, name: '分组', color: 'yellow' })).toBe(
+      false,
+    );
+    expect(controller.ungroupTabs(groupId)).toBe(false);
+  });
+
+  it('用户创建观察在首次加载前且不接触任务Tab，异常不遗留未登记资源', async () => {
+    const onUserTabCreated = vi.fn((wc: Electron.WebContents) => {
+      expect(wc.loadURL).not.toHaveBeenCalled();
+      throw new Error('受控观察异常');
+    });
+    const { controller } = harness({ onUserTabCreated });
+    const user = await controller.createTab('https://example.com/user');
+    await controller.createTaskTab('https://example.com/task');
+    expect(onUserTabCreated).toHaveBeenCalledTimes(1);
+    expect(controller.getTabsState().userTabIds).toEqual([user.id]);
+    expect(await controller.getTabs()).toHaveLength(2);
+    controller.dispose();
+    expect(electronMock.instances.every((view) => view.webContents.destroyed)).toBe(true);
+  });
+});
+
 it('只有普通标签主框架提交写历史；后台、失败和子框架不会写入', async () => {
   const onNavigationCommitted = vi.fn(() => 'visit-1');
   const { controller } = harness({ onNavigationCommitted });

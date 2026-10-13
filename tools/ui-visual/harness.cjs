@@ -349,20 +349,18 @@ async function setTheme(webContents, theme) {
   const state = await evaluate(
     webContents,
     `(() => {
-      const select = document.querySelector('select[aria-label="界面外观"]');
-      if (!(select instanceof HTMLSelectElement)) return { ok: false };
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
-      if (setter === undefined) return { ok: false };
-      setter.call(select, ${encoded});
-      select.dispatchEvent(new Event('change', { bubbles: true }));
+      const choices = [...document.querySelectorAll('.theme-choice input[type="radio"]')];
+      const selected = choices.find(choice => choice.value === ${encoded});
+      if (!(selected instanceof HTMLInputElement)) return { ok: false };
+      selected.click();
       return {
         ok: true,
-        value: select.value,
-        options: [...select.options].map((option) => option.value),
+        value: selected.value,
+        options: choices.map((option) => option.value),
       };
     })()`,
   );
-  if (!state.ok) throw new Error('无法通过原生 select setter 切换主题');
+  if (!state.ok) throw new Error('无法通过外观单选控件切换主题');
   await waitFor(
     `等待 ${theme} 主题生效`,
     () =>
@@ -382,7 +380,7 @@ async function readComputedTheme(webContents) {
     `(() => {
       const style = getComputedStyle(document.body);
       return {
-        select: document.querySelector('select[aria-label="界面外观"]')?.value ?? null,
+        select: document.querySelector('.theme-choice input:checked')?.value ?? null,
         root: document.documentElement.dataset.theme ?? null,
         prefersDark: matchMedia('(prefers-color-scheme: dark)').matches,
         color: style.color,
@@ -517,7 +515,7 @@ async function inspectDom(webContents, panelSelector, expectedTheme) {
       const html = document.documentElement;
       const body = document.body;
       const panel = ${selector} === null ? null : document.querySelector(${selector});
-      const themeSelect = document.querySelector('select[aria-label="界面外观"]');
+      const themeSelect = document.querySelector('.theme-choice-group');
       const bodyStyle = getComputedStyle(body);
       const chrome = document.querySelector('.chrome');
       const chromeStyle = chrome instanceof HTMLElement ? getComputedStyle(chrome) : null;
@@ -543,11 +541,11 @@ async function inspectDom(webContents, panelSelector, expectedTheme) {
         expectedTheme: ${theme},
         activeTheme: html.dataset.theme ?? null,
         storedTheme: localStorage.getItem('aibrowse.appearance'),
-        themeSelect: themeSelect instanceof HTMLSelectElement
+        themeSelect: themeSelect instanceof HTMLFieldSetElement
           ? {
-              value: themeSelect.value,
-              ariaLabel: themeSelect.getAttribute('aria-label'),
-              options: [...themeSelect.options].map((option) => option.value),
+              value: themeSelect.querySelector('input:checked')?.value,
+              ariaLabel: themeSelect.getAttribute('aria-label') ?? themeSelect.querySelector('legend')?.textContent?.trim(),
+              options: [...themeSelect.querySelectorAll('input[type="radio"]')].map((option) => option.value),
             }
           : null,
         document: {
@@ -1374,7 +1372,7 @@ async function run(win) {
       () =>
         evaluate(
           win.webContents,
-          `document.querySelector('select[aria-label="界面外观"]')?.value === 'dark'`,
+          `document.querySelector('.theme-choice input:checked')?.value === 'dark'`,
         ),
       5_000,
     );

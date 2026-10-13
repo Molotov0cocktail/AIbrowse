@@ -180,6 +180,12 @@ const invokeWatch = async <T>(
 };
 
 const bridge: AibrowseBridge = {
+  userscripts: {
+    list: () => invoke(IPC.UserScriptsList),
+    importScript: () => invoke(IPC.UserScriptsImport),
+    setEnabled: (id, enabled) => invoke(IPC.UserScriptsSetEnabled, { id, enabled }),
+    remove: (id) => invoke(IPC.UserScriptsRemove, { id }),
+  },
   appPreferences: {
     get: () => invoke<TraySettings>(IPC.AppPreferencesGet),
     setRunInTray: (runInTray) => invoke<TraySettings>(IPC.AppPreferencesSet, { runInTray }),
@@ -219,6 +225,11 @@ const bridge: AibrowseBridge = {
   },
   tabs: {
     list: () => invoke<TabInfo[]>(IPC.TabsList),
+    getState: () => invoke<TabsState>(IPC.TabsGetState),
+    createGroup: (payload) => invoke<boolean>(IPC.TabsCreateGroup, payload),
+    updateGroup: (payload) => invoke<boolean>(IPC.TabsUpdateGroup, payload),
+    setGroup: (payload) => invoke<boolean>(IPC.TabsSetGroup, payload),
+    ungroup: (groupId) => invoke<boolean>(IPC.TabsUngroup, { groupId }),
     create: (url) => invoke<TabInfo | null>(IPC.TabsCreate, { url }),
     close: (tabId) => invoke<boolean>(IPC.TabsClose, { tabId }),
     activate: (tabId) => invoke<boolean>(IPC.TabsActivate, { tabId }),
