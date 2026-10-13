@@ -29,7 +29,18 @@
   源码/工具/构建前后恒等；真实 trusted click 对应唯一有 userGesture 的 will-download，产品自行取消。
   产品请求头监听、Cookie读取/CDP及 IDM 尝试均0，旧外观/分组/两内置脚本/持久化门保持；Provider0。
   主协调复看深色手动 URL 界面和浅色两脚本开关截图，文案/控件可读；物理输入、打包启动 NOTRUN。
-  工具新 oracle 红1→7PASS 保留。独立复跑17文件188PASS，最终产品审核与发行绑定在收尾时记录。
+  工具新 oracle 红1→7PASS 保留。独立复跑17文件188PASS，产品/工具独审 `independent-review.json` PASS，
+  绑定新手动源码候选 `667b480ff541586f4587dd3e6d4a6dd686bdfc81`。
+- 发行/选择：该干净候选构建0.1.11程序与EXE/MSI，package/verify/static/provenance/compare均0；
+  `review-package-final.json` 独审PASS，225源码模块、16构建件、63ASAR、75程序文件、7资源文件27资产，
+  无自动下载模块/COM helper/对应manifest。独审只读比较的排序/Windows ASAR路径适配失败保留，
+  修正工具后数量/字节/摘要原门不减；未把同manifest比较称作可复现构建。
+  来源manifest为`e52de0c3cabab84edcf0f1f2f6196091954f7cd2592707f954ffcf90dce1586d`，独审选择记录冻结22证明。
+- output CheckOnly/Switch均0，ID`d74b1d9d80c6420e8258c25ed7ac43cb`；新0.1.11为79文件624807330字节。
+  旧0.1.10完整79文件621055447字节保留于本轮 `previous-output-d74b1d9d80c6420e8258c25ed7ac43cb`。
+  `output-switch-review.json`最终独审PASS：新旧各79文件及23证明与plan字节闭合，旧版完整保留。
+  切后collector原目录预算不适用于含安装器根目录的失败原件保留，按75程序+4根文件逐项复核原门通过。
+  包/安装器启动仍NOTRUN，真实IDM停止验证且不声称健康；本任务完成，仅文档收尾正常同步双远程。
 
 ## 浏览器内置脚本与点击下载接管（2026-10-13）
 

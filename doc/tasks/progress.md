@@ -9,8 +9,18 @@
 - 2026-10-13 最新裁决：IDM 修复后仍报损坏，用户要求改回手动填写 URL。停止真实 IDM 调用，
   撤除自动下载接管、Cookie/来源交接及 COM helper；保留两个指定脚本内置、外观和分组。
   合同见 legacy-repair 首节，接管 `7bf5f38`；失败诊断工具候选 `2069ab2` 保留。
-  当前正在实现/验证新范围，output 仍为 0.1.10；真实 IDM 窗口不再是交付门，损坏状态不声称修复。
-  下一动作：完成手动路线回归与独立审核，重建无自动接管能力的 0.1.11 后选择 output。
+  已实现并通过独审：188项独立聚焦，root126项集成；浏览器86项与工具7项红→绿，计数有重叠不相加。
+  typecheck/lint/format/build均0；原生UI双进程9bdeb799一次PASS，9/20localhost，真实点击下载被产品取消，
+  零产品请求头监听/Cookie/CDP/IDM尝试，外观/分组/内置脚本/持久化保持通过，0Provider。
+  源候选 `667b480ff541586f4587dd3e6d4a6dd686bdfc81` 干净构建0.1.11，包校验/静态绑定/provenance通过，
+  包独审PASS（225模块/16构建件/63ASAR/75程序文件；7资源文件27脚本资产恒等），无自动下载模块/helper。
+  **output 已更新0.1.11**，79文件624807330字节；manifest
+  `e52de0c3cabab84edcf0f1f2f6196091954f7cd2592707f954ffcf90dce1586d`，入口`output/win-unpacked/AIbrowse.exe`。
+  CheckOnly/Switch均0，切换ID`d74b1d9d80c6420e8258c25ed7ac43cb`；旧0.1.10完整79文件保留在
+  `log/manual-idm-return-20261013/previous-output-d74b1d9d80c6420e8258c25ed7ac43cb`。
+  最终切换独审PASS：新旧各79文件、23证明与plan字节闭合，旧版完整保留。该任务完成，文档正常双远程同步。
+  真实IDM仍损坏，手动分发不承诺下载完成；该窗口门已由用户新裁决取消，旧失败不改判。
+  未启动真实profile、发行程序或安装器，物理输入NOTRUN；旧自动out/release已完整归档。
   下列自动接管候选、窗口待验及原验包记录均为已被最新裁决替代的历史。
 
 - 2026-10-13 用户要求改为直接内置指定脚本和 IDM 点击下载接管；干净接管
