@@ -143,7 +143,7 @@ for (const method of ['spawn', 'exec', 'execFile', 'spawnSync', 'execSync', 'exe
   require('node:child_process')[method] = function (...args) {
     const executable = String(args[0] ?? '');
     report.nativeHelpers.push({ method, executable });
-    if (!/idman(?:\.exe)?/i.test(executable)) {
+    if (!/idman(?:\.exe)?|idm-handoff(?:\.exe)?/i.test(executable)) {
       persist();
       return Reflect.apply(original, this, args);
     }
@@ -370,9 +370,7 @@ async function downloadAndScriptsUi() {
   assert.equal(typeof status.available, 'boolean');
   const qualified = await invoke('qualifiedScripts', 'list');
   assert.deepEqual(qualified.map((script) => script.id).sort(), ['ac-baidu', 'github-zh']);
-  assert(
-    qualified.every((script) => !script.installed && !script.enabled && script.issue === null),
-  );
+  assert(qualified.every((script) => script.installed && script.enabled && script.issue === null));
   const rejected = [];
   for (const url of [
     'file:///C:/fixture.zip',

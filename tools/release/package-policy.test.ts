@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { verifyGuardianBytes } from './package-policy';
+import { verifyGuardianBytes, verifyIdmHelperBytes } from './package-policy';
+
+it('IDM 接管程序必须绑定包内固定摘要，不接受其它可执行文件或多余字段', () => {
+  const bytes = Buffer.from('bounded-idm-helper');
+  const manifest = {
+    version: 1,
+    bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+  };
+  expect(verifyIdmHelperBytes(manifest, bytes)).toBe(manifest.sha256);
+  expect(() => verifyIdmHelperBytes(manifest, Buffer.from('different-helper'))).toThrow();
+  expect(() => verifyIdmHelperBytes({ ...manifest, executable: 'other.exe' }, bytes)).toThrow();
+  expect(() => verifyIdmHelperBytes({ ...manifest, bytes: 0 }, Buffer.alloc(0))).toThrow();
+});
 
 it('guardian 必须与 ASAR 中唯一固定清单匹配，拒绝篡改与扩展字段', () => {
   const bytes = Buffer.from('synthetic-helper');
@@ -26,6 +39,10 @@ describe('release package positive allowlist', () => {
     expect(isAllowedArchivePath('resources/aibrowse.ico')).toBe(true);
     expect(isAllowedArchivePath('resources/other.ico')).toBe(false);
     expect(isAllowedArchivePath('resources/app-preferences.json')).toBe(false);
+    expect(isAllowedArchivePath('resources/qualified-userscripts/ac-baidu.json')).toBe(true);
+    expect(isAllowedArchivePath('resources/qualified-userscripts/github-zh.json')).toBe(true);
+    expect(isAllowedArchivePath('resources/qualified-userscripts/other.json')).toBe(false);
+    expect(isAllowedArchivePath('resources/qualified-userscripts/state.json')).toBe(false);
   });
   it('accepts only fixed release outputs and the qualified production dependency closure', () => {
     expect(isAllowedArchivePath('out/release/main/index.js')).toBe(true);
@@ -33,6 +50,8 @@ describe('release package positive allowlist', () => {
     expect(isAllowedArchivePath('out/release/preload/index.js')).toBe(true);
     expect(isAllowedArchivePath('out/release/preload/qualified-userscripts.js')).toBe(true);
     expect(isAllowedArchivePath('out/release/preload/other.js')).toBe(false);
+    expect(isAllowedArchivePath('out/release/main/idm-handoff-integrity.json')).toBe(true);
+    expect(isAllowedArchivePath('out/release/main/other-helper.json')).toBe(false);
     expect(isAllowedArchivePath('out/release/renderer/assets/index-a1b2.js')).toBe(true);
     expect(isAllowedArchivePath('node_modules/parse5/dist/index.js')).toBe(true);
 

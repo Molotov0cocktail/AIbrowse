@@ -202,6 +202,33 @@ describe('资格脚本安装与持久化', () => {
     expect(restarted.list()[0]).toMatchObject({ installed: true, enabled: true, issue: null });
   });
 
+  it('内置恢复只补回缺失bundle并保留已有停用状态和值', async () => {
+    const { directory, store } = createStore();
+    const providedTexts = new Map([
+      ['source', '// ac source\n'],
+      ['require-0', 'globalThis.acRequired = true;\n'],
+      ['style', 'body { color: red; }\n'],
+    ]);
+    await store.install('ac-baidu', () => true, providedTexts);
+    expect(store.setValue('ac-baidu', 'layout', 'two-column')).toEqual({ ok: true });
+    expect(store.setEnabled('ac-baidu', false)).toEqual({ ok: true });
+    store.dispose();
+    fs.unlinkSync(join(directory, 'bundles', 'ac-baidu.json'));
+
+    const restarted = new QualifiedScriptStore({
+      directory,
+      fetchText: fixtureFetch(),
+      testCatalog,
+    });
+    expect(restarted.canRestoreMissingBuiltIn('ac-baidu')).toBe(true);
+    await expect(restarted.install('ac-baidu', () => true, providedTexts, true)).resolves.toEqual({
+      ok: true,
+    });
+    expect(restarted.list()[0]).toMatchObject({ installed: true, enabled: false, issue: null });
+    expect(restarted.setEnabled('ac-baidu', true)).toEqual({ ok: true });
+    expect(restarted.getValues('ac-baidu')).toEqual({ layout: 'two-column' });
+  });
+
   it.each([
     [
       '缺少资产',

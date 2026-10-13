@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { QualifiedScriptStore } from '../../src/main/userscripts-qualified/store';
 import { QualifiedScriptRuntime } from '../../src/main/userscripts-qualified/runtime';
 import { QUALIFIED_SCRIPT_CATALOG } from '../../src/main/userscripts-qualified/catalog';
+import { readQualifiedPackage } from '../../src/main/userscripts-qualified/package';
+import { createQualifiedScriptFeature } from '../../src/main/userscripts-qualified/feature';
 
 // Original bytes execute only against offline representative DOM, never live sites.
 const root = process.env.AIBROWSE_QUALIFIED_PROBE_ROOT;
@@ -35,6 +37,7 @@ const result = {
 };
 let runtime: QualifiedScriptRuntime | undefined;
 let store: QualifiedScriptStore | undefined;
+let startupFeature: ReturnType<typeof createQualifiedScriptFeature> | undefined;
 const windows: BrowserWindow[] = [];
 let activeId = -1;
 let closing = false;
@@ -47,6 +50,7 @@ function finish(error?: unknown): void {
   fs.writeFileSync(path.join(root!, 'result.json'), JSON.stringify(result, null, 2));
   runtime?.dispose();
   store?.dispose();
+  startupFeature?.dispose();
   for (const window of windows) if (!window.isDestroyed()) window.destroy();
   app.exit(result.passed ? 0 : 1);
 }
@@ -81,25 +85,23 @@ const pageSafety = `({require:typeof require,process:typeof process,GM:typeof GM
 void app
   .whenReady()
   .then(async () => {
-    const candidates = new Map<string, string>();
-    const originals = path.resolve('log/idm-tool-20261013/scripts');
-    function scan(directory: string): void {
-      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-        const file = path.join(directory, entry.name);
-        if (entry.isDirectory()) scan(file);
-        else if (entry.isFile()) candidates.set(hash(fs.readFileSync(file)), file);
-      }
-    }
-    scan(originals);
-    const urls = new Map<string, string>();
+    const packageFiles = {
+      'ac-baidu': path.join(root, 'resources', 'qualified-userscripts', 'ac-baidu.json'),
+      'github-zh': path.join(root, 'resources', 'qualified-userscripts', 'github-zh.json'),
+    } as const;
+    const builtInTexts = new Map<string, ReadonlyMap<string, string>>();
     for (const entry of Object.values(QUALIFIED_SCRIPT_CATALOG)) {
+      const texts = readQualifiedPackage(packageFiles[entry.id], entry);
+      builtInTexts.set(entry.id, texts);
       for (const asset of entry.assets) {
-        const file = candidates.get(asset.sha256);
-        if (!file) throw new Error(`固定原件缺失：${asset.key}`);
-        const bytes = fs.readFileSync(file);
-        if (bytes.length !== asset.bytes) throw new Error(`固定原件长度不符：${asset.key}`);
-        urls.set(asset.url, file);
-        result.assets.push({ url: asset.url, file, sha256: asset.sha256, bytes: bytes.length });
+        const text = texts.get(asset.key);
+        if (text === undefined) throw new Error(`固定内置资产缺失：${asset.key}`);
+        result.assets.push({
+          url: asset.url,
+          file: `${packageFiles[entry.id]}#${asset.key}`,
+          sha256: asset.sha256,
+          bytes: Buffer.byteLength(text),
+        });
       }
     }
     for (const file of [
@@ -115,15 +117,13 @@ void app
       result.toolHashes[path.resolve(file)] = hash(fs.readFileSync(file));
     const storeOptions = {
       directory: path.join(root, 'qualified-store'),
-      fetchText: async (url: string): Promise<string> => {
-        const file = urls.get(url);
-        if (!file) throw new Error('安装替身拒绝目录外 URL');
-        return fs.readFileSync(file, 'utf8');
+      fetchText: async (): Promise<string> => {
+        throw new Error('内置初始化禁止安装网络');
       },
     };
     store = new QualifiedScriptStore(storeOptions);
     for (const id of ['ac-baidu', 'github-zh'] as const) {
-      const installed = await store.install(id, () => true);
+      const installed = await store.install(id, () => true, builtInTexts.get(id));
       if (!installed.ok) throw new Error(installed.message);
     }
     // This is an explicit test setting input, not a source modification.
@@ -443,6 +443,38 @@ void app
       result.network,
       !result.network.some((item) => item.url.includes('iflyrec')),
     );
+    runtime.dispose();
+    runtime = undefined;
+    ipcMain.removeAllListeners('qualified-scripts:prepare');
+    ipcMain.removeAllListeners('qualified-scripts:sync');
+    ipcMain.removeAllListeners('qualified-scripts:cancel');
+    ipcMain.removeHandler('qualified-scripts:request');
+    const startupWindow = new BrowserWindow({ show: false });
+    windows.push(startupWindow);
+    startupFeature = createQualifiedScriptFeature({
+      win: startupWindow,
+      dataRoot: path.join(root, 'startup-data'),
+      isOpen: () => false,
+      canInitialize: () => true,
+      getActiveUserContentsId: () => null,
+      openUserTab: () => undefined,
+    });
+    await startupFeature.ready;
+    const startupState = startupFeature.store.list();
+    check(
+      'builtInFeatureStartup',
+      startupState,
+      startupState.length === 2 &&
+        startupState.every((item) => item.installed && item.enabled && item.issue === null),
+    );
+    check(
+      'runtimeRemainsAdmissionClosed',
+      startupFeature.runtime.prepare({ sender: { id: -1 } } as never, {}),
+      startupFeature.runtime.prepare({ sender: { id: -1 } } as never, {}).length === 0,
+    );
+    startupFeature.dispose();
+    startupFeature = undefined;
+    startupWindow.destroy();
     finish();
   })
   .catch(finish);

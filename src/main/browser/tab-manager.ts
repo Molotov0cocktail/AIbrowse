@@ -3,7 +3,20 @@
 // 依赖方向：仅被 BrowserController 调用，不反向引用 controller（分层纪律）.
 
 import { randomUUID } from 'node:crypto';
-import { WebContentsView, type BaseWindow, type Session, type WebContents } from 'electron';
+import {
+  WebContentsView,
+  type BaseWindow,
+  type Session,
+  type WebContents,
+  type WebFrameMain,
+} from 'electron';
+import {
+  DOWNLOAD_GESTURE_LIFETIME_MS,
+  type DownloadGestureRecord,
+  type DownloadGestureTransfer,
+  type DownloadLease,
+  type NativeDownloadSnapshot,
+} from './download-gesture';
 import type { TabInfo } from '../../shared/types/browser';
 import { ALLOWED_SCHEME_PATTERN, redactTabIdForLog, redactUrlForLog } from '../../shared/url';
 import { logError, logWarn } from '../logger';
@@ -50,6 +63,7 @@ export interface TabEntry {
   popupGestureExpiresAt: number;
   popupSuppressionCount: number;
   popupRoutingEpoch: number;
+  downloadGesture: DownloadGestureRecord | null;
 }
 
 export interface CreateTabOptions {
@@ -69,14 +83,24 @@ export interface TabManagerOptions {
   session: Session; // 持久分区会话（SessionManager 提供，§7）
   onChanged: () => void; // 增删/标题/URL/状态变化 → controller 组装并推送 TabsState
   isUserTabInteractive?: (tabId: string) => boolean;
-  onUserOpenTab?: (sourceTabId: string, url: string, background: boolean) => void;
+  onUserOpenTab?: (
+    sourceTabId: string,
+    url: string,
+    background: boolean,
+    transfer?: DownloadGestureTransfer,
+  ) => void;
 }
 
 export class TabManager {
   // Map 追加序 = contentView 子 view 顺序 = z 序（§6 保持稳定）
   private readonly entries = new Map<string, TabEntry>();
 
-  constructor(private readonly options: TabManagerOptions) {}
+  private readonly onOwnerUnavailable = (): void => this.clearPopupGestures();
+
+  constructor(private readonly options: TabManagerOptions) {
+    options.ownerWindow.on?.('hide', this.onOwnerUnavailable);
+    options.ownerWindow.on?.('blur', this.onOwnerUnavailable);
+  }
 
   createTab(url: string, options: CreateTabOptions = {}): TabEntry {
     const deferredBlank = options.deferInitialBlankLoad === true;
@@ -134,11 +158,12 @@ export class TabManager {
             this.options.isUserTabInteractive?.(info.id) !== true
           )
             return;
-          this.options.onUserOpenTab?.(
-            info.id,
-            targetUrl,
-            details.disposition === 'background-tab',
-          );
+          const background = details.disposition === 'background-tab';
+          const transfer = background
+            ? undefined
+            : this.transferDownloadGesture(source, targetUrl, details.referrer);
+          if (transfer === undefined) this.options.onUserOpenTab?.(info.id, targetUrl, background);
+          else this.options.onUserOpenTab?.(info.id, targetUrl, background, transfer);
         });
         return { action: 'deny' };
       }
@@ -168,6 +193,7 @@ export class TabManager {
       popupGestureExpiresAt: 0,
       popupSuppressionCount: 0,
       popupRoutingEpoch: 0,
+      downloadGesture: null,
     };
     this.entries.set(info.id, entry);
 
@@ -208,6 +234,7 @@ export class TabManager {
     for (const entry of this.entries.values()) {
       entry.popupGestureExpiresAt = 0;
       entry.popupRoutingEpoch += 1;
+      entry.downloadGesture = null;
     }
   }
 
@@ -217,6 +244,7 @@ export class TabManager {
     entry.popupGestureExpiresAt = 0;
     entry.popupRoutingEpoch += 1;
     entry.popupSuppressionCount += 1;
+    entry.downloadGesture = null;
     let released = false;
     return () => {
       if (released) return;
@@ -224,6 +252,134 @@ export class TabManager {
       entry.popupGestureExpiresAt = 0;
       entry.popupRoutingEpoch += 1;
       entry.popupSuppressionCount -= 1;
+      entry.downloadGesture = null;
+    };
+  }
+
+  revokeDownloadGesture(tabId: string): void {
+    const entry = this.entries.get(tabId);
+    if (entry) entry.downloadGesture = null;
+  }
+
+  private downloadGestureCurrent(entry: TabEntry, record: DownloadGestureRecord): boolean {
+    const wc = entry.view.webContents;
+    try {
+      return (
+        this.entries.get(entry.info.id) === entry &&
+        entry.downloadGesture === record &&
+        !entry.taskOwned &&
+        entry.popupSuppressionCount === 0 &&
+        !wc.isDestroyed() &&
+        entry.generation === record.generation &&
+        performance.now() < record.expiresAt &&
+        this.options.isUserTabInteractive?.(entry.info.id) === true &&
+        wc.mainFrame === record.frame &&
+        record.frame.parent === null &&
+        !record.frame.detached &&
+        (record.initialUrl !== null || record.frame.origin === record.origin)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  isUserDownloadFrame(webContentsId: number, frame: WebFrameMain | null): boolean {
+    if (!frame) return false;
+    const entry = this.list().find((candidate) => candidate.view.webContents.id === webContentsId);
+    if (!entry || entry.taskOwned) return false;
+    try {
+      const wc = entry.view.webContents;
+      return (
+        !wc.isDestroyed() && wc.mainFrame === frame && frame.parent === null && !frame.detached
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  getDownloadCaptureContext(
+    webContentsId: number,
+    frame: WebFrameMain | null,
+  ): DownloadLease | null {
+    const entry = this.list().find((candidate) => candidate.view.webContents.id === webContentsId);
+    const record = entry?.downloadGesture;
+    if (
+      !entry ||
+      !record ||
+      record.consumed ||
+      record.frame !== frame ||
+      !this.downloadGestureCurrent(entry, record)
+    )
+      return null;
+    return { token: record.token, isCurrent: () => this.downloadGestureCurrent(entry, record) };
+  }
+
+  consumeDownloadLease(
+    wc: WebContents,
+    frame: WebFrameMain | null,
+    snapshot: NativeDownloadSnapshot,
+  ): DownloadLease | null {
+    const entry = this.list().find((candidate) => candidate.view.webContents === wc);
+    const record = entry?.downloadGesture;
+    if (
+      !entry ||
+      !record ||
+      record.consumed ||
+      record.frame !== frame ||
+      !this.downloadGestureCurrent(entry, record)
+    )
+      return null;
+    if (record.initialUrl === null) {
+      if (!snapshot.hasUserGesture || snapshot.initiatorOrigin !== record.origin) return null;
+    } else if (
+      !record.navigationStarted ||
+      snapshot.urlChain[0] !== record.initialUrl ||
+      snapshot.urlChain.at(-1) !== snapshot.url ||
+      snapshot.initiatorOrigin !== ''
+    )
+      return null;
+    record.consumed = true;
+    if (record.initialUrl !== null) {
+      // A cancelled native download has no new document and is not a page-load error.
+      entry.info.state = 'ready';
+      delete entry.info.failure;
+      this.options.onChanged();
+    }
+    return { token: record.token, isCurrent: () => this.downloadGestureCurrent(entry, record) };
+  }
+
+  private transferDownloadGesture(
+    entry: TabEntry,
+    initialUrl: string,
+    referrer: Electron.Referrer,
+  ): DownloadGestureTransfer | undefined {
+    const record = entry.downloadGesture;
+    if (
+      !record ||
+      record.consumed ||
+      !this.downloadGestureCurrent(entry, record) ||
+      entry.view.webContents.focusedFrame !== record.frame
+    )
+      return undefined;
+    entry.downloadGesture = null;
+    return {
+      token: record.token,
+      expiresAt: record.expiresAt,
+      initialUrl,
+      referrer: { ...referrer },
+    };
+  }
+
+  adoptDownloadGesture(entry: TabEntry, transfer: DownloadGestureTransfer): void {
+    if (entry.taskOwned || entry.committedUrl !== null || transfer.expiresAt <= performance.now())
+      return;
+    entry.downloadGesture = {
+      ...transfer,
+      generation: entry.generation,
+      frame: entry.view.webContents.mainFrame,
+      origin: '',
+      navigationStarted: false,
+      consumed: false,
     };
   }
 
@@ -266,6 +422,8 @@ export class TabManager {
   }
 
   dispose(): void {
+    this.options.ownerWindow.removeListener?.('hide', this.onOwnerUnavailable);
+    this.options.ownerWindow.removeListener?.('blur', this.onOwnerUnavailable);
     for (const tabId of [...this.entries.keys()]) this.closeTab(tabId);
   }
 
@@ -290,6 +448,27 @@ export class TabManager {
       )
         return;
       entry.popupGestureExpiresAt = performance.now() + 1000;
+      try {
+        const frame = wc.mainFrame;
+        if (
+          !entry.taskOwned &&
+          frame.parent === null &&
+          !frame.detached &&
+          /^https?:\/\//.test(frame.origin)
+        )
+          entry.downloadGesture = {
+            token: randomUUID(),
+            expiresAt: performance.now() + DOWNLOAD_GESTURE_LIFETIME_MS,
+            generation: entry.generation,
+            frame,
+            origin: frame.origin,
+            initialUrl: null,
+            navigationStarted: false,
+            consumed: false,
+          };
+      } catch {
+        entry.downloadGesture = null;
+      }
     };
     const clearPopupGesture = (): void => {
       const entry = this.entries.get(info.id);
@@ -313,10 +492,14 @@ export class TabManager {
     };
     wc.on('before-mouse-event', onMouse);
     wc.on('before-input-event', onInput);
-    wc.on('blur', clearPopupGesture);
+    const onBlur = (): void => {
+      clearPopupGesture();
+      this.revokeDownloadGesture(info.id);
+    };
+    wc.on('blur', onBlur);
     cleanup.push(() => wc.removeListener('before-mouse-event', onMouse));
     cleanup.push(() => wc.removeListener('before-input-event', onInput));
-    cleanup.push(() => wc.removeListener('blur', clearPopupGesture));
+    cleanup.push(() => wc.removeListener('blur', onBlur));
     // A crash retires the document until a new main-document navigation begins.
     // Late load callbacks must not present the dead document as a healthy page.
     let crashed = false;
@@ -345,6 +528,15 @@ export class TabManager {
       delete info.failure;
       const entry = this.entries.get(info.id);
       if (entry !== undefined) {
+        const record = entry.downloadGesture;
+        if (record?.initialUrl) {
+          if (
+            record.navigationStarted ||
+            (details.url !== undefined && details.url !== record.initialUrl)
+          )
+            entry.downloadGesture = null;
+          else record.navigationStarted = true;
+        }
         entry.navigationSerial += 1;
         entry.historyVisitId = null;
       }
@@ -371,6 +563,8 @@ export class TabManager {
       isMainFrame: boolean,
     ): void => {
       if (crashed) return;
+      const record = this.entries.get(info.id)?.downloadGesture;
+      if (isMainFrame && record?.initialUrl && record.consumed) return;
       if (isMainFrame && errorCode !== -3) {
         info.failure = 'load-failed';
         // -3（ERR_ABORTED）为导航竞态，由 transition 统一忽略；这里只记录真实失败
@@ -413,6 +607,7 @@ export class TabManager {
       // 世代过期（执行前主进程侧校验 → stale-element）。事件触发时条目已登记。
       const entry = this.entries.get(info.id);
       if (entry !== undefined) {
+        entry.downloadGesture = null;
         entry.generation += 1;
         info.title = '';
         this.recordCommit(entry, url, '');
@@ -466,6 +661,7 @@ export class TabManager {
 
     const onRenderGone = (): void => {
       clearPopupGesture();
+      this.revokeDownloadGesture(info.id);
       crashed = true;
       const entry = this.entries.get(info.id);
       if (entry !== undefined) {

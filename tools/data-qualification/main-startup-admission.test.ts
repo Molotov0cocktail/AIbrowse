@@ -137,7 +137,11 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
   const observed: boolean[] = [];
   const context = vm.createContext({
     mainRootAdmission: { isOpen: () => true },
-    createMainWindow: () => ({ on: vi.fn(), getContentSize: () => [800, 600] }),
+    createMainWindow: () => ({
+      on: vi.fn(),
+      getContentSize: () => [800, 600],
+      isDestroyed: () => false,
+    }),
     installTrayController: vi.fn(),
     createUserScriptFeature: vi.fn(() => ({ service: {}, runtime: { attach: vi.fn() } })),
     createIdmFeature: vi.fn(() => ({})),
@@ -148,7 +152,11 @@ it('实际装配到首个 Store 构造边界时数据准入仍关闭', async () 
     __dirname: 'synthetic-main',
     userScriptService: null,
     BrowserControllerImpl: class {},
-    AppSessionManager: class {},
+    AppSessionManager: class {
+      getSession() {
+        return {};
+      }
+    },
     datasetStartup: { prepare: async () => 'normal', isChecking: () => false },
     assertStartupNoStores: vi.fn(),
     createStartupDataPreparation: () => ({ prepare: async () => ({ state: 'normal' }) }),

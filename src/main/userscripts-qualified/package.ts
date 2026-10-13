@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import { decodeUserScript, readBoundedRegularFile } from '../userscripts/store';
 import type { CatalogEntry } from './catalog';
 
@@ -58,6 +59,23 @@ export function readQualifiedPackage(
 ): ReadonlyMap<string, string> {
   try {
     return decodeQualifiedPackage(readBoundedRegularFile(path, MAX_PACKAGE_BYTES), entry);
+  } catch {
+    return fail();
+  }
+}
+
+export function readBuiltInQualifiedPackage(
+  path: string,
+  entry: CatalogEntry,
+  io: Pick<typeof fs, 'statSync' | 'readFileSync'> = fs,
+): ReadonlyMap<string, string> {
+  try {
+    const stat = io.statSync(path);
+    if (!stat.isFile() || stat.size > MAX_PACKAGE_BYTES) return fail();
+    const bytes = io.readFileSync(path);
+    if (!Buffer.isBuffer(bytes) || bytes.length !== stat.size || bytes.length > MAX_PACKAGE_BYTES)
+      return fail();
+    return decodeQualifiedPackage(bytes, entry);
   } catch {
     return fail();
   }

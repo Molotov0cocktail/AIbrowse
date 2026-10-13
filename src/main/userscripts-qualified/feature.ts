@@ -1,12 +1,4 @@
-import {
-  app,
-  dialog,
-  ipcMain,
-  Menu,
-  Notification,
-  type BrowserWindow,
-  type IpcMainEvent,
-} from 'electron';
+import { app, ipcMain, Menu, Notification, type BrowserWindow, type IpcMainEvent } from 'electron';
 import { join } from 'node:path';
 import type {
   QualifiedScriptId,
@@ -16,12 +8,18 @@ import { QualifiedScriptStore } from './store';
 import { QualifiedScriptNetwork } from './network';
 import { QualifiedScriptRuntime } from './runtime';
 import { getCatalogEntry } from './catalog';
-import { readQualifiedPackage } from './package';
+import { readBuiltInQualifiedPackage } from './package';
+
+const BUILT_IN_PACKAGE_NAMES = {
+  'ac-baidu': 'ac-baidu.json',
+  'github-zh': 'github-zh.json',
+} as const satisfies Record<QualifiedScriptId, string>;
 
 export function createQualifiedScriptFeature(options: {
   win: BrowserWindow;
   dataRoot: string;
   isOpen: () => boolean;
+  canInitialize?: () => boolean;
   getActiveUserContentsId: () => number | null;
   openUserTab: (url: string) => void;
 }) {
@@ -75,64 +73,81 @@ export function createQualifiedScriptFeature(options: {
   };
   app.once('will-quit', dispose);
   options.win.once('closed', dispose);
+  const builtInTexts = new Map<QualifiedScriptId, ReadonlyMap<string, string>>();
+  const ready = (async (): Promise<void> => {
+    for (const id of Object.keys(BUILT_IN_PACKAGE_NAMES) as QualifiedScriptId[]) {
+      if (disposed) return;
+      const entry = getCatalogEntry(id);
+      let texts: ReadonlyMap<string, string>;
+      try {
+        texts = readBuiltInQualifiedPackage(
+          join(app.getAppPath(), 'resources', 'qualified-userscripts', BUILT_IN_PACKAGE_NAMES[id]),
+          entry,
+        );
+      } catch {
+        store.setBuiltInIssue(id, '内置脚本资源缺失、损坏或与固定版本不一致；本次运行已安全停用。');
+        continue;
+      }
+      builtInTexts.set(id, texts);
+      store.setBuiltInIssue(id, null);
+      const status = store.list().find((item) => item.id === id);
+      const restoreMissing = store.canRestoreMissingBuiltIn(id);
+      if (status?.installed || (status?.issue !== null && !restoreMissing)) continue;
+      const result = await store.install(
+        id,
+        () => !disposed && (options.canInitialize?.() ?? options.isOpen()),
+        texts,
+        restoreMissing,
+      );
+      if (!result.ok)
+        store.setBuiltInIssue(id, `内置脚本初始化失败；本次运行已安全停用：${result.message}`);
+    }
+  })();
+
+  const setEnabled = async (
+    id: QualifiedScriptId,
+    enabled: boolean,
+    isCurrent: () => boolean = () => true,
+  ): Promise<QualifiedScriptResult> => {
+    await ready;
+    const active = (): boolean =>
+      !disposed && !options.win.isDestroyed() && options.isOpen() && isCurrent();
+    if (!active()) return { ok: false, message: '页面状态已变化，请重新操作。' };
+    let status = store.list().find((item) => item.id === id);
+    if (enabled && status?.installed !== true && status?.issue === null) {
+      const texts = builtInTexts.get(id);
+      if (texts === undefined)
+        return { ok: false, message: '内置脚本资源当前不可用，已保持停用。' };
+      const installed = await store.install(id, active, texts);
+      if (!installed.ok || installed.cancelled) return installed;
+      status = store.list().find((item) => item.id === id);
+    }
+    if (!active()) return { ok: false, message: '页面状态已变化，请重新操作。' };
+    if (enabled && status?.installed !== true)
+      return { ok: false, message: status?.issue ?? '内置脚本当前不可用，已保持停用。' };
+    const result = store.setEnabled(id, enabled);
+    if (result.ok && !enabled) runtime.revokeScript(id);
+    return result;
+  };
+
   return {
     store,
     runtime,
+    ready,
     dispose,
     async install(
       id: QualifiedScriptId,
       isCurrent: () => boolean,
       fromFile = false,
     ): Promise<QualifiedScriptResult> {
-      if (disposed || !isCurrent() || options.win.isDestroyed())
+      void fromFile;
+      if (!isCurrent() || options.win.isDestroyed())
         return { ok: false, message: '页面已关闭，请重新操作。' };
-      const entry = getCatalogEntry(id);
-      let texts: ReadonlyMap<string, string> | undefined;
-      if (fromFile) {
-        const selection = await dialog.showOpenDialog(options.win, {
-          title: `选择“${entry.name}”本地脚本包`,
-          properties: ['openFile'],
-          filters: [{ name: 'AIbrowse 脚本包', extensions: ['json'] }],
-        });
-        if (disposed || !isCurrent() || options.win.isDestroyed())
-          return { ok: false, message: '页面状态已变化，请重新操作。' };
-        if (selection.canceled) return { ok: true, cancelled: true };
-        if (selection.filePaths.length !== 1)
-          return { ok: false, message: '请选择一个完整脚本包。' };
-        try {
-          texts = readQualifiedPackage(selection.filePaths[0]!, entry);
-        } catch {
-          return { ok: false, message: '本地脚本包校验失败，请确认选择了对应版本的完整文件。' };
-        }
-      }
-      const confirmation = await dialog.showMessageBox(options.win, {
-        type: 'warning',
-        title: '安装指定用户脚本',
-        message: `安装并启用“${entry.name}”？`,
-        detail: [
-          `版本：${entry.version}。${fromFile ? '本地脚本和依赖已通过完整性校验，安装无需联网' : '将下载并校验固定版本的脚本及依赖'}，后续不自动更新。`,
-          '脚本只在匹配的普通浏览标签页运行，可以读取或修改网页，并在本机保存自己的设置。研究和监控任务页面不注入。',
-          id === 'ac-baidu'
-            ? 'AC-baidu 可向公网发起不携带浏览器登录信息的 GET/HEAD 请求。其官方设置网页可读取和修改 AC-baidu 配置。'
-            : 'GitHub 界面汉化使用本地词库；附带的讯飞简介翻译已禁用，请使用 AI 共读翻译。',
-          '网页变化可能影响 AI 共读内容；同一网站的登录和网页存储仍与现有浏览会话共享。安装后刷新匹配网页生效。',
-        ].join('\n\n'),
-        buttons: ['取消', '安装并启用'],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      });
-      if (confirmation.response !== 1) return { ok: true, cancelled: true };
-      if (disposed || !isCurrent()) return { ok: false, message: '页面状态已变化，请重新操作。' };
-      return store.install(id, isCurrent, texts);
+      return setEnabled(id, true, isCurrent);
     },
-    setEnabled(id: QualifiedScriptId, enabled: boolean): QualifiedScriptResult {
-      const result = store.setEnabled(id, enabled);
-      if (result.ok && !enabled) runtime.revokeScript(id);
-      return result;
-    },
+    setEnabled,
     remove(id: QualifiedScriptId): QualifiedScriptResult {
-      const result = store.remove(id);
+      const result = store.setEnabled(id, false);
       if (result.ok) runtime.revokeScript(id);
       return result;
     },

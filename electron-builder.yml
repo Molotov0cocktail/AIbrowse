@@ -10,6 +10,7 @@ directories:
 files:
   - out/release/main/*.js
   - out/release/main/lifecycle-guardian-integrity.json
+  - out/release/main/idm-handoff-integrity.json
   - '!out/release/main/release-modules.json'
   - out/release/preload/index.js
   - out/release/preload/qualified-userscripts.js
@@ -18,6 +19,13 @@ files:
   - out/release/renderer/assets/**/*
   - package.json
   - resources/aibrowse.ico
+  - resources/qualified-userscripts/ac-baidu.json
+  - resources/qualified-userscripts/github-zh.json
+  - resources/qualified-userscripts/NOTICE.md
+  - resources/qualified-userscripts/licenses/GPL-3.0.txt
+  - resources/qualified-userscripts/licenses/Apache-2.0.txt
+  - resources/qualified-userscripts/licenses/Vue-MIT.txt
+  - resources/qualified-userscripts/licenses/AC-UPSTREAM-MIT.txt
   - node_modules/@federicocarboni/saxe/package.json
   - node_modules/@federicocarboni/saxe/LICENSE
   - node_modules/@federicocarboni/saxe/lib/index.js
@@ -37,6 +45,8 @@ files:
 extraResources:
   - from: out/lifecycle-guardian/guardian.exe
     to: lifecycle-guardian/guardian.exe
+  - from: out/idm/idm-handoff.exe
+    to: idm/idm-handoff.exe
 extraMetadata:
   main: out/release/main/index.js
 electronFuses:

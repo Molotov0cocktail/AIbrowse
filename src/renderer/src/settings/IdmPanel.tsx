@@ -52,7 +52,7 @@ export function IdmPanel() {
   return (
     <section className="settings-section-card idm-panel" aria-label="IDM 下载工具">
       <h2>IDM 下载工具</h2>
-      <p>复制文件的下载链接，发送到电脑上已安装的 Internet Download Manager。</p>
+      <p>在网页中点击下载链接，浏览器识别文件地址后会打开 IDM 下载确认窗口。</p>
       <p role="status">
         {available === null ? '正在检测 IDM…' : available ? '已检测到 IDM' : '未检测到 IDM'}
       </p>
@@ -66,7 +66,7 @@ export function IdmPanel() {
           void send();
         }}
       >
-        <label htmlFor="idm-download-url">下载链接</label>
+        <label htmlFor="idm-download-url">也可以粘贴下载链接</label>
         <input
           id="idm-download-url"
           type="url"
@@ -85,9 +85,9 @@ export function IdmPanel() {
       {error !== null && <p role="alert">{error}</p>}
       {notice !== null && <p role="status">{notice}</p>}
       <p className="idm-note">
-        支持 HTTP / HTTPS
-        文件链接。仅发送链接，不传递本浏览器的登录信息；需要登录的网站可能无法直接下载。
-        下载确认与进度在 IDM 中查看。
+        点击下载支持 HTTP / HTTPS 文件链接及重定向，仅向本机 IDM
+        传递该次下载所需的登录信息与来源页。研究、监控和 AI 自动操作不会触发接管。
+        粘贴链接仅发送地址。下载确认与进度在 IDM 中查看。
       </p>
     </section>
   );

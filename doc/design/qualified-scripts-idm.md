@@ -12,30 +12,71 @@ GitHub 的本地词库汉化保留，附带讯飞简介翻译禁用，翻译交�
 不将“任务页不注入”宣传为消除全部间接影响。本轮不改变 AI 工具数、赋予模型脚本/下载执行权限或安装
 Chrome/Tampermonkey 本体，不引入独立登录、浏览器会话迁移或自动更新。
 
+用户随后要求改为浏览器内置功能：两个脚本随程序提供，点击网页下载链接后直接解析并弹出 IDM 确认。
+用户已明确批准将该次下载所需 Cookie 和来源页信息仅转交本机 IDM，以支持登录下载。此新裁决替换原先
+“仅粘贴链接、手动安装脚本、不转 Cookie”的交付范围；其它隔离与隐私约束继续有效。
+
 ## IDM
 
-受信 UI 提供显式 HTTP(S) 链接交接。主进程只探测 Windows 标准程序目录的固定 IDMan.exe，
-不接受 renderer 指定可执行路径、命令参数、保存路径或 Cookie。启动使用 shell=false 与固定 `/d URL`；
-不使用自动确认、静默下载、添加队列等额外参数。IDM 负责确认与下载进度，返回成功只表示启动请求已派发。
+普通标签的真实鼠标/键盘输入在主进程建立短时、一次性、绑定文档的下载许可。原生 DownloadItem 的
+用户手势、发起 origin、主 frame 与许可共同校验；独立的任务 Tab、无输入的脚本、子 frame、AI 交互、
+失效或已隐藏页面均不能触发交接。AI click/fill/scroll 复用既有交互抑制点，同时撤销下载许可。
+下载导航开始不等于提交新文档，故许可保留到下载判定；真正提交、崩溃、关闭或新操作使旧许可失效。
+原有 target=_blank 路由通过主进程新建标签后会失去原生 userGesture，因此仅为该次受信弹出路由转移
+准确初始 URL 与原来源的许可，在新标签首次文档提交前使用，不能借此授权任意后续网页下载。
 
-URL 有界、必须显式 HTTP(S)、拒凭据与空白/控制字符/反斜杠；路径查询、进程错误及 URL 不回显日志。
-异步探测后与启动前复核当前 UI 文档/准入租约，退出时停止新交接；并发请求拒绝，启动等待有超时，
-不终止用户已有的 IDM 进程。Session 既有 will-download 拒绝保留，网页/AI/任务页没有 IDM 调用通道。
-官方接口来源：[IDM 命令行](https://www.internetdownloadmanager.com/support/command_line.html)。
+用户激活只证明近期输入，不证明用户理解链接内容：点击后网页 JavaScript 可以决定实际下载地址，
+原生探针也确认无关点击后约100ms脚本下载仍可能带 userGesture。产品保留网站点击按钮后触发下载的
+正常语义；以一次性许可和 IDM 确认为边界，不声称识别网页意图或禁止所有由 JavaScript 发起的下载。
 
-## 两脚本资格与安装
+Session 的 will-download 仍先 preventDefault，禁止 Chromium 自行落盘。拦截器在同一事件轮同步
+提取最终 URL/重定向链/文件名等元数据；webRequest.onSendHeaders 只在有效许可期间记录对应主 frame
+实际 GET 请求的 Cookie/Referer/User-Agent，按请求标识、文档、许可、响应就绪和 URL 链唯一关联。
+敏感头仅短时有界内存，消费、过期或退出即清理，不进日志、磁盘、命令行或 renderer；仍在途的非敏感
+请求归属不能仅因许可到期而遗忘，避免迟到旧下载借用新请求的登录信息。
+主进程从已登记普通主frame的请求开始保存最多256条URL摘要/原请求编号/许可身份，任务frame不登记；
+只有响应就绪的唯一候选才可对应DownloadItem。普通HTML导航完成可退休，下载完成事件因真实时序可在
+will-download之前或之后，不能单独作为删除依据；原生下载消费唯一身份，即使该次未获授权也不遗留骨架。
+多义或容量饱和安全拒绝，不按超时遗忘旧归属；frame销毁释放。实际头最多8条、10秒，许可撤销立即清理。
+
+Electron43.7.7对download属性的原生下载公开空请求头，页面CDP也不提供该请求事件。因此仅此整空头的
+GET/other路径使用窄范围兼容读取：原生发起origin、当前主frame实际URL和完整重定向链必须严格同源，
+排除iframe、opaque、popup许可转移和跨源链；主进程临时拥有该webContents的debugger，唯一命令是
+`Network.getCookies({urls:[最终URL]})`，不启用Network事件，不读取正文，不暴露通用调试接口。
+该API按frame的网络隔离键/顶级站点筛选分区；同源完整链满足SameSite Strict的前提。实际Chromium资格
+必须比较不同顶级站点CHIPS隔离、路径/HttpOnly/Strict和no-referrer事实，不能仅以文档推断通过。
+读取前后校验原文档、一次性许可及Cookie变更；重复Cookie名、多义/opaque分区、已有调试连接、超时和
+导航均拒绝。只把最终URL当前匹配的登录Cookie交给本机IDM，不称其为历史请求头的完整重建；来源字段
+只用原生已裁剪referrer，空值保留空。普通完整头路径继续使用实际发送值。
+禁止session.cookies.get作为兜底：该版本会包含全部Cookie分区且不返回分区标识。POST、跨源缺失头、
+非HTTP(S)及关联不唯一不猜测重放，不扩大SameSite或第三方分区权限。
+
+主进程调用固定随包构建的 `idm-handoff.exe`，通过有界 UTF-8 长度前缀 stdin 协议传递五字段
+URL/Referer/Cookie/文件名/User-Agent；无任意参数、路径、POST、密码或保存目录接口。helper 使用官方
+COM `SendLinkToIDM2`，flags=0，确认和进度留在 IDM，不静默下载。helper 自身先通过包内摘要/大小校验，
+构建源码受 Git 管理、编译身份留证，程序不需要用户安装开发工具。异步工作与启动前复核一次性许可，
+并发拒绝、超时结束本次 helper，不终止用户原有 IDM；成功只表示 COM 接收请求，不表示下载完成。
+
+受信 UI 的手动粘贴入口继续使用固定 IDMan.exe `/d URL`，只发送地址。URL 有界、显式 HTTP(S)，拒凭据、
+空白/控制字符和反斜杠，路径/进程错误和完整 URL 不回显日志。网页/renderer/AI 无通用 IDM 或 helper API。
+官方接口来源：[IDM COM API](https://www.internetdownloadmanager.com/support/idm_api.html)、
+[IDM 命令行](https://www.internetdownloadmanager.com/support/command_line.html)、
+[Electron DownloadItem](https://www.electronjs.org/docs/latest/api/download-item)、
+[Electron Session 下载事件](https://www.electronjs.org/docs/latest/api/session#event-will-download)。
+
+## 两脚本资格与内置资源
 
 资格目录 `src/main/userscripts-qualified/catalog.ts` 固定脚本标识、版本、根源码和有序 require/resource
 的来源、字节数及 SHA256。AC 27.20 为根源码+2 require+22 resource；GitHub
-1.9.2.4-2026-09-27 为根源码+词库 require。完整资产只在用户本地安装数据和忽略的验收目录中存储，
-不将第三方源码入 Git。UI 的安装按钮仅接受编译期两标识，主进程展示能力并确认后下载校验；任何资产
-版本变化/摘要不符/失败都不能产生部分已安装状态。更新必须重新核验目录，不在运行时执行自动更新。
+1.9.2.4-2026-09-27 为根源码+词库 require。27 份完整资产作为固定 JSON 数据资源随程序提供，连同来源、
+版本、原始许可和归属说明进入 Git 及内部发行包；不修改原稿存档字节，不去在线下载缺失资源。
+这是资源供应方式的替换，既有隔离世界执行、逐资产摘要验证和能力范围不扩大。
 
-直连不可用时，支持受信 UI 选择本地固定资产 JSON 包；选择后仍展示相同能力确认。包仅包含
-`format=1/id/version/assets`，assets 的键必须与编译期目录完全一致，逐项字节数和 SHA256 重验；
-整体≤16MiB，必须是有界普通文件，不接受路径、URL、权限、用户设置或覆盖目录。文件路径只来自
-主进程 dialog，不经 renderer；取消、导航或准入失效均不提交。安装复用同一原子 store，不回退联网。
-下载原件可在本用户机器上组装为此包供安装，不进入 Git 或公开发布，不将第三方原稿作为产品内置资产。
+新 profile 默认启用这两个用户已请求的功能，既有 enabled/values 保留。用户只需在“下载与脚本”使用
+开关，不再挑本地包或联网安装；脚本菜单仍提供原本的配置入口。资源只接受固定 app 内路径，仍校验
+闭合格式 `format=1/id/version/assets`、精确目录键、版本、逐项字节数和 SHA256；整体≤16MiB，不接受
+路径、URL、权限或用户设置注入。缺失/篡改安全禁用，不能以远程重新下载掩盖损坏。
+更新需随应用重新核验资源目录，无运行时自动更新；先前手动安装和超时证据保留在任务历史。
 
 脚本安装包和 enabled/values 状态分离，原子写入成功后才变更内存事实；损坏原件保留并禁用，不能覆写
 成“修复成功”。只读/满盘/并发删除或退出都安全失败。脚本数据不进入模型、会话、业务数据库、日志或

@@ -5,14 +5,35 @@ import { spawn } from 'node:child_process';
 import { setTimeout, clearTimeout } from 'node:timers';
 import { build } from 'esbuild';
 import electronPath from 'electron';
+import { createPackage } from '@electron/asar';
 
 const kind = process.argv[2];
-if (!['document-start', 'runtime', 'actual'].includes(kind)) throw new Error('探针类型无效');
+if (!['document-start', 'runtime', 'actual', 'asar-resource'].includes(kind))
+  throw new Error('探针类型无效');
 const root = path.resolve(process.argv[3] || '');
-const allowed = path.resolve('log/idm-tool-20261013') + path.sep;
+const allowed = path.resolve('log/builtin-tools-20261013') + path.sep;
 if (!root.startsWith(allowed) || fs.existsSync(root)) throw new Error('需要新的隔离证据目录');
 fs.mkdirSync(root, { recursive: true });
-const main = path.join(root, 'probe.cjs');
+if (kind === 'actual')
+  fs.cpSync(
+    path.resolve('resources/qualified-userscripts'),
+    path.join(root, 'resources', 'qualified-userscripts'),
+    { recursive: true, errorOnExist: true },
+  );
+const appRoot = kind === 'asar-resource' ? path.join(root, 'app') : root;
+fs.mkdirSync(appRoot, { recursive: true });
+if (kind === 'asar-resource') {
+  fs.cpSync(
+    path.resolve('resources/qualified-userscripts'),
+    path.join(appRoot, 'resources', 'qualified-userscripts'),
+    { recursive: true, errorOnExist: true },
+  );
+  fs.writeFileSync(
+    path.join(appRoot, 'package.json'),
+    JSON.stringify({ name: 'qualified-asar-resource-probe', version: '1.0.0', main: 'probe.cjs' }),
+  );
+}
+const main = path.join(appRoot, 'probe.cjs');
 await build({
   entryPoints: [`tools/qualified-userscripts-runtime/${kind}-probe.ts`],
   outfile: main,
@@ -22,7 +43,7 @@ await build({
   external: ['electron'],
 });
 const preload = path.join(root, 'qualified-preload.cjs');
-if (kind !== 'document-start')
+if (kind !== 'document-start' && kind !== 'asar-resource')
   await build({
     entryPoints: ['src/preload/qualified-userscripts.ts'],
     outfile: preload,
@@ -37,7 +58,12 @@ const env = {
   AIBROWSE_QUALIFIED_PRELOAD: preload,
 };
 delete env.ELECTRON_RUN_AS_NODE;
-const child = spawn(electronPath, [main], {
+let launch = main;
+if (kind === 'asar-resource') {
+  launch = path.join(root, 'app.asar');
+  await createPackage(appRoot, launch);
+}
+const child = spawn(electronPath, [launch], {
   env,
   windowsHide: true,
   stdio: ['ignore', 'pipe', 'pipe'],

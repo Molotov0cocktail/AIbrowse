@@ -66,8 +66,8 @@ export function QualifiedScriptsPanel() {
     <section className="settings-section-card userscripts-panel" aria-label="指定油猴脚本">
       <div className="userscripts-heading">
         <div>
-          <h2>指定油猴脚本</h2>
-          <p>AC-baidu 与 GitHub 中文化，使用经过校验的固定版本。</p>
+          <h2>内置网页增强</h2>
+          <p>AC-baidu 与 GitHub 中文化已随应用提供，并固定为经过校验的版本。</p>
         </div>
         <button
           type="button"
@@ -81,10 +81,10 @@ export function QualifiedScriptsPanel() {
         </button>
       </div>
       <p className="userscripts-note">
-        安装时会显示所需权限。网络下载失败时可从本地脚本包安装。只在普通浏览标签运行，研究与监控任务页面不注入；安装后刷新匹配网页生效。
+        无需联网下载或导入文件。功能只在普通浏览标签运行，研究与监控任务页面不注入；切换后刷新匹配网页生效。
       </p>
       {loading && <p role="status">正在读取脚本状态…</p>}
-      {busy && <p role="status">正在处理；安装时需要下载并校验脚本及依赖…</p>}
+      {busy && <p role="status">正在保存内置功能状态…</p>}
       {error !== null && (
         <p role="alert" className="userscripts-error">
           {error}
@@ -102,57 +102,27 @@ export function QualifiedScriptsPanel() {
               <div>
                 <h3>{script.name}</h3>
                 <span>
-                  版本 {script.version} ·{' '}
-                  {script.installed ? (script.enabled ? '已启用' : '已停用') : '未安装'}
+                  版本 {script.version} · 内置 · {script.enabled ? '已启用' : '已停用'}
                 </span>
               </div>
-              {script.installed ? (
-                <label className="userscript-toggle">
-                  启用
-                  <input
-                    type="checkbox"
-                    checked={script.enabled}
-                    disabled={busy}
-                    aria-label={`启用 ${script.name}`}
-                    onChange={(event) => {
-                      const enabled = event.currentTarget.checked;
-                      void run(
-                        () => window.aibrowse.qualifiedScripts.setEnabled(script.id, enabled),
-                        enabled
-                          ? '已启用，请刷新匹配网页。'
-                          : '已停用。刷新已打开网页可清除此前的页面改动。',
-                      );
-                    }}
-                  />
-                </label>
-              ) : (
-                <div className="userscript-install-actions">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(
-                        () => window.aibrowse.qualifiedScripts.install(script.id),
-                        '已安装并启用，请刷新匹配网页。',
-                      )
-                    }
-                  >
-                    {script.issue !== null ? '重新安装' : '安装'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() =>
-                      void run(
-                        () => window.aibrowse.qualifiedScripts.installFile(script.id),
-                        '已从本地安装并启用，请刷新匹配网页。',
-                      )
-                    }
-                  >
-                    从本地安装
-                  </button>
-                </div>
-              )}
+              <label className="userscript-toggle">
+                启用
+                <input
+                  type="checkbox"
+                  checked={script.enabled}
+                  disabled={busy || script.issue !== null}
+                  aria-label={`启用 ${script.name}`}
+                  onChange={(event) => {
+                    const enabled = event.currentTarget.checked;
+                    void run(
+                      () => window.aibrowse.qualifiedScripts.setEnabled(script.id, enabled),
+                      enabled
+                        ? '已启用，请刷新匹配网页。'
+                        : '已停用。刷新已打开网页可清除此前的页面改动。',
+                    );
+                  }}
+                />
+              </label>
             </div>
             <p>
               {script.id === 'ac-baidu'
@@ -164,27 +134,12 @@ export function QualifiedScriptsPanel() {
                 {script.issue}
               </p>
             )}
-            {script.installed && (
-              <div className="userscript-remove">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(
-                      () => window.aibrowse.qualifiedScripts.remove(script.id),
-                      '已卸载。刷新已打开网页可清除此前的页面改动。',
-                    )
-                  }
-                >
-                  卸载
-                </button>
-              </div>
-            )}
           </article>
         ))}
       </div>
       <p className="userscripts-note">
-        脚本会改变匹配网页，AI 共读会看到这些变化。脚本设置保存在本机，版本不会自动更新。
+        内置代码会改变匹配网页，AI
+        共读会看到这些变化。脚本设置保存在本机；停用不会删除设置，版本随应用更新。
       </p>
     </section>
   );

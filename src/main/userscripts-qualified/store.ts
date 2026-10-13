@@ -264,6 +264,7 @@ export class QualifiedScriptStore {
   private readonly catalog: Readonly<Record<QualifiedScriptId, CatalogEntry>>;
   private readonly state = new Map<QualifiedScriptId, StateRecord>();
   private readonly bundles = new Map<QualifiedScriptId, BundleSnapshot>();
+  private readonly builtInIssues = new Map<QualifiedScriptId, string>();
   private readonly epochs = new Map<QualifiedScriptId, number>();
   private readonly installing = new Map<QualifiedScriptId, AbortController>();
   private stateDigest: string | null = null;
@@ -283,6 +284,16 @@ export class QualifiedScriptStore {
 
   list(): QualifiedScriptStatus[] {
     return IDS.map((id) => this.status(id));
+  }
+
+  setBuiltInIssue(id: QualifiedScriptId, issue: string | null): void {
+    if (issue === null) this.builtInIssues.delete(id);
+    else this.builtInIssues.set(id, issue);
+  }
+
+  canRestoreMissingBuiltIn(id: QualifiedScriptId): boolean {
+    const bundle = this.bundles.get(id);
+    return this.stateIssue === null && this.state.has(id) && bundle?.exists === false;
   }
 
   getEnabled(): EnabledQualifiedScript[] {
@@ -319,6 +330,7 @@ export class QualifiedScriptStore {
     id: QualifiedScriptId,
     isCurrent: () => boolean,
     providedTexts?: ReadonlyMap<string, string>,
+    preserveExistingEnabled = false,
   ): Promise<QualifiedScriptResult> {
     if (this.disposed) return { ok: false, message: '资格脚本管理已关闭。' };
     if (this.stateIssue !== null) return { ok: false, message: this.stateIssue };
@@ -375,7 +387,8 @@ export class QualifiedScriptStore {
       const nextState = new Map(this.state);
       nextState.set(id, {
         revision,
-        enabled: true,
+        enabled:
+          preserveExistingEnabled && previousState !== undefined ? previousState.enabled : true,
         values: previousState === undefined ? {} : cloneValues(previousState.values),
       });
       this.saveStateForBundle(id, nextState, nextBundle);
@@ -530,7 +543,7 @@ export class QualifiedScriptStore {
       valid: null,
       issue: null,
     };
-    let issue = this.stateIssue ?? bundle.issue;
+    let issue = this.builtInIssues.get(id) ?? this.stateIssue ?? bundle.issue;
     if (issue === null && state === undefined && bundle.exists)
       issue = '检测到未完成的安装包，当前未启用；可重新安装恢复。';
     if (issue === null && state !== undefined && !bundle.exists)

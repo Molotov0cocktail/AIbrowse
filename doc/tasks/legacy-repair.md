@@ -1,5 +1,60 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 浏览器内置脚本与点击下载接管（2026-10-13）
+
+- TASK / BASELINE：用户要求阅读插件与脚本代码直接集成到浏览器，IDM 保留点击下载链接后解析并弹出
+  下载窗口的交互。干净 baseline `853ea389aba842b5feb7820f787bc4a24b02fbb5`，当前 output 0.1.10。
+  这是对上一轮手动脚本安装与粘贴链接路线的替换授权；不恢复已取消的沉浸式翻译和原版扩展装载。
+- GOAL：两个指定脚本随程序提供、无需联网下载安装或挑选本地包；提供明确的启停入口，保留设置和现有
+  功能。普通浏览中用户点击下载链接，浏览器识别实际下载及重定向地址，打开 IDM 原生下载确认窗口。
+- INVARIANTS：保留研究/监控任务页隔离；AI 操作、无用户输入的自动下载、隐藏/失效页面不得自行启动 IDM；下载确认
+  留在 IDM，浏览器不静默写入下载文件、不增加模型工具。原稿身份、来源、许可与改动如实保留；禁用讯飞
+  翻译、普通用户脚本导入和现有脚本设置不退化。不会把 URL 交接称作视频抓取或全协议下载兼容。
+- PLAN / SCOPE：并行调查官方 IDM 扩展代码/公开接口、本机安装与两个原稿/依赖许可；采用原生下载事件、
+  可验证用户输入和文档归属建立有界接管路径；脚本复用已有隔离世界和有界能力接口，换成内置资源供应。
+  工程选择依最小真实可行性结果确定后同步正式设计；新增外部凭据转交等产品取舍须明确裁决。
+- 用户已裁决支持登录下载，批准只向本机 IDM 转交该次下载需要的 Cookie 与来源信息。工程采用原生
+  优先匹配 onSendHeaders 的实际请求头，不枚举完整 Cookie 库；固定 COM helper 使用 stdin 五字段有界协议，
+  flags=0，保留 IDM 确认。正式设计已同步 `doc/design/qualified-scripts-idm.md`。
+- 原生输入的诚实边界：点击后网站可以通过 JavaScript 决定实际下载地址；Chromium 的短暂用户激活并非
+  链接内容意图证明。实际观测到无关点击后约100ms脚本触发仍带 userGesture，因此不承诺禁止一切脚本
+  下载。每次操作仍最多一次 IDM 确认，任务/子帧/AI/无输入/过期许可拒绝，不自动开始下载。
+- TEST / ACCEPTANCE：先建立旧版无内置脚本/点击接管的甄别性检查；覆盖重定向、下载元数据、一次点击
+  一次交接、AI/任务页/子帧/伪造输入/过期文档拒绝、导航并发和清理；原生 Electron 验证实际点击到下载
+  事件，再验证受控 IDM 窗口（若本机程序存在）或明确标记未运行。内置资产在普通与发行包均可用，设置
+  跨重启保持；关键能力与持久化经新独立审核，完成受影响回归和包身份验证后更新 output 并双远程同步。
+- STOP / EVIDENCE：先验证平台事件能证明用户输入与下载归属，不把不可靠标记假设成事实；同路线连续
+  两轮无新增证据即换路。第三方原件、失败和请求计数在 `log/builtin-tools-20261013/`，通用工具入 Git；
+  不降低验收门，不以额外调查掩盖影响用户体验的未解决限制。
+- 当前验证：内置27资产的原稿受控效果与重开已通过 `builtin-actual-002`，真实ASAR虚拟读取通过
+  `asar-resource-001`；首次工具时序失败保留。全量 `full-test-01.txt` 实际7607PASS/1FAIL/3SKIP、exit1，
+  原因是普通popup回调新增undefined第四参数；保持旧三参数语义后原独审与浏览器104项通过。
+- 下载采集REPLAN：真实Electron普通、重定向及新标签请求头完整；`download-product-10`证明download属性
+  请求实际携Cookie/UA/Referer，但onSendHeaders为空；11的beforeSendHeaders亦为空。`cdp-download-02`
+  又证明页面CDP无该下载请求事件。禁止把缺失头当匿名成功；原工程单一onSendHeaders方案须更换。
+  精确Electron43.7.7源码的cookies.get(url)包含所有分区且剥离分区标识，故不能直接用它代替实际请求Cookie。
+- 替代资格 `cookie-scope-01` 首场4次localhost请求PASS：精确URL的固定CDP getCookies使用当前主frame的
+  隔离键，只返回本顶级站点分区及未分区Cookie；排除其它路径/顶级分区，HttpOnly/Strict和实际请求匹配。
+  来源原生字段正确执行origin与no-referrer，UA匹配；未启用Network事件、未采集正文、0IDM。
+  仅严格同源完整链的空头GET/other路径采用该读取，能力和失败边界见正式设计。新增reader16项通过，
+  独审另发现blob页面origin相同与不可序列化分区字段两反例，修后独审6项及相关27项通过，失败原件保留。
+- 当前独审 `independent-review.json` 为REPAIR：三项同URL头关联、两项异步脚本开关反例已关闭；跨手势
+  在途旧请求不得因10秒过期就遗忘关联，需要真实终结证据或等价请求身份边界。敏感头仍及时清理。
+- 真实IDM一次调用返回S_OK，但既有IDM提示主程序损坏，未出现目标确认框；原始诊断保留。
+  用户选择自行处理IDM后继续验证；没有点击其现有继续下载按钮、修复软件或把COM成功当作窗口验收。
+- 当前代码审核：`independent-review.json`最终代码安全/持久化/并发PASS，13文件236项；旧REPAIR完整留为
+  `independent-review-interim-01.json`。五个旧缺陷和两项reader反例均关闭，原件保留，不扩张到真实IDM/发行包。
+- 最终原生产品：`download-product-final-01`，29localhost/0IDM，六种普通/属性/重定向/新标签路径传递的
+  Cookie集合、UA、来源均与服务器一致，AI/任务/iframe/无输入零service；旧A/新B逆序只交接B。
+  最后reader计时器const整理与UI“所需登录信息”文字不改变授权或时序语义，独审确认等价复用，22reader项再绿。
+- UI双进程：`log/browser-groups-userscripts-20261013/runtime-7452024f-6668-43da-add1-ca2068688c19/`
+  PASS，外观/分组/内置启用开关/脚本持久化与原桥接门通过，7/20localhost、0Provider/0IDM，源码产物前后绑定。
+  主协调复看深色外观与下载脚本设置截图，选项和两个开关可见。打包启动/物理输入仍NOTRUN。
+- 回归：`integration-final-01` 19文件350项PASS；`typecheck-final-02`、`lint-final-02`、`format-final-02`
+  均exit0。首轮缺statusLine测试夹具、reader prefer-const失败原件保留，修复不更改权限门。
+  普通build-final-01成功；最终发行构建仍需绑定下面的干净候选提交。旧release原目录已完整移到
+  `log/builtin-tools-20261013/previous-release`，旧manifest摘要见`release-archive.json`；output不变。
+
 ## IDM 工具与指定油猴脚本（2026-10-13）
 
 - TASK / BASELINE：用户进一步收缩需求：去掉沉浸式翻译，只保留 IDM 工具与油猴脚本，翻译交由现有

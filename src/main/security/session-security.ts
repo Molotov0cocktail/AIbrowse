@@ -33,7 +33,7 @@ export function installSessionSecurity(
 
   target.on('will-download', (event) => {
     event.preventDefault();
-    logWarn('security', '已取消未授权下载');
+    logWarn('security', '已拦截浏览器直接下载');
   });
 
   if (blockFileRequests) {

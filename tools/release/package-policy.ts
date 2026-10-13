@@ -8,13 +8,25 @@ import { NtExecutable, NtExecutableResource } from 'resedit';
 
 export const PACKAGED_EXECUTABLE = 'AIbrowse.exe';
 
+const BUILT_IN_SCRIPT_FILES = [
+  'resources/qualified-userscripts/ac-baidu.json',
+  'resources/qualified-userscripts/github-zh.json',
+  'resources/qualified-userscripts/NOTICE.md',
+  'resources/qualified-userscripts/licenses/GPL-3.0.txt',
+  'resources/qualified-userscripts/licenses/Apache-2.0.txt',
+  'resources/qualified-userscripts/licenses/Vue-MIT.txt',
+  'resources/qualified-userscripts/licenses/AC-UPSTREAM-MIT.txt',
+] as const;
+
 const REQUIRED_FILES = [
+  ...BUILT_IN_SCRIPT_FILES,
   'package.json',
   'resources/aibrowse.ico',
   'out/release/main/index.js',
   'out/release/main/transfer-worker.js',
   'out/release/main/startup-probe-worker.js',
   'out/release/main/lifecycle-guardian-integrity.json',
+  'out/release/main/idm-handoff-integrity.json',
   'out/release/preload/index.js',
   'out/release/preload/qualified-userscripts.js',
   'out/release/renderer/index.html',
@@ -75,8 +87,10 @@ export const isAllowedArchivePath = (archivePath: string): boolean => {
   const path = normalizeArchivePath(archivePath);
   if (path === 'package.json') return true;
   if (path === 'resources/aibrowse.ico') return true;
+  if ((BUILT_IN_SCRIPT_FILES as readonly string[]).includes(path)) return true;
   if (path === 'out/release/main/index.js') return true;
   if (path === 'out/release/main/lifecycle-guardian-integrity.json') return true;
+  if (path === 'out/release/main/idm-handoff-integrity.json') return true;
   if (/^out\/release\/main\/[a-z0-9][a-z0-9_-]*\.js$/i.test(path)) return true;
   if (path === 'out/release/preload/index.js') return true;
   if (path === 'out/release/preload/qualified-userscripts.js') return true;
@@ -124,6 +138,24 @@ export function verifyGuardianBytes(manifest: unknown, bytes: Buffer): string {
     throw new Error('guardian 完整性清单无效');
   const actual = createHash('sha256').update(bytes).digest('hex');
   if (actual !== manifest.sha256) throw new Error('guardian 与 ASAR 内清单不一致');
+  return actual;
+}
+
+export function verifyIdmHelperBytes(manifest: unknown, bytes: Buffer): string {
+  if (
+    !isRecord(manifest) ||
+    Object.keys(manifest).sort().join(',') !== 'bytes,sha256,version' ||
+    manifest.version !== 1 ||
+    !Number.isSafeInteger(manifest.bytes) ||
+    Number(manifest.bytes) < 1 ||
+    Number(manifest.bytes) > 512 * 1024 ||
+    manifest.bytes !== bytes.length ||
+    typeof manifest.sha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(manifest.sha256)
+  )
+    throw new Error('IDM 接管程序完整性清单无效');
+  const actual = createHash('sha256').update(bytes).digest('hex');
+  if (actual !== manifest.sha256) throw new Error('IDM 接管程序与 ASAR 内清单不一致');
   return actual;
 }
 
@@ -283,11 +315,23 @@ export const verifyPackagedDirectory = async (inputRoot: string): Promise<Packag
     readJsonFromAsar(asar, 'out/release/main/lifecycle-guardian-integrity.json'),
     readFileSync(guardianPath),
   );
+  const idmPath = join(packageRoot, 'resources/idm/idm-handoff.exe');
+  const idmStat = statSync(idmPath, { throwIfNoEntry: false });
+  if (!idmStat?.isFile() || idmStat.size > 512 * 1024 || idmStat.nlink !== 1)
+    fail('固定 IDM 接管程序不存在或形状无效');
+  verifyIdmHelperBytes(
+    readJsonFromAsar(asar, 'out/release/main/idm-handoff-integrity.json'),
+    readFileSync(idmPath),
+  );
   if (
     outerFiles.some(
       (path) =>
         path.startsWith('resources/') &&
-        !['resources/app.asar', 'resources/lifecycle-guardian/guardian.exe'].includes(path),
+        ![
+          'resources/app.asar',
+          'resources/lifecycle-guardian/guardian.exe',
+          'resources/idm/idm-handoff.exe',
+        ].includes(path),
     )
   )
     fail('resources 出现未批准的附加文件');
