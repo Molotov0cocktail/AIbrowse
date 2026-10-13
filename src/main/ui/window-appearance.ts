@@ -1,11 +1,22 @@
 import type { BrowserWindow, NativeTheme } from 'electron';
 import type { Appearance } from '../../shared/types/app';
+import {
+  createThemePalette,
+  isThemeColor,
+  normalizeThemeColor,
+  type ThemeColor,
+} from '../../shared/theme-colors';
 
-export function titlebarColors(appearance: Appearance, systemDark: boolean) {
+export function titlebarColors(
+  appearance: Appearance,
+  systemDark: boolean,
+  themeColor: ThemeColor = null,
+) {
   const dark = appearance === 'dark' || (appearance === 'system' && systemDark);
+  const palette = createThemePalette(themeColor, dark);
   return {
-    color: dark ? '#171a20' : '#f4f5f8',
-    symbolColor: dark ? '#e7ebf2' : '#222b3d',
+    color: palette.chrome,
+    symbolColor: palette.text,
     height: 36,
   };
 }
@@ -14,13 +25,15 @@ export function titlebarColors(appearance: Appearance, systemDark: boolean) {
 export function installWindowAppearance(
   win: BrowserWindow,
   theme: NativeTheme,
-): (appearance: Appearance) => boolean {
+): (appearance: Appearance, themeColor?: ThemeColor) => boolean {
   let appearance: Appearance = 'system';
+  let themeColor: ThemeColor = null;
+  let closed = false;
   const update = (): boolean => {
-    if (win.isDestroyed()) return false;
     try {
+      if (closed || win.isDestroyed()) return false;
       if (process.platform === 'win32')
-        win.setTitleBarOverlay(titlebarColors(appearance, theme.shouldUseDarkColors));
+        win.setTitleBarOverlay(titlebarColors(appearance, theme.shouldUseDarkColors, themeColor));
       return true;
     } catch {
       return false;
@@ -30,9 +43,14 @@ export function installWindowAppearance(
     if (appearance === 'system') update();
   };
   theme.on('updated', onTheme);
-  win.once('closed', () => theme.removeListener('updated', onTheme));
-  return (next) => {
+  win.once('closed', () => {
+    closed = true;
+    theme.removeListener('updated', onTheme);
+  });
+  return (next, nextThemeColor = null) => {
+    if (!['system', 'light', 'dark'].includes(next) || !isThemeColor(nextThemeColor)) return false;
     appearance = next;
+    themeColor = normalizeThemeColor(nextThemeColor);
     return update();
   };
 }

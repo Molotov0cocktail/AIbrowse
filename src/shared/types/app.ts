@@ -18,6 +18,7 @@ import type {
   QualifiedScriptResult,
   QualifiedScriptStatus,
 } from './qualified-userscripts';
+import type { ThemeColor } from '../theme-colors';
 import type {
   BrowserBookmark,
   BrowserBookmarkUpdate,
@@ -184,7 +185,7 @@ export interface AibrowseBridge {
     snapshot(tabId: string): Promise<PageSnapshot | null>;
   };
   ui: {
-    setAppearance(appearance: Appearance): Promise<boolean>;
+    setAppearance(appearance: Appearance, themeColor?: ThemeColor): Promise<boolean>;
     // 渲染层 ResizeObserver 测量内容容器两维矩形后上报（§11.2，单向 send）
     reportContentBounds(bounds: ContentBounds): void;
     // C8 决议 #158(5)：受控 UI send——切换 WebContentsView 可见性

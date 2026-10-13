@@ -407,6 +407,221 @@ async function appearance() {
   await capture('scripts-settings');
   await clickText('.workspace-page-back', '返回浏览');
 }
+async function themeState(mode, color) {
+  await until(`配色${mode}/${color}`, () =>
+    js(`(() => {
+    const root=document.documentElement;
+    return root.dataset.theme===${JSON.stringify(mode)} && root.dataset.themeColor===${JSON.stringify(color)} && localStorage.getItem('aibrowse.appearance')===${JSON.stringify(mode)} && localStorage.getItem('aibrowse.themeColor')===${JSON.stringify(color)};
+  })()`),
+  );
+}
+async function inputValue(selector, value) {
+  await js(`(() => {
+    const input=document.querySelector(${JSON.stringify(selector)});
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)});
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+    input.dispatchEvent(new Event('change',{bubbles:true}));
+  })()`);
+}
+function cssHex(value) {
+  const numbers = value.match(/[\d.]+/g)?.map(Number);
+  assert(numbers && numbers.length === 3, `颜色必须为不透明RGB：${value}`);
+  return '#' + numbers.map((number) => Math.round(number).toString(16).padStart(2, '0')).join('');
+}
+async function themeSample(name) {
+  const animations = await js(`(async () => {
+    const all=document.getAnimations();
+    const infinite=all.filter(animation=>animation.effect?.getTiming().iterations===Infinity);
+    const ignoredInfinite=infinite.map(animation=>{
+      const target=animation.effect?.target;
+      const properties=[...new Set(animation.effect.getKeyframes().flatMap(frame=>Object.keys(frame)))];
+      if (!(target instanceof Element) || !target.matches('.spinner') || target.matches('.tab-strip-row,.toolbar,.tab.active,.ai-toggle') || animation.animationName!=='spin' || properties.some(property=>!['offset','computedOffset','easing','composite','transform'].includes(property)))
+        throw new Error('存在影响颜色观测或未识别的无限动画，停止主题验收');
+      return {type:target.tagName,className:target.className,animation:animation.animationName,properties};
+    });
+    const samples=[...document.querySelectorAll('.tab-strip-row,.toolbar,.tab.active,.ai-toggle')];
+    const relevant=all.filter(animation=>{
+      const target=animation.effect?.target;
+      return Number.isFinite(animation.effect?.getTiming().iterations) && target instanceof Element && samples.some(sample=>sample===target || sample.contains(target));
+    });
+    await Promise.all(relevant.map(animation=>animation.finished.catch(()=>undefined)));
+    return {finiteSampleAnimations:relevant.length,ignoredInfiniteCount:ignoredInfinite.length,ignoredInfinite};
+  })()`);
+  report.details.themeAnimations ??= {};
+  report.details.themeAnimations[name] = animations;
+  persist();
+  win.focus();
+  win.webContents.focus();
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: 10, y: 110 });
+  await delay(60);
+  await js(
+    `(() => { const button=document.querySelector('.ai-toggle'); if (button.getAttribute('aria-pressed')==='true') button.click(); })()`,
+  );
+  const sample = await js(`(() => {
+    const root=document.documentElement;
+    const chrome=getComputedStyle(document.querySelector('.tab-strip-row'));
+    const toolbar=getComputedStyle(document.querySelector('.toolbar'));
+    const tab=getComputedStyle(document.querySelector('.tab.active'));
+    const button=document.querySelector('.ai-toggle');
+    const ai=getComputedStyle(button), rect=button.getBoundingClientRect();
+    return {mode:root.dataset.theme,color:root.dataset.themeColor,systemDark:matchMedia('(prefers-color-scheme: dark)').matches,chrome:chrome.backgroundColor,text:chrome.color,toolbar:toolbar.backgroundColor,activeTab:tab.backgroundColor,tabText:tab.color,normal:{color:ai.color,background:ai.backgroundColor,filter:ai.filter,hover:button.matches(':hover')},point:{x:Math.round(rect.x+rect.width/2),y:Math.round(rect.y+rect.height/2)}};
+  })()`);
+  assert.equal(sample.normal.hover, false);
+  assert.equal(sample.normal.filter, 'none');
+  sample.normalContrast = contrast(sample.normal.color, sample.normal.background);
+  sample.chromeContrast = contrast(sample.text, sample.chrome);
+  sample.tabContrast = contrast(sample.tabText, sample.activeTab);
+  await until('标题栏原生参数同步', () => {
+    const native = report.details.nativeOverlays.at(-1);
+    if (native?.color !== cssHex(sample.chrome) || native?.symbolColor !== cssHex(sample.text))
+      return false;
+    sample.native = { ...native };
+    return true;
+  });
+  win.webContents.sendInputEvent({ type: 'mouseMove', ...sample.point });
+  await until('AI按钮真实悬停', () => js(`document.querySelector('.ai-toggle').matches(':hover')`));
+  sample.hover = await js(
+    `(() => { const style=getComputedStyle(document.querySelector('.ai-toggle'));return {color:style.color,background:style.backgroundColor,filter:style.filter}; })()`,
+  );
+  assert.equal(sample.hover.filter, 'none');
+  sample.hoverContrast = contrast(sample.hover.color, sample.hover.background);
+  report.details.themeSamples ??= {};
+  report.details.themeSamples[name] = sample;
+  persist();
+  assert(sample.normalContrast >= 4.5 && sample.hoverContrast >= 4.5, `${name}按钮文字对比不足`);
+  assert(sample.chromeContrast >= 4.5 && sample.tabContrast >= 4.5, `${name}标签文字对比不足`);
+  assert.equal(sample.native.height, 36);
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: 10, y: 110 });
+  return sample;
+}
+async function themeColors() {
+  await click('[aria-label="设置"]');
+  await clickText('.settings-nav button', '外观');
+  await until('主题色16预设', () =>
+    js(`document.querySelectorAll('.theme-color-choice input').length===16`),
+  );
+  await click('.theme-color-choice input[value="default"]');
+  win.focus();
+  win.webContents.focus();
+  await js(`document.querySelector('.theme-color-choice input[value="default"]').focus()`);
+  win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Right' });
+  win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Right' });
+  await themeState('system', '#1a73e8');
+  const keyboard = await js(`(() => {
+    const input=document.activeElement;
+    const choice=input.closest('.theme-color-choice');
+    const style=getComputedStyle(choice);
+    return {value:input.value,checked:input.checked,focusVisible:input.matches(':focus-visible'),outline:parseFloat(style.outlineWidth),name:input.getAttribute('aria-label')};
+  })()`);
+  assert.equal(keyboard.value, 'blue');
+  assert.equal(keyboard.checked, true);
+  assert.equal(keyboard.focusVisible, true);
+  assert(keyboard.outline >= 2 && keyboard.name.length > 0);
+  fact('themeColorKeyboard', keyboard);
+  const samples = {};
+  const narrow = {};
+  for (const mode of ['light', 'dark']) {
+    await click(`.theme-choice input[value="${mode}"]`);
+    await click('.theme-color-choice input[value="purple"]');
+    await themeState(mode, '#7e57c2');
+    samples[mode] = await themeSample(`purple-${mode}`);
+    await js(`document.querySelector('.settings-page').scrollTop=0`);
+    await capture(`theme-purple-${mode}`);
+    win.setSize(600, 900);
+    await delay(200);
+    await js(`document.querySelector('.theme-color-picker').scrollIntoView({block:'nearest'})`);
+    const geometry = await js(`(() => {
+      const root=document.querySelector('.settings-content'), picker=document.querySelector('.theme-color-picker');
+      const rect=picker.getBoundingClientRect();
+      const boxes=[...picker.querySelectorAll('.theme-color-choice,.theme-color-custom input,.theme-color-custom button')].map(e=>{const r=e.getBoundingClientRect();return {x:r.x,right:r.right,width:r.width,height:r.height};});
+      return {viewport:innerWidth,width:root.clientWidth,scrollWidth:root.scrollWidth,pickerWidth:picker.clientWidth,pickerScrollWidth:picker.scrollWidth,left:rect.left,right:rect.right,boxes};
+    })()`);
+    assert(geometry.viewport >= 560 && geometry.viewport <= 600);
+    assert(geometry.scrollWidth <= geometry.width + 1);
+    assert(geometry.pickerScrollWidth <= geometry.pickerWidth + 1);
+    assert(geometry.boxes.length === 19);
+    assert(
+      geometry.boxes.every(
+        (box) =>
+          box.width >= 35 &&
+          box.height >= 35 &&
+          box.x >= geometry.left - 1 &&
+          box.right <= geometry.right + 1,
+      ),
+    );
+    narrow[mode] = geometry;
+    await capture(`theme-purple-${mode}-600px`);
+    win.setSize(1280, 900);
+    await delay(100);
+  }
+  assert.notEqual(samples.light.chrome, samples.dark.chrome);
+  fact('themeColorNarrow', narrow);
+  await inputValue('.theme-color-hex input', '#GGGGGG');
+  await click('.theme-color-custom button[type="submit"]');
+  await until('拒绝非法HEX', () =>
+    js(
+      `document.querySelector('.theme-color-hex input').getAttribute('aria-invalid')==='true' && document.querySelector('.theme-color-error')?.textContent.includes('HEX')`,
+    ),
+  );
+  await themeState('dark', '#7e57c2');
+  await inputValue('.theme-color-hex input', '#FFCC00');
+  await click('.theme-color-custom button[type="submit"]');
+  await themeState('dark', '#ffcc00');
+  await themeSample('custom-hex-dark');
+  await inputValue('.theme-color-native input', '#00ff00');
+  await themeState('dark', '#00ff00');
+  await themeSample('custom-picker-dark');
+  await click('.theme-choice input[value="light"]');
+  await themeState('light', '#00ff00');
+  fact('themeColorInputs', {
+    invalidRejected: true,
+    hex: '#ffcc00',
+    nativeInput: '#00ff00',
+    modeIndependent: true,
+  });
+  await clickText('.theme-color-heading button', '恢复默认');
+  await themeState('light', 'default');
+  assert(await js(`document.querySelector('.theme-color-choice input[value="default"]').checked`));
+  fact('themeColorReset', { mode: 'light', color: 'default' });
+  await click('.theme-choice input[value="system"]');
+  await click('.theme-color-choice input[value="purple"]');
+  await themeState('system', '#7e57c2');
+  const system = await themeSample('purple-system');
+  assert.equal(system.chrome, samples[system.systemDark ? 'dark' : 'light'].chrome);
+  fact('themeColors', { purple: '#7e57c2', systemDark: system.systemDark });
+  fact('themeNativeSync', { samples: Object.keys(report.details.themeSamples) });
+  await clickText('.workspace-page-back', '返回浏览');
+}
+async function prepareThemePersistence() {
+  await clickText('.settings-nav button', '外观');
+  await click('.theme-choice input[value="dark"]');
+  await inputValue('.theme-color-hex input', '#245F94');
+  await click('.theme-color-custom button[type="submit"]');
+  await themeState('dark', '#245f94');
+  await themeSample('persisted-dark');
+  writeFileSync(
+    join(root, 'expected-theme.json'),
+    JSON.stringify({ mode: 'dark', color: '#245f94' }),
+    { flag: 'wx' },
+  );
+  fact('themeColorPersistencePrepared');
+}
+async function reopenTheme() {
+  const expected = JSON.parse(readFileSync(join(root, 'expected-theme.json'), 'utf8'));
+  assert.deepEqual(expected, { mode: 'dark', color: '#245f94' });
+  await themeState(expected.mode, expected.color);
+  await click('[aria-label="设置"]');
+  await clickText('.settings-nav button', '外观');
+  await until('重启颜色控件还原', () =>
+    js(
+      `document.querySelector('.theme-choice input[value="dark"]').checked && document.querySelector('.theme-color-hex input').value==='#245f94'`,
+    ),
+  );
+  await themeSample('reopened-dark');
+  await capture('theme-reopened');
+  fact('themeColorPersisted', expected);
+  await clickText('.workspace-page-back', '返回浏览');
+}
 async function downloadAndScriptsUi() {
   await click('[aria-label="下载与脚本"]');
   await until('工具直达下载与脚本', () =>
@@ -700,10 +915,15 @@ async function run() {
   if (phase === 'write') {
     await groups();
     await appearance();
+    await themeColors();
     await downloadAndScriptsUi();
     await browserDownloadBlocked();
     await writeScripts();
-  } else await reopenScripts();
+    await prepareThemePersistence();
+  } else {
+    await reopenTheme();
+    await reopenScripts();
+  }
   assert.equal(report.network.unexpected, 0);
   assert.equal(report.network.node, 0);
   assert.equal(report.network.fetch, 0);
@@ -730,6 +950,15 @@ app.on('browser-window-created', (_event, value) => {
   if (started) return;
   started = true;
   win = value;
+  report.details.nativeOverlays = [];
+  const setOverlay = win.setTitleBarOverlay;
+  win.setTitleBarOverlay = function (...args) {
+    const result = Reflect.apply(setOverlay, this, args);
+    // Record only successful calls to the real native implementation.
+    report.details.nativeOverlays.push({ ...args[0] });
+    persist();
+    return result;
+  };
   void run().catch(fail);
 });
 app.on('will-quit', () => {

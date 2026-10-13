@@ -51,7 +51,13 @@ vi.mock('./research/use-research', () => ({
   }),
 }));
 vi.mock('./ui/useAppearance', () => ({
-  useAppearance: () => ({ appearance: 'system', setAppearance: vi.fn() }),
+  useAppearance: () => ({
+    appearance: 'system',
+    setAppearance: vi.fn(),
+    themeColor: null,
+    themeColorError: null,
+    setThemeColor: vi.fn(() => true),
+  }),
 }));
 vi.mock('./storage/useLocalData', () => ({
   useLocalData: () => ({ issue: null }),

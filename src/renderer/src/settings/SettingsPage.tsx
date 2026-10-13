@@ -3,6 +3,7 @@ import { LocalDataPanel } from '../storage/LocalDataPanel';
 import type { LocalDataController } from '../storage/useLocalData';
 import { Icon } from '../ui/Icon';
 import { ThemeSelect } from '../ui/ThemeSelect';
+import { ThemeColorPicker } from '../ui/ThemeColorPicker';
 import type { AppearanceController } from '../ui/useAppearance';
 import { TraySettingsControl } from './TraySettingsControl';
 import { UserScriptsPanel } from './UserScriptsPanel';
@@ -86,8 +87,13 @@ export function SettingsPage({
           {section === 'appearance' && (
             <section className="settings-section-card">
               <h2>外观</h2>
-              <p>选择应用界面和 Windows 标题栏按钮的颜色模式。</p>
+              <p>选择界面的浅深模式，再搭配喜欢的主题色。</p>
               <ThemeSelect appearance={appearance.appearance} onChange={appearance.setAppearance} />
+              <ThemeColorPicker
+                color={appearance.themeColor}
+                onChange={appearance.setThemeColor}
+                error={appearance.themeColorError}
+              />
             </section>
           )}
           {section === 'ai' && (

@@ -1,4 +1,5 @@
 import { IPC } from '../../shared/types/ipc';
+import { isThemeColor } from '../../shared/theme-colors';
 import {
   isCreateTabGroupPayload,
   isUpdateTabGroupPayload,
@@ -28,7 +29,8 @@ function validateBrowserUiPayload(channel: string, payload: unknown): boolean {
   try {
     if (channel === IPC.UiAppearance)
       return (
-        closed(payload, ['appearance']) &&
+        (closed(payload, ['appearance']) ||
+          (closed(payload, ['appearance', 'themeColor']) && isThemeColor(payload.themeColor))) &&
         typeof payload.appearance === 'string' &&
         ['system', 'light', 'dark'].includes(payload.appearance)
       );

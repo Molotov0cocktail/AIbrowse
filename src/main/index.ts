@@ -30,6 +30,7 @@ import type {
   SetTabGroupPayload,
 } from '../shared/types/browser';
 import type { Appearance, TraySettings } from '../shared/types/app';
+import type { ThemeColor } from '../shared/theme-colors';
 import { dispatchBrowserLibrary, browserPageForLibrary } from './browser-library-ipc';
 import type { BrowserLibraryService } from './browser-library/browser-library-service';
 import {
@@ -460,7 +461,10 @@ function requireNodeDataRoot(): string {
 let browserController: BrowserControllerImpl | null = null;
 let mainWindow: BrowserWindow | null = null;
 let browserLibraryService: BrowserLibraryService | null = null;
-const windowAppearances = new WeakMap<BrowserWindow, (appearance: Appearance) => boolean>();
+const windowAppearances = new WeakMap<
+  BrowserWindow,
+  (appearance: Appearance, themeColor?: ThemeColor) => boolean
+>();
 let diagnosticTabCount: number | null = null;
 const uiDocuments = new WeakMap<BrowserWindow, UiDocumentGuard>();
 const uiRecoveries = new WeakMap<BrowserWindow, UiRendererRecovery>();
@@ -1608,8 +1612,14 @@ if (!gotLock) {
       );
     }
     handle(IPC.UiAppearance, (payload) => {
-      const appearance = (payload as { appearance: Appearance }).appearance;
-      return mainWindow !== null && (windowAppearances.get(mainWindow)?.(appearance) ?? false);
+      const { appearance, themeColor } = payload as {
+        appearance: Appearance;
+        themeColor?: ThemeColor;
+      };
+      return (
+        mainWindow !== null &&
+        (windowAppearances.get(mainWindow)?.(appearance, themeColor) ?? false)
+      );
     });
 
     const readTabId = (payload: unknown): string | null =>

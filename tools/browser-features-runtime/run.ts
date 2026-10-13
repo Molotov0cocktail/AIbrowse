@@ -65,6 +65,13 @@ export function phasePassed(value: unknown, phase: string): boolean {
           'groupEditorControls',
           'uiReloadGroups',
           'appearance',
+          'themeColors',
+          'themeColorKeyboard',
+          'themeColorInputs',
+          'themeColorReset',
+          'themeColorNarrow',
+          'themeNativeSync',
+          'themeColorPersistencePrepared',
           'downloadToolEntry',
           'downloadToolAppearance',
           'browserDownloadBlocked',
@@ -74,7 +81,7 @@ export function phasePassed(value: unknown, phase: string): boolean {
           'persistencePrepared',
         ]
       : phase === 'reopen'
-        ? ['isolation', 'scriptsPersisted', 'persistedExecution']
+        ? ['isolation', 'scriptsPersisted', 'persistedExecution', 'themeColorPersisted']
         : [];
   return (
     required.length > 0 &&

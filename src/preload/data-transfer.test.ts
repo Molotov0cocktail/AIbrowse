@@ -105,6 +105,7 @@ it('文档token拒绝时五个新入口均不能抵达main业务handler', async 
     () => api.browserLibrary.clearHistory(),
     () => api.browserLibrary.addCurrentBookmark(),
     () => api.ui.setAppearance('dark'),
+    () => api.ui.setAppearance('dark', '#123456'),
     () => api.dataTransfer.getStatus(),
     () => api.getConversationStorageStatus(),
     () => api.dataTransfer.start('backup'),
@@ -117,4 +118,16 @@ it('文档token拒绝时五个新入口均不能抵达main业务handler', async 
   await vi.advanceTimersByTimeAsync(10_000);
   await rejected;
   expect(electron.invoke).toHaveBeenCalledExactlyOnceWith(IPC.UiDocumentOpen);
+});
+
+it('主题色桥接保留旧参数形状，新调用仅传模式与色种子和文档token', async () => {
+  const api = await bridge();
+  await api.ui.setAppearance('dark');
+  await api.ui.setAppearance('system', '#123456');
+  await api.ui.setAppearance('light', null);
+  expect(electron.invoke.mock.calls.slice(1)).toEqual([
+    [IPC.UiAppearance, { appearance: 'dark' }, 'synthetic-document-token'],
+    [IPC.UiAppearance, { appearance: 'system', themeColor: '#123456' }, 'synthetic-document-token'],
+    [IPC.UiAppearance, { appearance: 'light', themeColor: null }, 'synthetic-document-token'],
+  ]);
 });

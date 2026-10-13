@@ -1,5 +1,37 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 自定义主题色（2026-10-13）
+
+- TASK / BASELINE：用户在手动IDM收尾时新增主题色需求，提供Chrome配色截图。先完成旧任务0.1.11交付
+  与双远程同步，干净baseline `035e504b1313c2fb3065c81c2d592f791adea68e`。
+- GOAL / SCOPE：外观页增加预设色卡、自定义选色/HEX、恢复默认及持久化；浅深系统模式独立；应用外壳与
+  原生标题栏同源配色。正式契约 `doc/design/theme-colors.md`。不涉及截图中其它Chrome设置、网页主题注入、
+  壁纸或远程主题包，不恢复已撤销IDM自动接管。
+- PLAN / INVARIANTS：共享纯调色算法；renderer专用色键/UI；闭合IPC与原生标题栏并行实现。保存失败诚实
+  反馈；既有mode、用户脚本、任务隔离、语义色/分组色保持。无新网络或系统通用能力。
+- TEST / ACCEPTANCE：先建立新色输入与安全/持久化反例；预设和极端色对比度、键盘/选中、模式独立及
+  重启验证；受影响typecheck/lint/test/build、真实隔离UI和独立审核后更新内部程序/安装器并双远程同步。
+- STOP / EVIDENCE：不降低可读性门；最多两轮同假设无新证据即调整工程方案。新证据
+  `log/theme-colors-20261013/`，旧0.1.11仍为output选定版，新候选验证前不替换。
+- 聚焦实现：配色59项、renderer46项、main/preload30项及独立12文件121项通过；root集成12文件142项
+  通过，计数重叠不相加。独立色彩oracle覆盖729种RGB×浅深两模式；严格HEX/IPC、两键独立、保存失败
+  保旧均有反例。全局typecheck/lint/format与普通build通过。默认浅色次级文字和AI按钮背景已有甄别红态。
+- 首轮原生UI `runtime-b9974cb8-bed4-4c0b-a885-12a0a6d9256a` 实际FAIL：AI按钮浅色悬停被更高优先级
+  的全局button规则覆盖，白字对比仅1.281。0网络/Provider/IDM，源码与构建前后恒等，失败原件保留；
+  当前代码审核结论收窄为纯逻辑/IPC/持久化PASS，产品待CSS级联修复与原生复验，不能以纯算法通过代替。
+- CSS修复改为优先级明确的AI专属选择器，真实源规则级联反例红→绿，renderer48项及独立13项通过；
+  普通build-02通过，首轮构建完整归档至`out-before-hover-repair`。第二轮`runtime-f2591376`已通过所有
+  主题切换/HEX/键盘/窄窗/原生同步/悬停及旧功能门，但最终保存样本等待全document无限spinner，180秒
+  超时FAIL，8次本地请求、0Provider/IDM。这是采样等待范围错误；工具限定为所测控件的有限动画并记录
+  忽略项，保持实际computed style对比、原生参数和重启门不变。产品和普通构建无需修改，旧失败均保留。
+- 最终原生UI `runtime-833f8981-426e-421e-b7ce-6c7847d96ba0` 双进程PASS，before/after恒等；当轮9/20
+  本地请求，三轮累计17，Provider/IDM/Cookie/CDP/产品请求头监听均0。紫色浅深normal/hover对比分别
+  5.84566/8.10066；实际native overlay与DOM逐样本匹配，键盘focus-visible、600px布局、HEX拒绝及
+  大写归一化、取色input事件、恢复默认保mode、system当时系统选择、自选dark/#245f94重开均通过。
+  原分组/下载拒绝/脚本及任务隔离相关门保持。主协调复看浅色全窗、深色600px和自选色重启截图。
+  仅忽略了1个transform-only的`.spinner`无限动画，进一步确认旧等待阻塞原因；其他无限动画受控拒绝。
+  未改变OS主题；物理输入、系统取色对话框操作、真实profile及发行包/安装器启动NOTRUN。
+
 ## 内置脚本交付与恢复手动 IDM（2026-10-13）
 
 - TASK / BASELINE：接管 `7bf5f38080c9713010a362e6a1c093aef356efe9`，用户告知 IDM 修复完成；

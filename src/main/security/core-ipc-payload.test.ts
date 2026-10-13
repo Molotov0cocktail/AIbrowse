@@ -126,6 +126,39 @@ it('浏览资料库严格限制查询、标识、网址与外观枚举', () => {
   expect(validateCoreIpcPayload('ui:appearance', { appearance: 'invalid' })).toBe(false);
 });
 
+it('主题色IPC只接受旧模式或新闭合模式加RGB色种子，不开放任意样式', () => {
+  for (const appearance of ['system', 'light', 'dark']) {
+    expect(validateCoreIpcPayload(IPC.UiAppearance, { appearance })).toBe(true);
+    for (const themeColor of [null, '#000000', '#FFFFFF', '#a1B2c3'])
+      expect(validateCoreIpcPayload(IPC.UiAppearance, { appearance, themeColor })).toBe(true);
+  }
+  for (const themeColor of [
+    undefined,
+    '',
+    'red',
+    '#fff',
+    '#11223344',
+    ' #112233',
+    '#112233\n',
+    'rgb(1,2,3)',
+    'url(file:///private)',
+    {},
+    1,
+    false,
+  ])
+    expect(validateCoreIpcPayload(IPC.UiAppearance, { appearance: 'dark', themeColor })).toBe(
+      false,
+    );
+  for (const payload of [
+    { appearance: 'dark', themeColor: null, color: '#000000' },
+    { themeColor: '#112233' },
+    { appearance: 'other', themeColor: '#112233' },
+    { appearance: 'dark', themeColor: null, [Symbol('x')]: true },
+    Object.assign(new Date(), { appearance: 'dark', themeColor: null }),
+  ])
+    expect(validateCoreIpcPayload(IPC.UiAppearance, payload)).toBe(false);
+});
+
 it('诊断仅接受空预览与闭合候选标识，不接收路径或正文', () => {
   const digest = 'a'.repeat(64);
   expect(validateCoreIpcPayload(IPC.DiagnosticPreview, undefined)).toBe(true);

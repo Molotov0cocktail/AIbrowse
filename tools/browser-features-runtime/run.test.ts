@@ -26,11 +26,19 @@ describe('运行证据边界', () => {
       passed: true,
       willQuit: true,
       error: null,
-      facts: { isolation: true, scriptsPersisted: true, persistedExecution: true },
+      facts: {
+        isolation: true,
+        scriptsPersisted: true,
+        persistedExecution: true,
+        themeColorPersisted: true,
+      },
       childLaunches: 0,
       downloadBoundary: quietDownloadBoundary(),
     };
     expect(phasePassed(valid, 'reopen')).toBe(true);
+    expect(
+      phasePassed({ ...valid, facts: { ...valid.facts, themeColorPersisted: false } }, 'reopen'),
+    ).toBe(false);
     expect(phasePassed({ ...valid, facts: { isolation: true } }, 'reopen')).toBe(false);
     expect(phasePassed({ ...valid, willQuit: false }, 'reopen')).toBe(false);
     expect(phasePassed({ ...valid, error: '失败' }, 'reopen')).toBe(false);
@@ -50,6 +58,13 @@ describe('运行证据边界', () => {
           'groupEditorControls',
           'uiReloadGroups',
           'appearance',
+          'themeColors',
+          'themeColorKeyboard',
+          'themeColorInputs',
+          'themeColorReset',
+          'themeColorNarrow',
+          'themeNativeSync',
+          'themeColorPersistencePrepared',
           'downloadToolEntry',
           'downloadToolAppearance',
           'browserDownloadBlocked',
@@ -67,6 +82,18 @@ describe('运行证据边界', () => {
       },
     };
     expect(phasePassed(valid, 'write')).toBe(true);
+    for (const fact of [
+      'themeColors',
+      'themeColorKeyboard',
+      'themeColorInputs',
+      'themeColorReset',
+      'themeColorNarrow',
+      'themeNativeSync',
+      'themeColorPersistencePrepared',
+    ])
+      expect(phasePassed({ ...valid, facts: { ...valid.facts, [fact]: false } }, 'write')).toBe(
+        false,
+      );
     expect(phasePassed({ ...valid, downloadBoundary: undefined }, 'write')).toBe(false);
     for (const change of [
       { nativeEvents: [] },

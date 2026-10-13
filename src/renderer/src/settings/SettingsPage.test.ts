@@ -31,7 +31,13 @@ it('设置页提供常规托盘入口及其余分类并将数据故障标在常�
     section: 'general',
     onSectionChange,
     onBack: vi.fn(),
-    appearance: { appearance: 'system', setAppearance: vi.fn() },
+    appearance: {
+      appearance: 'system',
+      setAppearance: vi.fn(),
+      themeColor: null,
+      themeColorError: null,
+      setThemeColor: vi.fn(() => true),
+    },
     localData: {
       status: null,
       storage: null,
@@ -64,7 +70,13 @@ it('浏览库故障也标在本地数据分类入口', () => {
     section: 'appearance',
     onSectionChange: vi.fn(),
     onBack: vi.fn(),
-    appearance: { appearance: 'system', setAppearance: vi.fn() },
+    appearance: {
+      appearance: 'system',
+      setAppearance: vi.fn(),
+      themeColor: null,
+      themeColorError: null,
+      setThemeColor: vi.fn(() => true),
+    },
     localData: {
       status: null,
       storage: null,

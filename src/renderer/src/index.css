@@ -11,11 +11,14 @@
   --border: light-dark(#e0e4eb, #353c48);
   --border-strong: light-dark(#c6cdd9, #515e73);
   --text: light-dark(#222b3d, #e7ebf2);
-  --muted: light-dark(#647086, #a4afc2);
+  --muted: light-dark(#5d697e, #a4afc2);
   --accent: light-dark(#eaf0fd, #2b3854);
   --brand: light-dark(#3d5faa, #a9c1ff);
   --primary: light-dark(#3d5faa, #86a6f1);
   --on-primary: light-dark(#ffffff, #111b32);
+  --chrome-bg: var(--bg);
+  --toolbar-bg: var(--bg);
+  --active-tab-bg: var(--surface);
   --danger: light-dark(#b73540, #ff9ca5);
   --danger-soft: light-dark(#fff0f0, #432830);
   --warning: light-dark(#855911, #edc478);
@@ -126,7 +129,7 @@ body {
 
 .chrome {
   flex-shrink: 0;
-  background: var(--bg);
+  background: var(--chrome-bg);
   border-bottom: 1px solid var(--border);
 }
 
@@ -137,6 +140,7 @@ body {
   min-height: 43px;
   padding: 4px 8px;
   border-top: 1px solid var(--border);
+  background: var(--toolbar-bg);
 }
 
 .nav-button {
@@ -211,7 +215,7 @@ body {
 }
 
 .tab.active {
-  background: var(--surface);
+  background: var(--active-tab-bg);
   color: var(--text);
   border-color: var(--border);
   box-shadow: inset 0 2px 0 var(--brand);
@@ -255,7 +259,7 @@ body {
   padding: 3px
     calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px))) 0
     env(titlebar-area-x, 8px);
-  background: var(--bg);
+  background: var(--chrome-bg);
   -webkit-app-region: drag;
 }
 
@@ -2052,11 +2056,14 @@ body {
   font-weight: 650;
 }
 
-.ai-toggle:hover,
-.ai-toggle[aria-pressed='true'] {
+button.ai-toggle:hover:not(:disabled),
+button.ai-toggle[aria-pressed='true'] {
   border-color: var(--primary);
-  background: color-mix(in srgb, var(--primary) 84%, var(--surface));
+  background: var(--primary);
   color: var(--on-primary);
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 3px var(--primary);
 }
 
 .address-field:focus-within {

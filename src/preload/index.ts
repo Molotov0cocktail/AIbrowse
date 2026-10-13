@@ -257,7 +257,11 @@ const bridge: AibrowseBridge = {
     snapshot: (tabId) => invoke<PageSnapshot | null>(IPC.PageSnapshot, { tabId }),
   },
   ui: {
-    setAppearance: (appearance) => invoke<boolean>(IPC.UiAppearance, { appearance }),
+    setAppearance: (appearance, themeColor) =>
+      invoke<boolean>(
+        IPC.UiAppearance,
+        themeColor === undefined ? { appearance } : { appearance, themeColor },
+      ),
     reportContentBounds: (bounds) => {
       send(IPC.UiContentBounds, bounds);
     },
