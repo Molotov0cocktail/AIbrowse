@@ -8,8 +8,8 @@
 
 - 2026-10-13 用户进一步裁决：去掉沉浸式翻译，保留 IDM 工具与油猴脚本，翻译用现有 AI 共读。
   不再等待独立插件区选择；按原有标签/共享登录推进显式 IDM 链接交接与脚本支持。
-  指定脚本为 GreasyFork 14178 AC-baidu、435208 GitHub 中文化，正在下载原版并核查实际依赖；
-  不把原子集冒充两脚本兼容。baseline 仍73c3783，当前output 0.1.9，详细差量合同见 legacy-repair 新首节。
+  指定脚本 GreasyFork 14178 AC-baidu、435208 GitHub 中文化已完成固定版本适配与下载；
+  不把原子集冒充完整油猴兼容。baseline 73c3783，当前output **0.1.10**，详细差量合同见 legacy-repair 首节。
   原版扩展调查结论/工具保留为历史；本轮不接通原版扩展、不开放网页或 AI 的下载执行通道。
   用户已批准指定脚本高阶能力但禁用附带讯飞翻译，正式设计 `doc/design/qualified-scripts-idm.md`。
   IDM、固定资格脚本及本地资产包安装已实现，真实27资产下载校验完成；受控原稿actual-3 PASS。
@@ -18,7 +18,13 @@
   完整UI双进程a63e5cc8 PASS：工具入口/深浅600px/原分组与脚本持久化，7本地请求/0Provider/0IDM。
   首两场验收工具误拦guardian失败已定位保留；修后恢复默认GPU、原UI门不减。
   全量7550PASS/2FAIL/3SKIP（exit1）保留；2项旧验收夹具/方法名误归SQL修后39项通过，组合7553PASS/3SKIP。
-  typecheck/lint/format及普通build通过；准备0.1.10最终干净发行构建与包身份审核，output仍0.1.9。
+  typecheck/lint/format、普通build及最终发行构建通过；源候选ae4acd2d3870565055845e3f0480fc64c35b493d。
+  新包独审PASS：225模块/16构建件/56ASAR/75程序文件，manifest
+  083e703df2617ceca4987f75d34f8a1a99843ef660e44b4418b560ee8ac8a8f2。
+  output切换4c12eb1cd62f4ad2a45929bb94aabb1c成功；独立新旧各79文件全树复核PASS。
+  旧0.1.9保留在log/idm-tool-20261013/previous-output-4c12eb1cd62f4ad2a45929bb94aabb1c。
+  本轮完成；发行程序启动/安装器执行/真实IDM下载NOTRUN，普通原生UI与脚本运行证据不扩张到这些场景。
+  仅文档收尾与正常双远程同步；不启动额外功能或原版Chrome扩展接入。
 
 - 2026-10-13 用户进一步要求接入原版油猴、IDM 下载助手、沉浸式翻译；接管干净
   `73c378329c755fff2ea1555b4e461348923f1fcd`。正在核对官方包/API、本机 IDM 和任务页隔离方案；
