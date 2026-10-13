@@ -6,6 +6,13 @@
 
 ### 当前任务与后继
 
+- 2026-10-14 用户要求新建标签清空网址、地址栏单击全选/双击定位光标；干净接管
+  `904b478805503f83a85def604a049dba27f3616a`，output仍为0.1.14。已定位renderer聚焦草稿跨标签残留，
+  差量合同见legacy-repair首节及detailed-design §9。已修复标签身份同步及单击/双击选择，6文件189项PASS。
+  原生工具焦点/拖动前提失效的FAIL与独审REPLAN保留，真实重复单击红态修复后，23c32eef十项全PASS，
+  正常退出/绑定恒等，十轮累计32本地请求、0外网/Provider；typecheck/lint/format/build通过。
+  正在执行0.1.15源码绑定发行与output选择，不触真实profile或其它功能；发行启动/安装器执行NOTRUN。
+
 - 2026-10-14 用户要求定位并修复启动红色“浏览数据暂不可用”气泡，干净接管
   `a6ae2dc3e7ca02cb3aa531d859cd68e4b3e2a5df`，output 0.1.13。合同见legacy-repair首节。
   真实日志及browser.db只读副本已核验，完整性ok、原文件摘要恒等；根因是浏览库、会话和备份恢复入口

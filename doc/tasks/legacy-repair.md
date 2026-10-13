@@ -1,5 +1,44 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 新标签地址清空与地址栏点击选择（2026-10-14）
+
+- TASK / BASELINE：用户要求新标签为空网址、单击地址栏全选、双击定位光标。干净接管
+  `904b478805503f83a85def604a049dba27f3616a`，output为0.1.14；权威源为本次用户请求、
+  `doc/detailed-design.md` §9及现有浏览器能力隔离契约。
+- CURRENT VERIFIED STATE：BrowserController无参数createTab已经创建about:blank；App创建成功后聚焦
+  地址栏，而AddressBar只按URL且只在未聚焦时同步draft，导致标签切换仍保留上一页输入。
+- GOAL / NON-GOALS / INVARIANTS：只修地址显示与选择交互；保持同标签编辑草稿、失焦恢复、键盘和
+  导航规范化。无主进程/IPC/存储/权限变化，不读取真实账号资料，不启动其它功能或Stage8。
+- SCOPE / PLAN：AddressBar按标签身份同步；左单击全选、双击恢复光标，保留拖动和右键原生行为。
+  聚焦反例先红后绿；实际Chromium鼠标序列和产品新建Tab链验证，通用工具纳入tools。
+- ACCEPTANCE / TEST PLAN：受影响renderer/浏览器回归、typecheck/lint/format/build；运行验收每轮
+  独立profile、总预算90秒、0外网/Provider，保留失败与源码/产物绑定。按变更风险复用未变存储、安全、
+  安装器生命周期与全阶段证据；验证后更新内部候选及output、保留旧版并正常双远程同步。
+- STOP / REPLAN：同路线两轮无新增证据即换路；不得用事件模拟冒充物理输入或真实账号验证。
+  原始证据位于`log/address-bar-20261014/`与`log/address-bar-runtime-20261014/`，发行启动/安装器
+  执行若未实测则明确NOT RUN。真实运行每轮至多12个本机环回请求，外网与Provider调用为0。
+- 聚焦验证：原地址栏8项为5FAIL/3PASS，修后连同App导航、Toolbar、TabBar、URL规范化及
+  BrowserController共6文件188PASS；独立地址栏8项及接线/浏览器129项PASS，重叠不相加。
+  首次typecheck发现新增测试夹具readonly数组声明错误，修正类型后通过；产品无类型豁免。
+- 旧普通构建18文件完整保留在`baseline-out/`。三场旧原生运行e0e3b116、f2bca108、b7ae3990
+  均正常退出且源码/产物绑定前后恒等，单击/重复单击/双击/同URL跨标签草稿实际红态；各4个本地请求。
+  这些运行的新建按钮路径本身已显示空地址，未声称它们复现全部截图时序；聚焦反例验证已聚焦标签
+  身份变化时的草稿残留。旧工具误将显式导航导致失焦后的草稿同步视为失败，改为本地页history.pushState
+  在不改变焦点时验证同标签编辑；点击位置改为按文本宽度定位，旧原件不改判，不继续旧矩阵重跑。
+- 原生oracle修订：5d704427误选同URL的旧WebContents，按创建前后唯一新增ID修复；0d0bd949与
+  be5f1630仍出现重复单击/草稿失败，6c6e9312观测确认UI原生焦点与document.hasFocus全false、
+  无focusin/out。独审由初步REPAIR改为焦点前提REPLAN，记录均保留；工具改为输入前取得真实焦点，
+  不改产品迁就后台输入。1796cd0a在真实焦点下证实草稿保留通过，重复单击仍失败，构成产品修复红态。
+- 产品补修：primary单击先focus，再预折叠旧选区，随后由Chromium放置原生caret；click全选而dblclick
+  恢复caret，避免点中旧选区后浏览器延迟取消全选。c46d2501重复单击已通过，但新增拖动探针未发送
+  leftbuttondown，拖动及后继双击前提失效；补齐按住左键与mousemove.buttons观测后再验，未降低要求。
+- 最终`fixed-green-23c32eef-4c10-4463-8650-8856b38e7477`真实产品DOM十项全PASS：单击/重复单击、
+  双击caret25、拖动9..28、右键、新标签空地址、同URL切页、同标签草稿、失焦恢复与Enter导航。
+  真实document/native焦点、正常退出、Job释放及源码/工具/产物绑定恒等；最终3个本地请求，所有十轮
+  累计32个本地请求、0外网/Provider。全部旧FAIL保留；旧out与当时dirty源码分别绑定，不冒称旧构建来源。
+- 最终聚焦6文件189PASS，末尾focus先后序9项PASS；typecheck-final、全局lint加受影响增量lint、
+  全局format及build-focus-order均exit0。未重开未受影响的全阶段长测、数据库或Provider验收。
+
 ## 启动期浏览数据错误气泡（2026-10-14）
 
 - TASK / BASELINE：用户要求读取项目与应用数据，定位并修复每次进入应用的红色提示。干净接管
