@@ -31,6 +31,23 @@
   原分组/下载拒绝/脚本及任务隔离相关门保持。主协调复看浅色全窗、深色600px和自选色重启截图。
   仅忽略了1个transform-only的`.spinner`无限动画，进一步确认旧等待阻塞原因；其他无限动画受控拒绝。
   未改变OS主题；物理输入、系统取色对话框操作、真实profile及发行包/安装器启动NOTRUN。
+- 重启截图的“浏览数据暂不可用”提示已只读追溯：旧0.1.11同门也有；初始service=null时状态读取返回
+  unavailable，hook每5秒重读，而新旧reopen在React ready后约1秒即退出，未观察到下一次刷新。
+  两轮隔离browser.db均user_version=1、integrity_check=ok、8条历史含各自/reopened，原DB读前后摘要
+  恒等，日志无storage-error/损坏。该旧启动瞬态未在本轮修复，也不把未观察的提示消失当成事实。
+  SQLite readOnly检查仍产生0字节WAL和32768字节SHM，已保留并记录，未触真实profile或追加网络。
+- 独立产品审核`independent-review.json` PASS，绑定源码候选
+  `46188a77ec24ed17eac8e2ca4ace751979dd2a75`及743项实际源/工具/普通构建输入；普通构建完整保留在
+  `ordinary-ui-out`。该干净候选构建0.1.12 EXE/MSI，package/verify/static/provenance/compare均0；
+  同manifest比较仅证明schema/身份，不称为可复现构建。包独审`review-package-final.json` PASS：
+  226源码模块、16构建件、63ASAR成员、75程序文件、7脚本资源/27资产、12安装器源输入完整绑定，
+  自动下载模块/helper仍不存在；此前独立路径映射误报原件保留，修正Windows分隔符后摘要门未变。
+  manifest为`3d69768086782da40fefada2caa558d513a292fb0b52dd7f31090c6559677fca`。
+- output CheckOnly/Switch均0，切换ID`4384b44e620548af89efad9538ad1f24`；新0.1.12为79文件624834101字节。
+  旧0.1.11完整79文件624807330字节保留于本轮`previous-output-4384b44e620548af89efad9538ad1f24`。
+  `output-switch-review.json`最终独审PASS：新旧各79文件、24证明与plan字节闭合，旧版完整保留。
+  最终候选typecheck复核0（`typecheck-final-02.txt`）；CSS/工具修复后的聚焦lint/format均0。
+  当前用户请求已交付；未启动真实profile、发行包、安装器或IDM，收尾只修改文档并正常双远程同步。
 
 ## 内置脚本交付与恢复手动 IDM（2026-10-13）
 

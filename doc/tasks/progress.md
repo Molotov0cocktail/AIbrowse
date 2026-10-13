@@ -7,13 +7,20 @@
 ### 当前任务与后继
 
 - 2026-10-13 用户新增Chrome风格主题色自定义：预设色卡、自选色/HEX、恢复默认，独立于浅深系统模式。
-  旧手动IDM任务已收尾双推，干净接管`035e504b1313c2fb3065c81c2d592f791adea68e`；output现为0.1.11。
+  旧手动IDM任务已收尾双推，干净接管`035e504b1313c2fb3065c81c2d592f791adea68e`。
   合同见legacy-repair首节与`doc/design/theme-colors.md`。16配色、自选色/HEX、独立持久化、闭合IPC与原生
   标题栏已实现；root142项集成、renderer最终48项和独立121项/修复13项通过（重叠不相加）。
   typecheck/lint/format/build通过，实际CSS悬停覆盖已红→绿；前两轮UI失败与构建原件保留。
   原生UI最终`runtime-833f8981`双进程PASS：色卡/键盘/600px/HEX/恢复默认/标题栏/重启均通过，9本地请求，
-  三轮累计17，0Provider/IDM。新主题未改变网页或AI/研究/监控权限。下一动作是独审收定与0.1.12构建选择；
-  output仍保持0.1.11，未经选包不声称新发行交付。
+  三轮累计17，0Provider/IDM。新主题未改变网页或AI/研究/监控权限，独立产品审核PASS。
+  干净源码候选`46188a77ec24ed17eac8e2ca4ace751979dd2a75`已构建0.1.12，发行校验/静态绑定/provenance
+  通过，包独审PASS（226源码模块/16构建件/63ASAR/75程序文件；7资源文件27脚本资产恒等）。
+  **output已更新0.1.12**，79文件624834101字节，入口`output/win-unpacked/AIbrowse.exe`；manifest
+  `3d69768086782da40fefada2caa558d513a292fb0b52dd7f31090c6559677fca`。
+  切换ID`4384b44e620548af89efad9538ad1f24`，CheckOnly/Switch与最终独审均PASS：新旧各79文件、24证明
+  完整闭合。旧0.1.11保留于`log/theme-colors-20261013/previous-output-4384b44e620548af89efad9538ad1f24`。
+  旧启动短暂“浏览数据暂不可用”提示仍为观察项，非本轮新增；隔离DB完整性ok、原文件摘要恒等，详见任务文档。
+  未启动真实profile、发行程序或安装器；物理输入/系统选色对话框操作NOTRUN。功能交付完成，仅文档收尾正常双推。
 
 - 2026-10-13 最新裁决：IDM 修复后仍报损坏，用户要求改回手动填写 URL。停止真实 IDM 调用，
   撤除自动下载接管、Cookie/来源交接及 COM helper；保留两个指定脚本内置、外观和分组。
