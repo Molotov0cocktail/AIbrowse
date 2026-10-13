@@ -41,6 +41,15 @@
   新独立审核`independent-review.json`PASS，独立190项及末尾联动56项通过（重叠不累加），398项源/工具/
   普通构建绑定核验；模型按AGENTS调度，工具未回显actual故记不可验证。后续只进行源码绑定内部包构建与
   output交付；发行启动/安装器执行保持NOT RUN。
+- 交付：干净源码`d7687ebfd33bc5e1e035c535da33f773ead6d096`构建0.1.14，发行校验/静态绑定/provenance
+  通过；独立包审核PASS（227模块、16产物、63ASAR、75程序文件，73外部文件与旧包恒等）。审核中误把中文
+  MSI语言2052按1033检查的失败原件保留，修正oracle后通过，未修改产品或重构建。
+  **output已更新0.1.14**：79文件624843885字节，入口`D:\AIbrowse\output\win-unpacked\AIbrowse.exe`；
+  manifest SHA256 `f625775a248f4a4ec8725ff8864dfb85b0786683b948d07ea87b11166473748e`。
+  CheckOnly/Switch均exit0，切换`da2fc38285cb48419a09842212623faa`，旧0.1.13完整79文件保留在
+  `log/browser-startup-20261014/previous-output-da2fc38285cb48419a09842212623faa`；主协调切后逐文件核验
+  新旧树/6证明/manifest及真实浏览库原摘要恒等PASS，见`output-final-verification.json`。
+  本次修复与内部交付完成，后续仅文档提交和正常双远程同步，不启动其它产品工作。发行/安装器运行NOT RUN。
 
 ## 通用网页新窗口关系与登录空白页（2026-10-13）
 
