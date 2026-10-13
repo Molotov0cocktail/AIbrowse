@@ -7,11 +7,16 @@
 ### 当前任务与后继
 
 - 2026-10-14 用户要求新建标签清空网址、地址栏单击全选/双击定位光标；干净接管
-  `904b478805503f83a85def604a049dba27f3616a`，output仍为0.1.14。已定位renderer聚焦草稿跨标签残留，
+  `904b478805503f83a85def604a049dba27f3616a`，接管output为0.1.14。已定位renderer聚焦草稿跨标签残留，
   差量合同见legacy-repair首节及detailed-design §9。已修复标签身份同步及单击/双击选择，6文件189项PASS。
   原生工具焦点/拖动前提失效的FAIL与独审REPLAN保留，真实重复单击红态修复后，23c32eef十项全PASS，
   正常退出/绑定恒等，十轮累计32本地请求、0外网/Provider；typecheck/lint/format/build通过。
-  正在执行0.1.15源码绑定发行与output选择，不触真实profile或其它功能；发行启动/安装器执行NOTRUN。
+  产品与包新独审PASS（738运行绑定、227模块/16构建件/63ASAR/75程序文件），干净候选
+  `51391a4e15ee87f1d54e308b31c012c190e910ea`构建0.1.15，发行renderer与已验普通构建字节相同。
+  **output已更新0.1.15**，79文件624843617字节，入口`output/win-unpacked/AIbrowse.exe`；manifest
+  `cf148663effe5e9b428a91aa1b6f552d13f8acfac0611ffab9f456c22c8f6fef`。CheckOnly/Switch及切后新旧树/
+  8证明核验PASS；旧0.1.14位于本轮log的`previous-output-c86454fd763142afa7bcf8af890e273a`。
+  本轮完成，仅文档收尾与正常双远程同步；不触真实profile、不启动其它功能。发行启动/安装器执行NOTRUN。
 
 - 2026-10-14 用户要求定位并修复启动红色“浏览数据暂不可用”气泡，干净接管
   `a6ae2dc3e7ca02cb3aa531d859cd68e4b3e2a5df`，output 0.1.13。合同见legacy-repair首节。

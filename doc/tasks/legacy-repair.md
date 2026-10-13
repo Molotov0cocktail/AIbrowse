@@ -38,6 +38,17 @@
   累计32个本地请求、0外网/Provider。全部旧FAIL保留；旧out与当时dirty源码分别绑定，不冒称旧构建来源。
 - 最终聚焦6文件189PASS，末尾focus先后序9项PASS；typecheck-final、全局lint加受影响增量lint、
   全局format及build-focus-order均exit0。未重开未受影响的全阶段长测、数据库或Provider验收。
+- 独立产品审核PASS：最终738绑定核验、9项末尾聚焦及前序41/129项适用复用，不累加重复计数；
+  最终提交源码的typecheck-delivery也exit0。模型按AGENTS调度，工具未回显actual，记不可验证。
+  干净源码候选`51391a4e15ee87f1d54e308b31c012c190e910ea`构建0.1.15，release/static/MSI只读与
+  provenance验证通过；独立包审PASS（227模块/16构建件/63ASAR/75程序文件）。发行renderer与已验
+  普通构建逐字节一致，73外部文件、46资源/依赖、guardian和安装工具保持既有资格。
+- **output已更新0.1.15**：79文件624843617字节，入口`D:\AIbrowse\output\win-unpacked\AIbrowse.exe`；
+  manifest SHA256 `cf148663effe5e9b428a91aa1b6f552d13f8acfac0611ffab9f456c22c8f6fef`。
+  CheckOnly/Switch均exit0，切换`c86454fd763142afa7bcf8af890e273a`，旧0.1.14完整保留在
+  `log/address-bar-20261014/previous-output-c86454fd763142afa7bcf8af890e273a`。切后新旧各79文件、8份
+  冻结证明及manifest独立重算PASS，见`output-final-verification.json`。本轮修复与内部交付完成，
+  不触真实profile、不启动其它产品功能；发行启动/安装器执行/物理鼠标保持NOTRUN。最后仅文档收尾及双远程同步。
 
 ## 启动期浏览数据错误气泡（2026-10-14）
 
