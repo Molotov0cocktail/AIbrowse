@@ -76,6 +76,18 @@
   62a结束后launcher仅追加60秒精确测试进程树清理与65秒硬停止记录，产品/页面夹具不变；此工具超时分支
   仅完成静态检查，未把62a成功退出当成该超时分支的运行资格。1cb由操作者中止，其事后记录明确退出码
   unknown及核验时无匹配遗留进程，不伪造当时退出码或将缺失结果称为通过。
+- 交付完成：新独立产品审核`independent-review.json` PASS，干净源码候选
+  `4da3b39d5375d4ecf671003d4421fce1a5ee7a95`构建0.1.13；发行构建、包校验、静态绑定、MSI只读检查与
+  provenance均通过。独立包审核`independent-package-review.json` PASS，核准227源码模块、16构建件、
+  63ASAR成员、75程序文件、12安装器源码及保持恒等的7脚本资源/27资产；既有手动IDM源码保持不变。
+  包核对中排序、Windows ASAR路径表示与错误追加的IDM名称禁项三条诊断失败保留，纠正工程oracle后
+  原成员/字节/摘要门通过；没有产品变化或降低验收要求。
+  manifest为`3da28311d2022c6e6971c512a1cb50cd91cc6ba6216b9f647799b48c7ba2d5ea`。
+- output CheckOnly/Switch均0，切换ID`190a2923727641e182609a903b5e04a3`；新0.1.13为79文件624842112字节。
+  旧0.1.12完整79文件624834101字节保留于本轮`previous-output-190a2923727641e182609a903b5e04a3`。
+  `independent-output-review.json`最终独审PASS：新旧两树、6直接证明及plan完整闭合，staging已搬空；
+  入口为`output/win-unpacked/AIbrowse.exe`。未清理真实账号数据，未启动真实profile、发行程序或安装器；
+  用户需在新版回到原站刷新并重新发起登录，不能令旧空白页恢复已丢失的opener。仅文档收尾与正常双推。
 
 ## 自定义主题色（2026-10-13）
 
