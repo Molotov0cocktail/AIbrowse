@@ -26,6 +26,14 @@ export const IPC = {
   UserScriptsImport: 'userscripts:import',
   UserScriptsSetEnabled: 'userscripts:set-enabled',
   UserScriptsRemove: 'userscripts:remove',
+  IdmGetStatus: 'downloads:idm-status',
+  IdmSend: 'downloads:idm-send',
+  QualifiedScriptsList: 'qualified-scripts:list',
+  QualifiedScriptsInstall: 'qualified-scripts:install',
+  QualifiedScriptsInstallFile: 'qualified-scripts:install-file',
+  QualifiedScriptsSetEnabled: 'qualified-scripts:set-enabled',
+  QualifiedScriptsRemove: 'qualified-scripts:remove',
+  QualifiedScriptsMenu: 'qualified-scripts:menu',
   TabsCreate: 'tabs:create', // payload: { url?: string }（原始地址栏输入，main 侧规范化）
   TabsClose: 'tabs:close', // payload: { tabId }
   TabsActivate: 'tabs:activate', // payload: { tabId }

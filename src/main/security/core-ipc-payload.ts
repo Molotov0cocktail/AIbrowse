@@ -94,6 +94,43 @@ const schemas: Readonly<Record<string, readonly string[]>> = {
 
 /** Domain adapters retain their stricter value and budget validation. */
 export function validateCoreIpcPayload(channel: string, payload: unknown): boolean {
+  if (channel === IPC.QualifiedScriptsList || channel === IPC.QualifiedScriptsMenu)
+    return payload === undefined;
+  if (
+    [
+      IPC.QualifiedScriptsInstall,
+      IPC.QualifiedScriptsInstallFile,
+      IPC.QualifiedScriptsRemove,
+      IPC.QualifiedScriptsSetEnabled,
+    ].includes(channel as typeof IPC.QualifiedScriptsInstall)
+  ) {
+    try {
+      const enabled = channel === IPC.QualifiedScriptsSetEnabled;
+      return (
+        closed(payload, enabled ? ['id', 'enabled'] : ['id']) &&
+        (payload.id === 'ac-baidu' || payload.id === 'github-zh') &&
+        (!enabled || typeof payload.enabled === 'boolean')
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (channel === IPC.IdmGetStatus) return payload === undefined;
+  if (channel === IPC.IdmSend) {
+    try {
+      if (!closed(payload, ['url'])) return false;
+      const descriptor = Object.getOwnPropertyDescriptor(payload, 'url');
+      return (
+        descriptor !== undefined &&
+        'value' in descriptor &&
+        typeof descriptor.value === 'string' &&
+        descriptor.value.length > 0 &&
+        descriptor.value.length <= 8192
+      );
+    } catch {
+      return false;
+    }
+  }
   if (
     channel === IPC.TabsGetState ||
     channel === IPC.UserScriptsList ||

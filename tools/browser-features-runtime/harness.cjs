@@ -52,8 +52,17 @@ const report = {
   captures: [],
   dialogs: [],
   network: { electronLocal: 0, unexpected: 0, node: 0, fetch: 0 },
+  childLaunches: 0,
+  nativeHelpers: [],
+  lifecycle: [],
 };
 const persist = () => writeFileSync(join(root, `${phase}.json`), JSON.stringify(report, null, 2));
+const lifecycle = (event) => {
+  report.lifecycle.push({ event, at: Date.now(), ready: app.isReady() });
+  persist();
+};
+app.on('will-finish-launching', () => lifecycle('will-finish-launching'));
+app.on('ready', () => lifecycle('ready'));
 const fact = (name, detail) => {
   report.facts[name] = true;
   if (detail !== undefined) report.details[name] = detail;
@@ -128,6 +137,21 @@ globalThis.fetch = function () {
   report.network.fetch += 1;
   return Promise.reject(new Error('本轮不允许Provider或fetch网络调用'));
 };
+// Preserve production startup helpers while denying every IDM launch.
+for (const method of ['spawn', 'exec', 'execFile', 'spawnSync', 'execSync', 'execFileSync']) {
+  const original = require('node:child_process')[method];
+  require('node:child_process')[method] = function (...args) {
+    const executable = String(args[0] ?? '');
+    report.nativeHelpers.push({ method, executable });
+    if (!/idman(?:\.exe)?/i.test(executable)) {
+      persist();
+      return Reflect.apply(original, this, args);
+    }
+    report.childLaunches += 1;
+    persist();
+    throw new Error('本轮不允许启动 IDM');
+  };
+}
 
 let pendingFile = null;
 let confirming = false;
@@ -327,9 +351,99 @@ async function appearance() {
     colors.dark.rows.map((row) => row.background),
   );
   fact('appearance', colors);
-  await clickText('.settings-nav button', '插件与脚本');
+  await clickText('.settings-nav button', '下载与脚本');
   await until('脚本入口', () => js(`document.body.textContent.includes('导入脚本')`));
   await capture('scripts-settings');
+  await clickText('.workspace-page-back', '返回浏览');
+}
+async function downloadAndScriptsUi() {
+  await click('[aria-label="下载与脚本"]');
+  await until('工具直达下载与脚本', () =>
+    js(
+      `document.querySelector('.settings-nav [aria-current="page"]')?.textContent==='下载与脚本' && document.querySelectorAll('[aria-label="指定油猴脚本"] .userscript-card').length===2`,
+    ),
+  );
+  for (const label of ['IDM 下载工具', '指定油猴脚本', '用户脚本管理']) {
+    assert(await js(`Boolean(document.querySelector('[aria-label=${JSON.stringify(label)}]'))`));
+  }
+  const status = await invoke('downloads', 'getStatus');
+  assert.equal(typeof status.available, 'boolean');
+  const qualified = await invoke('qualifiedScripts', 'list');
+  assert.deepEqual(qualified.map((script) => script.id).sort(), ['ac-baidu', 'github-zh']);
+  assert(
+    qualified.every((script) => !script.installed && !script.enabled && script.issue === null),
+  );
+  const rejected = [];
+  for (const url of [
+    'file:///C:/fixture.zip',
+    'javascript:alert(1)',
+    'https://example.com/file\r\ninvalid',
+  ]) {
+    const answer = await invoke('downloads', 'sendToIdm', url);
+    assert.equal(answer.ok, false);
+    assert.equal(answer.code, 'invalid-url');
+    rejected.push({ url, answer });
+  }
+  assert.equal(report.childLaunches, 0);
+  fact('downloadToolEntry', { status, qualified, rejected });
+  const samples = {};
+  for (const theme of ['light', 'dark']) {
+    await clickText('.settings-nav button', '外观');
+    await click(`.theme-choice input[value="${theme}"]`);
+    await until('主题切换', () =>
+      js(`document.documentElement.dataset.theme===${JSON.stringify(theme)}`),
+    );
+    await clickText('.settings-nav button', '下载与脚本');
+    await until('指定脚本完成渲染', () =>
+      js(`document.querySelectorAll('[aria-label="指定油猴脚本"] .userscript-card').length===2`),
+    );
+    await js(
+      `Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => undefined)))`,
+    );
+    await js(`document.querySelector('.settings-page').scrollTop=0`);
+    await capture(`download-scripts-${theme}`);
+    await js(
+      `document.querySelector('[aria-label="指定油猴脚本"]').scrollIntoView({block:'start'})`,
+    );
+    await capture(`qualified-scripts-${theme}`);
+    await js(
+      `document.querySelector('[aria-label="用户脚本管理"]').scrollIntoView({block:'start'})`,
+    );
+    await capture(`other-scripts-${theme}`);
+    await js(`document.querySelector('.settings-page').scrollTop=0`);
+    win.setSize(600, 900);
+    await delay(250);
+    const geometry = await js(`(() => {
+      const root=document.querySelector('.settings-content');
+      const panels=[...root.querySelectorAll(':scope > section')].map(e=>({label:e.getAttribute('aria-label'),width:e.getBoundingClientRect().width,scrollWidth:e.scrollWidth,clientWidth:e.clientWidth}));
+      const input=document.querySelector('#idm-download-url').getBoundingClientRect();
+      return {viewport:innerWidth,rootWidth:root.clientWidth,rootScrollWidth:root.scrollWidth,inputWidth:input.width,panels};
+    })()`);
+    samples[theme] = geometry;
+    report.details.downloadNarrowSamples = samples;
+    persist();
+    assert(geometry.viewport <= 600 && geometry.viewport >= 560);
+    assert(geometry.rootScrollWidth <= geometry.rootWidth + 1, '窄窗口工具页横向溢出');
+    assert(geometry.inputWidth >= 150);
+    assert(
+      geometry.panels.length === 3 &&
+        geometry.panels.every(
+          (panel) => panel.width > 250 && panel.scrollWidth <= panel.clientWidth + 1,
+        ),
+    );
+    await capture(`download-scripts-${theme}-600px`);
+    await js(
+      `document.querySelector('[aria-label="指定油猴脚本"]').scrollIntoView({block:'start'})`,
+    );
+    await capture(`qualified-scripts-${theme}-600px`);
+    await js(
+      `document.querySelector('[aria-label="用户脚本管理"]').scrollIntoView({block:'start'})`,
+    );
+    await capture(`other-scripts-${theme}-600px`);
+    win.setSize(1280, 900);
+    await delay(150);
+  }
+  fact('downloadToolAppearance', samples);
   await clickText('.workspace-page-back', '返回浏览');
 }
 function contrast(first, second) {
@@ -480,10 +594,10 @@ async function writeScripts() {
   await capture('script-matched');
   fact('persistencePrepared', { ids: saved.map((script) => script.id) });
   await click('[aria-label="设置"]');
-  await clickText('.settings-nav button', '插件与脚本');
+  await clickText('.settings-nav button', '下载与脚本');
   await until('脚本列表反映已保存状态', () =>
     js(`(() => {
-      const rows = [...document.querySelectorAll('.userscript-card')];
+      const rows = [...document.querySelectorAll('[aria-label="用户脚本管理"] .userscript-card')];
       return rows.length === 2 && rows.some(row => row.textContent.includes('重启启用验证') && row.querySelector('input').checked) && rows.some(row => row.textContent.includes('重启禁用验证') && !row.querySelector('input').checked);
     })()`),
   );
@@ -510,11 +624,13 @@ async function run() {
   if (phase === 'write') {
     await groups();
     await appearance();
+    await downloadAndScriptsUi();
     await writeScripts();
   } else await reopenScripts();
   assert.equal(report.network.unexpected, 0);
   assert.equal(report.network.node, 0);
   assert.equal(report.network.fetch, 0);
+  assert.equal(report.childLaunches, 0);
   report.passed = true;
   persist();
   app.quit();
@@ -541,4 +657,7 @@ app.on('will-quit', () => {
 });
 process.on('exit', persist);
 persist();
+lifecycle('before-product-require');
 require(join(repository, 'out/main/index.js'));
+lifecycle('after-product-require');
+setTimeout(() => lifecycle('first-event-loop-turn'), 0);

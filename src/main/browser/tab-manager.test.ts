@@ -3,6 +3,8 @@ import type { BaseWindow, Session } from 'electron';
 import { describe, expect, it, vi } from 'vitest';
 import { TabManager } from './tab-manager';
 
+const viewOptions = vi.hoisted(() => [] as unknown[]);
+
 vi.mock('electron', async () => {
   const { EventEmitter: Emitter } = await import('node:events');
   class TestWebContents extends Emitter {
@@ -24,10 +26,49 @@ vi.mock('electron', async () => {
   }
   return {
     WebContentsView: class {
+      constructor(options: unknown) {
+        viewOptions.push(options);
+      }
       webContents = new TestWebContents();
       setVisible(): void {}
     },
   };
+});
+
+it('专用脚本 preload 只进入用户标签，任务标签保留无 preload 的相同安全 Session', () => {
+  const ownerWindow = {
+    contentView: { addChildView: vi.fn(), removeChildView: vi.fn() },
+    isDestroyed: () => false,
+  };
+  const session = {} as Session;
+  const attach = vi.fn();
+  const manager = new TabManager({
+    ownerWindow: ownerWindow as unknown as BaseWindow,
+    session,
+    onChanged: vi.fn(),
+    onUserTabCreated: attach,
+    qualifiedScriptPreload: 'D:/AIbrowse/out/preload/qualified-userscripts.js',
+  });
+  try {
+    manager.createTab('https://github.com/');
+    manager.createTab('https://github.com/', { taskOwned: true });
+    const [user, task] = viewOptions.slice(-2) as Array<{
+      webPreferences: Record<string, unknown>;
+    }>;
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(user.webPreferences.preload).toBe('D:/AIbrowse/out/preload/qualified-userscripts.js');
+    expect(task.webPreferences).not.toHaveProperty('preload');
+    for (const options of [user, task])
+      expect(options.webPreferences).toMatchObject({
+        session,
+        sandbox: true,
+        contextIsolation: true,
+        webSecurity: true,
+        nodeIntegration: false,
+      });
+  } finally {
+    manager.dispose();
+  }
 });
 
 interface TestWebContents extends EventEmitter {

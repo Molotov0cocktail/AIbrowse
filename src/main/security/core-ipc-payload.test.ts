@@ -2,6 +2,57 @@ import { expect, it } from 'vitest';
 import { IPC } from '../../shared/types/ipc';
 import { validateCoreIpcPayload } from './core-ipc-payload';
 
+it('指定脚本 UI 只接受编译期标识和闭合启用状态，不接受源码路径或私有能力', () => {
+  for (const channel of [IPC.QualifiedScriptsList, IPC.QualifiedScriptsMenu]) {
+    expect(validateCoreIpcPayload(channel, undefined)).toBe(true);
+    expect(validateCoreIpcPayload(channel, {})).toBe(false);
+  }
+  for (const channel of [
+    IPC.QualifiedScriptsInstall,
+    IPC.QualifiedScriptsInstallFile,
+    IPC.QualifiedScriptsRemove,
+  ]) {
+    for (const id of ['ac-baidu', 'github-zh'])
+      expect(validateCoreIpcPayload(channel, { id })).toBe(true);
+    for (const input of [
+      { id: 'unknown' },
+      { id: '../ac-baidu' },
+      { id: 'ac-baidu', source: 'x' },
+      { id: 'github-zh', path: 'x' },
+      { id: 'ac-baidu', [Symbol('token')]: true },
+    ])
+      expect(validateCoreIpcPayload(channel, input)).toBe(false);
+  }
+  expect(
+    validateCoreIpcPayload(IPC.QualifiedScriptsSetEnabled, { id: 'github-zh', enabled: false }),
+  ).toBe(true);
+  expect(
+    validateCoreIpcPayload(IPC.QualifiedScriptsSetEnabled, { id: 'github-zh', enabled: 'false' }),
+  ).toBe(false);
+});
+
+it('IDM 仅接受闭合 URL 字段，不接收程序路径、命令参数或执行开关', () => {
+  const url = 'https://example.com/file.zip';
+  expect(validateCoreIpcPayload(IPC.IdmGetStatus, undefined)).toBe(true);
+  expect(validateCoreIpcPayload(IPC.IdmGetStatus, {})).toBe(false);
+  expect(validateCoreIpcPayload(IPC.IdmSend, { url })).toBe(true);
+  for (const payload of [
+    undefined,
+    {},
+    { url: 3 },
+    { url: '' },
+    { url: 'a'.repeat(8193) },
+    { url, path: 'arbitrary.exe' },
+    { url, args: ['/n'] },
+    { url, shell: true },
+    { url, [Symbol('hidden')]: true },
+    Object.create({ url }),
+    Object.defineProperty({}, 'url', { get: () => url }),
+  ]) {
+    expect(validateCoreIpcPayload(IPC.IdmSend, payload)).toBe(false);
+  }
+});
+
 it('分组与用户脚本通道拒绝未知字段、路径、代码和不合法参数', () => {
   const id = '11111111-1111-4111-8111-111111111111';
   for (const channel of [IPC.TabsGetState, IPC.UserScriptsList, IPC.UserScriptsImport]) {

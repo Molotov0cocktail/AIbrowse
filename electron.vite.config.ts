@@ -94,7 +94,10 @@ export default defineConfig(({ mode }) => ({
     build: {
       outDir: outputDirectory(mode, 'preload'),
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/preload/index.ts') },
+        input: {
+          index: resolve(__dirname, 'src/preload/index.ts'),
+          'qualified-userscripts': resolve(__dirname, 'src/preload/qualified-userscripts.ts'),
+        },
       },
     },
   },

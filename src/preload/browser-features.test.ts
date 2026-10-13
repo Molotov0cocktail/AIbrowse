@@ -23,6 +23,47 @@ beforeEach(() => {
   );
 });
 
+it('IDM bridge 固定为状态读取与 URL 交接，复用当前 UI 文档授权', async () => {
+  await import('./index');
+  const api = electron.exposeInMainWorld.mock.calls[0]![1] as AibrowseBridge;
+  await api.downloads.getStatus();
+  await api.downloads.sendToIdm('https://example.com/file.zip');
+  expect(electron.invoke.mock.calls).toEqual([
+    [IPC.UiDocumentOpen],
+    [IPC.IdmGetStatus, undefined, 'document-token'],
+    [IPC.IdmSend, { url: 'https://example.com/file.zip' }, 'document-token'],
+  ]);
+  expect(Object.keys(api.downloads).sort()).toEqual(['getStatus', 'sendToIdm']);
+});
+
+it('指定脚本 UI bridge 不暴露远程脚本私有 IPC 能力', async () => {
+  await import('./index');
+  const api = electron.exposeInMainWorld.mock.calls[0]![1] as AibrowseBridge;
+  await api.qualifiedScripts.list();
+  await api.qualifiedScripts.install('ac-baidu');
+  await api.qualifiedScripts.installFile('github-zh');
+  await api.qualifiedScripts.setEnabled('github-zh', false);
+  await api.qualifiedScripts.remove('ac-baidu');
+  await api.qualifiedScripts.showMenu();
+  expect(electron.invoke.mock.calls).toEqual([
+    [IPC.UiDocumentOpen],
+    [IPC.QualifiedScriptsList, undefined, 'document-token'],
+    [IPC.QualifiedScriptsInstall, { id: 'ac-baidu' }, 'document-token'],
+    [IPC.QualifiedScriptsInstallFile, { id: 'github-zh' }, 'document-token'],
+    [IPC.QualifiedScriptsSetEnabled, { id: 'github-zh', enabled: false }, 'document-token'],
+    [IPC.QualifiedScriptsRemove, { id: 'ac-baidu' }, 'document-token'],
+    [IPC.QualifiedScriptsMenu, undefined, 'document-token'],
+  ]);
+  expect(Object.keys(api.qualifiedScripts).sort()).toEqual([
+    'install',
+    'installFile',
+    'list',
+    'remove',
+    'setEnabled',
+    'showMenu',
+  ]);
+});
+
 it('分组与脚本 bridge 只使用当前 UI 文档授权且不接受导入路径或源代码', async () => {
   await import('./index');
   const api = electron.exposeInMainWorld.mock.calls[0]![1] as AibrowseBridge;

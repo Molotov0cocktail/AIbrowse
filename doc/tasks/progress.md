@@ -6,6 +6,32 @@
 
 ### 当前任务与后继
 
+- 2026-10-13 用户进一步裁决：去掉沉浸式翻译，保留 IDM 工具与油猴脚本，翻译用现有 AI 共读。
+  不再等待独立插件区选择；按原有标签/共享登录推进显式 IDM 链接交接与脚本支持。
+  指定脚本为 GreasyFork 14178 AC-baidu、435208 GitHub 中文化，正在下载原版并核查实际依赖；
+  不把原子集冒充两脚本兼容。baseline 仍73c3783，当前output 0.1.9，详细差量合同见 legacy-repair 新首节。
+  原版扩展调查结论/工具保留为历史；本轮不接通原版扩展、不开放网页或 AI 的下载执行通道。
+  用户已批准指定脚本高阶能力但禁用附带讯飞翻译，正式设计 `doc/design/qualified-scripts-idm.md`。
+  IDM、固定资格脚本及本地资产包安装已实现，真实27资产下载校验完成；受控原稿actual-3 PASS。
+  独立安全/持久化/并发审核PASS，最终15文件258项；两个真实本地包安装/重开、IDM真实argv替身通过。
+  在线安装两root直连超时保留，增加同摘要本地安装；包位于script-packages，真实IDM下载/线上全站兼容NOTRUN。
+  完整UI双进程a63e5cc8 PASS：工具入口/深浅600px/原分组与脚本持久化，7本地请求/0Provider/0IDM。
+  首两场验收工具误拦guardian失败已定位保留；修后恢复默认GPU、原UI门不减。
+  typecheck/build通过，全量回归运行中；准备0.1.10发行候选与包身份审核，output仍0.1.9。
+
+- 2026-10-13 用户进一步要求接入原版油猴、IDM 下载助手、沉浸式翻译；接管干净
+  `73c378329c755fff2ea1555b4e461348923f1fcd`。正在核对官方包/API、本机 IDM 和任务页隔离方案；
+  合同见 legacy-repair 新首节，工具证据为 `log/extensions-three-20261013/`。
+  当前 output 仍 0.1.9，未安装或执行三个真实插件；不把原有限脚本支持称为 Tampermonkey 本体。
+  真实合成 MV3 探针正常完成，扩展页/SW 均发现菜单、下载、Cookie、创建标签等 API 缺失；
+  nativeMessaging/offscreen 等入口存在但业务 NOTRUN；userScripts 有内部每扩展开关而未发现公开入口，
+  临时 profile 对照探针仍 NOTRUN，不能仅凭 undefined 声称内核未实现。
+  精确 Electron 源码进一步确认 native host 固定 DISALLOW；现成 electron-chrome-extensions
+  下载接口占位、无 userScripts 且有权限/消息分帧缺口，不能直接接入并宣称三插件兼容。
+  三包静态版本分别 5.5.1/6.43.1/1.33.3；现有共享 Session 不能按 taskOwned 排除原版扩展。
+  用户正了解独立插件区的登录/界面影响，尚未选择；已解释独立持久登录与研究/监控继续使用原会话。
+  有界兼容库/原生源码调查已完成；此调查路线已被上述新裁决替代，不继续等待或实施独立插件区。
+
 - 2026-10-13 用户新增外观选项修复、标签分组与插件，已明确“两者都需要，先完成油猴脚本支持”。
   接管干净 `6ccbef2216977b78affdd76695654b557280a5ff`；本轮已完成，当前 output 为 0.1.9。
   正式差量见 `doc/design/browser-groups-userscripts.md` 与 legacy-repair 首节。

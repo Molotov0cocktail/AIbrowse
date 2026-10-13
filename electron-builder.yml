@@ -12,6 +12,7 @@ files:
   - out/release/main/lifecycle-guardian-integrity.json
   - '!out/release/main/release-modules.json'
   - out/release/preload/index.js
+  - out/release/preload/qualified-userscripts.js
   - out/release/renderer/index.html
   - out/release/renderer/asset-manifest.json
   - out/release/renderer/assets/**/*

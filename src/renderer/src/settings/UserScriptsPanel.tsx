@@ -71,7 +71,7 @@ export function UserScriptsPanel() {
     <section className="settings-section-card userscripts-panel" aria-label="用户脚本管理">
       <div className="userscripts-heading">
         <div>
-          <h2>用户脚本</h2>
+          <h2>其他用户脚本</h2>
           <p>为常用网站添加你需要的样式和功能。</p>
         </div>
         <button
@@ -200,18 +200,18 @@ export function UserScriptsPanel() {
         ))}
       </div>
       <details className="userscripts-compatibility">
-        <summary>支持哪些油猴脚本？</summary>
+        <summary>其他脚本的兼容范围</summary>
         <p>
-          支持在页面加载后修改 DOM 和样式的脚本。支持
+          手动导入的其他脚本支持在页面加载后修改 DOM 和样式。支持
           @match、@include、@exclude、@exclude-match，以及
           GM_addStyle、GM.addStyle、GM_info、GM.info。
         </p>
         <p>
-          暂不支持 @require、@resource、GM 存储、跨域请求、unsafeWindow 或 document-start /
-          document-end。导入不兼容脚本时会显示原因。
+          此导入入口暂不支持 @require、@resource、GM 存储、跨域请求、unsafeWindow 或 document-start
+          / document-end。导入不兼容脚本时会显示原因。
         </p>
         <p>
-          所有脚本均隔离运行，包括 @grant none；不能直接访问网页 JavaScript
+          此处导入的脚本均隔离运行，包括 @grant none；不能直接访问网页 JavaScript
           变量。只在普通浏览标签页运行，不向研究或监控任务页面注入。脚本仍可能通过网页正常能力影响同源登录或存储状态。
         </p>
         <p>
@@ -220,7 +220,7 @@ export function UserScriptsPanel() {
       </details>
       <div className="userscripts-extension-status">
         <h3>Chrome 扩展</h3>
-        <p>当前版本先提供用户脚本支持。Chrome 扩展和 Tampermonkey 本体尚未开放安装。</p>
+        <p>这里提供内置脚本支持与 IDM 链接交接，不安装 Chrome 扩展或 Tampermonkey 本体。</p>
       </div>
     </section>
   );

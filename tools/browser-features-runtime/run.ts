@@ -40,6 +40,8 @@ export function phasePassed(value: unknown, phase: string): boolean {
           'groupEditorControls',
           'uiReloadGroups',
           'appearance',
+          'downloadToolEntry',
+          'downloadToolAppearance',
           'scriptLifecycle',
           'scriptIsolation',
           'unsupportedRejected',

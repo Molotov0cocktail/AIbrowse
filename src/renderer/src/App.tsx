@@ -400,6 +400,7 @@ export default function App() {
           onOpenHistory={() => openLibrary('history')}
           onOpenBookmarks={() => openLibrary('bookmarks')}
           onOpenSettings={() => openSettings('general')}
+          onOpenTools={() => openSettings('extensions')}
           onToggleBookmark={toggleCurrentBookmark}
           bookmarked={currentBookmark !== null}
           addressBarRef={addressBarRef}

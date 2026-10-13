@@ -6,6 +6,8 @@ import { ThemeSelect } from '../ui/ThemeSelect';
 import type { AppearanceController } from '../ui/useAppearance';
 import { TraySettingsControl } from './TraySettingsControl';
 import { UserScriptsPanel } from './UserScriptsPanel';
+import { IdmPanel } from './IdmPanel';
+import { QualifiedScriptsPanel } from './QualifiedScriptsPanel';
 
 export type SettingsSection = 'general' | 'appearance' | 'extensions' | 'ai' | 'data' | 'advanced';
 
@@ -24,7 +26,7 @@ interface SettingsPageProps {
 const SECTIONS: Array<{ id: SettingsSection; label: string }> = [
   { id: 'general', label: '常规' },
   { id: 'appearance', label: '外观' },
-  { id: 'extensions', label: '插件与脚本' },
+  { id: 'extensions', label: '下载与脚本' },
   { id: 'ai', label: 'AI 配置' },
   { id: 'data', label: '本地数据' },
   { id: 'advanced', label: '高级' },
@@ -68,7 +70,13 @@ export function SettingsPage({
           ))}
         </nav>
         <div className="settings-content">
-          {section === 'extensions' && <UserScriptsPanel />}
+          {section === 'extensions' && (
+            <>
+              <IdmPanel />
+              <QualifiedScriptsPanel />
+              <UserScriptsPanel />
+            </>
+          )}
           {section === 'general' && (
             <section className="settings-section-card">
               <h2>常规</h2>

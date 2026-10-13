@@ -1,0 +1,35 @@
+.idm-panel h2 {
+  margin-top: 0;
+}
+
+.idm-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.idm-form label {
+  grid-column: 1 / -1;
+  font-weight: 600;
+}
+
+.idm-form input {
+  min-width: 0;
+  width: 100%;
+}
+
+.idm-note {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.idm-panel [role='alert'] {
+  color: var(--danger);
+}
+
+@media (max-width: 600px) {
+  .idm-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -31,6 +31,8 @@ describe('release package positive allowlist', () => {
     expect(isAllowedArchivePath('out/release/main/index.js')).toBe(true);
     expect(isAllowedArchivePath('out/release/main/runtime-a1b2.js')).toBe(true);
     expect(isAllowedArchivePath('out/release/preload/index.js')).toBe(true);
+    expect(isAllowedArchivePath('out/release/preload/qualified-userscripts.js')).toBe(true);
+    expect(isAllowedArchivePath('out/release/preload/other.js')).toBe(false);
     expect(isAllowedArchivePath('out/release/renderer/assets/index-a1b2.js')).toBe(true);
     expect(isAllowedArchivePath('node_modules/parse5/dist/index.js')).toBe(true);
 

@@ -12,6 +12,12 @@ import type {
   SetTabGroupPayload,
 } from './browser';
 import type { UserScriptResult, UserScriptSummary } from './userscripts';
+import type { IdmToolResult, IdmToolStatus } from './downloads';
+import type {
+  QualifiedScriptId,
+  QualifiedScriptResult,
+  QualifiedScriptStatus,
+} from './qualified-userscripts';
 import type {
   BrowserBookmark,
   BrowserBookmarkUpdate,
@@ -100,6 +106,18 @@ export interface TraySettings {
 
 // Minimal-privilege bridge exposed by the preload script to the renderer (React UI only).
 export interface AibrowseBridge {
+  qualifiedScripts: {
+    list(): Promise<QualifiedScriptStatus[]>;
+    install(id: QualifiedScriptId): Promise<QualifiedScriptResult>;
+    installFile(id: QualifiedScriptId): Promise<QualifiedScriptResult>;
+    setEnabled(id: QualifiedScriptId, enabled: boolean): Promise<QualifiedScriptResult>;
+    remove(id: QualifiedScriptId): Promise<QualifiedScriptResult>;
+    showMenu(): Promise<boolean>;
+  };
+  downloads: {
+    getStatus(): Promise<IdmToolStatus>;
+    sendToIdm(url: string): Promise<IdmToolResult>;
+  };
   userscripts: {
     list(): Promise<UserScriptResult<UserScriptSummary[]>>;
     importScript(): Promise<UserScriptResult<UserScriptSummary | null>>;

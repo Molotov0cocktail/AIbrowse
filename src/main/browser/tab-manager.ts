@@ -61,6 +61,7 @@ export interface CreateTabOptions {
 declare const __RELEASE__: boolean;
 
 export interface TabManagerOptions {
+  qualifiedScriptPreload?: string;
   onUserTabCreated?: (webContents: WebContents) => void;
   onNavigationCommitted?: (page: BrowserBookmarkInput) => string | null;
   onVisitTitleChanged?: (visit: BrowserVisitTitleUpdate) => void;
@@ -80,7 +81,8 @@ export class TabManager {
   createTab(url: string, options: CreateTabOptions = {}): TabEntry {
     const deferredBlank = options.deferInitialBlankLoad === true;
     const view = new WebContentsView({
-      // 安全基线（§11）：远程网页无 preload、无 Node 集成；显式声明，不依赖默认值
+      // Remote pages never load the application bridge. Qualified user-script
+      // APIs live only in isolated worlds; task tabs have no preload at all.
       webPreferences: {
         session: this.options.session,
         nodeIntegration: false,
@@ -88,7 +90,9 @@ export class TabManager {
         sandbox: true,
         webSecurity: true,
         devTools: typeof __RELEASE__ === 'undefined' || !__RELEASE__,
-        // 不配置 preload：远程网页不得获得任何 bridge（§3.2 最小权限）
+        ...(options.taskOwned !== true && this.options.qualifiedScriptPreload
+          ? { preload: this.options.qualifiedScriptPreload }
+          : {}),
       },
     });
     // An unloaded blank view can display, focus and navigate, so the UI sees ready.

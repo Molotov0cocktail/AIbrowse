@@ -16,6 +16,7 @@ const REQUIRED_FILES = [
   'out/release/main/startup-probe-worker.js',
   'out/release/main/lifecycle-guardian-integrity.json',
   'out/release/preload/index.js',
+  'out/release/preload/qualified-userscripts.js',
   'out/release/renderer/index.html',
   'out/release/renderer/asset-manifest.json',
 ] as const;
@@ -78,6 +79,7 @@ export const isAllowedArchivePath = (archivePath: string): boolean => {
   if (path === 'out/release/main/lifecycle-guardian-integrity.json') return true;
   if (/^out\/release\/main\/[a-z0-9][a-z0-9_-]*\.js$/i.test(path)) return true;
   if (path === 'out/release/preload/index.js') return true;
+  if (path === 'out/release/preload/qualified-userscripts.js') return true;
   if (path === 'out/release/renderer/index.html') return true;
   if (path === 'out/release/renderer/asset-manifest.json') return true;
   if (/^out\/release\/renderer\/assets\/[a-z0-9][a-z0-9._-]*$/i.test(path)) return true;

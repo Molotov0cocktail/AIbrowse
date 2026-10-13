@@ -8,6 +8,12 @@
   flex-wrap: wrap;
 }
 
+.userscript-install-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .userscripts-heading h2,
 .userscript-title-row h3 {
   margin: 0 0 6px;

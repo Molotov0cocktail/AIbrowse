@@ -16,6 +16,13 @@ import { installWindowAppearance, titlebarColors } from './ui/window-appearance'
 import { TrayController } from './ui/tray-controller';
 import { TrayPreferences } from './ui/tray-preferences';
 import { createUserScriptFeature } from './userscript-ui';
+import { createIdmFeature } from './idm-ui';
+import {
+  createQualifiedScriptFeature,
+  type QualifiedScriptFeature,
+} from './userscripts-qualified/feature';
+import type { QualifiedScriptId } from '../shared/types/qualified-userscripts';
+import type { IdmDownloadService } from './downloads/idm-service';
 import type { UserScriptService } from './userscripts/service';
 import type {
   CreateTabGroupPayload,
@@ -511,6 +518,8 @@ let shutdownQuitReady = false;
 let trayController: TrayController | null = null;
 let trayPreferences: TrayPreferences | null = null;
 let userScriptService: UserScriptService | null = null;
+let idmService: IdmDownloadService | null = null;
+let qualifiedScripts: QualifiedScriptFeature | null = null;
 let trayError: string | null = null;
 // S4：config:providers:* handler 需要直接引用生产 ConfigStore/凭据实例
 let configStore: ConfigStore | null = null;
@@ -1758,6 +1767,39 @@ if (!gotLock) {
       code: 'unavailable' as const,
       message: '用户脚本服务暂不可用。',
     });
+    handle(IPC.IdmGetStatus, () => idmService?.getStatus() ?? { available: false });
+    handle(IPC.QualifiedScriptsList, () => qualifiedScripts?.store.list() ?? []);
+    handle(
+      IPC.QualifiedScriptsInstall,
+      (payload, isCurrent) =>
+        qualifiedScripts?.install((payload as { id: QualifiedScriptId }).id, isCurrent) ??
+        scriptsUnavailable(),
+    );
+    handle(
+      IPC.QualifiedScriptsInstallFile,
+      (payload, isCurrent) =>
+        qualifiedScripts?.install((payload as { id: QualifiedScriptId }).id, isCurrent, true) ??
+        scriptsUnavailable(),
+    );
+    handle(IPC.QualifiedScriptsSetEnabled, (payload) => {
+      const input = payload as { id: QualifiedScriptId; enabled: boolean };
+      return qualifiedScripts?.setEnabled(input.id, input.enabled) ?? scriptsUnavailable();
+    });
+    handle(
+      IPC.QualifiedScriptsRemove,
+      (payload) =>
+        qualifiedScripts?.remove((payload as { id: QualifiedScriptId }).id) ?? scriptsUnavailable(),
+    );
+    handle(IPC.QualifiedScriptsMenu, () => qualifiedScripts?.showMenu() ?? false);
+    handle(
+      IPC.IdmSend,
+      (payload, isCurrent) =>
+        idmService?.send((payload as { url: string }).url, isCurrent) ?? {
+          ok: false,
+          code: 'unavailable',
+          message: 'IDM 下载工具暂不可用，请稍后重试。',
+        },
+    );
     handle(IPC.UserScriptsList, () => userScriptService?.list() ?? scriptsUnavailable());
     handle(
       IPC.UserScriptsImport,
@@ -3328,9 +3370,21 @@ async function assembleBrowserWindow(): Promise<void> {
     !__RELEASE__ && SMOKE_MODE ? SMOKE_AI_DATA_DIR : requireNodeDataRoot(),
   );
   userScriptService = scripts.service;
+  idmService = createIdmFeature(win);
+  qualifiedScripts = createQualifiedScriptFeature({
+    win,
+    dataRoot: !__RELEASE__ && SMOKE_MODE ? SMOKE_AI_DATA_DIR : requireNodeDataRoot(),
+    isOpen: mainRootIsOpen,
+    getActiveUserContentsId: () => browserController?.getActiveUserWebContentsId() ?? null,
+    openUserTab: (url) => {
+      void browserController?.createTab(url);
+    },
+  });
   const controller = new BrowserControllerImpl({
+    qualifiedScriptPreload: join(__dirname, '../preload/qualified-userscripts.js'),
     onUserTabCreated: (webContents) => {
       scripts.runtime.attach(webContents);
+      qualifiedScripts?.runtime.attach(webContents);
     },
     onNavigationCommitted: (input) => {
       if (!mainRootIsOpen()) return null;

@@ -16,6 +16,7 @@ interface ToolbarProps {
   onOpenHistory: () => void;
   onOpenBookmarks: () => void;
   onOpenSettings: () => void;
+  onOpenTools?: () => void;
   onToggleBookmark: () => void;
   addressBarRef: Ref<HTMLInputElement>;
   activePanel?: 'ai' | 'sources' | 'research' | 'diagnostics' | null;
@@ -38,6 +39,7 @@ export function Toolbar({
   onOpenHistory,
   onOpenBookmarks,
   onOpenSettings,
+  onOpenTools,
   onToggleBookmark,
   addressBarRef,
   activePanel = null,
@@ -156,6 +158,18 @@ export function Toolbar({
           <Icon name="bookmark" />
           <span className="toolbar-label">书签</span>
         </button>
+        {onOpenTools && (
+          <button
+            type="button"
+            className="nav-button tools-open"
+            aria-label="下载与脚本"
+            title="IDM 下载与用户脚本"
+            onClick={onOpenTools}
+          >
+            <Icon name="external-link" />
+            <span className="toolbar-label">工具</span>
+          </button>
+        )}
         <button
           type="button"
           className="nav-button settings-open"

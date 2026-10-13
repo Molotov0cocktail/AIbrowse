@@ -64,6 +64,7 @@ export interface BrowserController {
 }
 
 export interface BrowserControllerOptions {
+  qualifiedScriptPreload?: string;
   onUserTabCreated?: TabManagerOptions['onUserTabCreated'];
   onNavigationCommitted?: TabManagerOptions['onNavigationCommitted'];
   onVisitTitleChanged?: TabManagerOptions['onVisitTitleChanged'];
@@ -94,6 +95,7 @@ export class BrowserControllerImpl implements BrowserController {
 
   constructor(private readonly options: BrowserControllerOptions) {
     this.tabManager = new TabManager({
+      qualifiedScriptPreload: options.qualifiedScriptPreload,
       ownerWindow: options.ownerWindow,
       session: options.sessionManager.getSession(),
       onUserTabCreated: options.onUserTabCreated,
@@ -167,6 +169,15 @@ export class BrowserControllerImpl implements BrowserController {
       entry.view.webContents.isDestroyed()
       ? null
       : { url: entry.committedUrl, title: entry.info.title };
+  }
+
+  /** Main-only ownership observation; not part of the BrowserController tool interface. */
+  getActiveUserWebContentsId(): number | null {
+    if (this.disposed || this.activeTabId === null) return null;
+    const entry = this.tabManager.get(this.activeTabId);
+    return !entry || entry.taskOwned || entry.view.webContents.isDestroyed()
+      ? null
+      : entry.view.webContents.id;
   }
 
   /** Main-only ownership observation; not part of the BrowserController tool interface. */

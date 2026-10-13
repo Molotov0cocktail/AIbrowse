@@ -1,5 +1,102 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## IDM 工具与指定油猴脚本（2026-10-13）
+
+- TASK / BASELINE：用户进一步收缩需求：去掉沉浸式翻译，只保留 IDM 工具与油猴脚本，翻译交由现有
+  AI 共读。baseline 仍为 `73c378329c755fff2ea1555b4e461348923f1fcd`，已有未提交差量仅为上一节
+  原版扩展调查文档与受控探针；全部保留，不能将其记为安装成功。当前 output 0.1.9。
+- GOAL / FIXED DECISIONS：沿用原有标签与登录会话，不新增独立插件区，不装原版 Chrome 扩展。
+  IDM 通过显式用户操作发送 HTTP(S) 下载链接到本机已安装程序；不自动接管下载、不捕获媒体或转移 Cookie。
+  用户指定 GreasyFork 14178 AC-baidu 与 435208 GitHub 中文化；先下载原版静态资格，按实际依赖判定兼容。
+  原有限 DOM/样式脚本支持继续可用，不把现有子集或自制示例冒充这两个脚本运行通过。
+- INVARIANTS / NON-GOALS：研究/监控任务 Tab 不注入脚本、不发送 IDM；网页/模型不能调用 IDM 或安装脚本。
+  原 Session 下载拒绝保留；不向模型增加 shell/JS/通用网络/文件能力，不修改真实 profile/安装软件。
+  普通页脚本可能改变 AI 共读看到的 DOM 及共享网站状态，此诚实边界已向用户说明，不能承诺绝无间接影响。
+- PLAN / SCOPE：并行 IDM 主进程服务与两真实脚本静态资格；root 完成受信 UI/IPC/装配与正式设计。
+  主进程固定检测标准 IDM 安装路径，spawn shell=false、固定 `/d` 参数与校验 URL，零任意参数/路径接口。
+  未检测到程序、失败/忙碌/关闭如实返回；成功只表示请求发出，实际下载确认与进度由 IDM 负责。
+  脚本需要扩大安全/隐私承诺时先给出具体影响；不为显示“已安装”删掉原版依赖或静默降低功能。
+- VALIDATION / ACCEPTANCE：严格 IPC 与 URL/参数注入反例、真实进程参数传递的受控替身、UI 提交与错误反馈，
+  旧任务页与下载拒绝回归；指定脚本必须有原版字节/来源和实际功能证据才能报兼容。
+  真实 IDM 默认不执行无人值守下载，受控替身只证明交接机制；未知/未运行保留。安全接口独立审核后交付。
+  原件在 `log/idm-tool-20261013/`，通用工具纳入 Git；两轮无新证据即换路，产品取舍才请求裁决。
+- 用户已明确批准两脚本所需存储、跨网站请求及 AC 网页 JavaScript 交互，仅普通用户标签；
+  禁用 GitHub 附带讯飞翻译，翻译交由 AI 共读。正式差量为 `doc/design/qualified-scripts-idm.md`。
+  工程采用根源码与依赖全哈希固定的两资格档、普通 Tab 专用隔离世界 preload、主进程受限能力代理；
+  通用手动导入脚本仍保持原能力子集，任务页不配置专用 preload。用户确认已满足，不再等待重复裁决。
+- 实现与修复：IDM 固定路径 `/d URL`、受信 UI/IPC、脚本固定目录/原子存储/公网客户端/专用 preload
+  已接通。独审反例关闭外部 bundle 删除/修改后错误启用、数组 getter、GitHub 讯飞入口；红态原件保留。
+  AC 原稿裸 `Reg_Get` 的作用域错误在精确版本内存副本修正，原资产不改；实际验证两重定向路径通过。
+- 原生脚本：`qualified-actual-3/result.json` PASS，GitHub/Gist 本地汉化与无讯飞入口、AC 两重定向路径、
+  菜单/写后 reload/存储重开、三设置域窄桥与拒绝伪造、同 Session 任务页不注入均通过。
+  三场累计20内存页面+5broker替身，外网0/Provider0；首场 oracle 布尔误判与真实原版回退缺陷、
+  第二场入口红态及侵入调试超时原件不改判，不将离线代表 DOM 扩张为线上所有站点完整兼容。
+- 交付路径：真实在线安装首场两 root 各1次均10秒超时，完整失败在 `install-network-01/`。
+  新增有界 JSON 本地包安装，复用固定目录逐资产摘要和原子提交，不放宽网络。两个包共27资产已组装至
+  `script-packages/`（Git 忽略），本机 SHA 与 `local-packages-01/packages.json` 一致；
+  `install-local-02/` 两完整包安装及重开 PASS、0网络；`idm-argv-03/` 实际服务+真实子进程 argv PASS，
+  未执行真实 IDM 下载。两个探针均有当前源码/工具绑定。
+- 审核：新的独立 Astra/xhigh 安全/持久化/并发审核 PASS，最终15文件258项通过；原件
+  `independent-security-review-final.json`。范围不包含发行包身份、线上完整兼容或真实 IDM 下载。
+- 完整 UI 冒烟：`log/browser-groups-userscripts-20261013/runtime-a63e5cc8-44af-40b7-b666-cbf1bd219c5e/`
+  双进程 PASS，工具直达/两固定标识/IDM非法URL拒绝/深浅600px/旧分组与脚本持久化全部通过，
+  7/20本地请求、0Provider、0IDM启动、源码工具产物前后绑定一致。
+  先前 ef884、8e283 两场启动失败保留，已定位为新验收工具误拦产品必要 guardian 子进程；
+  修正仅拒 IDM 后默认 GPU 正常，不改变 UI 验收阈值。此场版本元数据为0.1.9；随后仅升版本0.1.10。
+
+## 油猴、IDM 与沉浸式翻译接入（2026-10-13）
+
+- TASK / BASELINE：用户现要求添加三个指定插件：Tampermonkey、IDM 下载助手、沉浸式翻译。
+  干净 baseline `73c378329c755fff2ea1555b4e461348923f1fcd`，当前交付仍为 0.1.9。
+- GOAL / SCOPE：先核对官方插件包实际依赖与 Electron 43.7.7 运行能力，再实施可证明工作的接入；
+  不能把内建脚本子集或第三方自制替身称作原版插件。新请求授权本轮接入，覆盖上一任务的暂缓边界。
+- INVARIANTS / SOURCES：仍保持用户此前要求的 Research/Watch 任务页隔离、共享登录既有承诺和宿主权限边界。
+  官方 Electron 扩展文档、插件发行方文档/包、当前源码与实际隔离探针共同确定工程事实。
+- PLAN / VALIDATION：并行只读调查两种扩展/IDM 本机安装/Session 隔离；接口资格探针只运行合成扩展，
+  独立 profile/session、网络拒绝、单场 30 秒，不运行真实插件或安装器、不触真实浏览器 profile。
+  工具放 `tools/extensions-qualification/`，原件在 `log/extensions-three-20261013/`。
+- ACCEPTANCE / STOP：安装须以指定插件的实际功能、持久化与隔离验收为准，不能仅凭 loadExtension 成功。
+  若关键原生 API 缺失，或接入必须改变共享登录/任务隔离/浏览器交互，先形成具体替代方案与影响，
+  请求必要的产品裁决；不以无限兼容层、宽泛宿主权限或无诊断重试规避。当前没有宣称三插件可用。
+- 当前资格证据：`capabilities-82f351a8-31dd-4c47-bb41-8465aa8d61e0/result.json` 为真实
+  Electron 43.7.7 / Chromium 150 的合成 MV3 扩展页与后台 Service Worker 观察，两处结果一致；
+  单场正常退出、未超时、0 网络请求、0 Provider。`tabs.create`、`windows.create/getCurrent`、
+  `contextMenus.create`、`downloads.download`、`cookies.getAll`、`permissions.contains/request`、
+  `webNavigation.onCommitted`、`proxy.settings.get` 均 undefined；下载、菜单、Cookie、导航、代理权限
+  另有原生 unknown 警告。`runtime.connectNative/sendNativeMessage`、offscreen、scripting、DNR、
+  storage.sync 有函数入口，但未调用业务操作，不能据此宣称宿主连接或这些能力可用。
+  `userScripts` 亦 undefined；Chrome 的扩展用户脚本开关可能影响可见性，尚不能仅凭此判定内核未实现。
+  工具 SHA256 `b1322b0ff029615f0ea6855571dafb0efa474e623e573b9ddfa74e1fb0c5ec26`，
+  工具格式/lint 通过；第三方真实包均未执行，不把静态依赖分析或合成装载等同插件业务验收。
+- 官方包静态取样：Tampermonkey 5.5.1 / MV3 实际依赖 userScripts、Cookie、创建标签等；
+  沉浸式翻译 1.33.3 / MV3 设置/关于/打开链接/PDF 路径实际调用缺失的 tabs.create，
+  菜单存在性有保护，不据此断言基础网页翻译必定失败。翻译官方 ZIP CDN 直连与代理均 403 原件保留，
+  单次改用官方商店对应 Google CRX 端点成功；包、manifest 与摘要在 `official-static/`。
+  本机 IDM 存在，IDMGCExt.crx 为 6.43.1 / MV3，原版使用上述部分缺失接口；nativeMessaging
+  入口存在而宿主握手 NOTRUN。`idm/static-inspection.json` 保存安装版本、宿主允许扩展 ID 和包摘要；
+  未改注册表/宿主允许列表、未执行 IDM、未接触浏览器真实 profile。
+- 隔离方案调查：现有用户/Research/Watch Tab 使用同一 `persist:aibrowse`，taskOwned 只是应用字段；
+  Electron Session 级原版扩展不识别它，公开接口未提供逐 WebContents 禁用扩展的承诺。
+  候选方案保留原会话，新增有标识的持久插件区，Cookie/网站存储独立，不自动复制登录数据；
+  可保持相同窗口和标签操作，但需要在插件区单独登录。此为产品体验取舍，已向用户解释并请求选择，
+  当前尚未接受；独立区本身不消除 Chrome API 兼容缺口。
+  后续有界核查覆盖现成扩展兼容库及 userScripts 开关；未安装新依赖、未实施插件区或修改产品源码。
+- 后续源码资格：精确 Electron v43.7.7 的
+  [ElectronMessagingDelegate](https://raw.githubusercontent.com/electron/electron/v43.7.7/shell/browser/extensions/electron_messaging_delegate.cc)
+  将 native host 固定判为 DISALLOW，接收器返回 nullptr；因此原生方法存在仍不能直接连接 IDM，
+  这补充解释了前述探针的观测边界，未执行真实宿主握手。
+  已静态核查上游 electron-browser-shell 提交 `354b0b8192e8c2d960e50cf108b5dbbb70448fec`：
+  electron-chrome-extensions 可补部分 tabs/windows/menu/cookies/navigation，但 downloads 全为 noop、
+  无 userScripts；权限撤销占位、Cookie 权限/来源绑定不完整，native 消息存在 UTF-8 长度与分帧缺口。
+  不作为可直接采用的兼容方案。npm 4.9.0 与该最新源码不能视为同一候选；原件在 `official-static/ece-*`。
+  未增加依赖或运行该库，普通网页/SW 可否到达其 IPC 仍须反例验证，不把静态疑点写成已证实攻击。
+- userScripts 源码边界：Electron 创建 Chromium UserScriptManager，每扩展偏好
+  `user_scripts_enabled` 默认 false；但公开 Extensions API 未发现开关，且
+  `dynamic_user_scripts_store()` 返回 nullptr，不能推定注册/跨重启兼容。
+  若继续此路线，先核实内部偏好层级，再用全新临时 profile 固定 ID 合成扩展做一次 false/true 对照，
+  验证真实注册、执行、撤销及任务 Session 无注入；不猜键或枚举开关，不触真实用户偏好。
+  此内部格式路线仍仅为候选，探针 NOTRUN；原生方法缺省不可见不能扩大成内核绝对不可实现。
+
 ## 外观、标签分组与脚本插件（2026-10-13）
 
 - TASK / BASELINE：用户截图指出外观选项不可读，并要求标签分组、插件及油猴脚本；随后明确

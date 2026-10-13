@@ -180,6 +180,18 @@ const invokeWatch = async <T>(
 };
 
 const bridge: AibrowseBridge = {
+  qualifiedScripts: {
+    list: () => invoke(IPC.QualifiedScriptsList),
+    install: (id) => invoke(IPC.QualifiedScriptsInstall, { id }),
+    installFile: (id) => invoke(IPC.QualifiedScriptsInstallFile, { id }),
+    setEnabled: (id, enabled) => invoke(IPC.QualifiedScriptsSetEnabled, { id, enabled }),
+    remove: (id) => invoke(IPC.QualifiedScriptsRemove, { id }),
+    showMenu: () => invoke(IPC.QualifiedScriptsMenu),
+  },
+  downloads: {
+    getStatus: () => invoke(IPC.IdmGetStatus),
+    sendToIdm: (url) => invoke(IPC.IdmSend, { url }),
+  },
   userscripts: {
     list: () => invoke(IPC.UserScriptsList),
     importScript: () => invoke(IPC.UserScriptsImport),
