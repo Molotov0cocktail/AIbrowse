@@ -1,5 +1,82 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 通用网页新窗口关系与登录空白页（2026-10-13）
+
+- TASK / BASELINE：用户报告 Google 登录 x.com 后停留空白 `accounts.google.com/gsi/transform`，
+  授权读取项目与应用数据并修复。干净接管 `b8f782c078881194590d7a77f58a17fcb3844a2e`，output 为0.1.12。
+- CURRENT VERIFIED STATE：实际运行的是 output 程序。只读复制当日应用日志到
+  `log/oauth-popup-20261013/runtime-observed.log`，SHA256
+  `a049d02d404ddb4550193f402abcad4b7f6c3f0e956609b57e24cde24e0fc9b5`；18:50–18:54四次
+  新建 Google `/o/oauth2/v2/auth` Tab 后，均紧接着拦截 `/gsi/select`。源码对原生请求一律deny，再
+  loadURL创建隔离Tab，确定丢失原始window.open返回值与opener；历史页面内执行过程未采集，不声称恢复了
+  Google内部具体失败栈。未读取Cookie、登录令牌或Provider凭据，未清除/迁移真实数据。
+- GOAL / NON-GOALS：用户进一步明确应修复这一类问题，不接受X/Google站点特判。恢复用户主动打开
+  网页新窗口的通用语义，覆盖登录/授权、普通新标签、空白窗口引导和表单提交；不模拟账号登录、不放松
+  TLS/同源策略、不开放无手势popup或AI/系统权限、不启动下一阶段。
+- FIXED DECISIONS / INVARIANTS：活动可见且已提交HTTP(S)文档的普通Tab，经一次实体输入门打开无凭据
+  HTTP(S)或精确about:blank，通过Electron createWindow收编原生child为应用内WebContentsView。
+  保留window.open句柄、opener/noopener/noreferrer、postMessage及window.close；GET/POST与来源由
+  内核处理，不提取/中转登录令牌。相同session、安全偏好创建前固定，无应用bridge。创建前复验文档/epoch；
+  已创建普通Tab不因父页导航/关闭被应用级联关闭，自动关闭时完整清理并恢复有效活动页。
+- EQUIVALENCE / SCOPE：旧deny后仅loadURL丢失窗口关系，是通用实现缺陷；用户最新指令授权恢复标准
+  网页关系，不增加本地能力。无手势、任务/AI、后台/隐藏来源、凭据URL和非网页协议继续拒绝。无guest
+  的原生链接路径采用固定Electron43.7.7的主进程原生导航闭包适配：同步事件、目标、源世代和单次消费绑定，
+  缺能力/版本不符即拒绝，禁止用loadURL重建POST/来源。真实验证referrer/Origin/POST与内核沙箱继承。
+  隐藏BrowserWindow的contentView只是页面兄弟容器，不能当作搬走页面；直接WCV收编也被平台拒绝，
+  此路线已停止。正式契约同步浏览器核心§9及Stage7安全章节。
+- IMPLEMENTATION / TEST：产品修改集中TabManager/BrowserController；先红→绿，再验证不同合成站点的
+  跨源句柄/通信/关闭、noopener、空白引导、POST/referrer、前后台、父页导航/关闭与取消/销毁安全反例。
+  内核标准script-closable关闭资格及sandbox子帧继承必须真实验证。受控工具纳入
+  `tools/oauth-popup/`，隔离新profile，0真实账号/Provider调用、单轮最多30合成本地请求/90秒。
+  受影响测试、typecheck/lint/format/build、新独立安全审核及源码绑定的内部包验证后交付0.1.13。
+- ACCEPTANCE / STOP：保留旧失败；同路线两轮无新证据即换路。真实Google账号最终登录需用户在新版重试，
+  不将合成协议验证写成真实账号验收。运行中的旧程序不强杀，换包前须正常退出；其余实现、审核、构建持续
+  推进。完成后更新progress并按既有授权正常双推；新证据统一保存在 `log/oauth-popup-20261013/`。
+- 已保留基线真实红态 `red-baseline-8833ab24-152d-4400-af1a-99feb53a382a`：冻结b8f782c产品bundle
+  `72391f93a8d4c09a0dd00d559ebcc6c35429abc259f37b6972036445db434744`，真实WebContentsView与
+  输入事件下window.open返回null、子页opener=false、无postMessage/自动关闭；2次合成协议请求，0外网。
+  初版单测红9FAIL/58PASS；中间绿色不作为通用最终验收。两次通用真实候选失败原件
+  `fixed-86952a39-*`、`fixed-936f5b71-*`保留：销毁后读取WCV.webContents getter失效，修复改为保存
+  独立WebContents引用；空preload字符串的原生告警也已定位，未配置时省略，配置时固定资格脚本路径。
+- 换路证据：`native-owner-*`为隐藏BrowserWindow可行性，前两场oracle/异步异常失败并精确清理测试进程，
+  第三场发现容器resize未改变网页viewport；第四场只证明宿主resize/原生通信/POST，不能证明实际页面搬迁。
+  最终 `native-owner-48e869e5-cdd1-43c1-b8e1-6676af350099` 被平台拒绝（WebContents已附属于窗口）。
+  因BrowserWindow的contentView不包含主网页，此路线停止，任何中间passed都不计入产品通过。最终可复现
+  拒绝探针源码 `tools/oauth-popup/native-window-feasibility.mjs`；早期实验没有完整逐场源码绑定，不作为准入。
+- 关闭语义REPLAN：初加“所有手动Tab不可脚本关闭”是工程oracle错误，WHATWG/固定Chromium实际允许
+  网页创建窗口或单文档历史顶层页关闭，原Research/Watch的用户Tab所有权限制不等于网页绝对禁止关闭。
+  `fixed-full-b1bc3a29-*`与`fixed-close-fa50a855-*`失败保留：旧baseline也允许手动单文档页自关，
+  Electron43.7.7另硬编码宽松选项，导致多文档父页也可被opener.close关闭。独立REPLAN后采用启动前
+  固定`allowScriptsToCloseWindows=false`恢复标准资格；`fixed-close-switch-8163d54e-*`真实4本地请求
+  证明多文档手动父页被保护、单文档页及网页创建child可关。关闭补验区分中键/Ctrl用户UI开页与普通
+  无修饰键target=_blank/脚本开页，不把“无guest”直接当作“DOM创建”；按
+  [MDN关闭语义](https://developer.mozilla.org/en-US/docs/Web/API/Window/close)与
+  [WHATWG规则](https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-window-close)核实创建资格。
+  合法关闭同时暴露旧普通Tab销毁绕过Controller的活动项残留，独立红态已保留，按正常关闭统一恢复。
+  原绝对oracle不改判成功，新标准与原产品目标等价且收紧平台默认，不增加产品取舍。
+- 首次全量实际527文件/7710测试PASS、1文件/1测试FAIL、3SKIP（631秒，exit1）；失败是未改Watch
+  H3a离线transport证据写入`EVIDENCE_WRITE_FAILED`，原日志`full-tests-01.txt`保留，具体系统错误未采集。
+  仅对该用例加已有同类FS observer及失败原件保留，按原预算复验，不把首次全量改判为通过。
+  整文件20项复验通过，独立整文件复验也20项通过；未观察到新的FS错误，历史具体系统错误仍unknown。
+  后续浏览器活动恢复新增红态后113项聚焦通过，独立140项通过（重叠不相加）；普通build-02、最终
+  typecheck及受影响lint通过。只复验变更范围，不重新运行未受影响的十分钟全仓矩阵。
+- 关闭最终对照`fixed-close-switch-7276af46-e266-4d13-a977-50193f99bb42`通过：13/30本地请求，
+  固定启动设置与源文件摘要绑定；中键无guest历史2拒绝自关，普通左键链接及POST原生guest历史2允许自关。
+  POST保留body/Origin/Referer，父页及活动态保持；最后单文档页自关补唯一活动空白页，多文档手动父页
+  拒绝child关闭而child仍可自关。前两次采样仅等待请求到达而未等导航提交的失败、`3fb04d59`误把中键
+  当DOM创建的oracle失败均保留，独审已纠正分类，不称其为产品退化；没有为此放宽产品关闭设置。
+- 最终整体验证`fixed-full-62a01dc7-ad21-4e80-a9c6-07e463824f38`通过，exit0、源/工具运行前后恒等、
+  固定启动设置已绑定，17/30合成与本地请求，0外部请求/真实Cookie/Provider。两组独立站点与空白引导均
+  保留WindowProxy、opener、双向postMessage及child自关；noopener父导航/关闭后child存活、POST方法/
+  body/Origin/Referer、noreferrer与远程Node/Electron隔离通过。sandbox继承以同HTML正常脚本正控和
+  受沙箱目标不执行脚本的反例通过；其输入是主frame真实输入额度加受控子frame固定anchor激活，不冒称
+  sendInputEvent完成物理子frame点击。真实账号登录、发行程序和安装器启动仍NOTRUN。
+  full正例去除已废止的单历史父页不可关断言，关闭资格由上述7276矩阵覆盖。7500场也绿，之后工具格式
+  变化重新冻结为62a场；早期full失败不改判，失败与timeout均保留。
+  62a结束后launcher仅追加60秒精确测试进程树清理与65秒硬停止记录，产品/页面夹具不变；此工具超时分支
+  仅完成静态检查，未把62a成功退出当成该超时分支的运行资格。1cb由操作者中止，其事后记录明确退出码
+  unknown及核验时无匹配遗留进程，不伪造当时退出码或将缺失结果称为通过。
+
 ## 自定义主题色（2026-10-13）
 
 - TASK / BASELINE：用户在手动IDM收尾时新增主题色需求，提供Chrome配色截图。先完成旧任务0.1.11交付

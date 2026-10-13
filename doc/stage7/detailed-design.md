@@ -125,9 +125,11 @@ UI IPC 统一验证当前窗口、主帧、当前受信文档/世代以及 paylo
 主 UI 和每个 Tab Session 都设置权限 check/request 策略；网页权限默认拒绝。已承诺的“复制当前视图”
 若需 clipboard 写权限，限定 UI、规范化安全投影和该能力，不允许剪贴板读取或给网页开放同权。
 
-原生 `window.open`、UI 非入口导航、Tab 非 HTTP(S)/既有受控空白页导航继续拒绝。
-普通用户点击新标签链接按浏览器核心 detailed-design §9 的一次性实体输入额度重路由到隔离 Tab；
-无输入 popup、任务 Tab、AI 交互、POST、凭据 URL 和系统协议不能走此例外。
+原生 `window.open` 默认拒绝；UI 非入口导航、Tab 非 HTTP(S)/既有受控空白页导航继续拒绝。
+普通用户新窗口按浏览器核心 detailed-design §9 的一次性实体输入门收编为安全WebContentsView，通用保留
+window.open/opener/noopener、来源、表单POST与关闭语义；不采用丢失窗口关系的URL重开或站点特判。
+无输入popup、任务Tab、AI交互、凭据URL和系统协议不能走此路径；POST仅为网页实体输入触发的原生表单，
+不新增AI或主进程任意HTTP接口。相同session、安全偏好、创建时文档复验及本地能力隔离保持。
 E1 增加 Session `will-download` 拦截：没有产品下载入口的下载一律取消，不能自动保存、启动可执行文件或调用外部 shell。
 此处不新增下载管理器。用户选择应用内导出的原生保存对话框走专用主进程服务。
 

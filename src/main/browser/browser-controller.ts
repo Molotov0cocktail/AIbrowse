@@ -107,10 +107,16 @@ export class BrowserControllerImpl implements BrowserController {
         !this.snapshotShutdown &&
         this.contentVisible &&
         this.activeTabId === tabId,
-      onUserOpenTab: (_sourceTabId, url, background) => {
-        void this.createTabInternal(url, { background }).catch(() => {
-          logWarn('browser', '用户链接新标签页创建失败');
-        });
+      onPopupTabCreated: (tabId, background) => {
+        if (!background) {
+          this.activeTabId = tabId;
+          this.applyActiveVisual();
+        }
+        this.pushState();
+      },
+      onTabCloseRequested: (tabId) => {
+        const replaceLastTab = this.tabManager.get(tabId)?.taskOwned !== true;
+        void this.closeTabInternal(tabId, replaceLastTab);
       },
     });
     this.pageReader = new PageReader();
@@ -166,7 +172,7 @@ export class BrowserControllerImpl implements BrowserController {
       entry.taskOwned ||
       entry.committedUrl === null ||
       entry.info.state === 'error' ||
-      entry.view.webContents.isDestroyed()
+      entry.webContents.isDestroyed()
       ? null
       : { url: entry.committedUrl, title: entry.info.title };
   }
@@ -175,20 +181,22 @@ export class BrowserControllerImpl implements BrowserController {
   getActiveUserWebContentsId(): number | null {
     if (this.disposed || this.activeTabId === null) return null;
     const entry = this.tabManager.get(this.activeTabId);
-    return !entry || entry.taskOwned || entry.view.webContents.isDestroyed()
+    return !entry || entry.taskOwned || entry.webContents.isDestroyed()
       ? null
-      : entry.view.webContents.id;
+      : entry.webContents.id;
   }
 
   /** Main-only ownership observation; not part of the BrowserController tool interface. */
   getOwnedWebContentsId(tabId: string): number | null {
     const entry = this.tabManager.get(tabId);
-    return entry === undefined || entry.view.webContents.isDestroyed()
-      ? null
-      : entry.view.webContents.id;
+    return entry === undefined || entry.webContents.isDestroyed() ? null : entry.webContents.id;
   }
 
   async closeTab(tabId: string): Promise<boolean> {
+    return this.closeTabInternal(tabId, true);
+  }
+
+  private async closeTabInternal(tabId: string, replaceLastTab: boolean): Promise<boolean> {
     if (this.disposed) return false;
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) {
@@ -201,16 +209,25 @@ export class BrowserControllerImpl implements BrowserController {
     this.tabManager.closeTab(tabId); // 移除条目 + removeChildView + close + 逐一移除监听器（§6）
     logInfo('browser', `已关闭标签页（tabId=${redactTabIdForLog(tabId)}）`);
     if (closedActive) {
-      const nextId = selectNextActive(tabsBeforeClose, this.activeTabId, tabId);
+      const nextId =
+        entry.openedByTabId !== undefined && this.tabManager.get(entry.openedByTabId)
+          ? entry.openedByTabId
+          : selectNextActive(
+              tabsBeforeClose.filter((tab) => tab.id === tabId || this.tabManager.get(tab.id)),
+              this.activeTabId,
+              tabId,
+            );
       if (nextId !== null) {
         this.activeTabId = nextId;
         this.applyActiveVisual();
       } else {
         // 最后 Tab 策略（§5）：窗口常驻不退出，自动新建空白 Tab（dispose 路径不走本方法）
         this.activeTabId = null;
-        logInfo('browser', '已关闭最后一个标签页，自动新建空白标签页');
-        void this.createTab();
-        return true;
+        if (replaceLastTab && !this.snapshotShutdown) {
+          logInfo('browser', '已关闭最后一个标签页，自动新建空白标签页');
+          void this.createTab();
+          return true;
+        }
       }
     }
     this.pushState();
@@ -250,7 +267,7 @@ export class BrowserControllerImpl implements BrowserController {
   async goBack(tabId: string): Promise<boolean> {
     const entry = this.guardNavigation('goBack', tabId);
     if (entry === null) return false;
-    const history = entry.view.webContents.navigationHistory;
+    const history = entry.webContents.navigationHistory;
     if (!history.canGoBack()) {
       logWarn('browser', `goBack 无后退历史（tabId=${redactTabIdForLog(tabId)}）`);
       return false;
@@ -262,7 +279,7 @@ export class BrowserControllerImpl implements BrowserController {
   async goForward(tabId: string): Promise<boolean> {
     const entry = this.guardNavigation('goForward', tabId);
     if (entry === null) return false;
-    const history = entry.view.webContents.navigationHistory;
+    const history = entry.webContents.navigationHistory;
     if (!history.canGoForward()) {
       logWarn('browser', `goForward 无前进历史（tabId=${redactTabIdForLog(tabId)}）`);
       return false;
@@ -280,7 +297,7 @@ export class BrowserControllerImpl implements BrowserController {
     ) {
       return this.materializeDeferredBlank(entry);
     }
-    entry.view.webContents.reload();
+    entry.webContents.reload();
     return true;
   }
 
@@ -370,7 +387,7 @@ export class BrowserControllerImpl implements BrowserController {
     if (entry === undefined) return null; // L3：tab 不存在
     if (!(await this.materializeDeferredBlank(entry, signal))) return null;
     if (this.snapshotShutdown || this.disposed || this.tabManager.get(tabId) !== entry) return null;
-    const wc = entry.view.webContents;
+    const wc = entry.webContents;
     if (wc.isDestroyed()) return null; // L3：webContents 已销毁
     // Electron may defer executeJavaScript until a pending navigation has loaded.
     // Never re-stamp a cross-document result: discard it and collect afresh once.
@@ -408,7 +425,7 @@ export class BrowserControllerImpl implements BrowserController {
       logWarn('browser', `交互请求未知 tabId=${redactTabIdForLog(tabId)}`);
       return { ok: false, errorCode: 'execution-failed', reason: '标签页不存在' };
     }
-    const wc = entry.view.webContents;
+    const wc = entry.webContents;
     if (wc.isDestroyed()) {
       return { ok: false, errorCode: 'execution-failed', reason: '标签页已销毁' };
     }
@@ -455,7 +472,7 @@ export class BrowserControllerImpl implements BrowserController {
     const restorePopups = this.tabManager.suppressUserPopups(tabId);
     try {
       const norm = await this.pageReader.click(
-        entry.view.webContents,
+        entry.webContents,
         elementId,
         allowedKind,
         expectedDocumentId,
@@ -498,7 +515,7 @@ export class BrowserControllerImpl implements BrowserController {
     const restorePopups = this.tabManager.suppressUserPopups(tabId);
     try {
       const norm = await this.pageReader.fill(
-        entry.view.webContents,
+        entry.webContents,
         elementId,
         text,
         expectedDocumentId,
@@ -529,7 +546,7 @@ export class BrowserControllerImpl implements BrowserController {
     if (this.disposed || this.tabManager.get(tabId) !== entry) {
       return { ok: false, reason: '标签页不存在' };
     }
-    const wc = entry.view.webContents;
+    const wc = entry.webContents;
     if (wc.isDestroyed()) {
       return { ok: false, reason: '标签页已销毁' };
     }
@@ -596,7 +613,7 @@ export class BrowserControllerImpl implements BrowserController {
       entry.view.setVisible(visible);
       if (visible && entry.info.id === this.activeTabId) {
         entry.view.setBounds(bounds);
-        entry.view.webContents.focus();
+        entry.webContents.focus();
       }
     }
   }
@@ -626,7 +643,7 @@ export class BrowserControllerImpl implements BrowserController {
     target: string,
     purpose: 'materialize' | 'navigation',
   ): Promise<boolean> {
-    const wc = entry.view.webContents;
+    const wc = entry.webContents;
     if (this.disposed || this.tabManager.get(entry.info.id) !== entry || wc.isDestroyed()) {
       return Promise.resolve(false);
     }

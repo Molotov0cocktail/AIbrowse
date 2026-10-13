@@ -281,6 +281,9 @@ import {
 } from './smoke';
 
 let windowsNotificationIdentityConfigured = false;
+// Electron permits every page to close a window by default. Restore Chromium's
+// normal script-closable checks without changing opener or page JavaScript.
+app.commandLine.appendSwitch('blink-settings', 'allowScriptsToCloseWindows=false');
 // Preserve the existing product data identity before any profile or writer setup.
 if (__RELEASE__) {
   registerAppAssetScheme(protocol);

@@ -241,9 +241,9 @@ export interface AibrowseBridge {
 
 最小权限定稿：
 
-- **远程网页不挂载任何 preload**：Tab 的 WebContentsView 不配置 preload（`nodeIntegration=false`、
-  `contextIsolation=true`、`sandbox=true`），PageReader 采集走固定 world 1001 隔离注入（§8），
-  与 bridge 完全无关。
+- **远程网页无应用 bridge**：Tab保持 `nodeIntegration=false`、`contextIsolation=true`、`sandbox=true`。
+  普通用户Tab仅允许固定资格脚本隔离preload（见`doc/design/qualified-scripts-idm.md`），任务Tab无preload；
+  网页不能指定preload。PageReader采集走固定world1001隔离注入（§8），与应用bridge无关。
 - `tabs:updated` **全量推送**（整个 `TabsState`）而非增量事件：渲染层幂等更新，
   避免增量事件乱序/丢失导致 UI 与主进程状态漂移。
 - `onUpdated` 返回退订函数；preload 内部对同一通道只注册一次 ipcRenderer 监听、
@@ -465,12 +465,24 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
 - **导航白名单**：每个 Tab webContents 的 `will-navigate` **与 `will-redirect`**（T5 R-02 加固，
   302 目标同样过白名单——程序化 loadURL 遇重定向时唯一拦截点）仅放行 `http:`/`https:`/`about:`，
   其余（`file:`、自定义协议等）`preventDefault` + warn 日志（First_stage §八「对导航做好合理处理」）。
-- **window.open**：每个 Tab webContents 的原生窗口请求仍一律 `deny`；2026-10-12 用户要求修复普通网页
-  新标签链接后，由 BrowserController 对活动可见的普通 Tab 最近一次主进程实体鼠标/键盘输入，签发
-  一次性、最长 1 秒的打开额度。合法无凭据 HTTP(S) GET 请求可重路由为应用内隔离 Tab；Ctrl/中键保持后台。
-  隐藏、失焦、切页、导航、崩溃及 AI 交互撤销额度，排队执行前复验来源与文档；任务 Tab 永不获得额度。
-  不传递 opener、POST 或页面提供的窗口特权，不开放 file/外部协议/系统窗口。无输入脚本请求仍拒绝。
-  该实体输入边界覆盖同一 WebContents 的子 frame，不声称框架 API 能证明点击只来自主 frame。
+- **window.open**：默认拒绝。2026-10-13按用户要求通用修复窗口关系，不使用站点特判；活动可见且已提交
+  HTTP(S)文档的普通Tab，最近一次主进程实体鼠标/键盘输入签发一次性、最长1秒额度。无凭据HTTP(S)或
+  精确about:blank请求，经Electron收编为应用内WebContentsView；Ctrl/中键保持后台。
+  隐藏、失焦、切页、导航、崩溃及AI交互撤销额度，创建前复验来源与文档；任务Tab永不获得额度。
+  保留Chromium原生window.open句柄、opener及rel=noopener/noreferrer、跨源postMessage、来源与表单POST；
+  不手工提取/中转/记录令牌，不用URL重开替代已有原生guest。精确空白引导保留同步脚本导航的窗口关系。
+  无guest的原生链接路径由固定Electron43.7.7主进程 `-new-window` 事件原生navigate闭包完成导航；适配
+  仅同步匹配当前事件/目标/源世代且单次消费，版本或结构失配即拒绝，不降级到loadURL复制POST/来源。
+  内核原始initiator、sandbox、referrer/Origin与POST由真实资格验证，不手工猜测。该非公开适配随Electron
+  升级必须重新资格；网页/模型无调用通道。已创建普通Tab不因父导航/关闭被应用主动级联关闭。
+  child使用相同session、固定sandbox/contextIsolation/webSecurity、关闭Node且无应用bridge；不接受网页
+  偏好，release关闭DevTools。启动前固定Blink设置`allowScriptsToCloseWindows=false`，覆写Electron宽松默认；
+  脚本关闭遵从Chromium的script-closable规则：网页创建的窗口或仅一个文档历史的顶层页允许关闭，
+  多文档历史的手动Tab拒绝脚本关闭。中键/Ctrl等浏览器UI开页不等同网页脚本创建；普通无修饰键的
+  target=_blank链接/表单与window.open按内核创建资格处理。不得误称所有手动Tab均不可关闭；任务所有权限制另行保持。
+  自动关闭时摘除view/事件并恢复有效活动Tab；重复销毁、关闭父页、取消创建与应用dispose均须幂等。
+  额度覆盖同一WebContents子frame，不声称API能证明只来自主frame；无手势、任务/AI、凭据URL、file及
+  外部协议继续拒绝。同源和COOP由内核执行，不放松响应头。合成验证不等于真实账号最终登录通过。
 - **UI 窗口自身导航保护**（T3，安全红线；**是 tabs/nav/page/ui bridge 扩展的硬前提**——导航保护
   必须先于或与 bridge 扩展同闭环落地，不得先暴露 bridge 再补保护）：React UI 所在窗口的 preload 会随
   该窗口的**任何**导航加载——若 UI 窗口主框架被导航到远程页面，远程页面将获得 `window.aibrowse`
@@ -529,9 +541,9 @@ Cookie 或未提交地址。合法 URL query/fragment 保留，userinfo 拒绝�
 | contextIsolation=true                  | 同上（显式声明，不依赖默认值）                                                                                                                              |
 | sandbox=true                           | 同上（显式声明）                                                                                                                                            |
 | webSecurity 不关闭                     | 不设置 webSecurity（默认开启）                                                                                                                              |
-| 远程网页无 Electron API / 文件系统访问 | Tab view 无 preload；无 Node 集成                                                                                                                           |
-| ipcRenderer 不整体暴露                 | preload 仅白名单 bridge（§3.2）；远程页面无 preload                                                                                                         |
-| window.open 限制                       | 每个 Tab + UI 窗口 setWindowOpenHandler deny                                                                                                                |
+| 远程网页无 Electron API / 文件系统访问 | Tab无应用bridge、无Node集成；普通Tab仅固定资格脚本隔离preload（§3.2）                                                                                       |
+| ipcRenderer 不整体暴露                 | 应用preload仅白名单bridge（§3.2）；网页不能调用应用bridge                                                                                                   |
+| window.open 限制                       | UI deny；普通Tab仅§9实体输入门收编安全原生child并保留窗口关系，任务/AI/无手势拒绝                                                                           |
 | 导航处理                               | Tab will-navigate + will-redirect 白名单 http/https/about（T5 R-02 加固，302 目标同过白名单）；UI 窗口 will-navigate + will-redirect 仅自身来源（§9）       |
 | 网页权限请求不得默认放行               | persist Session 注册 setPermissionRequestHandler + setPermissionCheckHandler，v1 默认拒绝（§7，permission-policy.ts 纯函数决策，未知权限/畸形来源安全拒绝） |
 | UI 与远程网页安全边界                  | UI 渲染进程 ≠ Tab WebContentsView（独立 webContents + preload 隔离）                                                                                        |

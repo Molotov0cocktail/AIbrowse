@@ -8,6 +8,7 @@ import type { TabInfo } from '../../shared/types/browser';
 import { ALLOWED_SCHEME_PATTERN, redactTabIdForLog, redactUrlForLog } from '../../shared/url';
 import { logError, logWarn } from '../logger';
 import { transition } from './tab-state';
+import { NativePopupNavigation } from './native-popup-navigation';
 import type {
   BrowserBookmarkInput,
   BrowserVisitTitleUpdate,
@@ -26,9 +27,14 @@ export interface PendingTabLoad {
 
 export interface TabEntry {
   readonly taskOwned: boolean;
+  readonly openedByTabId?: string;
   committedUrl: string | null;
+  committedNavigationSerial: number;
   historyVisitId: string | null;
   view: WebContentsView;
+  // A destroyed WebContentsView can clear its getter before emitting destroyed.
+  // Retain the original reference so teardown never dereferences that getter.
+  readonly webContents: WebContents;
   info: TabEntryInfo;
   cleanupFns: Array<() => void>;
   // Document epochs advance on main-document commits and renderer crashes.
@@ -69,7 +75,8 @@ export interface TabManagerOptions {
   session: Session; // 持久分区会话（SessionManager 提供，§7）
   onChanged: () => void; // 增删/标题/URL/状态变化 → controller 组装并推送 TabsState
   isUserTabInteractive?: (tabId: string) => boolean;
-  onUserOpenTab?: (sourceTabId: string, url: string, background: boolean) => void;
+  onPopupTabCreated?: (tabId: string, background: boolean) => void;
+  onTabCloseRequested?: (tabId: string) => void;
 }
 
 export class TabManager {
@@ -79,22 +86,41 @@ export class TabManager {
   constructor(private readonly options: TabManagerOptions) {}
 
   createTab(url: string, options: CreateTabOptions = {}): TabEntry {
-    const deferredBlank = options.deferInitialBlankLoad === true;
     const view = new WebContentsView({
       // Remote pages never load the application bridge. Qualified user-script
       // APIs live only in isolated worlds; task tabs have no preload at all.
       webPreferences: {
-        session: this.options.session,
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-        webSecurity: true,
-        devTools: typeof __RELEASE__ === 'undefined' || !__RELEASE__,
+        ...this.remoteWebPreferences(),
         ...(options.taskOwned !== true && this.options.qualifiedScriptPreload
           ? { preload: this.options.qualifiedScriptPreload }
           : {}),
       },
     });
+    return this.registerTab(url, options, view, view.webContents);
+  }
+
+  private remoteWebPreferences(): Electron.WebPreferences {
+    return {
+      session: this.options.session,
+      nodeIntegration: false,
+      nodeIntegrationInSubFrames: false,
+      nodeIntegrationInWorker: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      webviewTag: false,
+      devTools: typeof __RELEASE__ === 'undefined' || !__RELEASE__,
+    };
+  }
+
+  private registerTab(
+    url: string,
+    options: CreateTabOptions,
+    view: WebContentsView,
+    wc: WebContents,
+    openedByTabId?: string,
+  ): TabEntry {
+    const deferredBlank = options.deferInitialBlankLoad === true;
     // An unloaded blank view can display, focus and navigate, so the UI sees ready.
     // Snapshot, reload and scroll first load about:blank to obtain a real document.
     const info: TabEntryInfo = {
@@ -103,9 +129,11 @@ export class TabManager {
       url,
       state: deferredBlank ? 'ready' : 'idle',
     };
-    const wc = view.webContents;
-
+    const nativeNavigation = new NativePopupNavigation(wc);
     wc.setWindowOpenHandler((details) => {
+      // Every handler invocation consumes the matching native dispatch, even
+      // when the application policy subsequently rejects the popup.
+      const navigationLease = nativeNavigation.take(details);
       const source = this.entries.get(info.id);
       const hasGesture = source !== undefined && source.popupGestureExpiresAt > performance.now();
       if (source !== undefined) source.popupGestureExpiresAt = 0;
@@ -116,31 +144,104 @@ export class TabManager {
         targetUrl !== null &&
         source.popupRoutingAllowed &&
         source.popupSuppressionCount === 0 &&
+        this.hasCommittedPopupSource(source) &&
         this.options.isUserTabInteractive?.(info.id) === true
       ) {
         const generation = source.generation;
         const navigationSerial = source.navigationSerial;
         const popupRoutingEpoch = source.popupRoutingEpoch;
-        // Deny Chromium's native child first. Recheck the source before creating
-        // an isolated application tab without an opener or inherited preferences.
-        queueMicrotask(() => {
-          if (
-            this.entries.get(info.id) !== source ||
-            wc.isDestroyed() ||
-            source.generation !== generation ||
-            source.navigationSerial !== navigationSerial ||
-            source.popupRoutingEpoch !== popupRoutingEpoch ||
-            source.popupSuppressionCount !== 0 ||
-            this.options.isUserTabInteractive?.(info.id) !== true
-          )
-            return;
-          this.options.onUserOpenTab?.(
-            info.id,
-            targetUrl,
-            details.disposition === 'background-tab',
-          );
-        });
-        return { action: 'deny' };
+        const sourceIsCurrent = (): boolean =>
+          this.entries.get(info.id) === source &&
+          !wc.isDestroyed() &&
+          source.generation === generation &&
+          source.navigationSerial === navigationSerial &&
+          source.popupRoutingEpoch === popupRoutingEpoch &&
+          source.popupSuppressionCount === 0 &&
+          this.options.isUserTabInteractive?.(info.id) === true;
+        return {
+          action: 'allow',
+          outlivesOpener: true,
+          // Chromium must receive these before it creates the guest renderer.
+          overrideBrowserWindowOptions: {
+            webPreferences: {
+              ...this.remoteWebPreferences(),
+              ...(this.options.qualifiedScriptPreload
+                ? { preload: this.options.qualifiedScriptPreload }
+                : {}),
+            },
+          },
+          createWindow: (nativeOptions) => {
+            // Electron passes the native guest at runtime but omits this
+            // property from BrowserWindowConstructorOptions' public type.
+            const guest = (
+              nativeOptions as Electron.BrowserWindowConstructorOptions & {
+                webContents?: WebContents;
+              }
+            ).webContents;
+            const sandboxFlags = (
+              nativeOptions.webPreferences as
+                (Electron.WebPreferences & { openerSandboxFlags?: unknown }) | undefined
+            )?.openerSandboxFlags;
+            if (
+              guest?.isDestroyed() ||
+              !sourceIsCurrent() ||
+              (guest === undefined && navigationLease === null) ||
+              (sandboxFlags !== undefined &&
+                (typeof sandboxFlags !== 'number' ||
+                  !Number.isSafeInteger(sandboxFlags) ||
+                  sandboxFlags < 0 ||
+                  sandboxFlags > 0xffffffff)) ||
+              (guest === undefined &&
+                navigationLease !== null &&
+                (sandboxFlags ?? 0) !== navigationLease.sandboxFlags)
+            ) {
+              // The API requires a WebContents return even after revocation.
+              // Never register or navigate a revoked popup.
+              const cancelled =
+                guest ??
+                new WebContentsView({ webPreferences: this.remoteWebPreferences() }).webContents;
+              queueMicrotask(() => {
+                if (!cancelled.isDestroyed()) cancelled.close({ waitForBeforeUnload: false });
+              });
+              return cancelled;
+            }
+            const view = new WebContentsView({
+              ...(guest === undefined ? {} : { webContents: guest }),
+              webPreferences: {
+                ...this.remoteWebPreferences(),
+                ...(this.options.qualifiedScriptPreload
+                  ? { preload: this.options.qualifiedScriptPreload }
+                  : {}),
+                ...(sandboxFlags === undefined ? {} : { openerSandboxFlags: sandboxFlags }),
+              },
+            });
+            const child = this.registerTab(
+              targetUrl,
+              { allowUserPopupRouting: true },
+              view,
+              view.webContents,
+              info.id,
+            );
+            if (guest === undefined) {
+              try {
+                if (!sourceIsCurrent() || !navigationLease?.navigate(child.webContents)) {
+                  this.closeTab(child.info.id);
+                  return child.webContents;
+                }
+              } catch {
+                this.closeTab(child.info.id);
+                logWarn('browser', '原生新标签页导航失败');
+                return child.webContents;
+              }
+            }
+            this.clearPopupGestures();
+            this.options.onPopupTabCreated?.(
+              child.info.id,
+              details.disposition === 'background-tab',
+            );
+            return child.webContents;
+          },
+        };
       }
       logWarn(
         'browser',
@@ -150,13 +251,17 @@ export class TabManager {
     });
 
     const cleanupFns = this.wireEvents(wc, info);
+    cleanupFns.push(() => nativeNavigation.dispose());
     this.options.ownerWindow.contentView.addChildView(view);
     view.setVisible(false); // 可见性由 controller 统一管理（活动 Tab 才可见）
     const entry: TabEntry = {
       taskOwned: options.taskOwned === true,
+      ...(openedByTabId === undefined ? {} : { openedByTabId }),
       committedUrl: null,
+      committedNavigationSerial: -1,
       historyVisitId: null,
       view,
+      webContents: wc,
       info,
       cleanupFns,
       generation: deferredBlank ? 0 : 1,
@@ -173,16 +278,7 @@ export class TabManager {
 
     // 防御：正常情况下 closeTab/dispose 先移除条目；此处兜底意外销毁
     wc.once('destroyed', () => {
-      const registered = this.entries.get(info.id);
-      if (registered !== undefined) {
-        this.invalidateLoads(registered);
-        this.entries.delete(info.id);
-        logWarn(
-          'browser',
-          `webContents 意外销毁（tabId=${redactTabIdForLog(info.id)}），已从登记表移除`,
-        );
-        this.options.onChanged();
-      }
+      if (this.entries.has(info.id)) this.requestCloseTab(info.id);
     });
 
     if (!entry.taskOwned) {
@@ -229,11 +325,11 @@ export class TabManager {
 
   private popupTarget(details: Electron.HandlerDetails): string | null {
     if (
-      details.postBody !== undefined ||
       details.url.length > 8192 ||
       !['default', 'foreground-tab', 'background-tab', 'new-window'].includes(details.disposition)
     )
       return null;
+    if (details.url === 'about:blank') return details.postBody === undefined ? details.url : null;
     try {
       const target = new URL(details.url);
       return (target.protocol === 'https:' || target.protocol === 'http:') &&
@@ -246,6 +342,31 @@ export class TabManager {
     }
   }
 
+  private hasCommittedPopupSource(source: TabEntry): boolean {
+    if (
+      source.taskOwned ||
+      source.committedUrl === null ||
+      source.committedNavigationSerial !== source.navigationSerial
+    )
+      return false;
+    try {
+      const origin = new URL(source.committedUrl);
+      return (
+        (origin.protocol === 'https:' || origin.protocol === 'http:') &&
+        origin.username === '' &&
+        origin.password === ''
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private requestCloseTab(tabId: string): void {
+    this.options.onTabCloseRequested?.(tabId);
+    // Standalone managers and disposed controllers still release their views.
+    if (this.entries.has(tabId)) this.closeTab(tabId);
+  }
+
   closeTab(tabId: string): boolean {
     const entry = this.entries.get(tabId);
     if (entry === undefined) return false;
@@ -256,9 +377,9 @@ export class TabManager {
     if (!this.options.ownerWindow.isDestroyed()) {
       this.options.ownerWindow.contentView.removeChildView(entry.view);
     }
-    if (!entry.view.webContents.isDestroyed()) {
+    if (!entry.webContents.isDestroyed()) {
       // 浏览器语义：关闭标签页必须立即生效，不等页面 beforeunload
-      entry.view.webContents.close({ waitForBeforeUnload: false });
+      entry.webContents.close({ waitForBeforeUnload: false });
     }
     entry.cleanupFns.forEach((fn) => fn());
     this.options.onChanged();
@@ -414,6 +535,7 @@ export class TabManager {
       const entry = this.entries.get(info.id);
       if (entry !== undefined) {
         entry.generation += 1;
+        entry.committedNavigationSerial = entry.navigationSerial;
         info.title = '';
         this.recordCommit(entry, url, '');
       }

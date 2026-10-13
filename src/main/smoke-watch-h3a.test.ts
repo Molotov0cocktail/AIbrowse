@@ -752,6 +752,9 @@ describe('H3a public product qualification', () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-offline-'));
     const evidenceDir = mkdtempSync(join(tmpdir(), 'aibrowse-h3a-offline-evidence-'));
     const clock = new FakeClock(Date.parse('2026-09-06T00:00:00.000Z'));
+    let completed = false;
+    fsObserver.enabled = true;
+    fsObserver.failures.length = 0;
     try {
       const result = await runH3aCampaign({
         candidateSha: 'a'.repeat(40),
@@ -768,7 +771,9 @@ describe('H3a public product qualification', () => {
         },
         maxCandidateMs: 15_000,
       });
-      expect(result.validationErrors).toEqual([]);
+      const failureDiagnostic = JSON.stringify(fsObserver.failures);
+      expect(fsObserver.failures, `安全文件系统失败诊断：${failureDiagnostic}`).toEqual([]);
+      expect(result.validationErrors, `安全文件系统失败诊断：${failureDiagnostic}`).toEqual([]);
       expect(result.report.scenarios.map((scenario) => scenario.result)).toEqual([
         'pass',
         'pass',
@@ -890,9 +895,13 @@ describe('H3a public product qualification', () => {
       const evidenceFiles = readdirSync(evidenceDir);
       expect(evidenceFiles.filter((file) => file.startsWith('campaign-start-'))).toHaveLength(2);
       expect(evidenceFiles.filter((file) => file.startsWith('report-'))).toHaveLength(2);
+      completed = true;
     } finally {
-      rmSync(rootDir, { recursive: true, force: true });
-      rmSync(evidenceDir, { recursive: true, force: true });
+      fsObserver.enabled = false;
+      if (completed) {
+        rmSync(rootDir, { recursive: true, force: true });
+        rmSync(evidenceDir, { recursive: true, force: true });
+      }
     }
   });
 

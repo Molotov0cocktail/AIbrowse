@@ -5,15 +5,20 @@ import { TabManager } from '../../src/main/browser/tab-manager';
 
 interface Contents extends EventEmitter {
   open(details: Electron.HandlerDetails): Electron.WindowOpenHandlerResponse;
+  loadURL: ReturnType<typeof vi.fn<() => Promise<void>>>;
   close(): void;
   isDestroyed(): boolean;
 }
 
-const mock = vi.hoisted(() => ({ contents: [] as Contents[] }));
+const mock = vi.hoisted(() => ({
+  contents: [] as Contents[],
+  createContents: null as (() => Contents) | null,
+}));
 vi.mock('electron', async () => {
   const { EventEmitter: Emitter } = await import('node:events');
   class TestContents extends Emitter {
     destroyed = false;
+    loadURL = vi.fn(async () => {});
     open: Contents['open'] = () => ({ action: 'deny' });
     setWindowOpenHandler(handler: Contents['open']) {
       this.open = handler;
@@ -29,12 +34,14 @@ vi.mock('electron', async () => {
       this.emit('destroyed');
     }
   }
+  mock.createContents = () => new TestContents();
   return {
     WebContentsView: class {
-      webContents = new TestContents();
+      webContents: Contents;
       setVisible = vi.fn();
       setBounds = vi.fn();
-      constructor() {
+      constructor(options: { webContents?: Contents }) {
+        this.webContents = options.webContents ?? new TestContents();
         mock.contents.push(this.webContents);
       }
     },
@@ -53,7 +60,7 @@ afterEach(() => {
 
 function fixture(allow = true) {
   let interactive = true;
-  const onUserOpenTab = vi.fn();
+  const onPopupTabCreated = vi.fn();
   const manager = new TabManager({
     ownerWindow: {
       isDestroyed: () => false,
@@ -62,11 +69,15 @@ function fixture(allow = true) {
     session: {} as Session,
     onChanged: vi.fn(),
     isUserTabInteractive: () => interactive,
-    onUserOpenTab,
+    onPopupTabCreated,
   });
   managers.push(manager);
-  const entry = manager.createTab('https://example.test/', { allowUserPopupRouting: allow });
+  const entry = manager.createTab('https://example.test/', {
+    allowUserPopupRouting: allow,
+    taskOwned: !allow,
+  });
   const wc = mock.contents.at(-1)!;
+  wc.emit('did-navigate', {}, 'https://example.test/');
   const mouse = () => wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
   const details: Electron.HandlerDetails = {
     url: 'https://target.test/path?q=value',
@@ -81,7 +92,18 @@ function fixture(allow = true) {
     wc,
     mouse,
     details,
-    onUserOpenTab,
+    onPopupTabCreated,
+    adopt: (response: Electron.WindowOpenHandlerResponse) => {
+      expect(response.action).toBe('allow');
+      const guest = mock.createContents!();
+      expect(
+        response.createWindow!({
+          ...response.overrideBrowserWindowOptions,
+          webContents: guest,
+        } as Electron.BrowserWindowConstructorOptions),
+      ).toBe(guest);
+      return guest;
+    },
     hide: () => {
       interactive = false;
     },
@@ -89,15 +111,23 @@ function fixture(allow = true) {
 }
 
 describe('独审：用户弹出路由的撤销、一次性和信任边界', () => {
-  it('仅回调规范化URL与后台布尔值，不转交窗口特权或opener', async () => {
+  it('收编原生child并只回调标签标识与后台布尔值，网页features不增加权限', () => {
     const f = fixture();
     f.mouse();
-    expect(f.wc.open({ ...f.details, disposition: 'background-tab' })).toEqual({ action: 'deny' });
-    await Promise.resolve();
-    expect(f.onUserOpenTab).toHaveBeenCalledExactlyOnceWith(f.entry.info.id, f.details.url, true);
-    f.wc.open(f.details);
-    await Promise.resolve();
-    expect(f.onUserOpenTab).toHaveBeenCalledOnce();
+    const response = f.wc.open({ ...f.details, disposition: 'background-tab' });
+    expect(response.overrideBrowserWindowOptions?.webPreferences).toMatchObject({
+      nodeIntegration: false,
+      sandbox: true,
+      contextIsolation: true,
+      webSecurity: true,
+    });
+    expect(response.overrideBrowserWindowOptions?.webPreferences?.preload).toBeUndefined();
+    const guest = f.adopt(response);
+    const child = f.manager.list().find((entry) => entry.info.id !== f.entry.info.id)!;
+    expect(f.onPopupTabCreated).toHaveBeenCalledExactlyOnceWith(child.info.id, true);
+    expect(guest.loadURL).not.toHaveBeenCalled();
+    expect(f.wc.open(f.details)).toEqual({ action: 'deny' });
+    expect(f.onPopupTabCreated).toHaveBeenCalledOnce();
   });
 
   it.each(['blur', 'navigation', 'crash', 'close', 'hidden', 'suppress-and-restore'])(
@@ -105,7 +135,7 @@ describe('独审：用户弹出路由的撤销、一次性和信任边界', () =
     async (change) => {
       const f = fixture();
       f.mouse();
-      f.wc.open(f.details);
+      const response = f.wc.open(f.details);
       if (change === 'blur') f.wc.emit('blur');
       if (change === 'navigation')
         f.wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
@@ -113,8 +143,10 @@ describe('独审：用户弹出路由的撤销、一次性和信任边界', () =
       if (change === 'close') f.manager.closeTab(f.entry.info.id);
       if (change === 'hidden') f.hide();
       if (change === 'suppress-and-restore') f.manager.suppressUserPopups(f.entry.info.id)();
+      const guest = f.adopt(response);
       await Promise.resolve();
-      expect(f.onUserOpenTab).not.toHaveBeenCalled();
+      expect(guest.isDestroyed()).toBe(true);
+      expect(f.onPopupTabCreated).not.toHaveBeenCalled();
     },
   );
 
@@ -127,15 +159,15 @@ describe('独审：用户弹出路由的撤销、一次性和信任边界', () =
     f.mouse();
     f.wc.open(f.details);
     await Promise.resolve();
-    expect(f.onUserOpenTab).not.toHaveBeenCalled();
+    expect(f.onPopupTabCreated).not.toHaveBeenCalled();
     releaseB();
     f.wc.open(f.details);
     await Promise.resolve();
-    expect(f.onUserOpenTab).not.toHaveBeenCalled();
+    expect(f.onPopupTabCreated).not.toHaveBeenCalled();
     f.mouse();
-    f.wc.open(f.details);
+    f.adopt(f.wc.open(f.details));
     await Promise.resolve();
-    expect(f.onUserOpenTab).toHaveBeenCalledOnce();
+    expect(f.onPopupTabCreated).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -143,7 +175,7 @@ describe('独审：用户弹出路由的撤销、一次性和信任边界', () =
     'javascript:window.alert(1)',
     'file:///C:/unsafe',
     'data:text/html,unsafe',
-    'about:blank',
+    'about:blank#fragment',
     'ftp://example.test/',
     'not-a-url',
     'https://example.test/' + 'a'.repeat(8192),
@@ -153,19 +185,29 @@ describe('独审：用户弹出路由的撤销、一次性和信任边界', () =
     f.wc.open({ ...f.details, url });
     f.wc.open(f.details);
     await Promise.resolve();
-    expect(f.onUserOpenTab).not.toHaveBeenCalled();
+    expect(f.onPopupTabCreated).not.toHaveBeenCalled();
   });
 
-  it('POST被拒且消耗该次额度，随后GET不得复用', async () => {
+  it('精确about:blank允许原生引导且消耗该次额度', () => {
     const f = fixture();
     f.mouse();
-    f.wc.open({
+    const guest = f.adopt(f.wc.open({ ...f.details, url: 'about:blank' }));
+    expect(guest.loadURL).not.toHaveBeenCalled();
+    expect(f.wc.open(f.details)).toEqual({ action: 'deny' });
+    expect(f.onPopupTabCreated).toHaveBeenCalledOnce();
+  });
+
+  it('POST保留原生guest且消耗该次额度，随后GET不得复用', () => {
+    const f = fixture();
+    f.mouse();
+    const response = f.wc.open({
       ...f.details,
       postBody: { data: [], contentType: 'application/x-www-form-urlencoded' },
     });
-    f.wc.open(f.details);
-    await Promise.resolve();
-    expect(f.onUserOpenTab).not.toHaveBeenCalled();
+    const guest = f.adopt(response);
+    expect(guest.loadURL).not.toHaveBeenCalled();
+    expect(f.wc.open(f.details)).toEqual({ action: 'deny' });
+    expect(f.onPopupTabCreated).toHaveBeenCalledOnce();
   });
 
   it('任务标签对鼠标和键盘实体输入都拒绝', async () => {
@@ -175,7 +217,7 @@ describe('独审：用户弹出路由的撤销、一次性和信任边界', () =
     f.wc.emit('before-input-event', {}, { type: 'keyDown', key: 'Enter', isAutoRepeat: false });
     f.wc.open(f.details);
     await Promise.resolve();
-    expect(f.onUserOpenTab).not.toHaveBeenCalled();
+    expect(f.onPopupTabCreated).not.toHaveBeenCalled();
   });
 
   it('一秒边界到期即拒绝，不接受DOM click作为实体输入', async () => {
@@ -187,7 +229,7 @@ describe('独审：用户弹出路由的撤销、一次性和信任边界', () =
     f.wc.emit('click', {});
     f.wc.open(f.details);
     await Promise.resolve();
-    expect(f.onUserOpenTab).not.toHaveBeenCalled();
+    expect(f.onPopupTabCreated).not.toHaveBeenCalled();
   });
 
   it('关闭后解除新增输入/blur监听', () => {

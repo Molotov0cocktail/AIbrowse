@@ -93,7 +93,7 @@ function harness() {
   const created = manager.createTab('https://example.com/page');
   const entry = manager.get(created.info.id);
   if (entry === undefined) throw new Error('测试标签页未登记');
-  const wc = entry.view.webContents as unknown as TestWebContents;
+  const wc = entry.webContents as unknown as TestWebContents;
   return { manager, entry, wc, ownerWindow };
 }
 
@@ -257,7 +257,7 @@ describe('TabManager 单网页崩溃隔离与显式恢复', () => {
     const { manager } = harness();
     try {
       const blank = manager.createTab('about:blank', { deferInitialBlankLoad: true });
-      const wc = blank.view.webContents as unknown as TestWebContents;
+      const wc = blank.webContents as unknown as TestWebContents;
       wc.emit('render-process-gone');
       expect(blank.generation).toBe(1);
       expect(blank.deferredBlank).toBe(false);
@@ -316,7 +316,7 @@ describe('TabManager 单网页崩溃隔离与显式恢复', () => {
   it('连续崩溃不启动自动重试，其他用户标签的文档、标题和登记保持', () => {
     const { manager, entry, wc, ownerWindow } = harness();
     const other = manager.createTab('https://example.com/other');
-    const otherWc = other.view.webContents as unknown as TestWebContents;
+    const otherWc = other.webContents as unknown as TestWebContents;
     otherWc.emit('did-finish-load');
     otherWc.emit('page-title-updated', {}, '另一个用户标签');
     const otherInfo = { ...other.info };

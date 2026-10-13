@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { BaseWindow, Session } from 'electron';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserControllerImpl, type BrowserControllerOptions } from './browser-controller';
 import type { SessionManager } from './session-manager';
 
@@ -39,6 +39,7 @@ interface TestView {
 
 const electronMock = vi.hoisted(() => ({
   instances: [] as TestView[],
+  createGuest: null as (() => TestWebContents) | null,
   deferBlankLoads: false,
   deferredUrls: [] as string[],
   noCommitUrls: [] as string[],
@@ -180,13 +181,18 @@ vi.mock('electron', async () => {
 
   return {
     WebContentsView: class {
-      readonly webContents = new MockWebContents();
+      readonly webContents: MockWebContents;
       readonly preferences: Record<string, unknown>;
       readonly setVisible = vi.fn();
       readonly setBounds = vi.fn();
 
-      constructor(options: { webPreferences: Record<string, unknown> }) {
-        this.preferences = options.webPreferences;
+      constructor(options: {
+        webPreferences?: Record<string, unknown>;
+        webContents?: MockWebContents;
+      }) {
+        this.webContents = options.webContents ?? new MockWebContents();
+        electronMock.createGuest = () => new MockWebContents();
+        this.preferences = options.webPreferences ?? {};
         electronMock.instances.push(this as unknown as TestView);
       }
     },
@@ -222,13 +228,22 @@ function harness(observers: Partial<BrowserControllerOptions> = {}): {
   };
 }
 
+const originalElectronVersion = Object.getOwnPropertyDescriptor(process.versions, 'electron');
+
 beforeEach(() => {
+  Object.defineProperty(process.versions, 'electron', { value: '43.7.7', configurable: true });
   electronMock.instances.length = 0;
   electronMock.pending.length = 0;
   electronMock.deferredUrls.length = 0;
   electronMock.noCommitUrls.length = 0;
   electronMock.syncFailureUrls.length = 0;
   electronMock.deferBlankLoads = false;
+});
+
+afterEach(() => {
+  if (originalElectronVersion)
+    Object.defineProperty(process.versions, 'electron', originalElectronVersion);
+  else Reflect.deleteProperty(process.versions, 'electron');
 });
 
 describe('用户标签分组', () => {
@@ -305,6 +320,57 @@ describe('用户标签分组', () => {
   });
 });
 
+describe('网页原生关闭后的用户标签生命周期', () => {
+  it.each([false, true])('任务页销毁恢复幸存用户页=%s，且不创建用户空白页', async (withUserTab) => {
+    const { controller } = harness();
+    const user = withUserTab ? await controller.createTab('https://user.example/') : null;
+    const task = await controller.createTaskTab('https://task.example/');
+    const taskView = electronMock.instances.at(-1)!;
+    taskView.webContents.destroyUnexpectedly();
+    expect(controller.getTabsState().activeTabId).toBe(user?.id ?? null);
+    expect(controller.getTabsState().activeTabId).not.toBe(task.id);
+    expect(await controller.getTabs()).toHaveLength(withUserTab ? 1 : 0);
+    expect(electronMock.instances).toHaveLength(withUserTab ? 2 : 1);
+    controller.dispose();
+  });
+
+  it('活动普通页销毁后选择存活邻页并移除视图及监听器', async () => {
+    const { controller, ownerWindow } = harness();
+    const first = await controller.createTab('https://first.example/');
+    const second = await controller.createTab('https://second.example/');
+    const secondView = electronMock.instances[1]!;
+    secondView.webContents.destroyUnexpectedly();
+    expect(await controller.getActiveTab()).toMatchObject({ id: first.id, active: true });
+    expect(await controller.getTabs()).toHaveLength(1);
+    expect(controller.getTabsState().activeTabId).not.toBe(second.id);
+    expect(ownerWindow.contentView.removeChildView).toHaveBeenCalledWith(secondView);
+    expect(secondView.webContents.listenerCount('did-navigate')).toBe(0);
+    expect(secondView.webContents.close).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it('后台普通页销毁不抢活动页，最后页销毁只补一个空白页', async () => {
+    const { controller, ownerWindow } = harness();
+    await controller.createTab('https://background.example/');
+    const active = await controller.createTab('https://active.example/');
+    const backgroundView = electronMock.instances[0]!;
+    const activeView = electronMock.instances[1]!;
+    backgroundView.webContents.destroyUnexpectedly();
+    expect((await controller.getActiveTab())?.id).toBe(active.id);
+    activeView.webContents.destroyUnexpectedly();
+    activeView.webContents.emit('destroyed');
+    const replacement = (await controller.getActiveTab())!;
+    expect(replacement).toMatchObject({ url: 'about:blank', active: true });
+    expect(replacement.id).not.toBe(active.id);
+    expect(await controller.getTabs()).toHaveLength(1);
+    expect(electronMock.instances).toHaveLength(3);
+    expect(ownerWindow.contentView.removeChildView).toHaveBeenCalledTimes(2);
+    controller.dispose();
+    expect(electronMock.instances).toHaveLength(3);
+    expect(await controller.getTabs()).toHaveLength(0);
+  });
+});
+
 it('只有普通标签主框架提交写历史；后台、失败和子框架不会写入', async () => {
   const onNavigationCommitted = vi.fn(() => 'visit-1');
   const { controller } = harness({ onNavigationCommitted });
@@ -359,6 +425,356 @@ function userClick(wc: TestWebContents): void {
   wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left', x: 10, y: 10 });
 }
 
+const GOOGLE_AUTH = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture';
+
+function nativeLink(wc: TestWebContents, details: Electron.HandlerDetails, sandboxFlags = 0) {
+  const navigate = vi.fn<(contents: Electron.WebContents) => void>();
+  wc.emit(
+    '-new-window',
+    { preventDefault: vi.fn() },
+    details.url,
+    details.frameName,
+    details.disposition,
+    details.features,
+    details.referrer,
+    details.postBody?.data,
+    sandboxFlags,
+    navigate,
+  );
+  return navigate;
+}
+
+function adoptPopup(response: Electron.WindowOpenHandlerResponse): TestWebContents {
+  expect(response.action).toBe('allow');
+  expect(response.outlivesOpener).toBe(true);
+  const guest = electronMock.createGuest!();
+  const nativeOptions = {
+    ...response.overrideBrowserWindowOptions,
+    webContents: guest as unknown as Electron.WebContents,
+  };
+  expect(response.createWindow!(nativeOptions)).toBe(guest);
+  return guest;
+}
+
+function openUserPopup(
+  source: TestWebContents,
+  details = popupDetails(GOOGLE_AUTH, 'new-window'),
+): TestWebContents {
+  userClick(source);
+  return adoptPopup(source.windowOpen(details));
+}
+
+describe('用户弹窗保留原生浏览器关系', () => {
+  it.each([
+    ['https://x.com/i/flow/login', GOOGLE_AUTH],
+    ['https://app.example/', 'https://idp.example/login'],
+    ['http://localhost:4321/', 'http://localhost:4322/form'],
+  ])('来源 %s 原窗口收编到 %s，不创建替身或再次 loadURL', async (origin, target) => {
+    const onUserTabCreated = vi.fn();
+    const { controller, ownerWindow } = harness({ onUserTabCreated });
+    try {
+      const source = await controller.createTab(origin);
+      const guest = openUserPopup(electronMock.instances[0]!.webContents, popupDetails(target));
+      expect(await controller.getTabs()).toHaveLength(2);
+      expect((await controller.getTabs())[1]).toMatchObject({ url: target, active: true });
+      expect(electronMock.instances[1]!.webContents).toBe(guest);
+      expect(guest.loadURL).not.toHaveBeenCalled();
+      expect(onUserTabCreated).toHaveBeenLastCalledWith(guest);
+      guest.destroyUnexpectedly();
+      expect(await controller.getTabs()).toHaveLength(1);
+      expect((await controller.getActiveTab())?.id).toBe(source.id);
+      expect(electronMock.instances[0]!.setVisible).toHaveBeenLastCalledWith(true);
+      expect(ownerWindow.contentView.removeChildView).toHaveBeenCalledWith(
+        electronMock.instances[1],
+      );
+      expect(guest.listenerCount('did-navigate')).toBe(0);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('弹窗安全偏好在 Chromium 创建前固定，网页 features 不增加权限或 preload', async () => {
+    const { controller } = harness({ qualifiedScriptPreload: 'D:/fixed-script.js' });
+    try {
+      await controller.createTab('https://app.example/');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      const response = wc.windowOpen({
+        ...popupDetails('https://idp.example/', 'new-window'),
+        features:
+          'nodeIntegration=yes,webviewTag=yes,contextIsolation=no,webSecurity=no,preload=C:/evil.js',
+      });
+      expect(response.action).toBe('allow');
+      expect(response.overrideBrowserWindowOptions?.webPreferences).toMatchObject({
+        session: electronMock.instances[0]!.preferences.session,
+        nodeIntegration: false,
+        nodeIntegrationInSubFrames: false,
+        nodeIntegrationInWorker: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+        webviewTag: false,
+        preload: 'D:/fixed-script.js',
+      });
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it.each(['navigation', 'crash', 'close', 'destroy'] as const)(
+    '来源 %s 不误关已经建立的普通子页',
+    async (operation) => {
+      const { controller } = harness();
+      try {
+        const source = await controller.createTab('https://app.example/');
+        const wc = electronMock.instances[0]!.webContents;
+        const guest = openUserPopup(wc);
+        const child = (await controller.getActiveTab())!;
+        if (operation === 'navigation')
+          await controller.navigate(source.id, 'https://other.example/');
+        else if (operation === 'crash') wc.emit('render-process-gone');
+        else if (operation === 'close') await controller.closeTab(source.id);
+        else wc.destroyUnexpectedly();
+        expect(guest.destroyed).toBe(false);
+        expect((await controller.getActiveTab())?.id).toBe(child.id);
+        guest.destroyUnexpectedly();
+        expect(await controller.getActiveTab()).not.toBeNull();
+      } finally {
+        controller.dispose();
+      }
+    },
+  );
+
+  it('源页同文档及子帧导航不关闭子页，关闭后台子页不抢焦点', async () => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://app.example/');
+      const wc = electronMock.instances[0]!.webContents;
+      const guest = openUserPopup(wc);
+      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+      wc.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+      expect(guest.destroyed).toBe(false);
+      const other = await controller.createTab('https://other.example/');
+      guest.destroyUnexpectedly();
+      expect((await controller.getActiveTab())?.id).toBe(other.id);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('跨文档在途即使收到旧页面 hash 提交和新点击，也不能建立弹窗', async () => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://app.example/');
+      const wc = electronMock.instances[0]!.webContents;
+      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+      wc.emit('did-navigate-in-page', {}, 'https://app.example/#old', true);
+      userClick(wc);
+      expect(wc.windowOpen(popupDetails(GOOGLE_AUTH))).toEqual({ action: 'deny' });
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it.each(['navigation', 'hidden', 'blur', 'ai', 'closed'] as const)(
+    '原生创建前 %s 撤销入口，迟到 guest 释放且无登记残留',
+    async (operation) => {
+      const { controller } = harness();
+      try {
+        const source = await controller.createTab('https://app.example/');
+        const wc = electronMock.instances[0]!.webContents;
+        userClick(wc);
+        const response = wc.windowOpen(popupDetails(GOOGLE_AUTH));
+        expect(response.action).toBe('allow');
+        if (operation === 'navigation')
+          await controller.navigate(source.id, 'https://other.example/');
+        else if (operation === 'hidden') {
+          controller.setContentVisible(false);
+          controller.setContentVisible(true);
+        } else if (operation === 'blur') wc.emit('blur');
+        else if (operation === 'ai') await controller.scrollTab(source.id, 10);
+        else await controller.closeTab(source.id);
+        const guest = electronMock.createGuest!();
+        const nativeOptions = {
+          show: false,
+          webContents: guest as unknown as Electron.WebContents,
+        };
+        response.createWindow!(nativeOptions);
+        await Promise.resolve();
+        expect(guest.destroyed).toBe(true);
+        expect(await controller.getTabs()).toHaveLength(1);
+      } finally {
+        controller.dispose();
+      }
+    },
+  );
+
+  it('AI 操作即使同步触发鼠标事件也不能建立原生子页', async () => {
+    const { controller } = harness();
+    try {
+      const source = await controller.createTab('https://app.example/');
+      const wc = electronMock.instances[0]!.webContents;
+      const snapshot = await controller.getPageSnapshot(source.id);
+      wc.collectScript.mockImplementation(async () => {
+        userClick(wc);
+        expect(wc.windowOpen(popupDetails(GOOGLE_AUTH))).toEqual({ action: 'deny' });
+        return { ok: true, tag: 'a', text: '登录' };
+      });
+      userClick(wc);
+      await controller.clickElement(source.id, 'el-1', 'nav', snapshot!.meta.documentId);
+      expect(wc.windowOpen(popupDetails(GOOGLE_AUTH))).toEqual({ action: 'deny' });
+      expect(await controller.getTabs()).toHaveLength(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('精确 about:blank 作为原生脚本引导页保留，不自行覆盖 DOM', async () => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://app.example/');
+      const guest = openUserPopup(
+        electronMock.instances[0]!.webContents,
+        popupDetails('about:blank'),
+      );
+      expect((await controller.getActiveTab())?.url).toBe('about:blank');
+      expect(guest.loadURL).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('没有原生 guest 的后台链接只调用原生闭包，不重放 referrer 或 POST', async () => {
+    const { controller } = harness();
+    try {
+      const source = await controller.createTab('https://app.example/');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      const details = {
+        ...popupDetails('https://form.example/submit', 'background-tab'),
+        referrer: {
+          url: 'https://app.example/',
+          policy: 'strict-origin-when-cross-origin' as const,
+        },
+        postBody: {
+          data: [{ type: 'rawData' as const, bytes: Buffer.from('fixture=value') }],
+          contentType: 'multipart/form-data',
+          boundary: 'fixture-boundary',
+        },
+      };
+      const navigate = nativeLink(wc, details);
+      const response = wc.windowOpen(details);
+      expect(response.action).toBe('allow');
+      const child = response.createWindow!({}) as unknown as TestWebContents;
+      expect(navigate).toHaveBeenCalledExactlyOnceWith(child);
+      expect(child.loadURL).not.toHaveBeenCalled();
+      expect((await controller.getActiveTab())?.id).toBe(source.id);
+      expect(child.focus).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('原生 POST guest 不经应用重放或改成 GET', async () => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://app.example/');
+      const guest = openUserPopup(electronMock.instances[0]!.webContents, {
+        ...popupDetails('https://form.example/submit'),
+        postBody: {
+          data: [{ type: 'rawData', bytes: Buffer.from('fixture=value') }],
+          contentType: 'application/x-www-form-urlencoded',
+        },
+      });
+      expect(guest.loadURL).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it('无 guest 分支白名单保留原生子帧沙箱标记，不继承未受控偏好', async () => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://app.example/');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      const details = popupDetails('https://other.example/', 'background-tab');
+      const navigate = nativeLink(wc, details, 123);
+      const response = wc.windowOpen(details);
+      const nativeOptions = {
+        webPreferences: {
+          openerSandboxFlags: 123,
+          preload: 'C:/evil.js',
+          nodeIntegration: true,
+          sandbox: false,
+        },
+      };
+      response.createWindow!(nativeOptions);
+      expect(electronMock.instances[1]!.preferences).toMatchObject({
+        openerSandboxFlags: 123,
+        nodeIntegration: false,
+        sandbox: true,
+      });
+      expect(electronMock.instances[1]!.preferences.preload).toBeUndefined();
+      expect(navigate).toHaveBeenCalledOnce();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it.each([-1, 1.5, 0x100000000, '123', null])(
+    '非法原生沙箱标记 %s 不登记、不导航并释放内容',
+    async (openerSandboxFlags) => {
+      const { controller } = harness();
+      try {
+        await controller.createTab('https://app.example/');
+        const wc = electronMock.instances[0]!.webContents;
+        userClick(wc);
+        const response = wc.windowOpen(popupDetails('https://other.example/', 'background-tab'));
+        const nativeOptions = { webPreferences: { openerSandboxFlags, sandbox: true } };
+        const cancelled = response.createWindow!(nativeOptions) as unknown as TestWebContents;
+        await Promise.resolve();
+        expect(cancelled.destroyed).toBe(true);
+        expect(cancelled.loadURL).not.toHaveBeenCalled();
+        expect(await controller.getTabs()).toHaveLength(1);
+      } finally {
+        controller.dispose();
+      }
+    },
+  );
+
+  it.each([
+    'about:blank#fragment',
+    'about:blank?query',
+    'about:srcdoc',
+    'https://user:password@example.org/',
+  ])('拒绝非网页或凭据目标 %s', async (url) => {
+    const { controller } = harness();
+    try {
+      await controller.createTab('https://app.example/');
+      const wc = electronMock.instances[0]!.webContents;
+      userClick(wc);
+      expect(wc.windowOpen(popupDetails(url))).toEqual({ action: 'deny' });
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it.each(['about:blank', 'file:///C:/fixture', 'https://user:password@example.org/'])(
+    '不合格已提交来源 %s 不获得弹窗能力',
+    async (url) => {
+      const { controller } = harness();
+      try {
+        await controller.createTab(url);
+        const wc = electronMock.instances[0]!.webContents;
+        userClick(wc);
+        expect(wc.windowOpen(popupDetails(GOOGLE_AUTH))).toEqual({ action: 'deny' });
+      } finally {
+        controller.dispose();
+      }
+    },
+  );
+});
 describe('BrowserController 手动下载边界', () => {
   it('用户输入不提供下载凭据采集或自动交接入口', async () => {
     const { controller } = harness();
@@ -420,13 +836,13 @@ describe('BrowserController 用户新标签导航安全边界', () => {
       controller.dispose();
     }
   });
-  it('用户点击 target=_blank 拒绝原生窗口并在应用内打开安全目标', async () => {
+  it('用户点击 target=_blank 收编原生内容并在应用内打开安全目标', async () => {
     const { controller } = harness();
     try {
       const source = await controller.createTab('https://www.bing.com/search?q=bilibili');
       const wc = electronMock.instances[0]!.webContents;
       userClick(wc);
-      expect(wc.windowOpen(popupDetails())).toEqual({ action: 'deny' });
+      adoptPopup(wc.windowOpen(popupDetails()));
       await Promise.resolve();
       const tabs = await controller.getTabs();
       expect(tabs).toHaveLength(2);
@@ -450,8 +866,14 @@ describe('BrowserController 用户新标签导航安全边界', () => {
       const source = await controller.createTab('https://example.com/');
       const wc = electronMock.instances[0]!.webContents;
       userClick(wc);
-      wc.windowOpen(popupDetails('https://example.org/', 'background-tab'));
-      wc.windowOpen(popupDetails('https://example.net/', 'background-tab'));
+      const details = popupDetails('https://example.org/', 'background-tab');
+      nativeLink(wc, details);
+      const response = wc.windowOpen(details);
+      expect(response.action).toBe('allow');
+      response.createWindow!({});
+      expect(wc.windowOpen(popupDetails('https://example.net/', 'background-tab'))).toEqual({
+        action: 'deny',
+      });
       await Promise.resolve();
       expect(await controller.getTabs()).toHaveLength(2);
       expect((await controller.getActiveTab())?.id).toBe(source.id);
@@ -466,7 +888,6 @@ describe('BrowserController 用户新标签导航安全边界', () => {
     'file:///C:/private',
     'data:text/html,x',
     'mailto:a@example.com',
-    'about:blank',
     'https://u:p@example.com/',
   ])('即使用户输入也拒绝危险/非网页目标 %s', async (url) => {
     const { controller } = harness();
@@ -515,7 +936,7 @@ describe('BrowserController 用户新标签导航安全边界', () => {
     }
   });
 
-  it('过期额度、文档导航、POST 与已关闭源均拒绝', async () => {
+  it('过期额度、在途文档中的 POST 与已关闭源均拒绝', async () => {
     const { controller } = harness();
     const now = vi.spyOn(performance, 'now').mockReturnValue(100);
     try {
@@ -554,7 +975,7 @@ describe('BrowserController 用户新标签导航安全边界', () => {
       await Promise.resolve();
       expect(await controller.getTabs()).toHaveLength(1);
       wc.emit('before-input-event', {}, { type: 'keyDown', key: 'Enter', isAutoRepeat: false });
-      wc.windowOpen(popupDetails());
+      adoptPopup(wc.windowOpen(popupDetails()));
       await Promise.resolve();
       expect(await controller.getTabs()).toHaveLength(2);
     } finally {
@@ -599,24 +1020,28 @@ describe('BrowserController 默认空白 view 延迟物化', () => {
     controller.dispose();
   });
 
-  it('已摘除 Tab 的快照仍登记在途，批准后不创建替代 Tab', async () => {
-    const { controller } = harness();
-    const tab = await controller.createTab('https://example.com/');
-    const wc = electronMock.instances[0]!.webContents;
-    wc.collectScript.mockReturnValue(new Promise(() => undefined));
-    const snapshot = controller.getPageSnapshot(tab.id);
-    for (let i = 0; i < 12; i++) await Promise.resolve();
-    wc.destroyUnexpectedly();
-    controller.beginSnapshotShutdown();
-    expect(controller.getPendingSnapshotCount()).toBe(1);
-    expect(await controller.getTabs()).toHaveLength(0);
-    await controller.stopSnapshotsForShutdown();
-    expect(await snapshot).toBeNull();
-    expect(controller.getPendingSnapshotCount()).toBe(0);
-    expect(await controller.getTabs()).toHaveLength(0);
-    expect(electronMock.instances).toHaveLength(1);
-    controller.dispose();
-  });
+  it.each([false, true])(
+    '已摘除 Tab 的快照仍登记在途，退出批准状态=%s 后不再创建标签',
+    async (shutdownBeforeClose) => {
+      const { controller } = harness();
+      const tab = await controller.createTab('https://example.com/');
+      const wc = electronMock.instances[0]!.webContents;
+      wc.collectScript.mockReturnValue(new Promise(() => undefined));
+      const snapshot = controller.getPageSnapshot(tab.id);
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      if (shutdownBeforeClose) controller.beginSnapshotShutdown();
+      wc.destroyUnexpectedly();
+      controller.beginSnapshotShutdown();
+      expect(controller.getPendingSnapshotCount()).toBe(1);
+      expect(await controller.getTabs()).toHaveLength(shutdownBeforeClose ? 0 : 1);
+      await controller.stopSnapshotsForShutdown();
+      expect(await snapshot).toBeNull();
+      expect(controller.getPendingSnapshotCount()).toBe(0);
+      expect(await controller.getTabs()).toHaveLength(shutdownBeforeClose ? 0 : 1);
+      expect(electronMock.instances).toHaveLength(shutdownBeforeClose ? 1 : 2);
+      controller.dispose();
+    },
+  );
 
   it.each(['reload', 'goBack', 'goForward', 'page'] as const)(
     '%s 替代加载后，旧 ERR_ABORTED 在新导航开始及完成后回调均不覆盖状态',
@@ -1114,7 +1539,8 @@ describe('BrowserController 默认空白 view 延迟物化', () => {
     secondWc.destroyUnexpectedly();
     expect(await destroyedSnapshot).toBeNull();
     expect(secondWc.collectScript).not.toHaveBeenCalled();
-    expect(await second.controller.getActiveTab()).toBeNull();
+    expect(await second.controller.getActiveTab()).toMatchObject({ url: 'about:blank' });
+    expect((await second.controller.getActiveTab())?.id).not.toBe(destroyedTab.id);
     second.controller.dispose();
   });
 
