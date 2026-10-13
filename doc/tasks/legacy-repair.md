@@ -54,6 +54,17 @@
   均exit0。首轮缺statusLine测试夹具、reader prefer-const失败原件保留，修复不更改权限门。
   普通build-final-01成功；最终发行构建仍需绑定下面的干净候选提交。旧release原目录已完整移到
   `log/builtin-tools-20261013/previous-release`，旧manifest摘要见`release-archive.json`；output不变。
+- 候选与静态包审核：干净源码`14e9302929fec66dc4eee9209d7f643553f547c8`构建0.1.11，`package-final-01`
+  与包校验/静态绑定/provenance/比较均exit0；最后报告`review-package-final.json`PASS，独立核对
+  229源码模块/17构建件/64ASAR/76程序文件、7资源文件中的27脚本资产、12安装器源码及MSI只读表。
+  新helper为8704字节，SHA256 `869c611c9c3ac0dd5c3d3a16a2f54ff86fb1a3dbf4fa264b5fd36e21f221bf81`，
+  源码/编译脚本、两Roslyn与三Framework引用、out与包内外身份完整匹配；编译证据为`idm-compiler-final.json`。
+  发行manifest SHA256 `ae322762048f919669d1356a70b6f362bb1bee06813c0e377bd954ef4e085e30`。
+- 当前交付边界：候选程序和EXE/MSI位于`release/`，output仍0.1.10且manifest恒等旧值；没有切换或运行
+  安装器、没有启动真实用户profile。静态包PASS不替代IDM确认窗口或实际下载验收。
+  用户选择先修复本机IDM，故保留此唯一外部待验；只读/关闭精确探针对话框的工具已收紧为可见#32770、
+  唯一token和开始/取消按钮，纯分类测试PASS。已构建`idm-native-ready.mjs`及输入身份（executed=false），
+  收到修复完成消息后校验身份再执行，随后按真实结果决定output选择；不擅自点击用户现有继续下载窗口。
 
 ## IDM 工具与指定油猴脚本（2026-10-13）
 

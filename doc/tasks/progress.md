@@ -19,8 +19,14 @@
   本机IDM已存在“主程序文件已损坏”窗口，COM接收成功不等于弹窗通过；用户选择先自行处理IDM后再验证。
   最终集成19文件350项、typecheck/lint/format均PASS；普通UI双进程7452024f PASS（7本地请求/0Provider/0IDM）。
   末尾纯const计时器整理及登录信息文案差量经独审等价复用原生/UI证据；发行包将由最终源码重新构建。
-  旧release完整移至本轮previous-release，output仍为0.1.10。下一步构建和验包；真实IDM窗口仍待用户修复后复验。
-  本轮尚未更新output或声称最终交付完成。
+  干净源码候选 `14e9302929fec66dc4eee9209d7f643553f547c8` 已构建0.1.11完整程序与EXE/MSI，包校验、
+  静态绑定、provenance与比较均PASS。独立静态验包PASS：229源码模块/17构建件/64ASAR/76程序文件，
+  helper源码/编译器/8704字节产物/包内身份一致；manifest为`ae322762048f919669d1356a70b6f362bb1bee06813c0e377bd954ef4e085e30`。
+  候选在`release/`；旧release完整移至本轮previous-release，output manifest仍恒等旧083e703d…版本0.1.10。
+  当前仅保存已审核源码和待验状态；**未更新output、未声称最终交付完成**，包启动和安装器执行NOTRUN。
+  下一唯一动作：用户告知IDM修复完成后，校验`idm-native-ready-identity.json`并运行已准备的隔离本地探针
+  `node log/builtin-tools-20261013/idm-native-ready.mjs`，只观察/关闭精确标记的下载确认框，不点开始下载。
+  真实窗口通过后再核对当前源码与发行身份、完成output选择与收尾；没有要求用户重新授权已有浏览器改动。
 
 - 2026-10-13 用户进一步裁决：去掉沉浸式翻译，保留 IDM 工具与油猴脚本，翻译用现有 AI 共读。
   不再等待独立插件区选择；按原有标签/共享登录推进显式 IDM 链接交接与脚本支持。
