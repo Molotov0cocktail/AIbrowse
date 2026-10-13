@@ -3,6 +3,7 @@ import type { ConversationStorageStatus } from '../../../shared/types/conversati
 import type { DataTransferAction, DataTransferStatus } from '../../../shared/types/data-transfer';
 
 const ACTIVE = new Set([
+  'initializing',
   'choosing',
   'confirming',
   'draining',

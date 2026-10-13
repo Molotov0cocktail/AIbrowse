@@ -464,6 +464,7 @@ function requireNodeDataRoot(): string {
 let browserController: BrowserControllerImpl | null = null;
 let mainWindow: BrowserWindow | null = null;
 let browserLibraryService: BrowserLibraryService | null = null;
+let startupDataInitializing = false;
 const windowAppearances = new WeakMap<
   BrowserWindow,
   (appearance: Appearance, themeColor?: ThemeColor) => boolean
@@ -1611,6 +1612,7 @@ if (!gotLock) {
           payload,
           browserLibraryService,
           () => browserController?.getActiveUserPage() ?? null,
+          startupDataInitializing,
         ),
       );
     }
@@ -1704,9 +1706,9 @@ if (!gotLock) {
       dataTransferRuntime?.getStatus() ?? {
         operationId: null,
         action: null,
-        state: 'recovery-required',
-        code: 'recovery',
-        message: startupTransferMessage,
+        state: startupDataInitializing ? 'initializing' : 'recovery-required',
+        code: startupDataInitializing ? 'none' : 'recovery',
+        message: startupDataInitializing ? '正在准备本地数据' : startupTransferMessage,
         canCancel: false,
         canRecoverOriginal: false,
         availableActions: [],
@@ -1714,7 +1716,11 @@ if (!gotLock) {
     handle(IPC.DataTransferStatus, transferStatus);
     handle(
       IPC.ConversationStorageStatus,
-      () => conversationService?.getStorageStatus() ?? { state: 'recovery-required', code: 'io' },
+      () =>
+        conversationService?.getStorageStatus() ??
+        (startupDataInitializing
+          ? { state: 'initializing', code: null }
+          : { state: 'recovery-required', code: 'io' }),
     );
     handle(IPC.DataTransferStart, async (payload, isCurrent) => {
       if (!isCurrent()) return transferStatus();
@@ -3348,6 +3354,7 @@ if (!gotLock) {
 async function createBrowserWindow(): Promise<void> {
   const release = mainRootAdmission.enter();
   if (release === null) return;
+  startupDataInitializing = true;
   try {
     await assembleBrowserWindow();
     if (!__RELEASE__ && SMOKE_MODE) {
@@ -3372,6 +3379,7 @@ async function createBrowserWindow(): Promise<void> {
       }
     }
   } finally {
+    startupDataInitializing = false;
     release();
   }
 }

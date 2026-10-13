@@ -87,6 +87,7 @@ export interface DataTransferPorts {
 }
 
 const MESSAGES: Record<DataTransferState, string> = {
+  initializing: '正在准备本地数据',
   idle: '尚未开始数据维护',
   choosing: '请在系统对话框中选择文件',
   confirming: '等待恢复确认',

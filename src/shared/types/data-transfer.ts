@@ -1,5 +1,6 @@
 export type DataTransferAction = 'backup' | 'restore';
 export type DataTransferState =
+  | 'initializing'
   | 'idle'
   | 'choosing'
   | 'confirming'

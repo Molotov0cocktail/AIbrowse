@@ -13,6 +13,14 @@ const status = {
   availableActions: ['restore'],
 };
 
+const initializing = {
+  ...status,
+  state: 'initializing',
+  code: 'none',
+  message: '正在准备本地数据',
+  availableActions: [],
+};
+
 const electron = vi.hoisted(() => ({
   invoke: vi.fn(),
   exposeInMainWorld: vi.fn(),
@@ -73,6 +81,26 @@ async function bridge() {
     (call) => call[0] === 'aibrowse',
   )![1] as AibrowseBridge;
 }
+it('首次真实状态回执允许无动作的初始化投影', async () => {
+  const api = await bridge();
+  electron.invoke.mockResolvedValue(initializing);
+  await expect(api.dataTransfer.getStatus()).resolves.toEqual(initializing);
+});
+
+it.each([
+  { ...initializing, availableActions: ['backup'] },
+  { ...initializing, availableActions: ['restore'] },
+  { ...initializing, canCancel: true },
+  { ...initializing, canRecoverOriginal: true },
+  { ...initializing, operationId: '7f24a960-dd65-4ef2-a04a-742c0e87c845' },
+  { ...initializing, action: 'restore' },
+  { ...initializing, code: 'recovery' },
+])('初始化投影不得携带操作能力或混淆故障：%j', async (value) => {
+  const api = await bridge();
+  electron.invoke.mockResolvedValue(value);
+  await expect(api.dataTransfer.getStatus()).rejects.toThrow('本地数据状态无效');
+});
+
 it('实际preload仅封装固定通道、闭合参数及隔离文档token', async () => {
   const api = await bridge();
   const operationId = '7f24a960-dd65-4ef2-a04a-742c0e87c845';

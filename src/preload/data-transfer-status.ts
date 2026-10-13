@@ -1,6 +1,7 @@
 import type { DataTransferStatus } from '../shared/types/data-transfer';
 
 const states = new Set([
+  'initializing',
   'idle',
   'choosing',
   'confirming',
@@ -79,6 +80,13 @@ export function parseDataTransferStatus(value: unknown): DataTransferStatus {
     v.availableActions.length > 2 ||
     [...v.availableActions].some((action) => action !== 'backup' && action !== 'restore') ||
     new Set(v.availableActions).size !== v.availableActions.length ||
+    (v.state === 'initializing' &&
+      (v.operationId !== null ||
+        v.action !== null ||
+        v.code !== 'none' ||
+        v.canCancel ||
+        v.canRecoverOriginal ||
+        v.availableActions.length !== 0)) ||
     (v.availableActions.length > 0 &&
       (!startable.has(v.state) || v.canCancel || v.canRecoverOriginal))
   )

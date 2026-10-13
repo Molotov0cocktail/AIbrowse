@@ -51,6 +51,6 @@ export interface BrowserVisitTitleUpdate extends BrowserBookmarkInput {
 }
 
 export interface BrowserLibraryStatus {
-  state: 'available' | 'unavailable' | 'maintenance' | 'storage-error';
+  state: 'initializing' | 'available' | 'unavailable' | 'maintenance' | 'storage-error';
   message: string;
 }

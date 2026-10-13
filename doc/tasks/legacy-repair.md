@@ -1,5 +1,47 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 启动期浏览数据错误气泡（2026-10-14）
+
+- TASK / BASELINE：用户要求读取项目与应用数据，定位并修复每次进入应用的红色提示。干净接管
+  `a6ae2dc3e7ca02cb3aa531d859cd68e4b3e2a5df`，output 为0.1.13；不扩展其它功能。
+- CURRENT VERIFIED STATE：当日真实日志两次界面就绪均早于数据服务图开放约400ms；浏览库只读副本
+  schema v1、integrity_check=ok，主文件读前后摘要恒等，无WAL/SHM/journal。原件与摘要保存在
+  `log/browser-startup-20261014/`，未读取凭据、Cookie、历史正文，未修改真实profile。
+  当前代码将尚未装配的空service作为unavailable，renderer立即报错并5秒后复读，符合截图现象。
+- GOAL / INVARIANTS：正常初始化不得报数据故障；真实不可用、读写失败与维护状态仍如实呈现。
+  历史/书签、迁移、完整性校验、恢复与关闭准入不变，不删除或重建用户库，不延迟隐藏真实故障。
+- ENGINEERING / SCOPE：主进程显式区分正在装配与装配结束后不可用；启动所有完成、提前返回与异常
+  路径统一结束初始化状态。状态IPC保留当前文档认证，不开放业务门；renderer初始化期间短间隔复读，
+  稳态恢复原间隔。仅改变状态表达与观察时效，不改变数据库打开顺序或安全验证。
+- 同根因范围修订：独审从真实启动DOM证据发现会话保存状态与备份/恢复状态也把空service/runtime误报为
+  recovery-required，并会优先遮挡浏览库提示。三个状态入口共用startupDataInitializing，空对象初始化时
+  返回中性initializing，实际service/恢复入口优先，装配结束仍保留真实失败；备份恢复动作仍为空列表。
+  浏览库以250ms、其余状态以既有活动态500ms复读；真实Electron oracle升级为全程无任何可见全局故障气泡，
+  首次窄目标通过不当作最终绿态，初审REPAIR与原运行证据全部保留。
+- TEST / ACCEPTANCE：先建立旧实现红态，覆盖正常初始化、慢初始化、失败/提前返回、关闭和真实存储错误；
+  隔离Electron完整启动观察首次IPC与DOM提示，修复前后对照，正常退出与复启。单轮90秒、0外部/Provider；
+  测试工具入受控tools，原件不入库。受影响回归、typecheck/lint/format/build与新独立审核通过后，
+  源码绑定构建0.1.14，更新output并保留旧包，正常双远程同步。
+- STOP / REPLAN：同路线两轮无新增证据即换路；真实数据异常另定位并保留原件，不能靠屏蔽提示判通过。
+  不重复未受影响的全阶段长测；发行启动与安装器运行未实际执行则明确NOT RUN。
+- 实际验证：浏览库最初聚焦4FAIL/4PASS，修后39PASS；实际装配基线Git对象同oracle为5FAIL/1PASS，
+  当前接线与App37PASS。新增全局标记导致两份AST旧夹具各2项ReferenceError，补齐变量后保留原断言通过。
+  19文件集成`integration-final-02.txt`269PASS；末尾preload初始化投影新增正反例红1FAIL/22PASS，
+  修复闭合白名单且限定无动作tuple后23PASS，两轮不累加。typecheck-final-03、lint-final及末尾preload lint、
+  format-check-final、build-final均exit0。本次复用未变数据库与迁移语义，不重开全阶段全量或长时验收。
+- 原生证据链：`startup-old-red-5b623176-ee91-452f-b3cd-ff48270d10ef`捕获旧bundle的目标气泡与
+  unavailable→available；其运行绑定同时记录当时新工作区与旧bundle，不把dirty源码冒充旧产物构建来源。
+  `startup-fixed-clean-899d931c-f4df-4b8d-bb50-c395fb963b4b`仅窄目标oracle通过，实际两场仍出现会话故障，
+  不授最终PASS。全局oracle的`e7368baf-8af2-4c89-9181-5577f2183987`正式FAIL，定位preload未接受新状态；
+  三轮原件及初审REPAIR均保留，未挑绿覆盖失败。
+- 最终原生`startup-fixed-clean-5e5e6f7a-a8bc-4f7a-871f-ad72a7cb228e`同一隔离profile两进程PASS，
+  三通道均initializing→available/ready/idle、全程任意全局故障气泡0、4张截图；正常关闭、Job释放及guardian
+  main/utility清空，0网络/Provider，源码/工具/完整构建绑定前后恒等。真实browser.db原件SHA256仍为
+  `a8d732d1b955a8b574452df6c2e16bd495e7f02eab778d05ca260c08a9c57ca9`，没有修改真实profile。
+  新独立审核`independent-review.json`PASS，独立190项及末尾联动56项通过（重叠不累加），398项源/工具/
+  普通构建绑定核验；模型按AGENTS调度，工具未回显actual故记不可验证。后续只进行源码绑定内部包构建与
+  output交付；发行启动/安装器执行保持NOT RUN。
+
 ## 通用网页新窗口关系与登录空白页（2026-10-13）
 
 - TASK / BASELINE：用户报告 Google 登录 x.com 后停留空白 `accounts.google.com/gsi/transform`，

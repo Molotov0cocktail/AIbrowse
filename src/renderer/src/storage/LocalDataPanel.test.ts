@@ -83,7 +83,13 @@ const active: DataTransferStatus = {
   availableActions: [],
 };
 const cleanups: Array<() => void> = [];
-function mount(read = vi.fn(async () => idle)) {
+function mount(
+  read = vi.fn(async () => idle),
+  readStorage = vi.fn(async (): Promise<ConversationStorageStatus> => ({
+    state: 'ready',
+    code: null,
+  })),
+) {
   const bridge = {
     dataTransfer: {
       getStatus: read,
@@ -91,10 +97,7 @@ function mount(read = vi.fn(async () => idle)) {
       cancel: vi.fn(async () => ({ ...active, state: 'cancelled' as const })),
       recoverOriginal: vi.fn(async () => idle),
     },
-    getConversationStorageStatus: vi.fn(async (): Promise<ConversationStorageStatus> => ({
-      state: 'ready',
-      code: null,
-    })),
+    getConversationStorageStatus: readStorage,
   };
   vi.stubGlobal('window', { aibrowse: bridge });
   render();
@@ -310,3 +313,83 @@ it('转移状态长期pending也不阻断会话持久失败的新状态', async 
   expect(read).toHaveBeenCalledOnce();
   expect(f.bridge.getConversationStorageStatus).toHaveBeenCalledTimes(2);
 });
+
+const initializing: DataTransferStatus = {
+  ...idle,
+  state: 'initializing',
+  message: '正在准备本地数据',
+  availableActions: [],
+};
+const storageInitializing: ConversationStorageStatus = { state: 'initializing', code: null };
+
+function controller() {
+  hooks.cursor = 0;
+  return useLocalData();
+}
+
+it('初次状态尚未返回时保持中性且不能启动数据操作', () => {
+  mount(
+    vi.fn(() => new Promise<DataTransferStatus>(() => {})),
+    vi.fn(() => new Promise<ConversationStorageStatus>(() => {})),
+  );
+  expect(controller().issue).toBeNull();
+  expect(nodes(render()).filter((node) => node.props.role === 'alert')).toEqual([]);
+  expect(button('备份本地数据').props.disabled).toBe(true);
+  expect(button('选择备份恢复').props.disabled).toBe(true);
+});
+
+it('正常初始化不显示全局或面板故障，状态就绪后开放原有操作', async () => {
+  const f = mount(
+    vi.fn(async () => initializing),
+    vi.fn(async () => storageInitializing),
+  );
+  await drain();
+  expect(controller().issue).toBeNull();
+  expect(nodes(render()).filter((node) => node.props.role === 'alert')).toEqual([]);
+  expect(text(render())).toContain('正在准备本地数据');
+  expect(button('备份本地数据').props.disabled).toBe(true);
+  expect(button('选择备份恢复').props.disabled).toBe(true);
+  button('备份本地数据').props.onClick!();
+  expect(f.bridge.dataTransfer.start).not.toHaveBeenCalled();
+  f.bridge.dataTransfer.getStatus.mockResolvedValue(idle);
+  f.bridge.getConversationStorageStatus.mockResolvedValue({ state: 'ready', code: null });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(f.bridge.dataTransfer.getStatus).toHaveBeenCalledTimes(2);
+  expect(controller().issue).toBeNull();
+  expect(nodes(render()).filter((node) => node.props.role === 'alert')).toEqual([]);
+  expect(button('备份本地数据').props.disabled).toBe(false);
+  expect(button('选择备份恢复').props.disabled).toBe(false);
+});
+
+it.each(['conversation', 'recovery-required', 'failed'] as const)(
+  '另一域仍初始化时%s的真实故障仍通过面板及全局issue呈现',
+  async (failure) => {
+    const f = mount(
+      vi.fn(async () => initializing),
+      vi.fn(async () => storageInitializing),
+    );
+    await drain();
+    if (failure === 'conversation') {
+      f.bridge.getConversationStorageStatus.mockResolvedValue({
+        state: 'recovery-required',
+        code: 'io',
+      });
+    } else {
+      f.bridge.dataTransfer.getStatus.mockResolvedValue({
+        ...initializing,
+        state: failure,
+        code: 'recovery',
+        message: '受控真实恢复故障',
+      });
+    }
+    await vi.advanceTimersByTimeAsync(500);
+    const alerts = nodes(render()).filter((node) => node.props.role === 'alert');
+    expect(alerts).toHaveLength(1);
+    expect(controller().issue).toBe(
+      failure === 'conversation' ? '会话保存失败，不能确认已保存' : '本地数据需要处理，请打开设置',
+    );
+    expect(text(alerts[0])).toContain(
+      failure === 'conversation' ? '会话保存失败' : '受控真实恢复故障',
+    );
+  },
+);

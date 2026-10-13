@@ -10,6 +10,7 @@ import type { AgentRunSummary, ToolStep } from './agent';
 export type ContextMode = 'selection' | 'snapshot' | 'none';
 
 export type ConversationStorageStatus =
+  | { state: 'initializing'; code: null }
   | { state: 'ready'; code: null }
   | { state: 'recovery-required'; code: 'invalid' | 'budget' | 'io' };
 

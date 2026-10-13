@@ -21,6 +21,29 @@ function store() {
   opened.push({ path, service: outcome.service });
   return outcome.service;
 }
+it('启动装配中空服务是初始化，结束后空服务才是不可用，业务仍拒绝', () => {
+  expect(
+    dispatchBrowserLibrary(IPC.BrowserLibraryStatus, undefined, null, () => null, true),
+  ).toMatchObject({ state: 'initializing' });
+  expect(
+    dispatchBrowserLibrary(IPC.BrowserLibraryStatus, undefined, null, () => null, false),
+  ).toMatchObject({ state: 'unavailable' });
+  expect(
+    dispatchBrowserLibrary(IPC.BrowserHistoryList, undefined, null, () => null, true),
+  ).toMatchObject({ ok: false, code: 'unavailable' });
+});
+
+it('服务已存在时初始化标志不遮蔽真实状态与关闭故障', () => {
+  const service = store();
+  expect(
+    dispatchBrowserLibrary(IPC.BrowserLibraryStatus, undefined, service, () => null, true),
+  ).toMatchObject({ state: 'available' });
+  service.dispose();
+  expect(
+    dispatchBrowserLibrary(IPC.BrowserLibraryStatus, undefined, service, () => null, true),
+  ).toMatchObject({ state: 'unavailable' });
+});
+
 it('收藏当前页取主进程真实已提交网址，空白或任务页不能收藏', () => {
   const service = store();
   const current = () => ({ url: 'https://example.com/?private=value#section', title: '标题' });

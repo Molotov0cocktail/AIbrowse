@@ -3,10 +3,12 @@ import App from './App';
 import { TabBar } from './browser/TabBar';
 import { Toolbar } from './browser/Toolbar';
 import { SettingsPage } from './settings/SettingsPage';
+import type { BrowserLibraryStatus } from '../../shared/types/browser-library';
 
 const hooks = vi.hoisted(() => ({
   initialView: 'watch' as 'watch' | 'research-result' | 'settings' | 'library',
   viewWrites: [] as string[],
+  libraryStatus: { state: 'available', message: '' } as BrowserLibraryStatus | null,
 }));
 
 vi.mock('react', () => ({
@@ -63,8 +65,12 @@ vi.mock('./storage/useLocalData', () => ({
   useLocalData: () => ({ issue: null }),
 }));
 vi.mock('./browser-library/useBrowserLibraryStatus', () => ({
-  useBrowserLibraryStatus: () => ({ state: 'available', message: '' }),
+  useBrowserLibraryStatus: () => hooks.libraryStatus,
 }));
+
+beforeEach(() => {
+  hooks.libraryStatus = { state: 'available', message: '' };
+});
 
 interface ElementNode {
   type: unknown;
@@ -157,4 +163,39 @@ it('设置工作区初次进入常规页', () => {
   });
   const settings = component<Record<string, unknown>>(App(), SettingsPage);
   expect(settings.section).toBe('general');
+});
+
+describe('浏览数据全局故障提醒', () => {
+  beforeEach(() => {
+    hooks.initialView = 'settings';
+    hooks.viewWrites = [];
+    vi.stubGlobal('__WATCH_QUALIFICATION__', false);
+    vi.stubGlobal('window', { aibrowse: { nav: {}, tabs: {} } });
+  });
+
+  it.each([null, 'initializing', 'available', 'maintenance'] as const)(
+    '%s不显示浏览数据故障气泡或设置故障标记',
+    (state) => {
+      hooks.libraryStatus = state === null ? null : { state, message: '受控状态' };
+      const tree = App();
+      expect(elements(tree).filter((node) => node.props.className === 'data-global-alert')).toEqual(
+        [],
+      );
+      expect(component<Record<string, unknown>>(tree, SettingsPage).browserDataIssue).toBeNull();
+    },
+  );
+
+  it.each([
+    ['unavailable', '浏览数据暂不可用，请检查本地数据'],
+    ['storage-error', '浏览数据保存或读取失败，部分新访问可能未保存；请检查本地数据'],
+  ] as const)('%s仍显示真实故障并可进入设置', (state, message) => {
+    hooks.libraryStatus = { state, message: '不可信错误内容不得回显' };
+    const tree = App();
+    const alerts = elements(tree).filter((node) => node.props.className === 'data-global-alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.props.children).toBe(message);
+    expect(component<Record<string, unknown>>(tree, SettingsPage).browserDataIssue).toBe(message);
+    (alerts[0]!.props.onClick as () => void)();
+    expect(hooks.viewWrites).toContain('settings');
+  });
 });

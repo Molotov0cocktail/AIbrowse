@@ -1,6 +1,6 @@
 {
   "name": "aibrowse",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "AI 信息浏览器 —— Windows 桌面多标签页浏览器：内置 Chromium，AI 与用户共享同一浏览器会话，可共读网页、自主浏览、管理长期信源并完成多源研究",
   "main": "./out/main/index.js",
   "private": true,

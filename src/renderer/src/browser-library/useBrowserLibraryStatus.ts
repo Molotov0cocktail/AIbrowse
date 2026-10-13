@@ -13,13 +13,15 @@ export function useBrowserLibraryStatus(): BrowserLibraryStatus | null {
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const read = async (): Promise<void> => {
+      let nextReadMs = 5000;
       try {
         const result = await window.aibrowse.browserLibrary.getStatus();
+        if (result.state === 'initializing') nextReadMs = 250;
         if (live) setStatus(result);
       } catch {
         if (live) setStatus(UNAVAILABLE);
       } finally {
-        if (live) timer = setTimeout(() => void read(), 5000);
+        if (live) timer = setTimeout(() => void read(), nextReadMs);
       }
     };
     void read();

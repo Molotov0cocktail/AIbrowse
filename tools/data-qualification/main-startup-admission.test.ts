@@ -67,6 +67,7 @@ it('真实装配 Promise 返回并释放主租约后才开始排队的冒烟', a
   const context = vm.createContext({
     mainRootAdmission: { enter: () => release },
     assembleBrowserWindow: () => assembly,
+    startupDataInitializing: false,
     __RELEASE__: false,
     SMOKE_MODE: true,
     smokeWindowReady: false,
@@ -411,6 +412,7 @@ it('一般装配异常先保留恢复入口并释放根租约，不在内部等�
   const shutdownRuntime = vi.fn();
   const context = vm.createContext({
     mainRootAdmission: { enter: () => release, isOpen: () => true },
+    startupDataInitializing: false,
     assembleBrowserWindow: async () => {
       throw new Error('constructor failed');
     },

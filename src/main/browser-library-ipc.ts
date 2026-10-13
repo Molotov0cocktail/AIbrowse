@@ -37,12 +37,15 @@ export function dispatchBrowserLibrary(
   payload: unknown,
   service: BrowserLibraryService | null,
   currentPage: () => BrowserBookmarkInput | null,
+  initializing = false,
 ): unknown {
   if (channel === IPC.BrowserLibraryStatus)
     return (
       service?.getStatus() ?? {
-        state: 'unavailable',
-        message: '浏览历史与书签暂不可用，请查看设置中的本地数据',
+        state: initializing ? 'initializing' : 'unavailable',
+        message: initializing
+          ? '正在准备浏览历史与书签'
+          : '浏览历史与书签暂不可用，请查看设置中的本地数据',
       }
     );
   if (service === null) return unavailable();

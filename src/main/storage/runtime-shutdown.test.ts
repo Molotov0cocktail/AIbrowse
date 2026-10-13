@@ -330,6 +330,7 @@ function mainFixture(digestFailure = false, duringStartup = false, trayEnabled =
     watchShutdownStarted: false,
     conversationService: producer('conversation'),
     browserLibraryService: { dispose: libraryDisposed },
+    startupDataInitializing: false,
     researchMaintenance: research,
     sourceService: { dispose: closed },
     sourceUsageTracker: { waitForIdle: vi.fn(() => usagePending.promise) },
