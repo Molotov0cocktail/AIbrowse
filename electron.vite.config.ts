@@ -4,7 +4,6 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import { runtimeCompileProfile } from './tools/data-qualification/runtime/build-profile';
 import { lifecycleBuild } from './tools/build/lifecycle-build';
-import { idmBuild } from './tools/build/idm-build';
 import {
   releaseModuleReport,
   releaseAssetManifest,
@@ -51,7 +50,6 @@ export default defineConfig(({ mode }) => ({
     },
     plugins: [
       lifecycleBuild(__dirname),
-      idmBuild(__dirname),
       runtimeCompileProfile(mode === 'runtime-qualification'),
       externalizeDepsPlugin(),
       ...(mode === 'release' ? [releaseCompileProfile(), releaseModuleReport(__dirname)] : []),

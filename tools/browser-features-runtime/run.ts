@@ -30,6 +30,31 @@ export function phasePassed(value: unknown, phase: string): boolean {
     report.error !== null
   )
     return false;
+  const boundary = report.downloadBoundary;
+  if (boundary === null || typeof boundary !== 'object' || report.childLaunches !== 0) return false;
+  const download = boundary as Record<string, unknown>;
+  if (
+    typeof download.harnessHeaderObservers !== 'number' ||
+    download.harnessHeaderObservers < 1 ||
+    !Array.isArray(download.productHeaderListeners) ||
+    download.productHeaderListeners.length !== 0 ||
+    download.cookieReads !== 0 ||
+    download.debuggerAttachments !== 0 ||
+    download.cookieCommands !== 0 ||
+    !Array.isArray(download.nativeEvents)
+  )
+    return false;
+  if (phase === 'write') {
+    const event = download.nativeEvents[0] as Record<string, unknown> | undefined;
+    if (
+      download.trustedClick !== true ||
+      download.nativeEvents.length !== 1 ||
+      event?.filename !== 'blocked-download.bin' ||
+      event?.hasUserGesture !== true ||
+      event?.prevented !== true
+    )
+      return false;
+  } else if (download.nativeEvents.length !== 0 || download.trustedClick !== false) return false;
   const facts = report.facts;
   if (facts === null || typeof facts !== 'object') return false;
   const required =
@@ -42,6 +67,7 @@ export function phasePassed(value: unknown, phase: string): boolean {
           'appearance',
           'downloadToolEntry',
           'downloadToolAppearance',
+          'browserDownloadBlocked',
           'scriptLifecycle',
           'scriptIsolation',
           'unsupportedRejected',
@@ -96,9 +122,7 @@ async function main(): Promise<void> {
         '--exclude-standard',
         '-z',
         'src',
-        'native/idm',
         'resources/qualified-userscripts',
-        'tools/build/idm-build.ts',
         'tools/browser-features-runtime',
         'package.json',
         'package-lock.json',
@@ -107,7 +131,7 @@ async function main(): Promise<void> {
       { cwd: repository, encoding: 'utf8' },
     )
       .split('\0')
-      .filter(Boolean);
+      .filter((path) => path !== '' && existsSync(join(repository, path)));
     const paths = [
       ...new Set([
         ...sources,
@@ -160,7 +184,8 @@ async function main(): Promise<void> {
   let exceeded = false;
   let stop: (() => void) | undefined;
   const server = createServer((request, response) => {
-    requests.push(new URL(request.url ?? '/', 'http://127.0.0.1').pathname);
+    const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+    requests.push(pathname);
     if (requests.length > input.requestBudget) {
       exceeded = true;
       response.writeHead(429).end('请求预算耗尽');
@@ -168,7 +193,21 @@ async function main(): Promise<void> {
       return;
     }
     response.setHeader('Cache-Control', 'no-store');
+    if (pathname === '/blocked-download.bin') {
+      response.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': 'attachment; filename="blocked-download.bin"',
+      });
+      response.end('controlled-download-fixture');
+      return;
+    }
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
+    if (pathname === '/download-click') {
+      response.end(
+        '<!doctype html><html><head><title>下载拒绝验证</title><link rel="icon" href="data:,"></head><body><a id="blocked-download" style="display:block;width:240px;height:80px" href="/blocked-download.bin">受控下载链接</a><script>window.__downloadClickTrusted=false;document.querySelector("#blocked-download").addEventListener("click",event=>{window.__downloadClickTrusted=event.isTrusted;});</script></body></html>',
+      );
+      return;
+    }
     response.end(
       '<!doctype html><html><head><title>脚本合成页面</title><link rel="icon" href="data:,"><script>window.__fixturePageSecret="page-world";</script></head><body><h1>本地合成页面</h1><p id="fixture">仅用于脚本功能验证</p></body></html>',
     );
@@ -229,6 +268,8 @@ async function main(): Promise<void> {
     phases.every((phase) => phase.code === 0 && phase.passed) &&
     !exceeded &&
     requests.length <= 20 &&
+    requests.filter((path) => path === '/download-click').length === 1 &&
+    requests.filter((path) => path === '/blocked-download.bin').length === 1 &&
     unchanged(after);
   save(join(root, 'result.json'), {
     passed,
@@ -239,7 +280,7 @@ async function main(): Promise<void> {
     sourceAndArtifactsUnchanged: unchanged(after),
     providerCalls: 0,
     boundary:
-      '普通构建、程序化真实UI/bridge、隔离profile/session；原生选文件/确认受控；物理输入和打包启动NOTRUN',
+      '普通构建、程序化真实UI/bridge、隔离profile/session；sendInputEvent点击下载验证产品取消与零IDM调用；原生选文件/确认受控；物理输入和打包启动NOTRUN',
     taskTabs: '任务所有权拒绝由独立核心单元测试覆盖，本工具未创建Research/Watch任务',
   });
   process.stdout.write(`${root}\npassed=${passed}\n`);

@@ -12,57 +12,25 @@ GitHub 的本地词库汉化保留，附带讯飞简介翻译禁用，翻译交�
 不将“任务页不注入”宣传为消除全部间接影响。本轮不改变 AI 工具数、赋予模型脚本/下载执行权限或安装
 Chrome/Tampermonkey 本体，不引入独立登录、浏览器会话迁移或自动更新。
 
-用户随后要求改为浏览器内置功能：两个脚本随程序提供，点击网页下载链接后直接解析并弹出 IDM 确认。
-用户已明确批准将该次下载所需 Cookie 和来源页信息仅转交本机 IDM，以支持登录下载。此新裁决替换原先
-“仅粘贴链接、手动安装脚本、不转 Cookie”的交付范围；其它隔离与隐私约束继续有效。
+用户要求两个脚本随程序内置。曾授权网页下载自动接管及仅向本机 IDM 交接所需登录信息；真实确认窗口
+验证未通过后，用户确认本机 IDM 仍报损坏，并明确改回手动填写 URL。当前产品仅保留受信 UI 的地址交接，
+不采集或转交 Cookie、来源页、User-Agent，不包含 COM helper 或自动下载路径。旧调查与失败留在 Git/
+任务历史；这一最新裁决替换自动接管方案，脚本内置与其它隔离边界继续有效。
 
 ## IDM
 
-普通标签的真实鼠标/键盘输入在主进程建立短时、一次性、绑定文档的下载许可。原生 DownloadItem 的
-用户手势、发起 origin、主 frame 与许可共同校验；独立的任务 Tab、无输入的脚本、子 frame、AI 交互、
-失效或已隐藏页面均不能触发交接。AI click/fill/scroll 复用既有交互抑制点，同时撤销下载许可。
-下载导航开始不等于提交新文档，故许可保留到下载判定；真正提交、崩溃、关闭或新操作使旧许可失效。
-原有 target=_blank 路由通过主进程新建标签后会失去原生 userGesture，因此仅为该次受信弹出路由转移
-准确初始 URL 与原来源的许可，在新标签首次文档提交前使用，不能借此授权任意后续网页下载。
+用户在“下载与脚本”粘贴 HTTP(S) 地址并点击“发送到 IDM”。受信 UI 经现有严格 IPC 调用主进程
+IdmDownloadService，仅检测固定 Windows 默认安装目录，使用 shell=false 和固定参数 `/d URL`；
+拒绝内嵌凭据、控制字符、非法 URL 与额外 IPC 字段。提交前后复核窗口文档/应用准入，并发或退出安全拒绝。
+仅发送该地址，不传浏览器 Cookie、来源页或其它登录状态；需要浏览器登录信息的链接可能无法下载。
 
-用户激活只证明近期输入，不证明用户理解链接内容：点击后网页 JavaScript 可以决定实际下载地址，
-原生探针也确认无关点击后约100ms脚本下载仍可能带 userGesture。产品保留网站点击按钮后触发下载的
-正常语义；以一次性许可和 IDM 确认为边界，不声称识别网页意图或禁止所有由 JavaScript 发起的下载。
+Session 的 will-download 无条件 preventDefault，网页、AI、研究或监控均不能启动 IDM 或写下载文件。
+不存在自动下载手势许可、请求头采集、下载专用 CDP Cookie 读取、COM helper 或相关发行资源。
+普通 popup 路由与 AI 弹窗抑制保持原契约；没有新增 AI 工具或网页可调用的外部程序接口。
 
-Session 的 will-download 仍先 preventDefault，禁止 Chromium 自行落盘。拦截器在同一事件轮同步
-提取最终 URL/重定向链/文件名等元数据；webRequest.onSendHeaders 只在有效许可期间记录对应主 frame
-实际 GET 请求的 Cookie/Referer/User-Agent，按请求标识、文档、许可、响应就绪和 URL 链唯一关联。
-敏感头仅短时有界内存，消费、过期或退出即清理，不进日志、磁盘、命令行或 renderer；仍在途的非敏感
-请求归属不能仅因许可到期而遗忘，避免迟到旧下载借用新请求的登录信息。
-主进程从已登记普通主frame的请求开始保存最多256条URL摘要/原请求编号/许可身份，任务frame不登记；
-只有响应就绪的唯一候选才可对应DownloadItem。普通HTML导航完成可退休，下载完成事件因真实时序可在
-will-download之前或之后，不能单独作为删除依据；原生下载消费唯一身份，即使该次未获授权也不遗留骨架。
-多义或容量饱和安全拒绝，不按超时遗忘旧归属；frame销毁释放。实际头最多8条、10秒，许可撤销立即清理。
-
-Electron43.7.7对download属性的原生下载公开空请求头，页面CDP也不提供该请求事件。因此仅此整空头的
-GET/other路径使用窄范围兼容读取：原生发起origin、当前主frame实际URL和完整重定向链必须严格同源，
-排除iframe、opaque、popup许可转移和跨源链；主进程临时拥有该webContents的debugger，唯一命令是
-`Network.getCookies({urls:[最终URL]})`，不启用Network事件，不读取正文，不暴露通用调试接口。
-该API按frame的网络隔离键/顶级站点筛选分区；同源完整链满足SameSite Strict的前提。实际Chromium资格
-必须比较不同顶级站点CHIPS隔离、路径/HttpOnly/Strict和no-referrer事实，不能仅以文档推断通过。
-读取前后校验原文档、一次性许可及Cookie变更；重复Cookie名、多义/opaque分区、已有调试连接、超时和
-导航均拒绝。只把最终URL当前匹配的登录Cookie交给本机IDM，不称其为历史请求头的完整重建；来源字段
-只用原生已裁剪referrer，空值保留空。普通完整头路径继续使用实际发送值。
-禁止session.cookies.get作为兜底：该版本会包含全部Cookie分区且不返回分区标识。POST、跨源缺失头、
-非HTTP(S)及关联不唯一不猜测重放，不扩大SameSite或第三方分区权限。
-
-主进程调用固定随包构建的 `idm-handoff.exe`，通过有界 UTF-8 长度前缀 stdin 协议传递五字段
-URL/Referer/Cookie/文件名/User-Agent；无任意参数、路径、POST、密码或保存目录接口。helper 使用官方
-COM `SendLinkToIDM2`，flags=0，确认和进度留在 IDM，不静默下载。helper 自身先通过包内摘要/大小校验，
-构建源码受 Git 管理、编译身份留证，程序不需要用户安装开发工具。异步工作与启动前复核一次性许可，
-并发拒绝、超时结束本次 helper，不终止用户原有 IDM；成功只表示 COM 接收请求，不表示下载完成。
-
-受信 UI 的手动粘贴入口继续使用固定 IDMan.exe `/d URL`，只发送地址。URL 有界、显式 HTTP(S)，拒凭据、
-空白/控制字符和反斜杠，路径/进程错误和完整 URL 不回显日志。网页/renderer/AI 无通用 IDM 或 helper API。
-官方接口来源：[IDM COM API](https://www.internetdownloadmanager.com/support/idm_api.html)、
-[IDM 命令行](https://www.internetdownloadmanager.com/support/command_line.html)、
-[Electron DownloadItem](https://www.electronjs.org/docs/latest/api/download-item)、
-[Electron Session 下载事件](https://www.electronjs.org/docs/latest/api/session#event-will-download)。
+可用状态只表示固定路径存在，成功返回只表示请求已经发出，不证明 IDM 健康、弹窗出现或下载完成。
+下载确认与进度由本机 IDM 管理；用户确认的第三方程序损坏不由浏览器静默修复。
+官方接口来源：[IDM 命令行](https://www.internetdownloadmanager.com/support/command_line.html)。
 
 ## 两脚本资格与内置资源
 

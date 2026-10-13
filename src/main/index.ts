@@ -16,12 +16,13 @@ import { installWindowAppearance, titlebarColors } from './ui/window-appearance'
 import { TrayController } from './ui/tray-controller';
 import { TrayPreferences } from './ui/tray-preferences';
 import { createUserScriptFeature } from './userscript-ui';
-import { createIdmFeature, type IdmFeature } from './idm-ui';
+import { createIdmFeature } from './idm-ui';
 import {
   createQualifiedScriptFeature,
   type QualifiedScriptFeature,
 } from './userscripts-qualified/feature';
 import type { QualifiedScriptId } from '../shared/types/qualified-userscripts';
+import type { IdmDownloadService } from './downloads/idm-service';
 import type { UserScriptService } from './userscripts/service';
 import type {
   CreateTabGroupPayload,
@@ -517,7 +518,7 @@ let shutdownQuitReady = false;
 let trayController: TrayController | null = null;
 let trayPreferences: TrayPreferences | null = null;
 let userScriptService: UserScriptService | null = null;
-let idmService: IdmFeature | null = null;
+let idmService: IdmDownloadService | null = null;
 let qualifiedScripts: QualifiedScriptFeature | null = null;
 let trayError: string | null = null;
 // S4：config:providers:* handler 需要直接引用生产 ConfigStore/凭据实例
@@ -3371,17 +3372,7 @@ async function assembleBrowserWindow(): Promise<void> {
     !__RELEASE__ && SMOKE_MODE ? SMOKE_AI_DATA_DIR : requireNodeDataRoot(),
   );
   userScriptService = scripts.service;
-  const sessionManager = new AppSessionManager();
-  idmService = createIdmFeature({
-    win,
-    session: sessionManager.getSession(),
-    isOpen: mainRootIsOpen,
-    isUserDownloadFrame: (id, frame) => browserController?.isUserDownloadFrame(id, frame) ?? false,
-    getCaptureContext: (id, frame) =>
-      browserController?.getDownloadCaptureContext(id, frame) ?? null,
-    consumeDownloadLease: (wc, frame, snapshot) =>
-      browserController?.consumeDownloadLease(wc, frame, snapshot) ?? null,
-  });
+  idmService = createIdmFeature(win);
   qualifiedScripts = createQualifiedScriptFeature({
     win,
     dataRoot: !__RELEASE__ && SMOKE_MODE ? SMOKE_AI_DATA_DIR : requireNodeDataRoot(),
@@ -3426,7 +3417,7 @@ async function assembleBrowserWindow(): Promise<void> {
       }
     },
     ownerWindow: win,
-    sessionManager,
+    sessionManager: new AppSessionManager(),
     getFallbackBounds: () => {
       // chrome 高度上报（T3）前按窗口内容区兜底设 bounds（§6）
       const [width, height] = win.getContentSize();

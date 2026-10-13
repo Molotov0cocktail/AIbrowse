@@ -10,7 +10,6 @@ directories:
 files:
   - out/release/main/*.js
   - out/release/main/lifecycle-guardian-integrity.json
-  - out/release/main/idm-handoff-integrity.json
   - '!out/release/main/release-modules.json'
   - out/release/preload/index.js
   - out/release/preload/qualified-userscripts.js
@@ -45,8 +44,6 @@ files:
 extraResources:
   - from: out/lifecycle-guardian/guardian.exe
     to: lifecycle-guardian/guardian.exe
-  - from: out/idm/idm-handoff.exe
-    to: idm/idm-handoff.exe
 extraMetadata:
   main: out/release/main/index.js
 electronFuses:

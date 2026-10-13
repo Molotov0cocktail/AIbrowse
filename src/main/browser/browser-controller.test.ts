@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { BaseWindow, Session, WebContents, WebFrameMain } from 'electron';
+import type { BaseWindow, Session } from 'electron';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserControllerImpl, type BrowserControllerOptions } from './browser-controller';
 import type { SessionManager } from './session-manager';
@@ -11,9 +11,6 @@ interface PendingLoad {
 }
 
 interface TestWebContents extends EventEmitter {
-  id: number;
-  mainFrame: WebFrameMain;
-  focusedFrame: WebFrameMain | null;
   windowOpen: (details: Electron.HandlerDetails) => Electron.WindowOpenHandlerResponse;
   currentUrl: string;
   destroyed: boolean;
@@ -53,9 +50,6 @@ vi.mock('electron', async () => {
   const { EventEmitter: Emitter } = await import('node:events');
 
   class MockWebContents extends Emitter {
-    id = electronMock.instances.length + 1;
-    mainFrame = { parent: null, detached: false, origin: 'null' } as WebFrameMain;
-    focusedFrame = this.mainFrame;
     currentUrl = '';
     destroyed = false;
     private loading = false;
@@ -83,7 +77,6 @@ vi.mock('electron', async () => {
       const commit = (): void => {
         if (serial !== this.loadSerial || this.destroyed) return;
         this.currentUrl = url;
-        Object.assign(this.mainFrame, { origin: new URL(url).origin });
         this.emit('did-navigate', {}, url);
         this.emit('did-finish-load');
       };
@@ -211,10 +204,10 @@ function harness(observers: Partial<BrowserControllerOptions> = {}): {
   controller: BrowserControllerImpl;
   ownerWindow: BaseWindow;
 } {
-  const ownerWindow = Object.assign(new EventEmitter(), {
+  const ownerWindow = {
     contentView: { addChildView: vi.fn(), removeChildView: vi.fn() },
     isDestroyed: () => false,
-  }) as unknown as BaseWindow;
+  } as unknown as BaseWindow;
   const sessionManager = {
     getSession: () => ({}) as Session,
   } as SessionManager;
@@ -366,295 +359,15 @@ function userClick(wc: TestWebContents): void {
   wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left', x: 10, y: 10 });
 }
 
-describe('BrowserController 原生下载一次性文档许可', () => {
-  const download = {
-    url: 'https://example.com/file.zip',
-    urlChain: ['https://example.com/file.zip'],
-    filename: 'file.zip',
-    hasUserGesture: true,
-    initiatorOrigin: 'https://example.com',
-  };
-  function consume(controller: BrowserControllerImpl, wc: TestWebContents, snapshot = download) {
-    return controller.consumeDownloadLease(wc as unknown as WebContents, wc.mainFrame, snapshot);
-  }
-
-  it('无输入请求归属仅接受已登记用户主框架，不依赖活动或可见状态', async () => {
-    const { controller } = harness();
-    try {
-      const user = await controller.createTab('https://example.com/');
-      const wc = electronMock.instances[0]!.webContents;
-      expect(controller.isUserDownloadFrame(wc.id, wc.mainFrame)).toBe(true);
-      expect(controller.getDownloadCaptureContext(wc.id, wc.mainFrame)).toBeNull();
-      await controller.createTaskTab('https://example.com/task');
-      const task = electronMock.instances[1]!.webContents;
-      controller.setContentVisible(false);
-      expect(controller.isUserDownloadFrame(wc.id, wc.mainFrame)).toBe(true);
-      expect(controller.isUserDownloadFrame(task.id, task.mainFrame)).toBe(false);
-      expect(controller.isUserDownloadFrame(wc.id, task.mainFrame)).toBe(false);
-      expect(controller.isUserDownloadFrame(-1, wc.mainFrame)).toBe(false);
-      expect(controller.isUserDownloadFrame(wc.id, null)).toBe(false);
-      expect(
-        controller.isUserDownloadFrame(wc.id, {
-          ...wc.mainFrame,
-          parent: wc.mainFrame,
-        } as WebFrameMain),
-      ).toBe(false);
-      Object.assign(wc.mainFrame, { detached: true });
-      expect(controller.isUserDownloadFrame(wc.id, wc.mainFrame)).toBe(false);
-      Object.assign(wc.mainFrame, { detached: false });
-      await controller.closeTab(user.id);
-      expect(controller.isUserDownloadFrame(wc.id, wc.mainFrame)).toBe(false);
-    } finally {
-      controller.dispose();
-    }
-  });
-
-  it('真实输入和原生下载双证据放行一次，开始下载导航不撤销', async () => {
+describe('BrowserController 手动下载边界', () => {
+  it('用户输入不提供下载凭据采集或自动交接入口', async () => {
     const { controller } = harness();
     try {
       await controller.createTab('https://example.com/');
-      const wc = electronMock.instances[0]!.webContents;
-      expect(consume(controller, wc)).toBeNull();
-      userClick(wc);
-      const captured = controller.getDownloadCaptureContext(wc.id, wc.mainFrame);
-      expect(captured?.isCurrent()).toBe(true);
-      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
-      const accepted = consume(controller, wc);
-      expect(accepted?.token).toBe(captured?.token);
-      expect(accepted?.isCurrent()).toBe(true);
-      expect(consume(controller, wc)).toBeNull();
-      expect(controller.getDownloadCaptureContext(wc.id, wc.mainFrame)).toBeNull();
-    } finally {
-      controller.dispose();
-    }
-  });
-
-  it.each(['gesture', 'origin', 'null-frame', 'iframe', 'detached'])(
-    '拒绝缺少 %s 的下载',
-    async (kind) => {
-      const { controller } = harness();
-      try {
-        await controller.createTab('https://example.com/');
-        const wc = electronMock.instances[0]!.webContents;
-        userClick(wc);
-        const frame =
-          kind === 'null-frame'
-            ? null
-            : kind === 'iframe'
-              ? ({ ...wc.mainFrame, parent: wc.mainFrame } as WebFrameMain)
-              : wc.mainFrame;
-        if (kind === 'detached') Object.assign(wc.mainFrame, { detached: true });
-        expect(
-          controller.consumeDownloadLease(wc as unknown as WebContents, frame, {
-            ...download,
-            hasUserGesture: kind !== 'gesture',
-            initiatorOrigin: kind === 'origin' ? 'https://evil.example' : download.initiatorOrigin,
-          }),
-        ).toBeNull();
-      } finally {
-        controller.dispose();
-      }
-    },
-  );
-
-  it.each([
-    'commit',
-    'crash',
-    'hidden',
-    'switch',
-    'blur',
-    'close',
-    'AI',
-    'navigate',
-    'window-hide',
-    'window-blur',
-  ])('已消费许可异步复验在 %s 后失效，不能恢复复用', async (kind) => {
-    const { controller, ownerWindow } = harness();
-    try {
-      const tab = await controller.createTab('https://example.com/');
-      const wc = electronMock.instances[0]!.webContents;
-      userClick(wc);
-      const accepted = consume(controller, wc);
-      expect(accepted?.isCurrent()).toBe(true);
-      if (kind === 'commit') wc.emit('did-navigate', {}, 'https://example.com/');
-      if (kind === 'crash') wc.emit('render-process-gone');
-      if (kind === 'hidden') {
-        controller.setContentVisible(false);
-        controller.setContentVisible(true);
-      }
-      if (kind === 'switch') {
-        await controller.createTab();
-        await controller.activateTab(tab.id);
-      }
-      if (kind === 'blur') wc.emit('blur');
-      if (kind === 'window-hide') ownerWindow.emit('hide');
-      if (kind === 'window-blur') ownerWindow.emit('blur');
-      if (kind === 'close') await controller.closeTab(tab.id);
-      if (kind === 'AI') await controller.scrollTab(tab.id, 1);
-      if (kind === 'navigate') await controller.navigate(tab.id, 'https://example.com/');
-      expect(accepted?.isCurrent()).toBe(false);
-      expect(consume(controller, wc)).toBeNull();
-    } finally {
-      controller.dispose();
-    }
-  });
-
-  it('10秒后过期，新输入替换旧许可且不延长旧异步交接', async () => {
-    const now = vi.spyOn(performance, 'now').mockReturnValue(100);
-    const { controller } = harness();
-    try {
-      await controller.createTab('https://example.com/');
-      const wc = electronMock.instances[0]!.webContents;
-      userClick(wc);
-      const first = controller.getDownloadCaptureContext(wc.id, wc.mainFrame);
-      now.mockReturnValue(5000);
-      userClick(wc);
-      expect(first?.isCurrent()).toBe(false);
-      const second = consume(controller, wc);
-      now.mockReturnValue(15000);
-      expect(second?.isCurrent()).toBe(false);
-      expect(controller.getDownloadCaptureContext(wc.id, wc.mainFrame)).toBeNull();
-    } finally {
-      now.mockRestore();
-      controller.dispose();
-    }
-  });
-
-  it('任务页、后台页和AI操作中的伪造输入不授予许可', async () => {
-    const { controller } = harness();
-    try {
-      const tab = await controller.createTab('https://example.com/');
-      const wc = electronMock.instances[0]!.webContents;
-      await controller.createTaskTab('https://example.com/');
-      const task = electronMock.instances[1]!.webContents;
-      userClick(task);
-      userClick(wc);
-      expect(consume(controller, task)).toBeNull();
-      expect(consume(controller, wc)).toBeNull();
-      await controller.activateTab(tab.id);
-      wc.collectScript.mockImplementation(async () => {
-        userClick(wc);
-        expect(consume(controller, wc)).toBeNull();
-        return { ok: true, viewport: {} };
-      });
-      userClick(wc);
-      await controller.scrollTab(tab.id, 2);
-      expect(consume(controller, wc)).toBeNull();
-    } finally {
-      controller.dispose();
-    }
-  });
-
-  it('用户_blank路由可继承精确初始URL重定向许可，父页不得重复消费', async () => {
-    const { controller } = harness();
-    const initial = 'https://example.com/redirect';
-    electronMock.noCommitUrls.push(initial);
-    try {
-      await controller.createTab('https://example.com/');
-      const source = electronMock.instances[0]!.webContents;
-      userClick(source);
-      source.windowOpen(popupDetails(initial));
-      await Promise.resolve();
-      const target = electronMock.instances[1]!.webContents;
-      expect(controller.getDownloadCaptureContext(target.id, target.mainFrame)).not.toBeNull();
-      expect(consume(controller, source)).toBeNull();
-      expect(
-        consume(controller, target, {
-          ...download,
-          hasUserGesture: false,
-          initiatorOrigin: '',
-          urlChain: [initial, download.url],
-        })?.isCurrent(),
-      ).toBe(true);
-      expect(
-        consume(controller, target, {
-          ...download,
-          hasUserGesture: false,
-          initiatorOrigin: '',
-          urlChain: [initial, download.url],
-        }),
-      ).toBeNull();
-    } finally {
-      controller.dispose();
-    }
-  });
-
-  it.each(['wrong-url', 'commit', 'second-navigation'])(
-    '_blank派生在%s拒绝把未提交新页当任意URL许可',
-    async (kind) => {
-      const { controller } = harness();
-      const initial = 'https://example.com/redirect';
-      electronMock.noCommitUrls.push(initial);
-      try {
-        await controller.createTab('https://example.com/');
-        const source = electronMock.instances[0]!.webContents;
-        userClick(source);
-        source.windowOpen(popupDetails(initial));
-        await Promise.resolve();
-        const target = electronMock.instances[1]!.webContents;
-        if (kind === 'commit') target.emit('did-navigate', {}, initial);
-        if (kind === 'second-navigation')
-          target.emit('did-start-navigation', {
-            isMainFrame: true,
-            isSameDocument: false,
-            url: 'https://evil.example/',
-          });
-        expect(
-          consume(controller, target, {
-            ...download,
-            hasUserGesture: false,
-            initiatorOrigin: '',
-            urlChain: kind === 'wrong-url' ? [download.url] : [initial, download.url],
-          }),
-        ).toBeNull();
-      } finally {
-        controller.dispose();
-      }
-    },
-  );
-
-  it('子帧焦点的_blank不得继承主文档下载许可', async () => {
-    const { controller } = harness();
-    const initial = 'https://example.com/redirect';
-    electronMock.noCommitUrls.push(initial);
-    try {
-      await controller.createTab('https://example.com/');
-      const source = electronMock.instances[0]!.webContents;
-      userClick(source);
-      source.focusedFrame = { ...source.mainFrame, parent: source.mainFrame } as WebFrameMain;
-      source.windowOpen(popupDetails(initial));
-      await Promise.resolve();
-      const target = electronMock.instances[1]!.webContents;
-      expect(controller.getDownloadCaptureContext(target.id, target.mainFrame)).toBeNull();
-    } finally {
-      controller.dispose();
-    }
-  });
-
-  it('已接管的新标签下载导致loadURL失败时不误报页面加载错误', async () => {
-    const { controller } = harness();
-    const initial = 'https://example.com/redirect';
-    electronMock.deferredUrls.push(initial);
-    try {
-      await controller.createTab('https://example.com/');
-      const source = electronMock.instances[0]!.webContents;
-      userClick(source);
-      source.windowOpen(popupDetails(initial));
-      await Promise.resolve();
-      const target = electronMock.instances[1]!.webContents;
-      const lease = consume(controller, target, {
-        ...download,
-        hasUserGesture: false,
-        initiatorOrigin: '',
-        urlChain: [initial, download.url],
-      });
-      expect(lease?.isCurrent()).toBe(true);
-      target.emit('did-fail-load', {}, -2, 'ERR_FAILED', initial, true);
-      electronMock.pending[0]!.reject(new Error('ERR_FAILED'));
-      await Promise.resolve();
-      expect((await controller.getTabs())[1]).toMatchObject({ state: 'ready' });
-      expect((await controller.getTabs())[1]).not.toHaveProperty('failure');
-      expect(lease?.isCurrent()).toBe(true);
+      userClick(electronMock.instances[0]!.webContents);
+      expect('getDownloadCaptureContext' in controller).toBe(false);
+      expect('isUserDownloadFrame' in controller).toBe(false);
+      expect('consumeDownloadLease' in controller).toBe(false);
     } finally {
       controller.dispose();
     }

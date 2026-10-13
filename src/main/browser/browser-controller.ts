@@ -3,12 +3,7 @@
 // 分层方向（不可反向）：UI → BrowserController → TabManager / SessionManager → Electron APIs.
 // 失败语义（§4）：参数/状态问题安全返回 false/null，不抛异常；仅未预期内部异常 reject。
 
-import type { BaseWindow, Rectangle, WebContents, WebFrameMain } from 'electron';
-import type {
-  DownloadGestureTransfer,
-  DownloadLease,
-  NativeDownloadSnapshot,
-} from './download-gesture';
+import type { BaseWindow, Rectangle } from 'electron';
 import type {
   ElementActionResult,
   PageSnapshot,
@@ -111,10 +106,9 @@ export class BrowserControllerImpl implements BrowserController {
         !this.disposed &&
         !this.snapshotShutdown &&
         this.contentVisible &&
-        this.options.ownerWindow.isVisible?.() !== false &&
         this.activeTabId === tabId,
-      onUserOpenTab: (_sourceTabId, url, background, downloadTransfer) => {
-        void this.createTabInternal(url, { background, downloadTransfer }).catch(() => {
+      onUserOpenTab: (_sourceTabId, url, background) => {
+        void this.createTabInternal(url, { background }).catch(() => {
           logWarn('browser', '用户链接新标签页创建失败');
         });
       },
@@ -133,11 +127,7 @@ export class BrowserControllerImpl implements BrowserController {
 
   private async createTabInternal(
     url?: string,
-    options: {
-      taskOwned?: boolean;
-      background?: boolean;
-      downloadTransfer?: DownloadGestureTransfer;
-    } = {},
+    options: { taskOwned?: boolean; background?: boolean } = {},
   ): Promise<TabInfo> {
     this.assertAlive();
     const deferInitialBlankLoad = url === undefined || url === '';
@@ -157,12 +147,9 @@ export class BrowserControllerImpl implements BrowserController {
       this.activeTabId = entry.info.id;
       this.applyActiveVisual();
     }
-    if (options.downloadTransfer)
-      this.tabManager.adoptDownloadGesture(entry, options.downloadTransfer);
     // Materialize an implicit blank view on its first DOM operation. Explicit
     // URLs, including about:blank, keep their existing real-load behavior.
-    if (!deferInitialBlankLoad)
-      void this.startLoad(entry, target, 'navigation', options.downloadTransfer?.referrer);
+    if (!deferInitialBlankLoad) void this.startLoad(entry, target, 'navigation');
     logInfo(
       'browser',
       `已创建标签页（tabId=${redactTabIdForLog(entry.info.id)}，url=${redactUrlForLog(target)}）`,
@@ -199,28 +186,6 @@ export class BrowserControllerImpl implements BrowserController {
     return entry === undefined || entry.view.webContents.isDestroyed()
       ? null
       : entry.view.webContents.id;
-  }
-
-  /** Main-only download authorization; absent from the AI browser interface. */
-  getDownloadCaptureContext(
-    webContentsId: number,
-    frame: WebFrameMain | null,
-  ): DownloadLease | null {
-    return this.tabManager.getDownloadCaptureContext(webContentsId, frame);
-  }
-
-  /** Main-only request provenance; ownership does not itself authorize a download. */
-  isUserDownloadFrame(webContentsId: number, frame: WebFrameMain | null): boolean {
-    return !this.disposed && this.tabManager.isUserDownloadFrame(webContentsId, frame);
-  }
-
-  /** Consumes the physical-input capability before any asynchronous IDM work. */
-  consumeDownloadLease(
-    wc: WebContents,
-    frame: WebFrameMain | null,
-    snapshot: NativeDownloadSnapshot,
-  ): DownloadLease | null {
-    return this.tabManager.consumeDownloadLease(wc, frame, snapshot);
   }
 
   async closeTab(tabId: string): Promise<boolean> {
@@ -267,7 +232,6 @@ export class BrowserControllerImpl implements BrowserController {
   }
 
   async navigate(tabId: string, url: string): Promise<boolean> {
-    this.tabManager.revokeDownloadGesture(tabId);
     if (this.disposed) return false;
     if (url === '') {
       logWarn('browser', `navigate 收到空 URL（tabId=${redactTabIdForLog(tabId)}）`);
@@ -651,7 +615,6 @@ export class BrowserControllerImpl implements BrowserController {
   }
 
   private guardNavigation(method: string, tabId: string): TabEntry | null {
-    this.tabManager.revokeDownloadGesture(tabId);
     if (this.disposed) return null;
     const entry = this.tabManager.get(tabId);
     if (entry === undefined) logWarn('browser', `${method} 未知 tabId=${redactTabIdForLog(tabId)}`);
@@ -662,7 +625,6 @@ export class BrowserControllerImpl implements BrowserController {
     entry: TabEntry,
     target: string,
     purpose: 'materialize' | 'navigation',
-    httpReferrer?: Electron.Referrer,
   ): Promise<boolean> {
     const wc = entry.view.webContents;
     if (this.disposed || this.tabManager.get(entry.info.id) !== entry || wc.isDestroyed()) {
@@ -692,10 +654,7 @@ export class BrowserControllerImpl implements BrowserController {
         this.tabManager.get(entry.info.id) === entry &&
         !wc.isDestroyed() &&
         entry.loadSerial === serial;
-      const downloadHandled =
-        entry.downloadGesture?.consumed === true && entry.downloadGesture.initialUrl === target;
-      const acceptedSuccess =
-        (ok || downloadHandled) && isCurrent && (!requiresFirstCommit || entry.generation > 0);
+      const acceptedSuccess = ok && isCurrent && (!requiresFirstCommit || entry.generation > 0);
       // Electron rejects an old loadURL with -3 when reload/history/page navigation
       // supersedes it. Cancellation must not overwrite the successor's state.
       const aborted =
@@ -730,8 +689,7 @@ export class BrowserControllerImpl implements BrowserController {
     entry.latestLoad = latest;
 
     try {
-      const load = httpReferrer ? wc.loadURL(target, { httpReferrer }) : wc.loadURL(target);
-      void load.then(
+      void wc.loadURL(target).then(
         () => settle(true),
         (err: unknown) => settle(false, err),
       );

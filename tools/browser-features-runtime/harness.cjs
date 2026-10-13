@@ -1,4 +1,4 @@
-/* global __dirname, require, process, setTimeout, clearTimeout, URL */
+/* global __dirname, require, process, setTimeout, clearTimeout, queueMicrotask, URL */
 // Electron requires a synchronous CommonJS bootstrap before the product entry.
 /* eslint-disable @typescript-eslint/no-require-imports */
 const assert = require('node:assert/strict');
@@ -53,6 +53,15 @@ const report = {
   dialogs: [],
   network: { electronLocal: 0, unexpected: 0, node: 0, fetch: 0 },
   childLaunches: 0,
+  downloadBoundary: {
+    harnessHeaderObservers: 0,
+    productHeaderListeners: [],
+    cookieReads: 0,
+    debuggerAttachments: 0,
+    cookieCommands: 0,
+    nativeEvents: [],
+    trustedClick: false,
+  },
   nativeHelpers: [],
   lifecycle: [],
 };
@@ -83,6 +92,20 @@ const observeScriptRuntime = (value) => {
   persist();
 };
 app.on('web-contents-created', (_event, contents) => {
+  const attach = contents.debugger.attach;
+  contents.debugger.attach = function (...args) {
+    report.downloadBoundary.debuggerAttachments += 1;
+    persist();
+    return Reflect.apply(attach, this, args);
+  };
+  const command = contents.debugger.sendCommand;
+  contents.debugger.sendCommand = function (...args) {
+    if (['Network.getCookies', 'Network.getAllCookies', 'Storage.getCookies'].includes(args[0])) {
+      report.downloadBoundary.cookieCommands += 1;
+      persist();
+    }
+    return Reflect.apply(command, this, args);
+  };
   for (const name of ['did-finish-load', 'did-stop-loading']) {
     contents.on(name, () => {
       if (!contents.isDestroyed() && local(contents.getURL()))
@@ -113,13 +136,41 @@ const fail = (error) => {
   app.quit();
 };
 app.on('session-created', (value) => {
-  // Observe a distinct event without replacing product request/security handlers.
+  // Install our counter first; registrations observed below belong to the product.
   value.webRequest.onSendHeaders({ urls: ['http://*/*', 'https://*/*'] }, (details) => {
     if (local(details.url)) report.network.electronLocal += 1;
     else {
       report.network.unexpected += 1;
       fail(new Error('拒绝验收计划外网络请求'));
     }
+  });
+  report.downloadBoundary.harnessHeaderObservers += 1;
+  for (const method of ['onBeforeSendHeaders', 'onSendHeaders']) {
+    const original = value.webRequest[method];
+    value.webRequest[method] = function (...args) {
+      report.downloadBoundary.productHeaderListeners.push(method);
+      persist();
+      return Reflect.apply(original, this, args);
+    };
+  }
+  const getCookies = value.cookies.get;
+  value.cookies.get = function (...args) {
+    report.downloadBoundary.cookieReads += 1;
+    persist();
+    return Reflect.apply(getCookies, this, args);
+  };
+  value.on('will-download', (event, item) => {
+    const native = {
+      filename: item.getFilename(),
+      hasUserGesture: item.hasUserGesture(),
+      prevented: false,
+    };
+    report.downloadBoundary.nativeEvents.push(native);
+    // Inspect the same event after product listeners run; this harness never cancels it.
+    queueMicrotask(() => {
+      native.prevented = event.defaultPrevented;
+      persist();
+    });
   });
 });
 for (const protocol of ['node:http', 'node:https']) {
@@ -444,6 +495,33 @@ async function downloadAndScriptsUi() {
   fact('downloadToolAppearance', samples);
   await clickText('.workspace-page-back', '返回浏览');
 }
+async function browserDownloadBlocked() {
+  const { contents } = await page(`${launch.base}/download-click`);
+  win.show();
+  win.focus();
+  contents.focus();
+  await delay(100);
+  assert(win.isFocused() && contents.isFocused(), '下载正控制未取得前台焦点');
+  const point = await contents.executeJavaScript(`(() => {
+    const rect=document.querySelector('#blocked-download').getBoundingClientRect();
+    return {x:Math.round(rect.x+rect.width/2),y:Math.round(rect.y+rect.height/2)};
+  })()`);
+  contents.sendInputEvent({ type: 'mouseMove', ...point });
+  await delay(50);
+  contents.sendInputEvent({ type: 'mouseDown', button: 'left', ...point, clickCount: 1 });
+  await delay(80);
+  contents.sendInputEvent({ type: 'mouseUp', button: 'left', ...point, clickCount: 1 });
+  await until('浏览器原生下载事件', () => report.downloadBoundary.nativeEvents.length > 0);
+  report.downloadBoundary.trustedClick = await contents.executeJavaScript(
+    'window.__downloadClickTrusted===true',
+  );
+  assert.equal(report.downloadBoundary.trustedClick, true);
+  assert.deepEqual(report.downloadBoundary.nativeEvents, [
+    { filename: 'blocked-download.bin', hasUserGesture: true, prevented: true },
+  ]);
+  assert.equal(report.childLaunches, 0);
+  fact('browserDownloadBlocked');
+}
 function contrast(first, second) {
   const luminance = (value) => {
     const numbers = value.match(/[\d.]+/g)?.map(Number);
@@ -623,12 +701,18 @@ async function run() {
     await groups();
     await appearance();
     await downloadAndScriptsUi();
+    await browserDownloadBlocked();
     await writeScripts();
   } else await reopenScripts();
   assert.equal(report.network.unexpected, 0);
   assert.equal(report.network.node, 0);
   assert.equal(report.network.fetch, 0);
   assert.equal(report.childLaunches, 0);
+  assert(report.downloadBoundary.harnessHeaderObservers > 0);
+  assert.deepEqual(report.downloadBoundary.productHeaderListeners, []);
+  assert.equal(report.downloadBoundary.cookieReads, 0);
+  assert.equal(report.downloadBoundary.debuggerAttachments, 0);
+  assert.equal(report.downloadBoundary.cookieCommands, 0);
   report.passed = true;
   persist();
   app.quit();
