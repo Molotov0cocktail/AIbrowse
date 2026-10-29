@@ -16,7 +16,14 @@
   正式契约已改用官方源码、发行摘要、PE只读八SPKI连续表及旧版对照补证，未把在线结果改PASS。
   共33次显式TLS探针（不含隐式AIA）；原件 `log/ca-security-20261029/`，差量合同见legacy-repair首节。
   发行隔离Preflight因跨卷拒绝且未更改真实profile；发行启动/安装器执行NOT RUN。
-  当前output仍0.1.15；下一步完成干净候选包核验与output交付，再正常双远程同步。
+  最终干净源 `7951e5cbed06825a66df6eee3fa2fbbf3769e9c2` 已构建0.1.16，包独审PASS（227模块/
+  16构建件/63ASAR/75程序文件，官方四个可执行节恒等及八SPKI只读表、fuse/MSI核验通过）。
+  **output已更新0.1.16**：79文件625019792字节，入口`output/win-unpacked/AIbrowse.exe`；manifest
+  `a977f0baac065f4766e2c5306bccf61d1194741680a5c5791dafa49c87c4b495`。
+  CheckOnly/Switch均0，切换`2111e57060b14a10bd12d70970ab2b7f`；旧0.1.15完整保留于本轮log的
+  `previous-output-2111e57060b14a10bd12d70970ab2b7f`。切后独立复核PASS，新旧各79文件及9证明全摘要恒等。
+  本轮交付完成，仅文档提交与正常双远程同步后停止，
+  不启动额外产品功能；Chromium在线BLOCKED、发行启动/安装器执行NOT RUN边界继续保持。
 
 - 2026-10-14 用户要求新建标签清空网址、地址栏单击全选/双击定位光标；干净接管
   `904b478805503f83a85def604a049dba27f3616a`，接管output为0.1.14。已定位renderer聚焦草稿跨标签残留，

@@ -44,6 +44,18 @@
   修复后 root 与独立复验各 3 文件 9 项 PASS，未累加重复计数。另有独立 128 项、5 项 CA 判定器和
   8 项破坏阻断表反例；typecheck/lint/format/build 通过。证据 `independent-review.json` 与其关联原件。
   官方 ZIP→实际 EXE、OAuth 来源与 bundle、安全资格 CJS 均独立核对；模型 actual 未回显，不可验证。
+- 最终干净候选 `7951e5cbed06825a66df6eee3fa2fbbf3769e9c2` 重新构建完整程序及 EXE/MSI，首候选包另存
+  `first-candidate-release`，旧发行中间件另存 `previous-release`。root 包白名单/静态绑定/MSI/来源校验通过，
+  新包独审 PASS：227 源模块、16 构建件、63 ASAR 成员、75 程序文件、12 安装器源码；45 脚本和依赖资产不变。
+  官方 EXE 四个可执行 PE 节与包内 EXE 恒等，唯一只读 Chromium 前缀+八 SPKI 表仍在；九项 fuse 和 ASAR
+  integrity 符合正式策略。手写审核脚本的 ASAR 路径/排序两次前提失败保留，规范化按 path 集合复验后通过。
+- **output 已更新 0.1.16**：79 文件、625019792 字节；入口 `D:\AIbrowse\output\win-unpacked\AIbrowse.exe`。
+  manifest SHA256 `a977f0baac065f4766e2c5306bccf61d1194741680a5c5791dafa49c87c4b495`；CheckOnly/Switch
+  均 exit0，切换 `2111e57060b14a10bd12d70970ab2b7f`；旧 0.1.15 全部 79 文件原样保留于
+  `log/ca-security-20261029/previous-output-2111e57060b14a10bd12d70970ab2b7f`。发行启动/安装器执行 NOT RUN，
+  未触真实用户数据/根证书；此轮不公开发布、不引入自动更新。
+- 最终切后新独立复核 PASS：新旧各 79 文件及 9 份证明逐项摘要恒等，staging 不再存在，来源与 manifest
+  未改变；证据 `output-final-verification.json`。本轮实现、安全升级及内部交付完成，最后仅文档提交和双远程同步。
 
 ## 新标签地址清空与地址栏点击选择（2026-10-14）
 
