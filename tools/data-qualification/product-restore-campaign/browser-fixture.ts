@@ -53,13 +53,9 @@ export function createCampaignFixture(root: string, variant: Variant): void {
         row.visited_at,
       );
     for (const row of rows.bookmarks)
-      db.prepare('INSERT INTO browser_bookmarks VALUES(?,?,?,?,?)').run(
-        row.id,
-        row.url,
-        row.title,
-        row.created_at,
-        row.updated_at,
-      );
+      db.prepare(
+        'INSERT INTO browser_bookmarks(id,url,title,created_at,updated_at) VALUES(?,?,?,?,?)',
+      ).run(row.id, row.url, row.title, row.created_at, row.updated_at);
   } finally {
     db.close();
   }

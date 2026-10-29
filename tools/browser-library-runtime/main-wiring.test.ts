@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { browserPageForLibrary } from '../../src/main/browser-library-ipc';
 import { openBrowserLibraryStore } from '../../src/main/browser-library/browser-library-store';
 import type { BrowserLibraryService } from '../../src/main/browser-library/browser-library-service';
+import type { BrowserVisitTitleUpdate } from '../../src/shared/types/browser-library';
 import { MaintenanceAdmission } from '../../src/main/storage/maintenance-admission';
 import { MaintenanceCoordinator } from '../../src/main/storage/maintenance-coordinator';
 
@@ -236,7 +237,12 @@ it('生产导航与标题回调受实际维护屏障和退出封门保护，清�
     mainRootAdmission: root,
     dataAdmissionOpen: true,
     runtimeMaintenance: maintenance,
-    browserLibraryService: service,
+    browserLibraryService: {
+      recordNavigation: service.recordNavigation.bind(service),
+      // VM literals have a foreign prototype; production callbacks share the service realm.
+      updateVisitTitle: (value: BrowserVisitTitleUpdate) =>
+        service.updateVisitTitle(structuredClone(value)),
+    },
     browserPageForLibrary,
     input: { url: 'https://example.com/path?private=local#fragment', title: '初始标题' },
   });

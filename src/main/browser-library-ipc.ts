@@ -1,6 +1,8 @@
 import type { BrowserLibraryService } from './browser-library/browser-library-service';
 import type {
   BrowserBookmarkInput,
+  BrowserBookmarkListRequest,
+  BrowserBookmarkGroupInput,
   BrowserBookmarkUpdate,
   BrowserLibraryListRequest,
   BrowserLibraryResult,
@@ -38,6 +40,7 @@ export function dispatchBrowserLibrary(
   service: BrowserLibraryService | null,
   currentPage: () => BrowserBookmarkInput | null,
   initializing = false,
+  currentGroup: (groupId: string) => BrowserBookmarkGroupInput | null = () => null,
 ): unknown {
   if (channel === IPC.BrowserLibraryStatus)
     return (
@@ -56,8 +59,16 @@ export function dispatchBrowserLibrary(
       return service.deleteHistory((payload as { id: string }).id);
     case IPC.BrowserHistoryClear:
       return service.clearHistory();
+    case IPC.BrowserBookmarkGroupsList:
+      return service.listBookmarkGroups();
+    case IPC.BrowserBookmarkGroupSave: {
+      const group = currentGroup((payload as { groupId: string }).groupId);
+      return group === null
+        ? { ok: false, code: 'invalid-input', message: '请选择包含可收藏网页的用户分组' }
+        : service.saveBookmarkGroup(group);
+    }
     case IPC.BrowserBookmarksList:
-      return service.listBookmarks(payload as BrowserLibraryListRequest);
+      return service.listBookmarks(payload as BrowserBookmarkListRequest);
     case IPC.BrowserBookmarkUpdate:
       return service.updateBookmark(payload as BrowserBookmarkUpdate);
     case IPC.BrowserBookmarkRemove:

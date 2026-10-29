@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { DiagnosticPreviewDto } from '../../../shared/types/diagnostics';
 import { diagnosticErrorLabel, shortDiagnosticDigest } from './diagnostic-display';
 import './diagnostic-panel.css';
+import { Icon } from '../ui/Icon';
 
 export interface DiagnosticPanelProps {
   readonly onClose: () => void;
@@ -47,9 +48,23 @@ export function DiagnosticPanel({ onClose }: DiagnosticPanelProps) {
   return (
     <aside className="diagnostic-panel" aria-label="诊断信息">
       <div className="diagnostic-panel-header">
-        <h2>诊断信息</h2>
-        <button type="button" onClick={onClose} aria-label="关闭诊断信息">
-          ×
+        <div className="sidebar-heading">
+          <span className="sidebar-heading-icon">
+            <Icon name="activity" />
+          </span>
+          <div>
+            <h2>诊断信息</h2>
+            <p>运行状态与安全导出</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="sidebar-icon-action"
+          onClick={onClose}
+          aria-label="关闭诊断信息"
+          title="关闭诊断信息"
+        >
+          <Icon name="chevron-right" size={16} />
         </button>
       </div>
       <p className="diagnostic-panel-note">

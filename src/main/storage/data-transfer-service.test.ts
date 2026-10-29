@@ -30,13 +30,13 @@ function fixture(participants: MaintenanceParticipant[] = []) {
   );
   const result = (c: TransferOperationContext): TransferResult => ({
     manifest: {
-      formatVersion: 1,
+      formatVersion: 2,
       productVersion: 'test',
       snapshotId: c.job.snapshotId,
-      members: ['sources', 'research', 'watch', 'conversations'].map((id) => ({
+      members: ['sources', 'research', 'watch', 'conversations', 'browser'].map((id) => ({
         id,
         present: true,
-        schemaVersion: id === 'watch' ? 6 : 1,
+        schemaVersion: id === 'watch' ? 6 : id === 'browser' ? 2 : 1,
         bytes: 100,
         sha256,
       })) as TransferResult['manifest']['members'],
@@ -93,7 +93,7 @@ function fixture(participants: MaintenanceParticipant[] = []) {
             action: 'restore',
             snapshotId: c.job.snapshotId,
             expected: Object.fromEntries(
-              ['sources', 'research', 'watch', 'conversations'].map((id) => [
+              ['sources', 'research', 'watch', 'conversations', 'browser'].map((id) => [
                 id,
                 { bytes: 100, sha256 },
               ]),

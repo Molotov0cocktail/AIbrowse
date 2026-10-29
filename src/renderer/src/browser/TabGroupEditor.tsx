@@ -57,10 +57,13 @@ export function TabGroupEditor({
     selectedTab === null
       ? null
       : (groups.find((group) => group.tabIds.includes(selectedTab.id)) ?? null);
+  const [bookmarkIssue, setBookmarkIssue] = useState('');
+  const [savingBookmarkGroup, setSavingBookmarkGroup] = useState(false);
   const [name, setName] = useState(selectedGroup?.name ?? '新分组');
   const [color, setColor] = useState<TabGroupColor>(selectedGroup?.color ?? 'blue');
 
   useEffect(() => {
+    setBookmarkIssue('');
     setName(selectedGroup?.name ?? '新分组');
     setColor(selectedGroup?.color ?? 'blue');
   }, [selectedGroup?.id, selectedGroup?.name, selectedGroup?.color]);
@@ -68,6 +71,23 @@ export function TabGroupEditor({
   const normalizedName = name.trim();
   const validName = normalizedName.length >= 1 && normalizedName.length <= 40;
 
+  const saveBookmarks = async (): Promise<void> => {
+    if (selectedGroup === null || savingBookmarkGroup) return;
+    setSavingBookmarkGroup(true);
+    setBookmarkIssue('');
+    try {
+      const result = await window.aibrowse.browserLibrary.saveBookmarkGroup(selectedGroup.id);
+      setBookmarkIssue(
+        result.ok
+          ? '已保存到书签，可在书签页展开后逐个打开'
+          : '保存失败，请确认分组内均为网页且未超过 100 项',
+      );
+    } catch {
+      setBookmarkIssue('保存失败，请稍后重试');
+    } finally {
+      setSavingBookmarkGroup(false);
+    }
+  };
   return (
     <section className="tab-group-editor" aria-label="标签分组编辑器">
       <div className="tab-group-editor-heading">
@@ -183,6 +203,19 @@ export function TabGroupEditor({
             )}
           </div>
 
+          {selectedGroup !== null && (
+            <div className="bookmark-group-save">
+              <button
+                type="button"
+                disabled={savingBookmarkGroup}
+                onClick={() => void saveBookmarks()}
+              >
+                {savingBookmarkGroup ? '正在保存…' : '保存分组到书签'}
+              </button>
+              <p>保存当前已应用的组名和颜色；同名书签组会合并，已有网址会移入此组。</p>
+            </div>
+          )}
+          {bookmarkIssue !== '' && <p role="status">{bookmarkIssue}</p>}
           <div className="tab-group-existing-groups" aria-label="已有分组">
             {groups
               .filter((group) => group.id !== selectedGroup?.id)

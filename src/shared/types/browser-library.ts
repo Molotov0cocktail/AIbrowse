@@ -1,3 +1,5 @@
+import type { TabGroupColor } from './browser';
+
 export interface BrowserHistoryEntry {
   id: string;
   url: string;
@@ -6,6 +8,7 @@ export interface BrowserHistoryEntry {
 }
 
 export interface BrowserBookmark {
+  groupId: string | null;
   id: string;
   url: string;
   title: string;
@@ -43,6 +46,7 @@ export interface BrowserBookmarkInput {
 }
 
 export interface BrowserBookmarkUpdate extends BrowserBookmarkInput {
+  groupId?: string | null;
   id: string;
 }
 
@@ -53,4 +57,19 @@ export interface BrowserVisitTitleUpdate extends BrowserBookmarkInput {
 export interface BrowserLibraryStatus {
   state: 'initializing' | 'available' | 'unavailable' | 'maintenance' | 'storage-error';
   message: string;
+}
+
+export interface BrowserBookmarkGroup {
+  id: string;
+  name: string;
+  color: TabGroupColor;
+}
+export interface BrowserBookmarkGroupInput {
+  name: string;
+  color: TabGroupColor;
+  bookmarks: BrowserBookmarkInput[];
+}
+
+export interface BrowserBookmarkListRequest extends BrowserLibraryListRequest {
+  groupId?: string | null;
 }

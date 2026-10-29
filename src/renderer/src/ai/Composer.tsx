@@ -51,6 +51,7 @@ export function Composer({
       {errorMessage !== null && <div className="ai-error-line">{errorMessage}</div>}
       <textarea
         className="ai-composer-textarea"
+        aria-label="问题或任务目标"
         rows={3}
         placeholder={placeholder}
         value={draft}
@@ -59,6 +60,7 @@ export function Composer({
         onKeyDown={onKeyDown}
       />
       <div className="ai-composer-actions">
+        <span className="ai-composer-shortcuts">Enter 发送 · Shift + Enter 换行</span>
         {showAbort ? (
           <button type="button" className="ai-abort" onClick={onAbort}>
             {abortLabel}

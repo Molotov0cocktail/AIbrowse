@@ -241,6 +241,7 @@ it('实际IPC闭包逐次读取并以第五参数传递初始化状态', () => {
       null,
       expect.any(Function),
       initializing,
+      expect.any(Function),
     );
   }
 });

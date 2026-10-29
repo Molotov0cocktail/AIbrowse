@@ -207,3 +207,202 @@ it.each(['history-id', 'visited-at', 'bookmark-id', 'created-at', 'updated-at'])
     }
   },
 );
+
+it('persists bookmark groups across restart and keeps URL uniqueness', () => {
+  const { service, dbPath } = store();
+  const input = {
+    name: 'Research',
+    color: 'blue' as const,
+    bookmarks: [
+      { url: 'https://example.com/a', title: 'A' },
+      { url: 'https://example.com/b', title: 'B' },
+    ],
+  };
+  const group = value(service.saveBookmarkGroup(input));
+  value(service.saveBookmarkGroup(input));
+  expect(value(service.listBookmarkGroups())).toHaveLength(1);
+  expect(value(service.listBookmarks(request)).items).toHaveLength(2);
+  service.dispose();
+  const reopened = openBrowserLibraryStore({ dbPath });
+  if (reopened.mode !== 'normal') throw new Error(reopened.reason);
+  services.push(reopened.service);
+  expect(value(reopened.service.listBookmarkGroups())).toEqual([group]);
+  const marks = value(reopened.service.listBookmarks(request)).items;
+  expect(marks.every((mark) => mark.groupId === group.id)).toBe(true);
+  const mark = marks[0]!;
+  expect(
+    value(
+      reopened.service.updateBookmark({
+        id: mark.id,
+        title: mark.title,
+        url: mark.url,
+        groupId: null,
+      }),
+    )?.groupId,
+  ).toBeNull();
+  expect(
+    reopened.service.saveBookmarkGroup({
+      ...input,
+      bookmarks: [{ url: 'javascript:alert(1)', title: '' }],
+    }),
+  ).toMatchObject({ ok: false, code: 'invalid-input' });
+});
+
+it('migrates validated v1 bookmarks without changing their identity or history', () => {
+  const path = join(root, crypto.randomUUID());
+  mkdirSync(path);
+  const dbPath = join(path, 'browser.db');
+  const db = new DatabaseSync(dbPath);
+  const id = crypto.randomUUID();
+  const now = '2026-01-01T00:00:00.000Z';
+  for (const sql of BROWSER_MIGRATIONS[0]!.statements) db.exec(sql);
+  db.prepare('INSERT INTO browser_bookmarks VALUES(?,?,?,?,?)').run(
+    id,
+    'https://example.com/',
+    'Legacy',
+    now,
+    now,
+  );
+  db.exec('PRAGMA user_version=1');
+  db.close();
+  const opened = openBrowserLibraryStore({ dbPath });
+  if (opened.mode !== 'normal') throw new Error(opened.reason);
+  services.push(opened.service);
+  expect(value(opened.service.listBookmarks(request)).items).toEqual([
+    {
+      id,
+      url: 'https://example.com/',
+      title: 'Legacy',
+      createdAt: now,
+      updatedAt: now,
+      groupId: null,
+    },
+  ]);
+  expect(value(opened.service.listBookmarkGroups())).toEqual([]);
+  const check = new DatabaseSync(dbPath);
+  expect(validateBrowserLibraryTransfer(check).ok).toBe(true);
+  expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
+  check.close();
+});
+
+it('independently pages group members, reassigns uniquely and prunes empty groups atomically', () => {
+  const { service } = store();
+  const group = value(
+    service.saveBookmarkGroup({
+      name: 'Paged',
+      color: 'blue',
+      bookmarks: Array.from({ length: 75 }, (_, i) => ({
+        url: `https://example.com/${i}`,
+        title: String(i),
+      })),
+    }),
+  );
+  value(service.addBookmark({ url: 'https://example.com/outside', title: 'outside' }));
+  const first = value(service.listBookmarks({ ...request, limit: 50, groupId: group.id }));
+  const second = value(
+    service.listBookmarks({ ...request, limit: 50, groupId: group.id, cursor: first.nextCursor }),
+  );
+  expect(first.items).toHaveLength(50);
+  expect(second.items).toHaveLength(25);
+  expect(second.nextCursor).toBeNull();
+  expect(value(service.listBookmarks({ ...request, groupId: null })).items).toHaveLength(1);
+  const destination = value(
+    service.saveBookmarkGroup({
+      name: 'Moved',
+      color: 'green',
+      bookmarks: [{ url: first.items[0]!.url, title: 'Moved' }],
+    }),
+  );
+  expect(value(service.listBookmarks({ ...request, groupId: destination.id })).items).toHaveLength(
+    1,
+  );
+  value(service.removeBookmark(first.items[0]!.id));
+  expect(value(service.listBookmarkGroups())).toEqual([group]);
+});
+
+it('rolls back the entire group and reassignment on a member write failure', () => {
+  const { service, dbPath } = store();
+  const original = value(service.addBookmark({ url: 'https://example.com/a', title: 'Original' }));
+  const db = new DatabaseSync(dbPath);
+  db.exec(
+    "CREATE TRIGGER fail_bookmark BEFORE INSERT ON browser_bookmarks WHEN NEW.title = 'Fail' BEGIN SELECT RAISE(ABORT,'failure'); END",
+  );
+  expect(
+    service.saveBookmarkGroup({
+      name: 'Rollback',
+      color: 'red',
+      bookmarks: [
+        { url: original.url, title: 'Changed' },
+        { url: 'https://example.com/b', title: 'Fail' },
+      ],
+    }),
+  ).toMatchObject({ ok: false, code: 'storage-error' });
+  expect(value(service.listBookmarkGroups())).toEqual([]);
+  expect(value(service.listBookmarks(request)).items).toEqual([original]);
+  db.close();
+});
+
+it('rejects invalid groups and oversized saves without partial records, including during maintenance', () => {
+  const { service } = store();
+  const valid = {
+    name: 'Bounded',
+    color: 'blue' as const,
+    bookmarks: [{ url: 'https://example.com/', title: 'Page' }],
+  };
+  for (const input of [
+    { ...valid, name: 'x'.repeat(41) },
+    { ...valid, bookmarks: [] },
+    { ...valid, bookmarks: Array.from({ length: 101 }, () => valid.bookmarks[0]!) },
+    { ...valid, extra: true },
+  ])
+    expect(service.saveBookmarkGroup(input)).toMatchObject({ ok: false, code: 'invalid-input' });
+  expect(value(service.listBookmarkGroups())).toEqual([]);
+  service.pauseForMaintenance(1);
+  expect(service.saveBookmarkGroup(valid)).toMatchObject({ ok: false, code: 'maintenance' });
+  expect(service.listBookmarkGroups()).toMatchObject({ ok: false, code: 'maintenance' });
+});
+
+it('rejects the 101st group as capacity input without a persistent storage error', () => {
+  const { service } = store();
+  for (let i = 0; i < 100; i++)
+    expect(
+      service.saveBookmarkGroup({
+        name: String(i),
+        color: 'blue',
+        bookmarks: [{ url: `https://example.com/${i}`, title: '' }],
+      }).ok,
+    ).toBe(true);
+  expect(
+    service.saveBookmarkGroup({
+      name: 'Overflow',
+      color: 'blue',
+      bookmarks: [{ url: 'https://example.com/overflow', title: '' }],
+    }),
+  ).toMatchObject({ ok: false, code: 'invalid-input' });
+  expect(service.getStatus().state).toBe('available');
+  expect(value(service.listBookmarkGroups())).toHaveLength(100);
+});
+
+it.each(['remove', 'update'])('rolls back %s when empty-group cleanup fails', (operation) => {
+  const { service, dbPath } = store();
+  const group = value(
+    service.saveBookmarkGroup({
+      name: 'Atomic',
+      color: 'blue',
+      bookmarks: [{ url: 'https://example.com/a', title: 'Original' }],
+    }),
+  );
+  const mark = value(service.listBookmarks(request)).items[0]!;
+  const db = new DatabaseSync(dbPath);
+  db.exec(
+    "CREATE TRIGGER fail_prune BEFORE DELETE ON browser_bookmark_groups BEGIN SELECT RAISE(ABORT,'failure'); END",
+  );
+  const result =
+    operation === 'remove'
+      ? service.removeBookmark(mark.id)
+      : service.updateBookmark({ id: mark.id, url: mark.url, title: 'Changed', groupId: null });
+  expect(result).toMatchObject({ ok: false, code: 'storage-error' });
+  expect(value(service.listBookmarks(request)).items).toEqual([mark]);
+  expect(value(service.listBookmarkGroups())).toEqual([group]);
+  db.close();
+});

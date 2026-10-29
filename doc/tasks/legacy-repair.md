@@ -1,5 +1,41 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 书签分组、起始页与侧栏体验（2026-10-29）
+
+- TASK / BASELINE：用户要求书签按命名组折叠选择、保留已有标签分组，以及侧栏美化和有内容的起始页。
+  干净接管 `cb1e3af97718dc8b4929fdc377f23570dddaa2dc`，output 为 0.1.16。
+- SOURCES / GOAL：以本次用户请求、`doc/design/browser-groups-userscripts.md` 和 Stage7 detailed-design
+  数据/界面契约为准。本轮是已授权的阶段后体验增量，不启动其它 Stage8 功能。
+- FIXED DECISIONS：用户显式将标签组保存到书签，持久保留名称、颜色和成员；书签页分组默认折叠，展开后
+  单项打开，未分组书签继续可用。沿用 URL 唯一和本地保存语义，不自动恢复会话或批量打开全部网址。
+  起始页仅在普通用户空白 Tab 显示，提供搜索/导航、最近六条历史、最多四项监视任务及已有功能入口；
+  不自动访问历史站点，不加载远程图标，不创建监视任务、不调用模型。侧栏沿用主题颜色，统一层级与交互。
+- INVARIANTS / NON-GOALS：保留 Sources/Research/Watch/AI 权限、任务 Tab 所有权、真实用户数据和备份恢复；
+  历史/书签不进入模型、日志或网页。内部 DOM 起始页通过既有可见性通道隐藏空白原生视图，导航后恢复。
+- PLAN / SCOPE：书签数据/迁移/IPC/UI、起始页及 App 装配、侧栏样式并行独立文件实现；数据迁移同步
+  备份/恢复校验。新增验收源码放 `tools/ux-polish-runtime/`，原件放 `log/ux-polish-20261029/`。
+- TEST PLAN：书签先红后绿，覆盖旧库迁移、重启、重复 URL、非法输入、任务组拒绝和事务失败；起始页覆盖
+  原生视图显示边界、异步卸载与错误空态。集成 typecheck/lint/format/test/build；真实 Electron 隔离 profile
+  两进程验证保存/重启、分组展开单选、起始导航、浅深/600px 侧栏截图与布局。
+- ACCEPTANCE / STOP：新独立持久化/安全/UI 审核 PASS 后构建内部 0.1.17，验证身份后更新 output 并保留旧包，
+  正常双远程同步。每轮真实 UI 至多180秒/进程、30 localhost 请求、0 Provider/外网；保留失败原件。
+  同路线连续两轮无新证据则换路；数据语义/安全损失必须停止并裁决，不能迁就实现降低门槛。
+- 实施结果：browser.db v2、标签组保存/归组、独立组内分页及空组清理已实现；起始页与侧栏已完成。
+  独审发现备份 manifest/worker 当前版本链仍写旧 schema，已修复并以 v1/v2 原库备份恢复、历史
+  format2/schema1 备份导入和原件恒等证明关闭；update/remove 与空组清理统一事务，故障注入回滚通过。
+  旧验收夹具的五列INSERT、当前版本断言和VM跨realm前提同步修订，原失败保留，不改变历史证据。
+- 真实 UI：`fixed-green-91bfc7fa-03bd-42df-a7cd-eeb8f3d39569` write40/reopen10项通过，覆盖组名/
+  成员重启保留、默认折叠/展开/单选、起始页/历史、浅深×1280/600×三侧栏、键盘与原生视图显隐。
+  两次旧harness仅发Enter keyDown/up，未产生keypress/submit，失败保留；补原生char的窄诊断
+  `keyboard-probe-a4e5b607-9290-4988-bd93-d2b3449471f6` 七项通过，实录submit且无点击兜底。
+  四轮累计6个localhost请求、0外网/Provider，均正常退出；独立747文件绑定复核通过，最终工具增量
+  不影响已验产品/构建。主协调复看书签、浅深及600px截图，无遮挡或横向溢出。
+- 集成：typecheck/lint/format/build均0。全量原件 `test-all.txt` 为7756PASS/43FAIL/3SKIP、exit1；
+  执行中独审修复与旧模块变换缓存并存，不能声称该轮全绿。最终10个受影响失败文件统一159PASS
+  （`final-affected-regression.txt`）；另两个未修改模块H3a单次20PASS及资格脚本独立29PASS。
+  H3a旧失败为验收证据EVIDENCE_WRITE_FAILED，脚本旧失败在合法值写入准备；底层错误未恢复，均保留unknown。
+  当前断言及故障反例全部保持，独审按实际范围判断当前增量，不将原全量失败改判。
+
 ## eMudhra CA 事件安全升级（2026-10-29）
 
 - TASK / BASELINE：用户要求定位近期 CA 重大事件并升级程序；干净接管

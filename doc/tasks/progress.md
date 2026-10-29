@@ -6,6 +6,14 @@
 
 ### 当前任务与后继
 
+- 2026-10-29 用户新增书签分组保留、侧栏美化和起始页；干净接管
+  `cb1e3af97718dc8b4929fdc377f23570dddaa2dc`，当前 output 仍为0.1.16。
+  差量合同见 `doc/tasks/legacy-repair.md` 首节及分组/Stage7设计。
+  正在实现 browser.db v2 书签组与独立组内分页、本地起始页、侧栏主题精修；新独立审核进行中。
+  起始页/组事实9项与App导航31项通过，早期typecheck/红态及实现迭代原件保留于
+  `log/ux-polish-20261029/`。下一动作：收敛独审修复、集成与真实Electron隔离验证，审核通过后
+  构建0.1.17并更新output、正常双推；不触真实profile，不公开发行。
+
 - 2026-10-29 用户要求搜索 CA 重大事件并安全升级。干净 baseline
   `eb6f012bc13030be733197f69d0866ffb3b0b495`；定位 eMudhra 八中间 CA 弱密钥事件及 Electron
   GHSA-jr5w-w6x2-84p9。候选 0.1.16 升级 Electron 43.8.4/内嵌与开发 Node 24.22.1，补齐

@@ -203,6 +203,8 @@ const bridge: AibrowseBridge = {
     setRunInTray: (runInTray) => invoke<TraySettings>(IPC.AppPreferencesSet, { runInTray }),
   },
   browserLibrary: {
+    listBookmarkGroups: () => invoke(IPC.BrowserBookmarkGroupsList),
+    saveBookmarkGroup: (groupId) => invoke(IPC.BrowserBookmarkGroupSave, { groupId }),
     getStatus: () => invoke(IPC.BrowserLibraryStatus),
     listHistory: (request) => invoke(IPC.BrowserHistoryList, request),
     deleteHistory: (id) => invoke(IPC.BrowserHistoryDelete, { id }),

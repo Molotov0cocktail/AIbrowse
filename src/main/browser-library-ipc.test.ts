@@ -1,3 +1,4 @@
+import { validateCoreIpcPayload } from './security/core-ipc-payload';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -79,4 +80,53 @@ it('维护与关闭期间不读取或写入资料，状态仍可见', async () =
   expect(dispatchBrowserLibrary(IPC.BrowserLibraryStatus, undefined, service, get)).toMatchObject({
     state: 'unavailable',
   });
+});
+
+it('bookmark group bridge accepts only a group identity, never renderer supplied members', () => {
+  const id = crypto.randomUUID();
+  expect(validateCoreIpcPayload(IPC.BrowserBookmarkGroupSave, { groupId: id })).toBe(true);
+  expect(validateCoreIpcPayload(IPC.BrowserBookmarkGroupSave, { groupId: id, bookmarks: [] })).toBe(
+    false,
+  );
+  expect(
+    validateCoreIpcPayload(IPC.BrowserBookmarksList, {
+      query: '',
+      cursor: null,
+      limit: 50,
+      groupId: id,
+    }),
+  ).toBe(true);
+  expect(
+    validateCoreIpcPayload(IPC.BrowserBookmarksList, {
+      query: '',
+      cursor: null,
+      limit: 101,
+      groupId: id,
+    }),
+  ).toBe(false);
+  const service = store();
+  expect(
+    dispatchBrowserLibrary(
+      IPC.BrowserBookmarkGroupSave,
+      { groupId: id },
+      service,
+      () => null,
+      false,
+      () => null,
+    ),
+  ).toMatchObject({ ok: false });
+  expect(
+    dispatchBrowserLibrary(
+      IPC.BrowserBookmarkGroupSave,
+      { groupId: id },
+      service,
+      () => null,
+      false,
+      () => ({
+        name: 'Saved',
+        color: 'blue',
+        bookmarks: [{ url: 'https://example.com/', title: 'Page' }],
+      }),
+    ),
+  ).toMatchObject({ ok: true, value: { name: 'Saved', color: 'blue' } });
 });

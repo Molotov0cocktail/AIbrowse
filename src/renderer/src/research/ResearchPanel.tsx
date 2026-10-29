@@ -44,9 +44,23 @@ export function ResearchPanel({
   return (
     <aside className="research-panel">
       <div className="research-panel-header">
-        <span className="research-panel-title">研究</span>
-        <button type="button" className="research-panel-collapse" onClick={onCollapse}>
-          收起
+        <div className="sidebar-heading">
+          <span className="sidebar-heading-icon">
+            <Icon name="research" />
+          </span>
+          <div>
+            <h2 className="research-panel-title">研究</h2>
+            <p>多源探索 · 证据可追溯</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="research-panel-collapse sidebar-icon-action"
+          aria-label="收起研究面板"
+          title="收起研究面板"
+          onClick={onCollapse}
+        >
+          <Icon name="chevron-right" size={16} />
         </button>
       </div>
 

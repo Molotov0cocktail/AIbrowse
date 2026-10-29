@@ -21,4 +21,16 @@ export const BROWSER_MIGRATIONS: readonly MigrationStep[] = [
       'CREATE INDEX idx_browser_bookmarks_time ON browser_bookmarks(updated_at DESC, id DESC)',
     ],
   },
+  {
+    version: 2,
+    statements: [
+      `CREATE TABLE browser_bookmark_groups (
+      id TEXT PRIMARY KEY NOT NULL CHECK(typeof(id) = 'text' AND length(id) = 36 AND length(CAST(id AS BLOB)) = 36 AND instr(id,char(0)) = 0),
+      name TEXT NOT NULL UNIQUE CHECK(typeof(name) = 'text' AND length(name) BETWEEN 1 AND 40 AND length(CAST(name AS BLOB)) <= 160 AND instr(name,char(0)) = 0),
+      color TEXT NOT NULL CHECK(color IN ('grey','blue','red','yellow','green','purple'))
+    )`,
+      `ALTER TABLE browser_bookmarks ADD COLUMN group_id TEXT REFERENCES browser_bookmark_groups(id) CHECK(group_id IS NULL OR (typeof(group_id) = 'text' AND length(CAST(group_id AS BLOB)) = 36))`,
+      'CREATE INDEX idx_browser_bookmarks_group ON browser_bookmarks(group_id)',
+    ],
+  },
 ];

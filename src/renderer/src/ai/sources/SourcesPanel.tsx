@@ -4,6 +4,7 @@ import { useSourcesPanel, type SourcesGroupFilter } from './useSourcesPanel';
 import { HardDeleteDialog } from './HardDeleteDialog';
 import { SourceAddForm } from './SourceAddForm';
 import { SourceDetailForm } from './SourceDetailForm';
+import { Icon } from '../../ui/Icon';
 import {
   QUICK_ADD_RELATED_TITLE,
   describeSourcesState,
@@ -63,7 +64,15 @@ export function SourcesPanel({ onCollapse, onCreateWatch }: SourcesPanelProps) {
   return (
     <aside className="sources-panel">
       <div className="sources-panel-header">
-        <span className="sources-panel-title">信源</span>
+        <div className="sidebar-heading">
+          <span className="sidebar-heading-icon">
+            <Icon name="bookmark" />
+          </span>
+          <div>
+            <h2 className="sources-panel-title">信源</h2>
+            <p>收藏来源，积累可靠线索</p>
+          </div>
+        </div>
         <button
           type="button"
           className="sources-quick-add"
@@ -82,11 +91,12 @@ export function SourcesPanel({ onCollapse, onCreateWatch }: SourcesPanelProps) {
         </button>
         <button
           type="button"
-          className="sources-refresh"
+          className="sources-refresh sidebar-icon-action"
           aria-label="刷新信源列表"
+          title="刷新信源列表"
           onClick={() => panel.refreshAll()}
         >
-          刷新
+          <Icon name="refresh" size={16} />
         </button>
         {/* B7 决议 #91：FTS 诊断性 rebuild——仅 normal 状态可触发（canWrite 门控 +
             main 适配器门控双保险）；重复点击由 write 互斥受控 */}
@@ -100,11 +110,12 @@ export function SourcesPanel({ onCollapse, onCreateWatch }: SourcesPanelProps) {
         </button>
         <button
           type="button"
-          className="sources-collapse"
+          className="sources-collapse sidebar-icon-action"
           aria-label="收起信源面板"
+          title="收起信源面板"
           onClick={onCollapse}
         >
-          收起
+          <Icon name="chevron-right" size={16} />
         </button>
       </div>
 
@@ -181,6 +192,7 @@ export function SourcesPanel({ onCollapse, onCreateWatch }: SourcesPanelProps) {
               <button
                 type="button"
                 className={`sources-view-browse${!panel.searchMode ? ' active' : ''}`}
+                aria-pressed={!panel.searchMode}
                 onClick={() => panel.setSearchMode(false)}
               >
                 浏览
@@ -188,6 +200,7 @@ export function SourcesPanel({ onCollapse, onCreateWatch }: SourcesPanelProps) {
               <button
                 type="button"
                 className={`sources-view-search${panel.searchMode ? ' active' : ''}`}
+                aria-pressed={panel.searchMode}
                 onClick={() => panel.setSearchMode(true)}
               >
                 搜索
@@ -197,6 +210,7 @@ export function SourcesPanel({ onCollapse, onCreateWatch }: SourcesPanelProps) {
               <input
                 type="text"
                 className="sources-search-input"
+                aria-label="搜索信源"
                 placeholder="按名称/网址/标签/分组/备注搜索"
                 value={panel.searchQuery}
                 onChange={(e) => panel.setSearchQuery(e.target.value)}

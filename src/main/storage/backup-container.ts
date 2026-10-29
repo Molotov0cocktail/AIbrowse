@@ -79,9 +79,9 @@ const SCHEMAS = {
   research: [0, 1],
   watch: [0, 1, 2, 3, 4, 5, 6],
   conversations: [1],
-  browser: [0, 1],
+  browser: [0, 1, 2],
 } as const;
-const CURRENT = { sources: 1, research: 1, watch: 6, conversations: 1, browser: 1 } as const;
+const CURRENT = { sources: 1, research: 1, watch: 6, conversations: 1, browser: 2 } as const;
 export type BackupErrorCode =
   | 'invalid-container'
   | 'unsupported-version'

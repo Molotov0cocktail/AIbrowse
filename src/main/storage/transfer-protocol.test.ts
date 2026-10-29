@@ -72,7 +72,7 @@ it.each(['snapshot', 'unknown', 'duplicate', 'schema', 'hash', 'oversize'] as co
       members: BACKUP_IDS.map((id) => ({
         id,
         present: true,
-        schemaVersion: id === 'watch' ? 6 : 1,
+        schemaVersion: id === 'watch' ? 6 : id === 'browser' ? 2 : 1,
         bytes: 0,
         sha256: 'a'.repeat(64),
       })),
@@ -109,7 +109,7 @@ it.each(['backup', 'restore', 'migrate'] as const)(
         members: BACKUP_IDS.map((id) => ({
           id,
           present: true,
-          schemaVersion: id === 'watch' ? 6 : 1,
+          schemaVersion: id === 'watch' ? 6 : id === 'browser' ? 2 : 1,
           bytes: 0,
           sha256: 'a'.repeat(64),
         })),
@@ -122,44 +122,50 @@ it.each(['backup', 'restore', 'migrate'] as const)(
     expect(() => createTransferProtocol({ ...job, action }).receive(frame())).toThrow();
   },
 );
-it.each(['missing-member', 'old-schema', 'output-path', 'output-limit', 'output-hash'] as const)(
-  'rejects invalid work/output proof: %s',
-  (change) => {
-    const result: {
-      manifest: {
-        formatVersion: number;
-        productVersion: string;
-        snapshotId: string;
-        members: Array<Record<string, unknown>>;
-      };
-      backup: Record<string, unknown>;
-    } = {
-      manifest: {
-        formatVersion: 2,
-        productVersion: '0.1.0',
-        snapshotId: job.snapshotId,
-        members: BACKUP_IDS.map((id) => ({
-          id,
-          present: true,
-          schemaVersion: id === 'watch' ? 6 : 1,
-          bytes: 0,
-          sha256: 'a'.repeat(64),
-        })),
-      },
-      backup: { bytes: 1, sha256: 'b'.repeat(64) },
+it.each([
+  'missing-member',
+  'old-schema',
+  'old-browser-schema',
+  'output-path',
+  'output-limit',
+  'output-hash',
+] as const)('rejects invalid work/output proof: %s', (change) => {
+  const result: {
+    manifest: {
+      formatVersion: number;
+      productVersion: string;
+      snapshotId: string;
+      members: Array<Record<string, unknown>>;
     };
-    if (change === 'missing-member') {
-      result.manifest.members[0].present = false;
-      result.manifest.members[0].sha256 = null;
-    }
-    if (change === 'old-schema') result.manifest.members[0].schemaVersion = 0;
-    if (change === 'output-path') result.backup.path = 'private';
-    if (change === 'output-limit') result.backup.bytes = 5 * 1024 ** 3 + 1;
-    if (change === 'output-hash') result.backup.sha256 = 'bad';
-    expect(() =>
-      createTransferProtocol(job).receive(
-        JSON.stringify({ type: 'result', operationId: job.operationId, result }),
-      ),
-    ).toThrow();
-  },
-);
+    backup: Record<string, unknown>;
+  } = {
+    manifest: {
+      formatVersion: 2,
+      productVersion: '0.1.0',
+      snapshotId: job.snapshotId,
+      members: BACKUP_IDS.map((id) => ({
+        id,
+        present: true,
+        schemaVersion: id === 'watch' ? 6 : id === 'browser' ? 2 : 1,
+        bytes: 0,
+        sha256: 'a'.repeat(64),
+      })),
+    },
+    backup: { bytes: 1, sha256: 'b'.repeat(64) },
+  };
+  if (change === 'missing-member') {
+    result.manifest.members[0].present = false;
+    result.manifest.members[0].sha256 = null;
+  }
+  if (change === 'old-schema') result.manifest.members[0].schemaVersion = 0;
+  if (change === 'old-browser-schema')
+    result.manifest.members.find((member) => member.id === 'browser')!.schemaVersion = 1;
+  if (change === 'output-path') result.backup.path = 'private';
+  if (change === 'output-limit') result.backup.bytes = 5 * 1024 ** 3 + 1;
+  if (change === 'output-hash') result.backup.sha256 = 'bad';
+  expect(() =>
+    createTransferProtocol(job).receive(
+      JSON.stringify({ type: 'result', operationId: job.operationId, result }),
+    ),
+  ).toThrow();
+});

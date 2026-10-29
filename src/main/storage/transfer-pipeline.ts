@@ -519,7 +519,7 @@ export async function runTransferPipeline(
       manifest.members.push({
         id,
         present: true,
-        schemaVersion: id === 'watch' ? 6 : 1,
+        schemaVersion: id === 'watch' ? 6 : id === 'browser' ? 2 : 1,
         bytes: digest.bytes,
         sha256: digest.sha256,
       });
@@ -534,7 +534,7 @@ export async function runTransferPipeline(
             ? {
                 path: work.file(BACKUP_FILES[id]),
                 snapshotId: job.snapshotId,
-                schemaVersion: id === 'watch' ? 6 : 1,
+                schemaVersion: id === 'watch' ? 6 : id === 'browser' ? 2 : 1,
               }
             : null,
         ]),

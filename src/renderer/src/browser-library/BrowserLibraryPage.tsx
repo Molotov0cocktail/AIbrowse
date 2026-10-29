@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type {
   BrowserBookmark,
+  BrowserBookmarkGroup,
   BrowserHistoryEntry,
   BrowserLibraryCursor,
 } from '../../../shared/types/browser-library';
@@ -38,6 +39,8 @@ export function BrowserLibraryPage({
   onOpenUrl,
   onBookmarksChanged,
 }: BrowserLibraryPageProps) {
+  const [revision, setRevision] = useState(0);
+  const [groups, setGroups] = useState<BrowserBookmarkGroup[]>([]);
   const [queryInput, setQueryInput] = useState('');
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<LibraryItem[]>([]);
@@ -58,8 +61,17 @@ export function BrowserLibraryPage({
       const result =
         mode === 'history'
           ? await window.aibrowse.browserLibrary.listHistory(request)
-          : await window.aibrowse.browserLibrary.listBookmarks(request);
+          : await window.aibrowse.browserLibrary.listBookmarks({ ...request, groupId: null });
+      const groupResult =
+        mode === 'bookmarks' ? await window.aibrowse.browserLibrary.listBookmarkGroups() : null;
       if (version !== requestVersion.current) return;
+      if (groupResult !== null) {
+        if (!groupResult.ok) {
+          setError(fixedError(mode));
+          return;
+        }
+        setGroups(groupResult.value);
+      }
       if (!result.ok) {
         setError(fixedError(mode));
         return;
@@ -78,6 +90,7 @@ export function BrowserLibraryPage({
   useEffect(() => {
     viewEpoch.current++;
     setItems([]);
+    setGroups([]);
     setNextCursor(null);
     setConfirmClear(false);
     setEditing(null);
@@ -99,7 +112,13 @@ export function BrowserLibraryPage({
       applyForCurrentLibraryView(viewEpoch.current, startedEpoch, () =>
         setItems((current) => current.filter((candidate) => candidate.id !== item.id)),
       );
-      if (!isHistory(item)) onBookmarksChanged();
+      if (!isHistory(item)) {
+        onBookmarksChanged();
+        applyForCurrentLibraryView(viewEpoch.current, startedEpoch, () => {
+          setRevision((value) => value + 1);
+          void load(null);
+        });
+      }
     } catch {
       applyForCurrentLibraryView(viewEpoch.current, startedEpoch, () =>
         setError('删除未完成，请稍后重试'),
@@ -137,6 +156,7 @@ export function BrowserLibraryPage({
         id: editing.id,
         url: editing.url,
         title: editing.title,
+        groupId: editing.groupId,
       });
       if (!result.ok) {
         applyForCurrentLibraryView(viewEpoch.current, startedEpoch, () =>
@@ -156,12 +176,83 @@ export function BrowserLibraryPage({
         setEditing(null);
       });
       onBookmarksChanged();
+      applyForCurrentLibraryView(viewEpoch.current, startedEpoch, () => {
+        setRevision((value) => value + 1);
+        void load(null);
+      });
     } catch {
       applyForCurrentLibraryView(viewEpoch.current, startedEpoch, () =>
         setError('书签修改未完成，请稍后重试'),
       );
     }
   };
+
+  const renderItem = (item: LibraryItem) => (
+    <li key={item.id} className="library-item">
+      {editing?.id === item.id && !isHistory(item) ? (
+        <div className="bookmark-editor">
+          <label>
+            <span>名称</span>
+            <input
+              maxLength={1000}
+              value={editing.title}
+              onChange={(event) => setEditing({ ...editing, title: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>网址</span>
+            <input
+              maxLength={8192}
+              value={editing.url}
+              onChange={(event) => setEditing({ ...editing, url: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>书签分组</span>
+            <select
+              value={editing.groupId ?? ''}
+              onChange={(event) => setEditing({ ...editing, groupId: event.target.value || null })}
+            >
+              <option value="">未分组</option>
+              {groups.map((group) => (
+                <option key={group.id} value={group.id}>
+                  {group.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" onClick={() => void saveBookmark()}>
+            保存
+          </button>
+          <button type="button" onClick={() => setEditing(null)}>
+            取消
+          </button>
+        </div>
+      ) : (
+        <>
+          <button type="button" className="library-item-main" onClick={() => onOpenUrl(item.url)}>
+            <span className="library-item-title">{displayTitle(item)}</span>
+            <span className="library-item-url">{item.url}</span>
+            <time dateTime={isHistory(item) ? item.visitedAt : item.updatedAt}>
+              {new Date(isHistory(item) ? item.visitedAt : item.updatedAt).toLocaleString()}
+            </time>
+          </button>
+          {!isHistory(item) && (
+            <button type="button" onClick={() => setEditing(item)}>
+              编辑
+            </button>
+          )}
+          <button
+            type="button"
+            aria-label={`删除 ${displayTitle(item)}`}
+            onClick={() => void deleteItem(item)}
+          >
+            删除
+          </button>
+        </>
+      )}
+    </li>
+  );
 
   return (
     <div className="browser-library-page">
@@ -228,73 +319,33 @@ export function BrowserLibraryPage({
       <p className="library-privacy-note">
         {mode === 'history'
           ? '仅记录普通标签页浏览。记录一直保存在本机，直到你手动删除或清空；后台 Research 和 Watch 任务不记录。'
-          : '书签独立于 Sources；AI 无法读取或管理书签。'}
+          : '书签独立于 Sources；AI 无法读取或管理书签。展开分组后可逐个打开，编辑书签可调整分组。'}
       </p>
       {error !== null && (
         <p role="alert" className="library-error">
           {error}
         </p>
       )}
-      {!loading && items.length === 0 && error === null && (
+      {!loading && items.length === 0 && groups.length === 0 && error === null && (
         <div className="library-empty">{mode === 'history' ? '暂无浏览历史' : '暂无书签'}</div>
       )}
       <ul className="library-list">
-        {items.map((item) => (
-          <li key={item.id} className="library-item">
-            {editing?.id === item.id && !isHistory(item) ? (
-              <div className="bookmark-editor">
-                <label>
-                  <span>名称</span>
-                  <input
-                    maxLength={1000}
-                    value={editing.title}
-                    onChange={(event) => setEditing({ ...editing, title: event.target.value })}
-                  />
-                </label>
-                <label>
-                  <span>网址</span>
-                  <input
-                    maxLength={8192}
-                    value={editing.url}
-                    onChange={(event) => setEditing({ ...editing, url: event.target.value })}
-                  />
-                </label>
-                <button type="button" onClick={() => void saveBookmark()}>
-                  保存
-                </button>
-                <button type="button" onClick={() => setEditing(null)}>
-                  取消
-                </button>
-              </div>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="library-item-main"
-                  onClick={() => onOpenUrl(item.url)}
-                >
-                  <span className="library-item-title">{displayTitle(item)}</span>
-                  <span className="library-item-url">{item.url}</span>
-                  <time dateTime={isHistory(item) ? item.visitedAt : item.updatedAt}>
-                    {new Date(isHistory(item) ? item.visitedAt : item.updatedAt).toLocaleString()}
-                  </time>
-                </button>
-                {!isHistory(item) && (
-                  <button type="button" onClick={() => setEditing(item)}>
-                    编辑
-                  </button>
-                )}
-                <button
-                  type="button"
-                  aria-label={`删除 ${displayTitle(item)}`}
-                  onClick={() => void deleteItem(item)}
-                >
-                  删除
-                </button>
-              </>
-            )}
-          </li>
-        ))}
+        {mode === 'history' ? (
+          items.map(renderItem)
+        ) : (
+          <>
+            {groups.map((group) => (
+              <BookmarkGroup
+                key={group.id}
+                group={group}
+                query={query}
+                revision={revision}
+                renderItem={renderItem}
+              />
+            ))}
+            {items.filter((item) => !isHistory(item) && item.groupId === null).map(renderItem)}
+          </>
+        )}
       </ul>
       {nextCursor !== null && (
         <button
@@ -308,5 +359,86 @@ export function BrowserLibraryPage({
       )}
       {loading && items.length === 0 && <div className="library-empty">正在加载…</div>}
     </div>
+  );
+}
+
+function BookmarkGroup({
+  group,
+  query,
+  revision,
+  renderItem,
+}: {
+  group: BrowserBookmarkGroup;
+  query: string;
+  revision: number;
+  renderItem: (item: LibraryItem) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<BrowserBookmark[]>([]);
+  const [cursor, setCursor] = useState<BrowserLibraryCursor | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+  const epoch = useRef(0);
+  const load = async (next: BrowserLibraryCursor | null): Promise<void> => {
+    const current = ++epoch.current;
+    setLoading(true);
+    setError(false);
+    try {
+      const result = await window.aibrowse.browserLibrary.listBookmarks({
+        groupId: group.id,
+        query: group.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ? '' : query,
+        cursor: next,
+        limit: 50,
+      });
+      if (current !== epoch.current) return;
+      if (!result.ok) {
+        setError(true);
+        return;
+      }
+      setItems((previous) =>
+        next === null ? result.value.items : [...previous, ...result.value.items],
+      );
+      setCursor(result.value.nextCursor);
+    } catch {
+      if (current === epoch.current) setError(true);
+    } finally {
+      if (current === epoch.current) setLoading(false);
+    }
+  };
+  useEffect(() => {
+    setItems([]);
+    setCursor(null);
+    if (open) void load(null);
+    return () => {
+      epoch.current++;
+    };
+  }, [open, query, revision, group.id, group.name]);
+  return (
+    <li className="bookmark-group">
+      <details onToggle={(event) => setOpen(event.currentTarget.open)}>
+        <summary>
+          <span className={`tab-group-dot tab-group-color-${group.color}`} />
+          {group.name}
+        </summary>
+        <ul className="library-list bookmark-group-members">{items.map(renderItem)}</ul>
+        {loading && <p role="status">正在加载…</p>}
+        {error && (
+          <p role="alert">
+            无法读取分组{' '}
+            <button type="button" onClick={() => void load(null)}>
+              重试
+            </button>
+          </p>
+        )}
+        {!loading && !error && items.length === 0 && (
+          <p className="library-empty">没有匹配的书签</p>
+        )}
+        {cursor !== null && (
+          <button type="button" disabled={loading} onClick={() => void load(cursor)}>
+            加载更多组内书签
+          </button>
+        )}
+      </details>
+    </li>
   );
 }

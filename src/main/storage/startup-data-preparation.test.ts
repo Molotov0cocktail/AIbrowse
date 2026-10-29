@@ -79,7 +79,7 @@ async function fixture(mode: 'normal' | 'migrate' = 'normal') {
               ...digest(id),
             })),
             { id: 'conversations', present: true, schemaVersion: 1, bytes: 2, sha256: treeHash },
-            { id: 'browser', present: true, schemaVersion: 1, ...digest('browser') },
+            { id: 'browser', present: true, schemaVersion: 2, ...digest('browser') },
           ],
         },
         backup: null,

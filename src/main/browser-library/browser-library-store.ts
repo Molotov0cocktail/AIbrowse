@@ -1,3 +1,4 @@
+import { validateBrowserLibraryTransfer } from './browser-library-repository';
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -74,7 +75,10 @@ export function openBrowserLibraryStore(
     const probe = probeDbFile(options.dbPath);
     if (
       probe.state !== 'missing' &&
-      (probe.state !== 'ok' || (probe.userVersion !== 0 && probe.userVersion !== 1))
+      (probe.state !== 'ok' ||
+        probe.userVersion === null ||
+        probe.userVersion < 0 ||
+        probe.userVersion > BROWSER_MIGRATIONS.length)
     )
       return unavailable();
     if (probe.state === 'ok') {
@@ -88,7 +92,8 @@ export function openBrowserLibraryStore(
         readonly.exec('PRAGMA trusted_schema=OFF; PRAGMA query_only=ON;');
         if (
           !validateTransferSchema(readonly, 'browser').ok ||
-          readonly.prepare('PRAGMA quick_check(1)').get()?.quick_check !== 'ok'
+          readonly.prepare('PRAGMA quick_check(1)').get()?.quick_check !== 'ok' ||
+          (probe.userVersion === 1 && !validateBrowserLibraryTransfer(readonly, 1).ok)
         )
           return unavailable();
       } finally {
@@ -116,8 +121,7 @@ export function openBrowserLibraryStore(
         if (db.isOpen) db.close();
       },
     };
-    if (probe.state === 'missing' || probe.userVersion === 0)
-      runMigrations(handle, BROWSER_MIGRATIONS);
+    runMigrations(handle, BROWSER_MIGRATIONS);
     return { mode: 'normal', service: new BrowserLibraryService(handle), reason: null };
   } catch {
     database?.close();

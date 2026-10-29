@@ -21,6 +21,8 @@ import type {
 import type { ThemeColor } from '../theme-colors';
 import type {
   BrowserBookmark,
+  BrowserBookmarkListRequest,
+  BrowserBookmarkGroup,
   BrowserBookmarkUpdate,
   BrowserHistoryEntry,
   BrowserLibraryListRequest,
@@ -130,6 +132,8 @@ export interface AibrowseBridge {
     setRunInTray(enabled: boolean): Promise<TraySettings>;
   };
   browserLibrary: {
+    listBookmarkGroups(): Promise<BrowserLibraryResult<BrowserBookmarkGroup[]>>;
+    saveBookmarkGroup(groupId: string): Promise<BrowserLibraryResult<BrowserBookmarkGroup>>;
     getStatus(): Promise<BrowserLibraryStatus>;
     listHistory(
       request: BrowserLibraryListRequest,
@@ -137,7 +141,7 @@ export interface AibrowseBridge {
     deleteHistory(id: string): Promise<BrowserLibraryResult<boolean>>;
     clearHistory(): Promise<BrowserLibraryResult<boolean>>;
     listBookmarks(
-      request: BrowserLibraryListRequest,
+      request: BrowserBookmarkListRequest,
     ): Promise<BrowserLibraryResult<BrowserLibraryPage<BrowserBookmark>>>;
     addCurrentBookmark(): Promise<BrowserLibraryResult<BrowserBookmark>>;
     updateBookmark(

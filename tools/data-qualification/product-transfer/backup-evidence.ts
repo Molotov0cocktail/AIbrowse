@@ -98,7 +98,7 @@ export async function inspectProductBackup(
         Object.keys(row).join(',') !== 'id,present,schemaVersion,bytes,sha256' ||
         row.id !== ids[i] ||
         typeof row.present !== 'boolean' ||
-        row.schemaVersion !== [1, 1, 6, 1, 1][i] ||
+        row.schemaVersion !== [1, 1, 6, 1, 2][i] ||
         typeof row.bytes !== 'number' ||
         !Number.isSafeInteger(row.bytes) ||
         row.bytes < 0 ||

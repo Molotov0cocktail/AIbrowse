@@ -10,6 +10,7 @@ import { validateProviderConfig } from '../ai/config-store';
 import { parseDiagnosticExportPayload } from '../../shared/types/diagnostics';
 import {
   isBrowserBookmarkUpdate,
+  isBrowserBookmarkListRequest,
   isBrowserLibraryId,
   isBrowserLibraryListRequest,
 } from '../../shared/browser-library';
@@ -34,14 +35,21 @@ function validateBrowserUiPayload(channel: string, payload: unknown): boolean {
         typeof payload.appearance === 'string' &&
         ['system', 'light', 'dark'].includes(payload.appearance)
       );
-    if (channel === IPC.BrowserHistoryList || channel === IPC.BrowserBookmarksList)
+    if (channel === IPC.BrowserBookmarksList) return isBrowserBookmarkListRequest(payload);
+    if (channel === IPC.BrowserHistoryList)
       return (
         closed(payload, ['query', 'cursor', 'limit']) &&
         (payload.cursor === null || closed(payload.cursor, ['at', 'id'])) &&
         isBrowserLibraryListRequest(payload)
       );
+    if (channel === IPC.BrowserBookmarkGroupSave)
+      return closed(payload, ['groupId']) && isBrowserLibraryId(payload.groupId);
     if (channel === IPC.BrowserBookmarkUpdate)
-      return closed(payload, ['id', 'url', 'title']) && isBrowserBookmarkUpdate(payload);
+      return (
+        (closed(payload, ['id', 'url', 'title']) ||
+          closed(payload, ['id', 'url', 'title', 'groupId'])) &&
+        isBrowserBookmarkUpdate(payload)
+      );
     if (channel === IPC.BrowserHistoryDelete || channel === IPC.BrowserBookmarkRemove)
       return closed(payload, ['id']) && isBrowserLibraryId(payload.id);
     return payload === undefined || closed(payload, []);

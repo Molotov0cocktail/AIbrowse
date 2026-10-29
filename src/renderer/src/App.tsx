@@ -26,6 +26,9 @@ import { SettingsPage, type SettingsSection } from './settings/SettingsPage';
 import { BrowserLibraryPage, type BrowserLibraryMode } from './browser-library/BrowserLibraryPage';
 import { useBrowserLibraryStatus } from './browser-library/useBrowserLibraryStatus';
 import type { BrowserBookmark } from '../../shared/types/browser-library';
+import { StartPage } from './start/StartPage';
+import { isStartPageTab } from './start/start-page-state';
+import './browser-library/bookmark-groups.css';
 
 // 浏览器 chrome（T3）+ AI 侧栏停靠（S4，design §11.1）+ Agent 确认对话框（A6 §11.2，
 // App 级全局挂载）：顶部工具栏 + 标签栏为渲染层 UI，主内容区由主进程 WebContentsView
@@ -109,11 +112,6 @@ export default function App() {
     [],
   );
 
-  // C8 决议 #158(6)：viewMode → WebContentsView 可见性（受控 UI send 通道）
-  useEffect(() => {
-    window.aibrowse.ui.setBrowserContentVisible(viewMode === 'browser');
-  }, [viewMode]);
-
   // 决议 #163(4)：删除当前画布任务 → 清空结果画布并切回 browser 模式
   useEffect(() => {
     if (research.state.resultCanvasCleared) {
@@ -128,6 +126,11 @@ export default function App() {
     tabsState === null
       ? null
       : (tabsState.tabs.find((t) => t.id === tabsState.activeTabId) ?? null);
+  const showStartPage = viewMode === 'browser' && isStartPageTab(activeTab, tabsState);
+
+  useEffect(() => {
+    window.aibrowse.ui.setBrowserContentVisible(viewMode === 'browser' && !showStartPage);
+  }, [viewMode, showStartPage]);
 
   const refreshCurrentBookmark = (): void => {
     void window.aibrowse.browserLibrary
@@ -490,6 +493,23 @@ export default function App() {
                   .catch(() => setLibraryNotice('无法打开该地址，请稍后重试'));
               }}
               onBookmarksChanged={refreshCurrentBookmark}
+            />
+          ) : showStartPage ? (
+            <StartPage
+              key={activeTab?.id}
+              libraryState={libraryStatus?.state ?? null}
+              onNavigate={async (input) =>
+                activeTab !== null && window.aibrowse.nav.navigate(activeTab.id, input)
+              }
+              onOpenHistory={() => openLibrary('history')}
+              onOpenBookmarks={() => openLibrary('bookmarks')}
+              onOpenWatch={() => {
+                setSidePanel(null);
+                setWatchFocus(null);
+                setWatchTargetUrl(null);
+                setViewMode('watch');
+              }}
+              onOpenAi={() => setSidePanel('ai')}
             />
           ) : null}
         </main>

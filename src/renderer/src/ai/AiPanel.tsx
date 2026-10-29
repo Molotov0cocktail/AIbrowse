@@ -9,6 +9,7 @@ import { useStream } from './useStream';
 import { ChatView } from './ChatView';
 import { Composer } from './Composer';
 import { ContextBadge } from './ContextBadge';
+import { Icon } from '../ui/Icon';
 
 interface AiPanelProps {
   onCollapse: () => void;
@@ -108,11 +109,20 @@ export function AiPanel({ onCollapse, onOpenSettings, agent }: AiPanelProps) {
   return (
     <aside className="ai-panel">
       <div className="ai-panel-header">
-        <span className="ai-panel-title">AI 共读助手</span>
+        <div className="sidebar-heading">
+          <span className="sidebar-heading-icon">
+            <Icon name="sparkles" />
+          </span>
+          <div>
+            <h2 className="ai-panel-title">AI 共读助手</h2>
+            <p>与当前网页一起思考</p>
+          </div>
+        </div>
         <span className="ai-mode-switch" role="group" aria-label="AI 模式">
           <button
             type="button"
             className={`ai-mode-chat${mode === 'chat' ? ' active' : ''}`}
+            aria-pressed={mode === 'chat'}
             onClick={() => setMode('chat')}
           >
             对话
@@ -120,24 +130,38 @@ export function AiPanel({ onCollapse, onOpenSettings, agent }: AiPanelProps) {
           <button
             type="button"
             className={`ai-mode-task${mode === 'task' ? ' active' : ''}`}
+            aria-pressed={mode === 'task'}
             onClick={() => setMode('task')}
           >
             任务
           </button>
         </span>
-        <button type="button" className="ai-new-session" onClick={() => void createSession()}>
-          新建会话
-        </button>
-        <button type="button" className="ai-settings-open" onClick={onOpenSettings}>
-          设置
+        <button
+          type="button"
+          className="ai-new-session sidebar-icon-action"
+          aria-label="新建会话"
+          title="新建会话"
+          onClick={() => void createSession()}
+        >
+          <Icon name="plus" size={16} />
         </button>
         <button
           type="button"
-          className="ai-collapse"
+          className="ai-settings-open sidebar-icon-action"
+          aria-label="设置"
+          title="设置"
+          onClick={onOpenSettings}
+        >
+          <Icon name="settings" size={16} />
+        </button>
+        <button
+          type="button"
+          className="ai-collapse sidebar-icon-action"
+          title="收起 AI 面板"
           aria-label="收起 AI 面板"
           onClick={onCollapse}
         >
-          收起
+          <Icon name="chevron-right" size={16} />
         </button>
       </div>
 

@@ -6,6 +6,8 @@ export const IPC = {
   BrowserHistoryList: 'browser-library:history-list',
   BrowserHistoryDelete: 'browser-library:history-delete',
   BrowserHistoryClear: 'browser-library:history-clear',
+  BrowserBookmarkGroupsList: 'browser-library:bookmark-groups-list',
+  BrowserBookmarkGroupSave: 'browser-library:bookmark-group-save',
   BrowserBookmarksList: 'browser-library:bookmarks-list',
   BrowserBookmarkAddCurrent: 'browser-library:bookmark-add-current',
   BrowserBookmarkUpdate: 'browser-library:bookmark-update',

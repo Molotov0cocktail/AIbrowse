@@ -32,6 +32,7 @@ import type {
 import type { Appearance, TraySettings } from '../shared/types/app';
 import type { ThemeColor } from '../shared/theme-colors';
 import { dispatchBrowserLibrary, browserPageForLibrary } from './browser-library-ipc';
+import { browserBookmarkGroupFromTabs } from './browser-bookmark-group';
 import type { BrowserLibraryService } from './browser-library/browser-library-service';
 import {
   openBrowserLibraryStore,
@@ -1601,6 +1602,8 @@ if (!gotLock) {
       IPC.BrowserHistoryDelete,
       IPC.BrowserHistoryClear,
       IPC.BrowserBookmarksList,
+      IPC.BrowserBookmarkGroupsList,
+      IPC.BrowserBookmarkGroupSave,
       IPC.BrowserBookmarkAddCurrent,
       IPC.BrowserBookmarkUpdate,
       IPC.BrowserBookmarkRemove,
@@ -1613,6 +1616,8 @@ if (!gotLock) {
           browserLibraryService,
           () => browserController?.getActiveUserPage() ?? null,
           startupDataInitializing,
+          (groupId) =>
+            browserBookmarkGroupFromTabs(browserController?.getTabsState() ?? null, groupId),
         ),
       );
     }

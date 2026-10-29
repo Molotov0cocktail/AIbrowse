@@ -3,6 +3,8 @@ import type { DbHandle } from '../sources/db/sqlite-driver';
 import { MaintenanceAdmission } from '../storage/maintenance-admission';
 import {
   isBrowserBookmarkInput,
+  isBrowserBookmarkListRequest,
+  isBrowserBookmarkGroupInput,
   isBrowserBookmarkUpdate,
   isBrowserLibraryId,
   isBrowserLibraryListRequest,
@@ -11,6 +13,9 @@ import {
 } from '../../shared/browser-library';
 import type {
   BrowserBookmark,
+  BrowserBookmarkListRequest,
+  BrowserBookmarkGroup,
+  BrowserBookmarkGroupInput,
   BrowserBookmarkInput,
   BrowserBookmarkUpdate,
   BrowserHistoryEntry,
@@ -20,7 +25,10 @@ import type {
   BrowserLibraryStatus,
   BrowserVisitTitleUpdate,
 } from '../../shared/types/browser-library';
-import { BrowserLibraryRepository } from './browser-library-repository';
+import {
+  BrowserLibraryRepository,
+  BrowserBookmarkCapacityError,
+} from './browser-library-repository';
 
 const errors = {
   'invalid-input': '浏览数据请求无效',
@@ -60,7 +68,13 @@ export class BrowserLibraryService {
     if (release === null) return { ok: false, code: 'maintenance', message: errors.maintenance };
     try {
       return { ok: true, value: work() };
-    } catch {
+    } catch (error) {
+      if (error instanceof BrowserBookmarkCapacityError)
+        return {
+          ok: false,
+          code: 'invalid-input',
+          message: '最多保存 100 个书签分组，请先移出或删除不再需要的成员',
+        };
       this.storageError = true;
       return { ok: false, code: 'storage-error', message: errors['storage-error'] };
     } finally {
@@ -106,10 +120,28 @@ export class BrowserLibraryService {
     return this.run(true, () => this.repository.clearHistory());
   }
 
+  listBookmarkGroups(): BrowserLibraryResult<BrowserBookmarkGroup[]> {
+    return this.run(true, () => this.repository.listBookmarkGroups());
+  }
+  saveBookmarkGroup(input: BrowserBookmarkGroupInput): BrowserLibraryResult<BrowserBookmarkGroup> {
+    return this.run(isBrowserBookmarkGroupInput(input), () =>
+      this.repository.saveBookmarkGroup(
+        {
+          name: input.name.trim(),
+          color: input.color,
+          bookmarks: input.bookmarks.map((item) => ({
+            title: item.title,
+            url: normalizeBrowserLibraryUrl(item.url)!,
+          })),
+        },
+        this.time(),
+      ),
+    );
+  }
   listBookmarks(
-    request: BrowserLibraryListRequest,
+    request: BrowserBookmarkListRequest,
   ): BrowserLibraryResult<BrowserLibraryPage<BrowserBookmark>> {
-    return this.run(isBrowserLibraryListRequest(request), () =>
+    return this.run(isBrowserBookmarkListRequest(request), () =>
       this.repository.listBookmarks(request),
     );
   }

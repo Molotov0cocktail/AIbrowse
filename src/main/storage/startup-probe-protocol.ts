@@ -4,7 +4,7 @@ import { TRANSFER_FRAME_LIMITS, TRANSFER_PHASE_MS } from './transfer-budget';
 
 export const STARTUP_PROBE_DOMAINS = ['sources', 'research', 'watch', 'browser'] as const;
 export type StartupProbeDomain = (typeof STARTUP_PROBE_DOMAINS)[number];
-export const STARTUP_PROBE_VERSIONS = { sources: 1, research: 1, watch: 6, browser: 1 } as const;
+export const STARTUP_PROBE_VERSIONS = { sources: 1, research: 1, watch: 6, browser: 2 } as const;
 export interface StartupFileIdentity {
   dev: string;
   ino: string;

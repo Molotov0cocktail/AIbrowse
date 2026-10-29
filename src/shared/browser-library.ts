@@ -1,5 +1,8 @@
+import { isTabGroupName, TAB_GROUP_COLORS } from './tab-groups';
 import type {
   BrowserBookmarkInput,
+  BrowserBookmarkListRequest,
+  BrowserBookmarkGroupInput,
   BrowserBookmarkUpdate,
   BrowserLibraryListRequest,
 } from './types/browser-library';
@@ -51,7 +54,8 @@ function closed(value: unknown, keys: readonly string[]): value is Record<string
     value !== null &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
-    Object.keys(value).length === keys.length &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null) &&
+    Reflect.ownKeys(value).length === keys.length &&
     keys.every((key) => Object.hasOwn(value, key))
   );
 }
@@ -95,9 +99,32 @@ export function isBrowserBookmarkInput(value: unknown): value is BrowserBookmark
 
 export function isBrowserBookmarkUpdate(value: unknown): value is BrowserBookmarkUpdate {
   return (
-    closed(value, ['id', 'url', 'title']) &&
+    (closed(value, ['id', 'url', 'title']) ||
+      (closed(value, ['id', 'url', 'title', 'groupId']) &&
+        (value.groupId === null || isBrowserLibraryId(value.groupId)))) &&
     isBrowserLibraryId(value.id) &&
     normalizeBrowserLibraryUrl(value.url) !== null &&
     isBrowserLibraryTitle(value.title)
+  );
+}
+
+export function isBrowserBookmarkGroupInput(value: unknown): value is BrowserBookmarkGroupInput {
+  return (
+    closed(value, ['name', 'color', 'bookmarks']) &&
+    isTabGroupName(value.name) &&
+    TAB_GROUP_COLORS.some((color) => color === value.color) &&
+    Array.isArray(value.bookmarks) &&
+    value.bookmarks.length >= 1 &&
+    value.bookmarks.length <= 100 &&
+    value.bookmarks.every(isBrowserBookmarkInput)
+  );
+}
+
+export function isBrowserBookmarkListRequest(value: unknown): value is BrowserBookmarkListRequest {
+  if (isBrowserLibraryListRequest(value)) return true;
+  return (
+    closed(value, ['query', 'cursor', 'limit', 'groupId']) &&
+    (value.groupId === null || isBrowserLibraryId(value.groupId)) &&
+    isBrowserLibraryListRequest({ query: value.query, cursor: value.cursor, limit: value.limit })
   );
 }

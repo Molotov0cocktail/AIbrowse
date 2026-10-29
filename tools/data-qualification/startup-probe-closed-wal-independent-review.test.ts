@@ -113,7 +113,7 @@ it('独立四域关闭WAL正控保持主库全部元数据和字节，逐域登�
   const result = await runStartupProbe(root, control());
   expect(result.state).toBe('normal');
   if (result.state === 'recovery-required') throw new Error('四域预检未通过');
-  expect(result.members.map((member) => member.version)).toEqual([1, 1, 6, 1]);
+  expect(result.members.map((member) => member.version)).toEqual([1, 1, 6, 2]);
   expect(result.members.every((member) => member.wal?.size === '0')).toBe(true);
   expect(files.map(facts)).toEqual(before);
   await expect(assertStartupProbeInputs(root, result, () => {})).resolves.toBeUndefined();

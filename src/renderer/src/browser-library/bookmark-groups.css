@@ -1,0 +1,75 @@
+.bookmark-group {
+  display: block;
+  padding: 0;
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.bookmark-group > details > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.bookmark-group > details > summary::before {
+  content: '›';
+  font-size: 20px;
+  line-height: 1;
+  width: 12px;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+.bookmark-group > details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.bookmark-group > details > summary:hover {
+  background: var(--surface-hover);
+}
+.bookmark-group-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.bookmark-group .bookmark-group-members {
+  padding: 4px 12px 12px 34px;
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+.bookmark-group-members > li {
+  box-shadow: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}
+.bookmark-group-members > li:last-child {
+  border-bottom: 0;
+}
+.bookmark-group-save {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.bookmark-group-save > button {
+  color: var(--brand);
+  background: var(--accent);
+  border-color: transparent;
+}
+.bookmark-group-save > p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+@media (max-width: 700px) {
+  .bookmark-group .bookmark-group-members {
+    padding-left: 12px;
+  }
+}
