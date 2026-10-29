@@ -38,6 +38,14 @@
 - 新独立产品审核PASS，`independent-review.json` 绑定53源/工具文件与16项证明，明确关闭43项当前阻塞，
   两项历史I/O未知不改判。实现候选 `c6856b1d599b1082bc81e1e8ca36996afbe3b226`；末尾仅去除验收
   PowerShell空尾行与记录审核，不改变已验产品/工具行为。发行程序/安装器执行另记NOT RUN。
+- 交付：最终干净源 `d05a9efdb1fa907a150a7e0cbb0f897cc6516ad5` 构建0.1.17，构建、包资格、静态
+  绑定与provenance均0；新独立包审PASS，228模块/16产物/63ASAR/75程序文件、三方renderer字节恒等，
+  MSI/NSIS及fuse身份闭合。包审两次工具前提失败原件保留，修正ASAR路径分隔符等读取前提后通过。
+  `selection-review.json` 绑定17证明，manifest `4dade405d96de3bf2c3dcb5f0100d7fdb8d4ee43a606476dd5ec0bbed5ea4195`。
+  CheckOnly/Switch均0，当前output已更新0.1.17；切换 `4acce26c262d4e27a5425eff6e0ec843`，旧0.1.16
+  全字节保留于本轮log的同ID previous-output目录。发行启动/安装器执行NOTRUN，未触真实用户profile。
+- 切后独立复核 `independent-output-check.json` PASS：新79文件625075558字节、旧79文件625019792字节，
+  全路径/大小/摘要与plan一致，18证明及manifest恒等。功能交付完成，正式文档收尾后正常同步两个远程。
 
 ## eMudhra CA 事件安全升级（2026-10-29）
 

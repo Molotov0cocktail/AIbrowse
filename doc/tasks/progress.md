@@ -7,14 +7,22 @@
 ### 当前任务与后继
 
 - 2026-10-29 用户新增书签分组保留、侧栏美化和起始页；干净接管
-  `cb1e3af97718dc8b4929fdc377f23570dddaa2dc`，当前 output 仍为0.1.16。
+  `cb1e3af97718dc8b4929fdc377f23570dddaa2dc`，接管 output 为0.1.16。
   差量合同见 `doc/tasks/legacy-repair.md` 首节及分组/Stage7设计。
   browser.db v2书签组与独立组内分页、本地起始页、侧栏主题精修已实现，新独立产品审核PASS。
   实现候选 `c6856b1d599b1082bc81e1e8ca36996afbe3b226`；typecheck/lint/format/build通过。
   全量7756PASS/43FAIL/3SKIP原件保留，最终受影响10文件159PASS及未改H3a20PASS/脚本独立29PASS
   关闭当前门，旧两I/O原因仍unknown。真实UI两进程40+10项、Enter窄场7项通过，累计6 localhost/
   0外网/Provider；747运行绑定独核通过，详见 `log/ux-polish-20261029/` 与任务文档。
-  下一动作：干净源构建0.1.17、独立验包后更新output并正常双推；不触真实profile，不公开发行。
+  干净源 `d05a9efdb1fa907a150a7e0cbb0f897cc6516ad5` 已构建0.1.17，独立验包PASS（228模块/
+  16产物/63ASAR/75程序文件），普通/发行/包内renderer字节恒等。
+  **output已更新0.1.17**，79文件625075558字节，入口 `output/win-unpacked/AIbrowse.exe`；manifest
+  `4dade405d96de3bf2c3dcb5f0100d7fdb8d4ee43a606476dd5ec0bbed5ea4195`。
+  CheckOnly/Switch均0，切换 `4acce26c262d4e27a5425eff6e0ec843`，旧0.1.16完整保留于
+  本轮log的`previous-output-4acce26c262d4e27a5425eff6e0ec843`。
+  切后独立复核PASS：新旧各79文件、18证明全摘要恒等。本轮功能交付完成，文档与正常双远程同步收尾；
+  不启动额外功能，未触真实profile，未公开发行。
+  发行启动与安装器执行NOTRUN，保留历史隔离环境限制，未将开发Electron冒烟混称发行启动。
 
 - 2026-10-29 用户要求搜索 CA 重大事件并安全升级。干净 baseline
   `eb6f012bc13030be733197f69d0866ffb3b0b495`；定位 eMudhra 八中间 CA 弱密钥事件及 Electron
