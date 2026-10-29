@@ -1,5 +1,5 @@
-export const NODE_VERSION = 'v24.18.0';
-export const NODE_SHA256 = '9a4eb5f1c29c6a2e93852ead46b999e284a6a5ca8bab4d4e241d587d025a52de';
+export const NODE_VERSION = 'v24.22.1';
+export const NODE_SHA256 = 'd702daa815eabbff763c7d3808e235cf031cf2ca70211b56847bc72f51e240e5';
 export const JOB_SOURCE_SHA256 = 'be1fbf5623ae06da19848f33c5837c1c3ca42827935961d99453a1397cbcd167';
 export const WORK_MS = 120_000;
 export const EXIT_ONLY_MS = 30_000;

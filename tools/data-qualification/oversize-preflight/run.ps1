@@ -194,7 +194,7 @@ try {
     if($build.fixedTransferJobSha256 -cne 'be1fbf5623ae06da19848f33c5837c1c3ca42827935961d99453a1397cbcd167' -or $build.artifacts.'FixedTransferJob.cs'.sha256 -cne $build.fixedTransferJobSha256 -or $build.sources.'tools/data-qualification/full-transfer/FixedTransferJob.cs' -cne $build.fixedTransferJobSha256){throw '共享监督器来源无效'}
     if($build.artifacts.'SparseFile.cs'.sha256 -cne $build.sources.'tools/data-qualification/oversize-preflight/SparseFile.cs'){throw '稀疏helper复制制品不同源'}
     $node=(Get-Command node.exe -CommandType Application|Select-Object -First 1).Source
-    if($build.node.version -cne 'v24.18.0' -or $build.node.sha256 -cne '9a4eb5f1c29c6a2e93852ead46b999e284a6a5ca8bab4d4e241d587d025a52de' -or ('v'+(Get-Item -LiteralPath $node).VersionInfo.ProductVersion) -cne $build.node.version){throw '固定Node无效'}
+    if($build.node.version -cne 'v24.22.1' -or $build.node.sha256 -cne 'd702daa815eabbff763c7d3808e235cf031cf2ca70211b56847bc72f51e240e5' -or ('v'+(Get-Item -LiteralPath $node).VersionInfo.ProductVersion) -cne $build.node.version){throw '固定Node无效'}
     $nodeBinding=Read-Bound $node 134217728 $false
     if($nodeBinding.hash -cne $build.node.sha256){throw '固定Node摘要改变'}
     Check-Time
@@ -241,7 +241,7 @@ try {
     $result.job=[ordered]@{succeeded=$job.Succeeded;actualZero=$job.ActualZero;exitCode=$job.ExitCode;samples=$job.Samples;limitFlags=$job.LimitFlags;processLimit=$job.ProcessLimit;processCommitLimit=[string]$job.ProcessCommitLimit;jobCommitLimit=[string]$job.JobCommitLimit;rssPeakBytes=[string]$job.RssPeakBytes;treeRssPeakBytes=[string]$job.TreeRssPeakBytes;creationFlags=$job.CreationFlags}
     $phase='receipt'
     $proof=Read-Json (Join-Path $scope 'complete.json')
-    if($proof.version -ne 1 -or $proof.scopeId -cne $ScopeId -or $proof.kind -cne 'oversize-preflight' -or $proof.nodeVersion -cne 'v24.18.0' -or $proof.controlsReached -ne $true -or $proof.completed -ne $true -or $proof.productE2Pass -ne $false -or $proof.capacityQualified -ne $false -or $proof.enospcQualified -ne $false -or $proof.zeroReadClaimed -ne $false -or $proof.files.Count -ne 4){throw 'worker回执无效'}
+    if($proof.version -ne 1 -or $proof.scopeId -cne $ScopeId -or $proof.kind -cne 'oversize-preflight' -or $proof.nodeVersion -cne 'v24.22.1' -or $proof.controlsReached -ne $true -or $proof.completed -ne $true -or $proof.productE2Pass -ne $false -or $proof.capacityQualified -ne $false -or $proof.enospcQualified -ne $false -or $proof.zeroReadClaimed -ne $false -or $proof.files.Count -ne 4){throw 'worker回执无效'}
     foreach($index in 0..3){
         $actual=$proof.files[$index];$expected=$plans[$index]
         if($actual.id -cne @('container','sources','research','watch')[$index] -or $actual.file -cne $expected.name -or $actual.expectedBytes -ne $expected.bytes -or $actual.observedBytes -ne $expected.bytes -or $actual.rejected -ne $true -or $actual.preserved -ne $true -or $actual.noSidecars -ne $true){throw 'worker逐项回执无效'}

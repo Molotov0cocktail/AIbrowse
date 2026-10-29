@@ -35,6 +35,15 @@
 - 发行运行 REPLAN：既有隔离器只读 Preflight 因父目录与 profile 实际句柄不在同一 NTFS 卷而拒绝，原件保留。
   不放宽隔离器、不迁移或读取真实用户资料；复用新运行时实际安全六场景、OAuth 两矩阵与 TLS 证据，另对最终
   包检查运行时阻断表、ASAR/源码图、fuse、安装器内容及来源绑定。发行启动/安装器执行保持 NOT RUN。
+- 全量回归发现当前仍执行的 oversize-preflight build-only 测试被旧 Node 24.18.0/SHA 身份门拒绝；
+  同步这一个现行工具的版本与官方已核验 Node 24.22.1 可执行文件摘要，并重跑聚焦 build-only 回归。
+  保留精确版本+SHA 双重门、容量/时间/闭包/claim 全部阈值；旧 proof 和长时资格不因本次通过而自动迁移。
+- TLS 首轮采集器的 ESM 顶层等待令 Electron 零探针超时，原件保留；修工具后未重跑已完成的旧 Node。
+  早期采集器只保留源码 SHA 而无逐版源码快照，不能声称早期工具逐字节可复现；最终受控工具已入 Git。
+- 产品新独审 PASS：初轮 REPAIR 与全量 `7772 PASS / 1 FAIL / 3 SKIP` 原件保留；唯一超限工具身份门
+  修复后 root 与独立复验各 3 文件 9 项 PASS，未累加重复计数。另有独立 128 项、5 项 CA 判定器和
+  8 项破坏阻断表反例；typecheck/lint/format/build 通过。证据 `independent-review.json` 与其关联原件。
+  官方 ZIP→实际 EXE、OAuth 来源与 bundle、安全资格 CJS 均独立核对；模型 actual 未回显，不可验证。
 
 ## 新标签地址清空与地址栏点击选择（2026-10-14）
 

@@ -9,13 +9,14 @@
 - 2026-10-29 用户要求搜索 CA 重大事件并安全升级。干净 baseline
   `eb6f012bc13030be733197f69d0866ffb3b0b495`；定位 eMudhra 八中间 CA 弱密钥事件及 Electron
   GHSA-jr5w-w6x2-84p9。候选 0.1.16 升级 Electron 43.8.4/内嵌与开发 Node 24.22.1，补齐
-  开发构建树安全版本，完整/生产 audit 均 0；typecheck/lint/format/build 已通过，全量仍在执行。
+  开发构建树安全版本，完整/生产 audit 均 0；typecheck/lint/format/build 已通过。全量7772PASS/1FAIL/3SKIP
+  原件保留，唯一旧Node身份门修复后聚焦与独立各9PASS；独立安全审核PASS，初轮REPAIR保留。
   六场景 Electron 安全资格与 OAuth 全矩阵/关闭矩阵均通过，真实合成请求30、0 Provider。
   Node HTTPS/fetch 旧接受新 CERT_REVOKED；Chromium 正控200，受影响站超时/一般CA错误仍为BLOCKED。
   正式契约已改用官方源码、发行摘要、PE只读八SPKI连续表及旧版对照补证，未把在线结果改PASS。
   共33次显式TLS探针（不含隐式AIA）；原件 `log/ca-security-20261029/`，差量合同见legacy-repair首节。
   发行隔离Preflight因跨卷拒绝且未更改真实profile；发行启动/安装器执行NOT RUN。
-  当前output仍0.1.15；下一步完成独立审核、干净候选包核验与output交付，再正常双远程同步。
+  当前output仍0.1.15；下一步完成干净候选包核验与output交付，再正常双远程同步。
 
 - 2026-10-14 用户要求新建标签清空网址、地址栏单击全选/双击定位光标；干净接管
   `904b478805503f83a85def604a049dba27f3616a`，接管output为0.1.14。已定位renderer聚焦草稿跨标签残留，

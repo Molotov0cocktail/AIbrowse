@@ -27,7 +27,8 @@ BrowserLibrary 的独立 browser.db 不与 Source sharing/模型工具连接，�
 原 Watch 的 Public DNS/robots/TLS/跳转门、Session task-owned Tab、事实确定性、保留策略及零原始正文落盘继续保持。
 
 CA 弱密钥可使默认受信链失去身份保证。2026-10-29 维护针对 eMudhra 事件升级 Electron/Node，
-分别验证 Chromium 网页与 Node HTTPS/fetch 拒绝受影响链及可信 HTTPS 正例；不以 npm audit 或根库版本
+分别验证 Chromium 官方内置撤信修复与 Node HTTPS/fetch 拒绝受影响链及可信 HTTPS 正例；Chromium 在线
+AIA 阻塞时使用 detailed-design 的源码/官方二进制/完整只读阻断表组合证据，保留在线 BLOCKED。不以 npm audit 或根库版本
 字符串代替链校验。不允许证书错误放行、自签根兜底、禁用 TLS 校验或修改真实用户 Windows 根库。
 
 本轮实现目标是未签名内部候选、NSIS 界面加全机 MSI 和手工升级。用户已批准安装/升级/卸载使用 UAC，应用普通用户运行；
