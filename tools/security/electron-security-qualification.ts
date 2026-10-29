@@ -208,7 +208,7 @@ async function inspectUiAssets(contents: WebContents): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  assertCondition(process.versions.electron === '43.7.7', 'Electron 版本不匹配');
+  assertCondition(process.versions.electron === '43.8.4', 'Electron 版本不匹配');
   await app.whenReady();
 
   await runScenario('safeStorage 最大合法合成 Key 密文预算', async () => {

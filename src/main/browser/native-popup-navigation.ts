@@ -1,10 +1,10 @@
 import { EventEmitter } from 'node:events';
 import type { WebContents } from 'electron';
 
-// Electron 43.7.7 emits this main-process event before its public window-open
+// Electron 43.8.4 emits this main-process event before its public window-open
 // handler. Its native callback retains the initiating frame, CSP, referrer,
 // sandbox restrictions and original request body. Never reconstruct that request.
-const QUALIFIED_ELECTRON_VERSION = '43.7.7';
+const QUALIFIED_ELECTRON_VERSION = '43.8.4';
 
 export interface NativePopupNavigationLease {
   readonly sandboxFlags: number;

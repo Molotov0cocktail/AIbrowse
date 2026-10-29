@@ -63,7 +63,7 @@ beforeEach(() => {
   mock.views.length = 0;
   mock.dropDestroyedViewContents = false;
   electronVersionDescriptor = Object.getOwnPropertyDescriptor(process.versions, 'electron');
-  Object.defineProperty(process.versions, 'electron', { value: '43.7.7', configurable: true });
+  Object.defineProperty(process.versions, 'electron', { value: '43.8.4', configurable: true });
 });
 afterEach(() => {
   if (electronVersionDescriptor)

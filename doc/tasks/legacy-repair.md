@@ -1,5 +1,41 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## eMudhra CA 事件安全升级（2026-10-29）
+
+- TASK / BASELINE：用户要求定位近期 CA 重大事件并升级程序；干净接管
+  `eb6f012bc13030be733197f69d0866ffb3b0b495`，现有 output 为 0.1.15。
+- AUTHORITATIVE SOURCES / CURRENT VERIFIED STATE：eMudhra 2026-10-21 官方说明确认八个中间 CA 弱密钥；
+  Node 24.22.1 官方发行记录包含 NSS 3.131.1 根库更新及 blocked public keys 链拒绝；Electron 43.8.4
+  官方发行记录包含 Node 24.22.1。实际旧依赖 Electron 43.7.7、开发 Node 24.18.0，不能复用旧 TLS 安全结论。
+- GOAL / NON-GOALS / INVARIANTS：覆盖 Chromium 网页与 Node fetch/HTTPS 两条 TLS 路径；保持正常可信
+  HTTPS、登录窗口、数据、权限、沙箱及手动升级语义。不关闭证书校验、不自动修改 Windows 信任库、不公开发行。
+- FIXED DECISIONS / SCOPE：同 major 精确升级 Electron 43.8.4 与项目内开发 Node 24.22.1，保持其余无关
+  产品实现；同步 lock、构建身份及真正依赖版本的运行门。工程等价性基于同 major API 与受影响原生行为复验，
+  不以版本字符串替代 TLS 证据。历史绑定旧运行时的长测工具和证据保持原义，不批量改写历史。
+- 依赖审计差量：实际 npm audit 发现开发/构建树仍有已发布的安全修复，纳入本次安全升级：Vite 7.3.7、
+  Vitest 4.1.12、undici 7.30.1/6.29.1、fast-uri 3.1.9、source-map-js 1.2.2、zod 4.6.6。
+  仅同 major 安全版本及锁闭包更新，生产三个解析依赖不变；保留升级前 audit，复查完整树及生产树，不执行强制修复。
+- PLAN / TEST PLAN：先冻结旧运行时/根库事实，再装官方校验过的运行时；检查实际阻断、正常证书控制，
+  全量单 worker 测试、typecheck/lint/format/build、Electron 安全与登录窗口资格、发行包身份及 fuse/ASAR 门。
+  外部受控 TLS 检查每轮至多 20 次、单次 15 秒、最多两轮；不发送 Cookie/凭据/Provider 内容，不做无界重试。
+- ACCEPTANCE / STOP：新独立安全审核 PASS 后构建 0.1.16 并核验、更新 output，完整保留旧包，正常双远程同步。
+  上游修复不能覆盖实际链、原生兼容失效或同路线两轮无新证据时重定工程方案；不得放宽证书门或隐藏失败。
+  原件在 `log/ca-security-20261029/` 及现有工具强制的独立目录；未运行场景明确 NOT RUN。
+- 官方来源：[eMudhra 声明](https://emudhra.com/en/press-release/emudhra-statement-distrust-global-tls-intermediate-root-ca)、
+  [Node 24.22.1](https://nodejs.org/en/blog/release/v24.22.1)、
+  [Electron 43.8.4](https://releases.electronjs.org/release/v43.8.4)。
+- 验证 REPLAN：真实旧 Node/Electron 已接受 emSign 原链；新版独立 Node 与 Electron 内 Node 的 HTTPS/fetch
+  均对原链与 Sectigo 交叉链明确 `CERT_REVOKED`，可信 HTTPS 为 200。Chromium 原链 AIA 补全超时，交叉链为
+  `ERR_CERT_AUTHORITY_INVALID`；两轮均保留 BLOCKED，累计 33 次显式 TLS 探针后停止外网测试。
+  Chromium 另有隐式 AIA 补链请求，33 不是全部底层网络请求数；原始 netLog 保留且不入库。
+  Chromium 事件修复改用组合证据：官方 GHSA-jr5w-w6x2-84p9 与精确 43.8.4 源码补丁、官方发行 ZIP 摘要、
+  实际 PE 只读节内八个 SPKI 的连续表及 Chromium 既有前缀定位、旧版本不存在该表的对照、可信 HTTPS 正例。
+  这些证据验证交付包含官方内置撤信实现，不把网络超时或一般 CA 错误改判为本事件的在线吊销通过。
+  Node 的链拒绝证据不能冒充 Chromium；静态表也不独立证明每条机器码执行分支。
+- 发行运行 REPLAN：既有隔离器只读 Preflight 因父目录与 profile 实际句柄不在同一 NTFS 卷而拒绝，原件保留。
+  不放宽隔离器、不迁移或读取真实用户资料；复用新运行时实际安全六场景、OAuth 两矩阵与 TLS 证据，另对最终
+  包检查运行时阻断表、ASAR/源码图、fuse、安装器内容及来源绑定。发行启动/安装器执行保持 NOT RUN。
+
 ## 新标签地址清空与地址栏点击选择（2026-10-14）
 
 - TASK / BASELINE：用户要求新标签为空网址、单击地址栏全选、双击定位光标。干净接管

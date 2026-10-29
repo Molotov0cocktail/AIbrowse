@@ -103,8 +103,8 @@ Event 投影生成可选摘要解释，不能决定是否变化、是否命中�
 
 - Electron + TypeScript + React + Vite + Node.js；浏览器承载使用 WebContentsView，禁用已废弃的
   BrowserView；测试 Vitest，lint ESLint，格式 Prettier。
-- Node.js 24.x（`.node-version` = 24.18.0，`engines.node` = `>=24 <25`）；Electron 43.7.7；
-  electron-vite 5.0.0；Vite 7.3.6；React 19.2.8；TypeScript 6.0.3；Vitest 4.1.11；
+- Node.js 24.x（`.node-version` = 24.22.1，`engines.node` = `>=24.22.1 <25`）；Electron 43.8.4；
+  electron-vite 5.0.0；Vite 7.3.7；React 19.2.8；TypeScript 6.0.3；Vitest 4.1.12；
   ESLint 10.8.1；Prettier 3.9.6。
 - Stage7 发行构建辅助依赖精确固定：electron-builder 26.15.3、@electron/fuses 2.1.3、
   @electron/asar 4.3.1、resedit 3.1.0。它们只用于构建/验收，不扩大产品运行权限。

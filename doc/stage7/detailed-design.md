@@ -67,7 +67,16 @@ E1使用`release` mode输出`out/release/{main,preload,renderer}`。入口先做
 产品名AIbrowse、package/app name保持aibrowse，appId为com.aibrowse.desktop；启动先固定现有appData/aibrowse数据根，
 不把产品显示名改变误当数据迁移。CookieEncryption按原Electron EXE实读的Disabled保持关闭。
 
-E1安全资格REPLAN：Electron43.4.0命中上游GHSA-qmv3-fv6v-rmhq（sandbox preload cache），官方明确无应用层替代修复。
+2026-10-29 CA 安全维护：运行时基线更新为 Electron 43.8.4（内嵌 Node 24.22.1），开发 Node 24.22.1。
+同 major 升级保持产品权限与数据契约；新增 eMudhra 弱密钥事件的 Chromium/Node 两路实际资格。
+Node 上游包含 NSS 3.131.1 根库与被封锁公钥链拒绝，Chromium 必须另验，不能把 Node 根库当成浏览器证据。
+版本门及本地打包清理身份随新运行时核验；旧长测运行时绑定和历史证据不自动迁移。差量合同见 legacy-repair。
+CA 事件验收允许用上游精确修复源码、官方二进制摘要、实际 PE 只读节完整阻断表及旧版对照、正常 TLS 正例
+组合证明 Chromium 修复已交付；AIA/网络条件导致的在线 BLOCKED 必须保留，不能声称在线吊销验证通过。
+Node HTTPS/fetch 继续要求原生链拒绝；包运行受真实 profile 隔离门限制时，用已验同运行时与最终静态绑定复核，
+显式保留发行启动 NOT RUN，不为验收修改用户的根证书或 profile。
+
+历史E1安全资格REPLAN：Electron43.4.0命中上游GHSA-qmv3-fv6v-rmhq（sandbox preload cache），官方明确无应用层替代修复。
 据[官方安全公告](https://github.com/electron/electron/security/advisories/GHSA-qmv3-fv6v-rmhq)与
 [43.7.7发行记录](https://releases.electronjs.org/release/v43.7.7)，同major更新到精确43.7.7，保持安全/资源阈值。
 其余公告按实际功能适用性核对，不宣称版本命中等同产品可利用。新版本重做全量、build、dev/production及

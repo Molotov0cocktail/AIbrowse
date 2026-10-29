@@ -5,7 +5,7 @@ import { NativePopupNavigation } from './native-popup-navigation';
 
 const originalVersion = Object.getOwnPropertyDescriptor(process.versions, 'electron');
 beforeEach(() => {
-  Object.defineProperty(process.versions, 'electron', { value: '43.7.7', configurable: true });
+  Object.defineProperty(process.versions, 'electron', { value: '43.8.4', configurable: true });
 });
 afterEach(() => {
   if (originalVersion) Object.defineProperty(process.versions, 'electron', originalVersion);
@@ -98,14 +98,17 @@ describe('固定 Electron 原生弹窗导航适配', () => {
     expect(f.navigate).not.toHaveBeenCalled();
   });
 
-  it('未资格化的 Electron 版本拒绝捕获，不以手工导航降级', () => {
-    const f = fixture();
-    Object.defineProperty(process.versions, 'electron', { value: '44.0.0', configurable: true });
-    f.source.emit('-new-window', ...f.args);
-    expect(f.adapter.take(f.details)).toBeNull();
-    expect(f.navigate).not.toHaveBeenCalled();
-    f.adapter.dispose();
-  });
+  it.each(['43.7.7', '43.8.3', '43.8.5', '44.0.0', undefined])(
+    '未资格化的 Electron 版本 %s 拒绝捕获，不以手工导航降级',
+    (version) => {
+      const f = fixture();
+      Object.defineProperty(process.versions, 'electron', { value: version, configurable: true });
+      f.source.emit('-new-window', ...f.args);
+      expect(f.adapter.take(f.details)).toBeNull();
+      expect(f.navigate).not.toHaveBeenCalled();
+      f.adapter.dispose();
+    },
+  );
 
   it.each([undefined, null, -1, 1.5, 0x100000000, '123'])(
     '非法原生沙箱标记 %s 拒绝捕获',

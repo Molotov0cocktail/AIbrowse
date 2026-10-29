@@ -1,16 +1,22 @@
 {
   "name": "aibrowse",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "AI 信息浏览器 —— Windows 桌面多标签页浏览器：内置 Chromium，AI 与用户共享同一浏览器会话，可共读网页、自主浏览、管理长期信源并完成多源研究",
   "main": "./out/main/index.js",
   "private": true,
   "engines": {
-    "node": ">=24 <25"
+    "node": ">=24.22.1 <25"
   },
   "overrides": {
     "@electron/get": {
-      "undici": "7.29.1"
-    }
+      "undici": "7.30.1"
+    },
+    "node-gyp": {
+      "undici": "6.29.1"
+    },
+    "fast-uri": "3.1.9",
+    "source-map-js": "1.2.2",
+    "zod": "4.6.6"
   },
   "scripts": {
     "dev": "electron-vite dev",
@@ -45,7 +51,7 @@
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "5.2.0",
-    "electron": "43.7.7",
+    "electron": "43.8.4",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "eslint": "10.8.1",
@@ -58,7 +64,7 @@
     "resedit": "3.1.0",
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
-    "vite": "7.3.6",
-    "vitest": "4.1.11"
+    "vite": "7.3.7",
+    "vitest": "4.1.12"
   }
 }

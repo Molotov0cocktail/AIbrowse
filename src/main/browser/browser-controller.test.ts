@@ -231,7 +231,7 @@ function harness(observers: Partial<BrowserControllerOptions> = {}): {
 const originalElectronVersion = Object.getOwnPropertyDescriptor(process.versions, 'electron');
 
 beforeEach(() => {
-  Object.defineProperty(process.versions, 'electron', { value: '43.7.7', configurable: true });
+  Object.defineProperty(process.versions, 'electron', { value: '43.8.4', configurable: true });
   electronMock.instances.length = 0;
   electronMock.pending.length = 0;
   electronMock.deferredUrls.length = 0;

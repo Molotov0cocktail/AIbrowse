@@ -9,6 +9,15 @@ if ($MyInvocation.InvocationName -ne '.') {
 & {
     $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
     $localRoot = Join-Path $projectRoot '.local-dev'
+    $nodeVersion = [IO.File]::ReadAllText((Join-Path $projectRoot '.node-version')).Trim()
+    if ($nodeVersion -cnotmatch '^24\.[0-9]+\.[0-9]+$') { throw '项目 Node 版本声明无效' }
+    $nodeDirectory = Join-Path $localRoot ('node-v' + $nodeVersion + '/node-v' + $nodeVersion + '-win-x64')
+    if (Test-Path -LiteralPath (Join-Path $nodeDirectory 'node.exe')) {
+        $env:PATH = $nodeDirectory + [IO.Path]::PathSeparator + $env:PATH
+    }
+    if ((& node --version) -cne ('v' + $nodeVersion)) {
+        throw "需要项目固定 Node $nodeVersion；请先在 .local-dev 安装经官方摘要核验的 Windows x64 运行时"
+    }
     $directories = @(
         $localRoot
         (Join-Path $localRoot 'cache')

@@ -32,7 +32,7 @@ export default function finishLocalElectronPackage(context) {
     versionStat.isSymbolicLink() ||
     versionStat.nlink !== 1 ||
     versionStat.size !== 6 ||
-    readFileSync(version, 'utf8') !== '43.7.7'
+    readFileSync(version, 'utf8') !== '43.8.4'
   )
     throw new Error('Electron版本文件失配');
   // Validate both members before changing either. Never widen the package policy.

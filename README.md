@@ -322,12 +322,14 @@
 
 ## 技术栈（实际落地版本）
 
-Electron 43.4.0（WebContentsView 承载网页）· electron-vite 5 · Vite 7.3.6 · React 19.2.8 ·
-TypeScript 6.0.3 · Vitest 4 · ESLint 10（flat config）· Prettier 3.9 · Node.js 24.x（engines `>=24 <25`）
+Electron 43.8.4（WebContentsView 承载网页）· Node 24.22.1 · electron-vite 5 · Vite 7.3.7 · React 19.2.8 ·
+TypeScript 6.0.3 · Vitest 4.1.12 · ESLint 10（flat config）· Prettier 3.9（Node engines `>=24.22.1 <25`）
 
 ## 快速开始
 
-Windows 开发时先在当前 PowerShell 点调用项目环境入口：
+首次准备时，从 Node 官方下载 `.node-version` 对应 Windows x64 ZIP，核对官方 `SHASUMS256.txt` 后，
+解压到 `.local-dev/node-v24.22.1/`（其下为 `node-v24.22.1-win-x64/node.exe`）。也支持 PATH 中已有
+相同固定版本；旧运行时会被环境入口拒绝。Windows 开发时先在当前 PowerShell 点调用项目环境入口：
 
 ```powershell
 . .\tools\maintenance\enter-project-environment.ps1

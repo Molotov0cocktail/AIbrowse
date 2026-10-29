@@ -26,6 +26,10 @@ BrowserLibrary 的独立 browser.db 不与 Source sharing/模型工具连接，�
 新增攻击面集中于 release 启动环境、打包与依赖、Provider 目标配置、用户备份导入、崩溃恢复、诊断导出和安装升级。
 原 Watch 的 Public DNS/robots/TLS/跳转门、Session task-owned Tab、事实确定性、保留策略及零原始正文落盘继续保持。
 
+CA 弱密钥可使默认受信链失去身份保证。2026-10-29 维护针对 eMudhra 事件升级 Electron/Node，
+分别验证 Chromium 网页与 Node HTTPS/fetch 拒绝受影响链及可信 HTTPS 正例；不以 npm audit 或根库版本
+字符串代替链校验。不允许证书错误放行、自签根兜底、禁用 TLS 校验或修改真实用户 Windows 根库。
+
 本轮实现目标是未签名内部候选、NSIS 界面加全机 MSI 和手工升级。用户已批准安装/升级/卸载使用 UAC，应用普通用户运行；
 ProgramFiles 固定受保护安装根及 machine context 组件归属须独审实测，数据/凭据仍按用户隔离。没有自动更新网络面，不公开发布；
 管理员NSIS固定官方3.13及工具摘要，拒绝旧3.04；暂存竞争/低权限改写/reparse及任意INSTALLDIR为新增权限反例。
