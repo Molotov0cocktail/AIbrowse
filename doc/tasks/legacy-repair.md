@@ -35,6 +35,9 @@
   （`final-affected-regression.txt`）；另两个未修改模块H3a单次20PASS及资格脚本独立29PASS。
   H3a旧失败为验收证据EVIDENCE_WRITE_FAILED，脚本旧失败在合法值写入准备；底层错误未恢复，均保留unknown。
   当前断言及故障反例全部保持，独审按实际范围判断当前增量，不将原全量失败改判。
+- 新独立产品审核PASS，`independent-review.json` 绑定53源/工具文件与16项证明，明确关闭43项当前阻塞，
+  两项历史I/O未知不改判。实现候选 `c6856b1d599b1082bc81e1e8ca36996afbe3b226`；末尾仅去除验收
+  PowerShell空尾行与记录审核，不改变已验产品/工具行为。发行程序/安装器执行另记NOT RUN。
 
 ## eMudhra CA 事件安全升级（2026-10-29）
 

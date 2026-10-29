@@ -38,4 +38,3 @@ catch {
 }
 $record | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $jobPath -Encoding utf8
 exit 0
-

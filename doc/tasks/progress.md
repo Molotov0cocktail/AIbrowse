@@ -9,10 +9,12 @@
 - 2026-10-29 用户新增书签分组保留、侧栏美化和起始页；干净接管
   `cb1e3af97718dc8b4929fdc377f23570dddaa2dc`，当前 output 仍为0.1.16。
   差量合同见 `doc/tasks/legacy-repair.md` 首节及分组/Stage7设计。
-  正在实现 browser.db v2 书签组与独立组内分页、本地起始页、侧栏主题精修；新独立审核进行中。
-  起始页/组事实9项与App导航31项通过，早期typecheck/红态及实现迭代原件保留于
-  `log/ux-polish-20261029/`。下一动作：收敛独审修复、集成与真实Electron隔离验证，审核通过后
-  构建0.1.17并更新output、正常双推；不触真实profile，不公开发行。
+  browser.db v2书签组与独立组内分页、本地起始页、侧栏主题精修已实现，新独立产品审核PASS。
+  实现候选 `c6856b1d599b1082bc81e1e8ca36996afbe3b226`；typecheck/lint/format/build通过。
+  全量7756PASS/43FAIL/3SKIP原件保留，最终受影响10文件159PASS及未改H3a20PASS/脚本独立29PASS
+  关闭当前门，旧两I/O原因仍unknown。真实UI两进程40+10项、Enter窄场7项通过，累计6 localhost/
+  0外网/Provider；747运行绑定独核通过，详见 `log/ux-polish-20261029/` 与任务文档。
+  下一动作：干净源构建0.1.17、独立验包后更新output并正常双推；不触真实profile，不公开发行。
 
 - 2026-10-29 用户要求搜索 CA 重大事件并安全升级。干净 baseline
   `eb6f012bc13030be733197f69d0866ffb3b0b495`；定位 eMudhra 八中间 CA 弱密钥事件及 Electron
