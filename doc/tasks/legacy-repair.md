@@ -38,6 +38,15 @@
   对照、iframe允许/拒绝、阻止Esc及真实壳恢复oracle；工具typecheck/lint/format通过，但未把新增工具门判绿。
 - 独立审核 `independent-review.json`：代码/单测范围PASS，整体产品验收BLOCKED，不授output选择。
   当前仅准备可审查的0.1.18候选，output保持0.1.17；待桌面就绪后完成原生矩阵、必要修复/复核再交付。
+- 候选已生成：干净源 `8132a76850ce69666b2906e1df2e1e5341e90848`，版本0.1.18完整程序与EXE/MSI
+  位于 `release/`；构建、包校验、静态绑定与provenance均0，最终typecheck-candidate/lint-candidate均0。
+  manifest为`e14a8f72f1abc03d232c36b133ef3e405861b8b148cc3f88652a5b243c91db06`。
+  新独立包静态审核 `independent-package-review.json` PASS：229模块/16构建件/63ASAR/75程序文件，
+  全屏实现/1002退出及接线实际打包，fuse和MSI身份闭合。审核工具一次清单排序前提失败保留failed01，
+  改用path集合核验后通过，未改产品。此次PASS仅说明静态包身份，不授运行门或output切换。
+  原output0.1.17完整79文件与manifest已独立重算恒等（`4dade405d96de3bf2c3dcb5f0100d7fdb8d4ee43a606476dd5ec0bbed5ea4195`）。
+  本轮源码与状态只保存本地提交，不推待验候选。下一唯一动作仍为桌面就绪后的真实全屏验证。
+  分工调度参数为gpt-6-astra/high及独审xhigh；工具未回显actual，实际模型不可验证，不扩张审核结论。
 
 ## 书签分组、起始页与侧栏体验（2026-10-29）
 

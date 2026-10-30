@@ -13,7 +13,10 @@
   原因unknown。新独立9文件201PASS，代码范围PASS，整体产品验收BLOCKED；原件 `log/video-fullscreen-20261030/`。
   原生测试无法获得Windows前台，用户回复暂时无法操作桌面；首超时非有效产品红态，11轮28本机请求、
   0 Provider全部保留。automatic/AI负例PASS，后台/任务拒绝Promise未settle仍FAIL，不把日志改判。
-  当前仅准备0.1.18待验候选，**output保持0.1.17**；下一动作：桌面就绪后完成原生矩阵与复核，再选择output。
+  干净源 `8132a76850ce69666b2906e1df2e1e5341e90848` 已生成0.1.18完整候选于`release/`；包静态独审PASS
+  （229模块/16构建件/63ASAR/75程序文件），manifest为`e14a8f72f1abc03d232c36b133ef3e405861b8b148cc3f88652a5b243c91db06`。
+  **output保持0.1.17**，独立全79文件/manifest恒等；未启动发行程序/安装器，未推待验候选。
+  下一动作：桌面就绪后完成原生矩阵与复核，再选择output；包静态PASS不等于全屏运行验收通过。
 
 - 2026-10-29 用户新增书签分组保留、侧栏美化和起始页；干净接管
   `cb1e3af97718dc8b4929fdc377f23570dddaa2dc`，接管 output 为0.1.16。
