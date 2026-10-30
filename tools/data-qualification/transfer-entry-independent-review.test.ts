@@ -116,7 +116,7 @@ it.each([false, true])(
         members: BACKUP_IDS.map((id) => ({
           id,
           present: true,
-          schemaVersion: id === 'watch' ? 6 : 1,
+          schemaVersion: id === 'watch' ? 6 : id === 'browser' ? 2 : 1,
           bytes: 0,
           sha256: 'a'.repeat(64),
         })),
