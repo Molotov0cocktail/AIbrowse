@@ -28,6 +28,16 @@
   最新独立5文件164PASS，typecheck-delivery/lint-delivery/build-delivery均0；旧全量失败与旧BLOCKED记录保留。
   新整体产品审核 `independent-review-final.json` PASS，绑定22源/工具与47证明，明确复用未改范围及16请求
   重建口径。允许最终干净候选重建与静态验包，发行启动/安装器执行仍NOT RUN。
+- 最终交付：干净源 `199445d9311b388173cfb56dad1ea92d4decd141` 已重建0.1.18完整程序与EXE/MSI，
+  package-delivery/package-verify-delivery/package-static-delivery/provenance-delivery均0；新包独审
+  `independent-package-review-delivery.json` PASS，229模块/16构建件/63ASAR/75程序文件与安装身份闭合。
+  manifest为`8bb106cf64ecc3ad92df8c13b6ec5bc62c7458ce63abfa375c5f7c8af70e66bb`，selection绑定29份证明。
+  CheckOnly/Switch均0，切换 `cdca2300577043fca32225cacb6aea8b`，output已更新0.1.18；旧0.1.17完整
+  保留于本轮log的`previous-output-cdca2300577043fca32225cacb6aea8b`。只交付未签名内部候选，不公开发布。
+  切后新独核 `independent-output-check-delivery.json` PASS：新旧各79文件、30证明、22份审核源码及选择
+  脚本摘要恒等，staging已消失。功能交付完成，正常双远程同步后停止，不启动额外产品工作。
+
+以下为初轮合同与受阻历史记录，当前结论以上述恢复验证和最终交付为准：
 
 - TASK / BASELINE：用户报告 bilibili 视频全屏按钮无效，并要求覆盖其他网页视频。干净接管
   `5372d373b1c8e58257a4e5bcc7cb19795dba42cb`，当前 output 为 0.1.17。

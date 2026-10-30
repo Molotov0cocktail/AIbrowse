@@ -16,7 +16,12 @@
   typecheck-delivery/lint-delivery/build-delivery均0。未访问真实bilibili或真实profile，不把本机夹具冒充站点验证。
   新整体产品独审 `independent-review-final.json` PASS，22源/工具及47证明闭合；旧BLOCKED与失败保留。
   初版8132a76的待验包完整归档于本轮log的`previous-candidate-8132a76`，不再作为当前最终候选。
-  **output当前仍0.1.17**；下一动作：最终独立审核、干净源重建0.1.18、核验身份后选择output并正常双远程同步。
+  干净源 `199445d9311b388173cfb56dad1ea92d4decd141` 已重建0.1.18，包静态独审PASS，229模块/16构建件/
+  63ASAR/75程序文件身份闭合；manifest为`8bb106cf64ecc3ad92df8c13b6ec5bc62c7458ce63abfa375c5f7c8af70e66bb`。
+  **output已更新0.1.18**，入口`output/win-unpacked/AIbrowse.exe`。CheckOnly/Switch均0，切换
+  `cdca2300577043fca32225cacb6aea8b`，旧0.1.17完整保留于本轮log同ID的previous-output目录。
+  切后新独核PASS：新旧各79文件、30证明及审核源码恒等；未启动发行程序/安装器，未公开发布。
+  功能交付完成，仅文档收尾与正常双远程同步后停止，不启动额外功能。
 
 - 2026-10-29 用户新增书签分组保留、侧栏美化和起始页；干净接管
   `cb1e3af97718dc8b4929fdc377f23570dddaa2dc`，接管 output 为0.1.16。
