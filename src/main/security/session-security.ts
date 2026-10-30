@@ -1,4 +1,4 @@
-import type { Session } from 'electron';
+import type { Session, WebContents } from 'electron';
 import { logWarn } from '../logger';
 
 export interface SessionSecurityOptions {
@@ -10,6 +10,35 @@ export interface SessionSecurityOptions {
 }
 
 const installedSessions = new WeakMap<Session, boolean>();
+const fullscreenPolicies = new WeakMap<WebContents, (phase: 'check' | 'request') => boolean>();
+
+/** Main-process registration only; no renderer or Session-wide permission grant. */
+export function registerFullscreenPolicy(
+  contents: WebContents,
+  policy: (phase: 'check' | 'request') => boolean,
+): () => void {
+  fullscreenPolicies.set(contents, policy);
+  return () => {
+    if (fullscreenPolicies.get(contents) === policy) fullscreenPolicies.delete(contents);
+  };
+}
+
+function allowFullscreen(
+  contents: WebContents | null,
+  permission: string,
+  url: string,
+  phase: 'check' | 'request',
+): boolean {
+  if (permission !== 'fullscreen' || contents === null) return false;
+  try {
+    const target = new URL(url);
+    if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password)
+      return false;
+    return fullscreenPolicies.get(contents)?.(phase) === true;
+  } catch {
+    return false;
+  }
+}
 
 /** Applies the same fail-closed capability boundary to every Electron Session. */
 export function installSessionSecurity(
@@ -25,11 +54,14 @@ export function installSessionSecurity(
     return;
   }
 
-  target.setPermissionRequestHandler((_webContents, _permission, callback) => {
-    callback(false);
-    logWarn('security', '已拒绝 Session 权限请求');
+  target.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const allowed = allowFullscreen(webContents, permission, details.requestingUrl, 'request');
+    callback(allowed);
+    if (!allowed) logWarn('security', '已拒绝 Session 权限请求');
   });
-  target.setPermissionCheckHandler(() => false);
+  target.setPermissionCheckHandler((webContents, permission, origin) =>
+    allowFullscreen(webContents, permission, origin, 'check'),
+  );
 
   target.on('will-download', (event) => {
     event.preventDefault();

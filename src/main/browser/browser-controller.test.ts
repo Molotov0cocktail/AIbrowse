@@ -3,6 +3,7 @@ import type { BaseWindow, Session } from 'electron';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserControllerImpl, type BrowserControllerOptions } from './browser-controller';
 import type { SessionManager } from './session-manager';
+import { installSessionSecurity } from '../security/session-security';
 
 interface PendingLoad {
   url: string;
@@ -209,13 +210,32 @@ vi.mock('../logger', () => ({
 function harness(observers: Partial<BrowserControllerOptions> = {}): {
   controller: BrowserControllerImpl;
   ownerWindow: BaseWindow;
+  requestFullscreen: (wc: TestWebContents, permission?: string) => boolean;
 } {
-  const ownerWindow = {
+  let fullScreen = false;
+  const ownerWindow = Object.assign(new EventEmitter(), {
     contentView: { addChildView: vi.fn(), removeChildView: vi.fn() },
     isDestroyed: () => false,
-  } as unknown as BaseWindow;
+    isVisible: () => true,
+    isFocused: () => true,
+    isFullScreen: () => fullScreen,
+    setFullScreen: vi.fn((value: boolean) => {
+      fullScreen = value;
+    }),
+    getContentBounds: () => ({ x: 30, y: 40, width: 1600, height: 900 }),
+  }) as unknown as BaseWindow;
+  let request: Parameters<Session['setPermissionRequestHandler']>[0] = null;
+  const session = {
+    setPermissionRequestHandler: (handler: typeof request) => {
+      request = handler;
+    },
+    setPermissionCheckHandler: vi.fn(),
+    on: vi.fn(),
+    webRequest: { onBeforeRequest: vi.fn() },
+  } as unknown as Session;
+  installSessionSecurity(session);
   const sessionManager = {
-    getSession: () => ({}) as Session,
+    getSession: () => session,
   } as SessionManager;
   return {
     controller: new BrowserControllerImpl({
@@ -225,8 +245,154 @@ function harness(observers: Partial<BrowserControllerOptions> = {}): {
       ...observers,
     }),
     ownerWindow,
+    requestFullscreen: (wc, permission = 'fullscreen') => {
+      let result = false;
+      request?.(
+        wc as unknown as Electron.WebContents,
+        permission as 'fullscreen',
+        (ok) => {
+          result = ok;
+        },
+        { requestingUrl: wc.currentUrl, isMainFrame: true },
+      );
+      return result;
+    },
   };
 }
+
+describe('网页 HTML 全屏', () => {
+  it.each(['media', 'pointerLock', 'keyboardLock', 'automatic-fullscreen', 'unknown'])(
+    '原生手势不放行 %s',
+    async (permission) => {
+      const { controller, requestFullscreen } = harness();
+      await controller.createTab('https://example.com/video');
+      const wc = electronMock.instances[0]!.webContents;
+      wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+      expect(requestFullscreen(wc, permission)).toBe(false);
+      controller.dispose();
+    },
+  );
+
+  it.each([
+    'task',
+    'background',
+    'hidden',
+    'uncommitted',
+    'blank',
+    'navigation',
+    'expired',
+    'repeated-key',
+  ])('拒绝 %s 标签/手势', async (mode) => {
+    const { controller, requestFullscreen } = harness();
+    if (mode === 'uncommitted') electronMock.noCommitUrls.push('https://example.com/video');
+    if (mode === 'task') await controller.createTaskTab('https://example.com/video');
+    else await controller.createTab(mode === 'blank' ? undefined : 'https://example.com/video');
+    const wc = electronMock.instances[0]!.webContents;
+    wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+    if (mode === 'background') await controller.createTab();
+    if (mode === 'hidden') controller.setContentVisible(false);
+    if (mode === 'navigation')
+      wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    if (mode === 'expired' || mode === 'repeated-key') {
+      vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 2000);
+      if (mode === 'repeated-key')
+        wc.emit('before-input-event', {}, { type: 'keyDown', key: 'f', isAutoRepeat: true });
+    }
+    expect(requestFullscreen(wc)).toBe(false);
+    vi.restoreAllMocks();
+    controller.dispose();
+  });
+
+  it.each(['escape', 'navigation', 'switch', 'hidden', 'crash', 'close', 'window-hide', 'dispose'])(
+    '全屏在 %s 后恢复窗口及普通布局，延迟enter不可复活',
+    async (mode) => {
+      const { controller, ownerWindow, requestFullscreen } = harness();
+      const tab = await controller.createTab('https://example.com/video');
+      const wc = electronMock.instances[0]!.webContents;
+      wc.emit('before-input-event', {}, { type: 'keyDown', key: 'f', isAutoRepeat: false });
+      expect(requestFullscreen(wc)).toBe(true);
+      expect(requestFullscreen(wc)).toBe(false);
+      wc.emit('enter-html-full-screen');
+      expect(ownerWindow.isFullScreen()).toBe(true);
+      if (mode === 'escape') wc.emit('before-input-event', {}, { type: 'keyDown', key: 'Escape' });
+      if (mode === 'navigation')
+        wc.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+      if (mode === 'switch') await controller.createTab();
+      if (mode === 'hidden') controller.setContentVisible(false);
+      if (mode === 'crash') wc.emit('render-process-gone');
+      if (mode === 'close') await controller.closeTab(tab.id);
+      if (mode === 'window-hide') ownerWindow.emit('hide');
+      if (mode === 'dispose') controller.dispose();
+      expect(ownerWindow.isFullScreen()).toBe(false);
+      wc.emit('enter-html-full-screen');
+      expect(ownerWindow.isFullScreen()).toBe(false);
+      controller.dispose();
+    },
+  );
+
+  it('AI动作撤销旧手势且执行期间不能用新手势借权，完成后仍需新实体手势', async () => {
+    const { controller, requestFullscreen } = harness();
+    const tab = await controller.createTab('https://example.com/video');
+    const wc = electronMock.instances[0]!.webContents;
+    let settle: ((value: unknown) => void) | undefined;
+    wc.collectScript.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+    wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+    const action = controller.scrollTab(tab.id, 100);
+    await Promise.resolve();
+    wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+    expect(requestFullscreen(wc)).toBe(false);
+    settle?.({ ok: true, viewport: { scrollX: 0, scrollY: 100, width: 800, height: 600 } });
+    await action;
+    expect(requestFullscreen(wc)).toBe(false);
+    wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+    expect(requestFullscreen(wc)).toBe(true);
+    controller.dispose();
+  });
+
+  it('HTML退出保留用户原有窗口全屏，宿主resize更新全内容bounds', async () => {
+    const { controller, ownerWindow, requestFullscreen } = harness();
+    ownerWindow.setFullScreen(true);
+    await controller.createTab('https://example.com/video');
+    const view = electronMock.instances[0]!;
+    view.webContents.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+    expect(requestFullscreen(view.webContents)).toBe(true);
+    view.webContents.emit('enter-html-full-screen');
+    vi.spyOn(ownerWindow, 'getContentBounds').mockReturnValue({
+      x: 30,
+      y: 40,
+      width: 1920,
+      height: 1080,
+    });
+    ownerWindow.emit('resize');
+    expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1920, height: 1080 });
+    view.webContents.emit('leave-html-full-screen');
+    expect(ownerWindow.isFullScreen()).toBe(true);
+    controller.dispose();
+  });
+
+  it('仅已提交活动用户页实体手势可请求全屏，覆盖宿主内容并恢复普通 bounds', async () => {
+    const { controller, ownerWindow, requestFullscreen } = harness();
+    await controller.createTab('https://example.com/video');
+    const view = electronMock.instances[0]!;
+    expect(requestFullscreen(view.webContents)).toBe(false);
+    view.webContents.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+    expect(requestFullscreen(view.webContents)).toBe(true);
+    view.webContents.emit('enter-html-full-screen');
+    expect(ownerWindow.isFullScreen()).toBe(true);
+    expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1600, height: 900 });
+    controller.setContentBounds({ x: 10, y: 90, width: 800, height: 600 });
+    expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1600, height: 900 });
+    view.webContents.emit('leave-html-full-screen');
+    expect(ownerWindow.isFullScreen()).toBe(false);
+    expect(view.setBounds).toHaveBeenLastCalledWith({ x: 10, y: 90, width: 800, height: 600 });
+    controller.dispose();
+  });
+});
 
 const originalElectronVersion = Object.getOwnPropertyDescriptor(process.versions, 'electron');
 

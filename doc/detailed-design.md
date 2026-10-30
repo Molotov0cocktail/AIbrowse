@@ -360,8 +360,14 @@ error ──reload/navigate──► loading        任意状态 ──closeTab�
   就是多 Profile（Personal/School/Work）接口落点（§2.4 `getSession(profile?)`）。
 - **权限安全默认值（2026-08-13 安全补丁，§11）**：分区首次创建时由 SessionManager 统一注册
   `setPermissionRequestHandler` + `setPermissionCheckHandler`（官方要求两者同时实现才是完整权限
-  处理），策略委托 `permission-policy.ts` 纯函数——v1 一律拒绝（默认拒绝，未知权限/畸形来源
-  同样安全拒绝）；未来所有 profile 派生分区自动获得同一默认值。
+  处理），当前统一由 `installSessionSecurity` 装配，未知权限/畸形来源安全拒绝；所有 profile
+  派生分区自动获得同一默认值。2026-10-30 用户要求恢复网页视频全屏，新增以下窄例外。
+- **HTML 全屏**：仅已登记且存活的活动可见普通用户 Tab，在已提交 HTTP(S) 文档上发生实体输入后
+  可请求 `fullscreen`。主进程按 WebContents 身份复核授权；后台、任务 Tab、AI 操作和无输入请求拒绝。
+  iframe 仍受 Chromium 用户激活与 Permissions Policy 限制；不放行 `automatic-fullscreen`、键盘锁、
+  指针锁或其他敏感权限。全屏不进入模型工具/IPC能力接口。
+  Controller 将全屏所有者视图铺满窗口内容区，退出恢复常规布局；Esc、导航、切换、隐藏、关闭及崩溃
+  均清理全屏状态。主进程不接受网页提供的任意窗口参数或执行脚本。
 - 本阶段不做 Cookie 管理 UI / 清空会话功能（非第一阶段范围）。
 
 ## 8. PageSnapshot 采集算法（Q1 + 采集细节定稿；T4 实现）
@@ -540,19 +546,19 @@ Cookie 或未提交地址。合法 URL query/fragment 保留，userinfo 拒绝�
 
 ## 11. 安全基线核对清单（First_stage §八 → 落实位置，T5 逐项核对）
 
-| 红线                                   | 落实位置                                                                                                                                                    |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 远程网页 nodeIntegration=false         | Tab view webPreferences 显式声明（T2）                                                                                                                      |
-| contextIsolation=true                  | 同上（显式声明，不依赖默认值）                                                                                                                              |
-| sandbox=true                           | 同上（显式声明）                                                                                                                                            |
-| webSecurity 不关闭                     | 不设置 webSecurity（默认开启）                                                                                                                              |
-| 远程网页无 Electron API / 文件系统访问 | Tab无应用bridge、无Node集成；普通Tab仅固定资格脚本隔离preload（§3.2）                                                                                       |
-| ipcRenderer 不整体暴露                 | 应用preload仅白名单bridge（§3.2）；网页不能调用应用bridge                                                                                                   |
-| window.open 限制                       | UI deny；普通Tab仅§9实体输入门收编安全原生child并保留窗口关系，任务/AI/无手势拒绝                                                                           |
-| 导航处理                               | Tab will-navigate + will-redirect 白名单 http/https/about（T5 R-02 加固，302 目标同过白名单）；UI 窗口 will-navigate + will-redirect 仅自身来源（§9）       |
-| 网页权限请求不得默认放行               | persist Session 注册 setPermissionRequestHandler + setPermissionCheckHandler，v1 默认拒绝（§7，permission-policy.ts 纯函数决策，未知权限/畸形来源安全拒绝） |
-| UI 与远程网页安全边界                  | UI 渲染进程 ≠ Tab WebContentsView（独立 webContents + preload 隔离）                                                                                        |
-| IPC 最小权限                           | sender 校验 + 通道白名单（§3）                                                                                                                              |
+| 红线                                   | 落实位置                                                                                                                                              |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 远程网页 nodeIntegration=false         | Tab view webPreferences 显式声明（T2）                                                                                                                |
+| contextIsolation=true                  | 同上（显式声明，不依赖默认值）                                                                                                                        |
+| sandbox=true                           | 同上（显式声明）                                                                                                                                      |
+| webSecurity 不关闭                     | 不设置 webSecurity（默认开启）                                                                                                                        |
+| 远程网页无 Electron API / 文件系统访问 | Tab无应用bridge、无Node集成；普通Tab仅固定资格脚本隔离preload（§3.2）                                                                                 |
+| ipcRenderer 不整体暴露                 | 应用preload仅白名单bridge（§3.2）；网页不能调用应用bridge                                                                                             |
+| window.open 限制                       | UI deny；普通Tab仅§9实体输入门收编安全原生child并保留窗口关系，任务/AI/无手势拒绝                                                                     |
+| 导航处理                               | Tab will-navigate + will-redirect 白名单 http/https/about（T5 R-02 加固，302 目标同过白名单）；UI 窗口 will-navigate + will-redirect 仅自身来源（§9） |
+| 网页权限请求不得默认放行               | Session 双权限 handler 默认拒绝；仅 §7 所述活动用户页实体输入的 HTML 全屏例外，未知权限/畸形来源安全拒绝                                              |
+| UI 与远程网页安全边界                  | UI 渲染进程 ≠ Tab WebContentsView（独立 webContents + preload 隔离）                                                                                  |
+| IPC 最小权限                           | sender 校验 + 通道白名单（§3）                                                                                                                        |
 
 ## 12. 定稿决议记录（Q1–Q4 + 草案变更点 + 安全补丁）
 
@@ -587,8 +593,8 @@ Cookie 或未提交地址。合法 URL query/fragment 保留，userinfo 拒绝�
 15. **网页权限默认拒绝**（已实现，本补丁）：Electron 官方安全文档明确「未注册 handler 时默认
     自动批准全部权限请求」。persist Session 现于分区首次创建时注册
     `setPermissionRequestHandler` + `setPermissionCheckHandler`（官方要求两者同时实现），
-    决策委托 `permission-policy.ts` 纯函数，v1 一律拒绝；未知权限类型与畸形来源同样安全拒绝；
-    配 `permission-policy.test.ts`（无 Electron mock 的纯策略测试）。T5 安全审计逐项核对。
+    初版一律拒绝；当前统一 SessionSecurity 装配以及用户全屏窄例外以 §7 为准，未知权限与畸形来源
+    继续安全拒绝。权限策略和实际 Session 装配均须有反例测试，历史 T5 审核范围不扩张为当前证据。
 16. **UI 窗口导航保护事件集定稿**（T3 实现，Electron 43.4.0 实证，2026-08-13）：
     实测矩阵（探针以本地 302 服务器 + 真实窗口驱动，结果如下）——
 

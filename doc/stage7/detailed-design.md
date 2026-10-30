@@ -133,6 +133,8 @@ UI IPC 统一验证当前窗口、主帧、当前受信文档/世代以及 paylo
 远程 Tab 没有应用 preload；所有窗口保持 sandbox/contextIsolation、关闭 Node，保留 webSecurity。
 主 UI 和每个 Tab Session 都设置权限 check/request 策略；网页权限默认拒绝。已承诺的“复制当前视图”
 若需 clipboard 写权限，限定 UI、规范化安全投影和该能力，不允许剪贴板读取或给网页开放同权。
+用户视频全屏按浏览器核心 detailed-design §7 的窄授权执行：仅活动可见普通用户页的实体输入允许
+HTML `fullscreen`，任务/后台/AI/自动全屏拒绝，其他权限不变；主进程维护窗口/布局恢复与 Esc 退出。
 
 原生 `window.open` 默认拒绝；UI 非入口导航、Tab 非 HTTP(S)/既有受控空白页导航继续拒绝。
 普通用户新窗口按浏览器核心 detailed-design §9 的一次性实体输入门收编为安全WebContentsView，通用保留

@@ -1,5 +1,44 @@
 # 遗留问题修复与严格诊断（2026-10-12）
 
+## 网页视频全屏修复（2026-10-30）
+
+- TASK / BASELINE：用户报告 bilibili 视频全屏按钮无效，并要求覆盖其他网页视频。干净接管
+  `5372d373b1c8e58257a4e5bcc7cb19795dba42cb`，当前 output 为 0.1.17。
+- SOURCES / GOAL：本次用户请求、浏览器 detailed-design §7/§11 与 Stage7 §3.2。恢复标准 HTML
+  Fullscreen API 的用户操作；不做站点特判、不增加 AI 工具或通用系统能力。
+- CURRENT STATE：实际 SessionSecurity 无条件拒绝全部权限；旧 permission-policy 纯函数未接入当前装配。
+  Controller 未管理 HTML 全屏窗口/原生视图布局。默认拒绝策略需要增加用户已授权的窄例外。
+- INVARIANTS：仅活动、可见、已提交 HTTP(S) 普通用户页的实体输入可申请全屏；后台、任务、AI 操作、
+  自动全屏、未知来源及其他权限继续拒绝。iframe 保留 Chromium Permissions Policy/用户激活限制，
+  不引入同源站点白名单。Esc 可退出；退出、切换、导航、关闭、隐藏和崩溃恢复布局与窗口状态。
+- PLAN / SCOPE：Session 安全授权按 WebContents 所有权注册并清理，TabManager/Controller 负责输入、
+  全屏生命周期与布局；同步正式契约并补甄别性单测、受控真实 Electron 验收源码。
+- TEST PLAN：旧实现先红后绿；权限敌手矩阵、布局/生命周期/AI隔离单测；typecheck/lint/format/build、
+  受影响集成及发行候选全量测试。真实 Electron 使用独立 profile、本地 video/容器/跨源 iframe，
+  检查 DOM 全屏、原生窗口、视图范围及退出恢复，不用日志字符串替代行为。
+- ACCEPTANCE / STOP：新独立安全审核 PASS 后构建内部 0.1.18，验证包身份后更新 output，完整保留旧包并
+  正常双远程同步。每轮原生验收至多180秒、40个本地请求、0 Provider；真实 bilibili 若可访问仅补充
+  站点验证，不读取真实 profile。连续两轮无新增证据则换路；不得放宽安全门或以合成场景冒充站点通过。
+  工具放 `tools/video-fullscreen-runtime/`，原件放 `log/video-fullscreen-20261030/`。
+- 实施：新增主进程 HtmlFullscreen 所有权管理及 Session 按 WebContents 窄授权；实体输入短窗、AI撤权、
+  全内容布局、Esc/导航/关闭/隐藏/崩溃恢复均有单测，退出脚本只使用固定1002隔离世界。未新增工具/IPC能力。
+  `unit-red.txt` 为旧权限实际false的甄别红态；单测初绿113项，独立初审139项。
+- 集成：typecheck-final/build-final/lint/format-final均0。全量 `test-all.txt` 为7816PASS/9FAIL/3SKIP、exit1，
+  原件保留。6FAIL定位为三个旧transfer独审成功夹具仍写browser schema1，与既有v2协议冲突；仅各修1行，
+  不改协议/旧备份导入/安全断言。其余2项dataset-switch五秒超时、1项credential临时文件rename EPERM，
+  底层原因仍unknown。原阈值不变，独立最终9文件201项PASS（`independent-final-focused.txt`）。
+- 原生验证未通过：最初超时缺有效DOM点击，不是产品红态；before-mouse事件已收到但DOM未收到点击，
+  坐标对照和精确窗口原生输入均保留失败。串行SetForegroundWindow及实际应用壳同样无法获得Windows前台，
+  用户已回复“暂时无法操作桌面”，停止同路线重试。严格负例automatic/AI实际请求与拒绝均1次PASS；
+  background/task虽观察到Session拒绝，Promise六秒未settle，保持FAIL，不以日志替代oracle。
+  bilibili真实站点、完整正例矩阵、退出/侧栏恢复、发行启动与安装器执行均未通过或NOT RUN。
+- 11轮本机请求账本（UUID前缀/请求数）：e5f5a8a6/1、87b0f62e/15、5737e823/0、0a7a9d60/1、
+  456775c4/1、01aa18f8/1、72ac6c10/1、d742fff4/1、4cb725b2/1、23d1848e/1、0a9a8c8c/5，
+  累计28请求、0 Provider，各轮sourceUnchanged=true，均保存在上述log唯一目录。最终工具包含后续旧源码
+  对照、iframe允许/拒绝、阻止Esc及真实壳恢复oracle；工具typecheck/lint/format通过，但未把新增工具门判绿。
+- 独立审核 `independent-review.json`：代码/单测范围PASS，整体产品验收BLOCKED，不授output选择。
+  当前仅准备可审查的0.1.18候选，output保持0.1.17；待桌面就绪后完成原生矩阵、必要修复/复核再交付。
+
 ## 书签分组、起始页与侧栏体验（2026-10-29）
 
 - TASK / BASELINE：用户要求书签按命名组折叠选择、保留已有标签分组，以及侧栏美化和有内容的起始页。

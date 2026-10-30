@@ -67,6 +67,7 @@ export interface CreateTabOptions {
 declare const __RELEASE__: boolean;
 
 export interface TabManagerOptions {
+  onTabRegistered?: (entry: TabEntry) => () => void;
   qualifiedScriptPreload?: string;
   onUserTabCreated?: (webContents: WebContents) => void;
   onNavigationCommitted?: (page: BrowserBookmarkInput) => string | null;
@@ -108,6 +109,7 @@ export class TabManager {
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
+      disableHtmlFullscreenWindowResize: true,
       webviewTag: false,
       devTools: typeof __RELEASE__ === 'undefined' || !__RELEASE__,
     };
@@ -275,6 +277,8 @@ export class TabManager {
       popupRoutingEpoch: 0,
     };
     this.entries.set(info.id, entry);
+    const cleanupFullscreen = this.options.onTabRegistered?.(entry);
+    if (cleanupFullscreen) cleanupFns.push(cleanupFullscreen);
 
     // 防御：正常情况下 closeTab/dispose 先移除条目；此处兜底意外销毁
     wc.once('destroyed', () => {

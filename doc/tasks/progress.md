@@ -2,9 +2,18 @@
 
 > 唯一进度源。历史放Git/原始证据；不再逐轮累积开发日记。风险编号不重排、不复用。
 
-## 当前结论（2026-10-29）
+## 当前结论（2026-10-30）
 
 ### 当前任务与后继
+
+- 2026-10-30 用户报告 bilibili 视频全屏无效，要求同时修复其他网页视频。干净接管
+  `5372d373b1c8e58257a4e5bcc7cb19795dba42cb`，output 仍0.1.17。
+  已实现 Session 按WebContents窄权限授权及全屏布局/恢复，差量合同见 legacy-repair 首节。
+  类型/构建/lint/格式通过；全量7816PASS/9FAIL/3SKIP保留，6项旧schema成功夹具已修，另3项I/O失败
+  原因unknown。新独立9文件201PASS，代码范围PASS，整体产品验收BLOCKED；原件 `log/video-fullscreen-20261030/`。
+  原生测试无法获得Windows前台，用户回复暂时无法操作桌面；首超时非有效产品红态，11轮28本机请求、
+  0 Provider全部保留。automatic/AI负例PASS，后台/任务拒绝Promise未settle仍FAIL，不把日志改判。
+  当前仅准备0.1.18待验候选，**output保持0.1.17**；下一动作：桌面就绪后完成原生矩阵与复核，再选择output。
 
 - 2026-10-29 用户新增书签分组保留、侧栏美化和起始页；干净接管
   `cb1e3af97718dc8b4929fdc377f23570dddaa2dc`，接管 output 为0.1.16。

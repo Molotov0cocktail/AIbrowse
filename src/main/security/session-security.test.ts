@@ -1,6 +1,6 @@
-import type { Session } from 'electron';
+import type { Session, WebContents } from 'electron';
 import { describe, expect, it, vi } from 'vitest';
-import { installSessionSecurity } from './session-security';
+import { installSessionSecurity, registerFullscreenPolicy } from './session-security';
 
 interface CapturedHandlers {
   request?: (
@@ -43,6 +43,37 @@ function fakeSession() {
 }
 
 describe('Session 安全默认值', () => {
+  it('全屏唯一按WC注册且check不消费手势；清理、无效来源与其他权限继续拒绝', () => {
+    const { target, captured } = fakeSession();
+    installSessionSecurity(target);
+    const contents = { getURL: () => 'https://example.com' } as WebContents;
+    const policy = vi.fn(() => true);
+    const cleanup = registerFullscreenPolicy(contents, policy);
+    expect(captured.check?.(contents, 'fullscreen', 'https://example.com', {})).toBe(true);
+    expect(policy).toHaveBeenLastCalledWith('check');
+    const callback = vi.fn();
+    captured.request?.(contents, 'fullscreen', callback, {
+      requestingUrl: 'https://frame.example.com',
+    });
+    expect(callback).toHaveBeenLastCalledWith(true);
+    expect(policy).toHaveBeenLastCalledWith('request');
+    for (const url of [
+      '',
+      'null',
+      'file:///x',
+      'data:text/html,x',
+      'https://user:pass@example.com',
+    ]) {
+      expect(captured.check?.(contents, 'fullscreen', url, {})).toBe(false);
+    }
+    expect(captured.check?.(null, 'fullscreen', 'https://example.com', {})).toBe(false);
+    expect(captured.check?.({}, 'fullscreen', 'https://example.com', {})).toBe(false);
+    expect(captured.check?.(contents, 'media', 'https://example.com', {})).toBe(false);
+    cleanup();
+    cleanup();
+    expect(captured.check?.(contents, 'fullscreen', 'https://example.com', {})).toBe(false);
+  });
+
   it('权限 request/check 对 UI、Tab、子帧与未知权限统一拒绝', () => {
     const { target, captured } = fakeSession();
     installSessionSecurity(target);

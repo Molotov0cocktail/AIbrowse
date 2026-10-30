@@ -25,6 +25,7 @@ import type { BrowserBookmarkInput } from '../../shared/types/browser-library';
 import { selectNextActive } from './tab-state';
 import { resolveViewVisibility } from './view-visibility';
 import { TabGroups } from './tab-groups';
+import { HtmlFullscreen } from './html-fullscreen';
 
 const ELEMENT_ID_PATTERN = /^el-\d{1,10}$/;
 const ALLOWED_KINDS: ReadonlySet<string> = new Set(['nav', 'expand', 'toggle', 'submit']);
@@ -80,6 +81,7 @@ export class BrowserControllerImpl implements BrowserController {
   private readonly tabManager: TabManager;
   private readonly tabGroups = new TabGroups(() => this.userTabIds());
   private readonly pageReader: PageReader;
+  private readonly htmlFullscreen: HtmlFullscreen;
   private activeTabId: string | null = null;
   private lastContentBounds: Rectangle | null = null;
   private disposed = false;
@@ -94,7 +96,19 @@ export class BrowserControllerImpl implements BrowserController {
   private contentVisible = true;
 
   constructor(private readonly options: BrowserControllerOptions) {
+    this.htmlFullscreen = new HtmlFullscreen(
+      options.ownerWindow,
+      (entry) =>
+        !this.disposed &&
+        !this.snapshotShutdown &&
+        this.contentVisible &&
+        this.activeTabId === entry.info.id,
+      () => {
+        if (!this.disposed) this.applyActiveVisual();
+      },
+    );
     this.tabManager = new TabManager({
+      onTabRegistered: (entry) => this.htmlFullscreen.register(entry),
       qualifiedScriptPreload: options.qualifiedScriptPreload,
       ownerWindow: options.ownerWindow,
       session: options.sessionManager.getSession(),
@@ -350,6 +364,7 @@ export class BrowserControllerImpl implements BrowserController {
   /** Main-only lifecycle controls; never exposed through the browser tool interface. */
   beginSnapshotShutdown(): void {
     this.snapshotShutdown = true;
+    this.htmlFullscreen.reconcile();
     this.pageReader.beginSnapshotShutdown();
   }
 
@@ -469,6 +484,7 @@ export class BrowserControllerImpl implements BrowserController {
         reason: '元素所属的快照已过期（页面已导航或刷新），请重新读取页面',
       };
     }
+    this.htmlFullscreen.revoke(tabId);
     const restorePopups = this.tabManager.suppressUserPopups(tabId);
     try {
       const norm = await this.pageReader.click(
@@ -512,6 +528,7 @@ export class BrowserControllerImpl implements BrowserController {
         reason: '元素所属的快照已过期（页面已导航或刷新），请重新读取页面',
       };
     }
+    this.htmlFullscreen.revoke(tabId);
     const restorePopups = this.tabManager.suppressUserPopups(tabId);
     try {
       const norm = await this.pageReader.fill(
@@ -551,6 +568,7 @@ export class BrowserControllerImpl implements BrowserController {
       return { ok: false, reason: '标签页已销毁' };
     }
     // scroll 无 elementId 绑定：作用于当前文档本身，不存在陈旧元素引用问题
+    this.htmlFullscreen.revoke(tabId);
     const restorePopups = this.tabManager.suppressUserPopups(tabId);
     try {
       const norm = await this.pageReader.scroll(wc, dy);
@@ -565,6 +583,7 @@ export class BrowserControllerImpl implements BrowserController {
   dispose(): void {
     if (this.disposed) return; // 幂等（§2.1）：before-quit 与窗口 closed 可能重复调用
     this.disposed = true;
+    this.htmlFullscreen.dispose();
     const tabCount = this.tabManager.list().length;
     this.tabManager.dispose(); // 全量清理，不走最后 Tab 策略
     this.tabGroups.clear();
@@ -592,7 +611,9 @@ export class BrowserControllerImpl implements BrowserController {
     // C8 决议 #158(2)：隐藏期间（contentVisible=false）不应用 bounds 到任何
     // view（结果画布模式；恢复可见时 applyActiveVisual 应用最后一次合法 bounds）
     if (this.contentVisible && this.activeTabId !== null) {
-      this.tabManager.get(this.activeTabId)?.view.setBounds(bounds);
+      this.tabManager
+        .get(this.activeTabId)
+        ?.view.setBounds(this.htmlFullscreen.bounds(this.activeTabId) ?? bounds);
     }
   }
 
@@ -602,6 +623,7 @@ export class BrowserControllerImpl implements BrowserController {
   // =true 时仅显示 active Tab 并应用最后一次合法 bounds + focus（隐藏期间
   // create/activate/焦点恢复均走本方法 → 不重新显示、不 focus）
   private applyActiveVisual(): void {
+    this.htmlFullscreen.reconcile();
     const visibility = resolveViewVisibility(
       this.tabManager.list().map((e) => e.info.id),
       this.activeTabId,
@@ -612,7 +634,7 @@ export class BrowserControllerImpl implements BrowserController {
       const visible = visibility.get(entry.info.id) ?? false;
       entry.view.setVisible(visible);
       if (visible && entry.info.id === this.activeTabId) {
-        entry.view.setBounds(bounds);
+        entry.view.setBounds(this.htmlFullscreen.bounds(entry.info.id) ?? bounds);
         entry.webContents.focus();
       }
     }
