@@ -109,6 +109,7 @@ export class BrowserControllerImpl implements BrowserController {
     );
     this.tabManager = new TabManager({
       onTabRegistered: (entry) => this.htmlFullscreen.register(entry),
+      onTabClosing: (entry) => this.htmlFullscreen.revoke(entry.info.id),
       qualifiedScriptPreload: options.qualifiedScriptPreload,
       ownerWindow: options.ownerWindow,
       session: options.sessionManager.getSession(),

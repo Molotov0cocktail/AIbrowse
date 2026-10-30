@@ -27,7 +27,7 @@ interface TestWebContents extends EventEmitter {
   };
   stop: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
-  close: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn<() => void>>;
   destroyUnexpectedly(): void;
 }
 
@@ -213,10 +213,28 @@ function harness(observers: Partial<BrowserControllerOptions> = {}): {
   requestFullscreen: (wc: TestWebContents, permission?: string) => boolean;
 } {
   let fullScreen = false;
+  let visible = true;
+  let minimized = false;
   const ownerWindow = Object.assign(new EventEmitter(), {
-    contentView: { addChildView: vi.fn(), removeChildView: vi.fn() },
+    contentView: Object.assign(new EventEmitter(), {
+      addChildView: vi.fn(),
+      removeChildView: vi.fn(),
+    }),
     isDestroyed: () => false,
-    isVisible: () => true,
+    isVisible: () => visible && !minimized,
+    isMinimized: () => minimized,
+    show: vi.fn(() => {
+      visible = true;
+      minimized = false;
+    }),
+    hide: vi.fn(() => {
+      visible = false;
+      ownerWindow.emit('hide');
+    }),
+    minimize: vi.fn(() => {
+      minimized = true;
+      ownerWindow.emit('minimize');
+    }),
     isFocused: () => true,
     isFullScreen: () => fullScreen,
     setFullScreen: vi.fn((value: boolean) => {
@@ -261,6 +279,100 @@ function harness(observers: Partial<BrowserControllerOptions> = {}): {
 }
 
 describe('网页 HTML 全屏', () => {
+  it.each(['hide', 'minimize'] as const)(
+    'Windows全屏退出重置宿主状态后恢复%s，且无全屏时不递归',
+    async (action) => {
+      const { controller, ownerWindow, requestFullscreen } = harness();
+      await controller.createTab('https://example.com/video');
+      const wc = electronMock.instances[0]!.webContents;
+      wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+      expect(requestFullscreen(wc)).toBe(true);
+      wc.emit('enter-html-full-screen');
+      const setFullscreen = vi.mocked(ownerWindow.setFullScreen).getMockImplementation()!;
+      vi.spyOn(ownerWindow, 'setFullScreen').mockImplementation((value) => {
+        setFullscreen(value);
+        if (!value) ownerWindow.show();
+      });
+      ownerWindow[action]();
+      expect(ownerWindow.isFullScreen()).toBe(false);
+      expect(ownerWindow.isVisible()).toBe(false);
+      expect(ownerWindow.isMinimized()).toBe(action === 'minimize');
+      expect(ownerWindow[action]).toHaveBeenCalledTimes(2);
+      ownerWindow[action]();
+      expect(ownerWindow[action]).toHaveBeenCalledTimes(3);
+      controller.dispose();
+    },
+  );
+
+  it('关闭前先退出宿主全屏，原生WebContents析构期间不能重入窗口或布局API', async () => {
+    const { controller, ownerWindow, requestFullscreen } = harness();
+    const tab = await controller.createTab('https://example.com/video');
+    const wc = electronMock.instances[0]!.webContents;
+    wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+    expect(requestFullscreen(wc)).toBe(true);
+    wc.emit('enter-html-full-screen');
+    let destroying = false;
+    const setFullscreen = vi.mocked(ownerWindow.setFullScreen).getMockImplementation()!;
+    vi.spyOn(ownerWindow, 'setFullScreen').mockImplementation((value) => {
+      expect(destroying, '禁止在原生析构栈重入窗口全屏API').toBe(false);
+      setFullscreen(value);
+    });
+    const close = wc.close.getMockImplementation()!;
+    wc.close.mockImplementationOnce(() => {
+      expect(ownerWindow.isFullScreen(), '关闭原生WC前必须退出宿主全屏').toBe(false);
+      destroying = true;
+      close();
+      destroying = false;
+    });
+    await expect(controller.closeTab(tab.id)).resolves.toBe(true);
+    expect(wc.destroyed).toBe(true);
+    controller.dispose();
+  });
+
+  it('意外销毁全屏WC时立即撤销所有权，窗口恢复推迟到原生析构栈退出', async () => {
+    const { controller, ownerWindow, requestFullscreen } = harness();
+    await controller.createTab('https://example.com/video');
+    const wc = electronMock.instances[0]!.webContents;
+    wc.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+    expect(requestFullscreen(wc)).toBe(true);
+    wc.emit('enter-html-full-screen');
+    const setFullscreen = vi.mocked(ownerWindow.setFullScreen).getMockImplementation()!;
+    let destroying = true;
+    vi.spyOn(ownerWindow, 'setFullScreen').mockImplementation((value) => {
+      expect(destroying, '意外析构中不得调用原生窗口API').toBe(false);
+      setFullscreen(value);
+    });
+    wc.destroyUnexpectedly();
+    destroying = false;
+    expect(requestFullscreen(wc)).toBe(false);
+    await Promise.resolve();
+    expect(ownerWindow.isFullScreen()).toBe(false);
+    controller.dispose();
+  });
+
+  it('Windows原生事件早于最终内容布局时，以实际contentView尺寸变化补齐26px', async () => {
+    const { controller, ownerWindow, requestFullscreen } = harness();
+    await controller.createTab('https://example.com/video');
+    const view = electronMock.instances[0]!;
+    const measure = vi.spyOn(ownerWindow, 'getContentBounds');
+    measure.mockReturnValue({ x: 0, y: 0, width: 884, height: 635 });
+    view.webContents.emit('before-mouse-event', {}, { type: 'mouseUp', button: 'left' });
+    expect(requestFullscreen(view.webContents)).toBe(true);
+    ownerWindow.emit('enter-full-screen');
+    measure.mockReturnValue({ x: 0, y: 0, width: 2560, height: 1414 });
+    ownerWindow.emit('resize');
+    view.webContents.emit('enter-html-full-screen');
+    expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 2560, height: 1414 });
+    measure.mockReturnValue({ x: 0, y: 0, width: 2560, height: 1440 });
+    ownerWindow.contentView.emit('bounds-changed');
+    expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 2560, height: 1440 });
+    view.webContents.emit('leave-html-full-screen');
+    ownerWindow.contentView.emit('bounds-changed');
+    expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 80, width: 1200, height: 720 });
+    controller.dispose();
+    expect(ownerWindow.contentView.listenerCount('bounds-changed')).toBe(0);
+  });
+
   it.each(['media', 'pointerLock', 'keyboardLock', 'automatic-fullscreen', 'unknown'])(
     '原生手势不放行 %s',
     async (permission) => {

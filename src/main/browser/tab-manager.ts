@@ -68,6 +68,7 @@ declare const __RELEASE__: boolean;
 
 export interface TabManagerOptions {
   onTabRegistered?: (entry: TabEntry) => () => void;
+  onTabClosing?: (entry: TabEntry) => void;
   qualifiedScriptPreload?: string;
   onUserTabCreated?: (webContents: WebContents) => void;
   onNavigationCommitted?: (page: BrowserBookmarkInput) => string | null;
@@ -374,6 +375,8 @@ export class TabManager {
   closeTab(tabId: string): boolean {
     const entry = this.entries.get(tabId);
     if (entry === undefined) return false;
+    // Retire window-level capabilities while the view and WebContents are still alive.
+    this.options.onTabClosing?.(entry);
     // 顺序（§6）：移除条目 → removeChildView（对非子 view 是 no-op）→ 关闭 → 逐一移除监听器
     this.invalidateLoads(entry);
     this.entries.delete(tabId);

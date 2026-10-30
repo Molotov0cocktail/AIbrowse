@@ -12,7 +12,9 @@ interface Registration {
 export class HtmlFullscreen {
   private readonly registrations = new Map<string, Registration>();
   private active: Registration | null = null;
+  private readonly contentView: BaseWindow['contentView'];
   private restoreWindowFullscreen = false;
+  private disposed = false;
   private readonly clearPending = (): void => {
     for (const registration of this.registrations.values()) {
       registration.gestureUntil = 0;
@@ -21,7 +23,16 @@ export class HtmlFullscreen {
   };
   private readonly onHide = (): void => {
     this.clearPending();
+    if (this.active === null) return;
     this.exit();
+    // Windows restores visibility when leaving fullscreen; preserve the user's hide.
+    if (!this.owner.isDestroyed() && this.owner.isVisible()) this.owner.hide();
+  };
+  private readonly onMinimize = (): void => {
+    this.clearPending();
+    if (this.active === null) return;
+    this.exit();
+    if (!this.owner.isDestroyed() && !this.owner.isMinimized()) this.owner.minimize();
   };
   private readonly onResize = (): void => {
     this.applyBounds();
@@ -35,10 +46,13 @@ export class HtmlFullscreen {
     private readonly isInteractive: (entry: TabEntry) => boolean,
     private readonly restoreLayout: () => void,
   ) {
+    this.contentView = owner.contentView;
+    // Native fullscreen/resize events can precede Windows client-area layout.
+    this.contentView.on('bounds-changed', this.onResize);
     owner.on('resize', this.onResize);
     owner.on('blur', this.clearPending);
     owner.on('hide', this.onHide);
-    owner.on('minimize', this.onHide);
+    owner.on('minimize', this.onMinimize);
     owner.on('leave-full-screen', this.onWindowLeave);
   }
 
@@ -50,6 +64,19 @@ export class HtmlFullscreen {
       if (this.eligible(entry)) registration.gestureUntil = performance.now() + 1000;
     };
     const revoke = (): void => this.revoke(entry.info.id);
+    const onDestroyed = (): void => {
+      registration.gestureUntil = 0;
+      registration.grantedUntil = 0;
+      if (this.active !== registration) return;
+      this.active = null;
+      const restoreFullscreen = this.restoreWindowFullscreen;
+      // Never reenter native window/layout APIs from a WebContents destruction stack.
+      queueMicrotask(() => {
+        if (this.disposed || this.active !== null || this.owner.isDestroyed()) return;
+        this.owner.setFullScreen(restoreFullscreen);
+        this.restoreLayout();
+      });
+    };
     const onMouse = (_event: Electron.Event, input: Electron.MouseInputEvent): void => {
       if ((input.type === 'mouseDown' || input.type === 'mouseUp') && input.button === 'left')
         grantGesture();
@@ -106,7 +133,7 @@ export class HtmlFullscreen {
     wc.on('leave-html-full-screen', onLeave);
     wc.on('did-start-navigation', onNavigation);
     wc.on('render-process-gone', revoke);
-    wc.on('destroyed', revoke);
+    wc.on('destroyed', onDestroyed);
     return () => {
       revoke();
       unregister();
@@ -117,7 +144,7 @@ export class HtmlFullscreen {
       wc.removeListener('leave-html-full-screen', onLeave);
       wc.removeListener('did-start-navigation', onNavigation);
       wc.removeListener('render-process-gone', revoke);
-      wc.removeListener('destroyed', revoke);
+      wc.removeListener('destroyed', onDestroyed);
     };
   }
 
@@ -184,12 +211,14 @@ export class HtmlFullscreen {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.clearPending();
     this.exit();
+    this.contentView.removeListener('bounds-changed', this.onResize);
     this.owner.removeListener('resize', this.onResize);
     this.owner.removeListener('blur', this.clearPending);
     this.owner.removeListener('hide', this.onHide);
-    this.owner.removeListener('minimize', this.onHide);
+    this.owner.removeListener('minimize', this.onMinimize);
     this.owner.removeListener('leave-full-screen', this.onWindowLeave);
   }
 }

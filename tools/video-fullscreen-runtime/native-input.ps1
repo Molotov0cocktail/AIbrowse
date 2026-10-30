@@ -13,6 +13,9 @@ using System.Runtime.InteropServices;
 using System.Threading;
 public static class FullscreenInput {
   [StructLayout(LayoutKind.Sequential)] public struct Point { public int X; public int Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rect);
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
   [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
@@ -24,6 +27,7 @@ public static class FullscreenInput {
   [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
   public static void Send(long handle, int process, int x, int y, string action) {
     SetProcessDPIAware();
+    SetThreadDpiAwarenessContext(new IntPtr(-4));
     var window = new IntPtr(handle);
     uint actual;
     GetWindowThreadProcessId(window, out actual);
@@ -33,8 +37,10 @@ public static class FullscreenInput {
     if (action == "Click") {
       if (!SetCursorPos(x, y)) throw new InvalidOperationException("鼠标定位失败");
       Thread.Sleep(100);
-      if (GetForegroundWindow() != window || GetAncestor(WindowFromPoint(new Point {X=x,Y=y}), 2) != window)
-        throw new InvalidOperationException("鼠标目标不属于验证窗口");
+      var hit = GetAncestor(WindowFromPoint(new Point {X=x,Y=y}), 2);
+      Rect rect; GetWindowRect(window, out rect);
+      if (GetForegroundWindow() != window || hit != window)
+        throw new InvalidOperationException("鼠标目标不属于验证窗口；目标=" + window + "，前台=" + GetForegroundWindow() + "，命中=" + hit + "，坐标=" + x + "," + y + "，窗口=" + rect.Left + "," + rect.Top + "," + rect.Right + "," + rect.Bottom);
       mouse_event(2,0,0,0,UIntPtr.Zero);
       Thread.Sleep(40);
       mouse_event(4,0,0,0,UIntPtr.Zero);

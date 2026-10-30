@@ -14,6 +14,11 @@ import { spawn, execFileSync } from 'node:child_process';
 const runRoot = resolve('log/video-fullscreen-20261030', randomUUID());
 mkdirSync(join(runRoot, 'profile'), { recursive: true });
 const output = join(runRoot, 'main.cjs');
+const budgetMs = Number(
+  process.argv.find((argument) => argument.startsWith('--budget-ms='))?.slice(12) ?? 180000,
+);
+if (!Number.isInteger(budgetMs) || budgetMs < 10000 || budgetMs > 180000)
+  throw new Error('运行预算须为10000至180000毫秒');
 const baseline = process.argv.find((argument) => argument.startsWith('--baseline='))?.slice(11);
 if (baseline && (!/^[a-f0-9]{40}$/.test(baseline) || process.argv.includes('--shell')))
   throw new Error('baseline只接受完整SHA且不适用真实壳');
@@ -73,7 +78,7 @@ writeFileSync(
       baseline,
       baselineSources,
       artifact: hash(output),
-      budgetMs: 180000,
+      budgetMs,
       maxRequests: 40,
       providerCalls: 0,
       purpose: '真实Electron全屏权限、窗口布局、退出恢复与非用户请求拒绝',
@@ -98,7 +103,13 @@ const child = spawn(
 );
 child.stdout.pipe(log, { end: false });
 child.stderr.pipe(log, { end: false });
-const stop = setTimeout(() => child.kill(), 180000);
+const stop = setTimeout(() => {
+  writeFileSync(
+    join(runRoot, 'deadline.json'),
+    JSON.stringify({ budgetMs, pid: child.pid, reason: '外部运行预算耗尽' }, null, 2),
+  );
+  child.kill();
+}, budgetMs);
 const code = await new Promise<number>((resolveExit, reject) => {
   child.once('error', reject);
   child.once('exit', (exitCode) => resolveExit(exitCode ?? -1));

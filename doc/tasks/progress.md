@@ -7,16 +7,16 @@
 ### 当前任务与后继
 
 - 2026-10-30 用户报告 bilibili 视频全屏无效，要求同时修复其他网页视频。干净接管
-  `5372d373b1c8e58257a4e5bcc7cb19795dba42cb`，output 仍0.1.17。
-  已实现 Session 按WebContents窄权限授权及全屏布局/恢复，差量合同见 legacy-repair 首节。
-  类型/构建/lint/格式通过；全量7816PASS/9FAIL/3SKIP保留，6项旧schema成功夹具已修，另3项I/O失败
-  原因unknown。新独立9文件201PASS，代码范围PASS，整体产品验收BLOCKED；原件 `log/video-fullscreen-20261030/`。
-  原生测试无法获得Windows前台，用户回复暂时无法操作桌面；首超时非有效产品红态，11轮28本机请求、
-  0 Provider全部保留。automatic/AI负例PASS，后台/任务拒绝Promise未settle仍FAIL，不把日志改判。
-  干净源 `8132a76850ce69666b2906e1df2e1e5341e90848` 已生成0.1.18完整候选于`release/`；包静态独审PASS
-  （229模块/16构建件/63ASAR/75程序文件），manifest为`e14a8f72f1abc03d232c36b133ef3e405861b8b148cc3f88652a5b243c91db06`。
-  **output保持0.1.17**，独立全79文件/manifest恒等；未启动发行程序/安装器，未推待验候选。
-  下一动作：桌面就绪后完成原生矩阵与复核，再选择output；包静态PASS不等于全屏运行验收通过。
+  `5372d373b1c8e58257a4e5bcc7cb19795dba42cb`；恢复基线 `3c88804`，差量合同见legacy-repair首节。
+  已完成窄权限、全屏布局及退出恢复，并修复原生最终尺寸缺26px、全屏关闭卡住、隐藏窗口被复显三项问题。
+  旧5372同夹具原生红态与修后绿态成立；最终15矩阵及完整壳侧栏恢复通过，网页关闭/意外WC销毁/dispose、
+  隐藏/最小化及恢复后再全屏窄验全部通过。累计85本机请求、0 Provider，原件 `log/video-fullscreen-20261030/`。
+  权限拒绝Promise挂起按上游源码依据REPLAN为实际callback及DOM/窗口/view/零迟到进入，不改旧失败或安全门。
+  旧全量7816PASS/9FAIL/3SKIP、I/O历史unknown及前台阻塞/失败保留；此前独立201项及最新5文件164项通过，
+  typecheck-delivery/lint-delivery/build-delivery均0。未访问真实bilibili或真实profile，不把本机夹具冒充站点验证。
+  新整体产品独审 `independent-review-final.json` PASS，22源/工具及47证明闭合；旧BLOCKED与失败保留。
+  初版8132a76的待验包完整归档于本轮log的`previous-candidate-8132a76`，不再作为当前最终候选。
+  **output当前仍0.1.17**；下一动作：最终独立审核、干净源重建0.1.18、核验身份后选择output并正常双远程同步。
 
 - 2026-10-29 用户新增书签分组保留、侧栏美化和起始页；干净接管
   `cb1e3af97718dc8b4929fdc377f23570dddaa2dc`，接管 output 为0.1.16。

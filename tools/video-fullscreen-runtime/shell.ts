@@ -25,6 +25,10 @@ const report: {
 } = { passed: false, requests: 0, providerCalls: 0, checks: [] };
 const server = createServer((_request, response) => {
   requests += 1;
+  writeFileSync(
+    join(root, 'requests.json'),
+    JSON.stringify({ requests, providerCalls: 0 }, null, 2),
+  );
   if (requests > 40) {
     response.writeHead(429).end();
     finish(new Error('本机请求超预算'));

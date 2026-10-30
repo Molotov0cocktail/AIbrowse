@@ -10,6 +10,9 @@ export async function nativeInput(
   x = 0,
   y = 0,
 ): Promise<void> {
+  owner.setAlwaysOnTop(true);
+  owner.moveTop();
+  owner.focus();
   const child = spawn(
     'pwsh.exe',
     [

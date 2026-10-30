@@ -2,6 +2,33 @@
 
 ## 网页视频全屏修复（2026-10-30）
 
+- 恢复验证：用户已确认桌面可操作，干净接管 `3c888045b2f0f81786f4e59be0788cb2b78e4f42`。
+  与已审8132a76相比仅任务文档变化，复用未受影响的201项单测和旧包静态证据；继续原生矩阵及必要修复。
+  拒绝路径oracle作窄REPLAN：[Electron 43.8.4源码](https://raw.githubusercontent.com/electron/electron/v43.8.4/shell/browser/api/electron_api_web_contents.cc)
+  的OnEnterFullscreenModeForTab在权限拒绝时直接返回，[上游37719](https://github.com/electron/electron/issues/37719)
+  也记录Promise不结束；旧FAIL保留。产品承诺为阻止越权全屏，不承诺平台拒绝Promise结束。
+  验收改为透明记录并原样转发产品权限callback(false)，绑定实际请求/WC，加DOM、窗口、view和零enter事件，
+  恢复后台可见后不得迟到全屏；内核前置拒绝仍检查Promise，正常用户正控仍须真实输入完整进入/退出。
+  不以日志或单独callback代替实际状态，不改产品权限策略，也不宣称旧Promise已拒绝。
+- 恢复后的原生结果：已确认遮挡窗口导致早期点击失效，仅验收窗口临时置顶后正常命中，未绕过精确
+  PID/窗口/前台/命中检查。旧5372同夹具 `0ea0264f` 实际点击、请求false/未进入红态，与 `fd627bf7`
+  真视频全屏/全尺寸/Esc绿态形成同工具对照，源码与工具绑定已独立逐项核验。
+  真实几何红态 `7c3ff723` 为view1414 vs最终1440；首次native enter事件方案 `8827d2fb` 仍失败，
+  改用contentView bounds-changed后通过。全屏关闭 `8d5ad938`/`67f32772`/`d7c33c09` 出现native阻塞，
+  保留超时/中止/阶段trace；改为销毁前撤权及退出，意外销毁异步恢复，`f26e196e`关闭与心跳通过。
+  `9ee9d261`隐藏窗口被退出全屏复显的红态已保留；按事件意图恢复隐藏/最小化后通过。
+- 最终原生矩阵 `8ae46826` 全15项PASS（20本机请求），实际壳 `f929eb75` 两项PASS（1请求），
+  覆盖视频/容器/F键/iframe允许与拒绝/阻止Esc/页面退出/切换/导航/关闭/内容显隐/自动/后台/任务/AI。
+  网页关闭 `76ea8ce1`、直接WC销毁 `93337c1d`、dispose `ac8be4ad` 各PASS；末尾仅隐藏分支增量后
+  `61c882de`/`28e0f9ca`分别证明隐藏/最小化保持、恢复布局、再次真实手势全屏及Esc退出。
+  全部合格证据sourceUnchanged=true，累计85次本机请求、0 Provider；未访问真实bilibili或用户profile。
+  请求累计口径：69次有result/requests直接计数，另外16次由中断轮重建（8d5 partial的13次加已加载close
+  夹具1次，67f和d7各已加载1次）；不声称三中断轮有完整落盘。后续工具已逐请求同步requests.json。
+  末尾修改只影响hide/minimize，独审允许复用未受影响15矩阵/壳/关闭证据，不重跑无关全量。
+  最新独立5文件164PASS，typecheck-delivery/lint-delivery/build-delivery均0；旧全量失败与旧BLOCKED记录保留。
+  新整体产品审核 `independent-review-final.json` PASS，绑定22源/工具与47证明，明确复用未改范围及16请求
+  重建口径。允许最终干净候选重建与静态验包，发行启动/安装器执行仍NOT RUN。
+
 - TASK / BASELINE：用户报告 bilibili 视频全屏按钮无效，并要求覆盖其他网页视频。干净接管
   `5372d373b1c8e58257a4e5bcc7cb19795dba42cb`，当前 output 为 0.1.17。
 - SOURCES / GOAL：本次用户请求、浏览器 detailed-design §7/§11 与 Stage7 §3.2。恢复标准 HTML
