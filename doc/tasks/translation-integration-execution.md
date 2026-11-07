@@ -282,3 +282,30 @@ timedtext是需维护的站点适配。yt-dlp不是已资格主依赖，EJS/runt
   92副本文件及5源码/编译产物字节闭合，三PNG目视通过。options截图是操作前状态，设置选择/reload真值来自
   同源码绑定探针result，不用截图代替行为。审核摘要为本轮log的installed-ui-review.json；实际模型未回显不可验证。
   无产品src/output变更，无第三方资产入Git；后继固定用户Tab/原content双语还原及生产安全装载继续按原合同。
+
+## 9. 原content双语/还原与安全宿主推进
+
+- 用户要求自行推进，不等待逐项确认。BASELINE：`6ba6a3660157326875fa7a635e5104124c7697d4`，main，干净。
+  复用§8原UI及资源资格，不重跑未受影响原UI矩阵；个人本机、未分发、原安装只读的边界不变。
+- 首切片：原1.34.4 content分段模块处理3段具有固定中文真值的合成英文；通过原配置/原服务接口接确定性
+  loopback替身，验证原文保持、译文数量/对应及还原后零译文。消息ACK不作为恢复完成证据。
+- 源码仅受控`tools/translation-qualification/content-*`与`run-content-*`；原安装程序/临时适配副本/截图/
+  原始运行输出只在本轮gitignored log，禁止把第三方完整代码复制入Git。不改isPro/账号/额度。
+- 使用新profile、单实例且复用host-probe.lock；精确loopback origin/path/method允许，外部请求一律拒绝，
+  真实Provider0、真实Key0、用户页面数据0；每场180秒触发终止，loopback请求≤60、翻译替身调用≤12，
+  同一失败假设最多两轮无新增证据即换路；记录每场预算和累计，保留以前unknown/失败和97拒绝账本。
+- 原生扩展仍只用于无任务/真实数据的诊断Session，不作为生产隔离方案；原popup若需活动页接点，只做
+  冻结userTab ID的窄诊断绑定，不扩展全Chrome兼容层。完整生产宿主须无Session级扩展观察和精确文档准入。
+- 并行只读调查实际BrowserController/TabManager/PageReader与已资格用户脚本的复用边界，形成受控原模块
+  装载、旧消息/导航关闭撤销、任务页排除和译文Evidence排除的最小正式接口；安全实现需反例与新独审。
+- 当前完成条件是可复现原content双语/还原证据及下一安全宿主接点明确，不将替身通过称真实翻译质量通过；
+  本切片审核/提交后继续已授权下一步，不以文档或提交边界要求用户确认。
+- 原custom1已核实际POST `{text_list,source_lang,target_lang}`→`{translations:[{text}]}`；两场
+  `content-0ed59007-f802-4df8-974c-06a941f0e409`及`content-85fcf1e6-8c3b-4a84-b92d-94c3a4954ef5`
+  三段逐一译文真值成立，原文保留，还原后译文节点0且原文不变。两场总loopback8、替身翻译6、拒绝132含哨兵2；
+  原20JS未改，真实Provider0。首场后补显式12次替身预算，第二场绑定最终采集代码，不删除首场。
+- 独审发现truthy标志/缺计数/伪数组可误判；`content-review-red.log`5PASS/3FAIL，修后8/8及两场离线重判
+  通过，`content-review-replay.json`绑定修后判定器与原件。采集器/runner和旧原件不改，不为判定修复再跑Electron。
+- 新设计§4.1规定生产文档租约、nonce、闭合服务/消息、原文节点账本与子帧后继资格；当前诊断不覆盖它们。
+- 独立Reviewer最终PASS限定上述原content合成双语/还原；独立8项及44个额外反例、90原资产/20原JS/92副本/
+  采集源码与编译身份闭合。摘要为本轮log的content-roundtrip-review.json；生产安全和真实质量不在此PASS范围。

@@ -629,6 +629,34 @@ LLMProvider文字流、DPAPI凭据和严格IPC可复用。现有快照是有界�
 - 本地解析/渲染组件与云端计算分开展示成本/能力；不下载模型、不默认引入Python/GPU运行栈。
   接受开源/API不等于授权无限费用、全部页面自动上传或全盘读取。
 
+### 4.1 受控宿主首模块与原文投影设计
+
+在原UI/原content诊断闭环后，生产首模块为固定用户文档租约与闭合路由；不把实验Session原生扩展装载
+带入生产。主进程专用UserDocumentIdentity包含tabId、webContentsId、generation、navigationSerial和loadSerial；
+租约含不可复用ID与AbortSignal。WebContents/WebFrameMain引用只留主进程，接口不进入AI工具契约。
+现有getOwnedWebContentsId包含任务页，不能充当准入；仅接受非taskOwned、已提交、未崩溃且无跨文档导航的用户页。
+
+- 每个请求和异步返回均复核租约、真实sender/senderFrame及预算；内容bootstrap在实际文档产生nonce并保存
+  document引用，执行与回填同步复验nonce/段落原值。导航开始、停用、取消、崩溃、关闭、退出均撤销，
+  导航失败不自动恢复旧token；活动Tab变化不能改变已冻结目标。
+- 新TranslationRuntime/IPC/world与qualified-userscripts分离，只复用生命周期机制。首批语义为握手、
+  非敏感配置/状态、有界进度、translatePage/restorePage/switchTranslationMode、类型化文本批次和取消；
+  不接受任意URL、headers、JS、文件路径、SQL或IPC名。原UI存储只允许明确非敏感键，Key只写/hasKey另验。
+- 原资产按摘要和唯一接点装载，tabs.query/get/sendMessage只映射租约用户页，runtime.getURL只接受固定
+  资产枚举。原通用fetch转发及字幕/图片主世界脚本不能透传；sandbox/isolated world本身不限制外发。
+  独立securityOrigin+CSP可作待验候选，DOM资源请求仍须覆盖；新Session网络门不能覆盖已有file拒绝门。
+- PageReader当前直接读innerText/textContent/selection。原1.34.4的r2/LN译文wrapper标记只覆盖部分路径；
+  PWe→rO→ode会原位修改Text.nodeValue，并有移除原节点/插入目标节点的fallback。因此CSS黑名单不足。
+  后继在真实DOM写入/替换接点建立内存原文节点账本，绑定节点/原值/替换值/版本，构造当前原文投影；
+  不缓存整页旧快照冒充实时原文，不读页面可伪造备份属性作为可信值，不自动还原页面干扰观看。
+  与PageReader world1001的投影交换必须专门资格，不能假定contextBridge能传DOM引用或让第三方代码进入该world。
+- 主帧先实现；WebFrameMain没有独立world执行接口，现有preload仅主帧且禁用子帧Node。子帧仍是后继保留目标，
+  需父租约/精确frame/子文档nonce及独立平台资格，不退到主世界或开启子帧Node。
+
+反例至少包括同URL用户/任务页、其他Tab及子frame冒用、reload/导航开始未提交/导航失败、晚到注入与响应、
+取消/关闭/崩溃、伪造消息与额外字段、重复requestId、预算/日志Key排除。原文投影另覆盖双语、原位仅译文、
+经典替换、还原、动态DOM、译文标记删除/伪造及网站自行改动。以上是后继设计，不代表这些门已经实现通过。
+
 ## 5. 验证计划与决策条件
 
 ### 5.1 实施前可行性验证顺序
