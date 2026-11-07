@@ -19,7 +19,9 @@
   经其同意才制作实现执行方案prompt。该轮只有资料/源码/历史证据复核，未生成prompt或实现产品；最新决议如下。
 - 最新用户决议及prompt基线：`a203047b234ebeb663cdf1aada51df333773ced9`。用户同意制作prompt，并要求
   **保留沉浸式翻译原框架/方便界面，免费版已能完成的功能不重写，仅缺失能力替代**。§3.6及
-  `doc/tasks/translation-integration-execution.md`为当前执行方向；本轮只制作prompt，不运行其中实施步骤。
+  `doc/tasks/translation-integration-execution.md`为当前执行方向；该轮只制作prompt，不运行其中实施步骤。
+- 执行启用：用户随后明确选择从P0/P1开始实施；执行baseline及差量合同见执行稿§7，当前进度见progress。
+  历史调查和prompt制作范围不再作为实施禁令；原客户端/高级服务仍须逐门资格，不能把启用等同兼容通过。
 
 ### 1.1 固定审查对象
 
@@ -530,6 +532,46 @@ R14若以后启用WebDAV/Drive，它们只是存储通道，版本/冲突/恢复
 缺菜单/侧栏/开页API先做窄适配，不开放任意JS/IPC/文件/HTTP，不放松Research/Watch或共享登录语义。
 
 正式可复制执行prompt见[翻译增量集成执行合同](../tasks/translation-integration-execution.md)。
+
+### 3.7 P0资源依据与实施映射
+
+80项主功能及复合分支的初始分类、保留资产、最小接口与逐项验收见
+[能力保留与差量矩阵](translation-capability-matrix.md)。分类不表示免费权益、运行兼容或效果已通过。
+用户确认在Edge和Chrome中已有插件安装；未读取这些浏览器的真实profile或账号数据。
+
+| 资源路径         | 已查依据                                                                                                                                                                                | 当前边界                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 原版正常安装     | [官方安装说明](https://immersivetranslate.com/zh-Hans/docs/installation/)提供ZIP解压和开发者模式加载路径                                                                                | 支持官方说明范围内安装；不推导Electron兼容、改包或内置权                                       |
+| 现行客户端修改   | [官方README](https://github.com/immersive-translate/immersive-translate/blob/main/README.md)声明非开源；固定包未见单独LICENSE/NOTICE/EULA                                               | 已查资源未找到覆盖1.34.4修改的明确依据；不是判定所有本机修改一概禁止                           |
+| 官方在线服务嵌入 | [中文条款](https://immersivetranslate.com/zh-Hans/docs/TERMS/)使用限制要求书面许可；[英文条款](https://immersivetranslate.com/en/docs/TERMS/)将Service定义为Website，当前未见同名限制段 | 两版均标2026-08-31但内容/范围有差异；不能据此宣布已有改包/分发授权，也不扩大成离线自有夹具禁令 |
+| 内置或深度集成   | [浏览器合作说明](https://immersivetranslate.com/zh-Hans/docs/browserExtensionIntegration/)列出预装及深度集成合作                                                                        | 可联系的合作路径，不是已授予本项目的许可；本轮未联系任何人                                     |
+| JS SDK           | [SDK说明](https://immersivetranslate.com/zh-Hans/docs/js-sdk/)面向自有网站，需联系取得脚本                                                                                              | 未取得资源，未证明包含原popup/options/字幕/文件完整流程                                        |
+
+原客户端修改/随包分发须分别有适用资源依据；拥有正常安装不自动闭合这两项。自有合成探针、固定包静态
+分析与窄宿主契约不依赖该条件，继续推进。不得为绕开外部条件擅自改成自研整套翻译器或独立登录区。
+
+### 3.8 宿主装载机制结论与适配路径
+
+43.8.4合成实测否决了“同共享Session直接装载全站原生扩展可尊重taskOwned”的假设：同URL普通页与
+Research/Watch页的主文档、同源iframe及about:blank全部运行合成内容脚本；后台收到对应消息，tabs.query
+可以枚举任务页。该反例不依赖是否缺菜单API，也不是1.34.4已执行证据。原件与每轮失败见执行合同§7。
+
+自有固定脚本的对照证明：不注册Session原生扩展，只在精确普通用户WebContents装载隔离preload，可保持
+Session/Cookie共享并排除本场任务页和子帧；导航/直接关闭准入登记撤销、第二本机origin拒绝哨兵成立。
+此结论只覆盖合成装载；原UI、后台能力、原文Evidence、密钥与旧消息竞态仍未通过。对子帧的合成默认排除
+不授权删除原版可用子帧翻译，产品子帧准入须绑定父用户Tab与精确文档另验。
+
+后继工程选择为受控客户端适配版，保持以下资产与能力边界：
+
+- 原popup/options/侧栏及content/基础字幕模块继续作为复用目标，适配包需逐资产摘要和窄diff；不另造平行UI。
+- 原扩展service worker不能以Session级权限继续运行；后续后台逻辑若复用，需放在无Node、无通用网络的
+  受控沙箱容器，通过闭合宿主消息接点工作，不把第三方后台代码直接放进有系统权限的主进程。
+- 普通用户页仍是共享登录Session；任务页无翻译preload、无原生扩展注册。标签枚举/动作只由宿主提供
+  精确用户Tab能力，不把全部webContents或任务页请求传给适配客户端。
+- 原平台抽象与browser-bridge仅作静态候选接点，不直接开放CustomEvent通用桥或靠UA伪装恢复所有能力。
+  UI的Key输入可局部改造为只写/hasKey；网络、存储、文件及PDF桥接按H4–H7逐项资格。
+- 下一切片是原设置/popup→指定用户文档双语/还原→非敏感设置重启保持，先确定性替身再真实免费路径。
+  适用本机修改/宿主集成资源依据未闭合前，不能把此路线标为已具备执行原资产适配的条件。
 
 ## 4. AIbrowse 集成边界
 
