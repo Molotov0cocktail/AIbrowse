@@ -15,6 +15,8 @@
 - 后续差量基线：`3a46d8564fd8bd4d6dac090a15d0485da276f9a4`，接管干净；用户进一步要求成熟GitHub
   组件、在线免费层/BYOK优先、尽量不部署本地模型，并纠正录播字幕应提前取得转写、按时间轴逐句显示。
   本轮只更新候选路线、服务资格、字幕契约和验收计划；复用未改动的80项盘点与静态工具证据。
+- 最终校验差量基线：`f443ada4e8e53f613ba8744c7f7a8793ed07f937`，接管干净；用户要求先交付最终方案评估，
+  经其同意才制作实现执行方案prompt。结论见§3.5；本轮只有资料/源码/历史证据复核，不生成该prompt或实现产品。
 
 ### 1.1 固定审查对象
 
@@ -190,19 +192,19 @@ API Key；默认安装不下载/部署本地 LLM、OCR、ASR、版面识别或 T
 
 | 路线                        | 优先方案与备用路径                                                                                                           | 最小可行性验证                                                                        | 停止/换路条件与差异                                                                                   |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| R01 网页/交互               | 评估 Read Frog 的段落/动态 DOM/字幕等模块，满足许可后提取适配；固定隔离脚本与自有UI负责原位双语、恢复、浮球、侧栏、快捷键    | 静态长文、SPA、iframe、Shadow DOM、富文本、编辑区、导航/关闭取消、恢复前后DOM比较     | 许可不兼容则独立实现所需模块；重复翻译、串页、正文损坏停止策略，不退化为快照摘要并称等价              |
+| R01 网页/交互               | 自有分段/动态DOM/回填与UI；Read Frog仅逐文件及依赖闭包资格后局部复用，不能整体引入其专有布局引擎；固定隔离脚本负责页面交互   | 静态长文、SPA、iframe、Shadow DOM、富文本、编辑区、导航/关闭取消、恢复前后DOM比较     | 许可不兼容则独立实现所需模块；重复翻译、串页、正文损坏停止策略，不退化为快照摘要并称等价              |
 | R02 智能翻译层              | 自有在线文字Provider＋有界上下文、领域专家、结构化术语提议、确定性校验、版本/优先级/冲突和对照                               | 同模型裸API对照；多义词/人名/专业词/指代、漏译/重译、术语采用、撤销                   | 缺段/改ID/术语错误时限次修复或明示失败；自动提议不静默修改永久术语库                                  |
 | R03 模型适配                | 官方免费层与BYOK；复用安全凭据，新增类型化TranslationProvider；文字、视觉、ASR、文档按能力分别配置                           | 协议/批量/取消/超时/限额/重定向/结构反例；免费耗尽和计费估算                          | 不自动切付费、不共享Key池；免费层不可用时明确配置/额度状态，不把网页端点当有服务保证的API             |
 | R04 写作/输入               | 用户选择语境→在线生成/润色→差异预览→确认回填；领域/语气模板、独立模型                                                        | input/contentEditable、IME、光标、原值变化、撤销、导航                                | 文档/元素/原值不符拒绝回填，不自动提交，不默认发送整页私信                                            |
 | R05 已有字幕/断句           | 优先平台人工/自动字幕；SRT解析优先subtitle.js，WebVTT/TTML/ASS按能力补适配；上下文批量预翻译，确定性句段映射和同步，详见§3.3 | 短碎cue/跨cue长句/重叠/双说话人；预取、播放/暂停、seek、倍速、全屏、切视频            | 丢cue/错误时间/错绑视频即拒绝；不要求等待整片翻译，不在每句播放时才发翻译请求                         |
-| R06 无字幕预转写            | 受控取得有权处理的录播音轨→在线文件/分块ASR（Groq优先评估，Azure批量ASR备选）→带时间戳原文→R05                               | 静音/噪声/口音/混语、分块边界/偏移、CER/WER、时间误差、首段就绪/全片完成、配额/取消   | 默认不录麦克风/实时回环听写；无可取得音轨时提供字幕/音频导入，不绕过DRM；直播/会议实时ASR另列可选范围 |
-| R07 图片OCR                 | 在线OCR/视觉API返回文本、框、阅读顺序→在线翻译→本地覆盖排版；优先评估Azure Read/Layout，视觉模型作备选                       | 中英日等选定语种、旋转/小字/无字/混排、框坐标、DPI/缩放、恢复与溢出                   | 无可靠框或幻觉文字不得自动覆盖；低质量保留原图、允许纠正，旁注有体验差异                              |
+| R06 无字幕预转写            | 先验音轨获取：导入/可处理媒体流/受控站点适配；再评估Groq large-v3、Azure Fast Transcription，Batch作异步长任务备选→R05       | 静音/噪声/口音/混语、分块边界/偏移、CER/WER、时间误差、首段就绪/全片完成、配额/取消   | 默认不录麦克风/实时回环听写；无可取得音轨时提供字幕/音频导入，不绕过DRM；直播/会议实时ASR另列可选范围 |
+| R07 图片OCR                 | Azure Document Intelligence prebuilt-read/layout→文字/框/顺序→翻译/本地排版；DeepL图片文档API作整链对照候选                  | 中英日等选定语种、旋转/小字/无字/混排、框坐标、DPI/缩放、恢复与溢出                   | 无可靠框或幻觉文字不得自动覆盖；低质量保留原图、允许纠正，旁注有体验差异                              |
 | R08 漫画成图                | 云OCR/阅读顺序＋在线翻译＋受控遮罩＋云inpainting＋本地排版；复用许可允许的开源排版/遮罩模块，纯色气泡可确定性填充            | 竖排/振假名/拟声/彩底/网点/长译文；分别验OCR、残字、背景损坏、排版                    | 云修复API只是组件，不等于成熟整套漫画服务；背景破坏/顺序错则不自动成图，覆盖/旁注不能冒充无痕重绘     |
 | R09 圈选/隐私               | 当前页显式圈选→受限截图/裁剪→用户配置在线OCR/视觉服务；本地确定性脱敏/可逆占位映射，不隐式部署NER模型                        | DPI/缩放/滚动/导航、仅选区上传、脱敏漏检/映射碰撞；图片中的敏感信息另验               | 文档/坐标不确定即丢弃；外发前可预览，敏感内容禁用不合适的免费层；规则脱敏不保证语义匿名化             |
-| R10 文本型PDF               | PDF.js解析/阅读＋文字API用于双语阅读；保版导出优先专业在线文档API（DeepL/Azure）；BabelDOC只作非默认外部服务候选             | 双栏/脚注/链接/旋转/字体/表格/公式、逐页完整性/顺序/溢出/导出回开                     | PDF.js不是翻译引擎；专业API也不默认提供原译对照；仅双栏阅读不等价保版导出，需分别验收                 |
+| R10 文本型PDF               | PDF.js＋文字API用于双语阅读；保版导出首评DeepL文档API，Azure PDF批量＋Blob作备选；BabelDOC非默认外部服务候选                 | 双栏/脚注/链接/旋转/字体/表格/公式、逐页完整性/顺序/溢出/导出回开                     | PDF.js不是翻译引擎；专业API也不默认提供原译对照；仅双栏阅读不等价保版导出，需分别验收                 |
 | R11 扫描/复杂PDF            | 云OCR/Layout或支持该格式的在线文档翻译→区块/表格ID→受控排版；公式优先保留                                                    | 倾斜/彩底/混合扫描/空白页、合并cell/跨页表、数值/公式/阅读关系                        | OCR缺漏、串cell、公式改动阻止成功导出；云端保版对公式/复杂扫描的能力也待真值验证                      |
 | R12 EPUB/DOCX/文本/字幕文件 | 本地有界ZIP/XML按spine/OOXML结构解析，文字API翻译后恢复；epub.js阅读，python-docx仅必要时评估；纯文本/字幕独立导出           | 目录/ruby/RTL、域/修订/文本框/超链接、编码/字幕样式、Markdown代码/公式、恶意归档/回开 | 不支持/DRM明确拒绝；不丢内容后假成功，Mammoth仅语义预览，MOBI单独资格                                 |
-| R13 朗读                    | Windows已有语音或用户配置在线TTS；不默认下载Kokoro等权重                                                                     | 语种/声线/切段、暂停/取消/释放/切页；时间事件单独验证                                 | 无时间事件只做段级高亮，不伪造逐词同步；免费字符耗尽不自动计费                                        |
+| R13 朗读                    | 受信UI检测speechSynthesis本地声线，Windows窄原生接口/Azure TTS备选；不默认下载声线或Kokoro权重                               | 语种/声线/切段、暂停/取消/释放/切页；时间事件单独验证                                 | 无时间事件只做段级高亮，不伪造逐词同步；免费字符耗尽不自动计费                                        |
 | R14 数据/配置/历史          | 本地版本化术语/设置、原子导入/备份、Undo/冲突；缓存绑定原文/模型/Prompt/术语版本，云同步另适配                               | 损坏/中断/并发/迁移/恢复、账号变化、请求结果未知、Key不进导出                         | 不复制官方Key云同步/Drive权限或默认云保存正文；跨设备差异明确说明                                     |
 | R15 外围/生态               | 侧栏/教程/反馈/公告本地设计；外部产品保留已识别入口；直播已有DOM字幕可做增量翻译                                             | 链接/开窗权限、隐藏条件/离线；逐项确定原版生态体验                                    | 不把直播增量字幕等同录播预取；账号/奖励/手机App/Zotero/Google Docs不因盘点就自动实现                  |
 
@@ -213,7 +215,7 @@ API Key；默认安装不下载/部署本地 LLM、OCR、ASR、版面识别或 T
 
 | 候选与核查版本                                                                                                                                                                        | 维护/许可依据                                                                          | 采用范围与限制                                                                                        |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| [Read Frog](https://github.com/mengxi-ream/read-frog/tree/174027d2bdfb6013dfc41d54c1cb87ee8c13274c)，核查SHA `174027d2bdfb6013dfc41d54c1cb87ee8c13274c`                               | 活跃仓库，release v1.58.0（2026-11-05）；GPLv3及另行商业许可；存在段落/字幕测试        | R01/R05优先复用评估，需改接AIbrowse安全边界；其给其他项目的特定商业授权不覆盖本项目                   |
+| [Read Frog](https://github.com/mengxi-ream/read-frog/tree/174027d2bdfb6013dfc41d54c1cb87ee8c13274c)，核查SHA `174027d2bdfb6013dfc41d54c1cb87ee8c13274c`                               | release v1.58.0；公开客户端GPLv3，另含专有布局包、未闭合许可依赖及托管服务             | 仅局部参考/复用资格，不能由根许可证推导完整可复用；默认不整体fork，不引入专有布局包                   |
 | [PDF.js](https://github.com/mozilla/pdf.js/tree/65832caa7b8dbc3a1274c533efe06032c7dba6d5)，核查SHA `65832caa7b8dbc3a1274c533efe06032c7dba6d5`                                         | Apache-2.0；最新release v6.5.438（2026-11-01）；测试覆盖Windows/Ubuntu与Chrome/Firefox | R10/R11阅读/坐标/文本项提取底座；不含OCR和完整保版翻译                                                |
 | [subtitle.js](https://github.com/gsantiago/subtitle.js/tree/e4c7ad0427dd102619a09378e69cfdcd831a7582)，核查SHA `e4c7ad0427dd102619a09378e69cfdcd831a7582`                             | MIT；源码package 4.2.2，分支最后提交2025-11-16；有解析/时间戳/resync/输出测试          | R05/R12优先SRT解析/导出；WebVTT仅部分支持，TTML/ASS另做；GitHub最新release仍4.1.2，不能混称固定发行版 |
 | [vtt.js](https://github.com/mozilla/vtt.js/tree/42ca104e8845bfc4485e8579d62cac6feaa00de9)，SHA `42ca104e8845bfc4485e8579d62cac6feaa00de9`                                             | Apache-2.0；默认分支最后提交2019-03-28；Grunt/Bower/PhantomJS旧工具链                  | 规范边界/测试参考，不优先新增主依赖；未归档不等于活跃维护                                             |
@@ -235,6 +237,20 @@ BabelDOC的[默认布局选择](https://github.com/funstory-ai/BabelDOC/blob/38d
 [ONNX推理](https://github.com/funstory-ai/BabelDOC/blob/38d3896dcde9b5a940c62cf5563cadea673a64d3/babeldoc/docvision/doclayout.py)和
 [资产下载](https://github.com/funstory-ai/BabelDOC/blob/38d3896dcde9b5a940c62cf5563cadea673a64d3/babeldoc/assets/assets.py)说明仅配置翻译Key仍会用本地模型。
 
+最终校验纠正：Read Frog固定SHA的package.json包含`@read-frog/layout-engine@0.8.0`、
+`@read-frog/api-contract@0.27.0`与`@read-frog/definitions@0.15.0`。前者发布包LICENSE为专有许可，
+限定作为发行方Read Frog产品未修改部分使用或取得书面许可；不能用根仓库GPL覆盖该包。
+后两者本轮发布包未找到许可证，关联monorepo当前不可访问，不能据此宣称许可闭合或必为私有仓库。
+主协调独立核验[固定npm元数据](https://registry.npmjs.org/@read-frog/layout-engine/0.8.0)与其tgz，
+48,214字节，SHA256 `6f3159b2f348dd58af15d08fe64abd6d747b9cfd4a5f4c7d8c4ee25756fbc037`，
+与registry的sha512 integrity一致；仅内存读取LICENSE，未安装/执行。
+`paragraph-segmentation.ts`已查运行时导入链未接上述布局包，可作局部候选；移植仍须保留适用许可，
+使用自有窄类型/站点接口，不能顺带搬入整个config/UI依赖链。不兼容时独立实现，不以IPC隔离消除许可义务。
+
+补充替代线索：[KISS Translator](https://github.com/fishjar/kiss-translator)的GPLv3代码可作第二算法参考，
+其动态Provider插件/hook/规则订阅不能整体带入受限能力层；尚未固定版本或检查依赖闭包，不列已资格主依赖。
+Interline（MIT、较新）和Margin Read（MIT、early MVP）没有足够资格证据替代完整高级能力，不因宽松许可就升格首选。
+
 前轮已调查、现不默认部署的候选：PaddleOCR（Apache-2.0）、whisper.cpp（MIT）、manga-ocr（Apache-2.0）、
 manga-image-translator（GPL-3.0）、Kokoro及其依赖。代码模块可继续评估，推理权重不随默认安装下载；
 若以后明确选用本地方案，模型、运行库、字体、声线许可及Windows资源/安全资格分别核验。
@@ -255,6 +271,14 @@ manga-image-translator（GPL-3.0）、Kokoro及其依赖。代码模块可继续
 | 保版文档：DeepL API                        | 新Developer为一次性100万字符，不重置；旧API Free每月50万但已停止新购；Growth等付费               | 文档格式/语种/体积另核；PDF/Office等最低每份计50,000字符，不把少页视为零成本；无双语/公式保真保证。[套餐](https://support.deepl.com/hc/en-us/articles/360021200939-DeepL-API-plans)、[计量](https://developers.deepl.com/docs/resources/usage-limits)                               |
 | 漫画去字修复：fal托管inpainting候选        | BYOK，未确认稳定免费层，不列免费承诺                                                             | 有图像/遮罩API，可与云OCR和本地排版组合；需验证模型/许可、网点保护、输出尺寸和留存后才能采用，不是已完成漫画翻译器。[API](https://fal.ai/models/fal-ai/lora/inpaint/api)                                                                                                            |
 
+最终补充：Azure [Fast Transcription](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/fast-transcription-create)
+适合同步录播文件备选，返回句/词时间戳，当前文件<500MB且<5小时；与Batch一样不适用F0实时ASR免费额度，
+各模型、地区及计量另核。Groq多音轨文件只识别第一轨，上传前须验证选轨，时间戳字段存在不等于词级对齐合格。
+DeepL[文档接口](https://developers.deepl.com/api-reference/document/upload-and-translate-a-document)列出JPEG/JPG/PNG，
+可加入图片整链对照；最低文件计费须按所选格式/套餐核验，不按OCR字数估算。Azure独立图片翻译在
+[格式表](https://learn.microsoft.com/en-us/azure/ai-services/translator/document-translation/overview)标为
+`2025-12-01-preview`，走批量/Blob、按图计费；只作为预览备选，不默认承诺漫画效果。
+
 数据处理按具体提供方/套餐适配：Azure文字翻译的[不保留提交内容说明](https://learn.microsoft.com/en-us/azure/ai-services/translator/secure-deployment)
 不能外推到文档/音频；Document Intelligence结果临时留存及删除见[FAQ](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/faq?view=doc-intel-4.0.0)。
 Groq[数据政策](https://console.groq.com/docs/your-data)区分默认处理、可靠性/滥用排查和ZDR，不把“默认不留存”写成绝对零日志。
@@ -265,6 +289,11 @@ Gemini的PDF理解不是保版导出，Files上传/主动删除见[文件接口]
 开源仓库中的免Key网页接口可另做有界资格调查，但不能仅凭代码推断稳定、长期免费或允许产品集成。
 本轮未发现可支撑全部高级功能、无需Key且有明确服务保障的免费主链。配置界面按能力显示文字、视觉/OCR、
 ASR、文档及修图服务状态；一个普通文字Key不自动具备其余模态能力，术语/上下文和字幕体验由产品层实现。
+
+普通文字备选可加入[Google Cloud Translation](https://cloud.google.com/products/translate/pricing?hl=en)：
+NMT首50万字符/月以抵扣方式提供，需启用billing，超额可能计费；不是免账单账户。OpenRouter免费模型仅作
+实验备选，[免费集合](https://openrouter.ai/collections/free-models/)有速率/日额度且模型会变化，不默认自动路由。
+二者本轮未真实调用，不挤占Azure文字免费候选＋现有LLM BYOK的首选地位；Gemini免费层仍仅作非敏感内容候选。
 
 ### 3.3 字幕契约：读取已有字幕、重新断句与同步显示
 
@@ -318,6 +347,14 @@ ASR、文档及修图服务状态；一个普通文字Key不自动具备其余�
 读取`.ytp-caption-segment`等已产生字幕并合并滚动更新；这也不证明扩展自己录音识别。平台已产生的字幕
 仍可增量翻译，其时延另验。用户具体视频是否直播、有效配置与所选字幕轨未取得，不能断定命中哪一分支。
 麦克风、系统回环和实时ASR不是当前录播主路径，也不因功能盘点自动启动实现。
+
+最终资格边界：[YouTube captions.list](https://developers.google.com/youtube/v3/docs/captions/list)不返回字幕正文，
+[captions.download](https://developers.google.com/youtube/v3/docs/captions/download)要求视频编辑权限。
+页面timedtext/播放器响应是站点适配，不能称任意视频可用的公开稳定API。R06必须先验证音轨取得，再跑ASR质量；
+用户导入与站点可处理非DRM媒体流是明确入口。[yt-dlp](https://github.com/yt-dlp/yt-dlp#dependencies)仅作受控
+提取器候选，YouTube完整支持还涉及EJS/JS runtime、部分请求PO Token及后处理依赖；不直接打包为已合格底座。
+播放流捕获只能取得已经播放的内容，不能替代提前读取录播音轨。原始追加/修订字幕事件先规范化，之后再校验
+句组对规范化cue的完整覆盖，不机械重复展示原始增量事件。
 
 ### 3.4 STT效果评估：原文准确度优先、速度其次、观看资源受限
 
@@ -396,11 +433,80 @@ WER/CER按冻结的NFKC、小写、去标点规则计算，**不是“100%减错
 建议工程筛选门为新增掉帧率≤0.1个百分点、无新增≥500ms停顿；须在该POC开始前冻结，不表示已通过或已获
 产品容忍度裁决。离线Worker应可暂停/卸载、单任务、无GPU默认占用，并在内存不足或持续字幕积压时显式失败/提示。
 
+### 3.5 最终方案评估与待用户确认范围
+
+2026-11-07最终校验覆盖全部15路线；保留§2的80项功能盘点。本节是**实现前技术评审**，不是功能已实现、
+达到原版Pro效果、生产准确度或观看无干扰验收。官方接口说明、仓库可读与真正端到端成功是不同证据。
+本轮没有调用真实Provider、上传文件/音频、安装依赖/模型或运行原插件；复用§3.4已有短样本实测。
+
+建议总体路线为：**AIbrowse原生翻译服务＋局部成熟组件＋按能力配置在线服务；默认不部署推理模型。**
+原插件1.34.4继续作为功能/交互参考，其会员后台不能由客户端代码恢复。Read Frog不整体fork；PDF.js、
+subtitle.js等在精确版本、许可与安全资格后采用。术语、上下文、段落映射、字幕预取、双语显示、撤销与
+文档任务是自有产品能力，不以接通一个文字API代替。下列“纳入”均是建议，等待用户确认。
+
+| 路线               | 最终建议                                                      | 决定效果的验证点                                                                |
+| ------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `R01` 网页/交互    | 纳入基础范围，自有DOM编排/双语回填，局部库复用                | 动态页、恢复原文、输入区保护、导航取消、跨页零串入；不承诺任意站点              |
+| `R02` 智能翻译     | 纳入基础范围，上下文/领域专家/智能术语提取/术语高亮与冲突管理 | 同模型裸API对照，原意/专名/术语、段落与占位符完整性；模型提议不得静默变永久术语 |
+| `R03` 服务适配     | 纳入基础范围，现有BYOK文字＋Azure官方文字免费层候选           | 能力/套餐分开配置；Key主进程，限额可见；免费不等于无Key/永久免费                |
+| `R04` 写作/输入    | 纳入基础范围，用户触发、差异预览与可撤销回填                  | IME/contentEditable、原值变化及元素身份；不自动提交输入内容                     |
+| `R05` 已有字幕     | 首批重点，人工/自动轨→规范化/句组→上下文预译→双语时间轴       | 先验首批站点取轨，再验同步/seek/倍速/全屏/切视频；页面适配有维护成本            |
+| `R06` 无字幕录播   | 条件纳入，音轨资格通过后比较Groq large-v3与云端备选           | 先取音轨，再比英语优先的WER/中日CER、专名与时间轴；未取得音轨不能宣布自动支持   |
+| `R07` 图片         | 条件纳入，云OCR＋翻译＋本地排版，整链图片API作对照            | OCR/阅读顺序、框、覆盖、竖排/小字；不能仅凭译文流畅判图片合格                   |
+| `R08` 漫画         | 保留高级目标，先POC，不承诺任意复杂漫画无痕重绘               | 气泡/遮罩/网点/拟声/长译文；纯色气泡与复杂背景分别验收，失败不静默降为旁注      |
+| `R09` 圈选         | 纳入基础范围，本地裁剪/用户遮罩＋在线OCR                      | 仅选区外发、缩放/导航绑定；截图先上云再脱敏不算外发前脱敏                       |
+| `R10` 文本PDF      | 双语阅读纳入；保版/双语文件导出先POC                          | PDF.js只负责阅读；DeepL首评、Azure PDF批量备选；译文PDF不自动等于双语PDF        |
+| `R11` 扫描/复杂PDF | 保留高级目标，按文本/扫描/混合分流，条件纳入                  | 漏区块、数值/公式/表格/字体；供应方“成功”不能代替逐页完整性验证                 |
+| `R12` 文件         | TXT/Markdown/SRT与EPUB/DOCX分格式纳入，复杂结构先POC          | 结构ID、归档安全、回开完整性；ASS/TTML/MOBI另资格，不把预览当保真导出           |
+| `R13` 朗读         | 纳入可选辅助，检测已安装本地声线，云TTS备选                   | 当前Electron离线发声、语种、取消/释放；无boundary事件则段级高亮                 |
+| `R14` 数据         | 本地术语/设置/导入导出纳入；翻译历史/云同步另定留存           | 原子写/迁移/Undo/Key排除；跨设备和远端正文保存不暗中开启                        |
+| `R15` 外围         | 应用内侧栏/浮球/快捷键/说明纳入                               | 手机App、Zotero、独立Google Docs插件、账户奖励生态不是本次Windows功能的当然组成 |
+
+R02区分人工固定术语、文章级智能建议与Provider自己的glossary能力，不把普通MT与LLM术语行为混称一致。
+R14若以后启用WebDAV/Drive，它们只是存储通道，版本/冲突/恢复仍由产品负责；Drive需本应用自己的OAuth，
+不继承其他产品的授权或appDataFolder。均不改变当前默认本地术语/设置、内存翻译缓存的建议。
+
+本轮纠正的具体限制，后续prompt不得丢失：
+
+1. **文档接口分流**：Azure PDF属于批量流程，需要Blob及其授权/删除生命周期；同步单文件当前格式表不含PDF。
+   Document Translation不适用F0文字额度。DeepL译文文件与PDF.js双语阅读器分别交付，双语文件导出须独立验证。
+2. **混合PDF缺口**：Azure[官方FAQ](https://learn.microsoft.com/en-us/azure/ai-services/translator/document-translation/faq)
+   明确混合数字/扫描元素仅翻译数字部分，扫描PDF可能丢布局/样式。须预检并标明未处理区块；转全扫描是有损选择，
+   不能当自动无差异fallback。支持扫描不等于任意公式/跨页表格保真。
+3. **图片隐私**：默认无本地OCR/NER时，外发前的图片保护靠用户可见的裁剪/遮罩；不能在云OCR之后倒称已在本地脱敏。
+   文字规则占位不承诺全部语义敏感信息可识别；高隐私内容须匹配服务数据政策或不外发。
+4. **结构保留**：[python-docx Document](https://python-docx.readthedocs.io/en/latest/api/document.html)的paragraphs/tables
+   不覆盖所有修订/嵌套结构，[Paragraph.text](https://python-docx.readthedocs.io/en/latest/api/text.html)赋值会删除run格式。
+   不用简单遍历替换承诺完整DOCX；epub.js是阅读器，输出需有界重打包，默认禁脚本；Mammoth预览另行净化。
+5. **STT的地位**：本地small Q5/2线程只保留备用，默认不随产品下载。现有483MiB/9.14%CPU数字不能保证播放零影响；
+   Windows字幕/UIA、实验性Windows AI Speech与WhisperX均不作默认录播底座。云模型准确度也须同语料实测。
+6. **服务选择**：Azure Document Intelligence Read/Layout与Azure Vision的Read不是同一产品，使用明确API及版本。
+   图片翻译预览接口、fal修图都需账户/费用/效果资格；不把开源客户端私有免Key端点或未知托管后端作为可靠免费主链。
+
+批准后最先需要关闭的是四类效果关口：首批站点取字幕/取音轨；同语料云ASR的原文与时延；图片/漫画成图；
+文本/扫描/混合PDF及复杂DOCX/EPUB的完整性和成品。失败时保留该功能未达标状态并提出替代，不缩减后称全部完成。
+基础功能与高级功能均纳入范围追踪，只有相应关口通过才能交付该能力。
+
+待用户确认的是上述总体路线和高级功能“先验证、达标后交付”的范围；不是逐一批准库/API工程选择。
+实施prompt需明确首批站点/格式、原译双语阅读与文件输出优先级、可外发数据类型、账号/费用上限；未确定的
+参数集中列为启动前决策项，不编造答案。本轮按用户要求停在评估，收到同意后才生成最终实现执行方案prompt。
+
 ## 4. AIbrowse 集成边界
 
 现有 BrowserController/TabManager 的标签所有权与文档世代、PageReader 固定隔离脚本、
 LLMProvider文字流、DPAPI凭据和严格IPC可复用。现有快照是有界共读文本，不能直接承担全文回填；
 消息内容目前是字符串，不能称已有视觉/音频/文档接口。
+
+最终源码复核：`src/main/browser/tab-manager.ts`仍保持远程页sandbox/contextIsolation/webSecurity；普通页
+仅有已资格化用户脚本preload，任务页不加载它，不能把它当新的通用翻译/网络桥。`src/main/security/session-security.ts`
+当前只窄放行fullscreen，没有现成媒体采集授权；`src/main/ai/provider/llm-provider.ts`与共享ProviderMessage
+仍是文字协议。所需TranslationService、任务级截图/媒体取得和各模态Adapter都需新设计实现。
+
+[Electron扩展说明](https://www.electronjs.org/docs/latest/api/extensions)只承诺部分Chrome API，不保证任意商店扩展。
+旧隔离探针是43.7.7，不能当43.8.4整插件兼容证据；本轮不走原插件直接装载/改会员判断路线。
+本机43.8.4类型声明含capturePage、executeJavaScriptInIsolatedWorld及Streams.audio WebFrameMain，支持窄能力设计的
+可行性；[定向播放音频捕获](https://www.electronjs.org/docs/latest/api/session#sessetdisplaymediarequesthandlerhandler-opts)
+及截图/声线仍须实际验证。平台方法存在不表示安全边界、性能或产品集成已通过；不得为取音频放开整个Session媒体权限。
 
 建议依赖方向：
 
